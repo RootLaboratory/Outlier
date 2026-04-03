@@ -63,5 +63,6 @@ void AOutlierPlayerController::SetupInputComponent()
 bool AOutlierPlayerController::ShouldUseTouchControls() const
 {
 	// are we on a mobile platform? Should we force touch?
-	return SVirtualJoystick::ShouldDisplayTouchInterface() || bForceTouchControls;
+	return false;
+	/*return SVirtualJoystick::ShouldDisplayTouchInterface() || bForceTouchControls;*/
 }
