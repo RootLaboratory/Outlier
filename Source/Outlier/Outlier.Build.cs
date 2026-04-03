@@ -8,7 +8,12 @@ public class Outlier : ModuleRules
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 
-		PublicDependencyModuleNames.AddRange(new string[] {
+		// FirstPerson template classes were merged into the Outlier module but still use
+		// the original template export macro in several headers.
+		PublicDefinitions.Add("TP_FIRSTPERSON_API=OUTLIER_API");
+
+		PublicDependencyModuleNames.AddRange(new string[]
+		{
 			"Core",
 			"CoreUObject",
 			"Engine",
@@ -21,28 +26,20 @@ public class Outlier : ModuleRules
 			"Slate"
 		});
 
-		PrivateDependencyModuleNames.AddRange(new string[] { });
+		PrivateDependencyModuleNames.AddRange(new string[]
+		{
+		});
 
 		PublicIncludePaths.AddRange(new string[] {
 			"Outlier",
-			"Outlier/Variant_Platforming",
-			"Outlier/Variant_Platforming/Animation",
-			"Outlier/Variant_Combat",
-			"Outlier/Variant_Combat/AI",
-			"Outlier/Variant_Combat/Animation",
-			"Outlier/Variant_Combat/Gameplay",
-			"Outlier/Variant_Combat/Interfaces",
-			"Outlier/Variant_Combat/UI",
-			"Outlier/Variant_SideScrolling",
-			"Outlier/Variant_SideScrolling/AI",
-			"Outlier/Variant_SideScrolling/Gameplay",
-			"Outlier/Variant_SideScrolling/Interfaces",
-			"Outlier/Variant_SideScrolling/UI"
+			"Outlier/TP_FirstPerson",
+			"Outlier/TP_FirstPerson/Variant_Horror",
+			"Outlier/TP_FirstPerson/Variant_Horror/UI",
+			"Outlier/TP_FirstPerson/Variant_Shooter",
+			"Outlier/TP_FirstPerson/Variant_Shooter/AI",
+			"Outlier/TP_FirstPerson/Variant_Shooter/UI",
+			"Outlier/TP_FirstPerson/Variant_Shooter/Weapons"
 		});
-
-		// Uncomment if you are using Slate UI
-		// PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore" });
-
 		// Uncomment if you are using online features
 		// PrivateDependencyModuleNames.Add("OnlineSubsystem");
 
