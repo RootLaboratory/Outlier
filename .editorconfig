@@ -1,25 +1,32 @@
 root = true
 
-# C++ 소스 코드 및 헤더 (엔진 표준: BOM 없는 UTF-8)
 [*.{c,cc,cpp,cxx,h,hpp,inl}]
 charset = utf-8
 indent_style = tab
 indent_size = 4
+tab_width = 4
+end_of_line = lf
 insert_final_newline = true
 trim_trailing_whitespace = true
 
-# 언리얼 빌드 시스템 (C#)
 [*.cs]
 charset = utf-8
 indent_style = space
 indent_size = 4
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
 
-# 프로젝트 설정 및 JSON 데이터
 [*.{uproject,uplugin,json}]
 charset = utf-8
 indent_style = space
 indent_size = 4
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
 
-# 셰이더 및 환경설정
-[*.{usf,ush,hlsl,ini}]
+[*.{usf,ush,hlsl,fx,ini}]
 charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
