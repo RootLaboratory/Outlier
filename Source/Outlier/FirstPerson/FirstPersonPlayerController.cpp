@@ -1,20 +1,27 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
+// Fill out your copyright notice in the Description page of Project Settings.
 
 
-#include "OutlierPlayerController.h"
+#include "FirstPersonPlayerController.h"
 #include "EnhancedInputSubsystems.h"
 #include "Engine/LocalPlayer.h"
 #include "InputMappingContext.h"
-#include "Blueprint/UserWidget.h"
+#include "FirstPersonPlayerCameraManager.h"
 #include "Outlier.h"
-#include "Widgets/Input/SVirtualJoystick.h"
 
-void AOutlierPlayerController::BeginPlay()
+AFirstPersonPlayerController::AFirstPersonPlayerController()
+{
+	// set the player camera manager
+	PlayerCameraManagerClass = AFirstPersonPlayerCameraManager::StaticClass();
+}
+
+
+void AFirstPersonPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
 }
 
-void AOutlierPlayerController::SetupInputComponent()
+
+void AFirstPersonPlayerController::SetupInputComponent()
 {
 	Super::SetupInputComponent();
 
@@ -31,3 +38,5 @@ void AOutlierPlayerController::SetupInputComponent()
 		}
 	}
 }
+
+
