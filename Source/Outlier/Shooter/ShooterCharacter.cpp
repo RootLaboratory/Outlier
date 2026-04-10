@@ -13,11 +13,12 @@
 #include "InputActionValue.h"
 #include "ShooterInputConfig.h"
 #include "Weapon/WeaponBase.h"
+#include "Weapon/RangedWeaponBase.h"
 #include "Outlier.h"
 
 AShooterCharacter::AShooterCharacter() : AFirstPersonCharacter()
 {
-	
+	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
 }
 
 void AShooterCharacter::BeginPlay()
@@ -86,12 +87,14 @@ void AShooterCharacter::TryReload()
 		return;
 	}
 
-	if (!CurrentWeapon)
+	ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(CurrentWeapon);
+
+	if (!RangedWeapon)
 	{
 		return;
 	}
 
-	CurrentWeapon->Reload();
+	RangedWeapon->Reload();
 }
 
 void AShooterCharacter::TrySwitchWeapon1()
@@ -136,11 +139,18 @@ void AShooterCharacter::TryStartAim()
 		return;
 	}
 
+	ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(CurrentWeapon);
+
+	if (!RangedWeapon)
+	{
+		return;
+	}
+
 	bIsAiming = true;
 
-	if (CurrentWeapon)
+	if (RangedWeapon)
 	{
-		CurrentWeapon->SetAiming(true);
+		RangedWeapon->SetAiming(true);
 	}
 }
 
@@ -148,9 +158,11 @@ void AShooterCharacter::TryStopAim()
 {
 	bIsAiming = false;
 
-	if (CurrentWeapon)
+	ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(CurrentWeapon);
+
+	if (RangedWeapon)
 	{
-		CurrentWeapon->SetAiming(false);
+		RangedWeapon->SetAiming(false);
 	}
 }
 

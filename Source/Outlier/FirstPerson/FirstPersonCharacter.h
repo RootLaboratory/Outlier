@@ -35,9 +35,9 @@ protected:
 	UPROPERTY(EditAnywhere, Category = Input)
 	UInputAction* LookAction;
 
-	/** Fire Weapon Input Action */
+	/** Attack Weapon Input Action */
 	UPROPERTY(EditAnywhere, Category = Input)
-	UInputAction* FireAction;
+	UInputAction* AttackAction;
 
 	UPROPERTY(EditAnywhere, Category = Weapon)
 	AWeaponBase* CurrentWeapon;
@@ -48,9 +48,9 @@ public:
 
 protected:
 
-	void TryStartFire();
+	void TryStartAttack();
 
-	void TryStopFire();
+	void TryStopAttack();
 
 	void MoveInput(const FInputActionValue& Value);
 

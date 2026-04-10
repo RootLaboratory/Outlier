@@ -3,42 +3,27 @@
 
 #include "Weapon/WeaponBase.h"
 
-
-// Sets default values
-AWeaponBase::AWeaponBase()
+bool AWeaponBase::CanAttack() const
 {
- 	// Set this actor to call Tick() every frame.  You can turn this off to improve performance if you don't need it.
-	PrimaryActorTick.bCanEverTick = true;
-
+	return false;
 }
 
-// Called when the game starts or when spawned
-void AWeaponBase::BeginPlay()
-{
-	Super::BeginPlay();
-	
-}
-
-// Called every frame
-void AWeaponBase::Tick(float DeltaTime)
-{
-	Super::Tick(DeltaTime);
-
-}
-
-void AWeaponBase::StartFire()
+void AWeaponBase::StartAttack()
 {
 }
 
-void AWeaponBase::StopFire()
+void AWeaponBase::StopAttack()
 {
 }
 
-void AWeaponBase::Reload()
+void AWeaponBase::PerformAttack()
 {
-
 }
 
-void AWeaponBase::SetAiming(bool IsAiming)
+void AWeaponBase::OnEquipped(ACharacter* NewOwner)
+{
+}
+
+void AWeaponBase::OnUnequipped()
 {
 }

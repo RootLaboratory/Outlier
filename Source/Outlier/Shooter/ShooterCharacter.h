@@ -30,8 +30,8 @@ protected:
 	/** Name of the third person mesh weapon socket */
 	FName ThirdPersonWeaponSocket = FName("HandGrip_R");
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
-	TArray<AWeaponBase*> OwnedWeapons;
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon")
+	TArray<TObjectPtr<AWeaponBase>> OwnedWeapons;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Health)
 	float MaxHP = 100.0f;
@@ -49,25 +49,26 @@ protected:
 	float SprintSpeed = 600.0f;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Combat)
-	uint8 bIsAiming = false;
+	uint8 bIsAiming : 1 = false;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Combat)
-	uint8 bIsSprinting = false;
+	uint8 bIsSprinting : 1 = false;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Combat)
-	uint8 bIsSliding = false;
+	uint8 bIsSliding : 1 = false;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Combat)
-	uint8 bIsCrouching = false;
+	uint8 bIsCrouching : 1 = false;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Combat)
-	uint8 bIsSuitMenuOpen = false;
+	uint8 bIsSuitMenuOpen : 1 = false;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Status)
+	uint8 bIsDead : 1 = false;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Combat)
 	int32 SelectedSuitIndex = 0; // 이후에 Suit 관련 만들면서 거기에 있는 enum 값으로 교체?
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Status)
-	uint8 bIsDead = false;
 
 public:
 

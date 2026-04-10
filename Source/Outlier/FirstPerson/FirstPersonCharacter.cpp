@@ -61,9 +61,9 @@ void AFirstPersonCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
 		// Look
 		EnhancedInputComponent->BindAction(LookAction, ETriggerEvent::Triggered, this, &AFirstPersonCharacter::LookInput);
 
-		// Fire
-		EnhancedInputComponent->BindAction(FireAction, ETriggerEvent::Started,   this, &AFirstPersonCharacter::TryStartFire);
-		EnhancedInputComponent->BindAction(FireAction, ETriggerEvent::Completed, this, &AFirstPersonCharacter::TryStopFire);
+		// Attack
+		EnhancedInputComponent->BindAction(AttackAction, ETriggerEvent::Started,   this, &AFirstPersonCharacter::TryStartAttack);
+		EnhancedInputComponent->BindAction(AttackAction, ETriggerEvent::Completed, this, &AFirstPersonCharacter::TryStopAttack);
 	}
 }
 
@@ -103,7 +103,7 @@ void AFirstPersonCharacter::DoAim(float Yaw, float Pitch)
 	}
 }
 
-void AFirstPersonCharacter::TryStartFire()
+void AFirstPersonCharacter::TryStartAttack()
 {
 	if (!CurrentWeapon)
 	{
@@ -111,15 +111,15 @@ void AFirstPersonCharacter::TryStartFire()
 		return;
 	}
 
-	CurrentWeapon->StartFire();
+	CurrentWeapon->StartAttack();
 }
 
-void AFirstPersonCharacter::TryStopFire()
+void AFirstPersonCharacter::TryStopAttack()
 {
 	if (!CurrentWeapon)
 	{
 		return;
 	}
 
-	CurrentWeapon->StopFire();
+	CurrentWeapon->StopAttack();
 }
