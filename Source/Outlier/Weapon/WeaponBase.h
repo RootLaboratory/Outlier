@@ -19,9 +19,12 @@ UCLASS(Abstract)
 class OUTLIER_API AWeaponBase : public AActor
 {
 	GENERATED_BODY()
-	
+
+public:
+	AWeaponBase();
+
 protected:
-	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Weapon)
 	USkeletalMeshComponent* Mesh;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = Weapon)
@@ -47,6 +50,9 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
 	uint8 bIsAttacking : 1 = false;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
+	uint8 bAttackOnCooldown : 1 = false;
 
 public:	
 	virtual bool CanAttack() const;

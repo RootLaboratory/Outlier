@@ -24,12 +24,6 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = Input)
 	TObjectPtr<UShooterInputConfig> InputConfig;
 
-	/** Name of the first person mesh weapon socket */
-	FName FirstPersonWeaponSocket = FName("HandGrip_R");
-
-	/** Name of the third person mesh weapon socket */
-	FName ThirdPersonWeaponSocket = FName("HandGrip_R");
-
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon")
 	TArray<TObjectPtr<AWeaponBase>> OwnedWeapons;
 
@@ -47,6 +41,9 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, Category = Movement)
 	float SprintSpeed = 600.0f;
+
+	UPROPERTY(EditDefaultsOnly, Category = Status)
+	float InteractRange = 100.0f;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Combat)
 	uint8 bIsAiming : 1 = false;
@@ -71,6 +68,12 @@ protected:
 
 
 public:
+
+	/** Name of the first person mesh weapon socket */
+	FName FirstPersonWeaponSocket = FName("HandGrip_R");
+
+	/** Name of the third person mesh weapon socket */
+	FName ThirdPersonWeaponSocket = FName("HandGrip_R");
 
 	/** Constructor */
 	AShooterCharacter();

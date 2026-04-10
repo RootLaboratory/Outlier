@@ -30,9 +30,6 @@ protected:
 	float ReloadTime = 1.0f;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Fire")
-	uint8 bIsAutomatic : 1 = true;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Fire")
 	float RecoilMultiplier = 1.0f;
 
 	// Bloom : 탄퍼짐
@@ -54,6 +51,12 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Bloom")
 	float AimBloomMultiplier = 0.6f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Fire")
+	uint8 bIsAutomatic : 1 = true;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon|Ammo")
+	uint8 bIsReloading : 1 = false;
 
 public:
 	virtual bool CanAttack() const override;

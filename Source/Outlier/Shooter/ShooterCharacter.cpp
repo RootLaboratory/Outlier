@@ -221,6 +221,47 @@ void AShooterCharacter::TryInteract()
 		return;
 	}
 
+	FVector CameraLocation;
+	FRotator CameraRotation;
+
+	GetController()->GetPlayerViewPoint(CameraLocation, CameraRotation);
+
+	FVector Start = CameraLocation;
+	FVector End = Start + (CameraRotation.Vector() * InteractRange); // 사거리
+
+	FHitResult Hit;
+	FCollisionQueryParams Params;
+	Params.AddIgnoredActor(this);
+
+	const bool bHit = GetWorld()->LineTraceSingleByChannel(
+		Hit,
+		Start,
+		End,
+		ECC_Visibility,
+		Params
+	);
+
+	if (bHit)
+	{
+		UE_LOG(LogTemp, Log, TEXT("[%s] Hit : %s"), *GetName(), *GetNameSafe(Hit.GetActor()));
+	}
+	else
+	{
+		UE_LOG(LogTemp, Log, TEXT("[%s] Miss"), *GetName());
+	}
+
+	FColor LineColor = bHit ? FColor::Green : FColor::Red;
+
+	DrawDebugLine(
+		GetWorld(),
+		Start,
+		End,
+		LineColor,
+		false,
+		3.0f,
+		0,
+		1.0f
+	);
 	// 라인트레이스로 상호작용 대상 검사
 	// 맞은 액터가 인터랙션 인터페이스를 구현하면 호출
 }
