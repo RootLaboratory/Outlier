@@ -45,17 +45,17 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Input")
 	UInputAction* LeanAction;
 
-	/** Slide Input Action */
-	UPROPERTY(EditAnywhere, Category = "Input")
-	UInputAction* SlideAction;
-
 	/** Interaction Input Action */
 	UPROPERTY(EditAnywhere, Category = "Input")
 	UInputAction* InteractionAction;
 	
-	/** Suit Select Input Action */
+	/** Suit Menu Hold Input Action */
 	UPROPERTY(EditAnywhere, Category = "Input")
-	UInputAction* SuitSelectAction;
+	UInputAction* SuitMenuHoldAction;
+
+	/** Suit Navigate Input Action */
+	UPROPERTY(EditAnywhere, Category = "Input")
+	UInputAction* SuitNavigateAction;
 
 	/** Suit Use Input Action */
 	UPROPERTY(EditAnywhere, Category = "Input")

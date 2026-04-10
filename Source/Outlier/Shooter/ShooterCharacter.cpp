@@ -43,29 +43,30 @@ void AShooterCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 	EnhancedInputComponent->BindAction(InputConfig->JumpAction,			ETriggerEvent::Completed, this, &ACharacter::StopJumping);
 
 	// Switch Weapon
-	EnhancedInputComponent->BindAction(InputConfig->SwitchWeapon1Action, ETriggerEvent::Triggered, this, &AShooterCharacter::TrySwitchWeapon1);
-	EnhancedInputComponent->BindAction(InputConfig->SwitchWeapon2Action, ETriggerEvent::Triggered, this, &AShooterCharacter::TrySwitchWeapon2);
-	EnhancedInputComponent->BindAction(InputConfig->SwitchWeapon3Action, ETriggerEvent::Triggered, this, &AShooterCharacter::TrySwitchWeapon3);
+	EnhancedInputComponent->BindAction(InputConfig->SwitchWeapon1Action, ETriggerEvent::Started,  this, &AShooterCharacter::TrySwitchWeapon1);
+	EnhancedInputComponent->BindAction(InputConfig->SwitchWeapon2Action, ETriggerEvent::Started,  this, &AShooterCharacter::TrySwitchWeapon2);
+	EnhancedInputComponent->BindAction(InputConfig->SwitchWeapon3Action, ETriggerEvent::Started,  this, &AShooterCharacter::TrySwitchWeapon3);
 
 	// Sprint
 	EnhancedInputComponent->BindAction(InputConfig->SprintAction,		ETriggerEvent::Started,   this, &AShooterCharacter::TryStartSprint);
 	EnhancedInputComponent->BindAction(InputConfig->SprintAction,		ETriggerEvent::Completed, this, &AShooterCharacter::TryStopSprint);
 
 	// Crouch
-	EnhancedInputComponent->BindAction(InputConfig->CrouchAction,		ETriggerEvent::Started,   this, &AShooterCharacter::TryStartCrouch);
+	EnhancedInputComponent->BindAction(InputConfig->CrouchAction,		ETriggerEvent::Started,   this, &AShooterCharacter::TryStartCrouchOrSlide);
 	EnhancedInputComponent->BindAction(InputConfig->CrouchAction,		ETriggerEvent::Completed, this, &AShooterCharacter::TryStopCrouch);
 
 	// Lean
 	EnhancedInputComponent->BindAction(InputConfig->LeanAction,			ETriggerEvent::Triggered, this, &AShooterCharacter::TryLean);
 
-	// Slide
-	EnhancedInputComponent->BindAction(InputConfig->SlideAction,		ETriggerEvent::Started,   this, &AShooterCharacter::TrySlide);
-
 	// Interaction
 	EnhancedInputComponent->BindAction(InputConfig->InteractionAction,  ETriggerEvent::Started,   this, &AShooterCharacter::TryInteract);
 
-	// Suit Select
-	EnhancedInputComponent->BindAction(InputConfig->SuitSelectAction,	ETriggerEvent::Triggered, this, &AShooterCharacter::TrySelectSuit);
+	// Suit Menu Hold
+	EnhancedInputComponent->BindAction(InputConfig->SuitMenuHoldAction, ETriggerEvent::Started,   this, &AShooterCharacter::TryOpenSuitMenu);
+	EnhancedInputComponent->BindAction(InputConfig->SuitMenuHoldAction, ETriggerEvent::Completed, this, &AShooterCharacter::TryCloseSuitMenu);
+
+	// Suit Navigate
+	EnhancedInputComponent->BindAction(InputConfig->SuitNavigateAction, ETriggerEvent::Triggered, this, &AShooterCharacter::UpdateSuitSelection);
 
 	// Suit Use
 	EnhancedInputComponent->BindAction(InputConfig->SuitUseAction,		ETriggerEvent::Started,   this, &AShooterCharacter::TryUseSuit);
@@ -115,7 +116,7 @@ void AShooterCharacter::SelectWeaponByIndex(int32 SlotIndex)
 		return;
 	}
 
-	if (OwnedWeapons.IsValidIndex(SlotIndex))
+	if (!OwnedWeapons.IsValidIndex(SlotIndex))
 	{
 		return;
 	}
@@ -168,13 +169,23 @@ void AShooterCharacter::TryStartSprint()
 void AShooterCharacter::TryStopSprint()
 {
 	bIsSprinting = false;
-	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
+
+	if (!bIsSliding)
+	{
+		GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
+	}
 }
 
-void AShooterCharacter::TryStartCrouch()
+void AShooterCharacter::TryStartCrouchOrSlide()
 {
 	if (bIsDead)
 	{
+		return;
+	}
+
+	if (bIsSprinting && GetVelocity().SizeSquared() > 0.0f)
+	{
+		TrySlide();
 		return;
 	}
 
@@ -183,6 +194,11 @@ void AShooterCharacter::TryStartCrouch()
 
 void AShooterCharacter::TryStopCrouch()
 {
+	if (bIsSliding)
+	{
+		return;
+	}
+
 	UnCrouch();
 }
 
@@ -197,6 +213,46 @@ void AShooterCharacter::TryInteract()
 	// 맞은 액터가 인터랙션 인터페이스를 구현하면 호출
 }
 
+void AShooterCharacter::TryOpenSuitMenu()
+{
+	if (bIsDead)
+	{
+		return;
+	}
+
+	bIsSuitMenuOpen = true;
+
+	// 라디얼 UI 표시
+	// 마우스 커서 표시
+	// 필요하면 이동 입력 제한
+}
+
+void AShooterCharacter::TryCloseSuitMenu()
+{
+	if (!bIsSuitMenuOpen)
+	{
+		return;
+	}
+
+	bIsSuitMenuOpen = false;
+
+	// 라디얼 UI 숨김
+	// 마우스 커서 숨김
+}
+
+void AShooterCharacter::UpdateSuitSelection(const FInputActionValue& Value)
+{
+	if (!bIsSuitMenuOpen)
+	{
+		return;
+	}
+
+	const FVector2D Input = Value.Get<FVector2D>();
+
+	const float Angle = FMath::Atan2(Input.Y, Input.X);
+	//SelectedSuitIndex = ConvertAngleToSuitIndex(Angle); Suit쪽 로직?
+}
+
 void AShooterCharacter::TryUseSuit()
 {
 	if (bIsDead)
@@ -204,34 +260,27 @@ void AShooterCharacter::TryUseSuit()
 		return;
 	}
 
-	// 현재 선택된 슈트 능력 사용
-}
-
-void AShooterCharacter::TrySelectSuit(const FInputActionValue& Value)
-{
-	if (bIsDead)
+	if (SelectedSuitIndex == INDEX_NONE)
 	{
 		return;
 	}
 
-	// 방향에 따른 Index 선택
-	// Index로 어떤 능력이다로 해야된다? 배열?
-	// 그냥 int32로? 고민중
+	// 현재 선택된 슈트 능력 사용
 }
 
 void AShooterCharacter::TrySlide()
 {
-	if (bIsDead)
-	{
-		return;
-	}
-
-	if (!bIsSprinting)
+	if (bIsDead || !bIsSprinting || bIsSliding)
 	{
 		return;
 	}
 
 	bIsSliding = true;
+
+	// 예: 슬라이드 시작 처리
+	// 캡슐 높이 조정
+	// 슬라이드 타이머 시작
+	// 속도 보정
 }
 
 void AShooterCharacter::TryLean(const FInputActionValue& Value)
@@ -254,7 +303,7 @@ void AShooterCharacter::ApplyDamageInternal(float DamageAmount)
 
 	CurHP = FMath::Clamp(CurHP - DamageAmount, 0.0f, MaxHP);
 
-	if (CurHP < 0.0f)
+	if (CurHP <= 0.0f)
 	{
 		Die();
 	}

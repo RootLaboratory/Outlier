@@ -42,9 +42,6 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Combat)
 	float CurrentLeanValue = 0.0f;
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Combat)
-	int32 SelectedSuitIndex = 0;
-
 	UPROPERTY(EditDefaultsOnly, Category = Movement)
 	float WalkSpeed = 300.0f;
 
@@ -62,6 +59,12 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Combat)
 	uint8 bIsCrouching = false;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Combat)
+	uint8 bIsSuitMenuOpen = false;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Combat)
+	int32 SelectedSuitIndex = 0; // 이후에 Suit 관련 만들면서 거기에 있는 enum 값으로 교체?
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Status)
 	uint8 bIsDead = false;
@@ -97,15 +100,19 @@ protected:
 
 	void TryStopSprint();
 
-	void TryStartCrouch();
+	void TryStartCrouchOrSlide();
 
 	void TryStopCrouch();
 
 	void TryInteract();
 
-	void TryUseSuit();
+	void TryOpenSuitMenu();
 
-	void TrySelectSuit(const FInputActionValue& Value);
+	void TryCloseSuitMenu();
+
+	void UpdateSuitSelection(const FInputActionValue& Value);
+
+	void TryUseSuit();
 
 	void TrySlide();
 
