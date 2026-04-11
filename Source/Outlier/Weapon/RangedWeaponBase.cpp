@@ -4,6 +4,7 @@
 #include "Weapon/RangedWeaponBase.h"
 #include "GameFramework/Character.h"
 #include "TimerManager.h"
+#include "Shooter/ShooterCharacter.h"
 
 void ARangedWeaponBase::StartAttackCooldown()
 {
@@ -94,7 +95,10 @@ void ARangedWeaponBase::FireShot()
 
 	if (bHit)
 	{
-		UE_LOG(LogTemp, Log, TEXT("[%s] Hit : %s"), *GetName(), *GetNameSafe(Hit.GetActor()));
+		if (AShooterCharacter* HitCharacter = Cast<AShooterCharacter>(Hit.GetActor()))
+		{
+			HitCharacter->ApplyDamageInternal(Damage);
+		}
 	}
 	else
 	{

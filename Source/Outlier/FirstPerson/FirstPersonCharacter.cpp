@@ -10,6 +10,7 @@
 #include "InputActionValue.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Weapon/WeaponBase.h"
+#include "Net/UnrealNetwork.h"
 #include "Outlier.h"
 
 
@@ -103,6 +104,21 @@ void AFirstPersonCharacter::DoAim(float Yaw, float Pitch)
 	}
 }
 
+void AFirstPersonCharacter::OnRep_CurrentWeapon()
+{
+	if (LastReplicatedWeapon && LastReplicatedWeapon != CurrentWeapon)
+	{
+		LastReplicatedWeapon->OnUnequipped();
+	}
+
+	if (CurrentWeapon)
+	{
+		CurrentWeapon->OnEquipped(this);
+	}
+
+	LastReplicatedWeapon = CurrentWeapon;
+}
+
 void AFirstPersonCharacter::TryStartAttack()
 {
 	if (!CurrentWeapon)
@@ -126,5 +142,34 @@ void AFirstPersonCharacter::TryStopAttack()
 
 void AFirstPersonCharacter::EquipWeapon(AWeaponBase* Weapon)
 {
+	if (!Weapon)
+	{
+		return;
+	}
 
+	if (CurrentWeapon == Weapon)
+	{
+		return;
+	}
+
+	if (CurrentWeapon)
+	{
+		CurrentWeapon->OnUnequipped();
+	}
+
+	CurrentWeapon = Weapon;
+
+	if (CurrentWeapon)
+	{
+		CurrentWeapon->OnEquipped(this);
+	}
+
+	LastReplicatedWeapon = CurrentWeapon;
+}
+
+void AFirstPersonCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+
+	DOREPLIFETIME(AFirstPersonCharacter, CurrentWeapon);
 }

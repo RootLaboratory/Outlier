@@ -30,7 +30,7 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Health)
 	float MaxHP = 100.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Health)
+	UPROPERTY(ReplicatedUsing = OnRep_CurHP, EditAnywhere, BlueprintReadWrite, Category = Health)
 	float CurHP = 100.0f;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Combat)
@@ -84,9 +84,11 @@ protected:
 	/** Initialize input action bindings */
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
 
-	virtual void EquipWeapon(AWeaponBase* Weapon) override;
-
 protected:
+
+	virtual void TryStartAttack() override;
+
+	virtual void TryStopAttack() override;
 
 	void TryReload();
 
@@ -124,10 +126,28 @@ protected:
 
 	void TryLean(const FInputActionValue& Value);
 
-	void ApplyDamageInternal(float DamageAmount);
+	UFUNCTION(Server, Reliable)
+	void ServerInteract(AActor* TargetActor);
+
+	UFUNCTION(Server, Reliable)
+	void ServerStartAttack();
+
+	UFUNCTION(Server, Reliable)
+	void ServerStopAttack();
+
+	UFUNCTION(Server, Reliable)
+	void ServerReload();
+
 	void Die();
 
 public:
+
+	UFUNCTION()
+	void OnRep_CurHP();
+
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
+	void ApplyDamageInternal(float DamageAmount);
 
 	/** Handles jump pressed inputs from either controls or UI interfaces */
 	UFUNCTION(BlueprintCallable, Category="Input")

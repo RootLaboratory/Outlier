@@ -15,6 +15,7 @@
 #include "Weapon/WeaponBase.h"
 #include "Weapon/RangedWeaponBase.h"
 #include "Interface/InteractableInterface.h"
+#include "Net/UnrealNetwork.h"
 #include "Outlier.h"
 
 AShooterCharacter::AShooterCharacter() : AFirstPersonCharacter()
@@ -82,6 +83,12 @@ void AShooterCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 }
 
 void AShooterCharacter::TryReload()
+{
+	ServerReload();
+	
+}
+
+void AShooterCharacter::ServerReload_Implementation()
 {
 	if (bIsDead)
 	{
@@ -247,36 +254,47 @@ void AShooterCharacter::TryInteract()
 		return;
 	}
 
-	AActor* HitActor = Hit.GetActor();
-	if (!HitActor)
+	ServerInteract(Hit.GetActor());
+}
+
+
+void AShooterCharacter::ServerInteract_Implementation(AActor* TargetActor)
+{
+	if(!TargetActor || bIsDead)
 	{
+		UE_LOG(LogTemp, Warning, TEXT("TargetActor is null or Dead"));
 		return;
 	}
 
-	if (bHit)
+	FVector CameraLocation;
+	FRotator CameraRotation;
+	GetController()->GetPlayerViewPoint(CameraLocation, CameraRotation);
+
+	const FVector Start = CameraLocation;
+	const FVector End = Start + (CameraRotation.Vector() * InteractRange);
+
+	FHitResult Hit;
+	FCollisionQueryParams Params;
+	Params.AddIgnoredActor(this);
+
+	const bool bHit = GetWorld()->LineTraceSingleByChannel(
+		Hit,
+		Start,
+		End,
+		ECC_Visibility,
+		Params
+	);
+
+	if (!bHit || Hit.GetActor() != TargetActor)
 	{
-		UE_LOG(LogTemp, Log, TEXT("[%s] Hit : %s"), *GetName(), *GetNameSafe(Hit.GetActor()));
+		UE_LOG(LogTemp, Warning, TEXT("Server interact validation failed"));
+		return;
 	}
 
-	if (IInteractableInterface* Interactable = Cast<IInteractableInterface>(HitActor))
+	if (IInteractableInterface* Interactable = Cast<IInteractableInterface>(TargetActor))
 	{
 		Interactable->Interact(this);
 	}
-
-	FColor LineColor = bHit ? FColor::Green : FColor::Red;
-
-	DrawDebugLine(
-		GetWorld(),
-		Start,
-		End,
-		LineColor,
-		false,
-		3.0f,
-		0,
-		1.0f
-	);
-	// 라인트레이스로 상호작용 대상 검사
-	// 맞은 액터가 인터랙션 인터페이스를 구현하면 호출
 }
 
 void AShooterCharacter::TryOpenSuitMenu()
@@ -360,6 +378,18 @@ void AShooterCharacter::TryLean(const FInputActionValue& Value)
 	CurrentLeanValue = LeanValue;
 }
 
+void AShooterCharacter::OnRep_CurHP()
+{
+	// TODO: UI 갱신
+}
+
+void AShooterCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+
+	DOREPLIFETIME(AShooterCharacter, CurHP);
+}
+
 void AShooterCharacter::ApplyDamageInternal(float DamageAmount)
 {
 	if (bIsDead || DamageAmount <= 0.0f)
@@ -387,25 +417,35 @@ void AShooterCharacter::Die()
 	GetCharacterMovement()->DisableMovement();
 }
 
-void AShooterCharacter::EquipWeapon(AWeaponBase* Weapon)
+void AShooterCharacter::TryStartAttack()
 {
-	if (!Weapon)
+	ServerStartAttack();
+}
+
+void AShooterCharacter::ServerStartAttack_Implementation()
+{
+	if (bIsDead || !CurrentWeapon)
 	{
 		return;
 	}
 
-	if (CurrentWeapon == Weapon)
+	CurrentWeapon->StartAttack();
+}
+
+void AShooterCharacter::TryStopAttack()
+{
+	ServerStopAttack();
+}
+
+
+void AShooterCharacter::ServerStopAttack_Implementation()
+{
+	if (!CurrentWeapon)
 	{
 		return;
 	}
 
-	if (CurrentWeapon)
-	{
-		CurrentWeapon->OnUnequipped();
-	}
-
-	CurrentWeapon = Weapon;
-	CurrentWeapon->OnEquipped(this);
+	CurrentWeapon->StopAttack();
 }
 
 void AShooterCharacter::DoJumpStart()

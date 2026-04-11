@@ -39,8 +39,14 @@ protected:
 	UPROPERTY(EditAnywhere, Category = Input)
 	UInputAction* AttackAction;
 
-	UPROPERTY(EditAnywhere, Category = Weapon)
+	UPROPERTY(ReplicatedUsing = OnRep_CurrentWeapon, EditAnywhere, Category = Weapon)
 	AWeaponBase* CurrentWeapon;
+
+	UPROPERTY(Transient)
+	TObjectPtr<AWeaponBase> LastReplicatedWeapon;
+
+	UFUNCTION()
+	void OnRep_CurrentWeapon();
 
 public:
 	/** Sets default values for this character's properties */
@@ -48,9 +54,9 @@ public:
 
 protected:
 
-	void TryStartAttack();
+	virtual void TryStartAttack();
 
-	void TryStopAttack();
+	virtual void TryStopAttack();
 
 	void MoveInput(const FInputActionValue& Value);
 
@@ -71,4 +77,7 @@ public:
 	UCameraComponent* GetFirstPersonCameraComponent() const { return FirstPersonCamera; }
 
 	virtual void EquipWeapon(AWeaponBase* Weapon);
+
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
 };
