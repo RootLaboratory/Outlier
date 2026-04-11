@@ -2,19 +2,72 @@
 
 
 #include "PartnerCamUI.h"
+#include "Engine/TextureRenderTarget2D.h"
+#include "Components/Image.h"
+#include "Materials/MaterialInterface.h"
+#include "Materials/MaterialInstanceDynamic.h"
 
-void UPartnerCamUI::EventCall()
+void UPartnerCamUI::NativeConstruct()
 {
-	bFlag = !bFlag;
+
+	Super::NativeConstruct();
+
+	PartnerCamMID = UMaterialInstanceDynamic::Create(PartnerCamMaterial, this);
 
 }
 
-
-void UPartnerCamUI::EventBind(const FGameplayTag& InTag)
+void UPartnerCamUI::SetPartnerCamera(bool bInFlag)
 {
-	Super::EventBind(InTag);
+
+	bFlag = !bInFlag;
+
+	if (bFlag)
+		Activate();
+
+	else Deactivate();
+
+}
+
+void UPartnerCamUI::SetPartnerRenderTarget(UTextureRenderTarget2D* InRenderTarget)
+{
 
 
+	if (InRenderTarget && PartnerCamMID)
+	{
 
+		UE_LOG(LogTemp, Error, TEXT("RenderTargetBinded"));
+
+
+		PartnerRenderTarget = InRenderTarget;
+
+		if (!PartnerCamMID)
+		{
+			UE_LOG(LogTemp, Error, TEXT("SetPartnerRenderTarget: PartnerCamMID is null, waiting for NativeConstruct"));
+			return;
+		}
+		else
+		{
+		PartnerCamMID->SetTextureParameterValue(TEXT("PartnerRT"), PartnerRenderTarget.Get());
+		UE_LOG(LogTemp, Error, TEXT("PartnerCamMID"));
+
+		}
+
+		if (CamImage)
+		{
+			UE_LOG(LogTemp, Error, TEXT("CamImage"));
+
+			CamImage->SetBrushFromMaterial(PartnerCamMID);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Error, TEXT("CamImage: CamImage is null, waiting for NativeConstruct"));
+
+		}
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT("Cant RenderTargetBinded"));
+
+	}
 
 }

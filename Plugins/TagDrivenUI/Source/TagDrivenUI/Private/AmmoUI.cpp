@@ -2,17 +2,9 @@
 
 
 #include "AmmoUI.h"
-#include "LocalPlayerUISubSystem.h"
-#include "GameFramework/PlayerController.h"
-
-
-void UAmmoUI::EventCall()
+void UAmmoUI::AmmoCountChanged_Implementation(int32 InAmmoCount)
 {
-
+//	UE_LOG(LogTemp, Error, TEXT("Received, But c++ Function worked: %d "), InAmmoCount);
+	Temp_AmmoCount = InAmmoCount;
 }
 
-void UAmmoUI::EventBind(const FGameplayTag& InTag)
-{
-	Super::EventBind(InTag);
-
-}

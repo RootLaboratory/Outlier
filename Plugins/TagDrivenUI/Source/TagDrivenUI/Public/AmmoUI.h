@@ -15,9 +15,12 @@ class TAGDRIVENUI_API UAmmoUI : public UEventDrivenUI
 	GENERATED_BODY()
 	
 public:
-	virtual void EventCall() override;
-	virtual void EventBind(const FGameplayTag& InTag) override;
 
-	UFUNCTION(BlueprintImplementableEvent)
-	void OnDamaged();
+	UFUNCTION(BlueprintNativeEvent, Category = "UI")
+	void AmmoCountChanged(int32 InAmmoCount);
+
+public:
+	UPROPERTY(BlueprintReadOnly, Category = "Data")
+	int Temp_AmmoCount = 40;
+
 };

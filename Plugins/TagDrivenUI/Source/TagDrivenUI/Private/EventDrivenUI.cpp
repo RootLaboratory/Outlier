@@ -4,23 +4,16 @@
 #include "EventDrivenUI.h"
 
 
-
-void UEventDrivenUI::EventCall()
+void UEventDrivenUI::Activate()
 {
+	SetVisibility(ESlateVisibility::SelfHitTestInvisible);
+	HandleActivatedVisual();
 }
 
-void UEventDrivenUI::EventBind(const FGameplayTag& InTag)
+void UEventDrivenUI::Deactivate()
 {
-	EventTag = InTag;
-
+	SetVisibility(ESlateVisibility::Collapsed);
+	HandleDeactivatedVisual();
 }
 
-const FGameplayTag& UEventDrivenUI::GetPlayTag()
-{
-	return EventTag;
-}
 
-void UEventDrivenUI::SetPlayTag(const FGameplayTag& InTag)
-{
-	EventTag = InTag;
-}

@@ -6,8 +6,6 @@
 
 #include "MainUIBase.h"
 
-#include "EventDrivenUI.h"
-
 #include "ShooterMainWidget.generated.h"
 
 class UPartnerCamUI;
@@ -21,16 +19,23 @@ class TAGDRIVENUI_API UShooterMainWidget : public UMainUIBase
 	GENERATED_BODY()
 public:
 
+	virtual void NativeConstruct() override;
+
+	//그 Construct 키워드 함수 사용 
 	virtual void ModuleInit() override;
 	virtual void ModuleDestruct() override;
-	virtual void ModuleActivate(bool bFlag) override;
+
+	virtual void ModuleActivate() override;
+	virtual void ModuleDeActivate() override;
 
 public:
 
 
-	UPROPERTY(meta = (BindWidget))
-	TObjectPtr<UPartnerCamUI> PartnerCameraUI;
 
+
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UPartnerCamUI> PartnerCamUI;
+	
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UHPBarUI> HPBarUI;
 

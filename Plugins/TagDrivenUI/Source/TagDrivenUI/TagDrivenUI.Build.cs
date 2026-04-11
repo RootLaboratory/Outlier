@@ -26,12 +26,13 @@ public class TagDrivenUI : ModuleRules
 			new string[]
 			{
 				"Core",
-				"GamePlayTags",
+				"GameplayTags",
 				"UMG",
 				"Slate",
 				"SlateCore",
                 "GameplayAbilities",
-				"GameplayTasks"
+				"GameplayTasks",
+                
 				// ... add other public dependencies that you statically link with here ...
 			}
 			);

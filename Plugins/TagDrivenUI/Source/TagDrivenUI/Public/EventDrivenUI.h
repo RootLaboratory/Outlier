@@ -13,23 +13,19 @@
  * 
  */
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnEventTriggered);
-
 UCLASS()
 class TAGDRIVENUI_API UEventDrivenUI : public UUserWidget
 {
 	GENERATED_BODY()
 
-protected:
-	virtual void EventCall();
-	virtual void EventBind(const FGameplayTag& InTag);
-
-	const FGameplayTag& GetPlayTag();
-	void SetPlayTag(const FGameplayTag& InTag);
+public:
+	 void Activate();
+	 void Deactivate();
 
 protected:
-	FGameplayTag EventTag;
+	UFUNCTION(BlueprintImplementableEvent, Category = "UI")
+	void HandleActivatedVisual();
 
-	UPROPERTY()
-	FOnEventTriggered OnEventTriggered;
+	UFUNCTION(BlueprintImplementableEvent, Category = "UI")
+	void HandleDeactivatedVisual();
 };
