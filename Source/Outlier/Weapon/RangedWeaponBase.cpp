@@ -56,6 +56,11 @@ void ARangedWeaponBase::Reload()
 void ARangedWeaponBase::ConsumeAmmo()
 {
 	CurrentAmmo = FMath::Max(CurrentAmmo - 1, 0);
+
+	if (CurrentAmmo == 0 && CanReload())
+	{
+		Reload();
+	}
 }
 
 void ARangedWeaponBase::FireShot()

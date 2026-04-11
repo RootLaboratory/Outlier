@@ -7,10 +7,12 @@
 #include "FirstPerson/FirstPersonCharacter.h"
 #include "GameFramework/Character.h"
 #include "Shooter/ShooterCharacter.h"
+#include <Net/UnrealNetwork.h>
 
 AWeaponBase::AWeaponBase()
 {
 	bReplicates = true;
+	SetReplicateMovement(false);
 
 	SceneRoot = CreateDefaultSubobject<USceneComponent>(TEXT("SceneRoot"));
 	SetRootComponent(SceneRoot);
@@ -169,4 +171,12 @@ void AWeaponBase::Interact(class AFirstPersonCharacter* Interactor)
 	}
 
 	Interactor->EquipWeapon(this);
+}
+
+void AWeaponBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+
+	DOREPLIFETIME(AWeaponBase, WeaponOwner);
+	DOREPLIFETIME(AWeaponBase, bIsEquipped);
 }

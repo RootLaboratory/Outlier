@@ -50,10 +50,10 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = Weapon)
 	float EffectiveRange = 1000.0f;
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
+	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
 	TObjectPtr<ACharacter> WeaponOwner;
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
+	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
 	uint8 bIsEquipped : 1 = false;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
@@ -77,4 +77,6 @@ public:
 	virtual void OnUnequipped();
 
 	virtual void Interact(class AFirstPersonCharacter* Interactor) override;
+
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 };
