@@ -84,6 +84,8 @@ protected:
 	/** Initialize input action bindings */
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
 
+	virtual void EquipWeapon(AWeaponBase* Weapon) override;
+
 protected:
 
 	void TryReload();

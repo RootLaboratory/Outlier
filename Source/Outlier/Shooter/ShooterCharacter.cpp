@@ -14,6 +14,7 @@
 #include "ShooterInputConfig.h"
 #include "Weapon/WeaponBase.h"
 #include "Weapon/RangedWeaponBase.h"
+#include "Interface/InteractableInterface.h"
 #include "Outlier.h"
 
 AShooterCharacter::AShooterCharacter() : AFirstPersonCharacter()
@@ -241,13 +242,25 @@ void AShooterCharacter::TryInteract()
 		Params
 	);
 
+	if (!bHit)
+	{
+		return;
+	}
+
+	AActor* HitActor = Hit.GetActor();
+	if (!HitActor)
+	{
+		return;
+	}
+
 	if (bHit)
 	{
 		UE_LOG(LogTemp, Log, TEXT("[%s] Hit : %s"), *GetName(), *GetNameSafe(Hit.GetActor()));
 	}
-	else
+
+	if (IInteractableInterface* Interactable = Cast<IInteractableInterface>(HitActor))
 	{
-		UE_LOG(LogTemp, Log, TEXT("[%s] Miss"), *GetName());
+		Interactable->Interact(this);
 	}
 
 	FColor LineColor = bHit ? FColor::Green : FColor::Red;
@@ -372,6 +385,27 @@ void AShooterCharacter::Die()
 	bIsDead = true;
 	StopJumping();
 	GetCharacterMovement()->DisableMovement();
+}
+
+void AShooterCharacter::EquipWeapon(AWeaponBase* Weapon)
+{
+	if (!Weapon)
+	{
+		return;
+	}
+
+	if (CurrentWeapon == Weapon)
+	{
+		return;
+	}
+
+	if (CurrentWeapon)
+	{
+		CurrentWeapon->OnUnequipped();
+	}
+
+	CurrentWeapon = Weapon;
+	CurrentWeapon->OnEquipped(this);
 }
 
 void AShooterCharacter::DoJumpStart()

@@ -123,3 +123,8 @@ void AFirstPersonCharacter::TryStopAttack()
 
 	CurrentWeapon->StopAttack();
 }
+
+void AFirstPersonCharacter::EquipWeapon(AWeaponBase* Weapon)
+{
+
+}

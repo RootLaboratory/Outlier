@@ -4,9 +4,11 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "Interface/InteractableInterface.h"
 #include "WeaponBase.generated.h"
 
 class USkeletalMeshComponent;
+class USceneComponent;
 
 UENUM(BlueprintType)
 enum class EWeaponType : uint8
@@ -16,7 +18,7 @@ enum class EWeaponType : uint8
 };
 
 UCLASS(Abstract)
-class OUTLIER_API AWeaponBase : public AActor
+class OUTLIER_API AWeaponBase : public AActor, public IInteractableInterface
 {
 	GENERATED_BODY()
 
@@ -24,8 +26,14 @@ public:
 	AWeaponBase();
 
 protected:
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Weapon)
-	USkeletalMeshComponent* Mesh;
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
+	TObjectPtr<USceneComponent> SceneRoot;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
+	TObjectPtr<USkeletalMeshComponent> FirstPersonWeaponMesh;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
+	TObjectPtr<USkeletalMeshComponent> ThirdPersonWeaponMesh;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = Weapon)
 	FName WeaponName;
@@ -51,8 +59,9 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
 	uint8 bIsAttacking : 1 = false;
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
-	uint8 bAttackOnCooldown : 1 = false;
+	void SetEquippedCollisionEnabled(bool bEnabled);
+	void SetPickupPresentation();
+	void SetEquippedPresentation();
 
 public:	
 	virtual bool CanAttack() const;
@@ -66,4 +75,6 @@ public:
 	virtual void OnEquipped(ACharacter* NewOwner);
 
 	virtual void OnUnequipped();
+
+	virtual void Interact(class AFirstPersonCharacter* Interactor) override;
 };

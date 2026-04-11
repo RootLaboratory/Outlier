@@ -64,9 +64,11 @@ protected:
 	/** Set up input action bindings */
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
 
+
 public:
 	USkeletalMeshComponent* GetFirstPersonMesh() const { return FirstPersonMesh; }
 
 	UCameraComponent* GetFirstPersonCameraComponent() const { return FirstPersonCamera; }
-	
+
+	virtual void EquipWeapon(AWeaponBase* Weapon);
 };

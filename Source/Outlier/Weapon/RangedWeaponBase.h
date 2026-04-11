@@ -58,6 +58,16 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon|Ammo")
 	uint8 bIsReloading : 1 = false;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon|Fire")
+	uint8 bAttackOnCooldown : 1 = false;
+
+	FTimerHandle AutoFireTimerHandle;
+	FTimerHandle AttackCooldownTimerHandle;
+
+	void HandleAutoFire();
+	void StartAttackCooldown();
+	void ResetAttackCooldown();
+
 public:
 	virtual bool CanAttack() const override;
 	virtual void StartAttack() override;

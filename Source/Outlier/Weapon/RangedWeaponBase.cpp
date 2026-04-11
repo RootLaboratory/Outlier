@@ -3,6 +3,28 @@
 
 #include "Weapon/RangedWeaponBase.h"
 #include "GameFramework/Character.h"
+#include "TimerManager.h"
+
+void ARangedWeaponBase::StartAttackCooldown()
+{
+	bAttackOnCooldown = true;
+
+	if (GetWorld())
+	{
+		GetWorld()->GetTimerManager().SetTimer(
+			AttackCooldownTimerHandle,
+			this,
+			&ARangedWeaponBase::ResetAttackCooldown,
+			AttackInterval,
+			false
+		);
+	}
+}
+
+void ARangedWeaponBase::ResetAttackCooldown()
+{
+	bAttackOnCooldown = false;
+}
 
 bool ARangedWeaponBase::CanReload() const
 {
@@ -115,15 +137,32 @@ void ARangedWeaponBase::SetAiming(bool Aimming)
 {
 }
 
+void ARangedWeaponBase::HandleAutoFire()
+{
+	if (!bIsAttacking || !Super::CanAttack() || bIsReloading || CurrentAmmo <= 0)
+	{
+		StopAttack();
+		return;
+	}
+
+	PerformAttack();
+}
+
 bool ARangedWeaponBase::CanAttack() const
 {
 	return Super::CanAttack()
+		&& !bAttackOnCooldown
 		&& !bIsReloading
 		&& CurrentAmmo > 0;
 }
 
 void ARangedWeaponBase::StartAttack()
 {
+	if (bIsAttacking)
+	{
+		return;
+	}
+
 	if (!CanAttack())
 	{
 		if (CurrentAmmo <= 0)
@@ -133,21 +172,52 @@ void ARangedWeaponBase::StartAttack()
 		return;
 	}
 
-	Super::StartAttack();
+	PerformAttack(); // 첫 발 즉시 발사
+
+	bIsAttacking = true;
+	// Attack state is set by ranged fire flow.
+
+	if (bIsAutomatic)
+	{
+		GetWorld()->GetTimerManager().SetTimer(
+			AutoFireTimerHandle,
+			this,
+			&ARangedWeaponBase::HandleAutoFire,
+			AttackInterval,
+			true
+		);
+	}
 }
 
 void ARangedWeaponBase::StopAttack()
 {
 	Super::StopAttack();
+
+	if (GetWorld())
+	{
+		GetWorld()->GetTimerManager().ClearTimer(AutoFireTimerHandle);
+		GetWorld()->GetTimerManager().ClearTimer(AttackCooldownTimerHandle);
+	}
+
+	bAttackOnCooldown = false;
 }
 
 void ARangedWeaponBase::PerformAttack()
 {
+	if (!Super::CanAttack() || bIsReloading || CurrentAmmo <= 0)
+	{
+		if (CurrentAmmo <= 0)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[%s] No ammo"), *GetName());
+			StopAttack();
+		}
+		return;
+	}
+
 	ConsumeAmmo();
 	FireShot();
 
-	bAttackOnCooldown = true;
-	bIsAttacking = false;
+	StartAttackCooldown();
 
 	UE_LOG(LogTemp, Log, TEXT("[%s] Fire success. Ammo: %d / %d"), *GetName(), CurrentAmmo, ReserveAmmo);
 }
