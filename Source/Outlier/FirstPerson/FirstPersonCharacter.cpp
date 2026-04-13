@@ -13,6 +13,14 @@
 #include "Net/UnrealNetwork.h"
 #include "Outlier.h"
 
+namespace
+{
+	const TCHAR* NetPrefix(const AActor* Actor)
+	{
+		return (Actor && Actor->HasAuthority()) ? TEXT("[Server]") : TEXT("[Client]");
+	}
+}
+
 
 // Sets default values
 AFirstPersonCharacter::AFirstPersonCharacter()
@@ -106,6 +114,7 @@ void AFirstPersonCharacter::DoAim(float Yaw, float Pitch)
 
 void AFirstPersonCharacter::OnRep_CurrentWeapon()
 {
+	UE_LOG(LogTemp, Log, TEXT("%s %s OnRep_CurrentWeapon Previous=%s Current=%s"), NetPrefix(this), *GetName(), *GetNameSafe(LastReplicatedWeapon), *GetNameSafe(CurrentWeapon));
 	if (LastReplicatedWeapon && LastReplicatedWeapon != CurrentWeapon)
 	{
 		LastReplicatedWeapon->OnUnequipped();
@@ -123,10 +132,11 @@ void AFirstPersonCharacter::TryStartAttack()
 {
 	if (!CurrentWeapon)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("No weapon equipped"));
+		UE_LOG(LogTemp, Warning, TEXT("%s %s TryStartAttack blocked: no weapon equipped"), NetPrefix(this), *GetName());
 		return;
 	}
 
+	UE_LOG(LogTemp, Log, TEXT("%s %s TryStartAttack Weapon=%s"), NetPrefix(this), *GetName(), *GetNameSafe(CurrentWeapon));
 	CurrentWeapon->StartAttack();
 }
 
@@ -134,9 +144,11 @@ void AFirstPersonCharacter::TryStopAttack()
 {
 	if (!CurrentWeapon)
 	{
+		UE_LOG(LogTemp, Warning, TEXT("%s %s TryStopAttack blocked: no weapon equipped"), NetPrefix(this), *GetName());
 		return;
 	}
 
+	UE_LOG(LogTemp, Log, TEXT("%s %s TryStopAttack Weapon=%s"), NetPrefix(this), *GetName(), *GetNameSafe(CurrentWeapon));
 	CurrentWeapon->StopAttack();
 }
 
@@ -144,13 +156,17 @@ void AFirstPersonCharacter::EquipWeapon(AWeaponBase* Weapon)
 {
 	if (!Weapon)
 	{
+		UE_LOG(LogTemp, Warning, TEXT("%s %s EquipWeapon blocked: weapon is null"), NetPrefix(this), *GetName());
 		return;
 	}
 
 	if (CurrentWeapon == Weapon)
 	{
+		UE_LOG(LogTemp, Log, TEXT("%s %s EquipWeapon skipped: already equipped %s"), NetPrefix(this), *GetName(), *GetNameSafe(Weapon));
 		return;
 	}
+
+	UE_LOG(LogTemp, Log, TEXT("%s %s EquipWeapon Previous=%s New=%s"), NetPrefix(this), *GetName(), *GetNameSafe(CurrentWeapon), *GetNameSafe(Weapon));
 
 	if (CurrentWeapon)
 	{
@@ -165,6 +181,7 @@ void AFirstPersonCharacter::EquipWeapon(AWeaponBase* Weapon)
 	}
 
 	LastReplicatedWeapon = CurrentWeapon;
+	UE_LOG(LogTemp, Log, TEXT("%s %s EquipWeapon complete Current=%s"), NetPrefix(this), *GetName(), *GetNameSafe(CurrentWeapon));
 }
 
 void AFirstPersonCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const

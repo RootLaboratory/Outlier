@@ -18,6 +18,14 @@
 #include "Net/UnrealNetwork.h"
 #include "Outlier.h"
 
+namespace
+{
+	const TCHAR* NetPrefix(const AActor* Actor)
+	{
+		return (Actor && Actor->HasAuthority()) ? TEXT("[Server]") : TEXT("[Client]");
+	}
+}
+
 AShooterCharacter::AShooterCharacter() : AFirstPersonCharacter()
 {
 	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
@@ -84,14 +92,17 @@ void AShooterCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 
 void AShooterCharacter::TryReload()
 {
+	UE_LOG(LogTemp, Log, TEXT("%s %s TryReload CurrentWeapon=%s"), NetPrefix(this), *GetName(), *GetNameSafe(CurrentWeapon));
 	ServerReload();
 	
 }
 
 void AShooterCharacter::ServerReload_Implementation()
 {
+	UE_LOG(LogTemp, Log, TEXT("[Server] %s ServerReload CurrentWeapon=%s"), *GetName(), *GetNameSafe(CurrentWeapon));
 	if (bIsDead)
 	{
+		UE_LOG(LogTemp, Warning, TEXT("[Server] %s ServerReload blocked: dead"), *GetName());
 		return;
 	}
 
@@ -99,6 +110,7 @@ void AShooterCharacter::ServerReload_Implementation()
 
 	if (!RangedWeapon)
 	{
+		UE_LOG(LogTemp, Warning, TEXT("[Server] %s ServerReload blocked: weapon is not ranged"), *GetName());
 		return;
 	}
 
@@ -226,6 +238,13 @@ void AShooterCharacter::TryInteract()
 {
 	if (bIsDead)
 	{
+		UE_LOG(LogTemp, Warning, TEXT("%s %s TryInteract blocked: dead"), NetPrefix(this), *GetName());
+		return;
+	}
+
+	if (!GetController())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("%s %s TryInteract blocked: controller is null"), NetPrefix(this), *GetName());
 		return;
 	}
 
@@ -251,9 +270,11 @@ void AShooterCharacter::TryInteract()
 
 	if (!bHit)
 	{
+		UE_LOG(LogTemp, Log, TEXT("%s %s TryInteract miss Start=%s End=%s"), NetPrefix(this), *GetName(), *Start.ToString(), *End.ToString());
 		return;
 	}
 
+	UE_LOG(LogTemp, Log, TEXT("%s %s TryInteract hit Target=%s"), NetPrefix(this), *GetName(), *GetNameSafe(Hit.GetActor()));
 	ServerInteract(Hit.GetActor());
 }
 
@@ -262,7 +283,13 @@ void AShooterCharacter::ServerInteract_Implementation(AActor* TargetActor)
 {
 	if(!TargetActor || bIsDead)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("TargetActor is null or Dead"));
+		UE_LOG(LogTemp, Warning, TEXT("[Server] %s ServerInteract blocked Target=%s Dead=%d"), *GetName(), *GetNameSafe(TargetActor), bIsDead ? 1 : 0);
+		return;
+	}
+
+	if (!GetController())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Server] %s ServerInteract blocked: controller is null"), *GetName());
 		return;
 	}
 
@@ -287,13 +314,18 @@ void AShooterCharacter::ServerInteract_Implementation(AActor* TargetActor)
 
 	if (!bHit || Hit.GetActor() != TargetActor)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("Server interact validation failed"));
+		UE_LOG(LogTemp, Warning, TEXT("[Server] %s ServerInteract validation failed Requested=%s Hit=%s"), *GetName(), *GetNameSafe(TargetActor), *GetNameSafe(Hit.GetActor()));
 		return;
 	}
 
 	if (IInteractableInterface* Interactable = Cast<IInteractableInterface>(TargetActor))
 	{
+		UE_LOG(LogTemp, Log, TEXT("[Server] %s ServerInteract success Target=%s"), *GetName(), *GetNameSafe(TargetActor));
 		Interactable->Interact(this);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Server] %s ServerInteract failed: target not interactable Target=%s"), *GetName(), *GetNameSafe(TargetActor));
 	}
 }
 
@@ -380,6 +412,7 @@ void AShooterCharacter::TryLean(const FInputActionValue& Value)
 
 void AShooterCharacter::OnRep_CurHP()
 {
+	UE_LOG(LogTemp, Log, TEXT("%s %s OnRep_CurHP CurHP=%.1f / %.1f"), NetPrefix(this), *GetName(), CurHP, MaxHP);
 	// TODO: UI 갱신
 }
 
@@ -394,10 +427,13 @@ void AShooterCharacter::ApplyDamageInternal(float DamageAmount)
 {
 	if (bIsDead || DamageAmount <= 0.0f)
 	{
+		UE_LOG(LogTemp, Warning, TEXT("%s %s ApplyDamageInternal blocked Dead=%d Damage=%.1f"), NetPrefix(this), *GetName(), bIsDead ? 1 : 0, DamageAmount);
 		return;
 	}
 
+	const float PreviousHP = CurHP;
 	CurHP = FMath::Clamp(CurHP - DamageAmount, 0.0f, MaxHP);
+	UE_LOG(LogTemp, Log, TEXT("%s %s ApplyDamageInternal Damage=%.1f HP %.1f -> %.1f"), NetPrefix(this), *GetName(), DamageAmount, PreviousHP, CurHP);
 
 	if (CurHP <= 0.0f)
 	{
@@ -413,12 +449,14 @@ void AShooterCharacter::Die()
 	}
 
 	bIsDead = true;
+	UE_LOG(LogTemp, Warning, TEXT("%s %s Die"), NetPrefix(this), *GetName());
 	StopJumping();
 	GetCharacterMovement()->DisableMovement();
 }
 
 void AShooterCharacter::TryStartAttack()
 {
+	UE_LOG(LogTemp, Log, TEXT("%s %s TryStartAttack CurrentWeapon=%s"), NetPrefix(this), *GetName(), *GetNameSafe(CurrentWeapon));
 	ServerStartAttack();
 }
 
@@ -426,14 +464,17 @@ void AShooterCharacter::ServerStartAttack_Implementation()
 {
 	if (bIsDead || !CurrentWeapon)
 	{
+		UE_LOG(LogTemp, Warning, TEXT("[Server] %s ServerStartAttack blocked Dead=%d Weapon=%s"), *GetName(), bIsDead ? 1 : 0, *GetNameSafe(CurrentWeapon));
 		return;
 	}
 
+	UE_LOG(LogTemp, Log, TEXT("[Server] %s ServerStartAttack Weapon=%s"), *GetName(), *GetNameSafe(CurrentWeapon));
 	CurrentWeapon->StartAttack();
 }
 
 void AShooterCharacter::TryStopAttack()
 {
+	UE_LOG(LogTemp, Log, TEXT("%s %s TryStopAttack CurrentWeapon=%s"), NetPrefix(this), *GetName(), *GetNameSafe(CurrentWeapon));
 	ServerStopAttack();
 }
 
@@ -442,9 +483,11 @@ void AShooterCharacter::ServerStopAttack_Implementation()
 {
 	if (!CurrentWeapon)
 	{
+		UE_LOG(LogTemp, Warning, TEXT("[Server] %s ServerStopAttack blocked: weapon is null"), *GetName());
 		return;
 	}
 
+	UE_LOG(LogTemp, Log, TEXT("[Server] %s ServerStopAttack Weapon=%s"), *GetName(), *GetNameSafe(CurrentWeapon));
 	CurrentWeapon->StopAttack();
 }
 
