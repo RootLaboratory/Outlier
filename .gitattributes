@@ -1,0 +1,29 @@
+# 인코딩 및 줄바꿈 설정 (문서/소스 코드)
+*.cpp      text diff=cpp eol=lf
+*.h        text diff=cpp eol=lf
+*.cs       text diff=csharp eol=lf
+*.ini      text eol=lf
+*.uproject text eol=lf
+*.uplugin  text eol=lf
+*.usf      text eol=lf
+*.ush      text eol=lf
+
+# 언리얼 바이너리 자산 (Git LFS 사용 권장)
+*.uasset filter=lfs diff=lfs merge=lfs -text
+*.umap   filter=lfs diff=lfs merge=lfs -text
+*.upk    filter=lfs diff=lfs merge=lfs -text
+*.udk    filter=lfs diff=lfs merge=lfs -text
+
+# 기타 바이너리 파일
+*.png    filter=lfs diff=lfs merge=lfs -text
+*.jpg    filter=lfs diff=lfs merge=lfs -text
+*.fbx    filter=lfs diff=lfs merge=lfs -text
+*.obj    filter=lfs diff=lfs merge=lfs -text
+*.exe    filter=lfs diff=lfs merge=lfs -text
+*.dll    filter=lfs diff=lfs merge=lfs -text
+*.lib    filter=lfs diff=lfs merge=lfs -text
+*.pdb    filter=lfs diff=lfs merge=lfs -text
+
+# 기타 데이터
+*.db     filter=lfs diff=lfs merge=lfs -text
+*.opendb filter=lfs diff=lfs merge=lfs -text
