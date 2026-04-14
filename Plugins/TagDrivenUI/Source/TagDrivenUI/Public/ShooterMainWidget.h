@@ -41,6 +41,8 @@ public:
 
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UAmmoUI> AmmoUI;
+
+	//Cross hair 추가 예정 
 };
 
 //

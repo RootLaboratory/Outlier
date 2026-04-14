@@ -13,10 +13,10 @@
 #include "EventDrivenUI.h"
 
 
-void ULocalPlayerUISubSystem::EventCall(const FGameplayTag& EventTag)
-{
-	
-}
+//void ULocalPlayerUISubSystem::EventCall(const FGameplayTag& EventTag)
+//{
+//	
+//}
 
 void ULocalPlayerUISubSystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -47,7 +47,10 @@ void ULocalPlayerUISubSystem::OnRep_HUDActivate(bool bShouldActivate)
 
 	}
 
-	MainUIInstance->SetVisibility(bShouldActivate ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
+
+	if (bShouldActivate) 	MainUIInstance->ModuleActivate();
+	else MainUIInstance->ModuleDeActivate();
+
 }
 
 void ULocalPlayerUISubSystem::OnRep_HealthChanged(float InHealth, float MaxHealth)
@@ -97,7 +100,7 @@ void ULocalPlayerUISubSystem::OnRep_AmmoCountChanged(int32 InAmmoCount)
 
 }
 
-void ULocalPlayerUISubSystem::OnRep_PartnerCameraChanged(bool InFlag)
+void ULocalPlayerUISubSystem::OnRep_PartnerCameraToggle()
 {
 	if (!MainUIInstance)
 	{
@@ -106,19 +109,14 @@ void ULocalPlayerUISubSystem::OnRep_PartnerCameraChanged(bool InFlag)
 
 	if (UPartnerCamUI* PartnerCamUI = Cast<UPartnerCamUI>(MainUIInstance->GetModule(EUIModule::PartnerCam)))
 	{
-		PartnerCamUI->SetPartnerCamera(InFlag);
+		PartnerCamUI->TogglePartnerCamera();
 	}
 }
 
-void ULocalPlayerUISubSystem::TempTestingCode()
-{
-//	UE_LOG(LogTemp, Warning, TEXT("MainUI Registered = %s"), MainUIInstance ? TEXT("true") : TEXT("false"));
-}
 
 void ULocalPlayerUISubSystem::PartnerCameraBind(USceneCaptureComponent2D* InCaptureComponent2D)
 {
 	//UE_LOG(LogTemp, Error, TEXT("Try PartnerCameraBind"));
-
 
 	if (UPartnerCamUI* PartnerCamUI = Cast<UPartnerCamUI>(MainUIInstance->GetModule(EUIModule::PartnerCam)))
 	{

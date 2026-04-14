@@ -9,7 +9,10 @@
 /**
  * 
  */
-UCLASS()
+
+//BP에서 조절 가능한 형태로 Material 데이터를 Wrapping; 
+
+UCLASS(Blueprintable)
 class VISUALEVENT_API UProjectionMarkDefinition : public UPrimaryDataAsset
 {
 	GENERATED_BODY()

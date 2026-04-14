@@ -36,8 +36,6 @@ public:
 
 	UEventDrivenUI* GetModule(EUIModule Key);
 
-
-protected:
 	virtual void ModuleInit() {}
 	virtual void ModuleDestruct() {}
 	virtual void ModuleActivate() {}

@@ -16,6 +16,12 @@
 class UEventDrivenUI;
 class USceneCaptureComponent2D;
 
+
+// Local Player에 대응되는 UI 관리 클래스
+// Player Controller에 UMainUIBase BP를 Register 하는 형식으로 처리.
+
+
+
 UCLASS()
 class TAGDRIVENUI_API ULocalPlayerUISubSystem : public ULocalPlayerSubsystem
 {
@@ -23,7 +29,7 @@ class TAGDRIVENUI_API ULocalPlayerUISubSystem : public ULocalPlayerSubsystem
 	
 public:
 	//UnUsed
-	void EventCall(const FGameplayTag& EventTag);
+	//void EventCall(const FGameplayTag& EventTag);
 
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	void RegisterMainUI(UMainUIBase* InMainUI);
@@ -38,16 +44,13 @@ public:
 	void OnRep_ShieldChanged( float InCurShield ,  float InMaxShield);
 
 	void OnRep_AmmoCountChanged(int32 InAmmoCount);
-	void OnRep_PartnerCameraChanged(bool InFlag);
-
-	void TempTestingCode();
-
+	void OnRep_PartnerCameraToggle();
 
 	void PartnerCameraBind(USceneCaptureComponent2D* InCaptureComponent2D);
 
 private:
 	UPROPERTY()
-	TObjectPtr<UMainUIBase> MainUIInstance;
+	TObjectPtr<UMainUIBase> MainUIInstance; //PlayerController에게 책임 전가; Pawn 타입 받아서; (Bind된 BP 타입 반환시켜서 Bind)
 
 };
 

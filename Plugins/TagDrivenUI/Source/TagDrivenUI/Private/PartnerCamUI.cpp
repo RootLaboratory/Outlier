@@ -16,10 +16,12 @@ void UPartnerCamUI::NativeConstruct()
 
 }
 
-void UPartnerCamUI::SetPartnerCamera(bool bInFlag)
+void UPartnerCamUI::TogglePartnerCamera()
 {
 
-	bFlag = !bInFlag;
+	//UE_LOG(LogTemp, Error, TEXT("Toggled"));
+
+	bFlag = !bFlag;
 
 	if (bFlag)
 		Activate();
@@ -35,32 +37,32 @@ void UPartnerCamUI::SetPartnerRenderTarget(UTextureRenderTarget2D* InRenderTarge
 	if (InRenderTarget && PartnerCamMID)
 	{
 
-		UE_LOG(LogTemp, Error, TEXT("RenderTargetBinded"));
+		//UE_LOG(LogTemp, Error, TEXT("RenderTargetBinded"));
 
 
 		PartnerRenderTarget = InRenderTarget;
 
 		if (!PartnerCamMID)
 		{
-			UE_LOG(LogTemp, Error, TEXT("SetPartnerRenderTarget: PartnerCamMID is null, waiting for NativeConstruct"));
+			//UE_LOG(LogTemp, Error, TEXT("SetPartnerRenderTarget: PartnerCamMID is null, waiting for NativeConstruct"));
 			return;
 		}
 		else
 		{
 		PartnerCamMID->SetTextureParameterValue(TEXT("PartnerRT"), PartnerRenderTarget.Get());
-		UE_LOG(LogTemp, Error, TEXT("PartnerCamMID"));
+		//UE_LOG(LogTemp, Error, TEXT("PartnerCamMID"));
 
 		}
 
 		if (CamImage)
 		{
-			UE_LOG(LogTemp, Error, TEXT("CamImage"));
+			//UE_LOG(LogTemp, Error, TEXT("CamImage"));
 
 			CamImage->SetBrushFromMaterial(PartnerCamMID);
 		}
 		else
 		{
-			UE_LOG(LogTemp, Error, TEXT("CamImage: CamImage is null, waiting for NativeConstruct"));
+			//UE_LOG(LogTemp, Error, TEXT("CamImage: CamImage is null, waiting for NativeConstruct"));
 
 		}
 	}

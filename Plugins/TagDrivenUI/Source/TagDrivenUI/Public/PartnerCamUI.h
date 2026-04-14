@@ -19,9 +19,8 @@ class TAGDRIVENUI_API UPartnerCamUI : public UEventDrivenUI
 
 public:
 
-
 	virtual void NativeConstruct() override;
-	void SetPartnerCamera(bool bInFlag);
+	void TogglePartnerCamera();
 	void SetPartnerRenderTarget(UTextureRenderTarget2D* InRenderTarget);
 
 
@@ -38,6 +37,5 @@ public:
 	TObjectPtr<UImage> CamImage;
 
 private:
-	//RT를 받고, 초기화 때 Camera Component 받게 해야함. 
 	uint8 bFlag : 1 = true;
 };

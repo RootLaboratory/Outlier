@@ -76,6 +76,10 @@ void UShooterMainWidget::ModuleActivate()
 
 void UShooterMainWidget::ModuleDeActivate()
 {
+
+	 // UE_LOG(LogTemp, Error, TEXT("ModuleDeActivate"));
+
+
 	for (auto& [Type, UIModule] : Module)
 	{
 		if (UIModule)
