@@ -55,7 +55,8 @@ public:
 	FRotator RelativeRotation = FRotator::ZeroRotator;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Projectile")
-	bool bAttachToSource = true;
+	uint8 bAttachToSource : 1 = true;
+
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Trail")
 	float Speed = 300.f;
