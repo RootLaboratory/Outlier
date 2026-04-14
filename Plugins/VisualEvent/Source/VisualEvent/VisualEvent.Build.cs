@@ -38,7 +38,7 @@ public class VisualEvent : ModuleRules
 				"Engine",
 				"Slate",
 				"SlateCore",
-                "Niagara"
+                "Niagara",
 				// ... add private dependencies that you statically link with here ...	
 			}
 			);
