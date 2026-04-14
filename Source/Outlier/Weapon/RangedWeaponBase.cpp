@@ -72,6 +72,7 @@ void ARangedWeaponBase::ConsumeAmmo()
 	}
 }
 
+
 void ARangedWeaponBase::FireShot()
 {
 	if (!WeaponOwner)

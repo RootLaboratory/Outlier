@@ -13,7 +13,10 @@ UCLASS(Abstract)
 class OUTLIER_API AMeleeWeaponBase : public AWeaponBase
 {
 	GENERATED_BODY()
-	
+
+public:
+	AMeleeWeaponBase();
+
 protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Melee")
 	float AttackRadius = 120.0f;

@@ -13,7 +13,9 @@ class USceneComponent;
 UENUM(BlueprintType)
 enum class EWeaponType : uint8
 {
-	Ranged,
+	Unarmed,
+	Pistol,
+	Rifle,
 	Melee
 };
 
@@ -39,7 +41,7 @@ protected:
 	FName WeaponName;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = Weapon)
-	EWeaponType WeaponType = EWeaponType::Ranged;
+	EWeaponType WeaponType = EWeaponType::Unarmed;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = Weapon)
 	float Damage = 10.0f;
@@ -79,4 +81,6 @@ public:
 	virtual void Interact(class AFirstPersonCharacter* Interactor) override;
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
+	EWeaponType GetWeaponType() const { return WeaponType; }
 };

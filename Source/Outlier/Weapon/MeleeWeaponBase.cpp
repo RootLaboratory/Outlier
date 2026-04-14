@@ -3,6 +3,11 @@
 
 #include "Weapon/MeleeWeaponBase.h"
 
+AMeleeWeaponBase::AMeleeWeaponBase()
+{
+	WeaponType = EWeaponType::Melee;
+}
+
 void AMeleeWeaponBase::PerformAttack()
 {
 }

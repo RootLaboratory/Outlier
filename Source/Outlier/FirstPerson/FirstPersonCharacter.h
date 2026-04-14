@@ -4,13 +4,13 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
+#include "Weapon/WeaponBase.h"
 #include "FirstPersonCharacter.generated.h"
 
 class USkeletalMeshComponent;
 class UCameraComponent;
 class UInputAction;
 struct FInputActionValue;
-class AWeaponBase;
 
 UCLASS()
 class OUTLIER_API AFirstPersonCharacter : public ACharacter
@@ -41,6 +41,9 @@ protected:
 
 	UPROPERTY(ReplicatedUsing = OnRep_CurrentWeapon, EditAnywhere, Category = Weapon)
 	AWeaponBase* CurrentWeapon;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
+	EWeaponType CurrentWeaponType = EWeaponType::Unarmed;
 
 	UPROPERTY(Transient)
 	TObjectPtr<AWeaponBase> LastReplicatedWeapon;
@@ -80,4 +83,5 @@ public:
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
+	EWeaponType GetWeaponType() const { return CurrentWeapon->GetWeaponType(); }
 };

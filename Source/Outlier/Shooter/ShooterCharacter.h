@@ -66,7 +66,6 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Combat)
 	int32 SelectedSuitIndex = 0; // 이후에 Suit 관련 만들면서 거기에 있는 enum 값으로 교체?
 
-
 public:
 
 	/** Name of the first person mesh weapon socket */

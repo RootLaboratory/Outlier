@@ -174,6 +174,7 @@ void AFirstPersonCharacter::EquipWeapon(AWeaponBase* Weapon)
 	}
 
 	CurrentWeapon = Weapon;
+	CurrentWeaponType = Weapon->GetWeaponType();
 
 	if (CurrentWeapon)
 	{
