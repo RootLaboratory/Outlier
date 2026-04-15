@@ -19,6 +19,7 @@ enum class EUIModule : uint8
 	FirstSkill,
 	SecondSkill,
 	ThirdSkill,
+	CrossHair,
 
 	None
 };

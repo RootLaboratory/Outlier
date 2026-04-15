@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
+
 #include "ShooterPlayerController.generated.h"
 
 class AShooterCharacter;
@@ -13,7 +14,7 @@ class AShooterCharacter;
  * Manages possession and respawn behavior.
  */
 UCLASS(abstract)
-class OUTLIER_API AShooterPlayerController : public AFirstPersonPlayerController
+class OUTLIER_API AShooterPlayerController : public AFirstPersonPlayerController 
 {
 	GENERATED_BODY()
 
@@ -39,7 +40,13 @@ protected:
 	UFUNCTION()
 	void OnPawnDestroyed(AActor* DestroyedActor);
 
+	virtual void BindMainUI() override;
+
+
 	// UI 관련
 	// 총알
 	// 피격 등등
+
+
+
 };

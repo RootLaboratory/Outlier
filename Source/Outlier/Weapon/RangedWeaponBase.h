@@ -6,6 +6,9 @@
 #include "Weapon/WeaponBase.h"
 #include "RangedWeaponBase.generated.h"
 
+class UProjectionMarkDefinition;
+class UTrailEffectDefinition;
+class ULocalPlayerUISubSystem;
 /**
  * 
  */
@@ -61,6 +64,14 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon|Fire")
 	uint8 bAttackOnCooldown : 1 = false;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Decal")
+	TSubclassOf<UProjectionMarkDefinition> Decal;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Effect")
+	TSubclassOf<UTrailEffectDefinition> Effect;
+
+
+
 	FTimerHandle AutoFireTimerHandle;
 	FTimerHandle AttackCooldownTimerHandle;
 
@@ -84,4 +95,16 @@ public:
 	virtual float GetCurrentSpread() const;
 
 	virtual void SetAiming(bool Aimming);
+
+protected:
+
+	UFUNCTION(NetMulticast, Unreliable)
+	void MulticastPlayFireFX(FVector_NetQuantize TraceEnd, bool bHit);
+
+	void PlayThirdPersonFireFX(FVector TraceEnd, bool bHit);
+
+	void PlayFirstPersonFireFX(FVector TraceEnd, bool bHit);
+
+
+	ULocalPlayerUISubSystem* GetLocalSubsystem(); //Helper
 };
