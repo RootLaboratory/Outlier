@@ -127,12 +127,11 @@ Plugins/**/Content/*
 Plugins/**/Content/**
 
 # Exclude main project content and non-code collaboration assets
-Content/*
 Content/**
-Collections/*
 Collections/**
-Developers/*
 Developers/**
+Content/Developers/**
+Content/Collections/**
 
 # Exclude Unreal assets and common art/media source files
 *.uasset
