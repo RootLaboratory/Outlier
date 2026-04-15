@@ -265,6 +265,7 @@ void AShooterCharacter::TryInteract()
 	FHitResult Hit;
 	FCollisionQueryParams Params;
 	Params.AddIgnoredActor(this);
+	Params.AddIgnoredActor(CurrentWeapon);
 
 	const bool bHit = GetWorld()->LineTraceSingleByChannel(
 		Hit,
@@ -273,7 +274,7 @@ void AShooterCharacter::TryInteract()
 		ECC_Visibility,
 		Params
 	);
-
+	
 	if (!bHit)
 	{
 		UE_LOG(LogTemp, Log, TEXT("%s %s TryInteract miss Start=%s End=%s"), NetPrefix(this), *GetName(), *Start.ToString(), *End.ToString());
@@ -309,6 +310,7 @@ void AShooterCharacter::ServerInteract_Implementation(AActor* TargetActor)
 	FHitResult Hit;
 	FCollisionQueryParams Params;
 	Params.AddIgnoredActor(this);
+	Params.AddIgnoredActor(CurrentWeapon);
 
 	const bool bHit = GetWorld()->LineTraceSingleByChannel(
 		Hit,
@@ -316,6 +318,17 @@ void AShooterCharacter::ServerInteract_Implementation(AActor* TargetActor)
 		End,
 		ECC_Visibility,
 		Params
+	);
+
+	DrawDebugLine(
+		GetWorld(),
+		Start,
+		End,
+		FColor::Red,
+		false,   // PersistentLines
+		3.0f,    // LifeTime
+		0,       // DepthPriority
+		1.0f     // Thickness
 	);
 
 	if (!bHit || Hit.GetActor() != TargetActor)
@@ -427,6 +440,16 @@ void AShooterCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
 	DOREPLIFETIME(AShooterCharacter, CurHP);
+}
+
+float AShooterCharacter::GetAimYawForAnimation() const
+{
+	return 0.0f;
+}
+
+float AShooterCharacter::GetAimPitchForAnimation() const
+{
+	return FRotator::NormalizeAxis(GetBaseAimRotation().Pitch);
 }
 
 void AShooterCharacter::ApplyDamageInternal(float DamageAmount)

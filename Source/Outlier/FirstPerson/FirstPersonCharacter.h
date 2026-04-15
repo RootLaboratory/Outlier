@@ -83,5 +83,5 @@ public:
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
-	EWeaponType GetWeaponType() const { return CurrentWeapon->GetWeaponType(); }
+	EWeaponType GetWeaponType() const;
 };

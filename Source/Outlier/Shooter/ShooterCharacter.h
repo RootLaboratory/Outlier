@@ -152,6 +152,10 @@ public:
 
 	void ApplyDamageInternal(float DamageAmount);
 
+	float GetAimYawForAnimation() const;
+
+	float GetAimPitchForAnimation() const;
+
 	/** Handles jump pressed inputs from either controls or UI interfaces */
 	UFUNCTION(BlueprintCallable, Category="Input")
 	virtual void DoJumpStart();

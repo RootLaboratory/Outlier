@@ -9,6 +9,7 @@
 
 class USkeletalMeshComponent;
 class USceneComponent;
+class USphereComponent;
 
 UENUM(BlueprintType)
 enum class EWeaponType : uint8
@@ -36,6 +37,9 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
 	TObjectPtr<USkeletalMeshComponent> ThirdPersonWeaponMesh;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
+	TObjectPtr<USphereComponent> InteractionCollision;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = Weapon)
 	FName WeaponName;
@@ -68,6 +72,8 @@ protected:
 public:	
 	virtual bool CanAttack() const;
 
+	virtual void OnConstruction(const FTransform& Transform) override;
+
 	virtual void StartAttack();
 
 	virtual void StopAttack();
@@ -78,9 +84,14 @@ public:
 
 	virtual void OnUnequipped();
 
+	virtual void OnDropped(const FTransform& DropTransform);
+
 	virtual void Interact(class AFirstPersonCharacter* Interactor) override;
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	EWeaponType GetWeaponType() const { return WeaponType; }
+
+	USkeletalMeshComponent* GetFirstPersonWeaponMesh() const { return FirstPersonWeaponMesh; }
+	USkeletalMeshComponent* GetThirdPersonWeaponMesh() const { return ThirdPersonWeaponMesh; }
 };
