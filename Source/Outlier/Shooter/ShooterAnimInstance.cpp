@@ -18,7 +18,7 @@ void UShooterAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 		Direction		  = UKismetAnimationLibrary::CalculateDirection(Shooter->GetCharacterMovement()->Velocity, Shooter->GetActorRotation());
 		CurrentWeaponType = Shooter->GetWeaponType();
 
-		AimYaw   = Shooter->GetBaseAimRotation().Yaw;
-		AimPitch = Shooter->GetBaseAimRotation().Pitch;
+		AimYaw   = Shooter->GetAimYawForAnimation();
+		AimPitch = Shooter->GetAimPitchForAnimation();
 	}
 }

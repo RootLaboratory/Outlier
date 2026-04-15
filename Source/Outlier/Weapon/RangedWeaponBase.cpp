@@ -135,6 +135,17 @@ void ARangedWeaponBase::FireShot()
 		Params
 	);
 
+	DrawDebugLine(
+		GetWorld(),
+		Start,
+		End,
+		FColor::Red,
+		false,   // PersistentLines
+		3.0f,    // LifeTime
+		0,       // DepthPriority
+		1.0f     // Thickness
+	);
+
 	if (bHit)
 	{
 		UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot hit Target=%s Start=%s End=%s"), NetPrefix(this), *GetName(), *GetNameSafe(Hit.GetActor()), *Start.ToString(), *End.ToString());

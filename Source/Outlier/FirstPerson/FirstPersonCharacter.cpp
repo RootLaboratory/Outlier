@@ -168,9 +168,12 @@ void AFirstPersonCharacter::EquipWeapon(AWeaponBase* Weapon)
 
 	UE_LOG(LogTemp, Log, TEXT("%s %s EquipWeapon Previous=%s New=%s"), NetPrefix(this), *GetName(), *GetNameSafe(CurrentWeapon), *GetNameSafe(Weapon));
 
-	if (CurrentWeapon)
+	AWeaponBase* OldWeapon = CurrentWeapon;
+	const FTransform PickupTransform = Weapon->GetActorTransform();
+
+	if (OldWeapon)
 	{
-		CurrentWeapon->OnUnequipped();
+		OldWeapon->OnDropped(PickupTransform);
 	}
 
 	CurrentWeapon = Weapon;
@@ -190,4 +193,14 @@ void AFirstPersonCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
 	DOREPLIFETIME(AFirstPersonCharacter, CurrentWeapon);
+}
+
+EWeaponType AFirstPersonCharacter::GetWeaponType() const
+{
+	if (CurrentWeapon)
+	{
+		return CurrentWeapon->GetWeaponType();
+	}
+
+	return EWeaponType::Unarmed;
 }

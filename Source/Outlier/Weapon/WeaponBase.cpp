@@ -4,6 +4,7 @@
 #include "Weapon/WeaponBase.h"
 #include "Components/SceneComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/SphereComponent.h"
 #include "FirstPerson/FirstPersonCharacter.h"
 #include "GameFramework/Character.h"
 #include "Shooter/ShooterCharacter.h"
@@ -20,7 +21,7 @@ namespace
 AWeaponBase::AWeaponBase()
 {
 	bReplicates = true;
-	SetReplicateMovement(false);
+	SetReplicateMovement(true);
 
 	SceneRoot = CreateDefaultSubobject<USceneComponent>(TEXT("SceneRoot"));
 	SetRootComponent(SceneRoot);
@@ -36,12 +37,53 @@ AWeaponBase::AWeaponBase()
 	ThirdPersonWeaponMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("ThirdPersonWeaponMesh"));
 	ThirdPersonWeaponMesh->SetupAttachment(SceneRoot);
 	ThirdPersonWeaponMesh->SetOwnerNoSee(true);
-	ThirdPersonWeaponMesh->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+	ThirdPersonWeaponMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	ThirdPersonWeaponMesh->SetCollisionResponseToAllChannels(ECR_Ignore);
-	ThirdPersonWeaponMesh->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
 	ThirdPersonWeaponMesh->SetGenerateOverlapEvents(false);
 
-	SetEquippedCollisionEnabled(true);
+	InteractionCollision = CreateDefaultSubobject<USphereComponent>(TEXT("InteractionCollision"));
+	InteractionCollision->SetupAttachment(SceneRoot);
+	InteractionCollision->SetSphereRadius(40.0f);
+	InteractionCollision->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+	InteractionCollision->SetCollisionObjectType(ECC_WorldDynamic);
+	InteractionCollision->SetCollisionResponseToAllChannels(ECR_Ignore);
+	InteractionCollision->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
+	InteractionCollision->SetGenerateOverlapEvents(false);
+	InteractionCollision->SetHiddenInGame(true);
+
+	SetEquippedCollisionEnabled(false);
+}
+
+void AWeaponBase::OnConstruction(const FTransform& Transform)
+{
+	Super::OnConstruction(Transform);
+
+	if (FirstPersonWeaponMesh)
+	{
+		FirstPersonWeaponMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		FirstPersonWeaponMesh->SetCollisionResponseToAllChannels(ECR_Ignore);
+		FirstPersonWeaponMesh->SetGenerateOverlapEvents(false);
+	}
+
+	if (ThirdPersonWeaponMesh)
+	{
+		ThirdPersonWeaponMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		ThirdPersonWeaponMesh->SetCollisionResponseToAllChannels(ECR_Ignore);
+		ThirdPersonWeaponMesh->SetGenerateOverlapEvents(false);
+	}
+
+	if (InteractionCollision)
+	{
+		InteractionCollision->SetSphereRadius(40.0f);
+		InteractionCollision->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+		InteractionCollision->SetCollisionObjectType(ECC_WorldDynamic);
+		InteractionCollision->SetCollisionResponseToAllChannels(ECR_Ignore);
+		InteractionCollision->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
+		InteractionCollision->SetGenerateOverlapEvents(false);
+		InteractionCollision->SetHiddenInGame(true);
+	}
+
+	SetEquippedCollisionEnabled(!bIsEquipped);
 }
 
 void AWeaponBase::SetEquippedCollisionEnabled(bool bEnabled)
@@ -50,9 +92,13 @@ void AWeaponBase::SetEquippedCollisionEnabled(bool bEnabled)
 		? ECollisionEnabled::QueryOnly
 		: ECollisionEnabled::NoCollision;
 
-	ThirdPersonWeaponMesh->SetCollisionEnabled(CollisionType);
+	InteractionCollision->SetCollisionEnabled(CollisionType);
+	InteractionCollision->SetCollisionResponseToAllChannels(ECR_Ignore);
+	InteractionCollision->SetCollisionResponseToChannel(ECC_Visibility, bEnabled ? ECR_Block : ECR_Ignore);
+	InteractionCollision->SetGenerateOverlapEvents(false);
+
+	ThirdPersonWeaponMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	ThirdPersonWeaponMesh->SetCollisionResponseToAllChannels(ECR_Ignore);
-	ThirdPersonWeaponMesh->SetCollisionResponseToChannel(ECC_Visibility, bEnabled ? ECR_Block : ECR_Ignore);
 	ThirdPersonWeaponMesh->SetGenerateOverlapEvents(false);
 }
 
@@ -165,11 +211,37 @@ void AWeaponBase::OnUnequipped()
 	FirstPersonWeaponMesh->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
 	ThirdPersonWeaponMesh->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
 
+	FirstPersonWeaponMesh->AttachToComponent(
+		SceneRoot,
+		FAttachmentTransformRules::SnapToTargetNotIncludingScale
+	);
+
+	ThirdPersonWeaponMesh->AttachToComponent(
+		SceneRoot,
+		FAttachmentTransformRules::SnapToTargetNotIncludingScale
+	);
+
 	// 바닥 아이템으로 둘 거면 여기서 다시 충돌 켜기
 	SetPickupPresentation();
 	SetOwner(nullptr);
 
 	UE_LOG(LogTemp, Log, TEXT("%s [%s] OnUnequipped"), NetPrefix(this), *GetName());
+}
+
+void AWeaponBase::OnDropped(const FTransform& DropTransform)
+{
+	OnUnequipped();
+	SetActorTransform(DropTransform, false, nullptr, ETeleportType::TeleportPhysics);
+
+	UE_LOG(
+		LogTemp,
+		Log,
+		TEXT("%s [%s] OnDropped Location=%s Rotation=%s"),
+		NetPrefix(this),
+		*GetName(),
+		*DropTransform.GetLocation().ToString(),
+		*DropTransform.Rotator().ToString()
+	);
 }
 
 void AWeaponBase::Interact(class AFirstPersonCharacter* Interactor)
