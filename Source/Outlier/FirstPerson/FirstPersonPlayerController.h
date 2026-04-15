@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerController.h"
+#include "PlayerUIProvider.h"
 #include "FirstPersonPlayerController.generated.h"
 
 class UInputMappingContext;
@@ -12,7 +13,7 @@ class UInputMappingContext;
  * 
  */
 UCLASS()
-class OUTLIER_API AFirstPersonPlayerController : public APlayerController
+class OUTLIER_API AFirstPersonPlayerController : public APlayerController ,  public IPlayerUIProvider
 {
 	GENERATED_BODY()
 	
@@ -29,5 +30,18 @@ protected:
 
 	// Input Mapping Context Setup
 	virtual void SetupInputComponent() override;
+
+
+	virtual TSubclassOf<UMainUIBase> GetMainUIClass_Implementation() const;
+
+	virtual void BindMainUI();
+
+
+	UPROPERTY()
+	TObjectPtr<UMainUIBase> ShooterUIInstance;
+
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "UI")
+	TSubclassOf<UMainUIBase> MainUIClass; //Bind될 ShooterUIClass
 
 };

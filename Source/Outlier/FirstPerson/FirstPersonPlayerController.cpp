@@ -40,3 +40,15 @@ void AFirstPersonPlayerController::SetupInputComponent()
 }
 
 
+
+
+TSubclassOf<UMainUIBase> AFirstPersonPlayerController::GetMainUIClass_Implementation() const
+{
+	return MainUIClass;
+}
+
+void AFirstPersonPlayerController::BindMainUI()
+{
+	
+}
+

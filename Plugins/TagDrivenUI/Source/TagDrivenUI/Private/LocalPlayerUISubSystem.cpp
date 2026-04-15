@@ -1,4 +1,4 @@
-﻿// Fill out your copyright notice in the Description page of Project Settings.
+// Fill out your copyright notice in the Description page of Project Settings.
 #include "LocalPlayerUISubSystem.h"
 #include "GameFramework/PlayerController.h"
 #include "Components/SceneCaptureComponent2D.h"
@@ -12,11 +12,6 @@
 
 #include "EventDrivenUI.h"
 
-
-//void ULocalPlayerUISubSystem::EventCall(const FGameplayTag& EventTag)
-//{
-//	
-//}
 
 void ULocalPlayerUISubSystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -88,6 +83,7 @@ void ULocalPlayerUISubSystem::OnRep_ShieldChanged( float InCurShield,  float InM
 
 void ULocalPlayerUISubSystem::OnRep_AmmoCountChanged(int32 InAmmoCount)
 {
+
 	if (!MainUIInstance)
 	{
 		return;
@@ -134,5 +130,15 @@ void ULocalPlayerUISubSystem::PartnerCameraBind(USceneCaptureComponent2D* InCapt
 	//	UE_LOG(LogTemp, Error, TEXT("Cant PartnerCamUI"));
 
 	}
-} 
+}
+uint8 ULocalPlayerUISubSystem::IsAiming()
+{
+	return bPlayerAiming;
+}
+
+void ULocalPlayerUISubSystem::SetPlayerAiming(uint8 bInAiming)
+{
+	bPlayerAiming = bInAiming;
+}
+
 

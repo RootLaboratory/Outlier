@@ -4,11 +4,14 @@
 
 #include "GameFramework/PlayerStart.h"
 #include "Kismet/GameplayStatics.h"
+#include "LocalPlayerUISubSystem.h"
 #include "ShooterCharacter.h"
 
 void AShooterPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
+
+	BindMainUI();
 }
 
 void AShooterPlayerController::SetupInputComponent()
@@ -38,7 +41,7 @@ void AShooterPlayerController::OnPawnDestroyed(AActor* DestroyedActor)
 {
 	// Find a spawn point to respawn the player.
 	TArray<AActor*> ActorList;
-	UGameplayStatics::GetAllActorsOfClass(GetWorld(), APlayerStart::StaticClass(), ActorList);
+	UGameplayStatics::GetAllActorsOfClass(AActor::GetWorld(), APlayerStart::StaticClass(), ActorList);
 
 	if (ActorList.Num() <= 0)
 	{
@@ -50,8 +53,52 @@ void AShooterPlayerController::OnPawnDestroyed(AActor* DestroyedActor)
 	const FTransform SpawnTransform = RandomPlayerStart->GetActorTransform();
 
 	// Spawn a replacement pawn and repossess it.
-	if (AShooterCharacter* RespawnedCharacter = GetWorld()->SpawnActor<AShooterCharacter>(CharacterClass, SpawnTransform))
+	if (AShooterCharacter* RespawnedCharacter = AActor::GetWorld()->SpawnActor<AShooterCharacter>(CharacterClass, SpawnTransform))
 	{
 		Possess(RespawnedCharacter);
 	}
 }
+
+
+
+void AShooterPlayerController::BindMainUI()
+{
+
+	UE_LOG(LogTemp, Warning, TEXT("BindMainUI"));
+
+
+	if ( !MainUIClass || ShooterUIInstance)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Cant InitializeMainUI"));
+
+		return;
+	}
+
+	ShooterUIInstance = CreateWidget<UMainUIBase>(this, MainUIClass);
+	if (!ShooterUIInstance)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Cant ShooterUIInstance"));
+
+		return;
+	}
+
+	ShooterUIInstance->AddToViewport();
+
+		if (ULocalPlayer* LP = this->GetLocalPlayer())
+		{
+			if (ULocalPlayerUISubSystem* UISubsystem = LP->GetSubsystem<ULocalPlayerUISubSystem>())
+			{
+				UISubsystem->RegisterMainUI(ShooterUIInstance);
+
+				//UISubsystem->PartnerCameraBind(CaptureComponent); //Main 끝내고.
+
+			}
+		}
+
+
+
+}
+
+
+
+

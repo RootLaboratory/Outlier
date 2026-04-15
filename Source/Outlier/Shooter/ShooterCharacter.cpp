@@ -6,10 +6,13 @@
 #include "Camera/CameraComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/SceneCaptureComponent2D.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Controller.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
+#include "ShooterPlayerController.h"
+#include "LocalPlayerUISubSystem.h"
 #include "InputActionValue.h"
 #include "ShooterInputConfig.h"
 #include "Weapon/WeaponBase.h"
@@ -29,6 +32,10 @@ namespace
 AShooterCharacter::AShooterCharacter() : AFirstPersonCharacter()
 {
 	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
+
+	CaptureComponent = CreateDefaultSubobject< USceneCaptureComponent2D>(TEXT("PartnerCameraCapture"));
+	CaptureComponent->SetupAttachment(RootComponent);
+
 }
 
 void AShooterCharacter::BeginPlay()
@@ -94,7 +101,6 @@ void AShooterCharacter::TryReload()
 {
 	UE_LOG(LogTemp, Log, TEXT("%s %s TryReload CurrentWeapon=%s"), NetPrefix(this), *GetName(), *GetNameSafe(CurrentWeapon));
 	ServerReload();
-	
 }
 
 void AShooterCharacter::ServerReload_Implementation()
@@ -435,6 +441,17 @@ void AShooterCharacter::ApplyDamageInternal(float DamageAmount)
 	CurHP = FMath::Clamp(CurHP - DamageAmount, 0.0f, MaxHP);
 	UE_LOG(LogTemp, Log, TEXT("%s %s ApplyDamageInternal Damage=%.1f HP %.1f -> %.1f"), NetPrefix(this), *GetName(), DamageAmount, PreviousHP, CurHP);
 
+	AShooterPlayerController* ShooterPlayerController = Cast< AShooterPlayerController>(GetController());
+	if (ShooterPlayerController)
+	{
+		if (ULocalPlayer* LP = ShooterPlayerController->GetLocalPlayer())
+		{
+			if (ULocalPlayerUISubSystem* UISubsystem = LP->GetSubsystem<ULocalPlayerUISubSystem>())
+				UISubsystem->OnRep_HealthChanged(CurHP, MaxHP);
+		}
+	}
+
+
 	if (CurHP <= 0.0f)
 	{
 		Die();
@@ -458,6 +475,9 @@ void AShooterCharacter::TryStartAttack()
 {
 	UE_LOG(LogTemp, Log, TEXT("%s %s TryStartAttack CurrentWeapon=%s"), NetPrefix(this), *GetName(), *GetNameSafe(CurrentWeapon));
 	ServerStartAttack();
+
+	ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(CurrentWeapon);
+
 }
 
 void AShooterCharacter::ServerStartAttack_Implementation()
