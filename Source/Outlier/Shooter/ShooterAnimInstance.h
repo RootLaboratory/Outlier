@@ -32,4 +32,13 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Stat)
 	float AimPitch = 0;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = IK)
+	uint8 bIsFirstPerson : 1 = false;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = IK)
+	FTransform LeftHandIKTransform = FTransform::Identity;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = IK)
+	float LeftHandIKAlpha = 1.0f;
 };

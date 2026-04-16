@@ -30,9 +30,10 @@ AFirstPersonCharacter::AFirstPersonCharacter()
 
 	FirstPersonMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("First Person Mesh"));
 
-	FirstPersonMesh->SetupAttachment(GetMesh());
+	FirstPersonMesh->SetupAttachment(GetCapsuleComponent());
 	FirstPersonMesh->SetOnlyOwnerSee(true);
 	FirstPersonMesh->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::FirstPerson;
+	FirstPersonMesh->SetWorldLocation(FVector(0, 0, -GetCapsuleComponent()->GetScaledCapsuleHalfHeight()));
 	FirstPersonMesh->SetCollisionProfileName(FName("NoCollision"));
 
 	// Create Camera
@@ -48,6 +49,7 @@ AFirstPersonCharacter::AFirstPersonCharacter()
 	// configure the character comps
 	GetMesh()->SetOwnerNoSee(true);
 	GetMesh()->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::WorldSpaceRepresentation;
+	GetMesh()->SetWorldLocation(FVector(0, 0, -GetCapsuleComponent()->GetScaledCapsuleHalfHeight()));
 
 	GetCapsuleComponent()->SetCapsuleSize(34.0f, 96.0f);
 
