@@ -1,6 +1,6 @@
 {
 	"FileVersion": 3,
-	"EngineAssociation": "5.7",
+    "EngineAssociation": "5.7",
 	"Category": "",
 	"Description": "",
 	"Modules": [
@@ -13,7 +13,7 @@
 				"AIModule",
 				"UMG",
 				"TagDrivenUI",
-        "VisualEvent",
+				"VisualEvent",
 				"CoreUObject"
 			]
 		}
