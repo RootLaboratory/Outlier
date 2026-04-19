@@ -2,27 +2,80 @@
 
 
 #include "Shooter/ShooterAnimInstance.h"
+#include "Camera/CameraComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
-#include "Shooter/ShooterCharacter.h"
 #include "KismetAnimationLibrary.h"
+
+void UShooterAnimInstance::NativeInitializeAnimation()
+{
+	Super::NativeInitializeAnimation();
+
+	APawn* OwnerPawn = TryGetPawnOwner();
+	CachedShooterCharacter = Cast<AShooterCharacter>(OwnerPawn);
+
+	if (!CachedShooterCharacter)
+	{
+		return;
+	}
+
+	CachedShooterCharacter->OnCharacterDeath.AddDynamic(this, &UShooterAnimInstance::HandleOwnerDeath);
+	CachedShooterCharacter->OnMovementStateChanged.AddDynamic(this, &UShooterAnimInstance::HandleOwnerMovementStateChanged);
+
+	MovementState = CachedShooterCharacter->GetMovementState();
+	CombatState = CachedShooterCharacter->GetCombatState();
+	WeaponMode = CachedShooterCharacter->GetWeaponMode();
+	bIsSliding    = CachedShooterCharacter->IsSliding();
+	bIsAiming     = CachedShooterCharacter->IsAiming();
+	bIsReloading  = CachedShooterCharacter->IsReloading();
+	bIsDead		  = CachedShooterCharacter->IsDead();
+}
 
 void UShooterAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 {
 	Super::NativeUpdateAnimation(DeltaSeconds);
 
-	AShooterCharacter* Shooter = Cast<AShooterCharacter>(TryGetPawnOwner());
+	if (!CachedShooterCharacter)
+	{
+		APawn* OwnerPawn = TryGetPawnOwner();
+		CachedShooterCharacter = Cast<AShooterCharacter>(OwnerPawn);
+	}
 
-	if (!IsValid(Shooter))
+	if(!CachedShooterCharacter)
 	{
 		return;
 	}
 
-	Speed = Shooter->GetCharacterMovement()->Velocity.Size2D();
-	Direction = UKismetAnimationLibrary::CalculateDirection(Shooter->GetCharacterMovement()->Velocity, Shooter->GetActorRotation());
-	CurrentWeaponType = Shooter->GetWeaponType();
+	Speed		      = CachedShooterCharacter->GetCharacterMovement()->Velocity.Size2D();
+	Direction		  = UKismetAnimationLibrary::CalculateDirection(
+		CachedShooterCharacter->GetCharacterMovement()->Velocity,
+		CachedShooterCharacter->GetActorRotation()
+	);
+	CurrentWeaponType = CachedShooterCharacter->GetWeaponType();
 
-	AimYaw = Shooter->GetAimYawForAnimation();
-	AimPitch = Shooter->GetAimPitchForAnimation();
+	AimYaw        = CachedShooterCharacter->GetAimYawForAnimation();
+	AimPitch	  = CachedShooterCharacter->GetAimPitchForAnimation();
+	LeanAlpha     = CachedShooterCharacter->GetCurrentLeanAlpha();
+	MovementState = CachedShooterCharacter->GetMovementState();
+	CombatState   = CachedShooterCharacter->GetCombatState();
+	WeaponMode    = CachedShooterCharacter->GetWeaponMode();
+
+	bIsCrouching	   = CachedShooterCharacter->bIsCrouched;
+	bIsSprinting	   = CachedShooterCharacter->IsSprinting();
+	bIsSliding		   = CachedShooterCharacter->IsSliding();
+	bIsSlidingCanceled = CachedShooterCharacter->IsSlidingCanceled();
+	bIsGrounded		   = CachedShooterCharacter->GetCharacterMovement()->IsMovingOnGround();
+	bIsInAir		   = !bIsGrounded;
+	bIsAiming	       = CachedShooterCharacter->IsAiming();
+	bIsReloading       = CachedShooterCharacter->IsReloading();
+	bIsDead		       = CachedShooterCharacter->IsDead();
+	bIsPrimaryWeapon   = (WeaponMode == EWeaponMode::Primary);
+	bIsSecondaryWeapon = (WeaponMode == EWeaponMode::Secondary);
+
+	if (CurrentWeaponType != EWeaponType::Rifle && CurrentWeaponType != EWeaponType::Pistol)
+	{
+		return;
+	}
 
 	USkeletalMeshComponent* OwningMesh = GetOwningComponent();
 	if (!OwningMesh)
@@ -30,16 +83,9 @@ void UShooterAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 		return;
 	}
 
-	bIsFirstPerson = (OwningMesh == Shooter->GetFirstPersonMesh());
-	LeftHandIKAlpha = bIsFirstPerson ? 0.4f : 1.0f;
-	LeftHandIKTransform = FTransform::Identity;
+	bIsFirstPerson = (OwningMesh == CachedShooterCharacter->GetFirstPersonMesh());
 
-	if (CurrentWeaponType == EWeaponType::Unarmed)
-	{
-		LeftHandIKAlpha = 0.0f;
-	}
-
-	AWeaponBase* CurrentWeapon = Shooter->GetCurrentWeapon();
+	AWeaponBase* CurrentWeapon = CachedShooterCharacter->GetCurrentWeapon();
 	if (!CurrentWeapon)
 	{
 		return;
@@ -68,9 +114,54 @@ void UShooterAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 		SocketWorldTransform.Rotator(),
 		OutLocation,
 		OutRotation
-		);
+	);
+
+	if (CurrentWeaponType == EWeaponType::Rifle)
+	{
+		if (FMath::Abs(AimPitch) > LeftHandIKRiflePitchOffsetStart)
+		{
+			const float NormalizedPitchAlpha = FMath::GetMappedRangeValueClamped(
+				FVector2D(LeftHandIKRiflePitchOffsetStart, 90.0f),
+				FVector2D(0.0f, 1.0f),
+				FMath::Abs(AimPitch)
+			);
+
+			const FVector PitchOffset = AimPitch >= 0.0f
+				? (LeftHandIKRiflePitchOffsetAtMaxUp * NormalizedPitchAlpha)
+				: (LeftHandIKRiflePitchOffsetAtMaxDown * NormalizedPitchAlpha);
+
+			OutLocation += PitchOffset;
+		}
+	}
+	else if (CurrentWeaponType == EWeaponType::Pistol)
+	{
+		if (FMath::Abs(AimPitch) > LeftHandIKPistolPitchOffsetStart)
+		{
+			const float NormalizedPitchAlpha = FMath::GetMappedRangeValueClamped(
+				FVector2D(LeftHandIKPistolPitchOffsetStart, 90.0f),
+				FVector2D(0.0f, 1.0f),
+				FMath::Abs(AimPitch)
+			);
+
+			const FVector PitchOffset = AimPitch >= 0.0f
+				? (LeftHandIKPistolPitchOffsetAtMaxUp * NormalizedPitchAlpha)
+				: (LeftHandIKPistolPitchOffsetAtMaxDown * NormalizedPitchAlpha);
+
+			OutLocation += PitchOffset;
+		}
+	}
 
 	LeftHandIKTransform.SetLocation(OutLocation);
 	LeftHandIKTransform.SetRotation(FQuat(OutRotation));
 	LeftHandIKTransform.SetScale3D(FVector::OneVector);
+}
+
+void UShooterAnimInstance::HandleOwnerDeath()
+{
+	bIsDead = true;
+}
+
+void UShooterAnimInstance::HandleOwnerMovementStateChanged(EMovementState NewState)
+{
+	MovementState = NewState;
 }

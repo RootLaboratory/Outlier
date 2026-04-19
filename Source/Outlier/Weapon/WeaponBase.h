@@ -100,7 +100,10 @@ public:
 	USkeletalMeshComponent* GetThirdPersonWeaponMesh() const { return ThirdPersonWeaponMesh; }
 
 	UFUNCTION(BlueprintCallable, Category = IK)
-	FName GetLeftHandIKSocketName() const { return LeftHandIKSocketName; }
+	FName GetLeftHandIKSocketName() const
+	{
+		return LeftHandIKSocketName;
+	}
 
 	UFUNCTION(BlueprintCallable, Category = IK)
 	USkeletalMeshComponent* GetWeaponByView(bool bFirstPerson) const

@@ -7,16 +7,9 @@
 #include "Components/SphereComponent.h"
 #include "FirstPerson/FirstPersonCharacter.h"
 #include "GameFramework/Character.h"
+#include "OutlierNetUtils.h"
 #include "Shooter/ShooterCharacter.h"
 #include <Net/UnrealNetwork.h>
-
-namespace
-{
-	const TCHAR* NetPrefix(const AActor* Actor)
-	{
-		return (Actor && Actor->HasAuthority()) ? TEXT("[Server]") : TEXT("[Client]");
-	}
-}
 
 AWeaponBase::AWeaponBase()
 {
@@ -132,12 +125,12 @@ void AWeaponBase::StartAttack()
 {
 	if (!CanAttack())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("%s [%s] StartAttack blocked Owner=%s Equipped=%d"), NetPrefix(this), *GetName(), *GetNameSafe(WeaponOwner), bIsEquipped ? 1 : 0);
+		UE_LOG(LogTemp, Warning, TEXT("%s [%s] StartAttack blocked Owner=%s Equipped=%d"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(WeaponOwner), bIsEquipped ? 1 : 0);
 		return;
 	}
 
 	bIsAttacking = true;
-	UE_LOG(LogTemp, Log, TEXT("%s [%s] StartAttack Owner=%s"), NetPrefix(this), *GetName(), *GetNameSafe(WeaponOwner));
+	UE_LOG(LogTemp, Log, TEXT("%s [%s] StartAttack Owner=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(WeaponOwner));
 }
 
 void AWeaponBase::StopAttack()
@@ -149,12 +142,12 @@ void AWeaponBase::StopAttack()
 
 	bIsAttacking = false;
 
-	UE_LOG(LogTemp, Log, TEXT("%s [%s] StopAttack"), NetPrefix(this), *GetName());
+	UE_LOG(LogTemp, Log, TEXT("%s [%s] StopAttack"), OutlierNet::GetNetPrefix(this), *GetName());
 }
 
 void AWeaponBase::PerformAttack()
 {
-	UE_LOG(LogTemp, Warning, TEXT("%s [%s] PerformAttack called on base weapon"), NetPrefix(this), *GetName());
+	UE_LOG(LogTemp, Warning, TEXT("%s [%s] PerformAttack called on base weapon"), OutlierNet::GetNetPrefix(this), *GetName());
 
 	bIsAttacking = false;
 }
@@ -163,7 +156,7 @@ void AWeaponBase::OnEquipped(ACharacter* NewOwner)
 {
 	if (!NewOwner)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("%s [%s] OnEquipped failed: owner is null"), NetPrefix(this), *GetName());
+		UE_LOG(LogTemp, Warning, TEXT("%s [%s] OnEquipped failed: owner is null"), OutlierNet::GetNetPrefix(this), *GetName());
 		return;
 	}
 
@@ -178,12 +171,16 @@ void AWeaponBase::OnEquipped(ACharacter* NewOwner)
 
 	if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(NewOwner))
 	{
+		const EWeaponType EquippedWeaponType = GetWeaponType();
+		const FName FirstPersonSocketName = Shooter->GetFirstPersonWeaponSocketByType(EquippedWeaponType);
+		const FName ThirdPersonSocketName = Shooter->GetThirdPersonWeaponSocketByType(EquippedWeaponType);
+
 		if (USkeletalMeshComponent* FirstPersonParent = Shooter->GetFirstPersonMesh())
 		{
 			FirstPersonWeaponMesh->AttachToComponent(
 				FirstPersonParent,
 				FAttachmentTransformRules::SnapToTargetNotIncludingScale,
-				Shooter->FirstPersonWeaponSocket
+				FirstPersonSocketName
 			);
 		}
 
@@ -192,13 +189,26 @@ void AWeaponBase::OnEquipped(ACharacter* NewOwner)
 			ThirdPersonWeaponMesh->AttachToComponent(
 				ThirdPersonParent,
 				FAttachmentTransformRules::SnapToTargetNotIncludingScale,
-				Shooter->ThirdPersonWeaponSocket
+				ThirdPersonSocketName
 			);
 		}
+
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("%s [%s] EquipSockets WeaponType=%d FP=%s TP=%s FPParent=%s TPParent=%s"),
+			OutlierNet::GetNetPrefix(this),
+			*GetName(),
+			static_cast<int32>(EquippedWeaponType),
+			*FirstPersonSocketName.ToString(),
+			*ThirdPersonSocketName.ToString(),
+			*GetNameSafe(Shooter->GetFirstPersonMesh()),
+			*GetNameSafe(Shooter->GetMesh())
+		);
 	}
 
 
-	UE_LOG(LogTemp, Log, TEXT("%s [%s] OnEquipped Owner=%s"), NetPrefix(this), *GetName(), *GetNameSafe(NewOwner));
+	UE_LOG(LogTemp, Log, TEXT("%s [%s] OnEquipped Owner=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(NewOwner));
 }
 
 void AWeaponBase::OnUnequipped()
@@ -225,7 +235,7 @@ void AWeaponBase::OnUnequipped()
 	SetPickupPresentation();
 	SetOwner(nullptr);
 
-	UE_LOG(LogTemp, Log, TEXT("%s [%s] OnUnequipped"), NetPrefix(this), *GetName());
+	UE_LOG(LogTemp, Log, TEXT("%s [%s] OnUnequipped"), OutlierNet::GetNetPrefix(this), *GetName());
 }
 
 void AWeaponBase::OnDropped(const FTransform& DropTransform)
@@ -237,7 +247,7 @@ void AWeaponBase::OnDropped(const FTransform& DropTransform)
 		LogTemp,
 		Log,
 		TEXT("%s [%s] OnDropped Location=%s Rotation=%s"),
-		NetPrefix(this),
+		OutlierNet::GetNetPrefix(this),
 		*GetName(),
 		*DropTransform.GetLocation().ToString(),
 		*DropTransform.Rotator().ToString()
@@ -248,11 +258,11 @@ void AWeaponBase::Interact(class AFirstPersonCharacter* Interactor)
 {
 	if (!Interactor)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("%s [%s] Interact blocked: interactor is null"), NetPrefix(this), *GetName());
+		UE_LOG(LogTemp, Warning, TEXT("%s [%s] Interact blocked: interactor is null"), OutlierNet::GetNetPrefix(this), *GetName());
 		return;
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("%s [%s] Interact Interactor=%s"), NetPrefix(this), *GetName(), *GetNameSafe(Interactor));
+	UE_LOG(LogTemp, Log, TEXT("%s [%s] Interact Interactor=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(Interactor));
 	Interactor->EquipWeapon(this);
 }
 
