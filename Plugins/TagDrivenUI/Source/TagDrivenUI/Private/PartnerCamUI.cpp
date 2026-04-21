@@ -9,24 +9,24 @@
 
 void UPartnerCamUI::NativeConstruct()
 {
-
 	Super::NativeConstruct();
 
 	PartnerCamMID = UMaterialInstanceDynamic::Create(PartnerCamMaterial, this);
-
 }
 
 void UPartnerCamUI::TogglePartnerCamera()
 {
-
-	//UE_LOG(LogTemp, Error, TEXT("Toggled"));
-
 	bFlag = !bFlag;
 
 	if (bFlag)
+	{
 		Activate();
+	}
 
-	else Deactivate();
+	else
+	{
+		Deactivate();
+	}
 
 }
 
@@ -36,10 +36,7 @@ void UPartnerCamUI::SetPartnerRenderTarget(UTextureRenderTarget2D* InRenderTarge
 
 	if (InRenderTarget && PartnerCamMID)
 	{
-
 		//UE_LOG(LogTemp, Error, TEXT("RenderTargetBinded"));
-
-
 		PartnerRenderTarget = InRenderTarget;
 
 		if (!PartnerCamMID)
@@ -63,7 +60,6 @@ void UPartnerCamUI::SetPartnerRenderTarget(UTextureRenderTarget2D* InRenderTarge
 		else
 		{
 			//UE_LOG(LogTemp, Error, TEXT("CamImage: CamImage is null, waiting for NativeConstruct"));
-
 		}
 	}
 	else

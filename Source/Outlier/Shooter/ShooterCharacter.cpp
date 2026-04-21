@@ -465,12 +465,15 @@ void AShooterCharacter::ApplyDamageInternal(float DamageAmount)
 	UE_LOG(LogTemp, Log, TEXT("%s %s ApplyDamageInternal Damage=%.1f HP %.1f -> %.1f"), NetPrefix(this), *GetName(), DamageAmount, PreviousHP, CurHP);
 
 	AShooterPlayerController* ShooterPlayerController = Cast< AShooterPlayerController>(GetController());
+
 	if (ShooterPlayerController)
 	{
 		if (ULocalPlayer* LP = ShooterPlayerController->GetLocalPlayer())
 		{
 			if (ULocalPlayerUISubSystem* UISubsystem = LP->GetSubsystem<ULocalPlayerUISubSystem>())
+			{
 				UISubsystem->OnRep_HealthChanged(CurHP, MaxHP);
+			}
 		}
 	}
 

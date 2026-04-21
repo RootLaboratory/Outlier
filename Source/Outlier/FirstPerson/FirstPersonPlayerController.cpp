@@ -52,3 +52,7 @@ void AFirstPersonPlayerController::BindMainUI()
 	
 }
 
+void AFirstPersonPlayerController::BindPostProcessSubSystem()
+{
+}
+

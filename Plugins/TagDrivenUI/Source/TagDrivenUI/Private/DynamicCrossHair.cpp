@@ -19,15 +19,8 @@ void UDynamicCrossHair::NativeConstruct()
 void UDynamicCrossHair::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 {
 
-	Super::NativeTick(MyGeometry, InDeltaTime);
+		Super::NativeTick(MyGeometry, InDeltaTime);
 
-
-
-	//if (CachedUISubsystem->IsAiming())
-	//{
-	//	//Ratio = 0.f;
-	//}
-	
 		APlayerController* PC = GetOwningPlayer();
 		ACharacter* Character = IsValid(PC) ? Cast<ACharacter>(PC->GetPawn()) : nullptr;
 		UCharacterMovementComponent* MoveComp = IsValid(Character) ? Character->GetCharacterMovement() : nullptr;
@@ -41,10 +34,10 @@ void UDynamicCrossHair::NativeTick(const FGeometry& MyGeometry, float InDeltaTim
 			const float SpeedRatio = (MaxSpeed > KINDA_SMALL_NUMBER) ? (CurrentSpeed / MaxSpeed) : 0.f;
 			float ClampedRatio = FMath::Clamp(SpeedRatio, 0.f, 1.f);
 		
+				
+		 Ratio = ClampedRatio;
 
-	 Ratio = ClampedRatio;
-
-	OnCrossHairTick(InDeltaTime);
+		OnCrossHairTick(InDeltaTime);
 
 }
 
