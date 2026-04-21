@@ -11,11 +11,10 @@
  * 
  */
 
-// 특정 동작에 부가적으로 생성되는 이펙트 및 Decal을 생성하는 클래스;
-
-
 class UProjectionMarkDefinition;
 class UTrailEffectDefinition;
+class USoundDefinition;
+
 UCLASS()
 class VISUALEVENT_API UVisualEventSubsystem : public UWorldSubsystem
 {
@@ -39,12 +38,6 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Visual Event")
 	void SpawnProjectileTrail(const UTrailEffectDefinition* Def, USceneComponent* AttachTarget);
 
-
-	UFUNCTION(BlueprintCallable, Category = "Visual Event")
-	void SpawnMarkFromHit(UProjectionMarkDefinition* Definition, const FHitResult& HitResult);
-
-	UFUNCTION(BlueprintCallable, Category = "Visual Event")
-	void PlaySoundAtLocation(UProjectionMarkDefinition* Definition, FVector Location);
-
-
+	UFUNCTION(BlueprintCallable, Category = "Sound Event")
+	void PlaySoundAtLocation(USoundDefinition* SoundDefinition, FVector Location);
 };

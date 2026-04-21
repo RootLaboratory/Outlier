@@ -5,7 +5,7 @@
 #include "Kismet/GameplayStatics.h"
 #include "ProjectionMarkDefinition.h"
 #include "TrailEffectDefinition.h"
-
+#include "SoundDefinition.h"
 #include "Niagara/Public/NiagaraComponent.h"
 #include "Niagara/Classes/NiagaraSystem.h"
 #include "Niagara/Public/NiagaraFunctionLibrary.h"
@@ -127,11 +127,26 @@ void UVisualEventSubsystem::SpawnProjectileTrail(const UTrailEffectDefinition* D
 	}
 }
 
-void UVisualEventSubsystem::SpawnMarkFromHit(UProjectionMarkDefinition* Definition, const FHitResult& HitResult)
+void UVisualEventSubsystem::PlaySoundAtLocation(USoundDefinition* SoundDefinition, FVector Location)
 {
+	if (!SoundDefinition || !SoundDefinition->Sound)
+	{
+		return;
+	}
+
+	const FVector FinalLocation = Location + SoundDefinition->LocationOffset;
+
+	UGameplayStatics::SpawnSoundAtLocation(
+		GetWorld(),
+		SoundDefinition->Sound,
+		FinalLocation,
+		FRotator::ZeroRotator,
+		SoundDefinition->VolumeMultiplier,
+		SoundDefinition->PitchMultiplier,
+		SoundDefinition->StartTime,
+		SoundDefinition->AttenuationSettings,
+		SoundDefinition->ConcurrencySettings,
+		SoundDefinition->bAutoDestroy
+	);
 }
 
-
-void UVisualEventSubsystem::PlaySoundAtLocation(UProjectionMarkDefinition* Definition, FVector Location)
-{
-}
