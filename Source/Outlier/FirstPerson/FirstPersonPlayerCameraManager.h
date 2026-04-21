@@ -17,5 +17,8 @@ class OUTLIER_API AFirstPersonPlayerCameraManager : public APlayerCameraManager
 	
 public:
 	AFirstPersonPlayerCameraManager();
+
+protected:
+	virtual void ProcessViewRotation(float DeltaTime, FRotator& OutViewRotation, FRotator& OutDeltaRot) override;
 	
 };
