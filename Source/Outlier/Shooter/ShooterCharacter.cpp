@@ -96,12 +96,11 @@ void AShooterCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 	EnhancedInputComponent->BindAction(InputConfig->SwitchWeapon3Action, ETriggerEvent::Started,  this, &AShooterCharacter::TrySwitchWeapon3);
 
 	// Sprint
-	EnhancedInputComponent->BindAction(InputConfig->SprintAction,		ETriggerEvent::Started,   this, &AShooterCharacter::TryStartSprint);
-	EnhancedInputComponent->BindAction(InputConfig->SprintAction,		ETriggerEvent::Completed, this, &AShooterCharacter::TryStopSprint);
+	EnhancedInputComponent->BindAction(InputConfig->SprintAction,		ETriggerEvent::Started,   this, &AShooterCharacter::HandleSprintPressed);
+	EnhancedInputComponent->BindAction(InputConfig->SprintAction,		ETriggerEvent::Completed, this, &AShooterCharacter::HandleSprintReleased);
 
 	// Crouch
-	EnhancedInputComponent->BindAction(InputConfig->CrouchAction,		ETriggerEvent::Started,   this, &AShooterCharacter::TryStartCrouchOrSlide);
-	EnhancedInputComponent->BindAction(InputConfig->CrouchAction,		ETriggerEvent::Completed, this, &AShooterCharacter::TryStopCrouch);
+	EnhancedInputComponent->BindAction(InputConfig->CrouchAction,		ETriggerEvent::Started,   this, &AShooterCharacter::HandleCrouchToggled);
 
 	// Lean
 	EnhancedInputComponent->BindAction(InputConfig->LeanAction,			ETriggerEvent::Triggered, this, &AShooterCharacter::TryLean);
@@ -124,8 +123,8 @@ void AShooterCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 	EnhancedInputComponent->BindAction(InputConfig->ReloadAction,		ETriggerEvent::Started,   this, &AShooterCharacter::TryReload);
 
 	// Aim
-	EnhancedInputComponent->BindAction(InputConfig->AimAction,			ETriggerEvent::Started,   this, &AShooterCharacter::TryStartAim);
-	EnhancedInputComponent->BindAction(InputConfig->AimAction,			ETriggerEvent::Completed, this, &AShooterCharacter::TryStopAim);
+	EnhancedInputComponent->BindAction(InputConfig->AimAction,			ETriggerEvent::Started,   this, &AShooterCharacter::HandleAimPressed);
+	EnhancedInputComponent->BindAction(InputConfig->AimAction,			ETriggerEvent::Completed, this, &AShooterCharacter::HandleAimReleased);
 }
 
 void AShooterCharacter::OnStartCrouch(float HalfHeightAdjust, float ScaledHalfHeightAdjust)
@@ -144,7 +143,7 @@ void AShooterCharacter::Landed(const FHitResult& Hit)
 {
 	Super::Landed(Hit);
 
-	if (bIsSliding)
+	if (IsSliding())
 	{
 		StopSlide(ESlideEndReason::JumpCancel);
 		return;
@@ -157,7 +156,7 @@ void AShooterCharacter::OnMovementModeChanged(EMovementMode  PrevMovementMode, u
 {
 	Super::OnMovementModeChanged(PrevMovementMode, PreviousCustomMode);
 
-	if (bIsSliding && GetCharacterMovement()->IsFalling())
+	if (IsSliding() && GetCharacterMovement()->IsFalling())
 	{
 		StopSlide(ESlideEndReason::FallCancel);
 		return;
@@ -214,51 +213,43 @@ void AShooterCharacter::SelectWeaponByIndex(int32 SlotIndex)
 	}
 }
 
-void AShooterCharacter::TryStartAim()
+void AShooterCharacter::HandleAimPressed()
 {
 	if (CombatComponent)
 	{
-		CombatComponent->TryStartAim();
+		CombatComponent->HandleAimPressed();
 	}
 }
 
-void AShooterCharacter::TryStopAim()
+void AShooterCharacter::HandleAimReleased()
 {
 	if (CombatComponent)
 	{
-		CombatComponent->TryStopAim();
+		CombatComponent->HandleAimReleased();
 	}
 }
 
-void AShooterCharacter::TryStartSprint()
+void AShooterCharacter::HandleSprintPressed()
 {
 	if (MovementComponent)
 	{
-		MovementComponent->TryStartSprint();
+		MovementComponent->HandleSprintPressed();
 	}
 }
 
-void AShooterCharacter::TryStopSprint()
+void AShooterCharacter::HandleSprintReleased()
 {
 	if (MovementComponent)
 	{
-		MovementComponent->TryStopSprint();
+		MovementComponent->HandleSprintReleased();
 	}
 }
 
-void AShooterCharacter::TryStartCrouchOrSlide()
+void AShooterCharacter::HandleCrouchToggled()
 {
 	if (MovementComponent)
 	{
-		MovementComponent->TryStartCrouchOrSlide();
-	}
-}
-
-void AShooterCharacter::TryStopCrouch()
-{
-	if (MovementComponent)
-	{
-		MovementComponent->TryStopCrouch();
+		MovementComponent->HandleCrouchToggled();
 	}
 }
 
@@ -417,7 +408,7 @@ void AShooterCharacter::TryUseSuit()
 		return;
 	}
 
-	if (SelectedSuitIndex == INDEX_NONE)
+	if (SelectedSuitSlot == INDEX_NONE)
 	{
 		return;
 	}
@@ -440,8 +431,8 @@ void AShooterCharacter::TryLean(const FInputActionValue& Value)
 		return;
 	}
 
-	const float LeanValue = Value.Get<float>();
-	TargetLeanValue = FMath::Abs(LeanValue) > KINDA_SMALL_NUMBER ? LeanValue : 0.0f;
+	const float LeanAlpha = Value.Get<float>();
+	TargetLeanAlpha = FMath::Abs(LeanAlpha) > KINDA_SMALL_NUMBER ? LeanAlpha : 0.0f;
 	StartLeanUpdate();
 }
 
@@ -461,16 +452,10 @@ void AShooterCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
 	DOREPLIFETIME(AShooterCharacter, CurHP);
-	DOREPLIFETIME(AShooterCharacter, bIsAiming);
-	DOREPLIFETIME(AShooterCharacter, bIsSprinting);
-	DOREPLIFETIME(AShooterCharacter, bIsSliding);
 	DOREPLIFETIME(AShooterCharacter, bIsDead);
 	DOREPLIFETIME(AShooterCharacter, MovementState);
 	DOREPLIFETIME(AShooterCharacter, WeaponMode);
 	DOREPLIFETIME(AShooterCharacter, CombatState);
-	DOREPLIFETIME(AShooterCharacter, bIsReloading);
-	DOREPLIFETIME(AShooterCharacter, bSecondaryOnCooldown);
-	DOREPLIFETIME(AShooterCharacter, bIsMeleeAttacking);
 }
 
 void AShooterCharacter::EquipWeapon(AWeaponBase* Weapon)
@@ -509,6 +494,36 @@ bool AShooterCharacter::CanReloadInCurrentState() const
 bool AShooterCharacter::CanFireInCurrentState() const
 {
 	return CombatComponent ? CombatComponent->CanFireInCurrentState() : false;
+}
+
+bool AShooterCharacter::WantsToAim() const
+{
+	return CombatComponent ? CombatComponent->WantsToAim() : false;
+}
+
+bool AShooterCharacter::IsAiming() const
+{
+	return CombatComponent ? CombatComponent->IsAiming() : false;
+}
+
+bool AShooterCharacter::IsSliding() const
+{
+	return MovementComponent ? MovementComponent->IsSliding() : false;
+}
+
+bool AShooterCharacter::IsSprinting() const
+{
+	return MovementComponent ? MovementComponent->IsSprinting() : false;
+}
+
+bool AShooterCharacter::IsSlidingCanceled() const
+{
+	return MovementComponent ? MovementComponent->IsSlidingCanceled() : false;
+}
+
+bool AShooterCharacter::IsReloading() const
+{
+	return CombatComponent ? CombatComponent->IsReloading() : false;
 }
 
 void AShooterCharacter::RefreshWeaponMode()
@@ -599,11 +614,27 @@ void AShooterCharacter::FinishSecondaryCooldownInternal()
 	}
 }
 
+void AShooterCharacter::ResetSecondaryCooldownInternal()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->ResetSecondaryCooldown();
+	}
+}
+
 void AShooterCharacter::ApplyDamageInternal(float DamageAmount)
 {
 	if (HealthComponent)
 	{
 		HealthComponent->ApplyDamage(DamageAmount);
+	}
+}
+
+void AShooterCharacter::HandleWeaponAttackStoppedInternal()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->HandleWeaponAttackStopped();
 	}
 }
 
@@ -625,34 +656,20 @@ void AShooterCharacter::StartLeanUpdate()
 
 void AShooterCharacter::StopLeanUpdateIfSettled()
 {
-	if (FMath::IsNearlyEqual(CurrentLeanValue, TargetLeanValue, KINDA_SMALL_NUMBER))
+	if (FMath::IsNearlyEqual(CurrentLeanAlpha, TargetLeanAlpha, KINDA_SMALL_NUMBER))
 	{
-		CurrentLeanValue = TargetLeanValue;
+		CurrentLeanAlpha = TargetLeanAlpha;
 		GetWorldTimerManager().ClearTimer(LeanUpdateTimerHandle);
 	}
 }
 
 void AShooterCharacter::UpdateLeanStep()
 {
-	CurrentLeanValue = FMath::FInterpTo(CurrentLeanValue, TargetLeanValue, 1.0f / 60.0f, LeanInterpSpeed);
-	const float LeanRoll = CurrentLeanValue * MaxLeanAngle;
-
-	if (USceneComponent* CameraRoot = GetFirstPersonCameraRoot())
-	{
-		const FRotator TargetRotation(
-			BaseFirstPersonCameraRootRotation.Pitch,
-			BaseFirstPersonCameraRootRotation.Yaw,
-			BaseFirstPersonCameraRootRotation.Roll + LeanRoll);
-		CameraRoot->SetRelativeRotation(TargetRotation);
-	}
+	CurrentLeanAlpha = FMath::FInterpTo(CurrentLeanAlpha, TargetLeanAlpha, 1.0f / 60.0f, LeanInterpSpeed);
 
 	if (FirstPersonMesh)
 	{
-		const FRotator TargetRotation(
-			BaseFirstPersonMeshRotation.Pitch,
-			BaseFirstPersonMeshRotation.Yaw,
-			BaseFirstPersonMeshRotation.Roll + LeanRoll);
-		FirstPersonMesh->SetRelativeRotation(TargetRotation);
+		FirstPersonMesh->SetRelativeRotation(BaseFirstPersonMeshRotation);
 	}
 
 	StopLeanUpdateIfSettled();
@@ -754,16 +771,11 @@ void AShooterCharacter::HandleSlideWallHit(const FHitResult& Hit)
 
 void AShooterCharacter::HandleDeath()
 {
-	bFireHeld = false;
-	bAimHeld = false;
-	bSprintHeld = false;
-	bCrouchHeld = false;
-	bSecondaryOnCooldown = false;
-	bIsMeleeAttacking = false;
-	TargetLeanValue = 0.0f;
-	CurrentLeanValue = 0.0f;
+	ClearInputIntent();
+	TargetLeanAlpha = 0.0f;
+	CurrentLeanAlpha = 0.0f;
 
-	if (bIsSliding)
+	if (IsSliding())
 	{
 		StopSlide(ESlideEndReason::ForcedCancel);
 	}
@@ -774,8 +786,6 @@ void AShooterCharacter::HandleDeath()
 	TryStopAttack();
 
 	StopJumping();
-	GetWorldTimerManager().ClearTimer(SlideTimerHandle);
-	GetWorldTimerManager().ClearTimer(SecondaryCooldownStateTimerHandle);
 	GetWorldTimerManager().ClearTimer(LeanUpdateTimerHandle);
 
 	if (USceneComponent* CameraRoot = GetFirstPersonCameraRoot())
@@ -795,6 +805,19 @@ void AShooterCharacter::HandleDeath()
 	RefreshCombatState();
 	RefreshMovementState();
 	OnCharacterDeath.Broadcast();
+}
+
+void AShooterCharacter::ClearInputIntent()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->ClearInputIntent();
+	}
+
+	if (MovementComponent)
+	{
+		MovementComponent->ClearInputIntent();
+	}
 }
 
 void AShooterCharacter::UpdateLocalHealthUI() const
@@ -846,11 +869,11 @@ void AShooterCharacter::ServerSetAimState_Implementation(bool bNewAiming)
 
 	if (bNewAiming)
 	{
-		CombatComponent->TryStartAim();
+		CombatComponent->HandleAimPressed();
 	}
 	else
 	{
-		CombatComponent->TryStopAim();
+		CombatComponent->HandleAimReleased();
 	}
 }
 
@@ -863,27 +886,27 @@ void AShooterCharacter::ServerSetSprintState_Implementation(bool bNewSprinting)
 
 	if (bNewSprinting)
 	{
-		MovementComponent->TryStartSprint();
+		MovementComponent->HandleSprintPressed();
 	}
 	else
 	{
-		MovementComponent->TryStopSprint();
+		MovementComponent->HandleSprintReleased();
 	}
 }
 
-void AShooterCharacter::ServerStartCrouchOrSlide_Implementation()
+void AShooterCharacter::ServerRequestCrouchOrSlide_Implementation()
 {
 	if (MovementComponent)
 	{
-		MovementComponent->TryStartCrouchOrSlide();
+		MovementComponent->RequestCrouchOrSlide();
 	}
 }
 
-void AShooterCharacter::ServerStopCrouch_Implementation()
+void AShooterCharacter::ServerRequestUncrouch_Implementation()
 {
 	if (MovementComponent)
 	{
-		MovementComponent->TryStopCrouch();
+		MovementComponent->RequestUncrouch();
 	}
 }
 

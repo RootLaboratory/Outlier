@@ -12,6 +12,28 @@ class OUTLIER_API UShooterInventoryComponent : public UShooterCharacterComponent
 {
 	GENERATED_BODY()
 
+protected:
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon")
+	TArray<TObjectPtr<AWeaponBase>> OwnedWeapons;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Weapon")
+	FName FirstPersonWeaponSocketDefault = FName("HandGrip_R");
+
+	UPROPERTY(EditDefaultsOnly, Category = "Weapon")
+	FName ThirdPersonWeaponSocketDefault = FName("HandGrip_R");
+
+	UPROPERTY(EditDefaultsOnly, Category = "Weapon")
+	FName FirstPersonWeaponSocketRifle = FName("HandGrip_R_Rifle");
+
+	UPROPERTY(EditDefaultsOnly, Category = "Weapon")
+	FName ThirdPersonWeaponSocketRifle = FName("HandGrip_R_Rifle");
+
+	UPROPERTY(EditDefaultsOnly, Category = "Weapon")
+	FName FirstPersonWeaponSocketPistol = FName("HandGrip_R_Pistol_FP");
+
+	UPROPERTY(EditDefaultsOnly, Category = "Weapon")
+	FName ThirdPersonWeaponSocketPistol = FName("HandGrip_R_Pistol_TP");
+
 public:
 	UShooterInventoryComponent();
 
@@ -23,4 +45,6 @@ public:
 	void TrySwitchWeapon3();
 	void SelectWeaponByIndex(int32 SlotIndex);
 	void HandleEquipWeapon(AWeaponBase* Weapon);
+
+	const TArray<TObjectPtr<AWeaponBase>>& GetOwnedWeapons() const { return OwnedWeapons; }
 };

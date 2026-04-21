@@ -142,6 +142,11 @@ void AWeaponBase::StopAttack()
 
 	bIsAttacking = false;
 
+	if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner))
+	{
+		Shooter->HandleWeaponAttackStoppedInternal();
+	}
+
 	UE_LOG(LogTemp, Log, TEXT("%s [%s] StopAttack"), OutlierNet::GetNetPrefix(this), *GetName());
 }
 

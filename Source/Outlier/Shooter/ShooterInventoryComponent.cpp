@@ -19,11 +19,11 @@ FName UShooterInventoryComponent::GetFirstPersonWeaponSocketByType(EWeaponType W
 	switch (WeaponType)
 	{
 	case EWeaponType::Rifle:
-		return ShooterCharacter->FirstPersonWeaponSocketRifle;
+		return FirstPersonWeaponSocketRifle;
 	case EWeaponType::Pistol:
-		return ShooterCharacter->FirstPersonWeaponSocketPistol;
+		return FirstPersonWeaponSocketPistol;
 	default:
-		return ShooterCharacter->FirstPersonWeaponSocketDefault;
+		return FirstPersonWeaponSocketDefault;
 	}
 }
 
@@ -38,11 +38,11 @@ FName UShooterInventoryComponent::GetThirdPersonWeaponSocketByType(EWeaponType W
 	switch (WeaponType)
 	{
 	case EWeaponType::Rifle:
-		return ShooterCharacter->ThirdPersonWeaponSocketRifle;
+		return ThirdPersonWeaponSocketRifle;
 	case EWeaponType::Pistol:
-		return ShooterCharacter->ThirdPersonWeaponSocketPistol;
+		return ThirdPersonWeaponSocketPistol;
 	default:
-		return ShooterCharacter->ThirdPersonWeaponSocketDefault;
+		return ThirdPersonWeaponSocketDefault;
 	}
 }
 
@@ -76,25 +76,25 @@ void UShooterInventoryComponent::SelectWeaponByIndex(int32 SlotIndex)
 		return;
 	}
 
-	if (!ShooterCharacter->OwnedWeapons.IsValidIndex(SlotIndex))
+	if (!OwnedWeapons.IsValidIndex(SlotIndex))
 	{
 		return;
 	}
 
-	if (ShooterCharacter->CurrentWeapon == ShooterCharacter->OwnedWeapons[SlotIndex])
+	// Inventory가 무기 슬롯을 관리하고, Character에는 최종 장착 결과만 적용시킨다.
+	if (ShooterCharacter->CurrentWeapon == OwnedWeapons[SlotIndex])
 	{
 		return;
 	}
 
-	if (ShooterCharacter->bIsReloading)
+	if (ShooterCharacter->IsReloading())
 	{
 		ShooterCharacter->CancelReloadInternal();
 	}
 
-	ShooterCharacter->GetWorldTimerManager().ClearTimer(ShooterCharacter->SecondaryCooldownStateTimerHandle);
-	ShooterCharacter->bSecondaryOnCooldown = false;
+	ShooterCharacter->ResetSecondaryCooldownInternal();
 	ShooterCharacter->StopAimInternal();
-	ShooterCharacter->EquipWeapon(ShooterCharacter->OwnedWeapons[SlotIndex]);
+	ShooterCharacter->AFirstPersonCharacter::EquipWeapon(OwnedWeapons[SlotIndex]);
 	ShooterCharacter->RefreshWeaponMode();
 	ShooterCharacter->RefreshCombatState();
 }
@@ -107,13 +107,14 @@ void UShooterInventoryComponent::HandleEquipWeapon(AWeaponBase* Weapon)
 		return;
 	}
 
-	if (!ShooterCharacter->OwnedWeapons.Contains(Weapon))
+	if (!OwnedWeapons.Contains(Weapon))
 	{
-		ShooterCharacter->OwnedWeapons.Add(Weapon);
+		OwnedWeapons.Add(Weapon);
 	}
 
 	// 실제 장착/해제 라이프사이클은 베이스 캐릭터 구현을 재사용하고,
 	// Shooter 쪽에서는 슬롯 목록과 파생 상태만 보정
+	// Inventory가 보유 무기와 소켓 규칙을 관리하고, 최종 장착은 Character가 맡음
 	ShooterCharacter->AFirstPersonCharacter::EquipWeapon(Weapon);
 	ShooterCharacter->RefreshWeaponMode();
 	ShooterCharacter->RefreshCombatState();

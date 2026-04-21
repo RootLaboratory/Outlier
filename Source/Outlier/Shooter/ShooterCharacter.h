@@ -25,7 +25,7 @@ enum class EMovementState : uint8
 	Idle,
 	Walk,
 	Run,
-	Sit,
+	Crouch,
 	Jump,
 	Slide
 };
@@ -77,61 +77,7 @@ class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter
 	friend class UShooterMovementComponent;
 
 protected:
-	/** Input Config */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = Input)
-	TObjectPtr<UShooterInputConfig> InputConfig;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon")
-	TArray<TObjectPtr<AWeaponBase>> OwnedWeapons;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Animation)
-	TObjectPtr<UAnimMontage> FireMontage;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Animation)
-	TObjectPtr<UAnimMontage> SlideMontage;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Animation)
-	TObjectPtr<UAnimMontage> ReloadMontage;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Health)
-	float MaxHP = 100.0f;
-
-	UPROPERTY(ReplicatedUsing = OnRep_CurHP, EditAnywhere, BlueprintReadWrite, Category = Health)
-	float CurHP = 100.0f;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Combat)
-	float CurrentLeanValue = 0.0f;
-
-	UPROPERTY(EditDefaultsOnly, Category = Movement)
-	float WalkSpeed = 300.0f;
-
-	UPROPERTY(EditDefaultsOnly, Category = Movement)
-	float SprintSpeed = 600.0f;
-
-	UPROPERTY(EditDefaultsOnly, Category = Status)
-	float InteractRange = 100.0f;
-
-	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = Combat)
-	uint8 bIsAiming : 1 = false;
-
-	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = Combat)
-	uint8 bIsSprinting : 1 = false;
-
-	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = Combat)
-	uint8 bIsSliding : 1 = false;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Combat)
-	uint8 bIsSlidingCanceled : 1 = false;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Combat)
-	uint8 bIsSuitMenuOpen : 1 = false;
-
-	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = Status)
-	uint8 bIsDead : 1 = false;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Combat)
-	int32 SelectedSuitIndex = 0; // 이후에 Suit 관련 만들면서 거기에 있는 enum 값으로 교체?
-
+	// Components / Owned Objects
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<USceneCaptureComponent2D> CaptureComponent;
 
@@ -147,6 +93,58 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UShooterMovementComponent> MovementComponent;
 
+	// Config / Tunables
+	/** Input Config */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
+	TObjectPtr<UShooterInputConfig> InputConfig;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Health")
+	float MaxHP = 100.0f;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Movement")
+	float WalkSpeed = 300.0f;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Movement")
+	float SprintSpeed = 600.0f;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Status")
+	float InteractRange = 100.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat")
+	float LeanInterpSpeed = 8.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat")
+	float MaxLeanAngle = 15.0f;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Slide")
+	float SlideDuration = 1.0f;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Slide")
+	float MinSlideSpeed = 200.f;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Slide")
+	float SlideWallStopDotThreshold = 0.5f;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Slide")
+	float SlideSpeedMultiplier = 1.2f;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Slide")
+	TObjectPtr<UCurveFloat> SlideSpeedCurve;
+
+	// Animation Assets
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
+	TObjectPtr<UAnimMontage> FireMontage;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
+	TObjectPtr<UAnimMontage> SlideMontage;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
+	TObjectPtr<UAnimMontage> ReloadMontage;
+
+	// Replicated Gameplay State
+	UPROPERTY(ReplicatedUsing = OnRep_CurHP, EditAnywhere, BlueprintReadWrite, Category = "Health")
+	float CurHP = 100.0f;
+
 	UPROPERTY(ReplicatedUsing = OnRep_MovementState, VisibleAnywhere, BlueprintReadOnly, Category = "State")
 	EMovementState MovementState = EMovementState::Idle;
 
@@ -156,100 +154,34 @@ protected:
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "State")
 	ECombatState CombatState = ECombatState::Idle;
 
-	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "State")
-	uint8 bIsReloading : 1= false;
+	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Status")
+	uint8 bIsDead : 1 = false;
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Input")
-	uint8 bSprintHeld : 1 = false;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Input")
-	uint8 bCrouchHeld : 1 = false;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Input")
-	uint8 bAimHeld : 1 = false;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Input")
-	uint8 bFireHeld : 1 = false;
-
-	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "State")
-	uint8 bSecondaryOnCooldown : 1 = false;
-
-	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "State")
-	uint8 bIsMeleeAttacking : 1 = false;
+	// Local Runtime State
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
+	uint8 bIsSuitMenuOpen : 1 = false;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "State")
 	uint8 bIsEquipping : 1 = false;
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Combat)
-	float TargetLeanValue = 0.0f;
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
+	int32 SelectedSuitSlot = 0; // 이후에 Suit 관련 만들면서 거기에 있는 enum 값으로 교체?
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = Combat)
-	float LeanInterpSpeed = 8.0f;
+	// Lean Runtime Data
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
+	float CurrentLeanAlpha = 0.0f;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = Combat)
-	float MaxLeanAngle = 15.0f;
-
-	FTimerHandle LeanUpdateTimerHandle;
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
+	float TargetLeanAlpha = 0.0f;
 
 	FRotator BaseFirstPersonCameraRootRotation = FRotator::ZeroRotator;
 	FRotator BaseFirstPersonMeshRotation = FRotator::ZeroRotator;
 
-	UPROPERTY(EditDefaultsOnly, Category = "Slide")
-	float SlideDuration = 1.0f;
-
-	UPROPERTY(EditDefaultsOnly, Category = "Slide")
-	float MinSlideSpeed = 200.f;
-
-	UPROPERTY(EditDefaultsOnly, Category = "Slide")
-	float SlideWallStopDotValue = 0.5f;
-
-	UPROPERTY(EditDefaultsOnly, Category = "Slide")
-	float SlideSpeedMultiplier = 1.2f;
-
-	UPROPERTY(EditDefaultsOnly, Category = "Slide")
-	TObjectPtr<UCurveFloat> SlideSpeedCurve;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Slide")
-	FVector SlideDirection = FVector::ZeroVector;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Slide")
-	float SlideStartSpeed = 0.0f;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Slide")
-	float SlideElapsedTime = 0.0f;
-
-	FTimerHandle SlideUpdateTimerHandle;
-
-	FTimerHandle SlideTimerHandle;
-	FTimerHandle SecondaryCooldownStateTimerHandle;
-public:
-
-	/** First Person Mesh Default Weapon Socket */
-	FName FirstPersonWeaponSocketDefault = FName("HandGrip_R");
-
-	/** Third Person Mesh Default Weapon Socket */
-	FName ThirdPersonWeaponSocketDefault = FName("HandGrip_R");
-
-	/** First Person Mesh Rifle Weapon Socket */
-	FName FirstPersonWeaponSocketRifle = FName("HandGrip_R_Rifle");
-
-	/** Third Person Mesh Rifle Weapon Socket */
-	FName ThirdPersonWeaponSocketRifle = FName("HandGrip_R_Rifle");
-
-	/** First Person Mesh Pistol Weapon Socket */
-	FName FirstPersonWeaponSocketPistol = FName("HandGrip_R_Pistol_FP");
-
-	/** Third Person Mesh Pistol Weapon Socket */
-	FName ThirdPersonWeaponSocketPistol = FName("HandGrip_R_Pistol_TP");
-
-	FName GetFirstPersonWeaponSocketByType(EWeaponType WeaponType) const;
-
-	FName GetThirdPersonWeaponSocketByType(EWeaponType WeaponType) const;
-	
-	/** Constructor */
-	AShooterCharacter();
+	// Timers
+	FTimerHandle LeanUpdateTimerHandle;
 
 protected:
+	// Engine Lifecycle
 	virtual void BeginPlay() override;
 
 	/** Initialize input action bindings */
@@ -264,57 +196,113 @@ protected:
 	virtual void OnMovementModeChanged(EMovementMode  PrevMovementMode, uint8 PreviousCustomMode) override;
 
 public:
+	// Construction
+	/** Constructor */
+	AShooterCharacter();
+
+	// Events
 	UPROPERTY(BlueprintAssignable, Category = "Event")
 	FOnCharacterDeath OnCharacterDeath;
 
 	UPROPERTY(BlueprintAssignable, Category = "Event")
 	FOnMovementStateChanged OnMovementStateChanged;
 
+	// Weapon Socket Queries
+	FName GetFirstPersonWeaponSocketByType(EWeaponType WeaponType) const;
+	FName GetThirdPersonWeaponSocketByType(EWeaponType WeaponType) const;
+
+	// Replication / Engine Hooks
+	UFUNCTION()
+	void OnRep_CurHP();
+
+	UFUNCTION()
+	void OnRep_MovementState();
+
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	virtual void EquipWeapon(AWeaponBase* Weapon) override;
+
+	// Read-only Queries
+	float GetAimYawForAnimation() const;
+	float GetAimPitchForAnimation() const;
+
+	bool CanEnterCombatState(EWeaponMode InWeaponMode, ECombatState NextState) const;
+	bool CanAimInCurrentState() const;
+	bool CanReloadInCurrentState() const;
+	bool CanFireInCurrentState() const;
+
+	bool WantsToAim() const;
+	bool IsAiming() const;
+	bool IsSliding() const;
+	bool IsSprinting() const;
+	bool IsSlidingCanceled() const;
+
+	UFUNCTION(BlueprintPure)
+	float GetCurrentLeanAlpha() const { return CurrentLeanAlpha; }
+
+	UFUNCTION(BlueprintPure)
+	float GetCurrentLeanRollDegrees() const { return CurrentLeanAlpha * MaxLeanAngle; }
+
+	UFUNCTION(BlueprintPure)
+	float GetMaxLeanAngle() const { return MaxLeanAngle; }
+
+	UFUNCTION(BlueprintPure)
+	EMovementState GetMovementState() const { return MovementState; }
+
+	UFUNCTION(BlueprintPure)
+	ECombatState GetCombatState() const { return CombatState; }
+
+	UFUNCTION(BlueprintPure)
+	EWeaponMode GetWeaponMode() const { return WeaponMode; }
+
+	UFUNCTION(BlueprintPure)
+	bool IsReloading() const;
+
+	UFUNCTION(BlueprintPure)
+	bool IsDead() const { return bIsDead; }
+
+	void ApplyDamageInternal(float DamageAmount);
+	void HandleWeaponAttackStoppedInternal();
+
+	// Blueprint / Notify Entry Points
+	UFUNCTION(BlueprintCallable, Category = "Animation|Notify")
+	void HandleReloadCommitNotify();
+
+	/** Handles jump pressed inputs from either controls or UI interfaces */
+	UFUNCTION(BlueprintCallable, Category="Input")
+	virtual void DoJumpStart();
+
+	/** Handles jump pressed inputs from either controls or UI interfaces */
+	UFUNCTION(BlueprintCallable, Category="Input")
+	virtual void DoJumpEnd();
+
 protected:
-	void StartLeanUpdate();
-	void StopLeanUpdateIfSettled();
-	void UpdateLeanStep();
-
+	// Input Handlers
 	virtual void TryStartAttack() override;
-
 	virtual void TryStopAttack() override;
 
 	void TryReload();
-
 	void TrySwitchWeapon1();
-
 	void TrySwitchWeapon2();
-
 	void TrySwitchWeapon3();
-
 	void SelectWeaponByIndex(int32 SlotIndex);
 
-	void TryStartAim();
+	void HandleAimPressed();
+	void HandleAimReleased();
 
-	void TryStopAim();
+	void HandleSprintPressed();
+	void HandleSprintReleased();
 
-	void TryStartSprint();
-
-	void TryStopSprint();
-
-	void TryStartCrouchOrSlide();
-
-	void TryStopCrouch();
+	void HandleCrouchToggled();
 
 	void TryInteract();
-
 	void TryOpenSuitMenu();
-
 	void TryCloseSuitMenu();
-
 	void UpdateSuitSelection(const FInputActionValue& Value);
-
 	void TryUseSuit();
-
 	void TrySlide();
-
 	void TryLean(const FInputActionValue& Value);
 
+	// Server RPC
 	UFUNCTION(Server, Reliable)
 	void ServerInteract(AActor* TargetActor);
 
@@ -337,10 +325,10 @@ protected:
 	void ServerSetSprintState(bool bNewSprinting);
 
 	UFUNCTION(Server, Reliable)
-	void ServerStartCrouchOrSlide();
+	void ServerRequestCrouchOrSlide();
 
 	UFUNCTION(Server, Reliable)
-	void ServerStopCrouch();
+	void ServerRequestUncrouch();
 
 	UFUNCTION(Server, Reliable)
 	void ServerJumpStart();
@@ -348,39 +336,7 @@ protected:
 	UFUNCTION(Server, Reliable)
 	void ServerJumpEnd();
 
-	void Die();
-
-public:
-
-	UFUNCTION()
-	void OnRep_CurHP();
-
-	UFUNCTION()
-	void OnRep_MovementState();
-
-	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
-
-	virtual void EquipWeapon(AWeaponBase* Weapon) override;
-
-	void ApplyDamageInternal(float DamageAmount);
-
-	float GetAimYawForAnimation() const;
-
-	float GetAimPitchForAnimation() const;
-
-	bool CanEnterCombatState(EWeaponMode InWeaponMode, ECombatState NextState) const;
-	bool CanAimInCurrentState() const;
-	bool CanReloadInCurrentState() const;
-	bool CanFireInCurrentState() const;
-
-	bool IsAiming() const { return bIsAiming; }
-
-	bool IsSliding() const { return bIsSliding; }
-
-	bool IsSprinting() const { return bIsSprinting; }
-
-	bool IsSlidingCanceled() const { return bIsSlidingCanceled; }
-
+	// Internal Helpers
 	void RefreshMovementState();
 	void RefreshCombatState();
 	void RefreshWeaponMode();
@@ -394,42 +350,19 @@ public:
 	void FinishReloadInternal();
 	void BeginSecondaryCooldownInternal(float CooldownDuration);
 	void FinishSecondaryCooldownInternal();
+	void ResetSecondaryCooldownInternal();
+
+	void StartLeanUpdate();
+	void StopLeanUpdateIfSettled();
+	void UpdateLeanStep();
 
 	bool CanStartSlide() const;
 	void StopSlide(ESlideEndReason EndReason);
 	void HandleSlideWallHit(const FHitResult& Hit);
 
+	void Die();
 	void HandleDeath();
 	void UpdateLocalHealthUI() const;
 	void PlayLocalActionMontage(UAnimMontage* Montage);
-
-public:
-	UFUNCTION(BlueprintPure)
-	float GetCurrentLeanAlpha() const { return CurrentLeanValue; }
-
-	UFUNCTION(BlueprintPure)
-	EMovementState GetMovementState() const { return MovementState; }
-
-	UFUNCTION(BlueprintPure)
-	ECombatState GetCombatState() const { return CombatState; }
-
-	UFUNCTION(BlueprintPure)
-	EWeaponMode GetWeaponMode() const { return WeaponMode; }
-
-	UFUNCTION(BlueprintPure)
-	bool IsReloading() const { return bIsReloading; }
-
-	UFUNCTION(BlueprintPure)
-	bool IsDead() const { return bIsDead; }
-
-	UFUNCTION(BlueprintCallable, Category = "Animation|Notify")
-	void HandleReloadCommitNotify();
-
-	/** Handles jump pressed inputs from either controls or UI interfaces */
-	UFUNCTION(BlueprintCallable, Category="Input")
-	virtual void DoJumpStart();
-
-	/** Handles jump pressed inputs from either controls or UI interfaces */
-	UFUNCTION(BlueprintCallable, Category="Input")
-	virtual void DoJumpEnd();
+	void ClearInputIntent();
 };
