@@ -146,6 +146,7 @@ void AFirstPersonCharacter::OnRep_CurrentWeapon()
 
 void AFirstPersonCharacter::TryStartAttack()
 {
+	UE_LOG(LogTemp, Log, TEXT("FirstPerson"));
 	if (!CurrentWeapon)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("%s %s TryStartAttack blocked: no weapon equipped"), OutlierNet::GetNetPrefix(this), *GetName());
@@ -213,11 +214,6 @@ void AFirstPersonCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>
 
 EWeaponType AFirstPersonCharacter::GetWeaponType() const
 {
-	if (CurrentWeapon)
-	{
-		return CurrentWeapon->GetWeaponType();
-	}
-
-	return EWeaponType::Unarmed;
+	return CurrentWeaponType;
 }
 

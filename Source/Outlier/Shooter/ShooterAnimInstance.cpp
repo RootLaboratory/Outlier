@@ -11,6 +11,12 @@ void UShooterAnimInstance::NativeInitializeAnimation()
 {
 	Super::NativeInitializeAnimation();
 
+	if (CachedShooterCharacter)
+	{
+		CachedShooterCharacter->OnCharacterDeath.RemoveDynamic(this, &UShooterAnimInstance::HandleOwnerDeath);
+		CachedShooterCharacter->OnMovementStateChanged.RemoveDynamic(this, &UShooterAnimInstance::HandleOwnerMovementStateChanged);
+	}
+
 	APawn* OwnerPawn = TryGetPawnOwner();
 	CachedShooterCharacter = Cast<AShooterCharacter>(OwnerPawn);
 
@@ -19,8 +25,8 @@ void UShooterAnimInstance::NativeInitializeAnimation()
 		return;
 	}
 
-	CachedShooterCharacter->OnCharacterDeath.AddDynamic(this, &UShooterAnimInstance::HandleOwnerDeath);
-	CachedShooterCharacter->OnMovementStateChanged.AddDynamic(this, &UShooterAnimInstance::HandleOwnerMovementStateChanged);
+	CachedShooterCharacter->OnCharacterDeath.AddUniqueDynamic(this, &UShooterAnimInstance::HandleOwnerDeath);
+	CachedShooterCharacter->OnMovementStateChanged.AddUniqueDynamic(this, &UShooterAnimInstance::HandleOwnerMovementStateChanged);
 
 	MovementState = CachedShooterCharacter->GetMovementState();
 	CombatState = CachedShooterCharacter->GetCombatState();
@@ -29,6 +35,18 @@ void UShooterAnimInstance::NativeInitializeAnimation()
 	bIsAiming     = CachedShooterCharacter->IsAiming();
 	bIsReloading  = CachedShooterCharacter->IsReloading();
 	bIsDead		  = CachedShooterCharacter->IsDead();
+}
+
+void UShooterAnimInstance::NativeUninitializeAnimation()
+{
+	if (CachedShooterCharacter)
+	{
+		CachedShooterCharacter->OnCharacterDeath.RemoveDynamic(this, &UShooterAnimInstance::HandleOwnerDeath);
+		CachedShooterCharacter->OnMovementStateChanged.RemoveDynamic(this, &UShooterAnimInstance::HandleOwnerMovementStateChanged);
+		CachedShooterCharacter = nullptr;
+	}
+
+	Super::NativeUninitializeAnimation();
 }
 
 void UShooterAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
