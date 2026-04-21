@@ -4,6 +4,7 @@
 #include "Shooter/AnimNotify_ReloadCommit.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Weapon/RangedWeaponBase.h"
+#include "OutlierNetUtils.h"
 
 void UAnimNotify_ReloadCommit::Notify(USkeletalMeshComponent* MeshComp, UAnimSequenceBase* Animation, const FAnimNotifyEventReference& EventReference)
 {
@@ -17,6 +18,16 @@ void UAnimNotify_ReloadCommit::Notify(USkeletalMeshComponent* MeshComp, UAnimSeq
 	{
 		return;
 	}
+
+	UE_LOG(
+		LogTemp,
+		Log,
+		TEXT("%s %s AnimNotify_ReloadCommit Mesh=%s Animation=%s"),
+		OutlierNet::GetNetPrefix(Shooter),
+		*Shooter->GetName(),
+		*GetNameSafe(MeshComp),
+		*GetNameSafe(Animation)
+	);
 
 	Shooter->HandleReloadCommitNotify();
 }
