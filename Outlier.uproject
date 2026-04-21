@@ -15,7 +15,8 @@
 				"TagDrivenUI",
 				"VisualEvent",
 				"CoreUObject",
-				"RDG"
+				"RDG",
+				"CoreUObject"
 			]
 		}
 	],

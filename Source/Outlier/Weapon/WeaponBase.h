@@ -56,6 +56,9 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = Weapon)
 	float EffectiveRange = 1000.0f;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = IK)
+	FName LeftHandIKSocketName = FName("LeftHandIK");
+
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
 	TObjectPtr<ACharacter> WeaponOwner;
 
@@ -65,6 +68,7 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
 	uint8 bIsAttacking : 1 = false;
 
+protected:
 	void SetEquippedCollisionEnabled(bool bEnabled);
 	void SetPickupPresentation();
 	void SetEquippedPresentation();
@@ -94,4 +98,13 @@ public:
 
 	USkeletalMeshComponent* GetFirstPersonWeaponMesh() const { return FirstPersonWeaponMesh; }
 	USkeletalMeshComponent* GetThirdPersonWeaponMesh() const { return ThirdPersonWeaponMesh; }
+
+	UFUNCTION(BlueprintCallable, Category = IK)
+	FName GetLeftHandIKSocketName() const { return LeftHandIKSocketName; }
+
+	UFUNCTION(BlueprintCallable, Category = IK)
+	USkeletalMeshComponent* GetWeaponByView(bool bFirstPerson) const
+	{
+		return bFirstPerson ? FirstPersonWeaponMesh : ThirdPersonWeaponMesh;
+	}
 };
