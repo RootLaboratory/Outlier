@@ -1,6 +1,6 @@
 {
 	"FileVersion": 3,
-    "EngineAssociation": "5.7",
+	"EngineAssociation": "{2739CEF7-4B3C-3773-2977-B6880D84B6FE}",
 	"Category": "",
 	"Description": "",
 	"Modules": [
@@ -14,6 +14,8 @@
 				"UMG",
 				"TagDrivenUI",
 				"VisualEvent",
+				"CoreUObject",
+				"RDG",
 				"CoreUObject"
 			]
 		}
@@ -32,6 +34,10 @@
 		},
 		{
 			"Name": "GameplayStateTree",
+			"Enabled": true
+		},
+		{
+			"Name": "RDG",
 			"Enabled": true
 		}
 	]

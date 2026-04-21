@@ -29,6 +29,9 @@ class TAGDRIVENUI_API ULocalPlayerUISubSystem : public ULocalPlayerSubsystem
 	
 public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
+	virtual void Deinitialize() override;
+
+public:
 	void RegisterMainUI(UMainUIBase* InMainUI);
 	void UnregisterMainUI(UMainUIBase* InMainUI);
 
@@ -40,15 +43,14 @@ public:
 	void OnRep_AmmoCountChanged(int32 InAmmoCount);
 	void OnRep_PartnerCameraToggle();
 
-
-	void PartnerCameraBind(USceneCaptureComponent2D* InCaptureComponent2D);
 public:
 	uint8 IsAiming();
 	void SetPlayerAiming(uint8 bInAiming);
+	void PartnerCameraBind(USceneCaptureComponent2D* InCaptureComponent2D);
+
 private:
 	UPROPERTY()
 	TObjectPtr<UMainUIBase> MainUIInstance; //PlayerController에게 책임 전가; Pawn 타입 받아서; (Bind된 BP 타입 반환시켜서 Bind)
-
 
 	uint8 bPlayerAiming : 1 = false; 
 

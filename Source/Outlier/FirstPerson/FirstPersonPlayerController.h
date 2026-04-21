@@ -35,7 +35,7 @@ protected:
 	virtual TSubclassOf<UMainUIBase> GetMainUIClass_Implementation() const;
 
 	virtual void BindMainUI();
-
+	virtual void BindPostProcessSubSystem();
 
 	UPROPERTY()
 	TObjectPtr<UMainUIBase> ShooterUIInstance;

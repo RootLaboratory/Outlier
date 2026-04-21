@@ -19,6 +19,11 @@ void ULocalPlayerUISubSystem::Initialize(FSubsystemCollectionBase& Collection)
 	//UE_LOG(LogTemp, Warning, TEXT("LocalPlayerUISubSystem Initialized"));
 }
 
+void ULocalPlayerUISubSystem::Deinitialize()
+{
+	Super::Deinitialize();
+}
+
 void ULocalPlayerUISubSystem::RegisterMainUI(UMainUIBase* InMainUI)
 {
 	MainUIInstance = InMainUI;
@@ -42,9 +47,14 @@ void ULocalPlayerUISubSystem::OnRep_HUDActivate(bool bShouldActivate)
 
 	}
 
-
-	if (bShouldActivate) 	MainUIInstance->ModuleActivate();
-	else MainUIInstance->ModuleDeActivate();
+	if (bShouldActivate)
+	{
+		MainUIInstance->ModuleActivate();
+	}
+	else
+	{
+		MainUIInstance->ModuleDeActivate();
+	}
 
 }
 
@@ -117,8 +127,10 @@ void ULocalPlayerUISubSystem::PartnerCameraBind(USceneCaptureComponent2D* InCapt
 	if (UPartnerCamUI* PartnerCamUI = Cast<UPartnerCamUI>(MainUIInstance->GetModule(EUIModule::PartnerCam)))
 	{
 		UTextureRenderTarget2D* RenderTarget = InCaptureComponent2D->TextureTarget;
-		if(RenderTarget)
-		PartnerCamUI->SetPartnerRenderTarget(RenderTarget);
+		if (RenderTarget)
+		{
+			PartnerCamUI->SetPartnerRenderTarget(RenderTarget);
+		}
 		else
 		{
 		//	UE_LOG(LogTemp, Error, TEXT("Cant RT"));

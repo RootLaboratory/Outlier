@@ -18,6 +18,7 @@ void UVisualEventSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 void UVisualEventSubsystem::Deinitialize()
 {
+
 }
 
 void UVisualEventSubsystem::SpawnMarkAtLocation(UProjectionMarkDefinition* Def, FVector Location, FRotator Rotation)
@@ -25,12 +26,8 @@ void UVisualEventSubsystem::SpawnMarkAtLocation(UProjectionMarkDefinition* Def, 
     if (!Def || !Def->DecalMaterial)
     {
       //  UE_LOG(LogTemp, Error, TEXT("NO DECAL "));
-
         return;
     }
-
- //   UE_LOG(LogTemp, Error, TEXT(" DECAL WORKS "));
-
 
     UGameplayStatics::SpawnDecalAtLocation(
         GetWorld(),
@@ -46,9 +43,7 @@ void UVisualEventSubsystem::SpawnBeamTrail(const UTrailEffectDefinition* Def, co
 {
 	if (!Def || !Def->FXAsset)
 	{
-
 		//UE_LOG(LogTemp, Error, TEXT("NO DEF EFFEECT "));
-
 		return;
 	}
 
