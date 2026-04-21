@@ -5,21 +5,16 @@
 #include "Animation/AnimInstance.h"
 #include "Camera/CameraComponent.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/SceneComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "EnhancedInputComponent.h"
 #include "InputActionValue.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Weapon/WeaponBase.h"
 #include "Net/UnrealNetwork.h"
+#include "OutlierNetUtils.h"
 #include "Outlier.h"
-
-namespace
-{
-	const TCHAR* NetPrefix(const AActor* Actor)
-	{
-		return (Actor && Actor->HasAuthority()) ? TEXT("[Server]") : TEXT("[Client]");
-	}
-}
+#include "Shooter/ShooterCharacter.h"
 
 
 // Sets default values
@@ -36,15 +31,19 @@ AFirstPersonCharacter::AFirstPersonCharacter()
 	FirstPersonMesh->SetWorldLocation(FVector(0, 0, -GetCapsuleComponent()->GetScaledCapsuleHalfHeight()));
 	FirstPersonMesh->SetCollisionProfileName(FName("NoCollision"));
 
+	FirstPersonCameraRoot = CreateDefaultSubobject<USceneComponent>(TEXT("First Person Camera Root"));
+	FirstPersonCameraRoot->SetupAttachment(GetCapsuleComponent());
+	FirstPersonCameraRoot->SetRelativeLocation(FVector(0.0f, 0.0f, 64.0f));
+
 	// Create Camera
 	FirstPersonCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("First Person Camera"));
-	FirstPersonCamera->SetupAttachment(FirstPersonMesh, FName("head"));
-	FirstPersonCamera->SetRelativeLocationAndRotation(FVector(-2.8f, 5.89f, 0.0f), FRotator(0.0f, 90.0f, -90.0f));
+	FirstPersonCamera->SetupAttachment(FirstPersonCameraRoot);
+	FirstPersonCamera->SetRelativeLocationAndRotation(FVector::ZeroVector, FRotator::ZeroRotator);
 	FirstPersonCamera->bUsePawnControlRotation = true;
 	FirstPersonCamera->bEnableFirstPersonFieldOfView = true;
-	FirstPersonCamera->bEnableFirstPersonScale = true;
+	FirstPersonCamera->bEnableFirstPersonScale = false;
 	FirstPersonCamera->FirstPersonFieldOfView = 70.0f;
-	FirstPersonCamera->FirstPersonScale = 0.6f;
+	FirstPersonCamera->FirstPersonScale = 1.0f;
 
 	// configure the character comps
 	GetMesh()->SetOwnerNoSee(true);
@@ -68,6 +67,7 @@ void AFirstPersonCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
 	{
 		// Move
 		EnhancedInputComponent->BindAction(MoveAction, ETriggerEvent::Triggered, this, &AFirstPersonCharacter::MoveInput);
+		EnhancedInputComponent->BindAction(MoveAction, ETriggerEvent::Completed, this, &AFirstPersonCharacter::MoveInput);
 
 		// Look
 		EnhancedInputComponent->BindAction(LookAction, ETriggerEvent::Triggered, this, &AFirstPersonCharacter::LookInput);
@@ -78,10 +78,15 @@ void AFirstPersonCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
 	}
 }
 
+void AFirstPersonCharacter::BeginPlay()
+{
+	Super::BeginPlay();
+}
+
 void AFirstPersonCharacter::MoveInput(const FInputActionValue& Value)
 {
 	// get the Vector2D move axis
-	FVector2D MovementVector = Value.Get<FVector2D>();
+	const FVector2D MovementVector = Value.Get<FVector2D>();
 
 	DoMove(MovementVector.X, MovementVector.Y);
 }
@@ -91,11 +96,20 @@ void AFirstPersonCharacter::LookInput(const FInputActionValue& Value)
 	// get the Vector2D move axis
 	FVector2D LookAxisVector = Value.Get<FVector2D>();
 
-	DoAim(LookAxisVector.X, LookAxisVector.Y);
+	// 카메라 기준이라 Y를 뒤집음
+	DoAim(LookAxisVector.X, -LookAxisVector.Y);
 }
 
 void AFirstPersonCharacter::DoMove(float Right, float Forward)
 {
+	if (const AShooterCharacter* ShooterCharacter = Cast<AShooterCharacter>(this))
+	{
+		if (ShooterCharacter->GetMovementState() == EMovementState::Slide)
+		{
+			return;
+		}
+	}
+
 	if (GetController())
 	{
 		// move inputs
@@ -116,7 +130,7 @@ void AFirstPersonCharacter::DoAim(float Yaw, float Pitch)
 
 void AFirstPersonCharacter::OnRep_CurrentWeapon()
 {
-	UE_LOG(LogTemp, Log, TEXT("%s %s OnRep_CurrentWeapon Previous=%s Current=%s"), NetPrefix(this), *GetName(), *GetNameSafe(LastReplicatedWeapon), *GetNameSafe(CurrentWeapon));
+	UE_LOG(LogTemp, Log, TEXT("%s %s OnRep_CurrentWeapon Previous=%s Current=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(LastReplicatedWeapon), *GetNameSafe(CurrentWeapon));
 	if (LastReplicatedWeapon && LastReplicatedWeapon != CurrentWeapon)
 	{
 		LastReplicatedWeapon->OnUnequipped();
@@ -134,11 +148,11 @@ void AFirstPersonCharacter::TryStartAttack()
 {
 	if (!CurrentWeapon)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("%s %s TryStartAttack blocked: no weapon equipped"), NetPrefix(this), *GetName());
+		UE_LOG(LogTemp, Warning, TEXT("%s %s TryStartAttack blocked: no weapon equipped"), OutlierNet::GetNetPrefix(this), *GetName());
 		return;
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("%s %s TryStartAttack Weapon=%s"), NetPrefix(this), *GetName(), *GetNameSafe(CurrentWeapon));
+	UE_LOG(LogTemp, Log, TEXT("%s %s TryStartAttack Weapon=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(CurrentWeapon));
 	CurrentWeapon->StartAttack();
 }
 
@@ -146,11 +160,11 @@ void AFirstPersonCharacter::TryStopAttack()
 {
 	if (!CurrentWeapon)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("%s %s TryStopAttack blocked: no weapon equipped"), NetPrefix(this), *GetName());
+		UE_LOG(LogTemp, Warning, TEXT("%s %s TryStopAttack blocked: no weapon equipped"), OutlierNet::GetNetPrefix(this), *GetName());
 		return;
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("%s %s TryStopAttack Weapon=%s"), NetPrefix(this), *GetName(), *GetNameSafe(CurrentWeapon));
+	UE_LOG(LogTemp, Log, TEXT("%s %s TryStopAttack Weapon=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(CurrentWeapon));
 	CurrentWeapon->StopAttack();
 }
 
@@ -158,17 +172,17 @@ void AFirstPersonCharacter::EquipWeapon(AWeaponBase* Weapon)
 {
 	if (!Weapon)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("%s %s EquipWeapon blocked: weapon is null"), NetPrefix(this), *GetName());
+		UE_LOG(LogTemp, Warning, TEXT("%s %s EquipWeapon blocked: weapon is null"), OutlierNet::GetNetPrefix(this), *GetName());
 		return;
 	}
 
 	if (CurrentWeapon == Weapon)
 	{
-		UE_LOG(LogTemp, Log, TEXT("%s %s EquipWeapon skipped: already equipped %s"), NetPrefix(this), *GetName(), *GetNameSafe(Weapon));
+		UE_LOG(LogTemp, Log, TEXT("%s %s EquipWeapon skipped: already equipped %s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(Weapon));
 		return;
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("%s %s EquipWeapon Previous=%s New=%s"), NetPrefix(this), *GetName(), *GetNameSafe(CurrentWeapon), *GetNameSafe(Weapon));
+	UE_LOG(LogTemp, Log, TEXT("%s %s EquipWeapon Previous=%s New=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(CurrentWeapon), *GetNameSafe(Weapon));
 
 	AWeaponBase* OldWeapon = CurrentWeapon;
 	const FTransform PickupTransform = Weapon->GetActorTransform();
@@ -187,7 +201,7 @@ void AFirstPersonCharacter::EquipWeapon(AWeaponBase* Weapon)
 	}
 
 	LastReplicatedWeapon = CurrentWeapon;
-	UE_LOG(LogTemp, Log, TEXT("%s %s EquipWeapon complete Current=%s"), NetPrefix(this), *GetName(), *GetNameSafe(CurrentWeapon));
+	UE_LOG(LogTemp, Log, TEXT("%s %s EquipWeapon complete Current=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(CurrentWeapon));
 }
 
 void AFirstPersonCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -206,3 +220,4 @@ EWeaponType AFirstPersonCharacter::GetWeaponType() const
 
 	return EWeaponType::Unarmed;
 }
+

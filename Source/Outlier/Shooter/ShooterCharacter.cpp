@@ -15,34 +15,64 @@
 #include "LocalPlayerUISubSystem.h"
 #include "InputActionValue.h"
 #include "ShooterInputConfig.h"
+#include "ShooterHealthComponent.h"
+#include "ShooterInventoryComponent.h"
+#include "ShooterCombatComponent.h"
+#include "ShooterMovementComponent.h"
 #include "Weapon/WeaponBase.h"
 #include "Weapon/RangedWeaponBase.h"
 #include "Interface/InteractableInterface.h"
 #include "Net/UnrealNetwork.h"
+#include "OutlierNetUtils.h"
 #include "Outlier.h"
 
-namespace
+FName AShooterCharacter::GetFirstPersonWeaponSocketByType(EWeaponType WeaponType) const
 {
-	const TCHAR* NetPrefix(const AActor* Actor)
-	{
-		return (Actor && Actor->HasAuthority()) ? TEXT("[Server]") : TEXT("[Client]");
-	}
+	return InventoryComponent ? InventoryComponent->GetFirstPersonWeaponSocketByType(WeaponType) : NAME_None;
+}
+
+FName AShooterCharacter::GetThirdPersonWeaponSocketByType(EWeaponType WeaponType) const
+{
+	return InventoryComponent ? InventoryComponent->GetThirdPersonWeaponSocketByType(WeaponType) : NAME_None;
 }
 
 AShooterCharacter::AShooterCharacter() : AFirstPersonCharacter()
 {
+	PrimaryActorTick.bCanEverTick = false;
+
 	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
 
 	CaptureComponent = CreateDefaultSubobject< USceneCaptureComponent2D>(TEXT("PartnerCameraCapture"));
 	CaptureComponent->SetupAttachment(RootComponent);
-
+	HealthComponent = CreateDefaultSubobject<UShooterHealthComponent>(TEXT("HealthComponent"));
+	InventoryComponent = CreateDefaultSubobject<UShooterInventoryComponent>(TEXT("InventoryComponent"));
+	CombatComponent = CreateDefaultSubobject<UShooterCombatComponent>(TEXT("CombatComponent"));
+	MovementComponent = CreateDefaultSubobject<UShooterMovementComponent>(TEXT("MovementComponent"));
 }
 
 void AShooterCharacter::BeginPlay()
 {
 	Super::BeginPlay();
 
-	CurHP = MaxHP;
+	if (USceneComponent* CameraRoot = GetFirstPersonCameraRoot())
+	{
+		BaseFirstPersonCameraRootRotation = CameraRoot->GetRelativeRotation();
+	}
+
+	if (FirstPersonMesh)
+	{
+		BaseFirstPersonMeshRotation = FirstPersonMesh->GetRelativeRotation();
+	}
+
+	if (HasAuthority())
+	{
+		CurHP = FMath::Clamp(CurHP, 0.0f, MaxHP);
+	}
+
+	RefreshWeaponMode();
+	RefreshMovementState();
+	RefreshCombatState();
+	UpdateLocalHealthUI();
 }
 
 void AShooterCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
@@ -57,8 +87,8 @@ void AShooterCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 	}
 
 	// Jumping
-	EnhancedInputComponent->BindAction(InputConfig->JumpAction,         ETriggerEvent::Started,   this, &ACharacter::Jump);
-	EnhancedInputComponent->BindAction(InputConfig->JumpAction,			ETriggerEvent::Completed, this, &ACharacter::StopJumping);
+	EnhancedInputComponent->BindAction(InputConfig->JumpAction,         ETriggerEvent::Started,   this, &AShooterCharacter::DoJumpStart);
+	EnhancedInputComponent->BindAction(InputConfig->JumpAction,			ETriggerEvent::Completed, this, &AShooterCharacter::DoJumpEnd);
 
 	// Switch Weapon
 	EnhancedInputComponent->BindAction(InputConfig->SwitchWeapon1Action, ETriggerEvent::Started,  this, &AShooterCharacter::TrySwitchWeapon1);
@@ -66,15 +96,15 @@ void AShooterCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 	EnhancedInputComponent->BindAction(InputConfig->SwitchWeapon3Action, ETriggerEvent::Started,  this, &AShooterCharacter::TrySwitchWeapon3);
 
 	// Sprint
-	EnhancedInputComponent->BindAction(InputConfig->SprintAction,		ETriggerEvent::Started,   this, &AShooterCharacter::TryStartSprint);
-	EnhancedInputComponent->BindAction(InputConfig->SprintAction,		ETriggerEvent::Completed, this, &AShooterCharacter::TryStopSprint);
+	EnhancedInputComponent->BindAction(InputConfig->SprintAction,		ETriggerEvent::Started,   this, &AShooterCharacter::HandleSprintPressed);
+	EnhancedInputComponent->BindAction(InputConfig->SprintAction,		ETriggerEvent::Completed, this, &AShooterCharacter::HandleSprintReleased);
 
 	// Crouch
-	EnhancedInputComponent->BindAction(InputConfig->CrouchAction,		ETriggerEvent::Started,   this, &AShooterCharacter::TryStartCrouchOrSlide);
-	EnhancedInputComponent->BindAction(InputConfig->CrouchAction,		ETriggerEvent::Completed, this, &AShooterCharacter::TryStopCrouch);
+	EnhancedInputComponent->BindAction(InputConfig->CrouchAction,		ETriggerEvent::Started,   this, &AShooterCharacter::HandleCrouchToggled);
 
 	// Lean
 	EnhancedInputComponent->BindAction(InputConfig->LeanAction,			ETriggerEvent::Triggered, this, &AShooterCharacter::TryLean);
+	EnhancedInputComponent->BindAction(InputConfig->LeanAction,			ETriggerEvent::Completed, this, &AShooterCharacter::TryLean);
 
 	// Interaction
 	EnhancedInputComponent->BindAction(InputConfig->InteractionAction,  ETriggerEvent::Started,   this, &AShooterCharacter::TryInteract);
@@ -93,164 +123,147 @@ void AShooterCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 	EnhancedInputComponent->BindAction(InputConfig->ReloadAction,		ETriggerEvent::Started,   this, &AShooterCharacter::TryReload);
 
 	// Aim
-	EnhancedInputComponent->BindAction(InputConfig->AimAction,			ETriggerEvent::Started,   this, &AShooterCharacter::TryStartAim);
-	EnhancedInputComponent->BindAction(InputConfig->AimAction,			ETriggerEvent::Completed, this, &AShooterCharacter::TryStopAim);
+	EnhancedInputComponent->BindAction(InputConfig->AimAction,			ETriggerEvent::Started,   this, &AShooterCharacter::HandleAimPressed);
+	EnhancedInputComponent->BindAction(InputConfig->AimAction,			ETriggerEvent::Completed, this, &AShooterCharacter::HandleAimReleased);
+}
+
+void AShooterCharacter::OnStartCrouch(float HalfHeightAdjust, float ScaledHalfHeightAdjust)
+{
+	Super::OnStartCrouch(HalfHeightAdjust, ScaledHalfHeightAdjust);
+	RefreshMovementState();
+}
+
+void AShooterCharacter::OnEndCrouch(float HalfHeightAdjust, float ScaledHalfHeightAdjust)
+{
+	Super::OnEndCrouch(HalfHeightAdjust, ScaledHalfHeightAdjust);
+	RefreshMovementState();
+}
+
+void AShooterCharacter::Landed(const FHitResult& Hit)
+{
+	Super::Landed(Hit);
+
+	if (IsSliding())
+	{
+		StopSlide(ESlideEndReason::JumpCancel);
+		return;
+	}
+
+	RefreshMovementState();
+}
+
+void AShooterCharacter::OnMovementModeChanged(EMovementMode  PrevMovementMode, uint8 PreviousCustomMode)
+{
+	Super::OnMovementModeChanged(PrevMovementMode, PreviousCustomMode);
+
+	if (IsSliding() && GetCharacterMovement()->IsFalling())
+	{
+		StopSlide(ESlideEndReason::FallCancel);
+		return;
+	}
+
+	RefreshMovementState();
 }
 
 void AShooterCharacter::TryReload()
 {
-	UE_LOG(LogTemp, Log, TEXT("%s %s TryReload CurrentWeapon=%s"), NetPrefix(this), *GetName(), *GetNameSafe(CurrentWeapon));
-	ServerReload();
+	if (CombatComponent)
+	{
+		CombatComponent->TryReload();
+	}
 }
 
 void AShooterCharacter::ServerReload_Implementation()
 {
-	UE_LOG(LogTemp, Log, TEXT("[Server] %s ServerReload CurrentWeapon=%s"), *GetName(), *GetNameSafe(CurrentWeapon));
-	if (bIsDead)
+	if (CombatComponent)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[Server] %s ServerReload blocked: dead"), *GetName());
-		return;
+		CombatComponent->TryReload();
 	}
-
-	ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(CurrentWeapon);
-
-	if (!RangedWeapon)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[Server] %s ServerReload blocked: weapon is not ranged"), *GetName());
-		return;
-	}
-
-	RangedWeapon->Reload();
 }
 
 void AShooterCharacter::TrySwitchWeapon1()
 {
-	SelectWeaponByIndex(0);
+	if (InventoryComponent)
+	{
+		InventoryComponent->TrySwitchWeapon1();
+	}
 }
 
 void AShooterCharacter::TrySwitchWeapon2()
 {
-	SelectWeaponByIndex(1);
+	if (InventoryComponent)
+	{
+		InventoryComponent->TrySwitchWeapon2();
+	}
 }
 
 void AShooterCharacter::TrySwitchWeapon3()
 {
-	SelectWeaponByIndex(2);
+	if (InventoryComponent)
+	{
+		InventoryComponent->TrySwitchWeapon3();
+	}
 }
 
 void AShooterCharacter::SelectWeaponByIndex(int32 SlotIndex)
 {
-	if (bIsDead)
+	if (InventoryComponent)
 	{
-		return;
-	}
-
-	if (!OwnedWeapons.IsValidIndex(SlotIndex))
-	{
-		return;
-	}
-
-	if (CurrentWeapon == OwnedWeapons[SlotIndex])
-	{
-		return;
-	}
-
-	CurrentWeapon = OwnedWeapons[SlotIndex];
-}
-
-void AShooterCharacter::TryStartAim()
-{
-	if (bIsDead)
-	{
-		return;
-	}
-
-	ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(CurrentWeapon);
-
-	if (!RangedWeapon)
-	{
-		return;
-	}
-
-	bIsAiming = true;
-
-	if (RangedWeapon)
-	{
-		RangedWeapon->SetAiming(true);
+		InventoryComponent->SelectWeaponByIndex(SlotIndex);
 	}
 }
 
-void AShooterCharacter::TryStopAim()
+void AShooterCharacter::HandleAimPressed()
 {
-	bIsAiming = false;
-
-	ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(CurrentWeapon);
-
-	if (RangedWeapon)
+	if (CombatComponent)
 	{
-		RangedWeapon->SetAiming(false);
+		CombatComponent->HandleAimPressed();
 	}
 }
 
-void AShooterCharacter::TryStartSprint()
+void AShooterCharacter::HandleAimReleased()
 {
-	if (bIsDead || GetCharacterMovement()->IsCrouching())
+	if (CombatComponent)
 	{
-		return;
-	}
-
-	bIsSprinting = true;
-
-	GetCharacterMovement()->MaxWalkSpeed = SprintSpeed;
-}
-
-void AShooterCharacter::TryStopSprint()
-{
-	bIsSprinting = false;
-
-	if (!bIsSliding)
-	{
-		GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
+		CombatComponent->HandleAimReleased();
 	}
 }
 
-void AShooterCharacter::TryStartCrouchOrSlide()
+void AShooterCharacter::HandleSprintPressed()
 {
-	if (bIsDead)
+	if (MovementComponent)
 	{
-		return;
+		MovementComponent->HandleSprintPressed();
 	}
-
-	if (bIsSprinting && GetVelocity().SizeSquared() > 0.0f)
-	{
-		TrySlide();
-		return;
-	}
-
-	Crouch();
 }
 
-void AShooterCharacter::TryStopCrouch()
+void AShooterCharacter::HandleSprintReleased()
 {
-	if (bIsSliding)
+	if (MovementComponent)
 	{
-		return;
+		MovementComponent->HandleSprintReleased();
 	}
+}
 
-	UnCrouch();
+void AShooterCharacter::HandleCrouchToggled()
+{
+	if (MovementComponent)
+	{
+		MovementComponent->HandleCrouchToggled();
+	}
 }
 
 void AShooterCharacter::TryInteract()
 {
 	if (bIsDead)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("%s %s TryInteract blocked: dead"), NetPrefix(this), *GetName());
+		UE_LOG(LogTemp, Warning, TEXT("%s %s TryInteract blocked: dead"), OutlierNet::GetNetPrefix(this), *GetName());
 		return;
 	}
 
 	if (!GetController())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("%s %s TryInteract blocked: controller is null"), NetPrefix(this), *GetName());
+		UE_LOG(LogTemp, Warning, TEXT("%s %s TryInteract blocked: controller is null"), OutlierNet::GetNetPrefix(this), *GetName());
 		return;
 	}
 
@@ -277,11 +290,11 @@ void AShooterCharacter::TryInteract()
 	
 	if (!bHit)
 	{
-		UE_LOG(LogTemp, Log, TEXT("%s %s TryInteract miss Start=%s End=%s"), NetPrefix(this), *GetName(), *Start.ToString(), *End.ToString());
+		UE_LOG(LogTemp, Log, TEXT("%s %s TryInteract miss Start=%s End=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *Start.ToString(), *End.ToString());
 		return;
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("%s %s TryInteract hit Target=%s"), NetPrefix(this), *GetName(), *GetNameSafe(Hit.GetActor()));
+	UE_LOG(LogTemp, Log, TEXT("%s %s TryInteract hit Target=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(Hit.GetActor()));
 	ServerInteract(Hit.GetActor());
 }
 
@@ -395,7 +408,7 @@ void AShooterCharacter::TryUseSuit()
 		return;
 	}
 
-	if (SelectedSuitIndex == INDEX_NONE)
+	if (SelectedSuitSlot == INDEX_NONE)
 	{
 		return;
 	}
@@ -405,17 +418,10 @@ void AShooterCharacter::TryUseSuit()
 
 void AShooterCharacter::TrySlide()
 {
-	if (bIsDead || !bIsSprinting || bIsSliding)
+	if (MovementComponent)
 	{
-		return;
+		MovementComponent->TrySlide();
 	}
-
-	bIsSliding = true;
-
-	// 예: 슬라이드 시작 처리
-	// 캡슐 높이 조정
-	// 슬라이드 타이머 시작
-	// 속도 보정
 }
 
 void AShooterCharacter::TryLean(const FInputActionValue& Value)
@@ -425,14 +431,20 @@ void AShooterCharacter::TryLean(const FInputActionValue& Value)
 		return;
 	}
 
-	const float LeanValue = Value.Get<float>();
-	CurrentLeanValue = LeanValue;
+	const float LeanAlpha = Value.Get<float>();
+	TargetLeanAlpha = FMath::Abs(LeanAlpha) > KINDA_SMALL_NUMBER ? LeanAlpha : 0.0f;
+	StartLeanUpdate();
 }
 
 void AShooterCharacter::OnRep_CurHP()
 {
-	UE_LOG(LogTemp, Log, TEXT("%s %s OnRep_CurHP CurHP=%.1f / %.1f"), NetPrefix(this), *GetName(), CurHP, MaxHP);
-	// TODO: UI 갱신
+	UE_LOG(LogTemp, Log, TEXT("%s %s OnRep_CurHP CurHP=%.1f / %.1f"), OutlierNet::GetNetPrefix(this), *GetName(), CurHP, MaxHP);
+	UpdateLocalHealthUI();
+}
+
+void AShooterCharacter::OnRep_MovementState()
+{
+	OnMovementStateChanged.Broadcast(MovementState);
 }
 
 void AShooterCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -440,6 +452,18 @@ void AShooterCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
 	DOREPLIFETIME(AShooterCharacter, CurHP);
+	DOREPLIFETIME(AShooterCharacter, bIsDead);
+	DOREPLIFETIME(AShooterCharacter, MovementState);
+	DOREPLIFETIME(AShooterCharacter, WeaponMode);
+	DOREPLIFETIME(AShooterCharacter, CombatState);
+}
+
+void AShooterCharacter::EquipWeapon(AWeaponBase* Weapon)
+{
+	if (InventoryComponent)
+	{
+		InventoryComponent->HandleEquipWeapon(Weapon);
+	}
 }
 
 float AShooterCharacter::GetAimYawForAnimation() const
@@ -452,99 +476,452 @@ float AShooterCharacter::GetAimPitchForAnimation() const
 	return FRotator::NormalizeAxis(GetBaseAimRotation().Pitch);
 }
 
+bool AShooterCharacter::CanEnterCombatState(EWeaponMode InWeaponMode, ECombatState NextState) const
+{
+	return CombatComponent ? CombatComponent->CanEnterCombatState(InWeaponMode, NextState) : false;
+}
+
+bool AShooterCharacter::CanAimInCurrentState() const
+{
+	return CombatComponent ? CombatComponent->CanAimInCurrentState() : false;
+}
+
+bool AShooterCharacter::CanReloadInCurrentState() const
+{
+	return CombatComponent ? CombatComponent->CanReloadInCurrentState() : false;
+}
+
+bool AShooterCharacter::CanFireInCurrentState() const
+{
+	return CombatComponent ? CombatComponent->CanFireInCurrentState() : false;
+}
+
+bool AShooterCharacter::WantsToAim() const
+{
+	return CombatComponent ? CombatComponent->WantsToAim() : false;
+}
+
+bool AShooterCharacter::IsAiming() const
+{
+	return CombatComponent ? CombatComponent->IsAiming() : false;
+}
+
+bool AShooterCharacter::IsSliding() const
+{
+	return MovementComponent ? MovementComponent->IsSliding() : false;
+}
+
+bool AShooterCharacter::IsSprinting() const
+{
+	return MovementComponent ? MovementComponent->IsSprinting() : false;
+}
+
+bool AShooterCharacter::IsSlidingCanceled() const
+{
+	return MovementComponent ? MovementComponent->IsSlidingCanceled() : false;
+}
+
+bool AShooterCharacter::IsReloading() const
+{
+	return CombatComponent ? CombatComponent->IsReloading() : false;
+}
+
+void AShooterCharacter::RefreshWeaponMode()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->RefreshWeaponMode();
+	}
+}
+
+void AShooterCharacter::RefreshCombatState()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->RefreshCombatState();
+	}
+}
+
+void AShooterCharacter::ResolveStateConflicts()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->ResolveStateConflicts();
+	}
+}
+
+void AShooterCharacter::StopSprintInternal()
+{
+	if (MovementComponent)
+	{
+		MovementComponent->StopSprintInternal();
+	}
+}
+
+void AShooterCharacter::StopAimInternal()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->StopAimInternal();
+	}
+}
+
+void AShooterCharacter::BeginReloadInternal()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->BeginReloadInternal();
+	}
+}
+
+void AShooterCharacter::CancelReloadInternal()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->CancelReloadInternal();
+	}
+}
+
+void AShooterCharacter::FinishReloadInternal()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->FinishReloadInternal();
+	}
+}
+
+void AShooterCharacter::HandleReloadCommitNotify()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->HandleReloadCommitNotify();
+	}
+}
+
+void AShooterCharacter::BeginSecondaryCooldownInternal(float CooldownDuration)
+{
+	if (CombatComponent)
+	{
+		CombatComponent->BeginSecondaryCooldownInternal(CooldownDuration);
+	}
+}
+
+void AShooterCharacter::FinishSecondaryCooldownInternal()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->FinishSecondaryCooldownInternal();
+	}
+}
+
+void AShooterCharacter::ResetSecondaryCooldownInternal()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->ResetSecondaryCooldown();
+	}
+}
+
 void AShooterCharacter::ApplyDamageInternal(float DamageAmount)
 {
-	if (bIsDead || DamageAmount <= 0.0f)
+	if (HealthComponent)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("%s %s ApplyDamageInternal blocked Dead=%d Damage=%.1f"), NetPrefix(this), *GetName(), bIsDead ? 1 : 0, DamageAmount);
+		HealthComponent->ApplyDamage(DamageAmount);
+	}
+}
+
+void AShooterCharacter::HandleWeaponAttackStoppedInternal()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->HandleWeaponAttackStopped();
+	}
+}
+
+void AShooterCharacter::StartLeanUpdate()
+{
+	if (GetWorldTimerManager().IsTimerActive(LeanUpdateTimerHandle))
+	{
 		return;
 	}
 
-	const float PreviousHP = CurHP;
-	CurHP = FMath::Clamp(CurHP - DamageAmount, 0.0f, MaxHP);
-	UE_LOG(LogTemp, Log, TEXT("%s %s ApplyDamageInternal Damage=%.1f HP %.1f -> %.1f"), NetPrefix(this), *GetName(), DamageAmount, PreviousHP, CurHP);
+	GetWorldTimerManager().SetTimer(
+		LeanUpdateTimerHandle,
+		this,
+		&AShooterCharacter::UpdateLeanStep,
+		1.0f / 60.0f,
+		true
+	);
+}
 
-	AShooterPlayerController* ShooterPlayerController = Cast< AShooterPlayerController>(GetController());
-
-	if (ShooterPlayerController)
+void AShooterCharacter::StopLeanUpdateIfSettled()
+{
+	if (FMath::IsNearlyEqual(CurrentLeanAlpha, TargetLeanAlpha, KINDA_SMALL_NUMBER))
 	{
-		if (ULocalPlayer* LP = ShooterPlayerController->GetLocalPlayer())
-		{
-			if (ULocalPlayerUISubSystem* UISubsystem = LP->GetSubsystem<ULocalPlayerUISubSystem>())
-			{
-				UISubsystem->OnRep_HealthChanged(CurHP, MaxHP);
-			}
-		}
+		CurrentLeanAlpha = TargetLeanAlpha;
+		GetWorldTimerManager().ClearTimer(LeanUpdateTimerHandle);
+	}
+}
+
+void AShooterCharacter::UpdateLeanStep()
+{
+	CurrentLeanAlpha = FMath::FInterpTo(CurrentLeanAlpha, TargetLeanAlpha, 1.0f / 60.0f, LeanInterpSpeed);
+
+	if (FirstPersonMesh)
+	{
+		FirstPersonMesh->SetRelativeRotation(BaseFirstPersonMeshRotation);
 	}
 
-
-	if (CurHP <= 0.0f)
-	{
-		Die();
-	}
+	StopLeanUpdateIfSettled();
 }
 
 void AShooterCharacter::Die()
 {
-	if (bIsDead)
+	if (HealthComponent)
 	{
-		return;
+		HealthComponent->Die();
 	}
-
-	bIsDead = true;
-	UE_LOG(LogTemp, Warning, TEXT("%s %s Die"), NetPrefix(this), *GetName());
-	StopJumping();
-	GetCharacterMovement()->DisableMovement();
 }
 
 void AShooterCharacter::TryStartAttack()
 {
-	UE_LOG(LogTemp, Log, TEXT("%s %s TryStartAttack CurrentWeapon=%s"), NetPrefix(this), *GetName(), *GetNameSafe(CurrentWeapon));
-	ServerStartAttack();
-
-	ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(CurrentWeapon);
-
+	if (CombatComponent)
+	{
+		CombatComponent->TryStartAttack();
+	}
 }
 
 void AShooterCharacter::ServerStartAttack_Implementation()
 {
-	if (bIsDead || !CurrentWeapon)
+	if (CombatComponent)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[Server] %s ServerStartAttack blocked Dead=%d Weapon=%s"), *GetName(), bIsDead ? 1 : 0, *GetNameSafe(CurrentWeapon));
-		return;
+		CombatComponent->TryStartAttack();
 	}
-
-	UE_LOG(LogTemp, Log, TEXT("[Server] %s ServerStartAttack Weapon=%s"), *GetName(), *GetNameSafe(CurrentWeapon));
-	CurrentWeapon->StartAttack();
 }
 
 void AShooterCharacter::TryStopAttack()
 {
-	UE_LOG(LogTemp, Log, TEXT("%s %s TryStopAttack CurrentWeapon=%s"), NetPrefix(this), *GetName(), *GetNameSafe(CurrentWeapon));
-	ServerStopAttack();
+	if (CombatComponent)
+	{
+		CombatComponent->TryStopAttack();
+	}
 }
 
 
 void AShooterCharacter::ServerStopAttack_Implementation()
 {
-	if (!CurrentWeapon)
+	if (CombatComponent)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[Server] %s ServerStopAttack blocked: weapon is null"), *GetName());
-		return;
+		CombatComponent->TryStopAttack();
 	}
-
-	UE_LOG(LogTemp, Log, TEXT("[Server] %s ServerStopAttack Weapon=%s"), *GetName(), *GetNameSafe(CurrentWeapon));
-	CurrentWeapon->StopAttack();
 }
 
 void AShooterCharacter::DoJumpStart()
 {
-	// signal the character to jump
-	Jump();
+	if (MovementComponent)
+	{
+		MovementComponent->DoJumpStart();
+	}
 }
 
 void AShooterCharacter::DoJumpEnd()
 {
-	// signal the character to stop jumping
+	if (MovementComponent)
+	{
+		MovementComponent->DoJumpEnd();
+	}
+}
+
+void AShooterCharacter::RefreshMovementState()
+{
+	if (MovementComponent)
+	{
+		MovementComponent->RefreshMovementState();
+	}
+}
+
+void AShooterCharacter::SetMovementStateImmediate(EMovementState NewState)
+{
+	if (MovementComponent)
+	{
+		MovementComponent->SetMovementStateImmediate(NewState);
+	}
+}
+
+bool AShooterCharacter::CanStartSlide() const
+{
+	return MovementComponent ? MovementComponent->CanStartSlide() : false;
+}
+
+void AShooterCharacter::StopSlide(ESlideEndReason EndReason)
+{
+	if (MovementComponent)
+	{
+		MovementComponent->StopSlide(EndReason);
+	}
+}
+
+void AShooterCharacter::HandleSlideWallHit(const FHitResult& Hit)
+{
+	if (MovementComponent)
+	{
+		MovementComponent->HandleSlideWallHit(Hit);
+	}
+}
+
+void AShooterCharacter::HandleDeath()
+{
+	ClearInputIntent();
+	TargetLeanAlpha = 0.0f;
+	CurrentLeanAlpha = 0.0f;
+
+	if (IsSliding())
+	{
+		StopSlide(ESlideEndReason::ForcedCancel);
+	}
+
+	StopAimInternal();
+	CancelReloadInternal();
+	StopSprintInternal();
+	TryStopAttack();
+
 	StopJumping();
+	GetWorldTimerManager().ClearTimer(LeanUpdateTimerHandle);
+
+	if (USceneComponent* CameraRoot = GetFirstPersonCameraRoot())
+	{
+		CameraRoot->SetRelativeRotation(BaseFirstPersonCameraRootRotation);
+	}
+
+	if (FirstPersonMesh)
+	{
+		FirstPersonMesh->SetRelativeRotation(BaseFirstPersonMeshRotation);
+	}
+
+	GetCharacterMovement()->DisableMovement();
+
+	DisableInput(Cast<APlayerController>(GetController()));
+
+	RefreshCombatState();
+	RefreshMovementState();
+	OnCharacterDeath.Broadcast();
+}
+
+void AShooterCharacter::ClearInputIntent()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->ClearInputIntent();
+	}
+
+	if (MovementComponent)
+	{
+		MovementComponent->ClearInputIntent();
+	}
+}
+
+void AShooterCharacter::UpdateLocalHealthUI() const
+{
+	AShooterPlayerController* ShooterPlayerController = Cast<AShooterPlayerController>(GetController());
+	if (!ShooterPlayerController)
+	{
+		return;
+	}
+
+	if (ULocalPlayer* LocalPlayer = ShooterPlayerController->GetLocalPlayer())
+	{
+		if (ULocalPlayerUISubSystem* UISubsystem = LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>())
+		{
+			UISubsystem->OnRep_HealthChanged(CurHP, MaxHP);
+		}
+	}
+}
+
+void AShooterCharacter::PlayLocalActionMontage(UAnimMontage* Montage)
+{
+	if (!Montage || HasAuthority())
+	{
+		return;
+	}
+
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+
+	PlayAnimMontage(Montage);
+}
+
+void AShooterCharacter::ServerSelectWeaponByIndex_Implementation(int32 SlotIndex)
+{
+	if (InventoryComponent)
+	{
+		InventoryComponent->SelectWeaponByIndex(SlotIndex);
+	}
+}
+
+void AShooterCharacter::ServerSetAimState_Implementation(bool bNewAiming)
+{
+	if (!CombatComponent)
+	{
+		return;
+	}
+
+	if (bNewAiming)
+	{
+		CombatComponent->HandleAimPressed();
+	}
+	else
+	{
+		CombatComponent->HandleAimReleased();
+	}
+}
+
+void AShooterCharacter::ServerSetSprintState_Implementation(bool bNewSprinting)
+{
+	if (!MovementComponent)
+	{
+		return;
+	}
+
+	if (bNewSprinting)
+	{
+		MovementComponent->HandleSprintPressed();
+	}
+	else
+	{
+		MovementComponent->HandleSprintReleased();
+	}
+}
+
+void AShooterCharacter::ServerRequestCrouchOrSlide_Implementation()
+{
+	if (MovementComponent)
+	{
+		MovementComponent->RequestCrouchOrSlide();
+	}
+}
+
+void AShooterCharacter::ServerRequestUncrouch_Implementation()
+{
+	if (MovementComponent)
+	{
+		MovementComponent->RequestUncrouch();
+	}
+}
+
+void AShooterCharacter::ServerJumpStart_Implementation()
+{
+	if (MovementComponent)
+	{
+		MovementComponent->DoJumpStart();
+	}
+}
+
+void AShooterCharacter::ServerJumpEnd_Implementation()
+{
+	if (MovementComponent)
+	{
+		MovementComponent->DoJumpEnd();
+	}
 }
