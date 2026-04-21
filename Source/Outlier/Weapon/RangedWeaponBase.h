@@ -32,6 +32,9 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Ammo")
 	float ReloadTime = 1.0f;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Cooldown")
+	float ReuseCooldown = 0.0f;
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Fire")
 	float RecoilMultiplier = 1.0f;
 
@@ -64,6 +67,9 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon|Fire")
 	uint8 bAttackOnCooldown : 1 = false;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon|Cooldown")
+	uint8 bOnReuseCooldown : 1 = false;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Decal")
 	TSubclassOf<UProjectionMarkDefinition> Decal;
 
@@ -74,10 +80,13 @@ protected:
 
 	FTimerHandle AutoFireTimerHandle;
 	FTimerHandle AttackCooldownTimerHandle;
+	FTimerHandle ReuseCooldownTimerHandle;
 
 	void HandleAutoFire();
 	void StartAttackCooldown();
 	void ResetAttackCooldown();
+	void StartReuseCooldown();
+	void FinishReuseCooldown();
 
 public:
 	virtual bool CanAttack() const override;
@@ -87,6 +96,9 @@ public:
 
 	virtual bool CanReload() const;
 	virtual void Reload();
+	virtual void BeginReload();
+	virtual void FinishReload();
+	virtual void CancelReload();
 	virtual void ConsumeAmmo();
 	virtual void FireShot();
 	virtual void ApplyRecoil();
@@ -95,6 +107,18 @@ public:
 	virtual float GetCurrentSpread() const;
 
 	virtual void SetAiming(bool Aimming);
+
+	UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
+	bool IsReloading() const { return bIsReloading; }
+
+	UFUNCTION(BlueprintPure, Category = "Weapon|Cooldown")
+	bool IsOnReuseCooldown() const { return bOnReuseCooldown; }
+
+	UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
+	float GetReloadTime() const { return ReloadTime; }
+
+	UFUNCTION(BlueprintPure, Category = "Weapon|Cooldown")
+	float GetReuseCooldown() const { return ReuseCooldown; }
 
 protected:
 

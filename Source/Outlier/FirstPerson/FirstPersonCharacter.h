@@ -9,6 +9,7 @@
 
 class USkeletalMeshComponent;
 class UCameraComponent;
+class USceneComponent;
 class UInputAction;
 struct FInputActionValue;
 
@@ -17,6 +18,7 @@ class OUTLIER_API AFirstPersonCharacter : public ACharacter
 {
 	GENERATED_BODY()
 
+protected:
 	/** Pawn Mesh : first person view(arms; seen only by self) */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Components, meta = (AllowPrivateAccess = "true"))
 	USkeletalMeshComponent* FirstPersonMesh;
@@ -25,7 +27,10 @@ class OUTLIER_API AFirstPersonCharacter : public ACharacter
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Components, meta = (AllowPrivateAccess = "true"))
 	UCameraComponent* FirstPersonCamera;
 
-protected:
+	/** First Person Camera Root */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Components, meta = (AllowPrivateAccess = "true"))
+	USceneComponent* FirstPersonCameraRoot;
+
 
 	/** Move Input Action */
 	UPROPERTY(EditAnywhere, Category = Input)
@@ -73,11 +78,14 @@ protected:
 	/** Set up input action bindings */
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
 
+	virtual void BeginPlay() override;
 
 public:
 	USkeletalMeshComponent* GetFirstPersonMesh() const { return FirstPersonMesh; }
 
 	UCameraComponent* GetFirstPersonCameraComponent() const { return FirstPersonCamera; }
+
+	USceneComponent* GetFirstPersonCameraRoot() const { return FirstPersonCameraRoot; }
 
 	virtual void EquipWeapon(AWeaponBase* Weapon);
 
