@@ -1,0 +1,40 @@
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/ScreenPass.ush"
+
+Texture2D InputTexture;
+SamplerState InputSampler;
+
+float BlendWeight;
+float Intensity;
+float VelocityScale;
+uint bEnabled;
+float2 ViewRectMinUV;
+float2 ViewRectMaxUV;
+
+void MainPS(
+    FScreenVertexOutput Input,
+    out float4 OutColor : SV_Target0)
+{
+    const float2 UV = Input.UV;
+    float Offset = 0.0025f * max(Intensity, 0.0f) * max(VelocityScale, 0.0f);
+
+    Offset = 0.0025f;
+
+    float4 Center = InputTexture.Sample(InputSampler, UV);
+
+    if (bEnabled == 0)
+    {
+        OutColor = Center;
+        return;
+    }
+
+    float2 PrevUV = clamp(UV + float2(-Offset, 0.0f), ViewRectMinUV, ViewRectMaxUV);
+    float2 NextUV = clamp(UV + float2( Offset, 0.0f), ViewRectMinUV, ViewRectMaxUV);
+
+    float4 Prev = InputTexture.Sample(InputSampler, PrevUV);
+    float4 Next = InputTexture.Sample(InputSampler, NextUV);
+
+    float4 Blurred = (Prev + Center + Next) / 3.0f;
+
+    OutColor = lerp(Center, Blurred, saturate(0.5f));
+}

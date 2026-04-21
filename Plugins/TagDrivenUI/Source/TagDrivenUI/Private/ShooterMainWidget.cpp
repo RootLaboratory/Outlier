@@ -1,4 +1,4 @@
-﻿// Fill out your copyright notice in the Description page of Project Settings.
+// Fill out your copyright notice in the Description page of Project Settings.
 
 
 #include "ShooterMainWidget.h"
@@ -22,12 +22,8 @@ void UShooterMainWidget::NativeConstruct()
 //
 void UShooterMainWidget::ModuleInit()
 {
-
-	
 	Module.Empty();
 	Module.Reserve((int32)EUIModule::None);
-
-
 
 	if (PartnerCamUI)
 	{
@@ -47,13 +43,6 @@ void UShooterMainWidget::ModuleInit()
 		//UE_LOG(LogTemp, Warning, TEXT("Added Ammo / Num=%d"), Module.Num());
 	}
 
-	/*UE_LOG(LogTemp, Warning, TEXT("Contains Partner=%d HP=%d Ammo=%d"),
-		Module.Contains(EUIModule::PartnerCam),
-		Module.Contains(EUIModule::HP),
-		Module.Contains(EUIModule::Ammo));*/
-
-	//UE_LOG(LogTemp, Warning, TEXT("ModuleInit End / Final Num=%d"), Module.Num());
-
 	ModuleActivate();
 }
 
@@ -64,7 +53,6 @@ void UShooterMainWidget::ModuleDestruct()
 //
 void UShooterMainWidget::ModuleActivate()
 {
-
 		for (auto& [Type, UIModule] : Module)
 		{
 			if (UIModule)
@@ -76,10 +64,6 @@ void UShooterMainWidget::ModuleActivate()
 
 void UShooterMainWidget::ModuleDeActivate()
 {
-
-	 // UE_LOG(LogTemp, Error, TEXT("ModuleDeActivate"));
-
-
 	for (auto& [Type, UIModule] : Module)
 	{
 		if (UIModule)

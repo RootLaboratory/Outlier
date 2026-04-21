@@ -304,17 +304,16 @@ void ARangedWeaponBase::PlayFirstPersonFireFX(FVector TraceEnd, bool bHit)
 
 		}
 
-		//if (Decal)
-		//{
-		//	UProjectionMarkDefinition* DecalInstance = NewObject<UProjectionMarkDefinition>(this, Decal);
-		//	VisualSubsystem->SpawnMarkAtLocation(DecalInstance, TraceEnd, FRotator(1,1,1));
-		//}
+		if (Decal)
+		{
+			UProjectionMarkDefinition* DecalInstance = NewObject<UProjectionMarkDefinition>(this, Decal);
+			VisualSubsystem->SpawnMarkAtLocation(DecalInstance, TraceEnd, FRotator(1,1,1));
+		}
 	}
 }
 
 ULocalPlayerUISubSystem* ARangedWeaponBase::GetLocalSubsystem()
 {
-
 	AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
 
 	if (Shooter)
