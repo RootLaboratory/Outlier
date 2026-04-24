@@ -25,7 +25,7 @@ void UVisualEventSubsystem::SpawnMarkAtLocation(UProjectionMarkDefinition* Def, 
 {
     if (!Def || !Def->DecalMaterial)
     {
-      //  UE_LOG(LogTemp, Error, TEXT("NO DECAL "));
+        UE_LOG(LogTemp, Error, TEXT("NO DECAL "));
         return;
     }
 
@@ -43,7 +43,7 @@ void UVisualEventSubsystem::SpawnBeamTrail(const UTrailEffectDefinition* Def, co
 {
 	if (!Def || !Def->FXAsset)
 	{
-		//UE_LOG(LogTemp, Error, TEXT("NO DEF EFFEECT "));
+	    UE_LOG(LogTemp, Error, TEXT("NO DEF EFFEECT "));
 		return;
 	}
 
@@ -69,6 +69,12 @@ void UVisualEventSubsystem::SpawnBeamTrail(const UTrailEffectDefinition* Def, co
 			Comp->SetVariableVec3(TEXT("User.Direction"), Direction);
 			Comp->SetVariableFloat(TEXT("User.Speed"), Speed);
 			Comp->SetAutoDestroy(true);
+
+			if (Def->LifeSpan > 0.f)
+			{
+				Comp->SetMaxSimTime(Def->LifeSpan);
+			}
+
 		}
 
 	}
@@ -131,6 +137,8 @@ void UVisualEventSubsystem::PlaySoundAtLocation(USoundDefinition* SoundDefinitio
 {
 	if (!SoundDefinition || !SoundDefinition->Sound)
 	{
+		UE_LOG(LogTemp, Error, TEXT("NO Sound "));
+
 		return;
 	}
 
@@ -148,5 +156,109 @@ void UVisualEventSubsystem::PlaySoundAtLocation(USoundDefinition* SoundDefinitio
 		SoundDefinition->ConcurrencySettings,
 		SoundDefinition->bAutoDestroy
 	);
+}
+
+//Trail은 Weapon에서 처리할 거고, 맞은 애의 이펙트 정보 자체는 Endpos만 요구하는 위치 기반이니 배제.
+void UVisualEventSubsystem::FeaturesEffect(FVector Location, FRotator Rotation, FVisualEventSet& EffectSet)
+{
+	if (EffectSet.DecalDef)
+	{
+		//UE_LOG(LogTemp, Error, TEXT("DecalDef Valid "));
+
+		SpawnMarkAtLocation(EffectSet.DecalDef, Location, Rotation);
+	}
+
+	if (EffectSet.TrailEffectDef)
+	{
+		//UE_LOG(LogTemp, Error, TEXT("DecalDef Valid "));
+
+		SpawnEffectAtLocation(EffectSet.TrailEffectDef, Location, Rotation);
+	}
+
+	if (EffectSet.SoundDef)
+	{
+		//UE_LOG(LogTemp, Error, TEXT("Sound Valid "));
+
+		PlaySoundAtLocation(EffectSet.SoundDef, Location);
+	}
+
+
+}
+
+void UVisualEventSubsystem::SpawnMuzzleEffect(const UTrailEffectDefinition* Def, const FVector& Location, const FRotator& Rotation)
+{
+	if (!Def || !Def->FXAsset)
+	{
+		return;
+	}
+
+	const FVector FinalLocation = Location + Def->RelativeLocation;
+	const FRotator FinalRotation = Rotation + Def->RelativeRotation + Def->RotationOffset;
+
+	if (UNiagaraSystem* Niagara = Cast<UNiagaraSystem>(Def->FXAsset))
+	{
+		UNiagaraComponent* Comp = UNiagaraFunctionLibrary::SpawnSystemAtLocation(
+			GetWorld(),
+			Niagara,
+			FinalLocation,
+			FinalRotation,
+			Def->Scale,
+			true,
+			true);
+
+		if (Comp)
+		{
+			Comp->SetAutoDestroy(true);
+		}
+	}
+	else if (UParticleSystem* Particle = Cast<UParticleSystem>(Def->FXAsset))
+	{
+		UGameplayStatics::SpawnEmitterAtLocation(
+			GetWorld(),
+			Particle,
+			FinalLocation,
+			FinalRotation,
+			Def->Scale,
+			true);
+	}
+}
+
+void UVisualEventSubsystem::SpawnEffectAtLocation(const UTrailEffectDefinition* Def, const FVector& Location, const FRotator& Rotation)
+{
+	if (!Def || !Def->FXAsset)
+	{
+		UE_LOG(LogTemp, Error, TEXT("NO DEF EFFECT"));
+		return;
+	}
+
+	const FVector FinalLocation = Location + Def->RelativeLocation;
+	const FRotator FinalRotation = Rotation + Def->RelativeRotation + Def->RotationOffset;
+
+	if (UNiagaraSystem* Niagara = Cast<UNiagaraSystem>(Def->FXAsset))
+	{
+		UNiagaraComponent* Comp = UNiagaraFunctionLibrary::SpawnSystemAtLocation(
+			GetWorld(),
+			Niagara,
+			FinalLocation,
+			FinalRotation,
+			Def->Scale,
+			true,
+			true);
+
+		if (Comp)
+		{
+			Comp->SetAutoDestroy(true);
+		}
+	}
+	else if (UParticleSystem* Particle = Cast<UParticleSystem>(Def->FXAsset))
+	{
+		UGameplayStatics::SpawnEmitterAtLocation(
+			GetWorld(),
+			Particle,
+			FinalLocation,
+			FinalRotation,
+			Def->Scale,
+			true);
+	}
 }
 

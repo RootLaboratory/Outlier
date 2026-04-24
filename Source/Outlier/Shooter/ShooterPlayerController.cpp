@@ -11,9 +11,15 @@
 void AShooterPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
-
 	BindMainUI();
 	BindPostProcessSubSystem();
+
+	//시범용, 1P 한정 클래스로 나눠지면 분리 예정.
+	AShooterCharacter* ShooterCharacter = Cast<AShooterCharacter>(GetCharacter());
+	if (ShooterCharacter)
+	{
+		ShooterCharacter->OnMovementStateChanged.AddDynamic(this, &AShooterPlayerController::HandleMovementStateChanged);
+	}
 }
 
 void AShooterPlayerController::SetupInputComponent()
@@ -65,7 +71,7 @@ void AShooterPlayerController::OnPawnDestroyed(AActor* DestroyedActor)
 
 void AShooterPlayerController::BindMainUI()
 {
-	UE_LOG(LogTemp, Warning, TEXT("BindMainUI"));
+	//UE_LOG(LogTemp, Warning, TEXT("BindMainUI"));
 
 	if ( !MainUIClass || ShooterUIInstance)
 	{
@@ -100,6 +106,36 @@ void AShooterPlayerController::BindPostProcessSubSystem()
 		{
 			//PPSubsystem->ActivateSlideState();
 			//일단 SetUp만 처리 
+		}
+	}
+}
+
+void AShooterPlayerController::HandleMovementStateChanged(EMovementState NewState)
+{
+	if (ULocalPlayer* LP = GetLocalPlayer())
+	{
+		if (ULocalPlayerUISubSystem* UISubsystem = LP->GetSubsystem<ULocalPlayerUISubSystem>())
+		{
+
+
+			//UE_LOG(LogTemp, Error, TEXT("HandleMovementStateChanged %d"), NewState);
+			switch (NewState)
+			{
+			case EMovementState::Jump:
+				UISubsystem->OnRep_PlayerStateChanged(EUIPlayerState::Jump);
+				break;
+			case EMovementState::Slide:
+				UISubsystem->OnRep_PlayerStateChanged(EUIPlayerState::Slide);
+				break;
+			case EMovementState::Walk:
+			case EMovementState::Run:
+			case EMovementState::Crouch:
+				UISubsystem->OnRep_PlayerStateChanged(EUIPlayerState::Move);
+				break;
+			default:
+				UISubsystem->OnRep_PlayerStateChanged(EUIPlayerState::Idle);
+				break;
+			}
 		}
 	}
 }

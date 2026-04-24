@@ -195,6 +195,7 @@ protected:
 
 	virtual void OnMovementModeChanged(EMovementMode  PrevMovementMode, uint8 PreviousCustomMode) override;
 
+	virtual void OnMoveInputUpdated(const FVector2D& MoveValue);
 public:
 	// Construction
 	/** Constructor */

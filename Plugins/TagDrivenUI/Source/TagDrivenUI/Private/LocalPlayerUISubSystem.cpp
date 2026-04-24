@@ -2,14 +2,11 @@
 #include "LocalPlayerUISubSystem.h"
 #include "GameFramework/PlayerController.h"
 #include "Components/SceneCaptureComponent2D.h"
-
-
-
 #include "MainUIBase.h"
 #include "HPBarUI.h"
 #include "PartnerCamUI.h"
 #include "AmmoUI.h"
-
+#include "DynamicCrossHair.h"
 #include "EventDrivenUI.h"
 
 
@@ -36,8 +33,6 @@ void ULocalPlayerUISubSystem::UnregisterMainUI(UMainUIBase* InMainUI)
 		MainUIInstance = nullptr;
 	}
 }
-
-
 
 void ULocalPlayerUISubSystem::OnRep_HUDActivate(bool bShouldActivate)
 {
@@ -106,6 +101,21 @@ void ULocalPlayerUISubSystem::OnRep_AmmoCountChanged(int32 InAmmoCount)
 
 }
 
+void ULocalPlayerUISubSystem::OnRep_PlayerStateChanged(EUIPlayerState State)
+{
+
+	if (UDynamicCrossHair* CrossHairUI = Cast<UDynamicCrossHair>(MainUIInstance->GetModule(EUIModule::CrossHair)))
+	{
+		CrossHairUI->SetPlayerState(State);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT("UNVALID CLASS NOT DynamicCrossHairClass"));
+	}
+}
+
+
+
 void ULocalPlayerUISubSystem::OnRep_PartnerCameraToggle()
 {
 	if (!MainUIInstance)
@@ -116,6 +126,45 @@ void ULocalPlayerUISubSystem::OnRep_PartnerCameraToggle()
 	if (UPartnerCamUI* PartnerCamUI = Cast<UPartnerCamUI>(MainUIInstance->GetModule(EUIModule::PartnerCam)))
 	{
 		PartnerCamUI->TogglePartnerCamera();
+	}
+}
+
+void ULocalPlayerUISubSystem::OnRep_Aiming()
+{
+	if (UCrossHairBase* CrossHairBase = Cast<UCrossHairBase>(MainUIInstance->GetModule(EUIModule::CrossHair)))
+	{
+		CrossHairBase->OnAiming();
+	}
+	
+}
+
+void ULocalPlayerUISubSystem::OnRep_AimingOff()
+{
+	if (UCrossHairBase* CrossHairBase = Cast<UCrossHairBase>(MainUIInstance->GetModule(EUIModule::CrossHair)))
+	{
+		CrossHairBase->OnAimingOff();
+	}
+}
+
+
+void ULocalPlayerUISubSystem::OnRep_AttackSign(EAttackSign InType)
+{
+
+	if (UCrossHairBase* CrossHairBase = Cast<UCrossHairBase>(MainUIInstance->GetModule(EUIModule::CrossHair)))
+	{
+		//UE_LOG(LogTemp, Error, TEXT("CrossHair Instance Class: %s"), *GetNameSafe(CrossHairBase->GetClass()));
+		//UE_LOG(LogTemp, Error, TEXT("OnRep_AttackSign %d"), (uint8)InType);
+		CrossHairBase->SpawnAttckSign(InType);
+	}
+}
+
+//차후 수정 예정; 
+void ULocalPlayerUISubSystem::OnRep_ShootCrosshairChanged()
+{
+	if (UDynamicCrossHair* CrossHairBase = Cast<UDynamicCrossHair>(MainUIInstance->GetModule(EUIModule::CrossHair)))
+	{
+		UE_LOG(LogTemp, Log, TEXT("OnRep_ShootCrosshairChanged"));
+		CrossHairBase->On_RepShoot();
 	}
 }
 
@@ -139,18 +188,9 @@ void ULocalPlayerUISubSystem::PartnerCameraBind(USceneCaptureComponent2D* InCapt
 	}
 	else
 	{
-	//	UE_LOG(LogTemp, Error, TEXT("Cant PartnerCamUI"));
+		//	UE_LOG(LogTemp, Error, TEXT("Cant PartnerCamUI"));
 
 	}
-}
-uint8 ULocalPlayerUISubSystem::IsAiming()
-{
-	return bPlayerAiming;
-}
-
-void ULocalPlayerUISubSystem::SetPlayerAiming(uint8 bInAiming)
-{
-	bPlayerAiming = bInAiming;
 }
 
 

@@ -4,14 +4,15 @@
 #include "Weapon/RangedWeaponBase.h"
 #include "GameFramework/Character.h"
 #include "TimerManager.h"
-
 #include "Kismet/GameplayStatics.h"
-
 #include "VisualEventSubsystem.h"
 #include "ProjectionMarkDefinition.h"
 #include "TrailEffectDefinition.h"
+#include "SoundDefinition.h"
+#include "VisualEffectProvider.h"
 #include "MainUIBase.h"
 #include "LocalPlayerUISubSystem.h"
+#include "CrossHairBase.h"
 #include "Shooter/ShooterPlayerController.h"
 #include "Shooter/ShooterCharacter.h"
 #include "OutlierNetUtils.h"
@@ -97,9 +98,9 @@ void ARangedWeaponBase::FinishReload()
 	ReserveAmmo -= AmmoToLoad;
 	bIsReloading = false;
 
-	if (GetLocalSubsystem() != nullptr)
+	if (GetLocalUISubsystem() != nullptr)
 	{
-		GetLocalSubsystem()->OnRep_AmmoCountChanged(CurrentAmmo);
+		GetLocalUISubsystem()->OnRep_AmmoCountChanged(CurrentAmmo);
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("%s [%s] Reload complete Ammo=%d / %d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo, ReserveAmmo);
@@ -119,9 +120,9 @@ void ARangedWeaponBase::ConsumeAmmo()
 {
 	CurrentAmmo = FMath::Max(CurrentAmmo - 1, 0);
 
-	if (GetLocalSubsystem() != nullptr)
+	if (GetLocalUISubsystem() != nullptr)
 	{
-		GetLocalSubsystem()->OnRep_AmmoCountChanged(CurrentAmmo);
+		GetLocalUISubsystem()->OnRep_AmmoCountChanged(CurrentAmmo);
 	}
 
 	if (CurrentAmmo == 0 && CanReload())
@@ -193,23 +194,30 @@ void ARangedWeaponBase::FireShot()
 			HitCharacter->ApplyDamageInternal(Damage);
 			UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot applied Damage=%.1f To=%s"), OutlierNet::GetNetPrefix(this), *GetName(), Damage, *GetNameSafe(HitCharacter));
 		}
-
+		
+		//GetLocalUISubsystem()->OnRep_AttackSign(EAttackSign::Default); //Enemy 추가되면 확장
+		//GetLocalUISubsystem()->OnRep_Aiming(); // Aiming 확장되면 추가. 기능은 구현 완.
 	}
 	else
 	{
 		UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot miss Start=%s End=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *Start.ToString(), *End.ToString());
 	}
 
-	MulticastPlayFireFX_Implementation(Hit.ImpactPoint, bHit);
-
-	if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner))
 	{
-		if (AShooterPlayerController* PC = Cast<AShooterPlayerController>(Shooter->GetController()))
-		{
-			PlayFirstPersonFireFX(Hit.ImpactPoint, bHit);
-		}
-	}
+		GetLocalUISubsystem()->OnRep_ShootCrosshairChanged();
 
+		AActor* HitActor = Hit.GetActor();
+		MulticastPlayFireFX_Implementation(Hit.ImpactPoint, HitActor);
+
+		if(UVisualEventSubsystem * VisualSubsystem = GetWorld()->GetSubsystem<UVisualEventSubsystem>())
+		{
+			if (GunSound)
+			{
+				VisualSubsystem->PlaySoundAtLocation(GunSound, Start);
+			}
+		}
+
+	}
 
 	FColor LineColor = bHit ? FColor::Green : FColor::Red;
 
@@ -248,7 +256,24 @@ void ARangedWeaponBase::SetAiming(bool Aimming)
 }
 
 
-void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, bool bHit)
+void ARangedWeaponBase::MulticastPlayFireFX_Implementation(FVector_NetQuantize TraceEnd,  AActor* Hit)
+{
+	AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
+	if (!Shooter)
+	{
+		return;
+	}
+
+	if (Shooter->IsLocallyControlled())
+	{
+		PlayFirstPersonFireFX(TraceEnd, Hit);
+		return;
+	}
+
+	PlayThirdPersonFireFX(TraceEnd, Hit);
+}
+
+void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd,  AActor* Hit)
 {
 	USkeletalMeshComponent* Mesh = ThirdPersonWeaponMesh;
 	if (!Mesh)
@@ -256,30 +281,82 @@ void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, bool bHit)
 		return;
 	}
 
-
 	if (UVisualEventSubsystem* VisualSubsystem = GetWorld()->GetSubsystem<UVisualEventSubsystem>())
 	{
-
 		FVector MuzzleLocation = Mesh->GetSocketLocation(TEXT("Muzzle"));
 		FVector MuzzleForward = Mesh->GetSocketRotation(TEXT("Muzzle")).Vector();
+		const FRotator MuzzleRotation = Mesh->GetSocketRotation(TEXT("Muzzle"));
 
 		FVector Start = MuzzleLocation + MuzzleForward * 10.f;
+		FVector End = TraceEnd;
 
-		if (Effect)
+		if (WeaponMuzzle)
 		{
+			//UE_LOG(LogTemp, Log, TEXT("PlayFirstPersonFireFX_EffectSpawned"));
+			//UTrailEffectDefinition* MuzzleEffectInstance = NewObject<UTrailEffectDefinition>(this, WeaponMuzzle);
 
-			UTrailEffectDefinition* EffectInstance = NewObject<UTrailEffectDefinition>(this, Effect);
-			VisualSubsystem->SpawnBeamTrail(EffectInstance, Start, TraceEnd);
+			if (!Hit)
+			{
+
+				FVector CameraLocation;
+				FRotator CameraRotation;
+
+				ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
+				OwnerCharacter->GetController()->GetPlayerViewPoint(CameraLocation, CameraRotation);
+
+				Start = CameraLocation;
+			}
+
+			VisualSubsystem->SpawnMuzzleEffect(WeaponMuzzle, Start, MuzzleRotation);
 
 		}
+
+
+		if (WeaponTrail)
+		{
+			//UTrailEffectDefinition* TrailEffectInstance = NewObject<UTrailEffectDefinition>(this, WeaponTrail);
+			if (!Hit)
+			{
+
+				FVector CameraLocation;
+				FRotator CameraRotation;
+
+				ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
+				OwnerCharacter->GetController()->GetPlayerViewPoint(CameraLocation, CameraRotation);
+
+				Start = CameraLocation;
+				End = Start + (CameraRotation.Vector() * EffectiveRange);
+
+			}
+
+			VisualSubsystem->SpawnBeamTrail(WeaponTrail, Start, End);
+		}
+
+
+		if (Hit)
+		{
+			//UE_LOG(LogTemp, Error, TEXT("PlayFirstPersonFireFX Hit"));
+			IVisualEffectProvider* Provider = Cast<IVisualEffectProvider>(Hit);
+
+			if (Provider)
+			{
+				//UE_LOG(LogTemp, Error, TEXT("PlayFirstPersonFireFX Hit and ProviderComponent"));
+				FVisualEventSet AssetSet = Provider->GetVisualEventSet();
+				VisualSubsystem->FeaturesEffect(TraceEnd, MuzzleRotation, AssetSet);
+			}
+
+			else
+			{
+				//UE_LOG(LogTemp, Error, TEXT("PlayFirstPersonFireFX Hit but no  ProviderComponent"));
+			}
+
+		}
+
 	}
 }
 
-void ARangedWeaponBase::PlayFirstPersonFireFX(FVector TraceEnd, bool bHit)
+void ARangedWeaponBase::PlayFirstPersonFireFX(FVector TraceEnd, AActor* Hit)
 {
-
-	UE_LOG(LogTemp, Log, TEXT("PlayFirstPersonFireFX"));
-
 
 	USkeletalMeshComponent* Mesh = FirstPersonWeaponMesh;
 	if (!Mesh)
@@ -288,31 +365,81 @@ void ARangedWeaponBase::PlayFirstPersonFireFX(FVector TraceEnd, bool bHit)
 	}
 
 
-	if (UVisualEventSubsystem* VisualSubsystem = GetWorld()->GetSubsystem<UVisualEventSubsystem>() )
+	if (UVisualEventSubsystem* VisualSubsystem = GetWorld()->GetSubsystem<UVisualEventSubsystem>())
 	{
-
 		FVector MuzzleLocation = Mesh->GetSocketLocation(TEXT("Muzzle"));
 		FVector MuzzleForward = Mesh->GetSocketRotation(TEXT("Muzzle")).Vector();
+		const FRotator MuzzleRotation = Mesh->GetSocketRotation(TEXT("Muzzle"));
 
 		FVector Start = MuzzleLocation + MuzzleForward * 10.f;
+		FVector End = TraceEnd;
 
-		if (Effect)
+		if (WeaponMuzzle)
 		{
+			//UE_LOG(LogTemp, Log, TEXT("PlayFirstPersonFireFX_EffectSpawned"));
+			//UTrailEffectDefinition* MuzzleEffectInstance = NewObject<UTrailEffectDefinition>(this, WeaponMuzzle);
 
-			UTrailEffectDefinition* EffectInstance = NewObject<UTrailEffectDefinition>(this, Effect);
-			VisualSubsystem->SpawnBeamTrail(EffectInstance, Start, TraceEnd);
+			if (!Hit)
+			{
+
+				FVector CameraLocation;
+				FRotator CameraRotation;
+
+				ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
+				OwnerCharacter->GetController()->GetPlayerViewPoint(CameraLocation, CameraRotation);
+
+				Start = CameraLocation;
+			}
+
+			VisualSubsystem->SpawnMuzzleEffect(WeaponMuzzle, Start, MuzzleRotation);
+			
+		}
+
+
+		if (WeaponTrail)
+		{
+			//UTrailEffectDefinition* TrailEffectInstance = NewObject<UTrailEffectDefinition>(this, WeaponTrail);
+			if (!Hit)
+			{
+
+				FVector CameraLocation;
+				FRotator CameraRotation;
+
+				ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
+				OwnerCharacter->GetController()->GetPlayerViewPoint(CameraLocation, CameraRotation);
+
+				Start = CameraLocation;
+				End = Start + (CameraRotation.Vector() * EffectiveRange);
+
+			}
+
+			VisualSubsystem->SpawnBeamTrail(WeaponTrail, Start, End);
+		}
+
+
+		if (Hit)
+		{
+			//UE_LOG(LogTemp, Error, TEXT("PlayFirstPersonFireFX Hit"));
+			IVisualEffectProvider* Provider = Cast<IVisualEffectProvider>(Hit);
+
+			if (Provider)
+			{
+				//UE_LOG(LogTemp, Error, TEXT("PlayFirstPersonFireFX Hit and ProviderComponent"));
+				FVisualEventSet AssetSet = Provider->GetVisualEventSet();
+				VisualSubsystem->FeaturesEffect(TraceEnd, MuzzleRotation, AssetSet);
+			}
+
+			else
+			{
+				//UE_LOG(LogTemp, Error, TEXT("PlayFirstPersonFireFX Hit but no  ProviderComponent"));
+			}
 
 		}
 
-		if (Decal)
-		{
-			UProjectionMarkDefinition* DecalInstance = NewObject<UProjectionMarkDefinition>(this, Decal);
-			VisualSubsystem->SpawnMarkAtLocation(DecalInstance, TraceEnd, FRotator(1,1,1));
-		}
 	}
 }
 
-ULocalPlayerUISubSystem* ARangedWeaponBase::GetLocalSubsystem()
+ULocalPlayerUISubSystem* ARangedWeaponBase::GetLocalUISubsystem()
 {
 	AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
 
@@ -337,24 +464,6 @@ ULocalPlayerUISubSystem* ARangedWeaponBase::GetLocalSubsystem()
 		}
 	}
 	return nullptr;
-}
-
-
-void ARangedWeaponBase::MulticastPlayFireFX_Implementation(FVector_NetQuantize TraceEnd, bool bHit)
-{
-	AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
-	if (!Shooter)
-	{
-		return;
-	}
-
-	// 오너는 여기서 제외하고, 남들에게만 TP FX
-	if (Shooter->IsLocallyControlled())
-	{
-		return;
-	}
-
-	PlayThirdPersonFireFX(TraceEnd, bHit);
 }
 
 void ARangedWeaponBase::HandleAutoFire()

@@ -9,7 +9,7 @@
 #include "HPBarUI.h"
 #include "AmmoUI.h"
 #include "PartnerCamUI.h"
-
+#include "CrossHairBase.h"
 void UShooterMainWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
@@ -42,6 +42,14 @@ void UShooterMainWidget::ModuleInit()
 		Module.Add(EUIModule::Ammo, AmmoUI);
 		//UE_LOG(LogTemp, Warning, TEXT("Added Ammo / Num=%d"), Module.Num());
 	}
+
+	if (CrossHairUI)
+	{
+		Module.Add(EUIModule::CrossHair, CrossHairUI);
+		//UE_LOG(LogTemp, Warning, TEXT("Added Ammo / Num=%d"), Module.Num());
+	}
+
+
 
 	ModuleActivate();
 }

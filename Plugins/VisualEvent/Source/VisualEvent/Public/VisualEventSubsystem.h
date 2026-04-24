@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
+#include "VisualEventType.h"
 #include "VisualEventSubsystem.generated.h"
 
 
@@ -40,4 +41,19 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Sound Event")
 	void PlaySoundAtLocation(USoundDefinition* SoundDefinition, FVector Location);
+
+
+	UFUNCTION(BlueprintCallable, Category = "Set Event")
+	void FeaturesEffect(FVector Location, FRotator Rotation, FVisualEventSet& EffectSet);
+
+	UFUNCTION(BlueprintCallable, Category = "Visual Event")
+
+	void SpawnMuzzleEffect(const UTrailEffectDefinition* Def, const FVector& Location, const FRotator& Rotation);
+
+	//일단 Trail으로 받지만 따로 분리할 것임.
+	UFUNCTION(BlueprintCallable, Category = "Visual Event")
+	void SpawnEffectAtLocation(const UTrailEffectDefinition* Def, const FVector& Location, const FRotator& Rotation);
+
+
+
 };

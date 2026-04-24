@@ -165,6 +165,15 @@ void AShooterCharacter::OnMovementModeChanged(EMovementMode  PrevMovementMode, u
 	RefreshMovementState();
 }
 
+void AShooterCharacter::OnMoveInputUpdated(const FVector2D& MoveValue)
+{
+  Super::OnMoveInputUpdated(MoveValue);
+	if (MovementComponent)
+	{
+		MovementComponent->RefreshMovementState();
+	}
+}
+
 void AShooterCharacter::TryReload()
 {
 	if (CombatComponent)

@@ -11,7 +11,7 @@
 class UPartnerCamUI;
 class UHPBarUI;
 class UAmmoUI;
-
+class UCrossHairBase;
 
 UCLASS(Blueprintable)
 class TAGDRIVENUI_API UShooterMainWidget : public UMainUIBase
@@ -41,6 +41,10 @@ public:
 
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UAmmoUI> AmmoUI;
+
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UCrossHairBase> CrossHairUI;
+
 
 	//Cross hair to be added;
 };
