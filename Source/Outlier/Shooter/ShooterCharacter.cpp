@@ -694,15 +694,15 @@ void AShooterCharacter::HandleFireShotAnimation()
 		IsLocallyControlled() ? 1 : 0,
 		HasAuthority() ? 1 : 0);
 
-	MulticastPlayThirdPersonMontage(ThirdPersonMontage);
+	MulticastPlayThirdPersonActionMontage(EShooterMontageAction::Fire, GetWeaponType());
 
 	if (IsLocallyControlled())
 	{
-		PlayFirstPersonMontage(FirstPersonMontage);
+		PlayFirstPersonActionMontage(EShooterMontageAction::Fire, GetWeaponType());
 		return;
 	}
 
-	ClientPlayFirstPersonMontage(FirstPersonMontage);
+	ClientPlayFirstPersonActionMontage(EShooterMontageAction::Fire, GetWeaponType());
 }
 
 void AShooterCharacter::StartLeanUpdate()
@@ -927,6 +927,54 @@ FName AShooterCharacter::ResolveMontageSectionNameForWeapon(EWeaponType WeaponTy
 	}
 }
 
+void AShooterCharacter::PlayFirstPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType)
+{
+	UAnimMontage* Montage = nullptr;
+	switch (Action)
+	{
+	case EShooterMontageAction::Fire:
+		Montage = FirstPersonFireMontage;
+		break;
+	case EShooterMontageAction::Reload:
+		Montage = FirstPersonReloadMontage;
+		break;
+	case EShooterMontageAction::Slide:
+		Montage = FirstPersonSlideMontage;
+		break;
+	case EShooterMontageAction::Equip:
+		Montage = FirstPersonEquipMontage;
+		break;
+	default:
+		break;
+	}
+
+	PlayFirstPersonMontageForWeapon(Montage, WeaponType);
+}
+
+void AShooterCharacter::PlayThirdPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType)
+{
+	UAnimMontage* Montage = nullptr;
+	switch (Action)
+	{
+	case EShooterMontageAction::Fire:
+		Montage = ThirdPersonFireMontage;
+		break;
+	case EShooterMontageAction::Reload:
+		Montage = ThirdPersonReloadMontage;
+		break;
+	case EShooterMontageAction::Slide:
+		Montage = ThirdPersonSlideMontage;
+		break;
+	case EShooterMontageAction::Equip:
+		Montage = ThirdPersonEquipMontage;
+		break;
+	default:
+		break;
+	}
+
+	PlayThirdPersonMontageForWeapon(Montage, WeaponType);
+}
+
 void AShooterCharacter::PlayFirstPersonMontage(UAnimMontage* Montage)
 {
 	PlayFirstPersonMontageForWeapon(Montage, GetWeaponType());
@@ -960,12 +1008,12 @@ void AShooterCharacter::PlayFirstPersonMontageForWeapon(UAnimMontage* Montage, E
 			*GetName(),
 			*GetNameSafe(Montage),
 			*SectionName.ToString(),
-			(SectionName != NAME_None && Montage->IsValidSectionName(SectionName)) ? 1 : 0,
+			(SectionName != TEXT("Default") && Montage->IsValidSectionName(SectionName)) ? 1 : 0,
 			*GetNameSafe(FirstPersonAnimInstance),
 			static_cast<int32>(WeaponType));
 
 		FirstPersonAnimInstance->Montage_Play(Montage);
-		if (SectionName != NAME_None && Montage->IsValidSectionName(SectionName))
+		if (SectionName != TEXT("Default") && Montage->IsValidSectionName(SectionName))
 		{
 			FirstPersonAnimInstance->Montage_JumpToSection(SectionName, Montage);
 		}
@@ -1020,12 +1068,12 @@ void AShooterCharacter::PlayThirdPersonMontageForWeapon(UAnimMontage* Montage, E
 				*GetName(),
 				*GetNameSafe(Montage),
 				*SectionName.ToString(),
-				(SectionName != NAME_None && Montage->IsValidSectionName(SectionName)) ? 1 : 0,
+				(SectionName != TEXT("Default") && Montage->IsValidSectionName(SectionName)) ? 1 : 0,
 				*GetNameSafe(ThirdPersonAnimInstance),
 				static_cast<int32>(WeaponType));
 
 			ThirdPersonAnimInstance->Montage_Play(Montage);
-			if (SectionName != NAME_None && Montage->IsValidSectionName(SectionName))
+			if (SectionName != TEXT("Default") && Montage->IsValidSectionName(SectionName))
 			{
 				ThirdPersonAnimInstance->Montage_JumpToSection(SectionName, Montage);
 			}
@@ -1084,17 +1132,6 @@ void AShooterCharacter::StopThirdPersonMontage(UAnimMontage* Montage)
 	}
 }
 
-void AShooterCharacter::PlaySplitMontages(UAnimMontage* FirstPersonMontage, UAnimMontage* ThirdPersonMontage)
-{
-	if (IsLocallyControlled())
-	{
-		PlayFirstPersonMontage(FirstPersonMontage);
-		return;
-	}
-
-	PlayThirdPersonMontage(ThirdPersonMontage);
-}
-
 void AShooterCharacter::StopSplitMontages(UAnimMontage* FirstPersonMontage, UAnimMontage* ThirdPersonMontage)
 {
 	if (IsLocallyControlled())
@@ -1124,12 +1161,12 @@ void AShooterCharacter::PlayEquipMontages()
 
 	if (IsLocallyControlled())
 	{
-		PlayFirstPersonMontageForWeapon(FirstPersonEquipMontage, EquippedWeaponType);
+		PlayFirstPersonActionMontage(EShooterMontageAction::Equip, EquippedWeaponType);
 	}
 
 	if (HasAuthority())
 	{
-		MulticastPlayThirdPersonMontage(ThirdPersonEquipMontage);
+		MulticastPlayThirdPersonActionMontage(EShooterMontageAction::Equip, EquippedWeaponType);
 	}
 }
 
@@ -1275,17 +1312,17 @@ void AShooterCharacter::ServerJumpEnd_Implementation()
 	}
 }
 
-void AShooterCharacter::ClientPlayFirstPersonMontage_Implementation(UAnimMontage* Montage)
+void AShooterCharacter::ClientPlayFirstPersonActionMontage_Implementation(EShooterMontageAction Action, EWeaponType WeaponType)
 {
-	PlayFirstPersonMontage(Montage);
+	PlayFirstPersonActionMontage(Action, WeaponType);
 }
 
-void AShooterCharacter::MulticastPlayThirdPersonMontage_Implementation(UAnimMontage* Montage)
+void AShooterCharacter::MulticastPlayThirdPersonActionMontage_Implementation(EShooterMontageAction Action, EWeaponType WeaponType)
 {
-	if (!Montage || IsLocallyControlled())
+	if (IsLocallyControlled())
 	{
 		return;
 	}
 
-	PlayThirdPersonMontage(Montage);
+	PlayThirdPersonActionMontage(Action, WeaponType);
 }

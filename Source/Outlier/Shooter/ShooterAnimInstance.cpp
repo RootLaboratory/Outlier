@@ -6,6 +6,7 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "KismetAnimationLibrary.h"
+#include "OutlierNetUtils.h"
 
 void UShooterAnimInstance::NativeInitializeAnimation()
 {
@@ -22,7 +23,22 @@ void UShooterAnimInstance::NativeInitializeAnimation()
 
 	if (!CachedShooterCharacter)
 	{
+		UE_LOG(LogTemp, Warning, TEXT("[TPAnim] NativeInitializeAnimation failed OwnerPawn=%s"), *GetNameSafe(OwnerPawn));
 		return;
+	}
+
+	if (USkeletalMeshComponent* OwningMesh = GetOwningComponent())
+	{
+		UE_LOG(
+			LogTemp,
+			Log,
+			TEXT("%s [TPAnim] Init AnimClass=%s Mesh=%s Owner=%s WeaponType=%d OwnerNoSee=%d"),
+			OutlierNet::GetNetPrefix(CachedShooterCharacter),
+			*GetClass()->GetName(),
+			*GetNameSafe(OwningMesh),
+			*GetNameSafe(CachedShooterCharacter),
+			static_cast<int32>(CachedShooterCharacter->GetWeaponType()),
+			OwningMesh->GetOwnerNoSee() ? 1 : 0);
 	}
 
 	CachedShooterCharacter->OnCharacterDeath.AddUniqueDynamic(this, &UShooterAnimInstance::HandleOwnerDeath);
@@ -61,8 +77,15 @@ void UShooterAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 
 	if(!CachedShooterCharacter)
 	{
+		if (!bHasLoggedMissingOwner)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[TPAnim] NativeUpdateAnimation missing CachedShooterCharacter OwnerPawn=%s"), *GetNameSafe(TryGetPawnOwner()));
+			bHasLoggedMissingOwner = true;
+		}
 		return;
 	}
+
+	bHasLoggedMissingOwner = false;
 
 	Speed		      = CachedShooterCharacter->GetCharacterMovement()->Velocity.Size2D();
 	Direction		  = UKismetAnimationLibrary::CalculateDirection(
@@ -86,6 +109,69 @@ void UShooterAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 	bIsDead		       = CachedShooterCharacter->IsDead();
 	bIsPrimaryWeapon   = (WeaponMode == EWeaponMode::Primary);
 	bIsSecondaryWeapon = (WeaponMode == EWeaponMode::Secondary);
+
+	if (!bHasLoggedInitialization)
+	{
+		if (USkeletalMeshComponent* OwningMesh = GetOwningComponent())
+		{
+			UE_LOG(
+				LogTemp,
+				Log,
+				TEXT("%s [TPAnim] FirstUpdate AnimClass=%s Mesh=%s Owner=%s Speed=%.2f WeaponType=%d Move=%d Combat=%d InAir=%d Aiming=%d Reloading=%d"),
+				OutlierNet::GetNetPrefix(CachedShooterCharacter),
+				*GetClass()->GetName(),
+				*GetNameSafe(OwningMesh),
+				*GetNameSafe(CachedShooterCharacter),
+				Speed,
+				static_cast<int32>(CurrentWeaponType),
+				static_cast<int32>(MovementState),
+				static_cast<int32>(CombatState),
+				bIsInAir ? 1 : 0,
+				bIsAiming ? 1 : 0,
+				bIsReloading ? 1 : 0);
+		}
+
+		bHasLoggedInitialization = true;
+		LastLoggedSpeed = Speed;
+		LastLoggedWeaponType = CurrentWeaponType;
+		LastLoggedMovementState = MovementState;
+		LastLoggedCombatState = CombatState;
+		bLastLoggedInAir = bIsInAir;
+		bLastLoggedAiming = bIsAiming;
+		bLastLoggedReloading = bIsReloading;
+	}
+	else if (FMath::Abs(Speed - LastLoggedSpeed) > 10.0f
+		|| CurrentWeaponType != LastLoggedWeaponType
+		|| MovementState != LastLoggedMovementState
+		|| CombatState != LastLoggedCombatState
+		|| bIsInAir != bLastLoggedInAir
+		|| bIsAiming != bLastLoggedAiming
+		|| bIsReloading != bLastLoggedReloading)
+	{
+		UE_LOG(
+			LogTemp,
+			Log,
+			TEXT("%s [TPAnim] State Speed=%.2f WeaponType=%d Move=%d Combat=%d InAir=%d Aiming=%d Reloading=%d Sliding=%d Sprinting=%d Crouching=%d"),
+			OutlierNet::GetNetPrefix(CachedShooterCharacter),
+			Speed,
+			static_cast<int32>(CurrentWeaponType),
+			static_cast<int32>(MovementState),
+			static_cast<int32>(CombatState),
+			bIsInAir ? 1 : 0,
+			bIsAiming ? 1 : 0,
+			bIsReloading ? 1 : 0,
+			bIsSliding ? 1 : 0,
+			bIsSprinting ? 1 : 0,
+			bIsCrouching ? 1 : 0);
+
+		LastLoggedSpeed = Speed;
+		LastLoggedWeaponType = CurrentWeaponType;
+		LastLoggedMovementState = MovementState;
+		LastLoggedCombatState = CombatState;
+		bLastLoggedInAir = bIsInAir;
+		bLastLoggedAiming = bIsAiming;
+		bLastLoggedReloading = bIsReloading;
+	}
 
 	if (CurrentWeaponType != EWeaponType::Rifle && CurrentWeaponType != EWeaponType::Pistol)
 	{

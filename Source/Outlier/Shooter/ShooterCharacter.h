@@ -63,6 +63,15 @@ enum class ESlideEndReason : uint8
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnCharacterDeath);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnMovementStateChanged, EMovementState, NewState);
 
+UENUM()
+enum class EShooterMontageAction : uint8
+{
+	Fire,
+	Reload,
+	Slide,
+	Equip
+};
+
 /**
  * 
  */
@@ -167,7 +176,7 @@ protected:
 	FName PistolMontageSectionName = TEXT("Pistol");
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Animation|Sections")
-	FName DefaultMontageSectionName = NAME_None;
+	FName DefaultMontageSectionName = TEXT("Default");
 
 	// Replicated Gameplay State
 	UPROPERTY(ReplicatedUsing = OnRep_CurHP, EditAnywhere, BlueprintReadWrite, Category = "Health")
@@ -406,10 +415,10 @@ protected:
 	void ServerJumpEnd();
 
 	UFUNCTION(Client, Reliable)
-	void ClientPlayFirstPersonMontage(UAnimMontage* Montage);
+	void ClientPlayFirstPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType);
 
 	UFUNCTION(NetMulticast, Reliable)
-	void MulticastPlayThirdPersonMontage(UAnimMontage* Montage);
+	void MulticastPlayThirdPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType);
 
 	// Internal Helpers
 public:
@@ -444,9 +453,10 @@ public:
 	void PlayFirstPersonMontageForWeapon(UAnimMontage* Montage, EWeaponType WeaponType);
 	void PlayThirdPersonMontage(UAnimMontage* Montage);
 	void PlayThirdPersonMontageForWeapon(UAnimMontage* Montage, EWeaponType WeaponType);
+	void PlayFirstPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType);
+	void PlayThirdPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType);
 	void StopFirstPersonMontage(UAnimMontage* Montage);
 	void StopThirdPersonMontage(UAnimMontage* Montage);
-	void PlaySplitMontages(UAnimMontage* FirstPersonMontage, UAnimMontage* ThirdPersonMontage);
 	void StopSplitMontages(UAnimMontage* FirstPersonMontage, UAnimMontage* ThirdPersonMontage);
 	void PlayEquipMontages();
 	void UpdateFirstPersonPresentation(float DeltaSeconds);

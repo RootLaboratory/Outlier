@@ -304,7 +304,7 @@ void UShooterCombatComponent::HandleAutoReloadRequested()
 
 	if (!ShooterCharacter->IsLocallyControlled())
 	{
-		ShooterCharacter->ClientPlayFirstPersonMontage(ShooterCharacter->FirstPersonReloadMontage);
+		ShooterCharacter->ClientPlayFirstPersonActionMontage(EShooterMontageAction::Reload, ShooterCharacter->GetWeaponType());
 	}
 
 	BeginReloadInternal();
@@ -480,10 +480,11 @@ void UShooterCombatComponent::BeginReloadInternal()
 		*GetNameSafe(ShooterCharacter->ThirdPersonReloadMontage),
 		ShooterCharacter->IsLocallyControlled() ? 1 : 0,
 		ShooterCharacter->HasAuthority() ? 1 : 0);
-	ShooterCharacter->MulticastPlayThirdPersonMontage(ShooterCharacter->ThirdPersonReloadMontage);
-	ShooterCharacter->PlaySplitMontages(
-		ShooterCharacter->FirstPersonReloadMontage,
-		ShooterCharacter->ThirdPersonReloadMontage);
+	ShooterCharacter->MulticastPlayThirdPersonActionMontage(EShooterMontageAction::Reload, ShooterCharacter->GetWeaponType());
+	if (ShooterCharacter->IsLocallyControlled())
+	{
+		ShooterCharacter->PlayFirstPersonActionMontage(EShooterMontageAction::Reload, ShooterCharacter->GetWeaponType());
+	}
 	ShooterCharacter->GetWorldTimerManager().ClearTimer(ReloadCommitFallbackTimerHandle);
 
 	if (ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(ShooterCharacter->CurrentWeapon))

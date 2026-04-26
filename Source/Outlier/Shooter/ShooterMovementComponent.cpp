@@ -188,10 +188,11 @@ void UShooterMovementComponent::TrySlide()
 
 	ShooterCharacter->Crouch();
 	RefreshMovementState();
-	ShooterCharacter->MulticastPlayThirdPersonMontage(ShooterCharacter->ThirdPersonSlideMontage);
-	ShooterCharacter->PlaySplitMontages(
-		ShooterCharacter->FirstPersonSlideMontage,
-		ShooterCharacter->ThirdPersonSlideMontage);
+	ShooterCharacter->MulticastPlayThirdPersonActionMontage(EShooterMontageAction::Slide, ShooterCharacter->GetWeaponType());
+	if (ShooterCharacter->IsLocallyControlled())
+	{
+		ShooterCharacter->PlayFirstPersonActionMontage(EShooterMontageAction::Slide, ShooterCharacter->GetWeaponType());
+	}
 
 	StartSlideMovement();
 

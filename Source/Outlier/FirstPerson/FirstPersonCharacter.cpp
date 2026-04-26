@@ -86,6 +86,17 @@ void AFirstPersonCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
 void AFirstPersonCharacter::BeginPlay()
 {
 	Super::BeginPlay();
+
+	UE_LOG(
+		LogTemp,
+		Log,
+		TEXT("%s %s FPBeginPlay FirstPersonMesh=%s MeshAnimClass=%s MeshAnimInstance=%s OnlyOwnerSee=%d"),
+		OutlierNet::GetNetPrefix(this),
+		*GetName(),
+		*GetNameSafe(FirstPersonMesh),
+		FirstPersonMesh ? *GetNameSafe(FirstPersonMesh->GetAnimClass()) : TEXT("None"),
+		FirstPersonMesh ? *GetNameSafe(FirstPersonMesh->GetAnimInstance()) : TEXT("None"),
+		(FirstPersonMesh && FirstPersonMesh->GetOnlyOwnerSee()) ? 1 : 0);
 }
 
 void AFirstPersonCharacter::MoveInput(const FInputActionValue& Value)

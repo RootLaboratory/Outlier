@@ -72,4 +72,25 @@ protected:
 
 	UPROPERTY(BlueprintReadOnly, Category = "Anim")
 	uint8 bIsInAir : 1 = false;
+
+	UPROPERTY(Transient)
+	uint8 bHasLoggedInitialization : 1 = false;
+
+	UPROPERTY(Transient)
+	uint8 bHasLoggedMissingOwner : 1 = false;
+
+	UPROPERTY(Transient)
+	float LastLoggedSpeed = -1.0f;
+
+	UPROPERTY(Transient)
+	EWeaponType LastLoggedWeaponType = EWeaponType::Unarmed;
+
+	UPROPERTY(Transient)
+	uint8 bLastLoggedInAir : 1 = false;
+
+	UPROPERTY(Transient)
+	uint8 bLastLoggedAiming : 1 = false;
+
+	UPROPERTY(Transient)
+	uint8 bLastLoggedReloading : 1 = false;
 };
