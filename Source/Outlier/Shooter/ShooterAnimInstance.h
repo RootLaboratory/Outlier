@@ -92,9 +92,6 @@ protected:
 	UPROPERTY()
 	TObjectPtr<AShooterCharacter> CachedShooterCharacter = nullptr;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = IK)
-	uint8 bIsFirstPerson : 1 = false;
-
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = IK)
 	FTransform LeftHandIKTransform = FTransform::Identity;
 

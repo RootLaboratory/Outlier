@@ -36,7 +36,7 @@ void UShooterCombatComponent::TryReload()
 	if (!ShooterCharacter->HasAuthority())
 	{
 		// 1인칭 반응성은 로컬에서 먼저 주고, 실제 상태 전이는 서버가 확정
-		ShooterCharacter->PlayLocalActionMontage(ShooterCharacter->ReloadMontage);
+		ShooterCharacter->PlayFirstPersonMontage(ShooterCharacter->FirstPersonReloadMontage);
 		ShooterCharacter->ServerReload();
 		return;
 	}
@@ -169,7 +169,6 @@ void UShooterCombatComponent::TryStartAttack()
 	if (!ShooterCharacter->HasAuthority())
 	{
 		// 발사 판정은 서버가 하지만, 손맛을 위해 소유 클라이언트는 몽타주만 즉시 재생
-		ShooterCharacter->PlayLocalActionMontage(ShooterCharacter->FireMontage);
 		ShooterCharacter->ServerStartAttack();
 		return;
 	}
@@ -225,7 +224,6 @@ void UShooterCombatComponent::TryStartAttack()
 	}
 
 	// 전투 상태가 확정된 뒤에만 서버에서 실제 발사와 몽타주를 진행
-	ShooterCharacter->PlayAnimMontage(ShooterCharacter->FireMontage);
 	ShooterCharacter->CurrentWeapon->StartAttack();
 }
 
@@ -267,6 +265,49 @@ void UShooterCombatComponent::HandleWeaponAttackStopped()
 	bWantsToFire = false;
 	bIsMeleeAttacking = false;
 	RefreshCombatState();
+}
+
+void UShooterCombatComponent::HandleAutoReloadRequested()
+{
+	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	if (!ShooterCharacter || !ShooterCharacter->HasAuthority())
+	{
+		return;
+	}
+
+	ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(ShooterCharacter->CurrentWeapon);
+	if (!RangedWeapon || !RangedWeapon->CanReload() || bIsReloading)
+	{
+		return;
+	}
+
+	if (ShooterCharacter->CurrentWeapon->IsAttacking())
+	{
+		ShooterCharacter->CurrentWeapon->StopAttack();
+	}
+
+	if (ShooterCharacter->MovementState == EMovementState::Run)
+	{
+		ShooterCharacter->StopSprintInternal();
+	}
+
+	if (ShooterCharacter->CombatState == ECombatState::Aim)
+	{
+		StopAimInternal();
+	}
+
+	RangedWeapon->BeginReload();
+	if (!RangedWeapon->IsReloading())
+	{
+		return;
+	}
+
+	if (!ShooterCharacter->IsLocallyControlled())
+	{
+		ShooterCharacter->ClientPlayFirstPersonMontage(ShooterCharacter->FirstPersonReloadMontage);
+	}
+
+	BeginReloadInternal();
 }
 
 void UShooterCombatComponent::RefreshCombatState()
@@ -428,7 +469,21 @@ void UShooterCombatComponent::BeginReloadInternal()
 	// 리로드 상태는 여기서 먼저 잠그고, 이후 RefreshCombatState에서 무기 상태와 다시 맞춤
 	bIsReloading = true;
 	ShooterCharacter->CombatState = ECombatState::Reload;
-	ShooterCharacter->PlayAnimMontage(ShooterCharacter->ReloadMontage);
+	UE_LOG(
+		LogTemp,
+		Log,
+		TEXT("%s %s BeginReloadInternal WeaponType=%d FPReload=%s TPReload=%s Local=%d Authority=%d"),
+		OutlierNet::GetNetPrefix(ShooterCharacter),
+		*ShooterCharacter->GetName(),
+		static_cast<int32>(ShooterCharacter->GetWeaponType()),
+		*GetNameSafe(ShooterCharacter->FirstPersonReloadMontage),
+		*GetNameSafe(ShooterCharacter->ThirdPersonReloadMontage),
+		ShooterCharacter->IsLocallyControlled() ? 1 : 0,
+		ShooterCharacter->HasAuthority() ? 1 : 0);
+	ShooterCharacter->MulticastPlayThirdPersonMontage(ShooterCharacter->ThirdPersonReloadMontage);
+	ShooterCharacter->PlaySplitMontages(
+		ShooterCharacter->FirstPersonReloadMontage,
+		ShooterCharacter->ThirdPersonReloadMontage);
 	ShooterCharacter->GetWorldTimerManager().ClearTimer(ReloadCommitFallbackTimerHandle);
 
 	if (ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(ShooterCharacter->CurrentWeapon))
@@ -448,7 +503,7 @@ void UShooterCombatComponent::BeginReloadInternal()
 			OutlierNet::GetNetPrefix(ShooterCharacter),
 			*ShooterCharacter->GetName(),
 			FallbackDelay,
-			*GetNameSafe(ShooterCharacter->ReloadMontage)
+			*GetNameSafe(ShooterCharacter->ThirdPersonReloadMontage)
 		);
 	}
 }
@@ -463,7 +518,9 @@ void UShooterCombatComponent::CancelReloadInternal()
 
 	bIsReloading = false;
 	ShooterCharacter->GetWorldTimerManager().ClearTimer(ReloadCommitFallbackTimerHandle);
-	ShooterCharacter->StopAnimMontage(ShooterCharacter->ReloadMontage);
+	ShooterCharacter->StopSplitMontages(
+		ShooterCharacter->FirstPersonReloadMontage,
+		ShooterCharacter->ThirdPersonReloadMontage);
 	if (ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(ShooterCharacter->CurrentWeapon))
 	{
 		RangedWeapon->CancelReload();

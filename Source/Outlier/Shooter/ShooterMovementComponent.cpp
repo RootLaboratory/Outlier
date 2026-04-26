@@ -181,13 +181,17 @@ void UShooterMovementComponent::TrySlide()
 	// 슬라이드는 이동 상태, 웅크림, 타이머가 함께 바뀌는 복합 액션
 	// 슬라이드는 sprint와 crouch 상태를 잠시 덮어쓰는 복합 액션
 	bIsSliding = true;
+	bIsSlidingCanceled = false;
 	SlideDirection = Velocity2D;
 	SlideStartSpeed = ShooterCharacter->SprintSpeed * ShooterCharacter->SlideSpeedMultiplier;
 	SlideElapsedTime = 0.0f;
 
 	ShooterCharacter->Crouch();
 	RefreshMovementState();
-	ShooterCharacter->PlayAnimMontage(ShooterCharacter->SlideMontage);
+	ShooterCharacter->MulticastPlayThirdPersonMontage(ShooterCharacter->ThirdPersonSlideMontage);
+	ShooterCharacter->PlaySplitMontages(
+		ShooterCharacter->FirstPersonSlideMontage,
+		ShooterCharacter->ThirdPersonSlideMontage);
 
 	StartSlideMovement();
 
@@ -210,8 +214,12 @@ void UShooterMovementComponent::StopSlide(ESlideEndReason EndReason)
 	}
 
 	bIsSliding = false;
+	bIsSlidingCanceled = (EndReason != ESlideEndReason::Finished);
 	ShooterCharacter->GetWorldTimerManager().ClearTimer(SlideTimerHandle);
 	FinishSlideMovement();
+	ShooterCharacter->StopSplitMontages(
+		ShooterCharacter->FirstPersonSlideMontage,
+		ShooterCharacter->ThirdPersonSlideMontage);
 
 	switch (EndReason)
 	{

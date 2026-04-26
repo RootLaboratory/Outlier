@@ -38,7 +38,7 @@ FName AShooterCharacter::GetThirdPersonWeaponSocketByType(EWeaponType WeaponType
 
 AShooterCharacter::AShooterCharacter() : AFirstPersonCharacter()
 {
-	PrimaryActorTick.bCanEverTick = false;
+	PrimaryActorTick.bCanEverTick = true;
 
 	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
 
@@ -59,9 +59,28 @@ void AShooterCharacter::BeginPlay()
 		BaseFirstPersonCameraRootRotation = CameraRoot->GetRelativeRotation();
 	}
 
+	if (USceneComponent* ViewModelRoot = GetFirstPersonViewModelRoot())
+	{
+		BaseFirstPersonViewModelRootLocation = ViewModelRoot->GetRelativeLocation();
+		BaseFirstPersonViewModelRootRotation = ViewModelRoot->GetRelativeRotation();
+	}
+
 	if (FirstPersonMesh)
 	{
+		BaseFirstPersonMeshLocation = FirstPersonMesh->GetRelativeLocation();
 		BaseFirstPersonMeshRotation = FirstPersonMesh->GetRelativeRotation();
+	}
+
+	if (USceneComponent* ViewModelRoot = GetFirstPersonViewModelRoot())
+	{
+		if (FirstPersonMesh && !BaseFirstPersonMeshLocation.IsNearlyZero())
+		{
+			// Treat the view-model root as the single framing anchor and keep the mesh at its local origin.
+			BaseFirstPersonViewModelRootLocation += BaseFirstPersonMeshLocation;
+			ViewModelRoot->SetRelativeLocation(BaseFirstPersonViewModelRootLocation);
+			BaseFirstPersonMeshLocation = FVector::ZeroVector;
+			FirstPersonMesh->SetRelativeLocation(BaseFirstPersonMeshLocation);
+		}
 	}
 
 	if (HasAuthority())
@@ -73,6 +92,14 @@ void AShooterCharacter::BeginPlay()
 	RefreshMovementState();
 	RefreshCombatState();
 	UpdateLocalHealthUI();
+	UpdateFirstPersonPresentation(0.0f);
+}
+
+void AShooterCharacter::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+
+	UpdateFirstPersonPresentation(DeltaSeconds);
 }
 
 void AShooterCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
@@ -130,12 +157,16 @@ void AShooterCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 void AShooterCharacter::OnStartCrouch(float HalfHeightAdjust, float ScaledHalfHeightAdjust)
 {
 	Super::OnStartCrouch(HalfHeightAdjust, ScaledHalfHeightAdjust);
+
+	UpdateFirstPersonPresentation(0.0f);
 	RefreshMovementState();
 }
 
 void AShooterCharacter::OnEndCrouch(float HalfHeightAdjust, float ScaledHalfHeightAdjust)
 {
 	Super::OnEndCrouch(HalfHeightAdjust, ScaledHalfHeightAdjust);
+
+	UpdateFirstPersonPresentation(0.0f);
 	RefreshMovementState();
 }
 
@@ -638,6 +669,42 @@ void AShooterCharacter::HandleWeaponAttackStoppedInternal()
 	}
 }
 
+void AShooterCharacter::HandleAutoReloadRequested()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->HandleAutoReloadRequested();
+	}
+}
+
+void AShooterCharacter::HandleFireShotAnimation()
+{
+	UAnimMontage* FirstPersonMontage = FirstPersonFireMontage;
+	UAnimMontage* ThirdPersonMontage = ThirdPersonFireMontage;
+
+	UE_LOG(
+		LogTemp,
+		Log,
+		TEXT("%s %s HandleFireShotAnimation WeaponType=%d FP=%s TP=%s Local=%d Authority=%d"),
+		OutlierNet::GetNetPrefix(this),
+		*GetName(),
+		static_cast<int32>(GetWeaponType()),
+		*GetNameSafe(FirstPersonMontage),
+		*GetNameSafe(ThirdPersonMontage),
+		IsLocallyControlled() ? 1 : 0,
+		HasAuthority() ? 1 : 0);
+
+	MulticastPlayThirdPersonMontage(ThirdPersonMontage);
+
+	if (IsLocallyControlled())
+	{
+		PlayFirstPersonMontage(FirstPersonMontage);
+		return;
+	}
+
+	ClientPlayFirstPersonMontage(FirstPersonMontage);
+}
+
 void AShooterCharacter::StartLeanUpdate()
 {
 	if (GetWorldTimerManager().IsTimerActive(LeanUpdateTimerHandle))
@@ -669,8 +736,11 @@ void AShooterCharacter::UpdateLeanStep()
 
 	if (FirstPersonMesh)
 	{
+		FirstPersonMesh->SetRelativeLocation(BaseFirstPersonMeshLocation);
 		FirstPersonMesh->SetRelativeRotation(BaseFirstPersonMeshRotation);
 	}
+
+	UpdateFirstPersonPresentation(1.0f / 60.0f);
 
 	StopLeanUpdateIfSettled();
 }
@@ -795,7 +865,14 @@ void AShooterCharacter::HandleDeath()
 
 	if (FirstPersonMesh)
 	{
+		FirstPersonMesh->SetRelativeLocation(BaseFirstPersonMeshLocation);
 		FirstPersonMesh->SetRelativeRotation(BaseFirstPersonMeshRotation);
+	}
+
+	if (USceneComponent* ViewModelRoot = GetFirstPersonViewModelRoot())
+	{
+		ViewModelRoot->SetRelativeLocation(BaseFirstPersonViewModelRootLocation);
+		ViewModelRoot->SetRelativeRotation(BaseFirstPersonViewModelRootRotation);
 	}
 
 	GetCharacterMovement()->DisableMovement();
@@ -837,19 +914,291 @@ void AShooterCharacter::UpdateLocalHealthUI() const
 	}
 }
 
-void AShooterCharacter::PlayLocalActionMontage(UAnimMontage* Montage)
+FName AShooterCharacter::ResolveMontageSectionNameForWeapon(EWeaponType WeaponType) const
 {
-	if (!Montage || HasAuthority())
+	switch (WeaponType)
+	{
+	case EWeaponType::Rifle:
+		return RifleMontageSectionName;
+	case EWeaponType::Pistol:
+		return PistolMontageSectionName;
+	default:
+		return DefaultMontageSectionName;
+	}
+}
+
+void AShooterCharacter::PlayFirstPersonMontage(UAnimMontage* Montage)
+{
+	PlayFirstPersonMontageForWeapon(Montage, GetWeaponType());
+}
+
+void AShooterCharacter::PlayFirstPersonMontageForWeapon(UAnimMontage* Montage, EWeaponType WeaponType)
+{
+	if (!Montage || !IsLocallyControlled() || !FirstPersonMesh)
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("%s %s PlayFirstPersonMontageForWeapon skipped Montage=%s Local=%d FirstPersonMesh=%s WeaponType=%d"),
+			OutlierNet::GetNetPrefix(this),
+			*GetName(),
+			*GetNameSafe(Montage),
+			IsLocallyControlled() ? 1 : 0,
+			*GetNameSafe(FirstPersonMesh),
+			static_cast<int32>(WeaponType));
+		return;
+	}
+
+	if (UAnimInstance* FirstPersonAnimInstance = FirstPersonMesh->GetAnimInstance())
+	{
+		const FName SectionName = ResolveMontageSectionNameForWeapon(WeaponType);
+		UE_LOG(
+			LogTemp,
+			Log,
+			TEXT("%s %s PlayFirstPersonMontageForWeapon Montage=%s Section=%s SectionValid=%d AnimInstance=%s WeaponType=%d"),
+			OutlierNet::GetNetPrefix(this),
+			*GetName(),
+			*GetNameSafe(Montage),
+			*SectionName.ToString(),
+			(SectionName != NAME_None && Montage->IsValidSectionName(SectionName)) ? 1 : 0,
+			*GetNameSafe(FirstPersonAnimInstance),
+			static_cast<int32>(WeaponType));
+
+		FirstPersonAnimInstance->Montage_Play(Montage);
+		if (SectionName != NAME_None && Montage->IsValidSectionName(SectionName))
+		{
+			FirstPersonAnimInstance->Montage_JumpToSection(SectionName, Montage);
+		}
+		else
+		{
+			UE_LOG(
+				LogTemp,
+				Warning,
+				TEXT("%s %s PlayFirstPersonMontageForWeapon no valid section Montage=%s Section=%s"),
+				OutlierNet::GetNetPrefix(this),
+				*GetName(),
+				*GetNameSafe(Montage),
+				*SectionName.ToString());
+		}
+	}
+	else
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("%s %s PlayFirstPersonMontageForWeapon missing AnimInstance Mesh=%s Montage=%s"),
+			OutlierNet::GetNetPrefix(this),
+			*GetName(),
+			*GetNameSafe(FirstPersonMesh),
+			*GetNameSafe(Montage));
+	}
+}
+
+void AShooterCharacter::PlayThirdPersonMontage(UAnimMontage* Montage)
+{
+	PlayThirdPersonMontageForWeapon(Montage, GetWeaponType());
+}
+
+void AShooterCharacter::PlayThirdPersonMontageForWeapon(UAnimMontage* Montage, EWeaponType WeaponType)
+{
+	if (!Montage)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("%s %s PlayThirdPersonMontageForWeapon skipped: montage is null"), OutlierNet::GetNetPrefix(this), *GetName());
+		return;
+	}
+
+	if (USkeletalMeshComponent* ThirdPersonMesh = GetMesh())
+	{
+		if (UAnimInstance* ThirdPersonAnimInstance = ThirdPersonMesh->GetAnimInstance())
+		{
+			const FName SectionName = ResolveMontageSectionNameForWeapon(WeaponType);
+			UE_LOG(
+				LogTemp,
+				Log,
+				TEXT("%s %s PlayThirdPersonMontageForWeapon Montage=%s Section=%s SectionValid=%d AnimInstance=%s WeaponType=%d"),
+				OutlierNet::GetNetPrefix(this),
+				*GetName(),
+				*GetNameSafe(Montage),
+				*SectionName.ToString(),
+				(SectionName != NAME_None && Montage->IsValidSectionName(SectionName)) ? 1 : 0,
+				*GetNameSafe(ThirdPersonAnimInstance),
+				static_cast<int32>(WeaponType));
+
+			ThirdPersonAnimInstance->Montage_Play(Montage);
+			if (SectionName != NAME_None && Montage->IsValidSectionName(SectionName))
+			{
+				ThirdPersonAnimInstance->Montage_JumpToSection(SectionName, Montage);
+			}
+			else
+			{
+				UE_LOG(
+					LogTemp,
+					Warning,
+					TEXT("%s %s PlayThirdPersonMontageForWeapon no valid section Montage=%s Section=%s"),
+					OutlierNet::GetNetPrefix(this),
+					*GetName(),
+					*GetNameSafe(Montage),
+					*SectionName.ToString());
+			}
+		}
+		else
+		{
+			UE_LOG(
+				LogTemp,
+				Warning,
+				TEXT("%s %s PlayThirdPersonMontageForWeapon missing AnimInstance Mesh=%s Montage=%s"),
+				OutlierNet::GetNetPrefix(this),
+				*GetName(),
+				*GetNameSafe(ThirdPersonMesh),
+				*GetNameSafe(Montage));
+		}
+	}
+}
+
+void AShooterCharacter::StopFirstPersonMontage(UAnimMontage* Montage)
+{
+	if (!Montage || !IsLocallyControlled() || !FirstPersonMesh)
 	{
 		return;
 	}
 
+	if (UAnimInstance* FirstPersonAnimInstance = FirstPersonMesh->GetAnimInstance())
+	{
+		FirstPersonAnimInstance->Montage_Stop(0.0f, Montage);
+	}
+}
+
+void AShooterCharacter::StopThirdPersonMontage(UAnimMontage* Montage)
+{
+	if (!Montage)
+	{
+		return;
+	}
+
+	if (USkeletalMeshComponent* ThirdPersonMesh = GetMesh())
+	{
+		if (UAnimInstance* ThirdPersonAnimInstance = ThirdPersonMesh->GetAnimInstance())
+		{
+			ThirdPersonAnimInstance->Montage_Stop(0.0f, Montage);
+		}
+	}
+}
+
+void AShooterCharacter::PlaySplitMontages(UAnimMontage* FirstPersonMontage, UAnimMontage* ThirdPersonMontage)
+{
+	if (IsLocallyControlled())
+	{
+		PlayFirstPersonMontage(FirstPersonMontage);
+		return;
+	}
+
+	PlayThirdPersonMontage(ThirdPersonMontage);
+}
+
+void AShooterCharacter::StopSplitMontages(UAnimMontage* FirstPersonMontage, UAnimMontage* ThirdPersonMontage)
+{
+	if (IsLocallyControlled())
+	{
+		StopFirstPersonMontage(FirstPersonMontage);
+		return;
+	}
+
+	StopThirdPersonMontage(ThirdPersonMontage);
+}
+
+void AShooterCharacter::PlayEquipMontages()
+{
+	const EWeaponType EquippedWeaponType = GetWeaponType();
+
+	UE_LOG(
+		LogTemp,
+		Log,
+		TEXT("%s %s PlayEquipMontages WeaponType=%d FP=%s TP=%s Local=%d Authority=%d"),
+		OutlierNet::GetNetPrefix(this),
+		*GetName(),
+		static_cast<int32>(EquippedWeaponType),
+		*GetNameSafe(FirstPersonEquipMontage),
+		*GetNameSafe(ThirdPersonEquipMontage),
+		IsLocallyControlled() ? 1 : 0,
+		HasAuthority() ? 1 : 0);
+
+	if (IsLocallyControlled())
+	{
+		PlayFirstPersonMontageForWeapon(FirstPersonEquipMontage, EquippedWeaponType);
+	}
+
+	if (HasAuthority())
+	{
+		MulticastPlayThirdPersonMontage(ThirdPersonEquipMontage);
+	}
+}
+
+void AShooterCharacter::UpdateFirstPersonPresentation(float DeltaSeconds)
+{
 	if (!IsLocallyControlled())
 	{
 		return;
 	}
 
-	PlayAnimMontage(Montage);
+	USceneComponent* ViewModelRoot = GetFirstPersonViewModelRoot();
+	if (!ViewModelRoot)
+	{
+		return;
+	}
+
+	const float AimPitch = FRotator::NormalizeAxis(GetBaseAimRotation().Pitch);
+	const float PitchCompensation = FMath::Clamp(-AimPitch * FirstPersonPitchFollowScale, -FirstPersonPitchFollowClamp, FirstPersonPitchFollowClamp);
+
+	FVector WeaponBaseOffset = FirstPersonViewModelOffset;
+	switch (GetWeaponType())
+	{
+	case EWeaponType::Rifle:
+		WeaponBaseOffset = RifleFirstPersonViewModelOffset;
+		break;
+	case EWeaponType::Pistol:
+		WeaponBaseOffset = PistolFirstPersonViewModelOffset;
+		break;
+	default:
+		break;
+	}
+
+	FVector PitchLocationOffset = FVector::ZeroVector;
+	if (FMath::Abs(AimPitch) > FirstPersonPitchLocationOffsetStart)
+	{
+		const float PitchLocationAlpha = FMath::GetMappedRangeValueClamped(
+			FVector2D(FirstPersonPitchLocationOffsetStart, 90.0f),
+			FVector2D(0.0f, 1.0f),
+			FMath::Abs(AimPitch));
+		PitchLocationOffset = AimPitch >= 0.0f
+			? (FirstPersonPitchLocationOffsetAtMaxUp * PitchLocationAlpha)
+			: (FirstPersonPitchLocationOffsetAtMaxDown * PitchLocationAlpha);
+	}
+
+	FVector TargetLocation = BaseFirstPersonViewModelRootLocation + WeaponBaseOffset + PitchLocationOffset;
+	if (bIsCrouched)
+	{
+		TargetLocation += CrouchedFirstPersonViewModelOffset;
+	}
+
+	const FRotator TargetRotation = BaseFirstPersonViewModelRootRotation + FRotator(PitchCompensation, 0.0f, 0.0f);
+
+	if (DeltaSeconds <= 0.0f)
+	{
+		ViewModelRoot->SetRelativeLocation(TargetLocation);
+		ViewModelRoot->SetRelativeRotation(TargetRotation);
+		return;
+	}
+
+	ViewModelRoot->SetRelativeLocation(FMath::VInterpTo(
+		ViewModelRoot->GetRelativeLocation(),
+		TargetLocation,
+		DeltaSeconds,
+		FirstPersonViewModelInterpSpeed));
+	ViewModelRoot->SetRelativeRotation(FMath::RInterpTo(
+		ViewModelRoot->GetRelativeRotation(),
+		TargetRotation,
+		DeltaSeconds,
+		FirstPersonViewModelInterpSpeed));
 }
 
 void AShooterCharacter::ServerSelectWeaponByIndex_Implementation(int32 SlotIndex)
@@ -924,4 +1273,19 @@ void AShooterCharacter::ServerJumpEnd_Implementation()
 	{
 		MovementComponent->DoJumpEnd();
 	}
+}
+
+void AShooterCharacter::ClientPlayFirstPersonMontage_Implementation(UAnimMontage* Montage)
+{
+	PlayFirstPersonMontage(Montage);
+}
+
+void AShooterCharacter::MulticastPlayThirdPersonMontage_Implementation(UAnimMontage* Montage)
+{
+	if (!Montage || IsLocallyControlled())
+	{
+		return;
+	}
+
+	PlayThirdPersonMontage(Montage);
 }

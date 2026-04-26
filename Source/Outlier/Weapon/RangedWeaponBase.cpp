@@ -124,10 +124,6 @@ void ARangedWeaponBase::ConsumeAmmo()
 		GetLocalSubsystem()->OnRep_AmmoCountChanged(CurrentAmmo);
 	}
 
-	if (CurrentAmmo == 0 && CanReload())
-	{
-		BeginReload();
-	}
 }
 
 
@@ -446,8 +442,21 @@ void ARangedWeaponBase::PerformAttack()
 	ConsumeAmmo();
 	FireShot();
 
+	if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner))
+	{
+		Shooter->HandleFireShotAnimation();
+	}
+
 	StartAttackCooldown();
 	StartReuseCooldown();
+
+	if (CurrentAmmo == 0 && CanReload())
+	{
+		if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner))
+		{
+			Shooter->HandleAutoReloadRequested();
+		}
+	}
 
 	UE_LOG(LogTemp, Log, TEXT("%s [%s] Fire success Ammo=%d / %d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo, ReserveAmmo);
 }

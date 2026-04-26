@@ -70,9 +70,6 @@ void UShooterAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 		CachedShooterCharacter->GetActorRotation()
 	);
 	CurrentWeaponType = CachedShooterCharacter->GetWeaponType();
-
-	AimYaw        = CachedShooterCharacter->GetAimYawForAnimation();
-	AimPitch	  = CachedShooterCharacter->GetAimPitchForAnimation();
 	LeanAlpha     = CachedShooterCharacter->GetCurrentLeanAlpha();
 	MovementState = CachedShooterCharacter->GetMovementState();
 	CombatState   = CachedShooterCharacter->GetCombatState();
@@ -101,7 +98,8 @@ void UShooterAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 		return;
 	}
 
-	bIsFirstPerson = (OwningMesh == CachedShooterCharacter->GetFirstPersonMesh());
+	AimYaw = CachedShooterCharacter->GetAimYawForAnimation();
+	AimPitch = CachedShooterCharacter->GetAimPitchForAnimation();
 
 	AWeaponBase* CurrentWeapon = CachedShooterCharacter->GetCurrentWeapon();
 	if (!CurrentWeapon)
@@ -109,7 +107,7 @@ void UShooterAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 		return;
 	}
 
-	USkeletalMeshComponent* WeaponMesh = CurrentWeapon->GetWeaponByView(bIsFirstPerson);
+	USkeletalMeshComponent* WeaponMesh = CurrentWeapon->GetWeaponByView(false);
 	if (!WeaponMesh)
 	{
 		return;
