@@ -930,6 +930,7 @@ FName AShooterCharacter::ResolveMontageSectionNameForWeapon(EWeaponType WeaponTy
 void AShooterCharacter::PlayFirstPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType)
 {
 	UAnimMontage* Montage = nullptr;
+	bool bUseWeaponSection = true;
 	switch (Action)
 	{
 	case EShooterMontageAction::Fire:
@@ -940,6 +941,7 @@ void AShooterCharacter::PlayFirstPersonActionMontage(EShooterMontageAction Actio
 		break;
 	case EShooterMontageAction::Slide:
 		Montage = FirstPersonSlideMontage;
+		bUseWeaponSection = false;
 		break;
 	case EShooterMontageAction::Equip:
 		Montage = FirstPersonEquipMontage;
@@ -948,12 +950,13 @@ void AShooterCharacter::PlayFirstPersonActionMontage(EShooterMontageAction Actio
 		break;
 	}
 
-	PlayFirstPersonMontageForWeapon(Montage, WeaponType);
+	PlayFirstPersonMontageForWeapon(Montage, WeaponType, bUseWeaponSection);
 }
 
 void AShooterCharacter::PlayThirdPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType)
 {
 	UAnimMontage* Montage = nullptr;
+	bool bUseWeaponSection = true;
 	switch (Action)
 	{
 	case EShooterMontageAction::Fire:
@@ -964,6 +967,7 @@ void AShooterCharacter::PlayThirdPersonActionMontage(EShooterMontageAction Actio
 		break;
 	case EShooterMontageAction::Slide:
 		Montage = ThirdPersonSlideMontage;
+		bUseWeaponSection = false;
 		break;
 	case EShooterMontageAction::Equip:
 		Montage = ThirdPersonEquipMontage;
@@ -972,7 +976,7 @@ void AShooterCharacter::PlayThirdPersonActionMontage(EShooterMontageAction Actio
 		break;
 	}
 
-	PlayThirdPersonMontageForWeapon(Montage, WeaponType);
+	PlayThirdPersonMontageForWeapon(Montage, WeaponType, bUseWeaponSection);
 }
 
 void AShooterCharacter::PlayFirstPersonMontage(UAnimMontage* Montage)
@@ -980,7 +984,7 @@ void AShooterCharacter::PlayFirstPersonMontage(UAnimMontage* Montage)
 	PlayFirstPersonMontageForWeapon(Montage, GetWeaponType());
 }
 
-void AShooterCharacter::PlayFirstPersonMontageForWeapon(UAnimMontage* Montage, EWeaponType WeaponType)
+void AShooterCharacter::PlayFirstPersonMontageForWeapon(UAnimMontage* Montage, EWeaponType WeaponType, bool bUseWeaponSection)
 {
 	if (!Montage || !IsLocallyControlled() || !FirstPersonMesh)
 	{
@@ -999,25 +1003,26 @@ void AShooterCharacter::PlayFirstPersonMontageForWeapon(UAnimMontage* Montage, E
 
 	if (UAnimInstance* FirstPersonAnimInstance = FirstPersonMesh->GetAnimInstance())
 	{
-		const FName SectionName = ResolveMontageSectionNameForWeapon(WeaponType);
+		const FName SectionName = bUseWeaponSection ? ResolveMontageSectionNameForWeapon(WeaponType) : NAME_None;
 		UE_LOG(
 			LogTemp,
 			Log,
-			TEXT("%s %s PlayFirstPersonMontageForWeapon Montage=%s Section=%s SectionValid=%d AnimInstance=%s WeaponType=%d"),
+			TEXT("%s %s PlayFirstPersonMontageForWeapon Montage=%s Section=%s SectionValid=%d UseSection=%d AnimInstance=%s WeaponType=%d"),
 			OutlierNet::GetNetPrefix(this),
 			*GetName(),
 			*GetNameSafe(Montage),
 			*SectionName.ToString(),
-			(SectionName != TEXT("Default") && Montage->IsValidSectionName(SectionName)) ? 1 : 0,
+			(SectionName != NAME_None && Montage->IsValidSectionName(SectionName)) ? 1 : 0,
+			bUseWeaponSection ? 1 : 0,
 			*GetNameSafe(FirstPersonAnimInstance),
 			static_cast<int32>(WeaponType));
 
 		FirstPersonAnimInstance->Montage_Play(Montage);
-		if (SectionName != TEXT("Default") && Montage->IsValidSectionName(SectionName))
+		if (SectionName != NAME_None && Montage->IsValidSectionName(SectionName))
 		{
 			FirstPersonAnimInstance->Montage_JumpToSection(SectionName, Montage);
 		}
-		else
+		else if (bUseWeaponSection)
 		{
 			UE_LOG(
 				LogTemp,
@@ -1047,7 +1052,7 @@ void AShooterCharacter::PlayThirdPersonMontage(UAnimMontage* Montage)
 	PlayThirdPersonMontageForWeapon(Montage, GetWeaponType());
 }
 
-void AShooterCharacter::PlayThirdPersonMontageForWeapon(UAnimMontage* Montage, EWeaponType WeaponType)
+void AShooterCharacter::PlayThirdPersonMontageForWeapon(UAnimMontage* Montage, EWeaponType WeaponType, bool bUseWeaponSection)
 {
 	if (!Montage)
 	{
@@ -1059,25 +1064,26 @@ void AShooterCharacter::PlayThirdPersonMontageForWeapon(UAnimMontage* Montage, E
 	{
 		if (UAnimInstance* ThirdPersonAnimInstance = ThirdPersonMesh->GetAnimInstance())
 		{
-			const FName SectionName = ResolveMontageSectionNameForWeapon(WeaponType);
+			const FName SectionName = bUseWeaponSection ? ResolveMontageSectionNameForWeapon(WeaponType) : NAME_None;
 			UE_LOG(
 				LogTemp,
 				Log,
-				TEXT("%s %s PlayThirdPersonMontageForWeapon Montage=%s Section=%s SectionValid=%d AnimInstance=%s WeaponType=%d"),
+				TEXT("%s %s PlayThirdPersonMontageForWeapon Montage=%s Section=%s SectionValid=%d UseSection=%d AnimInstance=%s WeaponType=%d"),
 				OutlierNet::GetNetPrefix(this),
 				*GetName(),
 				*GetNameSafe(Montage),
 				*SectionName.ToString(),
-				(SectionName != TEXT("Default") && Montage->IsValidSectionName(SectionName)) ? 1 : 0,
+				(SectionName != NAME_None && Montage->IsValidSectionName(SectionName)) ? 1 : 0,
+				bUseWeaponSection ? 1 : 0,
 				*GetNameSafe(ThirdPersonAnimInstance),
 				static_cast<int32>(WeaponType));
 
 			ThirdPersonAnimInstance->Montage_Play(Montage);
-			if (SectionName != TEXT("Default") && Montage->IsValidSectionName(SectionName))
+			if (SectionName != NAME_None && Montage->IsValidSectionName(SectionName))
 			{
 				ThirdPersonAnimInstance->Montage_JumpToSection(SectionName, Montage);
 			}
-			else
+			else if (bUseWeaponSection)
 			{
 				UE_LOG(
 					LogTemp,

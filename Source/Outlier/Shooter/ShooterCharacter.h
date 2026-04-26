@@ -450,9 +450,9 @@ public:
 	void UpdateLocalHealthUI() const;
 	FName ResolveMontageSectionNameForWeapon(EWeaponType WeaponType) const;
 	void PlayFirstPersonMontage(UAnimMontage* Montage);
-	void PlayFirstPersonMontageForWeapon(UAnimMontage* Montage, EWeaponType WeaponType);
+	void PlayFirstPersonMontageForWeapon(UAnimMontage* Montage, EWeaponType WeaponType, bool bUseWeaponSection = true);
 	void PlayThirdPersonMontage(UAnimMontage* Montage);
-	void PlayThirdPersonMontageForWeapon(UAnimMontage* Montage, EWeaponType WeaponType);
+	void PlayThirdPersonMontageForWeapon(UAnimMontage* Montage, EWeaponType WeaponType, bool bUseWeaponSection = true);
 	void PlayFirstPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType);
 	void PlayThirdPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType);
 	void StopFirstPersonMontage(UAnimMontage* Montage);

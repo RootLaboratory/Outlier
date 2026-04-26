@@ -90,13 +90,12 @@ void AFirstPersonCharacter::BeginPlay()
 	UE_LOG(
 		LogTemp,
 		Log,
-		TEXT("%s %s FPBeginPlay FirstPersonMesh=%s MeshAnimClass=%s MeshAnimInstance=%s OnlyOwnerSee=%d"),
+		TEXT("%s %s FPBeginPlay FirstPersonMesh=%s MeshAnimClass=%s MeshAnimInstance=%s"),
 		OutlierNet::GetNetPrefix(this),
 		*GetName(),
 		*GetNameSafe(FirstPersonMesh),
 		FirstPersonMesh ? *GetNameSafe(FirstPersonMesh->GetAnimClass()) : TEXT("None"),
-		FirstPersonMesh ? *GetNameSafe(FirstPersonMesh->GetAnimInstance()) : TEXT("None"),
-		(FirstPersonMesh && FirstPersonMesh->GetOnlyOwnerSee()) ? 1 : 0);
+		FirstPersonMesh ? *GetNameSafe(FirstPersonMesh->GetAnimInstance()) : TEXT("None"));
 }
 
 void AFirstPersonCharacter::MoveInput(const FInputActionValue& Value)
@@ -154,7 +153,12 @@ void AFirstPersonCharacter::OnRep_CurrentWeapon()
 
 	if (CurrentWeapon)
 	{
+		CurrentWeaponType = CurrentWeapon->GetWeaponType();
 		CurrentWeapon->OnEquipped(this);
+	}
+	else
+	{
+		CurrentWeaponType = EWeaponType::Unarmed;
 	}
 
 	LastReplicatedWeapon = CurrentWeapon;
