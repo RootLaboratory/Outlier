@@ -18,6 +18,7 @@ struct FLensFlareParameters
 	float BlendWeight = 0.0f;
 	float Intensity = 0.0f;
 	float Threshold = 1.0f;
+
 	FLinearColor Tint = FLinearColor::White;
 
 };
@@ -32,7 +33,19 @@ struct FBloomBlurParameters
 	int32 PassCount = 1;
 };
 
+// UI까지 합성된 최종 텍스처에 적용할 chromatic aberration 입력 파라미터.
+struct FUIChromaticAberrationParameters
+{
+	int32 bEnabled = false;
+	float StartOffset = 0.9f;
+	float Intensity = 0.7f;
+	float Padding = 0.0f;
+};
 
+struct FPostProcessStrctureUI
+{
+	FUIChromaticAberrationParameters ChromaticAberration;
+};
 
 struct FPostProcessStrcture
 {

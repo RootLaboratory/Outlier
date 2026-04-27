@@ -28,7 +28,7 @@ void UDynamicCrossHair::NativeTick(const FGeometry& MyGeometry, float InDeltaTim
 	CurrentStateSpread = CalculateStateSpread();
 	UpdateFinalSpread();
 
-	if (GEngine)
+	/*if (GEngine)
 	{
 		const FString DebugText = FString::Printf(
 			TEXT("MoveSpread: %.2f | ShootSpread: %.2f | StateSpread: %.2f | FinalSpread: %.2f"),
@@ -44,25 +44,20 @@ void UDynamicCrossHair::NativeTick(const FGeometry& MyGeometry, float InDeltaTim
 			FColor::Green,
 			DebugText
 		);
-	}
+	}*/
 
 	OnCrossHairTick(InDeltaTime);
 }
 
 void UDynamicCrossHair::OnAiming()
 {
-
-	UE_LOG(LogTemp, Error, TEXT("OnAiming"));
-
 	bAiming = true;
-
 	CrossHairCollapsed();
 }
 
 void UDynamicCrossHair::OnAimingOff()
 {
 	bAiming = false;
-
 	CrossHairVisible();
 }
 
@@ -110,14 +105,9 @@ void UDynamicCrossHair::UpdateMoveSpread()
 		return;
 	}
 
-	//Max 다른 곳.
 	const float MaxSpeed = MoveSpreadReferenceSpeed;
 	const float CurrentSpeed = MoveComp->Velocity.Size2D();
 	const float SpeedRatio = (MaxSpeed > KINDA_SMALL_NUMBER) ? (CurrentSpeed / MaxSpeed) : 0.f;
-
-	UE_LOG(LogTemp, Error, TEXT("MaxSpeed %f") , MaxSpeed);
-	UE_LOG(LogTemp, Error, TEXT("CurrentSpeed %f"), CurrentSpeed);
-
 
 	Ratio = FMath::Clamp(SpeedRatio, 0.f, 1.f);
 

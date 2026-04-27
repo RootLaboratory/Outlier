@@ -1,23 +1,17 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
-
 #include "LocalPlayerPostProcessSubsystem.h"
-#include "SceneViewExtension.h"
+
 #include "OutlierPostProcessSceneViewExtension.h"
+#include "SceneViewExtension.h"
 
 void ULocalPlayerPostProcessSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
-	//UE_LOG(LogTemp, Error, TEXT("EXT Initalized"));
 
 	if (ULocalPlayer* LP = GetLocalPlayer())
 	{
-		//UE_LOG(LogTemp, Error, TEXT("EXT Initalized"));
 		ViewExtension = FSceneViewExtensions::NewExtension<FOutlierPostProcessSceneViewExtension>(LP);
-	}
-	else
-	{
-		//UE_LOG(LogTemp, Error, TEXT("LP NONE Initalized"));
 	}
 }
 
@@ -27,14 +21,18 @@ void ULocalPlayerPostProcessSubsystem::Deinitialize()
 	ViewExtension.Reset();
 }
 
+void ULocalPlayerPostProcessSubsystem::MarkDirty()
+{
+	CachedUIPostProcessParameters = UIPostProcessParameters;
+	bDirty = true;
+}
+
 void ULocalPlayerPostProcessSubsystem::ActivateSlideState()
 {
 	if (PlayerState.bIsSliding)
 	{
 		return;
 	}
-
-	//UE_LOG(LogTemp, Error, TEXT("ActivateSlideState"));
 
 	PlayerState.bIsSliding = true;
 	PostProcessParameters.MotionBlur.bEnabled = true;
@@ -48,6 +46,34 @@ void ULocalPlayerPostProcessSubsystem::DeActivateSlideState()
 	bDirty = true;
 }
 
+void ULocalPlayerPostProcessSubsystem::ActivateChromaticAberration()
+{
+	SetChromaticAberrationEnabled(true);
+}
+
+void ULocalPlayerPostProcessSubsystem::DeactivateChromaticAberration()
+{
+	SetChromaticAberrationEnabled(false);
+}
+
+void ULocalPlayerPostProcessSubsystem::SetChromaticAberrationEnabled(bool bEnabled)
+{
+	UIPostProcessParameters.ChromaticAberration.bEnabled = bEnabled ? 1 : 0;
+	MarkDirty();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetChromaticAberrationStartOffset(float InStartOffset)
+{
+	UIPostProcessParameters.ChromaticAberration.StartOffset = FMath::Clamp(InStartOffset, 0.0f, 1.0f);
+	MarkDirty();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetChromaticAberrationIntensity(float InIntensity)
+{
+	UIPostProcessParameters.ChromaticAberration.Intensity = FMath::Max(0.0f, InIntensity);
+	MarkDirty();
+}
+
 void ULocalPlayerPostProcessSubsystem::TickFrame()
 {
 	if (!bDirty)
@@ -56,6 +82,7 @@ void ULocalPlayerPostProcessSubsystem::TickFrame()
 	}
 
 	CachedPostProcessParameters = PostProcessParameters;
+	CachedUIPostProcessParameters = UIPostProcessParameters;
 
 	if (ViewExtension.IsValid())
 	{
@@ -68,6 +95,11 @@ void ULocalPlayerPostProcessSubsystem::TickFrame()
 const FPostProcessStrcture& ULocalPlayerPostProcessSubsystem::GetPostProcessStrcture()
 {
 	return CachedPostProcessParameters;
+}
+
+const FPostProcessStrctureUI& ULocalPlayerPostProcessSubsystem::GetUIPostProcessStrcture() const
+{
+	return UIPostProcessParameters;
 }
 
 bool ULocalPlayerPostProcessSubsystem::IsDirty()

@@ -389,7 +389,6 @@ void UShooterMovementComponent::RefreshMovementState()
 		if (Speed2D <= KINDA_SMALL_NUMBER)
 		{
 			NewState = EMovementState::Idle;
-			UE_LOG(LogTemp, Error, TEXT("Idle Now"));
 		}
 		else if (bIsSprinting)
 		{

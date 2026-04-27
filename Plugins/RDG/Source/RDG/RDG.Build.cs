@@ -39,6 +39,7 @@ public class RDG : ModuleRules
 				"Engine",
 				"Slate",
 				"SlateCore",
+                "InputCore",
                 "RHI",
                 "Renderer",
 				"Projects"

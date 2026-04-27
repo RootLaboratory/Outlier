@@ -74,25 +74,11 @@ bool FOutlierPostProcessSceneViewExtension::IsActiveThisFrame_Internal(const FSc
 		LocalPlayerWorld = LocalPlayer->GetWorld();
 	}
 
-	/*UE_LOG(LogTemp, Warning,
-		TEXT("IsActiveThisFrame_Internal | LP=%d Viewport=%p ContextWorld=%s LPWorld=%s SameWorld=%d"),
-		LocalPlayer.IsValid() ? 1 : 0,
-		Context.Viewport,
-		ContextWorld ? *ContextWorld->GetName() : TEXT("None"),
-		LocalPlayerWorld ? *LocalPlayerWorld->GetName() : TEXT("None"),
-		(ContextWorld && LocalPlayerWorld && ContextWorld == LocalPlayerWorld) ? 1 : 0);*/
-
-	return LocalPlayer.IsValid();// && ShouldRenderAnyEffect();
+	return LocalPlayer.IsValid();
 }
 
 void FOutlierPostProcessSceneViewExtension::SubscribeToPostProcessingPass(EPostProcessingPass PassId, const FSceneView& View, FAfterPassCallbackDelegateArray& InOutPassCallbacks, bool bIsPassEnabled)
 {
-
-	/*UE_LOG(LogTemp, Warning,
-		TEXT("PP PassId=%d Enabled=%d CachedMB=%d"),
-		(int32)PassId,
-		bIsPassEnabled ? 1 : 0,
-		CachedParameters.MotionBlur.bEnabled ? 1 : 0);*/
 	if (!bIsPassEnabled)
 	{
 		return;
@@ -110,8 +96,6 @@ void FOutlierPostProcessSceneViewExtension::SubscribeToPostProcessingPass(EPostP
 
 	if (PassId != EPostProcessingPass::MotionBlur)
 	{
-	//	UE_LOG(LogTemp, Error, TEXT("EPostProcessingPass::MotionBlur"));
-
 		return;
 	}
 
