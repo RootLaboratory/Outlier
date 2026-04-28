@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
+#include "Shooter/ShooterCharacter.h"
 #include "ShooterPlayerController.generated.h"
 
 class AShooterCharacter;
@@ -42,6 +43,9 @@ protected:
 	virtual void BindMainUI() override;
 
 	virtual void BindPostProcessSubSystem() override;
+
+	UFUNCTION()
+	void HandleMovementStateChanged(EMovementState NewState);
 
 	// UI 관련
 	// 총알

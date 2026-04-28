@@ -32,8 +32,6 @@ void UPartnerCamUI::TogglePartnerCamera()
 
 void UPartnerCamUI::SetPartnerRenderTarget(UTextureRenderTarget2D* InRenderTarget)
 {
-
-
 	if (InRenderTarget && PartnerCamMID)
 	{
 		//UE_LOG(LogTemp, Error, TEXT("RenderTargetBinded"));

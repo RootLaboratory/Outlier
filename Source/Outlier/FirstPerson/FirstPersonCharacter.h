@@ -100,4 +100,7 @@ public:
 	EWeaponType GetWeaponType() const;
 
 	AWeaponBase* GetCurrentWeapon() const { return CurrentWeapon; }
+
+	virtual void OnMoveInputUpdated(const FVector2D& MoveValue);
+
 };

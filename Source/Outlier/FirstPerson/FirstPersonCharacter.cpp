@@ -104,6 +104,8 @@ void AFirstPersonCharacter::MoveInput(const FInputActionValue& Value)
 	const FVector2D MovementVector = Value.Get<FVector2D>();
 
 	DoMove(MovementVector.X, MovementVector.Y);
+
+	OnMoveInputUpdated(MovementVector);
 }
 
 void AFirstPersonCharacter::LookInput(const FInputActionValue& Value)
@@ -237,3 +239,8 @@ EWeaponType AFirstPersonCharacter::GetWeaponType() const
 {
 	return CurrentWeaponType;
 }
+
+void AFirstPersonCharacter::OnMoveInputUpdated(const FVector2D& MoveValue)
+{
+}
+
