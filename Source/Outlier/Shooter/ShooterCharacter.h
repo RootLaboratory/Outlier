@@ -63,6 +63,15 @@ enum class ESlideEndReason : uint8
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnCharacterDeath);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnMovementStateChanged, EMovementState, NewState);
 
+UENUM()
+enum class EShooterMontageAction : uint8
+{
+	Fire,
+	Reload,
+	Slide,
+	Equip
+};
+
 /**
  * 
  */
@@ -131,15 +140,43 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Slide")
 	TObjectPtr<UCurveFloat> SlideSpeedCurve;
 
-	// Animation Assets
+	/// Animation Assets
+	// Fire
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
-	TObjectPtr<UAnimMontage> FireMontage;
+	TObjectPtr<UAnimMontage> FirstPersonFireMontage;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
-	TObjectPtr<UAnimMontage> SlideMontage;
+	TObjectPtr<UAnimMontage> ThirdPersonFireMontage;
+
+	// Slide
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
+	TObjectPtr<UAnimMontage> FirstPersonSlideMontage;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
-	TObjectPtr<UAnimMontage> ReloadMontage;
+	TObjectPtr<UAnimMontage> ThirdPersonSlideMontage;
+
+	// Reload
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
+	TObjectPtr<UAnimMontage> FirstPersonReloadMontage;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
+	TObjectPtr<UAnimMontage> ThirdPersonReloadMontage;
+
+	// Equip
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
+	TObjectPtr<UAnimMontage> FirstPersonEquipMontage;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
+	TObjectPtr<UAnimMontage> ThirdPersonEquipMontage;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Animation|Sections")
+	FName RifleMontageSectionName = TEXT("Rifle");
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Animation|Sections")
+	FName PistolMontageSectionName = TEXT("Pistol");
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Animation|Sections")
+	FName DefaultMontageSectionName = TEXT("Default");
 
 	// Replicated Gameplay State
 	UPROPERTY(ReplicatedUsing = OnRep_CurHP, EditAnywhere, BlueprintReadWrite, Category = "Health")
@@ -174,7 +211,45 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
 	float TargetLeanAlpha = 0.0f;
 
+	// Offset
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
+	FVector CrouchedFirstPersonMeshOffset = FVector(0.0f, 0.0f, 18.0f);
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
+	FVector FirstPersonViewModelOffset = FVector(-6.0f, 0.0f, 4.0f);
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
+	FVector RifleFirstPersonViewModelOffset = FVector(2.0f, -10.0f, 15.0f);
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
+	FVector PistolFirstPersonViewModelOffset = FVector(4.0f, -8.0f, 10.0f);
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
+	FVector CrouchedFirstPersonViewModelOffset = FVector(-2.0f, 0.0f, 10.0f);
+
+	// FirstPerson Pitch
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
+	float FirstPersonPitchFollowScale = 0.15f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
+	float FirstPersonPitchFollowClamp = 6.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
+	float FirstPersonPitchLocationOffsetStart = 10.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
+	FVector FirstPersonPitchLocationOffsetAtMaxUp = FVector(-2.0f, 0.0f, -2.0f);
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
+	FVector FirstPersonPitchLocationOffsetAtMaxDown = FVector(2.0f, 0.0f, 8.0f);
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
+	float FirstPersonViewModelInterpSpeed = 12.0f;
+
+	FVector  BaseFirstPersonMeshLocation = FVector::ZeroVector;
+	FVector  BaseFirstPersonViewModelRootLocation = FVector::ZeroVector;
 	FRotator BaseFirstPersonCameraRootRotation = FRotator::ZeroRotator;
+	FRotator BaseFirstPersonViewModelRootRotation = FRotator::ZeroRotator;
 	FRotator BaseFirstPersonMeshRotation = FRotator::ZeroRotator;
 
 	// Timers
@@ -183,6 +258,7 @@ protected:
 protected:
 	// Engine Lifecycle
 	virtual void BeginPlay() override;
+	virtual void Tick(float DeltaSeconds) override;
 
 	/** Initialize input action bindings */
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
@@ -263,6 +339,8 @@ public:
 
 	void ApplyDamageInternal(float DamageAmount);
 	void HandleWeaponAttackStoppedInternal();
+	void HandleAutoReloadRequested();
+	void HandleFireShotAnimation();
 
 	// Blueprint / Notify Entry Points
 	UFUNCTION(BlueprintCallable, Category = "Animation|Notify")
@@ -337,7 +415,14 @@ protected:
 	UFUNCTION(Server, Reliable)
 	void ServerJumpEnd();
 
+	UFUNCTION(Client, Reliable)
+	void ClientPlayFirstPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType);
+
+	UFUNCTION(NetMulticast, Reliable)
+	void MulticastPlayThirdPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType);
+
 	// Internal Helpers
+public:
 	void RefreshMovementState();
 	void RefreshCombatState();
 	void RefreshWeaponMode();
@@ -364,6 +449,17 @@ protected:
 	void Die();
 	void HandleDeath();
 	void UpdateLocalHealthUI() const;
-	void PlayLocalActionMontage(UAnimMontage* Montage);
+	FName ResolveMontageSectionNameForWeapon(EWeaponType WeaponType) const;
+	void PlayFirstPersonMontage(UAnimMontage* Montage);
+	void PlayFirstPersonMontageForWeapon(UAnimMontage* Montage, EWeaponType WeaponType, bool bUseWeaponSection = true);
+	void PlayThirdPersonMontage(UAnimMontage* Montage);
+	void PlayThirdPersonMontageForWeapon(UAnimMontage* Montage, EWeaponType WeaponType, bool bUseWeaponSection = true);
+	void PlayFirstPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType);
+	void PlayThirdPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType);
+	void StopFirstPersonMontage(UAnimMontage* Montage);
+	void StopThirdPersonMontage(UAnimMontage* Montage);
+	void StopSplitMontages(UAnimMontage* FirstPersonMontage, UAnimMontage* ThirdPersonMontage);
+	void PlayEquipMontages();
+	void UpdateFirstPersonPresentation(float DeltaSeconds);
 	void ClearInputIntent();
 };

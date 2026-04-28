@@ -23,14 +23,6 @@ AFirstPersonCharacter::AFirstPersonCharacter()
 	// Set size for collision capsule
 	GetCapsuleComponent()->InitCapsuleSize(55.0f, 96.0f);
 
-	FirstPersonMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("First Person Mesh"));
-
-	FirstPersonMesh->SetupAttachment(GetCapsuleComponent());
-	FirstPersonMesh->SetOnlyOwnerSee(true);
-	FirstPersonMesh->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::FirstPerson;
-	FirstPersonMesh->SetWorldLocation(FVector(0, 0, -GetCapsuleComponent()->GetScaledCapsuleHalfHeight()));
-	FirstPersonMesh->SetCollisionProfileName(FName("NoCollision"));
-
 	FirstPersonCameraRoot = CreateDefaultSubobject<USceneComponent>(TEXT("First Person Camera Root"));
 	FirstPersonCameraRoot->SetupAttachment(GetCapsuleComponent());
 	FirstPersonCameraRoot->SetRelativeLocation(FVector(0.0f, 0.0f, 64.0f));
@@ -44,6 +36,19 @@ AFirstPersonCharacter::AFirstPersonCharacter()
 	FirstPersonCamera->bEnableFirstPersonScale = false;
 	FirstPersonCamera->FirstPersonFieldOfView = 70.0f;
 	FirstPersonCamera->FirstPersonScale = 1.0f;
+
+	FirstPersonViewModelRoot = CreateDefaultSubobject<USceneComponent>(TEXT("First Person ViewModel Root"));
+	FirstPersonViewModelRoot->SetupAttachment(FirstPersonCamera);
+	FirstPersonViewModelRoot->SetRelativeLocation(FVector(0.0f, 0.0f, 0.0f));
+	FirstPersonViewModelRoot->SetRelativeRotation(FRotator::ZeroRotator);
+
+	FirstPersonMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("First Person Mesh"));
+	FirstPersonMesh->SetupAttachment(FirstPersonViewModelRoot);
+	FirstPersonMesh->SetOnlyOwnerSee(true);
+	FirstPersonMesh->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::FirstPerson;
+	FirstPersonMesh->SetRelativeLocation(FVector(-2.0f, 0.0f, -130.0f));
+	FirstPersonMesh->SetRelativeRotation(FRotator::ZeroRotator);
+	FirstPersonMesh->SetCollisionProfileName(FName("NoCollision"));
 
 	// configure the character comps
 	GetMesh()->SetOwnerNoSee(true);
@@ -81,6 +86,16 @@ void AFirstPersonCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
 void AFirstPersonCharacter::BeginPlay()
 {
 	Super::BeginPlay();
+
+	UE_LOG(
+		LogTemp,
+		Log,
+		TEXT("%s %s FPBeginPlay FirstPersonMesh=%s MeshAnimClass=%s MeshAnimInstance=%s"),
+		OutlierNet::GetNetPrefix(this),
+		*GetName(),
+		*GetNameSafe(FirstPersonMesh),
+		FirstPersonMesh ? *GetNameSafe(FirstPersonMesh->GetAnimClass()) : TEXT("None"),
+		FirstPersonMesh ? *GetNameSafe(FirstPersonMesh->GetAnimInstance()) : TEXT("None"));
 }
 
 void AFirstPersonCharacter::MoveInput(const FInputActionValue& Value)
@@ -140,7 +155,12 @@ void AFirstPersonCharacter::OnRep_CurrentWeapon()
 
 	if (CurrentWeapon)
 	{
+		CurrentWeaponType = CurrentWeapon->GetWeaponType();
 		CurrentWeapon->OnEquipped(this);
+	}
+	else
+	{
+		CurrentWeaponType = EWeaponType::Unarmed;
 	}
 
 	LastReplicatedWeapon = CurrentWeapon;
@@ -204,6 +224,7 @@ void AFirstPersonCharacter::EquipWeapon(AWeaponBase* Weapon)
 	}
 
 	LastReplicatedWeapon = CurrentWeapon;
+
 	UE_LOG(LogTemp, Log, TEXT("%s %s EquipWeapon complete Current=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(CurrentWeapon));
 }
 

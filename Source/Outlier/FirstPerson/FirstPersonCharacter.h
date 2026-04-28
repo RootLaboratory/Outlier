@@ -31,6 +31,10 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Components, meta = (AllowPrivateAccess = "true"))
 	USceneComponent* FirstPersonCameraRoot;
 
+	/** Root used to keep first-person arms and weapon in camera space */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Components, meta = (AllowPrivateAccess = "true"))
+	USceneComponent* FirstPersonViewModelRoot;
+
 
 	/** Move Input Action */
 	UPROPERTY(EditAnywhere, Category = Input)
@@ -86,6 +90,8 @@ public:
 	UCameraComponent* GetFirstPersonCameraComponent() const { return FirstPersonCamera; }
 
 	USceneComponent* GetFirstPersonCameraRoot() const { return FirstPersonCameraRoot; }
+
+	USceneComponent* GetFirstPersonViewModelRoot() const { return FirstPersonViewModelRoot; }
 
 	virtual void EquipWeapon(AWeaponBase* Weapon);
 

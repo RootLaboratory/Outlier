@@ -72,6 +72,12 @@ void UShooterInventoryComponent::SelectWeaponByIndex(int32 SlotIndex)
 	if (!ShooterCharacter->HasAuthority())
 	{
 		// 슬롯 선택은 서버가 현재 장착 무기를 최종 결정
+		if (OwnedWeapons.IsValidIndex(SlotIndex))
+		{
+			ShooterCharacter->PlayFirstPersonMontageForWeapon(
+				ShooterCharacter->FirstPersonEquipMontage,
+				OwnedWeapons[SlotIndex] ? OwnedWeapons[SlotIndex]->GetWeaponType() : EWeaponType::Unarmed);
+		}
 		ShooterCharacter->ServerSelectWeaponByIndex(SlotIndex);
 		return;
 	}
@@ -95,6 +101,7 @@ void UShooterInventoryComponent::SelectWeaponByIndex(int32 SlotIndex)
 	ShooterCharacter->ResetSecondaryCooldownInternal();
 	ShooterCharacter->StopAimInternal();
 	ShooterCharacter->AFirstPersonCharacter::EquipWeapon(OwnedWeapons[SlotIndex]);
+	ShooterCharacter->PlayEquipMontages();
 	ShooterCharacter->RefreshWeaponMode();
 	ShooterCharacter->RefreshCombatState();
 }
