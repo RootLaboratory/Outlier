@@ -14,7 +14,7 @@ void AShooterPlayerController::BeginPlay()
 	BindMainUI();
 	BindPostProcessSubSystem();
 
-	//시범용, 1P 한정 클래스로 나눠지면 분리 예정.
+	//슬라이드 1P 지정 콜백으로 하겠지만 분리 예정.
 	AShooterCharacter* ShooterCharacter = Cast<AShooterCharacter>(GetCharacter());
 	if (ShooterCharacter)
 	{
@@ -67,8 +67,6 @@ void AShooterPlayerController::OnPawnDestroyed(AActor* DestroyedActor)
 	}
 }
 
-
-
 void AShooterPlayerController::BindMainUI()
 {
 	if ( !MainUIClass || ShooterUIInstance)
@@ -101,7 +99,9 @@ void AShooterPlayerController::BindPostProcessSubSystem()
 	{
 		if (ULocalPlayerPostProcessSubsystem* PPSubsystem = LP->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
 		{
-			PPSubsystem->ActivateChromaticAberration();
+			//PPSubsystem->ActivateChromaticAberration();
+			//PPSubsystem->SetDualKawaseBlurEnabled(true);
+			//PPSubsystem->SetDualKawaseBlurRadius(6.0f);
 			//PPSubsystem->ActivateSlideState();
 		}
 	}
@@ -113,7 +113,7 @@ void AShooterPlayerController::HandleMovementStateChanged(EMovementState NewStat
 	{
 		if (ULocalPlayerUISubSystem* UISubsystem = LP->GetSubsystem<ULocalPlayerUISubSystem>())
 		{
-			//UE_LOG(LogTemp, Error, TEXT("HandleMovementStateChanged %d"), NewState);
+			//UE_LOG(LogTemp, Error, TEXT("HandleMovementStateChanged %d"), NewState));
 			switch (NewState)
 			{
 			case EMovementState::Jump:
@@ -134,7 +134,3 @@ void AShooterPlayerController::HandleMovementStateChanged(EMovementState NewStat
 		}
 	}
 }
-
-
-
-

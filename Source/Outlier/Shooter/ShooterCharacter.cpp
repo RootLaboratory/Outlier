@@ -68,7 +68,7 @@ void AShooterCharacter::BeginPlay()
 	{
 		CurHP = FMath::Clamp(CurHP, 0.0f, MaxHP);
 	}
-
+	
 	RefreshWeaponMode();
 	RefreshMovementState();
 	RefreshCombatState();

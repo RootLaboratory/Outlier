@@ -126,6 +126,12 @@ ULocalPlayerPostProcessSubsystem* FRDGModule::ResolvePostProcessSubsystem()
 
 		if (ULocalPlayerPostProcessSubsystem* Subsystem = LocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
 		{
+			UE_LOG(LogTemp, Warning, TEXT("RDG ResolvePostProcessSubsystem | World=%s Type=%d LocalPlayer=%p Subsystem=%p"),
+				*World->GetName(),
+				(int32)World->WorldType,
+				LocalPlayer,
+				Subsystem);
+
 			CachedPostProcessSubsystem = Subsystem;
 			return Subsystem;
 		}

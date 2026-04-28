@@ -10,6 +10,7 @@
 #include "AmmoUI.h"
 #include "PartnerCamUI.h"
 #include "CrossHairBase.h"
+
 void UShooterMainWidget::NativeConstruct()
 {
 	Super::NativeConstruct();

@@ -65,7 +65,7 @@ void ULocalPlayerUISubSystem::OnRep_HealthChanged(float InHealth, float MaxHealt
 
 	if (UHPBarUI* HPBarUI = Cast<UHPBarUI>(MainUIInstance->GetModule(EUIModule::HP)))
 	{
-		//UE_LOG(LogTemp, Warning, TEXT("HP Changed, %f"), Ratio);
+		UE_LOG(LogTemp, Error, TEXT("HP Changed, %f"), Ratio);
 		HPBarUI->HealthChanged(Ratio);
 	}
 }
@@ -81,7 +81,6 @@ void ULocalPlayerUISubSystem::OnRep_ShieldChanged( float InCurShield,  float InM
 
 	if (UHPBarUI* HPBarUI = Cast<UHPBarUI>(MainUIInstance->GetModule(EUIModule::HP)))
 	{
-	//	UE_LOG(LogTemp, Warning, TEXT("HP Changed, %f"), Ratio);
 		HPBarUI->ShieldChanged(Ratio);
 	}
 }

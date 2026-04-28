@@ -125,6 +125,119 @@ void SRDGGraphicsDebugger::Construct(const FArguments& InArgs)
 						]
 					]
 				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(RDGGraphicsDebugger::RowPadding)
+				[
+					SNew(SExpandableArea)
+					.InitiallyCollapsed(false)
+					.HeaderContent()
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.VAlign(VAlign_Center)
+						[
+							SNew(SCheckBox)
+							.IsChecked(this, &SRDGGraphicsDebugger::GetDualKawaseEnabledCheckState)
+							.OnCheckStateChanged(this, &SRDGGraphicsDebugger::OnDualKawaseEnabledChanged)
+						]
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+						.VAlign(VAlign_Center)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Dual Kawase Blur")))
+						]
+					]
+					.BodyContent()
+					[
+						SNew(SVerticalBox)
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Blur Radius")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SBox)
+							.WidthOverride(120.0f)
+							[
+								SNew(SNumericEntryBox<float>)
+								.AllowSpin(true)
+								.MinValue(0.0f)
+								.MinSliderValue(0.0f)
+								.MaxSliderValue(8.0f)
+								.Value(this, &SRDGGraphicsDebugger::GetDualKawaseBlurRadiusValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnDualKawaseBlurRadiusChanged)
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Blend Weight (0-1)")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot()
+							.FillWidth(1.0f)
+							.VAlign(VAlign_Center)
+							[
+								SNew(SSlider)
+								.MinValue(0.0f)
+								.MaxValue(1.0f)
+								.Value(this, &SRDGGraphicsDebugger::GetDualKawaseBlendWeightSliderValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnDualKawaseBlendWeightChanged)
+							]
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+							[
+								SNew(SBox)
+								.WidthOverride(72.0f)
+								[
+									SNew(SNumericEntryBox<float>)
+									.AllowSpin(false)
+									.MinValue(0.0f)
+									.MaxValue(1.0f)
+									.Value(this, &SRDGGraphicsDebugger::GetDualKawaseBlendWeightValue)
+									.OnValueChanged(this, &SRDGGraphicsDebugger::OnDualKawaseBlendWeightChanged)
+								]
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Downsample Count")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SBox)
+							.WidthOverride(120.0f)
+							[
+								SNew(SNumericEntryBox<int32>)
+								.AllowSpin(true)
+								.MinValue(1)
+								.MaxValue(6)
+								.MinSliderValue(1)
+								.MaxSliderValue(6)
+								.Value(this, &SRDGGraphicsDebugger::GetDualKawaseDownsampleCountValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnDualKawaseDownsampleCountChanged)
+							]
+						]
+					]
+				]
 			]
 		]
 	];
@@ -233,5 +346,87 @@ void SRDGGraphicsDebugger::OnChromaticIntensityChanged(float NewValue)
 	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
 	{
 		Subsystem->SetChromaticAberrationIntensity(NewValue);
+	}
+}
+
+ECheckBoxState SRDGGraphicsDebugger::GetDualKawaseEnabledCheckState() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().DualKawaseBlur.bEnabled ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+	}
+
+	return ECheckBoxState::Unchecked;
+}
+
+void SRDGGraphicsDebugger::OnDualKawaseEnabledChanged(ECheckBoxState NewState)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetDualKawaseBlurEnabled(NewState == ECheckBoxState::Checked);
+	}
+}
+
+TOptional<float> SRDGGraphicsDebugger::GetDualKawaseBlurRadiusValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().DualKawaseBlur.BlurRadius;
+	}
+
+	return TOptional<float>();
+}
+
+void SRDGGraphicsDebugger::OnDualKawaseBlurRadiusChanged(float NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetDualKawaseBlurRadius(NewValue);
+	}
+}
+
+float SRDGGraphicsDebugger::GetDualKawaseBlendWeightSliderValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().DualKawaseBlur.BlendWeight;
+	}
+
+	return 0.0f;
+}
+
+TOptional<float> SRDGGraphicsDebugger::GetDualKawaseBlendWeightValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().DualKawaseBlur.BlendWeight;
+	}
+
+	return TOptional<float>();
+}
+
+void SRDGGraphicsDebugger::OnDualKawaseBlendWeightChanged(float NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetDualKawaseBlurBlendWeight(NewValue);
+	}
+}
+
+TOptional<int32> SRDGGraphicsDebugger::GetDualKawaseDownsampleCountValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().DualKawaseBlur.DownsampleCount;
+	}
+
+	return TOptional<int32>();
+}
+
+void SRDGGraphicsDebugger::OnDualKawaseDownsampleCountChanged(int32 NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetDualKawaseBlurDownsampleCount(NewValue);
 	}
 }

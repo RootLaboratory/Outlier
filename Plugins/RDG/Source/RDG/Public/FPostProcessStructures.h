@@ -33,6 +33,14 @@ struct FBloomBlurParameters
 	int32 PassCount = 1;
 };
 
+struct FDualKawaseBlurParameters
+{
+	int32 bEnabled = false;
+	float BlurRadius = 1.0f;
+	float BlendWeight = 1.0f;
+	int32 DownsampleCount = 3;
+};
+
 // UI까지 합성된 최종 텍스처에 적용할 chromatic aberration 입력 파라미터.
 struct FUIChromaticAberrationParameters
 {
@@ -52,4 +60,5 @@ struct FPostProcessStrcture
 	FMotionBlurParameters MotionBlur;
 	FLensFlareParameters LensFlare;
 	FBloomBlurParameters BloomBlur;
+	FDualKawaseBlurParameters DualKawaseBlur;
 };

@@ -194,9 +194,6 @@ void ARangedWeaponBase::FireShot()
 			HitCharacter->ApplyDamageInternal(Damage);
 			UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot applied Damage=%.1f To=%s"), OutlierNet::GetNetPrefix(this), *GetName(), Damage, *GetNameSafe(HitCharacter));
 		}
-		
-		//GetLocalUISubsystem()->OnRep_AttackSign(EAttackSign::Default); //Enemy 추가되면 확장
-		//GetLocalUISubsystem()->OnRep_Aiming(); // Aiming 확장되면 추가. 기능은 구현 완.
 	}
 	else
 	{

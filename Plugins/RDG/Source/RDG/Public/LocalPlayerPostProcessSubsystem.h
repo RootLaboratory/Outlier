@@ -32,8 +32,14 @@ public:
 	void SetChromaticAberrationStartOffset(float InStartOffset);
 	void SetChromaticAberrationIntensity(float InIntensity);
 
+	void SetDualKawaseBlurEnabled(bool bEnabled);
+	void SetDualKawaseBlurRadius(float InBlurRadius);
+	void SetDualKawaseBlurBlendWeight(float InBlendWeight);
+	void SetDualKawaseBlurDownsampleCount(int32 InDownsampleCount);
+
 	void TickFrame();
 	const FPostProcessStrcture& GetPostProcessStrcture();
+	const FPostProcessStrcture& GetPostProcessStrcture() const;
 	const FPostProcessStrctureUI& GetUIPostProcessStrcture() const;
 	bool IsDirty();
 

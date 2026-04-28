@@ -13,6 +13,8 @@ void ULocalPlayerPostProcessSubsystem::Initialize(FSubsystemCollectionBase& Coll
 	{
 		ViewExtension = FSceneViewExtensions::NewExtension<FOutlierPostProcessSceneViewExtension>(LP);
 	}
+
+	TickFrame();
 }
 
 void ULocalPlayerPostProcessSubsystem::Deinitialize()
@@ -23,6 +25,7 @@ void ULocalPlayerPostProcessSubsystem::Deinitialize()
 
 void ULocalPlayerPostProcessSubsystem::MarkDirty()
 {
+	CachedPostProcessParameters = PostProcessParameters;
 	CachedUIPostProcessParameters = UIPostProcessParameters;
 	bDirty = true;
 }
@@ -74,6 +77,37 @@ void ULocalPlayerPostProcessSubsystem::SetChromaticAberrationIntensity(float InI
 	MarkDirty();
 }
 
+void ULocalPlayerPostProcessSubsystem::SetDualKawaseBlurEnabled(bool bEnabled)
+{
+	PostProcessParameters.DualKawaseBlur.bEnabled = bEnabled ? 1 : 0;
+	MarkDirty();
+	TickFrame();
+
+}
+
+void ULocalPlayerPostProcessSubsystem::SetDualKawaseBlurRadius(float InBlurRadius)
+{
+	PostProcessParameters.DualKawaseBlur.BlurRadius = FMath::Max(0.0f, InBlurRadius);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetDualKawaseBlurBlendWeight(float InBlendWeight)
+{
+	PostProcessParameters.DualKawaseBlur.BlendWeight = FMath::Clamp(InBlendWeight, 0.0f, 1.0f);
+	MarkDirty();
+	TickFrame();
+
+}
+
+void ULocalPlayerPostProcessSubsystem::SetDualKawaseBlurDownsampleCount(int32 InDownsampleCount)
+{
+	PostProcessParameters.DualKawaseBlur.DownsampleCount = FMath::Clamp(InDownsampleCount, 1, 6);
+	MarkDirty();
+	TickFrame();
+
+}
+
 void ULocalPlayerPostProcessSubsystem::TickFrame()
 {
 	if (!bDirty)
@@ -87,12 +121,18 @@ void ULocalPlayerPostProcessSubsystem::TickFrame()
 	if (ViewExtension.IsValid())
 	{
 		ViewExtension->UpdateCachedParameters(CachedPostProcessParameters);
+		ViewExtension->UpdateCachedUIParameters(CachedUIPostProcessParameters);
 	}
 
 	bDirty = false;
 }
 
 const FPostProcessStrcture& ULocalPlayerPostProcessSubsystem::GetPostProcessStrcture()
+{
+	return CachedPostProcessParameters;
+}
+
+const FPostProcessStrcture& ULocalPlayerPostProcessSubsystem::GetPostProcessStrcture() const
 {
 	return CachedPostProcessParameters;
 }
@@ -106,3 +146,4 @@ bool ULocalPlayerPostProcessSubsystem::IsDirty()
 {
 	return bDirty;
 }
+
