@@ -27,9 +27,9 @@ public:
 		const FSceneView& InView,
 		const FPostProcessingInputs& Inputs) override;
 
-
 public:
 	void UpdateCachedParameters(const FPostProcessStrcture& InParameters);
+	void UpdateCachedUIParameters(const FPostProcessStrctureUI& InParameters);
 
 private:
 	bool ShouldRenderAnyEffect() const;
@@ -40,8 +40,13 @@ private:
 		const FSceneView& View,
 		const FPostProcessMaterialInputs& Inputs);
 
+	FScreenPassTexture DualKawaseBlurCallback_RenderThread(
+		FRDGBuilder& GraphBuilder,
+		const FSceneView& View,
+		const FPostProcessMaterialInputs& Inputs);
+
 private:
 	TWeakObjectPtr<ULocalPlayer> LocalPlayer;
 	FPostProcessStrcture CachedParameters;
-
+	FPostProcessStrctureUI CachedUIParameters;
 };

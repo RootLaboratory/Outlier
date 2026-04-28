@@ -9,6 +9,7 @@
 class UProjectionMarkDefinition;
 class UTrailEffectDefinition;
 class ULocalPlayerUISubSystem;
+class USoundDefinition;
 /**
  * 
  */
@@ -71,10 +72,16 @@ protected:
 	uint8 bOnReuseCooldown : 1 = false;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Decal")
-	TSubclassOf<UProjectionMarkDefinition> Decal;
+	TObjectPtr<UProjectionMarkDefinition> WeaponDecal;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Effect")
-	TSubclassOf<UTrailEffectDefinition> Effect;
+	TObjectPtr<UTrailEffectDefinition> WeaponMuzzle; 
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Effect")
+	TObjectPtr<UTrailEffectDefinition> WeaponTrail; 
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sound")
+	TObjectPtr<USoundDefinition> GunSound; 
 
 
 
@@ -123,12 +130,11 @@ public:
 protected:
 
 	UFUNCTION(NetMulticast, Unreliable)
-	void MulticastPlayFireFX(FVector_NetQuantize TraceEnd, bool bHit);
+	void MulticastPlayFireFX(FVector_NetQuantize TraceEnd,  AActor* Hit);
 
-	void PlayThirdPersonFireFX(FVector TraceEnd, bool bHit);
+	void PlayThirdPersonFireFX(FVector TraceEnd,  AActor* Hit);
 
-	void PlayFirstPersonFireFX(FVector TraceEnd, bool bHit);
+	void PlayFirstPersonFireFX(FVector TraceEnd,  AActor* Hit);
 
-
-	ULocalPlayerUISubSystem* GetLocalSubsystem(); //Helper
+	ULocalPlayerUISubSystem* GetLocalUISubsystem(); //Helper
 };

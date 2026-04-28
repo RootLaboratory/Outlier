@@ -385,6 +385,7 @@ void UShooterMovementComponent::RefreshMovementState()
 	else
 	{
 		const float Speed2D = ShooterCharacter->GetVelocity().Size2D();
+
 		if (Speed2D <= KINDA_SMALL_NUMBER)
 		{
 			NewState = EMovementState::Idle;

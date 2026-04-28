@@ -17,7 +17,6 @@ class TAGDRIVENUI_API UHPBarUI : public UEventDrivenUI
 	
 public:
 
-
 	UFUNCTION(BlueprintNativeEvent, Category = "UI")
 	void ShieldChanged(float InShieldRatio);
 	UFUNCTION(BlueprintNativeEvent, Category = "UI")

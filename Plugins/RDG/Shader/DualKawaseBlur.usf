@@ -1,0 +1,51 @@
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/ScreenPass.ush"
+
+Texture2D InputTexture;
+Texture2D OriginalTexture;
+SamplerState InputSampler;
+
+float2 InvResolution;
+float KernelOffset;
+float BlendWeight;
+uint bUpsample;
+uint bCompositeWithOriginal;
+
+void MainPS(
+	FScreenVertexOutput Input,
+	out float4 OutColor : SV_Target0)
+{
+	float2 UV = Input.UV;
+
+	if (bCompositeWithOriginal != 0)
+	{
+		float4 OriginalColor = OriginalTexture.Sample(InputSampler, UV);
+		float4 BlurredColor = InputTexture.Sample(InputSampler, UV);
+		OutColor = lerp(OriginalColor, BlurredColor, saturate(BlendWeight));
+		return;
+	}
+
+	float2 BaseOffset = InvResolution * (KernelOffset + 0.5f);
+	float4 Accumulated = 0.0f;
+
+	if (bUpsample != 0)
+	{
+		Accumulated += InputTexture.Sample(InputSampler, UV + float2(-BaseOffset.x * 2.0f, 0.0f));
+		Accumulated += InputTexture.Sample(InputSampler, UV + float2(-BaseOffset.x, BaseOffset.y));
+		Accumulated += InputTexture.Sample(InputSampler, UV + float2(0.0f, BaseOffset.y * 2.0f));
+		Accumulated += InputTexture.Sample(InputSampler, UV + float2(BaseOffset.x, BaseOffset.y));
+		Accumulated += InputTexture.Sample(InputSampler, UV + float2(BaseOffset.x * 2.0f, 0.0f));
+		Accumulated += InputTexture.Sample(InputSampler, UV + float2(BaseOffset.x, -BaseOffset.y));
+		Accumulated += InputTexture.Sample(InputSampler, UV + float2(0.0f, -BaseOffset.y * 2.0f));
+		Accumulated += InputTexture.Sample(InputSampler, UV + float2(-BaseOffset.x, -BaseOffset.y));
+		OutColor = Accumulated * (1.0f / 8.0f);
+	}
+	else
+	{
+		Accumulated += InputTexture.Sample(InputSampler, UV + float2(-BaseOffset.x, -BaseOffset.y));
+		Accumulated += InputTexture.Sample(InputSampler, UV + float2(BaseOffset.x, -BaseOffset.y));
+		Accumulated += InputTexture.Sample(InputSampler, UV + float2(-BaseOffset.x, BaseOffset.y));
+		Accumulated += InputTexture.Sample(InputSampler, UV + float2(BaseOffset.x, BaseOffset.y));
+		OutColor = Accumulated * 0.25f;
+	}
+}

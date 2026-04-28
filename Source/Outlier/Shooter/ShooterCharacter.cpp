@@ -68,7 +68,7 @@ void AShooterCharacter::BeginPlay()
 	{
 		CurHP = FMath::Clamp(CurHP, 0.0f, MaxHP);
 	}
-
+	
 	RefreshWeaponMode();
 	RefreshMovementState();
 	RefreshCombatState();
@@ -163,6 +163,16 @@ void AShooterCharacter::OnMovementModeChanged(EMovementMode  PrevMovementMode, u
 	}
 
 	RefreshMovementState();
+}
+
+void AShooterCharacter::OnMoveInputUpdated(const FVector2D& MoveValue)
+{
+  Super::OnMoveInputUpdated(MoveValue);
+
+	if (MovementComponent)
+	{
+		MovementComponent->RefreshMovementState();
+	}
 }
 
 void AShooterCharacter::TryReload()

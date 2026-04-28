@@ -11,9 +11,15 @@
 void AShooterPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
-
 	BindMainUI();
 	BindPostProcessSubSystem();
+
+	//슬라이드 1P 지정 콜백으로 하겠지만 분리 예정.
+	AShooterCharacter* ShooterCharacter = Cast<AShooterCharacter>(GetCharacter());
+	if (ShooterCharacter)
+	{
+		ShooterCharacter->OnMovementStateChanged.AddDynamic(this, &AShooterPlayerController::HandleMovementStateChanged);
+	}
 }
 
 void AShooterPlayerController::SetupInputComponent()
@@ -61,12 +67,8 @@ void AShooterPlayerController::OnPawnDestroyed(AActor* DestroyedActor)
 	}
 }
 
-
-
 void AShooterPlayerController::BindMainUI()
 {
-	UE_LOG(LogTemp, Warning, TEXT("BindMainUI"));
-
 	if ( !MainUIClass || ShooterUIInstance)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("Cant InitializeMainUI"));
@@ -82,14 +84,13 @@ void AShooterPlayerController::BindMainUI()
 
 	ShooterUIInstance->AddToViewport();
 
-		if (ULocalPlayer* LP = this->GetLocalPlayer())
+	if (ULocalPlayer* LP = this->GetLocalPlayer())
+	{
+		if (ULocalPlayerUISubSystem* UISubsystem = LP->GetSubsystem<ULocalPlayerUISubSystem>())
 		{
-			if (ULocalPlayerUISubSystem* UISubsystem = LP->GetSubsystem<ULocalPlayerUISubSystem>())
-			{
-				UISubsystem->RegisterMainUI(ShooterUIInstance);
-				//UISubsystem->PartnerCameraBind(CaptureComponent); //Main 끝내고.
-			}
+			UISubsystem->RegisterMainUI(ShooterUIInstance);
 		}
+	}
 }
 
 void AShooterPlayerController::BindPostProcessSubSystem()
@@ -98,12 +99,38 @@ void AShooterPlayerController::BindPostProcessSubSystem()
 	{
 		if (ULocalPlayerPostProcessSubsystem* PPSubsystem = LP->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
 		{
+			//PPSubsystem->ActivateChromaticAberration();
+			//PPSubsystem->SetDualKawaseBlurEnabled(true);
+			//PPSubsystem->SetDualKawaseBlurRadius(6.0f);
 			//PPSubsystem->ActivateSlideState();
-			//일단 SetUp만 처리 
 		}
 	}
 }
 
-
-
-
+void AShooterPlayerController::HandleMovementStateChanged(EMovementState NewState)
+{
+	if (ULocalPlayer* LP = GetLocalPlayer())
+	{
+		if (ULocalPlayerUISubSystem* UISubsystem = LP->GetSubsystem<ULocalPlayerUISubSystem>())
+		{
+			//UE_LOG(LogTemp, Error, TEXT("HandleMovementStateChanged %d"), NewState));
+			switch (NewState)
+			{
+			case EMovementState::Jump:
+				UISubsystem->OnRep_PlayerStateChanged(EUIPlayerState::Jump);
+				break;
+			case EMovementState::Slide:
+				UISubsystem->OnRep_PlayerStateChanged(EUIPlayerState::Slide);
+				break;
+			case EMovementState::Walk:
+			case EMovementState::Run:
+			case EMovementState::Crouch:
+				UISubsystem->OnRep_PlayerStateChanged(EUIPlayerState::Move);
+				break;
+			default:
+				UISubsystem->OnRep_PlayerStateChanged(EUIPlayerState::Idle);
+				break;
+			}
+		}
+	}
+}
