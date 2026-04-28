@@ -31,7 +31,6 @@ protected:
 	// Input Mapping Context Setup
 	virtual void SetupInputComponent() override;
 
-
 	virtual TSubclassOf<UMainUIBase> GetMainUIClass_Implementation() const;
 
 	virtual void BindMainUI();
@@ -40,8 +39,7 @@ protected:
 	UPROPERTY()
 	TObjectPtr<UMainUIBase> ShooterUIInstance;
 
-
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "UI")
-	TSubclassOf<UMainUIBase> MainUIClass; //Bind될 ShooterUIClass
+	TSubclassOf<UMainUIBase> MainUIClass;
 
 };

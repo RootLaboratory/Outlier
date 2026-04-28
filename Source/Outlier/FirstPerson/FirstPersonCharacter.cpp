@@ -7,6 +7,7 @@
 #include "Components/CapsuleComponent.h"
 #include "Components/SceneComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "LocalPlayerUISubSystem.h"
 #include "EnhancedInputComponent.h"
 #include "InputActionValue.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -80,6 +81,9 @@ void AFirstPersonCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
 		// Attack
 		EnhancedInputComponent->BindAction(AttackAction, ETriggerEvent::Started,   this, &AFirstPersonCharacter::TryStartAttack);
 		EnhancedInputComponent->BindAction(AttackAction, ETriggerEvent::Completed, this, &AFirstPersonCharacter::TryStopAttack);
+
+
+		EnhancedInputComponent->BindAction(CamToggleAction, ETriggerEvent::Started, this, &AFirstPersonCharacter::TryCamToggle);
 	}
 }
 
@@ -142,6 +146,24 @@ void AFirstPersonCharacter::DoAim(float Yaw, float Pitch)
 		// rotation inputs
 		AddControllerYawInput(Yaw);
 		AddControllerPitchInput(Pitch);
+	}
+}
+
+void AFirstPersonCharacter::TryCamToggle()
+{
+	//UE_LOG(LogTemp, Error, TEXT("Toggle"));
+	APlayerController* PlayerController = Cast<APlayerController>(GetController());
+
+	if (PlayerController)
+	{
+		if (ULocalPlayer* LP = PlayerController->GetLocalPlayer())
+		{
+			if (ULocalPlayerUISubSystem* PPSubsystem = LP->GetSubsystem<ULocalPlayerUISubSystem>())
+			{
+
+				PPSubsystem->OnRep_PartnerCameraToggle();
+			}
+		}
 	}
 }
 
