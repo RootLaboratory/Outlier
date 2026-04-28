@@ -74,9 +74,38 @@ void UShooterAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 		CachedShooterCharacter = Cast<AShooterCharacter>(OwnerPawn);
 	}
 
-	Speed		      = CachedShooterCharacter->GetCharacterMovement()->Velocity.Size2D();
+	if (!CachedShooterCharacter)
+	{
+		Speed = 0.0f;
+		Direction = 0.0f;
+		CurrentWeaponType = EWeaponType::Unarmed;
+		LeanAlpha = 0.0f;
+		bIsCrouching = false;
+		bIsSprinting = false;
+		bIsSliding = false;
+		bIsSlidingCanceled = false;
+		bIsGrounded = true;
+		bIsInAir = false;
+		bIsAiming = false;
+		bIsReloading = false;
+		bIsPrimaryWeapon = false;
+		bIsSecondaryWeapon = false;
+		return;
+	}
+
+	UCharacterMovementComponent* CharacterMovement = CachedShooterCharacter->GetCharacterMovement();
+	if (!CharacterMovement)
+	{
+		Speed = 0.0f;
+		Direction = 0.0f;
+		bIsGrounded = true;
+		bIsInAir = false;
+		return;
+	}
+
+	Speed		      = CharacterMovement->Velocity.Size2D();
 	Direction		  = UKismetAnimationLibrary::CalculateDirection(
-		CachedShooterCharacter->GetCharacterMovement()->Velocity,
+		CharacterMovement->Velocity,
 		CachedShooterCharacter->GetActorRotation()
 	);
 	CurrentWeaponType = CachedShooterCharacter->GetWeaponType();
@@ -89,7 +118,7 @@ void UShooterAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 	bIsSprinting	   = CachedShooterCharacter->IsSprinting();
 	bIsSliding		   = CachedShooterCharacter->IsSliding();
 	bIsSlidingCanceled = CachedShooterCharacter->IsSlidingCanceled();
-	bIsGrounded		   = CachedShooterCharacter->GetCharacterMovement()->IsMovingOnGround();
+	bIsGrounded		   = CharacterMovement->IsMovingOnGround();
 	bIsInAir		   = !bIsGrounded;
 	bIsAiming	       = CachedShooterCharacter->IsAiming();
 	bIsReloading       = CachedShooterCharacter->IsReloading();
