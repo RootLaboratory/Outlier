@@ -48,6 +48,9 @@ protected:
 	UPROPERTY(EditAnywhere, Category = Input)
 	UInputAction* AttackAction;
 
+	UPROPERTY(EditAnywhere, Category = Input)
+	UInputAction* CamToggleAction;
+
 	UPROPERTY(ReplicatedUsing = OnRep_CurrentWeapon, EditAnywhere, Category = Weapon)
 	AWeaponBase* CurrentWeapon;
 
@@ -77,6 +80,9 @@ protected:
 	void DoMove(float Right, float Forward);
 
 	void DoAim(float Yaw, float Pitch);
+
+	void TryCamToggle();
+
 protected:
 
 	/** Set up input action bindings */

@@ -200,9 +200,10 @@ void ARangedWeaponBase::FireShot()
 		GetLocalUISubsystem()->OnRep_ShootCrosshairChanged();
 
 		AActor* HitActor = Hit.GetActor();
-		MulticastPlayFireFX_Implementation(Hit.ImpactPoint, HitActor);
+		const FVector TraceEndPoint = bHit ? Hit.ImpactPoint : End;
+		MulticastPlayFireFX(TraceEndPoint, HitActor);
 
-		if(UVisualEventSubsystem * VisualSubsystem = GetWorld()->GetSubsystem<UVisualEventSubsystem>())
+		if (UVisualEventSubsystem* VisualSubsystem = GetWorld()->GetSubsystem<UVisualEventSubsystem>())
 		{
 			if (GunSound)
 			{
@@ -249,7 +250,7 @@ void ARangedWeaponBase::SetAiming(bool Aimming)
 }
 
 
-void ARangedWeaponBase::MulticastPlayFireFX_Implementation(FVector_NetQuantize TraceEnd,  AActor* Hit)
+void ARangedWeaponBase::MulticastPlayFireFX_Implementation(FVector_NetQuantize TraceEnd, AActor* Hit)
 {
 	AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
 	if (!Shooter)
@@ -266,7 +267,7 @@ void ARangedWeaponBase::MulticastPlayFireFX_Implementation(FVector_NetQuantize T
 	PlayThirdPersonFireFX(TraceEnd, Hit);
 }
 
-void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd,  AActor* Hit)
+void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, AActor* Hit)
 {
 	USkeletalMeshComponent* Mesh = ThirdPersonWeaponMesh;
 	if (!Mesh)
@@ -280,25 +281,13 @@ void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd,  AActor* Hit)
 		FVector MuzzleForward = Mesh->GetSocketRotation(TEXT("Muzzle")).Vector();
 		const FRotator MuzzleRotation = Mesh->GetSocketRotation(TEXT("Muzzle"));
 
-		FVector Start = MuzzleLocation + MuzzleForward * 10.f;
+		const FVector Start = MuzzleLocation;// +MuzzleForward * 10.f;
 		FVector End = TraceEnd;
 
 		if (WeaponMuzzle)
 		{
 			//UE_LOG(LogTemp, Log, TEXT("PlayFirstPersonFireFX_EffectSpawned"));
 			//UTrailEffectDefinition* MuzzleEffectInstance = NewObject<UTrailEffectDefinition>(this, WeaponMuzzle);
-
-			if (!Hit)
-			{
-
-				FVector CameraLocation;
-				FRotator CameraRotation;
-
-				ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
-				OwnerCharacter->GetController()->GetPlayerViewPoint(CameraLocation, CameraRotation);
-
-				Start = CameraLocation;
-			}
 
 			VisualSubsystem->SpawnMuzzleEffect(WeaponMuzzle, Start, MuzzleRotation);
 
@@ -308,20 +297,6 @@ void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd,  AActor* Hit)
 		if (WeaponTrail)
 		{
 			//UTrailEffectDefinition* TrailEffectInstance = NewObject<UTrailEffectDefinition>(this, WeaponTrail);
-			if (!Hit)
-			{
-
-				FVector CameraLocation;
-				FRotator CameraRotation;
-
-				ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
-				OwnerCharacter->GetController()->GetPlayerViewPoint(CameraLocation, CameraRotation);
-
-				Start = CameraLocation;
-				End = Start + (CameraRotation.Vector() * EffectiveRange);
-
-			}
-
 			VisualSubsystem->SpawnBeamTrail(WeaponTrail, Start, End);
 		}
 
@@ -364,7 +339,7 @@ void ARangedWeaponBase::PlayFirstPersonFireFX(FVector TraceEnd, AActor* Hit)
 		FVector MuzzleForward = Mesh->GetSocketRotation(TEXT("Muzzle")).Vector();
 		const FRotator MuzzleRotation = Mesh->GetSocketRotation(TEXT("Muzzle"));
 
-		FVector Start = MuzzleLocation + MuzzleForward * 10.f;
+		const FVector Start = MuzzleLocation + MuzzleForward * 10.f;
 		FVector End = TraceEnd;
 
 		if (WeaponMuzzle)
@@ -372,40 +347,14 @@ void ARangedWeaponBase::PlayFirstPersonFireFX(FVector TraceEnd, AActor* Hit)
 			//UE_LOG(LogTemp, Log, TEXT("PlayFirstPersonFireFX_EffectSpawned"));
 			//UTrailEffectDefinition* MuzzleEffectInstance = NewObject<UTrailEffectDefinition>(this, WeaponMuzzle);
 
-			if (!Hit)
-			{
-
-				FVector CameraLocation;
-				FRotator CameraRotation;
-
-				ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
-				OwnerCharacter->GetController()->GetPlayerViewPoint(CameraLocation, CameraRotation);
-
-				Start = CameraLocation;
-			}
-
 			VisualSubsystem->SpawnMuzzleEffect(WeaponMuzzle, Start, MuzzleRotation);
-			
+
 		}
 
 
 		if (WeaponTrail)
 		{
 			//UTrailEffectDefinition* TrailEffectInstance = NewObject<UTrailEffectDefinition>(this, WeaponTrail);
-			if (!Hit)
-			{
-
-				FVector CameraLocation;
-				FRotator CameraRotation;
-
-				ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
-				OwnerCharacter->GetController()->GetPlayerViewPoint(CameraLocation, CameraRotation);
-
-				Start = CameraLocation;
-				End = Start + (CameraRotation.Vector() * EffectiveRange);
-
-			}
-
 			VisualSubsystem->SpawnBeamTrail(WeaponTrail, Start, End);
 		}
 

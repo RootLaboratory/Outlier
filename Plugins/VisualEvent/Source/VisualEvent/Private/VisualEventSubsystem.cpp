@@ -192,7 +192,7 @@ void UVisualEventSubsystem::SpawnMuzzleEffect(const UTrailEffectDefinition* Def,
 		return;
 	}
 
-	const FVector FinalLocation = Location + Def->RelativeLocation;
+	const FVector FinalLocation = Location +Def->RelativeLocation;
 	const FRotator FinalRotation = Rotation + Def->RelativeRotation + Def->RotationOffset;
 
 	if (UNiagaraSystem* Niagara = Cast<UNiagaraSystem>(Def->FXAsset))
