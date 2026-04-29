@@ -189,9 +189,10 @@ void ARangedWeaponBase::FireShot()
 		UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot miss Start=%s End=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *Start.ToString(), *End.ToString());
 	}
 
-	{
-		GetLocalUISubsystem()->OnRep_ShootCrosshairChanged();
 
+	ClientNotifyShotFired();
+
+	{
 		AActor* HitActor = Hit.GetActor();
 		const FVector TraceEndPoint = bHit ? Hit.ImpactPoint : End;
 		MulticastPlayFireFX(TraceEndPoint, HitActor);
@@ -259,11 +260,23 @@ void ARangedWeaponBase::MulticastPlayFireFX_Implementation(FVector_NetQuantize T
 	PlayThirdPersonFireFX(TraceEnd, Hit);
 }
 
+
 void ARangedWeaponBase::OnRep_CurAmmo()
 {
 	if (GetLocalUISubsystem() != nullptr)
 	{
 		GetLocalUISubsystem()->OnRep_AmmoCountChanged(CurrentAmmo);
+	}
+}
+
+
+void ARangedWeaponBase::ClientNotifyShotFired_Implementation()
+{
+	AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
+
+	if (Shooter->IsLocallyControlled())
+	{
+		GetLocalUISubsystem()->OnRep_ShootCrosshairChanged();
 	}
 }
 
@@ -331,7 +344,6 @@ void ARangedWeaponBase::PlayFirstPersonFireFX(FVector TraceEnd, AActor* Hit)
 	{
 		return;
 	}
-
 
 	if (UVisualEventSubsystem* VisualSubsystem = GetWorld()->GetSubsystem<UVisualEventSubsystem>())
 	{
