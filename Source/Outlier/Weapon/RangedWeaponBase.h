@@ -129,6 +129,9 @@ public:
 
 protected:
 
+	UFUNCTION(Client, Unreliable)
+	void ClientNotifyShotFired();
+
 	UFUNCTION(NetMulticast, Unreliable)
 	void MulticastPlayFireFX(FVector_NetQuantize TraceEnd,  AActor* Hit);
 

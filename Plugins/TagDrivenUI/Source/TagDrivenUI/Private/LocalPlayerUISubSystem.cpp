@@ -115,7 +115,7 @@ void ULocalPlayerUISubSystem::OnRep_PlayerStateChanged(EUIPlayerState State)
 
 
 
-void ULocalPlayerUISubSystem::OnRep_PartnerCameraToggle()
+void ULocalPlayerUISubSystem::PartnerCameraToggle()
 {
 	if (!MainUIInstance)
 	{
