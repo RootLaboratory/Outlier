@@ -97,10 +97,7 @@ void ARangedWeaponBase::FinishReload()
 	CurrentAmmo += AmmoToLoad;
 	bIsReloading = false;
 
-	if (GetLocalUISubsystem() != nullptr)
-	{
-		GetLocalUISubsystem()->OnRep_AmmoCountChanged(CurrentAmmo);
-	}
+	UpdateLocalAmmoUI();
 
 	UE_LOG(LogTemp, Log, TEXT("%s [%s] Reload complete Ammo=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo);
 }
@@ -118,6 +115,7 @@ void ARangedWeaponBase::CancelReload()
 void ARangedWeaponBase::ConsumeAmmo()
 {
 	CurrentAmmo = FMath::Max(CurrentAmmo - 1, 0);
+	UpdateLocalAmmoUI();
 }
 
 
@@ -261,12 +259,15 @@ void ARangedWeaponBase::MulticastPlayFireFX_Implementation(FVector_NetQuantize T
 }
 
 
+void ARangedWeaponBase::OnEquipped(ACharacter* NewOwner)
+{
+	Super::OnEquipped(NewOwner);
+	UpdateLocalAmmoUI();
+}
+
 void ARangedWeaponBase::OnRep_CurAmmo()
 {
-	if (GetLocalUISubsystem() != nullptr)
-	{
-		GetLocalUISubsystem()->OnRep_AmmoCountChanged(CurrentAmmo);
-	}
+	UpdateLocalAmmoUI();
 }
 
 
@@ -393,7 +394,7 @@ void ARangedWeaponBase::PlayFirstPersonFireFX(FVector TraceEnd, AActor* Hit)
 	}
 }
 
-ULocalPlayerUISubSystem* ARangedWeaponBase::GetLocalUISubsystem()
+ULocalPlayerUISubSystem* ARangedWeaponBase::GetLocalUISubsystem() const
 {
 	AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
 
@@ -418,6 +419,14 @@ ULocalPlayerUISubSystem* ARangedWeaponBase::GetLocalUISubsystem()
 		}
 	}
 	return nullptr;
+}
+
+void ARangedWeaponBase::UpdateLocalAmmoUI() const
+{
+	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
+	{
+		UISubsystem->OnRep_AmmoCountChanged(CurrentAmmo);
+	}
 }
 
 void ARangedWeaponBase::HandleAutoFire()

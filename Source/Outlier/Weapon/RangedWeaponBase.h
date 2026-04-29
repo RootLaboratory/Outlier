@@ -93,6 +93,7 @@ protected:
 
 public:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const;
+	virtual void OnEquipped(ACharacter* NewOwner) override;
 
 	virtual bool CanAttack() const override;
 	virtual void StartAttack() override;
@@ -129,6 +130,7 @@ public:
 	void OnRep_CurAmmo();
 
 protected:
+	void UpdateLocalAmmoUI() const;
 
 	UFUNCTION(Client, Unreliable)
 	void ClientNotifyShotFired();
@@ -140,5 +142,5 @@ protected:
 
 	void PlayFirstPersonFireFX(FVector TraceEnd,  AActor* Hit);
 
-	ULocalPlayerUISubSystem* GetLocalUISubsystem(); //Helper
+	ULocalPlayerUISubSystem* GetLocalUISubsystem() const; //Helper
 };
