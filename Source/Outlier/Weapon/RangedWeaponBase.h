@@ -23,12 +23,8 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Ammo")
 	int32 MagazineSize = 30;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Ammo")
+	UPROPERTY(ReplicatedUsing = OnRep_CurAmmo, EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Ammo")
 	int32 CurrentAmmo = 30;
-
-	// 잔탄
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Ammo")
-	int32 ReserveAmmo = 90;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Ammo")
 	float ReloadTime = 1.0f;
@@ -96,6 +92,8 @@ protected:
 	void FinishReuseCooldown();
 
 public:
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const;
+
 	virtual bool CanAttack() const override;
 	virtual void StartAttack() override;
 	virtual void StopAttack() override;
@@ -126,6 +124,9 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Weapon|Cooldown")
 	float GetReuseCooldown() const { return ReuseCooldown; }
+
+	UFUNCTION()
+	void OnRep_CurAmmo();
 
 protected:
 

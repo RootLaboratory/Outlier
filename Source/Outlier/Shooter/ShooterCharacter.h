@@ -18,6 +18,7 @@ class UShooterMovementComponent;
 enum class EWeaponType : uint8;
 class UAnimMontage;
 class UCurveFloat;
+class UCurveVector;
 
 UENUM(BlueprintType)
 enum class EMovementState : uint8
@@ -233,6 +234,9 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
 	float FirstPersonPitchFollowClamp = 6.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
+	TObjectPtr<UCurveVector> FirstPersonPitchLocationOffsetCurve = nullptr;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
 	float FirstPersonPitchLocationOffsetStart = 10.0f;
