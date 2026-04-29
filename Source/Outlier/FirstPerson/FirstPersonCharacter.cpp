@@ -151,6 +151,11 @@ void AFirstPersonCharacter::DoAim(float Yaw, float Pitch)
 
 void AFirstPersonCharacter::TryCamToggle()
 {
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+
 	//UE_LOG(LogTemp, Error, TEXT("Toggle"));
 	APlayerController* PlayerController = Cast<APlayerController>(GetController());
 
@@ -161,7 +166,7 @@ void AFirstPersonCharacter::TryCamToggle()
 			if (ULocalPlayerUISubSystem* PPSubsystem = LP->GetSubsystem<ULocalPlayerUISubSystem>())
 			{
 
-				PPSubsystem->OnRep_PartnerCameraToggle();
+				PPSubsystem->PartnerCameraToggle();
 			}
 		}
 	}

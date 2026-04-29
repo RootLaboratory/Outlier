@@ -42,7 +42,7 @@ public:
 public:
 
 	void PartnerCameraBind(USceneCaptureComponent2D* InCaptureComponent2D);
-	void OnRep_PartnerCameraToggle();
+	void PartnerCameraToggle();
 
 private:
 	UPROPERTY()
