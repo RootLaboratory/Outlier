@@ -7,6 +7,7 @@
 #include "Components/CapsuleComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/SceneCaptureComponent2D.h"
+#include "Curves/CurveVector.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Controller.h"
 #include "EnhancedInputComponent.h"
@@ -1216,7 +1217,16 @@ void AShooterCharacter::UpdateFirstPersonPresentation(float DeltaSeconds)
 	}
 
 	FVector PitchLocationOffset = FVector::ZeroVector;
-	if (FMath::Abs(AimPitch) > FirstPersonPitchLocationOffsetStart)
+	if (FirstPersonPitchLocationOffsetCurve)
+	{
+		const float NormalizedPitch = FMath::GetMappedRangeValueClamped(
+			FVector2D(-90.0f, 90.0f),
+			FVector2D(-1.0f, 1.0f),
+			AimPitch);
+
+		PitchLocationOffset = FirstPersonPitchLocationOffsetCurve->GetVectorValue(NormalizedPitch);
+	}
+	else if (FMath::Abs(AimPitch) > FirstPersonPitchLocationOffsetStart)
 	{
 		const float PitchLocationAlpha = FMath::GetMappedRangeValueClamped(
 			FVector2D(FirstPersonPitchLocationOffsetStart, 90.0f),

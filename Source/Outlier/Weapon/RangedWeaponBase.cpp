@@ -16,6 +16,7 @@
 #include "Shooter/ShooterPlayerController.h"
 #include "Shooter/ShooterCharacter.h"
 #include "OutlierNetUtils.h"
+#include "Net/UnrealNetwork.h"
 
 void ARangedWeaponBase::StartAttackCooldown()
 {
@@ -64,8 +65,7 @@ void ARangedWeaponBase::FinishReuseCooldown()
 bool ARangedWeaponBase::CanReload() const
 {
 	return !bIsReloading
-		&& CurrentAmmo < MagazineSize
-		&& ReserveAmmo > 0;
+		&& CurrentAmmo < MagazineSize;
 }
 
 void ARangedWeaponBase::Reload()
@@ -77,7 +77,7 @@ void ARangedWeaponBase::BeginReload()
 {
 	if (!CanReload())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("%s [%s] Reload blocked Ammo=%d Reserve=%d Reloading=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo, ReserveAmmo, bIsReloading ? 1 : 0);
+		UE_LOG(LogTemp, Warning, TEXT("%s [%s] Reload blocked Ammo=%d Reloading=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo, bIsReloading ? 1 : 0);
 		return;
 	}
 
@@ -92,10 +92,9 @@ void ARangedWeaponBase::FinishReload()
 	}
 
 	const int32 NeededAmmo = MagazineSize - CurrentAmmo;
-	const int32 AmmoToLoad = FMath::Min(NeededAmmo, ReserveAmmo);
+	const int32 AmmoToLoad = FMath::Min(NeededAmmo, MagazineSize);
 
 	CurrentAmmo += AmmoToLoad;
-	ReserveAmmo -= AmmoToLoad;
 	bIsReloading = false;
 
 	if (GetLocalUISubsystem() != nullptr)
@@ -103,7 +102,7 @@ void ARangedWeaponBase::FinishReload()
 		GetLocalUISubsystem()->OnRep_AmmoCountChanged(CurrentAmmo);
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("%s [%s] Reload complete Ammo=%d / %d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo, ReserveAmmo);
+	UE_LOG(LogTemp, Log, TEXT("%s [%s] Reload complete Ammo=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo);
 }
 
 void ARangedWeaponBase::CancelReload()
@@ -119,12 +118,6 @@ void ARangedWeaponBase::CancelReload()
 void ARangedWeaponBase::ConsumeAmmo()
 {
 	CurrentAmmo = FMath::Max(CurrentAmmo - 1, 0);
-
-	if (GetLocalUISubsystem() != nullptr)
-	{
-		GetLocalUISubsystem()->OnRep_AmmoCountChanged(CurrentAmmo);
-	}
-
 }
 
 
@@ -210,7 +203,6 @@ void ARangedWeaponBase::FireShot()
 				VisualSubsystem->PlaySoundAtLocation(GunSound, Start);
 			}
 		}
-
 	}
 
 	FColor LineColor = bHit ? FColor::Green : FColor::Red;
@@ -265,6 +257,14 @@ void ARangedWeaponBase::MulticastPlayFireFX_Implementation(FVector_NetQuantize T
 	}
 
 	PlayThirdPersonFireFX(TraceEnd, Hit);
+}
+
+void ARangedWeaponBase::OnRep_CurAmmo()
+{
+	if (GetLocalUISubsystem() != nullptr)
+	{
+		GetLocalUISubsystem()->OnRep_AmmoCountChanged(CurrentAmmo);
+	}
 }
 
 void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, AActor* Hit)
@@ -417,8 +417,15 @@ void ARangedWeaponBase::HandleAutoFire()
 		return;
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("%s [%s] HandleAutoFire tick Ammo=%d Reserve=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo, ReserveAmmo);
+	UE_LOG(LogTemp, Log, TEXT("%s [%s] HandleAutoFire tick Ammo=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo);
 	PerformAttack();
+}
+
+void ARangedWeaponBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+
+	DOREPLIFETIME(ARangedWeaponBase, CurrentAmmo);
 }
 
 bool ARangedWeaponBase::CanAttack() const
@@ -440,7 +447,7 @@ void ARangedWeaponBase::StartAttack()
 
 	if (!CanAttack())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("%s [%s] StartAttack blocked CanAttack=false Ammo=%d Reserve=%d Reloading=%d Cooldown=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo, ReserveAmmo, bIsReloading ? 1 : 0, bAttackOnCooldown ? 1 : 0);
+		UE_LOG(LogTemp, Warning, TEXT("%s [%s] StartAttack blocked CanAttack=false Ammo=%d Reloading=%d Cooldown=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo, bIsReloading ? 1 : 0, bAttackOnCooldown ? 1 : 0);
 		if (CurrentAmmo <= 0)
 		{
 			UE_LOG(LogTemp, Warning, TEXT("%s [%s] No ammo"), OutlierNet::GetNetPrefix(this), *GetName());
@@ -450,7 +457,7 @@ void ARangedWeaponBase::StartAttack()
 
 	PerformAttack(); // 첫 발 즉시 발사
 
-	UE_LOG(LogTemp, Log, TEXT("%s [%s] StartAttack Ammo=%d Reserve=%d Automatic=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo, ReserveAmmo, bIsAutomatic ? 1 : 0);
+	UE_LOG(LogTemp, Log, TEXT("%s [%s] StartAttack Ammo=%d Automatic=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo, bIsAutomatic ? 1 : 0);
 	bIsAttacking = true;
 	// Attack state is set by ranged fire flow.
 
@@ -493,7 +500,7 @@ void ARangedWeaponBase::PerformAttack()
 		return;
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("%s [%s] PerformAttack AmmoBefore=%d Reserve=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo, ReserveAmmo);
+	UE_LOG(LogTemp, Log, TEXT("%s [%s] PerformAttack AmmoBefore=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo);
 	ConsumeAmmo();
 	FireShot();
 
@@ -513,5 +520,5 @@ void ARangedWeaponBase::PerformAttack()
 		}
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("%s [%s] Fire success Ammo=%d / %d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo, ReserveAmmo);
+	UE_LOG(LogTemp, Log, TEXT("%s [%s] Fire success Ammo=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo);
 }
