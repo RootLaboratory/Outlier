@@ -3,6 +3,9 @@
 #include "CoreMinimal.h"
 #include "SceneViewExtension.h"
 #include "FPostProcessStructures.h"
+#include "HAL/CriticalSection.h"
+#include "HeatHazeSourceComponent.h"
+#include "RDGEffectSourceWorldSubsystem.h"
 
 class ULocalPlayer;
 
@@ -30,10 +33,13 @@ public:
 public:
 	void UpdateCachedParameters(const FPostProcessStrcture& InParameters);
 	void UpdateCachedUIParameters(const FPostProcessStrctureUI& InParameters);
+	void UpdateHeatHazeSources(const TArray<FHeatHazeSourceData>& InSources);
 
 private:
 	bool ShouldRenderAnyEffect() const;
 	bool IsTargetLocalPlayerView(const FSceneView& InView) const;
+	bool HasHeatHazeSources() const;
+	void CopyHeatHazeSources(TArray<FHeatHazeSourceData>& OutSources) const;
 
 	FScreenPassTexture MotionBlurCallback_RenderThread(
 		FRDGBuilder& GraphBuilder,
@@ -45,8 +51,16 @@ private:
 		const FSceneView& View,
 		const FPostProcessMaterialInputs& Inputs);
 
+	FScreenPassTexture HeatHazeCallback_RenderThread(
+		FRDGBuilder& GraphBuilder,
+		const FSceneView& View,
+		const FPostProcessMaterialInputs& Inputs);
+
 private:
 	TWeakObjectPtr<ULocalPlayer> LocalPlayer;
 	FPostProcessStrcture CachedParameters;
 	FPostProcessStrctureUI CachedUIParameters;
+
+	mutable FCriticalSection HeatHazeSourcesCriticalSection;
+	TArray<FHeatHazeSourceData> CachedHeatHazeSources;
 };

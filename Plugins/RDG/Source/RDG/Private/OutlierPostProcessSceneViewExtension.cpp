@@ -1,7 +1,11 @@
 #include "OutlierPostProcessSceneViewExtension.h"
-
 #include "FRDGDualKawaseBlurPass.h"
+#include "FRDGExplosionVolumePass.h"
+#include "FRDGHeatHazePass.h"
 #include "FRDGMotionBlurPass.h"
+#include "Engine/LocalPlayer.h"
+#include "Engine/World.h"
+#include "PostProcessInputs.h"
 #include "PostProcess/PostProcessMaterialInputs.h"
 #include "ScreenPass.h"
 
@@ -21,6 +25,19 @@ void FOutlierPostProcessSceneViewExtension::SetupView(FSceneViewFamily& InViewFa
 
 void FOutlierPostProcessSceneViewExtension::BeginRenderViewFamily(FSceneViewFamily& InViewFamily)
 {
+	if (ULocalPlayer* LP = LocalPlayer.Get())
+	{
+		if (UWorld* World = LP->GetWorld())
+		{
+			if (URDGEffectSourceWorldSubsystem* SourceSubsystem = World->GetSubsystem<URDGEffectSourceWorldSubsystem>())
+			{
+				TArray<FHeatHazeSourceData> HeatHazeSources;
+				SourceSubsystem->GatherHeatHazeSources(HeatHazeSources);
+				UpdateHeatHazeSources(HeatHazeSources);
+			}
+		}
+	}
+
 	if (!ShouldRenderAnyEffect())
 	{
 		return;
@@ -70,6 +87,14 @@ void FOutlierPostProcessSceneViewExtension::SubscribeToPostProcessingPass(EPostP
 				&FOutlierPostProcessSceneViewExtension::MotionBlurCallback_RenderThread));
 	}
 
+	if (PassId == EPostProcessingPass::BeforeDOF && HasHeatHazeSources())
+	{
+		InOutPassCallbacks.Add(
+			FAfterPassCallbackDelegate::CreateRaw(
+				this,
+				&FOutlierPostProcessSceneViewExtension::HeatHazeCallback_RenderThread));
+	}
+
 	if (PassId == EPostProcessingPass::Tonemap && CachedParameters.DualKawaseBlur.bEnabled)
 	{
 
@@ -85,6 +110,23 @@ void FOutlierPostProcessSceneViewExtension::SubscribeToPostProcessingPass(EPostP
 
 void FOutlierPostProcessSceneViewExtension::PrePostProcessPass_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& InView, const FPostProcessingInputs& Inputs)
 {
+	if (!IsTargetLocalPlayerView(InView) || !Inputs.SceneTextures)
+	{
+		return;
+	}
+
+	FRDGTextureRef SceneDepthTexture = (*Inputs.SceneTextures)->SceneDepthTexture;
+	if (!SceneDepthTexture)
+	{
+		return;
+	}
+
+	FExplosionVolumeParameters ExplosionParameters;
+	FRDGExplosionVolumePass::AddPass(
+		GraphBuilder,
+		InView,
+		SceneDepthTexture,
+		ExplosionParameters);
 }
 
 void FOutlierPostProcessSceneViewExtension::UpdateCachedUIParameters(const FPostProcessStrctureUI& InParameters)
@@ -97,12 +139,19 @@ void FOutlierPostProcessSceneViewExtension::UpdateCachedParameters(const FPostPr
 	CachedParameters = InParameters;
 }
 
+void FOutlierPostProcessSceneViewExtension::UpdateHeatHazeSources(const TArray<FHeatHazeSourceData>& InSources)
+{
+	FScopeLock Lock(&HeatHazeSourcesCriticalSection);
+	CachedHeatHazeSources = InSources;
+}
+
 bool FOutlierPostProcessSceneViewExtension::ShouldRenderAnyEffect() const
 {
 	return CachedParameters.MotionBlur.bEnabled
 		|| CachedParameters.LensFlare.bEnabled
 		|| CachedParameters.BloomBlur.bEnabled
-		|| CachedParameters.DualKawaseBlur.bEnabled;
+		|| CachedParameters.DualKawaseBlur.bEnabled
+		|| HasHeatHazeSources();
 }
 
 bool FOutlierPostProcessSceneViewExtension::IsTargetLocalPlayerView(const FSceneView& InView) const
@@ -114,6 +163,18 @@ bool FOutlierPostProcessSceneViewExtension::IsTargetLocalPlayerView(const FScene
 	}
 
 	return LocalPlayer.IsValid();
+}
+
+bool FOutlierPostProcessSceneViewExtension::HasHeatHazeSources() const
+{
+	FScopeLock Lock(&HeatHazeSourcesCriticalSection);
+	return !CachedHeatHazeSources.IsEmpty();
+}
+
+void FOutlierPostProcessSceneViewExtension::CopyHeatHazeSources(TArray<FHeatHazeSourceData>& OutSources) const
+{
+	FScopeLock Lock(&HeatHazeSourcesCriticalSection);
+	OutSources = CachedHeatHazeSources;
 }
 
 FScreenPassTexture FOutlierPostProcessSceneViewExtension::MotionBlurCallback_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessMaterialInputs& Inputs)
@@ -153,3 +214,32 @@ FScreenPassTexture FOutlierPostProcessSceneViewExtension::DualKawaseBlurCallback
 		SceneColor,
 		CachedParameters.DualKawaseBlur);
 }
+
+FScreenPassTexture FOutlierPostProcessSceneViewExtension::HeatHazeCallback_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessMaterialInputs& Inputs)
+{
+	const FScreenPassTexture SceneColor = FScreenPassTexture::CopyFromSlice(
+		GraphBuilder,
+		Inputs.GetInput(EPostProcessMaterialInput::SceneColor),
+		Inputs.OverrideOutput);
+
+	if (!SceneColor.IsValid())
+	{
+		return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
+	}
+
+	TArray<FHeatHazeSourceData> HeatHazeSources;
+	CopyHeatHazeSources(HeatHazeSources);
+	if (HeatHazeSources.IsEmpty())
+	{
+		return SceneColor;
+	}
+
+	return FRDGHeatHazePass::AddPass(
+		GraphBuilder,
+		View,
+		SceneColor,
+		HeatHazeSources);
+}
+
+
+
