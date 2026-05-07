@@ -9,7 +9,10 @@
 #include "GameFramework/Character.h"
 #include "OutlierNetUtils.h"
 #include "Shooter/ShooterCharacter.h"
-#include <Net/UnrealNetwork.h>
+#include "Net/UnrealNetwork.h"
+#include "Engine/DataTable.h"
+#include "Weapon/WeaponCoreRow.h"
+#include "Weapon/WeaponRangeRow.h"
 
 AWeaponBase::AWeaponBase()
 {
@@ -79,6 +82,80 @@ void AWeaponBase::OnConstruction(const FTransform& Transform)
 	SetEquippedCollisionEnabled(!bIsEquipped);
 }
 
+void AWeaponBase::EnsureWeaponDataInitialized()
+{
+	if (bWeaponDataInitialized)
+	{
+		return;
+	}
+
+	InitializeFromDataTables();
+	bWeaponDataInitialized = true;
+}
+
+void AWeaponBase::InitializeFromDataTables()
+{
+	if (const FWeaponCoreRow* CoreRow = WeaponCoreRow.GetRow<FWeaponCoreRow>(TEXT("InitializeWeaponCore")))
+	{
+		if (!CoreRow->WeaponId.IsNone())
+		{
+			WeaponName = CoreRow->WeaponId;
+		}
+
+		WeaponType = CoreRow->WeaponType;
+		FireType = CoreRow->FireType;
+		FireMode = CoreRow->FireMode;
+		Damage = CoreRow->Damage;
+		MovementSpeedMultiplier = FMath::Max(CoreRow->MovementSpeedMultiplier, 0.0f);
+		RangeProfileId = CoreRow->RangeProfileId;
+
+		if (CoreRow->FireRateRpm > 0.0f)
+		{
+			AttackInterval = 60.0f / CoreRow->FireRateRpm;
+		}
+	}
+
+	InitializeRangeFromDataTable();
+}
+
+void AWeaponBase::InitializeRangeFromDataTable()
+{
+	const FWeaponRangeRow* RangeRow = WeaponRangeRow.GetRow<FWeaponRangeRow>(TEXT("InitializeWeaponRange"));
+	if (!RangeRow && WeaponRangeTable && !RangeProfileId.IsNone())
+	{
+		RangeRow = WeaponRangeTable->FindRow<FWeaponRangeRow>(RangeProfileId, TEXT("InitializeWeaponRange"));
+	}
+
+	if (!RangeRow)
+	{
+		return;
+	}
+
+	DamageFalloffStartRange = FMath::Max(RangeRow->FalloffStartRangeCm, 0.0f);
+	DamageFalloffMaxRange = FMath::Max(RangeRow->MaxRangeCm, DamageFalloffStartRange);
+	MinDamageMultiplier = FMath::Clamp(RangeRow->MinDamageMultiplier, 0.0f, 1.0f);
+
+	if (DamageFalloffMaxRange > 0.0f)
+	{
+		EffectiveRange = DamageFalloffMaxRange;
+	}
+}
+
+float AWeaponBase::GetDamageAtDistance(float DistanceCm) const
+{
+	if (DamageFalloffMaxRange <= DamageFalloffStartRange || DistanceCm <= DamageFalloffStartRange)
+	{
+		return Damage;
+	}
+
+	const float FalloffAlpha = FMath::Clamp(
+		(DistanceCm - DamageFalloffStartRange) / (DamageFalloffMaxRange - DamageFalloffStartRange),
+		0.0f,
+		1.0f);
+
+	return Damage * FMath::Lerp(1.0f, MinDamageMultiplier, FalloffAlpha);
+}
+
 void AWeaponBase::SetEquippedCollisionEnabled(bool bEnabled)
 {
 	const ECollisionEnabled::Type CollisionType = bEnabled
@@ -113,6 +190,13 @@ void AWeaponBase::SetEquippedPresentation()
 
 	ThirdPersonWeaponMesh->SetHiddenInGame(false);
 	SetEquippedCollisionEnabled(false);
+}
+
+void AWeaponBase::BeginPlay()
+{
+	Super::BeginPlay();
+
+	EnsureWeaponDataInitialized();
 }
 
 bool AWeaponBase::CanAttack() const
@@ -159,6 +243,8 @@ void AWeaponBase::PerformAttack()
 
 void AWeaponBase::OnEquipped(ACharacter* NewOwner)
 {
+	EnsureWeaponDataInitialized();
+
 	if (!NewOwner)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("%s [%s] OnEquipped failed: owner is null"), OutlierNet::GetNetPrefix(this), *GetName());

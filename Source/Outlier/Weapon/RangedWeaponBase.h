@@ -4,12 +4,14 @@
 
 #include "CoreMinimal.h"
 #include "Weapon/WeaponBase.h"
+#include "Engine/DataTable.h"
 #include "RangedWeaponBase.generated.h"
 
 class UProjectionMarkDefinition;
 class UTrailEffectDefinition;
 class ULocalPlayerUISubSystem;
 class USoundDefinition;
+class UWeaponFeedbackDefinition;
 /**
  * 
  */
@@ -34,6 +36,21 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Fire")
 	float RecoilMultiplier = 1.0f;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Recoil")
+	float RecoilPitchAmplitude = 0.0f;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Recoil")
+	float RecoilLocationXAmplitude = 0.0f;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Recoil")
+	float RecoilLocationYAmplitude = 0.0f;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Recoil")
+	float RecoilFovAmplitude = 0.0f;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Recoil")
+	float RecoilRecoverySpeed = 0.0f;
 
 	// Bloom : 탄퍼짐
 
@@ -61,6 +78,9 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon|Ammo")
 	uint8 bIsReloading : 1 = false;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon|Ammo")
+	uint8 bIsAiming : 1 = false;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon|Fire")
 	uint8 bAttackOnCooldown : 1 = false;
 
@@ -79,11 +99,55 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sound")
 	TObjectPtr<USoundDefinition> GunSound; 
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Data")
+	TObjectPtr<UDataTable> WeaponBloomTable;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Data")
+	FName BloomProfileId;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Data")
+	TObjectPtr<UDataTable> WeaponProjectileTable;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Data")
+	FName ProjectileProfileId;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Data")
+	FDataTableRowHandle ProjectileDataRow;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Data")
+	TObjectPtr<UDataTable> WeaponRecoilTable;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Data")
+	FName RecoilProfileId;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Data")
+	FDataTableRowHandle RecoilDataRow;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Data")
+	TObjectPtr<UWeaponFeedbackDefinition> FeedbackDefinition;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Projectile")
+	float ProjectileSpeedCmPerSec = 0.0f;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Projectile")
+	float ProjectileMaxRangeCm = 0.0f;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Projectile")
+	float ProjectileStunTime = 0.0f;
 
 	FTimerHandle AutoFireTimerHandle;
 	FTimerHandle AttackCooldownTimerHandle;
 	FTimerHandle ReuseCooldownTimerHandle;
+
+protected:
+	virtual void InitializeFromDataTables() override;
+
+	virtual void InitializeBloomFromDataTable();
+	virtual void InitializeRecoilFromDataTable();
+	virtual void InitializeProjectileFromDataTable();
+	virtual void ApplyFeedbackDefinition();
+
+	void RefreshBloomSettingsFromState();
 
 	void HandleAutoFire();
 	void StartAttackCooldown();
@@ -112,7 +176,7 @@ public:
 	virtual void RecoverBloom(float DeltaTime);
 	virtual float GetCurrentSpread() const;
 
-	virtual void SetAiming(bool Aimming);
+	virtual void SetAiming(bool bAiming);
 
 	UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
 	bool IsReloading() const { return bIsReloading; }

@@ -17,6 +17,11 @@
 #include "Shooter/ShooterCharacter.h"
 #include "OutlierNetUtils.h"
 #include "Net/UnrealNetwork.h"
+#include "Weapon/WeaponCoreRow.h"
+#include "Weapon/WeaponBloomRow.h"
+#include "Weapon/WeaponFeedbackDefinition.h"
+#include "Weapon/WeaponProjectileRow.h"
+#include "Weapon/WeaponRecoilRow.h"
 
 void ARangedWeaponBase::StartAttackCooldown()
 {
@@ -178,8 +183,10 @@ void ARangedWeaponBase::FireShot()
 		UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot hit Target=%s Start=%s End=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(Hit.GetActor()), *Start.ToString(), *End.ToString());
 		if (AShooterCharacter* HitCharacter = Cast<AShooterCharacter>(Hit.GetActor()))
 		{
-			HitCharacter->ApplyDamageInternal(Damage);
-			UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot applied Damage=%.1f To=%s"), OutlierNet::GetNetPrefix(this), *GetName(), Damage, *GetNameSafe(HitCharacter));
+			const float HitDistance = FVector::Distance(Start, Hit.ImpactPoint);
+			const float DamageToApply = GetDamageAtDistance(HitDistance);
+			HitCharacter->ApplyDamageInternal(DamageToApply);
+			UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot applied Damage=%.1f To=%s"), OutlierNet::GetNetPrefix(this), *GetName(), DamageToApply, *GetNameSafe(HitCharacter));
 		}
 	}
 	else
@@ -225,19 +232,24 @@ void ARangedWeaponBase::ApplyRecoil()
 
 void ARangedWeaponBase::ApplyBloomPerShot()
 {
+	BloomCurrent = FMath::Clamp(BloomCurrent + BloomPerShot, BloomMin, BloomMax);
 }
 
 void ARangedWeaponBase::RecoverBloom(float DeltaTime)
 {
+	BloomCurrent = FMath::FInterpConstantTo(BloomCurrent, BloomMin, DeltaTime, BloomRecoveryRate);
 }
 
 float ARangedWeaponBase::GetCurrentSpread() const
 {
-	return 0.0f;
+	return BloomCurrent;
 }
 
-void ARangedWeaponBase::SetAiming(bool Aimming)
+void ARangedWeaponBase::SetAiming(bool bAiming)
 {
+	bIsAiming = bAiming;
+
+	RefreshBloomSettingsFromState();
 }
 
 
@@ -429,6 +441,163 @@ void ARangedWeaponBase::UpdateLocalAmmoUI() const
 	}
 }
 
+void ARangedWeaponBase::InitializeFromDataTables()
+{
+	Super::InitializeFromDataTables();
+
+	if (const FWeaponCoreRow* CoreRow = WeaponCoreRow.GetRow<FWeaponCoreRow>(TEXT("InitializeRangedWeaponCore")))
+	{
+		MagazineSize = FMath::Max(CoreRow->MagazineSize, 0);
+		CurrentAmmo = MagazineSize;
+		ReloadTime = FMath::Max(CoreRow->ReloadTime, 0.0f);
+		BloomMin = CoreRow->DefaultMinBloom;
+		BloomMax = FMath::Max(CoreRow->DefaultMaxBloom, BloomMin);
+		BloomCurrent = FMath::Clamp(BloomCurrent, BloomMin, BloomMax);
+		RecoilMultiplier = FMath::Max(CoreRow->RecoilMultiplier, 0.0f);
+		bIsAutomatic = FireMode == EWeaponFireMode::FullAuto;
+		BloomProfileId = CoreRow->BloomProfileId;
+		ProjectileProfileId = CoreRow->ProjectileProfileId;
+		RecoilProfileId = CoreRow->RecoilProfileId;
+
+		if (CoreRow->FeedbackDefinition)
+		{
+			FeedbackDefinition = CoreRow->FeedbackDefinition;
+		}
+	}
+
+	InitializeBloomFromDataTable();
+	InitializeRecoilFromDataTable();
+	InitializeProjectileFromDataTable();
+	ApplyFeedbackDefinition();
+}
+
+void ARangedWeaponBase::InitializeBloomFromDataTable()
+{
+	RefreshBloomSettingsFromState();
+}
+
+void ARangedWeaponBase::InitializeRecoilFromDataTable()
+{
+	const FWeaponRecoilRow* RecoilRow = RecoilDataRow.GetRow<FWeaponRecoilRow>(TEXT("InitializeWeaponRecoil"));
+	if (!RecoilRow && WeaponRecoilTable && !RecoilProfileId.IsNone())
+	{
+		RecoilRow = WeaponRecoilTable->FindRow<FWeaponRecoilRow>(RecoilProfileId, TEXT("InitializeWeaponRecoil"));
+	}
+
+	if (!RecoilRow)
+	{
+		return;
+	}
+
+	RecoilPitchAmplitude = RecoilRow->PitchAmplitude;
+	RecoilLocationXAmplitude = RecoilRow->LocationXAmplitude;
+	RecoilLocationYAmplitude = RecoilRow->LocationYAmplitude;
+	RecoilFovAmplitude = RecoilRow->FovAmplitude;
+	RecoilRecoverySpeed = RecoilRow->RecoverySpeed;
+}
+
+void ARangedWeaponBase::InitializeProjectileFromDataTable()
+{// TODO:
+	const FWeaponProjectileRow* ProjectileRow = ProjectileDataRow.GetRow<FWeaponProjectileRow>(TEXT("InitializeWeaponProjectile"));
+	if (!ProjectileRow && WeaponProjectileTable && !ProjectileProfileId.IsNone())
+	{
+		ProjectileRow = WeaponProjectileTable->FindRow<FWeaponProjectileRow>(ProjectileProfileId, TEXT("InitializeWeaponProjectile"));
+	}
+
+	if (!ProjectileRow)
+	{
+		return;
+	}
+
+	ProjectileSpeedCmPerSec = ProjectileRow->ProjectileSpeedCmPerSec;
+	ProjectileMaxRangeCm = ProjectileRow->MaxRangeCm;
+	ProjectileStunTime = ProjectileRow->StunTime;
+
+	if (ProjectileRow->ReuseCooldown > 0.0f)
+	{
+		ReuseCooldown = ProjectileRow->ReuseCooldown;
+	}
+}
+
+void ARangedWeaponBase::ApplyFeedbackDefinition()
+{
+	if (!FeedbackDefinition)
+	{
+		return;
+	}
+
+	WeaponDecal  = FeedbackDefinition->WeaponDecal;
+	WeaponMuzzle = FeedbackDefinition->WeaponMuzzle;
+	WeaponTrail  = FeedbackDefinition->WeaponTrail;
+	GunSound     = FeedbackDefinition->GunSound;
+}
+
+void ARangedWeaponBase::RefreshBloomSettingsFromState()
+{
+	if (!WeaponBloomTable || BloomProfileId.IsNone())
+	{
+		return;
+	}
+
+	const AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
+	const EWeaponAimMode DesiredAimMode = bIsAiming ? EWeaponAimMode::ADS : EWeaponAimMode::Hip;
+	EWeaponMoveState DesiredMoveState = EWeaponMoveState::StillOrCrouch;
+
+	if (Shooter)
+	{
+		switch (Shooter->GetMovementState())
+		{
+		case EMovementState::Jump:
+			DesiredMoveState = EWeaponMoveState::Air;
+			break;
+		case EMovementState::Walk:
+		case EMovementState::Run:
+		case EMovementState::Slide:
+			DesiredMoveState = EWeaponMoveState::Moving;
+			break;
+		case EMovementState::Idle:
+		case EMovementState::Crouch:
+		default:
+			DesiredMoveState = EWeaponMoveState::StillOrCrouch;
+			break;
+		}
+	}
+
+	TArray<FWeaponBloomRow*> BloomRows;
+	WeaponBloomTable->GetAllRows<FWeaponBloomRow>(TEXT("RefreshBloomSettingsFromState"), BloomRows);
+
+	const FWeaponBloomRow* BestRow = nullptr;
+	for (const FWeaponBloomRow* Row : BloomRows)
+	{
+		if (!Row || Row->BloomProfileId != BloomProfileId || Row->MoveState != DesiredMoveState)
+		{
+			continue;
+		}
+
+		if (Row->AimMode == DesiredAimMode)
+		{
+			BestRow = Row;
+			break;
+		}
+
+		if (Row->AimMode == EWeaponAimMode::Any)
+		{
+			BestRow = Row;
+		}
+	}
+
+	if (!BestRow)
+	{
+		return;
+	}
+
+	BloomMin = BestRow->MinBloom;
+	BloomMax = FMath::Max(BestRow->MaxBloom, BloomMin);
+	BloomPerShot = BestRow->IncPerShot;
+	BloomRecoveryRate = BestRow->RecoveryRate;
+	BloomCurrent = FMath::Clamp(BloomCurrent, BloomMin, BloomMax);
+}
+
 void ARangedWeaponBase::HandleAutoFire()
 {
 	if (!bIsAttacking || !Super::CanAttack() || bIsReloading || CurrentAmmo <= 0)
@@ -522,8 +691,12 @@ void ARangedWeaponBase::PerformAttack()
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("%s [%s] PerformAttack AmmoBefore=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo);
+	RefreshBloomSettingsFromState();
 	ConsumeAmmo();
 	FireShot();
+
+	ApplyBloomPerShot();
+	ApplyRecoil();
 
 	if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner))
 	{
