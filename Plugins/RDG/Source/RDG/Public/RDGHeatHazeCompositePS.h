@@ -16,8 +16,6 @@ public:
 		SHADER_PARAMETER_SAMPLER(SamplerState, SceneColorSampler)
 		SHADER_PARAMETER_SAMPLER(SamplerState, RefractionSampler)
 		SHADER_PARAMETER(FVector2f, FieldExtent)
-		SHADER_PARAMETER(FVector2f, ViewRectMinUV)
-		SHADER_PARAMETER(FVector2f, ViewRectMaxUV)
 		RENDER_TARGET_BINDING_SLOTS()
 	END_SHADER_PARAMETER_STRUCT()
 

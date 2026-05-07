@@ -57,6 +57,8 @@ void URDGEffectSourceWorldSubsystem::GatherHeatHazeSources(TArray<FHeatHazeSourc
 		FHeatHazeSourceData SourceData;
 		if (Source->BuildSourceData(SourceData))
 		{
+			UE_LOG(LogTemp, Error, TEXT("BuildSourceData"));
+
 			OutSources.Add(SourceData);
 		}
 	}

@@ -7,8 +7,6 @@ SamplerState SceneColorSampler;
 SamplerState RefractionSampler;
 
 float2 FieldExtent;
-float2 ViewRectMinUV;
-float2 ViewRectMaxUV;
 
 void MainPS(
 	FScreenVertexOutput Input,
@@ -20,7 +18,7 @@ void MainPS(
 	float2 OffsetUV = Field.rg / max(FieldExtent, float2(1.0f, 1.0f));
 	float Mask = saturate(Field.a);
 
-	float2 DistortedUV = clamp(UV + OffsetUV, ViewRectMinUV, ViewRectMaxUV);
+	float2 DistortedUV = saturate(UV + OffsetUV);
 	float4 OriginalColor = SceneColorTexture.Sample(SceneColorSampler, UV);
 	float4 DistortedColor = SceneColorTexture.Sample(SceneColorSampler, DistortedUV);
 

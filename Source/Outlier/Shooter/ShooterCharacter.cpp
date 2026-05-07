@@ -139,6 +139,7 @@ void AShooterCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 
 	// Suit Menu Hold
 	EnhancedInputComponent->BindAction(InputConfig->SuitMenuHoldAction, ETriggerEvent::Started,   this, &AShooterCharacter::TryOpenSuitMenu);
+	EnhancedInputComponent->BindAction(InputConfig->SuitMenuHoldAction,ETriggerEvent::Triggered,this,&AShooterCharacter::TryHandleSuitMenuHover);
 	EnhancedInputComponent->BindAction(InputConfig->SuitMenuHoldAction, ETriggerEvent::Completed, this, &AShooterCharacter::TryCloseSuitMenu);
 
 	// Suit Navigate
@@ -205,6 +206,15 @@ void AShooterCharacter::OnMoveInputUpdated(const FVector2D& MoveValue)
 	{
 		MovementComponent->RefreshMovementState();
 	}
+}
+
+void AShooterCharacter::LookInput(const FInputActionValue& Value)
+{
+	if (bIsSuitMenuOpen) return;
+
+	FVector2D LookAxisVector = Value.Get<FVector2D>();
+
+	DoAim(LookAxisVector.X, -LookAxisVector.Y);
 }
 
 void AShooterCharacter::TryReload()
@@ -405,6 +415,10 @@ void AShooterCharacter::ServerInteract_Implementation(AActor* TargetActor)
 
 void AShooterCharacter::TryOpenSuitMenu()
 {
+
+	UE_LOG(LogTemp, Warning, TEXT("TryOpenSuitMenu"));
+
+
 	if (bIsDead)
 	{
 		return;
@@ -415,6 +429,32 @@ void AShooterCharacter::TryOpenSuitMenu()
 	// 라디얼 UI 표시
 	// 마우스 커서 표시
 	// 필요하면 이동 입력 제한
+
+	AShooterPlayerController* ShooterController = Cast<AShooterPlayerController>(GetController());
+	if (!ShooterController || !ShooterController->AbilityUIInstance)
+	{
+		return;
+	}
+
+	ShooterController->AbilityUIInstance->SetVisibility(ESlateVisibility::Visible);
+
+}
+
+void AShooterCharacter::TryHandleSuitMenuHover()
+{
+
+
+	if (bIsSuitMenuOpen) return;
+
+	AShooterPlayerController* ShooterController = Cast<AShooterPlayerController>(GetController());
+	if (!ShooterController || !ShooterController->AbilityUIInstance)
+	{
+		return;
+	}
+
+	ShooterController->AbilityUIInstance->TryHovering();
+	
+	
 }
 
 void AShooterCharacter::TryCloseSuitMenu()
@@ -428,6 +468,14 @@ void AShooterCharacter::TryCloseSuitMenu()
 
 	// 라디얼 UI 숨김
 	// 마우스 커서 숨김
+
+	AShooterPlayerController* ShooterController = Cast<AShooterPlayerController>(GetController());
+	if (!ShooterController || !ShooterController->AbilityUIInstance)
+	{
+		ShooterController->AbilityUIInstance->SetVisibility(ESlateVisibility::Collapsed);
+		ShooterController->AbilityUIInstance->TryGetHoveredAbility(ShooterAbility);
+	}
+
 }
 
 void AShooterCharacter::UpdateSuitSelection(const FInputActionValue& Value)
@@ -450,7 +498,7 @@ void AShooterCharacter::TryUseSuit()
 		return;
 	}
 
-	if (SelectedSuitSlot == INDEX_NONE)
+	if (ShooterAbility == EShooterAbility::None)
 	{
 		return;
 	}

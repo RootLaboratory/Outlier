@@ -5,12 +5,24 @@
 #include "CoreMinimal.h"
 #include "EventDrivenUI.h"
 #include "Shooter/Ability/ShooterAbility.h"
+#include "Components/Widget.h"
 #include "ShooterAbilityUI.generated.h"
 
 /**
  * 
  */
 class UShooterAbilitySectionUI;
+class UMaterialInterface;
+class UMaterialInstanceDynamic;
+class UBorder;
+class UImage;
+
+
+//ICON
+// Image
+// 해금조건
+// 쿨타임 받는 거
+
 
 UCLASS()
 class OUTLIER_API UShooterAbilityUI : public UEventDrivenUI
@@ -22,27 +34,37 @@ public:
 	virtual void NativeConstruct() override;
 
 	bool TryGetHoveredAbility(EShooterAbility& OutAbility);
+	void TryHovering();
+	float CalculateCoordinate();
 
 public:
 
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidget)) 
-	TObjectPtr< UShooterAbilitySectionUI> Buttom; //Teleport
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	TObjectPtr<UBorder> CenterCircle; 
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr< UShooterAbilitySectionUI> TOP; // Shield
+	TObjectPtr<UBorder> BigCircle;
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr< UShooterAbilitySectionUI> Left; // Stealth
+	TObjectPtr<UShooterAbilitySectionUI> IconTeleport; // Teleport
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr< UShooterAbilitySectionUI> Right; // Stimpack
+	TObjectPtr<UShooterAbilitySectionUI> IconStealth; // Stealth
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr< UShooterAbilitySectionUI> Circle; // None
+	TObjectPtr<UShooterAbilitySectionUI> IconStimpack; // Stimpack
 
-	UPROPERTY(BlueprintReadOnly, Category = "Shooter Ability Sections")
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	TObjectPtr<UShooterAbilitySectionUI> IconShield; // Shield
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Ability UI|Material")
+	TObjectPtr<UMaterialInterface> M_ShooterAbilityUI;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> ShooterAbilityMID;
+
+
+	//UPROPERTY(BlueprintReadOnly, Category = "Shooter Ability Sections")
 	TArray < TObjectPtr<UShooterAbilitySectionUI>> AbilitySections;
 	
 };
-
-

@@ -19,7 +19,8 @@ AHeatHazeQuadActor::AHeatHazeQuadActor()
 	HeatHazeSource = CreateDefaultSubobject<UHeatHazeSourceComponent>(TEXT("HeatHazeSource"));
 	HeatHazeSource->SetupAttachment(Root);
 
-	SetLifeSpan(1.5f);
+	HeatHazeSource->SetRelativeLocation(FVector(0.0f, 0.0f, 50.0f));
+	//SetLifeSpan(1.5f);
 }
 
 // Called when the game starts or when spawned

@@ -12,6 +12,7 @@
  */
 
 class UImage;
+class UBorder;
 
 UCLASS()
 class OUTLIER_API UShooterAbilitySectionUI : public UUserWidget
@@ -19,34 +20,41 @@ class OUTLIER_API UShooterAbilitySectionUI : public UUserWidget
 	GENERATED_BODY()
 	
 public:
-	const EShooterAbility& GetAbility();
-
-	void SetAbility(EShooterAbility InAbility);
-
-public:
-	void AbilityUnLock();
-
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr<UImage> BackgroundImage;
-
-	/*UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr<UImage> AbilityIcon;*/
+	virtual void NativeConstruct() override;
 
 public:
 
 	UFUNCTION(BlueprintCallable, Category = "MaterialStandard")
 	bool IsUnLock();
 
-	UFUNCTION(BlueprintCallable)
-	void SetHovered(bool bInHovered);
+	const EShooterAbility& GetAbility();
 
-	UFUNCTION(BlueprintImplementableEvent)
-	void OnVisualStateChanged();
+	void SetAbility(EShooterAbility InAbility);
+
+	void SetCoolTime(float InCoolTime);
+
+	void AbilityUnLock();
+
+public:
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	TObjectPtr<UImage> AbilityIcon;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Ability CoolTime UI|Material")
+	TObjectPtr<UMaterialInterface> M_ShooterAbilityCoolTimeUI;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> ShooterAbilityMID;
+
+	//Image -> Material; 변경 시, 기존 Brush
+	FSlateBrush DefaultIconBrush;
+
+
 
 private:
 	EShooterAbility BindAbility = EShooterAbility::None;
 	bool bAbilityUnlocked : 1 = false;
 	bool bHovered : 1 = false;
+	float CoolTime = 0; // 후에 Material 연동 
 };
 
-//
+

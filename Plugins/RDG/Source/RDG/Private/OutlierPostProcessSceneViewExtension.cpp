@@ -34,6 +34,7 @@ void FOutlierPostProcessSceneViewExtension::BeginRenderViewFamily(FSceneViewFami
 				TArray<FHeatHazeSourceData> HeatHazeSources;
 				SourceSubsystem->GatherHeatHazeSources(HeatHazeSources);
 				UpdateHeatHazeSources(HeatHazeSources);
+
 			}
 		}
 	}
