@@ -13,6 +13,7 @@
 #include "Engine/DataTable.h"
 #include "Weapon/WeaponCoreRow.h"
 #include "Weapon/WeaponRangeRow.h"
+#include "Weapon/Spawn/WeaponSpawnPoint.h"
 
 AWeaponBase::AWeaponBase()
 {
@@ -29,6 +30,8 @@ AWeaponBase::AWeaponBase()
 	FirstPersonWeaponMesh->SetCollisionResponseToAllChannels(ECR_Ignore);
 	FirstPersonWeaponMesh->SetGenerateOverlapEvents(false);
 	FirstPersonWeaponMesh->SetHiddenInGame(true);
+	FirstPersonWeaponMesh->SetCastShadow(false);
+	FirstPersonWeaponMesh->SetCastHiddenShadow(false);
 
 	ThirdPersonWeaponMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("ThirdPersonWeaponMesh"));
 	ThirdPersonWeaponMesh->SetupAttachment(SceneRoot);
@@ -36,6 +39,8 @@ AWeaponBase::AWeaponBase()
 	ThirdPersonWeaponMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	ThirdPersonWeaponMesh->SetCollisionResponseToAllChannels(ECR_Ignore);
 	ThirdPersonWeaponMesh->SetGenerateOverlapEvents(false);
+	ThirdPersonWeaponMesh->SetCastShadow(true);
+	ThirdPersonWeaponMesh->SetCastHiddenShadow(false);
 
 	InteractionCollision = CreateDefaultSubobject<USphereComponent>(TEXT("InteractionCollision"));
 	InteractionCollision->SetupAttachment(SceneRoot);
@@ -175,21 +180,89 @@ void AWeaponBase::SetEquippedCollisionEnabled(bool bEnabled)
 void AWeaponBase::SetPickupPresentation()
 {
 	FirstPersonWeaponMesh->SetHiddenInGame(true);
+	FirstPersonWeaponMesh->SetCastShadow(false);
+	FirstPersonWeaponMesh->SetCastHiddenShadow(false);
 	FirstPersonWeaponMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	FirstPersonWeaponMesh->SetCollisionResponseToAllChannels(ECR_Ignore);
 
 	ThirdPersonWeaponMesh->SetHiddenInGame(false);
+	ThirdPersonWeaponMesh->SetCastShadow(true);
+	ThirdPersonWeaponMesh->SetCastHiddenShadow(false);
 	SetEquippedCollisionEnabled(true);
 }
 
 void AWeaponBase::SetEquippedPresentation()
 {
 	FirstPersonWeaponMesh->SetHiddenInGame(false);
+	FirstPersonWeaponMesh->SetCastShadow(false);
+	FirstPersonWeaponMesh->SetCastHiddenShadow(false);
 	FirstPersonWeaponMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	FirstPersonWeaponMesh->SetCollisionResponseToAllChannels(ECR_Ignore);
 
 	ThirdPersonWeaponMesh->SetHiddenInGame(false);
+	ThirdPersonWeaponMesh->SetCastShadow(true);
+	ThirdPersonWeaponMesh->SetCastHiddenShadow(true);
 	SetEquippedCollisionEnabled(false);
+}
+
+void AWeaponBase::ApplyReplicatedPresentation()
+{
+	if (bIsEquipped)
+	{
+		SetEquippedPresentation();
+
+		if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner))
+		{
+			const EWeaponType EquippedWeaponType = GetWeaponType();
+			const FName FirstPersonSocketName = Shooter->GetFirstPersonWeaponSocketByType(EquippedWeaponType);
+			const FName ThirdPersonSocketName = Shooter->GetThirdPersonWeaponSocketByType(EquippedWeaponType);
+
+			if (USkeletalMeshComponent* FirstPersonParent = Shooter->GetFirstPersonMesh())
+			{
+				FirstPersonWeaponMesh->AttachToComponent(
+					FirstPersonParent,
+					FAttachmentTransformRules::SnapToTargetNotIncludingScale,
+					FirstPersonSocketName
+				);
+			}
+
+			if (USkeletalMeshComponent* ThirdPersonParent = Shooter->GetMesh())
+			{
+				ThirdPersonWeaponMesh->AttachToComponent(
+					ThirdPersonParent,
+					FAttachmentTransformRules::SnapToTargetNotIncludingScale,
+					ThirdPersonSocketName
+				);
+			}
+		}
+
+		return;
+	}
+
+	FirstPersonWeaponMesh->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
+	ThirdPersonWeaponMesh->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
+
+	FirstPersonWeaponMesh->AttachToComponent(
+		SceneRoot,
+		FAttachmentTransformRules::SnapToTargetNotIncludingScale
+	);
+
+	ThirdPersonWeaponMesh->AttachToComponent(
+		SceneRoot,
+		FAttachmentTransformRules::SnapToTargetNotIncludingScale
+	);
+
+	SetPickupPresentation();
+}
+
+void AWeaponBase::OnRep_EquippedState()
+{
+	ApplyReplicatedPresentation();
+}
+
+void AWeaponBase::SetOwningSpawnPoint(AWeaponSpawnPoint* SpawnPoint)
+{
+	OwningSpawnPoint = SpawnPoint;
 }
 
 void AWeaponBase::BeginPlay()
@@ -205,8 +278,31 @@ bool AWeaponBase::CanAttack() const
 		&& bIsEquipped;
 }
 
+bool AWeaponBase::CanBePickedUpBy(const AFirstPersonCharacter* Interactor) const
+{
+	if (!Interactor || bIsEquipped || WeaponOwner != nullptr || IsPendingKillPending())
+	{
+		return false;
+	}
+
+	if (DropPickupBlockedInteractor.Get() == Interactor
+		&& GetWorld()
+		&& GetWorld()->GetTimeSeconds() < DropPickupBlockedUntilTime)
+	{
+		return false;
+	}
+
+	return true;
+}
+
 void AWeaponBase::StartAttack()
 {
+	if (!HasAuthority())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("%s [%s] StartAttack blocked: client call"), OutlierNet::GetNetPrefix(this), *GetName());
+		return;
+	}
+
 	if (!CanAttack())
 	{
 		UE_LOG(LogTemp, Warning, TEXT("%s [%s] StartAttack blocked Owner=%s Equipped=%d"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(WeaponOwner), bIsEquipped ? 1 : 0);
@@ -254,6 +350,13 @@ void AWeaponBase::OnEquipped(ACharacter* NewOwner)
 	WeaponOwner = NewOwner;
 	bIsEquipped = true;
 	bIsAttacking = false;
+	DropPickupBlockedInteractor = nullptr;
+	DropPickupBlockedUntilTime = 0.0f;
+
+	if (OwningSpawnPoint)
+	{
+		OwningSpawnPoint->NotifyWeaponPickedUp(this);
+	}
 
 	SetOwner(NewOwner);
 
@@ -300,6 +403,7 @@ void AWeaponBase::OnEquipped(ACharacter* NewOwner)
 
 
 	UE_LOG(LogTemp, Log, TEXT("%s [%s] OnEquipped Owner=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(NewOwner));
+	ForceNetUpdate();
 }
 
 void AWeaponBase::OnUnequipped()
@@ -307,7 +411,38 @@ void AWeaponBase::OnUnequipped()
 	StopAttack();
 
 	bIsEquipped = false;
+	bIsAttacking = false;
+
+	if (FirstPersonWeaponMesh)
+	{
+		FirstPersonWeaponMesh->SetHiddenInGame(true);
+		FirstPersonWeaponMesh->SetCastShadow(false);
+		FirstPersonWeaponMesh->SetCastHiddenShadow(false);
+	}
+
+	if (ThirdPersonWeaponMesh)
+	{
+		ThirdPersonWeaponMesh->SetHiddenInGame(true);
+		ThirdPersonWeaponMesh->SetCastShadow(false);
+		ThirdPersonWeaponMesh->SetCastHiddenShadow(false);
+	}
+
+	SetEquippedCollisionEnabled(false);
+
+	UE_LOG(LogTemp, Log, TEXT("%s [%s] OnUnequipped"), OutlierNet::GetNetPrefix(this), *GetName());
+}
+
+void AWeaponBase::OnDropped(const FTransform& DropTransform, AFirstPersonCharacter* DroppedBy)
+{
+	StopAttack();
+
+	bIsEquipped = false;
+	bIsAttacking = false;
 	WeaponOwner = nullptr;
+	DropPickupBlockedInteractor = DroppedBy;
+	DropPickupBlockedUntilTime = GetWorld()
+		? GetWorld()->GetTimeSeconds() + DropInstigatorPickupBlockDuration
+		: 0.0f;
 
 	FirstPersonWeaponMesh->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
 	ThirdPersonWeaponMesh->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
@@ -322,27 +457,19 @@ void AWeaponBase::OnUnequipped()
 		FAttachmentTransformRules::SnapToTargetNotIncludingScale
 	);
 
-	// 바닥 아이템으로 둘 거면 여기서 다시 충돌 켜기
+	SetActorTransform(DropTransform, false, nullptr, ETeleportType::TeleportPhysics);
 	SetPickupPresentation();
 	SetOwner(nullptr);
-
-	UE_LOG(LogTemp, Log, TEXT("%s [%s] OnUnequipped"), OutlierNet::GetNetPrefix(this), *GetName());
-}
-
-void AWeaponBase::OnDropped(const FTransform& DropTransform)
-{
-	OnUnequipped();
-	SetActorTransform(DropTransform, false, nullptr, ETeleportType::TeleportPhysics);
 
 	UE_LOG(
 		LogTemp,
 		Log,
-		TEXT("%s [%s] OnDropped Location=%s Rotation=%s"),
+		TEXT("%s [%s] OnDropped BlockedInteractor=%s Until=%.2f"),
 		OutlierNet::GetNetPrefix(this),
 		*GetName(),
-		*DropTransform.GetLocation().ToString(),
-		*DropTransform.Rotator().ToString()
-	);
+		*GetNameSafe(DroppedBy),
+		DropPickupBlockedUntilTime);
+	ForceNetUpdate();
 }
 
 void AWeaponBase::Interact(class AFirstPersonCharacter* Interactor)
@@ -353,8 +480,26 @@ void AWeaponBase::Interact(class AFirstPersonCharacter* Interactor)
 		return;
 	}
 
+	if (!CanBePickedUpBy(Interactor))
+	{
+		UE_LOG(
+			LogTemp,
+			Log,
+			TEXT("%s [%s] Interact blocked Owner=%s Equipped=%d Interactor=%s"),
+			OutlierNet::GetNetPrefix(this),
+			*GetName(),
+			*GetNameSafe(WeaponOwner),
+			bIsEquipped ? 1 : 0,
+			*GetNameSafe(Interactor));
+		return;
+	}
+
 	UE_LOG(LogTemp, Log, TEXT("%s [%s] Interact Interactor=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(Interactor));
-	Interactor->EquipWeapon(this);
+
+	if(AShooterCharacter * Shooter = Cast<AShooterCharacter>(Interactor))
+	{
+		Shooter->EquipWeapon(this);
+	}
 }
 
 void AWeaponBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -363,4 +508,21 @@ void AWeaponBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifet
 
 	DOREPLIFETIME(AWeaponBase, WeaponOwner);
 	DOREPLIFETIME(AWeaponBase, bIsEquipped);
+}
+
+void AWeaponBase::OnOwnerLost()
+{
+	StopAttack();
+
+	bIsEquipped = false;
+	bIsAttacking = false;
+	WeaponOwner = nullptr;
+	SetOwner(nullptr);
+
+	if (OwningSpawnPoint)
+	{
+		OwningSpawnPoint->NotifyWeaponRemoved(this);
+	}
+
+	Destroy();
 }

@@ -18,6 +18,8 @@ public:
 	
 	/** Constructor */
 	AOutlierGameMode();
+
+	virtual void Logout(AController* Exiting) override;
 };
 
 

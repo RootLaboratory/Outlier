@@ -195,6 +195,7 @@ public:
 
 protected:
 	void UpdateLocalAmmoUI() const;
+	virtual void OnRep_EquippedState() override;
 
 	UFUNCTION(Client, Unreliable)
 	void ClientNotifyShotFired();

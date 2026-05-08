@@ -96,6 +96,16 @@ void AShooterCharacter::BeginPlay()
 	UpdateFirstPersonPresentation(0.0f);
 }
 
+void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (HasAuthority())
+	{
+		CleanupOwnedWeapons();
+	}
+
+	Super::EndPlay(EndPlayReason);
+}
+
 void AShooterCharacter::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
@@ -905,6 +915,14 @@ void AShooterCharacter::ClearInputIntent()
 	if (MovementComponent)
 	{
 		MovementComponent->ClearInputIntent();
+	}
+}
+
+void AShooterCharacter::CleanupOwnedWeapons()
+{
+	if (InventoryComponent)
+	{
+		InventoryComponent->CleanupOwnedWeapons();
 	}
 }
 

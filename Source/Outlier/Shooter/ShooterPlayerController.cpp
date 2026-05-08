@@ -22,6 +22,13 @@ void AShooterPlayerController::BeginPlay()
 	}
 }
 
+void AShooterPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	CleanupPossessedShooterWeapons();
+
+	Super::EndPlay(EndPlayReason);
+}
+
 void AShooterPlayerController::SetupInputComponent()
 {
 	Super::SetupInputComponent();
@@ -47,9 +54,22 @@ void AShooterPlayerController::OnPossess(APawn* InPawn)
 
 void AShooterPlayerController::OnPawnDestroyed(AActor* DestroyedActor)
 {
+	if (HasAuthority())
+	{
+		if (AShooterCharacter* ShooterCharacter = Cast<AShooterCharacter>(DestroyedActor))
+		{
+			ShooterCharacter->CleanupOwnedWeapons();
+		}
+	}
+
+	if (!HasAuthority() || !CharacterClass || IsPendingKillPending())
+	{
+		return;
+	}
+
 	// Find a spawn point to respawn the player.
 	TArray<AActor*> ActorList;
-	UGameplayStatics::GetAllActorsOfClass(AActor::GetWorld(), APlayerStart::StaticClass(), ActorList);
+	UGameplayStatics::GetAllActorsOfClass(GetWorld(), APlayerStart::StaticClass(), ActorList);
 
 	if (ActorList.Num() <= 0)
 	{
@@ -61,14 +81,32 @@ void AShooterPlayerController::OnPawnDestroyed(AActor* DestroyedActor)
 	const FTransform SpawnTransform = RandomPlayerStart->GetActorTransform();
 
 	// Spawn a replacement pawn and repossess it.
-	if (AShooterCharacter* RespawnedCharacter = AActor::GetWorld()->SpawnActor<AShooterCharacter>(CharacterClass, SpawnTransform))
+	if (AShooterCharacter* RespawnedCharacter = GetWorld()->SpawnActor<AShooterCharacter>(CharacterClass, SpawnTransform))
 	{
 		Possess(RespawnedCharacter);
 	}
 }
 
+void AShooterPlayerController::CleanupPossessedShooterWeapons()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	if (AShooterCharacter* ShooterCharacter = Cast<AShooterCharacter>(GetPawn()))
+	{
+		ShooterCharacter->CleanupOwnedWeapons();
+	}
+}
+
 void AShooterPlayerController::BindMainUI()
 {
+	if (!IsLocalController())
+	{
+		return;
+	}
+
 	if ( !MainUIClass || ShooterUIInstance)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("Cant InitializeMainUI"));

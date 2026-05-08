@@ -262,6 +262,7 @@ protected:
 protected:
 	// Engine Lifecycle
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void Tick(float DeltaSeconds) override;
 
 	/** Initialize input action bindings */
@@ -425,7 +426,7 @@ protected:
 	UFUNCTION(NetMulticast, Reliable)
 	void MulticastPlayThirdPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType);
 
-	// Internal Helpers
+
 public:
 	void RefreshMovementState();
 	void RefreshCombatState();
@@ -433,6 +434,7 @@ public:
 	void ResolveStateConflicts();
 	void SetMovementStateImmediate(EMovementState NewState);
 
+	// Internal Helpers
 	void StopSprintInternal();
 	void StopAimInternal();
 	void BeginReloadInternal();
@@ -466,4 +468,6 @@ public:
 	void PlayEquipMontages();
 	void UpdateFirstPersonPresentation(float DeltaSeconds);
 	void ClearInputIntent();
+
+	void CleanupOwnedWeapons();
 };

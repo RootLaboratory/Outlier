@@ -12,6 +12,8 @@
 class USkeletalMeshComponent;
 class USceneComponent;
 class USphereComponent;
+class AWeaponSpawnPoint;
+class AFirstPersonCharacter;
 
 UENUM(BlueprintType)
 enum class EWeaponType : uint8
@@ -79,10 +81,10 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = IK)
 	FName LeftHandIKSocketName = FName("LeftHandIK");
 
-	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
+	UPROPERTY(ReplicatedUsing = OnRep_EquippedState, VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
 	TObjectPtr<ACharacter> WeaponOwner;
 
-	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
+	UPROPERTY(ReplicatedUsing = OnRep_EquippedState, VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
 	uint8 bIsEquipped : 1 = false;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
@@ -103,6 +105,18 @@ protected:
 	UPROPERTY(Transient, VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Data")
 	uint8 bWeaponDataInitialized : 1 = false;
 
+	UPROPERTY()
+	TObjectPtr<AWeaponSpawnPoint> OwningSpawnPoint;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Pickup")
+	float DropInstigatorPickupBlockDuration = 0.35f;
+
+	UPROPERTY(Transient)
+	TWeakObjectPtr<AFirstPersonCharacter> DropPickupBlockedInteractor;
+
+	UPROPERTY(Transient)
+	float DropPickupBlockedUntilTime = 0.0f;
+
 protected:
 	virtual void EnsureWeaponDataInitialized();
 	virtual void InitializeFromDataTables();
@@ -111,6 +125,10 @@ protected:
 	void SetEquippedCollisionEnabled(bool bEnabled);
 	void SetPickupPresentation();
 	void SetEquippedPresentation();
+	void ApplyReplicatedPresentation();
+
+	UFUNCTION()
+	virtual void OnRep_EquippedState();
 
 public:
 	virtual void BeginPlay() override;
@@ -129,16 +147,22 @@ public:
 
 	virtual void OnUnequipped();
 
-	virtual void OnDropped(const FTransform& DropTransform);
+	virtual void OnDropped(const FTransform& DropTransform, AFirstPersonCharacter* DroppedBy = nullptr);
 
 	virtual void Interact(class AFirstPersonCharacter* Interactor) override;
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
+	void OnOwnerLost();
+
+	void SetOwningSpawnPoint(AWeaponSpawnPoint* SpawnPoint);
+
 	EWeaponType GetWeaponType() const { return WeaponType; }
 	EWeaponFireType GetFireType() const { return FireType; }
 	EWeaponFireMode GetFireMode() const { return FireMode; }
 	bool IsAttacking() const { return bIsAttacking; }
+	bool IsEquipped() const { return bIsEquipped; }
+	bool CanBePickedUpBy(const AFirstPersonCharacter* Interactor) const;
 	float GetDamageAtDistance(float DistanceCm) const;
 	float GetMovementSpeedMultiplier() const { return MovementSpeedMultiplier; }
 

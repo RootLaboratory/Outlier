@@ -2,10 +2,32 @@
 
 #include "Shooter/ShooterInventoryComponent.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Net/UnrealNetwork.h"
+#include "OutlierNetUtils.h"
 
 UShooterInventoryComponent::UShooterInventoryComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
+	SetIsReplicatedByDefault(true);
+}
+
+void UShooterInventoryComponent::BeginPlay()
+{
+	Super::BeginPlay();
+
+	const int32 SlotCount = static_cast<int32>(EWeaponSlot::Max);
+	if (WeaponSlots.Num() != SlotCount)
+	{
+		WeaponSlots.SetNum(SlotCount);
+	}
+}
+
+void UShooterInventoryComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+
+	DOREPLIFETIME(UShooterInventoryComponent, WeaponSlots);
+	DOREPLIFETIME(UShooterInventoryComponent, CurrentSlot);
 }
 
 FName UShooterInventoryComponent::GetFirstPersonWeaponSocketByType(EWeaponType WeaponType) const
@@ -48,20 +70,96 @@ FName UShooterInventoryComponent::GetThirdPersonWeaponSocketByType(EWeaponType W
 
 void UShooterInventoryComponent::TrySwitchWeapon1()
 {
-	SelectWeaponByIndex(0);
+	SelectWeaponSlot(EWeaponSlot::Primary);
 }
 
 void UShooterInventoryComponent::TrySwitchWeapon2()
 {
-	SelectWeaponByIndex(1);
+	SelectWeaponSlot(EWeaponSlot::Secondary);
 }
 
 void UShooterInventoryComponent::TrySwitchWeapon3()
 {
-	SelectWeaponByIndex(2);
+	SelectWeaponSlot(EWeaponSlot::Melee);
 }
 
 void UShooterInventoryComponent::SelectWeaponByIndex(int32 SlotIndex)
+{
+	SelectWeaponSlot(static_cast<EWeaponSlot>(SlotIndex));
+}
+
+void UShooterInventoryComponent::HandleEquipWeapon(AWeaponBase* Weapon)
+{
+	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+
+	UE_LOG(
+		LogTemp,
+		Log,
+		TEXT("%s HandleEquipWeapon Enter Weapon=%s Shooter=%s Authority=%d SlotNum=%d"),
+		OutlierNet::GetNetPrefix(ShooterCharacter),
+		*GetNameSafe(Weapon),
+		*GetNameSafe(ShooterCharacter),
+		ShooterCharacter && ShooterCharacter->HasAuthority() ? 1 : 0,
+		WeaponSlots.Num()
+	);
+
+	if (!ShooterCharacter || !Weapon || !ShooterCharacter->HasAuthority())
+	{
+		return;
+	}
+
+	if (!Weapon->CanBePickedUpBy(ShooterCharacter))
+	{
+		UE_LOG(
+			LogTemp,
+			Log,
+			TEXT("%s HandleEquipWeapon blocked unavailable Weapon=%s"),
+			OutlierNet::GetNetPrefix(ShooterCharacter),
+			*GetNameSafe(Weapon)
+		);
+		return;
+	}
+
+	const EWeaponSlot Slot = GetSlotForWeaponType(Weapon->GetWeaponType());
+	const int32 SlotIndex = static_cast<int32>(Slot);
+
+	UE_LOG(
+		LogTemp,
+		Log,
+		TEXT("%s HandleEquipWeapon Slot WeaponType=%d Slot=%d Valid=%d"),
+		OutlierNet::GetNetPrefix(ShooterCharacter),
+		static_cast<int32>(Weapon->GetWeaponType()),
+		SlotIndex,
+		WeaponSlots.IsValidIndex(SlotIndex) ? 1 : 0
+	);
+
+	if (!IsValidWeaponSlot(Slot))
+	{
+		return;
+	}
+
+
+	AWeaponBase* OldWeapon = WeaponSlots[SlotIndex];
+
+	if (OldWeapon && OldWeapon != Weapon)
+	{
+		FTransform DropTransform = Weapon->GetActorTransform();
+		DropTransform.SetScale3D(FVector::OneVector);
+		OldWeapon->OnDropped(DropTransform, ShooterCharacter);
+	}
+
+	WeaponSlots[SlotIndex] = Weapon;
+	CurrentSlot = Slot;
+
+	// 실제 장착/해제 라이프사이클은 베이스 캐릭터 구현을 재사용하고,
+	// Shooter 쪽에서는 슬롯 목록과 파생 상태만 보정
+	// Inventory가 보유 무기와 소켓 규칙을 관리하고, 최종 장착은 Character가 맡음
+	ShooterCharacter->AFirstPersonCharacter::EquipWeapon(Weapon);
+	ShooterCharacter->RefreshWeaponMode();
+	ShooterCharacter->RefreshCombatState();
+}
+
+void UShooterInventoryComponent::SelectWeaponSlot(EWeaponSlot Slot)
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 	if (!ShooterCharacter || ShooterCharacter->bIsDead)
@@ -69,26 +167,21 @@ void UShooterInventoryComponent::SelectWeaponByIndex(int32 SlotIndex)
 		return;
 	}
 
+	const int32 WeaponIndex = static_cast<int32>(Slot);
+
 	if (!ShooterCharacter->HasAuthority())
 	{
-		// 슬롯 선택은 서버가 현재 장착 무기를 최종 결정
-		if (OwnedWeapons.IsValidIndex(SlotIndex))
-		{
-			ShooterCharacter->PlayFirstPersonMontageForWeapon(
-				ShooterCharacter->FirstPersonEquipMontage,
-				OwnedWeapons[SlotIndex] ? OwnedWeapons[SlotIndex]->GetWeaponType() : EWeaponType::Unarmed);
-		}
-		ShooterCharacter->ServerSelectWeaponByIndex(SlotIndex);
+		ShooterCharacter->ServerSelectWeaponByIndex(WeaponIndex);
 		return;
 	}
 
-	if (!OwnedWeapons.IsValidIndex(SlotIndex))
+	if (!IsValidWeaponSlot(Slot))
 	{
 		return;
 	}
 
-	// Inventory가 무기 슬롯을 관리하고, Character에는 최종 장착 결과만 적용시킨다.
-	if (ShooterCharacter->CurrentWeapon == OwnedWeapons[SlotIndex])
+	AWeaponBase* TargetWeapon = WeaponSlots[WeaponIndex];
+	if (!TargetWeapon || TargetWeapon == ShooterCharacter->CurrentWeapon)
 	{
 		return;
 	}
@@ -100,29 +193,64 @@ void UShooterInventoryComponent::SelectWeaponByIndex(int32 SlotIndex)
 
 	ShooterCharacter->ResetSecondaryCooldownInternal();
 	ShooterCharacter->StopAimInternal();
-	ShooterCharacter->AFirstPersonCharacter::EquipWeapon(OwnedWeapons[SlotIndex]);
+
+	CurrentSlot = Slot;
+
+	ShooterCharacter->AFirstPersonCharacter::EquipWeapon(TargetWeapon);
 	ShooterCharacter->PlayEquipMontages();
 	ShooterCharacter->RefreshWeaponMode();
 	ShooterCharacter->RefreshCombatState();
 }
 
-void UShooterInventoryComponent::HandleEquipWeapon(AWeaponBase* Weapon)
+void UShooterInventoryComponent::CleanupOwnedWeapons()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (!ShooterCharacter || !Weapon)
+	if (!ShooterCharacter || !ShooterCharacter->HasAuthority())
 	{
 		return;
 	}
 
-	if (!OwnedWeapons.Contains(Weapon))
+	for (AWeaponBase* Weapon : WeaponSlots)
 	{
-		OwnedWeapons.Add(Weapon);
+		if (!Weapon)
+		{
+			continue;
+		}
+
+		Weapon->OnOwnerLost();
 	}
 
-	// 실제 장착/해제 라이프사이클은 베이스 캐릭터 구현을 재사용하고,
-	// Shooter 쪽에서는 슬롯 목록과 파생 상태만 보정
-	// Inventory가 보유 무기와 소켓 규칙을 관리하고, 최종 장착은 Character가 맡음
-	ShooterCharacter->AFirstPersonCharacter::EquipWeapon(Weapon);
+	WeaponSlots.SetNum(static_cast<int32>(EWeaponSlot::Max));
+	for (TObjectPtr<AWeaponBase>& Weapon : WeaponSlots)
+	{
+		Weapon = nullptr;
+	}
+
+	ShooterCharacter->AFirstPersonCharacter::EquipWeapon(nullptr);
 	ShooterCharacter->RefreshWeaponMode();
 	ShooterCharacter->RefreshCombatState();
+}
+
+EWeaponSlot UShooterInventoryComponent::GetSlotForWeaponType(EWeaponType WeaponType)
+{
+	switch (WeaponType)
+	{
+	case EWeaponType::Rifle:
+		return EWeaponSlot::Primary;
+	case EWeaponType::Pistol:
+		return EWeaponSlot::Secondary;
+	case EWeaponType::Melee:
+		return EWeaponSlot::Melee;
+	case EWeaponType::Unarmed:
+		return EWeaponSlot::Unarmed;
+	}
+
+	return EWeaponSlot::Unarmed;
+}
+
+bool UShooterInventoryComponent::IsValidWeaponSlot(EWeaponSlot Slot) const
+{
+	const int32 Index = static_cast<int32>(Slot);
+
+	return WeaponSlots.IsValidIndex(Index);
 }

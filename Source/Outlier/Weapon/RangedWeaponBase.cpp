@@ -126,6 +126,11 @@ void ARangedWeaponBase::ConsumeAmmo()
 
 void ARangedWeaponBase::FireShot()
 {
+	if (!HasAuthority())
+	{
+		return;
+	}
+
 	if (!WeaponOwner)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("%s [%s] FireShot blocked: WeaponOwner is null"), OutlierNet::GetNetPrefix(this), *GetName());
@@ -282,6 +287,15 @@ void ARangedWeaponBase::OnRep_CurAmmo()
 	UpdateLocalAmmoUI();
 }
 
+void ARangedWeaponBase::OnRep_EquippedState()
+{
+	Super::OnRep_EquippedState();
+
+	if (IsEquipped())
+	{
+		UpdateLocalAmmoUI();
+	}
+}
 
 void ARangedWeaponBase::ClientNotifyShotFired_Implementation()
 {
@@ -629,6 +643,11 @@ bool ARangedWeaponBase::CanAttack() const
 
 void ARangedWeaponBase::StartAttack()
 {
+	if (!HasAuthority())
+	{
+		return;
+	}
+
 	if (bIsAttacking)
 	{
 		UE_LOG(LogTemp, Log, TEXT("%s [%s] StartAttack skipped: already attacking"), OutlierNet::GetNetPrefix(this), *GetName());
@@ -679,6 +698,11 @@ void ARangedWeaponBase::StopAttack()
 
 void ARangedWeaponBase::PerformAttack()
 {
+	if (!HasAuthority())
+	{
+		return;
+	}
+
 	if (!Super::CanAttack() || bIsReloading || CurrentAmmo <= 0)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("%s [%s] PerformAttack blocked BaseCanAttack=%d Reloading=%d Ammo=%d"), OutlierNet::GetNetPrefix(this), *GetName(), Super::CanAttack() ? 1 : 0, bIsReloading ? 1 : 0, CurrentAmmo);
