@@ -37,10 +37,6 @@ protected:
 	/** Pawn initialization */
 	virtual void OnPossess(APawn* InPawn) override;
 
-	/** Called if the possessed pawn is destroyed */
-	UFUNCTION()
-	void OnPawnDestroyed(AActor* DestroyedActor);
-
 	void CleanupPossessedShooterWeapons();
 
 	virtual void BindMainUI() override;
