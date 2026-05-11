@@ -48,6 +48,16 @@ public class RDG : ModuleRules
 				// ... add private dependencies that you statically link with here ...	
 			}
 			);
+
+		if (Target.bBuildEditor)
+		{
+			PrivateDependencyModuleNames.AddRange(
+				new string[]
+				{
+					"ToolMenus"
+				}
+				);
+		}
 		
 		
 		DynamicallyLoadedModuleNames.AddRange(
@@ -58,5 +68,4 @@ public class RDG : ModuleRules
 			);
 	}
 }
-
 

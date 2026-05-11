@@ -20,6 +20,8 @@
 #include "ShooterInventoryComponent.h"
 #include "ShooterCombatComponent.h"
 #include "ShooterMovementComponent.h"
+#include "UI/ShooterAbilitySectionUI.h"
+#include "LocalPlayerPostProcessSubsystem.h"
 #include "Weapon/WeaponBase.h"
 #include "Weapon/RangedWeaponBase.h"
 #include "Interface/InteractableInterface.h"
@@ -426,9 +428,7 @@ void AShooterCharacter::TryOpenSuitMenu()
 
 	bIsSuitMenuOpen = true;
 
-	// 라디얼 UI 표시
 	// 마우스 커서 표시
-	// 필요하면 이동 입력 제한
 
 	AShooterPlayerController* ShooterController = Cast<AShooterPlayerController>(GetController());
 	if (!ShooterController || !ShooterController->AbilityUIInstance)
@@ -436,15 +436,20 @@ void AShooterCharacter::TryOpenSuitMenu()
 		return;
 	}
 
+	if (ULocalPlayer* LP = ShooterController->GetLocalPlayer())
+	{
+		if (ULocalPlayerPostProcessSubsystem* PPSubsystem = LP->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
+		{
+			PPSubsystem->SetDualKawaseBlurEnabled(true);
+		}
+	}
 	ShooterController->AbilityUIInstance->SetVisibility(ESlateVisibility::Visible);
-
+	ShooterController->AbilityUIInstance->AbilitySections[static_cast<int32>(EShooterAbility::Teleport)]->SetCoolTime(7);
 }
 
 void AShooterCharacter::TryHandleSuitMenuHover()
 {
-
-
-	if (bIsSuitMenuOpen) return;
+	if (!bIsSuitMenuOpen) return;
 
 	AShooterPlayerController* ShooterController = Cast<AShooterPlayerController>(GetController());
 	if (!ShooterController || !ShooterController->AbilityUIInstance)
@@ -452,6 +457,7 @@ void AShooterCharacter::TryHandleSuitMenuHover()
 		return;
 	}
 
+	UE_LOG(LogTemp, Error, TEXT("Null: TryHandleSuitMenuHover"));
 	ShooterController->AbilityUIInstance->TryHovering();
 	
 	
@@ -459,6 +465,8 @@ void AShooterCharacter::TryHandleSuitMenuHover()
 
 void AShooterCharacter::TryCloseSuitMenu()
 {
+	UE_LOG(LogTemp, Error, TEXT("TryCloseSuitMenu"));
+
 	if (!bIsSuitMenuOpen)
 	{
 		return;
@@ -470,10 +478,25 @@ void AShooterCharacter::TryCloseSuitMenu()
 	// 마우스 커서 숨김
 
 	AShooterPlayerController* ShooterController = Cast<AShooterPlayerController>(GetController());
-	if (!ShooterController || !ShooterController->AbilityUIInstance)
+	if (ShooterController && ShooterController->AbilityUIInstance)
 	{
 		ShooterController->AbilityUIInstance->SetVisibility(ESlateVisibility::Collapsed);
 		ShooterController->AbilityUIInstance->TryGetHoveredAbility(ShooterAbility);
+		UE_LOG(LogTemp, Error, TEXT("Collasped"));
+
+	}
+	else if (!ShooterController->AbilityUIInstance)
+	{
+		UE_LOG(LogTemp, Error, TEXT("Null: AbilityUIInstance"));
+
+	}
+
+	if (ULocalPlayer* LP = ShooterController->GetLocalPlayer())
+	{
+		if (ULocalPlayerPostProcessSubsystem* PPSubsystem = LP->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
+		{
+			PPSubsystem->SetDualKawaseBlurEnabled(false);
+		}
 	}
 
 }

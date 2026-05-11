@@ -30,15 +30,15 @@ class OUTLIER_API UShooterAbilityUI : public UEventDrivenUI
 	GENERATED_BODY()
 
 public:
-
 	virtual void NativeConstruct() override;
+	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
 
+public:
 	bool TryGetHoveredAbility(EShooterAbility& OutAbility);
 	void TryHovering();
 	float CalculateCoordinate();
 
 public:
-
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UBorder> CenterCircle; 
 
@@ -49,13 +49,13 @@ public:
 	TObjectPtr<UShooterAbilitySectionUI> IconTeleport; // Teleport
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	TObjectPtr<UShooterAbilitySectionUI> IconShield; // Shield
+
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UShooterAbilitySectionUI> IconStealth; // Stealth
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UShooterAbilitySectionUI> IconStimpack; // Stimpack
-
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr<UShooterAbilitySectionUI> IconShield; // Shield
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Ability UI|Material")
 	TObjectPtr<UMaterialInterface> M_ShooterAbilityUI;

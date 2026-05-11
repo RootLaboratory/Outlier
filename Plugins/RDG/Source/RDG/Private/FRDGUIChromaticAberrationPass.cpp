@@ -1,5 +1,6 @@
-#include "FRDGUIChromaticAberrationPass.h"
+#pragma once
 
+#include "FRDGUIChromaticAberrationPass.h"
 #include "FPostProcessStructures.h"
 #include "RDGChromaticAberrationPS.h"
 #include "RHIStaticStates.h"

@@ -3,6 +3,7 @@
 #include "FRDGExplosionVolumePass.h"
 #include "FRDGHeatHazePass.h"
 #include "FRDGMotionBlurPass.h"
+#include "FRDGDatamoshingPass.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
 #include "PostProcessInputs.h"
@@ -56,6 +57,23 @@ void FOutlierPostProcessSceneViewExtension::BeginRenderViewFamily(FSceneViewFami
 			continue;
 		}
 	}
+
+
+	// 오래 안 쓴 ViewState 엔트리만 정리. 다중 뷰포트(빙의 + 에디터 등)가 ping-pong으로
+	// 서로의 history를 지우지 않도록, 일정 프레임 이상 미사용일 때만 제거.
+	ENQUEUE_RENDER_COMMAND(DatamoshHistoryCleanup)(
+		[this](FRHICommandListImmediate&)
+		{
+			constexpr uint64 StaleFrameThreshold = 120;
+			const uint64 CurrentFrame = GFrameCounterRenderThread;
+			for (auto It = DatamoshHistoryMap.CreateIterator(); It; ++It)
+			{
+				if (CurrentFrame > It.Value().LastTouchedFrame + StaleFrameThreshold)
+				{
+					It.RemoveCurrent();
+				}
+			}
+		});
 }
 
 bool FOutlierPostProcessSceneViewExtension::IsActiveThisFrame_Internal(const FSceneViewExtensionContext& Context) const
@@ -65,17 +83,38 @@ bool FOutlierPostProcessSceneViewExtension::IsActiveThisFrame_Internal(const FSc
 
 void FOutlierPostProcessSceneViewExtension::SubscribeToPostProcessingPass(EPostProcessingPass PassId, const FSceneView& View, FAfterPassCallbackDelegateArray& InOutPassCallbacks, bool bIsPassEnabled)
 {
-	if (!bIsPassEnabled)
-	{
-		return;
-	}
-
 	if (!ShouldRenderAnyEffect())
 	{
 		return;
 	}
 
 	if (!IsTargetLocalPlayerView(View))
+	{
+		return;
+	}
+
+	if (PassId == EPostProcessingPass::Tonemap && CachedParameters.DualKawaseBlur.bEnabled)
+	{
+		InOutPassCallbacks.Add(
+			FAfterPassCallbackDelegate::CreateRaw(
+				this,
+				&FOutlierPostProcessSceneViewExtension::DualKawaseBlurCallback_RenderThread));
+
+		
+	}
+	if (PassId == EPostProcessingPass::Tonemap && CachedParameters.Datamoshing.bEnabled)
+	{
+
+		//UE_LOG(LogTemp, Error, TEXT("CreateRaw"));
+
+		InOutPassCallbacks.Add(
+			FAfterPassCallbackDelegate::CreateRaw(
+				this,
+				&FOutlierPostProcessSceneViewExtension::DatamoshingCallback_RenderThread));
+	}
+
+
+	if (!bIsPassEnabled)
 	{
 		return;
 	}
@@ -94,18 +133,6 @@ void FOutlierPostProcessSceneViewExtension::SubscribeToPostProcessingPass(EPostP
 			FAfterPassCallbackDelegate::CreateRaw(
 				this,
 				&FOutlierPostProcessSceneViewExtension::HeatHazeCallback_RenderThread));
-	}
-
-	if (PassId == EPostProcessingPass::Tonemap && CachedParameters.DualKawaseBlur.bEnabled)
-	{
-
-		UE_LOG(LogTemp, Error, TEXT("KAWASE IN"));
-
-
-		InOutPassCallbacks.Add(
-			FAfterPassCallbackDelegate::CreateRaw(
-				this,
-				&FOutlierPostProcessSceneViewExtension::DualKawaseBlurCallback_RenderThread));
 	}
 }
 
@@ -152,18 +179,29 @@ bool FOutlierPostProcessSceneViewExtension::ShouldRenderAnyEffect() const
 		|| CachedParameters.LensFlare.bEnabled
 		|| CachedParameters.BloomBlur.bEnabled
 		|| CachedParameters.DualKawaseBlur.bEnabled
+		|| CachedParameters.Datamoshing.bEnabled
 		|| HasHeatHazeSources();
 }
 
 bool FOutlierPostProcessSceneViewExtension::IsTargetLocalPlayerView(const FSceneView& InView) const
 {
-
-	if (!InView.Family)
+	if (!InView.Family || !InView.State)
 	{
 		return false;
 	}
 
-	return LocalPlayer.IsValid();
+	ULocalPlayer* LP = LocalPlayer.Get();
+	if (!LP)
+	{
+		return false;
+	}
+
+	// LocalPlayer가 속한 World와 View가 그리는 World가 일치해야 대상 뷰로 판정.
+	// (PIE LocalPlayer는 PIE World, 에디터 LocalPlayer는 에디터 World를 갖기 때문에
+	//  빙의 중에도 둘이 자연스럽게 분리됨. SceneViewExtension은 LocalPlayer 단위로 생성됨.)
+	const UWorld* LPWorld = LP->GetWorld();
+	const FSceneInterface* Scene = InView.Family->Scene;
+	return LPWorld != nullptr && Scene != nullptr && Scene->GetWorld() == LPWorld;
 }
 
 bool FOutlierPostProcessSceneViewExtension::HasHeatHazeSources() const
@@ -182,8 +220,7 @@ FScreenPassTexture FOutlierPostProcessSceneViewExtension::MotionBlurCallback_Ren
 {
 	const FScreenPassTexture SceneColor = FScreenPassTexture::CopyFromSlice(
 		GraphBuilder,
-		Inputs.GetInput(EPostProcessMaterialInput::SceneColor),
-		Inputs.OverrideOutput);
+		Inputs.GetInput(EPostProcessMaterialInput::SceneColor));
 
 	if (!SceneColor.IsValid())
 	{
@@ -194,15 +231,15 @@ FScreenPassTexture FOutlierPostProcessSceneViewExtension::MotionBlurCallback_Ren
 		GraphBuilder,
 		View,
 		SceneColor,
-		CachedParameters.MotionBlur);
+		CachedParameters.MotionBlur,
+		Inputs.OverrideOutput);
 }
 
 FScreenPassTexture FOutlierPostProcessSceneViewExtension::DualKawaseBlurCallback_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessMaterialInputs& Inputs)
 {
 	const FScreenPassTexture SceneColor = FScreenPassTexture::CopyFromSlice(
 		GraphBuilder,
-		Inputs.GetInput(EPostProcessMaterialInput::SceneColor),
-		Inputs.OverrideOutput);
+		Inputs.GetInput(EPostProcessMaterialInput::SceneColor));
 
 	if (!SceneColor.IsValid())
 	{
@@ -213,15 +250,15 @@ FScreenPassTexture FOutlierPostProcessSceneViewExtension::DualKawaseBlurCallback
 		GraphBuilder,
 		View,
 		SceneColor,
-		CachedParameters.DualKawaseBlur);
+		CachedParameters.DualKawaseBlur,
+		Inputs.OverrideOutput);
 }
 
 FScreenPassTexture FOutlierPostProcessSceneViewExtension::HeatHazeCallback_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessMaterialInputs& Inputs)
 {
 	const FScreenPassTexture SceneColor = FScreenPassTexture::CopyFromSlice(
 		GraphBuilder,
-		Inputs.GetInput(EPostProcessMaterialInput::SceneColor),
-		Inputs.OverrideOutput);
+		Inputs.GetInput(EPostProcessMaterialInput::SceneColor));
 
 	if (!SceneColor.IsValid())
 	{
@@ -239,8 +276,44 @@ FScreenPassTexture FOutlierPostProcessSceneViewExtension::HeatHazeCallback_Rende
 		GraphBuilder,
 		View,
 		SceneColor,
-		HeatHazeSources);
+		HeatHazeSources,
+		Inputs.OverrideOutput);
 }
 
+FScreenPassTexture FOutlierPostProcessSceneViewExtension::DatamoshingCallback_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessMaterialInputs& Inputs)
+{
+	const FScreenPassTexture SceneColor = FScreenPassTexture::CopyFromSlice(
+		GraphBuilder,
+		Inputs.GetInput(EPostProcessMaterialInput::SceneColor));
 
+	if (!SceneColor.IsValid())
+	{
+		UE_LOG(LogTemp, Error, TEXT("RENDERTHREAD CALL, !SceneColor.IsValid()"))
 
+		return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
+	}
+
+	// 1. ViewState 유효성 검사 및 키(Key) 추출
+	FSceneViewState* ViewState = View.State ? View.State->GetConcreteViewState() : nullptr;	if (!ViewState)
+	{
+		UE_LOG(LogTemp, Error, TEXT("RENDERTHREAD CALL, !ViewState"))
+
+		// 에디터의 특정 뷰포트나 씬 캡처 등 ViewState가 없는 경우 원본 반환
+		return SceneColor;
+	}
+
+	// 2. 현재 뷰에 맵핑된 History 엔트리 획득 (없으면 새로 생성). 프레임 마킹으로 cleanup 방어.
+	FDatamoshHistoryEntry& Entry = DatamoshHistoryMap.FindOrAdd(ViewState);
+	Entry.LastTouchedFrame = GFrameCounterRenderThread;
+
+	//UE_LOG(LogTemp, Error, TEXT("AddPass"))
+
+	return FRDGDatamoshingPass::AddPass(
+		GraphBuilder,
+		View,
+		SceneColor,
+		CachedParameters.Datamoshing,
+		Entry.RenderTarget,
+		Inputs.OverrideOutput
+	);
+}

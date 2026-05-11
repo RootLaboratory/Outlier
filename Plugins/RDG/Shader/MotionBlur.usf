@@ -15,10 +15,8 @@ void MainPS(
     FScreenVertexOutput Input,
     out float4 OutColor : SV_Target0)
 {
-    const float2 UV = Input.UV;
+    const float2 UV = clamp(Input.UV, ViewRectMinUV, ViewRectMaxUV);
     float Offset = 0.0025f * max(Intensity, 0.0f) * max(VelocityScale, 0.0f);
-
-    Offset = 0.0025f;
 
     float4 Center = InputTexture.Sample(InputSampler, UV);
 
@@ -36,5 +34,5 @@ void MainPS(
 
     float4 Blurred = (Prev + Center + Next) / 3.0f;
 
-    OutColor = lerp(Center, Blurred, saturate(0.5f));
+    OutColor = lerp(Center, Blurred, saturate(BlendWeight));
 }

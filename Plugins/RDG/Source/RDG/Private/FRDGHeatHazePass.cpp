@@ -34,43 +34,41 @@ namespace
 		{
 			return false;
 		}
-		CenterPixel.X = CenterPixel.X / View.UnscaledViewRect.Width();
-		CenterPixel.Y = CenterPixel.Y / View.UnscaledViewRect.Height();
 
-
+		// AddDrawScreenPass UV = AbsolutePixel / SceneExtent, so RefractionTexture is sampled
+		// at UV * FieldExtent = AbsolutePixel * FieldExtent / SceneExtent.
+		// CenterPixel from WorldToPixel is already in absolute pixel space (includes ViewRect.Min),
+		// so CenterInField must use the same scale — no ViewRect.Min subtraction needed.
 		const FVector2f FieldScale(
-			static_cast<float>(FieldExtent.X) / static_cast<float>(FMath::Max(1, SceneExtent.X)),
-			static_cast<float>(FieldExtent.Y) / static_cast<float>(FMath::Max(1, SceneExtent.Y)));
+			static_cast<float>(FieldExtent.X) / static_cast<float>(SceneExtent.X),
+			static_cast<float>(FieldExtent.Y) / static_cast<float>(SceneExtent.Y));
 
-		//const FVector2f CenterInField(
-		//    static_cast<float>(CenterPixel.X) * FieldScale.X,
-		//    static_cast<float>(CenterPixel.Y) * FieldScale.Y);
-
-
-		const FVector2f CenterUV(
-			CenterPixel.X / View.UnscaledViewRect.Width(),
-			CenterPixel.Y / View.UnscaledViewRect.Height());
-		// FieldExtent 픽셀 좌표로 변환
 		const FVector2f CenterInField(
-			CenterUV.X * FieldExtent.X,
-			CenterUV.Y * FieldExtent.Y);
-		// 스크린 공간에서 직접 직교 축 계산 (원근 개입 없음)
-		const FVector4 ScreenCenter = View.WorldToScreen(Center);
-		const float InvW = 1.0f / FMath::Max(ScreenCenter.W, 0.0001f);
-		const float ProjectionScaleX = View.ViewMatrices.GetProjectionMatrix().M[0][0];
-		const float ProjectionScaleY = View.ViewMatrices.GetProjectionMatrix().M[1][1];
+			static_cast<float>(CenterPixel.X) * FieldScale.X,
+			static_cast<float>(CenterPixel.Y) * FieldScale.Y);
 
+		// Transform 축을 스크린에 투영 (빌보딩은 호출자 Transform에서 처리됨)
+		// FTransform3f는 GetUnitAxis 없음 → 쿼터니언에서 직접 축 추출
+		const FVector AxisXWorld(Source.Transform.GetRotation().GetAxisY());
+		const FVector AxisYWorld(Source.Transform.GetRotation().GetAxisZ());
+
+		FVector2D AxisXEndPixel, AxisYEndPixel;
+		View.WorldToPixel(Center + AxisXWorld * Source.Size.X * 0.5f, AxisXEndPixel);
+		View.WorldToPixel(Center + AxisYWorld * Source.Size.Y * 0.5f, AxisYEndPixel);
+
+		// 차분에서는 ViewRect.Min이 상쇄됨
 		const FVector2f AxisXInField(
-			Source.Size.X * 0.5f * InvW * ProjectionScaleX
-			* View.UnscaledViewRect.Width() * 0.5f * FieldScale.X, 0.0f);
-
+			(AxisXEndPixel.X - CenterPixel.X) * FieldScale.X,
+			(AxisXEndPixel.Y - CenterPixel.Y) * FieldScale.Y);
 		const FVector2f AxisYInField(
-			0.0f, Source.Size.Y * 0.5f * InvW * ProjectionScaleY
-			* View.UnscaledViewRect.Height() * 0.5f * FieldScale.Y);
+			(AxisYEndPixel.X - CenterPixel.X) * FieldScale.X,
+			(AxisYEndPixel.Y - CenterPixel.Y) * FieldScale.Y);
+
 		if (AxisXInField.SizeSquared() < 1.0f || AxisYInField.SizeSquared() < 1.0f)
 		{
 			return false;
 		}
+
 		const float PixelOffsetScale = (FieldScale.X + FieldScale.Y) * 0.5f;
 		OutData.CenterAndStrength = FVector4f(
 			CenterInField.X,
@@ -107,12 +105,13 @@ namespace
 		for (const FHeatHazeSourceData& Source : Sources)
 		{
 			FHeatHazeSourceShaderData ShaderData;
-			if (ProjectHeatHazeSource(View, SceneColor.Texture->Desc.Extent, FieldExtent, Source, ShaderData))
+			const FIntPoint SceneExtent = SceneColor.Texture->Desc.Extent;
+			if (ProjectHeatHazeSource(View, FieldExtent, SceneExtent, Source, ShaderData))
 			{
 				ShaderSources.Add(ShaderData);
 			}
 
-			UE_LOG(LogTemp, Warning, TEXT("UnscaledViewRect: Min(%d,%d) Max(%d,%d) Size(%d,%d)"),
+			/*UE_LOG(LogTemp, Warning, TEXT("UnscaledViewRect: Min(%d,%d) Max(%d,%d) Size(%d,%d)"),
 				View.UnscaledViewRect.Min.X, View.UnscaledViewRect.Min.Y,
 				View.UnscaledViewRect.Max.X, View.UnscaledViewRect.Max.Y,
 				View.UnscaledViewRect.Width(), View.UnscaledViewRect.Height());
@@ -123,7 +122,7 @@ namespace
 				SceneColor.ViewRect.Width(), SceneColor.ViewRect.Height());
 
 			UE_LOG(LogTemp, Warning, TEXT("SceneColor Extent: %d, %d"),
-				SceneColor.Texture->Desc.Extent.X, SceneColor.Texture->Desc.Extent.Y);
+				SceneColor.Texture->Desc.Extent.X, SceneColor.Texture->Desc.Extent.Y);*/
 
 		}
 
@@ -179,14 +178,9 @@ FScreenPassTexture CompositeHeatHaze(
 	const FSceneView& View,
 	const FScreenPassTexture& SceneColor,
 	FRDGTextureRef RefractionTexture,
-	const FIntPoint& FieldExtent)
+	const FIntPoint& FieldExtent,
+	const FScreenPassRenderTarget& Output)
 {
-	FScreenPassRenderTarget Output = FScreenPassRenderTarget::CreateFromInput(
-		GraphBuilder,
-		SceneColor,
-		ERenderTargetLoadAction::ENoAction,
-		TEXT("RDG.HeatHaze.Output"));
-
 	FRDGHeatHazeCompositePS::FParameters* PassParameters = GraphBuilder.AllocParameters<FRDGHeatHazeCompositePS::FParameters>();
 	PassParameters->SceneColorTexture = SceneColor.Texture;
 	PassParameters->RefractionTexture = RefractionTexture;
@@ -209,7 +203,7 @@ FScreenPassTexture CompositeHeatHaze(
 		PixelShader,
 		PassParameters);
 
-	return MoveTemp(Output);
+	return FScreenPassTexture(Output);
 }
 
 
@@ -217,17 +211,20 @@ FScreenPassTexture FRDGHeatHazePass::AddPass(
 	FRDGBuilder& GraphBuilder,
 	const FSceneView& View,
 	const FScreenPassTexture& SceneColor,
-	TConstArrayView<FHeatHazeSourceData> Sources)
+	TConstArrayView<FHeatHazeSourceData> Sources,
+	const FScreenPassRenderTarget& OverrideOutput)
 {
 	if (!SceneColor.IsValid() || Sources.IsEmpty())
 	{
 		return SceneColor;
 	}
 
-	const FIntPoint SceneExtent = SceneColor.Texture->Desc.Extent;
-	const FIntPoint FieldExtent(
-		FMath::Max(1, SceneExtent.X / 2),
-		FMath::Max(1, SceneExtent.Y / 2));
+	// OverrideOutput이 유효하지 않으면 SceneColor 기반으로 출력 RT 생성
+	const FScreenPassRenderTarget FinalOutput = OverrideOutput.IsValid()
+		? OverrideOutput
+		: FScreenPassRenderTarget::CreateFromInput(GraphBuilder, SceneColor, ERenderTargetLoadAction::ENoAction, TEXT("RDG.HeatHaze.Output"));
+
+	const FIntPoint FieldExtent = FinalOutput.Texture->Desc.Extent;
 
 	FRDGTextureRef RefractionTexture = BuildHeatHazeRefractionField(
 		GraphBuilder,
@@ -246,6 +243,7 @@ FScreenPassTexture FRDGHeatHazePass::AddPass(
 		View,
 		SceneColor,
 		RefractionTexture,
-		FieldExtent);
+		FieldExtent,
+		FinalOutput);
 }
 

@@ -49,6 +49,118 @@ void SRDGGraphicsDebugger::Construct(const FArguments& InArgs)
 						.VAlign(VAlign_Center)
 						[
 							SNew(SCheckBox)
+							.IsChecked(this, &SRDGGraphicsDebugger::GetMotionBlurEnabledCheckState)
+							.OnCheckStateChanged(this, &SRDGGraphicsDebugger::OnMotionBlurEnabledChanged)
+						]
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+						.VAlign(VAlign_Center)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Motion Blur")))
+						]
+					]
+					.BodyContent()
+					[
+						SNew(SVerticalBox)
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Blend Weight (0-1)")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot()
+							.FillWidth(1.0f)
+							.VAlign(VAlign_Center)
+							[
+								SNew(SSlider)
+								.MinValue(0.0f)
+								.MaxValue(1.0f)
+								.Value(this, &SRDGGraphicsDebugger::GetMotionBlurBlendWeightSliderValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnMotionBlurBlendWeightChanged)
+							]
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+							[
+								SNew(SBox)
+								.WidthOverride(72.0f)
+								[
+									SNew(SNumericEntryBox<float>)
+									.AllowSpin(false)
+									.MinValue(0.0f)
+									.MaxValue(1.0f)
+									.Value(this, &SRDGGraphicsDebugger::GetMotionBlurBlendWeightValue)
+									.OnValueChanged(this, &SRDGGraphicsDebugger::OnMotionBlurBlendWeightChanged)
+								]
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Intensity")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SBox)
+							.WidthOverride(120.0f)
+							[
+								SNew(SNumericEntryBox<float>)
+								.AllowSpin(true)
+								.MinValue(0.0f)
+								.MinSliderValue(0.0f)
+								.MaxSliderValue(8.0f)
+								.Value(this, &SRDGGraphicsDebugger::GetMotionBlurIntensityValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnMotionBlurIntensityChanged)
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Velocity Scale")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SBox)
+							.WidthOverride(120.0f)
+							[
+								SNew(SNumericEntryBox<float>)
+								.AllowSpin(true)
+								.MinValue(0.0f)
+								.MinSliderValue(0.0f)
+								.MaxSliderValue(8.0f)
+								.Value(this, &SRDGGraphicsDebugger::GetMotionBlurVelocityScaleValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnMotionBlurVelocityScaleChanged)
+							]
+						]
+					]
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(RDGGraphicsDebugger::RowPadding)
+				[
+					SNew(SExpandableArea)
+					.InitiallyCollapsed(false)
+					.HeaderContent()
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.VAlign(VAlign_Center)
+						[
+							SNew(SCheckBox)
 							.IsChecked(this, &SRDGGraphicsDebugger::GetChromaticEnabledCheckState)
 							.OnCheckStateChanged(this, &SRDGGraphicsDebugger::OnChromaticEnabledChanged)
 						]
@@ -238,6 +350,74 @@ void SRDGGraphicsDebugger::Construct(const FArguments& InArgs)
 						]
 					]
 				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(RDGGraphicsDebugger::RowPadding)
+				[
+					SNew(SExpandableArea)
+					.InitiallyCollapsed(false)
+					.HeaderContent()
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.VAlign(VAlign_Center)
+						[
+							SNew(SCheckBox)
+							.IsChecked(this, &SRDGGraphicsDebugger::GetDatamoshEnabledCheckState)
+							.OnCheckStateChanged(this, &SRDGGraphicsDebugger::OnDatamoshEnabledChanged)
+						]
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+						.VAlign(VAlign_Center)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Datamoshing")))
+						]
+					]
+					.BodyContent()
+					[
+						SNew(SVerticalBox)
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Death Progress (0-1)")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot()
+							.FillWidth(1.0f)
+							.VAlign(VAlign_Center)
+							[
+								SNew(SSlider)
+								.MinValue(0.0f)
+								.MaxValue(1.0f)
+								.Value(this, &SRDGGraphicsDebugger::GetDatamoshProgressSliderValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnDatamoshProgressChanged)
+							]
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+							[
+								SNew(SBox)
+								.WidthOverride(72.0f)
+								[
+									SNew(SNumericEntryBox<float>)
+									.AllowSpin(false)
+									.MinValue(0.0f)
+									.MaxValue(1.0f)
+									.Value(this, &SRDGGraphicsDebugger::GetDatamoshProgressValue)
+									.OnValueChanged(this, &SRDGGraphicsDebugger::OnDatamoshProgressChanged)
+								]
+							]
+						]
+					]
+				]
 			]
 		]
 	];
@@ -349,6 +529,88 @@ void SRDGGraphicsDebugger::OnChromaticIntensityChanged(float NewValue)
 	}
 }
 
+ECheckBoxState SRDGGraphicsDebugger::GetMotionBlurEnabledCheckState() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().MotionBlur.bEnabled ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+	}
+
+	return ECheckBoxState::Unchecked;
+}
+
+void SRDGGraphicsDebugger::OnMotionBlurEnabledChanged(ECheckBoxState NewState)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetMotionBlurEnabled(NewState == ECheckBoxState::Checked);
+	}
+}
+
+float SRDGGraphicsDebugger::GetMotionBlurBlendWeightSliderValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().MotionBlur.BlendWeight;
+	}
+
+	return 0.0f;
+}
+
+TOptional<float> SRDGGraphicsDebugger::GetMotionBlurBlendWeightValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().MotionBlur.BlendWeight;
+	}
+
+	return TOptional<float>();
+}
+
+void SRDGGraphicsDebugger::OnMotionBlurBlendWeightChanged(float NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetMotionBlurBlendWeight(NewValue);
+	}
+}
+
+TOptional<float> SRDGGraphicsDebugger::GetMotionBlurIntensityValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().MotionBlur.Intensity;
+	}
+
+	return TOptional<float>();
+}
+
+void SRDGGraphicsDebugger::OnMotionBlurIntensityChanged(float NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetMotionBlurIntensity(NewValue);
+	}
+}
+
+TOptional<float> SRDGGraphicsDebugger::GetMotionBlurVelocityScaleValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().MotionBlur.VelocityScale;
+	}
+
+	return TOptional<float>();
+}
+
+void SRDGGraphicsDebugger::OnMotionBlurVelocityScaleChanged(float NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetMotionBlurVelocityScale(NewValue);
+	}
+}
+
 ECheckBoxState SRDGGraphicsDebugger::GetDualKawaseEnabledCheckState() const
 {
 	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
@@ -428,5 +690,51 @@ void SRDGGraphicsDebugger::OnDualKawaseDownsampleCountChanged(int32 NewValue)
 	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
 	{
 		Subsystem->SetDualKawaseBlurDownsampleCount(NewValue);
+	}
+}
+
+ECheckBoxState SRDGGraphicsDebugger::GetDatamoshEnabledCheckState() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().Datamoshing.bEnabled ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+	}
+
+	return ECheckBoxState::Unchecked;
+}
+
+void SRDGGraphicsDebugger::OnDatamoshEnabledChanged(ECheckBoxState NewState)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetDatamoshingEnabled(NewState == ECheckBoxState::Checked);
+	}
+}
+
+float SRDGGraphicsDebugger::GetDatamoshProgressSliderValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().Datamoshing.Progress;
+	}
+
+	return 0.0f;
+}
+
+TOptional<float> SRDGGraphicsDebugger::GetDatamoshProgressValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().Datamoshing.Progress;
+	}
+
+	return TOptional<float>();
+}
+
+void SRDGGraphicsDebugger::OnDatamoshProgressChanged(float NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetDatamoshingProgress(NewValue);
 	}
 }

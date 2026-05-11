@@ -20,7 +20,7 @@ void UHeatHazeSourceComponent::OnRegister()
 		if (Subsystem)
 		{
 			Subsystem->RegisterSource(this);
-			UE_LOG(LogTemp, Error, TEXT("Registered"));
+			//UE_LOG(LogTemp, Error, TEXT("Registered"));
 		}
 	}
 }

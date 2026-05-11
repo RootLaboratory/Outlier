@@ -56,6 +56,11 @@ private:
 		const FSceneView& View,
 		const FPostProcessMaterialInputs& Inputs);
 
+	FScreenPassTexture DatamoshingCallback_RenderThread(
+		FRDGBuilder& GraphBuilder,
+		const FSceneView& View,
+		const FPostProcessMaterialInputs& Inputs);
+
 private:
 	TWeakObjectPtr<ULocalPlayer> LocalPlayer;
 	FPostProcessStrcture CachedParameters;
@@ -63,4 +68,11 @@ private:
 
 	mutable FCriticalSection HeatHazeSourcesCriticalSection;
 	TArray<FHeatHazeSourceData> CachedHeatHazeSources;
+
+	struct FDatamoshHistoryEntry
+	{
+		TRefCountPtr<IPooledRenderTarget> RenderTarget;
+		uint64 LastTouchedFrame = 0;
+	};
+	TMap<FSceneViewState*, FDatamoshHistoryEntry> DatamoshHistoryMap;
 };

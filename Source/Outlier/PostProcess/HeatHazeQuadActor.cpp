@@ -3,6 +3,7 @@
 
 #include "HeatHazeQuadActor.h"
 #include "HeatHazeSourceComponent.h"
+#include "Kismet/GameplayStatics.h"
 
 // Sets default values
 AHeatHazeQuadActor::AHeatHazeQuadActor()
@@ -35,5 +36,13 @@ void AHeatHazeQuadActor::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 
+	/*if (APlayerCameraManager* CameraManager = UGameplayStatics::GetPlayerCameraManager(this, 0))
+	{
+		const FVector ToCamera = (CameraManager->GetCameraLocation() - GetActorLocation()).GetSafeNormal();
+		if (!ToCamera.IsNearlyZero())
+		{
+			SetActorRotation(FRotationMatrix::MakeFromXZ(ToCamera, FVector::UpVector).Rotator());
+		}
+	}*/
 }
 

@@ -14,17 +14,54 @@ void UShooterAbilityUI::NativeConstruct()
 	AbilitySections.SetNum(static_cast<int32>(EShooterAbility::None) + 1);
 
 	AbilitySections[static_cast<int32>(EShooterAbility::Teleport)] = IconTeleport;
+	AbilitySections[static_cast<int32>(EShooterAbility::Teleport)]->SetAbility(EShooterAbility::Teleport);
+
+	AbilitySections[static_cast<int32>(EShooterAbility::Teleport)]->AbilityUnLock();
+
 	AbilitySections[static_cast<int32>(EShooterAbility::Shield)] = IconShield;
+	AbilitySections[static_cast<int32>(EShooterAbility::Shield)]->SetAbility(EShooterAbility::Shield);
+
+
 	AbilitySections[static_cast<int32>(EShooterAbility::Stealth)] = IconStealth;
+	AbilitySections[static_cast<int32>(EShooterAbility::Stealth)]->SetAbility(EShooterAbility::Stealth);
+
 	AbilitySections[static_cast<int32>(EShooterAbility::Stimpack)] = IconStimpack;
+	AbilitySections[static_cast<int32>(EShooterAbility::Stimpack)]->SetAbility(EShooterAbility::Stimpack);
+
 	AbilitySections[static_cast<int32>(EShooterAbility::None)] = nullptr;
 
 	if (BigCircle && M_ShooterAbilityUI)
 	{
 		BigCircle->SetBrushFromMaterial(M_ShooterAbilityUI);
 		ShooterAbilityMID = BigCircle->GetDynamicMaterial();
-	}
 
+
+		const FVector2D ASize = BigCircle->GetCachedGeometry().GetLocalSize();
+		const FVector2D BSize = CenterCircle->GetCachedGeometry().GetLocalSize();
+
+		const float RadiusUV = (BSize.X * 0.5f) / ASize.X; //큰원의 영역에서, 작은 원의 반지름 영역.
+
+		ShooterAbilityMID->SetScalarParameterValue(TEXT("CutRadius"), RadiusUV);
+		ShooterAbilityMID->SetScalarParameterValue(TEXT("CutFeather"), 2.f / ASize.X);
+	}
+	//UE_LOG(LogTemp, Warning, TEXT("ViewportScale: %f"), UWidgetLayoutLibrary::GetViewportScale(this));
+
+}
+
+void UShooterAbilityUI::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
+{
+	Super::NativeTick(MyGeometry, InDeltaTime);
+
+	for (UShooterAbilitySectionUI* Section : AbilitySections)
+	{
+		if (!Section || !Section->IsCooldowning())
+		{
+			continue;
+		}
+
+		Section->UpdateCoolTime(InDeltaTime);
+
+	}
 }
 
 bool UShooterAbilityUI::TryGetHoveredAbility(EShooterAbility& OutAbility)
@@ -35,15 +72,16 @@ bool UShooterAbilityUI::TryGetHoveredAbility(EShooterAbility& OutAbility)
 
 	if (AngleDeg >= -45.f && AngleDeg < 45.f)
 	{
-		if (AbilitySections[static_cast<int32>(EShooterAbility::Teleport)]->IsUnLock())
+		if (AbilitySections[static_cast<int32>(EShooterAbility::Teleport)] || AbilitySections[static_cast<int32>(EShooterAbility::Teleport)]->IsUnLock())
 		{
+			AbilitySections[static_cast<int32>(EShooterAbility::Teleport)]->SetCoolTime(5.0f);
 			OutAbility = EShooterAbility::Teleport;
 			DirectionText = TEXT("RIGHT");
 		}
 	}
 	else if (AngleDeg >= 45.f && AngleDeg < 135.f)
 	{
-		if (AbilitySections[static_cast<int32>(EShooterAbility::Shield)]->IsUnLock())
+		if (AbilitySections[static_cast<int32>(EShooterAbility::Shield)] || AbilitySections[static_cast<int32>(EShooterAbility::Shield)]->IsUnLock())
 		{
 			OutAbility = EShooterAbility::Shield;
 			DirectionText = TEXT("BOTTOM");
@@ -51,7 +89,7 @@ bool UShooterAbilityUI::TryGetHoveredAbility(EShooterAbility& OutAbility)
 	}
 	else if (AngleDeg >= 135.f || AngleDeg < -135.f)
 	{
-		if (AbilitySections[static_cast<int32>(EShooterAbility::Stealth)]->IsUnLock())
+		if (AbilitySections[static_cast<int32>(EShooterAbility::Stealth)] || AbilitySections[static_cast<int32>(EShooterAbility::Stealth)]->IsUnLock())
 		{
 			OutAbility = EShooterAbility::Stealth;
 			DirectionText = TEXT("LEFT");
@@ -59,7 +97,7 @@ bool UShooterAbilityUI::TryGetHoveredAbility(EShooterAbility& OutAbility)
 	}
 	else
 	{
-		if (AbilitySections[static_cast<int32>(EShooterAbility::Stimpack)]->IsUnLock())
+		if (AbilitySections[static_cast<int32>(EShooterAbility::Stimpack)] || AbilitySections[static_cast<int32>(EShooterAbility::Stimpack)]->IsUnLock())
 		{
 			OutAbility = EShooterAbility::Stimpack;
 			DirectionText = TEXT("TOP");
@@ -72,6 +110,7 @@ bool UShooterAbilityUI::TryGetHoveredAbility(EShooterAbility& OutAbility)
 
 void UShooterAbilityUI::TryHovering()
 {
+
 	if (!ShooterAbilityMID)
 	{
 		return;
@@ -82,6 +121,8 @@ void UShooterAbilityUI::TryHovering()
 	float OutMaterialParameter = 0;
 	const TCHAR* DirectionText = TEXT("None");
 
+	ShooterAbilityMID->SetScalarParameterValue(TEXT("Direction"), -1);
+	
 	if (AngleDeg >= -45.f && AngleDeg < 45.f)
 	{
 		if (AbilitySections[static_cast<int32>(EShooterAbility::Teleport)]->IsUnLock())

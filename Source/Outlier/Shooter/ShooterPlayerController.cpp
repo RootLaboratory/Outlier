@@ -84,7 +84,7 @@ void AShooterPlayerController::BindMainUI()
 		return;
 	}
 
-	//ShooterUIInstance->AddToViewport();
+	ShooterUIInstance->AddToViewport();
 
 	if (ULocalPlayer* LP = this->GetLocalPlayer())
 	{
@@ -116,9 +116,6 @@ void AShooterPlayerController::BindPostProcessSubSystem()
 	{
 		if (ULocalPlayerPostProcessSubsystem* PPSubsystem = LP->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
 		{
-			//PPSubsystem->ActivateChromaticAberration();
-			//PPSubsystem->SetDualKawaseBlurEnabled(true);
-			//PPSubsystem->SetDualKawaseBlurRadius(6.0f);
 			//PPSubsystem->ActivateSlideState();
 		}
 	}

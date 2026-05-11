@@ -1,19 +1,20 @@
 #pragma once
-
 #include "CoreMinimal.h"
 #include "RenderGraphFwd.h"
 #include "ScreenPass.h"
 
 class FSceneView;
-struct FDualKawaseBlurParameters;
+struct FDatamoshingParameters;
 
-class FRDGDualKawaseBlurPass
+class FRDGDatamoshingPass
 {
 public:
 	static FScreenPassTexture AddPass(
 		FRDGBuilder& GraphBuilder,
 		const FSceneView& View,
 		const FScreenPassTexture& SceneColor,
-		const FDualKawaseBlurParameters& Parameters,
-		const FScreenPassRenderTarget& OverrideOutput = FScreenPassRenderTarget());
+		const FDatamoshingParameters& Parameters,
+		TRefCountPtr<IPooledRenderTarget>& InOutHistoryRT,
+		const FScreenPassRenderTarget& OverrideOutput
+	);
 };

@@ -19,7 +19,7 @@ void FRDGDebugWindowManager::OpenWindow()
 	TSharedRef<SWindow> NewWindow =
 		SNew(SWindow)
 		.Title(FText::FromString(TEXT("RDG Graphics Debugger")))
-		.ClientSize(FVector2D(420.0f, 220.0f))
+		.ClientSize(FVector2D(460.0f, 560.0f))
 		.SupportsMinimize(true)
 		.SupportsMaximize(false)
 		.FocusWhenFirstShown(true)

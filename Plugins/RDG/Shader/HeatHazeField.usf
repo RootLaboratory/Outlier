@@ -15,6 +15,7 @@ uint SourceCount;
 float2 OutputExtent;
 float Time;
 
+// Random
 float Hash21(float2 P)
 {
 	return frac(sin(dot(P, float2(127.1f, 311.7f))) * 43758.5453123f);
@@ -24,10 +25,12 @@ float NoiseValue(float2 P)
 {
 	float2 I = floor(P);
 	float2 F = frac(P);
+
 	float A = Hash21(I);
 	float B = Hash21(I + float2(1.0f, 0.0f));
 	float C = Hash21(I + float2(0.0f, 1.0f));
 	float D = Hash21(I + float2(1.0f, 1.0f));
+
 	float2 U = F * F * (3.0f - 2.0f * F);
 	return lerp(lerp(A, B, U.x), lerp(C, D, U.x), U.y);
 }
@@ -38,8 +41,9 @@ float2 NoiseVector(float2 P)
 		NoiseValue(P),
 		NoiseValue(P + float2(19.19f, 73.73f))) * 2.0f - 1.0f;
 }
-
+//thread group 크기 한 그룹이 8x8 = 64 픽셀을 처리
 [numthreads(8, 8, 1)]
+
 void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 {
 	uint2 Pixel = DispatchThreadId.xy;
@@ -70,6 +74,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		float2 Delta = PixelCenter - Center;
 		float LocalX = dot(Delta, AxisX) / max(dot(AxisX, AxisX), 0.0001f);
 		float LocalY = dot(Delta, AxisY) / max(dot(AxisY, AxisY), 0.0001f);
+
 		float Edge = max(abs(LocalX), abs(LocalY));
 
 		float EdgeMask = saturate((1.0f - Edge) / EdgeSoftness);
@@ -91,3 +96,8 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 
 	OutRefractionTexture[Pixel] = float4(AccumulatedOffset, 0.0f, saturate(AccumulatedMask));
 }
+
+
+
+
+

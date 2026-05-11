@@ -14,5 +14,7 @@ public:
 		FRDGBuilder& GraphBuilder,
 		const FSceneView& View,
 		const FScreenPassTexture& SceneColor,
-		TConstArrayView<FHeatHazeSourceData> Sources);
+		TConstArrayView<FHeatHazeSourceData> Sources,
+		const FScreenPassRenderTarget& OverrideOutput
+		);
 };

@@ -45,7 +45,8 @@ static FScreenPassTexture RenderDualKawaseStage(
 	PassParameters->InputTexture = Input.Texture;
 	PassParameters->OriginalTexture = OriginalTexture.IsValid() ? OriginalTexture.Texture : Input.Texture;
 	PassParameters->InputSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-	PassParameters->InvResolution = FVector2f(1.0f / FMath::Max(1, Input.ViewRect.Width()), 1.0f / FMath::Max(1, Input.ViewRect.Height()));
+	const FScreenPassTextureViewport InputViewport(Input);
+	PassParameters->InvResolution = FVector2f(1.0f / FMath::Max(1, InputViewport.Extent.X), 1.0f / FMath::Max(1, InputViewport.Extent.Y));
 	PassParameters->KernelOffset = KernelOffset;
 	PassParameters->BlendWeight = BlendWeight;
 	PassParameters->bUpsample = bUpsample ? 1u : 0u;
@@ -73,11 +74,9 @@ FScreenPassTexture FRDGDualKawaseBlurPass::AddPass(
 	FRDGBuilder& GraphBuilder,
 	const FSceneView& View,
 	const FScreenPassTexture& SceneColor,
-	const FDualKawaseBlurParameters& Parameters)
+	const FDualKawaseBlurParameters& Parameters,
+	const FScreenPassRenderTarget& OverrideOutput)
 {
-
-
-
 	if (!SceneColor.IsValid() || Parameters.bEnabled == 0)
 	{
 		return SceneColor;
@@ -141,19 +140,23 @@ FScreenPassTexture FRDGDualKawaseBlurPass::AddPass(
 			*FString::Printf(TEXT("RDG.DualKawase.Upsample.%d"), Index));
 	}
 
-	FRDGTextureDesc FinalDesc = SceneColor.Texture->Desc;
-	EnumRemoveFlags(FinalDesc.Flags, ETextureCreateFlags::Presentable);
-	FinalDesc.Reset();
-	FinalDesc.Flags |= TexCreate_RenderTargetable | TexCreate_ShaderResource;
+	FScreenPassRenderTarget FinalOutput = OverrideOutput;
+	if (!FinalOutput.IsValid())
+	{
+		FRDGTextureDesc FinalDesc = SceneColor.Texture->Desc;
+		EnumRemoveFlags(FinalDesc.Flags, ETextureCreateFlags::Presentable);
+		FinalDesc.Reset();
+		FinalDesc.Flags |= TexCreate_RenderTargetable | TexCreate_ShaderResource;
 
-	FRDGTextureRef FinalTexture = GraphBuilder.CreateTexture(
-		FinalDesc,
-		TEXT("RDG.DualKawase.Final"));
+		FRDGTextureRef FinalTexture = GraphBuilder.CreateTexture(
+			FinalDesc,
+			TEXT("RDG.DualKawase.Final"));
 
-	FScreenPassRenderTarget FinalOutput(
-		FinalTexture,
-		SceneColor.ViewRect,
-		ERenderTargetLoadAction::ENoAction);
+		FinalOutput = FScreenPassRenderTarget(
+			FinalTexture,
+			SceneColor.ViewRect,
+			ERenderTargetLoadAction::ENoAction);
+	}
 
 	return RenderDualKawaseStage(
 		GraphBuilder,

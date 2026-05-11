@@ -26,14 +26,15 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "MaterialStandard")
 	bool IsUnLock();
-
 	const EShooterAbility& GetAbility();
-
 	void SetAbility(EShooterAbility InAbility);
-
-	void SetCoolTime(float InCoolTime);
-
 	void AbilityUnLock();
+
+public:
+	void SetCoolTime(float InCoolTime);
+	void UpdateCoolTime(float delta); //delta 누적 및 Material Update
+	bool IsCooldowning();
+	void CooldownDone();
 
 public:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
@@ -48,13 +49,13 @@ public:
 	//Image -> Material; 변경 시, 기존 Brush
 	FSlateBrush DefaultIconBrush;
 
-
-
 private:
 	EShooterAbility BindAbility = EShooterAbility::None;
 	bool bAbilityUnlocked : 1 = false;
-	bool bHovered : 1 = false;
-	float CoolTime = 0; // 후에 Material 연동 
+	bool bCooldowning : 1 = false;
+
+	float CoolTime = 0; // 후에 Material 연동
+	float AccumulatedTime = 0; // 후에 Material 연동 
 };
 
 
