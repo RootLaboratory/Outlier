@@ -63,7 +63,6 @@ public:
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> ShooterAbilityMID;
 
-
 	//UPROPERTY(BlueprintReadOnly, Category = "Shooter Ability Sections")
 	TArray < TObjectPtr<UShooterAbilitySectionUI>> AbilitySections;
 	

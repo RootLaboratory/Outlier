@@ -55,7 +55,7 @@ public:
 	bool BuildSourceData(FHeatHazeSourceData& OutData) const;
 public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heat Haze")
-	bool bEnabled = true;
+	uint8 bEnabled : 1 = true;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heat Haze")
 	EHeatHazeSourceShape Shape = EHeatHazeSourceShape::Sphere;

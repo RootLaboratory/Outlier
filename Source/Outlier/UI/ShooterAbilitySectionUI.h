@@ -51,8 +51,8 @@ public:
 
 private:
 	EShooterAbility BindAbility = EShooterAbility::None;
-	bool bAbilityUnlocked : 1 = false;
-	bool bCooldowning : 1 = false;
+	uint8 bAbilityUnlocked : 1 = false;
+	uint8 bCooldowning : 1 = false;
 
 	float CoolTime = 0; // 후에 Material 연동
 	float AccumulatedTime = 0; // 후에 Material 연동 
