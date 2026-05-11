@@ -1,6 +1,7 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
+﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
+using System.IO;
 
 public class RDG : ModuleRules
 {
@@ -17,7 +18,8 @@ public class RDG : ModuleRules
 		
 		PrivateIncludePaths.AddRange(
 			new string[] {
-				// ... add other private include paths required here ...
+				Path.Combine(EngineDirectory, "Source/Runtime/Renderer/Internal"),
+				Path.Combine(EngineDirectory, "Source/Runtime/Renderer/Internal/PostProcess")
 			}
 			);
 			
@@ -46,6 +48,16 @@ public class RDG : ModuleRules
 				// ... add private dependencies that you statically link with here ...	
 			}
 			);
+
+		if (Target.bBuildEditor)
+		{
+			PrivateDependencyModuleNames.AddRange(
+				new string[]
+				{
+					"ToolMenus"
+				}
+				);
+		}
 		
 		
 		DynamicallyLoadedModuleNames.AddRange(
@@ -56,3 +68,4 @@ public class RDG : ModuleRules
 			);
 	}
 }
+

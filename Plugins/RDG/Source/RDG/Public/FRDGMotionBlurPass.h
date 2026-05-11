@@ -14,7 +14,8 @@ public:
 		FRDGBuilder& GraphBuilder,
 		const FSceneView& View,
 		const FScreenPassTexture& SceneColor,
-		const FMotionBlurParameters& Parameters);
+		const FMotionBlurParameters& Parameters,
+		const FScreenPassRenderTarget& OverrideOutput = FScreenPassRenderTarget());
 };
 
 //RDG 리소스/입출력 관리, Texture 생성, graph 연결, Shader 실행 orchestration

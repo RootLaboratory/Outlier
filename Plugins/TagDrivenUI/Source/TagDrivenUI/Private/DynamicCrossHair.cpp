@@ -4,6 +4,7 @@
 #include "DynamicCrossHair.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/Character.h"
+#include "Blueprint/WidgetLayoutLibrary.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "LocalPlayerUISubSystem.h"
 
@@ -14,6 +15,8 @@ void UDynamicCrossHair::NativeConstruct()
 	{
 		CachedUISubsystem = LP->GetSubsystem<ULocalPlayerUISubSystem>();
 	}
+	UE_LOG(LogTemp, Warning, TEXT("UDynamicCrossHair ViewportScale: %f"), UWidgetLayoutLibrary::GetViewportScale(this));
+
 }
 
 void UDynamicCrossHair::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)

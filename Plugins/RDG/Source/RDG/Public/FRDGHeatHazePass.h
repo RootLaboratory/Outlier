@@ -5,15 +5,16 @@
 #include "ScreenPass.h"
 
 class FSceneView;
-struct FDualKawaseBlurParameters;
+struct FHeatHazeSourceData;
 
-class FRDGDualKawaseBlurPass
+class FRDGHeatHazePass
 {
 public:
 	static FScreenPassTexture AddPass(
 		FRDGBuilder& GraphBuilder,
 		const FSceneView& View,
 		const FScreenPassTexture& SceneColor,
-		const FDualKawaseBlurParameters& Parameters,
-		const FScreenPassRenderTarget& OverrideOutput = FScreenPassRenderTarget());
+		TConstArrayView<FHeatHazeSourceData> Sources,
+		const FScreenPassRenderTarget& OverrideOutput
+		);
 };

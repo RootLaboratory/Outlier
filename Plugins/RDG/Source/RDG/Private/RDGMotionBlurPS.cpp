@@ -19,29 +19,52 @@ FScreenPassTexture FRDGMotionBlurPass::AddPass(
 	FRDGBuilder& GraphBuilder,
 	const FSceneView& View,
 	const FScreenPassTexture& SceneColor,
-	const FMotionBlurParameters& Parameters)
+	const FMotionBlurParameters& Parameters,
+	const FScreenPassRenderTarget& OverrideOutput)
 {
 	if (!SceneColor.IsValid() || Parameters.bEnabled == 0)
 	{
-		//UE_LOG(LogTemp, Error, TEXT("ADDPASS RETURN SceneColor"));
 		return SceneColor;
 	}
 
-	FScreenPassRenderTarget Output = FScreenPassRenderTarget::CreateFromInput(
-		GraphBuilder,
-		SceneColor,
-		ERenderTargetLoadAction::ENoAction,
-		TEXT("RDG.MotionBlur.Output"));
+	FScreenPassRenderTarget Output = OverrideOutput;
+	if (Output.IsValid())
+	{
+		const bool bPartialOutput =
+			Output.ViewRect.Min != FIntPoint::ZeroValue ||
+			(Output.Texture && Output.Texture->Desc.Extent != Output.ViewRect.Max);
+		if (bPartialOutput)
+		{
+			Output.LoadAction = ERenderTargetLoadAction::ELoad;
+		}
+	}
+	else
+	{
+		Output = FScreenPassRenderTarget::CreateFromInput(
+			GraphBuilder,
+			SceneColor,
+			ERenderTargetLoadAction::ENoAction,
+			TEXT("RDG.MotionBlur.Output"));
+	}
 
 	FRDGMotionBlurPS::FParameters* PassParameters = GraphBuilder.AllocParameters<FRDGMotionBlurPS::FParameters>();
 	PassParameters->InputTexture = SceneColor.Texture;
-	PassParameters->InputSampler = TStaticSamplerState<SF_Bilinear>::GetRHI();
-	PassParameters->InputSampler =
-	TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-	FScreenPassTextureViewport InputViewport(SceneColor);// Viewport size
-	const FVector2D RectToExtent = InputViewport.GetRectToExtentRatio();
-	PassParameters->ViewRectMinUV = FVector2f(0.0f, 0.0f);
-	PassParameters->ViewRectMaxUV = FVector2f((float)RectToExtent.X, (float)RectToExtent.Y);
+	PassParameters->InputSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+	FScreenPassTextureViewport InputViewport(SceneColor);
+	const FVector2f InvExtent(
+		1.0f / FMath::Max(1, InputViewport.Extent.X),
+		1.0f / FMath::Max(1, InputViewport.Extent.Y));
+	const FVector2f BilinearMinUV(
+		(static_cast<float>(InputViewport.Rect.Min.X) + 0.5f) * InvExtent.X,
+		(static_cast<float>(InputViewport.Rect.Min.Y) + 0.5f) * InvExtent.Y);
+	const FVector2f BilinearMaxUV(
+		(static_cast<float>(InputViewport.Rect.Max.X) - 0.5f) * InvExtent.X,
+		(static_cast<float>(InputViewport.Rect.Max.Y) - 0.5f) * InvExtent.Y);
+
+	PassParameters->ViewRectMinUV = BilinearMinUV;
+	PassParameters->ViewRectMaxUV = FVector2f(
+		FMath::Max(BilinearMinUV.X, BilinearMaxUV.X),
+		FMath::Max(BilinearMinUV.Y, BilinearMaxUV.Y));
 
 	PassParameters->BlendWeight = Parameters.BlendWeight;
 	PassParameters->Intensity = Parameters.Intensity;

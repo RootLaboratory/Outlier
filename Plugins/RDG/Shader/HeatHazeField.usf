@@ -1,0 +1,103 @@
+#include "/Engine/Private/Common.ush"
+
+struct FHeatHazeSourceShaderData
+{
+	float4 CenterAndStrength;
+	float4 AxisXAndSoftness;
+	float4 AxisYAndNoise;
+	float4 NoiseDirectionAndPadding;
+};
+
+StructuredBuffer<FHeatHazeSourceShaderData> SourceDataBuffer;
+RWTexture2D<float4> OutRefractionTexture;
+
+uint SourceCount;
+float2 OutputExtent;
+float Time;
+
+// Random
+float Hash21(float2 P)
+{
+	return frac(sin(dot(P, float2(127.1f, 311.7f))) * 43758.5453123f);
+}
+
+float NoiseValue(float2 P)
+{
+	float2 I = floor(P);
+	float2 F = frac(P);
+
+	float A = Hash21(I);
+	float B = Hash21(I + float2(1.0f, 0.0f));
+	float C = Hash21(I + float2(0.0f, 1.0f));
+	float D = Hash21(I + float2(1.0f, 1.0f));
+
+	float2 U = F * F * (3.0f - 2.0f * F);
+	return lerp(lerp(A, B, U.x), lerp(C, D, U.x), U.y);
+}
+
+float2 NoiseVector(float2 P)
+{
+	return float2(
+		NoiseValue(P),
+		NoiseValue(P + float2(19.19f, 73.73f))) * 2.0f - 1.0f;
+}
+//thread group 크기 한 그룹이 8x8 = 64 픽셀을 처리
+[numthreads(8, 8, 1)]
+
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	uint2 Pixel = DispatchThreadId.xy;
+	if (Pixel.x >= (uint)OutputExtent.x || Pixel.y >= (uint)OutputExtent.y)
+	{
+		return;
+	}
+
+	float2 PixelCenter = float2(Pixel) + 0.5f;
+	float2 AccumulatedOffset = 0.0f;
+	float AccumulatedMask = 0.0f;
+
+	for (uint SourceIndex = 0; SourceIndex < SourceCount; ++SourceIndex)
+	{
+		FHeatHazeSourceShaderData Source = SourceDataBuffer[SourceIndex];
+
+		float2 Center = Source.CenterAndStrength.xy;
+		float Strength = Source.CenterAndStrength.z;
+		float MaxPixelOffset = Source.CenterAndStrength.w;
+		float2 AxisX = Source.AxisXAndSoftness.xy;
+		float EdgeSoftness = max(Source.AxisXAndSoftness.z, 0.001f);
+		float NoiseScale = Source.AxisXAndSoftness.w;
+		float2 AxisY = Source.AxisYAndNoise.xy;
+		float NoiseSpeed = Source.AxisYAndNoise.z;
+		float FalloffExponent = max(Source.AxisYAndNoise.w, 0.001f);
+		float2 NoiseDirection = Source.NoiseDirectionAndPadding.xy;
+
+		float2 Delta = PixelCenter - Center;
+		float LocalX = dot(Delta, AxisX) / max(dot(AxisX, AxisX), 0.0001f);
+		float LocalY = dot(Delta, AxisY) / max(dot(AxisY, AxisY), 0.0001f);
+
+		float Edge = max(abs(LocalX), abs(LocalY));
+
+		float EdgeMask = saturate((1.0f - Edge) / EdgeSoftness);
+		EdgeMask = pow(EdgeMask, FalloffExponent);
+
+		if (EdgeMask <= 0.0f)
+		{
+			continue;
+		}
+
+		float2 LocalUV = float2(LocalX, LocalY) * 0.5f + 0.5f;
+		float2 NoiseUV = LocalUV * NoiseScale + NoiseDirection * (Time * NoiseSpeed);
+		float2 Noise = NoiseVector(NoiseUV);
+		float SourceMask = saturate(EdgeMask * Strength);
+
+		AccumulatedOffset += Noise * MaxPixelOffset * SourceMask;
+		AccumulatedMask = max(AccumulatedMask, SourceMask);
+	}
+
+	OutRefractionTexture[Pixel] = float4(AccumulatedOffset, 0.0f, saturate(AccumulatedMask));
+}
+
+
+
+
+

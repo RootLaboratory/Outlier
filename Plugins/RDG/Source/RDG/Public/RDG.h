@@ -22,10 +22,12 @@ private:
 	ULocalPlayerPostProcessSubsystem* ResolvePostProcessSubsystem();
 	void RegisterSlateHook();
 	bool IsTargetGameWindow(const SWindow& Window) const;
-	void RequestOpenDebugWindow();
+#if WITH_EDITOR
+	void RegisterMenus();
+	void OpenDebugWindowFromMenu();
+#endif
 
 	FDelegateHandle BackBufferReadyHandle;
 	TWeakObjectPtr<ULocalPlayerPostProcessSubsystem> CachedPostProcessSubsystem;
 	TUniquePtr<FRDGDebugWindowManager> DebugWindowManager;
-	TAtomic<bool> bDebugWindowOpenRequested = false;
 };

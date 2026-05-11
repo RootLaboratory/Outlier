@@ -2,7 +2,6 @@
 
 #include "RDG.h"
 
-#include "Async/Async.h"
 #include "Debug/RDGDebugWindowManager.h"
 #include "FRDGUIChromaticAberrationPass.h"
 #include "Framework/Application/SlateApplication.h"
@@ -17,12 +16,15 @@
 #include "ScreenPass.h"
 #include "ShaderCore.h"
 
+#if WITH_EDITOR
+#include "ToolMenus.h"
+#endif
+
 #define LOCTEXT_NAMESPACE "FRDGModule"
 
 void FRDGModule::StartupModule()
 {
 	DebugWindowManager = MakeUnique<FRDGDebugWindowManager>();
-	bDebugWindowOpenRequested = false;
 
 	const TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("RDG"));
 	if (!Plugin.IsValid())
@@ -39,6 +41,14 @@ void FRDGModule::StartupModule()
 	}
 
 	FCoreDelegates::OnPostEngineInit.AddRaw(this, &FRDGModule::RegisterSlateHook);
+
+#if WITH_EDITOR
+	if (!IsRunningCommandlet())
+	{
+		UToolMenus::RegisterStartupCallback(
+			FSimpleMulticastDelegate::FDelegate::CreateRaw(this, &FRDGModule::RegisterMenus));
+	}
+#endif
 }
 
 bool FRDGModule::IsTargetGameWindow(const SWindow& Window) const
@@ -74,22 +84,6 @@ void FRDGModule::RegisterSlateHook()
 					&FRDGModule::HandleBackBufferReadyRDG);
 		}
 	}
-}
-
-void FRDGModule::RequestOpenDebugWindow()
-{
-	if (bDebugWindowOpenRequested.Exchange(true))
-	{
-		return;
-	}
-
-	AsyncTask(ENamedThreads::GameThread, [this]()
-	{
-		if (DebugWindowManager.IsValid())
-		{
-			DebugWindowManager->OpenWindow();
-		}
-	});
 }
 
 ULocalPlayerPostProcessSubsystem* FRDGModule::ResolvePostProcessSubsystem()
@@ -140,8 +134,45 @@ ULocalPlayerPostProcessSubsystem* FRDGModule::ResolvePostProcessSubsystem()
 	return nullptr;
 }
 
+#if WITH_EDITOR
+void FRDGModule::RegisterMenus()
+{
+	FToolMenuOwnerScoped OwnerScoped(this);
+
+	if (UToolMenu* WindowMenu = UToolMenus::Get()->ExtendMenu(TEXT("LevelEditor.MainMenu.Window")))
+	{
+		FToolMenuSection& Section = WindowMenu->FindOrAddSection(
+			TEXT("RDG"),
+			LOCTEXT("RDGMenuSection", "RDG"));
+
+		Section.AddMenuEntry(
+			TEXT("OpenRDGGraphicsDebugger"),
+			LOCTEXT("OpenRDGGraphicsDebugger", "RDG Graphics Debugger"),
+			LOCTEXT("OpenRDGGraphicsDebuggerTooltip", "Open the RDG post-process debugger window."),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateRaw(this, &FRDGModule::OpenDebugWindowFromMenu)));
+	}
+}
+
+void FRDGModule::OpenDebugWindowFromMenu()
+{
+	if (DebugWindowManager.IsValid())
+	{
+		DebugWindowManager->OpenWindow();
+	}
+}
+#endif
+
 void FRDGModule::ShutdownModule()
 {
+#if WITH_EDITOR
+	if (UToolMenus::IsToolMenuUIEnabled())
+	{
+		UToolMenus::UnRegisterStartupCallback(this);
+		UToolMenus::UnregisterOwner(this);
+	}
+#endif
+
 	if (DebugWindowManager.IsValid())
 	{
 		DebugWindowManager->CloseWindow();
@@ -158,7 +189,6 @@ void FRDGModule::ShutdownModule()
 	BackBufferReadyHandle.Reset();
 	CachedPostProcessSubsystem.Reset();
 	DebugWindowManager.Reset();
-	bDebugWindowOpenRequested = false;
 }
 
 void FRDGModule::HandleBackBufferReadyRDG(FRDGBuilder& GraphBuilder, SWindow& Window, FRDGTexture* BackBuffer)
@@ -178,8 +208,6 @@ void FRDGModule::HandleBackBufferReadyRDG(FRDGBuilder& GraphBuilder, SWindow& Wi
 	{
 		return;
 	}
-
-	RequestOpenDebugWindow();
 
 	Subsystem->TickFrame();
 

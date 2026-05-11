@@ -5,10 +5,10 @@
 #include "CoreMinimal.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
 #include "Shooter/ShooterCharacter.h"
+#include "UI/ShooterAbilityUI.h"
 #include "ShooterPlayerController.generated.h"
 
 class AShooterCharacter;
-
 /**
  * Basic player controller class for shooter gameplay.
  * Manages possession and respawn behavior.
@@ -51,6 +51,12 @@ protected:
 	// 총알
 	// 피격 등등
 
+public:
 
+	UPROPERTY()
+	TObjectPtr<UShooterAbilityUI>  AbilityUIInstance;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Ability UI")
+	TSubclassOf<UShooterAbilityUI> AbilityUIClass;
 
 };

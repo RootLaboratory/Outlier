@@ -25,6 +25,16 @@ private:
 	TOptional<float> GetChromaticIntensityValue() const;
 	void OnChromaticIntensityChanged(float NewValue);
 
+	ECheckBoxState GetMotionBlurEnabledCheckState() const;
+	void OnMotionBlurEnabledChanged(ECheckBoxState NewState);
+	float GetMotionBlurBlendWeightSliderValue() const;
+	TOptional<float> GetMotionBlurBlendWeightValue() const;
+	void OnMotionBlurBlendWeightChanged(float NewValue);
+	TOptional<float> GetMotionBlurIntensityValue() const;
+	void OnMotionBlurIntensityChanged(float NewValue);
+	TOptional<float> GetMotionBlurVelocityScaleValue() const;
+	void OnMotionBlurVelocityScaleChanged(float NewValue);
+
 	ECheckBoxState GetDualKawaseEnabledCheckState() const;
 	void OnDualKawaseEnabledChanged(ECheckBoxState NewState);
 	TOptional<float> GetDualKawaseBlurRadiusValue() const;
@@ -34,6 +44,12 @@ private:
 	void OnDualKawaseBlendWeightChanged(float NewValue);
 	TOptional<int32> GetDualKawaseDownsampleCountValue() const;
 	void OnDualKawaseDownsampleCountChanged(int32 NewValue);
+
+	ECheckBoxState GetDatamoshEnabledCheckState() const;
+	void OnDatamoshEnabledChanged(ECheckBoxState NewState);
+	float GetDatamoshProgressSliderValue() const;
+	TOptional<float> GetDatamoshProgressValue() const;
+	void OnDatamoshProgressChanged(float NewValue);
 
 	mutable TWeakObjectPtr<ULocalPlayerPostProcessSubsystem> CachedSubsystem;
 };

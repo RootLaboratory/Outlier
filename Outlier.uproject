@@ -8,16 +8,17 @@
 			"Name": "Outlier",
 			"Type": "Runtime",
 			"LoadingPhase": "Default",
-			"AdditionalDependencies": [
-				"Engine",
-				"AIModule",
-				"UMG",
-				"TagDrivenUI",
-				"VisualEvent",
-				"CoreUObject",
-				"RDG",
-				"CoreUObject"
-			]
+            "AdditionalDependencies": [
+                "Engine",
+                "AIModule",
+                "UMG",
+                "SlateCore",
+                "TagDrivenUI",
+                "VisualEvent",
+                "CoreUObject",
+                "RDG",
+                "CoreUObject"
+            ]
 		}
 	],
 	"Plugins": [
@@ -38,6 +39,14 @@
 		},
 		{
 			"Name": "RDG",
+			"Enabled": true
+		},
+		{
+			"Name": "TagDrivenUI",
+			"Enabled": true
+		},
+		{
+			"Name": "VisualEvent",
 			"Enabled": true
 		}
 	]
