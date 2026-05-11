@@ -38,15 +38,41 @@ void ULocalPlayerPostProcessSubsystem::ActivateSlideState()
 	}
 
 	PlayerState.bIsSliding = true;
-	PostProcessParameters.MotionBlur.bEnabled = true;
-	bDirty = true;
+	SetMotionBlurEnabled(true);
 }
 
 void ULocalPlayerPostProcessSubsystem::DeActivateSlideState()
 {
 	PlayerState.bIsSliding = false;
-	PostProcessParameters.MotionBlur.bEnabled = false;
-	bDirty = true;
+	SetMotionBlurEnabled(false);
+}
+
+void ULocalPlayerPostProcessSubsystem::SetMotionBlurEnabled(bool bEnabled)
+{
+	PostProcessParameters.MotionBlur.bEnabled = bEnabled ? 1 : 0;
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetMotionBlurBlendWeight(float InBlendWeight)
+{
+	PostProcessParameters.MotionBlur.BlendWeight = FMath::Clamp(InBlendWeight, 0.0f, 1.0f);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetMotionBlurIntensity(float InIntensity)
+{
+	PostProcessParameters.MotionBlur.Intensity = FMath::Max(0.0f, InIntensity);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetMotionBlurVelocityScale(float InVelocityScale)
+{
+	PostProcessParameters.MotionBlur.VelocityScale = FMath::Max(0.0f, InVelocityScale);
+	MarkDirty();
+	TickFrame();
 }
 
 void ULocalPlayerPostProcessSubsystem::ActivateChromaticAberration()
@@ -108,6 +134,20 @@ void ULocalPlayerPostProcessSubsystem::SetDualKawaseBlurDownsampleCount(int32 In
 
 }
 
+void ULocalPlayerPostProcessSubsystem::SetDatamoshingEnabled(bool bEnabled)
+{
+	PostProcessParameters.Datamoshing.bEnabled = bEnabled ? 1 : 0;
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetDatamoshingProgress(float InProgress)
+{
+	PostProcessParameters.Datamoshing.Progress = FMath::Clamp(InProgress, 0.0f, 1.0f);
+	MarkDirty();
+	TickFrame();
+}
+
 void ULocalPlayerPostProcessSubsystem::TickFrame()
 {
 	if (!bDirty)
@@ -146,4 +186,3 @@ bool ULocalPlayerPostProcessSubsystem::IsDirty()
 {
 	return bDirty;
 }
-

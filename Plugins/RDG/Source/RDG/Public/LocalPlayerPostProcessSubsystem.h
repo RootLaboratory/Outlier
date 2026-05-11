@@ -25,6 +25,10 @@ public:
 
 	void ActivateSlideState();
 	void DeActivateSlideState();
+	void SetMotionBlurEnabled(bool bEnabled);
+	void SetMotionBlurBlendWeight(float InBlendWeight);
+	void SetMotionBlurIntensity(float InIntensity);
+	void SetMotionBlurVelocityScale(float InVelocityScale);
 
 	void ActivateChromaticAberration();
 	void DeactivateChromaticAberration();
@@ -36,6 +40,9 @@ public:
 	void SetDualKawaseBlurRadius(float InBlurRadius);
 	void SetDualKawaseBlurBlendWeight(float InBlendWeight);
 	void SetDualKawaseBlurDownsampleCount(int32 InDownsampleCount);
+
+	void SetDatamoshingEnabled(bool bEnabled);
+	void SetDatamoshingProgress(float InProgress);
 
 	void TickFrame();
 	const FPostProcessStrcture& GetPostProcessStrcture();

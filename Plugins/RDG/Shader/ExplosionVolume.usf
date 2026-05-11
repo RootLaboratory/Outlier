@@ -1,0 +1,90 @@
+#include "/Engine/Private/Common.ush"
+
+#define EXPLOSION_VOLUME_SIZE 64
+#define EXPLOSION_VOLUME_MAX_DEPTH 5000.0f
+#define EXPLOSION_DEPTH_BIAS 10.0f
+
+RWTexture3D<float4> OutVolume;
+Texture2D SceneDepthTexture;
+SamplerState PointClampSampler;
+
+float3 ExplosionCenter;
+float ExplosionRadius;
+float ExplosionForce;
+
+float2 GetViewportUV(uint2 VoxelXY)
+{
+	return (float2(VoxelXY) + 0.5f) / (float)EXPLOSION_VOLUME_SIZE;
+}
+
+float2 ViewportUVToScreenPosition(float2 ViewportUV)
+{
+	return ViewportUV * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f);
+}
+
+uint2 ViewportUVToScenePixel(float2 ViewportUV)
+{
+	float2 ViewSize = View.ViewSizeAndInvSize.xy;
+	float2 Pixel = View.ViewRectMin.xy + floor(ViewportUV * ViewSize);
+	Pixel = min(Pixel, View.ViewRectMin.xy + ViewSize - 1.0f);
+	return (uint2)Pixel;
+}
+
+float ComputeSliceDepth(uint ZSlice)
+{
+	float Slice = ((float)ZSlice + 0.5f) / (float)EXPLOSION_VOLUME_SIZE;
+
+	// Bias resolution toward the camera so nearby wall occlusion is less chunky.
+	return max(1.0f, Slice * Slice * EXPLOSION_VOLUME_MAX_DEPTH);
+}
+
+float3 ComputeTranslatedWorldPosition(float2 ViewportUV, float SceneDepth)
+{
+	float2 ScreenPosition = ViewportUVToScreenPosition(ViewportUV);
+	float4 ScreenVector = float4(GetScreenPositionForProjectionType(ScreenPosition, SceneDepth), SceneDepth, 1.0f);
+	return mul(ScreenVector, View.ScreenToTranslatedWorld).xyz;
+}
+
+float3 ComputeTranslatedExplosionCenter()
+{
+	FDFVector3 PreViewTranslation = MakeDFVector3(View.PreViewTranslationHigh, View.PreViewTranslationLow);
+	return DFFastToTranslatedWorld(ExplosionCenter, PreViewTranslation);
+}
+
+[numthreads(8, 8, 8)]
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	if (any(DispatchThreadId >= uint3(EXPLOSION_VOLUME_SIZE, EXPLOSION_VOLUME_SIZE, EXPLOSION_VOLUME_SIZE)))
+	{
+		return;
+	}
+
+	const float2 ViewportUV = GetViewportUV(DispatchThreadId.xy);
+	const float VoxelDepth = ComputeSliceDepth(DispatchThreadId.z);
+	const uint2 ScenePixel = ViewportUVToScenePixel(ViewportUV);
+	const float DeviceZ = SceneDepthTexture.Load(int3(ScenePixel, 0)).r;
+	const float SceneDepth = ConvertFromDeviceZ(DeviceZ);
+
+	if (VoxelDepth > SceneDepth + EXPLOSION_DEPTH_BIAS)
+	{
+		OutVolume[DispatchThreadId] = float4(0.0f, 0.0f, 0.0f, 0.0f);
+		return;
+	}
+
+	const float3 TranslatedWorldPosition = ComputeTranslatedWorldPosition(ViewportUV, VoxelDepth);
+	const float3 TranslatedCenter = ComputeTranslatedExplosionCenter();
+	const float3 Offset = TranslatedWorldPosition - TranslatedCenter;
+	const float Distance = length(Offset);
+
+	if (Distance >= ExplosionRadius || ExplosionRadius <= 0.0f || ExplosionForce == 0.0f)
+	{
+		OutVolume[DispatchThreadId] = float4(0.0f, 0.0f, 0.0f, 0.0f);
+		return;
+	}
+
+	const float Falloff = smoothstep(ExplosionRadius, 0.0f, Distance);
+	const float3 Direction = Offset / max(Distance, 1.0f);
+	const float3 Velocity = Direction * ExplosionForce * Falloff;
+
+	OutVolume[DispatchThreadId] = float4(Velocity, Falloff);
+}

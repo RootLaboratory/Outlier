@@ -2,10 +2,12 @@
 
 #include "ShooterPlayerController.h"
 
+#include "Blueprint/UserWidget.h"
 #include "GameFramework/PlayerStart.h"
 #include "Kismet/GameplayStatics.h"
 #include "LocalPlayerUISubSystem.h"
 #include "LocalPlayerPostProcessSubsystem.h"
+#include "UI/ShooterAbilityUI.h"
 #include "ShooterCharacter.h"
 #include "OutlierGameMode.h"
 
@@ -93,6 +95,21 @@ void AShooterPlayerController::BindMainUI()
 			UISubsystem->RegisterMainUI(ShooterUIInstance);
 		}
 	}
+	if (!AbilityUIClass || AbilityUIInstance)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Cant InitializeAbilityUI"));
+		return;
+	}
+
+	AbilityUIInstance = CreateWidget<UShooterAbilityUI>(this, AbilityUIClass);
+	if (!AbilityUIInstance)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Cant AbilityUIInstance"));
+		return;
+	}
+
+	AbilityUIInstance->AddToViewport();
+	AbilityUIInstance->SetVisibility(ESlateVisibility::Collapsed);
 }
 
 void AShooterPlayerController::BindPostProcessSubSystem()
@@ -101,9 +118,6 @@ void AShooterPlayerController::BindPostProcessSubSystem()
 	{
 		if (ULocalPlayerPostProcessSubsystem* PPSubsystem = LP->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
 		{
-			//PPSubsystem->ActivateChromaticAberration();
-			//PPSubsystem->SetDualKawaseBlurEnabled(true);
-			//PPSubsystem->SetDualKawaseBlurRadius(6.0f);
 			//PPSubsystem->ActivateSlideState();
 		}
 	}

@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "FirstPerson/FirstPersonCharacter.h"
+#include "Shooter/Ability/ShooterAbility.h"
 #include "ShooterCharacter.generated.h"
 
 class UInputAction;
@@ -203,7 +204,8 @@ protected:
 	uint8 bIsEquipping : 1 = false;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
-	int32 SelectedSuitSlot = 0; // 이후에 Suit 관련 만들면서 거기에 있는 enum 값으로 교체?
+
+	EShooterAbility ShooterAbility = EShooterAbility::None;
 
 	// Lean Runtime Data
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
@@ -277,6 +279,9 @@ protected:
 	virtual void OnMovementModeChanged(EMovementMode  PrevMovementMode, uint8 PreviousCustomMode) override;
 
 	virtual void OnMoveInputUpdated(const FVector2D& MoveValue);
+
+	virtual void LookInput(const FInputActionValue& Value) override;
+
 public:
 	// Construction
 	/** Constructor */
@@ -380,6 +385,7 @@ protected:
 
 	void TryInteract();
 	void TryOpenSuitMenu();
+	void TryHandleSuitMenuHover();
 	void TryCloseSuitMenu();
 	void UpdateSuitSelection(const FInputActionValue& Value);
 	void TryUseSuit();

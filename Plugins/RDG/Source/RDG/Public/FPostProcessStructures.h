@@ -4,11 +4,17 @@
 
 #include "CoreMinimal.h"
 
+struct FDatamoshingParameters
+{
+	int32 bEnabled = false;
+	float Progress = 1.0f;
+};
+
 struct FMotionBlurParameters
 {
 	int32 bEnabled = false; //Padding.?
 	float BlendWeight = 0.7f;
-	float Intensity = 0.3f;
+	float Intensity = 1.0f;
 	float VelocityScale = 0.5f;
 };
 
@@ -61,4 +67,5 @@ struct FPostProcessStrcture
 	FLensFlareParameters LensFlare;
 	FBloomBlurParameters BloomBlur;
 	FDualKawaseBlurParameters DualKawaseBlur;
+	FDatamoshingParameters Datamoshing;
 };

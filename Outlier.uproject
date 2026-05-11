@@ -8,41 +8,50 @@
 			"Name": "Outlier",
 			"Type": "Runtime",
 			"LoadingPhase": "Default",
-			"AdditionalDependencies": [
-				"Engine",
-				"AIModule",
-				"UMG",
-				"TagDrivenUI",
-				"VisualEvent",
-				"CoreUObject",
-				"RDG",
-				"CoreUObject"
-			]
+            "AdditionalDependencies": [
+                "Engine",
+                "AIModule",
+                "UMG",
+                "SlateCore",
+                "TagDrivenUI",
+                "VisualEvent",
+                "CoreUObject",
+                "RDG",
+                "CoreUObject"
+            ]
 		}
 	],
-	"Plugins": [
-		{
-			"Name": "ModelingToolsEditorMode",
-			"Enabled": true,
-			"TargetAllowList": [
-				"Editor"
-			]
-		},
-		{
-			"Name": "StateTree",
-			"Enabled": true
-		},
-		{
-			"Name": "GameplayStateTree",
-			"Enabled": true
-		},
-		{
-			"Name": "RDG",
-			"Enabled": true
-		},
-		{
-			"Name": "StructCreatorPlugin",
-			"Enabled": true
-		}
-	]
+    "Plugins": [
+        {
+            "Name": "ModelingToolsEditorMode",
+            "Enabled": true,
+            "TargetAllowList": [
+                "Editor"
+            ]
+        },
+        {
+            "Name": "StateTree",
+            "Enabled": true
+        },
+        {
+            "Name": "GameplayStateTree",
+            "Enabled": true
+        },
+        {
+            "Name": "RDG",
+            "Enabled": true
+        },
+        {
+            "Name": "TagDrivenUI",
+            "Enabled": true
+        },
+        {
+            "Name": "VisualEvent",
+            "Enabled": true
+        },
+        {
+            "Name": "StructCreatorPlugin",
+            "Enabled": true
+        }
+    ]
 }

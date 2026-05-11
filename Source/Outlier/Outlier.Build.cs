@@ -23,7 +23,8 @@ public class Outlier : ModuleRules
             "GameplayStateTreeModule",
             "UMG",
             "Slate",
-            "AnimGraphRuntime"
+            "AnimGraphRuntime",
+            "TagDrivenUI"
         });
 
         PrivateDependencyModuleNames.AddRange(new string[]
