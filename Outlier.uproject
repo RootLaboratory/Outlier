@@ -1,6 +1,6 @@
 {
 	"FileVersion": 3,
-	"EngineAssociation": "{2390827C-40D9-8BC0-BAA6-2B86F8EF1BA8}",
+	"EngineAssociation": "{61999753-472F-044D-2393-FFB7E2D4307F}",
 	"Category": "",
 	"Description": "",
 	"Modules": [
@@ -21,33 +21,37 @@
             ]
 		}
 	],
-	"Plugins": [
-		{
-			"Name": "ModelingToolsEditorMode",
-			"Enabled": true,
-			"TargetAllowList": [
-				"Editor"
-			]
-		},
-		{
-			"Name": "StateTree",
-			"Enabled": true
-		},
-		{
-			"Name": "GameplayStateTree",
-			"Enabled": true
-		},
-		{
-			"Name": "RDG",
-			"Enabled": true
-		},
-		{
-			"Name": "TagDrivenUI",
-			"Enabled": true
-		},
-		{
-			"Name": "VisualEvent",
-			"Enabled": true
-		}
-	]
+    "Plugins": [
+        {
+            "Name": "ModelingToolsEditorMode",
+            "Enabled": true,
+            "TargetAllowList": [
+                "Editor"
+            ]
+        },
+        {
+            "Name": "StateTree",
+            "Enabled": true
+        },
+        {
+            "Name": "GameplayStateTree",
+            "Enabled": true
+        },
+        {
+            "Name": "RDG",
+            "Enabled": true
+        },
+        {
+            "Name": "TagDrivenUI",
+            "Enabled": true
+        },
+        {
+            "Name": "VisualEvent",
+            "Enabled": true
+        },
+        {
+            "Name": "StructCreatorPlugin",
+            "Enabled": true
+        }
+    ]
 }

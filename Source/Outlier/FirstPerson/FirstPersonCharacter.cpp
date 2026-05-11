@@ -175,21 +175,7 @@ void AFirstPersonCharacter::TryCamToggle()
 void AFirstPersonCharacter::OnRep_CurrentWeapon()
 {
 	UE_LOG(LogTemp, Log, TEXT("%s %s OnRep_CurrentWeapon Previous=%s Current=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(LastReplicatedWeapon), *GetNameSafe(CurrentWeapon));
-	if (LastReplicatedWeapon && LastReplicatedWeapon != CurrentWeapon)
-	{
-		LastReplicatedWeapon->OnUnequipped();
-	}
-
-	if (CurrentWeapon)
-	{
-		CurrentWeaponType = CurrentWeapon->GetWeaponType();
-		CurrentWeapon->OnEquipped(this);
-	}
-	else
-	{
-		CurrentWeaponType = EWeaponType::Unarmed;
-	}
-
+	CurrentWeaponType = CurrentWeapon ? CurrentWeapon->GetWeaponType() : EWeaponType::Unarmed;
 	LastReplicatedWeapon = CurrentWeapon;
 }
 
@@ -220,30 +206,36 @@ void AFirstPersonCharacter::TryStopAttack()
 
 void AFirstPersonCharacter::EquipWeapon(AWeaponBase* Weapon)
 {
-	if (!Weapon)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("%s %s EquipWeapon blocked: weapon is null"), OutlierNet::GetNetPrefix(this), *GetName());
-		return;
-	}
-
 	if (CurrentWeapon == Weapon)
 	{
-		UE_LOG(LogTemp, Log, TEXT("%s %s EquipWeapon skipped: already equipped %s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(Weapon));
+		UE_LOG(
+			LogTemp,
+			Log,
+			TEXT("%s %s EquipWeapon skipped: already equipped %s"),
+			OutlierNet::GetNetPrefix(this),
+			*GetName(),
+			*GetNameSafe(Weapon)
+		);
 		return;
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("%s %s EquipWeapon Previous=%s New=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(CurrentWeapon), *GetNameSafe(Weapon));
+	UE_LOG(
+		LogTemp,
+		Log,
+		TEXT("%s %s EquipWeapon Previous=%s New=%s"),
+		OutlierNet::GetNetPrefix(this),
+		*GetName(),
+		*GetNameSafe(CurrentWeapon),
+		*GetNameSafe(Weapon)
+	);
 
-	AWeaponBase* OldWeapon = CurrentWeapon;
-	const FTransform PickupTransform = Weapon->GetActorTransform();
-
-	if (OldWeapon)
+	if (CurrentWeapon && CurrentWeapon->GetOwner() == this)
 	{
-		OldWeapon->OnDropped(PickupTransform);
+		CurrentWeapon->OnUnequipped();
 	}
 
 	CurrentWeapon = Weapon;
-	CurrentWeaponType = Weapon->GetWeaponType();
+	CurrentWeaponType = CurrentWeapon ? CurrentWeapon->GetWeaponType() : EWeaponType::Unarmed;
 
 	if (CurrentWeapon)
 	{
@@ -251,6 +243,7 @@ void AFirstPersonCharacter::EquipWeapon(AWeaponBase* Weapon)
 	}
 
 	LastReplicatedWeapon = CurrentWeapon;
+	ForceNetUpdate();
 
 	UE_LOG(LogTemp, Log, TEXT("%s %s EquipWeapon complete Current=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(CurrentWeapon));
 }
@@ -270,4 +263,3 @@ EWeaponType AFirstPersonCharacter::GetWeaponType() const
 void AFirstPersonCharacter::OnMoveInputUpdated(const FVector2D& MoveValue)
 {
 }
-

@@ -4,12 +4,16 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "Engine/DataTable.h"
 #include "Interface/InteractableInterface.h"
+#include "Weapon/WeaponDataTypes.h"
 #include "WeaponBase.generated.h"
 
 class USkeletalMeshComponent;
 class USceneComponent;
 class USphereComponent;
+class AWeaponSpawnPoint;
+class AFirstPersonCharacter;
 
 UENUM(BlueprintType)
 enum class EWeaponType : uint8
@@ -47,6 +51,12 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = Weapon)
 	EWeaponType WeaponType = EWeaponType::Unarmed;
 
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Data")
+	EWeaponFireType FireType = EWeaponFireType::HitScan;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Data")
+	EWeaponFireMode FireMode = EWeaponFireMode::SemiAuto;
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = Weapon)
 	float Damage = 10.0f;
 
@@ -56,24 +66,73 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = Weapon)
 	float EffectiveRange = 1000.0f;
 
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Data")
+	float MovementSpeedMultiplier = 1.0f;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Range")
+	float DamageFalloffStartRange = 0.0f;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Range")
+	float DamageFalloffMaxRange = 0.0f;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Range")
+	float MinDamageMultiplier = 1.0f;
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = IK)
 	FName LeftHandIKSocketName = FName("LeftHandIK");
 
-	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
+	UPROPERTY(ReplicatedUsing = OnRep_EquippedState, VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
 	TObjectPtr<ACharacter> WeaponOwner;
 
-	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
+	UPROPERTY(ReplicatedUsing = OnRep_EquippedState, VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
 	uint8 bIsEquipped : 1 = false;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
 	uint8 bIsAttacking : 1 = false;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Data")
+	FDataTableRowHandle WeaponCoreRow;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Data")
+	TObjectPtr<UDataTable> WeaponRangeTable;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Data")
+	FName RangeProfileId;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Data")
+	FDataTableRowHandle WeaponRangeRow;
+
+	UPROPERTY(Transient, VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Data")
+	uint8 bWeaponDataInitialized : 1 = false;
+
+	UPROPERTY()
+	TObjectPtr<AWeaponSpawnPoint> OwningSpawnPoint;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Pickup")
+	float DropInstigatorPickupBlockDuration = 0.35f;
+
+	UPROPERTY(Transient)
+	TWeakObjectPtr<AFirstPersonCharacter> DropPickupBlockedInteractor;
+
+	UPROPERTY(Transient)
+	float DropPickupBlockedUntilTime = 0.0f;
+
 protected:
+	virtual void EnsureWeaponDataInitialized();
+	virtual void InitializeFromDataTables();
+	virtual void InitializeRangeFromDataTable();
+
 	void SetEquippedCollisionEnabled(bool bEnabled);
 	void SetPickupPresentation();
 	void SetEquippedPresentation();
+	void ApplyReplicatedPresentation();
 
-public:	
+	UFUNCTION()
+	virtual void OnRep_EquippedState();
+
+public:
+	virtual void BeginPlay() override;
+
 	virtual bool CanAttack() const;
 
 	virtual void OnConstruction(const FTransform& Transform) override;
@@ -88,14 +147,24 @@ public:
 
 	virtual void OnUnequipped();
 
-	virtual void OnDropped(const FTransform& DropTransform);
+	virtual void OnDropped(const FTransform& DropTransform, AFirstPersonCharacter* DroppedBy = nullptr);
 
 	virtual void Interact(class AFirstPersonCharacter* Interactor) override;
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
+	void OnOwnerLost();
+
+	void SetOwningSpawnPoint(AWeaponSpawnPoint* SpawnPoint);
+
 	EWeaponType GetWeaponType() const { return WeaponType; }
+	EWeaponFireType GetFireType() const { return FireType; }
+	EWeaponFireMode GetFireMode() const { return FireMode; }
 	bool IsAttacking() const { return bIsAttacking; }
+	bool IsEquipped() const { return bIsEquipped; }
+	bool CanBePickedUpBy(const AFirstPersonCharacter* Interactor) const;
+	float GetDamageAtDistance(float DistanceCm) const;
+	float GetMovementSpeedMultiplier() const { return MovementSpeedMultiplier; }
 
 	USkeletalMeshComponent* GetFirstPersonWeaponMesh() const { return FirstPersonWeaponMesh; }
 	USkeletalMeshComponent* GetThirdPersonWeaponMesh() const { return ThirdPersonWeaponMesh; }

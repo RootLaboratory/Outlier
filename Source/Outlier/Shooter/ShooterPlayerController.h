@@ -29,6 +29,7 @@ protected:
 
 	/** Gameplay initialization */
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 	/** Input mapping context setup */
 	virtual void SetupInputComponent() override;
@@ -36,9 +37,7 @@ protected:
 	/** Pawn initialization */
 	virtual void OnPossess(APawn* InPawn) override;
 
-	/** Called if the possessed pawn is destroyed */
-	UFUNCTION()
-	void OnPawnDestroyed(AActor* DestroyedActor);
+	void CleanupPossessedShooterWeapons();
 
 	virtual void BindMainUI() override;
 
