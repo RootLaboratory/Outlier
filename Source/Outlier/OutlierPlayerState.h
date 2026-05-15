@@ -10,6 +10,7 @@
 /**
  * 
  */
+
 UCLASS()
 class OUTLIER_API AOutlierPlayerState : public APlayerState
 {

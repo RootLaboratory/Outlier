@@ -4,6 +4,8 @@
 #include "Shooter/ShooterCharacter.h"
 #include "OutlierPlayerState.h"
 #include "OutlierCheckpoint.h"
+#include "OutlierGameState.h"
+#include "FrontendPlayerController.h"
 #include "Save/OutlierSaveSubSystem.h"
 #include "Kismet/GameplayStatics.h"
 #include "GameFramework/PlayerState.h"
@@ -69,7 +71,9 @@ void AOutlierGameMode::Logout(AController* Exiting)
 	}
 
 	Super::Logout(Exiting);
+
 }
+
 
 void AOutlierGameMode::RespawnPlayerAtCheckpoint(AController* Controller)
 {
