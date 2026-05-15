@@ -4,7 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Subsystems/GameInstanceSubsystem.h"
-#include "OutlierCheckpointData.h"
+#include "Save/OutlierCheckpointData.h"
 #include "OutlierSaveSubSystem.generated.h"
 
 /**

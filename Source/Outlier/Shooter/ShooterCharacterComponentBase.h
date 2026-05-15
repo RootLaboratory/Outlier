@@ -8,7 +8,7 @@
 
 class AShooterCharacter;
 
-UCLASS(Abstract)
+UCLASS(Abstract, ClassGroup = (Custom), meta = (BlueprintSpawnableComponent))
 class OUTLIER_API UShooterCharacterComponentBase : public UActorComponent
 {
 	GENERATED_BODY()

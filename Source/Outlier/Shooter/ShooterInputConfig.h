@@ -3,7 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Engine/DataAsset.h"
+#include "FirstPerson/FirstPersonInputConfig.h"
 #include "ShooterInputConfig.generated.h"
 
 class UInputAction;
@@ -12,7 +12,7 @@ class UInputAction;
  * 
  */
 UCLASS(BlueprintType, Blueprintable)
-class OUTLIER_API UShooterInputConfig : public UDataAsset
+class OUTLIER_API UShooterInputConfig : public UFirstPersonInputConfig
 {
 	GENERATED_BODY()
 
@@ -45,10 +45,6 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Input")
 	UInputAction* LeanAction;
 
-	/** Interaction Input Action */
-	UPROPERTY(EditAnywhere, Category = "Input")
-	UInputAction* InteractionAction;
-	
 	/** Suit Menu Hold Input Action */
 	UPROPERTY(EditAnywhere, Category = "Input")
 	UInputAction* SuitMenuHoldAction;
@@ -68,5 +64,4 @@ public:
 	/** Aim Input Action */
 	UPROPERTY(EditAnywhere, Category = "Input")
 	UInputAction* AimAction;
-
 };

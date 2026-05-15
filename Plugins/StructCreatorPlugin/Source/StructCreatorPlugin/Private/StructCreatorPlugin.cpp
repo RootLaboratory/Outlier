@@ -5,13 +5,17 @@
 #include "StructCreatorPluginCommands.h"
 #include "DesktopPlatformModule.h"
 #include "Framework/Application/SlateApplication.h"
+#include "GameProjectGenerationModule.h"
 #include "HAL/FileManager.h"
 #include "IDesktopPlatform.h"
+#include "ISourceCodeAccessModule.h"
+#include "ISourceCodeAccessor.h"
 #include "Misc/App.h"
 #include "Misc/FileHelper.h"
 #include "Misc/MessageDialog.h"
 #include "Misc/Paths.h"
 #include "ToolMenus.h"
+#include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Layout/SUniformGridPanel.h"
@@ -60,29 +64,69 @@ namespace
 		return true;
 	}
 
-	FString MakeStructHeaderContent(const FString& FileName, const FString& StructBaseName)
+	FString MakeStructHeaderContent(
+		const FString& FileName,
+		const FString& StructBaseName,
+		bool bIsDataTableRow,
+		bool bAddDisplayFields,
+		bool bAddGameplayTag,
+		bool bAddSoftObjectReference)
 	{
 		const FString ProjectName = FApp::GetProjectName();
 		const FString ApiMacro = ProjectName.ToUpper() + TEXT("_API");
+		FString ExtraIncludes;
+		if (bIsDataTableRow)
+		{
+			ExtraIncludes += TEXT("#include \"Engine/DataTable.h\"");
+		}
+		if (bAddGameplayTag)
+		{
+			ExtraIncludes += TEXT("#include \"GameplayTagContainer.h\"");
+		}
+		if (bAddSoftObjectReference)
+		{
+			ExtraIncludes += TEXT("#include \"UObject/SoftObjectPtr.h\"");
+		}
+
+		const FString BaseType = bIsDataTableRow ? TEXT(" : public FTableRowBase") : TEXT("");
+		FString Fields = TEXT("\tUPROPERTY(EditAnywhere, BlueprintReadWrite)\n\tint32 ID = 0;\n");
+
+		if (bAddDisplayFields)
+		{
+			Fields += TEXT("\n\tUPROPERTY(EditAnywhere, BlueprintReadWrite)\n\tFText DisplayName;\n");
+			Fields += TEXT("\n\tUPROPERTY(EditAnywhere, BlueprintReadWrite)\n\tFText Description;\n");
+		}
+
+		if (bAddGameplayTag)
+		{
+			Fields += TEXT("\n\tUPROPERTY(EditAnywhere, BlueprintReadWrite)\n\tFGameplayTag Tag;\n");
+		}
+
+		if (bAddSoftObjectReference)
+		{
+			Fields += TEXT("\n\tUPROPERTY(EditAnywhere, BlueprintReadWrite)\n\tTSoftObjectPtr<UObject> Asset;\n");
+		}
 
 		return FString::Printf(TEXT(R"(#pragma once
 
 #include "CoreMinimal.h"
+%s
 #include "%s.generated.h"
 
 USTRUCT(BlueprintType)
-struct %s F%s
+struct %s F%s%s
 {
 	GENERATED_BODY()
 
-public:
-	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	int32 ID = 0;
+%s
 };
 )"),
+			*ExtraIncludes,
 			*FileName,
 			*ApiMacro,
-			*StructBaseName);
+			*StructBaseName,
+			*BaseType,
+			*Fields);
 	}
 
 	FString ResolveCreateDirectory(FString RawDirectory)
@@ -100,6 +144,25 @@ public:
 		}
 
 		return FPaths::ConvertRelativePathToFull(RawDirectory);
+	}
+
+	bool RefreshCodeProject(FText& OutFailReason, FText& OutFailLog)
+	{
+		return FGameProjectGenerationModule::Get().UpdateCodeProject(OutFailReason, OutFailLog);
+	}
+
+	bool OpenHeaderInSourceCodeAccessor(const FString& HeaderPath)
+	{
+		ISourceCodeAccessModule& SourceCodeAccessModule = FModuleManager::LoadModuleChecked<ISourceCodeAccessModule>(TEXT("SourceCodeAccess"));
+		ISourceCodeAccessor& SourceCodeAccessor = SourceCodeAccessModule.GetAccessor();
+
+		if (!SourceCodeAccessor.CanAccessSourceCode())
+		{
+			SourceCodeAccessor.RefreshAvailability();
+		}
+
+		return SourceCodeAccessor.CanAccessSourceCode()
+			&& SourceCodeAccessor.OpenFileAtLine(HeaderPath, 1);
 	}
 }
 
@@ -145,12 +208,16 @@ void FStructCreatorPluginModule::PluginButtonClicked()
 {
 	TSharedPtr<SEditableTextBox> StructNameTextBox;
 	TSharedPtr<SEditableTextBox> DirectoryTextBox;
+	TSharedPtr<SCheckBox> DataTableRowCheckBox;
+	TSharedPtr<SCheckBox> DisplayFieldsCheckBox;
+	TSharedPtr<SCheckBox> GameplayTagCheckBox;
+	TSharedPtr<SCheckBox> SoftObjectReferenceCheckBox;
 	bool bCreateRequested = false;
 	const FString DefaultDirectory = FPaths::Combine(FPaths::ProjectDir(), TEXT("Source"), FApp::GetProjectName());
 
 	TSharedRef<SWindow> DialogWindow = SNew(SWindow)
 		.Title(LOCTEXT("CreateStructWindowTitle", "New C++ Struct..."))
-		.ClientSize(FVector2D(560.0f, 210.0f))
+		.ClientSize(FVector2D(560.0f, 350.0f))
 		.SupportsMaximize(false)
 		.SupportsMinimize(false);
 
@@ -169,6 +236,55 @@ void FStructCreatorPluginModule::PluginButtonClicked()
 		[
 			SAssignNew(StructNameTextBox, SEditableTextBox)
 			.HintText(LOCTEXT("StructNameHint", "ItemData or FItemData"))
+		]
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(12.0f, 2.0f, 12.0f, 8.0f)
+		[
+			SAssignNew(DataTableRowCheckBox, SCheckBox)
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("DataTableRowCheckBoxLabel", "DataTable Row (inherit FTableRowBase)"))
+			]
+		]
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(12.0f, 0.0f, 12.0f, 4.0f)
+		[
+			SNew(STextBlock)
+			.Text(LOCTEXT("CommonFieldsLabel", "Common Fields"))
+			.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+		]
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(12.0f, 0.0f, 12.0f, 4.0f)
+		[
+			SAssignNew(DisplayFieldsCheckBox, SCheckBox)
+			.IsChecked(ECheckBoxState::Checked)
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("DisplayFieldsCheckBoxLabel", "DisplayName + Description"))
+			]
+		]
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(12.0f, 0.0f, 12.0f, 4.0f)
+		[
+			SAssignNew(GameplayTagCheckBox, SCheckBox)
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("GameplayTagCheckBoxLabel", "Gameplay Tag"))
+			]
+		]
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(12.0f, 0.0f, 12.0f, 8.0f)
+		[
+			SAssignNew(SoftObjectReferenceCheckBox, SCheckBox)
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("SoftObjectReferenceCheckBoxLabel", "Soft Object Reference"))
+			]
 		]
 		+ SVerticalBox::Slot()
 		.AutoHeight()
@@ -260,7 +376,13 @@ void FStructCreatorPluginModule::PluginButtonClicked()
 
 	FSlateApplication::Get().AddModalWindow(DialogWindow, nullptr);
 
-	if (!bCreateRequested || !StructNameTextBox.IsValid() || !DirectoryTextBox.IsValid())
+	if (!bCreateRequested
+		|| !StructNameTextBox.IsValid()
+		|| !DirectoryTextBox.IsValid()
+		|| !DataTableRowCheckBox.IsValid()
+		|| !DisplayFieldsCheckBox.IsValid()
+		|| !GameplayTagCheckBox.IsValid()
+		|| !SoftObjectReferenceCheckBox.IsValid())
 	{
 		return;
 	}
@@ -302,7 +424,17 @@ void FStructCreatorPluginModule::PluginButtonClicked()
 		return;
 	}
 
-	const FString HeaderContent = MakeStructHeaderContent(FileName, StructBaseName);
+	const bool bIsDataTableRow = DataTableRowCheckBox->IsChecked();
+	const bool bAddDisplayFields = DisplayFieldsCheckBox->IsChecked();
+	const bool bAddGameplayTag = GameplayTagCheckBox->IsChecked();
+	const bool bAddSoftObjectReference = SoftObjectReferenceCheckBox->IsChecked();
+	const FString HeaderContent = MakeStructHeaderContent(
+		FileName,
+		StructBaseName,
+		bIsDataTableRow,
+		bAddDisplayFields,
+		bAddGameplayTag,
+		bAddSoftObjectReference);
 	if (!FFileHelper::SaveStringToFile(HeaderContent, *HeaderPath))
 	{
 		FMessageDialog::Open(
@@ -311,9 +443,29 @@ void FStructCreatorPluginModule::PluginButtonClicked()
 		return;
 	}
 
+	FText RefreshFailReason;
+	FText RefreshFailLog;
+	const bool bProjectRefreshed = RefreshCodeProject(RefreshFailReason, RefreshFailLog);
+	const bool bHeaderOpened = OpenHeaderInSourceCodeAccessor(HeaderPath);
+
+	if (!bProjectRefreshed)
+	{
+		FMessageDialog::Open(
+			EAppMsgType::Ok,
+			FText::Format(
+				LOCTEXT("StructHeaderCreatedRefreshFailedMessage", "Created:\n{0}\n\nThe header was created, but refreshing the code project failed:\n{1}\n\nUse Tools > Refresh Visual Studio Project if it does not appear in the solution."),
+				FText::FromString(HeaderPath),
+				RefreshFailReason.IsEmpty() ? LOCTEXT("StructHeaderCreatedUnknownRefreshFailure", "Unknown error.") : RefreshFailReason));
+		return;
+	}
+
 	FMessageDialog::Open(
 		EAppMsgType::Ok,
-		FText::Format(LOCTEXT("StructHeaderCreatedMessage", "Created:\n{0}\n\nCompile the project so Unreal Header Tool can detect the new USTRUCT."), FText::FromString(HeaderPath)));
+		FText::Format(
+			bHeaderOpened
+				? LOCTEXT("StructHeaderCreatedMessage", "Created:\n{0}\n\nThe Visual Studio project was refreshed and the header was opened. Compile the project so Unreal Header Tool can detect the new USTRUCT.")
+				: LOCTEXT("StructHeaderCreatedOpenFailedMessage", "Created:\n{0}\n\nThe Visual Studio project was refreshed. Open the header from the solution, then compile so Unreal Header Tool can detect the new USTRUCT."),
+			FText::FromString(HeaderPath)));
 }
 
 void FStructCreatorPluginModule::RegisterMenus()

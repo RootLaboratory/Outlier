@@ -56,6 +56,7 @@ protected:
 	// 피격 등등
 
 public:
+	AShooterPlayerController();
 
 	UPROPERTY()
 	TObjectPtr<UShooterAbilityUI>  AbilityUIInstance;

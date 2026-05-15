@@ -13,6 +13,11 @@
 #include "ShooterMainWidget.h"
 #include "OutlierGameMode.h"
 
+AShooterPlayerController::AShooterPlayerController()
+{
+	DefaultPlayerRole = EOutlierPlayerRole::Shooter;
+}
+
 void AShooterPlayerController::BeginPlay()
 {
 	Super::BeginPlay();

@@ -7,6 +7,9 @@
 #include "Components/CapsuleComponent.h"
 #include "Components/SceneComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "DrawDebugHelpers.h"
+#include "FirstPersonInputConfig.h"
+#include "Interface/InteractableInterface.h"
 #include "LocalPlayerUISubSystem.h"
 #include "EnhancedInputComponent.h"
 #include "InputActionValue.h"
@@ -68,23 +71,27 @@ void AFirstPersonCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
 {
 	Super::SetupPlayerInputComponent(PlayerInputComponent);
 
-	// Set up action bindings
-	if (UEnhancedInputComponent* EnhancedInputComponent = Cast<UEnhancedInputComponent>(PlayerInputComponent))
-	{
-		// Move
-		EnhancedInputComponent->BindAction(MoveAction, ETriggerEvent::Triggered, this, &AFirstPersonCharacter::MoveInput);
-		EnhancedInputComponent->BindAction(MoveAction, ETriggerEvent::Completed, this, &AFirstPersonCharacter::MoveInput);
-
-		// Look
-		EnhancedInputComponent->BindAction(LookAction, ETriggerEvent::Triggered, this, &AFirstPersonCharacter::LookInput);
-
-		// Attack
-		EnhancedInputComponent->BindAction(AttackAction, ETriggerEvent::Started,   this, &AFirstPersonCharacter::TryStartAttack);
-		EnhancedInputComponent->BindAction(AttackAction, ETriggerEvent::Completed, this, &AFirstPersonCharacter::TryStopAttack);
-
-
-		EnhancedInputComponent->BindAction(CamToggleAction, ETriggerEvent::Started, this, &AFirstPersonCharacter::TryCamToggle);
+	UEnhancedInputComponent* EnhancedInputComponent = Cast<UEnhancedInputComponent>(PlayerInputComponent);
+	if (!EnhancedInputComponent || !InputConfig) {
+		UE_LOG(LogTemp, Warning, TEXT("EnhancedInputComponent or InputConfig is Null"));
+		return;
 	}
+
+	// Move
+	EnhancedInputComponent->BindAction(InputConfig->MoveAction, ETriggerEvent::Triggered, this, &AFirstPersonCharacter::MoveInput);
+	EnhancedInputComponent->BindAction(InputConfig->MoveAction, ETriggerEvent::Completed, this, &AFirstPersonCharacter::MoveInput);
+
+	// Look
+	EnhancedInputComponent->BindAction(InputConfig->LookAction, ETriggerEvent::Triggered, this, &AFirstPersonCharacter::LookInput);
+
+	// Attack
+	EnhancedInputComponent->BindAction(InputConfig->AttackAction, ETriggerEvent::Started, this, &AFirstPersonCharacter::TryStartAttack);
+	EnhancedInputComponent->BindAction(InputConfig->AttackAction, ETriggerEvent::Completed, this, &AFirstPersonCharacter::TryStopAttack);
+
+	// Interaction
+	EnhancedInputComponent->BindAction(InputConfig->InteractionAction, ETriggerEvent::Started, this, &AFirstPersonCharacter::TryInteract);
+
+	EnhancedInputComponent->BindAction(InputConfig->CamToggleAction, ETriggerEvent::Started, this, &AFirstPersonCharacter::TryCamToggle);
 }
 
 void AFirstPersonCharacter::BeginPlay()
@@ -169,6 +176,114 @@ void AFirstPersonCharacter::TryCamToggle()
 				PPSubsystem->PartnerCameraToggle();
 			}
 		}
+	}
+}
+
+bool AFirstPersonCharacter::CanInteract() const
+{
+	return true;
+}
+
+void AFirstPersonCharacter::TryInteract()
+{
+	if (!CanInteract())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("%s %s TryInteract blocked"), OutlierNet::GetNetPrefix(this), *GetName());
+		return;
+	}
+
+	if (!GetController())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("%s %s TryInteract blocked: controller is null"), OutlierNet::GetNetPrefix(this), *GetName());
+		return;
+	}
+
+	FVector CameraLocation;
+	FRotator CameraRotation;
+	GetController()->GetPlayerViewPoint(CameraLocation, CameraRotation);
+
+	const FVector Start = CameraLocation;
+	const FVector End = Start + (CameraRotation.Vector() * InteractRange);
+
+	FHitResult Hit;
+	FCollisionQueryParams Params;
+	Params.AddIgnoredActor(this);
+	Params.AddIgnoredActor(CurrentWeapon);
+
+	const bool bHit = GetWorld()->LineTraceSingleByChannel(
+		Hit,
+		Start,
+		End,
+		ECC_Visibility,
+		Params);
+
+	if (!bHit)
+	{
+		UE_LOG(LogTemp, Log, TEXT("%s %s TryInteract miss Start=%s End=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *Start.ToString(), *End.ToString());
+		return;
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("%s %s TryInteract hit Target=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(Hit.GetActor()));
+	ServerInteract(Hit.GetActor());
+}
+
+void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor)
+{
+	if (!TargetActor || !CanInteract())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Server] %s ServerInteract blocked Target=%s"), *GetName(), *GetNameSafe(TargetActor));
+		return;
+	}
+
+	if (!GetController())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Server] %s ServerInteract blocked: controller is null"), *GetName());
+		return;
+	}
+
+	FVector CameraLocation;
+	FRotator CameraRotation;
+	GetController()->GetPlayerViewPoint(CameraLocation, CameraRotation);
+
+	const FVector Start = CameraLocation;
+	const FVector End = Start + (CameraRotation.Vector() * InteractRange);
+
+	FHitResult Hit;
+	FCollisionQueryParams Params;
+	Params.AddIgnoredActor(this);
+	Params.AddIgnoredActor(CurrentWeapon);
+
+	const bool bHit = GetWorld()->LineTraceSingleByChannel(
+		Hit,
+		Start,
+		End,
+		ECC_Visibility,
+		Params);
+
+	DrawDebugLine(
+		GetWorld(),
+		Start,
+		End,
+		bHit ? FColor::Green : FColor::Red,
+		false,
+		3.0f,
+		0,
+		1.0f);
+
+	if (!bHit || Hit.GetActor() != TargetActor)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Server] %s ServerInteract validation failed Requested=%s Hit=%s"), *GetName(), *GetNameSafe(TargetActor), *GetNameSafe(Hit.GetActor()));
+		return;
+	}
+
+	if (IInteractableInterface* Interactable = Cast<IInteractableInterface>(TargetActor))
+	{
+		UE_LOG(LogTemp, Log, TEXT("[Server] %s ServerInteract success Target=%s"), *GetName(), *GetNameSafe(TargetActor));
+		Interactable->Interact(this);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Server] %s ServerInteract failed: target not interactable Target=%s"), *GetName(), *GetNameSafe(TargetActor));
 	}
 }
 

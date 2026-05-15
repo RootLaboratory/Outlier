@@ -11,6 +11,7 @@
 class USkeletalMeshComponent;
 class UCameraComponent;
 class USceneComponent;
+class UFirstPersonInputConfig;
 class UInputAction;
 struct FInputActionValue;
 
@@ -38,21 +39,12 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Components, meta = (AllowPrivateAccess = "true"))
 	USceneComponent* FirstPersonViewModelRoot;
 
+	/** Input Config */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
+	TObjectPtr<UFirstPersonInputConfig> InputConfig;
 
-	/** Move Input Action */
-	UPROPERTY(EditAnywhere, Category = Input)
-	UInputAction* MoveAction;
-
-	/** Look Input Action */
-	UPROPERTY(EditAnywhere, Category = Input)
-	UInputAction* LookAction;
-
-	/** Attack Weapon Input Action */
-	UPROPERTY(EditAnywhere, Category = Input)
-	UInputAction* AttackAction;
-
-	UPROPERTY(EditAnywhere, Category = Input)
-	UInputAction* CamToggleAction;
+	UPROPERTY(EditDefaultsOnly, Category = "Interaction")
+	float InteractRange = 100.0f;
 
 	UPROPERTY(ReplicatedUsing = OnRep_CurrentWeapon, EditAnywhere, Category = Weapon)
 	AWeaponBase* CurrentWeapon;
@@ -70,6 +62,8 @@ public:
 	/** Sets default values for this character's properties */
 	AFirstPersonCharacter();
 
+	void TryInteract();
+
 protected:
 
 	virtual void TryStartAttack();
@@ -80,11 +74,16 @@ protected:
 
 	virtual void LookInput(const FInputActionValue& Value);
 
-	void DoMove(float Right, float Forward);
+	virtual void DoMove(float Right, float Forward);
 
 	void DoAim(float Yaw, float Pitch);
 
 	void TryCamToggle();
+
+	virtual bool CanInteract() const;
+
+	UFUNCTION(Server, Reliable)
+	void ServerInteract(AActor* TargetActor);
 
 protected:
 
