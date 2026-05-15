@@ -159,12 +159,8 @@ void AOutlierGameMode::Logout(AController* Exiting)
 
 }
 
-<<<<<<< HEAD
-void AOutlierGameMode::RespawnPairAtCheckpoint(AController* Controller)
-=======
 
-void AOutlierGameMode::RespawnPlayerAtCheckpoint(AController* Controller)
->>>>>>> Outlier/Dev
+void AOutlierGameMode::RespawnPairAtCheckpoint(AController* Controller)
 {
 	if (!Controller)
 	{
