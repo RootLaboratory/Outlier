@@ -14,6 +14,8 @@ class OUTLIER_API UPartnerMovementComponent : public UPartnerCharacterComponentB
 	GENERATED_BODY()
 
 public:	
+	UPartnerMovementComponent();
+
 	void RefreshMovementState();
 	void ApplyCameraAssist();
 	void StopCameraAssist();
@@ -34,6 +36,8 @@ public:
 	) override;
 
 protected:
+	virtual void BeginPlay() override;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
 	float DirectionWeight = 500.0f;
 
@@ -48,6 +52,7 @@ private:
 	FVector SmoothedVelocity = FVector::ZeroVector;
 
 private:
+	void ApplyManualMoveInput();
 	void UpdateNormalMove(float DeltaTime);
 	void UpdateFreeMove(float DeltaTime);
 	void UpdateSyncMove(float DeltaTime);

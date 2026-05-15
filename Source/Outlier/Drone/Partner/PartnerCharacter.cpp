@@ -22,6 +22,14 @@ void APartnerCharacter::BeginPlay()
 {
 	Super::BeginPlay();
 
+	if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
+	{
+		MoveComp->SetMovementMode(MOVE_Flying);
+		MoveComp->GravityScale = 0.0f;
+		MoveComp->MaxFlySpeed = bIsAccelerate ? BoostSpeed : MoveSpeed;
+		MoveComp->BrakingDecelerationFlying = Deceleration;
+	}
+
 	EnsurePartnerDataInitialized();
 
 	if (HasAuthority())
@@ -66,7 +74,15 @@ void APartnerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 	UEnhancedInputComponent* EnhancedInputComponent = Cast<UEnhancedInputComponent>(PlayerInputComponent);
 	UPartnerInputConfig* PartnerInputConfig = Cast<UPartnerInputConfig>(InputConfig);
 	if (!EnhancedInputComponent || !PartnerInputConfig) {
-		UE_LOG(LogTemp, Warning, TEXT("EnhancedInputComponent or Partner InputConfig is Null"));
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[OutlierInputDebug] Partner input bind failed: EnhancedInput=%s PartnerInputConfig=%s RawInputConfig=%s RawClass=%s"),
+			*GetNameSafe(EnhancedInputComponent),
+			*GetNameSafe(PartnerInputConfig),
+			*GetNameSafe(InputConfig),
+			InputConfig ? *GetNameSafe(InputConfig->GetClass()) : TEXT("None")
+		);
 		return;
 	}
 
@@ -102,9 +118,9 @@ void APartnerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 	EnhancedInputComponent->BindAction(PartnerInputConfig->VerticalMoveAction, ETriggerEvent::Completed, this, &APartnerCharacter::StopVerticalMove);
 }
 
-void APartnerCharacter::OnMoveInputUpdated(const FVector2D& MoveValue)
+void APartnerCharacter::DoMove(float Right, float Forward)
 {
-	Super::OnMoveInputUpdated(MoveValue);
+	const FVector2D MoveValue(Right, Forward);
 
 	if (!CanAcceptInput())
 	{
@@ -120,6 +136,11 @@ void APartnerCharacter::OnMoveInputUpdated(const FVector2D& MoveValue)
 		MovementComponent->SetMoveInput(MoveValue);
 		MovementComponent->RefreshMovementState();
 	}
+}
+
+void APartnerCharacter::OnMoveInputUpdated(const FVector2D& MoveValue)
+{
+	Super::OnMoveInputUpdated(MoveValue);
 }
 
 void APartnerCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -244,6 +265,7 @@ void APartnerCharacter::ToggleAccelerate()
 	if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
 	{
 		MoveComp->MaxWalkSpeed = bIsAccelerate ? BoostSpeed : MoveSpeed;
+		MoveComp->MaxFlySpeed = bIsAccelerate ? BoostSpeed : MoveSpeed;
 	}
 }
 
@@ -262,6 +284,8 @@ void APartnerCharacter::FreeMove()
 
 void APartnerCharacter::StopFreeMove()
 {
+	UE_LOG(LogTemp, Warning, TEXT("[OutlierInputDebug] Partner FreeMove Completed: %s"), *GetNameSafe(this));
+
 	if (MovementComponent)
 	{
 		MovementComponent->SetFreeMove(false);
@@ -508,8 +532,12 @@ void  APartnerCharacter::InitializeFromDataTables()
 		if (UCharacterMovementComponent* CharacterMovementComp = GetCharacterMovement())
 		{
 			CharacterMovementComp->MaxWalkSpeed = MoveSpeed;
+			CharacterMovementComp->MaxFlySpeed = MoveSpeed;
 			CharacterMovementComp->MaxAcceleration = Acceleration;
 			CharacterMovementComp->BrakingDecelerationWalking = Deceleration;
+			CharacterMovementComp->BrakingDecelerationFlying = Deceleration;
+			CharacterMovementComp->GravityScale = 0.0f;
+			CharacterMovementComp->SetMovementMode(MOVE_Flying);
 		}
 	}
 
@@ -626,7 +654,15 @@ APartnerCharacter::APartnerCharacter()
 {
 	PrimaryActorTick.bCanEverTick = false;
 
-	GetCharacterMovement()->MaxWalkSpeed = MoveSpeed;
+	if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
+	{
+		MoveComp->DefaultLandMovementMode = MOVE_Flying;
+		MoveComp->SetMovementMode(MOVE_Flying);
+		MoveComp->GravityScale = 0.0f;
+		MoveComp->MaxWalkSpeed = MoveSpeed;
+		MoveComp->MaxFlySpeed = MoveSpeed;
+		MoveComp->BrakingDecelerationFlying = Deceleration;
+	}
 
 	MovementComponent = CreateDefaultSubobject<UPartnerMovementComponent>(TEXT("MovementComponent"));
 	SupportComponent  = CreateDefaultSubobject<UPartnerSupportComponent> (TEXT("SupportComponent"));

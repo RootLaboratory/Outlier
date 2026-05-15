@@ -7,6 +7,21 @@
 #include "GameFramework/CharacterMovementComponent.h"
 
 
+UPartnerMovementComponent::UPartnerMovementComponent()
+{
+	PrimaryComponentTick.bCanEverTick = true;
+	PrimaryComponentTick.bStartWithTickEnabled = false;
+}
+
+void UPartnerMovementComponent::BeginPlay()
+{
+	Super::BeginPlay();
+
+	PrimaryComponentTick.bCanEverTick = true;
+	SetComponentTickEnabled(false);
+	RefreshTickEnabled();
+}
+
 void UPartnerMovementComponent::RefreshMovementState()
 {
 	if (!PartnerCharacter)
@@ -35,6 +50,11 @@ void UPartnerMovementComponent::StopCameraAssist()
 
 void UPartnerMovementComponent::SetSyncMove(bool SyncMove)
 {
+	if (bSyncMove == SyncMove)
+	{
+		return;
+	}
+
 	bSyncMove = SyncMove;
 	if (PartnerCharacter)
 	{
@@ -44,6 +64,11 @@ void UPartnerMovementComponent::SetSyncMove(bool SyncMove)
 
 void UPartnerMovementComponent::SetFreeMove(bool FreeMove)
 {
+	if (bFreeMove == FreeMove)
+	{
+		return;
+	}
+
 	bFreeMove = FreeMove;
 	if (PartnerCharacter)
 	{
@@ -54,12 +79,16 @@ void UPartnerMovementComponent::SetFreeMove(bool FreeMove)
 void UPartnerMovementComponent::SetMoveInput(const FVector2D& MoveInput)
 {
 	CurrentMoveInput = MoveInput;
+
+	ApplyManualMoveInput();
 	RefreshTickEnabled();
 }
 
 void UPartnerMovementComponent::SetVerticalInput(const float Axis)
 {
 	VerticalInput = Axis;
+
+	ApplyManualMoveInput();
 	RefreshTickEnabled();
 }
 
@@ -103,26 +132,33 @@ void UPartnerMovementComponent::TickComponent(float DeltaTime, ELevelTick TickTy
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
-	if (!PartnerCharacter || !ShooterCharacter)
+	if (!PartnerCharacter)
 	{
 		return;
 	}
 
-	UpdateBoundaryState();
+	if (ShooterCharacter)
+	{
+		UpdateBoundaryState();
+	}
 
 	switch (PartnerCharacter->MoveMode)
 	{
 	case EPartnerMoveMode::Normal:
-		UpdateNormalMove(DeltaTime);
 		break;
 	case EPartnerMoveMode::FreeMove:
-		UpdateFreeMove(DeltaTime);
 		break;
 	case EPartnerMoveMode::SyncMove:
-		UpdateSyncMove(DeltaTime);
+		if (ShooterCharacter)
+		{
+			UpdateSyncMove(DeltaTime);
+		}
 		break;
 	case EPartnerMoveMode::CameraAssist:
-		UpdateCameraAssist(DeltaTime);
+		if (ShooterCharacter)
+		{
+			UpdateCameraAssist(DeltaTime);
+		}
 		break;
 	}
 
@@ -130,27 +166,47 @@ void UPartnerMovementComponent::TickComponent(float DeltaTime, ELevelTick TickTy
 	RefreshTickEnabled();
 }
 
+void UPartnerMovementComponent::ApplyManualMoveInput()
+{
+	if (!PartnerCharacter)
+	{
+		return;
+	}
+
+	switch (PartnerCharacter->MoveMode)
+	{
+	case EPartnerMoveMode::Normal:
+		UpdateNormalMove(0.0f);
+		break;
+	case EPartnerMoveMode::FreeMove:
+		UpdateFreeMove(0.0f);
+		break;
+	default:
+		break;
+	}
+}
+
 void UPartnerMovementComponent::UpdateNormalMove(float DeltaTime)
 {
+	const float CurrentSpeed = PartnerCharacter->bIsAccelerate
+		? PartnerCharacter->BoostSpeed
+		: PartnerCharacter->MoveSpeed;
+
 	FVector Move =
-		PartnerCharacter->GetActorForwardVector() * CurrentMoveInput.X +
-		PartnerCharacter->GetActorRightVector()   * CurrentMoveInput.Y;
+		PartnerCharacter->GetActorForwardVector() * CurrentMoveInput.Y +
+		PartnerCharacter->GetActorRightVector()   * CurrentMoveInput.X;
 
 	Move.Z = 0.0f;
 
-	if (!Move.IsNearlyZero())
-	{
-		PartnerCharacter->AddMovementInput(Move.GetSafeNormal(), 1.0f);
-	}
-
 	if (!FMath::IsNearlyZero(VerticalInput))
 	{
-		FVector Delta = FVector::UpVector
-			* VerticalInput
-			* PartnerCharacter->VerticalSpeed
-			* DeltaTime;
+		const float VerticalScale = PartnerCharacter->VerticalSpeed / FMath::Max(CurrentSpeed, KINDA_SMALL_NUMBER);
+		Move += FVector::UpVector * VerticalInput * VerticalScale;
+	}
 
-		PartnerCharacter->AddActorWorldOffset(Delta, true);
+	if (!Move.IsNearlyZero())
+	{
+		PartnerCharacter->AddMovementInput(Move.GetClampedToMaxSize(1.0f), 1.0f);
 	}
 }
 
@@ -159,27 +215,25 @@ void UPartnerMovementComponent::UpdateFreeMove(float DeltaTime)
 	const FRotator ViewRot = PartnerCharacter->GetControlRotation();
 
 	const FVector Forward = ViewRot.Vector();
-	const FVector Right = FRotationMatrix(ViewRot).GetScaledAxis(EAxis::X);
+	const FVector Right = FRotationMatrix(ViewRot).GetScaledAxis(EAxis::Y);
 	const FVector Up = FVector::UpVector;
 
+	const float CurrentSpeed = PartnerCharacter->bIsAccelerate
+		? PartnerCharacter->BoostSpeed
+		: PartnerCharacter->MoveSpeed;
+	const float VerticalScale = PartnerCharacter->VerticalSpeed / FMath::Max(CurrentSpeed, KINDA_SMALL_NUMBER);
+
 	FVector Move =
-		Forward * CurrentMoveInput.X +
-		Right   * CurrentMoveInput.Y +
-		Up      * VerticalInput;
+		Forward * CurrentMoveInput.Y +
+		Right   * CurrentMoveInput.X +
+		Up      * VerticalInput * VerticalScale;
 
 	if (Move.IsNearlyZero())
 	{
 		return;
 	}
 
-	const float Speed = PartnerCharacter->bIsAccelerate
-		? PartnerCharacter->BoostSpeed
-		: PartnerCharacter->MoveSpeed;
-
-	PartnerCharacter->AddActorWorldOffset(
-		Move.GetSafeNormal() * Speed * DeltaTime,
-		true
-	);
+	PartnerCharacter->AddMovementInput(Move.GetClampedToMaxSize(1.0f), 1.0f);
 }
 
 void UPartnerMovementComponent::UpdateSyncMove(float DeltaTime)
@@ -234,7 +288,7 @@ void UPartnerMovementComponent::UpdateCameraAssist(float DeltaTime)
 		PartnerCharacter->AssistInterpSpeed
 	);
 
-	MoveTowardTargetWithAvoidance(NewLocation, DeltaTime, PartnerCharacter->AssistInterpSpeed);
+	MoveTowardTargetWithAvoidance(TargetLocation, DeltaTime, PartnerCharacter->AssistInterpSpeed);
 }
 
 void UPartnerMovementComponent::UpdateMovementFeel(float DeltaTime)

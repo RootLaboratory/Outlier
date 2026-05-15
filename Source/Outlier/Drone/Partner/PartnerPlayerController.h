@@ -33,15 +33,10 @@ protected:
 	/** Pawn initialization */
 	virtual void OnPossess(APawn* InPawn) override;
 
-	void CleanupPossessedShooterWeapons();
-
 	virtual void BindMainUI() override;
 
 	virtual void BindPostProcessSubSystem() override;
 
-	// UI 관련
-	// 총알
-	// 피격 등등	
 public:
 	APartnerPlayerController();
 	

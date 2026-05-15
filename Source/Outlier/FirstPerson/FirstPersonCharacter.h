@@ -71,7 +71,7 @@ protected:
 
 	virtual void LookInput(const FInputActionValue& Value);
 
-	void DoMove(float Right, float Forward);
+	virtual void DoMove(float Right, float Forward);
 
 	void DoAim(float Yaw, float Pitch);
 

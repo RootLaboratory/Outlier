@@ -12,6 +12,15 @@ APartnerPlayerController::APartnerPlayerController()
 void APartnerPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
+
+	UE_LOG(
+		LogTemp,
+		Warning,
+		TEXT("[OutlierInputDebug] PartnerPC BeginPlay: %s Pawn=%s"),
+		*GetNameSafe(this),
+		*GetNameSafe(GetPawn())
+	);
+
 	BindMainUI();
 	BindPostProcessSubSystem();
 }
@@ -24,6 +33,14 @@ void APartnerPlayerController::SetupInputComponent()
 void APartnerPlayerController::OnPossess(APawn* InPawn)
 {
 	Super::OnPossess(InPawn);
+
+	UE_LOG(
+		LogTemp,
+		Warning,
+		TEXT("[OutlierInputDebug] PartnerPC OnPossess: Pawn=%s Class=%s"),
+		*GetNameSafe(InPawn),
+		InPawn ? *GetNameSafe(InPawn->GetClass()) : TEXT("None")
+	);
 
 	if (!InPawn)
 	{
