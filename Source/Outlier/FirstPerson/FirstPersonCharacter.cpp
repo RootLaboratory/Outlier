@@ -355,12 +355,15 @@ void AFirstPersonCharacter::EquipWeapon(AWeaponBase* Weapon)
 	if (CurrentWeapon)
 	{
 		CurrentWeapon->OnEquipped(this);
+		OnWeaponChanged.Broadcast(CurrentWeapon->GetWeaponType());
 	}
 
 	LastReplicatedWeapon = CurrentWeapon;
 	ForceNetUpdate();
 
 	UE_LOG(LogTemp, Log, TEXT("%s %s EquipWeapon complete Current=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(CurrentWeapon));
+
+	
 }
 
 void AFirstPersonCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const

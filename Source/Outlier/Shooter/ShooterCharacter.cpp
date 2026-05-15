@@ -20,7 +20,7 @@
 #include "ShooterInventoryComponent.h"
 #include "ShooterCombatComponent.h"
 #include "ShooterMovementComponent.h"
-#include "UI/ShooterAbilitySectionUI.h"
+#include "UI/AbilityIconUI.h"
 #include "LocalPlayerPostProcessSubsystem.h"
 #include "Weapon/WeaponBase.h"
 #include "Weapon/RangedWeaponBase.h"
@@ -343,7 +343,6 @@ void AShooterCharacter::TryOpenSuitMenu()
 		}
 	}
 	ShooterController->AbilityUIInstance->SetVisibility(ESlateVisibility::Visible);
-	ShooterController->AbilityUIInstance->AbilitySections[static_cast<int32>(EShooterAbility::Teleport)]->SetCoolTime(7);
 }
 
 void AShooterCharacter::TryHandleSuitMenuHover()
@@ -380,7 +379,7 @@ void AShooterCharacter::TryCloseSuitMenu()
 	if (ShooterController && ShooterController->AbilityUIInstance)
 	{
 		ShooterController->AbilityUIInstance->SetVisibility(ESlateVisibility::Collapsed);
-		ShooterController->AbilityUIInstance->TryGetHoveredAbility(ShooterAbility);
+		ShooterController->AbilityUIInstance->TryGetHoveredAbility(SelectedAbilityTag);
 		UE_LOG(LogTemp, Error, TEXT("Collasped"));
 
 	}
@@ -420,7 +419,8 @@ void AShooterCharacter::TryUseSuit()
 		return;
 	}
 
-	if (ShooterAbility == EShooterAbility::None)
+	//이건 따로 None을 만들어야 하나.
+	if (!SelectedAbilityTag.IsValid())
 	{
 		return;
 	}

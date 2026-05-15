@@ -20,25 +20,35 @@ namespace
 		FVector4f NoiseDirectionAndPadding;
 	};
 
+	bool ProjectWorldToSceneColorPixel(
+		const FSceneView& View,
+		const FScreenPassTexture& SceneColor,
+		const FVector& WorldPosition,
+		FVector2D& OutPixelLocation)
+	{
+		return FSceneView::ProjectWorldToScreen(
+			WorldPosition,
+			SceneColor.ViewRect,
+			View.ViewMatrices.GetViewProjectionMatrix(),
+			OutPixelLocation);
+	}
+
 	bool ProjectHeatHazeSource(
 		const FSceneView& View,
 		const FIntPoint& FieldExtent,
 		const FIntPoint& SceneExtent,
 		const FHeatHazeSourceData& Source,
-		FHeatHazeSourceShaderData& OutData
+		FHeatHazeSourceShaderData& OutData,
+		const FScreenPassTexture& SceneColor
 	)
 	{
 		const FVector Center(Source.Transform.GetLocation());
 		FVector2D CenterPixel;
-		if (!View.WorldToPixel(Center, CenterPixel))
+		if (!ProjectWorldToSceneColorPixel(View, SceneColor, Center, CenterPixel))
 		{
 			return false;
 		}
 
-		// AddDrawScreenPass UV = AbsolutePixel / SceneExtent, so RefractionTexture is sampled
-		// at UV * FieldExtent = AbsolutePixel * FieldExtent / SceneExtent.
-		// CenterPixel from WorldToPixel is already in absolute pixel space (includes ViewRect.Min),
-		// so CenterInField must use the same scale — no ViewRect.Min subtraction needed.
 		const FVector2f FieldScale(
 			static_cast<float>(FieldExtent.X) / static_cast<float>(SceneExtent.X),
 			static_cast<float>(FieldExtent.Y) / static_cast<float>(SceneExtent.Y));
@@ -49,12 +59,19 @@ namespace
 
 		// Transform 축을 스크린에 투영 (빌보딩은 호출자 Transform에서 처리됨)
 		// FTransform3f는 GetUnitAxis 없음 → 쿼터니언에서 직접 축 추출
-		const FVector AxisXWorld(Source.Transform.GetRotation().GetAxisY());
-		const FVector AxisYWorld(Source.Transform.GetRotation().GetAxisZ());
+
+		FVector AxisXWorld;
+		FVector AxisYWorld;
+
+		AxisXWorld = View.GetViewRight();
+		AxisYWorld = View.GetViewUp();
 
 		FVector2D AxisXEndPixel, AxisYEndPixel;
-		View.WorldToPixel(Center + AxisXWorld * Source.Size.X * 0.5f, AxisXEndPixel);
-		View.WorldToPixel(Center + AxisYWorld * Source.Size.Y * 0.5f, AxisYEndPixel);
+		if (!ProjectWorldToSceneColorPixel(View, SceneColor, Center + AxisXWorld * Source.Size.X * 0.5f, AxisXEndPixel) ||
+			!ProjectWorldToSceneColorPixel(View, SceneColor, Center + AxisYWorld * Source.Size.Y * 0.5f, AxisYEndPixel))
+		{
+			return false;
+		}
 
 		// 차분에서는 ViewRect.Min이 상쇄됨
 		const FVector2f AxisXInField(
@@ -106,24 +123,10 @@ namespace
 		{
 			FHeatHazeSourceShaderData ShaderData;
 			const FIntPoint SceneExtent = SceneColor.Texture->Desc.Extent;
-			if (ProjectHeatHazeSource(View, FieldExtent, SceneExtent, Source, ShaderData))
+			if (ProjectHeatHazeSource(View, FieldExtent, SceneExtent, Source, ShaderData, SceneColor))
 			{
 				ShaderSources.Add(ShaderData);
 			}
-
-			/*UE_LOG(LogTemp, Warning, TEXT("UnscaledViewRect: Min(%d,%d) Max(%d,%d) Size(%d,%d)"),
-				View.UnscaledViewRect.Min.X, View.UnscaledViewRect.Min.Y,
-				View.UnscaledViewRect.Max.X, View.UnscaledViewRect.Max.Y,
-				View.UnscaledViewRect.Width(), View.UnscaledViewRect.Height());
-
-			UE_LOG(LogTemp, Warning, TEXT("SceneColor ViewRect: Min(%d,%d) Max(%d,%d) Size(%d,%d)"),
-				SceneColor.ViewRect.Min.X, SceneColor.ViewRect.Min.Y,
-				SceneColor.ViewRect.Max.X, SceneColor.ViewRect.Max.Y,
-				SceneColor.ViewRect.Width(), SceneColor.ViewRect.Height());
-
-			UE_LOG(LogTemp, Warning, TEXT("SceneColor Extent: %d, %d"),
-				SceneColor.Texture->Desc.Extent.X, SceneColor.Texture->Desc.Extent.Y);*/
-
 		}
 
 		if (ShaderSources.IsEmpty())
@@ -224,7 +227,9 @@ FScreenPassTexture FRDGHeatHazePass::AddPass(
 		? OverrideOutput
 		: FScreenPassRenderTarget::CreateFromInput(GraphBuilder, SceneColor, ERenderTargetLoadAction::ENoAction, TEXT("RDG.HeatHaze.Output"));
 
-	const FIntPoint FieldExtent = FinalOutput.Texture->Desc.Extent;
+	// Keep the refraction field in the same pixel space as SceneColor.
+	// OverrideOutput can differ in extent, but the composite shader samples SceneColor with UV + offset.
+	const FIntPoint FieldExtent = SceneColor.Texture->Desc.Extent;
 
 	FRDGTextureRef RefractionTexture = BuildHeatHazeRefractionField(
 		GraphBuilder,
@@ -246,4 +251,3 @@ FScreenPassTexture FRDGHeatHazePass::AddPass(
 		FieldExtent,
 		FinalOutput);
 }
-

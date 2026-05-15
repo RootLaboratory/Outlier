@@ -8,7 +8,7 @@
 #include "AmmoUI.h"
 #include "DynamicCrossHair.h"
 #include "EventDrivenUI.h"
-
+#include "StaticCrossHair.h"
 
 void ULocalPlayerUISubSystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -157,14 +157,22 @@ void ULocalPlayerUISubSystem::OnRep_AttackSign(EAttackSign InType)
 	}
 }
 
-//차후 수정 예정; 
-void ULocalPlayerUISubSystem::OnRep_ShootCrosshairChanged()
+void ULocalPlayerUISubSystem::OnRep_ShootCrosshairChanged(float InFireRate)
 {
 	if (UDynamicCrossHair* CrossHairBase = Cast<UDynamicCrossHair>(MainUIInstance->GetModule(EUIModule::CrossHair)))
 	{
 		UE_LOG(LogTemp, Log, TEXT("OnRep_ShootCrosshairChanged"));
 		CrossHairBase->On_RepShoot();
 	}
+	else if (UStaticCrossHair* Crosshair = Cast<UStaticCrossHair>(MainUIInstance->GetModule(EUIModule::CrossHair)))
+	{
+		Crosshair->SetCoolTime(InFireRate );
+		UE_LOG(LogTemp, Log, TEXT("InFireRate %f"), InFireRate);
+
+	}
+	else
+		UE_LOG(LogTemp, Log, TEXT("Type Error"));
+
 }
 
 

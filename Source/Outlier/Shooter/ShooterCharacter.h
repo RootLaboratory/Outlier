@@ -196,7 +196,7 @@ protected:
 	uint8 bIsEquipping : 1 = false;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
-	EShooterAbility ShooterAbility = EShooterAbility::None;
+	FGameplayTag SelectedAbilityTag;
 
 	// Lean Runtime Data
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
@@ -366,6 +366,8 @@ public:
 
 	UFUNCTION(BlueprintPure)
 	EWeaponMode GetWeaponMode() const { return WeaponMode; }
+
+	UShooterInventoryComponent* GetInventoryComponent() { return InventoryComponent; }
 
 	UFUNCTION(BlueprintPure)
 	bool IsReloading() const;

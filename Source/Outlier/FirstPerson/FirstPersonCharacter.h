@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
 #include "Weapon/WeaponBase.h"
+#include "GameplayTagContainer.h"
 #include "FirstPersonCharacter.generated.h"
 
 class USkeletalMeshComponent;
@@ -13,6 +14,8 @@ class USceneComponent;
 class UFirstPersonInputConfig;
 class UInputAction;
 struct FInputActionValue;
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnWeaponChanged, EWeaponType, NewWeaponType);
 
 UCLASS()
 class OUTLIER_API AFirstPersonCharacter : public ACharacter
@@ -108,4 +111,7 @@ public:
 
 	virtual void OnMoveInputUpdated(const FVector2D& MoveValue);
 
+public:
+	UPROPERTY(BlueprintAssignable)
+	FOnWeaponChanged OnWeaponChanged;
 };

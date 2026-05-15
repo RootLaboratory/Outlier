@@ -4,14 +4,14 @@
 
 #include "CoreMinimal.h"
 #include "EventDrivenUI.h"
-#include "Shooter/Ability/ShooterAbility.h"
+#include "GameplayTagContainer.h"
 #include "Components/Widget.h"
 #include "ShooterAbilityUI.generated.h"
 
 /**
  * 
  */
-class UShooterAbilitySectionUI;
+class UAbilityIconUI;
 class UMaterialInterface;
 class UMaterialInstanceDynamic;
 class UBorder;
@@ -34,9 +34,10 @@ public:
 	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
 
 public:
-	bool TryGetHoveredAbility(EShooterAbility& OutAbility);
+	bool TryGetHoveredAbility(FGameplayTag& OutAbilityTag);
 	void TryHovering();
 	float CalculateCoordinate();
+	UAbilityIconUI* GetAbilityIcon(const FGameplayTag& AbilityTag) const;
 
 public:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
@@ -46,16 +47,16 @@ public:
 	TObjectPtr<UBorder> BigCircle;
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr<UShooterAbilitySectionUI> IconTeleport; // Teleport
+	TObjectPtr<UAbilityIconUI> IconTeleport; // Teleport
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr<UShooterAbilitySectionUI> IconShield; // Shield
+	TObjectPtr<UAbilityIconUI> IconShield; // Shield
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr<UShooterAbilitySectionUI> IconStealth; // Stealth
+	TObjectPtr<UAbilityIconUI> IconStealth; // Stealth
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr<UShooterAbilitySectionUI> IconStimpack; // Stimpack
+	TObjectPtr<UAbilityIconUI> IconStimpack; // Stimpack
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Ability UI|Material")
 	TObjectPtr<UMaterialInterface> M_ShooterAbilityUI;
@@ -63,7 +64,23 @@ public:
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> ShooterAbilityMID;
 
-	//UPROPERTY(BlueprintReadOnly, Category = "Shooter Ability Sections")
-	TArray < TObjectPtr<UShooterAbilitySectionUI>> AbilitySections;
+	UPROPERTY(BlueprintReadOnly, Category = "Shooter Ability Sections")
+	TMap<FGameplayTag, TObjectPtr<UAbilityIconUI>> AbilitySections;
 	
+private:
+	void RegisterAbilityIcon(UAbilityIconUI* Icon, const FGameplayTag& AbilityTag, bool bUnlock = false);
+	FGameplayTag GetAbilityTagByAngle(float AngleDeg) const;
+	bool IsAbilityUnlocked(const FGameplayTag& AbilityTag) const;
+
+	UPROPERTY(Transient)
+	FGameplayTag RightAbilityTag;
+
+	UPROPERTY(Transient)
+	FGameplayTag BottomAbilityTag;
+
+	UPROPERTY(Transient)
+	FGameplayTag LeftAbilityTag;
+
+	UPROPERTY(Transient)
+	FGameplayTag TopAbilityTag;
 };

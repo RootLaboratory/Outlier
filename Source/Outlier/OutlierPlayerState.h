@@ -21,6 +21,7 @@ enum class EOutlierPlayerRole : uint8
 /**
  * 
  */
+
 UCLASS()
 class OUTLIER_API AOutlierPlayerState : public APlayerState
 {

@@ -1,50 +1,50 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 
-#include "UI/ShooterAbilitySectionUI.h"
+#include "UI/AbilityIconUI.h"
 #include "Components/Image.h"
 
-const EShooterAbility& UShooterAbilitySectionUI::GetAbility()
+ FGameplayTag& UAbilityIconUI::GetAbilityTag()
 {
-	return BindAbility;
+	return AbilityTag;
 }
+ void UAbilityIconUI::SetAbility(FGameplayTag InaAbility)
+ {
+	 AbilityTag = InaAbility;
+ }
 
-void UShooterAbilitySectionUI::SetAbility(EShooterAbility InAbility)
-{
-	BindAbility = InAbility;
-}
 
-void UShooterAbilitySectionUI::NativeConstruct()
+void UAbilityIconUI::NativeConstruct()
 {
 	DefaultIconBrush = AbilityIcon->GetBrush();
 	AbilityIcon->SetVisibility(bAbilityUnlocked ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
 }
 
-void UShooterAbilitySectionUI::SetCoolTime(float InCoolTime)
+void UAbilityIconUI::SetCoolTime(float InCoolTime)
 {
 	UE_LOG(LogTemp, Error, TEXT("SetCoolTime"));
 
-	if (!AbilityIcon || !M_ShooterAbilityCoolTimeUI || !DefaultIconBrush.GetResourceObject())
+	if (!AbilityIcon || !M_AbilityCoolTimeUI || !DefaultIconBrush.GetResourceObject())
 	{
 		return;
 	}
 
 	CoolTime = InCoolTime; // Chatacter 의 TotalCoolTime;
-	AbilityIcon->SetBrushFromMaterial(M_ShooterAbilityCoolTimeUI);
-	ShooterAbilityMID = AbilityIcon->GetDynamicMaterial();
+	AbilityIcon->SetBrushFromMaterial(M_AbilityCoolTimeUI);
+	AbilityMID = AbilityIcon->GetDynamicMaterial();
 
 	UObject* Resource = DefaultIconBrush.GetResourceObject();
 
 	if (UTexture* IconTexture = Cast<UTexture>(Resource))
 	{
-		ShooterAbilityMID->SetTextureParameterValue(TEXT("IconTexture"), IconTexture);
+		AbilityMID->SetTextureParameterValue(TEXT("IconTexture"), IconTexture);
 		UE_LOG(LogTemp, Error, TEXT("SetTextureParameterValue"));
 
 	}
 	bCooldowning = true;
 }
 
-void UShooterAbilitySectionUI::UpdateCoolTime(float delta)
+void UAbilityIconUI::UpdateCoolTime(float delta)
 {
 	AccumulatedTime += delta;
 
@@ -57,17 +57,17 @@ void UShooterAbilitySectionUI::UpdateCoolTime(float delta)
 	}
 
 	float Progress = AccumulatedTime / CoolTime;
-	ShooterAbilityMID->SetScalarParameterValue(TEXT("CooldownProgress"), Progress);
+	AbilityMID->SetScalarParameterValue(TEXT("CooldownProgress"), Progress);
 }
 
-bool UShooterAbilitySectionUI::IsCooldowning()
+bool UAbilityIconUI::IsCooldowning()
 {
 	if (!IsUnLock()) return false;
 
 	return bCooldowning;
 }
 
-void UShooterAbilitySectionUI::CooldownDone()
+void UAbilityIconUI::CooldownDone()
 {
 
 	UE_LOG(LogTemp, Error, TEXT("CooldownDone"));
@@ -75,18 +75,18 @@ void UShooterAbilitySectionUI::CooldownDone()
 	bCooldowning = false;
 	AccumulatedTime = 0.f;
 	CoolTime = 0.f;
-	ShooterAbilityMID = nullptr;
+	AbilityMID = nullptr;
 	AbilityIcon->SetBrush(DefaultIconBrush);
 }
 
-void UShooterAbilitySectionUI::AbilityUnLock()
+void UAbilityIconUI::AbilityUnLock()
 {
 	bAbilityUnlocked = true;
 	AbilityIcon->SetBrush(DefaultIconBrush);
 	AbilityIcon->SetVisibility(ESlateVisibility::Visible);
 }
 
-bool UShooterAbilitySectionUI::IsUnLock()
+bool UAbilityIconUI::IsUnLock()
 {
 	return bAbilityUnlocked;
 }

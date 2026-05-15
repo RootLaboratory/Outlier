@@ -26,6 +26,7 @@ enum class EHeatHazeBlendMode : uint8
 
 struct FHeatHazeSourceData
 {
+	EHeatHazeSourceShape Shape = EHeatHazeSourceShape::Sphere;
 	FTransform3f Transform;
 	FVector2f Size = FVector2f(100.0f, 100.0f);
 	float Strength = 1.0f;

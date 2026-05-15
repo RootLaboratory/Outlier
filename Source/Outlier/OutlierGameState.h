@@ -9,9 +9,10 @@
 /**
  * 
  */
+
 UCLASS()
 class OUTLIER_API AOutlierGameState : public AGameStateBase
 {
 	GENERATED_BODY()
-	
+
 };

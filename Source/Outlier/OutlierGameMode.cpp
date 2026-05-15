@@ -5,6 +5,8 @@
 #include "Shooter/ShooterCharacter.h"
 #include "OutlierPlayerState.h"
 #include "Save/OutlierCheckpoint.h"
+#include "OutlierGameState.h"
+#include "FrontendPlayerController.h"
 #include "Save/OutlierSaveSubSystem.h"
 #include "GameFramework/GameStateBase.h"
 #include "Kismet/GameplayStatics.h"
@@ -154,9 +156,15 @@ void AOutlierGameMode::Logout(AController* Exiting)
 	}
 
 	Super::Logout(Exiting);
+
 }
 
+<<<<<<< HEAD
 void AOutlierGameMode::RespawnPairAtCheckpoint(AController* Controller)
+=======
+
+void AOutlierGameMode::RespawnPlayerAtCheckpoint(AController* Controller)
+>>>>>>> Outlier/Dev
 {
 	if (!Controller)
 	{
