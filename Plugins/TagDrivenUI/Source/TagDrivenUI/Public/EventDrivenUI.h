@@ -5,13 +5,8 @@
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
 #include "GameplayTagContainer.h"
-
-
 #include "EventDrivenUI.generated.h"
 
-/**
- * 
- */
 
 UCLASS()
 class TAGDRIVENUI_API UEventDrivenUI : public UUserWidget

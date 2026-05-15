@@ -4,11 +4,11 @@
 
 #include "CoreMinimal.h"
 #include "FirstPerson/FirstPersonCharacter.h"
+#include "Shooter/Ability/ShooterAbility.h"
 #include "ShooterCharacter.generated.h"
 
 class UInputAction;
 struct FInputActionValue;
-class UShooterInputConfig;
 class AWeaponBase;
 class USceneCaptureComponent2D;
 class UShooterHealthComponent;
@@ -18,6 +18,8 @@ class UShooterMovementComponent;
 enum class EWeaponType : uint8;
 class UAnimMontage;
 class UCurveFloat;
+class UCurveVector;
+class APartnerCharacter;
 
 UENUM(BlueprintType)
 enum class EMovementState : uint8
@@ -63,6 +65,15 @@ enum class ESlideEndReason : uint8
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnCharacterDeath);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnMovementStateChanged, EMovementState, NewState);
 
+UENUM()
+enum class EShooterMontageAction : uint8
+{
+	Fire,
+	Reload,
+	Slide,
+	Equip
+};
+
 /**
  * 
  */
@@ -93,11 +104,6 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UShooterMovementComponent> MovementComponent;
 
-	// Config / Tunables
-	/** Input Config */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
-	TObjectPtr<UShooterInputConfig> InputConfig;
-
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Health")
 	float MaxHP = 100.0f;
 
@@ -106,9 +112,6 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, Category = "Movement")
 	float SprintSpeed = 600.0f;
-
-	UPROPERTY(EditDefaultsOnly, Category = "Status")
-	float InteractRange = 100.0f;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat")
 	float LeanInterpSpeed = 8.0f;
@@ -131,15 +134,43 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Slide")
 	TObjectPtr<UCurveFloat> SlideSpeedCurve;
 
-	// Animation Assets
+	/// Animation Assets
+	// Fire
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
-	TObjectPtr<UAnimMontage> FireMontage;
+	TObjectPtr<UAnimMontage> FirstPersonFireMontage;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
-	TObjectPtr<UAnimMontage> SlideMontage;
+	TObjectPtr<UAnimMontage> ThirdPersonFireMontage;
+
+	// Slide
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
+	TObjectPtr<UAnimMontage> FirstPersonSlideMontage;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
-	TObjectPtr<UAnimMontage> ReloadMontage;
+	TObjectPtr<UAnimMontage> ThirdPersonSlideMontage;
+
+	// Reload
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
+	TObjectPtr<UAnimMontage> FirstPersonReloadMontage;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
+	TObjectPtr<UAnimMontage> ThirdPersonReloadMontage;
+
+	// Equip
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
+	TObjectPtr<UAnimMontage> FirstPersonEquipMontage;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
+	TObjectPtr<UAnimMontage> ThirdPersonEquipMontage;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Animation|Sections")
+	FName RifleMontageSectionName = TEXT("Rifle");
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Animation|Sections")
+	FName PistolMontageSectionName = TEXT("Pistol");
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Animation|Sections")
+	FName DefaultMontageSectionName = TEXT("Default");
 
 	// Replicated Gameplay State
 	UPROPERTY(ReplicatedUsing = OnRep_CurHP, EditAnywhere, BlueprintReadWrite, Category = "Health")
@@ -165,7 +196,7 @@ protected:
 	uint8 bIsEquipping : 1 = false;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
-	int32 SelectedSuitSlot = 0; // 이후에 Suit 관련 만들면서 거기에 있는 enum 값으로 교체?
+	FGameplayTag SelectedAbilityTag;
 
 	// Lean Runtime Data
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
@@ -174,15 +205,81 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
 	float TargetLeanAlpha = 0.0f;
 
+	// Offset
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
+	FVector CrouchedFirstPersonMeshOffset = FVector(0.0f, 0.0f, 18.0f);
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
+	FVector FirstPersonViewModelOffset = FVector(-6.0f, 0.0f, 4.0f);
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
+	FVector RifleFirstPersonViewModelOffset = FVector(2.0f, -10.0f, 15.0f);
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
+	FVector PistolFirstPersonViewModelOffset = FVector(4.0f, -8.0f, 10.0f);
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
+	FVector CrouchedFirstPersonViewModelOffset = FVector(-2.0f, 0.0f, 10.0f);
+
+	// FirstPerson Pitch
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
+	float FirstPersonPitchFollowScale = 0.15f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
+	float FirstPersonPitchFollowClamp = 6.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
+	TObjectPtr<UCurveVector> FirstPersonPitchLocationOffsetCurve = nullptr;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
+	float FirstPersonPitchLocationOffsetStart = 10.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
+	FVector FirstPersonPitchLocationOffsetAtMaxUp = FVector(-2.0f, 0.0f, -2.0f);
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
+	FVector FirstPersonPitchLocationOffsetAtMaxDown = FVector(2.0f, 0.0f, 8.0f);
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
+	float FirstPersonViewModelInterpSpeed = 12.0f;
+
+	FVector  BaseFirstPersonMeshLocation = FVector::ZeroVector;
+	FVector  BaseFirstPersonViewModelRootLocation = FVector::ZeroVector;
 	FRotator BaseFirstPersonCameraRootRotation = FRotator::ZeroRotator;
+	FRotator BaseFirstPersonViewModelRootRotation = FRotator::ZeroRotator;
 	FRotator BaseFirstPersonMeshRotation = FRotator::ZeroRotator;
 
 	// Timers
 	FTimerHandle LeanUpdateTimerHandle;
 
+	FTimerHandle PartnerShieldTimerHandle;
+
+	UPROPERTY(ReplicatedUsing = OnRep_CurShield, EditAnywhere, BlueprintReadWrite, Category = "Shield")
+	float CurShield = 100.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shield")
+	float MaxShield = 100.0f;
+
+	UPROPERTY(ReplicatedUsing = OnRep_CurPartnerShield, EditAnywhere, BlueprintReadWrite, Category = "Shield")
+	float CurPartnerShield = 100.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shield")
+	float MaxPartnerShield = 100.0f;
+
+	float PartnerShieldElapsedTime = 0.0f;
+
+	float PartnerShieldDuration = 0.0f;
+
+	UPROPERTY()
+	TObjectPtr<APartnerCharacter> CachedPartnerCharacter;
+
+	bool bSuitDisabledByPartnerBoundary = false;
+
 protected:
 	// Engine Lifecycle
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	virtual void Tick(float DeltaSeconds) override;
 
 	/** Initialize input action bindings */
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
@@ -194,6 +291,10 @@ protected:
 	virtual void Landed(const FHitResult& Hit) override;
 
 	virtual void OnMovementModeChanged(EMovementMode  PrevMovementMode, uint8 PreviousCustomMode) override;
+
+	virtual void OnMoveInputUpdated(const FVector2D& MoveValue);
+
+	virtual void LookInput(const FInputActionValue& Value) override;
 
 public:
 	// Construction
@@ -218,6 +319,12 @@ public:
 	UFUNCTION()
 	void OnRep_MovementState();
 
+	UFUNCTION()
+	void OnRep_CurShield();
+
+	UFUNCTION()
+	void OnRep_CurPartnerShield();
+
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual void EquipWeapon(AWeaponBase* Weapon) override;
 
@@ -229,12 +336,18 @@ public:
 	bool CanAimInCurrentState() const;
 	bool CanReloadInCurrentState() const;
 	bool CanFireInCurrentState() const;
+	virtual bool CanInteract() const override;
 
 	bool WantsToAim() const;
 	bool IsAiming() const;
 	bool IsSliding() const;
 	bool IsSprinting() const;
 	bool IsSlidingCanceled() const;
+
+	void SetPartnerCharacter(APartnerCharacter* NewPartner);
+	void SetSuitDisabledByPartnerBoundary(bool bDisabled);
+
+	void ApplyPartnerShield(float Amount, float Duration);
 
 	UFUNCTION(BlueprintPure)
 	float GetCurrentLeanAlpha() const { return CurrentLeanAlpha; }
@@ -254,6 +367,8 @@ public:
 	UFUNCTION(BlueprintPure)
 	EWeaponMode GetWeaponMode() const { return WeaponMode; }
 
+	UShooterInventoryComponent* GetInventoryComponent() { return InventoryComponent; }
+
 	UFUNCTION(BlueprintPure)
 	bool IsReloading() const;
 
@@ -262,20 +377,20 @@ public:
 
 	void ApplyDamageInternal(float DamageAmount);
 	void HandleWeaponAttackStoppedInternal();
+	void HandleAutoReloadRequested();
+	void HandleFireShotAnimation();
 
 	// Blueprint / Notify Entry Points
 	UFUNCTION(BlueprintCallable, Category = "Animation|Notify")
 	void HandleReloadCommitNotify();
 
-	/** Handles jump pressed inputs from either controls or UI interfaces */
-	UFUNCTION(BlueprintCallable, Category="Input")
-	virtual void DoJumpStart();
+	void DoJumpStart();
 
-	/** Handles jump pressed inputs from either controls or UI interfaces */
-	UFUNCTION(BlueprintCallable, Category="Input")
-	virtual void DoJumpEnd();
+	void DoJumpEnd();
 
 protected:
+	void UpdatePartnerShieldDecay();
+
 	// Input Handlers
 	virtual void TryStartAttack() override;
 	virtual void TryStopAttack() override;
@@ -294,8 +409,8 @@ protected:
 
 	void HandleCrouchToggled();
 
-	void TryInteract();
 	void TryOpenSuitMenu();
+	void TryHandleSuitMenuHover();
 	void TryCloseSuitMenu();
 	void UpdateSuitSelection(const FInputActionValue& Value);
 	void TryUseSuit();
@@ -303,9 +418,6 @@ protected:
 	void TryLean(const FInputActionValue& Value);
 
 	// Server RPC
-	UFUNCTION(Server, Reliable)
-	void ServerInteract(AActor* TargetActor);
-
 	UFUNCTION(Server, Reliable)
 	void ServerStartAttack();
 
@@ -336,13 +448,21 @@ protected:
 	UFUNCTION(Server, Reliable)
 	void ServerJumpEnd();
 
-	// Internal Helpers
+	UFUNCTION(Client, Reliable)
+	void ClientPlayFirstPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType);
+
+	UFUNCTION(NetMulticast, Reliable)
+	void MulticastPlayThirdPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType);
+
+
+public:
 	void RefreshMovementState();
 	void RefreshCombatState();
 	void RefreshWeaponMode();
 	void ResolveStateConflicts();
 	void SetMovementStateImmediate(EMovementState NewState);
 
+	// Internal Helpers
 	void StopSprintInternal();
 	void StopAimInternal();
 	void BeginReloadInternal();
@@ -363,6 +483,19 @@ protected:
 	void Die();
 	void HandleDeath();
 	void UpdateLocalHealthUI() const;
-	void PlayLocalActionMontage(UAnimMontage* Montage);
+	FName ResolveMontageSectionNameForWeapon(EWeaponType WeaponType) const;
+	void PlayFirstPersonMontage(UAnimMontage* Montage);
+	void PlayFirstPersonMontageForWeapon(UAnimMontage* Montage, EWeaponType WeaponType, bool bUseWeaponSection = true);
+	void PlayThirdPersonMontage(UAnimMontage* Montage);
+	void PlayThirdPersonMontageForWeapon(UAnimMontage* Montage, EWeaponType WeaponType, bool bUseWeaponSection = true);
+	void PlayFirstPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType);
+	void PlayThirdPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType);
+	void StopFirstPersonMontage(UAnimMontage* Montage);
+	void StopThirdPersonMontage(UAnimMontage* Montage);
+	void StopSplitMontages(UAnimMontage* FirstPersonMontage, UAnimMontage* ThirdPersonMontage);
+	void PlayEquipMontages();
+	void UpdateFirstPersonPresentation(float DeltaSeconds);
 	void ClearInputIntent();
+
+	void CleanupOwnedWeapons();
 };

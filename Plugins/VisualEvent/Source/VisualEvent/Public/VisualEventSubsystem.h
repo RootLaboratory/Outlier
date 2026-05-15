@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
+#include "VisualEventType.h"
 #include "VisualEventSubsystem.generated.h"
 
 
@@ -11,11 +12,10 @@
  * 
  */
 
-// ∆Ø¡§ µø¿€ø° ∫Œ∞°¿˚¿∏∑Œ ª˝º∫µ«¥¬ ¿Ã∆Â∆Æ π◊ Decal¿ª ª˝º∫«œ¥¬ ≈¨∑°Ω∫;
-
-
 class UProjectionMarkDefinition;
 class UTrailEffectDefinition;
+class USoundDefinition;
+
 UCLASS()
 class VISUALEVENT_API UVisualEventSubsystem : public UWorldSubsystem
 {
@@ -39,12 +39,21 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Visual Event")
 	void SpawnProjectileTrail(const UTrailEffectDefinition* Def, USceneComponent* AttachTarget);
 
+	UFUNCTION(BlueprintCallable, Category = "Sound Event")
+	void PlaySoundAtLocation(USoundDefinition* SoundDefinition, FVector Location);
+
+
+	UFUNCTION(BlueprintCallable, Category = "Set Event")
+	void FeaturesEffect(FVector Location, FRotator Rotation, FVisualEventSet& EffectSet);
 
 	UFUNCTION(BlueprintCallable, Category = "Visual Event")
-	void SpawnMarkFromHit(UProjectionMarkDefinition* Definition, const FHitResult& HitResult);
 
+	void SpawnMuzzleEffect(const UTrailEffectDefinition* Def, const FVector& Location, const FRotator& Rotation);
+
+	//ÏùºÎã® TrailÏúºÎ°ú Î∞õÏßÄÎßå Îî∞Î°ú Î∂ÑÎ¶¨Ìï† Í≤ÉÏûÑ.
 	UFUNCTION(BlueprintCallable, Category = "Visual Event")
-	void PlaySoundAtLocation(UProjectionMarkDefinition* Definition, FVector Location);
+	void SpawnEffectAtLocation(const UTrailEffectDefinition* Def, const FVector& Location, const FRotator& Rotation);
+
 
 
 };

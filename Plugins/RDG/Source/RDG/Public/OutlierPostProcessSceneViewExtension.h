@@ -3,6 +3,9 @@
 #include "CoreMinimal.h"
 #include "SceneViewExtension.h"
 #include "FPostProcessStructures.h"
+#include "HAL/CriticalSection.h"
+#include "HeatHazeSourceComponent.h"
+#include "RDGEffectSourceWorldSubsystem.h"
 
 class ULocalPlayer;
 
@@ -27,15 +30,33 @@ public:
 		const FSceneView& InView,
 		const FPostProcessingInputs& Inputs) override;
 
-
 public:
 	void UpdateCachedParameters(const FPostProcessStrcture& InParameters);
+	void UpdateCachedUIParameters(const FPostProcessStrctureUI& InParameters);
+	void UpdateHeatHazeSources(const TArray<FHeatHazeSourceData>& InSources);
 
 private:
 	bool ShouldRenderAnyEffect() const;
 	bool IsTargetLocalPlayerView(const FSceneView& InView) const;
+	bool HasHeatHazeSources() const;
+	void CopyHeatHazeSources(TArray<FHeatHazeSourceData>& OutSources) const;
 
 	FScreenPassTexture MotionBlurCallback_RenderThread(
+		FRDGBuilder& GraphBuilder,
+		const FSceneView& View,
+		const FPostProcessMaterialInputs& Inputs);
+
+	FScreenPassTexture DualKawaseBlurCallback_RenderThread(
+		FRDGBuilder& GraphBuilder,
+		const FSceneView& View,
+		const FPostProcessMaterialInputs& Inputs);
+
+	FScreenPassTexture HeatHazeCallback_RenderThread(
+		FRDGBuilder& GraphBuilder,
+		const FSceneView& View,
+		const FPostProcessMaterialInputs& Inputs);
+
+	FScreenPassTexture DatamoshingCallback_RenderThread(
 		FRDGBuilder& GraphBuilder,
 		const FSceneView& View,
 		const FPostProcessMaterialInputs& Inputs);
@@ -43,5 +64,15 @@ private:
 private:
 	TWeakObjectPtr<ULocalPlayer> LocalPlayer;
 	FPostProcessStrcture CachedParameters;
+	FPostProcessStrctureUI CachedUIParameters;
 
+	mutable FCriticalSection HeatHazeSourcesCriticalSection;
+	TArray<FHeatHazeSourceData> CachedHeatHazeSources;
+
+	struct FDatamoshHistoryEntry
+	{
+		TRefCountPtr<IPooledRenderTarget> RenderTarget;
+		uint64 LastTouchedFrame = 0;
+	};
+	TMap<FSceneViewState*, FDatamoshHistoryEntry> DatamoshHistoryMap;
 };

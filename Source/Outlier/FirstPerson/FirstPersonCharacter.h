@@ -5,13 +5,17 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
 #include "Weapon/WeaponBase.h"
+#include "GameplayTagContainer.h"
 #include "FirstPersonCharacter.generated.h"
 
 class USkeletalMeshComponent;
 class UCameraComponent;
 class USceneComponent;
+class UFirstPersonInputConfig;
 class UInputAction;
 struct FInputActionValue;
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnWeaponChanged, EWeaponType, NewWeaponType);
 
 UCLASS()
 class OUTLIER_API AFirstPersonCharacter : public ACharacter
@@ -31,18 +35,16 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Components, meta = (AllowPrivateAccess = "true"))
 	USceneComponent* FirstPersonCameraRoot;
 
+	/** Root used to keep first-person arms and weapon in camera space */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Components, meta = (AllowPrivateAccess = "true"))
+	USceneComponent* FirstPersonViewModelRoot;
 
-	/** Move Input Action */
-	UPROPERTY(EditAnywhere, Category = Input)
-	UInputAction* MoveAction;
+	/** Input Config */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
+	TObjectPtr<UFirstPersonInputConfig> InputConfig;
 
-	/** Look Input Action */
-	UPROPERTY(EditAnywhere, Category = Input)
-	UInputAction* LookAction;
-
-	/** Attack Weapon Input Action */
-	UPROPERTY(EditAnywhere, Category = Input)
-	UInputAction* AttackAction;
+	UPROPERTY(EditDefaultsOnly, Category = "Interaction")
+	float InteractRange = 100.0f;
 
 	UPROPERTY(ReplicatedUsing = OnRep_CurrentWeapon, EditAnywhere, Category = Weapon)
 	AWeaponBase* CurrentWeapon;
@@ -60,6 +62,8 @@ public:
 	/** Sets default values for this character's properties */
 	AFirstPersonCharacter();
 
+	void TryInteract();
+
 protected:
 
 	virtual void TryStartAttack();
@@ -68,11 +72,19 @@ protected:
 
 	void MoveInput(const FInputActionValue& Value);
 
-	void LookInput(const FInputActionValue& Value);
+	virtual void LookInput(const FInputActionValue& Value);
 
-	void DoMove(float Right, float Forward);
+	virtual void DoMove(float Right, float Forward);
 
 	void DoAim(float Yaw, float Pitch);
+
+	void TryCamToggle();
+
+	virtual bool CanInteract() const;
+
+	UFUNCTION(Server, Reliable)
+	void ServerInteract(AActor* TargetActor);
+
 protected:
 
 	/** Set up input action bindings */
@@ -87,6 +99,8 @@ public:
 
 	USceneComponent* GetFirstPersonCameraRoot() const { return FirstPersonCameraRoot; }
 
+	USceneComponent* GetFirstPersonViewModelRoot() const { return FirstPersonViewModelRoot; }
+
 	virtual void EquipWeapon(AWeaponBase* Weapon);
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
@@ -94,4 +108,10 @@ public:
 	EWeaponType GetWeaponType() const;
 
 	AWeaponBase* GetCurrentWeapon() const { return CurrentWeapon; }
+
+	virtual void OnMoveInputUpdated(const FVector2D& MoveValue);
+
+public:
+	UPROPERTY(BlueprintAssignable)
+	FOnWeaponChanged OnWeaponChanged;
 };

@@ -1,6 +1,6 @@
 {
 	"FileVersion": 3,
-	"EngineAssociation": "{2739CEF7-4B3C-3773-2977-B6880D84B6FE}",
+	"EngineAssociation": "5.7",
 	"Category": "",
 	"Description": "",
 	"Modules": [
@@ -12,11 +12,13 @@
 				"Engine",
 				"AIModule",
 				"UMG",
+				"SlateCore",
 				"TagDrivenUI",
 				"VisualEvent",
 				"CoreUObject",
 				"RDG",
-				"CoreUObject"
+                "CoreUObject",
+                "GameplayTags"
 			]
 		}
 	],
@@ -38,6 +40,18 @@
 		},
 		{
 			"Name": "RDG",
+			"Enabled": true
+		},
+		{
+			"Name": "TagDrivenUI",
+			"Enabled": true
+		},
+		{
+			"Name": "VisualEvent",
+			"Enabled": true
+		},
+		{
+			"Name": "StructCreatorPlugin",
 			"Enabled": true
 		}
 	]

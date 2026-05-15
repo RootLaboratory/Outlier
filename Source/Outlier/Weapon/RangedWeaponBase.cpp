@@ -4,17 +4,24 @@
 #include "Weapon/RangedWeaponBase.h"
 #include "GameFramework/Character.h"
 #include "TimerManager.h"
-
 #include "Kismet/GameplayStatics.h"
-
 #include "VisualEventSubsystem.h"
 #include "ProjectionMarkDefinition.h"
 #include "TrailEffectDefinition.h"
+#include "SoundDefinition.h"
+#include "VisualEffectProvider.h"
 #include "MainUIBase.h"
 #include "LocalPlayerUISubSystem.h"
+#include "CrossHairBase.h"
 #include "Shooter/ShooterPlayerController.h"
 #include "Shooter/ShooterCharacter.h"
 #include "OutlierNetUtils.h"
+#include "Net/UnrealNetwork.h"
+#include "Weapon/WeaponCoreRow.h"
+#include "Weapon/WeaponBloomRow.h"
+#include "Weapon/WeaponFeedbackDefinition.h"
+#include "Weapon/WeaponProjectileRow.h"
+#include "Weapon/WeaponRecoilRow.h"
 
 void ARangedWeaponBase::StartAttackCooldown()
 {
@@ -63,8 +70,7 @@ void ARangedWeaponBase::FinishReuseCooldown()
 bool ARangedWeaponBase::CanReload() const
 {
 	return !bIsReloading
-		&& CurrentAmmo < MagazineSize
-		&& ReserveAmmo > 0;
+		&& CurrentAmmo < MagazineSize;
 }
 
 void ARangedWeaponBase::Reload()
@@ -76,7 +82,7 @@ void ARangedWeaponBase::BeginReload()
 {
 	if (!CanReload())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("%s [%s] Reload blocked Ammo=%d Reserve=%d Reloading=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo, ReserveAmmo, bIsReloading ? 1 : 0);
+		UE_LOG(LogTemp, Warning, TEXT("%s [%s] Reload blocked Ammo=%d Reloading=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo, bIsReloading ? 1 : 0);
 		return;
 	}
 
@@ -91,18 +97,14 @@ void ARangedWeaponBase::FinishReload()
 	}
 
 	const int32 NeededAmmo = MagazineSize - CurrentAmmo;
-	const int32 AmmoToLoad = FMath::Min(NeededAmmo, ReserveAmmo);
+	const int32 AmmoToLoad = FMath::Min(NeededAmmo, MagazineSize);
 
 	CurrentAmmo += AmmoToLoad;
-	ReserveAmmo -= AmmoToLoad;
 	bIsReloading = false;
 
-	if (GetLocalSubsystem() != nullptr)
-	{
-		GetLocalSubsystem()->OnRep_AmmoCountChanged(CurrentAmmo);
-	}
+	UpdateLocalAmmoUI();
 
-	UE_LOG(LogTemp, Log, TEXT("%s [%s] Reload complete Ammo=%d / %d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo, ReserveAmmo);
+	UE_LOG(LogTemp, Log, TEXT("%s [%s] Reload complete Ammo=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo);
 }
 
 void ARangedWeaponBase::CancelReload()
@@ -118,21 +120,17 @@ void ARangedWeaponBase::CancelReload()
 void ARangedWeaponBase::ConsumeAmmo()
 {
 	CurrentAmmo = FMath::Max(CurrentAmmo - 1, 0);
-
-	if (GetLocalSubsystem() != nullptr)
-	{
-		GetLocalSubsystem()->OnRep_AmmoCountChanged(CurrentAmmo);
-	}
-
-	if (CurrentAmmo == 0 && CanReload())
-	{
-		BeginReload();
-	}
+	UpdateLocalAmmoUI();
 }
 
 
 void ARangedWeaponBase::FireShot()
 {
+	if (!HasAuthority())
+	{
+		return;
+	}
+
 	if (!WeaponOwner)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("%s [%s] FireShot blocked: WeaponOwner is null"), OutlierNet::GetNetPrefix(this), *GetName());
@@ -190,26 +188,33 @@ void ARangedWeaponBase::FireShot()
 		UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot hit Target=%s Start=%s End=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(Hit.GetActor()), *Start.ToString(), *End.ToString());
 		if (AShooterCharacter* HitCharacter = Cast<AShooterCharacter>(Hit.GetActor()))
 		{
-			HitCharacter->ApplyDamageInternal(Damage);
-			UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot applied Damage=%.1f To=%s"), OutlierNet::GetNetPrefix(this), *GetName(), Damage, *GetNameSafe(HitCharacter));
+			const float HitDistance = FVector::Distance(Start, Hit.ImpactPoint);
+			const float DamageToApply = GetDamageAtDistance(HitDistance);
+			HitCharacter->ApplyDamageInternal(DamageToApply);
+			UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot applied Damage=%.1f To=%s"), OutlierNet::GetNetPrefix(this), *GetName(), DamageToApply, *GetNameSafe(HitCharacter));
 		}
-
 	}
 	else
 	{
 		UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot miss Start=%s End=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *Start.ToString(), *End.ToString());
 	}
 
-	MulticastPlayFireFX_Implementation(Hit.ImpactPoint, bHit);
 
-	if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner))
+	ClientNotifyShotFired();
+
 	{
-		if (AShooterPlayerController* PC = Cast<AShooterPlayerController>(Shooter->GetController()))
+		AActor* HitActor = Hit.GetActor();
+		const FVector TraceEndPoint = bHit ? Hit.ImpactPoint : End;
+		MulticastPlayFireFX(TraceEndPoint, HitActor);
+
+		if (UVisualEventSubsystem* VisualSubsystem = GetWorld()->GetSubsystem<UVisualEventSubsystem>())
 		{
-			PlayFirstPersonFireFX(Hit.ImpactPoint, bHit);
+			if (GunSound)
+			{
+				VisualSubsystem->PlaySoundAtLocation(GunSound, Start);
+			}
 		}
 	}
-
 
 	FColor LineColor = bHit ? FColor::Green : FColor::Red;
 
@@ -232,23 +237,77 @@ void ARangedWeaponBase::ApplyRecoil()
 
 void ARangedWeaponBase::ApplyBloomPerShot()
 {
+	BloomCurrent = FMath::Clamp(BloomCurrent + BloomPerShot, BloomMin, BloomMax);
 }
 
 void ARangedWeaponBase::RecoverBloom(float DeltaTime)
 {
+	BloomCurrent = FMath::FInterpConstantTo(BloomCurrent, BloomMin, DeltaTime, BloomRecoveryRate);
 }
 
 float ARangedWeaponBase::GetCurrentSpread() const
 {
-	return 0.0f;
+	return BloomCurrent;
 }
 
-void ARangedWeaponBase::SetAiming(bool Aimming)
+void ARangedWeaponBase::SetAiming(bool bAiming)
 {
+	bIsAiming = bAiming;
+
+	RefreshBloomSettingsFromState();
 }
 
 
-void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, bool bHit)
+void ARangedWeaponBase::MulticastPlayFireFX_Implementation(FVector_NetQuantize TraceEnd, AActor* Hit)
+{
+	AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
+	if (!Shooter)
+	{
+		return;
+	}
+
+	if (Shooter->IsLocallyControlled())
+	{
+		PlayFirstPersonFireFX(TraceEnd, Hit);
+		return;
+	}
+
+	PlayThirdPersonFireFX(TraceEnd, Hit);
+}
+
+
+void ARangedWeaponBase::OnEquipped(ACharacter* NewOwner)
+{
+	Super::OnEquipped(NewOwner);
+	UpdateLocalAmmoUI();
+}
+
+void ARangedWeaponBase::OnRep_CurAmmo()
+{
+	UpdateLocalAmmoUI();
+}
+
+void ARangedWeaponBase::OnRep_EquippedState()
+{
+	Super::OnRep_EquippedState();
+
+	if (IsEquipped())
+	{
+		UpdateLocalAmmoUI();
+	}
+}
+
+void ARangedWeaponBase::ClientNotifyShotFired_Implementation()
+{
+	AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
+
+	if (Shooter->IsLocallyControlled())
+	{
+		GetLocalUISubsystem()->OnRep_ShootCrosshairChanged(ReuseCooldown);
+	}
+}
+
+void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, AActor* Hit)
 {
 	USkeletalMeshComponent* Mesh = ThirdPersonWeaponMesh;
 	if (!Mesh)
@@ -256,30 +315,56 @@ void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, bool bHit)
 		return;
 	}
 
-
 	if (UVisualEventSubsystem* VisualSubsystem = GetWorld()->GetSubsystem<UVisualEventSubsystem>())
 	{
-
 		FVector MuzzleLocation = Mesh->GetSocketLocation(TEXT("Muzzle"));
 		FVector MuzzleForward = Mesh->GetSocketRotation(TEXT("Muzzle")).Vector();
+		const FRotator MuzzleRotation = Mesh->GetSocketRotation(TEXT("Muzzle"));
 
-		FVector Start = MuzzleLocation + MuzzleForward * 10.f;
+		const FVector Start = MuzzleLocation;// +MuzzleForward * 10.f;
+		FVector End = TraceEnd;
 
-		if (Effect)
+		if (WeaponMuzzle)
 		{
+			//UE_LOG(LogTemp, Log, TEXT("PlayFirstPersonFireFX_EffectSpawned"));
+			//UTrailEffectDefinition* MuzzleEffectInstance = NewObject<UTrailEffectDefinition>(this, WeaponMuzzle);
 
-			UTrailEffectDefinition* EffectInstance = NewObject<UTrailEffectDefinition>(this, Effect);
-			VisualSubsystem->SpawnBeamTrail(EffectInstance, Start, TraceEnd);
+			VisualSubsystem->SpawnMuzzleEffect(WeaponMuzzle, Start, MuzzleRotation);
 
 		}
+
+
+		if (WeaponTrail)
+		{
+			//UTrailEffectDefinition* TrailEffectInstance = NewObject<UTrailEffectDefinition>(this, WeaponTrail);
+			VisualSubsystem->SpawnBeamTrail(WeaponTrail, Start, End);
+		}
+
+
+		if (Hit)
+		{
+			//UE_LOG(LogTemp, Error, TEXT("PlayFirstPersonFireFX Hit"));
+			IVisualEffectProvider* Provider = Cast<IVisualEffectProvider>(Hit);
+
+			if (Provider)
+			{
+				//UE_LOG(LogTemp, Error, TEXT("PlayFirstPersonFireFX Hit and ProviderComponent"));
+				FVisualEventSet AssetSet = Provider->GetVisualEventSet();
+				VisualSubsystem->FeaturesEffect(TraceEnd, MuzzleRotation, AssetSet);
+			}
+
+			else
+			{
+				//UE_LOG(LogTemp, Error, TEXT("PlayFirstPersonFireFX Hit but no  ProviderComponent"));
+			}
+
+		}
+
 	}
 }
 
-void ARangedWeaponBase::PlayFirstPersonFireFX(FVector TraceEnd, bool bHit)
+void ARangedWeaponBase::PlayFirstPersonFireFX(FVector TraceEnd, AActor* Hit)
 {
-
-	UE_LOG(LogTemp, Log, TEXT("PlayFirstPersonFireFX"));
-
 
 	USkeletalMeshComponent* Mesh = FirstPersonWeaponMesh;
 	if (!Mesh)
@@ -287,32 +372,55 @@ void ARangedWeaponBase::PlayFirstPersonFireFX(FVector TraceEnd, bool bHit)
 		return;
 	}
 
-
-	if (UVisualEventSubsystem* VisualSubsystem = GetWorld()->GetSubsystem<UVisualEventSubsystem>() )
+	if (UVisualEventSubsystem* VisualSubsystem = GetWorld()->GetSubsystem<UVisualEventSubsystem>())
 	{
-
 		FVector MuzzleLocation = Mesh->GetSocketLocation(TEXT("Muzzle"));
 		FVector MuzzleForward = Mesh->GetSocketRotation(TEXT("Muzzle")).Vector();
+		const FRotator MuzzleRotation = Mesh->GetSocketRotation(TEXT("Muzzle"));
 
-		FVector Start = MuzzleLocation + MuzzleForward * 10.f;
+		const FVector Start = MuzzleLocation + MuzzleForward * 10.f;
+		FVector End = TraceEnd;
 
-		if (Effect)
+		if (WeaponMuzzle)
 		{
+			//UE_LOG(LogTemp, Log, TEXT("PlayFirstPersonFireFX_EffectSpawned"));
+			//UTrailEffectDefinition* MuzzleEffectInstance = NewObject<UTrailEffectDefinition>(this, WeaponMuzzle);
 
-			UTrailEffectDefinition* EffectInstance = NewObject<UTrailEffectDefinition>(this, Effect);
-			VisualSubsystem->SpawnBeamTrail(EffectInstance, Start, TraceEnd);
+			VisualSubsystem->SpawnMuzzleEffect(WeaponMuzzle, Start, MuzzleRotation);
 
 		}
 
-		if (Decal)
+
+		if (WeaponTrail)
 		{
-			UProjectionMarkDefinition* DecalInstance = NewObject<UProjectionMarkDefinition>(this, Decal);
-			VisualSubsystem->SpawnMarkAtLocation(DecalInstance, TraceEnd, FRotator(1,1,1));
+			//UTrailEffectDefinition* TrailEffectInstance = NewObject<UTrailEffectDefinition>(this, WeaponTrail);
+			VisualSubsystem->SpawnBeamTrail(WeaponTrail, Start, End);
 		}
+
+
+		if (Hit)
+		{
+			//UE_LOG(LogTemp, Error, TEXT("PlayFirstPersonFireFX Hit"));
+			IVisualEffectProvider* Provider = Cast<IVisualEffectProvider>(Hit);
+
+			if (Provider)
+			{
+				//UE_LOG(LogTemp, Error, TEXT("PlayFirstPersonFireFX Hit and ProviderComponent"));
+				FVisualEventSet AssetSet = Provider->GetVisualEventSet();
+				VisualSubsystem->FeaturesEffect(TraceEnd, MuzzleRotation, AssetSet);
+			}
+
+			else
+			{
+				//UE_LOG(LogTemp, Error, TEXT("PlayFirstPersonFireFX Hit but no  ProviderComponent"));
+			}
+
+		}
+
 	}
 }
 
-ULocalPlayerUISubSystem* ARangedWeaponBase::GetLocalSubsystem()
+ULocalPlayerUISubSystem* ARangedWeaponBase::GetLocalUISubsystem() const
 {
 	AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
 
@@ -339,22 +447,169 @@ ULocalPlayerUISubSystem* ARangedWeaponBase::GetLocalSubsystem()
 	return nullptr;
 }
 
-
-void ARangedWeaponBase::MulticastPlayFireFX_Implementation(FVector_NetQuantize TraceEnd, bool bHit)
+void ARangedWeaponBase::UpdateLocalAmmoUI() const
 {
-	AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
-	if (!Shooter)
+	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
+	{
+		UISubsystem->OnRep_AmmoCountChanged(CurrentAmmo);
+	}
+}
+
+void ARangedWeaponBase::InitializeFromDataTables()
+{
+	Super::InitializeFromDataTables();
+
+	if (const FWeaponCoreRow* CoreRow = WeaponCoreRow.GetRow<FWeaponCoreRow>(TEXT("InitializeRangedWeaponCore")))
+	{
+		MagazineSize = FMath::Max(CoreRow->MagazineSize, 0);
+		CurrentAmmo = MagazineSize;
+		ReloadTime = FMath::Max(CoreRow->ReloadTime, 0.0f);
+		BloomMin = CoreRow->DefaultMinBloom;
+		BloomMax = FMath::Max(CoreRow->DefaultMaxBloom, BloomMin);
+		BloomCurrent = FMath::Clamp(BloomCurrent, BloomMin, BloomMax);
+		RecoilMultiplier = FMath::Max(CoreRow->RecoilMultiplier, 0.0f);
+		bIsAutomatic = FireMode == EWeaponFireMode::FullAuto;
+		BloomProfileId = CoreRow->BloomProfileId;
+		ProjectileProfileId = CoreRow->ProjectileProfileId;
+		RecoilProfileId = CoreRow->RecoilProfileId;
+
+		if (CoreRow->FeedbackDefinition)
+		{
+			FeedbackDefinition = CoreRow->FeedbackDefinition;
+		}
+	}
+
+	InitializeBloomFromDataTable();
+	InitializeRecoilFromDataTable();
+	InitializeProjectileFromDataTable();
+	ApplyFeedbackDefinition();
+}
+
+void ARangedWeaponBase::InitializeBloomFromDataTable()
+{
+	RefreshBloomSettingsFromState();
+}
+
+void ARangedWeaponBase::InitializeRecoilFromDataTable()
+{
+	const FWeaponRecoilRow* RecoilRow = RecoilDataRow.GetRow<FWeaponRecoilRow>(TEXT("InitializeWeaponRecoil"));
+	if (!RecoilRow && WeaponRecoilTable && !RecoilProfileId.IsNone())
+	{
+		RecoilRow = WeaponRecoilTable->FindRow<FWeaponRecoilRow>(RecoilProfileId, TEXT("InitializeWeaponRecoil"));
+	}
+
+	if (!RecoilRow)
 	{
 		return;
 	}
 
-	// 오너는 여기서 제외하고, 남들에게만 TP FX
-	if (Shooter->IsLocallyControlled())
+	RecoilPitchAmplitude = RecoilRow->PitchAmplitude;
+	RecoilLocationXAmplitude = RecoilRow->LocationXAmplitude;
+	RecoilLocationYAmplitude = RecoilRow->LocationYAmplitude;
+	RecoilFovAmplitude = RecoilRow->FovAmplitude;
+	RecoilRecoverySpeed = RecoilRow->RecoverySpeed;
+}
+
+void ARangedWeaponBase::InitializeProjectileFromDataTable()
+{// TODO:
+	const FWeaponProjectileRow* ProjectileRow = ProjectileDataRow.GetRow<FWeaponProjectileRow>(TEXT("InitializeWeaponProjectile"));
+	if (!ProjectileRow && WeaponProjectileTable && !ProjectileProfileId.IsNone())
+	{
+		ProjectileRow = WeaponProjectileTable->FindRow<FWeaponProjectileRow>(ProjectileProfileId, TEXT("InitializeWeaponProjectile"));
+	}
+
+	if (!ProjectileRow)
 	{
 		return;
 	}
 
-	PlayThirdPersonFireFX(TraceEnd, bHit);
+	ProjectileSpeedCmPerSec = ProjectileRow->ProjectileSpeedCmPerSec;
+	ProjectileMaxRangeCm = ProjectileRow->MaxRangeCm;
+	ProjectileStunTime = ProjectileRow->StunTime;
+
+	if (ProjectileRow->ReuseCooldown > 0.0f)
+	{
+		ReuseCooldown = ProjectileRow->ReuseCooldown;
+	}
+}
+
+void ARangedWeaponBase::ApplyFeedbackDefinition()
+{
+	if (!FeedbackDefinition)
+	{
+		return;
+	}
+
+	WeaponDecal  = FeedbackDefinition->WeaponDecal;
+	WeaponMuzzle = FeedbackDefinition->WeaponMuzzle;
+	WeaponTrail  = FeedbackDefinition->WeaponTrail;
+	GunSound     = FeedbackDefinition->GunSound;
+}
+
+void ARangedWeaponBase::RefreshBloomSettingsFromState()
+{
+	if (!WeaponBloomTable || BloomProfileId.IsNone())
+	{
+		return;
+	}
+
+	const AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
+	const EWeaponAimMode DesiredAimMode = bIsAiming ? EWeaponAimMode::ADS : EWeaponAimMode::Hip;
+	EWeaponMoveState DesiredMoveState = EWeaponMoveState::StillOrCrouch;
+
+	if (Shooter)
+	{
+		switch (Shooter->GetMovementState())
+		{
+		case EMovementState::Jump:
+			DesiredMoveState = EWeaponMoveState::Air;
+			break;
+		case EMovementState::Walk:
+		case EMovementState::Run:
+		case EMovementState::Slide:
+			DesiredMoveState = EWeaponMoveState::Moving;
+			break;
+		case EMovementState::Idle:
+		case EMovementState::Crouch:
+		default:
+			DesiredMoveState = EWeaponMoveState::StillOrCrouch;
+			break;
+		}
+	}
+
+	TArray<FWeaponBloomRow*> BloomRows;
+	WeaponBloomTable->GetAllRows<FWeaponBloomRow>(TEXT("RefreshBloomSettingsFromState"), BloomRows);
+
+	const FWeaponBloomRow* BestRow = nullptr;
+	for (const FWeaponBloomRow* Row : BloomRows)
+	{
+		if (!Row || Row->BloomProfileId != BloomProfileId || Row->MoveState != DesiredMoveState)
+		{
+			continue;
+		}
+
+		if (Row->AimMode == DesiredAimMode)
+		{
+			BestRow = Row;
+			break;
+		}
+
+		if (Row->AimMode == EWeaponAimMode::Any)
+		{
+			BestRow = Row;
+		}
+	}
+
+	if (!BestRow)
+	{
+		return;
+	}
+
+	BloomMin = BestRow->MinBloom;
+	BloomMax = FMath::Max(BestRow->MaxBloom, BloomMin);
+	BloomPerShot = BestRow->IncPerShot;
+	BloomRecoveryRate = BestRow->RecoveryRate;
+	BloomCurrent = FMath::Clamp(BloomCurrent, BloomMin, BloomMax);
 }
 
 void ARangedWeaponBase::HandleAutoFire()
@@ -366,8 +621,15 @@ void ARangedWeaponBase::HandleAutoFire()
 		return;
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("%s [%s] HandleAutoFire tick Ammo=%d Reserve=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo, ReserveAmmo);
+	UE_LOG(LogTemp, Log, TEXT("%s [%s] HandleAutoFire tick Ammo=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo);
 	PerformAttack();
+}
+
+void ARangedWeaponBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+
+	DOREPLIFETIME(ARangedWeaponBase, CurrentAmmo);
 }
 
 bool ARangedWeaponBase::CanAttack() const
@@ -381,6 +643,11 @@ bool ARangedWeaponBase::CanAttack() const
 
 void ARangedWeaponBase::StartAttack()
 {
+	if (!HasAuthority())
+	{
+		return;
+	}
+
 	if (bIsAttacking)
 	{
 		UE_LOG(LogTemp, Log, TEXT("%s [%s] StartAttack skipped: already attacking"), OutlierNet::GetNetPrefix(this), *GetName());
@@ -389,7 +656,7 @@ void ARangedWeaponBase::StartAttack()
 
 	if (!CanAttack())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("%s [%s] StartAttack blocked CanAttack=false Ammo=%d Reserve=%d Reloading=%d Cooldown=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo, ReserveAmmo, bIsReloading ? 1 : 0, bAttackOnCooldown ? 1 : 0);
+		UE_LOG(LogTemp, Warning, TEXT("%s [%s] StartAttack blocked CanAttack=false Ammo=%d Reloading=%d Cooldown=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo, bIsReloading ? 1 : 0, bAttackOnCooldown ? 1 : 0);
 		if (CurrentAmmo <= 0)
 		{
 			UE_LOG(LogTemp, Warning, TEXT("%s [%s] No ammo"), OutlierNet::GetNetPrefix(this), *GetName());
@@ -399,7 +666,7 @@ void ARangedWeaponBase::StartAttack()
 
 	PerformAttack(); // 첫 발 즉시 발사
 
-	UE_LOG(LogTemp, Log, TEXT("%s [%s] StartAttack Ammo=%d Reserve=%d Automatic=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo, ReserveAmmo, bIsAutomatic ? 1 : 0);
+	UE_LOG(LogTemp, Log, TEXT("%s [%s] StartAttack Ammo=%d Automatic=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo, bIsAutomatic ? 1 : 0);
 	bIsAttacking = true;
 	// Attack state is set by ranged fire flow.
 
@@ -431,6 +698,11 @@ void ARangedWeaponBase::StopAttack()
 
 void ARangedWeaponBase::PerformAttack()
 {
+	if (!HasAuthority())
+	{
+		return;
+	}
+
 	if (!Super::CanAttack() || bIsReloading || CurrentAmmo <= 0)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("%s [%s] PerformAttack blocked BaseCanAttack=%d Reloading=%d Ammo=%d"), OutlierNet::GetNetPrefix(this), *GetName(), Super::CanAttack() ? 1 : 0, bIsReloading ? 1 : 0, CurrentAmmo);
@@ -442,12 +714,29 @@ void ARangedWeaponBase::PerformAttack()
 		return;
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("%s [%s] PerformAttack AmmoBefore=%d Reserve=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo, ReserveAmmo);
+	UE_LOG(LogTemp, Log, TEXT("%s [%s] PerformAttack AmmoBefore=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo);
+	RefreshBloomSettingsFromState();
 	ConsumeAmmo();
 	FireShot();
+
+	ApplyBloomPerShot();
+	ApplyRecoil();
+
+	if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner))
+	{
+		Shooter->HandleFireShotAnimation();
+	}
 
 	StartAttackCooldown();
 	StartReuseCooldown();
 
-	UE_LOG(LogTemp, Log, TEXT("%s [%s] Fire success Ammo=%d / %d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo, ReserveAmmo);
+	if (CurrentAmmo == 0 && CanReload())
+	{
+		if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner))
+		{
+			Shooter->HandleAutoReloadRequested();
+		}
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("%s [%s] Fire success Ammo=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo);
 }

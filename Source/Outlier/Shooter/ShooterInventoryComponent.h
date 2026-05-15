@@ -7,15 +7,22 @@
 #include "Weapon/WeaponBase.h"
 #include "ShooterInventoryComponent.generated.h"
 
+UENUM(BlueprintType)
+enum class EWeaponSlot : uint8
+{
+	Unarmed		UMETA(DisplayName = "Unarmed"),
+	Primary		UMETA(DisplayName = "Primary"),
+	Secondary	UMETA(DisplayName = "Secondary"),
+	Melee		UMETA(DisplayName = "Melee"),
+	Max			UMETA(Hidden)
+};
+
 UCLASS(ClassGroup=(Shooter), meta=(BlueprintSpawnableComponent))
 class OUTLIER_API UShooterInventoryComponent : public UShooterCharacterComponentBase
 {
 	GENERATED_BODY()
 
 protected:
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon")
-	TArray<TObjectPtr<AWeaponBase>> OwnedWeapons;
-
 	UPROPERTY(EditDefaultsOnly, Category = "Weapon")
 	FName FirstPersonWeaponSocketDefault = FName("HandGrip_R");
 
@@ -34,8 +41,17 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Weapon")
 	FName ThirdPersonWeaponSocketPistol = FName("HandGrip_R_Pistol_TP");
 
+	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Weapon")
+	TArray<TObjectPtr<AWeaponBase>> WeaponSlots;
+
+	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Weapon")
+	EWeaponSlot CurrentSlot = EWeaponSlot::Primary;
+
 public:
 	UShooterInventoryComponent();
+
+	virtual void BeginPlay() override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	FName GetFirstPersonWeaponSocketByType(EWeaponType WeaponType) const;
 	FName GetThirdPersonWeaponSocketByType(EWeaponType WeaponType) const;
@@ -44,7 +60,16 @@ public:
 	void TrySwitchWeapon2();
 	void TrySwitchWeapon3();
 	void SelectWeaponByIndex(int32 SlotIndex);
-	void HandleEquipWeapon(AWeaponBase* Weapon);
 
-	const TArray<TObjectPtr<AWeaponBase>>& GetOwnedWeapons() const { return OwnedWeapons; }
+	void HandleEquipWeapon(AWeaponBase* Weapon);
+	void SelectWeaponSlot(EWeaponSlot Slot);
+
+	void CleanupOwnedWeapons();
+public:
+
+	
+
+private:
+	static EWeaponSlot GetSlotForWeaponType(EWeaponType WeaponType);
+	bool IsValidWeaponSlot(EWeaponSlot Slot) const;
 };

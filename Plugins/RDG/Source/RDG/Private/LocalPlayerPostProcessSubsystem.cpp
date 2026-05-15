@@ -1,30 +1,33 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
-
 #include "LocalPlayerPostProcessSubsystem.h"
-#include "SceneViewExtension.h"
+
 #include "OutlierPostProcessSceneViewExtension.h"
+#include "SceneViewExtension.h"
 
 void ULocalPlayerPostProcessSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
-	//UE_LOG(LogTemp, Error, TEXT("EXT Initalized"));
 
 	if (ULocalPlayer* LP = GetLocalPlayer())
 	{
-		//UE_LOG(LogTemp, Error, TEXT("EXT Initalized"));
 		ViewExtension = FSceneViewExtensions::NewExtension<FOutlierPostProcessSceneViewExtension>(LP);
 	}
-	else
-	{
-		//UE_LOG(LogTemp, Error, TEXT("LP NONE Initalized"));
-	}
+
+	TickFrame();
 }
 
 void ULocalPlayerPostProcessSubsystem::Deinitialize()
 {
 	Super::Deinitialize();
 	ViewExtension.Reset();
+}
+
+void ULocalPlayerPostProcessSubsystem::MarkDirty()
+{
+	CachedPostProcessParameters = PostProcessParameters;
+	CachedUIPostProcessParameters = UIPostProcessParameters;
+	bDirty = true;
 }
 
 void ULocalPlayerPostProcessSubsystem::ActivateSlideState()
@@ -34,18 +37,115 @@ void ULocalPlayerPostProcessSubsystem::ActivateSlideState()
 		return;
 	}
 
-	//UE_LOG(LogTemp, Error, TEXT("ActivateSlideState"));
-
 	PlayerState.bIsSliding = true;
-	PostProcessParameters.MotionBlur.bEnabled = true;
-	bDirty = true;
+	SetMotionBlurEnabled(true);
 }
 
 void ULocalPlayerPostProcessSubsystem::DeActivateSlideState()
 {
 	PlayerState.bIsSliding = false;
-	PostProcessParameters.MotionBlur.bEnabled = false;
-	bDirty = true;
+	SetMotionBlurEnabled(false);
+}
+
+void ULocalPlayerPostProcessSubsystem::SetMotionBlurEnabled(bool bEnabled)
+{
+	PostProcessParameters.MotionBlur.bEnabled = bEnabled ? 1 : 0;
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetMotionBlurBlendWeight(float InBlendWeight)
+{
+	PostProcessParameters.MotionBlur.BlendWeight = FMath::Clamp(InBlendWeight, 0.0f, 1.0f);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetMotionBlurIntensity(float InIntensity)
+{
+	PostProcessParameters.MotionBlur.Intensity = FMath::Max(0.0f, InIntensity);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetMotionBlurVelocityScale(float InVelocityScale)
+{
+	PostProcessParameters.MotionBlur.VelocityScale = FMath::Max(0.0f, InVelocityScale);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::ActivateChromaticAberration()
+{
+	SetChromaticAberrationEnabled(true);
+}
+
+void ULocalPlayerPostProcessSubsystem::DeactivateChromaticAberration()
+{
+	SetChromaticAberrationEnabled(false);
+}
+
+void ULocalPlayerPostProcessSubsystem::SetChromaticAberrationEnabled(bool bEnabled)
+{
+	UIPostProcessParameters.ChromaticAberration.bEnabled = bEnabled ? 1 : 0;
+	MarkDirty();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetChromaticAberrationStartOffset(float InStartOffset)
+{
+	UIPostProcessParameters.ChromaticAberration.StartOffset = FMath::Clamp(InStartOffset, 0.0f, 1.0f);
+	MarkDirty();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetChromaticAberrationIntensity(float InIntensity)
+{
+	UIPostProcessParameters.ChromaticAberration.Intensity = FMath::Max(0.0f, InIntensity);
+	MarkDirty();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetDualKawaseBlurEnabled(bool bEnabled)
+{
+	PostProcessParameters.DualKawaseBlur.bEnabled = bEnabled ? 1 : 0;
+	MarkDirty();
+	TickFrame();
+
+}
+
+void ULocalPlayerPostProcessSubsystem::SetDualKawaseBlurRadius(float InBlurRadius)
+{
+	PostProcessParameters.DualKawaseBlur.BlurRadius = FMath::Max(0.0f, InBlurRadius);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetDualKawaseBlurBlendWeight(float InBlendWeight)
+{
+	PostProcessParameters.DualKawaseBlur.BlendWeight = FMath::Clamp(InBlendWeight, 0.0f, 1.0f);
+	MarkDirty();
+	TickFrame();
+
+}
+
+void ULocalPlayerPostProcessSubsystem::SetDualKawaseBlurDownsampleCount(int32 InDownsampleCount)
+{
+	PostProcessParameters.DualKawaseBlur.DownsampleCount = FMath::Clamp(InDownsampleCount, 1, 6);
+	MarkDirty();
+	TickFrame();
+
+}
+
+void ULocalPlayerPostProcessSubsystem::SetDatamoshingEnabled(bool bEnabled)
+{
+	PostProcessParameters.Datamoshing.bEnabled = bEnabled ? 1 : 0;
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetDatamoshingProgress(float InProgress)
+{
+	PostProcessParameters.Datamoshing.Progress = FMath::Clamp(InProgress, 0.0f, 1.0f);
+	MarkDirty();
+	TickFrame();
 }
 
 void ULocalPlayerPostProcessSubsystem::TickFrame()
@@ -56,10 +156,12 @@ void ULocalPlayerPostProcessSubsystem::TickFrame()
 	}
 
 	CachedPostProcessParameters = PostProcessParameters;
+	CachedUIPostProcessParameters = UIPostProcessParameters;
 
 	if (ViewExtension.IsValid())
 	{
 		ViewExtension->UpdateCachedParameters(CachedPostProcessParameters);
+		ViewExtension->UpdateCachedUIParameters(CachedUIPostProcessParameters);
 	}
 
 	bDirty = false;
@@ -68,6 +170,16 @@ void ULocalPlayerPostProcessSubsystem::TickFrame()
 const FPostProcessStrcture& ULocalPlayerPostProcessSubsystem::GetPostProcessStrcture()
 {
 	return CachedPostProcessParameters;
+}
+
+const FPostProcessStrcture& ULocalPlayerPostProcessSubsystem::GetPostProcessStrcture() const
+{
+	return CachedPostProcessParameters;
+}
+
+const FPostProcessStrctureUI& ULocalPlayerPostProcessSubsystem::GetUIPostProcessStrcture() const
+{
+	return UIPostProcessParameters;
 }
 
 bool ULocalPlayerPostProcessSubsystem::IsDirty()

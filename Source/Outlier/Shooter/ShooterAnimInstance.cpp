@@ -6,6 +6,7 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "KismetAnimationLibrary.h"
+#include "OutlierNetUtils.h"
 
 void UShooterAnimInstance::NativeInitializeAnimation()
 {
@@ -22,7 +23,21 @@ void UShooterAnimInstance::NativeInitializeAnimation()
 
 	if (!CachedShooterCharacter)
 	{
+		UE_LOG(LogTemp, Warning, TEXT("[TPAnim] NativeInitializeAnimation failed OwnerPawn=%s"), *GetNameSafe(OwnerPawn));
 		return;
+	}
+
+	if (USkeletalMeshComponent* OwningMesh = GetOwningComponent())
+	{
+		UE_LOG(
+			LogTemp,
+			Log,
+			TEXT("%s [TPAnim] Init AnimClass=%s Mesh=%s Owner=%s WeaponType=%d"),
+			OutlierNet::GetNetPrefix(CachedShooterCharacter),
+			*GetClass()->GetName(),
+			*GetNameSafe(OwningMesh),
+			*GetNameSafe(CachedShooterCharacter),
+			static_cast<int32>(CachedShooterCharacter->GetWeaponType()));
 	}
 
 	CachedShooterCharacter->OnCharacterDeath.AddUniqueDynamic(this, &UShooterAnimInstance::HandleOwnerDeath);
@@ -59,20 +74,41 @@ void UShooterAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 		CachedShooterCharacter = Cast<AShooterCharacter>(OwnerPawn);
 	}
 
-	if(!CachedShooterCharacter)
+	if (!CachedShooterCharacter)
 	{
+		Speed = 0.0f;
+		Direction = 0.0f;
+		CurrentWeaponType = EWeaponType::Unarmed;
+		LeanAlpha = 0.0f;
+		bIsCrouching = false;
+		bIsSprinting = false;
+		bIsSliding = false;
+		bIsSlidingCanceled = false;
+		bIsGrounded = true;
+		bIsInAir = false;
+		bIsAiming = false;
+		bIsReloading = false;
+		bIsPrimaryWeapon = false;
+		bIsSecondaryWeapon = false;
 		return;
 	}
 
-	Speed		      = CachedShooterCharacter->GetCharacterMovement()->Velocity.Size2D();
+	UCharacterMovementComponent* CharacterMovement = CachedShooterCharacter->GetCharacterMovement();
+	if (!CharacterMovement)
+	{
+		Speed = 0.0f;
+		Direction = 0.0f;
+		bIsGrounded = true;
+		bIsInAir = false;
+		return;
+	}
+
+	Speed		      = CharacterMovement->Velocity.Size2D();
 	Direction		  = UKismetAnimationLibrary::CalculateDirection(
-		CachedShooterCharacter->GetCharacterMovement()->Velocity,
+		CharacterMovement->Velocity,
 		CachedShooterCharacter->GetActorRotation()
 	);
 	CurrentWeaponType = CachedShooterCharacter->GetWeaponType();
-
-	AimYaw        = CachedShooterCharacter->GetAimYawForAnimation();
-	AimPitch	  = CachedShooterCharacter->GetAimPitchForAnimation();
 	LeanAlpha     = CachedShooterCharacter->GetCurrentLeanAlpha();
 	MovementState = CachedShooterCharacter->GetMovementState();
 	CombatState   = CachedShooterCharacter->GetCombatState();
@@ -82,7 +118,7 @@ void UShooterAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 	bIsSprinting	   = CachedShooterCharacter->IsSprinting();
 	bIsSliding		   = CachedShooterCharacter->IsSliding();
 	bIsSlidingCanceled = CachedShooterCharacter->IsSlidingCanceled();
-	bIsGrounded		   = CachedShooterCharacter->GetCharacterMovement()->IsMovingOnGround();
+	bIsGrounded		   = CharacterMovement->IsMovingOnGround();
 	bIsInAir		   = !bIsGrounded;
 	bIsAiming	       = CachedShooterCharacter->IsAiming();
 	bIsReloading       = CachedShooterCharacter->IsReloading();
@@ -101,7 +137,8 @@ void UShooterAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 		return;
 	}
 
-	bIsFirstPerson = (OwningMesh == CachedShooterCharacter->GetFirstPersonMesh());
+	AimYaw = CachedShooterCharacter->GetAimYawForAnimation();
+	AimPitch = CachedShooterCharacter->GetAimPitchForAnimation();
 
 	AWeaponBase* CurrentWeapon = CachedShooterCharacter->GetCurrentWeapon();
 	if (!CurrentWeapon)
@@ -109,7 +146,7 @@ void UShooterAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 		return;
 	}
 
-	USkeletalMeshComponent* WeaponMesh = CurrentWeapon->GetWeaponByView(bIsFirstPerson);
+	USkeletalMeshComponent* WeaponMesh = CurrentWeapon->GetWeaponByView(false);
 	if (!WeaponMesh)
 	{
 		return;

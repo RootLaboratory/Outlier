@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerController.h"
+#include "OutlierPlayerState.h"
 #include "PlayerUIProvider.h"
 #include "FirstPersonPlayerController.generated.h"
 
@@ -26,22 +27,32 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "Input|Input Mappings")
 	TArray<UInputMappingContext*> DefaultMappingContexts;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Pair")
+	EOutlierPlayerRole DefaultPlayerRole = EOutlierPlayerRole::None;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Pair")
+	int32 DefaultPairId = 0;
+
 	virtual void BeginPlay() override;
+
+	virtual void OnPossess(APawn* InPawn) override;
+	virtual void OnRep_PlayerState() override;
 
 	// Input Mapping Context Setup
 	virtual void SetupInputComponent() override;
-
 
 	virtual TSubclassOf<UMainUIBase> GetMainUIClass_Implementation() const;
 
 	virtual void BindMainUI();
 	virtual void BindPostProcessSubSystem();
 
+	void InitializeOutlierPlayerState();
+	void RegisterCurrentPawnWithPlayerState();
+
 	UPROPERTY()
 	TObjectPtr<UMainUIBase> ShooterUIInstance;
 
-
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "UI")
-	TSubclassOf<UMainUIBase> MainUIClass; //Bind될 ShooterUIClass
+	TSubclassOf<UMainUIBase> MainUIClass;
 
 };

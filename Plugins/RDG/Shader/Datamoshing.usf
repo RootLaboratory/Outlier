@@ -1,0 +1,69 @@
+#include "/Engine/Public/Platform.ush"
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/ScreenPass.ush"
+
+Texture2D CurrentFrameTexture;
+Texture2D HistoryFrameTexture;
+SamplerState GlobalSampler;
+float Progress;   // 슬레이트 슬라이더로 들어오는 intensity (0~1)
+
+float3 RGBtoHSV(float3 c)
+{
+    float4 K = float4(0.0, -1.0/3.0, 2.0/3.0, -1.0);
+    float4 p = lerp(float4(c.bg, K.wz), float4(c.gb, K.xy), step(c.b, c.g));
+    float4 q = lerp(float4(p.xyw, c.r), float4(c.r, p.yzx), step(p.x, c.r));
+    float d = q.x - min(q.w, q.y);
+    float e = 1.0e-10;
+    return float3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+
+float3 HSVtoRGB(float3 c)
+{
+    float4 K = float4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    float3 p = abs(frac(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * lerp(K.xxx, saturate(p - K.xxx), c.y);
+}
+
+void MainPS(
+    FScreenVertexOutput Input,
+    out float4 OutColor : SV_Target0)
+{
+    const float PI = 3.14159265;
+    const float ColorLevels = 4.0;
+
+    uint W, H;
+    HistoryFrameTexture.GetDimensions(W, H);
+    float2 PixelSize = float2(1.0 / (float)W, 1.0 / (float)H);
+
+    float2 UV = Input.UV;
+    float4 Current = Texture2DSample(CurrentFrameTexture, GlobalSampler, UV);
+    float4 History = Texture2DSample(HistoryFrameTexture, GlobalSampler, UV);
+
+    // 1. history HSV 양자화
+    float3 hsv = RGBtoHSV(History.rgb);
+    hsv.x = floor(hsv.x * ColorLevels) / ColorLevels;
+    hsv.yz = floor(hsv.yz * ColorLevels) / ColorLevels;
+
+    // 2. Progress가 클수록 더 밝은 픽셀까지 글리치에 잡아먹힘
+    float Threshold = Progress;
+
+    if (hsv.z > Threshold)
+    {
+        // 임계 이상 밝은 픽셀: 원본 유지
+        OutColor = Current;
+    }
+    else
+    {
+        // 임계 이하: 자기 hue 방향으로 한 픽셀 끌어옴
+        float rotation = frac(hsv.x * 3.0);
+        float angle = 2.0 * PI * rotation;
+        float2 ShiftedUV = UV + float2(sin(angle), cos(angle)) * PixelSize;
+
+        float3 dragged = Texture2DSample(HistoryFrameTexture, GlobalSampler, ShiftedUV).rgb;
+        float3 dHSV = RGBtoHSV(dragged);
+        dHSV.x = floor(dHSV.x * ColorLevels) / ColorLevels;
+        dHSV.y = 1.0;
+
+        OutColor = float4(HSVtoRGB(dHSV), 1.0);
+    }
+}

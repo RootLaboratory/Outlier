@@ -1,0 +1,26 @@
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/ScreenPass.ush"
+
+Texture2D SceneColorTexture;
+Texture2D RefractionTexture;
+SamplerState SceneColorSampler;
+SamplerState RefractionSampler;
+
+float2 FieldExtent;
+
+void MainPS(
+	FScreenVertexOutput Input,
+	out float4 OutColor : SV_Target0)
+{
+	float2 UV = Input.UV;
+	float4 Field = RefractionTexture.Sample(RefractionSampler, UV);
+
+	float2 OffsetUV = Field.rg / max(FieldExtent, float2(1.0f, 1.0f));
+	float Mask = saturate(Field.a);
+
+	float2 DistortedUV = saturate(UV + OffsetUV);
+	float4 OriginalColor = SceneColorTexture.Sample(SceneColorSampler, UV);
+	float4 DistortedColor = SceneColorTexture.Sample(SceneColorSampler, DistortedUV);
+
+	OutColor = lerp(OriginalColor, DistortedColor, Mask);
+}

@@ -6,6 +6,13 @@
 #include "GameFramework/GameModeBase.h"
 #include "OutlierGameMode.generated.h"
 
+class AShooterCharacter;
+class APartnerCharacter;
+class AOutlierCheckpoint;
+class AOutlierPlayerState;
+enum class EOutlierPlayerRole : uint8;
+struct FOutlierCheckpointData;
+
 /**
  *  Simple GameMode for a third person game
  */
@@ -15,10 +22,33 @@ class AOutlierGameMode : public AGameModeBase
 	GENERATED_BODY()
 
 public:
-	
+
 	/** Constructor */
 	AOutlierGameMode();
+
+	void RegisterCheckpoint(AController* Controller, AOutlierCheckpoint* Checkpoint);
+	void RefreshPairLinks(AOutlierPlayerState* TriggeringPlayerState);
+
+	UFUNCTION()
+	void HandlePlayerDeath(AShooterCharacter* Character);
+
+protected:
+	UPROPERTY(EditDefaultsOnly, Category = "Respawn")
+	TSubclassOf<AShooterCharacter> ShooterClass;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Respawn")
+	TSubclassOf<APartnerCharacter> PartnerClass;
+
+protected:
+	virtual void Logout(AController* Exiting) override;
+
+	void RespawnPairAtCheckpoint(AController* Controller);
+	bool ResolveCheckpointTransform(AController* Controller, FTransform& OutTransform) const;
+	FString GetPlayerSaveId(AController* Controller) const;
+
+	AOutlierPlayerState* FindPairPlayerState(int32 PairId, EOutlierPlayerRole PlayerRole) const;
+	AController* GetControllerFromPlayerState(AOutlierPlayerState* PlayerState) const;
+	void ApplyCheckpointToPair(AOutlierPlayerState* TriggeringPlayerState, const FOutlierCheckpointData& Data);
+	void RegisterSpawnedPair(AOutlierPlayerState* ShooterPlayerState, AOutlierPlayerState* PartnerPlayerState, AShooterCharacter* Shooter, APartnerCharacter* Partner);
+
 };
-
-
-

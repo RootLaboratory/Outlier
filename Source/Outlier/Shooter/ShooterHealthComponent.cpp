@@ -3,6 +3,7 @@
 #include "Shooter/ShooterHealthComponent.h"
 #include "Shooter/ShooterCharacter.h"
 #include "OutlierNetUtils.h"
+#include "OutlierGameMode.h"
 
 UShooterHealthComponent::UShooterHealthComponent()
 {
@@ -44,4 +45,12 @@ void UShooterHealthComponent::Die()
 
 	ShooterCharacter->bIsDead = true;
 	ShooterCharacter->HandleDeath();
+
+	if (ShooterCharacter->HasAuthority())
+	{
+		if (AOutlierGameMode* GM = ShooterCharacter->GetWorld()->GetAuthGameMode<AOutlierGameMode>())
+		{
+			GM->HandlePlayerDeath(ShooterCharacter);
+		}
+	}
 }

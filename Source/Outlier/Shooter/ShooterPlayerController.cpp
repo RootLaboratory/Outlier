@@ -2,18 +2,42 @@
 
 #include "ShooterPlayerController.h"
 
+#include "Blueprint/UserWidget.h"
 #include "GameFramework/PlayerStart.h"
 #include "Kismet/GameplayStatics.h"
 #include "LocalPlayerUISubSystem.h"
 #include "LocalPlayerPostProcessSubsystem.h"
+#include "UI/ShooterAbilityUI.h"
 #include "ShooterCharacter.h"
+#include "ShooterInventoryComponent.h"
+#include "ShooterMainWidget.h"
+#include "OutlierGameMode.h"
+
+AShooterPlayerController::AShooterPlayerController()
+{
+	DefaultPlayerRole = EOutlierPlayerRole::Shooter;
+}
 
 void AShooterPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
-
 	BindMainUI();
 	BindPostProcessSubSystem();
+
+	//슬라이드 1P 지정 콜백으로 하겠지만 분리 예정.
+	AShooterCharacter* ShooterCharacter = Cast<AShooterCharacter>(GetCharacter());
+	if (ShooterCharacter)
+	{
+		ShooterCharacter->OnMovementStateChanged.AddDynamic(this, &AShooterPlayerController::HandleMovementStateChanged);
+		ShooterCharacter->OnWeaponChanged.AddDynamic(this, &AShooterPlayerController::OnWeaponChanged);
+	}
+}
+
+void AShooterPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	CleanupPossessedShooterWeapons();
+
+	Super::EndPlay(EndPlayReason);
 }
 
 void AShooterPlayerController::SetupInputComponent()
@@ -30,42 +54,35 @@ void AShooterPlayerController::OnPossess(APawn* InPawn)
 		return;
 	}
 
-	InPawn->OnDestroyed.AddDynamic(this, &AShooterPlayerController::OnPawnDestroyed);
-
 	if (AShooterCharacter* ShooterCharacter = Cast<AShooterCharacter>(InPawn))
 	{
 		// Mark the currently possessed pawn so gameplay systems can identify it.
 		ShooterCharacter->Tags.Add(PlayerPawnTag);
 	}
+
+
+
 }
 
-void AShooterPlayerController::OnPawnDestroyed(AActor* DestroyedActor)
+void AShooterPlayerController::CleanupPossessedShooterWeapons()
 {
-	// Find a spawn point to respawn the player.
-	TArray<AActor*> ActorList;
-	UGameplayStatics::GetAllActorsOfClass(AActor::GetWorld(), APlayerStart::StaticClass(), ActorList);
-
-	if (ActorList.Num() <= 0)
+	if (!HasAuthority())
 	{
 		return;
 	}
 
-	// Choose a random player start.
-	AActor* RandomPlayerStart = ActorList[FMath::RandRange(0, ActorList.Num() - 1)];
-	const FTransform SpawnTransform = RandomPlayerStart->GetActorTransform();
-
-	// Spawn a replacement pawn and repossess it.
-	if (AShooterCharacter* RespawnedCharacter = AActor::GetWorld()->SpawnActor<AShooterCharacter>(CharacterClass, SpawnTransform))
+	if (AShooterCharacter* ShooterCharacter = Cast<AShooterCharacter>(GetPawn()))
 	{
-		Possess(RespawnedCharacter);
+		ShooterCharacter->CleanupOwnedWeapons();
 	}
 }
 
-
-
 void AShooterPlayerController::BindMainUI()
 {
-	UE_LOG(LogTemp, Warning, TEXT("BindMainUI"));
+	if (!IsLocalController())
+	{
+		return;
+	}
 
 	if ( !MainUIClass || ShooterUIInstance)
 	{
@@ -82,14 +99,28 @@ void AShooterPlayerController::BindMainUI()
 
 	ShooterUIInstance->AddToViewport();
 
-		if (ULocalPlayer* LP = this->GetLocalPlayer())
+	if (ULocalPlayer* LP = this->GetLocalPlayer())
+	{
+		if (ULocalPlayerUISubSystem* UISubsystem = LP->GetSubsystem<ULocalPlayerUISubSystem>())
 		{
-			if (ULocalPlayerUISubSystem* UISubsystem = LP->GetSubsystem<ULocalPlayerUISubSystem>())
-			{
-				UISubsystem->RegisterMainUI(ShooterUIInstance);
-				//UISubsystem->PartnerCameraBind(CaptureComponent); //Main 끝내고.
-			}
+			UISubsystem->RegisterMainUI(ShooterUIInstance);
 		}
+	}
+	if (!AbilityUIClass || AbilityUIInstance)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Cant InitializeAbilityUI"));
+		return;
+	}
+
+	AbilityUIInstance = CreateWidget<UShooterAbilityUI>(this, AbilityUIClass);
+	if (!AbilityUIInstance)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Cant AbilityUIInstance"));
+		return;
+	}
+
+	AbilityUIInstance->AddToViewport();
+	AbilityUIInstance->SetVisibility(ESlateVisibility::Collapsed);
 }
 
 void AShooterPlayerController::BindPostProcessSubSystem()
@@ -99,11 +130,45 @@ void AShooterPlayerController::BindPostProcessSubSystem()
 		if (ULocalPlayerPostProcessSubsystem* PPSubsystem = LP->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
 		{
 			//PPSubsystem->ActivateSlideState();
-			//일단 SetUp만 처리 
 		}
 	}
 }
 
+void AShooterPlayerController::HandleMovementStateChanged(EMovementState NewState)
+{
+	if (ULocalPlayer* LP = GetLocalPlayer())
+	{
+		if (ULocalPlayerUISubSystem* UISubsystem = LP->GetSubsystem<ULocalPlayerUISubSystem>())
+		{
+			//UE_LOG(LogTemp, Error, TEXT("HandleMovementStateChanged %d"), NewState));
+			switch (NewState)
+			{
+			case EMovementState::Jump:
+				UISubsystem->OnRep_PlayerStateChanged(EUIPlayerState::Jump);
+				break;
+			case EMovementState::Slide:
+				UISubsystem->OnRep_PlayerStateChanged(EUIPlayerState::Slide);
+				break;
+			case EMovementState::Walk:
+			case EMovementState::Run:
+			case EMovementState::Crouch:
+				UISubsystem->OnRep_PlayerStateChanged(EUIPlayerState::Move);
+				break;
+			default:
+				UISubsystem->OnRep_PlayerStateChanged(EUIPlayerState::Idle);
+				break;
+			}
+		}
+	}
+}
 
+void AShooterPlayerController::OnWeaponChanged(EWeaponType NewType)
+{
+	UShooterMainWidget* ShooterUI = Cast<UShooterMainWidget>(ShooterUIInstance);
 
-
+	if (ShooterUI)
+	{
+		ShooterUI->OnChangeWeapon(static_cast<EWidgetWeaponType>(NewType));
+	}
+	
+}

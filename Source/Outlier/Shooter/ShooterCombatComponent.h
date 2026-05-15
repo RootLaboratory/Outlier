@@ -44,6 +44,7 @@ public:
 	void TryStartAttack();
 	void TryStopAttack();
 	void HandleWeaponAttackStopped();
+	void HandleAutoReloadRequested();
 
 	void RefreshCombatState();
 	void RefreshWeaponMode();

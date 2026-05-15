@@ -6,7 +6,6 @@
 #include "EventDrivenUI.h"
 #include "HPBarUI.generated.h"
 
-
 /**
  * 
  */
@@ -17,12 +16,10 @@ class TAGDRIVENUI_API UHPBarUI : public UEventDrivenUI
 	
 public:
 
-
 	UFUNCTION(BlueprintNativeEvent, Category = "UI")
 	void ShieldChanged(float InShieldRatio);
 	UFUNCTION(BlueprintNativeEvent, Category = "UI")
 	void HealthChanged(float InHealthRatio);
-
 
 public:
 	UPROPERTY(BlueprintReadWrite, Category = "Data")
@@ -30,5 +27,4 @@ public:
 	UPROPERTY(BlueprintReadWrite, Category = "Data")
 	float CurrentShieldRatio=1 ;
 
-	
 };

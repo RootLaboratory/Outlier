@@ -1,0 +1,49 @@
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/ScreenPass.ush"
+
+Texture2D InputTexture;
+SamplerState InputSampler;
+
+uint bEnabled;
+float StartOffset;
+float2 CAScale;
+
+float2 ConvertScreenUVToLensUV(float2 UV)
+{
+	return (UV - 0.5f) * 2.0f;
+}
+
+float2 ConvertLensUVToScreenUV(float2 LensUV)
+{
+	return LensUV * 0.5f + 0.5f;
+}
+
+void MainPS(
+	FScreenVertexOutput Input,
+	out float4 OutColor : SV_Target0)
+{
+	float2 UV = Input.UV;
+	float4 BaseColor = InputTexture.Sample(InputSampler, UV);
+
+	if (bEnabled == 0)
+	{
+		OutColor = BaseColor;
+		return;
+	}
+
+	float2 LensUV = ConvertScreenUVToLensUV(UV);
+	float4 CAUV = LensUV.xyxy
+		- sign(LensUV).xyxy
+		* saturate(abs(LensUV) - StartOffset).xyxy
+		* CAScale.rrgg;
+
+	float2 UVR = saturate(ConvertLensUVToScreenUV(CAUV.xy));
+	float2 UVG = saturate(ConvertLensUVToScreenUV(CAUV.zw));
+	float2 UVB = UV;
+
+	float4 SampleR = InputTexture.Sample(InputSampler, UVR);
+	float SampleG = InputTexture.Sample(InputSampler, UVG).g;
+	float SampleB = InputTexture.Sample(InputSampler, UVB).b;
+
+	OutColor = float4(SampleR.r, SampleG, SampleB, BaseColor.a);
+}

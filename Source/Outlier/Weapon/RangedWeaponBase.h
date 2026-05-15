@@ -4,11 +4,14 @@
 
 #include "CoreMinimal.h"
 #include "Weapon/WeaponBase.h"
+#include "Engine/DataTable.h"
 #include "RangedWeaponBase.generated.h"
 
 class UProjectionMarkDefinition;
 class UTrailEffectDefinition;
 class ULocalPlayerUISubSystem;
+class USoundDefinition;
+class UWeaponFeedbackDefinition;
 /**
  * 
  */
@@ -22,12 +25,8 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Ammo")
 	int32 MagazineSize = 30;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Ammo")
+	UPROPERTY(ReplicatedUsing = OnRep_CurAmmo, EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Ammo")
 	int32 CurrentAmmo = 30;
-
-	// 잔탄
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Ammo")
-	int32 ReserveAmmo = 90;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Ammo")
 	float ReloadTime = 1.0f;
@@ -37,6 +36,21 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Fire")
 	float RecoilMultiplier = 1.0f;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Recoil")
+	float RecoilPitchAmplitude = 0.0f;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Recoil")
+	float RecoilLocationXAmplitude = 0.0f;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Recoil")
+	float RecoilLocationYAmplitude = 0.0f;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Recoil")
+	float RecoilFovAmplitude = 0.0f;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Recoil")
+	float RecoilRecoverySpeed = 0.0f;
 
 	// Bloom : 탄퍼짐
 
@@ -64,6 +78,9 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon|Ammo")
 	uint8 bIsReloading : 1 = false;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon|Ammo")
+	uint8 bIsAiming : 1 = false;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon|Fire")
 	uint8 bAttackOnCooldown : 1 = false;
 
@@ -71,16 +88,66 @@ protected:
 	uint8 bOnReuseCooldown : 1 = false;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Decal")
-	TSubclassOf<UProjectionMarkDefinition> Decal;
+	TObjectPtr<UProjectionMarkDefinition> WeaponDecal;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Effect")
-	TSubclassOf<UTrailEffectDefinition> Effect;
+	TObjectPtr<UTrailEffectDefinition> WeaponMuzzle; 
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Effect")
+	TObjectPtr<UTrailEffectDefinition> WeaponTrail; 
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sound")
+	TObjectPtr<USoundDefinition> GunSound; 
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Data")
+	TObjectPtr<UDataTable> WeaponBloomTable;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Data")
+	FName BloomProfileId;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Data")
+	TObjectPtr<UDataTable> WeaponProjectileTable;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Data")
+	FName ProjectileProfileId;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Data")
+	FDataTableRowHandle ProjectileDataRow;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Data")
+	TObjectPtr<UDataTable> WeaponRecoilTable;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Data")
+	FName RecoilProfileId;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Data")
+	FDataTableRowHandle RecoilDataRow;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Data")
+	TObjectPtr<UWeaponFeedbackDefinition> FeedbackDefinition;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Projectile")
+	float ProjectileSpeedCmPerSec = 0.0f;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Projectile")
+	float ProjectileMaxRangeCm = 0.0f;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Projectile")
+	float ProjectileStunTime = 0.0f;
 
 	FTimerHandle AutoFireTimerHandle;
 	FTimerHandle AttackCooldownTimerHandle;
 	FTimerHandle ReuseCooldownTimerHandle;
+
+protected:
+	virtual void InitializeFromDataTables() override;
+
+	virtual void InitializeBloomFromDataTable();
+	virtual void InitializeRecoilFromDataTable();
+	virtual void InitializeProjectileFromDataTable();
+	virtual void ApplyFeedbackDefinition();
+
+	void RefreshBloomSettingsFromState();
 
 	void HandleAutoFire();
 	void StartAttackCooldown();
@@ -89,6 +156,9 @@ protected:
 	void FinishReuseCooldown();
 
 public:
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const;
+	virtual void OnEquipped(ACharacter* NewOwner) override;
+
 	virtual bool CanAttack() const override;
 	virtual void StartAttack() override;
 	virtual void StopAttack() override;
@@ -106,7 +176,7 @@ public:
 	virtual void RecoverBloom(float DeltaTime);
 	virtual float GetCurrentSpread() const;
 
-	virtual void SetAiming(bool Aimming);
+	virtual void SetAiming(bool bAiming);
 
 	UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
 	bool IsReloading() const { return bIsReloading; }
@@ -120,15 +190,22 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Weapon|Cooldown")
 	float GetReuseCooldown() const { return ReuseCooldown; }
 
+	UFUNCTION()
+	void OnRep_CurAmmo();
+
 protected:
+	void UpdateLocalAmmoUI() const;
+	virtual void OnRep_EquippedState() override;
+
+	UFUNCTION(Client, Unreliable)
+	void ClientNotifyShotFired();
 
 	UFUNCTION(NetMulticast, Unreliable)
-	void MulticastPlayFireFX(FVector_NetQuantize TraceEnd, bool bHit);
+	void MulticastPlayFireFX(FVector_NetQuantize TraceEnd,  AActor* Hit);
 
-	void PlayThirdPersonFireFX(FVector TraceEnd, bool bHit);
+	void PlayThirdPersonFireFX(FVector TraceEnd,  AActor* Hit);
 
-	void PlayFirstPersonFireFX(FVector TraceEnd, bool bHit);
+	void PlayFirstPersonFireFX(FVector TraceEnd,  AActor* Hit);
 
-
-	ULocalPlayerUISubSystem* GetLocalSubsystem(); //Helper
+	ULocalPlayerUISubSystem* GetLocalUISubsystem() const; //Helper
 };
