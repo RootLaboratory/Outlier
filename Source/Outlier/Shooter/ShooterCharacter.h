@@ -9,7 +9,6 @@
 
 class UInputAction;
 struct FInputActionValue;
-class UShooterInputConfig;
 class AWeaponBase;
 class USceneCaptureComponent2D;
 class UShooterHealthComponent;
@@ -20,6 +19,7 @@ enum class EWeaponType : uint8;
 class UAnimMontage;
 class UCurveFloat;
 class UCurveVector;
+class APartnerCharacter;
 
 UENUM(BlueprintType)
 enum class EMovementState : uint8
@@ -104,11 +104,6 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UShooterMovementComponent> MovementComponent;
 
-	// Config / Tunables
-	/** Input Config */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
-	TObjectPtr<UShooterInputConfig> InputConfig;
-
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Health")
 	float MaxHP = 100.0f;
 
@@ -117,9 +112,6 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, Category = "Movement")
 	float SprintSpeed = 600.0f;
-
-	UPROPERTY(EditDefaultsOnly, Category = "Status")
-	float InteractRange = 100.0f;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat")
 	float LeanInterpSpeed = 8.0f;
@@ -204,7 +196,6 @@ protected:
 	uint8 bIsEquipping : 1 = false;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
-
 	EShooterAbility ShooterAbility = EShooterAbility::None;
 
 	// Lean Runtime Data
@@ -261,6 +252,29 @@ protected:
 	// Timers
 	FTimerHandle LeanUpdateTimerHandle;
 
+	FTimerHandle PartnerShieldTimerHandle;
+
+	UPROPERTY(ReplicatedUsing = OnRep_CurShield, EditAnywhere, BlueprintReadWrite, Category = "Shield")
+	float CurShield = 100.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shield")
+	float MaxShield = 100.0f;
+
+	UPROPERTY(ReplicatedUsing = OnRep_CurPartnerShield, EditAnywhere, BlueprintReadWrite, Category = "Shield")
+	float CurPartnerShield = 100.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shield")
+	float MaxPartnerShield = 100.0f;
+
+	float PartnerShieldElapsedTime = 0.0f;
+
+	float PartnerShieldDuration = 0.0f;
+
+	UPROPERTY()
+	TObjectPtr<APartnerCharacter> CachedPartnerCharacter;
+
+	bool bSuitDisabledByPartnerBoundary = false;
+
 protected:
 	// Engine Lifecycle
 	virtual void BeginPlay() override;
@@ -305,6 +319,12 @@ public:
 	UFUNCTION()
 	void OnRep_MovementState();
 
+	UFUNCTION()
+	void OnRep_CurShield();
+
+	UFUNCTION()
+	void OnRep_CurPartnerShield();
+
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual void EquipWeapon(AWeaponBase* Weapon) override;
 
@@ -316,12 +336,18 @@ public:
 	bool CanAimInCurrentState() const;
 	bool CanReloadInCurrentState() const;
 	bool CanFireInCurrentState() const;
+	virtual bool CanInteract() const override;
 
 	bool WantsToAim() const;
 	bool IsAiming() const;
 	bool IsSliding() const;
 	bool IsSprinting() const;
 	bool IsSlidingCanceled() const;
+
+	void SetPartnerCharacter(APartnerCharacter* NewPartner);
+	void SetSuitDisabledByPartnerBoundary(bool bDisabled);
+
+	void ApplyPartnerShield(float Amount, float Duration);
 
 	UFUNCTION(BlueprintPure)
 	float GetCurrentLeanAlpha() const { return CurrentLeanAlpha; }
@@ -356,15 +382,13 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Animation|Notify")
 	void HandleReloadCommitNotify();
 
-	/** Handles jump pressed inputs from either controls or UI interfaces */
-	UFUNCTION(BlueprintCallable, Category="Input")
-	virtual void DoJumpStart();
+	void DoJumpStart();
 
-	/** Handles jump pressed inputs from either controls or UI interfaces */
-	UFUNCTION(BlueprintCallable, Category="Input")
-	virtual void DoJumpEnd();
+	void DoJumpEnd();
 
 protected:
+	void UpdatePartnerShieldDecay();
+
 	// Input Handlers
 	virtual void TryStartAttack() override;
 	virtual void TryStopAttack() override;
@@ -383,7 +407,6 @@ protected:
 
 	void HandleCrouchToggled();
 
-	void TryInteract();
 	void TryOpenSuitMenu();
 	void TryHandleSuitMenuHover();
 	void TryCloseSuitMenu();
@@ -393,9 +416,6 @@ protected:
 	void TryLean(const FInputActionValue& Value);
 
 	// Server RPC
-	UFUNCTION(Server, Reliable)
-	void ServerInteract(AActor* TargetActor);
-
 	UFUNCTION(Server, Reliable)
 	void ServerStartAttack();
 

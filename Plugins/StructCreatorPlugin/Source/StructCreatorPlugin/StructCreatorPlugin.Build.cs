@@ -36,6 +36,8 @@ public class StructCreatorPlugin : ModuleRules
 			{
 				"Projects",
 				"DesktopPlatform",
+				"GameProjectGeneration",
+				"SourceCodeAccess",
 				"InputCore",
 				"EditorFramework",
 				"UnrealEd",

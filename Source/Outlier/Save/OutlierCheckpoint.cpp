@@ -1,10 +1,10 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 
-#include "OutlierCheckpoint.h"
-#include "Shooter/ShooterCharacter.h"
+#include "Save/OutlierCheckpoint.h"
 #include "OutlierGameMode.h"
 #include "Components/BoxComponent.h"
+#include "GameFramework/Pawn.h"
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
 
@@ -41,17 +41,17 @@ FTransform AOutlierCheckpoint::GetSpawnTransform() const
 	return SpawnPoint ? SpawnPoint->GetComponentTransform() : GetActorTransform();
 }
 
-void AOutlierCheckpoint::NotifyActorBeginOverlap(AActor* OtherActor)
+void AOutlierCheckpoint::NotifyActorEndOverlap(AActor* OtherActor)
 {
-	Super::NotifyActorBeginOverlap(OtherActor);
+	Super::NotifyActorEndOverlap(OtherActor);
 
 	if (!HasAuthority())
 	{
 		return;
 	}
 
-	AShooterCharacter* ShooterCharacter = Cast<AShooterCharacter>(OtherActor);
-	if (!ShooterCharacter)
+	APawn* Pawn = Cast<APawn>(OtherActor);
+	if (!Pawn)
 	{
 		return;
 	}
@@ -59,6 +59,6 @@ void AOutlierCheckpoint::NotifyActorBeginOverlap(AActor* OtherActor)
 	AOutlierGameMode* GM = GetWorld()->GetAuthGameMode<AOutlierGameMode>();
 	if (GM)
 	{
-		GM->RegisterCheckpoint(ShooterCharacter, this);
+		GM->RegisterCheckpoint(Pawn->GetController(), this);
 	}
 }

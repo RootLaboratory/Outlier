@@ -1,0 +1,49 @@
+// Fill out your copyright notice in the Description page of Project Settings.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "FirstPerson/FirstPersonPlayerController.h"
+#include "PartnerPlayerController.generated.h"
+
+class APartnerCharacter;
+/**
+ * 
+ */
+UCLASS()
+class OUTLIER_API APartnerPlayerController : public AFirstPersonPlayerController
+{
+	GENERATED_BODY()
+
+protected:
+	/** Pawn class used when respawning the player. */
+	UPROPERTY(EditAnywhere, Category = "Partner|Respawn")
+	TSubclassOf<APartnerCharacter> CharacterClass;
+
+	/** Tag applied to the possessed player pawn. */
+	UPROPERTY(EditAnywhere, Category = "Partner|Player")
+	FName PartnerPawnTag = FName("Partner");
+
+	/** Gameplay initialization */
+	virtual void BeginPlay() override;
+
+	/** Input mapping context setup */
+	virtual void SetupInputComponent() override;
+
+	/** Pawn initialization */
+	virtual void OnPossess(APawn* InPawn) override;
+
+	void CleanupPossessedShooterWeapons();
+
+	virtual void BindMainUI() override;
+
+	virtual void BindPostProcessSubSystem() override;
+
+	// UI 관련
+	// 총알
+	// 피격 등등	
+public:
+	APartnerPlayerController();
+	
+	
+};

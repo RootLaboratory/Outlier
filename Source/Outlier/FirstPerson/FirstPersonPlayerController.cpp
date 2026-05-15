@@ -6,7 +6,10 @@
 #include "Engine/LocalPlayer.h"
 #include "InputMappingContext.h"
 #include "FirstPersonPlayerCameraManager.h"
+#include "OutlierGameMode.h"
+#include "Drone/Partner/PartnerCharacter.h"
 #include "Outlier.h"
+#include "Shooter/ShooterCharacter.h"
 
 AFirstPersonPlayerController::AFirstPersonPlayerController()
 {
@@ -18,8 +21,23 @@ AFirstPersonPlayerController::AFirstPersonPlayerController()
 void AFirstPersonPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
+	InitializeOutlierPlayerState();
 }
 
+void AFirstPersonPlayerController::OnPossess(APawn* InPawn)
+{
+	Super::OnPossess(InPawn);
+
+	InitializeOutlierPlayerState();
+	RegisterCurrentPawnWithPlayerState();
+}
+
+void AFirstPersonPlayerController::OnRep_PlayerState()
+{
+	Super::OnRep_PlayerState();
+
+	InitializeOutlierPlayerState();
+}
 
 void AFirstPersonPlayerController::SetupInputComponent()
 {
@@ -56,3 +74,51 @@ void AFirstPersonPlayerController::BindPostProcessSubSystem()
 {
 }
 
+void AFirstPersonPlayerController::InitializeOutlierPlayerState()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	AOutlierPlayerState* OutlierPlayerState = GetPlayerState<AOutlierPlayerState>();
+	if (!OutlierPlayerState)
+	{
+		return;
+	}
+
+	OutlierPlayerState->SetPlayerRole(DefaultPlayerRole);
+	OutlierPlayerState->SetPairId(DefaultPairId);
+}
+
+void AFirstPersonPlayerController::RegisterCurrentPawnWithPlayerState()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	AOutlierPlayerState* OutlierPlayerState = GetPlayerState<AOutlierPlayerState>();
+	if (!OutlierPlayerState)
+	{
+		return;
+	}
+
+	if (AShooterCharacter* ShooterCharacter = Cast<AShooterCharacter>(GetPawn()))
+	{
+		OutlierPlayerState->SetPlayerRole(EOutlierPlayerRole::Shooter);
+		OutlierPlayerState->SetShooterCharacter(ShooterCharacter);
+	}
+	else if (APartnerCharacter* PartnerCharacter = Cast<APartnerCharacter>(GetPawn()))
+	{
+		OutlierPlayerState->SetPlayerRole(EOutlierPlayerRole::Partner);
+		OutlierPlayerState->SetPartnerCharacter(PartnerCharacter);
+	}
+
+	if (AOutlierGameMode* GameMode = GetWorld()
+		? GetWorld()->GetAuthGameMode<AOutlierGameMode>()
+		: nullptr)
+	{
+		GameMode->RefreshPairLinks(OutlierPlayerState);
+	}
+}
