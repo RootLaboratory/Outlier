@@ -5,6 +5,8 @@
 #include "CoreMinimal.h"
 #include "ShooterAbility.generated.h"
 
+//GamePlaytag로 변경. 사용 안 함. 
+
 UENUM(BlueprintType)
 enum class EShooterAbility : uint8
 {

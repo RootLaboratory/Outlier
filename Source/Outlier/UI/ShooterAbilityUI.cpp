@@ -1,7 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "ShooterAbilityUI.h"
-#include "UI/ShooterAbilitySectionUI.h"
+#include "UI/AbilityIconUI.h"
 #include "Blueprint/WidgetLayoutLibrary.h"
 #include "Components/Border.h"
 #include "Framework/Application/SlateApplication.h"
@@ -11,106 +11,89 @@ void UShooterAbilityUI::NativeConstruct()
 	Super::NativeConstruct();
 
 	AbilitySections.Reset();
-	AbilitySections.SetNum(static_cast<int32>(EShooterAbility::None) + 1);
 
-	AbilitySections[static_cast<int32>(EShooterAbility::Teleport)] = IconTeleport;
-	AbilitySections[static_cast<int32>(EShooterAbility::Teleport)]->SetAbility(EShooterAbility::Teleport);
+	RightAbilityTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.Teleport")), false);
+	BottomAbilityTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.Shield")), false);
+	LeftAbilityTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.Stealth")), false);
+	TopAbilityTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.Stimpack")), false);
 
-	AbilitySections[static_cast<int32>(EShooterAbility::Teleport)]->AbilityUnLock();
+	if (!RightAbilityTag.IsValid())
+	{
+		UE_LOG(LogTemp, Error, TEXT("Missing GameplayTag: Ability.Shooter.Teleport"));
+	}
+	if (!BottomAbilityTag.IsValid())
+	{
+		UE_LOG(LogTemp, Error, TEXT("Missing GameplayTag: Ability.Shooter.Shield"));
+	}
+	if (!LeftAbilityTag.IsValid())
+	{
+		UE_LOG(LogTemp, Error, TEXT("Missing GameplayTag: Ability.Shooter.Stealth"));
+	}
+	if (!TopAbilityTag.IsValid())
+	{
+		UE_LOG(LogTemp, Error, TEXT("Missing GameplayTag: Ability.Shooter.Stimpack"));
+	}
 
-	AbilitySections[static_cast<int32>(EShooterAbility::Shield)] = IconShield;
-	AbilitySections[static_cast<int32>(EShooterAbility::Shield)]->SetAbility(EShooterAbility::Shield);
+	RegisterAbilityIcon(IconTeleport, RightAbilityTag, true);
+	RegisterAbilityIcon(IconShield, BottomAbilityTag, true);
+	RegisterAbilityIcon(IconStealth, LeftAbilityTag, true);
+	RegisterAbilityIcon(IconStimpack, TopAbilityTag, true);
 
-
-	AbilitySections[static_cast<int32>(EShooterAbility::Stealth)] = IconStealth;
-	AbilitySections[static_cast<int32>(EShooterAbility::Stealth)]->SetAbility(EShooterAbility::Stealth);
-
-	AbilitySections[static_cast<int32>(EShooterAbility::Stimpack)] = IconStimpack;
-	AbilitySections[static_cast<int32>(EShooterAbility::Stimpack)]->SetAbility(EShooterAbility::Stimpack);
-
-	AbilitySections[static_cast<int32>(EShooterAbility::None)] = nullptr;
-
-	if (BigCircle && M_ShooterAbilityUI)
+	if (BigCircle && CenterCircle && M_ShooterAbilityUI)
 	{
 		BigCircle->SetBrushFromMaterial(M_ShooterAbilityUI);
 		ShooterAbilityMID = BigCircle->GetDynamicMaterial();
 
-
 		const FVector2D ASize = BigCircle->GetCachedGeometry().GetLocalSize();
 		const FVector2D BSize = CenterCircle->GetCachedGeometry().GetLocalSize();
-
-		const float RadiusUV = (BSize.X * 0.5f) / ASize.X; //큰원의 영역에서, 작은 원의 반지름 영역.
+		const float RadiusUV = (BSize.X * 0.5f) / ASize.X;
 
 		ShooterAbilityMID->SetScalarParameterValue(TEXT("CutRadius"), RadiusUV);
 		ShooterAbilityMID->SetScalarParameterValue(TEXT("CutFeather"), 2.f / ASize.X);
 	}
-	//UE_LOG(LogTemp, Warning, TEXT("ViewportScale: %f"), UWidgetLayoutLibrary::GetViewportScale(this));
-
 }
 
 void UShooterAbilityUI::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 {
 	Super::NativeTick(MyGeometry, InDeltaTime);
 
-	for (UShooterAbilitySectionUI* Section : AbilitySections)
+	for (const TPair<FGameplayTag, TObjectPtr<UAbilityIconUI>>& AbilitySection : AbilitySections)
 	{
+		UAbilityIconUI* Section = AbilitySection.Value;
 		if (!Section || !Section->IsCooldowning())
 		{
 			continue;
 		}
 
 		Section->UpdateCoolTime(InDeltaTime);
-
 	}
 }
 
-bool UShooterAbilityUI::TryGetHoveredAbility(EShooterAbility& OutAbility)
+bool UShooterAbilityUI::TryGetHoveredAbility(FGameplayTag& OutAbilityTag)
 {
+	OutAbilityTag = FGameplayTag();
+
 	const float AngleDeg = CalculateCoordinate();
-
-	const TCHAR* DirectionText = TEXT("None");
-
-	if (AngleDeg >= -45.f && AngleDeg < 45.f)
+	const FGameplayTag HoveredAbilityTag = GetAbilityTagByAngle(AngleDeg);
+	UAbilityIconUI* HoveredIcon = GetAbilityIcon(HoveredAbilityTag);
+	if (!HoveredIcon || !HoveredIcon->IsUnLock())
 	{
-		if (AbilitySections[static_cast<int32>(EShooterAbility::Teleport)] || AbilitySections[static_cast<int32>(EShooterAbility::Teleport)]->IsUnLock())
-		{
-			AbilitySections[static_cast<int32>(EShooterAbility::Teleport)]->SetCoolTime(5.0f);
-			OutAbility = EShooterAbility::Teleport;
-			DirectionText = TEXT("RIGHT");
-		}
-	}
-	else if (AngleDeg >= 45.f && AngleDeg < 135.f)
-	{
-		if (AbilitySections[static_cast<int32>(EShooterAbility::Shield)] || AbilitySections[static_cast<int32>(EShooterAbility::Shield)]->IsUnLock())
-		{
-			OutAbility = EShooterAbility::Shield;
-			DirectionText = TEXT("BOTTOM");
-		}
-	}
-	else if (AngleDeg >= 135.f || AngleDeg < -135.f)
-	{
-		if (AbilitySections[static_cast<int32>(EShooterAbility::Stealth)] || AbilitySections[static_cast<int32>(EShooterAbility::Stealth)]->IsUnLock())
-		{
-			OutAbility = EShooterAbility::Stealth;
-			DirectionText = TEXT("LEFT");
-		}
-	}
-	else
-	{
-		if (AbilitySections[static_cast<int32>(EShooterAbility::Stimpack)] || AbilitySections[static_cast<int32>(EShooterAbility::Stimpack)]->IsUnLock())
-		{
-			OutAbility = EShooterAbility::Stimpack;
-			DirectionText = TEXT("TOP");
-		}
+		return false;
 	}
 
-	
+	OutAbilityTag = HoveredAbilityTag;
+
+	//
+	if (HoveredAbilityTag == RightAbilityTag)
+	{
+		HoveredIcon->SetCoolTime(5.0f);
+	}
+
 	return true;
 }
 
 void UShooterAbilityUI::TryHovering()
 {
-
 	if (!ShooterAbilityMID)
 	{
 		return;
@@ -118,44 +101,86 @@ void UShooterAbilityUI::TryHovering()
 
 	const float AngleDeg = CalculateCoordinate();
 
-	float OutMaterialParameter = 0;
-	const TCHAR* DirectionText = TEXT("None");
-
 	ShooterAbilityMID->SetScalarParameterValue(TEXT("Direction"), -1);
-	
+
 	if (AngleDeg >= -45.f && AngleDeg < 45.f)
 	{
-		if (AbilitySections[static_cast<int32>(EShooterAbility::Teleport)]->IsUnLock())
+		if (IsAbilityUnlocked(RightAbilityTag))
 		{
 			ShooterAbilityMID->SetScalarParameterValue(TEXT("Direction"), 0);
-			DirectionText = TEXT("RIGHT");
 		}
 	}
 	else if (AngleDeg >= 45.f && AngleDeg < 135.f)
 	{
-		if (AbilitySections[static_cast<int32>(EShooterAbility::Shield)]->IsUnLock())
+		if (IsAbilityUnlocked(BottomAbilityTag))
 		{
 			ShooterAbilityMID->SetScalarParameterValue(TEXT("Direction"), 1);
-			DirectionText = TEXT("BOTTOM");
 		}
 	}
 	else if (AngleDeg >= 135.f || AngleDeg < -135.f)
 	{
-		if (AbilitySections[static_cast<int32>(EShooterAbility::Stealth)]->IsUnLock())
+		if (IsAbilityUnlocked(LeftAbilityTag))
 		{
 			ShooterAbilityMID->SetScalarParameterValue(TEXT("Direction"), 2);
-			DirectionText = TEXT("LEFT");
 		}
 	}
-	else 
+	else
 	{
-		if (AbilitySections[static_cast<int32>(EShooterAbility::Stimpack)]->IsUnLock())
+		if (IsAbilityUnlocked(TopAbilityTag))
 		{
 			ShooterAbilityMID->SetScalarParameterValue(TEXT("Direction"), 3);
-			DirectionText = TEXT("TOP");
 		}
 	}
+}
 
+void UShooterAbilityUI::RegisterAbilityIcon(UAbilityIconUI* Icon, const FGameplayTag& AbilityTag, bool bUnlock)
+{
+	if (!Icon || !AbilityTag.IsValid())
+	{
+		return;
+	}
+
+	Icon->AbilityTag = AbilityTag;
+	AbilitySections.Add(AbilityTag, Icon);
+
+	if (bUnlock)
+	{
+		Icon->AbilityUnLock();
+	}
+}
+
+UAbilityIconUI* UShooterAbilityUI::GetAbilityIcon(const FGameplayTag& AbilityTag) const
+{
+	const TObjectPtr<UAbilityIconUI>* Icon = AbilitySections.Find(AbilityTag);
+	return Icon ? Icon->Get() : nullptr;
+}
+
+FGameplayTag UShooterAbilityUI::GetAbilityTagByAngle(float AngleDeg) const
+{
+	if (AngleDeg >= -45.f && AngleDeg < 45.f)
+	{
+		return RightAbilityTag;
+	}
+	if (AngleDeg >= 45.f && AngleDeg < 135.f)
+	{
+		return BottomAbilityTag;
+	}
+	if (AngleDeg >= 135.f || AngleDeg < -135.f)
+	{
+		return LeftAbilityTag;
+	}
+
+	return TopAbilityTag;
+}
+
+bool UShooterAbilityUI::IsAbilityUnlocked(const FGameplayTag& AbilityTag) const
+{
+	if (UAbilityIconUI* Icon = GetAbilityIcon(AbilityTag))
+	{
+		return Icon->IsUnLock();
+	}
+
+	return false;
 }
 
 float UShooterAbilityUI::CalculateCoordinate()

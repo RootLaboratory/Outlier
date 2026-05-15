@@ -4,8 +4,10 @@
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
+#include "GameplayTagContainer.h"
+
 #include "Shooter/Ability/ShooterAbility.h"
-#include "ShooterAbilitySectionUI.generated.h"
+#include "AbilityIconUI.generated.h"
 
 /**
  * 
@@ -13,9 +15,10 @@
 
 class UImage;
 class UBorder;
+class UTextBlock;
 
 UCLASS()
-class OUTLIER_API UShooterAbilitySectionUI : public UUserWidget
+class OUTLIER_API UAbilityIconUI: public UUserWidget
 {
 	GENERATED_BODY()
 	
@@ -26,8 +29,8 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "MaterialStandard")
 	bool IsUnLock();
-	const EShooterAbility& GetAbility();
-	void SetAbility(EShooterAbility InAbility);
+	FGameplayTag& GetAbilityTag();
+	void SetAbility(FGameplayTag InAbility);
 	void AbilityUnLock();
 
 public:
@@ -41,16 +44,21 @@ public:
 	TObjectPtr<UImage> AbilityIcon;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Ability CoolTime UI|Material")
-	TObjectPtr<UMaterialInterface> M_ShooterAbilityCoolTimeUI;
+	TObjectPtr<UMaterialInterface> M_AbilityCoolTimeUI;
 
 	UPROPERTY(Transient)
-	TObjectPtr<UMaterialInstanceDynamic> ShooterAbilityMID;
+	TObjectPtr<UMaterialInstanceDynamic> AbilityMID;
 
 	//Image -> Material; 변경 시, 기존 Brush
 	FSlateBrush DefaultIconBrush;
 
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ability", meta = (Categories = "Ability"))
+	FGameplayTag AbilityTag;
+
 private:
-	EShooterAbility BindAbility = EShooterAbility::None;
+	//EShooterAbility BindAbility = EShooterAbility::None;
+
 	uint8 bAbilityUnlocked : 1 = false;
 	uint8 bCooldowning : 1 = false;
 

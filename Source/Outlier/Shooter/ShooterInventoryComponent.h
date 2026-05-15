@@ -65,6 +65,9 @@ public:
 	void SelectWeaponSlot(EWeaponSlot Slot);
 
 	void CleanupOwnedWeapons();
+public:
+
+	
 
 private:
 	static EWeaponSlot GetSlotForWeaponType(EWeaponType WeaponType);

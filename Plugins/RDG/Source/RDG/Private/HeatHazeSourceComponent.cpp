@@ -45,6 +45,7 @@ bool UHeatHazeSourceComponent::BuildSourceData(FHeatHazeSourceData& OutData) con
 		return false;
 	}
 
+	OutData.Shape = Shape;
 	OutData.Transform = FTransform3f(GetComponentTransform());
 	OutData.Size = FVector2f(BoxExtent.X, BoxExtent.Y);
 	OutData.Strength = Strength;
@@ -59,4 +60,3 @@ bool UHeatHazeSourceComponent::BuildSourceData(FHeatHazeSourceData& OutData) con
 
 	return true;
 }
-
