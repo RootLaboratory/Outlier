@@ -191,6 +191,7 @@ void FRDGModule::ShutdownModule()
 	DebugWindowManager.Reset();
 }
 
+//Chromatic Aberration;
 void FRDGModule::HandleBackBufferReadyRDG(FRDGBuilder& GraphBuilder, SWindow& Window, FRDGTexture* BackBuffer)
 {
 	if (!BackBuffer)
