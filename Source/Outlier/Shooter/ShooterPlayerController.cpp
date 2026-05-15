@@ -9,6 +9,8 @@
 #include "LocalPlayerPostProcessSubsystem.h"
 #include "UI/ShooterAbilityUI.h"
 #include "ShooterCharacter.h"
+#include "ShooterInventoryComponent.h"
+#include "ShooterMainWidget.h"
 #include "OutlierGameMode.h"
 
 void AShooterPlayerController::BeginPlay()
@@ -22,6 +24,7 @@ void AShooterPlayerController::BeginPlay()
 	if (ShooterCharacter)
 	{
 		ShooterCharacter->OnMovementStateChanged.AddDynamic(this, &AShooterPlayerController::HandleMovementStateChanged);
+		ShooterCharacter->OnWeaponChanged.AddDynamic(this, &AShooterPlayerController::OnWeaponChanged);
 	}
 }
 
@@ -51,6 +54,9 @@ void AShooterPlayerController::OnPossess(APawn* InPawn)
 		// Mark the currently possessed pawn so gameplay systems can identify it.
 		ShooterCharacter->Tags.Add(PlayerPawnTag);
 	}
+
+
+
 }
 
 void AShooterPlayerController::CleanupPossessedShooterWeapons()
@@ -149,4 +155,15 @@ void AShooterPlayerController::HandleMovementStateChanged(EMovementState NewStat
 			}
 		}
 	}
+}
+
+void AShooterPlayerController::OnWeaponChanged(EWeaponType NewType)
+{
+	UShooterMainWidget* ShooterUI = Cast<UShooterMainWidget>(ShooterUIInstance);
+
+	if (ShooterUI)
+	{
+		ShooterUI->OnChangeWeapon(static_cast<EWidgetWeaponType>(NewType));
+	}
+	
 }

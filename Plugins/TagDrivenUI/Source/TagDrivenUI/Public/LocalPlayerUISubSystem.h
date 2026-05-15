@@ -38,7 +38,7 @@ public:
 	void OnRep_Aiming();
 	void OnRep_AimingOff();
 	void OnRep_AttackSign(EAttackSign InType);
-	void OnRep_ShootCrosshairChanged();
+	void OnRep_ShootCrosshairChanged(float InFireRate);
 public:
 
 	void PartnerCameraBind(USceneCaptureComponent2D* InCaptureComponent2D);

@@ -8,6 +8,8 @@
 #include "UI/ShooterAbilityUI.h"
 #include "ShooterPlayerController.generated.h"
 
+
+
 class AShooterCharacter;
 /**
  * Basic player controller class for shooter gameplay.
@@ -45,6 +47,9 @@ protected:
 
 	UFUNCTION()
 	void HandleMovementStateChanged(EMovementState NewState);
+
+	UFUNCTION()
+	void OnWeaponChanged(EWeaponType NewType);
 
 	// UI 관련
 	// 총알

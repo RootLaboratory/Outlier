@@ -303,7 +303,7 @@ void ARangedWeaponBase::ClientNotifyShotFired_Implementation()
 
 	if (Shooter->IsLocallyControlled())
 	{
-		GetLocalUISubsystem()->OnRep_ShootCrosshairChanged();
+		GetLocalUISubsystem()->OnRep_ShootCrosshairChanged(ReuseCooldown);
 	}
 }
 
