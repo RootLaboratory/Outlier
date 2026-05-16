@@ -58,6 +58,15 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Pair")
 	int32 GetPairId() const { return PairId; }
 
+	UFUNCTION(BlueprintCallable, Category = "Pair")
+	void SetArenaId(int32 NewArenaId);
+
+	UFUNCTION(BlueprintPure, Category = "Pair")
+	int32 GetArenaId() const { return ArenaId; }
+
+	UPROPERTY(Replicated)
+	int32 ArenaId = INDEX_NONE;
+
 protected:
 	UPROPERTY(Replicated)
 	EOutlierPlayerRole PlayerRole = EOutlierPlayerRole::None;

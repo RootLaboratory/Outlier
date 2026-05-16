@@ -20,5 +20,5 @@ public:
 
 protected:
 	virtual void ProcessViewRotation(float DeltaTime, FRotator& OutViewRotation, FRotator& OutDeltaRot) override;
-	
+	virtual void UpdateViewTarget(FTViewTarget& OutVT, float DeltaTime) override;
 };

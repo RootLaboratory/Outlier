@@ -3,10 +3,12 @@
 
 #include "Drone/Partner/PartnerPlayerController.h"
 #include "Drone/Partner/PartnerCharacter.h"
+#include "FirstPerson/FirstPersonPlayerCameraManager.h"
 
 APartnerPlayerController::APartnerPlayerController()
 {
 	DefaultPlayerRole = EOutlierPlayerRole::Partner;
+	PlayerCameraManagerClass = AFirstPersonPlayerCameraManager::StaticClass();
 }
 
 void APartnerPlayerController::BeginPlay()
@@ -19,6 +21,15 @@ void APartnerPlayerController::BeginPlay()
 		TEXT("[OutlierInputDebug] PartnerPC BeginPlay: %s Pawn=%s"),
 		*GetNameSafe(this),
 		*GetNameSafe(GetPawn())
+	);
+
+	UE_LOG(
+		LogTemp,
+		Warning,
+		TEXT("[OutlierCameraFeel] PartnerPC CameraManager: Class=%s Instance=%s Expected=%s"),
+		*GetNameSafe(PlayerCameraManagerClass),
+		*GetNameSafe(PlayerCameraManager),
+		*GetNameSafe(AFirstPersonPlayerCameraManager::StaticClass())
 	);
 
 	BindMainUI();

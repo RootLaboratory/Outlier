@@ -113,10 +113,34 @@ protected:
 	float RotationLagRecoverSpeed = 10.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Control")
+	float CameraPitchOnMove = 5.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Control")
 	float CameraRollOnTurn = 2.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Control")
 	float CameraRollInterpSpeed = 8.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Control")
+	float MeshInertialTiltScale = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Control")
+	float CameraInertialTiltScale = 0.6f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Control")
+	float ViewModelInertialTiltScale = 0.8f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Control")
+	float InertialTiltReboundRatio = 0.5f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Control")
+	float InertialTiltReboundMaxScale = 1.5f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Control")
+	float InertialTiltReboundInterpMultiplier = 2.5f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Control")
+	float InertialTiltRecoverInterpMultiplier = 1.8f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Control")
 	TSoftObjectPtr<UCurveFloat> TurnFeelCurve;
@@ -257,8 +281,6 @@ protected:
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Survival")
 	int32 CurrentHitCount = 0;
 
-	float LookRollInput = 0.0f;
-
 	// DataTable
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Data")
 	FDataTableRowHandle DroneMoveDataRow;
@@ -324,6 +346,8 @@ protected:
 	bool CanAcceptInput() const;
 
 	void SetMoveMode(EPartnerMoveMode NewMode);
+	void ApplyMoveMode(EPartnerMoveMode NewMode);
+	bool CanApplyMoveMode(EPartnerMoveMode NewMode) const;
 
 	UFUNCTION(Server, Reliable)
 	void ServerSetMoveMode(EPartnerMoveMode NewMode);
@@ -352,4 +376,10 @@ public:
 	void OnRep_MoveMode();
 
 	void SetShooterCharacter(AShooterCharacter* NewShooter);
+	float GetCurrentInertialCameraPitchDegrees() const;
+	float GetCurrentInertialCameraRollDegrees() const;
+	float GetMaxInertialCameraPitchDegrees() const { return FMath::Max(CameraPitchOnMove, 0.0f); }
+	float GetMaxInertialCameraRollDegrees() const { return FMath::Max(CameraRollOnTurn, 0.0f); }
+
+	void SetMovementState(EDroneMovementState State);
 };

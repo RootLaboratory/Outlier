@@ -134,7 +134,6 @@ void APartnerCharacter::DoMove(float Right, float Forward)
 	if (MovementComponent)
 	{
 		MovementComponent->SetMoveInput(MoveValue);
-		MovementComponent->RefreshMovementState();
 	}
 }
 
@@ -438,11 +437,21 @@ bool APartnerCharacter::CanAcceptInput() const
 
 void APartnerCharacter::SetMoveMode(EPartnerMoveMode NewMode)
 {
-	if (!CanAcceptInput() && NewMode != EPartnerMoveMode::Normal)
+	if (!CanApplyMoveMode(NewMode))
 	{
 		return;
 	}
 
+	ApplyMoveMode(NewMode);
+
+	if (!HasAuthority())
+	{
+		ServerSetMoveMode(NewMode);
+	}
+}
+
+void APartnerCharacter::ApplyMoveMode(EPartnerMoveMode NewMode)
+{
 	if (MoveMode == NewMode)
 	{
 		return;
@@ -450,15 +459,23 @@ void APartnerCharacter::SetMoveMode(EPartnerMoveMode NewMode)
 
 	MoveMode = NewMode;
 
-	if (!HasAuthority())
-	{
-		ServerSetMoveMode(NewMode);
-	}
-
 	if (MovementComponent)
 	{
-		MovementComponent->RefreshTickEnabled();
+		MovementComponent->OnMoveModeChanged(NewMode);
 	}
+}
+
+bool APartnerCharacter::CanApplyMoveMode(EPartnerMoveMode NewMode) const
+{
+	if (!CanAcceptInput() && NewMode != EPartnerMoveMode::Normal)
+	{
+		return false;
+	}
+
+	return NewMode == EPartnerMoveMode::Normal ||
+		NewMode == EPartnerMoveMode::FreeMove ||
+		NewMode == EPartnerMoveMode::SyncMove ||
+		NewMode == EPartnerMoveMode::CameraAssist;
 }
 
 void APartnerCharacter::ServerUseSkill_Implementation(EPartnerSkillType SkillType)
@@ -496,12 +513,12 @@ void APartnerCharacter::ServerHackTarget_Implementation(AActor* TargetActor)
 
 void APartnerCharacter::ServerSetMoveMode_Implementation(EPartnerMoveMode NewMode)
 {
-	MoveMode = NewMode;
-
-	if (MovementComponent)
+	if (!CanApplyMoveMode(NewMode))
 	{
-		MovementComponent->OnMoveModeChanged(NewMode);
+		return;
 	}
+
+	ApplyMoveMode(NewMode);
 }
 
 void APartnerCharacter::EnsurePartnerDataInitialized()
@@ -641,13 +658,6 @@ void APartnerCharacter::LookInput(const FInputActionValue& Value)
 		PC->SetControlRotation(ControlRot);
 	}
 
-	const float TargetRoll = -LookAxis.X * CameraRollOnTurn;
-	LookRollInput = FMath::Clamp(-TargetRoll / FMath::Max(CameraRollOnTurn, KINDA_SMALL_NUMBER), -1.0f, 1.0f);
-
-	if (MovementComponent)
-	{
-		MovementComponent->RefreshTickEnabled();
-	}
 }
 
 APartnerCharacter::APartnerCharacter()
@@ -675,6 +685,10 @@ void APartnerCharacter::OnRep_DroneMovementState()
 
 void APartnerCharacter::OnRep_MoveMode()
 {
+	if (MovementComponent)
+	{
+		MovementComponent->OnMoveModeChanged(MoveMode);
+	}
 }
 
 void APartnerCharacter::SetShooterCharacter(AShooterCharacter* NewShooter)
@@ -690,4 +704,29 @@ void APartnerCharacter::SetShooterCharacter(AShooterCharacter* NewShooter)
 	{
 		SupportComponent->RefreshCharacterRefsFromPlayerState();
 	}
+}
+
+float APartnerCharacter::GetCurrentInertialCameraRollDegrees() const
+{
+	return MovementComponent
+		? MovementComponent->GetCurrentCameraRollDegrees()
+		: 0.0f;
+}
+
+void APartnerCharacter::SetMovementState(EDroneMovementState State)
+{
+	if (MovementState == State)
+	{
+		return;
+	}
+
+	MovementState = State;
+	OnRep_DroneMovementState();
+}
+
+float APartnerCharacter::GetCurrentInertialCameraPitchDegrees() const
+{
+	return MovementComponent
+		? MovementComponent->GetCurrentCameraPitchDegrees()
+		: 0.0f;
 }
