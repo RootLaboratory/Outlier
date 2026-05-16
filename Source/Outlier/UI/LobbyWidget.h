@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
+#include "OutlierPlayerState.h"
 #include "LobbyWidget.generated.h"
 
 /**
@@ -12,10 +13,16 @@
 class UButton;
 class UImage;
 
+// Button에 PC 정보를 받아서, PlayerSTATE에 ENUM BIND;
+// 
+
 UCLASS()
 class OUTLIER_API ULobbyWidget : public UUserWidget
 {
 	GENERATED_BODY()
+public:
+	virtual void NativeConstruct() override;
+	virtual void NativeDestruct() override;
 
 protected:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
@@ -43,5 +50,24 @@ protected:
 	TObjectPtr<UButton> BackButton;
 
 private:
-	
+	UFUNCTION()
+	void HandleShooterSelectClicked();
+
+	UFUNCTION()
+	void HandlePartnerSelectClicked();
+
+	UFUNCTION()
+	void HandleStartButtonClicked();
+
+	UFUNCTION()
+	void HandleBackButtonEvent();
+
+	void HandlePendingLobbyStateChanged(AOutlierPlayerState* ChangedPS);
+
+	void RequestRole(EOutlierPlayerRole DesiredRole);
+	void BindLobbyPlayerStateDelegates();
+	void UnbindLobbyPlayerStateDelegates();
+	AOutlierPlayerState* GetLocalOutlierPlayerState() const;
+	void RefreshRoleSelection();
+
 };

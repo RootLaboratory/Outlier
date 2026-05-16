@@ -211,3 +211,4 @@ void AFirstPersonPlayerController::RegisterCurrentPawnWithPlayerState()
 		GameMode->RefreshPairLinks(OutlierPlayerState);
 	}
 }
+

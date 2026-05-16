@@ -49,10 +49,11 @@ protected:
 	void InitializeOutlierPlayerState();
 	void RegisterCurrentPawnWithPlayerState();
 
+protected:
+
 	UPROPERTY()
 	TObjectPtr<UMainUIBase> ShooterUIInstance;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "UI")
 	TSubclassOf<UMainUIBase> MainUIClass;
-
 };

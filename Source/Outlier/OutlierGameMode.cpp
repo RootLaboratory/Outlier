@@ -165,10 +165,12 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 	FirstPS->SetPairId(PairId);
 	FirstPS->SetArenaId(ArenaId);
 	FirstPS->SetPlayerRole(FirstRole);
+	FirstPS->ClearPendingLobbyState();
 
 	SecondPS->SetPairId(PairId);
 	SecondPS->SetArenaId(ArenaId);
 	SecondPS->SetPlayerRole(SecondRole);
+	SecondPS->ClearPendingLobbyState();
 
 	AController* ShooterController =
 		FirstRole == EOutlierPlayerRole::Shooter

@@ -11,6 +11,14 @@ void UOutlierArenaPoolSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	if (InWorld.GetNetMode() == NM_DedicatedServer ||
 		InWorld.GetNetMode() == NM_ListenServer)
 	{
+		ArenaLevel = TSoftObjectPtr<UWorld>(FSoftObjectPath(TEXT("/Game/Maps/TesttYS.TesttYS")));
+
+		if (!ArenaLevel)
+		{
+			UE_LOG(LogTemp, Error,TEXT("ArenaLevle Faileed"))
+			return;
+		}
+
 		PreloadArenas();
 	}
 }
