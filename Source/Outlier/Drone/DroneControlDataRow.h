@@ -31,6 +31,9 @@ struct OUTLIER_API FDroneControlDataRow : public FTableRowBase
 	float RotationLagRecoverSpeed = 10.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
+	float CameraPitchOnMove = 5.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly)
 	float CameraRollOnTurn = 2.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)

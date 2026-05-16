@@ -4,13 +4,26 @@
 #include "Drone/Partner/PartnerMovementComponent.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Drone/Partner/PartnerCharacter.h"
+#include "Components/SceneComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 
 
 UPartnerMovementComponent::UPartnerMovementComponent()
 {
 	PrimaryComponentTick.bCanEverTick = true;
-	PrimaryComponentTick.bStartWithTickEnabled = false;
+	PrimaryComponentTick.bStartWithTickEnabled = true;
+}
+
+void UPartnerMovementComponent::OnRegister()
+{
+	PrimaryComponentTick.bCanEverTick = true;
+	PrimaryComponentTick.bStartWithTickEnabled = true;
+
+	Super::OnRegister();
+
+	Activate(true);
+	SetComponentTickEnabled(true);
 }
 
 void UPartnerMovementComponent::BeginPlay()
@@ -18,30 +31,59 @@ void UPartnerMovementComponent::BeginPlay()
 	Super::BeginPlay();
 
 	PrimaryComponentTick.bCanEverTick = true;
-	SetComponentTickEnabled(false);
+	PrimaryComponentTick.SetTickFunctionEnable(true);
+	Activate(true);
+	SetComponentTickEnabled(true);
+
+	if (PartnerCharacter && PartnerCharacter->GetMesh())
+	{
+		BaseMeshRelativeRotation = PartnerCharacter->GetMesh()->GetRelativeRotation();
+		bVisualTiltInitialized = true;
+	}
+
+	if (PartnerCharacter && PartnerCharacter->GetFirstPersonViewModelRoot())
+	{
+		BaseViewModelRelativeRotation = PartnerCharacter->GetFirstPersonViewModelRoot()->GetRelativeRotation();
+	}
+
 	RefreshTickEnabled();
 }
 
 void UPartnerMovementComponent::RefreshMovementState()
 {
-	if (!PartnerCharacter)
+	if (!PartnerCharacter || !PartnerCharacter->HasAuthority())
 	{
 		return;
 	}
 
 	EDroneMovementState NewState = EDroneMovementState::Follow;
 
+	if (PartnerCharacter->MoveMode == EPartnerMoveMode::SyncMove ||
+		PartnerCharacter->MoveMode == EPartnerMoveMode::CameraAssist)
+	{
+		NewState = EDroneMovementState::Follow;
+	}
+	else
+	{
+		NewState = EDroneMovementState::Fly;
+	}
+	
+
+	PartnerCharacter->SetMovementState(NewState);
 }
 
 void UPartnerMovementComponent::ApplyCameraAssist()
 {
-	bCameraAssist = true;
+	if (!PartnerCharacter || PartnerCharacter->MoveMode == EPartnerMoveMode::CameraAssist)
+	{
+		return;
+	}
+
 	PartnerCharacter->SetMoveMode(EPartnerMoveMode::CameraAssist);
 }
 
 void UPartnerMovementComponent::StopCameraAssist()
 {
-	bCameraAssist = false;
 	if (PartnerCharacter && PartnerCharacter->MoveMode == EPartnerMoveMode::CameraAssist)
 	{
 		PartnerCharacter->SetMoveMode(EPartnerMoveMode::Normal);
@@ -50,30 +92,40 @@ void UPartnerMovementComponent::StopCameraAssist()
 
 void UPartnerMovementComponent::SetSyncMove(bool SyncMove)
 {
-	if (bSyncMove == SyncMove)
+	if (!PartnerCharacter)
 	{
 		return;
 	}
 
-	bSyncMove = SyncMove;
-	if (PartnerCharacter)
+	const EPartnerMoveMode TargetMode = SyncMove
+		? EPartnerMoveMode::SyncMove
+		: EPartnerMoveMode::Normal;
+
+	if (PartnerCharacter->MoveMode == TargetMode)
 	{
-		PartnerCharacter->SetMoveMode(SyncMove ? EPartnerMoveMode::SyncMove : EPartnerMoveMode::Normal);
+		return;
 	}
+
+	PartnerCharacter->SetMoveMode(TargetMode);
 }
 
 void UPartnerMovementComponent::SetFreeMove(bool FreeMove)
 {
-	if (bFreeMove == FreeMove)
+	if (!PartnerCharacter)
 	{
 		return;
 	}
 
-	bFreeMove = FreeMove;
-	if (PartnerCharacter)
+	const EPartnerMoveMode TargetMode = FreeMove
+		? EPartnerMoveMode::FreeMove
+		: EPartnerMoveMode::Normal;
+
+	if (PartnerCharacter->MoveMode == TargetMode)
 	{
-		PartnerCharacter->SetMoveMode(FreeMove ? EPartnerMoveMode::FreeMove : EPartnerMoveMode::Normal);
+		return;
 	}
+
+	PartnerCharacter->SetMoveMode(TargetMode);
 }
 
 void UPartnerMovementComponent::SetMoveInput(const FVector2D& MoveInput)
@@ -94,36 +146,38 @@ void UPartnerMovementComponent::SetVerticalInput(const float Axis)
 
 void UPartnerMovementComponent::OnMoveModeChanged(EPartnerMoveMode NewMode)
 {
-	if (NewMode == EPartnerMoveMode::SyncMove)
+	if (NewMode == EPartnerMoveMode::SyncMove && PartnerCharacter && PartnerCharacter->HasAuthority())
 	{
 		EnterSyncMove();
 	}
 
+	RefreshMovementState();
 	RefreshTickEnabled();
 }
 
 void UPartnerMovementComponent::RefreshTickEnabled()
 {
 	bool bMovementFeelNeedsTick = false;
-	if (PartnerCharacter && PartnerCharacter->GetFirstPersonCameraRoot())
+	if (PartnerCharacter)
 	{
-		const FRotator CameraRootRot = PartnerCharacter->GetFirstPersonCameraRoot()->GetRelativeRotation();
+		const FRotator MeshRot = PartnerCharacter->GetMesh()
+			? PartnerCharacter->GetMesh()->GetRelativeRotation()
+			: FRotator::ZeroRotator;
+
 		bMovementFeelNeedsTick =
-			!CameraRootRot.IsNearlyZero(0.1f) ||
+			!MeshRot.Equals(BaseMeshRelativeRotation, 0.1f) ||
+			!FMath::IsNearlyZero(CurrentInertialPitch, 0.1f) ||
+			!FMath::IsNearlyZero(CurrentInertialRoll, 0.1f) ||
+			!FMath::IsNearlyZero(CurrentCameraPitch, 0.05f) ||
+			!FMath::IsNearlyZero(CurrentCameraRoll, 0.05f) ||
+			bPitchReboundActive ||
+			bRollReboundActive ||
 			!SmoothedVelocity.IsNearlyZero(1.0f) ||
-			!FMath::IsNearlyZero(PartnerCharacter->LookRollInput, 0.01f);
+			!CurrentMoveInput.IsNearlyZero(0.01f) ||
+			!FMath::IsNearlyZero(VerticalInput, 0.01f);
 	}
 
-	const bool bShouldTick =
-	  PartnerCharacter &&
-	  (
-		PartnerCharacter->MoveMode		== EPartnerMoveMode::SyncMove	  ||
-		PartnerCharacter->MoveMode		== EPartnerMoveMode::CameraAssist ||
-		PartnerCharacter->BoundaryState != EPartnerBoundaryState::Inside  ||
-		!CurrentMoveInput.IsNearlyZero()								  ||
-		!FMath::IsNearlyZero(VerticalInput)								  ||
-		bMovementFeelNeedsTick
-	  );
+	const bool bShouldTick = PartnerCharacter != nullptr;
 
 	SetComponentTickEnabled(bShouldTick);
 }
@@ -137,32 +191,32 @@ void UPartnerMovementComponent::TickComponent(float DeltaTime, ELevelTick TickTy
 		return;
 	}
 
-	if (ShooterCharacter)
+	const bool bCanRunInputMovement =
+		PartnerCharacter->HasAuthority() || PartnerCharacter->IsLocallyControlled();
+
+	const bool bCanRunServerMovement = PartnerCharacter->HasAuthority();
+	const bool bCanRunLocalFeel = PartnerCharacter->IsLocallyControlled();
+
+	if (bCanRunServerMovement && ShooterCharacter)
 	{
 		UpdateBoundaryState();
 	}
 
-	switch (PartnerCharacter->MoveMode)
+	if (bCanRunInputMovement)
 	{
-	case EPartnerMoveMode::Normal:
-		break;
-	case EPartnerMoveMode::FreeMove:
-		break;
-	case EPartnerMoveMode::SyncMove:
-		if (ShooterCharacter)
-		{
-			UpdateSyncMove(DeltaTime);
-		}
-		break;
-	case EPartnerMoveMode::CameraAssist:
-		if (ShooterCharacter)
-		{
-			UpdateCameraAssist(DeltaTime);
-		}
-		break;
+		UpdateInputMovement();
 	}
 
-	UpdateMovementFeel(DeltaTime);
+	if (bCanRunServerMovement)
+	{
+		UpdateServerDrivenMovement(DeltaTime);
+	}
+
+	if (bCanRunLocalFeel)
+	{
+		UpdateMovementFeel(DeltaTime);
+	}
+
 	RefreshTickEnabled();
 }
 
@@ -173,20 +227,25 @@ void UPartnerMovementComponent::ApplyManualMoveInput()
 		return;
 	}
 
+	if (!PartnerCharacter->HasAuthority() && !PartnerCharacter->IsLocallyControlled())
+	{
+		return;
+	}
+
 	switch (PartnerCharacter->MoveMode)
 	{
 	case EPartnerMoveMode::Normal:
-		UpdateNormalMove(0.0f);
+		UpdateNormalMove();
 		break;
 	case EPartnerMoveMode::FreeMove:
-		UpdateFreeMove(0.0f);
+		UpdateFreeMove();
 		break;
 	default:
 		break;
 	}
 }
 
-void UPartnerMovementComponent::UpdateNormalMove(float DeltaTime)
+void UPartnerMovementComponent::UpdateNormalMove()
 {
 	const float CurrentSpeed = PartnerCharacter->bIsAccelerate
 		? PartnerCharacter->BoostSpeed
@@ -210,7 +269,7 @@ void UPartnerMovementComponent::UpdateNormalMove(float DeltaTime)
 	}
 }
 
-void UPartnerMovementComponent::UpdateFreeMove(float DeltaTime)
+void UPartnerMovementComponent::UpdateFreeMove()
 {
 	const FRotator ViewRot = PartnerCharacter->GetControlRotation();
 
@@ -248,19 +307,6 @@ void UPartnerMovementComponent::UpdateSyncMove(float DeltaTime)
 	MoveTowardTargetWithAvoidance(TargetLocation, DeltaTime, PartnerCharacter->SyncMoveInterpSpeed);
 }
 
-void UPartnerMovementComponent::UpdateVerticalMove(float DeltaTime)
-{
-	if (FMath::IsNearlyZero(VerticalInput))
-	{
-		return;
-	}
-
-	FVector VerticalOffset =
-		FVector::UpVector * VerticalInput * PartnerCharacter->VerticalSpeed * DeltaTime;
-
-	PartnerCharacter->AddActorWorldOffset(VerticalOffset, true);
-}
-
 void UPartnerMovementComponent::UpdateCameraAssist(float DeltaTime)
 {
 	if (!ShooterCharacter)
@@ -281,33 +327,56 @@ void UPartnerMovementComponent::UpdateCameraAssist(float DeltaTime)
 		Right	 * LocalOffset.Y +
 		Up		 * LocalOffset.Z;
 
-	FVector NewLocation = FMath::VInterpTo(
-		PartnerCharacter->GetActorLocation(),
-		TargetLocation,
-		DeltaTime,
-		PartnerCharacter->AssistInterpSpeed
-	);
-
 	MoveTowardTargetWithAvoidance(TargetLocation, DeltaTime, PartnerCharacter->AssistInterpSpeed);
 }
 
 void UPartnerMovementComponent::UpdateMovementFeel(float DeltaTime)
 {
-	if (!PartnerCharacter || DeltaTime <= KINDA_SMALL_NUMBER || !PartnerCharacter->GetFirstPersonCameraRoot())
+	if (!CanUpdateMovementFeel(DeltaTime))
 	{
 		return;
 	}
+
+	if (!bVisualTiltInitialized && PartnerCharacter->GetMesh())
+	{
+		BaseMeshRelativeRotation = PartnerCharacter->GetMesh()->GetRelativeRotation();
+		bVisualTiltInitialized = true;
+	}
+
+	const FPartnerMovementKinematics Kinematics = CalculateMovementKinematics(DeltaTime);
+	const FPartnerTiltTarget DesiredTarget = CalculateTiltTargets(Kinematics);
+
+	UpdateInertialTilt(DesiredTarget, Kinematics, DeltaTime);
+	ApplyCameraTilt();
+	ApplyVisualTilt(DeltaTime);
+
+	LastLocation = PartnerCharacter->GetActorLocation();
+}
+
+bool UPartnerMovementComponent::CanUpdateMovementFeel(float DeltaTime) const
+{
+	return PartnerCharacter && DeltaTime > KINDA_SMALL_NUMBER;
+}
+
+FPartnerMovementKinematics UPartnerMovementComponent::CalculateMovementKinematics(float DeltaTime)
+{
+	FPartnerMovementKinematics Result;
 
 	const FVector CurrentLocation = PartnerCharacter->GetActorLocation();
 	if (!bMovementFeelInitialized)
 	{
 		LastLocation = CurrentLocation;
 		bMovementFeelInitialized = true;
-		return;
 	}
 
-	const FVector RawVelocity = (CurrentLocation - LastLocation) / DeltaTime;
-	const FVector Acceleration = (RawVelocity - SmoothedVelocity) / DeltaTime;
+	const FVector LocationVelocity = (CurrentLocation - LastLocation) / DeltaTime;
+	FVector RawVelocity = PartnerCharacter->GetVelocity();
+	if (RawVelocity.IsNearlyZero(1.0f) && !LocationVelocity.IsNearlyZero(1.0f))
+	{
+		RawVelocity = LocationVelocity;
+	}
+
+	Result.Acceleration = (RawVelocity - SmoothedVelocity) / DeltaTime;
 
 	SmoothedVelocity = FMath::VInterpTo(
 		SmoothedVelocity,
@@ -316,65 +385,232 @@ void UPartnerMovementComponent::UpdateMovementFeel(float DeltaTime)
 		PartnerCharacter->RotationLagRecoverSpeed
 	);
 
-	const FVector LocalAcceleration =
-		PartnerCharacter->GetActorTransform().InverseTransformVectorNoScale(Acceleration);
+	Result.Velocity = RawVelocity;
+	Result.LocalVelocity = PartnerCharacter->GetActorTransform().InverseTransformVectorNoScale(RawVelocity);
+	Result.LocalAcceleration = PartnerCharacter->GetActorTransform().InverseTransformVectorNoScale(Result.Acceleration);
+	Result.MassFactor = GetMovementMassFactor();
 
-	const float MassFactor = GetMovementMassFactor();
-	const float AccelScale = PartnerCharacter->RotationLagAmount * 0.002f / MassFactor;
-	const float MaxPitch = 10.0f;
-	const float MaxRoll = 15.0f;
+	const float SpeedReference = FMath::Max(PartnerCharacter->BoostSpeed, PartnerCharacter->MoveSpeed);
+	Result.SpeedAlpha = FMath::Clamp(
+		Result.LocalVelocity.Size() / FMath::Max(SpeedReference, 1.0f),
+		0.0f,
+		1.0f
+	);
+
+	return Result;
+}
+
+FPartnerTiltTarget UPartnerMovementComponent::CalculateTiltTargets(const FPartnerMovementKinematics& Kinematics) const
+{
+	FPartnerTiltTarget Result;
+
+	const float AccelReference = FMath::Max(PartnerCharacter->Acceleration, 1.0f);
+	Result.TiltStrength = FMath::Clamp(PartnerCharacter->RotationLagAmount * 12.5f, 0.1f, 3.0f);
+
+	const float MaxRoll = PartnerCharacter->GetMaxInertialCameraRollDegrees();
+	const float MaxPitch = PartnerCharacter->GetMaxInertialCameraPitchDegrees();
+	Result.EffectiveMaxPitch = MaxPitch / Kinematics.MassFactor;
+	Result.EffectiveMaxRoll = MaxRoll / Kinematics.MassFactor;
+
+	const bool bHasMovementInput =
+		!CurrentMoveInput.IsNearlyZero(0.01f) ||
+		!FMath::IsNearlyZero(VerticalInput, 0.01f);
+	const float PitchResponseScale = bHasMovementInput ? 1.0f : 0.5f;
 
 	const float AccelPitch = FMath::Clamp(
-		-LocalAcceleration.X * AccelScale,
-		-MaxPitch,
-		MaxPitch
+		-Kinematics.LocalAcceleration.X / AccelReference * Result.EffectiveMaxPitch * 0.45f * PitchResponseScale,
+		-Result.EffectiveMaxPitch,
+		Result.EffectiveMaxPitch
 	);
 
 	const float AccelRoll = FMath::Clamp(
-		LocalAcceleration.Y * AccelScale,
-		-MaxRoll,
-		MaxRoll
+		Kinematics.LocalAcceleration.Y / AccelReference * Result.EffectiveMaxRoll,
+		-Result.EffectiveMaxRoll,
+		Result.EffectiveMaxRoll
 	);
 
 	float TurnRoll = 0.0f;
-	if (!RawVelocity.IsNearlyZero(1.0f))
+	if (!Kinematics.LocalVelocity.IsNearlyZero(20.0f))
 	{
-		const FVector VelocityDir = RawVelocity.GetSafeNormal2D();
-		const FVector ForwardDir = PartnerCharacter->GetActorForwardVector().GetSafeNormal2D();
-
-		if (!VelocityDir.IsNearlyZero() && !ForwardDir.IsNearlyZero())
+		const float RollDirectionScale = CurrentMoveInput.Y < -0.2f ? -1.0f : 1.0f;
+		const FVector LocalVelocityDir = Kinematics.LocalVelocity.GetSafeNormal();
+		FVector DesiredLocalDirection(CurrentMoveInput.Y, CurrentMoveInput.X, VerticalInput * 0.35f);
+		if (!DesiredLocalDirection.IsNearlyZero())
 		{
-			const float Dot = FMath::Clamp(FVector::DotProduct(ForwardDir, VelocityDir), -1.0f, 1.0f);
-			const float CrossZ = FVector::CrossProduct(ForwardDir, VelocityDir).Z;
-
-			TurnRoll = FMath::RadiansToDegrees(FMath::Acos(Dot)) * CrossZ * 0.25f / MassFactor;
+			DesiredLocalDirection.Normalize();
+			const float DirectionChange = FMath::Clamp(
+				DesiredLocalDirection.Y - LocalVelocityDir.Y,
+				-1.0f,
+				1.0f
+			);
+			TurnRoll += DirectionChange * Result.EffectiveMaxRoll * 0.5f * RollDirectionScale;
 		}
+
+		const float SideSpeedAlpha = FMath::Clamp(
+			Kinematics.LocalVelocity.Y / FMath::Max(PartnerCharacter->MoveSpeed, 1.0f),
+			-1.0f,
+			1.0f
+		);
+		TurnRoll += SideSpeedAlpha * Result.EffectiveMaxRoll * 0.35f * RollDirectionScale;
 	}
 
-	const float LookRoll = -PartnerCharacter->LookRollInput * PartnerCharacter->CameraRollOnTurn / MassFactor;
-	const float TargetPitch = FMath::Clamp(AccelPitch, -MaxPitch, MaxPitch);
-	const float TargetRoll = FMath::Clamp(AccelRoll + TurnRoll + LookRoll, -MaxRoll, MaxRoll);
+	const float VerticalPitch = FMath::Clamp(
+		-Kinematics.LocalAcceleration.Z / AccelReference * Result.EffectiveMaxPitch * 0.15f * PitchResponseScale,
+		-Result.EffectiveMaxPitch,
+		Result.EffectiveMaxPitch
+	);
 
-	FRotator CurrentRot = PartnerCharacter->GetFirstPersonCameraRoot()->GetRelativeRotation();
+	Result.TurnRoll = TurnRoll;
+	Result.Pitch = FMath::Clamp(
+		(AccelPitch + VerticalPitch) * Result.TiltStrength,
+		-Result.EffectiveMaxPitch,
+		Result.EffectiveMaxPitch
+	);
+	Result.Roll = FMath::Clamp(
+		(AccelRoll + TurnRoll) * Result.TiltStrength,
+		-Result.EffectiveMaxRoll,
+		Result.EffectiveMaxRoll
+	);
 
-	const FRotator TargetRot(TargetPitch, 0.0f, TargetRoll);
-	const float FeelInterpSpeed = PartnerCharacter->CameraRollInterpSpeed / MassFactor;
-	const FRotator NewRot = FMath::RInterpTo(
-		CurrentRot,
-		TargetRot,
+	return Result;
+}
+
+void UPartnerMovementComponent::UpdateInertialTilt(
+	const FPartnerTiltTarget& TiltTarget,
+	const FPartnerMovementKinematics& Kinematics,
+	float DeltaTime)
+{
+	float PitchInterpSpeedMultiplier = 1.0f;
+	float RollInterpSpeedMultiplier = 1.0f;
+
+	const float TargetBlendSpeed =
+		FMath::Max(PartnerCharacter->CameraRollInterpSpeed, 1.0f);
+	SmoothedTiltTarget.X = FMath::FInterpTo(
+		SmoothedTiltTarget.X,
+		TiltTarget.Pitch,
+		DeltaTime,
+		TargetBlendSpeed
+	);
+	SmoothedTiltTarget.Y = FMath::FInterpTo(
+		SmoothedTiltTarget.Y,
+		TiltTarget.Roll,
+		DeltaTime,
+		TargetBlendSpeed
+	);
+
+	FPartnerTiltTarget ResolvedTarget = TiltTarget;
+	ResolvedTarget.Pitch = SmoothedTiltTarget.X;
+	ResolvedTarget.Roll = SmoothedTiltTarget.Y;
+	ResolvedTarget.Pitch = ResolveInertialReboundAxis(
+		CurrentInertialPitch,
+		ResolvedTarget.Pitch,
+		TiltTarget.EffectiveMaxPitch,
+		Kinematics.SpeedAlpha,
+		Kinematics.MassFactor,
+		PreviousTargetPitch,
+		bPitchReboundActive,
+		PitchReboundTarget,
+		PitchInterpSpeedMultiplier
+	);
+	ResolvedTarget.Roll = ResolveInertialReboundAxis(
+		CurrentInertialRoll,
+		ResolvedTarget.Roll,
+		TiltTarget.EffectiveMaxRoll,
+		Kinematics.SpeedAlpha,
+		Kinematics.MassFactor,
+		PreviousTargetRoll,
+		bRollReboundActive,
+		RollReboundTarget,
+		RollInterpSpeedMultiplier
+	);
+
+	const float CoupledInterpSpeedMultiplier =
+		FMath::Max(PitchInterpSpeedMultiplier, RollInterpSpeedMultiplier);
+	const float FeelInterpSpeed =
+		PartnerCharacter->CameraRollInterpSpeed / Kinematics.MassFactor * CoupledInterpSpeedMultiplier;
+
+	CurrentInertialPitch = FMath::FInterpTo(
+		CurrentInertialPitch,
+		ResolvedTarget.Pitch,
 		DeltaTime,
 		FeelInterpSpeed
 	);
 
-	PartnerCharacter->GetFirstPersonCameraRoot()->SetRelativeRotation(NewRot);
-	PartnerCharacter->LookRollInput = FMath::FInterpTo(
-		PartnerCharacter->LookRollInput,
-		0.0f,
+	CurrentInertialRoll = FMath::FInterpTo(
+		CurrentInertialRoll,
+		ResolvedTarget.Roll,
 		DeltaTime,
-		PartnerCharacter->RotationLagRecoverSpeed / MassFactor
+		FeelInterpSpeed
+	);
+}
+
+void UPartnerMovementComponent::ApplyCameraTilt()
+{
+	CurrentCameraPitch = FMath::Clamp(
+		CurrentInertialPitch * PartnerCharacter->CameraInertialTiltScale,
+		-PartnerCharacter->GetMaxInertialCameraPitchDegrees(),
+		PartnerCharacter->GetMaxInertialCameraPitchDegrees()
+	);
+	CurrentCameraRoll = CurrentInertialRoll * PartnerCharacter->CameraInertialTiltScale;
+}
+
+void UPartnerMovementComponent::ApplyVisualTilt(float DeltaTime)
+{
+	ApplyMeshTilt(DeltaTime);
+	ApplyViewModelTilt(DeltaTime);
+}
+
+void UPartnerMovementComponent::ApplyMeshTilt(float DeltaTime)
+{
+	if (!bVisualTiltInitialized || !PartnerCharacter->GetMesh())
+	{
+		return;
+	}
+
+	const float FeelInterpSpeed = PartnerCharacter->CameraRollInterpSpeed / GetMovementMassFactor();
+	const FRotator TargetMeshRot =
+		BaseMeshRelativeRotation +
+		FRotator(
+			CurrentInertialPitch * PartnerCharacter->MeshInertialTiltScale,
+			0.0f,
+			CurrentInertialRoll * PartnerCharacter->MeshInertialTiltScale
+		);
+
+	const FRotator NewMeshRot = FMath::RInterpTo(
+		PartnerCharacter->GetMesh()->GetRelativeRotation(),
+		TargetMeshRot,
+		DeltaTime,
+		FeelInterpSpeed
 	);
 
-	LastLocation = CurrentLocation;
+	PartnerCharacter->GetMesh()->SetRelativeRotation(NewMeshRot);
+}
+
+void UPartnerMovementComponent::ApplyViewModelTilt(float DeltaTime)
+{
+	USceneComponent* ViewModelRoot = PartnerCharacter->GetFirstPersonViewModelRoot();
+	if (!ViewModelRoot)
+	{
+		return;
+	}
+
+	const float FeelInterpSpeed = PartnerCharacter->CameraRollInterpSpeed / GetMovementMassFactor();
+	const FRotator TargetViewModelRot =
+		BaseViewModelRelativeRotation +
+		FRotator(
+			CurrentInertialPitch * PartnerCharacter->ViewModelInertialTiltScale,
+			0.0f,
+			CurrentInertialRoll * PartnerCharacter->ViewModelInertialTiltScale
+		);
+
+	const FRotator NewViewModelRot = FMath::RInterpTo(
+		ViewModelRoot->GetRelativeRotation(),
+		TargetViewModelRot,
+		DeltaTime,
+		FeelInterpSpeed
+	);
+
+	ViewModelRoot->SetRelativeRotation(NewViewModelRot);
 }
 
 void UPartnerMovementComponent::UpdateBoundaryState()
@@ -448,17 +684,17 @@ FVector UPartnerMovementComponent::FindSimpleAvoidanceTarget(const FVector& Curr
 	const FVector Up = FVector::UpVector;
 	const FVector Right = FVector::CrossProduct(Up, ToTarget).GetSafeNormal();
 
-	const float AvoidDistace = 150.0f;
+	const float AvoidDistance = 150.0f;
 
 	TArray<FVector> Candidates;
-	Candidates.Add(Hit.ImpactPoint + Right * AvoidDistace);
-	Candidates.Add(Hit.ImpactPoint - Right * AvoidDistace);
-	Candidates.Add(Hit.ImpactPoint + Up * AvoidDistace);
-	Candidates.Add(Hit.ImpactPoint - Up * AvoidDistace);
-	Candidates.Add(Hit.ImpactPoint + Right * AvoidDistace + Up * AvoidDistace);
-	Candidates.Add(Hit.ImpactPoint + Right * AvoidDistace - Up * AvoidDistace);
-	Candidates.Add(Hit.ImpactPoint - Right * AvoidDistace + Up * AvoidDistace);
-	Candidates.Add(Hit.ImpactPoint - Right * AvoidDistace - Up * AvoidDistace);
+	Candidates.Add(Hit.ImpactPoint + Right * AvoidDistance);
+	Candidates.Add(Hit.ImpactPoint - Right * AvoidDistance);
+	Candidates.Add(Hit.ImpactPoint + Up * AvoidDistance);
+	Candidates.Add(Hit.ImpactPoint - Up * AvoidDistance);
+	Candidates.Add(Hit.ImpactPoint + Right * AvoidDistance + Up * AvoidDistance);
+	Candidates.Add(Hit.ImpactPoint + Right * AvoidDistance - Up * AvoidDistance);
+	Candidates.Add(Hit.ImpactPoint - Right * AvoidDistance + Up * AvoidDistance);
+	Candidates.Add(Hit.ImpactPoint - Right * AvoidDistance - Up * AvoidDistance);
 
 	FVector BestTarget = CurrentLocation;
 	float BestScore = TNumericLimits<float>::Max();
@@ -518,4 +754,153 @@ float UPartnerMovementComponent::GetMovementMassFactor() const
 	}
 
 	return FMath::Clamp(CharacterMovement->Mass / 100.0f, 0.5f, 3.0f);
+}
+
+float UPartnerMovementComponent::ResolveInertialReboundAxis(
+	float CurrentValue,
+	float DesiredTarget,
+	float MaxAbsValue,
+	float SpeedAlpha,
+	float MassFactor,
+	float& PreviousDesiredTarget,
+	bool& bReboundActive,
+	float& ReboundTarget,
+	float& OutInterpSpeedMultiplier
+) const
+{
+	if (!PartnerCharacter)
+	{
+		return DesiredTarget;
+	}
+
+	OutInterpSpeedMultiplier = 1.0f;
+
+	const float TriggerMagnitude = FMath::Max(MaxAbsValue * 0.25f, 0.75f);
+	const float CurrentMagnitude = FMath::Abs(CurrentValue);
+	const float DesiredMagnitude = FMath::Abs(DesiredTarget);
+	const float PreviousMagnitude = FMath::Abs(PreviousDesiredTarget);
+
+	const bool bHadMeaningfulTilt =
+		CurrentMagnitude > TriggerMagnitude ||
+		PreviousMagnitude > TriggerMagnitude;
+
+	const bool bReleased =
+		PreviousMagnitude > TriggerMagnitude &&
+		DesiredMagnitude < PreviousMagnitude * 0.45f;
+
+	const bool bReversed =
+		PreviousDesiredTarget * DesiredTarget < -0.1f;
+
+	if (!bReboundActive && bHadMeaningfulTilt && (bReleased || bReversed))
+	{
+		const float ReboundRatio =
+			FMath::Clamp(PartnerCharacter->InertialTiltReboundRatio, 0.0f, 1.0f);
+
+		const float SpeedScale = FMath::Lerp(0.35f, 1.0f, SpeedAlpha);
+		const float MassScale = FMath::Clamp(1.0f / FMath::Max(MassFactor, 0.1f), 0.35f, 1.5f);
+
+		const float MaxReboundMagnitude =
+			MaxAbsValue * PartnerCharacter->InertialTiltReboundMaxScale;
+
+		const float ReboundMagnitude = FMath::Clamp(
+			CurrentMagnitude * ReboundRatio * SpeedScale * MassScale,
+			0.0f,
+			MaxReboundMagnitude);
+
+		ReboundTarget =
+			-FMath::Sign(CurrentValue) * ReboundMagnitude;
+
+		bReboundActive = true;
+		OutInterpSpeedMultiplier =
+			FMath::Max(PartnerCharacter->InertialTiltReboundInterpMultiplier, 1.0f);
+
+		PreviousDesiredTarget = DesiredTarget;
+		return ReboundTarget;
+	}
+
+	if (bReboundActive)
+	{
+		OutInterpSpeedMultiplier =
+			FMath::Max(PartnerCharacter->InertialTiltReboundInterpMultiplier, 1.0f);
+
+		const float MovementOverrideAlpha = FMath::Clamp(
+			DesiredMagnitude / FMath::Max(MaxAbsValue, 1.0f) * FMath::Lerp(0.5f, 1.0f, SpeedAlpha),
+			0.0f,
+			1.0f
+		);
+		const float BlendedTarget = FMath::Lerp(
+			ReboundTarget,
+			DesiredTarget,
+			MovementOverrideAlpha
+		);
+
+		const float CompletionTolerance =
+			FMath::Max(MaxAbsValue * 0.04f, 0.2f);
+
+		if (FMath::Abs(CurrentValue - BlendedTarget) <= CompletionTolerance &&
+			DesiredMagnitude < TriggerMagnitude * 0.5f)
+		{
+			bReboundActive = false;
+			OutInterpSpeedMultiplier =
+				FMath::Max(PartnerCharacter->InertialTiltRecoverInterpMultiplier, 1.0f);
+
+			PreviousDesiredTarget = DesiredTarget;
+			return 0.0f;
+		}
+
+		if (MovementOverrideAlpha > 0.85f)
+		{
+			bReboundActive = false;
+		}
+
+		PreviousDesiredTarget = DesiredTarget;
+		return BlendedTarget;
+	}
+
+	if (DesiredMagnitude < TriggerMagnitude * 0.5f)
+	{
+		OutInterpSpeedMultiplier =
+			FMath::Max(PartnerCharacter->InertialTiltRecoverInterpMultiplier, 1.0f);
+
+		PreviousDesiredTarget = DesiredTarget;
+		return 0.0f;
+	}
+
+	PreviousDesiredTarget = DesiredTarget;
+	return DesiredTarget;
+}
+
+void UPartnerMovementComponent::UpdateInputMovement()
+{
+	switch (PartnerCharacter->MoveMode)
+	{
+	case EPartnerMoveMode::Normal:
+		UpdateNormalMove();
+		break;
+	case EPartnerMoveMode::FreeMove:
+		UpdateFreeMove();
+		break;
+	default:
+		break;
+	}
+}
+
+void UPartnerMovementComponent::UpdateServerDrivenMovement(float DeltaTime)
+{
+	if (!ShooterCharacter)
+	{
+		return;
+	}
+
+	switch (PartnerCharacter->MoveMode)
+	{
+	case EPartnerMoveMode::CameraAssist:
+		UpdateCameraAssist(DeltaTime);
+		break;
+	case EPartnerMoveMode::SyncMove:
+		UpdateSyncMove(DeltaTime);
+		break;
+	default:
+		break;
+	}
 }
