@@ -99,6 +99,16 @@ void AOutlierPlayerState::SetPairId(int32 NewPairId)
 	PairId = NewPairId;
 }
 
+void AOutlierPlayerState::SetArenaId(int32 NewArenaId)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	ArenaId = NewArenaId;
+}
+
 void AOutlierPlayerState::RefreshCharacterLinks()
 {
 	if (ShooterCharacter)
@@ -129,6 +139,7 @@ void AOutlierPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& 
 
 	DOREPLIFETIME(AOutlierPlayerState, PlayerRole);
 	DOREPLIFETIME(AOutlierPlayerState, PairId);
+	DOREPLIFETIME(AOutlierPlayerState, ArenaId);
 	DOREPLIFETIME(AOutlierPlayerState, CheckpointData);
 	DOREPLIFETIME(AOutlierPlayerState, ShooterCharacter);
 	DOREPLIFETIME(AOutlierPlayerState, PartnerCharacter);

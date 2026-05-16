@@ -32,6 +32,14 @@ public:
 	UFUNCTION()
 	void HandlePlayerDeath(AShooterCharacter* Character);
 
+	void StartMatchedPair(
+		AController* FirstController,
+		AController* SecondController,
+		int32 PairId,
+		int32 ArenaId,
+		EOutlierPlayerRole FirstRole,
+		EOutlierPlayerRole SecondRole);
+
 protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Respawn")
 	TSubclassOf<AShooterCharacter> ShooterClass;
@@ -51,4 +59,8 @@ protected:
 	void ApplyCheckpointToPair(AOutlierPlayerState* TriggeringPlayerState, const FOutlierCheckpointData& Data);
 	void RegisterSpawnedPair(AOutlierPlayerState* ShooterPlayerState, AOutlierPlayerState* PartnerPlayerState, AShooterCharacter* Shooter, APartnerCharacter* Partner);
 
+	bool ResolveArenaSpawnTransforms(
+		int32 ArenaId,
+		FTransform& OutShooterSpawn,
+		FTransform& OutPartnerSpawn) const;
 };

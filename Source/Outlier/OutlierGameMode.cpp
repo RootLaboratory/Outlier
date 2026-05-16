@@ -7,8 +7,10 @@
 #include "Save/OutlierCheckpoint.h"
 #include "OutlierGameState.h"
 #include "FrontendPlayerController.h"
+#include "Network/OutlierArenaPoolSubsystem.h"
 #include "Save/OutlierSaveSubSystem.h"
 #include "GameFramework/GameStateBase.h"
+#include "GameFramework/PlayerStart.h"
 #include "Kismet/GameplayStatics.h"
 #include "GameFramework/PlayerState.h"
 
@@ -143,6 +145,79 @@ void AOutlierGameMode::HandlePlayerDeath(AShooterCharacter* Character)
 	Character->DetachFromControllerPendingDestroy();
 	
 	RespawnPairAtCheckpoint(Controller);
+}
+
+void AOutlierGameMode::StartMatchedPair(AController* FirstController, AController* SecondController, int32 PairId, int32 ArenaId, EOutlierPlayerRole FirstRole, EOutlierPlayerRole SecondRole)
+{
+	if (!FirstController || !SecondController)
+	{
+		return;
+	}
+
+	AOutlierPlayerState* FirstPS = FirstController->GetPlayerState<AOutlierPlayerState>();
+	AOutlierPlayerState* SecondPS = SecondController->GetPlayerState<AOutlierPlayerState>();
+
+	if (!FirstPS || !SecondPS)
+	{
+		return;
+	}
+
+	FirstPS->SetPairId(PairId);
+	FirstPS->SetArenaId(ArenaId);
+	FirstPS->SetPlayerRole(FirstRole);
+
+	SecondPS->SetPairId(PairId);
+	SecondPS->SetArenaId(ArenaId);
+	SecondPS->SetPlayerRole(SecondRole);
+
+	AController* ShooterController =
+		FirstRole == EOutlierPlayerRole::Shooter
+		? FirstController
+		: SecondController;
+
+	AController* PartnerController =
+		FirstRole == EOutlierPlayerRole::Partner
+		? FirstController
+		: SecondController;
+
+	AOutlierPlayerState* ShooterPS =
+		ShooterController->GetPlayerState<AOutlierPlayerState>();
+
+	AOutlierPlayerState* PartnerPS =
+		PartnerController->GetPlayerState<AOutlierPlayerState>();
+
+	FTransform ShooterSpawn;
+	FTransform PartnerSpawn;
+
+	if (!ResolveArenaSpawnTransforms(ArenaId, ShooterSpawn, PartnerSpawn))
+	{
+		AActor* FallbackStart = FindPlayerStart(ShooterController);
+		ShooterSpawn = FallbackStart ? FallbackStart->GetActorTransform() : FTransform::Identity;
+		PartnerSpawn = ShooterSpawn;
+		PartnerSpawn.AddToTranslation(ShooterSpawn.GetRotation().GetRightVector() * 150.0f);
+	}
+
+	AShooterCharacter* Shooter = GetWorld()->SpawnActor<AShooterCharacter>(
+		ShooterClass,
+		ShooterSpawn
+	);
+
+	APartnerCharacter* Partner = GetWorld()->SpawnActor<APartnerCharacter>(
+		PartnerClass,
+		PartnerSpawn
+	);
+
+	if (ShooterController && Shooter)
+	{
+		ShooterController->Possess(Shooter);
+	}
+
+	if (PartnerController && Partner)
+	{
+		PartnerController->Possess(Partner);
+	}
+
+	RegisterSpawnedPair(ShooterPS, PartnerPS, Shooter, Partner);
 }
 
 void AOutlierGameMode::Logout(AController* Exiting)
@@ -362,4 +437,86 @@ void AOutlierGameMode::RegisterSpawnedPair(
 		PartnerPlayerState->SetPartnerCharacter(Partner);
 		PartnerPlayerState->SetSuitDisabledByPartnerBoundary(false);
 	}
+}
+
+bool AOutlierGameMode::ResolveArenaSpawnTransforms(int32 ArenaId, FTransform& OutShooterSpawn, FTransform& OutPartnerSpawn) const
+{
+	// 예시:
+	// AOutlierArenaSpawnPoint 같은 Actor를 만들고
+	// ArenaId + Role 기준으로 찾기
+
+	ULevel* ArenaLevel = nullptr;
+	if (const UWorld* World = GetWorld())
+	{
+		if (const UOutlierArenaPoolSubsystem* ArenaPool = World->GetSubsystem<UOutlierArenaPoolSubsystem>())
+		{
+			ArenaLevel = ArenaPool->GetArenaLoadedLevel(ArenaId);
+		}
+	}
+
+	if (!ArenaLevel)
+	{
+		return false;
+	}
+
+	TArray<AActor*> PlayerStartActors;
+	UGameplayStatics::GetAllActorsOfClass(
+		GetWorld(),
+		APlayerStart::StaticClass(),
+		PlayerStartActors
+	);
+
+	APlayerStart* ShooterStart = nullptr;
+	APlayerStart* PartnerStart = nullptr;
+	TArray<APlayerStart*> ArenaStarts;
+
+	for (AActor* Actor : PlayerStartActors)
+	{
+		APlayerStart* PlayerStart = Cast<APlayerStart>(Actor);
+		if (!PlayerStart || PlayerStart->GetLevel() != ArenaLevel)
+		{
+			continue;
+		}
+
+		ArenaStarts.Add(PlayerStart);
+
+		const FName StartTag = PlayerStart->PlayerStartTag;
+		if (!ShooterStart && (StartTag == TEXT("Shooter") || StartTag == TEXT("Player1") || StartTag == TEXT("1P")))
+		{
+			ShooterStart = PlayerStart;
+		}
+		else if (!PartnerStart && (StartTag == TEXT("Partner") || StartTag == TEXT("Player2") || StartTag == TEXT("2P")))
+		{
+			PartnerStart = PlayerStart;
+		}
+	}
+
+	if (!ShooterStart && ArenaStarts.Num() > 0)
+	{
+		ShooterStart = ArenaStarts[0];
+	}
+
+	if (!PartnerStart && ArenaStarts.Num() > 1)
+	{
+		PartnerStart = ArenaStarts[1];
+	}
+
+	if (!ShooterStart)
+	{
+		return false;
+	}
+
+	OutShooterSpawn = ShooterStart->GetActorTransform();
+	if (PartnerStart)
+	{
+		OutPartnerSpawn = PartnerStart->GetActorTransform();
+	}
+	else
+	{
+		OutPartnerSpawn = OutShooterSpawn;
+		OutPartnerSpawn.AddToTranslation(OutShooterSpawn.GetRotation().GetRightVector() * 150.0f);
+	}
+
+	return true;
+
 }
