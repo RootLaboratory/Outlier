@@ -441,10 +441,6 @@ void AOutlierGameMode::RegisterSpawnedPair(
 
 bool AOutlierGameMode::ResolveArenaSpawnTransforms(int32 ArenaId, FTransform& OutShooterSpawn, FTransform& OutPartnerSpawn) const
 {
-	// 예시:
-	// AOutlierArenaSpawnPoint 같은 Actor를 만들고
-	// ArenaId + Role 기준으로 찾기
-
 	ULevel* ArenaLevel = nullptr;
 	if (const UWorld* World = GetWorld())
 	{
