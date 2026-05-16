@@ -30,6 +30,7 @@ public:
 	void EnqueueForPairThenRolePick(AController* Controller);
 	void EnqueueByRole(AController* Controller, EOutlierPlayerRole DesiredRole);
 	bool SelectRoleInPendingMatch(AController* Controller, EOutlierPlayerRole DesiredRole);
+	bool TryStartPendingMatch(AController* Controller);
 
 	void Cancel(AController* Controller);
 	void ReleaseMatch(int32 PairId);

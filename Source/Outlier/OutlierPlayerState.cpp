@@ -81,12 +81,13 @@ float AOutlierPlayerState::GetPartnerDistance() const
 
 void AOutlierPlayerState::SetPlayerRole(EOutlierPlayerRole NewRole)
 {
-	if (!HasAuthority())
+	if (!HasAuthority() || PlayerRole == NewRole)
 	{
 		return;
 	}
 
 	PlayerRole = NewRole;
+	HandlePlayerRoleChanged();
 }
 
 void AOutlierPlayerState::SetPairId(int32 NewPairId)
@@ -109,6 +110,48 @@ void AOutlierPlayerState::SetArenaId(int32 NewArenaId)
 	ArenaId = NewArenaId;
 }
 
+void AOutlierPlayerState::SetPendingLobbyMatchId(int32 NewPendingLobbyMatchId)
+{
+	if (!HasAuthority() || PendingLobbyMatchId == NewPendingLobbyMatchId)
+	{
+		return;
+	}
+
+	PendingLobbyMatchId = NewPendingLobbyMatchId;
+	HandlePendingLobbyStateChanged();
+}
+
+void AOutlierPlayerState::SetPendingLobbyRole(EOutlierPlayerRole NewPendingLobbyRole)
+{
+	if (!HasAuthority() || PendingLobbyRole == NewPendingLobbyRole)
+	{
+		return;
+	}
+
+	PendingLobbyRole = NewPendingLobbyRole;
+	HandlePendingLobbyStateChanged();
+}
+
+void AOutlierPlayerState::ClearPendingLobbyState()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	const bool bChanged =
+		PendingLobbyMatchId != INDEX_NONE ||
+		PendingLobbyRole != EOutlierPlayerRole::None;
+
+	PendingLobbyMatchId = INDEX_NONE;
+	PendingLobbyRole = EOutlierPlayerRole::None;
+
+	if (bChanged)
+	{
+		HandlePendingLobbyStateChanged();
+	}
+}
+
 void AOutlierPlayerState::RefreshCharacterLinks()
 {
 	if (ShooterCharacter)
@@ -121,6 +164,31 @@ void AOutlierPlayerState::RefreshCharacterLinks()
 	{
 		PartnerCharacter->SetShooterCharacter(ShooterCharacter);
 	}
+}
+
+void AOutlierPlayerState::OnRep_PlayerRole()
+{
+	HandlePlayerRoleChanged();
+}
+
+void AOutlierPlayerState::OnRep_PendingLobbyMatchId()
+{
+	HandlePendingLobbyStateChanged();
+}
+
+void AOutlierPlayerState::OnRep_PendingLobbyRole()
+{
+	HandlePendingLobbyStateChanged();
+}
+
+void AOutlierPlayerState::HandlePlayerRoleChanged()
+{
+	OnPlayerRoleChanged.Broadcast(this);
+}
+
+void AOutlierPlayerState::HandlePendingLobbyStateChanged()
+{
+	OnPendingLobbyStateChanged.Broadcast(this);
 }
 
 void AOutlierPlayerState::SetCheckpointData(const FOutlierCheckpointData& NewData)
@@ -140,6 +208,8 @@ void AOutlierPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& 
 	DOREPLIFETIME(AOutlierPlayerState, PlayerRole);
 	DOREPLIFETIME(AOutlierPlayerState, PairId);
 	DOREPLIFETIME(AOutlierPlayerState, ArenaId);
+	DOREPLIFETIME(AOutlierPlayerState, PendingLobbyMatchId);
+	DOREPLIFETIME(AOutlierPlayerState, PendingLobbyRole);
 	DOREPLIFETIME(AOutlierPlayerState, CheckpointData);
 	DOREPLIFETIME(AOutlierPlayerState, ShooterCharacter);
 	DOREPLIFETIME(AOutlierPlayerState, PartnerCharacter);
