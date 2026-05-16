@@ -15,6 +15,52 @@
 #include "Weapon/WeaponRangeRow.h"
 #include "Weapon/Spawn/WeaponSpawnPoint.h"
 
+namespace
+{
+	const FName DefaultWeaponSocketName(TEXT("HandGrip_R"));
+
+	void AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacter* NewOwner)
+	{
+		if (!Weapon || !NewOwner)
+		{
+			return;
+		}
+
+		AFirstPersonCharacter* FirstPersonOwner = Cast<AFirstPersonCharacter>(NewOwner);
+		if (!FirstPersonOwner)
+		{
+			return;
+		}
+
+		FName FirstPersonSocketName = DefaultWeaponSocketName;
+		FName ThirdPersonSocketName = DefaultWeaponSocketName;
+		if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(NewOwner))
+		{
+			const EWeaponType EquippedWeaponType = Weapon->GetWeaponType();
+			FirstPersonSocketName = Shooter->GetFirstPersonWeaponSocketByType(EquippedWeaponType);
+			ThirdPersonSocketName = Shooter->GetThirdPersonWeaponSocketByType(EquippedWeaponType);
+		}
+
+		if (USkeletalMeshComponent* FirstPersonParent = FirstPersonOwner->GetFirstPersonMesh())
+		{
+			Weapon->GetFirstPersonWeaponMesh()->AttachToComponent(
+				FirstPersonParent,
+				FAttachmentTransformRules::SnapToTargetNotIncludingScale,
+				FirstPersonSocketName
+			);
+		}
+
+		if (USkeletalMeshComponent* ThirdPersonParent = FirstPersonOwner->GetMesh())
+		{
+			Weapon->GetThirdPersonWeaponMesh()->AttachToComponent(
+				ThirdPersonParent,
+				FAttachmentTransformRules::SnapToTargetNotIncludingScale,
+				ThirdPersonSocketName
+			);
+		}
+	}
+}
+
 AWeaponBase::AWeaponBase()
 {
 	bReplicates = true;
@@ -211,30 +257,7 @@ void AWeaponBase::ApplyReplicatedPresentation()
 	{
 		SetEquippedPresentation();
 
-		if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner))
-		{
-			const EWeaponType EquippedWeaponType = GetWeaponType();
-			const FName FirstPersonSocketName = Shooter->GetFirstPersonWeaponSocketByType(EquippedWeaponType);
-			const FName ThirdPersonSocketName = Shooter->GetThirdPersonWeaponSocketByType(EquippedWeaponType);
-
-			if (USkeletalMeshComponent* FirstPersonParent = Shooter->GetFirstPersonMesh())
-			{
-				FirstPersonWeaponMesh->AttachToComponent(
-					FirstPersonParent,
-					FAttachmentTransformRules::SnapToTargetNotIncludingScale,
-					FirstPersonSocketName
-				);
-			}
-
-			if (USkeletalMeshComponent* ThirdPersonParent = Shooter->GetMesh())
-			{
-				ThirdPersonWeaponMesh->AttachToComponent(
-					ThirdPersonParent,
-					FAttachmentTransformRules::SnapToTargetNotIncludingScale,
-					ThirdPersonSocketName
-				);
-			}
-		}
+		AttachWeaponMeshesToOwner(this, WeaponOwner);
 
 		return;
 	}
@@ -362,6 +385,7 @@ void AWeaponBase::OnEquipped(ACharacter* NewOwner)
 
 	// 장착 중에는 캐릭터를 밀지 않도록 충돌 비활성화
 	SetEquippedPresentation();
+	AttachWeaponMeshesToOwner(this, NewOwner);
 
 	if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(NewOwner))
 	{
@@ -496,10 +520,7 @@ void AWeaponBase::Interact(class AFirstPersonCharacter* Interactor)
 
 	UE_LOG(LogTemp, Log, TEXT("%s [%s] Interact Interactor=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(Interactor));
 
-	if(AShooterCharacter * Shooter = Cast<AShooterCharacter>(Interactor))
-	{
-		Shooter->EquipWeapon(this);
-	}
+	Interactor->EquipWeapon(this);
 }
 
 void AWeaponBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const

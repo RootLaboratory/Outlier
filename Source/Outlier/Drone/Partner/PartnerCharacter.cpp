@@ -7,6 +7,7 @@
 #include "EnhancedInputSubsystems.h"
 #include "Drone/Partner/PartnerMovementComponent.h"
 #include "Drone/Partner/PartnerSupportComponent.h"
+#include "Drone/Partner/PartnerCombatComponent.h"
 #include "Net/UnrealNetwork.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Drone/DroneMoveDataRow.h"
@@ -140,6 +141,22 @@ void APartnerCharacter::DoMove(float Right, float Forward)
 void APartnerCharacter::OnMoveInputUpdated(const FVector2D& MoveValue)
 {
 	Super::OnMoveInputUpdated(MoveValue);
+}
+
+void APartnerCharacter::TryStartAttack()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->TryStartAttack();
+	}
+}
+
+void APartnerCharacter::TryStopAttack()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->TryStopAttack();
+	}
 }
 
 void APartnerCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -496,6 +513,9 @@ void APartnerCharacter::ServerUseSkill_Implementation(EPartnerSkillType SkillTyp
 	case EPartnerSkillType::Scan:
 		SupportComponent->TryScan_Server();
 		break;
+	case EPartnerSkillType::Hack:
+		SupportComponent->TryHack_Server(nullptr);
+		break;
 	default:
 		break;
 	}
@@ -676,6 +696,7 @@ APartnerCharacter::APartnerCharacter()
 
 	MovementComponent = CreateDefaultSubobject<UPartnerMovementComponent>(TEXT("MovementComponent"));
 	SupportComponent  = CreateDefaultSubobject<UPartnerSupportComponent> (TEXT("SupportComponent"));
+	CombatComponent   = CreateDefaultSubobject<UPartnerCombatComponent>  (TEXT("CombatComponent"));
 }
 
 void APartnerCharacter::OnRep_DroneMovementState()
@@ -704,6 +725,11 @@ void APartnerCharacter::SetShooterCharacter(AShooterCharacter* NewShooter)
 	{
 		SupportComponent->RefreshCharacterRefsFromPlayerState();
 	}
+}
+
+void APartnerCharacter::ClientNotifySkillUseResult_Implementation(EPartnerSkillType SkillType, EPartnerSkillUseResult Result)
+{
+	OnPartnerSkillUseResult.Broadcast(SkillType, Result);
 }
 
 float APartnerCharacter::GetCurrentInertialCameraRollDegrees() const
