@@ -84,7 +84,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Lobby")
 	void ClearPendingLobbyState();
 
-	UPROPERTY(Replicated)
+	UPROPERTY(ReplicatedUsing = OnRep_ArenaId)
 	int32 ArenaId = INDEX_NONE;
 
 protected:
@@ -136,6 +136,9 @@ protected:
 
 	UFUNCTION()
 	void OnRep_PendingLobbyRole();
+
+	UFUNCTION()
+	void OnRep_ArenaId();
 
 	void HandlePlayerRoleChanged();
 	void HandlePendingLobbyStateChanged();

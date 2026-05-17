@@ -24,10 +24,19 @@ public:
 	FOutlierArenaInstance* AcquireArena();
 	void ReleaseArena(int32 ArenaId);
 	ULevel* GetArenaLoadedLevel(int32 ArenaId) const;
+	void EnsureArenaLoaded(int32 ArenaId); // ps id replcated되고, 해당 id로 arena 이동; Client는 id 에 해당하는 arena만 load 
 
 private:
 	void PreloadArenas();
 	ULevelStreamingDynamic* LoadArenaLevelInstance(int32, const FTransform& InstanceTransform);
+	void RefreshArenaReadyStates(const TCHAR* Reason);
+
+	UFUNCTION()
+	void HandleArenaLevelLoaded();
+
+	UFUNCTION()
+	void HandleArenaLevelShown();
+
 
 	UPROPERTY()
 	TArray<FOutlierArenaInstance> Arenas;
@@ -37,5 +46,5 @@ private:
 
 public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Arena")
-	int32 MaxArenaCount = 5;
+	int32 MaxArenaCount = 1;
 };

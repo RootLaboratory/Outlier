@@ -4,6 +4,7 @@
 #include "OutlierPlayerState.h"
 #include "Net/UnrealNetwork.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Network/OutlierArenaPoolSubsystem.h"
 #include "Drone/Partner/PartnerCharacter.h"
 
 void AOutlierPlayerState::OnRep_CheckpointData()
@@ -117,6 +118,9 @@ void AOutlierPlayerState::SetPendingLobbyMatchId(int32 NewPendingLobbyMatchId)
 		return;
 	}
 
+	UE_LOG(LogTemp, Warning, TEXT("[PlayerState] SetPendingLobbyMatchId: %d -> %d (%s)"),
+		PendingLobbyMatchId, NewPendingLobbyMatchId, *GetPlayerName());
+
 	PendingLobbyMatchId = NewPendingLobbyMatchId;
 	HandlePendingLobbyStateChanged();
 }
@@ -173,12 +177,31 @@ void AOutlierPlayerState::OnRep_PlayerRole()
 
 void AOutlierPlayerState::OnRep_PendingLobbyMatchId()
 {
+	UE_LOG(LogTemp, Warning, TEXT("[PlayerState] OnRep_PendingLobbyMatchId: %d on CLIENT (%s)"),
+		PendingLobbyMatchId, *GetPlayerName());
 	HandlePendingLobbyStateChanged();
 }
 
 void AOutlierPlayerState::OnRep_PendingLobbyRole()
 {
 	HandlePendingLobbyStateChanged();
+}
+
+void AOutlierPlayerState::OnRep_ArenaId()
+{
+	if (ArenaId == INDEX_NONE)
+	{
+		return;
+	}
+
+	if (UWorld* World = GetWorld())
+	{
+		if (UOutlierArenaPoolSubsystem* ArenaPool =
+			World->GetSubsystem<UOutlierArenaPoolSubsystem>())
+		{
+			ArenaPool->EnsureArenaLoaded(ArenaId);
+		}
+	}
 }
 
 void AOutlierPlayerState::HandlePlayerRoleChanged()

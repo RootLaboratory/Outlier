@@ -16,8 +16,12 @@ void UOutlierMatchmakingSubsystem::EnqueueForPairThenRolePick(AController* Contr
 {
 	if (!Controller)
 	{
+		UE_LOG(LogTemp, Error, TEXT("[Matchmaking] EnqueueForPairThenRolePick: Controller is NULL"));
 		return;
 	}
+
+	UE_LOG(LogTemp, Warning, TEXT("[Matchmaking] EnqueueForPairThenRolePick: %s added. WaitingPlayers before: %d"),
+		*Controller->GetName(), WaitingPlayers.Num());
 
 	Cancel(Controller);
 
@@ -31,6 +35,9 @@ void UOutlierMatchmakingSubsystem::EnqueueForPairThenRolePick(AController* Contr
 	Request.RequestTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
 
 	WaitingPlayers.Add(Request);
+
+	UE_LOG(LogTemp, Warning, TEXT("[Matchmaking] WaitingPlayers after enqueue: %d"), WaitingPlayers.Num());
+
 	TryCreateMatch();
 }
 
@@ -253,6 +260,8 @@ void UOutlierMatchmakingSubsystem::TryCreateMatch()
 
 void UOutlierMatchmakingSubsystem::TryCreatePairThenRolePickMatch()
 {
+	UE_LOG(LogTemp, Warning, TEXT("[Matchmaking] TryCreatePairThenRolePickMatch: WaitingPlayers=%d"), WaitingPlayers.Num());
+
 	while (WaitingPlayers.Num() >= 2)
 	{
 		FOutlierMatchRequest First = WaitingPlayers[0];
@@ -262,6 +271,7 @@ void UOutlierMatchmakingSubsystem::TryCreatePairThenRolePickMatch()
 
 		if (!First.Controller || !Second.Controller)
 		{
+			UE_LOG(LogTemp, Error, TEXT("[Matchmaking] PairThenRolePick: one of the controllers is NULL, skipping"));
 			continue;
 		}
 
@@ -271,16 +281,21 @@ void UOutlierMatchmakingSubsystem::TryCreatePairThenRolePickMatch()
 		PendingMatch.SecondController = Second.Controller;
 		PendingMatch.CreatedTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
 
+		UE_LOG(LogTemp, Warning, TEXT("[Matchmaking] PendingMatch created: Id=%d, First=%s, Second=%s"),
+			PendingMatch.PendingMatchId, *First.Controller->GetName(), *Second.Controller->GetName());
+
 		if (AOutlierPlayerState* FirstPS = First.Controller->GetPlayerState<AOutlierPlayerState>())
 		{
 			FirstPS->SetPendingLobbyMatchId(PendingMatch.PendingMatchId);
 			FirstPS->SetPendingLobbyRole(EOutlierPlayerRole::None);
+			UE_LOG(LogTemp, Warning, TEXT("[Matchmaking] FirstPS PendingLobbyMatchId set to %d"), PendingMatch.PendingMatchId);
 		}
 
 		if (AOutlierPlayerState* SecondPS = Second.Controller->GetPlayerState<AOutlierPlayerState>())
 		{
 			SecondPS->SetPendingLobbyMatchId(PendingMatch.PendingMatchId);
 			SecondPS->SetPendingLobbyRole(EOutlierPlayerRole::None);
+			UE_LOG(LogTemp, Warning, TEXT("[Matchmaking] SecondPS PendingLobbyMatchId set to %d"), PendingMatch.PendingMatchId);
 		}
 
 		PendingRolePickMatches.Add(PendingMatch);

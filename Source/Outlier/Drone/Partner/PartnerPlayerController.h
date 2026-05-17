@@ -37,6 +37,10 @@ protected:
 
 	virtual void BindPostProcessSubSystem() override;
 
+	virtual void ReceivedPlayer() override;
+
+	virtual void AcknowledgePossession(APawn* P) override;
+
 public:
 	APartnerPlayerController();
 	
