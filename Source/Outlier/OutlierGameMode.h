@@ -4,8 +4,12 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/GameModeBase.h"
+#include "GameFramework/GameMode.h"
 #include "OutlierGameMode.generated.h"
 
+class APlayerController;
+class AShooterPlayerController;
+class APartnerPlayerController;
 class AShooterCharacter;
 class APartnerCharacter;
 class AOutlierCheckpoint;
@@ -47,6 +51,12 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Respawn")
 	TSubclassOf<APartnerCharacter> PartnerClass;
 
+	UPROPERTY(EditDefaultsOnly, Category = "Controller")
+	TSubclassOf<AShooterPlayerController> ShooterControllerClass;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Controller")
+	TSubclassOf<APartnerPlayerController> PartnerControllerClass;
+
 protected:
 	virtual void Logout(AController* Exiting) override;
 
@@ -58,6 +68,7 @@ protected:
 	AController* GetControllerFromPlayerState(AOutlierPlayerState* PlayerState) const;
 	void ApplyCheckpointToPair(AOutlierPlayerState* TriggeringPlayerState, const FOutlierCheckpointData& Data);
 	void RegisterSpawnedPair(AOutlierPlayerState* ShooterPlayerState, AOutlierPlayerState* PartnerPlayerState, AShooterCharacter* Shooter, APartnerCharacter* Partner);
+	//APlayerController* SwapPlayerController(APlayerController* OldPC, TSubclassOf<APlayerController> NewClass);
 
 	bool ResolveArenaSpawnTransforms(
 		int32 ArenaId,

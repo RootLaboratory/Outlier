@@ -22,6 +22,7 @@ public:
 
 	virtual void BeginPlay() override;
 	virtual void AcknowledgePossession(APawn* P) override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 public:
 	UFUNCTION(Server, Reliable)
@@ -38,6 +39,9 @@ public:
 
 	UFUNCTION(Server, Reliable)
 	void ServerRequestStartPendingMatch();
+
+	UFUNCTION(Client, Reliable)
+	void ClientPrepareForMatch();
 public:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr< UTitleMainWidget> TitleWidget;

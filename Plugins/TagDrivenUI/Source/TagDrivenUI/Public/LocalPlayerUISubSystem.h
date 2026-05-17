@@ -45,8 +45,10 @@ public:
 	void PartnerCameraToggle();
 
 private:
+	UMainUIBase* GetMainUI() const;
+	UEventDrivenUI* GetModule(EUIModule Key) const;
+
 	UPROPERTY()
 	TObjectPtr<UMainUIBase> MainUIInstance; //PlayerController에게 책임 전가; Pawn 타입 받아서; (Bind된 BP 타입 반환시켜서 Bind)
 
 };
-
