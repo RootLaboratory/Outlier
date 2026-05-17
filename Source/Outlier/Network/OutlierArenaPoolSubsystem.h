@@ -10,6 +10,8 @@
 class ULevelStreamingDynamic;
 class ULevel;
 
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnArenaShown, int32 /*ArenaId*/);
+
 /**
  * 
  */
@@ -24,7 +26,10 @@ public:
 	FOutlierArenaInstance* AcquireArena();
 	void ReleaseArena(int32 ArenaId);
 	ULevel* GetArenaLoadedLevel(int32 ArenaId) const;
-	void EnsureArenaLoaded(int32 ArenaId); // ps id replcated되고, 해당 id로 arena 이동; Client는 id 에 해당하는 arena만 load 
+	void EnsureArenaLoaded(int32 ArenaId); // Client는 id 에 해당하는 arena만 load
+	bool IsArenaReady(int32 ArenaId) const;
+
+	FOnArenaShown OnArenaShown;
 
 private:
 	void PreloadArenas();
@@ -46,5 +51,5 @@ private:
 
 public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Arena")
-	int32 MaxArenaCount = 1;
+	int32 MaxArenaCount = 2;
 };

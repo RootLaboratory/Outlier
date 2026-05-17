@@ -230,12 +230,12 @@ void UOutlierArenaPoolSubsystem::EnsureArenaLoaded(int32 ArenaId)
 		return;
 	}
 
-	UE_LOG(LogTemp, Warning,
+	/*UE_LOG(LogTemp, Warning,
 		TEXT("[ArenaPool] EnsureArenaLoaded requested ArenaId=%d World=%s NetMode=%d ExistingArenaCount=%d"),
 		ArenaId,
 		*World->GetName(),
 		static_cast<int32>(World->GetNetMode()),
-		Arenas.Num());
+		Arenas.Num());*/
 
 	if (World->GetNetMode() != NM_Client)
 	{
@@ -335,4 +335,29 @@ void UOutlierArenaPoolSubsystem::HandleArenaLevelLoaded()
 void UOutlierArenaPoolSubsystem::HandleArenaLevelShown()
 {
 	RefreshArenaReadyStates(TEXT("OnLevelShown"));
+
+	const UWorld* World = GetWorld();
+	for (const FOutlierArenaInstance& Arena : Arenas)
+	{
+		if (Arena.bReady)
+		{
+			/*UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][2] OnArenaShown.Broadcast ArenaId=%d NetMode=%d BoundCount=%d"),
+				Arena.ArenaId,
+				World ? (int32)World->GetNetMode() : -1,
+				OnArenaShown.IsBound() ? 1 : 0);*/
+			OnArenaShown.Broadcast(Arena.ArenaId);
+		}
+	}
+}
+
+bool UOutlierArenaPoolSubsystem::IsArenaReady(int32 ArenaId) const
+{
+	for (const FOutlierArenaInstance& Arena : Arenas)
+	{
+		if (Arena.ArenaId == ArenaId)
+		{
+			return Arena.bReady;
+		}
+	}
+	return false;
 }

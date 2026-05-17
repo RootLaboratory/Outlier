@@ -4,7 +4,6 @@
 #include "OutlierPlayerState.h"
 #include "Net/UnrealNetwork.h"
 #include "Shooter/ShooterCharacter.h"
-#include "Network/OutlierArenaPoolSubsystem.h"
 #include "Drone/Partner/PartnerCharacter.h"
 
 void AOutlierPlayerState::OnRep_CheckpointData()
@@ -189,19 +188,6 @@ void AOutlierPlayerState::OnRep_PendingLobbyRole()
 
 void AOutlierPlayerState::OnRep_ArenaId()
 {
-	if (ArenaId == INDEX_NONE)
-	{
-		return;
-	}
-
-	if (UWorld* World = GetWorld())
-	{
-		if (UOutlierArenaPoolSubsystem* ArenaPool =
-			World->GetSubsystem<UOutlierArenaPoolSubsystem>())
-		{
-			ArenaPool->EnsureArenaLoaded(ArenaId);
-		}
-	}
 }
 
 void AOutlierPlayerState::HandlePlayerRoleChanged()

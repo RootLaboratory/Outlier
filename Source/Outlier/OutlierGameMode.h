@@ -44,6 +44,12 @@ public:
 		EOutlierPlayerRole FirstRole,
 		EOutlierPlayerRole SecondRole);
 
+	void OnClientArenaReady(APlayerController* PC);
+
+private:
+	UPROPERTY()
+	TMap<TObjectPtr<APlayerController>, TObjectPtr<APawn>> PendingPossessions;
+
 protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Respawn")
 	TSubclassOf<AShooterCharacter> ShooterClass;

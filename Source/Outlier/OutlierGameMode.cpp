@@ -12,6 +12,7 @@
 #include "GameFramework/GameStateBase.h"
 #include "Shooter/ShooterPlayerController.h"
 #include "Drone/Partner/PartnerPlayerController.h"
+#include "FirstPerson/FirstPersonPlayerController.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/NetConnection.h"
 #include "GameFramework/PlayerStart.h"
@@ -244,7 +245,7 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 	FActorSpawnParameters SpawnParams;
 	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 
-	if (ShooterControllerClass) // TSubclassOf<AShooterPlayerController> 변수
+	if (ShooterControllerClass)
 	{
 		NewShooterPC = GetWorld()->SpawnActor<APlayerController>(ShooterControllerClass, ShooterSpawn, SpawnParams);
 	}
@@ -262,57 +263,77 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 		SwapPlayerControllers(Cast<APlayerController>(PartnerController), NewPartnerPC);
 	}
 
+	if (AFirstPersonPlayerController* FPC = Cast<AFirstPersonPlayerController>(NewShooterPC))
+	{
+		if (!FPC->IsLocalController())
+		{
+			//UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][0] ClientArenaLoad → ShooterPC=%s ArenaId=%d"), *GetNameSafe(FPC), ArenaId);
+			FPC->ClientArenaLoad(ArenaId);
+		}
+	}
+	if (AFirstPersonPlayerController* FPC = Cast<AFirstPersonPlayerController>(NewPartnerPC))
+	{
+		if (!FPC->IsLocalController())
+		{
+			//UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][0] ClientArenaLoad → PartnerPC=%s ArenaId=%d"), *GetNameSafe(FPC), ArenaId);
+			FPC->ClientArenaLoad(ArenaId);
+		}
+	}
+
 	if (NewShooterPC && Shooter)
 	{
-		NewShooterPC->Possess(Shooter);
+		if (NewShooterPC->IsLocalController())
+		{
+			//UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][0] ShooterPC is local → Possess immediately"));
+			NewShooterPC->Possess(Shooter);
+		}
+		else
+		{
+			/*UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][0] ShooterPC is remote → PendingPossessions PC=%s Pawn=%s"),
+				*GetNameSafe(NewShooterPC), *GetNameSafe(Shooter));*/
+			PendingPossessions.Add(NewShooterPC, Shooter);
+		}
 	}
 
 	if (NewPartnerPC && Partner)
 	{
-		NewPartnerPC->Possess(Partner);
+		if (NewPartnerPC->IsLocalController())
+		{
+			//UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][0] PartnerPC is local → Possess immediately"));
+			NewPartnerPC->Possess(Partner);
+		}
+		else
+		{
+			/*UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][0] PartnerPC is remote → PendingPossessions PC=%s Pawn=%s"),
+				*GetNameSafe(NewPartnerPC), *GetNameSafe(Partner));*/
+			PendingPossessions.Add(NewPartnerPC, Partner);
+		}
 	}
-
-	//UE_LOG(LogTemp, Warning,
-	//	TEXT("[SpawnCheck] Shooter Rep=%d NetLoad=%d Role=%d RemoteRole=%d"),
-	//	Shooter ? Shooter->GetIsReplicated() : 0,
-	//	Shooter ? Shooter->bNetLoadOnClient : 0,
-	//	Shooter ? (int32)Shooter->GetLocalRole() : -1,
-	//	Shooter ? (int32)Shooter->GetRemoteRole() : -1
-	//);
-
-	//UE_LOG(LogTemp, Warning,
-	//	TEXT("[SpawnCheck] Shooter Rep=%d NetLoad=%d Role=%d RemoteRole=%d"),
-	//	Partner ? Partner->GetIsReplicated() : 0,
-	//	Partner ? Partner->bNetLoadOnClient : 0,
-	//	Partner ? (int32)Partner->GetLocalRole() : -1,
-	//	Partner ? (int32)Partner->GetRemoteRole() : -1
-	//);
-
-	////UE_LOG(LogTemp, Warning, TEXT("[GameMode] Spawn: Shooter=%s Partner=%s"),
-	////	*GetNameSafe(Shooter), *GetNameSafe(Partner));
-
-	////if (NewShooterPC && Shooter)
-	////{
-	////	UE_LOG(LogTemp, Warning, TEXT("[GameMode] Possess Shooter: PC=%s CurrentPawn=%s"),
-	////		*GetNameSafe(NewShooterPC), *GetNameSafe(NewShooterPC->GetPawn()));
-	////	NewShooterPC->Possess(Shooter);
-	////	UE_LOG(LogTemp, Warning, TEXT("[GameMode] After Possess Shooter: PC.Pawn=%s Shooter.Controller=%s"),
-	////		*GetNameSafe(NewShooterPC->GetPawn()), *GetNameSafe(Shooter->GetController()));
-	////}
-
-	////if (NewPartnerPC && Partner)
-	////{
-	////	UE_LOG(LogTemp, Warning, TEXT("[GameMode] Possess Partner: PC=%s CurrentPawn=%s"),
-	////		*GetNameSafe(NewPartnerPC), *GetNameSafe(NewPartnerPC->GetPawn()));
-	////	NewPartnerPC->Possess(Partner);
-	////	UE_LOG(LogTemp, Warning, TEXT("[GameMode] After Possess Partner: PC.Pawn=%s Partner.Controller=%s"),
-	////		*GetNameSafe(NewPartnerPC->GetPawn()), *GetNameSafe(Partner->GetController()));
-	////}
 
 	RegisterSpawnedPair(ShooterPS, PartnerPS, Shooter, Partner);
 }
 
 
+
+void AOutlierGameMode::OnClientArenaReady(APlayerController* PC)
+{
+	/*UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][5] OnClientArenaReady PC=%s PendingCount=%d"),
+		*GetNameSafe(PC), PendingPossessions.Num());*/
+
+	TObjectPtr<APawn>* PendingPawn = PendingPossessions.Find(PC);
+	if (!PendingPawn || !(*PendingPawn))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][5] No pending pawn for PC=%s"), *GetNameSafe(PC));
+		PendingPossessions.Remove(PC);
+		return;
+	}
+
+	APawn* Pawn = PendingPawn->Get();
+	PendingPossessions.Remove(PC);
+
+	//UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][5] Possessing Pawn=%s"), *GetNameSafe(Pawn));
+	PC->Possess(Pawn);
+}
 
 void AOutlierGameMode::Logout(AController* Exiting)
 {
@@ -545,14 +566,6 @@ bool AOutlierGameMode::ResolveArenaSpawnTransforms(int32 ArenaId, FTransform& Ou
 		}
 	}
 
-	UE_LOG(LogTemp, Warning,
-		TEXT("[GameMode] ResolveArenaSpawnTransforms START World=%s NetMode=%d ArenaId=%d ArenaLevel=%s ArenaPackage=%s"),
-		*GetNameSafe(World),
-		World ? static_cast<int32>(World->GetNetMode()) : -1,
-		ArenaId,
-		*GetNameSafe(ArenaLevel),
-		ArenaLevel ? *ArenaLevel->GetOutermost()->GetName() : TEXT("None"));
-
 	if (!ArenaLevel)
 	{
 		UE_LOG(LogTemp, Warning,
@@ -568,11 +581,6 @@ bool AOutlierGameMode::ResolveArenaSpawnTransforms(int32 ArenaId, FTransform& Ou
 		PlayerStartActors
 	);
 
-	UE_LOG(LogTemp, Warning,
-		TEXT("[GameMode] ResolveArenaSpawnTransforms PlayerStartCount=%d TargetArenaLevel=%s"),
-		PlayerStartActors.Num(),
-		*GetNameSafe(ArenaLevel));
-
 	APlayerStart* ShooterStart = nullptr;
 	APlayerStart* PartnerStart = nullptr;
 	TArray<APlayerStart*> ArenaStarts;
@@ -586,15 +594,7 @@ bool AOutlierGameMode::ResolveArenaSpawnTransforms(int32 ArenaId, FTransform& Ou
 		}
 
 		const bool bSameLevel = PlayerStart->GetLevel() == ArenaLevel;
-		UE_LOG(LogTemp, Warning,
-			TEXT("[GameMode] PlayerStart Candidate Name=%s Tag=%s SameArenaLevel=%d ActorLevel=%s ActorPackage=%s Location=%s"),
-			*GetNameSafe(PlayerStart),
-			*PlayerStart->PlayerStartTag.ToString(),
-			bSameLevel ? 1 : 0,
-			*GetNameSafe(PlayerStart->GetLevel()),
-			PlayerStart->GetLevel() ? *PlayerStart->GetLevel()->GetOutermost()->GetName() : TEXT("None"),
-			*PlayerStart->GetActorLocation().ToString());
-
+	
 		if (!bSameLevel)
 		{
 			continue;
@@ -642,13 +642,6 @@ bool AOutlierGameMode::ResolveArenaSpawnTransforms(int32 ArenaId, FTransform& Ou
 		OutPartnerSpawn = OutShooterSpawn;
 		OutPartnerSpawn.AddToTranslation(OutShooterSpawn.GetRotation().GetRightVector() * 150.0f);
 	}
-
-	UE_LOG(LogTemp, Warning,
-		TEXT("[GameMode] ResolveArenaSpawnTransforms RESULT ArenaId=%d ArenaStartCount=%d ShooterStart=%s PartnerStart=%s"),
-		ArenaId,
-		ArenaStarts.Num(),
-		*GetNameSafe(ShooterStart),
-		*GetNameSafe(PartnerStart));
 
 	return true;
 
