@@ -17,23 +17,6 @@ void APartnerPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
 
-	UE_LOG(
-		LogTemp,
-		Warning,
-		TEXT("[OutlierInputDebug] PartnerPC BeginPlay: %s Pawn=%s"),
-		*GetNameSafe(this),
-		*GetNameSafe(GetPawn())
-	);
-
-	UE_LOG(
-		LogTemp,
-		Warning,
-		TEXT("[OutlierCameraFeel] PartnerPC CameraManager: Class=%s Instance=%s Expected=%s"),
-		*GetNameSafe(PlayerCameraManagerClass),
-		*GetNameSafe(PlayerCameraManager),
-		*GetNameSafe(AFirstPersonPlayerCameraManager::StaticClass())
-	);
-
 	BindMainUI();
 	BindPostProcessSubSystem();
 }
@@ -107,21 +90,12 @@ void APartnerPlayerController::BindMainUI()
 	}
 
 	ShooterUIInstance->AddToViewport();
-	UE_LOG(LogTemp, Warning,
-		TEXT("[PartnerPC] MainUI added PC=%s UI=%s MainUIClass=%s"),
-		*GetNameSafe(this),
-		*GetNameSafe(ShooterUIInstance),
-		*GetNameSafe(MainUIClass));
 
 	if (ULocalPlayer* LP = GetLocalPlayer())
 	{
 		if (ULocalPlayerUISubSystem* UISubsystem = LP->GetSubsystem<ULocalPlayerUISubSystem>())
 		{
 			UISubsystem->RegisterMainUI(ShooterUIInstance);
-			UE_LOG(LogTemp, Warning,
-				TEXT("[PartnerPC] MainUI registered to UISubsystem PC=%s UI=%s"),
-				*GetNameSafe(this),
-				*GetNameSafe(ShooterUIInstance));
 		}
 	}
 }
@@ -134,35 +108,8 @@ void APartnerPlayerController::ReceivedPlayer()
 {
 	Super::ReceivedPlayer();
 
-	UE_LOG(LogTemp, Warning,
-		TEXT("[PartnerPC] ReceivedPlayer PC=%s Local=%d Auth=%d Pawn=%s PS=%s MainUIClass=%s UI=%s"),
-		*GetNameSafe(this),
-		IsLocalController(),
-		HasAuthority(),
-		*GetNameSafe(GetPawn()),
-		*GetNameSafe(PlayerState),
-		*GetNameSafe(MainUIClass),
-		*GetNameSafe(ShooterUIInstance)
-	);
-
 	BindMainUI();
 	BindPostProcessSubSystem();
 }
 
-void APartnerPlayerController::AcknowledgePossession(APawn* P)
-{
-	Super::AcknowledgePossession(P);
 
-	UE_LOG(LogTemp, Warning,
-		TEXT("[PartnerPC] AcknowledgePossession PC=%s Local=%d Auth=%d Pawn=%s MainUIClass=%s UI=%s"),
-		*GetNameSafe(this),
-		IsLocalController(),
-		HasAuthority(),
-		*GetNameSafe(P),
-		*GetNameSafe(MainUIClass),
-		*GetNameSafe(ShooterUIInstance)
-	);
-
-	BindMainUI();
-	BindPostProcessSubSystem();
-}

@@ -56,44 +56,13 @@ void AShooterPlayerController::OnPossess(APawn* InPawn)
 
 	if (AShooterCharacter* ShooterCharacter = Cast<AShooterCharacter>(InPawn))
 	{
-		// Mark the currently possessed pawn so gameplay systems can identify it.
 		ShooterCharacter->Tags.Add(PlayerPawnTag);
 	}
-
-
-
 }
 
 void AShooterPlayerController::ReceivedPlayer()
 {
 	Super::ReceivedPlayer();
-
-	UE_LOG(LogTemp, Warning,
-		TEXT("[ShooterPC] ReceivedPlayer PC=%s Local=%d Auth=%d Pawn=%s PS=%s MainUIClass=%s UI=%s"),
-		*GetNameSafe(this),
-		IsLocalController() ? 1 : 0,
-		HasAuthority() ? 1 : 0,
-		*GetNameSafe(GetPawn()),
-		*GetNameSafe(PlayerState),
-		*GetNameSafe(MainUIClass),
-		*GetNameSafe(ShooterUIInstance));
-
-	BindMainUI();
-	BindPostProcessSubSystem();
-}
-
-void AShooterPlayerController::AcknowledgePossession(APawn* P)
-{
-	Super::AcknowledgePossession(P);
-
-	UE_LOG(LogTemp, Warning,
-		TEXT("[ShooterPC] AcknowledgePossession PC=%s Local=%d Auth=%d Pawn=%s MainUIClass=%s UI=%s"),
-		*GetNameSafe(this),
-		IsLocalController() ? 1 : 0,
-		HasAuthority() ? 1 : 0,
-		*GetNameSafe(P),
-		*GetNameSafe(MainUIClass),
-		*GetNameSafe(ShooterUIInstance));
 
 	BindMainUI();
 	BindPostProcessSubSystem();

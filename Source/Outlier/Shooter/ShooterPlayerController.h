@@ -39,7 +39,6 @@ protected:
 	/** Pawn initialization */
 	virtual void OnPossess(APawn* InPawn) override;
 	virtual void ReceivedPlayer() override;
-	virtual void AcknowledgePossession(APawn* P) override;
 
 	void CleanupPossessedShooterWeapons();
 
