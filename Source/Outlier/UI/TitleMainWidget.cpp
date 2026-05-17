@@ -40,8 +40,20 @@ void UTitleMainWidget::ExitPressed()
 
 void UTitleMainWidget::ShowLobby()
 {
+	UE_LOG(LogTemp, Warning,
+		TEXT("[TitleMain] ShowLobby TitleMain=%p LobbyWidget=%p OwningPC=%s Before=%d"),
+		this,
+		LobbyWidget.Get(),
+		*GetNameSafe(GetOwningPlayer()),
+		LobbyWidget ? (int32)LobbyWidget->GetVisibility() : -1);
+
 	TitleWidget->SetVisibility(ESlateVisibility::Collapsed);
 	LobbyWidget->SetVisibility(ESlateVisibility::Visible);
+
+	UE_LOG(LogTemp, Warning,
+		TEXT("[TitleMain] ShowLobby After=%d IsVisible=%d"),
+		LobbyWidget ? (int32)LobbyWidget->GetVisibility() : -1,
+		LobbyWidget ? LobbyWidget->IsVisible() : 0);
 }
 
 void UTitleMainWidget::ShowTitle()

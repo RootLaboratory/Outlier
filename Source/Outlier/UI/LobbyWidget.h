@@ -63,11 +63,15 @@ private:
 	void HandleBackButtonEvent();
 
 	void HandlePendingLobbyStateChanged(AOutlierPlayerState* ChangedPS);
-
 	void RequestRole(EOutlierPlayerRole DesiredRole);
 	void BindLobbyPlayerStateDelegates();
 	void UnbindLobbyPlayerStateDelegates();
 	AOutlierPlayerState* GetLocalOutlierPlayerState() const;
 	void RefreshRoleSelection();
 
+private:
+	//Widget delegate 설정이 PS array 촉기화보다 일러서 Timer로 지연 delegate 초기화;
+	FTimerHandle LobbyRefreshTimerHandle;
+	void StartLobbyRefreshTimer();
+	void StopLobbyRefreshTimer();
 };

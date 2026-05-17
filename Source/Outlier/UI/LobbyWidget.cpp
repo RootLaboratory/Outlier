@@ -11,6 +11,17 @@ void ULobbyWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
 
+	/*UE_LOG(LogTemp, Warning,
+		TEXT("[LobbyWidget] NativeConstruct this=%p World=%s NetMode=%d OwningPC=%s Local=%d Auth=%d InViewport=%d Visibility=%d"),
+		this,
+		*GetNameSafe(GetWorld()),
+		GetWorld() ? (int32)GetWorld()->GetNetMode() : -1,
+		*GetNameSafe(GetOwningPlayer()),
+		GetOwningPlayer() ? GetOwningPlayer()->IsLocalController() : 0,
+		GetOwningPlayer() ? GetOwningPlayer()->HasAuthority() : 0,
+		IsInViewport(),
+		(int32)GetVisibility());*/
+
 	if (ShooterSelect)
 	{
 		ShooterSelect->OnClicked.AddDynamic(this, &ULobbyWidget::HandleShooterSelectClicked);
@@ -28,12 +39,15 @@ void ULobbyWidget::NativeConstruct()
 
 	BindLobbyPlayerStateDelegates();
 	RefreshRoleSelection();
+	StartLobbyRefreshTimer();
 }
 
 void ULobbyWidget::NativeDestruct()
 {
+	StopLobbyRefreshTimer();
 	UnbindLobbyPlayerStateDelegates();
 	Super::NativeDestruct();
+
 }
 
 void ULobbyWidget::HandleShooterSelectClicked()
@@ -65,6 +79,11 @@ void ULobbyWidget::HandleBackButtonEvent()
 
 void ULobbyWidget::HandlePendingLobbyStateChanged(AOutlierPlayerState* ChangedPS)
 {
+	/*UE_LOG(LogTemp, Warning, TEXT("[LobbyWidget] HandlePendingLobbyStateChanged: PS=%s, MatchId=%d, Role=%d"),
+		ChangedPS ? *ChangedPS->GetPlayerName() : TEXT("NULL"),
+		ChangedPS ? ChangedPS->GetPendingLobbyMatchId() : -1,
+		ChangedPS ? (int32)ChangedPS->GetPendingLobbyRole() : -1);*/
+
 	BindLobbyPlayerStateDelegates();
 	RefreshRoleSelection();
 }
@@ -76,6 +95,18 @@ void ULobbyWidget::RequestRole(EOutlierPlayerRole DesiredRole)
 	{
 		return;
 	}
+
+	AFrontendPlayerController* PC = Cast<AFrontendPlayerController>(GetOwningPlayer());
+
+
+	//UE_LOG(LogTemp, Warning,
+	//	TEXT("[LobbyUI] RequestRole Widget=%s PC=%s Local=%d Auth=%d Role=%d"),
+	//	*GetNameSafe(this),
+	//	*GetNameSafe(PC),
+	//	PC ? PC->IsLocalController() : 0,
+	//	PC ? PC->HasAuthority() : 0,
+	//	(int32)DesiredRole);
+
 
 	FrontendPC->RequestSelectLobbyRole(DesiredRole);
 }
@@ -164,11 +195,48 @@ void ULobbyWidget::RefreshRoleSelection()
 		: INDEX_NONE;
 
 	const AGameStateBase* GS = GetWorld() ? GetWorld()->GetGameState() : nullptr;
+
+	/*UE_LOG(LogTemp, Warning,
+		TEXT("[LobbyWidget] Refresh START Widget=%s PC=%s LocalPS=%s MatchId=%d GS=%s PlayerArray=%d ShooterImg=%s PartnerImg=%s StartBtn=%s"),
+		*GetNameSafe(this),
+		*GetNameSafe(GetOwningPlayer()),
+		*GetNameSafe(LocalPS),
+		PendingLobbyMatchId,
+		*GetNameSafe(GS),
+		GS ? GS->PlayerArray.Num() : -1,
+		*GetNameSafe(ShooterSelectedImage),
+		*GetNameSafe(PartnerSelectedImage),
+		*GetNameSafe(StartButton)
+	);
+
+	UE_LOG(LogTemp, Warning,
+		TEXT("[LobbyWidget] Refresh END this=%p NetMode=%d WidgetVis=%d IsVisible=%d ShooterTaken=%d PartnerTaken=%d ShooterImgVis=%d PartnerImgVis=%d StartEnabled=%d"),
+		this,
+		GetWorld() ? (int32)GetWorld()->GetNetMode() : -1,
+		(int32)GetVisibility(),
+		IsVisible(),
+		bShooterTaken,
+		bPartnerTaken,
+		ShooterSelectedImage ? (int32)ShooterSelectedImage->GetVisibility() : -1,
+		PartnerSelectedImage ? (int32)PartnerSelectedImage->GetVisibility() : -1,
+		StartButton ? StartButton->GetIsEnabled() : 0);*/
+
 	if (GS && PendingLobbyMatchId != INDEX_NONE)
 	{
 		for (APlayerState* RawPS : GS->PlayerArray)
 		{
 			const AOutlierPlayerState* OutlierPS = Cast<AOutlierPlayerState>(RawPS);
+
+		/*	UE_LOG(LogTemp, Warning,
+				TEXT("[LobbyWidget] PlayerArray PS=%s Cast=%s PSMatchId=%d PendingRole=%d FinalRole=%d IsLocalPS=%d"),
+				*GetNameSafe(RawPS),
+				*GetNameSafe(OutlierPS),
+				OutlierPS ? OutlierPS->GetPendingLobbyMatchId() : INDEX_NONE,
+				OutlierPS ? (int32)OutlierPS->GetPendingLobbyRole() : -1,
+				OutlierPS ? (int32)OutlierPS->GetPlayerRole() : -1,
+				OutlierPS == LocalPS
+			);*/
+
 			if (!OutlierPS || OutlierPS->GetPendingLobbyMatchId() != PendingLobbyMatchId)
 			{
 				continue;
@@ -178,6 +246,13 @@ void ULobbyWidget::RefreshRoleSelection()
 			bPartnerTaken |= OutlierPS->GetPendingLobbyRole() == EOutlierPlayerRole::Partner;
 		}
 	}
+
+	/*UE_LOG(LogTemp, Warning,
+		TEXT("[LobbyWidget] Refresh RESULT MatchId=%d ShooterTaken=%d PartnerTaken=%d"),
+		PendingLobbyMatchId,
+		bShooterTaken,
+		bPartnerTaken
+	);*/
 
 	if (ShooterSelectedImage)
 	{
@@ -197,4 +272,30 @@ void ULobbyWidget::RefreshRoleSelection()
 	{
 		StartButton->SetIsEnabled(bShooterTaken && bPartnerTaken);
 	}
+}
+
+void ULobbyWidget::StartLobbyRefreshTimer()
+{
+	if (!GetWorld())
+	{
+		return;
+	}
+
+	GetWorld()->GetTimerManager().SetTimer(
+		LobbyRefreshTimerHandle,
+		this,
+		&ULobbyWidget::RefreshRoleSelection,
+		0.1f,
+		true
+	);
+}
+
+void ULobbyWidget::StopLobbyRefreshTimer()
+{
+	if (!GetWorld())
+	{
+		return;
+	}
+
+	GetWorld()->GetTimerManager().ClearTimer(LobbyRefreshTimerHandle);
 }

@@ -301,9 +301,14 @@ void ARangedWeaponBase::ClientNotifyShotFired_Implementation()
 {
 	AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
 
-	if (Shooter->IsLocallyControlled())
+	if (!IsValid(Shooter) || !Shooter->IsLocallyControlled())
 	{
-		GetLocalUISubsystem()->OnRep_ShootCrosshairChanged(ReuseCooldown);
+		return;
+	}
+
+	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
+	{
+		UISubsystem->OnRep_ShootCrosshairChanged(ReuseCooldown);
 	}
 }
 
