@@ -186,10 +186,6 @@ void AOutlierPlayerState::OnRep_PendingLobbyRole()
 	HandlePendingLobbyStateChanged();
 }
 
-void AOutlierPlayerState::OnRep_ArenaId()
-{
-}
-
 void AOutlierPlayerState::HandlePlayerRoleChanged()
 {
 	OnPlayerRoleChanged.Broadcast(this);
