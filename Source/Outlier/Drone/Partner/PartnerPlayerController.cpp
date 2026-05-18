@@ -4,6 +4,8 @@
 #include "Drone/Partner/PartnerPlayerController.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "FirstPerson/FirstPersonPlayerCameraManager.h"
+#include "Blueprint/UserWidget.h"
+#include "LocalPlayerUISubSystem.h"
 
 APartnerPlayerController::APartnerPlayerController()
 {
@@ -14,23 +16,6 @@ APartnerPlayerController::APartnerPlayerController()
 void APartnerPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
-
-	UE_LOG(
-		LogTemp,
-		Warning,
-		TEXT("[OutlierInputDebug] PartnerPC BeginPlay: %s Pawn=%s"),
-		*GetNameSafe(this),
-		*GetNameSafe(GetPawn())
-	);
-
-	UE_LOG(
-		LogTemp,
-		Warning,
-		TEXT("[OutlierCameraFeel] PartnerPC CameraManager: Class=%s Instance=%s Expected=%s"),
-		*GetNameSafe(PlayerCameraManagerClass),
-		*GetNameSafe(PlayerCameraManager),
-		*GetNameSafe(AFirstPersonPlayerCameraManager::StaticClass())
-	);
 
 	BindMainUI();
 	BindPostProcessSubSystem();
@@ -67,8 +52,64 @@ void APartnerPlayerController::OnPossess(APawn* InPawn)
 
 void APartnerPlayerController::BindMainUI()
 {
+	if (!IsLocalController())
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[PartnerPC] BindMainUI skipped: not local PC=%s Auth=%d"),
+			*GetNameSafe(this),
+			HasAuthority() ? 1 : 0);
+		return;
+	}
+
+	if (ShooterUIInstance)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[PartnerPC] BindMainUI skipped: already exists PC=%s UI=%s"),
+			*GetNameSafe(this),
+			*GetNameSafe(ShooterUIInstance));
+		return;
+	}
+
+	if (!MainUIClass)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[PartnerPC] BindMainUI failed: MainUIClass is null PC=%s Class=%s"),
+			*GetNameSafe(this),
+			*GetNameSafe(GetClass()));
+		return;
+	}
+
+	ShooterUIInstance = CreateWidget<UMainUIBase>(this, MainUIClass);
+	if (!ShooterUIInstance)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[PartnerPC] BindMainUI failed: CreateWidget returned null PC=%s MainUIClass=%s"),
+			*GetNameSafe(this),
+			*GetNameSafe(MainUIClass));
+		return;
+	}
+
+	ShooterUIInstance->AddToViewport();
+
+	if (ULocalPlayer* LP = GetLocalPlayer())
+	{
+		if (ULocalPlayerUISubSystem* UISubsystem = LP->GetSubsystem<ULocalPlayerUISubSystem>())
+		{
+			UISubsystem->RegisterMainUI(ShooterUIInstance);
+		}
+	}
 }
 
 void APartnerPlayerController::BindPostProcessSubSystem()
 {
 }
+
+void APartnerPlayerController::ReceivedPlayer()
+{
+	Super::ReceivedPlayer();
+
+	BindMainUI();
+	BindPostProcessSubSystem();
+}
+
+

@@ -9,16 +9,30 @@
 /**
  * 
  */
+
+class ULoadingWidget;
+
 UCLASS()
 class OUTLIER_API UOutlierGameInstance : public UGameInstance
 {
 	GENERATED_BODY()
-	
+
 public:
 	virtual void Init() override;
 
 private:
+
 	void HandlePostLoadMap(UWorld* LoadedWorld);
+	void HandlePreLoadMap(const FString& MapName);
+
+public:
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "UI")
+	TSubclassOf<ULoadingWidget> LoadingWidgetClass;
+
+	UPROPERTY()
+	TObjectPtr<ULoadingWidget> LoadingWidget;
+private:
 
 	bool bTriedConnect = false;
+
 };

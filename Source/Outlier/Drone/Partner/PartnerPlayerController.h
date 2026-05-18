@@ -37,6 +37,8 @@ protected:
 
 	virtual void BindPostProcessSubSystem() override;
 
+	virtual void ReceivedPlayer() override;
+
 public:
 	APartnerPlayerController();
 	

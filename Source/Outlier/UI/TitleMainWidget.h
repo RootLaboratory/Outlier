@@ -31,7 +31,16 @@ public:
 
 private:
 	UFUNCTION()
+	void StartPressed();
+
+	UFUNCTION()
+	void ExitPressed();
+
+	UFUNCTION()
 	void ShowLobby();
+
+	UFUNCTION()
+	void ShowTitle();
 
 	UFUNCTION()
 	void RequestExit();

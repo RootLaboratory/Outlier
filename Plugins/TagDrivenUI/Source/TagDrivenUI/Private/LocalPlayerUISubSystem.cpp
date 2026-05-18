@@ -34,9 +34,21 @@ void ULocalPlayerUISubSystem::UnregisterMainUI(UMainUIBase* InMainUI)
 	}
 }
 
+UMainUIBase* ULocalPlayerUISubSystem::GetMainUI() const
+{
+	return IsValid(MainUIInstance) ? MainUIInstance.Get() : nullptr;
+}
+
+UEventDrivenUI* ULocalPlayerUISubSystem::GetModule(EUIModule Key) const
+{
+	UMainUIBase* MainUI = GetMainUI();
+	return MainUI ? MainUI->GetModule(Key) : nullptr;
+}
+
 void ULocalPlayerUISubSystem::OnRep_HUDActivate(bool bShouldActivate)
 {
-	if (!MainUIInstance)
+	UMainUIBase* MainUI = GetMainUI();
+	if (!MainUI)
 	{
 		return;
 
@@ -44,11 +56,11 @@ void ULocalPlayerUISubSystem::OnRep_HUDActivate(bool bShouldActivate)
 
 	if (bShouldActivate)
 	{
-		MainUIInstance->ModuleActivate();
+		MainUI->ModuleActivate();
 	}
 	else
 	{
-		MainUIInstance->ModuleDeActivate();
+		MainUI->ModuleDeActivate();
 	}
 
 }
@@ -58,12 +70,12 @@ void ULocalPlayerUISubSystem::OnRep_HealthChanged(float InHealth, float MaxHealt
 
 	float Ratio = InHealth / MaxHealth;
 
-	if (!MainUIInstance)
+	if (!GetMainUI())
 	{
 		return;
 	}
 
-	if (UHPBarUI* HPBarUI = Cast<UHPBarUI>(MainUIInstance->GetModule(EUIModule::HP)))
+	if (UHPBarUI* HPBarUI = Cast<UHPBarUI>(GetModule(EUIModule::HP)))
 	{
 		UE_LOG(LogTemp, Error, TEXT("HP Changed, %f"), Ratio);
 		HPBarUI->HealthChanged(Ratio);
@@ -74,12 +86,12 @@ void ULocalPlayerUISubSystem::OnRep_ShieldChanged( float InCurShield,  float InM
 {
 	float Ratio = InCurShield / InMaxShield;
 
-	if (!MainUIInstance)
+	if (!GetMainUI())
 	{
 		return;
 	}
 
-	if (UHPBarUI* HPBarUI = Cast<UHPBarUI>(MainUIInstance->GetModule(EUIModule::HP)))
+	if (UHPBarUI* HPBarUI = Cast<UHPBarUI>(GetModule(EUIModule::HP)))
 	{
 		HPBarUI->ShieldChanged(Ratio);
 	}
@@ -88,12 +100,12 @@ void ULocalPlayerUISubSystem::OnRep_ShieldChanged( float InCurShield,  float InM
 void ULocalPlayerUISubSystem::OnRep_AmmoCountChanged(int32 InAmmoCount)
 {
 
-	if (!MainUIInstance)
+	if (!GetMainUI())
 	{
 		return;
 	}
 
-	if (UAmmoUI* AmmoUI = Cast<UAmmoUI>(MainUIInstance->GetModule(EUIModule::Ammo)))
+	if (UAmmoUI* AmmoUI = Cast<UAmmoUI>(GetModule(EUIModule::Ammo)))
 	{
 		AmmoUI->AmmoCountChanged(InAmmoCount);
 	}
@@ -103,7 +115,7 @@ void ULocalPlayerUISubSystem::OnRep_AmmoCountChanged(int32 InAmmoCount)
 void ULocalPlayerUISubSystem::OnRep_PlayerStateChanged(EUIPlayerState State)
 {
 
-	if (UDynamicCrossHair* CrossHairUI = Cast<UDynamicCrossHair>(MainUIInstance->GetModule(EUIModule::CrossHair)))
+	if (UDynamicCrossHair* CrossHairUI = Cast<UDynamicCrossHair>(GetModule(EUIModule::CrossHair)))
 	{
 		CrossHairUI->SetPlayerState(State);
 	}
@@ -117,12 +129,12 @@ void ULocalPlayerUISubSystem::OnRep_PlayerStateChanged(EUIPlayerState State)
 
 void ULocalPlayerUISubSystem::PartnerCameraToggle()
 {
-	if (!MainUIInstance)
+	if (!GetMainUI())
 	{
 		return;
 	}
 
-	if (UPartnerCamUI* PartnerCamUI = Cast<UPartnerCamUI>(MainUIInstance->GetModule(EUIModule::PartnerCam)))
+	if (UPartnerCamUI* PartnerCamUI = Cast<UPartnerCamUI>(GetModule(EUIModule::PartnerCam)))
 	{
 		PartnerCamUI->TogglePartnerCamera();
 	}
@@ -130,7 +142,7 @@ void ULocalPlayerUISubSystem::PartnerCameraToggle()
 
 void ULocalPlayerUISubSystem::OnRep_Aiming()
 {
-	if (UCrossHairBase* CrossHairBase = Cast<UCrossHairBase>(MainUIInstance->GetModule(EUIModule::CrossHair)))
+	if (UCrossHairBase* CrossHairBase = Cast<UCrossHairBase>(GetModule(EUIModule::CrossHair)))
 	{
 		CrossHairBase->OnAiming();
 	}
@@ -139,7 +151,7 @@ void ULocalPlayerUISubSystem::OnRep_Aiming()
 
 void ULocalPlayerUISubSystem::OnRep_AimingOff()
 {
-	if (UCrossHairBase* CrossHairBase = Cast<UCrossHairBase>(MainUIInstance->GetModule(EUIModule::CrossHair)))
+	if (UCrossHairBase* CrossHairBase = Cast<UCrossHairBase>(GetModule(EUIModule::CrossHair)))
 	{
 		CrossHairBase->OnAimingOff();
 	}
@@ -149,7 +161,7 @@ void ULocalPlayerUISubSystem::OnRep_AimingOff()
 void ULocalPlayerUISubSystem::OnRep_AttackSign(EAttackSign InType)
 {
 
-	if (UCrossHairBase* CrossHairBase = Cast<UCrossHairBase>(MainUIInstance->GetModule(EUIModule::CrossHair)))
+	if (UCrossHairBase* CrossHairBase = Cast<UCrossHairBase>(GetModule(EUIModule::CrossHair)))
 	{
 		//UE_LOG(LogTemp, Error, TEXT("CrossHair Instance Class: %s"), *GetNameSafe(CrossHairBase->GetClass()));
 		//UE_LOG(LogTemp, Error, TEXT("OnRep_AttackSign %d"), (uint8)InType);
@@ -159,12 +171,19 @@ void ULocalPlayerUISubSystem::OnRep_AttackSign(EAttackSign InType)
 
 void ULocalPlayerUISubSystem::OnRep_ShootCrosshairChanged(float InFireRate)
 {
-	if (UDynamicCrossHair* CrossHairBase = Cast<UDynamicCrossHair>(MainUIInstance->GetModule(EUIModule::CrossHair)))
+	UEventDrivenUI* CrossHairModule = GetModule(EUIModule::CrossHair);
+	if (!CrossHairModule)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[LocalPlayerUISubSystem] ShootCrosshair skipped: MainUI or CrossHair module is not ready"));
+		return;
+	}
+
+	if (UDynamicCrossHair* CrossHairBase = Cast<UDynamicCrossHair>(CrossHairModule))
 	{
 		UE_LOG(LogTemp, Log, TEXT("OnRep_ShootCrosshairChanged"));
 		CrossHairBase->On_RepShoot();
 	}
-	else if (UStaticCrossHair* Crosshair = Cast<UStaticCrossHair>(MainUIInstance->GetModule(EUIModule::CrossHair)))
+	else if (UStaticCrossHair* Crosshair = Cast<UStaticCrossHair>(CrossHairModule))
 	{
 		Crosshair->SetCoolTime(InFireRate );
 		UE_LOG(LogTemp, Log, TEXT("InFireRate %f"), InFireRate);
@@ -180,7 +199,12 @@ void ULocalPlayerUISubSystem::PartnerCameraBind(USceneCaptureComponent2D* InCapt
 {
 	//UE_LOG(LogTemp, Error, TEXT("Try PartnerCameraBind"));
 
-	if (UPartnerCamUI* PartnerCamUI = Cast<UPartnerCamUI>(MainUIInstance->GetModule(EUIModule::PartnerCam)))
+	if (!InCaptureComponent2D)
+	{
+		return;
+	}
+
+	if (UPartnerCamUI* PartnerCamUI = Cast<UPartnerCamUI>(GetModule(EUIModule::PartnerCam)))
 	{
 		UTextureRenderTarget2D* RenderTarget = InCaptureComponent2D->TextureTarget;
 		if (RenderTarget)
@@ -199,5 +223,4 @@ void ULocalPlayerUISubSystem::PartnerCameraBind(USceneCaptureComponent2D* InCapt
 
 	}
 }
-
 

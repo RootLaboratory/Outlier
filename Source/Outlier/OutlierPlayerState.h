@@ -9,6 +9,7 @@
 
 class AShooterCharacter;
 class APartnerCharacter;
+class AOutlierPlayerState;
 
 UENUM(BlueprintType)
 enum class EOutlierPlayerRole : uint8
@@ -17,6 +18,10 @@ enum class EOutlierPlayerRole : uint8
 	Shooter,
 	Partner
 };
+
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnPlayerRoleChanged, AOutlierPlayerState*);
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnPendingLobbyStateChanged, AOutlierPlayerState*);
+
 
 /**
  * 
@@ -64,15 +69,36 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Pair")
 	int32 GetArenaId() const { return ArenaId; }
 
+	UFUNCTION(BlueprintCallable, Category = "Lobby")
+	void SetPendingLobbyMatchId(int32 NewPendingLobbyMatchId);
+
+	UFUNCTION(BlueprintPure, Category = "Lobby")
+	int32 GetPendingLobbyMatchId() const { return PendingLobbyMatchId; }
+
+	UFUNCTION(BlueprintCallable, Category = "Lobby")
+	void SetPendingLobbyRole(EOutlierPlayerRole NewPendingLobbyRole);
+
+	UFUNCTION(BlueprintPure, Category = "Lobby")
+	EOutlierPlayerRole GetPendingLobbyRole() const { return PendingLobbyRole; }
+
+	UFUNCTION(BlueprintCallable, Category = "Lobby")
+	void ClearPendingLobbyState();
+
 	UPROPERTY(Replicated)
 	int32 ArenaId = INDEX_NONE;
 
 protected:
-	UPROPERTY(Replicated)
+	UPROPERTY(ReplicatedUsing = OnRep_PlayerRole)
 	EOutlierPlayerRole PlayerRole = EOutlierPlayerRole::None;
 
 	UPROPERTY(Replicated)
 	int32 PairId = INDEX_NONE;
+
+	UPROPERTY(ReplicatedUsing = OnRep_PendingLobbyMatchId)
+	int32 PendingLobbyMatchId = INDEX_NONE;
+
+	UPROPERTY(ReplicatedUsing = OnRep_PendingLobbyRole)
+	EOutlierPlayerRole PendingLobbyRole = EOutlierPlayerRole::None;
 
 	UPROPERTY(ReplicatedUsing = OnRep_CheckpointData)
 	FOutlierCheckpointData CheckpointData;
@@ -101,4 +127,21 @@ protected:
 	void OnRep_SuitDisabledByPartnerBoundary();
 
 	void RefreshCharacterLinks();
+
+	UFUNCTION()
+	void OnRep_PlayerRole();
+
+	UFUNCTION()
+	void OnRep_PendingLobbyMatchId();
+
+	UFUNCTION()
+	void OnRep_PendingLobbyRole();
+
+	void HandlePlayerRoleChanged();
+	void HandlePendingLobbyStateChanged();
+
+public:
+
+	FOnPlayerRoleChanged OnPlayerRoleChanged;
+	FOnPendingLobbyStateChanged OnPendingLobbyStateChanged;
 };
