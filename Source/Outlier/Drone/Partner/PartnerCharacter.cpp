@@ -7,6 +7,7 @@
 #include "EnhancedInputSubsystems.h"
 #include "Drone/Partner/PartnerMovementComponent.h"
 #include "Drone/Partner/PartnerSupportComponent.h"
+#include "Drone/Partner/PartnerCombatComponent.h"
 #include "Net/UnrealNetwork.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Drone/DroneMoveDataRow.h"
@@ -142,6 +143,22 @@ void APartnerCharacter::OnMoveInputUpdated(const FVector2D& MoveValue)
 	Super::OnMoveInputUpdated(MoveValue);
 }
 
+void APartnerCharacter::TryStartAttack()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->TryStartAttack();
+	}
+}
+
+void APartnerCharacter::TryStopAttack()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->TryStopAttack();
+	}
+}
+
 void APartnerCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
@@ -153,6 +170,7 @@ void APartnerCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	DOREPLIFETIME(APartnerCharacter, bShieldActive);
 	DOREPLIFETIME(APartnerCharacter, bScanning);
 	DOREPLIFETIME(APartnerCharacter, LastHackServerTime);
+	DOREPLIFETIME(APartnerCharacter, bIsAccelerate);
 	DOREPLIFETIME(APartnerCharacter, bIsRebooting);
 	DOREPLIFETIME(APartnerCharacter, bIsInvincible);
 	DOREPLIFETIME(APartnerCharacter, CurrentHitCount);
@@ -259,12 +277,12 @@ void APartnerCharacter::ToggleAccelerate()
 		return;
 	}
 
-	bIsAccelerate = !bIsAccelerate;
+	const bool bNewAccelerate = !bIsAccelerate;
+	ApplyAccelerateState(bNewAccelerate);
 
-	if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
+	if (!HasAuthority())
 	{
-		MoveComp->MaxWalkSpeed = bIsAccelerate ? BoostSpeed : MoveSpeed;
-		MoveComp->MaxFlySpeed = bIsAccelerate ? BoostSpeed : MoveSpeed;
+		ServerSetAccelerate(bNewAccelerate);
 	}
 }
 
@@ -379,7 +397,7 @@ void APartnerCharacter::StartReboot()
 	bIsRebooting = true;
 	bIsInvincible = true;
 	CurrentHitCount = 0;
-	bIsAccelerate = false;
+	ApplyAccelerateState(false);
 
 	if (MovementComponent)
 	{
@@ -478,6 +496,34 @@ bool APartnerCharacter::CanApplyMoveMode(EPartnerMoveMode NewMode) const
 		NewMode == EPartnerMoveMode::CameraAssist;
 }
 
+void APartnerCharacter::ApplyAccelerateState(bool bNewAccelerate)
+{
+	bIsAccelerate = bNewAccelerate;
+
+	if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
+	{
+		const float CurrentSpeed = bIsAccelerate ? BoostSpeed : MoveSpeed;
+		MoveComp->MaxWalkSpeed = CurrentSpeed;
+		MoveComp->MaxFlySpeed = CurrentSpeed;
+	}
+
+	if (MovementComponent)
+	{
+		MovementComponent->ResetMovementFeel();
+	}
+}
+
+void APartnerCharacter::ServerSetAccelerate_Implementation(bool bNewAccelerate)
+{
+	if (!CanAcceptInput())
+	{
+		return;
+	}
+
+	ApplyAccelerateState(bNewAccelerate);
+	ForceNetUpdate();
+}
+
 void APartnerCharacter::ServerUseSkill_Implementation(EPartnerSkillType SkillType)
 {
 	if (!SupportComponent || !CanAcceptInput())
@@ -495,6 +541,9 @@ void APartnerCharacter::ServerUseSkill_Implementation(EPartnerSkillType SkillTyp
 		break;
 	case EPartnerSkillType::Scan:
 		SupportComponent->TryScan_Server();
+		break;
+	case EPartnerSkillType::Hack:
+		SupportComponent->TryHack_Server(nullptr);
 		break;
 	default:
 		break;
@@ -676,6 +725,7 @@ APartnerCharacter::APartnerCharacter()
 
 	MovementComponent = CreateDefaultSubobject<UPartnerMovementComponent>(TEXT("MovementComponent"));
 	SupportComponent  = CreateDefaultSubobject<UPartnerSupportComponent> (TEXT("SupportComponent"));
+	CombatComponent   = CreateDefaultSubobject<UPartnerCombatComponent>  (TEXT("CombatComponent"));
 }
 
 void APartnerCharacter::OnRep_DroneMovementState()
@@ -691,6 +741,11 @@ void APartnerCharacter::OnRep_MoveMode()
 	}
 }
 
+void APartnerCharacter::OnRep_IsAccelerate()
+{
+	ApplyAccelerateState(bIsAccelerate);
+}
+
 void APartnerCharacter::SetShooterCharacter(AShooterCharacter* NewShooter)
 {
 	CachedShooterCharacter = NewShooter;
@@ -704,6 +759,11 @@ void APartnerCharacter::SetShooterCharacter(AShooterCharacter* NewShooter)
 	{
 		SupportComponent->RefreshCharacterRefsFromPlayerState();
 	}
+}
+
+void APartnerCharacter::ClientNotifySkillUseResult_Implementation(EPartnerSkillType SkillType, EPartnerSkillUseResult Result)
+{
+	OnPartnerSkillUseResult.Broadcast(SkillType, Result);
 }
 
 float APartnerCharacter::GetCurrentInertialCameraRollDegrees() const

@@ -132,7 +132,6 @@ void UPartnerMovementComponent::SetMoveInput(const FVector2D& MoveInput)
 {
 	CurrentMoveInput = MoveInput;
 
-	ApplyManualMoveInput();
 	RefreshTickEnabled();
 }
 
@@ -140,12 +139,13 @@ void UPartnerMovementComponent::SetVerticalInput(const float Axis)
 {
 	VerticalInput = Axis;
 
-	ApplyManualMoveInput();
 	RefreshTickEnabled();
 }
 
 void UPartnerMovementComponent::OnMoveModeChanged(EPartnerMoveMode NewMode)
 {
+	ResetMovementFeel();
+
 	if (NewMode == EPartnerMoveMode::SyncMove && PartnerCharacter && PartnerCharacter->HasAuthority())
 	{
 		EnterSyncMove();
@@ -153,6 +153,25 @@ void UPartnerMovementComponent::OnMoveModeChanged(EPartnerMoveMode NewMode)
 
 	RefreshMovementState();
 	RefreshTickEnabled();
+}
+
+void UPartnerMovementComponent::ResetMovementFeel()
+{
+	bMovementFeelInitialized = false;
+	SmoothedVelocity = PartnerCharacter
+		? PartnerCharacter->GetVelocity()
+		: FVector::ZeroVector;
+	SmoothedTiltTarget = FVector2D::ZeroVector;
+	CurrentInertialPitch = 0.0f;
+	CurrentInertialRoll = 0.0f;
+	CurrentCameraPitch = 0.0f;
+	CurrentCameraRoll = 0.0f;
+	PreviousTargetPitch = 0.0f;
+	PreviousTargetRoll = 0.0f;
+	bPitchReboundActive = false;
+	bRollReboundActive = false;
+	PitchReboundTarget = 0.0f;
+	RollReboundTarget = 0.0f;
 }
 
 void UPartnerMovementComponent::RefreshTickEnabled()
@@ -377,6 +396,9 @@ FPartnerMovementKinematics UPartnerMovementComponent::CalculateMovementKinematic
 	}
 
 	Result.Acceleration = (RawVelocity - SmoothedVelocity) / DeltaTime;
+	Result.Acceleration = Result.Acceleration.GetClampedToMaxSize(
+		FMath::Max(PartnerCharacter->Acceleration * 2.0f, 1.0f)
+	);
 
 	SmoothedVelocity = FMath::VInterpTo(
 		SmoothedVelocity,

@@ -180,13 +180,15 @@ ULevelStreamingDynamic* UOutlierArenaPoolSubsystem::LoadArenaLevelInstance(int32
 	}
 
 	bool bSuccess = false;
+	const FString LevelNameOverride = FString::Printf(TEXT("OutlierArena_%d"), ArenaId);
 	ULevelStreamingDynamic* StreamingLevel =
 		ULevelStreamingDynamic::LoadLevelInstanceBySoftObjectPtr(
 			World,
 			ArenaLevel,
 			InstanceTransform.GetLocation(),
 			InstanceTransform.GetRotation().Rotator(),
-			bSuccess
+			bSuccess,
+			LevelNameOverride
 		);
 
 	if (!bSuccess || !StreamingLevel)
@@ -206,11 +208,12 @@ ULevelStreamingDynamic* UOutlierArenaPoolSubsystem::LoadArenaLevelInstance(int32
 	StreamingLevel->SetShouldBeVisible(true);
 
 	UE_LOG(LogTemp, Warning,
-		TEXT("[ArenaPool] LoadArenaLevelInstance success ArenaId=%d NetMode=%d Streaming=%s Package=%s Transform=%s"),
+		TEXT("[ArenaPool] LoadArenaLevelInstance success ArenaId=%d NetMode=%d Streaming=%s Package=%s Override=%s Transform=%s"),
 		ArenaId,
 		static_cast<int32>(World->GetNetMode()),
 		*GetNameSafe(StreamingLevel),
 		*StreamingLevel->GetWorldAssetPackageName(),
+		*LevelNameOverride,
 		*InstanceTransform.ToHumanReadableString());
 
 	return StreamingLevel;

@@ -28,33 +28,45 @@ void UPartnerSupportComponent::BeginPlay()
 
 void UPartnerSupportComponent::TryHack_Server(AActor* TargetActor)
 {
-	if (!PartnerCharacter || !PartnerCharacter->HasAuthority() || !TargetActor)
+	if (!PartnerCharacter || !PartnerCharacter->HasAuthority())
 	{
+		NotifySkillResult(EPartnerSkillType::Hack, EPartnerSkillUseResult::InvalidState);
 		return;
 	}
 
 	if (!CanUseSkill_Server(TEXT("Hack"), PartnerCharacter->HackCooldown))
 	{
+		NotifySkillResult(EPartnerSkillType::Hack, EPartnerSkillUseResult::Cooldown);
+		return;
+	}
+
+	AActor* HackTarget = TargetActor ? TargetActor : FindTarget(PartnerCharacter->HackRange);
+	if (!HackTarget)
+	{
+		NotifySkillResult(EPartnerSkillType::Hack, EPartnerSkillUseResult::NoTarget);
 		return;
 	}
 
 	const float Distance = FVector::Dist(
 		PartnerCharacter->GetActorLocation(),
-		TargetActor->GetActorLocation()
+		HackTarget->GetActorLocation()
 	);
 
 	if (Distance > PartnerCharacter->HackRange)
 	{
+		NotifySkillResult(EPartnerSkillType::Hack, EPartnerSkillUseResult::OutOfRange);
 		return;
 	}
 
-	if (PartnerCharacter->bRequireLineOfSight && !HasLineOfSight(TargetActor))
+	if (PartnerCharacter->bRequireLineOfSight && !HasLineOfSight(HackTarget))
 	{
+		NotifySkillResult(EPartnerSkillType::Hack, EPartnerSkillUseResult::NoLineOfSight);
 		return;
 	}
 
 	MarkSkillUsed(TEXT("Hack"));
 	PartnerCharacter->LastHackServerTime = GetWorld()->GetTimeSeconds();
+	NotifySkillResult(EPartnerSkillType::Hack, EPartnerSkillUseResult::Success);
 
 	// 해킹 로직
 }
@@ -63,11 +75,13 @@ void UPartnerSupportComponent::TryAreaOfEffect_Server()
 {
 	if (!PartnerCharacter || !PartnerCharacter->HasAuthority())
 	{
+		NotifySkillResult(EPartnerSkillType::AreaOfEffect, EPartnerSkillUseResult::InvalidState);
 		return;
 	}
 
 	if (!CanUseSkill_Server(TEXT("AreaOfEffect"), PartnerCharacter->AreaOfEffectCooldown))
 	{
+		NotifySkillResult(EPartnerSkillType::AreaOfEffect, EPartnerSkillUseResult::Cooldown);
 		return;
 	}
 
@@ -107,17 +121,21 @@ void UPartnerSupportComponent::TryAreaOfEffect_Server()
 
 		ApplyAreaOfEffect(Actor);
 	}
+
+	NotifySkillResult(EPartnerSkillType::AreaOfEffect, EPartnerSkillUseResult::Success);
 }
 
 void UPartnerSupportComponent::TryScan_Server()
 {
 	if (!PartnerCharacter || !PartnerCharacter->HasAuthority())
 	{
+		NotifySkillResult(EPartnerSkillType::Scan, EPartnerSkillUseResult::InvalidState);
 		return;
 	}
 
 	if (!CanUseSkill_Server(TEXT("Scan"), PartnerCharacter->ScanCooldown))
 	{
+		NotifySkillResult(EPartnerSkillType::Scan, EPartnerSkillUseResult::Cooldown);
 		return;
 	}
 
@@ -163,28 +181,34 @@ void UPartnerSupportComponent::TryScan_Server()
 		0.03f,
 		true
 	);
+
+	NotifySkillResult(EPartnerSkillType::Scan, EPartnerSkillUseResult::Success);
 }
 
 void UPartnerSupportComponent::TryShield_Server()
 {
 	if (!PartnerCharacter || !PartnerCharacter->HasAuthority())
 	{
+		NotifySkillResult(EPartnerSkillType::Shield, EPartnerSkillUseResult::InvalidState);
 		return;
 	}
 
 	if (!CanUseSkill_Server(TEXT("Shield"), PartnerCharacter->ShieldCooldown))
 	{
+		NotifySkillResult(EPartnerSkillType::Shield, EPartnerSkillUseResult::Cooldown);
 		return;
 	}
 
 	if (!CanUseShield())
 	{
+		NotifySkillResult(EPartnerSkillType::Shield, EPartnerSkillUseResult::OutOfRange);
 		return;
 	}
 
 	AShooterCharacter* Shooter = PartnerCharacter->CachedShooterCharacter;
 	if (!Shooter)
 	{
+		NotifySkillResult(EPartnerSkillType::Shield, EPartnerSkillUseResult::NoTarget);
 		return;
 	}
 
@@ -205,6 +229,8 @@ void UPartnerSupportComponent::TryShield_Server()
 		ShieldDuration,
 		false
 	);
+
+	NotifySkillResult(EPartnerSkillType::Shield, EPartnerSkillUseResult::Success);
 }
 
 bool UPartnerSupportComponent::CanUseSkill_Server(FName SkillName, float CoolDown) const
@@ -359,14 +385,50 @@ bool UPartnerSupportComponent::CanUseShield() const
 	return Distance <= PartnerCharacter->ShieldRange;
 }
 
+void UPartnerSupportComponent::NotifySkillResult(EPartnerSkillType SkillType, EPartnerSkillUseResult Result) const
+{
+	if (PartnerCharacter)
+	{
+		PartnerCharacter->ClientNotifySkillUseResult(SkillType, Result);
+	}
+}
+
 bool UPartnerSupportComponent::IsInsideView(AActor* Actor) const
 {
 	return false;
 }
 
-bool UPartnerSupportComponent::HasLineOfSight(AActor* actor) const
+bool UPartnerSupportComponent::HasLineOfSight(AActor* Actor) const
 {
-	return false;
+	if (!PartnerCharacter || !Actor || !GetWorld())
+	{
+		return false;
+	}
+
+	FVector Start;
+	FRotator Rotation;
+	if (AController* Controller = PartnerCharacter->GetController())
+	{
+		Controller->GetPlayerViewPoint(Start, Rotation);
+	}
+	else
+	{
+		Start = PartnerCharacter->GetActorLocation();
+	}
+
+	FHitResult Hit;
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(PartnerLineOfSight), false);
+	Params.AddIgnoredActor(PartnerCharacter);
+
+	const bool bHit = GetWorld()->LineTraceSingleByChannel(
+		Hit,
+		Start,
+		Actor->GetActorLocation(),
+		ECC_Visibility,
+		Params
+	);
+
+	return !bHit || Hit.GetActor() == Actor;
 }
 
 void UPartnerSupportComponent::ApplyScanEffect(AActor* Actor)

@@ -260,13 +260,13 @@ void ARangedWeaponBase::SetAiming(bool bAiming)
 
 void ARangedWeaponBase::MulticastPlayFireFX_Implementation(FVector_NetQuantize TraceEnd, AActor* Hit)
 {
-	AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
-	if (!Shooter)
+	ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
+	if (!OwnerCharacter)
 	{
 		return;
 	}
 
-	if (Shooter->IsLocallyControlled())
+	if (OwnerCharacter->IsLocallyControlled())
 	{
 		PlayFirstPersonFireFX(TraceEnd, Hit);
 		return;
@@ -299,16 +299,13 @@ void ARangedWeaponBase::OnRep_EquippedState()
 
 void ARangedWeaponBase::ClientNotifyShotFired_Implementation()
 {
-	AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
-
-	if (!IsValid(Shooter) || !Shooter->IsLocallyControlled())
+	ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
+	if (OwnerCharacter && OwnerCharacter->IsLocallyControlled())
 	{
-		return;
-	}
-
-	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
-	{
-		UISubsystem->OnRep_ShootCrosshairChanged(ReuseCooldown);
+		if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
+		{
+			UISubsystem->OnRep_ShootCrosshairChanged(ReuseCooldown);
+		}
 	}
 }
 

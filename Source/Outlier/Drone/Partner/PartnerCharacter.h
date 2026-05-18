@@ -39,12 +39,25 @@ enum class EPartnerSkillType : uint8
 	AreaOfEffect
 };
 
+UENUM(BlueprintType)
+enum class EPartnerSkillUseResult : uint8
+{
+	Success,
+	InvalidState,
+	Cooldown,
+	NoTarget,
+	OutOfRange,
+	NoLineOfSight
+};
+
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnDroneMovementStateChanged, EDroneMovementState, NewState);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnPartnerSkillUseResult, EPartnerSkillType, SkillType, EPartnerSkillUseResult, Result);
 
 class AShooterCharacter;
 class UCurveFloat;
 class UPartnerMovementComponent;
 class UPartnerSupportComponent;
+class UPartnerCombatComponent;
 
 UCLASS()
 class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter
@@ -53,6 +66,7 @@ class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter
 
 	friend class UPartnerMovementComponent;
 	friend class UPartnerSupportComponent;
+	friend class UPartnerCombatComponent;
 
 protected:
 	// Components
@@ -61,6 +75,9 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UPartnerSupportComponent> SupportComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UPartnerCombatComponent> CombatComponent;
 
 	// Move Data
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Move")
@@ -225,7 +242,7 @@ protected:
 	float AssistDeadZoneAngle = 3.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "CameraAssist")
-	float AssistInterpSpeed = 400.0f;
+	float AssistInterpSpeed = 5.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "CameraAssist")
 	float AssistStrength = 100.0f;
@@ -269,6 +286,7 @@ protected:
 	FTimerHandle HitInvincibleTimerHandle;
 	FTimerHandle RebootInvincibleTimerHandle;
 
+	UPROPERTY(ReplicatedUsing = OnRep_IsAccelerate, VisibleAnywhere, BlueprintReadOnly, Category = "Move")
 	uint8 bIsAccelerate : 1 = false;
 	uint8 bPartnerDataInitialized : 1 = false;
 
@@ -319,6 +337,8 @@ protected:
 	virtual void DoMove(float Right, float Forward) override;
 	virtual void OnMoveInputUpdated(const FVector2D& MoveValue);
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	virtual void TryStartAttack() override;
+	virtual void TryStopAttack() override;
 
 	void AreaOfEffect();
 	void CameraAssist();
@@ -348,9 +368,13 @@ protected:
 	void SetMoveMode(EPartnerMoveMode NewMode);
 	void ApplyMoveMode(EPartnerMoveMode NewMode);
 	bool CanApplyMoveMode(EPartnerMoveMode NewMode) const;
+	void ApplyAccelerateState(bool bNewAccelerate);
 
 	UFUNCTION(Server, Reliable)
 	void ServerSetMoveMode(EPartnerMoveMode NewMode);
+
+	UFUNCTION(Server, Reliable)
+	void ServerSetAccelerate(bool bNewAccelerate);
 
 	UFUNCTION(Server, Reliable)
 	void ServerUseSkill(EPartnerSkillType SkillType);
@@ -366,6 +390,9 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Event")
 	FOnDroneMovementStateChanged OnDroneMovementStateChanged;
 
+	UPROPERTY(BlueprintAssignable, Category = "Event")
+	FOnPartnerSkillUseResult OnPartnerSkillUseResult;
+
 public:
 	APartnerCharacter();
 
@@ -375,7 +402,14 @@ public:
 	UFUNCTION()
 	void OnRep_MoveMode();
 
+	UFUNCTION()
+	void OnRep_IsAccelerate();
+
 	void SetShooterCharacter(AShooterCharacter* NewShooter);
+	
+	UFUNCTION(Client, Reliable)
+	void ClientNotifySkillUseResult(EPartnerSkillType SkillType, EPartnerSkillUseResult Result);
+
 	float GetCurrentInertialCameraPitchDegrees() const;
 	float GetCurrentInertialCameraRollDegrees() const;
 	float GetMaxInertialCameraPitchDegrees() const { return FMath::Max(CameraPitchOnMove, 0.0f); }

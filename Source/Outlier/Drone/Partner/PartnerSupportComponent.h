@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Drone/Partner/PartnerCharacter.h"
 #include "Drone/Partner/PartnerCharacterComponentBase.h"
 #include "PartnerSupportComponent.generated.h"
 
@@ -49,6 +50,7 @@ private:
 	void EndScan_Server();
 
 	bool CanUseShield() const;
+	void NotifySkillResult(EPartnerSkillType SkillType, EPartnerSkillUseResult Result) const;
 
 	bool IsInsideView(AActor* Actor) const;
 	bool HasLineOfSight(AActor* Actor) const;
