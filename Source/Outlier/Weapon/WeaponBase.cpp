@@ -540,10 +540,11 @@ void AWeaponBase::OnOwnerLost()
 	WeaponOwner = nullptr;
 	SetOwner(nullptr);
 
-	if (OwningSpawnPoint)
+	if (!IsActorBeingDestroyed() && IsValid(OwningSpawnPoint))
 	{
 		OwningSpawnPoint->NotifyWeaponRemoved(this);
 	}
 
+	OwningSpawnPoint= nullptr;
 	Destroy();
 }

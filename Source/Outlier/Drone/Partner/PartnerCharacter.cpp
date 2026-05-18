@@ -170,6 +170,7 @@ void APartnerCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	DOREPLIFETIME(APartnerCharacter, bShieldActive);
 	DOREPLIFETIME(APartnerCharacter, bScanning);
 	DOREPLIFETIME(APartnerCharacter, LastHackServerTime);
+	DOREPLIFETIME(APartnerCharacter, bIsAccelerate);
 	DOREPLIFETIME(APartnerCharacter, bIsRebooting);
 	DOREPLIFETIME(APartnerCharacter, bIsInvincible);
 	DOREPLIFETIME(APartnerCharacter, CurrentHitCount);
@@ -276,12 +277,12 @@ void APartnerCharacter::ToggleAccelerate()
 		return;
 	}
 
-	bIsAccelerate = !bIsAccelerate;
+	const bool bNewAccelerate = !bIsAccelerate;
+	ApplyAccelerateState(bNewAccelerate);
 
-	if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
+	if (!HasAuthority())
 	{
-		MoveComp->MaxWalkSpeed = bIsAccelerate ? BoostSpeed : MoveSpeed;
-		MoveComp->MaxFlySpeed = bIsAccelerate ? BoostSpeed : MoveSpeed;
+		ServerSetAccelerate(bNewAccelerate);
 	}
 }
 
@@ -396,7 +397,7 @@ void APartnerCharacter::StartReboot()
 	bIsRebooting = true;
 	bIsInvincible = true;
 	CurrentHitCount = 0;
-	bIsAccelerate = false;
+	ApplyAccelerateState(false);
 
 	if (MovementComponent)
 	{
@@ -493,6 +494,34 @@ bool APartnerCharacter::CanApplyMoveMode(EPartnerMoveMode NewMode) const
 		NewMode == EPartnerMoveMode::FreeMove ||
 		NewMode == EPartnerMoveMode::SyncMove ||
 		NewMode == EPartnerMoveMode::CameraAssist;
+}
+
+void APartnerCharacter::ApplyAccelerateState(bool bNewAccelerate)
+{
+	bIsAccelerate = bNewAccelerate;
+
+	if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
+	{
+		const float CurrentSpeed = bIsAccelerate ? BoostSpeed : MoveSpeed;
+		MoveComp->MaxWalkSpeed = CurrentSpeed;
+		MoveComp->MaxFlySpeed = CurrentSpeed;
+	}
+
+	if (MovementComponent)
+	{
+		MovementComponent->ResetMovementFeel();
+	}
+}
+
+void APartnerCharacter::ServerSetAccelerate_Implementation(bool bNewAccelerate)
+{
+	if (!CanAcceptInput())
+	{
+		return;
+	}
+
+	ApplyAccelerateState(bNewAccelerate);
+	ForceNetUpdate();
 }
 
 void APartnerCharacter::ServerUseSkill_Implementation(EPartnerSkillType SkillType)
@@ -710,6 +739,11 @@ void APartnerCharacter::OnRep_MoveMode()
 	{
 		MovementComponent->OnMoveModeChanged(MoveMode);
 	}
+}
+
+void APartnerCharacter::OnRep_IsAccelerate()
+{
+	ApplyAccelerateState(bIsAccelerate);
 }
 
 void APartnerCharacter::SetShooterCharacter(AShooterCharacter* NewShooter)

@@ -242,7 +242,7 @@ protected:
 	float AssistDeadZoneAngle = 3.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "CameraAssist")
-	float AssistInterpSpeed = 400.0f;
+	float AssistInterpSpeed = 5.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "CameraAssist")
 	float AssistStrength = 100.0f;
@@ -286,6 +286,7 @@ protected:
 	FTimerHandle HitInvincibleTimerHandle;
 	FTimerHandle RebootInvincibleTimerHandle;
 
+	UPROPERTY(ReplicatedUsing = OnRep_IsAccelerate, VisibleAnywhere, BlueprintReadOnly, Category = "Move")
 	uint8 bIsAccelerate : 1 = false;
 	uint8 bPartnerDataInitialized : 1 = false;
 
@@ -367,9 +368,13 @@ protected:
 	void SetMoveMode(EPartnerMoveMode NewMode);
 	void ApplyMoveMode(EPartnerMoveMode NewMode);
 	bool CanApplyMoveMode(EPartnerMoveMode NewMode) const;
+	void ApplyAccelerateState(bool bNewAccelerate);
 
 	UFUNCTION(Server, Reliable)
 	void ServerSetMoveMode(EPartnerMoveMode NewMode);
+
+	UFUNCTION(Server, Reliable)
+	void ServerSetAccelerate(bool bNewAccelerate);
 
 	UFUNCTION(Server, Reliable)
 	void ServerUseSkill(EPartnerSkillType SkillType);
@@ -396,6 +401,9 @@ public:
 
 	UFUNCTION()
 	void OnRep_MoveMode();
+
+	UFUNCTION()
+	void OnRep_IsAccelerate();
 
 	void SetShooterCharacter(AShooterCharacter* NewShooter);
 	

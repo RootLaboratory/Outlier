@@ -51,5 +51,5 @@ private:
 
 public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Arena")
-	int32 MaxArenaCount = 2;
+	int32 MaxArenaCount = 1;
 };

@@ -44,6 +44,7 @@ public:
 	void SetMoveInput(const FVector2D& MoveInput);
 	void SetVerticalInput(const float Axis);
 	void OnMoveModeChanged(EPartnerMoveMode NewMode);
+	void ResetMovementFeel();
 
 	void RefreshTickEnabled();
 
