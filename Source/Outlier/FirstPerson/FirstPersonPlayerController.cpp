@@ -10,13 +10,13 @@
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Outlier.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Network/OutlierArenaPoolSubsystem.h"
 
 AFirstPersonPlayerController::AFirstPersonPlayerController()
 {
 	// set the player camera manager
 	PlayerCameraManagerClass = AFirstPersonPlayerCameraManager::StaticClass();
 }
-
 
 void AFirstPersonPlayerController::BeginPlay()
 {
@@ -173,6 +173,72 @@ void AFirstPersonPlayerController::InitializeOutlierPlayerState()
 	);
 }
 
+void AFirstPersonPlayerController::ClientArenaLoad_Implementation(int32 ArenaId)
+{
+	/*UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][1] ClientArenaLoad PC=%s ArenaId=%d NetMode=%d"),
+		*GetNameSafe(this), ArenaId, GetWorld() ? (int32)GetWorld()->GetNetMode() : -1);*/
+
+	UOutlierArenaPoolSubsystem* ArenaPool = GetWorld()
+		? GetWorld()->GetSubsystem<UOutlierArenaPoolSubsystem>()
+		: nullptr;
+
+	if (!ArenaPool)
+	{
+		//UE_LOG(LogTemp, Error, TEXT("[ArenaReady][1] ArenaPool is null"));
+		return;
+	}
+
+	ArenaPool->EnsureArenaLoaded(ArenaId);
+
+	if (ArenaPool->IsArenaReady(ArenaId))
+	{
+		//UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][1] Arena already ready ArenaId=%d"), ArenaId);
+		ServerNotifyArenaReady();
+		return;
+	}
+
+	PendingArenaId = ArenaId;
+	ArenaPool->OnArenaShown.AddUObject(this, &AFirstPersonPlayerController::HandleArenaShown);
+	//UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][1] Waiting for OnArenaShown ArenaId=%d"), ArenaId);
+}
+
+void AFirstPersonPlayerController::HandleArenaShown(int32 ShownArenaId)
+{
+	/*UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][2] HandleArenaShown ShownArenaId=%d PendingArenaId=%d PC=%s"),
+		ShownArenaId, PendingArenaId, *GetNameSafe(this));*/
+
+	if (ShownArenaId != PendingArenaId)
+	{
+		return;
+	}
+
+	if (UOutlierArenaPoolSubsystem* ArenaPool = GetWorld()
+		? GetWorld()->GetSubsystem<UOutlierArenaPoolSubsystem>()
+		: nullptr)
+	{
+		ArenaPool->OnArenaShown.RemoveAll(this);
+	}
+
+	PendingArenaId = INDEX_NONE;
+	ServerNotifyArenaReady();
+}
+
+void AFirstPersonPlayerController::ServerNotifyArenaReady_Implementation()
+{
+	/*UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][4] ServerNotifyArenaReady PC=%s Auth=%d"),
+		*GetNameSafe(this), HasAuthority());*/
+
+	AOutlierGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr;
+	if (GameMode)
+	{
+		GameMode->OnClientArenaReady(this);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT("[ArenaReady][4] GameMode is null"));
+	}
+}
+
 void AFirstPersonPlayerController::RegisterCurrentPawnWithPlayerState()
 {
 	if (!HasAuthority())
@@ -211,3 +277,4 @@ void AFirstPersonPlayerController::RegisterCurrentPawnWithPlayerState()
 		GameMode->RefreshPairLinks(OutlierPlayerState);
 	}
 }
+

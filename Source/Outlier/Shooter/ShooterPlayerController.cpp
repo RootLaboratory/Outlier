@@ -56,12 +56,16 @@ void AShooterPlayerController::OnPossess(APawn* InPawn)
 
 	if (AShooterCharacter* ShooterCharacter = Cast<AShooterCharacter>(InPawn))
 	{
-		// Mark the currently possessed pawn so gameplay systems can identify it.
 		ShooterCharacter->Tags.Add(PlayerPawnTag);
 	}
+}
 
+void AShooterPlayerController::ReceivedPlayer()
+{
+	Super::ReceivedPlayer();
 
-
+	BindMainUI();
+	BindPostProcessSubSystem();
 }
 
 void AShooterPlayerController::CleanupPossessedShooterWeapons()
@@ -81,46 +85,90 @@ void AShooterPlayerController::BindMainUI()
 {
 	if (!IsLocalController())
 	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[ShooterPC] BindMainUI skipped: not local PC=%s Auth=%d"),
+			*GetNameSafe(this),
+			HasAuthority() ? 1 : 0);
 		return;
 	}
 
-	if ( !MainUIClass || ShooterUIInstance)
+	if (ShooterUIInstance)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("Cant InitializeMainUI"));
+		UE_LOG(LogTemp, Warning,
+			TEXT("[ShooterPC] BindMainUI skipped: already exists PC=%s UI=%s"),
+			*GetNameSafe(this),
+			*GetNameSafe(ShooterUIInstance));
+		return;
+	}
+
+	if (!MainUIClass)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[ShooterPC] BindMainUI failed: MainUIClass is null PC=%s Class=%s"),
+			*GetNameSafe(this),
+			*GetNameSafe(GetClass()));
 		return;
 	}
 
 	ShooterUIInstance = CreateWidget<UMainUIBase>(this, MainUIClass);
 	if (!ShooterUIInstance)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("Cant ShooterUIInstance"));
+		UE_LOG(LogTemp, Warning,
+			TEXT("[ShooterPC] BindMainUI failed: CreateWidget returned null PC=%s MainUIClass=%s"),
+			*GetNameSafe(this),
+			*GetNameSafe(MainUIClass));
 		return;
 	}
 
 	ShooterUIInstance->AddToViewport();
+	UE_LOG(LogTemp, Warning,
+		TEXT("[ShooterPC] MainUI added PC=%s UI=%s MainUIClass=%s"),
+		*GetNameSafe(this),
+		*GetNameSafe(ShooterUIInstance),
+		*GetNameSafe(MainUIClass));
 
 	if (ULocalPlayer* LP = this->GetLocalPlayer())
 	{
 		if (ULocalPlayerUISubSystem* UISubsystem = LP->GetSubsystem<ULocalPlayerUISubSystem>())
 		{
 			UISubsystem->RegisterMainUI(ShooterUIInstance);
+			UE_LOG(LogTemp, Warning,
+				TEXT("[ShooterPC] MainUI registered to UISubsystem PC=%s UI=%s"),
+				*GetNameSafe(this),
+				*GetNameSafe(ShooterUIInstance));
 		}
 	}
-	if (!AbilityUIClass || AbilityUIInstance)
+
+	if (AbilityUIInstance)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("Cant InitializeAbilityUI"));
+		return;
+	}
+
+	if (!AbilityUIClass)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[ShooterPC] BindMainUI skipped: AbilityUIClass is null PC=%s"),
+			*GetNameSafe(this));
 		return;
 	}
 
 	AbilityUIInstance = CreateWidget<UShooterAbilityUI>(this, AbilityUIClass);
 	if (!AbilityUIInstance)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("Cant AbilityUIInstance"));
+		UE_LOG(LogTemp, Warning,
+			TEXT("[ShooterPC] BindMainUI failed: Create AbilityUI returned null PC=%s AbilityUIClass=%s"),
+			*GetNameSafe(this),
+			*GetNameSafe(AbilityUIClass));
 		return;
 	}
 
 	AbilityUIInstance->AddToViewport();
 	AbilityUIInstance->SetVisibility(ESlateVisibility::Collapsed);
+	UE_LOG(LogTemp, Warning,
+		TEXT("[ShooterPC] AbilityUI added PC=%s UI=%s AbilityUIClass=%s"),
+		*GetNameSafe(this),
+		*GetNameSafe(AbilityUIInstance),
+		*GetNameSafe(AbilityUIClass));
 }
 
 void AShooterPlayerController::BindPostProcessSubSystem()
