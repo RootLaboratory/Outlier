@@ -292,6 +292,8 @@ void AFirstPersonCharacter::OnRep_CurrentWeapon()
 	UE_LOG(LogTemp, Log, TEXT("%s %s OnRep_CurrentWeapon Previous=%s Current=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(LastReplicatedWeapon), *GetNameSafe(CurrentWeapon));
 	CurrentWeaponType = CurrentWeapon ? CurrentWeapon->GetWeaponType() : EWeaponType::Unarmed;
 	LastReplicatedWeapon = CurrentWeapon;
+	OnWeaponChanged.Broadcast(CurrentWeaponType);
+
 }
 
 void AFirstPersonCharacter::TryStartAttack()

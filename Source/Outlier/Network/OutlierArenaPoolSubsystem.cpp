@@ -39,6 +39,8 @@ FOutlierArenaInstance* UOutlierArenaPoolSubsystem::AcquireArena()
 
 	for (FOutlierArenaInstance& Arena : Arenas)
 	{
+		Arena.bReady = IsStreamingArenaReady(Arena.StreamingLevel);
+
 		if (!Arena.bReady && Arena.StreamingLevel)
 		{
 			Arena.bReady = Arena.StreamingLevel->IsLevelLoaded();
@@ -47,11 +49,11 @@ FOutlierArenaInstance* UOutlierArenaPoolSubsystem::AcquireArena()
 		if (!Arena.bInUse && Arena.bReady)
 		{
 			Arena.bInUse = true;
-			UE_LOG(LogTemp, Warning,
+		/*	UE_LOG(LogTemp, Warning,
 				TEXT("[ArenaPool] AcquireArena ArenaId=%d Level=%s Transform=%s"),
 				Arena.ArenaId,
 				*GetNameSafe(Arena.StreamingLevel ? Arena.StreamingLevel->GetLoadedLevel() : nullptr),
-				*Arena.InstanceTransform.ToHumanReadableString());
+				*Arena.InstanceTransform.ToHumanReadableString());*/
 			return &Arena;
 		}
 	}
@@ -93,8 +95,8 @@ void UOutlierArenaPoolSubsystem::ReleaseArena(int32 ArenaId)
 		}
 
 		Arena.StreamingLevel = NewStreamingLevel;
-		Arena.bReady = NewStreamingLevel->IsLevelLoaded();
-		
+		Arena.bReady = IsStreamingArenaReady(NewStreamingLevel);
+
 		return;
 	}
 }
@@ -164,14 +166,14 @@ void UOutlierArenaPoolSubsystem::PreloadArenas()
 
 		Arenas.Add(Arena);
 
-		UE_LOG(LogTemp, Warning,
+		/*UE_LOG(LogTemp, Warning,
 			TEXT("[ArenaPool] Preloaded ArenaId=%d NetMode=%d Ready=%d Streaming=%s LoadedLevel=%s Transform=%s"),
 			Arena.ArenaId,
 			static_cast<int32>(World->GetNetMode()),
 			Arena.bReady,
 			*GetNameSafe(StreamingLevel),
 			*GetNameSafe(StreamingLevel->GetLoadedLevel()),
-			*Arena.InstanceTransform.ToHumanReadableString());
+			*Arena.InstanceTransform.ToHumanReadableString());*/
 	}
 }
 
@@ -211,14 +213,14 @@ ULevelStreamingDynamic* UOutlierArenaPoolSubsystem::LoadArenaLevelInstance(int32
 	StreamingLevel->SetShouldBeLoaded(true);
 	StreamingLevel->SetShouldBeVisible(true);
 
-	UE_LOG(LogTemp, Warning,
+	/*UE_LOG(LogTemp, Warning,
 		TEXT("[ArenaPool] LoadArenaLevelInstance success ArenaId=%d NetMode=%d Streaming=%s Package=%s Override=%s Transform=%s"),
 		ArenaId,
 		static_cast<int32>(World->GetNetMode()),
 		*GetNameSafe(StreamingLevel),
 		*StreamingLevel->GetWorldAssetPackageName(),
 		*LevelNameOverride,
-		*InstanceTransform.ToHumanReadableString());
+		*InstanceTransform.ToHumanReadableString());*/
 
 	return StreamingLevel;
 }
@@ -287,7 +289,7 @@ void UOutlierArenaPoolSubsystem::EnsureArenaLoaded(int32 ArenaId)
 	Arena.StreamingLevel = StreamingLevel;
 	Arena.InstanceTransform = InstanceTransform;
 	Arena.bInUse = true;
-	Arena.bReady = StreamingLevel->IsLevelLoaded();
+	Arena.bReady = IsStreamingArenaReady(StreamingLevel);
 
 	Arenas.Add(Arena);
 
@@ -319,7 +321,7 @@ void UOutlierArenaPoolSubsystem::RefreshArenaReadyStates(const TCHAR* Reason)
 
 		Arena.bReady = bLoaded;
 
-		UE_LOG(LogTemp, Warning,
+		/*UE_LOG(LogTemp, Warning,
 			TEXT("[ArenaPool] RefreshReady Reason=%s ArenaId=%d NetMode=%d Ready=%d->%d Loaded=%d Visible=%d Streaming=%s LoadedLevel=%s Package=%s"),
 			Reason,
 			Arena.ArenaId,
@@ -330,7 +332,7 @@ void UOutlierArenaPoolSubsystem::RefreshArenaReadyStates(const TCHAR* Reason)
 			bVisible ? 1 : 0,
 			*GetNameSafe(Arena.StreamingLevel),
 			*GetNameSafe(LoadedLevel),
-			LoadedLevel ? *LoadedLevel->GetOutermost()->GetName() : TEXT("None"));
+			LoadedLevel ? *LoadedLevel->GetOutermost()->GetName() : TEXT("None"));*/
 	}
 }
 
@@ -346,12 +348,8 @@ void UOutlierArenaPoolSubsystem::HandleArenaLevelShown()
 	const UWorld* World = GetWorld();
 	for (const FOutlierArenaInstance& Arena : Arenas)
 	{
-		if (Arena.bReady)
+		if (IsStreamingArenaReady(Arena.StreamingLevel))
 		{
-			/*UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][2] OnArenaShown.Broadcast ArenaId=%d NetMode=%d BoundCount=%d"),
-				Arena.ArenaId,
-				World ? (int32)World->GetNetMode() : -1,
-				OnArenaShown.IsBound() ? 1 : 0);*/
 			OnArenaShown.Broadcast(Arena.ArenaId);
 		}
 	}
@@ -367,4 +365,12 @@ bool UOutlierArenaPoolSubsystem::IsArenaReady(int32 ArenaId) const
 		}
 	}
 	return false;
+}
+
+ bool UOutlierArenaPoolSubsystem::IsStreamingArenaReady(const ULevelStreamingDynamic* StreamingLevel)
+{
+	return StreamingLevel &&
+		StreamingLevel->IsLevelLoaded() &&
+		StreamingLevel->IsLevelVisible() &&
+		StreamingLevel->GetLoadedLevel() != nullptr;
 }

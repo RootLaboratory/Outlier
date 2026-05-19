@@ -26,18 +26,20 @@ protected:
 
 	/** Gameplay initialization */
 	virtual void BeginPlay() override;
-
+	
 	/** Input mapping context setup */
 	virtual void SetupInputComponent() override;
 
 	/** Pawn initialization */
 	virtual void OnPossess(APawn* InPawn) override;
 
+	virtual void ReceivedPlayer() override;
+
+	virtual void AcknowledgePossession(APawn* P) override;
+
 	virtual void BindMainUI() override;
 
 	virtual void BindPostProcessSubSystem() override;
-
-	virtual void ReceivedPlayer() override;
 
 public:
 	APartnerPlayerController();

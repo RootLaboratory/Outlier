@@ -28,7 +28,7 @@ public:
 	ULevel* GetArenaLoadedLevel(int32 ArenaId) const;
 	void EnsureArenaLoaded(int32 ArenaId); // Client는 id 에 해당하는 arena만 load
 	bool IsArenaReady(int32 ArenaId) const;
-
+	bool IsStreamingArenaReady(const ULevelStreamingDynamic* StreamingLevel);
 	FOnArenaShown OnArenaShown;
 
 private:

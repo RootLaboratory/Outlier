@@ -25,7 +25,8 @@ public class Outlier : ModuleRules
             "UMG",
             "Slate",
             "AnimGraphRuntime",
-            "TagDrivenUI"
+            "TagDrivenUI",
+            "DeveloperSettings"
         });
 
         PrivateDependencyModuleNames.AddRange(new string[]
