@@ -21,16 +21,6 @@ AShooterPlayerController::AShooterPlayerController()
 void AShooterPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
-	BindMainUI();
-	BindPostProcessSubSystem();
-
-	//슬라이드 1P 지정 콜백으로 하겠지만 분리 예정.
-	AShooterCharacter* ShooterCharacter = Cast<AShooterCharacter>(GetCharacter());
-	if (ShooterCharacter)
-	{
-		ShooterCharacter->OnMovementStateChanged.AddDynamic(this, &AShooterPlayerController::HandleMovementStateChanged);
-		ShooterCharacter->OnWeaponChanged.AddDynamic(this, &AShooterPlayerController::OnWeaponChanged);
-	}
 }
 
 void AShooterPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -58,14 +48,44 @@ void AShooterPlayerController::OnPossess(APawn* InPawn)
 	{
 		ShooterCharacter->Tags.Add(PlayerPawnTag);
 	}
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT("[ShooterPC] OnPossess"));	
+	}
+
+	
+}
+void AShooterPlayerController::AcknowledgePossession(APawn* P) 
+{
+	Super::AcknowledgePossession(P);
+	BindShooterCharacterDelegates(Cast<AShooterCharacter>(P));
+}
+
+void AShooterPlayerController::BindShooterCharacterDelegates(AShooterCharacter* ShooterCharacter)
+{
+	ShooterCharacter->OnMovementStateChanged.AddDynamic(
+		this,
+		&AShooterPlayerController::HandleMovementStateChanged
+	);
+
+	ShooterCharacter->OnWeaponChanged.AddDynamic(
+		this,
+		&AShooterPlayerController::OnWeaponChanged
+	);
 }
 
 void AShooterPlayerController::ReceivedPlayer()
 {
 	Super::ReceivedPlayer();
 
+	if (!IsLocalController())
+	{
+		return;
+	}
+
 	BindMainUI();
 	BindPostProcessSubSystem();
+
 }
 
 void AShooterPlayerController::CleanupPossessedShooterWeapons()
@@ -111,6 +131,7 @@ void AShooterPlayerController::BindMainUI()
 	}
 
 	ShooterUIInstance = CreateWidget<UMainUIBase>(this, MainUIClass);
+
 	if (!ShooterUIInstance)
 	{
 		UE_LOG(LogTemp, Warning,
@@ -217,6 +238,12 @@ void AShooterPlayerController::OnWeaponChanged(EWeaponType NewType)
 	if (ShooterUI)
 	{
 		ShooterUI->OnChangeWeapon(static_cast<EWidgetWeaponType>(NewType));
+
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT("ShooterUI"));
+
 	}
 	
 }

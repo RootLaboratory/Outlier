@@ -19,11 +19,11 @@ void UStaticCrossHair::NativeConstruct()
 void UStaticCrossHair::NativeTick(const FGeometry& MyGeometry, float Indelta)
 {
 	Super::NativeTick(MyGeometry, Indelta);
-	UE_LOG(LogTemp, Error, TEXT("NativeTick"));
+	//UE_LOG(LogTemp, Error, TEXT("NativeTick"));
 
 	if (IsCooldowning())
 	{
-		UE_LOG(LogTemp, Error, TEXT("NativeTick") );
+		//UE_LOG(LogTemp, Error, TEXT("NativeTick") );
 
 		UpdateCoolTime(Indelta);
 	}

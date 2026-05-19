@@ -30,14 +30,6 @@ void APartnerPlayerController::OnPossess(APawn* InPawn)
 {
 	Super::OnPossess(InPawn);
 
-	UE_LOG(
-		LogTemp,
-		Warning,
-		TEXT("[OutlierInputDebug] PartnerPC OnPossess: Pawn=%s Class=%s"),
-		*GetNameSafe(InPawn),
-		InPawn ? *GetNameSafe(InPawn->GetClass()) : TEXT("None")
-	);
-
 	if (!InPawn)
 	{
 		return;
@@ -45,7 +37,6 @@ void APartnerPlayerController::OnPossess(APawn* InPawn)
 
 	if (APartnerCharacter* PartnerCharacter = Cast<APartnerCharacter>(InPawn))
 	{
-		// Mark the currently possessed pawn so gameplay systems can identify it.
 		PartnerCharacter->Tags.Add(PartnerPawnTag);
 	}
 }
@@ -108,8 +99,18 @@ void APartnerPlayerController::ReceivedPlayer()
 {
 	Super::ReceivedPlayer();
 
+	if (!IsLocalController())
+	{
+		return;
+	}
+
 	BindMainUI();
 	BindPostProcessSubSystem();
+}
+
+void APartnerPlayerController::AcknowledgePossession(APawn* P)
+{
+	Super::AcknowledgePossession(P);
 }
 
 
