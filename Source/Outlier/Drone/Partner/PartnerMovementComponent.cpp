@@ -8,6 +8,14 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 
+namespace
+{
+	bool IsAutoFollowMoveMode(EPartnerMoveMode MoveMode)
+	{
+		return MoveMode == EPartnerMoveMode::CameraAssist ||
+			MoveMode == EPartnerMoveMode::SyncMove;
+	}
+}
 
 UPartnerMovementComponent::UPartnerMovementComponent()
 {
@@ -116,6 +124,11 @@ void UPartnerMovementComponent::SetFreeMove(bool FreeMove)
 		return;
 	}
 
+	if (IsAutoFollowMoveMode(PartnerCharacter->MoveMode))
+	{
+		return;
+	}
+
 	const EPartnerMoveMode TargetMode = FreeMove
 		? EPartnerMoveMode::FreeMove
 		: EPartnerMoveMode::Normal;
@@ -130,14 +143,18 @@ void UPartnerMovementComponent::SetFreeMove(bool FreeMove)
 
 void UPartnerMovementComponent::SetMoveInput(const FVector2D& MoveInput)
 {
-	CurrentMoveInput = MoveInput;
+	CurrentMoveInput = PartnerCharacter && IsAutoFollowMoveMode(PartnerCharacter->MoveMode)
+		? FVector2D::ZeroVector
+		: MoveInput;
 
 	RefreshTickEnabled();
 }
 
 void UPartnerMovementComponent::SetVerticalInput(const float Axis)
 {
-	VerticalInput = Axis;
+	VerticalInput = PartnerCharacter && IsAutoFollowMoveMode(PartnerCharacter->MoveMode)
+		? 0.0f
+		: Axis;
 
 	RefreshTickEnabled();
 }
@@ -146,7 +163,14 @@ void UPartnerMovementComponent::OnMoveModeChanged(EPartnerMoveMode NewMode)
 {
 	ResetMovementFeel();
 
-	if (NewMode == EPartnerMoveMode::SyncMove && PartnerCharacter && PartnerCharacter->HasAuthority())
+	if (IsAutoFollowMoveMode(NewMode))
+	{
+		CurrentMoveInput = FVector2D::ZeroVector;
+		VerticalInput = 0.0f;
+	}
+
+	if (NewMode == EPartnerMoveMode::SyncMove && PartnerCharacter &&
+		(PartnerCharacter->HasAuthority() || PartnerCharacter->IsLocallyControlled()))
 	{
 		EnterSyncMove();
 	}
@@ -211,9 +235,16 @@ void UPartnerMovementComponent::TickComponent(float DeltaTime, ELevelTick TickTy
 	}
 
 	const bool bCanRunInputMovement =
-		PartnerCharacter->HasAuthority() || PartnerCharacter->IsLocallyControlled();
+		!IsAutoFollowMoveMode(PartnerCharacter->MoveMode) &&
+		(PartnerCharacter->HasAuthority() || PartnerCharacter->IsLocallyControlled());
 
 	const bool bCanRunServerMovement = PartnerCharacter->HasAuthority();
+	const bool bCanRunPredictedFollowMovement =
+		PartnerCharacter->IsLocallyControlled() &&
+		(
+			PartnerCharacter->MoveMode == EPartnerMoveMode::CameraAssist ||
+			PartnerCharacter->MoveMode == EPartnerMoveMode::SyncMove
+		);
 	const bool bCanRunLocalFeel = PartnerCharacter->IsLocallyControlled();
 
 	if (bCanRunServerMovement && ShooterCharacter)
@@ -226,7 +257,7 @@ void UPartnerMovementComponent::TickComponent(float DeltaTime, ELevelTick TickTy
 		UpdateInputMovement();
 	}
 
-	if (bCanRunServerMovement)
+	if (bCanRunServerMovement || bCanRunPredictedFollowMovement)
 	{
 		UpdateServerDrivenMovement(DeltaTime);
 	}
@@ -242,6 +273,11 @@ void UPartnerMovementComponent::TickComponent(float DeltaTime, ELevelTick TickTy
 void UPartnerMovementComponent::ApplyManualMoveInput()
 {
 	if (!PartnerCharacter)
+	{
+		return;
+	}
+
+	if (IsAutoFollowMoveMode(PartnerCharacter->MoveMode))
 	{
 		return;
 	}
@@ -667,6 +703,11 @@ void UPartnerMovementComponent::MoveTowardTargetWithAvoidance(
 	float DeltaTime,
 	float InterpSpeed)
 {
+	if (DeltaTime <= KINDA_SMALL_NUMBER)
+	{
+		return;
+	}
+
 	const FVector CurrentLocation = PartnerCharacter->GetActorLocation();
 
 	FHitResult Hit;
@@ -690,14 +731,33 @@ void UPartnerMovementComponent::MoveTowardTargetWithAvoidance(
 		);
 	}
 
-	const FVector NewLocation = FMath::VInterpTo(
-		CurrentLocation,
-		MoveTarget,
-		DeltaTime,
-		InterpSpeed
-	);
+	const FVector ToTarget = MoveTarget - CurrentLocation;
+	const float Distance = ToTarget.Size();
+	const float AcceptanceRadius = PartnerCharacter->MoveMode == EPartnerMoveMode::CameraAssist
+		? FMath::Max(PartnerCharacter->AssistMinDistance, 10.0f)
+		: 25.0f;
 
-	PartnerCharacter->SetActorLocation(NewLocation, true);
+	if (Distance <= AcceptanceRadius)
+	{
+		return;
+	}
+
+	const float MaxDistance = PartnerCharacter->MoveMode == EPartnerMoveMode::CameraAssist
+		? FMath::Max(PartnerCharacter->AssistMaxDistance, AcceptanceRadius + 1.0f)
+		: FMath::Max(PartnerCharacter->SyncMoveDistance, AcceptanceRadius + 1.0f);
+
+	const float DistanceAlpha = FMath::Clamp(
+		(Distance - AcceptanceRadius) / FMath::Max(MaxDistance - AcceptanceRadius, 1.0f),
+		0.0f,
+		1.0f
+	);
+	const float StrengthScale = PartnerCharacter->MoveMode == EPartnerMoveMode::CameraAssist
+		? FMath::Clamp(PartnerCharacter->AssistStrength / 100.0f, 0.0f, 1.0f)
+		: 1.0f;
+	const float InterpScale = FMath::Clamp(InterpSpeed / 8.0f, 0.1f, 1.0f);
+	const float InputScale = FMath::Clamp(DistanceAlpha * StrengthScale * InterpScale, 0.0f, 1.0f);
+
+	PartnerCharacter->AddMovementInput(ToTarget.GetSafeNormal(), InputScale);
 }
 
 FVector UPartnerMovementComponent::FindSimpleAvoidanceTarget(const FVector& CurrentLocation, const FVector& TargetLocation, const FHitResult& Hit)
@@ -894,6 +954,11 @@ float UPartnerMovementComponent::ResolveInertialReboundAxis(
 
 void UPartnerMovementComponent::UpdateInputMovement()
 {
+	if (!PartnerCharacter || IsAutoFollowMoveMode(PartnerCharacter->MoveMode))
+	{
+		return;
+	}
+
 	switch (PartnerCharacter->MoveMode)
 	{
 	case EPartnerMoveMode::Normal:
