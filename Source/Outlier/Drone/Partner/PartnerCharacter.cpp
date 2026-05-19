@@ -699,14 +699,13 @@ void APartnerCharacter::LookInput(const FInputActionValue& Value)
 	{
 		FRotator ControlRot = PC->GetControlRotation();
 		ControlRot.Pitch = FMath::ClampAngle(
-			ControlRot.Pitch + PitchInput,
+			ControlRot.Pitch - PitchInput,
 			PitchMin,
 			PitchMax
 		);
 
 		PC->SetControlRotation(ControlRot);
 	}
-
 }
 
 APartnerCharacter::APartnerCharacter()
