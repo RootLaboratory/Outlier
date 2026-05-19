@@ -242,7 +242,7 @@ protected:
 	float AssistDeadZoneAngle = 3.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "CameraAssist")
-	float AssistInterpSpeed = 5.0f;
+	float AssistInterpSpeed = 100.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "CameraAssist")
 	float AssistStrength = 100.0f;

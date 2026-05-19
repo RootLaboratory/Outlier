@@ -3,12 +3,16 @@
 
 #include "Network/OutlierArenaPoolSubsystem.h"
 #include "Engine/LevelStreamingDynamic.h"
+#include "OutlierArenaSettings.h"
 
 void UOutlierArenaPoolSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 {
 	Super::OnWorldBeginPlay(InWorld);
 
-	ArenaLevel = TSoftObjectPtr<UWorld>(FSoftObjectPath(TEXT("/Game/Maps/TestYS.TestYS")));
+	const UOutlierArenaSettings* Settings =	GetDefault<UOutlierArenaSettings>();
+
+	ArenaLevel = Settings->ArenaLevel;
+	MaxArenaCount = Settings->MaxArenaCount;
 
 	if (ArenaLevel.IsNull())
 	{
