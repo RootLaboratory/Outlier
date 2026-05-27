@@ -4,25 +4,12 @@
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
+#include "GameplayTagContainer.h"
 #include "MainUIBase.generated.h"
 
 /**
  * 
  */
-UENUM()
-enum class EUIModule : uint8
-{
-	HP,
-	PartnerCam,
-	Ammo,
-	Suit,
-	FirstSkill,
-	SecondSkill,
-	ThirdSkill,
-	CrossHair,
-
-	None
-};
 
 // UI 전용 Player State
 // Controller에 BroadCast 받아놓아서, Sub에 처리하도록 함. 
@@ -46,7 +33,7 @@ class TAGDRIVENUI_API UMainUIBase : public UUserWidget
 
 public:
 
-	UEventDrivenUI* GetModule(EUIModule Key);
+	UEventDrivenUI* GetModule(const FGameplayTag& ModuleTag) const;
 
 	virtual void ModuleInit() {}
 	virtual void ModuleDestruct() {}
@@ -55,6 +42,9 @@ public:
 
 
 protected:
+	void RegisterModule(UEventDrivenUI* InModule);
+	void RegisterModule(const FGameplayTag& ModuleTag, UEventDrivenUI* InModule);
+
 	UPROPERTY()
-	TMap< EUIModule, UEventDrivenUI*> Module;
+	TMap<FGameplayTag, TObjectPtr<UEventDrivenUI>> Modules;
 };

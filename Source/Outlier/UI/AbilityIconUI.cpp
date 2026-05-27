@@ -3,21 +3,38 @@
 
 #include "UI/AbilityIconUI.h"
 #include "Components/Image.h"
+#include "Engine/Texture.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialInterface.h"
 
- FGameplayTag& UAbilityIconUI::GetAbilityTag()
+FGameplayTag UAbilityIconUI::GetAbilityTag() const
 {
 	return AbilityTag;
 }
- void UAbilityIconUI::SetAbility(FGameplayTag InaAbility)
- {
-	 AbilityTag = InaAbility;
- }
+
+void UAbilityIconUI::SetAbility(FGameplayTag InAbility)
+{
+	AbilityTag = InAbility;
+}
 
 
 void UAbilityIconUI::NativeConstruct()
 {
-	DefaultIconBrush = AbilityIcon->GetBrush();
-	AbilityIcon->SetVisibility(bAbilityUnlocked ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
+	Super::NativeConstruct();
+
+	if (AbilityIcon)
+	{
+		DefaultIconBrush = AbilityIcon->GetBrush();
+		AbilityIcon->SetVisibility(bAbilityUnlocked ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
+	}
+
+	if (DisabledImage && DisabledMaterial)
+	{
+		DisabledMID = UMaterialInstanceDynamic::Create(DisabledMaterial, this);
+		DisabledImage->SetBrushFromMaterial(DisabledMID);
+	}
+
+	RefreshAbilityEnabledVisual();
 }
 
 void UAbilityIconUI::SetCoolTime(float InCoolTime)
@@ -32,6 +49,10 @@ void UAbilityIconUI::SetCoolTime(float InCoolTime)
 	CoolTime = InCoolTime; // Chatacter 의 TotalCoolTime;
 	AbilityIcon->SetBrushFromMaterial(M_AbilityCoolTimeUI);
 	AbilityMID = AbilityIcon->GetDynamicMaterial();
+	if (!AbilityMID)
+	{
+		return;
+	}
 
 	UObject* Resource = DefaultIconBrush.GetResourceObject();
 
@@ -44,9 +65,14 @@ void UAbilityIconUI::SetCoolTime(float InCoolTime)
 	bCooldowning = true;
 }
 
-void UAbilityIconUI::UpdateCoolTime(float delta)
+void UAbilityIconUI::UpdateCoolTime(float Delta)
 {
-	AccumulatedTime += delta;
+	if (!bCooldowning || !AbilityMID || CoolTime <= 0.0f)
+	{
+		return;
+	}
+
+	AccumulatedTime += Delta;
 
 	UE_LOG(LogTemp, Error, TEXT("UpdateCoolTime: %f") , AccumulatedTime);
 
@@ -60,7 +86,7 @@ void UAbilityIconUI::UpdateCoolTime(float delta)
 	AbilityMID->SetScalarParameterValue(TEXT("CooldownProgress"), Progress);
 }
 
-bool UAbilityIconUI::IsCooldowning()
+bool UAbilityIconUI::IsCooldowning() const
 {
 	if (!IsUnLock()) return false;
 
@@ -76,19 +102,53 @@ void UAbilityIconUI::CooldownDone()
 	AccumulatedTime = 0.f;
 	CoolTime = 0.f;
 	AbilityMID = nullptr;
-	AbilityIcon->SetBrush(DefaultIconBrush);
+	if (AbilityIcon)
+	{
+		AbilityIcon->SetBrush(DefaultIconBrush);
+	}
 }
 
 void UAbilityIconUI::AbilityUnLock()
 {
 	bAbilityUnlocked = true;
-	AbilityIcon->SetBrush(DefaultIconBrush);
-	AbilityIcon->SetVisibility(ESlateVisibility::Visible);
+	if (AbilityIcon)
+	{
+		AbilityIcon->SetBrush(DefaultIconBrush);
+		AbilityIcon->SetVisibility(ESlateVisibility::Visible);
+	}
+	RefreshAbilityEnabledVisual();
 }
 
-bool UAbilityIconUI::IsUnLock()
+bool UAbilityIconUI::IsUnLock() const
 {
 	return bAbilityUnlocked;
 }
 
+bool UAbilityIconUI::IsAbilityEnabled() const
+{
+	return bAbilityEnabled;
+}
 
+void UAbilityIconUI::SetAbilityEnabled(bool bInAbilityEnabled)
+{
+	if (bAbilityEnabled == bInAbilityEnabled)
+	{
+		return;
+	}
+
+	bAbilityEnabled = bInAbilityEnabled;
+	RefreshAbilityEnabledVisual();
+}
+
+void UAbilityIconUI::RefreshAbilityEnabledVisual()
+{
+	if (DisabledImage)
+	{
+		DisabledImage->SetVisibility(bAbilityEnabled ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
+	}
+
+	if (DisabledMID)
+	{
+		DisabledMID->SetScalarParameterValue(DisabledParameterName, bAbilityEnabled ? 1.0f : 0.0f);
+	}
+}

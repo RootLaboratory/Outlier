@@ -7,6 +7,7 @@
 #include "GameplayTagContainer.h"
 #include "CrossHairBase.h"
 #include "MainUIBase.h"
+#include "PartnerHPUI.h"
 #include "LocalPlayerUISubSystem.generated.h"
 
 class UEventDrivenUI;
@@ -31,22 +32,26 @@ public:
 	//Replicated
 	void OnRep_HUDActivate(bool bShouldActivate); //Whole Widgets Activation Toggle
 	void OnRep_HealthChanged(float InHealth, float MaxHealth);
+	void OnRep_PartnerShieldChanged(float InHealth, float MaxHealth);
 	void OnRep_ShieldChanged( float InCurShield ,  float InMaxShield);
 	void OnRep_AmmoCountChanged(int32 InAmmoCount);
-	
+	void OnRep_ShooterConditionRefresh();
 public:
 	void OnRep_Aiming();
 	void OnRep_AimingOff();
 	void OnRep_AttackSign(EAttackSign InType);
 	void OnRep_ShootCrosshairChanged(float InFireRate);
+	void OnRep_ShooterHPStateChanged(const FGameplayTag& InShooterConditionTag);
 public:
 
 	void PartnerCameraBind(USceneCaptureComponent2D* InCaptureComponent2D);
 	void PartnerCameraToggle();
+	void PartnerDistanceUpdate(const float Distance);
 
 private:
 	UMainUIBase* GetMainUI() const;
-	UEventDrivenUI* GetModule(EUIModule Key) const;
+	UEventDrivenUI* GetModule(const FGameplayTag& ModuleTag) const;
+	UEventDrivenUI* GetModuleAny(const FGameplayTag& FirstTag, const FGameplayTag& SecondTag) const;
 
 	UPROPERTY()
 	TObjectPtr<UMainUIBase> MainUIInstance;

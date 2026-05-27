@@ -5,65 +5,90 @@
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
 #include "GameplayTagContainer.h"
-
-#include "Shooter/Ability/ShooterAbility.h"
 #include "AbilityIconUI.generated.h"
 
-/**
- * 
- */
-
 class UImage;
-class UBorder;
+class UMaterialInstanceDynamic;
+class UMaterialInterface;
 class UTextBlock;
 
 UCLASS()
-class OUTLIER_API UAbilityIconUI: public UUserWidget
+class OUTLIER_API UAbilityIconUI : public UUserWidget
 {
 	GENERATED_BODY()
-	
+
 public:
 	virtual void NativeConstruct() override;
 
 public:
+	UFUNCTION(BlueprintPure, Category = "Ability")
+	bool IsUnLock() const;
 
-	UFUNCTION(BlueprintCallable, Category = "MaterialStandard")
-	bool IsUnLock();
-	FGameplayTag& GetAbilityTag();
+	UFUNCTION(BlueprintPure, Category = "Ability")
+	bool IsAbilityEnabled() const;
+
+	UFUNCTION(BlueprintCallable, Category = "Ability")
+	void SetAbilityEnabled(bool bInAbilityEnabled);
+
+	UFUNCTION(BlueprintPure, Category = "Ability")
+	FGameplayTag GetAbilityTag() const;
+
+	UFUNCTION(BlueprintCallable, Category = "Ability")
 	void SetAbility(FGameplayTag InAbility);
+
+	UFUNCTION(BlueprintCallable, Category = "Ability")
 	void AbilityUnLock();
 
 public:
+	UFUNCTION(BlueprintCallable, Category = "Ability|Cooldown")
 	void SetCoolTime(float InCoolTime);
-	void UpdateCoolTime(float delta); //delta 누적 및 Material Update
-	bool IsCooldowning();
+
+	void UpdateCoolTime(float Delta);
+
+	UFUNCTION(BlueprintPure, Category = "Ability|Cooldown")
+	bool IsCooldowning() const;
+
+	UFUNCTION(BlueprintCallable, Category = "Ability|Cooldown")
 	void CooldownDone();
 
 public:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UImage> AbilityIcon;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Ability CoolTime UI|Material")
-	TObjectPtr<UMaterialInterface> M_AbilityCoolTimeUI;
+	UPROPERTY(meta = (BindWidgetOptional))
+	TObjectPtr<UImage> DisabledImage;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> AbilityMID;
 
-	//Image -> Material; 변경 시, 기존 Brush
-	FSlateBrush DefaultIconBrush;
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> DisabledMID;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Ability|Cooldown|Material")
+	TObjectPtr<UMaterialInterface> M_AbilityCoolTimeUI;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Ability|Disabled|Material")
+	TObjectPtr<UMaterialInterface> DisabledMaterial;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Ability|Disabled|Material")
+	FName DisabledParameterName = TEXT("bEnabled");
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ability", meta = (Categories = "Ability"))
 	FGameplayTag AbilityTag;
 
-private:
-	//EShooterAbility BindAbility = EShooterAbility::None;
+	UPROPERTY(meta = (BindWidgetOptional))
+	TObjectPtr<UTextBlock> KeyText;
 
+	FSlateBrush DefaultIconBrush;
+
+private:
+	void RefreshAbilityEnabledVisual();
+
+private:
 	uint8 bAbilityUnlocked : 1 = false;
 	uint8 bCooldowning : 1 = false;
+	uint8 bAbilityEnabled : 1 = true;
 
-	float CoolTime = 0; // 후에 Material 연동
-	float AccumulatedTime = 0; // 후에 Material 연동 
+	float CoolTime = 0.0f;
+	float AccumulatedTime = 0.0f;
 };
-
-

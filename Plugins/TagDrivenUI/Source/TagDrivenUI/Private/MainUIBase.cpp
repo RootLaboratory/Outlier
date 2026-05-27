@@ -1,12 +1,34 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 #include "MainUIBase.h"
+#include "EventDrivenUI.h"
 
-UEventDrivenUI* UMainUIBase::GetModule(EUIModule Key)
+UEventDrivenUI* UMainUIBase::GetModule(const FGameplayTag& ModuleTag) const
 {
-    if (Module.Contains(Key))
-    {
-        return Module[Key];
-    }
+	const TObjectPtr<UEventDrivenUI>* FoundModule = Modules.Find(ModuleTag);
+	return FoundModule ? FoundModule->Get() : nullptr;
+}
 
-    return nullptr;
+void UMainUIBase::RegisterModule(UEventDrivenUI* InModule)
+{
+	if (!InModule)
+	{
+		return;
+	}
+
+	RegisterModule(InModule->ModuleTag, InModule);
+}
+
+void UMainUIBase::RegisterModule(const FGameplayTag& ModuleTag, UEventDrivenUI* InModule)
+{
+	if (!ModuleTag.IsValid())
+	{
+		return;
+	}
+
+	if (InModule)
+	{
+		InModule->ModuleTag = ModuleTag;
+	}
+
+	Modules.Add(ModuleTag, InModule);
 }

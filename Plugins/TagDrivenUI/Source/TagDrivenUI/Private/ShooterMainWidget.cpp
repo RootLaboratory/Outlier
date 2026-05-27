@@ -1,79 +1,63 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
-
 #include "ShooterMainWidget.h"
 
-#include "EventDrivenUI.h"
-#include "Blueprint/WidgetTree.h"
-
-#include "HPBarUI.h"
 #include "AmmoUI.h"
-#include "PartnerCamUI.h"
 #include "CrossHairBase.h"
+#include "EventDrivenUI.h"
+#include "HPBarUI.h"
+#include "PartnerCamUI.h"
+#include "TagDrivenUIGameplayTags.h"
 
 void UShooterMainWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
-	//UE_LOG(LogTemp, Warning, TEXT("Shooter NativeConstructed"));
 
 	ModuleInit();
 }
 
-// Binding된 오브젝트들 Initalize 하고; Event bind 호출
-//
 void UShooterMainWidget::ModuleInit()
 {
-	Module.Empty();
-	Module.Reserve((int32)EUIModule::None);
+	UE_LOG(LogTemp, Error, TEXT("ModuleInit"));
 
-	if (PartnerCamUI)
-	{
-		Module.Add(EUIModule::PartnerCam, PartnerCamUI);
-	}
 
-	if (HPBarUI)
-	{
-		Module.Add(EUIModule::HP, HPBarUI);
-	}
+	Modules.Empty();
+	Modules.Reserve(4);
 
-	if (AmmoUI)
-	{
-		Module.Add(EUIModule::Ammo, AmmoUI);
-	}
+	RegisterModule(TagDrivenUITags::Shooter::PartnerCam(), PartnerCamUI);
+	RegisterModule(TagDrivenUITags::Shooter::HP(), HPBarUI);
+	RegisterModule(TagDrivenUITags::Shooter::Ammo(), AmmoUI);
+	RegisterModule(TagDrivenUITags::Shooter::CrossHair(), nullptr);
 
-	
-	Module.Add(EUIModule::CrossHair, nullptr); //키 bind만.
-
+	//ModuleActivate();
 
 	SuitOnModuleInit();
 }
 
 void UShooterMainWidget::ModuleDestruct()
 {
-
 }
 
 void UShooterMainWidget::ModuleActivate()
 {
-		for (auto& [Type, UIModule] : Module)
+	for (auto& [Type, UIModule] : Modules)
+	{
+		if (UIModule)
 		{
-			if (UIModule)
-			{
-				UIModule->Activate();
-			}
+			UIModule->Activate();
 		}
+	}
 }
 
 void UShooterMainWidget::ModuleDeActivate()
 {
-	for (auto& [Type, UIModule] : Module)
+	for (auto& [Type, UIModule] : Modules)
 	{
 		if (UIModule)
 		{
 			UIModule->Deactivate();
 		}
 	}
-
 }
 
 void UShooterMainWidget::DefaultModuleInit()
@@ -81,22 +65,45 @@ void UShooterMainWidget::DefaultModuleInit()
 	ModuleDeActivate();
 }
 
-//스킬은 추후에, 
 void UShooterMainWidget::SuitOnModuleInit()
 {
+	if (RifleCrossHairUI)
+	{
+		RifleCrossHairUI->Deactivate();
+	}
 
-	if (RifleCrossHairUI) RifleCrossHairUI->Deactivate();
-	if (PistolCrossHairUI) PistolCrossHairUI->Deactivate();
-	if (AmmoUI) AmmoUI->Deactivate();
+	if (PistolCrossHairUI)
+	{
+		PistolCrossHairUI->Deactivate();
+	}
 
+	if (AmmoUI)
+	{
+		AmmoUI->Deactivate();
+	}
 
+	if (UEventDrivenUI* HPModule = GetModule(TagDrivenUITags::Shooter::HP()))
+	{
+		UE_LOG(LogTemp, Error, TEXT("SuitOnModuleInit HPModule"));
+		HPModule->Activate();
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT(" HPModule"));
 
-	if(Module[EUIModule::HP])
-		Module[EUIModule::HP]->Activate();
+	}
 
-	if (Module[EUIModule::PartnerCam])
-		Module[EUIModule::PartnerCam]->Activate();
+	if (UEventDrivenUI* PartnerCamModule = GetModule(TagDrivenUITags::Shooter::PartnerCam()))
+	{
+		UE_LOG(LogTemp, Error, TEXT("SuitOnModuleInit PartnerCamModule"));
 
+		PartnerCamModule->Activate();
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT(" PartnerCam"));
+
+	}
 }
 
 void UShooterMainWidget::OnChangeWeapon(EWidgetWeaponType Type)
@@ -107,7 +114,10 @@ void UShooterMainWidget::OnChangeWeapon(EWidgetWeaponType Type)
 	{
 		UE_LOG(LogTemp, Error, TEXT("Melee"));
 
-		if (AmmoUI) AmmoUI->Deactivate();
+		if (AmmoUI)
+		{
+			AmmoUI->Deactivate();
+		}
 
 		if (CurrentCrossHairUI)
 		{
@@ -115,15 +125,17 @@ void UShooterMainWidget::OnChangeWeapon(EWidgetWeaponType Type)
 		}
 
 		CurrentCrossHairUI = nullptr;
-		Module[EUIModule::CrossHair] = CurrentCrossHairUI;
-
+		RegisterModule(TagDrivenUITags::Shooter::CrossHair(), CurrentCrossHairUI);
 		break;
 	}
 	case EWidgetWeaponType::Pistol:
 	{
 		UE_LOG(LogTemp, Error, TEXT("Pistol"));
 
-		if (AmmoUI) AmmoUI->Activate();
+		if (AmmoUI)
+		{
+			AmmoUI->Activate();
+		}
 
 		if (CurrentCrossHairUI)
 		{
@@ -137,15 +149,17 @@ void UShooterMainWidget::OnChangeWeapon(EWidgetWeaponType Type)
 			CurrentCrossHairUI->Activate();
 		}
 
-		Module[EUIModule::CrossHair] = CurrentCrossHairUI;
-		
+		RegisterModule(TagDrivenUITags::Shooter::CrossHair(), CurrentCrossHairUI);
 		break;
 	}
 	case EWidgetWeaponType::Rifle:
 	{
 		UE_LOG(LogTemp, Error, TEXT("Rifle"));
 
-		if (AmmoUI) AmmoUI->Activate();
+		if (AmmoUI)
+		{
+			AmmoUI->Activate();
+		}
 
 		if (CurrentCrossHairUI)
 		{
@@ -154,19 +168,15 @@ void UShooterMainWidget::OnChangeWeapon(EWidgetWeaponType Type)
 
 		CurrentCrossHairUI = RifleCrossHairUI;
 
-
 		if (CurrentCrossHairUI)
 		{
 			CurrentCrossHairUI->Activate();
 		}
 
-		Module[EUIModule::CrossHair] = CurrentCrossHairUI;
+		RegisterModule(TagDrivenUITags::Shooter::CrossHair(), CurrentCrossHairUI);
 		break;
-
 	}
-
-
+	default:
+		break;
 	}
-	
 }
-
