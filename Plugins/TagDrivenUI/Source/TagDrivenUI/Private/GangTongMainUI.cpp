@@ -2,7 +2,7 @@
 
 
 #include "GangTongMainUI.h"
-
+#include "AbilityIconUI.h"
 #include "EventDrivenUI.h"
 #include "PartnerHPUI.h"
 #include "PartnerCamUI.h"
@@ -20,12 +20,33 @@ void UGangTongMainUI::NativeConstruct()
 void UGangTongMainUI::ModuleInit()
 {
 	Modules.Empty();
-	Modules.Reserve(4);
+	Modules.Reserve(8);
 
 	RegisterModule(TagDrivenUITags::Partner::HP(), PartnerHPUI);
 	RegisterModule(TagDrivenUITags::Partner::PartnerCam(), PartnerCamUI);
 	RegisterModule(TagDrivenUITags::Partner::CrossHair(), CrossHairUI);
 	RegisterModule(TagDrivenUITags::Partner::DistanceLimit(), DistanceSlide);
+
+	RegisterAbilityIcon(AbilityShieldIcon,  TagDrivenUITags::Ability::Partner::Shield(),  true);
+	RegisterAbilityIcon(AbilityHackingIcon, TagDrivenUITags::Ability::Partner::Hacking(), true);
+	RegisterAbilityIcon(AbilityScanIcon,    TagDrivenUITags::Ability::Partner::Scan(),    true);
+	RegisterAbilityIcon(AbilityEMPIcon,     TagDrivenUITags::Ability::Partner::EMP(),     true);
+}
+
+void UGangTongMainUI::On_RepAbilityDisabledByDistance()
+{
+	if (UAbilityIconUI* ShieldIcon = GetAbilityIcon(TagDrivenUITags::Ability::Partner::Shield()))
+	{
+		ShieldIcon->SetAbilityEnabled(false);
+	}
+}
+
+void UGangTongMainUI::On_RepAbilityabledByDistance()
+{
+	if (UAbilityIconUI* ShieldIcon = GetAbilityIcon(TagDrivenUITags::Ability::Partner::Shield()))
+	{
+		ShieldIcon->SetAbilityEnabled(true);
+	}
 }
 
 void UGangTongMainUI::ModuleDestruct()

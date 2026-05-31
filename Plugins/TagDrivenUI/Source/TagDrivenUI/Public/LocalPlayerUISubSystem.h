@@ -47,6 +47,9 @@ public:
 	void PartnerCameraBind(USceneCaptureComponent2D* InCaptureComponent2D);
 	void PartnerCameraToggle();
 	void PartnerDistanceUpdate(const float Distance);
+	void OnAbilityUsed(const FGameplayTag& AbilityTag, float CoolTime);
+	void OnAbilityDisabledByDistance();
+	void OnAbilityEnabledByDistance();
 
 private:
 	UMainUIBase* GetMainUI() const;

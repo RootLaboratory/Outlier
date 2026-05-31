@@ -55,9 +55,11 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnPartnerSkillUseResult, EPartnerS
 
 class AShooterCharacter;
 class UCurveFloat;
+class UPartnerDistanceComponent;
 class UPartnerMovementComponent;
 class UPartnerSupportComponent;
 class UPartnerCombatComponent;
+class USceneCaptureComponent2D;
 
 UCLASS()
 class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter
@@ -67,9 +69,13 @@ class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter
 	friend class UPartnerMovementComponent;
 	friend class UPartnerSupportComponent;
 	friend class UPartnerCombatComponent;
+	friend class UPartnerDistanceComponent;
 
 protected:
 	// Components
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UPartnerDistanceComponent> DistanceComponent;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UPartnerMovementComponent> MovementComponent;
 
@@ -78,6 +84,9 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UPartnerCombatComponent> CombatComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<USceneCaptureComponent2D> CaptureComponent;
 
 	// Move Data
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Move")
@@ -173,7 +182,7 @@ protected:
 	float ScanCooldown = 5.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
-	float ScanExpandSpeed = 30.0f;
+	float ScanExpandSpeed = 300.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
 	float HackRange = 300.0f;
@@ -321,9 +330,6 @@ protected:
 	UPROPERTY()
 	TObjectPtr<AShooterCharacter> CachedShooterCharacter;
 
-	// Timers
-	FTimerHandle BoundaryCheckTimerHandle;
-
 protected:
 	virtual void BeginPlay() override;
 	virtual float TakeDamage(
@@ -357,7 +363,6 @@ protected:
 
 	void SetBoundaryOutside(bool bOutside);
 
-	void UpdateBoundaryByTimer();
 	void HandlePartnerHit();
 	void StartReboot();
 	void FinishReboot();
@@ -416,4 +421,5 @@ public:
 	float GetMaxInertialCameraRollDegrees() const { return FMath::Max(CameraRollOnTurn, 0.0f); }
 
 	void SetMovementState(EDroneMovementState State);
+	void NotifyBoundaryUI(bool bDisabled);
 };

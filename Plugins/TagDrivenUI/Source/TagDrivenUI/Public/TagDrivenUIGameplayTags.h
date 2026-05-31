@@ -33,21 +33,27 @@ namespace TagDrivenUITags
 			return Tag;
 		}
 
-		inline FGameplayTag FirstSkill()
+		inline FGameplayTag ShieldSkill()
 		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Shooter.UI.Module.Skill.First")));
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Shooter.UI.Module.Skill.Shield")));
 			return Tag;
 		}
 
-		inline FGameplayTag SecondSkill()
+		inline FGameplayTag StimPackSkill()
 		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Shooter.UI.Module.Skill.Second")));
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Shooter.UI.Module.Skill.StimPack")));
 			return Tag;
 		}
 
-		inline FGameplayTag ThirdSkill()
+		inline FGameplayTag StealthSkill()
 		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Shooter.UI.Module.Skill.Third")));
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Shooter.UI.Module.Skill.Stealth")));
+			return Tag;
+		}
+
+		inline FGameplayTag TeleportSkill()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Shooter.UI.Module.Skill.Teleport")));
 			return Tag;
 		}
 
@@ -90,21 +96,27 @@ namespace TagDrivenUITags
 			return Tag;
 		}
 
-		inline FGameplayTag FirstSkill()
+		inline FGameplayTag EMPSkill()
 		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Partner.UI.Module.Skill.First")));
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Partner.UI.Module.Skill.EMP")));
 			return Tag;
 		}
 
-		inline FGameplayTag SecondSkill()
+		inline FGameplayTag ShieldSkill()
 		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Partner.UI.Module.Skill.Second")));
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Partner.UI.Module.Skill.Shield")));
 			return Tag;
 		}
 
-		inline FGameplayTag ThirdSkill()
+		inline FGameplayTag HackingSkill()
 		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Partner.UI.Module.Skill.Third")));
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Partner.UI.Module.Skill.Hacking")));
+			return Tag;
+		}
+
+		inline FGameplayTag ScanSkill()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Partner.UI.Module.Skill.Scan")));
 			return Tag;
 		}
 
@@ -118,6 +130,63 @@ namespace TagDrivenUITags
 		{
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Partner.UI.Module.DistanceLimit")));
 			return Tag;
+		}
+	}
+
+	namespace Ability
+	{
+		namespace Shooter
+		{
+			inline FGameplayTag Teleport()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.Teleport")));
+				return Tag;
+			}
+
+			inline FGameplayTag Shield()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.Shield")));
+				return Tag;
+			}
+
+			inline FGameplayTag Stealth()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.Stealth")));
+				return Tag;
+			}
+
+			inline FGameplayTag StimPack()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.StimPack")));
+				return Tag;
+			}
+		}
+
+		namespace Partner
+		{
+			inline FGameplayTag Shield()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Partner.Shield")));
+				return Tag;
+			}
+
+			inline FGameplayTag Hacking()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Partner.Hacking")));
+				return Tag;
+			}
+
+			inline FGameplayTag Scan()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Partner.Scan")));
+				return Tag;
+			}
+
+			inline FGameplayTag EMP()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Partner.EMP")));
+				return Tag;
+			}
 		}
 	}
 

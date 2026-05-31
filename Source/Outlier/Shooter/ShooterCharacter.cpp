@@ -10,17 +10,19 @@
 #include "Curves/CurveVector.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Controller.h"
+#include "GameFramework/PlayerController.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
 #include "ShooterPlayerController.h"
 #include "LocalPlayerUISubSystem.h"
 #include "InputActionValue.h"
+#include "Drone/Partner/PartnerCharacter.h"
+#include "TagDrivenUIGameplayTags.h"
 #include "ShooterInputConfig.h"
 #include "ShooterHealthComponent.h"
 #include "ShooterInventoryComponent.h"
 #include "ShooterCombatComponent.h"
 #include "ShooterMovementComponent.h"
-#include "UI/AbilityIconUI.h"
 #include "LocalPlayerPostProcessSubsystem.h"
 #include "Weapon/WeaponBase.h"
 #include "Weapon/RangedWeaponBase.h"
@@ -88,12 +90,12 @@ void AShooterCharacter::BeginPlay()
 	if (HasAuthority())
 	{
 		CurHP = FMath::Clamp(CurHP, 0.0f, MaxHP);
+		CurShield = MaxShield;
 	}
 	
 	RefreshWeaponMode();
 	RefreshMovementState();
 	RefreshCombatState();
-	UpdateLocalHealthUI();
 	UpdateFirstPersonPresentation(0.0f);
 }
 
@@ -419,6 +421,11 @@ void AShooterCharacter::TryUseSuit()
 		return;
 	}
 
+	if (bSuitDisabledByPartnerBoundary)
+	{
+		return;
+	}
+
 	//이건 따로 None을 만들어야 하나.
 	if (!SelectedAbilityTag.IsValid())
 	{
@@ -451,7 +458,8 @@ void AShooterCharacter::TryLean(const FInputActionValue& Value)
 void AShooterCharacter::OnRep_CurHP()
 {
 	UE_LOG(LogTemp, Log, TEXT("%s %s OnRep_CurHP CurHP=%.1f / %.1f"), OutlierNet::GetNetPrefix(this), *GetName(), CurHP, MaxHP);
-	UpdateLocalHealthUI();
+	OnShooterHealthChanged.Broadcast(CurHP, MaxHP);
+	OnShooterConditionChanged.Broadcast(ResolveShooterConditionTag());
 }
 
 void AShooterCharacter::OnRep_MovementState()
@@ -461,12 +469,13 @@ void AShooterCharacter::OnRep_MovementState()
 
 void AShooterCharacter::OnRep_CurShield()
 {
-
+	OnShooterShieldChanged.Broadcast(CurShield, MaxShield);
+	OnShooterConditionChanged.Broadcast(ResolveShooterConditionTag());
 }
 
 void AShooterCharacter::OnRep_CurPartnerShield()
 {
-
+	BroadcastPartnerShieldState();
 }
 
 void AShooterCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -474,6 +483,9 @@ void AShooterCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
 	DOREPLIFETIME(AShooterCharacter, CurHP);
+	DOREPLIFETIME(AShooterCharacter, MaxPartnerShield);
+	DOREPLIFETIME(AShooterCharacter, CurPartnerShield);
+	DOREPLIFETIME(AShooterCharacter, CurShield);
 	DOREPLIFETIME(AShooterCharacter, bIsDead);
 	DOREPLIFETIME(AShooterCharacter, MovementState);
 	DOREPLIFETIME(AShooterCharacter, WeaponMode);
@@ -811,6 +823,10 @@ void AShooterCharacter::UpdatePartnerShieldDecay()
 	);
 
 	CurPartnerShield = FMath::Lerp(MaxPartnerShield, 0.0f, Alpha);
+	if (GetNetMode() != NM_DedicatedServer)
+	{
+		BroadcastPartnerShieldState();
+	}
 
 	if (CurPartnerShield <= 0.0f)
 	{
@@ -921,21 +937,39 @@ void AShooterCharacter::CleanupOwnedWeapons()
 	}
 }
 
-void AShooterCharacter::UpdateLocalHealthUI() const
+FGameplayTag AShooterCharacter::ResolveShooterConditionTag() const
 {
-	AShooterPlayerController* ShooterPlayerController = Cast<AShooterPlayerController>(GetController());
-	if (!ShooterPlayerController)
+	FGameplayTag ConditionTag = TagDrivenUITags::Condition::Shooter::HP();
+
+	if (CurShield > 0.0f)
 	{
-		return;
+		ConditionTag = TagDrivenUITags::Condition::Shooter::Shield();
 	}
 
-	if (ULocalPlayer* LocalPlayer = ShooterPlayerController->GetLocalPlayer())
+	if (CurPartnerShield > 0.0f)
 	{
-		if (ULocalPlayerUISubSystem* UISubsystem = LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>())
-		{
-			UISubsystem->OnRep_HealthChanged(CurHP, MaxHP);
-		}
+		ConditionTag = TagDrivenUITags::Condition::Shooter::PartnerShield();
 	}
+
+	return ConditionTag;
+}
+
+void AShooterCharacter::RefreshUIForRespawn()
+{
+	BroadcastCurrentUIState();
+}
+
+void AShooterCharacter::BroadcastCurrentUIState()
+{
+	OnShooterHealthChanged.Broadcast(CurHP, MaxHP);
+	OnShooterShieldChanged.Broadcast(CurShield, MaxShield);
+	BroadcastPartnerShieldState();
+}
+
+void AShooterCharacter::BroadcastPartnerShieldState()
+{
+	OnShooterPartnerShieldChanged.Broadcast(CurPartnerShield, MaxPartnerShield);
+	OnShooterConditionChanged.Broadcast(ResolveShooterConditionTag());
 }
 
 FName AShooterCharacter::ResolveMontageSectionNameForWeapon(EWeaponType WeaponType) const
@@ -1375,15 +1409,45 @@ void AShooterCharacter::SetSuitDisabledByPartnerBoundary(bool bDisabled)
 {
 	bSuitDisabledByPartnerBoundary = bDisabled;
 
-	// 여기서 슈트 입력 막기, UI 갱신, 이펙트 토글 등
-}
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
 
+	APlayerController* PC = Cast<APlayerController>(GetController());
+	if (!PC)
+	{
+		return;
+	}
+
+	ULocalPlayer* LP = PC->GetLocalPlayer();
+	if (!LP)
+	{
+		return;
+	}
+
+	if (ULocalPlayerUISubSystem* SubSystem = LP->GetSubsystem<ULocalPlayerUISubSystem>())
+	{
+		if (bDisabled)
+		{
+			SubSystem->OnAbilityDisabledByDistance();
+		}
+		else
+		{
+			SubSystem->OnAbilityEnabledByDistance();
+		}
+	}
+}
 void AShooterCharacter::ApplyPartnerShield(float Amount, float Duration)
 {
 	CurPartnerShield = Amount;
 	MaxPartnerShield = Amount;
-
+	PartnerShieldElapsedTime = 0.0f;
 	PartnerShieldDuration = Duration;
+	if (GetNetMode() != NM_DedicatedServer)
+	{
+		BroadcastPartnerShieldState();
+	}
 
 	GetWorldTimerManager().SetTimer(
 		PartnerShieldTimerHandle,

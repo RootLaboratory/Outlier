@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "FirstPerson/FirstPersonCharacter.h"
+#include "GameplayTagContainer.h"
 #include "Shooter/Ability/ShooterAbility.h"
 #include "ShooterCharacter.generated.h"
 
@@ -15,11 +16,17 @@ class UShooterHealthComponent;
 class UShooterInventoryComponent;
 class UShooterCombatComponent;
 class UShooterMovementComponent;
+class ULocalPlayerUISubSystem;
 enum class EWeaponType : uint8;
 class UAnimMontage;
 class UCurveFloat;
 class UCurveVector;
 class APartnerCharacter;
+
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnShooterHealthChanged, float /*CurrentHealth*/, float /*MaxHealth*/);
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnShooterShieldChanged, float /*CurrentShield*/, float /*MaxShield*/);
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnShooterPartnerShieldChanged, float /*CurrentPartnerShield*/, float /*MaxPartnerShield*/);
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnShooterConditionChanged, const FGameplayTag& /*ConditionTag*/);
 
 UENUM(BlueprintType)
 enum class EMovementState : uint8
@@ -261,10 +268,10 @@ protected:
 	float MaxShield = 100.0f;
 
 	UPROPERTY(ReplicatedUsing = OnRep_CurPartnerShield, EditAnywhere, BlueprintReadWrite, Category = "Shield")
-	float CurPartnerShield = 100.0f;
+	float CurPartnerShield = 0.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shield")
-	float MaxPartnerShield = 100.0f;
+	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = "Shield")
+	float MaxPartnerShield = 0.0f;
 
 	float PartnerShieldElapsedTime = 0.0f;
 
@@ -308,6 +315,11 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Event")
 	FOnMovementStateChanged OnMovementStateChanged;
 
+	FOnShooterHealthChanged OnShooterHealthChanged;
+	FOnShooterShieldChanged OnShooterShieldChanged;
+	FOnShooterPartnerShieldChanged OnShooterPartnerShieldChanged;
+	FOnShooterConditionChanged OnShooterConditionChanged;
+
 	// Weapon Socket Queries
 	FName GetFirstPersonWeaponSocketByType(EWeaponType WeaponType) const;
 	FName GetThirdPersonWeaponSocketByType(EWeaponType WeaponType) const;
@@ -348,6 +360,7 @@ public:
 	void SetSuitDisabledByPartnerBoundary(bool bDisabled);
 
 	void ApplyPartnerShield(float Amount, float Duration);
+	void BroadcastCurrentUIState();
 
 	UFUNCTION(BlueprintPure)
 	float GetCurrentLeanAlpha() const { return CurrentLeanAlpha; }
@@ -482,7 +495,11 @@ public:
 
 	void Die();
 	void HandleDeath();
-	void UpdateLocalHealthUI() const;
+
+	FGameplayTag ResolveShooterConditionTag() const;
+	void BroadcastPartnerShieldState();
+	void RefreshUIForRespawn();
+
 	FName ResolveMontageSectionNameForWeapon(EWeaponType WeaponType) const;
 	void PlayFirstPersonMontage(UAnimMontage* Montage);
 	void PlayFirstPersonMontageForWeapon(UAnimMontage* Montage, EWeaponType WeaponType, bool bUseWeaponSection = true);

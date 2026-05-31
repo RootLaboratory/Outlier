@@ -111,7 +111,7 @@ void AOutlierPostProcessVolume::SetScanMaterialParameters(FVector ScanLocation, 
 		FLinearColor(ScanLocation.X, ScanLocation.Y, ScanLocation.Z, 0.0f)
 	);
 
-	UE_LOG(LogTemp, Error, TEXT("[ScanPPDebug] Set Params Radius=%.2f Range=%.2f Location=%s"), ScanRadius, Range, *ScanLocation.ToString());
+	//UE_LOG(LogTemp, Error, TEXT("[ScanPPDebug] Set Params Radius=%.2f Range=%.2f Location=%s"), ScanRadius, Range, *ScanLocation.ToString());
 
 }
 
@@ -137,5 +137,5 @@ void AOutlierPostProcessVolume::UpdateScanMaterialParameters(FVector ScanLocatio
 		FLinearColor(ScanLocation.X, ScanLocation.Y, ScanLocation.Z, 0.0f)
 	);
 
-	UE_LOG(LogTemp, Error, TEXT("[ScanPPDebug] Update Params Radius=%.2f Location=%s"), ScanRadius, *ScanLocation.ToString());
+	//UE_LOG(LogTemp, Error, TEXT("[ScanPPDebug] Update Params Radius=%.2f Location=%s"), ScanRadius, *ScanLocation.ToString());
 }

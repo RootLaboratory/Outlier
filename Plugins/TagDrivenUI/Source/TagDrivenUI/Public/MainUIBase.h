@@ -23,7 +23,7 @@ enum class EUIPlayerState : uint8
 };
 
 class UEventDrivenUI;
-
+class UAbilityIconUI;
 
 
 UCLASS()
@@ -34,17 +34,26 @@ class TAGDRIVENUI_API UMainUIBase : public UUserWidget
 public:
 
 	UEventDrivenUI* GetModule(const FGameplayTag& ModuleTag) const;
+	UAbilityIconUI* GetAbilityIcon(const FGameplayTag& AbilityTag) const;
+	void AddAbilityIconEntry(UAbilityIconUI* Icon, const FGameplayTag& AbilityTag);
+	virtual void On_RepAbilityDisabledByDistance();
+	virtual void On_RepAbilityabledByDistance();
+public:
 
 	virtual void ModuleInit() {}
 	virtual void ModuleDestruct() {}
 	virtual void ModuleActivate() {}
 	virtual void ModuleDeActivate() {}
-
+	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
 
 protected:
 	void RegisterModule(UEventDrivenUI* InModule);
 	void RegisterModule(const FGameplayTag& ModuleTag, UEventDrivenUI* InModule);
+	void RegisterAbilityIcon(UAbilityIconUI* Icon, const FGameplayTag& AbilityTag, bool bUnlock = false);
 
 	UPROPERTY()
 	TMap<FGameplayTag, TObjectPtr<UEventDrivenUI>> Modules;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Ability Sections")
+	TMap<FGameplayTag, TObjectPtr<UAbilityIconUI>> AbilitySections;
 };

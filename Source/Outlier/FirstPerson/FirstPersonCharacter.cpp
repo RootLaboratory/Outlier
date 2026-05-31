@@ -167,13 +167,20 @@ void AFirstPersonCharacter::TryCamToggle()
 	APlayerController* PlayerController = Cast<APlayerController>(GetController());
 
 	if (PlayerController)
-	{
+	{	UE_LOG(LogTemp, Error, TEXT("PlayerController"));
+
 		if (ULocalPlayer* LP = PlayerController->GetLocalPlayer())
 		{
+			UE_LOG(LogTemp, Error, TEXT("ULocalPlayer"));
+
 			if (ULocalPlayerUISubSystem* PPSubsystem = LP->GetSubsystem<ULocalPlayerUISubSystem>())
 			{
-
 				PPSubsystem->PartnerCameraToggle();
+			}
+			else
+			{
+				UE_LOG(LogTemp, Error, TEXT("PPSubsystem"));
+
 			}
 		}
 	}

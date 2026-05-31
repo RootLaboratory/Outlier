@@ -3,9 +3,12 @@
 
 #include "Drone/Partner/PartnerPlayerController.h"
 #include "Drone/Partner/PartnerCharacter.h"
+#include "Engine/LocalPlayer.h"
 #include "FirstPerson/FirstPersonPlayerCameraManager.h"
 #include "Blueprint/UserWidget.h"
 #include "LocalPlayerUISubSystem.h"
+#include "OutlierPlayerState.h"
+#include "Shooter/ShooterCharacter.h"
 
 APartnerPlayerController::APartnerPlayerController()
 {
@@ -16,9 +19,20 @@ APartnerPlayerController::APartnerPlayerController()
 void APartnerPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
+}
 
-	BindMainUI();
-	BindPostProcessSubSystem();
+void APartnerPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	UnbindShooterCharacterDelegates();
+	UnbindPlayerStateDelegates();
+	Super::EndPlay(EndPlayReason);
+}
+
+void APartnerPlayerController::OnRep_PlayerState()
+{
+	Super::OnRep_PlayerState();
+	BindPlayerStateDelegates();
+	RefreshShooterUIForRespawnFromPlayerState();
 }
 
 void APartnerPlayerController::SetupInputComponent()
@@ -86,7 +100,12 @@ void APartnerPlayerController::BindMainUI()
 	{
 		if (ULocalPlayerUISubSystem* UISubsystem = LP->GetSubsystem<ULocalPlayerUISubSystem>())
 		{
+			UE_LOG(LogTemp, Error, TEXT("[PartnerPC] GetLocalPlayer"));
 			UISubsystem->RegisterMainUI(ShooterUIInstance);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Error, TEXT("[PartnerPC] No GetLocalPlayer"));
 		}
 	}
 }
@@ -111,6 +130,157 @@ void APartnerPlayerController::ReceivedPlayer()
 void APartnerPlayerController::AcknowledgePossession(APawn* P)
 {
 	Super::AcknowledgePossession(P);
+
+	BindMainUI();
+	BindPostProcessSubSystem();
+	BindPlayerStateDelegates();
+	RefreshShooterUIForRespawnFromPlayerState();
 }
 
+void APartnerPlayerController::RefreshShooterUIForRespawnFromPlayerState()
+{
+	BindShooterCharacterDelegatesFromPlayerState();
+}
 
+void APartnerPlayerController::BindPlayerStateDelegates()
+{
+	if (!IsLocalController())
+	{
+		return;
+	}
+
+	AOutlierPlayerState* OutlierPlayerState = GetPlayerState<AOutlierPlayerState>();
+	if (!OutlierPlayerState || BoundOutlierPlayerState == OutlierPlayerState)
+	{
+		return;
+	}
+
+	UnbindPlayerStateDelegates();
+	BoundOutlierPlayerState = OutlierPlayerState;
+	BoundOutlierPlayerState->OnPlayerCharactersChanged.AddUObject(
+		this,
+		&APartnerPlayerController::HandlePlayerCharactersChanged
+	);
+
+}
+
+void APartnerPlayerController::UnbindPlayerStateDelegates()
+{
+	if (!BoundOutlierPlayerState)
+	{
+		return;
+	}
+
+	BoundOutlierPlayerState->OnPlayerCharactersChanged.RemoveAll(this);
+	BoundOutlierPlayerState = nullptr;
+}
+
+void APartnerPlayerController::HandlePlayerCharactersChanged(AOutlierPlayerState* ChangedPlayerState)
+{
+	BindShooterCharacterDelegatesFromPlayerState();
+}
+
+void APartnerPlayerController::BindShooterCharacterDelegatesFromPlayerState()
+{
+	if (!IsLocalController())
+	{
+		return;
+	}
+
+	AOutlierPlayerState* OutlierPlayerState = GetPlayerState<AOutlierPlayerState>();
+	if (!OutlierPlayerState)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[PartnerPC] Shooter UI refresh skipped: PlayerState is null PC=%s"), *GetNameSafe(this));
+		return;
+	}
+
+	AShooterCharacter* ShooterCharacter = OutlierPlayerState->GetShooterCharacter();
+	if (!ShooterCharacter)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[PartnerPC] Shooter UI refresh skipped: ShooterCharacter is null PS=%s"), *GetNameSafe(OutlierPlayerState));
+		return;
+	}
+
+	if (!GetLocalUISubsystem())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[PartnerPC] Shooter UI refresh skipped: UISubsystem is null PC=%s"), *GetNameSafe(this));
+		return;
+	}
+
+	UnbindShooterCharacterDelegates();
+	BoundShooterCharacter = ShooterCharacter;
+
+	ShooterCharacter->OnShooterHealthChanged.AddUObject(
+		this,
+		&APartnerPlayerController::HandleShooterHealthChanged
+	);
+
+	ShooterCharacter->OnShooterShieldChanged.AddUObject(
+		this,
+		&APartnerPlayerController::HandleShooterShieldChanged
+	);
+
+	ShooterCharacter->OnShooterPartnerShieldChanged.AddUObject(
+		this,
+		&APartnerPlayerController::HandleShooterPartnerShieldChanged
+	);
+
+	ShooterCharacter->OnShooterConditionChanged.AddUObject(
+		this,
+		&APartnerPlayerController::HandleShooterConditionChanged
+	);
+
+	ShooterCharacter->BroadcastCurrentUIState();
+}
+
+void APartnerPlayerController::UnbindShooterCharacterDelegates()
+{
+	if (!BoundShooterCharacter)
+	{
+		return;
+	}
+
+	BoundShooterCharacter->OnShooterHealthChanged.RemoveAll(this);
+	BoundShooterCharacter->OnShooterShieldChanged.RemoveAll(this);
+	BoundShooterCharacter->OnShooterPartnerShieldChanged.RemoveAll(this);
+	BoundShooterCharacter->OnShooterConditionChanged.RemoveAll(this);
+	BoundShooterCharacter = nullptr;
+}
+
+ULocalPlayerUISubSystem* APartnerPlayerController::GetLocalUISubsystem() const
+{
+	ULocalPlayer* LocalPlayer = GetLocalPlayer();
+	return LocalPlayer ? LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>() : nullptr;
+}
+
+void APartnerPlayerController::HandleShooterHealthChanged(float CurrentHealth, float MaxHealth)
+{
+	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
+	{
+		UISubsystem->OnRep_HealthChanged(CurrentHealth, MaxHealth);
+	}
+}
+
+void APartnerPlayerController::HandleShooterShieldChanged(float CurrentShield, float MaxShield)
+{
+	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
+	{
+		UISubsystem->OnRep_ShieldChanged(CurrentShield, MaxShield);
+	}
+}
+
+void APartnerPlayerController::HandleShooterPartnerShieldChanged(float CurrentPartnerShield, float MaxPartnerShield)
+{
+	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
+	{
+		UISubsystem->OnRep_PartnerShieldChanged(CurrentPartnerShield, MaxPartnerShield);
+	}
+}
+
+void APartnerPlayerController::HandleShooterConditionChanged(const FGameplayTag& ConditionTag)
+{
+	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
+	{
+		UISubsystem->OnRep_ShooterHPStateChanged(ConditionTag);
+	}
+}

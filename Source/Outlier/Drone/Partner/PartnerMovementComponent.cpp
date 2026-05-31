@@ -247,11 +247,6 @@ void UPartnerMovementComponent::TickComponent(float DeltaTime, ELevelTick TickTy
 		);
 	const bool bCanRunLocalFeel = PartnerCharacter->IsLocallyControlled();
 
-	if (bCanRunServerMovement && ShooterCharacter)
-	{
-		UpdateBoundaryState();
-	}
-
 	if (bCanRunInputMovement)
 	{
 		UpdateInputMovement();
@@ -669,23 +664,6 @@ void UPartnerMovementComponent::ApplyViewModelTilt(float DeltaTime)
 	);
 
 	ViewModelRoot->SetRelativeRotation(NewViewModelRot);
-}
-
-void UPartnerMovementComponent::UpdateBoundaryState()
-{
-	if (!PartnerCharacter || !ShooterCharacter)
-	{
-		return;
-	}
-
-	const float Distance = FVector::Dist(
-		PartnerCharacter->GetActorLocation(),
-		ShooterCharacter->GetActorLocation()
-	);
-
-	const bool bOutside = Distance > PartnerCharacter->SuitDisableBoundaryRadius;
-
-	PartnerCharacter->SetBoundaryOutside(bOutside);
 }
 
 void UPartnerMovementComponent::EnterSyncMove()

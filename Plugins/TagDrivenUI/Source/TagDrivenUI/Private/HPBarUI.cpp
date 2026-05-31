@@ -11,3 +11,6 @@ void UHPBarUI::HealthChanged_Implementation(float InShieldRatio)
 {
 }
 
+void UHPBarUI::PartnerShieldChanged_Implementation(float InPartnerShieldRatio)
+{
+}

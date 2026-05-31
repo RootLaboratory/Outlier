@@ -2,6 +2,7 @@
 #include "LocalPlayerUISubSystem.h"
 #include "GameFramework/PlayerController.h"
 #include "Components/SceneCaptureComponent2D.h"
+#include "AbilityIconUI.h"
 #include "MainUIBase.h"
 #include "HPBarUI.h"
 #include "PartnerCamUI.h"
@@ -98,9 +99,20 @@ void ULocalPlayerUISubSystem::OnRep_HealthChanged(float InHealth, float MaxHealt
 	}
 }
 
-void ULocalPlayerUISubSystem::OnRep_PartnerShieldChanged(float InHealth, float MaxHealth)
+void ULocalPlayerUISubSystem::OnRep_PartnerShieldChanged(float InPartnerShield, float MaxPartnerShield)
 {
+	float Ratio = MaxPartnerShield > 0.0f ? InPartnerShield / MaxPartnerShield : 0.0f;
 
+	if (!GetMainUI())
+	{
+		return;
+	}
+
+	if (UHPBarUI* HPBarUI = Cast<UHPBarUI>(GetModuleAny(TagDrivenUITags::Shooter::HP(), TagDrivenUITags::Partner::HP())))
+	{
+		UE_LOG(LogTemp, Error, TEXT("PartnerShield Changed, %f"), Ratio);
+		HPBarUI->PartnerShieldChanged(Ratio);
+	}
 }
 
 void ULocalPlayerUISubSystem::OnRep_ShieldChanged( float InCurShield,  float InMaxShield)
@@ -243,6 +255,36 @@ void ULocalPlayerUISubSystem::OnRep_ShooterHPStateChanged(const FGameplayTag& In
 	if (UPartnerHPUI* PartnerHPUI = Cast<UPartnerHPUI>(GetModule(TagDrivenUITags::Partner::HP())))
 	{
 		PartnerHPUI->SetShooterCondition(InShooterConditionTag);
+	}
+}
+
+void ULocalPlayerUISubSystem::OnAbilityDisabledByDistance()
+{
+	if (UMainUIBase* MainUI = GetMainUI())
+	{
+		MainUI->On_RepAbilityDisabledByDistance();
+	}
+}
+
+void ULocalPlayerUISubSystem::OnAbilityEnabledByDistance()
+{
+	if (UMainUIBase* MainUI = GetMainUI())
+	{
+		MainUI->On_RepAbilityabledByDistance();
+	}
+}
+
+void ULocalPlayerUISubSystem::OnAbilityUsed(const FGameplayTag& AbilityTag, float CoolTime)
+{
+	UMainUIBase* MainUI = GetMainUI();
+	if (!MainUI)
+	{
+		return;
+	}
+
+	if (UAbilityIconUI* Icon = MainUI->GetAbilityIcon(AbilityTag))
+	{
+		Icon->SetCoolTime(CoolTime);
 	}
 }
 
