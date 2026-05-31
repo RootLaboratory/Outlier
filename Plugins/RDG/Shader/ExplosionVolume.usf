@@ -1,16 +1,12 @@
 #include "/Engine/Private/Common.ush"
 
 #define EXPLOSION_VOLUME_SIZE 64
-#define EXPLOSION_VOLUME_MAX_DEPTH 5000.0f
+#define EXPLOSION_VOLUME_MAX_DEPTH 500.0f
 #define EXPLOSION_DEPTH_BIAS 10.0f
 
 RWTexture3D<float4> OutVolume;
 Texture2D SceneDepthTexture;
 SamplerState PointClampSampler;
-
-float3 ExplosionCenter;
-float ExplosionRadius;
-float ExplosionForce;
 
 float2 GetViewportUV(uint2 VoxelXY)
 {
@@ -38,19 +34,6 @@ float ComputeSliceDepth(uint ZSlice)
 	return max(1.0f, Slice * Slice * EXPLOSION_VOLUME_MAX_DEPTH);
 }
 
-float3 ComputeTranslatedWorldPosition(float2 ViewportUV, float SceneDepth)
-{
-	float2 ScreenPosition = ViewportUVToScreenPosition(ViewportUV);
-	float4 ScreenVector = float4(GetScreenPositionForProjectionType(ScreenPosition, SceneDepth), SceneDepth, 1.0f);
-	return mul(ScreenVector, View.ScreenToTranslatedWorld).xyz;
-}
-
-float3 ComputeTranslatedExplosionCenter()
-{
-	FDFVector3 PreViewTranslation = MakeDFVector3(View.PreViewTranslationHigh, View.PreViewTranslationLow);
-	return DFFastToTranslatedWorld(ExplosionCenter, PreViewTranslation);
-}
-
 [numthreads(8, 8, 8)]
 void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 {
@@ -71,20 +54,5 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		return;
 	}
 
-	const float3 TranslatedWorldPosition = ComputeTranslatedWorldPosition(ViewportUV, VoxelDepth);
-	const float3 TranslatedCenter = ComputeTranslatedExplosionCenter();
-	const float3 Offset = TranslatedWorldPosition - TranslatedCenter;
-	const float Distance = length(Offset);
-
-	if (Distance >= ExplosionRadius || ExplosionRadius <= 0.0f || ExplosionForce == 0.0f)
-	{
-		OutVolume[DispatchThreadId] = float4(0.0f, 0.0f, 0.0f, 0.0f);
-		return;
-	}
-
-	const float Falloff = smoothstep(ExplosionRadius, 0.0f, Distance);
-	const float3 Direction = Offset / max(Distance, 1.0f);
-	const float3 Velocity = Direction * ExplosionForce * Falloff;
-
-	OutVolume[DispatchThreadId] = float4(Velocity, Falloff);
+	OutVolume[DispatchThreadId] = float4(1.0f, 1.0f, 1.0f, 1.0f);
 }
