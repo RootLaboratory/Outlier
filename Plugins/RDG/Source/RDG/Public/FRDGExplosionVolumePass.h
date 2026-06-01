@@ -14,6 +14,8 @@ namespace RDGExplosionVolume
 class FRDGExplosionVolumePass
 {
 public:
+	static bool IsEnabled();
+
 	static FRDGTextureRef AddPass(
 		FRDGBuilder& GraphBuilder,
 		const FSceneView& View,

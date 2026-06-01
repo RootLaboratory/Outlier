@@ -1,4 +1,4 @@
-﻿#include "FRDGExplosionVolumePass.h"
+#include "FRDGExplosionVolumePass.h"
 
 #include "RDGExplosionVolumeCS.h"
 #include "RenderGraphBuilder.h"
@@ -9,6 +9,17 @@
 namespace
 {
 constexpr int32 ExplosionVolumeThreadGroupSize = 8;
+
+TAutoConsoleVariable<int32> CVarExplosionVolumeEnable(
+	TEXT("rdg.ExplosionVolume.Enable"),
+	0,
+	TEXT("Generate RDG explosion volume. 0=off, 1=on."),
+	ECVF_RenderThreadSafe);
+}
+
+bool FRDGExplosionVolumePass::IsEnabled()
+{
+	return CVarExplosionVolumeEnable.GetValueOnAnyThread() != 0;
 }
 
 FRDGTextureRef FRDGExplosionVolumePass::AddPass(
@@ -16,7 +27,7 @@ FRDGTextureRef FRDGExplosionVolumePass::AddPass(
 	const FSceneView& View,
 	FRDGTextureRef SceneDepthTexture)
 {
-	if (!SceneDepthTexture)
+	if (!IsEnabled() || !SceneDepthTexture)
 	{
 		return nullptr;
 	}

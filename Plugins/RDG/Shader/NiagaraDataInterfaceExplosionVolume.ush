@@ -32,6 +32,7 @@ void SampleExplosionVolumeWorld_{ParameterName}(in float3 WorldPosition, in floa
 
 	OutIsValid = bInsideTexture && bInsideFrustum;
 	OutField = OutIsValid ? {ParameterName}_Texture.SampleLevel({ParameterName}_TextureSampler, float3(ViewportUV, W), MipLevel) : float4(0.0f, 0.0f, 0.0f, 0.0f);
+
 }
 
 void ExplosionVolumeDimensions_{ParameterName}(out float3 OutDimensions)

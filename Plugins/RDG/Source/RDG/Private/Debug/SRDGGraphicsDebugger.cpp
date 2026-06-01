@@ -3,6 +3,7 @@
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/LocalPlayer.h"
+#include "HAL/IConsoleManager.h"
 #include "LocalPlayerPostProcessSubsystem.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SNumericEntryBox.h"
@@ -34,6 +35,65 @@ void SRDGGraphicsDebugger::Construct(const FArguments& InArgs)
 				[
 					SNew(STextBlock)
 					.Text(FText::FromString(TEXT("RDG Graphics Debugger")))
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(RDGGraphicsDebugger::RowPadding)
+				[
+					SNew(SExpandableArea)
+					.InitiallyCollapsed(false)
+					.HeaderContent()
+					[
+						SNew(STextBlock)
+						.Text(FText::FromString(TEXT("Explosion Volume")))
+					]
+					.BodyContent()
+					[
+						SNew(SVerticalBox)
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.VAlign(VAlign_Center)
+							[
+								SNew(SCheckBox)
+								.IsChecked(this, &SRDGGraphicsDebugger::GetExplosionVolumeEnabledCheckState)
+								.OnCheckStateChanged(this, &SRDGGraphicsDebugger::OnExplosionVolumeEnabledChanged)
+							]
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+							.VAlign(VAlign_Center)
+							[
+								SNew(STextBlock)
+								.Text(FText::FromString(TEXT("Generate 3D Volume")))
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.VAlign(VAlign_Center)
+							[
+								SNew(SCheckBox)
+								.IsChecked(this, &SRDGGraphicsDebugger::GetExplosionVolumeVisualizeCheckState)
+								.OnCheckStateChanged(this, &SRDGGraphicsDebugger::OnExplosionVolumeVisualizeChanged)
+							]
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+							.VAlign(VAlign_Center)
+							[
+								SNew(STextBlock)
+								.Text(FText::FromString(TEXT("Visualize Volume")))
+							]
+						]
+					]
 				]
 				+ SVerticalBox::Slot()
 				.AutoHeight()
@@ -463,6 +523,40 @@ ULocalPlayerPostProcessSubsystem* SRDGGraphicsDebugger::ResolvePostProcessSubsys
 	}
 
 	return nullptr;
+}
+
+ECheckBoxState SRDGGraphicsDebugger::GetExplosionVolumeEnabledCheckState() const
+{
+	if (const IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("rdg.ExplosionVolume.Enable")))
+	{
+		return CVar->GetInt() != 0 ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+	}
+	return ECheckBoxState::Unchecked;
+}
+
+void SRDGGraphicsDebugger::OnExplosionVolumeEnabledChanged(ECheckBoxState NewState)
+{
+	if (IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("rdg.ExplosionVolume.Enable")))
+	{
+		CVar->Set(NewState == ECheckBoxState::Checked ? 1 : 0, ECVF_SetByCode);
+	}
+}
+
+ECheckBoxState SRDGGraphicsDebugger::GetExplosionVolumeVisualizeCheckState() const
+{
+	if (const IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("rdg.ExplosionVolume.Visualize")))
+	{
+		return CVar->GetInt() != 0 ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+	}
+	return ECheckBoxState::Unchecked;
+}
+
+void SRDGGraphicsDebugger::OnExplosionVolumeVisualizeChanged(ECheckBoxState NewState)
+{
+	if (IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("rdg.ExplosionVolume.Visualize")))
+	{
+		CVar->Set(NewState == ECheckBoxState::Checked ? 1 : 0, ECVF_SetByCode);
+	}
 }
 
 ECheckBoxState SRDGGraphicsDebugger::GetChromaticEnabledCheckState() const

@@ -3,10 +3,14 @@
 #include "NiagaraCompileHashVisitor.h"
 #include "NiagaraGpuComputeDispatchInterface.h"
 #include "NiagaraShaderParametersBuilder.h"
+#include "Interfaces/IPluginManager.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
 #include "RDGExplosionVolumeProvider.h"
 #include "RenderGraphBuilder.h"
 #include "RenderGraphUtils.h"
 #include "RHIStaticStates.h"
+#include "ShaderCore.h"
 
 #define LOCTEXT_NAMESPACE "UNiagaraDataInterfaceExplosionVolume"
 
@@ -14,6 +18,30 @@ const TCHAR* UNiagaraDataInterfaceExplosionVolume::TemplateShaderFilePath = TEXT
 const FName UNiagaraDataInterfaceExplosionVolume::SampleExplosionVolumeUVWName(TEXT("SampleExplosionVolumeUVW"));
 const FName UNiagaraDataInterfaceExplosionVolume::SampleExplosionVolumeWorldName(TEXT("SampleExplosionVolumeWorld"));
 const FName UNiagaraDataInterfaceExplosionVolume::ExplosionVolumeDimensionsName(TEXT("ExplosionVolumeDimensions"));
+
+// 에디터에서 Niagara GPU HLSL을 생성할 때, .ush 템플릿을 명시적으로 읽어서 붙이는 fallback
+
+#if WITH_EDITORONLY_DATA
+namespace
+{
+	bool LoadExplosionVolumeTemplateHLSL(const TCHAR* VirtualShaderPath, FString& OutTemplate)
+	{
+		if (LoadShaderSourceFile(VirtualShaderPath, EShaderPlatform::SP_PCD3D_SM5, &OutTemplate, nullptr))
+		{
+			return true;
+		}
+
+		const TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("RDG"));
+		if (!Plugin.IsValid())
+		{
+			return false;
+		}
+
+		const FString PhysicalShaderPath = FPaths::Combine(Plugin->GetBaseDir(), TEXT("Shader/NiagaraDataInterfaceExplosionVolume.ush"));
+		return FFileHelper::LoadFileToString(OutTemplate, *PhysicalShaderPath);
+	}
+}
+#endif
 
 struct FNiagaraDataInterfaceProxyExplosionVolume : public FNiagaraDataInterfaceProxy
 {
@@ -108,7 +136,13 @@ void UNiagaraDataInterfaceExplosionVolume::GetParameterDefinitionHLSL(const FNia
 	{
 		{ TEXT("ParameterName"), ParamInfo.DataInterfaceHLSLSymbol },
 	};
-	AppendTemplateHLSL(OutHLSL, TemplateShaderFilePath, TemplateArgs);
+
+	FString TemplateFile;
+	if (LoadExplosionVolumeTemplateHLSL(TemplateShaderFilePath, TemplateFile))
+	{
+		OutHLSL.Append(FString::Format(*TemplateFile, TemplateArgs));
+		OutHLSL.AppendChar('\n');
+	}
 }
 
 bool UNiagaraDataInterfaceExplosionVolume::GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL)

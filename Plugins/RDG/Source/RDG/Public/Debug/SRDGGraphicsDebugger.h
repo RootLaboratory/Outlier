@@ -17,6 +17,11 @@ public:
 private:
 	ULocalPlayerPostProcessSubsystem* ResolvePostProcessSubsystem() const;
 
+	ECheckBoxState GetExplosionVolumeEnabledCheckState() const;
+	void OnExplosionVolumeEnabledChanged(ECheckBoxState NewState);
+	ECheckBoxState GetExplosionVolumeVisualizeCheckState() const;
+	void OnExplosionVolumeVisualizeChanged(ECheckBoxState NewState);
+
 	ECheckBoxState GetChromaticEnabledCheckState() const;
 	void OnChromaticEnabledChanged(ECheckBoxState NewState);
 	float GetChromaticStartOffsetSliderValue() const;

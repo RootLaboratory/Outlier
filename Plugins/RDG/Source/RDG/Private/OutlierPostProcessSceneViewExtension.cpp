@@ -151,8 +151,9 @@ void FOutlierPostProcessSceneViewExtension::PrePostProcessPass_RenderThread(FRDG
 		Inputs.SceneTextures ? 1 : 0);
 
 
-	if (!IsTargetLocalPlayerView(InView) || !Inputs.SceneTextures)
+	if (!FRDGExplosionVolumePass::IsEnabled() || !IsTargetLocalPlayerView(InView) || !Inputs.SceneTextures)
 	{
+		CachedVelocityVolume = nullptr;
 		return;
 	}
 
@@ -168,8 +169,13 @@ void FOutlierPostProcessSceneViewExtension::PrePostProcessPass_RenderThread(FRDG
 	FRDGTextureRef VelocityVolume = FRDGExplosionVolumePass::AddPass(
 		GraphBuilder, InView, SceneDepthTexture);
 
-	FRDGExplosionVolumeProvider::QueueExtraction(GraphBuilder, VelocityVolume);
+	if (!VelocityVolume)
+	{
+		CachedVelocityVolume = nullptr;
+		return;
+	}
 
+	FRDGExplosionVolumeProvider::QueueExtraction(GraphBuilder, VelocityVolume);
 	CachedVelocityVolume = VelocityVolume;
 	//같은 프레임의 경우,
 	//Excute 이후에 처리 되니깐최초 프레임은 못 읽더라도 그 다음부터는 읽게 할 수 있음.
