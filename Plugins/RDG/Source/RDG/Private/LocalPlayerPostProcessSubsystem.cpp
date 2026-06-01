@@ -3,6 +3,8 @@
 #include "LocalPlayerPostProcessSubsystem.h"
 
 #include "OutlierPostProcessSceneViewExtension.h"
+#include "RDGExplosionVolumeProvider.h"
+#include "RenderingThread.h"
 #include "SceneViewExtension.h"
 
 void ULocalPlayerPostProcessSubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -21,6 +23,13 @@ void ULocalPlayerPostProcessSubsystem::Deinitialize()
 {
 	Super::Deinitialize();
 	ViewExtension.Reset();
+
+	ENQUEUE_RENDER_COMMAND(ReleaseExplosionVolumeTexture)(
+		[](FRHICommandListImmediate&)
+		{
+			FRDGExplosionVolumeProvider::Release_RenderThread();
+		});
+	FlushRenderingCommands();
 }
 
 void ULocalPlayerPostProcessSubsystem::MarkDirty()
@@ -155,9 +164,6 @@ void ULocalPlayerPostProcessSubsystem::TickFrame()
 		return;
 	}
 
-	CachedPostProcessParameters = PostProcessParameters;
-	CachedUIPostProcessParameters = UIPostProcessParameters;
-
 	if (ViewExtension.IsValid())
 	{
 		ViewExtension->UpdateCachedParameters(CachedPostProcessParameters);
@@ -179,7 +185,7 @@ const FPostProcessStrcture& ULocalPlayerPostProcessSubsystem::GetPostProcessStrc
 
 const FPostProcessStrctureUI& ULocalPlayerPostProcessSubsystem::GetUIPostProcessStrcture() const
 {
-	return UIPostProcessParameters;
+	return CachedUIPostProcessParameters;
 }
 
 bool ULocalPlayerPostProcessSubsystem::IsDirty()

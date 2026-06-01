@@ -1,11 +1,14 @@
 #include "OutlierPostProcessSceneViewExtension.h"
 #include "FRDGDualKawaseBlurPass.h"
 #include "FRDGExplosionVolumePass.h"
+#include "FRDGExplosionVolumeVisualizePass.h"
 #include "FRDGHeatHazePass.h"
 #include "FRDGMotionBlurPass.h"
 #include "FRDGDatamoshingPass.h"
+#include "RDGExplosionVolumeProvider.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
+#include "DrawDebugHelpers.h"
 #include "PostProcessInputs.h"
 #include "PostProcess/PostProcessMaterialInputs.h"
 #include "ScreenPass.h"
@@ -26,6 +29,7 @@ void FOutlierPostProcessSceneViewExtension::SetupView(FSceneViewFamily& InViewFa
 
 void FOutlierPostProcessSceneViewExtension::BeginRenderViewFamily(FSceneViewFamily& InViewFamily)
 {
+
 	if (ULocalPlayer* LP = LocalPlayer.Get())
 	{
 		if (UWorld* World = LP->GetWorld())
@@ -40,27 +44,10 @@ void FOutlierPostProcessSceneViewExtension::BeginRenderViewFamily(FSceneViewFami
 		}
 	}
 
-	if (!ShouldRenderAnyEffect())
-	{
-		return;
-	}
-
-	for (auto* View : InViewFamily.Views)
-	{
-		if (!View)
-		{
-			continue;
-		}
-
-		if (!IsTargetLocalPlayerView(*View))
-		{
-			continue;
-		}
-	}
-
-
+	
 	// 오래 안 쓴 ViewState 엔트리만 정리. 다중 뷰포트(빙의 + 에디터 등)가 ping-pong으로
 	// 서로의 history를 지우지 않도록, 일정 프레임 이상 미사용일 때만 제거.
+
 	ENQUEUE_RENDER_COMMAND(DatamoshHistoryCleanup)(
 		[this](FRHICommandListImmediate&)
 		{
@@ -78,6 +65,7 @@ void FOutlierPostProcessSceneViewExtension::BeginRenderViewFamily(FSceneViewFami
 
 bool FOutlierPostProcessSceneViewExtension::IsActiveThisFrame_Internal(const FSceneViewExtensionContext& Context) const
 {
+
 	return LocalPlayer.IsValid();
 }
 
@@ -85,7 +73,10 @@ void FOutlierPostProcessSceneViewExtension::SubscribeToPostProcessingPass(EPostP
 {
 	if (!ShouldRenderAnyEffect())
 	{
-		return;
+		if (!FRDGExplosionVolumeVisualizePass::IsEnabled())
+		{
+			return;
+		}
 	}
 
 	if (!IsTargetLocalPlayerView(View))
@@ -113,6 +104,22 @@ void FOutlierPostProcessSceneViewExtension::SubscribeToPostProcessingPass(EPostP
 				&FOutlierPostProcessSceneViewExtension::DatamoshingCallback_RenderThread));
 	}
 
+	if (PassId == EPostProcessingPass::Tonemap && FRDGExplosionVolumeVisualizePass::IsEnabled())
+	{
+		//UE_LOG(LogTemp, Error, TEXT("RDG.ExplosionVolume.Visualize"));
+
+
+		InOutPassCallbacks.Add(
+			FAfterPassCallbackDelegate::CreateRaw(
+				this,
+				&FOutlierPostProcessSceneViewExtension::ExplosionVolumeVisualizeCallback_RenderThread));
+	}
+	//else
+	//{
+	//	UE_LOG(LogTemp, Error, TEXT("RDG.ExplosionVolume.CantVisualize"));
+
+	//}
+
 
 	if (!bIsPassEnabled)
 	{
@@ -138,23 +145,40 @@ void FOutlierPostProcessSceneViewExtension::SubscribeToPostProcessingPass(EPostP
 
 void FOutlierPostProcessSceneViewExtension::PrePostProcessPass_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& InView, const FPostProcessingInputs& Inputs)
 {
-	if (!IsTargetLocalPlayerView(InView) || !Inputs.SceneTextures)
+
+	UE_LOG(LogTemp, Warning, TEXT("PrePostProcess: IsTarget=%d, HasSceneTextures=%d"),
+		IsTargetLocalPlayerView(InView) ? 1 : 0,
+		Inputs.SceneTextures ? 1 : 0);
+
+
+	if (!FRDGExplosionVolumePass::IsEnabled() || !IsTargetLocalPlayerView(InView) || !Inputs.SceneTextures)
 	{
+		CachedVelocityVolume = nullptr;
 		return;
 	}
 
 	FRDGTextureRef SceneDepthTexture = (*Inputs.SceneTextures)->SceneDepthTexture;
 	if (!SceneDepthTexture)
 	{
+		UE_LOG(LogTemp, Error, TEXT("SceneDepthTexture Invalid "));
 		return;
 	}
 
-	FExplosionVolumeParameters ExplosionParameters;
-	FRDGExplosionVolumePass::AddPass(
-		GraphBuilder,
-		InView,
-		SceneDepthTexture,
-		ExplosionParameters);
+
+
+	FRDGTextureRef VelocityVolume = FRDGExplosionVolumePass::AddPass(
+		GraphBuilder, InView, SceneDepthTexture);
+
+	if (!VelocityVolume)
+	{
+		CachedVelocityVolume = nullptr;
+		return;
+	}
+
+	FRDGExplosionVolumeProvider::QueueExtraction(GraphBuilder, VelocityVolume);
+	CachedVelocityVolume = VelocityVolume;
+	//같은 프레임의 경우,
+	//Excute 이후에 처리 되니깐최초 프레임은 못 읽더라도 그 다음부터는 읽게 할 수 있음.
 }
 
 void FOutlierPostProcessSceneViewExtension::UpdateCachedUIParameters(const FPostProcessStrctureUI& InParameters)
@@ -199,6 +223,7 @@ bool FOutlierPostProcessSceneViewExtension::IsTargetLocalPlayerView(const FScene
 	// LocalPlayer가 속한 World와 View가 그리는 World가 일치해야 대상 뷰로 판정.
 	// (PIE LocalPlayer는 PIE World, 에디터 LocalPlayer는 에디터 World를 갖기 때문에
 	//  빙의 중에도 둘이 자연스럽게 분리됨. SceneViewExtension은 LocalPlayer 단위로 생성됨.)
+
 	const UWorld* LPWorld = LP->GetWorld();
 	const FSceneInterface* Scene = InView.Family->Scene;
 	return LPWorld != nullptr && Scene != nullptr && Scene->GetWorld() == LPWorld;
@@ -316,4 +341,23 @@ FScreenPassTexture FOutlierPostProcessSceneViewExtension::DatamoshingCallback_Re
 		Entry.RenderTarget,
 		Inputs.OverrideOutput
 	);
+}
+
+FScreenPassTexture FOutlierPostProcessSceneViewExtension::ExplosionVolumeVisualizeCallback_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessMaterialInputs& Inputs)
+{
+	const FScreenPassTexture SceneColor = FScreenPassTexture::CopyFromSlice(
+		GraphBuilder,
+		Inputs.GetInput(EPostProcessMaterialInput::SceneColor));
+
+	if (!SceneColor.IsValid())
+	{
+		return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
+	}
+
+	return FRDGExplosionVolumeVisualizePass::AddPass(
+		GraphBuilder,
+		View,
+		SceneColor,
+		CachedVelocityVolume,
+		Inputs.OverrideOutput);
 }

@@ -21,10 +21,17 @@ public:
 	UFUNCTION(BlueprintNativeEvent, Category = "UI")
 	void HealthChanged(float InHealthRatio);
 
+	UFUNCTION(BlueprintNativeEvent, Category = "UI")
+
+	void PartnerShieldChanged(float InPartnerShieldRatio);
+
 public:
 	UPROPERTY(BlueprintReadWrite, Category = "Data")
 	float CurrentHPRatio =1;
 	UPROPERTY(BlueprintReadWrite, Category = "Data")
 	float CurrentShieldRatio=1 ;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Data")
+	float CurrentPartnerShieldRatio = 1;
 
 };

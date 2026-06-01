@@ -61,6 +61,11 @@ private:
 		const FSceneView& View,
 		const FPostProcessMaterialInputs& Inputs);
 
+	FScreenPassTexture ExplosionVolumeVisualizeCallback_RenderThread(
+		FRDGBuilder& GraphBuilder,
+		const FSceneView& View,
+		const FPostProcessMaterialInputs& Inputs);
+
 private:
 	TWeakObjectPtr<ULocalPlayer> LocalPlayer;
 	FPostProcessStrcture CachedParameters;
@@ -75,4 +80,7 @@ private:
 		uint64 LastTouchedFrame = 0;
 	};
 	TMap<FSceneViewState*, FDatamoshHistoryEntry> DatamoshHistoryMap;
+
+	//
+	FRDGTextureRef CachedVelocityVolume = nullptr;
 };

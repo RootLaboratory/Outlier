@@ -1,4 +1,4 @@
-﻿#include "FRDGExplosionVolumePass.h"
+#include "FRDGExplosionVolumePass.h"
 
 #include "RDGExplosionVolumeCS.h"
 #include "RenderGraphBuilder.h"
@@ -8,23 +8,32 @@
 
 namespace
 {
-constexpr int32 ExplosionVolumeSize = 64;
 constexpr int32 ExplosionVolumeThreadGroupSize = 8;
+
+TAutoConsoleVariable<int32> CVarExplosionVolumeEnable(
+	TEXT("rdg.ExplosionVolume.Enable"),
+	0,
+	TEXT("Generate RDG explosion volume. 0=off, 1=on."),
+	ECVF_RenderThreadSafe);
+}
+
+bool FRDGExplosionVolumePass::IsEnabled()
+{
+	return CVarExplosionVolumeEnable.GetValueOnAnyThread() != 0;
 }
 
 FRDGTextureRef FRDGExplosionVolumePass::AddPass(
 	FRDGBuilder& GraphBuilder,
 	const FSceneView& View,
-	FRDGTextureRef SceneDepthTexture,
-	const FExplosionVolumeParameters& Parameters)
+	FRDGTextureRef SceneDepthTexture)
 {
-	if (!SceneDepthTexture || Parameters.ExplosionRadius <= 0.0f || Parameters.ExplosionForce == 0.0f)
+	if (!IsEnabled() || !SceneDepthTexture)
 	{
 		return nullptr;
 	}
 
 	FRDGTextureDesc VolumeDesc = FRDGTextureDesc::Create3D(
-		FIntVector(ExplosionVolumeSize, ExplosionVolumeSize, ExplosionVolumeSize),
+		FIntVector(RDGExplosionVolume::VolumeSize, RDGExplosionVolume::VolumeSize, RDGExplosionVolume::VolumeSize),
 		PF_FloatRGBA,
 		FClearValueBinding::Transparent,
 		TexCreate_UAV | TexCreate_ShaderResource);
@@ -35,9 +44,6 @@ FRDGTextureRef FRDGExplosionVolumePass::AddPass(
 	PassParameters->OutVolume = GraphBuilder.CreateUAV(VelocityVolume);
 	PassParameters->SceneDepthTexture = SceneDepthTexture;
 	PassParameters->PointClampSampler = TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-	PassParameters->ExplosionCenter = Parameters.ExplosionCenter;
-	PassParameters->ExplosionRadius = Parameters.ExplosionRadius;
-	PassParameters->ExplosionForce = Parameters.ExplosionForce;
 	PassParameters->View = View.ViewUniformBuffer;
 
 	FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(View.GetFeatureLevel());
@@ -50,9 +56,9 @@ FRDGTextureRef FRDGExplosionVolumePass::AddPass(
 		ComputeShader,
 		PassParameters,
 		FIntVector(
-			ExplosionVolumeSize / ExplosionVolumeThreadGroupSize,
-			ExplosionVolumeSize / ExplosionVolumeThreadGroupSize,
-			ExplosionVolumeSize / ExplosionVolumeThreadGroupSize));
+			RDGExplosionVolume::VolumeSize / ExplosionVolumeThreadGroupSize,
+			RDGExplosionVolume::VolumeSize / ExplosionVolumeThreadGroupSize,
+			RDGExplosionVolume::VolumeSize / ExplosionVolumeThreadGroupSize));
 
 	return VelocityVolume;
 }

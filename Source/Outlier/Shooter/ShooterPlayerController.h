@@ -11,6 +11,8 @@
 
 
 class AShooterCharacter;
+class ULocalPlayerUISubSystem;
+struct FGameplayTag;
 /**
  * Basic player controller class for shooter gameplay.
  * Manages possession and respawn behavior.
@@ -41,6 +43,13 @@ protected:
 	virtual void ReceivedPlayer() override;
 	virtual void AcknowledgePossession(APawn* P) override;
 	void BindShooterCharacterDelegates(AShooterCharacter* ShooterCharacter);
+	void UnbindShooterCharacterDelegates();
+	ULocalPlayerUISubSystem* GetLocalUISubsystem() const;
+
+	void HandleShooterHealthChanged(float CurrentHealth, float MaxHealth);
+	void HandleShooterShieldChanged(float CurrentShield, float MaxShield);
+	void HandleShooterPartnerShieldChanged(float CurrentPartnerShield, float MaxPartnerShield);
+	void HandleShooterConditionChanged(const FGameplayTag& ConditionTag);
 
 	void CleanupPossessedShooterWeapons();
 
@@ -63,6 +72,9 @@ public:
 
 	UPROPERTY()
 	TObjectPtr<UShooterAbilityUI>  AbilityUIInstance;
+
+	UPROPERTY()
+	TObjectPtr<AShooterCharacter> BoundShooterCharacter;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Ability UI")
 	TSubclassOf<UShooterAbilityUI> AbilityUIClass;

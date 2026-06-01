@@ -5,10 +5,12 @@
 #include "Drone/Partner/PartnerInputConfig.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
+#include "Drone/Partner/PartnerDistanceComponent.h"
 #include "Drone/Partner/PartnerMovementComponent.h"
 #include "Drone/Partner/PartnerSupportComponent.h"
 #include "Drone/Partner/PartnerCombatComponent.h"
 #include "Net/UnrealNetwork.h"
+#include "Components/SceneCaptureComponent2D.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Drone/DroneMoveDataRow.h"
 #include "Drone/DroneControlDataRow.h"
@@ -18,6 +20,8 @@
 #include "Drone/Partner/PartnerCameraAssistDataRow.h"
 #include "Shooter/ShooterCharacter.h"
 #include "OutlierPlayerState.h"
+#include "LocalPlayerUISubSystem.h"
+#include "TagDrivenUIGameplayTags.h"
 
 void APartnerCharacter::BeginPlay()
 {
@@ -32,18 +36,8 @@ void APartnerCharacter::BeginPlay()
 	}
 
 	EnsurePartnerDataInitialized();
-
-	if (HasAuthority())
-	{
-		GetWorldTimerManager().SetTimer(
-			BoundaryCheckTimerHandle,
-			this,
-			&APartnerCharacter::UpdateBoundaryByTimer,
-			0.1f,
-			true
-		);
-	}
 }
+
 
 float APartnerCharacter::TakeDamage(
 	float DamageAmount,
@@ -235,6 +229,7 @@ void APartnerCharacter::Scan()
 	{
 		return;
 	}
+	UE_LOG(LogTemp, Error, TEXT("Scan Valid"));
 
 	ServerUseSkill(EPartnerSkillType::Scan);
 }
@@ -246,7 +241,41 @@ void APartnerCharacter::Shield()
 		return;
 	}
 
+	UE_LOG(LogTemp, Error, TEXT("Shield Valid"));
+
 	ServerUseSkill(EPartnerSkillType::Shield);
+}
+
+void APartnerCharacter::NotifyBoundaryUI(bool bDisabled)
+{
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+
+	APlayerController* PC = Cast<APlayerController>(GetController());
+	if (!PC)
+	{
+		return;
+	}
+
+	ULocalPlayer* LP = PC->GetLocalPlayer();
+	if (!LP)
+	{
+		return;
+	}
+
+	if (ULocalPlayerUISubSystem* SubSystem = LP->GetSubsystem<ULocalPlayerUISubSystem>())
+	{
+		if (bDisabled)
+		{
+			SubSystem->OnAbilityDisabledByDistance();
+		}
+		else
+		{
+			SubSystem->OnAbilityEnabledByDistance();
+		}
+	}
 }
 
 void APartnerCharacter::SyncMove()
@@ -351,15 +380,8 @@ void APartnerCharacter::SetBoundaryOutside(bool bOutside)
 
 	if (AOutlierPlayerState* PS = GetPlayerState<AOutlierPlayerState>())
 	{
+		//UE_LOG(LogTemp, Error, TEXT("SetBoundaryOutside"));
 		PS->SetSuitDisabledByPartnerBoundary(bOutside);
-	}
-}
-
-void APartnerCharacter::UpdateBoundaryByTimer()
-{
-	if (MovementComponent)
-	{
-		MovementComponent->UpdateBoundaryState();
 	}
 }
 
@@ -721,7 +743,9 @@ APartnerCharacter::APartnerCharacter()
 		MoveComp->MaxFlySpeed = MoveSpeed;
 		MoveComp->BrakingDecelerationFlying = Deceleration;
 	}
-
+	CaptureComponent = CreateDefaultSubobject< USceneCaptureComponent2D>(TEXT("PartnerCameraCapture"));
+	CaptureComponent->SetupAttachment(RootComponent);
+	DistanceComponent = CreateDefaultSubobject<UPartnerDistanceComponent>(TEXT("DistanceComponent"));
 	MovementComponent = CreateDefaultSubobject<UPartnerMovementComponent>(TEXT("MovementComponent"));
 	SupportComponent  = CreateDefaultSubobject<UPartnerSupportComponent> (TEXT("SupportComponent"));
 	CombatComponent   = CreateDefaultSubobject<UPartnerCombatComponent>  (TEXT("CombatComponent"));
@@ -754,6 +778,11 @@ void APartnerCharacter::SetShooterCharacter(AShooterCharacter* NewShooter)
 		MovementComponent->RefreshCharacterRefsFromPlayerState();
 	}
 
+	if (DistanceComponent)
+	{
+		DistanceComponent->RefreshCharacterRefsFromPlayerState();
+	}
+
 	if (SupportComponent)
 	{
 		SupportComponent->RefreshCharacterRefsFromPlayerState();
@@ -763,6 +792,56 @@ void APartnerCharacter::SetShooterCharacter(AShooterCharacter* NewShooter)
 void APartnerCharacter::ClientNotifySkillUseResult_Implementation(EPartnerSkillType SkillType, EPartnerSkillUseResult Result)
 {
 	OnPartnerSkillUseResult.Broadcast(SkillType, Result);
+
+	if (Result != EPartnerSkillUseResult::Success)
+	{
+		return;
+	}
+
+	APlayerController* PC = Cast<APlayerController>(GetController());
+	if (!PC)
+	{
+		return;
+	}
+
+	ULocalPlayer* LP = PC->GetLocalPlayer();
+	if (!LP)
+	{
+		return;
+	}
+
+	ULocalPlayerUISubSystem* SubSystem = LP->GetSubsystem<ULocalPlayerUISubSystem>();
+	if (!SubSystem)
+	{
+		return;
+	}
+
+	FGameplayTag AbilityTag;
+	float CoolTime = 0.f;
+
+	switch (SkillType)
+	{
+	case EPartnerSkillType::Shield:
+		AbilityTag = TagDrivenUITags::Ability::Partner::Shield();
+		CoolTime   = ShieldCooldown;
+		break;
+	case EPartnerSkillType::Scan:
+		AbilityTag = TagDrivenUITags::Ability::Partner::Scan();
+		CoolTime   = ScanCooldown;
+		break;
+	case EPartnerSkillType::Hack:
+		AbilityTag = TagDrivenUITags::Ability::Partner::Hacking();
+		CoolTime   = HackCooldown;
+		break;
+	case EPartnerSkillType::AreaOfEffect:
+		AbilityTag = TagDrivenUITags::Ability::Partner::EMP();
+		CoolTime   = AreaOfEffectCooldown;
+		break;
+	default:
+		return;
+	}
+
+	SubSystem->OnAbilityUsed(AbilityTag, CoolTime);
 }
 
 float APartnerCharacter::GetCurrentInertialCameraRollDegrees() const

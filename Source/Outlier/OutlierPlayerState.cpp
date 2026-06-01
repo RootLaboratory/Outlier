@@ -27,6 +27,11 @@ void AOutlierPlayerState::OnRep_SuitDisabledByPartnerBoundary()
 	{
 		ShooterCharacter->SetSuitDisabledByPartnerBoundary(bSuitDisabledByPartnerBoundary);
 	}
+
+	if (PartnerCharacter)
+	{
+		PartnerCharacter->NotifyBoundaryUI(bSuitDisabledByPartnerBoundary);
+	}
 }
 
 void AOutlierPlayerState::SetShooterCharacter(AShooterCharacter* NewShooter)
@@ -63,6 +68,13 @@ void AOutlierPlayerState::SetSuitDisabledByPartnerBoundary(bool bDisabled)
 	if (ShooterCharacter)
 	{
 		ShooterCharacter->SetSuitDisabledByPartnerBoundary(bDisabled);
+	}
+
+	// Listen Server: OnRep_SuitDisabledByPartnerBoundary fires only on clients,
+	// so directly notify the Partner's UI on the server instance.
+	if (PartnerCharacter)
+	{
+		PartnerCharacter->NotifyBoundaryUI(bDisabled);
 	}
 }
 
@@ -167,6 +179,8 @@ void AOutlierPlayerState::RefreshCharacterLinks()
 	{
 		PartnerCharacter->SetShooterCharacter(ShooterCharacter);
 	}
+
+	OnPlayerCharactersChanged.Broadcast(this);
 }
 
 void AOutlierPlayerState::OnRep_PlayerRole()

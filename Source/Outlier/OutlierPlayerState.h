@@ -21,6 +21,7 @@ enum class EOutlierPlayerRole : uint8
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnPlayerRoleChanged, AOutlierPlayerState*);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnPendingLobbyStateChanged, AOutlierPlayerState*);
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnPlayerCharactersChanged, AOutlierPlayerState*);
 
 
 /**
@@ -56,6 +57,8 @@ public:
 	EOutlierPlayerRole GetPlayerRole() const { return PlayerRole; }
 	bool IsShooterPlayer() const { return PlayerRole == EOutlierPlayerRole::Shooter; }
 	bool IsPartnerPlayer() const { return PlayerRole == EOutlierPlayerRole::Partner; }
+
+	FOnPlayerCharactersChanged OnPlayerCharactersChanged;
 
 	UFUNCTION(BlueprintCallable, Category = "Pair")
 	void SetPairId(int32 NewPairId);

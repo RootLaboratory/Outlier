@@ -21,10 +21,12 @@ AShooterPlayerController::AShooterPlayerController()
 void AShooterPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
+	BindMainUI();
 }
 
 void AShooterPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	UnbindShooterCharacterDelegates();
 	CleanupPossessedShooterWeapons();
 
 	Super::EndPlay(EndPlayReason);
@@ -59,10 +61,24 @@ void AShooterPlayerController::AcknowledgePossession(APawn* P)
 {
 	Super::AcknowledgePossession(P);
 	BindShooterCharacterDelegates(Cast<AShooterCharacter>(P));
+
+	if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(P))
+	{
+		Shooter->RefreshUIForRespawn();
+	}
 }
 
 void AShooterPlayerController::BindShooterCharacterDelegates(AShooterCharacter* ShooterCharacter)
 {
+	UnbindShooterCharacterDelegates();
+
+	if (!ShooterCharacter)
+	{
+		return;
+	}
+
+	BoundShooterCharacter = ShooterCharacter;
+
 	ShooterCharacter->OnMovementStateChanged.AddDynamic(
 		this,
 		&AShooterPlayerController::HandleMovementStateChanged
@@ -72,6 +88,80 @@ void AShooterPlayerController::BindShooterCharacterDelegates(AShooterCharacter* 
 		this,
 		&AShooterPlayerController::OnWeaponChanged
 	);
+
+	ShooterCharacter->OnShooterHealthChanged.AddUObject(
+		this,
+		&AShooterPlayerController::HandleShooterHealthChanged
+	);
+
+	ShooterCharacter->OnShooterShieldChanged.AddUObject(
+		this,
+		&AShooterPlayerController::HandleShooterShieldChanged
+	);
+
+	ShooterCharacter->OnShooterPartnerShieldChanged.AddUObject(
+		this,
+		&AShooterPlayerController::HandleShooterPartnerShieldChanged
+	);
+
+	ShooterCharacter->OnShooterConditionChanged.AddUObject(
+		this,
+		&AShooterPlayerController::HandleShooterConditionChanged
+	);
+}
+
+void AShooterPlayerController::UnbindShooterCharacterDelegates()
+{
+	if (!BoundShooterCharacter)
+	{
+		return;
+	}
+
+	BoundShooterCharacter->OnMovementStateChanged.RemoveAll(this);
+	BoundShooterCharacter->OnWeaponChanged.RemoveAll(this);
+	BoundShooterCharacter->OnShooterHealthChanged.RemoveAll(this);
+	BoundShooterCharacter->OnShooterShieldChanged.RemoveAll(this);
+	BoundShooterCharacter->OnShooterPartnerShieldChanged.RemoveAll(this);
+	BoundShooterCharacter->OnShooterConditionChanged.RemoveAll(this);
+	BoundShooterCharacter = nullptr;
+}
+
+ULocalPlayerUISubSystem* AShooterPlayerController::GetLocalUISubsystem() const
+{
+	ULocalPlayer* LocalPlayer = GetLocalPlayer();
+	return LocalPlayer ? LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>() : nullptr;
+}
+
+void AShooterPlayerController::HandleShooterHealthChanged(float CurrentHealth, float MaxHealth)
+{
+	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
+	{
+		UISubsystem->OnRep_HealthChanged(CurrentHealth, MaxHealth);
+	}
+}
+
+void AShooterPlayerController::HandleShooterShieldChanged(float CurrentShield, float MaxShield)
+{
+	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
+	{
+		UISubsystem->OnRep_ShieldChanged(CurrentShield, MaxShield);
+	}
+}
+
+void AShooterPlayerController::HandleShooterPartnerShieldChanged(float CurrentPartnerShield, float MaxPartnerShield)
+{
+	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
+	{
+		UISubsystem->OnRep_PartnerShieldChanged(CurrentPartnerShield, MaxPartnerShield);
+	}
+}
+
+void AShooterPlayerController::HandleShooterConditionChanged(const FGameplayTag& ConditionTag)
+{
+	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
+	{
+		UISubsystem->OnRep_ShooterHPStateChanged(ConditionTag);
+	}
 }
 
 void AShooterPlayerController::ReceivedPlayer()
@@ -143,7 +233,7 @@ void AShooterPlayerController::BindMainUI()
 
 	ShooterUIInstance->AddToViewport();
 	UE_LOG(LogTemp, Warning,
-		TEXT("[ShooterPC] MainUI added PC=%s UI=%s MainUIClass=%s"),
+		TEXT("[ShooterPC] MainUI added to viewport PC=%s UI=%s MainUIClass=%s"),
 		*GetNameSafe(this),
 		*GetNameSafe(ShooterUIInstance),
 		*GetNameSafe(MainUIClass));

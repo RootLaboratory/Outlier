@@ -28,6 +28,8 @@ public:
 	void TryShield_Server();
 
 private:
+	static constexpr int32 DefaultScanStencilValue = 0;
+
 	TMap<FName, float> LastUseTimes;
 
 	FTimerHandle ShieldTimerHandle;
@@ -38,6 +40,8 @@ private:
 
 	TArray<TObjectPtr<AActor>> PendingScanActors;
 	TArray<TObjectPtr<AActor>> ScannedActors;
+
+	FVector ScanOrigin = FVector::ZeroVector;
 
 private:
 	bool CanUseSkill_Server(FName SkillName, float CoolDown) const;
@@ -54,9 +58,25 @@ private:
 
 	bool IsInsideView(AActor* Actor) const;
 	bool HasLineOfSight(AActor* Actor) const;
+	int32 ResolveScanStencilValue(AActor* Actor) const;
 
 	void ApplyScanEffect(AActor* Actor);
 	void ClearScanEffect(AActor* Actor);
 
 	void ApplyAreaOfEffect(AActor* Actor);
+
+	UFUNCTION(NetMulticast, Reliable)
+	void MulticastStartScanVisual(FVector InScanOrigin, float InCurrentScanRadius, float InScanRange);
+
+	UFUNCTION(NetMulticast, Unreliable)
+	void MulticastUpdateScanVisual(FVector InScanOrigin, float InCurrentScanRadius);
+
+	UFUNCTION(NetMulticast, Reliable)
+	void MulticastApplyScanEffect(AActor* Actor, int32 StencilValue);
+
+	UFUNCTION(NetMulticast, Reliable)
+	void MulticastClearScanEffect(AActor* Actor);
+
+	UFUNCTION(NetMulticast, Reliable)
+	void MulticastEndScanVisual();
 };

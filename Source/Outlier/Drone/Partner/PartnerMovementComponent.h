@@ -48,7 +48,6 @@ public:
 
 	void RefreshTickEnabled();
 
-	void UpdateBoundaryState();
 	float GetCurrentCameraPitchDegrees() const { return CurrentCameraPitch; }
 	float GetCurrentCameraRollDegrees() const { return CurrentCameraRoll; }
 
