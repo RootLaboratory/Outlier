@@ -33,6 +33,18 @@ namespace TagDrivenUITags
 			return Tag;
 		}
 
+		inline FGameplayTag CurrentAbility()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Shooter.UI.Module.CurrentAbility")));
+			return Tag;
+		}
+
+		inline FGameplayTag CurrentWeapon()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Shooter.UI.Module.CurrentWeapon")));
+			return Tag;
+		}
+
 		inline FGameplayTag ShieldSkill()
 		{
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Shooter.UI.Module.Skill.Shield")));

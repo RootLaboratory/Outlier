@@ -70,8 +70,6 @@ void AOutlierPlayerState::SetSuitDisabledByPartnerBoundary(bool bDisabled)
 		ShooterCharacter->SetSuitDisabledByPartnerBoundary(bDisabled);
 	}
 
-	// Listen Server: OnRep_SuitDisabledByPartnerBoundary fires only on clients,
-	// so directly notify the Partner's UI on the server instance.
 	if (PartnerCharacter)
 	{
 		PartnerCharacter->NotifyBoundaryUI(bDisabled);

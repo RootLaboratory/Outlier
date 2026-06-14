@@ -12,6 +12,8 @@
 #include "StaticCrossHair.h"
 #include "DistanceSlideUI.h"
 #include "PartnerHPUI.h"
+#include "ShooterCurrentAbilityIcon.h"
+#include "ShooterMainWidget.h"
 #include "TagDrivenUIGameplayTags.h"
 
 void ULocalPlayerUISubSystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -196,6 +198,32 @@ void ULocalPlayerUISubSystem::PartnerDistanceUpdate(const float Distance)
 	}
 }
 
+void ULocalPlayerUISubSystem::OnCurrentWeaponChanged(EWidgetWeaponType WeaponType)
+{
+	if (UShooterMainWidget* ShooterMainUI = Cast<UShooterMainWidget>(GetMainUI()))
+	{
+		ShooterMainUI->OnChangeWeapon(WeaponType);
+	}
+}
+
+void ULocalPlayerUISubSystem::OnCurrentAbilityChanged(const FGameplayTag& AbilityTag)
+{
+	if (UShooterCurrentAbilityIcon* CurrentAbilityIcon = Cast<UShooterCurrentAbilityIcon>(GetModule(TagDrivenUITags::Shooter::CurrentAbility())))
+	{
+		CurrentAbilityIcon->SetCurrentAbility(AbilityTag);
+	}
+}
+
+bool ULocalPlayerUISubSystem::ApplyCurrentAbilityCooldownIfMatches(const FGameplayTag& AbilityTag, float CoolTime)
+{
+	if (UShooterCurrentAbilityIcon* CurrentAbilityIcon = Cast<UShooterCurrentAbilityIcon>(GetModule(TagDrivenUITags::Shooter::CurrentAbility())))
+	{
+		return CurrentAbilityIcon->ApplyCooldownIfMatches(AbilityTag, CoolTime);
+	}
+
+	return false;
+}
+
 void ULocalPlayerUISubSystem::OnRep_Aiming()
 {
 	if (UCrossHairBase* CrossHairBase = Cast<UCrossHairBase>(GetModuleAny(TagDrivenUITags::Shooter::CrossHair(), TagDrivenUITags::Partner::CrossHair())))
@@ -285,6 +313,11 @@ void ULocalPlayerUISubSystem::OnAbilityUsed(const FGameplayTag& AbilityTag, floa
 	if (UAbilityIconUI* Icon = MainUI->GetAbilityIcon(AbilityTag))
 	{
 		Icon->SetCoolTime(CoolTime);
+	}
+
+	if (UShooterCurrentAbilityIcon* CurrentAbilityIcon = Cast<UShooterCurrentAbilityIcon>(GetModule(TagDrivenUITags::Shooter::CurrentAbility())))
+	{
+		CurrentAbilityIcon->ApplyCooldownIfMatches(AbilityTag, CoolTime);
 	}
 }
 

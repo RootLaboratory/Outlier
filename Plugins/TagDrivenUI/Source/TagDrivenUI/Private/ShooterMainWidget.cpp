@@ -7,6 +7,8 @@
 #include "EventDrivenUI.h"
 #include "HPBarUI.h"
 #include "PartnerCamUI.h"
+#include "ShooterCurrentAbilityIcon.h"
+#include "ShooterCurrentWeaponIcon.h"
 #include "TagDrivenUIGameplayTags.h"
 
 void UShooterMainWidget::NativeConstruct()
@@ -22,13 +24,15 @@ void UShooterMainWidget::ModuleInit()
 
 
 	Modules.Empty();
-	Modules.Reserve(4);
+	Modules.Reserve(6);
 
 	RegisterModule(TagDrivenUITags::Shooter::PartnerCam(), PartnerCamUI);
 	RegisterModule(TagDrivenUITags::Shooter::HP(), HPBarUI);
 	RegisterModule(TagDrivenUITags::Shooter::Ammo(), AmmoUI);
 	RegisterModule(TagDrivenUITags::Shooter::CrossHair(), nullptr);
-
+	RegisterModule(TagDrivenUITags::Shooter::CurrentAbility(), CurrentAbilityUI);
+	RegisterModule(TagDrivenUITags::Shooter::CurrentWeapon(), CurrentWeaponUI);
+	
 	//ModuleActivate();
 
 	SuitOnModuleInit();
@@ -63,6 +67,7 @@ void UShooterMainWidget::ModuleDeActivate()
 void UShooterMainWidget::DefaultModuleInit()
 {
 	ModuleDeActivate();
+
 }
 
 void UShooterMainWidget::SuitOnModuleInit()
@@ -80,6 +85,16 @@ void UShooterMainWidget::SuitOnModuleInit()
 	if (AmmoUI)
 	{
 		AmmoUI->Deactivate();
+	}
+
+	if (CurrentAbilityUI)
+	{
+		CurrentAbilityUI->Activate();
+	}
+
+	if (CurrentWeaponUI)
+	{
+		CurrentWeaponUI->Activate();
 	}
 
 	if (UEventDrivenUI* HPModule = GetModule(TagDrivenUITags::Shooter::HP()))
@@ -108,6 +123,11 @@ void UShooterMainWidget::SuitOnModuleInit()
 
 void UShooterMainWidget::OnChangeWeapon(EWidgetWeaponType Type)
 {
+	if (UShooterCurrentWeaponIcon* CurrentWeaponModule = Cast<UShooterCurrentWeaponIcon>(GetModule(TagDrivenUITags::Shooter::CurrentWeapon())))
+	{
+		CurrentWeaponModule->SetCurrentWeapon(Type);
+	}
+
 	switch (Type)
 	{
 	case EWidgetWeaponType::Melee:
@@ -176,7 +196,22 @@ void UShooterMainWidget::OnChangeWeapon(EWidgetWeaponType Type)
 		RegisterModule(TagDrivenUITags::Shooter::CrossHair(), CurrentCrossHairUI);
 		break;
 	}
+	case EWidgetWeaponType::Unarmed:
 	default:
+	{
+		if (AmmoUI)
+		{
+			AmmoUI->Deactivate();
+		}
+
+		if (CurrentCrossHairUI)
+		{
+			CurrentCrossHairUI->Deactivate();
+		}
+
+		CurrentCrossHairUI = nullptr;
+		RegisterModule(TagDrivenUITags::Shooter::CrossHair(), CurrentCrossHairUI);
 		break;
+	}
 	}
 }
