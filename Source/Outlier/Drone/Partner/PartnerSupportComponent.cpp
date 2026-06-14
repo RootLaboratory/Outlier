@@ -3,6 +3,7 @@
 
 #include "Drone/Partner/PartnerSupportComponent.h"
 #include "Drone/Partner/PartnerCharacter.h"
+#include "Drone/Partner/PartnerShieldSphere.h"
 #include "Interface/ScannableInterface.h"
 #include "Shooter/ShooterCharacter.h"
 #include "OutlierPlayerState.h"
@@ -29,6 +30,18 @@ void UPartnerSupportComponent::BeginPlay()
 
 	// ...
 	
+}
+
+void UPartnerSupportComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	DestroyShieldActor_Server();
+
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(ShieldMonitorTimerHandle);
+	}
+
+	Super::EndPlay(EndPlayReason);
 }
 
 void UPartnerSupportComponent::TryHack_Server(AActor* TargetActor)
@@ -241,16 +254,16 @@ void UPartnerSupportComponent::TryShield_Server()
 	const float ShieldDuration = PartnerCharacter->ShieldDuration;
 
 	Shooter->ApplyPartnerShield(ShieldAmount, ShieldDuration);
+	SpawnShieldActor_Server(Shooter);
 
 	PartnerCharacter->bShieldActive = true;
-	ShieldElapsedTime = 0.0f;
 
 	GetWorld()->GetTimerManager().SetTimer(
-		ShieldTimerHandle,
+		ShieldMonitorTimerHandle,
 		this,
-		&UPartnerSupportComponent::EndShield_Server,
-		ShieldDuration,
-		false
+		&UPartnerSupportComponent::UpdateShield_Server,
+		0.05f,
+		true
 	);
 
 	NotifySkillResult(EPartnerSkillType::Shield, EPartnerSkillUseResult::Success);
@@ -311,6 +324,117 @@ AActor* UPartnerSupportComponent::FindTarget(float Range) const
 	return bHit ? Hit.GetActor() : nullptr;
 }
 
+void UPartnerSupportComponent::SpawnShieldActor_Server(AShooterCharacter* Shooter)
+{
+	UWorld* World = GetWorld();
+	if (!World || !PartnerCharacter || !PartnerCharacter->HasAuthority() || !Shooter || !ShieldActorClass)
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[PartnerShieldSpawn] Blocked World=%d Partner=%s Authority=%d Shooter=%s ShieldActorClass=%s"),
+			World ? 1 : 0,
+			*GetNameSafe(PartnerCharacter),
+			PartnerCharacter && PartnerCharacter->HasAuthority() ? 1 : 0,
+			*GetNameSafe(Shooter),
+			*GetNameSafe(ShieldActorClass)
+		);
+		return;
+	}
+
+	UE_LOG(
+		LogTemp,
+		Log,
+		TEXT("[PartnerShieldSpawn] SpawnRequest Partner=%s Shooter=%s Class=%s Location=%s Rotation=%s"),
+		*GetNameSafe(PartnerCharacter),
+		*GetNameSafe(Shooter),
+		*GetNameSafe(ShieldActorClass),
+		*Shooter->GetActorLocation().ToString(),
+		*Shooter->GetActorRotation().ToString()
+	);
+
+	DestroyShieldActor_Server();
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.Owner = Shooter;
+	SpawnParams.Instigator = PartnerCharacter;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+	ActiveShieldActor = World->SpawnActor<APartnerShieldSphere>(
+		ShieldActorClass,
+		Shooter->GetActorLocation(),
+		Shooter->GetActorRotation(),
+		SpawnParams
+	);
+
+	if (ActiveShieldActor)
+	{
+		ActiveShieldActor->InitializeShield(Shooter, PartnerCharacter);
+
+		UE_LOG(
+			LogTemp,
+			Log,
+			TEXT("[PartnerShieldSpawn] SpawnSuccess Actor=%s Target=%s Radius=%.1f Offset=%s Location=%s"),
+			*GetNameSafe(ActiveShieldActor),
+			*GetNameSafe(ActiveShieldActor->GetShieldTarget()),
+			ActiveShieldActor->GetShieldRadius(),
+			*ActiveShieldActor->GetTargetRelativeLocation().ToString(),
+			*ActiveShieldActor->GetActorLocation().ToString()
+		);
+
+		if (bDebugShieldActorSpawn)
+		{
+			DrawDebugSphere(
+				World,
+				ActiveShieldActor->GetActorLocation(),
+				ActiveShieldActor->GetShieldRadius(),
+				32,
+				FColor::Cyan,
+				false,
+				ShieldActorDebugLifeTime,
+				0,
+				2.0f
+			);
+		}
+	}
+	else
+	{
+		UE_LOG(
+			LogTemp,
+			Error,
+			TEXT("[PartnerShieldSpawn] SpawnFailed Partner=%s Shooter=%s Class=%s"),
+			*GetNameSafe(PartnerCharacter),
+			*GetNameSafe(Shooter),
+			*GetNameSafe(ShieldActorClass)
+		);
+	}
+}
+
+void UPartnerSupportComponent::DestroyShieldActor_Server()
+{
+	if (ActiveShieldActor)
+	{
+		UE_LOG(LogTemp, Log, TEXT("[PartnerShieldSpawn] Destroy Actor=%s"), *GetNameSafe(ActiveShieldActor));
+		ActiveShieldActor->EndShield();
+		ActiveShieldActor = nullptr;
+	}
+}
+
+void UPartnerSupportComponent::UpdateShield_Server()
+{
+	if (!PartnerCharacter || !PartnerCharacter->HasAuthority())
+	{
+		EndShield_Server();
+		return;
+	}
+
+	AShooterCharacter* Shooter = PartnerCharacter->CachedShooterCharacter;
+	if (!Shooter || Shooter->GetCurPartnerShield() <= 0.0f)
+	{
+		EndShield_Server();
+	}
+}
+
 void UPartnerSupportComponent::EndShield_Server()
 {
 	if (!PartnerCharacter)
@@ -319,7 +443,8 @@ void UPartnerSupportComponent::EndShield_Server()
 	}
 
 	PartnerCharacter->bShieldActive = false;
-	GetWorld()->GetTimerManager().ClearTimer(ShieldTimerHandle);
+	GetWorld()->GetTimerManager().ClearTimer(ShieldMonitorTimerHandle);
+	DestroyShieldActor_Server();
 }
 
 void UPartnerSupportComponent::UpdateScan_Server()
@@ -430,7 +555,7 @@ bool UPartnerSupportComponent::CanUseShield() const
 	{
 		return false;
 	}
-	
+
 	const float Distance = PS->GetPartnerDistance();
 	return Distance <= PartnerCharacter->ShieldRange;
 }
@@ -500,18 +625,10 @@ int32 UPartnerSupportComponent::ResolveScanStencilValue(AActor* Actor) const
 
 	if (const IScannableInterface* NativeScannable = Cast<IScannableInterface>(Actor))
 	{
-		const int32 StencilValue = NativeScannable->Execute_GetScanStencilValue(Actor);
+		const int32 StencilValue = NativeScannable->GetScanStencilValue();
 		UE_LOG(LogTemp, Error, TEXT("NativeScannable Valid, %d"), StencilValue);
 		return StencilValue;
 	}
-
-	if (Actor->GetClass()->ImplementsInterface(UScannableInterface::StaticClass()))
-	{
-		const int32 StencilValue = IScannableInterface::Execute_GetScanStencilValue(Actor);
-		//UE_LOG(LogTemp, Error, TEXT("ImplementsInterface Valid, %d"), StencilValue);
-		return StencilValue;
-	}
-
 
 	return DefaultScanStencilValue;
 }

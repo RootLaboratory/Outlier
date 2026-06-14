@@ -9,6 +9,7 @@
 #include "Drone/Partner/PartnerMovementComponent.h"
 #include "Drone/Partner/PartnerSupportComponent.h"
 #include "Drone/Partner/PartnerCombatComponent.h"
+#include "Drone/Partner/PartnerHackComponent.h"
 #include "Net/UnrealNetwork.h"
 #include "Components/SceneCaptureComponent2D.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -21,6 +22,7 @@
 #include "Shooter/ShooterCharacter.h"
 #include "OutlierPlayerState.h"
 #include "LocalPlayerUISubSystem.h"
+#include "PartnerAbilityComponent.h"
 #include "TagDrivenUIGameplayTags.h"
 
 void APartnerCharacter::BeginPlay()
@@ -92,7 +94,8 @@ void APartnerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 	EnhancedInputComponent->BindAction(PartnerInputConfig->HackingAction,		ETriggerEvent::Started,	  this, &APartnerCharacter::TryHacking);
 
 	// Scan
-	EnhancedInputComponent->BindAction(PartnerInputConfig->ScanAction,			ETriggerEvent::Started,   this, &APartnerCharacter::Scan);	
+	//EnhancedInputComponent->BindAction(PartnerInputConfig->ScanAction,			ETriggerEvent::Started,   this, &APartnerCharacter::Scan);	
+	EnhancedInputComponent->BindAction(PartnerInputConfig->ScanAction, ETriggerEvent::Started, this, &APartnerCharacter::TestAbilityScan);
 
 	// Shield
 	EnhancedInputComponent->BindAction(PartnerInputConfig->ShieldAction,		ETriggerEvent::Started,	  this, &APartnerCharacter::Shield);
@@ -203,9 +206,26 @@ void APartnerCharacter::StopCameraAssist()
 
 void APartnerCharacter::TryHacking()
 {
+	UPartnerHackComponent* RuntimeHackComponent = GetRuntimeHackComponent();
+
+	UE_LOG(LogTemp, Warning, TEXT("[PartnerHackDebug] TryHacking input Pawn=%s Local=%d Authority=%d CanAcceptInput=%d HackComponent=%s RuntimeHackComponent=%s MemberOwner=%s RuntimeOwner=%s"),
+		*GetNameSafe(this),
+		IsLocallyControlled() ? 1 : 0,
+		HasAuthority() ? 1 : 0,
+		CanAcceptInput() ? 1 : 0,
+		*GetNameSafe(HackComponent),
+		*GetNameSafe(RuntimeHackComponent),
+		*GetNameSafe(HackComponent ? HackComponent->GetOwner() : nullptr),
+		*GetNameSafe(RuntimeHackComponent ? RuntimeHackComponent->GetOwner() : nullptr));
+
 	if (!CanAcceptInput())
 	{
 		return;
+	}
+
+	if (RuntimeHackComponent)
+	{
+		RuntimeHackComponent->TryHack();
 	}
 
 	ServerUseSkill(EPartnerSkillType::Hack);
@@ -221,6 +241,18 @@ void APartnerCharacter::Hacking(AActor* TargetActor)
 	UE_LOG(LogTemp, Warning, TEXT("Hack Target : %s"), *GetNameSafe(TargetActor));
 
 	// 해킹 로직
+}
+
+void APartnerCharacter::TestAbilityScan()
+{
+	if (!CanAcceptInput())
+	{
+		return;
+	}
+	UE_LOG(LogTemp, Error, TEXT("Scan Valid"));
+
+
+	TestAbilityComponent->TryActivateAbilityByTag(PartnerAbilityComponentTags::Scan());
 }
 
 void APartnerCharacter::Scan()
@@ -269,7 +301,7 @@ void APartnerCharacter::NotifyBoundaryUI(bool bDisabled)
 	{
 		if (bDisabled)
 		{
-			SubSystem->OnAbilityDisabledByDistance();
+			SubSystem->OnAbilityDisabledByDistance(); //스킬 사거리 존재한다면 따로 분리.
 		}
 		else
 		{
@@ -380,9 +412,13 @@ void APartnerCharacter::SetBoundaryOutside(bool bOutside)
 
 	if (AOutlierPlayerState* PS = GetPlayerState<AOutlierPlayerState>())
 	{
-		//UE_LOG(LogTemp, Error, TEXT("SetBoundaryOutside"));
 		PS->SetSuitDisabledByPartnerBoundary(bOutside);
 	}
+}
+
+EPartnerBoundaryState APartnerCharacter::GetBoundaryOutside()
+{
+	return BoundaryState;
 }
 
 void APartnerCharacter::HandlePartnerHit()
@@ -475,6 +511,22 @@ bool APartnerCharacter::CanAcceptInput() const
 	return !bIsRebooting;
 }
 
+UPartnerHackComponent* APartnerCharacter::GetRuntimeHackComponent() const
+{
+	UPartnerHackComponent* RuntimeHackComponent = FindComponentByClass<UPartnerHackComponent>();
+	if (RuntimeHackComponent && RuntimeHackComponent->GetOwner() == this)
+	{
+		return RuntimeHackComponent;
+	}
+
+	if (HackComponent && HackComponent->GetOwner() == this)
+	{
+		return HackComponent;
+	}
+
+	return nullptr;
+}
+
 void APartnerCharacter::SetMoveMode(EPartnerMoveMode NewMode)
 {
 	if (!CanApplyMoveMode(NewMode))
@@ -548,7 +600,7 @@ void APartnerCharacter::ServerSetAccelerate_Implementation(bool bNewAccelerate)
 
 void APartnerCharacter::ServerUseSkill_Implementation(EPartnerSkillType SkillType)
 {
-	if (!SupportComponent || !CanAcceptInput())
+	if (!CanAcceptInput())
 	{
 		return;
 	}
@@ -556,30 +608,66 @@ void APartnerCharacter::ServerUseSkill_Implementation(EPartnerSkillType SkillTyp
 	switch (SkillType)
 	{
 	case EPartnerSkillType::AreaOfEffect:
-		SupportComponent->TryAreaOfEffect_Server();
+		if (SupportComponent)
+		{
+			SupportComponent->TryAreaOfEffect_Server();
+		}
 		break;
 	case EPartnerSkillType::Shield:
-		SupportComponent->TryShield_Server();
+		if (SupportComponent)
+		{
+			SupportComponent->TryShield_Server();
+		}
 		break;
 	case EPartnerSkillType::Scan:
-		SupportComponent->TryScan_Server();
+		if (SupportComponent)
+		{
+			SupportComponent->TryScan_Server();
+		}
 		break;
 	case EPartnerSkillType::Hack:
-		SupportComponent->TryHack_Server(nullptr);
 		break;
 	default:
 		break;
 	}
 }
 
-void APartnerCharacter::ServerHackTarget_Implementation(AActor* TargetActor)
+void APartnerCharacter::RequestHackTarget(AActor* TargetActor)
 {
-	if (!SupportComponent || !TargetActor || !CanAcceptInput())
+	UPartnerHackComponent* RuntimeHackComponent = GetRuntimeHackComponent();
+
+	UE_LOG(LogTemp, Warning, TEXT("[PartnerHackDebug] RequestHackTarget Pawn=%s Target=%s Local=%d Authority=%d HackComponent=%s RuntimeHackComponent=%s MemberOwner=%s RuntimeOwner=%s"),
+		*GetNameSafe(this),
+		*GetNameSafe(TargetActor),
+		IsLocallyControlled() ? 1 : 0,
+		HasAuthority() ? 1 : 0,
+		*GetNameSafe(HackComponent),
+		*GetNameSafe(RuntimeHackComponent),
+		*GetNameSafe(HackComponent ? HackComponent->GetOwner() : nullptr),
+		*GetNameSafe(RuntimeHackComponent ? RuntimeHackComponent->GetOwner() : nullptr));
+
+	if (!TargetActor)
 	{
 		return;
 	}
 
-	SupportComponent->TryHack_Server(TargetActor);
+	if (RuntimeHackComponent)
+	{
+		RuntimeHackComponent->TryStartHack(TargetActor);
+	}
+
+	ServerHackTarget(TargetActor);
+}
+
+void APartnerCharacter::ServerHackTarget_Implementation(AActor* TargetActor)
+{
+	UPartnerHackComponent* RuntimeHackComponent = GetRuntimeHackComponent();
+	if (!RuntimeHackComponent || !TargetActor || !CanAcceptInput())
+	{
+		return;
+	}
+
+	RuntimeHackComponent->TryStartHack(TargetActor);
 }
 
 void APartnerCharacter::ServerSetMoveMode_Implementation(EPartnerMoveMode NewMode)
@@ -748,7 +836,9 @@ APartnerCharacter::APartnerCharacter()
 	DistanceComponent = CreateDefaultSubobject<UPartnerDistanceComponent>(TEXT("DistanceComponent"));
 	MovementComponent = CreateDefaultSubobject<UPartnerMovementComponent>(TEXT("MovementComponent"));
 	SupportComponent  = CreateDefaultSubobject<UPartnerSupportComponent> (TEXT("SupportComponent"));
+	TestAbilityComponent = CreateDefaultSubobject<UPartnerAbilityComponent>(TEXT("AbilityComponent"));
 	CombatComponent   = CreateDefaultSubobject<UPartnerCombatComponent>  (TEXT("CombatComponent"));
+	HackComponent     = CreateDefaultSubobject<UPartnerHackComponent>    (TEXT("HackComponent"));
 }
 
 void APartnerCharacter::OnRep_DroneMovementState()
@@ -786,6 +876,12 @@ void APartnerCharacter::SetShooterCharacter(AShooterCharacter* NewShooter)
 	if (SupportComponent)
 	{
 		SupportComponent->RefreshCharacterRefsFromPlayerState();
+	}
+
+	HackComponent = GetRuntimeHackComponent();
+	if (HackComponent)
+	{
+		HackComponent->RefreshCharacterRefsFromPlayerState();
 	}
 }
 

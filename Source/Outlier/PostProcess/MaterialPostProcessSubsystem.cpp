@@ -15,18 +15,46 @@ void UMaterialPostProcessSubsystem::Initialize(FSubsystemCollectionBase& Collect
 void UMaterialPostProcessSubsystem::Deinitialize()
 {
 	EndScanPostProcess();
+	SetStealthPostProcessEnabled(false);
 
 	Super::Deinitialize();
 }
 
-void UMaterialPostProcessSubsystem::RegisterScanPostProcessVolume(AOutlierPostProcessVolume* InPostProcessVolume)
+void UMaterialPostProcessSubsystem::RegisterPostProcessVolume(AOutlierPostProcessVolume* InPostProcessVolume)
 {
-	if (!InPostProcessVolume || !InPostProcessVolume->HasValidScanPostProcessBindings())
+	if (!InPostProcessVolume)
 	{
 		return;
 	}
 
-	BoundScanPostProcessVolume = InPostProcessVolume;
+	if (!InPostProcessVolume->HasValidScanPostProcessBindings()
+		&& !InPostProcessVolume->HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::Stealth)
+		&& !InPostProcessVolume->HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::Damaged))
+	{
+		return;
+	}
+
+	BoundPostProcessVolume = InPostProcessVolume;
+}
+
+void UMaterialPostProcessSubsystem::RegisterScanPostProcessVolume(AOutlierPostProcessVolume* InPostProcessVolume)
+{
+	RegisterPostProcessVolume(InPostProcessVolume);
+}
+
+void UMaterialPostProcessSubsystem::SetPostProcessEnabled(EOutlierPostProcessMaterialType MaterialType, bool bEnabled)
+{
+	if (ShouldSkipRenderingWork() || !BoundPostProcessVolume)
+	{
+		return;
+	}
+
+	BoundPostProcessVolume->SetPostProcessEnabled(MaterialType, bEnabled);
+}
+
+void UMaterialPostProcessSubsystem::SetStealthPostProcessEnabled(bool bEnabled)
+{
+	SetPostProcessEnabled(EOutlierPostProcessMaterialType::Stealth, bEnabled);
 }
 
 void UMaterialPostProcessSubsystem::StartScanPostProcess(
@@ -34,13 +62,13 @@ void UMaterialPostProcessSubsystem::StartScanPostProcess(
 	float CurrentScanRadius,
 	float Range)
 {
-	if (ShouldSkipRenderingWork() || !BoundScanPostProcessVolume)
+	if (ShouldSkipRenderingWork() || !BoundPostProcessVolume)
 	{
 		return;
 	}
 
-	BoundScanPostProcessVolume->SetScanMaterialParameters(ScanOrigin, CurrentScanRadius, Range);
-	BoundScanPostProcessVolume->SetScanPostProcessEnabled(true);
+	BoundPostProcessVolume->SetScanMaterialParameters(ScanOrigin, CurrentScanRadius, Range);
+	BoundPostProcessVolume->SetScanPostProcessEnabled(true);
 }
 
 void UMaterialPostProcessSubsystem::UpdateScanPostProcess(
@@ -48,25 +76,23 @@ void UMaterialPostProcessSubsystem::UpdateScanPostProcess(
 	float CurrentScanRadius)
 {
 
-	//DrawDebugSphere(
-	//	GetWorld(),
-	//	ScanOrigin,
-	//	CurrentScanRadius,
-	//	32,
-	//	FColor::Cyan,
-	//	false,
-	//	0.25f,
-	//	0,
-	//	2.0f
-	//);
-
-	if (ShouldSkipRenderingWork() || !BoundScanPostProcessVolume)
+	if (ShouldSkipRenderingWork() || !BoundPostProcessVolume)
 	{
-		UE_LOG(LogTemp, Error, TEXT("BoundScanPostProcessVolume inValid"));
+		UE_LOG(LogTemp, Error, TEXT("BoundPostProcessVolume inValid"));
 		return;
 	}
 
-	BoundScanPostProcessVolume->UpdateScanMaterialParameters(ScanOrigin, CurrentScanRadius);
+	BoundPostProcessVolume->UpdateScanMaterialParameters(ScanOrigin, CurrentScanRadius);
+}
+
+void UMaterialPostProcessSubsystem::UpdateDamagedPostProcess(float InHPRatio)
+{
+	if (ShouldSkipRenderingWork() || !BoundPostProcessVolume)
+	{
+		return;
+	}
+
+	BoundPostProcessVolume->UpdateDamagedMaterialParameters(InHPRatio);
 }
 
 void UMaterialPostProcessSubsystem::EndScanPostProcess()
@@ -76,10 +102,10 @@ void UMaterialPostProcessSubsystem::EndScanPostProcess()
 		return;
 	}
 
-	if (BoundScanPostProcessVolume)
+	if (BoundPostProcessVolume)
 	{
-		BoundScanPostProcessVolume->SetScanPostProcessEnabled(false);
-		BoundScanPostProcessVolume->SetScanMaterialParameters(FVector::ZeroVector, 0.0f, 0.0f);
+		BoundPostProcessVolume->SetScanPostProcessEnabled(false);
+		BoundPostProcessVolume->SetScanMaterialParameters(FVector::ZeroVector, 0.0f, 0.0f);
 	}
 	ClearAllScanStencils();
 }

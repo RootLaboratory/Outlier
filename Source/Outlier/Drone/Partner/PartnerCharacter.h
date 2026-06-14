@@ -59,8 +59,9 @@ class UPartnerDistanceComponent;
 class UPartnerMovementComponent;
 class UPartnerSupportComponent;
 class UPartnerCombatComponent;
+class UPartnerHackComponent;
 class USceneCaptureComponent2D;
-
+class UPartnerAbilityComponent;
 UCLASS()
 class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter
 {
@@ -70,7 +71,7 @@ class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter
 	friend class UPartnerSupportComponent;
 	friend class UPartnerCombatComponent;
 	friend class UPartnerDistanceComponent;
-
+	friend class UPartnerAbilityComponent;
 protected:
 	// Components
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
@@ -82,8 +83,14 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UPartnerSupportComponent> SupportComponent;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TestAbilityComponents")
+	TObjectPtr<UPartnerAbilityComponent> TestAbilityComponent;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UPartnerCombatComponent> CombatComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UPartnerHackComponent> HackComponent;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<USceneCaptureComponent2D> CaptureComponent;
@@ -351,6 +358,8 @@ protected:
 	void StopCameraAssist();
 	void TryHacking();
 	void Hacking(AActor* TargetActor);
+	//
+	void TestAbilityScan();
 	void Scan();
 	void Shield();
 	void SyncMove();
@@ -362,6 +371,7 @@ protected:
 	void StopVerticalMove();
 
 	void SetBoundaryOutside(bool bOutside);
+	EPartnerBoundaryState GetBoundaryOutside();
 
 	void HandlePartnerHit();
 	void StartReboot();
@@ -369,6 +379,7 @@ protected:
 	void ClearHitInvincible();
 	void ClearRebootInvincible();
 	bool CanAcceptInput() const;
+	UPartnerHackComponent* GetRuntimeHackComponent() const;
 
 	void SetMoveMode(EPartnerMoveMode NewMode);
 	void ApplyMoveMode(EPartnerMoveMode NewMode);
@@ -411,6 +422,9 @@ public:
 	void OnRep_IsAccelerate();
 
 	void SetShooterCharacter(AShooterCharacter* NewShooter);
+
+	UFUNCTION(BlueprintCallable, Category = "Hack")
+	void RequestHackTarget(AActor* TargetActor);
 	
 	UFUNCTION(Client, Reliable)
 	void ClientNotifySkillUseResult(EPartnerSkillType SkillType, EPartnerSkillUseResult Result);

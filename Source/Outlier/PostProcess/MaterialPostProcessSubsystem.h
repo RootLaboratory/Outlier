@@ -8,6 +8,7 @@
 
 class AOutlierPostProcessVolume;
 class UPrimitiveComponent;
+enum class EOutlierPostProcessMaterialType : uint8;
 
 struct FScanStencilRestoreState
 {
@@ -24,11 +25,17 @@ public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 
+	void RegisterPostProcessVolume(AOutlierPostProcessVolume* InPostProcessVolume);
 	void RegisterScanPostProcessVolume(AOutlierPostProcessVolume* InPostProcessVolume);
+
+	void SetPostProcessEnabled(EOutlierPostProcessMaterialType MaterialType, bool bEnabled);
+	void SetStealthPostProcessEnabled(bool bEnabled);
 
 	void StartScanPostProcess(FVector ScanOrigin, float CurrentScanRadius, float Range);
 
 	void UpdateScanPostProcess(FVector ScanOrigin, float CurrentScanRadius);
+
+	void UpdateDamagedPostProcess(float InHPRatio);
 
 	void EndScanPostProcess();
 
@@ -38,7 +45,7 @@ public:
 
 private:
 	UPROPERTY()
-	TObjectPtr<AOutlierPostProcessVolume> BoundScanPostProcessVolume;
+	TObjectPtr<AOutlierPostProcessVolume> BoundPostProcessVolume;
 
 	TMap<TWeakObjectPtr<UPrimitiveComponent>, FScanStencilRestoreState> ScanStencilRestoreStates;
 

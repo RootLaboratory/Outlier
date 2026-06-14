@@ -17,7 +17,7 @@ public:
 	AScanTestActor();
 
 public:
-	virtual int32 GetScanStencilValue_Implementation() const override;
+	virtual int32 GetScanStencilValue() const override;
 protected:
 	// Called when the game starts or when spawned
 	virtual void BeginPlay() override;
