@@ -294,6 +294,11 @@ void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor)
 	}
 }
 
+FGameplayTagContainer AFirstPersonCharacter::GetOwnedGameplayTagsForQuery() const
+{
+	return OwnedQueryTags;
+}
+
 void AFirstPersonCharacter::OnRep_CurrentWeapon()
 {
 	UE_LOG(LogTemp, Log, TEXT("%s %s OnRep_CurrentWeapon Previous=%s Current=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(LastReplicatedWeapon), *GetNameSafe(CurrentWeapon));

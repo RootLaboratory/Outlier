@@ -16,6 +16,7 @@
 #include "Shooter/ShooterPlayerController.h"
 #include "Shooter/ShooterCharacter.h"
 #include "OutlierNetUtils.h"
+#include "Drone/Partner/PartnerShieldSphere.h"
 #include "Net/UnrealNetwork.h"
 #include "Weapon/WeaponCoreRow.h"
 #include "Weapon/WeaponBloomRow.h"
@@ -186,10 +187,16 @@ void ARangedWeaponBase::FireShot()
 	if (bHit)
 	{
 		UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot hit Target=%s Start=%s End=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(Hit.GetActor()), *Start.ToString(), *End.ToString());
-		if (AShooterCharacter* HitCharacter = Cast<AShooterCharacter>(Hit.GetActor()))
+		const float HitDistance = FVector::Distance(Start, Hit.ImpactPoint);
+		const float DamageToApply = GetDamageAtDistance(HitDistance);
+
+		if (APartnerShieldSphere* Shield = Cast<APartnerShieldSphere>(Hit.GetActor()))
 		{
-			const float HitDistance = FVector::Distance(Start, Hit.ImpactPoint);
-			const float DamageToApply = GetDamageAtDistance(HitDistance);
+			Shield->ApplyShieldDamage(DamageToApply);
+			UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot applied Shield Damage=%.1f To=%s"), OutlierNet::GetNetPrefix(this), *GetName(), DamageToApply, *GetNameSafe(Shield));
+		}
+		else if (AShooterCharacter* HitCharacter = Cast<AShooterCharacter>(Hit.GetActor()))
+		{
 			HitCharacter->ApplyDamageInternal(DamageToApply);
 			UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot applied Damage=%.1f To=%s"), OutlierNet::GetNetPrefix(this), *GetName(), DamageToApply, *GetNameSafe(HitCharacter));
 		}

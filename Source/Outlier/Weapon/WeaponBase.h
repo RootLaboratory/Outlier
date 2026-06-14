@@ -14,6 +14,7 @@ class USceneComponent;
 class USphereComponent;
 class AWeaponSpawnPoint;
 class AFirstPersonCharacter;
+class UInteractableComponent;
 
 UENUM(BlueprintType)
 enum class EWeaponType : uint8
@@ -44,6 +45,9 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
 	TObjectPtr<USphereComponent> InteractionCollision;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Interaction")
+	TObjectPtr<UInteractableComponent> InteractableComponent;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = Weapon)
 	FName WeaponName;
@@ -148,6 +152,8 @@ public:
 	virtual void OnUnequipped();
 
 	virtual void OnDropped(const FTransform& DropTransform, AFirstPersonCharacter* DroppedBy = nullptr);
+
+	virtual UInteractableComponent* GetInteractableComponent() const override;
 
 	virtual void Interact(class AFirstPersonCharacter* Interactor) override;
 

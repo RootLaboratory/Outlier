@@ -274,6 +274,10 @@ void AShooterPlayerController::BindMainUI()
 	}
 
 	AbilityUIInstance->AddToViewport();
+	AbilityUIInstance->OnAbilitySelected.AddDynamic(
+		this,
+		&AShooterPlayerController::HandleAbilitySelected
+	);
 	AbilityUIInstance->SetVisibility(ESlateVisibility::Collapsed);
 	UE_LOG(LogTemp, Warning,
 		TEXT("[ShooterPC] AbilityUI added PC=%s UI=%s AbilityUIClass=%s"),
@@ -323,17 +327,26 @@ void AShooterPlayerController::HandleMovementStateChanged(EMovementState NewStat
 
 void AShooterPlayerController::OnWeaponChanged(EWeaponType NewType)
 {
-	UShooterMainWidget* ShooterUI = Cast<UShooterMainWidget>(ShooterUIInstance);
-
-	if (ShooterUI)
+	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
 	{
-		ShooterUI->OnChangeWeapon(static_cast<EWidgetWeaponType>(NewType));
-
+		UISubsystem->OnCurrentWeaponChanged(static_cast<EWidgetWeaponType>(NewType));
 	}
 	else
 	{
-		UE_LOG(LogTemp, Error, TEXT("ShooterUI"));
-
+		UE_LOG(LogTemp, Error, TEXT("Shooter UI subsystem is not ready"));
 	}
 	
+}
+
+void AShooterPlayerController::HandleAbilitySelected(FGameplayTag AbilityTag)
+{
+	if (!AbilityTag.IsValid())
+	{
+		return;
+	}
+
+	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
+	{
+		UISubsystem->OnCurrentAbilityChanged(AbilityTag);
+	}
 }
