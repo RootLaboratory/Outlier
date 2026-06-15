@@ -105,15 +105,15 @@ void AOutlierPostProcessVolume::SetPostProcessEnabled(EOutlierPostProcessMateria
 	{
 	case EOutlierPostProcessMaterialType::Scan:
 		bScanPostProcessEnabled = bInEnabled;
-		UE_LOG(LogTemp, Error, TEXT("[ScanPPDebug] SetEnabled=%d Weight=%.2f"), bScanPostProcessEnabled ? 1 : 0, TargetWeight);
+		//UE_LOG(LogTemp, Error, TEXT("[ScanPPDebug] SetEnabled=%d Weight=%.2f"), bScanPostProcessEnabled ? 1 : 0, TargetWeight);
 		break;
 	case EOutlierPostProcessMaterialType::Stealth:
 		bStealthPostProcessEnabled = bInEnabled;
-		UE_LOG(LogTemp, Error, TEXT("[StealthPPDebug] SetEnabled=%d Weight=%.2f"), bStealthPostProcessEnabled ? 1 : 0, TargetWeight);
+		//UE_LOG(LogTemp, Error, TEXT("[StealthPPDebug] SetEnabled=%d Weight=%.2f"), bStealthPostProcessEnabled ? 1 : 0, TargetWeight);
 		break;
 	case EOutlierPostProcessMaterialType::Damaged:
 		bDamagedPostProcessEnabled = bInEnabled;
-		UE_LOG(LogTemp, Error, TEXT("[DamagedPPDebug] SetEnabled=%d Weight=%.2f"), bDamagedPostProcessEnabled ? 1 : 0, TargetWeight);
+		//UE_LOG(LogTemp, Error, TEXT("[DamagedPPDebug] SetEnabled=%d Weight=%.2f"), bDamagedPostProcessEnabled ? 1 : 0, TargetWeight);
 		break;
 	default:
 		break;

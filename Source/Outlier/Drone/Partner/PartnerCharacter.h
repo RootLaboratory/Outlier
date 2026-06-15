@@ -178,48 +178,73 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Control")
 	TSoftObjectPtr<UCurveFloat> TurnFeelCurve;
 
-	// Skill Data
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
-	float ScanRange = 300.0f;
+	// Skill Data - Scan
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Scan")
+	float ScanRange = 1000.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Scan")
 	float ScanDuration = 3.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
-	float ScanCooldown = 5.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Scan")
+	float ScanCooldown = 10.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Scan")
+	float ScanExpandSpeed = 5.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
-	float ScanExpandSpeed = 300.0f;
+	
+	// Skill Data - Hack
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Hack")
+	float HackRange = 500.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
-	float HackRange = 300.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Hack")
+	float HackEffectiveRange = 300.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
-	float HackDuration = 2.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Hack")
+	float HackMiniGameTime = 5.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
-	float HackCooldown = 6.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Hack")
+	float HackCooldown = 3.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
-	float AreaOfEffectRange = 100.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Hack")
+	float HackFailPenaltyTime = 3.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
-	float AreaOfEffectDuration = 3.0f;
+	// Skill Data - EMP
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|EMP")
+	float AreaOfEffectRange = 1500.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
-	float AreaOfEffectCooldown = 8.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|EMP")
+	float EMPMarkingTime = 3.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
-	float ShieldRange = 100.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|EMP")
+	float EMPStunDuration = 3.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
-	float ShieldDuration = 4.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|EMP")
+	float AreaOfEffectCooldown = 30.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
-	float ShieldCooldown = 10.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|EMP")
+	int32 EMPMaxTargets = 99;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
-	float ShieldAmount = 200.0f;
+	// Skill Data - Shield
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Shield")
+	float ShieldRange = 200.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Shield")
+	float ShieldDuration = 5.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Shield")
+	float ShieldCooldown = 20.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Shield")
+	float ShieldAmount = 100.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Shield")
+	float ShieldDecayRate = 20.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Shield")
+	float ShieldDecayDelay = 1.0f;
+
+	// Skill Data - Interaction
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Interaction")
+	float InteractionRange = 200.0f;
 
 	// Skill Common
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")

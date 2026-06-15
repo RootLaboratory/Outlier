@@ -94,8 +94,8 @@ void APartnerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 	EnhancedInputComponent->BindAction(PartnerInputConfig->HackingAction,		ETriggerEvent::Started,	  this, &APartnerCharacter::TryHacking);
 
 	// Scan
-	//EnhancedInputComponent->BindAction(PartnerInputConfig->ScanAction,			ETriggerEvent::Started,   this, &APartnerCharacter::Scan);	
-	EnhancedInputComponent->BindAction(PartnerInputConfig->ScanAction, ETriggerEvent::Started, this, &APartnerCharacter::TestAbilityScan);
+	EnhancedInputComponent->BindAction(PartnerInputConfig->ScanAction,			ETriggerEvent::Started,   this, &APartnerCharacter::Scan);	
+	//EnhancedInputComponent->BindAction(PartnerInputConfig->ScanAction, ETriggerEvent::Started, this, &APartnerCharacter::TestAbilityScan);
 
 	// Shield
 	EnhancedInputComponent->BindAction(PartnerInputConfig->ShieldAction,		ETriggerEvent::Started,	  this, &APartnerCharacter::Shield);
@@ -732,21 +732,33 @@ void  APartnerCharacter::InitializeFromDataTables()
 
 	if (const FPartnerSkillDataRow* SkillDataRow = PartnerSkillDataRow.GetRow<FPartnerSkillDataRow>(TEXT("InitializeSkillData")))
 	{
-		ScanRange				 = SkillDataRow->ScanRange;
-		ScanDuration			 = SkillDataRow->ScanDuration;
-		ScanCooldown			 = SkillDataRow->ScanCooldown;
-		HackRange				 = SkillDataRow->HackRange;
-		HackDuration			 = SkillDataRow->HackDuration;
-		HackCooldown			 = SkillDataRow->HackCooldown;
-		AreaOfEffectRange		 = SkillDataRow->AreaOfEffectRange;
-		AreaOfEffectDuration	 = SkillDataRow->AreaOfEffectDuration;
-		AreaOfEffectCooldown	 = SkillDataRow->AreaOfEffectCooldown;
-		ShieldRange				 = SkillDataRow->ShieldRange;
-		ShieldDuration			 = SkillDataRow->ShieldDuration;
-		ShieldCooldown			 = SkillDataRow->ShieldCooldown;
-		ShieldAmount			 = SkillDataRow->ShieldAmount;
-	}
+		ScanRange			= SkillDataRow->ScanRange;
+		ScanDuration		= SkillDataRow->ScanDuration;
+		ScanCooldown		= SkillDataRow->ScanCooldown;
+		ScanExpandSpeed		= SkillDataRow->ScanExpandSpeed;
 
+		HackRange			= SkillDataRow->HackRange;
+		HackEffectiveRange	= SkillDataRow->HackEffectiveRange;
+		HackMiniGameTime	= SkillDataRow->HackMiniGameTime;
+		HackCooldown		= SkillDataRow->HackCooldown;
+		HackFailPenaltyTime	= SkillDataRow->HackFailPenaltyTime;
+
+		AreaOfEffectRange	= SkillDataRow->AreaOfEffectRange;
+		EMPMarkingTime		= SkillDataRow->EMPMarkingTime;
+		EMPStunDuration		= SkillDataRow->EMPStunDuration;
+		AreaOfEffectCooldown= SkillDataRow->AreaOfEffectCooldown;
+		EMPMaxTargets		= SkillDataRow->EMPMaxTargets;
+
+		ShieldRange			= SkillDataRow->ShieldRange;
+		ShieldDuration		= SkillDataRow->ShieldDuration;
+		ShieldCooldown		= SkillDataRow->ShieldCooldown;
+		ShieldAmount		= SkillDataRow->ShieldAmount;
+		ShieldDecayRate		= SkillDataRow->ShieldDecayRate;
+		ShieldDecayDelay	= SkillDataRow->ShieldDecayDelay;
+
+		InteractionRange	= SkillDataRow->InteractionRange;
+	}
+	
 	if (const FPartnerSkillCommonRow* SkillCommonRow = PartnerSkillCommonDataRow.GetRow<FPartnerSkillCommonRow>(TEXT("InitializeSkillCommon")))
 	{
 		CoolDown			= SkillCommonRow->CoolDown;
