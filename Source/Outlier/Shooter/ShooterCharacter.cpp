@@ -14,6 +14,8 @@
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
 #include "ShooterPlayerController.h"
+#include "PostProcess/MaterialPostProcessSubsystem.h"
+#include "PostProcess/OutlierPostProcessVolume.h"
 #include "LocalPlayerUISubSystem.h"
 #include "InputActionValue.h"
 #include "Drone/Partner/PartnerCharacter.h"
@@ -24,8 +26,6 @@
 #include "ShooterCombatComponent.h"
 #include "ShooterMovementComponent.h"
 #include "LocalPlayerPostProcessSubsystem.h"
-#include "PostProcess/MaterialPostProcessSubsystem.h"
-#include "PostProcess/OutlierPostProcessVolume.h"
 #include "Weapon/WeaponBase.h"
 #include "Weapon/RangedWeaponBase.h"
 #include "Net/UnrealNetwork.h"
@@ -475,7 +475,7 @@ void AShooterCharacter::TryUseSuit()
 	{
 		UE_LOG(LogTemp, Error, TEXT("MaterialSub"));
 
-		MaterialSub->SetStealthPostProcessEnabled(true);
+		MaterialSub->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Stealth,true);
 
 	}
 
@@ -506,12 +506,16 @@ void AShooterCharacter::OnRep_CurHP()
 	UE_LOG(LogTemp, Log, TEXT("%s %s OnRep_CurHP CurHP=%.1f / %.1f"), OutlierNet::GetNetPrefix(this), *GetName(), CurHP, MaxHP);
 	OnShooterHealthChanged.Broadcast(CurHP, MaxHP);
 
-	UMaterialPostProcessSubsystem* PPS = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>();
-	if (PPS)
+	if (IsLocallyControlled())
 	{
-		PPS->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Damaged, true);
-		PPS->UpdateDamagedPostProcess(CurHP / MaxHP);
+		UMaterialPostProcessSubsystem* PPS = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>();
+		if (PPS)
+		{
+			PPS->UpdateDamagedPostProcess(CurHP / MaxHP);
+			PPS->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Damaged, true);
+		}
 	}
+
 	OnShooterConditionChanged.Broadcast(ResolveShooterConditionTag());
 }
 

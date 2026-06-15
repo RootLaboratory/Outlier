@@ -371,7 +371,7 @@ void UPartnerSupportComponent::SpawnShieldActor_Server(AShooterCharacter* Shoote
 	{
 		ActiveShieldActor->InitializeShield(Shooter, PartnerCharacter);
 
-		UE_LOG(
+		/*UE_LOG(
 			LogTemp,
 			Log,
 			TEXT("[PartnerShieldSpawn] SpawnSuccess Actor=%s Target=%s Radius=%.1f Offset=%s Location=%s"),
@@ -380,22 +380,7 @@ void UPartnerSupportComponent::SpawnShieldActor_Server(AShooterCharacter* Shoote
 			ActiveShieldActor->GetShieldRadius(),
 			*ActiveShieldActor->GetTargetRelativeLocation().ToString(),
 			*ActiveShieldActor->GetActorLocation().ToString()
-		);
-
-		if (bDebugShieldActorSpawn)
-		{
-			DrawDebugSphere(
-				World,
-				ActiveShieldActor->GetActorLocation(),
-				ActiveShieldActor->GetShieldRadius(),
-				32,
-				FColor::Cyan,
-				false,
-				ShieldActorDebugLifeTime,
-				0,
-				2.0f
-			);
-		}
+		);*/
 	}
 	else
 	{

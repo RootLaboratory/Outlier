@@ -26,14 +26,16 @@ class OUTLIER_API AOutlierPostProcessVolume : public APostProcessVolume
 public:
 	bool HasValidScanPostProcessBindings() const;
 	bool HasValidPostProcessMaterial(EOutlierPostProcessMaterialType MaterialType) const;
-
 	void SetPostProcessEnabled(EOutlierPostProcessMaterialType MaterialType, bool bInEnabled);
-	void SetScanPostProcessEnabled(bool bEnableScanPostProcess);
-	void SetStealthPostProcessEnabled(bool bEnabledStealthPostProcess);
-
+	
+	void SetDamagedMaterialParameters(float InRatio);
 	void SetScanMaterialParameters(FVector ScanLocation, float ScanRadius, float Range);
+	void ResetPostProcessMaterialParameters();
+
 	void UpdateScanMaterialParameters(FVector ScanLocation, float ScanRadius) const;
 	void UpdateDamagedMaterialParameters(float InPlayerHPRatio) const;
+	void UpdateDamagedMaterialParameters(float InPlayerHPRatio, FVector4 Color) const;
+	void DisableAllBlendablesHard();
 
 protected:
 	virtual void BeginPlay() override;

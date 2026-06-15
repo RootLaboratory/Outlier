@@ -337,7 +337,7 @@ protected:
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Survival")
 	uint8 bIsInvincible : 1 = false;
 
-	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Survival")
+	UPROPERTY(ReplicatedUsing = OnRep_CurrentHitCount, VisibleAnywhere, BlueprintReadOnly, Category = "Survival")
 	int32 CurrentHitCount = 0;
 
 	// DataTable
@@ -378,6 +378,7 @@ protected:
 	virtual void TryStartAttack() override;
 	virtual void TryStopAttack() override;
 
+
 	void AreaOfEffect();
 	void CameraAssist();
 	void StopCameraAssist();
@@ -398,7 +399,6 @@ protected:
 	void SetBoundaryOutside(bool bOutside);
 	EPartnerBoundaryState GetBoundaryOutside();
 
-	void HandlePartnerHit();
 	void StartReboot();
 	void FinishReboot();
 	void ClearHitInvincible();
@@ -446,6 +446,9 @@ public:
 	UFUNCTION()
 	void OnRep_IsAccelerate();
 
+	UFUNCTION()
+	void OnRep_CurrentHitCount();
+
 	void SetShooterCharacter(AShooterCharacter* NewShooter);
 
 	UFUNCTION(BlueprintCallable, Category = "Hack")
@@ -461,4 +464,9 @@ public:
 
 	void SetMovementState(EDroneMovementState State);
 	void NotifyBoundaryUI(bool bDisabled);
+	void ApplyDamagedEvent(float InRatio) const;
+	void NullifyDamagedEvenet() const;
+
+	void HandlePartnerHit();
+
 };

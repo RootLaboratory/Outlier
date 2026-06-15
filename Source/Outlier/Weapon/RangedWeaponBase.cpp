@@ -15,6 +15,7 @@
 #include "CrossHairBase.h"
 #include "Shooter/ShooterPlayerController.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Drone/Partner/PartnerCharacter.h"
 #include "OutlierNetUtils.h"
 #include "Drone/Partner/PartnerShieldSphere.h"
 #include "Net/UnrealNetwork.h"
@@ -200,6 +201,10 @@ void ARangedWeaponBase::FireShot()
 			HitCharacter->ApplyDamageInternal(DamageToApply);
 			UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot applied Damage=%.1f To=%s"), OutlierNet::GetNetPrefix(this), *GetName(), DamageToApply, *GetNameSafe(HitCharacter));
 		}
+		else if (APartnerCharacter* PartnerCharacter = Cast<APartnerCharacter>(Hit.GetActor()))
+		{
+			PartnerCharacter->HandlePartnerHit();
+		}
 	}
 	else
 	{
@@ -335,9 +340,6 @@ void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, AActor* Hit)
 
 		if (WeaponMuzzle)
 		{
-			//UE_LOG(LogTemp, Log, TEXT("PlayFirstPersonFireFX_EffectSpawned"));
-			//UTrailEffectDefinition* MuzzleEffectInstance = NewObject<UTrailEffectDefinition>(this, WeaponMuzzle);
-
 			VisualSubsystem->SpawnMuzzleEffect(WeaponMuzzle, Start, MuzzleRotation);
 
 		}
@@ -345,26 +347,26 @@ void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, AActor* Hit)
 
 		if (WeaponTrail)
 		{
-			//UTrailEffectDefinition* TrailEffectInstance = NewObject<UTrailEffectDefinition>(this, WeaponTrail);
 			VisualSubsystem->SpawnBeamTrail(WeaponTrail, Start, End);
 		}
 
 
 		if (Hit)
 		{
-			//UE_LOG(LogTemp, Error, TEXT("PlayFirstPersonFireFX Hit"));
 			IVisualEffectProvider* Provider = Cast<IVisualEffectProvider>(Hit);
 
 			if (Provider)
 			{
-				//UE_LOG(LogTemp, Error, TEXT("PlayFirstPersonFireFX Hit and ProviderComponent"));
 				FVisualEventSet AssetSet = Provider->GetVisualEventSet();
 				VisualSubsystem->FeaturesEffect(TraceEnd, MuzzleRotation, AssetSet);
 			}
 
 			else
 			{
-				//UE_LOG(LogTemp, Error, TEXT("PlayFirstPersonFireFX Hit but no  ProviderComponent"));
+				if (WeaponDecal)
+				{
+					VisualSubsystem->SpawnMarkAtLocation(WeaponDecal, Start, MuzzleRotation);
+				}
 			}
 
 		}
@@ -392,36 +394,31 @@ void ARangedWeaponBase::PlayFirstPersonFireFX(FVector TraceEnd, AActor* Hit)
 
 		if (WeaponMuzzle)
 		{
-			//UE_LOG(LogTemp, Log, TEXT("PlayFirstPersonFireFX_EffectSpawned"));
-			//UTrailEffectDefinition* MuzzleEffectInstance = NewObject<UTrailEffectDefinition>(this, WeaponMuzzle);
-
 			VisualSubsystem->SpawnMuzzleEffect(WeaponMuzzle, Start, MuzzleRotation);
-
 		}
 
 
 		if (WeaponTrail)
 		{
-			//UTrailEffectDefinition* TrailEffectInstance = NewObject<UTrailEffectDefinition>(this, WeaponTrail);
 			VisualSubsystem->SpawnBeamTrail(WeaponTrail, Start, End);
 		}
 
-
 		if (Hit)
 		{
-			//UE_LOG(LogTemp, Error, TEXT("PlayFirstPersonFireFX Hit"));
 			IVisualEffectProvider* Provider = Cast<IVisualEffectProvider>(Hit);
 
 			if (Provider)
 			{
-				//UE_LOG(LogTemp, Error, TEXT("PlayFirstPersonFireFX Hit and ProviderComponent"));
 				FVisualEventSet AssetSet = Provider->GetVisualEventSet();
 				VisualSubsystem->FeaturesEffect(TraceEnd, MuzzleRotation, AssetSet);
 			}
 
 			else
 			{
-				//UE_LOG(LogTemp, Error, TEXT("PlayFirstPersonFireFX Hit but no  ProviderComponent"));
+				if (WeaponDecal)
+				{
+					VisualSubsystem->SpawnMarkAtLocation(WeaponDecal, Start, MuzzleRotation);
+			    }
 			}
 
 		}

@@ -96,7 +96,7 @@ void ULocalPlayerUISubSystem::OnRep_HealthChanged(float InHealth, float MaxHealt
 
 	if (UHPBarUI* HPBarUI = Cast<UHPBarUI>(GetModuleAny(TagDrivenUITags::Shooter::HP(), TagDrivenUITags::Partner::HP())))
 	{
-		UE_LOG(LogTemp, Error, TEXT("HP Changed, %f"), Ratio);
+		//UE_LOG(LogTemp, Error, TEXT("HP Changed, %f"), Ratio);
 		HPBarUI->HealthChanged(Ratio);
 	}
 }
@@ -112,7 +112,7 @@ void ULocalPlayerUISubSystem::OnRep_PartnerShieldChanged(float InPartnerShield, 
 
 	if (UHPBarUI* HPBarUI = Cast<UHPBarUI>(GetModuleAny(TagDrivenUITags::Shooter::HP(), TagDrivenUITags::Partner::HP())))
 	{
-		UE_LOG(LogTemp, Error, TEXT("PartnerShield Changed, %f"), Ratio);
+		//UE_LOG(LogTemp, Error, TEXT("PartnerShield Changed, %f"), Ratio);
 		HPBarUI->PartnerShieldChanged(Ratio);
 	}
 }
@@ -264,13 +264,13 @@ void ULocalPlayerUISubSystem::OnRep_ShootCrosshairChanged(float InFireRate)
 
 	if (UDynamicCrossHair* CrossHairBase = Cast<UDynamicCrossHair>(CrossHairModule))
 	{
-		UE_LOG(LogTemp, Log, TEXT("OnRep_ShootCrosshairChanged"));
+		//UE_LOG(LogTemp, Log, TEXT("OnRep_ShootCrosshairChanged"));
 		CrossHairBase->On_RepShoot();
 	}
 	else if (UStaticCrossHair* Crosshair = Cast<UStaticCrossHair>(CrossHairModule))
 	{
 		Crosshair->SetCoolTime(InFireRate );
-		UE_LOG(LogTemp, Log, TEXT("InFireRate %f"), InFireRate);
+		//UE_LOG(LogTemp, Log, TEXT("InFireRate %f"), InFireRate);
 
 	}
 	else

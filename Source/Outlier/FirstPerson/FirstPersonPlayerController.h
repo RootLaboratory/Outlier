@@ -57,7 +57,7 @@ protected:
 
 	void InitializeOutlierPlayerState();
 	void RegisterCurrentPawnWithPlayerState();
-
+	virtual void RefreshPostProcessState();
 	
 
 protected:

@@ -15,6 +15,8 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Drone/DroneMoveDataRow.h"
 #include "Drone/DroneControlDataRow.h"
+#include "PostProcess/MaterialPostProcessSubsystem.h"
+#include "PostProcess/OutlierPostProcessVolume.h"
 #include "Drone/Partner/PartnerSkillCommonRow.h"
 #include "Drone/Partner/PartnerSkillDataRow.h"
 #include "Drone/Partner/PartnerSurvivalDataRow.h"
@@ -47,6 +49,7 @@ float APartnerCharacter::TakeDamage(
 	AController* EventInstigator,
 	AActor* DamageCauser)
 {
+
 	const float AppliedDamage = Super::TakeDamage(
 		DamageAmount,
 		DamageEvent,
@@ -156,6 +159,7 @@ void APartnerCharacter::TryStopAttack()
 	}
 }
 
+
 void APartnerCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
@@ -171,6 +175,25 @@ void APartnerCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	DOREPLIFETIME(APartnerCharacter, bIsRebooting);
 	DOREPLIFETIME(APartnerCharacter, bIsInvincible);
 	DOREPLIFETIME(APartnerCharacter, CurrentHitCount);
+}
+
+void APartnerCharacter::OnRep_CurrentHitCount()
+{
+
+	if (!IsLocallyControlled()) return;
+
+	if (CurrentHitCount <= 0)
+	{
+		NullifyDamagedEvenet();
+		return;
+	}
+
+	if (MaxHitCount <= 0)
+	{
+		return;
+	}
+	
+	ApplyDamagedEvent(static_cast<float>(MaxHitCount-CurrentHitCount) / static_cast<float>(MaxHitCount));
 }
 
 void APartnerCharacter::AreaOfEffect()
@@ -310,6 +333,31 @@ void APartnerCharacter::NotifyBoundaryUI(bool bDisabled)
 	}
 }
 
+void APartnerCharacter::ApplyDamagedEvent(float InRatio) const
+{
+	if (IsLocallyControlled())
+	{
+		UMaterialPostProcessSubsystem* PPS = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>();
+		if (PPS)
+		{
+			PPS->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Damaged, true);
+			PPS->UpdateDamagedPostProcess(InRatio, FVector4(0.0f,0.0f,1.0f,0.0f));
+		}
+	}
+}
+
+void APartnerCharacter::NullifyDamagedEvenet() const
+{
+	UMaterialPostProcessSubsystem* MaterialSub = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>();
+	if (MaterialSub)
+	{
+		UE_LOG(LogTemp, Error, TEXT("MaterialSub"));
+
+		MaterialSub->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Damaged, false);
+		MaterialSub->UpdateDamagedPostProcess(1);
+	}
+}
+
 void APartnerCharacter::SyncMove()
 {
 	if (!CanAcceptInput())
@@ -439,6 +487,11 @@ void APartnerCharacter::HandlePartnerHit()
 		false
 	);
 
+	if (IsLocallyControlled())
+	{
+		OnRep_CurrentHitCount();
+	}
+
 	if (CurrentHitCount >= MaxHitCount)
 	{
 		StartReboot();
@@ -455,6 +508,12 @@ void APartnerCharacter::StartReboot()
 	bIsRebooting = true;
 	bIsInvincible = true;
 	CurrentHitCount = 0;
+
+	if (IsLocallyControlled())
+	{
+		OnRep_CurrentHitCount();
+	}
+
 	ApplyAccelerateState(false);
 
 	if (MovementComponent)
@@ -600,7 +659,7 @@ void APartnerCharacter::ServerSetAccelerate_Implementation(bool bNewAccelerate)
 
 void APartnerCharacter::ServerUseSkill_Implementation(EPartnerSkillType SkillType)
 {
-	if (!CanAcceptInput())
+	if (!CanAcceptInput() && !SupportComponent)
 	{
 		return;
 	}
@@ -608,22 +667,19 @@ void APartnerCharacter::ServerUseSkill_Implementation(EPartnerSkillType SkillTyp
 	switch (SkillType)
 	{
 	case EPartnerSkillType::AreaOfEffect:
-		if (SupportComponent)
-		{
+
 			SupportComponent->TryAreaOfEffect_Server();
-		}
+
 		break;
 	case EPartnerSkillType::Shield:
-		if (SupportComponent)
-		{
+
 			SupportComponent->TryShield_Server();
-		}
 		break;
+
 	case EPartnerSkillType::Scan:
-		if (SupportComponent)
-		{
+
 			SupportComponent->TryScan_Server();
-		}
+
 		break;
 	case EPartnerSkillType::Hack:
 		break;

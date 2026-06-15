@@ -120,22 +120,6 @@ void AOutlierPostProcessVolume::SetPostProcessEnabled(EOutlierPostProcessMateria
 	}
 }
 
-void AOutlierPostProcessVolume::SetScanPostProcessEnabled(bool bEnableScanPostProcess)
-{
-	if (!HasValidScanPostProcessBindings())
-	{
-		return;
-	}
-
-	SetPostProcessEnabled(EOutlierPostProcessMaterialType::Scan, bEnableScanPostProcess);
-}
-
-void AOutlierPostProcessVolume::SetStealthPostProcessEnabled(bool bEnabledStealthPostProcess)
-{
-	SetPostProcessEnabled(EOutlierPostProcessMaterialType::Stealth, bEnabledStealthPostProcess);
-}
-
-
 bool AOutlierPostProcessVolume::SetBlendableWeight(EOutlierPostProcessMaterialType MaterialType, float Weight)
 {
 	const TObjectPtr<UMaterialInterface>* PostProcessMaterial = PostProcessMaterials.Find(MaterialType);
@@ -159,7 +143,18 @@ bool AOutlierPostProcessVolume::SetBlendableWeight(EOutlierPostProcessMaterialTy
 	return true;
 }
 
-void AOutlierPostProcessVolume::SetScanMaterialParameters(FVector ScanLocation, float ScanRadius, float Range) 
+void AOutlierPostProcessVolume::SetDamagedMaterialParameters(float InRatio)
+{
+}
+
+void AOutlierPostProcessVolume::ResetPostProcessMaterialParameters()
+{
+	SetScanMaterialParameters(FVector::ZeroVector, 0.0f, 0.0f);
+	UpdateDamagedMaterialParameters(1.0f);
+	ScanRangeRange = 0.0f;
+}
+
+void AOutlierPostProcessVolume::SetScanMaterialParameters(FVector ScanLocation, float ScanRadius, float Range)
 {
 	UWorld* World = GetWorld();
 	if (!World || !HasValidScanPostProcessBindings())
@@ -242,4 +237,37 @@ void AOutlierPostProcessVolume::UpdateDamagedMaterialParameters(float InPlayerHP
 	{
 		DamagedMID->SetScalarParameterValue(TEXT("HP_Portion"), FMath::Clamp(InPlayerHPRatio, 0.0f, 1.0f));
 	}
+}
+
+void AOutlierPostProcessVolume::UpdateDamagedMaterialParameters(float InPlayerHPRatio, FVector4 Color) const
+{
+	const TObjectPtr<UMaterialInterface>* DamagedMaterial = PostProcessMaterials.Find(EOutlierPostProcessMaterialType::Damaged);
+	UMaterialInstanceDynamic* DamagedMID = DamagedMaterial ? Cast<UMaterialInstanceDynamic>(DamagedMaterial->Get()) : nullptr;
+
+	if (DamagedMID)
+	{
+		DamagedMID->SetScalarParameterValue(TEXT("HP_Portion"), FMath::Clamp(InPlayerHPRatio, 0.0f, 1.0f));
+		DamagedMID->SetVectorParameterValue(TEXT("DamagedColor"), Color);
+
+	}
+}
+
+void AOutlierPostProcessVolume::DisableAllBlendablesHard()
+{
+	for (FWeightedBlendable& Blendable : Settings.WeightedBlendables.Array)
+	{
+		UE_LOG(
+			LogTemp,
+			Error,
+			TEXT("[PPHardDisable] Obj=%s OldWeight=%.3f -> 0"),
+			*GetNameSafe(Blendable.Object.Get()),
+			Blendable.Weight
+		);
+
+		Blendable.Weight = 0.0f;
+	}
+
+	bScanPostProcessEnabled = false;
+	bStealthPostProcessEnabled = false;
+	bDamagedPostProcessEnabled = false;
 }

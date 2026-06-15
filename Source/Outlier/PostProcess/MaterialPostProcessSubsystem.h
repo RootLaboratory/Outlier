@@ -24,28 +24,30 @@ class OUTLIER_API UMaterialPostProcessSubsystem : public UWorldSubsystem
 public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
-
 	void RegisterPostProcessVolume(AOutlierPostProcessVolume* InPostProcessVolume);
-	void RegisterScanPostProcessVolume(AOutlierPostProcessVolume* InPostProcessVolume);
-
 	void SetPostProcessEnabled(EOutlierPostProcessMaterialType MaterialType, bool bEnabled);
-	void SetStealthPostProcessEnabled(bool bEnabled);
+	void Refresh();
+	void DisableAllBoundPostProcessMaterials();
+	void FlushScanStencilRestoreStates();
+	void FlushPostProcessMaterialParameters();
 
+	//Scan
 	void StartScanPostProcess(FVector ScanOrigin, float CurrentScanRadius, float Range);
-
 	void UpdateScanPostProcess(FVector ScanOrigin, float CurrentScanRadius);
-
-	void UpdateDamagedPostProcess(float InHPRatio);
-
+	void ApplyScanStencil(AActor* Actor, int32 StencilValue);
+	void ClearScanStencil(AActor* Actor);
 	void EndScanPostProcess();
 
-	void ApplyScanStencil(AActor* Actor, int32 StencilValue);
+	//Damaged
+	void UpdateDamagedPostProcess(float InHPRatio);
+	void UpdateDamagedPostProcess(float InHPRatio, FVector4 Color);
+	void EndDamagedPostProcess();
 
-	void ClearScanStencil(AActor* Actor);
-
-private:
 	UPROPERTY()
 	TObjectPtr<AOutlierPostProcessVolume> BoundPostProcessVolume;
+
+private:
+	
 
 	TMap<TWeakObjectPtr<UPrimitiveComponent>, FScanStencilRestoreState> ScanStencilRestoreStates;
 

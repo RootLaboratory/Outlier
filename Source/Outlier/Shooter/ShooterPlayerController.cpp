@@ -8,6 +8,7 @@
 #include "LocalPlayerUISubSystem.h"
 #include "LocalPlayerPostProcessSubsystem.h"
 #include "UI/ShooterAbilityUI.h"
+#include "PostProcess/MaterialPostProcessSubsystem.h"
 #include "ShooterCharacter.h"
 #include "ShooterInventoryComponent.h"
 #include "ShooterMainWidget.h"
@@ -55,6 +56,24 @@ void AShooterPlayerController::OnPossess(APawn* InPawn)
 		UE_LOG(LogTemp, Error, TEXT("[ShooterPC] OnPossess"));	
 	}
 
+	if (IsLocalController())
+	{
+		if (UMaterialPostProcessSubsystem* PPS = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
+		{
+			PPS->Refresh();
+		}
+	}
+
+
+	/*if (AShooterCharacter* ShooterCharacter = Cast<AShooterCharacter>(InPawn))
+	{
+
+		if (IsLocalController())
+		{
+			UE_LOG(LogTemp, Error, TEXT("TryRefresh"));
+			ShooterCharacter->RefreshPostProcessState();
+		}
+	}*/
 	
 }
 void AShooterPlayerController::AcknowledgePossession(APawn* P) 
@@ -65,6 +84,14 @@ void AShooterPlayerController::AcknowledgePossession(APawn* P)
 	if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(P))
 	{
 		Shooter->RefreshUIForRespawn();
+	}
+
+	if (IsLocalController())
+	{
+		if (UMaterialPostProcessSubsystem* PPS = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
+		{
+			PPS->Refresh();
+		}
 	}
 }
 

@@ -210,8 +210,8 @@ void APartnerShieldSphere::RefreshOwnerVisibility()
 {
 	if (ShieldVisual)
 	{
-		ShieldVisual->SetOwnerNoSee(true);
-	ShieldVisual->SetOnlyOwnerSee(false);
+	  ShieldVisual->SetOwnerNoSee(true);
+	  ShieldVisual->SetOnlyOwnerSee(false);
 	}
 }
 
