@@ -12,10 +12,10 @@ AInteractableDoor::AInteractableDoor()
 
 	InteractableComponent = CreateDefaultSubobject<UInteractableComponent>(TEXT("InteractableComponent"));
 
+	RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("DoorRoot"));
+
 	DoorMeshLeft = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("DoorMeshLeft"));
 	DoorMeshRight = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("DoorMeshRight"));
-
-	RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("DoorRoot"));
 	DoorMeshLeft->SetupAttachment(RootComponent);
 	DoorMeshRight->SetupAttachment(RootComponent);
 }
