@@ -38,7 +38,8 @@ void UShooterMovementComponent::HandleSprintPressed()
 
 	if (ShooterCharacter->bIsDead || ShooterCharacter->GetCharacterMovement()->IsCrouching()
 		|| ShooterCharacter->WantsToAim()
-		|| ShooterCharacter->IsReloading())
+		|| ShooterCharacter->IsReloading()
+		|| ShooterCharacter->IsActionLocked())
 	{
 		UE_LOG(
 			LogTemp,
@@ -116,6 +117,11 @@ void UShooterMovementComponent::RequestCrouchOrSlide()
 		return;
 	}
 
+	if (ShooterCharacter->IsActionLocked())
+	{
+		return;
+	}
+
 	bWantsToCrouch = true;
 
 	if (bIsSprinting && ShooterCharacter->GetVelocity().SizeSquared() > 0.0f)
@@ -182,6 +188,7 @@ void UShooterMovementComponent::TrySlide()
 	// 슬라이드는 sprint와 crouch 상태를 잠시 덮어쓰는 복합 액션
 	bIsSliding = true;
 	bIsSlidingCanceled = false;
+	ShooterCharacter->BeginActionLock(EShooterActionLock::Slide);
 	SlideDirection = Velocity2D;
 	SlideStartSpeed = ShooterCharacter->SprintSpeed * ShooterCharacter->SlideSpeedMultiplier;
 	SlideElapsedTime = 0.0f;
@@ -216,6 +223,7 @@ void UShooterMovementComponent::StopSlide(ESlideEndReason EndReason)
 
 	bIsSliding = false;
 	bIsSlidingCanceled = (EndReason != ESlideEndReason::Finished);
+	ShooterCharacter->EndActionLock(EShooterActionLock::Slide);
 	ShooterCharacter->GetWorldTimerManager().ClearTimer(SlideTimerHandle);
 	FinishSlideMovement();
 	ShooterCharacter->StopSplitMontages(
@@ -282,6 +290,11 @@ void UShooterMovementComponent::DoJumpStart()
 	{
 		StopSlide(ESlideEndReason::JumpCancel);
 		return;
+	}
+
+	if (bIsSprinting)
+	{
+		StopSprintInternal();
 	}
 
 	ShooterCharacter->Jump();
@@ -463,5 +476,5 @@ bool UShooterMovementComponent::CanStartSlide() const
 		&& ShooterCharacter->GetCharacterMovement()->IsMovingOnGround()
 		&& ShooterCharacter->GetVelocity().Size2D() >= ShooterCharacter->MinSlideSpeed
 		&& !ShooterCharacter->IsReloading()
-		&& !ShooterCharacter->bIsEquipping;
+		&& !ShooterCharacter->IsActionLocked();
 }

@@ -32,7 +32,6 @@ protected:
 	uint8 bIsMeleeAttacking : 1 = false;
 
 	FTimerHandle SecondaryCooldownStateTimerHandle;
-	FTimerHandle ReloadCommitFallbackTimerHandle;
 
 public:
 	UShooterCombatComponent();
@@ -58,7 +57,6 @@ public:
 	void FinishSecondaryCooldownInternal();
 	void ResetSecondaryCooldown();
 	void HandleReloadCommitNotify();
-	void HandleReloadCommitFallback();
 
 	bool CanEnterCombatState(EWeaponMode InWeaponMode, ECombatState NextState) const;
 	bool CanAimInCurrentState() const;

@@ -16,52 +16,6 @@
 #include "Weapon/WeaponRangeRow.h"
 #include "Weapon/Spawn/WeaponSpawnPoint.h"
 
-namespace
-{
-	const FName DefaultWeaponSocketName(TEXT("HandGrip_R"));
-
-	void AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacter* NewOwner)
-	{
-		if (!Weapon || !NewOwner)
-		{
-			return;
-		}
-
-		AFirstPersonCharacter* FirstPersonOwner = Cast<AFirstPersonCharacter>(NewOwner);
-		if (!FirstPersonOwner)
-		{
-			return;
-		}
-
-		FName FirstPersonSocketName = DefaultWeaponSocketName;
-		FName ThirdPersonSocketName = DefaultWeaponSocketName;
-		if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(NewOwner))
-		{
-			const EWeaponType EquippedWeaponType = Weapon->GetWeaponType();
-			FirstPersonSocketName = Shooter->GetFirstPersonWeaponSocketByType(EquippedWeaponType);
-			ThirdPersonSocketName = Shooter->GetThirdPersonWeaponSocketByType(EquippedWeaponType);
-		}
-
-		if (USkeletalMeshComponent* FirstPersonParent = FirstPersonOwner->GetFirstPersonMesh())
-		{
-			Weapon->GetFirstPersonWeaponMesh()->AttachToComponent(
-				FirstPersonParent,
-				FAttachmentTransformRules::SnapToTargetNotIncludingScale,
-				FirstPersonSocketName
-			);
-		}
-
-		if (USkeletalMeshComponent* ThirdPersonParent = FirstPersonOwner->GetMesh())
-		{
-			Weapon->GetThirdPersonWeaponMesh()->AttachToComponent(
-				ThirdPersonParent,
-				FAttachmentTransformRules::SnapToTargetNotIncludingScale,
-				ThirdPersonSocketName
-			);
-		}
-	}
-}
-
 AWeaponBase::AWeaponBase()
 {
 	bReplicates = true;
@@ -160,7 +114,7 @@ void AWeaponBase::InitializeFromDataTables()
 		FireType = CoreRow->FireType;
 		FireMode = CoreRow->FireMode;
 		Damage = CoreRow->Damage;
-		MovementSpeedMultiplier = FMath::Max(CoreRow->MovementSpeedMultiplier, 0.0f);
+		MovementSpeedMultiplier = FMath::Max(CoreRow->GameplayMovementSpeedMultiplier, 0.0f);
 		RangeProfileId = CoreRow->RangeProfileId;
 
 		if (CoreRow->FireRateRpm > 0.0f)
@@ -258,10 +212,17 @@ void AWeaponBase::ApplyReplicatedPresentation()
 {
 	if (bIsEquipped)
 	{
-		SetEquippedPresentation();
-
+		// Notify 전까지 숨김 상태만 유지
 		AttachWeaponMeshesToOwner(this, WeaponOwner);
 
+		if (FirstPersonWeaponMesh)
+		{
+			FirstPersonWeaponMesh->SetHiddenInGame(true);
+		}
+		if (ThirdPersonWeaponMesh)
+		{
+			ThirdPersonWeaponMesh->SetHiddenInGame(true);
+		}
 		return;
 	}
 
@@ -390,52 +351,139 @@ void AWeaponBase::OnEquipped(ACharacter* NewOwner)
 	}
 
 	SetOwner(NewOwner);
-
-	// 장착 중에는 캐릭터를 밀지 않도록 충돌 비활성화
-	SetEquippedPresentation();
 	AttachWeaponMeshesToOwner(this, NewOwner);
 
-	if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(NewOwner))
+	// Equip 몽타주 Notify 전까지 1P 무기는 숨겨둘 수도 있음
+	if (FirstPersonWeaponMesh)
 	{
-		const EWeaponType EquippedWeaponType = GetWeaponType();
-		const FName FirstPersonSocketName = Shooter->GetFirstPersonWeaponSocketByType(EquippedWeaponType);
-		const FName ThirdPersonSocketName = Shooter->GetThirdPersonWeaponSocketByType(EquippedWeaponType);
-
-		if (USkeletalMeshComponent* FirstPersonParent = Shooter->GetFirstPersonMesh())
-		{
-			FirstPersonWeaponMesh->AttachToComponent(
-				FirstPersonParent,
-				FAttachmentTransformRules::SnapToTargetNotIncludingScale,
-				FirstPersonSocketName
-			);
-		}
-
-		if (USkeletalMeshComponent* ThirdPersonParent = Shooter->GetMesh())
-		{
-			ThirdPersonWeaponMesh->AttachToComponent(
-				ThirdPersonParent,
-				FAttachmentTransformRules::SnapToTargetNotIncludingScale,
-				ThirdPersonSocketName
-			);
-		}
-
-		UE_LOG(
-			LogTemp,
-			Warning,
-			TEXT("%s [%s] EquipSockets WeaponType=%d FP=%s TP=%s FPParent=%s TPParent=%s"),
-			OutlierNet::GetNetPrefix(this),
-			*GetName(),
-			static_cast<int32>(EquippedWeaponType),
-			*FirstPersonSocketName.ToString(),
-			*ThirdPersonSocketName.ToString(),
-			*GetNameSafe(Shooter->GetFirstPersonMesh()),
-			*GetNameSafe(Shooter->GetMesh())
-		);
+		FirstPersonWeaponMesh->SetHiddenInGame(true);
 	}
 
+	if (ThirdPersonWeaponMesh)
+	{
+		ThirdPersonWeaponMesh->SetHiddenInGame(true);
+	}
 
 	UE_LOG(LogTemp, Log, TEXT("%s [%s] OnEquipped Owner=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(NewOwner));
 	ForceNetUpdate();
+}
+
+void AWeaponBase::AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacter* NewOwner)
+{
+	if (!Weapon || !NewOwner)
+	{
+		return;
+	}
+
+	AShooterCharacter* Shooter = Cast<AShooterCharacter>(NewOwner);
+	if (!Shooter)
+	{
+		return;
+	}
+
+	const EWeaponType EquippedWeaponType = Weapon->GetWeaponType();
+	FName FirstPersonSocketName = Shooter->GetFirstPersonWeaponSocketByType(EquippedWeaponType);
+	FName ThirdPersonSocketName = Shooter->GetThirdPersonWeaponSocketByType(EquippedWeaponType);
+	const FAttachmentTransformRules WeaponAttachRules(
+		EAttachmentRule::KeepRelative,
+		EAttachmentRule::KeepRelative,
+		EAttachmentRule::SnapToTarget,
+		false
+	);
+
+	if (USkeletalMeshComponent* FirstPersonParent = Shooter->GetFirstPersonMesh())
+	{
+		const bool bHasFirstPersonSocket = FirstPersonParent->DoesSocketExist(FirstPersonSocketName);
+		Weapon->GetFirstPersonWeaponMesh()->AttachToComponent(
+			FirstPersonParent,
+			WeaponAttachRules,
+			FirstPersonSocketName
+		);
+
+		const FTransform FirstPersonSocketTransform =
+			FirstPersonParent->GetSocketTransform(FirstPersonSocketName, RTS_Component);
+		const FTransform FirstPersonWeaponRelativeTransform =
+			Weapon->GetFirstPersonWeaponMesh()->GetRelativeTransform();
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[WeaponAttach][FP] Weapon=%s Type=%d Parent=%s Socket=%s Exists=%d SocketLoc=%s SocketRot=%s WeaponRelLoc=%s WeaponRelRot=%s"),
+			*GetNameSafe(Weapon),
+			static_cast<int32>(EquippedWeaponType),
+			*GetNameSafe(FirstPersonParent),
+			*FirstPersonSocketName.ToString(),
+			bHasFirstPersonSocket ? 1 : 0,
+			*FirstPersonSocketTransform.GetLocation().ToCompactString(),
+			*FirstPersonSocketTransform.Rotator().ToCompactString(),
+			*FirstPersonWeaponRelativeTransform.GetLocation().ToCompactString(),
+			*FirstPersonWeaponRelativeTransform.Rotator().ToCompactString()
+		);
+	}
+
+	if (USkeletalMeshComponent* ThirdPersonParent = Shooter->GetMesh())
+	{
+		const bool bHasThirdPersonSocket = ThirdPersonParent->DoesSocketExist(ThirdPersonSocketName);
+		Weapon->GetThirdPersonWeaponMesh()->AttachToComponent(
+			ThirdPersonParent,
+			WeaponAttachRules,
+			ThirdPersonSocketName
+		);
+
+		const FTransform ThirdPersonSocketTransform =
+			ThirdPersonParent->GetSocketTransform(ThirdPersonSocketName, RTS_Component);
+		const FTransform ThirdPersonWeaponRelativeTransform =
+			Weapon->GetThirdPersonWeaponMesh()->GetRelativeTransform();
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[WeaponAttach][TP] Weapon=%s Type=%d Parent=%s Socket=%s Exists=%d SocketLoc=%s SocketRot=%s WeaponRelLoc=%s WeaponRelRot=%s"),
+			*GetNameSafe(Weapon),
+			static_cast<int32>(EquippedWeaponType),
+			*GetNameSafe(ThirdPersonParent),
+			*ThirdPersonSocketName.ToString(),
+			bHasThirdPersonSocket ? 1 : 0,
+			*ThirdPersonSocketTransform.GetLocation().ToCompactString(),
+			*ThirdPersonSocketTransform.Rotator().ToCompactString(),
+			*ThirdPersonWeaponRelativeTransform.GetLocation().ToCompactString(),
+			*ThirdPersonWeaponRelativeTransform.Rotator().ToCompactString()
+		);
+	}
+
+	UE_LOG(
+		LogTemp,
+		Warning,
+		TEXT("[WeaponAttach] FP Socket=%s TP Socket=%s FPParent=%s TPParent=%s"),
+		*FirstPersonSocketName.ToString(),
+		*ThirdPersonSocketName.ToString(),
+		*GetNameSafe(Shooter->GetFirstPersonMesh()),
+		*GetNameSafe(Shooter->GetMesh())
+	);
+}
+
+void AWeaponBase::AttachWeaponMeshesToOwnerMeshes()
+{
+	ACharacter* CharacterOwner = Cast<ACharacter>(WeaponOwner);
+	if (!CharacterOwner)
+	{
+		return;
+	}
+
+	UE_LOG(
+		LogTemp,
+		Warning,
+		TEXT("[WeaponAttach] Weapon=%s Owner=%s FP=%s TP=%s"),
+		*GetNameSafe(this),
+		*GetNameSafe(CharacterOwner),
+		*GetNameSafe(FirstPersonWeaponMesh),
+		*GetNameSafe(ThirdPersonWeaponMesh)
+	);
+
+	AttachWeaponMeshesToOwner(this, CharacterOwner);
+}
+
+void AWeaponBase::ShowEquippedPresentation()
+{
+	SetEquippedPresentation();
 }
 
 void AWeaponBase::OnUnequipped()

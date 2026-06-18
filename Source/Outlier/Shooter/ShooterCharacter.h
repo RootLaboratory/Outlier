@@ -20,7 +20,6 @@ class ULocalPlayerUISubSystem;
 enum class EWeaponType : uint8;
 class UAnimMontage;
 class UCurveFloat;
-class UCurveVector;
 class APartnerCharacter;
 
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnShooterHealthChanged, float /*CurrentHealth*/, float /*MaxHealth*/);
@@ -57,6 +56,15 @@ enum class ECombatState : uint8
 	Reload,
 	Cooldown,	// 보조무기용
 	Attack		// 근접무기용
+};
+
+UENUM(BlueprintType)
+enum class EShooterActionLock : uint8
+{
+	None,
+	Equip,
+	Reload,
+	Slide
 };
 
 UENUM(BlueprintType)
@@ -192,6 +200,9 @@ protected:
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "State")
 	ECombatState CombatState = ECombatState::Idle;
 
+	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "State")
+	EShooterActionLock ActionLock = EShooterActionLock::None;
+
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Status")
 	uint8 bIsDead : 1 = false;
 
@@ -212,44 +223,6 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
 	float TargetLeanAlpha = 0.0f;
 
-	// Offset
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
-	FVector CrouchedFirstPersonMeshOffset = FVector(0.0f, 0.0f, 18.0f);
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
-	FVector FirstPersonViewModelOffset = FVector(-6.0f, 0.0f, 4.0f);
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
-	FVector RifleFirstPersonViewModelOffset = FVector(2.0f, -10.0f, 15.0f);
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
-	FVector PistolFirstPersonViewModelOffset = FVector(4.0f, -8.0f, 10.0f);
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
-	FVector CrouchedFirstPersonViewModelOffset = FVector(-2.0f, 0.0f, 10.0f);
-
-	// FirstPerson Pitch
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
-	float FirstPersonPitchFollowScale = 0.15f;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
-	float FirstPersonPitchFollowClamp = 6.0f;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
-	TObjectPtr<UCurveVector> FirstPersonPitchLocationOffsetCurve = nullptr;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
-	float FirstPersonPitchLocationOffsetStart = 10.0f;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
-	FVector FirstPersonPitchLocationOffsetAtMaxUp = FVector(-2.0f, 0.0f, -2.0f);
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
-	FVector FirstPersonPitchLocationOffsetAtMaxDown = FVector(2.0f, 0.0f, 8.0f);
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FirstPerson")
-	float FirstPersonViewModelInterpSpeed = 12.0f;
-
 	FVector  BaseFirstPersonMeshLocation = FVector::ZeroVector;
 	FVector  BaseFirstPersonViewModelRootLocation = FVector::ZeroVector;
 	FRotator BaseFirstPersonCameraRootRotation = FRotator::ZeroRotator;
@@ -258,6 +231,8 @@ protected:
 
 	// Timers
 	FTimerHandle LeanUpdateTimerHandle;
+
+	FTimerHandle ActionLockTimerHandle;
 
 	FTimerHandle PartnerShieldTimerHandle;
 
@@ -284,7 +259,6 @@ protected:
 	// Engine Lifecycle
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
-	virtual void Tick(float DeltaSeconds) override;
 
 	/** Initialize input action bindings */
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
@@ -378,6 +352,12 @@ public:
 
 	UFUNCTION(BlueprintPure)
 	EWeaponMode GetWeaponMode() const { return WeaponMode; }
+
+	UFUNCTION(BlueprintPure)
+	EShooterActionLock GetActionLock() const { return ActionLock; }
+
+	UFUNCTION(BlueprintPure)
+	bool IsActionLocked() const { return ActionLock != EShooterActionLock::None; }
 
 	UShooterInventoryComponent* GetInventoryComponent() { return InventoryComponent; }
 
@@ -484,6 +464,10 @@ public:
 	void FinishSecondaryCooldownInternal();
 	void ResetSecondaryCooldownInternal();
 
+	bool CanStartAction(EShooterActionLock NextLock) const;
+	void BeginActionLock(EShooterActionLock NewLock);
+	void EndActionLock(EShooterActionLock LockToEnd);
+
 	void StartLeanUpdate();
 	void StopLeanUpdateIfSettled();
 	void UpdateLeanStep();
@@ -510,7 +494,6 @@ public:
 	void StopThirdPersonMontage(UAnimMontage* Montage);
 	void StopSplitMontages(UAnimMontage* FirstPersonMontage, UAnimMontage* ThirdPersonMontage);
 	void PlayEquipMontages();
-	void UpdateFirstPersonPresentation(float DeltaSeconds);
 	void ClearInputIntent();
 
 	void CleanupOwnedWeapons();
