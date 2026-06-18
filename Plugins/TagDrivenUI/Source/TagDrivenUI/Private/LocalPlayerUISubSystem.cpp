@@ -12,6 +12,8 @@
 #include "StaticCrossHair.h"
 #include "DistanceSlideUI.h"
 #include "PartnerHPUI.h"
+#include "ShooterCurrentAbilityIcon.h"
+#include "ShooterMainWidget.h"
 #include "TagDrivenUIGameplayTags.h"
 
 void ULocalPlayerUISubSystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -94,7 +96,7 @@ void ULocalPlayerUISubSystem::OnRep_HealthChanged(float InHealth, float MaxHealt
 
 	if (UHPBarUI* HPBarUI = Cast<UHPBarUI>(GetModuleAny(TagDrivenUITags::Shooter::HP(), TagDrivenUITags::Partner::HP())))
 	{
-		UE_LOG(LogTemp, Error, TEXT("HP Changed, %f"), Ratio);
+		//UE_LOG(LogTemp, Error, TEXT("HP Changed, %f"), Ratio);
 		HPBarUI->HealthChanged(Ratio);
 	}
 }
@@ -110,7 +112,7 @@ void ULocalPlayerUISubSystem::OnRep_PartnerShieldChanged(float InPartnerShield, 
 
 	if (UHPBarUI* HPBarUI = Cast<UHPBarUI>(GetModuleAny(TagDrivenUITags::Shooter::HP(), TagDrivenUITags::Partner::HP())))
 	{
-		UE_LOG(LogTemp, Error, TEXT("PartnerShield Changed, %f"), Ratio);
+		//UE_LOG(LogTemp, Error, TEXT("PartnerShield Changed, %f"), Ratio);
 		HPBarUI->PartnerShieldChanged(Ratio);
 	}
 }
@@ -162,7 +164,7 @@ void ULocalPlayerUISubSystem::OnRep_PlayerStateChanged(EUIPlayerState State)
 	}
 	else
 	{
-		UE_LOG(LogTemp, Error, TEXT("UNVALID CLASS NOT DynamicCrossHairClass"));
+		//UE_LOG(LogTemp, Error, TEXT("UNVALID CLASS NOT DynamicCrossHairClass"));
 	}
 }
 
@@ -194,6 +196,32 @@ void ULocalPlayerUISubSystem::PartnerDistanceUpdate(const float Distance)
 	{
 		DistanceSlideUI->UpdateDistanceRatio(Distance);
 	}
+}
+
+void ULocalPlayerUISubSystem::OnCurrentWeaponChanged(EWidgetWeaponType WeaponType)
+{
+	if (UShooterMainWidget* ShooterMainUI = Cast<UShooterMainWidget>(GetMainUI()))
+	{
+		ShooterMainUI->OnChangeWeapon(WeaponType);
+	}
+}
+
+void ULocalPlayerUISubSystem::OnCurrentAbilityChanged(const FGameplayTag& AbilityTag)
+{
+	if (UShooterCurrentAbilityIcon* CurrentAbilityIcon = Cast<UShooterCurrentAbilityIcon>(GetModule(TagDrivenUITags::Shooter::CurrentAbility())))
+	{
+		CurrentAbilityIcon->SetCurrentAbility(AbilityTag);
+	}
+}
+
+bool ULocalPlayerUISubSystem::ApplyCurrentAbilityCooldownIfMatches(const FGameplayTag& AbilityTag, float CoolTime)
+{
+	if (UShooterCurrentAbilityIcon* CurrentAbilityIcon = Cast<UShooterCurrentAbilityIcon>(GetModule(TagDrivenUITags::Shooter::CurrentAbility())))
+	{
+		return CurrentAbilityIcon->ApplyCooldownIfMatches(AbilityTag, CoolTime);
+	}
+
+	return false;
 }
 
 void ULocalPlayerUISubSystem::OnRep_Aiming()
@@ -236,13 +264,13 @@ void ULocalPlayerUISubSystem::OnRep_ShootCrosshairChanged(float InFireRate)
 
 	if (UDynamicCrossHair* CrossHairBase = Cast<UDynamicCrossHair>(CrossHairModule))
 	{
-		UE_LOG(LogTemp, Log, TEXT("OnRep_ShootCrosshairChanged"));
+		//UE_LOG(LogTemp, Log, TEXT("OnRep_ShootCrosshairChanged"));
 		CrossHairBase->On_RepShoot();
 	}
 	else if (UStaticCrossHair* Crosshair = Cast<UStaticCrossHair>(CrossHairModule))
 	{
 		Crosshair->SetCoolTime(InFireRate );
-		UE_LOG(LogTemp, Log, TEXT("InFireRate %f"), InFireRate);
+		//UE_LOG(LogTemp, Log, TEXT("InFireRate %f"), InFireRate);
 
 	}
 	else
@@ -285,6 +313,11 @@ void ULocalPlayerUISubSystem::OnAbilityUsed(const FGameplayTag& AbilityTag, floa
 	if (UAbilityIconUI* Icon = MainUI->GetAbilityIcon(AbilityTag))
 	{
 		Icon->SetCoolTime(CoolTime);
+	}
+
+	if (UShooterCurrentAbilityIcon* CurrentAbilityIcon = Cast<UShooterCurrentAbilityIcon>(GetModule(TagDrivenUITags::Shooter::CurrentAbility())))
+	{
+		CurrentAbilityIcon->ApplyCooldownIfMatches(AbilityTag, CoolTime);
 	}
 }
 

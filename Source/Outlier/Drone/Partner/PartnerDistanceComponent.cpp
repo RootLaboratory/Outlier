@@ -49,7 +49,7 @@ void UPartnerDistanceComponent::TickComponent(
 	}
 
 	const float Distance = CalculateDistance();
-	const float BoundaryRadius = PartnerCharacter->SuitDisableBoundaryRadius;
+	const float BoundaryRadius = PartnerCharacter->SuitDisableBoundaryRadius; 
 	const float DistanceRatio = BoundaryRadius > 0.0f ? Distance / BoundaryRadius : 0.0f;
 
 	if (CachedSubsystem)

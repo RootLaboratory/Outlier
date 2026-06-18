@@ -91,6 +91,20 @@ void AFrontendPlayerController::RequestStartPendingMatch()
 	ServerRequestStartPendingMatch();
 }
 
+void AFrontendPlayerController::RequestCancelMatchmaking()
+{
+	ServerRequestCancelMatchmaking();
+}
+
+void AFrontendPlayerController::ServerRequestCancelMatchmaking_Implementation()
+{
+	UOutlierMatchmakingSubsystem* Matchmaking = GetGameInstance()->GetSubsystem<UOutlierMatchmakingSubsystem>();
+	if (Matchmaking)
+	{
+		Matchmaking->Cancel(this);
+	}
+}
+
 void AFrontendPlayerController::ClientPrepareForMatch_Implementation()
 {
 	if (TitleWidget)

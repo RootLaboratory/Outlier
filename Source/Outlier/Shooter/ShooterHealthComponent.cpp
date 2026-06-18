@@ -7,16 +7,20 @@
 
 UShooterHealthComponent::UShooterHealthComponent()
 {
-	PrimaryComponentTick.bCanEverTick = false;
+	PrimaryComponentTick.bCanEverTick = true;
 }
 
 void UShooterHealthComponent::ApplyDamage(float DamageAmount)
 {
+	if (!GetOwner()->HasAuthority()) return;
+
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 	if (!ShooterCharacter)
 	{
 		return;
 	}
+
+	GetHit();
 
 	if (ShooterCharacter->bIsDead || DamageAmount <= 0.0f)
 	{
@@ -71,5 +75,60 @@ void UShooterHealthComponent::Die()
 		{
 			GM->HandlePlayerDeath(ShooterCharacter);
 		}
+	}
+
+
+	HitHistoryRefresh();
+}
+
+void UShooterHealthComponent::GetHit()
+{
+	bShieldRecoveryAbled = false;
+	HitAccumulated = 0.0f;
+	RecoveryAccumulated = 0.0f;
+}
+
+void UShooterHealthComponent::HitHistoryRefresh()
+{
+	bShieldRecoveryAbled = true;
+	HitAccumulated = 0.f;
+	RecoveryAccumulated = 0.f;
+}
+
+void UShooterHealthComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
+{
+	if (!GetOwner()->HasAuthority()) return;
+	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+
+
+	if (bShieldRecoveryAbled)
+	{
+		if (AShooterCharacter* ShooterCharacter = GetShooterCharacter())
+		{
+			if (ShooterCharacter->CurShield >= ShooterCharacter->MaxShield)
+			{
+				return;
+			}
+			else
+			{
+				RecoveryAccumulated += DeltaTime;
+
+				if (RecoveryAccumulated >= ShieldRecoveryInterval)
+				{
+					RecoveryAccumulated = 0;
+					ShooterCharacter->CurShield = FMath::Min(ShooterCharacter->MaxShield, ShooterCharacter->CurShield + ShieldRecoveryValue);
+					ShooterCharacter->OnRep_CurShield();
+				}
+			}
+		}
+	}
+
+
+	HitAccumulated += DeltaTime;
+
+	if (HitAccumulated >= HitInterval)
+	{
+		HitAccumulated = 0;
+		bShieldRecoveryAbled = true;
 	}
 }

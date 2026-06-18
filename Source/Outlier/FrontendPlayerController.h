@@ -42,6 +42,12 @@ public:
 
 	UFUNCTION(Client, Reliable)
 	void ClientPrepareForMatch();
+
+	UFUNCTION(BlueprintCallable)
+	void RequestCancelMatchmaking();
+
+	UFUNCTION(Server, Reliable)
+	void ServerRequestCancelMatchmaking();
 public:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr< UTitleMainWidget> TitleWidget;

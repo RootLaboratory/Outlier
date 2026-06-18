@@ -11,7 +11,7 @@ AScanTestActor::AScanTestActor()
 
 }
 
-int32 AScanTestActor::GetScanStencilValue_Implementation() const
+int32 AScanTestActor::GetScanStencilValue() const
 {
 	UE_LOG(LogTemp, Error, TEXT("GetScanStencilValue Valid, %d"), ScanStencilValue);
 	return ScanStencilValue;
@@ -21,7 +21,6 @@ int32 AScanTestActor::GetScanStencilValue_Implementation() const
 void AScanTestActor::BeginPlay()
 {
 	Super::BeginPlay();
-	
 }
 
 

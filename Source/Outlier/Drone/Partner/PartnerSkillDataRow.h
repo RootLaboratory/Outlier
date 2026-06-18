@@ -9,42 +9,71 @@ struct OUTLIER_API FPartnerSkillDataRow : public FTableRowBase
 {
 	GENERATED_BODY()
 
+	// Scan
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
-	float ScanRange = 300.0f;
+	float ScanRange = 1000.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
 	float ScanDuration = 3.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
-	float ScanCooldown = 5.0f;
+	float ScanCooldown = 10.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
-	float HackRange = 300.0f;
+	float ScanExpandSpeed = 5.0f;
+
+	// Hack
+	UPROPERTY(EditAnywhere, BlueprintReadOnly)
+	float HackRange = 500.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
-	float HackDuration = 2.0f;
+	float HackEffectiveRange = 300.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
-	float HackCooldown = 6.0f;
+	float HackMiniGameTime = 5.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
-	float AreaOfEffectRange = 100.0f;
+	float HackCooldown = 3.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
-	float AreaOfEffectDuration = 3.0f;
+	float HackFailPenaltyTime = 3.0f;
+
+	// EMP (AreaOfEffect)
+	UPROPERTY(EditAnywhere, BlueprintReadOnly)
+	float AreaOfEffectRange = 1500.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
-	float AreaOfEffectCooldown = 8.0f;
+	float EMPMarkingTime = 3.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
-	float ShieldRange = 100.0f;
+	float EMPStunDuration = 3.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
-	float ShieldDuration = 4.0f;
+	float AreaOfEffectCooldown = 30.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
-	float ShieldCooldown = 10.0f;
+	int32 EMPMaxTargets = 99;
+
+	// Shield
+	UPROPERTY(EditAnywhere, BlueprintReadOnly)
+	float ShieldRange = 200.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
-	float ShieldAmount = 200.0f;
+	float ShieldDuration = 5.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly)
+	float ShieldCooldown = 20.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly)
+	float ShieldAmount = 100.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly)
+	float ShieldDecayRate = 20.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly)
+	float ShieldDecayDelay = 1.0f;
+
+	// Interaction
+	UPROPERTY(EditAnywhere, BlueprintReadOnly)
+	float InteractionRange = 200.0f;
 };

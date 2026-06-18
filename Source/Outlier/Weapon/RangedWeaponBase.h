@@ -236,11 +236,11 @@ protected:
 	void ClientNotifyShotFired();
 
 	UFUNCTION(NetMulticast, Unreliable)
-	void MulticastPlayFireFX(FVector_NetQuantize TraceEnd,  AActor* Hit);
+	void MulticastPlayFireFX(FVector_NetQuantize TraceEnd, FVector_NetQuantizeNormal ImpactNormal, AActor* Hit);
 
-	void PlayThirdPersonFireFX(FVector TraceEnd,  AActor* Hit);
+	void PlayThirdPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit);
 
-	void PlayFirstPersonFireFX(FVector TraceEnd,  AActor* Hit);
+	void PlayFirstPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit);
 
 	ULocalPlayerUISubSystem* GetLocalUISubsystem() const; //Helper
 };

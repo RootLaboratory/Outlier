@@ -63,6 +63,9 @@ protected:
 	UFUNCTION()
 	void OnWeaponChanged(EWeaponType NewType);
 
+	UFUNCTION()
+	void HandleAbilitySelected(FGameplayTag AbilityTag);
+
 	// UI 관련
 	// 총알
 	// 피격 등등

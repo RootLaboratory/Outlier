@@ -67,7 +67,7 @@ protected:
 	virtual void Logout(AController* Exiting) override;
 
 	void RespawnPairAtCheckpoint(AController* Controller);
-	bool ResolveCheckpointTransform(AController* Controller, FTransform& OutTransform) const;
+	bool ResolveCheckpointTransform(AController* Controller, int32 ArenaId, FTransform& OutTransform) const;
 	FString GetPlayerSaveId(AController* Controller) const;
 
 	AOutlierPlayerState* FindPairPlayerState(int32 PairId, EOutlierPlayerRole PlayerRole) const;

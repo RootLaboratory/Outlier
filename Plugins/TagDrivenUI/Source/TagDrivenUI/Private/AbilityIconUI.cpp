@@ -27,12 +27,11 @@ void UAbilityIconUI::NativeConstruct()
 	}
 }
 
-
 void UAbilityIconUI::EnsureMasterMaterial()
 {
 	if (AbilityMID)
 	{
-		return; 
+		return;
 	}
 
 	if (!AbilityIcon || !M_AbilityIconMaster || !DefaultIconBrush.GetResourceObject())
@@ -48,20 +47,32 @@ void UAbilityIconUI::EnsureMasterMaterial()
 		return;
 	}
 
-	// 아이콘 텍스처를 마스터 머티리얼에 전달
 	if (UTexture* IconTexture = Cast<UTexture>(DefaultIconBrush.GetResourceObject()))
 	{
 		AbilityMID->SetTextureParameterValue(TEXT("IconTexture"), IconTexture);
 	}
 
-	// 현재 상태 파라미터 동기화
-	AbilityMID->SetScalarParameterValue(TEXT("CooldownProgress"), 0.0f);
+	SyncMaterialState();
+}
+
+void UAbilityIconUI::SyncMaterialState()
+{
+	if (!AbilityMID)
+	{
+		return;
+	}
+
+	const float CooldownProgress = bCooldowning && CoolTime > 0.0f
+		? FMath::Clamp(AccumulatedTime / CoolTime, 0.0f, 1.0f)
+		: 0.0f;
+
+	AbilityMID->SetScalarParameterValue(TEXT("CooldownProgress"), CooldownProgress);
+	AbilityMID->SetScalarParameterValue(TEXT("IsCoolDown"), bCooldowning ? 1.0f : 0.0f);
 	AbilityMID->SetScalarParameterValue(TEXT("LockFactor"), bAbilityEnabled ? 0.0f : 1.0f);
 }
 
 void UAbilityIconUI::TryRestoreDefaultBrush()
 {
-	// 쿨타임도 끝나고 잠금도 없을 때만 기본 텍스처로 복귀
 	if (bCooldowning || !bAbilityEnabled)
 	{
 		return;
@@ -75,14 +86,16 @@ void UAbilityIconUI::TryRestoreDefaultBrush()
 	}
 }
 
-
 void UAbilityIconUI::AbilityUnLock()
 {
 	bAbilityUnlocked = true;
 
 	if (AbilityIcon)
 	{
-		AbilityIcon->SetBrush(DefaultIconBrush);
+		if (!bCooldowning)
+		{
+			AbilityIcon->SetBrush(DefaultIconBrush);
+		}
 		AbilityIcon->SetVisibility(ESlateVisibility::Visible);
 	}
 }
@@ -109,34 +122,38 @@ void UAbilityIconUI::SetAbilityEnabled(bool bInAbilityEnabled)
 	if (!bAbilityEnabled)
 	{
 		EnsureMasterMaterial();
-		if (AbilityMID)
-		{
-			AbilityMID->SetScalarParameterValue(TEXT("LockFactor"), 1.0f);
-		}
+		SyncMaterialState();
+		return;
 	}
-	else
-	{
-		if (AbilityMID)
-		{
-			AbilityMID->SetScalarParameterValue(TEXT("LockFactor"), 0.0f);
-		}
-		TryRestoreDefaultBrush();
-	}
+
+	SyncMaterialState();
+	TryRestoreDefaultBrush();
 }
 
 void UAbilityIconUI::SetCoolTime(float InCoolTime)
+{
+	const UWorld* World = GetWorld();
+	SetCoolTimeAt(InCoolTime, World ? World->GetTimeSeconds() : 0.0f);
+}
+
+void UAbilityIconUI::SetCoolTimeAt(float InCoolTime, float InStartTime)
 {
 	if (!AbilityIcon || !M_AbilityIconMaster || !DefaultIconBrush.GetResourceObject())
 	{
 		return;
 	}
 
-	CoolTime        = InCoolTime;
-	AccumulatedTime = 0.0f;
+	CoolTime = InCoolTime;
+	CooldownStartTime = InStartTime;
+
+	const UWorld* World = GetWorld();
+	AccumulatedTime = World
+		? FMath::Max(0.0f, World->GetTimeSeconds() - CooldownStartTime)
+		: 0.0f;
+	bCooldowning = true;
 
 	EnsureMasterMaterial();
-
-	bCooldowning = true;
+	SyncMaterialState();
 }
 
 void UAbilityIconUI::UpdateCoolTime(float Delta)
@@ -146,7 +163,14 @@ void UAbilityIconUI::UpdateCoolTime(float Delta)
 		return;
 	}
 
-	AccumulatedTime += Delta;
+	if (const UWorld* World = GetWorld())
+	{
+		AccumulatedTime = FMath::Max(0.0f, World->GetTimeSeconds() - CooldownStartTime);
+	}
+	else
+	{
+		AccumulatedTime += Delta;
+	}
 
 	if (AccumulatedTime >= CoolTime)
 	{
@@ -154,27 +178,26 @@ void UAbilityIconUI::UpdateCoolTime(float Delta)
 		return;
 	}
 
-	const float Progress = AccumulatedTime / CoolTime;
-	AbilityMID->SetScalarParameterValue(TEXT("CooldownProgress"), Progress);
+	SyncMaterialState();
 }
 
 bool UAbilityIconUI::IsCooldowning() const
 {
-	if (!IsUnLock()) return false;
+	if (!IsUnLock())
+	{
+		return false;
+	}
+
 	return bCooldowning;
 }
 
 void UAbilityIconUI::CooldownDone()
 {
-	bCooldowning    = false;
-	AccumulatedTime = 0.f;
-	CoolTime        = 0.f;
+	bCooldowning = false;
+	AccumulatedTime = 0.0f;
+	CooldownStartTime = 0.0f;
+	CoolTime = 0.0f;
 
-	if (AbilityMID)
-	{
-		AbilityMID->SetScalarParameterValue(TEXT("CooldownProgress"), 0.0f);
-	}
-
-	// 잠금도 없으면 기본 텍스처로 복귀
+	SyncMaterialState();
 	TryRestoreDefaultBrush();
 }

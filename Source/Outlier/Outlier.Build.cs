@@ -27,7 +27,7 @@ public class Outlier : ModuleRules
             "AnimGraphRuntime",
             "TagDrivenUI",
             "DeveloperSettings",
-            "Niagara"
+            "VisualEvent"
         });
 
         PrivateDependencyModuleNames.AddRange(new string[]

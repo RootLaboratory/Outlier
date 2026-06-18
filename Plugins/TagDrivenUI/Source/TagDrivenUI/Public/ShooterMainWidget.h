@@ -12,6 +12,8 @@ class UPartnerCamUI;
 class UHPBarUI;
 class UAmmoUI;
 class UCrossHairBase;
+class UShooterCurrentAbilityIcon;
+class UShooterCurrentWeaponIcon;
 
 UENUM(BlueprintType)
 enum class EWidgetWeaponType : uint8
@@ -61,9 +63,12 @@ public:
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UCrossHairBase> PistolCrossHairUI;
 
-private:
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UShooterCurrentAbilityIcon> CurrentAbilityUI;
 
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UShooterCurrentWeaponIcon> CurrentWeaponUI;
+
+private:
 	TObjectPtr<UCrossHairBase> CurrentCrossHairUI;
 };
-
-

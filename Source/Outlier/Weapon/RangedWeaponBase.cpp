@@ -17,7 +17,9 @@
 #include "CrossHairBase.h"
 #include "Shooter/ShooterPlayerController.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Drone/Partner/PartnerCharacter.h"
 #include "OutlierNetUtils.h"
+#include "Drone/Partner/PartnerShieldSphere.h"
 #include "Net/UnrealNetwork.h"
 #include "Weapon/WeaponCoreRow.h"
 #include "Weapon/WeaponBloomRow.h"
@@ -189,12 +191,22 @@ void ARangedWeaponBase::FireShot()
 	if (bHit)
 	{
 		UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot hit Target=%s Start=%s End=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(Hit.GetActor()), *Start.ToString(), *End.ToString());
-		if (AShooterCharacter* HitCharacter = Cast<AShooterCharacter>(Hit.GetActor()))
+		const float HitDistance = FVector::Distance(Start, Hit.ImpactPoint);
+		const float DamageToApply = GetDamageAtDistance(HitDistance);
+
+		if (APartnerShieldSphere* Shield = Cast<APartnerShieldSphere>(Hit.GetActor()))
 		{
-			const float HitDistance = FVector::Distance(Start, Hit.ImpactPoint);
-			const float DamageToApply = GetDamageAtDistance(HitDistance);
+			Shield->ApplyShieldDamage(DamageToApply);
+			UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot applied Shield Damage=%.1f To=%s"), OutlierNet::GetNetPrefix(this), *GetName(), DamageToApply, *GetNameSafe(Shield));
+		}
+		else if (AShooterCharacter* HitCharacter = Cast<AShooterCharacter>(Hit.GetActor()))
+		{
 			HitCharacter->ApplyDamageInternal(DamageToApply);
 			UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot applied Damage=%.1f To=%s"), OutlierNet::GetNetPrefix(this), *GetName(), DamageToApply, *GetNameSafe(HitCharacter));
+		}
+		else if (APartnerCharacter* PartnerCharacter = Cast<APartnerCharacter>(Hit.GetActor()))
+		{
+			PartnerCharacter->HandlePartnerHit();
 		}
 	}
 	else
@@ -208,7 +220,8 @@ void ARangedWeaponBase::FireShot()
 	{
 		AActor* HitActor = Hit.GetActor();
 		const FVector TraceEndPoint = bHit ? Hit.ImpactPoint : End;
-		MulticastPlayFireFX(TraceEndPoint, HitActor);
+		const FVector ImpactNormal = bHit ? Hit.ImpactNormal : -CameraRotation.Vector();
+		MulticastPlayFireFX(TraceEndPoint, ImpactNormal, HitActor);
 
 		if (UVisualEventSubsystem* VisualSubsystem = GetWorld()->GetSubsystem<UVisualEventSubsystem>())
 		{
@@ -446,7 +459,7 @@ void ARangedWeaponBase::AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacte
 }
 
 
-void ARangedWeaponBase::MulticastPlayFireFX_Implementation(FVector_NetQuantize TraceEnd, AActor* Hit)
+void ARangedWeaponBase::MulticastPlayFireFX_Implementation(FVector_NetQuantize TraceEnd, FVector_NetQuantizeNormal ImpactNormal, AActor* Hit)
 {
 	ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
 	if (!OwnerCharacter)
@@ -456,11 +469,11 @@ void ARangedWeaponBase::MulticastPlayFireFX_Implementation(FVector_NetQuantize T
 
 	if (OwnerCharacter->IsLocallyControlled())
 	{
-		PlayFirstPersonFireFX(TraceEnd, Hit);
+		PlayFirstPersonFireFX(TraceEnd, ImpactNormal, Hit);
 		return;
 	}
 
-	PlayThirdPersonFireFX(TraceEnd, Hit);
+	PlayThirdPersonFireFX(TraceEnd, ImpactNormal, Hit);
 }
 
 
@@ -529,7 +542,7 @@ void ARangedWeaponBase::ClientNotifyShotFired_Implementation()
 	}
 }
 
-void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, AActor* Hit)
+void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit)
 {
 	USkeletalMeshComponent* Mesh = ThirdPersonWeaponMesh;
 	if (!Mesh)
@@ -548,9 +561,6 @@ void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, AActor* Hit)
 
 		if (WeaponMuzzle)
 		{
-			//UE_LOG(LogTemp, Log, TEXT("PlayFirstPersonFireFX_EffectSpawned"));
-			//UTrailEffectDefinition* MuzzleEffectInstance = NewObject<UTrailEffectDefinition>(this, WeaponMuzzle);
-
 			VisualSubsystem->SpawnMuzzleEffect(WeaponMuzzle, Start, MuzzleRotation);
 
 		}
@@ -558,26 +568,31 @@ void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, AActor* Hit)
 
 		if (WeaponTrail)
 		{
-			//UTrailEffectDefinition* TrailEffectInstance = NewObject<UTrailEffectDefinition>(this, WeaponTrail);
 			VisualSubsystem->SpawnBeamTrail(WeaponTrail, Start, End);
 		}
 
 
 		if (Hit)
 		{
-			//UE_LOG(LogTemp, Error, TEXT("PlayFirstPersonFireFX Hit"));
+			const FRotator ImpactRotation = ImpactNormal.GetSafeNormal().Rotation();
 			IVisualEffectProvider* Provider = Cast<IVisualEffectProvider>(Hit);
+			bool bSpawnFallbackDecal = true;
 
 			if (Provider)
 			{
-				//UE_LOG(LogTemp, Error, TEXT("PlayFirstPersonFireFX Hit and ProviderComponent"));
 				FVisualEventSet AssetSet = Provider->GetVisualEventSet();
-				VisualSubsystem->FeaturesEffect(TraceEnd, MuzzleRotation, AssetSet);
+				if (AssetSet.DecalDef && !AssetSet.DecalDef->DecalMaterial)
+				{
+					AssetSet.DecalDef = nullptr;
+				}
+
+				VisualSubsystem->FeaturesEffect(TraceEnd, ImpactRotation, AssetSet);
+				bSpawnFallbackDecal = !AssetSet.DecalDef;
 			}
 
-			else
+			if (bSpawnFallbackDecal && WeaponDecal)
 			{
-				//UE_LOG(LogTemp, Error, TEXT("PlayFirstPersonFireFX Hit but no  ProviderComponent"));
+				VisualSubsystem->SpawnMarkAtLocation(WeaponDecal, TraceEnd, ImpactRotation);
 			}
 
 		}
@@ -585,7 +600,7 @@ void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, AActor* Hit)
 	}
 }
 
-void ARangedWeaponBase::PlayFirstPersonFireFX(FVector TraceEnd, AActor* Hit)
+void ARangedWeaponBase::PlayFirstPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit)
 {
 
 	USkeletalMeshComponent* Mesh = FirstPersonWeaponMesh;
@@ -605,36 +620,36 @@ void ARangedWeaponBase::PlayFirstPersonFireFX(FVector TraceEnd, AActor* Hit)
 
 		if (WeaponMuzzle)
 		{
-			//UE_LOG(LogTemp, Log, TEXT("PlayFirstPersonFireFX_EffectSpawned"));
-			//UTrailEffectDefinition* MuzzleEffectInstance = NewObject<UTrailEffectDefinition>(this, WeaponMuzzle);
-
 			VisualSubsystem->SpawnMuzzleEffect(WeaponMuzzle, Start, MuzzleRotation);
-
 		}
 
 
 		if (WeaponTrail)
 		{
-			//UTrailEffectDefinition* TrailEffectInstance = NewObject<UTrailEffectDefinition>(this, WeaponTrail);
 			VisualSubsystem->SpawnBeamTrail(WeaponTrail, Start, End);
 		}
 
-
 		if (Hit)
 		{
-			//UE_LOG(LogTemp, Error, TEXT("PlayFirstPersonFireFX Hit"));
+			const FRotator ImpactRotation = ImpactNormal.GetSafeNormal().Rotation();
 			IVisualEffectProvider* Provider = Cast<IVisualEffectProvider>(Hit);
+			bool bSpawnFallbackDecal = true;
 
 			if (Provider)
 			{
-				//UE_LOG(LogTemp, Error, TEXT("PlayFirstPersonFireFX Hit and ProviderComponent"));
 				FVisualEventSet AssetSet = Provider->GetVisualEventSet();
-				VisualSubsystem->FeaturesEffect(TraceEnd, MuzzleRotation, AssetSet);
+				if (AssetSet.DecalDef && !AssetSet.DecalDef->DecalMaterial)
+				{
+					AssetSet.DecalDef = nullptr;
+				}
+
+				VisualSubsystem->FeaturesEffect(TraceEnd, ImpactRotation, AssetSet);
+				bSpawnFallbackDecal = !AssetSet.DecalDef;
 			}
 
-			else
+			if (bSpawnFallbackDecal && WeaponDecal)
 			{
-				//UE_LOG(LogTemp, Error, TEXT("PlayFirstPersonFireFX Hit but no  ProviderComponent"));
+				VisualSubsystem->SpawnMarkAtLocation(WeaponDecal, TraceEnd, ImpactRotation);
 			}
 
 		}

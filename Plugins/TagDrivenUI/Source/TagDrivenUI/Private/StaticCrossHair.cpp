@@ -39,6 +39,10 @@ void UStaticCrossHair::SetCoolTime(float InCoolTime)
 	}
 
 	CoolTime = InCoolTime; // Chatacter 의 TotalCoolTime;
+	bCooldowning = true;
+
+	UE_LOG(LogTemp, Error, TEXT("CoolTime %f"), InCoolTime);
+
 	CrossHairImage->SetBrushFromMaterial(M_ReloadingTimeUI);
 	ReloadingTimeMID = CrossHairImage->GetDynamicMaterial();
 
@@ -48,9 +52,9 @@ void UStaticCrossHair::SetCoolTime(float InCoolTime)
 	{
 		ReloadingTimeMID->SetTextureParameterValue(TEXT("IconTexture"), IconTexture);
 		UE_LOG(LogTemp, Error, TEXT("SetTextureParameterValue"));
-
+		ReloadingTimeMID->SetScalarParameterValue(TEXT("IsCoolDown"), static_cast<float>(bCooldowning));
 	}
-	bCooldowning = true;
+
 }
 
 void UStaticCrossHair::UpdateCoolTime(float InCoolTime)
@@ -77,10 +81,12 @@ bool UStaticCrossHair::IsCooldowning()
 void UStaticCrossHair::CooldownDone()
 {
 	UE_LOG(LogTemp, Error, TEXT("CooldownDone"));
+	ReloadingTimeMID->SetScalarParameterValue(TEXT("IsCoolDown"), static_cast<float>(bCooldowning));
 
 	bCooldowning = false;
 	AccumulatedTime = 0.f;
 	CoolTime = 0.f;
 	ReloadingTimeMID = nullptr;
 	CrossHairImage->SetBrush(DefaultIconBrush);
+
 }

@@ -11,6 +11,7 @@
 #include "Shooter/ShooterCharacter.h"
 #include "Net/UnrealNetwork.h"
 #include "Engine/DataTable.h"
+#include "Interaction/InteractableComponent.h"
 #include "Weapon/WeaponCoreRow.h"
 #include "Weapon/WeaponRangeRow.h"
 #include "Weapon/Spawn/WeaponSpawnPoint.h"
@@ -44,6 +45,8 @@ AWeaponBase::AWeaponBase()
 
 	InteractionCollision = CreateDefaultSubobject<USphereComponent>(TEXT("InteractionCollision"));
 	InteractionCollision->SetupAttachment(SceneRoot);
+
+	InteractableComponent = CreateDefaultSubobject<UInteractableComponent>(TEXT("InteractableComponent"));
 	InteractionCollision->SetSphereRadius(40.0f);
 	InteractionCollision->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
 	InteractionCollision->SetCollisionObjectType(ECC_WorldDynamic);
@@ -275,7 +278,12 @@ bool AWeaponBase::CanBePickedUpBy(const AFirstPersonCharacter* Interactor) const
 	{
 		return false;
 	}
+	const FGameplayTagContainer PlayerCharacterInteractTag = Interactor->GetOwnedGameplayTagsForQuery();
 
+	if(!PlayerCharacterInteractTag.IsEmpty() && !InteractableComponent->CanInteract(PlayerCharacterInteractTag))
+	{
+		return false;
+	}
 	return true;
 }
 
@@ -569,6 +577,11 @@ void AWeaponBase::Interact(class AFirstPersonCharacter* Interactor)
 	UE_LOG(LogTemp, Log, TEXT("%s [%s] Interact Interactor=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(Interactor));
 
 	Interactor->EquipWeapon(this);
+}
+
+UInteractableComponent* AWeaponBase::GetInteractableComponent() const
+{
+	return InteractableComponent;
 }
 
 void AWeaponBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
