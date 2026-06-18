@@ -159,18 +159,18 @@ void AFirstPersonPlayerController::InitializeOutlierPlayerState()
 		return;
 	}
 
-	OutlierPlayerState->SetPlayerRole(DefaultPlayerRole);
-	OutlierPlayerState->SetPairId(DefaultPairId);
+	//OutlierPlayerState->SetPlayerRole(DefaultPlayerRole);
+	//OutlierPlayerState->SetPairId(DefaultPairId);
 
-	UE_LOG(
-		LogTemp,
-		Warning,
-		TEXT("[OutlierInputDebug] InitializeOutlierPlayerState: PC=%s PS=%s Role=%d PairId=%d"),
-		*GetNameSafe(this),
-		*GetNameSafe(OutlierPlayerState),
-		static_cast<int32>(DefaultPlayerRole),
-		DefaultPairId
-	);
+	//UE_LOG(
+	//	LogTemp,
+	//	Warning,
+	//	TEXT("[OutlierInputDebug] InitializeOutlierPlayerState: PC=%s PS=%s Role=%d PairId=%d"),
+	//	*GetNameSafe(this),
+	//	*GetNameSafe(OutlierPlayerState),
+	//	static_cast<int32>(DefaultPlayerRole),
+	//	DefaultPairId
+	//);
 }
 
 void AFirstPersonPlayerController::ClientArenaLoad_Implementation(int32 ArenaId)
@@ -276,4 +276,9 @@ void AFirstPersonPlayerController::RegisterCurrentPawnWithPlayerState()
 	{
 		GameMode->RefreshPairLinks(OutlierPlayerState);
 	}
+}
+
+void AFirstPersonPlayerController::RefreshPostProcessState()
+{
+	
 }

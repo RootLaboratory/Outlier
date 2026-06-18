@@ -43,6 +43,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Ability|Cooldown")
 	void SetCoolTime(float InCoolTime);
 
+	void SetCoolTimeAt(float InCoolTime, float InStartTime);
 	void UpdateCoolTime(float Delta);
 
 	UFUNCTION(BlueprintPure, Category = "Ability|Cooldown")
@@ -73,6 +74,7 @@ public:
 private:
 	// 마스터 머티리얼이 필요한 상태(쿨타임 or 잠금)면 MID로 교체
 	void EnsureMasterMaterial();
+	void SyncMaterialState();
 
 	// 쿨타임도 끝나고 잠금도 없으면 기본 텍스처로 복귀
 	void TryRestoreDefaultBrush();
@@ -83,5 +85,6 @@ private:
 	uint8 bAbilityEnabled  : 1 = true;
 
 	float CoolTime        = 0.0f;
+	float CooldownStartTime = 0.0f;
 	float AccumulatedTime = 0.0f;
 };

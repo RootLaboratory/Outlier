@@ -44,15 +44,15 @@ struct FDualKawaseBlurParameters
 	int32 bEnabled = false;
 	float BlurRadius = 1.0f;
 	float BlendWeight = 1.0f;
-	int32 DownsampleCount = 3;
+	int32 DownsampleCount = 2;
 };
 
 // UI까지 합성된 최종 텍스처에 적용할 chromatic aberration 입력 파라미터.
 struct FUIChromaticAberrationParameters
 {
-	int32 bEnabled = false;
-	float StartOffset = 0.9f;
-	float Intensity = 0.7f;
+	int32 bEnabled = true;
+	float StartOffset = 0.2f;
+	float Intensity = 0.4f;
 	float Padding = 0.0f;
 };
 

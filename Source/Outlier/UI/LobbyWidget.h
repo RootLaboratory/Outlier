@@ -13,6 +13,8 @@
 class UButton;
 class UImage;
 
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnLobbyBackRequested);
+
 // Button에 PC 정보를 받아서, PlayerSTATE에 ENUM BIND;
 // 
 
@@ -23,6 +25,9 @@ class OUTLIER_API ULobbyWidget : public UUserWidget
 public:
 	virtual void NativeConstruct() override;
 	virtual void NativeDestruct() override;
+
+	UPROPERTY(BlueprintAssignable)
+	FOnLobbyBackRequested OnBackRequested;
 
 protected:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))

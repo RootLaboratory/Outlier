@@ -7,6 +7,7 @@
 #include "FirstPerson/FirstPersonPlayerCameraManager.h"
 #include "Blueprint/UserWidget.h"
 #include "LocalPlayerUISubSystem.h"
+#include "PostProcess/MaterialPostProcessSubsystem.h"
 #include "OutlierPlayerState.h"
 #include "Shooter/ShooterCharacter.h"
 
@@ -53,6 +54,25 @@ void APartnerPlayerController::OnPossess(APawn* InPawn)
 	{
 		PartnerCharacter->Tags.Add(PartnerPawnTag);
 	}
+
+	/*if (APartnerCharacter* PartnerCharacter = Cast<APartnerCharacter>(InPawn))
+	{
+
+		if (IsLocalController())
+		{
+			UE_LOG(LogTemp, Error, TEXT("TryRefresh"));
+			PartnerCharacter->RefreshPostProcessState();
+		}
+	}*/
+
+	if (IsLocalController())
+	{
+		if (UMaterialPostProcessSubsystem* PPS = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
+		{
+			PPS->Refresh();
+		}
+	}
+
 }
 
 void APartnerPlayerController::BindMainUI()
@@ -135,6 +155,15 @@ void APartnerPlayerController::AcknowledgePossession(APawn* P)
 	BindPostProcessSubSystem();
 	BindPlayerStateDelegates();
 	RefreshShooterUIForRespawnFromPlayerState();
+
+	if (IsLocalController())
+	{
+		if (UMaterialPostProcessSubsystem* PPS = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
+		{
+			PPS->Refresh();
+		}
+	}
+
 }
 
 void APartnerPlayerController::RefreshShooterUIForRespawnFromPlayerState()

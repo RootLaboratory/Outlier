@@ -12,6 +12,7 @@
 
 class UEventDrivenUI;
 class USceneCaptureComponent2D;
+enum class EWidgetWeaponType : uint8;
 
 
 UCLASS()
@@ -47,6 +48,9 @@ public:
 	void PartnerCameraBind(USceneCaptureComponent2D* InCaptureComponent2D);
 	void PartnerCameraToggle();
 	void PartnerDistanceUpdate(const float Distance);
+	void OnCurrentWeaponChanged(EWidgetWeaponType WeaponType);
+	void OnCurrentAbilityChanged(const FGameplayTag& AbilityTag);
+	bool ApplyCurrentAbilityCooldownIfMatches(const FGameplayTag& AbilityTag, float CoolTime);
 	void OnAbilityUsed(const FGameplayTag& AbilityTag, float CoolTime);
 	void OnAbilityDisabledByDistance();
 	void OnAbilityEnabledByDistance();

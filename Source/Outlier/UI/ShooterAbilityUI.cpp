@@ -78,12 +78,25 @@ bool UShooterAbilityUI::TryGetHoveredAbility(FGameplayTag& OutAbilityTag)
 
 	OutAbilityTag = HoveredAbilityTag;
 
-	//
-	if (HoveredAbilityTag == RightAbilityTag)
+	OnAbilitySelected.Broadcast(HoveredAbilityTag);
+
+	return true;
+}
+
+bool UShooterAbilityUI::ApplyCooldownIfMatches(const FGameplayTag& AbilityTag, float CoolTime)
+{
+	if (!AbilityTag.IsValid() || CoolTime <= 0.0f)
 	{
-		HoveredIcon->SetCoolTime(5.0f);
+		return false;
 	}
 
+	UAbilityIconUI* AbilityIcon = GetAbilityIcon(AbilityTag);
+	if (!AbilityIcon || !AbilityIcon->IsUnLock())
+	{
+		return false;
+	}
+
+	AbilityIcon->SetCoolTime(CoolTime);
 	return true;
 }
 

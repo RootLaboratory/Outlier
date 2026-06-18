@@ -18,6 +18,7 @@ void UTitleMainWidget::NativeConstruct()
 	}
 	if (LobbyWidget)
 	{
+		LobbyWidget->OnBackRequested.AddDynamic(this, &UTitleMainWidget::HandleLobbyBackRequested);
 		LobbyWidget->SetVisibility(ESlateVisibility::Collapsed);
 	}
 }
@@ -79,5 +80,15 @@ void UTitleMainWidget::RequestExit()
 
 
 	UE_LOG(LogTemp, Error, TEXT("QuitGame"));
+}
+
+void UTitleMainWidget::HandleLobbyBackRequested()
+{
+	AFrontendPlayerController* PC = Cast<AFrontendPlayerController>(GetOwningPlayer());
+	if (PC)
+	{
+		PC->RequestCancelMatchmaking();
+	}
+	ShowTitle();
 }
 

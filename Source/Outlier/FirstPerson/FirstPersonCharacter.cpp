@@ -267,7 +267,7 @@ void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor)
 		ECC_Visibility,
 		Params);
 
-	DrawDebugLine(
+	/*DrawDebugLine(
 		GetWorld(),
 		Start,
 		End,
@@ -275,7 +275,7 @@ void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor)
 		false,
 		3.0f,
 		0,
-		1.0f);
+		1.0f);*/
 
 	if (!bHit || Hit.GetActor() != TargetActor)
 	{
@@ -292,6 +292,11 @@ void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[Server] %s ServerInteract failed: target not interactable Target=%s"), *GetName(), *GetNameSafe(TargetActor));
 	}
+}
+
+FGameplayTagContainer AFirstPersonCharacter::GetOwnedGameplayTagsForQuery() const
+{
+	return OwnedQueryTags;
 }
 
 void AFirstPersonCharacter::OnRep_CurrentWeapon()

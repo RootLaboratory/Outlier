@@ -44,4 +44,7 @@ private:
 
 	UFUNCTION()
 	void RequestExit();
+
+	UFUNCTION()
+	void HandleLobbyBackRequested();
 };

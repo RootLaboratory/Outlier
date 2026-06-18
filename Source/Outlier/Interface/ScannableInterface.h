@@ -18,6 +18,5 @@ class OUTLIER_API IScannableInterface
 	GENERATED_BODY()
 
 public:
-	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "Scan")
-	int32 GetScanStencilValue() const;
+	virtual int32 GetScanStencilValue() const = 0;
 };

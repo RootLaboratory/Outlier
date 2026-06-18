@@ -273,8 +273,6 @@ protected:
 	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = "Shield")
 	float MaxPartnerShield = 0.0f;
 
-	float PartnerShieldElapsedTime = 0.0f;
-
 	float PartnerShieldDuration = 0.0f;
 
 	UPROPERTY()
@@ -360,6 +358,7 @@ public:
 	void SetSuitDisabledByPartnerBoundary(bool bDisabled);
 
 	void ApplyPartnerShield(float Amount, float Duration);
+	float GetCurPartnerShield() const { return CurPartnerShield; }
 	void BroadcastCurrentUIState();
 
 	UFUNCTION(BlueprintPure)

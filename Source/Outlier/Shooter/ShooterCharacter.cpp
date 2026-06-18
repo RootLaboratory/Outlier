@@ -14,6 +14,8 @@
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
 #include "ShooterPlayerController.h"
+#include "PostProcess/MaterialPostProcessSubsystem.h"
+#include "PostProcess/OutlierPostProcessVolume.h"
 #include "LocalPlayerUISubSystem.h"
 #include "InputActionValue.h"
 #include "Drone/Partner/PartnerCharacter.h"
@@ -385,7 +387,7 @@ void AShooterCharacter::TryCloseSuitMenu()
 		UE_LOG(LogTemp, Error, TEXT("Collasped"));
 
 	}
-	else if (!ShooterController->AbilityUIInstance)
+	else if (!ShooterController || !ShooterController->AbilityUIInstance)
 	{
 		UE_LOG(LogTemp, Error, TEXT("Null: AbilityUIInstance"));
 
@@ -416,23 +418,67 @@ void AShooterCharacter::UpdateSuitSelection(const FInputActionValue& Value)
 
 void AShooterCharacter::TryUseSuit()
 {
+	UE_LOG(LogTemp, Error, TEXT("TryUseSuit"));
+
+
+	constexpr float SuitAbilityCooldown = 5.0f;
+
 	if (bIsDead)
 	{
+		UE_LOG(LogTemp, Error, TEXT("ShooterController"));
+
 		return;
 	}
 
-	if (bSuitDisabledByPartnerBoundary)
+	//if (bSuitDisabledByPartnerBoundary)
+	//{
+	//	UE_LOG(LogTemp, Error, TEXT("bSuitDisabledByPartnerBoundary"));
+
+	//	return;
+	//}
+
+	/*if (!SelectedAbilityTag.IsValid())
 	{
-		return;
-	}
+		UE_LOG(LogTemp, Error, TEXT("SelectedAbilityTag"));
 
-	//이건 따로 None을 만들어야 하나.
-	if (!SelectedAbilityTag.IsValid())
+		return;
+	}*/
+
+	AShooterPlayerController* ShooterController = Cast<AShooterPlayerController>(GetController());
+	if (!ShooterController)
 	{
+		UE_LOG(LogTemp, Error, TEXT("ShooterController"));
+
 		return;
 	}
 
-	// 현재 선택된 슈트 능력 사용
+	ULocalPlayerUISubSystem* UISubsystem = nullptr;
+	if (ULocalPlayer* LocalPlayer = ShooterController->GetLocalPlayer())
+	{
+		UISubsystem = LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>();
+	}
+
+	/*if (!UISubsystem || !UISubsystem->ApplyCurrentAbilityCooldownIfMatches(SelectedAbilityTag, SuitAbilityCooldown))
+	{
+		UE_LOG(LogTemp, Error, TEXT("ApplyCurrentAbilityCooldownIfMatches"));
+
+		return;
+	}*/
+
+	if (ShooterController->AbilityUIInstance)
+	{
+		ShooterController->AbilityUIInstance->ApplyCooldownIfMatches(SelectedAbilityTag, SuitAbilityCooldown);
+	}
+
+	UMaterialPostProcessSubsystem* MaterialSub = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>();
+	if (MaterialSub)
+	{
+		UE_LOG(LogTemp, Error, TEXT("MaterialSub"));
+
+		MaterialSub->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Stealth,true);
+
+	}
+
 }
 
 void AShooterCharacter::TrySlide()
@@ -459,6 +505,7 @@ void AShooterCharacter::OnRep_CurHP()
 {
 	UE_LOG(LogTemp, Log, TEXT("%s %s OnRep_CurHP CurHP=%.1f / %.1f"), OutlierNet::GetNetPrefix(this), *GetName(), CurHP, MaxHP);
 	OnShooterHealthChanged.Broadcast(CurHP, MaxHP);
+
 	OnShooterConditionChanged.Broadcast(ResolveShooterConditionTag());
 }
 
@@ -470,7 +517,19 @@ void AShooterCharacter::OnRep_MovementState()
 void AShooterCharacter::OnRep_CurShield()
 {
 	OnShooterShieldChanged.Broadcast(CurShield, MaxShield);
+
+	if (IsLocallyControlled())
+	{
+		UMaterialPostProcessSubsystem* PPS = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>();
+		if (PPS)
+		{
+			PPS->UpdateDamagedPostProcess(CurShield / MaxShield , FVector4(0,0,1,0));
+			PPS->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Damaged, true);
+		}
+	}
+
 	OnShooterConditionChanged.Broadcast(ResolveShooterConditionTag());
+
 }
 
 void AShooterCharacter::OnRep_CurPartnerShield()
@@ -814,15 +873,17 @@ void AShooterCharacter::UpdatePartnerShieldDecay()
 {
 	constexpr float DeltaTime = 1.0f / 60.0f;
 
-	PartnerShieldElapsedTime += DeltaTime;
+	if (PartnerShieldDuration <= KINDA_SMALL_NUMBER)
+	{
+		CurPartnerShield = 0.0f;
+		BroadcastPartnerShieldState();
+		GetWorldTimerManager().ClearTimer(PartnerShieldTimerHandle);
+		return;
+	}
 
-	const float Alpha = FMath::Clamp(
-		PartnerShieldElapsedTime / PartnerShieldDuration,
-		0.0f,
-		1.0f
-	);
+	const float DecayAmount = (MaxPartnerShield / PartnerShieldDuration) * DeltaTime;
+	CurPartnerShield = FMath::Max(0.0f, CurPartnerShield - DecayAmount);
 
-	CurPartnerShield = FMath::Lerp(MaxPartnerShield, 0.0f, Alpha);
 	if (GetNetMode() != NM_DedicatedServer)
 	{
 		BroadcastPartnerShieldState();
@@ -963,6 +1024,7 @@ void AShooterCharacter::BroadcastCurrentUIState()
 {
 	OnShooterHealthChanged.Broadcast(CurHP, MaxHP);
 	OnShooterShieldChanged.Broadcast(CurShield, MaxShield);
+	OnWeaponChanged.Broadcast(GetWeaponType());
 	BroadcastPartnerShieldState();
 }
 
@@ -1442,7 +1504,6 @@ void AShooterCharacter::ApplyPartnerShield(float Amount, float Duration)
 {
 	CurPartnerShield = Amount;
 	MaxPartnerShield = Amount;
-	PartnerShieldElapsedTime = 0.0f;
 	PartnerShieldDuration = Duration;
 	if (GetNetMode() != NM_DedicatedServer)
 	{
