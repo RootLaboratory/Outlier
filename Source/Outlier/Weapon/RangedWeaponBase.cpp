@@ -217,7 +217,8 @@ void ARangedWeaponBase::FireShot()
 	{
 		AActor* HitActor = Hit.GetActor();
 		const FVector TraceEndPoint = bHit ? Hit.ImpactPoint : End;
-		MulticastPlayFireFX(TraceEndPoint, HitActor);
+		const FVector ImpactNormal = bHit ? Hit.ImpactNormal : -CameraRotation.Vector();
+		MulticastPlayFireFX(TraceEndPoint, ImpactNormal, HitActor);
 
 		if (UVisualEventSubsystem* VisualSubsystem = GetWorld()->GetSubsystem<UVisualEventSubsystem>())
 		{
@@ -270,7 +271,7 @@ void ARangedWeaponBase::SetAiming(bool bAiming)
 }
 
 
-void ARangedWeaponBase::MulticastPlayFireFX_Implementation(FVector_NetQuantize TraceEnd, AActor* Hit)
+void ARangedWeaponBase::MulticastPlayFireFX_Implementation(FVector_NetQuantize TraceEnd, FVector_NetQuantizeNormal ImpactNormal, AActor* Hit)
 {
 	ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
 	if (!OwnerCharacter)
@@ -280,11 +281,11 @@ void ARangedWeaponBase::MulticastPlayFireFX_Implementation(FVector_NetQuantize T
 
 	if (OwnerCharacter->IsLocallyControlled())
 	{
-		PlayFirstPersonFireFX(TraceEnd, Hit);
+		PlayFirstPersonFireFX(TraceEnd, ImpactNormal, Hit);
 		return;
 	}
 
-	PlayThirdPersonFireFX(TraceEnd, Hit);
+	PlayThirdPersonFireFX(TraceEnd, ImpactNormal, Hit);
 }
 
 
@@ -321,7 +322,7 @@ void ARangedWeaponBase::ClientNotifyShotFired_Implementation()
 	}
 }
 
-void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, AActor* Hit)
+void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit)
 {
 	USkeletalMeshComponent* Mesh = ThirdPersonWeaponMesh;
 	if (!Mesh)
@@ -353,20 +354,25 @@ void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, AActor* Hit)
 
 		if (Hit)
 		{
+			const FRotator ImpactRotation = ImpactNormal.GetSafeNormal().Rotation();
 			IVisualEffectProvider* Provider = Cast<IVisualEffectProvider>(Hit);
+			bool bSpawnFallbackDecal = true;
 
 			if (Provider)
 			{
 				FVisualEventSet AssetSet = Provider->GetVisualEventSet();
-				VisualSubsystem->FeaturesEffect(TraceEnd, MuzzleRotation, AssetSet);
+				if (AssetSet.DecalDef && !AssetSet.DecalDef->DecalMaterial)
+				{
+					AssetSet.DecalDef = nullptr;
+				}
+
+				VisualSubsystem->FeaturesEffect(TraceEnd, ImpactRotation, AssetSet);
+				bSpawnFallbackDecal = !AssetSet.DecalDef;
 			}
 
-			else
+			if (bSpawnFallbackDecal && WeaponDecal)
 			{
-				if (WeaponDecal)
-				{
-					VisualSubsystem->SpawnMarkAtLocation(WeaponDecal, Start, MuzzleRotation);
-				}
+				VisualSubsystem->SpawnMarkAtLocation(WeaponDecal, TraceEnd, ImpactRotation);
 			}
 
 		}
@@ -374,7 +380,7 @@ void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, AActor* Hit)
 	}
 }
 
-void ARangedWeaponBase::PlayFirstPersonFireFX(FVector TraceEnd, AActor* Hit)
+void ARangedWeaponBase::PlayFirstPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit)
 {
 
 	USkeletalMeshComponent* Mesh = FirstPersonWeaponMesh;
@@ -405,20 +411,25 @@ void ARangedWeaponBase::PlayFirstPersonFireFX(FVector TraceEnd, AActor* Hit)
 
 		if (Hit)
 		{
+			const FRotator ImpactRotation = ImpactNormal.GetSafeNormal().Rotation();
 			IVisualEffectProvider* Provider = Cast<IVisualEffectProvider>(Hit);
+			bool bSpawnFallbackDecal = true;
 
 			if (Provider)
 			{
 				FVisualEventSet AssetSet = Provider->GetVisualEventSet();
-				VisualSubsystem->FeaturesEffect(TraceEnd, MuzzleRotation, AssetSet);
+				if (AssetSet.DecalDef && !AssetSet.DecalDef->DecalMaterial)
+				{
+					AssetSet.DecalDef = nullptr;
+				}
+
+				VisualSubsystem->FeaturesEffect(TraceEnd, ImpactRotation, AssetSet);
+				bSpawnFallbackDecal = !AssetSet.DecalDef;
 			}
 
-			else
+			if (bSpawnFallbackDecal && WeaponDecal)
 			{
-				if (WeaponDecal)
-				{
-					VisualSubsystem->SpawnMarkAtLocation(WeaponDecal, Start, MuzzleRotation);
-			    }
+				VisualSubsystem->SpawnMarkAtLocation(WeaponDecal, TraceEnd, ImpactRotation);
 			}
 
 		}

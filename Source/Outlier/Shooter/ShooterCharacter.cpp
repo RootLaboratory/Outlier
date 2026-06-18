@@ -506,16 +506,6 @@ void AShooterCharacter::OnRep_CurHP()
 	UE_LOG(LogTemp, Log, TEXT("%s %s OnRep_CurHP CurHP=%.1f / %.1f"), OutlierNet::GetNetPrefix(this), *GetName(), CurHP, MaxHP);
 	OnShooterHealthChanged.Broadcast(CurHP, MaxHP);
 
-	if (IsLocallyControlled())
-	{
-		UMaterialPostProcessSubsystem* PPS = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>();
-		if (PPS)
-		{
-			PPS->UpdateDamagedPostProcess(CurHP / MaxHP);
-			PPS->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Damaged, true);
-		}
-	}
-
 	OnShooterConditionChanged.Broadcast(ResolveShooterConditionTag());
 }
 
@@ -527,6 +517,17 @@ void AShooterCharacter::OnRep_MovementState()
 void AShooterCharacter::OnRep_CurShield()
 {
 	OnShooterShieldChanged.Broadcast(CurShield, MaxShield);
+
+	if (IsLocallyControlled())
+	{
+		UMaterialPostProcessSubsystem* PPS = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>();
+		if (PPS)
+		{
+			PPS->UpdateDamagedPostProcess(CurShield / MaxShield , FVector4(0,0,1,0));
+			PPS->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Damaged, true);
+		}
+	}
+
 	OnShooterConditionChanged.Broadcast(ResolveShooterConditionTag());
 
 }
