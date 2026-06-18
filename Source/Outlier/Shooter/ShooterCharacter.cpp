@@ -1024,6 +1024,7 @@ void AShooterCharacter::BroadcastCurrentUIState()
 {
 	OnShooterHealthChanged.Broadcast(CurHP, MaxHP);
 	OnShooterShieldChanged.Broadcast(CurShield, MaxShield);
+	OnWeaponChanged.Broadcast(GetWeaponType());
 	BroadcastPartnerShieldState();
 }
 

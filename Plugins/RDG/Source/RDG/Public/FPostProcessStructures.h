@@ -52,7 +52,7 @@ struct FUIChromaticAberrationParameters
 {
 	int32 bEnabled = true;
 	float StartOffset = 0.2f;
-	float Intensity = 0.7f;
+	float Intensity = 0.4f;
 	float Padding = 0.0f;
 };
 

@@ -174,16 +174,16 @@ void ARangedWeaponBase::FireShot()
 		Params
 	);
 
-	DrawDebugLine(
-		GetWorld(),
-		Start,
-		End,
-		FColor::Red,
-		false,   // PersistentLines
-		3.0f,    // LifeTime
-		0,       // DepthPriority
-		1.0f     // Thickness
-	);
+	//DrawDebugLine(
+	//	GetWorld(),
+	//	Start,
+	//	End,
+	//	FColor::Red,
+	//	false,   // PersistentLines
+	//	3.0f,    // LifeTime
+	//	0,       // DepthPriority
+	//	1.0f     // Thickness
+	//);
 
 	if (bHit)
 	{
@@ -231,7 +231,7 @@ void ARangedWeaponBase::FireShot()
 
 	FColor LineColor = bHit ? FColor::Green : FColor::Red;
 
-	DrawDebugLine(
+	/*DrawDebugLine(
 		GetWorld(),
 		Start,
 		End,
@@ -240,7 +240,7 @@ void ARangedWeaponBase::FireShot()
 		3.0f,
 		0,
 		1.0f
-	);
+	);*/
 }
 
 // 반동, 탄 퍼짐은 추후 작업 예정

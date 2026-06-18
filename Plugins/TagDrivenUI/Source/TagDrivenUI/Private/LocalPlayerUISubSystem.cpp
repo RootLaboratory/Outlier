@@ -164,7 +164,7 @@ void ULocalPlayerUISubSystem::OnRep_PlayerStateChanged(EUIPlayerState State)
 	}
 	else
 	{
-		UE_LOG(LogTemp, Error, TEXT("UNVALID CLASS NOT DynamicCrossHairClass"));
+		//UE_LOG(LogTemp, Error, TEXT("UNVALID CLASS NOT DynamicCrossHairClass"));
 	}
 }
 
