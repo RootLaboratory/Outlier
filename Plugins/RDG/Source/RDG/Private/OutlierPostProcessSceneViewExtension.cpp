@@ -146,9 +146,9 @@ void FOutlierPostProcessSceneViewExtension::SubscribeToPostProcessingPass(EPostP
 void FOutlierPostProcessSceneViewExtension::PrePostProcessPass_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& InView, const FPostProcessingInputs& Inputs)
 {
 
-	UE_LOG(LogTemp, Warning, TEXT("PrePostProcess: IsTarget=%d, HasSceneTextures=%d"),
+	/*UE_LOG(LogTemp, Warning, TEXT("PrePostProcess: IsTarget=%d, HasSceneTextures=%d"),
 		IsTargetLocalPlayerView(InView) ? 1 : 0,
-		Inputs.SceneTextures ? 1 : 0);
+		Inputs.SceneTextures ? 1 : 0);*/
 
 
 	if (!FRDGExplosionVolumePass::IsEnabled() || !IsTargetLocalPlayerView(InView) || !Inputs.SceneTextures)

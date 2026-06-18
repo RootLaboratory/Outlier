@@ -15,5 +15,9 @@ class OUTLIER_API UAnimNotify_ReloadCommit : public UAnimNotify
 	GENERATED_BODY()
 	
 public:
-	virtual void Notify(USkeletalMeshComponent* MeshComp, UAnimSequenceBase* Animation, const FAnimNotifyEventReference& EventReference) override;
+	virtual void Notify(
+		USkeletalMeshComponent* MeshComp,
+		UAnimSequenceBase* Animation,
+		const FAnimNotifyEventReference& EventReference
+	) override;
 };

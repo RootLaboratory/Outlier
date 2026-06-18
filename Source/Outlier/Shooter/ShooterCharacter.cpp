@@ -2,12 +2,12 @@
 
 #include "ShooterCharacter.h"
 #include "Animation/AnimInstance.h"
+#include "Animation/AnimMontage.h"
 #include "Engine/LocalPlayer.h"
 #include "Camera/CameraComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/SceneCaptureComponent2D.h"
-#include "Curves/CurveVector.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Controller.h"
 #include "GameFramework/PlayerController.h"
@@ -96,7 +96,6 @@ void AShooterCharacter::BeginPlay()
 	RefreshWeaponMode();
 	RefreshMovementState();
 	RefreshCombatState();
-	UpdateFirstPersonPresentation(0.0f);
 }
 
 void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -107,13 +106,6 @@ void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	}
 
 	Super::EndPlay(EndPlayReason);
-}
-
-void AShooterCharacter::Tick(float DeltaSeconds)
-{
-	Super::Tick(DeltaSeconds);
-
-	UpdateFirstPersonPresentation(DeltaSeconds);
 }
 
 void AShooterCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
@@ -171,7 +163,6 @@ void AShooterCharacter::OnStartCrouch(float HalfHeightAdjust, float ScaledHalfHe
 {
 	Super::OnStartCrouch(HalfHeightAdjust, ScaledHalfHeightAdjust);
 
-	UpdateFirstPersonPresentation(0.0f);
 	RefreshMovementState();
 }
 
@@ -179,7 +170,6 @@ void AShooterCharacter::OnEndCrouch(float HalfHeightAdjust, float ScaledHalfHeig
 {
 	Super::OnEndCrouch(HalfHeightAdjust, ScaledHalfHeightAdjust);
 
-	UpdateFirstPersonPresentation(0.0f);
 	RefreshMovementState();
 }
 
@@ -748,8 +738,6 @@ void AShooterCharacter::UpdateLeanStep()
 		FirstPersonMesh->SetRelativeRotation(BaseFirstPersonMeshRotation);
 	}
 
-	UpdateFirstPersonPresentation(1.0f / 60.0f);
-
 	StopLeanUpdateIfSettled();
 }
 
@@ -1232,83 +1220,6 @@ void AShooterCharacter::PlayEquipMontages()
 	{
 		MulticastPlayThirdPersonActionMontage(EShooterMontageAction::Equip, EquippedWeaponType);
 	}
-}
-
-void AShooterCharacter::UpdateFirstPersonPresentation(float DeltaSeconds)
-{
-	if (!IsLocallyControlled())
-	{
-		return;
-	}
-
-	USceneComponent* ViewModelRoot = GetFirstPersonViewModelRoot();
-	if (!ViewModelRoot)
-	{
-		return;
-	}
-
-	const float AimPitch = FRotator::NormalizeAxis(GetBaseAimRotation().Pitch);
-	const float PitchCompensation = FMath::Clamp(-AimPitch * FirstPersonPitchFollowScale, -FirstPersonPitchFollowClamp, FirstPersonPitchFollowClamp);
-
-	FVector WeaponBaseOffset = FirstPersonViewModelOffset;
-	switch (GetWeaponType())
-	{
-	case EWeaponType::Rifle:
-		WeaponBaseOffset = RifleFirstPersonViewModelOffset;
-		break;
-	case EWeaponType::Pistol:
-		WeaponBaseOffset = PistolFirstPersonViewModelOffset;
-		break;
-	default:
-		break;
-	}
-
-	FVector PitchLocationOffset = FVector::ZeroVector;
-	if (FirstPersonPitchLocationOffsetCurve)
-	{
-		const float NormalizedPitch = FMath::GetMappedRangeValueClamped(
-			FVector2D(-90.0f, 90.0f),
-			FVector2D(-1.0f, 1.0f),
-			AimPitch);
-
-		PitchLocationOffset = FirstPersonPitchLocationOffsetCurve->GetVectorValue(NormalizedPitch);
-	}
-	else if (FMath::Abs(AimPitch) > FirstPersonPitchLocationOffsetStart)
-	{
-		const float PitchLocationAlpha = FMath::GetMappedRangeValueClamped(
-			FVector2D(FirstPersonPitchLocationOffsetStart, 90.0f),
-			FVector2D(0.0f, 1.0f),
-			FMath::Abs(AimPitch));
-		PitchLocationOffset = AimPitch >= 0.0f
-			? (FirstPersonPitchLocationOffsetAtMaxUp * PitchLocationAlpha)
-			: (FirstPersonPitchLocationOffsetAtMaxDown * PitchLocationAlpha);
-	}
-
-	FVector TargetLocation = BaseFirstPersonViewModelRootLocation + WeaponBaseOffset + PitchLocationOffset;
-	if (bIsCrouched)
-	{
-		TargetLocation += CrouchedFirstPersonViewModelOffset;
-	}
-
-	const FRotator TargetRotation = BaseFirstPersonViewModelRootRotation + FRotator(PitchCompensation, 0.0f, 0.0f);
-
-	if (DeltaSeconds <= 0.0f)
-	{
-		ViewModelRoot->SetRelativeLocation(TargetLocation);
-		ViewModelRoot->SetRelativeRotation(TargetRotation);
-		return;
-	}
-
-	ViewModelRoot->SetRelativeLocation(FMath::VInterpTo(
-		ViewModelRoot->GetRelativeLocation(),
-		TargetLocation,
-		DeltaSeconds,
-		FirstPersonViewModelInterpSpeed));
-	ViewModelRoot->SetRelativeRotation(FMath::RInterpTo(
-		ViewModelRoot->GetRelativeRotation(),
-		TargetRotation,
-		DeltaSeconds,
-		FirstPersonViewModelInterpSpeed));
 }
 
 void AShooterCharacter::ServerSelectWeaponByIndex_Implementation(int32 SlotIndex)

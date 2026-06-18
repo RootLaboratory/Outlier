@@ -485,28 +485,6 @@ void UShooterCombatComponent::BeginReloadInternal()
 	{
 		ShooterCharacter->PlayFirstPersonActionMontage(EShooterMontageAction::Reload, ShooterCharacter->GetWeaponType());
 	}
-	ShooterCharacter->GetWorldTimerManager().ClearTimer(ReloadCommitFallbackTimerHandle);
-
-	if (ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(ShooterCharacter->CurrentWeapon))
-	{
-		const float FallbackDelay = FMath::Max(RangedWeapon->GetReloadTime(), 0.01f);
-		ShooterCharacter->GetWorldTimerManager().SetTimer(
-			ReloadCommitFallbackTimerHandle,
-			this,
-			&UShooterCombatComponent::HandleReloadCommitFallback,
-			FallbackDelay,
-			false);
-
-		UE_LOG(
-			LogTemp,
-			Log,
-			TEXT("%s %s BeginReloadInternal scheduled fallback Delay=%.2f Montage=%s"),
-			OutlierNet::GetNetPrefix(ShooterCharacter),
-			*ShooterCharacter->GetName(),
-			FallbackDelay,
-			*GetNameSafe(ShooterCharacter->ThirdPersonReloadMontage)
-		);
-	}
 }
 
 void UShooterCombatComponent::CancelReloadInternal()
@@ -518,7 +496,6 @@ void UShooterCombatComponent::CancelReloadInternal()
 	}
 
 	bIsReloading = false;
-	ShooterCharacter->GetWorldTimerManager().ClearTimer(ReloadCommitFallbackTimerHandle);
 	ShooterCharacter->StopSplitMontages(
 		ShooterCharacter->FirstPersonReloadMontage,
 		ShooterCharacter->ThirdPersonReloadMontage);
@@ -537,7 +514,7 @@ void UShooterCombatComponent::FinishReloadInternal()
 		return;
 	}
 
-	ShooterCharacter->GetWorldTimerManager().ClearTimer(ReloadCommitFallbackTimerHandle);
+	UE_LOG(LogTemp, Warning, TEXT("Reload End"));
 	bIsReloading = false;
 	RefreshCombatState();
 }
@@ -598,27 +575,12 @@ void UShooterCombatComponent::HandleReloadCommitNotify()
 		return;
 	}
 
-	ShooterCharacter->GetWorldTimerManager().ClearTimer(ReloadCommitFallbackTimerHandle);
 	UE_LOG(LogTemp, Log, TEXT("%s %s HandleReloadCommitNotify"), OutlierNet::GetNetPrefix(ShooterCharacter), *ShooterCharacter->GetName());
 
 	if (ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(ShooterCharacter->CurrentWeapon))
 	{
 		RangedWeapon->FinishReload();
 	}
-
-	FinishReloadInternal();
-}
-
-void UShooterCombatComponent::HandleReloadCommitFallback()
-{
-	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (!ShooterCharacter || !bIsReloading)
-	{
-		return;
-	}
-
-	UE_LOG(LogTemp, Warning, TEXT("%s %s HandleReloadCommitFallback"), OutlierNet::GetNetPrefix(ShooterCharacter), *ShooterCharacter->GetName());
-	HandleReloadCommitNotify();
 }
 
 bool UShooterCombatComponent::CanEnterCombatState(EWeaponMode InWeaponMode, ECombatState NextState) const

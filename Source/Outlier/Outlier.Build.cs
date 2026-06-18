@@ -26,7 +26,8 @@ public class Outlier : ModuleRules
             "Slate",
             "AnimGraphRuntime",
             "TagDrivenUI",
-            "DeveloperSettings"
+            "DeveloperSettings",
+            "Niagara"
         });
 
         PrivateDependencyModuleNames.AddRange(new string[]

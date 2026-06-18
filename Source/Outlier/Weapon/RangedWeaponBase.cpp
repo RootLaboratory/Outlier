@@ -2,6 +2,8 @@
 
 
 #include "Weapon/RangedWeaponBase.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "GameFramework/Character.h"
 #include "TimerManager.h"
 #include "Kismet/GameplayStatics.h"
@@ -22,6 +24,7 @@
 #include "Weapon/WeaponFeedbackDefinition.h"
 #include "Weapon/WeaponProjectileRow.h"
 #include "Weapon/WeaponRecoilRow.h"
+#include "Shooter/ShooterFirstPersonAnimInstance.h"
 
 void ARangedWeaponBase::StartAttackCooldown()
 {
@@ -233,6 +236,25 @@ void ARangedWeaponBase::FireShot()
 // 반동, 탄 퍼짐은 추후 작업 예정
 void ARangedWeaponBase::ApplyRecoil()
 {
+	AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
+	if (!Shooter || !Shooter->IsLocallyControlled())
+	{
+		return;
+	}
+
+	USkeletalMeshComponent* FirstPersonMesh = Shooter->GetFirstPersonMesh();
+	if (!FirstPersonMesh)
+	{
+		return;
+	}
+
+	UShooterFirstPersonAnimInstance* FPAnim =
+		Cast<UShooterFirstPersonAnimInstance>(FirstPersonMesh->GetAnimInstance());
+
+	if (FPAnim)
+	{
+		FPAnim->AddViewModelRecoil(RecoilMultiplier);
+	}
 }
 
 void ARangedWeaponBase::ApplyBloomPerShot()
@@ -257,6 +279,172 @@ void ARangedWeaponBase::SetAiming(bool bAiming)
 	RefreshBloomSettingsFromState();
 }
 
+void ARangedWeaponBase::ApplySightMesh()
+{
+	if (!SightMesh)
+	{
+		if (FirstSight && FirstSight->GetStaticMesh())
+		{
+			SightMesh = FirstSight->GetStaticMesh();
+		}
+		else if (ThirdSight && ThirdSight->GetStaticMesh())
+		{
+			SightMesh = ThirdSight->GetStaticMesh();
+		}
+	}
+
+	if (FirstSight)
+	{
+		if (SightMesh)
+		{
+			FirstSight->SetStaticMesh(SightMesh);
+		}
+		FirstSight->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		FirstSight->SetCollisionResponseToAllChannels(ECR_Ignore);
+		FirstSight->SetGenerateOverlapEvents(false);
+		FirstSight->SetOnlyOwnerSee(true);
+	}
+
+	if (ThirdSight)
+	{
+		if (SightMesh)
+		{
+			ThirdSight->SetStaticMesh(SightMesh);
+		}
+		ThirdSight->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		ThirdSight->SetCollisionResponseToAllChannels(ECR_Ignore);
+		ThirdSight->SetGenerateOverlapEvents(false);
+		ThirdSight->SetOwnerNoSee(true);
+	}
+}
+
+void ARangedWeaponBase::ApplyMagazineMeshSettings()
+{
+	UStaticMeshComponent* MagazineComponents[] = { FirstHandMagazineMesh, ThirdHandMagazineMesh };
+	for (UStaticMeshComponent* MagazineComponent : MagazineComponents)
+	{
+		if (!MagazineComponent)
+		{
+			continue;
+		}
+
+		if (MagazineMesh)
+		{
+			MagazineComponent->SetStaticMesh(MagazineMesh);
+		}
+		MagazineComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		MagazineComponent->SetCollisionResponseToAllChannels(ECR_Ignore);
+		MagazineComponent->SetGenerateOverlapEvents(false);
+		MagazineComponent->SetHiddenInGame(true);
+	}
+
+	if (FirstHandMagazineMesh)
+	{
+		FirstHandMagazineMesh->SetOnlyOwnerSee(true);
+	}
+	if (ThirdHandMagazineMesh)
+	{
+		ThirdHandMagazineMesh->SetOwnerNoSee(true);
+	}
+}
+
+void ARangedWeaponBase::HideHandMagazine()
+{
+	if (FirstHandMagazineMesh)
+	{
+		FirstHandMagazineMesh->SetHiddenInGame(true);
+	}
+	if (ThirdHandMagazineMesh)
+	{
+		ThirdHandMagazineMesh->SetHiddenInGame(true);
+	}
+}
+
+void ARangedWeaponBase::AttachMagazineToLeftHand(AShooterCharacter*)
+{
+	ApplyMagazineMeshSettings();
+
+	if (FirstHandMagazineMesh)
+	{
+		FirstHandMagazineMesh->SetHiddenInGame(!FirstHandMagazineMesh->GetStaticMesh());
+	}
+	if (ThirdHandMagazineMesh)
+	{
+		ThirdHandMagazineMesh->SetHiddenInGame(!ThirdHandMagazineMesh->GetStaticMesh());
+	}
+}
+
+void ARangedWeaponBase::AttachMagazineToWeapon()
+{
+	HideHandMagazine();
+}
+
+void ARangedWeaponBase::AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacter* NewOwner)
+{
+	Super::AttachWeaponMeshesToOwner(Weapon, NewOwner);
+
+	ApplySightMesh();
+	ApplyMagazineMeshSettings();
+
+	AShooterCharacter* Shooter = Cast<AShooterCharacter>(NewOwner);
+	if (Shooter)
+	{
+		if (USkeletalMeshComponent* FirstPersonMesh = Shooter->GetFirstPersonMesh())
+		{
+			if (FirstHandMagazineMesh)
+			{
+				FirstHandMagazineMesh->AttachToComponent(
+					FirstPersonMesh,
+					FAttachmentTransformRules::SnapToTargetNotIncludingScale,
+					LeftHandMagazineSocketName
+				);
+			}
+		}
+
+		if (USkeletalMeshComponent* ThirdPersonMesh = Shooter->GetMesh())
+		{
+			if (ThirdHandMagazineMesh)
+			{
+				ThirdHandMagazineMesh->AttachToComponent(
+					ThirdPersonMesh,
+					FAttachmentTransformRules::SnapToTargetNotIncludingScale,
+					LeftHandMagazineSocketName
+				);
+			}
+		}
+	}
+
+	
+
+	if (SightMesh)
+	{
+		if (USkeletalMeshComponent* FirstWeapon = Weapon->GetFirstPersonWeaponMesh())
+		{
+			if (FirstSight)
+			{
+				FirstSight->AttachToComponent(
+					FirstWeapon,
+					FAttachmentTransformRules::SnapToTargetNotIncludingScale,
+					SightSocketName
+				);
+			}
+		}
+
+		if (USkeletalMeshComponent* ThirdWeapon = Weapon->GetThirdPersonWeaponMesh())
+		{
+			if (ThirdSight)
+			{
+				ThirdSight->AttachToComponent(
+					ThirdWeapon,
+					FAttachmentTransformRules::SnapToTargetNotIncludingScale,
+					SightSocketName
+				);
+			}
+		}
+	}
+
+}
+
 
 void ARangedWeaponBase::MulticastPlayFireFX_Implementation(FVector_NetQuantize TraceEnd, AActor* Hit)
 {
@@ -279,7 +467,39 @@ void ARangedWeaponBase::MulticastPlayFireFX_Implementation(FVector_NetQuantize T
 void ARangedWeaponBase::OnEquipped(ACharacter* NewOwner)
 {
 	Super::OnEquipped(NewOwner);
+	if (FirstSight)
+	{
+		FirstSight->SetHiddenInGame(true);
+	}
+	if (ThirdSight)
+	{
+		ThirdSight->SetHiddenInGame(true);
+	}
+	if (FirstHandMagazineMesh)
+	{
+		FirstHandMagazineMesh->SetHiddenInGame(true);
+	}
+	if (ThirdHandMagazineMesh)
+	{
+		ThirdHandMagazineMesh->SetHiddenInGame(true);
+	}
 	UpdateLocalAmmoUI();
+}
+
+void ARangedWeaponBase::ShowEquippedPresentation()
+{
+	Super::ShowEquippedPresentation();
+	ApplySightMesh();
+
+	if (FirstSight)
+	{
+		FirstSight->SetHiddenInGame(!SightMesh);
+	}
+	if (ThirdSight)
+	{
+		ThirdSight->SetHiddenInGame(!SightMesh);
+	}
+	HideHandMagazine();
 }
 
 void ARangedWeaponBase::OnRep_CurAmmo()
@@ -457,6 +677,30 @@ void ARangedWeaponBase::UpdateLocalAmmoUI() const
 	}
 }
 
+ARangedWeaponBase::ARangedWeaponBase() : AWeaponBase()
+{
+	FirstSight = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("FirstSight"));
+	FirstSight->SetupAttachment(FirstPersonWeaponMesh);
+	ThirdSight = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ThirdSight"));
+	ThirdSight->SetupAttachment(ThirdPersonWeaponMesh);
+
+	FirstHandMagazineMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("FirstHandMagazine"));
+	FirstHandMagazineMesh->SetupAttachment(FirstPersonWeaponMesh);
+	FirstHandMagazineMesh->SetHiddenInGame(true);
+
+	ThirdHandMagazineMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ThirdHandMagazine"));
+	ThirdHandMagazineMesh->SetupAttachment(ThirdPersonWeaponMesh);
+	ThirdHandMagazineMesh->SetHiddenInGame(true);
+}
+
+void ARangedWeaponBase::OnConstruction(const FTransform& Transform)
+{
+	Super::OnConstruction(Transform);
+
+	ApplySightMesh();
+	ApplyMagazineMeshSettings();
+}
+
 void ARangedWeaponBase::InitializeFromDataTables()
 {
 	Super::InitializeFromDataTables();
@@ -465,26 +709,22 @@ void ARangedWeaponBase::InitializeFromDataTables()
 	{
 		MagazineSize = FMath::Max(CoreRow->MagazineSize, 0);
 		CurrentAmmo = MagazineSize;
-		ReloadTime = FMath::Max(CoreRow->ReloadTime, 0.0f);
 		BloomMin = CoreRow->DefaultMinBloom;
 		BloomMax = FMath::Max(CoreRow->DefaultMaxBloom, BloomMin);
 		BloomCurrent = FMath::Clamp(BloomCurrent, BloomMin, BloomMax);
-		RecoilMultiplier = FMath::Max(CoreRow->RecoilMultiplier, 0.0f);
+		RecoilMultiplier = FMath::Max(CoreRow->GameplayRecoilMultiplier, 0.0f);
 		bIsAutomatic = FireMode == EWeaponFireMode::FullAuto;
 		BloomProfileId = CoreRow->BloomProfileId;
 		ProjectileProfileId = CoreRow->ProjectileProfileId;
 		RecoilProfileId = CoreRow->RecoilProfileId;
-
-		if (CoreRow->FeedbackDefinition)
-		{
-			FeedbackDefinition = CoreRow->FeedbackDefinition;
-		}
 	}
 
 	InitializeBloomFromDataTable();
 	InitializeRecoilFromDataTable();
 	InitializeProjectileFromDataTable();
 	ApplyFeedbackDefinition();
+	ApplySightMesh();
+	ApplyMagazineMeshSettings();
 }
 
 void ARangedWeaponBase::InitializeBloomFromDataTable()
@@ -505,11 +745,11 @@ void ARangedWeaponBase::InitializeRecoilFromDataTable()
 		return;
 	}
 
-	RecoilPitchAmplitude = RecoilRow->PitchAmplitude;
-	RecoilLocationXAmplitude = RecoilRow->LocationXAmplitude;
-	RecoilLocationYAmplitude = RecoilRow->LocationYAmplitude;
-	RecoilFovAmplitude = RecoilRow->FovAmplitude;
-	RecoilRecoverySpeed = RecoilRow->RecoverySpeed;
+	RecoilPitchAmplitude = RecoilRow->ControlPitchAmplitude;
+	RecoilLocationXAmplitude = RecoilRow->CameraLocationXAmplitude;
+	RecoilLocationYAmplitude = RecoilRow->CameraLocationYAmplitude;
+	RecoilFovAmplitude = RecoilRow->CameraFovKickAmplitude;
+	RecoilRecoverySpeed = RecoilRow->ControlRecoverySpeed;
 }
 
 void ARangedWeaponBase::InitializeProjectileFromDataTable()

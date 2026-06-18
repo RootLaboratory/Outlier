@@ -67,8 +67,6 @@ public:
 	void CleanupOwnedWeapons();
 public:
 
-	
-
 private:
 	static EWeaponSlot GetSlotForWeaponType(EWeaponType WeaponType);
 	bool IsValidWeaponSlot(EWeaponSlot Slot) const;

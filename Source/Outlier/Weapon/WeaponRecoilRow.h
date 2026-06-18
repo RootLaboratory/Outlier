@@ -14,18 +14,18 @@ struct OUTLIER_API FWeaponRecoilRow : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
 	FName RecoilProfileId;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly)
-	float PitchAmplitude = 0.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Recoil|Control")
+	float ControlPitchAmplitude = 0.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly)
-	float LocationXAmplitude = 0.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Recoil|Camera")
+	float CameraLocationXAmplitude = 0.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly)
-	float LocationYAmplitude = 0.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Recoil|Camera")
+	float CameraLocationYAmplitude = 0.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly)
-	float FovAmplitude = 0.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Recoil|Camera")
+	float CameraFovKickAmplitude = 0.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly)
-	float RecoverySpeed = 0.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Recoil|Control")
+	float ControlRecoverySpeed = 0.0f;
 };

@@ -14,6 +14,7 @@ class USceneComponent;
 class USphereComponent;
 class AWeaponSpawnPoint;
 class AFirstPersonCharacter;
+class UProceduralAnimValues;
 
 UENUM(BlueprintType)
 enum class EWeaponType : uint8
@@ -81,6 +82,9 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = IK)
 	FName LeftHandIKSocketName = FName("LeftHandIK");
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = IK)
+	FName LeftHandSprintIKSocketName = FName("LeftHandIK_Sprint");
+
 	UPROPERTY(ReplicatedUsing = OnRep_EquippedState, VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
 	TObjectPtr<ACharacter> WeaponOwner;
 
@@ -117,6 +121,9 @@ protected:
 	UPROPERTY(Transient)
 	float DropPickupBlockedUntilTime = 0.0f;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Animation")
+	TObjectPtr<UProceduralAnimValues> FirstPersonProceduralValues = nullptr;
+
 protected:
 	virtual void EnsureWeaponDataInitialized();
 	virtual void InitializeFromDataTables();
@@ -144,6 +151,10 @@ public:
 	virtual void PerformAttack();
 
 	virtual void OnEquipped(ACharacter* NewOwner);
+
+	virtual void AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacter* NewOwner);
+	void AttachWeaponMeshesToOwnerMeshes();
+	virtual void ShowEquippedPresentation();
 
 	virtual void OnUnequipped();
 
@@ -176,8 +187,20 @@ public:
 	}
 
 	UFUNCTION(BlueprintCallable, Category = IK)
+	FName GetLeftHandSprintIKSocketName() const
+	{
+		return LeftHandSprintIKSocketName;
+	}
+
+	UFUNCTION(BlueprintCallable, Category = IK)
 	USkeletalMeshComponent* GetWeaponByView(bool bFirstPerson) const
 	{
 		return bFirstPerson ? FirstPersonWeaponMesh : ThirdPersonWeaponMesh;
+	}
+
+	UFUNCTION(BlueprintPure, Category = "Weapon|Animation")
+	const UProceduralAnimValues* GetFirstPersonProceduralValues() const
+	{
+		return FirstPersonProceduralValues;
 	}
 };
