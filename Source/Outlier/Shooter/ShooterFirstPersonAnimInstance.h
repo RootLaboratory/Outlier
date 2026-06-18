@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Animation/AnimInstance.h"
+#include "Kismet/KismetMathLibrary.h"
 #include "Shooter/Anim/FirstPersonProceduralAnimRuntime.h"
 #include "Weapon/WeaponBase.h"
 #include "Shooter/ShooterCharacter.h"
@@ -30,6 +31,10 @@ public:
 	void AddViewModelRecoil(float GameplayRecoilScale = 1.0f);
 
 	void UpdateViewModelRecoil(float DeltaSeconds);
+
+	// 반동 스프링 보간 상태(프레임 간 속도 유지). FRecoilValues의 Stiffness/Mass/Damping/TargetVelocity로 구동.
+	FVectorSpringState RecoilLocSpringState;
+	FVectorSpringState RecoilRotSpringState;
 
 protected:
 	UFUNCTION()
@@ -155,6 +160,12 @@ protected:
 
 	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|LeftHand")
 	FRotator ViewModelLeftHandIKRot = FRotator::ZeroRotator;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|LeftHand")
+	FVector ViewModelLeftHandGripOffsetLoc = FVector::ZeroVector;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|LeftHand")
+	FRotator ViewModelLeftHandGripOffsetRot = FRotator::ZeroRotator;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|LeftHand")
 	float ViewModelLeftHandIKAlpha = 1.0f;

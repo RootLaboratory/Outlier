@@ -108,6 +108,11 @@ void UShooterInventoryComponent::HandleEquipWeapon(AWeaponBase* Weapon)
 		return;
 	}
 
+	if (!ShooterCharacter->CanStartAction(EShooterActionLock::Equip))
+	{
+		return;
+	}
+
 	if (!Weapon->CanBePickedUpBy(ShooterCharacter))
 	{
 		UE_LOG(
@@ -164,6 +169,11 @@ void UShooterInventoryComponent::SelectWeaponSlot(EWeaponSlot Slot)
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 	if (!ShooterCharacter || ShooterCharacter->bIsDead)
+	{
+		return;
+	}
+
+	if (!ShooterCharacter->CanStartAction(EShooterActionLock::Equip))
 	{
 		return;
 	}

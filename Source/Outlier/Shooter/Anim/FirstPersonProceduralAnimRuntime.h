@@ -29,6 +29,13 @@ struct OUTLIER_API FFirstPersonProceduralAnimRuntime
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reload")
 	float ReloadPoseAlpha = 0.0f;
 
+	// 재장전 시 팔을 미는 오프셋(이미 reload 알파로 스케일됨). 그래프에서 root 본에 적용.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reload")
+	FVector ReloadPushLoc = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reload")
+	FRotator ReloadPushRot = FRotator::ZeroRotator;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Equip")
 	float EquipPoseAlpha = 0.0f;
 
@@ -76,6 +83,15 @@ struct OUTLIER_API FFirstPersonProceduralAnimRuntime
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Left Hand")
 	float LeftUpperArmPitchAlpha = 0.0f;
+
+	// Route 1: ik_hand_gun(총손) 로컬 기준 왼손 그립 오프셋(정적).
+	// 그래프에서 ik_hand_l = CopyBone(ik_hand_gun) + 이 오프셋(Bone Space)으로 두면
+	// 예측 없이 모든 절차적 움직임에 손이 정확히 붙는다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Left Hand")
+	FVector LeftHandGripOffsetLoc = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Left Hand")
+	FRotator LeftHandGripOffsetRot = FRotator::ZeroRotator;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Right Hand")
 	FVector RightHandIKLocOffset = FVector::ZeroVector;

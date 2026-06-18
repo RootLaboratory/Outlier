@@ -494,6 +494,14 @@ void UShooterFirstPersonAnimInstance::AddViewModelRecoil(float GameplayRecoilSca
 	ViewModelRecoilRot += FRotator::MakeFromEuler(
 		(RecoilValues.RecoilAmplitudeRot + RandomRot) * GameplayRecoilScale
 	);
+
+	// 연사 시 반동이 무한 누적되어 총/손이 치솟는 것 방지: 누적값에 상한을 둔다(런어웨이 방지용 넉넉한 캡).
+	ViewModelRecoilLoc = ViewModelRecoilLoc.GetClampedToMaxSize(4.0f);
+	FVector RecoilRotEuler = ViewModelRecoilRot.Euler();
+	RecoilRotEuler.X = FMath::Clamp(RecoilRotEuler.X, -10.0f, 10.0f); // Roll
+	RecoilRotEuler.Y = FMath::Clamp(RecoilRotEuler.Y, -10.0f, 10.0f); // Pitch
+	RecoilRotEuler.Z = FMath::Clamp(RecoilRotEuler.Z, -10.0f, 10.0f); // Yaw
+	ViewModelRecoilRot = FRotator::MakeFromEuler(RecoilRotEuler);
 	ViewModelFireIKAlpha = 1.0f;
 }
 
@@ -509,19 +517,29 @@ void UShooterFirstPersonAnimInstance::UpdateViewModelRecoil(float DeltaSeconds)
 		FireIKAlphaDecaySpeed
 	);
 
-	ViewModelRecoilLoc = FMath::VInterpTo(
-		ViewModelRecoilLoc,
-		FVector::ZeroVector,
-		DeltaSeconds,
-		18.0f
-	);
+	if (CurrentProceduralValues)
+	{
+		const FRecoilValues& RecoilValues = CurrentProceduralValues->RecoilValues;
 
-	ViewModelRecoilRot = FMath::RInterpTo(
-		ViewModelRecoilRot,
-		FRotator::ZeroRotator,
-		DeltaSeconds,
-		18.0f
-	);
+		// 위치 반동: 스프링 보간으로 0 복귀 (Stiffness/Mass/Damping/TargetVelocity 실제 사용)
+		ViewModelRecoilLoc = UKismetMathLibrary::VectorSpringInterp(
+			ViewModelRecoilLoc, FVector::ZeroVector, RecoilLocSpringState,
+			RecoilValues.StiffnessLoc, RecoilValues.CriticalDampingFactorLoc,
+			DeltaSeconds, RecoilValues.MassLoc, RecoilValues.TargetVelocityAmountLoc);
+
+		// 회전 반동: Euler(Roll,Pitch,Yaw)로 펼쳐 스프링 보간 후 복원
+		FVector RecoilRotEuler = ViewModelRecoilRot.Euler();
+		RecoilRotEuler = UKismetMathLibrary::VectorSpringInterp(
+			RecoilRotEuler, FVector::ZeroVector, RecoilRotSpringState,
+			RecoilValues.StiffnessRot, RecoilValues.CriticalDampingFactorRot,
+			DeltaSeconds, RecoilValues.MassRot, RecoilValues.TargetVelocityAmountRot);
+		ViewModelRecoilRot = FRotator::MakeFromEuler(RecoilRotEuler);
+	}
+	else
+	{
+		ViewModelRecoilLoc = FMath::VInterpTo(ViewModelRecoilLoc, FVector::ZeroVector, DeltaSeconds, 18.0f);
+		ViewModelRecoilRot = FMath::RInterpTo(ViewModelRecoilRot, FRotator::ZeroRotator, DeltaSeconds, 18.0f);
+	}
 }
 
 void UShooterFirstPersonAnimInstance::HandleOwnerDeath()
@@ -678,8 +696,14 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralValues(float De
 
 	WalkCycleTime += DeltaSeconds * GroundSpeed * 0.01f;
 
-	const float X = FMath::Sin(WalkCycleTime * 2.0f);
-	const float Z = FMath::Abs(FMath::Cos(WalkCycleTime * 2.0f));
+	const float WalkPhase = WalkCycleTime * 2.0f;
+	const float X = FMath::Sin(WalkPhase);
+	const float Z = FMath::Abs(FMath::Cos(WalkPhase));
+
+	// 회전은 위치보다 살짝 늦게 따라오게 해서 기계적인 느낌을 줄인다
+	const float WalkRotPhase = WalkPhase - WeaponValues.WalkAnimRotPhaseOffset;
+	const float Xr = FMath::Sin(WalkRotPhase);
+	const float Zr = FMath::Abs(FMath::Cos(WalkRotPhase));
 
 	ViewModelForwardWalkAnimLoc = FVector(
 		WeaponValues.WalkAnimLocAmplitude.X * X,
@@ -688,9 +712,9 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralValues(float De
 	) * ViewModelWalkAnimAlpha;
 
 	ViewModelForwardWalkAnimRot = FRotator(
-		WeaponValues.WalkAnimRotAmplitude.Pitch * Z,
-		WeaponValues.WalkAnimRotAmplitude.Yaw * X,
-		WeaponValues.WalkAnimRotAmplitude.Roll * X
+		WeaponValues.WalkAnimRotAmplitude.Pitch * Zr,
+		WeaponValues.WalkAnimRotAmplitude.Yaw * Xr,
+		WeaponValues.WalkAnimRotAmplitude.Roll * Xr
 	) * ViewModelWalkAnimAlpha;
 
 	const FRotator CurrentAimRot = CachedShooterCharacter->GetBaseAimRotation();
@@ -784,6 +808,8 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralValues(float De
 	FVector TargetLeftHandIKLoc = FVector::ZeroVector;
 	FRotator TargetLeftHandIKRot = FRotator::ZeroRotator;
 	float TargetLeftHandIKAlpha = 0.0f;
+	FVector TargetLeftHandGripOffsetLoc = FVector::ZeroVector;
+	FRotator TargetLeftHandGripOffsetRot = FRotator::ZeroRotator;
 	bool bLeftHandIKSocketValid = false;
 	FName DebugLeftHandSocketName = NAME_None;
 	USkeletalMeshComponent* DebugWeaponMesh = nullptr;
@@ -837,7 +863,44 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralValues(float De
 			const FTransform ArmsWorldTransform = ArmsMesh->GetComponentTransform();
 			const FVector SocketLocalLoc = ArmsWorldTransform.InverseTransformPosition(SocketWorldTransform.GetLocation());
 			const FRotator SocketLocalRot = ArmsWorldTransform.InverseTransformRotation(SocketWorldTransform.GetRotation()).Rotator();
-			const FVector WeaponPivotLocalLoc = ArmsWorldTransform.InverseTransformPosition(WeaponMesh->GetComponentLocation());
+			// 무기는 그래프에서 ik_hand_gun 본 기준으로 회전하므로(VB hand_gun -> ik_hand_gun CopyBone),
+			// 소켓 재구성의 회전 피벗도 무기 메시 원점이 아니라 그 본 위치를 써야 손이 안 떨어진다.
+			const int32 WeaponPivotBoneIndex = ArmsMesh->GetBoneIndex(TEXT("ik_hand_gun"));
+			const FVector WeaponPivotLocalLoc = (WeaponPivotBoneIndex != INDEX_NONE)
+				? ArmsMesh->GetBoneTransform(WeaponPivotBoneIndex, FTransform::Identity).GetLocation()
+				: ArmsWorldTransform.InverseTransformPosition(WeaponMesh->GetComponentLocation());
+
+			// Route 1: 왼손 LeftHandIK 소켓을 ik_hand_gun(총손) 로컬로 변환한 정적 그립 오프셋.
+			// 소켓과 총손을 같은(지난) 포즈에서 읽으므로 상대값은 정확하다(강체). 그래프에서 실제 ik_hand_gun에 얹는다.
+			if (WeaponPivotBoneIndex != INDEX_NONE)
+			{
+				const FTransform GunHandCompTransform = ArmsMesh->GetBoneTransform(WeaponPivotBoneIndex, FTransform::Identity);
+
+				// 옛 재구성이 손 타깃에 더하던 튜닝 오프셋(pitch + sprint)을 raw 값으로 소켓에 합쳐 그립 오프셋에 포함.
+				// raw를 쓰는 이유: 절차적 회전은 그래프(ik_hand_gun)가 적용하므로 여기서 또 회전시키면 이중 적용된다.
+				// sprint가 아닐 땐 LeftHandRuntimeSprintAlpha=0이라 sprint 항은 0 → 기존 동작 그대로.
+				const FVector SprintPitchSocketLocRaw = GetPitchCurveVectorValue(
+					WeaponValues.LeftHandSprintPitchSocketLocCurve, FVector::ZeroVector, AimPitch,
+					WeaponValues.PitchOffsetMin, WeaponValues.PitchOffsetMax) * LeftHandRuntimeSprintAlpha;
+				const FRotator SprintPitchSocketRotRaw = GetPitchCurveRotatorValue(
+					WeaponValues.LeftHandSprintPitchSocketRotCurve, FRotator::ZeroRotator, AimPitch,
+					WeaponValues.PitchOffsetMin, WeaponValues.PitchOffsetMax) * LeftHandRuntimeSprintAlpha;
+				const FVector SprintIKLocRaw = WeaponValues.LeftHandSprintIKLocOffset * LeftHandRuntimeSprintAlpha;
+				const FRotator SprintIKRotRaw = WeaponValues.LeftHandSprintIKRotOffset * LeftHandRuntimeSprintAlpha;
+
+				const FVector SocketLocWithOffsets =
+					SocketLocalLoc + LeftHandPitchIKOffsetLoc + SprintPitchSocketLocRaw + SprintIKLocRaw;
+				const FQuat SocketRotWithOffsets = (
+					SocketLocalRot.Quaternion() *
+					LeftHandPitchIKOffsetRot.Quaternion() *
+					SprintPitchSocketRotRaw.Quaternion() *
+					SprintIKRotRaw.Quaternion()
+				).GetNormalized();
+				const FTransform SocketCompTransform(SocketRotWithOffsets, SocketLocWithOffsets);
+				const FTransform GripOffset = SocketCompTransform.GetRelativeTransform(GunHandCompTransform);
+				TargetLeftHandGripOffsetLoc = GripOffset.GetLocation();
+				TargetLeftHandGripOffsetRot = GripOffset.Rotator();
+			}
 
 			const bool bSkipLeftHandExtraOffset = bSkipLeftHandExtraOffsetThisFrame;
 			const auto GetLeftHandFollowLocScale = [](const FVector& Scale)
@@ -980,6 +1043,8 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralValues(float De
 	ViewModelLeftHandIKLoc = TargetLeftHandIKLoc;
 	ViewModelLeftHandIKRot = TargetLeftHandIKRot;
 	ViewModelLeftHandIKAlpha = TargetLeftHandIKAlpha;
+	ViewModelLeftHandGripOffsetLoc = TargetLeftHandGripOffsetLoc;
+	ViewModelLeftHandGripOffsetRot = TargetLeftHandGripOffsetRot;
 
 	ViewModelMovementLoc = ViewModelSprintPoseLoc;
 	ViewModelMovementRot = ViewModelSprintPoseRot;
@@ -1102,6 +1167,8 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralRuntime()
 	ViewModelProceduralRuntime.SprintAlpha = RuntimeSprintAlpha;
 	ViewModelProceduralRuntime.LeftHandIKLoc = ViewModelLeftHandIKLoc;
 	ViewModelProceduralRuntime.LeftHandIKRot = ViewModelLeftHandIKRot;
+	ViewModelProceduralRuntime.LeftHandGripOffsetLoc = ViewModelLeftHandGripOffsetLoc;
+	ViewModelProceduralRuntime.LeftHandGripOffsetRot = ViewModelLeftHandGripOffsetRot;
 	const float RuntimeLeftHandIKAlpha = bUseFirearmProcedural ? ViewModelLeftHandIKAlpha : 0.0f;
 	ViewModelProceduralRuntime.LeftHandIKAlpha = RuntimeLeftHandIKAlpha;
 	ViewModelProceduralRuntime.LeftHandFreeAlpha = bUseFirearmProcedural ? (1.0f - RuntimeLeftHandIKAlpha) : 1.0f;
@@ -1121,6 +1188,10 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralRuntime()
 		RuntimeLeftUpperArmSprintPitchRot +
 		RuntimeLeftUpperArmRecoilRot;
 	ViewModelProceduralRuntime.LeftUpperArmPitchAlpha = RuntimeLeftHandIKAlpha;
+
+	// 재장전 시 팔을 앞/아래로 밀어 카메라 클리핑 방지 (reload 알파로 자동 페이드인/아웃)
+	ViewModelProceduralRuntime.ReloadPushLoc = WeaponValues.ReloadPushLoc * ReloadPoseAlpha;
+	ViewModelProceduralRuntime.ReloadPushRot = WeaponValues.ReloadPushRot * ReloadPoseAlpha;
 
 	if (bDebugLeftHandIK && LeftHandIKDebugLogTime <= 0.0f)
 	{

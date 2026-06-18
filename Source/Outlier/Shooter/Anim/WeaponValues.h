@@ -62,6 +62,13 @@ struct OUTLIER_API FWeaponValues
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Reload")
 	float ReloadBlendOutSpeed = 8.0f;
 
+	// 재장전 시 팔 전체를 미는 오프셋(컴포넌트 스페이스: X=앞, Y=오른쪽, Z=위). 카메라 클리핑(손이 카메라 파고듦) 방지용.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Reload")
+	FVector ReloadPushLoc = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Reload")
+	FRotator ReloadPushRot = FRotator::ZeroRotator;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Slide")
 	float SlideBlendInSpeed = 18.0f;
 
@@ -161,6 +168,9 @@ struct OUTLIER_API FWeaponValues
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Walk")
 	FRotator WalkAnimRotAmplitude = FRotator(0.5f, 0.8f, 0.5f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Walk")
+	float WalkAnimRotPhaseOffset = 0.35f;			// 회전이 위치보다 늦게 따라오는 지연(라디안). 0이면 동기, 0.2~0.5 권장
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Walk")
 	FRotator StrafeWalkRot = FRotator(0.0f, 0.0f, 4.0f);

@@ -33,6 +33,11 @@ void UShooterCombatComponent::TryReload()
 
 	UE_LOG(LogTemp, Log, TEXT("%s %s TryReload CurrentWeapon=%s"), OutlierNet::GetNetPrefix(ShooterCharacter), *ShooterCharacter->GetName(), *GetNameSafe(ShooterCharacter->CurrentWeapon));
 
+	if (!ShooterCharacter->CanStartAction(EShooterActionLock::Reload))
+	{
+		return;
+	}
+
 	if (!ShooterCharacter->HasAuthority())
 	{
 		// 1인칭 반응성은 로컬에서 먼저 주고, 실제 상태 전이는 서버가 확정
@@ -82,9 +87,10 @@ void UShooterCombatComponent::TryReload()
 		return;
 	}
 
-	if (ShooterCharacter->MovementState == EMovementState::Run)
+	if (ShooterCharacter->IsSprinting())
 	{
 		ShooterCharacter->StopSprintInternal();
+		ShooterCharacter->RefreshMovementState();
 	}
 
 	if (ShooterCharacter->CombatState == ECombatState::Aim)
@@ -127,9 +133,10 @@ void UShooterCombatComponent::HandleAimPressed()
 		return;
 	}
 
-	if (ShooterCharacter->MovementState == EMovementState::Run)
+	if (ShooterCharacter->IsSprinting())
 	{
 		ShooterCharacter->StopSprintInternal();
+		ShooterCharacter->RefreshMovementState();
 	}
 
 	// CombatComponent가 조준 입력 의도와 확정된 조준 상태를 함께 관리함
@@ -181,7 +188,7 @@ void UShooterCombatComponent::TryStartAttack()
 	RefreshWeaponMode();
 	ShooterCharacter->RefreshMovementState();
 
-	if (ShooterCharacter->MovementState == EMovementState::Run)
+	if (ShooterCharacter->IsSprinting())
 	{
 		ShooterCharacter->StopSprintInternal();
 		ShooterCharacter->RefreshMovementState();
@@ -286,9 +293,15 @@ void UShooterCombatComponent::HandleAutoReloadRequested()
 		ShooterCharacter->CurrentWeapon->StopAttack();
 	}
 
-	if (ShooterCharacter->MovementState == EMovementState::Run)
+	if (!ShooterCharacter->CanStartAction(EShooterActionLock::Reload))
+	{
+		return;
+	}
+
+	if (ShooterCharacter->IsSprinting())
 	{
 		ShooterCharacter->StopSprintInternal();
+		ShooterCharacter->RefreshMovementState();
 	}
 
 	if (ShooterCharacter->CombatState == ECombatState::Aim)
@@ -468,6 +481,7 @@ void UShooterCombatComponent::BeginReloadInternal()
 	// 리로드는 무기 내부 상태와 별개로 캐릭터 전투 상태도 함께 잠궈야 함
 	// 리로드 상태는 여기서 먼저 잠그고, 이후 RefreshCombatState에서 무기 상태와 다시 맞춤
 	bIsReloading = true;
+	ShooterCharacter->BeginActionLock(EShooterActionLock::Reload);
 	ShooterCharacter->CombatState = ECombatState::Reload;
 	UE_LOG(
 		LogTemp,
@@ -496,6 +510,7 @@ void UShooterCombatComponent::CancelReloadInternal()
 	}
 
 	bIsReloading = false;
+	ShooterCharacter->EndActionLock(EShooterActionLock::Reload);
 	ShooterCharacter->StopSplitMontages(
 		ShooterCharacter->FirstPersonReloadMontage,
 		ShooterCharacter->ThirdPersonReloadMontage);
@@ -516,6 +531,7 @@ void UShooterCombatComponent::FinishReloadInternal()
 
 	UE_LOG(LogTemp, Warning, TEXT("Reload End"));
 	bIsReloading = false;
+	ShooterCharacter->EndActionLock(EShooterActionLock::Reload);
 	RefreshCombatState();
 }
 
@@ -604,13 +620,14 @@ bool UShooterCombatComponent::CanAimInCurrentState() const
 	const AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 	return ShooterCharacter
 		&& !ShooterCharacter->bIsDead
+		&& !ShooterCharacter->IsActionLocked()
 		&& (ShooterCharacter->WeaponMode == EWeaponMode::Primary || ShooterCharacter->WeaponMode == EWeaponMode::Secondary);
 }
 
 bool UShooterCombatComponent::CanReloadInCurrentState() const
 {
 	const AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-		return ShooterCharacter && !ShooterCharacter->bIsDead && !ShooterCharacter->IsSliding()
+		return ShooterCharacter && !ShooterCharacter->bIsDead && !ShooterCharacter->IsSliding() && !ShooterCharacter->IsActionLocked()
 		&& (ShooterCharacter->WeaponMode == EWeaponMode::Primary || ShooterCharacter->WeaponMode == EWeaponMode::Secondary);
 }
 
@@ -618,6 +635,11 @@ bool UShooterCombatComponent::CanFireInCurrentState() const
 {
 	const AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 	if (!ShooterCharacter || ShooterCharacter->bIsDead || ShooterCharacter->CurrentWeapon == nullptr)
+	{
+		return false;
+	}
+
+	if (ShooterCharacter->IsActionLocked())
 	{
 		return false;
 	}

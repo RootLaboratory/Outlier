@@ -59,6 +59,15 @@ enum class ECombatState : uint8
 };
 
 UENUM(BlueprintType)
+enum class EShooterActionLock : uint8
+{
+	None,
+	Equip,
+	Reload,
+	Slide
+};
+
+UENUM(BlueprintType)
 enum class ESlideEndReason : uint8
 {
 	Finished,       // 정상 종료
@@ -191,6 +200,9 @@ protected:
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "State")
 	ECombatState CombatState = ECombatState::Idle;
 
+	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "State")
+	EShooterActionLock ActionLock = EShooterActionLock::None;
+
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Status")
 	uint8 bIsDead : 1 = false;
 
@@ -219,6 +231,8 @@ protected:
 
 	// Timers
 	FTimerHandle LeanUpdateTimerHandle;
+
+	FTimerHandle ActionLockTimerHandle;
 
 	FTimerHandle PartnerShieldTimerHandle;
 
@@ -340,6 +354,12 @@ public:
 	UFUNCTION(BlueprintPure)
 	EWeaponMode GetWeaponMode() const { return WeaponMode; }
 
+	UFUNCTION(BlueprintPure)
+	EShooterActionLock GetActionLock() const { return ActionLock; }
+
+	UFUNCTION(BlueprintPure)
+	bool IsActionLocked() const { return ActionLock != EShooterActionLock::None; }
+
 	UShooterInventoryComponent* GetInventoryComponent() { return InventoryComponent; }
 
 	UFUNCTION(BlueprintPure)
@@ -444,6 +464,10 @@ public:
 	void BeginSecondaryCooldownInternal(float CooldownDuration);
 	void FinishSecondaryCooldownInternal();
 	void ResetSecondaryCooldownInternal();
+
+	bool CanStartAction(EShooterActionLock NextLock) const;
+	void BeginActionLock(EShooterActionLock NewLock);
+	void EndActionLock(EShooterActionLock LockToEnd);
 
 	void StartLeanUpdate();
 	void StopLeanUpdateIfSettled();
