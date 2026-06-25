@@ -134,6 +134,36 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat")
 	float MaxLeanAngle = 15.0f;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera")
+	float AimCameraFOV = 80.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera")
+	float SprintCameraFOV = 95.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera", meta = (ClampMin = "0.0"))
+	float CameraFOVInterpSpeed = 12.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera", meta = (ClampMin = "0.0"))
+	float AimCameraFOVInterpInSpeed = 8.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera", meta = (ClampMin = "0.0"))
+	float AimCameraFOVInterpOutSpeed = 14.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera|Sensitivity", meta = (ClampMin = "0.0"))
+	float AimLookSensitivityScale = 0.65f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera|Sensitivity", meta = (ClampMin = "0.0"))
+	float ReloadLookSensitivityScale = 0.85f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera|Sensitivity", meta = (ClampMin = "0.0"))
+	float SprintLookSensitivityScale = 1.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera|Recoil", meta = (ClampMin = "0.0"))
+	float CameraRecoilKickInterpSpeed = 28.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera|Recoil", meta = (ClampMin = "0.0"))
+	float CameraRecoilFOVRecoverySpeed = 16.0f;
+
 	UPROPERTY(EditDefaultsOnly, Category = "Slide")
 	float SlideDuration = 1.0f;
 
@@ -228,6 +258,11 @@ protected:
 	FRotator BaseFirstPersonCameraRootRotation = FRotator::ZeroRotator;
 	FRotator BaseFirstPersonViewModelRootRotation = FRotator::ZeroRotator;
 	FRotator BaseFirstPersonMeshRotation = FRotator::ZeroRotator;
+	float BaseCameraFOV = 90.0f;
+	FRotator CameraRecoilCurrent = FRotator::ZeroRotator;
+	FRotator CameraRecoilTarget = FRotator::ZeroRotator;
+	float CameraRecoilRecoverySpeed = 10.0f;
+	float CameraRecoilFOVOffset = 0.0f;
 
 	// Timers
 	FTimerHandle LeanUpdateTimerHandle;
@@ -259,6 +294,7 @@ protected:
 	// Engine Lifecycle
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	virtual void Tick(float DeltaSeconds) override;
 
 	/** Initialize input action bindings */
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
@@ -321,6 +357,7 @@ public:
 	bool CanReloadInCurrentState() const;
 	bool CanFireInCurrentState() const;
 	virtual bool CanInteract() const override;
+	bool CanLean() const;
 
 	bool WantsToAim() const;
 	bool IsAiming() const;
@@ -371,6 +408,14 @@ public:
 	void HandleWeaponAttackStoppedInternal();
 	void HandleAutoReloadRequested();
 	void HandleFireShotAnimation();
+	void AddWeaponCameraRecoil(
+		float PitchAmplitude,
+		float YawAmplitude,
+		float DirectionPitchAmplitude,
+		float FOVAmplitude,
+		float RecoverySpeed,
+		const FVector2D& NormalizedShotDirection
+	);
 
 	// Blueprint / Notify Entry Points
 	UFUNCTION(BlueprintCallable, Category = "Animation|Notify")
@@ -408,6 +453,7 @@ protected:
 	void TryUseSuit();
 	void TrySlide();
 	void TryLean(const FInputActionValue& Value);
+	void StopLean();
 
 	// Server RPC
 	UFUNCTION(Server, Reliable)
@@ -471,6 +517,9 @@ public:
 	void StartLeanUpdate();
 	void StopLeanUpdateIfSettled();
 	void UpdateLeanStep();
+	void UpdateCameraFOV(float DeltaSeconds);
+	void UpdateCameraRecoil(float DeltaSeconds);
+	float GetLookSensitivityScale() const;
 
 	bool CanStartSlide() const;
 	void StopSlide(ESlideEndReason EndReason);

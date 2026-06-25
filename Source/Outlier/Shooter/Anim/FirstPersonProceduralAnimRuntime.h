@@ -14,6 +14,9 @@ struct OUTLIER_API FFirstPersonProceduralAnimRuntime
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hip")
 	FRotator HipPoseRot = FRotator::ZeroRotator;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite,Category = "Idle")
+	float IdleIntensity = 1.0f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aim")
 	FVector AimPoseLoc = FVector::ZeroVector;
 
@@ -35,6 +38,30 @@ struct OUTLIER_API FFirstPersonProceduralAnimRuntime
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reload")
 	FRotator ReloadPushRot = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reload|Left Hand")
+	FVector LeftHandReloadGripOffsetLoc = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reload|Left Hand")
+	FRotator LeftHandReloadGripOffsetRot = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reload|Left Hand")
+	FVector LeftUpperArmReloadLoc = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reload|Left Hand")
+	FRotator LeftUpperArmReloadRot = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reload|Left Hand IK")
+	FVector LeftHandReloadIKLoc = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reload|Left Hand IK")
+	FRotator LeftHandReloadIKRot = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reload|Left Hand IK")
+	FVector LeftHandReloadJointTargetLoc = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reload|Left Hand IK")
+	float LeftHandReloadIKAlpha = 0.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Equip")
 	float EquipPoseAlpha = 0.0f;
@@ -59,6 +86,12 @@ struct OUTLIER_API FFirstPersonProceduralAnimRuntime
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sprint")
 	float SprintAlpha = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lean")
+	FRotator LeanRot = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lean")
+	float  LeanAlpha = 1.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Left Hand")
 	FVector LeftHandIKLoc = FVector::ZeroVector;
@@ -95,6 +128,9 @@ struct OUTLIER_API FFirstPersonProceduralAnimRuntime
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Right Hand")
 	FVector RightHandIKLocOffset = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Right Hand")
+	FRotator RightHandIKRotOffset = FRotator::ZeroRotator;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Movement")
 	FVector MovementLoc = FVector::ZeroVector;
@@ -167,6 +203,8 @@ struct OUTLIER_API FFirstPersonProceduralAnimRuntime
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wall Offset")
 	float WallOffsetAlpha = 0.0f;
+
+
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Start Stop")
 	FVector StartStopLoc = FVector::ZeroVector;

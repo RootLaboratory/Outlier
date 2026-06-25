@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DataTable.h"
+#include "Weapon/WeaponDataTypes.h"
 #include "WeaponRecoilRow.generated.h"
 
 USTRUCT(BlueprintType)
@@ -13,6 +14,9 @@ struct OUTLIER_API FWeaponRecoilRow : public FTableRowBase
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
 	FName RecoilProfileId;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly)
+	EWeaponAimMode AimMode = EWeaponAimMode::Hip;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Recoil|Control")
 	float ControlPitchAmplitude = 0.0f;

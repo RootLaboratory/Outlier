@@ -168,6 +168,11 @@ protected:
 	FTimerHandle AttackCooldownTimerHandle;
 	FTimerHandle ReuseCooldownTimerHandle;
 
+	FVector LastShotBaseDirection = FVector::ForwardVector;
+	FVector LastShotDirection = FVector::ForwardVector;
+	float LastShotSpreadDegrees = 0.0f;
+	uint8 bHasLastShotDirection : 1 = false;
+
 protected:
 	virtual void InitializeFromDataTables() override;
 
@@ -180,6 +185,9 @@ protected:
 	void ApplyMagazineMeshSettings();
 	void HideHandMagazine();
 	void RefreshBloomSettingsFromState();
+	void RefreshRecoilSettingsFromState();
+	FVector2D GetNormalizedLastShotDirection() const;
+	void ApplyRecoilWithShotDirection(const FVector2D& NormalizedShotDirection);
 
 	void HandleAutoFire();
 	void StartAttackCooldown();
@@ -233,7 +241,7 @@ protected:
 	virtual void OnRep_EquippedState() override;
 
 	UFUNCTION(Client, Unreliable)
-	void ClientNotifyShotFired();
+	void ClientNotifyShotFired(FVector2D NormalizedShotDirection);
 
 	UFUNCTION(NetMulticast, Unreliable)
 	void MulticastPlayFireFX(FVector_NetQuantize TraceEnd, FVector_NetQuantizeNormal ImpactNormal, AActor* Hit);

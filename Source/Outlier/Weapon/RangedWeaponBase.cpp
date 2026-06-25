@@ -108,6 +108,7 @@ void ARangedWeaponBase::FinishReload()
 	bIsReloading = false;
 
 	UpdateLocalAmmoUI();
+	ForceNetUpdate();
 
 	UE_LOG(LogTemp, Log, TEXT("%s [%s] Reload complete Ammo=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo);
 }
@@ -161,8 +162,19 @@ void ARangedWeaponBase::FireShot()
 	OwnerCharacter->GetController()->GetPlayerViewPoint(CameraLocation, CameraRotation);
 
 	FVector Start = CameraLocation;
+	const FVector BaseDirection = CameraRotation.Vector().GetSafeNormal();
+	const float ShotSpreadDegrees = FMath::Max(BloomCurrent, 0.0f);
+	const FVector ShotDirection = ShotSpreadDegrees > KINDA_SMALL_NUMBER
+		? FMath::VRandCone(BaseDirection, FMath::DegreesToRadians(ShotSpreadDegrees)).GetSafeNormal()
+		: BaseDirection;
+	LastShotBaseDirection = BaseDirection;
+	LastShotDirection = ShotDirection;
+	LastShotSpreadDegrees = ShotSpreadDegrees;
+	bHasLastShotDirection = true;
 	FVector End = Start + (CameraRotation.Vector() * EffectiveRange); // 사거리
 
+
+	End = Start + (ShotDirection * EffectiveRange);
 
 	FHitResult Hit;
 	FCollisionQueryParams Params;
@@ -215,12 +227,12 @@ void ARangedWeaponBase::FireShot()
 	}
 
 
-	ClientNotifyShotFired();
+	ClientNotifyShotFired(GetNormalizedLastShotDirection());
 
 	{
 		AActor* HitActor = Hit.GetActor();
 		const FVector TraceEndPoint = bHit ? Hit.ImpactPoint : End;
-		const FVector ImpactNormal = bHit ? Hit.ImpactNormal : -CameraRotation.Vector();
+		const FVector ImpactNormal = bHit ? Hit.ImpactNormal : -ShotDirection;
 		MulticastPlayFireFX(TraceEndPoint, ImpactNormal, HitActor);
 
 		if (UVisualEventSubsystem* VisualSubsystem = GetWorld()->GetSubsystem<UVisualEventSubsystem>())
@@ -249,11 +261,42 @@ void ARangedWeaponBase::FireShot()
 // 반동, 탄 퍼짐은 추후 작업 예정
 void ARangedWeaponBase::ApplyRecoil()
 {
+	ApplyRecoilWithShotDirection(GetNormalizedLastShotDirection());
+}
+
+FVector2D ARangedWeaponBase::GetNormalizedLastShotDirection() const
+{
+	if (!bHasLastShotDirection)
+	{
+		return FVector2D::ZeroVector;
+	}
+
+	const FRotator BaseRotation = LastShotBaseDirection.Rotation();
+	const FRotator ShotRotation = LastShotDirection.Rotation();
+	const float NormalizationSpread = FMath::Max(LastShotSpreadDegrees, 0.01f);
+
+	return FVector2D(
+		FMath::Clamp(FMath::FindDeltaAngleDegrees(BaseRotation.Yaw, ShotRotation.Yaw) / NormalizationSpread, -1.0f, 1.0f),
+		FMath::Clamp(FMath::FindDeltaAngleDegrees(BaseRotation.Pitch, ShotRotation.Pitch) / NormalizationSpread, -1.0f, 1.0f)
+	);
+}
+
+void ARangedWeaponBase::ApplyRecoilWithShotDirection(const FVector2D& NormalizedShotDirection)
+{
 	AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
 	if (!Shooter || !Shooter->IsLocallyControlled())
 	{
 		return;
 	}
+
+	Shooter->AddWeaponCameraRecoil(
+		RecoilPitchAmplitude * RecoilMultiplier,
+		RecoilLocationXAmplitude * RecoilMultiplier,
+		RecoilLocationYAmplitude * RecoilMultiplier,
+		RecoilFovAmplitude * RecoilMultiplier,
+		RecoilRecoverySpeed,
+		NormalizedShotDirection
+	);
 
 	USkeletalMeshComponent* FirstPersonMesh = Shooter->GetFirstPersonMesh();
 	if (!FirstPersonMesh)
@@ -266,7 +309,7 @@ void ARangedWeaponBase::ApplyRecoil()
 
 	if (FPAnim)
 	{
-		FPAnim->AddViewModelRecoil(RecoilMultiplier);
+		FPAnim->AddViewModelRecoil(RecoilMultiplier, NormalizedShotDirection);
 	}
 }
 
@@ -290,6 +333,7 @@ void ARangedWeaponBase::SetAiming(bool bAiming)
 	bIsAiming = bAiming;
 
 	RefreshBloomSettingsFromState();
+	RefreshRecoilSettingsFromState();
 }
 
 void ARangedWeaponBase::ApplySightMesh()
@@ -530,7 +574,7 @@ void ARangedWeaponBase::OnRep_EquippedState()
 	}
 }
 
-void ARangedWeaponBase::ClientNotifyShotFired_Implementation()
+void ARangedWeaponBase::ClientNotifyShotFired_Implementation(FVector2D NormalizedShotDirection)
 {
 	ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
 	if (OwnerCharacter && OwnerCharacter->IsLocallyControlled())
@@ -538,6 +582,11 @@ void ARangedWeaponBase::ClientNotifyShotFired_Implementation()
 		if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
 		{
 			UISubsystem->OnRep_ShootCrosshairChanged(ReuseCooldown);
+		}
+
+		if (!HasAuthority())
+		{
+			ApplyRecoilWithShotDirection(NormalizedShotDirection);
 		}
 	}
 }
@@ -749,10 +798,47 @@ void ARangedWeaponBase::InitializeBloomFromDataTable()
 
 void ARangedWeaponBase::InitializeRecoilFromDataTable()
 {
-	const FWeaponRecoilRow* RecoilRow = RecoilDataRow.GetRow<FWeaponRecoilRow>(TEXT("InitializeWeaponRecoil"));
+	RefreshRecoilSettingsFromState();
+}
+
+void ARangedWeaponBase::RefreshRecoilSettingsFromState()
+{
+	const EWeaponAimMode DesiredAimMode = bIsAiming ? EWeaponAimMode::ADS : EWeaponAimMode::Hip;
+	const FWeaponRecoilRow* RecoilRow = nullptr;
+
+	if (WeaponRecoilTable && !RecoilProfileId.IsNone())
+	{
+		TArray<FWeaponRecoilRow*> RecoilRows;
+		WeaponRecoilTable->GetAllRows<FWeaponRecoilRow>(TEXT("RefreshWeaponRecoil"), RecoilRows);
+
+		for (const FWeaponRecoilRow* CandidateRow : RecoilRows)
+		{
+			if (!CandidateRow || CandidateRow->RecoilProfileId != RecoilProfileId)
+			{
+				continue;
+			}
+
+			if (CandidateRow->AimMode == DesiredAimMode)
+			{
+				RecoilRow = CandidateRow;
+				break;
+			}
+
+			if (CandidateRow->AimMode == EWeaponAimMode::Any)
+			{
+				RecoilRow = CandidateRow;
+			}
+		}
+	}
+
 	if (!RecoilRow && WeaponRecoilTable && !RecoilProfileId.IsNone())
 	{
-		RecoilRow = WeaponRecoilTable->FindRow<FWeaponRecoilRow>(RecoilProfileId, TEXT("InitializeWeaponRecoil"));
+		RecoilRow = WeaponRecoilTable->FindRow<FWeaponRecoilRow>(RecoilProfileId, TEXT("RefreshWeaponRecoil"));
+	}
+
+	if (!RecoilRow)
+	{
+		RecoilRow = RecoilDataRow.GetRow<FWeaponRecoilRow>(TEXT("RefreshWeaponRecoil"));
 	}
 
 	if (!RecoilRow)

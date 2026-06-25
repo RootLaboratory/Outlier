@@ -214,15 +214,7 @@ void AWeaponBase::ApplyReplicatedPresentation()
 	{
 		// Notify 전까지 숨김 상태만 유지
 		AttachWeaponMeshesToOwner(this, WeaponOwner);
-
-		if (FirstPersonWeaponMesh)
-		{
-			FirstPersonWeaponMesh->SetHiddenInGame(true);
-		}
-		if (ThirdPersonWeaponMesh)
-		{
-			ThirdPersonWeaponMesh->SetHiddenInGame(true);
-		}
+		SetEquippedPresentation();
 		return;
 	}
 

@@ -65,6 +65,10 @@ void AShooterCharacter::BeginPlay()
 	{
 		BaseFirstPersonCameraRootRotation = CameraRoot->GetRelativeRotation();
 	}
+	if (FirstPersonCamera)
+	{
+		BaseCameraFOV = FirstPersonCamera->FieldOfView;
+	}
 
 	if (USceneComponent* ViewModelRoot = GetFirstPersonViewModelRoot())
 	{
@@ -99,6 +103,14 @@ void AShooterCharacter::BeginPlay()
 	RefreshWeaponMode();
 	RefreshMovementState();
 	RefreshCombatState();
+}
+
+void AShooterCharacter::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+
+	UpdateCameraFOV(DeltaSeconds);
+	UpdateCameraRecoil(DeltaSeconds);
 }
 
 void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -217,6 +229,7 @@ void AShooterCharacter::LookInput(const FInputActionValue& Value)
 	if (bIsSuitMenuOpen) return;
 
 	FVector2D LookAxisVector = Value.Get<FVector2D>();
+	LookAxisVector *= GetLookSensitivityScale();
 
 	DoAim(LookAxisVector.X, -LookAxisVector.Y);
 }
@@ -482,13 +495,20 @@ void AShooterCharacter::TrySlide()
 
 void AShooterCharacter::TryLean(const FInputActionValue& Value)
 {
-	if (bIsDead)
+	if (!CanLean())
 	{
+		StopLean();
 		return;
 	}
 
 	const float LeanAlpha = Value.Get<float>();
 	TargetLeanAlpha = FMath::Abs(LeanAlpha) > KINDA_SMALL_NUMBER ? LeanAlpha : 0.0f;
+	StartLeanUpdate();
+}
+
+void AShooterCharacter::StopLean()
+{
+	TargetLeanAlpha = 0.0f;
 	StartLeanUpdate();
 }
 
@@ -584,6 +604,15 @@ bool AShooterCharacter::CanFireInCurrentState() const
 bool AShooterCharacter::CanInteract() const
 {
 	return !bIsDead;
+}
+
+bool AShooterCharacter::CanLean() const
+{
+	return !bIsDead
+		&& !IsSprinting()
+		&& !GetCharacterMovement()->IsFalling()
+		&& !IsSliding()
+		&& !IsReloading();
 }
 
 bool AShooterCharacter::WantsToAim() const
@@ -828,6 +857,113 @@ void AShooterCharacter::UpdateLeanStep()
 	StopLeanUpdateIfSettled();
 }
 
+void AShooterCharacter::UpdateCameraFOV(float DeltaSeconds)
+{
+	if (!IsLocallyControlled() || !FirstPersonCamera)
+	{
+		return;
+	}
+
+	float TargetFOV = BaseCameraFOV;
+	float FOVInterpSpeed = CameraFOVInterpSpeed;
+	if (IsSprinting())
+	{
+		TargetFOV = SprintCameraFOV;
+	}
+	else if (IsAiming())
+	{
+		TargetFOV = AimCameraFOV;
+		FOVInterpSpeed = AimCameraFOVInterpInSpeed;
+	}
+	else if (FirstPersonCamera->FieldOfView < BaseCameraFOV)
+	{
+		FOVInterpSpeed = AimCameraFOVInterpOutSpeed;
+	}
+
+	TargetFOV += CameraRecoilFOVOffset;
+
+	const float NewFOV = FMath::FInterpTo(
+		FirstPersonCamera->FieldOfView,
+		TargetFOV,
+		DeltaSeconds,
+		FOVInterpSpeed
+	);
+	FirstPersonCamera->SetFieldOfView(NewFOV);
+}
+
+void AShooterCharacter::AddWeaponCameraRecoil(
+	float PitchAmplitude,
+	float YawAmplitude,
+	float DirectionPitchAmplitude,
+	float FOVAmplitude,
+	float RecoverySpeed,
+	const FVector2D& NormalizedShotDirection
+)
+{
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+
+	CameraRecoilTarget.Pitch += PitchAmplitude + (NormalizedShotDirection.Y * DirectionPitchAmplitude);
+	CameraRecoilTarget.Yaw += NormalizedShotDirection.X * YawAmplitude;
+	CameraRecoilRecoverySpeed = FMath::Max(RecoverySpeed, 0.0f);
+	CameraRecoilFOVOffset = FMath::Max(CameraRecoilFOVOffset, FMath::Max(FOVAmplitude, 0.0f));
+}
+
+void AShooterCharacter::UpdateCameraRecoil(float DeltaSeconds)
+{
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+
+	const FRotator NewRecoil = FMath::RInterpTo(
+		CameraRecoilCurrent,
+		CameraRecoilTarget,
+		DeltaSeconds,
+		CameraRecoilKickInterpSpeed
+	);
+	const FRotator DeltaRecoil = NewRecoil - CameraRecoilCurrent;
+
+	AddControllerPitchInput(-DeltaRecoil.Pitch);
+	AddControllerYawInput(DeltaRecoil.Yaw);
+
+	CameraRecoilCurrent = NewRecoil;
+	CameraRecoilTarget = FMath::RInterpTo(
+		CameraRecoilTarget,
+		FRotator::ZeroRotator,
+		DeltaSeconds,
+		CameraRecoilRecoverySpeed
+	);
+	CameraRecoilFOVOffset = FMath::FInterpTo(
+		CameraRecoilFOVOffset,
+		0.0f,
+		DeltaSeconds,
+		CameraRecoilFOVRecoverySpeed
+	);
+}
+
+float AShooterCharacter::GetLookSensitivityScale() const
+{
+	if (IsReloading())
+	{
+		return ReloadLookSensitivityScale;
+	}
+
+	if (IsAiming())
+	{
+		return AimLookSensitivityScale;
+	}
+
+	if (IsSprinting())
+	{
+		return SprintLookSensitivityScale;
+	}
+
+	return 1.0f;
+}
+
 void AShooterCharacter::Die()
 {
 	if (HealthComponent)
@@ -955,6 +1091,9 @@ void AShooterCharacter::HandleDeath()
 	bIsEquipping = false;
 	TargetLeanAlpha = 0.0f;
 	CurrentLeanAlpha = 0.0f;
+	CameraRecoilCurrent = FRotator::ZeroRotator;
+	CameraRecoilTarget = FRotator::ZeroRotator;
+	CameraRecoilFOVOffset = 0.0f;
 
 	if (IsSliding())
 	{

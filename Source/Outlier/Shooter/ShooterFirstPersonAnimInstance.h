@@ -30,6 +30,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Anim|FP Procedural|Recoil")
 	void AddViewModelRecoil(float GameplayRecoilScale = 1.0f);
 
+	void AddViewModelRecoil(float GameplayRecoilScale, const FVector2D& NormalizedShotDirection);
+
+	float GetViewModelSprintAlpha() const { return ViewModelSprintAlpha; }
+
 	void UpdateViewModelRecoil(float DeltaSeconds);
 
 	// 반동 스프링 보간 상태(프레임 간 속도 유지). FRecoilValues의 Stiffness/Mass/Damping/TargetVelocity로 구동.
@@ -86,6 +90,9 @@ protected:
 	UPROPERTY(BlueprintReadOnly, Category = "Anim")
 	uint8 bIsDead : 1 = false;
 
+	UPROPERTY(BlueprintReadOnly, Category = "Anim")
+	uint8 bIsLean : 1 = false;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Stat)
 	uint8 bIsGrounded : 1 = true;
 
@@ -107,9 +114,6 @@ protected:
 	UPROPERTY(Transient)
 	uint8 bBlockStartStopThisFrame : 1 = false;
 
-	UPROPERTY(Transient)
-	uint8 bSkipLeftHandExtraOffsetThisFrame : 1 = false;
-
 	UPROPERTY(BlueprintReadOnly, Category = "Anim|Movement")
 	FVector Velocity = FVector::ZeroVector;
 
@@ -130,6 +134,9 @@ protected:
 
 	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|Hip")
 	FRotator ViewModelHipPoseRot = FRotator::ZeroRotator;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|Idle")
+	float ViewModelIdleIntensity = 1.0f;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|Sprint")
 	FVector ViewModelSprintPoseLoc = FVector::ZeroVector;
@@ -155,6 +162,9 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|FP Procedural|StartStop")
 	float StartStopDisableBlendSpeed = 12.0f;
 
+	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|Sprint")
+	float SprintAnimMultiplier = 1.5f;
+
 	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|LeftHand")
 	FVector ViewModelLeftHandIKLoc = FVector::ZeroVector;
 
@@ -170,26 +180,11 @@ protected:
 	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|LeftHand")
 	float ViewModelLeftHandIKAlpha = 1.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|FP Procedural|LeftHand|Debug")
-	uint8 bDebugLeftHandIK : 1 = true;
+	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|Lean")
+	FRotator ViewModelLeanRot = FRotator::ZeroRotator;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|FP Procedural|LeftHand|Debug", meta = (ClampMin = "0.05"))
-	float LeftHandIKDebugLogInterval = 0.35f;
-
-	UPROPERTY(Transient)
-	float LeftHandIKDebugLogTime = 0.0f;
-
-	UPROPERTY(Transient)
-	FVector DebugLastLeftHandIKTargetLoc = FVector::ZeroVector;
-
-	UPROPERTY(Transient)
-	FRotator DebugLastLeftHandIKTargetRot = FRotator::ZeroRotator;
-
-	UPROPERTY(Transient)
-	float DebugLastLeftHandIKTargetAlpha = 0.0f;
-
-	UPROPERTY(Transient)
-	uint8 bDebugLastLeftHandIKSocketValid : 1 = false;
+	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|Lean")
+	float ViewModelLeanAlpha = 1.0f;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|Weapon")
 	float ViewModelWeaponPoseAlpha = 0.0f;
@@ -223,6 +218,15 @@ protected:
 
 	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|Movement")
 	float FingerMovementAlpha = 0.0f;
+
+	UPROPERTY(Transient)
+	float FingerMovementPulseTime = 0.0f;
+
+	UPROPERTY(Transient)
+	float FingerMovementCooldownTime = 0.0f;
+
+	UPROPERTY(Transient)
+	uint8 bFingerMovementPulseActive : 1 = false;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|Recoil")
 	FVector ViewModelRecoilLoc = FVector::ZeroVector;
@@ -269,10 +273,7 @@ protected:
 	FVector ViewModelLeftHandJointTargetLoc = FVector::ZeroVector;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|PitchOffset")
-	FVector ViewModelPitchIKOffsetLoc = FVector::ZeroVector;
-
-	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|PitchOffset")
-	FRotator ViewModelPitchIKOffsetRot = FRotator::ZeroRotator;
+	FVector ViewModelStandLeftHandJointTargetLoc = FVector::ZeroVector;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|PitchOffset")
 	FVector ViewModelLeftUpperArmPitchLoc = FVector::ZeroVector;
@@ -280,11 +281,20 @@ protected:
 	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|PitchOffset")
 	FRotator ViewModelLeftUpperArmPitchRot = FRotator::ZeroRotator;
 
+	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|PitchOffset")
+	FVector ViewModelStandLeftUpperArmPitchLoc = FVector::ZeroVector;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|PitchOffset")
+	FRotator ViewModelStandLeftUpperArmPitchRot = FRotator::ZeroRotator;
+
 	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|Aim")
 	float ReloadAimAlpha = 0.0f;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|Reload")
 	float ViewModelReloadPoseAlpha = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|Reload")
+	float ViewModelReloadIKBlendAlpha = 0.0f;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|Fire")
 	float ViewModelFireIKAlpha = 0.0f;
@@ -292,8 +302,14 @@ protected:
 	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|Equip")
 	float ViewModelEquipPoseAlpha = 0.0f;
 
+	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|Equip")
+	float ViewModelEquipIKBlendAlpha = 0.0f;
+
 	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|Slide")
 	float ViewModelSlidePoseAlpha = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|Slide")
+	float ViewModelSlideIKBlendAlpha = 0.0f;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|Tilt")
 	uint8 bIsForwardWalk : 1 = false;

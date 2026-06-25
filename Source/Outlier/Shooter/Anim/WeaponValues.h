@@ -14,11 +14,38 @@ struct OUTLIER_API FWeaponValues
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Movement")
 	float MovementStrengthRatio = 1.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon Change")
-	FVector  AnimMidpointOffsetIn = FVector::ZeroVector;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aim")
+	FVector  AimMidpointOffsetIn = FVector::ZeroVector;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon Change")
-	FVector  AnimMidpointOffsetOut = FVector::ZeroVector;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aim")
+	FVector  AimMidpointOffsetOut = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aim", meta = (ClampMin = "0.0"))
+	float AimInterpSpeedIn = 8.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aim", meta = (ClampMin = "0.0"))
+	float AimInterpSpeedOut = 14.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aim", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float AimPitchOffsetScale = 0.45f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aim", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float AimSwayScale = 0.35f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aim", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float AimMovementProceduralScale = 0.15f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aim|Sprint Transition", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float SprintToAimGateStartSprintAlpha = 0.85f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aim|Sprint Transition", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float SprintToAimGateEndSprintAlpha = 0.15f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sprint|Aim Transition", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float AimToSprintGateStartAimAlpha = 0.65f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sprint|Aim Transition", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float AimToSprintGateEndAimAlpha = 0.15f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Hip")
 	FVector HipPoseLoc = FVector::ZeroVector;
@@ -53,6 +80,12 @@ struct OUTLIER_API FWeaponValues
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sprint")
 	float NonSprintProceduralBlendOutSpeed = 12.0f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sprint")
+	float SprintAnimMultiplier = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LeftHand|Sprint", meta = (ClampMin = "0.0", ClampMax = "3.0"))
+	float LeftHandSprintAnimMultiplier = 1.0f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon Blend", meta = (ClampMin = "0.0", ClampMax = "3.0"))
 	float WeaponDetailAlphaEaseStrength = 1.0f;
 
@@ -68,6 +101,27 @@ struct OUTLIER_API FWeaponValues
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Reload")
 	FRotator ReloadPushRot = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Reload|LeftHand")
+	FVector LeftHandReloadGripOffsetLoc = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Reload|LeftHand")
+	FRotator LeftHandReloadGripOffsetRot = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Reload|LeftHand IK")
+	FVector LeftHandReloadIKLoc = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Reload|LeftHand IK")
+	FRotator LeftHandReloadIKRot = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Reload|LeftHand IK", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float LeftHandReloadIKAlpha = 0.35f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Reload|RightHand")
+	FVector RightHandReloadIKLocOffset = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Reload|RightHand")
+	FRotator RightHandReloadIKRotOffset = FRotator::ZeroRotator;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Slide")
 	float SlideBlendInSpeed = 18.0f;
@@ -106,12 +160,6 @@ struct OUTLIER_API FWeaponValues
 	FRotator LeftHandSprintIKRotOffset = FRotator::ZeroRotator;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LeftHand|Sprint|Pitch Curve")
-	TObjectPtr<UCurveVector> LeftHandSprintPitchSocketLocCurve = nullptr;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LeftHand|Sprint|Pitch Curve")
-	TObjectPtr<UCurveVector> LeftHandSprintPitchSocketRotCurve = nullptr;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LeftHand|Sprint|Pitch Curve")
 	TObjectPtr<UCurveVector> LeftHandSprintPitchJointTargetLocCurve = nullptr;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LeftHand|Sprint|Pitch Curve")
@@ -141,11 +189,29 @@ struct OUTLIER_API FWeaponValues
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LeftHand|IK Alpha", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float LeftHandReloadIKAlphaScale = 0.05f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LeftHand|IK Alpha", meta = (ClampMin = "0.0"))
+	float LeftHandReloadIKBlendInSpeed = 18.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LeftHand|IK Alpha", meta = (ClampMin = "0.0"))
+	float LeftHandReloadIKBlendOutSpeed = 8.0f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LeftHand|IK Alpha", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float LeftHandEquipIKAlphaScale = 0.15f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LeftHand|IK Alpha", meta = (ClampMin = "0.0"))
+	float LeftHandEquipIKBlendInSpeed = 18.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LeftHand|IK Alpha", meta = (ClampMin = "0.0"))
+	float LeftHandEquipIKBlendOutSpeed = 8.0f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LeftHand|IK Alpha", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float LeftHandSlideIKAlphaScale = 0.05f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LeftHand|IK Alpha", meta = (ClampMin = "0.0"))
+	float LeftHandSlideIKBlendInSpeed = 18.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LeftHand|IK Alpha", meta = (ClampMin = "0.0"))
+	float LeftHandSlideIKBlendOutSpeed = 8.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LeftHand|IK Alpha", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float LeftHandFireIKAlphaScale = 0.5f;
@@ -155,6 +221,33 @@ struct OUTLIER_API FWeaponValues
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Idle")
 	float FingerMovementAlpha = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Idle", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float IdleHipIntensity = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Idle", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float IdleAimIntensity = 0.45f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Idle", meta = (ClampMin = "0.0"))
+	float IdleIntensityInterpSpeed = 8.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Idle", meta = (ClampMin = "0.0"))
+	float FingerMovementPulseMinTime = 0.15f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Idle", meta = (ClampMin = "0.0"))
+	float FingerMovementPulseMaxTime = 0.25f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Idle", meta = (ClampMin = "0.0"))
+	float FingerMovementIntervalMinTime = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Idle", meta = (ClampMin = "0.0"))
+	float FingerMovementIntervalMaxTime = 2.5f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Lean")
+	float FirstPersonLeanYawDegrees = 25.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Lean", meta = (ClampMin = "0.0"))
+	float FirstPersonLeanInterpSpeed = 12.0f;
 
 	// Walk
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Walk")
@@ -190,11 +283,6 @@ struct OUTLIER_API FWeaponValues
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Pitch Offset|Curve")
 	float PitchOffsetMax = 60.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Pitch Offset|LeftHand Curve")
-	TObjectPtr<UCurveVector> PitchIKOffsetLocCurve = nullptr;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Pitch Offset|LeftHand Curve")
-	TObjectPtr<UCurveVector> PitchIKOffsetRotCurve = nullptr;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Pitch Offset|LeftHand Curve")
 	TObjectPtr<UCurveVector> PitchLeftHandJointTargetLocCurve = nullptr;
@@ -204,12 +292,6 @@ struct OUTLIER_API FWeaponValues
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Pitch Offset|LeftHand Curve")
 	TObjectPtr<UCurveVector> PitchLeftUpperArmRotCurve = nullptr;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Pitch Offset|Crouch LeftHand Curve")
-	TObjectPtr<UCurveVector> CrouchPitchIKOffsetLocCurve = nullptr;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Pitch Offset|Crouch LeftHand Curve")
-	TObjectPtr<UCurveVector> CrouchPitchIKOffsetRotCurve = nullptr;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Pitch Offset|Crouch LeftHand Curve")
 	TObjectPtr<UCurveVector> CrouchPitchLeftHandJointTargetLocCurve = nullptr;

@@ -3,7 +3,12 @@
 #include "StructCreatorPlugin.h"
 #include "StructCreatorPluginStyle.h"
 #include "StructCreatorPluginCommands.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "DesktopPlatformModule.h"
+#include "EditorFramework/AssetImportData.h"
+#include "EditorReimportHandler.h"
+#include "Engine/DataTable.h"
 #include "Framework/Application/SlateApplication.h"
 #include "GameProjectGenerationModule.h"
 #include "HAL/FileManager.h"
@@ -164,6 +169,27 @@ struct %s F%s%s
 		return SourceCodeAccessor.CanAccessSourceCode()
 			&& SourceCodeAccessor.OpenFileAtLine(HeaderPath, 1);
 	}
+
+	bool HasCsvImportSource(const UDataTable* DataTable)
+	{
+		if (!DataTable || !DataTable->AssetImportData)
+		{
+			return false;
+		}
+
+		TArray<FString> SourceFilenames;
+		DataTable->AssetImportData->ExtractFilenames(SourceFilenames);
+
+		for (const FString& SourceFilename : SourceFilenames)
+		{
+			if (FPaths::GetExtension(SourceFilename).Equals(TEXT("csv"), ESearchCase::IgnoreCase))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
 }
 
 void FStructCreatorPluginModule::StartupModule()
@@ -180,6 +206,11 @@ void FStructCreatorPluginModule::StartupModule()
 	PluginCommands->MapAction(
 		FStructCreatorPluginCommands::Get().PluginAction,
 		FExecuteAction::CreateRaw(this, &FStructCreatorPluginModule::PluginButtonClicked),
+		FCanExecuteAction());
+
+	PluginCommands->MapAction(
+		FStructCreatorPluginCommands::Get().ReimportAllCsvAction,
+		FExecuteAction::CreateRaw(this, &FStructCreatorPluginModule::ReimportAllCsvButtonClicked),
 		FCanExecuteAction());
 
 	UToolMenus::RegisterStartupCallback(FSimpleMulticastDelegate::FDelegate::CreateRaw(this, &FStructCreatorPluginModule::RegisterMenus));
@@ -468,6 +499,71 @@ void FStructCreatorPluginModule::PluginButtonClicked()
 			FText::FromString(HeaderPath)));
 }
 
+void FStructCreatorPluginModule::ReimportAllCsvButtonClicked()
+{
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+	FARFilter DataTableFilter;
+	DataTableFilter.ClassPaths.Add(UDataTable::StaticClass()->GetClassPathName());
+	DataTableFilter.PackagePaths.Add(FName(TEXT("/Game")));
+	DataTableFilter.bRecursiveClasses = true;
+	DataTableFilter.bRecursivePaths = true;
+
+	TArray<FAssetData> DataTableAssets;
+	AssetRegistry.GetAssets(DataTableFilter, DataTableAssets);
+
+	int32 CsvDataTableCount = 0;
+	int32 ReimportSuccessCount = 0;
+	TArray<FString> FailedAssetNames;
+
+	for (const FAssetData& AssetData : DataTableAssets)
+	{
+		UDataTable* DataTable = Cast<UDataTable>(AssetData.GetAsset());
+		if (!HasCsvImportSource(DataTable))
+		{
+			continue;
+		}
+
+		++CsvDataTableCount;
+		const bool bReimported = FReimportManager::Instance()->Reimport(DataTable, false, true);
+		if (bReimported)
+		{
+			++ReimportSuccessCount;
+		}
+		else
+		{
+			FailedAssetNames.Add(AssetData.PackageName.ToString());
+		}
+	}
+
+	if (CsvDataTableCount == 0)
+	{
+		FMessageDialog::Open(
+			EAppMsgType::Ok,
+			LOCTEXT("NoCsvDataTablesMessage", "No DataTables with CSV import sources were found in this project."));
+		return;
+	}
+
+	FText ResultMessage;
+	if (FailedAssetNames.IsEmpty())
+	{
+		ResultMessage = FText::Format(
+			LOCTEXT("ReimportCsvSuccessMessage", "Reimported {0} CSV DataTable(s)."),
+			FText::AsNumber(ReimportSuccessCount));
+	}
+	else
+	{
+		ResultMessage = FText::Format(
+			LOCTEXT("ReimportCsvPartialFailureMessage", "Reimported {0} of {1} CSV DataTable(s).\n\nFailed:\n{2}"),
+			FText::AsNumber(ReimportSuccessCount),
+			FText::AsNumber(CsvDataTableCount),
+			FText::FromString(FString::Join(FailedAssetNames, TEXT("\n"))));
+	}
+
+	FMessageDialog::Open(EAppMsgType::Ok, ResultMessage);
+}
+
 void FStructCreatorPluginModule::RegisterMenus()
 {
 	UToolMenus::Get()->UnregisterOwner(this);
@@ -480,6 +576,7 @@ void FStructCreatorPluginModule::RegisterMenus()
 		{
 			FToolMenuSection& Section = Menu->FindOrAddSection("Programming");
 			Section.AddMenuEntryWithCommandList(FStructCreatorPluginCommands::Get().PluginAction, PluginCommands);
+			Section.AddMenuEntryWithCommandList(FStructCreatorPluginCommands::Get().ReimportAllCsvAction, PluginCommands);
 		}
 	}
 
