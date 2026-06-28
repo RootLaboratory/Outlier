@@ -29,6 +29,7 @@ public:
 
 	UFUNCTION()
 	void HandleArenaShown(int32 ShownArenaId);
+	void ControlMainWidget(bool InFlag) const;
 
 protected:
 

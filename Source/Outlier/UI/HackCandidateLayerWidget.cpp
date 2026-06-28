@@ -1,4 +1,5 @@
 #include "UI/HackCandidateLayerWidget.h"
+#include "Blueprint/WidgetLayoutLibrary.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
@@ -7,19 +8,7 @@
 
 void UHackCandidateLayerWidget::BindHackComponent(UPartnerHackComponent* InHackComponent)
 {
-	if (HackComponent)
-	{
-		HackComponent->OnHackCandidateAdded.RemoveDynamic(this, &UHackCandidateLayerWidget::HandleCandidateAdded);
-		HackComponent->OnHackCandidateRemoved.RemoveDynamic(this, &UHackCandidateLayerWidget::HandleCandidateRemoved);
-	}
-
 	HackComponent = InHackComponent;
-
-	if (HackComponent)
-	{
-		HackComponent->OnHackCandidateAdded.AddDynamic(this, &UHackCandidateLayerWidget::HandleCandidateAdded);
-		HackComponent->OnHackCandidateRemoved.AddDynamic(this, &UHackCandidateLayerWidget::HandleCandidateRemoved);
-	}
 }
 
 void UHackCandidateLayerWidget::SetMarkerWidgetClass(TSubclassOf<UHackCandidateMarkerWidget> InMarkerWidgetClass)
@@ -76,6 +65,7 @@ void UHackCandidateLayerWidget::NativeTick(const FGeometry& MyGeometry, float In
 		return;
 	}
 
+
 	for (auto It = MarkerWidgets.CreateIterator(); It; ++It)
 	{
 		AActor* TargetActor = It.Key();
@@ -98,12 +88,13 @@ void UHackCandidateLayerWidget::NativeTick(const FGeometry& MyGeometry, float In
 
 		if (UCanvasPanelSlot* CanvasSlot = Cast<UCanvasPanelSlot>(Marker->Slot))
 		{
-			CanvasSlot->SetPosition(ScreenLocation);
+			const float ViewportScale = UWidgetLayoutLibrary::GetViewportScale(this);
+			CanvasSlot->SetPosition(ScreenLocation / ViewportScale);
 		}
 	}
 }
 
-void UHackCandidateLayerWidget::HandleCandidateAdded(AActor* TargetActor, UHackableComponent* HackableComponent)
+void UHackCandidateLayerWidget::AddCandidate(AActor* TargetActor, UHackableComponent* HackableComponent)
 {
 	if (!MarkerCanvas || !TargetActor || MarkerWidgets.Contains(TargetActor))
 	{
@@ -122,7 +113,7 @@ void UHackCandidateLayerWidget::HandleCandidateAdded(AActor* TargetActor, UHacka
 		return;
 	}
 
-	Marker->InitializeMarker(TargetActor, HackableComponent);
+	Marker->InitializeMarker(TargetActor, HackableComponent, HackComponent);
 	Marker->SetVisibility(ESlateVisibility::Visible);
 
 	UCanvasPanelSlot* CanvasSlot = MarkerCanvas->AddChildToCanvas(Marker);
@@ -136,7 +127,7 @@ void UHackCandidateLayerWidget::HandleCandidateAdded(AActor* TargetActor, UHacka
 	MarkerWidgets.Add(TargetActor, Marker);
 }
 
-void UHackCandidateLayerWidget::HandleCandidateRemoved(AActor* TargetActor, UHackableComponent* HackableComponent)
+void UHackCandidateLayerWidget::RemoveCandidate(AActor* TargetActor, UHackableComponent* HackableComponent)
 {
 	if (TObjectPtr<UHackCandidateMarkerWidget>* Marker = MarkerWidgets.Find(TargetActor))
 	{

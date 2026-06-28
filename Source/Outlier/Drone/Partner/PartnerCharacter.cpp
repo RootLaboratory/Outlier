@@ -10,6 +10,7 @@
 #include "Drone/Partner/PartnerSupportComponent.h"
 #include "Drone/Partner/PartnerCombatComponent.h"
 #include "Drone/Partner/PartnerHackComponent.h"
+#include "Drone/Partner/PartnerEMPComponent.h"
 #include "Net/UnrealNetwork.h"
 #include "Components/SceneCaptureComponent2D.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -21,6 +22,7 @@
 #include "Drone/Partner/PartnerSkillDataRow.h"
 #include "Drone/Partner/PartnerSurvivalDataRow.h"
 #include "Drone/Partner/PartnerCameraAssistDataRow.h"
+#include "GameplayTags/OutlierGameplayTags.h"
 #include "Shooter/ShooterCharacter.h"
 #include "OutlierPlayerState.h"
 #include "LocalPlayerUISubSystem.h"
@@ -198,12 +200,9 @@ void APartnerCharacter::OnRep_CurrentHitCount()
 
 void APartnerCharacter::AreaOfEffect()
 {
-	if (!CanAcceptInput())
-	{
-		return;
-	}
+	TryEMP();
 
-	ServerUseSkill(EPartnerSkillType::AreaOfEffect);
+	//ServerUseSkill(EPartnerSkillType::AreaOfEffect);
 }
 
 void APartnerCharacter::CameraAssist()
@@ -231,7 +230,7 @@ void APartnerCharacter::TryHacking()
 {
 	UPartnerHackComponent* RuntimeHackComponent = GetRuntimeHackComponent();
 
-	UE_LOG(LogTemp, Warning, TEXT("[PartnerHackDebug] TryHacking input Pawn=%s Local=%d Authority=%d CanAcceptInput=%d HackComponent=%s RuntimeHackComponent=%s MemberOwner=%s RuntimeOwner=%s"),
+	/*UE_LOG(LogTemp, Warning, TEXT("[PartnerHackDebug] TryHacking input Pawn=%s Local=%d Authority=%d CanAcceptInput=%d HackComponent=%s RuntimeHackComponent=%s MemberOwner=%s RuntimeOwner=%s"),
 		*GetNameSafe(this),
 		IsLocallyControlled() ? 1 : 0,
 		HasAuthority() ? 1 : 0,
@@ -239,7 +238,7 @@ void APartnerCharacter::TryHacking()
 		*GetNameSafe(HackComponent),
 		*GetNameSafe(RuntimeHackComponent),
 		*GetNameSafe(HackComponent ? HackComponent->GetOwner() : nullptr),
-		*GetNameSafe(RuntimeHackComponent ? RuntimeHackComponent->GetOwner() : nullptr));
+		*GetNameSafe(RuntimeHackComponent ? RuntimeHackComponent->GetOwner() : nullptr));*/
 
 	if (!CanAcceptInput())
 	{
@@ -251,7 +250,27 @@ void APartnerCharacter::TryHacking()
 		RuntimeHackComponent->TryHack();
 	}
 
-	ServerUseSkill(EPartnerSkillType::Hack);
+	//ServerUseSkill(EPartnerSkillType::Hack);
+}
+
+void APartnerCharacter::TryEMP()
+{
+	UPartnerEMPComponent* RuntimeEMPComponent = GetRuntimeEMPComponent();
+
+	if (!CanAcceptInput() || !RuntimeEMPComponent)
+	{
+		return;
+	}
+
+	if (RuntimeEMPComponent->IsEMPCandidateSearchActive())
+	{
+		// 동일 키로 confirm — 현재 마킹된 액터로 완료
+		RuntimeEMPComponent->NotifyEMPConfirmed();
+	}
+	else
+	{
+		RuntimeEMPComponent->TryEMP();
+	}
 }
 
 void APartnerCharacter::Hacking(AActor* TargetActor)
@@ -275,7 +294,7 @@ void APartnerCharacter::TestAbilityScan()
 	UE_LOG(LogTemp, Error, TEXT("Scan Valid"));
 
 
-	TestAbilityComponent->TryActivateAbilityByTag(PartnerAbilityComponentTags::Scan());
+	TestAbilityComponent->TryActivateAbilityByTag(OutlierGameplayTags::Ability::Partner::Scan());
 }
 
 void APartnerCharacter::Scan()
@@ -570,6 +589,22 @@ bool APartnerCharacter::CanAcceptInput() const
 	return !bIsRebooting;
 }
 
+UPartnerEMPComponent* APartnerCharacter::GetRuntimeEMPComponent() const
+{
+	UPartnerEMPComponent* RuntimeEMPComponent = FindComponentByClass<UPartnerEMPComponent>();
+	if (RuntimeEMPComponent && RuntimeEMPComponent->GetOwner() == this)
+	{
+		return RuntimeEMPComponent;
+	}
+
+	if (EMPComponent && EMPComponent->GetOwner() == this)
+	{
+		return EMPComponent;
+	}
+
+	return nullptr;
+}
+
 UPartnerHackComponent* APartnerCharacter::GetRuntimeHackComponent() const
 {
 	UPartnerHackComponent* RuntimeHackComponent = FindComponentByClass<UPartnerHackComponent>();
@@ -688,43 +723,6 @@ void APartnerCharacter::ServerUseSkill_Implementation(EPartnerSkillType SkillTyp
 	}
 }
 
-void APartnerCharacter::RequestHackTarget(AActor* TargetActor)
-{
-	UPartnerHackComponent* RuntimeHackComponent = GetRuntimeHackComponent();
-
-	UE_LOG(LogTemp, Warning, TEXT("[PartnerHackDebug] RequestHackTarget Pawn=%s Target=%s Local=%d Authority=%d HackComponent=%s RuntimeHackComponent=%s MemberOwner=%s RuntimeOwner=%s"),
-		*GetNameSafe(this),
-		*GetNameSafe(TargetActor),
-		IsLocallyControlled() ? 1 : 0,
-		HasAuthority() ? 1 : 0,
-		*GetNameSafe(HackComponent),
-		*GetNameSafe(RuntimeHackComponent),
-		*GetNameSafe(HackComponent ? HackComponent->GetOwner() : nullptr),
-		*GetNameSafe(RuntimeHackComponent ? RuntimeHackComponent->GetOwner() : nullptr));
-
-	if (!TargetActor)
-	{
-		return;
-	}
-
-	if (RuntimeHackComponent)
-	{
-		RuntimeHackComponent->TryStartHack(TargetActor);
-	}
-
-	ServerHackTarget(TargetActor);
-}
-
-void APartnerCharacter::ServerHackTarget_Implementation(AActor* TargetActor)
-{
-	UPartnerHackComponent* RuntimeHackComponent = GetRuntimeHackComponent();
-	if (!RuntimeHackComponent || !TargetActor || !CanAcceptInput())
-	{
-		return;
-	}
-
-	RuntimeHackComponent->TryStartHack(TargetActor);
-}
 
 void APartnerCharacter::ServerSetMoveMode_Implementation(EPartnerMoveMode NewMode)
 {
@@ -804,6 +802,12 @@ void  APartnerCharacter::InitializeFromDataTables()
 		EMPStunDuration		= SkillDataRow->EMPStunDuration;
 		AreaOfEffectCooldown= SkillDataRow->AreaOfEffectCooldown;
 		EMPMaxTargets		= SkillDataRow->EMPMaxTargets;
+
+		if (EMPComponent)
+		{
+			EMPComponent->EMPRange       = AreaOfEffectRange;
+			EMPComponent->EMPMarkingTime = EMPMarkingTime;
+		}
 
 		ShieldRange			= SkillDataRow->ShieldRange;
 		ShieldDuration		= SkillDataRow->ShieldDuration;
@@ -907,6 +911,7 @@ APartnerCharacter::APartnerCharacter()
 	TestAbilityComponent = CreateDefaultSubobject<UPartnerAbilityComponent>(TEXT("AbilityComponent"));
 	CombatComponent   = CreateDefaultSubobject<UPartnerCombatComponent>  (TEXT("CombatComponent"));
 	HackComponent     = CreateDefaultSubobject<UPartnerHackComponent>    (TEXT("HackComponent"));
+	EMPComponent      = CreateDefaultSubobject<UPartnerEMPComponent>     (TEXT("EMPComponent"));
 }
 
 void APartnerCharacter::OnRep_DroneMovementState()
@@ -950,6 +955,12 @@ void APartnerCharacter::SetShooterCharacter(AShooterCharacter* NewShooter)
 	if (HackComponent)
 	{
 		HackComponent->RefreshCharacterRefsFromPlayerState();
+	}
+
+	EMPComponent = GetRuntimeEMPComponent();
+	if (EMPComponent)
+	{
+		EMPComponent->RefreshCharacterRefsFromPlayerState();
 	}
 }
 

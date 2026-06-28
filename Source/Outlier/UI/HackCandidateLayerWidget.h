@@ -17,6 +17,8 @@ class OUTLIER_API UHackCandidateLayerWidget : public UUserWidget
 public:
 	void BindHackComponent(UPartnerHackComponent* InHackComponent);
 	void SetMarkerWidgetClass(TSubclassOf<UHackCandidateMarkerWidget> InMarkerWidgetClass);
+	void AddCandidate(AActor* TargetActor, UHackableComponent* HackableComponent);
+	void RemoveCandidate(AActor* TargetActor, UHackableComponent* HackableComponent);
 	void ClearMarkers();
 
 protected:
@@ -34,12 +36,6 @@ protected:
 	FVector2D MarkerSize = FVector2D(64.0f, 64.0f);
 
 private:
-	UFUNCTION()
-	void HandleCandidateAdded(AActor* TargetActor, UHackableComponent* HackableComponent);
-
-	UFUNCTION()
-	void HandleCandidateRemoved(AActor* TargetActor, UHackableComponent* HackableComponent);
-
 	UPROPERTY()
 	TObjectPtr<UPartnerHackComponent> HackComponent;
 

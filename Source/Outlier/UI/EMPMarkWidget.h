@@ -2,19 +2,19 @@
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
-#include "HackCandidateMarkerWidget.generated.h"
+#include "EMPMarkWidget.generated.h"
 
 class UButton;
-class UHackableComponent;
-class UPartnerHackComponent;
+class UEMPableComponent;
+class UPartnerEMPComponent;
 
 UCLASS()
-class OUTLIER_API UHackCandidateMarkerWidget : public UUserWidget
+class OUTLIER_API UEMPMarkWidget : public UUserWidget
 {
 	GENERATED_BODY()
 
 public:
-	void InitializeMarker(AActor* InTargetActor, UHackableComponent* InHackableComponent, UPartnerHackComponent* InHackComponent);
+	void InitializeMark(AActor* InTargetActor, UEMPableComponent* InEMPableComponent, UPartnerEMPComponent* InEMPComponent);
 
 protected:
 	virtual void NativeConstruct() override;
@@ -30,8 +30,8 @@ private:
 	TObjectPtr<AActor> TargetActor;
 
 	UPROPERTY()
-	TObjectPtr<UHackableComponent> HackableComponent;
+	TObjectPtr<UEMPableComponent> EMPableComponent;
 
 	UPROPERTY()
-	TObjectPtr<UPartnerHackComponent> HackComponent;
+	TObjectPtr<UPartnerEMPComponent> EMPComponent;
 };

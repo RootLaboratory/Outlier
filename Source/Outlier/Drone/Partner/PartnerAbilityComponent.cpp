@@ -5,6 +5,7 @@
 #include "Drone/Partner/PartnerHackComponent.h"
 #include "Drone/Partner/PartnerMovementComponent.h"
 #include "Drone/Partner/PartnerSupportComponent.h"
+#include "GameplayTags/OutlierGameplayTags.h"
 #include "GameplayTagContainer.h"
 
 UPartnerAbilityComponent::UPartnerAbilityComponent()
@@ -24,22 +25,22 @@ void UPartnerAbilityComponent::InitializeAbilityHandlers()
 	RefreshPartnerComponents();
 
 	RegisterAbilityHandler(
-		PartnerAbilityComponentTags::EMP(),
+		OutlierGameplayTags::Ability::Partner::EMP(),
 		FOutlierAbilityExecuteDelegate::CreateUObject(this, &UPartnerAbilityComponent::ExecuteEMP)
 	);
 
 	RegisterAbilityHandler(
-		PartnerAbilityComponentTags::Shield(),
+		OutlierGameplayTags::Ability::Partner::Shield(),
 		FOutlierAbilityExecuteDelegate::CreateUObject(this, &UPartnerAbilityComponent::ExecuteShield)
 	);
 
 	RegisterAbilityHandler(
-		PartnerAbilityComponentTags::Hacking(),
+		OutlierGameplayTags::Ability::Partner::Hacking(),
 		FOutlierAbilityExecuteDelegate::CreateUObject(this, &UPartnerAbilityComponent::ExecuteHacking)
 	);
 
 	RegisterAbilityHandler(
-		PartnerAbilityComponentTags::Scan(),
+		OutlierGameplayTags::Ability::Partner::Scan(),
 		FOutlierAbilityExecuteDelegate::CreateUObject(this, &UPartnerAbilityComponent::ExecuteScan)
 	);
 }
@@ -68,14 +69,17 @@ EOutlierAbilityResult UPartnerAbilityComponent::ExecuteShield(const FOutlierAbil
 
 EOutlierAbilityResult UPartnerAbilityComponent::ExecuteHacking(const FOutlierAbilityRow&)
 {
-	if (!HackComponent)
+	/*if (!HackComponent)
 	{
 		return EOutlierAbilityResult::NoHandler;
 	}
 
 	return HackComponent->TryHack()
 		? EOutlierAbilityResult::Success
-		: EOutlierAbilityResult::ExecutionFailed;
+		: EOutlierAbilityResult::ExecutionFailed;*/
+
+	return EOutlierAbilityResult::NoHandler;
+
 }
 
 EOutlierAbilityResult UPartnerAbilityComponent::ExecuteScan(const FOutlierAbilityRow&)
