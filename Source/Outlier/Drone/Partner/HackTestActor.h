@@ -24,7 +24,8 @@ protected:
 
 public:
 
-	virtual UHackableComponent* GetHackableComponent_Implementation() const override;
+	virtual UHackableComponent* GetHackableComponent() const override;
+	virtual void HandleHackEffect(FGameplayTag EffectTag, const FHackResultContext& Context) override;
 
 public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = "Components")

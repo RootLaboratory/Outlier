@@ -65,36 +65,19 @@ namespace HackGameplayTags
 		}
 	}
 
-	namespace State
+	namespace MiniGame
 	{
-		inline FGameplayTag Alive()
+		inline FGameplayTag SpinningCircle()
 		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.State.Alive")));
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.MiniGame.SpinningCircle")));
 			return Tag;
 		}
 
-		inline FGameplayTag Dead()
+		inline FGameplayTag ClickCircle()
 		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.State.Dead")));
-			return Tag;
-		}
-
-		inline FGameplayTag HackedOnce()
-		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.State.HackedOnce")));
-			return Tag;
-		}
-
-		inline FGameplayTag Locked()
-		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.State.Locked")));
-			return Tag;
-		}
-
-		inline FGameplayTag Immune()
-		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.State.Immune")));
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.MiniGame.ClickCircle")));
 			return Tag;
 		}
 	}
+
 }

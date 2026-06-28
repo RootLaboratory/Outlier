@@ -8,7 +8,6 @@
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnHackStarted, const FHackQueryContext&, Context);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnHackCompleted, const FHackResultContext&, Context);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnHackProcessChanged, const FHackProcessContext&, Context);
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
 	FOnHackEffectTriggered,
@@ -24,14 +23,14 @@ class OUTLIER_API UHackableComponent : public UActorComponent
 public:
 	UHackableComponent();
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hack")
-	FGameplayTagContainer HackTags;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Replicated, Category = "Hack")
+	FGameplayTagContainer HackTags;  // Target/State/Query
 
-	UPROPERTY(BlueprintReadOnly, Category = "Hack|UI")
-	uint8 bProjectWorldLocationToScreen : 1 = false;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hack|Effect", meta = (Categories = "Hack.Effect"))
+	FGameplayTagContainer SuccessEffectTags;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Hack|UI")
-	FVector2D LastProjectedScreenLocation = FVector2D::ZeroVector;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hack|Effect", meta = (Categories = "Hack.Effect"))
+	FGameplayTagContainer FailEffectTags;
 
 	UPROPERTY(BlueprintAssignable, Category = "Hack")
 	FOnHackStarted OnHackStarted;
@@ -40,12 +39,10 @@ public:
 	FOnHackCompleted OnHackCompleted;
 
 	UPROPERTY(BlueprintAssignable, Category = "Hack")
-	FOnHackProcessChanged OnHackProcessChanged;
-
-	UPROPERTY(BlueprintAssignable, Category = "Hack")
 	FOnHackEffectTriggered OnHackEffectTriggered;
 
 public:
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	UFUNCTION(BlueprintCallable, Category = "Hack")
 	bool CanBeHackTarget(const FHackQueryContext& Context) const;
@@ -60,14 +57,16 @@ public:
 	void CompleteHack(const FHackResultContext& Context);
 
 	UFUNCTION(BlueprintCallable, Category = "Hack")
-	void SetHackProcess(const FHackProcessContext& Context);
-
-	UFUNCTION(BlueprintCallable, Category = "Hack")
-	void SetProjectedScreenLocation(const FVector2D& ScreenLocation);
-
-	UFUNCTION(BlueprintCallable, Category = "Hack")
 	bool HasHackTag(FGameplayTag Tag) const;
 
 	UFUNCTION(BlueprintCallable, Category = "Hack")
 	bool IsHackTargetType() const;
+
+	UFUNCTION(NetMulticast, Reliable)
+	void MulticastTriggerHackEffects(const FGameplayTagContainer& EffectTags, const FHackResultContext& Context);
+
+
+private:
+	const FGameplayTagContainer& ResolveHackEffectTags(EHackResult Result) const;
+
 };

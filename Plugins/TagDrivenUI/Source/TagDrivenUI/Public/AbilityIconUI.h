@@ -39,6 +39,8 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Ability")
 	void AbilityUnLock();
 
+	void VisibilityControl(bool InFlag);
+
 public:
 	UFUNCTION(BlueprintCallable, Category = "Ability|Cooldown")
 	void SetCoolTime(float InCoolTime);
