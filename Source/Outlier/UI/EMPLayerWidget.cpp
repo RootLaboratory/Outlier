@@ -3,9 +3,9 @@
 #include "Blueprint/WidgetTree.h"
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
+#include "Components/Image.h"
 #include "Components/ProgressBar.h"
 #include "Drone/Partner/PartnerEMPComponent.h"
-#include "Input/Reply.h"
 #include "UI/EMPMarkWidget.h"
 
 void UEMPLayerWidget::BindEMPComponent(UPartnerEMPComponent* InEMPComponent)
@@ -24,48 +24,12 @@ void UEMPLayerWidget::InitializeMarkingTimer(float Duration)
 	ElapsedTime = 0.0f;
 	bTimerActive = true;
 	bFinished = false;
+	StartReveal();
 
 	if (EMPProgressBar)
 	{
 		EMPProgressBar->SetPercent(0.0f);
 	}
-}
-
-void UEMPLayerWidget::OnTabPressed()
-{
-	if (bFinished || !EMPComponent)
-	{
-		return;
-	}
-
-	if (!EMPComponent->HasMarkedTargets())
-	{
-		// 마킹된 대상 없음 — Tab 무시
-		return;
-	}
-
-	FinishEMP();
-}
-
-void UEMPLayerWidget::FinishEMP()
-{
-	if (bFinished || !EMPComponent)
-	{
-		return;
-	}
-
-	if (!EMPComponent->HasMarkedTargets())
-	{
-		return;
-	}
-
-	if (!EMPComponent->NotifyEMPConfirmed())
-	{
-		return;
-	}
-
-	bFinished = true;
-	bTimerActive = false;
 }
 
 void UEMPLayerWidget::ExpireEMP()
@@ -102,7 +66,6 @@ void UEMPLayerWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
 
-	SetIsFocusable(true);
 	SetVisibility(ESlateVisibility::SelfHitTestInvisible);
 
 	if (!MarkerCanvas && WidgetTree)
@@ -126,28 +89,13 @@ void UEMPLayerWidget::NativeConstruct()
 	{
 		EMPProgressBar->SetPercent(0.0f);
 	}
-}
 
-FReply UEMPLayerWidget::NativeOnKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent)
-{
-	if (InKeyEvent.GetKey() == EKeys::Tab)
+	EnsureRevealMaterial();
+
+	if (bRevealActive && RevealMaterial)
 	{
-		OnTabPressed();
-		return FReply::Handled();
+		RevealMaterial->SetScalarParameterValue(RevealRadiusParameterName, 0.0f);
 	}
-
-	return Super::NativeOnKeyDown(InGeometry, InKeyEvent);
-}
-
-FReply UEMPLayerWidget::NativeOnPreviewKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent)
-{
-	if (InKeyEvent.GetKey() == EKeys::Tab)
-	{
-		OnTabPressed();
-		return FReply::Handled();
-	}
-
-	return Super::NativeOnPreviewKeyDown(InGeometry, InKeyEvent);
 }
 
 void UEMPLayerWidget::NativeDestruct()
@@ -161,6 +109,8 @@ void UEMPLayerWidget::NativeDestruct()
 void UEMPLayerWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 {
 	Super::NativeTick(MyGeometry, InDeltaTime);
+
+	UpdateReveal(InDeltaTime);
 
 	// 타이머 진행
 	if (bTimerActive && !bFinished)
@@ -211,6 +161,60 @@ void UEMPLayerWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 			CanvasSlot->SetPosition(ScreenLocation / ViewportScale);
 		}
 	}
+}
+
+void UEMPLayerWidget::StartReveal()
+{
+	RevealElapsedTime = 0.0f;
+	bRevealActive = RevealDuration > 0.0f;
+
+	EnsureRevealMaterial();
+
+	if (RevealMaterial)
+	{
+		RevealMaterial->SetScalarParameterValue(RevealRadiusParameterName, 0.0f);
+	}
+}
+
+void UEMPLayerWidget::UpdateReveal(float InDeltaTime)
+{
+	if (!bRevealActive)
+	{
+		return;
+	}
+
+	EnsureRevealMaterial();
+
+	if (!RevealMaterial)
+	{
+		bRevealActive = false;
+		return;
+	}
+
+	RevealElapsedTime += InDeltaTime;
+
+	const float ClampedDuration = FMath::Max(RevealDuration, KINDA_SMALL_NUMBER);
+	const float Progress = FMath::Clamp(RevealElapsedTime / ClampedDuration, 0.0f, 1.0f);
+	const float EasedProgress = FMath::InterpEaseOut(0.0f, 1.0f, Progress, 2.0f);
+	const float RevealRadius = FMath::Lerp(0.0f, RevealMaxRadius, EasedProgress);
+
+	RevealMaterial->SetScalarParameterValue(RevealRadiusParameterName, RevealRadius);
+
+	if (Progress >= 1.0f)
+	{
+		RevealMaterial->SetScalarParameterValue(RevealRadiusParameterName, RevealMaxRadius);
+		bRevealActive = false;
+	}
+}
+
+void UEMPLayerWidget::EnsureRevealMaterial()
+{
+	if (RevealMaterial || !EMPRevealImage)
+	{
+		return;
+	}
+
+	RevealMaterial = EMPRevealImage->GetDynamicMaterial();
 }
 
 void UEMPLayerWidget::AddCandidate(AActor* TargetActor, UEMPableComponent* EMPableComponent)

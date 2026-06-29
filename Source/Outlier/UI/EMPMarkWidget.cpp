@@ -41,4 +41,5 @@ void UEMPMarkWidget::HandleClicked()
 	}
 
 	EMPComponent->TryMarkEMPTarget(TargetActor);
+	EMPComponent->RefocusEMPInput();
 }

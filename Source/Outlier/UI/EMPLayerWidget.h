@@ -5,6 +5,8 @@
 #include "EMPLayerWidget.generated.h"
 
 class UCanvasPanel;
+class UImage;
+class UMaterialInstanceDynamic;
 class UProgressBar;
 class UEMPMarkWidget;
 class UEMPableComponent;
@@ -23,22 +25,20 @@ public:
 	void RemoveCandidate(AActor* TargetActor, UEMPableComponent* EMPableComponent);
 	void ClearMarkers();
 
-	// Tab 입력 바인딩 쪽에서 직접 호출
-	void OnTabPressed();
-
 protected:
 	virtual void NativeConstruct() override;
 	virtual void NativeDestruct() override;
 	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
-	virtual FReply NativeOnKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent) override;
-	virtual FReply NativeOnPreviewKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent) override;
 
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UCanvasPanel> MarkerCanvas;
 
 	// BP에서 배치하거나 코드에서 fallback 생성
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UProgressBar> EMPProgressBar;
+
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	TObjectPtr<UImage> EMPRevealImage;
 
 	UPROPERTY(EditDefaultsOnly, Category = "EMP")
 	TSubclassOf<UEMPMarkWidget> MarkWidgetClass;
@@ -46,18 +46,35 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "EMP")
 	FVector2D MarkerSize = FVector2D(64.0f, 64.0f);
 
+	UPROPERTY(EditDefaultsOnly, Category = "EMP|Reveal")
+	float RevealDuration = 0.35f;
+
+	UPROPERTY(EditDefaultsOnly, Category = "EMP|Reveal")
+	float RevealMaxRadius = 0.7072f;
+
+	UPROPERTY(EditDefaultsOnly, Category = "EMP|Reveal")
+	FName RevealRadiusParameterName = TEXT("RevealRadius");
+
 private:
-	void FinishEMP();
 	void ExpireEMP();
+	void StartReveal();
+	void UpdateReveal(float InDeltaTime);
+	void EnsureRevealMaterial();
 
 	UPROPERTY()
 	TObjectPtr<UPartnerEMPComponent> EMPComponent;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> RevealMaterial;
 
 	UPROPERTY()
 	TMap<TObjectPtr<AActor>, TObjectPtr<UEMPMarkWidget>> MarkWidgets;
 
 	float MarkingDuration = 3.0f;
 	float ElapsedTime = 0.0f;
+	float RevealElapsedTime = 0.0f;
+
 	bool bTimerActive = false;
 	bool bFinished = false;
+	bool bRevealActive = false;
 };
