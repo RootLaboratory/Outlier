@@ -311,10 +311,6 @@ void AShooterCharacter::HandleCrouchToggled()
 
 void AShooterCharacter::TryOpenSuitMenu()
 {
-
-	UE_LOG(LogTemp, Warning, TEXT("TryOpenSuitMenu"));
-
-
 	if (bIsDead)
 	{
 		return;
@@ -323,7 +319,6 @@ void AShooterCharacter::TryOpenSuitMenu()
 	bIsSuitMenuOpen = true;
 
 	// 마우스 커서 표시
-
 	AShooterPlayerController* ShooterController = Cast<AShooterPlayerController>(GetController());
 	if (!ShooterController || !ShooterController->AbilityUIInstance)
 	{
@@ -350,16 +345,12 @@ void AShooterCharacter::TryHandleSuitMenuHover()
 		return;
 	}
 
-	UE_LOG(LogTemp, Error, TEXT("Null: TryHandleSuitMenuHover"));
 	ShooterController->AbilityUIInstance->TryHovering();
-	
-	
+
 }
 
 void AShooterCharacter::TryCloseSuitMenu()
 {
-	UE_LOG(LogTemp, Error, TEXT("TryCloseSuitMenu"));
-
 	if (!bIsSuitMenuOpen)
 	{
 		return;
@@ -375,13 +366,10 @@ void AShooterCharacter::TryCloseSuitMenu()
 	{
 		ShooterController->AbilityUIInstance->SetVisibility(ESlateVisibility::Collapsed);
 		ShooterController->AbilityUIInstance->TryGetHoveredAbility(SelectedAbilityTag);
-		UE_LOG(LogTemp, Error, TEXT("Collasped"));
-
 	}
 	else if (!ShooterController || !ShooterController->AbilityUIInstance)
 	{
 		UE_LOG(LogTemp, Error, TEXT("Null: AbilityUIInstance"));
-
 	}
 
 	if (ULocalPlayer* LP = ShooterController->GetLocalPlayer())
@@ -439,7 +427,6 @@ void AShooterCharacter::TryUseSuit()
 	if (!ShooterController)
 	{
 		UE_LOG(LogTemp, Error, TEXT("ShooterController"));
-
 		return;
 	}
 
@@ -464,8 +451,6 @@ void AShooterCharacter::TryUseSuit()
 	UMaterialPostProcessSubsystem* MaterialSub = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>();
 	if (MaterialSub)
 	{
-		UE_LOG(LogTemp, Error, TEXT("MaterialSub"));
-
 		MaterialSub->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Stealth,true);
 
 	}
@@ -494,7 +479,7 @@ void AShooterCharacter::TryLean(const FInputActionValue& Value)
 
 void AShooterCharacter::OnRep_CurHP()
 {
-	UE_LOG(LogTemp, Log, TEXT("%s %s OnRep_CurHP CurHP=%.1f / %.1f"), OutlierNet::GetNetPrefix(this), *GetName(), CurHP, MaxHP);
+	//UE_LOG(LogTemp, Log, TEXT("%s %s OnRep_CurHP CurHP=%.1f / %.1f"), OutlierNet::GetNetPrefix(this), *GetName(), CurHP, MaxHP);
 	OnShooterHealthChanged.Broadcast(CurHP, MaxHP);
 
 	OnShooterConditionChanged.Broadcast(ResolveShooterConditionTag());

@@ -262,15 +262,7 @@ void APartnerCharacter::TryEMP()
 		return;
 	}
 
-	if (RuntimeEMPComponent->IsEMPCandidateSearchActive())
-	{
-		// 동일 키로 confirm — 현재 마킹된 액터로 완료
-		RuntimeEMPComponent->NotifyEMPConfirmed();
-	}
-	else
-	{
-		RuntimeEMPComponent->TryEMP();
-	}
+	RuntimeEMPComponent->TryEMP();
 }
 
 void APartnerCharacter::Hacking(AActor* TargetActor)

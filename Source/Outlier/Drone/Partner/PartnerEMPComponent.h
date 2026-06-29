@@ -20,6 +20,7 @@ public:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "EMP|Candidate")
 	float EMPRange = 1500.0f;
@@ -66,6 +67,9 @@ public:
 	UFUNCTION(Server, Reliable)
 	void ServerCancelEMP();
 
+	UFUNCTION(Server, Reliable)
+	void ServerExpireEMP();
+
 	UFUNCTION(BlueprintCallable, Category = "EMP")
 	void RefreshEMPCandidates();
 
@@ -75,12 +79,15 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "EMP")
 	void StopEMPCandidateSearch();
 
+	void RefocusEMPInput();
+
 	UFUNCTION(BlueprintCallable, Category = "EMP")
 	bool IsEMPCandidateSearchActive() const { return bEMPCandidateSearchActive; }
 
 	UFUNCTION(BlueprintCallable, Category = "EMP")
 	const TArray<AActor*>& GetEMPCandidateActors() const { return EMPCandidateActors; }
 
+	UFUNCTION(Server, Reliable)
 	void TryMarkEMPTarget(AActor* TargetActor);
 
 	// 위젯에서 타이머 완료 or Tab confirm 시 호출
@@ -101,7 +108,9 @@ private:
 	TArray<AActor*> EMPCandidateActors;
 	TArray<AActor*> MarkedActors;
 
+	UPROPERTY(Replicated)
 	uint8 bEMPActive : 1 = false;
+
 	uint8 bEMPCandidateSearchActive : 1 = false;
 
 	int32 LastDebugCandidateCount = INDEX_NONE;
@@ -110,6 +119,8 @@ private:
 	bool IsCandidateActorValid(AActor* Actor, UEMPableComponent* EMPableComponent, FVector2D& OutScreenLocation) const;
 	bool IsActorInViewport(AActor* Actor, FVector2D& OutScreenLocation) const;
 	bool HasLineOfSight(AActor* Actor) const;
+	void CompleteEMPOnServer(const TArray<AActor*>& InMarkedActors);
+	void CancelEMPOnServer();
 
 	void EnsureEMPLayerWidget();
 	void DestroyEMPLayerWidget();

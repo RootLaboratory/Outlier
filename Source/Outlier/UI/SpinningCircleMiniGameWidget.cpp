@@ -118,7 +118,6 @@ void USpinningCircleMiniGameWidget::SpawnCircleBorders()
 	}
 
 	ClearCircleBorders();
-	UE_LOG(LogTemp, Error, TEXT("SpawnOn"));
 
 	const int32 MinCount = FMath::Max(2, MinCircleCount);
 	const int32 MaxCount = FMath::Max(MinCount, MaxCircleCount);

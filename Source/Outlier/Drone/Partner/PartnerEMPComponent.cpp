@@ -11,6 +11,8 @@
 #include "UI/EMPLayerWidget.h"
 #include "UI/EMPMarkWidget.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Net/UnrealNetwork.h"
 
 UPartnerEMPComponent::UPartnerEMPComponent()
 {
@@ -32,6 +34,13 @@ void UPartnerEMPComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	DestroyEMPLayerWidget();
 	ClearEMPCandidates();
 	Super::EndPlay(EndPlayReason);
+}
+
+void UPartnerEMPComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+
+	DOREPLIFETIME(UPartnerEMPComponent, bEMPActive);
 }
 
 void UPartnerEMPComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
@@ -60,10 +69,16 @@ void UPartnerEMPComponent::TryEMP_Implementation()
 
 	if (bEMPActive)
 	{
+		if (MarkedActors.Num() > 0)
+		{
+			const TArray<AActor*> ConfirmedActors = MarkedActors;
+			CompleteEMPOnServer(ConfirmedActors);
+		}
 		return;
 	}
 
 	bEMPActive = true;
+	MarkedActors.Empty();
 	ClientStartEMPSearch();
 	DefaultWidgetControl(true);
 
@@ -209,10 +224,54 @@ void UPartnerEMPComponent::StopEMPCandidateSearch()
 	}
 }
 
-void UPartnerEMPComponent::TryMarkEMPTarget(AActor* TargetActor)
+void UPartnerEMPComponent::RefocusEMPInput()
+{
+	if (!PartnerCharacter)
+	{
+		return;
+	}
+
+	APlayerController* PlayerController = Cast<APlayerController>(PartnerCharacter->GetController());
+	if (!PlayerController || !PlayerController->IsLocalController())
+	{
+		return;
+	}
+
+	FInputModeGameAndUI InputMode;
+	InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+	InputMode.SetHideCursorDuringCapture(false);
+
+	PlayerController->SetInputMode(InputMode);
+	PlayerController->bShowMouseCursor = true;
+
+	if (FSlateApplication::IsInitialized())
+	{
+		FSlateApplication::Get().SetAllUserFocusToGameViewport();
+	}
+}
+
+void UPartnerEMPComponent::TryMarkEMPTarget_Implementation(AActor* TargetActor)
 {
 	if (!TargetActor)
 	{
+		return;
+	}
+
+	if (!bEMPActive)
+	{
+		return;
+	}
+
+	UEMPableComponent* EMPableComponent = ResolveEMPableComponent(TargetActor);
+	FVector2D ScreenLocation = FVector2D::ZeroVector;
+	if (!IsCandidateActorValid(TargetActor, EMPableComponent, ScreenLocation))
+	{
+		if (bDebugEMP)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] TryMarkEMPTarget ignored invalid target Actor=%s"),
+				*GetNameSafe(TargetActor));
+		}
+
 		return;
 	}
 
@@ -227,47 +286,37 @@ void UPartnerEMPComponent::TryMarkEMPTarget(AActor* TargetActor)
 
 bool UPartnerEMPComponent::NotifyEMPConfirmed()
 {
-	if (MarkedActors.Num() <= 0)
+	if (!bEMPCandidateSearchActive)
 	{
-		if (bDebugEMP)
-		{
-			UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] NotifyEMPConfirmed ignored: no marked actors"));
-		}
-
 		return false;
 	}
 
-	if (bDebugEMP)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] NotifyEMPConfirmed MarkedCount=%d"), MarkedActors.Num());
-	}
-
-	const TArray<AActor*> ConfirmedActors = MarkedActors;
-
-	StopEMPCandidateSearch();
-	ServerCompleteEMP(ConfirmedActors);
-	MarkedActors.Empty();
+	TryEMP();
 	return true;
 }
 
 void UPartnerEMPComponent::NotifyEMPExpired()
 {
-	if (MarkedActors.Num() > 0)
+	if (!bEMPCandidateSearchActive)
 	{
-		NotifyEMPConfirmed();
 		return;
 	}
 
 	if (bDebugEMP)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] NotifyEMPExpired: no marked actors"));
+		UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] NotifyEMPExpired"));
 	}
 
 	StopEMPCandidateSearch();
-	ServerCancelEMP();
+	ServerExpireEMP();
 }
 
 void UPartnerEMPComponent::ServerCompleteEMP_Implementation(const TArray<AActor*>& InMarkedActors)
+{
+	CompleteEMPOnServer(InMarkedActors);
+}
+
+void UPartnerEMPComponent::CompleteEMPOnServer(const TArray<AActor*>& InMarkedActors)
 {
 	if (!bEMPActive)
 	{
@@ -282,6 +331,7 @@ void UPartnerEMPComponent::ServerCompleteEMP_Implementation(const TArray<AActor*
 		}
 
 		bEMPActive = false;
+		MarkedActors.Empty();
 		ClientCompleteEMP();
 		DefaultWidgetControl(false);
 		return;
@@ -316,6 +366,7 @@ void UPartnerEMPComponent::ServerCompleteEMP_Implementation(const TArray<AActor*
 	}
 
 	bEMPActive = false;
+	MarkedActors.Empty();
 	ClientCompleteEMP();
 	DefaultWidgetControl(false);
 }
@@ -348,12 +399,28 @@ void UPartnerEMPComponent::MulticastTriggerEMPEffect_Implementation(AActor* Targ
 
 void UPartnerEMPComponent::ServerCancelEMP_Implementation()
 {
+	CancelEMPOnServer();
+}
+
+void UPartnerEMPComponent::ServerExpireEMP_Implementation()
+{
+	if (bDebugEMP)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] ServerExpireEMP"));
+	}
+
+	CancelEMPOnServer();
+}
+
+void UPartnerEMPComponent::CancelEMPOnServer()
+{
 	if (bDebugEMP)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] ServerCancelEMP"));
 	}
 
 	bEMPActive = false;
+	MarkedActors.Empty();
 	ClientCompleteEMP();
 	DefaultWidgetControl(false);
 }
@@ -372,11 +439,8 @@ UEMPableComponent* UPartnerEMPComponent::ResolveEMPableComponent(AActor* Actor) 
 
 	if (!Actor->GetClass()->ImplementsInterface(UEMPableInterface::StaticClass()))
 	{
-		//UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] NoInterface: %s"), *GetNameSafe(Actor));
 		return nullptr;
 	}
-
-	//UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] InterfaceFound: %s"), *GetNameSafe(Actor));
 
 	UEMPableComponent* EMPableComp = Cast<IEMPableInterface>(Actor)->GetEMPableComponent();
 
@@ -385,8 +449,6 @@ UEMPableComponent* UPartnerEMPComponent::ResolveEMPableComponent(AActor* Actor) 
 		UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] Interface actor returned null component Actor=%s"),
 			*GetNameSafe(Actor));
 	}
-
-	//UE_LOG(LogTemp, Error, TEXT("Component Valid"));
 
 	return EMPableComp;
 }
@@ -496,7 +558,7 @@ void UPartnerEMPComponent::EnsureEMPLayerWidget()
 {
 	if (IsValid(EMPLayerWidget))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] EnsureEMPLayerWidget: already exists Widget=%s"), *GetNameSafe(EMPLayerWidget));
+		//UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] EnsureEMPLayerWidget: already exists Widget=%s"), *GetNameSafe(EMPLayerWidget));
 		return;
 	}
 
@@ -521,8 +583,8 @@ void UPartnerEMPComponent::EnsureEMPLayerWidget()
 
 	EMPLayerWidget = CreateWidget<UEMPLayerWidget>(PlayerController, EffectiveClass);
 
-	UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] EnsureEMPLayerWidget: CreateWidget result=%s Class=%s"),
-		*GetNameSafe(EMPLayerWidget), *GetNameSafe(EffectiveClass));
+	//UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] EnsureEMPLayerWidget: CreateWidget result=%s Class=%s"),
+	//	*GetNameSafe(EMPLayerWidget), *GetNameSafe(EffectiveClass));
 
 	if (!IsValid(EMPLayerWidget))
 	{
@@ -540,8 +602,8 @@ void UPartnerEMPComponent::EnsureEMPLayerWidget()
 
 void UPartnerEMPComponent::DestroyEMPLayerWidget()
 {
-	UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] DestroyEMPLayerWidget: ptr=%s IsValid=%d"),
-		*GetNameSafe(EMPLayerWidget), IsValid(EMPLayerWidget) ? 1 : 0);
+	//UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] DestroyEMPLayerWidget: ptr=%s IsValid=%d"),
+	//	*GetNameSafe(EMPLayerWidget), IsValid(EMPLayerWidget) ? 1 : 0);
 
 	APlayerController* PlayerController = PartnerCharacter ? Cast<APlayerController>(PartnerCharacter->GetController()) : nullptr;
 
@@ -640,6 +702,7 @@ void UPartnerEMPComponent::ApplyEMPInputMode()
 	{
 		InputMode.SetWidgetToFocus(EMPLayerWidget->TakeWidget());
 	}
+
 	InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
 	InputMode.SetHideCursorDuringCapture(false);
 
@@ -648,7 +711,7 @@ void UPartnerEMPComponent::ApplyEMPInputMode()
 
 	if (bDebugEMP)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] EMP input mode applied (UIOnly) PC=%s"),
+		UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] EMP input mode applied (GameAndUI) PC=%s"),
 			*GetNameSafe(PlayerController));
 	}
 }

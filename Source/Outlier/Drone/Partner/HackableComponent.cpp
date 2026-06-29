@@ -28,19 +28,11 @@ bool UHackableComponent::CanBeHackTarget(const FHackQueryContext& Context) const
 
 	if (Context.RequiredTags.Num() > 0 && !HackTags.HasAll(Context.RequiredTags))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[HackableDebug] CanBeHackTarget failed: missing required tags Owner=%s Required=%s Tags=%s"),
-			*GetNameSafe(GetOwner()),
-			*Context.RequiredTags.ToStringSimple(),
-			*HackTags.ToStringSimple());
 		return false;
 	}
 
 	if (Context.BlockedTags.Num() > 0 && HackTags.HasAny(Context.BlockedTags))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[HackableDebug] CanBeHackTarget failed: blocked tag Owner=%s Blocked=%s Tags=%s"),
-			*GetNameSafe(GetOwner()),
-			*Context.BlockedTags.ToStringSimple(),
-			*HackTags.ToStringSimple());
 		return false;
 	}
 
@@ -56,11 +48,6 @@ bool UHackableComponent::MatchesHackQuery(const FGameplayTagQuery& Query) const
 void UHackableComponent::BeginHack(const FHackQueryContext& Context)
 {
 	OnHackStarted.Broadcast(Context);
-
-	UE_LOG(LogTemp, Warning, TEXT("[HackableDebug] BeginHack Owner=%s Instigator=%s Tags=%s"),
-		*GetNameSafe(GetOwner()),
-		*GetNameSafe(Context.InstigatorActor.Get()),
-		*HackTags.ToStringSimple());
 }
 
 void UHackableComponent::CompleteHack(const FHackResultContext& Context)
@@ -129,7 +116,5 @@ void UHackableComponent::MulticastTriggerHackEffects_Implementation(const FGamep
 	{
 		Handler->HandleHackEffect(EffectTag, Context);
 	}
-
-	UE_LOG(LogTemp, Error, TEXT("MuliticastTriggerHackEffect Done"));
 
 }

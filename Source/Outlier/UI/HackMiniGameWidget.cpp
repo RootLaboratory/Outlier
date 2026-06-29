@@ -127,7 +127,6 @@ void UHackMiniGameWidget::HandleActiveMiniGameFinished(EHackResult Result)
 	FHackResultContext ResultContext;
 	ResultContext.TargetActor = TargetActor;
 	ResultContext.Result = Result;
-	UE_LOG(LogTemp, Error, TEXT(" 0이면 성공, 1이면 실패, 2면 취소 HandleActiveMiniGameFinished, %d"),static_cast<uint8>(Result));
 	OnHackMiniGameFinished.Broadcast(ResultContext);
 
 	ClearActiveMiniGame();

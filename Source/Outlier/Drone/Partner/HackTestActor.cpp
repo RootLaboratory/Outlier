@@ -28,22 +28,22 @@ UHackableComponent* AHackTestActor::GetHackableComponent() const
 
 void AHackTestActor::HandleHackEffect(FGameplayTag EffectTag, const FHackResultContext& Context)
 {
-	UE_LOG(LogTemp, Error, TEXT("HandleHackEffect Called"));
+	//UE_LOG(LogTemp, Error, TEXT("HandleHackEffect Called"));
 
 	if (Context.Result == EHackResult::Success)
 	{
-		UE_LOG(LogTemp, Error, TEXT("Success"));
+		//UE_LOG(LogTemp, Error, TEXT("Success"));
 		HackComponent->HackTags.AddTag(OutlierGameplayTags::State::HackedOnce());
 	}
 
 	if (Context.Result == EHackResult::Fail)
 	{
-		UE_LOG(LogTemp, Error, TEXT("Fail"));
+		//UE_LOG(LogTemp, Error, TEXT("Fail"));
 	}
 
 	if (Context.Result == EHackResult::Cancelled)
 	{
-		UE_LOG(LogTemp, Error, TEXT("Cancelled"));
+		//UE_LOG(LogTemp, Error, TEXT("Cancelled"));
 	}
 }
 

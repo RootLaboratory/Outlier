@@ -281,8 +281,6 @@ void AFirstPersonPlayerController::RegisterCurrentPawnWithPlayerState()
 
 void AFirstPersonPlayerController::ControlMainWidget(bool InFlag) const
 {
-	UE_LOG(LogTemp, Error, TEXT("ControlMainWidget"));
-
 	if (!IsLocalController())
 	{
 		return;
