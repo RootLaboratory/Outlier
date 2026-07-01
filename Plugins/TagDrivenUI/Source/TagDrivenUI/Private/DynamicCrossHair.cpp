@@ -15,8 +15,6 @@ void UDynamicCrossHair::NativeConstruct()
 	{
 		CachedUISubsystem = LP->GetSubsystem<ULocalPlayerUISubSystem>();
 	}
-	UE_LOG(LogTemp, Warning, TEXT("UDynamicCrossHair ViewportScale: %f"), UWidgetLayoutLibrary::GetViewportScale(this));
-
 }
 
 void UDynamicCrossHair::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)

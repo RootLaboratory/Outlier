@@ -69,6 +69,67 @@ void UMainUIBase::On_RepAbilityabledByDistance()
 	}
 }
 
+void UMainUIBase::ModulesControl(bool Flag)
+{
+	if (Flag)
+	{
+		for (TPair<FGameplayTag, TObjectPtr<UEventDrivenUI>> Module : Modules)
+		{
+			UEventDrivenUI* Widget = Module.Value;
+			{
+				if (Widget)
+				{
+					Widget->Activate();
+				}
+			}
+		}
+	}
+	else
+	{
+		for (TPair<FGameplayTag, TObjectPtr<UEventDrivenUI>> Module : Modules)
+		{
+			UEventDrivenUI* Widget = Module.Value;
+			{
+				if (Widget)
+				{
+					Widget->Deactivate();
+				}
+			}
+		}
+	}
+}
+//TMap<FGameplayTag, TObjectPtr<UAbilityIconUI>> AbilitySections;
+
+void UMainUIBase::AbilitySectionControl(bool Flag)
+{
+	if (Flag)
+	{
+		for (TPair<FGameplayTag, TObjectPtr<UAbilityIconUI>> Module : AbilitySections)
+		{
+			UAbilityIconUI* Widget = Module.Value;
+			{
+				if (Widget)
+				{
+					Widget->VisibilityControl(true);
+				}
+			}
+		}
+	}
+	else
+	{
+		for (TPair<FGameplayTag, TObjectPtr<UAbilityIconUI>> Module : AbilitySections)
+		{
+			UAbilityIconUI* Widget = Module.Value;
+			{
+				if (Widget)
+				{
+					Widget->VisibilityControl(false);
+				}
+			}
+		}
+	}
+}
+
 void UMainUIBase::RegisterAbilityIcon(UAbilityIconUI* Icon, const FGameplayTag& AbilityTag, bool bUnlock)
 {
 	if (!Icon || !AbilityTag.IsValid())

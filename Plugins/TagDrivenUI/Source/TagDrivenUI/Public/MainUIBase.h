@@ -38,6 +38,9 @@ public:
 	void AddAbilityIconEntry(UAbilityIconUI* Icon, const FGameplayTag& AbilityTag);
 	virtual void On_RepAbilityDisabledByDistance();
 	virtual void On_RepAbilityabledByDistance();
+
+	virtual void ModulesControl(bool Flag);
+	virtual void AbilitySectionControl(bool Flag);
 public:
 
 	virtual void ModuleInit() {}

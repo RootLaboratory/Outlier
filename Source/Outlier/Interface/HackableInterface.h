@@ -4,6 +4,8 @@
 
 #include "CoreMinimal.h"
 #include "UObject/Interface.h"
+#include "GameplayTagContainer.h"
+#include "Drone/Partner/HackType.h"
 #include "HackableInterface.generated.h"
 
 
@@ -22,6 +24,6 @@ class OUTLIER_API IHackableInterface
 	GENERATED_BODY()
 
 public:
-	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "Hack")
-	UHackableComponent* GetHackableComponent() const;
+	virtual UHackableComponent* GetHackableComponent() const = 0;
+	virtual void HandleHackEffect(FGameplayTag EffectTag, const FHackResultContext& Context) = 0;
 };

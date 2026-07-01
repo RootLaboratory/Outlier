@@ -62,6 +62,7 @@ class UPartnerCombatComponent;
 class UPartnerHackComponent;
 class USceneCaptureComponent2D;
 class UPartnerAbilityComponent;
+class UPartnerEMPComponent;
 UCLASS()
 class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter
 {
@@ -91,6 +92,9 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UPartnerHackComponent> HackComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UPartnerEMPComponent> EMPComponent;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<USceneCaptureComponent2D> CaptureComponent;
@@ -384,6 +388,7 @@ protected:
 	void StopCameraAssist();
 	void TryHacking();
 	void Hacking(AActor* TargetActor);
+	void TryEMP();
 	//
 	void TestAbilityScan();
 	void Scan();
@@ -405,6 +410,7 @@ protected:
 	void ClearRebootInvincible();
 	bool CanAcceptInput() const;
 	UPartnerHackComponent* GetRuntimeHackComponent() const;
+	UPartnerEMPComponent* GetRuntimeEMPComponent() const;
 
 	void SetMoveMode(EPartnerMoveMode NewMode);
 	void ApplyMoveMode(EPartnerMoveMode NewMode);
@@ -419,9 +425,6 @@ protected:
 
 	UFUNCTION(Server, Reliable)
 	void ServerUseSkill(EPartnerSkillType SkillType);
-
-	UFUNCTION(Server, Reliable)
-	void ServerHackTarget(AActor* TargetActor);
 
 	void EnsurePartnerDataInitialized();
 	void InitializeFromDataTables();
@@ -450,9 +453,6 @@ public:
 	void OnRep_CurrentHitCount();
 
 	void SetShooterCharacter(AShooterCharacter* NewShooter);
-
-	UFUNCTION(BlueprintCallable, Category = "Hack")
-	void RequestHackTarget(AActor* TargetActor);
 	
 	UFUNCTION(Client, Reliable)
 	void ClientNotifySkillUseResult(EPartnerSkillType SkillType, EPartnerSkillUseResult Result);

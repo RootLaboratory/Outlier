@@ -1,10 +1,20 @@
 #include "Drone/Partner/HackableComponent.h"
+#include "Interface/HackableInterface.h"
+#include "Net/UnrealNetwork.h"
 #include "Drone/Partner/HackGameplayTags.h"
 
 
 UHackableComponent::UHackableComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
+	SetIsReplicatedByDefault(true);
+}
+
+void UHackableComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+
+	DOREPLIFETIME(UHackableComponent, HackTags);
 }
 
 bool UHackableComponent::CanBeHackTarget(const FHackQueryContext& Context) const
@@ -18,19 +28,11 @@ bool UHackableComponent::CanBeHackTarget(const FHackQueryContext& Context) const
 
 	if (Context.RequiredTags.Num() > 0 && !HackTags.HasAll(Context.RequiredTags))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[HackableDebug] CanBeHackTarget failed: missing required tags Owner=%s Required=%s Tags=%s"),
-			*GetNameSafe(GetOwner()),
-			*Context.RequiredTags.ToStringSimple(),
-			*HackTags.ToStringSimple());
 		return false;
 	}
 
 	if (Context.BlockedTags.Num() > 0 && HackTags.HasAny(Context.BlockedTags))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[HackableDebug] CanBeHackTarget failed: blocked tag Owner=%s Blocked=%s Tags=%s"),
-			*GetNameSafe(GetOwner()),
-			*Context.BlockedTags.ToStringSimple(),
-			*HackTags.ToStringSimple());
 		return false;
 	}
 
@@ -45,60 +47,22 @@ bool UHackableComponent::MatchesHackQuery(const FGameplayTagQuery& Query) const
 
 void UHackableComponent::BeginHack(const FHackQueryContext& Context)
 {
-	FHackProcessContext ProcessContext;
-	ProcessContext.InstigatorActor = Context.InstigatorActor;
-	ProcessContext.TargetActor = GetOwner();
-	ProcessContext.HackProcess = EHackProcess::Start;
-
-	SetHackProcess(ProcessContext);
 	OnHackStarted.Broadcast(Context);
-
-	UE_LOG(LogTemp, Warning, TEXT("[HackableDebug] BeginHack Owner=%s Instigator=%s Tags=%s"),
-		*GetNameSafe(GetOwner()),
-		*GetNameSafe(Context.InstigatorActor.Get()),
-		*HackTags.ToStringSimple());
 }
 
 void UHackableComponent::CompleteHack(const FHackResultContext& Context)
 {
-	OnHackCompleted.Broadcast(Context);
-
-	UE_LOG(LogTemp, Warning, TEXT("[HackableDebug] CompleteHack Owner=%s Instigator=%s Result=%d ResultTags=%s"),
-		*GetNameSafe(GetOwner()),
-		*GetNameSafe(Context.InstigatorActor.Get()),
-		static_cast<int32>(Context.Result),
-		*Context.ResultTags.ToStringSimple());
-
-	if (Context.Result == EHackResult::Success)
+	if (!GetOwner()->HasAuthority())
 	{
-		HackTags.AddTag(HackGameplayTags::State::HackedOnce());
-
-		for (const FGameplayTag& Tag : HackTags)
-		{
-			if (Tag.MatchesTag(HackGameplayTags::Effect::Root()))
-			{
-				OnHackEffectTriggered.Broadcast(Tag, Context);
-			}
-		}
+		return;
 	}
 
-	FHackProcessContext ProcessContext;
-	ProcessContext.InstigatorActor = Context.InstigatorActor;
-	ProcessContext.TargetActor = Context.TargetActor.Get() ? Context.TargetActor.Get() : GetOwner();
-	ProcessContext.HackProcess = EHackProcess::Done;
-	SetHackProcess(ProcessContext);
-}
+	const FGameplayTagContainer EffectTags = ResolveHackEffectTags(Context.Result);
 
-void UHackableComponent::SetHackProcess(const FHackProcessContext& Context)
-{
-	bProjectWorldLocationToScreen = Context.HackProcess == EHackProcess::Try;
-	LastProjectedScreenLocation = Context.ScreenLocation;
-	OnHackProcessChanged.Broadcast(Context);
-}
+	MulticastTriggerHackEffects(EffectTags, Context);
 
-void UHackableComponent::SetProjectedScreenLocation(const FVector2D& ScreenLocation)
-{
-	LastProjectedScreenLocation = ScreenLocation;
+	OnHackCompleted.Broadcast(Context);
+
 }
 
 bool UHackableComponent::HasHackTag(FGameplayTag Tag) const
@@ -110,4 +74,47 @@ bool UHackableComponent::IsHackTargetType() const
 {
 	return HackTags.HasTag(HackGameplayTags::Target::Possessable())
 		|| HackTags.HasTag(HackGameplayTags::Target::NonPossessable());
+}
+
+const FGameplayTagContainer& UHackableComponent::ResolveHackEffectTags(EHackResult Result) const
+{
+	static const FGameplayTagContainer EmptyTags;
+
+	switch (Result)
+	{
+	case EHackResult::Success:
+		return SuccessEffectTags;
+
+	case EHackResult::Fail:
+		return FailEffectTags;
+
+	case EHackResult::Cancelled:
+	default:
+		return EmptyTags;
+	}
+}
+
+void UHackableComponent::MulticastTriggerHackEffects_Implementation(const FGameplayTagContainer& EffectTags, const FHackResultContext& Context)
+{
+
+	AActor* Owner = GetOwner();
+
+	if (!Owner || !Owner->GetClass()->ImplementsInterface(UHackableInterface::StaticClass()))
+	{
+		UE_LOG(LogTemp, Error, TEXT("MulticastTriggerHackEffect Owner Interface Invalid"));
+		return;
+	}
+
+	IHackableInterface* Handler = Cast<IHackableInterface>(Owner);
+	if (!Handler)
+	{
+		UE_LOG(LogTemp, Error, TEXT("MulticastTriggerHackEffect Owner Handler Invalid"));
+		return;
+	}
+
+	for (const FGameplayTag& EffectTag : EffectTags)
+	{
+		Handler->HandleHackEffect(EffectTag, Context);
+	}
+
 }

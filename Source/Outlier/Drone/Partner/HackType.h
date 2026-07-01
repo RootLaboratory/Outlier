@@ -12,14 +12,6 @@ enum class EHackResult : uint8
 	Cancelled
 };
 
-UENUM(BlueprintType)
-enum class EHackProcess : uint8
-{
-	Try,
-	Start,
-	Done
-};
-
 USTRUCT(BlueprintType)
 struct FHackQueryContext
 {
@@ -54,9 +46,6 @@ struct FHackProcessContext
 
 	UPROPERTY(BlueprintReadWrite)
 	TObjectPtr<AActor> TargetActor = nullptr;
-
-	UPROPERTY(BlueprintReadWrite)
-	EHackProcess HackProcess = EHackProcess::Try;
 
 	UPROPERTY(BlueprintReadWrite)
 	FVector2D ScreenLocation = FVector2D::ZeroVector;

@@ -11,73 +11,79 @@ namespace TagDrivenUITags
 	{
 		inline FGameplayTag HP()
 		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Shooter.UI.Module.HP")));
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("UI.Player.Shooter.HP")));
 			return Tag;
 		}
 
 		inline FGameplayTag PartnerCam()
 		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Shooter.UI.Module.PartnerCam")));
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("UI.Player.Shooter.PartnerCam")));
 			return Tag;
 		}
 
 		inline FGameplayTag Ammo()
 		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Shooter.UI.Module.Ammo")));
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("UI.Player.Shooter.Ammo")));
 			return Tag;
 		}
 
 		inline FGameplayTag Suit()
 		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Shooter.UI.Module.Suit")));
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("UI.Player.Shooter.Suit")));
 			return Tag;
 		}
 
 		inline FGameplayTag CurrentAbility()
 		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Shooter.UI.Module.CurrentAbility")));
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("UI.Player.Shooter.CurrentAbility")));
 			return Tag;
 		}
 
 		inline FGameplayTag CurrentWeapon()
 		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Shooter.UI.Module.CurrentWeapon")));
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("UI.Player.Shooter.CurrentWeapon")));
+			return Tag;
+		}
+
+		inline FGameplayTag AbilityWheel()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("UI.Player.Shooter.AbilityWheel")));
 			return Tag;
 		}
 
 		inline FGameplayTag ShieldSkill()
 		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Shooter.UI.Module.Skill.Shield")));
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("UI.Player.Shooter.Skill.Shield")));
 			return Tag;
 		}
 
 		inline FGameplayTag StimPackSkill()
 		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Shooter.UI.Module.Skill.StimPack")));
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("UI.Player.Shooter.Skill.StimPack")));
 			return Tag;
 		}
 
 		inline FGameplayTag StealthSkill()
 		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Shooter.UI.Module.Skill.Stealth")));
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("UI.Player.Shooter.Skill.Stealth")));
 			return Tag;
 		}
 
 		inline FGameplayTag TeleportSkill()
 		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Shooter.UI.Module.Skill.Teleport")));
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("UI.Player.Shooter.Skill.Teleport")));
 			return Tag;
 		}
 
 		inline FGameplayTag CrossHair()
 		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Shooter.UI.Module.CrossHair")));
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("UI.Player.Shooter.CrossHair")));
 			return Tag;
 		}
 
 		inline FGameplayTag DistanceLimit()
 		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Shooter.UI.Module.DistanceLimit")));
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("UI.Player.Shooter.DistanceLimit")));
 			return Tag;
 		}
 	}
@@ -86,61 +92,61 @@ namespace TagDrivenUITags
 	{
 		inline FGameplayTag HP()
 		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Partner.UI.Module.HP")));
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("UI.Player.Partner.HP")));
 			return Tag;
 		}
 
 		inline FGameplayTag PartnerCam()
 		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Partner.UI.Module.PartnerCam")));
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("UI.Player.Partner.PartnerCam")));
 			return Tag;
 		}
 
 		inline FGameplayTag Ammo()
 		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Partner.UI.Module.Ammo")));
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("UI.Player.Partner.Ammo")));
 			return Tag;
 		}
 
 		inline FGameplayTag Suit()
 		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Partner.UI.Module.Suit")));
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("UI.Player.Partner.Suit")));
 			return Tag;
 		}
 
 		inline FGameplayTag EMPSkill()
 		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Partner.UI.Module.Skill.EMP")));
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("UI.Player.Partner.Skill.EMP")));
 			return Tag;
 		}
 
 		inline FGameplayTag ShieldSkill()
 		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Partner.UI.Module.Skill.Shield")));
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("UI.Player.Partner.Skill.Shield")));
 			return Tag;
 		}
 
 		inline FGameplayTag HackingSkill()
 		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Partner.UI.Module.Skill.Hacking")));
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("UI.Player.Partner.Skill.Hacking")));
 			return Tag;
 		}
 
 		inline FGameplayTag ScanSkill()
 		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Partner.UI.Module.Skill.Scan")));
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("UI.Player.Partner.Skill.Scan")));
 			return Tag;
 		}
 
 		inline FGameplayTag CrossHair()
 		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Partner.UI.Module.CrossHair")));
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("UI.Player.Partner.CrossHair")));
 			return Tag;
 		}
 
 		inline FGameplayTag DistanceLimit()
 		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Partner.UI.Module.DistanceLimit")));
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("UI.Player.Partner.DistanceLimit")));
 			return Tag;
 		}
 	}

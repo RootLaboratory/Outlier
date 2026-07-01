@@ -100,6 +100,18 @@ void UAbilityIconUI::AbilityUnLock()
 	}
 }
 
+void UAbilityIconUI::VisibilityControl(bool InFlag)
+{
+	if (InFlag)
+	{
+		this->SetVisibility(ESlateVisibility::Visible);
+	}
+	else
+	{
+		this->SetVisibility(ESlateVisibility::Collapsed);
+	}
+}
+
 bool UAbilityIconUI::IsUnLock() const
 {
 	return bAbilityUnlocked;

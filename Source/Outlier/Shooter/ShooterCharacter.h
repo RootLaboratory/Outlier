@@ -5,7 +5,6 @@
 #include "CoreMinimal.h"
 #include "FirstPerson/FirstPersonCharacter.h"
 #include "GameplayTagContainer.h"
-#include "Shooter/Ability/ShooterAbility.h"
 #include "ShooterCharacter.generated.h"
 
 class UInputAction;
