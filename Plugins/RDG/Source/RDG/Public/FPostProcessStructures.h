@@ -50,7 +50,7 @@ struct FDualKawaseBlurParameters
 // UI까지 합성된 최종 텍스처에 적용할 chromatic aberration 입력 파라미터.
 struct FUIChromaticAberrationParameters
 {
-	int32 bEnabled = true;
+	int32 bEnabled = false;
 	float StartOffset = 0.2f;
 	float Intensity = 0.4f;
 	float Padding = 0.0f;

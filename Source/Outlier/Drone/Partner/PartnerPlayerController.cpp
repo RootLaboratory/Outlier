@@ -120,7 +120,6 @@ void APartnerPlayerController::BindMainUI()
 	{
 		if (ULocalPlayerUISubSystem* UISubsystem = LP->GetSubsystem<ULocalPlayerUISubSystem>())
 		{
-			UE_LOG(LogTemp, Error, TEXT("[PartnerPC] GetLocalPlayer"));
 			UISubsystem->RegisterMainUI(ShooterUIInstance);
 		}
 		else

@@ -6,6 +6,7 @@
 
 class UButton;
 class UHackableComponent;
+class UPartnerHackComponent;
 
 UCLASS()
 class OUTLIER_API UHackCandidateMarkerWidget : public UUserWidget
@@ -13,7 +14,7 @@ class OUTLIER_API UHackCandidateMarkerWidget : public UUserWidget
 	GENERATED_BODY()
 
 public:
-	void InitializeMarker(AActor* InTargetActor, UHackableComponent* InHackableComponent);
+	void InitializeMarker(AActor* InTargetActor, UHackableComponent* InHackableComponent, UPartnerHackComponent* InHackComponent);
 
 protected:
 	virtual void NativeConstruct() override;
@@ -30,4 +31,7 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UHackableComponent> HackableComponent;
+
+	UPROPERTY()
+	TObjectPtr<UPartnerHackComponent> HackComponent;
 };

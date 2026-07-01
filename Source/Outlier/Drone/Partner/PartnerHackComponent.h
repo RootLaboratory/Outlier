@@ -8,40 +8,10 @@
 #include "HackType.h"
 #include "PartnerHackComponent.generated.h"
 
-namespace PartnerAbilityComponentTags
-{
-	inline FGameplayTag EMP()
-	{
-		static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Partner.EMP")));
-		return Tag;
-	}
-
-	inline FGameplayTag Shield()
-	{
-		static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Partner.Shield")));
-		return Tag;
-	}
-
-	inline FGameplayTag Hacking()
-	{
-		static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Partner.Hacking")));
-		return Tag;
-	}
-
-	inline FGameplayTag Scan()
-	{
-		static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Partner.Scan")));
-		return Tag;
-	}
-}
-
 class UHackableComponent;
 class UHackCandidateLayerWidget;
 class UHackCandidateMarkerWidget;
-
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnPartnerHackCandidateAdded, AActor*, TargetActor, UHackableComponent*, HackableComponent);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnPartnerHackCandidateRemoved, AActor*, TargetActor, UHackableComponent*, HackableComponent);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnPartnerHackStarted, AActor*, TargetActor, UHackableComponent*, HackableComponent);
+class UHackMiniGameWidget;
 
 UCLASS()
 class OUTLIER_API UPartnerHackComponent : public UPartnerCharacterComponentBase
@@ -67,6 +37,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hack|Debug")
 	uint8 bDebugHack : 1 = true;
 
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hack|Candidate")
 	FGameplayTagContainer RequiredCandidateTags;
 
@@ -79,26 +50,37 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hack|UI")
 	TSubclassOf<UHackCandidateMarkerWidget> CandidateMarkerWidgetClass;
 
-	UPROPERTY(BlueprintAssignable, Category = "Hack")
-	FOnPartnerHackCandidateAdded OnHackCandidateAdded;
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hack|UI")
+	TSubclassOf<UHackMiniGameWidget> HackMiniGameWidgetClass;
 
-	UPROPERTY(BlueprintAssignable, Category = "Hack")
-	FOnPartnerHackCandidateRemoved OnHackCandidateRemoved;
+	UFUNCTION(Server, Reliable)
+	void TryHack();
 
-	UPROPERTY(BlueprintAssignable, Category = "Hack")
-	FOnPartnerHackStarted OnHackStarted;
+	UFUNCTION(Client, Reliable)
+	void ClientStartCandidateSearch();
+	UFUNCTION(Client, Reliable)
+	void ClientStopCandidateSearch();
 
-	UFUNCTION(BlueprintCallable, Category = "Hack")
-	bool TryHack();
+	UFUNCTION(Client, Reliable)
+	void ClientStartHackMiniGame(AActor* TargetActor, UHackableComponent* HackableComponent);
+
+	UFUNCTION(Client, Reliable)
+	void ClientStopHackMiniGame();
+
+	UFUNCTION(Client, Reliable)
+	void DefaultWidgetControl(bool InFlag);
+
+	UFUNCTION(Server, Reliable)
+	void ServerCompleteHack(const FHackResultContext& ResultContext);
 
 	UFUNCTION(BlueprintCallable, Category = "Hack")
 	void RefreshHackCandidates();
 
-	UFUNCTION(BlueprintCallable, Category = "Hack")
-	bool TryStartHack(AActor* TargetActor);
+	UFUNCTION(Server, Reliable)
+	void ServerTryStartHack(AActor* TargetActor);
 
 	UFUNCTION(BlueprintCallable, Category = "Hack")
-	void CompleteHack(const FHackResultContext& ResultContext);
+	void ClientCompleteHack();
 
 	UFUNCTION(BlueprintCallable, Category = "Hack")
 	void ClearHackCandidates();
@@ -108,6 +90,8 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Hack")
 	bool IsHackCandidateSearchActive() const { return bHackCandidateSearchActive; }
+
+	void TrySelectHackTarget(AActor* TargetActor);
 
 	UFUNCTION(BlueprintCallable, Category = "Hack")
 	const TArray<AActor*>& GetHackCandidateActors() const { return HackCandidateActors; }
@@ -122,6 +106,10 @@ protected:
 	UPROPERTY(Transient)
 	TObjectPtr<UHackCandidateLayerWidget> CandidateLayerWidget;
 
+	UPROPERTY(Transient)
+	TObjectPtr<UHackMiniGameWidget> HackMiniGameWidget;
+
+
 private:
 	TArray<AActor*> HackCandidateActors;
 
@@ -135,10 +123,18 @@ private:
 	bool HasLineOfSight(AActor* Actor) const;
 	void EnsureCandidateLayerWidget();
 	void DestroyCandidateLayerWidget();
+	bool EnsureHackMiniGameWidget(AActor* TargetActor, UHackableComponent* HackableComponent);
+	void DestroyHackMiniGameWidget();
 	void ApplyCandidateInputMode();
+	void ApplyHackMiniGameInputMode();
 	void RestoreGameInputMode();
 	void AddHackCandidate(AActor* Actor, UHackableComponent* HackableComponent, const FVector2D& ScreenLocation);
 	void RemoveHackCandidateAt(int32 Index);
 	void DeactivateUnselectedCandidates(UHackableComponent* SelectedComponent);
-	
+	void CancelActiveHack();
+
+	void StartHackMiniGame(AActor* TargetActor, UHackableComponent* HackableComponent);
+
+	UFUNCTION()
+	void HandleHackMiniGameFinished(const FHackResultContext& ResultContext);
 };

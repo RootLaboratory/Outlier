@@ -20,8 +20,7 @@ void UShooterMainWidget::NativeConstruct()
 
 void UShooterMainWidget::ModuleInit()
 {
-	UE_LOG(LogTemp, Error, TEXT("ModuleInit"));
-
+	//UE_LOG(LogTemp, Error, TEXT("ModuleInit"));
 
 	Modules.Empty();
 	Modules.Reserve(6);
@@ -99,25 +98,24 @@ void UShooterMainWidget::SuitOnModuleInit()
 
 	if (UEventDrivenUI* HPModule = GetModule(TagDrivenUITags::Shooter::HP()))
 	{
-		UE_LOG(LogTemp, Error, TEXT("SuitOnModuleInit HPModule"));
+		//_LOG(LogTemp, Error, TEXT("SuitOnModuleInit HPModule"));
 		HPModule->Activate();
 	}
 	else
 	{
-		UE_LOG(LogTemp, Error, TEXT(" HPModule"));
+		//_LOG(LogTemp, Error, TEXT(" HPModule"));
 
 	}
 
 	if (UEventDrivenUI* PartnerCamModule = GetModule(TagDrivenUITags::Shooter::PartnerCam()))
 	{
-		UE_LOG(LogTemp, Error, TEXT("SuitOnModuleInit PartnerCamModule"));
+		//UE_LOG(LogTemp, Error, TEXT("SuitOnModuleInit PartnerCamModule"));
 
 		PartnerCamModule->Activate();
 	}
 	else
 	{
-		UE_LOG(LogTemp, Error, TEXT(" PartnerCam"));
-
+		//UE_LOG(LogTemp, Error, TEXT(" PartnerCam"));
 	}
 }
 
@@ -132,7 +130,7 @@ void UShooterMainWidget::OnChangeWeapon(EWidgetWeaponType Type)
 	{
 	case EWidgetWeaponType::Melee:
 	{
-		UE_LOG(LogTemp, Error, TEXT("Melee"));
+		//UE_LOG(LogTemp, Error, TEXT("Melee"));
 
 		if (AmmoUI)
 		{
@@ -150,7 +148,7 @@ void UShooterMainWidget::OnChangeWeapon(EWidgetWeaponType Type)
 	}
 	case EWidgetWeaponType::Pistol:
 	{
-		UE_LOG(LogTemp, Error, TEXT("Pistol"));
+		//UE_LOG(LogTemp, Error, TEXT("Pistol"));
 
 		if (AmmoUI)
 		{
@@ -174,7 +172,7 @@ void UShooterMainWidget::OnChangeWeapon(EWidgetWeaponType Type)
 	}
 	case EWidgetWeaponType::Rifle:
 	{
-		UE_LOG(LogTemp, Error, TEXT("Rifle"));
+		//UE_LOG(LogTemp, Error, TEXT("Rifle"));
 
 		if (AmmoUI)
 		{

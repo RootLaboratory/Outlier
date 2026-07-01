@@ -1,12 +1,13 @@
 #include "UI/HackCandidateMarkerWidget.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/Button.h"
-#include "Drone/Partner/PartnerCharacter.h"
+#include "Drone/Partner/PartnerHackComponent.h"
 
-void UHackCandidateMarkerWidget::InitializeMarker(AActor* InTargetActor, UHackableComponent* InHackableComponent)
+void UHackCandidateMarkerWidget::InitializeMarker(AActor* InTargetActor, UHackableComponent* InHackableComponent, UPartnerHackComponent* InHackComponent)
 {
 	TargetActor = InTargetActor;
 	HackableComponent = InHackableComponent;
+	HackComponent = InHackComponent;
 }
 
 void UHackCandidateMarkerWidget::NativeConstruct()
@@ -31,17 +32,10 @@ void UHackCandidateMarkerWidget::NativeConstruct()
 
 void UHackCandidateMarkerWidget::HandleClicked()
 {
-	APlayerController* PC = GetOwningPlayer();
-	if (!PC)
+	if (!HackComponent || !TargetActor)
 	{
 		return;
 	}
 
-	APartnerCharacter* PartnerCharacter = Cast<APartnerCharacter>(PC->GetPawn());
-	if (!PartnerCharacter || !TargetActor)
-	{
-		return;
-	}
-
-	PartnerCharacter->RequestHackTarget(TargetActor);
+	HackComponent->TrySelectHackTarget(TargetActor);
 }

@@ -9,6 +9,7 @@
 #include "OutlierGameMode.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Outlier.h"
+#include "MainUIBase.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Network/OutlierArenaPoolSubsystem.h"
 
@@ -275,6 +276,20 @@ void AFirstPersonPlayerController::RegisterCurrentPawnWithPlayerState()
 		: nullptr)
 	{
 		GameMode->RefreshPairLinks(OutlierPlayerState);
+	}
+}
+
+void AFirstPersonPlayerController::ControlMainWidget(bool InFlag) const
+{
+	if (!IsLocalController())
+	{
+		return;
+	}
+
+	if (ShooterUIInstance)
+	{
+		ShooterUIInstance->ModulesControl(InFlag);
+		ShooterUIInstance->AbilitySectionControl(InFlag);
 	}
 }
 
