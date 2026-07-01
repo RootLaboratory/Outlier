@@ -8,7 +8,6 @@
 #include "EmpTestActor.generated.h"
 
 class UEMPableComponent;
-
 UCLASS()
 class OUTLIER_API AEmpTestActor : public AActor, public IEMPableInterface
 {
@@ -23,7 +22,7 @@ protected:
 public:
 	virtual UEMPableComponent* GetEMPableComponent() const override;
 	virtual void HandleEmp(FGameplayTag EffectTag) override;
-
+	
 	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = "Components")
 	TObjectPtr<UEMPableComponent> EMPComponent;
 };

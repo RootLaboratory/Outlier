@@ -35,6 +35,7 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Hack")
 	FVector2D MarkerSize = FVector2D(64.0f, 64.0f);
 
+
 private:
 	UPROPERTY()
 	TObjectPtr<UPartnerHackComponent> HackComponent;

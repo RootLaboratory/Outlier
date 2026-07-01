@@ -5,7 +5,9 @@
 #include "Components/CanvasPanelSlot.h"
 #include "Components/Image.h"
 #include "Components/ProgressBar.h"
+#include "Camera/PlayerCameraManager.h"
 #include "Drone/Partner/PartnerEMPComponent.h"
+#include "GameFramework/PlayerController.h"
 #include "UI/EMPMarkWidget.h"
 
 void UEMPLayerWidget::BindEMPComponent(UPartnerEMPComponent* InEMPComponent)
@@ -135,6 +137,16 @@ void UEMPLayerWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 		return;
 	}
 
+	APlayerCameraManager* CameraManager = PC->PlayerCameraManager;
+	if (!CameraManager)
+	{
+		return;
+	}
+
+	const FVector CameraLocation = CameraManager->GetCameraLocation();
+	const FRotator CameraRotation = CameraManager->GetCameraRotation();
+	const FVector CameraRight = CameraRotation.RotateVector(FVector::RightVector);
+
 	for (auto It = MarkWidgets.CreateIterator(); It; ++It)
 	{
 		AActor* TargetActor = It.Key();
@@ -147,7 +159,11 @@ void UEMPLayerWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 		}
 
 		FVector2D ScreenLocation = FVector2D::ZeroVector;
-		if (!PC->ProjectWorldLocationToScreen(TargetActor->GetActorLocation(), ScreenLocation, true))
+		FVector TargetOrigin = TargetActor->GetActorLocation();
+		FVector TargetExtent = FVector::ZeroVector;
+		TargetActor->GetActorBounds(true, TargetOrigin, TargetExtent);
+
+		if (!PC->ProjectWorldLocationToScreen(TargetOrigin, ScreenLocation, true))
 		{
 			Mark->SetVisibility(ESlateVisibility::Collapsed);
 			continue;
@@ -155,10 +171,36 @@ void UEMPLayerWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 
 		Mark->SetVisibility(ESlateVisibility::Visible);
 
+		const float Distance = FVector::Distance(CameraLocation, TargetActor->GetActorLocation());
+		const float MarkerScale = FMath::GetMappedRangeValueClamped(
+			FVector2D(NearDistance, FarDistance),
+			FVector2D(NearScale, FarScale),
+			Distance
+		);
+
+		FVector2D MarkerSlotSize = MarkerSize * MarkerScale;
+		if (bUseProjectedBoundsSize)
+		{
+			FVector2D EdgeScreenLocation = FVector2D::ZeroVector;
+			const float BoundsRadius = TargetExtent.GetMax();
+			if (BoundsRadius > KINDA_SMALL_NUMBER
+				&& PC->ProjectWorldLocationToScreen(TargetOrigin + CameraRight * BoundsRadius, EdgeScreenLocation, true))
+			{
+				const float ProjectedDiameter = FVector2D::Distance(ScreenLocation, EdgeScreenLocation) * 2.0f;
+				const float MarkerScreenSize = FMath::Clamp(
+					ProjectedDiameter * ProjectedBoundsSizeMultiplier,
+					MarkerMinSize,
+					MarkerMaxSize
+				);
+				MarkerSlotSize = FVector2D(MarkerScreenSize);
+			}
+		}
+
 		if (UCanvasPanelSlot* CanvasSlot = Cast<UCanvasPanelSlot>(Mark->Slot))
 		{
 			const float ViewportScale = UWidgetLayoutLibrary::GetViewportScale(this);
 			CanvasSlot->SetPosition(ScreenLocation / ViewportScale);
+			CanvasSlot->SetSize(MarkerSlotSize / ViewportScale);
 		}
 	}
 }

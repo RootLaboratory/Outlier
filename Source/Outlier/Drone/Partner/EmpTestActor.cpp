@@ -1,5 +1,6 @@
 #include "Drone/Partner/EmpTestActor.h"
 #include "Drone/Partner/EMPableComponent.h"
+#include "Drone/Partner/EMPFrameBillboardActor.h"
 #include "Drone/Partner/EMPGameplayTags.h"
 
 AEmpTestActor::AEmpTestActor()

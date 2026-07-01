@@ -46,6 +46,30 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "EMP")
 	FVector2D MarkerSize = FVector2D(64.0f, 64.0f);
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EMP Marker|Perspective")
+	float NearDistance = 300.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EMP Marker|Perspective")
+	float FarDistance = 3000.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EMP Marker|Perspective")
+	float NearScale = 1.4f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EMP Marker|Perspective")
+	float FarScale = 0.6f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EMP Marker|Perspective")
+	uint8 bUseProjectedBoundsSize : 1 = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EMP Marker|Perspective")
+	float ProjectedBoundsSizeMultiplier = 1.1f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EMP Marker|Perspective")
+	float MarkerMinSize = 48.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EMP Marker|Perspective")
+	float MarkerMaxSize = 220.0f;
+
 	UPROPERTY(EditDefaultsOnly, Category = "EMP|Reveal")
 	float RevealDuration = 0.35f;
 

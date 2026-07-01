@@ -65,7 +65,6 @@ void UHackCandidateLayerWidget::NativeTick(const FGeometry& MyGeometry, float In
 		return;
 	}
 
-
 	for (auto It = MarkerWidgets.CreateIterator(); It; ++It)
 	{
 		AActor* TargetActor = It.Key();
@@ -91,6 +90,7 @@ void UHackCandidateLayerWidget::NativeTick(const FGeometry& MyGeometry, float In
 			const float ViewportScale = UWidgetLayoutLibrary::GetViewportScale(this);
 			CanvasSlot->SetPosition(ScreenLocation / ViewportScale);
 		}
+
 	}
 }
 
