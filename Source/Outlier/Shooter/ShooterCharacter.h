@@ -179,6 +179,9 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Slide")
 	TObjectPtr<UCurveFloat> SlideSpeedCurve;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Components, meta = (AllowPrivateAccess = "true"))
+	USkeletalMeshComponent* ShadowMesh;
+
 	/// Animation Assets
 	// Fire
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
@@ -290,11 +293,33 @@ protected:
 
 	bool bSuitDisabledByPartnerBoundary = false;
 
+	// Slide
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera|Slide")
+	float SlideCameraEffectInterpInSpeed = 18.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera|Slide")
+	float SlideCameraEffectInterpOutSpeed = 8.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera|Slide")
+	TObjectPtr<UCurveFloat> SlideCameraRollCurve = nullptr;
+
+	float TargetSlideCameraEffectAlpha = 0.0f;
+	float CurrentSlideCameraEffectAlpha = 0.0f;
+
+	float SlideCameraEffectElapsedTime = 0.0f;
+	float SlideCameraEffectDuration = 0.0f;
+
+	float TargetSlideCameraRollDegrees = 0.0f;
+
+	float ActiveSlideCameraRollDegrees = 0.0f;
+
 protected:
 	// Engine Lifecycle
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void Tick(float DeltaSeconds) override;
+	virtual void PossessedBy(AController* NewController) override;
+	virtual void OnRep_Controller() override;
 
 	/** Initialize input action bindings */
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
@@ -310,7 +335,6 @@ protected:
 	virtual void OnMoveInputUpdated(const FVector2D& MoveValue);
 
 	virtual void LookInput(const FInputActionValue& Value) override;
-
 public:
 	// Construction
 	/** Constructor */
@@ -331,6 +355,7 @@ public:
 	// Weapon Socket Queries
 	FName GetFirstPersonWeaponSocketByType(EWeaponType WeaponType) const;
 	FName GetThirdPersonWeaponSocketByType(EWeaponType WeaponType) const;
+	USkeletalMeshComponent* GetShadowMesh() const { return ShadowMesh; }
 
 	// Replication / Engine Hooks
 	UFUNCTION()
@@ -379,6 +404,9 @@ public:
 	float GetCurrentLeanRollDegrees() const { return CurrentLeanAlpha * MaxLeanAngle; }
 
 	UFUNCTION(BlueprintPure)
+	float GetCurrentSlideCameraRollDegrees() const { return ActiveSlideCameraRollDegrees; }
+
+	UFUNCTION(BlueprintPure)
 	float GetMaxLeanAngle() const { return MaxLeanAngle; }
 
 	UFUNCTION(BlueprintPure)
@@ -424,7 +452,6 @@ public:
 	void DoJumpStart();
 
 	void DoJumpEnd();
-
 protected:
 	void UpdatePartnerShieldDecay();
 
@@ -454,6 +481,9 @@ protected:
 	void TrySlide();
 	void TryLean(const FInputActionValue& Value);
 	void StopLean();
+
+	void RefreshFirstPersonShadowPolicy();
+	void UpdateSlideCameraEffect(float DeltaSeconds);
 
 	// Server RPC
 	UFUNCTION(Server, Reliable)
@@ -524,6 +554,8 @@ public:
 	bool CanStartSlide() const;
 	void StopSlide(ESlideEndReason EndReason);
 	void HandleSlideWallHit(const FHitResult& Hit);
+	void BeginSlideCameraEffect(float CameraRollDegrees, float Duration);
+	void EndSlideCameraEffect();
 
 	void Die();
 	void HandleDeath();

@@ -43,6 +43,20 @@ AWeaponBase::AWeaponBase()
 	ThirdPersonWeaponMesh->SetCastShadow(true);
 	ThirdPersonWeaponMesh->SetCastHiddenShadow(false);
 
+	ShadowWeaponMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("ShadowWeaponMesh"));
+	ShadowWeaponMesh->SetupAttachment(SceneRoot);
+	ShadowWeaponMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	ShadowWeaponMesh->SetCollisionResponseToAllChannels(ECR_Ignore);
+	ShadowWeaponMesh->SetGenerateOverlapEvents(false);
+	ShadowWeaponMesh->SetHiddenInGame(true);
+	ShadowWeaponMesh->SetVisibility(true, true);
+	ShadowWeaponMesh->SetOwnerNoSee(false);
+	ShadowWeaponMesh->SetOnlyOwnerSee(false);
+	ShadowWeaponMesh->SetRenderInMainPass(true);
+	ShadowWeaponMesh->SetRenderInDepthPass(false);
+	ShadowWeaponMesh->SetCastShadow(false);
+	ShadowWeaponMesh->SetCastHiddenShadow(false);
+
 	InteractionCollision = CreateDefaultSubobject<USphereComponent>(TEXT("InteractionCollision"));
 	InteractionCollision->SetupAttachment(SceneRoot);
 
@@ -74,6 +88,17 @@ void AWeaponBase::OnConstruction(const FTransform& Transform)
 		ThirdPersonWeaponMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		ThirdPersonWeaponMesh->SetCollisionResponseToAllChannels(ECR_Ignore);
 		ThirdPersonWeaponMesh->SetGenerateOverlapEvents(false);
+	}
+
+	if (ShadowWeaponMesh)
+	{
+		if (!ShadowWeaponMesh->GetSkeletalMeshAsset() && ThirdPersonWeaponMesh)
+		{
+			ShadowWeaponMesh->SetSkeletalMeshAsset(ThirdPersonWeaponMesh->GetSkeletalMeshAsset());
+		}
+		ShadowWeaponMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		ShadowWeaponMesh->SetCollisionResponseToAllChannels(ECR_Ignore);
+		ShadowWeaponMesh->SetGenerateOverlapEvents(false);
 	}
 
 	if (InteractionCollision)
@@ -191,6 +216,12 @@ void AWeaponBase::SetPickupPresentation()
 	ThirdPersonWeaponMesh->SetHiddenInGame(false);
 	ThirdPersonWeaponMesh->SetCastShadow(true);
 	ThirdPersonWeaponMesh->SetCastHiddenShadow(false);
+	if (ShadowWeaponMesh)
+	{
+		ShadowWeaponMesh->SetHiddenInGame(true);
+		ShadowWeaponMesh->SetCastShadow(false);
+		ShadowWeaponMesh->SetCastHiddenShadow(false);
+	}
 	SetEquippedCollisionEnabled(true);
 }
 
@@ -205,7 +236,44 @@ void AWeaponBase::SetEquippedPresentation()
 	ThirdPersonWeaponMesh->SetHiddenInGame(false);
 	ThirdPersonWeaponMesh->SetCastShadow(true);
 	ThirdPersonWeaponMesh->SetCastHiddenShadow(true);
+	RefreshShadowWeaponPresentation();
 	SetEquippedCollisionEnabled(false);
+}
+
+void AWeaponBase::RefreshShadowWeaponPresentation()
+{
+	if (!ShadowWeaponMesh)
+	{
+		return;
+	}
+
+	AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
+	const bool bLocalView = Shooter && Shooter->IsLocallyControlled();
+
+	if (!ShadowWeaponMesh->GetSkeletalMeshAsset() && ThirdPersonWeaponMesh)
+	{
+		ShadowWeaponMesh->SetSkeletalMeshAsset(ThirdPersonWeaponMesh->GetSkeletalMeshAsset());
+	}
+
+	if (ThirdPersonWeaponMesh)
+	{
+		ShadowWeaponMesh->SetLeaderPoseComponent(ThirdPersonWeaponMesh);
+		ThirdPersonWeaponMesh->SetCastShadow(!bLocalView);
+		ThirdPersonWeaponMesh->SetCastHiddenShadow(false);
+	}
+
+	ShadowWeaponMesh->SetHiddenInGame(true);
+	ShadowWeaponMesh->SetVisibility(true, true);
+	ShadowWeaponMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	ShadowWeaponMesh->SetCollisionResponseToAllChannels(ECR_Ignore);
+	ShadowWeaponMesh->SetGenerateOverlapEvents(false);
+	ShadowWeaponMesh->SetOwnerNoSee(false);
+	ShadowWeaponMesh->SetOnlyOwnerSee(false);
+	ShadowWeaponMesh->SetRenderInMainPass(true);
+	ShadowWeaponMesh->SetRenderInDepthPass(false);
+	ShadowWeaponMesh->SetCastShadow(bLocalView);
+	ShadowWeaponMesh->SetCastHiddenShadow(bLocalView);
+	ShadowWeaponMesh->SetComponentTickEnabled(bLocalView);
 }
 
 void AWeaponBase::ApplyReplicatedPresentation()
@@ -220,6 +288,10 @@ void AWeaponBase::ApplyReplicatedPresentation()
 
 	FirstPersonWeaponMesh->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
 	ThirdPersonWeaponMesh->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
+	if (ShadowWeaponMesh)
+	{
+		ShadowWeaponMesh->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
+	}
 
 	FirstPersonWeaponMesh->AttachToComponent(
 		SceneRoot,
@@ -230,6 +302,13 @@ void AWeaponBase::ApplyReplicatedPresentation()
 		SceneRoot,
 		FAttachmentTransformRules::SnapToTargetNotIncludingScale
 	);
+	if (ShadowWeaponMesh)
+	{
+		ShadowWeaponMesh->AttachToComponent(
+			SceneRoot,
+			FAttachmentTransformRules::SnapToTargetNotIncludingScale
+		);
+	}
 
 	SetPickupPresentation();
 }
@@ -356,6 +435,13 @@ void AWeaponBase::OnEquipped(ACharacter* NewOwner)
 		ThirdPersonWeaponMesh->SetHiddenInGame(true);
 	}
 
+	if (ShadowWeaponMesh)
+	{
+		ShadowWeaponMesh->SetHiddenInGame(true);
+		ShadowWeaponMesh->SetCastShadow(false);
+		ShadowWeaponMesh->SetCastHiddenShadow(false);
+	}
+
 	UE_LOG(LogTemp, Log, TEXT("%s [%s] OnEquipped Owner=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(NewOwner));
 	ForceNetUpdate();
 }
@@ -441,6 +527,16 @@ void AWeaponBase::AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacter* New
 		);
 	}
 
+	if (USkeletalMeshComponent* ShadowParent = Shooter->GetShadowMesh())
+	{
+		Weapon->GetShadowWeaponMesh()->AttachToComponent(
+			ShadowParent,
+			WeaponAttachRules,
+			ThirdPersonSocketName
+		);
+		Weapon->RefreshShadowWeaponPresentation();
+	}
+
 	UE_LOG(
 		LogTemp,
 		Warning,
@@ -499,6 +595,13 @@ void AWeaponBase::OnUnequipped()
 		ThirdPersonWeaponMesh->SetCastHiddenShadow(false);
 	}
 
+	if (ShadowWeaponMesh)
+	{
+		ShadowWeaponMesh->SetHiddenInGame(true);
+		ShadowWeaponMesh->SetCastShadow(false);
+		ShadowWeaponMesh->SetCastHiddenShadow(false);
+	}
+
 	SetEquippedCollisionEnabled(false);
 
 	UE_LOG(LogTemp, Log, TEXT("%s [%s] OnUnequipped"), OutlierNet::GetNetPrefix(this), *GetName());
@@ -518,6 +621,10 @@ void AWeaponBase::OnDropped(const FTransform& DropTransform, AFirstPersonCharact
 
 	FirstPersonWeaponMesh->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
 	ThirdPersonWeaponMesh->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
+	if (ShadowWeaponMesh)
+	{
+		ShadowWeaponMesh->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
+	}
 
 	FirstPersonWeaponMesh->AttachToComponent(
 		SceneRoot,
@@ -528,6 +635,13 @@ void AWeaponBase::OnDropped(const FTransform& DropTransform, AFirstPersonCharact
 		SceneRoot,
 		FAttachmentTransformRules::SnapToTargetNotIncludingScale
 	);
+	if (ShadowWeaponMesh)
+	{
+		ShadowWeaponMesh->AttachToComponent(
+			SceneRoot,
+			FAttachmentTransformRules::SnapToTargetNotIncludingScale
+		);
+	}
 
 	SetActorTransform(DropTransform, false, nullptr, ETeleportType::TeleportPhysics);
 	SetPickupPresentation();

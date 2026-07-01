@@ -12,6 +12,8 @@
 
 class UProceduralAnimValues;
 class AWeaponBase;
+class UAnimSequenceBase;
+struct FWeaponValues;
 
 /**
  * 
@@ -46,6 +48,7 @@ protected:
 
 	void UpdateFirstPersonProceduralValues(float DeltaSeconds);
 	void UpdateFirstPersonProceduralRuntime();
+	void UpdateWallOffset(float DeltaSeconds, const FWeaponValues* WeaponValues);
 
 protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Stat)
@@ -282,10 +285,16 @@ protected:
 	FRotator ViewModelLeftUpperArmPitchRot = FRotator::ZeroRotator;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|PitchOffset")
+	FRotator ViewModelLeftLowerArmPitchRot = FRotator::ZeroRotator;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|PitchOffset")
 	FVector ViewModelStandLeftUpperArmPitchLoc = FVector::ZeroVector;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|PitchOffset")
 	FRotator ViewModelStandLeftUpperArmPitchRot = FRotator::ZeroRotator;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|PitchOffset")
+	FRotator ViewModelStandLeftLowerArmPitchRot = FRotator::ZeroRotator;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|Aim")
 	float ReloadAimAlpha = 0.0f;
@@ -336,10 +345,57 @@ protected:
 	float WallOffsetAlpha = 0.0f;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|WallOffset")
+	float WallMuzzleBlockAlpha = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|WallOffset")
 	FVector ViewModelWallOffsetLoc = FVector::ZeroVector;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|WallOffset")
 	FRotator ViewModelWallOffsetRot = FRotator::ZeroRotator;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|WallOffset")
+	FVector WallOffsetLoc = FVector::ZeroVector;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|WallOffset")
+	FRotator WallOffsetRot = FRotator::ZeroRotator;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|WallOffset")
+	TObjectPtr<UAnimSequenceBase> WallAvoidUpPose = nullptr;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|WallOffset")
+	TObjectPtr<UAnimSequenceBase> WallAvoidDownPose = nullptr;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|WallOffset")
+	float WallAvoidUpAlpha = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|WallOffset")
+	float WallAvoidDownAlpha = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|WallOffset")
+	float WallAvoidSideAlpha = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|WallOffset")
+	float WallAvoidSideSign = 0.0f;
+
+	float WallTargetAlpha = 0.0f;
+	float WallUpTargetAlpha = 0.0f;
+	float WallDownTargetAlpha = 0.0f;
+	float WallSideTargetAlpha = 0.0f;
+	float WallSideTargetSign = 0.0f;
+	float WallMuzzleBlockTargetAlpha = 0.0f;
+	float WallVeryCloseTargetAlpha = 0.0f;
+	float WallVeryCloseAlpha = 0.0f;
+	float WallTopEdgeTargetAlpha = 0.0f;
+	float WallTopEdgeAlpha = 0.0f;
+	float WallCeilingTargetAlpha = 0.0f;
+	float WallCeilingAlpha = 0.0f;
+	float WallHardStopTargetAlpha = 0.0f;
+	float WallHardStopSmoothedTargetAlpha = 0.0f;
+	float WallHardStopAlpha = 0.0f;
+	float WallHardStopSafetyAlpha = 0.0f;
+	float WallMuzzleBlockDownPreferenceTargetAlpha = 0.0f;
+	float WallMuzzleBlockDownPreferenceAlpha = 0.0f;
+	float WallMuzzleBlockReleaseHoldTimer = 0.0f;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|LeftRightWalk")
 	float StrafeWalkAlpha = 0.0f;

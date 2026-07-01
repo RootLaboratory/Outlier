@@ -373,11 +373,28 @@ void ARangedWeaponBase::ApplySightMesh()
 		ThirdSight->SetGenerateOverlapEvents(false);
 		ThirdSight->SetOwnerNoSee(true);
 	}
+
+	if (ShadowSight)
+	{
+		if (SightMesh)
+		{
+			ShadowSight->SetStaticMesh(SightMesh);
+		}
+		ShadowSight->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		ShadowSight->SetCollisionResponseToAllChannels(ECR_Ignore);
+		ShadowSight->SetGenerateOverlapEvents(false);
+		ShadowSight->SetHiddenInGame(true);
+		ShadowSight->SetVisibility(true, true);
+		ShadowSight->SetRenderInMainPass(true);
+		ShadowSight->SetRenderInDepthPass(false);
+		ShadowSight->SetOwnerNoSee(false);
+		ShadowSight->SetOnlyOwnerSee(false);
+	}
 }
 
 void ARangedWeaponBase::ApplyMagazineMeshSettings()
 {
-	UStaticMeshComponent* MagazineComponents[] = { FirstHandMagazineMesh, ThirdHandMagazineMesh };
+	UStaticMeshComponent* MagazineComponents[] = { FirstHandMagazineMesh, ThirdHandMagazineMesh, ShadowHandMagazineMesh };
 	for (UStaticMeshComponent* MagazineComponent : MagazineComponents)
 	{
 		if (!MagazineComponent)
@@ -403,6 +420,13 @@ void ARangedWeaponBase::ApplyMagazineMeshSettings()
 	{
 		ThirdHandMagazineMesh->SetOwnerNoSee(true);
 	}
+	if (ShadowHandMagazineMesh)
+	{
+		ShadowHandMagazineMesh->SetOwnerNoSee(false);
+		ShadowHandMagazineMesh->SetOnlyOwnerSee(false);
+		ShadowHandMagazineMesh->SetRenderInMainPass(true);
+		ShadowHandMagazineMesh->SetRenderInDepthPass(false);
+	}
 }
 
 void ARangedWeaponBase::HideHandMagazine()
@@ -414,6 +438,12 @@ void ARangedWeaponBase::HideHandMagazine()
 	if (ThirdHandMagazineMesh)
 	{
 		ThirdHandMagazineMesh->SetHiddenInGame(true);
+	}
+	if (ShadowHandMagazineMesh)
+	{
+		ShadowHandMagazineMesh->SetHiddenInGame(true);
+		ShadowHandMagazineMesh->SetCastShadow(false);
+		ShadowHandMagazineMesh->SetCastHiddenShadow(false);
 	}
 }
 
@@ -428,6 +458,16 @@ void ARangedWeaponBase::AttachMagazineToLeftHand(AShooterCharacter*)
 	if (ThirdHandMagazineMesh)
 	{
 		ThirdHandMagazineMesh->SetHiddenInGame(!ThirdHandMagazineMesh->GetStaticMesh());
+	}
+	if (ShadowHandMagazineMesh)
+	{
+		const AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
+		const bool bLocalView = Shooter && Shooter->IsLocallyControlled();
+		const bool bShowMagazineShadow = bLocalView && ShadowHandMagazineMesh->GetStaticMesh();
+		ShadowHandMagazineMesh->SetHiddenInGame(true);
+		ShadowHandMagazineMesh->SetVisibility(true, true);
+		ShadowHandMagazineMesh->SetCastShadow(bShowMagazineShadow);
+		ShadowHandMagazineMesh->SetCastHiddenShadow(bShowMagazineShadow);
 	}
 }
 
@@ -469,6 +509,18 @@ void ARangedWeaponBase::AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacte
 				);
 			}
 		}
+
+		if (USkeletalMeshComponent* ShadowMesh = Shooter->GetShadowMesh())
+		{
+			if (ShadowHandMagazineMesh)
+			{
+				ShadowHandMagazineMesh->AttachToComponent(
+					ShadowMesh,
+					FAttachmentTransformRules::SnapToTargetNotIncludingScale,
+					LeftHandMagazineSocketName
+				);
+			}
+		}
 	}
 
 	
@@ -498,7 +550,21 @@ void ARangedWeaponBase::AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacte
 				);
 			}
 		}
+
+		if (USkeletalMeshComponent* ShadowWeapon = Weapon->GetShadowWeaponMesh())
+		{
+			if (ShadowSight)
+			{
+				ShadowSight->AttachToComponent(
+					ShadowWeapon,
+					FAttachmentTransformRules::SnapToTargetNotIncludingScale,
+					SightSocketName
+				);
+			}
+		}
 	}
+
+	RefreshShadowWeaponPresentation();
 
 }
 
@@ -532,6 +598,12 @@ void ARangedWeaponBase::OnEquipped(ACharacter* NewOwner)
 	{
 		ThirdSight->SetHiddenInGame(true);
 	}
+	if (ShadowSight)
+	{
+		ShadowSight->SetHiddenInGame(true);
+		ShadowSight->SetCastShadow(false);
+		ShadowSight->SetCastHiddenShadow(false);
+	}
 	if (FirstHandMagazineMesh)
 	{
 		FirstHandMagazineMesh->SetHiddenInGame(true);
@@ -539,6 +611,12 @@ void ARangedWeaponBase::OnEquipped(ACharacter* NewOwner)
 	if (ThirdHandMagazineMesh)
 	{
 		ThirdHandMagazineMesh->SetHiddenInGame(true);
+	}
+	if (ShadowHandMagazineMesh)
+	{
+		ShadowHandMagazineMesh->SetHiddenInGame(true);
+		ShadowHandMagazineMesh->SetCastShadow(false);
+		ShadowHandMagazineMesh->SetCastHiddenShadow(false);
 	}
 	UpdateLocalAmmoUI();
 }
@@ -556,7 +634,67 @@ void ARangedWeaponBase::ShowEquippedPresentation()
 	{
 		ThirdSight->SetHiddenInGame(!SightMesh);
 	}
+	RefreshShadowWeaponPresentation();
 	HideHandMagazine();
+}
+
+void ARangedWeaponBase::RefreshShadowWeaponPresentation()
+{
+	Super::RefreshShadowWeaponPresentation();
+
+	const AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
+	const bool bLocalView = Shooter && Shooter->IsLocallyControlled();
+
+	if (ShadowSight)
+	{
+		if (SightMesh)
+		{
+			ShadowSight->SetStaticMesh(SightMesh);
+		}
+		const bool bShowSightShadow = bLocalView && SightMesh != nullptr && IsEquipped();
+		ShadowSight->SetHiddenInGame(true);
+		ShadowSight->SetVisibility(true, true);
+		ShadowSight->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		ShadowSight->SetCollisionResponseToAllChannels(ECR_Ignore);
+		ShadowSight->SetGenerateOverlapEvents(false);
+		ShadowSight->SetRenderInMainPass(true);
+		ShadowSight->SetRenderInDepthPass(false);
+		ShadowSight->SetCastShadow(bShowSightShadow);
+		ShadowSight->SetCastHiddenShadow(bShowSightShadow);
+	}
+	if (ThirdSight)
+	{
+		ThirdSight->SetCastShadow(!bLocalView);
+		ThirdSight->SetCastHiddenShadow(false);
+	}
+
+	if (ShadowHandMagazineMesh)
+	{
+		if (MagazineMesh)
+		{
+			ShadowHandMagazineMesh->SetStaticMesh(MagazineMesh);
+		}
+		const bool bShowMagazineShadow =
+			bLocalView &&
+			MagazineMesh != nullptr &&
+			IsEquipped() &&
+			ThirdHandMagazineMesh &&
+			!ThirdHandMagazineMesh->bHiddenInGame;
+		ShadowHandMagazineMesh->SetHiddenInGame(true);
+		ShadowHandMagazineMesh->SetVisibility(true, true);
+		ShadowHandMagazineMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		ShadowHandMagazineMesh->SetCollisionResponseToAllChannels(ECR_Ignore);
+		ShadowHandMagazineMesh->SetGenerateOverlapEvents(false);
+		ShadowHandMagazineMesh->SetRenderInMainPass(true);
+		ShadowHandMagazineMesh->SetRenderInDepthPass(false);
+		ShadowHandMagazineMesh->SetCastShadow(bShowMagazineShadow);
+		ShadowHandMagazineMesh->SetCastHiddenShadow(bShowMagazineShadow);
+	}
+	if (ThirdHandMagazineMesh)
+	{
+		ThirdHandMagazineMesh->SetCastShadow(!bLocalView);
+		ThirdHandMagazineMesh->SetCastHiddenShadow(false);
+	}
 }
 
 void ARangedWeaponBase::OnRep_CurAmmo()
@@ -747,6 +885,9 @@ ARangedWeaponBase::ARangedWeaponBase() : AWeaponBase()
 	FirstSight->SetupAttachment(FirstPersonWeaponMesh);
 	ThirdSight = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ThirdSight"));
 	ThirdSight->SetupAttachment(ThirdPersonWeaponMesh);
+	ShadowSight = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ShadowSight"));
+	ShadowSight->SetupAttachment(ShadowWeaponMesh);
+	ShadowSight->SetHiddenInGame(true);
 
 	FirstHandMagazineMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("FirstHandMagazine"));
 	FirstHandMagazineMesh->SetupAttachment(FirstPersonWeaponMesh);
@@ -755,6 +896,10 @@ ARangedWeaponBase::ARangedWeaponBase() : AWeaponBase()
 	ThirdHandMagazineMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ThirdHandMagazine"));
 	ThirdHandMagazineMesh->SetupAttachment(ThirdPersonWeaponMesh);
 	ThirdHandMagazineMesh->SetHiddenInGame(true);
+
+	ShadowHandMagazineMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ShadowHandMagazine"));
+	ShadowHandMagazineMesh->SetupAttachment(ShadowWeaponMesh);
+	ShadowHandMagazineMesh->SetHiddenInGame(true);
 }
 
 void ARangedWeaponBase::OnConstruction(const FTransform& Transform)

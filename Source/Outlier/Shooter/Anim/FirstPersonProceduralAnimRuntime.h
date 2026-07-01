@@ -3,6 +3,8 @@
 #include "CoreMinimal.h"
 #include "FirstPersonProceduralAnimRuntime.generated.h"
 
+class UAnimSequenceBase;
+
 USTRUCT(BlueprintType)
 struct OUTLIER_API FFirstPersonProceduralAnimRuntime
 {
@@ -50,6 +52,9 @@ struct OUTLIER_API FFirstPersonProceduralAnimRuntime
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reload|Left Hand")
 	FRotator LeftUpperArmReloadRot = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reload|Left Hand")
+	FRotator LeftLowerArmReloadRot = FRotator::ZeroRotator;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reload|Left Hand IK")
 	FVector LeftHandReloadIKLoc = FVector::ZeroVector;
@@ -116,6 +121,12 @@ struct OUTLIER_API FFirstPersonProceduralAnimRuntime
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Left Hand")
 	float LeftUpperArmPitchAlpha = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Left Hand")
+	FRotator LeftLowerArmPitchRot = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Left Hand")
+	float LeftLowerArmPitchAlpha = 0.0f;
 
 	// Route 1: ik_hand_gun(총손) 로컬 기준 왼손 그립 오프셋(정적).
 	// 그래프에서 ik_hand_l = CopyBone(ik_hand_gun) + 이 오프셋(Bone Space)으로 두면
@@ -204,7 +215,26 @@ struct OUTLIER_API FFirstPersonProceduralAnimRuntime
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wall Offset")
 	float WallOffsetAlpha = 0.0f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wall Offset")
+	float WallMuzzleBlockAlpha = 0.0f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wall Offset")
+	TObjectPtr<UAnimSequenceBase> WallAvoidUpPose = nullptr;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wall Offset")
+	TObjectPtr<UAnimSequenceBase> WallAvoidDownPose = nullptr;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wall Offset")
+	float WallAvoidUpAlpha = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wall Offset")
+	float WallAvoidDownAlpha = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wall Offset")
+	float WallAvoidSideAlpha = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wall Offset")
+	float WallAvoidSideSign = 0.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Start Stop")
 	FVector StartStopLoc = FVector::ZeroVector;

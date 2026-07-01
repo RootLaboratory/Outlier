@@ -45,6 +45,9 @@ protected:
 	TObjectPtr<USkeletalMeshComponent> ThirdPersonWeaponMesh;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
+	TObjectPtr<USkeletalMeshComponent> ShadowWeaponMesh;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
 	TObjectPtr<USphereComponent> InteractionCollision;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Interaction")
@@ -159,6 +162,7 @@ public:
 	virtual void AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacter* NewOwner);
 	void AttachWeaponMeshesToOwnerMeshes();
 	virtual void ShowEquippedPresentation();
+	virtual void RefreshShadowWeaponPresentation();
 
 	virtual void OnUnequipped();
 
@@ -185,6 +189,7 @@ public:
 
 	USkeletalMeshComponent* GetFirstPersonWeaponMesh() const { return FirstPersonWeaponMesh; }
 	USkeletalMeshComponent* GetThirdPersonWeaponMesh() const { return ThirdPersonWeaponMesh; }
+	USkeletalMeshComponent* GetShadowWeaponMesh() const { return ShadowWeaponMesh; }
 
 	UFUNCTION(BlueprintCallable, Category = IK)
 	FName GetLeftHandIKSocketName() const

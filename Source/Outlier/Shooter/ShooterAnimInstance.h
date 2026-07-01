@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Animation/AnimInstance.h"
+#include "Shooter/Anim/ThirdPersonProceduralAnimRuntime.h"
 #include "Weapon/WeaponBase.h"
 #include "Shooter/ShooterCharacter.h"
 #include "ShooterAnimInstance.generated.h"
@@ -27,6 +28,10 @@ protected:
 
 	UFUNCTION()
 	void HandleOwnerMovementStateChanged(EMovementState NewState);
+
+	void ResetThirdPersonProceduralRuntime();
+	void UpdateThirdPersonProceduralRuntime(float DeltaSeconds, bool bHasWeapon, bool bHasLeftHandIK);
+	float UpdateTurnInPlaceYaw(float DeltaSeconds, bool bCanTurnInPlace);
 
 protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Stat)
@@ -92,8 +97,77 @@ protected:
 	UPROPERTY()
 	TObjectPtr<AShooterCharacter> CachedShooterCharacter = nullptr;
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = IK)
+	UPROPERTY(Transient)
 	FTransform LeftHandIKTransform = FTransform::Identity;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TurnInPlace")
+	float TurnInPlaceYaw = 0.0f;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TurnInPlace")
+	float TurnInPlaceDirection = 0.0f;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TurnInPlace")
+	float TurnInPlaceVisualYaw = 0.0f;
+
+	float PreviousBaseAimYaw = 0.0f;
+	float TurnInPlaceResetTimeRemaining = 0.0f;
+	uint8 bHasPreviousBaseAimYaw : 1 = false;
+	uint8 bIsTurnInPlaceConsuming : 1 = false;
+	uint8 bTurnInPlaceResetRequested : 1 = false;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Anim|TP Procedural")
+	FThirdPersonProceduralAnimRuntime ThirdPersonProceduralRuntime;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|TP Procedural|Aim", meta = (ClampMin = "0.0"))
+	float ThirdPersonAimBlendInSpeed = 12.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|TP Procedural|Aim", meta = (ClampMin = "0.0"))
+	float ThirdPersonAimBlendOutSpeed = 10.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|TP Procedural|Upper Body", meta = (ClampMin = "0.0"))
+	float ThirdPersonUpperBodyBlendInSpeed = 14.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|TP Procedural|Upper Body", meta = (ClampMin = "0.0"))
+	float ThirdPersonUpperBodyBlendOutSpeed = 12.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|TP Procedural|Turn In Place", meta = (ClampMin = "0.0"))
+	float ThirdPersonTurnInPlaceMinSpeed = 20.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|TP Procedural|Turn In Place", meta = (ClampMin = "0.0"))
+	float ThirdPersonTurnInPlaceStartYaw = 55.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|TP Procedural|Turn In Place", meta = (ClampMin = "0.0"))
+	float ThirdPersonTurnInPlaceFullYaw = 115.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|TP Procedural|Turn In Place", meta = (ClampMin = "0.0"))
+	float ThirdPersonTurnInPlaceYawConsumeSpeed = 160.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|TP Procedural|Turn In Place", meta = (ClampMin = "0.0"))
+	float ThirdPersonTurnInPlaceResetHoldTime = 0.16f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|TP Procedural|Turn In Place", meta = (ClampMin = "0.0"))
+	float ThirdPersonTurnInPlaceBlendInSpeed = 8.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|TP Procedural|Turn In Place", meta = (ClampMin = "0.0"))
+	float ThirdPersonTurnInPlaceBlendOutSpeed = 10.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|TP Procedural|Turn In Place", meta = (ClampMin = "0.0"))
+	float ThirdPersonTurnInPlaceMinPlayRate = 0.8f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|TP Procedural|Turn In Place", meta = (ClampMin = "0.0"))
+	float ThirdPersonTurnInPlaceMaxPlayRate = 1.25f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|TP Procedural|Left Hand IK", meta = (ClampMin = "0.0"))
+	float ThirdPersonLeftHandIKBlendInSpeed = 20.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|TP Procedural|Left Hand IK", meta = (ClampMin = "0.0"))
+	float ThirdPersonLeftHandIKBlendOutSpeed = 14.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|TP Procedural|Action", meta = (ClampMin = "0.0"))
+	float ThirdPersonActionBlendInSpeed = 18.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|TP Procedural|Action", meta = (ClampMin = "0.0"))
+	float ThirdPersonActionBlendOutSpeed = 14.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = IK)
 	float LeftHandIKRiflePitchOffsetStart = 10.0f;

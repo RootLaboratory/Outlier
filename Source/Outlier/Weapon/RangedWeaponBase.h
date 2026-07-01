@@ -45,6 +45,9 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapon|Sight")
 	UStaticMeshComponent* ThirdSight = nullptr;
 
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapon|Sight")
+	UStaticMeshComponent* ShadowSight = nullptr;
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Sight")
 	FName SightSocketName = FName("Sight");
 
@@ -56,6 +59,9 @@ protected:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapon|Magazine")
 	UStaticMeshComponent* ThirdHandMagazineMesh = nullptr;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapon|Magazine")
+	UStaticMeshComponent* ShadowHandMagazineMesh = nullptr;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Magazine")
 	FName LeftHandMagazineSocketName = FName("Magazine");
@@ -199,6 +205,7 @@ public:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const;
 	virtual void OnEquipped(ACharacter* NewOwner) override;
 	virtual void ShowEquippedPresentation() override;
+	virtual void RefreshShadowWeaponPresentation() override;
 
 	virtual bool CanAttack() const override;
 	virtual void StartAttack() override;

@@ -7,6 +7,8 @@
 #include "Shooter/ShooterCharacter.h"
 #include "ShooterCombatComponent.generated.h"
 
+class UAnimMontage;
+
 UCLASS(ClassGroup=(Shooter), meta=(BlueprintSpawnableComponent))
 class OUTLIER_API UShooterCombatComponent : public UShooterCharacterComponentBase
 {
@@ -42,10 +44,12 @@ protected:
 
 	uint8 bPendingSprintExitFire : 1 = false;
 
+	bool IsActionLockBlockingAimFire(const AShooterCharacter& ShooterCharacter) const;
 	bool ShouldDelayFireForSprintExit(const AShooterCharacter& ShooterCharacter) const;
 	void QueueSprintExitFire(AShooterCharacter& ShooterCharacter);
 	void RetryPendingSprintExitFire();
 	void ClearPendingSprintExitFire();
+	void HandleReloadMontageEnded(UAnimMontage* Montage, bool bInterrupted);
 
 public:
 	UShooterCombatComponent();

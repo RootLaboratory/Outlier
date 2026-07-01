@@ -401,7 +401,7 @@ void UShooterMovementComponent::RefreshMovementState()
 	{
 		NewState = EMovementState::Slide;
 	}
-	else if (!ShooterCharacter->GetCharacterMovement()->IsMovingOnGround())
+	else if (ShooterCharacter->GetCharacterMovement()->IsFalling())
 	{
 		NewState = EMovementState::Jump;
 	}

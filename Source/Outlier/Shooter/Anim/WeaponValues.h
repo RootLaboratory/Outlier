@@ -108,6 +108,18 @@ struct OUTLIER_API FWeaponValues
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Reload|LeftHand")
 	FRotator LeftHandReloadGripOffsetRot = FRotator::ZeroRotator;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Reload|LeftHand")
+	FVector LeftUpperArmReloadLoc = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Reload|LeftHand")
+	FRotator LeftUpperArmReloadRot = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Reload|LeftHand")
+	FRotator LeftLowerArmReloadRot = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Reload|LeftHand IK")
+	FVector LeftHandReloadJointTargetLoc = FVector::ZeroVector;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Reload|LeftHand IK")
 	FVector LeftHandReloadIKLoc = FVector::ZeroVector;
 
@@ -116,6 +128,9 @@ struct OUTLIER_API FWeaponValues
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Reload|LeftHand IK", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float LeftHandReloadIKAlpha = 0.35f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Reload|LeftHand IK", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float LeftHandReloadArmAlpha = 1.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Reload|RightHand")
 	FVector RightHandReloadIKLocOffset = FVector::ZeroVector;
@@ -149,6 +164,30 @@ struct OUTLIER_API FWeaponValues
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LeftHand|Follow")
 	float LeftHandSprintRotScale = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LeftHand|Grip Socket")
+	FVector LeftHandGripSocketLocOffset = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LeftHand|Grip Socket")
+	FRotator LeftHandGripSocketRotOffset = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LeftHand|Grip Socket|WallOffset")
+	FVector LeftHandWallMuzzleBlockSocketLocOffset = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LeftHand|Grip Socket|WallOffset")
+	FRotator LeftHandWallMuzzleBlockSocketRotOffset = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LeftHand|Grip Socket|WallOffset", meta = (ClampMin = "0.0"))
+	float LeftHandWallMuzzleBlockSocketOffsetAlphaScale = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LeftHand|Grip Socket|WallOffset|VeryClose")
+	FVector LeftHandWallVeryCloseSocketLocOffset = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LeftHand|Grip Socket|WallOffset|VeryClose")
+	FRotator LeftHandWallVeryCloseSocketRotOffset = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LeftHand|Grip Socket|WallOffset|VeryClose", meta = (ClampMin = "0.0"))
+	float LeftHandWallVeryCloseSocketOffsetAlphaScale = 1.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LeftHand|Follow")
 	FVector LeftHandSprintJointTargetLoc = FVector::ZeroVector;
@@ -283,6 +322,8 @@ struct OUTLIER_API FWeaponValues
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Pitch Offset|Curve")
 	float PitchOffsetMax = 60.0f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Pitch Offset|LowerArm")
+	FRotator LeftLowerArmRot = FRotator::ZeroRotator;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Pitch Offset|LeftHand Curve")
 	TObjectPtr<UCurveVector> PitchLeftHandJointTargetLocCurve = nullptr;
@@ -309,10 +350,223 @@ struct OUTLIER_API FWeaponValues
 	FRotator JumpLandRot = FRotator::ZeroRotator;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset")
-	FVector WallOffsetLoc = FVector::ZeroVector;
+	float WallTraceDistance = 110.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset")
-	FRotator WallOffsetRot = FRotator::ZeroRotator;
+	float WallTraceRadius = 14.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset")
+	float WallSafeDistance = 70.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset")
+	float WallProbeForwardOffset = 45.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset")
+	float WallProbeRightOffset = 12.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset")
+	float WallProbeUpOffset = -8.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset")
+	float WallVerticalProbeOffset = 22.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset")
+	float WallSideProbeOffset = 22.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|Pose")
+	TObjectPtr<UAnimSequenceBase> WallAvoidUpPose = nullptr;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|Pose")
+	TObjectPtr<UAnimSequenceBase> WallAvoidDownPose = nullptr;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|Pose", meta = (ClampMin = "0.0"))
+	float WallAvoidUpPoseAlphaScale = 1.35f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|Pose", meta = (ClampMin = "0.0"))
+	float WallMuzzleBlockUpPoseScale = 0.75f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|Pose", meta = (ClampMin = "0.0"))
+	float WallMuzzleBlockDownPoseScale = 0.75f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset")
+	FVector WallMaxOffsetLoc = FVector(0.0f, -4.0f, -1.0f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|MuzzleBlock")
+	float WallMuzzleBlockTraceDistance = 60.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|MuzzleBlock")
+	float WallMuzzleBlockTraceRadius = 5.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|MuzzleBlock")
+	float WallMuzzleBlockSafeDistance = 40.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|MuzzleBlock")
+	float WallMuzzleBlockForwardOffset = 85.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|MuzzleBlock")
+	float WallMuzzleBlockRightOffset = 10.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|MuzzleBlock")
+	float WallMuzzleBlockUpOffset = -8.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|MuzzleBlock")
+	float WallBarrelBlockLength = 70.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|MuzzleBlock")
+	float WallBarrelBlockTraceRadius = 6.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|MuzzleBlock")
+	float WallBarrelBlockSafeDistance = 55.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|MuzzleBlock", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float WallTopEdgeBarrelBlockScale = 0.35f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|MuzzleBlock", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float WallTopEdgeVeryCloseScale = 0.25f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|MuzzleBlock", meta = (ClampMin = "0.0"))
+	float WallTopEdgeBlendInSpeed = 18.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|MuzzleBlock", meta = (ClampMin = "0.0"))
+	float WallTopEdgeBlendOutSpeed = 8.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|Ceiling", meta = (ClampMin = "0.0"))
+	float WallCeilingBlendInSpeed = 16.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|Ceiling", meta = (ClampMin = "0.0"))
+	float WallCeilingBlendOutSpeed = 10.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|MuzzleBlock", meta = (ClampMin = "0.0"))
+	float WallPitchBlockTraceRadiusBoost = 6.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|MuzzleBlock", meta = (ClampMin = "0.0"))
+	float WallPitchBlockLengthBoost = 20.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|MuzzleBlock")
+	FVector WallMuzzleBlockLoc = FVector(0.0f, -14.0f, -2.0f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|MuzzleBlock")
+	FRotator WallMuzzleBlockRot = FRotator(-25.0f, 0.0f, 0.0f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|MuzzleBlock")
+	FRotator WallMuzzleBlockDownRot = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|MuzzleBlock")
+	float WallMuzzleBlockBlendInSpeed = 50.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|MuzzleBlock")
+	float WallMuzzleBlockBlendOutSpeed = 14.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|MuzzleBlock", meta = (ClampMin = "0.0"))
+	float WallMuzzleBlockReleaseHoldTime = 0.12f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|MuzzleBlock", meta = (ClampMin = "0.0"))
+	float WallMuzzleBlockPreferenceBlendSpeed = 10.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|HardStop", meta = (ClampMin = "0.0"))
+	float WallHardStopClearance = 18.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|HardStop", meta = (ClampMin = "0.0"))
+	float WallHardStopRange = 22.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|HardStop")
+	FVector WallHardStopLoc = FVector(0.0f, -16.0f, -5.0f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|HardStop")
+	FRotator WallHardStopRot = FRotator(-8.0f, 0.0f, 0.0f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|HardStop", meta = (ClampMin = "0.0"))
+	float WallHardStopBlendInSpeed = 80.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|HardStop", meta = (ClampMin = "0.0"))
+	float WallHardStopBlendOutSpeed = 18.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|HardStop", meta = (ClampMin = "0.0"))
+	float WallHardStopTargetSmoothSpeed = 8.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|HardStop", meta = (ClampMin = "0.0"))
+	float WallHardStopSafetyBlendInSpeed = 80.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|HardStop", meta = (ClampMin = "0.0"))
+	float WallHardStopSafetyBlendOutSpeed = 22.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|VeryClose", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float WallVeryCloseStartAlpha = 0.9f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|VeryClose", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float WallVeryCloseFullAlpha = 0.98f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|VeryClose")
+	FVector WallVeryCloseLoc = FVector(0.0f, -6.0f, -4.0f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|VeryClose")
+	FRotator WallVeryCloseRot = FRotator(-8.0f, 0.0f, 0.0f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|VeryClose", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float WallVeryCloseMuzzleBlockScale = 0.2f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|VeryClose", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float WallVeryCloseMuzzleRotSuppressScale = 0.65f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|VeryClose", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float WallVeryCloseMuzzleOffsetSuppressScale = 0.75f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|VeryClose", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float WallVeryClosePoseSuppressScale = 0.7f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|VeryClose")
+	float WallVeryCloseBlendInSpeed = 50.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|VeryClose")
+	float WallVeryCloseBlendOutSpeed = 12.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset")
+	FRotator WallMaxOffsetRot = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset")
+	FRotator WallSideOffsetRot = FRotator(0.0f, 10.0f, 12.0f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|LeftHand")
+	FVector LeftHandWallSideIKLocOffset = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|LeftHand", meta = (DeprecatedProperty, DeprecationMessage = "Use Wall Muzzle Block arm offsets instead. MuzzleBlock should not move ik_hand_l directly."))
+	FVector LeftHandWallMuzzleBlockIKLocOffset = FVector(0.0f, 2.0f, -2.0f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|LeftHand", meta = (DeprecatedProperty, DeprecationMessage = "Use Wall Muzzle Block arm offsets instead. MuzzleBlock should not rotate ik_hand_l directly."))
+	FRotator LeftHandWallMuzzleBlockIKRotOffset = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|LeftHand", meta = (ClampMin = "0.0", DeprecatedProperty, DeprecationMessage = "Use LeftHandWallMuzzleBlockArmAlphaScale instead."))
+	float LeftHandWallMuzzleBlockIKLocAlphaScale = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|LeftHand", meta = (ClampMin = "0.0"))
+	float LeftHandWallMuzzleBlockArmAlphaScale = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|LeftHand")
+	FVector LeftHandWallMuzzleBlockJointTargetLoc = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|LeftHand")
+	FVector LeftUpperArmWallMuzzleBlockLoc = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|LeftHand")
+	FRotator LeftUpperArmWallMuzzleBlockRot = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|LeftHand")
+	FRotator LeftLowerArmWallMuzzleBlockRot = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float WallSideCloseOffsetScale = 0.35f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset")
+	float WallBlendInSpeed = 40.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset")
+	float WallBlendOutSpeed = 8.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|Debug")
+	uint8 bDrawWallOffsetDebug : 1 = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|Debug", meta = (EditCondition = "bDrawWallOffsetDebug", ClampMin = "0.0"))
+	float WallOffsetDebugDrawTime = 0.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|StartStop")
 	FVector StartMoveLoc = FVector(-0.4f, 0.0f, -0.1f);
