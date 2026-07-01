@@ -8,6 +8,7 @@
 #include "Components/CapsuleComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/SceneCaptureComponent2D.h"
+#include "Curves/CurveFloat.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Controller.h"
 #include "GameFramework/PlayerController.h"
@@ -49,6 +50,16 @@ AShooterCharacter::AShooterCharacter() : AFirstPersonCharacter()
 
 	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
 
+	ShadowMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("ShadowMesh"));
+	ShadowMesh->SetupAttachment(GetCapsuleComponent());
+	ShadowMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	ShadowMesh->SetOnlyOwnerSee(false);
+	ShadowMesh->SetOwnerNoSee(false);
+	ShadowMesh->SetCastShadow(false);
+	ShadowMesh->SetCastHiddenShadow(false);
+	ShadowMesh->SetRenderInMainPass(true);
+	ShadowMesh->SetRenderInDepthPass(false);
+
 	CaptureComponent = CreateDefaultSubobject< USceneCaptureComponent2D>(TEXT("PartnerCameraCapture"));
 	CaptureComponent->SetupAttachment(RootComponent);
 	HealthComponent = CreateDefaultSubobject<UShooterHealthComponent>(TEXT("HealthComponent"));
@@ -61,9 +72,15 @@ void AShooterCharacter::BeginPlay()
 {
 	Super::BeginPlay();
 
+	RefreshFirstPersonShadowPolicy();
+
 	if (USceneComponent* CameraRoot = GetFirstPersonCameraRoot())
 	{
 		BaseFirstPersonCameraRootRotation = CameraRoot->GetRelativeRotation();
+	}
+	if (FirstPersonCamera)
+	{
+		BaseCameraFOV = FirstPersonCamera->FieldOfView;
 	}
 
 	if (USceneComponent* ViewModelRoot = GetFirstPersonViewModelRoot())
@@ -101,6 +118,15 @@ void AShooterCharacter::BeginPlay()
 	RefreshCombatState();
 }
 
+void AShooterCharacter::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+
+	UpdateSlideCameraEffect(DeltaSeconds);
+	UpdateCameraFOV(DeltaSeconds);
+	UpdateCameraRecoil(DeltaSeconds);
+}
+
 void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	if (HasAuthority())
@@ -109,6 +135,68 @@ void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	}
 
 	Super::EndPlay(EndPlayReason);
+}
+
+void AShooterCharacter::PossessedBy(AController* NewController)
+{
+	Super::PossessedBy(NewController);
+
+	RefreshFirstPersonShadowPolicy();
+}
+
+void AShooterCharacter::OnRep_Controller()
+{
+	Super::OnRep_Controller();
+
+	RefreshFirstPersonShadowPolicy();
+}
+
+void AShooterCharacter::RefreshFirstPersonShadowPolicy()
+{
+	const bool bLocalView = IsLocallyControlled();
+
+	if (USkeletalMeshComponent* ThirdPersonMesh = GetMesh())
+	{
+		ThirdPersonMesh->SetOwnerNoSee(bLocalView);
+		ThirdPersonMesh->SetCastShadow(!bLocalView);
+		ThirdPersonMesh->SetCastHiddenShadow(false);
+	}
+
+	if (FirstPersonMesh)
+	{
+		FirstPersonMesh->SetOnlyOwnerSee(true);
+		FirstPersonMesh->SetCastShadow(false);
+		FirstPersonMesh->SetCastHiddenShadow(false);
+	}
+
+	if (ShadowMesh)
+	{
+		USkeletalMeshComponent* ThirdPersonMesh = GetMesh();
+		if (ThirdPersonMesh)
+		{
+			if (!ShadowMesh->GetSkeletalMeshAsset())
+			{
+				ShadowMesh->SetSkeletalMeshAsset(ThirdPersonMesh->GetSkeletalMeshAsset());
+			}
+			ShadowMesh->SetLeaderPoseComponent(ThirdPersonMesh);
+		}
+
+		ShadowMesh->SetOnlyOwnerSee(false);
+		ShadowMesh->SetOwnerNoSee(false);
+		ShadowMesh->SetHiddenInGame(true);
+		ShadowMesh->SetVisibility(true, true);
+		ShadowMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		ShadowMesh->SetRenderInMainPass(true);
+		ShadowMesh->SetRenderInDepthPass(false);
+		ShadowMesh->SetCastShadow(bLocalView);
+		ShadowMesh->SetCastHiddenShadow(bLocalView);
+		ShadowMesh->SetComponentTickEnabled(bLocalView);
+	}
+
+	if (AWeaponBase* EquippedWeapon = GetCurrentWeapon())
+	{
+		EquippedWeapon->RefreshShadowWeaponPresentation();
+	}
 }
 
 void AShooterCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
@@ -217,6 +305,7 @@ void AShooterCharacter::LookInput(const FInputActionValue& Value)
 	if (bIsSuitMenuOpen) return;
 
 	FVector2D LookAxisVector = Value.Get<FVector2D>();
+	LookAxisVector *= GetLookSensitivityScale();
 
 	DoAim(LookAxisVector.X, -LookAxisVector.Y);
 }
@@ -482,14 +571,63 @@ void AShooterCharacter::TrySlide()
 
 void AShooterCharacter::TryLean(const FInputActionValue& Value)
 {
-	if (bIsDead)
+	if (!CanLean())
 	{
+		StopLean();
 		return;
 	}
 
 	const float LeanAlpha = Value.Get<float>();
 	TargetLeanAlpha = FMath::Abs(LeanAlpha) > KINDA_SMALL_NUMBER ? LeanAlpha : 0.0f;
 	StartLeanUpdate();
+}
+
+void AShooterCharacter::StopLean()
+{
+	TargetLeanAlpha = 0.0f;
+	StartLeanUpdate();
+}
+
+void AShooterCharacter::UpdateSlideCameraEffect(float DeltaSeconds)
+{
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+
+	const float InterpSpeed = TargetSlideCameraEffectAlpha > CurrentSlideCameraEffectAlpha
+		? SlideCameraEffectInterpInSpeed
+		: SlideCameraEffectInterpOutSpeed;
+
+	CurrentSlideCameraEffectAlpha = FMath::FInterpTo(
+		CurrentSlideCameraEffectAlpha,
+		TargetSlideCameraEffectAlpha,
+		DeltaSeconds,
+		InterpSpeed
+	);
+
+	if (TargetSlideCameraEffectAlpha > KINDA_SMALL_NUMBER)
+	{
+		SlideCameraEffectElapsedTime += DeltaSeconds;
+	}
+
+	const float NormalizedSlideCameraTime = SlideCameraEffectDuration > KINDA_SMALL_NUMBER
+		? FMath::Clamp(SlideCameraEffectElapsedTime / SlideCameraEffectDuration, 0.0f, 1.0f)
+		: 0.0f;
+	const float RollCurveAlpha = SlideCameraRollCurve
+		? SlideCameraRollCurve->GetFloatValue(NormalizedSlideCameraTime)
+		: 1.0f;
+
+	ActiveSlideCameraRollDegrees = TargetSlideCameraRollDegrees * RollCurveAlpha * CurrentSlideCameraEffectAlpha;
+
+	if (CurrentSlideCameraEffectAlpha <= KINDA_SMALL_NUMBER &&
+		TargetSlideCameraEffectAlpha <= KINDA_SMALL_NUMBER)
+	{
+		SlideCameraEffectElapsedTime = 0.0f;
+		SlideCameraEffectDuration = 0.0f;
+		TargetSlideCameraRollDegrees = 0.0f;
+		ActiveSlideCameraRollDegrees = 0.0f;
+	}
 }
 
 void AShooterCharacter::OnRep_CurHP()
@@ -553,7 +691,7 @@ void AShooterCharacter::EquipWeapon(AWeaponBase* Weapon)
 
 float AShooterCharacter::GetAimYawForAnimation() const
 {
-	return 0.0f;
+	return FRotator::NormalizeAxis(GetBaseAimRotation().Yaw - GetActorRotation().Yaw);
 }
 
 float AShooterCharacter::GetAimPitchForAnimation() const
@@ -584,6 +722,15 @@ bool AShooterCharacter::CanFireInCurrentState() const
 bool AShooterCharacter::CanInteract() const
 {
 	return !bIsDead;
+}
+
+bool AShooterCharacter::CanLean() const
+{
+	return !bIsDead
+		&& !IsSprinting()
+		&& !GetCharacterMovement()->IsFalling()
+		&& !IsSliding()
+		&& !IsReloading();
 }
 
 bool AShooterCharacter::WantsToAim() const
@@ -714,9 +861,13 @@ void AShooterCharacter::ResetSecondaryCooldownInternal()
 
 bool AShooterCharacter::CanStartAction(EShooterActionLock NextLock) const
 {
+	const bool bCanOverrideSlideLock =
+		ActionLock == EShooterActionLock::Slide &&
+		(NextLock == EShooterActionLock::Reload || NextLock == EShooterActionLock::Equip);
+
 	return !bIsDead
 		&& NextLock != EShooterActionLock::None
-		&& ActionLock == EShooterActionLock::None;
+		&& (ActionLock == EShooterActionLock::None || bCanOverrideSlideLock);
 }
 
 void AShooterCharacter::BeginActionLock(EShooterActionLock NewLock)
@@ -828,6 +979,113 @@ void AShooterCharacter::UpdateLeanStep()
 	StopLeanUpdateIfSettled();
 }
 
+void AShooterCharacter::UpdateCameraFOV(float DeltaSeconds)
+{
+	if (!IsLocallyControlled() || !FirstPersonCamera)
+	{
+		return;
+	}
+
+	float TargetFOV = BaseCameraFOV;
+	float FOVInterpSpeed = CameraFOVInterpSpeed;
+	if (IsSprinting())
+	{
+		TargetFOV = SprintCameraFOV;
+	}
+	else if (IsAiming())
+	{
+		TargetFOV = AimCameraFOV;
+		FOVInterpSpeed = AimCameraFOVInterpInSpeed;
+	}
+	else if (FirstPersonCamera->FieldOfView < BaseCameraFOV)
+	{
+		FOVInterpSpeed = AimCameraFOVInterpOutSpeed;
+	}
+
+	TargetFOV += CameraRecoilFOVOffset;
+
+	const float NewFOV = FMath::FInterpTo(
+		FirstPersonCamera->FieldOfView,
+		TargetFOV,
+		DeltaSeconds,
+		FOVInterpSpeed
+	);
+	FirstPersonCamera->SetFieldOfView(NewFOV);
+}
+
+void AShooterCharacter::AddWeaponCameraRecoil(
+	float PitchAmplitude,
+	float YawAmplitude,
+	float DirectionPitchAmplitude,
+	float FOVAmplitude,
+	float RecoverySpeed,
+	const FVector2D& NormalizedShotDirection
+)
+{
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+
+	CameraRecoilTarget.Pitch += PitchAmplitude + (NormalizedShotDirection.Y * DirectionPitchAmplitude);
+	CameraRecoilTarget.Yaw += NormalizedShotDirection.X * YawAmplitude;
+	CameraRecoilRecoverySpeed = FMath::Max(RecoverySpeed, 0.0f);
+	CameraRecoilFOVOffset = FMath::Max(CameraRecoilFOVOffset, FMath::Max(FOVAmplitude, 0.0f));
+}
+
+void AShooterCharacter::UpdateCameraRecoil(float DeltaSeconds)
+{
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+
+	const FRotator NewRecoil = FMath::RInterpTo(
+		CameraRecoilCurrent,
+		CameraRecoilTarget,
+		DeltaSeconds,
+		CameraRecoilKickInterpSpeed
+	);
+	const FRotator DeltaRecoil = NewRecoil - CameraRecoilCurrent;
+
+	AddControllerPitchInput(-DeltaRecoil.Pitch);
+	AddControllerYawInput(DeltaRecoil.Yaw);
+
+	CameraRecoilCurrent = NewRecoil;
+	CameraRecoilTarget = FMath::RInterpTo(
+		CameraRecoilTarget,
+		FRotator::ZeroRotator,
+		DeltaSeconds,
+		CameraRecoilRecoverySpeed
+	);
+	CameraRecoilFOVOffset = FMath::FInterpTo(
+		CameraRecoilFOVOffset,
+		0.0f,
+		DeltaSeconds,
+		CameraRecoilFOVRecoverySpeed
+	);
+}
+
+float AShooterCharacter::GetLookSensitivityScale() const
+{
+	if (IsReloading())
+	{
+		return ReloadLookSensitivityScale;
+	}
+
+	if (IsAiming())
+	{
+		return AimLookSensitivityScale;
+	}
+
+	if (IsSprinting())
+	{
+		return SprintLookSensitivityScale;
+	}
+
+	return 1.0f;
+}
+
 void AShooterCharacter::Die()
 {
 	if (HealthComponent)
@@ -883,6 +1141,29 @@ void AShooterCharacter::DoJumpEnd()
 	{
 		MovementComponent->DoJumpEnd();
 	}
+}
+
+void AShooterCharacter::BeginSlideCameraEffect(float CameraRollDegrees, float Duration)
+{
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+
+	TargetSlideCameraEffectAlpha = 1.0f;
+	SlideCameraEffectElapsedTime = 0.0f;
+	SlideCameraEffectDuration = FMath::Max(Duration, KINDA_SMALL_NUMBER);
+	TargetSlideCameraRollDegrees = CameraRollDegrees;
+}
+
+void AShooterCharacter::EndSlideCameraEffect()
+{
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+
+	TargetSlideCameraEffectAlpha = 0.0f;
 }
 
 void AShooterCharacter::UpdatePartnerShieldDecay()
@@ -955,6 +1236,9 @@ void AShooterCharacter::HandleDeath()
 	bIsEquipping = false;
 	TargetLeanAlpha = 0.0f;
 	CurrentLeanAlpha = 0.0f;
+	CameraRecoilCurrent = FRotator::ZeroRotator;
+	CameraRecoilTarget = FRotator::ZeroRotator;
+	CameraRecoilFOVOffset = 0.0f;
 
 	if (IsSliding())
 	{
@@ -1496,19 +1780,6 @@ void AShooterCharacter::ClientPlayFirstPersonActionMontage_Implementation(EShoot
 
 void AShooterCharacter::MulticastPlayThirdPersonActionMontage_Implementation(EShooterMontageAction Action, EWeaponType WeaponType)
 {
-	if (IsLocallyControlled())
-	{
-		UE_LOG(
-			LogTemp,
-			Warning,
-			TEXT("%s %s [TPMontage] Multicast skipped on locally controlled pawn Action=%d WeaponType=%d"),
-			OutlierNet::GetNetPrefix(this),
-			*GetName(),
-			static_cast<int32>(Action),
-			static_cast<int32>(WeaponType));
-		return;
-	}
-
 	UE_LOG(
 		LogTemp,
 		Warning,

@@ -2,9 +2,14 @@
 
 #include "Shooter/ShooterCombatComponent.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Shooter/ShooterFirstPersonAnimInstance.h"
 #include "Weapon/RangedWeaponBase.h"
 #include "Shooter/ShooterMovementComponent.h"
 #include "OutlierNetUtils.h"
+#include "Animation/AnimInstance.h"
+#include "Animation/AnimMontage.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "Net/UnrealNetwork.h"
 
 UShooterCombatComponent::UShooterCombatComponent()
@@ -33,16 +38,39 @@ void UShooterCombatComponent::TryReload()
 
 	UE_LOG(LogTemp, Log, TEXT("%s %s TryReload CurrentWeapon=%s"), OutlierNet::GetNetPrefix(ShooterCharacter), *ShooterCharacter->GetName(), *GetNameSafe(ShooterCharacter->CurrentWeapon));
 
-	if (!ShooterCharacter->CanStartAction(EShooterActionLock::Reload))
-	{
-		return;
-	}
-
 	if (!ShooterCharacter->HasAuthority())
 	{
 		// 1인칭 반응성은 로컬에서 먼저 주고, 실제 상태 전이는 서버가 확정
-		ShooterCharacter->PlayFirstPersonMontage(ShooterCharacter->FirstPersonReloadMontage);
+		if (ShooterCharacter->CanStartAction(EShooterActionLock::Reload))
+		{
+			ShooterCharacter->StopLean();
+			ShooterCharacter->PlayFirstPersonMontage(ShooterCharacter->FirstPersonReloadMontage);
+		}
+		else
+		{
+			UE_LOG(
+				LogTemp,
+				Warning,
+				TEXT("%s %s TryReload local prediction skipped ActionLock=%d"),
+				OutlierNet::GetNetPrefix(ShooterCharacter),
+				*ShooterCharacter->GetName(),
+				static_cast<int32>(ShooterCharacter->GetActionLock())
+			);
+		}
 		ShooterCharacter->ServerReload();
+		return;
+	}
+
+	if (!ShooterCharacter->CanStartAction(EShooterActionLock::Reload))
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("%s %s TryReload server blocked ActionLock=%d"),
+			OutlierNet::GetNetPrefix(ShooterCharacter),
+			*ShooterCharacter->GetName(),
+			static_cast<int32>(ShooterCharacter->GetActionLock())
+		);
 		return;
 	}
 
@@ -92,6 +120,7 @@ void UShooterCombatComponent::TryReload()
 		ShooterCharacter->StopSprintInternal();
 		ShooterCharacter->RefreshMovementState();
 	}
+	ShooterCharacter->StopLean();
 
 	if (ShooterCharacter->CombatState == ECombatState::Aim)
 	{
@@ -163,6 +192,75 @@ void UShooterCombatComponent::HandleAimReleased()
 	RefreshCombatState();
 }
 
+bool UShooterCombatComponent::ShouldDelayFireForSprintExit(const AShooterCharacter& ShooterCharacter) const
+{
+	if (!ShooterCharacter.IsLocallyControlled())
+	{
+		return false;
+	}
+
+	const USkeletalMeshComponent* FirstPersonMesh = ShooterCharacter.GetFirstPersonMesh();
+	const UShooterFirstPersonAnimInstance* FirstPersonAnimInstance = FirstPersonMesh
+		? Cast<UShooterFirstPersonAnimInstance>(FirstPersonMesh->GetAnimInstance())
+		: nullptr;
+
+	return FirstPersonAnimInstance
+		&& FirstPersonAnimInstance->GetViewModelSprintAlpha() > SprintFireAllowedAlpha;
+}
+
+void UShooterCombatComponent::QueueSprintExitFire(AShooterCharacter& ShooterCharacter)
+{
+	bPendingSprintExitFire = true;
+	bWantsToFire = true;
+
+	if (ShooterCharacter.IsSprinting())
+	{
+		if (!ShooterCharacter.HasAuthority())
+		{
+			ShooterCharacter.ServerSetSprintState(false);
+		}
+
+		ShooterCharacter.StopSprintInternal();
+		ShooterCharacter.RefreshMovementState();
+	}
+
+	ShooterCharacter.GetWorldTimerManager().ClearTimer(PendingSprintExitFireTimerHandle);
+	ShooterCharacter.GetWorldTimerManager().SetTimer(
+		PendingSprintExitFireTimerHandle,
+		this,
+		&UShooterCombatComponent::RetryPendingSprintExitFire,
+		FMath::Max(SprintExitFireRetryInterval, KINDA_SMALL_NUMBER),
+		false
+	);
+}
+
+void UShooterCombatComponent::RetryPendingSprintExitFire()
+{
+	if (!bPendingSprintExitFire || !bWantsToFire)
+	{
+		ClearPendingSprintExitFire();
+		return;
+	}
+
+	TryStartAttack();
+}
+
+void UShooterCombatComponent::ClearPendingSprintExitFire()
+{
+	bPendingSprintExitFire = false;
+
+	if (AShooterCharacter* ShooterCharacter = GetShooterCharacter())
+	{
+		ShooterCharacter->GetWorldTimerManager().ClearTimer(PendingSprintExitFireTimerHandle);
+	}
+}
+
+bool UShooterCombatComponent::IsActionLockBlockingAimFire(const AShooterCharacter& ShooterCharacter) const
+{
+	const EShooterActionLock ActionLock = ShooterCharacter.GetActionLock();
+	return ActionLock != EShooterActionLock::None && ActionLock != EShooterActionLock::Slide;
+}
+
 void UShooterCombatComponent::TryStartAttack()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
@@ -172,6 +270,14 @@ void UShooterCombatComponent::TryStartAttack()
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("%s %s TryStartAttack CurrentWeapon=%s"), OutlierNet::GetNetPrefix(ShooterCharacter), *ShooterCharacter->GetName(), *GetNameSafe(ShooterCharacter->CurrentWeapon));
+
+	if (ShouldDelayFireForSprintExit(*ShooterCharacter))
+	{
+		QueueSprintExitFire(*ShooterCharacter);
+		return;
+	}
+
+	ClearPendingSprintExitFire();
 
 	if (!ShooterCharacter->HasAuthority())
 	{
@@ -243,6 +349,7 @@ void UShooterCombatComponent::TryStopAttack()
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("%s %s TryStopAttack CurrentWeapon=%s"), OutlierNet::GetNetPrefix(ShooterCharacter), *ShooterCharacter->GetName(), *GetNameSafe(ShooterCharacter->CurrentWeapon));
+	ClearPendingSprintExitFire();
 	bWantsToFire = false;
 	bIsMeleeAttacking = false;
 
@@ -303,6 +410,7 @@ void UShooterCombatComponent::HandleAutoReloadRequested()
 		ShooterCharacter->StopSprintInternal();
 		ShooterCharacter->RefreshMovementState();
 	}
+	ShooterCharacter->StopLean();
 
 	if (ShooterCharacter->CombatState == ECombatState::Aim)
 	{
@@ -313,11 +421,6 @@ void UShooterCombatComponent::HandleAutoReloadRequested()
 	if (!RangedWeapon->IsReloading())
 	{
 		return;
-	}
-
-	if (!ShooterCharacter->IsLocallyControlled())
-	{
-		ShooterCharacter->ClientPlayFirstPersonActionMontage(EShooterMontageAction::Reload, ShooterCharacter->GetWeaponType());
 	}
 
 	BeginReloadInternal();
@@ -447,6 +550,11 @@ void UShooterCombatComponent::ResolveStateConflicts()
 		ShooterCharacter->RefreshMovementState();
 	}
 
+	if (ShooterCharacter->IsSprinting() || bIsReloading)
+	{
+		ShooterCharacter->StopLean();
+	}
+
 	if (ShooterCharacter->CombatState == ECombatState::Reload && bWantsToFire)
 	{
 		CancelReloadInternal();
@@ -481,8 +589,11 @@ void UShooterCombatComponent::BeginReloadInternal()
 	// 리로드는 무기 내부 상태와 별개로 캐릭터 전투 상태도 함께 잠궈야 함
 	// 리로드 상태는 여기서 먼저 잠그고, 이후 RefreshCombatState에서 무기 상태와 다시 맞춤
 	bIsReloading = true;
+	ShooterCharacter->StopLean();
 	ShooterCharacter->BeginActionLock(EShooterActionLock::Reload);
 	ShooterCharacter->CombatState = ECombatState::Reload;
+	ShooterCharacter->ForceNetUpdate();
+
 	UE_LOG(
 		LogTemp,
 		Log,
@@ -494,10 +605,29 @@ void UShooterCombatComponent::BeginReloadInternal()
 		*GetNameSafe(ShooterCharacter->ThirdPersonReloadMontage),
 		ShooterCharacter->IsLocallyControlled() ? 1 : 0,
 		ShooterCharacter->HasAuthority() ? 1 : 0);
+
 	ShooterCharacter->MulticastPlayThirdPersonActionMontage(EShooterMontageAction::Reload, ShooterCharacter->GetWeaponType());
+
+	if (UAnimInstance* ThirdPersonAnimInstance = ShooterCharacter->GetMesh() ? ShooterCharacter->GetMesh()->GetAnimInstance() : nullptr)
+	{
+		FOnMontageEnded ReloadEndedDelegate;
+		ReloadEndedDelegate.BindUObject(this, &UShooterCombatComponent::HandleReloadMontageEnded);
+		ThirdPersonAnimInstance->Montage_SetEndDelegate(ReloadEndedDelegate, ShooterCharacter->ThirdPersonReloadMontage);
+	}
+
 	if (ShooterCharacter->IsLocallyControlled())
 	{
 		ShooterCharacter->PlayFirstPersonActionMontage(EShooterMontageAction::Reload, ShooterCharacter->GetWeaponType());
+		if (UAnimInstance* FirstPersonAnimInstance = ShooterCharacter->GetFirstPersonMesh() ? ShooterCharacter->GetFirstPersonMesh()->GetAnimInstance() : nullptr)
+		{
+			FOnMontageEnded ReloadEndedDelegate;
+			ReloadEndedDelegate.BindUObject(this, &UShooterCombatComponent::HandleReloadMontageEnded);
+			FirstPersonAnimInstance->Montage_SetEndDelegate(ReloadEndedDelegate, ShooterCharacter->FirstPersonReloadMontage);
+		}
+	}
+	else if (ShooterCharacter->HasAuthority())
+	{
+		ShooterCharacter->ClientPlayFirstPersonActionMontage(EShooterMontageAction::Reload, ShooterCharacter->GetWeaponType());
 	}
 }
 
@@ -511,6 +641,7 @@ void UShooterCombatComponent::CancelReloadInternal()
 
 	bIsReloading = false;
 	ShooterCharacter->EndActionLock(EShooterActionLock::Reload);
+
 	ShooterCharacter->StopSplitMontages(
 		ShooterCharacter->FirstPersonReloadMontage,
 		ShooterCharacter->ThirdPersonReloadMontage);
@@ -529,10 +660,55 @@ void UShooterCombatComponent::FinishReloadInternal()
 		return;
 	}
 
+	if (!ShooterCharacter->HasAuthority())
+	{
+		return;
+	}
+
+	if (!bIsReloading)
+	{
+		return;
+	}
+
 	UE_LOG(LogTemp, Warning, TEXT("Reload End"));
+	if (ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(ShooterCharacter->CurrentWeapon))
+	{
+		if (RangedWeapon->IsReloading())
+		{
+			UE_LOG(LogTemp, Warning, TEXT("%s %s Reload end applying missed commit"), OutlierNet::GetNetPrefix(ShooterCharacter), *ShooterCharacter->GetName());
+			RangedWeapon->FinishReload();
+		}
+	}
+
 	bIsReloading = false;
 	ShooterCharacter->EndActionLock(EShooterActionLock::Reload);
 	RefreshCombatState();
+	ShooterCharacter->ForceNetUpdate();
+}
+
+void UShooterCombatComponent::HandleReloadMontageEnded(UAnimMontage* Montage, bool bInterrupted)
+{
+	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	if (!ShooterCharacter || !ShooterCharacter->HasAuthority())
+	{
+		return;
+	}
+
+	const bool bIsReloadMontage =
+		Montage == ShooterCharacter->FirstPersonReloadMontage ||
+		Montage == ShooterCharacter->ThirdPersonReloadMontage;
+	if (!bIsReloadMontage)
+	{
+		return;
+	}
+
+	if (bInterrupted)
+	{
+		CancelReloadInternal();
+		return;
+	}
+
+	FinishReloadInternal();
 }
 
 void UShooterCombatComponent::BeginSecondaryCooldownInternal(float CooldownDuration)
@@ -593,6 +769,11 @@ void UShooterCombatComponent::HandleReloadCommitNotify()
 
 	UE_LOG(LogTemp, Log, TEXT("%s %s HandleReloadCommitNotify"), OutlierNet::GetNetPrefix(ShooterCharacter), *ShooterCharacter->GetName());
 
+	if (!ShooterCharacter->HasAuthority())
+	{
+		return;
+	}
+
 	if (ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(ShooterCharacter->CurrentWeapon))
 	{
 		RangedWeapon->FinishReload();
@@ -620,14 +801,24 @@ bool UShooterCombatComponent::CanAimInCurrentState() const
 	const AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 	return ShooterCharacter
 		&& !ShooterCharacter->bIsDead
-		&& !ShooterCharacter->IsActionLocked()
+		&& !IsActionLockBlockingAimFire(*ShooterCharacter)
+		&& ShooterCharacter->GetCharacterMovement()->IsMovingOnGround()
 		&& (ShooterCharacter->WeaponMode == EWeaponMode::Primary || ShooterCharacter->WeaponMode == EWeaponMode::Secondary);
 }
 
 bool UShooterCombatComponent::CanReloadInCurrentState() const
 {
 	const AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-		return ShooterCharacter && !ShooterCharacter->bIsDead && !ShooterCharacter->IsSliding() && !ShooterCharacter->IsActionLocked()
+	if (!ShooterCharacter || ShooterCharacter->bIsDead)
+	{
+		return false;
+	}
+
+	const bool bActionLockedByNonSlide =
+		ShooterCharacter->IsActionLocked() &&
+		ShooterCharacter->GetActionLock() != EShooterActionLock::Slide;
+
+	return !bActionLockedByNonSlide
 		&& (ShooterCharacter->WeaponMode == EWeaponMode::Primary || ShooterCharacter->WeaponMode == EWeaponMode::Secondary);
 }
 
@@ -639,7 +830,12 @@ bool UShooterCombatComponent::CanFireInCurrentState() const
 		return false;
 	}
 
-	if (ShooterCharacter->IsActionLocked())
+	if (IsActionLockBlockingAimFire(*ShooterCharacter))
+	{
+		return false;
+	}
+
+	if (ShooterCharacter->IsSliding() && !bWantsToAim && !bIsAiming)
 	{
 		return false;
 	}
@@ -659,6 +855,7 @@ bool UShooterCombatComponent::CanFireInCurrentState() const
 
 void UShooterCombatComponent::ClearInputIntent()
 {
+	ClearPendingSprintExitFire();
 	bWantsToAim = false;
 	bWantsToFire = false;
 }

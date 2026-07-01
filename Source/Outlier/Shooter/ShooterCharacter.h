@@ -134,6 +134,36 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat")
 	float MaxLeanAngle = 15.0f;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera")
+	float AimCameraFOV = 80.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera")
+	float SprintCameraFOV = 95.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera", meta = (ClampMin = "0.0"))
+	float CameraFOVInterpSpeed = 12.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera", meta = (ClampMin = "0.0"))
+	float AimCameraFOVInterpInSpeed = 8.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera", meta = (ClampMin = "0.0"))
+	float AimCameraFOVInterpOutSpeed = 14.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera|Sensitivity", meta = (ClampMin = "0.0"))
+	float AimLookSensitivityScale = 0.65f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera|Sensitivity", meta = (ClampMin = "0.0"))
+	float ReloadLookSensitivityScale = 0.85f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera|Sensitivity", meta = (ClampMin = "0.0"))
+	float SprintLookSensitivityScale = 1.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera|Recoil", meta = (ClampMin = "0.0"))
+	float CameraRecoilKickInterpSpeed = 28.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera|Recoil", meta = (ClampMin = "0.0"))
+	float CameraRecoilFOVRecoverySpeed = 16.0f;
+
 	UPROPERTY(EditDefaultsOnly, Category = "Slide")
 	float SlideDuration = 1.0f;
 
@@ -148,6 +178,9 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, Category = "Slide")
 	TObjectPtr<UCurveFloat> SlideSpeedCurve;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Components, meta = (AllowPrivateAccess = "true"))
+	USkeletalMeshComponent* ShadowMesh;
 
 	/// Animation Assets
 	// Fire
@@ -228,6 +261,11 @@ protected:
 	FRotator BaseFirstPersonCameraRootRotation = FRotator::ZeroRotator;
 	FRotator BaseFirstPersonViewModelRootRotation = FRotator::ZeroRotator;
 	FRotator BaseFirstPersonMeshRotation = FRotator::ZeroRotator;
+	float BaseCameraFOV = 90.0f;
+	FRotator CameraRecoilCurrent = FRotator::ZeroRotator;
+	FRotator CameraRecoilTarget = FRotator::ZeroRotator;
+	float CameraRecoilRecoverySpeed = 10.0f;
+	float CameraRecoilFOVOffset = 0.0f;
 
 	// Timers
 	FTimerHandle LeanUpdateTimerHandle;
@@ -255,10 +293,33 @@ protected:
 
 	bool bSuitDisabledByPartnerBoundary = false;
 
+	// Slide
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera|Slide")
+	float SlideCameraEffectInterpInSpeed = 18.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera|Slide")
+	float SlideCameraEffectInterpOutSpeed = 8.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera|Slide")
+	TObjectPtr<UCurveFloat> SlideCameraRollCurve = nullptr;
+
+	float TargetSlideCameraEffectAlpha = 0.0f;
+	float CurrentSlideCameraEffectAlpha = 0.0f;
+
+	float SlideCameraEffectElapsedTime = 0.0f;
+	float SlideCameraEffectDuration = 0.0f;
+
+	float TargetSlideCameraRollDegrees = 0.0f;
+
+	float ActiveSlideCameraRollDegrees = 0.0f;
+
 protected:
 	// Engine Lifecycle
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	virtual void Tick(float DeltaSeconds) override;
+	virtual void PossessedBy(AController* NewController) override;
+	virtual void OnRep_Controller() override;
 
 	/** Initialize input action bindings */
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
@@ -274,7 +335,6 @@ protected:
 	virtual void OnMoveInputUpdated(const FVector2D& MoveValue);
 
 	virtual void LookInput(const FInputActionValue& Value) override;
-
 public:
 	// Construction
 	/** Constructor */
@@ -295,6 +355,7 @@ public:
 	// Weapon Socket Queries
 	FName GetFirstPersonWeaponSocketByType(EWeaponType WeaponType) const;
 	FName GetThirdPersonWeaponSocketByType(EWeaponType WeaponType) const;
+	USkeletalMeshComponent* GetShadowMesh() const { return ShadowMesh; }
 
 	// Replication / Engine Hooks
 	UFUNCTION()
@@ -321,6 +382,7 @@ public:
 	bool CanReloadInCurrentState() const;
 	bool CanFireInCurrentState() const;
 	virtual bool CanInteract() const override;
+	bool CanLean() const;
 
 	bool WantsToAim() const;
 	bool IsAiming() const;
@@ -340,6 +402,9 @@ public:
 
 	UFUNCTION(BlueprintPure)
 	float GetCurrentLeanRollDegrees() const { return CurrentLeanAlpha * MaxLeanAngle; }
+
+	UFUNCTION(BlueprintPure)
+	float GetCurrentSlideCameraRollDegrees() const { return ActiveSlideCameraRollDegrees; }
 
 	UFUNCTION(BlueprintPure)
 	float GetMaxLeanAngle() const { return MaxLeanAngle; }
@@ -371,6 +436,14 @@ public:
 	void HandleWeaponAttackStoppedInternal();
 	void HandleAutoReloadRequested();
 	void HandleFireShotAnimation();
+	void AddWeaponCameraRecoil(
+		float PitchAmplitude,
+		float YawAmplitude,
+		float DirectionPitchAmplitude,
+		float FOVAmplitude,
+		float RecoverySpeed,
+		const FVector2D& NormalizedShotDirection
+	);
 
 	// Blueprint / Notify Entry Points
 	UFUNCTION(BlueprintCallable, Category = "Animation|Notify")
@@ -379,7 +452,6 @@ public:
 	void DoJumpStart();
 
 	void DoJumpEnd();
-
 protected:
 	void UpdatePartnerShieldDecay();
 
@@ -408,6 +480,10 @@ protected:
 	void TryUseSuit();
 	void TrySlide();
 	void TryLean(const FInputActionValue& Value);
+	void StopLean();
+
+	void RefreshFirstPersonShadowPolicy();
+	void UpdateSlideCameraEffect(float DeltaSeconds);
 
 	// Server RPC
 	UFUNCTION(Server, Reliable)
@@ -471,10 +547,15 @@ public:
 	void StartLeanUpdate();
 	void StopLeanUpdateIfSettled();
 	void UpdateLeanStep();
+	void UpdateCameraFOV(float DeltaSeconds);
+	void UpdateCameraRecoil(float DeltaSeconds);
+	float GetLookSensitivityScale() const;
 
 	bool CanStartSlide() const;
 	void StopSlide(ESlideEndReason EndReason);
 	void HandleSlideWallHit(const FHitResult& Hit);
+	void BeginSlideCameraEffect(float CameraRollDegrees, float Duration);
+	void EndSlideCameraEffect();
 
 	void Die();
 	void HandleDeath();

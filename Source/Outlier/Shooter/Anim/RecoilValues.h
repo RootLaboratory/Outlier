@@ -64,6 +64,21 @@ struct OUTLIER_API FRecoilValues
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recoil|Random Rotation")
 	float RandomRotZMax;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recoil|Shot Direction")
+	float DirectionLocYInfluence = 0.03f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recoil|Shot Direction")
+	float DirectionLocZInfluence = 0.02f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recoil|Shot Direction")
+	float DirectionPitchInfluence = 0.20f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recoil|Shot Direction")
+	float DirectionYawInfluence = 0.25f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recoil|Shot Direction")
+	float DirectionRollInfluence = 0.15f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recoil|Spring")
 	float CriticalDampingFactorLoc;					// 위치 반동이 흔들리다 멈추는 감쇠
 

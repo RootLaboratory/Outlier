@@ -26,8 +26,10 @@ void AFirstPersonPlayerCameraManager::ProcessViewRotation(float DeltaTime, FRota
 	const AShooterCharacter* ShooterCharacter = Cast<AShooterCharacter>(OwningController->GetPawn());
 	if (ShooterCharacter)
 	{
+		const float LeanRoll = ShooterCharacter->GetCurrentLeanRollDegrees();
+		const float SlideRoll = ShooterCharacter->GetCurrentSlideCameraRollDegrees();
 		OutViewRotation.Roll = FMath::Clamp(
-			ShooterCharacter->GetCurrentLeanRollDegrees(),
+			LeanRoll + SlideRoll,
 			-1.0f * ShooterCharacter->GetMaxLeanAngle(),
 			ShooterCharacter->GetMaxLeanAngle()
 		);

@@ -45,6 +45,9 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapon|Sight")
 	UStaticMeshComponent* ThirdSight = nullptr;
 
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapon|Sight")
+	UStaticMeshComponent* ShadowSight = nullptr;
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Sight")
 	FName SightSocketName = FName("Sight");
 
@@ -56,6 +59,9 @@ protected:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapon|Magazine")
 	UStaticMeshComponent* ThirdHandMagazineMesh = nullptr;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapon|Magazine")
+	UStaticMeshComponent* ShadowHandMagazineMesh = nullptr;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Magazine")
 	FName LeftHandMagazineSocketName = FName("Magazine");
@@ -168,6 +174,11 @@ protected:
 	FTimerHandle AttackCooldownTimerHandle;
 	FTimerHandle ReuseCooldownTimerHandle;
 
+	FVector LastShotBaseDirection = FVector::ForwardVector;
+	FVector LastShotDirection = FVector::ForwardVector;
+	float LastShotSpreadDegrees = 0.0f;
+	uint8 bHasLastShotDirection : 1 = false;
+
 protected:
 	virtual void InitializeFromDataTables() override;
 
@@ -180,6 +191,9 @@ protected:
 	void ApplyMagazineMeshSettings();
 	void HideHandMagazine();
 	void RefreshBloomSettingsFromState();
+	void RefreshRecoilSettingsFromState();
+	FVector2D GetNormalizedLastShotDirection() const;
+	void ApplyRecoilWithShotDirection(const FVector2D& NormalizedShotDirection);
 
 	void HandleAutoFire();
 	void StartAttackCooldown();
@@ -191,6 +205,7 @@ public:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const;
 	virtual void OnEquipped(ACharacter* NewOwner) override;
 	virtual void ShowEquippedPresentation() override;
+	virtual void RefreshShadowWeaponPresentation() override;
 
 	virtual bool CanAttack() const override;
 	virtual void StartAttack() override;
@@ -233,7 +248,7 @@ protected:
 	virtual void OnRep_EquippedState() override;
 
 	UFUNCTION(Client, Unreliable)
-	void ClientNotifyShotFired();
+	void ClientNotifyShotFired(FVector2D NormalizedShotDirection);
 
 	UFUNCTION(NetMulticast, Unreliable)
 	void MulticastPlayFireFX(FVector_NetQuantize TraceEnd, FVector_NetQuantizeNormal ImpactNormal, AActor* Hit);
