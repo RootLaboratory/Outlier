@@ -108,6 +108,7 @@ void ARangedWeaponBase::FinishReload()
 	bIsReloading = false;
 
 	UpdateLocalAmmoUI();
+	ForceNetUpdate();
 
 	UE_LOG(LogTemp, Log, TEXT("%s [%s] Reload complete Ammo=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo);
 }
@@ -161,8 +162,19 @@ void ARangedWeaponBase::FireShot()
 	OwnerCharacter->GetController()->GetPlayerViewPoint(CameraLocation, CameraRotation);
 
 	FVector Start = CameraLocation;
+	const FVector BaseDirection = CameraRotation.Vector().GetSafeNormal();
+	const float ShotSpreadDegrees = FMath::Max(BloomCurrent, 0.0f);
+	const FVector ShotDirection = ShotSpreadDegrees > KINDA_SMALL_NUMBER
+		? FMath::VRandCone(BaseDirection, FMath::DegreesToRadians(ShotSpreadDegrees)).GetSafeNormal()
+		: BaseDirection;
+	LastShotBaseDirection = BaseDirection;
+	LastShotDirection = ShotDirection;
+	LastShotSpreadDegrees = ShotSpreadDegrees;
+	bHasLastShotDirection = true;
 	FVector End = Start + (CameraRotation.Vector() * EffectiveRange); // 사거리
 
+
+	End = Start + (ShotDirection * EffectiveRange);
 
 	FHitResult Hit;
 	FCollisionQueryParams Params;
@@ -215,12 +227,12 @@ void ARangedWeaponBase::FireShot()
 	}
 
 
-	ClientNotifyShotFired();
+	ClientNotifyShotFired(GetNormalizedLastShotDirection());
 
 	{
 		AActor* HitActor = Hit.GetActor();
 		const FVector TraceEndPoint = bHit ? Hit.ImpactPoint : End;
-		const FVector ImpactNormal = bHit ? Hit.ImpactNormal : -CameraRotation.Vector();
+		const FVector ImpactNormal = bHit ? Hit.ImpactNormal : -ShotDirection;
 		MulticastPlayFireFX(TraceEndPoint, ImpactNormal, HitActor);
 
 		if (UVisualEventSubsystem* VisualSubsystem = GetWorld()->GetSubsystem<UVisualEventSubsystem>())
@@ -249,11 +261,42 @@ void ARangedWeaponBase::FireShot()
 // 반동, 탄 퍼짐은 추후 작업 예정
 void ARangedWeaponBase::ApplyRecoil()
 {
+	ApplyRecoilWithShotDirection(GetNormalizedLastShotDirection());
+}
+
+FVector2D ARangedWeaponBase::GetNormalizedLastShotDirection() const
+{
+	if (!bHasLastShotDirection)
+	{
+		return FVector2D::ZeroVector;
+	}
+
+	const FRotator BaseRotation = LastShotBaseDirection.Rotation();
+	const FRotator ShotRotation = LastShotDirection.Rotation();
+	const float NormalizationSpread = FMath::Max(LastShotSpreadDegrees, 0.01f);
+
+	return FVector2D(
+		FMath::Clamp(FMath::FindDeltaAngleDegrees(BaseRotation.Yaw, ShotRotation.Yaw) / NormalizationSpread, -1.0f, 1.0f),
+		FMath::Clamp(FMath::FindDeltaAngleDegrees(BaseRotation.Pitch, ShotRotation.Pitch) / NormalizationSpread, -1.0f, 1.0f)
+	);
+}
+
+void ARangedWeaponBase::ApplyRecoilWithShotDirection(const FVector2D& NormalizedShotDirection)
+{
 	AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
 	if (!Shooter || !Shooter->IsLocallyControlled())
 	{
 		return;
 	}
+
+	Shooter->AddWeaponCameraRecoil(
+		RecoilPitchAmplitude * RecoilMultiplier,
+		RecoilLocationXAmplitude * RecoilMultiplier,
+		RecoilLocationYAmplitude * RecoilMultiplier,
+		RecoilFovAmplitude * RecoilMultiplier,
+		RecoilRecoverySpeed,
+		NormalizedShotDirection
+	);
 
 	USkeletalMeshComponent* FirstPersonMesh = Shooter->GetFirstPersonMesh();
 	if (!FirstPersonMesh)
@@ -266,7 +309,7 @@ void ARangedWeaponBase::ApplyRecoil()
 
 	if (FPAnim)
 	{
-		FPAnim->AddViewModelRecoil(RecoilMultiplier);
+		FPAnim->AddViewModelRecoil(RecoilMultiplier, NormalizedShotDirection);
 	}
 }
 
@@ -290,6 +333,7 @@ void ARangedWeaponBase::SetAiming(bool bAiming)
 	bIsAiming = bAiming;
 
 	RefreshBloomSettingsFromState();
+	RefreshRecoilSettingsFromState();
 }
 
 void ARangedWeaponBase::ApplySightMesh()
@@ -329,11 +373,28 @@ void ARangedWeaponBase::ApplySightMesh()
 		ThirdSight->SetGenerateOverlapEvents(false);
 		ThirdSight->SetOwnerNoSee(true);
 	}
+
+	if (ShadowSight)
+	{
+		if (SightMesh)
+		{
+			ShadowSight->SetStaticMesh(SightMesh);
+		}
+		ShadowSight->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		ShadowSight->SetCollisionResponseToAllChannels(ECR_Ignore);
+		ShadowSight->SetGenerateOverlapEvents(false);
+		ShadowSight->SetHiddenInGame(true);
+		ShadowSight->SetVisibility(true, true);
+		ShadowSight->SetRenderInMainPass(true);
+		ShadowSight->SetRenderInDepthPass(false);
+		ShadowSight->SetOwnerNoSee(false);
+		ShadowSight->SetOnlyOwnerSee(false);
+	}
 }
 
 void ARangedWeaponBase::ApplyMagazineMeshSettings()
 {
-	UStaticMeshComponent* MagazineComponents[] = { FirstHandMagazineMesh, ThirdHandMagazineMesh };
+	UStaticMeshComponent* MagazineComponents[] = { FirstHandMagazineMesh, ThirdHandMagazineMesh, ShadowHandMagazineMesh };
 	for (UStaticMeshComponent* MagazineComponent : MagazineComponents)
 	{
 		if (!MagazineComponent)
@@ -359,6 +420,13 @@ void ARangedWeaponBase::ApplyMagazineMeshSettings()
 	{
 		ThirdHandMagazineMesh->SetOwnerNoSee(true);
 	}
+	if (ShadowHandMagazineMesh)
+	{
+		ShadowHandMagazineMesh->SetOwnerNoSee(false);
+		ShadowHandMagazineMesh->SetOnlyOwnerSee(false);
+		ShadowHandMagazineMesh->SetRenderInMainPass(true);
+		ShadowHandMagazineMesh->SetRenderInDepthPass(false);
+	}
 }
 
 void ARangedWeaponBase::HideHandMagazine()
@@ -370,6 +438,12 @@ void ARangedWeaponBase::HideHandMagazine()
 	if (ThirdHandMagazineMesh)
 	{
 		ThirdHandMagazineMesh->SetHiddenInGame(true);
+	}
+	if (ShadowHandMagazineMesh)
+	{
+		ShadowHandMagazineMesh->SetHiddenInGame(true);
+		ShadowHandMagazineMesh->SetCastShadow(false);
+		ShadowHandMagazineMesh->SetCastHiddenShadow(false);
 	}
 }
 
@@ -384,6 +458,16 @@ void ARangedWeaponBase::AttachMagazineToLeftHand(AShooterCharacter*)
 	if (ThirdHandMagazineMesh)
 	{
 		ThirdHandMagazineMesh->SetHiddenInGame(!ThirdHandMagazineMesh->GetStaticMesh());
+	}
+	if (ShadowHandMagazineMesh)
+	{
+		const AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
+		const bool bLocalView = Shooter && Shooter->IsLocallyControlled();
+		const bool bShowMagazineShadow = bLocalView && ShadowHandMagazineMesh->GetStaticMesh();
+		ShadowHandMagazineMesh->SetHiddenInGame(true);
+		ShadowHandMagazineMesh->SetVisibility(true, true);
+		ShadowHandMagazineMesh->SetCastShadow(bShowMagazineShadow);
+		ShadowHandMagazineMesh->SetCastHiddenShadow(bShowMagazineShadow);
 	}
 }
 
@@ -425,6 +509,18 @@ void ARangedWeaponBase::AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacte
 				);
 			}
 		}
+
+		if (USkeletalMeshComponent* ShadowMesh = Shooter->GetShadowMesh())
+		{
+			if (ShadowHandMagazineMesh)
+			{
+				ShadowHandMagazineMesh->AttachToComponent(
+					ShadowMesh,
+					FAttachmentTransformRules::SnapToTargetNotIncludingScale,
+					LeftHandMagazineSocketName
+				);
+			}
+		}
 	}
 
 	
@@ -454,7 +550,21 @@ void ARangedWeaponBase::AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacte
 				);
 			}
 		}
+
+		if (USkeletalMeshComponent* ShadowWeapon = Weapon->GetShadowWeaponMesh())
+		{
+			if (ShadowSight)
+			{
+				ShadowSight->AttachToComponent(
+					ShadowWeapon,
+					FAttachmentTransformRules::SnapToTargetNotIncludingScale,
+					SightSocketName
+				);
+			}
+		}
 	}
+
+	RefreshShadowWeaponPresentation();
 
 }
 
@@ -488,6 +598,12 @@ void ARangedWeaponBase::OnEquipped(ACharacter* NewOwner)
 	{
 		ThirdSight->SetHiddenInGame(true);
 	}
+	if (ShadowSight)
+	{
+		ShadowSight->SetHiddenInGame(true);
+		ShadowSight->SetCastShadow(false);
+		ShadowSight->SetCastHiddenShadow(false);
+	}
 	if (FirstHandMagazineMesh)
 	{
 		FirstHandMagazineMesh->SetHiddenInGame(true);
@@ -495,6 +611,12 @@ void ARangedWeaponBase::OnEquipped(ACharacter* NewOwner)
 	if (ThirdHandMagazineMesh)
 	{
 		ThirdHandMagazineMesh->SetHiddenInGame(true);
+	}
+	if (ShadowHandMagazineMesh)
+	{
+		ShadowHandMagazineMesh->SetHiddenInGame(true);
+		ShadowHandMagazineMesh->SetCastShadow(false);
+		ShadowHandMagazineMesh->SetCastHiddenShadow(false);
 	}
 	UpdateLocalAmmoUI();
 }
@@ -512,7 +634,67 @@ void ARangedWeaponBase::ShowEquippedPresentation()
 	{
 		ThirdSight->SetHiddenInGame(!SightMesh);
 	}
+	RefreshShadowWeaponPresentation();
 	HideHandMagazine();
+}
+
+void ARangedWeaponBase::RefreshShadowWeaponPresentation()
+{
+	Super::RefreshShadowWeaponPresentation();
+
+	const AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
+	const bool bLocalView = Shooter && Shooter->IsLocallyControlled();
+
+	if (ShadowSight)
+	{
+		if (SightMesh)
+		{
+			ShadowSight->SetStaticMesh(SightMesh);
+		}
+		const bool bShowSightShadow = bLocalView && SightMesh != nullptr && IsEquipped();
+		ShadowSight->SetHiddenInGame(true);
+		ShadowSight->SetVisibility(true, true);
+		ShadowSight->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		ShadowSight->SetCollisionResponseToAllChannels(ECR_Ignore);
+		ShadowSight->SetGenerateOverlapEvents(false);
+		ShadowSight->SetRenderInMainPass(true);
+		ShadowSight->SetRenderInDepthPass(false);
+		ShadowSight->SetCastShadow(bShowSightShadow);
+		ShadowSight->SetCastHiddenShadow(bShowSightShadow);
+	}
+	if (ThirdSight)
+	{
+		ThirdSight->SetCastShadow(!bLocalView);
+		ThirdSight->SetCastHiddenShadow(false);
+	}
+
+	if (ShadowHandMagazineMesh)
+	{
+		if (MagazineMesh)
+		{
+			ShadowHandMagazineMesh->SetStaticMesh(MagazineMesh);
+		}
+		const bool bShowMagazineShadow =
+			bLocalView &&
+			MagazineMesh != nullptr &&
+			IsEquipped() &&
+			ThirdHandMagazineMesh &&
+			!ThirdHandMagazineMesh->bHiddenInGame;
+		ShadowHandMagazineMesh->SetHiddenInGame(true);
+		ShadowHandMagazineMesh->SetVisibility(true, true);
+		ShadowHandMagazineMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		ShadowHandMagazineMesh->SetCollisionResponseToAllChannels(ECR_Ignore);
+		ShadowHandMagazineMesh->SetGenerateOverlapEvents(false);
+		ShadowHandMagazineMesh->SetRenderInMainPass(true);
+		ShadowHandMagazineMesh->SetRenderInDepthPass(false);
+		ShadowHandMagazineMesh->SetCastShadow(bShowMagazineShadow);
+		ShadowHandMagazineMesh->SetCastHiddenShadow(bShowMagazineShadow);
+	}
+	if (ThirdHandMagazineMesh)
+	{
+		ThirdHandMagazineMesh->SetCastShadow(!bLocalView);
+		ThirdHandMagazineMesh->SetCastHiddenShadow(false);
+	}
 }
 
 void ARangedWeaponBase::OnRep_CurAmmo()
@@ -530,7 +712,7 @@ void ARangedWeaponBase::OnRep_EquippedState()
 	}
 }
 
-void ARangedWeaponBase::ClientNotifyShotFired_Implementation()
+void ARangedWeaponBase::ClientNotifyShotFired_Implementation(FVector2D NormalizedShotDirection)
 {
 	ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
 	if (OwnerCharacter && OwnerCharacter->IsLocallyControlled())
@@ -538,6 +720,11 @@ void ARangedWeaponBase::ClientNotifyShotFired_Implementation()
 		if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
 		{
 			UISubsystem->OnRep_ShootCrosshairChanged(ReuseCooldown);
+		}
+
+		if (!HasAuthority())
+		{
+			ApplyRecoilWithShotDirection(NormalizedShotDirection);
 		}
 	}
 }
@@ -698,6 +885,9 @@ ARangedWeaponBase::ARangedWeaponBase() : AWeaponBase()
 	FirstSight->SetupAttachment(FirstPersonWeaponMesh);
 	ThirdSight = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ThirdSight"));
 	ThirdSight->SetupAttachment(ThirdPersonWeaponMesh);
+	ShadowSight = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ShadowSight"));
+	ShadowSight->SetupAttachment(ShadowWeaponMesh);
+	ShadowSight->SetHiddenInGame(true);
 
 	FirstHandMagazineMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("FirstHandMagazine"));
 	FirstHandMagazineMesh->SetupAttachment(FirstPersonWeaponMesh);
@@ -706,6 +896,10 @@ ARangedWeaponBase::ARangedWeaponBase() : AWeaponBase()
 	ThirdHandMagazineMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ThirdHandMagazine"));
 	ThirdHandMagazineMesh->SetupAttachment(ThirdPersonWeaponMesh);
 	ThirdHandMagazineMesh->SetHiddenInGame(true);
+
+	ShadowHandMagazineMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ShadowHandMagazine"));
+	ShadowHandMagazineMesh->SetupAttachment(ShadowWeaponMesh);
+	ShadowHandMagazineMesh->SetHiddenInGame(true);
 }
 
 void ARangedWeaponBase::OnConstruction(const FTransform& Transform)
@@ -749,10 +943,47 @@ void ARangedWeaponBase::InitializeBloomFromDataTable()
 
 void ARangedWeaponBase::InitializeRecoilFromDataTable()
 {
-	const FWeaponRecoilRow* RecoilRow = RecoilDataRow.GetRow<FWeaponRecoilRow>(TEXT("InitializeWeaponRecoil"));
+	RefreshRecoilSettingsFromState();
+}
+
+void ARangedWeaponBase::RefreshRecoilSettingsFromState()
+{
+	const EWeaponAimMode DesiredAimMode = bIsAiming ? EWeaponAimMode::ADS : EWeaponAimMode::Hip;
+	const FWeaponRecoilRow* RecoilRow = nullptr;
+
+	if (WeaponRecoilTable && !RecoilProfileId.IsNone())
+	{
+		TArray<FWeaponRecoilRow*> RecoilRows;
+		WeaponRecoilTable->GetAllRows<FWeaponRecoilRow>(TEXT("RefreshWeaponRecoil"), RecoilRows);
+
+		for (const FWeaponRecoilRow* CandidateRow : RecoilRows)
+		{
+			if (!CandidateRow || CandidateRow->RecoilProfileId != RecoilProfileId)
+			{
+				continue;
+			}
+
+			if (CandidateRow->AimMode == DesiredAimMode)
+			{
+				RecoilRow = CandidateRow;
+				break;
+			}
+
+			if (CandidateRow->AimMode == EWeaponAimMode::Any)
+			{
+				RecoilRow = CandidateRow;
+			}
+		}
+	}
+
 	if (!RecoilRow && WeaponRecoilTable && !RecoilProfileId.IsNone())
 	{
-		RecoilRow = WeaponRecoilTable->FindRow<FWeaponRecoilRow>(RecoilProfileId, TEXT("InitializeWeaponRecoil"));
+		RecoilRow = WeaponRecoilTable->FindRow<FWeaponRecoilRow>(RecoilProfileId, TEXT("RefreshWeaponRecoil"));
+	}
+
+	if (!RecoilRow)
+	{
+		RecoilRow = RecoilDataRow.GetRow<FWeaponRecoilRow>(TEXT("RefreshWeaponRecoil"));
 	}
 
 	if (!RecoilRow)

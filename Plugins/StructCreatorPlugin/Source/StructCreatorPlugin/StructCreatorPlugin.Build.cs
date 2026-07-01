@@ -35,6 +35,7 @@ public class StructCreatorPlugin : ModuleRules
 			new string[]
 			{
 				"Projects",
+				"AssetRegistry",
 				"DesktopPlatform",
 				"GameProjectGeneration",
 				"SourceCodeAccess",

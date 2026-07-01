@@ -3,6 +3,8 @@
 #include "CoreMinimal.h"
 #include "FirstPersonProceduralAnimRuntime.generated.h"
 
+class UAnimSequenceBase;
+
 USTRUCT(BlueprintType)
 struct OUTLIER_API FFirstPersonProceduralAnimRuntime
 {
@@ -13,6 +15,9 @@ struct OUTLIER_API FFirstPersonProceduralAnimRuntime
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hip")
 	FRotator HipPoseRot = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite,Category = "Idle")
+	float IdleIntensity = 1.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aim")
 	FVector AimPoseLoc = FVector::ZeroVector;
@@ -35,6 +40,33 @@ struct OUTLIER_API FFirstPersonProceduralAnimRuntime
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reload")
 	FRotator ReloadPushRot = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reload|Left Hand")
+	FVector LeftHandReloadGripOffsetLoc = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reload|Left Hand")
+	FRotator LeftHandReloadGripOffsetRot = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reload|Left Hand")
+	FVector LeftUpperArmReloadLoc = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reload|Left Hand")
+	FRotator LeftUpperArmReloadRot = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reload|Left Hand")
+	FRotator LeftLowerArmReloadRot = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reload|Left Hand IK")
+	FVector LeftHandReloadIKLoc = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reload|Left Hand IK")
+	FRotator LeftHandReloadIKRot = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reload|Left Hand IK")
+	FVector LeftHandReloadJointTargetLoc = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reload|Left Hand IK")
+	float LeftHandReloadIKAlpha = 0.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Equip")
 	float EquipPoseAlpha = 0.0f;
@@ -60,6 +92,12 @@ struct OUTLIER_API FFirstPersonProceduralAnimRuntime
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sprint")
 	float SprintAlpha = 0.0f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lean")
+	FRotator LeanRot = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lean")
+	float  LeanAlpha = 1.0f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Left Hand")
 	FVector LeftHandIKLoc = FVector::ZeroVector;
 
@@ -84,6 +122,12 @@ struct OUTLIER_API FFirstPersonProceduralAnimRuntime
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Left Hand")
 	float LeftUpperArmPitchAlpha = 0.0f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Left Hand")
+	FRotator LeftLowerArmPitchRot = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Left Hand")
+	float LeftLowerArmPitchAlpha = 0.0f;
+
 	// Route 1: ik_hand_gun(총손) 로컬 기준 왼손 그립 오프셋(정적).
 	// 그래프에서 ik_hand_l = CopyBone(ik_hand_gun) + 이 오프셋(Bone Space)으로 두면
 	// 예측 없이 모든 절차적 움직임에 손이 정확히 붙는다.
@@ -95,6 +139,9 @@ struct OUTLIER_API FFirstPersonProceduralAnimRuntime
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Right Hand")
 	FVector RightHandIKLocOffset = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Right Hand")
+	FRotator RightHandIKRotOffset = FRotator::ZeroRotator;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Movement")
 	FVector MovementLoc = FVector::ZeroVector;
@@ -167,6 +214,27 @@ struct OUTLIER_API FFirstPersonProceduralAnimRuntime
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wall Offset")
 	float WallOffsetAlpha = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wall Offset")
+	float WallMuzzleBlockAlpha = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wall Offset")
+	TObjectPtr<UAnimSequenceBase> WallAvoidUpPose = nullptr;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wall Offset")
+	TObjectPtr<UAnimSequenceBase> WallAvoidDownPose = nullptr;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wall Offset")
+	float WallAvoidUpAlpha = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wall Offset")
+	float WallAvoidDownAlpha = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wall Offset")
+	float WallAvoidSideAlpha = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wall Offset")
+	float WallAvoidSideSign = 0.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Start Stop")
 	FVector StartStopLoc = FVector::ZeroVector;

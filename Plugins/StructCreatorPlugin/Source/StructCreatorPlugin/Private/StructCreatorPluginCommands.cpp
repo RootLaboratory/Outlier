@@ -12,6 +12,13 @@ void FStructCreatorPluginCommands::RegisterCommands()
 		"Create a new USTRUCT header in the project's Source folder.",
 		EUserInterfaceActionType::Button,
 		FInputChord());
+
+	UI_COMMAND(
+		ReimportAllCsvAction,
+		"Reimport All CSV DataTables",
+		"Reimport every DataTable in the project that was imported from a CSV file.",
+		EUserInterfaceActionType::Button,
+		FInputChord());
 }
 
 #undef LOCTEXT_NAMESPACE

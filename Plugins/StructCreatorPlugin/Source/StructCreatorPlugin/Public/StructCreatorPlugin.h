@@ -17,6 +17,7 @@ public:
 	
 	/** This function will be bound to Command. */
 	void PluginButtonClicked();
+	void ReimportAllCsvButtonClicked();
 	
 private:
 

@@ -7,6 +7,8 @@
 #include "Shooter/ShooterCharacter.h"
 #include "ShooterCombatComponent.generated.h"
 
+class UAnimMontage;
+
 UCLASS(ClassGroup=(Shooter), meta=(BlueprintSpawnableComponent))
 class OUTLIER_API UShooterCombatComponent : public UShooterCharacterComponentBase
 {
@@ -31,7 +33,23 @@ protected:
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
 	uint8 bIsMeleeAttacking : 1 = false;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Combat|Fire", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float SprintFireAllowedAlpha = 0.2f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Combat|Fire", meta = (ClampMin = "0.0"))
+	float SprintExitFireRetryInterval = 0.02f;
+
 	FTimerHandle SecondaryCooldownStateTimerHandle;
+	FTimerHandle PendingSprintExitFireTimerHandle;
+
+	uint8 bPendingSprintExitFire : 1 = false;
+
+	bool IsActionLockBlockingAimFire(const AShooterCharacter& ShooterCharacter) const;
+	bool ShouldDelayFireForSprintExit(const AShooterCharacter& ShooterCharacter) const;
+	void QueueSprintExitFire(AShooterCharacter& ShooterCharacter);
+	void RetryPendingSprintExitFire();
+	void ClearPendingSprintExitFire();
+	void HandleReloadMontageEnded(UAnimMontage* Montage, bool bInterrupted);
 
 public:
 	UShooterCombatComponent();
