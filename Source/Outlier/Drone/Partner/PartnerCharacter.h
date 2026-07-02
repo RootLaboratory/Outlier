@@ -60,7 +60,6 @@ class UPartnerMovementComponent;
 class UPartnerSupportComponent;
 class UPartnerCombatComponent;
 class UPartnerHackComponent;
-class USceneCaptureComponent2D;
 class UPartnerAbilityComponent;
 class UPartnerEMPComponent;
 UCLASS()
@@ -95,9 +94,6 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UPartnerEMPComponent> EMPComponent;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
-	TObjectPtr<USceneCaptureComponent2D> CaptureComponent;
 
 	// Move Data
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Move")

@@ -12,7 +12,6 @@
 #include "Drone/Partner/PartnerHackComponent.h"
 #include "Drone/Partner/PartnerEMPComponent.h"
 #include "Net/UnrealNetwork.h"
-#include "Components/SceneCaptureComponent2D.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Drone/DroneMoveDataRow.h"
 #include "Drone/DroneControlDataRow.h"
@@ -895,8 +894,7 @@ APartnerCharacter::APartnerCharacter()
 		MoveComp->MaxFlySpeed = MoveSpeed;
 		MoveComp->BrakingDecelerationFlying = Deceleration;
 	}
-	CaptureComponent = CreateDefaultSubobject< USceneCaptureComponent2D>(TEXT("PartnerCameraCapture"));
-	CaptureComponent->SetupAttachment(RootComponent);
+
 	DistanceComponent = CreateDefaultSubobject<UPartnerDistanceComponent>(TEXT("DistanceComponent"));
 	MovementComponent = CreateDefaultSubobject<UPartnerMovementComponent>(TEXT("MovementComponent"));
 	SupportComponent  = CreateDefaultSubobject<UPartnerSupportComponent> (TEXT("SupportComponent"));

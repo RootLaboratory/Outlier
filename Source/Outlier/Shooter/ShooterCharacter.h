@@ -10,7 +10,6 @@
 class UInputAction;
 struct FInputActionValue;
 class AWeaponBase;
-class USceneCaptureComponent2D;
 class UShooterHealthComponent;
 class UShooterInventoryComponent;
 class UShooterCombatComponent;
@@ -25,6 +24,7 @@ DECLARE_MULTICAST_DELEGATE_TwoParams(FOnShooterHealthChanged, float /*CurrentHea
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnShooterShieldChanged, float /*CurrentShield*/, float /*MaxShield*/);
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnShooterPartnerShieldChanged, float /*CurrentPartnerShield*/, float /*MaxPartnerShield*/);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnShooterConditionChanged, const FGameplayTag& /*ConditionTag*/);
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnShooterDynamicCrosshairChanged, bool /*bAiming*/);
 
 UENUM(BlueprintType)
 enum class EMovementState : uint8
@@ -102,10 +102,6 @@ class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter
 	friend class UShooterMovementComponent;
 
 protected:
-	// Components / Owned Objects
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
-	TObjectPtr<USceneCaptureComponent2D> CaptureComponent;
-
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UShooterHealthComponent> HealthComponent;
 
@@ -350,6 +346,7 @@ public:
 	FOnShooterShieldChanged OnShooterShieldChanged;
 	FOnShooterPartnerShieldChanged OnShooterPartnerShieldChanged;
 	FOnShooterConditionChanged OnShooterConditionChanged;
+	FOnShooterDynamicCrosshairChanged OnShooterDynamicCrosshairChanged;
 
 	// Weapon Socket Queries
 	FName GetFirstPersonWeaponSocketByType(EWeaponType WeaponType) const;

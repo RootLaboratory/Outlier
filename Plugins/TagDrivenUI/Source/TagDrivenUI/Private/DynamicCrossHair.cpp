@@ -53,12 +53,16 @@ void UDynamicCrossHair::NativeTick(const FGeometry& MyGeometry, float InDeltaTim
 void UDynamicCrossHair::OnAiming()
 {
 	bAiming = true;
+	//SetVisibility(ESlateVisibility::Hidden);
+
 	CrossHairCollapsed();
 }
 
 void UDynamicCrossHair::OnAimingOff()
 {
 	bAiming = false;
+	//SetVisibility(ESlateVisibility::Visible);
+
 	CrossHairVisible();
 }
 

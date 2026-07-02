@@ -173,6 +173,7 @@ void UShooterCombatComponent::HandleAimPressed()
 	bIsAiming = true;
 	ShooterCharacter->CombatState = ECombatState::Aim;
 	RangedWeapon->SetAiming(true);
+	ShooterCharacter->OnShooterDynamicCrosshairChanged.Broadcast(true);
 }
 
 void UShooterCombatComponent::HandleAimReleased()
@@ -569,12 +570,18 @@ void UShooterCombatComponent::StopAimInternal()
 		return;
 	}
 
+	const bool bWasAiming = bIsAiming;
 	bWantsToAim = false;
 	bIsAiming = false;
 
 	if (ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(ShooterCharacter->CurrentWeapon))
 	{
 		RangedWeapon->SetAiming(false);
+	}
+
+	if (bWasAiming)
+	{
+		ShooterCharacter->OnShooterDynamicCrosshairChanged.Broadcast(false);
 	}
 }
 

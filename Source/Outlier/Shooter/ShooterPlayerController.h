@@ -44,12 +44,14 @@ protected:
 	virtual void AcknowledgePossession(APawn* P) override;
 	void BindShooterCharacterDelegates(AShooterCharacter* ShooterCharacter);
 	void UnbindShooterCharacterDelegates();
-	ULocalPlayerUISubSystem* GetLocalUISubsystem() const;
 
+	//UI
+	ULocalPlayerUISubSystem* GetLocalUISubsystem() const;
 	void HandleShooterHealthChanged(float CurrentHealth, float MaxHealth);
 	void HandleShooterShieldChanged(float CurrentShield, float MaxShield);
 	void HandleShooterPartnerShieldChanged(float CurrentPartnerShield, float MaxPartnerShield);
 	void HandleShooterConditionChanged(const FGameplayTag& ConditionTag);
+	void HandleShooterDynamicCrosshair(bool InFlag);
 
 	void CleanupPossessedShooterWeapons();
 

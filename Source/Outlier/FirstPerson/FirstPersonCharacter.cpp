@@ -13,6 +13,7 @@
 #include "LocalPlayerUISubSystem.h"
 #include "EnhancedInputComponent.h"
 #include "InputActionValue.h"
+#include "Components/SceneCaptureComponent2D.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Weapon/WeaponBase.h"
 #include "Net/UnrealNetwork.h"
@@ -64,6 +65,11 @@ AFirstPersonCharacter::AFirstPersonCharacter()
 	// configure character movement
 	GetCharacterMovement()->BrakingDecelerationFalling = 1500.0f;
 	GetCharacterMovement()->AirControl = 0.5f;
+
+	//Capture Component
+	CaptureComponent = CreateDefaultSubobject< USceneCaptureComponent2D>(TEXT("PartnerCameraCapture"));
+	CaptureComponent->SetupAttachment(FirstPersonCamera);
+	CaptureComponent->HideActorComponents(GetOwner(), true);
 }
 
 // Called to bind functionality to input
@@ -306,6 +312,7 @@ void AFirstPersonCharacter::OnRep_CurrentWeapon()
 	LastReplicatedWeapon = CurrentWeapon;
 	OnWeaponChanged.Broadcast(CurrentWeaponType);
 
+	CaptureComponentWeaponNotIncluded(LastReplicatedWeapon);
 }
 
 void AFirstPersonCharacter::TryStartAttack()
@@ -394,4 +401,16 @@ EWeaponType AFirstPersonCharacter::GetWeaponType() const
 
 void AFirstPersonCharacter::OnMoveInputUpdated(const FVector2D& MoveValue)
 {
+}
+
+void AFirstPersonCharacter::CaptureComponentWeaponNotIncluded(AWeaponBase* Weapon)
+{
+	if (CaptureComponent && Weapon)
+	{
+		CaptureComponent->HideActorComponents(Weapon, true);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT("CaptureComponentWEAPONnoTiNCLUDED"));
+	}
 }

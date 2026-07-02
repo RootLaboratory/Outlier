@@ -43,6 +43,7 @@ public:
 	void OnRep_AttackSign(EAttackSign InType);
 	void OnRep_ShootCrosshairChanged(float InFireRate);
 	void OnRep_ShooterHPStateChanged(const FGameplayTag& InShooterConditionTag);
+	void OnRep_ShooterDynamicCrosshairChanged(bool InFlag);
 public:
 
 	void PartnerCameraBind(USceneCaptureComponent2D* InCaptureComponent2D);
