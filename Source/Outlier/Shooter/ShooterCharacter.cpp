@@ -60,12 +60,19 @@ AShooterCharacter::AShooterCharacter() : AFirstPersonCharacter()
 	ShadowMesh->SetRenderInMainPass(true);
 	ShadowMesh->SetRenderInDepthPass(false);
 
-	CaptureComponent = CreateDefaultSubobject< USceneCaptureComponent2D>(TEXT("PartnerCameraCapture"));
-	CaptureComponent->SetupAttachment(RootComponent);
+	
 	HealthComponent = CreateDefaultSubobject<UShooterHealthComponent>(TEXT("HealthComponent"));
 	InventoryComponent = CreateDefaultSubobject<UShooterInventoryComponent>(TEXT("InventoryComponent"));
 	CombatComponent = CreateDefaultSubobject<UShooterCombatComponent>(TEXT("CombatComponent"));
 	MovementComponent = CreateDefaultSubobject<UShooterMovementComponent>(TEXT("MovementComponent"));
+
+	if (CaptureComponent)
+	{
+		if (USkeletalMeshComponent* ThirdPersonMesh = GetMesh())
+		{
+			CaptureComponent->HideComponent(ThirdPersonMesh);
+		}
+	}
 }
 
 void AShooterCharacter::BeginPlay()

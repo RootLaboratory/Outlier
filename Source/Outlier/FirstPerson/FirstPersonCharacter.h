@@ -14,6 +14,7 @@ class UCameraComponent;
 class USceneComponent;
 class UFirstPersonInputConfig;
 class UInputAction;
+class USceneCaptureComponent2D;
 struct FInputActionValue;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnWeaponChanged, EWeaponType, NewWeaponType);
@@ -58,6 +59,10 @@ protected:
 
 	UPROPERTY(Transient)
 	TObjectPtr<AWeaponBase> LastReplicatedWeapon;
+
+	// Components / Owned Objects
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<USceneCaptureComponent2D> CaptureComponent;
 
 	UFUNCTION()
 	void OnRep_CurrentWeapon();
@@ -117,6 +122,7 @@ public:
 
 	virtual void OnMoveInputUpdated(const FVector2D& MoveValue);
 
+	void CaptureComponentWeaponNotIncluded(AWeaponBase* Weapon);
 public:
 	UPROPERTY(BlueprintAssignable)
 	FOnWeaponChanged OnWeaponChanged;

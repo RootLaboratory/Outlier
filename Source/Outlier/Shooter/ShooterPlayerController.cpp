@@ -135,6 +135,11 @@ void AShooterPlayerController::BindShooterCharacterDelegates(AShooterCharacter* 
 		this,
 		&AShooterPlayerController::HandleShooterConditionChanged
 	);
+
+	ShooterCharacter->OnShooterDynamicCrosshairChanged.AddUObject(
+		this,
+		&AShooterPlayerController::HandleShooterDynamicCrosshair
+	);
 }
 
 void AShooterPlayerController::UnbindShooterCharacterDelegates()
@@ -150,6 +155,7 @@ void AShooterPlayerController::UnbindShooterCharacterDelegates()
 	BoundShooterCharacter->OnShooterShieldChanged.RemoveAll(this);
 	BoundShooterCharacter->OnShooterPartnerShieldChanged.RemoveAll(this);
 	BoundShooterCharacter->OnShooterConditionChanged.RemoveAll(this);
+	BoundShooterCharacter->OnShooterDynamicCrosshairChanged.RemoveAll(this);
 	BoundShooterCharacter = nullptr;
 }
 
@@ -188,6 +194,14 @@ void AShooterPlayerController::HandleShooterConditionChanged(const FGameplayTag&
 	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
 	{
 		UISubsystem->OnRep_ShooterHPStateChanged(ConditionTag);
+	}
+}
+
+void AShooterPlayerController::HandleShooterDynamicCrosshair(bool InFlag)
+{
+	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
+	{
+		UISubsystem->OnRep_ShooterDynamicCrosshairChanged(InFlag);
 	}
 }
 

@@ -286,6 +286,21 @@ void ULocalPlayerUISubSystem::OnRep_ShooterHPStateChanged(const FGameplayTag& In
 	}
 }
 
+void ULocalPlayerUISubSystem::OnRep_ShooterDynamicCrosshairChanged(bool InFlag)
+{
+	if (UCrossHairBase* Crosshair = Cast<UCrossHairBase>(GetModule(TagDrivenUITags::Shooter::CrossHair())))
+	{
+		if (InFlag)
+		{
+			Crosshair->OnAiming();
+		}
+		else
+		{
+			Crosshair->OnAimingOff();
+		}
+	}
+}
+
 void ULocalPlayerUISubSystem::OnAbilityDisabledByDistance()
 {
 	if (UMainUIBase* MainUI = GetMainUI())
