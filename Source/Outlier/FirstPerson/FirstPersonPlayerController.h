@@ -21,6 +21,16 @@ class OUTLIER_API AFirstPersonPlayerController : public APlayerController ,  pub
 public:
 	AFirstPersonPlayerController();
 
+	UFUNCTION(Client, Reliable)
+	void ClientArenaLoad(int32 ArenaId);
+
+	UFUNCTION(Server, Reliable)
+	void ServerNotifyArenaReady();
+
+	UFUNCTION()
+	void HandleArenaShown(int32 ShownArenaId);
+	void ControlMainWidget(bool InFlag) const;
+
 protected:
 
 	/** Input Mapping Contexts */
@@ -48,11 +58,16 @@ protected:
 
 	void InitializeOutlierPlayerState();
 	void RegisterCurrentPawnWithPlayerState();
+	virtual void RefreshPostProcessState();
+	
+
+protected:
+
+	int32 PendingArenaId = INDEX_NONE;
 
 	UPROPERTY()
 	TObjectPtr<UMainUIBase> ShooterUIInstance;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "UI")
 	TSubclassOf<UMainUIBase> MainUIClass;
-
 };

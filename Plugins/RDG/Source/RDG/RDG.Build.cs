@@ -1,4 +1,4 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 using System.IO;
@@ -28,7 +28,10 @@ public class RDG : ModuleRules
 			new string[]
 			{
 				"Core",
-                "RenderCore"
+				"RenderCore",
+				"Niagara",
+				"NiagaraCore",
+				"VectorVM"
 				// ... add other public dependencies that you statically link with here ...
 			}
             );
@@ -43,7 +46,7 @@ public class RDG : ModuleRules
 				"SlateCore",
                 "InputCore",
                 "RHI",
-                "Renderer",
+				"Renderer",
 				"Projects"
 				// ... add private dependencies that you statically link with here ...	
 			}
@@ -68,4 +71,3 @@ public class RDG : ModuleRules
 			);
 	}
 }
-

@@ -14,6 +14,8 @@ class USceneComponent;
 class USphereComponent;
 class AWeaponSpawnPoint;
 class AFirstPersonCharacter;
+class UInteractableComponent;
+class UProceduralAnimValues;
 
 UENUM(BlueprintType)
 enum class EWeaponType : uint8
@@ -43,7 +45,13 @@ protected:
 	TObjectPtr<USkeletalMeshComponent> ThirdPersonWeaponMesh;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
+	TObjectPtr<USkeletalMeshComponent> ShadowWeaponMesh;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
 	TObjectPtr<USphereComponent> InteractionCollision;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Interaction")
+	TObjectPtr<UInteractableComponent> InteractableComponent;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = Weapon)
 	FName WeaponName;
@@ -81,6 +89,9 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = IK)
 	FName LeftHandIKSocketName = FName("LeftHandIK");
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = IK)
+	FName LeftHandSprintIKSocketName = FName("LeftHandIK_Sprint");
+
 	UPROPERTY(ReplicatedUsing = OnRep_EquippedState, VisibleAnywhere, BlueprintReadOnly, Category = Weapon)
 	TObjectPtr<ACharacter> WeaponOwner;
 
@@ -117,6 +128,9 @@ protected:
 	UPROPERTY(Transient)
 	float DropPickupBlockedUntilTime = 0.0f;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Animation")
+	TObjectPtr<UProceduralAnimValues> FirstPersonProceduralValues = nullptr;
+
 protected:
 	virtual void EnsureWeaponDataInitialized();
 	virtual void InitializeFromDataTables();
@@ -145,9 +159,16 @@ public:
 
 	virtual void OnEquipped(ACharacter* NewOwner);
 
+	virtual void AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacter* NewOwner);
+	void AttachWeaponMeshesToOwnerMeshes();
+	virtual void ShowEquippedPresentation();
+	virtual void RefreshShadowWeaponPresentation();
+
 	virtual void OnUnequipped();
 
 	virtual void OnDropped(const FTransform& DropTransform, AFirstPersonCharacter* DroppedBy = nullptr);
+
+	virtual UInteractableComponent* GetInteractableComponent() const override;
 
 	virtual void Interact(class AFirstPersonCharacter* Interactor) override;
 
@@ -165,9 +186,14 @@ public:
 	bool CanBePickedUpBy(const AFirstPersonCharacter* Interactor) const;
 	float GetDamageAtDistance(float DistanceCm) const;
 	float GetMovementSpeedMultiplier() const { return MovementSpeedMultiplier; }
+	float GetFirstPersonProceduralRecoilMultiplier() const;
+	float GetThirdPersonProceduralRecoilMultiplier() const;
+	float GetThirdPersonProceduralSprintMultiplier() const;
+	float GetThirdPersonProceduralWallOffsetMultiplier() const;
 
 	USkeletalMeshComponent* GetFirstPersonWeaponMesh() const { return FirstPersonWeaponMesh; }
 	USkeletalMeshComponent* GetThirdPersonWeaponMesh() const { return ThirdPersonWeaponMesh; }
+	USkeletalMeshComponent* GetShadowWeaponMesh() const { return ShadowWeaponMesh; }
 
 	UFUNCTION(BlueprintCallable, Category = IK)
 	FName GetLeftHandIKSocketName() const
@@ -176,8 +202,20 @@ public:
 	}
 
 	UFUNCTION(BlueprintCallable, Category = IK)
+	FName GetLeftHandSprintIKSocketName() const
+	{
+		return LeftHandSprintIKSocketName;
+	}
+
+	UFUNCTION(BlueprintCallable, Category = IK)
 	USkeletalMeshComponent* GetWeaponByView(bool bFirstPerson) const
 	{
 		return bFirstPerson ? FirstPersonWeaponMesh : ThirdPersonWeaponMesh;
+	}
+
+	UFUNCTION(BlueprintPure, Category = "Weapon|Animation")
+	const UProceduralAnimValues* GetFirstPersonProceduralValues() const
+	{
+		return FirstPersonProceduralValues;
 	}
 };

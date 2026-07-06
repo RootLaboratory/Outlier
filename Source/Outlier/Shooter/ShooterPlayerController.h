@@ -11,6 +11,8 @@
 
 
 class AShooterCharacter;
+class ULocalPlayerUISubSystem;
+struct FGameplayTag;
 /**
  * Basic player controller class for shooter gameplay.
  * Manages possession and respawn behavior.
@@ -38,6 +40,18 @@ protected:
 
 	/** Pawn initialization */
 	virtual void OnPossess(APawn* InPawn) override;
+	virtual void ReceivedPlayer() override;
+	virtual void AcknowledgePossession(APawn* P) override;
+	void BindShooterCharacterDelegates(AShooterCharacter* ShooterCharacter);
+	void UnbindShooterCharacterDelegates();
+
+	//UI
+	ULocalPlayerUISubSystem* GetLocalUISubsystem() const;
+	void HandleShooterHealthChanged(float CurrentHealth, float MaxHealth);
+	void HandleShooterShieldChanged(float CurrentShield, float MaxShield);
+	void HandleShooterPartnerShieldChanged(float CurrentPartnerShield, float MaxPartnerShield);
+	void HandleShooterConditionChanged(const FGameplayTag& ConditionTag);
+	void HandleShooterDynamicCrosshair(bool InFlag);
 
 	void CleanupPossessedShooterWeapons();
 
@@ -51,6 +65,12 @@ protected:
 	UFUNCTION()
 	void OnWeaponChanged(EWeaponType NewType);
 
+	UFUNCTION()
+	void HandleAbilitySelected(FGameplayTag AbilityTag);
+
+	UFUNCTION()
+	void  HandleShooterAimingBlur(bool InFlag, int32 WeaponStencilValue);
+
 	// UI 관련
 	// 총알
 	// 피격 등등
@@ -58,8 +78,13 @@ protected:
 public:
 	AShooterPlayerController();
 
+	void SocketDistanceUpdate(float Distance); //테스팅.
+
 	UPROPERTY()
 	TObjectPtr<UShooterAbilityUI>  AbilityUIInstance;
+
+	UPROPERTY()
+	TObjectPtr<AShooterCharacter> BoundShooterCharacter;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Ability UI")
 	TSubclassOf<UShooterAbilityUI> AbilityUIClass;

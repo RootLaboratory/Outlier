@@ -5,18 +5,28 @@
 #include "Drone/Partner/PartnerInputConfig.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
+#include "Drone/Partner/PartnerDistanceComponent.h"
 #include "Drone/Partner/PartnerMovementComponent.h"
 #include "Drone/Partner/PartnerSupportComponent.h"
+#include "Drone/Partner/PartnerCombatComponent.h"
+#include "Drone/Partner/PartnerHackComponent.h"
+#include "Drone/Partner/PartnerEMPComponent.h"
 #include "Net/UnrealNetwork.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Drone/DroneMoveDataRow.h"
 #include "Drone/DroneControlDataRow.h"
+#include "PostProcess/MaterialPostProcessSubsystem.h"
+#include "PostProcess/OutlierPostProcessVolume.h"
 #include "Drone/Partner/PartnerSkillCommonRow.h"
 #include "Drone/Partner/PartnerSkillDataRow.h"
 #include "Drone/Partner/PartnerSurvivalDataRow.h"
 #include "Drone/Partner/PartnerCameraAssistDataRow.h"
+#include "GameplayTags/OutlierGameplayTags.h"
 #include "Shooter/ShooterCharacter.h"
 #include "OutlierPlayerState.h"
+#include "LocalPlayerUISubSystem.h"
+#include "PartnerAbilityComponent.h"
+#include "TagDrivenUIGameplayTags.h"
 
 void APartnerCharacter::BeginPlay()
 {
@@ -31,18 +41,8 @@ void APartnerCharacter::BeginPlay()
 	}
 
 	EnsurePartnerDataInitialized();
-
-	if (HasAuthority())
-	{
-		GetWorldTimerManager().SetTimer(
-			BoundaryCheckTimerHandle,
-			this,
-			&APartnerCharacter::UpdateBoundaryByTimer,
-			0.1f,
-			true
-		);
-	}
 }
+
 
 float APartnerCharacter::TakeDamage(
 	float DamageAmount,
@@ -50,6 +50,7 @@ float APartnerCharacter::TakeDamage(
 	AController* EventInstigator,
 	AActor* DamageCauser)
 {
+
 	const float AppliedDamage = Super::TakeDamage(
 		DamageAmount,
 		DamageEvent,
@@ -98,6 +99,7 @@ void APartnerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 
 	// Scan
 	EnhancedInputComponent->BindAction(PartnerInputConfig->ScanAction,			ETriggerEvent::Started,   this, &APartnerCharacter::Scan);	
+	//EnhancedInputComponent->BindAction(PartnerInputConfig->ScanAction, ETriggerEvent::Started, this, &APartnerCharacter::TestAbilityScan);
 
 	// Shield
 	EnhancedInputComponent->BindAction(PartnerInputConfig->ShieldAction,		ETriggerEvent::Started,	  this, &APartnerCharacter::Shield);
@@ -134,7 +136,6 @@ void APartnerCharacter::DoMove(float Right, float Forward)
 	if (MovementComponent)
 	{
 		MovementComponent->SetMoveInput(MoveValue);
-		MovementComponent->RefreshMovementState();
 	}
 }
 
@@ -142,6 +143,23 @@ void APartnerCharacter::OnMoveInputUpdated(const FVector2D& MoveValue)
 {
 	Super::OnMoveInputUpdated(MoveValue);
 }
+
+void APartnerCharacter::TryStartAttack()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->TryStartAttack();
+	}
+}
+
+void APartnerCharacter::TryStopAttack()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->TryStopAttack();
+	}
+}
+
 
 void APartnerCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
@@ -154,19 +172,34 @@ void APartnerCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	DOREPLIFETIME(APartnerCharacter, bShieldActive);
 	DOREPLIFETIME(APartnerCharacter, bScanning);
 	DOREPLIFETIME(APartnerCharacter, LastHackServerTime);
+	DOREPLIFETIME(APartnerCharacter, bIsAccelerate);
 	DOREPLIFETIME(APartnerCharacter, bIsRebooting);
 	DOREPLIFETIME(APartnerCharacter, bIsInvincible);
 	DOREPLIFETIME(APartnerCharacter, CurrentHitCount);
 }
 
-void APartnerCharacter::AreaOfEffect()
+void APartnerCharacter::OnRep_CurrentHitCount()
 {
-	if (!CanAcceptInput())
+
+	if (!IsLocallyControlled()) return;
+
+	if (CurrentHitCount <= 0)
 	{
+		NullifyDamagedEvenet();
 		return;
 	}
 
-	ServerUseSkill(EPartnerSkillType::AreaOfEffect);
+	if (MaxHitCount <= 0)
+	{
+		return;
+	}
+	
+	ApplyDamagedEvent(static_cast<float>(MaxHitCount-CurrentHitCount) / static_cast<float>(MaxHitCount));
+}
+
+void APartnerCharacter::AreaOfEffect()
+{
+	TryEMP();
 }
 
 void APartnerCharacter::CameraAssist()
@@ -192,12 +225,22 @@ void APartnerCharacter::StopCameraAssist()
 
 void APartnerCharacter::TryHacking()
 {
-	if (!CanAcceptInput())
+	if (!CanAcceptInput() || !TestAbilityComponent)
 	{
 		return;
 	}
 
-	ServerUseSkill(EPartnerSkillType::Hack);
+	TestAbilityComponent->TryActivateAbilityByTag(OutlierGameplayTags::Ability::Partner::Hacking());
+}
+
+void APartnerCharacter::TryEMP()
+{
+	if (!CanAcceptInput() || !TestAbilityComponent)
+	{
+		return;
+	}
+
+	TestAbilityComponent->TryActivateAbilityByTag(OutlierGameplayTags::Ability::Partner::EMP());
 }
 
 void APartnerCharacter::Hacking(AActor* TargetActor)
@@ -212,12 +255,25 @@ void APartnerCharacter::Hacking(AActor* TargetActor)
 	// 해킹 로직
 }
 
+void APartnerCharacter::TestAbilityScan()
+{
+	if (!CanAcceptInput())
+	{
+		return;
+	}
+	UE_LOG(LogTemp, Error, TEXT("Scan Valid"));
+
+
+	TestAbilityComponent->TryActivateAbilityByTag(OutlierGameplayTags::Ability::Partner::Scan());
+}
+
 void APartnerCharacter::Scan()
 {
 	if (!CanAcceptInput())
 	{
 		return;
 	}
+	UE_LOG(LogTemp, Error, TEXT("Scan Valid"));
 
 	ServerUseSkill(EPartnerSkillType::Scan);
 }
@@ -229,7 +285,66 @@ void APartnerCharacter::Shield()
 		return;
 	}
 
+	UE_LOG(LogTemp, Error, TEXT("Shield Valid"));
+
 	ServerUseSkill(EPartnerSkillType::Shield);
+}
+
+void APartnerCharacter::NotifyBoundaryUI(bool bDisabled)
+{
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+
+	APlayerController* PC = Cast<APlayerController>(GetController());
+	if (!PC)
+	{
+		return;
+	}
+
+	ULocalPlayer* LP = PC->GetLocalPlayer();
+	if (!LP)
+	{
+		return;
+	}
+
+	if (ULocalPlayerUISubSystem* SubSystem = LP->GetSubsystem<ULocalPlayerUISubSystem>())
+	{
+		if (bDisabled)
+		{
+			SubSystem->OnAbilityDisabledByDistance(); //스킬 사거리 존재한다면 따로 분리.
+		}
+		else
+		{
+			SubSystem->OnAbilityEnabledByDistance();
+		}
+	}
+}
+
+void APartnerCharacter::ApplyDamagedEvent(float InRatio) const
+{
+	if (IsLocallyControlled())
+	{
+		UMaterialPostProcessSubsystem* PPS = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>();
+		if (PPS)
+		{
+			PPS->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Damaged, true);
+			PPS->UpdateDamagedPostProcess(InRatio, FVector4(0.0f,0.0f,1.0f,0.0f));
+		}
+	}
+}
+
+void APartnerCharacter::NullifyDamagedEvenet() const
+{
+	UMaterialPostProcessSubsystem* MaterialSub = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>();
+	if (MaterialSub)
+	{
+		UE_LOG(LogTemp, Error, TEXT("MaterialSub"));
+
+		MaterialSub->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Damaged, false);
+		MaterialSub->UpdateDamagedPostProcess(1);
+	}
 }
 
 void APartnerCharacter::SyncMove()
@@ -260,12 +375,12 @@ void APartnerCharacter::ToggleAccelerate()
 		return;
 	}
 
-	bIsAccelerate = !bIsAccelerate;
+	const bool bNewAccelerate = !bIsAccelerate;
+	ApplyAccelerateState(bNewAccelerate);
 
-	if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
+	if (!HasAuthority())
 	{
-		MoveComp->MaxWalkSpeed = bIsAccelerate ? BoostSpeed : MoveSpeed;
-		MoveComp->MaxFlySpeed = bIsAccelerate ? BoostSpeed : MoveSpeed;
+		ServerSetAccelerate(bNewAccelerate);
 	}
 }
 
@@ -338,12 +453,9 @@ void APartnerCharacter::SetBoundaryOutside(bool bOutside)
 	}
 }
 
-void APartnerCharacter::UpdateBoundaryByTimer()
+EPartnerBoundaryState APartnerCharacter::GetBoundaryOutside()
 {
-	if (MovementComponent)
-	{
-		MovementComponent->UpdateBoundaryState();
-	}
+	return BoundaryState;
 }
 
 void APartnerCharacter::HandlePartnerHit()
@@ -364,6 +476,11 @@ void APartnerCharacter::HandlePartnerHit()
 		false
 	);
 
+	if (IsLocallyControlled())
+	{
+		OnRep_CurrentHitCount();
+	}
+
 	if (CurrentHitCount >= MaxHitCount)
 	{
 		StartReboot();
@@ -380,7 +497,13 @@ void APartnerCharacter::StartReboot()
 	bIsRebooting = true;
 	bIsInvincible = true;
 	CurrentHitCount = 0;
-	bIsAccelerate = false;
+
+	if (IsLocallyControlled())
+	{
+		OnRep_CurrentHitCount();
+	}
+
+	ApplyAccelerateState(false);
 
 	if (MovementComponent)
 	{
@@ -436,13 +559,55 @@ bool APartnerCharacter::CanAcceptInput() const
 	return !bIsRebooting;
 }
 
+UPartnerEMPComponent* APartnerCharacter::GetRuntimeEMPComponent() const
+{
+	UPartnerEMPComponent* RuntimeEMPComponent = FindComponentByClass<UPartnerEMPComponent>();
+	if (RuntimeEMPComponent && RuntimeEMPComponent->GetOwner() == this)
+	{
+		return RuntimeEMPComponent;
+	}
+
+	if (EMPComponent && EMPComponent->GetOwner() == this)
+	{
+		return EMPComponent;
+	}
+
+	return nullptr;
+}
+
+UPartnerHackComponent* APartnerCharacter::GetRuntimeHackComponent() const
+{
+	UPartnerHackComponent* RuntimeHackComponent = FindComponentByClass<UPartnerHackComponent>();
+	if (RuntimeHackComponent && RuntimeHackComponent->GetOwner() == this)
+	{
+		return RuntimeHackComponent;
+	}
+
+	if (HackComponent && HackComponent->GetOwner() == this)
+	{
+		return HackComponent;
+	}
+
+	return nullptr;
+}
+
 void APartnerCharacter::SetMoveMode(EPartnerMoveMode NewMode)
 {
-	if (!CanAcceptInput() && NewMode != EPartnerMoveMode::Normal)
+	if (!CanApplyMoveMode(NewMode))
 	{
 		return;
 	}
 
+	ApplyMoveMode(NewMode);
+
+	if (!HasAuthority())
+	{
+		ServerSetMoveMode(NewMode);
+	}
+}
+
+void APartnerCharacter::ApplyMoveMode(EPartnerMoveMode NewMode)
+{
 	if (MoveMode == NewMode)
 	{
 		return;
@@ -450,20 +615,56 @@ void APartnerCharacter::SetMoveMode(EPartnerMoveMode NewMode)
 
 	MoveMode = NewMode;
 
-	if (!HasAuthority())
+	if (MovementComponent)
 	{
-		ServerSetMoveMode(NewMode);
+		MovementComponent->OnMoveModeChanged(NewMode);
+	}
+}
+
+bool APartnerCharacter::CanApplyMoveMode(EPartnerMoveMode NewMode) const
+{
+	if (!CanAcceptInput() && NewMode != EPartnerMoveMode::Normal)
+	{
+		return false;
+	}
+
+	return NewMode == EPartnerMoveMode::Normal ||
+		NewMode == EPartnerMoveMode::FreeMove ||
+		NewMode == EPartnerMoveMode::SyncMove ||
+		NewMode == EPartnerMoveMode::CameraAssist;
+}
+
+void APartnerCharacter::ApplyAccelerateState(bool bNewAccelerate)
+{
+	bIsAccelerate = bNewAccelerate;
+
+	if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
+	{
+		const float CurrentSpeed = bIsAccelerate ? BoostSpeed : MoveSpeed;
+		MoveComp->MaxWalkSpeed = CurrentSpeed;
+		MoveComp->MaxFlySpeed = CurrentSpeed;
 	}
 
 	if (MovementComponent)
 	{
-		MovementComponent->RefreshTickEnabled();
+		MovementComponent->ResetMovementFeel();
 	}
+}
+
+void APartnerCharacter::ServerSetAccelerate_Implementation(bool bNewAccelerate)
+{
+	if (!CanAcceptInput())
+	{
+		return;
+	}
+
+	ApplyAccelerateState(bNewAccelerate);
+	ForceNetUpdate();
 }
 
 void APartnerCharacter::ServerUseSkill_Implementation(EPartnerSkillType SkillType)
 {
-	if (!SupportComponent || !CanAcceptInput())
+	if (!CanAcceptInput() && !SupportComponent)
 	{
 		return;
 	}
@@ -471,37 +672,36 @@ void APartnerCharacter::ServerUseSkill_Implementation(EPartnerSkillType SkillTyp
 	switch (SkillType)
 	{
 	case EPartnerSkillType::AreaOfEffect:
-		SupportComponent->TryAreaOfEffect_Server();
+
+			SupportComponent->TryAreaOfEffect_Server();
+
 		break;
 	case EPartnerSkillType::Shield:
-		SupportComponent->TryShield_Server();
+
+			SupportComponent->TryShield_Server();
 		break;
+
 	case EPartnerSkillType::Scan:
-		SupportComponent->TryScan_Server();
+
+			SupportComponent->TryScan_Server();
+
+		break;
+	case EPartnerSkillType::Hack:
 		break;
 	default:
 		break;
 	}
 }
 
-void APartnerCharacter::ServerHackTarget_Implementation(AActor* TargetActor)
+
+void APartnerCharacter::ServerSetMoveMode_Implementation(EPartnerMoveMode NewMode)
 {
-	if (!SupportComponent || !TargetActor || !CanAcceptInput())
+	if (!CanApplyMoveMode(NewMode))
 	{
 		return;
 	}
 
-	SupportComponent->TryHack_Server(TargetActor);
-}
-
-void APartnerCharacter::ServerSetMoveMode_Implementation(EPartnerMoveMode NewMode)
-{
-	MoveMode = NewMode;
-
-	if (MovementComponent)
-	{
-		MovementComponent->OnMoveModeChanged(NewMode);
-	}
+	ApplyMoveMode(NewMode);
 }
 
 void APartnerCharacter::EnsurePartnerDataInitialized()
@@ -556,21 +756,33 @@ void  APartnerCharacter::InitializeFromDataTables()
 
 	if (const FPartnerSkillDataRow* SkillDataRow = PartnerSkillDataRow.GetRow<FPartnerSkillDataRow>(TEXT("InitializeSkillData")))
 	{
-		ScanRange				 = SkillDataRow->ScanRange;
-		ScanDuration			 = SkillDataRow->ScanDuration;
-		ScanCooldown			 = SkillDataRow->ScanCooldown;
-		HackRange				 = SkillDataRow->HackRange;
-		HackDuration			 = SkillDataRow->HackDuration;
-		HackCooldown			 = SkillDataRow->HackCooldown;
-		AreaOfEffectRange		 = SkillDataRow->AreaOfEffectRange;
-		AreaOfEffectDuration	 = SkillDataRow->AreaOfEffectDuration;
-		AreaOfEffectCooldown	 = SkillDataRow->AreaOfEffectCooldown;
-		ShieldRange				 = SkillDataRow->ShieldRange;
-		ShieldDuration			 = SkillDataRow->ShieldDuration;
-		ShieldCooldown			 = SkillDataRow->ShieldCooldown;
-		ShieldAmount			 = SkillDataRow->ShieldAmount;
-	}
+		ScanRange			= SkillDataRow->ScanRange;
+		ScanDuration		= SkillDataRow->ScanDuration;
+		ScanCooldown		= SkillDataRow->ScanCooldown;
+		ScanExpandSpeed		= SkillDataRow->ScanExpandSpeed;
 
+		HackRange			= SkillDataRow->HackRange;
+		HackEffectiveRange	= SkillDataRow->HackEffectiveRange;
+		HackMiniGameTime	= SkillDataRow->HackMiniGameTime;
+		HackCooldown		= SkillDataRow->HackCooldown;
+		HackFailPenaltyTime	= SkillDataRow->HackFailPenaltyTime;
+
+		AreaOfEffectRange	= SkillDataRow->AreaOfEffectRange;
+		EMPMarkingTime		= SkillDataRow->EMPMarkingTime;
+		EMPStunDuration		= SkillDataRow->EMPStunDuration;
+		AreaOfEffectCooldown= SkillDataRow->AreaOfEffectCooldown;
+		EMPMaxTargets		= SkillDataRow->EMPMaxTargets;
+
+		ShieldRange			= SkillDataRow->ShieldRange;
+		ShieldDuration		= SkillDataRow->ShieldDuration;
+		ShieldCooldown		= SkillDataRow->ShieldCooldown;
+		ShieldAmount		= SkillDataRow->ShieldAmount;
+		ShieldDecayRate		= SkillDataRow->ShieldDecayRate;
+		ShieldDecayDelay	= SkillDataRow->ShieldDecayDelay;
+
+		InteractionRange	= SkillDataRow->InteractionRange;
+	}
+	
 	if (const FPartnerSkillCommonRow* SkillCommonRow = PartnerSkillCommonDataRow.GetRow<FPartnerSkillCommonRow>(TEXT("InitializeSkillCommon")))
 	{
 		CoolDown			= SkillCommonRow->CoolDown;
@@ -597,6 +809,11 @@ void  APartnerCharacter::InitializeFromDataTables()
 		RebootTime				  = SurvivalDataRow->RebootTime;
 		InvincibleAfterRebootTime = SurvivalDataRow->InvincibleAfterRebootTime;
 		HitInvincibleTime		  = SurvivalDataRow->HitInvincibleTime;
+	}
+
+	if (TestAbilityComponent)
+	{
+		TestAbilityComponent->RefreshCachedPartnerAbilityData();
 	}
 }
 
@@ -633,20 +850,12 @@ void APartnerCharacter::LookInput(const FInputActionValue& Value)
 	{
 		FRotator ControlRot = PC->GetControlRotation();
 		ControlRot.Pitch = FMath::ClampAngle(
-			ControlRot.Pitch + PitchInput,
+			ControlRot.Pitch - PitchInput,
 			PitchMin,
 			PitchMax
 		);
 
 		PC->SetControlRotation(ControlRot);
-	}
-
-	const float TargetRoll = -LookAxis.X * CameraRollOnTurn;
-	LookRollInput = FMath::Clamp(-TargetRoll / FMath::Max(CameraRollOnTurn, KINDA_SMALL_NUMBER), -1.0f, 1.0f);
-
-	if (MovementComponent)
-	{
-		MovementComponent->RefreshTickEnabled();
 	}
 }
 
@@ -664,8 +873,13 @@ APartnerCharacter::APartnerCharacter()
 		MoveComp->BrakingDecelerationFlying = Deceleration;
 	}
 
+	DistanceComponent = CreateDefaultSubobject<UPartnerDistanceComponent>(TEXT("DistanceComponent"));
 	MovementComponent = CreateDefaultSubobject<UPartnerMovementComponent>(TEXT("MovementComponent"));
 	SupportComponent  = CreateDefaultSubobject<UPartnerSupportComponent> (TEXT("SupportComponent"));
+	TestAbilityComponent = CreateDefaultSubobject<UPartnerAbilityComponent>(TEXT("AbilityComponent"));
+	CombatComponent   = CreateDefaultSubobject<UPartnerCombatComponent>  (TEXT("CombatComponent"));
+	HackComponent     = CreateDefaultSubobject<UPartnerHackComponent>    (TEXT("HackComponent"));
+	EMPComponent      = CreateDefaultSubobject<UPartnerEMPComponent>     (TEXT("EMPComponent"));
 }
 
 void APartnerCharacter::OnRep_DroneMovementState()
@@ -675,6 +889,15 @@ void APartnerCharacter::OnRep_DroneMovementState()
 
 void APartnerCharacter::OnRep_MoveMode()
 {
+	if (MovementComponent)
+	{
+		MovementComponent->OnMoveModeChanged(MoveMode);
+	}
+}
+
+void APartnerCharacter::OnRep_IsAccelerate()
+{
+	ApplyAccelerateState(bIsAccelerate);
 }
 
 void APartnerCharacter::SetShooterCharacter(AShooterCharacter* NewShooter)
@@ -686,8 +909,105 @@ void APartnerCharacter::SetShooterCharacter(AShooterCharacter* NewShooter)
 		MovementComponent->RefreshCharacterRefsFromPlayerState();
 	}
 
+	if (DistanceComponent)
+	{
+		DistanceComponent->RefreshCharacterRefsFromPlayerState();
+	}
+
 	if (SupportComponent)
 	{
 		SupportComponent->RefreshCharacterRefsFromPlayerState();
 	}
+
+	HackComponent = GetRuntimeHackComponent();
+	if (HackComponent)
+	{
+		HackComponent->RefreshCharacterRefsFromPlayerState();
+	}
+
+	EMPComponent = GetRuntimeEMPComponent();
+	if (EMPComponent)
+	{
+		EMPComponent->RefreshCharacterRefsFromPlayerState();
+	}
+}
+
+void APartnerCharacter::ClientNotifySkillUseResult_Implementation(EPartnerSkillType SkillType, EPartnerSkillUseResult Result)
+{
+	OnPartnerSkillUseResult.Broadcast(SkillType, Result);
+
+	if (Result != EPartnerSkillUseResult::Success)
+	{
+		return;
+	}
+
+	APlayerController* PC = Cast<APlayerController>(GetController());
+	if (!PC)
+	{
+		return;
+	}
+
+	ULocalPlayer* LP = PC->GetLocalPlayer();
+	if (!LP)
+	{
+		return;
+	}
+
+	ULocalPlayerUISubSystem* SubSystem = LP->GetSubsystem<ULocalPlayerUISubSystem>();
+	if (!SubSystem)
+	{
+		return;
+	}
+
+	FGameplayTag AbilityTag;
+	float CoolTime = 0.f;
+
+	switch (SkillType)
+	{
+	case EPartnerSkillType::Shield:
+		AbilityTag = TagDrivenUITags::Ability::Partner::Shield();
+		CoolTime   = ShieldCooldown;
+		break;
+	case EPartnerSkillType::Scan:
+		AbilityTag = TagDrivenUITags::Ability::Partner::Scan();
+		CoolTime   = ScanCooldown;
+		break;
+	case EPartnerSkillType::Hack:
+		AbilityTag = TagDrivenUITags::Ability::Partner::Hacking();
+		CoolTime   = HackCooldown;
+		break;
+	case EPartnerSkillType::AreaOfEffect:
+		AbilityTag = TagDrivenUITags::Ability::Partner::EMP();
+		CoolTime   = AreaOfEffectCooldown;
+		break;
+	default:
+		return;
+	}
+
+	SubSystem->OnAbilityUsed(AbilityTag, CoolTime);
+}
+
+float APartnerCharacter::GetCurrentInertialCameraRollDegrees() const
+{
+	return MovementComponent
+		? MovementComponent->GetCurrentCameraRollDegrees()
+		: 0.0f;
+}
+
+void APartnerCharacter::SetMovementState(EDroneMovementState State)
+{
+	if (MovementState == State)
+	{
+		return;
+	}
+
+	MovementState = State;
+	OnRep_DroneMovementState();
+}
+
+float APartnerCharacter::GetCurrentInertialCameraPitchDegrees() const
+{
+	return MovementComponent
+		? MovementComponent->GetCurrentCameraPitchDegrees()
+		: 0.0f;
 }

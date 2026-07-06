@@ -1,0 +1,121 @@
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/ScreenPass.ush"
+
+Texture2D SceneColorTexture;
+Texture3D VolumeTexture;
+SamplerState SceneColorSampler;
+SamplerState VolumeSampler;
+
+// x: mode, y: opacity, z: overlay scale, w: velocity scale
+float4 VisualizeSettings;
+// xy: scene extent, z: volume size, w: unused
+float4 TextureSettings;
+// xy: min scene color UV, zw: max scene color UV
+float4 ViewRectUV;
+
+float3 HeatColor(float Value)
+{
+	Value = saturate(Value);
+	float3 Cold = float3(0.02f, 0.04f, 0.08f);
+	float3 Warm = float3(1.0f, 0.35f, 0.04f);
+	float3 Hot = float3(1.0f, 0.95f, 0.25f);
+	return lerp(lerp(Cold, Warm, Value), Hot, smoothstep(0.65f, 1.0f, Value));
+}
+
+float3 EncodeField(float4 Field, bool bVelocityMode)
+{
+	if (bVelocityMode)
+	{
+		const float VelocityScale = max(VisualizeSettings.w, 0.000001f);
+		const float3 SignedVelocity = saturate(Field.xyz * VelocityScale * 0.5f + 0.5f);
+		const float Magnitude = saturate(length(Field.xyz) * VelocityScale);
+		return lerp(float3(0.0f, 0.0f, 0.0f), SignedVelocity, Magnitude);
+	}
+
+	return HeatColor(Field.a);
+}
+
+float4 DrawAtlas(float2 UV, float4 SceneColor, bool bVelocityMode)
+{
+	const float2 SceneExtent = max(TextureSettings.xy, float2(1.0f, 1.0f));
+	const float VolumeSize = max(TextureSettings.z, 1.0f);
+	const float2 ViewUVRange = max(ViewRectUV.zw - ViewRectUV.xy, float2(0.000001f, 0.000001f));
+	const float2 LocalViewUV = saturate((UV - ViewRectUV.xy) / ViewUVRange);
+	const float2 Pixel = LocalViewUV * SceneExtent;
+	const float AtlasSizePixels = min(SceneExtent.x, SceneExtent.y) * saturate(VisualizeSettings.z);
+	const float2 AtlasMin = float2(20.0f, 20.0f);
+	const float2 Local = (Pixel - AtlasMin) / max(AtlasSizePixels, 1.0f);
+
+	if (any(Local < 0.0f) || any(Local > 1.0f))
+	{
+		return SceneColor;
+	}
+
+	const float TileCount = 8.0f;
+	const float2 TileCoordFloat = Local * TileCount;
+	const float2 Tile = floor(TileCoordFloat);
+	const float2 TileUV = frac(TileCoordFloat);
+	const float Slice = Tile.x + Tile.y * TileCount;
+	const float W = (Slice + 0.5f) / VolumeSize;
+
+	const float4 Field = VolumeTexture.SampleLevel(VolumeSampler, float3(TileUV, W), 0.0f);
+	float3 DebugColor = EncodeField(Field, bVelocityMode);
+
+	const float2 TileEdge = min(TileUV, 1.0f - TileUV);
+	const float Grid = 1.0f - smoothstep(0.0f, 0.012f, min(TileEdge.x, TileEdge.y));
+	DebugColor = lerp(DebugColor, float3(0.0f, 0.0f, 0.0f), Grid * 0.55f);
+
+	const float BorderEdge = min(min(Local.x, Local.y), min(1.0f - Local.x, 1.0f - Local.y));
+	const float Border = 1.0f - smoothstep(0.0f, 0.006f, BorderEdge);
+	DebugColor = lerp(DebugColor, float3(1.0f, 1.0f, 1.0f), Border);
+
+	return float4(lerp(SceneColor.rgb, DebugColor, saturate(VisualizeSettings.y)), SceneColor.a);
+}
+
+float4 DrawProjection(float2 UV, float4 SceneColor, bool bVelocityMode)
+{
+	const float VolumeSize = max(TextureSettings.z, 1.0f);
+	float4 BestField = 0.0f;
+	float BestWeight = 0.0f;
+
+	[loop]
+	for (int Slice = 0; Slice < 64; ++Slice)
+	{
+		if ((float)Slice >= VolumeSize)
+		{
+			break;
+		}
+
+		const float W = ((float)Slice + 0.5f) / VolumeSize;
+		const float4 Field = VolumeTexture.SampleLevel(VolumeSampler, float3(UV, W), 0.0f);
+		const float Weight = bVelocityMode ? length(Field.xyz) * max(VisualizeSettings.w, 0.000001f) : Field.a;
+
+		if (Weight > BestWeight)
+		{
+			BestWeight = Weight;
+			BestField = Field;
+		}
+	}
+
+	const float Mask = saturate(BestWeight);
+	const float3 DebugColor = EncodeField(BestField, bVelocityMode);
+	return float4(lerp(SceneColor.rgb, DebugColor, Mask * saturate(VisualizeSettings.y)), SceneColor.a);
+}
+
+void MainPS(
+	FScreenVertexOutput Input,
+	out float4 OutColor : SV_Target0)
+{
+	const int Mode = (int)round(VisualizeSettings.x);
+	const bool bVelocityMode = Mode == 2;
+	const float2 UV = clamp(Input.UV, ViewRectUV.xy, ViewRectUV.zw);
+	const float4 SceneColor = SceneColorTexture.Sample(SceneColorSampler, UV);
+
+	if (Mode == 1 || Mode == 2)
+	{
+		OutColor = DrawAtlas(UV, SceneColor, bVelocityMode);
+		return;
+	}
+
+	OutColor = SceneColor;
+}

@@ -9,13 +9,9 @@ void UTitleWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
 
-	UE_LOG(LogTemp, Error, TEXT("NativeConstruct"));
-
 	if (StartButton)
 	{
 		StartButton->OnClicked.AddDynamic(this, &UTitleWidget::HandleStartButtonEvent);
-		UE_LOG(LogTemp, Error, TEXT("StartButton"));
-
 	}
 
 	if (ExitButton)
@@ -26,8 +22,6 @@ void UTitleWidget::NativeConstruct()
 
 void UTitleWidget::HandleStartButtonEvent()
 {
-	UE_LOG(LogTemp, Error, TEXT("HandleStartButtonEvent"));
-
 	// TitleWidget, base에 해당 Widget을 끄고 LobbyWidget을 활성화 시키게 해댤라고 요청 해야함.
 	OnStartRequested.Broadcast();
 }

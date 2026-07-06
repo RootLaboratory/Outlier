@@ -1,0 +1,41 @@
+float3			{ParameterName}_TextureSize;
+float			{ParameterName}_MaxDepth;
+Texture3D		{ParameterName}_Texture;
+SamplerState	{ParameterName}_TextureSampler;
+
+void SampleExplosionVolumeUVW_{ParameterName}(in float3 UVW, in float MipLevel, out float4 OutField)
+{
+	OutField = {ParameterName}_Texture.SampleLevel({ParameterName}_TextureSampler, saturate(UVW), MipLevel);
+}
+
+void SampleExplosionVolumeWorld_{ParameterName}(in float3 WorldPosition, in float MipLevel, out float4 OutField, out bool OutIsValid)
+{
+	const FLWCVector3 LwcPosition = MakeLWCVector3(GetEngineOwnerLWCTile(), WorldPosition);
+	const float3 TranslatedWorldPosition = DFFastToTranslatedWorld(DFFromTileOffset_Hack(LwcPosition), PrimaryView.PreViewTranslation);
+	const float4 ClipPosition = mul(float4(TranslatedWorldPosition, 1.0f), PrimaryView.TranslatedWorldToClip);
+
+	const float SafeClipW = max(abs(ClipPosition.w), 1.0e-6f);
+	const float2 ScreenPosition = ClipPosition.xy / SafeClipW;
+	const float2 ViewportUV = ScreenPosition * PrimaryView.ScreenPositionScaleBias.xy + PrimaryView.ScreenPositionScaleBias.wz;
+
+	const float3 TranslatedViewOrigin = DFFastToTranslatedWorld(PrimaryView.WorldViewOrigin, PrimaryView.PreViewTranslation);
+	const float ViewDepth = dot(TranslatedWorldPosition - TranslatedViewOrigin, PrimaryView.ViewForward.xyz);
+	const float W = sqrt(saturate(ViewDepth / max({ParameterName}_MaxDepth, 1.0f)));
+
+	const bool bInsideTexture = {ParameterName}_TextureSize.x > 0.0f;
+	const bool bInsideFrustum =
+		ClipPosition.w > 0.0f &&
+		ViewDepth >= 0.0f &&
+		ViewDepth <= {ParameterName}_MaxDepth &&
+		all(ViewportUV >= 0.0f) &&
+		all(ViewportUV <= 1.0f);
+
+	OutIsValid = bInsideTexture && bInsideFrustum;
+	OutField = OutIsValid ? {ParameterName}_Texture.SampleLevel({ParameterName}_TextureSampler, float3(ViewportUV, W), MipLevel) : float4(0.0f, 0.0f, 0.0f, 0.0f);
+
+}
+
+void ExplosionVolumeDimensions_{ParameterName}(out float3 OutDimensions)
+{
+	OutDimensions = {ParameterName}_TextureSize;
+}

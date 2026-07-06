@@ -65,6 +65,7 @@ public:
 	void StopSprintInternal();
 	void ClearInputIntent();
 	bool CanStartSlide() const;
+	bool CanSprint() const;
 
 	bool WantsToSprint() const { return bWantsToSprint; }
 	bool WantsToCrouch() const { return bWantsToCrouch; }

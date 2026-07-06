@@ -29,6 +29,7 @@ void AWeaponSpawnPoint::SpawnWeapon()
 
 	FActorSpawnParameters Params;
 	Params.Owner = this;
+	Params.OverrideLevel = GetLevel();
 
 	SpawnedWeapon = GetWorld()->SpawnActor<AWeaponBase>(
 		WeaponClass,
@@ -68,5 +69,6 @@ void AWeaponSpawnPoint::NotifyWeaponPickedUp(AWeaponBase* Weapon)
 		return;
 	}
 
+	SpawnedWeapon = nullptr;
 	GetWorldTimerManager().ClearTimer(RespawnTimerHandle);
 }

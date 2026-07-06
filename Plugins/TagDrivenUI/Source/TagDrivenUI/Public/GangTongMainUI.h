@@ -9,15 +9,26 @@
 
 class UPartnerCamUI;
 class UStaticCrossHair;
-class UHPBarUI;
+class UAbilityIconUI;
+class UDistanceSlideUI;
+class UPartnerHPUI;
+//HP Delegate;
 
+UENUM(BlueprintType)
+enum class EPlayerHPCondition : uint8
+{
+	NonShield,
+	NormalShield,
+	SkillShield,
+};
 
 UCLASS()
 class TAGDRIVENUI_API UGangTongMainUI : public UMainUIBase
 {
 	GENERATED_BODY()
-
-public:
+	
+private:
+	virtual void NativeConstruct() override;
 
 	virtual void ModuleInit() override;
 	virtual void ModuleDestruct() override;
@@ -25,6 +36,9 @@ public:
 	virtual void ModuleActivate() override;
 	virtual void ModuleDeActivate() override;
 
+
+	virtual void On_RepAbilityDisabledByDistance() override;
+	virtual void On_RepAbilityabledByDistance() override;
 public:
 
 	UPROPERTY(meta = (BindWidget))
@@ -34,6 +48,23 @@ public:
 	TObjectPtr<UStaticCrossHair> CrossHairUI;
 
 	UPROPERTY(meta = (BindWidget))
-	TObjectPtr<UHPBarUI> PartnerHPUI;
+	TObjectPtr<UPartnerHPUI> PartnerHPUI;
+
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UAbilityIconUI> AbilityShieldIcon;
+
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UAbilityIconUI> AbilityHackingIcon;
+
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UAbilityIconUI> AbilityScanIcon;
+
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UAbilityIconUI> AbilityEMPIcon;
+
+	UPROPERTY(meta = (BindWidgetOptional))
+	TObjectPtr<UDistanceSlideUI> DistanceSlide;
+
+
 
 };

@@ -15,8 +15,6 @@ void UDynamicCrossHair::NativeConstruct()
 	{
 		CachedUISubsystem = LP->GetSubsystem<ULocalPlayerUISubSystem>();
 	}
-	UE_LOG(LogTemp, Warning, TEXT("UDynamicCrossHair ViewportScale: %f"), UWidgetLayoutLibrary::GetViewportScale(this));
-
 }
 
 void UDynamicCrossHair::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
@@ -55,12 +53,16 @@ void UDynamicCrossHair::NativeTick(const FGeometry& MyGeometry, float InDeltaTim
 void UDynamicCrossHair::OnAiming()
 {
 	bAiming = true;
+	//SetVisibility(ESlateVisibility::Hidden);
+
 	CrossHairCollapsed();
 }
 
 void UDynamicCrossHair::OnAimingOff()
 {
 	bAiming = false;
+	//SetVisibility(ESlateVisibility::Visible);
+
 	CrossHairVisible();
 }
 

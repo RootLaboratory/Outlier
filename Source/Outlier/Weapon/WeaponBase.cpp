@@ -11,9 +11,11 @@
 #include "Shooter/ShooterCharacter.h"
 #include "Net/UnrealNetwork.h"
 #include "Engine/DataTable.h"
+#include "Interaction/InteractableComponent.h"
 #include "Weapon/WeaponCoreRow.h"
 #include "Weapon/WeaponRangeRow.h"
 #include "Weapon/Spawn/WeaponSpawnPoint.h"
+#include "Shooter/Anim/ProceduralAnimValues.h"
 
 AWeaponBase::AWeaponBase()
 {
@@ -42,8 +44,24 @@ AWeaponBase::AWeaponBase()
 	ThirdPersonWeaponMesh->SetCastShadow(true);
 	ThirdPersonWeaponMesh->SetCastHiddenShadow(false);
 
+	ShadowWeaponMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("ShadowWeaponMesh"));
+	ShadowWeaponMesh->SetupAttachment(SceneRoot);
+	ShadowWeaponMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	ShadowWeaponMesh->SetCollisionResponseToAllChannels(ECR_Ignore);
+	ShadowWeaponMesh->SetGenerateOverlapEvents(false);
+	ShadowWeaponMesh->SetHiddenInGame(true);
+	ShadowWeaponMesh->SetVisibility(true, true);
+	ShadowWeaponMesh->SetOwnerNoSee(false);
+	ShadowWeaponMesh->SetOnlyOwnerSee(false);
+	ShadowWeaponMesh->SetRenderInMainPass(true);
+	ShadowWeaponMesh->SetRenderInDepthPass(false);
+	ShadowWeaponMesh->SetCastShadow(false);
+	ShadowWeaponMesh->SetCastHiddenShadow(false);
+
 	InteractionCollision = CreateDefaultSubobject<USphereComponent>(TEXT("InteractionCollision"));
 	InteractionCollision->SetupAttachment(SceneRoot);
+
+	InteractableComponent = CreateDefaultSubobject<UInteractableComponent>(TEXT("InteractableComponent"));
 	InteractionCollision->SetSphereRadius(40.0f);
 	InteractionCollision->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
 	InteractionCollision->SetCollisionObjectType(ECC_WorldDynamic);
@@ -71,6 +89,17 @@ void AWeaponBase::OnConstruction(const FTransform& Transform)
 		ThirdPersonWeaponMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		ThirdPersonWeaponMesh->SetCollisionResponseToAllChannels(ECR_Ignore);
 		ThirdPersonWeaponMesh->SetGenerateOverlapEvents(false);
+	}
+
+	if (ShadowWeaponMesh)
+	{
+		if (!ShadowWeaponMesh->GetSkeletalMeshAsset() && ThirdPersonWeaponMesh)
+		{
+			ShadowWeaponMesh->SetSkeletalMeshAsset(ThirdPersonWeaponMesh->GetSkeletalMeshAsset());
+		}
+		ShadowWeaponMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		ShadowWeaponMesh->SetCollisionResponseToAllChannels(ECR_Ignore);
+		ShadowWeaponMesh->SetGenerateOverlapEvents(false);
 	}
 
 	if (InteractionCollision)
@@ -111,7 +140,7 @@ void AWeaponBase::InitializeFromDataTables()
 		FireType = CoreRow->FireType;
 		FireMode = CoreRow->FireMode;
 		Damage = CoreRow->Damage;
-		MovementSpeedMultiplier = FMath::Max(CoreRow->MovementSpeedMultiplier, 0.0f);
+		MovementSpeedMultiplier = FMath::Max(CoreRow->GameplayMovementSpeedMultiplier, 0.0f);
 		RangeProfileId = CoreRow->RangeProfileId;
 
 		if (CoreRow->FireRateRpm > 0.0f)
@@ -161,6 +190,34 @@ float AWeaponBase::GetDamageAtDistance(float DistanceCm) const
 	return Damage * FMath::Lerp(1.0f, MinDamageMultiplier, FalloffAlpha);
 }
 
+float AWeaponBase::GetFirstPersonProceduralRecoilMultiplier() const
+{
+	return FirstPersonProceduralValues
+		? FMath::Max(FirstPersonProceduralValues->WeaponValues.FirstPersonRecoilMultiplier, 0.0f)
+		: 1.0f;
+}
+
+float AWeaponBase::GetThirdPersonProceduralRecoilMultiplier() const
+{
+	return FirstPersonProceduralValues
+		? FMath::Max(FirstPersonProceduralValues->WeaponValues.ThirdPersonRecoilMultiplier, 0.0f)
+		: 1.0f;
+}
+
+float AWeaponBase::GetThirdPersonProceduralSprintMultiplier() const
+{
+	return FirstPersonProceduralValues
+		? FMath::Max(FirstPersonProceduralValues->WeaponValues.ThirdPersonSprintMultiplier, 0.0f)
+		: 1.0f;
+}
+
+float AWeaponBase::GetThirdPersonProceduralWallOffsetMultiplier() const
+{
+	return FirstPersonProceduralValues
+		? FMath::Max(FirstPersonProceduralValues->WeaponValues.ThirdPersonWallOffsetMultiplier, 0.0f)
+		: 1.0f;
+}
+
 void AWeaponBase::SetEquippedCollisionEnabled(bool bEnabled)
 {
 	const ECollisionEnabled::Type CollisionType = bEnabled
@@ -188,6 +245,12 @@ void AWeaponBase::SetPickupPresentation()
 	ThirdPersonWeaponMesh->SetHiddenInGame(false);
 	ThirdPersonWeaponMesh->SetCastShadow(true);
 	ThirdPersonWeaponMesh->SetCastHiddenShadow(false);
+	if (ShadowWeaponMesh)
+	{
+		ShadowWeaponMesh->SetHiddenInGame(true);
+		ShadowWeaponMesh->SetCastShadow(false);
+		ShadowWeaponMesh->SetCastHiddenShadow(false);
+	}
 	SetEquippedCollisionEnabled(true);
 }
 
@@ -202,45 +265,62 @@ void AWeaponBase::SetEquippedPresentation()
 	ThirdPersonWeaponMesh->SetHiddenInGame(false);
 	ThirdPersonWeaponMesh->SetCastShadow(true);
 	ThirdPersonWeaponMesh->SetCastHiddenShadow(true);
+	RefreshShadowWeaponPresentation();
 	SetEquippedCollisionEnabled(false);
+}
+
+void AWeaponBase::RefreshShadowWeaponPresentation()
+{
+	if (!ShadowWeaponMesh)
+	{
+		return;
+	}
+
+	AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
+	const bool bLocalView = Shooter && Shooter->IsLocallyControlled();
+
+	if (!ShadowWeaponMesh->GetSkeletalMeshAsset() && ThirdPersonWeaponMesh)
+	{
+		ShadowWeaponMesh->SetSkeletalMeshAsset(ThirdPersonWeaponMesh->GetSkeletalMeshAsset());
+	}
+
+	if (ThirdPersonWeaponMesh)
+	{
+		ShadowWeaponMesh->SetLeaderPoseComponent(ThirdPersonWeaponMesh);
+		ThirdPersonWeaponMesh->SetCastShadow(!bLocalView);
+		ThirdPersonWeaponMesh->SetCastHiddenShadow(false);
+	}
+
+	ShadowWeaponMesh->SetHiddenInGame(true);
+	ShadowWeaponMesh->SetVisibility(true, true);
+	ShadowWeaponMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	ShadowWeaponMesh->SetCollisionResponseToAllChannels(ECR_Ignore);
+	ShadowWeaponMesh->SetGenerateOverlapEvents(false);
+	ShadowWeaponMesh->SetOwnerNoSee(false);
+	ShadowWeaponMesh->SetOnlyOwnerSee(false);
+	ShadowWeaponMesh->SetRenderInMainPass(true);
+	ShadowWeaponMesh->SetRenderInDepthPass(false);
+	ShadowWeaponMesh->SetCastShadow(bLocalView);
+	ShadowWeaponMesh->SetCastHiddenShadow(bLocalView);
+	ShadowWeaponMesh->SetComponentTickEnabled(bLocalView);
 }
 
 void AWeaponBase::ApplyReplicatedPresentation()
 {
 	if (bIsEquipped)
 	{
+		// Notify 전까지 숨김 상태만 유지
+		AttachWeaponMeshesToOwner(this, WeaponOwner);
 		SetEquippedPresentation();
-
-		if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner))
-		{
-			const EWeaponType EquippedWeaponType = GetWeaponType();
-			const FName FirstPersonSocketName = Shooter->GetFirstPersonWeaponSocketByType(EquippedWeaponType);
-			const FName ThirdPersonSocketName = Shooter->GetThirdPersonWeaponSocketByType(EquippedWeaponType);
-
-			if (USkeletalMeshComponent* FirstPersonParent = Shooter->GetFirstPersonMesh())
-			{
-				FirstPersonWeaponMesh->AttachToComponent(
-					FirstPersonParent,
-					FAttachmentTransformRules::SnapToTargetNotIncludingScale,
-					FirstPersonSocketName
-				);
-			}
-
-			if (USkeletalMeshComponent* ThirdPersonParent = Shooter->GetMesh())
-			{
-				ThirdPersonWeaponMesh->AttachToComponent(
-					ThirdPersonParent,
-					FAttachmentTransformRules::SnapToTargetNotIncludingScale,
-					ThirdPersonSocketName
-				);
-			}
-		}
-
 		return;
 	}
 
 	FirstPersonWeaponMesh->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
 	ThirdPersonWeaponMesh->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
+	if (ShadowWeaponMesh)
+	{
+		ShadowWeaponMesh->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
+	}
 
 	FirstPersonWeaponMesh->AttachToComponent(
 		SceneRoot,
@@ -251,6 +331,13 @@ void AWeaponBase::ApplyReplicatedPresentation()
 		SceneRoot,
 		FAttachmentTransformRules::SnapToTargetNotIncludingScale
 	);
+	if (ShadowWeaponMesh)
+	{
+		ShadowWeaponMesh->AttachToComponent(
+			SceneRoot,
+			FAttachmentTransformRules::SnapToTargetNotIncludingScale
+		);
+	}
 
 	SetPickupPresentation();
 }
@@ -291,7 +378,12 @@ bool AWeaponBase::CanBePickedUpBy(const AFirstPersonCharacter* Interactor) const
 	{
 		return false;
 	}
+	const FGameplayTagContainer PlayerCharacterInteractTag = Interactor->GetOwnedGameplayTagsForQuery();
 
+	if(!PlayerCharacterInteractTag.IsEmpty() && !InteractableComponent->CanInteract(PlayerCharacterInteractTag))
+	{
+		return false;
+	}
 	return true;
 }
 
@@ -359,51 +451,162 @@ void AWeaponBase::OnEquipped(ACharacter* NewOwner)
 	}
 
 	SetOwner(NewOwner);
+	AttachWeaponMeshesToOwner(this, NewOwner);
 
-	// 장착 중에는 캐릭터를 밀지 않도록 충돌 비활성화
-	SetEquippedPresentation();
-
-	if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(NewOwner))
+	// Equip 몽타주 Notify 전까지 1P 무기는 숨겨둘 수도 있음
+	if (FirstPersonWeaponMesh)
 	{
-		const EWeaponType EquippedWeaponType = GetWeaponType();
-		const FName FirstPersonSocketName = Shooter->GetFirstPersonWeaponSocketByType(EquippedWeaponType);
-		const FName ThirdPersonSocketName = Shooter->GetThirdPersonWeaponSocketByType(EquippedWeaponType);
-
-		if (USkeletalMeshComponent* FirstPersonParent = Shooter->GetFirstPersonMesh())
-		{
-			FirstPersonWeaponMesh->AttachToComponent(
-				FirstPersonParent,
-				FAttachmentTransformRules::SnapToTargetNotIncludingScale,
-				FirstPersonSocketName
-			);
-		}
-
-		if (USkeletalMeshComponent* ThirdPersonParent = Shooter->GetMesh())
-		{
-			ThirdPersonWeaponMesh->AttachToComponent(
-				ThirdPersonParent,
-				FAttachmentTransformRules::SnapToTargetNotIncludingScale,
-				ThirdPersonSocketName
-			);
-		}
-
-		UE_LOG(
-			LogTemp,
-			Warning,
-			TEXT("%s [%s] EquipSockets WeaponType=%d FP=%s TP=%s FPParent=%s TPParent=%s"),
-			OutlierNet::GetNetPrefix(this),
-			*GetName(),
-			static_cast<int32>(EquippedWeaponType),
-			*FirstPersonSocketName.ToString(),
-			*ThirdPersonSocketName.ToString(),
-			*GetNameSafe(Shooter->GetFirstPersonMesh()),
-			*GetNameSafe(Shooter->GetMesh())
-		);
+		FirstPersonWeaponMesh->SetHiddenInGame(true);
 	}
 
+	if (ThirdPersonWeaponMesh)
+	{
+		ThirdPersonWeaponMesh->SetHiddenInGame(true);
+	}
+
+	if (ShadowWeaponMesh)
+	{
+		ShadowWeaponMesh->SetHiddenInGame(true);
+		ShadowWeaponMesh->SetCastShadow(false);
+		ShadowWeaponMesh->SetCastHiddenShadow(false);
+	}
+
+	AFirstPersonCharacter* Character = Cast<AFirstPersonCharacter>(NewOwner);
+	if (Character)
+	{
+		Character->CaptureComponentWeaponNotIncluded(this);
+	}
 
 	UE_LOG(LogTemp, Log, TEXT("%s [%s] OnEquipped Owner=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(NewOwner));
 	ForceNetUpdate();
+}
+
+void AWeaponBase::AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacter* NewOwner)
+{
+	if (!Weapon || !NewOwner)
+	{
+		return;
+	}
+
+	AShooterCharacter* Shooter = Cast<AShooterCharacter>(NewOwner);
+	if (!Shooter)
+	{
+		return;
+	}
+
+	const EWeaponType EquippedWeaponType = Weapon->GetWeaponType();
+	FName FirstPersonSocketName = Shooter->GetFirstPersonWeaponSocketByType(EquippedWeaponType);
+	FName ThirdPersonSocketName = Shooter->GetThirdPersonWeaponSocketByType(EquippedWeaponType);
+	const FAttachmentTransformRules WeaponAttachRules(
+		EAttachmentRule::KeepRelative,
+		EAttachmentRule::KeepRelative,
+		EAttachmentRule::SnapToTarget,
+		false
+	);
+
+	if (USkeletalMeshComponent* FirstPersonParent = Shooter->GetFirstPersonMesh())
+	{
+		const bool bHasFirstPersonSocket = FirstPersonParent->DoesSocketExist(FirstPersonSocketName);
+		Weapon->GetFirstPersonWeaponMesh()->AttachToComponent(
+			FirstPersonParent,
+			WeaponAttachRules,
+			FirstPersonSocketName
+		);
+
+		const FTransform FirstPersonSocketTransform =
+			FirstPersonParent->GetSocketTransform(FirstPersonSocketName, RTS_Component);
+		const FTransform FirstPersonWeaponRelativeTransform =
+			Weapon->GetFirstPersonWeaponMesh()->GetRelativeTransform();
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[WeaponAttach][FP] Weapon=%s Type=%d Parent=%s Socket=%s Exists=%d SocketLoc=%s SocketRot=%s WeaponRelLoc=%s WeaponRelRot=%s"),
+			*GetNameSafe(Weapon),
+			static_cast<int32>(EquippedWeaponType),
+			*GetNameSafe(FirstPersonParent),
+			*FirstPersonSocketName.ToString(),
+			bHasFirstPersonSocket ? 1 : 0,
+			*FirstPersonSocketTransform.GetLocation().ToCompactString(),
+			*FirstPersonSocketTransform.Rotator().ToCompactString(),
+			*FirstPersonWeaponRelativeTransform.GetLocation().ToCompactString(),
+			*FirstPersonWeaponRelativeTransform.Rotator().ToCompactString()
+		);
+	}
+
+	if (USkeletalMeshComponent* ThirdPersonParent = Shooter->GetMesh())
+	{
+		const bool bHasThirdPersonSocket = ThirdPersonParent->DoesSocketExist(ThirdPersonSocketName);
+		Weapon->GetThirdPersonWeaponMesh()->AttachToComponent(
+			ThirdPersonParent,
+			WeaponAttachRules,
+			ThirdPersonSocketName
+		);
+
+		const FTransform ThirdPersonSocketTransform =
+			ThirdPersonParent->GetSocketTransform(ThirdPersonSocketName, RTS_Component);
+		const FTransform ThirdPersonWeaponRelativeTransform =
+			Weapon->GetThirdPersonWeaponMesh()->GetRelativeTransform();
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[WeaponAttach][TP] Weapon=%s Type=%d Parent=%s Socket=%s Exists=%d SocketLoc=%s SocketRot=%s WeaponRelLoc=%s WeaponRelRot=%s"),
+			*GetNameSafe(Weapon),
+			static_cast<int32>(EquippedWeaponType),
+			*GetNameSafe(ThirdPersonParent),
+			*ThirdPersonSocketName.ToString(),
+			bHasThirdPersonSocket ? 1 : 0,
+			*ThirdPersonSocketTransform.GetLocation().ToCompactString(),
+			*ThirdPersonSocketTransform.Rotator().ToCompactString(),
+			*ThirdPersonWeaponRelativeTransform.GetLocation().ToCompactString(),
+			*ThirdPersonWeaponRelativeTransform.Rotator().ToCompactString()
+		);
+	}
+
+	if (USkeletalMeshComponent* ShadowParent = Shooter->GetShadowMesh())
+	{
+		Weapon->GetShadowWeaponMesh()->AttachToComponent(
+			ShadowParent,
+			WeaponAttachRules,
+			ThirdPersonSocketName
+		);
+		Weapon->RefreshShadowWeaponPresentation();
+	}
+
+	UE_LOG(
+		LogTemp,
+		Warning,
+		TEXT("[WeaponAttach] FP Socket=%s TP Socket=%s FPParent=%s TPParent=%s"),
+		*FirstPersonSocketName.ToString(),
+		*ThirdPersonSocketName.ToString(),
+		*GetNameSafe(Shooter->GetFirstPersonMesh()),
+		*GetNameSafe(Shooter->GetMesh())
+	);
+}
+
+void AWeaponBase::AttachWeaponMeshesToOwnerMeshes()
+{
+	ACharacter* CharacterOwner = Cast<ACharacter>(WeaponOwner);
+	if (!CharacterOwner)
+	{
+		return;
+	}
+
+	UE_LOG(
+		LogTemp,
+		Warning,
+		TEXT("[WeaponAttach] Weapon=%s Owner=%s FP=%s TP=%s"),
+		*GetNameSafe(this),
+		*GetNameSafe(CharacterOwner),
+		*GetNameSafe(FirstPersonWeaponMesh),
+		*GetNameSafe(ThirdPersonWeaponMesh)
+	);
+
+	AttachWeaponMeshesToOwner(this, CharacterOwner);
+}
+
+void AWeaponBase::ShowEquippedPresentation()
+{
+	SetEquippedPresentation();
 }
 
 void AWeaponBase::OnUnequipped()
@@ -427,6 +630,13 @@ void AWeaponBase::OnUnequipped()
 		ThirdPersonWeaponMesh->SetCastHiddenShadow(false);
 	}
 
+	if (ShadowWeaponMesh)
+	{
+		ShadowWeaponMesh->SetHiddenInGame(true);
+		ShadowWeaponMesh->SetCastShadow(false);
+		ShadowWeaponMesh->SetCastHiddenShadow(false);
+	}
+
 	SetEquippedCollisionEnabled(false);
 
 	UE_LOG(LogTemp, Log, TEXT("%s [%s] OnUnequipped"), OutlierNet::GetNetPrefix(this), *GetName());
@@ -446,6 +656,10 @@ void AWeaponBase::OnDropped(const FTransform& DropTransform, AFirstPersonCharact
 
 	FirstPersonWeaponMesh->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
 	ThirdPersonWeaponMesh->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
+	if (ShadowWeaponMesh)
+	{
+		ShadowWeaponMesh->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
+	}
 
 	FirstPersonWeaponMesh->AttachToComponent(
 		SceneRoot,
@@ -456,6 +670,13 @@ void AWeaponBase::OnDropped(const FTransform& DropTransform, AFirstPersonCharact
 		SceneRoot,
 		FAttachmentTransformRules::SnapToTargetNotIncludingScale
 	);
+	if (ShadowWeaponMesh)
+	{
+		ShadowWeaponMesh->AttachToComponent(
+			SceneRoot,
+			FAttachmentTransformRules::SnapToTargetNotIncludingScale
+		);
+	}
 
 	SetActorTransform(DropTransform, false, nullptr, ETeleportType::TeleportPhysics);
 	SetPickupPresentation();
@@ -496,10 +717,12 @@ void AWeaponBase::Interact(class AFirstPersonCharacter* Interactor)
 
 	UE_LOG(LogTemp, Log, TEXT("%s [%s] Interact Interactor=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(Interactor));
 
-	if(AShooterCharacter * Shooter = Cast<AShooterCharacter>(Interactor))
-	{
-		Shooter->EquipWeapon(this);
-	}
+	Interactor->EquipWeapon(this);
+}
+
+UInteractableComponent* AWeaponBase::GetInteractableComponent() const
+{
+	return InteractableComponent;
 }
 
 void AWeaponBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -519,10 +742,11 @@ void AWeaponBase::OnOwnerLost()
 	WeaponOwner = nullptr;
 	SetOwner(nullptr);
 
-	if (OwningSpawnPoint)
+	if (!IsActorBeingDestroyed() && IsValid(OwningSpawnPoint))
 	{
 		OwningSpawnPoint->NotifyWeaponRemoved(this);
 	}
 
+	OwningSpawnPoint= nullptr;
 	Destroy();
 }

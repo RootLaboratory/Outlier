@@ -108,6 +108,11 @@ void UShooterInventoryComponent::HandleEquipWeapon(AWeaponBase* Weapon)
 		return;
 	}
 
+	if (!ShooterCharacter->CanStartAction(EShooterActionLock::Equip))
+	{
+		return;
+	}
+
 	if (!Weapon->CanBePickedUpBy(ShooterCharacter))
 	{
 		UE_LOG(
@@ -155,6 +160,7 @@ void UShooterInventoryComponent::HandleEquipWeapon(AWeaponBase* Weapon)
 	// Shooter 쪽에서는 슬롯 목록과 파생 상태만 보정
 	// Inventory가 보유 무기와 소켓 규칙을 관리하고, 최종 장착은 Character가 맡음
 	ShooterCharacter->AFirstPersonCharacter::EquipWeapon(Weapon);
+	ShooterCharacter->PlayEquipMontages();
 	ShooterCharacter->RefreshWeaponMode();
 	ShooterCharacter->RefreshCombatState();
 }
@@ -163,6 +169,11 @@ void UShooterInventoryComponent::SelectWeaponSlot(EWeaponSlot Slot)
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 	if (!ShooterCharacter || ShooterCharacter->bIsDead)
+	{
+		return;
+	}
+
+	if (!ShooterCharacter->CanStartAction(EShooterActionLock::Equip))
 	{
 		return;
 	}

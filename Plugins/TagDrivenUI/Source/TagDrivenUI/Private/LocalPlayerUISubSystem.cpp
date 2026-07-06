@@ -2,6 +2,7 @@
 #include "LocalPlayerUISubSystem.h"
 #include "GameFramework/PlayerController.h"
 #include "Components/SceneCaptureComponent2D.h"
+#include "AbilityIconUI.h"
 #include "MainUIBase.h"
 #include "HPBarUI.h"
 #include "PartnerCamUI.h"
@@ -9,6 +10,11 @@
 #include "DynamicCrossHair.h"
 #include "EventDrivenUI.h"
 #include "StaticCrossHair.h"
+#include "DistanceSlideUI.h"
+#include "PartnerHPUI.h"
+#include "ShooterCurrentAbilityIcon.h"
+#include "ShooterMainWidget.h"
+#include "TagDrivenUIGameplayTags.h"
 
 void ULocalPlayerUISubSystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -34,9 +40,34 @@ void ULocalPlayerUISubSystem::UnregisterMainUI(UMainUIBase* InMainUI)
 	}
 }
 
+UMainUIBase* ULocalPlayerUISubSystem::GetMainUI() const
+{
+	return IsValid(MainUIInstance) ? MainUIInstance.Get() : nullptr;
+}
+
+UEventDrivenUI* ULocalPlayerUISubSystem::GetModule(const FGameplayTag& ModuleTag) const
+{
+	UMainUIBase* MainUI = GetMainUI();
+	return MainUI ? MainUI->GetModule(ModuleTag) : nullptr;
+}
+
+UEventDrivenUI* ULocalPlayerUISubSystem::GetModuleAny(
+	const FGameplayTag& FirstTag,
+	const FGameplayTag& SecondTag
+) const
+{
+	if (UEventDrivenUI* FirstModule = GetModule(FirstTag))
+	{
+		return FirstModule;
+	}
+
+	return GetModule(SecondTag);
+}
+
 void ULocalPlayerUISubSystem::OnRep_HUDActivate(bool bShouldActivate)
 {
-	if (!MainUIInstance)
+	UMainUIBase* MainUI = GetMainUI();
+	if (!MainUI)
 	{
 		return;
 
@@ -44,11 +75,11 @@ void ULocalPlayerUISubSystem::OnRep_HUDActivate(bool bShouldActivate)
 
 	if (bShouldActivate)
 	{
-		MainUIInstance->ModuleActivate();
+		MainUI->ModuleActivate();
 	}
 	else
 	{
-		MainUIInstance->ModuleDeActivate();
+		MainUI->ModuleDeActivate();
 	}
 
 }
@@ -58,15 +89,31 @@ void ULocalPlayerUISubSystem::OnRep_HealthChanged(float InHealth, float MaxHealt
 
 	float Ratio = InHealth / MaxHealth;
 
-	if (!MainUIInstance)
+	if (!GetMainUI())
 	{
 		return;
 	}
 
-	if (UHPBarUI* HPBarUI = Cast<UHPBarUI>(MainUIInstance->GetModule(EUIModule::HP)))
+	if (UHPBarUI* HPBarUI = Cast<UHPBarUI>(GetModuleAny(TagDrivenUITags::Shooter::HP(), TagDrivenUITags::Partner::HP())))
 	{
-		UE_LOG(LogTemp, Error, TEXT("HP Changed, %f"), Ratio);
+		//UE_LOG(LogTemp, Error, TEXT("HP Changed, %f"), Ratio);
 		HPBarUI->HealthChanged(Ratio);
+	}
+}
+
+void ULocalPlayerUISubSystem::OnRep_PartnerShieldChanged(float InPartnerShield, float MaxPartnerShield)
+{
+	float Ratio = MaxPartnerShield > 0.0f ? InPartnerShield / MaxPartnerShield : 0.0f;
+
+	if (!GetMainUI())
+	{
+		return;
+	}
+
+	if (UHPBarUI* HPBarUI = Cast<UHPBarUI>(GetModuleAny(TagDrivenUITags::Shooter::HP(), TagDrivenUITags::Partner::HP())))
+	{
+		//UE_LOG(LogTemp, Error, TEXT("PartnerShield Changed, %f"), Ratio);
+		HPBarUI->PartnerShieldChanged(Ratio);
 	}
 }
 
@@ -74,12 +121,12 @@ void ULocalPlayerUISubSystem::OnRep_ShieldChanged( float InCurShield,  float InM
 {
 	float Ratio = InCurShield / InMaxShield;
 
-	if (!MainUIInstance)
+	if (!GetMainUI())
 	{
 		return;
 	}
 
-	if (UHPBarUI* HPBarUI = Cast<UHPBarUI>(MainUIInstance->GetModule(EUIModule::HP)))
+	if (UHPBarUI* HPBarUI = Cast<UHPBarUI>(GetModuleAny(TagDrivenUITags::Shooter::HP(), TagDrivenUITags::Partner::HP())))
 	{
 		HPBarUI->ShieldChanged(Ratio);
 	}
@@ -88,28 +135,36 @@ void ULocalPlayerUISubSystem::OnRep_ShieldChanged( float InCurShield,  float InM
 void ULocalPlayerUISubSystem::OnRep_AmmoCountChanged(int32 InAmmoCount)
 {
 
-	if (!MainUIInstance)
+	if (!GetMainUI())
 	{
 		return;
 	}
 
-	if (UAmmoUI* AmmoUI = Cast<UAmmoUI>(MainUIInstance->GetModule(EUIModule::Ammo)))
+	if (UAmmoUI* AmmoUI = Cast<UAmmoUI>(GetModuleAny(TagDrivenUITags::Shooter::Ammo(), TagDrivenUITags::Partner::Ammo())))
 	{
 		AmmoUI->AmmoCountChanged(InAmmoCount);
 	}
 
 }
 
+void ULocalPlayerUISubSystem::OnRep_ShooterConditionRefresh()
+{
+	if (UPartnerHPUI* PartnerHPUI = Cast<UPartnerHPUI>(GetModule(TagDrivenUITags::Partner::HP())))
+	{
+		PartnerHPUI->RefreshShooterConditionUI();
+	}
+}
+
 void ULocalPlayerUISubSystem::OnRep_PlayerStateChanged(EUIPlayerState State)
 {
 
-	if (UDynamicCrossHair* CrossHairUI = Cast<UDynamicCrossHair>(MainUIInstance->GetModule(EUIModule::CrossHair)))
+	if (UDynamicCrossHair* CrossHairUI = Cast<UDynamicCrossHair>(GetModuleAny(TagDrivenUITags::Shooter::CrossHair(), TagDrivenUITags::Partner::CrossHair())))
 	{
 		CrossHairUI->SetPlayerState(State);
 	}
 	else
 	{
-		UE_LOG(LogTemp, Error, TEXT("UNVALID CLASS NOT DynamicCrossHairClass"));
+		//UE_LOG(LogTemp, Error, TEXT("UNVALID CLASS NOT DynamicCrossHairClass"));
 	}
 }
 
@@ -117,20 +172,61 @@ void ULocalPlayerUISubSystem::OnRep_PlayerStateChanged(EUIPlayerState State)
 
 void ULocalPlayerUISubSystem::PartnerCameraToggle()
 {
-	if (!MainUIInstance)
+	if (!GetMainUI())
 	{
+		UE_LOG(LogTemp, Error, TEXT("GetMainUI"));
+
 		return;
 	}
 
-	if (UPartnerCamUI* PartnerCamUI = Cast<UPartnerCamUI>(MainUIInstance->GetModule(EUIModule::PartnerCam)))
+	if (UPartnerCamUI* PartnerCamUI = Cast<UPartnerCamUI>(GetModuleAny(TagDrivenUITags::Shooter::PartnerCam(), TagDrivenUITags::Partner::PartnerCam())))
 	{
 		PartnerCamUI->TogglePartnerCamera();
 	}
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT("PartnerCamUI"));
+
+	}
+}
+
+void ULocalPlayerUISubSystem::PartnerDistanceUpdate(const float Distance)
+{
+	if (UDistanceSlideUI* DistanceSlideUI = Cast<UDistanceSlideUI>(GetModule(TagDrivenUITags::Partner::DistanceLimit())))
+	{
+		DistanceSlideUI->UpdateDistanceRatio(Distance);
+	}
+}
+
+void ULocalPlayerUISubSystem::OnCurrentWeaponChanged(EWidgetWeaponType WeaponType)
+{
+	if (UShooterMainWidget* ShooterMainUI = Cast<UShooterMainWidget>(GetMainUI()))
+	{
+		ShooterMainUI->OnChangeWeapon(WeaponType);
+	}
+}
+
+void ULocalPlayerUISubSystem::OnCurrentAbilityChanged(const FGameplayTag& AbilityTag)
+{
+	if (UShooterCurrentAbilityIcon* CurrentAbilityIcon = Cast<UShooterCurrentAbilityIcon>(GetModule(TagDrivenUITags::Shooter::CurrentAbility())))
+	{
+		CurrentAbilityIcon->SetCurrentAbility(AbilityTag);
+	}
+}
+
+bool ULocalPlayerUISubSystem::ApplyCurrentAbilityCooldownIfMatches(const FGameplayTag& AbilityTag, float CoolTime)
+{
+	if (UShooterCurrentAbilityIcon* CurrentAbilityIcon = Cast<UShooterCurrentAbilityIcon>(GetModule(TagDrivenUITags::Shooter::CurrentAbility())))
+	{
+		return CurrentAbilityIcon->ApplyCooldownIfMatches(AbilityTag, CoolTime);
+	}
+
+	return false;
 }
 
 void ULocalPlayerUISubSystem::OnRep_Aiming()
 {
-	if (UCrossHairBase* CrossHairBase = Cast<UCrossHairBase>(MainUIInstance->GetModule(EUIModule::CrossHair)))
+	if (UCrossHairBase* CrossHairBase = Cast<UCrossHairBase>(GetModuleAny(TagDrivenUITags::Shooter::CrossHair(), TagDrivenUITags::Partner::CrossHair())))
 	{
 		CrossHairBase->OnAiming();
 	}
@@ -139,7 +235,7 @@ void ULocalPlayerUISubSystem::OnRep_Aiming()
 
 void ULocalPlayerUISubSystem::OnRep_AimingOff()
 {
-	if (UCrossHairBase* CrossHairBase = Cast<UCrossHairBase>(MainUIInstance->GetModule(EUIModule::CrossHair)))
+	if (UCrossHairBase* CrossHairBase = Cast<UCrossHairBase>(GetModuleAny(TagDrivenUITags::Shooter::CrossHair(), TagDrivenUITags::Partner::CrossHair())))
 	{
 		CrossHairBase->OnAimingOff();
 	}
@@ -149,7 +245,7 @@ void ULocalPlayerUISubSystem::OnRep_AimingOff()
 void ULocalPlayerUISubSystem::OnRep_AttackSign(EAttackSign InType)
 {
 
-	if (UCrossHairBase* CrossHairBase = Cast<UCrossHairBase>(MainUIInstance->GetModule(EUIModule::CrossHair)))
+	if (UCrossHairBase* CrossHairBase = Cast<UCrossHairBase>(GetModuleAny(TagDrivenUITags::Shooter::CrossHair(), TagDrivenUITags::Partner::CrossHair())))
 	{
 		//UE_LOG(LogTemp, Error, TEXT("CrossHair Instance Class: %s"), *GetNameSafe(CrossHairBase->GetClass()));
 		//UE_LOG(LogTemp, Error, TEXT("OnRep_AttackSign %d"), (uint8)InType);
@@ -159,15 +255,22 @@ void ULocalPlayerUISubSystem::OnRep_AttackSign(EAttackSign InType)
 
 void ULocalPlayerUISubSystem::OnRep_ShootCrosshairChanged(float InFireRate)
 {
-	if (UDynamicCrossHair* CrossHairBase = Cast<UDynamicCrossHair>(MainUIInstance->GetModule(EUIModule::CrossHair)))
+	UEventDrivenUI* CrossHairModule = GetModuleAny(TagDrivenUITags::Shooter::CrossHair(), TagDrivenUITags::Partner::CrossHair());
+	if (!CrossHairModule)
 	{
-		UE_LOG(LogTemp, Log, TEXT("OnRep_ShootCrosshairChanged"));
+		UE_LOG(LogTemp, Warning, TEXT("[LocalPlayerUISubSystem] ShootCrosshair skipped: MainUI or CrossHair module is not ready"));
+		return;
+	}
+
+	if (UDynamicCrossHair* CrossHairBase = Cast<UDynamicCrossHair>(CrossHairModule))
+	{
+		//UE_LOG(LogTemp, Log, TEXT("OnRep_ShootCrosshairChanged"));
 		CrossHairBase->On_RepShoot();
 	}
-	else if (UStaticCrossHair* Crosshair = Cast<UStaticCrossHair>(MainUIInstance->GetModule(EUIModule::CrossHair)))
+	else if (UStaticCrossHair* Crosshair = Cast<UStaticCrossHair>(CrossHairModule))
 	{
 		Crosshair->SetCoolTime(InFireRate );
-		UE_LOG(LogTemp, Log, TEXT("InFireRate %f"), InFireRate);
+		//UE_LOG(LogTemp, Log, TEXT("InFireRate %f"), InFireRate);
 
 	}
 	else
@@ -175,12 +278,74 @@ void ULocalPlayerUISubSystem::OnRep_ShootCrosshairChanged(float InFireRate)
 
 }
 
+void ULocalPlayerUISubSystem::OnRep_ShooterHPStateChanged(const FGameplayTag& InShooterConditionTag)
+{
+	if (UPartnerHPUI* PartnerHPUI = Cast<UPartnerHPUI>(GetModule(TagDrivenUITags::Partner::HP())))
+	{
+		PartnerHPUI->SetShooterCondition(InShooterConditionTag);
+	}
+}
+
+void ULocalPlayerUISubSystem::OnRep_ShooterDynamicCrosshairChanged(bool InFlag)
+{
+	if (UCrossHairBase* Crosshair = Cast<UCrossHairBase>(GetModule(TagDrivenUITags::Shooter::CrossHair())))
+	{
+		if (InFlag)
+		{
+			Crosshair->OnAiming();
+		}
+		else
+		{
+			Crosshair->OnAimingOff();
+		}
+	}
+}
+
+void ULocalPlayerUISubSystem::OnAbilityDisabledByDistance()
+{
+	if (UMainUIBase* MainUI = GetMainUI())
+	{
+		MainUI->On_RepAbilityDisabledByDistance();
+	}
+}
+
+void ULocalPlayerUISubSystem::OnAbilityEnabledByDistance()
+{
+	if (UMainUIBase* MainUI = GetMainUI())
+	{
+		MainUI->On_RepAbilityabledByDistance();
+	}
+}
+
+void ULocalPlayerUISubSystem::OnAbilityUsed(const FGameplayTag& AbilityTag, float CoolTime)
+{
+	UMainUIBase* MainUI = GetMainUI();
+	if (!MainUI)
+	{
+		return;
+	}
+
+	if (UAbilityIconUI* Icon = MainUI->GetAbilityIcon(AbilityTag))
+	{
+		Icon->SetCoolTime(CoolTime);
+	}
+
+	if (UShooterCurrentAbilityIcon* CurrentAbilityIcon = Cast<UShooterCurrentAbilityIcon>(GetModule(TagDrivenUITags::Shooter::CurrentAbility())))
+	{
+		CurrentAbilityIcon->ApplyCooldownIfMatches(AbilityTag, CoolTime);
+	}
+}
 
 void ULocalPlayerUISubSystem::PartnerCameraBind(USceneCaptureComponent2D* InCaptureComponent2D)
 {
 	//UE_LOG(LogTemp, Error, TEXT("Try PartnerCameraBind"));
 
-	if (UPartnerCamUI* PartnerCamUI = Cast<UPartnerCamUI>(MainUIInstance->GetModule(EUIModule::PartnerCam)))
+	if (!InCaptureComponent2D)
+	{
+		return;
+	}
+
+	if (UPartnerCamUI* PartnerCamUI = Cast<UPartnerCamUI>(GetModuleAny(TagDrivenUITags::Shooter::PartnerCam(), TagDrivenUITags::Partner::PartnerCam())))
 	{
 		UTextureRenderTarget2D* RenderTarget = InCaptureComponent2D->TextureTarget;
 		if (RenderTarget)
@@ -199,5 +364,3 @@ void ULocalPlayerUISubSystem::PartnerCameraBind(USceneCaptureComponent2D* InCapt
 
 	}
 }
-
-

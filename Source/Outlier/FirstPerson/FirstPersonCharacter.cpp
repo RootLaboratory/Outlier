@@ -13,6 +13,7 @@
 #include "LocalPlayerUISubSystem.h"
 #include "EnhancedInputComponent.h"
 #include "InputActionValue.h"
+#include "Components/SceneCaptureComponent2D.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Weapon/WeaponBase.h"
 #include "Net/UnrealNetwork.h"
@@ -54,6 +55,8 @@ AFirstPersonCharacter::AFirstPersonCharacter()
 	FirstPersonMesh->SetRelativeRotation(FRotator::ZeroRotator);
 	FirstPersonMesh->SetCollisionProfileName(FName("NoCollision"));
 
+
+
 	// configure the character comps
 	GetMesh()->SetOwnerNoSee(true);
 	GetMesh()->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::WorldSpaceRepresentation;
@@ -64,6 +67,10 @@ AFirstPersonCharacter::AFirstPersonCharacter()
 	// configure character movement
 	GetCharacterMovement()->BrakingDecelerationFalling = 1500.0f;
 	GetCharacterMovement()->AirControl = 0.5f;
+
+	//Capture Component
+	CaptureComponent = CreateDefaultSubobject< USceneCaptureComponent2D>(TEXT("PartnerCameraCapture"));
+	CaptureComponent->SetupAttachment(FirstPersonCamera);
 }
 
 // Called to bind functionality to input
@@ -167,13 +174,20 @@ void AFirstPersonCharacter::TryCamToggle()
 	APlayerController* PlayerController = Cast<APlayerController>(GetController());
 
 	if (PlayerController)
-	{
+	{	UE_LOG(LogTemp, Error, TEXT("PlayerController"));
+
 		if (ULocalPlayer* LP = PlayerController->GetLocalPlayer())
 		{
+			UE_LOG(LogTemp, Error, TEXT("ULocalPlayer"));
+
 			if (ULocalPlayerUISubSystem* PPSubsystem = LP->GetSubsystem<ULocalPlayerUISubSystem>())
 			{
-
 				PPSubsystem->PartnerCameraToggle();
+			}
+			else
+			{
+				UE_LOG(LogTemp, Error, TEXT("PPSubsystem"));
+
 			}
 		}
 	}
@@ -260,7 +274,7 @@ void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor)
 		ECC_Visibility,
 		Params);
 
-	DrawDebugLine(
+	/*DrawDebugLine(
 		GetWorld(),
 		Start,
 		End,
@@ -268,7 +282,7 @@ void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor)
 		false,
 		3.0f,
 		0,
-		1.0f);
+		1.0f);*/
 
 	if (!bHit || Hit.GetActor() != TargetActor)
 	{
@@ -287,11 +301,19 @@ void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor)
 	}
 }
 
+FGameplayTagContainer AFirstPersonCharacter::GetOwnedGameplayTagsForQuery() const
+{
+	return OwnedQueryTags;
+}
+
 void AFirstPersonCharacter::OnRep_CurrentWeapon()
 {
 	UE_LOG(LogTemp, Log, TEXT("%s %s OnRep_CurrentWeapon Previous=%s Current=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(LastReplicatedWeapon), *GetNameSafe(CurrentWeapon));
 	CurrentWeaponType = CurrentWeapon ? CurrentWeapon->GetWeaponType() : EWeaponType::Unarmed;
 	LastReplicatedWeapon = CurrentWeapon;
+	OnWeaponChanged.Broadcast(CurrentWeaponType);
+
+	CaptureComponentWeaponNotIncluded(LastReplicatedWeapon);
 }
 
 void AFirstPersonCharacter::TryStartAttack()
@@ -380,4 +402,16 @@ EWeaponType AFirstPersonCharacter::GetWeaponType() const
 
 void AFirstPersonCharacter::OnMoveInputUpdated(const FVector2D& MoveValue)
 {
+}
+
+void AFirstPersonCharacter::CaptureComponentWeaponNotIncluded(AWeaponBase* Weapon)
+{
+	if (CaptureComponent && Weapon)
+	{
+		CaptureComponent->HideActorComponents(Weapon, true);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT("CaptureComponentWEAPONnoTiNCLUDED"));
+	}
 }

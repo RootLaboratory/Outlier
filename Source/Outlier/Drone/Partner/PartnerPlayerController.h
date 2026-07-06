@@ -7,6 +7,10 @@
 #include "PartnerPlayerController.generated.h"
 
 class APartnerCharacter;
+class AShooterCharacter;
+class AOutlierPlayerState;
+class ULocalPlayerUISubSystem;
+struct FGameplayTag;
 /**
  * 
  */
@@ -26,16 +30,41 @@ protected:
 
 	/** Gameplay initialization */
 	virtual void BeginPlay() override;
-
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	virtual void OnRep_PlayerState() override;
+	
 	/** Input mapping context setup */
 	virtual void SetupInputComponent() override;
 
 	/** Pawn initialization */
 	virtual void OnPossess(APawn* InPawn) override;
 
+	virtual void ReceivedPlayer() override;
+
+	virtual void AcknowledgePossession(APawn* P) override;
+
 	virtual void BindMainUI() override;
 
 	virtual void BindPostProcessSubSystem() override;
+
+	void RefreshShooterUIForRespawnFromPlayerState();
+	void BindPlayerStateDelegates();
+	void UnbindPlayerStateDelegates();
+	void HandlePlayerCharactersChanged(AOutlierPlayerState* ChangedPlayerState);
+	void BindShooterCharacterDelegatesFromPlayerState();
+	void UnbindShooterCharacterDelegates();
+	ULocalPlayerUISubSystem* GetLocalUISubsystem() const;
+
+	void HandleShooterHealthChanged(float CurrentHealth, float MaxHealth);
+	void HandleShooterShieldChanged(float CurrentShield, float MaxShield);
+	void HandleShooterPartnerShieldChanged(float CurrentPartnerShield, float MaxPartnerShield);
+	void HandleShooterConditionChanged(const FGameplayTag& ConditionTag);
+
+	UPROPERTY()
+	TObjectPtr<AShooterCharacter> BoundShooterCharacter;
+
+	UPROPERTY()
+	TObjectPtr<AOutlierPlayerState> BoundOutlierPlayerState;
 
 public:
 	APartnerPlayerController();

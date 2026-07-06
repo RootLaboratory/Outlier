@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerController.h"
+#include "OutlierPlayerState.h"
 #include "FrontendPlayerController.generated.h"
 
 /**
@@ -11,7 +12,7 @@
  */
 
 class UTitleMainWidget;
-
+class ULoadingWidget;
 UCLASS()
 class OUTLIER_API AFrontendPlayerController : public APlayerController
 {
@@ -20,7 +21,33 @@ class OUTLIER_API AFrontendPlayerController : public APlayerController
 public:
 
 	virtual void BeginPlay() override;
+	virtual void AcknowledgePossession(APawn* P) override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
+public:
+	UFUNCTION(Server, Reliable)
+	void ServerRequestMatchmaking();
+
+	UFUNCTION(BlueprintCallable)
+	void RequestSelectLobbyRole(EOutlierPlayerRole DesiredRole);
+
+	UFUNCTION(BlueprintCallable)
+	void RequestStartPendingMatch();
+
+	UFUNCTION(Server, Reliable)
+	void ServerRequestSelectLobbyRole(EOutlierPlayerRole DesiredRole);
+
+	UFUNCTION(Server, Reliable)
+	void ServerRequestStartPendingMatch();
+
+	UFUNCTION(Client, Reliable)
+	void ClientPrepareForMatch();
+
+	UFUNCTION(BlueprintCallable)
+	void RequestCancelMatchmaking();
+
+	UFUNCTION(Server, Reliable)
+	void ServerRequestCancelMatchmaking();
 public:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr< UTitleMainWidget> TitleWidget;

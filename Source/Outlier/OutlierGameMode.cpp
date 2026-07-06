@@ -7,8 +7,15 @@
 #include "Save/OutlierCheckpoint.h"
 #include "OutlierGameState.h"
 #include "FrontendPlayerController.h"
+#include "Network/OutlierArenaPoolSubsystem.h"
 #include "Save/OutlierSaveSubSystem.h"
 #include "GameFramework/GameStateBase.h"
+#include "Shooter/ShooterPlayerController.h"
+#include "Drone/Partner/PartnerPlayerController.h"
+#include "FirstPerson/FirstPersonPlayerController.h"
+#include "Engine/LocalPlayer.h"
+#include "Engine/NetConnection.h"
+#include "GameFramework/PlayerStart.h"
 #include "Kismet/GameplayStatics.h"
 #include "GameFramework/PlayerState.h"
 
@@ -145,6 +152,203 @@ void AOutlierGameMode::HandlePlayerDeath(AShooterCharacter* Character)
 	RespawnPairAtCheckpoint(Controller);
 }
 
+void AOutlierGameMode::StartMatchedPair(AController* FirstController, AController* SecondController, int32 PairId, int32 ArenaId, EOutlierPlayerRole FirstRole, EOutlierPlayerRole SecondRole)
+{
+	if (!FirstController || !SecondController)
+	{
+		return;
+	}
+
+	if (AFrontendPlayerController* FrontendShooterPC = Cast<AFrontendPlayerController>(FirstController))
+	{
+		FrontendShooterPC->ClientPrepareForMatch();
+	}
+
+	if (AFrontendPlayerController* FrontendPartnerPC = Cast<AFrontendPlayerController>(SecondController))
+	{
+		FrontendPartnerPC->ClientPrepareForMatch();
+	}
+
+	AOutlierPlayerState* FirstPS = FirstController->GetPlayerState<AOutlierPlayerState>();
+	AOutlierPlayerState* SecondPS = SecondController->GetPlayerState<AOutlierPlayerState>();
+
+	if (!FirstPS || !SecondPS)
+	{
+		return;
+	}
+
+	FirstPS->SetPairId(PairId);
+	FirstPS->SetArenaId(ArenaId);
+	FirstPS->SetPlayerRole(FirstRole);
+	FirstPS->ClearPendingLobbyState();
+
+	SecondPS->SetPairId(PairId);
+	SecondPS->SetArenaId(ArenaId);
+	SecondPS->SetPlayerRole(SecondRole);
+	SecondPS->ClearPendingLobbyState();
+
+	AController* ShooterController =
+		FirstRole == EOutlierPlayerRole::Shooter
+		? FirstController
+		: SecondController;
+
+	AController* PartnerController =
+		SecondRole == EOutlierPlayerRole::Partner
+		? SecondController
+		: FirstController;
+
+	AOutlierPlayerState* ShooterPS =
+		ShooterController->GetPlayerState<AOutlierPlayerState>();
+
+	AOutlierPlayerState* PartnerPS =
+		PartnerController->GetPlayerState<AOutlierPlayerState>();
+
+	FTransform ShooterSpawn;
+	FTransform PartnerSpawn;
+
+	if (!ResolveArenaSpawnTransforms(ArenaId, ShooterSpawn, PartnerSpawn))
+	{
+		AActor* FallbackStart = FindPlayerStart(ShooterController);
+		ShooterSpawn = FallbackStart ? FallbackStart->GetActorTransform() : FTransform::Identity;
+		PartnerSpawn = ShooterSpawn;
+		PartnerSpawn.AddToTranslation(ShooterSpawn.GetRotation().GetRightVector() * 150.0f);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[GameMode] ResolveArenaSpawnTransforms success ArenaId=%d ShooterSpawn=%s PartnerSpawn=%s"),
+			ArenaId,
+			*ShooterSpawn.ToHumanReadableString(),
+			*PartnerSpawn.ToHumanReadableString());
+	}
+
+	AShooterCharacter* Shooter = GetWorld()->SpawnActor<AShooterCharacter>(
+		ShooterClass,
+		ShooterSpawn
+	);
+
+	APartnerCharacter* Partner = GetWorld()->SpawnActor<APartnerCharacter>(
+		PartnerClass,
+		PartnerSpawn
+	);
+
+	APlayerController* NewShooterPC = nullptr;
+	APlayerController* NewPartnerPC = nullptr;
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+	if (ShooterControllerClass)
+	{
+		NewShooterPC = GetWorld()->SpawnActor<APlayerController>(ShooterControllerClass, ShooterSpawn, SpawnParams);
+	}
+	if (PartnerControllerClass)
+	{
+		NewPartnerPC = GetWorld()->SpawnActor<APlayerController>(PartnerControllerClass, PartnerSpawn, SpawnParams);
+	}
+
+	if (ShooterController && NewShooterPC)
+	{
+		SwapPlayerControllers(Cast<APlayerController>(ShooterController), NewShooterPC);
+	}
+	if (PartnerController && NewPartnerPC)
+	{
+		SwapPlayerControllers(Cast<APlayerController>(PartnerController), NewPartnerPC);
+	}
+
+	AOutlierPlayerState* NewShooterPS = NewShooterPC ? NewShooterPC->GetPlayerState<AOutlierPlayerState>() : nullptr;
+	AOutlierPlayerState* NewPartnerPS = NewPartnerPC ? NewPartnerPC->GetPlayerState<AOutlierPlayerState>() : nullptr;
+
+	if (NewShooterPS)
+	{
+		NewShooterPS->SetPairId(PairId);
+		NewShooterPS->SetArenaId(ArenaId);
+		NewShooterPS->SetPlayerRole(EOutlierPlayerRole::Shooter);
+		NewShooterPS->ClearPendingLobbyState();
+	}
+
+	if (NewPartnerPS)
+	{
+		NewPartnerPS->SetPairId(PairId);
+		NewPartnerPS->SetArenaId(ArenaId);
+		NewPartnerPS->SetPlayerRole(EOutlierPlayerRole::Partner);
+		NewPartnerPS->ClearPendingLobbyState();
+	}
+
+
+	RegisterSpawnedPair(NewShooterPS, NewPartnerPS, Shooter, Partner);
+
+	if (AFirstPersonPlayerController* FPC = Cast<AFirstPersonPlayerController>(NewShooterPC))
+	{
+		if (!FPC->IsLocalController())
+		{
+			//UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][0] ClientArenaLoad → ShooterPC=%s ArenaId=%d"), *GetNameSafe(FPC), ArenaId);
+			FPC->ClientArenaLoad(ArenaId);
+		}
+	}
+	if (AFirstPersonPlayerController* FPC = Cast<AFirstPersonPlayerController>(NewPartnerPC))
+	{
+		if (!FPC->IsLocalController())
+		{
+			//UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][0] ClientArenaLoad → PartnerPC=%s ArenaId=%d"), *GetNameSafe(FPC), ArenaId);
+			FPC->ClientArenaLoad(ArenaId);
+		}
+	}
+
+	if (NewShooterPC && Shooter)
+	{
+		if (NewShooterPC->IsLocalController())
+		{
+			//UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][0] ShooterPC is local → Possess immediately"));
+			NewShooterPC->Possess(Shooter);
+		}
+		else
+		{
+			/*UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][0] ShooterPC is remote → PendingPossessions PC=%s Pawn=%s"),
+			*GetNameSafe(NewShooterPC), *GetNameSafe(Shooter));*/
+			PendingPossessions.Add(NewShooterPC, Shooter);
+		}
+	}
+
+	if (NewPartnerPC && Partner)
+	{
+		if (NewPartnerPC->IsLocalController())
+		{
+			//UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][0] PartnerPC is local → Possess immediately"));
+			NewPartnerPC->Possess(Partner);
+		}
+		else
+		{
+			/*UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][0] PartnerPC is remote → PendingPossessions PC=%s Pawn=%s"),
+				*GetNameSafe(NewPartnerPC), *GetNameSafe(Partner));*/
+			PendingPossessions.Add(NewPartnerPC, Partner);
+		}
+	}
+
+}
+
+
+
+void AOutlierGameMode::OnClientArenaReady(APlayerController* PC)
+{
+	/*UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][5] OnClientArenaReady PC=%s PendingCount=%d"),
+		*GetNameSafe(PC), PendingPossessions.Num());*/
+
+	TObjectPtr<APawn>* PendingPawn = PendingPossessions.Find(PC);
+	if (!PendingPawn || !(*PendingPawn))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][5] No pending pawn for PC=%s"), *GetNameSafe(PC));
+		PendingPossessions.Remove(PC);
+		return;
+	}
+
+	APawn* Pawn = PendingPawn->Get();
+	PendingPossessions.Remove(PC);
+
+	//UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][5] Possessing Pawn=%s"), *GetNameSafe(Pawn));
+	PC->Possess(Pawn);
+}
+
 void AOutlierGameMode::Logout(AController* Exiting)
 {
 	if (Exiting)
@@ -186,14 +390,44 @@ void AOutlierGameMode::RespawnPairAtCheckpoint(AController* Controller)
 		ShooterPlayerState = TriggeringPlayerState;
 	}
 
+	const int32 ArenaId = ShooterPlayerState->GetArenaId();
+
 	FTransform SpawnTransform;
-	if (!ResolveCheckpointTransform(GetControllerFromPlayerState(ShooterPlayerState), SpawnTransform))
+	FTransform PartnerSpawnTransform;
+
+	if (ResolveCheckpointTransform(GetControllerFromPlayerState(ShooterPlayerState), ArenaId, SpawnTransform))
+	{
+		PartnerSpawnTransform = SpawnTransform;
+		PartnerSpawnTransform.AddToTranslation(
+			SpawnTransform.GetRotation().GetRightVector() * 150.0f
+		);
+	}
+	else if (ResolveArenaSpawnTransforms(ArenaId, SpawnTransform, PartnerSpawnTransform))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[Respawn] Checkpoint missing. Fallback to arena start. ArenaId=%d Spawn=%s PartnerSpawn=%s"),
+			ArenaId,
+			*SpawnTransform.ToHumanReadableString(),
+			*PartnerSpawnTransform.ToHumanReadableString());
+	}
+	else
 	{
 		AActor* PlayerStart = FindPlayerStart(Controller);
 		SpawnTransform = PlayerStart
 			? PlayerStart->GetActorTransform()
 			: FTransform::Identity;
+
+		PartnerSpawnTransform.AddToTranslation(
+			SpawnTransform.GetRotation().GetRightVector() * 150.0f
+		);
+
+		UE_LOG(LogTemp, Warning,
+			TEXT("[Respawn] Arena fallback failed. Fallback to FindPlayerStart. ArenaId=%d PlayerStart=%s Spawn=%s"),
+			ArenaId,
+			*GetNameSafe(PlayerStart),
+			*SpawnTransform.ToHumanReadableString());
 	}
+
 
 	AShooterCharacter* OldShooter = ShooterPlayerState->GetShooterCharacter();
 	APartnerCharacter* OldPartner = ShooterPlayerState->GetPartnerCharacter();
@@ -237,11 +471,6 @@ void AOutlierGameMode::RespawnPairAtCheckpoint(AController* Controller)
 		);
 	}
 
-	FTransform PartnerSpawnTransform = SpawnTransform;
-	PartnerSpawnTransform.AddToTranslation(
-		SpawnTransform.GetRotation().GetRightVector() * 150.0f
-	);
-
 	APartnerCharacter* NewPartner = PartnerClass
 		? GetWorld()->SpawnActor<APartnerCharacter>(PartnerClass, PartnerSpawnTransform)
 		: nullptr;
@@ -265,7 +494,7 @@ void AOutlierGameMode::RespawnPairAtCheckpoint(AController* Controller)
 	RegisterSpawnedPair(ShooterPlayerState, PartnerPlayerState, NewShooter, NewPartner);
 }
 
-bool AOutlierGameMode::ResolveCheckpointTransform(AController* Controller, FTransform& OutTransform) const
+bool AOutlierGameMode::ResolveCheckpointTransform(AController* Controller, int32 ArenaId, FTransform& OutTransform) const
 {
 	const AOutlierPlayerState* PS = Controller
 		? Controller->GetPlayerState<AOutlierPlayerState>()
@@ -278,6 +507,20 @@ bool AOutlierGameMode::ResolveCheckpointTransform(AController* Controller, FTran
 
 	const FOutlierCheckpointData& Data = PS->GetCheckpointData();
 
+	ULevel* ArenaLevel = nullptr;
+	if (const UWorld* World = GetWorld())
+	{
+		if (const UOutlierArenaPoolSubsystem* ArenaPool = World->GetSubsystem<UOutlierArenaPoolSubsystem>())
+		{
+			ArenaLevel = ArenaPool->GetArenaLoadedLevel(ArenaId);
+		}
+	}
+
+	if (!ArenaLevel)
+	{
+		return false;
+	}
+
 	TArray<AActor*> Checkpoints;
 	UGameplayStatics::GetAllActorsOfClass(
 		GetWorld(),
@@ -288,7 +531,17 @@ bool AOutlierGameMode::ResolveCheckpointTransform(AController* Controller, FTran
 	for (AActor* Actor : Checkpoints)
 	{
 		const AOutlierCheckpoint* Checkpoint = Cast<AOutlierCheckpoint>(Actor);
-		if (Checkpoint && Checkpoint->GetCheckpointId() == Data.CheckpointId)
+		if (!Checkpoint)
+		{
+			continue;
+		}
+
+		if (Checkpoint->GetLevel() != ArenaLevel)
+		{
+			continue;
+		}
+
+		if (Checkpoint->GetCheckpointId() == Data.CheckpointId)
 		{
 			OutTransform = Checkpoint->GetSpawnTransform();
 			return true;
@@ -362,4 +615,97 @@ void AOutlierGameMode::RegisterSpawnedPair(
 		PartnerPlayerState->SetPartnerCharacter(Partner);
 		PartnerPlayerState->SetSuitDisabledByPartnerBoundary(false);
 	}
+}
+
+bool AOutlierGameMode::ResolveArenaSpawnTransforms(int32 ArenaId, FTransform& OutShooterSpawn, FTransform& OutPartnerSpawn) const
+{
+	const UWorld* World = GetWorld();
+	ULevel* ArenaLevel = nullptr;
+	if (World)
+	{
+		if (const UOutlierArenaPoolSubsystem* ArenaPool = World->GetSubsystem<UOutlierArenaPoolSubsystem>())
+		{
+			ArenaLevel = ArenaPool->GetArenaLoadedLevel(ArenaId);
+		}
+	}
+
+	if (!ArenaLevel)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[GameMode] ResolveArenaSpawnTransforms FAIL no ArenaLevel ArenaId=%d"),
+			ArenaId);
+		return false;
+	}
+
+	TArray<AActor*> PlayerStartActors;
+	UGameplayStatics::GetAllActorsOfClass(
+		World,
+		APlayerStart::StaticClass(),
+		PlayerStartActors
+	);
+
+	APlayerStart* ShooterStart = nullptr;
+	APlayerStart* PartnerStart = nullptr;
+	TArray<APlayerStart*> ArenaStarts;
+
+	for (AActor* Actor : PlayerStartActors)
+	{
+		APlayerStart* PlayerStart = Cast<APlayerStart>(Actor);
+		if (!PlayerStart)
+		{
+			continue;
+		}
+
+		const bool bSameLevel = PlayerStart->GetLevel() == ArenaLevel;
+	
+		if (!bSameLevel)
+		{
+			continue;
+		}
+
+		ArenaStarts.Add(PlayerStart);
+
+		const FName StartTag = PlayerStart->PlayerStartTag;
+		if (!ShooterStart && (StartTag == TEXT("Shooter") || StartTag == TEXT("Player1") || StartTag == TEXT("1P")))
+		{
+			ShooterStart = PlayerStart;
+		}
+		else if (!PartnerStart && (StartTag == TEXT("Partner") || StartTag == TEXT("Player2") || StartTag == TEXT("2P")))
+		{
+			PartnerStart = PlayerStart;
+		}
+	}
+
+	if (!ShooterStart && ArenaStarts.Num() > 0)
+	{
+		ShooterStart = ArenaStarts[0];
+	}
+
+	if (!PartnerStart && ArenaStarts.Num() > 1)
+	{
+		PartnerStart = ArenaStarts[1];
+	}
+
+	if (!ShooterStart)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[GameMode] ResolveArenaSpawnTransforms FAIL no ShooterStart ArenaId=%d ArenaStartCount=%d"),
+			ArenaId,
+			ArenaStarts.Num());
+		return false;
+	}
+
+	OutShooterSpawn = ShooterStart->GetActorTransform();
+	if (PartnerStart)
+	{
+		OutPartnerSpawn = PartnerStart->GetActorTransform();
+	}
+	else
+	{
+		OutPartnerSpawn = OutShooterSpawn;
+		OutPartnerSpawn.AddToTranslation(OutShooterSpawn.GetRotation().GetRightVector() * 150.0f);
+	}
+
+	return true;
+
 }

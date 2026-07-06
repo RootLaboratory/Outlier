@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
+#include "OutlierPlayerState.h"
 #include "LobbyWidget.generated.h"
 
 /**
@@ -12,10 +13,21 @@
 class UButton;
 class UImage;
 
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnLobbyBackRequested);
+
+// Button에 PC 정보를 받아서, PlayerSTATE에 ENUM BIND;
+// 
+
 UCLASS()
 class OUTLIER_API ULobbyWidget : public UUserWidget
 {
 	GENERATED_BODY()
+public:
+	virtual void NativeConstruct() override;
+	virtual void NativeDestruct() override;
+
+	UPROPERTY(BlueprintAssignable)
+	FOnLobbyBackRequested OnBackRequested;
 
 protected:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
@@ -43,5 +55,28 @@ protected:
 	TObjectPtr<UButton> BackButton;
 
 private:
-	
+	UFUNCTION()
+	void HandleShooterSelectClicked();
+
+	UFUNCTION()
+	void HandlePartnerSelectClicked();
+
+	UFUNCTION()
+	void HandleStartButtonClicked();
+
+	UFUNCTION()
+	void HandleBackButtonEvent();
+
+	void HandlePendingLobbyStateChanged(AOutlierPlayerState* ChangedPS);
+	void RequestRole(EOutlierPlayerRole DesiredRole);
+	void BindLobbyPlayerStateDelegates();
+	void UnbindLobbyPlayerStateDelegates();
+	AOutlierPlayerState* GetLocalOutlierPlayerState() const;
+	void RefreshRoleSelection();
+
+private:
+	//Widget delegate 설정이 PS array 촉기화보다 일러서 Timer로 지연 delegate 초기화;
+	FTimerHandle LobbyRefreshTimerHandle;
+	void StartLobbyRefreshTimer();
+	void StopLobbyRefreshTimer();
 };

@@ -7,16 +7,20 @@
 
 UShooterHealthComponent::UShooterHealthComponent()
 {
-	PrimaryComponentTick.bCanEverTick = false;
+	PrimaryComponentTick.bCanEverTick = true;
 }
 
 void UShooterHealthComponent::ApplyDamage(float DamageAmount)
 {
+	if (!GetOwner()->HasAuthority()) return;
+
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 	if (!ShooterCharacter)
 	{
 		return;
 	}
+
+	GetHit();
 
 	if (ShooterCharacter->bIsDead || DamageAmount <= 0.0f)
 	{
@@ -24,10 +28,29 @@ void UShooterHealthComponent::ApplyDamage(float DamageAmount)
 		return;
 	}
 
-	const float PreviousHP = ShooterCharacter->CurHP;
-	ShooterCharacter->CurHP = FMath::Clamp(ShooterCharacter->CurHP - DamageAmount, 0.0f, ShooterCharacter->MaxHP);
-	UE_LOG(LogTemp, Log, TEXT("%s %s ApplyDamageInternal Damage=%.1f HP %.1f -> %.1f"), OutlierNet::GetNetPrefix(ShooterCharacter), *ShooterCharacter->GetName(), DamageAmount, PreviousHP, ShooterCharacter->CurHP);
-	ShooterCharacter->UpdateLocalHealthUI();
+	float RemainingDamage = DamageAmount;
+
+	if (ShooterCharacter->CurPartnerShield > 0.0f)
+	{
+		const float AbsorbedDamage = FMath::Min(ShooterCharacter->CurPartnerShield, RemainingDamage);
+		ShooterCharacter->CurPartnerShield -= AbsorbedDamage;
+		RemainingDamage -= AbsorbedDamage;
+		ShooterCharacter->BroadcastPartnerShieldState();
+	}
+
+	if (RemainingDamage > 0.0f && ShooterCharacter->CurShield > 0.0f)
+	{
+		const float AbsorbedDamage = FMath::Min(ShooterCharacter->CurShield, RemainingDamage);
+		ShooterCharacter->CurShield -= AbsorbedDamage;
+		RemainingDamage -= AbsorbedDamage;
+		ShooterCharacter->OnRep_CurShield();
+	}
+
+	if (RemainingDamage > 0.0f && ShooterCharacter->CurShield <= 0.0f)
+	{
+		ShooterCharacter->CurHP = FMath::Clamp(ShooterCharacter->CurHP - RemainingDamage, 0.0f, ShooterCharacter->MaxHP);
+		ShooterCharacter->OnRep_CurHP();
+	}
 
 	if (ShooterCharacter->CurHP <= 0.0f)
 	{
@@ -52,5 +75,60 @@ void UShooterHealthComponent::Die()
 		{
 			GM->HandlePlayerDeath(ShooterCharacter);
 		}
+	}
+
+
+	HitHistoryRefresh();
+}
+
+void UShooterHealthComponent::GetHit()
+{
+	bShieldRecoveryAbled = false;
+	HitAccumulated = 0.0f;
+	RecoveryAccumulated = 0.0f;
+}
+
+void UShooterHealthComponent::HitHistoryRefresh()
+{
+	bShieldRecoveryAbled = true;
+	HitAccumulated = 0.f;
+	RecoveryAccumulated = 0.f;
+}
+
+void UShooterHealthComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
+{
+	if (!GetOwner()->HasAuthority()) return;
+	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+
+
+	if (bShieldRecoveryAbled)
+	{
+		if (AShooterCharacter* ShooterCharacter = GetShooterCharacter())
+		{
+			if (ShooterCharacter->CurShield >= ShooterCharacter->MaxShield)
+			{
+				return;
+			}
+			else
+			{
+				RecoveryAccumulated += DeltaTime;
+
+				if (RecoveryAccumulated >= ShieldRecoveryInterval)
+				{
+					RecoveryAccumulated = 0;
+					ShooterCharacter->CurShield = FMath::Min(ShooterCharacter->MaxShield, ShooterCharacter->CurShield + ShieldRecoveryValue);
+					ShooterCharacter->OnRep_CurShield();
+				}
+			}
+		}
+	}
+
+
+	HitAccumulated += DeltaTime;
+
+	if (HitAccumulated >= HitInterval)
+	{
+		HitAccumulated = 0;
+		bShieldRecoveryAbled = true;
 	}
 }

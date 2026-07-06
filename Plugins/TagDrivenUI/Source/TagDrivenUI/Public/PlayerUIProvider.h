@@ -10,7 +10,7 @@ class UMainUIBase;
 
 
 UINTERFACE(Blueprintable)
-class UPlayerUIProvider : public UInterface
+class TAGDRIVENUI_API UPlayerUIProvider : public UInterface
 {
 	GENERATED_BODY()
 };

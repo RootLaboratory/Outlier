@@ -7,10 +7,12 @@
 #include "GameplayTagContainer.h"
 #include "CrossHairBase.h"
 #include "MainUIBase.h"
+#include "PartnerHPUI.h"
 #include "LocalPlayerUISubSystem.generated.h"
 
 class UEventDrivenUI;
 class USceneCaptureComponent2D;
+enum class EWidgetWeaponType : uint8;
 
 
 UCLASS()
@@ -31,22 +33,35 @@ public:
 	//Replicated
 	void OnRep_HUDActivate(bool bShouldActivate); //Whole Widgets Activation Toggle
 	void OnRep_HealthChanged(float InHealth, float MaxHealth);
+	void OnRep_PartnerShieldChanged(float InHealth, float MaxHealth);
 	void OnRep_ShieldChanged( float InCurShield ,  float InMaxShield);
 	void OnRep_AmmoCountChanged(int32 InAmmoCount);
-	
+	void OnRep_ShooterConditionRefresh();
 public:
 	void OnRep_Aiming();
 	void OnRep_AimingOff();
 	void OnRep_AttackSign(EAttackSign InType);
 	void OnRep_ShootCrosshairChanged(float InFireRate);
+	void OnRep_ShooterHPStateChanged(const FGameplayTag& InShooterConditionTag);
+	void OnRep_ShooterDynamicCrosshairChanged(bool InFlag);
 public:
 
 	void PartnerCameraBind(USceneCaptureComponent2D* InCaptureComponent2D);
 	void PartnerCameraToggle();
+	void PartnerDistanceUpdate(const float Distance);
+	void OnCurrentWeaponChanged(EWidgetWeaponType WeaponType);
+	void OnCurrentAbilityChanged(const FGameplayTag& AbilityTag);
+	bool ApplyCurrentAbilityCooldownIfMatches(const FGameplayTag& AbilityTag, float CoolTime);
+	void OnAbilityUsed(const FGameplayTag& AbilityTag, float CoolTime);
+	void OnAbilityDisabledByDistance();
+	void OnAbilityEnabledByDistance();
 
 private:
+	UMainUIBase* GetMainUI() const;
+	UEventDrivenUI* GetModule(const FGameplayTag& ModuleTag) const;
+	UEventDrivenUI* GetModuleAny(const FGameplayTag& FirstTag, const FGameplayTag& SecondTag) const;
+
 	UPROPERTY()
-	TObjectPtr<UMainUIBase> MainUIInstance; //PlayerController에게 책임 전가; Pawn 타입 받아서; (Bind된 BP 타입 반환시켜서 Bind)
+	TObjectPtr<UMainUIBase> MainUIInstance;
 
 };
-

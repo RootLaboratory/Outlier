@@ -9,6 +9,7 @@
 #include "WeaponCoreRow.generated.h"
 
 class UWeaponFeedbackDefinition;
+class UProceduralAnimValues;
 
 /**
  * 
@@ -43,19 +44,16 @@ struct OUTLIER_API FWeaponCoreRow : public FTableRowBase
 	float FireRateRpm = 0.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
-	float ReloadTime = 0.0f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly)
 	float DefaultMinBloom = 0.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
 	float DefaultMaxBloom = 0.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
-	float RecoilMultiplier = 1.0f;
+	float GameplayRecoilMultiplier = 1.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
-	float MovementSpeedMultiplier = 1.0f;
+	float GameplayMovementSpeedMultiplier = 1.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
 	FName RangeProfileId;
@@ -68,7 +66,4 @@ struct OUTLIER_API FWeaponCoreRow : public FTableRowBase
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
 	FName ProjectileProfileId;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly)
-	TObjectPtr<UWeaponFeedbackDefinition> FeedbackDefinition;
 };

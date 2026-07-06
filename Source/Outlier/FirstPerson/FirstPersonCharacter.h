@@ -6,6 +6,7 @@
 #include "GameFramework/Character.h"
 #include "Weapon/WeaponBase.h"
 #include "GameplayTagContainer.h"
+#include "Interface/GameplayTagProviderInterface.h"
 #include "FirstPersonCharacter.generated.h"
 
 class USkeletalMeshComponent;
@@ -13,12 +14,13 @@ class UCameraComponent;
 class USceneComponent;
 class UFirstPersonInputConfig;
 class UInputAction;
+class USceneCaptureComponent2D;
 struct FInputActionValue;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnWeaponChanged, EWeaponType, NewWeaponType);
 
 UCLASS()
-class OUTLIER_API AFirstPersonCharacter : public ACharacter
+class OUTLIER_API AFirstPersonCharacter : public ACharacter, public IGameplayTagProviderInterface
 {
 	GENERATED_BODY()
 
@@ -46,6 +48,9 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Interaction")
 	float InteractRange = 100.0f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Gameplay Tags")
+	FGameplayTagContainer OwnedQueryTags;
+
 	UPROPERTY(ReplicatedUsing = OnRep_CurrentWeapon, EditAnywhere, Category = Weapon)
 	AWeaponBase* CurrentWeapon;
 
@@ -54,6 +59,10 @@ protected:
 
 	UPROPERTY(Transient)
 	TObjectPtr<AWeaponBase> LastReplicatedWeapon;
+
+	// Components / Owned Objects
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<USceneCaptureComponent2D> CaptureComponent;
 
 	UFUNCTION()
 	void OnRep_CurrentWeapon();
@@ -105,12 +114,15 @@ public:
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
+	virtual FGameplayTagContainer GetOwnedGameplayTagsForQuery() const override;
+
 	EWeaponType GetWeaponType() const;
 
 	AWeaponBase* GetCurrentWeapon() const { return CurrentWeapon; }
 
 	virtual void OnMoveInputUpdated(const FVector2D& MoveValue);
 
+	void CaptureComponentWeaponNotIncluded(AWeaponBase* Weapon);
 public:
 	UPROPERTY(BlueprintAssignable)
 	FOnWeaponChanged OnWeaponChanged;

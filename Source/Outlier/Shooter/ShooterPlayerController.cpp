@@ -8,6 +8,7 @@
 #include "LocalPlayerUISubSystem.h"
 #include "LocalPlayerPostProcessSubsystem.h"
 #include "UI/ShooterAbilityUI.h"
+#include "PostProcess/MaterialPostProcessSubsystem.h"
 #include "ShooterCharacter.h"
 #include "ShooterInventoryComponent.h"
 #include "ShooterMainWidget.h"
@@ -18,23 +19,26 @@ AShooterPlayerController::AShooterPlayerController()
 	DefaultPlayerRole = EOutlierPlayerRole::Shooter;
 }
 
+void AShooterPlayerController::SocketDistanceUpdate(float Distance)
+{
+	if (ULocalPlayer* LP = this->GetLocalPlayer())
+	{
+		if (ULocalPlayerPostProcessSubsystem* PPSubsystem = LP->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
+		{
+			PPSubsystem->SetADSSocketDistance(Distance);
+		}
+	}
+}
+
 void AShooterPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
 	BindMainUI();
-	BindPostProcessSubSystem();
-
-	//슬라이드 1P 지정 콜백으로 하겠지만 분리 예정.
-	AShooterCharacter* ShooterCharacter = Cast<AShooterCharacter>(GetCharacter());
-	if (ShooterCharacter)
-	{
-		ShooterCharacter->OnMovementStateChanged.AddDynamic(this, &AShooterPlayerController::HandleMovementStateChanged);
-		ShooterCharacter->OnWeaponChanged.AddDynamic(this, &AShooterPlayerController::OnWeaponChanged);
-	}
 }
 
 void AShooterPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	UnbindShooterCharacterDelegates();
 	CleanupPossessedShooterWeapons();
 
 	Super::EndPlay(EndPlayReason);
@@ -56,11 +60,178 @@ void AShooterPlayerController::OnPossess(APawn* InPawn)
 
 	if (AShooterCharacter* ShooterCharacter = Cast<AShooterCharacter>(InPawn))
 	{
-		// Mark the currently possessed pawn so gameplay systems can identify it.
 		ShooterCharacter->Tags.Add(PlayerPawnTag);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT("[ShooterPC] OnPossess"));	
+	}
+
+	if (IsLocalController())
+	{
+		if (UMaterialPostProcessSubsystem* PPS = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
+		{
+			PPS->Refresh();
+		}
 	}
 
 
+	/*if (AShooterCharacter* ShooterCharacter = Cast<AShooterCharacter>(InPawn))
+	{
+
+		if (IsLocalController())
+		{
+			UE_LOG(LogTemp, Error, TEXT("TryRefresh"));
+			ShooterCharacter->RefreshPostProcessState();
+		}
+	}*/
+	
+}
+void AShooterPlayerController::AcknowledgePossession(APawn* P) 
+{
+	Super::AcknowledgePossession(P);
+	BindShooterCharacterDelegates(Cast<AShooterCharacter>(P));
+
+	if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(P))
+	{
+		Shooter->RefreshUIForRespawn();
+	}
+
+	if (IsLocalController())
+	{
+		if (UMaterialPostProcessSubsystem* PPS = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
+		{
+			PPS->Refresh();
+		}
+	}
+}
+
+void AShooterPlayerController::BindShooterCharacterDelegates(AShooterCharacter* ShooterCharacter)
+{
+	UnbindShooterCharacterDelegates();
+
+	if (!ShooterCharacter)
+	{
+		return;
+	}
+
+	BoundShooterCharacter = ShooterCharacter;
+
+	ShooterCharacter->OnMovementStateChanged.AddDynamic(
+		this,
+		&AShooterPlayerController::HandleMovementStateChanged
+	);
+
+	ShooterCharacter->OnWeaponChanged.AddDynamic(
+		this,
+		&AShooterPlayerController::OnWeaponChanged
+	);
+
+	ShooterCharacter->OnShooterHealthChanged.AddUObject(
+		this,
+		&AShooterPlayerController::HandleShooterHealthChanged
+	);
+
+	ShooterCharacter->OnShooterShieldChanged.AddUObject(
+		this,
+		&AShooterPlayerController::HandleShooterShieldChanged
+	);
+
+	ShooterCharacter->OnShooterPartnerShieldChanged.AddUObject(
+		this,
+		&AShooterPlayerController::HandleShooterPartnerShieldChanged
+	);
+
+	ShooterCharacter->OnShooterConditionChanged.AddUObject(
+		this,
+		&AShooterPlayerController::HandleShooterConditionChanged
+	);
+
+	ShooterCharacter->OnShooterDynamicCrosshairChanged.AddUObject(
+		this,
+		&AShooterPlayerController::HandleShooterDynamicCrosshair
+	);
+
+	ShooterCharacter->OnShooterAimingBlur.AddUObject(
+		this, &AShooterPlayerController::HandleShooterAimingBlur
+	);
+}
+
+void AShooterPlayerController::UnbindShooterCharacterDelegates()
+{
+	if (!BoundShooterCharacter)
+	{
+		return;
+	}
+
+	BoundShooterCharacter->OnMovementStateChanged.RemoveAll(this);
+	BoundShooterCharacter->OnWeaponChanged.RemoveAll(this);
+	BoundShooterCharacter->OnShooterHealthChanged.RemoveAll(this);
+	BoundShooterCharacter->OnShooterShieldChanged.RemoveAll(this);
+	BoundShooterCharacter->OnShooterPartnerShieldChanged.RemoveAll(this);
+	BoundShooterCharacter->OnShooterConditionChanged.RemoveAll(this);
+	BoundShooterCharacter->OnShooterDynamicCrosshairChanged.RemoveAll(this);
+	BoundShooterCharacter->OnShooterAimingBlur.RemoveAll(this);
+	BoundShooterCharacter = nullptr;
+}
+
+ULocalPlayerUISubSystem* AShooterPlayerController::GetLocalUISubsystem() const
+{
+	ULocalPlayer* LocalPlayer = GetLocalPlayer();
+	return LocalPlayer ? LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>() : nullptr;
+}
+
+void AShooterPlayerController::HandleShooterHealthChanged(float CurrentHealth, float MaxHealth)
+{
+	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
+	{
+		UISubsystem->OnRep_HealthChanged(CurrentHealth, MaxHealth);
+	}
+}
+
+void AShooterPlayerController::HandleShooterShieldChanged(float CurrentShield, float MaxShield)
+{
+	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
+	{
+		UISubsystem->OnRep_ShieldChanged(CurrentShield, MaxShield);
+	}
+}
+
+void AShooterPlayerController::HandleShooterPartnerShieldChanged(float CurrentPartnerShield, float MaxPartnerShield)
+{
+	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
+	{
+		UISubsystem->OnRep_PartnerShieldChanged(CurrentPartnerShield, MaxPartnerShield);
+	}
+}
+
+void AShooterPlayerController::HandleShooterConditionChanged(const FGameplayTag& ConditionTag)
+{
+	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
+	{
+		UISubsystem->OnRep_ShooterHPStateChanged(ConditionTag);
+	}
+}
+
+void AShooterPlayerController::HandleShooterDynamicCrosshair(bool InFlag)
+{
+	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
+	{
+		UISubsystem->OnRep_ShooterDynamicCrosshairChanged(InFlag);
+	}
+}
+
+void AShooterPlayerController::ReceivedPlayer()
+{
+	Super::ReceivedPlayer();
+
+	if (!IsLocalController())
+	{
+		return;
+	}
+
+	BindMainUI();
+	BindPostProcessSubSystem();
 
 }
 
@@ -81,46 +252,95 @@ void AShooterPlayerController::BindMainUI()
 {
 	if (!IsLocalController())
 	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[ShooterPC] BindMainUI skipped: not local PC=%s Auth=%d"),
+			*GetNameSafe(this),
+			HasAuthority() ? 1 : 0);
 		return;
 	}
 
-	if ( !MainUIClass || ShooterUIInstance)
+	if (ShooterUIInstance)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("Cant InitializeMainUI"));
+		UE_LOG(LogTemp, Warning,
+			TEXT("[ShooterPC] BindMainUI skipped: already exists PC=%s UI=%s"),
+			*GetNameSafe(this),
+			*GetNameSafe(ShooterUIInstance));
+		return;
+	}
+
+	if (!MainUIClass)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[ShooterPC] BindMainUI failed: MainUIClass is null PC=%s Class=%s"),
+			*GetNameSafe(this),
+			*GetNameSafe(GetClass()));
 		return;
 	}
 
 	ShooterUIInstance = CreateWidget<UMainUIBase>(this, MainUIClass);
+
 	if (!ShooterUIInstance)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("Cant ShooterUIInstance"));
+		UE_LOG(LogTemp, Warning,
+			TEXT("[ShooterPC] BindMainUI failed: CreateWidget returned null PC=%s MainUIClass=%s"),
+			*GetNameSafe(this),
+			*GetNameSafe(MainUIClass));
 		return;
 	}
 
 	ShooterUIInstance->AddToViewport();
+	UE_LOG(LogTemp, Warning,
+		TEXT("[ShooterPC] MainUI added to viewport PC=%s UI=%s MainUIClass=%s"),
+		*GetNameSafe(this),
+		*GetNameSafe(ShooterUIInstance),
+		*GetNameSafe(MainUIClass));
 
 	if (ULocalPlayer* LP = this->GetLocalPlayer())
 	{
 		if (ULocalPlayerUISubSystem* UISubsystem = LP->GetSubsystem<ULocalPlayerUISubSystem>())
 		{
 			UISubsystem->RegisterMainUI(ShooterUIInstance);
+			UE_LOG(LogTemp, Warning,
+				TEXT("[ShooterPC] MainUI registered to UISubsystem PC=%s UI=%s"),
+				*GetNameSafe(this),
+				*GetNameSafe(ShooterUIInstance));
 		}
 	}
-	if (!AbilityUIClass || AbilityUIInstance)
+
+	if (AbilityUIInstance)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("Cant InitializeAbilityUI"));
+		return;
+	}
+
+	if (!AbilityUIClass)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[ShooterPC] BindMainUI skipped: AbilityUIClass is null PC=%s"),
+			*GetNameSafe(this));
 		return;
 	}
 
 	AbilityUIInstance = CreateWidget<UShooterAbilityUI>(this, AbilityUIClass);
 	if (!AbilityUIInstance)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("Cant AbilityUIInstance"));
+		UE_LOG(LogTemp, Warning,
+			TEXT("[ShooterPC] BindMainUI failed: Create AbilityUI returned null PC=%s AbilityUIClass=%s"),
+			*GetNameSafe(this),
+			*GetNameSafe(AbilityUIClass));
 		return;
 	}
 
 	AbilityUIInstance->AddToViewport();
+	AbilityUIInstance->OnAbilitySelected.AddDynamic(
+		this,
+		&AShooterPlayerController::HandleAbilitySelected
+	);
 	AbilityUIInstance->SetVisibility(ESlateVisibility::Collapsed);
+	UE_LOG(LogTemp, Warning,
+		TEXT("[ShooterPC] AbilityUI added PC=%s UI=%s AbilityUIClass=%s"),
+		*GetNameSafe(this),
+		*GetNameSafe(AbilityUIInstance),
+		*GetNameSafe(AbilityUIClass));
 }
 
 void AShooterPlayerController::BindPostProcessSubSystem()
@@ -164,11 +384,36 @@ void AShooterPlayerController::HandleMovementStateChanged(EMovementState NewStat
 
 void AShooterPlayerController::OnWeaponChanged(EWeaponType NewType)
 {
-	UShooterMainWidget* ShooterUI = Cast<UShooterMainWidget>(ShooterUIInstance);
-
-	if (ShooterUI)
+	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
 	{
-		ShooterUI->OnChangeWeapon(static_cast<EWidgetWeaponType>(NewType));
+		UISubsystem->OnCurrentWeaponChanged(static_cast<EWidgetWeaponType>(NewType));
 	}
-	
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT("Shooter UI subsystem is not ready"));
+	}
+}
+
+void AShooterPlayerController::HandleAbilitySelected(FGameplayTag AbilityTag)
+{
+	if (!AbilityTag.IsValid())
+	{
+		return;
+	}
+
+	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
+	{
+		UISubsystem->OnCurrentAbilityChanged(AbilityTag);
+	}
+}
+
+void AShooterPlayerController::HandleShooterAimingBlur(bool InFlag, int32 WeaponStencilValue)
+{
+	if (ULocalPlayer* LP = this->GetLocalPlayer())
+	{
+		if (ULocalPlayerPostProcessSubsystem* PPSubsystem = LP->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
+		{
+			PPSubsystem->SetADSBlurAiming(InFlag, WeaponStencilValue);
+		}
+	}
 }

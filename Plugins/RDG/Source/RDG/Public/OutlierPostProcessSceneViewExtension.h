@@ -51,12 +51,22 @@ private:
 		const FSceneView& View,
 		const FPostProcessMaterialInputs& Inputs);
 
+	FScreenPassTexture ADSWeaponBlurCallback_RenderThread(
+		FRDGBuilder& GraphBuilder,
+		const FSceneView& View,
+		const FPostProcessMaterialInputs& Inputs);
+
 	FScreenPassTexture HeatHazeCallback_RenderThread(
 		FRDGBuilder& GraphBuilder,
 		const FSceneView& View,
 		const FPostProcessMaterialInputs& Inputs);
 
 	FScreenPassTexture DatamoshingCallback_RenderThread(
+		FRDGBuilder& GraphBuilder,
+		const FSceneView& View,
+		const FPostProcessMaterialInputs& Inputs);
+
+	FScreenPassTexture ExplosionVolumeVisualizeCallback_RenderThread(
 		FRDGBuilder& GraphBuilder,
 		const FSceneView& View,
 		const FPostProcessMaterialInputs& Inputs);
@@ -75,4 +85,10 @@ private:
 		uint64 LastTouchedFrame = 0;
 	};
 	TMap<FSceneViewState*, FDatamoshHistoryEntry> DatamoshHistoryMap;
+
+	//
+	FRDGTextureRef CachedVelocityVolume = nullptr;
+	FRDGTextureRef CachedADSCustomDepth = nullptr;
+	FRDGTextureRef CachedADSHardMask = nullptr;
+	FRDGTextureRef CachedADSWeaponMask = nullptr;
 };

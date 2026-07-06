@@ -1,7 +1,9 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "ShooterAbilityUI.h"
-#include "UI/AbilityIconUI.h"
+#include "AbilityIconUI.h"
+#include "MainUIBase.h"
+#include "TagDrivenUIGameplayTags.h"
 #include "Blueprint/WidgetLayoutLibrary.h"
 #include "Components/Border.h"
 #include "Framework/Application/SlateApplication.h"
@@ -12,32 +14,25 @@ void UShooterAbilityUI::NativeConstruct()
 
 	AbilitySections.Reset();
 
-	RightAbilityTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.Teleport")), false);
-	BottomAbilityTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.Shield")), false);
-	LeftAbilityTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.Stealth")), false);
-	TopAbilityTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.Stimpack")), false);
-
-	if (!RightAbilityTag.IsValid())
-	{
-		UE_LOG(LogTemp, Error, TEXT("Missing GameplayTag: Ability.Shooter.Teleport"));
-	}
-	if (!BottomAbilityTag.IsValid())
-	{
-		UE_LOG(LogTemp, Error, TEXT("Missing GameplayTag: Ability.Shooter.Shield"));
-	}
-	if (!LeftAbilityTag.IsValid())
-	{
-		UE_LOG(LogTemp, Error, TEXT("Missing GameplayTag: Ability.Shooter.Stealth"));
-	}
-	if (!TopAbilityTag.IsValid())
-	{
-		UE_LOG(LogTemp, Error, TEXT("Missing GameplayTag: Ability.Shooter.Stimpack"));
-	}
+	RightAbilityTag  = TagDrivenUITags::Ability::Shooter::Teleport();
+	BottomAbilityTag = TagDrivenUITags::Ability::Shooter::Shield();
+	LeftAbilityTag   = TagDrivenUITags::Ability::Shooter::Stealth();
+	TopAbilityTag    = TagDrivenUITags::Ability::Shooter::StimPack();
 
 	RegisterAbilityIcon(IconTeleport, RightAbilityTag, true);
 	RegisterAbilityIcon(IconShield, BottomAbilityTag, true);
 	RegisterAbilityIcon(IconStealth, LeftAbilityTag, true);
 	RegisterAbilityIcon(IconStimpack, TopAbilityTag, true);
+
+	// 부모 ShooterMainWidget(MainUIBase)의 AbilitySections에도 등록
+	// → OnAbilityDisabledByDistance 등 거리 lock 신호를 받을 수 있도록
+	if (UMainUIBase* MainUI = GetTypedOuter<UMainUIBase>())
+	{
+		for (const TPair<FGameplayTag, TObjectPtr<UAbilityIconUI>>& Section : AbilitySections)
+		{
+			MainUI->AddAbilityIconEntry(Section.Value.Get(), Section.Key);
+		}
+	}
 
 	if (BigCircle && CenterCircle && M_ShooterAbilityUI)
 	{
@@ -83,12 +78,25 @@ bool UShooterAbilityUI::TryGetHoveredAbility(FGameplayTag& OutAbilityTag)
 
 	OutAbilityTag = HoveredAbilityTag;
 
-	//
-	if (HoveredAbilityTag == RightAbilityTag)
+	OnAbilitySelected.Broadcast(HoveredAbilityTag);
+
+	return true;
+}
+
+bool UShooterAbilityUI::ApplyCooldownIfMatches(const FGameplayTag& AbilityTag, float CoolTime)
+{
+	if (!AbilityTag.IsValid() || CoolTime <= 0.0f)
 	{
-		HoveredIcon->SetCoolTime(5.0f);
+		return false;
 	}
 
+	UAbilityIconUI* AbilityIcon = GetAbilityIcon(AbilityTag);
+	if (!AbilityIcon || !AbilityIcon->IsUnLock())
+	{
+		return false;
+	}
+
+	AbilityIcon->SetCoolTime(CoolTime);
 	return true;
 }
 

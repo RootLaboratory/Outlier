@@ -23,4 +23,8 @@ protected:
 
 	UFUNCTION(BlueprintImplementableEvent, Category = "UI")
 	void HandleDeactivatedVisual();
+
+public:
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "UI", meta = (Categories = "UI.Player.Shooter,UI.Player.Partner"))
+	FGameplayTag ModuleTag;
 };

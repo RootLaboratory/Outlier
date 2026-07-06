@@ -2,6 +2,8 @@
 
 
 #include "Weapon/RangedWeaponBase.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "GameFramework/Character.h"
 #include "TimerManager.h"
 #include "Kismet/GameplayStatics.h"
@@ -15,13 +17,17 @@
 #include "CrossHairBase.h"
 #include "Shooter/ShooterPlayerController.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Drone/Partner/PartnerCharacter.h"
 #include "OutlierNetUtils.h"
+#include "Drone/Partner/PartnerShieldSphere.h"
 #include "Net/UnrealNetwork.h"
 #include "Weapon/WeaponCoreRow.h"
 #include "Weapon/WeaponBloomRow.h"
 #include "Weapon/WeaponFeedbackDefinition.h"
 #include "Weapon/WeaponProjectileRow.h"
 #include "Weapon/WeaponRecoilRow.h"
+#include "Shooter/ShooterAnimInstance.h"
+#include "Shooter/ShooterFirstPersonAnimInstance.h"
 
 void ARangedWeaponBase::StartAttackCooldown()
 {
@@ -103,6 +109,7 @@ void ARangedWeaponBase::FinishReload()
 	bIsReloading = false;
 
 	UpdateLocalAmmoUI();
+	ForceNetUpdate();
 
 	UE_LOG(LogTemp, Log, TEXT("%s [%s] Reload complete Ammo=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo);
 }
@@ -156,8 +163,19 @@ void ARangedWeaponBase::FireShot()
 	OwnerCharacter->GetController()->GetPlayerViewPoint(CameraLocation, CameraRotation);
 
 	FVector Start = CameraLocation;
+	const FVector BaseDirection = CameraRotation.Vector().GetSafeNormal();
+	const float ShotSpreadDegrees = FMath::Max(BloomCurrent, 0.0f);
+	const FVector ShotDirection = ShotSpreadDegrees > KINDA_SMALL_NUMBER
+		? FMath::VRandCone(BaseDirection, FMath::DegreesToRadians(ShotSpreadDegrees)).GetSafeNormal()
+		: BaseDirection;
+	LastShotBaseDirection = BaseDirection;
+	LastShotDirection = ShotDirection;
+	LastShotSpreadDegrees = ShotSpreadDegrees;
+	bHasLastShotDirection = true;
 	FVector End = Start + (CameraRotation.Vector() * EffectiveRange); // 사거리
 
+
+	End = Start + (ShotDirection * EffectiveRange);
 
 	FHitResult Hit;
 	FCollisionQueryParams Params;
@@ -172,26 +190,36 @@ void ARangedWeaponBase::FireShot()
 		Params
 	);
 
-	DrawDebugLine(
-		GetWorld(),
-		Start,
-		End,
-		FColor::Red,
-		false,   // PersistentLines
-		3.0f,    // LifeTime
-		0,       // DepthPriority
-		1.0f     // Thickness
-	);
+	//DrawDebugLine(
+	//	GetWorld(),
+	//	Start,
+	//	End,
+	//	FColor::Red,
+	//	false,   // PersistentLines
+	//	3.0f,    // LifeTime
+	//	0,       // DepthPriority
+	//	1.0f     // Thickness
+	//);
 
 	if (bHit)
 	{
 		UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot hit Target=%s Start=%s End=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(Hit.GetActor()), *Start.ToString(), *End.ToString());
-		if (AShooterCharacter* HitCharacter = Cast<AShooterCharacter>(Hit.GetActor()))
+		const float HitDistance = FVector::Distance(Start, Hit.ImpactPoint);
+		const float DamageToApply = GetDamageAtDistance(HitDistance);
+
+		if (APartnerShieldSphere* Shield = Cast<APartnerShieldSphere>(Hit.GetActor()))
 		{
-			const float HitDistance = FVector::Distance(Start, Hit.ImpactPoint);
-			const float DamageToApply = GetDamageAtDistance(HitDistance);
+			Shield->ApplyShieldDamage(DamageToApply);
+			UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot applied Shield Damage=%.1f To=%s"), OutlierNet::GetNetPrefix(this), *GetName(), DamageToApply, *GetNameSafe(Shield));
+		}
+		else if (AShooterCharacter* HitCharacter = Cast<AShooterCharacter>(Hit.GetActor()))
+		{
 			HitCharacter->ApplyDamageInternal(DamageToApply);
 			UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot applied Damage=%.1f To=%s"), OutlierNet::GetNetPrefix(this), *GetName(), DamageToApply, *GetNameSafe(HitCharacter));
+		}
+		else if (APartnerCharacter* PartnerCharacter = Cast<APartnerCharacter>(Hit.GetActor()))
+		{
+			PartnerCharacter->HandlePartnerHit();
 		}
 	}
 	else
@@ -200,12 +228,13 @@ void ARangedWeaponBase::FireShot()
 	}
 
 
-	ClientNotifyShotFired();
+	ClientNotifyShotFired(GetNormalizedLastShotDirection());
 
 	{
 		AActor* HitActor = Hit.GetActor();
 		const FVector TraceEndPoint = bHit ? Hit.ImpactPoint : End;
-		MulticastPlayFireFX(TraceEndPoint, HitActor);
+		const FVector ImpactNormal = bHit ? Hit.ImpactNormal : -ShotDirection;
+		MulticastPlayFireFX(TraceEndPoint, ImpactNormal, HitActor, GetNormalizedLastShotDirection());
 
 		if (UVisualEventSubsystem* VisualSubsystem = GetWorld()->GetSubsystem<UVisualEventSubsystem>())
 		{
@@ -218,7 +247,7 @@ void ARangedWeaponBase::FireShot()
 
 	FColor LineColor = bHit ? FColor::Green : FColor::Red;
 
-	DrawDebugLine(
+	/*DrawDebugLine(
 		GetWorld(),
 		Start,
 		End,
@@ -227,12 +256,65 @@ void ARangedWeaponBase::FireShot()
 		3.0f,
 		0,
 		1.0f
-	);
+	);*/
 }
 
 // 반동, 탄 퍼짐은 추후 작업 예정
 void ARangedWeaponBase::ApplyRecoil()
 {
+	ApplyRecoilWithShotDirection(GetNormalizedLastShotDirection());
+}
+
+FVector2D ARangedWeaponBase::GetNormalizedLastShotDirection() const
+{
+	if (!bHasLastShotDirection)
+	{
+		return FVector2D::ZeroVector;
+	}
+
+	const FRotator BaseRotation = LastShotBaseDirection.Rotation();
+	const FRotator ShotRotation = LastShotDirection.Rotation();
+	const float NormalizationSpread = FMath::Max(LastShotSpreadDegrees, 0.01f);
+
+	return FVector2D(
+		FMath::Clamp(FMath::FindDeltaAngleDegrees(BaseRotation.Yaw, ShotRotation.Yaw) / NormalizationSpread, -1.0f, 1.0f),
+		FMath::Clamp(FMath::FindDeltaAngleDegrees(BaseRotation.Pitch, ShotRotation.Pitch) / NormalizationSpread, -1.0f, 1.0f)
+	);
+}
+
+void ARangedWeaponBase::ApplyRecoilWithShotDirection(const FVector2D& NormalizedShotDirection)
+{
+	AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
+	if (!Shooter || !Shooter->IsLocallyControlled())
+	{
+		return;
+	}
+
+	Shooter->AddWeaponCameraRecoil(
+		RecoilPitchAmplitude * RecoilMultiplier,
+		RecoilLocationXAmplitude * RecoilMultiplier,
+		RecoilLocationYAmplitude * RecoilMultiplier,
+		RecoilFovAmplitude * RecoilMultiplier,
+		RecoilRecoverySpeed,
+		NormalizedShotDirection
+	);
+
+	USkeletalMeshComponent* FirstPersonMesh = Shooter->GetFirstPersonMesh();
+	if (!FirstPersonMesh)
+	{
+		return;
+	}
+
+	UShooterFirstPersonAnimInstance* FPAnim =
+		Cast<UShooterFirstPersonAnimInstance>(FirstPersonMesh->GetAnimInstance());
+
+	if (FPAnim)
+	{
+		FPAnim->AddViewModelRecoil(
+			RecoilMultiplier * GetFirstPersonProceduralRecoilMultiplier(),
+			NormalizedShotDirection
+		);
+	}
 }
 
 void ARangedWeaponBase::ApplyBloomPerShot()
@@ -255,31 +337,396 @@ void ARangedWeaponBase::SetAiming(bool bAiming)
 	bIsAiming = bAiming;
 
 	RefreshBloomSettingsFromState();
+	RefreshRecoilSettingsFromState();
+}
+
+void ARangedWeaponBase::ApplySightMesh()
+{
+	if (!SightMesh)
+	{
+		if (FirstSight && FirstSight->GetStaticMesh())
+		{
+			SightMesh = FirstSight->GetStaticMesh();
+		}
+		else if (ThirdSight && ThirdSight->GetStaticMesh())
+		{
+			SightMesh = ThirdSight->GetStaticMesh();
+		}
+	}
+
+	if (FirstSight)
+	{
+		if (SightMesh)
+		{
+			FirstSight->SetStaticMesh(SightMesh);
+		}
+		FirstSight->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		FirstSight->SetCollisionResponseToAllChannels(ECR_Ignore);
+		FirstSight->SetGenerateOverlapEvents(false);
+		FirstSight->SetOnlyOwnerSee(true);
+
+		FirstSight->SetRenderCustomDepth(true);
+		FirstSight->SetCustomDepthStencilValue(3);
+		FirstSight->SetCustomDepthStencilWriteMask(ERendererStencilMask::ERSM_Default);
+	}
+
+	if (ThirdSight)
+	{
+		if (SightMesh)
+		{
+			ThirdSight->SetStaticMesh(SightMesh);
+		}
+		ThirdSight->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		ThirdSight->SetCollisionResponseToAllChannels(ECR_Ignore);
+		ThirdSight->SetGenerateOverlapEvents(false);
+		ThirdSight->SetOwnerNoSee(true);
+	}
+
+	if (ShadowSight)
+	{
+		if (SightMesh)
+		{
+			ShadowSight->SetStaticMesh(SightMesh);
+		}
+		ShadowSight->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		ShadowSight->SetCollisionResponseToAllChannels(ECR_Ignore);
+		ShadowSight->SetGenerateOverlapEvents(false);
+		ShadowSight->SetHiddenInGame(true);
+		ShadowSight->SetVisibility(true, true);
+		ShadowSight->SetRenderInMainPass(true);
+		ShadowSight->SetRenderInDepthPass(false);
+		ShadowSight->SetOwnerNoSee(false);
+		ShadowSight->SetOnlyOwnerSee(false);
+	}
+}
+
+void ARangedWeaponBase::ApplyMagazineMeshSettings()
+{
+	UStaticMeshComponent* MagazineComponents[] = { FirstHandMagazineMesh, ThirdHandMagazineMesh, ShadowHandMagazineMesh };
+	for (UStaticMeshComponent* MagazineComponent : MagazineComponents)
+	{
+		if (!MagazineComponent)
+		{
+			continue;
+		}
+
+		if (MagazineMesh)
+		{
+			MagazineComponent->SetStaticMesh(MagazineMesh);
+		}
+		MagazineComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		MagazineComponent->SetCollisionResponseToAllChannels(ECR_Ignore);
+		MagazineComponent->SetGenerateOverlapEvents(false);
+		MagazineComponent->SetHiddenInGame(true);
+	}
+
+	if (FirstHandMagazineMesh)
+	{
+		FirstHandMagazineMesh->SetOnlyOwnerSee(true);
+	}
+	if (ThirdHandMagazineMesh)
+	{
+		ThirdHandMagazineMesh->SetOwnerNoSee(true);
+	}
+	if (ShadowHandMagazineMesh)
+	{
+		ShadowHandMagazineMesh->SetOwnerNoSee(false);
+		ShadowHandMagazineMesh->SetOnlyOwnerSee(false);
+		ShadowHandMagazineMesh->SetRenderInMainPass(true);
+		ShadowHandMagazineMesh->SetRenderInDepthPass(false);
+	}
+}
+
+void ARangedWeaponBase::HideHandMagazine()
+{
+	if (FirstHandMagazineMesh)
+	{
+		FirstHandMagazineMesh->SetHiddenInGame(true);
+	}
+	if (ThirdHandMagazineMesh)
+	{
+		ThirdHandMagazineMesh->SetHiddenInGame(true);
+	}
+	if (ShadowHandMagazineMesh)
+	{
+		ShadowHandMagazineMesh->SetHiddenInGame(true);
+		ShadowHandMagazineMesh->SetCastShadow(false);
+		ShadowHandMagazineMesh->SetCastHiddenShadow(false);
+	}
+}
+
+void ARangedWeaponBase::AttachMagazineToLeftHand(AShooterCharacter*)
+{
+	ApplyMagazineMeshSettings();
+
+	if (FirstHandMagazineMesh)
+	{
+		FirstHandMagazineMesh->SetHiddenInGame(!FirstHandMagazineMesh->GetStaticMesh());
+	}
+	if (ThirdHandMagazineMesh)
+	{
+		ThirdHandMagazineMesh->SetHiddenInGame(!ThirdHandMagazineMesh->GetStaticMesh());
+	}
+	if (ShadowHandMagazineMesh)
+	{
+		const AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
+		const bool bLocalView = Shooter && Shooter->IsLocallyControlled();
+		const bool bShowMagazineShadow = bLocalView && ShadowHandMagazineMesh->GetStaticMesh();
+		ShadowHandMagazineMesh->SetHiddenInGame(true);
+		ShadowHandMagazineMesh->SetVisibility(true, true);
+		ShadowHandMagazineMesh->SetCastShadow(bShowMagazineShadow);
+		ShadowHandMagazineMesh->SetCastHiddenShadow(bShowMagazineShadow);
+	}
+}
+
+void ARangedWeaponBase::AttachMagazineToWeapon()
+{
+	HideHandMagazine();
+}
+
+UStaticMeshComponent* ARangedWeaponBase::GetFirstSightMesh() const
+{
+	if (FirstSight)
+	{
+		return FirstSight;
+	}
+
+	return nullptr;
+}
+
+void ARangedWeaponBase::AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacter* NewOwner)
+{
+	Super::AttachWeaponMeshesToOwner(Weapon, NewOwner);
+
+	ApplySightMesh();
+	ApplyMagazineMeshSettings();
+
+	AShooterCharacter* Shooter = Cast<AShooterCharacter>(NewOwner);
+	if (Shooter)
+	{
+		if (USkeletalMeshComponent* FirstPersonMesh = Shooter->GetFirstPersonMesh())
+		{
+			if (FirstHandMagazineMesh)
+			{
+				FirstHandMagazineMesh->AttachToComponent(
+					FirstPersonMesh,
+					FAttachmentTransformRules::SnapToTargetNotIncludingScale,
+					LeftHandMagazineSocketName
+				);
+			}
+		}
+
+		if (USkeletalMeshComponent* ThirdPersonMesh = Shooter->GetMesh())
+		{
+			if (ThirdHandMagazineMesh)
+			{
+				ThirdHandMagazineMesh->AttachToComponent(
+					ThirdPersonMesh,
+					FAttachmentTransformRules::SnapToTargetNotIncludingScale,
+					LeftHandMagazineSocketName
+				);
+			}
+		}
+
+		if (USkeletalMeshComponent* ShadowMesh = Shooter->GetShadowMesh())
+		{
+			if (ShadowHandMagazineMesh)
+			{
+				ShadowHandMagazineMesh->AttachToComponent(
+					ShadowMesh,
+					FAttachmentTransformRules::SnapToTargetNotIncludingScale,
+					LeftHandMagazineSocketName
+				);
+			}
+		}
+	}
+
+	
+
+	if (SightMesh)
+	{
+		if (USkeletalMeshComponent* FirstWeapon = Weapon->GetFirstPersonWeaponMesh())
+		{
+			if (FirstSight)
+			{
+				FirstSight->AttachToComponent(
+					FirstWeapon,
+					FAttachmentTransformRules::SnapToTargetNotIncludingScale,
+					SightSocketName
+				);
+			}
+		}
+
+		if (USkeletalMeshComponent* ThirdWeapon = Weapon->GetThirdPersonWeaponMesh())
+		{
+			if (ThirdSight)
+			{
+				ThirdSight->AttachToComponent(
+					ThirdWeapon,
+					FAttachmentTransformRules::SnapToTargetNotIncludingScale,
+					SightSocketName
+				);
+			}
+		}
+
+		if (USkeletalMeshComponent* ShadowWeapon = Weapon->GetShadowWeaponMesh())
+		{
+			if (ShadowSight)
+			{
+				ShadowSight->AttachToComponent(
+					ShadowWeapon,
+					FAttachmentTransformRules::SnapToTargetNotIncludingScale,
+					SightSocketName
+				);
+			}
+		}
+	}
+
+	RefreshShadowWeaponPresentation();
+
 }
 
 
-void ARangedWeaponBase::MulticastPlayFireFX_Implementation(FVector_NetQuantize TraceEnd, AActor* Hit)
+void ARangedWeaponBase::MulticastPlayFireFX_Implementation(FVector_NetQuantize TraceEnd, FVector_NetQuantizeNormal ImpactNormal, AActor* Hit, FVector2D NormalizedShotDirection)
 {
-	AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
-	if (!Shooter)
+	if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner))
+	{
+		if (USkeletalMeshComponent* ThirdPersonMesh = Shooter->GetMesh())
+		{
+			if (UShooterAnimInstance* TPAnim = Cast<UShooterAnimInstance>(ThirdPersonMesh->GetAnimInstance()))
+			{
+				TPAnim->AddThirdPersonRecoil(
+					RecoilMultiplier * GetThirdPersonProceduralRecoilMultiplier(),
+					NormalizedShotDirection
+				);
+			}
+		}
+	}
+
+	ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
+	if (!OwnerCharacter)
 	{
 		return;
 	}
 
-	if (Shooter->IsLocallyControlled())
+	if (OwnerCharacter->IsLocallyControlled())
 	{
-		PlayFirstPersonFireFX(TraceEnd, Hit);
+		PlayFirstPersonFireFX(TraceEnd, ImpactNormal, Hit);
 		return;
 	}
 
-	PlayThirdPersonFireFX(TraceEnd, Hit);
+	PlayThirdPersonFireFX(TraceEnd, ImpactNormal, Hit);
 }
 
 
 void ARangedWeaponBase::OnEquipped(ACharacter* NewOwner)
 {
 	Super::OnEquipped(NewOwner);
+	if (FirstSight)
+	{
+		FirstSight->SetHiddenInGame(true);
+	}
+	if (ThirdSight)
+	{
+		ThirdSight->SetHiddenInGame(true);
+	}
+	if (ShadowSight)
+	{
+		ShadowSight->SetHiddenInGame(true);
+		ShadowSight->SetCastShadow(false);
+		ShadowSight->SetCastHiddenShadow(false);
+	}
+	if (FirstHandMagazineMesh)
+	{
+		FirstHandMagazineMesh->SetHiddenInGame(true);
+	}
+	if (ThirdHandMagazineMesh)
+	{
+		ThirdHandMagazineMesh->SetHiddenInGame(true);
+	}
+	if (ShadowHandMagazineMesh)
+	{
+		ShadowHandMagazineMesh->SetHiddenInGame(true);
+		ShadowHandMagazineMesh->SetCastShadow(false);
+		ShadowHandMagazineMesh->SetCastHiddenShadow(false);
+	}
 	UpdateLocalAmmoUI();
+}
+
+void ARangedWeaponBase::ShowEquippedPresentation()
+{
+	Super::ShowEquippedPresentation();
+	ApplySightMesh();
+
+	if (FirstSight)
+	{
+		FirstSight->SetHiddenInGame(!SightMesh);
+	}
+	if (ThirdSight)
+	{
+		ThirdSight->SetHiddenInGame(!SightMesh);
+	}
+	RefreshShadowWeaponPresentation();
+	HideHandMagazine();
+}
+
+void ARangedWeaponBase::RefreshShadowWeaponPresentation()
+{
+	Super::RefreshShadowWeaponPresentation();
+
+	const AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
+	const bool bLocalView = Shooter && Shooter->IsLocallyControlled();
+
+	if (ShadowSight)
+	{
+		if (SightMesh)
+		{
+			ShadowSight->SetStaticMesh(SightMesh);
+		}
+		const bool bShowSightShadow = bLocalView && SightMesh != nullptr && IsEquipped();
+		ShadowSight->SetHiddenInGame(true);
+		ShadowSight->SetVisibility(true, true);
+		ShadowSight->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		ShadowSight->SetCollisionResponseToAllChannels(ECR_Ignore);
+		ShadowSight->SetGenerateOverlapEvents(false);
+		ShadowSight->SetRenderInMainPass(true);
+		ShadowSight->SetRenderInDepthPass(false);
+		ShadowSight->SetCastShadow(bShowSightShadow);
+		ShadowSight->SetCastHiddenShadow(bShowSightShadow);
+	}
+	if (ThirdSight)
+	{
+		ThirdSight->SetCastShadow(!bLocalView);
+		ThirdSight->SetCastHiddenShadow(false);
+	}
+
+	if (ShadowHandMagazineMesh)
+	{
+		if (MagazineMesh)
+		{
+			ShadowHandMagazineMesh->SetStaticMesh(MagazineMesh);
+		}
+		const bool bShowMagazineShadow =
+			bLocalView &&
+			MagazineMesh != nullptr &&
+			IsEquipped() &&
+			ThirdHandMagazineMesh &&
+			!ThirdHandMagazineMesh->bHiddenInGame;
+		ShadowHandMagazineMesh->SetHiddenInGame(true);
+		ShadowHandMagazineMesh->SetVisibility(true, true);
+		ShadowHandMagazineMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		ShadowHandMagazineMesh->SetCollisionResponseToAllChannels(ECR_Ignore);
+		ShadowHandMagazineMesh->SetGenerateOverlapEvents(false);
+		ShadowHandMagazineMesh->SetRenderInMainPass(true);
+		ShadowHandMagazineMesh->SetRenderInDepthPass(false);
+		ShadowHandMagazineMesh->SetCastShadow(bShowMagazineShadow);
+		ShadowHandMagazineMesh->SetCastHiddenShadow(bShowMagazineShadow);
+	}
+	if (ThirdHandMagazineMesh)
+	{
+		ThirdHandMagazineMesh->SetCastShadow(!bLocalView);
+		ThirdHandMagazineMesh->SetCastHiddenShadow(false);
+	}
 }
 
 void ARangedWeaponBase::OnRep_CurAmmo()
@@ -297,17 +744,37 @@ void ARangedWeaponBase::OnRep_EquippedState()
 	}
 }
 
-void ARangedWeaponBase::ClientNotifyShotFired_Implementation()
+int32 ARangedWeaponBase::ResolveADSBlurStencil()
 {
-	AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
+	constexpr int32 DefaultADSWeaponStencil = 3;
 
-	if (Shooter->IsLocallyControlled())
+	if (!FirstPersonWeaponMesh)
 	{
-		GetLocalUISubsystem()->OnRep_ShootCrosshairChanged(ReuseCooldown);
+		return DefaultADSWeaponStencil;
+	}
+
+	const int32 StencilValue = FirstPersonWeaponMesh->CustomDepthStencilValue;
+	return StencilValue > 0 ? StencilValue : DefaultADSWeaponStencil;
+}
+
+void ARangedWeaponBase::ClientNotifyShotFired_Implementation(FVector2D NormalizedShotDirection)
+{
+	ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
+	if (OwnerCharacter && OwnerCharacter->IsLocallyControlled())
+	{
+		if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
+		{
+			UISubsystem->OnRep_ShootCrosshairChanged(ReuseCooldown);
+		}
+
+		if (!HasAuthority())
+		{
+			ApplyRecoilWithShotDirection(NormalizedShotDirection);
+		}
 	}
 }
 
-void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, AActor* Hit)
+void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit)
 {
 	USkeletalMeshComponent* Mesh = ThirdPersonWeaponMesh;
 	if (!Mesh)
@@ -326,9 +793,6 @@ void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, AActor* Hit)
 
 		if (WeaponMuzzle)
 		{
-			//UE_LOG(LogTemp, Log, TEXT("PlayFirstPersonFireFX_EffectSpawned"));
-			//UTrailEffectDefinition* MuzzleEffectInstance = NewObject<UTrailEffectDefinition>(this, WeaponMuzzle);
-
 			VisualSubsystem->SpawnMuzzleEffect(WeaponMuzzle, Start, MuzzleRotation);
 
 		}
@@ -336,26 +800,31 @@ void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, AActor* Hit)
 
 		if (WeaponTrail)
 		{
-			//UTrailEffectDefinition* TrailEffectInstance = NewObject<UTrailEffectDefinition>(this, WeaponTrail);
 			VisualSubsystem->SpawnBeamTrail(WeaponTrail, Start, End);
 		}
 
 
 		if (Hit)
 		{
-			//UE_LOG(LogTemp, Error, TEXT("PlayFirstPersonFireFX Hit"));
+			const FRotator ImpactRotation = ImpactNormal.GetSafeNormal().Rotation();
 			IVisualEffectProvider* Provider = Cast<IVisualEffectProvider>(Hit);
+			bool bSpawnFallbackDecal = true;
 
 			if (Provider)
 			{
-				//UE_LOG(LogTemp, Error, TEXT("PlayFirstPersonFireFX Hit and ProviderComponent"));
 				FVisualEventSet AssetSet = Provider->GetVisualEventSet();
-				VisualSubsystem->FeaturesEffect(TraceEnd, MuzzleRotation, AssetSet);
+				if (AssetSet.DecalDef && !AssetSet.DecalDef->DecalMaterial)
+				{
+					AssetSet.DecalDef = nullptr;
+				}
+
+				VisualSubsystem->FeaturesEffect(TraceEnd, ImpactRotation, AssetSet);
+				bSpawnFallbackDecal = !AssetSet.DecalDef;
 			}
 
-			else
+			if (bSpawnFallbackDecal && WeaponDecal)
 			{
-				//UE_LOG(LogTemp, Error, TEXT("PlayFirstPersonFireFX Hit but no  ProviderComponent"));
+				VisualSubsystem->SpawnMarkAtLocation(WeaponDecal, TraceEnd, ImpactRotation);
 			}
 
 		}
@@ -363,7 +832,7 @@ void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, AActor* Hit)
 	}
 }
 
-void ARangedWeaponBase::PlayFirstPersonFireFX(FVector TraceEnd, AActor* Hit)
+void ARangedWeaponBase::PlayFirstPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit)
 {
 
 	USkeletalMeshComponent* Mesh = FirstPersonWeaponMesh;
@@ -383,36 +852,36 @@ void ARangedWeaponBase::PlayFirstPersonFireFX(FVector TraceEnd, AActor* Hit)
 
 		if (WeaponMuzzle)
 		{
-			//UE_LOG(LogTemp, Log, TEXT("PlayFirstPersonFireFX_EffectSpawned"));
-			//UTrailEffectDefinition* MuzzleEffectInstance = NewObject<UTrailEffectDefinition>(this, WeaponMuzzle);
-
 			VisualSubsystem->SpawnMuzzleEffect(WeaponMuzzle, Start, MuzzleRotation);
-
 		}
 
 
 		if (WeaponTrail)
 		{
-			//UTrailEffectDefinition* TrailEffectInstance = NewObject<UTrailEffectDefinition>(this, WeaponTrail);
 			VisualSubsystem->SpawnBeamTrail(WeaponTrail, Start, End);
 		}
 
-
 		if (Hit)
 		{
-			//UE_LOG(LogTemp, Error, TEXT("PlayFirstPersonFireFX Hit"));
+			const FRotator ImpactRotation = ImpactNormal.GetSafeNormal().Rotation();
 			IVisualEffectProvider* Provider = Cast<IVisualEffectProvider>(Hit);
+			bool bSpawnFallbackDecal = true;
 
 			if (Provider)
 			{
-				//UE_LOG(LogTemp, Error, TEXT("PlayFirstPersonFireFX Hit and ProviderComponent"));
 				FVisualEventSet AssetSet = Provider->GetVisualEventSet();
-				VisualSubsystem->FeaturesEffect(TraceEnd, MuzzleRotation, AssetSet);
+				if (AssetSet.DecalDef && !AssetSet.DecalDef->DecalMaterial)
+				{
+					AssetSet.DecalDef = nullptr;
+				}
+
+				VisualSubsystem->FeaturesEffect(TraceEnd, ImpactRotation, AssetSet);
+				bSpawnFallbackDecal = !AssetSet.DecalDef;
 			}
 
-			else
+			if (bSpawnFallbackDecal && WeaponDecal)
 			{
-				//UE_LOG(LogTemp, Error, TEXT("PlayFirstPersonFireFX Hit but no  ProviderComponent"));
+				VisualSubsystem->SpawnMarkAtLocation(WeaponDecal, TraceEnd, ImpactRotation);
 			}
 
 		}
@@ -455,6 +924,83 @@ void ARangedWeaponBase::UpdateLocalAmmoUI() const
 	}
 }
 
+ARangedWeaponBase::ARangedWeaponBase() : AWeaponBase()
+{
+	FirstSight = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("FirstSight"));
+	FirstSight->SetupAttachment(FirstPersonWeaponMesh);
+	ThirdSight = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ThirdSight"));
+	ThirdSight->SetupAttachment(ThirdPersonWeaponMesh);
+	ShadowSight = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ShadowSight"));
+	ShadowSight->SetupAttachment(ShadowWeaponMesh);
+	ShadowSight->SetHiddenInGame(true);
+
+	FirstHandMagazineMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("FirstHandMagazine"));
+	FirstHandMagazineMesh->SetupAttachment(FirstPersonWeaponMesh);
+	FirstHandMagazineMesh->SetHiddenInGame(true);
+
+	ThirdHandMagazineMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ThirdHandMagazine"));
+	ThirdHandMagazineMesh->SetupAttachment(ThirdPersonWeaponMesh);
+	ThirdHandMagazineMesh->SetHiddenInGame(true);
+
+	ShadowHandMagazineMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ShadowHandMagazine"));
+	ShadowHandMagazineMesh->SetupAttachment(ShadowWeaponMesh);
+	ShadowHandMagazineMesh->SetHiddenInGame(true);
+}
+
+void ARangedWeaponBase::OnConstruction(const FTransform& Transform)
+{
+	Super::OnConstruction(Transform);
+
+	ApplySightMesh();
+	ApplyMagazineMeshSettings();
+	CacheSightAimMaterials();
+}
+
+void ARangedWeaponBase::CacheSightAimMaterials()
+{
+	SightAimMIDs.Reset();
+
+	if (!FirstSight)
+	{
+		return;
+	}
+
+	//hard coding; 
+	static constexpr int32 SightSlots[] = { 1, 2 };
+
+	for (const int32 SlotIndex : SightSlots)
+	{
+		if (SlotIndex >= FirstSight->GetNumMaterials())
+		{
+			continue;
+		}
+
+		UMaterialInstanceDynamic* MID = FirstSight->CreateAndSetMaterialInstanceDynamic(SlotIndex);
+		if (MID)
+		{
+			SightAimMIDs.Add(MID);
+		}
+	}
+}
+
+void ARangedWeaponBase::SetSightAimMaterialFlag(bool bAiming)
+{
+	if (SightAimMIDs.Num() == 0)
+	{
+		CacheSightAimMaterials();
+	}
+
+	const float FlagValue = bAiming ? 1.0f : 0.0f;
+
+	for (UMaterialInstanceDynamic* MID : SightAimMIDs)
+	{
+		if (MID)
+		{
+			MID->SetScalarParameterValue(SightAimScalarParamName, FlagValue);
+		}
+	}
+}
+
 void ARangedWeaponBase::InitializeFromDataTables()
 {
 	Super::InitializeFromDataTables();
@@ -463,26 +1009,22 @@ void ARangedWeaponBase::InitializeFromDataTables()
 	{
 		MagazineSize = FMath::Max(CoreRow->MagazineSize, 0);
 		CurrentAmmo = MagazineSize;
-		ReloadTime = FMath::Max(CoreRow->ReloadTime, 0.0f);
 		BloomMin = CoreRow->DefaultMinBloom;
 		BloomMax = FMath::Max(CoreRow->DefaultMaxBloom, BloomMin);
 		BloomCurrent = FMath::Clamp(BloomCurrent, BloomMin, BloomMax);
-		RecoilMultiplier = FMath::Max(CoreRow->RecoilMultiplier, 0.0f);
+		RecoilMultiplier = FMath::Max(CoreRow->GameplayRecoilMultiplier, 0.0f);
 		bIsAutomatic = FireMode == EWeaponFireMode::FullAuto;
 		BloomProfileId = CoreRow->BloomProfileId;
 		ProjectileProfileId = CoreRow->ProjectileProfileId;
 		RecoilProfileId = CoreRow->RecoilProfileId;
-
-		if (CoreRow->FeedbackDefinition)
-		{
-			FeedbackDefinition = CoreRow->FeedbackDefinition;
-		}
 	}
 
 	InitializeBloomFromDataTable();
 	InitializeRecoilFromDataTable();
 	InitializeProjectileFromDataTable();
 	ApplyFeedbackDefinition();
+	ApplySightMesh();
+	ApplyMagazineMeshSettings();
 }
 
 void ARangedWeaponBase::InitializeBloomFromDataTable()
@@ -492,10 +1034,47 @@ void ARangedWeaponBase::InitializeBloomFromDataTable()
 
 void ARangedWeaponBase::InitializeRecoilFromDataTable()
 {
-	const FWeaponRecoilRow* RecoilRow = RecoilDataRow.GetRow<FWeaponRecoilRow>(TEXT("InitializeWeaponRecoil"));
+	RefreshRecoilSettingsFromState();
+}
+
+void ARangedWeaponBase::RefreshRecoilSettingsFromState()
+{
+	const EWeaponAimMode DesiredAimMode = bIsAiming ? EWeaponAimMode::ADS : EWeaponAimMode::Hip;
+	const FWeaponRecoilRow* RecoilRow = nullptr;
+
+	if (WeaponRecoilTable && !RecoilProfileId.IsNone())
+	{
+		TArray<FWeaponRecoilRow*> RecoilRows;
+		WeaponRecoilTable->GetAllRows<FWeaponRecoilRow>(TEXT("RefreshWeaponRecoil"), RecoilRows);
+
+		for (const FWeaponRecoilRow* CandidateRow : RecoilRows)
+		{
+			if (!CandidateRow || CandidateRow->RecoilProfileId != RecoilProfileId)
+			{
+				continue;
+			}
+
+			if (CandidateRow->AimMode == DesiredAimMode)
+			{
+				RecoilRow = CandidateRow;
+				break;
+			}
+
+			if (CandidateRow->AimMode == EWeaponAimMode::Any)
+			{
+				RecoilRow = CandidateRow;
+			}
+		}
+	}
+
 	if (!RecoilRow && WeaponRecoilTable && !RecoilProfileId.IsNone())
 	{
-		RecoilRow = WeaponRecoilTable->FindRow<FWeaponRecoilRow>(RecoilProfileId, TEXT("InitializeWeaponRecoil"));
+		RecoilRow = WeaponRecoilTable->FindRow<FWeaponRecoilRow>(RecoilProfileId, TEXT("RefreshWeaponRecoil"));
+	}
+
+	if (!RecoilRow)
+	{
+		RecoilRow = RecoilDataRow.GetRow<FWeaponRecoilRow>(TEXT("RefreshWeaponRecoil"));
 	}
 
 	if (!RecoilRow)
@@ -503,11 +1082,11 @@ void ARangedWeaponBase::InitializeRecoilFromDataTable()
 		return;
 	}
 
-	RecoilPitchAmplitude = RecoilRow->PitchAmplitude;
-	RecoilLocationXAmplitude = RecoilRow->LocationXAmplitude;
-	RecoilLocationYAmplitude = RecoilRow->LocationYAmplitude;
-	RecoilFovAmplitude = RecoilRow->FovAmplitude;
-	RecoilRecoverySpeed = RecoilRow->RecoverySpeed;
+	RecoilPitchAmplitude = RecoilRow->ControlPitchAmplitude;
+	RecoilLocationXAmplitude = RecoilRow->CameraLocationXAmplitude;
+	RecoilLocationYAmplitude = RecoilRow->CameraLocationYAmplitude;
+	RecoilFovAmplitude = RecoilRow->CameraFovKickAmplitude;
+	RecoilRecoverySpeed = RecoilRow->ControlRecoverySpeed;
 }
 
 void ARangedWeaponBase::InitializeProjectileFromDataTable()
@@ -665,6 +1244,11 @@ void ARangedWeaponBase::StartAttack()
 	}
 
 	PerformAttack(); // 첫 발 즉시 발사
+
+	if (!Super::CanAttack() || bIsReloading || CurrentAmmo <= 0)
+	{
+		return;
+	}
 
 	UE_LOG(LogTemp, Log, TEXT("%s [%s] StartAttack Ammo=%d Automatic=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo, bIsAutomatic ? 1 : 0);
 	bIsAttacking = true;

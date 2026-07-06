@@ -39,13 +39,29 @@ enum class EPartnerSkillType : uint8
 	AreaOfEffect
 };
 
+UENUM(BlueprintType)
+enum class EPartnerSkillUseResult : uint8
+{
+	Success,
+	InvalidState,
+	Cooldown,
+	NoTarget,
+	OutOfRange,
+	NoLineOfSight
+};
+
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnDroneMovementStateChanged, EDroneMovementState, NewState);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnPartnerSkillUseResult, EPartnerSkillType, SkillType, EPartnerSkillUseResult, Result);
 
 class AShooterCharacter;
 class UCurveFloat;
+class UPartnerDistanceComponent;
 class UPartnerMovementComponent;
 class UPartnerSupportComponent;
-
+class UPartnerCombatComponent;
+class UPartnerHackComponent;
+class UPartnerAbilityComponent;
+class UPartnerEMPComponent;
 UCLASS()
 class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter
 {
@@ -53,14 +69,31 @@ class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter
 
 	friend class UPartnerMovementComponent;
 	friend class UPartnerSupportComponent;
-
+	friend class UPartnerCombatComponent;
+	friend class UPartnerDistanceComponent;
+	friend class UPartnerAbilityComponent;
 protected:
 	// Components
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UPartnerDistanceComponent> DistanceComponent;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UPartnerMovementComponent> MovementComponent;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UPartnerSupportComponent> SupportComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TestAbilityComponents")
+	TObjectPtr<UPartnerAbilityComponent> TestAbilityComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UPartnerCombatComponent> CombatComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UPartnerHackComponent> HackComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UPartnerEMPComponent> EMPComponent;
 
 	// Move Data
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Move")
@@ -113,56 +146,105 @@ protected:
 	float RotationLagRecoverSpeed = 10.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Control")
+	float CameraPitchOnMove = 5.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Control")
 	float CameraRollOnTurn = 2.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Control")
 	float CameraRollInterpSpeed = 8.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Control")
+	float MeshInertialTiltScale = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Control")
+	float CameraInertialTiltScale = 0.6f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Control")
+	float ViewModelInertialTiltScale = 0.8f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Control")
+	float InertialTiltReboundRatio = 0.5f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Control")
+	float InertialTiltReboundMaxScale = 1.5f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Control")
+	float InertialTiltReboundInterpMultiplier = 2.5f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Control")
+	float InertialTiltRecoverInterpMultiplier = 1.8f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Control")
 	TSoftObjectPtr<UCurveFloat> TurnFeelCurve;
 
-	// Skill Data
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
-	float ScanRange = 300.0f;
+	// Skill Data - Scan
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Scan")
+	float ScanRange = 1000.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Scan")
 	float ScanDuration = 3.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
-	float ScanCooldown = 5.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Scan")
+	float ScanCooldown = 10.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Scan")
+	float ScanExpandSpeed = 5.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
-	float ScanExpandSpeed = 30.0f;
+	
+	// Skill Data - Hack
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Hack")
+	float HackRange = 500.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
-	float HackRange = 300.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Hack")
+	float HackEffectiveRange = 300.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
-	float HackDuration = 2.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Hack")
+	float HackMiniGameTime = 5.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
-	float HackCooldown = 6.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Hack")
+	float HackCooldown = 3.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
-	float AreaOfEffectRange = 100.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Hack")
+	float HackFailPenaltyTime = 3.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
-	float AreaOfEffectDuration = 3.0f;
+	// Skill Data - EMP
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|EMP")
+	float AreaOfEffectRange = 1500.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
-	float AreaOfEffectCooldown = 8.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|EMP")
+	float EMPMarkingTime = 3.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
-	float ShieldRange = 100.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|EMP")
+	float EMPStunDuration = 3.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
-	float ShieldDuration = 4.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|EMP")
+	float AreaOfEffectCooldown = 30.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
-	float ShieldCooldown = 10.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|EMP")
+	int32 EMPMaxTargets = 99;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
-	float ShieldAmount = 200.0f;
+	// Skill Data - Shield
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Shield")
+	float ShieldRange = 200.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Shield")
+	float ShieldDuration = 5.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Shield")
+	float ShieldCooldown = 20.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Shield")
+	float ShieldAmount = 100.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Shield")
+	float ShieldDecayRate = 20.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Shield")
+	float ShieldDecayDelay = 1.0f;
+
+	// Skill Data - Interaction
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Interaction")
+	float InteractionRange = 200.0f;
 
 	// Skill Common
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
@@ -201,7 +283,7 @@ protected:
 	float AssistDeadZoneAngle = 3.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "CameraAssist")
-	float AssistInterpSpeed = 400.0f;
+	float AssistInterpSpeed = 100.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "CameraAssist")
 	float AssistStrength = 100.0f;
@@ -245,6 +327,7 @@ protected:
 	FTimerHandle HitInvincibleTimerHandle;
 	FTimerHandle RebootInvincibleTimerHandle;
 
+	UPROPERTY(ReplicatedUsing = OnRep_IsAccelerate, VisibleAnywhere, BlueprintReadOnly, Category = "Move")
 	uint8 bIsAccelerate : 1 = false;
 	uint8 bPartnerDataInitialized : 1 = false;
 
@@ -254,10 +337,8 @@ protected:
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Survival")
 	uint8 bIsInvincible : 1 = false;
 
-	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Survival")
+	UPROPERTY(ReplicatedUsing = OnRep_CurrentHitCount, VisibleAnywhere, BlueprintReadOnly, Category = "Survival")
 	int32 CurrentHitCount = 0;
-
-	float LookRollInput = 0.0f;
 
 	// DataTable
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Data")
@@ -281,9 +362,6 @@ protected:
 	UPROPERTY()
 	TObjectPtr<AShooterCharacter> CachedShooterCharacter;
 
-	// Timers
-	FTimerHandle BoundaryCheckTimerHandle;
-
 protected:
 	virtual void BeginPlay() override;
 	virtual float TakeDamage(
@@ -297,12 +375,18 @@ protected:
 	virtual void DoMove(float Right, float Forward) override;
 	virtual void OnMoveInputUpdated(const FVector2D& MoveValue);
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	virtual void TryStartAttack() override;
+	virtual void TryStopAttack() override;
+
 
 	void AreaOfEffect();
 	void CameraAssist();
 	void StopCameraAssist();
 	void TryHacking();
 	void Hacking(AActor* TargetActor);
+	void TryEMP();
+	//
+	void TestAbilityScan();
 	void Scan();
 	void Shield();
 	void SyncMove();
@@ -314,25 +398,29 @@ protected:
 	void StopVerticalMove();
 
 	void SetBoundaryOutside(bool bOutside);
+	EPartnerBoundaryState GetBoundaryOutside();
 
-	void UpdateBoundaryByTimer();
-	void HandlePartnerHit();
 	void StartReboot();
 	void FinishReboot();
 	void ClearHitInvincible();
 	void ClearRebootInvincible();
 	bool CanAcceptInput() const;
+	UPartnerHackComponent* GetRuntimeHackComponent() const;
+	UPartnerEMPComponent* GetRuntimeEMPComponent() const;
 
 	void SetMoveMode(EPartnerMoveMode NewMode);
+	void ApplyMoveMode(EPartnerMoveMode NewMode);
+	bool CanApplyMoveMode(EPartnerMoveMode NewMode) const;
+	void ApplyAccelerateState(bool bNewAccelerate);
 
 	UFUNCTION(Server, Reliable)
 	void ServerSetMoveMode(EPartnerMoveMode NewMode);
 
 	UFUNCTION(Server, Reliable)
-	void ServerUseSkill(EPartnerSkillType SkillType);
+	void ServerSetAccelerate(bool bNewAccelerate);
 
 	UFUNCTION(Server, Reliable)
-	void ServerHackTarget(AActor* TargetActor);
+	void ServerUseSkill(EPartnerSkillType SkillType);
 
 	void EnsurePartnerDataInitialized();
 	void InitializeFromDataTables();
@@ -341,6 +429,9 @@ protected:
 public:
 	UPROPERTY(BlueprintAssignable, Category = "Event")
 	FOnDroneMovementStateChanged OnDroneMovementStateChanged;
+
+	UPROPERTY(BlueprintAssignable, Category = "Event")
+	FOnPartnerSkillUseResult OnPartnerSkillUseResult;
 
 public:
 	APartnerCharacter();
@@ -351,5 +442,27 @@ public:
 	UFUNCTION()
 	void OnRep_MoveMode();
 
+	UFUNCTION()
+	void OnRep_IsAccelerate();
+
+	UFUNCTION()
+	void OnRep_CurrentHitCount();
+
 	void SetShooterCharacter(AShooterCharacter* NewShooter);
+	
+	UFUNCTION(Client, Reliable)
+	void ClientNotifySkillUseResult(EPartnerSkillType SkillType, EPartnerSkillUseResult Result);
+
+	float GetCurrentInertialCameraPitchDegrees() const;
+	float GetCurrentInertialCameraRollDegrees() const;
+	float GetMaxInertialCameraPitchDegrees() const { return FMath::Max(CameraPitchOnMove, 0.0f); }
+	float GetMaxInertialCameraRollDegrees() const { return FMath::Max(CameraRollOnTurn, 0.0f); }
+
+	void SetMovementState(EDroneMovementState State);
+	void NotifyBoundaryUI(bool bDisabled);
+	void ApplyDamagedEvent(float InRatio) const;
+	void NullifyDamagedEvenet() const;
+
+	void HandlePartnerHit();
+
 };

@@ -17,6 +17,7 @@ class UMaterialInstanceDynamic;
 class UBorder;
 class UImage;
 
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnShooterAbilitySelected, FGameplayTag, AbilityTag);
 
 //ICON
 // Image
@@ -35,6 +36,7 @@ public:
 
 public:
 	bool TryGetHoveredAbility(FGameplayTag& OutAbilityTag);
+	bool ApplyCooldownIfMatches(const FGameplayTag& AbilityTag, float CoolTime);
 	void TryHovering();
 	float CalculateCoordinate();
 	UAbilityIconUI* GetAbilityIcon(const FGameplayTag& AbilityTag) const;
@@ -66,6 +68,9 @@ public:
 
 	UPROPERTY(BlueprintReadOnly, Category = "Shooter Ability Sections")
 	TMap<FGameplayTag, TObjectPtr<UAbilityIconUI>> AbilitySections;
+
+	UPROPERTY(BlueprintAssignable, Category = "Ability")
+	FOnShooterAbilitySelected OnAbilitySelected;
 	
 private:
 	void RegisterAbilityIcon(UAbilityIconUI* Icon, const FGameplayTag& AbilityTag, bool bUnlock = false);

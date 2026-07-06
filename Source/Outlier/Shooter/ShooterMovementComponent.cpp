@@ -31,14 +31,13 @@ void UShooterMovementComponent::HandleSprintPressed()
 		return;
 	}
 
-	if (!ShooterCharacter->HasAuthority())
+	if (ShooterCharacter->WantsToAim() || ShooterCharacter->IsAiming())
 	{
-		ShooterCharacter->ServerSetSprintState(true);
+		ShooterCharacter->StopAimInternal();
+		ShooterCharacter->RefreshCombatState();
 	}
 
-	if (ShooterCharacter->bIsDead || ShooterCharacter->GetCharacterMovement()->IsCrouching()
-		|| ShooterCharacter->WantsToAim()
-		|| ShooterCharacter->IsReloading())
+	if (!CanSprint())
 	{
 		UE_LOG(
 			LogTemp,
@@ -56,6 +55,12 @@ void UShooterMovementComponent::HandleSprintPressed()
 		return;
 	}
 
+	if (!ShooterCharacter->HasAuthority())
+	{
+		ShooterCharacter->ServerSetSprintState(true);
+	}
+
+	ShooterCharacter->StopLean();
 	bWantsToSprint = true;
 	bIsSprinting = true;
 	ShooterCharacter->GetCharacterMovement()->MaxWalkSpeed = ShooterCharacter->SprintSpeed;
@@ -112,6 +117,11 @@ void UShooterMovementComponent::RequestCrouchOrSlide()
 	}
 
 	if (ShooterCharacter->bIsDead)
+	{
+		return;
+	}
+
+	if (ShooterCharacter->IsActionLocked())
 	{
 		return;
 	}
@@ -182,6 +192,8 @@ void UShooterMovementComponent::TrySlide()
 	// 슬라이드는 sprint와 crouch 상태를 잠시 덮어쓰는 복합 액션
 	bIsSliding = true;
 	bIsSlidingCanceled = false;
+	ShooterCharacter->StopLean();
+	ShooterCharacter->BeginActionLock(EShooterActionLock::Slide);
 	SlideDirection = Velocity2D;
 	SlideStartSpeed = ShooterCharacter->SprintSpeed * ShooterCharacter->SlideSpeedMultiplier;
 	SlideElapsedTime = 0.0f;
@@ -216,6 +228,7 @@ void UShooterMovementComponent::StopSlide(ESlideEndReason EndReason)
 
 	bIsSliding = false;
 	bIsSlidingCanceled = (EndReason != ESlideEndReason::Finished);
+	ShooterCharacter->EndActionLock(EShooterActionLock::Slide);
 	ShooterCharacter->GetWorldTimerManager().ClearTimer(SlideTimerHandle);
 	FinishSlideMovement();
 	ShooterCharacter->StopSplitMontages(
@@ -282,6 +295,11 @@ void UShooterMovementComponent::DoJumpStart()
 	{
 		StopSlide(ESlideEndReason::JumpCancel);
 		return;
+	}
+
+	if (bIsSprinting)
+	{
+		StopSprintInternal();
 	}
 
 	ShooterCharacter->Jump();
@@ -383,7 +401,7 @@ void UShooterMovementComponent::RefreshMovementState()
 	{
 		NewState = EMovementState::Slide;
 	}
-	else if (!ShooterCharacter->GetCharacterMovement()->IsMovingOnGround())
+	else if (ShooterCharacter->GetCharacterMovement()->IsFalling())
 	{
 		NewState = EMovementState::Jump;
 	}
@@ -463,5 +481,15 @@ bool UShooterMovementComponent::CanStartSlide() const
 		&& ShooterCharacter->GetCharacterMovement()->IsMovingOnGround()
 		&& ShooterCharacter->GetVelocity().Size2D() >= ShooterCharacter->MinSlideSpeed
 		&& !ShooterCharacter->IsReloading()
-		&& !ShooterCharacter->bIsEquipping;
+		&& !ShooterCharacter->IsActionLocked();
+}
+
+bool UShooterMovementComponent::CanSprint() const
+{
+	const AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+
+	return !ShooterCharacter->bIsDead && !ShooterCharacter->GetCharacterMovement()->IsCrouching()
+		&& !ShooterCharacter->WantsToAim()
+		&& !ShooterCharacter->IsReloading()
+		&& !ShooterCharacter->IsActionLocked();
 }

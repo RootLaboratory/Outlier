@@ -12,6 +12,9 @@ class UTrailEffectDefinition;
 class ULocalPlayerUISubSystem;
 class USoundDefinition;
 class UWeaponFeedbackDefinition;
+class UStaticMesh;
+class UStaticMeshComponent;
+class AShooterCharacter;
 /**
  * 
  */
@@ -19,6 +22,11 @@ UCLASS(Abstract)
 class OUTLIER_API ARangedWeaponBase : public AWeaponBase
 {
 	GENERATED_BODY()
+
+public:
+	ARangedWeaponBase();
+
+	virtual void OnConstruction(const FTransform& Transform) override;
 
 protected:
 	// 1탄창
@@ -28,8 +36,35 @@ protected:
 	UPROPERTY(ReplicatedUsing = OnRep_CurAmmo, EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Ammo")
 	int32 CurrentAmmo = 30;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Ammo")
-	float ReloadTime = 1.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapon|Sight")
+	UStaticMesh* SightMesh = nullptr;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapon|Sight")
+	UStaticMeshComponent* FirstSight = nullptr;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapon|Sight")
+	UStaticMeshComponent* ThirdSight = nullptr;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapon|Sight")
+	UStaticMeshComponent* ShadowSight = nullptr;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Sight")
+	FName SightSocketName = FName("Sight");
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapon|Magazine")
+	UStaticMesh* MagazineMesh = nullptr;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapon|Magazine")
+	UStaticMeshComponent* FirstHandMagazineMesh = nullptr;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapon|Magazine")
+	UStaticMeshComponent* ThirdHandMagazineMesh = nullptr;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapon|Magazine")
+	UStaticMeshComponent* ShadowHandMagazineMesh = nullptr;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Magazine")
+	FName LeftHandMagazineSocketName = FName("Magazine");
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Cooldown")
 	float ReuseCooldown = 0.0f;
@@ -135,9 +170,20 @@ protected:
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Projectile")
 	float ProjectileStunTime = 0.0f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ADS|Sight")
+	FName SightAimScalarParamName = TEXT("Flag");
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> SightAimMIDs;
+
 	FTimerHandle AutoFireTimerHandle;
 	FTimerHandle AttackCooldownTimerHandle;
 	FTimerHandle ReuseCooldownTimerHandle;
+
+	FVector LastShotBaseDirection = FVector::ForwardVector;
+	FVector LastShotDirection = FVector::ForwardVector;
+	float LastShotSpreadDegrees = 0.0f;
+	uint8 bHasLastShotDirection : 1 = false;
 
 protected:
 	virtual void InitializeFromDataTables() override;
@@ -147,17 +193,26 @@ protected:
 	virtual void InitializeProjectileFromDataTable();
 	virtual void ApplyFeedbackDefinition();
 
+	void ApplySightMesh();
+	void ApplyMagazineMeshSettings();
+	void HideHandMagazine();
 	void RefreshBloomSettingsFromState();
+	void RefreshRecoilSettingsFromState();
+	FVector2D GetNormalizedLastShotDirection() const;
+	void ApplyRecoilWithShotDirection(const FVector2D& NormalizedShotDirection);
 
 	void HandleAutoFire();
 	void StartAttackCooldown();
 	void ResetAttackCooldown();
 	void StartReuseCooldown();
 	void FinishReuseCooldown();
+	void CacheSightAimMaterials();
 
 public:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const;
 	virtual void OnEquipped(ACharacter* NewOwner) override;
+	virtual void ShowEquippedPresentation() override;
+	virtual void RefreshShadowWeaponPresentation() override;
 
 	virtual bool CanAttack() const override;
 	virtual void StartAttack() override;
@@ -178,14 +233,18 @@ public:
 
 	virtual void SetAiming(bool bAiming);
 
+	virtual void AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacter* NewOwner) override;
+
+	void AttachMagazineToLeftHand(AShooterCharacter* Shooter);
+	void AttachMagazineToWeapon();
+	UStaticMeshComponent* GetFirstSightMesh() const;
+	void SetSightAimMaterialFlag(bool bAiming);
+
 	UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
 	bool IsReloading() const { return bIsReloading; }
 
 	UFUNCTION(BlueprintPure, Category = "Weapon|Cooldown")
 	bool IsOnReuseCooldown() const { return bOnReuseCooldown; }
-
-	UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
-	float GetReloadTime() const { return ReloadTime; }
 
 	UFUNCTION(BlueprintPure, Category = "Weapon|Cooldown")
 	float GetReuseCooldown() const { return ReuseCooldown; }
@@ -193,19 +252,21 @@ public:
 	UFUNCTION()
 	void OnRep_CurAmmo();
 
+	int32 ResolveADSBlurStencil();
+
 protected:
 	void UpdateLocalAmmoUI() const;
 	virtual void OnRep_EquippedState() override;
 
 	UFUNCTION(Client, Unreliable)
-	void ClientNotifyShotFired();
+	void ClientNotifyShotFired(FVector2D NormalizedShotDirection);
 
 	UFUNCTION(NetMulticast, Unreliable)
-	void MulticastPlayFireFX(FVector_NetQuantize TraceEnd,  AActor* Hit);
+	void MulticastPlayFireFX(FVector_NetQuantize TraceEnd, FVector_NetQuantizeNormal ImpactNormal, AActor* Hit, FVector2D NormalizedShotDirection);
 
-	void PlayThirdPersonFireFX(FVector TraceEnd,  AActor* Hit);
+	void PlayThirdPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit);
 
-	void PlayFirstPersonFireFX(FVector TraceEnd,  AActor* Hit);
+	void PlayFirstPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit);
 
 	ULocalPlayerUISubSystem* GetLocalUISubsystem() const; //Helper
 };
