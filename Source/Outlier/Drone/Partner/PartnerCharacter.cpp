@@ -200,8 +200,6 @@ void APartnerCharacter::OnRep_CurrentHitCount()
 void APartnerCharacter::AreaOfEffect()
 {
 	TryEMP();
-
-	//ServerUseSkill(EPartnerSkillType::AreaOfEffect);
 }
 
 void APartnerCharacter::CameraAssist()
@@ -227,41 +225,22 @@ void APartnerCharacter::StopCameraAssist()
 
 void APartnerCharacter::TryHacking()
 {
-	UPartnerHackComponent* RuntimeHackComponent = GetRuntimeHackComponent();
-
-	/*UE_LOG(LogTemp, Warning, TEXT("[PartnerHackDebug] TryHacking input Pawn=%s Local=%d Authority=%d CanAcceptInput=%d HackComponent=%s RuntimeHackComponent=%s MemberOwner=%s RuntimeOwner=%s"),
-		*GetNameSafe(this),
-		IsLocallyControlled() ? 1 : 0,
-		HasAuthority() ? 1 : 0,
-		CanAcceptInput() ? 1 : 0,
-		*GetNameSafe(HackComponent),
-		*GetNameSafe(RuntimeHackComponent),
-		*GetNameSafe(HackComponent ? HackComponent->GetOwner() : nullptr),
-		*GetNameSafe(RuntimeHackComponent ? RuntimeHackComponent->GetOwner() : nullptr));*/
-
-	if (!CanAcceptInput())
+	if (!CanAcceptInput() || !TestAbilityComponent)
 	{
 		return;
 	}
 
-	if (RuntimeHackComponent)
-	{
-		RuntimeHackComponent->TryHack();
-	}
-
-	//ServerUseSkill(EPartnerSkillType::Hack);
+	TestAbilityComponent->TryActivateAbilityByTag(OutlierGameplayTags::Ability::Partner::Hacking());
 }
 
 void APartnerCharacter::TryEMP()
 {
-	UPartnerEMPComponent* RuntimeEMPComponent = GetRuntimeEMPComponent();
-
-	if (!CanAcceptInput() || !RuntimeEMPComponent)
+	if (!CanAcceptInput() || !TestAbilityComponent)
 	{
 		return;
 	}
 
-	RuntimeEMPComponent->TryEMP();
+	TestAbilityComponent->TryActivateAbilityByTag(OutlierGameplayTags::Ability::Partner::EMP());
 }
 
 void APartnerCharacter::Hacking(AActor* TargetActor)
@@ -794,12 +773,6 @@ void  APartnerCharacter::InitializeFromDataTables()
 		AreaOfEffectCooldown= SkillDataRow->AreaOfEffectCooldown;
 		EMPMaxTargets		= SkillDataRow->EMPMaxTargets;
 
-		if (EMPComponent)
-		{
-			EMPComponent->EMPRange       = AreaOfEffectRange;
-			EMPComponent->EMPMarkingTime = EMPMarkingTime;
-		}
-
 		ShieldRange			= SkillDataRow->ShieldRange;
 		ShieldDuration		= SkillDataRow->ShieldDuration;
 		ShieldCooldown		= SkillDataRow->ShieldCooldown;
@@ -836,6 +809,11 @@ void  APartnerCharacter::InitializeFromDataTables()
 		RebootTime				  = SurvivalDataRow->RebootTime;
 		InvincibleAfterRebootTime = SurvivalDataRow->InvincibleAfterRebootTime;
 		HitInvincibleTime		  = SurvivalDataRow->HitInvincibleTime;
+	}
+
+	if (TestAbilityComponent)
+	{
+		TestAbilityComponent->RefreshCachedPartnerAbilityData();
 	}
 }
 

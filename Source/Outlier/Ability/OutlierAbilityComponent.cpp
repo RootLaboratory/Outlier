@@ -66,6 +66,15 @@ void UOutlierAbilityComponent::RebuildAbilityCache()
 
 EOutlierAbilityResult UOutlierAbilityComponent::TryActivateAbilityByTag(FGameplayTag AbilityTag)
 {
+	if (AActor* Owner = GetOwner())
+	{
+		if (!Owner->HasAuthority())
+		{
+			ServerTryActivateAbilityByTag(AbilityTag);
+			return EOutlierAbilityResult::RequestSent;
+		}
+	}
+
 	const FOutlierAbilityRow* AbilityRow = FindAbilityRowByAbilityTag(AbilityTag);
 	if (!AbilityRow)
 	{
@@ -74,7 +83,7 @@ EOutlierAbilityResult UOutlierAbilityComponent::TryActivateAbilityByTag(FGamepla
 	}
 
 	const EOutlierAbilityResult FailureReason = GetActivationFailureReason(AbilityTag);
-	if (FailureReason != EOutlierAbilityResult::Success)
+	if (FailureReason != EOutlierAbilityResult::RequestSent)
 	{
 		UE_LOG(LogTemp, Error, TEXT("AbilityRow Null"));
 
@@ -82,18 +91,18 @@ EOutlierAbilityResult UOutlierAbilityComponent::TryActivateAbilityByTag(FGamepla
 	}
 
 	const EOutlierAbilityResult ExecuteResult = ExecuteAbilityInternal(*AbilityRow);
-	if (ExecuteResult != EOutlierAbilityResult::Success)
+	if (ExecuteResult != EOutlierAbilityResult::RequestSent)
 	{
 		return ExecuteResult;
 	}
 
 	CommitCooldown(*AbilityRow);
-	return EOutlierAbilityResult::Success;
+	return EOutlierAbilityResult::RequestSent;
 }
 
 bool UOutlierAbilityComponent::CanActivateAbilityByTag(FGameplayTag AbilityTag) const
 {
-	return GetActivationFailureReason(AbilityTag) == EOutlierAbilityResult::Success;
+	return GetActivationFailureReason(AbilityTag) == EOutlierAbilityResult::RequestSent;
 }
 
 EOutlierAbilityResult UOutlierAbilityComponent::GetActivationFailureReason(FGameplayTag AbilityTag) const
@@ -109,12 +118,19 @@ EOutlierAbilityResult UOutlierAbilityComponent::GetActivationFailureReason(FGame
 		return EOutlierAbilityResult::Locked;
 	}
 
-	if (IsOnCooldown(AbilityRow->CooldownTag))
+	const EOutlierAbilityResult AdditionalFailureReason = GetAdditionalActivationFailureReason(*AbilityRow);
+	if (AdditionalFailureReason != EOutlierAbilityResult::RequestSent)
+	{
+		return AdditionalFailureReason;
+	}
+
+	// Hack과 EMP는 입력키와 토글이 동일 해, Active 판정이 필요. 
+	if (!ShouldBypassCooldownForActivation(*AbilityRow) && IsOnCooldown(AbilityRow->CooldownTag))
 	{
 		return EOutlierAbilityResult::Cooldown;
 	}
 
-	return EOutlierAbilityResult::Success;
+	return EOutlierAbilityResult::RequestSent;
 }
 
 bool UOutlierAbilityComponent::IsOnCooldown(FGameplayTag CooldownTag) const
@@ -255,6 +271,45 @@ void UOutlierAbilityComponent::InitializeAbilityHandlers()
 {
 }
 
+EOutlierAbilityResult UOutlierAbilityComponent::GetAdditionalActivationFailureReason(const FOutlierAbilityRow&) const
+{
+	//일단 보류
+	return EOutlierAbilityResult::RequestSent;
+}
+
+bool UOutlierAbilityComponent::ShouldBypassCooldownForActivation(const FOutlierAbilityRow&) const
+{
+	return false;
+}
+
+void UOutlierAbilityComponent::ServerTryActivateAbilityByTag_Implementation(FGameplayTag AbilityTag)
+{
+	TryActivateAbilityByTag(AbilityTag);
+}
+
+void UOutlierAbilityComponent::CacheAbilityRow(const FOutlierAbilityRow& AbilityRow)
+{
+	if (!AbilityRow.AbilityTag.IsValid())
+	{
+		return;
+	}
+
+	if (const FOutlierAbilityRow* CachedRow = AbilityRowsByAbilityTag.Find(AbilityRow.AbilityTag))
+	{
+		if (CachedRow->InputTag.IsValid())
+		{
+			AbilityTagsByInputTag.Remove(CachedRow->InputTag);
+		}
+	}
+
+	AbilityRowsByAbilityTag.Add(AbilityRow.AbilityTag, AbilityRow);
+
+	if (AbilityRow.InputTag.IsValid())
+	{
+		AbilityTagsByInputTag.Add(AbilityRow.InputTag, AbilityRow.AbilityTag);
+	}
+}
+
 EOutlierAbilityResult UOutlierAbilityComponent::ExecuteAbilityInternal(const FOutlierAbilityRow& AbilityRow)
 {
 	FOutlierAbilityExecuteDelegate* Handler = AbilityHandlers.Find(AbilityRow.AbilityTag);
@@ -291,6 +346,12 @@ void UOutlierAbilityComponent::CommitCooldown(const FOutlierAbilityRow& AbilityR
 		AbilityRow.CooldownSeconds,
 		false
 	);
+	//override;l
+	HandleAbilityCooldownCommitted(AbilityRow, CooldownState.EndTime);
+}
+
+void UOutlierAbilityComponent::HandleAbilityCooldownCommitted(const FOutlierAbilityRow&, float)
+{
 }
 
 void UOutlierAbilityComponent::ClearCooldownTag(FGameplayTag CooldownTag)

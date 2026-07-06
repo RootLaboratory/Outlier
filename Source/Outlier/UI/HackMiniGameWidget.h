@@ -23,6 +23,9 @@ public:
 	void InitializeHackMiniGame(AActor* InTargetActor, UHackableComponent* InHackableComponent, UPartnerHackComponent* InHackComponent);
 
 	UFUNCTION(BlueprintCallable, Category = "Hack|MiniGame")
+	void SetMiniGameTimeLimit(float InTimeLimit);
+
+	UFUNCTION(BlueprintCallable, Category = "Hack|MiniGame")
 	bool StartHacking();
 
 	UFUNCTION(BlueprintCallable, Category = "Hack|MiniGame")
@@ -62,4 +65,6 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UHackingMiniGameBase> ActiveMiniGameWidget;
+
+	float MiniGameTimeLimit = 0.0f;
 };

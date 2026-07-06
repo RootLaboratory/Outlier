@@ -211,6 +211,7 @@ void UPartnerSupportComponent::TryScan_Server()
 		true
 	);
 
+	//Multicast 수정
 	MulticastStartScanVisual(
 		ScanOrigin,
 		CurrentScanRadius,

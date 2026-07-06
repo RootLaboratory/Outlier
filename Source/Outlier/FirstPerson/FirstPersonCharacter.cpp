@@ -55,6 +55,8 @@ AFirstPersonCharacter::AFirstPersonCharacter()
 	FirstPersonMesh->SetRelativeRotation(FRotator::ZeroRotator);
 	FirstPersonMesh->SetCollisionProfileName(FName("NoCollision"));
 
+
+
 	// configure the character comps
 	GetMesh()->SetOwnerNoSee(true);
 	GetMesh()->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::WorldSpaceRepresentation;
@@ -69,7 +71,6 @@ AFirstPersonCharacter::AFirstPersonCharacter()
 	//Capture Component
 	CaptureComponent = CreateDefaultSubobject< USceneCaptureComponent2D>(TEXT("PartnerCameraCapture"));
 	CaptureComponent->SetupAttachment(FirstPersonCamera);
-	CaptureComponent->HideActorComponents(GetOwner(), true);
 }
 
 // Called to bind functionality to input

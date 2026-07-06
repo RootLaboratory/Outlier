@@ -13,6 +13,7 @@
 #include "FirstPerson/FirstPersonPlayerController.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Net/UnrealNetwork.h"
+#include "TimerManager.h"
 
 UPartnerEMPComponent::UPartnerEMPComponent()
 {
@@ -23,6 +24,9 @@ UPartnerEMPComponent::UPartnerEMPComponent()
 void UPartnerEMPComponent::BeginPlay()
 {
 	Super::BeginPlay();
+
+	CachedAbilityData.EMPRange = EMPRange;
+	CachedAbilityData.MarkingTime = EMPMarkingTime;
 
 	BlockedEMPTags.AddTag(OutlierGameplayTags::State::Dead());
 	BlockedEMPTags.AddTag(OutlierGameplayTags::State::Immune());
@@ -87,6 +91,14 @@ void UPartnerEMPComponent::TryEMP_Implementation()
 		UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] TryEMP started Partner=%s Range=%.1f"),
 			*GetNameSafe(PartnerCharacter), EMPRange);
 	}
+}
+
+void UPartnerEMPComponent::CacheAbilityData(const FPartnerEMPAbilityData& InAbilityData)
+{
+	CachedAbilityData = InAbilityData;
+
+	EMPRange = CachedAbilityData.EMPRange;
+	EMPMarkingTime = CachedAbilityData.MarkingTime;
 }
 
 void UPartnerEMPComponent::ClientStartEMPSearch_Implementation()
@@ -275,6 +287,19 @@ void UPartnerEMPComponent::TryMarkEMPTarget_Implementation(AActor* TargetActor)
 		return;
 	}
 
+	if (!MarkedActors.Contains(TargetActor)
+		&& CachedAbilityData.MaxTargets > 0
+		&& MarkedActors.Num() >= CachedAbilityData.MaxTargets)
+	{
+		if (bDebugEMP)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] TryMarkEMPTarget ignored: max targets reached MaxTargets=%d"),
+				CachedAbilityData.MaxTargets);
+		}
+
+		return;
+	}
+
 	MarkedActors.AddUnique(TargetActor);
 
 	if (bDebugEMP)
@@ -342,8 +367,14 @@ void UPartnerEMPComponent::CompleteEMPOnServer(const TArray<AActor*>& InMarkedAc
 		UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] ServerCompleteEMP MarkedCount=%d"), InMarkedActors.Num());
 	}
 
+	int32 AppliedTargetCount = 0;
 	for (AActor* MarkedActor : InMarkedActors)
 	{
+		if (CachedAbilityData.MaxTargets > 0 && AppliedTargetCount >= CachedAbilityData.MaxTargets)
+		{
+			break;
+		}
+
 		if (!IsValid(MarkedActor))
 		{
 			continue;
@@ -362,6 +393,29 @@ void UPartnerEMPComponent::CompleteEMPOnServer(const TArray<AActor*>& InMarkedAc
 		}
 
 		EMPableComponent->AddEMPTag(OutlierGameplayTags::State::Stunned());
+		++AppliedTargetCount;
+
+		if (CachedAbilityData.StunDuration > 0.0f)
+		{
+			if (UWorld* World = GetWorld())
+			{
+				TWeakObjectPtr<UEMPableComponent> WeakEMPableComponent = EMPableComponent;
+				FTimerHandle ClearStunTimerHandle;
+				World->GetTimerManager().SetTimer(
+					ClearStunTimerHandle,
+					FTimerDelegate::CreateWeakLambda(this, [WeakEMPableComponent]()
+					{
+						if (UEMPableComponent* EMPableComponent = WeakEMPableComponent.Get())
+						{
+							EMPableComponent->RemoveEMPTag(OutlierGameplayTags::State::Stunned());
+						}
+					}),
+					CachedAbilityData.StunDuration,
+					false
+				);
+			}
+		}
+
 		MulticastTriggerEMPEffect(MarkedActor);
 	}
 

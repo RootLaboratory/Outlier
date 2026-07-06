@@ -4,9 +4,11 @@
 
 #include "CoreMinimal.h"
 #include "Ability/OutlierAbilityComponent.h"
+#include "Drone/Partner/PartnerEMPComponent.h"
+#include "Drone/Partner/PartnerHackComponent.h"
 #include "PartnerAbilityComponent.generated.h"
 
-class UPartnerHackComponent;
+class UPartnerEMPComponent;
 class UPartnerMovementComponent;
 class UPartnerSupportComponent;
 
@@ -20,8 +22,13 @@ public:
 
 	virtual void BeginPlay() override;
 
+	void RefreshCachedPartnerAbilityData();
+
 protected:
 	virtual void InitializeAbilityHandlers() override;
+	virtual EOutlierAbilityResult GetAdditionalActivationFailureReason(const FOutlierAbilityRow& AbilityRow) const override;
+	virtual bool ShouldBypassCooldownForActivation(const FOutlierAbilityRow& AbilityRow) const override;
+	virtual void HandleAbilityCooldownCommitted(const FOutlierAbilityRow& AbilityRow, float CooldownEndTime) override;
 
 	EOutlierAbilityResult ExecuteEMP(const FOutlierAbilityRow& AbilityRow);
 	EOutlierAbilityResult ExecuteShield(const FOutlierAbilityRow& AbilityRow);
@@ -29,12 +36,31 @@ protected:
 	EOutlierAbilityResult ExecuteScan(const FOutlierAbilityRow& AbilityRow);
 
 	void RefreshPartnerComponents();
+	void CachePartnerAbilityData(
+		const FPartnerHackAbilityData& HackAbilityData,
+		float HackCooldownSeconds,
+		const FPartnerEMPAbilityData& EMPAbilityData,
+		float EMPCooldownSeconds);
+	void NotifyAbilityCooldownUI(FGameplayTag AbilityTag, float CooldownSeconds, float CooldownEndTime) const;
+
+	UFUNCTION(Client, Reliable)
+	void ClientSyncPartnerAbilityData(
+		const FPartnerHackAbilityData& HackAbilityData,
+		float HackCooldownSeconds,
+		const FPartnerEMPAbilityData& EMPAbilityData,
+		float EMPCooldownSeconds);
+
+	UFUNCTION(Client, Reliable)
+	void ClientNotifyAbilityCooldown(FGameplayTag AbilityTag, float CooldownSeconds, float CooldownEndTime);
 
 	UPROPERTY(Transient)
 	TObjectPtr<UPartnerSupportComponent> SupportComponent;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UPartnerHackComponent> HackComponent;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UPartnerEMPComponent> EMPComponent;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UPartnerMovementComponent> MovementComponent;

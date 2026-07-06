@@ -13,6 +13,27 @@ class UHackCandidateLayerWidget;
 class UHackCandidateMarkerWidget;
 class UHackMiniGameWidget;
 
+USTRUCT(BlueprintType)
+struct OUTLIER_API FPartnerHackAbilityData
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hack")
+	float CandidateRange = 1200.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hack")
+	float EffectiveRange = 300.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hack")
+	float MiniGameTime = 5.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hack")
+	float FailPenaltyTime = 3.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hack")
+	bool bRequireLineOfSight = true;
+};
+
 UCLASS()
 class OUTLIER_API UPartnerHackComponent : public UPartnerCharacterComponentBase
 {
@@ -56,6 +77,9 @@ public:
 	UFUNCTION(Server, Reliable)
 	void TryHack();
 
+	UFUNCTION(BlueprintCallable, Category = "Hack")
+	void CacheAbilityData(const FPartnerHackAbilityData& InAbilityData);
+
 	UFUNCTION(Client, Reliable)
 	void ClientStartCandidateSearch();
 	UFUNCTION(Client, Reliable)
@@ -91,6 +115,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Hack")
 	bool IsHackCandidateSearchActive() const { return bHackCandidateSearchActive; }
 
+	UFUNCTION(BlueprintCallable, Category = "Hack")
+	bool IsHackInteractionActive() const { return bHackCandidateSearchActive || ActiveHackableComponent || HackMiniGameWidget; }
+
 	void TrySelectHackTarget(AActor* TargetActor);
 
 	UFUNCTION(BlueprintCallable, Category = "Hack")
@@ -111,6 +138,9 @@ protected:
 
 
 private:
+	UPROPERTY(VisibleInstanceOnly, Category = "Hack")
+	FPartnerHackAbilityData CachedAbilityData;
+
 	TArray<AActor*> HackCandidateActors;
 
 	uint8 bHackCandidateSearchActive : 1 = false;

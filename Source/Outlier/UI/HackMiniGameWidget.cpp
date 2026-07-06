@@ -17,6 +17,11 @@ void UHackMiniGameWidget::InitializeHackMiniGame(AActor* InTargetActor, UHackabl
 	HackComponent = InHackComponent;
 }
 
+void UHackMiniGameWidget::SetMiniGameTimeLimit(float InTimeLimit)
+{
+	MiniGameTimeLimit = FMath::Max(0.0f, InTimeLimit);
+}
+
 bool UHackMiniGameWidget::StartHacking()
 {
 	ClearActiveMiniGame();
@@ -41,6 +46,7 @@ bool UHackMiniGameWidget::StartHacking()
 	}
 
 	ActiveMiniGameWidget->InitializeMiniGame(TargetActor, HackableComponent);
+	ActiveMiniGameWidget->SetTimeLimit(MiniGameTimeLimit);
 	ActiveMiniGameWidget->OnMiniGameFinished.AddDynamic(this, &UHackMiniGameWidget::HandleActiveMiniGameFinished);
 	ActiveMiniGameWidget->StartMiniGame();
 

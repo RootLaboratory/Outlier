@@ -11,7 +11,7 @@
 UENUM(BlueprintType)
 enum class EOutlierAbilityResult : uint8
 {
-	Success,
+	RequestSent,
 	InvalidAbility,
 	Locked,
 	Cooldown,
@@ -20,6 +20,7 @@ enum class EOutlierAbilityResult : uint8
 	ExecutionFailed
 };
 
+//공용.데이터
 USTRUCT(BlueprintType)
 struct OUTLIER_API FOutlierAbilityRow : public FTableRowBase
 {
@@ -130,9 +131,16 @@ protected:
 	FGameplayTagContainer RuntimeUnlockedAbilities;
 
 	virtual void InitializeAbilityHandlers();
+	virtual EOutlierAbilityResult GetAdditionalActivationFailureReason(const FOutlierAbilityRow& AbilityRow) const;
+	virtual bool ShouldBypassCooldownForActivation(const FOutlierAbilityRow& AbilityRow) const;
 	virtual EOutlierAbilityResult ExecuteAbilityInternal(const FOutlierAbilityRow& AbilityRow);
 	virtual void CommitCooldown(const FOutlierAbilityRow& AbilityRow);
+	virtual void HandleAbilityCooldownCommitted(const FOutlierAbilityRow& AbilityRow, float CooldownEndTime);
 
+	UFUNCTION(Server, Reliable)
+	void ServerTryActivateAbilityByTag(FGameplayTag AbilityTag);
+
+	void CacheAbilityRow(const FOutlierAbilityRow& AbilityRow);
 	void ClearCooldownTag(FGameplayTag CooldownTag);
 
 private:

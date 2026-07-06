@@ -24,6 +24,10 @@ void UPartnerHackComponent::BeginPlay()
 {
 	Super::BeginPlay();
 
+	CachedAbilityData.CandidateRange = CandidateRange;
+	CachedAbilityData.EffectiveRange = CandidateRange;
+	CachedAbilityData.bRequireLineOfSight = bRequireLineOfSight;
+
 	BlockedCandidateTags.AddTag(OutlierGameplayTags::State::Dead());
 	BlockedCandidateTags.AddTag(OutlierGameplayTags::State::HackedOnce());
 	BlockedCandidateTags.AddTag(OutlierGameplayTags::State::Locked());
@@ -100,6 +104,14 @@ void UPartnerHackComponent::TryHack_Implementation()
 	}
 
 	return;
+}
+
+void UPartnerHackComponent::CacheAbilityData(const FPartnerHackAbilityData& InAbilityData)
+{
+	CachedAbilityData = InAbilityData;
+
+	CandidateRange = CachedAbilityData.CandidateRange;
+	bRequireLineOfSight = CachedAbilityData.bRequireLineOfSight;
 }
 
 void UPartnerHackComponent::ClientStartCandidateSearch_Implementation()
@@ -305,6 +317,20 @@ void UPartnerHackComponent::ServerTryStartHack_Implementation(AActor* TargetActo
 		return;
 	}
 
+	const float EffectiveRange = CachedAbilityData.EffectiveRange > 0.0f
+		? CachedAbilityData.EffectiveRange
+		: CandidateRange;
+	if (FVector::DistSquared(PartnerCharacter->GetActorLocation(), TargetActor->GetActorLocation()) > FMath::Square(EffectiveRange))
+	{
+		if (bDebugHack)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[PartnerHackDebug] TryStartHack failed: outside effective range Target=%s Range=%.1f"),
+				*GetNameSafe(TargetActor),
+				EffectiveRange);
+		}
+		return;
+	}
+
 	DeactivateUnselectedCandidates(HackableComponent);
 	bHackCandidateSearchActive = false;
 	ActiveHackableComponent = HackableComponent;
@@ -354,7 +380,7 @@ FHackQueryContext UPartnerHackComponent::BuildQueryContext() const
 {
 	FHackQueryContext Context;
 	Context.InstigatorActor = PartnerCharacter;
-	Context.MaxRange = CandidateRange; //?몃??먯꽌 諛쏆븘?ㅻ뒗 嫄곕줈. 
+	Context.MaxRange = CachedAbilityData.EffectiveRange > 0.0f ? CachedAbilityData.EffectiveRange : CandidateRange;
 	Context.RequiredTags = RequiredCandidateTags;
 	Context.BlockedTags = BlockedCandidateTags;
 
@@ -573,6 +599,7 @@ bool UPartnerHackComponent::EnsureHackMiniGameWidget(AActor* TargetActor, UHacka
 	}
 
 	HackMiniGameWidget->InitializeHackMiniGame(TargetActor, HackableComponent, this);
+	HackMiniGameWidget->SetMiniGameTimeLimit(CachedAbilityData.MiniGameTime);
 	HackMiniGameWidget->OnHackMiniGameFinished.AddDynamic(this, &UPartnerHackComponent::HandleHackMiniGameFinished);
 	HackMiniGameWidget->AddToViewport(150);
 
