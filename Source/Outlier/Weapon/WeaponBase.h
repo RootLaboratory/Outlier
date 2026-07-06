@@ -186,6 +186,10 @@ public:
 	bool CanBePickedUpBy(const AFirstPersonCharacter* Interactor) const;
 	float GetDamageAtDistance(float DistanceCm) const;
 	float GetMovementSpeedMultiplier() const { return MovementSpeedMultiplier; }
+	float GetFirstPersonProceduralRecoilMultiplier() const;
+	float GetThirdPersonProceduralRecoilMultiplier() const;
+	float GetThirdPersonProceduralSprintMultiplier() const;
+	float GetThirdPersonProceduralWallOffsetMultiplier() const;
 
 	USkeletalMeshComponent* GetFirstPersonWeaponMesh() const { return FirstPersonWeaponMesh; }
 	USkeletalMeshComponent* GetThirdPersonWeaponMesh() const { return ThirdPersonWeaponMesh; }

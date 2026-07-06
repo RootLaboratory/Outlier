@@ -2,6 +2,7 @@
 
 
 #include "Shooter/ShooterFirstPersonAnimInstance.h"
+#include "Animation/AnimMontage.h"
 #include "Camera/CameraComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Curves/CurveVector.h"
@@ -10,6 +11,7 @@
 #include "KismetAnimationLibrary.h"
 #include "OutlierNetUtils.h"
 #include "Shooter/Anim/ProceduralAnimValues.h"
+#include "Shooter/ShooterAnimInstance.h"
 
 namespace
 {
@@ -138,6 +140,7 @@ void UShooterFirstPersonAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 		bIsInAir = false;
 		bIsAiming = false;
 		bIsReloading = false;
+		bIsEquipping = false;
 		ViewModelWeaponPoseAlpha = 0.0f;
 		ViewModelWeaponEquipDetailAlpha = 0.0f;
 		ViewModelSprintExitDetailAlpha = 1.0f;
@@ -185,6 +188,7 @@ void UShooterFirstPersonAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 	bIsSliding = CachedShooterCharacter->IsSliding();
 	bIsAiming = CachedShooterCharacter->IsAiming();
 	bIsReloading = CachedShooterCharacter->IsReloading();
+	bIsEquipping = CachedShooterCharacter->GetActionLock() == EShooterActionLock::Equip;
 	bIsDead = CachedShooterCharacter->IsDead();
 	AimPitch = FRotator::NormalizeAxis(CachedShooterCharacter->GetBaseAimRotation().Pitch);
 
@@ -192,6 +196,7 @@ void UShooterFirstPersonAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 	bIsGrounded = CharacterMovement->IsMovingOnGround();
 	bIsInAir = bIsFalling;
 
+	// ── 무기 교체 감지와 포즈 알파 초기화 ────────────────────────────────
 	AWeaponBase* NewWeapon = CachedShooterCharacter->GetCurrentWeapon();
 	const bool bWeaponChanged = NewWeapon != CurrentWeapon;
 
@@ -275,11 +280,23 @@ void UShooterFirstPersonAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 	const float ReloadBlendOutSpeed = WeaponValues ? WeaponValues->ReloadBlendOutSpeed : 8.0f;
 	const float SlideBlendInSpeed = WeaponValues ? WeaponValues->SlideBlendInSpeed : 18.0f;
 	const float SlideBlendOutSpeed = WeaponValues ? WeaponValues->SlideBlendOutSpeed : 8.0f;
+	const float ReloadIKBlendInSpeed = WeaponValues ? WeaponValues->LeftHandReloadIKBlendInSpeed : ReloadBlendInSpeed;
+	const float ReloadIKBlendOutSpeed = WeaponValues ? WeaponValues->LeftHandReloadIKBlendOutSpeed : ReloadBlendOutSpeed;
 	const float EquipIKBlendInSpeed = WeaponValues ? WeaponValues->LeftHandEquipIKBlendInSpeed : ReloadBlendInSpeed;
 	const float EquipIKBlendOutSpeed = WeaponValues ? WeaponValues->LeftHandEquipIKBlendOutSpeed : ReloadBlendOutSpeed;
 	const float SlideIKBlendInSpeed = WeaponValues ? WeaponValues->LeftHandSlideIKBlendInSpeed : SlideBlendInSpeed;
 	const float SlideIKBlendOutSpeed = WeaponValues ? WeaponValues->LeftHandSlideIKBlendOutSpeed : SlideBlendOutSpeed;
+	const float ActionProceduralReleaseTime = WeaponValues ? FMath::Max(WeaponValues->LeftHandActionProceduralReleaseTime, 0.0f) : 0.16f;
+	const bool bReloadProceduralActive =
+		bIsReloading &&
+		bCanUseFirearmProcedural &&
+		IsMontageInProceduralActionWindow(CachedShooterCharacter ? CachedShooterCharacter->GetFirstPersonReloadMontage() : nullptr, ActionProceduralReleaseTime);
+	const bool bEquipProceduralActive =
+		bIsEquipping &&
+		bCanUseWeaponPose &&
+		IsMontageInProceduralActionWindow(CachedShooterCharacter ? CachedShooterCharacter->GetFirstPersonEquipMontage() : nullptr, ActionProceduralReleaseTime);
 	
+	// ── 액션 알파 (스프린트/재장전/슬라이드/장착 + 각 IK 블렌드) ─────────
 	ViewModelSprintAlpha = FMath::FInterpTo(
 		ViewModelSprintAlpha,
 		bIsSprinting ? 1.0f : 0.0f,
@@ -289,12 +306,17 @@ void UShooterFirstPersonAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 
 	ViewModelReloadPoseAlpha = FMath::FInterpTo(
 		ViewModelReloadPoseAlpha,
-		(bIsReloading && bCanUseFirearmProcedural) ? 1.0f : 0.0f,
+		bReloadProceduralActive ? 1.0f : 0.0f,
 		DeltaSeconds,
-		bIsReloading ? ReloadBlendInSpeed : ReloadBlendOutSpeed
+		bReloadProceduralActive ? ReloadBlendInSpeed : ReloadBlendOutSpeed
 	);
 
-	ViewModelReloadIKBlendAlpha = ViewModelReloadPoseAlpha;
+	ViewModelReloadIKBlendAlpha = FMath::FInterpTo(
+		ViewModelReloadIKBlendAlpha,
+		ViewModelReloadPoseAlpha,
+		DeltaSeconds,
+		ViewModelReloadPoseAlpha > ViewModelReloadIKBlendAlpha ? ReloadIKBlendInSpeed : ReloadIKBlendOutSpeed
+	);
 
 	ViewModelSlidePoseAlpha = FMath::FInterpTo(
 		ViewModelSlidePoseAlpha,
@@ -303,7 +325,12 @@ void UShooterFirstPersonAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 		bIsSliding ? SlideBlendInSpeed : SlideBlendOutSpeed
 	);
 
-	ViewModelEquipPoseAlpha = FMath::Clamp(1.0f - ViewModelWeaponEquipDetailAlpha, 0.0f, 1.0f) * (bCanUseWeaponPose ? 1.0f : 0.0f);
+	ViewModelEquipPoseAlpha = FMath::FInterpTo(
+		ViewModelEquipPoseAlpha,
+		bEquipProceduralActive ? 1.0f : 0.0f,
+		DeltaSeconds,
+		bEquipProceduralActive ? EquipIKBlendInSpeed : EquipIKBlendOutSpeed
+	);
 	ViewModelEquipIKBlendAlpha = FMath::FInterpTo(
 		ViewModelEquipIKBlendAlpha,
 		ViewModelEquipPoseAlpha,
@@ -344,26 +371,32 @@ void UShooterFirstPersonAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 		ViewModelSprintExitDetailAlpha > 0.95f &&
 		ViewModelWeaponEquipDetailAlpha > 0.95f;
 
+	// ── 조준 알파 (벽 근접 시 ADS 해제 반영) ─────────────────────────────
 	const FWeaponValues* WeaponValuesForAim = CurrentProceduralValues ? &CurrentProceduralValues->WeaponValues : nullptr;
 	const float AimInterpSpeedIn = WeaponValuesForAim ? FMath::Max(WeaponValuesForAim->AimInterpSpeedIn, 0.0f) : 12.0f;
 	const float AimInterpSpeedOut = WeaponValuesForAim ? FMath::Max(WeaponValuesForAim->AimInterpSpeedOut, 0.0f) : 12.0f;
+	const float WallAimBreakAlpha = ResolveWallAimBreakAlpha(WeaponValuesForAim);
 	const bool bWantsAim = bIsAiming;
 	const bool bWantsReloadAim = bIsAiming && bIsReloading;
+	const float TargetAimAlpha = bWantsAim ? (1.0f - WallAimBreakAlpha) : 0.0f;
+	const float TargetReloadAimAlpha = bWantsReloadAim ? (1.0f - WallAimBreakAlpha) : 0.0f;
+	const bool bAimBreakingFromWall = WallAimBreakAlpha > KINDA_SMALL_NUMBER;
 
 	ViewModelAimAlpha = FMath::FInterpTo(
 		ViewModelAimAlpha,
-		bWantsAim ? 1.0f : 0.0f,
+		TargetAimAlpha,
 		DeltaSeconds,
-		bWantsAim ? AimInterpSpeedIn : AimInterpSpeedOut
+		(bWantsAim && !bAimBreakingFromWall) ? AimInterpSpeedIn : AimInterpSpeedOut
 	);
 
 	ReloadAimAlpha = FMath::FInterpTo(
 		ReloadAimAlpha,
-		bWantsReloadAim ? 1.0f : 0.0f,
+		TargetReloadAimAlpha,
 		DeltaSeconds,
-		bWantsReloadAim ? AimInterpSpeedIn : AimInterpSpeedOut
+		(bWantsReloadAim && !bAimBreakingFromWall) ? AimInterpSpeedIn : AimInterpSpeedOut
 	);
 
+	// ── 이동 관련 알파 (걷기/앉기/스트레이프/낙하) ───────────────────────
 	const bool bWantsWalkAnim =
 		bCanUseFirearmProcedural &&
 		bShouldMove &&
@@ -407,6 +440,7 @@ void UShooterFirstPersonAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 		bIsFalling ? 8.0f : 12.0f
 	);
 
+	// ── 무기 데이터 기반 디테일 (아이들 호흡/린/손가락/가감속 모션) ──────
 	if (CurrentProceduralValues)
 	{
 		const bool bCanPlayIdleDetail =
@@ -440,50 +474,7 @@ void UShooterFirstPersonAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 		ViewModelLeanAlpha = 1.0f;
 		bIsLean = FMath::Abs(LeanYaw) > KINDA_SMALL_NUMBER;
 
-		const float FingerBaseAlpha = FMath::Clamp(WeaponValues->FingerMovementAlpha, 0.0f, 1.0f);
-		if (bCanPlayIdleDetail && FingerBaseAlpha > KINDA_SMALL_NUMBER)
-		{
-			if (bFingerMovementPulseActive)
-			{
-				FingerMovementPulseTime = FMath::Max(FingerMovementPulseTime - DeltaSeconds, 0.0f);
-				FingerMovementAlpha = FingerBaseAlpha;
-
-				if (FingerMovementPulseTime <= 0.0f)
-				{
-					bFingerMovementPulseActive = false;
-					FingerMovementAlpha = 0.0f;
-					FingerMovementCooldownTime = FMath::RandRange(
-						FMath::Min(WeaponValues->FingerMovementIntervalMinTime, WeaponValues->FingerMovementIntervalMaxTime),
-						FMath::Max(WeaponValues->FingerMovementIntervalMinTime, WeaponValues->FingerMovementIntervalMaxTime)
-					);
-				}
-			}
-			else
-			{
-				FingerMovementCooldownTime -= DeltaSeconds;
-
-				if (FingerMovementCooldownTime <= 0.0f)
-				{
-					bFingerMovementPulseActive = true;
-					FingerMovementPulseTime = FMath::RandRange(
-						FMath::Min(WeaponValues->FingerMovementPulseMinTime, WeaponValues->FingerMovementPulseMaxTime),
-						FMath::Max(WeaponValues->FingerMovementPulseMinTime, WeaponValues->FingerMovementPulseMaxTime)
-					);
-					FingerMovementAlpha = FingerBaseAlpha;
-				}
-				else
-				{
-					FingerMovementAlpha = 0.0f;
-				}
-			}
-		}
-		else
-		{
-			bFingerMovementPulseActive = false;
-			FingerMovementPulseTime = 0.0f;
-			FingerMovementCooldownTime = 0.0f;
-			FingerMovementAlpha = 0.0f;
-		}
+		UpdateFingerMovement(DeltaSeconds, *WeaponValues, bCanPlayIdleDetail);
 
 		ViewModelCurrentStrafeWalkRot = FMath::RInterpTo(
 			ViewModelCurrentStrafeWalkRot,
@@ -569,7 +560,7 @@ void UShooterFirstPersonAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 	UpdateFirstPersonProceduralValues(DeltaSeconds);
 
 	UpdateViewModelRecoil(DeltaSeconds);
-	UpdateFirstPersonProceduralRuntime();
+	UpdateFirstPersonProceduralRuntime(DeltaSeconds);
 
 	bWasSprinting = bIsSprinting;
 	bHadWeaponPose = bCanUseWeaponPose;
@@ -670,6 +661,120 @@ void UShooterFirstPersonAnimInstance::HandleOwnerDeath()
 	bIsDead = true;
 }
 
+bool UShooterFirstPersonAnimInstance::IsMontageInProceduralActionWindow(const UAnimMontage* Montage, float EarlyReleaseTime) const
+{
+	if (!Montage)
+	{
+		return true;
+	}
+
+	const UAnimInstance* AnimInstance = GetOwningComponent() ? GetOwningComponent()->GetAnimInstance() : nullptr;
+	if (!AnimInstance || !AnimInstance->Montage_IsPlaying(Montage))
+	{
+		return false;
+	}
+
+	float WindowEndTime = Montage->GetPlayLength();
+	const FName CurrentSectionName = AnimInstance->Montage_GetCurrentSection(Montage);
+	if (!CurrentSectionName.IsNone())
+	{
+		const int32 SectionIndex = Montage->GetSectionIndex(CurrentSectionName);
+		if (SectionIndex != INDEX_NONE)
+		{
+			float SectionStartTime = 0.0f;
+			float SectionEndTime = 0.0f;
+			Montage->GetSectionStartAndEndTime(SectionIndex, SectionStartTime, SectionEndTime);
+			WindowEndTime = SectionEndTime;
+		}
+	}
+
+	const float CurrentPosition = AnimInstance->Montage_GetPosition(Montage);
+	return CurrentPosition < FMath::Max(WindowEndTime - FMath::Max(EarlyReleaseTime, 0.0f), 0.0f);
+}
+
+float UShooterFirstPersonAnimInstance::ResolveWallAimBreakAlpha(const FWeaponValues* WeaponValues) const
+{
+	// 벽 ADS 해제 판정은 3인칭 AnimInstance가 단일 기준으로 계산한다 — 두 시점이
+	// 같은 프레임에 같은 값으로 조준을 해제하기 위함
+	if (CachedShooterCharacter)
+	{
+		if (const USkeletalMeshComponent* BodyMesh = CachedShooterCharacter->GetMesh())
+		{
+			if (const UShooterAnimInstance* BodyAnimInstance = Cast<UShooterAnimInstance>(BodyMesh->GetAnimInstance()))
+			{
+				return BodyAnimInstance->GetWallAimBreakAlpha();
+			}
+		}
+	}
+
+	// 몸 메시에 Shooter 인스턴스가 없으면 자체 벽 알파로 로컬 계산 (폴백)
+	const float WallAimBreakStartAlpha = WeaponValues
+		? FMath::Clamp(WeaponValues->WallAimBreakStartAlpha, 0.0f, 1.0f)
+		: 0.55f;
+	const float WallAimBreakFullAlpha = WeaponValues
+		? FMath::Max(FMath::Clamp(WeaponValues->WallAimBreakFullAlpha, 0.0f, 1.0f), WallAimBreakStartAlpha + KINDA_SMALL_NUMBER)
+		: 0.85f;
+	const float WallAimBlockSourceAlpha = FMath::Clamp(
+		FMath::Max3(WallVeryCloseAlpha, WallHardStopAlpha, WallMuzzleBlockAlpha),
+		0.0f,
+		1.0f
+	);
+	return FMath::GetMappedRangeValueClamped(
+		FVector2D(WallAimBreakStartAlpha, WallAimBreakFullAlpha),
+		FVector2D(0.0f, 1.0f),
+		WallAimBlockSourceAlpha
+	);
+}
+
+void UShooterFirstPersonAnimInstance::UpdateFingerMovement(float DeltaSeconds, const FWeaponValues& WeaponValues, bool bCanPlayIdleDetail)
+{
+	const float FingerBaseAlpha = FMath::Clamp(WeaponValues.FingerMovementAlpha, 0.0f, 1.0f);
+	if (!bCanPlayIdleDetail || FingerBaseAlpha <= KINDA_SMALL_NUMBER)
+	{
+		bFingerMovementPulseActive = false;
+		FingerMovementPulseTime = 0.0f;
+		FingerMovementCooldownTime = 0.0f;
+		FingerMovementAlpha = 0.0f;
+		return;
+	}
+
+	if (bFingerMovementPulseActive)
+	{
+		// 펄스 진행 중: 시간이 다 되면 멈추고 다음 발동까지의 쿨다운을 추첨
+		FingerMovementPulseTime = FMath::Max(FingerMovementPulseTime - DeltaSeconds, 0.0f);
+		FingerMovementAlpha = FingerBaseAlpha;
+
+		if (FingerMovementPulseTime <= 0.0f)
+		{
+			bFingerMovementPulseActive = false;
+			FingerMovementAlpha = 0.0f;
+			FingerMovementCooldownTime = FMath::RandRange(
+				FMath::Min(WeaponValues.FingerMovementIntervalMinTime, WeaponValues.FingerMovementIntervalMaxTime),
+				FMath::Max(WeaponValues.FingerMovementIntervalMinTime, WeaponValues.FingerMovementIntervalMaxTime)
+			);
+		}
+	}
+	else
+	{
+		// 쿨다운 소진 시 새 펄스 시작 (지속 시간 추첨)
+		FingerMovementCooldownTime -= DeltaSeconds;
+
+		if (FingerMovementCooldownTime <= 0.0f)
+		{
+			bFingerMovementPulseActive = true;
+			FingerMovementPulseTime = FMath::RandRange(
+				FMath::Min(WeaponValues.FingerMovementPulseMinTime, WeaponValues.FingerMovementPulseMaxTime),
+				FMath::Max(WeaponValues.FingerMovementPulseMinTime, WeaponValues.FingerMovementPulseMaxTime)
+			);
+			FingerMovementAlpha = FingerBaseAlpha;
+		}
+		else
+		{
+			FingerMovementAlpha = 0.0f;
+		}
+	}
+}
+
 void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralValues(float DeltaSeconds)
 {
 	if (!CurrentProceduralValues)
@@ -687,6 +792,12 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralValues(float De
 		ViewModelLeftHandIKAlpha = 0.0f;
 		ViewModelLeftHandGripOffsetLoc = FVector::ZeroVector;
 		ViewModelLeftHandGripOffsetRot = FRotator::ZeroRotator;
+		ViewModelLeftHandActionReturnGripOffsetLoc = FVector::ZeroVector;
+		ViewModelLeftHandActionReturnGripOffsetRot = FRotator::ZeroRotator;
+		LastLeftHandActionGripOffsetLoc = FVector::ZeroVector;
+		LastLeftHandActionGripOffsetRot = FRotator::ZeroRotator;
+		PreviousLeftHandActionIKAlpha = 0.0f;
+		LeftHandActionReturnTimer = 0.0f;
 		ViewModelWeaponPoseAlpha = 0.0f;
 		ViewModelWeaponEquipDetailAlpha = 0.0f;
 		ViewModelNonSprintProceduralAlpha = 0.0f;
@@ -746,6 +857,7 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralValues(float De
 		return;
 	}
 
+	// ── 무기 데이터 → 뷰모델 포즈/피치 커브 값 갱신 ──────────────────────
 	const FWeaponValues& WeaponValues = CurrentProceduralValues->WeaponValues;
 
 	ViewModelHipPoseLoc = WeaponValues.HipPoseLoc;
@@ -893,6 +1005,7 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralValues(float De
 	FRotator TargetLeftHandGripOffsetRot = FRotator::ZeroRotator;
 	bool bLeftHandIKSocketValid = false;
 
+	// ── 왼손 그립 소켓 재구성 (무기 소켓 → ik_hand_gun 로컬 오프셋) ──────
 	if (FirearmIKAlpha > 0.0f && CurrentWeapon)
 	{
 		USkeletalMeshComponent* WeaponMesh = CurrentWeapon->GetFirstPersonWeaponMesh();
@@ -949,14 +1062,22 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralValues(float De
 				const FQuat SocketLocalQuat = SocketLocalRot.Quaternion();
 				const FVector BaseGripSocketLocRaw =
 					SocketLocalQuat.RotateVector(WeaponValues.LeftHandGripSocketLocOffset);
+				const float ActionPoseAlpha = FMath::Clamp(FMath::Max(ViewModelReloadPoseAlpha, ViewModelEquipPoseAlpha), 0.0f, 1.0f);
+				const float WallActionLeftHandScale = FMath::Lerp(
+					1.0f,
+					FMath::Clamp(WeaponValues.WallActionLeftHandScale, 0.0f, 1.0f),
+					ActionPoseAlpha
+				);
 				const float WallVeryCloseSocketOffsetAlpha = FMath::Clamp(
 					FMath::InterpEaseOut(0.0f, 1.0f, WallVeryCloseAlpha, 2.0f) *
+					WallActionLeftHandScale *
 					WeaponValues.LeftHandWallVeryCloseSocketOffsetAlphaScale,
 					0.0f,
 					1.0f
 				);
 				const float WallMuzzleBlockSocketOffsetAlpha = FMath::Clamp(
 					FMath::InterpEaseOut(0.0f, 1.0f, WallMuzzleBlockAlpha, 2.0f) *
+					WallActionLeftHandScale *
 					(1.0f - FMath::Clamp(WallMuzzleBlockDownPreferenceAlpha, 0.0f, 1.0f)) *
 					(1.0f - WallVeryCloseSocketOffsetAlpha) *
 					WeaponValues.LeftHandWallMuzzleBlockSocketOffsetAlphaScale,
@@ -998,18 +1119,67 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralValues(float De
 	ViewModelLeftHandIKLoc = FVector::ZeroVector;
 	ViewModelLeftHandIKRot = FRotator::ZeroRotator;
 	ViewModelLeftHandIKAlpha = TargetLeftHandIKAlpha;
-	ViewModelLeftHandGripOffsetLoc = TargetLeftHandGripOffsetLoc;
-	ViewModelLeftHandGripOffsetRot = TargetLeftHandGripOffsetRot;
+	const float ActionIKBlendAlphaForTarget = FMath::Clamp(FMath::Max(ViewModelReloadIKBlendAlpha, ViewModelEquipIKBlendAlpha), 0.0f, 1.0f);
+	const bool bReturningFromActionIK =
+		(ActionIKBlendAlphaForTarget > KINDA_SMALL_NUMBER || LeftHandActionReturnTimer > 0.0f);
+	if (PreviousLeftHandActionIKAlpha > KINDA_SMALL_NUMBER && ActionIKBlendAlphaForTarget <= KINDA_SMALL_NUMBER)
+	{
+		LeftHandActionReturnTimer = 0.12f;
+	}
+	else
+	{
+		LeftHandActionReturnTimer = FMath::Max(LeftHandActionReturnTimer - DeltaSeconds, 0.0f);
+	}
+	const float LeftHandIKTargetBlendSpeed = bReturningFromActionIK
+		? FMath::Max(WeaponValues.LeftHandIKTargetActionReturnBlendSpeed, 0.0f)
+		: FMath::Max(WeaponValues.LeftHandIKTargetBlendSpeed, 0.0f);
+	// 벽 단계는 각자의 알파로 이미 그립 타깃을 스무딩하고 있다. 여기서 또
+	// 보간하면 벽 오프셋 복귀 중 왼손이 소켓을 늦게 따라가므로, 벽 단계가
+	// 하나라도 활성일 때는 스냅한다
+	const float WallGripStageAlpha = FMath::Max3(
+		FMath::Max(WallOffsetAlpha, WallMuzzleBlockAlpha),
+		WallVeryCloseAlpha,
+		FMath::Max(WallHardStopAlpha, WallHardStopSafetyAlpha)
+	);
+	const bool bWallGripSnap = WallGripStageAlpha > KINDA_SMALL_NUMBER && !bReturningFromActionIK;
+	if (!bLeftHandIKSocketValid || LeftHandIKTargetBlendSpeed <= 0.0f || bWallGripSnap)
+	{
+		ViewModelLeftHandGripOffsetLoc = TargetLeftHandGripOffsetLoc;
+		ViewModelLeftHandGripOffsetRot = TargetLeftHandGripOffsetRot;
+	}
+	else
+	{
+		ViewModelLeftHandGripOffsetLoc = FMath::VInterpTo(
+			ViewModelLeftHandGripOffsetLoc,
+			TargetLeftHandGripOffsetLoc,
+			DeltaSeconds,
+			LeftHandIKTargetBlendSpeed
+		);
+		ViewModelLeftHandGripOffsetRot = FMath::RInterpTo(
+			ViewModelLeftHandGripOffsetRot,
+			TargetLeftHandGripOffsetRot,
+			DeltaSeconds,
+			LeftHandIKTargetBlendSpeed
+		);
+	}
 
 	ViewModelMovementLoc = ViewModelSprintPoseLoc;
 	ViewModelMovementRot = ViewModelSprintPoseRot;
 }
 
-void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralRuntime()
+// 프레임마다 계산해 둔 개별 알파/오프셋들을 ABP가 소비하는 런타임 구조체
+// (ViewModelProceduralRuntime) 하나로 합성한다
+void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralRuntime(float DeltaSeconds)
 {
 	if (!CurrentProceduralValues)
 	{
 		ViewModelProceduralRuntime = FFirstPersonProceduralAnimRuntime();
+		ViewModelLeftHandActionReturnGripOffsetLoc = FVector::ZeroVector;
+		ViewModelLeftHandActionReturnGripOffsetRot = FRotator::ZeroRotator;
+		LastLeftHandActionGripOffsetLoc = FVector::ZeroVector;
+		LastLeftHandActionGripOffsetRot = FRotator::ZeroRotator;
+		PreviousLeftHandActionIKAlpha = 0.0f;
+		LeftHandActionReturnTimer = 0.0f;
 		return;
 	}
 
@@ -1072,8 +1242,22 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralRuntime()
 	const float RawSprintAlpha = RawSprintAlphaForAim;
 	const float ReloadPoseAlpha = FMath::Clamp(ViewModelReloadPoseAlpha, 0.0f, 1.0f);
 	const float ReloadCrossfadeAlpha = ReloadPoseAlpha;
-	const float NonReloadCrossfadeAlpha = 1.0f - ReloadCrossfadeAlpha;
 	const float EquipPoseAlpha = FMath::Clamp(ViewModelEquipPoseAlpha, 0.0f, 1.0f);
+	const float EquipCrossfadeAlpha = EquipPoseAlpha;
+	const float ReloadIKCrossfadeAlpha = FMath::Clamp(ViewModelReloadIKBlendAlpha, 0.0f, 1.0f);
+	const float EquipIKCrossfadeAlpha = FMath::Clamp(ViewModelEquipIKBlendAlpha, 0.0f, 1.0f);
+	const float NonActionCrossfadeAlpha = 1.0f - FMath::Clamp(FMath::Max(ReloadIKCrossfadeAlpha, EquipIKCrossfadeAlpha), 0.0f, 1.0f);
+	const float WallActionAlpha = FMath::Clamp(FMath::Max(ReloadCrossfadeAlpha, EquipCrossfadeAlpha), 0.0f, 1.0f);
+	const float WallActionPoseScale = FMath::Lerp(
+		1.0f,
+		FMath::Clamp(WeaponValues.WallActionPoseScale, 0.0f, 1.0f),
+		WallActionAlpha
+	);
+	const float WallActionLeftHandScale = FMath::Lerp(
+		1.0f,
+		FMath::Clamp(WeaponValues.WallActionLeftHandScale, 0.0f, 1.0f),
+		WallActionAlpha
+	);
 	const float SlidePoseAlpha = FMath::Clamp(ViewModelSlidePoseAlpha, 0.0f, 1.0f);
 	const float RuntimeSprintAlpha = RawSprintAlpha * FirearmAlpha * AimToSprintGateAlpha;
 	const float RuntimeAimSwayScale = FMath::Lerp(
@@ -1086,7 +1270,13 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralRuntime()
 		FMath::Clamp(WeaponValues.AimMovementProceduralScale, 0.0f, 1.0f),
 		FMath::Clamp(ViewModelAimAlpha, 0.0f, 1.0f)
 	);
+	const float RuntimeAimWalkAnimScale = FMath::Lerp(
+		1.0f,
+		FMath::Clamp(WeaponValues.AimWalkAnimScale, 0.0f, 1.0f),
+		FMath::Clamp(ViewModelAimAlpha, 0.0f, 1.0f)
+	);
 	const float NonSprintMovementProceduralAlpha = FirearmMinorProceduralAlpha * RuntimeAimMovementProceduralScale;
+	const float NonSprintWalkAnimProceduralAlpha = FirearmMinorProceduralAlpha * RuntimeAimWalkAnimScale;
 
 	const FVector RuntimeSwayLoc = ViewModelSwayLoc * SharedMinorProceduralAlpha * RuntimeAimSwayScale;
 	const FRotator RuntimeSwayRot = ViewModelSwayRot * SharedMinorProceduralAlpha * RuntimeAimSwayScale;
@@ -1123,9 +1313,10 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralRuntime()
 			WeaponValues.PitchOffsetMax
 		) * RuntimeSprintAlpha;
 	const float ForwardWalkProceduralAlpha = bIsSprinting ? RuntimeSprintAlpha : NonSprintMovementProceduralAlpha;
+	const float ForwardWalkAnimProceduralAlpha = bIsSprinting ? RuntimeSprintAlpha : NonSprintWalkAnimProceduralAlpha;
 	const FVector RuntimeForwardWalkLoc = ViewModelForwardWalkLoc * ForwardWalkProceduralAlpha;
 	const FRotator RuntimeForwardWalkRot = ViewModelForwardWalkRot * ViewModelWalkAnimAlpha * ForwardWalkProceduralAlpha;
-	const float RuntimeForwardWalkAlpha = ViewModelWalkAnimAlpha * ForwardWalkProceduralAlpha;
+	const float RuntimeForwardWalkAlpha = ViewModelWalkAnimAlpha * ForwardWalkAnimProceduralAlpha;
 	const FVector RuntimeJumpLandLoc = ViewModelJumpLandLoc * FirearmMinorProceduralAlpha;
 	const FRotator RuntimeJumpLandRot = ViewModelJumpLandRot * FirearmMinorProceduralAlpha;
 	const float RuntimeJumpLandAlpha = ViewModelJumpLandAlpha * FirearmMinorProceduralAlpha;
@@ -1136,7 +1327,7 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralRuntime()
 		RuntimeRecoilLoc +
 		RuntimeSwayLoc +
 		(ViewModelForwardWalkLoc * ViewModelWalkAnimAlpha * ForwardWalkProceduralAlpha) +
-		(ViewModelForwardWalkAnimLoc * ForwardWalkProceduralAlpha) +
+		(ViewModelForwardWalkAnimLoc * ForwardWalkAnimProceduralAlpha) +
 		(ViewModelStartStopLoc * NonSprintMovementProceduralAlpha) +
 		RuntimeJumpLandLoc;
 	const FRotator RuntimeWeaponRootRotOffset = (
@@ -1145,7 +1336,7 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralRuntime()
 		RuntimeRecoilRot.Quaternion() *
 		RuntimeSwayRot.Quaternion() *
 		RuntimeForwardWalkRot.Quaternion() *
-		(ViewModelForwardWalkAnimRot * ForwardWalkProceduralAlpha).Quaternion() *
+		(ViewModelForwardWalkAnimRot * ForwardWalkAnimProceduralAlpha).Quaternion() *
 		(ViewModelCurrentStrafeWalkRot * NonSprintMovementProceduralAlpha).Quaternion() *
 		(ViewModelStartStopRot * NonSprintMovementProceduralAlpha).Quaternion() *
 		RuntimeJumpLandRot.Quaternion() 
@@ -1155,74 +1346,210 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralRuntime()
 	ViewModelProceduralRuntime.WeaponRootLocOffset = RuntimeWeaponRootLocOffset;
 	ViewModelProceduralRuntime.WeaponRootRotOffset = RuntimeWeaponRootRotOffset;
 
-	ViewModelProceduralRuntime.RightHandIKLocOffset = WeaponValues.RightHandReloadIKLocOffset;
-	ViewModelProceduralRuntime.RightHandIKRotOffset = WeaponValues.RightHandReloadIKRotOffset;
+	ViewModelProceduralRuntime.RightHandIKLocOffset =
+		(WeaponValues.RightHandReloadIKLocOffset * ReloadCrossfadeAlpha) +
+		(WeaponValues.RightHandEquipIKLocOffset * EquipCrossfadeAlpha);
+	ViewModelProceduralRuntime.RightHandIKRotOffset =
+		(WeaponValues.RightHandReloadIKRotOffset * ReloadCrossfadeAlpha) +
+		(WeaponValues.RightHandEquipIKRotOffset * EquipCrossfadeAlpha);
 	ViewModelProceduralRuntime.SprintPoseLoc = ViewModelSprintPoseLoc;
 	ViewModelProceduralRuntime.SprintPoseRot = ViewModelSprintPoseRot;
 	ViewModelProceduralRuntime.SprintAlpha = RuntimeSprintAlpha;
-	const float WallPoseBlendAlpha = FMath::Clamp(FMath::Max3(WallAvoidUpAlpha, WallAvoidDownAlpha, WallMuzzleBlockAlpha), 0.0f, 1.0f);
-	const float WallSideSuppressAlpha = FMath::Clamp(FMath::Max3(WallPoseBlendAlpha, WallVeryCloseAlpha, WallCeilingAlpha), 0.0f, 1.0f);
-	const float WallSideOnlyAlpha = FMath::Clamp(WallAvoidSideAlpha * (1.0f - WallSideSuppressAlpha), 0.0f, 1.0f);
+	// ── 벽 단계 알파의 런타임 합성 ───────────────────────────────────────
+	// 근접 단계(VeryClose/HardStop)가 강해지면 회피 포즈와 MuzzleBlock 팔
+	// 보정을 억제해서, 서로 다른 벽 대응이 팔 위에 중첩되지 않게 한다
+	const float ScaledWallAvoidUpAlpha = WallAvoidUpAlpha * WallActionPoseScale;
+	const float ScaledWallAvoidDownAlpha = WallAvoidDownAlpha * WallActionPoseScale;
+	const float ScaledWallMuzzleBlockAlpha = WallMuzzleBlockAlpha * WallActionPoseScale;
+	const float ScaledWallVeryCloseAlpha = WallVeryCloseAlpha * WallActionPoseScale;
+	const float ScaledWallCeilingAlpha = WallCeilingAlpha * WallActionPoseScale;
+	const float WallPoseBlendAlpha = FMath::Clamp(FMath::Max3(ScaledWallAvoidUpAlpha, ScaledWallAvoidDownAlpha, ScaledWallMuzzleBlockAlpha), 0.0f, 1.0f);
+	const float WallSideSuppressAlpha = FMath::Clamp(FMath::Max3(WallPoseBlendAlpha, ScaledWallVeryCloseAlpha, ScaledWallCeilingAlpha), 0.0f, 1.0f);
+	const float WallSideOnlyAlpha = FMath::Clamp(WallAvoidSideAlpha * WallActionLeftHandScale * (1.0f - WallSideSuppressAlpha), 0.0f, 1.0f);
 	const float WallVeryClosePoseSuppressAlpha = FMath::Clamp(
 		FMath::Max(
-			FMath::InterpEaseOut(0.0f, 1.0f, WallVeryCloseAlpha, 2.0f) *
+			FMath::InterpEaseOut(0.0f, 1.0f, ScaledWallVeryCloseAlpha, 2.0f) *
 			WeaponValues.WallVeryClosePoseSuppressScale,
 			FMath::Max(WallHardStopAlpha, WallHardStopSafetyAlpha)
 		),
 		0.0f,
 		1.0f
 	);
-	const float WallMuzzleBlockOnlyAlpha = FMath::Clamp(WallMuzzleBlockAlpha * (1.0f - WallVeryClosePoseSuppressAlpha), 0.0f, 1.0f);
+	const float WallMuzzleBlockOnlyAlpha = FMath::Clamp(ScaledWallMuzzleBlockAlpha * (1.0f - WallVeryClosePoseSuppressAlpha), 0.0f, 1.0f);
 	const float WallMuzzleBlockArmAlpha = FMath::Clamp(
 		FMath::InterpEaseOut(0.0f, 1.0f, WallMuzzleBlockOnlyAlpha, 2.0f) *
+		WallActionLeftHandScale *
 		WeaponValues.LeftHandWallMuzzleBlockArmAlphaScale,
 		0.0f,
 		1.0f
 	);
+	const float WallActionHandFollowScale = FMath::Clamp(WeaponValues.WallActionHandFollowScale, 0.0f, 1.0f);
+	const float WallActionArmFollowScale = FMath::Clamp(WeaponValues.WallActionArmFollowScale, 0.0f, 1.0f);
+	const FVector WallActionHandFollowLoc = ViewModelWallOffsetLoc * WallActionHandFollowScale;
+	const FRotator WallActionHandFollowRot = ViewModelWallOffsetRot * WallActionHandFollowScale;
+	const FVector WallActionArmFollowLoc = ViewModelWallOffsetLoc * WallActionArmFollowScale;
+	const FRotator WallActionArmFollowRot = ViewModelWallOffsetRot * WallActionArmFollowScale;
+	const float WallCloseFollowAlpha = FMath::GetMappedRangeValueClamped(
+		FVector2D(0.05f, 0.35f),
+		FVector2D(0.0f, 1.0f),
+		FMath::Clamp(FMath::Max3(ScaledWallVeryCloseAlpha, WallHardStopAlpha, WallHardStopSafetyAlpha), 0.0f, 1.0f)
+	);
+	const float WallCloseArmFollowScale = FMath::Clamp(WeaponValues.WallCloseArmFollowScale, 0.0f, 1.0f) * WallCloseFollowAlpha;
+	const FVector WallCloseArmFollowLoc = ViewModelWallOffsetLoc * WallCloseArmFollowScale;
+	const FRotator WallCloseArmFollowRot = ViewModelWallOffsetRot * WallCloseArmFollowScale;
+	// ── 액션(재장전/장착) 중 왼손 그립과 복귀 오프셋 ─────────────────────
+	const float LeftHandActionIKAlpha = FMath::Clamp(FMath::Max(ReloadIKCrossfadeAlpha, EquipIKCrossfadeAlpha), 0.0f, 1.0f);
+	const FVector ReloadActionGripOffsetLoc = WeaponValues.LeftHandReloadGripOffsetLoc + WallActionHandFollowLoc;
+	const FRotator ReloadActionGripOffsetRot = WeaponValues.LeftHandReloadGripOffsetRot + WallActionHandFollowRot;
+	const FVector EquipActionGripOffsetLoc = WeaponValues.LeftHandEquipGripOffsetLoc + WallActionHandFollowLoc;
+	const FRotator EquipActionGripOffsetRot = WeaponValues.LeftHandEquipGripOffsetRot + WallActionHandFollowRot;
+	const float ActionGripWeight = ReloadIKCrossfadeAlpha + EquipIKCrossfadeAlpha;
+	if (ActionGripWeight > KINDA_SMALL_NUMBER)
+	{
+		LastLeftHandActionGripOffsetLoc =
+			((ReloadActionGripOffsetLoc * ReloadIKCrossfadeAlpha) + (EquipActionGripOffsetLoc * EquipIKCrossfadeAlpha)) /
+			ActionGripWeight;
+		LastLeftHandActionGripOffsetRot =
+			((ReloadActionGripOffsetRot * ReloadIKCrossfadeAlpha) + (EquipActionGripOffsetRot * EquipIKCrossfadeAlpha)) *
+			(1.0f / ActionGripWeight);
+	}
+	if (PreviousLeftHandActionIKAlpha > KINDA_SMALL_NUMBER && LeftHandActionIKAlpha <= KINDA_SMALL_NUMBER)
+	{
+		ViewModelLeftHandActionReturnGripOffsetLoc =
+			(LastLeftHandActionGripOffsetLoc - ViewModelLeftHandGripOffsetLoc).GetClampedToMaxSize(
+				FMath::Max(WeaponValues.LeftHandActionReturnMaxLocOffset, 0.0f)
+			);
+		ViewModelLeftHandActionReturnGripOffsetRot = (LastLeftHandActionGripOffsetRot - ViewModelLeftHandGripOffsetRot).GetNormalized();
+		const float MaxReturnRotOffset = FMath::Max(WeaponValues.LeftHandActionReturnMaxRotOffset, 0.0f);
+		ViewModelLeftHandActionReturnGripOffsetRot.Pitch = FMath::Clamp(
+			ViewModelLeftHandActionReturnGripOffsetRot.Pitch,
+			-MaxReturnRotOffset,
+			MaxReturnRotOffset
+		);
+		ViewModelLeftHandActionReturnGripOffsetRot.Yaw = FMath::Clamp(
+			ViewModelLeftHandActionReturnGripOffsetRot.Yaw,
+			-MaxReturnRotOffset,
+			MaxReturnRotOffset
+		);
+		ViewModelLeftHandActionReturnGripOffsetRot.Roll = FMath::Clamp(
+			ViewModelLeftHandActionReturnGripOffsetRot.Roll,
+			-MaxReturnRotOffset,
+			MaxReturnRotOffset
+		);
+	}
+	else if (LeftHandActionIKAlpha > KINDA_SMALL_NUMBER)
+	{
+		ViewModelLeftHandActionReturnGripOffsetLoc = FVector::ZeroVector;
+		ViewModelLeftHandActionReturnGripOffsetRot = FRotator::ZeroRotator;
+	}
+	else
+	{
+		const float ReturnBlendSpeed = FMath::Max(WeaponValues.LeftHandActionReturnBlendSpeed, 0.0f);
+		if (ReturnBlendSpeed <= 0.0f)
+		{
+			ViewModelLeftHandActionReturnGripOffsetLoc = FVector::ZeroVector;
+			ViewModelLeftHandActionReturnGripOffsetRot = FRotator::ZeroRotator;
+		}
+		else
+		{
+			ViewModelLeftHandActionReturnGripOffsetLoc = FMath::VInterpTo(
+				ViewModelLeftHandActionReturnGripOffsetLoc,
+				FVector::ZeroVector,
+				DeltaSeconds,
+				ReturnBlendSpeed
+			);
+			ViewModelLeftHandActionReturnGripOffsetRot = FMath::RInterpTo(
+				ViewModelLeftHandActionReturnGripOffsetRot,
+				FRotator::ZeroRotator,
+				DeltaSeconds,
+				ReturnBlendSpeed
+			);
+		}
+	}
+	PreviousLeftHandActionIKAlpha = LeftHandActionIKAlpha;
 	ViewModelProceduralRuntime.LeftHandIKLoc = ViewModelLeftHandIKLoc;
 	ViewModelProceduralRuntime.LeftHandIKRot = ViewModelLeftHandIKRot;
+	// 그립 오프셋에 벽 당김(WallOffsetLoc)을 다시 더하지 않는다: 그래프에서
+	// ik_hand_l은 벽 오프셋이 이미 적용된 ik_hand_gun에서 복사되므로 손은
+	// 무기를 자동으로 따라간다. 여기서 또 더하면 이중 적용이 되어 근접
+	// 단계(VeryClose/HardStop)에서 손이 그립을 벗어나 떠 보인다
 	ViewModelProceduralRuntime.LeftHandGripOffsetLoc =
 		ViewModelLeftHandGripOffsetLoc +
-		(WeaponValues.LeftHandWallSideIKLocOffset * WallSideOnlyAlpha * WallAvoidSideSign);
-	ViewModelProceduralRuntime.LeftHandGripOffsetRot = ViewModelLeftHandGripOffsetRot;
-	ViewModelProceduralRuntime.LeftHandReloadGripOffsetLoc = WeaponValues.LeftHandReloadGripOffsetLoc;
-	ViewModelProceduralRuntime.LeftHandReloadGripOffsetRot = WeaponValues.LeftHandReloadGripOffsetRot;
+		(WeaponValues.LeftHandWallSideIKLocOffset * WallSideOnlyAlpha * WallAvoidSideSign) +
+		ViewModelLeftHandActionReturnGripOffsetLoc;
+	ViewModelProceduralRuntime.LeftHandGripOffsetRot =
+		ViewModelLeftHandGripOffsetRot +
+		ViewModelLeftHandActionReturnGripOffsetRot;
+	ViewModelProceduralRuntime.LeftHandReloadGripOffsetLoc =
+		ReloadActionGripOffsetLoc;
+	ViewModelProceduralRuntime.LeftHandReloadGripOffsetRot =
+		ReloadActionGripOffsetRot;
+	ViewModelProceduralRuntime.LeftHandEquipGripOffsetLoc =
+		EquipActionGripOffsetLoc;
+	ViewModelProceduralRuntime.LeftHandEquipGripOffsetRot =
+		EquipActionGripOffsetRot;
 	const float RuntimeLeftHandIKAlpha = bUseFirearmProcedural
-		? ViewModelLeftHandIKAlpha * NonReloadCrossfadeAlpha
+		? ViewModelLeftHandIKAlpha * NonActionCrossfadeAlpha
 		: 0.0f;
 	const float RuntimeLeftHandReloadIKAlpha = bUseFirearmProcedural
-		? FMath::Clamp(WeaponValues.LeftHandReloadIKAlpha, 0.0f, 1.0f) * ReloadCrossfadeAlpha
+		? FMath::Clamp(WeaponValues.LeftHandReloadIKAlpha, 0.0f, 1.0f) * ReloadIKCrossfadeAlpha
 		: 0.0f;
 	const float RuntimeLeftHandReloadArmAlpha = bUseFirearmProcedural
 		? FMath::Clamp(WeaponValues.LeftHandReloadArmAlpha, 0.0f, 1.0f) * ReloadCrossfadeAlpha
 		: 0.0f;
+	const float RuntimeLeftHandEquipIKAlpha = bUseFirearmProcedural
+		? FMath::Clamp(WeaponValues.LeftHandEquipIKAlpha, 0.0f, 1.0f) * EquipIKCrossfadeAlpha
+		: 0.0f;
+	const float RuntimeLeftHandEquipArmAlpha = bUseFirearmProcedural
+		? FMath::Clamp(WeaponValues.LeftHandEquipArmAlpha, 0.0f, 1.0f) * EquipCrossfadeAlpha
+		: 0.0f;
+	const float RuntimeLeftHandAnyIKAlpha = FMath::Clamp(
+		RuntimeLeftHandIKAlpha + RuntimeLeftHandReloadIKAlpha + RuntimeLeftHandEquipIKAlpha,
+		0.0f,
+		1.0f
+	);
 	ViewModelProceduralRuntime.LeftHandIKAlpha = RuntimeLeftHandIKAlpha;
-	ViewModelProceduralRuntime.LeftHandFreeAlpha = bUseFirearmProcedural ? (1.0f - RuntimeLeftHandIKAlpha) : 1.0f;
+	ViewModelProceduralRuntime.LeftHandFreeAlpha = bUseFirearmProcedural ? (1.0f - RuntimeLeftHandAnyIKAlpha) : 1.0f;
 	const FVector RuntimeLeftHandJointTargetLoc =
 		ViewModelLeftHandJointTargetLoc +
 		(WeaponValues.LeftHandSprintJointTargetLoc * RuntimeSprintAlpha) +
 		RuntimeLeftHandSprintPitchJointTargetLoc +
 		RuntimeLeftHandRecoilJointTargetLoc +
-		(WeaponValues.LeftHandWallMuzzleBlockJointTargetLoc * WallMuzzleBlockArmAlpha);
+		(WeaponValues.LeftHandWallMuzzleBlockJointTargetLoc * WallMuzzleBlockArmAlpha) +
+		WallCloseArmFollowLoc;
 	ViewModelProceduralRuntime.LeftHandJointTargetLoc = RuntimeLeftHandJointTargetLoc;
-	ViewModelProceduralRuntime.LeftHandReloadIKLoc = WeaponValues.LeftHandReloadIKLoc * ReloadCrossfadeAlpha;
-	ViewModelProceduralRuntime.LeftHandReloadIKRot = WeaponValues.LeftHandReloadIKRot * ReloadCrossfadeAlpha;
+	ViewModelProceduralRuntime.LeftHandReloadIKLoc =
+		(WeaponValues.LeftHandReloadIKLoc + WallActionHandFollowLoc) * ReloadIKCrossfadeAlpha;
+	ViewModelProceduralRuntime.LeftHandReloadIKRot =
+		(WeaponValues.LeftHandReloadIKRot + WallActionHandFollowRot) * ReloadIKCrossfadeAlpha;
 	ViewModelProceduralRuntime.LeftHandReloadJointTargetLoc =
 		ViewModelStandLeftHandJointTargetLoc +
+		WallActionArmFollowLoc +
 		(WeaponValues.LeftHandReloadJointTargetLoc * RuntimeLeftHandReloadArmAlpha);
 	ViewModelProceduralRuntime.LeftHandReloadIKAlpha = RuntimeLeftHandReloadIKAlpha;
+	ViewModelProceduralRuntime.LeftHandEquipIKLoc =
+		(WeaponValues.LeftHandEquipIKLoc + WallActionHandFollowLoc) * EquipIKCrossfadeAlpha;
+	ViewModelProceduralRuntime.LeftHandEquipIKRot =
+		(WeaponValues.LeftHandEquipIKRot + WallActionHandFollowRot) * EquipIKCrossfadeAlpha;
+	ViewModelProceduralRuntime.LeftHandEquipJointTargetLoc =
+		ViewModelStandLeftHandJointTargetLoc +
+		WallActionArmFollowLoc +
+		(WeaponValues.LeftHandEquipJointTargetLoc * RuntimeLeftHandEquipArmAlpha);
+	ViewModelProceduralRuntime.LeftHandEquipIKAlpha = RuntimeLeftHandEquipIKAlpha;
 	ViewModelProceduralRuntime.LeftUpperArmPitchLoc =
 		ViewModelLeftUpperArmPitchLoc +
 		(WeaponValues.LeftUpperArmSprintLoc * RuntimeSprintAlpha) +
 		RuntimeLeftUpperArmSprintPitchLoc +
 		RuntimeLeftUpperArmRecoilLoc +
-		(WeaponValues.LeftUpperArmWallMuzzleBlockLoc * WallMuzzleBlockArmAlpha);
+		(WeaponValues.LeftUpperArmWallMuzzleBlockLoc * WallMuzzleBlockArmAlpha) +
+		WallCloseArmFollowLoc;
 	ViewModelProceduralRuntime.LeftUpperArmPitchRot =
 		ViewModelLeftUpperArmPitchRot +
 		(WeaponValues.LeftUpperArmSprintRot * RuntimeSprintAlpha) +
 		RuntimeLeftUpperArmSprintPitchRot +
 		RuntimeLeftUpperArmRecoilRot +
-		(WeaponValues.LeftUpperArmWallMuzzleBlockRot * WallMuzzleBlockArmAlpha);
+		(WeaponValues.LeftUpperArmWallMuzzleBlockRot * WallMuzzleBlockArmAlpha) +
+		WallCloseArmFollowRot;
 	ViewModelProceduralRuntime.LeftUpperArmPitchAlpha = RuntimeLeftHandIKAlpha;
 	ViewModelProceduralRuntime.LeftLowerArmPitchRot =
 		ViewModelLeftLowerArmPitchRot +
@@ -1230,16 +1557,31 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralRuntime()
 	ViewModelProceduralRuntime.LeftLowerArmPitchAlpha = RuntimeLeftHandIKAlpha;
 	ViewModelProceduralRuntime.LeftUpperArmReloadLoc =
 		ViewModelStandLeftUpperArmPitchLoc +
+		WallActionArmFollowLoc +
 		(WeaponValues.LeftUpperArmReloadLoc * RuntimeLeftHandReloadArmAlpha);
 	ViewModelProceduralRuntime.LeftUpperArmReloadRot = BlendRotatorOffset(
-		ViewModelStandLeftUpperArmPitchRot,
-		ViewModelStandLeftUpperArmPitchRot + WeaponValues.LeftUpperArmReloadRot,
+		ViewModelStandLeftUpperArmPitchRot + WallActionArmFollowRot,
+		ViewModelStandLeftUpperArmPitchRot + WallActionArmFollowRot + WeaponValues.LeftUpperArmReloadRot,
 		RuntimeLeftHandReloadArmAlpha
 	);
 	ViewModelProceduralRuntime.LeftLowerArmReloadRot = BlendRotatorOffset(
 		ViewModelStandLeftLowerArmPitchRot,
 		ViewModelStandLeftLowerArmPitchRot + WeaponValues.LeftLowerArmReloadRot,
 		RuntimeLeftHandReloadArmAlpha
+	);
+	ViewModelProceduralRuntime.LeftUpperArmEquipLoc =
+		ViewModelStandLeftUpperArmPitchLoc +
+		WallActionArmFollowLoc +
+		(WeaponValues.LeftUpperArmEquipLoc * RuntimeLeftHandEquipArmAlpha);
+	ViewModelProceduralRuntime.LeftUpperArmEquipRot = BlendRotatorOffset(
+		ViewModelStandLeftUpperArmPitchRot + WallActionArmFollowRot,
+		ViewModelStandLeftUpperArmPitchRot + WallActionArmFollowRot + WeaponValues.LeftUpperArmEquipRot,
+		RuntimeLeftHandEquipArmAlpha
+	);
+	ViewModelProceduralRuntime.LeftLowerArmEquipRot = BlendRotatorOffset(
+		ViewModelStandLeftLowerArmPitchRot,
+		ViewModelStandLeftLowerArmPitchRot + WeaponValues.LeftLowerArmEquipRot,
+		RuntimeLeftHandEquipArmAlpha
 	);
 
 	// 재장전 시 팔을 앞/아래로 밀어 카메라 클리핑 방지 (reload 알파로 자동 페이드인/아웃)
@@ -1253,8 +1595,8 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralRuntime()
 	ViewModelProceduralRuntime.ForwardWalkLoc = RuntimeForwardWalkLoc;
 	ViewModelProceduralRuntime.ForwardWalkRot = RuntimeForwardWalkRot;
 	ViewModelProceduralRuntime.ForwardWalkAlpha = RuntimeForwardWalkAlpha;
-	ViewModelProceduralRuntime.ForwardWalkAnimLoc = ViewModelForwardWalkAnimLoc * ForwardWalkProceduralAlpha;
-	ViewModelProceduralRuntime.ForwardWalkAnimRot = ViewModelForwardWalkAnimRot * ForwardWalkProceduralAlpha;
+	ViewModelProceduralRuntime.ForwardWalkAnimLoc = ViewModelForwardWalkAnimLoc * ForwardWalkAnimProceduralAlpha;
+	ViewModelProceduralRuntime.ForwardWalkAnimRot = ViewModelForwardWalkAnimRot * ForwardWalkAnimProceduralAlpha;
 	ViewModelProceduralRuntime.StrafeWalkAlpha = StrafeWalkAlpha * NonSprintMovementProceduralAlpha;
 	ViewModelProceduralRuntime.CurrentStrafeWalkRot = ViewModelCurrentStrafeWalkRot * NonSprintMovementProceduralAlpha;
 	ViewModelProceduralRuntime.ReloadPoseAlpha = FirearmAlpha * ReloadCrossfadeAlpha;
@@ -1286,8 +1628,8 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralRuntime()
 		WeaponValues.WallMuzzleBlockUpPoseScale *
 		(1.0f - FMath::Clamp(WallMuzzleBlockDownPreferenceAlpha, 0.0f, 1.0f));
 	const float RuntimeWallAvoidUpAlpha = FMath::Clamp(
-		FMath::Max(WallAvoidUpAlpha, MuzzleBlockUpPoseAlpha) *
-		(1.0f - FMath::Clamp(WallCeilingAlpha, 0.0f, 1.0f)) *
+		FMath::Max(ScaledWallAvoidUpAlpha, MuzzleBlockUpPoseAlpha) *
+		(1.0f - FMath::Clamp(ScaledWallCeilingAlpha, 0.0f, 1.0f)) *
 		(1.0f - WallVeryClosePoseSuppressAlpha) *
 		WeaponValues.WallAvoidUpPoseAlphaScale,
 		0.0f,
@@ -1296,9 +1638,9 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralRuntime()
 	ViewModelProceduralRuntime.WallAvoidUpAlpha = RuntimeWallAvoidUpAlpha;
 	ViewModelProceduralRuntime.WallAvoidDownAlpha = FMath::Clamp(
 		FMath::Max3(
-			WallAvoidDownAlpha * (1.0f - WallVeryClosePoseSuppressAlpha),
+			ScaledWallAvoidDownAlpha * (1.0f - WallVeryClosePoseSuppressAlpha),
 			MuzzleBlockDownPoseAlpha,
-			WallCeilingAlpha * (1.0f - WallVeryClosePoseSuppressAlpha)
+			ScaledWallCeilingAlpha * (1.0f - WallVeryClosePoseSuppressAlpha)
 		),
 		0.0f,
 		1.0f
@@ -1312,6 +1654,50 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralRuntime()
 	ViewModelProceduralRuntime.bIsReloading = bIsReloading;
 }
 
+void UShooterFirstPersonAnimInstance::ResetWallOffsetState(bool bResetPoseAssets)
+{
+	WallOffsetAlpha = 0.0f;
+	WallSmoothedTargetAlpha = 0.0f;
+	WallAvoidUpAlpha = 0.0f;
+	WallUpSmoothedTargetAlpha = 0.0f;
+	WallAvoidDownAlpha = 0.0f;
+	WallDownSmoothedTargetAlpha = 0.0f;
+	WallAvoidSideAlpha = 0.0f;
+	WallSideSmoothedTargetAlpha = 0.0f;
+	WallAvoidSideSign = 0.0f;
+	WallMuzzleBlockAlpha = 0.0f;
+	WallMuzzleBlockSmoothedTargetAlpha = 0.0f;
+	WallVeryCloseAlpha = 0.0f;
+	WallVeryCloseSmoothedTargetAlpha = 0.0f;
+	WallVeryCloseTargetAlpha = 0.0f;
+	WallVeryCloseOwnTargetAlpha = 0.0f;
+	WallHardStopOwnTargetAlpha = 0.0f;
+	WallTopEdgeAlpha = 0.0f;
+	WallTopEdgeTargetAlpha = 0.0f;
+	WallCeilingAlpha = 0.0f;
+	WallCeilingTargetAlpha = 0.0f;
+	WallHardStopAlpha = 0.0f;
+	WallHardStopTargetAlpha = 0.0f;
+	WallHardStopSmoothedTargetAlpha = 0.0f;
+	WallHardStopSafetyAlpha = 0.0f;
+	WallMuzzleBlockDownPreferenceTargetAlpha = 0.0f;
+	WallMuzzleBlockDownPreferenceAlpha = 0.0f;
+	WallMuzzleBlockReleaseHoldTimer = 0.0f;
+	if (bResetPoseAssets)
+	{
+		WallAvoidUpPose = nullptr;
+		WallAvoidDownPose = nullptr;
+	}
+	WallOffsetLoc = FVector::ZeroVector;
+	WallOffsetRot = FRotator::ZeroRotator;
+	ViewModelWallOffsetLoc = FVector::ZeroVector;
+	ViewModelWallOffsetRot = FRotator::ZeroRotator;
+}
+
+// 벽 근접 대응 파이프라인. 카메라 기준 프로브로 벽을 측정해서
+// 단계별 알파(WallOffset → MuzzleBlock/Barrel → VeryClose → HardStop)와
+// 회피 포즈 알파를 만들고, 최종 뷰모델 위치/회전 오프셋을 합성한다.
+// 근접 단계(VeryClose/HardStop)는 3인칭과 raw 타깃을 union해 상태를 통일한다
 void UShooterFirstPersonAnimInstance::UpdateWallOffset(float DeltaSeconds, const FWeaponValues* WeaponValues)
 {
 	WallTargetAlpha = 0.0f;
@@ -1332,66 +1718,22 @@ void UShooterFirstPersonAnimInstance::UpdateWallOffset(float DeltaSeconds, const
 		!CachedShooterCharacter->IsLocallyControlled() ||
 		!CachedShooterCharacter->GetWorld())
 	{
-		WallOffsetAlpha = 0.0f;
-		WallAvoidUpAlpha = 0.0f;
-		WallAvoidDownAlpha = 0.0f;
-		WallAvoidSideAlpha = 0.0f;
-		WallAvoidSideSign = 0.0f;
-		WallMuzzleBlockAlpha = 0.0f;
-		WallVeryCloseAlpha = 0.0f;
-		WallVeryCloseTargetAlpha = 0.0f;
-		WallTopEdgeAlpha = 0.0f;
-		WallTopEdgeTargetAlpha = 0.0f;
-		WallCeilingAlpha = 0.0f;
-		WallCeilingTargetAlpha = 0.0f;
-		WallHardStopAlpha = 0.0f;
-		WallHardStopTargetAlpha = 0.0f;
-		WallHardStopSmoothedTargetAlpha = 0.0f;
-		WallHardStopSafetyAlpha = 0.0f;
-		WallMuzzleBlockDownPreferenceTargetAlpha = 0.0f;
-		WallMuzzleBlockDownPreferenceAlpha = 0.0f;
-		WallMuzzleBlockReleaseHoldTimer = 0.0f;
-		WallAvoidUpPose = nullptr;
-		WallAvoidDownPose = nullptr;
-		WallOffsetLoc = FVector::ZeroVector;
-		WallOffsetRot = FRotator::ZeroRotator;
-		ViewModelWallOffsetLoc = FVector::ZeroVector;
-		ViewModelWallOffsetRot = FRotator::ZeroRotator;
+		ResetWallOffsetState(/*bResetPoseAssets=*/true);
 		return;
 	}
 
 	UCameraComponent* Camera = CachedShooterCharacter->GetFirstPersonCameraComponent();
 	if (!Camera)
 	{
-		WallOffsetAlpha = 0.0f;
-		WallAvoidUpAlpha = 0.0f;
-		WallAvoidDownAlpha = 0.0f;
-		WallAvoidSideAlpha = 0.0f;
-		WallAvoidSideSign = 0.0f;
-		WallMuzzleBlockAlpha = 0.0f;
-		WallVeryCloseAlpha = 0.0f;
-		WallVeryCloseTargetAlpha = 0.0f;
-		WallTopEdgeAlpha = 0.0f;
-		WallTopEdgeTargetAlpha = 0.0f;
-		WallCeilingAlpha = 0.0f;
-		WallCeilingTargetAlpha = 0.0f;
-		WallHardStopAlpha = 0.0f;
-		WallHardStopTargetAlpha = 0.0f;
-		WallHardStopSmoothedTargetAlpha = 0.0f;
-		WallHardStopSafetyAlpha = 0.0f;
-		WallMuzzleBlockDownPreferenceTargetAlpha = 0.0f;
-		WallMuzzleBlockDownPreferenceAlpha = 0.0f;
-		WallMuzzleBlockReleaseHoldTimer = 0.0f;
-		WallOffsetLoc = FVector::ZeroVector;
-		WallOffsetRot = FRotator::ZeroRotator;
-		ViewModelWallOffsetLoc = FVector::ZeroVector;
-		ViewModelWallOffsetRot = FRotator::ZeroRotator;
+		ResetWallOffsetState(/*bResetPoseAssets=*/false);
 		return;
 	}
 
 	WallAvoidUpPose = WeaponValues->WallAvoidUpPose;
 	WallAvoidDownPose = WeaponValues->WallAvoidDownPose;
 
+	// ── 1. 카메라 기준 트레이스 파라미터 ─────────────────────────────────
+	// 가파른 피치에서는 총열이 벽에 나란히 눕기 때문에 반경/길이를 부스트한다
 	const FVector Start = Camera->GetComponentLocation();
 	const FVector Forward = Camera->GetForwardVector();
 	const FVector Right = Camera->GetRightVector();
@@ -1429,6 +1771,7 @@ void UShooterFirstPersonAnimInstance::UpdateWallOffset(float DeltaSeconds, const
 		Params.AddIgnoredActor(CurrentWeapon);
 	}
 
+	// ── 2. 십자 프로브 스윕 (중앙/상/하/좌/우) ────────────────────────────
 	const FVector BaseTraceStart =
 		Start +
 		Forward * ProbeForwardOffset +
@@ -1469,6 +1812,10 @@ void UShooterFirstPersonAnimInstance::UpdateWallOffset(float DeltaSeconds, const
 	const FWallProbeResult LowerProbe = SweepWallProbe(BaseTraceStart - Up * VerticalProbeOffset);
 	const FWallProbeResult RightProbe = SweepWallProbe(BaseTraceStart + Right * SideProbeOffset);
 	const FWallProbeResult LeftProbe = SweepWallProbe(BaseTraceStart - Right * SideProbeOffset);
+
+	// ── 3. 경계 판정 ─────────────────────────────────────────────────────
+	// TopEdge: 아래 프로브만 벽을 봄(벽 위 모서리 너머를 조준)
+	// Ceiling: 위 프로브만 벽을 봄(경계 아래에서 위쪽이 막힘)
 	WallTopEdgeTargetAlpha = FMath::Clamp(
 		LowerProbe.Alpha - FMath::Max(CenterProbe.Alpha, UpperProbe.Alpha),
 		0.0f,
@@ -1496,6 +1843,9 @@ void UShooterFirstPersonAnimInstance::UpdateWallOffset(float DeltaSeconds, const
 			: WeaponValues->WallCeilingBlendOutSpeed
 	);
 
+	// ── 4. 총구/총열 차단 프로브 ─────────────────────────────────────────
+	// 총열(Barrel)은 총구 기준점 뒤쪽 구간을 스윕해서, 조준 레이가 벽을
+	// 비껴가도 벽에 나란히 누운 총열이 감지되게 한다
 	const FVector MuzzleBlockTraceStart =
 		Start +
 		Forward * FMath::Max(WeaponValues->WallMuzzleBlockForwardOffset, 0.0f) +
@@ -1576,6 +1926,10 @@ void UShooterFirstPersonAnimInstance::UpdateWallOffset(float DeltaSeconds, const
 		WallTopEdgeAlpha
 	);
 	WallMuzzleBlockTargetAlpha = FMath::Max(WallMuzzleBlockTargetAlpha, BarrelBlockTargetAlpha);
+
+	// ── 5. HardStop: 실제 히트 거리 기반 최근접 ──────────────────────────
+	// 선형 프로브 알파는 벽이 아직 멀 때 이미 포화되므로, 최근접 정보는
+	// 히트 거리로 직접 램프한다
 	const float HardStopClearance = FMath::Max(WeaponValues->WallHardStopClearance, 0.0f);
 	const float HardStopRange = FMath::Max(WeaponValues->WallHardStopRange, KINDA_SMALL_NUMBER);
 	const auto GetHardStopAlphaFromDistance = [&](const float Distance) -> float
@@ -1592,6 +1946,13 @@ void UShooterFirstPersonAnimInstance::UpdateWallOffset(float DeltaSeconds, const
 		? FMath::Max(GetHardStopAlphaFromDistance(BarrelDistanceToMuzzle), BarrelBlockProbe.Alpha * 0.5f)
 		: 0.0f;
 	WallHardStopTargetAlpha = FMath::Max(MuzzleHardStopAlpha, BarrelHardStopAlpha);
+
+	// ── 6. VeryClose + 3인칭으로 raw 타깃 publish ────────────────────────
+	// 근접 단계 raw 타깃은 3인칭이 읽어가 자기 WallTight 타깃과 union한다
+	// (FP → TP 단방향). 역방향으로 3인칭 값을 수입하면 "몸은 벽에 붙었지만
+	// 카메라 방향은 뚫려 있는" 상황(위를 보거나 모서리를 비껴 조준)에서
+	// 뷰모델이 이유 없이 당겨져 손이 어긋나 보이므로 하지 않는다
+	WallHardStopOwnTargetAlpha = WallHardStopTargetAlpha;
 	const float VeryCloseProbeAlpha = FMath::Max(
 		CenterProbe.Alpha,
 		FMath::Min(FMath::Max(UpperProbe.Alpha, LowerProbe.Alpha), CenterProbe.Alpha + 0.25f)
@@ -1617,7 +1978,10 @@ void UShooterFirstPersonAnimInstance::UpdateWallOffset(float DeltaSeconds, const
 		FVector2D(0.0f, 1.0f),
 		VeryCloseSourceAlpha
 	);
+	WallVeryCloseOwnTargetAlpha = WallVeryCloseTargetAlpha;
 
+	// ── 7. 상/하 회피 라우팅 ─────────────────────────────────────────────
+	// Ceiling이 뚜렷하면 무조건 아래로, 아니면 위/아래 중 우세한 쪽으로
 	const bool bUpperDominant = UpperProbe.Alpha >= LowerProbe.Alpha;
 	const float RawUpAlpha = FMath::Max(UpperProbe.Alpha, bUpperDominant ? CenterProbe.Alpha : 0.0f);
 	const float RawDownAlpha = FMath::Max(LowerProbe.Alpha, bUpperDominant ? 0.0f : CenterProbe.Alpha);
@@ -1644,6 +2008,7 @@ void UShooterFirstPersonAnimInstance::UpdateWallOffset(float DeltaSeconds, const
 		WeaponValues->WallMuzzleBlockPreferenceBlendSpeed
 	);
 
+	// ── 8. 좌/우 회피 ────────────────────────────────────────────────────
 	const float RawRightAlpha = RightProbe.Alpha;
 	const float RawLeftAlpha = LeftProbe.Alpha;
 	const float CenterSideSuppressAlpha = CenterProbe.Alpha * 0.65f;
@@ -1665,6 +2030,7 @@ void UShooterFirstPersonAnimInstance::UpdateWallOffset(float DeltaSeconds, const
 
 	WallTargetAlpha = FMath::Max(WallUpTargetAlpha, WallDownTargetAlpha);
 
+	// ── 디버그 드로잉 (bDrawWallOffsetDebug) ─────────────────────────────
 	if (WeaponValues->bDrawWallOffsetDebug)
 	{
 		const auto DrawProbe = [&](const FWallProbeResult& Probe, const FVector& ProbeStart, const FColor& HitColor)
@@ -1836,38 +2202,69 @@ void UShooterFirstPersonAnimInstance::UpdateWallOffset(float DeltaSeconds, const
 		);
 	}
 
-	const float InterpSpeed = WallTargetAlpha > WallOffsetAlpha
+	// ── 9. 타깃 스무딩과 보간 ────────────────────────────────────────────
+	// 타깃 스무딩은 상승 시 프로브 노이즈를 가라앉히기 위한 것. 하강에도
+	// 적용하면 블렌드 아웃 보간 위에 지수 감쇠 꼬리가 하나 더 쌓이므로,
+	// 릴리즈 시에는 스무딩 타깃을 즉시 떨어뜨린다. 마지막으로 SnapWallAlpha가
+	// 점근 구간을 잘라 오프셋이 실제로 0에 도달하게 한다.
+	const auto SmoothWallTarget = [](float Smoothed, float Target, float SmoothAlpha)
+	{
+		return Target < Smoothed ? Target : FMath::Lerp(Smoothed, Target, SmoothAlpha);
+	};
+	const auto SnapWallAlpha = [](float Alpha, float Target)
+	{
+		return (Target <= KINDA_SMALL_NUMBER && Alpha < 0.04f) ? 0.0f : Alpha;
+	};
+
+	const float WallTargetSmoothSpeed = FMath::Max(WeaponValues->WallTargetSmoothSpeed, 0.0f);
+	const float WallTargetSmoothAlpha = 1.0f - FMath::Exp(-WallTargetSmoothSpeed * DeltaSeconds);
+	WallSmoothedTargetAlpha = SmoothWallTarget(WallSmoothedTargetAlpha, WallTargetAlpha, WallTargetSmoothAlpha);
+	WallUpSmoothedTargetAlpha = SmoothWallTarget(WallUpSmoothedTargetAlpha, WallUpTargetAlpha, WallTargetSmoothAlpha);
+	WallDownSmoothedTargetAlpha = SmoothWallTarget(WallDownSmoothedTargetAlpha, WallDownTargetAlpha, WallTargetSmoothAlpha);
+	WallSideSmoothedTargetAlpha = SmoothWallTarget(WallSideSmoothedTargetAlpha, WallSideTargetAlpha, WallTargetSmoothAlpha);
+
+	const float MuzzleBlockTargetSmoothAlpha =
+		1.0f - FMath::Exp(-FMath::Max(WeaponValues->WallMuzzleBlockTargetSmoothSpeed, 0.0f) * DeltaSeconds);
+	WallMuzzleBlockSmoothedTargetAlpha =
+		SmoothWallTarget(WallMuzzleBlockSmoothedTargetAlpha, WallMuzzleBlockTargetAlpha, MuzzleBlockTargetSmoothAlpha);
+
+	const float VeryCloseTargetSmoothAlpha =
+		1.0f - FMath::Exp(-FMath::Max(WeaponValues->WallVeryCloseTargetSmoothSpeed, 0.0f) * DeltaSeconds);
+	WallVeryCloseSmoothedTargetAlpha =
+		SmoothWallTarget(WallVeryCloseSmoothedTargetAlpha, WallVeryCloseTargetAlpha, VeryCloseTargetSmoothAlpha);
+
+	const float InterpSpeed = WallSmoothedTargetAlpha > WallOffsetAlpha
 		? WeaponValues->WallBlendInSpeed
 		: WeaponValues->WallBlendOutSpeed;
 
-	WallOffsetAlpha = FMath::FInterpTo(
+	WallOffsetAlpha = SnapWallAlpha(FMath::FInterpTo(
 		WallOffsetAlpha,
-		WallTargetAlpha,
+		WallSmoothedTargetAlpha,
 		DeltaSeconds,
 		InterpSpeed
-	);
+	), WallSmoothedTargetAlpha);
 
-	WallAvoidUpAlpha = FMath::FInterpTo(
+	WallAvoidUpAlpha = SnapWallAlpha(FMath::FInterpTo(
 		WallAvoidUpAlpha,
-		WallUpTargetAlpha,
+		WallUpSmoothedTargetAlpha,
 		DeltaSeconds,
-		WallUpTargetAlpha > WallAvoidUpAlpha ? WeaponValues->WallBlendInSpeed : WeaponValues->WallBlendOutSpeed
-	);
-	WallAvoidDownAlpha = FMath::FInterpTo(
+		WallUpSmoothedTargetAlpha > WallAvoidUpAlpha ? WeaponValues->WallBlendInSpeed : WeaponValues->WallBlendOutSpeed
+	), WallUpSmoothedTargetAlpha);
+	WallAvoidDownAlpha = SnapWallAlpha(FMath::FInterpTo(
 		WallAvoidDownAlpha,
-		WallDownTargetAlpha,
+		WallDownSmoothedTargetAlpha,
 		DeltaSeconds,
-		WallDownTargetAlpha > WallAvoidDownAlpha ? WeaponValues->WallBlendInSpeed : WeaponValues->WallBlendOutSpeed
-	);
-	WallAvoidSideAlpha = FMath::FInterpTo(
+		WallDownSmoothedTargetAlpha > WallAvoidDownAlpha ? WeaponValues->WallBlendInSpeed : WeaponValues->WallBlendOutSpeed
+	), WallDownSmoothedTargetAlpha);
+	WallAvoidSideAlpha = SnapWallAlpha(FMath::FInterpTo(
 		WallAvoidSideAlpha,
-		WallSideTargetAlpha,
+		WallSideSmoothedTargetAlpha,
 		DeltaSeconds,
-		WallSideTargetAlpha > WallAvoidSideAlpha ? WeaponValues->WallBlendInSpeed : WeaponValues->WallBlendOutSpeed
-	);
+		WallSideSmoothedTargetAlpha > WallAvoidSideAlpha ? WeaponValues->WallBlendInSpeed : WeaponValues->WallBlendOutSpeed
+	), WallSideSmoothedTargetAlpha);
 	WallAvoidSideSign = FMath::FInterpTo(
 		WallAvoidSideSign,
-		WallSideTargetAlpha > KINDA_SMALL_NUMBER ? WallSideTargetSign : 0.0f,
+		WallSideSmoothedTargetAlpha > KINDA_SMALL_NUMBER ? WallSideTargetSign : 0.0f,
 		DeltaSeconds,
 		WeaponValues->WallBlendInSpeed
 	);
@@ -1876,49 +2273,63 @@ void UShooterFirstPersonAnimInstance::UpdateWallOffset(float DeltaSeconds, const
 		WallMuzzleBlockReleaseHoldTimer = FMath::Max(WeaponValues->WallMuzzleBlockReleaseHoldTime, 0.0f);
 	}
 	const float EffectiveMuzzleBlockTargetAlpha = WallMuzzleBlockReleaseHoldTimer > 0.0f
-		? FMath::Max(WallMuzzleBlockTargetAlpha, WallMuzzleBlockAlpha)
-		: WallMuzzleBlockTargetAlpha;
-	WallMuzzleBlockAlpha = FMath::FInterpTo(
+		? FMath::Max(WallMuzzleBlockSmoothedTargetAlpha, WallMuzzleBlockAlpha)
+		: WallMuzzleBlockSmoothedTargetAlpha;
+	WallMuzzleBlockAlpha = SnapWallAlpha(FMath::FInterpTo(
 		WallMuzzleBlockAlpha,
 		EffectiveMuzzleBlockTargetAlpha,
 		DeltaSeconds,
 		EffectiveMuzzleBlockTargetAlpha > WallMuzzleBlockAlpha
 			? WeaponValues->WallMuzzleBlockBlendInSpeed
 			: WeaponValues->WallMuzzleBlockBlendOutSpeed
-	);
+	), EffectiveMuzzleBlockTargetAlpha);
 	const float HardStopTargetSmoothAlpha = 1.0f - FMath::Exp(-FMath::Max(WeaponValues->WallHardStopTargetSmoothSpeed, 0.0f) * DeltaSeconds);
-	WallHardStopSmoothedTargetAlpha = FMath::Lerp(WallHardStopSmoothedTargetAlpha, WallHardStopTargetAlpha, HardStopTargetSmoothAlpha);
-	WallHardStopAlpha = FMath::FInterpTo(
+	WallHardStopSmoothedTargetAlpha = SmoothWallTarget(WallHardStopSmoothedTargetAlpha, WallHardStopTargetAlpha, HardStopTargetSmoothAlpha);
+	WallHardStopAlpha = SnapWallAlpha(FMath::FInterpTo(
 		WallHardStopAlpha,
 		WallHardStopSmoothedTargetAlpha,
 		DeltaSeconds,
 		WallHardStopSmoothedTargetAlpha > WallHardStopAlpha
 			? WeaponValues->WallHardStopBlendInSpeed
 			: WeaponValues->WallHardStopBlendOutSpeed
-	);
-	WallHardStopSafetyAlpha = FMath::FInterpTo(
+	), WallHardStopSmoothedTargetAlpha);
+	WallHardStopSafetyAlpha = SnapWallAlpha(FMath::FInterpTo(
 		WallHardStopSafetyAlpha,
 		WallHardStopTargetAlpha,
 		DeltaSeconds,
 		WallHardStopTargetAlpha > WallHardStopSafetyAlpha
 			? WeaponValues->WallHardStopSafetyBlendInSpeed
 			: WeaponValues->WallHardStopSafetyBlendOutSpeed
-	);
-	WallVeryCloseAlpha = FMath::FInterpTo(
+	), WallHardStopTargetAlpha);
+	WallVeryCloseAlpha = SnapWallAlpha(FMath::FInterpTo(
 		WallVeryCloseAlpha,
-		WallVeryCloseTargetAlpha,
+		WallVeryCloseSmoothedTargetAlpha,
 		DeltaSeconds,
-		WallVeryCloseTargetAlpha > WallVeryCloseAlpha
+		WallVeryCloseSmoothedTargetAlpha > WallVeryCloseAlpha
 			? WeaponValues->WallVeryCloseBlendInSpeed
 			: WeaponValues->WallVeryCloseBlendOutSpeed
-	);
+	), WallVeryCloseSmoothedTargetAlpha);
 
+	// ── 10. 오프셋 합성 ──────────────────────────────────────────────────
+	// 단계별 당김을 합산해 최종 뷰모델 위치/회전 오프셋을 만든다.
+	// 근접 단계가 강해질수록 MuzzleBlock 항은 억제되어 이중 당김을 막는다
 	const float EasedAlpha = FMath::InterpEaseOut(0.0f, 1.0f, WallOffsetAlpha, 2.0f);
 	const float EasedMuzzleBlockAlpha = FMath::InterpEaseOut(0.0f, 1.0f, WallMuzzleBlockAlpha, 2.0f);
 	const float EasedVeryCloseAlpha = FMath::InterpEaseOut(0.0f, 1.0f, WallVeryCloseAlpha, 2.0f);
 	const float EasedHardStopAlpha = FMath::InterpEaseOut(0.0f, 1.0f, WallHardStopAlpha, 2.0f);
 	const float EasedHardStopSafetyAlpha = FMath::InterpEaseOut(0.0f, 1.0f, WallHardStopSafetyAlpha, 2.0f);
 	const float EasedFinalHardStopAlpha = FMath::Max(EasedHardStopAlpha, EasedHardStopSafetyAlpha);
+	const float ActionWallAlpha = FMath::Clamp(FMath::Max(ViewModelReloadPoseAlpha, ViewModelEquipPoseAlpha), 0.0f, 1.0f);
+	const float ActionWallOffsetScale = FMath::Lerp(
+		1.0f,
+		FMath::Clamp(WeaponValues->WallActionOffsetScale, 0.0f, 1.0f),
+		ActionWallAlpha
+	);
+	const float ActionWallHardStopScale = FMath::Lerp(
+		1.0f,
+		FMath::Clamp(WeaponValues->WallActionHardStopScale, 0.0f, 1.0f),
+		ActionWallAlpha
+	);
 	const float EasedPoseAlpha = FMath::InterpEaseOut(
 		0.0f,
 		1.0f,
@@ -1945,22 +2356,26 @@ void UShooterFirstPersonAnimInstance::UpdateWallOffset(float DeltaSeconds, const
 	const float MuzzleOffsetSuppressAlpha = FMath::Max(EasedVeryCloseAlpha * VeryCloseMuzzleOffsetSuppressScale, EasedFinalHardStopAlpha);
 	const float MuzzleOffsetScale = FMath::Clamp(1.0f - MuzzleOffsetSuppressAlpha, 0.0f, 1.0f);
 
-	ViewModelWallOffsetLoc =
+	const FVector WallNonHardStopOffsetLoc =
 		(WeaponValues->WallMaxOffsetLoc * EasedAlpha) +
 		(WeaponValues->WallMaxOffsetLoc * SideCloseAlpha * FMath::Clamp(WeaponValues->WallSideCloseOffsetScale, 0.0f, 1.0f)) +
 		(WeaponValues->WallMuzzleBlockLoc * EasedMuzzleBlockAlpha * MuzzleOffsetScale) +
-		(WeaponValues->WallVeryCloseLoc * EasedVeryCloseAlpha) +
-		(WeaponValues->WallHardStopLoc * EasedFinalHardStopAlpha);
+		(WeaponValues->WallVeryCloseLoc * EasedVeryCloseAlpha);
+	ViewModelWallOffsetLoc =
+		(WallNonHardStopOffsetLoc * ActionWallOffsetScale) +
+		(WeaponValues->WallHardStopLoc * EasedFinalHardStopAlpha * ActionWallHardStopScale);
 	const float VeryCloseMuzzleRotSuppressScale = FMath::Clamp(WeaponValues->WallVeryCloseMuzzleRotSuppressScale, 0.0f, 1.0f);
 	const float MuzzleRotSuppressAlpha = FMath::Max(EasedVeryCloseAlpha * VeryCloseMuzzleRotSuppressScale, EasedFinalHardStopAlpha);
 	const float MuzzleRotScale = FMath::Clamp(1.0f - MuzzleRotSuppressAlpha, 0.0f, 1.0f);
-	ViewModelWallOffsetRot =
+	const FRotator WallNonHardStopOffsetRot =
 		(WeaponValues->WallMaxOffsetRot * EasedAlpha) +
 		(WeaponValues->WallSideOffsetRot * WallAvoidSideSign * EasedSideAlpha) +
 		(WeaponValues->WallMuzzleBlockRot * EasedMuzzleBlockAlpha * (1.0f - WallMuzzleBlockDownPreferenceAlpha) * MuzzleRotScale) +
 		(WeaponValues->WallMuzzleBlockDownRot * EasedMuzzleBlockAlpha * WallMuzzleBlockDownPreferenceAlpha * MuzzleRotScale) +
-		(WeaponValues->WallVeryCloseRot * EasedVeryCloseAlpha) +
-		(WeaponValues->WallHardStopRot * EasedFinalHardStopAlpha);
+		(WeaponValues->WallVeryCloseRot * EasedVeryCloseAlpha);
+	ViewModelWallOffsetRot =
+		(WallNonHardStopOffsetRot * ActionWallOffsetScale) +
+		(WeaponValues->WallHardStopRot * EasedFinalHardStopAlpha * ActionWallHardStopScale);
 	WallOffsetLoc = ViewModelWallOffsetLoc;
 	WallOffsetRot = ViewModelWallOffsetRot;
 }

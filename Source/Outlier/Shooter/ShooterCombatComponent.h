@@ -49,6 +49,10 @@ protected:
 	void QueueSprintExitFire(AShooterCharacter& ShooterCharacter);
 	void RetryPendingSprintExitFire();
 	void ClearPendingSprintExitFire();
+	void BindReloadMontageEndedDelegates();
+	void UnbindReloadMontageEndedDelegates();
+
+	UFUNCTION()
 	void HandleReloadMontageEnded(UAnimMontage* Montage, bool bInterrupted);
 
 public:

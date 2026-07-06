@@ -15,6 +15,7 @@
 #include "Weapon/WeaponCoreRow.h"
 #include "Weapon/WeaponRangeRow.h"
 #include "Weapon/Spawn/WeaponSpawnPoint.h"
+#include "Shooter/Anim/ProceduralAnimValues.h"
 
 AWeaponBase::AWeaponBase()
 {
@@ -187,6 +188,34 @@ float AWeaponBase::GetDamageAtDistance(float DistanceCm) const
 		1.0f);
 
 	return Damage * FMath::Lerp(1.0f, MinDamageMultiplier, FalloffAlpha);
+}
+
+float AWeaponBase::GetFirstPersonProceduralRecoilMultiplier() const
+{
+	return FirstPersonProceduralValues
+		? FMath::Max(FirstPersonProceduralValues->WeaponValues.FirstPersonRecoilMultiplier, 0.0f)
+		: 1.0f;
+}
+
+float AWeaponBase::GetThirdPersonProceduralRecoilMultiplier() const
+{
+	return FirstPersonProceduralValues
+		? FMath::Max(FirstPersonProceduralValues->WeaponValues.ThirdPersonRecoilMultiplier, 0.0f)
+		: 1.0f;
+}
+
+float AWeaponBase::GetThirdPersonProceduralSprintMultiplier() const
+{
+	return FirstPersonProceduralValues
+		? FMath::Max(FirstPersonProceduralValues->WeaponValues.ThirdPersonSprintMultiplier, 0.0f)
+		: 1.0f;
+}
+
+float AWeaponBase::GetThirdPersonProceduralWallOffsetMultiplier() const
+{
+	return FirstPersonProceduralValues
+		? FMath::Max(FirstPersonProceduralValues->WeaponValues.ThirdPersonWallOffsetMultiplier, 0.0f)
+		: 1.0f;
 }
 
 void AWeaponBase::SetEquippedCollisionEnabled(bool bEnabled)
