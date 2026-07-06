@@ -34,7 +34,14 @@ public:
 
 	void AddViewModelRecoil(float GameplayRecoilScale, const FVector2D& NormalizedShotDirection);
 
+	float GetViewModelAimAlpha() const { return ViewModelAimAlpha; }
 	float GetViewModelSprintAlpha() const { return ViewModelSprintAlpha; }
+
+	// 1인칭 자체 트레이스로 계산한 근접 단계 raw 타깃. 3인칭이 이 값을 자기
+	// WallTight 타깃과 union해서(FP → TP 단방향) 1인칭이 HardStop/VeryClose에
+	// 들어가면 Tight도 같이 걸린다. 보간된 알파가 아니라 raw 타깃만 넘길 것
+	float GetWallVeryCloseOwnTargetAlpha() const { return WallVeryCloseOwnTargetAlpha; }
+	float GetWallHardStopOwnTargetAlpha() const { return WallHardStopOwnTargetAlpha; }
 
 	void UpdateViewModelRecoil(float DeltaSeconds);
 
@@ -47,8 +54,20 @@ protected:
 	void HandleOwnerDeath();
 
 	void UpdateFirstPersonProceduralValues(float DeltaSeconds);
-	void UpdateFirstPersonProceduralRuntime();
+	void UpdateFirstPersonProceduralRuntime(float DeltaSeconds);
 	void UpdateWallOffset(float DeltaSeconds, const FWeaponValues* WeaponValues);
+	bool IsMontageInProceduralActionWindow(const UAnimMontage* Montage, float EarlyReleaseTime) const;
+
+	// 벽 근접 ADS 해제 알파를 얻는다. 3인칭 인스턴스가 단일 기준으로 계산한
+	// 값을 우선 사용하고, 몸 메시에 인스턴스가 없으면 로컬 계산으로 폴백
+	float ResolveWallAimBreakAlpha(const FWeaponValues* WeaponValues) const;
+
+	// 손가락 디테일: 무작위 간격으로 짧은 펄스를 발생시켜 살아있는 느낌을 준다
+	void UpdateFingerMovement(float DeltaSeconds, const FWeaponValues& WeaponValues, bool bCanPlayIdleDetail);
+
+	// 벽 오프셋 상태 전체 초기화 (전제 조건이 깨진 조기 반환 경로에서 사용).
+	// bResetPoseAssets: 회피 포즈 애셋 참조까지 해제할지 여부
+	void ResetWallOffsetState(bool bResetPoseAssets);
 
 protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Stat)
@@ -89,6 +108,9 @@ protected:
 
 	UPROPERTY(BlueprintReadOnly, Category = "Anim")
 	uint8 bIsReloading : 1 = false;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Anim")
+	uint8 bIsEquipping : 1 = false;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Anim")
 	uint8 bIsDead : 1 = false;
@@ -179,6 +201,17 @@ protected:
 
 	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|LeftHand")
 	FRotator ViewModelLeftHandGripOffsetRot = FRotator::ZeroRotator;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|LeftHand")
+	FVector ViewModelLeftHandActionReturnGripOffsetLoc = FVector::ZeroVector;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|LeftHand")
+	FRotator ViewModelLeftHandActionReturnGripOffsetRot = FRotator::ZeroRotator;
+
+	FVector LastLeftHandActionGripOffsetLoc = FVector::ZeroVector;
+	FRotator LastLeftHandActionGripOffsetRot = FRotator::ZeroRotator;
+	float PreviousLeftHandActionIKAlpha = 0.0f;
+	float LeftHandActionReturnTimer = 0.0f;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|LeftHand")
 	float ViewModelLeftHandIKAlpha = 1.0f;
@@ -378,18 +411,26 @@ protected:
 	float WallAvoidSideSign = 0.0f;
 
 	float WallTargetAlpha = 0.0f;
+	float WallSmoothedTargetAlpha = 0.0f;
 	float WallUpTargetAlpha = 0.0f;
+	float WallUpSmoothedTargetAlpha = 0.0f;
 	float WallDownTargetAlpha = 0.0f;
+	float WallDownSmoothedTargetAlpha = 0.0f;
 	float WallSideTargetAlpha = 0.0f;
+	float WallSideSmoothedTargetAlpha = 0.0f;
 	float WallSideTargetSign = 0.0f;
 	float WallMuzzleBlockTargetAlpha = 0.0f;
+	float WallMuzzleBlockSmoothedTargetAlpha = 0.0f;
 	float WallVeryCloseTargetAlpha = 0.0f;
+	float WallVeryCloseOwnTargetAlpha = 0.0f;
+	float WallVeryCloseSmoothedTargetAlpha = 0.0f;
 	float WallVeryCloseAlpha = 0.0f;
 	float WallTopEdgeTargetAlpha = 0.0f;
 	float WallTopEdgeAlpha = 0.0f;
 	float WallCeilingTargetAlpha = 0.0f;
 	float WallCeilingAlpha = 0.0f;
 	float WallHardStopTargetAlpha = 0.0f;
+	float WallHardStopOwnTargetAlpha = 0.0f;
 	float WallHardStopSmoothedTargetAlpha = 0.0f;
 	float WallHardStopAlpha = 0.0f;
 	float WallHardStopSafetyAlpha = 0.0f;

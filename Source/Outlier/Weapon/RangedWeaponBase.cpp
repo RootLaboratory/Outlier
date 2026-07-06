@@ -26,6 +26,7 @@
 #include "Weapon/WeaponFeedbackDefinition.h"
 #include "Weapon/WeaponProjectileRow.h"
 #include "Weapon/WeaponRecoilRow.h"
+#include "Shooter/ShooterAnimInstance.h"
 #include "Shooter/ShooterFirstPersonAnimInstance.h"
 
 void ARangedWeaponBase::StartAttackCooldown()
@@ -233,7 +234,7 @@ void ARangedWeaponBase::FireShot()
 		AActor* HitActor = Hit.GetActor();
 		const FVector TraceEndPoint = bHit ? Hit.ImpactPoint : End;
 		const FVector ImpactNormal = bHit ? Hit.ImpactNormal : -ShotDirection;
-		MulticastPlayFireFX(TraceEndPoint, ImpactNormal, HitActor);
+		MulticastPlayFireFX(TraceEndPoint, ImpactNormal, HitActor, GetNormalizedLastShotDirection());
 
 		if (UVisualEventSubsystem* VisualSubsystem = GetWorld()->GetSubsystem<UVisualEventSubsystem>())
 		{
@@ -309,7 +310,10 @@ void ARangedWeaponBase::ApplyRecoilWithShotDirection(const FVector2D& Normalized
 
 	if (FPAnim)
 	{
-		FPAnim->AddViewModelRecoil(RecoilMultiplier, NormalizedShotDirection);
+		FPAnim->AddViewModelRecoil(
+			RecoilMultiplier * GetFirstPersonProceduralRecoilMultiplier(),
+			NormalizedShotDirection
+		);
 	}
 }
 
@@ -569,8 +573,22 @@ void ARangedWeaponBase::AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacte
 }
 
 
-void ARangedWeaponBase::MulticastPlayFireFX_Implementation(FVector_NetQuantize TraceEnd, FVector_NetQuantizeNormal ImpactNormal, AActor* Hit)
+void ARangedWeaponBase::MulticastPlayFireFX_Implementation(FVector_NetQuantize TraceEnd, FVector_NetQuantizeNormal ImpactNormal, AActor* Hit, FVector2D NormalizedShotDirection)
 {
+	if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner))
+	{
+		if (USkeletalMeshComponent* ThirdPersonMesh = Shooter->GetMesh())
+		{
+			if (UShooterAnimInstance* TPAnim = Cast<UShooterAnimInstance>(ThirdPersonMesh->GetAnimInstance()))
+			{
+				TPAnim->AddThirdPersonRecoil(
+					RecoilMultiplier * GetThirdPersonProceduralRecoilMultiplier(),
+					NormalizedShotDirection
+				);
+			}
+		}
+	}
+
 	ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
 	if (!OwnerCharacter)
 	{
@@ -1153,6 +1171,11 @@ void ARangedWeaponBase::StartAttack()
 	}
 
 	PerformAttack(); // 첫 발 즉시 발사
+
+	if (!Super::CanAttack() || bIsReloading || CurrentAmmo <= 0)
+	{
+		return;
+	}
 
 	UE_LOG(LogTemp, Log, TEXT("%s [%s] StartAttack Ammo=%d Automatic=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo, bIsAutomatic ? 1 : 0);
 	bIsAttacking = true;

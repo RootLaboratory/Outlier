@@ -545,6 +545,7 @@ public:
 	void UpdateLeanStep();
 	void UpdateCameraFOV(float DeltaSeconds);
 	void UpdateCameraRecoil(float DeltaSeconds);
+	float GetEffectiveFirstPersonAimAlpha() const;
 	float GetLookSensitivityScale() const;
 
 	bool CanStartSlide() const;
@@ -571,6 +572,8 @@ public:
 	void StopThirdPersonMontage(UAnimMontage* Montage);
 	void StopSplitMontages(UAnimMontage* FirstPersonMontage, UAnimMontage* ThirdPersonMontage);
 	void PlayEquipMontages();
+	const UAnimMontage* GetFirstPersonReloadMontage() const { return FirstPersonReloadMontage; }
+	const UAnimMontage* GetFirstPersonEquipMontage() const { return FirstPersonEquipMontage; }
 	void ClearInputIntent();
 
 	void CleanupOwnedWeapons();

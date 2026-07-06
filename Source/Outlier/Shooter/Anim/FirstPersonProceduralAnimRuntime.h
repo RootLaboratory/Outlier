@@ -71,6 +71,33 @@ struct OUTLIER_API FFirstPersonProceduralAnimRuntime
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Equip")
 	float EquipPoseAlpha = 0.0f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Equip|Left Hand")
+	FVector LeftHandEquipGripOffsetLoc = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Equip|Left Hand")
+	FRotator LeftHandEquipGripOffsetRot = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Equip|Left Hand")
+	FVector LeftUpperArmEquipLoc = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Equip|Left Hand")
+	FRotator LeftUpperArmEquipRot = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Equip|Left Hand")
+	FRotator LeftLowerArmEquipRot = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Equip|Left Hand IK")
+	FVector LeftHandEquipIKLoc = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Equip|Left Hand IK")
+	FRotator LeftHandEquipIKRot = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Equip|Left Hand IK")
+	FVector LeftHandEquipJointTargetLoc = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Equip|Left Hand IK")
+	float LeftHandEquipIKAlpha = 0.0f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Slide")
 	float SlidePoseAlpha = 0.0f;
 
