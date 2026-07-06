@@ -1,4 +1,6 @@
 #include "OutlierPostProcessSceneViewExtension.h"
+#include "FRDGADSWeaponBlurPass.h"
+#include "FRDGADSWeaponMaskPass.h"
 #include "FRDGDualKawaseBlurPass.h"
 #include "FRDGExplosionVolumePass.h"
 #include "FRDGExplosionVolumeVisualizePass.h"
@@ -12,6 +14,7 @@
 #include "PostProcessInputs.h"
 #include "PostProcess/PostProcessMaterialInputs.h"
 #include "ScreenPass.h"
+#include "SceneTexturesConfig.h"
 
 FOutlierPostProcessSceneViewExtension::FOutlierPostProcessSceneViewExtension(const FAutoRegister& AutoRegister, ULocalPlayer* InLocalPlayer)
 	: FSceneViewExtensionBase(AutoRegister)
@@ -101,7 +104,15 @@ void FOutlierPostProcessSceneViewExtension::SubscribeToPostProcessingPass(EPostP
 		InOutPassCallbacks.Add(
 			FAfterPassCallbackDelegate::CreateRaw(
 				this,
-				&FOutlierPostProcessSceneViewExtension::DatamoshingCallback_RenderThread));
+			&FOutlierPostProcessSceneViewExtension::DatamoshingCallback_RenderThread));
+	}
+
+	if (PassId == EPostProcessingPass::Tonemap && CachedParameters.ADSBlur.bEnabled)
+	{
+		InOutPassCallbacks.Add(
+			FAfterPassCallbackDelegate::CreateRaw(
+				this,
+				&FOutlierPostProcessSceneViewExtension::ADSWeaponBlurCallback_RenderThread));
 	}
 
 	if (PassId == EPostProcessingPass::Tonemap && FRDGExplosionVolumeVisualizePass::IsEnabled())
@@ -138,6 +149,43 @@ void FOutlierPostProcessSceneViewExtension::SubscribeToPostProcessingPass(EPostP
 
 void FOutlierPostProcessSceneViewExtension::PrePostProcessPass_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& InView, const FPostProcessingInputs& Inputs)
 {
+	CachedADSCustomDepth = nullptr;
+	CachedADSHardMask = nullptr;
+	CachedADSWeaponMask = nullptr;
+	if (CachedParameters.ADSBlur.bEnabled && IsTargetLocalPlayerView(InView) && Inputs.SceneTextures)
+	{
+		const auto SceneTextureParameters = Inputs.SceneTextures->GetParameters();
+		FRDGTextureRef CustomDepthTexture = SceneTextureParameters->CustomDepthTexture;
+		FRDGTextureSRVRef CustomStencilTexture = SceneTextureParameters->CustomStencilTexture;
+		if (CustomStencilTexture)
+		{
+			CachedADSCustomDepth = CustomDepthTexture;
+			const FIntPoint MaskExtent = InView.UnscaledViewRect.Size();
+			FRDGTextureRef HardMask = FRDGADSWeaponMaskPass::AddBuildMaskPass(
+				GraphBuilder,
+				InView,
+				CustomStencilTexture,
+				MaskExtent,
+				static_cast<uint32>(CachedParameters.ADSBlur.WeaponStencilValue));
+			CachedADSHardMask = HardMask;
+
+			FRDGTextureRef DilatedMask = FRDGADSWeaponMaskPass::AddDilatePass(
+				GraphBuilder,
+				InView,
+				HardMask,
+				MaskExtent,
+				CachedParameters.ADSBlur.MaskDilateRadius);
+
+			CachedADSWeaponMask = FRDGADSWeaponMaskPass::AddSoftenPass(
+				GraphBuilder,
+				InView,
+				DilatedMask,
+				HardMask,
+				MaskExtent,
+				CachedParameters.ADSBlur.MaskSoftness);
+		}
+	}
+
 	if (!FRDGExplosionVolumePass::IsEnabled() || !IsTargetLocalPlayerView(InView) || !Inputs.SceneTextures)
 	{
 		CachedVelocityVolume = nullptr;
@@ -191,6 +239,7 @@ bool FOutlierPostProcessSceneViewExtension::ShouldRenderAnyEffect() const
 		|| CachedParameters.BloomBlur.bEnabled
 		|| CachedParameters.DualKawaseBlur.bEnabled
 		|| CachedParameters.Datamoshing.bEnabled
+		|| CachedParameters.ADSBlur.bEnabled
 		|| HasHeatHazeSources();
 }
 
@@ -263,6 +312,28 @@ FScreenPassTexture FOutlierPostProcessSceneViewExtension::DualKawaseBlurCallback
 		View,
 		SceneColor,
 		CachedParameters.DualKawaseBlur,
+		Inputs.OverrideOutput);
+}
+
+FScreenPassTexture FOutlierPostProcessSceneViewExtension::ADSWeaponBlurCallback_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessMaterialInputs& Inputs)
+{
+	const FScreenPassTexture SceneColor = FScreenPassTexture::CopyFromSlice(
+		GraphBuilder,
+		Inputs.GetInput(EPostProcessMaterialInput::SceneColor));
+
+	if (!SceneColor.IsValid())
+	{
+		return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
+	}
+
+	return FRDGADSWeaponBlurPass::AddPass(
+		GraphBuilder,
+		View,
+		SceneColor,
+		CachedADSWeaponMask,
+		CachedADSHardMask,
+		CachedADSCustomDepth,
+		CachedParameters.ADSBlur,
 		Inputs.OverrideOutput);
 }
 

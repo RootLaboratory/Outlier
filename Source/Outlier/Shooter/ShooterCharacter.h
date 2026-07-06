@@ -25,6 +25,7 @@ DECLARE_MULTICAST_DELEGATE_TwoParams(FOnShooterShieldChanged, float /*CurrentShi
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnShooterPartnerShieldChanged, float /*CurrentPartnerShield*/, float /*MaxPartnerShield*/);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnShooterConditionChanged, const FGameplayTag& /*ConditionTag*/);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnShooterDynamicCrosshairChanged, bool /*bAiming*/);
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnShooterAim, bool /*bAiming*/, int32 /*WeaponStencilValue*/);
 
 UENUM(BlueprintType)
 enum class EMovementState : uint8
@@ -347,7 +348,7 @@ public:
 	FOnShooterPartnerShieldChanged OnShooterPartnerShieldChanged;
 	FOnShooterConditionChanged OnShooterConditionChanged;
 	FOnShooterDynamicCrosshairChanged OnShooterDynamicCrosshairChanged;
-
+	FOnShooterAim OnShooterAimingBlur;
 	// Weapon Socket Queries
 	FName GetFirstPersonWeaponSocketByType(EWeaponType WeaponType) const;
 	FName GetThirdPersonWeaponSocketByType(EWeaponType WeaponType) const;

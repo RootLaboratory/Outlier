@@ -170,6 +170,12 @@ protected:
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Projectile")
 	float ProjectileStunTime = 0.0f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ADS|Sight")
+	FName SightAimScalarParamName = TEXT("Flag");
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> SightAimMIDs;
+
 	FTimerHandle AutoFireTimerHandle;
 	FTimerHandle AttackCooldownTimerHandle;
 	FTimerHandle ReuseCooldownTimerHandle;
@@ -200,6 +206,7 @@ protected:
 	void ResetAttackCooldown();
 	void StartReuseCooldown();
 	void FinishReuseCooldown();
+	void CacheSightAimMaterials();
 
 public:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const;
@@ -230,6 +237,8 @@ public:
 
 	void AttachMagazineToLeftHand(AShooterCharacter* Shooter);
 	void AttachMagazineToWeapon();
+	UStaticMeshComponent* GetFirstSightMesh() const;
+	void SetSightAimMaterialFlag(bool bAiming);
 
 	UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
 	bool IsReloading() const { return bIsReloading; }
@@ -242,6 +251,8 @@ public:
 
 	UFUNCTION()
 	void OnRep_CurAmmo();
+
+	int32 ResolveADSBlurStencil();
 
 protected:
 	void UpdateLocalAmmoUI() const;

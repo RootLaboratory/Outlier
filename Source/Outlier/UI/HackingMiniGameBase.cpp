@@ -6,6 +6,11 @@ void UHackingMiniGameBase::InitializeMiniGame(AActor* InTargetActor, UHackableCo
 	HackableComponent = InHackableComponent;
 }
 
+void UHackingMiniGameBase::SetTimeLimit(float InTimeLimit)
+{
+	TimeLimit = FMath::Max(0.0f, InTimeLimit);
+}
+
 void UHackingMiniGameBase::StartMiniGame()
 {
 	if (bMiniGameActive)
@@ -53,5 +58,9 @@ void UHackingMiniGameBase::NativeTick(const FGeometry& MyGeometry, float InDelta
 
 	ElapsedTime += InDeltaTime;
 	OnMiniGameUpdated(InDeltaTime);
-}
 
+	if (bMiniGameActive && TimeLimit > 0.0f && ElapsedTime >= TimeLimit)
+	{
+		FinishMiniGame(EHackResult::Fail);
+	}
+}

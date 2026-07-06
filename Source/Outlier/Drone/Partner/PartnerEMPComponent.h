@@ -9,6 +9,24 @@ class UEMPableComponent;
 class UEMPLayerWidget;
 class UEMPMarkWidget;
 
+USTRUCT(BlueprintType)
+struct OUTLIER_API FPartnerEMPAbilityData
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EMP")
+	float EMPRange = 1500.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EMP")
+	float MarkingTime = 3.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EMP")
+	float StunDuration = 3.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EMP")
+	int32 MaxTargets = 99;
+};
+
 UCLASS()
 class OUTLIER_API UPartnerEMPComponent : public UPartnerCharacterComponentBase
 {
@@ -45,6 +63,9 @@ public:
 
 	UFUNCTION(Server, Reliable)
 	void TryEMP();
+
+	UFUNCTION(BlueprintCallable, Category = "EMP")
+	void CacheAbilityData(const FPartnerEMPAbilityData& InAbilityData);
 
 	UFUNCTION(Client, Reliable)
 	void ClientStartEMPSearch();
@@ -85,6 +106,9 @@ public:
 	bool IsEMPCandidateSearchActive() const { return bEMPCandidateSearchActive; }
 
 	UFUNCTION(BlueprintCallable, Category = "EMP")
+	bool IsEMPInteractionActive() const { return bEMPActive || bEMPCandidateSearchActive; }
+
+	UFUNCTION(BlueprintCallable, Category = "EMP")
 	const TArray<AActor*>& GetEMPCandidateActors() const { return EMPCandidateActors; }
 
 	UFUNCTION(Server, Reliable)
@@ -105,6 +129,9 @@ protected:
 	TObjectPtr<UEMPLayerWidget> EMPLayerWidget;
 
 private:
+	UPROPERTY(VisibleInstanceOnly, Category = "EMP")
+	FPartnerEMPAbilityData CachedAbilityData;
+
 	TArray<AActor*> EMPCandidateActors;
 	TArray<AActor*> MarkedActors;
 
