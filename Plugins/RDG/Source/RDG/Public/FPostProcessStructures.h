@@ -47,7 +47,25 @@ struct FDualKawaseBlurParameters
 	int32 DownsampleCount = 2;
 };
 
-// UI까지 합성된 최종 텍스처에 적용할 chromatic aberration 입력 파라미터.
+struct FADSBlurParameters
+{
+	int32 bEnabled = false;
+	int32 WeaponStencilValue = 3;
+	float AdsBlend = 0.0f;
+	float BlurRadius = 0.0f;
+	int32 PassCount = 3;
+	float MaskDilateRadius = 2.0f;
+	float MaskSoftness = 1.5f;
+	float InnerPreserve = 0.65f;
+	float DepthBlurStart = 0.0f;
+	float DepthBlurEnd = 0.08f;
+	float DepthBlurPower = 1.0f;
+	float DepthFocusBias = 0.0f;
+	int32 GatherSampleCount = 48;
+	float ReachSoftness = 1.0f;
+	float FocusDistanceWorld = 0.0f; 
+};
+
 struct FUIChromaticAberrationParameters
 {
 	int32 bEnabled = false;
@@ -68,4 +86,5 @@ struct FPostProcessStrcture
 	FBloomBlurParameters BloomBlur;
 	FDualKawaseBlurParameters DualKawaseBlur;
 	FDatamoshingParameters Datamoshing;
+	FADSBlurParameters ADSBlur;
 };

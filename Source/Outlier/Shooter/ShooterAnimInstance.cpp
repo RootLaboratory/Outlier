@@ -382,7 +382,7 @@ void UShooterAnimInstance::UpdateThirdPersonProceduralRuntime(float DeltaSeconds
 
 	ThirdPersonProceduralRuntime.TurnInPlaceDirection = TurnInPlaceDirection;
 
-	UE_LOG(LogTemp, Warning, TEXT("Yaw : %f, Direction : %f"), TurnInPlaceYaw, TurnInPlaceDirection);
+	//UE_LOG(LogTemp, Warning, TEXT("Yaw : %f, Direction : %f"), TurnInPlaceYaw, TurnInPlaceDirection);
 
 	ThirdPersonProceduralRuntime.TurnInPlacePlayRate = FMath::GetMappedRangeValueClamped(
 		FVector2D(ThirdPersonTurnInPlaceStartYaw, ThirdPersonTurnInPlaceFullYaw),
