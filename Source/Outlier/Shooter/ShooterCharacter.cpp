@@ -26,6 +26,7 @@
 #include "ShooterHealthComponent.h"
 #include "ShooterInventoryComponent.h"
 #include "ShooterCombatComponent.h"
+#include "ShooterFirstPersonAnimInstance.h"
 #include "ShooterMovementComponent.h"
 #include "LocalPlayerPostProcessSubsystem.h"
 #include "Weapon/WeaponBase.h"
@@ -106,7 +107,7 @@ void AShooterCharacter::BeginPlay()
 	{
 		if (FirstPersonMesh && !BaseFirstPersonMeshLocation.IsNearlyZero())
 		{
-			// Treat the view-model root as the single framing anchor and keep the mesh at its local origin.
+			// 뷰모델 루트를 단일 프레이밍 앵커로 쓰고, 메시는 로컬 원점에 유지한다
 			BaseFirstPersonViewModelRootLocation += BaseFirstPersonMeshLocation;
 			ViewModelRoot->SetRelativeLocation(BaseFirstPersonViewModelRootLocation);
 			BaseFirstPersonMeshLocation = FVector::ZeroVector;
@@ -167,6 +168,13 @@ void AShooterCharacter::RefreshFirstPersonShadowPolicy()
 		ThirdPersonMesh->SetOwnerNoSee(bLocalView);
 		ThirdPersonMesh->SetCastShadow(!bLocalView);
 		ThirdPersonMesh->SetCastHiddenShadow(false);
+		if (bLocalView)
+		{
+			// 1인칭이 이 인스턴스와 애님 상태(벽 ADS 해제, 근접 단계 union)를
+			// 공유하고 그림자 메시도 이 포즈를 따라가므로, 로컬에서 몸이
+			// 하나도 렌더되지 않아도 계속 애니메이션을 갱신해야 한다
+			ThirdPersonMesh->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
+		}
 	}
 
 	if (FirstPersonMesh)
@@ -978,16 +986,19 @@ void AShooterCharacter::UpdateCameraFOV(float DeltaSeconds)
 		return;
 	}
 
+	const float EffectiveAimAlpha = IsSprinting() ? 0.0f : GetEffectiveFirstPersonAimAlpha();
 	float TargetFOV = BaseCameraFOV;
 	float FOVInterpSpeed = CameraFOVInterpSpeed;
 	if (IsSprinting())
 	{
 		TargetFOV = SprintCameraFOV;
 	}
-	else if (IsAiming())
+	else if (EffectiveAimAlpha > KINDA_SMALL_NUMBER)
 	{
-		TargetFOV = AimCameraFOV;
-		FOVInterpSpeed = AimCameraFOVInterpInSpeed;
+		TargetFOV = FMath::Lerp(BaseCameraFOV, AimCameraFOV, EffectiveAimAlpha);
+		FOVInterpSpeed = TargetFOV < FirstPersonCamera->FieldOfView
+			? AimCameraFOVInterpInSpeed
+			: AimCameraFOVInterpOutSpeed;
 	}
 	else if (FirstPersonCamera->FieldOfView < BaseCameraFOV)
 	{
@@ -1003,6 +1014,22 @@ void AShooterCharacter::UpdateCameraFOV(float DeltaSeconds)
 		FOVInterpSpeed
 	);
 	FirstPersonCamera->SetFieldOfView(NewFOV);
+}
+
+float AShooterCharacter::GetEffectiveFirstPersonAimAlpha() const
+{
+	if (!IsAiming())
+	{
+		return 0.0f;
+	}
+
+	const USkeletalMeshComponent* Mesh1P = GetFirstPersonMesh();
+	const UShooterFirstPersonAnimInstance* FirstPersonAnimInstance = Mesh1P
+		? Cast<UShooterFirstPersonAnimInstance>(Mesh1P->GetAnimInstance())
+		: nullptr;
+	return FirstPersonAnimInstance
+		? FMath::Clamp(FirstPersonAnimInstance->GetViewModelAimAlpha(), 0.0f, 1.0f)
+		: 1.0f;
 }
 
 void AShooterCharacter::AddWeaponCameraRecoil(
@@ -1067,7 +1094,7 @@ float AShooterCharacter::GetLookSensitivityScale() const
 
 	if (IsAiming())
 	{
-		return AimLookSensitivityScale;
+		return FMath::Lerp(1.0f, AimLookSensitivityScale, GetEffectiveFirstPersonAimAlpha());
 	}
 
 	if (IsSprinting())
@@ -1767,6 +1794,17 @@ void AShooterCharacter::ServerJumpEnd_Implementation()
 
 void AShooterCharacter::ClientPlayFirstPersonActionMontage_Implementation(EShooterMontageAction Action, EWeaponType WeaponType)
 {
+	if (Action == EShooterMontageAction::Reload && FirstPersonReloadMontage && FirstPersonMesh)
+	{
+		if (UAnimInstance* FirstPersonAnimInstance = FirstPersonMesh->GetAnimInstance())
+		{
+			if (FirstPersonAnimInstance->Montage_IsPlaying(FirstPersonReloadMontage))
+			{
+				return;
+			}
+		}
+	}
+
 	PlayFirstPersonActionMontage(Action, WeaponType);
 }
 
