@@ -54,7 +54,7 @@ protected:
 public:
 	UShooterCombatComponent();
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
-
+	virtual void TickComponent(float DeltaTime,ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 	void TryReload();
 	void HandleAimPressed();
 	void HandleAimReleased();

@@ -360,6 +360,10 @@ void ARangedWeaponBase::ApplySightMesh()
 		FirstSight->SetCollisionResponseToAllChannels(ECR_Ignore);
 		FirstSight->SetGenerateOverlapEvents(false);
 		FirstSight->SetOnlyOwnerSee(true);
+
+		FirstSight->SetRenderCustomDepth(true);
+		FirstSight->SetCustomDepthStencilValue(3);
+		FirstSight->SetCustomDepthStencilWriteMask(ERendererStencilMask::ERSM_Default);
 	}
 
 	if (ThirdSight)
@@ -474,6 +478,16 @@ void ARangedWeaponBase::AttachMagazineToLeftHand(AShooterCharacter*)
 void ARangedWeaponBase::AttachMagazineToWeapon()
 {
 	HideHandMagazine();
+}
+
+UStaticMeshComponent* ARangedWeaponBase::GetFirstSightMesh() const
+{
+	if (FirstSight)
+	{
+		return FirstSight;
+	}
+
+	return nullptr;
 }
 
 void ARangedWeaponBase::AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacter* NewOwner)
@@ -712,6 +726,19 @@ void ARangedWeaponBase::OnRep_EquippedState()
 	}
 }
 
+int32 ARangedWeaponBase::ResolveADSBlurStencil()
+{
+	constexpr int32 DefaultADSWeaponStencil = 3;
+
+	if (!FirstPersonWeaponMesh)
+	{
+		return DefaultADSWeaponStencil;
+	}
+
+	const int32 StencilValue = FirstPersonWeaponMesh->CustomDepthStencilValue;
+	return StencilValue > 0 ? StencilValue : DefaultADSWeaponStencil;
+}
+
 void ARangedWeaponBase::ClientNotifyShotFired_Implementation(FVector2D NormalizedShotDirection)
 {
 	ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
@@ -908,6 +935,52 @@ void ARangedWeaponBase::OnConstruction(const FTransform& Transform)
 
 	ApplySightMesh();
 	ApplyMagazineMeshSettings();
+	CacheSightAimMaterials();
+}
+
+void ARangedWeaponBase::CacheSightAimMaterials()
+{
+	SightAimMIDs.Reset();
+
+	if (!FirstSight)
+	{
+		return;
+	}
+
+	//hard coding; 
+	static constexpr int32 SightSlots[] = { 1, 2 };
+
+	for (const int32 SlotIndex : SightSlots)
+	{
+		if (SlotIndex >= FirstSight->GetNumMaterials())
+		{
+			continue;
+		}
+
+		UMaterialInstanceDynamic* MID = FirstSight->CreateAndSetMaterialInstanceDynamic(SlotIndex);
+		if (MID)
+		{
+			SightAimMIDs.Add(MID);
+		}
+	}
+}
+
+void ARangedWeaponBase::SetSightAimMaterialFlag(bool bAiming)
+{
+	if (SightAimMIDs.Num() == 0)
+	{
+		CacheSightAimMaterials();
+	}
+
+	const float FlagValue = bAiming ? 1.0f : 0.0f;
+
+	for (UMaterialInstanceDynamic* MID : SightAimMIDs)
+	{
+		if (MID)
+		{
+			MID->SetScalarParameterValue(SightAimScalarParamName, FlagValue);
+		}
+	}
 }
 
 void ARangedWeaponBase::InitializeFromDataTables()

@@ -19,6 +19,17 @@ AShooterPlayerController::AShooterPlayerController()
 	DefaultPlayerRole = EOutlierPlayerRole::Shooter;
 }
 
+void AShooterPlayerController::SocketDistanceUpdate(float Distance)
+{
+	if (ULocalPlayer* LP = this->GetLocalPlayer())
+	{
+		if (ULocalPlayerPostProcessSubsystem* PPSubsystem = LP->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
+		{
+			PPSubsystem->SetADSSocketDistance(Distance);
+		}
+	}
+}
+
 void AShooterPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
@@ -140,6 +151,10 @@ void AShooterPlayerController::BindShooterCharacterDelegates(AShooterCharacter* 
 		this,
 		&AShooterPlayerController::HandleShooterDynamicCrosshair
 	);
+
+	ShooterCharacter->OnShooterAimingBlur.AddUObject(
+		this, &AShooterPlayerController::HandleShooterAimingBlur
+	);
 }
 
 void AShooterPlayerController::UnbindShooterCharacterDelegates()
@@ -156,6 +171,7 @@ void AShooterPlayerController::UnbindShooterCharacterDelegates()
 	BoundShooterCharacter->OnShooterPartnerShieldChanged.RemoveAll(this);
 	BoundShooterCharacter->OnShooterConditionChanged.RemoveAll(this);
 	BoundShooterCharacter->OnShooterDynamicCrosshairChanged.RemoveAll(this);
+	BoundShooterCharacter->OnShooterAimingBlur.RemoveAll(this);
 	BoundShooterCharacter = nullptr;
 }
 
@@ -376,7 +392,6 @@ void AShooterPlayerController::OnWeaponChanged(EWeaponType NewType)
 	{
 		UE_LOG(LogTemp, Error, TEXT("Shooter UI subsystem is not ready"));
 	}
-	
 }
 
 void AShooterPlayerController::HandleAbilitySelected(FGameplayTag AbilityTag)
@@ -389,5 +404,16 @@ void AShooterPlayerController::HandleAbilitySelected(FGameplayTag AbilityTag)
 	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
 	{
 		UISubsystem->OnCurrentAbilityChanged(AbilityTag);
+	}
+}
+
+void AShooterPlayerController::HandleShooterAimingBlur(bool InFlag, int32 WeaponStencilValue)
+{
+	if (ULocalPlayer* LP = this->GetLocalPlayer())
+	{
+		if (ULocalPlayerPostProcessSubsystem* PPSubsystem = LP->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
+		{
+			PPSubsystem->SetADSBlurAiming(InFlag, WeaponStencilValue);
+		}
 	}
 }

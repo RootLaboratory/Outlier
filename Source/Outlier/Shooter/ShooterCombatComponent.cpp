@@ -3,6 +3,7 @@
 #include "Shooter/ShooterCombatComponent.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Shooter/ShooterFirstPersonAnimInstance.h"
+#include "Weapon/WeaponBase.h"
 #include "Weapon/RangedWeaponBase.h"
 #include "Shooter/ShooterMovementComponent.h"
 #include "OutlierNetUtils.h"
@@ -10,11 +11,35 @@
 #include "Animation/AnimMontage.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "Shooter/ShooterPlayerController.h"
 #include "Net/UnrealNetwork.h"
+
+namespace
+{
+	//매 프레임마다 Socket 위치 넘겨주기.
+	static const FName ADSFocusSocketName(TEXT("OpticAimPoint"));
+	float ResolveADSFocusDistance(AWeaponBase* Weapon, const FVector& CameraLocation)
+	{
+		ARangedWeaponBase* Base = Cast<ARangedWeaponBase>(Weapon);
+
+		if (Base)
+		{
+			if (!Base->GetFirstSightMesh()->DoesSocketExist(ADSFocusSocketName))
+			{
+				UE_LOG(LogTemp, Error, TEXT("NO Sockett"));
+
+				return -1.0f;
+			}
+		}
+		
+		const FVector SocketLocation = Base->GetFirstSightMesh()->GetSocketLocation(ADSFocusSocketName);
+		return FVector::Dist(CameraLocation, SocketLocation);
+	}
+}
 
 UShooterCombatComponent::UShooterCombatComponent()
 {
-	PrimaryComponentTick.bCanEverTick = false;
+	PrimaryComponentTick.bCanEverTick = true;
 	SetIsReplicatedByDefault(true);
 }
 
@@ -26,6 +51,41 @@ void UShooterCombatComponent::GetLifetimeReplicatedProps(TArray<FLifetimePropert
 	DOREPLIFETIME(UShooterCombatComponent, bIsReloading);
 	DOREPLIFETIME(UShooterCombatComponent, bSecondaryOnCooldown);
 	DOREPLIFETIME(UShooterCombatComponent, bIsMeleeAttacking);
+}
+
+void UShooterCombatComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
+{
+	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+
+	if (!IsAiming()) return;
+
+	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	if (!ShooterCharacter)
+	{
+		return;
+	}
+
+	ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(ShooterCharacter->CurrentWeapon);
+	if (!RangedWeapon)
+	{
+		return;
+	}
+
+	//Socket, 
+	AShooterPlayerController* ShooterController = Cast<AShooterPlayerController>(ShooterCharacter->GetController());
+
+	if (const ULocalPlayer* LocalPlayer = ShooterController->GetLocalPlayer())
+	{
+		if (const APlayerController* PC = LocalPlayer->GetPlayerController(GetWorld()))
+		{
+			if (const APlayerCameraManager* CameraManager = PC->PlayerCameraManager)
+			{
+				const FVector CameraLocation = CameraManager->GetCameraLocation();
+
+				ShooterController->SocketDistanceUpdate(ResolveADSFocusDistance(RangedWeapon, CameraLocation));
+			}
+		}
+	}
 }
 
 void UShooterCombatComponent::TryReload()
@@ -173,7 +233,10 @@ void UShooterCombatComponent::HandleAimPressed()
 	bIsAiming = true;
 	ShooterCharacter->CombatState = ECombatState::Aim;
 	RangedWeapon->SetAiming(true);
+	RangedWeapon->SetSightAimMaterialFlag(true);
+
 	ShooterCharacter->OnShooterDynamicCrosshairChanged.Broadcast(true);
+	ShooterCharacter->OnShooterAimingBlur.Broadcast(true, RangedWeapon->ResolveADSBlurStencil()); //PostPorcessing 전용 총 Mesh Stencil 받아오기.
 }
 
 void UShooterCombatComponent::HandleAimReleased()
@@ -187,6 +250,7 @@ void UShooterCombatComponent::HandleAimReleased()
 	if (!ShooterCharacter->HasAuthority())
 	{
 		ShooterCharacter->ServerSetAimState(false);
+
 	}
 
 	StopAimInternal();
@@ -577,11 +641,13 @@ void UShooterCombatComponent::StopAimInternal()
 	if (ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(ShooterCharacter->CurrentWeapon))
 	{
 		RangedWeapon->SetAiming(false);
-	}
+		RangedWeapon->SetSightAimMaterialFlag(false);
 
-	if (bWasAiming)
-	{
-		ShooterCharacter->OnShooterDynamicCrosshairChanged.Broadcast(false);
+		if (bWasAiming)
+		{
+			ShooterCharacter->OnShooterDynamicCrosshairChanged.Broadcast(false);
+			ShooterCharacter->OnShooterAimingBlur.Broadcast(false, RangedWeapon->ResolveADSBlurStencil());
+		}
 	}
 }
 
