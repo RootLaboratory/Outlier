@@ -18,6 +18,7 @@
 #include "Shooter/ShooterPlayerController.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Drone/Partner/PartnerCharacter.h"
+#include "Enemy/EnemyBase.h"
 #include "OutlierNetUtils.h"
 #include "Drone/Partner/PartnerShieldSphere.h"
 #include "Net/UnrealNetwork.h"
@@ -216,6 +217,11 @@ void ARangedWeaponBase::FireShot()
 		{
 			HitCharacter->ApplyDamageInternal(DamageToApply);
 			UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot applied Damage=%.1f To=%s"), OutlierNet::GetNetPrefix(this), *GetName(), DamageToApply, *GetNameSafe(HitCharacter));
+		}
+		else if (AEnemyBase* HitEnemy = Cast<AEnemyBase>(Hit.GetActor()))
+		{
+			HitEnemy->ApplyDamageInternal(DamageToApply);
+			UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot applied Enemy Damage=%.1f To=%s"), OutlierNet::GetNetPrefix(this), *GetName(), DamageToApply, *GetNameSafe(HitEnemy));
 		}
 		else if (APartnerCharacter* PartnerCharacter = Cast<APartnerCharacter>(Hit.GetActor()))
 		{

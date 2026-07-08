@@ -15,6 +15,7 @@
 #include "FirstPerson/FirstPersonPlayerController.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/NetConnection.h"
+#include "Enemy/EnemyBase.h"
 #include "GameFramework/PlayerStart.h"
 #include "Kismet/GameplayStatics.h"
 #include "GameFramework/PlayerState.h"
@@ -435,6 +436,14 @@ void AOutlierGameMode::RespawnPairAtCheckpoint(AController* Controller)
 	if (!OldPartner && PartnerPlayerState)
 	{
 		OldPartner = PartnerPlayerState->GetPartnerCharacter();
+	}
+
+	if (APartnerPlayerController* PartnerController = Cast<APartnerPlayerController>(GetControllerFromPlayerState(PartnerPlayerState)))
+	{
+		if (Cast<AEnemyBase>(PartnerController->GetPawn()))
+		{
+			PartnerController->ReleaseEnemyPossession();
+		}
 	}
 
 	ShooterPlayerState->SetShooterCharacter(nullptr);

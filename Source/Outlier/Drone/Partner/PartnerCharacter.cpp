@@ -460,7 +460,7 @@ EPartnerBoundaryState APartnerCharacter::GetBoundaryOutside()
 
 void APartnerCharacter::HandlePartnerHit()
 {
-	if (!HasAuthority() || MaxHitCount <= 0)
+	if (!HasAuthority() || MaxHitCount <= 0 || bIsInvincible || bIsRebooting)
 	{
 		return;
 	}
@@ -484,6 +484,29 @@ void APartnerCharacter::HandlePartnerHit()
 	if (CurrentHitCount >= MaxHitCount)
 	{
 		StartReboot();
+	}
+}
+
+void APartnerCharacter::SetInvincibleForEnemyPossession(bool bNewInvincible)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	bInvincibleForEnemyPossession = bNewInvincible;
+
+	if (bNewInvincible)
+	{
+		GetWorldTimerManager().ClearTimer(HitInvincibleTimerHandle);
+		GetWorldTimerManager().ClearTimer(RebootInvincibleTimerHandle);
+		bIsInvincible = true;
+		return;
+	}
+
+	if (!bIsRebooting)
+	{
+		bIsInvincible = false;
 	}
 }
 
@@ -543,7 +566,7 @@ void APartnerCharacter::FinishReboot()
 
 void APartnerCharacter::ClearHitInvincible()
 {
-	if (!bIsRebooting)
+	if (!bIsRebooting && !bInvincibleForEnemyPossession)
 	{
 		bIsInvincible = false;
 	}
@@ -551,7 +574,10 @@ void APartnerCharacter::ClearHitInvincible()
 
 void APartnerCharacter::ClearRebootInvincible()
 {
-	bIsInvincible = false;
+	if (!bInvincibleForEnemyPossession)
+	{
+		bIsInvincible = false;
+	}
 }
 
 bool APartnerCharacter::CanAcceptInput() const

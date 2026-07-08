@@ -337,6 +337,8 @@ protected:
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Survival")
 	uint8 bIsInvincible : 1 = false;
 
+	uint8 bInvincibleForEnemyPossession : 1 = false;
+
 	UPROPERTY(ReplicatedUsing = OnRep_CurrentHitCount, VisibleAnywhere, BlueprintReadOnly, Category = "Survival")
 	int32 CurrentHitCount = 0;
 
@@ -464,5 +466,6 @@ public:
 	void NullifyDamagedEvenet() const;
 
 	void HandlePartnerHit();
+	void SetInvincibleForEnemyPossession(bool bNewInvincible);
 
 };
