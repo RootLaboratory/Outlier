@@ -673,6 +673,7 @@ void APartnerCharacter::ApplyAccelerateState(bool bNewAccelerate)
 
 	if (MovementComponent)
 	{
+		MovementComponent->ApplyPartnerFlightSettings();
 		MovementComponent->ResetMovementFeel();
 	}
 }
@@ -840,6 +841,11 @@ void  APartnerCharacter::InitializeFromDataTables()
 	if (TestAbilityComponent)
 	{
 		TestAbilityComponent->RefreshCachedPartnerAbilityData();
+	}
+
+	if (MovementComponent)
+	{
+		MovementComponent->ApplyPartnerFlightSettings();
 	}
 }
 
