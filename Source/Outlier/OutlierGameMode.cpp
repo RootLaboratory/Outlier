@@ -358,6 +358,26 @@ void AOutlierGameMode::Logout(AController* Exiting)
 		{
 			ShooterCharacter->CleanupOwnedWeapons();
 		}
+
+		if (APartnerPlayerController* PartnerController = Cast<APartnerPlayerController>(Exiting))
+		{
+			if (AEnemyBase* EnemyPawn = Cast<AEnemyBase>(Exiting->GetPawn()))
+			{
+				// 캐시를 먼저 비워야 함 — 아래 Destroy()가 트리거하는 PawnPendingDestroy() 안전장치가
+				// 이미 지워질 캐시된 Partner를 복원하려고 시도하는 걸 막기 위함.
+				// AI에게 돌려주지 않고 바로 지우는 건, 일반 Shooter/Partner 로그아웃과 동일하게
+				// 빙의 중이던 Pawn과 원래 Pawn이 둘 다 사라지는 게 자연스럽다는 판단.
+				APartnerCharacter* CachedPartner = PartnerController->ExtractCachedPartnerCharacterForLogout();
+
+				EnemyPawn->ClearPossessedPlayerState();
+				EnemyPawn->Destroy();
+
+				if (CachedPartner)
+				{
+					CachedPartner->Destroy();
+				}
+			}
+		}
 	}
 
 	Super::Logout(Exiting);

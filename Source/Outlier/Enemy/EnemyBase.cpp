@@ -69,6 +69,13 @@ void AEnemyBase::PossessedBy(AController* NewController)
 
 void AEnemyBase::UnPossessed()
 {
+	// APartnerCharacter::UnPossessed()와 동일한 이유 — UnPossessed() 시 InputComponent가
+	// 컨트롤러 입력 스택에 남아있으면 재빙의 전까지 입력이 중복 발동할 수 있음
+	if (APlayerController* PC = Cast<APlayerController>(GetController()))
+	{
+		DisableInput(PC);
+	}
+
 	Super::UnPossessed();
 
 	SetEnemyPossessed(false);

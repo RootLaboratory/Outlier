@@ -36,6 +36,9 @@ void AVECDrone::ApplyMovementFromRuntimeStat()
 	if (UCharacterMovementComponent* MovementComponent = GetCharacterMovement())
 	{
 		MovementComponent->SetMovementMode(MOVE_Flying);
+		// ACharacter::Restart()가 SetDefaultMovementMode()를 호출하면서 빙의 전환 시
+		// MovementMode를 DefaultLandMovementMode로 되돌리는데, 이걸 안 해두면 빙의 해제 후 드론이 추락함
+		MovementComponent->DefaultLandMovementMode = MOVE_Flying;
 		MovementComponent->MaxFlySpeed = FMath::Max(RuntimeStat.MoveSpeed, 0.0f);
 		MovementComponent->BrakingDecelerationFlying = MovementComponent->BrakingDecelerationWalking;
 		MovementComponent->GravityScale = 0.0f;

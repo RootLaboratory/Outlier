@@ -60,7 +60,9 @@ void UShooterCombatComponent::TickComponent(float DeltaTime, ELevelTick TickType
 	if (!IsAiming()) return;
 
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (!ShooterCharacter)
+	// Controller는 소유 클라이언트에만 리플리케이트됨 — 이 틱이 다른 플레이어의 화면(원격/시뮬레이트 프록시)에서
+	// 돌아가는 중이면 GetController()가 항상 null이라 아래에서 널 참조 크래시가 났었음
+	if (!ShooterCharacter || !ShooterCharacter->IsLocallyControlled())
 	{
 		return;
 	}
@@ -71,8 +73,12 @@ void UShooterCombatComponent::TickComponent(float DeltaTime, ELevelTick TickType
 		return;
 	}
 
-	//Socket, 
+	//Socket,
 	AShooterPlayerController* ShooterController = Cast<AShooterPlayerController>(ShooterCharacter->GetController());
+	if (!ShooterController)
+	{
+		return;
+	}
 
 	if (const ULocalPlayer* LocalPlayer = ShooterController->GetLocalPlayer())
 	{

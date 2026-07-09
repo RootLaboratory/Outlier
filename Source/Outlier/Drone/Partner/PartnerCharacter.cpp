@@ -120,6 +120,19 @@ void APartnerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 	EnhancedInputComponent->BindAction(PartnerInputConfig->VerticalMoveAction, ETriggerEvent::Completed, this, &APartnerCharacter::StopVerticalMove);
 }
 
+void APartnerCharacter::UnPossessed()
+{
+	// UnPossessed()만으로는 이 Pawn의 InputComponent가 컨트롤러 입력 스택에서 자동으로 빠지지 않음
+	// (엔진은 폰이 곧 파괴될 거라 가정함). Partner는 Enemy 빙의 중에도 캐싱되어 살아있으므로
+	// 명시적으로 빼주지 않으면 겹치는 키 입력이 이전 바인딩까지 같이 발동함
+	if (APlayerController* PC = Cast<APlayerController>(GetController()))
+	{
+		DisableInput(PC);
+	}
+
+	Super::UnPossessed();
+}
+
 void APartnerCharacter::DoMove(float Right, float Forward)
 {
 	const FVector2D MoveValue(Right, Forward);
@@ -180,7 +193,6 @@ void APartnerCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 
 void APartnerCharacter::OnRep_CurrentHitCount()
 {
-
 	if (!IsLocallyControlled()) return;
 
 	if (CurrentHitCount <= 0)
@@ -193,7 +205,7 @@ void APartnerCharacter::OnRep_CurrentHitCount()
 	{
 		return;
 	}
-	
+
 	ApplyDamagedEvent(static_cast<float>(MaxHitCount-CurrentHitCount) / static_cast<float>(MaxHitCount));
 }
 

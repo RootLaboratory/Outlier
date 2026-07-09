@@ -146,6 +146,13 @@ void APartnerPlayerController::ServerReleaseEnemyPossession_Implementation()
 	ReleaseEnemyPossession();
 }
 
+APartnerCharacter* APartnerPlayerController::ExtractCachedPartnerCharacterForLogout()
+{
+	APartnerCharacter* Result = CachedPartnerCharacter.Get();
+	CachedPartnerCharacter.Reset();
+	return Result;
+}
+
 void APartnerPlayerController::RestoreCachedPartnerCharacter()
 {
 	if (!HasAuthority())

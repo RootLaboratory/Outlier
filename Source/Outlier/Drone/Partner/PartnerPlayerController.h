@@ -84,6 +84,9 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Partner|EnemyPossession")
 	void ReleaseEnemyPossession();
+
+	/** 로그아웃 정리용 — 캐시된 원래 Partner 캐릭터를 꺼내면서 캐시를 비운다. 빙의를 복원하지는 않는다. */
+	APartnerCharacter* ExtractCachedPartnerCharacterForLogout();
 	
 	
 };
