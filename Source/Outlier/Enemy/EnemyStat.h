@@ -54,4 +54,10 @@ struct OUTLIER_API FEnemyStat : public FTableRowBase
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	float PeripheralVisionAngle = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	float BattlePeripheralVisionAngle = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	float HearingRange = 0.0f;
 };

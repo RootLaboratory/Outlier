@@ -2,7 +2,9 @@
 
 
 #include "Weapon/RangedWeaponBase.h"
+#include "DrawDebugHelpers.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/SphereComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "GameFramework/Character.h"
 #include "TimerManager.h"
@@ -220,8 +222,32 @@ void ARangedWeaponBase::FireShot()
 		}
 		else if (AEnemyBase* HitEnemy = Cast<AEnemyBase>(Hit.GetActor()))
 		{
-			HitEnemy->ApplyDamageInternal(DamageToApply);
-			UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot applied Enemy Damage=%.1f To=%s"), OutlierNet::GetNetPrefix(this), *GetName(), DamageToApply, *GetNameSafe(HitEnemy));
+			// 어떤 걸 맞았는지(HitEnemy 확정)는 위의 단일 트레이스 결과 그대로 사용 — 벽/다른 액터에 대한
+			// 판정은 절대 안 바뀜. CoreHitboxComponent가 Body(SkeletalMeshComponent)의 Physics Asset
+			// 바디 안쪽에 겹쳐 있으면, 별도 컴포넌트로 분리했음에도 여전히 더 가까운 Body 바디에 가려져서
+			// 안 잡히는 것으로 보임 — 그래서 이 2차 프로브에서는 아예 Mesh(Body/Gun이 붙어있는 컴포넌트)
+			// 자체를 무시해서, Core가 Body 안쪽 어디에 있든 상관없이 확실히 잡히게 함
+			constexpr float CoreProbeExtraDistance = 1000.0f;
+			const FVector ProbeEnd = Start + (ShotDirection * (HitDistance + CoreProbeExtraDistance));
+
+			FCollisionQueryParams CoreProbeParams = Params;
+			CoreProbeParams.AddIgnoredComponent(HitEnemy->GetMesh());
+
+			TArray<FHitResult> BoneHitResults;
+			GetWorld()->LineTraceMultiByChannel(BoneHitResults, Start, ProbeEnd, ECC_PhysicsBody, CoreProbeParams);
+
+			bool bIsCoreHit = false;
+			for (const FHitResult& BodyHit : BoneHitResults)
+			{
+				if (BodyHit.GetActor() == HitEnemy && BodyHit.GetComponent() == HitEnemy->GetCoreHitboxComponent())
+				{
+					bIsCoreHit = true;
+					break;
+				}
+			}
+
+			HitEnemy->ApplyDamageInternal(DamageToApply, bIsCoreHit);
+			UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot applied Enemy Damage=%.1f To=%s Core=%d"), OutlierNet::GetNetPrefix(this), *GetName(), DamageToApply, *GetNameSafe(HitEnemy), bIsCoreHit ? 1 : 0);
 		}
 		else if (APartnerCharacter* PartnerCharacter = Cast<APartnerCharacter>(Hit.GetActor()))
 		{

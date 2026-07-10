@@ -8,6 +8,7 @@
 class AEnemyBase;
 class UAIPerceptionComponent;
 class UAISenseConfig_Sight;
+class UAISenseConfig_Hearing;
 
 UCLASS()
 class OUTLIER_API AEnemyAIController : public AAIController
@@ -29,10 +30,14 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|AI")
 	TObjectPtr<UAISenseConfig_Sight> SightConfig;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|AI")
+	TObjectPtr<UAISenseConfig_Hearing> HearingConfig;
+
 	UFUNCTION()
 	void HandleTargetPerceptionUpdated(AActor* Actor, FAIStimulus Stimulus);
 
 	void ConfigureSightFromEnemy(AEnemyBase* Enemy);
+	void ConfigureHearingFromEnemy(AEnemyBase* Enemy);
 	int32 ResolveArenaIdFromTarget(const AActor* TargetActor) const;
 	bool IsValidDetectionTarget(const AActor* TargetActor) const;
 };

@@ -12,6 +12,7 @@ class UStateTreeComponent;
 class UCameraComponent;
 class UHackableComponent;
 class UInputAction;
+class USphereComponent;
 struct FInputActionValue;
 
 UENUM(BlueprintType)
@@ -48,6 +49,11 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|Hack")
 	TObjectPtr<UHackableComponent> HackableComponent;
 
+	// Physics Asset 바디 대신 이 전용 컴포넌트로 코어 크리티컬을 판정함 — CoreBone 바디가 BodyBone 콜리전
+	// 안쪽에 겹쳐 있으면 같은 컴포넌트 안에서 가려져서 Multi 트레이스로도 검출이 안 되는 문제가 있었음
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|Damage")
+	TObjectPtr<USphereComponent> CoreHitboxComponent;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Enemy|Data")
 	FDataTableRowHandle EnemyStatRow;
 
@@ -59,6 +65,13 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "Enemy|Data")
 	float CurrentHealth = 0.0f;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|Data")
+	float CoreCriticalMultiplier = 3.0f;
+
+	// CoreHitboxComponent를 붙일 소켓/본 이름
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Damage")
+	FName CoreBoneName = TEXT("CoreBone");
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "Enemy|State")
 	uint8 bInCombat : 1 = false;
@@ -154,7 +167,10 @@ public:
 	FGameplayTag GetRoomTag() const { return RoomTag; }
 
 	UFUNCTION(BlueprintCallable, Category = "Enemy|Damage")
-	void ApplyDamageInternal(float DamageAmount);
+	void ApplyDamageInternal(float DamageAmount, bool bIsCoreHit);
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Damage")
+	USphereComponent* GetCoreHitboxComponent() const { return CoreHitboxComponent; }
 
 	virtual UHackableComponent* GetHackableComponent() const override;
 	virtual void HandleHackEffect(FGameplayTag EffectTag, const FHackResultContext& Context) override;

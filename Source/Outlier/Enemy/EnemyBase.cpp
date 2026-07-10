@@ -1,5 +1,4 @@
 #include "Enemy/EnemyBase.h"
-
 #include "Camera/CameraComponent.h"
 #include "Components/StateTreeComponent.h"
 #include "Drone/Partner/HackableComponent.h"
@@ -10,6 +9,8 @@
 #include "Enemy/EnemyAIController.h"
 #include "Enemy/EnemyRoomSubsystem.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "Components/CapsuleComponent.h"
+#include "Components/SphereComponent.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "InputActionValue.h"
 #include "Net/UnrealNetwork.h"
@@ -21,6 +22,11 @@ AEnemyBase::AEnemyBase()
 	AIControllerClass = AEnemyAIController::StaticClass();
 	AutoPossessAI = EAutoPossessAI::PlacedInWorldOrSpawned;
 
+	// 캡슐이 PhysicsBody 채널을 기본(Block)으로 막고 있으면, 무기 트레이스가 캡슐에 먼저 걸려서
+	// 캡슐 안쪽에 있는 몸통/코어 등 Physics Asset 본 바디까지 도달하지 못함 (팔다리처럼 캡슐 밖으로
+	// 튀어나온 부위만 본 단위로 정상 검출됨) — 그래서 이동/충돌용 콜리전은 그대로 두고 이 채널만 무시
+	GetCapsuleComponent()->SetCollisionResponseToChannel(ECC_PhysicsBody, ECR_Ignore);
+
 	StateTreeComponent = CreateDefaultSubobject<UStateTreeComponent>(TEXT("StateTreeComponent"));
 	EnemyCameraComponent = CreateDefaultSubobject<UCameraComponent>(TEXT("EnemyCameraComponent"));
 	EnemyCameraComponent->SetupAttachment(GetRootComponent());
@@ -28,6 +34,18 @@ AEnemyBase::AEnemyBase()
 	HackableComponent = CreateDefaultSubobject<UHackableComponent>(TEXT("HackableComponent"));
 	HackableComponent->HackTags.AddTag(HackGameplayTags::Target::Possessable());
 	HackableComponent->SuccessEffectTags.AddTag(HackGameplayTags::Effect::Possess());
+
+	// 코어 크리티컬 판정용 전용 콜리전 — Physics Asset 바디로 하면 BodyBone 안쪽에 겹친 CoreBone이
+	// 같은 컴포넌트 안에서 가려져서 Multi 트레이스로도 검출이 안 됐음 (Body 콜리전을 꺼야만 잡힘,
+	// 즉 겹친 바디 중 더 가까운 것에 가려지면 그 뒤는 아예 검사가 안 되는 것으로 확인됨). 그래서
+	// SkeletalMeshComponent와 무관한 별도 컴포넌트로 분리해서 독립적으로 트레이스에 잡히게 함
+	CoreHitboxComponent = CreateDefaultSubobject<USphereComponent>(TEXT("CoreHitboxComponent"));
+	CoreHitboxComponent->SetupAttachment(GetMesh(), CoreBoneName);
+	CoreHitboxComponent->InitSphereRadius(20.0f);
+	CoreHitboxComponent->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+	CoreHitboxComponent->SetCollisionResponseToAllChannels(ECR_Ignore);
+	CoreHitboxComponent->SetCollisionResponseToChannel(ECC_PhysicsBody, ECR_Block);
+	CoreHitboxComponent->SetGenerateOverlapEvents(false);
 }
 
 void AEnemyBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -300,11 +318,16 @@ void AEnemyBase::RestoreStateAfterStun()
 	bInCombat = CombatState == EEnemyCombatState::Combat;
 }
 
-void AEnemyBase::ApplyDamageInternal(float DamageAmount)
+void AEnemyBase::ApplyDamageInternal(float DamageAmount, bool bIsCoreHit)
 {
 	if (!HasAuthority() || DamageAmount <= 0.0f || CurrentHealth <= 0.0f)
 	{
 		return;
+	}
+
+	if (bIsCoreHit)
+	{
+		DamageAmount *= CoreCriticalMultiplier;
 	}
 
 	CurrentHealth = FMath::Max(CurrentHealth - DamageAmount, 0.0f);

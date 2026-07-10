@@ -5,6 +5,8 @@
 #include "Perception/AIPerceptionComponent.h"
 #include "Perception/AISense_Sight.h"
 #include "Perception/AISenseConfig_Sight.h"
+#include "Perception/AISense_Hearing.h"
+#include "Perception/AISenseConfig_Hearing.h"
 
 AEnemyAIController::AEnemyAIController()
 {
@@ -14,9 +16,15 @@ AEnemyAIController::AEnemyAIController()
 	SightConfig = CreateDefaultSubobject<UAISenseConfig_Sight>(TEXT("SightConfig"));
 	SightConfig->DetectionByAffiliation.bDetectEnemies = true;
 	SightConfig->DetectionByAffiliation.bDetectFriendlies = true;
-	SightConfig->DetectionByAffiliation.bDetectNeutrals = true;
+
+	HearingConfig = CreateDefaultSubobject<UAISenseConfig_Hearing>(TEXT("HearingConfig"));
+	HearingConfig->DetectionByAffiliation.bDetectEnemies = true;
+
 	EnemyPerceptionComponent->ConfigureSense(*SightConfig);
 	EnemyPerceptionComponent->SetDominantSense(SightConfig->GetSenseImplementation());
+	EnemyPerceptionComponent->ConfigureSense(*HearingConfig);
+	EnemyPerceptionComponent->SetDominantSense(HearingConfig->GetSenseImplementation());
+
 	EnemyPerceptionComponent->OnTargetPerceptionUpdated.AddDynamic(
 		this,
 		&AEnemyAIController::HandleTargetPerceptionUpdated
@@ -39,6 +47,7 @@ void AEnemyAIController::RefreshPerceptionConfigFromPawn()
 	if (AEnemyBase* Enemy = Cast<AEnemyBase>(GetPawn()))
 	{
 		ConfigureSightFromEnemy(Enemy);
+		ConfigureHearingFromEnemy(Enemy);
 	}
 }
 
@@ -51,6 +60,7 @@ void AEnemyAIController::SetEnemyPerceptionEnabled(bool bEnabled)
 
 	EnemyPerceptionComponent->SetComponentTickEnabled(bEnabled);
 	EnemyPerceptionComponent->SetSenseEnabled(UAISense_Sight::StaticClass(), bEnabled);
+	EnemyPerceptionComponent->SetSenseEnabled(UAISense_Hearing::StaticClass(), bEnabled);
 
 	if (bEnabled)
 	{
@@ -97,12 +107,26 @@ void AEnemyAIController::ConfigureSightFromEnemy(AEnemyBase* Enemy)
 	const FEnemyStat& RuntimeStat = Enemy->GetRuntimeStat();
 	const float PeripheralVisionAngle = RuntimeStat.Type == EEnemyType::Turret
 		? 180.0f
-		: RuntimeStat.PeripheralVisionAngle;
+		: Enemy->IsInCombat() ? RuntimeStat.BattlePeripheralVisionAngle : RuntimeStat.PeripheralVisionAngle;
 
 	SightConfig->SightRadius = FMath::Max(RuntimeStat.SightRadius, 0.0f);
 	SightConfig->LoseSightRadius = FMath::Max(RuntimeStat.LoseSightRadius, SightConfig->SightRadius);
 	SightConfig->PeripheralVisionAngleDegrees = FMath::Clamp(PeripheralVisionAngle, 0.0f, 180.0f);
 	EnemyPerceptionComponent->ConfigureSense(*SightConfig);
+	EnemyPerceptionComponent->RequestStimuliListenerUpdate();
+}
+
+void AEnemyAIController::ConfigureHearingFromEnemy(AEnemyBase* Enemy)
+{
+	if (!Enemy || !HearingConfig || !EnemyPerceptionComponent)
+	{
+		return;
+	}
+
+	const FEnemyStat& RuntimeStat = Enemy->GetRuntimeStat();
+
+	HearingConfig->HearingRange = FMath::Max(RuntimeStat.HearingRange, 0.0f);
+	EnemyPerceptionComponent->ConfigureSense(*HearingConfig);
 	EnemyPerceptionComponent->RequestStimuliListenerUpdate();
 }
 
