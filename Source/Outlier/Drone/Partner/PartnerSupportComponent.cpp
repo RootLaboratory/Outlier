@@ -212,7 +212,7 @@ void UPartnerSupportComponent::TryScan_Server()
 	);
 
 	//Multicast 수정
-	MulticastStartScanVisual(
+	ClientStartScanVisual(
 		ScanOrigin,
 		CurrentScanRadius,
 		PartnerCharacter->ScanRange
@@ -448,7 +448,7 @@ void UPartnerSupportComponent::UpdateScan_Server()
 
 	const float RadiusSq = FMath::Square(CurrentScanRadius);
 
-	MulticastUpdateScanVisual(
+	ClientUpdateScanVisual(
 		ScanOrigin,
 		CurrentScanRadius
 	);
@@ -525,7 +525,7 @@ void UPartnerSupportComponent::EndScan_Server()
 
 	//UE_LOG(LogTemp, Error, TEXT("[PartnerScanDebug] ScanEnd"));
 
-	MulticastEndScanVisual();
+	ClientEndScanVisual();
 }
 
 bool UPartnerSupportComponent::CanUseShield() const
@@ -628,7 +628,7 @@ void UPartnerSupportComponent::ApplyScanEffect(AActor* Actor)
 
 	if (int32 StencilValue = ResolveScanStencilValue(Actor))
 	{
-		MulticastApplyScanEffect(Actor, StencilValue);
+		ClientApplyScanEffect(Actor, StencilValue);
 	}
 
 }
@@ -640,7 +640,7 @@ void UPartnerSupportComponent::ClearScanEffect(AActor* Actor)
 		return;
 	}
 
-	MulticastClearScanEffect(Actor);
+	ClientClearScanEffect(Actor);
 }
 
 void UPartnerSupportComponent::ApplyAreaOfEffect(AActor* Actor)
@@ -654,11 +654,24 @@ void UPartnerSupportComponent::ApplyAreaOfEffect(AActor* Actor)
 	// UE_LOG(LogTemp, Log, TEXT("AOE Target: %s"), *GetNameSafe(Actor));
 }
 
-void UPartnerSupportComponent::MulticastStartScanVisual_Implementation(
+bool UPartnerSupportComponent::ShouldProcessLocalScanVisual() const
+{
+	return PartnerCharacter
+		&& PartnerCharacter->IsLocallyControlled()
+		&& GetWorld()
+		&& GetWorld()->GetNetMode() != NM_DedicatedServer;
+}
+
+void UPartnerSupportComponent::ClientStartScanVisual_Implementation(
 	FVector InScanOrigin,
 	float InCurrentScanRadius,
 	float InScanRange)
 {
+	if (!ShouldProcessLocalScanVisual())
+	{
+		return;
+	}
+
 	//DrawDebugSphere(
 	//	GetWorld(),
 	//	InScanOrigin,
@@ -677,10 +690,15 @@ void UPartnerSupportComponent::MulticastStartScanVisual_Implementation(
 	}
 }
 
-void UPartnerSupportComponent::MulticastUpdateScanVisual_Implementation(
+void UPartnerSupportComponent::ClientUpdateScanVisual_Implementation(
 	FVector InScanOrigin,
 	float InCurrentScanRadius)
 {
+	if (!ShouldProcessLocalScanVisual())
+	{
+		return;
+	}
+
 	/*DrawDebugSphere(
 		GetWorld(),
 		InScanOrigin,
@@ -699,25 +717,40 @@ void UPartnerSupportComponent::MulticastUpdateScanVisual_Implementation(
 	}
 }
 
-void UPartnerSupportComponent::MulticastApplyScanEffect_Implementation(AActor* Actor, int32 StencilValue)
+void UPartnerSupportComponent::ClientApplyScanEffect_Implementation(AActor* Actor, int32 StencilValue)
 {
+	if (!ShouldProcessLocalScanVisual())
+	{
+		return;
+	}
+
 	if (UMaterialPostProcessSubsystem* PostProcessSubsystem = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
 	{
-		//UE_LOG(LogTemp, Error, TEXT("MulticastApplyScanEffect_Implementation Valid, %d"), StencilValue);
+		//UE_LOG(LogTemp, Error, TEXT("ClientApplyScanEffect_Implementation Valid, %d"), StencilValue);
 		PostProcessSubsystem->ApplyScanStencil(Actor, StencilValue);
 	}
 }
 
-void UPartnerSupportComponent::MulticastClearScanEffect_Implementation(AActor* Actor)
+void UPartnerSupportComponent::ClientClearScanEffect_Implementation(AActor* Actor)
 {
+	if (!ShouldProcessLocalScanVisual())
+	{
+		return;
+	}
+
 	if (UMaterialPostProcessSubsystem* PostProcessSubsystem = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
 	{
 		PostProcessSubsystem->ClearScanStencil(Actor);
 	}
 }
 
-void UPartnerSupportComponent::MulticastEndScanVisual_Implementation()
+void UPartnerSupportComponent::ClientEndScanVisual_Implementation()
 {
+	if (!ShouldProcessLocalScanVisual())
+	{
+		return;
+	}
+
 	if (UMaterialPostProcessSubsystem* PostProcessSubsystem = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
 	{
 		PostProcessSubsystem->EndScanPostProcess();

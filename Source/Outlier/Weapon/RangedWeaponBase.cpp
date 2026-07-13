@@ -531,6 +531,7 @@ void ARangedWeaponBase::AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacte
 	Super::AttachWeaponMeshesToOwner(Weapon, NewOwner);
 
 	ApplySightMesh();
+	CacheSightAimMaterials();
 	ApplyMagazineMeshSettings();
 
 	AShooterCharacter* Shooter = Cast<AShooterCharacter>(NewOwner);
@@ -689,6 +690,7 @@ void ARangedWeaponBase::ShowEquippedPresentation()
 {
 	Super::ShowEquippedPresentation();
 	ApplySightMesh();
+	CacheSightAimMaterials();
 
 	if (FirstSight)
 	{

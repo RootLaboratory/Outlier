@@ -12,5 +12,6 @@ public:
 	static FScreenPassTexture AddPass(
 		FRDGBuilder& GraphBuilder,
 		const FSceneView& View,
-		const FScreenPassTexture& SceneColor);
+		const FScreenPassTexture& SceneColor,
+		const FScreenPassRenderTarget& OverrideOutput = FScreenPassRenderTarget());
 };

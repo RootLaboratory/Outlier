@@ -12,6 +12,7 @@
 
 class UEventDrivenUI;
 class USceneCaptureComponent2D;
+class UUserWidget;
 enum class EWidgetWeaponType : uint8;
 
 
@@ -55,6 +56,9 @@ public:
 	void OnAbilityUsed(const FGameplayTag& AbilityTag, float CoolTime);
 	void OnAbilityDisabledByDistance();
 	void OnAbilityEnabledByDistance();
+	void BindInteractionWidget(UUserWidget* InteractionWidget);
+	void BindInteractionWidget(UUserWidget* InteractionWidget, const FVector2D& WidgetPosition);
+	void UnbindInteractionWidget(UUserWidget* InteractionWidget);
 
 private:
 	UMainUIBase* GetMainUI() const;
@@ -64,4 +68,6 @@ private:
 	UPROPERTY()
 	TObjectPtr<UMainUIBase> MainUIInstance;
 
+	UPROPERTY()
+	TObjectPtr<UUserWidget> InteractionWidgetInstance;
 };

@@ -2,15 +2,18 @@
 
 #include "CoreMinimal.h"
 
-class FRDGADSWeaponMaskPass
+struct FADSBlurParameters;
+
+class FRDGAdsSightMaskPass
 {
 public:
 	static FRDGTextureRef AddBuildMaskPass(
 		FRDGBuilder& GraphBuilder,
 		const FSceneView& View,
 		FRDGTextureSRVRef CustomStencilTexture,
+		FRDGTextureRef CustomDepthTexture,
 		FIntPoint TextureExtent,
-		uint32 WeaponStencilValue);
+		const FADSBlurParameters& Parameters);
 
 	static FRDGTextureRef AddDilatePass(
 		FRDGBuilder& GraphBuilder,
@@ -32,10 +35,13 @@ private:
 		FRDGBuilder& GraphBuilder,
 		const FSceneView& View,
 		FRDGTextureSRVRef CustomStencilTexture,
+		FRDGTextureRef CustomDepthTexture,
 		FRDGTextureRef InputMask,
 		FRDGTextureRef HardMask,
 		FIntPoint TextureExtent,
 		uint32 WeaponStencilValue,
+		float FocusDistanceWorld,
+		float SightDistanceThreshold,
 		float Radius,
 		uint32 PassMode,
 		const TCHAR* TextureName,

@@ -51,7 +51,12 @@ private:
 		const FSceneView& View,
 		const FPostProcessMaterialInputs& Inputs);
 
-	FScreenPassTexture ADSWeaponBlurCallback_RenderThread(
+	FScreenPassTexture ADSPreDoFCaptureCallback_RenderThread(
+		FRDGBuilder& GraphBuilder,
+		const FSceneView& View,
+		const FPostProcessMaterialInputs& Inputs);
+
+	FScreenPassTexture ADSSightRestoreCallback_RenderThread(
 		FRDGBuilder& GraphBuilder,
 		const FSceneView& View,
 		const FPostProcessMaterialInputs& Inputs);
@@ -88,7 +93,8 @@ private:
 
 	//
 	FRDGTextureRef CachedVelocityVolume = nullptr;
-	FRDGTextureRef CachedADSCustomDepth = nullptr;
-	FRDGTextureRef CachedADSHardMask = nullptr;
-	FRDGTextureRef CachedADSWeaponMask = nullptr;
+	FRDGTextureRef CachedADSSightHardMask = nullptr;
+	FRDGTextureRef CachedADSSightSoftMask = nullptr;
+
+	FRDGTextureRef CachedADSPreDoFSceneColor = nullptr;
 };

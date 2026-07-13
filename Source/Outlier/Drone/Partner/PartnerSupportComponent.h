@@ -78,21 +78,22 @@ private:
 
 	void ApplyScanEffect(AActor* Actor);
 	void ClearScanEffect(AActor* Actor);
+	bool ShouldProcessLocalScanVisual() const;
 
 	void ApplyAreaOfEffect(AActor* Actor);
 
-	UFUNCTION(NetMulticast, Reliable)
-	void MulticastStartScanVisual(FVector InScanOrigin, float InCurrentScanRadius, float InScanRange);
+	UFUNCTION(Client, Reliable)
+	void ClientStartScanVisual(FVector InScanOrigin, float InCurrentScanRadius, float InScanRange);
 
-	UFUNCTION(NetMulticast, Unreliable)
-	void MulticastUpdateScanVisual(FVector InScanOrigin, float InCurrentScanRadius);
+	UFUNCTION(Client, Unreliable)
+	void ClientUpdateScanVisual(FVector InScanOrigin, float InCurrentScanRadius);
 
-	UFUNCTION(NetMulticast, Reliable)
-	void MulticastApplyScanEffect(AActor* Actor, int32 StencilValue);
+	UFUNCTION(Client, Reliable)
+	void ClientApplyScanEffect(AActor* Actor, int32 StencilValue);
 
-	UFUNCTION(NetMulticast, Reliable)
-	void MulticastClearScanEffect(AActor* Actor);
+	UFUNCTION(Client, Reliable)
+	void ClientClearScanEffect(AActor* Actor);
 
-	UFUNCTION(NetMulticast, Reliable)
-	void MulticastEndScanVisual();
+	UFUNCTION(Client, Reliable)
+	void ClientEndScanVisual();
 };

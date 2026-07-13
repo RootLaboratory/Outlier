@@ -6,7 +6,10 @@
 #include "PostProcess/MaterialPostProcessSubsystem.h"
 #include "Engine/Scene.h"
 #include "Engine/World.h"
+#include "Engine/GameInstance.h"
+#include "Engine/LocalPlayer.h"
 #include "Kismet/KismetMaterialLibrary.h"
+#include "LocalPlayerPostProcessSubsystem.h"
 #include "Materials/MaterialParameterCollection.h"
 #include "Materials/MaterialInterface.h"
 #include "Materials/MaterialInstanceDynamic.h"
@@ -47,6 +50,26 @@ void AOutlierPostProcessVolume::BeginPlay()
 		if (UMaterialPostProcessSubsystem* PostProcessSubsystem = World->GetSubsystem<UMaterialPostProcessSubsystem>())
 		{
 			PostProcessSubsystem->RegisterPostProcessVolume(this);
+		}
+
+		// Pushed directly to every local player's DoF driver, independent of
+		// UMaterialPostProcessSubsystem::RegisterPostProcessVolume's Scan/Stealth/Damaged
+		// material gate above — ADS depth of field has nothing to do with those materials
+		// and shouldn't silently no-op just because this volume doesn't have them assigned.
+		if (UGameInstance* GameInstance = World->GetGameInstance())
+		{
+			for (ULocalPlayer* LocalPlayer : GameInstance->GetLocalPlayers())
+			{
+				if (!LocalPlayer)
+				{
+					continue;
+				}
+
+				if (ULocalPlayerPostProcessSubsystem* DoFSubsystem = LocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
+				{
+					DoFSubsystem->SetDepthOfFieldVolume(this);
+				}
+			}
 		}
 	}
 }

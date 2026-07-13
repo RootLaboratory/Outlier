@@ -24,7 +24,7 @@ enum class EUIPlayerState : uint8
 
 class UEventDrivenUI;
 class UAbilityIconUI;
-
+class UCanvasPanel;
 
 UCLASS()
 class TAGDRIVENUI_API UMainUIBase : public UUserWidget
@@ -59,4 +59,11 @@ protected:
 
 	UPROPERTY(BlueprintReadOnly, Category = "Ability Sections")
 	TMap<FGameplayTag, TObjectPtr<UAbilityIconUI>> AbilitySections;
+
+public:
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UCanvasPanel> InteractionLayer;
+
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UCanvasPanel> DefaultLayer;
 };

@@ -1,5 +1,3 @@
-// Fill out your copyright notice in the Description page of Project Settings.
-
 #pragma once
 
 #include "CoreMinimal.h"
@@ -9,6 +7,7 @@
 #include "LocalPlayerPostProcessSubsystem.generated.h"
 
 class FOutlierPostProcessSceneViewExtension;
+class APostProcessVolume;
 
 struct FPPGameplayState
 {
@@ -52,36 +51,34 @@ public:
 	void SetADSBlurAiming(bool bInAiming, int32 InWeaponStencilValue = 3);
 	void SetADSSocketDistance(float Distance);
 	bool IsADSBlurAiming() const { return bADSBlurAiming; }
+	bool IsADSBlurDebugPassEnabled() const { return bADSBlurDebugPassEnabled; }
+	void SetADSBlurDebugPassEnabled(bool bEnabled);
 	float GetADSBlurRampInTime() const { return ADSBlurRampInTime; }
 	float GetADSBlurRampOutTime() const { return ADSBlurRampOutTime; }
-	float GetADSBlurMinRadius() const { return ADSBlurMinRadius; }
-	float GetADSBlurMaxRadius() const { return ADSBlurMaxRadius; }
-	float GetADSBlurMinMaskDilate() const { return ADSBlurMinMaskDilate; }
-	float GetADSBlurMaxMaskDilate() const { return ADSBlurMaxMaskDilate; }
-	float GetADSBlurMinMaskSoftness() const { return ADSBlurMinMaskSoftness; }
-	float GetADSBlurMaxMaskSoftness() const { return ADSBlurMaxMaskSoftness; }
-	int32 GetADSBlurPassCount() const { return ADSBlurPassCount; }
-	float GetADSBlurInnerPreserve() const { return ADSBlurInnerPreserve; }
-	float GetADSBlurDepthBlurStart() const { return ADSBlurDepthBlurStart; }
-	float GetADSBlurDepthBlurEnd() const { return ADSBlurDepthBlurEnd; }
-	float GetADSBlurDepthBlurPower() const { return ADSBlurDepthBlurPower; }
-	float GetADSBlurDepthFocusBias() const { return ADSBlurDepthFocusBias; }
 	float GetADSSocketDistance() const { return ADSBlurSocketDistance; }
-	int32 GetADSBlurGatherSampleCount() const { return ADSBlurGatherSampleCount; }
-	float GetADSBlurReachSoftness() const { return ADSBlurReachSoftness; }
-	void SetADSBlurPassCount(int32 InPassCount);
-	void SetADSBlurInnerPreserve(float InInnerPreserve);
-	void SetADSBlurDepthBlurRange(float InStart, float InEnd);
-	void SetADSBlurDepthBlurPower(float InPower);
-	void SetADSBlurDepthFocusBias(float InBias);
-	void SetADSBlurGatherSampleCount(int32 InSampleCount);
-	void SetADSBlurReachSoftness(float InReachSoftness);
 	void SetADSBlurRampTimes(float InRampInTime, float InRampOutTime);
-	void SetADSBlurRadiusRange(float InMinRadius, float InMaxRadius);
-	void SetADSBlurMaskDilateRange(float InMinDilate, float InMaxDilate);
-	void SetADSBlurMaskSoftnessRange(float InMinSoftness, float InMaxSoftness);
-	void SetADSBlurMaskDilateRadius(float InDilateRadius);
-	void SetADSBlurMaskSoftness(float InSoftness);
+
+	void SetADSBlurFocusDistanceWorld(float InFocusDistanceWorld);
+	void SetADSBlurSightDistanceThreshold(float InThreshold);
+	void SetADSBlurSightMaskDilateRadius(float InDilateRadius);
+	void SetADSBlurSightMaskSoftness(float InSoftness);
+	void SetADSBlurUseSoftSightMask(bool bInUseSoft);
+	void SetADSBlurGpuStatScopesEnabled(bool bEnabled);
+
+	void SetDepthOfFieldVolume(APostProcessVolume* InVolume);
+	void SetADSDoFEnabled(bool bEnabled);
+	void SetADSDoFApertureRange(float InAimFStop, float InHipFStop);
+	void SetADSDoFSensorWidth(float InSensorWidth);
+	void SetADSDoFMaxBlurClamp(float InMinFStop);
+	void SetADSDoFFocalRegion(float InFocalRegion);
+	void SetADSDoFFarTransitionRegion(float InFarTransitionRegion);
+	bool IsADSDoFEnabled() const { return bADSDoFEnabled; }
+	float GetADSDoFApertureAim() const { return ADSDoFApertureAim; }
+	float GetADSDoFApertureHip() const { return ADSDoFApertureHip; }
+	float GetADSDoFSensorWidth() const { return ADSDoFSensorWidth; }
+	float GetADSDoFMaxBlurClamp() const { return ADSDoFMinFStop; }
+	float GetADSDoFFocalRegion() const { return ADSDoFFocalRegion; }
+	float GetADSDoFFarTransitionRegion() const { return ADSDoFFarTransitionRegion; }
 
 	void TickFrame();
 	const FPostProcessStrcture& GetPostProcessStrcture();
@@ -92,12 +89,9 @@ public:
 private:
 	void MarkDirty();
 	void UpdateADSBlur(float DeltaTime);
+	void UpdateDepthOfField();
 	void ApplyADSBlurRuntimeParameters();
 	float GetADSBlurAlpha() const;
-	void SetADSBlurEnabled(bool bEnabled);
-	void SetADSBlurBlend(float InAdsBlend);
-	void SetADSBlurRadius(float InBlurRadius);
-	void SetADSBlurMaskParameters(float InDilateRadius, float InSoftness);
 	void SetADSBlurWeaponStencilValue(int32 InStencilValue);
 
 	FPPGameplayState PlayerState;
@@ -111,30 +105,20 @@ private:
 
 	uint8 bDirty : 1 = false;
 	uint8 bADSBlurAiming : 1 = false;
+	uint8 bADSBlurDebugPassEnabled : 1 = true;
 
 	float ADSBlurElapsedTime = 0.0f;
 	float ADSBlurRampInTime = 0.18f;
 	float ADSBlurRampOutTime = 0.12f;
 
-	float ADSBlurMinRadius = 0.0f;
-	float ADSBlurMaxRadius = 4.0f;
+	float ADSBlurSocketDistance = 11.0f;
 
-	float ADSBlurMinMaskDilate = 1.0f;
-	float ADSBlurMaxMaskDilate = 3.0f;
-
-	float ADSBlurMinMaskSoftness = 0.5f;
-	float ADSBlurMaxMaskSoftness = 5.0f;
-
-	int32 ADSBlurPassCount = 2;
-	float ADSBlurInnerPreserve = 0.f;
-
-	float ADSBlurDepthBlurStart = 0.0f;
-	float ADSBlurDepthBlurEnd = 0.8f;
-
-	float ADSBlurDepthBlurPower = 1.2f;
-	float ADSBlurDepthFocusBias = 0.1f;
-	int32 ADSBlurGatherSampleCount = 48;
-	float ADSBlurReachSoftness = 3.0f;
-
-	float ADSBlurSocketDistance = 0.0f; 
+	TWeakObjectPtr<APostProcessVolume> DoFVolume;
+	uint8 bADSDoFEnabled : 1 = true;
+	float ADSDoFApertureAim = 14.47f;
+	float ADSDoFApertureHip = 32.0f;
+	float ADSDoFSensorWidth = 12.576f;
+	float ADSDoFMinFStop = 0.0f;
+	float ADSDoFFocalRegion = 0.0f;
+	float ADSDoFFarTransitionRegion = 1500.0f;
 };

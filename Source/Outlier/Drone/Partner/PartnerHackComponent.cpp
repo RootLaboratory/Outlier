@@ -167,16 +167,16 @@ void UPartnerHackComponent::ServerCompleteHack_Implementation(const FHackResultC
 		return;
 	}
 
+	//possess 전, Input widget 정리. -> Enemy Widget이 생긴다면 수정 해야 할 부분.
+	ClientStopHackMiniGame();
+	DefaultWidgetControl(false);
+
 	FHackResultContext MutableResultContext = ResultContext;
 	MutableResultContext.TargetActor = ActiveHackableComponent->GetOwner();
 	MutableResultContext.InstigatorActor = PartnerCharacter;
 
 	ActiveHackableComponent->CompleteHack(MutableResultContext);
 	ActiveHackableComponent = nullptr;
-
-	ClientStopHackMiniGame();
-	DefaultWidgetControl(false);
-	//ClientCompleteHack();
 }
 
 void UPartnerHackComponent::DefaultWidgetControl_Implementation(bool InFlag)
@@ -610,16 +610,19 @@ bool UPartnerHackComponent::EnsureHackMiniGameWidget(AActor* TargetActor, UHacka
 
 void UPartnerHackComponent::DestroyHackMiniGameWidget()
 {
-	RestoreGameInputMode();
 
 	if (!HackMiniGameWidget)
 	{
+		RestoreGameInputMode();
 		return;
 	}
 
 	HackMiniGameWidget->OnHackMiniGameFinished.RemoveDynamic(this, &UPartnerHackComponent::HandleHackMiniGameFinished);
 	HackMiniGameWidget->RemoveFromParent();
 	HackMiniGameWidget = nullptr;
+
+	RestoreGameInputMode();
+
 
 }
 
@@ -704,9 +707,10 @@ void UPartnerHackComponent::RestoreGameInputMode()
 	PlayerController->SetInputMode(InputMode);
 	PlayerController->bShowMouseCursor = false;
 
-	/*UE_LOG(LogTemp, Error, TEXT("[HackInputDebug] RestoreGameInputMode called ??MiniGameWidget=%s CandidateWidget=%s"),
-		*GetNameSafe(HackMiniGameWidget),
-		*GetNameSafe(CandidateLayerWidget));*/
+
+	//UE_LOG(LogTemp, Error, TEXT("[HackInputDebug] RestoreGameInputMode called ??MiniGameWidget=%s CandidateWidget=%s"),
+	//	*GetNameSafe(HackMiniGameWidget),
+	//	*GetNameSafe(CandidateLayerWidget));
 }
 
 void UPartnerHackComponent::AddHackCandidate(AActor* Actor, UHackableComponent* HackableComponent, const FVector2D& ScreenLocation)
@@ -816,6 +820,7 @@ void UPartnerHackComponent::StartHackMiniGame(AActor* TargetActor, UHackableComp
 
 void UPartnerHackComponent::HandleHackMiniGameFinished(const FHackResultContext& ResultContext)
 {
-	ServerCompleteHack(ResultContext);
 	DestroyHackMiniGameWidget();
+
+	ServerCompleteHack(ResultContext);
 }

@@ -26,7 +26,7 @@ bool UHackMiniGameWidget::StartHacking()
 {
 	ClearActiveMiniGame();
 
-	TSubclassOf<UHackingMiniGameBase> MiniGameClass = ResolveMiniGameWidgetClass();
+	TSubclassOf<UHackingMiniGameBase> MiniGameClass = ResolveMiniGameWidgetClass(); //Tag 읽고 미니게임 처리.
 	if (!MiniGameClass || !MiniGameRoot)
 	{
 		return false;

@@ -2,17 +2,14 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
-#include "Interface/InteractableInterface.h"
 #include "Components/TimelineComponent.h"
 #include "InteractableDoor.generated.h"
 
-class UInteractableComponent;
 class UStaticMeshComponent;
 class UCurveFloat;
-class AFirstPersonCharacter;
 
 UCLASS()
-class OUTLIER_API AInteractableDoor : public AActor, public IInteractableInterface
+class OUTLIER_API AInteractableDoor : public AActor
 {
 	GENERATED_BODY()
 
@@ -24,13 +21,13 @@ protected:
 	virtual void Tick(float DeltaTime) override;
 
 public:
-	virtual UInteractableComponent* GetInteractableComponent() const override;
-	virtual void Interact(AFirstPersonCharacter* Interactor) override;
+	UFUNCTION(BlueprintCallable, Category = "Door")
+	void SetDoorOpen(bool bOpen);
+
+	UFUNCTION(BlueprintCallable, Category = "Door")
+	void ToggleDoor();
 
 public:
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")
-	TObjectPtr<UInteractableComponent> InteractableComponent;
-
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")
 	TObjectPtr<UStaticMeshComponent> DoorMeshLeft;
 
@@ -47,14 +44,21 @@ public:
 	TObjectPtr<UCurveFloat> DoorCurve;
 
 protected:
-	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Door")
+	UPROPERTY(ReplicatedUsing = OnRep_IsOpen, BlueprintReadOnly, Category = "Door")
 	bool bIsOpen = false;
 
 private:
 	FTimeline DoorTimeline;
+	FVector ClosedLocationLeft = FVector::ZeroVector;
+	FVector ClosedLocationRight = FVector::ZeroVector;
 
 	UFUNCTION()
 	void OnDoorTimelineUpdate(float Alpha);
+
+	UFUNCTION()
+	void OnRep_IsOpen();
+
+	void ApplyDoorState(bool bOpen);
 
 public:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;

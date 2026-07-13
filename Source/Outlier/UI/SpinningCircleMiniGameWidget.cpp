@@ -203,7 +203,6 @@ void USpinningCircleMiniGameWidget::UpdateCircleLayers(float DeltaTime)
 		}
 
 		Layer.AngleDegrees = FMath::Fmod(Layer.AngleDegrees + Layer.RotationSpeedDegrees * DeltaTime, 360.0f);
-		//Layer.AngleDegrees = FMath::Fmod(Layer.AngleDegrees + 1 * DeltaTime, 360.0f);
 
 		if (Layer.AngleDegrees < 0.0f)
 		{
@@ -284,10 +283,6 @@ USpinningCircleMiniGameWidget::EMouseAreaResult USpinningCircleMiniGameWidget::E
 	{
 		return EMouseAreaResult::Reset;
 	}
-
-	
-
-	// 전체 범위
 
 	for (const FSpinningCircleLayer& Layer : CircleLayers)
 	{
