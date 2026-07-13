@@ -2,6 +2,8 @@
 #include "LocalPlayerUISubSystem.h"
 #include "GameFramework/PlayerController.h"
 #include "Components/SceneCaptureComponent2D.h"
+#include "Components/CanvasPanel.h"
+#include "Components/CanvasPanelSlot.h"
 #include "AbilityIconUI.h"
 #include "MainUIBase.h"
 #include "HPBarUI.h"
@@ -15,6 +17,7 @@
 #include "ShooterCurrentAbilityIcon.h"
 #include "ShooterMainWidget.h"
 #include "TagDrivenUIGameplayTags.h"
+#include "Blueprint/UserWidget.h"
 
 void ULocalPlayerUISubSystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -36,6 +39,7 @@ void ULocalPlayerUISubSystem::UnregisterMainUI(UMainUIBase* InMainUI)
 {
 	if (MainUIInstance == InMainUI)
 	{
+		InteractionWidgetInstance = nullptr;
 		MainUIInstance = nullptr;
 	}
 }
@@ -334,6 +338,52 @@ void ULocalPlayerUISubSystem::OnAbilityUsed(const FGameplayTag& AbilityTag, floa
 	{
 		CurrentAbilityIcon->ApplyCooldownIfMatches(AbilityTag, CoolTime);
 	}
+}
+
+void ULocalPlayerUISubSystem::BindInteractionWidget(UUserWidget* InteractionWidget)
+{
+	BindInteractionWidget(InteractionWidget, FVector2D(0.0f, 160.0f));
+}
+
+void ULocalPlayerUISubSystem::BindInteractionWidget(UUserWidget* InteractionWidget, const FVector2D& WidgetPosition)
+{
+	UMainUIBase* MainUI = GetMainUI();
+	if (!MainUI || !MainUI->InteractionLayer || !InteractionWidget)
+	{
+		return;
+	}
+
+	InteractionWidgetInstance = InteractionWidget;
+
+	if (!InteractionWidget->GetParent())
+	{
+		UCanvasPanelSlot* CanvasSlot = MainUI->InteractionLayer->AddChildToCanvas(InteractionWidget);
+		if (CanvasSlot)
+		{
+			CanvasSlot->SetAnchors(FAnchors(0.0f, 0.0f));
+			CanvasSlot->SetAlignment(FVector2D(0.5f, 0.5f));
+			CanvasSlot->SetPosition(WidgetPosition);
+			CanvasSlot->SetAutoSize(false);
+			CanvasSlot->SetSize(FVector2D(64.0f, 64.0f));
+			CanvasSlot->SetZOrder(0);
+		}
+	}
+	else if (UCanvasPanelSlot* CanvasSlot = Cast<UCanvasPanelSlot>(InteractionWidget->Slot))
+	{
+		CanvasSlot->SetPosition(WidgetPosition);
+	}
+
+	InteractionWidget->SetVisibility(ESlateVisibility::HitTestInvisible);
+}
+
+void ULocalPlayerUISubSystem::UnbindInteractionWidget(UUserWidget* InteractionWidget)
+{
+	if (!InteractionWidget || InteractionWidgetInstance != InteractionWidget)
+	{
+		return;
+	}
+
+	InteractionWidget->SetVisibility(ESlateVisibility::Collapsed);
 }
 
 void ULocalPlayerUISubSystem::PartnerCameraBind(USceneCaptureComponent2D* InCaptureComponent2D)

@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 #include "MainUIBase.h"
 #include "AbilityIconUI.h"
+#include "Components/CanvasPanel.h"
 #include "EventDrivenUI.h"
 
 void UMainUIBase::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)

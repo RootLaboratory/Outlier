@@ -22,6 +22,6 @@ class OUTLIER_API IInteractableInterface
 	GENERATED_BODY()
 
 public:
-	virtual UInteractableComponent* GetInteractableComponent() const = 0; //Tag 사용으로 Component로 확장. 
+	virtual UInteractableComponent* GetInteractableComponent() const = 0;
 	virtual void Interact(class AFirstPersonCharacter* Interactor) = 0;
 };
