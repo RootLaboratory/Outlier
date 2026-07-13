@@ -161,3 +161,26 @@ Desktop.ini
 # Logs / temp
 *.log
 *.tmp
+.codex/*
+.codex/agents/
+.codex/agents/**
+.codex/skills/
+.codex/skills/**
+.codex/skills/.system/**
+.codex/prompts/
+.codex/prompts/**
+
+# oh-my-codex local state
+.omx/cache/
+.omx/logs/
+.omx/sessions/
+
+# Docs
+[Dd]ocs/
+
+# AI
+AGENTS.md
+CLAUDE.md
+DOCUMENT_AGENT.md
+IMPLEMENT_AGENT.md
+

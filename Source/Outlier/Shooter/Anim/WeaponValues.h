@@ -457,6 +457,14 @@ struct OUTLIER_API FWeaponValues
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset")
 	float WallSafeDistance = 70.0f;
 
+	// 히트 노멀 Z가 이 값보다 크면 바닥/완만한 경사로 보고 벽 후보에서 제외.
+	// 0.6 ≈ 53도보다 완만한 면은 무시 (앉아서 아래를 볼 때 바닥 오발동 방지).
+	// 단차/턱의 수직면은 노멀이 수평이라 그대로 감지된다.
+	// FP가 바닥에 오발동하면 근접 단계 raw 타깃이 3인칭 union으로 전파되어
+	// 3인칭 상체까지 튀므로, FP에도 TP와 동일한 필터를 둔다
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float WallFloorNormalZ = 0.6f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset", meta = (ClampMin = "0.0"))
 	float WallTargetSmoothSpeed = 10.0f;
 

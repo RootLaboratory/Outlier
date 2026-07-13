@@ -337,6 +337,8 @@ protected:
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Survival")
 	uint8 bIsInvincible : 1 = false;
 
+	uint8 bInvincibleForEnemyPossession : 1 = false;
+
 	UPROPERTY(ReplicatedUsing = OnRep_CurrentHitCount, VisibleAnywhere, BlueprintReadOnly, Category = "Survival")
 	int32 CurrentHitCount = 0;
 
@@ -372,6 +374,7 @@ protected:
 	) override;
 
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
+	virtual void UnPossessed() override;
 	virtual void DoMove(float Right, float Forward) override;
 	virtual void OnMoveInputUpdated(const FVector2D& MoveValue);
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
@@ -464,5 +467,6 @@ public:
 	void NullifyDamagedEvenet() const;
 
 	void HandlePartnerHit();
+	void SetInvincibleForEnemyPossession(bool bNewInvincible);
 
 };

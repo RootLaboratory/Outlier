@@ -317,6 +317,11 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|TP Procedural|Wall Offset", meta = (ClampMin = "0.0"))
 	float ThirdPersonWallTraceRadius = 8.0f;
 
+	// 히트 노멀 Z가 이 값보다 크면 바닥/완만한 경사로 보고 벽 후보에서 제외.
+	// 0.6 ≈ 53도보다 완만한 면은 무시 (앉아서 아래를 볼 때 바닥 오발동 방지)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|TP Procedural|Wall Offset", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float ThirdPersonWallFloorNormalZ = 0.6f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|TP Procedural|Wall Offset", meta = (ClampMin = "0.0"))
 	float ThirdPersonWallVerticalProbeOffset = 22.0f;
 

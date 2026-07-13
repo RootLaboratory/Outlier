@@ -62,7 +62,8 @@ void UShooterMovementComponent::HandleSprintPressed()
 
 	ShooterCharacter->StopLean();
 	bWantsToSprint = true;
-	bIsSprinting = true;
+	// bIsSprinting은 여기서 정하지 않음 — 정지 상태에서 Shift부터 눌러도 의도(bWantsToSprint)만 켜두고,
+	// 실제 이동이 시작되는 시점(OnMoveInputUpdated -> RefreshMovementState)에서 켜지도록 함
 	ShooterCharacter->GetCharacterMovement()->MaxWalkSpeed = ShooterCharacter->SprintSpeed;
 	RefreshMovementState();
 }
@@ -412,6 +413,10 @@ void UShooterMovementComponent::RefreshMovementState()
 	else
 	{
 		const float Speed2D = ShooterCharacter->GetVelocity().Size2D();
+
+		// Shift만 누르고 있는 상태(bWantsToSprint)로는 스프린트 취급하지 않고,
+		// 실제로 움직이고 있을 때만 bIsSprinting을 켠다 — 이 함수가 이동 입력마다 호출되므로 여기서 계속 갱신됨
+		bIsSprinting = bWantsToSprint && Speed2D > KINDA_SMALL_NUMBER;
 
 		if (Speed2D <= KINDA_SMALL_NUMBER)
 		{

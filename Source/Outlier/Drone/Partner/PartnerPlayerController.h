@@ -8,6 +8,7 @@
 
 class APartnerCharacter;
 class AShooterCharacter;
+class AEnemyBase;
 class AOutlierPlayerState;
 class ULocalPlayerUISubSystem;
 struct FGameplayTag;
@@ -38,6 +39,7 @@ protected:
 
 	/** Pawn initialization */
 	virtual void OnPossess(APawn* InPawn) override;
+	virtual void PawnPendingDestroy(APawn* InPawn) override;
 
 	virtual void ReceivedPlayer() override;
 
@@ -66,8 +68,25 @@ protected:
 	UPROPERTY()
 	TObjectPtr<AOutlierPlayerState> BoundOutlierPlayerState;
 
+	UPROPERTY()
+	TWeakObjectPtr<APartnerCharacter> CachedPartnerCharacter;
+
+	void RestoreCachedPartnerCharacter();
+	void RestoreCachedPartnerCharacterNextTick();
+
+	UFUNCTION(Server, Reliable)
+	void ServerReleaseEnemyPossession();
+
 public:
 	APartnerPlayerController();
+
+	void CachePartnerCharacterForEnemyPossession(APartnerCharacter* PartnerCharacter);
+
+	UFUNCTION(BlueprintCallable, Category = "Partner|EnemyPossession")
+	void ReleaseEnemyPossession();
+
+	/** 로그아웃 정리용 — 캐시된 원래 Partner 캐릭터를 꺼내면서 캐시를 비운다. 빙의를 복원하지는 않는다. */
+	APartnerCharacter* ExtractCachedPartnerCharacterForLogout();
 	
 	
 };

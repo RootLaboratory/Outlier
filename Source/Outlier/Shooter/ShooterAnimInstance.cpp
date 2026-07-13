@@ -455,6 +455,15 @@ void UShooterAnimInstance::UpdateThirdPersonWallOffset(float DeltaSeconds, AWeap
 				Params
 			);
 
+			// 바닥 필터: 위를 향한 노멀은 벽이 아니다. 앉거나 아래를 보면
+			// 조준 방향 프로브가 가까운 바닥을 때려 벽 단계가 오작동한다
+			if (Result.bHit &&
+				Result.Hit.ImpactNormal.Z > FMath::Clamp(ThirdPersonWallFloorNormalZ, 0.0f, 1.0f))
+			{
+				Result.bHit = false;
+				Result.Hit = FHitResult();
+			}
+
 			if (Result.bHit)
 			{
 				Result.Alpha = FMath::Clamp((ProbeDistance - Result.Hit.Distance) / ProbeSafeDistance, 0.0f, 1.0f);
@@ -493,6 +502,12 @@ void UShooterAnimInstance::UpdateThirdPersonWallOffset(float DeltaSeconds, AWeap
 				FCollisionShape::MakeSphere(TraceRadius),
 				Params
 			);
+			if (FlatProbe.bHit &&
+				FlatProbe.Hit.ImpactNormal.Z > FMath::Clamp(ThirdPersonWallFloorNormalZ, 0.0f, 1.0f))
+			{
+				FlatProbe.bHit = false;
+				FlatProbe.Hit = FHitResult();
+			}
 			if (FlatProbe.bHit)
 			{
 				FlatProbe.Alpha = FMath::Clamp((TraceDistance - FlatProbe.Hit.Distance) / SafeDistance, 0.0f, 1.0f);
