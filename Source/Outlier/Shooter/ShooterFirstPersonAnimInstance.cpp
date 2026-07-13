@@ -1799,6 +1799,16 @@ void UShooterFirstPersonAnimInstance::UpdateWallOffset(float DeltaSeconds, const
 			Params
 		);
 
+		// 바닥 필터: 위를 향한 노멀은 벽이 아니다. 앉아서 아래를 볼 때 바닥을
+		// 때려 근접 단계가 켜지면, 그 raw 타깃이 3인칭 union으로 전파돼
+		// 3인칭 상체까지 튄다
+		if (Result.bHit &&
+			Result.Hit.ImpactNormal.Z > FMath::Clamp(WeaponValues->WallFloorNormalZ, 0.0f, 1.0f))
+		{
+			Result.bHit = false;
+			Result.Hit = FHitResult();
+		}
+
 		if (Result.bHit)
 		{
 			Result.Alpha = FMath::Clamp((TraceDistance - Result.Hit.Distance) / SafeDistance, 0.0f, 1.0f);
@@ -1884,6 +1894,13 @@ void UShooterFirstPersonAnimInstance::UpdateWallOffset(float DeltaSeconds, const
 			Params
 		);
 
+		if (MuzzleBlockProbe.bHit &&
+			MuzzleBlockProbe.Hit.ImpactNormal.Z > FMath::Clamp(WeaponValues->WallFloorNormalZ, 0.0f, 1.0f))
+		{
+			MuzzleBlockProbe.bHit = false;
+			MuzzleBlockProbe.Hit = FHitResult();
+		}
+
 		if (MuzzleBlockProbe.bHit)
 		{
 			MuzzleBlockProbe.Alpha = FMath::Clamp(
@@ -1909,6 +1926,13 @@ void UShooterFirstPersonAnimInstance::UpdateWallOffset(float DeltaSeconds, const
 			FCollisionShape::MakeSphere(BarrelBlockTraceRadius),
 			Params
 		);
+
+		if (BarrelBlockProbe.bHit &&
+			BarrelBlockProbe.Hit.ImpactNormal.Z > FMath::Clamp(WeaponValues->WallFloorNormalZ, 0.0f, 1.0f))
+		{
+			BarrelBlockProbe.bHit = false;
+			BarrelBlockProbe.Hit = FHitResult();
+		}
 
 		if (BarrelBlockProbe.bHit)
 		{

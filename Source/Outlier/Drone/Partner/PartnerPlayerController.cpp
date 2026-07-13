@@ -10,6 +10,8 @@
 #include "PostProcess/MaterialPostProcessSubsystem.h"
 #include "OutlierPlayerState.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Enemy/EnemyBase.h"
+#include "TimerManager.h"
 
 APartnerPlayerController::APartnerPlayerController()
 {
@@ -73,6 +75,114 @@ void APartnerPlayerController::OnPossess(APawn* InPawn)
 		}
 	}
 
+}
+
+void APartnerPlayerController::PawnPendingDestroy(APawn* InPawn)
+{
+	AEnemyBase* EnemyPawn = Cast<AEnemyBase>(InPawn);
+	if (HasAuthority() && EnemyPawn && InPawn == GetPawn() && CachedPartnerCharacter.IsValid())
+	{
+		EnemyPawn->ClearPossessedPlayerState();
+		RestoreCachedPartnerCharacterNextTick();
+		return;
+	}
+
+	Super::PawnPendingDestroy(InPawn);
+}
+
+void APartnerPlayerController::CachePartnerCharacterForEnemyPossession(APartnerCharacter* PartnerCharacter)
+{
+	if (!HasAuthority() || !PartnerCharacter)
+	{
+		return;
+	}
+
+	CachedPartnerCharacter = PartnerCharacter;
+}
+
+void APartnerPlayerController::ReleaseEnemyPossession()
+{
+	if (!HasAuthority())
+	{
+		ServerReleaseEnemyPossession();
+		return;
+	}
+
+	AEnemyBase* EnemyPawn = Cast<AEnemyBase>(GetPawn());
+	if (!EnemyPawn)
+	{
+		return;
+	}
+
+	if (!CachedPartnerCharacter.IsValid())
+	{
+		if (AController* CachedAIController = EnemyPawn->GetCachedAIController())
+		{
+			CachedAIController->Possess(EnemyPawn);
+		}
+		else
+		{
+			EnemyPawn->SetEnemyPossessed(false);
+		}
+
+		CachedPartnerCharacter.Reset();
+		return;
+	}
+
+	if (AController* CachedAIController = EnemyPawn->GetCachedAIController())
+	{
+		CachedAIController->Possess(EnemyPawn);
+	}
+	else
+	{
+		EnemyPawn->SetEnemyPossessed(false);
+	}
+
+	RestoreCachedPartnerCharacter();
+}
+
+void APartnerPlayerController::ServerReleaseEnemyPossession_Implementation()
+{
+	ReleaseEnemyPossession();
+}
+
+APartnerCharacter* APartnerPlayerController::ExtractCachedPartnerCharacterForLogout()
+{
+	APartnerCharacter* Result = CachedPartnerCharacter.Get();
+	CachedPartnerCharacter.Reset();
+	return Result;
+}
+
+void APartnerPlayerController::RestoreCachedPartnerCharacter()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	APartnerCharacter* PartnerCharacter = CachedPartnerCharacter.Get();
+	if (!PartnerCharacter)
+	{
+		CachedPartnerCharacter.Reset();
+		return;
+	}
+
+	PartnerCharacter->SetInvincibleForEnemyPossession(false);
+	Possess(PartnerCharacter);
+	CachedPartnerCharacter.Reset();
+}
+
+void APartnerPlayerController::RestoreCachedPartnerCharacterNextTick()
+{
+	if (!HasAuthority() || !GetWorld())
+	{
+		return;
+	}
+
+	GetWorldTimerManager().SetTimerForNextTick(
+		this,
+		&APartnerPlayerController::RestoreCachedPartnerCharacter
+	);
 }
 
 void APartnerPlayerController::BindMainUI()
