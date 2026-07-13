@@ -62,7 +62,7 @@ UWidgetComponent* UInteractableComponent::EnsureInteractKeyWidgetComponent(APlay
 
 	NewWidgetComponent->SetWidgetClass(InteractKeyWidgetClass);
 	NewWidgetComponent->SetWidgetSpace(EWidgetSpace::Screen);
-	NewWidgetComponent->SetDrawSize(FVector2D(64.0f, 64.0f));
+	NewWidgetComponent->SetDrawSize(InteractKeyWidgetDrawSize);
 	NewWidgetComponent->SetDrawAtDesiredSize(false);
 	NewWidgetComponent->SetRelativeLocation(FVector(0.0f, 0.0f, InteractKeyWidgetZOffset));
 	NewWidgetComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);

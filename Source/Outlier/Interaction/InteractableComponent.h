@@ -34,6 +34,11 @@ public:
 	void InteractKeyWidgetActivate(AFirstPersonCharacter* Interactor);
 	void InteractKeyWidgetDeactivate();
 
+public:
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Interaction|Widget")
+	FVector2D InteractKeyWidgetDrawSize = FVector2D(64.0f, 64.0f);
+
 private:
 	UWidgetComponent* EnsureInteractKeyWidgetComponent(APlayerController* PlayerController);
 
