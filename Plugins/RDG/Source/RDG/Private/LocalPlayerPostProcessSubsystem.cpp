@@ -1,5 +1,3 @@
-// Fill out your copyright notice in the Description page of Project Settings.
-
 #include "LocalPlayerPostProcessSubsystem.h"
 
 #include "OutlierPostProcessSceneViewExtension.h"
@@ -181,6 +179,10 @@ void ULocalPlayerPostProcessSubsystem::SetADSBlurWeaponStencilValue(int32 InSten
 	TickFrame();
 }
 
+void ULocalPlayerPostProcessSubsystem::SetADSBlurFocusDistanceWorld(float InFocusDistanceWorld)
+{
+}
+
 void ULocalPlayerPostProcessSubsystem::SetADSBlurSightDistanceThreshold(float InThreshold)
 {
 	PostProcessParameters.ADSBlur.SightDistanceThreshold = FMath::Max(0.0f, InThreshold);
@@ -231,10 +233,7 @@ void ULocalPlayerPostProcessSubsystem::SetADSBlurDebugPassEnabled(bool bEnabled)
 
 void ULocalPlayerPostProcessSubsystem::SetADSSocketDistance(float Distance)
 {
-	// Controller가 매 프레임 소켓(광학 조준점)-카메라 거리를 넘겨줌. UE DoF 초점 거리(UpdateDepthOfField)로 사용됨.
-	// ADSBlur.FocusDistanceWorld(사이트-마스크 depth-band 판별 기준)는 이 실측값과 무관하게 11.0f 고정 유지.
-	ADSBlurSocketDistance = FMath::Max(0.0f, Distance);
-	PostProcessParameters.ADSBlur.FocusDistanceWorld = 11.0f;
+	//ADSBlurSocketDistance = FMath::Max(0.0f, Distance);
 
 	MarkDirty();
 	TickFrame();
@@ -287,8 +286,6 @@ void ULocalPlayerPostProcessSubsystem::UpdateDepthOfField()
 	FPostProcessSettings& PP = Volume->Settings;
 	const float Alpha = GetADSBlurAlpha();
 
-	// Off unless aiming with a valid focus distance. Diaphragm DOF treats a focal distance of
-	// 0 as disabled, so that's the clean off-switch when not aiming / ramped out.
 	if (!bADSDoFEnabled || Alpha <= KINDA_SMALL_NUMBER || ADSBlurSocketDistance <= 0.0f)
 	{
 		PP.bOverride_DepthOfFieldFocalDistance = true;
@@ -296,8 +293,6 @@ void ULocalPlayerPostProcessSubsystem::UpdateDepthOfField()
 		return;
 	}
 
-	// Focus on the optic aim point; open the aperture as the aim ramps in so the background
-	// blur fades in/out smoothly with the (already ramp-driven) alpha.
 	const float FStop = FMath::Lerp(ADSDoFApertureHip, ADSDoFApertureAim, Alpha);
 
 	PP.bOverride_DepthOfFieldFocalDistance = true;
@@ -309,12 +304,9 @@ void ULocalPlayerPostProcessSubsystem::UpdateDepthOfField()
 	PP.bOverride_DepthOfFieldSensorWidth = true;
 	PP.DepthOfFieldSensorWidth = ADSDoFSensorWidth;
 
-	// Caps how wide the aperture can open regardless of FStop above (0 = no cap).
 	PP.bOverride_DepthOfFieldMinFstop = true;
 	PP.DepthOfFieldMinFstop = ADSDoFMinFStop;
 
-	// How far from the focal point something has to be before it reaches max background blur:
-	// sharp within FocalRegion, then blur ramps up over FarTransitionRegion until CoC saturates.
 	PP.bOverride_DepthOfFieldFocalRegion = true;
 	PP.DepthOfFieldFocalRegion = ADSDoFFocalRegion;
 
@@ -350,10 +342,6 @@ void ULocalPlayerPostProcessSubsystem::UpdateADSBlur(float DeltaTime)
 	}
 	else
 	{
-		// Ramp elapsed time down linearly. Easing is applied only when reading the alpha
-		// (GetADSBlurAlpha); feeding the eased value back into ElapsedTime created a
-		// framerate-dependent stable fixed point that stalled the fade before reaching 0.
-		// A fixed decrement per frame guarantees it always reaches 0 within RampOutTime.
 		const float DecrementInElapsed = DeltaTime * (RampInTime / RampOutTime);
 		ADSBlurElapsedTime = FMath::Max(ADSBlurElapsedTime - DecrementInElapsed, 0.0f);
 	}
@@ -373,7 +361,7 @@ void ULocalPlayerPostProcessSubsystem::ApplyADSBlurRuntimeParameters()
 	const float Alpha = GetADSBlurAlpha();
 
 	PostProcessParameters.ADSBlur.bEnabled = bADSBlurDebugPassEnabled && Alpha > KINDA_SMALL_NUMBER ? 1 : 0;
-	PostProcessParameters.ADSBlur.FocusDistanceWorld = 11.0f; // SetADSSocketDistance와 동일하게 의도적으로 고정.
+	PostProcessParameters.ADSBlur.FocusDistanceWorld = 10.5f;
 
 	MarkDirty();
 	TickFrame();

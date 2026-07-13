@@ -63,6 +63,8 @@ private:
 	TOptional<float> GetADSBlurRampOutValue() const;
 	void OnADSBlurRampOutChanged(float NewValue);
 
+	TOptional<float> GetADSBlurFocusDistanceWorldValue() const;
+	void OnADSBlurFocusDistanceWorldChanged(float NewValue);
 	TOptional<float> GetADSBlurSightDistanceThresholdValue() const;
 	void OnADSBlurSightDistanceThresholdChanged(float NewValue);
 	TOptional<float> GetADSBlurSightMaskDilateRadiusValue() const;

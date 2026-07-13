@@ -590,6 +590,27 @@ void SRDGGraphicsDebugger::Construct(const FArguments& InArgs)
 						.Padding(RDGGraphicsDebugger::RowPadding)
 						[
 							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Focus Distance World")))]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SBox)
+							.WidthOverride(96.0f)
+							[
+								SNew(SNumericEntryBox<float>)
+								.AllowSpin(true)
+								.MinValue(0.0f)
+								.MinSliderValue(0.0f)
+								.MaxSliderValue(50.0f)
+								.Value(this, &SRDGGraphicsDebugger::GetADSBlurFocusDistanceWorldValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnADSBlurFocusDistanceWorldChanged)
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
 							.Text(FText::FromString(TEXT("Sight Distance Threshold")))]
 						+ SVerticalBox::Slot()
 						.AutoHeight()
@@ -1357,6 +1378,24 @@ TOptional<float> SRDGGraphicsDebugger::GetADSBlurSightDistanceThresholdValue() c
 	}
 
 	return TOptional<float>();
+}
+
+TOptional<float> SRDGGraphicsDebugger::GetADSBlurFocusDistanceWorldValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().ADSBlur.FocusDistanceWorld;
+	}
+
+	return TOptional<float>();
+}
+
+void SRDGGraphicsDebugger::OnADSBlurFocusDistanceWorldChanged(float NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetADSBlurFocusDistanceWorld(NewValue);
+	}
 }
 
 void SRDGGraphicsDebugger::OnADSBlurSightDistanceThresholdChanged(float NewValue)
