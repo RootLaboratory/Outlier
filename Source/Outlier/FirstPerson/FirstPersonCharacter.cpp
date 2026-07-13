@@ -10,6 +10,8 @@
 #include "DrawDebugHelpers.h"
 #include "FirstPersonInputConfig.h"
 #include "Interface/InteractableInterface.h"
+#include "Interaction/InteractionNode.h"
+#include "Interaction/InteractableComponent.h"
 #include "LocalPlayerUISubSystem.h"
 #include "EnhancedInputComponent.h"
 #include "InputActionValue.h"
@@ -17,6 +19,7 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Weapon/WeaponBase.h"
 #include "Net/UnrealNetwork.h"
+#include "Engine/OverlapResult.h"
 #include "OutlierNetUtils.h"
 #include "Outlier.h"
 #include "Shooter/ShooterCharacter.h"
@@ -105,6 +108,14 @@ void AFirstPersonCharacter::BeginPlay()
 {
 	Super::BeginPlay();
 
+	GetWorldTimerManager().SetTimer(
+		InteractionTraceTimerHandle,
+		this,
+		&AFirstPersonCharacter::UpdateInteractableFocus,
+		InteractionTraceInterval,
+		true
+	);
+
 	UE_LOG(
 		LogTemp,
 		Log,
@@ -114,6 +125,7 @@ void AFirstPersonCharacter::BeginPlay()
 		*GetNameSafe(FirstPersonMesh),
 		FirstPersonMesh ? *GetNameSafe(FirstPersonMesh->GetAnimClass()) : TEXT("None"),
 		FirstPersonMesh ? *GetNameSafe(FirstPersonMesh->GetAnimInstance()) : TEXT("None"));
+
 }
 
 void AFirstPersonCharacter::MoveInput(const FInputActionValue& Value)
@@ -170,7 +182,6 @@ void AFirstPersonCharacter::TryCamToggle()
 		return;
 	}
 
-	//UE_LOG(LogTemp, Error, TEXT("Toggle"));
 	APlayerController* PlayerController = Cast<APlayerController>(GetController());
 
 	if (PlayerController)
@@ -183,6 +194,8 @@ void AFirstPersonCharacter::TryCamToggle()
 			if (ULocalPlayerUISubSystem* PPSubsystem = LP->GetSubsystem<ULocalPlayerUISubSystem>())
 			{
 				PPSubsystem->PartnerCameraToggle();
+				bPartnerCameraCaptureActive = !bPartnerCameraCaptureActive;
+				SetPartnerCameraCaptureUpdating(bPartnerCameraCaptureActive);
 			}
 			else
 			{
@@ -190,6 +203,23 @@ void AFirstPersonCharacter::TryCamToggle()
 
 			}
 		}
+	}
+}
+
+void AFirstPersonCharacter::SetPartnerCameraCaptureUpdating(bool bEnabled)
+{
+	if (!CaptureComponent)
+	{
+		return;
+	}
+
+	CaptureComponent->bCaptureEveryFrame = bEnabled;
+	CaptureComponent->bCaptureOnMovement = bEnabled;
+	CaptureComponent->SetComponentTickEnabled(bEnabled);
+
+	if (bEnabled)
+	{
+		CaptureComponent->CaptureScene();
 	}
 }
 
@@ -212,33 +242,15 @@ void AFirstPersonCharacter::TryInteract()
 		return;
 	}
 
-	FVector CameraLocation;
-	FRotator CameraRotation;
-	GetController()->GetPlayerViewPoint(CameraLocation, CameraRotation);
-
-	const FVector Start = CameraLocation;
-	const FVector End = Start + (CameraRotation.Vector() * InteractRange);
-
-	FHitResult Hit;
-	FCollisionQueryParams Params;
-	Params.AddIgnoredActor(this);
-	Params.AddIgnoredActor(CurrentWeapon);
-
-	const bool bHit = GetWorld()->LineTraceSingleByChannel(
-		Hit,
-		Start,
-		End,
-		ECC_Visibility,
-		Params);
-
-	if (!bHit)
+	AActor* TargetActor = FindInteractTargetByTrace();
+	if (!TargetActor)
 	{
-		UE_LOG(LogTemp, Log, TEXT("%s %s TryInteract miss Start=%s End=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *Start.ToString(), *End.ToString());
+		UE_LOG(LogTemp, Log, TEXT("%s %s TryInteract miss"), OutlierNet::GetNetPrefix(this), *GetName());
 		return;
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("%s %s TryInteract hit Target=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(Hit.GetActor()));
-	ServerInteract(Hit.GetActor());
+	UE_LOG(LogTemp, Log, TEXT("%s %s TryInteract hit Target=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(TargetActor));
+	ServerInteract(TargetActor);
 }
 
 void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor)
@@ -255,38 +267,9 @@ void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor)
 		return;
 	}
 
-	FVector CameraLocation;
-	FRotator CameraRotation;
-	GetController()->GetPlayerViewPoint(CameraLocation, CameraRotation);
-
-	const FVector Start = CameraLocation;
-	const FVector End = Start + (CameraRotation.Vector() * InteractRange);
-
-	FHitResult Hit;
-	FCollisionQueryParams Params;
-	Params.AddIgnoredActor(this);
-	Params.AddIgnoredActor(CurrentWeapon);
-
-	const bool bHit = GetWorld()->LineTraceSingleByChannel(
-		Hit,
-		Start,
-		End,
-		ECC_Visibility,
-		Params);
-
-	/*DrawDebugLine(
-		GetWorld(),
-		Start,
-		End,
-		bHit ? FColor::Green : FColor::Red,
-		false,
-		3.0f,
-		0,
-		1.0f);*/
-
-	if (!bHit || Hit.GetActor() != TargetActor)
+	if (!IsInteractTargetByTrace(TargetActor))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[Server] %s ServerInteract validation failed Requested=%s Hit=%s"), *GetName(), *GetNameSafe(TargetActor), *GetNameSafe(Hit.GetActor()));
+		UE_LOG(LogTemp, Warning, TEXT("[Server] %s ServerInteract validation failed Requested=%s"), *GetName(), *GetNameSafe(TargetActor));
 		return;
 	}
 
@@ -294,10 +277,29 @@ void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor)
 	{
 		UE_LOG(LogTemp, Log, TEXT("[Server] %s ServerInteract success Target=%s"), *GetName(), *GetNameSafe(TargetActor));
 		Interactable->Interact(this);
+		ClientOnInteractSucceeded(TargetActor); //InteractObject UI Update;
 	}
 	else
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[Server] %s ServerInteract failed: target not interactable Target=%s"), *GetName(), *GetNameSafe(TargetActor));
+	}
+}
+
+void AFirstPersonCharacter::ClientOnInteractSucceeded_Implementation(AActor* TargetActor)
+{
+	FocusedInteractable = TargetActor;
+
+	if (IInteractableInterface* Interactable = Cast<IInteractableInterface>(TargetActor))
+	{
+		if (UInteractableComponent* InteractableComponent = Interactable->GetInteractableComponent())
+		{
+			InteractableComponent->InteractKeyWidgetDeactivate();
+		}
+
+		if (AInteractionNode* InteractionNode = Cast<AInteractionNode>(TargetActor))
+		{
+			InteractionNode->Interact(this);
+		}
 	}
 }
 
@@ -414,4 +416,274 @@ void AFirstPersonCharacter::CaptureComponentWeaponNotIncluded(AWeaponBase* Weapo
 	{
 		UE_LOG(LogTemp, Error, TEXT("CaptureComponentWEAPONnoTiNCLUDED"));
 	}
+}
+
+void AFirstPersonCharacter::UpdateInteractableFocus()
+{
+	TArray<AActor*> CurrentInteractables;
+	GetInteractablesInRange(CurrentInteractables);
+	SyncInteractableKeyWidgets(CurrentInteractables);
+}
+
+void AFirstPersonCharacter::GetInteractablesInRange(TArray<AActor*>& OutInteractables) const
+{
+	if (!GetWorld() || !GetController())
+	{
+		return;
+	}
+
+	const FVector SphereCenter = FirstPersonCamera
+		? FirstPersonCamera->GetComponentLocation()
+		: GetActorLocation();
+
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(InteractionSphereOverlap), false, this);
+	QueryParams.AddIgnoredActor(this);
+	QueryParams.AddIgnoredActor(CurrentWeapon);
+
+	TArray<FOverlapResult> Overlaps;
+	const bool bHasOverlap = GetWorld()->OverlapMultiByChannel(
+		Overlaps,
+		SphereCenter,
+		FQuat::Identity,
+		InteractionTraceChannel,
+		FCollisionShape::MakeSphere(InteractRange),
+		QueryParams
+	);
+
+	if (bDrawInteractionTrace)
+	{
+		const FColor TraceColor = bHasOverlap ? FColor::Green : FColor::Red;
+		DrawDebugSphere(GetWorld(), SphereCenter, InteractRange, 32, TraceColor, false, InteractionTraceInterval, 0, 1.5f);
+		DrawDebugPoint(GetWorld(), SphereCenter, 12.0f, FColor::Yellow, false, InteractionTraceInterval, 0);
+		DrawDebugString(GetWorld(), SphereCenter + FVector(0.0f, 0.0f, 16.0f), TEXT("Interaction SphereOverlap"), nullptr, TraceColor, InteractionTraceInterval, true);
+	}
+
+	if (!bHasOverlap)
+	{
+		return;
+	}
+
+	TSet<AActor*> VisitedActors;
+
+	for (const FOverlapResult& Overlap : Overlaps)
+	{
+		AActor* HitActor = Overlap.GetActor();
+		if (!HitActor || VisitedActors.Contains(HitActor))
+		{
+			continue;
+		}
+
+		VisitedActors.Add(HitActor);
+
+		IInteractableInterface* Interactable = Cast<IInteractableInterface>(HitActor);
+		if (!Interactable)
+		{
+			continue;
+		}
+
+		UInteractableComponent* InteractableComponent = Interactable->GetInteractableComponent();
+		if (!InteractableComponent || !InteractableComponent->CanInteract(GetOwnedGameplayTagsForQuery()))
+		{
+			continue;
+		}
+
+		OutInteractables.Add(HitActor);
+	}
+}
+
+AActor* AFirstPersonCharacter::FindInteractTargetByTrace() const
+{
+	if (!GetWorld() || !GetController())
+	{
+		return nullptr;
+	}
+
+	FVector CameraLocation;
+	FRotator CameraRotation;
+	GetController()->GetPlayerViewPoint(CameraLocation, CameraRotation);
+
+	 FVector Start = CameraLocation;
+	 FVector End = Start + CameraRotation.Vector() * InteractRange;
+
+	if (InteractionTraceMode == EInteractionTraceMode::SphereTrace)
+	{
+		End = Start + CameraRotation.Vector() * InteractRange - InteractionSphereTraceRadius;
+	}
+
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(InteractionTrace), false, this);
+	QueryParams.AddIgnoredActor(this);
+	QueryParams.AddIgnoredActor(CurrentWeapon);
+
+	FHitResult Hit;
+	bool bHit = false;
+
+	if (InteractionTraceMode == EInteractionTraceMode::SphereTrace)
+	{
+		bHit = GetWorld()->SweepSingleByChannel(
+			Hit,
+			Start,
+			End - InteractionSphereTraceRadius,
+			FQuat::Identity,
+			InteractionTraceChannel,
+			FCollisionShape::MakeSphere(InteractionSphereTraceRadius),
+			QueryParams
+		);
+	}
+	else
+	{
+		bHit = GetWorld()->LineTraceSingleByChannel(
+			Hit,
+			Start,
+			End,
+			InteractionTraceChannel,
+			QueryParams
+		);
+	}
+
+	if (bDrawInteractionTrace)
+	{
+		const FColor TraceColor = bHit ? FColor::Cyan : FColor::Orange;
+
+		if (InteractionTraceMode == EInteractionTraceMode::SphereTrace)
+		{
+			const FVector TraceVector = End - Start;
+			const float TraceLength = TraceVector.Size();
+			const FVector TraceDirection = TraceLength > UE_KINDA_SMALL_NUMBER
+				? TraceVector / TraceLength
+				: FVector::ForwardVector;
+			const FVector CapsuleCenter = (Start + End) * 0.5f;
+			const float CapsuleHalfHeight = TraceLength * 0.5f + InteractionSphereTraceRadius;
+			const FQuat CapsuleRotation = FQuat::FindBetweenNormals(FVector::UpVector, TraceDirection);
+
+			DrawDebugCapsule(
+				GetWorld(),
+				CapsuleCenter,
+				CapsuleHalfHeight,
+				InteractionSphereTraceRadius,
+				CapsuleRotation,
+				TraceColor,
+				false,
+				InteractionTraceInterval,
+				0,
+				1.5f
+			);
+
+			DrawDebugSphere(GetWorld(), Start, InteractionSphereTraceRadius, 16, FColor::Yellow, false, InteractionTraceInterval, 0, 1.0f);
+			DrawDebugSphere(GetWorld(), End, InteractionSphereTraceRadius, 16, TraceColor, false, InteractionTraceInterval, 0, 1.0f);
+			DrawDebugString(GetWorld(), CapsuleCenter + FVector(0.0f, 0.0f, 16.0f), TEXT("Interact SphereTrace"), nullptr, TraceColor, InteractionTraceInterval, true);
+		}
+		else
+		{
+			DrawDebugLine(
+				GetWorld(),
+				Start,
+				End,
+				TraceColor,
+				false,
+				InteractionTraceInterval,
+				0,
+				2.0f
+			);
+
+			DrawDebugPoint(GetWorld(), Start, 8.0f, FColor::Yellow, false, InteractionTraceInterval, 0);
+			DrawDebugPoint(GetWorld(), End, 8.0f, TraceColor, false, InteractionTraceInterval, 0);
+			DrawDebugString(GetWorld(), (Start + End) * 0.5f + FVector(0.0f, 0.0f, 16.0f), TEXT("Interact LineTrace"), nullptr, TraceColor, InteractionTraceInterval, true);
+		}
+
+
+		if (bHit)
+		{
+			DrawDebugPoint(GetWorld(), Hit.ImpactPoint, 12.0f, FColor::Cyan, false, InteractionTraceInterval, 0);
+			DrawDebugString(GetWorld(), Hit.ImpactPoint + FVector(0.0f, 0.0f, 16.0f), TEXT("Interact Trace Hit"), nullptr, FColor::Cyan, InteractionTraceInterval, true);
+		}
+	}
+
+	if (!bHit)
+	{
+		return nullptr;
+	}
+
+	AActor* HitActor = Hit.GetActor();
+	IInteractableInterface* Interactable = Cast<IInteractableInterface>(HitActor);
+	if (!Interactable)
+	{
+		return nullptr;
+	}
+
+	UInteractableComponent* InteractableComponent = Interactable->GetInteractableComponent();
+	if (!InteractableComponent || !InteractableComponent->CanInteract(GetOwnedGameplayTagsForQuery()))
+	{
+		return nullptr;
+	}
+
+	return HitActor;
+}
+
+bool AFirstPersonCharacter::IsInteractTargetByTrace(AActor* TargetActor) const
+{
+	if (!TargetActor)
+	{
+		return false;
+	}
+
+	return FindInteractTargetByTrace() == TargetActor;
+}
+
+void AFirstPersonCharacter::SyncInteractableKeyWidgets(const TArray<AActor*>& CurrentInteractables)
+{
+	TSet<AActor*> CurrentSet;
+	for (AActor* CurrentInteractable : CurrentInteractables)
+	{
+		if (CurrentInteractable)
+		{
+			CurrentSet.Add(CurrentInteractable);
+		}
+	}
+
+	for (TObjectPtr<AActor> PreviousInteractable : NearbyInteractables)
+	{
+		if (!PreviousInteractable || CurrentSet.Contains(PreviousInteractable.Get()))
+		{
+			continue;
+		}
+
+		if (IInteractableInterface* PreviousInterface = Cast<IInteractableInterface>(PreviousInteractable.Get()))
+		{
+			if (UInteractableComponent* PreviousComponent = PreviousInterface->GetInteractableComponent())
+			{
+				PreviousComponent->InteractKeyWidgetDeactivate();
+			}
+
+			if (AInteractionNode* PreviousInteractionNode = Cast<AInteractionNode>(PreviousInteractable.Get()))
+			{
+				PreviousInteractionNode->InteractInfoWidgetDeactivate();
+			}
+		}
+
+		if (FocusedInteractable == PreviousInteractable.Get())
+		{
+			FocusedInteractable = nullptr;
+		}
+	}
+
+	NearbyInteractables.Reset();
+
+	for (AActor* CurrentInteractable : CurrentInteractables)
+	{
+		if (!CurrentInteractable)
+		{
+			continue;
+		}
+
+		NearbyInteractables.Add(CurrentInteractable);
+
+		if (IInteractableInterface* CurrentInterface = Cast<IInteractableInterface>(CurrentInteractable))
+		{
+			if (UInteractableComponent* CurrentComponent = CurrentInterface->GetInteractableComponent())
+			{
+				CurrentComponent->InteractKeyWidgetActivate(this);
+			}
+		}
+	}
+
 }

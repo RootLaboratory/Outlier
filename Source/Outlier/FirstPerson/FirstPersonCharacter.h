@@ -19,6 +19,13 @@ struct FInputActionValue;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnWeaponChanged, EWeaponType, NewWeaponType);
 
+UENUM(BlueprintType)
+enum class EInteractionTraceMode : uint8
+{
+	LineTrace,
+	SphereTrace
+};
+
 UCLASS()
 class OUTLIER_API AFirstPersonCharacter : public ACharacter, public IGameplayTagProviderInterface
 {
@@ -94,12 +101,16 @@ protected:
 	UFUNCTION(Server, Reliable)
 	void ServerInteract(AActor* TargetActor);
 
+	UFUNCTION(Client, Reliable)
+	void ClientOnInteractSucceeded(AActor* TargetActor);
+
 protected:
 
 	/** Set up input action bindings */
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
 
 	virtual void BeginPlay() override;
+
 
 public:
 	USkeletalMeshComponent* GetFirstPersonMesh() const { return FirstPersonMesh; }
@@ -123,7 +134,47 @@ public:
 	virtual void OnMoveInputUpdated(const FVector2D& MoveValue);
 
 	void CaptureComponentWeaponNotIncluded(AWeaponBase* Weapon);
+
 public:
 	UPROPERTY(BlueprintAssignable)
 	FOnWeaponChanged OnWeaponChanged;
+
+private:
+	float InteractionTraceInterval = 0.5f;
+
+private:
+	void UpdateInteractableFocus();
+
+	void SetPartnerCameraCaptureUpdating(bool bEnabled);
+
+	void SyncInteractableKeyWidgets(const TArray<AActor*>& CurrentInteractables);
+
+	void GetInteractablesInRange(TArray<AActor*>& OutInteractables) const;
+
+	AActor* FindInteractTargetByTrace() const;
+
+	bool IsInteractTargetByTrace(AActor* TargetActor) const;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Interaction")
+	TEnumAsByte<ECollisionChannel> InteractionTraceChannel = ECC_Visibility;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Interaction", meta = (AllowPrivateAccess = "true"))
+	EInteractionTraceMode InteractionTraceMode = EInteractionTraceMode::LineTrace;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Interaction", meta = (AllowPrivateAccess = "true", EditCondition = "InteractionTraceMode == EInteractionTraceMode::SphereTrace", ClampMin = "0.0"))
+	float InteractionSphereTraceRadius = 4.0f;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Interaction|Debug")
+	bool bDrawInteractionTrace = false;
+
+	UPROPERTY()
+	AActor* FocusedInteractable = nullptr;
+
+	UPROPERTY()
+	TArray<TObjectPtr<AActor>> NearbyInteractables;
+
+	uint8 bPartnerCameraCaptureActive : 1 = true;
+
+	FTimerHandle InteractionTraceTimerHandle;
+
 };
