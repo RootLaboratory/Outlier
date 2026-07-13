@@ -6,6 +6,7 @@
 #include "RDGExplosionVolumeProvider.h"
 #include "RenderingThread.h"
 #include "SceneViewExtension.h"
+#include "Engine/PostProcessVolume.h"
 
 void ULocalPlayerPostProcessSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -35,6 +36,7 @@ void ULocalPlayerPostProcessSubsystem::Deinitialize()
 void ULocalPlayerPostProcessSubsystem::Tick(float DeltaTime)
 {
 	UpdateADSBlur(DeltaTime);
+	UpdateDepthOfField();
 }
 
 TStatId ULocalPlayerPostProcessSubsystem::GetStatId() const
@@ -172,38 +174,44 @@ void ULocalPlayerPostProcessSubsystem::SetDatamoshingProgress(float InProgress)
 	TickFrame();
 }
 
-void ULocalPlayerPostProcessSubsystem::SetADSBlurEnabled(bool bEnabled)
-{
-	PostProcessParameters.ADSBlur.bEnabled = bEnabled ? 1 : 0;
-	MarkDirty();
-	TickFrame();
-}
-
-void ULocalPlayerPostProcessSubsystem::SetADSBlurBlend(float InAdsBlend)
-{
-	PostProcessParameters.ADSBlur.AdsBlend = FMath::Clamp(InAdsBlend, 0.0f, 1.0f);
-	MarkDirty();
-	TickFrame();
-}
-
-void ULocalPlayerPostProcessSubsystem::SetADSBlurRadius(float InBlurRadius)
-{
-	PostProcessParameters.ADSBlur.BlurRadius = FMath::Max(0.0f, InBlurRadius);
-	MarkDirty();
-	TickFrame();
-}
-
-void ULocalPlayerPostProcessSubsystem::SetADSBlurMaskParameters(float InDilateRadius, float InSoftness)
-{
-	PostProcessParameters.ADSBlur.MaskDilateRadius = FMath::Max(0.0f, InDilateRadius);
-	PostProcessParameters.ADSBlur.MaskSoftness = FMath::Max(0.0f, InSoftness);
-	MarkDirty();
-	TickFrame();
-}
-
 void ULocalPlayerPostProcessSubsystem::SetADSBlurWeaponStencilValue(int32 InStencilValue)
 {
 	PostProcessParameters.ADSBlur.WeaponStencilValue = FMath::Clamp(InStencilValue, 0, 255);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetADSBlurSightDistanceThreshold(float InThreshold)
+{
+	PostProcessParameters.ADSBlur.SightDistanceThreshold = FMath::Max(0.0f, InThreshold);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetADSBlurSightMaskDilateRadius(float InDilateRadius)
+{
+	PostProcessParameters.ADSBlur.SightMaskDilateRadius = FMath::Max(0.0f, InDilateRadius);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetADSBlurSightMaskSoftness(float InSoftness)
+{
+	PostProcessParameters.ADSBlur.SightMaskSoftness = FMath::Max(0.0f, InSoftness);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetADSBlurUseSoftSightMask(bool bInUseSoft)
+{
+	PostProcessParameters.ADSBlur.bUseSoftSightMask = bInUseSoft ? 1 : 0;
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetADSBlurGpuStatScopesEnabled(bool bEnabled)
+{
+	PostProcessParameters.ADSBlur.bEnableGpuStatScopes = bEnabled ? 1 : 0;
 	MarkDirty();
 	TickFrame();
 }
@@ -215,96 +223,109 @@ void ULocalPlayerPostProcessSubsystem::SetADSBlurAiming(bool bInAiming, int32 In
 	ApplyADSBlurRuntimeParameters();
 }
 
+void ULocalPlayerPostProcessSubsystem::SetADSBlurDebugPassEnabled(bool bEnabled)
+{
+	bADSBlurDebugPassEnabled = bEnabled ? 1 : 0;
+	ApplyADSBlurRuntimeParameters();
+}
+
 void ULocalPlayerPostProcessSubsystem::SetADSSocketDistance(float Distance)
 {
-	// Controller가 매 프레임 소켓(광학 조준점) - 카메라 거리를 넘겨줌. CoC 초점 거리 P.
+	// Controller가 매 프레임 소켓(광학 조준점)-카메라 거리를 넘겨줌. UE DoF 초점 거리(UpdateDepthOfField)로 사용됨.
+	// ADSBlur.FocusDistanceWorld(사이트-마스크 depth-band 판별 기준)는 이 실측값과 무관하게 11.0f 고정 유지.
 	ADSBlurSocketDistance = FMath::Max(0.0f, Distance);
-	PostProcessParameters.ADSBlur.FocusDistanceWorld = ADSBlurSocketDistance;
-
 	PostProcessParameters.ADSBlur.FocusDistanceWorld = 11.0f;
 
 	MarkDirty();
 	TickFrame();
 }
 
+void ULocalPlayerPostProcessSubsystem::SetDepthOfFieldVolume(APostProcessVolume* InVolume)
+{
+	DoFVolume = InVolume;
+}
+
+void ULocalPlayerPostProcessSubsystem::SetADSDoFEnabled(bool bEnabled)
+{
+	bADSDoFEnabled = bEnabled ? 1 : 0;
+}
+
+void ULocalPlayerPostProcessSubsystem::SetADSDoFApertureRange(float InAimFStop, float InHipFStop)
+{
+	ADSDoFApertureAim = FMath::Max(0.1f, InAimFStop);
+	ADSDoFApertureHip = FMath::Max(0.1f, InHipFStop);
+}
+
+void ULocalPlayerPostProcessSubsystem::SetADSDoFSensorWidth(float InSensorWidth)
+{
+	ADSDoFSensorWidth = FMath::Max(1.0f, InSensorWidth);
+}
+
+void ULocalPlayerPostProcessSubsystem::SetADSDoFMaxBlurClamp(float InMinFStop)
+{
+	ADSDoFMinFStop = FMath::Max(0.0f, InMinFStop);
+}
+
+void ULocalPlayerPostProcessSubsystem::SetADSDoFFocalRegion(float InFocalRegion)
+{
+	ADSDoFFocalRegion = FMath::Max(0.0f, InFocalRegion);
+}
+
+void ULocalPlayerPostProcessSubsystem::SetADSDoFFarTransitionRegion(float InFarTransitionRegion)
+{
+	ADSDoFFarTransitionRegion = FMath::Max(0.0f, InFarTransitionRegion);
+}
+
+void ULocalPlayerPostProcessSubsystem::UpdateDepthOfField()
+{
+	APostProcessVolume* Volume = DoFVolume.Get();
+	if (!Volume)
+	{
+		return;
+	}
+
+	FPostProcessSettings& PP = Volume->Settings;
+	const float Alpha = GetADSBlurAlpha();
+
+	// Off unless aiming with a valid focus distance. Diaphragm DOF treats a focal distance of
+	// 0 as disabled, so that's the clean off-switch when not aiming / ramped out.
+	if (!bADSDoFEnabled || Alpha <= KINDA_SMALL_NUMBER || ADSBlurSocketDistance <= 0.0f)
+	{
+		PP.bOverride_DepthOfFieldFocalDistance = true;
+		PP.DepthOfFieldFocalDistance = 0.0f;
+		return;
+	}
+
+	// Focus on the optic aim point; open the aperture as the aim ramps in so the background
+	// blur fades in/out smoothly with the (already ramp-driven) alpha.
+	const float FStop = FMath::Lerp(ADSDoFApertureHip, ADSDoFApertureAim, Alpha);
+
+	PP.bOverride_DepthOfFieldFocalDistance = true;
+	PP.DepthOfFieldFocalDistance = ADSBlurSocketDistance;
+
+	PP.bOverride_DepthOfFieldFstop = true;
+	PP.DepthOfFieldFstop = FStop;
+
+	PP.bOverride_DepthOfFieldSensorWidth = true;
+	PP.DepthOfFieldSensorWidth = ADSDoFSensorWidth;
+
+	// Caps how wide the aperture can open regardless of FStop above (0 = no cap).
+	PP.bOverride_DepthOfFieldMinFstop = true;
+	PP.DepthOfFieldMinFstop = ADSDoFMinFStop;
+
+	// How far from the focal point something has to be before it reaches max background blur:
+	// sharp within FocalRegion, then blur ramps up over FarTransitionRegion until CoC saturates.
+	PP.bOverride_DepthOfFieldFocalRegion = true;
+	PP.DepthOfFieldFocalRegion = ADSDoFFocalRegion;
+
+	PP.bOverride_DepthOfFieldFarTransitionRegion = true;
+	PP.DepthOfFieldFarTransitionRegion = ADSDoFFarTransitionRegion;
+}
+
 void ULocalPlayerPostProcessSubsystem::SetADSBlurRampTimes(float InRampInTime, float InRampOutTime)
 {
 	ADSBlurRampInTime = FMath::Max(0.0f, InRampInTime);
 	ADSBlurRampOutTime = FMath::Max(0.0f, InRampOutTime);
-	ApplyADSBlurRuntimeParameters();
-}
-
-void ULocalPlayerPostProcessSubsystem::SetADSBlurRadiusRange(float InMinRadius, float InMaxRadius)
-{
-	ADSBlurMinRadius = FMath::Max(0.0f, InMinRadius);
-	ADSBlurMaxRadius = FMath::Max(ADSBlurMinRadius, InMaxRadius);
-	ApplyADSBlurRuntimeParameters();
-}
-
-void ULocalPlayerPostProcessSubsystem::SetADSBlurMaskDilateRange(float InMinDilate, float InMaxDilate)
-{
-	ADSBlurMinMaskDilate = FMath::Max(0.0f, InMinDilate);
-	ADSBlurMaxMaskDilate = FMath::Max(ADSBlurMinMaskDilate, InMaxDilate);
-	ApplyADSBlurRuntimeParameters();
-}
-
-void ULocalPlayerPostProcessSubsystem::SetADSBlurMaskSoftnessRange(float InMinSoftness, float InMaxSoftness)
-{
-	ADSBlurMinMaskSoftness = FMath::Max(0.0f, InMinSoftness);
-	ADSBlurMaxMaskSoftness = FMath::Max(ADSBlurMinMaskSoftness, InMaxSoftness);
-	ApplyADSBlurRuntimeParameters();
-}
-
-void ULocalPlayerPostProcessSubsystem::SetADSBlurMaskDilateRadius(float InDilateRadius)
-{
-	SetADSBlurMaskDilateRange(InDilateRadius, InDilateRadius);
-}
-
-void ULocalPlayerPostProcessSubsystem::SetADSBlurMaskSoftness(float InSoftness)
-{
-	SetADSBlurMaskSoftnessRange(InSoftness, InSoftness);
-}
-
-void ULocalPlayerPostProcessSubsystem::SetADSBlurPassCount(int32 InPassCount)
-{
-	ADSBlurPassCount = FMath::Clamp(InPassCount, 1, 4);
-	ApplyADSBlurRuntimeParameters();
-}
-
-void ULocalPlayerPostProcessSubsystem::SetADSBlurInnerPreserve(float InInnerPreserve)
-{
-	ADSBlurInnerPreserve = FMath::Clamp(InInnerPreserve, 0.0f, 1.0f);
-	ApplyADSBlurRuntimeParameters();
-}
-
-void ULocalPlayerPostProcessSubsystem::SetADSBlurDepthBlurRange(float InStart, float InEnd)
-{
-	ADSBlurDepthBlurStart = FMath::Max(0.0f, InStart);
-	ADSBlurDepthBlurEnd = FMath::Max(ADSBlurDepthBlurStart + KINDA_SMALL_NUMBER, InEnd);
-	ApplyADSBlurRuntimeParameters();
-}
-
-void ULocalPlayerPostProcessSubsystem::SetADSBlurDepthBlurPower(float InPower)
-{
-	ADSBlurDepthBlurPower = FMath::Max(KINDA_SMALL_NUMBER, InPower);
-	ApplyADSBlurRuntimeParameters();
-}
-
-void ULocalPlayerPostProcessSubsystem::SetADSBlurDepthFocusBias(float InBias)
-{
-	ADSBlurDepthFocusBias = InBias;
-	ApplyADSBlurRuntimeParameters();
-}
-
-void ULocalPlayerPostProcessSubsystem::SetADSBlurGatherSampleCount(int32 InSampleCount)
-{
-	ADSBlurGatherSampleCount = FMath::Clamp(InSampleCount, 1, 96);
-	ApplyADSBlurRuntimeParameters();
-}
-
-void ULocalPlayerPostProcessSubsystem::SetADSBlurReachSoftness(float InReachSoftness)
-{
-	ADSBlurReachSoftness = FMath::Max(0.0f, InReachSoftness);
 	ApplyADSBlurRuntimeParameters();
 }
 
@@ -329,8 +350,12 @@ void ULocalPlayerPostProcessSubsystem::UpdateADSBlur(float DeltaTime)
 	}
 	else
 	{
-		const float CurrentAlpha = GetADSBlurAlpha();
-		ADSBlurElapsedTime = FMath::Max((CurrentAlpha - DeltaTime / RampOutTime) * RampInTime, 0.0f);
+		// Ramp elapsed time down linearly. Easing is applied only when reading the alpha
+		// (GetADSBlurAlpha); feeding the eased value back into ElapsedTime created a
+		// framerate-dependent stable fixed point that stalled the fade before reaching 0.
+		// A fixed decrement per frame guarantees it always reaches 0 within RampOutTime.
+		const float DecrementInElapsed = DeltaTime * (RampInTime / RampOutTime);
+		ADSBlurElapsedTime = FMath::Max(ADSBlurElapsedTime - DecrementInElapsed, 0.0f);
 	}
 
 	ApplyADSBlurRuntimeParameters();
@@ -347,20 +372,8 @@ void ULocalPlayerPostProcessSubsystem::ApplyADSBlurRuntimeParameters()
 {
 	const float Alpha = GetADSBlurAlpha();
 
-	PostProcessParameters.ADSBlur.bEnabled = Alpha > KINDA_SMALL_NUMBER ? 1 : 0;
-	PostProcessParameters.ADSBlur.AdsBlend = Alpha;
-	PostProcessParameters.ADSBlur.BlurRadius = FMath::Lerp(ADSBlurMinRadius, ADSBlurMaxRadius, Alpha);
-	PostProcessParameters.ADSBlur.PassCount = ADSBlurPassCount;
-	PostProcessParameters.ADSBlur.MaskDilateRadius = FMath::Lerp(ADSBlurMinMaskDilate, ADSBlurMaxMaskDilate, Alpha);
-	PostProcessParameters.ADSBlur.MaskSoftness = FMath::Lerp(ADSBlurMinMaskSoftness, ADSBlurMaxMaskSoftness, Alpha);
-	PostProcessParameters.ADSBlur.InnerPreserve = ADSBlurInnerPreserve;
-	PostProcessParameters.ADSBlur.DepthBlurStart = ADSBlurDepthBlurStart;
-	PostProcessParameters.ADSBlur.DepthBlurEnd = ADSBlurDepthBlurEnd;
-	PostProcessParameters.ADSBlur.DepthBlurPower = ADSBlurDepthBlurPower;
-	PostProcessParameters.ADSBlur.DepthFocusBias = ADSBlurDepthFocusBias;
-	PostProcessParameters.ADSBlur.FocusDistanceWorld = ADSBlurSocketDistance;
-	PostProcessParameters.ADSBlur.GatherSampleCount = ADSBlurGatherSampleCount;
-	PostProcessParameters.ADSBlur.ReachSoftness = ADSBlurReachSoftness;
+	PostProcessParameters.ADSBlur.bEnabled = bADSBlurDebugPassEnabled && Alpha > KINDA_SMALL_NUMBER ? 1 : 0;
+	PostProcessParameters.ADSBlur.FocusDistanceWorld = 11.0f; // SetADSSocketDistance와 동일하게 의도적으로 고정.
 
 	MarkDirty();
 	TickFrame();

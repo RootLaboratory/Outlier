@@ -15,18 +15,23 @@ IMPLEMENT_GLOBAL_SHADER(FRDGSceneColorCopyPS, "/Plugin/RDG/SceneColorCopy.usf", 
 FScreenPassTexture FRDGSceneColorCopyPass::AddPass(
 	FRDGBuilder& GraphBuilder,
 	const FSceneView& View,
-	const FScreenPassTexture& SceneColor)
+	const FScreenPassTexture& SceneColor,
+	const FScreenPassRenderTarget& OverrideOutput)
 {
 	if (!SceneColor.IsValid())
 	{
 		return SceneColor;
 	}
 
-	FScreenPassRenderTarget Output = FScreenPassRenderTarget::CreateFromInput(
-		GraphBuilder,
-		SceneColor,
-		ERenderTargetLoadAction::ENoAction,
-		TEXT("RDG.SceneColorCopy.Output"));
+	FScreenPassRenderTarget Output = OverrideOutput;
+	if (!Output.IsValid())
+	{
+		Output = FScreenPassRenderTarget::CreateFromInput(
+			GraphBuilder,
+			SceneColor,
+			ERenderTargetLoadAction::ENoAction,
+			TEXT("RDG.SceneColorCopy.Output"));
+	}
 
 	FRDGSceneColorCopyPS::FParameters* PassParameters = GraphBuilder.AllocParameters<FRDGSceneColorCopyPS::FParameters>();
 	PassParameters->InputTexture = SceneColor.Texture;
