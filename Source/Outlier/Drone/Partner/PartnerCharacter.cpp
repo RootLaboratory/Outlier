@@ -67,9 +67,24 @@ float APartnerCharacter::TakeDamage(
 	return AppliedDamage;
 }
 
+void APartnerCharacter::UnPossessed()
+{
+	if (MovementComponent)
+	{
+		MovementComponent->ClearFlightInput();
+	}
+
+	Super::UnPossessed();
+}
+
 void APartnerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 {
 	Super::SetupPlayerInputComponent(PlayerInputComponent);
+
+	if (MovementComponent)
+	{
+		MovementComponent->ClearFlightInput();
+	}
 
 	// Set up Action Bindings
 	UEnhancedInputComponent* EnhancedInputComponent = Cast<UEnhancedInputComponent>(PlayerInputComponent);
@@ -118,19 +133,6 @@ void APartnerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 	// VerticalMove
 	EnhancedInputComponent->BindAction(PartnerInputConfig->VerticalMoveAction,	ETriggerEvent::Triggered, this, &APartnerCharacter::VerticalMove);
 	EnhancedInputComponent->BindAction(PartnerInputConfig->VerticalMoveAction, ETriggerEvent::Completed, this, &APartnerCharacter::StopVerticalMove);
-}
-
-void APartnerCharacter::UnPossessed()
-{
-	// UnPossessed()만으로는 이 Pawn의 InputComponent가 컨트롤러 입력 스택에서 자동으로 빠지지 않음
-	// (엔진은 폰이 곧 파괴될 거라 가정함). Partner는 Enemy 빙의 중에도 캐싱되어 살아있으므로
-	// 명시적으로 빼주지 않으면 겹치는 키 입력이 이전 바인딩까지 같이 발동함
-	if (APlayerController* PC = Cast<APlayerController>(GetController()))
-	{
-		DisableInput(PC);
-	}
-
-	Super::UnPossessed();
 }
 
 void APartnerCharacter::DoMove(float Right, float Forward)
@@ -679,7 +681,6 @@ void APartnerCharacter::ApplyAccelerateState(bool bNewAccelerate)
 	if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
 	{
 		const float CurrentSpeed = bIsAccelerate ? BoostSpeed : MoveSpeed;
-		MoveComp->MaxWalkSpeed = CurrentSpeed;
 		MoveComp->MaxFlySpeed = CurrentSpeed;
 	}
 
@@ -770,7 +771,6 @@ void  APartnerCharacter::InitializeFromDataTables()
 
 		if (UCharacterMovementComponent* CharacterMovementComp = GetCharacterMovement())
 		{
-			CharacterMovementComp->MaxWalkSpeed = MoveSpeed;
 			CharacterMovementComp->MaxFlySpeed = MoveSpeed;
 			CharacterMovementComp->MaxAcceleration = Acceleration;
 			CharacterMovementComp->BrakingDecelerationWalking = Deceleration;
@@ -912,7 +912,6 @@ APartnerCharacter::APartnerCharacter()
 		MoveComp->DefaultLandMovementMode = MOVE_Flying;
 		MoveComp->SetMovementMode(MOVE_Flying);
 		MoveComp->GravityScale = 0.0f;
-		MoveComp->MaxWalkSpeed = MoveSpeed;
 		MoveComp->MaxFlySpeed = MoveSpeed;
 		MoveComp->BrakingDecelerationFlying = Deceleration;
 	}

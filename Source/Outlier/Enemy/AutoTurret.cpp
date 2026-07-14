@@ -9,7 +9,6 @@ AAutoTurret::AAutoTurret()
 	if (UCharacterMovementComponent* MovementComponent = GetCharacterMovement())
 	{
 		MovementComponent->DisableMovement();
-		MovementComponent->MaxWalkSpeed = 0.0f;
 		MovementComponent->MaxFlySpeed = 0.0f;
 	}
 }
@@ -25,7 +24,6 @@ void AAutoTurret::ApplyMovementFromRuntimeStat()
 	if (UCharacterMovementComponent* MovementComponent = GetCharacterMovement())
 	{
 		MovementComponent->DisableMovement();
-		MovementComponent->MaxWalkSpeed = 0.0f;
 		MovementComponent->MaxFlySpeed = 0.0f;
 	}
 }

@@ -275,7 +275,8 @@ void UFlightMovementComponentBase::UpdateInputMovement()
 	}
 	else
 	{
-		const FRotator ViewRot = OwnerCharacter->GetControlRotation();
+		FRotator ViewRot = OwnerCharacter->GetControlRotation();
+		ViewRot.Roll = 0.0f;
 		Move =
 			ViewRot.Vector() * CurrentMoveInput.Y +
 			FRotationMatrix(ViewRot).GetScaledAxis(EAxis::Y) * CurrentMoveInput.X +
@@ -570,7 +571,7 @@ float UFlightMovementComponentBase::GetMovementMassFactor() const
 		return 1.0f;
 	}
 
-	return FMath::Clamp(CharacterMovement->Mass / 100.0f, 0.5f, 3.0f);
+	return FMath::Clamp(CharacterMovement->Mass / 50.0f, 0.5f, 3.0f);
 }
 
 float UFlightMovementComponentBase::ResolveInertialReboundAxis(

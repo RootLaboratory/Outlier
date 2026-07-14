@@ -67,7 +67,7 @@ protected:
 	float CurrentHealth = 0.0f;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|Data")
-	float CoreCriticalMultiplier = 3.0f;
+	float CoreCriticalMultiplier = 2.0f;
 
 	// CoreHitboxComponent를 붙일 소켓/본 이름
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Damage")

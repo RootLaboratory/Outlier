@@ -1,5 +1,9 @@
 #include "Enemy/VECDrone.h"
 
+#include "Camera/CameraComponent.h"
+#include "Components/CapsuleComponent.h"
+#include "Components/SceneComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Drone/DroneInputConfig.h"
 #include "EnhancedInputComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -9,12 +13,84 @@
 AVECDrone::AVECDrone()
 {
 	SetDefaultEnemyType(EEnemyType::Gun);
+	bUseControllerRotationPitch = false;
+
+	FirstPersonCameraRoot = CreateDefaultSubobject<USceneComponent>(TEXT("First Person Camera Root"));
+	FirstPersonCameraRoot->SetupAttachment(GetCapsuleComponent());
+	FirstPersonCameraRoot->SetRelativeLocation(FVector(0.0f, 0.0f, 64.0f));
+
+	EnemyCameraComponent->SetupAttachment(FirstPersonCameraRoot);
+	EnemyCameraComponent->SetRelativeLocationAndRotation(FVector::ZeroVector, FRotator::ZeroRotator);
+	EnemyCameraComponent->bUsePawnControlRotation = true;
+	EnemyCameraComponent->bEnableFirstPersonFieldOfView = true;
+	EnemyCameraComponent->bEnableFirstPersonScale = false;
+	EnemyCameraComponent->FirstPersonFieldOfView = 70.0f;
+	EnemyCameraComponent->FirstPersonScale = 1.0f;
+
+	FirstPersonViewModelRoot = CreateDefaultSubobject<USceneComponent>(TEXT("First Person ViewModel Root"));
+	FirstPersonViewModelRoot->SetupAttachment(EnemyCameraComponent);
+	FirstPersonViewModelRoot->SetRelativeLocationAndRotation(FVector::ZeroVector, FRotator::ZeroRotator);
+
+	FirstPersonMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("First Person Mesh"));
+	FirstPersonMesh->SetupAttachment(FirstPersonViewModelRoot);
+	FirstPersonMesh->SetOnlyOwnerSee(true);
+	FirstPersonMesh->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::FirstPerson;
+	FirstPersonMesh->SetRelativeLocation(FVector(-2.0f, 0.0f, -130.0f));
+	FirstPersonMesh->SetRelativeRotation(FRotator::ZeroRotator);
+	FirstPersonMesh->SetCollisionProfileName(FName("NoCollision"));
+
+	GetMesh()->SetOwnerNoSee(true);
+	GetMesh()->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::WorldSpaceRepresentation;
+
 	VECMovementComponent = CreateDefaultSubobject<UVECDroneMovementComponent>(TEXT("VECMovementComponent"));
+}
+
+float AVECDrone::GetCurrentCameraPitchDegrees() const
+{
+	return VECMovementComponent
+		? VECMovementComponent->GetCurrentCameraPitchDegrees()
+		: 0.0f;
+}
+
+float AVECDrone::GetCurrentCameraRollDegrees() const
+{
+	return VECMovementComponent
+		? VECMovementComponent->GetCurrentCameraRollDegrees()
+		: 0.0f;
+}
+
+float AVECDrone::GetMaxCameraPitchDegrees() const
+{
+	return VECMovementComponent
+		? FMath::Max(VECMovementComponent->GetCameraPitchOnMove(), 0.0f)
+		: 0.0f;
+}
+
+float AVECDrone::GetMaxCameraRollDegrees() const
+{
+	return VECMovementComponent
+		? FMath::Max(VECMovementComponent->GetCameraRollOnTurn(), 0.0f)
+		: 0.0f;
+}
+
+void AVECDrone::UnPossessed()
+{
+	if (VECMovementComponent)
+	{
+		VECMovementComponent->ClearFlightInput();
+	}
+
+	Super::UnPossessed();
 }
 
 void AVECDrone::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 {
 	Super::SetupPlayerInputComponent(PlayerInputComponent);
+
+	if (VECMovementComponent)
+	{
+		VECMovementComponent->ClearFlightInput();
+	}
 
 	UEnhancedInputComponent* EnhancedInputComponent = Cast<UEnhancedInputComponent>(PlayerInputComponent);
 	if (!EnhancedInputComponent || !InputConfig)

@@ -6,6 +6,8 @@
 
 class UDroneInputConfig;
 class UInputComponent;
+class USceneComponent;
+class USkeletalMeshComponent;
 class UVECDroneMovementComponent;
 struct FInputActionValue;
 
@@ -17,12 +19,38 @@ class OUTLIER_API AVECDrone : public AEnemyBase
 public:
 	AVECDrone();
 
+	UFUNCTION(BlueprintPure, Category = "VECDrone|Camera")
+	float GetCurrentCameraPitchDegrees() const;
+
+	UFUNCTION(BlueprintPure, Category = "VECDrone|Camera")
+	float GetCurrentCameraRollDegrees() const;
+
+	UFUNCTION(BlueprintPure, Category = "VECDrone|Camera")
+	float GetMaxCameraPitchDegrees() const;
+
+	UFUNCTION(BlueprintPure, Category = "VECDrone|Camera")
+	float GetMaxCameraRollDegrees() const;
+
+	USceneComponent* GetFirstPersonCameraRoot() const { return FirstPersonCameraRoot; }
+	USceneComponent* GetFirstPersonViewModelRoot() const { return FirstPersonViewModelRoot; }
+	USkeletalMeshComponent* GetFirstPersonMesh() const { return FirstPersonMesh; }
+
 protected:
+	virtual void UnPossessed() override;
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 	virtual void ApplyMovementFromRuntimeStat() override;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|Movement")
 	TObjectPtr<UVECDroneMovementComponent> VECMovementComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|FirstPerson")
+	TObjectPtr<USceneComponent> FirstPersonCameraRoot;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|FirstPerson")
+	TObjectPtr<USceneComponent> FirstPersonViewModelRoot;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|FirstPerson")
+	TObjectPtr<USkeletalMeshComponent> FirstPersonMesh;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Input")
 	TObjectPtr<UDroneInputConfig> InputConfig;

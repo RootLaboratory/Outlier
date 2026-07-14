@@ -5,6 +5,7 @@
 #include "VECDroneMovementComponent.generated.h"
 
 class AVECDrone;
+class USceneComponent;
 
 UCLASS(ClassGroup = (Custom), meta = (BlueprintSpawnableComponent))
 class OUTLIER_API UVECDroneMovementComponent : public UFlightMovementComponentBase
@@ -18,6 +19,7 @@ public:
 
 protected:
 	virtual ACharacter* GetFlightOwnerCharacter() const override;
+	virtual USceneComponent* GetFlightViewModelRoot() const override;
 	virtual bool CanRunInputMovement() const override;
 	virtual bool ShouldUpdateMovementFeel() const override;
 	virtual EFlightInputMode GetFlightInputMode() const override;

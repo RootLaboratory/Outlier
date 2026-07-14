@@ -50,11 +50,14 @@ public:
 
 	virtual void SetMoveInput(const FVector2D& MoveInput);
 	virtual void SetVerticalInput(float Axis);
+	void ClearFlightInput();
 	void ResetMovementFeel();
 	void RefreshTickEnabled();
 
 	float GetCurrentCameraPitchDegrees() const { return CurrentCameraPitch; }
 	float GetCurrentCameraRollDegrees() const { return CurrentCameraRoll; }
+	float GetCameraPitchOnMove() const { return CameraPitchOnMove; }
+	float GetCameraRollOnTurn() const { return CameraRollOnTurn; }
 
 	void SetMoveSpeed(float NewMoveSpeed);
 	void SetBoostSpeed(float NewBoostSpeed);
@@ -88,7 +91,6 @@ protected:
 	virtual void OnAfterInputMovement(float DeltaTime);
 
 	bool HasMoveInput() const;
-	void ClearFlightInput();
 	void UpdateInputMovement();
 	void UpdateMovementFeel(float DeltaTime);
 
