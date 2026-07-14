@@ -84,6 +84,7 @@ protected:
 
 	virtual ACharacter* GetFlightOwnerCharacter() const;
 	virtual USkeletalMeshComponent* GetFlightVisualMesh() const;
+	virtual USceneComponent* GetFlightVisualTiltRoot() const;
 	virtual USceneComponent* GetFlightViewModelRoot() const;
 	virtual bool CanRunInputMovement() const;
 	virtual bool ShouldUpdateMovementFeel() const;
@@ -91,6 +92,7 @@ protected:
 	virtual void OnAfterInputMovement(float DeltaTime);
 
 	bool HasMoveInput() const;
+	FVector BuildWorldMoveVector(float VerticalInputScale) const;
 	void UpdateInputMovement();
 	void UpdateMovementFeel(float DeltaTime);
 
@@ -129,6 +131,12 @@ protected:
 	float MeshInertialTiltScale = 1.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Flight|Feel")
+	float MeshPitchInertialTiltScale = 2.5f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Flight|Feel")
+	float MeshRollInertialTiltScale = 4.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Flight|Feel")
 	float CameraInertialTiltScale = 0.6f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Flight|Feel")
@@ -159,9 +167,10 @@ private:
 		const FFlightMovementKinematics& Kinematics,
 		float DeltaTime
 	);
+	void UpdateMeshInertialTilt(const FFlightMovementKinematics& Kinematics, float DeltaTime);
 	void ApplyCameraTilt();
 	void ApplyVisualTilt(float DeltaTime);
-	void ApplyMeshTilt(float DeltaTime);
+	void ApplyMeshTilt();
 	void ApplyViewModelTilt(float DeltaTime);
 	float GetMovementMassFactor() const;
 	float ResolveInertialReboundAxis(
@@ -181,6 +190,8 @@ private:
 	uint8 bViewModelTiltInitialized : 1 = false;
 	float CurrentInertialPitch = 0.0f;
 	float CurrentInertialRoll = 0.0f;
+	float CurrentMeshPitch = 0.0f;
+	float CurrentMeshRoll = 0.0f;
 	float CurrentCameraPitch = 0.0f;
 	float CurrentCameraRoll = 0.0f;
 	FVector2D SmoothedTiltTarget = FVector2D::ZeroVector;
@@ -192,6 +203,8 @@ private:
 	float PreviousTargetRoll = 0.0f;
 	FRotator BaseMeshRelativeRotation = FRotator::ZeroRotator;
 	FRotator BaseViewModelRelativeRotation = FRotator::ZeroRotator;
+	float PreviousActorYaw = 0.0f;
+	bool bMeshRotationInitialized = false;
 	FVector LastLocation = FVector::ZeroVector;
 	FVector SmoothedVelocity = FVector::ZeroVector;
 };

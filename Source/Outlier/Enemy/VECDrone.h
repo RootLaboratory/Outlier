@@ -33,9 +33,11 @@ public:
 
 	USceneComponent* GetFirstPersonCameraRoot() const { return FirstPersonCameraRoot; }
 	USceneComponent* GetFirstPersonViewModelRoot() const { return FirstPersonViewModelRoot; }
+	USceneComponent* GetThirdPersonTiltRoot() const { return ThirdPersonTiltRoot; }
 	USkeletalMeshComponent* GetFirstPersonMesh() const { return FirstPersonMesh; }
 
 protected:
+	virtual void BeginPlay() override;
 	virtual void UnPossessed() override;
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 	virtual void ApplyMovementFromRuntimeStat() override;
@@ -51,6 +53,9 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|FirstPerson")
 	TObjectPtr<USkeletalMeshComponent> FirstPersonMesh;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|Visual")
+	TObjectPtr<USceneComponent> ThirdPersonTiltRoot;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Input")
 	TObjectPtr<UDroneInputConfig> InputConfig;

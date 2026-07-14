@@ -15,6 +15,10 @@ AVECDrone::AVECDrone()
 	SetDefaultEnemyType(EEnemyType::Gun);
 	bUseControllerRotationPitch = false;
 
+	ThirdPersonTiltRoot = CreateDefaultSubobject<USceneComponent>(TEXT("Third Person Tilt Root"));
+	ThirdPersonTiltRoot->SetupAttachment(GetCapsuleComponent());
+	GetMesh()->SetupAttachment(ThirdPersonTiltRoot);
+
 	FirstPersonCameraRoot = CreateDefaultSubobject<USceneComponent>(TEXT("First Person Camera Root"));
 	FirstPersonCameraRoot->SetupAttachment(GetCapsuleComponent());
 	FirstPersonCameraRoot->SetRelativeLocation(FVector(0.0f, 0.0f, 64.0f));
@@ -43,6 +47,19 @@ AVECDrone::AVECDrone()
 	GetMesh()->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::WorldSpaceRepresentation;
 
 	VECMovementComponent = CreateDefaultSubobject<UVECDroneMovementComponent>(TEXT("VECMovementComponent"));
+}
+
+void AVECDrone::BeginPlay()
+{
+	if (ThirdPersonTiltRoot && GetMesh()->GetAttachParent() != ThirdPersonTiltRoot)
+	{
+		GetMesh()->AttachToComponent(
+			ThirdPersonTiltRoot,
+			FAttachmentTransformRules::KeepRelativeTransform
+		);
+	}
+
+	Super::BeginPlay();
 }
 
 float AVECDrone::GetCurrentCameraPitchDegrees() const

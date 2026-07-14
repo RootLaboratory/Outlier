@@ -30,6 +30,7 @@ public:
 protected:
 	virtual void BeginPlay() override;
 	virtual ACharacter* GetFlightOwnerCharacter() const override;
+	virtual USceneComponent* GetFlightVisualTiltRoot() const override;
 	virtual USceneComponent* GetFlightViewModelRoot() const override;
 	virtual bool CanRunInputMovement() const override;
 	virtual bool ShouldUpdateMovementFeel() const override;

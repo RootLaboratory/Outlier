@@ -62,6 +62,7 @@ class UPartnerCombatComponent;
 class UPartnerHackComponent;
 class UPartnerAbilityComponent;
 class UPartnerEMPComponent;
+class USceneComponent;
 UCLASS()
 class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter
 {
@@ -94,6 +95,9 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UPartnerEMPComponent> EMPComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<USceneComponent> ThirdPersonTiltRoot;
 
 	// Move Data
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Move")
@@ -458,6 +462,7 @@ public:
 
 	float GetCurrentInertialCameraPitchDegrees() const;
 	float GetCurrentInertialCameraRollDegrees() const;
+	USceneComponent* GetThirdPersonTiltRoot() const { return ThirdPersonTiltRoot; }
 	float GetMaxInertialCameraPitchDegrees() const { return FMath::Max(CameraPitchOnMove, 0.0f); }
 	float GetMaxInertialCameraRollDegrees() const { return FMath::Max(CameraRollOnTurn, 0.0f); }
 

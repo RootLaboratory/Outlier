@@ -5,6 +5,8 @@
 #include "Drone/Partner/PartnerInputConfig.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
+#include "Components/CapsuleComponent.h"
+#include "Components/SceneComponent.h"
 #include "Drone/Partner/PartnerDistanceComponent.h"
 #include "Drone/Partner/PartnerMovementComponent.h"
 #include "Drone/Partner/PartnerSupportComponent.h"
@@ -30,6 +32,14 @@
 
 void APartnerCharacter::BeginPlay()
 {
+	if (ThirdPersonTiltRoot && GetMesh()->GetAttachParent() != ThirdPersonTiltRoot)
+	{
+		GetMesh()->AttachToComponent(
+			ThirdPersonTiltRoot,
+			FAttachmentTransformRules::KeepRelativeTransform
+		);
+	}
+
 	Super::BeginPlay();
 
 	if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
@@ -906,6 +916,10 @@ void APartnerCharacter::LookInput(const FInputActionValue& Value)
 APartnerCharacter::APartnerCharacter()
 {
 	PrimaryActorTick.bCanEverTick = false;
+
+	ThirdPersonTiltRoot = CreateDefaultSubobject<USceneComponent>(TEXT("Third Person Tilt Root"));
+	ThirdPersonTiltRoot->SetupAttachment(GetCapsuleComponent());
+	GetMesh()->SetupAttachment(ThirdPersonTiltRoot);
 
 	if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
 	{

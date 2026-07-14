@@ -21,6 +21,12 @@ ACharacter* UVECDroneMovementComponent::GetFlightOwnerCharacter() const
 	return GetVECDroneOwner();
 }
 
+USceneComponent* UVECDroneMovementComponent::GetFlightVisualTiltRoot() const
+{
+	const AVECDrone* Drone = GetVECDroneOwner();
+	return Drone ? Drone->GetThirdPersonTiltRoot() : nullptr;
+}
+
 USceneComponent* UVECDroneMovementComponent::GetFlightViewModelRoot() const
 {
 	const AVECDrone* Drone = GetVECDroneOwner();
