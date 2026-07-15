@@ -26,7 +26,7 @@ void UEnemyRoomSubsystem::NotifyRoomCombat(int32 ArenaId, FGameplayTag RoomTag, 
 	for (AActor* Actor : ArenaLevel->Actors)
 	{
 		AEnemyBase* Enemy = Cast<AEnemyBase>(Actor);
-		if (!Enemy || Enemy == ExcludeEnemy || Enemy->GetRoomTag() != RoomTag)
+		if (!Enemy || Enemy == ExcludeEnemy || Enemy->GetDefaultRoomTag() != RoomTag)
 		{
 			continue;
 		}

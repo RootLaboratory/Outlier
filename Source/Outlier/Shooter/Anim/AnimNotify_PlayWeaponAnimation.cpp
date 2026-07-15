@@ -11,6 +11,8 @@ void UAnimNotify_PlayWeaponAnimation::Notify(
 	const FAnimNotifyEventReference& EventReference
 )
 {
+	Super::Notify(MeshComp, Animation, EventReference);
+
 	if (!MeshComp || !WeaponAnimation)
 	{
 		return;

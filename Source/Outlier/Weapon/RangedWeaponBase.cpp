@@ -31,6 +31,9 @@
 #include "Weapon/WeaponRecoilRow.h"
 #include "Shooter/ShooterAnimInstance.h"
 #include "Shooter/ShooterFirstPersonAnimInstance.h"
+#include "Enemy/EnemyRoomSubsystem.h"
+#include "Room/RoomTagComponent.h"
+#include "Interface/RoomTagInterface.h"
 
 void ARangedWeaponBase::StartAttackCooldown()
 {
@@ -274,6 +277,22 @@ void ARangedWeaponBase::FireShot()
 			{
 				VisualSubsystem->PlaySoundAtLocation(GunSound, Start);
 			}
+		}
+	}
+
+	if (bReportArenaWideNoise)
+	{
+		if (AEnemyBase* Enemy = Cast<AEnemyBase>(OwnerCharacter))
+		{
+			if (Enemy->IsEnemyPossessed())
+			{
+				ReportArenaWideNoise(OwnerCharacter);
+			}
+		}
+		else
+		{
+			// Shooter 라이플
+			ReportArenaWideNoise(OwnerCharacter);
 		}
 	}
 
@@ -1014,6 +1033,43 @@ void ARangedWeaponBase::CacheSightAimMaterials()
 		{
 			SightAimMIDs.Add(MID);
 		}
+	}
+}
+
+void ARangedWeaponBase::ReportArenaWideNoise(ACharacter* OwnerCharacter)
+{
+	if (!HasAuthority() || !OwnerCharacter)
+	{
+		return;
+	}
+
+	if (!bReportArenaWideNoise)
+	{
+		return;
+	}
+
+	const AOutlierPlayerState* PlayerState = OwnerCharacter->GetPlayerState<AOutlierPlayerState>();
+	if (!PlayerState)
+	{
+		return;
+	}
+
+	const IRoomTagInterface* RoomTagOwner = Cast<IRoomTagInterface>(OwnerCharacter);
+	if(!RoomTagOwner)
+	{
+		return;
+	}
+
+	const FGameplayTag CurrentRoomTag = RoomTagOwner->GetCurrentRoomTag();
+
+	if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
+	{
+		RoomSubsystem->NotifyRoomCombat(
+			PlayerState->GetArenaId(),
+			CurrentRoomTag,
+			OwnerCharacter->GetActorLocation(),
+			Cast<AEnemyBase>(OwnerCharacter)
+		);
 	}
 }
 

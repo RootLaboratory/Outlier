@@ -208,6 +208,8 @@ protected:
 	void FinishReuseCooldown();
 	void CacheSightAimMaterials();
 
+	void ReportArenaWideNoise(ACharacter* OwnerCharacter);
+
 public:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const;
 	virtual void OnEquipped(ACharacter* NewOwner) override;

@@ -14,6 +14,8 @@ void UAnimNotify_SpawnBulletCasing::Notify(
 	const FAnimNotifyEventReference& EventReference
 )
 {
+	Super::Notify(MeshComp, Animation, EventReference);
+
 	if (!MeshComp || !BulletCasingSystem)
 	{
 		return;

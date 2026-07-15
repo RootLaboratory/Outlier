@@ -4,8 +4,10 @@
 #include "GameFramework/Character.h"
 #include "Engine/DataTable.h"
 #include "GameplayTagContainer.h"
+#include "GenericTeamAgentInterface.h"
 #include "Enemy/EnemyStat.h"
 #include "Interface/HackableInterface.h"
+#include "Interface/RoomTagInterface.h"
 #include "EnemyBase.generated.h"
 
 class UStateTreeComponent;
@@ -14,6 +16,7 @@ class UHackableComponent;
 class UInputAction;
 class USphereComponent;
 struct FInputActionValue;
+class URoomTagComponent;
 
 UENUM(BlueprintType)
 enum class EEnemyCombatState : uint8
@@ -25,7 +28,7 @@ enum class EEnemyCombatState : uint8
 };
 
 UCLASS()
-class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface
+class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, public IGenericTeamAgentInterface, public IRoomTagInterface
 {
 	GENERATED_BODY()
 
@@ -60,6 +63,9 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Input")
 	TObjectPtr<UInputAction> ReleasePossessionAction;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Components, meta = (AllowPrivateAccess = "true"))
+	URoomTagComponent* RoomTagComponent;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, ReplicatedUsing = OnRep_RuntimeStat, Category = "Enemy|Data")
 	FEnemyStat RuntimeStat;
 
@@ -91,9 +97,6 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "Enemy|State")
 	uint8 bPlayerCurrentlyVisible : 1 = false;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Replicated, Category = "Enemy|Room", meta = (Categories = "Room"))
-	FGameplayTag RoomTag;
-
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|Room")
 	int32 LastKnownArenaId = INDEX_NONE;
 
@@ -104,6 +107,14 @@ protected:
 	EEnemyCombatState PreStunCombatState = EEnemyCombatState::NonCombat;
 
 public:
+	virtual FGenericTeamId GetGenericTeamId() const override;
+
+	virtual FGameplayTag GetCurrentRoomTag() const override;
+
+	virtual FGameplayTag GetDefaultRoomTag() const override;
+
+	virtual URoomTagComponent* GetRoomTagComp() const override;
+
 	UFUNCTION(BlueprintCallable, Category = "Enemy|State")
 	void SetEnemyPossessed(bool bNewIsPossessed);
 
@@ -163,9 +174,6 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Enemy|Possession")
 	AController* GetCachedAIController() const { return CachedAIController.IsValid() ? CachedAIController.Get() : nullptr; }
 
-	UFUNCTION(BlueprintPure, Category = "Enemy|Room")
-	FGameplayTag GetRoomTag() const { return RoomTag; }
-
 	UFUNCTION(BlueprintCallable, Category = "Enemy|Damage")
 	void ApplyDamageInternal(float DamageAmount, bool bIsCoreHit);
 
@@ -183,6 +191,7 @@ protected:
 	virtual void ApplyClassStatOverrides();
 	virtual void ApplyMovementFromRuntimeStat();
 	void PromotePreStunState(EEnemyCombatState DetectedState);
+	void RefreshPerceptionTeamRegistration();
 	void HandleDeath();
 	void HandleReleasePossessionInput(const FInputActionValue& Value);
 };

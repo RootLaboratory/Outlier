@@ -7,18 +7,24 @@
 #include "Perception/AISenseConfig_Sight.h"
 #include "Perception/AISense_Hearing.h"
 #include "Perception/AISenseConfig_Hearing.h"
+#include "Team/OutlierTeamIds.h"
 
 AEnemyAIController::AEnemyAIController()
 {
+	SetGenericTeamId(FGenericTeamId(OutlierTeamIds::Enemy));
+
 	EnemyPerceptionComponent = CreateDefaultSubobject<UAIPerceptionComponent>(TEXT("EnemyPerceptionComponent"));
 	SetPerceptionComponent(*EnemyPerceptionComponent);
 
 	SightConfig = CreateDefaultSubobject<UAISenseConfig_Sight>(TEXT("SightConfig"));
 	SightConfig->DetectionByAffiliation.bDetectEnemies = true;
-	SightConfig->DetectionByAffiliation.bDetectFriendlies = true;
+	SightConfig->DetectionByAffiliation.bDetectNeutrals = false;
+	SightConfig->DetectionByAffiliation.bDetectFriendlies = false;
 
 	HearingConfig = CreateDefaultSubobject<UAISenseConfig_Hearing>(TEXT("HearingConfig"));
 	HearingConfig->DetectionByAffiliation.bDetectEnemies = true;
+	HearingConfig->DetectionByAffiliation.bDetectNeutrals = false;
+	HearingConfig->DetectionByAffiliation.bDetectFriendlies = false;
 
 	EnemyPerceptionComponent->ConfigureSense(*SightConfig);
 	EnemyPerceptionComponent->SetDominantSense(SightConfig->GetSenseImplementation());
@@ -126,6 +132,7 @@ void AEnemyAIController::ConfigureHearingFromEnemy(AEnemyBase* Enemy)
 	const FEnemyStat& RuntimeStat = Enemy->GetRuntimeStat();
 
 	HearingConfig->HearingRange = FMath::Max(RuntimeStat.HearingRange, 0.0f);
+	UE_LOG(LogTemp, Warning, TEXT("%f"), HearingConfig->HearingRange);
 	EnemyPerceptionComponent->ConfigureSense(*HearingConfig);
 	EnemyPerceptionComponent->RequestStimuliListenerUpdate();
 }

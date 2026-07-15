@@ -14,6 +14,9 @@
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "InputActionValue.h"
 #include "Net/UnrealNetwork.h"
+#include "Perception/AIPerceptionSystem.h"
+#include "Team/OutlierTeamIds.h"
+#include "Room/RoomTagComponent.h"
 
 AEnemyBase::AEnemyBase()
 {
@@ -34,6 +37,8 @@ AEnemyBase::AEnemyBase()
 	HackableComponent = CreateDefaultSubobject<UHackableComponent>(TEXT("HackableComponent"));
 	HackableComponent->HackTags.AddTag(HackGameplayTags::Target::Possessable());
 	HackableComponent->SuccessEffectTags.AddTag(HackGameplayTags::Effect::Possess());
+
+	RoomTagComponent = CreateDefaultSubobject<URoomTagComponent>(TEXT("RoomTagComponent"));
 
 	// 코어 크리티컬 판정용 전용 콜리전 — Physics Asset 바디로 하면 BodyBone 안쪽에 겹친 CoreBone이
 	// 같은 컴포넌트 안에서 가려져서 Multi 트레이스로도 검출이 안 됐음 (Body 콜리전을 꺼야만 잡힘,
@@ -60,7 +65,6 @@ void AEnemyBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifeti
 	DOREPLIFETIME(AEnemyBase, CombatState);
 	DOREPLIFETIME(AEnemyBase, bIsPossessed);
 	DOREPLIFETIME(AEnemyBase, bPlayerCurrentlyVisible);
-	DOREPLIFETIME(AEnemyBase, RoomTag);
 }
 
 void AEnemyBase::BeginPlay()
@@ -110,6 +114,26 @@ void AEnemyBase::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent
 	);
 }
 
+FGenericTeamId AEnemyBase::GetGenericTeamId() const
+{
+	return FGenericTeamId(bIsPossessed ? OutlierTeamIds::Player : OutlierTeamIds::Enemy);
+}
+
+FGameplayTag AEnemyBase::GetCurrentRoomTag() const
+{
+	return RoomTagComponent ? RoomTagComponent->GetCurrentRoomTag() : FGameplayTag();
+}
+
+FGameplayTag AEnemyBase::GetDefaultRoomTag() const
+{
+	return RoomTagComponent ? RoomTagComponent->GetDefaultRoomTag() : FGameplayTag();
+}
+
+URoomTagComponent* AEnemyBase::GetRoomTagComp() const
+{
+	return RoomTagComponent;
+}
+
 void AEnemyBase::SetEnemyPossessed(bool bNewIsPossessed)
 {
 	if (!HasAuthority())
@@ -117,6 +141,7 @@ void AEnemyBase::SetEnemyPossessed(bool bNewIsPossessed)
 		return;
 	}
 
+	const bool bTeamChanged = bIsPossessed != bNewIsPossessed;
 	bIsPossessed = bNewIsPossessed;
 
 	if (!bIsPossessed)
@@ -143,6 +168,20 @@ void AEnemyBase::SetEnemyPossessed(bool bNewIsPossessed)
 	if (AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(GetCachedAIController()))
 	{
 		EnemyAIController->SetEnemyPerceptionEnabled(!bIsPossessed);
+	}
+
+	if (bTeamChanged)
+	{
+		RefreshPerceptionTeamRegistration();
+	}
+}
+
+void AEnemyBase::RefreshPerceptionTeamRegistration()
+{
+	if (UAIPerceptionSystem* PerceptionSystem = UAIPerceptionSystem::GetCurrent(GetWorld()))
+	{
+		PerceptionSystem->UnregisterSource(*this);
+		PerceptionSystem->RegisterSource(*this);
 	}
 }
 
@@ -235,6 +274,8 @@ void AEnemyBase::EnterCombatInArena(const FVector& PlayerLocation, int32 ArenaId
 	bInCombat = true;
 	CombatState = EEnemyCombatState::Combat;
 	UpdateLastKnownPlayerLocation(PlayerLocation);
+
+	const FGameplayTag RoomTag = GetDefaultRoomTag();
 
 	const int32 PropagationArenaId = ArenaId != INDEX_NONE ? ArenaId : LastKnownArenaId;
 	if (bPropagateToRoom && PropagationArenaId != INDEX_NONE && RoomTag.IsValid())
