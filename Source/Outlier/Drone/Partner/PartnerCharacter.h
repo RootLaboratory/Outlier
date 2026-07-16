@@ -330,6 +330,22 @@ protected:
 	FTimerHandle RebootTimerHandle;
 	FTimerHandle HitInvincibleTimerHandle;
 	FTimerHandle RebootInvincibleTimerHandle;
+	FTimerHandle BoostNoiseTimerHandle;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Noise|Boost", meta = (ClampMin = "0.05"))
+	float BoostNoiseInterval = 0.5f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Noise|Boost", meta = (ClampMin = "0.0"))
+	float BoostNoiseLoudness = 1.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Noise|Boost", meta = (ClampMin = "0.0"))
+	float BoostNoiseMaxRange = 1000.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Noise|Boost", meta = (ClampMin = "0.0"))
+	float BoostNoiseMinimumSpeed = 10.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Noise|Boost")
+	FName BoostNoiseTag = TEXT("Boost");
 
 	UPROPERTY(ReplicatedUsing = OnRep_IsAccelerate, VisibleAnywhere, BlueprintReadOnly, Category = "Move")
 	uint8 bIsAccelerate : 1 = false;
@@ -370,6 +386,7 @@ protected:
 
 protected:
 	virtual void BeginPlay() override;
+	virtual void PossessedBy(AController* NewController) override;
 	virtual float TakeDamage(
 		float DamageAmount,
 		struct FDamageEvent const& DamageEvent,
@@ -419,6 +436,9 @@ protected:
 	void ApplyMoveMode(EPartnerMoveMode NewMode);
 	bool CanApplyMoveMode(EPartnerMoveMode NewMode) const;
 	void ApplyAccelerateState(bool bNewAccelerate);
+	void StartBoostNoiseTimer();
+	void StopBoostNoiseTimer();
+	void ReportBoostNoise();
 
 	UFUNCTION(Server, Reliable)
 	void ServerSetMoveMode(EPartnerMoveMode NewMode);

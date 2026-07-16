@@ -36,6 +36,11 @@ protected:
 	UFUNCTION()
 	void HandleTargetPerceptionUpdated(AActor* Actor, FAIStimulus Stimulus);
 
+	void HandleSightStimulus(AEnemyBase* Enemy, AActor* Actor, const FAIStimulus& Stimulus);
+	void HandleHearingStimulus(AEnemyBase* Enemy, AActor* Actor, const FAIStimulus& Stimulus);
+
+	bool HasAnyVisiblePlayer() const;
+
 	void ConfigureSightFromEnemy(AEnemyBase* Enemy);
 	void ConfigureHearingFromEnemy(AEnemyBase* Enemy);
 	int32 ResolveArenaIdFromTarget(const AActor* TargetActor) const;

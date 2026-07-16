@@ -114,6 +114,16 @@ void AEnemyBase::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent
 	);
 }
 
+void AEnemyBase::SendEnemyStateTreeEvent(FGameplayTag Tag)
+{
+	if (!HasAuthority() || !Tag.IsValid() || !StateTreeComponent)
+	{
+		return;
+	}
+
+	StateTreeComponent->SendStateTreeEvent(Tag);
+}
+
 FGenericTeamId AEnemyBase::GetGenericTeamId() const
 {
 	return FGenericTeamId(bIsPossessed ? OutlierTeamIds::Player : OutlierTeamIds::Enemy);
@@ -136,12 +146,11 @@ URoomTagComponent* AEnemyBase::GetRoomTagComp() const
 
 void AEnemyBase::SetEnemyPossessed(bool bNewIsPossessed)
 {
-	if (!HasAuthority())
+	if (!HasAuthority() || bIsPossessed == bNewIsPossessed)
 	{
 		return;
 	}
 
-	const bool bTeamChanged = bIsPossessed != bNewIsPossessed;
 	bIsPossessed = bNewIsPossessed;
 
 	if (!bIsPossessed)
@@ -170,10 +179,13 @@ void AEnemyBase::SetEnemyPossessed(bool bNewIsPossessed)
 		EnemyAIController->SetEnemyPerceptionEnabled(!bIsPossessed);
 	}
 
-	if (bTeamChanged)
-	{
-		RefreshPerceptionTeamRegistration();
-	}
+	RefreshPerceptionTeamRegistration();
+
+	SendEnemyStateTreeEvent(
+		FGameplayTag::RequestGameplayTag(
+			bIsPossessed
+			? TEXT("Enemy.Event.Possession.Started")
+			: TEXT("Enemy.Event.Possession.Ended")));
 }
 
 void AEnemyBase::RefreshPerceptionTeamRegistration()
@@ -239,12 +251,20 @@ void AEnemyBase::SetPatternStartPlayerLocation(const FVector& NewLocation)
 
 void AEnemyBase::SetPlayerCurrentlyVisible(bool bNewVisible)
 {
-	if (!HasAuthority())
+	if (!HasAuthority() || bPlayerCurrentlyVisible == bNewVisible)
 	{
 		return;
 	}
 
 	bPlayerCurrentlyVisible = bNewVisible;
+
+	SendEnemyStateTreeEvent(
+		FGameplayTag::RequestGameplayTag(
+			bNewVisible
+			? TEXT("Enemy.Event.Perception.TargetAcquired")
+			: TEXT("Enemy.Event.Perception.TargetLost")
+		)
+	);
 }
 
 void AEnemyBase::EnterCombat(const FVector& PlayerLocation)
@@ -271,9 +291,15 @@ void AEnemyBase::EnterCombatInArena(const FVector& PlayerLocation, int32 ArenaId
 		return;
 	}
 
+	const bool bEnteredCombat = CombatState != EEnemyCombatState::Combat;
 	bInCombat = true;
 	CombatState = EEnemyCombatState::Combat;
 	UpdateLastKnownPlayerLocation(PlayerLocation);
+
+	if (bEnteredCombat)
+	{
+		RefreshPerceptionConfigForCurrentState();
+	}
 
 	const FGameplayTag RoomTag = GetDefaultRoomTag();
 
@@ -284,6 +310,13 @@ void AEnemyBase::EnterCombatInArena(const FVector& PlayerLocation, int32 ArenaId
 		{
 			RoomSubsystem->NotifyRoomCombat(PropagationArenaId, RoomTag, PlayerLocation, this);
 		}
+	}
+
+	if (bEnteredCombat)
+	{
+		SendEnemyStateTreeEvent(
+			FGameplayTag::RequestGameplayTag(
+				TEXT("Enemy.Event.Combat.Entered")));
 	}
 }
 
@@ -311,7 +344,8 @@ void AEnemyBase::EnterAlertInArena(const FVector& PlayerLocation, int32 ArenaId)
 		return;
 	}
 
-	if (CombatState == EEnemyCombatState::Combat)
+	if (CombatState == EEnemyCombatState::Combat ||
+		CombatState == EEnemyCombatState::Alert)
 	{
 		UpdateLastKnownPlayerLocation(PlayerLocation);
 		return;
@@ -319,6 +353,11 @@ void AEnemyBase::EnterAlertInArena(const FVector& PlayerLocation, int32 ArenaId)
 
 	CombatState = EEnemyCombatState::Alert;
 	UpdateLastKnownPlayerLocation(PlayerLocation);
+	RefreshPerceptionConfigForCurrentState();
+
+	SendEnemyStateTreeEvent(
+		FGameplayTag::RequestGameplayTag(
+			TEXT("Enemy.Event.Combat.Alerted")));
 }
 
 void AEnemyBase::EnterStun()
@@ -328,12 +367,18 @@ void AEnemyBase::EnterStun()
 		return;
 	}
 
-	if (CombatState != EEnemyCombatState::Stun)
+	if (CombatState == EEnemyCombatState::Stun)
 	{
-		PreStunCombatState = CombatState;
+		return;
 	}
 
+	PreStunCombatState = CombatState;
 	CombatState = EEnemyCombatState::Stun;
+	RefreshPerceptionConfigForCurrentState();
+
+	SendEnemyStateTreeEvent(
+		FGameplayTag::RequestGameplayTag(
+			TEXT("Enemy.Event.Status.StunStarted")));
 }
 
 void AEnemyBase::RestoreStateAfterStun()
@@ -350,6 +395,11 @@ void AEnemyBase::RestoreStateAfterStun()
 
 	CombatState = PreStunCombatState;
 	bInCombat = CombatState == EEnemyCombatState::Combat;
+	RefreshPerceptionConfigForCurrentState();
+
+	SendEnemyStateTreeEvent(
+		FGameplayTag::RequestGameplayTag(
+			TEXT("Enemy.Event.Status.StunEnded")));
 }
 
 void AEnemyBase::ApplyDamageInternal(float DamageAmount, bool bIsCoreHit)
@@ -443,7 +493,11 @@ void AEnemyBase::PromotePreStunState(EEnemyCombatState DetectedState)
 	if (DetectedState == EEnemyCombatState::Combat)
 	{
 		PreStunCombatState = EEnemyCombatState::Combat;
-		bInCombat = true;
+		if (!bInCombat)
+		{
+			bInCombat = true;
+			RefreshPerceptionConfigForCurrentState();
+		}
 		return;
 	}
 
@@ -453,12 +507,30 @@ void AEnemyBase::PromotePreStunState(EEnemyCombatState DetectedState)
 	}
 }
 
+void AEnemyBase::RefreshPerceptionConfigForCurrentState()
+{
+	AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(GetCachedAIController());
+	if (!EnemyAIController)
+	{
+		EnemyAIController = Cast<AEnemyAIController>(GetController());
+	}
+
+	if (EnemyAIController)
+	{
+		EnemyAIController->RefreshPerceptionConfigFromPawn();
+	}
+}
+
 void AEnemyBase::HandleDeath()
 {
 	if (bIsPossessed)
 	{
 		ClearPossessedPlayerState();
 	}
+
+	SendEnemyStateTreeEvent(
+		FGameplayTag::RequestGameplayTag(
+			TEXT("Enemy.Event.Died")));
 
 	Destroy();
 }

@@ -15,6 +15,8 @@ class OUTLIER_API URoomTagComponent : public UActorComponent
 	GENERATED_BODY()
 
 protected:
+	void BeginPlay() override;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "RoomTag")
 	FGameplayTag CurrentRoomTag;
 

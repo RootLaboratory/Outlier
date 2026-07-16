@@ -4,6 +4,13 @@
 #include "Room/RoomTagComponent.h"
 #include "Room/RoomVolume.h"
 
+void URoomTagComponent::BeginPlay()
+{
+	Super::BeginPlay();
+
+	RefreshCurrentRoom();
+}
+
 void URoomTagComponent::EnterRoom(ARoomVolume* Room)
 {
 	if (!IsValid(Room))
@@ -42,5 +49,5 @@ void URoomTagComponent::RefreshCurrentRoom()
 		}
 	);
 
-	CurrentRoomTag = ActiveRooms.IsEmpty() ? FGameplayTag() : ActiveRooms.Last()->GetRoomTag();
+	CurrentRoomTag = ActiveRooms.IsEmpty() ? DefaultRoomTag : ActiveRooms.Last()->GetRoomTag();
 }

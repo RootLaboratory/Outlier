@@ -43,6 +43,8 @@ protected:
 	virtual void UnPossessed() override;
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 
+	void SendEnemyStateTreeEvent(FGameplayTag Tag);
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|AI")
 	TObjectPtr<UStateTreeComponent> StateTreeComponent;
 
@@ -191,6 +193,7 @@ protected:
 	virtual void ApplyClassStatOverrides();
 	virtual void ApplyMovementFromRuntimeStat();
 	void PromotePreStunState(EEnemyCombatState DetectedState);
+	void RefreshPerceptionConfigForCurrentState();
 	void RefreshPerceptionTeamRegistration();
 	void HandleDeath();
 	void HandleReleasePossessionInput(const FInputActionValue& Value);

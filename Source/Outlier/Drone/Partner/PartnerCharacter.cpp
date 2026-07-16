@@ -29,6 +29,7 @@
 #include "LocalPlayerUISubSystem.h"
 #include "PartnerAbilityComponent.h"
 #include "TagDrivenUIGameplayTags.h"
+#include "Perception/AISense_Hearing.h"
 
 void APartnerCharacter::BeginPlay()
 {
@@ -51,6 +52,16 @@ void APartnerCharacter::BeginPlay()
 	}
 
 	EnsurePartnerDataInitialized();
+}
+
+void APartnerCharacter::PossessedBy(AController* NewController)
+{
+	Super::PossessedBy(NewController);
+
+	if (bIsAccelerate)
+	{
+		StartBoostNoiseTimer();
+	}
 }
 
 
@@ -79,6 +90,8 @@ float APartnerCharacter::TakeDamage(
 
 void APartnerCharacter::UnPossessed()
 {
+	StopBoostNoiseTimer();
+
 	if (MovementComponent)
 	{
 		MovementComponent->ClearFlightInput();
@@ -699,6 +712,63 @@ void APartnerCharacter::ApplyAccelerateState(bool bNewAccelerate)
 		MovementComponent->ApplyPartnerFlightSettings();
 		MovementComponent->ResetMovementFeel();
 	}
+
+	if (bIsAccelerate)
+	{
+		StartBoostNoiseTimer();
+	}
+	else
+	{
+		StopBoostNoiseTimer();
+	}
+}
+
+void APartnerCharacter::StartBoostNoiseTimer()
+{
+	if (!HasAuthority() || !GetWorld() || GetWorldTimerManager().IsTimerActive(BoostNoiseTimerHandle))
+	{
+		return;
+	}
+
+	GetWorldTimerManager().SetTimer(
+		BoostNoiseTimerHandle,
+		this,
+		&APartnerCharacter::ReportBoostNoise,
+		FMath::Max(BoostNoiseInterval, 0.05f),
+		true,
+		0.0f);
+}
+
+void APartnerCharacter::StopBoostNoiseTimer()
+{
+	if (!HasAuthority() || !GetWorld())
+	{
+		return;
+	}
+
+	GetWorldTimerManager().ClearTimer(BoostNoiseTimerHandle);
+}
+
+void APartnerCharacter::ReportBoostNoise()
+{
+	if (!HasAuthority() || !bIsAccelerate)
+	{
+		StopBoostNoiseTimer();
+		return;
+	}
+
+	if (!IsPlayerControlled() || GetVelocity().SizeSquared() < FMath::Square(BoostNoiseMinimumSpeed))
+	{
+		return;
+	}
+
+	UAISense_Hearing::ReportNoiseEvent(
+		GetWorld(),
+		GetActorLocation(),
+		BoostNoiseLoudness,
+		this,
+		BoostNoiseMaxRange,
+		BoostNoiseTag);
 }
 
 void APartnerCharacter::ServerSetAccelerate_Implementation(bool bNewAccelerate)

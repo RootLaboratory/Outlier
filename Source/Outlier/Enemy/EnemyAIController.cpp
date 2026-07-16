@@ -27,9 +27,8 @@ AEnemyAIController::AEnemyAIController()
 	HearingConfig->DetectionByAffiliation.bDetectFriendlies = false;
 
 	EnemyPerceptionComponent->ConfigureSense(*SightConfig);
-	EnemyPerceptionComponent->SetDominantSense(SightConfig->GetSenseImplementation());
 	EnemyPerceptionComponent->ConfigureSense(*HearingConfig);
-	EnemyPerceptionComponent->SetDominantSense(HearingConfig->GetSenseImplementation());
+	EnemyPerceptionComponent->SetDominantSense(SightConfig->GetSenseImplementation());
 
 	EnemyPerceptionComponent->OnTargetPerceptionUpdated.AddDynamic(
 		this,
@@ -86,9 +85,22 @@ void AEnemyAIController::HandleTargetPerceptionUpdated(AActor* Actor, FAIStimulu
 		return;
 	}
 
+	if (Stimulus.Type == UAISense::GetSenseID<UAISense_Sight>())
+	{
+		HandleSightStimulus(Enemy, Actor, Stimulus);
+	}
+	else if (Stimulus.Type == UAISense::GetSenseID<UAISense_Hearing>())
+	{
+		HandleHearingStimulus(Enemy, Actor, Stimulus);
+	}
+}
+
+void AEnemyAIController::HandleSightStimulus(AEnemyBase* Enemy, AActor* Actor, const FAIStimulus& Stimulus)
+{
 	if (Stimulus.WasSuccessfullySensed())
 	{
 		const FVector TargetLocation = Actor->GetActorLocation();
+
 		Enemy->SetPlayerCurrentlyVisible(true);
 		Enemy->UpdateLastKnownPlayerLocation(TargetLocation);
 
@@ -100,7 +112,48 @@ void AEnemyAIController::HandleTargetPerceptionUpdated(AActor* Actor, FAIStimulu
 		return;
 	}
 
-	Enemy->SetPlayerCurrentlyVisible(false);
+	const bool bAnyPlayerVisible = HasAnyVisiblePlayer();
+	Enemy->SetPlayerCurrentlyVisible(bAnyPlayerVisible);
+}
+
+void AEnemyAIController::HandleHearingStimulus(AEnemyBase* Enemy, AActor* Actor, const FAIStimulus& Stimulus)
+{
+	if (!Stimulus.WasSuccessfullySensed())
+	{
+		return;
+	}
+
+	const FVector HeardLocation = Stimulus.StimulusLocation;
+
+	Enemy->UpdateLastKnownPlayerLocation(HeardLocation);
+
+	const EEnemyCombatState State = Enemy->GetCombatState();
+	if (State == EEnemyCombatState::NonCombat ||
+		State == EEnemyCombatState::Stun)
+	{
+		Enemy->EnterAlertInArena(
+			HeardLocation,
+			ResolveArenaIdFromTarget(Actor));
+	}
+}
+
+bool AEnemyAIController::HasAnyVisiblePlayer() const
+{
+	if (!EnemyPerceptionComponent)
+	{
+		return false;
+	}
+
+	TArray<AActor*> VisibleActors;
+	EnemyPerceptionComponent->GetCurrentlyPerceivedActors(
+		UAISense_Sight::StaticClass(),
+		VisibleActors);
+
+	return VisibleActors.ContainsByPredicate(
+		[this](const AActor* Target)
+		{
+			return IsValidDetectionTarget(Target);
+		});
 }
 
 void AEnemyAIController::ConfigureSightFromEnemy(AEnemyBase* Enemy)
