@@ -100,6 +100,8 @@ void AFirstPersonCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
 
 	// Interaction
 	EnhancedInputComponent->BindAction(InputConfig->InteractionAction, ETriggerEvent::Started, this, &AFirstPersonCharacter::TryInteract);
+	EnhancedInputComponent->BindAction(InputConfig->InteractionAction, ETriggerEvent::Completed, this, &AFirstPersonCharacter::EndInteract);
+	EnhancedInputComponent->BindAction(InputConfig->InteractionAction, ETriggerEvent::Canceled, this, &AFirstPersonCharacter::EndInteract);
 
 	EnhancedInputComponent->BindAction(InputConfig->CamToggleAction, ETriggerEvent::Started, this, &AFirstPersonCharacter::TryCamToggle);
 }
@@ -246,11 +248,70 @@ void AFirstPersonCharacter::TryInteract()
 	if (!TargetActor)
 	{
 		UE_LOG(LogTemp, Log, TEXT("%s %s TryInteract miss"), OutlierNet::GetNetPrefix(this), *GetName());
+
+		if (IInteractableInterface* PreviousInteractable = Cast<IInteractableInterface>(HoldingInteractActor))
+		{
+			PreviousInteractable->EndHoldInteract(this, true);
+		}
+
 		return;
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("%s %s TryInteract hit Target=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(TargetActor));
+	if (IInteractableInterface* Interactable = Cast<IInteractableInterface>(TargetActor))
+	{
+		if (Interactable->RequiresHoldInteract())
+		{
+			if (HoldingInteractActor == TargetActor)
+			{
+				return;
+			}
+
+			if (HoldingInteractActor && HoldingInteractActor != TargetActor)
+			{
+				if (IInteractableInterface* PreviousInteractable = Cast<IInteractableInterface>(HoldingInteractActor))
+				{
+					PreviousInteractable->EndHoldInteract(this, true);
+				}
+			}
+
+			HoldingInteractActor = TargetActor;
+			Interactable->BeginHoldInteract(this);
+			return;
+		}
+	}
+
 	ServerInteract(TargetActor);
+}
+
+void AFirstPersonCharacter::EndInteract()
+{
+	if (!HoldingInteractActor)
+	{
+		return;
+	}
+
+	if (IInteractableInterface* Interactable = Cast<IInteractableInterface>(HoldingInteractActor.Get()))
+	{
+		Interactable->EndHoldInteract(this, true);
+	}
+
+	HoldingInteractActor = nullptr;
+}
+
+void AFirstPersonCharacter::NotifyHoldInteractCompleted(AActor* CompletedActor)
+{
+	if (!CompletedActor || CompletedActor != HoldingInteractActor)
+	{
+		return;
+	}
+
+	if (IInteractableInterface* Interactable = Cast<IInteractableInterface>(CompletedActor))
+	{
+		Interactable->EndHoldInteract(this, false);
+	}
+
+	ServerInteract(CompletedActor);
+	HoldingInteractActor = nullptr;
 }
 
 void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor)
@@ -298,6 +359,11 @@ void AFirstPersonCharacter::ClientOnInteractSucceeded_Implementation(AActor* Tar
 
 		if (AInteractionNode* InteractionNode = Cast<AInteractionNode>(TargetActor))
 		{
+			if (HasAuthority())
+			{
+				return;
+			}
+
 			InteractionNode->Interact(this);
 		}
 	}

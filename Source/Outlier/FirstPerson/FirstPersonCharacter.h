@@ -79,6 +79,8 @@ public:
 	AFirstPersonCharacter();
 
 	void TryInteract();
+	void EndInteract();
+	void NotifyHoldInteractCompleted(AActor* CompletedActor);
 
 protected:
 
@@ -169,6 +171,9 @@ private:
 
 	UPROPERTY()
 	AActor* FocusedInteractable = nullptr;
+
+	UPROPERTY()
+	TObjectPtr<AActor> HoldingInteractActor;
 
 	UPROPERTY()
 	TArray<TObjectPtr<AActor>> NearbyInteractables;

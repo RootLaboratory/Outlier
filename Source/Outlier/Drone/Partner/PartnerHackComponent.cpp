@@ -12,6 +12,7 @@
 #include "GameFramework/PlayerController.h"
 #include "Interface/HackableInterface.h"
 #include "UI/HackCandidateLayerWidget.h"
+#include "UI/HackCandidateMarkerWidget.h"
 #include "UI/HackMiniGameWidget.h"
 
 UPartnerHackComponent::UPartnerHackComponent()
@@ -104,6 +105,11 @@ void UPartnerHackComponent::TryHack_Implementation()
 	}
 
 	return;
+}
+
+void UPartnerHackComponent::EndHackHold()
+{
+	ResetLocalHackHoldProgress();
 }
 
 void UPartnerHackComponent::CacheAbilityData(const FPartnerHackAbilityData& InAbilityData)
@@ -276,14 +282,66 @@ void UPartnerHackComponent::RefreshHackCandidates()
 	}
 }
 
-void UPartnerHackComponent::TrySelectHackTarget(AActor* TargetActor)
+bool UPartnerHackComponent::TryBeginHackHold()
 {
-	if (!TargetActor)
+	if (!PartnerCharacter
+		|| !PartnerCharacter->IsLocallyControlled()
+		|| !bHackCandidateSearchActive
+		|| !HoveredMarkerWidget
+		|| !HoveredHackActor)
+	{
+		return false;
+	}
+
+	HoveredMarkerWidget->StartHackHold(CachedAbilityData.MiniGameTime);
+	return true;
+}
+
+void UPartnerHackComponent::NotifyHackMarkerHovered(UHackCandidateMarkerWidget* MarkerWidget, AActor* TargetActor)
+{
+	if (!MarkerWidget || !TargetActor)
 	{
 		return;
 	}
 
+	if (HoveredMarkerWidget && HoveredMarkerWidget != MarkerWidget)
+	{
+		HoveredMarkerWidget->CancelHackHold();
+	}
+
+	HoveredMarkerWidget = MarkerWidget;
+	HoveredHackActor = TargetActor;
+}
+
+void UPartnerHackComponent::NotifyHackMarkerUnhovered(UHackCandidateMarkerWidget* MarkerWidget, AActor* TargetActor)
+{
+	if (HoveredMarkerWidget != MarkerWidget || HoveredHackActor != TargetActor)
+	{
+		return;
+	}
+
+	ResetLocalHackHoldProgress();
+	HoveredMarkerWidget = nullptr;
+	HoveredHackActor = nullptr;
+}
+
+void UPartnerHackComponent::NotifyHackHoldCompleted(UHackCandidateMarkerWidget* MarkerWidget, AActor* TargetActor)
+{
+	if (!MarkerWidget || !TargetActor || MarkerWidget != HoveredMarkerWidget || TargetActor != HoveredHackActor)
+	{
+		return;
+	}
+
+	ResetLocalHackHoldProgress();
 	ServerTryStartHack(TargetActor);
+}
+
+void UPartnerHackComponent::ResetLocalHackHoldProgress()
+{
+	if (HoveredMarkerWidget)
+	{
+		HoveredMarkerWidget->CancelHackHold();
+	}
 }
 
 void UPartnerHackComponent::ServerTryStartHack_Implementation(AActor* TargetActor)
@@ -365,6 +423,10 @@ void UPartnerHackComponent::ClearHackCandidates()
 
 void UPartnerHackComponent::StopHackCandidateSearch()
 {
+	ResetLocalHackHoldProgress();
+	HoveredMarkerWidget = nullptr;
+	HoveredHackActor = nullptr;
+
 	bHackCandidateSearchActive = false;
 	DestroyCandidateLayerWidget();
 	ClearHackCandidates();
@@ -548,6 +610,7 @@ void UPartnerHackComponent::EnsureCandidateLayerWidget()
 	}
 
 	CandidateLayerWidget->SetMarkerWidgetClass(CandidateMarkerWidgetClass);
+	CandidateLayerWidget->SetHackableInfoWidgetClass(HackableInfoWidgetClass);
 	CandidateLayerWidget->BindHackComponent(this);
 	CandidateLayerWidget->AddToViewport(100);
 
@@ -754,6 +817,13 @@ void UPartnerHackComponent::RemoveHackCandidateAt(int32 Index)
 		CandidateLayerWidget->RemoveCandidate(Actor, HackableComponent);
 	}
 
+	if (Actor && HoveredHackActor == Actor)
+	{
+		ResetLocalHackHoldProgress();
+		HoveredMarkerWidget = nullptr;
+		HoveredHackActor = nullptr;
+	}
+
 	if (bDebugHack)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[PartnerHackDebug] Candidate removed Actor=%s Hackable=%s"),
@@ -781,6 +851,8 @@ void UPartnerHackComponent::DeactivateUnselectedCandidates(UHackableComponent* S
 
 void UPartnerHackComponent::CancelActiveHack()
 {
+	ResetLocalHackHoldProgress();
+
 	if (HackMiniGameWidget)
 	{
 		HackMiniGameWidget->CancelHacking();

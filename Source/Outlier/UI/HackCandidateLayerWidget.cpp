@@ -16,6 +16,11 @@ void UHackCandidateLayerWidget::SetMarkerWidgetClass(TSubclassOf<UHackCandidateM
 	MarkerWidgetClass = InMarkerWidgetClass;
 }
 
+void UHackCandidateLayerWidget::SetHackableInfoWidgetClass(TSubclassOf<UHackableInfoWidget> InHackableInfoWidgetClass)
+{
+	HackableInfoWidgetClass = InHackableInfoWidgetClass;
+}
+
 void UHackCandidateLayerWidget::ClearMarkers()
 {
 	for (const TPair<TObjectPtr<AActor>, TObjectPtr<UHackCandidateMarkerWidget>>& Pair : MarkerWidgets)
@@ -114,6 +119,7 @@ void UHackCandidateLayerWidget::AddCandidate(AActor* TargetActor, UHackableCompo
 	}
 
 	Marker->InitializeMarker(TargetActor, HackableComponent, HackComponent);
+	Marker->SetHackableInfoWidgetClass(HackableInfoWidgetClass);
 	Marker->SetVisibility(ESlateVisibility::Visible);
 
 	UCanvasPanelSlot* CanvasSlot = MarkerCanvas->AddChildToCanvas(Marker);
@@ -124,6 +130,7 @@ void UHackCandidateLayerWidget::AddCandidate(AActor* TargetActor, UHackableCompo
 		CanvasSlot->SetAlignment(FVector2D(0.5f, 0.5f));
 	}
 
+	Marker->EnsureHackableInfoWidget();
 	MarkerWidgets.Add(TargetActor, Marker);
 }
 

@@ -386,6 +386,7 @@ protected:
 	void CameraAssist();
 	void StopCameraAssist();
 	void TryHacking();
+	void EndHacking();
 	void Hacking(AActor* TargetActor);
 	void TryEMP();
 	//

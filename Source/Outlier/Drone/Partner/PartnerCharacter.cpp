@@ -96,6 +96,8 @@ void APartnerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 
 	// Hacking
 	EnhancedInputComponent->BindAction(PartnerInputConfig->HackingAction,		ETriggerEvent::Started,	  this, &APartnerCharacter::TryHacking);
+	EnhancedInputComponent->BindAction(PartnerInputConfig->HackingAction,		ETriggerEvent::Completed, this, &APartnerCharacter::EndHacking);
+	EnhancedInputComponent->BindAction(PartnerInputConfig->HackingAction,		ETriggerEvent::Canceled,  this, &APartnerCharacter::EndHacking);
 
 	// Scan
 	EnhancedInputComponent->BindAction(PartnerInputConfig->ScanAction,			ETriggerEvent::Started,   this, &APartnerCharacter::Scan);	
@@ -237,12 +239,33 @@ void APartnerCharacter::StopCameraAssist()
 
 void APartnerCharacter::TryHacking()
 {
-	if (!CanAcceptInput() || !TestAbilityComponent)
+	if (!CanAcceptInput())
+	{
+		return;
+	}
+
+	if (UPartnerHackComponent* RuntimeHackComponent = GetRuntimeHackComponent())
+	{
+		if (RuntimeHackComponent->TryBeginHackHold())
+		{
+			return;
+		}
+	}
+
+	if (!TestAbilityComponent)
 	{
 		return;
 	}
 
 	TestAbilityComponent->TryActivateAbilityByTag(OutlierGameplayTags::Ability::Partner::Hacking());
+}
+
+void APartnerCharacter::EndHacking()
+{
+	if (UPartnerHackComponent* RuntimeHackComponent = GetRuntimeHackComponent())
+	{
+		RuntimeHackComponent->EndHackHold();
+	}
 }
 
 void APartnerCharacter::TryEMP()

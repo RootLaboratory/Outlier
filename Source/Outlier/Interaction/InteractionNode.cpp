@@ -5,18 +5,27 @@
 #include "Engine/LocalPlayer.h"
 #include "FirstPerson/FirstPersonCharacter.h"
 #include "GameFramework/PlayerController.h"
+#include "Interaction/InteractionDescActor.h"
 #include "Interaction/InteractableComponent.h"
 #include "Interaction/InteractInfoSubsystem.h"
 #include "UI/InteractInfoWidget.h"
 
 AInteractionNode::AInteractionNode()
 {
-	PrimaryActorTick.bCanEverTick = false;
+	PrimaryActorTick.bCanEverTick = true;
+	SetActorTickEnabled(false);
 
 	SceneRoot = CreateDefaultSubobject<USceneComponent>(TEXT("SceneRoot"));
 	RootComponent = SceneRoot;
 
 	InteractableComponent = CreateDefaultSubobject<UInteractableComponent>(TEXT("InteractableComponent"));
+}
+
+void AInteractionNode::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+
+	TickHoldInteract(DeltaSeconds);
 }
 
 UInteractableComponent* AInteractionNode::GetInteractableComponent() const
@@ -34,11 +43,199 @@ void AInteractionNode::Interact(AFirstPersonCharacter* Interactor)
 	const FGameplayTagContainer InteractorTags = Interactor->GetOwnedGameplayTagsForQuery();
 	if (!InteractableComponent->CanInteract(InteractorTags))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[InteractionNode] Interact blocked by tags Actor=%s"), *GetName());
+		UE_LOG(LogTemp, Warning, TEXT("[InteractionNode] Interact blocked by tags Actor=%s InteractorTags=%s InteractableTags=%s"), *GetName(), *InteractorTags.ToStringSimple(), *InteractableComponent->InteractableTags.ToStringSimple());
+		return;
+	}
+
+	if (AInteractionDescActor* DescActor = EnsureInteractionDescActor())
+	{
+		if (RequiresHoldInteract())
+		{
+			MarkUsed();
+			ClearInteractionDescActor();
+			return;
+		}
+
+		DescActor->SetActorLocation(GetActorLocation() + FVector::UpVector * InteractionDescActorZOffset);
+		DescActor->SetSourceInteractionNode(this);
+		DescActor->ActivateDescFromSource(Interactor, InteractableComponent);
+		MarkHoldReady();
 		return;
 	}
 
 	InteractInfoWidgetActivate(Interactor);
+}
+
+bool AInteractionNode::RequiresHoldInteract() const
+{
+	if (!InteractableComponent)
+	{
+		return false;
+	}
+
+	const FGameplayTag HoldTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Interact.Type.Hold")), false);
+	return HoldTag.IsValid() && InteractableComponent->InteractableTags.HasTagExact(HoldTag);
+}
+
+void AInteractionNode::BeginHoldInteract(AFirstPersonCharacter* Interactor)
+{
+	if (!Interactor)
+	{
+		return;
+	}
+
+	HoldingInteractor = Interactor;
+	HoldElapsed = 0.0f;
+	bIsHoldingInteract = true;
+
+	if (AInteractionDescActor* DescActor = EnsureInteractionDescActor())
+	{
+		DescActor->SetActorLocation(GetActorLocation() + FVector::UpVector * InteractionDescActorZOffset);
+		DescActor->SetSourceInteractionNode(this);
+		DescActor->ActivateDescFromSource(Interactor, InteractableComponent);
+		DescActor->SetProgress(0.0f);
+	}
+
+	SetActorTickEnabled(true);
+}
+
+void AInteractionNode::EndHoldInteract(AFirstPersonCharacter* Interactor, bool bCanceled)
+{
+	if (HoldingInteractor.IsValid() && HoldingInteractor.Get() != Interactor)
+	{
+		return;
+	}
+
+	bIsHoldingInteract = false;
+	HoldingInteractor.Reset();
+	SetActorTickEnabled(false);
+
+	if (bCanceled)
+	{
+		HoldElapsed = 0.0f;
+		ClearInteractionDescActor();
+	}
+}
+
+AInteractionDescActor* AInteractionNode::EnsureInteractionDescActor()
+{
+	if (IsValid(InteractionDescActor))
+	{
+		return InteractionDescActor;
+	}
+
+	if (!InteractionDescActorClass)
+	{
+		return nullptr;
+	}
+
+	if (!GetWorld())
+	{
+		return nullptr;
+	}
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.Owner = this;
+
+	InteractionDescActor = GetWorld()->SpawnActor<AInteractionDescActor>(
+		InteractionDescActorClass,
+		GetActorLocation() + FVector::UpVector * InteractionDescActorZOffset,
+		GetActorRotation(),
+		SpawnParams
+	);
+
+	if (InteractionDescActor)
+	{
+		InteractionDescActor->SetSourceInteractionNode(this);
+	}
+
+	return InteractionDescActor;
+}
+
+void AInteractionNode::TickHoldInteract(float DeltaSeconds)
+{
+	if (!bIsHoldingInteract || HoldDuration <= 0.0f)
+	{
+		return;
+	}
+
+	HoldElapsed += DeltaSeconds;
+
+	const float HoldProgress = FMath::Clamp(HoldElapsed / HoldDuration, 0.0f, 1.0f);
+	if (IsValid(InteractionDescActor))
+	{
+		InteractionDescActor->SetProgress(HoldProgress);
+	}
+
+	if (HoldProgress < 1.0f)
+	{
+		return;
+	}
+
+	bIsHoldingInteract = false;
+	SetActorTickEnabled(false);
+
+	if (AFirstPersonCharacter* Interactor = HoldingInteractor.Get())
+	{
+		Interactor->NotifyHoldInteractCompleted(this);
+	}
+}
+
+void AInteractionNode::MarkHoldReady()
+{
+	if (!InteractableComponent)
+	{
+		return;
+	}
+
+	const FGameplayTag HoldTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Interact.Type.Hold")), false);
+	if (HoldTag.IsValid())
+	{
+		InteractableComponent->InteractableTags.AddTag(HoldTag);
+	}
+}
+
+void AInteractionNode::MarkUsed()
+{
+	if (!InteractableComponent)
+	{
+		return;
+	}
+
+	const FGameplayTag UsedTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Interact.State.Used")), false);
+	const FGameplayTag AbledTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Interact.State.Abled")), false);
+	const FGameplayTag UnusedTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Interact.State.Unused")), false);
+	const FGameplayTag HoldTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Interact.Type.Hold")), false);
+
+	if (UsedTag.IsValid())
+	{
+		InteractableComponent->InteractableTags.AddTag(UsedTag);
+	}
+
+	if (AbledTag.IsValid())
+	{
+		InteractableComponent->InteractableTags.RemoveTag(AbledTag);
+	}
+
+	if (UnusedTag.IsValid())
+	{
+		InteractableComponent->InteractableTags.RemoveTag(UnusedTag);
+	}
+
+	if (HoldTag.IsValid())
+	{
+		InteractableComponent->InteractableTags.RemoveTag(HoldTag);
+	}
+}
+
+void AInteractionNode::ClearInteractionDescActor()
+{
+	if (IsValid(InteractionDescActor))
+	{
+		InteractionDescActor->Destroy();
+	}
+
+	InteractionDescActor = nullptr;
 }
 
 UWidgetComponent* AInteractionNode::EnsureInteractInfoWidgetComponent(APlayerController* PlayerController)
