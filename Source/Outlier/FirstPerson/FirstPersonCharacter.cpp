@@ -232,6 +232,11 @@ bool AFirstPersonCharacter::CanInteract() const
 
 void AFirstPersonCharacter::TryInteract()
 {
+	if (bAwaitingHoldInteractResult)
+	{
+		return;
+	}
+
 	if (!CanInteract())
 	{
 		UE_LOG(LogTemp, Warning, TEXT("%s %s TryInteract blocked"), OutlierNet::GetNetPrefix(this), *GetName());
@@ -249,17 +254,14 @@ void AFirstPersonCharacter::TryInteract()
 	{
 		UE_LOG(LogTemp, Log, TEXT("%s %s TryInteract miss"), OutlierNet::GetNetPrefix(this), *GetName());
 
-		if (IInteractableInterface* PreviousInteractable = Cast<IInteractableInterface>(HoldingInteractActor))
-		{
-			PreviousInteractable->EndHoldInteract(this, true);
-		}
+		CancelLocalHoldInteract(true);
 
 		return;
 	}
 
 	if (IInteractableInterface* Interactable = Cast<IInteractableInterface>(TargetActor))
 	{
-		if (Interactable->RequiresHoldInteract())
+		if (Interactable->RequiresHoldInteract()) //Interaction Hold Tag로 Query
 		{
 			if (HoldingInteractActor == TargetActor)
 			{
@@ -268,10 +270,7 @@ void AFirstPersonCharacter::TryInteract()
 
 			if (HoldingInteractActor && HoldingInteractActor != TargetActor)
 			{
-				if (IInteractableInterface* PreviousInteractable = Cast<IInteractableInterface>(HoldingInteractActor))
-				{
-					PreviousInteractable->EndHoldInteract(this, true);
-				}
+				CancelLocalHoldInteract(true);
 			}
 
 			HoldingInteractActor = TargetActor;
@@ -280,22 +279,19 @@ void AFirstPersonCharacter::TryInteract()
 		}
 	}
 
+	//Hold Interaction Actor의 판정은 Hold Actor가 ServerInteract를 실행하는 식으로 처리. 업데이트는 해당 Actor에서 처리. 판정은 Character 에서
+	//Hold or 즉발
 	ServerInteract(TargetActor);
 }
 
 void AFirstPersonCharacter::EndInteract()
 {
-	if (!HoldingInteractActor)
+	if (!HoldingInteractActor || bAwaitingHoldInteractResult)
 	{
 		return;
 	}
 
-	if (IInteractableInterface* Interactable = Cast<IInteractableInterface>(HoldingInteractActor.Get()))
-	{
-		Interactable->EndHoldInteract(this, true);
-	}
-
-	HoldingInteractActor = nullptr;
+	CancelLocalHoldInteract(true);
 }
 
 void AFirstPersonCharacter::NotifyHoldInteractCompleted(AActor* CompletedActor)
@@ -305,13 +301,39 @@ void AFirstPersonCharacter::NotifyHoldInteractCompleted(AActor* CompletedActor)
 		return;
 	}
 
-	if (IInteractableInterface* Interactable = Cast<IInteractableInterface>(CompletedActor))
+	AActor* CurrentTargetActor = FindInteractTargetByTrace();
+
+	if (CurrentTargetActor != HoldingInteractActor)
 	{
-		Interactable->EndHoldInteract(this, false);
+		CancelLocalHoldInteract(true);
+		return;
 	}
 
+	bAwaitingHoldInteractResult = true;
 	ServerInteract(CompletedActor);
+}
+
+void AFirstPersonCharacter::CancelLocalHoldInteract(bool bNotifyServer)
+{
+	AActor* CanceledActor = HoldingInteractActor.Get();
+	if (!CanceledActor)
+	{
+		bAwaitingHoldInteractResult = false;
+		return;
+	}
+
+	if (IInteractableInterface* Interactable = Cast<IInteractableInterface>(CanceledActor))
+	{
+		Interactable->EndHoldInteract(this, true);
+	}
+
 	HoldingInteractActor = nullptr;
+	bAwaitingHoldInteractResult = false;
+
+	if (bNotifyServer)
+	{
+		ServerCancelHoldInteract(CanceledActor);
+	}
 }
 
 void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor)
@@ -319,18 +341,24 @@ void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor)
 	if (!TargetActor || !CanInteract())
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[Server] %s ServerInteract blocked Target=%s"), *GetName(), *GetNameSafe(TargetActor));
+		ServerCancelHoldInteract_Implementation(TargetActor);
+		ClientOnHoldInteractFailed(TargetActor);
 		return;
 	}
 
 	if (!GetController())
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[Server] %s ServerInteract blocked: controller is null"), *GetName());
+		ServerCancelHoldInteract_Implementation(TargetActor);
+		ClientOnHoldInteractFailed(TargetActor);
 		return;
 	}
 
 	if (!IsInteractTargetByTrace(TargetActor))
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[Server] %s ServerInteract validation failed Requested=%s"), *GetName(), *GetNameSafe(TargetActor));
+		ServerCancelHoldInteract_Implementation(TargetActor);
+		ClientOnHoldInteractFailed(TargetActor);
 		return;
 	}
 
@@ -343,11 +371,35 @@ void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor)
 	else
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[Server] %s ServerInteract failed: target not interactable Target=%s"), *GetName(), *GetNameSafe(TargetActor));
+		ServerCancelHoldInteract_Implementation(TargetActor);
+		ClientOnHoldInteractFailed(TargetActor);
+	}
+}
+
+void AFirstPersonCharacter::ServerCancelHoldInteract_Implementation(AActor* TargetActor)
+{
+	if (IInteractableInterface* Interactable = Cast<IInteractableInterface>(TargetActor))
+	{
+		if (Interactable->RequiresHoldInteract())
+		{
+			Interactable->EndHoldInteract(this, true);
+		}
 	}
 }
 
 void AFirstPersonCharacter::ClientOnInteractSucceeded_Implementation(AActor* TargetActor)
 {
+	if (bAwaitingHoldInteractResult && HoldingInteractActor == TargetActor)
+	{
+		if (IInteractableInterface* Interactable = Cast<IInteractableInterface>(TargetActor))
+		{
+			Interactable->EndHoldInteract(this, false);
+		}
+
+		HoldingInteractActor = nullptr;
+		bAwaitingHoldInteractResult = false;
+	}
+
 	FocusedInteractable = TargetActor;
 
 	if (IInteractableInterface* Interactable = Cast<IInteractableInterface>(TargetActor))
@@ -367,6 +419,16 @@ void AFirstPersonCharacter::ClientOnInteractSucceeded_Implementation(AActor* Tar
 			InteractionNode->Interact(this);
 		}
 	}
+}
+
+void AFirstPersonCharacter::ClientOnHoldInteractFailed_Implementation(AActor* TargetActor)
+{
+	if (TargetActor && HoldingInteractActor != TargetActor)
+	{
+		return;
+	}
+
+	CancelLocalHoldInteract(false);
 }
 
 FGameplayTagContainer AFirstPersonCharacter::GetOwnedGameplayTagsForQuery() const

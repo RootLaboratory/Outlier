@@ -14,6 +14,8 @@ AInteractionNode::AInteractionNode()
 {
 	PrimaryActorTick.bCanEverTick = true;
 	SetActorTickEnabled(false);
+	//bCanEverTick->Tick 가능
+	//SetActorTickEnabeld ->가능한 상태에서 지금은 boolean flag로
 
 	SceneRoot = CreateDefaultSubobject<USceneComponent>(TEXT("SceneRoot"));
 	RootComponent = SceneRoot;
@@ -49,8 +51,10 @@ void AInteractionNode::Interact(AFirstPersonCharacter* Interactor)
 
 	if (AInteractionDescActor* DescActor = EnsureInteractionDescActor())
 	{
+		//Node는 즉발 Interaction 후, Tag를 받아 Holding 이벤트를 받게 되어 있음.
 		if (RequiresHoldInteract())
 		{
+			//Holding 이벤트 후, 서버 Interact를 받은 다음. 사용 처리.
 			MarkUsed();
 			ClearInteractionDescActor();
 			return;
@@ -113,6 +117,7 @@ void AInteractionNode::EndHoldInteract(AFirstPersonCharacter* Interactor, bool b
 	if (bCanceled)
 	{
 		HoldElapsed = 0.0f;
+		ClearHoldReady();
 		ClearInteractionDescActor();
 	}
 }
@@ -192,6 +197,20 @@ void AInteractionNode::MarkHoldReady()
 	if (HoldTag.IsValid())
 	{
 		InteractableComponent->InteractableTags.AddTag(HoldTag);
+	}
+}
+
+void AInteractionNode::ClearHoldReady()
+{
+	if (!InteractableComponent)
+	{
+		return;
+	}
+
+	const FGameplayTag HoldTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Interact.Type.Hold")), false);
+	if (HoldTag.IsValid())
+	{
+		InteractableComponent->InteractableTags.RemoveTag(HoldTag);
 	}
 }
 

@@ -45,6 +45,7 @@ private:
 	UWidgetComponent* EnsureInteractInfoWidgetComponent(APlayerController* PlayerController);
 	void TickHoldInteract(float DeltaSeconds);
 	void MarkHoldReady();
+	void ClearHoldReady();
 	void MarkUsed();
 	void ClearInteractionDescActor();
 	bool GetPrimaryInteractTag(FGameplayTag& OutInteractTag) const;
