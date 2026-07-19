@@ -31,19 +31,28 @@ public:
 		float Radius);
 
 private:
-	static FRDGTextureRef AddMaskPass(
+	static FRDGTextureRef AddIntegerMaskPass(
 		FRDGBuilder& GraphBuilder,
 		const FSceneView& View,
 		FRDGTextureSRVRef CustomStencilTexture,
 		FRDGTextureRef CustomDepthTexture,
 		FRDGTextureRef InputMask,
-		FRDGTextureRef HardMask,
 		FIntPoint TextureExtent,
 		uint32 WeaponStencilValue,
 		float FocusDistanceWorld,
 		float SightDistanceThreshold,
 		float Radius,
 		uint32 PassMode,
+		const TCHAR* TextureName,
+		const TCHAR* EventName);
+
+	static FRDGTextureRef AddSoftenMaskPass(
+		FRDGBuilder& GraphBuilder,
+		const FSceneView& View,
+		FRDGTextureRef InputMask,
+		FRDGTextureRef HardMask,
+		FIntPoint TextureExtent,
+		float Radius,
 		const TCHAR* TextureName,
 		const TCHAR* EventName);
 };

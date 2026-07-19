@@ -6,6 +6,25 @@
 #include "SceneViewExtension.h"
 #include "Engine/PostProcessVolume.h"
 
+namespace PixelSortingAnimation
+{
+	void Reset(FPixelSortingParameters& Parameters)
+	{
+		Parameters.Threshold = 255.0f;
+		Parameters.Progress = 0.0f;
+	}
+
+	float ApplyCurve(float Progress, int32 Curve)
+	{
+		if (Curve == static_cast<int32>(EPixelSortingCurve::CubicEaseIn))
+		{
+			return Progress * Progress * Progress;
+		}
+
+		return Progress;
+	}
+}
+
 void ULocalPlayerPostProcessSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
@@ -34,6 +53,7 @@ void ULocalPlayerPostProcessSubsystem::Deinitialize()
 void ULocalPlayerPostProcessSubsystem::Tick(float DeltaTime)
 {
 	UpdateADSBlur(DeltaTime);
+	UpdatePixelSorting(DeltaTime);
 	UpdateDepthOfField();
 }
 
@@ -168,6 +188,106 @@ void ULocalPlayerPostProcessSubsystem::SetDatamoshingEnabled(bool bEnabled)
 void ULocalPlayerPostProcessSubsystem::SetDatamoshingProgress(float InProgress)
 {
 	PostProcessParameters.Datamoshing.Progress = FMath::Clamp(InProgress, 0.0f, 1.0f);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetPixelSortingEnabled(bool bEnabled)
+{
+	const bool bWasEnabled = PostProcessParameters.PixelSorting.bEnabled != 0;
+	PostProcessParameters.PixelSorting.bEnabled = bEnabled ? 1 : 0;
+	if (!bEnabled || !bWasEnabled)
+	{
+		PixelSortingAnimation::Reset(PostProcessParameters.PixelSorting);
+	}
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetPixelSortingMode(int32 InMode)
+{
+	PostProcessParameters.PixelSorting.Mode = FMath::Clamp(
+		InMode,
+		static_cast<int32>(EPixelSortingMode::White),
+		static_cast<int32>(EPixelSortingMode::Dark));
+	PixelSortingAnimation::Reset(PostProcessParameters.PixelSorting);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetPixelSortingCurve(int32 InCurve)
+{
+	FPixelSortingParameters& Parameters = PostProcessParameters.PixelSorting;
+	Parameters.Curve = FMath::Clamp(
+		InCurve,
+		static_cast<int32>(EPixelSortingCurve::Linear),
+		static_cast<int32>(EPixelSortingCurve::CubicEaseIn));
+	PixelSortingAnimation::Reset(Parameters);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetPixelSortingMinThreshold(int32 InMinThreshold)
+{
+	FPixelSortingParameters& Parameters = PostProcessParameters.PixelSorting;
+	Parameters.MinThreshold = FMath::Clamp(InMinThreshold, 0, 255);
+	PixelSortingAnimation::Reset(Parameters);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetPixelSortingScale(float InScale)
+{
+	PostProcessParameters.PixelSorting.Scale = FMath::Max(0.0f, InScale);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetPixelSortingRowsEnabled(bool bEnabled)
+{
+	PostProcessParameters.PixelSorting.bSortRows = bEnabled ? 1 : 0;
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetPixelSortingColumnsEnabled(bool bEnabled)
+{
+	PostProcessParameters.PixelSorting.bSortColumns = bEnabled ? 1 : 0;
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::UpdatePixelSorting(float DeltaTime)
+{
+	FPixelSortingParameters& Parameters = PostProcessParameters.PixelSorting;
+	if (Parameters.bEnabled == 0 || DeltaTime <= 0.0f)
+	{
+		return;
+	}
+
+	const float Minimum = static_cast<float>(FMath::Clamp(Parameters.MinThreshold, 0, 255));
+	const float ThresholdRange = 255.0f - Minimum;
+	const float Speed = FMath::Max(0.0f, Parameters.Scale);
+	const float ProgressStep = ThresholdRange > KINDA_SMALL_NUMBER
+		? DeltaTime * Speed / ThresholdRange
+		: 1.0f;
+	const float NextProgress = FMath::Clamp(Parameters.Progress + ProgressStep, 0.0f, 1.0f);
+	if (FMath::IsNearlyEqual(NextProgress, Parameters.Progress))
+	{
+		return;
+	}
+
+	const int32 PreviousThreshold = FMath::RoundToInt(Parameters.Threshold);
+	Parameters.Progress = NextProgress;
+	Parameters.Threshold = FMath::Lerp(
+		255.0f,
+		Minimum,
+		PixelSortingAnimation::ApplyCurve(NextProgress, Parameters.Curve));
+	if (PreviousThreshold == FMath::RoundToInt(Parameters.Threshold))
+	{
+		return;
+	}
+
 	MarkDirty();
 	TickFrame();
 }

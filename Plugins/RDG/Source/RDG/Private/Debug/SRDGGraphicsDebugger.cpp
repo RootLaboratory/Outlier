@@ -50,6 +50,172 @@ void SRDGGraphicsDebugger::Construct(const FArguments& InArgs)
 					.InitiallyCollapsed(false)
 					.HeaderContent()
 					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.VAlign(VAlign_Center)
+						[
+							SNew(SCheckBox)
+							.IsChecked(this, &SRDGGraphicsDebugger::GetPixelSortingEnabledCheckState)
+							.OnCheckStateChanged(this, &SRDGGraphicsDebugger::OnPixelSortingEnabledChanged)
+						]
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+						.VAlign(VAlign_Center)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Pixel Sorting")))
+						]
+					]
+					.BodyContent()
+					[
+						SNew(SVerticalBox)
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Mode (0 White, 1 Black, 2 Bright, 3 Dark)")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SBox)
+							.WidthOverride(120.0f)
+							[
+								SNew(SNumericEntryBox<int32>)
+								.AllowSpin(true)
+								.MinValue(0)
+								.MaxValue(3)
+								.MinSliderValue(0)
+								.MaxSliderValue(3)
+								.Value(this, &SRDGGraphicsDebugger::GetPixelSortingModeValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnPixelSortingModeChanged)
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Curve (0 Linear, 1 Cubic Ease-In)")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SBox)
+							.WidthOverride(120.0f)
+							[
+								SNew(SNumericEntryBox<int32>)
+								.AllowSpin(true)
+								.MinValue(0)
+								.MaxValue(1)
+								.MinSliderValue(0)
+								.MaxSliderValue(1)
+								.Value(this, &SRDGGraphicsDebugger::GetPixelSortingCurveValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnPixelSortingCurveChanged)
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Min Threshold (0-255)")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SBox)
+							.WidthOverride(140.0f)
+							[
+								SNew(SNumericEntryBox<int32>)
+								.AllowSpin(true)
+								.MinValue(0)
+								.MaxValue(255)
+								.MinSliderValue(0)
+								.MaxSliderValue(255)
+								.Value(this, &SRDGGraphicsDebugger::GetPixelSortingMinThresholdValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnPixelSortingMinThresholdChanged)
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Scale (Threshold levels / second)")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SBox)
+							.WidthOverride(120.0f)
+							[
+								SNew(SNumericEntryBox<float>)
+								.AllowSpin(true)
+								.MinValue(0.0f)
+								.MinSliderValue(0.0f)
+								.MaxSliderValue(1000.0f)
+								.Value(this, &SRDGGraphicsDebugger::GetPixelSortingScaleValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnPixelSortingScaleChanged)
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.VAlign(VAlign_Center)
+							[
+								SNew(SCheckBox)
+								.IsChecked(this, &SRDGGraphicsDebugger::GetPixelSortingColumnsCheckState)
+								.OnCheckStateChanged(this, &SRDGGraphicsDebugger::OnPixelSortingColumnsChanged)
+							]
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+							.VAlign(VAlign_Center)
+							[
+								SNew(STextBlock)
+								.Text(FText::FromString(TEXT("Sort Columns")))
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.VAlign(VAlign_Center)
+							[
+								SNew(SCheckBox)
+								.IsChecked(this, &SRDGGraphicsDebugger::GetPixelSortingRowsCheckState)
+								.OnCheckStateChanged(this, &SRDGGraphicsDebugger::OnPixelSortingRowsChanged)
+							]
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+							.VAlign(VAlign_Center)
+							[
+								SNew(STextBlock)
+								.Text(FText::FromString(TEXT("Sort Rows")))
+							]
+						]
+					]
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(RDGGraphicsDebugger::RowPadding)
+				[
+					SNew(SExpandableArea)
+					.InitiallyCollapsed(false)
+					.HeaderContent()
+					[
 						SNew(STextBlock)
 						.Text(FText::FromString(TEXT("Explosion Volume")))
 					]
@@ -1614,6 +1780,125 @@ void SRDGGraphicsDebugger::OnADSDoFFarTransitionRegionChanged(float NewValue)
 	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
 	{
 		Subsystem->SetADSDoFFarTransitionRegion(NewValue);
+	}
+}
+
+ECheckBoxState SRDGGraphicsDebugger::GetPixelSortingEnabledCheckState() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().PixelSorting.bEnabled ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+	}
+	return ECheckBoxState::Unchecked;
+}
+
+void SRDGGraphicsDebugger::OnPixelSortingEnabledChanged(ECheckBoxState NewState)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetPixelSortingEnabled(NewState == ECheckBoxState::Checked);
+	}
+}
+
+TOptional<int32> SRDGGraphicsDebugger::GetPixelSortingModeValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().PixelSorting.Mode;
+	}
+	return TOptional<int32>();
+}
+
+void SRDGGraphicsDebugger::OnPixelSortingModeChanged(int32 NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetPixelSortingMode(NewValue);
+	}
+}
+
+TOptional<int32> SRDGGraphicsDebugger::GetPixelSortingCurveValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().PixelSorting.Curve;
+	}
+	return TOptional<int32>();
+}
+
+void SRDGGraphicsDebugger::OnPixelSortingCurveChanged(int32 NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetPixelSortingCurve(NewValue);
+	}
+}
+
+TOptional<int32> SRDGGraphicsDebugger::GetPixelSortingMinThresholdValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().PixelSorting.MinThreshold;
+	}
+	return TOptional<int32>();
+}
+
+void SRDGGraphicsDebugger::OnPixelSortingMinThresholdChanged(int32 NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetPixelSortingMinThreshold(NewValue);
+	}
+}
+
+TOptional<float> SRDGGraphicsDebugger::GetPixelSortingScaleValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().PixelSorting.Scale;
+	}
+	return TOptional<float>();
+}
+
+void SRDGGraphicsDebugger::OnPixelSortingScaleChanged(float NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetPixelSortingScale(NewValue);
+	}
+}
+
+ECheckBoxState SRDGGraphicsDebugger::GetPixelSortingRowsCheckState() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().PixelSorting.bSortRows ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+	}
+	return ECheckBoxState::Unchecked;
+}
+
+void SRDGGraphicsDebugger::OnPixelSortingRowsChanged(ECheckBoxState NewState)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetPixelSortingRowsEnabled(NewState == ECheckBoxState::Checked);
+	}
+}
+
+ECheckBoxState SRDGGraphicsDebugger::GetPixelSortingColumnsCheckState() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().PixelSorting.bSortColumns ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+	}
+	return ECheckBoxState::Unchecked;
+}
+
+void SRDGGraphicsDebugger::OnPixelSortingColumnsChanged(ECheckBoxState NewState)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetPixelSortingColumnsEnabled(NewState == ECheckBoxState::Checked);
 	}
 }
 

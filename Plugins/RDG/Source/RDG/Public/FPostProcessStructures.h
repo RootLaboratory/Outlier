@@ -10,6 +10,33 @@ struct FDatamoshingParameters
 	float Progress = 1.0f;
 };
 
+enum class EPixelSortingMode : int32
+{
+	White = 0,
+	Black = 1,
+	Bright = 2,
+	Dark = 3
+};
+
+enum class EPixelSortingCurve : int32
+{
+	Linear = 0,
+	CubicEaseIn = 1
+};
+
+struct FPixelSortingParameters
+{
+	int32 bEnabled = false;
+	int32 Mode = static_cast<int32>(EPixelSortingMode::Bright);
+	int32 Curve = static_cast<int32>(EPixelSortingCurve::Linear);
+	float Threshold = 255.0f;
+	float Progress = 0.0f;
+	int32 MinThreshold = 80;
+	float Scale = 100.0f;
+	int32 bSortRows = true;
+	int32 bSortColumns = true;
+};
+
 struct FMotionBlurParameters
 {
 	int32 bEnabled = false; //Padding.?
@@ -91,5 +118,6 @@ struct FPostProcessStrcture
 	FBloomBlurParameters BloomBlur;
 	FDualKawaseBlurParameters DualKawaseBlur;
 	FDatamoshingParameters Datamoshing;
+	FPixelSortingParameters PixelSorting;
 	FADSBlurParameters ADSBlur;
 };

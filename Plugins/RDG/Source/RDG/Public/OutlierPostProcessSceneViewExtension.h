@@ -71,6 +71,11 @@ private:
 		const FSceneView& View,
 		const FPostProcessMaterialInputs& Inputs);
 
+	FScreenPassTexture PixelSortingCallback_RenderThread(
+		FRDGBuilder& GraphBuilder,
+		const FSceneView& View,
+		const FPostProcessMaterialInputs& Inputs);
+
 	FScreenPassTexture ExplosionVolumeVisualizeCallback_RenderThread(
 		FRDGBuilder& GraphBuilder,
 		const FSceneView& View,

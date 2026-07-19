@@ -47,6 +47,14 @@ public:
 	void SetDatamoshingEnabled(bool bEnabled);
 	void SetDatamoshingProgress(float InProgress);
 
+	void SetPixelSortingEnabled(bool bEnabled);
+	void SetPixelSortingMode(int32 InMode);
+	void SetPixelSortingCurve(int32 InCurve);
+	void SetPixelSortingMinThreshold(int32 InMinThreshold);
+	void SetPixelSortingScale(float InScale);
+	void SetPixelSortingRowsEnabled(bool bEnabled);
+	void SetPixelSortingColumnsEnabled(bool bEnabled);
+
 	UFUNCTION(BlueprintCallable, Category = "RDG|ADS Blur")
 	void SetADSBlurAiming(bool bInAiming, int32 InWeaponStencilValue = 3);
 	void SetADSSocketDistance(float Distance);
@@ -89,6 +97,7 @@ public:
 private:
 	void MarkDirty();
 	void UpdateADSBlur(float DeltaTime);
+	void UpdatePixelSorting(float DeltaTime);
 	void UpdateDepthOfField();
 	void ApplyADSBlurRuntimeParameters();
 	float GetADSBlurAlpha() const;
