@@ -50,8 +50,8 @@ private:
 	FTimerHandle ScanTimerHandle;
 
 	float CurrentScanRadius = 0.0f;
+	float ScanElapsedTime = 0.0f;
 
-	TArray<TObjectPtr<AActor>> PendingScanActors;
 	TArray<TObjectPtr<AActor>> ScannedActors;
 
 	FVector ScanOrigin = FVector::ZeroVector;

@@ -138,38 +138,44 @@ IMPLEMENT_GLOBAL_SHADER(FPixelSortColorToPackedCS, "/Plugin/RDG/PixelSorting.usf
 IMPLEMENT_GLOBAL_SHADER(FPixelSortPackedToColorCS, "/Plugin/RDG/PixelSorting.usf", "PackedToColorCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FPixelSortColorToColorCS, "/Plugin/RDG/PixelSorting.usf", "ColorToColorCS", SF_Compute);
 
-FScreenPassTexture FRDGPixelSortingPass::AddPass(
-	FRDGBuilder& GraphBuilder,
-	const FSceneView& View,
-	const FScreenPassTexture& SceneColor,
-	const FPixelSortingParameters& Parameters,
-	const FScreenPassRenderTarget& OverrideOutput)
+namespace PixelSorting
 {
-	if (!SceneColor.IsValid() || Parameters.bEnabled == 0)
-	{
-		return SceneColor;
-	}
+	// 정렬 자체는 View에 의존하지 않음 — feature level만 있으면 됨.
+	// 정렬된 텍스처를 돌려주고, OverrideOutput으로의 해상(resolve)은 호출부가 맡음.
+	// 정렬을 건너뛰어야 하면 nullptr.
+	FRDGTextureRef AddSortPasses(
+		FRDGBuilder& GraphBuilder,
+		ERHIFeatureLevel::Type FeatureLevel,
+		const FScreenPassTexture& SceneColor,
+		const FPixelSortingParameters& Parameters);
+}
 
+FRDGTextureRef PixelSorting::AddSortPasses(
+	FRDGBuilder& GraphBuilder,
+	ERHIFeatureLevel::Type FeatureLevel,
+	const FScreenPassTexture& SceneColor,
+	const FPixelSortingParameters& Parameters)
+{
 	const bool bRowsRequested = Parameters.bSortRows != 0;
 	const bool bColumnsRequested = Parameters.bSortColumns != 0;
-	const bool bSortRows = bRowsRequested && SceneColor.ViewRect.Width() <= MaxLineLength;
-	const bool bSortColumns = bColumnsRequested && SceneColor.ViewRect.Height() <= MaxLineLength;
+	const bool bSortRows = bRowsRequested && SceneColor.ViewRect.Width() <= FRDGPixelSortingPass::MaxLineLength;
+	const bool bSortColumns = bColumnsRequested && SceneColor.ViewRect.Height() <= FRDGPixelSortingPass::MaxLineLength;
 
 	if (bRowsRequested && !bSortRows)
 	{
-		ensureMsgf(false, TEXT("Pixel Sorting row length %d exceeds the %d-pixel LDS limit."), SceneColor.ViewRect.Width(), MaxLineLength);
+		ensureMsgf(false, TEXT("Pixel Sorting row length %d exceeds the %d-pixel LDS limit."), SceneColor.ViewRect.Width(), FRDGPixelSortingPass::MaxLineLength);
 	}
 	if (bColumnsRequested && !bSortColumns)
 	{
-		ensureMsgf(false, TEXT("Pixel Sorting column length %d exceeds the %d-pixel LDS limit."), SceneColor.ViewRect.Height(), MaxLineLength);
+		ensureMsgf(false, TEXT("Pixel Sorting column length %d exceeds the %d-pixel LDS limit."), SceneColor.ViewRect.Height(), FRDGPixelSortingPass::MaxLineLength);
 	}
 	if (!bSortRows && !bSortColumns)
 	{
-		return SceneColor;
+		return nullptr;
 	}
 
 	FRDGTextureRef OutputTexture = PixelSorting::CreateOutputTexture(GraphBuilder, SceneColor.Texture->Desc.Extent);
-	FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(View.GetFeatureLevel());
+	FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(FeatureLevel);
 
 	if (bSortRows && bSortColumns)
 	{
@@ -222,6 +228,32 @@ FScreenPassTexture FRDGPixelSortingPass::AddPass(
 			PixelSorting::GetGroupCount(SceneColor, Direction));
 	}
 
+	return OutputTexture;
+}
+
+FScreenPassTexture FRDGPixelSortingPass::AddPass(
+	FRDGBuilder& GraphBuilder,
+	const FSceneView& View,
+	const FScreenPassTexture& SceneColor,
+	const FPixelSortingParameters& Parameters,
+	const FScreenPassRenderTarget& OverrideOutput)
+{
+	if (!SceneColor.IsValid() || Parameters.bEnabled == 0)
+	{
+		return SceneColor;
+	}
+
+	FRDGTextureRef OutputTexture = PixelSorting::AddSortPasses(
+		GraphBuilder,
+		View.GetFeatureLevel(),
+		SceneColor,
+		Parameters);
+
+	if (!OutputTexture)
+	{
+		return SceneColor;
+	}
+
 	const FScreenPassTexture SortedSceneColor(OutputTexture, SceneColor.ViewRect);
 	if (OverrideOutput.IsValid())
 	{
@@ -230,6 +262,40 @@ FScreenPassTexture FRDGPixelSortingPass::AddPass(
 		return FRDGSceneColorCopyPass::AddPass(
 			GraphBuilder,
 			View,
+			SortedSceneColor,
+			OverrideOutput);
+	}
+
+	return SortedSceneColor;
+}
+
+FScreenPassTexture FRDGPixelSortingPass::AddPass(
+	FRDGBuilder& GraphBuilder,
+	const FScreenPassTexture& SceneColor,
+	const FPixelSortingParameters& Parameters,
+	const FScreenPassRenderTarget& OverrideOutput)
+{
+	if (!SceneColor.IsValid() || Parameters.bEnabled == 0)
+	{
+		return SceneColor;
+	}
+
+	FRDGTextureRef OutputTexture = PixelSorting::AddSortPasses(
+		GraphBuilder,
+		GMaxRHIFeatureLevel,
+		SceneColor,
+		Parameters);
+
+	if (!OutputTexture)
+	{
+		return SceneColor;
+	}
+
+	const FScreenPassTexture SortedSceneColor(OutputTexture, SceneColor.ViewRect);
+	if (OverrideOutput.IsValid())
+	{
+		return FRDGSceneColorCopyPass::AddPass(
+			GraphBuilder,
 			SortedSceneColor,
 			OverrideOutput);
 	}

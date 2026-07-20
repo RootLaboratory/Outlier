@@ -8,7 +8,6 @@
 #include "FRDGHeatHazePass.h"
 #include "FRDGMotionBlurPass.h"
 #include "FRDGDatamoshingPass.h"
-#include "FRDGPixelSortingPass.h"
 #include "RDGExplosionVolumeProvider.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
@@ -108,13 +107,8 @@ void FOutlierPostProcessSceneViewExtension::SubscribeToPostProcessingPass(EPostP
 			&FOutlierPostProcessSceneViewExtension::DatamoshingCallback_RenderThread));
 	}
 
-	if (PassId == EPostProcessingPass::Tonemap && CachedParameters.PixelSorting.bEnabled)
-	{
-		InOutPassCallbacks.Add(
-			FAfterPassCallbackDelegate::CreateRaw(
-				this,
-				&FOutlierPostProcessSceneViewExtension::PixelSortingCallback_RenderThread));
-	}
+	// Pixel Sorting은 여기서 돌지 않음. Slate 이후 backbuffer 단계(FRDGModule::HandleBackBufferReadyRDG)로
+	// 옮겨서 UI까지 포함한 최종 화면에 적용됨.
 
 	if (PassId == EPostProcessingPass::Tonemap && FRDGExplosionVolumeVisualizePass::IsEnabled())
 	{
@@ -262,7 +256,6 @@ bool FOutlierPostProcessSceneViewExtension::ShouldRenderAnyEffect() const
 		|| CachedParameters.BloomBlur.bEnabled
 		|| CachedParameters.DualKawaseBlur.bEnabled
 		|| CachedParameters.Datamoshing.bEnabled
-		|| CachedParameters.PixelSorting.bEnabled
 		|| CachedParameters.ADSBlur.bEnabled
 		|| HasHeatHazeSources();
 }
@@ -451,28 +444,6 @@ FScreenPassTexture FOutlierPostProcessSceneViewExtension::DatamoshingCallback_Re
 		Entry.RenderTarget,
 		Inputs.OverrideOutput
 	);
-}
-
-FScreenPassTexture FOutlierPostProcessSceneViewExtension::PixelSortingCallback_RenderThread(
-	FRDGBuilder& GraphBuilder,
-	const FSceneView& View,
-	const FPostProcessMaterialInputs& Inputs)
-{
-	const FScreenPassTexture SceneColor = FScreenPassTexture::CopyFromSlice(
-		GraphBuilder,
-		Inputs.GetInput(EPostProcessMaterialInput::SceneColor));
-
-	if (!SceneColor.IsValid())
-	{
-		return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
-	}
-
-	return FRDGPixelSortingPass::AddPass(
-		GraphBuilder,
-		View,
-		SceneColor,
-		CachedParameters.PixelSorting,
-		Inputs.OverrideOutput);
 }
 
 FScreenPassTexture FOutlierPostProcessSceneViewExtension::ExplosionVolumeVisualizeCallback_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessMaterialInputs& Inputs)

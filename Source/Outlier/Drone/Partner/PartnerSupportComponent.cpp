@@ -162,45 +162,17 @@ void UPartnerSupportComponent::TryScan_Server()
 
 	PartnerCharacter->bScanning = true;
 	CurrentScanRadius = 0.0f;
+	ScanElapsedTime = 0.0f;
 	ScanOrigin = PartnerCharacter->GetActorLocation();
 
-	PendingScanActors.Reset();
 	ScannedActors.Reset();
-
-	TArray<FOverlapResult> Results;
-
-	FCollisionObjectQueryParams ObjectParams;
-	ObjectParams.AddObjectTypesToQuery(ECC_Pawn);
-	ObjectParams.AddObjectTypesToQuery(ECC_WorldDynamic);
-	ObjectParams.AddObjectTypesToQuery(ECC_PhysicsBody);
-
-	FCollisionQueryParams QueryParams;
-	QueryParams.AddIgnoredActor(PartnerCharacter);
-
-	World->OverlapMultiByObjectType(
-		Results,
-		ScanOrigin,
-		FQuat::Identity,
-		ObjectParams,
-		FCollisionShape::MakeSphere(PartnerCharacter->ScanRange),
-		QueryParams
-	);
-
-	for (const FOverlapResult& Result : Results)
-	{
-		if (AActor* Actor = Result.GetActor())
-		{
-			PendingScanActors.Add(Actor);
-		}
-	}
 
 	/*UE_LOG(
 		LogTemp,
 		Error,
-		TEXT("[PartnerScanDebug] ScanStart Origin=%s Range=%.2f PendingCount=%d"),
+		TEXT("[PartnerScanDebug] ScanStart Origin=%s Range=%.2f"),
 		*ScanOrigin.ToString(),
-		PartnerCharacter->ScanRange,
-		PendingScanActors.Num()
+		PartnerCharacter->ScanRange
 	);*/
 
 	World->GetTimerManager().SetTimer(
@@ -444,7 +416,13 @@ void UPartnerSupportComponent::UpdateScan_Server()
 
 	const float TickInterval = 0.03f;
 
-	CurrentScanRadius += PartnerCharacter->ScanExpandSpeed * TickInterval;
+	ScanElapsedTime += TickInterval;
+
+	const float ScanProgress = PartnerCharacter->ScanDuration > 0.0f
+		? FMath::Clamp(ScanElapsedTime / PartnerCharacter->ScanDuration, 0.0f, 1.0f)
+		: 1.0f;
+
+	CurrentScanRadius = PartnerCharacter->ScanRange * ScanProgress;
 
 	const float RadiusSq = FMath::Square(CurrentScanRadius);
 
@@ -453,15 +431,36 @@ void UPartnerSupportComponent::UpdateScan_Server()
 		CurrentScanRadius
 	);
 
+	TArray<FOverlapResult> Results;
 
-	for (int32 Index = PendingScanActors.Num() - 1; Index >= 0; --Index)
+	FCollisionObjectQueryParams ObjectParams;
+	ObjectParams.AddObjectTypesToQuery(ECC_Pawn);
+	ObjectParams.AddObjectTypesToQuery(ECC_WorldDynamic);
+	ObjectParams.AddObjectTypesToQuery(ECC_PhysicsBody);
+
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(PartnerScan), false);
+	QueryParams.AddIgnoredActor(PartnerCharacter);
+
+	World->OverlapMultiByObjectType(
+		Results,
+		ScanOrigin,
+		FQuat::Identity,
+		ObjectParams,
+		FCollisionShape::MakeSphere(CurrentScanRadius),
+		QueryParams
+	);
+
+	for (const FOverlapResult& Result : Results)
 	{
-		AActor* Actor = PendingScanActors[Index].Get();
+		AActor* Actor = Result.GetActor();
 
 		if (!Actor)
 		{
-			UE_LOG(LogTemp, Error, TEXT("[PartnerScanDebug] PendingRemove NullActor Index=%d"), Index);
-			PendingScanActors.RemoveAtSwap(Index);
+			continue;
+		}
+
+		if (ScannedActors.Contains(Actor))
+		{
 			continue;
 		}
 
@@ -478,21 +477,19 @@ void UPartnerSupportComponent::UpdateScan_Server()
 		/*UE_LOG(
 			LogTemp,
 			Error,
-			TEXT("[PartnerScanDebug] ActorReached Actor=%s Class=%s Distance=%.2f Radius=%.2f PendingBefore=%d"),
+			TEXT("[PartnerScanDebug] ActorReached Actor=%s Class=%s Distance=%.2f Radius=%.2f"),
 			*GetNameSafe(Actor),
 			*GetNameSafe(Actor->GetClass()),
 			FMath::Sqrt(DistanceSq),
-			CurrentScanRadius,
-			PendingScanActors.Num()
+			CurrentScanRadius
 		);*/
 
 		ScannedActors.Add(Actor);
-		PendingScanActors.RemoveAtSwap(Index);
 
 		ApplyScanEffect(Actor);
 	}
 
-	if (CurrentScanRadius >= PartnerCharacter->ScanRange)
+	if (ScanProgress >= 1.0f)
 	{
 		EndScan_Server();
 	}
@@ -519,10 +516,9 @@ void UPartnerSupportComponent::EndScan_Server()
 	}
 
 	ScannedActors.Reset();
-	PendingScanActors.Reset();
 	CurrentScanRadius = 0.0f;
 	ScanOrigin = FVector::ZeroVector;
-
+	ScanElapsedTime = 0.0f;
 	//UE_LOG(LogTemp, Error, TEXT("[PartnerScanDebug] ScanEnd"));
 
 	ClientEndScanVisual();
