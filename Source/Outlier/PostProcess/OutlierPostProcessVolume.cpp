@@ -107,7 +107,7 @@ bool AOutlierPostProcessVolume::HasValidScanPostProcessBindings() const
 		&& !ScanRadiusParameterName.IsNone()
 		&& !ScanProgressParameterName.IsNone()
 		&& !ScanLocationParameterName.IsNone()
-		&& !ScanRangeParameterName.IsNone();
+		&& !ScanFlagParameterName.IsNone();
 }
 
 bool AOutlierPostProcessVolume::HasValidPostProcessMaterial(EOutlierPostProcessMaterialType MaterialType) const
@@ -192,13 +192,6 @@ void AOutlierPostProcessVolume::SetScanMaterialParameters(FVector ScanLocation, 
 		ScanRadius
 	);
 
-	UKismetMaterialLibrary::SetScalarParameterValue(
-		World,
-		ScanParameterCollection,
-		ScanRangeParameterName,
-		Range
-	);
-
 	UKismetMaterialLibrary::SetVectorParameterValue(
 		World,
 		ScanParameterCollection,
@@ -208,12 +201,25 @@ void AOutlierPostProcessVolume::SetScanMaterialParameters(FVector ScanLocation, 
 
 	const float Progress = Range > 0.0f ? ScanRadius / Range : 0.0f;
 
+	const float Flag = Range > 0.0f ? 1 : 0.0f;
+
 	UKismetMaterialLibrary::SetScalarParameterValue(
 		World,
 		ScanParameterCollection,
 		ScanProgressParameterName,
 		Progress
 	);
+
+	//기존 Range->
+	UKismetMaterialLibrary::SetScalarParameterValue(
+		World,
+		ScanParameterCollection,
+		ScanFlagParameterName,
+		Flag
+	);
+
+	UE_LOG(LogTemp, Error, TEXT("SCAN, %f:"), Flag);
+
 
 	ScanRangeRange = Range;
 

@@ -1,0 +1,200 @@
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/ScreenPass.ush"
+
+Texture2D InputTexture;
+Texture2D OriginalTexture;
+Texture2D<float> MaskTexture;
+Texture2D<float> HardMaskTexture;
+Texture2D CustomDepthTexture;
+SamplerState InputSampler;
+SamplerState MaskSampler;
+
+float2 InvResolution;
+float2 MaskTextureInvResolution;
+float2 CustomDepthTextureInvResolution;
+float4 ViewportUVToOriginalTextureUV;
+float4 ViewportUVToCustomDepthTextureUV;
+float4 ViewportUVToMaskTextureUV;
+float KernelOffset;
+float BlendWeight;
+float InnerPreserve;
+float DepthBlurStart;
+float DepthBlurEnd;
+float DepthBlurPower;
+float DepthFocusBias;
+uint bUpsample;
+uint bCompositeWithOriginal;
+float FocusDistanceWorld;
+float4 InvDeviceZToWorldZTransform;
+float MaxCoCRadius;
+uint GatherSampleCount;
+float ReachSoftness;
+uint bGather;
+
+#define ADS_MAX_GATHER_TAPS 96
+#define ADS_GOLDEN_ANGLE 2.39996323f
+
+float2 TransformUV(float2 UV, float4 ScaleBias)
+{
+	return UV * ScaleBias.xy + ScaleBias.zw;
+}
+
+float LinearizeSceneDepth(float DeviceZ)
+{
+	return DeviceZ * InvDeviceZToWorldZTransform.x
+		+ InvDeviceZToWorldZTransform.y
+		+ 1.0f / (DeviceZ * InvDeviceZToWorldZTransform.z - InvDeviceZToWorldZTransform.w);
+}
+
+float ComputeCoCPixels(float LinearZ)
+{
+	float Focus = FocusDistanceWorld + DepthFocusBias;
+	float Signed = 1.0f - Focus / max(LinearZ, 1.0f);
+	float Magnitude = abs(Signed);
+	float Range = max(DepthBlurEnd - DepthBlurStart, 1.0e-5f);
+	float Shaped = saturate((Magnitude - DepthBlurStart) / Range);
+	Shaped = pow(Shaped, max(DepthBlurPower, 1.0e-5f));
+	return Shaped * MaxCoCRadius;
+}
+
+float SampleStableFocusDepth()
+{
+	const float2 CenterViewportUV = float2(0.5f, 0.5f);
+	const float2 CenterDepthUV = TransformUV(CenterViewportUV, ViewportUVToCustomDepthTextureUV);
+	const float2 CenterMaskUV = TransformUV(CenterViewportUV, ViewportUVToMaskTextureUV);
+	float DepthSum = 0.0f;
+	float WeightSum = 0.0f;
+
+	[unroll]
+	for (int Y = -2; Y <= 2; ++Y)
+	{
+		[unroll]
+		for (int X = -2; X <= 2; ++X)
+		{
+			float2 SampleDepthUV = CenterDepthUV + float2(X, Y) * CustomDepthTextureInvResolution;
+			float2 SampleMaskUV = CenterMaskUV + float2(X, Y) * MaskTextureInvResolution;
+			float Depth = CustomDepthTexture.Sample(MaskSampler, SampleDepthUV).r;
+			float StencilMask = HardMaskTexture.Sample(MaskSampler, SampleMaskUV);
+			float Weight = step(0.5f, StencilMask) * step(1.0e-7f, Depth);
+			DepthSum += Depth * Weight;
+			WeightSum += Weight;
+		}
+	}
+
+	float CenterDepth = CustomDepthTexture.Sample(MaskSampler, CenterDepthUV).r;
+	return WeightSum > 0.0f ? DepthSum / WeightSum : CenterDepth;
+}
+
+void MainPS(
+	FScreenVertexOutput Input,
+	out float4 OutColor : SV_Target0)
+{
+	float2 UV = Input.UV;
+
+	if (bGather != 0)
+	{
+		float2 SceneUV = UV;
+		float2 ViewportUV = (SceneUV - ViewportUVToOriginalTextureUV.zw) / ViewportUVToOriginalTextureUV.xy;
+		float2 MaskUV = TransformUV(ViewportUV, ViewportUVToMaskTextureUV);
+		float SoftMask = MaskTexture.Sample(MaskSampler, MaskUV);
+		float4 CenterColor = OriginalTexture.Sample(InputSampler, SceneUV);
+
+		if (SoftMask < 1.0e-4f)
+		{
+			OutColor = CenterColor;
+			return;
+		}
+
+		float MaxRadius = max(MaxCoCRadius, 1.0e-3f);
+		uint SampleCount = clamp(GatherSampleCount, 1u, (uint)ADS_MAX_GATHER_TAPS);
+		float SampleCountInv = 1.0f / float(SampleCount);
+		float ReachFeather = max(ReachSoftness, 1.0e-4f);
+		float4 Sum = 0.0f;
+		float WeightSum = 0.0f;
+
+		[loop]
+		for (uint i = 0u; i < ADS_MAX_GATHER_TAPS; ++i)
+		{
+			if (i >= SampleCount)
+			{
+				break;
+			}
+
+			float T = (float(i) + 0.5f) * SampleCountInv;
+			float SampleRadius = sqrt(T) * MaxRadius;
+			float Angle = float(i) * ADS_GOLDEN_ANGLE;
+			float2 Offset = float2(cos(Angle), sin(Angle)) * SampleRadius;
+
+			float2 SampleSceneUV = SceneUV + Offset * InvResolution;
+			float2 SampleViewportUV = (SampleSceneUV - ViewportUVToOriginalTextureUV.zw) / ViewportUVToOriginalTextureUV.xy;
+			float2 SampleDepthUV = TransformUV(SampleViewportUV, ViewportUVToCustomDepthTextureUV);
+			float2 SampleMaskUV = TransformUV(SampleViewportUV, ViewportUVToMaskTextureUV);
+
+			float SampleHardMask = HardMaskTexture.Sample(MaskSampler, SampleMaskUV);
+			float SampleDeviceZ = CustomDepthTexture.Sample(MaskSampler, SampleDepthUV).r;
+			float SampleLinearZ = LinearizeSceneDepth(SampleDeviceZ);
+			float SampleCoC = ComputeCoCPixels(SampleLinearZ);
+
+			float Reach = saturate((SampleCoC - SampleRadius + ReachFeather) / ReachFeather);
+			float Weight = Reach * SampleHardMask;
+
+			Sum += OriginalTexture.Sample(InputSampler, SampleSceneUV) * Weight;
+			WeightSum += Weight;
+		}
+
+		float4 Blurred = WeightSum > 1.0e-4f ? Sum / WeightSum : CenterColor;
+		float Coverage = HardMaskTexture.Sample(MaskSampler, MaskUV);
+		float Blend = saturate(Coverage * BlendWeight);
+
+		OutColor = lerp(CenterColor, Blurred, Blend);
+		return;
+	}
+
+	if (bCompositeWithOriginal != 0)
+	{
+		float2 ViewportUV = UV;
+		float2 OriginalUV = TransformUV(ViewportUV, ViewportUVToOriginalTextureUV);
+		float2 DepthUV = TransformUV(ViewportUV, ViewportUVToCustomDepthTextureUV);
+		float2 MaskUV = TransformUV(ViewportUV, ViewportUVToMaskTextureUV);
+		float4 OriginalColor = OriginalTexture.Sample(InputSampler, OriginalUV);
+		float4 BlurredColor = InputTexture.Sample(InputSampler, UV);
+		float SoftMask = MaskTexture.Sample(MaskSampler, MaskUV);
+		float HardMask = HardMaskTexture.Sample(MaskSampler, MaskUV);
+		float RingMask = saturate(SoftMask - HardMask);
+		float Preserve = saturate(InnerPreserve);
+		float Mask = lerp(SoftMask, RingMask, Preserve);
+		float PixelDepth = CustomDepthTexture.Sample(MaskSampler, DepthUV).r;
+		float FocusDepth = SampleStableFocusDepth() + DepthFocusBias;
+		float DepthDelta = abs(PixelDepth - FocusDepth);
+		float DepthRange = max(DepthBlurEnd - DepthBlurStart, 1.0e-5f);
+		float DepthWeight = saturate((DepthDelta - DepthBlurStart) / DepthRange);
+		DepthWeight = pow(DepthWeight, max(DepthBlurPower, 1.0e-5f));
+		float BlurWeight = saturate(Mask * DepthWeight * BlendWeight);
+		OutColor = lerp(OriginalColor, BlurredColor, BlurWeight);
+		return;
+	}
+
+	float2 BaseOffset = InvResolution * (KernelOffset + 0.5f);
+	float4 Accumulated = 0.0f;
+
+	if (bUpsample != 0)
+	{
+		Accumulated += InputTexture.Sample(InputSampler, UV + float2(-BaseOffset.x * 2.0f, 0.0f));
+		Accumulated += InputTexture.Sample(InputSampler, UV + float2(-BaseOffset.x, BaseOffset.y));
+		Accumulated += InputTexture.Sample(InputSampler, UV + float2(0.0f, BaseOffset.y * 2.0f));
+		Accumulated += InputTexture.Sample(InputSampler, UV + float2(BaseOffset.x, BaseOffset.y));
+		Accumulated += InputTexture.Sample(InputSampler, UV + float2(BaseOffset.x * 2.0f, 0.0f));
+		Accumulated += InputTexture.Sample(InputSampler, UV + float2(BaseOffset.x, -BaseOffset.y));
+		Accumulated += InputTexture.Sample(InputSampler, UV + float2(0.0f, -BaseOffset.y * 2.0f));
+		Accumulated += InputTexture.Sample(InputSampler, UV + float2(-BaseOffset.x, -BaseOffset.y));
+		OutColor = Accumulated * (1.0f / 8.0f);
+	}
+	else
+	{
+		Accumulated += InputTexture.Sample(InputSampler, UV + float2(-BaseOffset.x, -BaseOffset.y));
+		Accumulated += InputTexture.Sample(InputSampler, UV + float2(BaseOffset.x, -BaseOffset.y));
+		Accumulated += InputTexture.Sample(InputSampler, UV + float2(-BaseOffset.x, BaseOffset.y));
+		Accumulated += InputTexture.Sample(InputSampler, UV + float2(BaseOffset.x, BaseOffset.y));
+		OutColor = Accumulated * 0.25f;
+	}
+}

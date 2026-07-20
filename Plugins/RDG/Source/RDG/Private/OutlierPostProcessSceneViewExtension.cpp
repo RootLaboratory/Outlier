@@ -12,6 +12,7 @@
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
 #include "DrawDebugHelpers.h"
+#include "FXRenderingUtils.h"
 #include "PostProcessInputs.h"
 #include "PostProcess/PostProcessMaterialInputs.h"
 #include "ProfilingDebugging/RealtimeGPUProfiler.h"
@@ -49,10 +50,6 @@ void FOutlierPostProcessSceneViewExtension::BeginRenderViewFamily(FSceneViewFami
 			}
 		}
 	}
-
-	
-	// ?�래 ????ViewState ?�트리만 ?�리. ?�중 뷰포??빙의 + ?�디????가 ping-pong?�로
-	// ?�로??history�?지?��? ?�도�? ?�정 ?�레???�상 미사?�일 ?�만 ?�거.
 
 	ENQUEUE_RENDER_COMMAND(DatamoshHistoryCleanup)(
 		[this](FRHICommandListImmediate&)
@@ -109,6 +106,9 @@ void FOutlierPostProcessSceneViewExtension::SubscribeToPostProcessingPass(EPostP
 				this,
 			&FOutlierPostProcessSceneViewExtension::DatamoshingCallback_RenderThread));
 	}
+
+	// Pixel Sorting은 여기서 돌지 않음. Slate 이후 backbuffer 단계(FRDGModule::HandleBackBufferReadyRDG)로
+	// 옮겨서 UI까지 포함한 최종 화면에 적용됨.
 
 	if (PassId == EPostProcessingPass::Tonemap && FRDGExplosionVolumeVisualizePass::IsEnabled())
 	{
@@ -171,7 +171,14 @@ void FOutlierPostProcessSceneViewExtension::PrePostProcessPass_RenderThread(FRDG
 		FRDGTextureSRVRef CustomStencilTexture = SceneTextureParameters->CustomStencilTexture;
 		if (CustomStencilTexture)
 		{
-			const FIntPoint MaskExtent = InView.UnscaledViewRect.Size();
+			const FIntRect PrimaryViewRect = UE::FXRenderingUtils::GetRawViewRectUnsafe(InView);
+			const FIntPoint MaskExtent = PrimaryViewRect.Size();
+			const int32 UnscaledViewWidth = InView.UnscaledViewRect.Width();
+			const float PrimaryResolutionFraction = UnscaledViewWidth > 0
+				? static_cast<float>(MaskExtent.X) / static_cast<float>(UnscaledViewWidth)
+				: 1.0f;
+			const float ScaledDilateRadius = CachedParameters.ADSBlur.SightMaskDilateRadius * PrimaryResolutionFraction;
+			const float ScaledSoftness = CachedParameters.ADSBlur.SightMaskSoftness * PrimaryResolutionFraction;
 
 			FRDGTextureRef SightHardMask = FRDGAdsSightMaskPass::AddBuildMaskPass(
 				GraphBuilder,
@@ -186,7 +193,7 @@ void FOutlierPostProcessSceneViewExtension::PrePostProcessPass_RenderThread(FRDG
 				InView,
 				SightHardMask,
 				MaskExtent,
-				CachedParameters.ADSBlur.SightMaskDilateRadius);
+				ScaledDilateRadius);
 
 			CachedADSSightSoftMask = FRDGAdsSightMaskPass::AddSoftenPass(
 				GraphBuilder,
@@ -194,7 +201,7 @@ void FOutlierPostProcessSceneViewExtension::PrePostProcessPass_RenderThread(FRDG
 				CachedADSSightHardMask,
 				CachedADSSightHardMask,
 				MaskExtent,
-				CachedParameters.ADSBlur.SightMaskSoftness);
+				ScaledSoftness);
 		}
 	}
 
@@ -224,8 +231,6 @@ void FOutlierPostProcessSceneViewExtension::PrePostProcessPass_RenderThread(FRDG
 
 	FRDGExplosionVolumeProvider::QueueExtraction(GraphBuilder, VelocityVolume);
 	CachedVelocityVolume = VelocityVolume;
-	//같�? ?�레?�의 경우,
-	//Excute ?�후??처리 ?�니깐최�??�레?��? �??�더?�도 �??�음부?�는 ?�게 ?????�음.
 }
 
 void FOutlierPostProcessSceneViewExtension::UpdateCachedUIParameters(const FPostProcessStrctureUI& InParameters)
@@ -268,8 +273,6 @@ bool FOutlierPostProcessSceneViewExtension::IsTargetLocalPlayerView(const FScene
 		return false;
 	}
 
-	// LocalPlayer가 ?�한 World?�?View가 그리??World가 ?�치?�야 ?�??뷰로 ?�정.
-	// (PIE LocalPlayer??PIE World, ?�디??LocalPlayer???�디??World�?갖기 ?�문??	//  빙의 중에???�이 ?�연?�럽�?분리?? SceneViewExtension?�?LocalPlayer ?�위�??�성??)
 
 	const UWorld* LPWorld = LP->GetWorld();
 	const FSceneInterface* Scene = InView.Family->Scene;
@@ -421,16 +424,13 @@ FScreenPassTexture FOutlierPostProcessSceneViewExtension::DatamoshingCallback_Re
 		return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
 	}
 
-	// 1. ViewState ?�효??검??�???Key) 추출
 	FSceneViewState* ViewState = View.State ? View.State->GetConcreteViewState() : nullptr;	if (!ViewState)
 	{
 		UE_LOG(LogTemp, Error, TEXT("RENDERTHREAD CALL, !ViewState"))
 
-		// ?�디?�의 ?�정 뷰포?�나 ??캡처 ??ViewState가 ?�는 경우 ?�본 반환
 		return SceneColor;
 	}
 
-	// 2. ?�재 뷰에 맵핑??History ?�트�??�득 (?�으�??�로 ?�성). ?�레??마킹?�로 cleanup 방어.
 	FDatamoshHistoryEntry& Entry = DatamoshHistoryMap.FindOrAdd(ViewState);
 	Entry.LastTouchedFrame = GFrameCounterRenderThread;
 

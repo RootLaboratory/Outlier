@@ -66,8 +66,8 @@ private:
 	FName ScanLocationParameterName = TEXT("Location");
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Scan", meta = (AllowPrivateAccess = "true"))
-	FName ScanRangeParameterName = TEXT("Range");
-
+	FName ScanFlagParameterName = TEXT("Flag");
+	
 	//플레이어에 따른 masking 색처리.
 
 private:

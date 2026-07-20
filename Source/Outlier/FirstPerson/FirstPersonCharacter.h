@@ -89,6 +89,8 @@ public:
 	virtual URoomTagComponent* GetRoomTagComp() const override;
 
 	void TryInteract();
+	void EndInteract();
+	void NotifyHoldInteractCompleted(AActor* CompletedActor);
 
 protected:
 
@@ -111,8 +113,14 @@ protected:
 	UFUNCTION(Server, Reliable)
 	void ServerInteract(AActor* TargetActor);
 
+	UFUNCTION(Server, Reliable)
+	void ServerCancelHoldInteract(AActor* TargetActor);
+
 	UFUNCTION(Client, Reliable)
 	void ClientOnInteractSucceeded(AActor* TargetActor);
+
+	UFUNCTION(Client, Reliable)
+	void ClientOnHoldInteractFailed(AActor* TargetActor);
 
 protected:
 
@@ -157,6 +165,8 @@ private:
 	float InteractionTraceInterval = 0.5f;
 
 private:
+	void CancelLocalHoldInteract(bool bNotifyServer);
+
 	void UpdateInteractableFocus();
 
 	void SetPartnerCameraCaptureUpdating(bool bEnabled);
@@ -183,6 +193,11 @@ private:
 
 	UPROPERTY()
 	AActor* FocusedInteractable = nullptr;
+
+	UPROPERTY()
+	TObjectPtr<AActor> HoldingInteractActor;
+
+	bool bAwaitingHoldInteractResult = false;
 
 	UPROPERTY()
 	TArray<TObjectPtr<AActor>> NearbyInteractables;

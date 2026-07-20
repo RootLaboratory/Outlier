@@ -93,6 +93,21 @@ private:
 	TOptional<float> GetADSDoFFarTransitionRegionValue() const;
 	void OnADSDoFFarTransitionRegionChanged(float NewValue);
 
+	ECheckBoxState GetPixelSortingEnabledCheckState() const;
+	void OnPixelSortingEnabledChanged(ECheckBoxState NewState);
+	TOptional<int32> GetPixelSortingModeValue() const;
+	void OnPixelSortingModeChanged(int32 NewValue);
+	TOptional<int32> GetPixelSortingCurveValue() const;
+	void OnPixelSortingCurveChanged(int32 NewValue);
+	TOptional<int32> GetPixelSortingMinThresholdValue() const;
+	void OnPixelSortingMinThresholdChanged(int32 NewValue);
+	TOptional<float> GetPixelSortingScaleValue() const;
+	void OnPixelSortingScaleChanged(float NewValue);
+	ECheckBoxState GetPixelSortingRowsCheckState() const;
+	void OnPixelSortingRowsChanged(ECheckBoxState NewState);
+	ECheckBoxState GetPixelSortingColumnsCheckState() const;
+	void OnPixelSortingColumnsChanged(ECheckBoxState NewState);
+
 	ECheckBoxState GetDatamoshEnabledCheckState() const;
 	void OnDatamoshEnabledChanged(ECheckBoxState NewState);
 	float GetDatamoshProgressSliderValue() const;
