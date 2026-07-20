@@ -7,6 +7,7 @@
 #include "InteractableInterface.generated.h"
 
 class UInteractableComponent;
+class AFirstPersonCharacter;
 
 /**
  * 
@@ -23,5 +24,9 @@ class OUTLIER_API IInteractableInterface
 
 public:
 	virtual UInteractableComponent* GetInteractableComponent() const = 0;
-	virtual void Interact(class AFirstPersonCharacter* Interactor) = 0;
+	virtual void Interact(AFirstPersonCharacter* Interactor) = 0;
+
+	virtual bool RequiresHoldInteract() const { return false; }
+	virtual void BeginHoldInteract(AFirstPersonCharacter* Interactor) {}
+	virtual void EndHoldInteract(AFirstPersonCharacter* Interactor, bool bCanceled) {}
 };

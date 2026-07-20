@@ -150,6 +150,8 @@ void UMaterialPostProcessSubsystem::ApplyScanStencil(AActor* Actor, int32 Stenci
 	TArray<UPrimitiveComponent*> PrimitiveComponents;
 	Actor->GetComponents<UPrimitiveComponent>(PrimitiveComponents);
 
+	//BP에서 설정하면 상관없긴 하다만.
+
 	for (UPrimitiveComponent* PrimitiveComponent : PrimitiveComponents)
 	{
 		if (!PrimitiveComponent)

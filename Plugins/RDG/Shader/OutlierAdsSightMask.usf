@@ -2,9 +2,11 @@
 
 Texture2D<uint2> CustomStencilTexture;
 Texture2D CustomDepthTexture;
-Texture2D<float> InputMask;
-Texture2D<float> HardMask;
-RWTexture2D<float> OutMask;
+Texture2D<uint> InputMask;
+Texture2D<float> InputSoftMask;
+Texture2D<uint> HardMask;
+RWTexture2D<uint> OutMask;
+RWTexture2D<float> OutSoftMask;
 
 int2 TextureExtent;
 int2 SourceViewRectMin;
@@ -28,7 +30,7 @@ float LinearizeSceneDepth(float DeviceZ)
 }
 
 [numthreads(8, 8, 1)]
-void MainCS(uint2 Pixel : SV_DispatchThreadID)
+void IntegerMaskMainCS(uint2 Pixel : SV_DispatchThreadID)
 {
     if (any(Pixel >= uint2(TextureExtent)))
     {
@@ -42,22 +44,24 @@ void MainCS(uint2 Pixel : SV_DispatchThreadID)
         float DeviceZ = CustomDepthTexture.Load(int3(ScenePixel, 0)).r;
         float LinearZ = LinearizeSceneDepth(DeviceZ);
         bool bIsSight = (Stencil == WeaponStencilValue) && (abs(LinearZ - FocusDistanceWorld) < SightDistanceThreshold);
-        OutMask[Pixel] = bIsSight ? 1.0f : 0.0f;
+        OutMask[Pixel] = bIsSight ? 1u : 0u;
         return;
     }
 
     if (PassMode == 1)
     {
-        float Mask = 0.0f;
+        uint Mask = 0u;
         int KernelRadius = max(0, (int)ceil(Radius));
         float2 CenterPixel = (float2(TextureExtent) - 1.0f) * 0.5f;
-        float CurrentCenterDist = length(float2(Pixel) - CenterPixel);
+        float CurrentCenterOffset = float(Pixel.x) - CenterPixel.x;
+        float CurrentCenterDistSquared = CurrentCenterOffset * CurrentCenterOffset;
 
         for (int X = -KernelRadius; X <= KernelRadius; ++X)
         {
             int2 SamplePixel = ClampPixel(int2(Pixel) + int2(X, 0));
-            float SampleCenterDist = length(float2(SamplePixel) - CenterPixel);
-            float bInward = step(CurrentCenterDist, SampleCenterDist);
+            float SampleCenterOffset = float(SamplePixel.x) - CenterPixel.x;
+            float SampleCenterDistSquared = SampleCenterOffset * SampleCenterOffset;
+            uint bInward = SampleCenterDistSquared >= CurrentCenterDistSquared ? 1u : 0u;
             Mask = max(Mask, InputMask.Load(int3(SamplePixel, 0)) * bInward);
         }
 
@@ -67,16 +71,18 @@ void MainCS(uint2 Pixel : SV_DispatchThreadID)
 
     if (PassMode == 2)
     {
-        float Mask = 0.0f;
+        uint Mask = 0u;
         int KernelRadius = max(0, (int)ceil(Radius));
         float2 CenterPixel = (float2(TextureExtent) - 1.0f) * 0.5f;
-        float CurrentCenterDist = length(float2(Pixel) - CenterPixel);
+        float CurrentCenterOffset = float(Pixel.y) - CenterPixel.y;
+        float CurrentCenterDistSquared = CurrentCenterOffset * CurrentCenterOffset;
 
         for (int Y = -KernelRadius; Y <= KernelRadius; ++Y)
         {
             int2 SamplePixel = ClampPixel(int2(Pixel) + int2(0, Y));
-            float SampleCenterDist = length(float2(SamplePixel) - CenterPixel);
-            float bInward = step(CurrentCenterDist, SampleCenterDist);
+            float SampleCenterOffset = float(SamplePixel.y) - CenterPixel.y;
+            float SampleCenterDistSquared = SampleCenterOffset * SampleCenterOffset;
+            uint bInward = SampleCenterDistSquared >= CurrentCenterDistSquared ? 1u : 0u;
             Mask = max(Mask, InputMask.Load(int3(SamplePixel, 0)) * bInward);
         }
 
@@ -84,27 +90,70 @@ void MainCS(uint2 Pixel : SV_DispatchThreadID)
         return;
     }
 
-    if (PassMode == 3)
+}
+
+[numthreads(8, 8, 1)]
+void SoftenHorizontalMainCS(uint2 Pixel : SV_DispatchThreadID)
+{
+    if (any(Pixel >= uint2(TextureExtent)))
     {
-        float Sum = 0.0f;
-        float WeightSum = 0.0f;
-        int KernelRadius = max(1, (int)ceil(Radius));
-
-        for (int Y = -KernelRadius; Y <= KernelRadius; ++Y)
-        {
-            for (int X = -KernelRadius; X <= KernelRadius; ++X)
-            {
-                float Distance = length(float2(X, Y));
-                float Weight = saturate(1.0f - Distance / (Radius + 1.0f));
-                int2 SamplePixel = ClampPixel(int2(Pixel) + int2(X, Y));
-
-                Sum += InputMask.Load(int3(SamplePixel, 0)) * Weight;
-                WeightSum += Weight;
-            }
-        }
-
-        float SoftMask = Sum / max(WeightSum, 1.0e-4f);
-        float HardMaskValue = HardMask.Load(int3(Pixel, 0));
-        OutMask[Pixel] = max(SoftMask, HardMaskValue);
+        return;
     }
+
+    int KernelRadius = max(1, (int)ceil(Radius));
+    float Sigma = max(Radius / 3.0f, 1.0e-3f);
+    float InvSigmaSquared = rcp(Sigma * Sigma);
+    float Weight = exp(-0.5f * InvSigmaSquared);
+    float WeightRatioStep = Weight * Weight;
+    float WeightRatio = WeightRatioStep * Weight;
+    float Sum = float(InputMask.Load(int3(Pixel, 0)));
+    float WeightSum = 1.0f;
+
+    for (int X = 1; X <= KernelRadius; ++X)
+    {
+        int2 NegativePixel = ClampPixel(int2(Pixel) - int2(X, 0));
+        int2 PositivePixel = ClampPixel(int2(Pixel) + int2(X, 0));
+        float Pair = float(InputMask.Load(int3(NegativePixel, 0)))
+            + float(InputMask.Load(int3(PositivePixel, 0)));
+        Sum += Pair * Weight;
+        WeightSum += 2.0f * Weight;
+        Weight *= WeightRatio;
+        WeightRatio *= WeightRatioStep;
+    }
+
+    OutSoftMask[Pixel] = Sum / max(WeightSum, 1.0e-4f);
+}
+
+[numthreads(8, 8, 1)]
+void SoftenVerticalMainCS(uint2 Pixel : SV_DispatchThreadID)
+{
+    if (any(Pixel >= uint2(TextureExtent)))
+    {
+        return;
+    }
+
+    int KernelRadius = max(1, (int)ceil(Radius));
+    float Sigma = max(Radius / 3.0f, 1.0e-3f);
+    float InvSigmaSquared = rcp(Sigma * Sigma);
+    float Weight = exp(-0.5f * InvSigmaSquared);
+    float WeightRatioStep = Weight * Weight;
+    float WeightRatio = WeightRatioStep * Weight;
+    float Sum = InputSoftMask.Load(int3(Pixel, 0));
+    float WeightSum = 1.0f;
+
+    for (int Y = 1; Y <= KernelRadius; ++Y)
+    {
+        int2 NegativePixel = ClampPixel(int2(Pixel) - int2(0, Y));
+        int2 PositivePixel = ClampPixel(int2(Pixel) + int2(0, Y));
+        float Pair = InputSoftMask.Load(int3(NegativePixel, 0))
+            + InputSoftMask.Load(int3(PositivePixel, 0));
+        Sum += Pair * Weight;
+        WeightSum += 2.0f * Weight;
+        Weight *= WeightRatio;
+        WeightRatio *= WeightRatioStep;
+    }
+
+    float SoftMask = Sum / max(WeightSum, 1.0e-4f);
+    float HardMaskValue = float(HardMask.Load(int3(Pixel, 0)));
+    OutSoftMask[Pixel] = max(SoftMask, HardMaskValue);
 }

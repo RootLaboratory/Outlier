@@ -15,26 +15,21 @@ UInteractableComponent::UInteractableComponent()
 
 bool UInteractableComponent::CanInteract(const FGameplayTagContainer& InteractorTags) const
 {
-	UE_LOG(
-		LogTemp,
-		Warning,
-		TEXT("[InteractDebug] InteractorTags=%s BlockedTags=%s RequiredQueryEmpty=%d"),
-		*InteractorTags.ToStringSimple(),
-		*BlockedInteractorTags.ToStringSimple(),
-		RequiredInteractorQuery.IsEmpty() ? 1 : 0
-	);
+	const FGameplayTag UsedTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Interact.State.Used")), false);
+	if (UsedTag.IsValid() && InteractableTags.HasTagExact(UsedTag))
+	{
+		return false;
+	}
 
 	if (!RequiredInteractorQuery.IsEmpty()
 		&& !RequiredInteractorQuery.Matches(InteractorTags))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[InteractDebug] Blocked: required query failed"));
 		return false;
 	}
 
 	if (BlockedInteractorTags.Num() > 0
 		&& InteractorTags.HasAny(BlockedInteractorTags))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[InteractDebug] Blocked: blocked tag matched"));
 		return false;
 	}
 
@@ -99,8 +94,6 @@ void UInteractableComponent::InteractKeyWidgetActivate(AFirstPersonCharacter* In
 	APlayerController* PlayerController = Cast<APlayerController>(Interactor->GetController());
 	if (!PlayerController || !InteractKeyWidgetClass)
 	{
-		UE_LOG(LogTemp, Error, TEXT("InteractKeyWidgetActivate failed: InteractKeyWidgetClass is null"));
-
 		return;
 	}
 

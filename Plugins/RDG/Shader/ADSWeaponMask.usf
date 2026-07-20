@@ -1,0 +1,83 @@
+#include "/Engine/Private/Common.ush"
+
+#ifndef STENCIL_COMPONENT_SWIZZLE
+#define STENCIL_COMPONENT_SWIZZLE .g
+#endif
+
+Texture2D<uint2> CustomStencilTexture;
+Texture2D<float> InputMask;
+Texture2D<float> HardMask;
+RWTexture2D<float> OutMask;
+
+int2 TextureExtent;
+int2 SourceViewRectMin;
+uint WeaponStencilValue;
+float Radius;
+uint PassMode;
+
+int2 ClampPixel(int2 Pixel)
+{
+	return clamp(Pixel, int2(0, 0), TextureExtent - 1);
+}
+
+[numthreads(8, 8, 1)]
+void MainCS(uint2 Pixel : SV_DispatchThreadID)
+{
+	if (any(Pixel >= uint2(TextureExtent)))
+	{
+		return;
+	}
+
+//Stencil; Reading
+
+	if (PassMode == 0)
+	{
+		uint Stencil = CustomStencilTexture.Load(int3(int2(Pixel) + SourceViewRectMin, 0)) STENCIL_COMPONENT_SWIZZLE;
+		OutMask[Pixel] = (Stencil == WeaponStencilValue) ? 1.0f : 0.0f;
+		return;
+	}
+
+//Dilate를 위한 Mask 팽창; Hard CUTTING 방지
+
+	if (PassMode == 1)
+	{
+		float Mask = 0.0f;
+		int KernelRadius = max(0, (int)ceil(Radius));
+
+		for (int Y = -KernelRadius; Y <= KernelRadius; ++Y)
+		{
+			for (int X = -KernelRadius; X <= KernelRadius; ++X)
+			{
+				int2 SamplePixel = ClampPixel(int2(Pixel) + int2(X, Y));
+				Mask = max(Mask, InputMask.Load(int3(SamplePixel, 0)));
+			}
+		}
+
+		OutMask[Pixel] = Mask;
+		return;
+	}
+
+	if (PassMode == 2)
+	{
+		float Sum = 0.0f;
+		float WeightSum = 0.0f;
+		int KernelRadius = max(1, (int)ceil(Radius));
+
+		for (int Y = -KernelRadius; Y <= KernelRadius; ++Y)
+		{
+			for (int X = -KernelRadius; X <= KernelRadius; ++X)
+			{
+				float Distance = length(float2(X, Y));
+				float Weight = saturate(1.0f - Distance / (Radius + 1.0f));
+				int2 SamplePixel = ClampPixel(int2(Pixel) + int2(X, Y));
+
+				Sum += InputMask.Load(int3(SamplePixel, 0)) * Weight;
+				WeightSum += Weight;
+			}
+		}
+
+		float SoftMask = Sum / max(WeightSum, 1.0e-4f);
+		float HardMaskValue = HardMask.Load(int3(Pixel, 0));
+		OutMask[Pixel] = max(SoftMask, HardMaskValue);
+	}
+}

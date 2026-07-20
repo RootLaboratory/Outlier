@@ -23,11 +23,15 @@ public:
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, PostDofColorTexture)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, PreDofColorTexture)
-		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SightMaskTexture)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float>, SightMaskTexture)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<uint>, SightMaskUintTexture)
 		SHADER_PARAMETER(FIntPoint, ViewMin)
 		SHADER_PARAMETER(FIntPoint, ViewMax)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float3>, OutColor)
 	END_SHADER_PARAMETER_STRUCT()
+
+	class FUintMask : SHADER_PERMUTATION_BOOL("SIGHT_MASK_UINT");
+	using FPermutationDomain = TShaderPermutationDomain<FUintMask>;
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
@@ -57,20 +61,25 @@ FRDGTextureRef FRDGAdsSightRestorePass::AddPass(
 	FRDGTextureRef OutColor = GraphBuilder.CreateTexture(OutDesc, TEXT("Outlier.AdsSightRestoreColor"));
 
 	FOutlierAdsSightRestoreCS::FParameters* Parameters = GraphBuilder.AllocParameters<FOutlierAdsSightRestoreCS::FParameters>();
+	const bool bUintMask = SightMaskTexture->Desc.Format == PF_R8_UINT;
 	Parameters->PostDofColorTexture = PostDofColorTexture;
 	Parameters->PreDofColorTexture = PreDofColorTexture;
-	Parameters->SightMaskTexture = SightMaskTexture;
+	Parameters->SightMaskTexture = bUintMask ? nullptr : SightMaskTexture;
+	Parameters->SightMaskUintTexture = bUintMask ? SightMaskTexture : nullptr;
 	Parameters->ViewMin = ViewRect.Min;
 	Parameters->ViewMax = ViewRect.Max;
 	Parameters->OutColor = GraphBuilder.CreateUAV(OutColor);
 
-	TShaderMapRef<FOutlierAdsSightRestoreCS> ComputeShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+	FOutlierAdsSightRestoreCS::FPermutationDomain PermutationVector;
+	PermutationVector.Set<FOutlierAdsSightRestoreCS::FUintMask>(bUintMask);
+	TShaderMapRef<FOutlierAdsSightRestoreCS> ComputeShader(GetGlobalShaderMap(GMaxRHIFeatureLevel), PermutationVector);
+	ClearUnusedGraphResources(ComputeShader, Parameters);
 
 	auto AddRestorePass = [&]()
 	{
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
-			RDG_EVENT_NAME("OutlierAdsSightRestore"),
+			RDG_EVENT_NAME("OutlierAdsSightRestore %dx%d", ViewRect.Width(), ViewRect.Height()),
 			ERDGPassFlags::Compute | ERDGPassFlags::NeverCull,
 			ComputeShader,
 			Parameters,

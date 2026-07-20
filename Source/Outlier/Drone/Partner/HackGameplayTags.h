@@ -80,4 +80,25 @@ namespace HackGameplayTags
 		}
 	}
 
+	namespace Info
+	{
+		inline FGameplayTag Root()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Info")));
+			return Tag;
+		}
+
+		inline FGameplayTag Drone()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Info.Drone")));
+			return Tag;
+		}
+
+		inline FGameplayTag Jump()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Info.Jump")));
+			return Tag;
+		}
+	}
+
 }

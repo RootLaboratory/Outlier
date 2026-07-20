@@ -11,6 +11,7 @@
 class UHackableComponent;
 class UHackCandidateLayerWidget;
 class UHackCandidateMarkerWidget;
+class UHackableInfoWidget;
 class UHackMiniGameWidget;
 
 USTRUCT(BlueprintType)
@@ -72,10 +73,15 @@ public:
 	TSubclassOf<UHackCandidateMarkerWidget> CandidateMarkerWidgetClass;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hack|UI")
+	TSubclassOf<UHackableInfoWidget> HackableInfoWidgetClass;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hack|UI")
 	TSubclassOf<UHackMiniGameWidget> HackMiniGameWidgetClass;
 
 	UFUNCTION(Server, Reliable)
 	void TryHack();
+
+	void EndHackHold();
 
 	UFUNCTION(BlueprintCallable, Category = "Hack")
 	void CacheAbilityData(const FPartnerHackAbilityData& InAbilityData);
@@ -118,7 +124,11 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Hack")
 	bool IsHackInteractionActive() const { return bHackCandidateSearchActive || ActiveHackableComponent || HackMiniGameWidget; }
 
-	void TrySelectHackTarget(AActor* TargetActor);
+	bool TryBeginHackHold();
+	void NotifyHackMarkerHovered(UHackCandidateMarkerWidget* MarkerWidget, AActor* TargetActor);
+	void NotifyHackMarkerUnhovered(UHackCandidateMarkerWidget* MarkerWidget, AActor* TargetActor);
+	void NotifyHackHoldCompleted(UHackCandidateMarkerWidget* MarkerWidget, AActor* TargetActor);
+	void ResetLocalHackHoldProgress();
 
 	UFUNCTION(BlueprintCallable, Category = "Hack")
 	const TArray<AActor*>& GetHackCandidateActors() const { return HackCandidateActors; }
@@ -145,6 +155,12 @@ private:
 
 	uint8 bHackCandidateSearchActive : 1 = false;
 	int32 LastDebugCandidateCount = INDEX_NONE;
+
+	UPROPERTY(Transient)
+	TObjectPtr<AActor> HoveredHackActor;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UHackCandidateMarkerWidget> HoveredMarkerWidget;
 
 	FHackQueryContext BuildQueryContext() const;
 	UHackableComponent* ResolveHackableComponent(AActor* Actor) const;

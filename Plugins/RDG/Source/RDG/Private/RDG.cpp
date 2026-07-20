@@ -3,6 +3,8 @@
 #include "RDG.h"
 
 #include "Debug/RDGDebugWindowManager.h"
+#include "FRDGPixelSortingPass.h"
+#include "FRDGSceneColorCopyPass.h"
 #include "FRDGUIChromaticAberrationPass.h"
 #include "Framework/Application/SlateApplication.h"
 #include "LocalPlayerPostProcessSubsystem.h"
@@ -191,7 +193,8 @@ void FRDGModule::ShutdownModule()
 	DebugWindowManager.Reset();
 }
 
-//Chromatic Aberration;
+// Slate가 그린 뒤, present 직전의 backbuffer에 도는 체인:
+// Pixel Sorting -> Chromatic Aberration -> Present
 void FRDGModule::HandleBackBufferReadyRDG(FRDGBuilder& GraphBuilder, SWindow& Window, FRDGTexture* BackBuffer)
 {
 	if (!BackBuffer)
@@ -212,25 +215,36 @@ void FRDGModule::HandleBackBufferReadyRDG(FRDGBuilder& GraphBuilder, SWindow& Wi
 
 	Subsystem->TickFrame();
 
-	const FUIChromaticAberrationParameters& Params =
+	const FPixelSortingParameters& PixelSortingParams =
+		Subsystem->GetPostProcessStrcture().PixelSorting;
+	const FUIChromaticAberrationParameters& ChromaticParams =
 		Subsystem->GetUIPostProcessStrcture().ChromaticAberration;
 
-	if (!Params.bEnabled)
+	if (!PixelSortingParams.bEnabled && !ChromaticParams.bEnabled)
 	{
 		return;
 	}
 
-	FScreenPassTexture Input(
+	FScreenPassTexture Current(
 		BackBuffer,
 		FIntRect(FIntPoint::ZeroValue, BackBuffer->Desc.Extent));
 
-	FScreenPassTexture Output =
-		FRDGUIChromaticAberrationPass::AddPass(GraphBuilder, Input, Params);
+	Current = FRDGPixelSortingPass::AddPass(GraphBuilder, Current, PixelSortingParams);
+	Current = FRDGUIChromaticAberrationPass::AddPass(GraphBuilder, Current, ChromaticParams);
 
-	if (Output.IsValid() && Output.Texture != BackBuffer)
+	if (!Current.IsValid() || Current.Texture == BackBuffer)
 	{
-		AddCopyTexturePass(GraphBuilder, Output.Texture, BackBuffer);
+		return;
 	}
+
+	// 픽셀 소팅 출력은 UAV를 쓸 수 있는 PF_R8G8B8A8이라 backbuffer 포맷(PF_B8G8R8A8 등)과
+	// 다를 수 있음. 단순 복사 대신 셰이더 blit으로 넘겨서 포맷/스위즐 변환까지 처리함.
+	FScreenPassRenderTarget BackBufferTarget(
+		BackBuffer,
+		FIntRect(FIntPoint::ZeroValue, BackBuffer->Desc.Extent),
+		ERenderTargetLoadAction::ENoAction);
+
+	FRDGSceneColorCopyPass::AddPass(GraphBuilder, Current, BackBufferTarget);
 }
 
 #undef LOCTEXT_NAMESPACE

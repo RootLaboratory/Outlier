@@ -1,0 +1,317 @@
+#include "/Engine/Private/Common.ush"
+
+#define PIXEL_SORT_GROUP_SIZE 256
+#define PIXEL_SORT_MAX_LINE_LENGTH 2048
+#define PIXEL_SORT_ELEMENTS_PER_THREAD (PIXEL_SORT_MAX_LINE_LENGTH / PIXEL_SORT_GROUP_SIZE)
+
+#define PIXEL_SORT_DIRECTION_COLUMN 0
+#define PIXEL_SORT_DIRECTION_ROW 1
+
+#define PIXEL_SORT_MODE_WHITE 0
+#define PIXEL_SORT_MODE_BLACK 1
+#define PIXEL_SORT_MODE_BRIGHT 2
+#define PIXEL_SORT_MODE_DARK 3
+
+Texture2D InputColor;
+Texture2D<uint> InputPacked;
+RWTexture2D<uint> OutputPacked;
+RWTexture2D<float4> OutputColor;
+
+int2 ViewRectMin;
+uint LineLength;
+uint PaddedLength;
+uint Direction;
+uint Mode;
+int Threshold;
+
+groupshared uint GColor[PIXEL_SORT_MAX_LINE_LENGTH];
+groupshared uint GSegment[PIXEL_SORT_MAX_LINE_LENGTH];
+
+uint2 GetPixelCoord(uint LineIndex, uint3 GroupId)
+{
+	const uint2 LocalCoord = Direction == PIXEL_SORT_DIRECTION_ROW
+		? uint2(LineIndex, GroupId.y)
+		: uint2(GroupId.x, LineIndex);
+
+	return uint2(ViewRectMin) + LocalCoord;
+}
+
+uint PackARGB8(float4 Color)
+{
+	const uint4 Color8 = (uint4)floor(saturate(Color) * 255.0f + 0.5f);
+	return (Color8.a << 24) | (Color8.r << 16) | (Color8.g << 8) | Color8.b;
+}
+
+float4 UnpackARGB8(uint Packed)
+{
+	return float4(
+		float((Packed >> 16) & 0xffu),
+		float((Packed >> 8) & 0xffu),
+		float(Packed & 0xffu),
+		float((Packed >> 24) & 0xffu)) / 255.0f;
+}
+
+uint GetOpaqueARGB(uint Packed)
+{
+	// The Processing source operates on opaque JPG pixels. Preserve payload alpha, but use
+	// opaque ARGB for the original signed-int threshold and ordering semantics.
+	return Packed | 0xff000000u;
+}
+
+uint GetColorOrderKey(uint Packed)
+{
+	// Flipping the sign bit maps Java/Processing signed int order to uint order.
+	return GetOpaqueARGB(Packed) ^ 0x80000000u;
+}
+
+uint GetBrightness8(uint Packed)
+{
+	const uint R = (Packed >> 16) & 0xffu;
+	const uint G = (Packed >> 8) & 0xffu;
+	const uint B = Packed & 0xffu;
+	return max(R, max(G, B));
+}
+
+bool IsSortable(uint Packed)
+{
+	const uint Threshold8 = (uint)clamp(Threshold, 0, 255);
+	const uint PackedThreshold = 0xff000000u | (Threshold8 << 16) | (Threshold8 << 8) | Threshold8;
+	if (Mode == PIXEL_SORT_MODE_WHITE)
+	{
+		return asint(GetOpaqueARGB(Packed)) > asint(PackedThreshold);
+	}
+	if (Mode == PIXEL_SORT_MODE_BLACK)
+	{
+		return asint(GetOpaqueARGB(Packed)) < asint(PackedThreshold);
+	}
+	if (Mode == PIXEL_SORT_MODE_DARK)
+	{
+		return int(GetBrightness8(Packed)) < Threshold;
+	}
+
+	return int(GetBrightness8(Packed)) > Threshold;
+}
+
+bool KeyLess(uint SegmentA, uint ColorA, uint SegmentB, uint ColorB)
+{
+	if (SegmentA != SegmentB)
+	{
+		return SegmentA < SegmentB;
+	}
+
+	return GetColorOrderKey(ColorA) < GetColorOrderKey(ColorB);
+}
+
+bool KeyGreater(uint SegmentA, uint ColorA, uint SegmentB, uint ColorB)
+{
+	if (SegmentA != SegmentB)
+	{
+		return SegmentA > SegmentB;
+	}
+
+	return GetColorOrderKey(ColorA) > GetColorOrderKey(ColorB);
+}
+
+void BuildSegmentsAndSort(uint GroupThreadIndex)
+{
+	uint BoundaryValues[PIXEL_SORT_ELEMENTS_PER_THREAD];
+
+	GroupMemoryBarrierWithGroupSync();
+
+	// Convert the temporary mask in GSegment into boundary flags. Every mask-zero pixel
+	// receives its own segment, while each contiguous mask-one span shares a segment.
+	[unroll]
+	for (uint Slot = 0; Slot < PIXEL_SORT_ELEMENTS_PER_THREAD; ++Slot)
+	{
+		const uint Index = GroupThreadIndex + Slot * PIXEL_SORT_GROUP_SIZE;
+		uint Boundary = 0u;
+		if (Index < LineLength)
+		{
+			const uint Mask = GSegment[Index];
+			const uint PreviousMask = Index > 0u ? GSegment[Index - 1u] : 0u;
+			Boundary = (Index == 0u || Mask == 0u || PreviousMask == 0u) ? 1u : 0u;
+		}
+		BoundaryValues[Slot] = Boundary;
+	}
+
+	// No thread may overwrite the mask until every thread has read its previous mask.
+	GroupMemoryBarrierWithGroupSync();
+
+	[unroll]
+	for (uint Slot = 0; Slot < PIXEL_SORT_ELEMENTS_PER_THREAD; ++Slot)
+	{
+		const uint Index = GroupThreadIndex + Slot * PIXEL_SORT_GROUP_SIZE;
+		GSegment[Index] = BoundaryValues[Slot];
+	}
+
+	GroupMemoryBarrierWithGroupSync();
+
+	// Hillis-Steele inclusive scan. Each thread owns eight logical elements and keeps all
+	// reads in registers before the group-wide write phase to avoid same-round feedback.
+	[loop]
+	for (uint Stride = 1u; Stride < PaddedLength; Stride <<= 1u)
+	{
+		uint PrefixValues[PIXEL_SORT_ELEMENTS_PER_THREAD];
+
+		[unroll]
+		for (uint Slot = 0; Slot < PIXEL_SORT_ELEMENTS_PER_THREAD; ++Slot)
+		{
+			const uint Index = GroupThreadIndex + Slot * PIXEL_SORT_GROUP_SIZE;
+			uint Value = GSegment[Index];
+			if (Index >= Stride && Index < PaddedLength)
+			{
+				Value += GSegment[Index - Stride];
+			}
+			PrefixValues[Slot] = Value;
+		}
+
+		GroupMemoryBarrierWithGroupSync();
+
+		[unroll]
+		for (uint Slot = 0; Slot < PIXEL_SORT_ELEMENTS_PER_THREAD; ++Slot)
+		{
+			const uint Index = GroupThreadIndex + Slot * PIXEL_SORT_GROUP_SIZE;
+			GSegment[Index] = PrefixValues[Slot];
+		}
+
+		GroupMemoryBarrierWithGroupSync();
+	}
+
+	// Padding sorts after every valid segment.
+	[unroll]
+	for (uint Slot = 0; Slot < PIXEL_SORT_ELEMENTS_PER_THREAD; ++Slot)
+	{
+		const uint Index = GroupThreadIndex + Slot * PIXEL_SORT_GROUP_SIZE;
+		if (Index >= LineLength)
+		{
+			GSegment[Index] = 0xffffffffu;
+			GColor[Index] = 0u;
+		}
+	}
+
+	GroupMemoryBarrierWithGroupSync();
+
+	// Full-line bitonic network. Segment ID is the primary key and Processing's signed
+	// packed ARGB order is the secondary key, so pixels never cross a span boundary.
+	[loop]
+	for (uint MergeSize = 2u; MergeSize <= PaddedLength; MergeSize <<= 1u)
+	{
+		[loop]
+		for (uint CompareDistance = MergeSize >> 1u; CompareDistance > 0u; CompareDistance >>= 1u)
+		{
+			[unroll]
+			for (uint Slot = 0; Slot < PIXEL_SORT_ELEMENTS_PER_THREAD; ++Slot)
+			{
+				const uint Index = GroupThreadIndex + Slot * PIXEL_SORT_GROUP_SIZE;
+				const uint Partner = Index ^ CompareDistance;
+				if (Index < PaddedLength && Partner > Index && Partner < PaddedLength)
+				{
+					const uint SegmentA = GSegment[Index];
+					const uint SegmentB = GSegment[Partner];
+					const uint ColorA = GColor[Index];
+					const uint ColorB = GColor[Partner];
+					const bool bAscending = (Index & MergeSize) == 0u;
+					const bool bSwap = bAscending
+						? KeyGreater(SegmentA, ColorA, SegmentB, ColorB)
+						: KeyLess(SegmentA, ColorA, SegmentB, ColorB);
+
+					if (bSwap)
+					{
+						GSegment[Index] = SegmentB;
+						GSegment[Partner] = SegmentA;
+						GColor[Index] = ColorB;
+						GColor[Partner] = ColorA;
+					}
+				}
+			}
+
+			GroupMemoryBarrierWithGroupSync();
+		}
+	}
+}
+
+void LoadColorLine(uint3 GroupId, uint GroupThreadIndex)
+{
+	[unroll]
+	for (uint Slot = 0; Slot < PIXEL_SORT_ELEMENTS_PER_THREAD; ++Slot)
+	{
+		const uint Index = GroupThreadIndex + Slot * PIXEL_SORT_GROUP_SIZE;
+		uint Packed = 0u;
+		uint Mask = 0u;
+		if (Index < LineLength)
+		{
+			Packed = PackARGB8(InputColor.Load(int3(GetPixelCoord(Index, GroupId), 0)));
+			Mask = IsSortable(Packed) ? 1u : 0u;
+		}
+		GColor[Index] = Packed;
+		GSegment[Index] = Mask;
+	}
+}
+
+void LoadPackedLine(uint3 GroupId, uint GroupThreadIndex)
+{
+	[unroll]
+	for (uint Slot = 0; Slot < PIXEL_SORT_ELEMENTS_PER_THREAD; ++Slot)
+	{
+		const uint Index = GroupThreadIndex + Slot * PIXEL_SORT_GROUP_SIZE;
+		uint Packed = 0u;
+		uint Mask = 0u;
+		if (Index < LineLength)
+		{
+			Packed = InputPacked.Load(int3(GetPixelCoord(Index, GroupId), 0));
+			Mask = IsSortable(Packed) ? 1u : 0u;
+		}
+		GColor[Index] = Packed;
+		GSegment[Index] = Mask;
+	}
+}
+
+void WritePackedLine(uint3 GroupId, uint GroupThreadIndex)
+{
+	[unroll]
+	for (uint Slot = 0; Slot < PIXEL_SORT_ELEMENTS_PER_THREAD; ++Slot)
+	{
+		const uint Index = GroupThreadIndex + Slot * PIXEL_SORT_GROUP_SIZE;
+		if (Index < LineLength)
+		{
+			OutputPacked[GetPixelCoord(Index, GroupId)] = GColor[Index];
+		}
+	}
+}
+
+void WriteColorLine(uint3 GroupId, uint GroupThreadIndex)
+{
+	[unroll]
+	for (uint Slot = 0; Slot < PIXEL_SORT_ELEMENTS_PER_THREAD; ++Slot)
+	{
+		const uint Index = GroupThreadIndex + Slot * PIXEL_SORT_GROUP_SIZE;
+		if (Index < LineLength)
+		{
+			OutputColor[GetPixelCoord(Index, GroupId)] = UnpackARGB8(GColor[Index]);
+		}
+	}
+}
+
+[numthreads(PIXEL_SORT_GROUP_SIZE, 1, 1)]
+void ColorToPackedCS(uint3 GroupId : SV_GroupID, uint GroupThreadIndex : SV_GroupIndex)
+{
+	LoadColorLine(GroupId, GroupThreadIndex);
+	BuildSegmentsAndSort(GroupThreadIndex);
+	WritePackedLine(GroupId, GroupThreadIndex);
+}
+
+[numthreads(PIXEL_SORT_GROUP_SIZE, 1, 1)]
+void PackedToColorCS(uint3 GroupId : SV_GroupID, uint GroupThreadIndex : SV_GroupIndex)
+{
+	LoadPackedLine(GroupId, GroupThreadIndex);
+	BuildSegmentsAndSort(GroupThreadIndex);
+	WriteColorLine(GroupId, GroupThreadIndex);
+}
+
+[numthreads(PIXEL_SORT_GROUP_SIZE, 1, 1)]
+void ColorToColorCS(uint3 GroupId : SV_GroupID, uint GroupThreadIndex : SV_GroupIndex)
+{
+	LoadColorLine(GroupId, GroupThreadIndex);
+	BuildSegmentsAndSort(GroupThreadIndex);
+	WriteColorLine(GroupId, GroupThreadIndex);
+}
