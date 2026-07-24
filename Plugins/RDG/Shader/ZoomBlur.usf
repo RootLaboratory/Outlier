@@ -1,0 +1,81 @@
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/ScreenPass.ush"
+
+Texture2D    ZoomBlurInput;
+SamplerState ZoomBlurInputSampler;
+
+Texture2D    CompositeFullResTexture;
+SamplerState CompositeFullResSampler;
+Texture2D    CompositeBlurredTexture;
+SamplerState CompositeBlurredSampler;
+
+float2 ZoomBlurCenter;
+float  ZoomBlurStrength;
+float  ZoomBlurStartOffset;
+float  ZoomBlurBlackFlushAlpha;
+float  ZoomBlurAspectRatio;
+int    ZoomBlurSampleCount;
+
+int2 SourceExtent;
+int2 ReducedExtent;
+int  ResolutionDivisor;
+
+// 중심에서 멀어질수록 1에 가까워지는 가중치.
+//
+// 방향 벡터에는 종횡비 보정을 하면 안 되지만(UV->픽셀 변환이 선형이라 UV 공간의
+// 중심 방향이 곧 픽셀 공간의 중심 방향임), 이 마스크는 "거리"를 재는 것이라
+// 보정하지 않으면 원이 아닌 타원이 나옴.
+float ComputeFalloff(float2 UV)
+{
+	const float2 Radial = (UV - ZoomBlurCenter) * float2(ZoomBlurAspectRatio, 1.0f);
+	const float Distance = length(Radial);
+	return saturate((Distance - ZoomBlurStartOffset) / max(1e-4f, 1.0f - ZoomBlurStartOffset));
+}
+
+void MainPS(
+	FScreenVertexOutput Input,
+	out float4 OutColor : SV_Target0)
+{
+	const float2 UV = Input.UV;
+	const float2 ToCenter = ZoomBlurCenter - UV;
+	const float Strength = ZoomBlurStrength * ComputeFalloff(UV);
+
+	// 균등 간격으로만 찍으면 부드러운 줄기가 아니라 원본이 여러 장 겹친 유령이 보임.
+	// 픽셀마다 시작점을 칸 안에서 흔들어 그 계단을 미세 노이즈로 바꿈.
+	// 두 번째 인자가 0이라 프레임이 지나도 패턴이 바뀌지 않음 — 시간에 따라 흔들면
+	// 화면이 끓어오르므로 반드시 고정 패턴이어야 함.
+	const float Dither = InterleavedGradientNoise(Input.Position.xy, 0.0f);
+
+	float4 Sum = 0.0f;
+
+	[loop]
+	for (int SampleIndex = 0; SampleIndex < ZoomBlurSampleCount; ++SampleIndex)
+	{
+		// [i, i+1) 안에서만 흔들리므로 전체 구간이 [0, 1)에 갇힘.
+		const float T = ((float)SampleIndex + Dither) / (float)ZoomBlurSampleCount;
+
+		// 중심 방향으로만 이동하므로 샘플 좌표가 화면 밖으로 나가지 않음.
+		Sum += ZoomBlurInput.Sample(ZoomBlurInputSampler, UV + ToCenter * T * Strength);
+	}
+
+	const float4 BlurredColor = Sum / (float)max(ZoomBlurSampleCount, 1);
+	OutColor = float4(lerp(BlurredColor.rgb, float3(0.0f, 0.0f, 0.0f), saturate(ZoomBlurBlackFlushAlpha)), BlurredColor.a);
+}
+
+void CompositePS(
+	FScreenVertexOutput Input,
+	out float4 OutColor : SV_Target0)
+{
+	const int2 FullResCoord = min(int2(Input.UV * float2(SourceExtent)), SourceExtent - 1);
+	const float4 OriginalColor = CompositeFullResTexture.Load(int3(FullResCoord, 0));
+
+	const float2 ReducedUV = (float2(FullResCoord) + 0.5f) / float(ResolutionDivisor) / float2(ReducedExtent);
+	const float4 BlurredColor = CompositeBlurredTexture.Sample(CompositeBlurredSampler, ReducedUV);
+
+	// 블러 세기가 거리에 비례하므로 "확대해도 안전한 정도"도 정확히 같은 값을 따름.
+	// 선명해야 하는 중심은 원본을 그대로 쓰고, 이미 뭉개진 가장자리만 확대본을 씀.
+	const float Falloff = ComputeFalloff(Input.UV);
+
+	const float3 ZoomBlurColor = lerp(OriginalColor.rgb, BlurredColor.rgb, Falloff);
+	OutColor = float4(lerp(ZoomBlurColor, float3(0.0f, 0.0f, 0.0f), saturate(ZoomBlurBlackFlushAlpha)), OriginalColor.a);
+}

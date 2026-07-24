@@ -9,6 +9,18 @@
 class FOutlierPostProcessSceneViewExtension;
 class APostProcessVolume;
 
+DECLARE_MULTICAST_DELEGATE(FOnHackTransitionCovered);
+DECLARE_MULTICAST_DELEGATE(FOnHackTransitionFinished);
+
+enum class EHackPossessionTransitionPhase : uint8
+{
+	Idle,
+	PixelSorting,
+	BlurToBlack,
+	Covered,
+	RevealFromBlack
+};
+
 struct FPPGameplayState
 {
 	uint8 bIsSliding : 1 = false;
@@ -52,8 +64,34 @@ public:
 	void SetPixelSortingCurve(int32 InCurve);
 	void SetPixelSortingMinThreshold(int32 InMinThreshold);
 	void SetPixelSortingScale(float InScale);
+	void SetPixelSortingColorInterpolationEnabled(bool bEnabled);
+	void SetPixelSortingTargetColor(const FLinearColor& InTargetColor);
 	void SetPixelSortingRowsEnabled(bool bEnabled);
 	void SetPixelSortingColumnsEnabled(bool bEnabled);
+	void SetPixelSortingResolutionDivisor(int32 InDivisor);
+
+	void SetZoomBlurEnabled(bool bEnabled);
+	void SetZoomBlurBlackFlushAlpha(float InBlackFlushAlpha);
+	void SetZoomBlurTriggerThreshold(int32 InTriggerThreshold);
+	void SetZoomBlurBlackoutStartProgress(float InStartProgress);
+	void SetZoomBlurCurve(int32 InCurve);
+	void SetZoomBlurBlackoutCurve(int32 InCurve);
+	void SetZoomBlurFadeInTimeScale(float InTimeScale);
+	void SetZoomBlurFadeOutTimeScale(float InTimeScale);
+	void SetZoomBlurBlackoutFadeInTimeScale(float InTimeScale);
+	void SetZoomBlurBlackoutFadeOutTimeScale(float InTimeScale);
+	void SetZoomBlurMaximumStrength(float InMaximumStrength);
+	void SetZoomBlurStartOffset(float InStartOffset);
+	void SetZoomBlurSampleCount(int32 InSampleCount);
+	void SetZoomBlurResolutionDivisor(int32 InDivisor);
+
+	void StartHackPossessionTransition();
+	bool StartHackPossessionReveal();
+	void CancelHackPossessionTransition();
+	bool IsHackPossessionTransitionActive() const;
+
+	FOnHackTransitionCovered OnHackTransitionCovered;
+	FOnHackTransitionFinished OnHackTransitionFinished;
 
 	UFUNCTION(BlueprintCallable, Category = "RDG|ADS Blur")
 	void SetADSBlurAiming(bool bInAiming, int32 InWeaponStencilValue = 3);
@@ -98,6 +136,7 @@ private:
 	void MarkDirty();
 	void UpdateADSBlur(float DeltaTime);
 	void UpdatePixelSorting(float DeltaTime);
+	void UpdateHackPossessionTransition(float DeltaTime);
 	void UpdateDepthOfField();
 	void ApplyADSBlurRuntimeParameters();
 	float GetADSBlurAlpha() const;
@@ -121,6 +160,13 @@ private:
 	float ADSBlurRampOutTime = 0.12f;
 
 	float ADSBlurSocketDistance = 11.0f;
+
+	EHackPossessionTransitionPhase HackPossessionTransitionPhase = EHackPossessionTransitionPhase::Idle;
+	float HackTransitionZoomBlurElapsedTime = 0.0f;
+	float HackTransitionBlackoutElapsedTime = 0.0f;
+	float HackTransitionZoomBlurDuration = 0.35f;
+	float HackTransitionBlackoutDuration = 0.35f;
+	uint8 bHackTransitionCoveredBroadcastSent : 1 = false;
 
 	TWeakObjectPtr<APostProcessVolume> DoFVolume;
 	uint8 bADSDoFEnabled : 1 = true;
