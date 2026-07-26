@@ -34,6 +34,9 @@
 #include "Enemy/EnemyRoomSubsystem.h"
 #include "Room/RoomTagComponent.h"
 #include "Interface/RoomTagInterface.h"
+#include "Interface/WeaponMuzzleProvider.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogEnemyBattleWeapon, Log, All);
 
 void ARangedWeaponBase::StartAttackCooldown()
 {
@@ -212,16 +215,49 @@ void ARangedWeaponBase::FireShot()
 		UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot hit Target=%s Start=%s End=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(Hit.GetActor()), *Start.ToString(), *End.ToString());
 		const float HitDistance = FVector::Distance(Start, Hit.ImpactPoint);
 		const float DamageToApply = GetDamageAtDistance(HitDistance);
+		if (const AEnemyBase* EnemyOwner = Cast<AEnemyBase>(OwnerCharacter))
+		{
+			UE_LOG(
+				LogEnemyBattleWeapon,
+				Display,
+				TEXT("[Battle][Shot] Enemy=%s Weapon=%s Result=Hit Target=%s Damage=%.1f Distance=%.1f Impact=%s"),
+				*GetNameSafe(EnemyOwner),
+				*GetNameSafe(this),
+				*GetNameSafe(Hit.GetActor()),
+				DamageToApply,
+				HitDistance,
+				*Hit.ImpactPoint.ToCompactString());
+		}
 
 		if (APartnerShieldSphere* Shield = Cast<APartnerShieldSphere>(Hit.GetActor()))
 		{
 			Shield->ApplyShieldDamage(DamageToApply);
 			UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot applied Shield Damage=%.1f To=%s"), OutlierNet::GetNetPrefix(this), *GetName(), DamageToApply, *GetNameSafe(Shield));
+			if (const AEnemyBase* EnemyOwner = Cast<AEnemyBase>(OwnerCharacter))
+			{
+				UE_LOG(
+					LogEnemyBattleWeapon,
+					Display,
+					TEXT("[Battle][Damage] Enemy=%s Type=Shield Target=%s Applied=%.1f"),
+					*GetNameSafe(EnemyOwner),
+					*GetNameSafe(Shield),
+					DamageToApply);
+			}
 		}
 		else if (AShooterCharacter* HitCharacter = Cast<AShooterCharacter>(Hit.GetActor()))
 		{
 			HitCharacter->ApplyDamageInternal(DamageToApply);
 			UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot applied Damage=%.1f To=%s"), OutlierNet::GetNetPrefix(this), *GetName(), DamageToApply, *GetNameSafe(HitCharacter));
+			if (const AEnemyBase* EnemyOwner = Cast<AEnemyBase>(OwnerCharacter))
+			{
+				UE_LOG(
+					LogEnemyBattleWeapon,
+					Display,
+					TEXT("[Battle][Damage] Enemy=%s Type=Shooter Target=%s Applied=%.1f"),
+					*GetNameSafe(EnemyOwner),
+					*GetNameSafe(HitCharacter),
+					DamageToApply);
+			}
 		}
 		else if (AEnemyBase* HitEnemy = Cast<AEnemyBase>(Hit.GetActor()))
 		{
@@ -251,15 +287,46 @@ void ARangedWeaponBase::FireShot()
 
 			HitEnemy->ApplyDamageInternal(DamageToApply, bIsCoreHit);
 			UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot applied Enemy Damage=%.1f To=%s Core=%d"), OutlierNet::GetNetPrefix(this), *GetName(), DamageToApply, *GetNameSafe(HitEnemy), bIsCoreHit ? 1 : 0);
+			if (const AEnemyBase* EnemyOwner = Cast<AEnemyBase>(OwnerCharacter))
+			{
+				UE_LOG(
+					LogEnemyBattleWeapon,
+					Display,
+					TEXT("[Battle][Damage] Enemy=%s Type=Enemy Target=%s Applied=%.1f Core=%d"),
+					*GetNameSafe(EnemyOwner),
+					*GetNameSafe(HitEnemy),
+					DamageToApply,
+					bIsCoreHit ? 1 : 0);
+			}
 		}
 		else if (APartnerCharacter* PartnerCharacter = Cast<APartnerCharacter>(Hit.GetActor()))
 		{
 			PartnerCharacter->HandlePartnerHit();
+			if (const AEnemyBase* EnemyOwner = Cast<AEnemyBase>(OwnerCharacter))
+			{
+				UE_LOG(
+					LogEnemyBattleWeapon,
+					Display,
+					TEXT("[Battle][Shot] Partner hit delivered. Enemy=%s Target=%s"),
+					*GetNameSafe(EnemyOwner),
+					*GetNameSafe(PartnerCharacter));
+			}
 		}
 	}
 	else
 	{
 		UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot miss Start=%s End=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *Start.ToString(), *End.ToString());
+		if (const AEnemyBase* EnemyOwner = Cast<AEnemyBase>(OwnerCharacter))
+		{
+			UE_LOG(
+				LogEnemyBattleWeapon,
+				Display,
+				TEXT("[Battle][Shot] Enemy=%s Weapon=%s Result=Miss Start=%s End=%s"),
+				*GetNameSafe(EnemyOwner),
+				*GetNameSafe(this),
+				*Start.ToCompactString(),
+				*End.ToCompactString());
+		}
 	}
 
 
@@ -661,7 +728,9 @@ void ARangedWeaponBase::MulticastPlayFireFX_Implementation(FVector_NetQuantize T
 		return;
 	}
 
-	if (OwnerCharacter->IsLocallyControlled())
+	const bool bUseFirstPersonPresentation =
+		OwnerCharacter->IsPlayerControlled() && OwnerCharacter->IsLocallyControlled();
+	if (bUseFirstPersonPresentation)
 	{
 		PlayFirstPersonFireFX(TraceEnd, ImpactNormal, Hit);
 		return;
@@ -829,19 +898,16 @@ void ARangedWeaponBase::ClientNotifyShotFired_Implementation(FVector2D Normalize
 
 void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit)
 {
-	USkeletalMeshComponent* Mesh = ThirdPersonWeaponMesh;
-	if (!Mesh)
+	FTransform MuzzleTransform;
+	if (!ResolveMuzzleTransform(false, MuzzleTransform))
 	{
 		return;
 	}
 
 	if (UVisualEventSubsystem* VisualSubsystem = GetWorld()->GetSubsystem<UVisualEventSubsystem>())
 	{
-		FVector MuzzleLocation = Mesh->GetSocketLocation(TEXT("Muzzle"));
-		FVector MuzzleForward = Mesh->GetSocketRotation(TEXT("Muzzle")).Vector();
-		const FRotator MuzzleRotation = Mesh->GetSocketRotation(TEXT("Muzzle"));
-
-		const FVector Start = MuzzleLocation;// +MuzzleForward * 10.f;
+		const FVector Start = MuzzleTransform.GetLocation();
+		const FRotator MuzzleRotation = MuzzleTransform.Rotator();
 		FVector End = TraceEnd;
 
 		if (WeaponMuzzle)
@@ -887,20 +953,17 @@ void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, FVector ImpactNo
 
 void ARangedWeaponBase::PlayFirstPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit)
 {
-
-	USkeletalMeshComponent* Mesh = FirstPersonWeaponMesh;
-	if (!Mesh)
+	FTransform MuzzleTransform;
+	if (!ResolveMuzzleTransform(true, MuzzleTransform))
 	{
 		return;
 	}
 
 	if (UVisualEventSubsystem* VisualSubsystem = GetWorld()->GetSubsystem<UVisualEventSubsystem>())
 	{
-		FVector MuzzleLocation = Mesh->GetSocketLocation(TEXT("Muzzle"));
-		FVector MuzzleForward = Mesh->GetSocketRotation(TEXT("Muzzle")).Vector();
-		const FRotator MuzzleRotation = Mesh->GetSocketRotation(TEXT("Muzzle"));
-
-		const FVector Start = MuzzleLocation + MuzzleForward * 10.f;
+		const FVector Start =
+			MuzzleTransform.GetLocation() + MuzzleTransform.GetRotation().GetForwardVector() * 10.0f;
+		const FRotator MuzzleRotation = MuzzleTransform.Rotator();
 		FVector End = TraceEnd;
 
 		if (WeaponMuzzle)
@@ -940,6 +1003,34 @@ void ARangedWeaponBase::PlayFirstPersonFireFX(FVector TraceEnd, FVector ImpactNo
 		}
 
 	}
+}
+
+bool ARangedWeaponBase::ResolveMuzzleTransform(bool bFirstPerson, FTransform& OutMuzzleTransform) const
+{
+	USkeletalMeshComponent* MuzzleComponent = nullptr;
+	FName SocketName = MuzzleSocketName;
+
+	// 일체형 무기는 Owner 본체의 소켓을 우선 사용한다.
+	if (const IWeaponMuzzleProvider* MuzzleProvider = Cast<IWeaponMuzzleProvider>(WeaponOwner))
+	{
+		MuzzleComponent = MuzzleProvider->GetWeaponMuzzleComponent(bFirstPerson);
+		SocketName = MuzzleProvider->GetWeaponMuzzleSocketName(bFirstPerson);
+	}
+
+	// Shooter처럼 독립 무기 메시를 쓰는 기존 무기는 원래 경로를 유지한다.
+	if (!MuzzleComponent || SocketName.IsNone() || !MuzzleComponent->DoesSocketExist(SocketName))
+	{
+		MuzzleComponent = bFirstPerson ? FirstPersonWeaponMesh.Get() : ThirdPersonWeaponMesh.Get();
+		SocketName = MuzzleSocketName;
+	}
+
+	if (!MuzzleComponent || SocketName.IsNone() || !MuzzleComponent->DoesSocketExist(SocketName))
+	{
+		return false;
+	}
+
+	OutMuzzleTransform = MuzzleComponent->GetSocketTransform(SocketName, RTS_World);
+	return true;
 }
 
 ULocalPlayerUISubSystem* ARangedWeaponBase::GetLocalUISubsystem() const

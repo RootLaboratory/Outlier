@@ -235,6 +235,9 @@ protected:
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Status")
 	uint8 bIsDead : 1 = false;
 
+	UPROPERTY(ReplicatedUsing = OnRep_IsStealthed, VisibleAnywhere, BlueprintReadOnly, Category = "Status")
+	uint8 bIsStealthed : 1 = false;
+
 	// Local Runtime State
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
 	uint8 bIsSuitMenuOpen : 1 = false;
@@ -367,8 +370,12 @@ public:
 	UFUNCTION()
 	void OnRep_CurPartnerShield();
 
+	UFUNCTION()
+	void OnRep_IsStealthed();
+
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual void EquipWeapon(AWeaponBase* Weapon) override;
+	virtual FGameplayTagContainer GetOwnedGameplayTagsForQuery() const override;
 
 	// Read-only Queries
 	float GetAimYawForAnimation() const;
@@ -429,6 +436,9 @@ public:
 	UFUNCTION(BlueprintPure)
 	bool IsDead() const { return bIsDead; }
 
+	UFUNCTION(BlueprintPure, Category = "Suit|Stealth")
+	bool IsStealthed() const { return bIsStealthed; }
+
 	void ApplyDamageInternal(float DamageAmount);
 	void HandleWeaponAttackStoppedInternal();
 	void HandleAutoReloadRequested();
@@ -475,6 +485,8 @@ protected:
 	void TryCloseSuitMenu();
 	void UpdateSuitSelection(const FInputActionValue& Value);
 	void TryUseSuit();
+	void ToggleStealth();
+	void SetStealthVisualEnabled(bool bEnabled);
 	void TrySlide();
 	void TryLean(const FInputActionValue& Value);
 	void StopLean();
@@ -512,6 +524,9 @@ protected:
 
 	UFUNCTION(Server, Reliable)
 	void ServerJumpEnd();
+
+	UFUNCTION(Server, Reliable)
+	void ServerToggleStealth();
 
 	UFUNCTION(Client, Reliable)
 	void ClientPlayFirstPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType);

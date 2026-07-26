@@ -30,6 +30,7 @@
 #include "PartnerAbilityComponent.h"
 #include "TagDrivenUIGameplayTags.h"
 #include "Perception/AISense_Hearing.h"
+#include "Enemy/EnemyRoomSubsystem.h"
 
 void APartnerCharacter::BeginPlay()
 {
@@ -91,6 +92,11 @@ float APartnerCharacter::TakeDamage(
 void APartnerCharacter::UnPossessed()
 {
 	StopBoostNoiseTimer();
+
+	if (CombatComponent)
+	{
+		CombatComponent->ForceStopAttack();
+	}
 
 	if (MovementComponent)
 	{
@@ -186,13 +192,23 @@ void APartnerCharacter::OnMoveInputUpdated(const FVector2D& MoveValue)
 
 void APartnerCharacter::TryStartAttack()
 {
+	StartWeaponAttack();
+}
+
+void APartnerCharacter::TryStopAttack()
+{
+	StopWeaponAttack();
+}
+
+void APartnerCharacter::StartWeaponAttack()
+{
 	if (CombatComponent)
 	{
 		CombatComponent->TryStartAttack();
 	}
 }
 
-void APartnerCharacter::TryStopAttack()
+void APartnerCharacter::StopWeaponAttack()
 {
 	if (CombatComponent)
 	{
@@ -213,9 +229,20 @@ void APartnerCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	DOREPLIFETIME(APartnerCharacter, bScanning);
 	DOREPLIFETIME(APartnerCharacter, LastHackServerTime);
 	DOREPLIFETIME(APartnerCharacter, bIsAccelerate);
+	DOREPLIFETIME(APartnerCharacter, bTestStealthed);
 	DOREPLIFETIME(APartnerCharacter, bIsRebooting);
 	DOREPLIFETIME(APartnerCharacter, bIsInvincible);
 	DOREPLIFETIME(APartnerCharacter, CurrentHitCount);
+}
+
+FGameplayTagContainer APartnerCharacter::GetOwnedGameplayTagsForQuery() const
+{
+	FGameplayTagContainer GameplayTags = Super::GetOwnedGameplayTagsForQuery();
+	if (bTestStealthed)
+	{
+		GameplayTags.AddTag(OutlierGameplayTags::State::Stealthed());
+	}
+	return GameplayTags;
 }
 
 void APartnerCharacter::OnRep_CurrentHitCount()
@@ -581,6 +608,11 @@ void APartnerCharacter::StartReboot()
 	bIsInvincible = true;
 	CurrentHitCount = 0;
 
+	if (CombatComponent)
+	{
+		CombatComponent->ForceStopAttack();
+	}
+
 	if (IsLocallyControlled())
 	{
 		OnRep_CurrentHitCount();
@@ -783,6 +815,19 @@ void APartnerCharacter::ReportBoostNoise()
 	if (!IsPlayerControlled() || GetVelocity().SizeSquared() < FMath::Square(BoostNoiseMinimumSpeed))
 	{
 		return;
+	}
+
+	const AOutlierPlayerState* OutlierPS = GetPlayerState<AOutlierPlayerState>();
+	const FGameplayTag CurrentRoomTag = GetCurrentRoomTag();
+	if (OutlierPS && CurrentRoomTag.IsValid())
+	{
+		if (const UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
+		{
+			if (RoomSubsystem->IsRoomInCombat(OutlierPS->GetArenaId(), CurrentRoomTag))
+			{
+				return;
+			}
+		}
 	}
 
 	UAISense_Hearing::ReportNoiseEvent(
@@ -1080,6 +1125,17 @@ void APartnerCharacter::SetShooterCharacter(AShooterCharacter* NewShooter)
 	{
 		EMPComponent->RefreshCharacterRefsFromPlayerState();
 	}
+}
+
+void APartnerCharacter::SetTestStealthed(bool bNewStealthed)
+{
+	if (!HasAuthority() || bTestStealthed == bNewStealthed)
+	{
+		return;
+	}
+
+	bTestStealthed = bNewStealthed;
+	ForceNetUpdate();
 }
 
 void APartnerCharacter::ClientNotifySkillUseResult_Implementation(EPartnerSkillType SkillType, EPartnerSkillUseResult Result)

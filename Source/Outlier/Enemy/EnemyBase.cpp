@@ -16,7 +16,12 @@
 #include "Net/UnrealNetwork.h"
 #include "Perception/AIPerceptionSystem.h"
 #include "Team/OutlierTeamIds.h"
+#include "TimerManager.h"
 #include "Room/RoomTagComponent.h"
+#include "Weapon/RangedWeaponBase.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogEnemyStateTree, Log, All);
+DEFINE_LOG_CATEGORY_STATIC(LogEnemyBattle, Log, All);
 
 AEnemyBase::AEnemyBase()
 {
@@ -31,6 +36,9 @@ AEnemyBase::AEnemyBase()
 	GetCapsuleComponent()->SetCollisionResponseToChannel(ECC_PhysicsBody, ECR_Ignore);
 
 	StateTreeComponent = CreateDefaultSubobject<UStateTreeComponent>(TEXT("StateTreeComponent"));
+	// Enemy StateTree의 행동 Task는 서버 권한과 AIController를 전제로 한다.
+	// 컴포넌트 자동 시작을 끄고 BeginPlay 초기화가 끝난 뒤 서버에서만 시작한다.
+	StateTreeComponent->SetStartLogicAutomatically(false);
 	EnemyCameraComponent = CreateDefaultSubobject<UCameraComponent>(TEXT("EnemyCameraComponent"));
 	EnemyCameraComponent->SetupAttachment(GetRootComponent());
 
@@ -53,6 +61,26 @@ AEnemyBase::AEnemyBase()
 	CoreHitboxComponent->SetGenerateOverlapEvents(false);
 }
 
+void AEnemyBase::PostInitializeComponents()
+{
+	Super::PostInitializeComponents();
+
+	PatrolPointA = GetActorLocation();
+	PatrolPointB = GetActorTransform().TransformPositionNoScale(PatrolPointBLocalOffset);
+
+	if (!StateTreeComponent || !BattleStateTreeReference.IsValid())
+	{
+		return;
+	}
+
+	// BP 기본값이 확정된 뒤, StateTreeComponent가 BeginPlay에서 자동 시작되기 전에 Override를 등록한다.
+	const FGameplayTag BattleStateTag = FGameplayTag::RequestGameplayTag(
+		TEXT("Enemy.StateTree.Battle"));
+	StateTreeComponent->AddLinkedStateTreeOverrides(
+		BattleStateTag,
+		BattleStateTreeReference);
+}
+
 void AEnemyBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
@@ -65,13 +93,68 @@ void AEnemyBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifeti
 	DOREPLIFETIME(AEnemyBase, CombatState);
 	DOREPLIFETIME(AEnemyBase, bIsPossessed);
 	DOREPLIFETIME(AEnemyBase, bPlayerCurrentlyVisible);
+	DOREPLIFETIME(AEnemyBase, bHasSharedTargetContact);
+	DOREPLIFETIME(AEnemyBase, SharedTargetLocation);
+	DOREPLIFETIME(AEnemyBase, AttackPhase);
+	DOREPLIFETIME(AEnemyBase, CurrentWeapon);
 }
 
 void AEnemyBase::BeginPlay()
 {
 	Super::BeginPlay();
 
+	if (RoomTagComponent)
+	{
+		RoomTagComponent->OnCurrentRoomTagChanged.AddUObject(
+			this,
+			&AEnemyBase::HandleCurrentRoomTagChanged);
+	}
+
+	if (HasAuthority())
+	{
+		if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
+		{
+			RoomSubsystem->RegisterEnemy(this);
+		}
+	}
+
 	InitializeFromEnemyStatRow();
+	EquipDefaultWeapon();
+
+	if (HasAuthority() && StateTreeComponent)
+	{
+		// Perception이 BeginPlay 전에 상태를 바꿨어도 Global Sync가 현재 값을 읽어
+		// 올바른 초기 State를 선택할 수 있도록 모든 Enemy 초기화 뒤에 시작한다.
+		StateTreeComponent->StartLogic();
+	}
+}
+
+void AEnemyBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	StopCurrentAttack();
+	RemoveRoomTargetObserver();
+	ReleaseSearchRingSlot();
+
+	if (HasAuthority())
+	{
+		if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
+		{
+			RoomSubsystem->UnregisterEnemy(this);
+		}
+	}
+
+	if (RoomTagComponent)
+	{
+		RoomTagComponent->OnCurrentRoomTagChanged.RemoveAll(this);
+	}
+
+	if (HasAuthority() && IsValid(CurrentWeapon))
+	{
+		CurrentWeapon->Destroy();
+		CurrentWeapon = nullptr;
+	}
+
+	Super::EndPlay(EndPlayReason);
 }
 
 void AEnemyBase::PossessedBy(AController* NewController)
@@ -91,6 +174,7 @@ void AEnemyBase::PossessedBy(AController* NewController)
 
 void AEnemyBase::UnPossessed()
 {
+	StopCurrentAttack();
 	Super::UnPossessed();
 
 	SetEnemyPossessed(false);
@@ -118,10 +202,49 @@ void AEnemyBase::SendEnemyStateTreeEvent(FGameplayTag Tag)
 {
 	if (!HasAuthority() || !Tag.IsValid() || !StateTreeComponent)
 	{
+		UE_LOG(
+			LogEnemyStateTree,
+			Warning,
+			TEXT("[StateTreeEvent] Send rejected. Enemy=%s Authority=%d Tag=%s Component=%s"),
+			*GetNameSafe(this),
+			HasAuthority(),
+			*Tag.ToString(),
+			*GetNameSafe(StateTreeComponent));
 		return;
 	}
 
+	UE_LOG(
+		LogEnemyStateTree,
+		Display,
+		TEXT("[StateTreeEvent] Send. Enemy=%s Tag=%s RunStatus=%s CombatState=%s"),
+		*GetNameSafe(this),
+		*Tag.ToString(),
+		*UEnum::GetValueAsString(StateTreeComponent->GetStateTreeRunStatus()),
+		*UEnum::GetValueAsString(CombatState));
 	StateTreeComponent->SendStateTreeEvent(Tag);
+}
+
+void AEnemyBase::SendEnemyStateTreeEventNextTick(FGameplayTag Tag)
+{
+	if (!HasAuthority() || !Tag.IsValid())
+	{
+		return;
+	}
+
+	UE_LOG(
+		LogEnemyStateTree,
+		Display,
+		TEXT("[StateTreeEvent] Deferred. Enemy=%s Tag=%s"),
+		*GetNameSafe(this),
+		*Tag.ToString());
+
+	GetWorldTimerManager().SetTimerForNextTick(
+		FTimerDelegate::CreateWeakLambda(
+			this,
+			[this, Tag]()
+			{
+				SendEnemyStateTreeEvent(Tag);
+			}));
 }
 
 FGenericTeamId AEnemyBase::GetGenericTeamId() const
@@ -152,6 +275,14 @@ void AEnemyBase::SetEnemyPossessed(bool bNewIsPossessed)
 	}
 
 	bIsPossessed = bNewIsPossessed;
+
+	if (bIsPossessed)
+	{
+		StopCurrentAttack();
+		RemoveRoomTargetObserver();
+		ClearSharedTargetContact();
+		ReleaseSearchRingSlot();
+	}
 
 	if (!bIsPossessed)
 	{
@@ -258,13 +389,142 @@ void AEnemyBase::SetPlayerCurrentlyVisible(bool bNewVisible)
 
 	bPlayerCurrentlyVisible = bNewVisible;
 
-	SendEnemyStateTreeEvent(
-		FGameplayTag::RequestGameplayTag(
-			bNewVisible
+	if (bNewVisible)
+	{
+		StopCurrentAttack();
+		ReleaseSearchRingSlot();
+	}
+
+	const FGameplayTag PerceptionEvent = FGameplayTag::RequestGameplayTag(
+		bNewVisible
 			? TEXT("Enemy.Event.Perception.TargetAcquired")
-			: TEXT("Enemy.Event.Perception.TargetLost")
-		)
-	);
+			: TEXT("Enemy.Event.Perception.TargetLost"));
+
+	if (bNewVisible)
+	{
+		SendEnemyStateTreeEvent(PerceptionEvent);
+	}
+	else
+	{
+		UE_LOG(
+			LogEnemyStateTree,
+			Display,
+			TEXT("[TargetLost] Visibility changed. Enemy=%s LastKnown=%s CombatState=%s EventDeferred=1"),
+			*GetNameSafe(this),
+			*LastKnownPlayerLocation.ToCompactString(),
+			*UEnum::GetValueAsString(CombatState));
+
+		// StateTree Global Task가 갱신된 가시성으로 전이 조건을 평가하도록 상실 이벤트를 다음 틱에 보낸다.
+		// 다음 틱 전에 재감지되었다면 오래된 TargetLost 이벤트는 폐기한다.
+		UE_LOG(
+			LogEnemyStateTree,
+			Display,
+			TEXT("[StateTreeEvent] Deferred. Enemy=%s Tag=%s"),
+			*GetNameSafe(this),
+			*PerceptionEvent.ToString());
+		GetWorldTimerManager().SetTimerForNextTick(
+			FTimerDelegate::CreateWeakLambda(
+				this,
+				[this, PerceptionEvent]()
+				{
+					if (!bPlayerCurrentlyVisible)
+					{
+						UE_LOG(
+							LogEnemyStateTree,
+							Display,
+							TEXT("[TargetLost] Event confirmed. Enemy=%s Tag=%s LastKnown=%s CombatState=%s"),
+							*GetNameSafe(this),
+							*PerceptionEvent.ToString(),
+							*LastKnownPlayerLocation.ToCompactString(),
+							*UEnum::GetValueAsString(CombatState));
+						SendEnemyStateTreeEvent(PerceptionEvent);
+					}
+					else
+					{
+						UE_LOG(
+							LogEnemyStateTree,
+							Display,
+							TEXT("[TargetLost] Event cancelled by reacquisition. Enemy=%s Tag=%s"),
+							*GetNameSafe(this),
+							*PerceptionEvent.ToString());
+					}
+				}));
+	}
+}
+
+void AEnemyBase::ApplySharedTargetContact(const FVector& TargetLocation)
+{
+	if (!HasAuthority()
+		|| CombatState != EEnemyCombatState::Combat
+		|| bIsPossessed)
+	{
+		return;
+	}
+
+	const bool bContactChanged = !bHasSharedTargetContact
+		|| !SharedTargetLocation.Equals(TargetLocation, 1.0f);
+	bHasSharedTargetContact = true;
+	SharedTargetLocation = TargetLocation;
+	UpdateLastKnownPlayerLocation(TargetLocation);
+	ReleaseSearchRingSlot();
+
+	if (bContactChanged)
+	{
+		UE_LOG(
+			LogEnemyBattle,
+			Display,
+			TEXT("[TargetLostMove][SharedContactApplied] Enemy=%s Current=%s SharedLocation=%s LastKnown=%s"),
+			*GetNameSafe(this),
+			*GetActorLocation().ToCompactString(),
+			*SharedTargetLocation.ToCompactString(),
+			*LastKnownPlayerLocation.ToCompactString());
+		SendEnemyStateTreeEvent(
+			FGameplayTag::RequestGameplayTag(
+				TEXT("Enemy.Event.Combat.TargetShared")));
+	}
+}
+
+void AEnemyBase::ClearSharedTargetContact()
+{
+	if (!HasAuthority() || !bHasSharedTargetContact)
+	{
+		return;
+	}
+
+	// 방에서 마지막으로 공유한 위치를 모든 적의 공통 수색 중심으로 보존한다.
+	// 개별 Perception 콜백 순서 때문에 Partner 위치가 LKP를 덮어쓴 경우도 여기서 정규화된다.
+	UpdateLastKnownPlayerLocation(SharedTargetLocation);
+	bHasSharedTargetContact = false;
+	UE_LOG(
+		LogEnemyBattle,
+		Display,
+		TEXT("[TargetLostMove][SharedContactCleared] Enemy=%s Current=%s PreviousSharedLocation=%s LastKnown=%s"),
+		*GetNameSafe(this),
+		*GetActorLocation().ToCompactString(),
+		*SharedTargetLocation.ToCompactString(),
+		*LastKnownPlayerLocation.ToCompactString());
+
+	const FGameplayTag SharedTargetLostEvent = FGameplayTag::RequestGameplayTag(
+		TEXT("Enemy.Event.Combat.SharedTargetLost"));
+
+	// TimerManager가 StateTreeComponent보다 먼저 갱신될 수 있으므로 한 프레임을
+	// 완전히 통과시킨 뒤 이벤트를 보내 Global Task 출력 갱신을 보장한다.
+	GetWorldTimerManager().SetTimerForNextTick(
+		FTimerDelegate::CreateWeakLambda(
+			this,
+			[this, SharedTargetLostEvent]()
+			{
+				GetWorldTimerManager().SetTimerForNextTick(
+					FTimerDelegate::CreateWeakLambda(
+						this,
+						[this, SharedTargetLostEvent]()
+						{
+							if (!bHasSharedTargetContact)
+							{
+								SendEnemyStateTreeEvent(SharedTargetLostEvent);
+							}
+						}));
+			}));
 }
 
 void AEnemyBase::EnterCombat(const FVector& PlayerLocation)
@@ -272,7 +532,11 @@ void AEnemyBase::EnterCombat(const FVector& PlayerLocation)
 	EnterCombatInArena(PlayerLocation, INDEX_NONE, true);
 }
 
-void AEnemyBase::EnterCombatInArena(const FVector& PlayerLocation, int32 ArenaId, bool bPropagateToRoom)
+void AEnemyBase::EnterCombatInArena(
+	const FVector& PlayerLocation,
+	int32 ArenaId,
+	bool bPropagateToRoom,
+	bool bDeferStateTreeEvent)
 {
 	if (!HasAuthority())
 	{
@@ -314,15 +578,55 @@ void AEnemyBase::EnterCombatInArena(const FVector& PlayerLocation, int32 ArenaId
 
 	if (bEnteredCombat)
 	{
-		SendEnemyStateTreeEvent(
-			FGameplayTag::RequestGameplayTag(
-				TEXT("Enemy.Event.Combat.Entered")));
+		const FGameplayTag CombatEnteredTag = FGameplayTag::RequestGameplayTag(
+			TEXT("Enemy.Event.Combat.Entered"));
+		if (bDeferStateTreeEvent)
+		{
+			SendEnemyStateTreeEventNextTick(CombatEnteredTag);
+		}
+		else
+		{
+			SendEnemyStateTreeEvent(CombatEnteredTag);
+		}
 	}
 }
 
 void AEnemyBase::EnterAlert(const FVector& PlayerLocation)
 {
 	EnterAlertInArena(PlayerLocation, INDEX_NONE);
+}
+
+// Alert Task가 감지 유지/상실 시간을 판정한 뒤 이 함수들로 실제 CombatState를 확정한다.
+// 시간 계산은 StateTree가, 권한 상태 변경과 전환 이벤트 발행은 C++가 담당한다.
+bool AEnemyBase::CommitAlertToCombat()
+{
+	if (!HasAuthority() || CombatState != EEnemyCombatState::Alert)
+	{
+		return false;
+	}
+
+	// 이 함수는 Alert StateTree Task의 Tick 안에서 호출된다. 같은 Tick에 이벤트를 보내면
+	// Global Sync가 이전 Alert 값을 가진 채 Enter Condition을 검사하므로 다음 Tick으로 넘긴다.
+	EnterCombatInArena(LastKnownPlayerLocation, INDEX_NONE, true, true);
+	return CombatState == EEnemyCombatState::Combat;
+}
+
+bool AEnemyBase::CommitAlertToNonCombat()
+{
+	if (!HasAuthority() || CombatState != EEnemyCombatState::Alert)
+	{
+		return false;
+	}
+
+	CombatState = EEnemyCombatState::NonCombat;
+	bInCombat = false;
+	RefreshPerceptionConfigForCurrentState();
+
+	SendEnemyStateTreeEventNextTick(
+		FGameplayTag::RequestGameplayTag(
+			TEXT("Enemy.Event.Combat.AlertCleared")));
+
+	return true;
 }
 
 void AEnemyBase::EnterAlertInArena(const FVector& PlayerLocation, int32 ArenaId)
@@ -374,6 +678,9 @@ void AEnemyBase::EnterStun()
 
 	PreStunCombatState = CombatState;
 	CombatState = EEnemyCombatState::Stun;
+	StopCurrentAttack();
+	RemoveRoomTargetObserver();
+	ReleaseSearchRingSlot();
 	RefreshPerceptionConfigForCurrentState();
 
 	SendEnemyStateTreeEvent(
@@ -521,8 +828,215 @@ void AEnemyBase::RefreshPerceptionConfigForCurrentState()
 	}
 }
 
+void AEnemyBase::EquipDefaultWeapon()
+{
+	if (!HasAuthority() || !DefaultWeaponClass || IsValid(CurrentWeapon))
+	{
+		return;
+	}
+
+	FActorSpawnParameters SpawnParameters;
+	SpawnParameters.Owner = this;
+	SpawnParameters.Instigator = this;
+	SpawnParameters.SpawnCollisionHandlingOverride =
+		ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+	ARangedWeaponBase* SpawnedWeapon = GetWorld()->SpawnActor<ARangedWeaponBase>(
+		DefaultWeaponClass,
+		GetActorTransform(),
+		SpawnParameters);
+	if (!SpawnedWeapon)
+	{
+		return;
+	}
+
+	CurrentWeapon = SpawnedWeapon;
+
+	// OnEquipped로 WeaponOwner/복제 상태를 먼저 확정한다.
+	// Shooter 전용 무기 메시 부착 헬퍼에 의존하지 않도록 Enemy Mesh에는 Actor Root를 직접 부착한다.
+	CurrentWeapon->OnEquipped(this);
+	CurrentWeapon->AttachToComponent(
+		GetMesh(),
+		FAttachmentTransformRules::SnapToTargetNotIncludingScale,
+		WeaponSocketName);
+	CurrentWeapon->ShowEquippedPresentation();
+	ForceNetUpdate();
+}
+
+bool AEnemyBase::StartAttackTarget(AActor* TargetActor)
+{
+	if (!IsValid(TargetActor))
+	{
+		UE_LOG(
+			LogEnemyBattle,
+			Warning,
+			TEXT("[Battle][Attack] Target rejected. Enemy=%s Target=%s"),
+			*GetNameSafe(this),
+			*GetNameSafe(TargetActor));
+		return false;
+	}
+
+	const bool bStarted = StartAttackLocation(TargetActor->GetActorLocation());
+	UE_LOG(
+		LogEnemyBattle,
+		Display,
+		TEXT("[Battle][Attack] Target request. Enemy=%s Target=%s Result=%s"),
+		*GetNameSafe(this),
+		*GetNameSafe(TargetActor),
+		bStarted ? TEXT("Started") : TEXT("Blocked"));
+	return bStarted;
+}
+
+bool AEnemyBase::StartAttackLocation(const FVector& TargetLocation)
+{
+	const bool bHasWeapon = IsValid(CurrentWeapon);
+	const bool bCanAttack = bHasWeapon && CurrentWeapon->CanAttack();
+	// 쿨다운 중인 요청은 조준 방향을 바꾸지 않는다. 실제로 발사할 수 있을 때만
+	// ControlRotation을 갱신해야 실패 재시도가 드론 Pitch를 흔들지 않는다.
+	const bool bAimUpdated = bCanAttack && UpdateAttackLocation(TargetLocation);
+	if (!bAimUpdated || !bHasWeapon || !bCanAttack)
+	{
+		UE_LOG(
+			LogEnemyBattle,
+			Warning,
+			TEXT("[Battle][Attack] Start blocked. Enemy=%s Aim=%d Weapon=%s CanAttack=%d CombatState=%s Possessed=%d"),
+			*GetNameSafe(this),
+			bAimUpdated ? 1 : 0,
+			*GetNameSafe(CurrentWeapon),
+			bCanAttack ? 1 : 0,
+			*UEnum::GetValueAsString(CombatState),
+			bIsPossessed ? 1 : 0);
+		return false;
+	}
+
+	CurrentWeapon->StartAttack();
+	SetAttackPhase(EEnemyAttackPhase::Firing);
+	UE_LOG(
+		LogEnemyBattle,
+		Display,
+		TEXT("[Battle][Attack] Started. Enemy=%s Weapon=%s TargetLocation=%s"),
+		*GetNameSafe(this),
+		*GetNameSafe(CurrentWeapon),
+		*TargetLocation.ToCompactString());
+	return true;
+}
+
+bool AEnemyBase::UpdateAttackLocation(const FVector& TargetLocation)
+{
+	if (!HasAuthority()
+		|| CombatState == EEnemyCombatState::Stun
+		|| bIsPossessed
+		|| !IsValid(CurrentWeapon))
+	{
+		return false;
+	}
+
+	AController* ActiveController = GetController();
+	if (!ActiveController)
+	{
+		return false;
+	}
+
+	FVector ViewLocation;
+	FRotator ViewRotation;
+	ActiveController->GetPlayerViewPoint(ViewLocation, ViewRotation);
+	const FVector Direction = TargetLocation - ViewLocation;
+	if (Direction.IsNearlyZero())
+	{
+		return false;
+	}
+
+	FRotator AimRotation = Direction.Rotation();
+	AimRotation.Roll = 0.0f;
+
+	// ControlRotation에는 Pitch까지 보존해 사격 방향과 VEC의 3인칭 조준 연출이 같은 값을 사용하게 한다.
+	// Character 본체는 이동/충돌을 위해 Yaw만 회전한다.
+	ActiveController->SetControlRotation(AimRotation);
+	SetActorRotation(FRotator(0.0f, AimRotation.Yaw, 0.0f));
+	return true;
+}
+
+void AEnemyBase::StopCurrentAttack()
+{
+	if (HasAuthority() && IsValid(CurrentWeapon))
+	{
+		CurrentWeapon->StopAttack();
+	}
+
+	if (HasAuthority())
+	{
+		SetAttackPhase(EEnemyAttackPhase::Idle);
+	}
+}
+
+void AEnemyBase::SetAttackPhase(EEnemyAttackPhase NewPhase)
+{
+	if (!HasAuthority() || AttackPhase == NewPhase)
+	{
+		return;
+	}
+
+	const EEnemyAttackPhase PreviousPhase = AttackPhase;
+	AttackPhase = NewPhase;
+	UE_LOG(
+		LogEnemyBattle,
+		Display,
+		TEXT("[Battle][AttackPhase] Enemy=%s Previous=%s New=%s"),
+		*GetNameSafe(this),
+		*UEnum::GetValueAsString(PreviousPhase),
+		*UEnum::GetValueAsString(AttackPhase));
+	OnAttackPhaseChanged(PreviousPhase, AttackPhase);
+	ForceNetUpdate();
+}
+
+void AEnemyBase::OnRep_AttackPhase(EEnemyAttackPhase PreviousPhase)
+{
+	OnAttackPhaseChanged(PreviousPhase, AttackPhase);
+}
+
+void AEnemyBase::ReleaseSearchRingSlot()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
+	{
+		RoomSubsystem->ReleaseSearchRingSlot(this);
+	}
+}
+
+void AEnemyBase::HandleCurrentRoomTagChanged(
+	FGameplayTag PreviousRoomTag,
+	FGameplayTag NewRoomTag)
+{
+	(void)PreviousRoomTag;
+	(void)NewRoomTag;
+	RemoveRoomTargetObserver();
+	ClearSharedTargetContact();
+	ReleaseSearchRingSlot();
+}
+
+void AEnemyBase::RemoveRoomTargetObserver()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
+	{
+		RoomSubsystem->RemoveRoomTargetObserver(this);
+	}
+}
+
 void AEnemyBase::HandleDeath()
 {
+	StopCurrentAttack();
+	RemoveRoomTargetObserver();
+	ReleaseSearchRingSlot();
+
 	if (bIsPossessed)
 	{
 		ClearPossessedPlayerState();
@@ -533,6 +1047,49 @@ void AEnemyBase::HandleDeath()
 			TEXT("Enemy.Event.Died")));
 
 	Destroy();
+}
+
+void AEnemyBase::HandleStartAttackInput()
+{
+	if (!HasAuthority())
+	{
+		if (IsLocallyControlled())
+		{
+			ServerStartWeaponAttack();
+		}
+		return;
+	}
+
+	if (bIsPossessed && IsValid(CurrentWeapon))
+	{
+		CurrentWeapon->StartAttack();
+		SetAttackPhase(EEnemyAttackPhase::Firing);
+	}
+}
+
+void AEnemyBase::HandleStopAttackInput()
+{
+	if (!HasAuthority())
+	{
+		if (IsLocallyControlled())
+		{
+			ServerStopWeaponAttack();
+		}
+		return;
+	}
+
+	StopCurrentAttack();
+}
+
+void AEnemyBase::ServerStartWeaponAttack_Implementation()
+{
+	// 서버에서 HandleStartAttackInput을 다시 거쳐 bIsPossessed와 CurrentWeapon을 검증한다.
+	HandleStartAttackInput();
+}
+
+void AEnemyBase::ServerStopWeaponAttack_Implementation()
+{
+	HandleStopAttackInput();
 }
 
 void AEnemyBase::HandleReleasePossessionInput(const FInputActionValue& Value)

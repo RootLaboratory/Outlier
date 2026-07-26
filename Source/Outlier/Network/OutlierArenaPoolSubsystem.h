@@ -11,6 +11,7 @@ class ULevelStreamingDynamic;
 class ULevel;
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnArenaShown, int32 /*ArenaId*/);
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnArenaReleased, int32 /*ArenaId*/);
 
 /**
  * 
@@ -30,6 +31,7 @@ public:
 	bool IsArenaReady(int32 ArenaId) const;
 	bool IsStreamingArenaReady(const ULevelStreamingDynamic* StreamingLevel);
 	FOnArenaShown OnArenaShown;
+	FOnArenaReleased OnArenaReleased;
 
 private:
 	void PreloadArenas();

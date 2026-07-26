@@ -72,6 +72,9 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Fire")
 	float RecoilMultiplier = 1.0f;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Fire")
+	FName MuzzleSocketName = TEXT("Muzzle");
+
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Recoil")
 	float RecoilPitchAmplitude = 0.0f;
 
@@ -269,6 +272,8 @@ protected:
 	void PlayThirdPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit);
 
 	void PlayFirstPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit);
+
+	bool ResolveMuzzleTransform(bool bFirstPerson, FTransform& OutMuzzleTransform) const;
 
 	ULocalPlayerUISubSystem* GetLocalUISubsystem() const; //Helper
 };

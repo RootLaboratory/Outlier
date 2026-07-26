@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "FirstPerson/FirstPersonCharacter.h"
 #include "Engine/DataTable.h"
+#include "Interface/WeaponMuzzleProvider.h"
 #include "PartnerCharacter.generated.h"
 
 UENUM(BlueprintType)
@@ -64,7 +65,7 @@ class UPartnerAbilityComponent;
 class UPartnerEMPComponent;
 class USceneComponent;
 UCLASS()
-class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter
+class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeaponMuzzleProvider
 {
 	GENERATED_BODY()
 
@@ -98,6 +99,13 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<USceneComponent> ThirdPersonTiltRoot;
+
+	// Partner 무기는 본체 메시와 일체형이므로 Weapon Actor 대신 이 소켓에서 총구 연출을 시작한다.
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Presentation")
+	FName FirstPersonWeaponMuzzleSocketName = TEXT("Muzzle");
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Presentation")
+	FName ThirdPersonWeaponMuzzleSocketName = TEXT("Muzzle");
 
 	// Move Data
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Move")
@@ -351,6 +359,10 @@ protected:
 	uint8 bIsAccelerate : 1 = false;
 	uint8 bPartnerDataInitialized : 1 = false;
 
+	// Shooter 은신 토글과 함께 AI 감지 대상에서 제외하기 위한 테스트 상태다.
+	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Test|Stealth")
+	uint8 bTestStealthed : 1 = false;
+
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Survival")
 	uint8 bIsRebooting : 1 = false;
 
@@ -399,6 +411,10 @@ protected:
 	virtual void DoMove(float Right, float Forward) override;
 	virtual void OnMoveInputUpdated(const FVector2D& MoveValue);
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	virtual FGameplayTagContainer GetOwnedGameplayTagsForQuery() const override;
+
+	// AFirstPersonCharacter의 AttackAction 입력 진입점.
+	// 실제 권한 처리와 무기 호출은 CombatComponent의 공개 공격 API에 위임한다.
 	virtual void TryStartAttack() override;
 	virtual void TryStopAttack() override;
 
@@ -464,6 +480,16 @@ public:
 public:
 	APartnerCharacter();
 
+	virtual USkeletalMeshComponent* GetWeaponMuzzleComponent(bool bFirstPerson) const override
+	{
+		return bFirstPerson ? GetFirstPersonMesh() : GetMesh();
+	}
+
+	virtual FName GetWeaponMuzzleSocketName(bool bFirstPerson) const override
+	{
+		return bFirstPerson ? FirstPersonWeaponMuzzleSocketName : ThirdPersonWeaponMuzzleSocketName;
+	}
+
 	UFUNCTION()
 	void OnRep_DroneMovementState();
 
@@ -477,6 +503,7 @@ public:
 	void OnRep_CurrentHitCount();
 
 	void SetShooterCharacter(AShooterCharacter* NewShooter);
+	void SetTestStealthed(bool bNewStealthed);
 	
 	UFUNCTION(Client, Reliable)
 	void ClientNotifySkillUseResult(EPartnerSkillType SkillType, EPartnerSkillUseResult Result);
@@ -495,4 +522,11 @@ public:
 	void HandlePartnerHit();
 	void SetInvincibleForEnemyPossession(bool bNewInvincible);
 
+	// 입력뿐 아니라 Ability/BP에서도 사용할 수 있는 Partner 공격 API.
+	// 소유 클라이언트에서 호출하면 CombatComponent가 서버 RPC로 전달한다.
+	UFUNCTION(BlueprintCallable, Category = "Partner|Combat")
+	void StartWeaponAttack();
+
+	UFUNCTION(BlueprintCallable, Category = "Partner|Combat")
+	void StopWeaponAttack();
 };

@@ -31,6 +31,7 @@
 #include "LocalPlayerPostProcessSubsystem.h"
 #include "Weapon/WeaponBase.h"
 #include "Weapon/RangedWeaponBase.h"
+#include "GameplayTags/OutlierGameplayTags.h"
 #include "Net/UnrealNetwork.h"
 #include "OutlierNetUtils.h"
 #include "Outlier.h"
@@ -137,6 +138,8 @@ void AShooterCharacter::Tick(float DeltaSeconds)
 
 void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	SetStealthVisualEnabled(false);
+
 	if (HasAuthority())
 	{
 		CleanupOwnedWeapons();
@@ -553,13 +556,48 @@ void AShooterCharacter::TryUseSuit()
 		ShooterController->AbilityUIInstance->ApplyCooldownIfMatches(SelectedAbilityTag, SuitAbilityCooldown);
 	}
 
-	UMaterialPostProcessSubsystem* MaterialSub = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>();
-	if (MaterialSub)
+	if (HasAuthority())
 	{
-		MaterialSub->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Stealth,true);
+		ToggleStealth();
+	}
+	else
+	{
+		ServerToggleStealth();
+	}
+}
 
+void AShooterCharacter::ToggleStealth()
+{
+	if (!HasAuthority() || bIsDead)
+	{
+		return;
 	}
 
+	bIsStealthed = !bIsStealthed;
+	if (CachedPartnerCharacter)
+	{
+		CachedPartnerCharacter->SetTestStealthed(bIsStealthed);
+	}
+	OnRep_IsStealthed();
+	ForceNetUpdate();
+}
+
+void AShooterCharacter::SetStealthVisualEnabled(bool bEnabled)
+{
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+
+	if (UMaterialPostProcessSubsystem* MaterialSub = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
+	{
+		MaterialSub->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Stealth, bEnabled);
+	}
+}
+
+void AShooterCharacter::ServerToggleStealth_Implementation()
+{
+	ToggleStealth();
 }
 
 void AShooterCharacter::TrySlide()
@@ -667,6 +705,11 @@ void AShooterCharacter::OnRep_CurPartnerShield()
 	BroadcastPartnerShieldState();
 }
 
+void AShooterCharacter::OnRep_IsStealthed()
+{
+	SetStealthVisualEnabled(bIsStealthed);
+}
+
 void AShooterCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
@@ -680,6 +723,17 @@ void AShooterCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	DOREPLIFETIME(AShooterCharacter, WeaponMode);
 	DOREPLIFETIME(AShooterCharacter, CombatState);
 	DOREPLIFETIME(AShooterCharacter, ActionLock);
+	DOREPLIFETIME(AShooterCharacter, bIsStealthed);
+}
+
+FGameplayTagContainer AShooterCharacter::GetOwnedGameplayTagsForQuery() const
+{
+	FGameplayTagContainer GameplayTags = Super::GetOwnedGameplayTagsForQuery();
+	if (bIsStealthed)
+	{
+		GameplayTags.AddTag(OutlierGameplayTags::State::Stealthed());
+	}
+	return GameplayTags;
 }
 
 void AShooterCharacter::EquipWeapon(AWeaponBase* Weapon)
@@ -1828,6 +1882,11 @@ void AShooterCharacter::MulticastPlayThirdPersonActionMontage_Implementation(ESh
 void AShooterCharacter::SetPartnerCharacter(APartnerCharacter* NewPartner)
 {
 	CachedPartnerCharacter = NewPartner;
+
+	if (HasAuthority() && CachedPartnerCharacter)
+	{
+		CachedPartnerCharacter->SetTestStealthed(bIsStealthed);
+	}
 }
 
 void AShooterCharacter::SetSuitDisabledByPartnerBoundary(bool bDisabled)

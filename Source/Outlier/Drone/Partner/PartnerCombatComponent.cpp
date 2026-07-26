@@ -3,7 +3,7 @@
 
 #include "Drone/Partner/PartnerCombatComponent.h"
 #include "Drone/Partner/PartnerCharacter.h"
-#include "Weapon/WeaponBase.h"
+#include "Weapon/RangedWeaponBase.h"
 
 UPartnerCombatComponent::UPartnerCombatComponent()
 {
@@ -23,6 +23,7 @@ void UPartnerCombatComponent::BeginPlay()
 
 void UPartnerCombatComponent::TryStartAttack()
 {
+	// 서버 RPC가 다시 이 함수로 들어오므로 입력 가능 여부는 서버에서도 동일하게 검증된다.
 	if (!PartnerCharacter || !PartnerCharacter->CanAcceptInput())
 	{
 		return;
@@ -30,6 +31,7 @@ void UPartnerCombatComponent::TryStartAttack()
 
 	if (!PartnerCharacter->HasAuthority())
 	{
+		// 이 컴포넌트의 Owner인 Partner를 소유한 클라이언트만 서버 RPC를 전송할 수 있다.
 		ServerStartAttack();
 		return;
 	}
@@ -49,7 +51,21 @@ void UPartnerCombatComponent::TryStopAttack()
 
 	if (!PartnerCharacter->HasAuthority())
 	{
+		// 공격 중지는 상태 변화 중에도 필요하므로 CanAcceptInput 검사를 하지 않는다.
 		ServerStopAttack();
+		return;
+	}
+
+	if (AWeaponBase* Weapon = PartnerCharacter->GetCurrentWeapon())
+	{
+		Weapon->StopAttack();
+	}
+}
+
+void UPartnerCombatComponent::ForceStopAttack()
+{
+	if (!PartnerCharacter || !PartnerCharacter->HasAuthority())
+	{
 		return;
 	}
 
@@ -81,7 +97,7 @@ void UPartnerCombatComponent::EquipDefaultWeapon_Server()
 	SpawnParams.Instigator = PartnerCharacter;
 	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 
-	AWeaponBase* DefaultWeapon = GetWorld()->SpawnActor<AWeaponBase>(
+	ARangedWeaponBase* DefaultWeapon = GetWorld()->SpawnActor<ARangedWeaponBase>(
 		DefaultWeaponClass,
 		PartnerCharacter->GetActorTransform(),
 		SpawnParams

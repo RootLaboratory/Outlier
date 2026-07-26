@@ -24,7 +24,15 @@ protected:
 	virtual bool CanRunInputMovement() const override;
 	virtual bool ShouldUpdateMovementFeel() const override;
 	virtual EFlightInputMode GetFlightInputMode() const override;
+	virtual void OnAfterInputMovement(float DeltaTime) override;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Flight|Facing")
+	float AIFacingPitchInterpSpeed = 8.0f;
 
 private:
 	AVECDrone* GetVECDroneOwner() const;
+	void UpdateAIFacingPitch(float DeltaTime);
+
+	bool bAIFacingPitchInitialized = false;
+	FRotator BaseAIFacingPitchRotation = FRotator::ZeroRotator;
 };

@@ -49,5 +49,11 @@ void URoomTagComponent::RefreshCurrentRoom()
 		}
 	);
 
+	const FGameplayTag PreviousRoomTag = CurrentRoomTag;
 	CurrentRoomTag = ActiveRooms.IsEmpty() ? DefaultRoomTag : ActiveRooms.Last()->GetRoomTag();
+
+	if (CurrentRoomTag != PreviousRoomTag)
+	{
+		OnCurrentRoomTagChanged.Broadcast(PreviousRoomTag, CurrentRoomTag);
+	}
 }
