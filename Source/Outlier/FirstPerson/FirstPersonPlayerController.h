@@ -4,11 +4,29 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerController.h"
+#include "GameplayTagContainer.h"
 #include "OutlierPlayerState.h"
 #include "PlayerUIProvider.h"
 #include "FirstPersonPlayerController.generated.h"
 
 class UInputMappingContext;
+
+namespace FirstPersonInputModeTags
+{
+	inline FGameplayTag EMP()
+	{
+		static const FGameplayTag Tag =
+			FGameplayTag::RequestGameplayTag(FName(TEXT("Input.Mode.EMP")));
+		return Tag;
+	}
+
+	inline FGameplayTag Hack()
+	{
+		static const FGameplayTag Tag =
+			FGameplayTag::RequestGameplayTag(FName(TEXT("Input.Mode.Hack")));
+		return Tag;
+	}
+}
 
 /**
  * 
@@ -27,10 +45,30 @@ public:
 	UFUNCTION(Server, Reliable)
 	void ServerNotifyArenaReady();
 
+	// 디버그: 요청한 페어의 arena를 서버 권위로 리로드
+	UFUNCTION(Server, Reliable)
+	void Server_RequestArenaReload();
+
+	// 디버그: 클라 arena 스트리밍 인스턴스를 강제 언로드 후 재로드
+	UFUNCTION(Client, Reliable)
+	void ClientArenaReload(int32 ArenaId);
+
 	UFUNCTION()
 	void HandleArenaShown(int32 ShownArenaId);
 	void ControlMainWidget(bool InFlag) const;
 
+	UFUNCTION(BlueprintCallable, Category = "Input|Input Mode")
+	bool SetFirstPersonInputMode(FGameplayTag NewInputMode);
+
+	UFUNCTION(BlueprintCallable, Category = "Input|Input Mode")
+	bool TryRestoreFirstPersonDefaultInputMode(FGameplayTag ExpectedInputMode);
+
+	UFUNCTION(BlueprintPure, Category = "Input|Input Mode")
+	FGameplayTag GetFirstPersonInputMode()const; 
+
+	UFUNCTION(BlueprintPure, Category = "Input|Input Mode")
+	bool IsFirstPersonInputMode(FGameplayTag InputMode) const;
+	
 protected:
 
 	/** Input Mapping Contexts */
@@ -42,6 +80,9 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Pair")
 	int32 DefaultPairId = 0;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Input|Input Mode")
+	FGameplayTag CurrentFirstPersonInputMode;
 
 	virtual void BeginPlay() override;
 

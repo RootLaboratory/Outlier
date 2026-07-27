@@ -62,6 +62,8 @@ class UPartnerCombatComponent;
 class UPartnerHackComponent;
 class UPartnerAbilityComponent;
 class UPartnerEMPComponent;
+class UPartnerSpriteAnimationComponent;
+
 UCLASS()
 class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter
 {
@@ -76,6 +78,9 @@ protected:
 	// Components
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UPartnerDistanceComponent> DistanceComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UPartnerSpriteAnimationComponent> FaceSpriteAnimationComponent;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UPartnerMovementComponent> MovementComponent;

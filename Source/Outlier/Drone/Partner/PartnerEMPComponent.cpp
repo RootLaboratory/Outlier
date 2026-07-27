@@ -13,7 +13,6 @@
 #include "FirstPerson/FirstPersonPlayerController.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Net/UnrealNetwork.h"
-#include "TimerManager.h"
 
 UPartnerEMPComponent::UPartnerEMPComponent()
 {
@@ -27,14 +26,13 @@ void UPartnerEMPComponent::BeginPlay()
 
 	CachedAbilityData.EMPRange = EMPRange;
 	CachedAbilityData.MarkingTime = EMPMarkingTime;
+	ResetEMPEarlyCompleteTimer();
 
-	BlockedEMPTags.AddTag(OutlierGameplayTags::State::Dead());
-	BlockedEMPTags.AddTag(OutlierGameplayTags::State::Immune());
-	BlockedEMPTags.AddTag(OutlierGameplayTags::State::Stunned());
 }
 
 void UPartnerEMPComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	ResetEMPEarlyCompleteTimer();
 	DestroyEMPLayerWidget();
 	ClearEMPCandidates();
 	Super::EndPlay(EndPlayReason);
@@ -73,7 +71,10 @@ void UPartnerEMPComponent::TryEMP_Implementation()
 
 	if (bEMPActive)
 	{
-		if (MarkedActors.Num() > 0)
+		const float ElapsedTime = GetEMPElapsedTime();
+		const float EarlyCompleteDelay = FMath::Max(EMPEarlyCompleteValue, 0.0f);
+
+		if (MarkedActors.Num() > 0 || ElapsedTime >= EarlyCompleteDelay)
 		{
 			const TArray<AActor*> ConfirmedActors = MarkedActors;
 			CompleteEMPOnServer(ConfirmedActors);
@@ -83,6 +84,7 @@ void UPartnerEMPComponent::TryEMP_Implementation()
 
 	bEMPActive = true;
 	MarkedActors.Empty();
+	InitializeEMPEarlyCompleteTimer();
 	ClientStartEMPSearch();
 	DefaultWidgetControl(true);
 
@@ -111,7 +113,18 @@ void UPartnerEMPComponent::ClientStartEMPSearch_Implementation()
 	bEMPCandidateSearchActive = true;
 
 	EnsureEMPLayerWidget();
-	RefreshEMPCandidates();
+	RefreshEMPCandidates(); //Capture
+
+	if (EMPLayerWidget)
+	{
+		const bool bInitialCaptureEmpty = EMPCandidateActors.IsEmpty(); //Capture 시 없으면, N초 뒤에 Widget 삭제 및, EMP 종료.
+		const float ExpirationTime = bInitialCaptureEmpty
+			? EMPInitialCaptureEmptyTimeout // 조기 종료 값
+			: EMPMarkingTime;
+
+		EMPLayerWidget->InitializeMarkingTimer(ExpirationTime);
+	}
+
 }
 
 void UPartnerEMPComponent::ClientStopEMPSearch_Implementation()
@@ -243,8 +256,14 @@ void UPartnerEMPComponent::RefocusEMPInput()
 		return;
 	}
 
-	APlayerController* PlayerController = Cast<APlayerController>(PartnerCharacter->GetController());
+	APartnerPlayerController* PlayerController =
+		Cast<APartnerPlayerController>(PartnerCharacter->GetController());
 	if (!PlayerController || !PlayerController->IsLocalController())
+	{
+		return;
+	}
+
+	if (!PlayerController->SetFirstPersonInputMode(FirstPersonInputModeTags::EMP()))
 	{
 		return;
 	}
@@ -357,6 +376,7 @@ void UPartnerEMPComponent::CompleteEMPOnServer(const TArray<AActor*>& InMarkedAc
 
 		bEMPActive = false;
 		MarkedActors.Empty();
+		ResetEMPEarlyCompleteTimer();
 		ClientCompleteEMP();
 		DefaultWidgetControl(false);
 		return;
@@ -392,63 +412,25 @@ void UPartnerEMPComponent::CompleteEMPOnServer(const TArray<AActor*>& InMarkedAc
 			continue;
 		}
 
-		EMPableComponent->AddEMPTag(OutlierGameplayTags::State::Stunned());
-		++AppliedTargetCount;
+		//Component에서는 Tag 주입과 Duration에 대한 EMP 만료 처리, Tag에 대한 상태 처리는 인터페이스 함수에서 구체화
+		EMPableComponent->ApplyEMPTagForDuration(
+			OutlierGameplayTags::State::Stunned(),
+			CachedAbilityData.StunDuration
+		);
 
-		if (CachedAbilityData.StunDuration > 0.0f)
+		if (IEMPableInterface* Handler = Cast<IEMPableInterface>(MarkedActor))
 		{
-			if (UWorld* World = GetWorld())
-			{
-				TWeakObjectPtr<UEMPableComponent> WeakEMPableComponent = EMPableComponent;
-				FTimerHandle ClearStunTimerHandle;
-				World->GetTimerManager().SetTimer(
-					ClearStunTimerHandle,
-					FTimerDelegate::CreateWeakLambda(this, [WeakEMPableComponent]()
-					{
-						if (UEMPableComponent* EMPableComponent = WeakEMPableComponent.Get())
-						{
-							EMPableComponent->RemoveEMPTag(OutlierGameplayTags::State::Stunned());
-						}
-					}),
-					CachedAbilityData.StunDuration,
-					false
-				);
-			}
+			Handler->HandleEMPStarted(OutlierGameplayTags::State::Stunned());
 		}
 
-		MulticastTriggerEMPEffect(MarkedActor);
+		++AppliedTargetCount;
 	}
 
 	bEMPActive = false;
 	MarkedActors.Empty();
+	ResetEMPEarlyCompleteTimer();
 	ClientCompleteEMP();
 	DefaultWidgetControl(false);
-}
-
-void UPartnerEMPComponent::MulticastTriggerEMPEffect_Implementation(AActor* TargetActor)
-{
-	if (!IsValid(TargetActor) || !TargetActor->GetClass()->ImplementsInterface(UEMPableInterface::StaticClass()))
-	{
-		if (bDebugEMP)
-		{
-			UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] MulticastTriggerEMPEffect skipped Actor=%s"),
-				*GetNameSafe(TargetActor));
-		}
-		return;
-	}
-
-	IEMPableInterface* Handler = Cast<IEMPableInterface>(TargetActor);
-	if (!Handler)
-	{
-		if (bDebugEMP)
-		{
-			UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] MulticastTriggerEMPEffect handler invalid Actor=%s"),
-				*GetNameSafe(TargetActor));
-		}
-		return;
-	}
-
-	Handler->HandleEmp(OutlierGameplayTags::State::Stunned());
 }
 
 void UPartnerEMPComponent::ServerCancelEMP_Implementation()
@@ -463,6 +445,13 @@ void UPartnerEMPComponent::ServerExpireEMP_Implementation()
 		UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] ServerExpireEMP"));
 	}
 
+	if (!MarkedActors.IsEmpty())
+	{
+		const TArray<AActor*> ExpiredMarkedActors = MarkedActors;
+		CompleteEMPOnServer(ExpiredMarkedActors);
+		return;
+	}
+
 	CancelEMPOnServer();
 }
 
@@ -475,6 +464,7 @@ void UPartnerEMPComponent::CancelEMPOnServer()
 
 	bEMPActive = false;
 	MarkedActors.Empty();
+	ResetEMPEarlyCompleteTimer();
 	ClientCompleteEMP();
 	DefaultWidgetControl(false);
 }
@@ -606,6 +596,34 @@ bool UPartnerEMPComponent::HasLineOfSight(AActor* Actor) const
 	);
 
 	return !bHit || Hit.GetActor() == Actor;
+}
+
+void UPartnerEMPComponent::InitializeEMPEarlyCompleteTimer()
+{
+	const UWorld* World = GetWorld();
+	if (!World)
+	{
+		ResetEMPEarlyCompleteTimer();
+		return;
+	}
+
+	EMPStartTimeSeconds = World->GetTimeSeconds();
+}
+
+void UPartnerEMPComponent::ResetEMPEarlyCompleteTimer()
+{
+	EMPStartTimeSeconds = 0.0f;
+}
+
+float UPartnerEMPComponent::GetEMPElapsedTime() const
+{
+	const UWorld* World = GetWorld();
+	if (!World || !bEMPActive)
+	{
+		return 0.0f;
+	}
+
+	return FMath::Max(World->GetTimeSeconds() - EMPStartTimeSeconds, 0.0f);
 }
 
 void UPartnerEMPComponent::EnsureEMPLayerWidget()
@@ -745,8 +763,14 @@ void UPartnerEMPComponent::ApplyEMPInputMode()
 		return;
 	}
 
-	APlayerController* PlayerController = Cast<APlayerController>(PartnerCharacter->GetController());
+	APartnerPlayerController* PlayerController =
+		Cast<APartnerPlayerController>(PartnerCharacter->GetController());
 	if (!PlayerController || !PlayerController->IsLocalController())
+	{
+		return;
+	}
+
+	if (!PlayerController->SetFirstPersonInputMode(FirstPersonInputModeTags::EMP()))
 	{
 		return;
 	}
@@ -777,19 +801,16 @@ void UPartnerEMPComponent::RestoreGameInputMode()
 		return;
 	}
 
-	APlayerController* PlayerController = Cast<APlayerController>(PartnerCharacter->GetController());
+	APartnerPlayerController* PlayerController =
+		Cast<APartnerPlayerController>(PartnerCharacter->GetController());
 	if (!PlayerController || !PlayerController->IsLocalController())
 	{
 		return;
 	}
 
-	FInputModeGameOnly InputMode;
-	PlayerController->SetInputMode(InputMode);
-	PlayerController->bShowMouseCursor = false;
-
-	if (AFirstPersonPlayerController* FirstPersonController = Cast<AFirstPersonPlayerController>(PlayerController))
+	if (PlayerController->TryRestoreFirstPersonDefaultInputMode(FirstPersonInputModeTags::EMP()))
 	{
-		FirstPersonController->ControlMainWidget(true);
+		PlayerController->ControlMainWidget(true);
 	}
 }
 

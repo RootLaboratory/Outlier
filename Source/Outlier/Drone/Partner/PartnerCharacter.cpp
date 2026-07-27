@@ -9,6 +9,7 @@
 #include "Drone/Partner/PartnerMovementComponent.h"
 #include "Drone/Partner/PartnerSupportComponent.h"
 #include "Drone/Partner/PartnerCombatComponent.h"
+#include "Drone/Partner/PartnerSpriteAnimationComponent.h"
 #include "Drone/Partner/PartnerHackComponent.h"
 #include "Drone/Partner/PartnerEMPComponent.h"
 #include "Net/UnrealNetwork.h"
@@ -124,13 +125,13 @@ void APartnerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 
 void APartnerCharacter::UnPossessed()
 {
-	// UnPossessed()만으로는 이 Pawn의 InputComponent가 컨트롤러 입력 스택에서 자동으로 빠지지 않음
-	// (엔진은 폰이 곧 파괴될 거라 가정함). Partner는 Enemy 빙의 중에도 캐싱되어 살아있으므로
-	// 명시적으로 빼주지 않으면 겹치는 키 입력이 이전 바인딩까지 같이 발동함
-	if (APlayerController* PC = Cast<APlayerController>(GetController()))
-	{
-		DisableInput(PC);
-	}
+	//// UnPossessed()만으로는 이 Pawn의 InputComponent가 컨트롤러 입력 스택에서 자동으로 빠지지 않음
+	//// (엔진은 폰이 곧 파괴될 거라 가정함). Partner는 Enemy 빙의 중에도 캐싱되어 살아있으므로
+	//// 명시적으로 빼주지 않으면 겹치는 키 입력이 이전 바인딩까지 같이 발동함
+	//if (APlayerController* PC = Cast<APlayerController>(GetController()))
+	//{
+	//	DisableInput(PC);
+	//}
 
 	Super::UnPossessed();
 }
@@ -258,6 +259,7 @@ void APartnerCharacter::TryHacking()
 	}
 
 	TestAbilityComponent->TryActivateAbilityByTag(OutlierGameplayTags::Ability::Partner::Hacking());
+	FaceSpriteAnimationComponent->SetEmotion(EPartnerEmotion::Happy);
 }
 
 void APartnerCharacter::EndHacking()
@@ -276,6 +278,8 @@ void APartnerCharacter::TryEMP()
 	}
 
 	TestAbilityComponent->TryActivateAbilityByTag(OutlierGameplayTags::Ability::Partner::EMP());
+	FaceSpriteAnimationComponent->SetEmotion(EPartnerEmotion::Surprised);
+
 }
 
 void APartnerCharacter::Hacking(AActor* TargetActor)
@@ -300,6 +304,7 @@ void APartnerCharacter::TestAbilityScan()
 
 
 	TestAbilityComponent->TryActivateAbilityByTag(OutlierGameplayTags::Ability::Partner::Scan());
+
 }
 
 void APartnerCharacter::Scan()
@@ -309,6 +314,7 @@ void APartnerCharacter::Scan()
 		return;
 	}
 	UE_LOG(LogTemp, Error, TEXT("Scan Valid"));
+	FaceSpriteAnimationComponent->SetEmotion(EPartnerEmotion::Sad);
 
 	ServerUseSkill(EPartnerSkillType::Scan);
 }
@@ -323,6 +329,8 @@ void APartnerCharacter::Shield()
 	UE_LOG(LogTemp, Error, TEXT("Shield Valid"));
 
 	ServerUseSkill(EPartnerSkillType::Shield);
+	FaceSpriteAnimationComponent->SetEmotion(EPartnerEmotion::Angry);
+
 }
 
 void APartnerCharacter::NotifyBoundaryUI(bool bDisabled)
@@ -947,6 +955,7 @@ APartnerCharacter::APartnerCharacter()
 	CombatComponent   = CreateDefaultSubobject<UPartnerCombatComponent>  (TEXT("CombatComponent"));
 	HackComponent     = CreateDefaultSubobject<UPartnerHackComponent>    (TEXT("HackComponent"));
 	EMPComponent      = CreateDefaultSubobject<UPartnerEMPComponent>     (TEXT("EMPComponent"));
+	FaceSpriteAnimationComponent = CreateDefaultSubobject<UPartnerSpriteAnimationComponent>(TEXT("SpriteAnimationComponent"));
 }
 
 void APartnerCharacter::OnRep_DroneMovementState()

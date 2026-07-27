@@ -1,11 +1,27 @@
 #include "Drone/Partner/EMPableComponent.h"
 #include "Drone/Partner/EMPGameplayTags.h"
+#include "Interface/EMPableInterface.h"
 #include "Net/UnrealNetwork.h"
 
 UEMPableComponent::UEMPableComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
 	SetIsReplicatedByDefault(true);
+}
+
+void UEMPableComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (UWorld* World = GetWorld())
+	{
+		FTimerManager& TimerManager = World->GetTimerManager();
+		for (TPair<FGameplayTag, FTimerHandle>& TimerPair : EMPDurationTimerHandles)
+		{
+			TimerManager.ClearTimer(TimerPair.Value);
+		}
+	}
+
+	EMPDurationTimerHandles.Empty();
+	Super::EndPlay(EndPlayReason);
 }
 
 void UEMPableComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -50,7 +66,83 @@ void UEMPableComponent::AddEMPTag(FGameplayTag Tag)
 	EMPTags.AddTag(Tag);
 }
 
+void UEMPableComponent::ApplyEMPTagForDuration(FGameplayTag Tag, float Duration)
+{
+	AActor* OwnerActor = GetOwner();
+	if (!OwnerActor || !OwnerActor->HasAuthority())
+	{
+		return;
+	}
+
+	AddEMPTag(Tag);
+	ClearEMPDurationTimer(Tag);
+
+	if (Duration <= 0.0f)
+	{
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	FTimerDelegate DurationExpiredDelegate;
+	DurationExpiredDelegate.BindUObject(this, &UEMPableComponent::HandleEMPTagDurationExpired, Tag);
+
+	FTimerHandle TimerHandle;
+	World->GetTimerManager().SetTimer(
+		TimerHandle,
+		DurationExpiredDelegate,
+		Duration,
+		false
+	);
+	EMPDurationTimerHandles.Add(Tag, TimerHandle);
+}
+
 void UEMPableComponent::RemoveEMPTag(FGameplayTag Tag)
 {
+	ClearEMPDurationTimer(Tag);
 	EMPTags.RemoveTag(Tag);
+}
+
+void UEMPableComponent::HandleEMPTagDurationExpired(FGameplayTag Tag)
+{
+	EMPDurationTimerHandles.Remove(Tag);
+
+	if (!EMPTags.HasTagExact(Tag))
+	{
+		return;
+	}
+
+	EMPTags.RemoveTag(Tag);
+
+	AActor* OwnerActor = GetOwner();
+	if (!OwnerActor || !OwnerActor->HasAuthority()
+		|| !OwnerActor->GetClass()->ImplementsInterface(UEMPableInterface::StaticClass()))
+	{
+		return;
+	}
+
+	if (IEMPableInterface* Handler = Cast<IEMPableInterface>(OwnerActor))
+	{
+		Handler->HandleEMPEnded(Tag);
+	}
+}
+
+void UEMPableComponent::ClearEMPDurationTimer(FGameplayTag Tag)
+{
+	FTimerHandle* TimerHandle = EMPDurationTimerHandles.Find(Tag);
+	if (!TimerHandle)
+	{
+		return;
+	}
+
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(*TimerHandle);
+	}
+
+	EMPDurationTimerHandles.Remove(Tag);
 }

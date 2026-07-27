@@ -5,6 +5,8 @@
 #include "Engine/DataTable.h"
 #include "GameplayTagContainer.h"
 #include "Enemy/EnemyStat.h"
+#include "Interface/EmpableInterface.h"
+#include "Interface/ScannableInterface.h"
 #include "Interface/HackableInterface.h"
 #include "EnemyBase.generated.h"
 
@@ -25,7 +27,7 @@ enum class EEnemyCombatState : uint8
 };
 
 UCLASS()
-class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface
+class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, public IEMPableInterface, public IScannableInterface
 {
 	GENERATED_BODY()
 
@@ -48,6 +50,9 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|Hack")
 	TObjectPtr<UHackableComponent> HackableComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|EMP")
+	TObjectPtr<UEMPableComponent> EmpableComponent;
 
 	// Physics Asset 바디 대신 이 전용 컴포넌트로 코어 크리티컬을 판정함 — CoreBone 바디가 BodyBone 콜리전
 	// 안쪽에 겹쳐 있으면 같은 컴포넌트 안에서 가려져서 Multi 트레이스로도 검출이 안 되는 문제가 있었음
@@ -174,7 +179,13 @@ public:
 
 	virtual UHackableComponent* GetHackableComponent() const override;
 	virtual void HandleHackEffect(FGameplayTag EffectTag, const FHackResultContext& Context) override;
+	virtual void HandleHackStarted(const FHackQueryContext& Context) override;
 
+	virtual UEMPableComponent* GetEMPableComponent() const override;
+	virtual void HandleEMPStarted(FGameplayTag EffectTag) override;
+	virtual void HandleEMPEnded(FGameplayTag EffectTag) override;
+
+	virtual int32 GetScanStencilValue() const override;
 protected:
 	UFUNCTION()
 	void OnRep_RuntimeStat();
@@ -182,7 +193,9 @@ protected:
 	void SetDefaultEnemyType(EEnemyType EnemyType);
 	virtual void ApplyClassStatOverrides();
 	virtual void ApplyMovementFromRuntimeStat();
+	bool HasActiveStunTag() const;
 	void PromotePreStunState(EEnemyCombatState DetectedState);
-	void HandleDeath();
+	//테스팅용으로 잠시 가상함수화
+	virtual void HandleDeath();
 	void HandleReleasePossessionInput(const FInputActionValue& Value);
 };

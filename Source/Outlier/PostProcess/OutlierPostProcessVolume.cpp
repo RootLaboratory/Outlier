@@ -128,7 +128,6 @@ void AOutlierPostProcessVolume::SetPostProcessEnabled(EOutlierPostProcessMateria
 	{
 	case EOutlierPostProcessMaterialType::Scan:
 		bScanPostProcessEnabled = bInEnabled;
-		//UE_LOG(LogTemp, Error, TEXT("[ScanPPDebug] SetEnabled=%d Weight=%.2f"), bScanPostProcessEnabled ? 1 : 0, TargetWeight);
 		break;
 	case EOutlierPostProcessMaterialType::Stealth:
 		bStealthPostProcessEnabled = bInEnabled;
@@ -217,9 +216,6 @@ void AOutlierPostProcessVolume::SetScanMaterialParameters(FVector ScanLocation, 
 		ScanFlagParameterName,
 		Flag
 	);
-
-	UE_LOG(LogTemp, Error, TEXT("SCAN, %f:"), Flag);
-
 
 	ScanRangeRange = Range;
 
