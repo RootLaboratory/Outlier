@@ -19,7 +19,9 @@ class OUTLIER_API UInteractableComponent : public UActorComponent
 public:
 	UInteractableComponent();
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction")
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Replicated, Category = "Interaction")
 	FGameplayTagContainer InteractableTags;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction")

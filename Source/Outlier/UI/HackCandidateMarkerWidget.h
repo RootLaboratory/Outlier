@@ -30,6 +30,9 @@ protected:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
 	TObjectPtr<UButton> SelectButton;
 
+	UPROPERTY(Editanywhere, BlueprintReadWrite , Category = "Hold")
+	float UpdateScale = 2.0f;
+
 private:
 	UFUNCTION()
 	void HandleHovered();

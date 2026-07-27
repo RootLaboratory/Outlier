@@ -106,6 +106,9 @@ void AInteractionDescActor::ActivateDescFromSource(AFirstPersonCharacter* Intera
 		DescWidgetComponent->InitWidget();
 	}
 
+	//Construct에서는 Uuserwidget만 만들기 때문에, Update를 해서 자식 클래스 업데이트 되는 템포를 초기화에 맞춤.
+	DescWidgetComponent->UpdateWidget();
+
 	InteractionDescWidget = Cast<UInteractionDescWidget>(DescWidgetComponent->GetUserWidgetObject());
 
 	FGameplayTag InteractTag;
@@ -175,6 +178,17 @@ void AInteractionDescActor::SetProgress(float InProgress)
 	{
 		InteractionDescWidget->SetProgress(Progress);
 	}
+}
+
+void AInteractionDescActor::PopupAnimationCall(bool Flag)
+{
+	if (!InteractionDescWidget)
+	{
+		return;
+	}
+
+	InteractionDescWidget->PlayPopUp(Flag);
+
 }
 
 void AInteractionDescActor::BillboardToCamera()

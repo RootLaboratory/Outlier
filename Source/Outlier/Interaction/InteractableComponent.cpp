@@ -6,11 +6,20 @@
 #include "Engine/LocalPlayer.h"
 #include "FirstPerson/FirstPersonCharacter.h"
 #include "GameFramework/Actor.h"
+#include "Net/UnrealNetwork.h"
 #include "UI/InteractKeyWidget.h"
 
 UInteractableComponent::UInteractableComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
+	SetIsReplicatedByDefault(true);
+}
+
+void UInteractableComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(UInteractableComponent, InteractableTags);
+
 }
 
 bool UInteractableComponent::CanInteract(const FGameplayTagContainer& InteractorTags) const

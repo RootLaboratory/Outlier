@@ -10,6 +10,7 @@ class UHackableComponent;
 class UImage;
 class UProgressBar;
 class UTextBlock;
+class UPopupRetainerBox;
 
 UCLASS()
 class OUTLIER_API UHackableInfoWidget : public UUserWidget
@@ -19,6 +20,8 @@ class OUTLIER_API UHackableInfoWidget : public UUserWidget
 public:
 	void InitializeInfo(AActor* InTargetActor, UHackableComponent* InHackableComponent);
 	void SetHackProgress(float InProgress);
+	void PlayPopup();
+	void ResetPopup();
 
 	float GetWidgetWidth() const { return WidgetWidth; }
 	float GetMinWidgetHeight() const { return MinWidgetHeight; }
@@ -31,6 +34,9 @@ protected:
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
 	TObjectPtr<UBorder> InfoBorder;
+
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	TObjectPtr<UPopupRetainerBox> PopupRetainerBox;
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
 	TObjectPtr<UTextBlock> TitleText;

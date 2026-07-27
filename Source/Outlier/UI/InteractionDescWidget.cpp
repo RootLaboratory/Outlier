@@ -2,6 +2,7 @@
 
 #include "Components/ProgressBar.h"
 #include "Components/TextBlock.h"
+#include "PopupRetainerBox.h"
 
 void UInteractionDescWidget::UpdateInteractionDesc(const FGameplayTag& InteractTag, const FInteractInfoRow& InteractInfo, float InProgress)
 {
@@ -11,7 +12,6 @@ void UInteractionDescWidget::UpdateInteractionDesc(const FGameplayTag& InteractT
 	{
 		DescText->SetText(InteractInfo.DisplayText);
 	}
-
 	SetProgress(InProgress);
 	SetVisibility(ESlateVisibility::HitTestInvisible);
 }
@@ -35,4 +35,12 @@ void UInteractionDescWidget::ClearInteractionDesc()
 
 	SetProgress(0.0f);
 	SetVisibility(ESlateVisibility::Collapsed);
+}
+
+void UInteractionDescWidget::PlayPopUp(bool InFlag)
+{
+	if (PopupRetainerBox)
+	{
+		PopupRetainerBox->PlayPopup(InFlag);
+	}
 }

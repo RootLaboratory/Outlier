@@ -62,7 +62,11 @@ void AInteractionNode::Interact(AFirstPersonCharacter* Interactor)
 
 		DescActor->SetActorLocation(GetActorLocation() + FVector::UpVector * InteractionDescActorZOffset);
 		DescActor->SetSourceInteractionNode(this);
+		UE_LOG(LogTemp, Error, TEXT("Interact"));
 		DescActor->ActivateDescFromSource(Interactor, InteractableComponent);
+
+		DescActor->PopupAnimationCall(false);
+
 		MarkHoldReady();
 		return;
 	}
@@ -387,11 +391,8 @@ void AInteractionNode::InteractInfoWidgetActivate(AFirstPersonCharacter* Interac
 	if (!InteractInfoWidget)
 	{
 		InteractInfoWidget = Cast<UInteractInfoWidget>(WidgetComponent->GetUserWidgetObject());
-	}
-
-	if (InteractInfoWidget)
-	{
 		InteractInfoWidget->UpdateInteractInfo(InteractTag, InteractInfo);
+
 	}
 }
 

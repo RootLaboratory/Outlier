@@ -35,10 +35,10 @@ public:
 	TObjectPtr<UStaticMeshComponent> DoorMeshRight;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Door")
-	FVector OpenOffsetLeft = FVector(-120.f, 0.f, 0.f);
+	FVector OpenOffsetLeft = FVector(0.0f, 120.f, 0.f);
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Door")
-	FVector OpenOffsetRight = FVector(120.f, 0.f, 0.f);
+	FVector OpenOffsetRight = FVector(0.0f, -120.f, 0.f);
 
 	UPROPERTY(EditAnywhere, Category = "Door")
 	TObjectPtr<UCurveFloat> DoorCurve;

@@ -8,6 +8,7 @@
 
 class UImage;
 class UMaterialInterface;
+class UPopupRetainerBox;
 class UTextureRenderTarget2D;
 /**
  * 
@@ -36,6 +37,12 @@ public:
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UImage> CamImage;
 
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	TObjectPtr<UPopupRetainerBox> PopupRetainerBox;
+
 private:
+	UFUNCTION()
+	void HandlePopupClosed();
+
 	uint8 bFlag : 1 = true;
 };

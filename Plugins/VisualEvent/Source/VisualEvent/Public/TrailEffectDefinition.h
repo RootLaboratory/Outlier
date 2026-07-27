@@ -25,19 +25,16 @@ public:
 	TObjectPtr<UFXSystemAsset> FXAsset;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FX")
-	float LifeSpan = 1.0f;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FX")
 	FVector Scale = FVector(1.f);
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FX")
 	FRotator RotationOffset = FRotator::ZeroRotator;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Beam")
-	FName StartParameterName = TEXT("Start");
+	FName StartParameterName = TEXT("User.Start");
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Beam")
-	FName EndParameterName = TEXT("End");
+	FName EndParameterName = TEXT("User.End");
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Beam")
 	FVector StartOffset = FVector::ZeroVector;
@@ -53,17 +50,4 @@ public:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Projectile")
 	FRotator RelativeRotation = FRotator::ZeroRotator;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Projectile")
-	uint8 bAttachToSource : 1 = true;
-
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Trail")
-	float Speed = 300.f;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Trail")
-	FName DirectionParameterName = TEXT("User.Direction");
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Trail")
-	FName SpeedParameterName = TEXT("User.Speed");
 };
