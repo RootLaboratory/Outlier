@@ -4,6 +4,8 @@
 #include "Network/OutlierArenaPoolSubsystem.h"
 #include "Engine/LevelStreamingDynamic.h"
 #include "OutlierArenaSettings.h"
+#include "TimerManager.h"
+#include "Engine/World.h"
 
 void UOutlierArenaPoolSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 {
@@ -98,6 +100,78 @@ void UOutlierArenaPoolSubsystem::ReleaseArena(int32 ArenaId)
 		Arena.bReady = IsStreamingArenaReady(NewStreamingLevel);
 
 		return;
+	}
+}
+
+void UOutlierArenaPoolSubsystem::ReloadArena(int32 ArenaId)
+{
+	for (FOutlierArenaInstance& Arena : Arenas)
+	{
+		if (Arena.ArenaId != ArenaId || !Arena.StreamingLevel)
+		{
+			continue;
+		}
+
+		// 같은 인스턴스/이름 유지한 채 언로드→재로드. bInUse/PairId는 손대지 않으니 자동 보존.
+		Arena.bReady = false;
+		BeginDeferredReload(Arena.StreamingLevel);
+		return;
+	}
+}
+
+void UOutlierArenaPoolSubsystem::BeginDeferredReload(ULevelStreamingDynamic* StreamingLevel)
+{
+	if (!StreamingLevel)
+	{
+		return;
+	}
+
+	// 언로드 요청 (비동기). 완료되면 TickPendingReloads가 다시 로드.
+	StreamingLevel->SetShouldBeVisible(false);
+	StreamingLevel->SetShouldBeLoaded(false);
+
+	PendingReloadLevels.AddUnique(StreamingLevel);
+
+	UWorld* World = GetWorld();
+	if (World && !World->GetTimerManager().IsTimerActive(ReloadPollTimer))
+	{
+		World->GetTimerManager().SetTimer(
+			ReloadPollTimer, this, &UOutlierArenaPoolSubsystem::TickPendingReloads, 0.05f, true);
+	}
+}
+
+void UOutlierArenaPoolSubsystem::TickPendingReloads()
+{
+	for (int32 Index = PendingReloadLevels.Num() - 1; Index >= 0; --Index)
+	{
+		ULevelStreamingDynamic* StreamingLevel = PendingReloadLevels[Index].Get();
+		if (!StreamingLevel)
+		{
+			PendingReloadLevels.RemoveAt(Index);
+			continue;
+		}
+
+		// 완전히 언로드될 때까지 대기
+		if (StreamingLevel->IsLevelLoaded() || StreamingLevel->GetLoadedLevel() != nullptr)
+		{
+			continue;
+		}
+
+		// 언로드 완료 → 같은 인스턴스로 다시 로드 (이름 유지)
+		StreamingLevel->SetShouldBeLoaded(true);
+		StreamingLevel->SetShouldBeVisible(true);
+		PendingReloadLevels.RemoveAt(Index);
+
+		UE_LOG(LogTemp, Warning, TEXT("[ArenaPool] Deferred reload re-load requested Streaming=%s"),
+			*GetNameSafe(StreamingLevel));
+	}
+
+	if (PendingReloadLevels.Num() == 0)
+	{
+		if (UWorld* World = GetWorld())
+		{
+			World->GetTimerManager().ClearTimer(ReloadPollTimer);
+		}
 	}
 }
 
@@ -225,7 +299,7 @@ ULevelStreamingDynamic* UOutlierArenaPoolSubsystem::LoadArenaLevelInstance(int32
 	return StreamingLevel;
 }
 
-void UOutlierArenaPoolSubsystem::EnsureArenaLoaded(int32 ArenaId)
+void UOutlierArenaPoolSubsystem::EnsureArenaLoaded(int32 ArenaId, bool bForceReload)
 {
 	UWorld* World = GetWorld();
 
@@ -255,9 +329,14 @@ void UOutlierArenaPoolSubsystem::EnsureArenaLoaded(int32 ArenaId)
 		return;
 	}
 
-	for (const FOutlierArenaInstance& Arena : Arenas)
+	for (FOutlierArenaInstance& Arena : Arenas)
 	{
-		if (Arena.ArenaId == ArenaId && Arena.StreamingLevel)
+		if (Arena.ArenaId != ArenaId || !Arena.StreamingLevel)
+		{
+			continue;
+		}
+
+		if (!bForceReload)
 		{
 			Arena.StreamingLevel->SetShouldBeLoaded(true);
 			Arena.StreamingLevel->SetShouldBeVisible(true);
@@ -271,6 +350,11 @@ void UOutlierArenaPoolSubsystem::EnsureArenaLoaded(int32 ArenaId)
 				*GetNameSafe(Arena.StreamingLevel->GetLoadedLevel()));
 			return;
 		}
+
+		// bForceReload: 같은 인스턴스 유지한 채 언로드→재로드 (이름 유지 → 서버 리플리케이션 매칭)
+		Arena.bReady = false;
+		BeginDeferredReload(Arena.StreamingLevel);
+		return;
 	}
 
 	const FVector InstanceLocation(0.0f, 0.0f, ArenaId * 100000.0f);

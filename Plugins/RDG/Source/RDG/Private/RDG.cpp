@@ -11,6 +11,7 @@
 #include "LocalPlayerPostProcessSubsystem.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
+#include "Engine/GameViewportClient.h"
 #include "Engine/LocalPlayer.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/Paths.h"
@@ -54,22 +55,6 @@ void FRDGModule::StartupModule()
 #endif
 }
 
-bool FRDGModule::IsTargetGameWindow(const SWindow& Window) const
-{
-	if (!GEngine || !GEngine->GameViewport)
-	{
-		return false;
-	}
-
-	TSharedPtr<SWindow> GameWindow = GEngine->GameViewport->GetWindow();
-	if (!GameWindow.IsValid())
-	{
-		return false;
-	}
-
-	return GameWindow.Get() == &Window;
-}
-
 void FRDGModule::RegisterSlateHook()
 {
 	if (!FSlateApplication::IsInitialized())
@@ -89,13 +74,9 @@ void FRDGModule::RegisterSlateHook()
 	}
 }
 
-ULocalPlayerPostProcessSubsystem* FRDGModule::ResolvePostProcessSubsystem()
+ULocalPlayerPostProcessSubsystem* FRDGModule::ResolvePostProcessSubsystem(
+	const SWindow& Window) const
 {
-	if (CachedPostProcessSubsystem.IsValid())
-	{
-		return CachedPostProcessSubsystem.Get();
-	}
-
 	if (!GEngine)
 	{
 		return nullptr;
@@ -115,6 +96,18 @@ ULocalPlayerPostProcessSubsystem* FRDGModule::ResolvePostProcessSubsystem()
 			continue;
 		}
 
+		UGameViewportClient* ViewportClient = GameInstance->GetGameViewportClient();
+		if (!ViewportClient)
+		{
+			continue;
+		}
+
+		const TSharedPtr<SWindow> GameWindow = ViewportClient->GetWindow();
+		if (!GameWindow.IsValid() || GameWindow.Get() != &Window)
+		{
+			continue;
+		}
+
 		ULocalPlayer* LocalPlayer = GameInstance->GetFirstGamePlayer();
 		if (!LocalPlayer)
 		{
@@ -123,13 +116,6 @@ ULocalPlayerPostProcessSubsystem* FRDGModule::ResolvePostProcessSubsystem()
 
 		if (ULocalPlayerPostProcessSubsystem* Subsystem = LocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
 		{
-			UE_LOG(LogTemp, Warning, TEXT("RDG ResolvePostProcessSubsystem | World=%s Type=%d LocalPlayer=%p Subsystem=%p"),
-				*World->GetName(),
-				(int32)World->WorldType,
-				LocalPlayer,
-				Subsystem);
-
-			CachedPostProcessSubsystem = Subsystem;
 			return Subsystem;
 		}
 	}
@@ -190,7 +176,6 @@ void FRDGModule::ShutdownModule()
 	}
 
 	BackBufferReadyHandle.Reset();
-	CachedPostProcessSubsystem.Reset();
 	DebugWindowManager.Reset();
 }
 
@@ -207,12 +192,8 @@ void FRDGModule::HandleBackBufferReadyRDG(FRDGBuilder& GraphBuilder, SWindow& Wi
 		return;
 	}
 
-	if (!IsTargetGameWindow(Window))
-	{
-		return;
-	}
-
-	ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem();
+	ULocalPlayerPostProcessSubsystem* Subsystem =
+		ResolvePostProcessSubsystem(Window);
 	if (!Subsystem)
 	{
 		return;

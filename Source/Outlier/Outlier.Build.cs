@@ -28,7 +28,9 @@ public class Outlier : ModuleRules
             "TagDrivenUI",
             "DeveloperSettings",
             "VisualEvent",
-            "Niagara"
+            "Niagara",
+            "PhysicsCore",
+            "GeometryCollectionEngine"
         });
 
         PrivateDependencyModuleNames.AddRange(new string[]

@@ -245,6 +245,14 @@ void ARangedWeaponBase::FireShot()
 					break;
 				}
 			}
+			if (bIsCoreHit)
+			{
+				GetLocalUISubsystem()->OnRep_AttackSign(EAttackSign::Critical);
+			}
+			else
+			{
+				GetLocalUISubsystem()->OnRep_AttackSign(EAttackSign::Default);
+			}
 
 			HitEnemy->ApplyDamageInternal(DamageToApply, bIsCoreHit);
 			UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot applied Enemy Damage=%.1f To=%s Core=%d"), OutlierNet::GetNetPrefix(this), *GetName(), DamageToApply, *GetNameSafe(HitEnemy), bIsCoreHit ? 1 : 0);
@@ -893,6 +901,10 @@ void ARangedWeaponBase::PlayFirstPersonFireFX(FVector TraceEnd, FVector ImpactNo
 		if (WeaponTrail)
 		{
 			VisualSubsystem->SpawnBeamTrail(WeaponTrail, Start, End);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Error, TEXT("TrailOff"))
 		}
 
 		if (Hit)

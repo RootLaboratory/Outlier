@@ -19,15 +19,13 @@ public:
 
 private:
 	void HandleBackBufferReadyRDG(FRDGBuilder& GraphBuilder, SWindow& Window, FRDGTexture* BackBuffer);
-	ULocalPlayerPostProcessSubsystem* ResolvePostProcessSubsystem();
+	ULocalPlayerPostProcessSubsystem* ResolvePostProcessSubsystem(const SWindow& Window) const;
 	void RegisterSlateHook();
-	bool IsTargetGameWindow(const SWindow& Window) const;
 #if WITH_EDITOR
 	void RegisterMenus();
 	void OpenDebugWindowFromMenu();
 #endif
 
 	FDelegateHandle BackBufferReadyHandle;
-	TWeakObjectPtr<ULocalPlayerPostProcessSubsystem> CachedPostProcessSubsystem;
 	TUniquePtr<FRDGDebugWindowManager> DebugWindowManager;
 };

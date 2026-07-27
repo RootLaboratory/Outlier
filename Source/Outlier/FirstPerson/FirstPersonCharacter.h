@@ -165,6 +165,8 @@ private:
 
 	bool IsInteractTargetByTrace(AActor* TargetActor) const;
 
+	void ArenaReload();
+
 	UPROPERTY(EditDefaultsOnly, Category = "Interaction")
 	TEnumAsByte<ECollisionChannel> InteractionTraceChannel = ECC_Visibility;
 
