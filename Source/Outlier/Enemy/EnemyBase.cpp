@@ -20,9 +20,6 @@
 #include "Room/RoomTagComponent.h"
 #include "Weapon/RangedWeaponBase.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogEnemyStateTree, Log, All);
-DEFINE_LOG_CATEGORY_STATIC(LogEnemyBattle, Log, All);
-
 AEnemyBase::AEnemyBase()
 {
 	PrimaryActorTick.bCanEverTick = false;
@@ -202,25 +199,9 @@ void AEnemyBase::SendEnemyStateTreeEvent(FGameplayTag Tag)
 {
 	if (!HasAuthority() || !Tag.IsValid() || !StateTreeComponent)
 	{
-		UE_LOG(
-			LogEnemyStateTree,
-			Warning,
-			TEXT("[StateTreeEvent] Send rejected. Enemy=%s Authority=%d Tag=%s Component=%s"),
-			*GetNameSafe(this),
-			HasAuthority(),
-			*Tag.ToString(),
-			*GetNameSafe(StateTreeComponent));
 		return;
 	}
 
-	UE_LOG(
-		LogEnemyStateTree,
-		Display,
-		TEXT("[StateTreeEvent] Send. Enemy=%s Tag=%s RunStatus=%s CombatState=%s"),
-		*GetNameSafe(this),
-		*Tag.ToString(),
-		*UEnum::GetValueAsString(StateTreeComponent->GetStateTreeRunStatus()),
-		*UEnum::GetValueAsString(CombatState));
 	StateTreeComponent->SendStateTreeEvent(Tag);
 }
 
@@ -231,12 +212,6 @@ void AEnemyBase::SendEnemyStateTreeEventNextTick(FGameplayTag Tag)
 		return;
 	}
 
-	UE_LOG(
-		LogEnemyStateTree,
-		Display,
-		TEXT("[StateTreeEvent] Deferred. Enemy=%s Tag=%s"),
-		*GetNameSafe(this),
-		*Tag.ToString());
 
 	GetWorldTimerManager().SetTimerForNextTick(
 		FTimerDelegate::CreateWeakLambda(
@@ -244,6 +219,42 @@ void AEnemyBase::SendEnemyStateTreeEventNextTick(FGameplayTag Tag)
 			[this, Tag]()
 			{
 				SendEnemyStateTreeEvent(Tag);
+			}));
+}
+
+void AEnemyBase::RequestCombatDecisionRefresh()
+{
+	if (!HasAuthority()
+		|| CombatState != EEnemyCombatState::Combat
+		|| bIsPossessed
+		|| bCombatDecisionRefreshPending)
+	{
+		return;
+	}
+
+	bCombatDecisionRefreshPending = true;
+	StopCurrentAttack();
+
+	GetWorldTimerManager().SetTimerForNextTick(
+		FTimerDelegate::CreateWeakLambda(
+			this,
+			[this]()
+			{
+				bCombatDecisionRefreshPending = false;
+
+				if (CombatState != EEnemyCombatState::Combat
+					|| bIsPossessed
+					|| bPlayerCurrentlyVisible)
+				{
+					return;
+				}
+
+				const FGameplayTag DecisionEvent = FGameplayTag::RequestGameplayTag(
+					bHasSharedTargetContact
+						? TEXT("Enemy.Event.Combat.TargetShared")
+						: TEXT("Enemy.Event.Combat.SharedTargetLost"));
+
+				SendEnemyStateTreeEvent(DecisionEvent);
 			}));
 }
 
@@ -406,22 +417,9 @@ void AEnemyBase::SetPlayerCurrentlyVisible(bool bNewVisible)
 	}
 	else
 	{
-		UE_LOG(
-			LogEnemyStateTree,
-			Display,
-			TEXT("[TargetLost] Visibility changed. Enemy=%s LastKnown=%s CombatState=%s EventDeferred=1"),
-			*GetNameSafe(this),
-			*LastKnownPlayerLocation.ToCompactString(),
-			*UEnum::GetValueAsString(CombatState));
 
 		// StateTree Global Task가 갱신된 가시성으로 전이 조건을 평가하도록 상실 이벤트를 다음 틱에 보낸다.
 		// 다음 틱 전에 재감지되었다면 오래된 TargetLost 이벤트는 폐기한다.
-		UE_LOG(
-			LogEnemyStateTree,
-			Display,
-			TEXT("[StateTreeEvent] Deferred. Enemy=%s Tag=%s"),
-			*GetNameSafe(this),
-			*PerceptionEvent.ToString());
 		GetWorldTimerManager().SetTimerForNextTick(
 			FTimerDelegate::CreateWeakLambda(
 				this,
@@ -429,24 +427,7 @@ void AEnemyBase::SetPlayerCurrentlyVisible(bool bNewVisible)
 				{
 					if (!bPlayerCurrentlyVisible)
 					{
-						UE_LOG(
-							LogEnemyStateTree,
-							Display,
-							TEXT("[TargetLost] Event confirmed. Enemy=%s Tag=%s LastKnown=%s CombatState=%s"),
-							*GetNameSafe(this),
-							*PerceptionEvent.ToString(),
-							*LastKnownPlayerLocation.ToCompactString(),
-							*UEnum::GetValueAsString(CombatState));
 						SendEnemyStateTreeEvent(PerceptionEvent);
-					}
-					else
-					{
-						UE_LOG(
-							LogEnemyStateTree,
-							Display,
-							TEXT("[TargetLost] Event cancelled by reacquisition. Enemy=%s Tag=%s"),
-							*GetNameSafe(this),
-							*PerceptionEvent.ToString());
 					}
 				}));
 	}
@@ -470,14 +451,6 @@ void AEnemyBase::ApplySharedTargetContact(const FVector& TargetLocation)
 
 	if (bContactChanged)
 	{
-		UE_LOG(
-			LogEnemyBattle,
-			Display,
-			TEXT("[TargetLostMove][SharedContactApplied] Enemy=%s Current=%s SharedLocation=%s LastKnown=%s"),
-			*GetNameSafe(this),
-			*GetActorLocation().ToCompactString(),
-			*SharedTargetLocation.ToCompactString(),
-			*LastKnownPlayerLocation.ToCompactString());
 		SendEnemyStateTreeEvent(
 			FGameplayTag::RequestGameplayTag(
 				TEXT("Enemy.Event.Combat.TargetShared")));
@@ -495,14 +468,6 @@ void AEnemyBase::ClearSharedTargetContact()
 	// 개별 Perception 콜백 순서 때문에 Partner 위치가 LKP를 덮어쓴 경우도 여기서 정규화된다.
 	UpdateLastKnownPlayerLocation(SharedTargetLocation);
 	bHasSharedTargetContact = false;
-	UE_LOG(
-		LogEnemyBattle,
-		Display,
-		TEXT("[TargetLostMove][SharedContactCleared] Enemy=%s Current=%s PreviousSharedLocation=%s LastKnown=%s"),
-		*GetNameSafe(this),
-		*GetActorLocation().ToCompactString(),
-		*SharedTargetLocation.ToCompactString(),
-		*LastKnownPlayerLocation.ToCompactString());
 
 	const FGameplayTag SharedTargetLostEvent = FGameplayTag::RequestGameplayTag(
 		TEXT("Enemy.Event.Combat.SharedTargetLost"));
@@ -867,23 +832,10 @@ bool AEnemyBase::StartAttackTarget(AActor* TargetActor)
 {
 	if (!IsValid(TargetActor))
 	{
-		UE_LOG(
-			LogEnemyBattle,
-			Warning,
-			TEXT("[Battle][Attack] Target rejected. Enemy=%s Target=%s"),
-			*GetNameSafe(this),
-			*GetNameSafe(TargetActor));
 		return false;
 	}
 
 	const bool bStarted = StartAttackLocation(TargetActor->GetActorLocation());
-	UE_LOG(
-		LogEnemyBattle,
-		Display,
-		TEXT("[Battle][Attack] Target request. Enemy=%s Target=%s Result=%s"),
-		*GetNameSafe(this),
-		*GetNameSafe(TargetActor),
-		bStarted ? TEXT("Started") : TEXT("Blocked"));
 	return bStarted;
 }
 
@@ -896,28 +848,11 @@ bool AEnemyBase::StartAttackLocation(const FVector& TargetLocation)
 	const bool bAimUpdated = bCanAttack && UpdateAttackLocation(TargetLocation);
 	if (!bAimUpdated || !bHasWeapon || !bCanAttack)
 	{
-		UE_LOG(
-			LogEnemyBattle,
-			Warning,
-			TEXT("[Battle][Attack] Start blocked. Enemy=%s Aim=%d Weapon=%s CanAttack=%d CombatState=%s Possessed=%d"),
-			*GetNameSafe(this),
-			bAimUpdated ? 1 : 0,
-			*GetNameSafe(CurrentWeapon),
-			bCanAttack ? 1 : 0,
-			*UEnum::GetValueAsString(CombatState),
-			bIsPossessed ? 1 : 0);
 		return false;
 	}
 
 	CurrentWeapon->StartAttack();
 	SetAttackPhase(EEnemyAttackPhase::Firing);
-	UE_LOG(
-		LogEnemyBattle,
-		Display,
-		TEXT("[Battle][Attack] Started. Enemy=%s Weapon=%s TargetLocation=%s"),
-		*GetNameSafe(this),
-		*GetNameSafe(CurrentWeapon),
-		*TargetLocation.ToCompactString());
 	return true;
 }
 
@@ -978,13 +913,6 @@ void AEnemyBase::SetAttackPhase(EEnemyAttackPhase NewPhase)
 
 	const EEnemyAttackPhase PreviousPhase = AttackPhase;
 	AttackPhase = NewPhase;
-	UE_LOG(
-		LogEnemyBattle,
-		Display,
-		TEXT("[Battle][AttackPhase] Enemy=%s Previous=%s New=%s"),
-		*GetNameSafe(this),
-		*UEnum::GetValueAsString(PreviousPhase),
-		*UEnum::GetValueAsString(AttackPhase));
 	OnAttackPhaseChanged(PreviousPhase, AttackPhase);
 	ForceNetUpdate();
 }
@@ -1034,6 +962,12 @@ void AEnemyBase::RemoveRoomTargetObserver()
 void AEnemyBase::HandleDeath()
 {
 	StopCurrentAttack();
+
+	if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
+	{
+		RoomSubsystem->NotifyTargetActorRemoved(this);
+	}
+
 	RemoveRoomTargetObserver();
 	ReleaseSearchRingSlot();
 
@@ -1046,6 +980,30 @@ void AEnemyBase::HandleDeath()
 		FGameplayTag::RequestGameplayTag(
 			TEXT("Enemy.Event.Died")));
 
+	if (StateTreeComponent)
+	{
+		StateTreeComponent->StopLogic(TEXT("Enemy died"));
+	}
+
+	AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(GetController());
+	if (!EnemyAIController)
+	{
+		EnemyAIController = Cast<AEnemyAIController>(CachedAIController.Get());
+	}
+
+	if (IsValid(EnemyAIController))
+	{
+		EnemyAIController->SetEnemyPerceptionEnabled(false);
+
+		if (EnemyAIController->GetPawn() == this)
+		{
+			EnemyAIController->UnPossess();
+		}
+
+		EnemyAIController->Destroy();
+	}
+
+	CachedAIController.Reset();
 	Destroy();
 }
 

@@ -30,7 +30,9 @@ struct FEnemyAttackTargetTaskInstanceData
 
 	float ElapsedTime = 0.0f;
 	float SelectedAttackDuration = 0.0f;
+	float CombatDecisionRefreshElapsed = 0.0f;
 	bool bAttackStarted = false;
+	bool bWaitingForCombatDecision = false;
 };
 
 // Actor를 추적해 조준 좌표를 매 Tick 갱신하고 지정 시간 동안 CurrentWeapon을 실행한다.

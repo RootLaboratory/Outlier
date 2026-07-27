@@ -26,6 +26,8 @@ public:
 	void RefreshPerceptionConfigFromPawn();
 	void BeginTaskDrivenControlPitch();
 	void EndTaskDrivenControlPitch();
+	// 사망 또는 리스폰으로 교체되는 액터를 감지 캐시에서 제거하고 남은 타겟을 즉시 재평가한다.
+	void ForgetDetectionTarget(AActor* TargetActor);
 
 	// 현재 Sight 대상 중 해킹 터렛, 빙의 드론, Shooter, Partner 순으로 선택한다.
 	// 같은 우선순위 안에서는 가장 가까운 대상을 반환한다.

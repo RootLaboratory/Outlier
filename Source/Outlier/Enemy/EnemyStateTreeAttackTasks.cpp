@@ -3,10 +3,10 @@
 #include "Enemy/EnemyAIController.h"
 #include "Weapon/RangedWeaponBase.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogEnemyBattleTask, Log, All);
-
 namespace
 {
+constexpr float CombatDecisionRefreshInterval = 0.25f;
+
 float SelectDuration(float MinDuration, float MaxDuration)
 {
 	// 발사 횟수는 Weapon의 연사 간격이 결정하고, Task는 자연스러운 버스트 지속시간만 선택한다.
@@ -30,6 +30,29 @@ AActor* ResolveAttackTarget(const FEnemyAttackTargetTaskInstanceData& InstanceDa
 		: nullptr;
 	return EnemyController ? EnemyController->GetPreferredVisibleTarget() : nullptr;
 }
+
+bool ShouldWaitForCombatDecision(
+	const FEnemyAttackTargetTaskInstanceData& InstanceData)
+{
+	return InstanceData.Enemy
+		&& InstanceData.Enemy->HasAuthority()
+		&& InstanceData.Enemy->GetCombatState() == EEnemyCombatState::Combat
+		&& InstanceData.bRequireVisibleTarget
+		&& !InstanceData.Enemy->IsPlayerCurrentlyVisible();
+}
+
+void BeginCombatDecisionWait(FEnemyAttackTargetTaskInstanceData& InstanceData)
+{
+	if (InstanceData.bAttackStarted)
+	{
+		InstanceData.Enemy->StopCurrentAttack();
+		InstanceData.bAttackStarted = false;
+	}
+
+	InstanceData.bWaitingForCombatDecision = true;
+	InstanceData.CombatDecisionRefreshElapsed = 0.0f;
+	InstanceData.Enemy->RequestCombatDecisionRefresh();
+}
 }
 
 FEnemyAttackTargetTask::FEnemyAttackTargetTask()
@@ -43,38 +66,33 @@ EStateTreeRunStatus FEnemyAttackTargetTask::EnterState(
 {
 	FInstanceDataType& InstanceData = Context.GetInstanceData(*this);
 	InstanceData.ElapsedTime = 0.0f;
+	InstanceData.CombatDecisionRefreshElapsed = 0.0f;
 	InstanceData.bAttackStarted = false;
+	InstanceData.bWaitingForCombatDecision = false;
 	InstanceData.SelectedAttackDuration = SelectDuration(
 		InstanceData.MinAttackDuration,
 		InstanceData.MaxAttackDuration);
 	AActor* TargetActor = ResolveAttackTarget(InstanceData);
 	if (!InstanceData.Enemy
 		|| !InstanceData.Enemy->HasAuthority()
-		|| !IsValid(TargetActor)
-		|| (InstanceData.bRequireVisibleTarget
-			&& !InstanceData.Enemy->IsPlayerCurrentlyVisible())
 		|| !IsValid(InstanceData.Enemy->GetCurrentWeapon()))
 	{
-		UE_LOG(
-			LogEnemyBattleTask,
-			Warning,
-			TEXT("[Battle][AttackTarget] Enter failed. Enemy=%s Authority=%d Target=%s Visible=%d RequireVisible=%d"),
-			*GetNameSafe(InstanceData.Enemy),
-			InstanceData.Enemy && InstanceData.Enemy->HasAuthority(),
-			*GetNameSafe(TargetActor),
-			InstanceData.Enemy && InstanceData.Enemy->IsPlayerCurrentlyVisible(),
-			InstanceData.bRequireVisibleTarget);
+		return EStateTreeRunStatus::Failed;
+	}
+
+	if (ShouldWaitForCombatDecision(InstanceData))
+	{
+		BeginCombatDecisionWait(InstanceData);
+		return EStateTreeRunStatus::Running;
+	}
+
+	if (!IsValid(TargetActor))
+	{
 		return EStateTreeRunStatus::Failed;
 	}
 
 	if (!InstanceData.Enemy->GetCurrentWeapon()->CanAttack())
 	{
-		UE_LOG(
-			LogEnemyBattleTask,
-			Verbose,
-			TEXT("[Battle][AttackTarget] Waiting for weapon. Enemy=%s Target=%s"),
-			*GetNameSafe(InstanceData.Enemy),
-			*GetNameSafe(TargetActor));
 		return EStateTreeRunStatus::Running;
 	}
 
@@ -84,13 +102,6 @@ EStateTreeRunStatus FEnemyAttackTargetTask::EnterState(
 	}
 
 	InstanceData.bAttackStarted = true;
-	UE_LOG(
-		LogEnemyBattleTask,
-		Display,
-		TEXT("[Battle][AttackTarget] Enter. Enemy=%s Target=%s Duration=%.2f"),
-		*GetNameSafe(InstanceData.Enemy),
-		*GetNameSafe(TargetActor),
-		InstanceData.SelectedAttackDuration);
 	return EStateTreeRunStatus::Running;
 }
 
@@ -102,19 +113,40 @@ EStateTreeRunStatus FEnemyAttackTargetTask::Tick(
 	AActor* TargetActor = ResolveAttackTarget(InstanceData);
 	if (!InstanceData.Enemy
 		|| !InstanceData.Enemy->HasAuthority()
-		|| !IsValid(TargetActor)
-		|| (InstanceData.bRequireVisibleTarget
-			&& !InstanceData.Enemy->IsPlayerCurrentlyVisible())
 		|| !IsValid(InstanceData.Enemy->GetCurrentWeapon()))
 	{
-		UE_LOG(
-			LogEnemyBattleTask,
-			Warning,
-			TEXT("[Battle][AttackTarget] Tick failed. Enemy=%s Target=%s Visible=%d"),
-			*GetNameSafe(InstanceData.Enemy),
-			*GetNameSafe(TargetActor),
-			InstanceData.Enemy && InstanceData.Enemy->IsPlayerCurrentlyVisible());
 		return EStateTreeRunStatus::Failed;
+	}
+
+	if (ShouldWaitForCombatDecision(InstanceData))
+	{
+		if (!InstanceData.bWaitingForCombatDecision)
+		{
+			BeginCombatDecisionWait(InstanceData);
+		}
+		else
+		{
+			InstanceData.CombatDecisionRefreshElapsed += DeltaTime;
+			if (InstanceData.CombatDecisionRefreshElapsed
+				>= CombatDecisionRefreshInterval)
+			{
+				InstanceData.CombatDecisionRefreshElapsed = 0.0f;
+				InstanceData.Enemy->RequestCombatDecisionRefresh();
+			}
+		}
+
+		return EStateTreeRunStatus::Running;
+	}
+
+	if (!IsValid(TargetActor))
+	{
+		return EStateTreeRunStatus::Failed;
+	}
+
+	if (InstanceData.bWaitingForCombatDecision)
+	{
+		InstanceData.bWaitingForCombatDecision = false;
+		InstanceData.CombatDecisionRefreshElapsed = 0.0f;
 	}
 
 	if (!InstanceData.bAttackStarted)
@@ -131,38 +163,17 @@ EStateTreeRunStatus FEnemyAttackTargetTask::Tick(
 
 		InstanceData.bAttackStarted = true;
 		InstanceData.ElapsedTime = 0.0f;
-		UE_LOG(
-			LogEnemyBattleTask,
-			Display,
-			TEXT("[Battle][AttackTarget] Started after wait. Enemy=%s Target=%s Duration=%.2f"),
-			*GetNameSafe(InstanceData.Enemy),
-			*GetNameSafe(TargetActor),
-			InstanceData.SelectedAttackDuration);
 		return EStateTreeRunStatus::Running;
 	}
 
 	if (!InstanceData.Enemy->UpdateAttackLocation(TargetActor->GetActorLocation()))
 	{
-		UE_LOG(
-			LogEnemyBattleTask,
-			Warning,
-			TEXT("[Battle][AttackTarget] Tick failed. Enemy=%s Target=%s Visible=%d"),
-			*GetNameSafe(InstanceData.Enemy),
-			*GetNameSafe(TargetActor),
-			InstanceData.Enemy->IsPlayerCurrentlyVisible());
 		return EStateTreeRunStatus::Failed;
 	}
 
 	InstanceData.ElapsedTime += DeltaTime;
 	if (InstanceData.ElapsedTime >= InstanceData.SelectedAttackDuration)
 	{
-		UE_LOG(
-			LogEnemyBattleTask,
-			Display,
-			TEXT("[Battle][AttackTarget] Completed. Enemy=%s Target=%s Elapsed=%.2f"),
-			*GetNameSafe(InstanceData.Enemy),
-			*GetNameSafe(TargetActor),
-			InstanceData.ElapsedTime);
 		return EStateTreeRunStatus::Succeeded;
 	}
 
@@ -177,11 +188,6 @@ void FEnemyAttackTargetTask::ExitState(
 	if (InstanceData.Enemy && InstanceData.bAttackStarted)
 	{
 		InstanceData.Enemy->StopCurrentAttack();
-		UE_LOG(
-			LogEnemyBattleTask,
-			Display,
-			TEXT("[Battle][AttackTarget] Exit. Enemy=%s"),
-			*GetNameSafe(InstanceData.Enemy));
 	}
 }
 
@@ -204,24 +210,11 @@ EStateTreeRunStatus FEnemyAttackLocationTask::EnterState(
 		|| !InstanceData.Enemy->HasAuthority()
 		|| !IsValid(InstanceData.Enemy->GetCurrentWeapon()))
 	{
-		UE_LOG(
-			LogEnemyBattleTask,
-			Warning,
-			TEXT("[Battle][AttackLocation] Enter failed. Enemy=%s Authority=%d Location=%s"),
-			*GetNameSafe(InstanceData.Enemy),
-			InstanceData.Enemy && InstanceData.Enemy->HasAuthority(),
-			*InstanceData.TargetLocation.ToCompactString());
 		return EStateTreeRunStatus::Failed;
 	}
 
 	if (!InstanceData.Enemy->GetCurrentWeapon()->CanAttack())
 	{
-		UE_LOG(
-			LogEnemyBattleTask,
-			Verbose,
-			TEXT("[Battle][AttackLocation] Waiting for weapon. Enemy=%s Location=%s"),
-			*GetNameSafe(InstanceData.Enemy),
-			*InstanceData.TargetLocation.ToCompactString());
 		return EStateTreeRunStatus::Running;
 	}
 
@@ -231,13 +224,6 @@ EStateTreeRunStatus FEnemyAttackLocationTask::EnterState(
 	}
 
 	InstanceData.bAttackStarted = true;
-	UE_LOG(
-		LogEnemyBattleTask,
-		Display,
-		TEXT("[Battle][AttackLocation] Enter. Enemy=%s Location=%s Duration=%.2f"),
-		*GetNameSafe(InstanceData.Enemy),
-		*InstanceData.TargetLocation.ToCompactString(),
-		InstanceData.SelectedAttackDuration);
 	return EStateTreeRunStatus::Running;
 }
 
@@ -250,12 +236,6 @@ EStateTreeRunStatus FEnemyAttackLocationTask::Tick(
 		|| !InstanceData.Enemy->HasAuthority()
 		|| !IsValid(InstanceData.Enemy->GetCurrentWeapon()))
 	{
-		UE_LOG(
-			LogEnemyBattleTask,
-			Warning,
-			TEXT("[Battle][AttackLocation] Tick failed. Enemy=%s Location=%s"),
-			*GetNameSafe(InstanceData.Enemy),
-			*InstanceData.TargetLocation.ToCompactString());
 		return EStateTreeRunStatus::Failed;
 	}
 
@@ -273,37 +253,17 @@ EStateTreeRunStatus FEnemyAttackLocationTask::Tick(
 
 		InstanceData.bAttackStarted = true;
 		InstanceData.ElapsedTime = 0.0f;
-		UE_LOG(
-			LogEnemyBattleTask,
-			Display,
-			TEXT("[Battle][AttackLocation] Started after wait. Enemy=%s Location=%s Duration=%.2f"),
-			*GetNameSafe(InstanceData.Enemy),
-			*InstanceData.TargetLocation.ToCompactString(),
-			InstanceData.SelectedAttackDuration);
 		return EStateTreeRunStatus::Running;
 	}
 
 	if (!InstanceData.Enemy->UpdateAttackLocation(InstanceData.TargetLocation))
 	{
-		UE_LOG(
-			LogEnemyBattleTask,
-			Warning,
-			TEXT("[Battle][AttackLocation] Tick failed. Enemy=%s Location=%s"),
-			*GetNameSafe(InstanceData.Enemy),
-			*InstanceData.TargetLocation.ToCompactString());
 		return EStateTreeRunStatus::Failed;
 	}
 
 	InstanceData.ElapsedTime += DeltaTime;
 	if (InstanceData.ElapsedTime >= InstanceData.SelectedAttackDuration)
 	{
-		UE_LOG(
-			LogEnemyBattleTask,
-			Display,
-			TEXT("[Battle][AttackLocation] Completed. Enemy=%s Location=%s Elapsed=%.2f"),
-			*GetNameSafe(InstanceData.Enemy),
-			*InstanceData.TargetLocation.ToCompactString(),
-			InstanceData.ElapsedTime);
 		return EStateTreeRunStatus::Succeeded;
 	}
 
@@ -318,11 +278,6 @@ void FEnemyAttackLocationTask::ExitState(
 	if (InstanceData.Enemy && InstanceData.bAttackStarted)
 	{
 		InstanceData.Enemy->StopCurrentAttack();
-		UE_LOG(
-			LogEnemyBattleTask,
-			Display,
-			TEXT("[Battle][AttackLocation] Exit. Enemy=%s"),
-			*GetNameSafe(InstanceData.Enemy));
 	}
 }
 
@@ -347,13 +302,6 @@ EStateTreeRunStatus FEnemyAttackPhaseWaitTask::EnterState(
 		InstanceData.MaxDuration);
 	// 서버가 단계만 확정하고 복제하며, 실제 전조·회복 연출은 Enemy BP가 선택한다.
 	InstanceData.Enemy->SetAttackPhase(InstanceData.Phase);
-	UE_LOG(
-		LogEnemyBattleTask,
-		Display,
-		TEXT("[Battle][AttackPhaseWait] Enter. Enemy=%s Phase=%s Duration=%.2f"),
-		*GetNameSafe(InstanceData.Enemy),
-		*UEnum::GetValueAsString(InstanceData.Phase),
-		InstanceData.SelectedDuration);
 	return InstanceData.SelectedDuration <= 0.0f
 		? EStateTreeRunStatus::Succeeded
 		: EStateTreeRunStatus::Running;
@@ -372,13 +320,6 @@ EStateTreeRunStatus FEnemyAttackPhaseWaitTask::Tick(
 	InstanceData.ElapsedTime += DeltaTime;
 	if (InstanceData.ElapsedTime >= InstanceData.SelectedDuration)
 	{
-		UE_LOG(
-			LogEnemyBattleTask,
-			Display,
-			TEXT("[Battle][AttackPhaseWait] Completed. Enemy=%s Phase=%s Elapsed=%.2f"),
-			*GetNameSafe(InstanceData.Enemy),
-			*UEnum::GetValueAsString(InstanceData.Phase),
-			InstanceData.ElapsedTime);
 		return EStateTreeRunStatus::Succeeded;
 	}
 

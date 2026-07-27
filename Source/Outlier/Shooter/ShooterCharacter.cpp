@@ -21,6 +21,7 @@
 #include "LocalPlayerUISubSystem.h"
 #include "InputActionValue.h"
 #include "Drone/Partner/PartnerCharacter.h"
+#include "Enemy/EnemyRoomSubsystem.h"
 #include "TagDrivenUIGameplayTags.h"
 #include "ShooterInputConfig.h"
 #include "ShooterHealthComponent.h"
@@ -578,6 +579,19 @@ void AShooterCharacter::ToggleStealth()
 	{
 		CachedPartnerCharacter->SetTestStealthed(bIsStealthed);
 	}
+
+	if (!bIsStealthed)
+	{
+		if (UEnemyRoomSubsystem* EnemyRoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
+		{
+			EnemyRoomSubsystem->RefreshDetectionTarget(this);
+			if (IsValid(CachedPartnerCharacter))
+			{
+				EnemyRoomSubsystem->RefreshDetectionTarget(CachedPartnerCharacter);
+			}
+		}
+	}
+
 	OnRep_IsStealthed();
 	ForceNetUpdate();
 }

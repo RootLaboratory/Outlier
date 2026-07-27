@@ -3,11 +3,9 @@
 #include "Enemy/EnemyRoomSubsystem.h"
 #include "Engine/World.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogEnemyTacticalTask, Log, All);
-
 namespace
 {
-constexpr float MinimumEnemyFlightZ = 150.0f;
+constexpr float MinimumTacticalFlightZ = 150.0f;
 
 bool ResolveFloorAdjustedLocation(
 	UWorld& World,
@@ -33,7 +31,7 @@ bool ResolveFloorAdjustedLocation(
 		HorizontalLocation.Y,
 		FMath::Max(
 			FloorHit.ImpactPoint.Z + FlightHeightOffset,
-			MinimumEnemyFlightZ));
+			MinimumTacticalFlightZ));
 	return true;
 }
 }
@@ -60,7 +58,7 @@ EStateTreeRunStatus FEnemyRequestSearchRingSlotTask::EnterState(
 	InstanceData.Destination = InstanceData.Enemy->GetActorLocation();
 	InstanceData.Destination.Z = FMath::Max(
 		InstanceData.Destination.Z,
-		MinimumEnemyFlightZ);
+		MinimumTacticalFlightZ);
 	InstanceData.FacingLocation = InstanceData.SearchCenter;
 
 	UEnemyRoomSubsystem* RoomSubsystem =
@@ -75,32 +73,9 @@ EStateTreeRunStatus FEnemyRequestSearchRingSlotTask::EnterState(
 			InstanceData.FloorTraceHalfHeight,
 			InstanceData.Destination))
 	{
-		UE_LOG(
-			LogEnemyTacticalTask,
-			Warning,
-			TEXT("[TargetLostMove][SearchRingFailed] Enemy=%s Center=%s Current=%s Radius=%.1f FlightHeightOffset=%.1f ArenaId=%d Visible=%d SharedContact=%d MoveSpeed=%.1f"),
-			*GetNameSafe(InstanceData.Enemy),
-			*InstanceData.SearchCenter.ToCompactString(),
-			*InstanceData.Enemy->GetActorLocation().ToCompactString(),
-			InstanceData.RingRadius,
-			InstanceData.FlightHeightOffset,
-			InstanceData.Enemy->GetLastKnownArenaId(),
-			InstanceData.Enemy->IsPlayerCurrentlyVisible() ? 1 : 0,
-			InstanceData.Enemy->HasSharedTargetContact() ? 1 : 0,
-			InstanceData.Enemy->GetRuntimeStat().MoveSpeed);
 		return EStateTreeRunStatus::Failed;
 	}
 
-	UE_LOG(
-		LogEnemyTacticalTask,
-		Display,
-		TEXT("[TargetLostMove][SearchRingAssigned] Enemy=%s Current=%s Center=%s Destination=%s Delta=%s Radius=%.1f"),
-		*GetNameSafe(InstanceData.Enemy),
-		*InstanceData.Enemy->GetActorLocation().ToCompactString(),
-		*InstanceData.SearchCenter.ToCompactString(),
-		*InstanceData.Destination.ToCompactString(),
-		*(InstanceData.Destination - InstanceData.Enemy->GetActorLocation()).ToCompactString(),
-		FVector::Dist2D(InstanceData.SearchCenter, InstanceData.Destination));
 	return EStateTreeRunStatus::Running;
 }
 
@@ -202,6 +177,6 @@ EStateTreeRunStatus FEnemySelectSuppressiveFireLocationTask::EnterState(
 			0.0f);
 	InstanceData.AttackLocation.Z = FMath::Max(
 		InstanceData.AttackLocation.Z,
-		MinimumEnemyFlightZ);
+		MinimumTacticalFlightZ);
 	return EStateTreeRunStatus::Succeeded;
 }

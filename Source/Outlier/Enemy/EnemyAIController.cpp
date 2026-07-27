@@ -16,8 +16,6 @@
 #include "Shooter/ShooterCharacter.h"
 #include "Team/OutlierTeamIds.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogEnemyPerception, Log, All);
-
 namespace
 {
 	enum class EEnemyTargetPriority : uint8
@@ -129,6 +127,40 @@ void AEnemyAIController::EndTaskDrivenControlPitch()
 	TaskDrivenControlPitchCount = FMath::Max(TaskDrivenControlPitchCount - 1, 0);
 }
 
+void AEnemyAIController::ForgetDetectionTarget(AActor* TargetActor)
+{
+	if (!IsValid(TargetActor) || !EnemyPerceptionComponent)
+	{
+		return;
+	}
+
+	EnemyPerceptionComponent->ForgetActor(TargetActor);
+	ProcessedStealthedTargets.Remove(TWeakObjectPtr<AActor>(TargetActor));
+	// Gameplay Tag 변화만으로는 Sight 쿼리가 즉시 다시 평가되지 않을 수 있다.
+	// 이전 결과를 지운 뒤 리스너를 갱신해 스텔스 해제 대상을 새 감지로 처리한다.
+	EnemyPerceptionComponent->RequestStimuliListenerUpdate();
+
+	AEnemyBase* Enemy = Cast<AEnemyBase>(GetPawn());
+	if (!IsValid(Enemy) || Enemy->IsEnemyPossessed())
+	{
+		return;
+	}
+
+	AActor* PreferredTarget = GetPreferredVisibleTarget();
+	const bool bHasVisibleTarget = IsValid(PreferredTarget);
+	Enemy->SetPlayerCurrentlyVisible(bHasVisibleTarget);
+
+	if (bHasVisibleTarget)
+	{
+		StartSharedTargetReporting();
+		RefreshSharedTargetContact();
+	}
+	else
+	{
+		StopSharedTargetReporting(true);
+	}
+}
+
 void AEnemyAIController::RefreshPerceptionConfigFromPawn()
 {
 	if (AEnemyBase* Enemy = Cast<AEnemyBase>(GetPawn()))
@@ -226,14 +258,6 @@ void AEnemyAIController::HandleTargetPerceptionUpdated(AActor* Actor, FAIStimulu
 
 		ProcessedStealthedTargets.Add(TargetKey);
 		const bool bAnyPlayerVisible = HasAnyVisiblePlayer();
-		UE_LOG(
-			LogEnemyPerception,
-			Display,
-			TEXT("[TargetLost][Stealth] Enemy=%s Target=%s AnyOtherTargetVisible=%d CombatState=%s"),
-			*GetNameSafe(Enemy),
-			*GetNameSafe(Actor),
-			bAnyPlayerVisible ? 1 : 0,
-			*UEnum::GetValueAsString(Enemy->GetCombatState()));
 		Enemy->SetPlayerCurrentlyVisible(bAnyPlayerVisible);
 		if (bAnyPlayerVisible)
 		{
@@ -290,16 +314,6 @@ void AEnemyAIController::HandleSightStimulus(AEnemyBase* Enemy, AActor* Actor, c
 	}
 
 	const bool bAnyPlayerVisible = HasAnyVisiblePlayer();
-	UE_LOG(
-		LogEnemyPerception,
-		Display,
-		TEXT("[TargetLost][Sight] Enemy=%s Target=%s StimulusAge=%.2f AnyOtherTargetVisible=%d LastKnown=%s CombatState=%s"),
-		*GetNameSafe(Enemy),
-		*GetNameSafe(Actor),
-		Stimulus.GetAge(),
-		bAnyPlayerVisible ? 1 : 0,
-		*Enemy->GetLastKnownPlayerLocation().ToCompactString(),
-		*UEnum::GetValueAsString(Enemy->GetCombatState()));
 	if (bAnyPlayerVisible)
 	{
 		StartSharedTargetReporting();
@@ -466,12 +480,6 @@ void AEnemyAIController::ForgetStealthedPerceivedActors()
 			}
 
 			ProcessedStealthedTargets.Add(TargetKey);
-			UE_LOG(
-				LogEnemyPerception,
-				Display,
-				TEXT("[TargetLost][StealthCache] Enemy=%s Target=%s Action=ForgetActor"),
-				*GetNameSafe(GetPawn()),
-				*GetNameSafe(Actor));
 		}
 	}
 }
@@ -506,7 +514,6 @@ void AEnemyAIController::ConfigureHearingFromEnemy(AEnemyBase* Enemy)
 	const float HearingRange = Enemy->IsInCombat() ? RuntimeStat.BattleHearingRange : RuntimeStat.HearingRange;
 
 	HearingConfig->HearingRange = FMath::Max(HearingRange, 0.0f);
-	UE_LOG(LogTemp, Warning, TEXT("%f"), HearingConfig->HearingRange);
 	EnemyPerceptionComponent->ConfigureSense(*HearingConfig);
 	EnemyPerceptionComponent->RequestStimuliListenerUpdate();
 }
@@ -526,9 +533,24 @@ int32 AEnemyAIController::ResolveArenaIdFromTarget(const AActor* TargetActor) co
 bool AEnemyAIController::IsValidDetectionTarget(const AActor* TargetActor) const
 {
 	const APawn* TargetPawn = Cast<APawn>(TargetActor);
-	return TargetPawn
-		&& TargetPawn->GetPlayerState<AOutlierPlayerState>() != nullptr
-		&& !IsStealthedDetectionTarget(TargetActor);
+	if (!TargetPawn
+		|| TargetPawn->GetPlayerState<AOutlierPlayerState>() == nullptr
+		|| IsStealthedDetectionTarget(TargetActor))
+	{
+		return false;
+	}
+
+	if (const AShooterCharacter* Shooter = Cast<AShooterCharacter>(TargetActor))
+	{
+		return !Shooter->IsDead();
+	}
+
+	if (const AEnemyBase* EnemyTarget = Cast<AEnemyBase>(TargetActor))
+	{
+		return EnemyTarget->GetCurrentHealth() > 0.0f;
+	}
+
+	return true;
 }
 
 bool AEnemyAIController::IsStealthedDetectionTarget(const AActor* TargetActor) const

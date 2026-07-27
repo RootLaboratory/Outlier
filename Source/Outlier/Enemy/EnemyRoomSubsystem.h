@@ -69,6 +69,10 @@ public:
 
 	// Observer가 시야를 잃거나 전투 행동에서 이탈하면 직접 관측자 집합에서 제거한다.
 	void RemoveRoomTargetObserver(AEnemyBase* Observer);
+	// 사망 또는 리스폰으로 교체되는 타겟을 방 공유 접촉과 Enemy Perception에서 제거한다.
+	void NotifyTargetActorRemoved(AActor* TargetActor);
+	// 스텔스 해제처럼 Actor는 유지되지만 감지 조건이 바뀐 경우 등록된 Enemy의 Sight를 다시 평가한다.
+	void RefreshDetectionTarget(AActor* TargetActor);
 
 	// 전투 중이며 플레이어를 놓친 이동 가능 Enemy에게 LKP 원형 슬롯을 배정한다.
 	// 중심/반경/높이 설정 또는 참여 개체가 달라지면 같은 방의 슬롯을 다시 계산한다.

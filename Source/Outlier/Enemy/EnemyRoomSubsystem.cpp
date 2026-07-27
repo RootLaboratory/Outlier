@@ -1,12 +1,11 @@
 #include "Enemy/EnemyRoomSubsystem.h"
 
+#include "Enemy/EnemyAIController.h"
 #include "Enemy/EnemyBase.h"
 #include "Engine/Level.h"
 #include "Engine/World.h"
 #include "Network/OutlierArenaPoolSubsystem.h"
 #include "Subsystems/SubsystemCollection.h"
-
-DEFINE_LOG_CATEGORY_STATIC(LogEnemyRoom, Log, All);
 
 void UEnemyRoomSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -74,7 +73,6 @@ void UEnemyRoomSubsystem::NotifyRoomCombat(int32 ArenaId, FGameplayTag RoomTag, 
 
 	CompactRegisteredEnemies();
 
-	int32 PropagatedEnemyCount = 0;
 	for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : RegisteredEnemies)
 	{
 		AEnemyBase* Enemy = EnemyPtr.Get();
@@ -87,18 +85,8 @@ void UEnemyRoomSubsystem::NotifyRoomCombat(int32 ArenaId, FGameplayTag RoomTag, 
 		}
 
 		Enemy->EnterCombatInArena(PlayerLocation, ArenaId, false);
-		++PropagatedEnemyCount;
 	}
 
-	UE_LOG(
-		LogEnemyRoom,
-		Display,
-		TEXT("[RoomCombat] ArenaId=%d RoomTag=%s Source=%s Registered=%d Propagated=%d"),
-		ArenaId,
-		*RoomTag.ToString(),
-		*GetNameSafe(ExcludeEnemy),
-		RegisteredEnemies.Num(),
-		PropagatedEnemyCount);
 
 	const FEnemyRoomSearchKey Key{ArenaId, RoomTag};
 	if (const FEnemyRoomTargetContactState* ContactState = TargetContactStates.Find(Key))
@@ -186,6 +174,55 @@ void UEnemyRoomSubsystem::RemoveRoomTargetObserver(AEnemyBase* Observer)
 	}
 }
 
+void UEnemyRoomSubsystem::NotifyTargetActorRemoved(AActor* TargetActor)
+{
+	UWorld* World = GetWorld();
+	if (!World || World->GetNetMode() == NM_Client || !TargetActor)
+	{
+		return;
+	}
+
+	TArray<FEnemyRoomSearchKey> RemovedContactKeys;
+	for (auto ContactIt = TargetContactStates.CreateIterator(); ContactIt; ++ContactIt)
+	{
+		if (ContactIt.Value().TargetActor.Get() == TargetActor
+			|| !ContactIt.Value().TargetActor.IsValid())
+		{
+			RemovedContactKeys.Add(ContactIt.Key());
+			ContactIt.RemoveCurrent();
+		}
+	}
+
+	for (const FEnemyRoomSearchKey& Key : RemovedContactKeys)
+	{
+		BroadcastSharedTargetLost(Key);
+	}
+
+	RefreshDetectionTarget(TargetActor);
+}
+
+void UEnemyRoomSubsystem::RefreshDetectionTarget(AActor* TargetActor)
+{
+	UWorld* World = GetWorld();
+	if (!World || World->GetNetMode() == NM_Client || !IsValid(TargetActor))
+	{
+		return;
+	}
+
+	CompactRegisteredEnemies();
+	for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : RegisteredEnemies)
+	{
+		AEnemyBase* Enemy = EnemyPtr.Get();
+		AEnemyAIController* AIController = IsValid(Enemy)
+			? Cast<AEnemyAIController>(Enemy->GetController())
+			: nullptr;
+		if (AIController)
+		{
+			AIController->ForgetDetectionTarget(TargetActor);
+		}
+	}
+}
+
 bool UEnemyRoomSubsystem::RequestSearchRingSlot(
 	AEnemyBase* Enemy,
 	const FVector& Center,
@@ -210,19 +247,6 @@ bool UEnemyRoomSubsystem::RequestSearchRingSlot(
 		|| Enemy->IsEnemyPossessed()
 		|| !RoomTag.IsValid())
 	{
-		UE_LOG(
-			LogEnemyRoom,
-			Warning,
-			TEXT("[SearchRing][RequestRejected] Enemy=%s Authority=%d ArenaId=%d RoomTag=%s MoveSpeed=%.1f CombatState=%s Visible=%d SharedContact=%d Possessed=%d"),
-			*GetNameSafe(Enemy),
-			Enemy->HasAuthority() ? 1 : 0,
-			Enemy->GetLastKnownArenaId(),
-			*RoomTag.ToString(),
-			Enemy->GetRuntimeStat().MoveSpeed,
-			*UEnum::GetValueAsString(Enemy->GetCombatState()),
-			Enemy->IsPlayerCurrentlyVisible() ? 1 : 0,
-			Enemy->HasSharedTargetContact() ? 1 : 0,
-			Enemy->IsEnemyPossessed() ? 1 : 0);
 		return false;
 	}
 
@@ -305,15 +329,6 @@ bool UEnemyRoomSubsystem::RebuildSearchRingAssignments(
 	ULevel* ArenaLevel = ArenaPool ? ArenaPool->GetArenaLoadedLevel(Key.ArenaId) : nullptr;
 	if (!World || !ArenaLevel)
 	{
-		UE_LOG(
-			LogEnemyRoom,
-			Warning,
-			TEXT("[SearchRing][RebuildRejected] ArenaId=%d RoomTag=%s World=%d ArenaPool=%d ArenaLevel=%d"),
-			Key.ArenaId,
-			*Key.RoomTag.ToString(),
-			World ? 1 : 0,
-			ArenaPool ? 1 : 0,
-			ArenaLevel ? 1 : 0);
 		return false;
 	}
 
@@ -339,13 +354,6 @@ bool UEnemyRoomSubsystem::RebuildSearchRingAssignments(
 
 	if (EligibleEnemies.IsEmpty())
 	{
-		UE_LOG(
-			LogEnemyRoom,
-			Warning,
-			TEXT("[SearchRing][NoEligibleEnemies] ArenaId=%d RoomTag=%s Registered=%d"),
-			Key.ArenaId,
-			*Key.RoomTag.ToString(),
-			RegisteredEnemies.Num());
 		SearchStates.Remove(Key);
 		return false;
 	}
@@ -412,16 +420,6 @@ bool UEnemyRoomSubsystem::RebuildSearchRingAssignments(
 
 	if (AvailableSlots.Num() != EligibleEnemies.Num())
 	{
-		UE_LOG(
-			LogEnemyRoom,
-			Warning,
-			TEXT("[SearchRing] No floor-valid layout. ArenaId=%d RoomTag=%s Center=%s Radius=%.1f EnemyCount=%d TraceHalfHeight=%.1f"),
-			Key.ArenaId,
-			*Key.RoomTag.ToString(),
-			*Center.ToCompactString(),
-			SafeRadius,
-			EligibleEnemies.Num(),
-			TraceHalfHeight);
 		return false;
 	}
 

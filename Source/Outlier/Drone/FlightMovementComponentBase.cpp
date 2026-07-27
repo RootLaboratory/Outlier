@@ -106,6 +106,12 @@ void UFlightMovementComponentBase::ResetMovementFeel()
 	bRollReboundActive = false;
 	PitchReboundTarget = 0.0f;
 	RollReboundTarget = 0.0f;
+	bMeshPitchReboundActive = false;
+	bMeshRollReboundActive = false;
+	MeshPitchReboundTarget = 0.0f;
+	MeshRollReboundTarget = 0.0f;
+	PreviousMeshTargetPitch = 0.0f;
+	PreviousMeshTargetRoll = 0.0f;
 	bMeshRotationInitialized = false;
 }
 
@@ -578,18 +584,46 @@ void UFlightMovementComponentBase::UpdateMeshInertialTilt(
 		EffectiveMaxRoll
 	);
 
+	// 메시도 감속하거나 선회 방향이 바뀔 때 반대 방향으로 짧게 튕겨야
+	// AI 비행이 목표 각도만 부드럽게 따라가는 느낌에 머물지 않는다.
+	float PitchInterpSpeedMultiplier = 1.0f;
+	const float ResolvedMeshPitch = ResolveInertialReboundAxis(
+		CurrentMeshPitch,
+		TargetMeshPitch,
+		EffectiveMaxPitch,
+		Kinematics.SpeedAlpha,
+		Kinematics.MassFactor,
+		PreviousMeshTargetPitch,
+		bMeshPitchReboundActive,
+		MeshPitchReboundTarget,
+		PitchInterpSpeedMultiplier
+	);
+
+	float RollInterpSpeedMultiplier = 1.0f;
+	const float ResolvedMeshRoll = ResolveInertialReboundAxis(
+		CurrentMeshRoll,
+		TargetMeshRoll,
+		EffectiveMaxRoll,
+		Kinematics.SpeedAlpha,
+		Kinematics.MassFactor,
+		PreviousMeshTargetRoll,
+		bMeshRollReboundActive,
+		MeshRollReboundTarget,
+		RollInterpSpeedMultiplier
+	);
+
 	const float MeshInterpSpeed = CameraRollInterpSpeed / Kinematics.MassFactor;
 	CurrentMeshPitch = FMath::FInterpTo(
 		CurrentMeshPitch,
-		TargetMeshPitch,
+		ResolvedMeshPitch,
 		DeltaTime,
-		MeshInterpSpeed
+		MeshInterpSpeed * PitchInterpSpeedMultiplier
 	);
 	CurrentMeshRoll = FMath::FInterpTo(
 		CurrentMeshRoll,
-		TargetMeshRoll,
+		ResolvedMeshRoll,
 		DeltaTime,
-		MeshInterpSpeed
+		MeshInterpSpeed * RollInterpSpeedMultiplier
 	);
 
 	PreviousActorYaw = CurrentActorYaw;

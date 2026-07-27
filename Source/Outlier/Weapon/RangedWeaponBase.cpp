@@ -36,8 +36,6 @@
 #include "Interface/RoomTagInterface.h"
 #include "Interface/WeaponMuzzleProvider.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogEnemyBattleWeapon, Log, All);
-
 void ARangedWeaponBase::StartAttackCooldown()
 {
 	bAttackOnCooldown = true;
@@ -215,49 +213,16 @@ void ARangedWeaponBase::FireShot()
 		UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot hit Target=%s Start=%s End=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(Hit.GetActor()), *Start.ToString(), *End.ToString());
 		const float HitDistance = FVector::Distance(Start, Hit.ImpactPoint);
 		const float DamageToApply = GetDamageAtDistance(HitDistance);
-		if (const AEnemyBase* EnemyOwner = Cast<AEnemyBase>(OwnerCharacter))
-		{
-			UE_LOG(
-				LogEnemyBattleWeapon,
-				Display,
-				TEXT("[Battle][Shot] Enemy=%s Weapon=%s Result=Hit Target=%s Damage=%.1f Distance=%.1f Impact=%s"),
-				*GetNameSafe(EnemyOwner),
-				*GetNameSafe(this),
-				*GetNameSafe(Hit.GetActor()),
-				DamageToApply,
-				HitDistance,
-				*Hit.ImpactPoint.ToCompactString());
-		}
 
 		if (APartnerShieldSphere* Shield = Cast<APartnerShieldSphere>(Hit.GetActor()))
 		{
 			Shield->ApplyShieldDamage(DamageToApply);
 			UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot applied Shield Damage=%.1f To=%s"), OutlierNet::GetNetPrefix(this), *GetName(), DamageToApply, *GetNameSafe(Shield));
-			if (const AEnemyBase* EnemyOwner = Cast<AEnemyBase>(OwnerCharacter))
-			{
-				UE_LOG(
-					LogEnemyBattleWeapon,
-					Display,
-					TEXT("[Battle][Damage] Enemy=%s Type=Shield Target=%s Applied=%.1f"),
-					*GetNameSafe(EnemyOwner),
-					*GetNameSafe(Shield),
-					DamageToApply);
-			}
 		}
 		else if (AShooterCharacter* HitCharacter = Cast<AShooterCharacter>(Hit.GetActor()))
 		{
 			HitCharacter->ApplyDamageInternal(DamageToApply);
 			UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot applied Damage=%.1f To=%s"), OutlierNet::GetNetPrefix(this), *GetName(), DamageToApply, *GetNameSafe(HitCharacter));
-			if (const AEnemyBase* EnemyOwner = Cast<AEnemyBase>(OwnerCharacter))
-			{
-				UE_LOG(
-					LogEnemyBattleWeapon,
-					Display,
-					TEXT("[Battle][Damage] Enemy=%s Type=Shooter Target=%s Applied=%.1f"),
-					*GetNameSafe(EnemyOwner),
-					*GetNameSafe(HitCharacter),
-					DamageToApply);
-			}
 		}
 		else if (AEnemyBase* HitEnemy = Cast<AEnemyBase>(Hit.GetActor()))
 		{
@@ -287,46 +252,15 @@ void ARangedWeaponBase::FireShot()
 
 			HitEnemy->ApplyDamageInternal(DamageToApply, bIsCoreHit);
 			UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot applied Enemy Damage=%.1f To=%s Core=%d"), OutlierNet::GetNetPrefix(this), *GetName(), DamageToApply, *GetNameSafe(HitEnemy), bIsCoreHit ? 1 : 0);
-			if (const AEnemyBase* EnemyOwner = Cast<AEnemyBase>(OwnerCharacter))
-			{
-				UE_LOG(
-					LogEnemyBattleWeapon,
-					Display,
-					TEXT("[Battle][Damage] Enemy=%s Type=Enemy Target=%s Applied=%.1f Core=%d"),
-					*GetNameSafe(EnemyOwner),
-					*GetNameSafe(HitEnemy),
-					DamageToApply,
-					bIsCoreHit ? 1 : 0);
-			}
 		}
 		else if (APartnerCharacter* PartnerCharacter = Cast<APartnerCharacter>(Hit.GetActor()))
 		{
 			PartnerCharacter->HandlePartnerHit();
-			if (const AEnemyBase* EnemyOwner = Cast<AEnemyBase>(OwnerCharacter))
-			{
-				UE_LOG(
-					LogEnemyBattleWeapon,
-					Display,
-					TEXT("[Battle][Shot] Partner hit delivered. Enemy=%s Target=%s"),
-					*GetNameSafe(EnemyOwner),
-					*GetNameSafe(PartnerCharacter));
-			}
 		}
 	}
 	else
 	{
 		UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot miss Start=%s End=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *Start.ToString(), *End.ToString());
-		if (const AEnemyBase* EnemyOwner = Cast<AEnemyBase>(OwnerCharacter))
-		{
-			UE_LOG(
-				LogEnemyBattleWeapon,
-				Display,
-				TEXT("[Battle][Shot] Enemy=%s Weapon=%s Result=Miss Start=%s End=%s"),
-				*GetNameSafe(EnemyOwner),
-				*GetNameSafe(this),
-				*Start.ToCompactString(),
-				*End.ToCompactString());
-		}
 	}
 
 

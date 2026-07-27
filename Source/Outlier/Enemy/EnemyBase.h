@@ -237,6 +237,10 @@ public:
 	bool UpdateAttackLocation(const FVector& TargetLocation);
 	void StopCurrentAttack();
 
+	// FireCycle이 타겟 상실과 같은 틱에 실패 전이를 처리해 Battle 전환 이벤트를 놓친 경우,
+	// 다음 틱에 현재 가시성/공유 접촉 상태에 맞는 전투 결정을 다시 요청한다.
+	void RequestCombatDecisionRefresh();
+
 	// 재감지, 스턴, 빙의, 사망, 방 이동 시 방 Subsystem에 보관된 수색 슬롯을 반환한다.
 	void ReleaseSearchRingSlot();
 
@@ -335,6 +339,8 @@ protected:
 	void HandleCurrentRoomTagChanged(FGameplayTag PreviousRoomTag, FGameplayTag NewRoomTag);
 	void RemoveRoomTargetObserver();
 	void HandleDeath();
+
+	bool bCombatDecisionRefreshPending = false;
 
 	// 빙의된 VEC의 AttackAction 입력 진입점.
 	// 소유 클라이언트는 시작/종료 상태만 RPC로 보내고 실제 발사는 서버 무기가 수행한다.

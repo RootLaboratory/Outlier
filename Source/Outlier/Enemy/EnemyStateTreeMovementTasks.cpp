@@ -5,8 +5,6 @@
 #include "Enemy/EnemyAIController.h"
 #include "GameFramework/CharacterMovementComponent.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogEnemyStateTreeMovement, Log, All);
-
 namespace
 {
 AAIController* ResolveAIController(AEnemyBase* Enemy)
@@ -101,6 +99,28 @@ bool RotateTowardLocation(
 	));
 	return YawError <= AngleTolerance && PitchError <= AngleTolerance;
 }
+
+void ApplyFlyTaskSpeedMultiplier(
+	AEnemyBase& Enemy,
+	float SpeedMultiplier)
+{
+	if (UCharacterMovementComponent* Movement = Enemy.GetCharacterMovement())
+	{
+		const float BaseMoveSpeed = FMath::Max(Enemy.GetRuntimeStat().MoveSpeed, 0.0f);
+		Movement->MaxFlySpeed =
+			BaseMoveSpeed * FMath::Max(SpeedMultiplier, 0.0f);
+	}
+}
+
+void RestoreFlyTaskBaseSpeed(AEnemyBase& Enemy)
+{
+	if (UCharacterMovementComponent* Movement = Enemy.GetCharacterMovement())
+	{
+		Movement->MaxFlySpeed = FMath::Max(
+			Enemy.GetRuntimeStat().MoveSpeed,
+			0.0f);
+	}
+}
 }
 
 FEnemyFlyToLocationTask::FEnemyFlyToLocationTask()
@@ -123,25 +143,15 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::EnterState(
 
 	// 이전 NavMesh 이동 요청이 비행 입력과 경쟁하지 않도록 진입 시 정리한다.
 	AIController->StopMovement();
-	InstanceData.DebugLogElapsedTime = 0.0f;
 
 	const float AcceptanceRadius = FMath::Max(InstanceData.AcceptanceRadius, 0.0f);
 	const bool bAlreadyAtDestination =
 		FVector::DistSquared(Enemy->GetActorLocation(), InstanceData.Destination)
 		<= FMath::Square(AcceptanceRadius);
-	UE_LOG(
-		LogEnemyStateTreeMovement,
-		Display,
-		TEXT("[TargetLostMove][FlyEnter] Enemy=%s Current=%s Destination=%s Delta=%s Distance=%.1f Acceptance=%.1f AlreadyAtDestination=%d MovementMode=%s"),
-		*GetNameSafe(Enemy),
-		*Enemy->GetActorLocation().ToCompactString(),
-		*InstanceData.Destination.ToCompactString(),
-		*(InstanceData.Destination - Enemy->GetActorLocation()).ToCompactString(),
-		FVector::Distance(Enemy->GetActorLocation(), InstanceData.Destination),
-		AcceptanceRadius,
-		bAlreadyAtDestination ? 1 : 0,
-		*UEnum::GetValueAsString(
-			static_cast<EMovementMode>(Enemy->GetCharacterMovement()->MovementMode)));
+	if (!bAlreadyAtDestination)
+	{
+		ApplyFlyTaskSpeedMultiplier(*Enemy, InstanceData.SpeedMultiplier);
+	}
 	return bAlreadyAtDestination
 		? EStateTreeRunStatus::Succeeded
 		: EStateTreeRunStatus::Running;
@@ -160,27 +170,9 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::Tick(
 		return EStateTreeRunStatus::Failed;
 	}
 
+	ApplyFlyTaskSpeedMultiplier(*Enemy, InstanceData.SpeedMultiplier);
 	const FVector ToDestination = InstanceData.Destination - Enemy->GetActorLocation();
 	const float AcceptanceRadius = FMath::Max(InstanceData.AcceptanceRadius, 0.0f);
-	InstanceData.DebugLogElapsedTime += DeltaTime;
-	if (InstanceData.DebugLogElapsedTime >= 0.5f)
-	{
-		InstanceData.DebugLogElapsedTime = 0.0f;
-		const UCharacterMovementComponent* Movement = Enemy->GetCharacterMovement();
-		UE_LOG(
-			LogEnemyStateTreeMovement,
-			Display,
-			TEXT("[TargetLostMove][FlyTick] Enemy=%s Current=%s Destination=%s Delta=%s Distance=%.1f Velocity=%s MovementMode=%s"),
-			*GetNameSafe(Enemy),
-			*Enemy->GetActorLocation().ToCompactString(),
-			*InstanceData.Destination.ToCompactString(),
-			*ToDestination.ToCompactString(),
-			ToDestination.Size(),
-			Movement ? *Movement->Velocity.ToCompactString() : TEXT("None"),
-			Movement
-				? *UEnum::GetValueAsString(static_cast<EMovementMode>(Movement->MovementMode))
-				: TEXT("None"));
-	}
 
 	if (ToDestination.SizeSquared() <= FMath::Square(AcceptanceRadius))
 	{
@@ -188,14 +180,6 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::Tick(
 		{
 			Movement->StopMovementImmediately();
 		}
-		UE_LOG(
-			LogEnemyStateTreeMovement,
-			Display,
-			TEXT("[TargetLostMove][FlySucceeded] Enemy=%s Current=%s Destination=%s Distance=%.1f"),
-			*GetNameSafe(Enemy),
-			*Enemy->GetActorLocation().ToCompactString(),
-			*InstanceData.Destination.ToCompactString(),
-			ToDestination.Size());
 		return EStateTreeRunStatus::Succeeded;
 	}
 
@@ -219,20 +203,11 @@ void FEnemyFlyToLocationTask::ExitState(
 	const FInstanceDataType& InstanceData = Context.GetInstanceData(*this);
 	if (IsValid(InstanceData.Enemy))
 	{
-		const FVector CurrentLocation = InstanceData.Enemy->GetActorLocation();
-		UE_LOG(
-			LogEnemyStateTreeMovement,
-			Display,
-			TEXT("[TargetLostMove][FlyExit] Enemy=%s Current=%s Destination=%s Distance=%.1f Velocity=%s"),
-			*GetNameSafe(InstanceData.Enemy),
-			*CurrentLocation.ToCompactString(),
-			*InstanceData.Destination.ToCompactString(),
-			FVector::Distance(CurrentLocation, InstanceData.Destination),
-			*InstanceData.Enemy->GetVelocity().ToCompactString());
 		if (UCharacterMovementComponent* Movement = InstanceData.Enemy->GetCharacterMovement())
 		{
 			Movement->StopMovementImmediately();
 		}
+		RestoreFlyTaskBaseSpeed(*InstanceData.Enemy);
 	}
 }
 
@@ -341,31 +316,13 @@ EStateTreeRunStatus FEnemyAlertHoldTask::EnterState(
 	AAIController* AIController = ResolveAIController(Enemy);
 	if (!Enemy || !Enemy->HasAuthority() || !AIController)
 	{
-		UE_LOG(
-			LogEnemyStateTreeMovement,
-			Warning,
-			TEXT("[Alert] Enter failed. Enemy=%s Authority=%d AIController=%s"),
-			*GetNameSafe(Enemy),
-			Enemy && Enemy->HasAuthority(),
-			*GetNameSafe(AIController));
 		return EStateTreeRunStatus::Failed;
 	}
 
 	AIController->StopMovement();
 	InstanceData.VisibleElapsedTime = 0.0f;
 	InstanceData.LostElapsedTime = 0.0f;
-	InstanceData.DebugLogElapsedTime = 0.0f;
 
-	UE_LOG(
-		LogEnemyStateTreeMovement,
-		Display,
-		TEXT("[Alert] Enter. Enemy=%s Visible=%d LKP=%s RotationSpeed=%.1f VisibleCommit=%.2f LostCommit=%.2f"),
-		*GetNameSafe(Enemy),
-		Enemy->IsPlayerCurrentlyVisible(),
-		*Enemy->GetLastKnownPlayerLocation().ToCompactString(),
-		InstanceData.RotationSpeed,
-		InstanceData.VisibleCommitDuration,
-		InstanceData.LostCommitDuration);
 	return EStateTreeRunStatus::Running;
 }
 
@@ -379,13 +336,6 @@ EStateTreeRunStatus FEnemyAlertHoldTask::Tick(
 	AAIController* AIController = ResolveAIController(Enemy);
 	if (!Enemy || !Enemy->HasAuthority() || !AIController)
 	{
-		UE_LOG(
-			LogEnemyStateTreeMovement,
-			Warning,
-			TEXT("[Alert] Tick failed. Enemy=%s Authority=%d AIController=%s"),
-			*GetNameSafe(Enemy),
-			Enemy && Enemy->HasAuthority(),
-			*GetNameSafe(AIController));
 		return EStateTreeRunStatus::Failed;
 	}
 
@@ -423,23 +373,6 @@ EStateTreeRunStatus FEnemyAlertHoldTask::Tick(
 	);
 
 	const float SafeDeltaTime = FMath::Max(DeltaTime, 0.0f);
-	InstanceData.DebugLogElapsedTime += SafeDeltaTime;
-	if (InstanceData.DebugLogElapsedTime >= 0.5f)
-	{
-		InstanceData.DebugLogElapsedTime = 0.0f;
-		UE_LOG(
-			LogEnemyStateTreeMovement,
-			Display,
-			TEXT("[Alert] Tick. Enemy=%s Visible=%d Target=%s Facing=%s ActorYaw=%.1f Control=%s VisibleTime=%.2f LostTime=%.2f"),
-			*GetNameSafe(Enemy),
-			bPlayerVisible,
-			*GetNameSafe(VisibleTarget),
-			*FacingLocation.ToCompactString(),
-			Enemy->GetActorRotation().Yaw,
-			*AIController->GetControlRotation().ToCompactString(),
-			InstanceData.VisibleElapsedTime,
-			InstanceData.LostElapsedTime);
-	}
 
 	if (bPlayerVisible)
 	{
@@ -448,14 +381,7 @@ EStateTreeRunStatus FEnemyAlertHoldTask::Tick(
 
 		if (InstanceData.VisibleElapsedTime >= FMath::Max(InstanceData.VisibleCommitDuration, 0.0f))
 		{
-			const bool bCommitted = Enemy->CommitAlertToCombat();
-			UE_LOG(
-				LogEnemyStateTreeMovement,
-				Display,
-				TEXT("[Alert] Commit combat. Enemy=%s Result=%d VisibleTime=%.2f"),
-				*GetNameSafe(Enemy),
-				bCommitted,
-				InstanceData.VisibleElapsedTime);
+			Enemy->CommitAlertToCombat();
 		}
 	}
 	else
@@ -465,14 +391,7 @@ EStateTreeRunStatus FEnemyAlertHoldTask::Tick(
 
 		if (InstanceData.LostElapsedTime >= FMath::Max(InstanceData.LostCommitDuration, 0.0f))
 		{
-			const bool bCommitted = Enemy->CommitAlertToNonCombat();
-			UE_LOG(
-				LogEnemyStateTreeMovement,
-				Display,
-				TEXT("[Alert] Commit non-combat. Enemy=%s Result=%d LostTime=%.2f"),
-				*GetNameSafe(Enemy),
-				bCommitted,
-				InstanceData.LostElapsedTime);
+			Enemy->CommitAlertToNonCombat();
 		}
 	}
 

@@ -7,8 +7,6 @@
 #include "Engine/World.h"
 #include "GameFramework/CharacterMovementComponent.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogEnemyBattleMovement, Log, All);
-
 namespace
 {
 constexpr float MinimumEnemyFlightZ = 150.0f;
@@ -114,12 +112,35 @@ void StopFlightMovement(
 	}
 }
 
+void ApplyCombatTaskSpeedMultiplier(
+	AEnemyBase& Enemy,
+	float SpeedMultiplier)
+{
+	if (UCharacterMovementComponent* Movement = Enemy.GetCharacterMovement())
+	{
+		const float BaseMoveSpeed = FMath::Max(Enemy.GetRuntimeStat().MoveSpeed, 0.0f);
+		Movement->MaxFlySpeed =
+			BaseMoveSpeed * FMath::Max(SpeedMultiplier, 0.0f);
+	}
+}
+
+void RestoreCombatTaskBaseSpeed(AEnemyBase& Enemy)
+{
+	if (UCharacterMovementComponent* Movement = Enemy.GetCharacterMovement())
+	{
+		Movement->MaxFlySpeed = FMath::Max(
+			Enemy.GetRuntimeStat().MoveSpeed,
+			0.0f);
+	}
+}
+
 void ApplyFlightMovement(
 	AEnemyBase& Enemy,
 	AEnemyAIController& AIController,
 	const FVector& Destination,
 	const FVector& FacingLocation,
 	float AcceptanceRadius,
+	float SpeedMultiplier,
 	float RotationSpeed,
 	float DeltaTime)
 {
@@ -133,6 +154,7 @@ void ApplyFlightMovement(
 	{
 		Movement->SetMovementMode(MOVE_Flying);
 	}
+	ApplyCombatTaskSpeedMultiplier(Enemy, SpeedMultiplier);
 
 	const FVector EnemyLocation = Enemy.GetActorLocation();
 	const FVector ToDestination = Destination - EnemyLocation;
@@ -237,13 +259,6 @@ EStateTreeRunStatus FEnemyApproachTargetTask::EnterState(
 	AEnemyAIController* AIController = ResolveEnemyAIController(InstanceData.Enemy);
 	if (!InstanceData.Enemy || !InstanceData.Enemy->HasAuthority() || !AIController)
 	{
-		UE_LOG(
-			LogEnemyBattleMovement,
-			Warning,
-			TEXT("[Battle][Approach] Enter failed. Enemy=%s Authority=%d AIController=%s"),
-			*GetNameSafe(InstanceData.Enemy),
-			InstanceData.Enemy && InstanceData.Enemy->HasAuthority(),
-			*GetNameSafe(AIController));
 		return EStateTreeRunStatus::Failed;
 	}
 
@@ -251,13 +266,9 @@ EStateTreeRunStatus FEnemyApproachTargetTask::EnterState(
 	InstanceData.bHasMoveDestination = false;
 	InstanceData.bShouldEnterOrbit = false;
 	StopFlightMovement(*InstanceData.Enemy, *AIController);
-	UE_LOG(
-		LogEnemyBattleMovement,
-		Display,
-		TEXT("[Battle][Approach] Enter. Enemy=%s Target=%s OrbitEnterDistance=%.1f"),
-		*GetNameSafe(InstanceData.Enemy),
-		*GetNameSafe(ResolveTarget(*AIController, InstanceData.TargetActor)),
-		InstanceData.OrbitEnterDistance);
+	ApplyCombatTaskSpeedMultiplier(
+		*InstanceData.Enemy,
+		InstanceData.SpeedMultiplier);
 	return EStateTreeRunStatus::Running;
 }
 
@@ -276,11 +287,6 @@ EStateTreeRunStatus FEnemyApproachTargetTask::Tick(
 	AActor* Target = ResolveTarget(*AIController, InstanceData.TargetActor);
 	if (!Target)
 	{
-		UE_LOG(
-			LogEnemyBattleMovement,
-			Warning,
-			TEXT("[Battle][Approach] Target lost. Enemy=%s"),
-			*GetNameSafe(Enemy));
 		return EStateTreeRunStatus::Failed;
 	}
 
@@ -291,20 +297,8 @@ EStateTreeRunStatus FEnemyApproachTargetTask::Tick(
 		TargetLocation,
 		InstanceData.DistanceMode);
 	// Approach와 Orbit이 서로 다른 경계를 사용하므로 경계 부근에서 상태가 흔들리지 않는다.
-	const bool bWasReadyForOrbit = InstanceData.bShouldEnterOrbit;
 	InstanceData.bShouldEnterOrbit =
 		InstanceData.TargetDistance <= InstanceData.OrbitEnterDistance;
-	if (!bWasReadyForOrbit && InstanceData.bShouldEnterOrbit)
-	{
-		UE_LOG(
-			LogEnemyBattleMovement,
-			Display,
-			TEXT("[Battle][Approach] Orbit threshold reached. Enemy=%s Target=%s Distance=%.1f Threshold=%.1f"),
-			*GetNameSafe(Enemy),
-			*GetNameSafe(Target),
-			InstanceData.TargetDistance,
-			InstanceData.OrbitEnterDistance);
-	}
 
 	InstanceData.RefreshElapsedTime += DeltaTime;
 	if (InstanceData.RefreshElapsedTime < InstanceData.TargetRefreshInterval)
@@ -317,6 +311,7 @@ EStateTreeRunStatus FEnemyApproachTargetTask::Tick(
 				InstanceData.MoveDestination,
 				TargetLocation,
 				InstanceData.AcceptanceRadius,
+				InstanceData.SpeedMultiplier,
 				InstanceData.RotationSpeed,
 				DeltaTime);
 		}
@@ -361,6 +356,7 @@ EStateTreeRunStatus FEnemyApproachTargetTask::Tick(
 				InstanceData.MoveDestination,
 				TargetLocation,
 				InstanceData.AcceptanceRadius,
+				InstanceData.SpeedMultiplier,
 				InstanceData.RotationSpeed,
 				DeltaTime);
 		}
@@ -385,6 +381,7 @@ EStateTreeRunStatus FEnemyApproachTargetTask::Tick(
 			InstanceData.MoveDestination,
 			TargetLocation,
 			InstanceData.AcceptanceRadius,
+			InstanceData.SpeedMultiplier,
 			InstanceData.RotationSpeed,
 			DeltaTime);
 	}
@@ -402,6 +399,7 @@ void FEnemyApproachTargetTask::ExitState(
 		if (IsValid(InstanceData.Enemy))
 		{
 			StopFlightMovement(*InstanceData.Enemy, *AIController);
+			RestoreCombatTaskBaseSpeed(*InstanceData.Enemy);
 		}
 	}
 }
@@ -428,14 +426,6 @@ EStateTreeRunStatus FEnemyOrbitTargetTask::EnterState(
 		|| !AIController
 		|| !Target)
 	{
-		UE_LOG(
-			LogEnemyBattleMovement,
-			Warning,
-			TEXT("[Battle][Orbit] Enter failed. Enemy=%s Authority=%d AIController=%s Target=%s"),
-			*GetNameSafe(InstanceData.Enemy),
-			InstanceData.Enemy && InstanceData.Enemy->HasAuthority(),
-			*GetNameSafe(AIController),
-			*GetNameSafe(Target));
 		return EStateTreeRunStatus::Failed;
 	}
 
@@ -451,15 +441,9 @@ EStateTreeRunStatus FEnemyOrbitTargetTask::EnterState(
 	InstanceData.bShouldFallbackToApproach = false;
 	InstanceData.bShouldExitOrbit = false;
 	StopFlightMovement(*InstanceData.Enemy, *AIController);
-	UE_LOG(
-		LogEnemyBattleMovement,
-		Display,
-		TEXT("[Battle][Orbit] Enter. Enemy=%s Target=%s Direction=%s Radius=%.1f ExitDistance=%.1f"),
-		*GetNameSafe(InstanceData.Enemy),
-		*GetNameSafe(Target),
-		*UEnum::GetValueAsString(InstanceData.ActiveOrbitDirection),
-		InstanceData.OrbitRadius,
-		InstanceData.OrbitExitDistance);
+	ApplyCombatTaskSpeedMultiplier(
+		*InstanceData.Enemy,
+		InstanceData.SpeedMultiplier);
 	return EStateTreeRunStatus::Running;
 }
 
@@ -478,11 +462,6 @@ EStateTreeRunStatus FEnemyOrbitTargetTask::Tick(
 	AActor* Target = ResolveTarget(*AIController, InstanceData.TargetActor);
 	if (!Target)
 	{
-		UE_LOG(
-			LogEnemyBattleMovement,
-			Warning,
-			TEXT("[Battle][Orbit] Target lost. Enemy=%s"),
-			*GetNameSafe(Enemy));
 		return EStateTreeRunStatus::Failed;
 	}
 
@@ -493,20 +472,8 @@ EStateTreeRunStatus FEnemyOrbitTargetTask::Tick(
 		OrbitCenter,
 		InstanceData.DistanceMode);
 	// 진입 거리보다 큰 이탈 거리를 사용해 선택된 선회 상태를 안정적으로 유지한다.
-	const bool bWasReadyToExitOrbit = InstanceData.bShouldExitOrbit;
 	InstanceData.bShouldExitOrbit =
 		InstanceData.TargetDistance >= InstanceData.OrbitExitDistance;
-	if (!bWasReadyToExitOrbit && InstanceData.bShouldExitOrbit)
-	{
-		UE_LOG(
-			LogEnemyBattleMovement,
-			Display,
-			TEXT("[Battle][Orbit] Approach threshold reached. Enemy=%s Target=%s Distance=%.1f Threshold=%.1f"),
-			*GetNameSafe(Enemy),
-			*GetNameSafe(Target),
-			InstanceData.TargetDistance,
-			InstanceData.OrbitExitDistance);
-	}
 
 	InstanceData.RefreshElapsedTime += DeltaTime;
 	InstanceData.RetryElapsedTime += DeltaTime;
@@ -521,6 +488,7 @@ EStateTreeRunStatus FEnemyOrbitTargetTask::Tick(
 				InstanceData.MoveDestination,
 				OrbitCenter,
 				InstanceData.AcceptanceRadius,
+				InstanceData.SpeedMultiplier,
 				InstanceData.RotationSpeed,
 				DeltaTime);
 		}
@@ -578,6 +546,7 @@ EStateTreeRunStatus FEnemyOrbitTargetTask::Tick(
 				InstanceData.MoveDestination,
 				OrbitCenter,
 				InstanceData.AcceptanceRadius,
+				InstanceData.SpeedMultiplier,
 				InstanceData.RotationSpeed,
 				DeltaTime);
 			return EStateTreeRunStatus::Running;
@@ -592,25 +561,15 @@ EStateTreeRunStatus FEnemyOrbitTargetTask::Tick(
 			InstanceData.MoveDestination,
 			OrbitCenter,
 			InstanceData.AcceptanceRadius,
+			InstanceData.SpeedMultiplier,
 			InstanceData.RotationSpeed,
 			DeltaTime);
 		return EStateTreeRunStatus::Running;
 	}
 
 	// 후보가 모두 막힌 동안에는 상태 전환용 신호를 올리고, 재시도 주기를 제한한다.
-	const bool bWasFallbackRequested = InstanceData.bShouldFallbackToApproach;
 	InstanceData.bShouldFallbackToApproach = true;
 	InstanceData.RetryElapsedTime = 0.0f;
-	if (!bWasFallbackRequested)
-	{
-		UE_LOG(
-			LogEnemyBattleMovement,
-			Warning,
-			TEXT("[Battle][Orbit] No valid candidate. Enemy=%s Target=%s Attempts=%d"),
-			*GetNameSafe(Enemy),
-			*GetNameSafe(Target),
-			SafeAttemptCount);
-	}
 	if (InstanceData.bHasMoveDestination)
 	{
 		ApplyFlightMovement(
@@ -619,6 +578,7 @@ EStateTreeRunStatus FEnemyOrbitTargetTask::Tick(
 			InstanceData.MoveDestination,
 			OrbitCenter,
 			InstanceData.AcceptanceRadius,
+			InstanceData.SpeedMultiplier,
 			InstanceData.RotationSpeed,
 			DeltaTime);
 	}
@@ -635,6 +595,7 @@ void FEnemyOrbitTargetTask::ExitState(
 		if (IsValid(InstanceData.Enemy))
 		{
 			StopFlightMovement(*InstanceData.Enemy, *AIController);
+			RestoreCombatTaskBaseSpeed(*InstanceData.Enemy);
 		}
 	}
 }

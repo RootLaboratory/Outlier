@@ -53,6 +53,10 @@ struct FEnemyApproachTargetTaskInstanceData
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0"))
 	float AcceptanceRadius = 100.0f;
 
+	// RuntimeStat.MoveSpeed를 기준으로 이 Task에서 사용할 이동 속도 비율이다.
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0"))
+	float SpeedMultiplier = 1.0f;
+
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0"))
 	float RotationSpeed = 180.0f;
 
@@ -139,6 +143,10 @@ struct FEnemyOrbitTargetTaskInstanceData
 
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0"))
 	float AcceptanceRadius = 100.0f;
+
+	// RuntimeStat.MoveSpeed를 기준으로 이 Task에서 사용할 이동 속도 비율이다.
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0"))
+	float SpeedMultiplier = 1.0f;
 
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0"))
 	float RotationSpeed = 180.0f;

@@ -21,10 +21,13 @@ struct FEnemyFlyToLocationTaskInstanceData
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0"))
 	float AcceptanceRadius = 50.0f;
 
+	// RuntimeStat.MoveSpeed를 기준으로 이 Task에서 사용할 이동 속도 비율이다.
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0"))
+	float SpeedMultiplier = 1.0f;
+
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0"))
 	float RotationSpeed = 180.0f;
 
-	float DebugLogElapsedTime = 0.0f;
 };
 
 // 지상 NavMesh에 투영하지 않고 비행 Pawn을 3D 목적지로 직접 이동시킨다.
@@ -162,7 +165,6 @@ struct FEnemyAlertHoldTaskInstanceData
 
 	float VisibleElapsedTime = 0.0f;
 	float LostElapsedTime = 0.0f;
-	float DebugLogElapsedTime = 0.0f;
 };
 
 // Alert 상태 안에서 LKP를 바라보며 감지 유지/상실 시간을 판정한다.

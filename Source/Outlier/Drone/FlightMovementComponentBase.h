@@ -201,6 +201,12 @@ private:
 	float RollReboundTarget = 0.0f;
 	float PreviousTargetPitch = 0.0f;
 	float PreviousTargetRoll = 0.0f;
+	bool bMeshPitchReboundActive = false;
+	bool bMeshRollReboundActive = false;
+	float MeshPitchReboundTarget = 0.0f;
+	float MeshRollReboundTarget = 0.0f;
+	float PreviousMeshTargetPitch = 0.0f;
+	float PreviousMeshTargetRoll = 0.0f;
 	FRotator BaseMeshRelativeRotation = FRotator::ZeroRotator;
 	FRotator BaseViewModelRelativeRotation = FRotator::ZeroRotator;
 	float PreviousActorYaw = 0.0f;
