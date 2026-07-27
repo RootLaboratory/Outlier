@@ -31,6 +31,10 @@
 #include "Weapon/WeaponRecoilRow.h"
 #include "Shooter/ShooterAnimInstance.h"
 #include "Shooter/ShooterFirstPersonAnimInstance.h"
+#include "Enemy/EnemyRoomSubsystem.h"
+#include "Room/RoomTagComponent.h"
+#include "Interface/RoomTagInterface.h"
+#include "Interface/WeaponMuzzleProvider.h"
 
 void ARangedWeaponBase::StartAttackCooldown()
 {
@@ -282,6 +286,22 @@ void ARangedWeaponBase::FireShot()
 			{
 				VisualSubsystem->PlaySoundAtLocation(GunSound, Start);
 			}
+		}
+	}
+
+	if (bReportArenaWideNoise)
+	{
+		if (AEnemyBase* Enemy = Cast<AEnemyBase>(OwnerCharacter))
+		{
+			if (Enemy->IsEnemyPossessed())
+			{
+				ReportArenaWideNoise(OwnerCharacter);
+			}
+		}
+		else
+		{
+			// Shooter 라이플
+			ReportArenaWideNoise(OwnerCharacter);
 		}
 	}
 
@@ -650,7 +670,9 @@ void ARangedWeaponBase::MulticastPlayFireFX_Implementation(FVector_NetQuantize T
 		return;
 	}
 
-	if (OwnerCharacter->IsLocallyControlled())
+	const bool bUseFirstPersonPresentation =
+		OwnerCharacter->IsPlayerControlled() && OwnerCharacter->IsLocallyControlled();
+	if (bUseFirstPersonPresentation)
 	{
 		PlayFirstPersonFireFX(TraceEnd, ImpactNormal, Hit);
 		return;
@@ -818,19 +840,16 @@ void ARangedWeaponBase::ClientNotifyShotFired_Implementation(FVector2D Normalize
 
 void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit)
 {
-	USkeletalMeshComponent* Mesh = ThirdPersonWeaponMesh;
-	if (!Mesh)
+	FTransform MuzzleTransform;
+	if (!ResolveMuzzleTransform(false, MuzzleTransform))
 	{
 		return;
 	}
 
 	if (UVisualEventSubsystem* VisualSubsystem = GetWorld()->GetSubsystem<UVisualEventSubsystem>())
 	{
-		FVector MuzzleLocation = Mesh->GetSocketLocation(TEXT("Muzzle"));
-		FVector MuzzleForward = Mesh->GetSocketRotation(TEXT("Muzzle")).Vector();
-		const FRotator MuzzleRotation = Mesh->GetSocketRotation(TEXT("Muzzle"));
-
-		const FVector Start = MuzzleLocation;// +MuzzleForward * 10.f;
+		const FVector Start = MuzzleTransform.GetLocation();
+		const FRotator MuzzleRotation = MuzzleTransform.Rotator();
 		FVector End = TraceEnd;
 
 		if (WeaponMuzzle)
@@ -876,20 +895,17 @@ void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, FVector ImpactNo
 
 void ARangedWeaponBase::PlayFirstPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit)
 {
-
-	USkeletalMeshComponent* Mesh = FirstPersonWeaponMesh;
-	if (!Mesh)
+	FTransform MuzzleTransform;
+	if (!ResolveMuzzleTransform(true, MuzzleTransform))
 	{
 		return;
 	}
 
 	if (UVisualEventSubsystem* VisualSubsystem = GetWorld()->GetSubsystem<UVisualEventSubsystem>())
 	{
-		FVector MuzzleLocation = Mesh->GetSocketLocation(TEXT("Muzzle"));
-		FVector MuzzleForward = Mesh->GetSocketRotation(TEXT("Muzzle")).Vector();
-		const FRotator MuzzleRotation = Mesh->GetSocketRotation(TEXT("Muzzle"));
-
-		const FVector Start = MuzzleLocation + MuzzleForward * 10.f;
+		const FVector Start =
+			MuzzleTransform.GetLocation() + MuzzleTransform.GetRotation().GetForwardVector() * 10.0f;
+		const FRotator MuzzleRotation = MuzzleTransform.Rotator();
 		FVector End = TraceEnd;
 
 		if (WeaponMuzzle)
@@ -933,6 +949,34 @@ void ARangedWeaponBase::PlayFirstPersonFireFX(FVector TraceEnd, FVector ImpactNo
 		}
 
 	}
+}
+
+bool ARangedWeaponBase::ResolveMuzzleTransform(bool bFirstPerson, FTransform& OutMuzzleTransform) const
+{
+	USkeletalMeshComponent* MuzzleComponent = nullptr;
+	FName SocketName = MuzzleSocketName;
+
+	// 일체형 무기는 Owner 본체의 소켓을 우선 사용한다.
+	if (const IWeaponMuzzleProvider* MuzzleProvider = Cast<IWeaponMuzzleProvider>(WeaponOwner))
+	{
+		MuzzleComponent = MuzzleProvider->GetWeaponMuzzleComponent(bFirstPerson);
+		SocketName = MuzzleProvider->GetWeaponMuzzleSocketName(bFirstPerson);
+	}
+
+	// Shooter처럼 독립 무기 메시를 쓰는 기존 무기는 원래 경로를 유지한다.
+	if (!MuzzleComponent || SocketName.IsNone() || !MuzzleComponent->DoesSocketExist(SocketName))
+	{
+		MuzzleComponent = bFirstPerson ? FirstPersonWeaponMesh.Get() : ThirdPersonWeaponMesh.Get();
+		SocketName = MuzzleSocketName;
+	}
+
+	if (!MuzzleComponent || SocketName.IsNone() || !MuzzleComponent->DoesSocketExist(SocketName))
+	{
+		return false;
+	}
+
+	OutMuzzleTransform = MuzzleComponent->GetSocketTransform(SocketName, RTS_World);
+	return true;
 }
 
 ULocalPlayerUISubSystem* ARangedWeaponBase::GetLocalUISubsystem() const
@@ -1026,6 +1070,43 @@ void ARangedWeaponBase::CacheSightAimMaterials()
 		{
 			SightAimMIDs.Add(MID);
 		}
+	}
+}
+
+void ARangedWeaponBase::ReportArenaWideNoise(ACharacter* OwnerCharacter)
+{
+	if (!HasAuthority() || !OwnerCharacter)
+	{
+		return;
+	}
+
+	if (!bReportArenaWideNoise)
+	{
+		return;
+	}
+
+	const AOutlierPlayerState* PlayerState = OwnerCharacter->GetPlayerState<AOutlierPlayerState>();
+	if (!PlayerState)
+	{
+		return;
+	}
+
+	const IRoomTagInterface* RoomTagOwner = Cast<IRoomTagInterface>(OwnerCharacter);
+	if(!RoomTagOwner)
+	{
+		return;
+	}
+
+	const FGameplayTag CurrentRoomTag = RoomTagOwner->GetCurrentRoomTag();
+
+	if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
+	{
+		RoomSubsystem->NotifyRoomCombat(
+			PlayerState->GetArenaId(),
+			CurrentRoomTag,
+			OwnerCharacter->GetActorLocation(),
+			Cast<AEnemyBase>(OwnerCharacter)
+		);
 	}
 }
 

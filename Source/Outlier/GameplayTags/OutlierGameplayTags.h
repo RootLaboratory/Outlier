@@ -72,5 +72,11 @@ namespace OutlierGameplayTags
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("State.HackedOnce")));
 			return Tag;
 		}
+
+		inline FGameplayTag Stealthed()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("State.Stealthed")));
+			return Tag;
+		}
 	}
 }

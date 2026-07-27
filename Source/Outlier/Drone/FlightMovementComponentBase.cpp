@@ -31,9 +31,9 @@ void UFlightMovementComponentBase::BeginPlay()
 	Activate(true);
 	SetComponentTickEnabled(true);
 
-	if (USkeletalMeshComponent* VisualMesh = GetFlightVisualMesh())
+	if (USceneComponent* VisualTiltRoot = GetFlightVisualTiltRoot())
 	{
-		BaseMeshRelativeRotation = VisualMesh->GetRelativeRotation();
+		BaseMeshRelativeRotation = VisualTiltRoot->GetRelativeRotation();
 		bVisualTiltInitialized = true;
 	}
 
@@ -96,6 +96,8 @@ void UFlightMovementComponentBase::ResetMovementFeel()
 	SmoothedTiltTarget = FVector2D::ZeroVector;
 	CurrentInertialPitch = 0.0f;
 	CurrentInertialRoll = 0.0f;
+	CurrentMeshPitch = 0.0f;
+	CurrentMeshRoll = 0.0f;
 	CurrentCameraPitch = 0.0f;
 	CurrentCameraRoll = 0.0f;
 	PreviousTargetPitch = 0.0f;
@@ -104,6 +106,13 @@ void UFlightMovementComponentBase::ResetMovementFeel()
 	bRollReboundActive = false;
 	PitchReboundTarget = 0.0f;
 	RollReboundTarget = 0.0f;
+	bMeshPitchReboundActive = false;
+	bMeshRollReboundActive = false;
+	MeshPitchReboundTarget = 0.0f;
+	MeshRollReboundTarget = 0.0f;
+	PreviousMeshTargetPitch = 0.0f;
+	PreviousMeshTargetRoll = 0.0f;
+	bMeshRotationInitialized = false;
 }
 
 void UFlightMovementComponentBase::RefreshTickEnabled()
@@ -213,6 +222,11 @@ USkeletalMeshComponent* UFlightMovementComponentBase::GetFlightVisualMesh() cons
 	return OwnerCharacter ? OwnerCharacter->GetMesh() : nullptr;
 }
 
+USceneComponent* UFlightMovementComponentBase::GetFlightVisualTiltRoot() const
+{
+	return GetFlightVisualMesh();
+}
+
 USceneComponent* UFlightMovementComponentBase::GetFlightViewModelRoot() const
 {
 	return nullptr;
@@ -263,29 +277,37 @@ void UFlightMovementComponentBase::UpdateInputMovement()
 
 	const float CurrentSpeed = bIsAccelerating ? BoostSpeed : MoveSpeed;
 	const float VerticalScale = VerticalSpeed / FMath::Max(CurrentSpeed, KINDA_SMALL_NUMBER);
-
-	FVector Move = FVector::ZeroVector;
-	if (GetFlightInputMode() == EFlightInputMode::Horizontal)
-	{
-		Move =
-			OwnerCharacter->GetActorForwardVector() * CurrentMoveInput.Y +
-			OwnerCharacter->GetActorRightVector() * CurrentMoveInput.X;
-		Move.Z = 0.0f;
-		Move += FVector::UpVector * VerticalInput * VerticalScale;
-	}
-	else
-	{
-		const FRotator ViewRot = OwnerCharacter->GetControlRotation();
-		Move =
-			ViewRot.Vector() * CurrentMoveInput.Y +
-			FRotationMatrix(ViewRot).GetScaledAxis(EAxis::Y) * CurrentMoveInput.X +
-			FVector::UpVector * VerticalInput * VerticalScale;
-	}
+	const FVector Move = BuildWorldMoveVector(VerticalScale);
 
 	if (!Move.IsNearlyZero())
 	{
 		OwnerCharacter->AddMovementInput(Move.GetClampedToMaxSize(1.0f), 1.0f);
 	}
+}
+
+FVector UFlightMovementComponentBase::BuildWorldMoveVector(float VerticalInputScale) const
+{
+	const ACharacter* OwnerCharacter = GetFlightOwnerCharacter();
+	if (!OwnerCharacter)
+	{
+		return FVector::ZeroVector;
+	}
+
+	if (GetFlightInputMode() == EFlightInputMode::Horizontal)
+	{
+		FVector Move =
+			OwnerCharacter->GetActorForwardVector() * CurrentMoveInput.Y +
+			OwnerCharacter->GetActorRightVector() * CurrentMoveInput.X;
+		Move.Z = 0.0f;
+		return Move + FVector::UpVector * VerticalInput * VerticalInputScale;
+	}
+
+	FRotator ViewRot = OwnerCharacter->GetControlRotation();
+	ViewRot.Roll = 0.0f;
+	return
+		ViewRot.Vector() * CurrentMoveInput.Y +
+		FRotationMatrix(ViewRot).GetScaledAxis(EAxis::Y) * CurrentMoveInput.X +
+		FVector::UpVector * VerticalInput * VerticalInputScale;
 }
 
 void UFlightMovementComponentBase::UpdateMovementFeel(float DeltaTime)
@@ -297,9 +319,9 @@ void UFlightMovementComponentBase::UpdateMovementFeel(float DeltaTime)
 
 	if (!bVisualTiltInitialized)
 	{
-		if (USkeletalMeshComponent* VisualMesh = GetFlightVisualMesh())
+		if (USceneComponent* VisualTiltRoot = GetFlightVisualTiltRoot())
 		{
-			BaseMeshRelativeRotation = VisualMesh->GetRelativeRotation();
+			BaseMeshRelativeRotation = VisualTiltRoot->GetRelativeRotation();
 			bVisualTiltInitialized = true;
 		}
 	}
@@ -317,6 +339,7 @@ void UFlightMovementComponentBase::UpdateMovementFeel(float DeltaTime)
 	const FFlightTiltTarget DesiredTarget = CalculateTiltTargets(Kinematics);
 
 	UpdateInertialTilt(DesiredTarget, Kinematics, DeltaTime);
+	UpdateMeshInertialTilt(Kinematics, DeltaTime);
 	ApplyCameraTilt();
 	ApplyVisualTilt(DeltaTime);
 
@@ -406,7 +429,11 @@ FFlightTiltTarget UFlightMovementComponentBase::CalculateTiltTargets(const FFlig
 	{
 		const float RollDirectionScale = CurrentMoveInput.Y < -0.2f ? -1.0f : 1.0f;
 		const FVector LocalVelocityDir = Kinematics.LocalVelocity.GetSafeNormal();
-		FVector DesiredLocalDirection(CurrentMoveInput.Y, CurrentMoveInput.X, VerticalInput * 0.35f);
+		const ACharacter* OwnerCharacter = GetFlightOwnerCharacter();
+		FVector DesiredLocalDirection = OwnerCharacter
+			? OwnerCharacter->GetActorTransform().InverseTransformVectorNoScale(
+				BuildWorldMoveVector(0.35f))
+			: FVector::ZeroVector;
 		if (!DesiredLocalDirection.IsNearlyZero())
 		{
 			DesiredLocalDirection.Normalize();
@@ -483,11 +510,123 @@ void UFlightMovementComponentBase::UpdateInertialTilt(
 		RollInterpSpeedMultiplier
 	);
 
-	const float CoupledInterpSpeedMultiplier = FMath::Max(PitchInterpSpeedMultiplier, RollInterpSpeedMultiplier);
-	const float FeelInterpSpeed = CameraRollInterpSpeed / Kinematics.MassFactor * CoupledInterpSpeedMultiplier;
+	const float BaseFeelInterpSpeed = CameraRollInterpSpeed / Kinematics.MassFactor;
+	const float PitchInterpSpeed = BaseFeelInterpSpeed * PitchInterpSpeedMultiplier;
+	const float RollInterpSpeed = BaseFeelInterpSpeed * RollInterpSpeedMultiplier;
 
-	CurrentInertialPitch = FMath::FInterpTo(CurrentInertialPitch, ResolvedTarget.Pitch, DeltaTime, FeelInterpSpeed);
-	CurrentInertialRoll = FMath::FInterpTo(CurrentInertialRoll, ResolvedTarget.Roll, DeltaTime, FeelInterpSpeed);
+	CurrentInertialPitch = FMath::FInterpTo(
+		CurrentInertialPitch,
+		ResolvedTarget.Pitch,
+		DeltaTime,
+		PitchInterpSpeed
+	);
+	CurrentInertialRoll = FMath::FInterpTo(
+		CurrentInertialRoll,
+		ResolvedTarget.Roll,
+		DeltaTime,
+		RollInterpSpeed
+	);
+}
+
+void UFlightMovementComponentBase::UpdateMeshInertialTilt(
+	const FFlightMovementKinematics& Kinematics,
+	float DeltaTime)
+{
+	const ACharacter* OwnerCharacter = GetFlightOwnerCharacter();
+	if (!OwnerCharacter)
+	{
+		return;
+	}
+
+	const float CurrentActorYaw = OwnerCharacter->GetActorRotation().Yaw;
+	if (!bMeshRotationInitialized)
+	{
+		PreviousActorYaw = CurrentActorYaw;
+		bMeshRotationInitialized = true;
+	}
+
+	const float SpeedReference = FMath::Max(FMath::Max(BoostSpeed, MoveSpeed), 1.0f);
+	const float AccelReference = FMath::Max(Acceleration, 1.0f);
+	const float EffectiveMaxPitch = FMath::Max(CameraPitchOnMove, 0.0f) / Kinematics.MassFactor;
+	const float EffectiveMaxRoll = FMath::Max(CameraRollOnTurn, 0.0f) / Kinematics.MassFactor;
+
+	const float ForwardSpeedAlpha = FMath::Clamp(
+		Kinematics.LocalVelocity.X / SpeedReference,
+		-1.0f,
+		1.0f
+	);
+	const float VerticalAccelAlpha = FMath::Clamp(
+		Kinematics.LocalAcceleration.Z / AccelReference,
+		-1.0f,
+		1.0f
+	);
+	const float TargetMeshPitch = FMath::Clamp(
+		(-ForwardSpeedAlpha - VerticalAccelAlpha * 0.15f) * EffectiveMaxPitch,
+		-EffectiveMaxPitch,
+		EffectiveMaxPitch
+	);
+
+	const float YawDelta = FMath::FindDeltaAngleDegrees(PreviousActorYaw, CurrentActorYaw);
+	const float YawRateAlpha = FMath::Clamp(YawDelta / DeltaTime / 120.0f, -1.0f, 1.0f);
+	const float SideAccelAlpha = FMath::Clamp(
+		Kinematics.LocalAcceleration.Y / AccelReference,
+		-1.0f,
+		1.0f
+	);
+	const float SideSpeedAlpha = FMath::Clamp(
+		Kinematics.LocalVelocity.Y / SpeedReference,
+		-1.0f,
+		1.0f
+	);
+	const float TargetMeshRoll = FMath::Clamp(
+		(YawRateAlpha * 0.8f + SideAccelAlpha * 0.4f + SideSpeedAlpha * 0.25f) * EffectiveMaxRoll,
+		-EffectiveMaxRoll,
+		EffectiveMaxRoll
+	);
+
+	// 메시도 감속하거나 선회 방향이 바뀔 때 반대 방향으로 짧게 튕겨야
+	// AI 비행이 목표 각도만 부드럽게 따라가는 느낌에 머물지 않는다.
+	float PitchInterpSpeedMultiplier = 1.0f;
+	const float ResolvedMeshPitch = ResolveInertialReboundAxis(
+		CurrentMeshPitch,
+		TargetMeshPitch,
+		EffectiveMaxPitch,
+		Kinematics.SpeedAlpha,
+		Kinematics.MassFactor,
+		PreviousMeshTargetPitch,
+		bMeshPitchReboundActive,
+		MeshPitchReboundTarget,
+		PitchInterpSpeedMultiplier
+	);
+
+	float RollInterpSpeedMultiplier = 1.0f;
+	const float ResolvedMeshRoll = ResolveInertialReboundAxis(
+		CurrentMeshRoll,
+		TargetMeshRoll,
+		EffectiveMaxRoll,
+		Kinematics.SpeedAlpha,
+		Kinematics.MassFactor,
+		PreviousMeshTargetRoll,
+		bMeshRollReboundActive,
+		MeshRollReboundTarget,
+		RollInterpSpeedMultiplier
+	);
+
+	const float MeshInterpSpeed = CameraRollInterpSpeed / Kinematics.MassFactor;
+	CurrentMeshPitch = FMath::FInterpTo(
+		CurrentMeshPitch,
+		ResolvedMeshPitch,
+		DeltaTime,
+		MeshInterpSpeed * PitchInterpSpeedMultiplier
+	);
+	CurrentMeshRoll = FMath::FInterpTo(
+		CurrentMeshRoll,
+		ResolvedMeshRoll,
+		DeltaTime,
+		MeshInterpSpeed * RollInterpSpeedMultiplier
+	);
+
+	PreviousActorYaw = CurrentActorYaw;
 }
 
 void UFlightMovementComponentBase::ApplyCameraTilt()
@@ -502,34 +641,27 @@ void UFlightMovementComponentBase::ApplyCameraTilt()
 
 void UFlightMovementComponentBase::ApplyVisualTilt(float DeltaTime)
 {
-	ApplyMeshTilt(DeltaTime);
+	ApplyMeshTilt();
 	ApplyViewModelTilt(DeltaTime);
 }
 
-void UFlightMovementComponentBase::ApplyMeshTilt(float DeltaTime)
+void UFlightMovementComponentBase::ApplyMeshTilt()
 {
-	USkeletalMeshComponent* VisualMesh = GetFlightVisualMesh();
-	if (!bVisualTiltInitialized || !VisualMesh)
+	USceneComponent* VisualTiltRoot = GetFlightVisualTiltRoot();
+	if (!bVisualTiltInitialized || !VisualTiltRoot)
 	{
 		return;
 	}
 
-	const float FeelInterpSpeed = CameraRollInterpSpeed / GetMovementMassFactor();
 	const FRotator TargetMeshRot =
 		BaseMeshRelativeRotation +
 		FRotator(
-			CurrentInertialPitch * MeshInertialTiltScale,
+			CurrentMeshPitch * MeshInertialTiltScale * MeshPitchInertialTiltScale,
 			0.0f,
-			CurrentInertialRoll * MeshInertialTiltScale
+			CurrentMeshRoll * MeshInertialTiltScale * MeshRollInertialTiltScale
 		);
-	const FRotator NewMeshRot = FMath::RInterpTo(
-		VisualMesh->GetRelativeRotation(),
-		TargetMeshRot,
-		DeltaTime,
-		FeelInterpSpeed
-	);
 
-	VisualMesh->SetRelativeRotation(NewMeshRot);
+	VisualTiltRoot->SetRelativeRotation(TargetMeshRot);
 }
 
 void UFlightMovementComponentBase::ApplyViewModelTilt(float DeltaTime)
@@ -570,7 +702,8 @@ float UFlightMovementComponentBase::GetMovementMassFactor() const
 		return 1.0f;
 	}
 
-	return FMath::Clamp(CharacterMovement->Mass / 100.0f, 0.5f, 3.0f);
+	const float NormalizedMass = FMath::Clamp(CharacterMovement->Mass / 25.0f, 0.5f, 3.0f);
+	return FMath::Sqrt(NormalizedMass);
 }
 
 float UFlightMovementComponentBase::ResolveInertialReboundAxis(

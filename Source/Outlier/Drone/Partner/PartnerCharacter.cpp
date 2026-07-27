@@ -5,6 +5,8 @@
 #include "Drone/Partner/PartnerInputConfig.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
+#include "Components/CapsuleComponent.h"
+#include "Components/SceneComponent.h"
 #include "Drone/Partner/PartnerDistanceComponent.h"
 #include "Drone/Partner/PartnerMovementComponent.h"
 #include "Drone/Partner/PartnerSupportComponent.h"
@@ -28,9 +30,19 @@
 #include "LocalPlayerUISubSystem.h"
 #include "PartnerAbilityComponent.h"
 #include "TagDrivenUIGameplayTags.h"
+#include "Perception/AISense_Hearing.h"
+#include "Enemy/EnemyRoomSubsystem.h"
 
 void APartnerCharacter::BeginPlay()
 {
+	if (ThirdPersonTiltRoot && GetMesh()->GetAttachParent() != ThirdPersonTiltRoot)
+	{
+		GetMesh()->AttachToComponent(
+			ThirdPersonTiltRoot,
+			FAttachmentTransformRules::KeepRelativeTransform
+		);
+	}
+
 	Super::BeginPlay();
 
 	if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
@@ -42,6 +54,16 @@ void APartnerCharacter::BeginPlay()
 	}
 
 	EnsurePartnerDataInitialized();
+}
+
+void APartnerCharacter::PossessedBy(AController* NewController)
+{
+	Super::PossessedBy(NewController);
+
+	if (bIsAccelerate)
+	{
+		StartBoostNoiseTimer();
+	}
 }
 
 
@@ -68,9 +90,31 @@ float APartnerCharacter::TakeDamage(
 	return AppliedDamage;
 }
 
+void APartnerCharacter::UnPossessed()
+{
+	StopBoostNoiseTimer();
+
+	if (CombatComponent)
+	{
+		CombatComponent->ForceStopAttack();
+	}
+
+	if (MovementComponent)
+	{
+		MovementComponent->ClearFlightInput();
+	}
+
+	Super::UnPossessed();
+}
+
 void APartnerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 {
 	Super::SetupPlayerInputComponent(PlayerInputComponent);
+
+	if (MovementComponent)
+	{
+		MovementComponent->ClearFlightInput();
+	}
 
 	// Set up Action Bindings
 	UEnhancedInputComponent* EnhancedInputComponent = Cast<UEnhancedInputComponent>(PlayerInputComponent);
@@ -123,19 +167,6 @@ void APartnerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 	EnhancedInputComponent->BindAction(PartnerInputConfig->VerticalMoveAction, ETriggerEvent::Completed, this, &APartnerCharacter::StopVerticalMove);
 }
 
-void APartnerCharacter::UnPossessed()
-{
-	//// UnPossessed()만으로는 이 Pawn의 InputComponent가 컨트롤러 입력 스택에서 자동으로 빠지지 않음
-	//// (엔진은 폰이 곧 파괴될 거라 가정함). Partner는 Enemy 빙의 중에도 캐싱되어 살아있으므로
-	//// 명시적으로 빼주지 않으면 겹치는 키 입력이 이전 바인딩까지 같이 발동함
-	//if (APlayerController* PC = Cast<APlayerController>(GetController()))
-	//{
-	//	DisableInput(PC);
-	//}
-
-	Super::UnPossessed();
-}
-
 void APartnerCharacter::DoMove(float Right, float Forward)
 {
 	const FVector2D MoveValue(Right, Forward);
@@ -162,13 +193,23 @@ void APartnerCharacter::OnMoveInputUpdated(const FVector2D& MoveValue)
 
 void APartnerCharacter::TryStartAttack()
 {
+	StartWeaponAttack();
+}
+
+void APartnerCharacter::TryStopAttack()
+{
+	StopWeaponAttack();
+}
+
+void APartnerCharacter::StartWeaponAttack()
+{
 	if (CombatComponent)
 	{
 		CombatComponent->TryStartAttack();
 	}
 }
 
-void APartnerCharacter::TryStopAttack()
+void APartnerCharacter::StopWeaponAttack()
 {
 	if (CombatComponent)
 	{
@@ -189,9 +230,20 @@ void APartnerCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	DOREPLIFETIME(APartnerCharacter, bScanning);
 	DOREPLIFETIME(APartnerCharacter, LastHackServerTime);
 	DOREPLIFETIME(APartnerCharacter, bIsAccelerate);
+	DOREPLIFETIME(APartnerCharacter, bTestStealthed);
 	DOREPLIFETIME(APartnerCharacter, bIsRebooting);
 	DOREPLIFETIME(APartnerCharacter, bIsInvincible);
 	DOREPLIFETIME(APartnerCharacter, CurrentHitCount);
+}
+
+FGameplayTagContainer APartnerCharacter::GetOwnedGameplayTagsForQuery() const
+{
+	FGameplayTagContainer GameplayTags = Super::GetOwnedGameplayTagsForQuery();
+	if (bTestStealthed)
+	{
+		GameplayTags.AddTag(OutlierGameplayTags::State::Stealthed());
+	}
+	return GameplayTags;
 }
 
 void APartnerCharacter::OnRep_CurrentHitCount()
@@ -564,6 +616,11 @@ void APartnerCharacter::StartReboot()
 	bIsInvincible = true;
 	CurrentHitCount = 0;
 
+	if (CombatComponent)
+	{
+		CombatComponent->ForceStopAttack();
+	}
+
 	if (IsLocallyControlled())
 	{
 		OnRep_CurrentHitCount();
@@ -710,7 +767,6 @@ void APartnerCharacter::ApplyAccelerateState(bool bNewAccelerate)
 	if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
 	{
 		const float CurrentSpeed = bIsAccelerate ? BoostSpeed : MoveSpeed;
-		MoveComp->MaxWalkSpeed = CurrentSpeed;
 		MoveComp->MaxFlySpeed = CurrentSpeed;
 	}
 
@@ -719,6 +775,76 @@ void APartnerCharacter::ApplyAccelerateState(bool bNewAccelerate)
 		MovementComponent->ApplyPartnerFlightSettings();
 		MovementComponent->ResetMovementFeel();
 	}
+
+	if (bIsAccelerate)
+	{
+		StartBoostNoiseTimer();
+	}
+	else
+	{
+		StopBoostNoiseTimer();
+	}
+}
+
+void APartnerCharacter::StartBoostNoiseTimer()
+{
+	if (!HasAuthority() || !GetWorld() || GetWorldTimerManager().IsTimerActive(BoostNoiseTimerHandle))
+	{
+		return;
+	}
+
+	GetWorldTimerManager().SetTimer(
+		BoostNoiseTimerHandle,
+		this,
+		&APartnerCharacter::ReportBoostNoise,
+		FMath::Max(BoostNoiseInterval, 0.05f),
+		true,
+		0.0f);
+}
+
+void APartnerCharacter::StopBoostNoiseTimer()
+{
+	if (!HasAuthority() || !GetWorld())
+	{
+		return;
+	}
+
+	GetWorldTimerManager().ClearTimer(BoostNoiseTimerHandle);
+}
+
+void APartnerCharacter::ReportBoostNoise()
+{
+	if (!HasAuthority() || !bIsAccelerate)
+	{
+		StopBoostNoiseTimer();
+		return;
+	}
+
+	if (!IsPlayerControlled() || GetVelocity().SizeSquared() < FMath::Square(BoostNoiseMinimumSpeed))
+	{
+		return;
+	}
+
+	const AOutlierPlayerState* OutlierPS = GetPlayerState<AOutlierPlayerState>();
+	const FGameplayTag CurrentRoomTag = GetCurrentRoomTag();
+	if (OutlierPS && CurrentRoomTag.IsValid())
+	{
+		if (const UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
+		{
+			if (RoomSubsystem->IsRoomInCombat(OutlierPS->GetArenaId(), CurrentRoomTag))
+			{
+				return;
+			}
+		}
+	}
+
+	UAISense_Hearing::ReportNoiseEvent(
+		GetWorld(),
+		GetActorLocation(),
+		BoostNoiseLoudness,
+		this,
+		BoostNoiseMaxRange,
+		BoostNoiseTag);
 }
 
 void APartnerCharacter::ServerSetAccelerate_Implementation(bool bNewAccelerate)
@@ -801,7 +927,6 @@ void  APartnerCharacter::InitializeFromDataTables()
 
 		if (UCharacterMovementComponent* CharacterMovementComp = GetCharacterMovement())
 		{
-			CharacterMovementComp->MaxWalkSpeed = MoveSpeed;
 			CharacterMovementComp->MaxFlySpeed = MoveSpeed;
 			CharacterMovementComp->MaxAcceleration = Acceleration;
 			CharacterMovementComp->BrakingDecelerationWalking = Deceleration;
@@ -938,12 +1063,15 @@ APartnerCharacter::APartnerCharacter()
 {
 	PrimaryActorTick.bCanEverTick = false;
 
+	ThirdPersonTiltRoot = CreateDefaultSubobject<USceneComponent>(TEXT("Third Person Tilt Root"));
+	ThirdPersonTiltRoot->SetupAttachment(GetCapsuleComponent());
+	GetMesh()->SetupAttachment(ThirdPersonTiltRoot);
+
 	if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
 	{
 		MoveComp->DefaultLandMovementMode = MOVE_Flying;
 		MoveComp->SetMovementMode(MOVE_Flying);
 		MoveComp->GravityScale = 0.0f;
-		MoveComp->MaxWalkSpeed = MoveSpeed;
 		MoveComp->MaxFlySpeed = MoveSpeed;
 		MoveComp->BrakingDecelerationFlying = Deceleration;
 	}
@@ -1006,6 +1134,17 @@ void APartnerCharacter::SetShooterCharacter(AShooterCharacter* NewShooter)
 	{
 		EMPComponent->RefreshCharacterRefsFromPlayerState();
 	}
+}
+
+void APartnerCharacter::SetTestStealthed(bool bNewStealthed)
+{
+	if (!HasAuthority() || bTestStealthed == bNewStealthed)
+	{
+		return;
+	}
+
+	bTestStealthed = bNewStealthed;
+	ForceNetUpdate();
 }
 
 void APartnerCharacter::ClientNotifySkillUseResult_Implementation(EPartnerSkillType SkillType, EPartnerSkillUseResult Result)

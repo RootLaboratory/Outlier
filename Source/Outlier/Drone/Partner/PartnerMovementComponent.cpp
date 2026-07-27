@@ -165,6 +165,11 @@ ACharacter* UPartnerMovementComponent::GetFlightOwnerCharacter() const
 	return PartnerCharacter;
 }
 
+USceneComponent* UPartnerMovementComponent::GetFlightVisualTiltRoot() const
+{
+	return PartnerCharacter ? PartnerCharacter->GetThirdPersonTiltRoot() : nullptr;
+}
+
 USceneComponent* UPartnerMovementComponent::GetFlightViewModelRoot() const
 {
 	return PartnerCharacter ? PartnerCharacter->GetFirstPersonViewModelRoot() : nullptr;
@@ -179,7 +184,12 @@ bool UPartnerMovementComponent::CanRunInputMovement() const
 
 bool UPartnerMovementComponent::ShouldUpdateMovementFeel() const
 {
-	return PartnerCharacter && PartnerCharacter->IsLocallyControlled();
+	if (!PartnerCharacter || PartnerCharacter->GetNetMode() == NM_DedicatedServer)
+	{
+		return false;
+	}
+
+	return PartnerCharacter->IsLocallyControlled() || PartnerCharacter->WasRecentlyRendered();
 }
 
 EFlightInputMode UPartnerMovementComponent::GetFlightInputMode() const

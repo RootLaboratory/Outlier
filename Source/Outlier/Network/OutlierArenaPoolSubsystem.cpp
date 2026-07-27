@@ -78,6 +78,7 @@ void UOutlierArenaPoolSubsystem::ReleaseArena(int32 ArenaId)
 		Arena.bInUse = false;
 		Arena.PairId = INDEX_NONE;
 		Arena.bReady = false;
+		OnArenaReleased.Broadcast(ArenaId);
 
 		ULevelStreamingDynamic* OldStreamingLevel = Arena.StreamingLevel;
 		Arena.StreamingLevel = nullptr;
