@@ -48,8 +48,7 @@ enum class EEnemyAttackPhase : uint8
 };
 
 UCLASS()
-class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, public IEMPableInterface, public IScannableInterface
-class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, public IGenericTeamAgentInterface, public IRoomTagInterface
+class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, public IEMPableInterface, public IScannableInterface, public IGenericTeamAgentInterface, public IRoomTagInterface
 {
 	GENERATED_BODY()
 
