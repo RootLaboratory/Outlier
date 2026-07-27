@@ -249,14 +249,14 @@ void ARangedWeaponBase::FireShot()
 					break;
 				}
 			}
-			if (bIsCoreHit)
+			/*if (bIsCoreHit)
 			{
 				GetLocalUISubsystem()->OnRep_AttackSign(EAttackSign::Critical);
 			}
 			else
 			{
 				GetLocalUISubsystem()->OnRep_AttackSign(EAttackSign::Default);
-			}
+			}*/
 
 			HitEnemy->ApplyDamageInternal(DamageToApply, bIsCoreHit);
 			UE_LOG(LogTemp, Log, TEXT("%s [%s] FireShot applied Enemy Damage=%.1f To=%s Core=%d"), OutlierNet::GetNetPrefix(this), *GetName(), DamageToApply, *GetNameSafe(HitEnemy), bIsCoreHit ? 1 : 0);
