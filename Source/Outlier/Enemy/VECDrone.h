@@ -48,6 +48,8 @@ public:
 		return bFirstPerson ? FirstPersonWeaponMuzzleSocketName : ThirdPersonWeaponMuzzleSocketName;
 	}
 
+	virtual void GetWeaponMuzzleSocketNames(bool bFirstPerson, TArray<FName>& OutSocketNames) const override;
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void UnPossessed() override;

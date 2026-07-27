@@ -15,18 +15,6 @@ enum class EEnemyType : uint8
 };
 
 USTRUCT(BlueprintType)
-struct OUTLIER_API FEnemyDamageInstance
-{
-	GENERATED_BODY()
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	float Amount = 0.0f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	int32 Count = 1;
-};
-
-USTRUCT(BlueprintType)
 struct OUTLIER_API FEnemyStat : public FTableRowBase
 {
 	GENERATED_BODY()
@@ -39,9 +27,6 @@ struct OUTLIER_API FEnemyStat : public FTableRowBase
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	float Health = 0.0f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	TArray<FEnemyDamageInstance> DamagePattern;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	float MoveSpeed = 0.0f;

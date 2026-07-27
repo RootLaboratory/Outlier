@@ -43,4 +43,5 @@ public:
 	/** Accelerate Input Action */
 	UPROPERTY(EditAnywhere, Category = "Input")
 	UInputAction* AccelerateAction;
+
 };

@@ -36,6 +36,11 @@
 #include "Interface/RoomTagInterface.h"
 #include "Interface/WeaponMuzzleProvider.h"
 
+namespace
+{
+	constexpr float BloomRecoveryTickInterval = 0.05f;
+}
+
 void ARangedWeaponBase::StartAttackCooldown()
 {
 	bAttackOnCooldown = true;
@@ -80,9 +85,33 @@ void ARangedWeaponBase::FinishReuseCooldown()
 	bOnReuseCooldown = false;
 }
 
+void ARangedWeaponBase::StartPostBurstCooldown()
+{
+	if (PostBurstCooldownSeconds <= 0.0f || !GetWorld())
+	{
+		return;
+	}
+
+	bOnPostBurstCooldown = true;
+	GetWorld()->GetTimerManager().ClearTimer(PostBurstCooldownTimerHandle);
+	GetWorld()->GetTimerManager().SetTimer(
+		PostBurstCooldownTimerHandle,
+		this,
+		&ARangedWeaponBase::FinishPostBurstCooldown,
+		PostBurstCooldownSeconds,
+		false
+	);
+}
+
+void ARangedWeaponBase::FinishPostBurstCooldown()
+{
+	bOnPostBurstCooldown = false;
+}
+
 bool ARangedWeaponBase::CanReload() const
 {
 	return !bIsReloading
+		&& !bInfiniteAmmo
 		&& CurrentAmmo < MagazineSize;
 }
 
@@ -133,6 +162,11 @@ void ARangedWeaponBase::CancelReload()
 
 void ARangedWeaponBase::ConsumeAmmo()
 {
+	if (bInfiniteAmmo)
+	{
+		return;
+	}
+
 	CurrentAmmo = FMath::Max(CurrentAmmo - 1, 0);
 	UpdateLocalAmmoUI();
 }
@@ -380,11 +414,51 @@ void ARangedWeaponBase::ApplyRecoilWithShotDirection(const FVector2D& Normalized
 void ARangedWeaponBase::ApplyBloomPerShot()
 {
 	BloomCurrent = FMath::Clamp(BloomCurrent + BloomPerShot, BloomMin, BloomMax);
+	EnsureBloomRecoveryTimer();
 }
 
 void ARangedWeaponBase::RecoverBloom(float DeltaTime)
 {
 	BloomCurrent = FMath::FInterpConstantTo(BloomCurrent, BloomMin, DeltaTime, BloomRecoveryRate);
+}
+
+void ARangedWeaponBase::EnsureBloomRecoveryTimer()
+{
+	if (!HasAuthority()
+		|| !GetWorld()
+		|| BloomRecoveryRate <= 0.0f
+		|| BloomCurrent <= BloomMin + KINDA_SMALL_NUMBER
+		|| GetWorld()->GetTimerManager().IsTimerActive(BloomRecoveryTimerHandle))
+	{
+		return;
+	}
+
+	GetWorld()->GetTimerManager().SetTimer(
+		BloomRecoveryTimerHandle,
+		this,
+		&ARangedWeaponBase::HandleBloomRecoveryTimer,
+		BloomRecoveryTickInterval,
+		true);
+}
+
+void ARangedWeaponBase::HandleBloomRecoveryTimer()
+{
+	if (!GetWorld())
+	{
+		return;
+	}
+
+	if (bIsAttacking)
+	{
+		return;
+	}
+
+	RecoverBloom(BloomRecoveryTickInterval);
+	if (BloomCurrent <= BloomMin + KINDA_SMALL_NUMBER)
+	{
+		BloomCurrent = BloomMin;
+		GetWorld()->GetTimerManager().ClearTimer(BloomRecoveryTimerHandle);
+	}
 }
 
 float ARangedWeaponBase::GetCurrentSpread() const
@@ -398,6 +472,7 @@ void ARangedWeaponBase::SetAiming(bool bAiming)
 
 	RefreshBloomSettingsFromState();
 	RefreshRecoilSettingsFromState();
+	EnsureBloomRecoveryTimer();
 }
 
 void ARangedWeaponBase::ApplySightMesh()
@@ -840,28 +915,30 @@ void ARangedWeaponBase::ClientNotifyShotFired_Implementation(FVector2D Normalize
 
 void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit)
 {
-	FTransform MuzzleTransform;
-	if (!ResolveMuzzleTransform(false, MuzzleTransform))
+	TArray<FTransform> MuzzleTransforms;
+	ResolveMuzzleTransforms(false, MuzzleTransforms);
+	if (MuzzleTransforms.IsEmpty())
 	{
 		return;
 	}
 
 	if (UVisualEventSubsystem* VisualSubsystem = GetWorld()->GetSubsystem<UVisualEventSubsystem>())
 	{
-		const FVector Start = MuzzleTransform.GetLocation();
-		const FRotator MuzzleRotation = MuzzleTransform.Rotator();
-		FVector End = TraceEnd;
-
-		if (WeaponMuzzle)
+		for (const FTransform& MuzzleTransform : MuzzleTransforms)
 		{
-			VisualSubsystem->SpawnMuzzleEffect(WeaponMuzzle, Start, MuzzleRotation);
+			const FVector Start = MuzzleTransform.GetLocation();
+			const FRotator MuzzleRotation = MuzzleTransform.Rotator();
 
-		}
+			if (WeaponMuzzle)
+			{
+				VisualSubsystem->SpawnMuzzleEffect(WeaponMuzzle, Start, MuzzleRotation);
+			}
 
 
-		if (WeaponTrail)
-		{
-			VisualSubsystem->SpawnBeamTrail(WeaponTrail, Start, End);
+			if (WeaponTrail)
+			{
+				VisualSubsystem->SpawnBeamTrail(WeaponTrail, Start, TraceEnd);
+			}
 		}
 
 
@@ -895,32 +972,34 @@ void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, FVector ImpactNo
 
 void ARangedWeaponBase::PlayFirstPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit)
 {
-	FTransform MuzzleTransform;
-	if (!ResolveMuzzleTransform(true, MuzzleTransform))
+	TArray<FTransform> MuzzleTransforms;
+	ResolveMuzzleTransforms(true, MuzzleTransforms);
+	if (MuzzleTransforms.IsEmpty())
 	{
 		return;
 	}
 
 	if (UVisualEventSubsystem* VisualSubsystem = GetWorld()->GetSubsystem<UVisualEventSubsystem>())
 	{
-		const FVector Start =
-			MuzzleTransform.GetLocation() + MuzzleTransform.GetRotation().GetForwardVector() * 10.0f;
-		const FRotator MuzzleRotation = MuzzleTransform.Rotator();
-		FVector End = TraceEnd;
-
-		if (WeaponMuzzle)
+		for (const FTransform& MuzzleTransform : MuzzleTransforms)
 		{
-			VisualSubsystem->SpawnMuzzleEffect(WeaponMuzzle, Start, MuzzleRotation);
-		}
+			const FVector Start =
+				MuzzleTransform.GetLocation() + MuzzleTransform.GetRotation().GetForwardVector() * 10.0f;
+			const FRotator MuzzleRotation = MuzzleTransform.Rotator();
 
+			if (WeaponMuzzle)
+			{
+				VisualSubsystem->SpawnMuzzleEffect(WeaponMuzzle, Start, MuzzleRotation);
+			}
 
-		if (WeaponTrail)
-		{
-			VisualSubsystem->SpawnBeamTrail(WeaponTrail, Start, End);
-		}
-		else
-		{
-			UE_LOG(LogTemp, Error, TEXT("TrailOff"))
+			if (WeaponTrail)
+			{
+				VisualSubsystem->SpawnBeamTrail(WeaponTrail, Start, TraceEnd);
+			}
+			else
+			{
+				UE_LOG(LogTemp, Error, TEXT("TrailOff"))
+			}
 		}
 
 		if (Hit)
@@ -951,32 +1030,37 @@ void ARangedWeaponBase::PlayFirstPersonFireFX(FVector TraceEnd, FVector ImpactNo
 	}
 }
 
-bool ARangedWeaponBase::ResolveMuzzleTransform(bool bFirstPerson, FTransform& OutMuzzleTransform) const
+void ARangedWeaponBase::ResolveMuzzleTransforms(bool bFirstPerson, TArray<FTransform>& OutMuzzleTransforms) const
 {
 	USkeletalMeshComponent* MuzzleComponent = nullptr;
-	FName SocketName = MuzzleSocketName;
+	TArray<FName> SocketNames;
 
 	// 일체형 무기는 Owner 본체의 소켓을 우선 사용한다.
 	if (const IWeaponMuzzleProvider* MuzzleProvider = Cast<IWeaponMuzzleProvider>(WeaponOwner))
 	{
 		MuzzleComponent = MuzzleProvider->GetWeaponMuzzleComponent(bFirstPerson);
-		SocketName = MuzzleProvider->GetWeaponMuzzleSocketName(bFirstPerson);
+		MuzzleProvider->GetWeaponMuzzleSocketNames(bFirstPerson, SocketNames);
 	}
 
 	// Shooter처럼 독립 무기 메시를 쓰는 기존 무기는 원래 경로를 유지한다.
-	if (!MuzzleComponent || SocketName.IsNone() || !MuzzleComponent->DoesSocketExist(SocketName))
+	if (!MuzzleComponent || SocketNames.IsEmpty())
 	{
 		MuzzleComponent = bFirstPerson ? FirstPersonWeaponMesh.Get() : ThirdPersonWeaponMesh.Get();
-		SocketName = MuzzleSocketName;
+		SocketNames = { MuzzleSocketName };
 	}
 
-	if (!MuzzleComponent || SocketName.IsNone() || !MuzzleComponent->DoesSocketExist(SocketName))
+	if (!MuzzleComponent)
 	{
-		return false;
+		return;
 	}
 
-	OutMuzzleTransform = MuzzleComponent->GetSocketTransform(SocketName, RTS_World);
-	return true;
+	for (const FName SocketName : SocketNames)
+	{
+		if (!SocketName.IsNone() && MuzzleComponent->DoesSocketExist(SocketName))
+		{
+			OutMuzzleTransforms.Add(MuzzleComponent->GetSocketTransform(SocketName, RTS_World));
+		}
+	}
 }
 
 ULocalPlayerUISubSystem* ARangedWeaponBase::GetLocalUISubsystem() const
@@ -1136,6 +1220,9 @@ void ARangedWeaponBase::InitializeFromDataTables()
 	{
 		MagazineSize = FMath::Max(CoreRow->MagazineSize, 0);
 		CurrentAmmo = MagazineSize;
+		bInfiniteAmmo = CoreRow->bInfiniteAmmo;
+		BurstShotCount = FMath::Max(CoreRow->BurstShotCount, 0);
+		PostBurstCooldownSeconds = FMath::Max(CoreRow->PostBurstCooldownSeconds, 0.0f);
 		BloomMin = CoreRow->DefaultMinBloom;
 		BloomMax = FMath::Max(CoreRow->DefaultMaxBloom, BloomMin);
 		BloomCurrent = FMath::Clamp(BloomCurrent, BloomMin, BloomMax);
@@ -1320,7 +1407,7 @@ void ARangedWeaponBase::RefreshBloomSettingsFromState()
 
 void ARangedWeaponBase::HandleAutoFire()
 {
-	if (!bIsAttacking || !Super::CanAttack() || bIsReloading || CurrentAmmo <= 0)
+	if (!bIsAttacking || !Super::CanAttack() || bIsReloading || bOnPostBurstCooldown || (!bInfiniteAmmo && CurrentAmmo <= 0))
 	{
 		UE_LOG(LogTemp, Log, TEXT("%s [%s] HandleAutoFire stop Attack=%d BaseCanAttack=%d Reloading=%d Ammo=%d"), OutlierNet::GetNetPrefix(this), *GetName(), bIsAttacking ? 1 : 0, Super::CanAttack() ? 1 : 0, bIsReloading ? 1 : 0, CurrentAmmo);
 		StopAttack();
@@ -1343,8 +1430,9 @@ bool ARangedWeaponBase::CanAttack() const
 	return Super::CanAttack()
 		&& !bAttackOnCooldown
 		&& !bOnReuseCooldown
+		&& !bOnPostBurstCooldown
 		&& !bIsReloading
-		&& CurrentAmmo > 0;
+		&& (bInfiniteAmmo || CurrentAmmo > 0);
 }
 
 void ARangedWeaponBase::StartAttack()
@@ -1363,22 +1451,23 @@ void ARangedWeaponBase::StartAttack()
 	if (!CanAttack())
 	{
 		UE_LOG(LogTemp, Warning, TEXT("%s [%s] StartAttack blocked CanAttack=false Ammo=%d Reloading=%d Cooldown=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo, bIsReloading ? 1 : 0, bAttackOnCooldown ? 1 : 0);
-		if (CurrentAmmo <= 0)
+		if (!bInfiniteAmmo && CurrentAmmo <= 0)
 		{
 			UE_LOG(LogTemp, Warning, TEXT("%s [%s] No ammo"), OutlierNet::GetNetPrefix(this), *GetName());
 		}
 		return;
 	}
 
+	CurrentBurstShotCount = 0;
+	bIsAttacking = true;
 	PerformAttack(); // 첫 발 즉시 발사
 
-	if (!Super::CanAttack() || bIsReloading || CurrentAmmo <= 0)
+	if (!bIsAttacking || !Super::CanAttack() || bIsReloading || bOnPostBurstCooldown || (!bInfiniteAmmo && CurrentAmmo <= 0))
 	{
 		return;
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("%s [%s] StartAttack Ammo=%d Automatic=%d"), OutlierNet::GetNetPrefix(this), *GetName(), CurrentAmmo, bIsAutomatic ? 1 : 0);
-	bIsAttacking = true;
 	// Attack state is set by ranged fire flow.
 
 	if (bIsAutomatic)
@@ -1404,6 +1493,7 @@ void ARangedWeaponBase::StopAttack()
 	}
 
 	bAttackOnCooldown = false;
+	CurrentBurstShotCount = 0;
 	UE_LOG(LogTemp, Log, TEXT("%s [%s] StopAttack cleared timers"), OutlierNet::GetNetPrefix(this), *GetName());
 }
 
@@ -1414,10 +1504,10 @@ void ARangedWeaponBase::PerformAttack()
 		return;
 	}
 
-	if (!Super::CanAttack() || bIsReloading || CurrentAmmo <= 0)
+	if (!Super::CanAttack() || bIsReloading || bOnPostBurstCooldown || (!bInfiniteAmmo && CurrentAmmo <= 0))
 	{
 		UE_LOG(LogTemp, Warning, TEXT("%s [%s] PerformAttack blocked BaseCanAttack=%d Reloading=%d Ammo=%d"), OutlierNet::GetNetPrefix(this), *GetName(), Super::CanAttack() ? 1 : 0, bIsReloading ? 1 : 0, CurrentAmmo);
-		if (CurrentAmmo <= 0)
+		if (!bInfiniteAmmo && CurrentAmmo <= 0)
 		{
 			UE_LOG(LogTemp, Warning, TEXT("%s [%s] No ammo"), OutlierNet::GetNetPrefix(this), *GetName());
 			StopAttack();
@@ -1429,6 +1519,7 @@ void ARangedWeaponBase::PerformAttack()
 	RefreshBloomSettingsFromState();
 	ConsumeAmmo();
 	FireShot();
+	++CurrentBurstShotCount;
 
 	ApplyBloomPerShot();
 	ApplyRecoil();
@@ -1441,11 +1532,21 @@ void ARangedWeaponBase::PerformAttack()
 	StartAttackCooldown();
 	StartReuseCooldown();
 
-	if (CurrentAmmo == 0 && CanReload())
+	if (BurstShotCount > 0 && CurrentBurstShotCount >= BurstShotCount)
+	{
+		StopAttack();
+		StartPostBurstCooldown();
+	}
+
+	if (!bInfiniteAmmo && CurrentAmmo == 0 && CanReload())
 	{
 		if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner))
 		{
 			Shooter->HandleAutoReloadRequested();
+		}
+		else if (APartnerCharacter* Partner = Cast<APartnerCharacter>(WeaponOwner))
+		{
+			Partner->HandleAutoReloadRequested();
 		}
 	}
 

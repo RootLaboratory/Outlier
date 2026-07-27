@@ -4,6 +4,7 @@
 #include "Drone/Partner/PartnerCombatComponent.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Weapon/RangedWeaponBase.h"
+#include "TimerManager.h"
 
 UPartnerCombatComponent::UPartnerCombatComponent()
 {
@@ -62,6 +63,42 @@ void UPartnerCombatComponent::TryStopAttack()
 	}
 }
 
+void UPartnerCombatComponent::StartAutoReload()
+{
+	if (!PartnerCharacter || !PartnerCharacter->HasAuthority())
+	{
+		return;
+	}
+
+	ARangedWeaponBase* Weapon = Cast<ARangedWeaponBase>(PartnerCharacter->GetCurrentWeapon());
+	if (!Weapon || !Weapon->CanReload())
+	{
+		return;
+	}
+
+	Weapon->StopAttack();
+	Weapon->BeginReload();
+	if (!Weapon->IsReloading())
+	{
+		return;
+	}
+
+	ReloadingWeapon = Weapon;
+	if (ReloadDurationSeconds <= 0.0f || !GetWorld())
+	{
+		FinishReload();
+		return;
+	}
+
+	GetWorld()->GetTimerManager().ClearTimer(ReloadTimerHandle);
+	GetWorld()->GetTimerManager().SetTimer(
+		ReloadTimerHandle,
+		this,
+		&UPartnerCombatComponent::FinishReload,
+		ReloadDurationSeconds,
+		false);
+}
+
 void UPartnerCombatComponent::ForceStopAttack()
 {
 	if (!PartnerCharacter || !PartnerCharacter->HasAuthority())
@@ -83,6 +120,27 @@ void UPartnerCombatComponent::ServerStartAttack_Implementation()
 void UPartnerCombatComponent::ServerStopAttack_Implementation()
 {
 	TryStopAttack();
+}
+
+void UPartnerCombatComponent::FinishReload()
+{
+	if (!PartnerCharacter || !PartnerCharacter->HasAuthority())
+	{
+		ReloadingWeapon.Reset();
+		return;
+	}
+
+	ARangedWeaponBase* Weapon = ReloadingWeapon.Get();
+	if (Weapon && Weapon == PartnerCharacter->GetCurrentWeapon())
+	{
+		Weapon->FinishReload();
+	}
+	else if (Weapon)
+	{
+		Weapon->CancelReload();
+	}
+
+	ReloadingWeapon.Reset();
 }
 
 void UPartnerCombatComponent::EquipDefaultWeapon_Server()

@@ -36,6 +36,9 @@ protected:
 	UPROPERTY(ReplicatedUsing = OnRep_CurAmmo, EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Ammo")
 	int32 CurrentAmmo = 30;
 
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Ammo")
+	uint8 bInfiniteAmmo : 1 = false;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapon|Sight")
 	UStaticMesh* SightMesh = nullptr;
 
@@ -68,6 +71,12 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Cooldown")
 	float ReuseCooldown = 0.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Burst", meta = (ClampMin = "0"))
+	int32 BurstShotCount = 0;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Burst", meta = (ClampMin = "0.0"))
+	float PostBurstCooldownSeconds = 0.0f;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Fire")
 	float RecoilMultiplier = 1.0f;
@@ -124,6 +133,9 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon|Cooldown")
 	uint8 bOnReuseCooldown : 1 = false;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon|Burst")
+	uint8 bOnPostBurstCooldown : 1 = false;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Decal")
 	TObjectPtr<UProjectionMarkDefinition> WeaponDecal;
@@ -182,10 +194,13 @@ protected:
 	FTimerHandle AutoFireTimerHandle;
 	FTimerHandle AttackCooldownTimerHandle;
 	FTimerHandle ReuseCooldownTimerHandle;
+	FTimerHandle PostBurstCooldownTimerHandle;
+	FTimerHandle BloomRecoveryTimerHandle;
 
 	FVector LastShotBaseDirection = FVector::ForwardVector;
 	FVector LastShotDirection = FVector::ForwardVector;
 	float LastShotSpreadDegrees = 0.0f;
+	int32 CurrentBurstShotCount = 0;
 	uint8 bHasLastShotDirection : 1 = false;
 
 protected:
@@ -209,6 +224,10 @@ protected:
 	void ResetAttackCooldown();
 	void StartReuseCooldown();
 	void FinishReuseCooldown();
+	void StartPostBurstCooldown();
+	void FinishPostBurstCooldown();
+	void EnsureBloomRecoveryTimer();
+	void HandleBloomRecoveryTimer();
 	void CacheSightAimMaterials();
 
 	void ReportArenaWideNoise(ACharacter* OwnerCharacter);
@@ -273,7 +292,7 @@ protected:
 
 	void PlayFirstPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit);
 
-	bool ResolveMuzzleTransform(bool bFirstPerson, FTransform& OutMuzzleTransform) const;
+	void ResolveMuzzleTransforms(bool bFirstPerson, TArray<FTransform>& OutMuzzleTransforms) const;
 
 	ULocalPlayerUISubSystem* GetLocalUISubsystem() const; //Helper
 };

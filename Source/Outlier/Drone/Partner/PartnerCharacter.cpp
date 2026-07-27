@@ -201,6 +201,14 @@ void APartnerCharacter::TryStopAttack()
 	StopWeaponAttack();
 }
 
+void APartnerCharacter::HandleAutoReloadRequested()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->StartAutoReload();
+	}
+}
+
 void APartnerCharacter::StartWeaponAttack()
 {
 	if (CombatComponent)
