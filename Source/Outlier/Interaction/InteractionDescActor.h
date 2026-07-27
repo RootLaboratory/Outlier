@@ -37,6 +37,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Interaction|Desc")
 	void SetProgress(float InProgress);
 
+	UFUNCTION(BlueprintCallable, Category = "Animation")
+	void PopupAnimationCall(bool Flag);
+
 protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")
 	TObjectPtr<USceneComponent> SceneRoot;

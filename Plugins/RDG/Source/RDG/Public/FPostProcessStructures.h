@@ -31,10 +31,73 @@ struct FPixelSortingParameters
 	int32 Curve = static_cast<int32>(EPixelSortingCurve::Linear);
 	float Threshold = 255.0f;
 	float Progress = 0.0f;
-	int32 MinThreshold = 80;
-	float Scale = 100.0f;
-	int32 bSortRows = true;
+	// false면 Pixel Sorting만 수행하고 아래 목표 색상 보간은 건너뛴다.
+	int32 bColorInterpolationEnabled = false;
+	// 정렬 대상 픽셀은 Progress가 0->1로 진행되는 동안 이 색상으로 보간된다.
+	// 알파는 원본 픽셀 값을 유지하므로 RGB만 사용한다.
+	FLinearColor TargetColor = FLinearColor::Blue;
+	int32 MinThreshold = 90;
+	float Scale = 90.0f;
+	int32 bSortRows = false;
 	int32 bSortColumns = true;
+
+	// 정렬을 원본 해상도의 1/N에서 수행하고 결과를 다시 합성함. 정렬 비용이
+	// O(n log^2 n)이라 2면 대략 4~5배 싸짐. 1이면 축소 없이 풀 해상도.
+	int32 ResolutionDivisor = 2;
+};
+
+// 중심으로 빨려 들어가는 느낌의 줌 블러. 각 픽셀에서 화면 중심 방향으로 훑으며
+// 평균내므로, 중심에 가까울수록 훑는 구간이 짧아져 자연히 선명하게 남음.
+// 벨로시티 기반인 FMotionBlurParameters와는 무관한 별개 효과임.
+struct FZoomBlurParameters
+{
+	int32 bEnabled = false;
+
+	// 해킹 Possess 전환용 암전 알파. 0은 ZoomBlur 화면, 1은 완전한 검정색이다.
+	float BlackFlushAlpha = 0.0f;
+
+	// 해킹 전환 중 ZoomBlur 자체 진행도. Strength의 0↔MaximumStrength 보간을 구동한다.
+	float Progress = 0.0f;
+
+	// PixelSorting Threshold가 이 값 이하가 되면 BlurToBlack 전환을 시작한다.
+	int32 TriggerThreshold = 140;
+
+	// ZoomBlur Progress가 이 지점에 도달하면 BlackFlushAlpha 진행을 시작한다.
+	float BlackoutStartProgress = 0.2f;
+
+	// ZoomBlur Progress에 적용되는 EPixelSortingCurve 값이다.
+	int32 ZoomBlurCurve = static_cast<int32>(EPixelSortingCurve::Linear);
+
+	// BlackFlushAlpha에 적용되는 EPixelSortingCurve 값이다.
+	int32 BlackoutCurve = static_cast<int32>(EPixelSortingCurve::CubicEaseIn);
+
+	// 암전 진입 시 ZoomBlur Progress의 0→1 진행 속도 배율이다.
+	float ZoomBlurFadeInTimeScale = 0.5f;
+
+	// Possess 이후 ZoomBlur Progress의 1→0 진행 속도 배율이다.
+	float ZoomBlurFadeOutTimeScale = 3.0f;
+
+	// BlackFlushAlpha의 0→1 진행 속도 배율이다.
+	float BlackoutFadeInTimeScale = 0.5f;
+
+	// Possess 이후 BlackFlushAlpha의 1→0 진행 속도 배율이다.
+	float BlackoutFadeOutTimeScale = 2.0f;
+
+	// 현재 프레임에 적용되는 ZoomBlur 강도. 해킹 전환 중 Progress에 의해 갱신된다.
+	float Strength = 0.0f;
+
+	// 해킹 전환이 Progress 1에 도달했을 때 적용할 최대 ZoomBlur 강도.
+	float MaximumStrength = 0.3f;
+
+	// 이 반경 안쪽은 원본을 유지함. 화면 중앙 UI 가독성 확보용.
+	float StartOffset = 0.0f;
+
+	// 적으면 줄기가 원본이 겹친 유령처럼 끊겨 보임. 디더링을 쓰므로 12~16이면 충분.
+	int32 SampleCount = 16;
+
+	// 블러를 1/N 해상도에서 수행하고 원본 위에 합성함. 선명해야 하는 중심은
+	// 합성 시 원본을 그대로 쓰므로 축소 손실이 드러나지 않음.
+	int32 ResolutionDivisor = 1;
 };
 
 struct FMotionBlurParameters
@@ -119,5 +182,6 @@ struct FPostProcessStrcture
 	FDualKawaseBlurParameters DualKawaseBlur;
 	FDatamoshingParameters Datamoshing;
 	FPixelSortingParameters PixelSorting;
+	FZoomBlurParameters ZoomBlur;
 	FADSBlurParameters ADSBlur;
 };

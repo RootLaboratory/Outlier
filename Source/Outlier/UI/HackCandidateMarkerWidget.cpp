@@ -156,7 +156,7 @@ void UHackCandidateMarkerWidget::TickHackHold()
 	}
 
 	const float HackHoldElapsed = World->GetTimeSeconds() - HackHoldStartTime;
-	const float HoldProgress = FMath::Clamp(HackHoldElapsed / HackHoldDuration, 0.0f, 1.0f);
+	const float HoldProgress = FMath::Clamp(HackHoldElapsed* UpdateScale / HackHoldDuration, 0.0f, 1.0f);
 	SetHackHoldProgress(HoldProgress);
 
 	if (HoldProgress < 1.0f)
@@ -247,12 +247,14 @@ void UHackCandidateMarkerWidget::ShowHackableInfoWidget()
 	}
 
 	HackableInfoWidget->SetVisibility(ESlateVisibility::HitTestInvisible);
+	HackableInfoWidget->PlayPopup();
 }
 
 void UHackCandidateMarkerWidget::HideHackableInfoWidget()
 {
 	if (HackableInfoWidget)
 	{
+		HackableInfoWidget->ResetPopup();
 		HackableInfoWidget->SetVisibility(ESlateVisibility::Collapsed);
 	}
 }

@@ -46,6 +46,12 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "EMP|Marking")
 	float EMPMarkingTime = 3.0f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EMP|Early Complete", meta = (ClampMin = "0.0", UIMin = "0.0", Units = "s"))
+	float EMPEarlyCompleteValue = 0.5f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EMP|CancleTime")
+	float EMPInitialCaptureEmptyTimeout = 0.2f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "EMP|Candidate")
 	FGameplayTagContainer RequiredEMPTags;
 
@@ -81,9 +87,6 @@ public:
 
 	UFUNCTION(Server, Reliable)
 	void ServerCompleteEMP(const TArray<AActor*>& InMarkedActors);
-
-	UFUNCTION(NetMulticast, Reliable)
-	void MulticastTriggerEMPEffect(AActor* TargetActor);
 
 	UFUNCTION(Server, Reliable)
 	void ServerCancelEMP();
@@ -142,10 +145,15 @@ private:
 
 	int32 LastDebugCandidateCount = INDEX_NONE;
 
+	float EMPStartTimeSeconds = 0.0f;
+
 	UEMPableComponent* ResolveEMPableComponent(AActor* Actor) const;
 	bool IsCandidateActorValid(AActor* Actor, UEMPableComponent* EMPableComponent, FVector2D& OutScreenLocation) const;
 	bool IsActorInViewport(AActor* Actor, FVector2D& OutScreenLocation) const;
 	bool HasLineOfSight(AActor* Actor) const;
+	void InitializeEMPEarlyCompleteTimer();
+	void ResetEMPEarlyCompleteTimer();
+	float GetEMPElapsedTime() const;
 	void CompleteEMPOnServer(const TArray<AActor*>& InMarkedActors);
 	void CancelEMPOnServer();
 

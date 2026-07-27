@@ -6,8 +6,13 @@
 #include "HackType.h"
 #include "HackableComponent.generated.h"
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnHackStarted, const FHackQueryContext&, Context);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnHackCompleted, const FHackResultContext&, Context);
+class UHackableComponent;
+
+DECLARE_MULTICAST_DELEGATE_TwoParams(
+	FOnHackTargetInvalidated,
+	UHackableComponent*,
+	EEndPlayReason::Type
+);
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
 	FOnHackEffectTriggered,
@@ -33,25 +38,19 @@ public:
 	FGameplayTagContainer FailEffectTags;
 
 	UPROPERTY(BlueprintAssignable, Category = "Hack")
-	FOnHackStarted OnHackStarted;
-
-	UPROPERTY(BlueprintAssignable, Category = "Hack")
-	FOnHackCompleted OnHackCompleted;
-
-	UPROPERTY(BlueprintAssignable, Category = "Hack")
 	FOnHackEffectTriggered OnHackEffectTriggered;
 
 public:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+
+	FOnHackTargetInvalidated OnHackTargetInvalidated;
 
 	UFUNCTION(BlueprintCallable, Category = "Hack")
 	bool CanBeHackTarget(const FHackQueryContext& Context) const;
 
 	UFUNCTION(BlueprintCallable, Category = "Hack")
 	bool MatchesHackQuery(const FGameplayTagQuery& Query) const;
-
-	UFUNCTION(BlueprintCallable, Category = "Hack")
-	void BeginHack(const FHackQueryContext& Context);
 
 	UFUNCTION(BlueprintCallable, Category = "Hack")
 	void CompleteHack(const FHackResultContext& Context);
@@ -65,6 +64,8 @@ public:
 	UFUNCTION(NetMulticast, Reliable)
 	void MulticastTriggerHackEffects(const FGameplayTagContainer& EffectTags, const FHackResultContext& Context);
 
+	UFUNCTION(BlueprintCallable, Category = "Hack")
+	void MarkAsHackedOnce();
 
 private:
 	const FGameplayTagContainer& ResolveHackEffectTags(EHackResult Result) const;

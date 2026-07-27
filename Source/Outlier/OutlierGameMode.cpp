@@ -530,6 +530,186 @@ void AOutlierGameMode::RespawnPairAtCheckpoint(AController* Controller)
 	RegisterSpawnedPair(ShooterPlayerState, PartnerPlayerState, NewShooter, NewPartner);
 }
 
+void AOutlierGameMode::DebugReloadArena(AController* Requester)
+{
+	if (!Requester)
+	{
+		return;
+	}
+
+	AOutlierPlayerState* TriggeringPS = Requester->GetPlayerState<AOutlierPlayerState>();
+	if (!TriggeringPS)
+	{
+		return;
+	}
+
+	const int32 PairId = TriggeringPS->GetPairId();
+
+	AOutlierPlayerState* ShooterPS = TriggeringPS->IsShooterPlayer()
+		? TriggeringPS
+		: FindPairPlayerState(PairId, EOutlierPlayerRole::Shooter);
+	AOutlierPlayerState* PartnerPS = TriggeringPS->IsPartnerPlayer()
+		? TriggeringPS
+		: FindPairPlayerState(PairId, EOutlierPlayerRole::Partner);
+	if (!ShooterPS)
+	{
+		ShooterPS = TriggeringPS;
+	}
+
+	const int32 ArenaId = ShooterPS->GetArenaId();
+	UE_LOG(LogTemp, Warning, TEXT("[DebugReload] DebugReloadArena PairId=%d ArenaId=%d ShooterPS=%s PartnerPS=%s"),
+		PairId, ArenaId, *GetNameSafe(ShooterPS), *GetNameSafe(PartnerPS));
+	if (ArenaId == INDEX_NONE)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[DebugReload] Bail: ArenaId==INDEX_NONE"));
+		return;
+	}
+
+	//시작은 save 상관없이 start
+	FTransform ShooterSpawn;
+	FTransform PartnerSpawn;
+	if (!ResolveArenaSpawnTransforms(ArenaId, ShooterSpawn, PartnerSpawn))
+	{
+		AActor* FallbackStart = FindPlayerStart(Requester);
+		ShooterSpawn = FallbackStart ? FallbackStart->GetActorTransform() : FTransform::Identity;
+		PartnerSpawn = ShooterSpawn;
+		PartnerSpawn.AddToTranslation(ShooterSpawn.GetRotation().GetRightVector() * 150.0f);
+	}
+
+	// 2) 기존 폰 정리 (RespawnPairAtCheckpoint와 동일). 파트너가 적 빙의 중이면 먼저 해제.
+	AShooterCharacter* OldShooter = ShooterPS->GetShooterCharacter();
+	APartnerCharacter* OldPartner = ShooterPS->GetPartnerCharacter();
+	if (!OldPartner && PartnerPS)
+	{
+		OldPartner = PartnerPS->GetPartnerCharacter();
+	}
+
+	if (APartnerPlayerController* PartnerPC = Cast<APartnerPlayerController>(GetControllerFromPlayerState(PartnerPS)))
+	{
+		if (Cast<AEnemyBase>(PartnerPC->GetPawn()))
+		{
+			PartnerPC->ReleaseEnemyPossession();
+		}
+	}
+
+	ShooterPS->SetShooterCharacter(nullptr);
+	ShooterPS->SetPartnerCharacter(nullptr);
+	ShooterPS->SetSuitDisabledByPartnerBoundary(false);
+	if (PartnerPS)
+	{
+		PartnerPS->SetShooterCharacter(nullptr);
+		PartnerPS->SetPartnerCharacter(nullptr);
+		PartnerPS->SetSuitDisabledByPartnerBoundary(false);
+	}
+
+	if (OldShooter)
+	{
+		OldShooter->CleanupOwnedWeapons();
+		OldShooter->Destroy();
+	}
+	if (OldPartner)
+	{
+		OldPartner->Destroy();
+	}
+
+	AShooterCharacter* NewShooter = ShooterClass
+		? GetWorld()->SpawnActor<AShooterCharacter>(ShooterClass, ShooterSpawn)
+		: nullptr;
+	APartnerCharacter* NewPartner = PartnerClass
+		? GetWorld()->SpawnActor<APartnerCharacter>(PartnerClass, PartnerSpawn)
+		: nullptr;
+
+	RegisterSpawnedPair(ShooterPS, PartnerPS, NewShooter, NewPartner);
+
+	// 4) possess 배선 — 지오메트리 준비 후로 지연.
+	//    remote → 클라 재스트리밍 후 OnClientArenaReady에서 possess
+	//    local  → 서버 자기 재스트리밍(OnArenaShown) 후 possess (아래 5)
+	AController* ShooterController = GetControllerFromPlayerState(ShooterPS);
+	AController* PartnerController = GetControllerFromPlayerState(PartnerPS);
+
+	if (APlayerController* PC = Cast<APlayerController>(ShooterController))
+	{
+		if (PC->IsLocalController())
+		{
+			PendingLocalPossessions.Add(PC, NewShooter);
+		}
+		else
+		{
+			PendingPossessions.Add(PC, NewShooter);
+			if (AFirstPersonPlayerController* FPC = Cast<AFirstPersonPlayerController>(PC))
+			{
+				FPC->ClientArenaReload(ArenaId);
+			}
+		}
+	}
+
+	if (APlayerController* PC = Cast<APlayerController>(PartnerController))
+	{
+		if (PC->IsLocalController())
+		{
+			PendingLocalPossessions.Add(PC, NewPartner);
+		}
+		else
+		{
+			PendingPossessions.Add(PC, NewPartner);
+			if (AFirstPersonPlayerController* FPC = Cast<AFirstPersonPlayerController>(PC))
+			{
+				FPC->ClientArenaReload(ArenaId);
+			}
+		}
+	}
+
+	// 5) 로컬 possess 대기 바인딩 + 서버측 리로드 시작
+	UOutlierArenaPoolSubsystem* ArenaPool = GetWorld()
+		? GetWorld()->GetSubsystem<UOutlierArenaPoolSubsystem>()
+		: nullptr;
+	if (!ArenaPool)
+	{
+		return;
+	}
+
+	if (PendingLocalPossessions.Num() > 0)
+	{
+		ReloadingArenaId = ArenaId;
+		if (!ArenaShownHandle.IsValid())
+		{
+			ArenaShownHandle = ArenaPool->OnArenaShown.AddUObject(this, &AOutlierGameMode::HandleServerArenaReloaded);
+		}
+	}
+
+	UE_LOG(LogTemp, Warning, TEXT("[DebugReload] Calling ReloadArena ArenaId=%d LocalPending=%d RemotePending=%d"),
+		ArenaId, PendingLocalPossessions.Num(), PendingPossessions.Num());
+	ArenaPool->ReloadArena(ArenaId);
+}
+
+void AOutlierGameMode::HandleServerArenaReloaded(int32 ReloadedArenaId)
+{
+	if (ReloadedArenaId != ReloadingArenaId)
+	{
+		return;
+	}
+
+	for (auto It = PendingLocalPossessions.CreateIterator(); It; ++It)
+	{
+		APlayerController* PC = It->Key.Get();
+		APawn* Pawn = It->Value.Get();
+		if (PC && Pawn)
+		{
+			PC->Possess(Pawn);
+		}
+	}
+	PendingLocalPossessions.Empty();
+
+	if (UOutlierArenaPoolSubsystem* ArenaPool = GetWorld()
+		? GetWorld()->GetSubsystem<UOutlierArenaPoolSubsystem>()
+		: nullptr)
+	{
+		ArenaPool->OnArenaShown.Remove(ArenaShownHandle);
+	}
+	ArenaShownHandle.Reset();
+	ReloadingArenaId = INDEX_NONE;
+}
+
 bool AOutlierGameMode::ResolveCheckpointTransform(AController* Controller, int32 ArenaId, FTransform& OutTransform) const
 {
 	const AOutlierPlayerState* PS = Controller

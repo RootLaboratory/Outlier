@@ -11,6 +11,7 @@
 #include "Drone/Partner/PartnerMovementComponent.h"
 #include "Drone/Partner/PartnerSupportComponent.h"
 #include "Drone/Partner/PartnerCombatComponent.h"
+#include "Drone/Partner/PartnerSpriteAnimationComponent.h"
 #include "Drone/Partner/PartnerHackComponent.h"
 #include "Drone/Partner/PartnerEMPComponent.h"
 #include "Net/UnrealNetwork.h"
@@ -310,6 +311,7 @@ void APartnerCharacter::TryHacking()
 	}
 
 	TestAbilityComponent->TryActivateAbilityByTag(OutlierGameplayTags::Ability::Partner::Hacking());
+	FaceSpriteAnimationComponent->SetEmotion(EPartnerEmotion::Happy);
 }
 
 void APartnerCharacter::EndHacking()
@@ -328,6 +330,8 @@ void APartnerCharacter::TryEMP()
 	}
 
 	TestAbilityComponent->TryActivateAbilityByTag(OutlierGameplayTags::Ability::Partner::EMP());
+	FaceSpriteAnimationComponent->SetEmotion(EPartnerEmotion::Surprised);
+
 }
 
 void APartnerCharacter::Hacking(AActor* TargetActor)
@@ -352,6 +356,7 @@ void APartnerCharacter::TestAbilityScan()
 
 
 	TestAbilityComponent->TryActivateAbilityByTag(OutlierGameplayTags::Ability::Partner::Scan());
+
 }
 
 void APartnerCharacter::Scan()
@@ -361,6 +366,7 @@ void APartnerCharacter::Scan()
 		return;
 	}
 	UE_LOG(LogTemp, Error, TEXT("Scan Valid"));
+	FaceSpriteAnimationComponent->SetEmotion(EPartnerEmotion::Sad);
 
 	ServerUseSkill(EPartnerSkillType::Scan);
 }
@@ -375,6 +381,8 @@ void APartnerCharacter::Shield()
 	UE_LOG(LogTemp, Error, TEXT("Shield Valid"));
 
 	ServerUseSkill(EPartnerSkillType::Shield);
+	FaceSpriteAnimationComponent->SetEmotion(EPartnerEmotion::Angry);
+
 }
 
 void APartnerCharacter::NotifyBoundaryUI(bool bDisabled)
@@ -1075,6 +1083,7 @@ APartnerCharacter::APartnerCharacter()
 	CombatComponent   = CreateDefaultSubobject<UPartnerCombatComponent>  (TEXT("CombatComponent"));
 	HackComponent     = CreateDefaultSubobject<UPartnerHackComponent>    (TEXT("HackComponent"));
 	EMPComponent      = CreateDefaultSubobject<UPartnerEMPComponent>     (TEXT("EMPComponent"));
+	FaceSpriteAnimationComponent = CreateDefaultSubobject<UPartnerSpriteAnimationComponent>(TEXT("SpriteAnimationComponent"));
 }
 
 void APartnerCharacter::OnRep_DroneMovementState()

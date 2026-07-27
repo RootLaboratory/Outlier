@@ -25,18 +25,16 @@ void UPartnerHackComponent::BeginPlay()
 {
 	Super::BeginPlay();
 
-	CachedAbilityData.CandidateRange = CandidateRange;
-	CachedAbilityData.EffectiveRange = CandidateRange;
 	CachedAbilityData.bRequireLineOfSight = bRequireLineOfSight;
 
 	BlockedCandidateTags.AddTag(OutlierGameplayTags::State::Dead());
-	BlockedCandidateTags.AddTag(OutlierGameplayTags::State::HackedOnce());
 	BlockedCandidateTags.AddTag(OutlierGameplayTags::State::Locked());
 	BlockedCandidateTags.AddTag(OutlierGameplayTags::State::Immune());
 }
 
 void UPartnerHackComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	ClearActiveHackableComponent();
 	DestroyHackMiniGameWidget();
 	DestroyCandidateLayerWidget();
 	ClearHackCandidates();
@@ -73,6 +71,25 @@ void UPartnerHackComponent::TryHack_Implementation()
 		return ;
 	}
 
+
+	if (APartnerPlayerController* PController =
+		Cast<APartnerPlayerController>(PartnerCharacter->GetController()))
+	{
+		const EPartnerPossessionState PossessionState =
+			PController->GetPartnerPossessionState();
+
+		if (PossessionState == EPartnerPossessionState::Transitioning)
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("Transitioning, %d"),
+				static_cast<int32>(PossessionState)
+			);
+			return;
+		}
+	}
+
 	//MiniGame;
 	if (ActiveHackableComponent || HackMiniGameWidget)
 	{
@@ -98,7 +115,7 @@ void UPartnerHackComponent::TryHack_Implementation()
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[PartnerHackDebug] TryHack started Partner=%s Range=%.1f HalfAngle=%.1f LOS=%d Candidates=%d"),
 			*GetNameSafe(PartnerCharacter),
-			CandidateRange,
+			CachedAbilityData.CandidateRange,
 			CandidateHalfAngleDegrees,
 			bRequireLineOfSight ? 1 : 0,
 			HackCandidateComponents.Num());
@@ -116,7 +133,6 @@ void UPartnerHackComponent::CacheAbilityData(const FPartnerHackAbilityData& InAb
 {
 	CachedAbilityData = InAbilityData;
 
-	CandidateRange = CachedAbilityData.CandidateRange;
 	bRequireLineOfSight = CachedAbilityData.bRequireLineOfSight;
 }
 
@@ -152,6 +168,7 @@ void UPartnerHackComponent::ClientStartHackMiniGame_Implementation(AActor* Targe
 		return;
 	}
 
+	SetActiveHackableComponent(HackableComponent);
 	StartHackMiniGame(TargetActor, HackableComponent);
 }
 
@@ -162,27 +179,63 @@ void UPartnerHackComponent::ClientStopHackMiniGame_Implementation()
 		return;
 	}
 
+	ClearActiveHackableComponent();
 	DestroyHackMiniGameWidget();
+}
+
+void UPartnerHackComponent::ClientAbortHackForInvalidTarget_Implementation()
+{
+	if (!PartnerCharacter || !PartnerCharacter->IsLocallyControlled())
+	{
+		return;
+	}
+
+	AbortLocalHackForInvalidTarget();
 }
 
 void UPartnerHackComponent::ServerCompleteHack_Implementation(const FHackResultContext& ResultContext)
 {
-	if (!ActiveHackableComponent)
+	if (!IsValid(ActiveHackableComponent)
+		|| !IsValid(ActiveHackableComponent->GetOwner())
+		|| ActiveHackableComponent->GetOwner()->IsActorBeingDestroyed())
 	{
-		UE_LOG(LogTemp, Error, TEXT("ActiveHackableComponent Null"));
+		if (bDebugHack)
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("[PartnerHackDebug] Hack failed: active target is no longer valid"));
+		}
+
+		ClearActiveHackableComponent();
+		ClientAbortHackForInvalidTarget();
+		DefaultWidgetControl(false);
 		return;
 	}
+
+	if (ResultContext.TargetActor != ActiveHackableComponent->GetOwner())
+	{
+		if (bDebugHack)
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("[PartnerHackDebug] Hack failed: stale result Target=%s ActiveTarget=%s"),
+				*GetNameSafe(ResultContext.TargetActor),
+				*GetNameSafe(ActiveHackableComponent->GetOwner()));
+		}
+		return;
+	}
+
+	UHackableComponent* CompletedHackableComponent = ActiveHackableComponent;
+	AActor* CompletedTargetActor = CompletedHackableComponent->GetOwner();
+	ClearActiveHackableComponent();
 
 	//possess 전, Input widget 정리. -> Enemy Widget이 생긴다면 수정 해야 할 부분.
 	ClientStopHackMiniGame();
 	DefaultWidgetControl(false);
 
 	FHackResultContext MutableResultContext = ResultContext;
-	MutableResultContext.TargetActor = ActiveHackableComponent->GetOwner();
+	MutableResultContext.TargetActor = CompletedTargetActor;
 	MutableResultContext.InstigatorActor = PartnerCharacter;
 
-	ActiveHackableComponent->CompleteHack(MutableResultContext);
-	ActiveHackableComponent = nullptr;
+	CompletedHackableComponent->CompleteHack(MutableResultContext);
 }
 
 void UPartnerHackComponent::DefaultWidgetControl_Implementation(bool InFlag)
@@ -240,7 +293,7 @@ void UPartnerHackComponent::RefreshHackCandidates()
 		PartnerCharacter->GetActorLocation(),
 		FQuat::Identity,
 		ObjectParams,
-		FCollisionShape::MakeSphere(CandidateRange),
+		FCollisionShape::MakeSphere(CachedAbilityData.CandidateRange),
 		QueryParams
 	);
 
@@ -293,7 +346,7 @@ bool UPartnerHackComponent::TryBeginHackHold()
 		return false;
 	}
 
-	HoveredMarkerWidget->StartHackHold(CachedAbilityData.MiniGameTime);
+	HoveredMarkerWidget->StartHackHold(CachedAbilityData.MiniGameTime); //Property로
 	return true;
 }
 
@@ -327,7 +380,11 @@ void UPartnerHackComponent::NotifyHackMarkerUnhovered(UHackCandidateMarkerWidget
 
 void UPartnerHackComponent::NotifyHackHoldCompleted(UHackCandidateMarkerWidget* MarkerWidget, AActor* TargetActor)
 {
-	if (!MarkerWidget || !TargetActor || MarkerWidget != HoveredMarkerWidget || TargetActor != HoveredHackActor)
+	if (!IsValid(MarkerWidget)
+		|| !IsValid(TargetActor)
+		|| TargetActor->IsActorBeingDestroyed()
+		|| MarkerWidget != HoveredMarkerWidget
+		|| TargetActor != HoveredHackActor)
 	{
 		return;
 	}
@@ -377,7 +434,7 @@ void UPartnerHackComponent::ServerTryStartHack_Implementation(AActor* TargetActo
 
 	const float EffectiveRange = CachedAbilityData.EffectiveRange > 0.0f
 		? CachedAbilityData.EffectiveRange
-		: CandidateRange;
+		: CachedAbilityData.CandidateRange;
 	if (FVector::DistSquared(PartnerCharacter->GetActorLocation(), TargetActor->GetActorLocation()) > FMath::Square(EffectiveRange))
 	{
 		if (bDebugHack)
@@ -391,10 +448,18 @@ void UPartnerHackComponent::ServerTryStartHack_Implementation(AActor* TargetActo
 
 	DeactivateUnselectedCandidates(HackableComponent);
 	bHackCandidateSearchActive = false;
-	ActiveHackableComponent = HackableComponent;
+	SetActiveHackableComponent(HackableComponent);
 
-	HackableComponent->BeginHack(Context);
+	//HackedOnce Marked
+	ActiveHackableComponent->MarkAsHackedOnce();
 
+	//Actor Override
+	if (IHackableInterface* Handler = Cast<IHackableInterface>(TargetActor))
+	{
+		Handler->HandleHackStarted(Context);
+	}
+
+	//Widegt
 	ClientStopCandidateSearch();
 	ClientStartHackMiniGame(TargetActor, HackableComponent);
 
@@ -442,9 +507,12 @@ FHackQueryContext UPartnerHackComponent::BuildQueryContext() const
 {
 	FHackQueryContext Context;
 	Context.InstigatorActor = PartnerCharacter;
-	Context.MaxRange = CachedAbilityData.EffectiveRange > 0.0f ? CachedAbilityData.EffectiveRange : CandidateRange;
+	Context.MaxRange = CachedAbilityData.EffectiveRange > 0.0f
+		? CachedAbilityData.EffectiveRange
+		: CachedAbilityData.CandidateRange;
 	Context.RequiredTags = RequiredCandidateTags;
 	Context.BlockedTags = BlockedCandidateTags;
+	Context.HackMultiUseTags.AddTag(HackGameplayTags::Use::Multiple());
 
 	if (PartnerCharacter)
 	{
@@ -466,7 +534,7 @@ FHackQueryContext UPartnerHackComponent::BuildQueryContext() const
 
 UHackableComponent* UPartnerHackComponent::ResolveHackableComponent(AActor* Actor) const
 {
-	if (!Actor || Actor == PartnerCharacter)
+	if (!IsValid(Actor) || Actor->IsActorBeingDestroyed() || Actor == PartnerCharacter)
 	{
 		return nullptr;
 	}
@@ -489,7 +557,10 @@ UHackableComponent* UPartnerHackComponent::ResolveHackableComponent(AActor* Acto
 
 bool UPartnerHackComponent::IsCandidateActorValid(AActor* Actor, UHackableComponent* HackableComponent, const FHackQueryContext& Context, FVector2D& OutScreenLocation) const
 {
-	if (!Actor || !HackableComponent || !HackableComponent->IsHackTargetType())
+	if (!IsValid(Actor)
+		|| Actor->IsActorBeingDestroyed()
+		|| !IsValid(HackableComponent)
+		|| !HackableComponent->IsHackTargetType())
 	{
 		return false;
 	}
@@ -523,7 +594,7 @@ bool UPartnerHackComponent::IsInsidePartnerFrustum(AActor* Actor, FVector2D& Out
 	const FVector ToTarget = Actor->GetActorLocation() - Context.ViewLocation;
 	const float DistanceSq = ToTarget.SizeSquared();
 
-	if (DistanceSq > FMath::Square(CandidateRange))
+	if (DistanceSq > FMath::Square(CachedAbilityData.CandidateRange))
 	{
 		return false;
 	}
@@ -696,8 +767,14 @@ void UPartnerHackComponent::ApplyCandidateInputMode()
 		return;
 	}
 
-	APlayerController* PlayerController = Cast<APlayerController>(PartnerCharacter->GetController());
+	APartnerPlayerController* PlayerController =
+		Cast<APartnerPlayerController>(PartnerCharacter->GetController());
 	if (!PlayerController || !PlayerController->IsLocalController())
+	{
+		return;
+	}
+
+	if (!PlayerController->SetFirstPersonInputMode(FirstPersonInputModeTags::Hack()))
 	{
 		return;
 	}
@@ -727,8 +804,14 @@ void UPartnerHackComponent::ApplyHackMiniGameInputMode()
 		return;
 	}
 
-	APlayerController* PlayerController = Cast<APlayerController>(PartnerCharacter->GetController());
+	APartnerPlayerController* PlayerController =
+		Cast<APartnerPlayerController>(PartnerCharacter->GetController());
 	if (!PlayerController || !PlayerController->IsLocalController())
+	{
+		return;
+	}
+
+	if (!PlayerController->SetFirstPersonInputMode(FirstPersonInputModeTags::Hack()))
 	{
 		return;
 	}
@@ -745,7 +828,6 @@ void UPartnerHackComponent::ApplyHackMiniGameInputMode()
 	PlayerController->SetInputMode(InputMode);
 	PlayerController->bShowMouseCursor = true;
 
-	//UE_LOG(LogTemp, Error, TEXT("[HackInputDebug] ApplyHackMiniGameInputMode called (UIOnly)"));
 }
 
 void UPartnerHackComponent::RestoreGameInputMode()
@@ -760,15 +842,14 @@ void UPartnerHackComponent::RestoreGameInputMode()
 		return;
 	}
 
-	APlayerController* PlayerController = Cast<APlayerController>(PartnerCharacter->GetController());
+	APartnerPlayerController* PlayerController =
+		Cast<APartnerPlayerController>(PartnerCharacter->GetController());
 	if (!PlayerController || !PlayerController->IsLocalController())
 	{
 		return;
 	}
 
-	FInputModeGameOnly InputMode;
-	PlayerController->SetInputMode(InputMode);
-	PlayerController->bShowMouseCursor = false;
+	PlayerController->TryRestoreFirstPersonDefaultInputMode(FirstPersonInputModeTags::Hack());
 
 
 	//UE_LOG(LogTemp, Error, TEXT("[HackInputDebug] RestoreGameInputMode called ??MiniGameWidget=%s CandidateWidget=%s"),
@@ -868,6 +949,77 @@ void UPartnerHackComponent::CancelActiveHack()
 	ResultContext.InstigatorActor = PartnerCharacter;
 	ResultContext.Result = EHackResult::Cancelled;
 	ServerCompleteHack(ResultContext);
+}
+
+void UPartnerHackComponent::SetActiveHackableComponent(UHackableComponent* HackableComponent)
+{
+	if (ActiveHackableComponent == HackableComponent)
+	{
+		return;
+	}
+
+	ClearActiveHackableComponent();
+	ActiveHackableComponent = HackableComponent;
+
+	if (IsValid(ActiveHackableComponent))
+	{
+		ActiveHackableComponent->OnHackTargetInvalidated.AddUObject(
+			this,
+			&UPartnerHackComponent::HandleHackTargetInvalidated);
+	}
+}
+
+void UPartnerHackComponent::ClearActiveHackableComponent()
+{
+	if (ActiveHackableComponent)
+	{
+		ActiveHackableComponent->OnHackTargetInvalidated.RemoveAll(this);
+	}
+
+	ActiveHackableComponent = nullptr;
+}
+
+void UPartnerHackComponent::AbortLocalHackForInvalidTarget()
+{
+	ClearActiveHackableComponent();
+	ResetLocalHackHoldProgress();
+	HoveredMarkerWidget = nullptr;
+	HoveredHackActor = nullptr;
+	bHackCandidateSearchActive = false;
+
+	// Remove the completion delegate with the widget so the invalid target cannot
+	// report a late mini-game result back to the server.
+	DestroyHackMiniGameWidget();
+	DestroyCandidateLayerWidget();
+	ClearHackCandidates();
+	LastDebugCandidateCount = INDEX_NONE;
+}
+
+void UPartnerHackComponent::HandleHackTargetInvalidated(
+	UHackableComponent* InvalidatedComponent,
+	EEndPlayReason::Type EndPlayReason)
+{
+	if (InvalidatedComponent != ActiveHackableComponent)
+	{
+		return;
+	}
+
+	if (bDebugHack)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[PartnerHackDebug] Hack failed: active target ended Target=%s EndPlayReason=%d"),
+			*GetNameSafe(InvalidatedComponent ? InvalidatedComponent->GetOwner() : nullptr),
+			static_cast<int32>(EndPlayReason));
+	}
+
+	const bool bHasAuthority = GetOwner() && GetOwner()->HasAuthority();
+	AbortLocalHackForInvalidTarget();
+
+	if (bHasAuthority)
+	{
+		ClientAbortHackForInvalidTarget();
+		DefaultWidgetControl(false);
+	}
 }
 
 void UPartnerHackComponent::StartHackMiniGame(AActor* TargetActor, UHackableComponent* HackableComponent)

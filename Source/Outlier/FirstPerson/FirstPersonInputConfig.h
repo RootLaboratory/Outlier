@@ -33,4 +33,7 @@ public:
 	/** Camera Toggle Input Action */
 	UPROPERTY(EditAnywhere, Category = "Input")
 	TObjectPtr<UInputAction> CamToggleAction;
+
+	UPROPERTY(EditAnywhere, Category = "Debug")
+	TObjectPtr<UInputAction> DebugArenaReload;
 };

@@ -53,7 +53,6 @@ void UVisualEventSubsystem::SpawnBeamTrail(const UTrailEffectDefinition* Def, co
 	if (UNiagaraSystem* Niagara = Cast<UNiagaraSystem>(Def->FXAsset))
 	{
 		const FVector Direction = (FinalEnd - FinalStart).GetSafeNormal();
-		const float Speed = Def->Speed;
 
 		UNiagaraComponent* Comp = UNiagaraFunctionLibrary::SpawnSystemAtLocation(
 			GetWorld(),
@@ -62,26 +61,19 @@ void UVisualEventSubsystem::SpawnBeamTrail(const UTrailEffectDefinition* Def, co
 			Direction.Rotation() + Def->RotationOffset,
 			Def->Scale,
 			true,
-			true);
+			false,
+			ENCPoolMethod::None,
+			false);
 
 		if (Comp)
 		{
-			Comp->SetVariableVec3(TEXT("User.Direction"), Direction);
-			Comp->SetVariableFloat(TEXT("User.Speed"), Speed);
-			Comp->SetAutoDestroy(true);
-
-			if (Def->LifeSpan > 0.f)
-			{
-				Comp->SetMaxSimTime(Def->LifeSpan);
-			}
-
+			Comp->SetVariablePosition(Def->StartParameterName, FinalStart);
+			Comp->SetVariablePosition(Def->EndParameterName, FinalEnd);
+			Comp->Activate(true);
 		}
-
 	}
 	else if (UParticleSystem* Particle = Cast<UParticleSystem>(Def->FXAsset))
 	{
-
-
 		UGameplayStatics::SpawnEmitterAtLocation(
 			GetWorld(),
 			Particle,
@@ -101,7 +93,7 @@ void UVisualEventSubsystem::SpawnProjectileTrail(const UTrailEffectDefinition* D
 
 	if (UNiagaraSystem* Niagara = Cast<UNiagaraSystem>(Def->FXAsset))
 	{
-		UNiagaraComponent* Comp = UNiagaraFunctionLibrary::SpawnSystemAttached(
+		UNiagaraFunctionLibrary::SpawnSystemAttached(
 			Niagara,
 			AttachTarget,
 			Def->AttachSocketName,
@@ -113,11 +105,6 @@ void UVisualEventSubsystem::SpawnProjectileTrail(const UTrailEffectDefinition* D
 			ENCPoolMethod::None,
 			true,
 			true);
-
-		if (Comp && Def->LifeSpan > 0.f)
-		{
-			Comp->SetAutoDestroy(true);
-		}
 	}
 	else if (UParticleSystem* Particle = Cast<UParticleSystem>(Def->FXAsset))
 	{
@@ -158,7 +145,7 @@ void UVisualEventSubsystem::PlaySoundAtLocation(USoundDefinition* SoundDefinitio
 	);
 }
 
-//Trail은 Weapon에서 처리할 거고, 맞은 애의 이펙트 정보 자체는 Endpos만 요구하는 위치 기반이니 배제.
+// Weapon trails are handled by the weapon; hit effects only require a world-space location.
 void UVisualEventSubsystem::FeaturesEffect(FVector Location, FRotator Rotation, FVisualEventSet& EffectSet)
 {
 	if (EffectSet.DecalDef)
@@ -261,4 +248,3 @@ void UVisualEventSubsystem::SpawnEffectAtLocation(const UTrailEffectDefinition* 
 			true);
 	}
 }
-

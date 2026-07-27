@@ -35,6 +35,17 @@ namespace PixelSorting
 		PassParameters->Threshold = FMath::RoundToInt(FMath::Clamp(Parameters.Threshold, 0.0f, 255.0f));
 	}
 
+	template <typename TParameters>
+	void SetColorBlendParameters(TParameters* PassParameters, const FPixelSortingParameters& Parameters)
+	{
+		PassParameters->TargetColor = FVector3f(
+			Parameters.TargetColor.R,
+			Parameters.TargetColor.G,
+			Parameters.TargetColor.B);
+		PassParameters->ColorBlendProgress = FMath::Clamp(Parameters.Progress, 0.0f, 1.0f);
+		PassParameters->bColorInterpolationEnabled = Parameters.bColorInterpolationEnabled != 0 ? 1u : 0u;
+	}
+
 	FIntVector GetGroupCount(const FScreenPassTexture& SceneColor, uint32 Direction)
 	{
 		return Direction == DirectionRow
@@ -103,6 +114,9 @@ public:
 		SHADER_PARAMETER(uint32, Direction)
 		SHADER_PARAMETER(uint32, Mode)
 		SHADER_PARAMETER(int32, Threshold)
+		SHADER_PARAMETER(FVector3f, TargetColor)
+		SHADER_PARAMETER(float, ColorBlendProgress)
+		SHADER_PARAMETER(uint32, bColorInterpolationEnabled)
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
@@ -126,6 +140,72 @@ public:
 		SHADER_PARAMETER(uint32, Direction)
 		SHADER_PARAMETER(uint32, Mode)
 		SHADER_PARAMETER(int32, Threshold)
+		SHADER_PARAMETER(FVector3f, TargetColor)
+		SHADER_PARAMETER(float, ColorBlendProgress)
+		SHADER_PARAMETER(uint32, bColorInterpolationEnabled)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+	}
+};
+
+class FPixelSortDownsampleBoxCS : public FGlobalShader
+{
+public:
+	DECLARE_GLOBAL_SHADER(FPixelSortDownsampleBoxCS);
+	SHADER_USE_PARAMETER_STRUCT(FPixelSortDownsampleBoxCS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, DownsampleSource)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, DownsampleOutput)
+		SHADER_PARAMETER(FIntPoint, SourceExtent)
+		SHADER_PARAMETER(FIntPoint, ReducedExtent)
+		SHADER_PARAMETER(int32, ResolutionDivisor)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+	}
+};
+
+class FPixelSortCoverageCS : public FGlobalShader
+{
+public:
+	DECLARE_GLOBAL_SHADER(FPixelSortCoverageCS);
+	SHADER_USE_PARAMETER_STRUCT(FPixelSortCoverageCS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, CoverageSorted)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, CoverageOriginal)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float>, CoverageOutput)
+		SHADER_PARAMETER(FIntPoint, ReducedExtent)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+	}
+};
+
+class FPixelSortCompositePS : public FGlobalShader
+{
+public:
+	DECLARE_GLOBAL_SHADER(FPixelSortCompositePS);
+	SHADER_USE_PARAMETER_STRUCT(FPixelSortCompositePS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, CompositeFullResTexture)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, CompositeSortedTexture)
+		SHADER_PARAMETER_SAMPLER(SamplerState, CompositeSortedSampler)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float>, CompositeCoverageTexture)
+		SHADER_PARAMETER_SAMPLER(SamplerState, CompositeCoverageSampler)
+		SHADER_PARAMETER(FIntPoint, SourceExtent)
+		SHADER_PARAMETER(FIntPoint, ReducedExtent)
+		SHADER_PARAMETER(int32, ResolutionDivisor)
+		RENDER_TARGET_BINDING_SLOTS()
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
@@ -137,6 +217,9 @@ public:
 IMPLEMENT_GLOBAL_SHADER(FPixelSortColorToPackedCS, "/Plugin/RDG/PixelSorting.usf", "ColorToPackedCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FPixelSortPackedToColorCS, "/Plugin/RDG/PixelSorting.usf", "PackedToColorCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FPixelSortColorToColorCS, "/Plugin/RDG/PixelSorting.usf", "ColorToColorCS", SF_Compute);
+IMPLEMENT_GLOBAL_SHADER(FPixelSortDownsampleBoxCS, "/Plugin/RDG/PixelSorting.usf", "DownsampleBoxCS", SF_Compute);
+IMPLEMENT_GLOBAL_SHADER(FPixelSortCoverageCS, "/Plugin/RDG/PixelSorting.usf", "CoverageCS", SF_Compute);
+IMPLEMENT_GLOBAL_SHADER(FPixelSortCompositePS, "/Plugin/RDG/PixelSorting.usf", "CompositePS", SF_Pixel);
 
 namespace PixelSorting
 {
@@ -148,6 +231,149 @@ namespace PixelSorting
 		ERHIFeatureLevel::Type FeatureLevel,
 		const FScreenPassTexture& SceneColor,
 		const FPixelSortingParameters& Parameters);
+
+	// 원본 해상도에서 정렬할지, 축소본에서 정렬한 뒤 합성할지 결정해 전체 경로를
+	// 처리함. 정렬이 아무것도 하지 않았으면 입력을 그대로 돌려줌.
+	FScreenPassTexture AddSortedSceneColor(
+		FRDGBuilder& GraphBuilder,
+		ERHIFeatureLevel::Type FeatureLevel,
+		const FScreenPassTexture& SceneColor,
+		const FPixelSortingParameters& Parameters);
+
+	int32 GetEffectiveDivisor(const FScreenPassTexture& SceneColor, const FPixelSortingParameters& Parameters)
+	{
+		const int32 Requested = FMath::Clamp(Parameters.ResolutionDivisor, 1, 8);
+
+		// 축소 경로는 뷰포트가 텍스처 원점에서 시작한다고 가정함(backbuffer가 그럼).
+		// 오프셋이 있는 뷰렉트는 좌표 매핑이 달라지므로 원본 해상도로 처리.
+		if (SceneColor.ViewRect.Min != FIntPoint::ZeroValue)
+		{
+			return 1;
+		}
+
+		return Requested;
+	}
+
+	FRDGTextureRef CreateCoverageTexture(FRDGBuilder& GraphBuilder, FIntPoint Extent)
+	{
+		const FRDGTextureDesc Desc = FRDGTextureDesc::Create2D(
+			Extent,
+			PF_G8,
+			FClearValueBinding::Black,
+			TexCreate_ShaderResource | TexCreate_UAV);
+
+		return GraphBuilder.CreateTexture(Desc, TEXT("RDG.PixelSorting.Coverage"));
+	}
+}
+
+FScreenPassTexture PixelSorting::AddSortedSceneColor(
+	FRDGBuilder& GraphBuilder,
+	ERHIFeatureLevel::Type FeatureLevel,
+	const FScreenPassTexture& SceneColor,
+	const FPixelSortingParameters& Parameters)
+{
+	const int32 Divisor = GetEffectiveDivisor(SceneColor, Parameters);
+
+	if (Divisor <= 1)
+	{
+		FRDGTextureRef SortedTexture = AddSortPasses(GraphBuilder, FeatureLevel, SceneColor, Parameters);
+		return SortedTexture
+			? FScreenPassTexture(SortedTexture, SceneColor.ViewRect)
+			: SceneColor;
+	}
+
+	FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(FeatureLevel);
+	const FIntPoint SourceExtent = SceneColor.ViewRect.Size();
+	const FIntPoint ReducedExtent = FIntPoint(
+		FMath::DivideAndRoundUp(SourceExtent.X, Divisor),
+		FMath::DivideAndRoundUp(SourceExtent.Y, Divisor));
+
+	// 1) 박스 필터로 축소. 픽셀 하나를 고르면 얇은 UI 요소가 임계값을 들락날락하며
+	//    깜빡이므로 반드시 평균을 씀.
+	FRDGTextureRef ReducedTexture = CreateOutputTexture(GraphBuilder, ReducedExtent);
+	{
+		FPixelSortDownsampleBoxCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FPixelSortDownsampleBoxCS::FParameters>();
+		PassParameters->DownsampleSource = SceneColor.Texture;
+		PassParameters->DownsampleOutput = GraphBuilder.CreateUAV(ReducedTexture);
+		PassParameters->SourceExtent = SourceExtent;
+		PassParameters->ReducedExtent = ReducedExtent;
+		PassParameters->ResolutionDivisor = Divisor;
+
+		TShaderMapRef<FPixelSortDownsampleBoxCS> ComputeShader(ShaderMap);
+		FComputeShaderUtils::AddPass(
+			GraphBuilder,
+			RDG_EVENT_NAME("RDG.PixelSorting.Downsample(1/%d)", Divisor),
+			ComputeShader,
+			PassParameters,
+			FComputeShaderUtils::GetGroupCount(ReducedExtent, FIntPoint(8, 8)));
+	}
+
+	// 2) 축소본에서 정렬.
+	const FScreenPassTexture ReducedSceneColor(ReducedTexture, FIntRect(FIntPoint::ZeroValue, ReducedExtent));
+	FRDGTextureRef SortedTexture = AddSortPasses(GraphBuilder, FeatureLevel, ReducedSceneColor, Parameters);
+	if (!SortedTexture)
+	{
+		return SceneColor;
+	}
+
+	// 3) 정렬 전후를 비교해 실제로 바뀐 픽셀만 표시.
+	FRDGTextureRef CoverageTexture = CreateCoverageTexture(GraphBuilder, ReducedExtent);
+	{
+		FPixelSortCoverageCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FPixelSortCoverageCS::FParameters>();
+		PassParameters->CoverageSorted = SortedTexture;
+		PassParameters->CoverageOriginal = ReducedTexture;
+		PassParameters->CoverageOutput = GraphBuilder.CreateUAV(CoverageTexture);
+		PassParameters->ReducedExtent = ReducedExtent;
+
+		TShaderMapRef<FPixelSortCoverageCS> ComputeShader(ShaderMap);
+		FComputeShaderUtils::AddPass(
+			GraphBuilder,
+			RDG_EVENT_NAME("RDG.PixelSorting.Coverage"),
+			ComputeShader,
+			PassParameters,
+			FComputeShaderUtils::GetGroupCount(ReducedExtent, FIntPoint(8, 8)));
+	}
+
+	// 4) 원본 풀 해상도 위에 정렬된 부분만 확대해 합성.
+	FRDGTextureDesc CompositeDesc = SceneColor.Texture->Desc;
+	EnumRemoveFlags(CompositeDesc.Flags, ETextureCreateFlags::Presentable);
+	CompositeDesc.Reset();
+	CompositeDesc.Flags |= TexCreate_RenderTargetable | TexCreate_ShaderResource;
+
+	FRDGTextureRef CompositeTexture = GraphBuilder.CreateTexture(
+		CompositeDesc,
+		TEXT("RDG.PixelSorting.Composite"));
+
+	FScreenPassRenderTarget Output(
+		CompositeTexture,
+		SceneColor.ViewRect,
+		ERenderTargetLoadAction::ENoAction);
+
+	FPixelSortCompositePS::FParameters* PassParameters = GraphBuilder.AllocParameters<FPixelSortCompositePS::FParameters>();
+	PassParameters->CompositeFullResTexture = SceneColor.Texture;
+	PassParameters->CompositeSortedTexture = SortedTexture;
+	PassParameters->CompositeSortedSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+	PassParameters->CompositeCoverageTexture = CoverageTexture;
+	PassParameters->CompositeCoverageSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+	PassParameters->SourceExtent = SourceExtent;
+	PassParameters->ReducedExtent = ReducedExtent;
+	PassParameters->ResolutionDivisor = Divisor;
+	PassParameters->RenderTargets[0] = Output.GetRenderTargetBinding();
+
+	TShaderMapRef<FScreenPassVS> VertexShader(ShaderMap);
+	TShaderMapRef<FPixelSortCompositePS> PixelShader(ShaderMap);
+
+	AddDrawScreenPass(
+		GraphBuilder,
+		RDG_EVENT_NAME("RDG.PixelSorting.Composite"),
+		FScreenPassViewInfo(),
+		FScreenPassTextureViewport(Output),
+		FScreenPassTextureViewport(SceneColor),
+		VertexShader,
+		PixelShader,
+		PassParameters);
+
+	return MoveTemp(Output);
 }
 
 FRDGTextureRef PixelSorting::AddSortPasses(
@@ -200,6 +426,7 @@ FRDGTextureRef PixelSorting::AddSortPasses(
 		RowParameters->InputPacked = PackedIntermediate;
 		RowParameters->OutputColor = GraphBuilder.CreateUAV(OutputTexture);
 		PixelSorting::SetCommonParameters(RowParameters, SceneColor, PixelSorting::DirectionRow, Parameters);
+		PixelSorting::SetColorBlendParameters(RowParameters, Parameters);
 
 		TShaderMapRef<FPixelSortPackedToColorCS> RowShader(ShaderMap);
 		FComputeShaderUtils::AddPass(
@@ -216,6 +443,7 @@ FRDGTextureRef PixelSorting::AddSortPasses(
 		PassParameters->InputColor = SceneColor.Texture;
 		PassParameters->OutputColor = GraphBuilder.CreateUAV(OutputTexture);
 		PixelSorting::SetCommonParameters(PassParameters, SceneColor, Direction, Parameters);
+		PixelSorting::SetColorBlendParameters(PassParameters, Parameters);
 
 		TShaderMapRef<FPixelSortColorToColorCS> ComputeShader(ShaderMap);
 		FComputeShaderUtils::AddPass(
@@ -243,18 +471,17 @@ FScreenPassTexture FRDGPixelSortingPass::AddPass(
 		return SceneColor;
 	}
 
-	FRDGTextureRef OutputTexture = PixelSorting::AddSortPasses(
+	const FScreenPassTexture SortedSceneColor = PixelSorting::AddSortedSceneColor(
 		GraphBuilder,
 		View.GetFeatureLevel(),
 		SceneColor,
 		Parameters);
 
-	if (!OutputTexture)
+	if (SortedSceneColor.Texture == SceneColor.Texture)
 	{
 		return SceneColor;
 	}
 
-	const FScreenPassTexture SortedSceneColor(OutputTexture, SceneColor.ViewRect);
 	if (OverrideOutput.IsValid())
 	{
 		// Keep the compute output shader-readable, then resolve/convert it into the final
@@ -280,18 +507,17 @@ FScreenPassTexture FRDGPixelSortingPass::AddPass(
 		return SceneColor;
 	}
 
-	FRDGTextureRef OutputTexture = PixelSorting::AddSortPasses(
+	const FScreenPassTexture SortedSceneColor = PixelSorting::AddSortedSceneColor(
 		GraphBuilder,
 		GMaxRHIFeatureLevel,
 		SceneColor,
 		Parameters);
 
-	if (!OutputTexture)
+	if (SortedSceneColor.Texture == SceneColor.Texture)
 	{
 		return SceneColor;
 	}
 
-	const FScreenPassTexture SortedSceneColor(OutputTexture, SceneColor.ViewRect);
 	if (OverrideOutput.IsValid())
 	{
 		return FRDGSceneColorCopyPass::AddPass(

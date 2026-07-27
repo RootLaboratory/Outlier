@@ -47,9 +47,6 @@ public:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hack|Candidate")
-	float CandidateRange = 1200.0f;
-
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hack|Candidate", meta = (ClampMin = "0.0", ClampMax = "180.0"))
 	float CandidateHalfAngleDegrees = 55.0f;
 
@@ -96,6 +93,9 @@ public:
 
 	UFUNCTION(Client, Reliable)
 	void ClientStopHackMiniGame();
+
+	UFUNCTION(Client, Reliable)
+	void ClientAbortHackForInvalidTarget();
 
 	UFUNCTION(Client, Reliable)
 	void DefaultWidgetControl(bool InFlag);
@@ -178,6 +178,12 @@ private:
 	void RemoveHackCandidateAt(int32 Index);
 	void DeactivateUnselectedCandidates(UHackableComponent* SelectedComponent);
 	void CancelActiveHack();
+	void SetActiveHackableComponent(UHackableComponent* HackableComponent);
+	void ClearActiveHackableComponent();
+	void AbortLocalHackForInvalidTarget();
+	void HandleHackTargetInvalidated(
+		UHackableComponent* InvalidatedComponent,
+		EEndPlayReason::Type EndPlayReason);
 
 	void StartHackMiniGame(AActor* TargetActor, UHackableComponent* HackableComponent);
 

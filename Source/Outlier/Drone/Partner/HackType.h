@@ -34,6 +34,9 @@ struct FHackQueryContext
 
 	UPROPERTY(BlueprintReadWrite)
 	FGameplayTagContainer BlockedTags;
+
+	UPROPERTY(BlueprintReadWrite, meta = (Categories = "Hack.Use"))
+	FGameplayTagContainer HackMultiUseTags;
 };
 
 USTRUCT(BlueprintType)

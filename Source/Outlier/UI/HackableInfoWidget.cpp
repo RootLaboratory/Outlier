@@ -6,6 +6,7 @@
 #include "Drone/Partner/HackInfoRow.h"
 #include "Drone/Partner/HackInfoSubsystem.h"
 #include "Engine/GameInstance.h"
+#include "PopupRetainerBox.h"
 #include "GameFramework/Actor.h"
 
 void UHackableInfoWidget::InitializeInfo(AActor* InTargetActor, UHackableComponent* InHackableComponent)
@@ -25,6 +26,22 @@ void UHackableInfoWidget::SetHackProgress(float InProgress)
 	}
 }
 
+void UHackableInfoWidget::PlayPopup()
+{
+	if (PopupRetainerBox)
+	{
+		PopupRetainerBox->PlayOpen();
+	}
+}
+
+void UHackableInfoWidget::ResetPopup()
+{
+	if (PopupRetainerBox)
+	{
+		PopupRetainerBox->ResetPopup();
+	}
+}
+
 FVector2D UHackableInfoWidget::GetOffsetForDistance(float Distance) const
 {
 	const float DistanceRange = FMath::Max(FarDistance - NearDistance, KINDA_SMALL_NUMBER);
@@ -37,6 +54,7 @@ void UHackableInfoWidget::NativeConstruct()
 	Super::NativeConstruct();
 
 	SetVisibility(ESlateVisibility::HitTestInvisible);
+	ResetPopup();
 	UpdateInfoText();
 	SetHackProgress(0.0f);
 }

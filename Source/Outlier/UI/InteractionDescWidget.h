@@ -6,6 +6,7 @@
 #include "Interaction/InteractInfoRow.h"
 #include "InteractionDescWidget.generated.h"
 
+class UPopupRetainerBox;
 class UProgressBar;
 class UTextBlock;
 
@@ -18,8 +19,12 @@ public:
 	void UpdateInteractionDesc(const FGameplayTag& InteractTag, const FInteractInfoRow& InteractInfo, float InProgress);
 	void SetProgress(float InProgress);
 	void ClearInteractionDesc();
+	void PlayPopUp(bool InFlag);
 
 protected:
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	TObjectPtr<UPopupRetainerBox> PopupRetainerBox;
+
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UTextBlock> DescText;
 

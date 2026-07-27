@@ -31,6 +31,7 @@ public:
 
 private:
 	static constexpr int32 DefaultScanStencilValue = 0;
+	static constexpr float ScanUpdateInterval = 0.03f;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Shield")
 	TSubclassOf<APartnerShieldSphere> ShieldActorClass;
@@ -47,10 +48,13 @@ private:
 	TMap<FName, float> LastUseTimes;
 
 	FTimerHandle ShieldMonitorTimerHandle;
-	FTimerHandle ScanTimerHandle;
+	FTimerHandle ScanServerStateTimerHandle;
+	FTimerHandle ScanClientUpdateTimerHandle;
 
 	float CurrentScanRadius = 0.0f;
 	float ScanElapsedTime = 0.0f;
+	float ActiveScanRange = 0.0f;
+	float ActiveScanDuration = 0.0f;
 
 	TArray<TObjectPtr<AActor>> ScannedActors;
 
@@ -66,8 +70,9 @@ private:
 	void UpdateShield_Server();
 	void EndShield_Server();
 
-	void UpdateScan_Server();
 	void EndScan_Server();
+	void UpdateScan_Client();
+	void EndScan_Client();
 
 	bool CanUseShield() const;
 	void NotifySkillResult(EPartnerSkillType SkillType, EPartnerSkillUseResult Result) const;
@@ -83,17 +88,5 @@ private:
 	void ApplyAreaOfEffect(AActor* Actor);
 
 	UFUNCTION(Client, Reliable)
-	void ClientStartScanVisual(FVector InScanOrigin, float InCurrentScanRadius, float InScanRange);
-
-	UFUNCTION(Client, Unreliable)
-	void ClientUpdateScanVisual(FVector InScanOrigin, float InCurrentScanRadius);
-
-	UFUNCTION(Client, Reliable)
-	void ClientApplyScanEffect(AActor* Actor, int32 StencilValue);
-
-	UFUNCTION(Client, Reliable)
-	void ClientClearScanEffect(AActor* Actor);
-
-	UFUNCTION(Client, Reliable)
-	void ClientEndScanVisual();
+	void ClientStartScanVisual(FVector InScanOrigin, float InScanRange, float InScanDuration);
 };

@@ -1,4 +1,5 @@
 #include "/Engine/Private/Common.ush"
+#include "/Engine/Private/ScreenPass.ush"
 
 #define PIXEL_SORT_GROUP_SIZE 256
 #define PIXEL_SORT_MAX_LINE_LENGTH 2048
@@ -23,6 +24,9 @@ uint PaddedLength;
 uint Direction;
 uint Mode;
 int Threshold;
+float3 TargetColor;
+float ColorBlendProgress;
+uint bColorInterpolationEnabled;
 
 groupshared uint GColor[PIXEL_SORT_MAX_LINE_LENGTH];
 groupshared uint GSegment[PIXEL_SORT_MAX_LINE_LENGTH];
@@ -287,7 +291,13 @@ void WriteColorLine(uint3 GroupId, uint GroupThreadIndex)
 		const uint Index = GroupThreadIndex + Slot * PIXEL_SORT_GROUP_SIZE;
 		if (Index < LineLength)
 		{
-			OutputColor[GetPixelCoord(Index, GroupId)] = UnpackARGB8(GColor[Index]);
+			const uint Packed = GColor[Index];
+			float4 SortedColor = UnpackARGB8(Packed);
+			if (bColorInterpolationEnabled != 0u && IsSortable(Packed))
+			{
+				SortedColor.rgb = lerp(SortedColor.rgb, saturate(TargetColor), saturate(ColorBlendProgress));
+			}
+			OutputColor[GetPixelCoord(Index, GroupId)] = SortedColor;
 		}
 	}
 }
@@ -314,4 +324,98 @@ void ColorToColorCS(uint3 GroupId : SV_GroupID, uint GroupThreadIndex : SV_Group
 	LoadColorLine(GroupId, GroupThreadIndex);
 	BuildSegmentsAndSort(GroupThreadIndex);
 	WriteColorLine(GroupId, GroupThreadIndex);
+}
+
+// ----------------------------------------------------------------------------
+// 축소 해상도 경로
+//
+// 정렬은 O(n log^2 n)이라 라인이 짧아지면 픽셀 수가 주는 것보다 더 싸짐.
+// 대신 결과를 그대로 확대하면 정렬되지 않은 영역(임계값 미달 픽셀은 제자리에
+// 통과됨)까지 뭉개지므로, 실제로 색이 바뀐 곳만 골라 원본 위에 합성함.
+// ----------------------------------------------------------------------------
+
+Texture2D DownsampleSource;
+RWTexture2D<float4> DownsampleOutput;
+
+Texture2D<float4> CoverageSorted;
+Texture2D<float4> CoverageOriginal;
+RWTexture2D<float> CoverageOutput;
+
+Texture2D CompositeFullResTexture;
+Texture2D CompositeSortedTexture;
+SamplerState CompositeSortedSampler;
+Texture2D<float> CompositeCoverageTexture;
+SamplerState CompositeCoverageSampler;
+
+int2 SourceExtent;
+int2 ReducedExtent;
+int ResolutionDivisor;
+
+// 박스 필터. 픽셀 하나를 골라 버리면 얇고 밝은 UI 요소(조준선, 글자 획)가 짝/홀
+// 위치에 따라 살아남거나 사라지면서 임계값을 들락날락해 프레임마다 깜빡임.
+// 주변을 평균내면 그 판정이 위치가 아니라 실제 밝기 총량을 따라가므로 안정적임.
+[numthreads(8, 8, 1)]
+void DownsampleBoxCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	const int2 Coord = int2(DispatchThreadId.xy);
+	if (any(Coord >= ReducedExtent))
+	{
+		return;
+	}
+
+	float4 Sum = 0.0f;
+	float Count = 0.0f;
+
+	[loop]
+	for (int Y = 0; Y < ResolutionDivisor; ++Y)
+	{
+		[loop]
+		for (int X = 0; X < ResolutionDivisor; ++X)
+		{
+			const int2 SourceCoord = min(Coord * ResolutionDivisor + int2(X, Y), SourceExtent - 1);
+			Sum += DownsampleSource.Load(int3(SourceCoord, 0));
+			Count += 1.0f;
+		}
+	}
+
+	DownsampleOutput[Coord] = Sum / max(Count, 1.0f);
+}
+
+// 정렬 전후를 비교해 "정렬이 실제로 건드린 픽셀"을 표시함. 별도 마스크를 들고
+// 다니지 않아도 되고, 정렬됐지만 색이 그대로인 균일 영역은 자연히 0이 되어
+// 원본의 선명도를 유지함.
+[numthreads(8, 8, 1)]
+void CoverageCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	const int2 Coord = int2(DispatchThreadId.xy);
+	if (any(Coord >= ReducedExtent))
+	{
+		return;
+	}
+
+	const float3 Sorted = CoverageSorted.Load(int3(Coord, 0)).rgb;
+	const float3 Original = CoverageOriginal.Load(int3(Coord, 0)).rgb;
+
+	// 8비트 한 단계의 절반보다 벌어졌으면 정렬로 옮겨진 픽셀로 판정.
+	const bool bChanged = any(abs(Sorted - Original) > (0.5f / 255.0f));
+	CoverageOutput[Coord] = bChanged ? 1.0f : 0.0f;
+}
+
+void CompositePS(
+	FScreenVertexOutput Input,
+	out float4 OutColor : SV_Target0)
+{
+	const int2 FullResCoord = min(int2(Input.UV * float2(SourceExtent)), SourceExtent - 1);
+	const float4 FullResColor = CompositeFullResTexture.Load(int3(FullResCoord, 0));
+
+	// 축소 텍스처는 실제 사용 영역(ReducedExtent)이 할당 크기보다 작을 수 있으므로
+	// 전체 UV가 아니라 원본 좌표를 배수로 나눠 직접 매핑함.
+	const float2 ReducedUV = (float2(FullResCoord) + 0.5f) / float(ResolutionDivisor) / float2(ReducedExtent);
+
+	const float4 SortedColor = CompositeSortedTexture.Sample(CompositeSortedSampler, ReducedUV);
+	const float Coverage = saturate(CompositeCoverageTexture.Sample(CompositeCoverageSampler, ReducedUV));
+
+	// 정렬된 구간은 색이 순서대로 늘어선 부드러운 띠라 확대해도 손실이 거의 없고,
+	// 손대지 않은 영역은 원본 풀 해상도가 그대로 남음.
+	OutColor = float4(lerp(FullResColor.rgb, SortedColor.rgb, Coverage), FullResColor.a);
 }

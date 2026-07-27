@@ -46,9 +46,21 @@ public:
 
 	void OnClientArenaReady(APlayerController* PC);
 
+	// 디버그: 요청한 페어의 arena를 통째로 리로드하고 시작점에 재스폰
+	void DebugReloadArena(AController* Requester);
+
 private:
 	UPROPERTY()
 	TMap<TObjectPtr<APlayerController>, TObjectPtr<APawn>> PendingPossessions;
+
+	// 디버그 리로드: 서버측 재스트리밍(OnArenaShown) 완료 후 possess할 로컬 PC들
+	UPROPERTY()
+	TMap<TObjectPtr<APlayerController>, TObjectPtr<APawn>> PendingLocalPossessions;
+
+	void HandleServerArenaReloaded(int32 ReloadedArenaId);
+
+	int32 ReloadingArenaId = INDEX_NONE;
+	FDelegateHandle ArenaShownHandle;
 
 protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Respawn")

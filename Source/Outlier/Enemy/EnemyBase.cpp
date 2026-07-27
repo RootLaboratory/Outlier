@@ -2,6 +2,8 @@
 #include "Camera/CameraComponent.h"
 #include "Components/StateTreeComponent.h"
 #include "Drone/Partner/HackableComponent.h"
+#include "Drone/Partner/EMPableComponent.h"
+#include "Drone/Partner/EMPGameplayTags.h"
 #include "Drone/Partner/HackGameplayTags.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Drone/Partner/PartnerPlayerController.h"
@@ -44,6 +46,9 @@ AEnemyBase::AEnemyBase()
 	HackableComponent->SuccessEffectTags.AddTag(HackGameplayTags::Effect::Possess());
 
 	RoomTagComponent = CreateDefaultSubobject<URoomTagComponent>(TEXT("RoomTagComponent"));
+
+	EmpableComponent = CreateDefaultSubobject<UEMPableComponent>(TEXT("EmpableComponent"));
+	EmpableComponent->AddEMPTag(EMPGameplayTags::Target::EMPable());
 
 	// 코어 크리티컬 판정용 전용 콜리전 — Physics Asset 바디로 하면 BodyBone 안쪽에 겹친 CoreBone이
 	// 같은 컴포넌트 안에서 가려져서 Multi 트레이스로도 검출이 안 됐음 (Body 콜리전을 꺼야만 잡힘,
@@ -298,22 +303,6 @@ void AEnemyBase::SetEnemyPossessed(bool bNewIsPossessed)
 	if (!bIsPossessed)
 	{
 		ClearPossessedPlayerState();
-	}
-
-	if (HackableComponent)
-	{
-		if (bIsPossessed)
-		{
-			HackableComponent->HackTags.RemoveTag(HackGameplayTags::Target::Possessable());
-			HackableComponent->HackTags.AddTag(HackGameplayTags::Target::NonPossessable());
-			HackableComponent->HackTags.AddTag(OutlierGameplayTags::State::HackedOnce());
-		}
-		else
-		{
-			HackableComponent->HackTags.RemoveTag(HackGameplayTags::Target::NonPossessable());
-			HackableComponent->HackTags.RemoveTag(OutlierGameplayTags::State::HackedOnce());
-			HackableComponent->HackTags.AddTag(HackGameplayTags::Target::Possessable());
-		}
 	}
 
 	if (AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(GetCachedAIController()))
@@ -706,7 +695,7 @@ UHackableComponent* AEnemyBase::GetHackableComponent() const
 
 void AEnemyBase::HandleHackEffect(FGameplayTag EffectTag, const FHackResultContext& Context)
 {
-	if (!HasAuthority() || Context.Result != EHackResult::Success)
+	if (!HasAuthority())
 	{
 		return;
 	}
@@ -717,6 +706,24 @@ void AEnemyBase::HandleHackEffect(FGameplayTag EffectTag, const FHackResultConte
 	}
 
 	if (IsEnemyPossessed())
+	{
+		return;
+	}
+
+	if (!HackableComponent)
+	{
+		return;
+	}
+	//성공 유무와 상관없이 hack 끝났다면 tag 삭제
+	HackableComponent->HackTags.RemoveTag(OutlierGameplayTags::State::Stunned());
+
+	if (!HasActiveStunTag())
+	{
+		RestoreStateAfterStun();
+	}
+
+
+	if (Context.Result != EHackResult::Success)
 	{
 		return;
 	}
@@ -733,9 +740,56 @@ void AEnemyBase::HandleHackEffect(FGameplayTag EffectTag, const FHackResultConte
 		return;
 	}
 
-	PartnerController->CachePartnerCharacterForEnemyPossession(PartnerCharacter);
-	PartnerCharacter->SetInvincibleForEnemyPossession(true);
-	PartnerController->Possess(this);
+	PartnerController->BeginEnemyPossessionTransition(this, PartnerCharacter);
+}
+
+void AEnemyBase::HandleHackStarted(const FHackQueryContext& Context)
+{
+	//Hack 접속.
+	if (!HackableComponent)
+	{
+		return;
+	}
+
+	//Enemy 빙의는 일회성으로 처리, Possessed 상태 상관없이, Hacking 타겟팅 시, Tag 컨펌하는 거로.
+
+	HackableComponent->HackTags.AddTag(OutlierGameplayTags::State::Stunned());
+	HackableComponent->HackTags.RemoveTag(HackGameplayTags::Target::Possessable());
+	HackableComponent->HackTags.AddTag(HackGameplayTags::Target::NonPossessable());
+
+	EnterStun();
+
+}
+
+UEMPableComponent* AEnemyBase::GetEMPableComponent() const
+{
+	return EmpableComponent;
+}
+
+//Partner EmpComponent Timer Delegate.
+void AEnemyBase::HandleEMPStarted(FGameplayTag EffectTag)
+{
+	if (EffectTag == OutlierGameplayTags::State::Stunned()
+		&& HasAuthority()
+		&& HasActiveStunTag())
+	{
+		EnterStun();
+	}
+}
+
+void AEnemyBase::HandleEMPEnded(FGameplayTag EffectTag)
+{
+	if (EffectTag == OutlierGameplayTags::State::Stunned()
+		&& HasAuthority()
+		&& !HasActiveStunTag())
+	{
+		RestoreStateAfterStun();
+	}
+}
+
+int32 AEnemyBase::GetScanStencilValue() const
+{
+	return static_cast<int32>(EScanType::Enemy);
 }
 
 void AEnemyBase::SetDefaultEnemyType(EEnemyType EnemyType)
@@ -753,6 +807,14 @@ void AEnemyBase::ApplyMovementFromRuntimeStat()
 	{
 		MovementComponent->MaxFlySpeed = FMath::Max(RuntimeStat.MoveSpeed, 0.0f);
 	}
+}
+
+bool AEnemyBase::HasActiveStunTag() const
+{
+	//스턴 판정이 일단 두 개라서; 임시로 처리. 
+	const FGameplayTag StunnedTag = OutlierGameplayTags::State::Stunned();
+	return (HackableComponent && HackableComponent->HasHackTag(StunnedTag))
+		|| (EmpableComponent && EmpableComponent->HasEMPTag(StunnedTag));
 }
 
 void AEnemyBase::PromotePreStunState(EEnemyCombatState DetectedState)

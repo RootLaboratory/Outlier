@@ -12,6 +12,7 @@
 #include "Interface/InteractableInterface.h"
 #include "Interaction/InteractionNode.h"
 #include "Interaction/InteractableComponent.h"
+#include "FirstPerson/FirstPersonPlayerController.h"
 #include "LocalPlayerUISubSystem.h"
 #include "EnhancedInputComponent.h"
 #include "InputActionValue.h"
@@ -116,6 +117,8 @@ void AFirstPersonCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
 	EnhancedInputComponent->BindAction(InputConfig->InteractionAction, ETriggerEvent::Canceled, this, &AFirstPersonCharacter::EndInteract);
 
 	EnhancedInputComponent->BindAction(InputConfig->CamToggleAction, ETriggerEvent::Started, this, &AFirstPersonCharacter::TryCamToggle);
+
+	EnhancedInputComponent->BindAction(InputConfig->DebugArenaReload, ETriggerEvent::Started, this, &AFirstPersonCharacter::ArenaReload);
 }
 
 void AFirstPersonCharacter::BeginPlay()
@@ -777,6 +780,15 @@ bool AFirstPersonCharacter::IsInteractTargetByTrace(AActor* TargetActor) const
 	}
 
 	return FindInteractTargetByTrace() == TargetActor;
+}
+
+void AFirstPersonCharacter::ArenaReload() 
+{
+	AFirstPersonPlayerController* FController = Cast<AFirstPersonPlayerController>(GetController());
+	if (FController)
+	{
+		FController->Server_RequestArenaReload();
+	}
 }
 
 void AFirstPersonCharacter::SyncInteractableKeyWidgets(const TArray<AActor*>& CurrentInteractables)

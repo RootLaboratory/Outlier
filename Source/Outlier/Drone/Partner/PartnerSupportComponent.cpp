@@ -9,7 +9,6 @@
 #include "OutlierPlayerState.h"
 #include "PostProcess/MaterialPostProcessSubsystem.h"
 #include "Components/ActorComponent.h"
-#include "DrawDebugHelpers.h"
 #include "Engine/OverlapResult.h"
 
 // Sets default values for this component's properties
@@ -39,6 +38,13 @@ void UPartnerSupportComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	if (UWorld* World = GetWorld())
 	{
 		World->GetTimerManager().ClearTimer(ShieldMonitorTimerHandle);
+		World->GetTimerManager().ClearTimer(ScanServerStateTimerHandle);
+		World->GetTimerManager().ClearTimer(ScanClientUpdateTimerHandle);
+	}
+
+	if (ActiveScanRange > 0.0f || ActiveScanDuration > 0.0f || !ScannedActors.IsEmpty())
+	{
+		EndScan_Client();
 	}
 
 	Super::EndPlay(EndPlayReason);
@@ -161,33 +167,23 @@ void UPartnerSupportComponent::TryScan_Server()
 	MarkSkillUsed(TEXT("Scan"));
 
 	PartnerCharacter->bScanning = true;
-	CurrentScanRadius = 0.0f;
-	ScanElapsedTime = 0.0f;
-	ScanOrigin = PartnerCharacter->GetActorLocation();
-
-	ScannedActors.Reset();
-
-	/*UE_LOG(
-		LogTemp,
-		Error,
-		TEXT("[PartnerScanDebug] ScanStart Origin=%s Range=%.2f"),
-		*ScanOrigin.ToString(),
-		PartnerCharacter->ScanRange
-	);*/
-
-	World->GetTimerManager().SetTimer(
-		ScanTimerHandle,
-		this,
-		&UPartnerSupportComponent::UpdateScan_Server,
-		0.03f,
-		true
-	);
+	const FVector InScanOrigin = PartnerCharacter->GetActorLocation();
+	const float InScanRange = PartnerCharacter->ScanRange;
+	const float InScanDuration = PartnerCharacter->ScanDuration;
 
 	//Multicast 수정
 	ClientStartScanVisual(
-		ScanOrigin,
-		CurrentScanRadius,
-		PartnerCharacter->ScanRange
+		InScanOrigin,
+		InScanRange,
+		InScanDuration
+	);
+
+	World->GetTimerManager().SetTimer(
+		ScanServerStateTimerHandle,
+		this,
+		&UPartnerSupportComponent::EndScan_Server,
+		FMath::Max(InScanDuration, KINDA_SMALL_NUMBER),
+		false
 	);
 
 	NotifySkillResult(EPartnerSkillType::Scan, EPartnerSkillUseResult::Success);
@@ -405,31 +401,29 @@ void UPartnerSupportComponent::EndShield_Server()
 	DestroyShieldActor_Server();
 }
 
-void UPartnerSupportComponent::UpdateScan_Server()
+void UPartnerSupportComponent::UpdateScan_Client()
 {
 	UWorld* World = GetWorld();
-	if (!World || !IsValid(PartnerCharacter))
+	if (!World || !ShouldProcessLocalScanVisual())
 	{
-		EndScan_Server();
+		EndScan_Client();
 		return;
 	}
 
-	const float TickInterval = 0.03f;
+	ScanElapsedTime += ScanUpdateInterval;
 
-	ScanElapsedTime += TickInterval;
-
-	const float ScanProgress = PartnerCharacter->ScanDuration > 0.0f
-		? FMath::Clamp(ScanElapsedTime / PartnerCharacter->ScanDuration, 0.0f, 1.0f)
+	const float ScanProgress = ActiveScanDuration > 0.0f
+		? FMath::Clamp(ScanElapsedTime / ActiveScanDuration, 0.0f, 1.0f)
 		: 1.0f;
 
-	CurrentScanRadius = PartnerCharacter->ScanRange * ScanProgress;
+	CurrentScanRadius = ActiveScanRange * ScanProgress;
 
 	const float RadiusSq = FMath::Square(CurrentScanRadius);
 
-	ClientUpdateScanVisual(
-		ScanOrigin,
-		CurrentScanRadius
-	);
+	if (UMaterialPostProcessSubsystem* PostProcessSubsystem = World->GetSubsystem<UMaterialPostProcessSubsystem>())
+	{
+		PostProcessSubsystem->UpdateScanPostProcess(ScanOrigin, CurrentScanRadius);
+	}
 
 	TArray<FOverlapResult> Results;
 
@@ -464,25 +458,16 @@ void UPartnerSupportComponent::UpdateScan_Server()
 			continue;
 		}
 
+		const FVector ActorLocation = Actor->GetActorLocation();
 		const float DistanceSq = FVector::DistSquared(
 			ScanOrigin,
-			Actor->GetActorLocation()
+			ActorLocation
 		);
 
 		if (DistanceSq > RadiusSq)
 		{
 			continue;
 		}
-
-		/*UE_LOG(
-			LogTemp,
-			Error,
-			TEXT("[PartnerScanDebug] ActorReached Actor=%s Class=%s Distance=%.2f Radius=%.2f"),
-			*GetNameSafe(Actor),
-			*GetNameSafe(Actor->GetClass()),
-			FMath::Sqrt(DistanceSq),
-			CurrentScanRadius
-		);*/
 
 		ScannedActors.Add(Actor);
 
@@ -491,7 +476,7 @@ void UPartnerSupportComponent::UpdateScan_Server()
 
 	if (ScanProgress >= 1.0f)
 	{
-		EndScan_Server();
+		EndScan_Client();
 	}
 }
 
@@ -503,9 +488,17 @@ void UPartnerSupportComponent::EndScan_Server()
 		return;
 	}
 
-	World->GetTimerManager().ClearTimer(ScanTimerHandle);
-
+	World->GetTimerManager().ClearTimer(ScanServerStateTimerHandle);
 	PartnerCharacter->bScanning = false;
+}
+
+void UPartnerSupportComponent::EndScan_Client()
+{
+	UWorld* World = GetWorld();
+	if (World)
+	{
+		World->GetTimerManager().ClearTimer(ScanClientUpdateTimerHandle);
+	}
 
 	for (const TWeakObjectPtr<AActor>& WeakActor : ScannedActors)
 	{
@@ -519,9 +512,16 @@ void UPartnerSupportComponent::EndScan_Server()
 	CurrentScanRadius = 0.0f;
 	ScanOrigin = FVector::ZeroVector;
 	ScanElapsedTime = 0.0f;
-	//UE_LOG(LogTemp, Error, TEXT("[PartnerScanDebug] ScanEnd"));
+	ActiveScanRange = 0.0f;
+	ActiveScanDuration = 0.0f;
 
-	ClientEndScanVisual();
+	if (World)
+	{
+		if (UMaterialPostProcessSubsystem* PostProcessSubsystem = World->GetSubsystem<UMaterialPostProcessSubsystem>())
+		{
+			PostProcessSubsystem->EndScanPostProcess();
+		}
+	}
 }
 
 bool UPartnerSupportComponent::CanUseShield() const
@@ -595,20 +595,9 @@ int32 UPartnerSupportComponent::ResolveScanStencilValue(AActor* Actor) const
 		return 0;
 	}
 
-	/*UE_LOG(
-		LogTemp,
-		Error,
-		TEXT("ResolveScanStencilValue Target=%s Class=%s Implements=%d NativeCast=%d"),
-		*GetNameSafe(Actor),
-		*GetNameSafe(Actor->GetClass()),
-		Actor->GetClass()->ImplementsInterface(UScannableInterface::StaticClass()) ? 1 : 0,
-		Cast<IScannableInterface>(Actor) ? 1 : 0
-	);*/
-
 	if (const IScannableInterface* NativeScannable = Cast<IScannableInterface>(Actor))
 	{
 		const int32 StencilValue = NativeScannable->GetScanStencilValue();
-		//UE_LOG(LogTemp, Error, TEXT("NativeScannable Valid, %d"), StencilValue);
 		return StencilValue;
 	}
 
@@ -624,7 +613,13 @@ void UPartnerSupportComponent::ApplyScanEffect(AActor* Actor)
 
 	if (int32 StencilValue = ResolveScanStencilValue(Actor))
 	{
-		ClientApplyScanEffect(Actor, StencilValue);
+		if (UWorld* World = GetWorld())
+		{
+			if (UMaterialPostProcessSubsystem* PostProcessSubsystem = World->GetSubsystem<UMaterialPostProcessSubsystem>())
+			{
+				PostProcessSubsystem->ApplyScanStencil(Actor, StencilValue);
+			}
+		}
 	}
 
 }
@@ -636,7 +631,13 @@ void UPartnerSupportComponent::ClearScanEffect(AActor* Actor)
 		return;
 	}
 
-	ClientClearScanEffect(Actor);
+	if (UWorld* World = GetWorld())
+	{
+		if (UMaterialPostProcessSubsystem* PostProcessSubsystem = World->GetSubsystem<UMaterialPostProcessSubsystem>())
+		{
+			PostProcessSubsystem->ClearScanStencil(Actor);
+		}
+	}
 }
 
 void UPartnerSupportComponent::ApplyAreaOfEffect(AActor* Actor)
@@ -660,95 +661,39 @@ bool UPartnerSupportComponent::ShouldProcessLocalScanVisual() const
 
 void UPartnerSupportComponent::ClientStartScanVisual_Implementation(
 	FVector InScanOrigin,
-	float InCurrentScanRadius,
-	float InScanRange)
+	float InScanRange,
+	float InScanDuration)
 {
 	if (!ShouldProcessLocalScanVisual())
 	{
 		return;
 	}
 
-	//DrawDebugSphere(
-	//	GetWorld(),
-	//	InScanOrigin,
-	//	InCurrentScanRadius,
-	//	32,
-	//	FColor::Cyan,
-	//	false,
-	//	0.25f,
-	//	0,
-	//	2.0f
-	//);
+	EndScan_Client();
 
-	if (UMaterialPostProcessSubsystem* PostProcessSubsystem = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
-	{
-		PostProcessSubsystem->StartScanPostProcess(InScanOrigin, InCurrentScanRadius, InScanRange);
-	}
-}
-
-void UPartnerSupportComponent::ClientUpdateScanVisual_Implementation(
-	FVector InScanOrigin,
-	float InCurrentScanRadius)
-{
-	if (!ShouldProcessLocalScanVisual())
+	UWorld* World = GetWorld();
+	if (!World)
 	{
 		return;
 	}
 
-	/*DrawDebugSphere(
-		GetWorld(),
-		InScanOrigin,
-		InCurrentScanRadius,
-		32,
-		FColor::Cyan,
-		false,
-		0.05f,
-		0,
-		1.0f
-	);*/
+	ScanOrigin = InScanOrigin;
+	CurrentScanRadius = 0.0f;
+	ScanElapsedTime = 0.0f;
+	ActiveScanRange = FMath::Max(0.0f, InScanRange);
+	ActiveScanDuration = FMath::Max(0.0f, InScanDuration);
+	ScannedActors.Reset();
 
-	if (UMaterialPostProcessSubsystem* PostProcessSubsystem = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
+	if (UMaterialPostProcessSubsystem* PostProcessSubsystem = World->GetSubsystem<UMaterialPostProcessSubsystem>())
 	{
-		PostProcessSubsystem->UpdateScanPostProcess(InScanOrigin, InCurrentScanRadius);
-	}
-}
-
-void UPartnerSupportComponent::ClientApplyScanEffect_Implementation(AActor* Actor, int32 StencilValue)
-{
-	if (!ShouldProcessLocalScanVisual())
-	{
-		return;
+		PostProcessSubsystem->StartScanPostProcess(ScanOrigin, CurrentScanRadius, ActiveScanRange);
 	}
 
-	if (UMaterialPostProcessSubsystem* PostProcessSubsystem = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
-	{
-		//UE_LOG(LogTemp, Error, TEXT("ClientApplyScanEffect_Implementation Valid, %d"), StencilValue);
-		PostProcessSubsystem->ApplyScanStencil(Actor, StencilValue);
-	}
-}
-
-void UPartnerSupportComponent::ClientClearScanEffect_Implementation(AActor* Actor)
-{
-	if (!ShouldProcessLocalScanVisual())
-	{
-		return;
-	}
-
-	if (UMaterialPostProcessSubsystem* PostProcessSubsystem = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
-	{
-		PostProcessSubsystem->ClearScanStencil(Actor);
-	}
-}
-
-void UPartnerSupportComponent::ClientEndScanVisual_Implementation()
-{
-	if (!ShouldProcessLocalScanVisual())
-	{
-		return;
-	}
-
-	if (UMaterialPostProcessSubsystem* PostProcessSubsystem = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
-	{
-		PostProcessSubsystem->EndScanPostProcess();
-	}
+	World->GetTimerManager().SetTimer(
+		ScanClientUpdateTimerHandle,
+		this,
+		&UPartnerSupportComponent::UpdateScan_Client,
+		ScanUpdateInterval,
+		true
+	);
 }

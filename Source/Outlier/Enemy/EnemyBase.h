@@ -6,6 +6,8 @@
 #include "GameplayTagContainer.h"
 #include "GenericTeamAgentInterface.h"
 #include "Enemy/EnemyStat.h"
+#include "Interface/EmpableInterface.h"
+#include "Interface/ScannableInterface.h"
 #include "Interface/HackableInterface.h"
 #include "Interface/RoomTagInterface.h"
 #include "StateTreeReference.h"
@@ -46,6 +48,7 @@ enum class EEnemyAttackPhase : uint8
 };
 
 UCLASS()
+class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, public IEMPableInterface, public IScannableInterface
 class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, public IGenericTeamAgentInterface, public IRoomTagInterface
 {
 	GENERATED_BODY()
@@ -96,6 +99,9 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|Hack")
 	TObjectPtr<UHackableComponent> HackableComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|EMP")
+	TObjectPtr<UEMPableComponent> EmpableComponent;
 
 	// Physics Asset 바디 대신 이 전용 컴포넌트로 코어 크리티컬을 판정함 — CoreBone 바디가 BodyBone 콜리전
 	// 안쪽에 겹쳐 있으면 같은 컴포넌트 안에서 가려져서 Multi 트레이스로도 검출이 안 되는 문제가 있었음
@@ -316,7 +322,13 @@ public:
 
 	virtual UHackableComponent* GetHackableComponent() const override;
 	virtual void HandleHackEffect(FGameplayTag EffectTag, const FHackResultContext& Context) override;
+	virtual void HandleHackStarted(const FHackQueryContext& Context) override;
 
+	virtual UEMPableComponent* GetEMPableComponent() const override;
+	virtual void HandleEMPStarted(FGameplayTag EffectTag) override;
+	virtual void HandleEMPEnded(FGameplayTag EffectTag) override;
+
+	virtual int32 GetScanStencilValue() const override;
 protected:
 	UFUNCTION()
 	void OnRep_RuntimeStat();
@@ -325,6 +337,7 @@ protected:
 	void SetDefaultEnemyType(EEnemyType EnemyType);
 	virtual void ApplyClassStatOverrides();
 	virtual void ApplyMovementFromRuntimeStat();
+	bool HasActiveStunTag() const;
 	void PromotePreStunState(EEnemyCombatState DetectedState);
 	void RefreshPerceptionConfigForCurrentState();
 	void RefreshPerceptionTeamRegistration();
@@ -338,7 +351,7 @@ protected:
 	// 방이 바뀌면 이전 방 기준으로 받은 수색 슬롯을 즉시 반환한다.
 	void HandleCurrentRoomTagChanged(FGameplayTag PreviousRoomTag, FGameplayTag NewRoomTag);
 	void RemoveRoomTargetObserver();
-	void HandleDeath();
+	virtual void HandleDeath();
 
 	bool bCombatDecisionRefreshPending = false;
 

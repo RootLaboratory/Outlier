@@ -10,8 +10,10 @@ AInteractableSwitch::AInteractableSwitch()
 	PrimaryActorTick.bCanEverTick = false;
 	bReplicates = true;
 
+	RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("SwitchRoot"));
+
 	SwitchMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("SwitchMesh"));
-	RootComponent = SwitchMesh;
+	SwitchMesh->SetupAttachment(RootComponent);
 
 	InteractableComponent = CreateDefaultSubobject<UInteractableComponent>(TEXT("InteractableComponent"));
 }

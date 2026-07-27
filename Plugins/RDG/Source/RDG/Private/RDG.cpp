@@ -6,10 +6,12 @@
 #include "FRDGPixelSortingPass.h"
 #include "FRDGSceneColorCopyPass.h"
 #include "FRDGUIChromaticAberrationPass.h"
+#include "FRDGZoomBlurPass.h"
 #include "Framework/Application/SlateApplication.h"
 #include "LocalPlayerPostProcessSubsystem.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
+#include "Engine/GameViewportClient.h"
 #include "Engine/LocalPlayer.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/Paths.h"
@@ -53,22 +55,6 @@ void FRDGModule::StartupModule()
 #endif
 }
 
-bool FRDGModule::IsTargetGameWindow(const SWindow& Window) const
-{
-	if (!GEngine || !GEngine->GameViewport)
-	{
-		return false;
-	}
-
-	TSharedPtr<SWindow> GameWindow = GEngine->GameViewport->GetWindow();
-	if (!GameWindow.IsValid())
-	{
-		return false;
-	}
-
-	return GameWindow.Get() == &Window;
-}
-
 void FRDGModule::RegisterSlateHook()
 {
 	if (!FSlateApplication::IsInitialized())
@@ -88,13 +74,9 @@ void FRDGModule::RegisterSlateHook()
 	}
 }
 
-ULocalPlayerPostProcessSubsystem* FRDGModule::ResolvePostProcessSubsystem()
+ULocalPlayerPostProcessSubsystem* FRDGModule::ResolvePostProcessSubsystem(
+	const SWindow& Window) const
 {
-	if (CachedPostProcessSubsystem.IsValid())
-	{
-		return CachedPostProcessSubsystem.Get();
-	}
-
 	if (!GEngine)
 	{
 		return nullptr;
@@ -114,6 +96,18 @@ ULocalPlayerPostProcessSubsystem* FRDGModule::ResolvePostProcessSubsystem()
 			continue;
 		}
 
+		UGameViewportClient* ViewportClient = GameInstance->GetGameViewportClient();
+		if (!ViewportClient)
+		{
+			continue;
+		}
+
+		const TSharedPtr<SWindow> GameWindow = ViewportClient->GetWindow();
+		if (!GameWindow.IsValid() || GameWindow.Get() != &Window)
+		{
+			continue;
+		}
+
 		ULocalPlayer* LocalPlayer = GameInstance->GetFirstGamePlayer();
 		if (!LocalPlayer)
 		{
@@ -122,13 +116,6 @@ ULocalPlayerPostProcessSubsystem* FRDGModule::ResolvePostProcessSubsystem()
 
 		if (ULocalPlayerPostProcessSubsystem* Subsystem = LocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
 		{
-			UE_LOG(LogTemp, Warning, TEXT("RDG ResolvePostProcessSubsystem | World=%s Type=%d LocalPlayer=%p Subsystem=%p"),
-				*World->GetName(),
-				(int32)World->WorldType,
-				LocalPlayer,
-				Subsystem);
-
-			CachedPostProcessSubsystem = Subsystem;
 			return Subsystem;
 		}
 	}
@@ -189,12 +176,15 @@ void FRDGModule::ShutdownModule()
 	}
 
 	BackBufferReadyHandle.Reset();
-	CachedPostProcessSubsystem.Reset();
 	DebugWindowManager.Reset();
 }
 
 // Slate가 그린 뒤, present 직전의 backbuffer에 도는 체인:
-// Pixel Sorting -> Chromatic Aberration -> Present
+// Pixel Sorting -> Zoom Blur -> Chromatic Aberration -> Present
+//
+// 줌 블러가 정렬보다 뒤인 이유: 먼저 흐리면 대비가 뭉개져 임계값을 넘는 픽셀이
+// 줄어들어 정렬 결과가 약해짐. 반대 순서면 줄무늬가 살아있는 채로 부드러워지고,
+// 정렬의 축소 합성 경계까지 자연스럽게 덮어줌.
 void FRDGModule::HandleBackBufferReadyRDG(FRDGBuilder& GraphBuilder, SWindow& Window, FRDGTexture* BackBuffer)
 {
 	if (!BackBuffer)
@@ -202,12 +192,8 @@ void FRDGModule::HandleBackBufferReadyRDG(FRDGBuilder& GraphBuilder, SWindow& Wi
 		return;
 	}
 
-	if (!IsTargetGameWindow(Window))
-	{
-		return;
-	}
-
-	ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem();
+	ULocalPlayerPostProcessSubsystem* Subsystem =
+		ResolvePostProcessSubsystem(Window);
 	if (!Subsystem)
 	{
 		return;
@@ -217,10 +203,12 @@ void FRDGModule::HandleBackBufferReadyRDG(FRDGBuilder& GraphBuilder, SWindow& Wi
 
 	const FPixelSortingParameters& PixelSortingParams =
 		Subsystem->GetPostProcessStrcture().PixelSorting;
+	const FZoomBlurParameters& ZoomBlurParams =
+		Subsystem->GetPostProcessStrcture().ZoomBlur;
 	const FUIChromaticAberrationParameters& ChromaticParams =
 		Subsystem->GetUIPostProcessStrcture().ChromaticAberration;
 
-	if (!PixelSortingParams.bEnabled && !ChromaticParams.bEnabled)
+	if (!PixelSortingParams.bEnabled && !ZoomBlurParams.bEnabled && !ChromaticParams.bEnabled)
 	{
 		return;
 	}
@@ -230,6 +218,7 @@ void FRDGModule::HandleBackBufferReadyRDG(FRDGBuilder& GraphBuilder, SWindow& Wi
 		FIntRect(FIntPoint::ZeroValue, BackBuffer->Desc.Extent));
 
 	Current = FRDGPixelSortingPass::AddPass(GraphBuilder, Current, PixelSortingParams);
+	Current = FRDGZoomBlurPass::AddPass(GraphBuilder, Current, ZoomBlurParams);
 	Current = FRDGUIChromaticAberrationPass::AddPass(GraphBuilder, Current, ChromaticParams);
 
 	if (!Current.IsValid() || Current.Texture == BackBuffer)

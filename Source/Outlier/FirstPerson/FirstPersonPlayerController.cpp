@@ -2,6 +2,7 @@
 
 
 #include "FirstPersonPlayerController.h"
+#include "EnhancedInputDeveloperSettings.h"
 #include "EnhancedInputSubsystems.h"
 #include "Engine/LocalPlayer.h"
 #include "InputMappingContext.h"
@@ -17,6 +18,101 @@ AFirstPersonPlayerController::AFirstPersonPlayerController()
 {
 	// set the player camera manager
 	PlayerCameraManagerClass = AFirstPersonPlayerCameraManager::StaticClass();
+}
+
+bool AFirstPersonPlayerController::SetFirstPersonInputMode(FGameplayTag NewInputMode)
+{
+	if (!IsLocalController() || !NewInputMode.IsValid())
+	{
+		return false;
+	}
+
+	ULocalPlayer* LocalPlayer = GetLocalPlayer();
+	if (!LocalPlayer)
+	{
+		return false;
+	}
+
+	UEnhancedInputLocalPlayerSubsystem* InputSubsystem =
+		LocalPlayer->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>();
+	if (!InputSubsystem)
+	{
+		return false;
+	}
+
+	const FGameplayTagContainer CurrentInputMode = InputSubsystem->GetInputMode();
+	if (CurrentInputMode.Num() == 1 && CurrentInputMode.HasTagExact(NewInputMode))
+	{
+		CurrentFirstPersonInputMode = NewInputMode;
+		return true;
+	}
+
+	FGameplayTagContainer InputModeContainer;
+	InputModeContainer.AddTag(NewInputMode);
+
+	FModifyContextOptions Options;
+	Options.bIgnoreAllPressedKeysUntilRelease = true;
+	Options.bForceImmediately = true;
+
+	InputSubsystem->SetInputMode(InputModeContainer, Options);
+	CurrentFirstPersonInputMode = NewInputMode;
+	return true;
+}
+
+bool AFirstPersonPlayerController::TryRestoreFirstPersonDefaultInputMode(FGameplayTag ExpectedInputMode)
+{
+	if (!IsLocalController() || !ExpectedInputMode.IsValid())
+	{
+		return false;
+	}
+
+	ULocalPlayer* LocalPlayer = GetLocalPlayer();
+	if (!LocalPlayer)
+	{
+		return false;
+	}
+
+	UEnhancedInputLocalPlayerSubsystem* InputSubsystem =
+		LocalPlayer->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>();
+	if (!InputSubsystem)
+	{
+		return false;
+	}
+
+	// A delayed cleanup from one ability must not replace a newer ability's input mode.
+	const FGameplayTagContainer CurrentInputMode = InputSubsystem->GetInputMode();
+	if (CurrentInputMode.Num() != 1 || !CurrentInputMode.HasTagExact(ExpectedInputMode))
+	{
+		return false;
+	}
+
+	const FGameplayTagContainer& DefaultInputMode =
+		GetDefault<UEnhancedInputDeveloperSettings>()->DefaultInputMode;
+	if (DefaultInputMode.IsEmpty())
+	{
+		return false;
+	}
+
+	FModifyContextOptions Options;
+	Options.bIgnoreAllPressedKeysUntilRelease = true;
+	Options.bForceImmediately = true;
+
+	InputSubsystem->SetInputMode(DefaultInputMode, Options);
+	CurrentFirstPersonInputMode = DefaultInputMode.First();
+
+	SetInputMode(FInputModeGameOnly());
+	bShowMouseCursor = false;
+	return true;
+}
+
+FGameplayTag AFirstPersonPlayerController::GetFirstPersonInputMode() const
+{
+	 return CurrentFirstPersonInputMode; 
+}
+
+bool AFirstPersonPlayerController::IsFirstPersonInputMode(FGameplayTag InputMode) const
+{
+	return CurrentFirstPersonInputMode.MatchesTagExact(InputMode);
 }
 
 void AFirstPersonPlayerController::BeginPlay()
@@ -121,12 +217,15 @@ void AFirstPersonPlayerController::SetupInputComponent()
 
 				Subsystem->AddMappingContext(CurrentContext, 0);
 			}
+
+			CurrentFirstPersonInputMode = Subsystem->GetInputMode().First();
 		}
 		else
 		{
 			UE_LOG(LogTemp, Warning, TEXT("[OutlierInputDebug] EnhancedInputLocalPlayerSubsystem is null: %s"), *GetNameSafe(this));
 		}
 	}
+
 }
 
 
@@ -201,6 +300,44 @@ void AFirstPersonPlayerController::ClientArenaLoad_Implementation(int32 ArenaId)
 	PendingArenaId = ArenaId;
 	ArenaPool->OnArenaShown.AddUObject(this, &AFirstPersonPlayerController::HandleArenaShown);
 	//UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][1] Waiting for OnArenaShown ArenaId=%d"), ArenaId);
+}
+
+void AFirstPersonPlayerController::Server_RequestArenaReload_Implementation()
+{
+	AOutlierPlayerState* PS = GetPlayerState<AOutlierPlayerState>();
+	UE_LOG(LogTemp, Warning, TEXT("[DebugReload] Server_RequestArenaReload PC=%s Auth=%d PS=%s ArenaId=%d"),
+		*GetNameSafe(this), HasAuthority(), *GetNameSafe(PS), PS ? PS->GetArenaId() : -2);
+
+	if (!PS || PS->GetArenaId() == INDEX_NONE)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[DebugReload] Bail: PS null or ArenaId==INDEX_NONE"));
+		return;
+	}
+
+	AOutlierGameMode* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr;
+	if (!GM)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[DebugReload] Bail: AuthGameMode null (not on server?)"));
+		return;
+	}
+
+	GM->DebugReloadArena(this);
+}
+
+void AFirstPersonPlayerController::ClientArenaReload_Implementation(int32 ArenaId)
+{
+	UOutlierArenaPoolSubsystem* ArenaPool = GetWorld()
+		? GetWorld()->GetSubsystem<UOutlierArenaPoolSubsystem>()
+		: nullptr;
+	if (!ArenaPool)
+	{
+		return;
+	}
+
+	// 강제 리로드라 항상 새로 스트리밍 → 바인딩 먼저 걸고(레이스 방지) 재로드
+	PendingArenaId = ArenaId;
+	ArenaPool->OnArenaShown.AddUObject(this, &AFirstPersonPlayerController::HandleArenaShown);
+	ArenaPool->EnsureArenaLoaded(ArenaId, /*bForceReload=*/true);
 }
 
 void AFirstPersonPlayerController::HandleArenaShown(int32 ShownArenaId)
