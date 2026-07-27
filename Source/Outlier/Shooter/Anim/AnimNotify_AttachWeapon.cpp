@@ -8,6 +8,8 @@
 
 void UAnimNotify_AttachWeapon::Notify(USkeletalMeshComponent* MeshComp, UAnimSequenceBase* Animation, const FAnimNotifyEventReference& EventReference)
 {
+	Super::Notify(MeshComp, Animation, EventReference);
+
 	if (!MeshComp || !Animation)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[AnimNotify_Attach] skipped Mesh=%s Animation=%s"),

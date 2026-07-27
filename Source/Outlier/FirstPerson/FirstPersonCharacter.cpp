@@ -23,6 +23,8 @@
 #include "OutlierNetUtils.h"
 #include "Outlier.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Team/OutlierTeamIds.h"
+#include "Room/RoomTagComponent.h"
 
 
 // Sets default values
@@ -58,7 +60,7 @@ AFirstPersonCharacter::AFirstPersonCharacter()
 	FirstPersonMesh->SetRelativeRotation(FRotator::ZeroRotator);
 	FirstPersonMesh->SetCollisionProfileName(FName("NoCollision"));
 
-
+	RoomTagComponent = CreateDefaultSubobject<URoomTagComponent>(TEXT("RoomTagComponent"));
 
 	// configure the character comps
 	GetMesh()->SetOwnerNoSee(true);
@@ -74,6 +76,16 @@ AFirstPersonCharacter::AFirstPersonCharacter()
 	//Capture Component
 	CaptureComponent = CreateDefaultSubobject< USceneCaptureComponent2D>(TEXT("PartnerCameraCapture"));
 	CaptureComponent->SetupAttachment(FirstPersonCamera);
+}
+
+FGenericTeamId AFirstPersonCharacter::GetGenericTeamId() const
+{
+	return FGenericTeamId(OutlierTeamIds::Player);
+}
+
+URoomTagComponent* AFirstPersonCharacter::GetRoomTagComp() const
+{
+	return RoomTagComponent;
 }
 
 // Called to bind functionality to input
@@ -434,6 +446,16 @@ void AFirstPersonCharacter::ClientOnHoldInteractFailed_Implementation(AActor* Ta
 FGameplayTagContainer AFirstPersonCharacter::GetOwnedGameplayTagsForQuery() const
 {
 	return OwnedQueryTags;
+}
+
+FGameplayTag AFirstPersonCharacter::GetCurrentRoomTag() const
+{
+	return RoomTagComponent ? RoomTagComponent->GetCurrentRoomTag() : FGameplayTag();
+}
+
+FGameplayTag AFirstPersonCharacter::GetDefaultRoomTag() const
+{
+	return RoomTagComponent ? RoomTagComponent->GetDefaultRoomTag() : FGameplayTag();
 }
 
 void AFirstPersonCharacter::OnRep_CurrentWeapon()

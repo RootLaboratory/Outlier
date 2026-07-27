@@ -3,6 +3,7 @@
 
 #include "FirstPersonPlayerCameraManager.h"
 #include "Drone/Partner/PartnerCharacter.h"
+#include "Enemy/VECDrone.h"
 #include "GameFramework/PlayerController.h"
 #include "Shooter/ShooterCharacter.h"
 
@@ -50,6 +51,20 @@ void AFirstPersonPlayerCameraManager::ProcessViewRotation(float DeltaTime, FRota
 		return;
 	}
 
+	const AVECDrone* VECDrone = Cast<AVECDrone>(OwningController->GetPawn());
+	if (VECDrone)
+	{
+		const float DroneRoll = VECDrone->GetCurrentCameraRollDegrees();
+		const float MaxDroneRoll = VECDrone->GetMaxCameraRollDegrees();
+
+		OutViewRotation.Roll = FMath::Clamp(
+			DroneRoll,
+			-1.0f * MaxDroneRoll,
+			MaxDroneRoll
+		);
+		return;
+	}
+
 	OutViewRotation.Roll = 0.0f;
 }
 
@@ -60,6 +75,23 @@ void AFirstPersonPlayerCameraManager::UpdateViewTarget(FTViewTarget& OutVT, floa
 	const APlayerController* OwningController = PCOwner;
 	if (!OwningController)
 	{
+		return;
+	}
+
+	const AVECDrone* VECDrone = Cast<AVECDrone>(OwningController->GetPawn());
+	if (VECDrone)
+	{
+		const float MaxDronePitch = VECDrone->GetMaxCameraPitchDegrees();
+		const float InertialPitch = FMath::Clamp(
+			VECDrone->GetCurrentCameraPitchDegrees(),
+			-1.0f * MaxDronePitch,
+			MaxDronePitch
+		);
+		OutVT.POV.Rotation.Pitch = FMath::ClampAngle(
+			OutVT.POV.Rotation.Pitch + InertialPitch,
+			ViewPitchMin,
+			ViewPitchMax
+		);
 		return;
 	}
 

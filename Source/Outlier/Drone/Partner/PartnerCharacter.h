@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "FirstPerson/FirstPersonCharacter.h"
 #include "Engine/DataTable.h"
+#include "Interface/WeaponMuzzleProvider.h"
 #include "PartnerCharacter.generated.h"
 
 UENUM(BlueprintType)
@@ -62,8 +63,9 @@ class UPartnerCombatComponent;
 class UPartnerHackComponent;
 class UPartnerAbilityComponent;
 class UPartnerEMPComponent;
+class USceneComponent;
 UCLASS()
-class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter
+class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeaponMuzzleProvider
 {
 	GENERATED_BODY()
 
@@ -94,6 +96,16 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UPartnerEMPComponent> EMPComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<USceneComponent> ThirdPersonTiltRoot;
+
+	// Partner 무기는 본체 메시와 일체형이므로 Weapon Actor 대신 이 소켓에서 총구 연출을 시작한다.
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Presentation")
+	FName FirstPersonWeaponMuzzleSocketName = TEXT("Muzzle");
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Presentation")
+	FName ThirdPersonWeaponMuzzleSocketName = TEXT("Muzzle");
 
 	// Move Data
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Move")
@@ -326,10 +338,30 @@ protected:
 	FTimerHandle RebootTimerHandle;
 	FTimerHandle HitInvincibleTimerHandle;
 	FTimerHandle RebootInvincibleTimerHandle;
+	FTimerHandle BoostNoiseTimerHandle;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Noise|Boost", meta = (ClampMin = "0.05"))
+	float BoostNoiseInterval = 0.5f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Noise|Boost", meta = (ClampMin = "0.0"))
+	float BoostNoiseLoudness = 1.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Noise|Boost", meta = (ClampMin = "0.0"))
+	float BoostNoiseMaxRange = 1000.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Noise|Boost", meta = (ClampMin = "0.0"))
+	float BoostNoiseMinimumSpeed = 10.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Noise|Boost")
+	FName BoostNoiseTag = TEXT("Boost");
 
 	UPROPERTY(ReplicatedUsing = OnRep_IsAccelerate, VisibleAnywhere, BlueprintReadOnly, Category = "Move")
 	uint8 bIsAccelerate : 1 = false;
 	uint8 bPartnerDataInitialized : 1 = false;
+
+	// Shooter 은신 토글과 함께 AI 감지 대상에서 제외하기 위한 테스트 상태다.
+	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Test|Stealth")
+	uint8 bTestStealthed : 1 = false;
 
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Survival")
 	uint8 bIsRebooting : 1 = false;
@@ -366,6 +398,7 @@ protected:
 
 protected:
 	virtual void BeginPlay() override;
+	virtual void PossessedBy(AController* NewController) override;
 	virtual float TakeDamage(
 		float DamageAmount,
 		struct FDamageEvent const& DamageEvent,
@@ -373,11 +406,15 @@ protected:
 		AActor* DamageCauser
 	) override;
 
-	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
 	virtual void UnPossessed() override;
+	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
 	virtual void DoMove(float Right, float Forward) override;
 	virtual void OnMoveInputUpdated(const FVector2D& MoveValue);
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	virtual FGameplayTagContainer GetOwnedGameplayTagsForQuery() const override;
+
+	// AFirstPersonCharacter의 AttackAction 입력 진입점.
+	// 실제 권한 처리와 무기 호출은 CombatComponent의 공개 공격 API에 위임한다.
 	virtual void TryStartAttack() override;
 	virtual void TryStopAttack() override;
 
@@ -416,6 +453,9 @@ protected:
 	void ApplyMoveMode(EPartnerMoveMode NewMode);
 	bool CanApplyMoveMode(EPartnerMoveMode NewMode) const;
 	void ApplyAccelerateState(bool bNewAccelerate);
+	void StartBoostNoiseTimer();
+	void StopBoostNoiseTimer();
+	void ReportBoostNoise();
 
 	UFUNCTION(Server, Reliable)
 	void ServerSetMoveMode(EPartnerMoveMode NewMode);
@@ -440,6 +480,16 @@ public:
 public:
 	APartnerCharacter();
 
+	virtual USkeletalMeshComponent* GetWeaponMuzzleComponent(bool bFirstPerson) const override
+	{
+		return bFirstPerson ? GetFirstPersonMesh() : GetMesh();
+	}
+
+	virtual FName GetWeaponMuzzleSocketName(bool bFirstPerson) const override
+	{
+		return bFirstPerson ? FirstPersonWeaponMuzzleSocketName : ThirdPersonWeaponMuzzleSocketName;
+	}
+
 	UFUNCTION()
 	void OnRep_DroneMovementState();
 
@@ -453,12 +503,14 @@ public:
 	void OnRep_CurrentHitCount();
 
 	void SetShooterCharacter(AShooterCharacter* NewShooter);
+	void SetTestStealthed(bool bNewStealthed);
 	
 	UFUNCTION(Client, Reliable)
 	void ClientNotifySkillUseResult(EPartnerSkillType SkillType, EPartnerSkillUseResult Result);
 
 	float GetCurrentInertialCameraPitchDegrees() const;
 	float GetCurrentInertialCameraRollDegrees() const;
+	USceneComponent* GetThirdPersonTiltRoot() const { return ThirdPersonTiltRoot; }
 	float GetMaxInertialCameraPitchDegrees() const { return FMath::Max(CameraPitchOnMove, 0.0f); }
 	float GetMaxInertialCameraRollDegrees() const { return FMath::Max(CameraRollOnTurn, 0.0f); }
 
@@ -470,4 +522,11 @@ public:
 	void HandlePartnerHit();
 	void SetInvincibleForEnemyPossession(bool bNewInvincible);
 
+	// 입력뿐 아니라 Ability/BP에서도 사용할 수 있는 Partner 공격 API.
+	// 소유 클라이언트에서 호출하면 CombatComponent가 서버 RPC로 전달한다.
+	UFUNCTION(BlueprintCallable, Category = "Partner|Combat")
+	void StartWeaponAttack();
+
+	UFUNCTION(BlueprintCallable, Category = "Partner|Combat")
+	void StopWeaponAttack();
 };

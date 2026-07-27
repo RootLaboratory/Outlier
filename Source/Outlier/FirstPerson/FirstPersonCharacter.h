@@ -6,6 +6,8 @@
 #include "GameFramework/Character.h"
 #include "Weapon/WeaponBase.h"
 #include "GameplayTagContainer.h"
+#include "GenericTeamAgentInterface.h"
+#include "Interface/RoomTagInterface.h"
 #include "Interface/GameplayTagProviderInterface.h"
 #include "FirstPersonCharacter.generated.h"
 
@@ -16,6 +18,7 @@ class UFirstPersonInputConfig;
 class UInputAction;
 class USceneCaptureComponent2D;
 struct FInputActionValue;
+class URoomTagComponent;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnWeaponChanged, EWeaponType, NewWeaponType);
 
@@ -27,7 +30,7 @@ enum class EInteractionTraceMode : uint8
 };
 
 UCLASS()
-class OUTLIER_API AFirstPersonCharacter : public ACharacter, public IGameplayTagProviderInterface
+class OUTLIER_API AFirstPersonCharacter : public ACharacter, public IGameplayTagProviderInterface, public IGenericTeamAgentInterface, public IRoomTagInterface
 {
 	GENERATED_BODY()
 
@@ -47,6 +50,9 @@ protected:
 	/** Root used to keep first-person arms and weapon in camera space */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Components, meta = (AllowPrivateAccess = "true"))
 	USceneComponent* FirstPersonViewModelRoot;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Components, meta = (AllowPrivateAccess = "true"))
+	URoomTagComponent* RoomTagComponent;
 
 	/** Input Config */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
@@ -77,6 +83,10 @@ protected:
 public:
 	/** Sets default values for this character's properties */
 	AFirstPersonCharacter();
+
+	virtual FGenericTeamId GetGenericTeamId() const override;
+
+	virtual URoomTagComponent* GetRoomTagComp() const override;
 
 	void TryInteract();
 	void EndInteract();
@@ -134,6 +144,10 @@ public:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	virtual FGameplayTagContainer GetOwnedGameplayTagsForQuery() const override;
+
+	virtual FGameplayTag GetCurrentRoomTag() const override;
+
+	virtual FGameplayTag GetDefaultRoomTag() const override;
 
 	EWeaponType GetWeaponType() const;
 

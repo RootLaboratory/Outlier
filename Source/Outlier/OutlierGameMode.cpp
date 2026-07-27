@@ -16,6 +16,7 @@
 #include "Engine/LocalPlayer.h"
 #include "Engine/NetConnection.h"
 #include "Enemy/EnemyBase.h"
+#include "Enemy/EnemyRoomSubsystem.h"
 #include "GameFramework/PlayerStart.h"
 #include "Kismet/GameplayStatics.h"
 #include "GameFramework/PlayerState.h"
@@ -475,6 +476,12 @@ void AOutlierGameMode::RespawnPairAtCheckpoint(AController* Controller)
 		PartnerPlayerState->SetShooterCharacter(nullptr);
 		PartnerPlayerState->SetPartnerCharacter(nullptr);
 		PartnerPlayerState->SetSuitDisabledByPartnerBoundary(false);
+	}
+
+	if (UEnemyRoomSubsystem* EnemyRoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
+	{
+		EnemyRoomSubsystem->NotifyTargetActorRemoved(OldShooter);
+		EnemyRoomSubsystem->NotifyTargetActorRemoved(OldPartner);
 	}
 
 	if (OldShooter)

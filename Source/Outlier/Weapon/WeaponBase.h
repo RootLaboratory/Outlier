@@ -131,6 +131,9 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Animation")
 	TObjectPtr<UProceduralAnimValues> FirstPersonProceduralValues = nullptr;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Noise")
+	bool bReportArenaWideNoise = false;
+
 protected:
 	virtual void EnsureWeaponDataInitialized();
 	virtual void InitializeFromDataTables();

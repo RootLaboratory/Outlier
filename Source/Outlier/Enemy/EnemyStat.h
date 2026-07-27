@@ -60,4 +60,7 @@ struct OUTLIER_API FEnemyStat : public FTableRowBase
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	float HearingRange = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	float BattleHearingRange = 0.0f;
 };
