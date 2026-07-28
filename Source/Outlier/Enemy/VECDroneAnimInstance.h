@@ -16,7 +16,6 @@ public:
 	virtual void NativeInitializeAnimation() override;
 	virtual void NativeUninitializeAnimation() override;
 	virtual void NativeUpdateAnimation(float DeltaSeconds) override;
-	virtual void NativePostEvaluateAnimation() override;
 
 protected:
 	// Set this in the AnimBP class defaults so FP/TP graphs can share this parent class.
@@ -52,13 +51,4 @@ private:
 	void CacheOwningVECDrone();
 	void RefreshAnimationState();
 	void ResetAnimationState();
-	void LogAnimationConfiguration() const;
-	const TCHAR* GetPresentationName() const;
-
-	EEnemyAttackPhase LastLoggedAttackPhase = EEnemyAttackPhase::Idle;
-	FName LastLoggedGraphState = NAME_None;
-	int32 ConsecutiveMismatchFrames = 0;
-	bool bHasLoggedAttackPhase = false;
-	bool bHasLoggedGraphState = false;
-	bool bHasLoggedMismatch = false;
 };

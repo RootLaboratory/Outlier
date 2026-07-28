@@ -178,6 +178,7 @@ private:
 	void RemoveHackCandidateAt(int32 Index);
 	void DeactivateUnselectedCandidates(UHackableComponent* SelectedComponent);
 	void CancelActiveHack();
+	void CompleteActiveHack(const FHackResultContext& ResultContext, bool bNotifyClient);
 	void SetActiveHackableComponent(UHackableComponent* HackableComponent);
 	void ClearActiveHackableComponent();
 	void AbortLocalHackForInvalidTarget();

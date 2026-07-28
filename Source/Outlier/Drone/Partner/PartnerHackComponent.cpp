@@ -34,6 +34,15 @@ void UPartnerHackComponent::BeginPlay()
 
 void UPartnerHackComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	if (GetOwner() && GetOwner()->HasAuthority() && IsValid(ActiveHackableComponent))
+	{
+		FHackResultContext ResultContext;
+		ResultContext.TargetActor = ActiveHackableComponent->GetOwner();
+		ResultContext.InstigatorActor = PartnerCharacter;
+		ResultContext.Result = EHackResult::Cancelled;
+		CompleteActiveHack(ResultContext, false);
+	}
+
 	ClearActiveHackableComponent();
 	DestroyHackMiniGameWidget();
 	DestroyCandidateLayerWidget();
@@ -195,6 +204,13 @@ void UPartnerHackComponent::ClientAbortHackForInvalidTarget_Implementation()
 
 void UPartnerHackComponent::ServerCompleteHack_Implementation(const FHackResultContext& ResultContext)
 {
+	CompleteActiveHack(ResultContext, true);
+}
+
+void UPartnerHackComponent::CompleteActiveHack(
+	const FHackResultContext& ResultContext,
+	bool bNotifyClient)
+{
 	if (!IsValid(ActiveHackableComponent)
 		|| !IsValid(ActiveHackableComponent->GetOwner())
 		|| ActiveHackableComponent->GetOwner()->IsActorBeingDestroyed())
@@ -206,8 +222,11 @@ void UPartnerHackComponent::ServerCompleteHack_Implementation(const FHackResultC
 		}
 
 		ClearActiveHackableComponent();
-		ClientAbortHackForInvalidTarget();
-		DefaultWidgetControl(false);
+		if (bNotifyClient)
+		{
+			ClientAbortHackForInvalidTarget();
+			DefaultWidgetControl(false);
+		}
 		return;
 	}
 
@@ -228,8 +247,11 @@ void UPartnerHackComponent::ServerCompleteHack_Implementation(const FHackResultC
 	ClearActiveHackableComponent();
 
 	//possess 전, Input widget 정리. -> Enemy Widget이 생긴다면 수정 해야 할 부분.
-	ClientStopHackMiniGame();
-	DefaultWidgetControl(false);
+	if (bNotifyClient)
+	{
+		ClientStopHackMiniGame();
+		DefaultWidgetControl(false);
+	}
 
 	FHackResultContext MutableResultContext = ResultContext;
 	MutableResultContext.TargetActor = CompletedTargetActor;

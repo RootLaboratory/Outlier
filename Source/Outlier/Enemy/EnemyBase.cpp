@@ -22,8 +22,6 @@
 #include "Room/RoomTagComponent.h"
 #include "Weapon/RangedWeaponBase.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogVECAnimation, Log, All);
-
 AEnemyBase::AEnemyBase()
 {
 	PrimaryActorTick.bCanEverTick = false;
@@ -1139,30 +1137,12 @@ void AEnemyBase::SetAttackPhase(EEnemyAttackPhase NewPhase)
 
 	const EEnemyAttackPhase PreviousPhase = AttackPhase;
 	AttackPhase = NewPhase;
-	UE_LOG(
-		LogVECAnimation,
-		Log,
-		TEXT("[VECAnimDebug][ServerPhase] Actor=%s Previous=%s New=%s Weapon=%s Controller=%s"),
-		*GetName(),
-		*UEnum::GetValueAsString(PreviousPhase),
-		*UEnum::GetValueAsString(AttackPhase),
-		*GetNameSafe(CurrentWeapon),
-		*GetNameSafe(GetController()));
 	OnAttackPhaseChanged(PreviousPhase, AttackPhase);
 	ForceNetUpdate();
 }
 
 void AEnemyBase::OnRep_AttackPhase(EEnemyAttackPhase PreviousPhase)
 {
-	UE_LOG(
-		LogVECAnimation,
-		Log,
-		TEXT("[VECAnimDebug][ReplicatedPhase] Actor=%s Previous=%s New=%s LocalRole=%d RemoteRole=%d"),
-		*GetName(),
-		*UEnum::GetValueAsString(PreviousPhase),
-		*UEnum::GetValueAsString(AttackPhase),
-		static_cast<int32>(GetLocalRole()),
-		static_cast<int32>(GetRemoteRole()));
 	OnAttackPhaseChanged(PreviousPhase, AttackPhase);
 }
 
