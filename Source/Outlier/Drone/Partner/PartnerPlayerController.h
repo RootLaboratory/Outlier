@@ -135,7 +135,7 @@ public:
 	EPartnerPossessionState PartnerPossessionState = EPartnerPossessionState::PartnerControlled;
 
 	void CachePartnerCharacterForEnemyPossession(APartnerCharacter* PartnerCharacter);
-	void BeginEnemyPossessionTransition(AEnemyBase* EnemyTarget, APartnerCharacter* PartnerCharacter);
+	bool BeginEnemyPossessionTransition(AEnemyBase* EnemyTarget, APartnerCharacter* PartnerCharacter);
 
 	UFUNCTION(BlueprintPure, Category = "Partner|EnemyPossession")
 	EPartnerPossessionState GetPartnerPossessionState() const { return PartnerPossessionState; }

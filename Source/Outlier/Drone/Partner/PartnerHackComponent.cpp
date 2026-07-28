@@ -235,6 +235,11 @@ void UPartnerHackComponent::ServerCompleteHack_Implementation(const FHackResultC
 	MutableResultContext.TargetActor = CompletedTargetActor;
 	MutableResultContext.InstigatorActor = PartnerCharacter;
 
+	if (IHackableInterface* Handler = Cast<IHackableInterface>(CompletedTargetActor))
+	{
+		Handler->HandleHackCompleted(MutableResultContext);
+	}
+
 	CompletedHackableComponent->CompleteHack(MutableResultContext);
 }
 

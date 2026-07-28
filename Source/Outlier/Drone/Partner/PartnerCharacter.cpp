@@ -239,6 +239,7 @@ void APartnerCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	DOREPLIFETIME(APartnerCharacter, LastHackServerTime);
 	DOREPLIFETIME(APartnerCharacter, bIsAccelerate);
 	DOREPLIFETIME(APartnerCharacter, bTestStealthed);
+	DOREPLIFETIME(APartnerCharacter, bHiddenForEnemyPossession);
 	DOREPLIFETIME(APartnerCharacter, bIsRebooting);
 	DOREPLIFETIME(APartnerCharacter, bIsInvincible);
 	DOREPLIFETIME(APartnerCharacter, CurrentHitCount);
@@ -247,7 +248,7 @@ void APartnerCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 FGameplayTagContainer APartnerCharacter::GetOwnedGameplayTagsForQuery() const
 {
 	FGameplayTagContainer GameplayTags = Super::GetOwnedGameplayTagsForQuery();
-	if (bTestStealthed)
+	if (bTestStealthed || bHiddenForEnemyPossession)
 	{
 		GameplayTags.AddTag(OutlierGameplayTags::State::Stealthed());
 	}
@@ -610,6 +611,31 @@ void APartnerCharacter::SetInvincibleForEnemyPossession(bool bNewInvincible)
 	if (!bIsRebooting)
 	{
 		bIsInvincible = false;
+	}
+}
+
+void APartnerCharacter::SetEnemyPossessionProtection(bool bEnabled)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	SetInvincibleForEnemyPossession(bEnabled);
+
+	if (bHiddenForEnemyPossession == bEnabled)
+	{
+		return;
+	}
+
+	bHiddenForEnemyPossession = bEnabled;
+	ForceNetUpdate();
+
+	if (UEnemyRoomSubsystem* EnemyRoomSubsystem = GetWorld()
+		? GetWorld()->GetSubsystem<UEnemyRoomSubsystem>()
+		: nullptr)
+	{
+		EnemyRoomSubsystem->RefreshDetectionTarget(this);
 	}
 }
 

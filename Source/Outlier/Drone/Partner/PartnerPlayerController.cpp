@@ -27,6 +27,11 @@ void APartnerPlayerController::BeginPlay()
 
 void APartnerPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	if (HasAuthority() && PendingEnemyPossessionTarget.IsValid())
+	{
+		CancelPendingEnemyPossessionTransition();
+	}
+
 	AEnemyBase* ServerPendingTarget = PendingEnemyPossessionTarget.Get();
 	AEnemyBase* LocalPendingTarget = LocalPendingEnemyPossessionTarget.Get();
 	if (ServerPendingTarget)
@@ -150,7 +155,7 @@ void APartnerPlayerController::CachePartnerCharacterForEnemyPossession(APartnerC
 }
 
 //Enemy의 HandleHack 이후부터 Controller가 책임.
-void APartnerPlayerController::BeginEnemyPossessionTransition(
+bool APartnerPlayerController::BeginEnemyPossessionTransition(
 	AEnemyBase* EnemyTarget,
 	APartnerCharacter* PartnerCharacter)
 {
@@ -160,26 +165,20 @@ void APartnerPlayerController::BeginEnemyPossessionTransition(
 		|| GetPawn() != PartnerCharacter
 		|| EnemyTarget->IsEnemyPossessed())
 	{
-		return;
+		return false;
 	}
 
 	if (PendingEnemyPossessionTarget.IsValid() || PendingEnemyPossessionSource.IsValid())
 	{
-		return;
+		return false;
 	}
 
 	PendingEnemyPossessionTarget = EnemyTarget;
 	PendingEnemyPossessionSource = PartnerCharacter;
 	BindPossessionTargetEndPlay(EnemyTarget); //Transitioning 중에 Enemy EndPlay 호출 시, 연출 및 해킹 종료.
-	PartnerCharacter->SetInvincibleForEnemyPossession(true);
 
 	ClientBeginEnemyPossessionTransition(EnemyTarget);
-
-	//Transitioning 될 때, Controller 단에서 input hack context만 적용.
-	if (!SetFirstPersonInputMode(FirstPersonInputModeTags::Hack()))
-	{
-		return;
-	}
+	return true;
 }
 
 void APartnerPlayerController::ClientBeginEnemyPossessionTransition_Implementation(AEnemyBase* EnemyTarget)
@@ -192,6 +191,7 @@ void APartnerPlayerController::ClientBeginEnemyPossessionTransition_Implementati
 	LocalPendingEnemyPossessionTarget = EnemyTarget;
 	BindPossessionTargetEndPlay(EnemyTarget);
 	bHackTransitionCoveredNotified = false;
+	SetFirstPersonInputMode(FirstPersonInputModeTags::Hack());
 	SetPartnerPossessionState(
 		EPartnerPossessionState::Transitioning,
 		EnemyTarget);
@@ -286,9 +286,13 @@ void APartnerPlayerController::CancelPendingEnemyPossessionTransition()
 	}
 
 	AEnemyBase* EnemyTarget = PendingEnemyPossessionTarget.Get();
-	if (APartnerCharacter* PartnerCharacter = PendingEnemyPossessionSource.Get())
+	if (EnemyTarget)
 	{
-		PartnerCharacter->SetInvincibleForEnemyPossession(false);
+		EnemyTarget->CancelPossessionProcess();
+	}
+	else if (APartnerCharacter* PartnerCharacter = PendingEnemyPossessionSource.Get())
+	{
+		PartnerCharacter->SetEnemyPossessionProtection(false);
 	}
 
 	PendingEnemyPossessionTarget.Reset();
@@ -319,6 +323,7 @@ void APartnerPlayerController::CancelLocalEnemyPossessionTransition(AEnemyBase* 
 	UnbindPossessionTargetEndPlay(LocalTarget);
 	bHackTransitionCoveredNotified = false;
 
+	TryRestoreFirstPersonDefaultInputMode(FirstPersonInputModeTags::Hack());
 	SetPartnerPossessionState(
 		EPartnerPossessionState::PartnerControlled,
 		ExpectedTarget ? ExpectedTarget : LocalTarget);
@@ -370,6 +375,7 @@ void APartnerPlayerController::HandleHackPossessionTransitionFinished()
 	LocalPendingEnemyPossessionTarget.Reset();
 	UnbindPossessionTargetEndPlay(CompletedTarget);
 	bHackTransitionCoveredNotified = false;
+	TryRestoreFirstPersonDefaultInputMode(FirstPersonInputModeTags::Hack());
 	SetPartnerPossessionState(
 		EPartnerPossessionState::EnemyPossessed,
 		CompletedTarget);
@@ -569,7 +575,7 @@ void APartnerPlayerController::RestoreCachedPartnerCharacter()
 		return;
 	}
 
-	PartnerCharacter->SetInvincibleForEnemyPossession(false);
+	PartnerCharacter->SetEnemyPossessionProtection(false);
 	Possess(PartnerCharacter);
 	CachedPartnerCharacter.Reset();
 }

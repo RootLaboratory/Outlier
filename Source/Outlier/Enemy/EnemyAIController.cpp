@@ -91,7 +91,7 @@ void AEnemyAIController::OnPossess(APawn* InPawn)
 	if (AEnemyBase* Enemy = Cast<AEnemyBase>(InPawn))
 	{
 		RefreshPerceptionConfigFromPawn();
-		SetEnemyPerceptionEnabled(!Enemy->IsEnemyPossessed());
+		SetEnemyPerceptionEnabled(!Enemy->IsAIControlSuppressed());
 	}
 }
 
@@ -141,7 +141,7 @@ void AEnemyAIController::ForgetDetectionTarget(AActor* TargetActor)
 	EnemyPerceptionComponent->RequestStimuliListenerUpdate();
 
 	AEnemyBase* Enemy = Cast<AEnemyBase>(GetPawn());
-	if (!IsValid(Enemy) || Enemy->IsEnemyPossessed())
+	if (!IsValid(Enemy) || Enemy->IsAIControlSuppressed())
 	{
 		return;
 	}
@@ -240,7 +240,7 @@ AActor* AEnemyAIController::GetPreferredVisibleTarget() const
 void AEnemyAIController::HandleTargetPerceptionUpdated(AActor* Actor, FAIStimulus Stimulus)
 {
 	AEnemyBase* Enemy = Cast<AEnemyBase>(GetPawn());
-	if (!Enemy || !Actor || Enemy->IsEnemyPossessed())
+	if (!Enemy || !Actor || Enemy->IsAIControlSuppressed())
 	{
 		return;
 	}
@@ -428,7 +428,7 @@ void AEnemyAIController::RefreshSharedTargetContact()
 
 	AActor* TargetActor = GetPreferredVisibleTarget();
 	if (!Enemy
-		|| Enemy->IsEnemyPossessed()
+		|| Enemy->IsAIControlSuppressed()
 		|| !IsValid(TargetActor))
 	{
 		StopSharedTargetReporting(true);

@@ -368,6 +368,9 @@ protected:
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Test|Stealth")
 	uint8 bTestStealthed : 1 = false;
 
+	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Partner|EnemyPossession")
+	uint8 bHiddenForEnemyPossession : 1 = false;
+
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Survival")
 	uint8 bIsRebooting : 1 = false;
 
@@ -526,6 +529,7 @@ public:
 
 	void HandlePartnerHit();
 	void SetInvincibleForEnemyPossession(bool bNewInvincible);
+	void SetEnemyPossessionProtection(bool bEnabled);
 
 	// 입력뿐 아니라 Ability/BP에서도 사용할 수 있는 Partner 공격 API.
 	// 소유 클라이언트에서 호출하면 CombatComponent가 서버 RPC로 전달한다.

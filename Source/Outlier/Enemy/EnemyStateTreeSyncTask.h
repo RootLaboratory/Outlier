@@ -25,6 +25,18 @@ struct FEnemyStateTreeSyncTaskInstanceData
 	UPROPERTY(EditAnywhere, Category = Output)
 	bool bIsPossessed = false;
 
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bPossessionInProgress = false;
+
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bPossessedAttackHeld = false;
+
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bPossessedAttackQueued = false;
+
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bHasPossessedAttackRequest = false;
+
 	// StateTree 바인딩 호환성을 위해 bool 
 	UPROPERTY(EditAnywhere, Category = Output)
 	bool bPlayerCurrentlyVisible = false;

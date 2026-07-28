@@ -78,5 +78,11 @@ namespace OutlierGameplayTags
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("State.Stealthed")));
 			return Tag;
 		}
+
+		inline FGameplayTag PossessPending()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("State.PossessPending")));
+			return Tag;
+		}
 	}
 }

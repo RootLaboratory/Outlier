@@ -22,6 +22,8 @@
 #include "Room/RoomTagComponent.h"
 #include "Weapon/RangedWeaponBase.h"
 
+DEFINE_LOG_CATEGORY_STATIC(LogVECAnimation, Log, All);
+
 AEnemyBase::AEnemyBase()
 {
 	PrimaryActorTick.bCanEverTick = false;
@@ -94,6 +96,7 @@ void AEnemyBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifeti
 	DOREPLIFETIME(AEnemyBase, PatternStartPlayerLocation);
 	DOREPLIFETIME(AEnemyBase, CombatState);
 	DOREPLIFETIME(AEnemyBase, bIsPossessed);
+	DOREPLIFETIME(AEnemyBase, bPossessionInProgress);
 	DOREPLIFETIME(AEnemyBase, bPlayerCurrentlyVisible);
 	DOREPLIFETIME(AEnemyBase, bHasSharedTargetContact);
 	DOREPLIFETIME(AEnemyBase, SharedTargetLocation);
@@ -133,6 +136,8 @@ void AEnemyBase::BeginPlay()
 
 void AEnemyBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	CancelPossessionProcess();
+	ResetPossessedAttackInput();
 	StopCurrentAttack();
 	RemoveRoomTargetObserver();
 	ReleaseSearchRingSlot();
@@ -231,7 +236,7 @@ void AEnemyBase::RequestCombatDecisionRefresh()
 {
 	if (!HasAuthority()
 		|| CombatState != EEnemyCombatState::Combat
-		|| bIsPossessed
+		|| IsAIControlSuppressed()
 		|| bCombatDecisionRefreshPending)
 	{
 		return;
@@ -248,7 +253,7 @@ void AEnemyBase::RequestCombatDecisionRefresh()
 				bCombatDecisionRefreshPending = false;
 
 				if (CombatState != EEnemyCombatState::Combat
-					|| bIsPossessed
+					|| IsAIControlSuppressed()
 					|| bPlayerCurrentlyVisible)
 				{
 					return;
@@ -290,10 +295,20 @@ void AEnemyBase::SetEnemyPossessed(bool bNewIsPossessed)
 		return;
 	}
 
+	const bool bWasPossessionInProgress = bPossessionInProgress;
 	bIsPossessed = bNewIsPossessed;
+	ResetPossessedAttackInput();
 
 	if (bIsPossessed)
 	{
+		bPossessionInProgress = false;
+		PossessionInstigatorPartner.Reset();
+		if (HackableComponent)
+		{
+			HackableComponent->HackTags.RemoveTag(
+				OutlierGameplayTags::State::PossessPending());
+		}
+
 		StopCurrentAttack();
 		RemoveRoomTargetObserver();
 		ClearSharedTargetContact();
@@ -307,16 +322,117 @@ void AEnemyBase::SetEnemyPossessed(bool bNewIsPossessed)
 
 	if (AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(GetCachedAIController()))
 	{
-		EnemyAIController->SetEnemyPerceptionEnabled(!bIsPossessed);
+		EnemyAIController->SetEnemyPerceptionEnabled(!IsAIControlSuppressed());
 	}
 
 	RefreshPerceptionTeamRegistration();
+	ForceNetUpdate();
+
+	if (!bIsPossessed || !bWasPossessionInProgress)
+	{
+		SendEnemyStateTreeEvent(
+			FGameplayTag::RequestGameplayTag(
+				bIsPossessed
+				? TEXT("Enemy.Event.Possession.Started")
+				: TEXT("Enemy.Event.Possession.Ended")));
+	}
+}
+
+bool AEnemyBase::BeginPossessionProcess(APartnerCharacter* PartnerCharacter)
+{
+	if (!HasAuthority()
+		|| !IsValid(PartnerCharacter)
+		|| bIsPossessed
+		|| bPossessionInProgress
+		|| !HackableComponent)
+	{
+		return false;
+	}
+
+	bPossessionInProgress = true;
+	PossessionInstigatorPartner = PartnerCharacter;
+	ResetPossessedAttackInput();
+	HackableComponent->HackTags.AddTag(
+		OutlierGameplayTags::State::PossessPending());
+
+	StopCurrentAttack();
+	RemoveRoomTargetObserver();
+	ClearSharedTargetContact();
+	ReleaseSearchRingSlot();
+	SetPlayerCurrentlyVisible(false);
+
+	if (AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(GetCachedAIController()))
+	{
+		EnemyAIController->SetEnemyPerceptionEnabled(false);
+	}
+
+	PartnerCharacter->SetEnemyPossessionProtection(true);
+	ForceNetUpdate();
 
 	SendEnemyStateTreeEvent(
 		FGameplayTag::RequestGameplayTag(
-			bIsPossessed
-			? TEXT("Enemy.Event.Possession.Started")
-			: TEXT("Enemy.Event.Possession.Ended")));
+			TEXT("Enemy.Event.Possession.Pending")));
+
+	return true;
+}
+
+void AEnemyBase::ConfirmPossessionProcess()
+{
+	if (!HasAuthority() || !bPossessionInProgress || !HackableComponent)
+	{
+		return;
+	}
+
+	HackableComponent->HackTags.RemoveTag(
+		OutlierGameplayTags::State::PossessPending());
+
+	SendEnemyStateTreeEvent(
+		FGameplayTag::RequestGameplayTag(
+			TEXT("Enemy.Event.Possession.Started")));
+}
+
+void AEnemyBase::CancelPossessionProcess()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	const bool bHadPossessionProcess = bPossessionInProgress
+		|| (HackableComponent
+			&& HackableComponent->HasHackTag(
+				OutlierGameplayTags::State::PossessPending()));
+	if (!bHadPossessionProcess)
+	{
+		return;
+	}
+
+	bPossessionInProgress = false;
+	if (HackableComponent)
+	{
+		HackableComponent->HackTags.RemoveTag(
+			OutlierGameplayTags::State::PossessPending());
+	}
+
+	if (APartnerCharacter* PartnerCharacter = PossessionInstigatorPartner.Get())
+	{
+		PartnerCharacter->SetEnemyPossessionProtection(false);
+	}
+	PossessionInstigatorPartner.Reset();
+
+	if (AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(GetCachedAIController()))
+	{
+		EnemyAIController->SetEnemyPerceptionEnabled(!bIsPossessed);
+	}
+
+	ForceNetUpdate();
+
+	if (!bIsPossessed)
+	{
+		SendEnemyStateTreeEvent(
+			FGameplayTag::RequestGameplayTag(
+				TEXT("Enemy.Event.Possession.Cancelled")));
+	}
 }
 
 void AEnemyBase::RefreshPerceptionTeamRegistration()
@@ -426,7 +542,7 @@ void AEnemyBase::ApplySharedTargetContact(const FVector& TargetLocation)
 {
 	if (!HasAuthority()
 		|| CombatState != EEnemyCombatState::Combat
-		|| bIsPossessed)
+		|| IsAIControlSuppressed())
 	{
 		return;
 	}
@@ -632,6 +748,7 @@ void AEnemyBase::EnterStun()
 
 	PreStunCombatState = CombatState;
 	CombatState = EEnemyCombatState::Stun;
+	ResetPossessedAttackInput();
 	StopCurrentAttack();
 	RemoveRoomTargetObserver();
 	ReleaseSearchRingSlot();
@@ -693,6 +810,16 @@ UHackableComponent* AEnemyBase::GetHackableComponent() const
 	return HackableComponent;
 }
 
+void AEnemyBase::HandleHackCompleted(const FHackResultContext& Context)
+{
+	if (HasAuthority()
+		&& bPossessionInProgress
+		&& Context.Result != EHackResult::Success)
+	{
+		CancelPossessionProcess();
+	}
+}
+
 void AEnemyBase::HandleHackEffect(FGameplayTag EffectTag, const FHackResultContext& Context)
 {
 	if (!HasAuthority())
@@ -705,7 +832,7 @@ void AEnemyBase::HandleHackEffect(FGameplayTag EffectTag, const FHackResultConte
 		return;
 	}
 
-	if (IsEnemyPossessed())
+	if (IsEnemyPossessed() || !bPossessionInProgress)
 	{
 		return;
 	}
@@ -714,51 +841,53 @@ void AEnemyBase::HandleHackEffect(FGameplayTag EffectTag, const FHackResultConte
 	{
 		return;
 	}
-	//성공 유무와 상관없이 hack 끝났다면 tag 삭제
-	HackableComponent->HackTags.RemoveTag(OutlierGameplayTags::State::Stunned());
-
-	if (!HasActiveStunTag())
-	{
-		RestoreStateAfterStun();
-	}
-
-
 	if (Context.Result != EHackResult::Success)
 	{
+		CancelPossessionProcess();
 		return;
 	}
 
 	APartnerCharacter* PartnerCharacter = Cast<APartnerCharacter>(Context.InstigatorActor);
-	if (!PartnerCharacter)
+	if (!PartnerCharacter || PossessionInstigatorPartner.Get() != PartnerCharacter)
 	{
+		CancelPossessionProcess();
 		return;
 	}
 
 	APartnerPlayerController* PartnerController = Cast<APartnerPlayerController>(PartnerCharacter->GetController());
 	if (!PartnerController)
 	{
+		CancelPossessionProcess();
 		return;
 	}
 
-	PartnerController->BeginEnemyPossessionTransition(this, PartnerCharacter);
+	if (!PartnerController->BeginEnemyPossessionTransition(this, PartnerCharacter))
+	{
+		CancelPossessionProcess();
+		return;
+	}
+
+	ConfirmPossessionProcess();
 }
 
 void AEnemyBase::HandleHackStarted(const FHackQueryContext& Context)
 {
-	//Hack 접속.
-	if (!HackableComponent)
+	if (!HasAuthority() || !HackableComponent || IsAIControlSuppressed())
 	{
 		return;
 	}
 
-	//Enemy 빙의는 일회성으로 처리, Possessed 상태 상관없이, Hacking 타겟팅 시, Tag 컨펌하는 거로.
+	APartnerCharacter* PartnerCharacter = Cast<APartnerCharacter>(Context.InstigatorActor);
+	if (!IsValid(PartnerCharacter))
+	{
+		return;
+	}
 
-	HackableComponent->HackTags.AddTag(OutlierGameplayTags::State::Stunned());
-	HackableComponent->HackTags.RemoveTag(HackGameplayTags::Target::Possessable());
-	HackableComponent->HackTags.AddTag(HackGameplayTags::Target::NonPossessable());
-
-	EnterStun();
-
+	if (BeginPossessionProcess(PartnerCharacter))
+	{
+		HackableComponent->HackTags.RemoveTag(HackGameplayTags::Target::Possessable());
+		HackableComponent->HackTags.AddTag(HackGameplayTags::Target::NonPossessable());
+	}
 }
 
 UEMPableComponent* AEnemyBase::GetEMPableComponent() const
@@ -918,11 +1047,42 @@ bool AEnemyBase::StartAttackLocation(const FVector& TargetLocation)
 	return true;
 }
 
+bool AEnemyBase::StartPossessedAttackBurst()
+{
+	if (!HasAuthority()
+		|| !bIsPossessed
+		|| CombatState == EEnemyCombatState::Stun
+		|| !IsValid(CurrentWeapon)
+		|| !CurrentWeapon->HasFixedBurst()
+		|| !CurrentWeapon->CanAttack())
+	{
+		return false;
+	}
+
+	CurrentWeapon->StartAttack();
+	SetAttackPhase(EEnemyAttackPhase::Firing);
+	return true;
+}
+
+bool AEnemyBase::ConsumePossessedAttackRequest()
+{
+	if (!HasAuthority() || !bIsPossessed || !HasPossessedAttackRequest())
+	{
+		return false;
+	}
+
+	bPossessedAttackQueued = false;
+	SendEnemyStateTreeEventNextTick(
+		FGameplayTag::RequestGameplayTag(
+			TEXT("Enemy.Event.Attack.RequestConsumed")));
+	return true;
+}
+
 bool AEnemyBase::UpdateAttackLocation(const FVector& TargetLocation)
 {
 	if (!HasAuthority()
 		|| CombatState == EEnemyCombatState::Stun
-		|| bIsPossessed
+		|| IsAIControlSuppressed()
 		|| !IsValid(CurrentWeapon))
 	{
 		return false;
@@ -953,13 +1113,17 @@ bool AEnemyBase::UpdateAttackLocation(const FVector& TargetLocation)
 	return true;
 }
 
-void AEnemyBase::StopCurrentAttack()
+void AEnemyBase::StopCurrentWeaponAttack()
 {
 	if (HasAuthority() && IsValid(CurrentWeapon))
 	{
 		CurrentWeapon->StopAttack();
 	}
+}
 
+void AEnemyBase::StopCurrentAttack()
+{
+	StopCurrentWeaponAttack();
 	if (HasAuthority())
 	{
 		SetAttackPhase(EEnemyAttackPhase::Idle);
@@ -975,12 +1139,30 @@ void AEnemyBase::SetAttackPhase(EEnemyAttackPhase NewPhase)
 
 	const EEnemyAttackPhase PreviousPhase = AttackPhase;
 	AttackPhase = NewPhase;
+	UE_LOG(
+		LogVECAnimation,
+		Log,
+		TEXT("[VECAnimDebug][ServerPhase] Actor=%s Previous=%s New=%s Weapon=%s Controller=%s"),
+		*GetName(),
+		*UEnum::GetValueAsString(PreviousPhase),
+		*UEnum::GetValueAsString(AttackPhase),
+		*GetNameSafe(CurrentWeapon),
+		*GetNameSafe(GetController()));
 	OnAttackPhaseChanged(PreviousPhase, AttackPhase);
 	ForceNetUpdate();
 }
 
 void AEnemyBase::OnRep_AttackPhase(EEnemyAttackPhase PreviousPhase)
 {
+	UE_LOG(
+		LogVECAnimation,
+		Log,
+		TEXT("[VECAnimDebug][ReplicatedPhase] Actor=%s Previous=%s New=%s LocalRole=%d RemoteRole=%d"),
+		*GetName(),
+		*UEnum::GetValueAsString(PreviousPhase),
+		*UEnum::GetValueAsString(AttackPhase),
+		static_cast<int32>(GetLocalRole()),
+		static_cast<int32>(GetRemoteRole()));
 	OnAttackPhaseChanged(PreviousPhase, AttackPhase);
 }
 
@@ -1023,6 +1205,7 @@ void AEnemyBase::RemoveRoomTargetObserver()
 
 void AEnemyBase::HandleDeath()
 {
+	ResetPossessedAttackInput();
 	StopCurrentAttack();
 
 	if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
@@ -1080,11 +1263,7 @@ void AEnemyBase::HandleStartAttackInput()
 		return;
 	}
 
-	if (bIsPossessed && IsValid(CurrentWeapon))
-	{
-		CurrentWeapon->StartAttack();
-		SetAttackPhase(EEnemyAttackPhase::Firing);
-	}
+	SetPossessedAttackHeld(true);
 }
 
 void AEnemyBase::HandleStopAttackInput()
@@ -1098,7 +1277,7 @@ void AEnemyBase::HandleStopAttackInput()
 		return;
 	}
 
-	StopCurrentAttack();
+	SetPossessedAttackHeld(false);
 }
 
 void AEnemyBase::ServerStartWeaponAttack_Implementation()
@@ -1110,6 +1289,51 @@ void AEnemyBase::ServerStartWeaponAttack_Implementation()
 void AEnemyBase::ServerStopWeaponAttack_Implementation()
 {
 	HandleStopAttackInput();
+}
+
+void AEnemyBase::SetPossessedAttackHeld(bool bHeld)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	if (!bIsPossessed)
+	{
+		ResetPossessedAttackInput();
+		return;
+	}
+
+	if (bHeld
+		&& (CombatState == EEnemyCombatState::Stun
+			|| CurrentHealth <= 0.0f
+			|| !IsValid(CurrentWeapon)))
+	{
+		return;
+	}
+
+	if (bPossessedAttackHeld == bHeld)
+	{
+		return;
+	}
+
+	bPossessedAttackHeld = bHeld;
+	if (bHeld)
+	{
+		bPossessedAttackQueued = true;
+	}
+
+	SendEnemyStateTreeEvent(
+		FGameplayTag::RequestGameplayTag(
+			bHeld
+			? TEXT("Enemy.Event.Attack.InputPressed")
+			: TEXT("Enemy.Event.Attack.InputReleased")));
+}
+
+void AEnemyBase::ResetPossessedAttackInput()
+{
+	bPossessedAttackHeld = false;
+	bPossessedAttackQueued = false;
 }
 
 void AEnemyBase::HandleReleasePossessionInput(const FInputActionValue& Value)

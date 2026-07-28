@@ -21,6 +21,7 @@ class USphereComponent;
 struct FInputActionValue;
 class URoomTagComponent;
 class ARangedWeaponBase;
+class APartnerCharacter;
 
 UENUM(BlueprintType)
 enum class EEnemyCombatState : uint8
@@ -145,6 +146,9 @@ protected:
 	uint8 bIsPossessed : 1 = false;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "Enemy|State")
+	uint8 bPossessionInProgress : 1 = false;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "Enemy|State")
 	uint8 bPlayerCurrentlyVisible : 1 = false;
 
 	// 같은 방의 다른 Enemy가 직접 Sight로 보고한 전투 대상 좌표.
@@ -178,6 +182,12 @@ protected:
 	TWeakObjectPtr<AController> CachedAIController;
 
 	UPROPERTY()
+	TWeakObjectPtr<APartnerCharacter> PossessionInstigatorPartner;
+
+	uint8 bPossessedAttackHeld : 1 = false;
+	uint8 bPossessedAttackQueued : 1 = false;
+
+	UPROPERTY()
 	EEnemyCombatState PreStunCombatState = EEnemyCombatState::NonCombat;
 
 public:
@@ -192,10 +202,17 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Enemy|State")
 	void SetEnemyPossessed(bool bNewIsPossessed);
 
+	void CancelPossessionProcess();
+
 	void ClearPossessedPlayerState();
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|State")
 	bool IsEnemyPossessed() const { return bIsPossessed; }
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|State")
+	bool IsPossessionInProgress() const { return bPossessionInProgress; }
+
+	bool IsAIControlSuppressed() const { return bIsPossessed || bPossessionInProgress; }
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|State")
 	bool IsInCombat() const { return bInCombat; }
@@ -227,6 +244,14 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Enemy|Weapon")
 	EEnemyAttackPhase GetAttackPhase() const { return AttackPhase; }
 
+	bool IsPossessedAttackHeld() const { return bPossessedAttackHeld; }
+	bool HasPossessedAttackQueued() const { return bPossessedAttackQueued; }
+	bool HasPossessedAttackRequest() const
+	{
+		return bPossessedAttackHeld || bPossessedAttackQueued;
+	}
+	bool ConsumePossessedAttackRequest();
+
 	// StateTree 공격 Task가 서버에서 호출한다. 클라이언트 BP에는 OnAttackPhaseChanged로 전달된다.
 	void SetAttackPhase(EEnemyAttackPhase NewPhase);
 
@@ -237,9 +262,11 @@ public:
 	// Target 버전은 Actor의 현재 위치를 사용하고 Location 버전은 LKP 위협 사격처럼 좌표만 조준한다.
 	bool StartAttackTarget(AActor* TargetActor);
 	bool StartAttackLocation(const FVector& TargetLocation);
+	bool StartPossessedAttackBurst();
 
 	// 반복 공격 중 조준 방향만 갱신한다. 무기 발사 주기 자체는 ARangedWeaponBase가 관리한다.
 	bool UpdateAttackLocation(const FVector& TargetLocation);
+	void StopCurrentWeaponAttack();
 	void StopCurrentAttack();
 
 	// FireCycle이 타겟 상실과 같은 틱에 실패 전이를 처리해 Battle 전환 이벤트를 놓친 경우,
@@ -322,6 +349,7 @@ public:
 	virtual UHackableComponent* GetHackableComponent() const override;
 	virtual void HandleHackEffect(FGameplayTag EffectTag, const FHackResultContext& Context) override;
 	virtual void HandleHackStarted(const FHackQueryContext& Context) override;
+	virtual void HandleHackCompleted(const FHackResultContext& Context) override;
 
 	virtual UEMPableComponent* GetEMPableComponent() const override;
 	virtual void HandleEMPStarted(FGameplayTag EffectTag) override;
@@ -337,6 +365,8 @@ protected:
 	virtual void ApplyClassStatOverrides();
 	virtual void ApplyMovementFromRuntimeStat();
 	bool HasActiveStunTag() const;
+	bool BeginPossessionProcess(APartnerCharacter* PartnerCharacter);
+	void ConfirmPossessionProcess();
 	void PromotePreStunState(EEnemyCombatState DetectedState);
 	void RefreshPerceptionConfigForCurrentState();
 	void RefreshPerceptionTeamRegistration();
@@ -359,6 +389,8 @@ protected:
 	void HandleStartAttackInput();
 	void HandleStopAttackInput();
 	void HandleReleasePossessionInput(const FInputActionValue& Value);
+	void SetPossessedAttackHeld(bool bHeld);
+	void ResetPossessedAttackInput();
 
 	// 서버는 bIsPossessed를 다시 확인한 뒤 CurrentWeapon을 실행한다.
 	UFUNCTION(Server, Reliable)
