@@ -41,7 +41,16 @@ struct OUTLIER_API FWeaponCoreRow : public FTableRowBase
 	int32 MagazineSize = 0;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
+	bool bInfiniteAmmo = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly)
 	float FireRateRpm = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly)
+	int32 BurstShotCount = 0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly)
+	float PostBurstCooldownSeconds = 0.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
 	float DefaultMinBloom = 0.0f;

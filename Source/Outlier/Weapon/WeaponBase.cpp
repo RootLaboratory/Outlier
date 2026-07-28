@@ -418,8 +418,6 @@ void AWeaponBase::StopAttack()
 	{
 		Shooter->HandleWeaponAttackStoppedInternal();
 	}
-
-	UE_LOG(LogTemp, Log, TEXT("%s [%s] StopAttack"), OutlierNet::GetNetPrefix(this), *GetName());
 }
 
 void AWeaponBase::PerformAttack()

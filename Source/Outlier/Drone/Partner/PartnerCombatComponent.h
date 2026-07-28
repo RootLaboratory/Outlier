@@ -22,6 +22,7 @@ public:
 	// 클라이언트에서는 서버 RPC만 요청하고 실제 무기 상태 변경은 서버에서 수행한다.
 	void TryStartAttack();
 	void TryStopAttack();
+	void StartAutoReload();
 
 	// 빙의 해제, 리부트처럼 입력과 무관하게 공격을 끝내야 하는 서버 전용 정리 함수.
 	void ForceStopAttack();
@@ -35,6 +36,9 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Partner|Weapon")
 	uint8 bEquipDefaultWeaponOnBeginPlay : 1 = true;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Partner|Weapon", meta = (ClampMin = "0.0"))
+	float ReloadDurationSeconds = 1.0f;
+
 	// 소유 클라이언트의 공격 시작/종료 상태만 서버로 전달한다.
 	// 연사 처리는 서버의 Weapon 타이머가 담당하므로 발사마다 RPC를 보내지 않는다.
 	// 구현부는 TryStartAttack/TryStopAttack을 다시 호출해 서버에서도 동일한 검증을 거친다.
@@ -47,4 +51,8 @@ protected:
 private:
 	// 무기 스폰과 장착은 서버에서만 수행한다.
 	void EquipDefaultWeapon_Server();
+	void FinishReload();
+
+	FTimerHandle ReloadTimerHandle;
+	TWeakObjectPtr<ARangedWeaponBase> ReloadingWeapon;
 };

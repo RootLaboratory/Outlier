@@ -15,6 +15,7 @@
 class UProjectionMarkDefinition;
 class UTrailEffectDefinition;
 class USoundDefinition;
+class UDecalComponent;
 
 UCLASS()
 class VISUALEVENT_API UVisualEventSubsystem : public UWorldSubsystem
@@ -54,6 +55,8 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Visual Event")
 	void SpawnEffectAtLocation(const UTrailEffectDefinition* Def, const FVector& Location, const FRotator& Rotation);
 
-
+private:
+	static constexpr int32 MaxActiveMarks = 128;
+	TArray<TWeakObjectPtr<UDecalComponent>> ActiveMarks;
 
 };

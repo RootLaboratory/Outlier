@@ -10,6 +10,39 @@
 #include "InputActionValue.h"
 #include "Enemy/VECDroneMovementComponent.h"
 
+namespace
+{
+	void CollectSocketsByPrefix(
+		const USkeletalMeshComponent* MeshComponent,
+		FName SocketPrefix,
+		TArray<FName>& OutSocketNames)
+	{
+		if (!MeshComponent || SocketPrefix.IsNone())
+		{
+			return;
+		}
+
+		const FString PrefixString = SocketPrefix.ToString();
+		TArray<FName> MatchingSockets;
+		for (const FName SocketName : MeshComponent->GetAllSocketNames())
+		{
+			const FString SocketString = SocketName.ToString();
+			if (SocketName == SocketPrefix || SocketString.StartsWith(PrefixString))
+			{
+				MatchingSockets.Add(SocketName);
+			}
+		}
+
+		MatchingSockets.Sort(
+			[](const FName& Left, const FName& Right)
+			{
+				return Left.LexicalLess(Right);
+			});
+
+		OutSocketNames.Append(MatchingSockets);
+	}
+}
+
 AVECDrone::AVECDrone()
 {
 	SetDefaultEnemyType(EEnemyType::Gun);
@@ -114,6 +147,17 @@ float AVECDrone::GetMaxCameraRollDegrees() const
 	return VECMovementComponent
 		? FMath::Max(VECMovementComponent->GetCameraRollOnTurn(), 0.0f)
 		: 0.0f;
+}
+
+void AVECDrone::GetWeaponMuzzleSocketNames(bool bFirstPerson, TArray<FName>& OutSocketNames) const
+{
+	const FName SocketPrefix = GetWeaponMuzzleSocketName(bFirstPerson);
+	CollectSocketsByPrefix(GetWeaponMuzzleComponent(bFirstPerson), SocketPrefix, OutSocketNames);
+
+	if (OutSocketNames.IsEmpty() && !SocketPrefix.IsNone())
+	{
+		OutSocketNames.Add(SocketPrefix);
+	}
 }
 
 void AVECDrone::UnPossessed()

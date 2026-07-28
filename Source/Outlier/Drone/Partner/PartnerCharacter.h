@@ -534,4 +534,6 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Partner|Combat")
 	void StopWeaponAttack();
+
+	void HandleAutoReloadRequested();
 };

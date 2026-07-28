@@ -20,4 +20,13 @@ class OUTLIER_API IWeaponMuzzleProvider
 public:
 	virtual USkeletalMeshComponent* GetWeaponMuzzleComponent(bool bFirstPerson) const = 0;
 	virtual FName GetWeaponMuzzleSocketName(bool bFirstPerson) const = 0;
+
+	virtual void GetWeaponMuzzleSocketNames(bool bFirstPerson, TArray<FName>& OutSocketNames) const
+	{
+		const FName SocketName = GetWeaponMuzzleSocketName(bFirstPerson);
+		if (!SocketName.IsNone())
+		{
+			OutSocketNames.Add(SocketName);
+		}
+	}
 };
