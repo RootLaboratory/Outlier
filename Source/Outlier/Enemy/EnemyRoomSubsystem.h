@@ -57,6 +57,7 @@ public:
 
 	void RegisterEnemy(AEnemyBase* Enemy);
 	void UnregisterEnemy(AEnemyBase* Enemy);
+	void RefreshEnemyRegistration(AEnemyBase* Enemy);
 	void NotifyRoomCombat(int32 ArenaId, FGameplayTag RoomTag, const FVector& PlayerLocation, AEnemyBase* ExcludeEnemy);
 	bool IsRoomInCombat(int32 ArenaId, FGameplayTag RoomTag) const;
 
@@ -100,13 +101,15 @@ private:
 	void BroadcastSharedTargetContact(const FEnemyRoomSearchKey& Key, const FVector& TargetLocation);
 	void BroadcastSharedTargetLost(const FEnemyRoomSearchKey& Key);
 	void CompactTargetContactState(FEnemyRoomTargetContactState& ContactState);
+	FEnemyRoomSearchKey ResolveEnemyRegistrationKey(const AEnemyBase* Enemy) const;
 	FGameplayTag ResolveEnemyRoomTag(const AEnemyBase* Enemy) const;
-	bool IsEnemyInArena(const AEnemyBase* Enemy, int32 ArenaId, const ULevel* ArenaLevel) const;
-	void CompactRegisteredEnemies();
+	void CompactRegisteredEnemies(const FEnemyRoomSearchKey& Key);
+	void CompactAllRegisteredEnemies();
 	void HandleArenaReleased(int32 ArenaId);
 
 	TMap<int32, TSet<FGameplayTag>> CombatRoomsByArena;
-	TSet<TWeakObjectPtr<AEnemyBase>> RegisteredEnemies;
+	TMap<FEnemyRoomSearchKey, TSet<TWeakObjectPtr<AEnemyBase>>> RegisteredEnemiesByRoom;
+	TMap<TWeakObjectPtr<AEnemyBase>, FEnemyRoomSearchKey> RegisteredEnemyKeys;
 
 	// Arena 해제 시 HandleArenaReleased에서 함께 제거한다.
 	TMap<FEnemyRoomSearchKey, FEnemyRoomSearchState> SearchStates;

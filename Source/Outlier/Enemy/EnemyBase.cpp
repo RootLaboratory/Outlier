@@ -614,6 +614,11 @@ void AEnemyBase::EnterCombatInArena(
 	if (ArenaId != INDEX_NONE)
 	{
 		LastKnownArenaId = ArenaId;
+		if (UEnemyRoomSubsystem* RoomSubsystem =
+			GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
+		{
+			RoomSubsystem->RefreshEnemyRegistration(this);
+		}
 	}
 
 	if (CombatState == EEnemyCombatState::Stun)
@@ -707,6 +712,11 @@ void AEnemyBase::EnterAlertInArena(const FVector& PlayerLocation, int32 ArenaId)
 	if (ArenaId != INDEX_NONE)
 	{
 		LastKnownArenaId = ArenaId;
+		if (UEnemyRoomSubsystem* RoomSubsystem =
+			GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
+		{
+			RoomSubsystem->RefreshEnemyRegistration(this);
+		}
 	}
 
 	if (CombatState == EEnemyCombatState::Stun)

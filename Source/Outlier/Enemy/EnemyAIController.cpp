@@ -153,7 +153,7 @@ void AEnemyAIController::ForgetDetectionTarget(AActor* TargetActor)
 	if (bHasVisibleTarget)
 	{
 		StartSharedTargetReporting();
-		RefreshSharedTargetContact();
+		ReportSharedTargetContact(Enemy, PreferredTarget);
 	}
 	else
 	{
@@ -199,11 +199,17 @@ AActor* AEnemyAIController::GetPreferredVisibleTarget() const
 		return nullptr;
 	}
 
-	TArray<AActor*> VisibleActors;
+	PerceivedActorScratch.Reset();
 	EnemyPerceptionComponent->GetCurrentlyPerceivedActors(
 		UAISense_Sight::StaticClass(),
-		VisibleActors);
+		PerceivedActorScratch);
 
+	return SelectPreferredVisibleTarget(PerceivedActorScratch);
+}
+
+AActor* AEnemyAIController::SelectPreferredVisibleTarget(
+	const TArray<AActor*>& VisibleActors) const
+{
 	const APawn* ControlledPawn = GetPawn();
 	AActor* BestTarget = nullptr;
 	EEnemyTargetPriority BestPriority = EEnemyTargetPriority::Invalid;
@@ -257,12 +263,13 @@ void AEnemyAIController::HandleTargetPerceptionUpdated(AActor* Actor, FAIStimulu
 		}
 
 		ProcessedStealthedTargets.Add(TargetKey);
-		const bool bAnyPlayerVisible = HasAnyVisiblePlayer();
+		AActor* PreferredTarget = GetPreferredVisibleTarget();
+		const bool bAnyPlayerVisible = IsValid(PreferredTarget);
 		Enemy->SetPlayerCurrentlyVisible(bAnyPlayerVisible);
 		if (bAnyPlayerVisible)
 		{
 			StartSharedTargetReporting();
-			RefreshSharedTargetContact();
+			ReportSharedTargetContact(Enemy, PreferredTarget);
 		}
 		else
 		{
@@ -309,15 +316,16 @@ void AEnemyAIController::HandleSightStimulus(AEnemyBase* Enemy, AActor* Actor, c
 		}
 
 		StartSharedTargetReporting();
-		RefreshSharedTargetContact();
+		ReportSharedTargetContact(Enemy, LocationSource);
 		return;
 	}
 
-	const bool bAnyPlayerVisible = HasAnyVisiblePlayer();
+	AActor* PreferredTarget = GetPreferredVisibleTarget();
+	const bool bAnyPlayerVisible = IsValid(PreferredTarget);
 	if (bAnyPlayerVisible)
 	{
 		StartSharedTargetReporting();
-		RefreshSharedTargetContact();
+		ReportSharedTargetContact(Enemy, PreferredTarget);
 	}
 	else
 	{
@@ -345,25 +353,6 @@ void AEnemyAIController::HandleHearingStimulus(AEnemyBase* Enemy, AActor* Actor,
 			HeardLocation,
 			ResolveArenaIdFromTarget(Actor));
 	}
-}
-
-bool AEnemyAIController::HasAnyVisiblePlayer() const
-{
-	if (!EnemyPerceptionComponent)
-	{
-		return false;
-	}
-
-	TArray<AActor*> VisibleActors;
-	EnemyPerceptionComponent->GetCurrentlyPerceivedActors(
-		UAISense_Sight::StaticClass(),
-		VisibleActors);
-
-	return VisibleActors.ContainsByPredicate(
-		[this](const AActor* Target)
-		{
-			return IsValidDetectionTarget(Target);
-		});
 }
 
 void AEnemyAIController::StartSharedTargetReporting()
@@ -424,9 +413,14 @@ void AEnemyAIController::RefreshSharedTargetContact()
 	}
 
 	// 이미 감지 중이던 플레이어가 은신한 경우에도 Perception 캐시에서 제거한다.
-	ForgetStealthedPerceivedActors();
+	AActor* TargetActor = ForgetStealthedPerceivedActors();
+	ReportSharedTargetContact(Enemy, TargetActor);
+}
 
-	AActor* TargetActor = GetPreferredVisibleTarget();
+void AEnemyAIController::ReportSharedTargetContact(
+	AEnemyBase* Enemy,
+	AActor* TargetActor)
+{
 	if (!Enemy
 		|| Enemy->IsAIControlSuppressed()
 		|| !IsValid(TargetActor))
@@ -454,19 +448,19 @@ void AEnemyAIController::RefreshSharedTargetContact()
 		TargetActor->GetActorLocation());
 }
 
-void AEnemyAIController::ForgetStealthedPerceivedActors()
+AActor* AEnemyAIController::ForgetStealthedPerceivedActors()
 {
 	if (!EnemyPerceptionComponent)
 	{
-		return;
+		return nullptr;
 	}
 
-	TArray<AActor*> VisibleActors;
+	PerceivedActorScratch.Reset();
 	EnemyPerceptionComponent->GetCurrentlyPerceivedActors(
 		UAISense_Sight::StaticClass(),
-		VisibleActors);
+		PerceivedActorScratch);
 
-	for (AActor* Actor : VisibleActors)
+	for (AActor* Actor : PerceivedActorScratch)
 	{
 		if (IsStealthedDetectionTarget(Actor))
 		{
@@ -482,6 +476,8 @@ void AEnemyAIController::ForgetStealthedPerceivedActors()
 			ProcessedStealthedTargets.Add(TargetKey);
 		}
 	}
+
+	return SelectPreferredVisibleTarget(PerceivedActorScratch);
 }
 
 void AEnemyAIController::ConfigureSightFromEnemy(AEnemyBase* Enemy)
