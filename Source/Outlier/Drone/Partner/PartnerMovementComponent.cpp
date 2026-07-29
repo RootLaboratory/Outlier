@@ -344,7 +344,7 @@ FVector UPartnerMovementComponent::FindSimpleAvoidanceTarget(
 	const FVector Right = FVector::CrossProduct(Up, ToTarget).GetSafeNormal();
 	const float AvoidDistance = 150.0f;
 
-	TArray<FVector> Candidates;
+	TArray<FVector, TInlineAllocator<8>> Candidates;
 	Candidates.Add(Hit.ImpactPoint + Right * AvoidDistance);
 	Candidates.Add(Hit.ImpactPoint - Right * AvoidDistance);
 	Candidates.Add(Hit.ImpactPoint + Up * AvoidDistance);

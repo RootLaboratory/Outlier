@@ -7,6 +7,7 @@
 #include "EnhancedInputSubsystems.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/SceneComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Drone/Partner/PartnerDistanceComponent.h"
 #include "Drone/Partner/PartnerMovementComponent.h"
 #include "Drone/Partner/PartnerSupportComponent.h"
@@ -32,6 +33,38 @@
 #include "TagDrivenUIGameplayTags.h"
 #include "Perception/AISense_Hearing.h"
 #include "Enemy/EnemyRoomSubsystem.h"
+#include "NiagaraComponent.h"
+#include "NiagaraFunctionLibrary.h"
+
+namespace
+{
+	void CollectSocketNamesByPrefix(
+		const USkeletalMeshComponent* MeshComponent,
+		FName SocketPrefix,
+		TArray<FName>& OutSocketNames)
+	{
+		if (!MeshComponent || SocketPrefix.IsNone())
+		{
+			return;
+		}
+
+		const FString PrefixString = SocketPrefix.ToString();
+		for (const FName SocketName : MeshComponent->GetAllSocketNames())
+		{
+			const FString SocketString = SocketName.ToString();
+			if (SocketName == SocketPrefix || SocketString.StartsWith(PrefixString))
+			{
+				OutSocketNames.Add(SocketName);
+			}
+		}
+
+		OutSocketNames.Sort(
+			[](const FName& Left, const FName& Right)
+			{
+				return Left.LexicalLess(Right);
+			});
+	}
+}
 
 void APartnerCharacter::BeginPlay()
 {
@@ -54,6 +87,14 @@ void APartnerCharacter::BeginPlay()
 	}
 
 	EnsurePartnerDataInitialized();
+	AttachBoostVFXToMeshes();
+}
+
+void APartnerCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	CleanupBoostVFXComponents();
+
+	Super::EndPlay(EndPlayReason);
 }
 
 void APartnerCharacter::PossessedBy(AController* NewController)
@@ -239,6 +280,7 @@ void APartnerCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	DOREPLIFETIME(APartnerCharacter, LastHackServerTime);
 	DOREPLIFETIME(APartnerCharacter, bIsAccelerate);
 	DOREPLIFETIME(APartnerCharacter, bTestStealthed);
+	DOREPLIFETIME(APartnerCharacter, bHiddenForEnemyPossession);
 	DOREPLIFETIME(APartnerCharacter, bIsRebooting);
 	DOREPLIFETIME(APartnerCharacter, bIsInvincible);
 	DOREPLIFETIME(APartnerCharacter, CurrentHitCount);
@@ -247,7 +289,7 @@ void APartnerCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 FGameplayTagContainer APartnerCharacter::GetOwnedGameplayTagsForQuery() const
 {
 	FGameplayTagContainer GameplayTags = Super::GetOwnedGameplayTagsForQuery();
-	if (bTestStealthed)
+	if (bTestStealthed || bHiddenForEnemyPossession)
 	{
 		GameplayTags.AddTag(OutlierGameplayTags::State::Stealthed());
 	}
@@ -613,6 +655,31 @@ void APartnerCharacter::SetInvincibleForEnemyPossession(bool bNewInvincible)
 	}
 }
 
+void APartnerCharacter::SetEnemyPossessionProtection(bool bEnabled)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	SetInvincibleForEnemyPossession(bEnabled);
+
+	if (bHiddenForEnemyPossession == bEnabled)
+	{
+		return;
+	}
+
+	bHiddenForEnemyPossession = bEnabled;
+	ForceNetUpdate();
+
+	if (UEnemyRoomSubsystem* EnemyRoomSubsystem = GetWorld()
+		? GetWorld()->GetSubsystem<UEnemyRoomSubsystem>()
+		: nullptr)
+	{
+		EnemyRoomSubsystem->RefreshDetectionTarget(this);
+	}
+}
+
 void APartnerCharacter::StartReboot()
 {
 	if (!HasAuthority() || bIsRebooting)
@@ -855,6 +922,59 @@ void APartnerCharacter::ReportBoostNoise()
 		BoostNoiseTag);
 }
 
+void APartnerCharacter::AttachBoostVFXToMeshes()
+{
+	if (!BoostVFX || GetNetMode() == NM_DedicatedServer || !BoostVFXComponents.IsEmpty())
+	{
+		return;
+	}
+
+	AttachBoostVFXToMesh(GetFirstPersonMesh());
+	AttachBoostVFXToMesh(GetMesh());
+}
+
+void APartnerCharacter::AttachBoostVFXToMesh(USkeletalMeshComponent* MeshComponent)
+{
+	if (!MeshComponent || BoostVFXSocketPrefix.IsNone())
+	{
+		return;
+	}
+
+	TArray<FName> BoostSocketNames;
+	CollectSocketNamesByPrefix(MeshComponent, BoostVFXSocketPrefix, BoostSocketNames);
+
+	for (const FName SocketName : BoostSocketNames)
+	{
+		UNiagaraComponent* NiagaraComponent = UNiagaraFunctionLibrary::SpawnSystemAttached(
+			BoostVFX,
+			MeshComponent,
+			SocketName,
+			FVector::ZeroVector,
+			FRotator::ZeroRotator,
+			EAttachLocation::SnapToTarget,
+			false,
+			true);
+
+		if (NiagaraComponent)
+		{
+			BoostVFXComponents.Add(NiagaraComponent);
+		}
+	}
+}
+
+void APartnerCharacter::CleanupBoostVFXComponents()
+{
+	for (TObjectPtr<UNiagaraComponent>& NiagaraComponent : BoostVFXComponents)
+	{
+		if (NiagaraComponent)
+		{
+			NiagaraComponent->DestroyComponent();
+		}
+	}
+
+	BoostVFXComponents.Reset();
+}
+
 void APartnerCharacter::ServerSetAccelerate_Implementation(bool bNewAccelerate)
 {
 	if (!CanAcceptInput())
@@ -1091,6 +1211,7 @@ APartnerCharacter::APartnerCharacter()
 	CombatComponent   = CreateDefaultSubobject<UPartnerCombatComponent>  (TEXT("CombatComponent"));
 	HackComponent     = CreateDefaultSubobject<UPartnerHackComponent>    (TEXT("HackComponent"));
 	EMPComponent      = CreateDefaultSubobject<UPartnerEMPComponent>     (TEXT("EMPComponent"));
+
 	FaceSpriteAnimationComponent = CreateDefaultSubobject<UPartnerSpriteAnimationComponent>(TEXT("SpriteAnimationComponent"));
 }
 

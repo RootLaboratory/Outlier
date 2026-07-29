@@ -242,6 +242,7 @@ public:
 	virtual void StartAttack() override;
 	virtual void StopAttack() override;
 	virtual void PerformAttack() override;
+	bool HasFixedBurst() const { return BurstShotCount > 0; }
 
 	virtual bool CanReload() const;
 	virtual void Reload();

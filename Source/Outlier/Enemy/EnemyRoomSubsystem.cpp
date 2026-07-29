@@ -29,7 +29,8 @@ void UEnemyRoomSubsystem::Deinitialize()
 	}
 
 	CombatRoomsByArena.Reset();
-	RegisteredEnemies.Reset();
+	RegisteredEnemiesByRoom.Reset();
+	RegisteredEnemyKeys.Reset();
 	SearchStates.Reset();
 	TargetContactStates.Reset();
 	Super::Deinitialize();
@@ -39,13 +40,67 @@ void UEnemyRoomSubsystem::RegisterEnemy(AEnemyBase* Enemy)
 {
 	if (IsValid(Enemy) && Enemy->HasAuthority())
 	{
-		RegisteredEnemies.Add(Enemy);
+		RefreshEnemyRegistration(Enemy);
 	}
 }
 
 void UEnemyRoomSubsystem::UnregisterEnemy(AEnemyBase* Enemy)
 {
-	RegisteredEnemies.Remove(Enemy);
+	if (!Enemy)
+	{
+		return;
+	}
+
+	const TWeakObjectPtr<AEnemyBase> EnemyKey(Enemy);
+	if (const FEnemyRoomSearchKey* RegisteredKey = RegisteredEnemyKeys.Find(EnemyKey))
+	{
+		if (TSet<TWeakObjectPtr<AEnemyBase>>* Enemies = RegisteredEnemiesByRoom.Find(*RegisteredKey))
+		{
+			Enemies->Remove(EnemyKey);
+			if (Enemies->IsEmpty())
+			{
+				RegisteredEnemiesByRoom.Remove(*RegisteredKey);
+			}
+		}
+		RegisteredEnemyKeys.Remove(EnemyKey);
+	}
+}
+
+void UEnemyRoomSubsystem::RefreshEnemyRegistration(AEnemyBase* Enemy)
+{
+	if (!IsValid(Enemy) || !Enemy->HasAuthority())
+	{
+		return;
+	}
+
+	const TWeakObjectPtr<AEnemyBase> EnemyPtr(Enemy);
+	const FEnemyRoomSearchKey NewKey = ResolveEnemyRegistrationKey(Enemy);
+	if (!NewKey.RoomTag.IsValid())
+	{
+		UnregisterEnemy(Enemy);
+		return;
+	}
+
+	if (const FEnemyRoomSearchKey* PreviousKey = RegisteredEnemyKeys.Find(EnemyPtr))
+	{
+		if (*PreviousKey == NewKey)
+		{
+			return;
+		}
+
+		if (TSet<TWeakObjectPtr<AEnemyBase>>* PreviousEnemies =
+			RegisteredEnemiesByRoom.Find(*PreviousKey))
+		{
+			PreviousEnemies->Remove(EnemyPtr);
+			if (PreviousEnemies->IsEmpty())
+			{
+				RegisteredEnemiesByRoom.Remove(*PreviousKey);
+			}
+		}
+	}
+
+	RegisteredEnemiesByRoom.FindOrAdd(NewKey).Add(EnemyPtr);
+	RegisteredEnemyKeys.Add(EnemyPtr, NewKey);
 }
 
 void UEnemyRoomSubsystem::NotifyRoomCombat(int32 ArenaId, FGameplayTag RoomTag, const FVector& PlayerLocation, AEnemyBase* ExcludeEnemy)
@@ -71,24 +126,24 @@ void UEnemyRoomSubsystem::NotifyRoomCombat(int32 ArenaId, FGameplayTag RoomTag, 
 	TSet<FGameplayTag>& CombatRooms = CombatRoomsByArena.FindOrAdd(ArenaId);
 	CombatRooms.Add(RoomTag);
 
-	CompactRegisteredEnemies();
-
-	for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : RegisteredEnemies)
+	const FEnemyRoomSearchKey Key{ArenaId, RoomTag};
+	CompactRegisteredEnemies(Key);
+	const TSet<TWeakObjectPtr<AEnemyBase>>* RegisteredEnemies =
+		RegisteredEnemiesByRoom.Find(Key);
+	if (RegisteredEnemies)
 	{
-		AEnemyBase* Enemy = EnemyPtr.Get();
-		if (!IsValid(Enemy)
-			|| Enemy == ExcludeEnemy
-			|| Enemy->GetDefaultRoomTag() != RoomTag
-			|| !IsEnemyInArena(Enemy, ArenaId, ArenaLevel))
+		for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : *RegisteredEnemies)
 		{
-			continue;
-		}
+			AEnemyBase* Enemy = EnemyPtr.Get();
+			if (!IsValid(Enemy) || Enemy == ExcludeEnemy)
+			{
+				continue;
+			}
 
-		Enemy->EnterCombatInArena(PlayerLocation, ArenaId, false);
+			Enemy->EnterCombatInArena(PlayerLocation, ArenaId, false);
+		}
 	}
 
-
-	const FEnemyRoomSearchKey Key{ArenaId, RoomTag};
 	if (const FEnemyRoomTargetContactState* ContactState = TargetContactStates.Find(Key))
 	{
 		BroadcastSharedTargetContact(Key, ContactState->LastReportedLocation);
@@ -209,16 +264,20 @@ void UEnemyRoomSubsystem::RefreshDetectionTarget(AActor* TargetActor)
 		return;
 	}
 
-	CompactRegisteredEnemies();
-	for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : RegisteredEnemies)
+	CompactAllRegisteredEnemies();
+	for (const TPair<FEnemyRoomSearchKey, TSet<TWeakObjectPtr<AEnemyBase>>>& RoomEntry :
+		RegisteredEnemiesByRoom)
 	{
-		AEnemyBase* Enemy = EnemyPtr.Get();
-		AEnemyAIController* AIController = IsValid(Enemy)
-			? Cast<AEnemyAIController>(Enemy->GetController())
-			: nullptr;
-		if (AIController)
+		for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : RoomEntry.Value)
 		{
-			AIController->ForgetDetectionTarget(TargetActor);
+			AEnemyBase* Enemy = EnemyPtr.Get();
+			AEnemyAIController* AIController = IsValid(Enemy)
+				? Cast<AEnemyAIController>(Enemy->GetController())
+				: nullptr;
+			if (AIController)
+			{
+				AIController->ForgetDetectionTarget(TargetActor);
+			}
 		}
 	}
 }
@@ -333,13 +392,19 @@ bool UEnemyRoomSubsystem::RebuildSearchRingAssignments(
 	}
 
 	TArray<AEnemyBase*> EligibleEnemies;
-	CompactRegisteredEnemies();
-	for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : RegisteredEnemies)
+	CompactRegisteredEnemies(Key);
+	const TSet<TWeakObjectPtr<AEnemyBase>>* RegisteredEnemies =
+		RegisteredEnemiesByRoom.Find(Key);
+	if (!RegisteredEnemies)
+	{
+		SearchStates.Remove(Key);
+		return false;
+	}
+
+	for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : *RegisteredEnemies)
 	{
 		AEnemyBase* Candidate = EnemyPtr.Get();
 		if (!IsValid(Candidate)
-			|| !IsEnemyInArena(Candidate, Key.ArenaId, ArenaLevel)
-			|| ResolveEnemyRoomTag(Candidate) != Key.RoomTag
 			|| Candidate->GetCombatState() != EEnemyCombatState::Combat
 			|| Candidate->IsPlayerCurrentlyVisible()
 			|| Candidate->HasSharedTargetContact()
@@ -489,13 +554,18 @@ void UEnemyRoomSubsystem::BroadcastSharedTargetContact(
 
 	SearchStates.Remove(Key);
 
-	CompactRegisteredEnemies();
-	for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : RegisteredEnemies)
+	CompactRegisteredEnemies(Key);
+	const TSet<TWeakObjectPtr<AEnemyBase>>* RegisteredEnemies =
+		RegisteredEnemiesByRoom.Find(Key);
+	if (!RegisteredEnemies)
+	{
+		return;
+	}
+
+	for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : *RegisteredEnemies)
 	{
 		AEnemyBase* Enemy = EnemyPtr.Get();
 		if (!IsValid(Enemy)
-			|| !IsEnemyInArena(Enemy, Key.ArenaId, ArenaLevel)
-			|| ResolveEnemyRoomTag(Enemy) != Key.RoomTag
 			|| Enemy->GetCombatState() != EEnemyCombatState::Combat
 			|| Enemy->IsEnemyPossessed())
 		{
@@ -518,13 +588,18 @@ void UEnemyRoomSubsystem::BroadcastSharedTargetLost(const FEnemyRoomSearchKey& K
 		return;
 	}
 
-	CompactRegisteredEnemies();
-	for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : RegisteredEnemies)
+	CompactRegisteredEnemies(Key);
+	const TSet<TWeakObjectPtr<AEnemyBase>>* RegisteredEnemies =
+		RegisteredEnemiesByRoom.Find(Key);
+	if (!RegisteredEnemies)
+	{
+		return;
+	}
+
+	for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : *RegisteredEnemies)
 	{
 		AEnemyBase* Enemy = EnemyPtr.Get();
-		if (!IsValid(Enemy)
-			|| !IsEnemyInArena(Enemy, Key.ArenaId, ArenaLevel)
-			|| ResolveEnemyRoomTag(Enemy) != Key.RoomTag)
+		if (!IsValid(Enemy))
 		{
 			continue;
 		}
@@ -554,35 +629,94 @@ FGameplayTag UEnemyRoomSubsystem::ResolveEnemyRoomTag(const AEnemyBase* Enemy) c
 	return Enemy->GetDefaultRoomTag();
 }
 
-bool UEnemyRoomSubsystem::IsEnemyInArena(
-	const AEnemyBase* Enemy,
-	int32 ArenaId,
-	const ULevel* ArenaLevel) const
+FEnemyRoomSearchKey UEnemyRoomSubsystem::ResolveEnemyRegistrationKey(
+	const AEnemyBase* Enemy) const
 {
-	if (!Enemy || !ArenaLevel)
+	FEnemyRoomSearchKey Key;
+	if (!Enemy)
 	{
-		return false;
+		return Key;
 	}
 
-	const int32 EnemyArenaId = Enemy->GetLastKnownArenaId();
-	if (EnemyArenaId != INDEX_NONE)
+	Key.ArenaId = Enemy->GetLastKnownArenaId();
+	Key.RoomTag = ResolveEnemyRoomTag(Enemy);
+	if (Key.ArenaId != INDEX_NONE)
 	{
-		return EnemyArenaId == ArenaId;
+		return Key;
 	}
 
 	const ULevel* EnemyLevel = Enemy->GetLevel();
 	const UWorld* World = GetWorld();
-	return EnemyLevel == ArenaLevel
-		|| (World && EnemyLevel == World->PersistentLevel && ArenaId == 0);
+	if (!World)
+	{
+		return Key;
+	}
+
+	if (EnemyLevel == World->PersistentLevel)
+	{
+		Key.ArenaId = 0;
+		return Key;
+	}
+
+	const UOutlierArenaPoolSubsystem* ArenaPool =
+		World->GetSubsystem<UOutlierArenaPoolSubsystem>();
+	if (!ArenaPool)
+	{
+		return Key;
+	}
+
+	for (int32 ArenaId = 0; ArenaId < ArenaPool->MaxArenaCount; ++ArenaId)
+	{
+		if (ArenaPool->GetArenaLoadedLevel(ArenaId) == EnemyLevel)
+		{
+			Key.ArenaId = ArenaId;
+			break;
+		}
+	}
+
+	return Key;
 }
 
-void UEnemyRoomSubsystem::CompactRegisteredEnemies()
+void UEnemyRoomSubsystem::CompactRegisteredEnemies(const FEnemyRoomSearchKey& Key)
 {
-	for (auto EnemyIt = RegisteredEnemies.CreateIterator(); EnemyIt; ++EnemyIt)
+	TSet<TWeakObjectPtr<AEnemyBase>>* RegisteredEnemies =
+		RegisteredEnemiesByRoom.Find(Key);
+	if (!RegisteredEnemies)
+	{
+		return;
+	}
+
+	for (auto EnemyIt = RegisteredEnemies->CreateIterator(); EnemyIt; ++EnemyIt)
 	{
 		if (!(*EnemyIt).IsValid())
 		{
+			RegisteredEnemyKeys.Remove(*EnemyIt);
 			EnemyIt.RemoveCurrent();
+		}
+	}
+
+	if (RegisteredEnemies->IsEmpty())
+	{
+		RegisteredEnemiesByRoom.Remove(Key);
+	}
+}
+
+void UEnemyRoomSubsystem::CompactAllRegisteredEnemies()
+{
+	for (auto RoomIt = RegisteredEnemiesByRoom.CreateIterator(); RoomIt; ++RoomIt)
+	{
+		for (auto EnemyIt = RoomIt.Value().CreateIterator(); EnemyIt; ++EnemyIt)
+		{
+			if (!(*EnemyIt).IsValid())
+			{
+				RegisteredEnemyKeys.Remove(*EnemyIt);
+				EnemyIt.RemoveCurrent();
+			}
+		}
+
+		if (RoomIt.Value().IsEmpty())
+		{
+			RoomIt.RemoveCurrent();
 		}
 	}
 }
@@ -590,6 +724,20 @@ void UEnemyRoomSubsystem::CompactRegisteredEnemies()
 void UEnemyRoomSubsystem::HandleArenaReleased(int32 ArenaId)
 {
 	CombatRoomsByArena.Remove(ArenaId);
+
+	for (auto RoomIt = RegisteredEnemiesByRoom.CreateIterator(); RoomIt; ++RoomIt)
+	{
+		if (RoomIt.Key().ArenaId != ArenaId)
+		{
+			continue;
+		}
+
+		for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : RoomIt.Value())
+		{
+			RegisteredEnemyKeys.Remove(EnemyPtr);
+		}
+		RoomIt.RemoveCurrent();
+	}
 
 	for (auto SearchStateIt = SearchStates.CreateIterator(); SearchStateIt; ++SearchStateIt)
 	{

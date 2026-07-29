@@ -635,6 +635,7 @@ void AFirstPersonCharacter::GetInteractablesInRange(TArray<AActor*>& OutInteract
 	}
 
 	TSet<AActor*> VisitedActors;
+	const FGameplayTagContainer OwnedGameplayTags = GetOwnedGameplayTagsForQuery();
 
 	for (const FOverlapResult& Overlap : Overlaps)
 	{
@@ -653,7 +654,7 @@ void AFirstPersonCharacter::GetInteractablesInRange(TArray<AActor*>& OutInteract
 		}
 
 		UInteractableComponent* InteractableComponent = Interactable->GetInteractableComponent();
-		if (!InteractableComponent || !InteractableComponent->CanInteract(GetOwnedGameplayTagsForQuery()))
+		if (!InteractableComponent || !InteractableComponent->CanInteract(OwnedGameplayTags))
 		{
 			continue;
 		}

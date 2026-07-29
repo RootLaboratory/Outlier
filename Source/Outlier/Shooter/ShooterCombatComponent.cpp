@@ -119,10 +119,7 @@ void UShooterCombatComponent::TryReload()
 					ShooterCharacter->StopSprintInternal();
 					ShooterCharacter->RefreshMovementState();
 				}
-				if (ShooterCharacter->CombatState == ECombatState::Aim)
-				{
-					StopAimInternal();
-				}
+				SuspendAimInternal();
 
 				bIsReloading = true;
 				ShooterCharacter->BeginActionLock(EShooterActionLock::Reload);
@@ -207,10 +204,7 @@ void UShooterCombatComponent::TryReload()
 	}
 	ShooterCharacter->StopLean();
 
-	if (ShooterCharacter->CombatState == ECombatState::Aim)
-	{
-		StopAimInternal();
-	}
+	SuspendAimInternal();
 
 	RangedWeapon->BeginReload();
 	if (!RangedWeapon->IsReloading())
@@ -235,8 +229,20 @@ void UShooterCombatComponent::HandleAimPressed()
 		ShooterCharacter->ServerSetAimState(true);
 	}
 
+	bWantsToAim = true;
 	RefreshWeaponMode();
 	if (!CanAimInCurrentState())
+	{
+		return;
+	}
+
+	StartAimInternal();
+}
+
+void UShooterCombatComponent::StartAimInternal()
+{
+	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	if (!ShooterCharacter || bIsAiming)
 	{
 		return;
 	}
@@ -254,7 +260,6 @@ void UShooterCombatComponent::HandleAimPressed()
 	}
 
 	// CombatComponent가 조준 입력 의도와 확정된 조준 상태를 함께 관리함
-	bWantsToAim = true;
 	bIsAiming = true;
 	ShooterCharacter->CombatState = ECombatState::Aim;
 	RangedWeapon->SetAiming(true);
@@ -503,10 +508,7 @@ void UShooterCombatComponent::HandleAutoReloadRequested()
 	}
 	ShooterCharacter->StopLean();
 
-	if (ShooterCharacter->CombatState == ECombatState::Aim)
-	{
-		StopAimInternal();
-	}
+	SuspendAimInternal();
 
 	RangedWeapon->BeginReload();
 	if (!RangedWeapon->IsReloading())
@@ -555,7 +557,7 @@ void UShooterCombatComponent::RefreshCombatState()
 		{
 			ShooterCharacter->CombatState = ECombatState::Reload;
 		}
-		else if (bWantsToAim)
+		else if (bIsAiming)
 		{
 			ShooterCharacter->CombatState = ECombatState::Aim;
 		}
@@ -581,7 +583,7 @@ void UShooterCombatComponent::RefreshCombatState()
 		{
 			ShooterCharacter->CombatState = ECombatState::Fire;
 		}
-		else if (bWantsToAim)
+		else if (bIsAiming)
 		{
 			ShooterCharacter->CombatState = ECombatState::Aim;
 		}
@@ -654,6 +656,12 @@ void UShooterCombatComponent::ResolveStateConflicts()
 
 void UShooterCombatComponent::StopAimInternal()
 {
+	bWantsToAim = false;
+	SuspendAimInternal();
+}
+
+void UShooterCombatComponent::SuspendAimInternal()
+{
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 	if (!ShooterCharacter)
 	{
@@ -661,7 +669,6 @@ void UShooterCombatComponent::StopAimInternal()
 	}
 
 	const bool bWasAiming = bIsAiming;
-	bWantsToAim = false;
 	bIsAiming = false;
 
 	if (ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(ShooterCharacter->CurrentWeapon))
@@ -677,6 +684,20 @@ void UShooterCombatComponent::StopAimInternal()
 	}
 }
 
+void UShooterCombatComponent::RestoreAimIfRequested()
+{
+	if (!bWantsToAim || bIsAiming)
+	{
+		return;
+	}
+
+	RefreshWeaponMode();
+	if (CanAimInCurrentState())
+	{
+		StartAimInternal();
+	}
+}
+
 void UShooterCombatComponent::BeginReloadInternal()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
@@ -687,6 +708,7 @@ void UShooterCombatComponent::BeginReloadInternal()
 
 	// 리로드는 무기 내부 상태와 별개로 캐릭터 전투 상태도 함께 잠궈야 함
 	// 리로드 상태는 여기서 먼저 잠그고, 이후 RefreshCombatState에서 무기 상태와 다시 맞춤
+	SuspendAimInternal();
 	bIsReloading = true;
 	ShooterCharacter->StopLean();
 	ShooterCharacter->BeginActionLock(EShooterActionLock::Reload);
@@ -751,6 +773,7 @@ void UShooterCombatComponent::CancelReloadInternal()
 		RangedWeapon->CancelReload();
 	}
 	RefreshCombatState();
+	RestoreAimIfRequested();
 }
 
 void UShooterCombatComponent::FinishReloadInternal()
@@ -785,7 +808,32 @@ void UShooterCombatComponent::FinishReloadInternal()
 	ShooterCharacter->EndActionLock(EShooterActionLock::Reload);
 	UnbindReloadMontageEndedDelegates();
 	RefreshCombatState();
+	RestoreAimIfRequested();
 	ShooterCharacter->ForceNetUpdate();
+}
+
+void UShooterCombatComponent::OnRep_IsReloading()
+{
+	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	if (!ShooterCharacter)
+	{
+		return;
+	}
+
+	if (bIsReloading)
+	{
+		SuspendAimInternal();
+		return;
+	}
+
+	if (ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(ShooterCharacter->CurrentWeapon))
+	{
+		RangedWeapon->CancelReload();
+	}
+	ShooterCharacter->EndActionLock(EShooterActionLock::Reload);
+	UnbindReloadMontageEndedDelegates();
+	RefreshCombatState();
+	RestoreAimIfRequested();
 }
 
 void UShooterCombatComponent::BindReloadMontageEndedDelegates()

@@ -52,9 +52,9 @@ protected:
 	void StartSharedTargetReporting();
 	void StopSharedTargetReporting(bool bRemoveObserver);
 	void RefreshSharedTargetContact();
-	void ForgetStealthedPerceivedActors();
-
-	bool HasAnyVisiblePlayer() const;
+	void ReportSharedTargetContact(AEnemyBase* Enemy, AActor* TargetActor);
+	AActor* ForgetStealthedPerceivedActors();
+	AActor* SelectPreferredVisibleTarget(const TArray<AActor*>& VisibleActors) const;
 
 	void ConfigureSightFromEnemy(AEnemyBase* Enemy);
 	void ConfigureHearingFromEnemy(AEnemyBase* Enemy);
@@ -68,5 +68,6 @@ protected:
 
 	FTimerHandle SharedTargetReportTimerHandle;
 	TSet<TWeakObjectPtr<AActor>> ProcessedStealthedTargets;
+	mutable TArray<AActor*> PerceivedActorScratch;
 	int32 TaskDrivenControlPitchCount = 0;
 };

@@ -187,7 +187,7 @@ void FEnemyAttackTargetTask::ExitState(
 	const FInstanceDataType& InstanceData = Context.GetInstanceData(*this);
 	if (InstanceData.Enemy && InstanceData.bAttackStarted)
 	{
-		InstanceData.Enemy->StopCurrentAttack();
+		InstanceData.Enemy->StopCurrentWeaponAttack();
 	}
 }
 
@@ -277,13 +277,100 @@ void FEnemyAttackLocationTask::ExitState(
 	const FInstanceDataType& InstanceData = Context.GetInstanceData(*this);
 	if (InstanceData.Enemy && InstanceData.bAttackStarted)
 	{
-		InstanceData.Enemy->StopCurrentAttack();
+		InstanceData.Enemy->StopCurrentWeaponAttack();
+	}
+}
+
+FEnemyPossessedBurstAttackTask::FEnemyPossessedBurstAttackTask()
+{
+	bShouldStateChangeOnReselect = true;
+}
+
+EStateTreeRunStatus FEnemyPossessedBurstAttackTask::EnterState(
+	FStateTreeExecutionContext& Context,
+	const FStateTreeTransitionResult& Transition) const
+{
+	FInstanceDataType& InstanceData = Context.GetInstanceData(*this);
+	InstanceData.bAttackStarted = false;
+
+	if (!InstanceData.Enemy
+		|| !InstanceData.Enemy->HasAuthority()
+		|| !InstanceData.Enemy->IsEnemyPossessed()
+		|| !IsValid(InstanceData.Enemy->GetCurrentWeapon())
+		|| !InstanceData.Enemy->GetCurrentWeapon()->HasFixedBurst())
+	{
+		return EStateTreeRunStatus::Failed;
+	}
+
+	if (!InstanceData.Enemy->GetCurrentWeapon()->CanAttack())
+	{
+		return EStateTreeRunStatus::Running;
+	}
+
+	if (!InstanceData.Enemy->StartPossessedAttackBurst())
+	{
+		return EStateTreeRunStatus::Failed;
+	}
+
+	InstanceData.bAttackStarted = true;
+	return EStateTreeRunStatus::Running;
+}
+
+EStateTreeRunStatus FEnemyPossessedBurstAttackTask::Tick(
+	FStateTreeExecutionContext& Context,
+	float DeltaTime) const
+{
+	(void)DeltaTime;
+
+	FInstanceDataType& InstanceData = Context.GetInstanceData(*this);
+	if (!InstanceData.Enemy
+		|| !InstanceData.Enemy->HasAuthority()
+		|| !InstanceData.Enemy->IsEnemyPossessed()
+		|| InstanceData.Enemy->GetCombatState() == EEnemyCombatState::Stun
+		|| !IsValid(InstanceData.Enemy->GetCurrentWeapon())
+		|| !InstanceData.Enemy->GetCurrentWeapon()->HasFixedBurst())
+	{
+		return EStateTreeRunStatus::Failed;
+	}
+
+	if (!InstanceData.bAttackStarted)
+	{
+		if (!InstanceData.Enemy->GetCurrentWeapon()->CanAttack())
+		{
+			return EStateTreeRunStatus::Running;
+		}
+
+		if (!InstanceData.Enemy->StartPossessedAttackBurst())
+		{
+			return EStateTreeRunStatus::Failed;
+		}
+
+		InstanceData.bAttackStarted = true;
+		return EStateTreeRunStatus::Running;
+	}
+
+	return InstanceData.Enemy->GetCurrentWeapon()->IsAttacking()
+		? EStateTreeRunStatus::Running
+		: EStateTreeRunStatus::Succeeded;
+}
+
+void FEnemyPossessedBurstAttackTask::ExitState(
+	FStateTreeExecutionContext& Context,
+	const FStateTreeTransitionResult& Transition) const
+{
+	const FInstanceDataType& InstanceData = Context.GetInstanceData(*this);
+	if (InstanceData.Enemy
+		&& InstanceData.bAttackStarted
+		&& IsValid(InstanceData.Enemy->GetCurrentWeapon())
+		&& InstanceData.Enemy->GetCurrentWeapon()->IsAttacking())
+	{
+		InstanceData.Enemy->StopCurrentWeaponAttack();
 	}
 }
 
 FEnemyAttackPhaseWaitTask::FEnemyAttackPhaseWaitTask()
 {
-	bShouldStateChangeOnReselect = false;
+	bShouldStateChangeOnReselect = true;
 }
 
 EStateTreeRunStatus FEnemyAttackPhaseWaitTask::EnterState(
@@ -292,6 +379,12 @@ EStateTreeRunStatus FEnemyAttackPhaseWaitTask::EnterState(
 {
 	FInstanceDataType& InstanceData = Context.GetInstanceData(*this);
 	if (!InstanceData.Enemy || !InstanceData.Enemy->HasAuthority())
+	{
+		return EStateTreeRunStatus::Failed;
+	}
+
+	if (InstanceData.bConsumePossessedAttackRequest
+		&& !InstanceData.Enemy->ConsumePossessedAttackRequest())
 	{
 		return EStateTreeRunStatus::Failed;
 	}
@@ -332,7 +425,9 @@ void FEnemyAttackPhaseWaitTask::ExitState(
 {
 	const FInstanceDataType& InstanceData = Context.GetInstanceData(*this);
 	if (InstanceData.Enemy
-		&& InstanceData.Enemy->GetAttackPhase() == InstanceData.Phase)
+		&& InstanceData.Phase == EEnemyAttackPhase::Recover
+		&& InstanceData.Enemy->GetAttackPhase() == EEnemyAttackPhase::Recover
+		&& !InstanceData.Enemy->HasPossessedAttackRequest())
 	{
 		InstanceData.Enemy->SetAttackPhase(EEnemyAttackPhase::Idle);
 	}

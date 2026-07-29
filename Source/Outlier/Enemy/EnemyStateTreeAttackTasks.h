@@ -113,6 +113,44 @@ struct OUTLIER_API FEnemyAttackLocationTask : public FStateTreeTaskCommonBase
 };
 
 USTRUCT()
+struct FEnemyPossessedBurstAttackTaskInstanceData
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = Context)
+	TObjectPtr<AEnemyBase> Enemy = nullptr;
+
+	bool bAttackStarted = false;
+};
+
+// Possessed VEC fire uses the PlayerController viewpoint resolved by the weapon
+// and completes only after the configured fixed burst has stopped.
+USTRUCT(meta = (DisplayName = "Enemy Possessed Burst Attack", Category = "Enemy|Attack"))
+struct OUTLIER_API FEnemyPossessedBurstAttackTask : public FStateTreeTaskCommonBase
+{
+	GENERATED_BODY()
+
+	using FInstanceDataType = FEnemyPossessedBurstAttackTaskInstanceData;
+
+	FEnemyPossessedBurstAttackTask();
+
+	virtual const UStruct* GetInstanceDataType() const override
+	{
+		return FInstanceDataType::StaticStruct();
+	}
+
+	virtual EStateTreeRunStatus EnterState(
+		FStateTreeExecutionContext& Context,
+		const FStateTreeTransitionResult& Transition) const override;
+	virtual EStateTreeRunStatus Tick(
+		FStateTreeExecutionContext& Context,
+		float DeltaTime) const override;
+	virtual void ExitState(
+		FStateTreeExecutionContext& Context,
+		const FStateTreeTransitionResult& Transition) const override;
+};
+
+USTRUCT()
 struct FEnemyAttackPhaseWaitTaskInstanceData
 {
 	GENERATED_BODY()
@@ -128,6 +166,9 @@ struct FEnemyAttackPhaseWaitTaskInstanceData
 
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0"))
 	float MaxDuration = 1.0f;
+
+	UPROPERTY(EditAnywhere, Category = Parameter)
+	bool bConsumePossessedAttackRequest = false;
 
 	float ElapsedTime = 0.0f;
 	float SelectedDuration = 0.0f;
