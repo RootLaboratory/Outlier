@@ -849,7 +849,10 @@ void UPartnerHackComponent::RestoreGameInputMode()
 		return;
 	}
 
-	PlayerController->TryRestoreFirstPersonDefaultInputMode(FirstPersonInputModeTags::Hack());
+	if (PlayerController->TryRestoreFirstPersonDefaultInputMode(FirstPersonInputModeTags::Hack()))
+	{
+		PlayerController->ControlMainWidget(true);
+	}
 
 
 	//UE_LOG(LogTemp, Error, TEXT("[HackInputDebug] RestoreGameInputMode called ??MiniGameWidget=%s CandidateWidget=%s"),

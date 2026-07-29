@@ -33,9 +33,10 @@ AInteractionDescActor::AInteractionDescActor()
 	DescWidgetComponent->SetupAttachment(SceneRoot);
 	DescWidgetComponent->SetWidgetSpace(EWidgetSpace::World);
 	DescWidgetComponent->SetDrawSize(InteractionDescWidgetDrawSize);
-	DescWidgetComponent->SetDrawAtDesiredSize(false);
+	DescWidgetComponent->SetDrawAtDesiredSize(true);
 	DescWidgetComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	DescWidgetComponent->SetGenerateOverlapEvents(false);
+	DescWidgetComponent->SetIsReplicated(false);
 	DescWidgetComponent->SetRelativeScale3D(InteractionDescWidgetScale);
 	DescWidgetComponent->SetVisibility(false);
 }
@@ -154,6 +155,7 @@ void AInteractionDescActor::ActivateDescFromSource(AFirstPersonCharacter* Intera
 	if (InteractionDescWidget)
 	{
 		InteractionDescWidget->UpdateInteractionDesc(InteractTag, InteractInfo, Progress);
+		RefreshDescWidgetDrawSize();
 	}
 }
 
@@ -215,6 +217,23 @@ void AInteractionDescActor::BillboardToCamera()
 	}
 
 	DescWidgetComponent->SetWorldRotation(ToCamera.Rotation());
+}
+
+void AInteractionDescActor::RefreshDescWidgetDrawSize()
+{
+	if (!DescWidgetComponent || !InteractionDescWidget)
+	{
+		return;
+	}
+
+	InteractionDescWidget->InvalidateLayoutAndVolatility();
+	InteractionDescWidget->ForceLayoutPrepass();
+
+	// The BP root SizeBox supplies the minimum desired size. Let the
+	// WidgetComponent follow that layout automatically so its outer render
+	// target and the nested Retainer receive the same geometry.
+	DescWidgetComponent->SetDrawAtDesiredSize(true);
+	DescWidgetComponent->RequestRedraw();
 }
 
 bool AInteractionDescActor::GetPrimaryInteractTag(const UInteractableComponent* SourceInteractableComponent, FGameplayTag& OutInteractTag) const

@@ -527,6 +527,11 @@ bool UPartnerEMPComponent::IsCandidateActorValid(AActor* Actor, UEMPableComponen
 		return false;
 	}
 
+	if (bRequireLineOfSight && !HasLineOfSight(Actor))
+	{
+		return false;
+	}
+
 	if (!IsActorInViewport(Actor, OutScreenLocation))
 	{
 		return false;

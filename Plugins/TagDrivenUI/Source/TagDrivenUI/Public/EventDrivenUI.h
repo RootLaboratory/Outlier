@@ -14,8 +14,8 @@ class TAGDRIVENUI_API UEventDrivenUI : public UUserWidget
 	GENERATED_BODY()
 
 public:
-	 void Activate();
-	 void Deactivate();
+	virtual void Activate();
+	virtual void Deactivate();
 
 protected:
 	UFUNCTION(BlueprintImplementableEvent, Category = "UI")

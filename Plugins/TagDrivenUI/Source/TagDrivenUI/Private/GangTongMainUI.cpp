@@ -31,6 +31,11 @@ void UGangTongMainUI::ModuleInit()
 	RegisterAbilityIcon(AbilityHackingIcon, TagDrivenUITags::Ability::Partner::Hacking(), true);
 	RegisterAbilityIcon(AbilityScanIcon,    TagDrivenUITags::Ability::Partner::Scan(),    true);
 	RegisterAbilityIcon(AbilityEMPIcon,     TagDrivenUITags::Ability::Partner::EMP(),     true);
+
+	if (UEventDrivenUI* PartnerCamModule = GetModule(TagDrivenUITags::Partner::PartnerCam()))
+	{
+		PartnerCamModule->Activate();
+	}
 }
 
 void UGangTongMainUI::On_RepAbilityDisabledByDistance()

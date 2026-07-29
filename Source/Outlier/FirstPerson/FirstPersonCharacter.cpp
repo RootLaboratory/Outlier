@@ -342,6 +342,11 @@ void AFirstPersonCharacter::CancelLocalHoldInteract(bool bNotifyServer)
 		Interactable->EndHoldInteract(this, true);
 	}
 
+	if (FocusedInteractable == CanceledActor)
+	{
+		FocusedInteractable = nullptr;
+	}
+
 	HoldingInteractActor = nullptr;
 	bAwaitingHoldInteractResult = false;
 
@@ -404,7 +409,11 @@ void AFirstPersonCharacter::ServerCancelHoldInteract_Implementation(AActor* Targ
 
 void AFirstPersonCharacter::ClientOnInteractSucceeded_Implementation(AActor* TargetActor)
 {
-	if (bAwaitingHoldInteractResult && HoldingInteractActor == TargetActor)
+	const bool bCompletedHoldInteract =
+		bAwaitingHoldInteractResult &&
+		HoldingInteractActor == TargetActor;
+
+	if (bCompletedHoldInteract)
 	{
 		if (IInteractableInterface* Interactable = Cast<IInteractableInterface>(TargetActor))
 		{
@@ -431,7 +440,16 @@ void AFirstPersonCharacter::ClientOnInteractSucceeded_Implementation(AActor* Tar
 				return;
 			}
 
-			InteractionNode->Interact(this);
+			InteractionNode->SyncInteractionStateFromServer(bCompletedHoldInteract);
+
+			if (bCompletedHoldInteract)
+			{
+				InteractionNode->DeactivateInteractionDesc();
+			}
+			else
+			{
+				InteractionNode->ActivateInteractionDesc(this);
+			}
 		}
 	}
 }
@@ -791,9 +809,12 @@ void AFirstPersonCharacter::ArenaReload()
 	}
 }
 
-void AFirstPersonCharacter::SyncInteractableKeyWidgets(const TArray<AActor*>& CurrentInteractables)
+void AFirstPersonCharacter::SyncInteractableKeyWidgets(
+	const TArray<AActor*>& CurrentInteractables)
 {
 	TSet<AActor*> CurrentSet;
+
+	// 범위 추적에는 FocusedInteractable도 포함
 	for (AActor* CurrentInteractable : CurrentInteractables)
 	{
 		if (CurrentInteractable)
@@ -804,7 +825,8 @@ void AFirstPersonCharacter::SyncInteractableKeyWidgets(const TArray<AActor*>& Cu
 
 	for (TObjectPtr<AActor> PreviousInteractable : NearbyInteractables)
 	{
-		if (!PreviousInteractable || CurrentSet.Contains(PreviousInteractable.Get()))
+		if (!PreviousInteractable ||
+			CurrentSet.Contains(PreviousInteractable.Get()))
 		{
 			continue;
 		}
@@ -816,8 +838,27 @@ void AFirstPersonCharacter::SyncInteractableKeyWidgets(const TArray<AActor*>& Cu
 				PreviousComponent->InteractKeyWidgetDeactivate();
 			}
 
-			if (AInteractionNode* PreviousInteractionNode = Cast<AInteractionNode>(PreviousInteractable.Get()))
+			if (AInteractionNode* PreviousInteractionNode =
+				Cast<AInteractionNode>(PreviousInteractable.Get()))
 			{
+				const bool bIsActiveInteraction =
+					FocusedInteractable == PreviousInteractable.Get() ||
+					HoldingInteractActor == PreviousInteractable.Get();
+
+				if (!bAwaitingHoldInteractResult &&
+					bIsActiveInteraction &&
+					PreviousInteractionNode->RequiresHoldInteract())
+				{
+					PreviousInteractionNode->ResetHoldInteraction(this);
+
+					if (HoldingInteractActor == PreviousInteractable.Get())
+					{
+						HoldingInteractActor = nullptr;
+					}
+
+					ServerCancelHoldInteract(PreviousInteractable.Get());
+				}
+
 				PreviousInteractionNode->InteractInfoWidgetDeactivate();
 			}
 		}
@@ -839,13 +880,21 @@ void AFirstPersonCharacter::SyncInteractableKeyWidgets(const TArray<AActor*>& Cu
 
 		NearbyInteractables.Add(CurrentInteractable);
 
-		if (IInteractableInterface* CurrentInterface = Cast<IInteractableInterface>(CurrentInteractable))
+		if (IInteractableInterface* CurrentInterface =
+			Cast<IInteractableInterface>(CurrentInteractable))
 		{
-			if (UInteractableComponent* CurrentComponent = CurrentInterface->GetInteractableComponent())
+			if (UInteractableComponent* CurrentComponent =
+				CurrentInterface->GetInteractableComponent())
 			{
-				CurrentComponent->InteractKeyWidgetActivate(this);
+				if (CurrentInteractable == FocusedInteractable)
+				{
+					CurrentComponent->InteractKeyWidgetDeactivate();
+				}
+				else
+				{
+					CurrentComponent->InteractKeyWidgetActivate(this);
+				}
 			}
 		}
 	}
-
 }

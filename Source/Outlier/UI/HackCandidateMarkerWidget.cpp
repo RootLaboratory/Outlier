@@ -234,6 +234,8 @@ void UHackCandidateMarkerWidget::EnsureHackableInfoWidget()
 	}
 
 	HackableInfoWidget->SetRenderScale(FVector2D::UnitVector);
+	HackableInfoWidget->InvalidateLayoutAndVolatility();
+	ParentCanvas->ForceLayoutPrepass();
 	HackableInfoWidget->SetVisibility(PreviousVisibility);
 }
 
@@ -297,14 +299,16 @@ bool UHackCandidateMarkerWidget::CalculateInfoWidgetLayout(FVector2D& OutPositio
 		FMath::Max(ViewportSize.Y - ViewportPadding.Y * 2.0f, 1.0f));
 
 	const float ActorDistance = FVector::Distance(PartnerActor->GetActorLocation(), TargetActor->GetActorLocation());
-	const float WidgetWidth = FMath::Max(HackableInfoWidget->GetWidgetWidth(), 1.0f);
-	const float MinWidgetHeight = FMath::Max(HackableInfoWidget->GetMinWidgetHeight(), 1.0f);
-	const float MaxWidgetHeight = FMath::Max(HackableInfoWidget->GetMaxWidgetHeight(), MinWidgetHeight);
 	const FVector2D DesiredSize = HackableInfoWidget->GetDesiredSize();
+	const float FallbackWidth = FMath::Max(HackableInfoWidget->GetWidgetWidth(), 1.0f);
+	const float FallbackHeight = FMath::Max(HackableInfoWidget->GetMinWidgetHeight(), 1.0f);
+	const float DesiredWidth = FMath::Max(DesiredSize.X, FallbackWidth);
+	const float DesiredHeight = FMath::Max(DesiredSize.Y, FallbackHeight);
 
-	OutSize.X = FMath::Min(WidgetWidth, InnerViewportSize.X);
-	OutSize.Y = FMath::Clamp(DesiredSize.Y, MinWidgetHeight, MaxWidgetHeight);
-	OutSize.Y = FMath::Min(OutSize.Y, InnerViewportSize.Y);
+	// The Retainer render target follows the widget's allotted geometry, so use
+	// the BP/dynamic desired size instead of imposing a smaller capture area.
+	OutSize.X = FMath::Min(DesiredWidth, InnerViewportSize.X);
+	OutSize.Y = FMath::Min(DesiredHeight, InnerViewportSize.Y);
 
 	const FVector2D PlacementDirection = (TargetPosition - PartnerPosition).GetSafeNormal();
 	const int32 PreferredXSign = PlacementDirection.X >= 0.0f ? -1 : 1;

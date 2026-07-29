@@ -29,6 +29,10 @@ public:
 	virtual bool RequiresHoldInteract() const override;
 	virtual void BeginHoldInteract(AFirstPersonCharacter* Interactor) override;
 	virtual void EndHoldInteract(AFirstPersonCharacter* Interactor, bool bCanceled) override;
+	void ResetHoldInteraction(AFirstPersonCharacter* Interactor);
+	void SyncInteractionStateFromServer(bool bCompletedHoldInteract);
+	void ActivateInteractionDesc(AFirstPersonCharacter* Interactor);
+	void DeactivateInteractionDesc();
 
 	void InteractInfoWidgetActivate(AFirstPersonCharacter* Interactor);
 	void InteractInfoWidgetDeactivate();

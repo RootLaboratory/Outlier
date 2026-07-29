@@ -21,7 +21,11 @@ class TAGDRIVENUI_API UPartnerCamUI : public UEventDrivenUI
 public:
 
 	virtual void NativeConstruct() override;
+	virtual void Activate() override;
+	virtual void Deactivate() override;
+
 	void TogglePartnerCamera();
+	void SetPartnerCameraActive(bool bActive);
 	void SetPartnerRenderTarget(UTextureRenderTarget2D* InRenderTarget);
 
 
@@ -41,8 +45,11 @@ public:
 	TObjectPtr<UPopupRetainerBox> PopupRetainerBox;
 
 private:
+	void EnsureMaterialInitialized();
+
 	UFUNCTION()
 	void HandlePopupClosed();
 
-	uint8 bFlag : 1 = true;
+	bool bHudActive = false;
+	bool bCameraActive = true;
 };

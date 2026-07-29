@@ -63,7 +63,7 @@ void UVisualEventSubsystem::SpawnBeamTrail(const UTrailEffectDefinition* Def, co
 {
 	if (!Def || !Def->FXAsset)
 	{
-	    UE_LOG(LogTemp, Error, TEXT("NO DEF EFFEECT "));
+	   // UE_LOG(LogTemp, Error, TEXT("NO DEF EFFEECT "));
 		return;
 	}
 
