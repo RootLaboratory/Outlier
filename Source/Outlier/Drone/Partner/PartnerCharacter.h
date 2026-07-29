@@ -64,6 +64,8 @@ class UPartnerHackComponent;
 class UPartnerAbilityComponent;
 class UPartnerEMPComponent;
 class UPartnerSpriteAnimationComponent;
+class UNiagaraComponent;
+class UNiagaraSystem;
 
 class USceneComponent;
 UCLASS()
@@ -111,6 +113,12 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Presentation")
 	FName ThirdPersonWeaponMuzzleSocketName = TEXT("Muzzle");
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "VFX")
+	TObjectPtr<UNiagaraSystem> BoostVFX;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "VFX")
+	FName BoostVFXSocketPrefix = TEXT("Boost");
 
 	// Move Data
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Move")
@@ -404,8 +412,12 @@ protected:
 	UPROPERTY()
 	TObjectPtr<AShooterCharacter> CachedShooterCharacter;
 
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UNiagaraComponent>> BoostVFXComponents;
+
 protected:
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void PossessedBy(AController* NewController) override;
 	virtual float TakeDamage(
 		float DamageAmount,
@@ -464,6 +476,9 @@ protected:
 	void StartBoostNoiseTimer();
 	void StopBoostNoiseTimer();
 	void ReportBoostNoise();
+	void AttachBoostVFXToMeshes();
+	void AttachBoostVFXToMesh(USkeletalMeshComponent* MeshComponent);
+	void CleanupBoostVFXComponents();
 
 	UFUNCTION(Server, Reliable)
 	void ServerSetMoveMode(EPartnerMoveMode NewMode);
