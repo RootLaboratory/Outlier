@@ -42,6 +42,10 @@ void FEnemyStateTreeSyncTask::SyncFromEnemy(FInstanceDataType& InstanceData) con
 
 	InstanceData.CombatState = InstanceData.Enemy->GetCombatState();
 	InstanceData.bIsPossessed = InstanceData.Enemy->IsEnemyPossessed();
+	InstanceData.bPossessionInProgress = InstanceData.Enemy->IsPossessionInProgress();
+	InstanceData.bPossessedAttackHeld = InstanceData.Enemy->IsPossessedAttackHeld();
+	InstanceData.bPossessedAttackQueued = InstanceData.Enemy->HasPossessedAttackQueued();
+	InstanceData.bHasPossessedAttackRequest = InstanceData.Enemy->HasPossessedAttackRequest();
 	InstanceData.bPlayerCurrentlyVisible = InstanceData.Enemy->IsPlayerCurrentlyVisible();
 	InstanceData.bHasSharedTargetContact = InstanceData.Enemy->HasSharedTargetContact();
 	InstanceData.SharedTargetLocation = InstanceData.Enemy->GetSharedTargetLocation();

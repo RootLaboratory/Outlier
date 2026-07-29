@@ -291,7 +291,6 @@ void AShooterCharacter::Landed(const FHitResult& Hit)
 	if (IsSliding())
 	{
 		StopSlide(ESlideEndReason::JumpCancel);
-		return;
 	}
 
 	RefreshMovementState();
@@ -304,10 +303,22 @@ void AShooterCharacter::OnMovementModeChanged(EMovementMode  PrevMovementMode, u
 	if (IsSliding() && GetCharacterMovement()->IsFalling())
 	{
 		StopSlide(ESlideEndReason::FallCancel);
-		return;
+	}
+
+	if (GetCharacterMovement()->IsFalling() && CombatComponent)
+	{
+		CombatComponent->SuspendAimInternal();
 	}
 
 	RefreshMovementState();
+	RefreshCombatState();
+
+	if (!GetCharacterMovement()->IsFalling()
+		&& PrevMovementMode == MOVE_Falling
+		&& CombatComponent)
+	{
+		CombatComponent->RestoreAimIfRequested();
+	}
 }
 
 void AShooterCharacter::OnMoveInputUpdated(const FVector2D& MoveValue)

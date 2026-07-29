@@ -64,6 +64,8 @@ class UPartnerHackComponent;
 class UPartnerAbilityComponent;
 class UPartnerEMPComponent;
 class UPartnerSpriteAnimationComponent;
+class UNiagaraComponent;
+class UNiagaraSystem;
 
 class USceneComponent;
 UCLASS()
@@ -111,6 +113,12 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Presentation")
 	FName ThirdPersonWeaponMuzzleSocketName = TEXT("Muzzle");
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "VFX")
+	TObjectPtr<UNiagaraSystem> BoostVFX;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "VFX")
+	FName BoostVFXSocketPrefix = TEXT("Boost");
 
 	// Move Data
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Move")
@@ -368,6 +376,9 @@ protected:
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Test|Stealth")
 	uint8 bTestStealthed : 1 = false;
 
+	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Partner|EnemyPossession")
+	uint8 bHiddenForEnemyPossession : 1 = false;
+
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Survival")
 	uint8 bIsRebooting : 1 = false;
 
@@ -401,8 +412,12 @@ protected:
 	UPROPERTY()
 	TObjectPtr<AShooterCharacter> CachedShooterCharacter;
 
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UNiagaraComponent>> BoostVFXComponents;
+
 protected:
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void PossessedBy(AController* NewController) override;
 	virtual float TakeDamage(
 		float DamageAmount,
@@ -461,6 +476,9 @@ protected:
 	void StartBoostNoiseTimer();
 	void StopBoostNoiseTimer();
 	void ReportBoostNoise();
+	void AttachBoostVFXToMeshes();
+	void AttachBoostVFXToMesh(USkeletalMeshComponent* MeshComponent);
+	void CleanupBoostVFXComponents();
 
 	UFUNCTION(Server, Reliable)
 	void ServerSetMoveMode(EPartnerMoveMode NewMode);
@@ -526,6 +544,7 @@ public:
 
 	void HandlePartnerHit();
 	void SetInvincibleForEnemyPossession(bool bNewInvincible);
+	void SetEnemyPossessionProtection(bool bEnabled);
 
 	// 입력뿐 아니라 Ability/BP에서도 사용할 수 있는 Partner 공격 API.
 	// 소유 클라이언트에서 호출하면 CombatComponent가 서버 RPC로 전달한다.

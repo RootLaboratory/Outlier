@@ -24,7 +24,7 @@ protected:
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
 	uint8 bIsAiming : 1 = false;
 
-	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
+	UPROPERTY(ReplicatedUsing = OnRep_IsReloading, VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
 	uint8 bIsReloading : 1 = false;
 
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
@@ -55,6 +55,11 @@ protected:
 	UFUNCTION()
 	void HandleReloadMontageEnded(UAnimMontage* Montage, bool bInterrupted);
 
+	UFUNCTION()
+	void OnRep_IsReloading();
+
+	void StartAimInternal();
+
 public:
 	UShooterCombatComponent();
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
@@ -72,6 +77,8 @@ public:
 	void ResolveStateConflicts();
 
 	void StopAimInternal();
+	void SuspendAimInternal();
+	void RestoreAimIfRequested();
 	void BeginReloadInternal();
 	void CancelReloadInternal();
 	void FinishReloadInternal();
