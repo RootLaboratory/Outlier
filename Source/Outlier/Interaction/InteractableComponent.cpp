@@ -71,6 +71,7 @@ UWidgetComponent* UInteractableComponent::EnsureInteractKeyWidgetComponent(APlay
 	NewWidgetComponent->SetRelativeLocation(FVector(0.0f, 0.0f, InteractKeyWidgetZOffset));
 	NewWidgetComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	NewWidgetComponent->SetGenerateOverlapEvents(false);
+	NewWidgetComponent->SetIsReplicated(false);
 	NewWidgetComponent->SetVisibility(false);
 
 	if (ULocalPlayer* LocalPlayer = PlayerController->GetLocalPlayer())

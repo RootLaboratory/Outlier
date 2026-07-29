@@ -21,7 +21,7 @@ void UPopupRetainerBox::SynchronizeProperties()
 	}
 	else if (!bPlaying && !IsDesignTime())
 	{
-		SetRetainRendering(false);
+		SetRetainRendering(bIsOpen);
 	}
 }
 
@@ -66,6 +66,7 @@ void UPopupRetainerBox::PlayPopupAdvanced(float InDirection, float InDuration, b
 void UPopupRetainerBox::ResetPopup()
 {
 	bPlaying = false;
+	bIsOpen = false;
 	bPendingPlayback = false;
 	bReversePlayback = false;
 	bResetRequested = true;
@@ -98,6 +99,7 @@ bool UPopupRetainerBox::TryResetPopup()
 	RequestRender();
 
 	SetRetainRendering(false);
+	bIsOpen = false;
 	bResetRequested = false;
 	return true;
 }
@@ -166,13 +168,16 @@ EActiveTimerReturnType UPopupRetainerBox::HandlePopupTick(double CurrentTime, fl
 
 	if (bFinishedClosing)
 	{
+		bIsOpen = false;
 		SetVisibility(ESlateVisibility::Collapsed);
 		SetRetainRendering(false);
 		OnClosed.Broadcast();
 	}
 	else
 	{
-		SetRetainRendering(false);
+		bIsOpen = true;
+		SetRetainRendering(true);
+		RequestRender();
 		OnOpened.Broadcast();
 	}
 

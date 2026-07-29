@@ -13,7 +13,7 @@ void UPartnerCamUI::NativeConstruct()
 {
 	Super::NativeConstruct();
 
-	PartnerCamMID = UMaterialInstanceDynamic::Create(PartnerCamMaterial, this);
+	EnsureMaterialInitialized();
 
 	if (PopupRetainerBox)
 	{
@@ -22,31 +22,79 @@ void UPartnerCamUI::NativeConstruct()
 		PopupRetainerBox->OnClosed.AddDynamic(this, &UPartnerCamUI::HandlePopupClosed);
 	}
 
-	if (PartnerRenderTarget && PartnerCamMID)
-	{
-		PartnerCamMID->SetTextureParameterValue(TEXT("PartnerRT"), PartnerRenderTarget.Get());
+	SetVisibility(ESlateVisibility::Collapsed);
+}
 
-		if (CamImage)
+void UPartnerCamUI::Activate()
+{
+	if (bHudActive)
+	{
+		EnsureMaterialInitialized();
+		if (PopupRetainerBox && bCameraActive)
 		{
-			CamImage->SetBrushFromMaterial(PartnerCamMID);
+			PopupRetainerBox->RequestRender();
 		}
+		return;
 	}
+
+	bHudActive = true;
+	if (!bCameraActive)
+	{
+		SetVisibility(ESlateVisibility::Collapsed);
+		return;
+	}
+
+	EnsureMaterialInitialized();
+	Super::Activate();
+
+	UE_LOG(LogTemp, Error, TEXT("Called"));
+
+	if (PopupRetainerBox)
+	{
+		PopupRetainerBox->ResetPopup();
+		PopupRetainerBox->PlayOpen();
+	}
+}
+
+void UPartnerCamUI::Deactivate()
+{
+	bHudActive = false;
+	if (PopupRetainerBox)
+	{
+		PopupRetainerBox->ResetPopup();
+	}
+	Super::Deactivate();
 }
 
 void UPartnerCamUI::TogglePartnerCamera()
 {
-	bFlag = !bFlag;
+	SetPartnerCameraActive(!bCameraActive);
+}
 
-	if (bFlag)
+void UPartnerCamUI::SetPartnerCameraActive(bool bActive)
+{
+	if (bCameraActive == bActive)
 	{
-		Activate();
+		return;
+	}
+
+	bCameraActive = bActive;
+	if (!bHudActive)
+	{
+		return;
+	}
+
+	if (bCameraActive)
+	{
+		EnsureMaterialInitialized();
+		Super::Activate();
 
 		if (PopupRetainerBox)
 		{
+			PopupRetainerBox->ResetPopup();
 			PopupRetainerBox->PlayOpen();
 		}
 	}
-
 	else
 	{
 		if (PopupRetainerBox)
@@ -55,45 +103,40 @@ void UPartnerCamUI::TogglePartnerCamera()
 		}
 		else
 		{
-			Deactivate();
+			Super::Deactivate();
 		}
 	}
-
 }
 
 void UPartnerCamUI::HandlePopupClosed()
 {
-	if (!bFlag)
+	if (!bCameraActive || !bHudActive)
 	{
-		Deactivate();
+		Super::Deactivate();
 	}
 }
 
 void UPartnerCamUI::SetPartnerRenderTarget(UTextureRenderTarget2D* InRenderTarget)
 {
 	PartnerRenderTarget = InRenderTarget;
+	EnsureMaterialInitialized();
+}
 
-	if (InRenderTarget && PartnerCamMID)
+void UPartnerCamUI::EnsureMaterialInitialized()
+{
+	if (!PartnerCamMID && PartnerCamMaterial)
 	{
-		//UE_LOG(LogTemp, Error, TEXT("RenderTargetBinded"));
-		PartnerCamMID->SetTextureParameterValue(TEXT("PartnerRT"), PartnerRenderTarget.Get());
-		//UE_LOG(LogTemp, Error, TEXT("PartnerCamMID"));
-
-		if (CamImage)
-		{
-			//UE_LOG(LogTemp, Error, TEXT("CamImage"));
-
-			CamImage->SetBrushFromMaterial(PartnerCamMID);
-		}
-		else
-		{
-			//UE_LOG(LogTemp, Error, TEXT("CamImage: CamImage is null, waiting for NativeConstruct"));
-		}
-	}
-	else
-	{
-		UE_LOG(LogTemp, Error, TEXT("Cant RenderTargetBinded"));
-
+		PartnerCamMID = UMaterialInstanceDynamic::Create(PartnerCamMaterial, this);
 	}
 
+	if (!PartnerCamMID || !PartnerRenderTarget)
+	{
+		return;
+	}
+
+	PartnerCamMID->SetTextureParameterValue(TEXT("PartnerRT"), PartnerRenderTarget.Get());
+	if (CamImage)
+	{
+		CamImage->SetBrushFromMaterial(PartnerCamMID);
+	}
 }

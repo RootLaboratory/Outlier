@@ -74,6 +74,7 @@ private:
 	float Direction = 0.0f;
 
 	bool bPlaying = false;
+	bool bIsOpen = false;
 	bool bReversePlayback = false;
 	bool bPendingPlayback = false;
 	bool bResetRequested = true;

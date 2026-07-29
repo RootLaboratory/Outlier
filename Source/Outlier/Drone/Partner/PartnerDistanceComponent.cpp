@@ -27,12 +27,18 @@ void UPartnerDistanceComponent::TickComponent(
 	FActorComponentTickFunction* ThisTickFunction
 )
 {
-	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
-
+	
 	if (!PartnerCharacter)
 	{
 		return;
 	}
+
+	if (!PartnerCharacter->HasAuthority() && !PartnerCharacter->IsLocallyControlled())
+	{
+		return;
+	}
+
+
 
 	if (!ShooterCharacter)
 	{
@@ -47,6 +53,8 @@ void UPartnerDistanceComponent::TickComponent(
 	{
 		CacheUISubsystem();
 	}
+
+	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
 	const float Distance = CalculateDistance();
 	const float BoundaryRadius = PartnerCharacter->SuitDisableBoundaryRadius; 

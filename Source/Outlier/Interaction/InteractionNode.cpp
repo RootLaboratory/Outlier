@@ -49,29 +49,24 @@ void AInteractionNode::Interact(AFirstPersonCharacter* Interactor)
 		return;
 	}
 
-	if (AInteractionDescActor* DescActor = EnsureInteractionDescActor())
+	if (RequiresHoldInteract())
 	{
-		//Node는 즉발 Interaction 후, Tag를 받아 Holding 이벤트를 받게 되어 있음.
-		if (RequiresHoldInteract())
+		MarkUsed();
+
+		if (Interactor->IsLocallyControlled())
 		{
-			//Holding 이벤트 후, 서버 Interact를 받은 다음. 사용 처리.
-			MarkUsed();
-			ClearInteractionDescActor();
-			return;
+			DeactivateInteractionDesc();
 		}
 
-		DescActor->SetActorLocation(GetActorLocation() + FVector::UpVector * InteractionDescActorZOffset);
-		DescActor->SetSourceInteractionNode(this);
-		UE_LOG(LogTemp, Error, TEXT("Interact"));
-		DescActor->ActivateDescFromSource(Interactor, InteractableComponent);
-
-		DescActor->PopupAnimationCall(false);
-
-		MarkHoldReady();
 		return;
 	}
 
-	InteractInfoWidgetActivate(Interactor);
+	MarkHoldReady();
+
+	if (Interactor->IsLocallyControlled())
+	{
+		ActivateInteractionDesc(Interactor);
+	}
 }
 
 bool AInteractionNode::RequiresHoldInteract() const
@@ -114,16 +109,71 @@ void AInteractionNode::EndHoldInteract(AFirstPersonCharacter* Interactor, bool b
 		return;
 	}
 
+	if (bCanceled)
+	{
+		ResetHoldInteraction(Interactor);
+		return;
+	}
+
 	bIsHoldingInteract = false;
 	HoldingInteractor.Reset();
 	SetActorTickEnabled(false);
+}
 
-	if (bCanceled)
+void AInteractionNode::ResetHoldInteraction(AFirstPersonCharacter* Interactor)
+{
+	if (HoldingInteractor.IsValid() && HoldingInteractor.Get() != Interactor)
 	{
-		HoldElapsed = 0.0f;
-		ClearHoldReady();
-		ClearInteractionDescActor();
+		return;
 	}
+
+	bIsHoldingInteract = false;
+	HoldingInteractor.Reset();
+	HoldElapsed = 0.0f;
+	SetActorTickEnabled(false);
+	ClearHoldReady();
+
+	if (IsValid(InteractionDescActor))
+	{
+		InteractionDescActor->SetProgress(0.0f);
+		InteractionDescActor->DeactivateDesc();
+	}
+}
+
+void AInteractionNode::SyncInteractionStateFromServer(bool bCompletedHoldInteract)
+{
+	if (bCompletedHoldInteract)
+	{
+		MarkUsed();
+		return;
+	}
+
+	MarkHoldReady();
+}
+
+void AInteractionNode::ActivateInteractionDesc(AFirstPersonCharacter* Interactor)
+{
+	if (!Interactor || !Interactor->IsLocallyControlled())
+	{
+		return;
+	}
+
+	if (AInteractionDescActor* DescActor = EnsureInteractionDescActor())
+	{
+		DescActor->SetActorLocation(GetActorLocation() + FVector::UpVector * InteractionDescActorZOffset);
+		DescActor->SetSourceInteractionNode(this);
+		DescActor->ActivateDescFromSource(Interactor, InteractableComponent);
+		DescActor->PopupAnimationCall(false);
+		return;
+	}
+
+	InteractInfoWidgetActivate(Interactor);
+}
+
+void AInteractionNode::DeactivateInteractionDesc()
+{
+	ClearInteractionDescActor();
+	InteractInfoWidgetDeactivate();
 }
 
 AInteractionDescActor* AInteractionNode::EnsureInteractionDescActor()
@@ -155,6 +205,8 @@ AInteractionDescActor* AInteractionNode::EnsureInteractionDescActor()
 
 	if (InteractionDescActor)
 	{
+		InteractionDescActor->SetReplicates(false);
+		InteractionDescActor->SetReplicateMovement(false);
 		InteractionDescActor->SetSourceInteractionNode(this);
 	}
 
@@ -285,6 +337,7 @@ UWidgetComponent* AInteractionNode::EnsureInteractInfoWidgetComponent(APlayerCon
 	NewWidgetComponent->SetDrawAtDesiredSize(false);
 	NewWidgetComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	NewWidgetComponent->SetGenerateOverlapEvents(false);
+	NewWidgetComponent->SetIsReplicated(false);
 	NewWidgetComponent->SetVisibility(false);
 
 	if (ULocalPlayer* LocalPlayer = PlayerController->GetLocalPlayer())

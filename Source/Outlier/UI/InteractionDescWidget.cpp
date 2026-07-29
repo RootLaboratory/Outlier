@@ -14,6 +14,13 @@ void UInteractionDescWidget::UpdateInteractionDesc(const FGameplayTag& InteractT
 	}
 	SetProgress(InProgress);
 	SetVisibility(ESlateVisibility::HitTestInvisible);
+	InvalidateLayoutAndVolatility();
+	ForceLayoutPrepass();
+
+	if (PopupRetainerBox)
+	{
+		PopupRetainerBox->RequestRender();
+	}
 }
 
 void UInteractionDescWidget::SetProgress(float InProgress)

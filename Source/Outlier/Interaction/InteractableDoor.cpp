@@ -6,6 +6,7 @@
 AInteractableDoor::AInteractableDoor()
 {
 	PrimaryActorTick.bCanEverTick = true;
+	PrimaryActorTick.bStartWithTickEnabled = false;
 	bReplicates = true;
 
 	RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("DoorRoot"));
@@ -28,6 +29,10 @@ void AInteractableDoor::BeginPlay()
 		FOnTimelineFloat UpdateDelegate;
 		UpdateDelegate.BindUFunction(this, FName("OnDoorTimelineUpdate"));
 		DoorTimeline.AddInterpFloat(DoorCurve, UpdateDelegate);
+
+		FOnTimelineEvent FinishedDelegate;
+		FinishedDelegate.BindUFunction(this, FName("OnDoorTimelineFinished"));
+		DoorTimeline.SetTimelineFinishedFunc(FinishedDelegate);
 	}
 
 	ApplyDoorState(bIsOpen);
@@ -50,6 +55,11 @@ void AInteractableDoor::OnDoorTimelineUpdate(float Alpha)
 	{
 		DoorMeshRight->SetRelativeLocation(FMath::Lerp(ClosedLocationRight, ClosedLocationRight + OpenOffsetRight, Alpha));
 	}
+}
+
+void AInteractableDoor::OnDoorTimelineFinished()
+{
+	SetActorTickEnabled(false);
 }
 
 void AInteractableDoor::SetDoorOpen(bool bOpen)
@@ -80,6 +90,21 @@ void AInteractableDoor::OnRep_IsOpen()
 
 void AInteractableDoor::ApplyDoorState(bool bOpen)
 {
+	if (!DoorCurve)
+	{
+		SetActorTickEnabled(false);
+		return;
+	}
+
+	const float TargetPosition = bOpen ? DoorTimeline.GetTimelineLength() : 0.0f;
+	if (FMath::IsNearlyEqual(DoorTimeline.GetPlaybackPosition(), TargetPosition))
+	{
+		SetActorTickEnabled(false);
+		return;
+	}
+
+	SetActorTickEnabled(true);
+
 	if (bOpen)
 	{
 		DoorTimeline.Play();

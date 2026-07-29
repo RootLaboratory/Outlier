@@ -58,6 +58,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "EMP|Candidate")
 	FGameplayTagContainer BlockedEMPTags;
 
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "EMP|Candidate")
+	uint8 bRequireLineOfSight : 1 = true;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "EMP|Debug")
 	uint8 bDebugEMP : 1 = true;
 

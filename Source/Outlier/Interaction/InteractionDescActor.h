@@ -55,6 +55,7 @@ protected:
 
 private:
 	void BillboardToCamera();
+	void RefreshDescWidgetDrawSize();
 	bool GetPrimaryInteractTag(const UInteractableComponent* SourceInteractableComponent, FGameplayTag& OutInteractTag) const;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction|UI", meta = (AllowPrivateAccess = "true"))
