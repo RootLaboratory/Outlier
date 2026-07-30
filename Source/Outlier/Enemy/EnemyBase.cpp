@@ -792,28 +792,18 @@ void AEnemyBase::RestoreStateAfterStun()
 
 void AEnemyBase::ApplyDamageInternal(float DamageAmount, bool bIsCoreHit)
 {
-	
-	if (!bIsPossessed || !HasAuthority() || DamageAmount <= 0.0f || CurrentHealth <= 0.0f)
+	if (!HasAuthority() || DamageAmount <= 0.0f || CurrentHealth <= 0.0f)
 	{
 		return;
 	}
 
-	if (bIsCoreHit)
-	{
-		DamageAmount *= CoreCriticalMultiplier;
-	}
+	const float FinalDamage = bIsCoreHit
+		? DamageAmount * CoreCriticalMultiplier
+		: DamageAmount;
 
-	CurrentHealth = FMath::Max(CurrentHealth - DamageAmount, 0.0f);
-
-	if (IsLocallyControlled())
-	{
-		UMaterialPostProcessSubsystem* PPS = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>();
-		if (PPS)
-		{
-			PPS->UpdateDamagedPostProcess(CurrentHealth / RuntimeStat.Health, FVector4(0, 0, 1, 0));
-			PPS->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Damaged, true);
-		}
-	}
+	const float PreviousHealth = CurrentHealth;
+	CurrentHealth = FMath::Max(CurrentHealth - FinalDamage, 0.0f);
+	HandleCurrentHealthChanged(PreviousHealth);
 
 	if (CurrentHealth <= 0.0f)
 	{
@@ -824,6 +814,33 @@ void AEnemyBase::ApplyDamageInternal(float DamageAmount, bool bIsCoreHit)
 void AEnemyBase::OnRep_RuntimeStat()
 {
 	ApplyMovementFromRuntimeStat();
+}
+
+void AEnemyBase::OnRep_CurrentHealth(float PreviousHealth)
+{
+	HandleCurrentHealthChanged(PreviousHealth);
+}
+
+void AEnemyBase::HandleCurrentHealthChanged(float PreviousHealth)
+{
+	if (!bIsPossessed || !IsLocallyControlled() || CurrentHealth >= PreviousHealth)
+	{
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	const float MaxHealth = RuntimeStat.Health;
+	if (!World || MaxHealth <= KINDA_SMALL_NUMBER)
+	{
+		return;
+	}
+
+	if (UMaterialPostProcessSubsystem* PPS = World->GetSubsystem<UMaterialPostProcessSubsystem>())
+	{
+		const float HealthRatio = FMath::Clamp(CurrentHealth / MaxHealth, 0.0f, 1.0f);
+		PPS->UpdateDamagedPostProcess(HealthRatio, FVector4(0.0f, 0.0f, 1.0f, 0.0f));
+		PPS->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Damaged, true);
+	}
 }
 
 UHackableComponent* AEnemyBase::GetHackableComponent() const

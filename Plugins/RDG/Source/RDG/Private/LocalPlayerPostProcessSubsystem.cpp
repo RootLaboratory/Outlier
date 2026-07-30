@@ -37,6 +37,11 @@ void ULocalPlayerPostProcessSubsystem::Initialize(FSubsystemCollectionBase& Coll
 		ViewExtension = FSceneViewExtensions::NewExtension<FOutlierPostProcessSceneViewExtension>(LP);
 	}
 
+
+#if UE_BUILD_SHIPPING
+	SetChromaticAberrationEnabled(true);
+#endif
+
 	TickFrame();
 }
 

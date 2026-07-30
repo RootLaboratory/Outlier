@@ -120,7 +120,7 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, ReplicatedUsing = OnRep_RuntimeStat, Category = "Enemy|Data")
 	FEnemyStat RuntimeStat;
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "Enemy|Data")
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, ReplicatedUsing = OnRep_CurrentHealth, Category = "Enemy|Data")
 	float CurrentHealth = 0.0f;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|Data")
@@ -359,6 +359,11 @@ public:
 protected:
 	UFUNCTION()
 	void OnRep_RuntimeStat();
+
+	UFUNCTION()
+	void OnRep_CurrentHealth(float PreviousHealth);
+
+	void HandleCurrentHealthChanged(float PreviousHealth);
 
 	void SendEnemyStateTreeEventNextTick(FGameplayTag Tag);
 	void SetDefaultEnemyType(EEnemyType EnemyType);
