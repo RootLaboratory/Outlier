@@ -4,8 +4,6 @@
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
 #include "Components/Widget.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Input/Reply.h"
 #include "UI/HackCircleBorderWidget.h"
 
 void UClickCircleMiniGameWidget::OnMiniGameStarted()
@@ -34,11 +32,11 @@ void UClickCircleMiniGameWidget::OnMiniGameFinishedEvent(EHackResult Result)
 	Super::OnMiniGameFinishedEvent(Result);
 }
 
-FReply UClickCircleMiniGameWidget::NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
+bool UClickCircleMiniGameWidget::HandlePrimaryClick()
 {
-	if (!IsMiniGameActive() || InMouseEvent.GetEffectingButton() != EKeys::LeftMouseButton)
+	if (!IsMiniGameActive())
 	{
-		return Super::NativeOnMouseButtonDown(InGeometry, InMouseEvent);
+		return false;
 	}
 
 	const EClickCircleMouseResult ClickResult = EvaluateMouseClick();
@@ -55,7 +53,7 @@ FReply UClickCircleMiniGameWidget::NativeOnMouseButtonDown(const FGeometry& InGe
 		FinishMiniGame(EHackResult::Fail);
 	}
 
-	return FReply::Handled();
+	return true;
 }
 
 void UClickCircleMiniGameWidget::EnsureCircleCanvas()

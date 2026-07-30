@@ -929,7 +929,6 @@ void APartnerCharacter::AttachBoostVFXToMeshes()
 		return;
 	}
 
-	AttachBoostVFXToMesh(GetFirstPersonMesh());
 	AttachBoostVFXToMesh(GetMesh());
 }
 

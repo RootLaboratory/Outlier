@@ -10,6 +10,7 @@ class UHackableComponent;
 class UHackingMiniGameBase;
 class UCanvasPanel;
 class UPartnerHackComponent;
+class UProgressBar;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnHackMiniGameWidgetFinished, const FHackResultContext&, ResultContext);
 
@@ -37,9 +38,20 @@ public:
 protected:
 	virtual void NativeConstruct() override;
 	virtual void NativeDestruct() override;
+	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
+	virtual FReply NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent) override;
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
 	TObjectPtr<UCanvasPanel> MiniGameRoot;
+
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	TObjectPtr<UProgressBar> TimeProgressBar;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Hack|MiniGame")
+	float ElapsedTime = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Hack|MiniGame")
+	uint8 bIsTimeLimited : 1 = true;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Hack|MiniGame")
 	TMap<FGameplayTag, TSubclassOf<UHackingMiniGameBase>> MiniGameWidgetClassesByTag;
@@ -49,6 +61,8 @@ protected:
 
 private:
 	TSubclassOf<UHackingMiniGameBase> ResolveMiniGameWidgetClass() const;
+	bool ResolveIsTimeLimited() const;
+	void RefreshTimeProgressBar();
 	void ClearActiveMiniGame();
 
 	UFUNCTION()

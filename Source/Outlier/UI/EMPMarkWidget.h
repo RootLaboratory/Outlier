@@ -22,6 +22,7 @@ public:
 	float CollaspsedTime = 1.0f;
 
 protected:
+	virtual void NativeOnInitialized() override;
 	virtual void NativeConstruct() override;
 	virtual void NativeDestruct() override;
 
@@ -34,6 +35,8 @@ protected:
 	
 
 private:
+	void DisableSelectButtonFocus();
+
 	UFUNCTION()
 	void HandleClicked();
 

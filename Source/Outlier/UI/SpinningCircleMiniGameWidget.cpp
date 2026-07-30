@@ -55,49 +55,49 @@ void USpinningCircleMiniGameWidget::OnMiniGameFinishedEvent(EHackResult Result)
 	Super::OnMiniGameFinishedEvent(Result);
 }
 
-int32 USpinningCircleMiniGameWidget::NativePaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
-{
-	LayerId = Super::NativePaint(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId, InWidgetStyle, bParentEnabled);
-
-	const FVector2D Center = GetCircleCenterLocal();
-
-	// 각 레이어의 갭 시작/끝 각도를 선으로 표시
-	for (const FSpinningCircleLayer& Layer : CircleLayers)
-	{
-		if (Layer.GapSize <= 0.0f) continue;
-
-		const float GapSizeDeg = Layer.GapSize * 360.0f;
-		const float GapStart = FMath::Fmod(90.0f + Layer.AngleDegrees, 360.0f);
-		const float GapEnd = FMath::Fmod(GapStart + GapSizeDeg, 360.0f);
-
-		// 갭 시작 (녹색)
-		const FVector2D StartDir(
-			FMath::Cos(FMath::DegreesToRadians(GapStart)),
-			FMath::Sin(FMath::DegreesToRadians(GapStart)));
-		// 갭 끝 (빨강)
-		const FVector2D EndDir(
-			FMath::Cos(FMath::DegreesToRadians(GapEnd)),
-			FMath::Sin(FMath::DegreesToRadians(GapEnd)));
-
-		TArray<FVector2D> GreenLine = { Center, Center + StartDir * Layer.Radius };
-		TArray<FVector2D> RedLine = { Center, Center + EndDir * Layer.Radius };
-
-		FSlateDrawElement::MakeLines(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(),
-			GreenLine, ESlateDrawEffect::None, FLinearColor::Green, true, 2.f);
-		FSlateDrawElement::MakeLines(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(),
-			RedLine, ESlateDrawEffect::None, FLinearColor::Red, true, 2.f);
-	}
-
-	// 마우스 위치 점
-	const FVector2D MouseLocal = GetMouseLocalPosition();
-	const FVector2D MouseBox(6.f, 6.f);
-	FSlateDrawElement::MakeBox(OutDrawElements, LayerId,
-		AllottedGeometry.ToPaintGeometry(MouseBox, FSlateLayoutTransform(MouseLocal - MouseBox * 0.5f)),
-		FCoreStyle::Get().GetBrush("WhiteBrush"),
-		ESlateDrawEffect::None, FLinearColor::Yellow);
-
-	return LayerId;
-}
+//int32 USpinningCircleMiniGameWidget::NativePaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
+//{
+//	LayerId = Super::NativePaint(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId, InWidgetStyle, bParentEnabled);
+//
+//	const FVector2D Center = GetCircleCenterLocal();
+//
+//	// 각 레이어의 갭 시작/끝 각도를 선으로 표시
+//	for (const FSpinningCircleLayer& Layer : CircleLayers)
+//	{
+//		if (Layer.GapSize <= 0.0f) continue;
+//
+//		const float GapSizeDeg = Layer.GapSize * 360.0f;
+//		const float GapStart = FMath::Fmod(90.0f + Layer.AngleDegrees, 360.0f);
+//		const float GapEnd = FMath::Fmod(GapStart + GapSizeDeg, 360.0f);
+//
+//		// 갭 시작 (녹색)
+//		const FVector2D StartDir(
+//			FMath::Cos(FMath::DegreesToRadians(GapStart)),
+//			FMath::Sin(FMath::DegreesToRadians(GapStart)));
+//		// 갭 끝 (빨강)
+//		const FVector2D EndDir(
+//			FMath::Cos(FMath::DegreesToRadians(GapEnd)),
+//			FMath::Sin(FMath::DegreesToRadians(GapEnd)));
+//
+//		TArray<FVector2D> GreenLine = { Center, Center + StartDir * Layer.Radius };
+//		TArray<FVector2D> RedLine = { Center, Center + EndDir * Layer.Radius };
+//
+//		FSlateDrawElement::MakeLines(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(),
+//			GreenLine, ESlateDrawEffect::None, FLinearColor::Green, true, 2.f);
+//		FSlateDrawElement::MakeLines(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(),
+//			RedLine, ESlateDrawEffect::None, FLinearColor::Red, true, 2.f);
+//	}
+//
+//	// 마우스 위치 점
+//	const FVector2D MouseLocal = GetMouseLocalPosition();
+//	const FVector2D MouseBox(6.f, 6.f);
+//	FSlateDrawElement::MakeBox(OutDrawElements, LayerId,
+//		AllottedGeometry.ToPaintGeometry(MouseBox, FSlateLayoutTransform(MouseLocal - MouseBox * 0.5f)),
+//		FCoreStyle::Get().GetBrush("WhiteBrush"),
+//		ESlateDrawEffect::None, FLinearColor::Yellow);
+//
+//	return LayerId;
+//}
 
 void USpinningCircleMiniGameWidget::EnsureCircleCanvas()
 {
