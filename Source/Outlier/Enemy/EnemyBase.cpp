@@ -1089,6 +1089,7 @@ bool AEnemyBase::StartPossessedAttackBurst()
 {
 	if (!HasAuthority()
 		|| !bIsPossessed
+		|| !HasPossessedAttackRequest()
 		|| CombatState == EEnemyCombatState::Stun
 		|| !IsValid(CurrentWeapon)
 		|| !CurrentWeapon->HasFixedBurst()
@@ -1098,6 +1099,10 @@ bool AEnemyBase::StartPossessedAttackBurst()
 	}
 
 	CurrentWeapon->StartAttack();
+	if (bPossessedAttackQueued)
+	{
+		ConsumePossessedAttackRequest();
+	}
 	SetAttackPhase(EEnemyAttackPhase::Firing);
 	return true;
 }
@@ -1324,30 +1329,35 @@ void AEnemyBase::SetPossessedAttackHeld(bool bHeld)
 		return;
 	}
 
-	if (bHeld
-		&& (CombatState == EEnemyCombatState::Stun
-			|| CurrentHealth <= 0.0f
-			|| !IsValid(CurrentWeapon)))
+	if (!bHeld)
+	{
+		const bool bWasHeld = bPossessedAttackHeld;
+
+		bPossessedAttackHeld = false;
+
+		if (bWasHeld)
+		{
+			SendEnemyStateTreeEvent(
+				FGameplayTag::RequestGameplayTag(
+					TEXT("Enemy.Event.Attack.InputReleased")));
+		}
+		return;
+	}
+
+	if (CombatState == EEnemyCombatState::Stun
+		|| CurrentHealth <= 0.0f
+		|| !IsValid(CurrentWeapon)
+		|| bPossessedAttackHeld)
 	{
 		return;
 	}
 
-	if (bPossessedAttackHeld == bHeld)
-	{
-		return;
-	}
-
-	bPossessedAttackHeld = bHeld;
-	if (bHeld)
-	{
-		bPossessedAttackQueued = true;
-	}
+	bPossessedAttackHeld = true;
+	bPossessedAttackQueued = true;
 
 	SendEnemyStateTreeEvent(
 		FGameplayTag::RequestGameplayTag(
-			bHeld
-			? TEXT("Enemy.Event.Attack.InputPressed")
-			: TEXT("Enemy.Event.Attack.InputReleased")));
+			TEXT("Enemy.Event.Attack.InputPressed")));
 }
 
 void AEnemyBase::ResetPossessedAttackInput()

@@ -120,15 +120,10 @@ void APartnerPlayerController::OnPossess(APawn* InPawn)
 		{
 			PPS->Refresh();
 		}
+
+		TryRestoreFirstPersonDefaultInputMode(FirstPersonInputModeTags::Hack());
+		BeginLocalEnemyPossessionReveal(InPawn);
 	}
-
-	if (!TryRestoreFirstPersonDefaultInputMode(FirstPersonInputModeTags::Hack()))
-	{
-		return;
-	}
-
-	BeginLocalEnemyPossessionReveal(InPawn);
-
 }
 
 void APartnerPlayerController::PawnPendingDestroy(APawn* InPawn)
@@ -696,6 +691,14 @@ void APartnerPlayerController::AcknowledgePossession(APawn* P)
 		SetPartnerPossessionState(
 			EPartnerPossessionState::PartnerControlled,
 			P);
+	}
+
+	if (AEnemyBase* PossessedEnemy = Cast<AEnemyBase>(P);
+		IsLocalController()
+		&& IsValid(PossessedEnemy)
+		&& LocalPendingEnemyPossessionTarget.Get() == PossessedEnemy)
+	{
+		TryRestoreFirstPersonDefaultInputMode(FirstPersonInputModeTags::Hack());
 	}
 
 	BindMainUI();
