@@ -100,6 +100,9 @@ protected:
 	UPROPERTY(BlueprintReadOnly, Category = "Anim")
 	uint8 bIsInAir : 1 = false;
 
+	UPROPERTY(BlueprintReadOnly, Category = "Anim|Movement")
+	float VelocityZ = 0.0f;
+
 	UPROPERTY(BlueprintReadOnly, Category = "Anim")
 	uint8 bIsPrimaryWeapon : 1 = false;
 

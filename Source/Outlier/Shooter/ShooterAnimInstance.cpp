@@ -34,6 +34,7 @@ namespace
 	{
 		return FRotator(Rotator.Pitch * Scale, Rotator.Yaw * Scale, Rotator.Roll * Scale);
 	}
+
 }
 
 void UShooterAnimInstance::NativeInitializeAnimation()
@@ -106,6 +107,7 @@ void UShooterAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 	{
 		Speed = 0.0f;
 		Direction = 0.0f;
+		VelocityZ = 0.0f;
 		CurrentWeaponType = EWeaponType::Unarmed;
 		AimYaw = 0.0f;
 		AimPitch = 0.0f;
@@ -129,6 +131,7 @@ void UShooterAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 	{
 		Speed = 0.0f;
 		Direction = 0.0f;
+		VelocityZ = 0.0f;
 		bIsGrounded = true;
 		bIsInAir = false;
 		ResetThirdPersonProceduralState();
@@ -136,6 +139,7 @@ void UShooterAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 	}
 
 	Speed		      = CharacterMovement->Velocity.Size2D();
+	VelocityZ         = CharacterMovement->Velocity.Z;
 	Direction		  = UKismetAnimationLibrary::CalculateDirection(
 		CharacterMovement->Velocity,
 		CachedShooterCharacter->GetActorRotation()
@@ -936,4 +940,3 @@ void UShooterAnimInstance::UpdateThirdPersonProceduralState(float DeltaSeconds, 
 	UpdateThirdPersonRecoil(DeltaSeconds, WeaponValues);
 	UpdateThirdPersonWallOffset(DeltaSeconds, CurrentWeapon, WeaponValues);
 }
-
