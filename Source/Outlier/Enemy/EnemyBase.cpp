@@ -7,6 +7,8 @@
 #include "Drone/Partner/HackGameplayTags.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Drone/Partner/PartnerPlayerController.h"
+#include "PostProcess/MaterialPostProcessSubsystem.h"
+#include "PostProcess/OutlierPostProcessVolume.h"
 #include "EnhancedInputComponent.h"
 #include "Enemy/EnemyAIController.h"
 #include "Enemy/EnemyRoomSubsystem.h"
@@ -790,7 +792,8 @@ void AEnemyBase::RestoreStateAfterStun()
 
 void AEnemyBase::ApplyDamageInternal(float DamageAmount, bool bIsCoreHit)
 {
-	if (!HasAuthority() || DamageAmount <= 0.0f || CurrentHealth <= 0.0f)
+	
+	if (!bIsPossessed || !HasAuthority() || DamageAmount <= 0.0f || CurrentHealth <= 0.0f)
 	{
 		return;
 	}
@@ -801,6 +804,16 @@ void AEnemyBase::ApplyDamageInternal(float DamageAmount, bool bIsCoreHit)
 	}
 
 	CurrentHealth = FMath::Max(CurrentHealth - DamageAmount, 0.0f);
+
+	if (IsLocallyControlled())
+	{
+		UMaterialPostProcessSubsystem* PPS = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>();
+		if (PPS)
+		{
+			PPS->UpdateDamagedPostProcess(CurrentHealth / RuntimeStat.Health, FVector4(0, 0, 1, 0));
+			PPS->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Damaged, true);
+		}
+	}
 
 	if (CurrentHealth <= 0.0f)
 	{

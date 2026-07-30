@@ -71,6 +71,7 @@ public:
 	virtual void OnMiniGameStarted() override;
 	virtual void OnMiniGameUpdated(float DeltaTime) override;
 	virtual void OnMiniGameFinishedEvent(EHackResult Result) override;
+	virtual bool HandlePrimaryClick() override;
 
 public:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
@@ -123,9 +124,6 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ClickCircle")
 	float StartAngleDegrees = -90.0f;
-
-protected:
-	virtual FReply NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent) override;
 
 private:
 	UPROPERTY(Transient)

@@ -19,16 +19,15 @@ public:
 	void InitializeMiniGame(AActor* InTargetActor, UHackableComponent* InHackableComponent);
 
 	UFUNCTION(BlueprintCallable, Category = "Hack|MiniGame")
-	void SetTimeLimit(float InTimeLimit);
-
-	UFUNCTION(BlueprintCallable, Category = "Hack|MiniGame")
-	 void StartMiniGame();
+	void StartMiniGame();
 
 	UFUNCTION(BlueprintCallable, Category = "Hack|MiniGame")
 	void FinishMiniGame(EHackResult Result);
 
 	UFUNCTION(BlueprintCallable, Category = "Hack|MiniGame")
 	bool IsMiniGameActive() const { return bMiniGameActive; }
+
+	virtual bool HandlePrimaryClick();
 
 	UPROPERTY(BlueprintAssignable, Category = "Hack|MiniGame")
 	FOnHackingMiniGameFinished OnMiniGameFinished;
@@ -47,12 +46,6 @@ protected:
 
 	UPROPERTY(BlueprintReadOnly, Category = "Hack|MiniGame")
 	TObjectPtr<UHackableComponent> HackableComponent;
-
-	UPROPERTY(BlueprintReadOnly, Category = "Hack|MiniGame")
-	float ElapsedTime = 0.0f;
-
-	UPROPERTY(BlueprintReadOnly, Category = "Hack|MiniGame")
-	float TimeLimit = 0.0f;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Hack|MiniGame")
 	uint8 bMiniGameActive : 1 = false;

@@ -78,6 +78,7 @@ void UPartnerEMPComponent::TryEMP_Implementation()
 		{
 			const TArray<AActor*> ConfirmedActors = MarkedActors;
 			CompleteEMPOnServer(ConfirmedActors);
+			//UE_LOG(LogTemp, Error, TEXT("Confirmed Called"));
 		}
 		return;
 	}
