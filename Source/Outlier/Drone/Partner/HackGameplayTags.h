@@ -80,6 +80,27 @@ namespace HackGameplayTags
 		}
 	}
 
+	namespace Time
+	{
+		inline FGameplayTag Root()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Time")));
+			return Tag;
+		}
+
+		inline FGameplayTag Limited()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Time.Limited")));
+			return Tag;
+		}
+
+		inline FGameplayTag Unlimited()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Time.Unlimited")));
+			return Tag;
+		}
+	}
+
 	namespace Use
 	{
 		inline FGameplayTag Root()

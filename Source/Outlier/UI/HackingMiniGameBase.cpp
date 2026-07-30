@@ -6,11 +6,6 @@ void UHackingMiniGameBase::InitializeMiniGame(AActor* InTargetActor, UHackableCo
 	HackableComponent = InHackableComponent;
 }
 
-void UHackingMiniGameBase::SetTimeLimit(float InTimeLimit)
-{
-	TimeLimit = FMath::Max(0.0f, InTimeLimit);
-}
-
 void UHackingMiniGameBase::StartMiniGame()
 {
 	if (bMiniGameActive)
@@ -18,7 +13,6 @@ void UHackingMiniGameBase::StartMiniGame()
 		return;
 	}
 
-	ElapsedTime = 0.0f;
 	bMiniGameActive = true;
 	OnMiniGameStarted();
 }
@@ -33,6 +27,11 @@ void UHackingMiniGameBase::FinishMiniGame(EHackResult Result)
 	bMiniGameActive = false;
 	OnMiniGameFinishedEvent(Result);
 	OnMiniGameFinished.Broadcast(Result);//Partner->결과 알리기.
+}
+
+bool UHackingMiniGameBase::HandlePrimaryClick()
+{
+	return false;
 }
 
 void UHackingMiniGameBase::OnMiniGameStarted()
@@ -56,11 +55,5 @@ void UHackingMiniGameBase::NativeTick(const FGeometry& MyGeometry, float InDelta
 		return;
 	}
 
-	ElapsedTime += InDeltaTime;
 	OnMiniGameUpdated(InDeltaTime);
-
-	if (bMiniGameActive && TimeLimit > 0.0f && ElapsedTime >= TimeLimit)
-	{
-		FinishMiniGame(EHackResult::Fail);
-	}
 }

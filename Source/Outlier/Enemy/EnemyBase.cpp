@@ -7,6 +7,8 @@
 #include "Drone/Partner/HackGameplayTags.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Drone/Partner/PartnerPlayerController.h"
+#include "PostProcess/MaterialPostProcessSubsystem.h"
+#include "PostProcess/OutlierPostProcessVolume.h"
 #include "EnhancedInputComponent.h"
 #include "Enemy/EnemyAIController.h"
 #include "Enemy/EnemyRoomSubsystem.h"
@@ -795,12 +797,13 @@ void AEnemyBase::ApplyDamageInternal(float DamageAmount, bool bIsCoreHit)
 		return;
 	}
 
-	if (bIsCoreHit)
-	{
-		DamageAmount *= CoreCriticalMultiplier;
-	}
+	const float FinalDamage = bIsCoreHit
+		? DamageAmount * CoreCriticalMultiplier
+		: DamageAmount;
 
-	CurrentHealth = FMath::Max(CurrentHealth - DamageAmount, 0.0f);
+	const float PreviousHealth = CurrentHealth;
+	CurrentHealth = FMath::Max(CurrentHealth - FinalDamage, 0.0f);
+	HandleCurrentHealthChanged(PreviousHealth);
 
 	if (CurrentHealth <= 0.0f)
 	{
@@ -811,6 +814,33 @@ void AEnemyBase::ApplyDamageInternal(float DamageAmount, bool bIsCoreHit)
 void AEnemyBase::OnRep_RuntimeStat()
 {
 	ApplyMovementFromRuntimeStat();
+}
+
+void AEnemyBase::OnRep_CurrentHealth(float PreviousHealth)
+{
+	HandleCurrentHealthChanged(PreviousHealth);
+}
+
+void AEnemyBase::HandleCurrentHealthChanged(float PreviousHealth)
+{
+	if (!bIsPossessed || !IsLocallyControlled() || CurrentHealth >= PreviousHealth)
+	{
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	const float MaxHealth = RuntimeStat.Health;
+	if (!World || MaxHealth <= KINDA_SMALL_NUMBER)
+	{
+		return;
+	}
+
+	if (UMaterialPostProcessSubsystem* PPS = World->GetSubsystem<UMaterialPostProcessSubsystem>())
+	{
+		const float HealthRatio = FMath::Clamp(CurrentHealth / MaxHealth, 0.0f, 1.0f);
+		PPS->UpdateDamagedPostProcess(HealthRatio, FVector4(0.0f, 0.0f, 1.0f, 0.0f));
+		PPS->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Damaged, true);
+	}
 }
 
 UHackableComponent* AEnemyBase::GetHackableComponent() const

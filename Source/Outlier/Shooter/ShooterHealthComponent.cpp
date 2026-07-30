@@ -97,38 +97,51 @@ void UShooterHealthComponent::HitHistoryRefresh()
 
 void UShooterHealthComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
-	if (!GetOwner()->HasAuthority()) return;
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
-
-	if (bShieldRecoveryAbled)
+	if (!GetOwner() || !GetOwner()->HasAuthority())
 	{
-		if (AShooterCharacter* ShooterCharacter = GetShooterCharacter())
-		{
-			if (ShooterCharacter->CurShield >= ShooterCharacter->MaxShield)
-			{
-				return;
-			}
-			else
-			{
-				RecoveryAccumulated += DeltaTime;
-
-				if (RecoveryAccumulated >= ShieldRecoveryInterval)
-				{
-					RecoveryAccumulated = 0;
-					ShooterCharacter->CurShield = FMath::Min(ShooterCharacter->MaxShield, ShooterCharacter->CurShield + ShieldRecoveryValue);
-					ShooterCharacter->OnRep_CurShield();
-				}
-			}
-		}
+		return;
 	}
 
-
-	HitAccumulated += DeltaTime;
-
-	if (HitAccumulated >= HitInterval)
+	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	if (!ShooterCharacter)
 	{
-		HitAccumulated = 0;
+		return;
+	}
+
+	// 피격 후 Shield 회복 대기시간
+	if (!bShieldRecoveryAbled)
+	{
+		HitAccumulated += DeltaTime;
+
+		if (HitAccumulated < HitInterval)
+		{
+			return;
+		}
+
+		HitAccumulated = 0.0f;
 		bShieldRecoveryAbled = true;
 	}
+
+	// 경계 밖에서는 Shield 회복만 차단
+	if (ShooterCharacter->bSuitDisabledByPartnerBoundary ||
+		ShooterCharacter->CurShield >= ShooterCharacter->MaxShield)
+	{
+		return;
+	}
+
+	RecoveryAccumulated += DeltaTime;
+
+	if (RecoveryAccumulated < ShieldRecoveryInterval)
+	{
+		return;
+	}
+
+	RecoveryAccumulated = 0.0f;
+	ShooterCharacter->CurShield = FMath::Min(
+		ShooterCharacter->MaxShield,
+		ShooterCharacter->CurShield + ShieldRecoveryValue);
+
+	ShooterCharacter->OnRep_CurShield();
 }
