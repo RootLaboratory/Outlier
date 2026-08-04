@@ -374,6 +374,12 @@ public:
 	void OnRep_IsStealthed();
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	// Unreal 공통 피해 진입점을 기존 Shooter 실드 및 HP 처리로 연결한다.
+	virtual float TakeDamage(
+		float DamageAmount,
+		FDamageEvent const& DamageEvent,
+		AController* EventInstigator,
+		AActor* DamageCauser) override;
 	virtual void EquipWeapon(AWeaponBase* Weapon) override;
 	virtual FGameplayTagContainer GetOwnedGameplayTagsForQuery() const override;
 
@@ -439,7 +445,6 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Suit|Stealth")
 	bool IsStealthed() const { return bIsStealthed; }
 
-	void ApplyDamageInternal(float DamageAmount);
 	void HandleWeaponAttackStoppedInternal();
 	void HandleAutoReloadRequested();
 	void HandleFireShotAnimation();
@@ -460,6 +465,7 @@ public:
 
 	void DoJumpEnd();
 protected:
+	void ApplyDamageInternal(float DamageAmount);
 	void UpdatePartnerShieldDecay();
 
 	// Input Handlers

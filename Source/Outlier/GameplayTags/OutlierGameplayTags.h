@@ -5,6 +5,21 @@
 
 namespace OutlierGameplayTags
 {
+	namespace Damage
+	{
+		inline FGameplayTag Weapon()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Damage.Weapon")));
+			return Tag;
+		}
+
+		inline FGameplayTag Explosion()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Damage.Explosion")));
+			return Tag;
+		}
+	}
+
 	namespace Ability
 	{
 		namespace Partner

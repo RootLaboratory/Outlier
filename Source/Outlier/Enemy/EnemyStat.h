@@ -48,4 +48,8 @@ struct OUTLIER_API FEnemyStat : public FTableRowBase
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	float BattleHearingRange = 0.0f;
+
+	// 부착 폭발물 약점이 없는 Enemy는 0을 사용한다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Explosion", meta = (ClampMin = "0.0"))
+	float ExplosiveWeakPointMultiplier = 0.0f;
 };

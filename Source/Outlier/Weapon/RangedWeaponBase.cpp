@@ -2,6 +2,9 @@
 
 
 #include "Weapon/RangedWeaponBase.h"
+
+#include "Damage/OutlierTaggedDamageEvent.h"
+#include "GameplayTags/OutlierGameplayTags.h"
 #include "DrawDebugHelpers.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/SphereComponent.h"
@@ -22,7 +25,6 @@
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Enemy/EnemyBase.h"
 #include "OutlierNetUtils.h"
-#include "Drone/Partner/PartnerShieldSphere.h"
 #include "Net/UnrealNetwork.h"
 #include "Weapon/WeaponCoreRow.h"
 #include "Weapon/WeaponBloomRow.h"
@@ -241,18 +243,12 @@ void ARangedWeaponBase::FireShot()
 
 	if (bHit)
 	{
+		AActor* HitActor = Hit.GetActor();
 		const float HitDistance = FVector::Distance(Start, Hit.ImpactPoint);
 		const float DamageToApply = GetDamageAtDistance(HitDistance);
+		FHitResult ResolvedDamageHit = Hit;
 
-		if (APartnerShieldSphere* Shield = Cast<APartnerShieldSphere>(Hit.GetActor()))
-		{
-			Shield->ApplyShieldDamage(DamageToApply);
-		}
-		else if (AShooterCharacter* HitCharacter = Cast<AShooterCharacter>(Hit.GetActor()))
-		{
-			HitCharacter->ApplyDamageInternal(DamageToApply);
-		}
-		else if (AEnemyBase* HitEnemy = Cast<AEnemyBase>(Hit.GetActor()))
+		if (AEnemyBase* HitEnemy = Cast<AEnemyBase>(HitActor))
 		{
 			// 어떤 걸 맞았는지(HitEnemy 확정)는 위의 단일 트레이스 결과 그대로 사용 — 벽/다른 액터에 대한
 			// 판정은 절대 안 바뀜. CoreHitboxComponent가 Body(SkeletalMeshComponent)의 Physics Asset
@@ -268,13 +264,17 @@ void ARangedWeaponBase::FireShot()
 			TArray<FHitResult> BoneHitResults;
 			GetWorld()->LineTraceMultiByChannel(BoneHitResults, Start, ProbeEnd, ECC_PhysicsBody, CoreProbeParams);
 
-			bool bIsCoreHit = false;
+			float BestWeakPointMultiplier = HitEnemy->GetWeakPointDamageMultiplier(Hit.GetComponent());
 			for (const FHitResult& BodyHit : BoneHitResults)
 			{
-				if (BodyHit.GetActor() == HitEnemy && BodyHit.GetComponent() == HitEnemy->GetCoreHitboxComponent())
+				if (BodyHit.GetActor() == HitEnemy)
 				{
-					bIsCoreHit = true;
-					break;
+					const float CandidateMultiplier = HitEnemy->GetWeakPointDamageMultiplier(BodyHit.GetComponent());
+					if (CandidateMultiplier > BestWeakPointMultiplier)
+					{
+						BestWeakPointMultiplier = CandidateMultiplier;
+						ResolvedDamageHit = BodyHit;
+					}
 				}
 			}
 			/*if (bIsCoreHit)
@@ -286,11 +286,15 @@ void ARangedWeaponBase::FireShot()
 				GetLocalUISubsystem()->OnRep_AttackSign(EAttackSign::Default);
 			}*/
 
-			HitEnemy->ApplyDamageInternal(DamageToApply, bIsCoreHit);
 		}
-		else if (APartnerCharacter* PartnerCharacter = Cast<APartnerCharacter>(Hit.GetActor()))
+
+		FOutlierTaggedDamageEvent DamageEvent;
+		DamageEvent.DamageTag = OutlierGameplayTags::Damage::Weapon();
+		DamageEvent.HitResult = ResolvedDamageHit;
+		DamageEvent.DamageOrigin = Start;
+		if (HitActor)
 		{
-			PartnerCharacter->HandlePartnerHit();
+			HitActor->TakeDamage(DamageToApply, DamageEvent, OwnerCharacter->GetController(), this);
 		}
 	}
 	ClientNotifyShotFired(GetNormalizedLastShotDirection());

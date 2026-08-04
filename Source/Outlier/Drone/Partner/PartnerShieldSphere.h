@@ -22,6 +22,11 @@ public:
 
 	virtual void Tick(float DeltaTime) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	virtual float TakeDamage(
+		float DamageAmount,
+		FDamageEvent const& DamageEvent,
+		AController* EventInstigator,
+		AActor* DamageCauser) override;
 
 	UFUNCTION(BlueprintCallable, Category = "Shield")
 	void InitializeShield(AShooterCharacter* InShieldTarget, APartnerCharacter* InSourcePartner);
@@ -34,9 +39,6 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Shield")
 	void SetTargetRelativeLocation(FVector InTargetRelativeLocation);
-
-	UFUNCTION(BlueprintCallable, Category = "Shield")
-	void ApplyShieldDamage(float DamageAmount);
 
 	UFUNCTION(BlueprintCallable, Category = "Shield")
 	void EndShield();

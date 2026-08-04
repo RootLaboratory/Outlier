@@ -2,6 +2,7 @@
 #include "PostProcess/TempDamagePannel.h"
 #include "Components/BoxComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Engine/DamageEvents.h"
 #include "Shooter/ShooterCharacter.h"
 
 ATempDamagePannel::ATempDamagePannel()
@@ -68,7 +69,7 @@ void ATempDamagePannel::Tick(float DeltaTime)
 		{
 			//UE_LOG(LogTemp, Error, TEXT("[Ticking] DamageAccumulatedTime >= SafeDamageInterval"));
 
-			Temp_Shooter->ApplyDamageInternal(DamageAmount);
+			ApplyDamageToShooter(Temp_Shooter);
 			DamageAccumulatedTime = 0.0f;
 		}
 	}
@@ -136,13 +137,13 @@ void ATempDamagePannel::HandleDamageCollisionEndOverlap(
 	DamageAccumulatedTime = 0.0f;
 }
 
-void ATempDamagePannel::ApplyDamageToShooter(AShooterCharacter* Shooter) const
+void ATempDamagePannel::ApplyDamageToShooter(AShooterCharacter* Shooter)
 {
 	if (!Shooter || DamageAmount <= 0.0f)
 	{
 		return;
 	}
 
-	Shooter->ApplyDamageInternal(DamageAmount);
+	FDamageEvent DamageEvent;
+	Shooter->TakeDamage(DamageAmount, DamageEvent, nullptr, this);
 }
-

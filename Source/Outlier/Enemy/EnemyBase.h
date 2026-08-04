@@ -57,6 +57,12 @@ public:
 	AEnemyBase();
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	// Unreal 공통 피해 진입점을 기존 Enemy HP 및 사망 처리로 연결한다.
+	virtual float TakeDamage(
+		float DamageAmount,
+		FDamageEvent const& DamageEvent,
+		AController* EventInstigator,
+		AActor* DamageCauser) override;
 
 protected:
 	virtual void PostInitializeComponents() override;
@@ -340,8 +346,15 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Enemy|Possession")
 	AController* GetCachedAIController() const { return CachedAIController.IsValid() ? CachedAIController.Get() : nullptr; }
 
-	UFUNCTION(BlueprintCallable, Category = "Enemy|Damage")
-	void ApplyDamageInternal(float DamageAmount, bool bIsCoreHit);
+	// WeakPoint: Core처럼 일반 부위보다 높은 피해 배율을 사용하는 피격 부위다.
+	virtual float GetWeakPointDamageMultiplier(const UPrimitiveComponent* HitComponent) const;
+
+	// 폭발 거리와 차폐가 반영된 비율로 이동형 Enemy 반동 또는 Turret 연출을 요청한다.
+	void ApplyExplosionReaction(
+		const FVector& ExplosionOrigin,
+		float EnemyImpulseScale,
+		float TurretReactionScale,
+		float EffectRatio);
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|Damage")
 	USphereComponent* GetCoreHitboxComponent() const { return CoreHitboxComponent; }
@@ -364,6 +377,7 @@ protected:
 	void OnRep_CurrentHealth(float PreviousHealth);
 
 	void HandleCurrentHealthChanged(float PreviousHealth);
+	void ApplyDamageInternal(float DamageAmount);
 
 	void SendEnemyStateTreeEventNextTick(FGameplayTag Tag);
 	void SetDefaultEnemyType(EEnemyType EnemyType);
@@ -386,6 +400,13 @@ protected:
 	void HandleCurrentRoomTagChanged(FGameplayTag PreviousRoomTag, FGameplayTag NewRoomTag);
 	void RemoveRoomTargetObserver();
 	virtual void HandleDeath();
+
+	// 서버에서 모든 클라이언트에 폭발 반응 방향과 연출 강도를 전달한다.
+	UFUNCTION(NetMulticast, Unreliable)
+	void MulticastExplosionReaction(FVector_NetQuantizeNormal Direction, float ReactionScale);
+
+	UFUNCTION(BlueprintImplementableEvent, Category = "Enemy|Explosion")
+	void OnExplosionReaction(FVector Direction, float ReactionScale);
 
 	bool bCombatDecisionRefreshPending = false;
 

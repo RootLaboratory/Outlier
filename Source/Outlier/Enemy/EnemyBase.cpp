@@ -1,6 +1,7 @@
 #include "Enemy/EnemyBase.h"
 #include "Camera/CameraComponent.h"
 #include "Components/StateTreeComponent.h"
+#include "Damage/OutlierTaggedDamageEvent.h"
 #include "Drone/Partner/HackableComponent.h"
 #include "Drone/Partner/EMPableComponent.h"
 #include "Drone/Partner/EMPGameplayTags.h"
@@ -790,24 +791,90 @@ void AEnemyBase::RestoreStateAfterStun()
 			TEXT("Enemy.Event.Status.StunEnded")));
 }
 
-void AEnemyBase::ApplyDamageInternal(float DamageAmount, bool bIsCoreHit)
+void AEnemyBase::ApplyDamageInternal(float DamageAmount)
 {
 	if (!HasAuthority() || DamageAmount <= 0.0f || CurrentHealth <= 0.0f)
 	{
 		return;
 	}
 
-	const float FinalDamage = bIsCoreHit
-		? DamageAmount * CoreCriticalMultiplier
-		: DamageAmount;
-
 	const float PreviousHealth = CurrentHealth;
-	CurrentHealth = FMath::Max(CurrentHealth - FinalDamage, 0.0f);
+	CurrentHealth = FMath::Max(CurrentHealth - DamageAmount, 0.0f);
 	HandleCurrentHealthChanged(PreviousHealth);
 
 	if (CurrentHealth <= 0.0f)
 	{
 		HandleDeath();
+	}
+}
+
+float AEnemyBase::TakeDamage(
+	float DamageAmount,
+	FDamageEvent const& DamageEvent,
+	AController* EventInstigator,
+	AActor* DamageCauser)
+{
+	if (!HasAuthority() || DamageAmount <= 0.0f || CurrentHealth <= 0.0f)
+	{
+		return 0.0f;
+	}
+
+	float DamageMultiplier = 1.0f;
+	if (DamageEvent.IsOfType(FOutlierTaggedDamageEvent::ClassID))
+	{
+		const FOutlierTaggedDamageEvent& TaggedEvent = static_cast<const FOutlierTaggedDamageEvent&>(DamageEvent);
+		if (TaggedEvent.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Weapon()))
+		{
+			DamageMultiplier = GetWeakPointDamageMultiplier(TaggedEvent.HitResult.GetComponent());
+		}
+	}
+
+	const float FinalDamage = DamageAmount * FMath::Max(DamageMultiplier, 0.0f);
+	const float AppliedDamage = Super::TakeDamage(FinalDamage, DamageEvent, EventInstigator, DamageCauser);
+	// 공통 TakeDamage 진입점을 기존 Enemy HP 및 사망 처리로 연결한다.
+	ApplyDamageInternal(AppliedDamage);
+	return AppliedDamage;
+}
+
+float AEnemyBase::GetWeakPointDamageMultiplier(const UPrimitiveComponent* HitComponent) const
+{
+	return HitComponent == CoreHitboxComponent ? CoreCriticalMultiplier : 1.0f;
+}
+
+void AEnemyBase::ApplyExplosionReaction(
+	const FVector& ExplosionOrigin,
+	float EnemyImpulseScale,
+	float TurretReactionScale,
+	float EffectRatio)
+{
+	if (!HasAuthority() || EffectRatio <= 0.0f || CurrentHealth <= 0.0f)
+	{
+		return;
+	}
+
+	const FVector Direction = (GetActorLocation() - ExplosionOrigin).GetSafeNormal();
+	if (RuntimeStat.Type == EEnemyType::Turret)
+	{
+		// 고정형 Turret은 이동시키지 않고 BP 연출에 필요한 방향과 강도만 전달한다.
+		MulticastExplosionReaction(Direction, FMath::Max(TurretReactionScale, 0.0f) * EffectRatio);
+		return;
+	}
+
+	const float ImpulseStrength = FMath::Max(EnemyImpulseScale, 0.0f) * EffectRatio;
+	if (ImpulseStrength > 0.0f)
+	{
+		LaunchCharacter(Direction * ImpulseStrength, true, true);
+	}
+	MulticastExplosionReaction(Direction, EffectRatio);
+}
+
+void AEnemyBase::MulticastExplosionReaction_Implementation(
+	FVector_NetQuantizeNormal Direction,
+	float ReactionScale)
+{
+	if (GetNetMode() != NM_DedicatedServer)
+	{
+		OnExplosionReaction(Direction, ReactionScale);
 	}
 }
 

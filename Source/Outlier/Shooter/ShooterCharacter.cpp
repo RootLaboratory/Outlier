@@ -977,6 +977,23 @@ void AShooterCharacter::ApplyDamageInternal(float DamageAmount)
 	}
 }
 
+float AShooterCharacter::TakeDamage(
+	float DamageAmount,
+	FDamageEvent const& DamageEvent,
+	AController* EventInstigator,
+	AActor* DamageCauser)
+{
+	if (!HasAuthority() || DamageAmount <= 0.0f)
+	{
+		return 0.0f;
+	}
+
+	const float AppliedDamage = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
+	// 폭발 등 공통 피해를 기존 Shooter 실드 및 HP 처리로 전달한다.
+	ApplyDamageInternal(AppliedDamage);
+	return AppliedDamage;
+}
+
 void AShooterCharacter::HandleWeaponAttackStoppedInternal()
 {
 	if (CombatComponent)
