@@ -165,6 +165,7 @@ struct FEnemyAlertHoldTaskInstanceData
 
 	float VisibleElapsedTime = 0.0f;
 	float LostElapsedTime = 0.0f;
+	bool bOwnsTaskDrivenPitch = false;
 };
 
 // Alert 상태 안에서 LKP를 바라보며 감지 유지/상실 시간을 판정한다.
@@ -190,6 +191,9 @@ struct OUTLIER_API FEnemyAlertHoldTask : public FStateTreeTaskCommonBase
 	virtual EStateTreeRunStatus Tick(
 		FStateTreeExecutionContext& Context,
 		float DeltaTime) const override;
+	virtual void ExitState(
+		FStateTreeExecutionContext& Context,
+		const FStateTreeTransitionResult& Transition) const override;
 };
 
 USTRUCT()

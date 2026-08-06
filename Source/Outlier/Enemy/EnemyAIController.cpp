@@ -5,8 +5,10 @@
 #include "Enemy/EnemyRoomSubsystem.h"
 #include "Engine/World.h"
 #include "GameplayTags/OutlierGameplayTags.h"
+#include "HAL/IConsoleManager.h"
 #include "Interface/GameplayTagProviderInterface.h"
 #include "TimerManager.h"
+#include "Outlier.h"
 #include "OutlierPlayerState.h"
 #include "Perception/AIPerceptionComponent.h"
 #include "Perception/AISense_Sight.h"
@@ -18,6 +20,90 @@
 
 namespace
 {
+	TAutoConsoleVariable<int32> CVarEnemyPerceptionDiagnostics(
+		TEXT("outlier.Enemy.PerceptionDiagnostics"),
+		0,
+		TEXT("Logs Enemy AI perception events and sight-loss geometry when set to 1."),
+		ECVF_Cheat);
+
+	bool IsEnemyPerceptionDiagnosticsEnabled()
+	{
+		return CVarEnemyPerceptionDiagnostics.GetValueOnGameThread() != 0;
+	}
+
+	const TCHAR* GetStimulusSenseName(const FAIStimulus& Stimulus)
+	{
+		if (Stimulus.Type == UAISense::GetSenseID<UAISense_Sight>())
+		{
+			return TEXT("Sight");
+		}
+
+		if (Stimulus.Type == UAISense::GetSenseID<UAISense_Hearing>())
+		{
+			return TEXT("Hearing");
+		}
+
+		return TEXT("Other");
+	}
+
+	void LogPerceptionDiagnostic(
+		const AEnemyBase& Enemy,
+		const AActor& Target,
+		const FAIStimulus& Stimulus)
+	{
+		if (!IsEnemyPerceptionDiagnosticsEnabled())
+		{
+			return;
+		}
+
+		const FVector SightOrigin = Stimulus.ReceiverLocation.IsNearlyZero()
+			? Enemy.GetPawnViewLocation()
+			: Stimulus.ReceiverLocation;
+		const FVector ToTarget = Target.GetActorLocation() - SightOrigin;
+		const float Distance = ToTarget.Size();
+		const FVector TargetDirection = ToTarget.GetSafeNormal();
+		const FVector ViewDirection = Enemy.GetViewRotation().Vector();
+		const float ViewAngle = TargetDirection.IsNearlyZero()
+			? 0.0f
+			: FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(
+				FVector::DotProduct(ViewDirection, TargetDirection),
+				-1.0f,
+				1.0f)));
+
+		FHitResult VisibilityHit;
+		FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(EnemyPerceptionDiagnostics), false, &Enemy);
+		const bool bVisibilityBlocked = Enemy.GetWorld()
+			&& Enemy.GetWorld()->LineTraceSingleByChannel(
+				VisibilityHit,
+				SightOrigin,
+				Target.GetActorLocation(),
+				ECC_Visibility,
+				QueryParams)
+			&& VisibilityHit.GetActor() != &Target;
+
+		UE_LOG(
+			LogOutlier,
+			Warning,
+			TEXT("[EnemyPerceptionDiag] Enemy=%s Class=%s Type=%s Sense=%s Sensed=%s Target=%s State=%s Visible=%s Distance=%.1f ViewAngle=%.1f StimulusAge=%.2f Strength=%.2f StimulusLocation=%s ReceiverLocation=%s VisibilityBlocked=%s HitActor=%s HitComponent=%s"),
+			*Enemy.GetName(),
+			*Enemy.GetClass()->GetName(),
+			*UEnum::GetValueAsString(Enemy.GetRuntimeStat().Type),
+			GetStimulusSenseName(Stimulus),
+			Stimulus.WasSuccessfullySensed() ? TEXT("true") : TEXT("false"),
+			*Target.GetName(),
+			*UEnum::GetValueAsString(Enemy.GetCombatState()),
+			Enemy.IsPlayerCurrentlyVisible() ? TEXT("true") : TEXT("false"),
+			Distance,
+			ViewAngle,
+			Stimulus.GetAge(),
+			Stimulus.Strength,
+			*Stimulus.StimulusLocation.ToCompactString(),
+			*Stimulus.ReceiverLocation.ToCompactString(),
+			bVisibilityBlocked ? TEXT("true") : TEXT("false"),
+			*GetNameSafe(VisibilityHit.GetActor()),
+			*GetNameSafe(VisibilityHit.GetComponent()));
+	}
+
 	enum class EEnemyTargetPriority : uint8
 	{
 		HackedTurret,
@@ -288,10 +374,12 @@ void AEnemyAIController::HandleTargetPerceptionUpdated(AActor* Actor, FAIStimulu
 	if (Stimulus.Type == UAISense::GetSenseID<UAISense_Sight>())
 	{
 		HandleSightStimulus(Enemy, Actor, Stimulus);
+		LogPerceptionDiagnostic(*Enemy, *Actor, Stimulus);
 	}
 	else if (Stimulus.Type == UAISense::GetSenseID<UAISense_Hearing>())
 	{
 		HandleHearingStimulus(Enemy, Actor, Stimulus);
+		LogPerceptionDiagnostic(*Enemy, *Actor, Stimulus);
 	}
 }
 
@@ -497,6 +585,23 @@ void AEnemyAIController::ConfigureSightFromEnemy(AEnemyBase* Enemy)
 	SightConfig->PeripheralVisionAngleDegrees = FMath::Clamp(PeripheralVisionAngle, 0.0f, 180.0f);
 	EnemyPerceptionComponent->ConfigureSense(*SightConfig);
 	EnemyPerceptionComponent->RequestStimuliListenerUpdate();
+
+	if (IsEnemyPerceptionDiagnosticsEnabled())
+	{
+		UE_LOG(
+			LogOutlier,
+			Warning,
+			TEXT("[EnemyPerceptionDiag] SightConfig Enemy=%s Class=%s Type=%s State=%s SightRadius=%.1f LoseSightRadius=%.1f PeripheralVisionAngle=%.1f ActorForward=%s ViewForward=%s"),
+			*Enemy->GetName(),
+			*Enemy->GetClass()->GetName(),
+			*UEnum::GetValueAsString(RuntimeStat.Type),
+			*UEnum::GetValueAsString(Enemy->GetCombatState()),
+			SightConfig->SightRadius,
+			SightConfig->LoseSightRadius,
+			SightConfig->PeripheralVisionAngleDegrees,
+			*Enemy->GetActorForwardVector().ToCompactString(),
+			*Enemy->GetViewRotation().Vector().ToCompactString());
+	}
 }
 
 void AEnemyAIController::ConfigureHearingFromEnemy(AEnemyBase* Enemy)

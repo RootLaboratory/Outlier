@@ -25,12 +25,13 @@ public:
 		const FExplosionProfileRow& Profile);
 
 	// 중심과 대상 사이 거리를 기준으로 최대 피해에서 최소 피해까지 선형 감쇠한다.
+	static float CalculateFalloffRatio(float Distance, float OuterRadius, float FalloffExponent);
+
 	static float CalculateDistanceDamage(
 		float Distance,
 		float MaxDamage,
-		float MinDamage,
-		float InnerRadius,
-		float OuterRadius);
+		float OuterRadius,
+		float FalloffExponent);
 
 private:
 	struct FPendingExplosion
@@ -55,7 +56,9 @@ private:
 		AActor* TargetActor,
 		TSubclassOf<UCameraShakeBase> CameraShakeClass,
 		float CameraShakeScale,
-		float EffectRatio) const;
+		float EffectRatio,
+		bool bCameraShakeEnabled,
+		bool bAllowCameraShakeForInactivePawn) const;
 
 	TArray<FPendingExplosion> PendingExplosions;
 	TSet<TWeakObjectPtr<UExplosionComponent>> QueuedComponents;

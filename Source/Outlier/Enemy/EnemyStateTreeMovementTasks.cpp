@@ -322,6 +322,15 @@ EStateTreeRunStatus FEnemyAlertHoldTask::EnterState(
 	AIController->StopMovement();
 	InstanceData.VisibleElapsedTime = 0.0f;
 	InstanceData.LostElapsedTime = 0.0f;
+	if (!InstanceData.bOwnsTaskDrivenPitch)
+	{
+		if (AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(AIController))
+		{
+			// Alert 중 계산한 Pitch가 AIController의 기본 회전 갱신으로 초기화되지 않게 유지한다.
+			EnemyAIController->BeginTaskDrivenControlPitch();
+			InstanceData.bOwnsTaskDrivenPitch = true;
+		}
+	}
 
 	return EStateTreeRunStatus::Running;
 }
@@ -396,6 +405,24 @@ EStateTreeRunStatus FEnemyAlertHoldTask::Tick(
 	}
 
 	return EStateTreeRunStatus::Running;
+}
+
+void FEnemyAlertHoldTask::ExitState(
+	FStateTreeExecutionContext& Context,
+	const FStateTreeTransitionResult& Transition) const
+{
+	FInstanceDataType& InstanceData = Context.GetInstanceData(*this);
+	if (!InstanceData.bOwnsTaskDrivenPitch)
+	{
+		return;
+	}
+
+	if (AEnemyAIController* AIController = Cast<AEnemyAIController>(
+		ResolveAIController(InstanceData.Enemy)))
+	{
+		AIController->EndTaskDrivenControlPitch();
+	}
+	InstanceData.bOwnsTaskDrivenPitch = false;
 }
 
 FEnemyRotateToAngleAndWaitTask::FEnemyRotateToAngleAndWaitTask()

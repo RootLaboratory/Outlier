@@ -41,6 +41,8 @@ public:
 	bool HasDetonated() const { return bHasDetonated; }
 
 	TSubclassOf<UCameraShakeBase> GetCameraShakeClass() const { return CameraShakeClass; }
+	bool IsCameraShakeEnabled() const { return bEnableExplosionCameraShake; }
+	bool AllowsCameraShakeForInactivePawn() const { return bAllowCameraShakeForInactivePawn; }
 
 	UPROPERTY(BlueprintAssignable, Category = "Explosion")
 	FOnExplosionProcessed OnExplosionProcessed;
@@ -58,6 +60,13 @@ protected:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Explosion|Presentation")
 	TSubclassOf<UCameraShakeBase> CameraShakeClass;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Explosion|Presentation")
+	uint8 bEnableExplosionCameraShake : 1 = true;
+
+	// 관전자 등 현재 Pawn을 직접 보고 있지 않을 때도 흔들림을 허용할지 결정한다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Explosion|Presentation")
+	uint8 bAllowCameraShakeForInactivePawn : 1 = false;
 
 	UPROPERTY(Replicated, VisibleInstanceOnly, BlueprintReadOnly, Category = "Explosion")
 	bool bHasDetonated = false;

@@ -117,6 +117,13 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Enemy|Data")
 	FDataTableRowHandle EnemyStatRow;
 
+	// 충격이 발생할 때마다 DataTable을 조회하지 않도록 초기화 시 RuntimeImpactReactionProfile에 복사한다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Enemy|Data")
+	FDataTableRowHandle ImpactReactionProfileRow;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Enemy|Impact")
+	FEnemyImpactReactionProfileRow RuntimeImpactReactionProfile;
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Input")
 	TObjectPtr<UInputAction> ReleasePossessionAction;
 
@@ -153,6 +160,9 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "Enemy|State")
 	uint8 bPossessionInProgress : 1 = false;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "Enemy|Impact")
+	uint8 bPossessedImpactInputLocked : 1 = false;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "Enemy|State")
 	uint8 bPlayerCurrentlyVisible : 1 = false;
@@ -218,7 +228,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Enemy|State")
 	bool IsPossessionInProgress() const { return bPossessionInProgress; }
 
-	bool IsAIControlSuppressed() const { return bIsPossessed || bPossessionInProgress; }
+	bool IsAIControlSuppressed() const
+	{
+		return bIsPossessed || bPossessionInProgress || bImpactReactionActive;
+	}
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|State")
 	bool IsInCombat() const { return bInCombat; }
@@ -356,6 +369,23 @@ public:
 		float TurretReactionScale,
 		float EffectRatio);
 
+	// ImpactReaction State의 진입, 활성 Tick, 종료 시점에만 호출한다.
+	bool BeginImpactReaction();
+	bool UpdateImpactRecovery(float DeltaTime, float ElapsedTime);
+	void EndImpactReaction();
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Impact")
+	bool IsImpactReactionActive() const { return bImpactReactionActive; }
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Impact")
+	FVector GetAccumulatedImpactVelocity() const { return AccumulatedImpactVelocity; }
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Impact")
+	float GetImpactCameraShakeScale() const { return RuntimeImpactReactionProfile.CameraShakeScale; }
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Impact")
+	bool IsPossessedImpactInputLocked() const { return bPossessedImpactInputLocked; }
+
 	UFUNCTION(BlueprintPure, Category = "Enemy|Damage")
 	USphereComponent* GetCoreHitboxComponent() const { return CoreHitboxComponent; }
 
@@ -400,6 +430,13 @@ protected:
 	void HandleCurrentRoomTagChanged(FGameplayTag PreviousRoomTag, FGameplayTag NewRoomTag);
 	void RemoveRoomTargetObserver();
 	virtual void HandleDeath();
+	virtual bool TryApplyCommittedImpactVelocity(const FVector& ImpactVelocity);
+	virtual void CancelCommittedAction();
+	virtual void ApplyExplosionReactionPresentation(const FVector& Direction, float ReactionScale);
+	void AccumulateImpactVelocity(const FVector& ImpactVelocity);
+	void RefreshImpactReactionDuration();
+	void BeginPossessedImpactInputLock();
+	void EndPossessedImpactInputLock();
 
 	// 서버에서 모든 클라이언트에 폭발 반응 방향과 연출 강도를 전달한다.
 	UFUNCTION(NetMulticast, Unreliable)
@@ -409,6 +446,13 @@ protected:
 	void OnExplosionReaction(FVector Direction, float ReactionScale);
 
 	bool bCombatDecisionRefreshPending = false;
+	FVector AccumulatedImpactVelocity = FVector::ZeroVector;
+	float CurrentImpactStrength = 0.0f;
+	float CurrentPhysicalKnockbackDuration = 0.0f;
+	float CurrentControlRecoveryDuration = 0.0f;
+	float ImpactRecoveryElapsedTime = 0.0f;
+	bool bImpactReactionActive = false;
+	FTimerHandle PossessedImpactInputLockTimerHandle;
 
 	// 빙의된 VEC의 AttackAction 입력 진입점.
 	// 소유 클라이언트는 시작/종료 상태만 RPC로 보내고 실제 발사는 서버 무기가 수행한다.

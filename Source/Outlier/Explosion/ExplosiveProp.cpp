@@ -1,10 +1,12 @@
 #include "Explosion/ExplosiveProp.h"
 
-#include "Components/BoxComponent.h"
+#include "Components/CapsuleComponent.h"
 #include "Components/SceneComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Damage/OutlierTaggedDamageEvent.h"
 #include "Explosion/ExplosionComponent.h"
+#include "Enemy/SelfDestructDrone.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "Kismet/GameplayStatics.h"
 #include "Net/UnrealNetwork.h"
@@ -24,8 +26,16 @@ AExplosiveProp::AExplosiveProp()
 	ExplosiveMesh->SetupAttachment(SceneRoot);
 	ExplosiveMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 
-	HitCollision = CreateDefaultSubobject<UBoxComponent>(TEXT("HitCollision"));
+	FirstPersonExplosiveMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("FirstPersonExplosiveMesh"));
+	FirstPersonExplosiveMesh->SetupAttachment(SceneRoot);
+	FirstPersonExplosiveMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	FirstPersonExplosiveMesh->SetOnlyOwnerSee(true);
+	FirstPersonExplosiveMesh->SetVisibility(false, true);
+	FirstPersonExplosiveMesh->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::FirstPerson;
+
+	HitCollision = CreateDefaultSubobject<UCapsuleComponent>(TEXT("HitCollision"));
 	HitCollision->SetupAttachment(SceneRoot);
+	HitCollision->InitCapsuleSize(30.0f, 50.0f);
 	HitCollision->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
 	HitCollision->SetCollisionObjectType(ECC_WorldDynamic);
 	HitCollision->SetCollisionResponseToAllChannels(ECR_Ignore);
@@ -40,12 +50,23 @@ void AExplosiveProp::BeginPlay()
 {
 	Super::BeginPlay();
 
-	if (!InitializeFromDataTable())
+	CachedOwningDrone = Cast<ASelfDestructDrone>(GetOwner());
+	if (!CachedOwningDrone.IsValid())
+	{
+		CachedOwningDrone = Cast<ASelfDestructDrone>(GetAttachParentActor());
+	}
+	if (CachedOwningDrone.IsValid())
+	{
+		SetupMountedPresentation();
+	}
+
+	// 부착형은 외형과 HitBox만 공유하고 HP 및 폭발 책임은 소유 자폭 드론이 가진다.
+	if (!CachedOwningDrone.IsValid() && !InitializeFromDataTable())
 	{
 		UE_LOG(LogTemp, Error, TEXT("Explosive prop %s has an invalid ExplosivePropRow"), *GetName());
 	}
 
-	if (ExplosionComponent)
+	if (!CachedOwningDrone.IsValid() && ExplosionComponent)
 	{
 		ExplosionComponent->OnExplosionProcessed.AddDynamic(this, &AExplosiveProp::HandleExplosionProcessed);
 	}
@@ -57,6 +78,64 @@ void AExplosiveProp::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLi
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(AExplosiveProp, bExploded);
+	DOREPLIFETIME(AExplosiveProp, MountedSocketName);
+}
+
+void AExplosiveProp::InitializeMountedSocket(FName InMountedSocketName)
+{
+	if (HasAuthority())
+	{
+		MountedSocketName = InMountedSocketName;
+	}
+}
+
+void AExplosiveProp::SetupMountedPresentation()
+{
+	ASelfDestructDrone* OwningDrone = CachedOwningDrone.Get();
+	if (!OwningDrone || MountedSocketName.IsNone())
+	{
+		return;
+	}
+
+	USkeletalMeshComponent* ThirdPersonMesh = OwningDrone->GetMesh();
+	if (ThirdPersonMesh && ThirdPersonMesh->DoesSocketExist(MountedSocketName))
+	{
+		AttachToComponent(
+			ThirdPersonMesh,
+			FAttachmentTransformRules::SnapToTargetNotIncludingScale,
+			MountedSocketName);
+		ExplosiveMesh->SetOwnerNoSee(true);
+	}
+
+	USkeletalMeshComponent* FirstPersonMesh = OwningDrone->GetFirstPersonMesh();
+	if (!FirstPersonMesh
+		|| !FirstPersonMesh->DoesSocketExist(MountedSocketName)
+		|| !FirstPersonExplosiveMesh)
+	{
+		if (HasAuthority())
+		{
+			UE_LOG(
+				LogOutlier,
+				Warning,
+				TEXT("[ExplosiveProp] Matching first-person socket is missing. Actor=%s Socket=%s"),
+				*GetNameSafe(this),
+				*MountedSocketName.ToString());
+		}
+		return;
+	}
+
+	FirstPersonExplosiveMesh->SetStaticMesh(ExplosiveMesh->GetStaticMesh());
+	for (int32 MaterialIndex = 0; MaterialIndex < ExplosiveMesh->GetNumMaterials(); ++MaterialIndex)
+	{
+		FirstPersonExplosiveMesh->SetMaterial(
+			MaterialIndex,
+			ExplosiveMesh->GetMaterial(MaterialIndex));
+	}
+	FirstPersonExplosiveMesh->AttachToComponent(
+		FirstPersonMesh,
+		FAttachmentTransformRules::SnapToTargetNotIncludingScale,
+		MountedSocketName);
+	FirstPersonExplosiveMesh->SetRelativeTransform(ExplosiveMesh->GetRelativeTransform());
 }
 
 float AExplosiveProp::TakeDamage(
@@ -65,6 +144,50 @@ float AExplosiveProp::TakeDamage(
 	AController* EventInstigator,
 	AActor* DamageCauser)
 {
+	if (CachedOwningDrone.IsValid())
+	{
+		if (!HasAuthority()
+			|| DamageAmount <= 0.0f
+			|| !DamageEvent.IsOfType(FOutlierTaggedDamageEvent::ClassID))
+		{
+			return 0.0f;
+		}
+
+		const FOutlierTaggedDamageEvent& MountedDamageEvent =
+			static_cast<const FOutlierTaggedDamageEvent&>(DamageEvent);
+		// 폭발 범위에는 드론과 부착물이 함께 잡히므로 무기 피격만 본체로 전달한다.
+		if (!MountedDamageEvent.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Weapon()))
+		{
+			return 0.0f;
+		}
+
+		const float PreviousDroneHealth = CachedOwningDrone->GetCurrentHealth();
+		const float WeakPointMultiplier = FMath::Max(
+			CachedOwningDrone->GetRuntimeStat().ExplosiveWeakPointMultiplier,
+			1.0f);
+		const FString DroneName = GetNameSafe(CachedOwningDrone.Get());
+		const FString ExplosiveName = GetNameSafe(this);
+		const FString ComponentName = GetNameSafe(MountedDamageEvent.HitResult.GetComponent());
+		const float AppliedDamage = CachedOwningDrone->TakeDamage(
+			DamageAmount,
+			DamageEvent,
+			EventInstigator,
+			DamageCauser);
+		UE_LOG(
+			LogOutlier,
+			Warning,
+			TEXT("[EnemyWeakPoint] Type=MountedExplosive Drone=%s Explosive=%s Component=%s RawDamage=%.2f Multiplier=%.2f AppliedDamage=%.2f HP=%.2f->%.2f"),
+			*DroneName,
+			*ExplosiveName,
+			*ComponentName,
+			DamageAmount,
+			WeakPointMultiplier,
+			AppliedDamage,
+			PreviousDroneHealth,
+			FMath::Max(PreviousDroneHealth - AppliedDamage, 0.0f));
+		return AppliedDamage;
+	}
+
 	UE_LOG(
 		LogOutlier,
 		Warning,
@@ -187,7 +310,7 @@ float AExplosiveProp::TakeDamage(
 void AExplosiveProp::ResetToInitialState()
 {
 	// SaveGame 담당 시스템이 서버에서 호출할 복구 진입점이다.
-	if (!HasAuthority() || !InitializeFromDataTable())
+	if (!HasAuthority() || CachedOwningDrone.IsValid() || !InitializeFromDataTable())
 	{
 		return;
 	}
@@ -239,6 +362,12 @@ void AExplosiveProp::ApplyExplodedState()
 	if (ExplosiveMesh)
 	{
 		ExplosiveMesh->SetVisibility(!bExploded, true);
+	}
+	if (FirstPersonExplosiveMesh)
+	{
+		FirstPersonExplosiveMesh->SetVisibility(
+			CachedOwningDrone.IsValid() && !bExploded,
+			true);
 	}
 
 	if (HitCollision)

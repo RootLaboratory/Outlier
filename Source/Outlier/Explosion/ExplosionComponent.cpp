@@ -2,6 +2,7 @@
 
 #include "Explosion/ExplosionSubsystem.h"
 #include "Explosion/ExplosionTypes.h"
+#include "Explosion/OutlierExplosionCameraShake.h"
 #include "Kismet/GameplayStatics.h"
 #include "Net/UnrealNetwork.h"
 #include "NiagaraFunctionLibrary.h"
@@ -11,6 +12,7 @@ UExplosionComponent::UExplosionComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
 	SetIsReplicatedByDefault(true);
+	CameraShakeClass = UOutlierExplosionCameraShake::StaticClass();
 }
 
 void UExplosionComponent::BeginPlay()

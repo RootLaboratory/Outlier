@@ -5,6 +5,7 @@
 #include "Engine/OverlapResult.h"
 #include "Engine/World.h"
 #include "Explosion/ExplosionComponent.h"
+#include "FirstPerson/FirstPersonPlayerController.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 #include "GameplayTags/OutlierGameplayTags.h"
@@ -47,27 +48,29 @@ void UExplosionSubsystem::RequestExplosion(
 	}
 }
 
-float UExplosionSubsystem::CalculateDistanceDamage(
+float UExplosionSubsystem::CalculateFalloffRatio(
 	float Distance,
-	float MaxDamage,
-	float MinDamage,
-	float InnerRadius,
-	float OuterRadius)
+	float OuterRadius,
+	float FalloffExponent)
 {
-	const float SafeInnerRadius = FMath::Max(InnerRadius, 0.0f);
-	const float SafeOuterRadius = FMath::Max(OuterRadius, SafeInnerRadius);
-	if (Distance > SafeOuterRadius)
+	const float SafeOuterRadius = FMath::Max(OuterRadius, 0.0f);
+	if (SafeOuterRadius <= 0.0f || Distance >= SafeOuterRadius)
 	{
 		return 0.0f;
 	}
 
-	if (Distance <= SafeInnerRadius || FMath::IsNearlyEqual(SafeInnerRadius, SafeOuterRadius))
-	{
-		return FMath::Max(MaxDamage, 0.0f);
-	}
+	const float NormalizedDistance = FMath::Clamp(Distance / SafeOuterRadius, 0.0f, 1.0f);
+	return FMath::Pow(1.0f - NormalizedDistance, FMath::Max(FalloffExponent, 0.01f));
+}
 
-	const float Alpha = (Distance - SafeInnerRadius) / (SafeOuterRadius - SafeInnerRadius);
-	return FMath::Max(FMath::Lerp(MaxDamage, MinDamage, Alpha), 0.0f);
+float UExplosionSubsystem::CalculateDistanceDamage(
+	float Distance,
+	float MaxDamage,
+	float OuterRadius,
+	float FalloffExponent)
+{
+	return FMath::Max(MaxDamage, 0.0f)
+		* CalculateFalloffRatio(Distance, OuterRadius, FalloffExponent);
 }
 
 void UExplosionSubsystem::ProcessPendingExplosions()
@@ -95,10 +98,7 @@ void UExplosionSubsystem::ProcessExplosion(const FPendingExplosion& Request)
 		return;
 	}
 
-	const float OuterRadius = FMath::Max3(
-		Request.Profile.OuterRadiusCm,
-		Request.Profile.InnerRadiusCm,
-		0.0f);
+	const float OuterRadius = FMath::Max(Request.Profile.OuterRadiusCm, 0.0f);
 	if (OuterRadius > 0.0f)
 	{
 		FCollisionObjectQueryParams ObjectQueryParams;
@@ -132,11 +132,14 @@ void UExplosionSubsystem::ProcessExplosion(const FPendingExplosion& Request)
 			const float DistanceDamage = CalculateDistanceDamage(
 				Distance,
 				Request.Profile.MaxDamage,
-				Request.Profile.MinDamage,
-				Request.Profile.InnerRadiusCm,
-				Request.Profile.OuterRadiusCm);
+				Request.Profile.OuterRadiusCm,
+				Request.Profile.DamageFalloffExponent);
+			const float ImpulseRatio = CalculateFalloffRatio(
+				Distance,
+				Request.Profile.OuterRadiusCm,
+				Request.Profile.ImpulseFalloffExponent);
 
-			if (DistanceDamage <= 0.0f)
+			if (DistanceDamage <= 0.0f && ImpulseRatio <= 0.0f)
 			{
 				continue;
 			}
@@ -146,15 +149,7 @@ void UExplosionSubsystem::ProcessExplosion(const FPendingExplosion& Request)
 				? FMath::Clamp(Request.Profile.OccludedMultiplier, 0.0f, 1.0f)
 				: 1.0f;
 			const float FinalDamage = DistanceDamage * OcclusionMultiplier;
-			if (FinalDamage <= 0.0f)
-			{
-				continue;
-			}
-
-			const float ReferenceDamage = FMath::Max(Request.Profile.MaxDamage, Request.Profile.MinDamage);
-			const float EffectRatio = ReferenceDamage > 0.0f
-				? FMath::Clamp(FinalDamage / ReferenceDamage, 0.0f, 1.0f)
-				: 0.0f;
+			const float FinalImpulseRatio = ImpulseRatio * OcclusionMultiplier;
 
 			// 피해와 동일한 감쇠 비율을 반동과 카메라 흔들림에도 사용한다.
 			if (AEnemyBase* Enemy = Cast<AEnemyBase>(TargetActor))
@@ -163,22 +158,27 @@ void UExplosionSubsystem::ProcessExplosion(const FPendingExplosion& Request)
 					Request.Location,
 					Request.Profile.EnemyImpulseScale,
 					Request.Profile.TurretReactionScale,
-					EffectRatio);
+					FinalImpulseRatio);
 			}
 			ApplyPlayerCameraShake(
 				TargetActor,
 				SourceComponent->GetCameraShakeClass(),
 				Request.Profile.CameraShakeScale,
-				EffectRatio);
+				FinalImpulseRatio,
+				SourceComponent->IsCameraShakeEnabled(),
+				SourceComponent->AllowsCameraShakeForInactivePawn());
 
-			FOutlierTaggedDamageEvent DamageEvent;
-			DamageEvent.DamageTag = OutlierGameplayTags::Damage::Explosion();
-			DamageEvent.DamageOrigin = Request.Location;
-			TargetActor->TakeDamage(
-				FinalDamage,
-				DamageEvent,
-				Request.EventInstigator.Get(),
-				SourceActor);
+			if (FinalDamage > 0.0f)
+			{
+				FOutlierTaggedDamageEvent DamageEvent;
+				DamageEvent.DamageTag = OutlierGameplayTags::Damage::Explosion();
+				DamageEvent.DamageOrigin = Request.Location;
+				TargetActor->TakeDamage(
+					FinalDamage,
+					DamageEvent,
+					Request.EventInstigator.Get(),
+					SourceActor);
+			}
 		}
 	}
 
@@ -211,18 +211,27 @@ void UExplosionSubsystem::ApplyPlayerCameraShake(
 	AActor* TargetActor,
 	TSubclassOf<UCameraShakeBase> CameraShakeClass,
 	float CameraShakeScale,
-	float EffectRatio) const
+	float EffectRatio,
+	bool bCameraShakeEnabled,
+	bool bAllowCameraShakeForInactivePawn) const
 {
 	const APawn* Pawn = Cast<APawn>(TargetActor);
-	APlayerController* PlayerController = Pawn ? Cast<APlayerController>(Pawn->GetController()) : nullptr;
-	if (!PlayerController || !CameraShakeClass || CameraShakeScale <= 0.0f)
+	AFirstPersonPlayerController* PlayerController = Pawn
+		? Cast<AFirstPersonPlayerController>(Pawn->GetController())
+		: nullptr;
+	if (!bCameraShakeEnabled || !PlayerController || !CameraShakeClass || CameraShakeScale <= 0.0f)
 	{
 		return;
 	}
 
-	PlayerController->ClientStartCameraShake(
+	float TargetScale = 1.0f;
+	if (const AEnemyBase* PossessedEnemy = Cast<AEnemyBase>(Pawn))
+	{
+		TargetScale = PossessedEnemy->GetImpactCameraShakeScale();
+	}
+
+	PlayerController->ClientPlayExplosionCameraShake(
 		CameraShakeClass,
-		CameraShakeScale * EffectRatio,
-		ECameraShakePlaySpace::CameraLocal,
-		FRotator::ZeroRotator);
+		CameraShakeScale * EffectRatio * TargetScale,
+		bAllowCameraShakeForInactivePawn);
 }

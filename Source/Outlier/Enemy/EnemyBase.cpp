@@ -1,6 +1,6 @@
 #include "Enemy/EnemyBase.h"
 #include "Camera/CameraComponent.h"
-#include "Components/StateTreeComponent.h"
+#include "Enemy/EnemyStateTreeComponent.h"
 #include "Damage/OutlierTaggedDamageEvent.h"
 #include "Drone/Partner/HackableComponent.h"
 #include "Drone/Partner/EMPableComponent.h"
@@ -18,12 +18,28 @@
 #include "Components/SphereComponent.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "InputActionValue.h"
+#include "HAL/IConsoleManager.h"
 #include "Net/UnrealNetwork.h"
 #include "Perception/AIPerceptionSystem.h"
 #include "Team/OutlierTeamIds.h"
 #include "TimerManager.h"
 #include "Room/RoomTagComponent.h"
 #include "Weapon/RangedWeaponBase.h"
+#include "Outlier.h"
+
+namespace
+{
+	TAutoConsoleVariable<int32> CVarEnemyImpactReactionDiagnostics(
+		TEXT("outlier.Enemy.ImpactReactionDiagnostics"),
+		0,
+		TEXT("폭발 충격과 반동 회복 사이클 진단 로그를 출력합니다. 0: 끔, 1: 켬"),
+		ECVF_Cheat);
+
+	bool IsEnemyImpactReactionDiagnosticsEnabled()
+	{
+		return CVarEnemyImpactReactionDiagnostics.GetValueOnGameThread() != 0;
+	}
+}
 
 AEnemyBase::AEnemyBase()
 {
@@ -37,7 +53,7 @@ AEnemyBase::AEnemyBase()
 	// 튀어나온 부위만 본 단위로 정상 검출됨) — 그래서 이동/충돌용 콜리전은 그대로 두고 이 채널만 무시
 	GetCapsuleComponent()->SetCollisionResponseToChannel(ECC_PhysicsBody, ECR_Ignore);
 
-	StateTreeComponent = CreateDefaultSubobject<UStateTreeComponent>(TEXT("StateTreeComponent"));
+	StateTreeComponent = CreateDefaultSubobject<UEnemyStateTreeComponent>(TEXT("StateTreeComponent"));
 	// Enemy StateTree의 행동 Task는 서버 권한과 AIController를 전제로 한다.
 	// 컴포넌트 자동 시작을 끄고 BeginPlay 초기화가 끝난 뒤 서버에서만 시작한다.
 	StateTreeComponent->SetStartLogicAutomatically(false);
@@ -98,6 +114,7 @@ void AEnemyBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifeti
 	DOREPLIFETIME(AEnemyBase, CombatState);
 	DOREPLIFETIME(AEnemyBase, bIsPossessed);
 	DOREPLIFETIME(AEnemyBase, bPossessionInProgress);
+	DOREPLIFETIME(AEnemyBase, bPossessedImpactInputLocked);
 	DOREPLIFETIME(AEnemyBase, bPlayerCurrentlyVisible);
 	DOREPLIFETIME(AEnemyBase, bHasSharedTargetContact);
 	DOREPLIFETIME(AEnemyBase, SharedTargetLocation);
@@ -139,6 +156,7 @@ void AEnemyBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	CancelPossessionProcess();
 	ResetPossessedAttackInput();
+	EndPossessedImpactInputLock();
 	StopCurrentAttack();
 	RemoveRoomTargetObserver();
 	ReleaseSearchRingSlot();
@@ -297,7 +315,14 @@ void AEnemyBase::SetEnemyPossessed(bool bNewIsPossessed)
 	}
 
 	const bool bWasPossessionInProgress = bPossessionInProgress;
+	bPossessedAttackHeld = false;
+	EndPossessedImpactInputLock();
 	bIsPossessed = bNewIsPossessed;
+	if (bIsPossessed)
+	{
+		CancelCommittedAction();
+		EndImpactReaction();
+	}
 	ResetPossessedAttackInput();
 
 	if (bIsPossessed)
@@ -351,6 +376,8 @@ bool AEnemyBase::BeginPossessionProcess(APartnerCharacter* PartnerCharacter)
 	}
 
 	bPossessionInProgress = true;
+	CancelCommittedAction();
+	EndImpactReaction();
 	PossessionInstigatorPartner = PartnerCharacter;
 	ResetPossessedAttackInput();
 	HackableComponent->HackTags.AddTag(
@@ -465,6 +492,12 @@ void AEnemyBase::InitializeFromEnemyStatRow()
 	if (const FEnemyStat* StatRow = EnemyStatRow.GetRow<FEnemyStat>(TEXT("EnemyStatRow")))
 	{
 		RuntimeStat = *StatRow;
+	}
+	if (const FEnemyImpactReactionProfileRow* ImpactProfile =
+		ImpactReactionProfileRow.GetRow<FEnemyImpactReactionProfileRow>(TEXT("ImpactReactionProfileRow")))
+	{
+		// 런타임 충격마다 RowHandle을 다시 조회하지 않도록 서버 초기화 시 한 번만 복사한다.
+		RuntimeImpactReactionProfile = *ImpactProfile;
 	}
 
 	ApplyClassStatOverrides();
@@ -759,6 +792,8 @@ void AEnemyBase::EnterStun()
 
 	PreStunCombatState = CombatState;
 	CombatState = EEnemyCombatState::Stun;
+	CancelCommittedAction();
+	EndImpactReaction();
 	ResetPossessedAttackInput();
 	StopCurrentAttack();
 	RemoveRoomTargetObserver();
@@ -820,19 +855,37 @@ float AEnemyBase::TakeDamage(
 	}
 
 	float DamageMultiplier = 1.0f;
+	bool bCoreWeakPointHit = false;
 	if (DamageEvent.IsOfType(FOutlierTaggedDamageEvent::ClassID))
 	{
 		const FOutlierTaggedDamageEvent& TaggedEvent = static_cast<const FOutlierTaggedDamageEvent&>(DamageEvent);
 		if (TaggedEvent.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Weapon()))
 		{
-			DamageMultiplier = GetWeakPointDamageMultiplier(TaggedEvent.HitResult.GetComponent());
+			const UPrimitiveComponent* HitComponent = TaggedEvent.HitResult.GetComponent();
+			bCoreWeakPointHit = HitComponent == CoreHitboxComponent;
+			DamageMultiplier = GetWeakPointDamageMultiplier(HitComponent);
 		}
 	}
 
+	const float PreviousHealth = CurrentHealth;
 	const float FinalDamage = DamageAmount * FMath::Max(DamageMultiplier, 0.0f);
 	const float AppliedDamage = Super::TakeDamage(FinalDamage, DamageEvent, EventInstigator, DamageCauser);
 	// 공통 TakeDamage 진입점을 기존 Enemy HP 및 사망 처리로 연결한다.
 	ApplyDamageInternal(AppliedDamage);
+	if (bCoreWeakPointHit)
+	{
+		UE_LOG(
+			LogOutlier,
+			Warning,
+			TEXT("[EnemyWeakPoint] Type=Core Actor=%s Component=%s RawDamage=%.2f Multiplier=%.2f AppliedDamage=%.2f HP=%.2f->%.2f"),
+			*GetNameSafe(this),
+			*GetNameSafe(CoreHitboxComponent),
+			DamageAmount,
+			DamageMultiplier,
+			AppliedDamage,
+			PreviousHealth,
+			CurrentHealth);
+	}
 	return AppliedDamage;
 }
 
@@ -861,11 +914,407 @@ void AEnemyBase::ApplyExplosionReaction(
 	}
 
 	const float ImpulseStrength = FMath::Max(EnemyImpulseScale, 0.0f) * EffectRatio;
-	if (ImpulseStrength > 0.0f)
+	if (ImpulseStrength <= 0.0f)
 	{
-		LaunchCharacter(Direction * ImpulseStrength, true, true);
+		MulticastExplosionReaction(Direction, EffectRatio);
+		return;
+	}
+
+	const float ResistanceRatio = FMath::Clamp(
+		RuntimeImpactReactionProfile.ResistanceRatio,
+		0.0f,
+		1.0f);
+	const FVector ImpactVelocity =
+		Direction * ImpulseStrength * (1.0f - ResistanceRatio);
+	if (IsEnemyImpactReactionDiagnosticsEnabled())
+	{
+		UE_LOG(
+			LogOutlier,
+			Warning,
+			TEXT("[EnemyImpactDiag] ExplosionReceived Enemy=%s Origin=%s EffectRatio=%.3f ImpulseScale=%.2f Resistance=%.3f ImpactVelocity=%s ImpactStrength=%.2f Active=%s Possessed=%s"),
+			*GetNameSafe(this),
+			*ExplosionOrigin.ToCompactString(),
+			EffectRatio,
+			EnemyImpulseScale,
+			ResistanceRatio,
+			*ImpactVelocity.ToCompactString(),
+			ImpactVelocity.Size(),
+			bImpactReactionActive ? TEXT("true") : TEXT("false"),
+			bIsPossessed ? TEXT("true") : TEXT("false"));
+	}
+
+	// 직접 빙의된 V.E.C.는 StateTree를 중단하지 않고 기존 Pawn 반동 경로를 사용한다.
+	if (bIsPossessed)
+	{
+		if (IsEnemyImpactReactionDiagnosticsEnabled())
+		{
+			UE_LOG(
+				LogOutlier,
+				Warning,
+				TEXT("[EnemyImpactDiag] PossessedImpactApplied Enemy=%s CommonRecoveryState=false"),
+				*GetNameSafe(this));
+		}
+		LaunchCharacter(ImpactVelocity, true, true);
+		BeginPossessedImpactInputLock();
+		MulticastExplosionReaction(Direction, EffectRatio);
+		return;
+	}
+
+	// 자폭 전조가 Commit된 드론은 카운트다운을 유지하고 돌진 속도에 반동만 더한다.
+	if (TryApplyCommittedImpactVelocity(ImpactVelocity))
+	{
+		if (IsEnemyImpactReactionDiagnosticsEnabled())
+		{
+			UE_LOG(
+				LogOutlier,
+				Warning,
+				TEXT("[EnemyImpactDiag] CommittedImpactApplied Enemy=%s CommonRecoveryState=false Reason=CommittedAction"),
+				*GetNameSafe(this));
+		}
+		MulticastExplosionReaction(Direction, EffectRatio);
+		return;
+	}
+
+	AccumulateImpactVelocity(ImpactVelocity);
+	if (!bImpactReactionActive
+		&& CurrentImpactStrength < RuntimeImpactReactionProfile.MinReactionStrength)
+	{
+		// 반응 기준 미만의 단발 충격은 연출만 재생하고 다음 피격까지 속도를 남기지 않는다.
+		AccumulatedImpactVelocity = FVector::ZeroVector;
+		CurrentImpactStrength = 0.0f;
+		CurrentPhysicalKnockbackDuration = 0.0f;
+		CurrentControlRecoveryDuration = 0.0f;
+		if (IsEnemyImpactReactionDiagnosticsEnabled())
+		{
+			UE_LOG(
+				LogOutlier,
+				Warning,
+				TEXT("[EnemyImpactDiag] ImpactIgnored Enemy=%s Reason=BelowThreshold MinStrength=%.2f"),
+				*GetNameSafe(this),
+				RuntimeImpactReactionProfile.MinReactionStrength);
+		}
+	}
+	else if (!bImpactReactionActive)
+	{
+		SendEnemyStateTreeEvent(
+			FGameplayTag::RequestGameplayTag(
+				TEXT("Enemy.Event.Status.ImpactStarted")));
+		if (IsEnemyImpactReactionDiagnosticsEnabled())
+		{
+			UE_LOG(
+				LogOutlier,
+				Warning,
+				TEXT("[EnemyImpactDiag] ImpactEventSent Enemy=%s Event=Enemy.Event.Status.ImpactStarted Strength=%.2f"),
+				*GetNameSafe(this),
+				CurrentImpactStrength);
+		}
 	}
 	MulticastExplosionReaction(Direction, EffectRatio);
+}
+
+void AEnemyBase::AccumulateImpactVelocity(const FVector& ImpactVelocity)
+{
+	const float PreviousStrength = AccumulatedImpactVelocity.Size();
+	ImpactRecoveryElapsedTime = 0.0f;
+	const float MaxStrength = FMath::Max(
+		RuntimeImpactReactionProfile.MaxAccumulatedStrength,
+		0.0f);
+	AccumulatedImpactVelocity = MaxStrength > 0.0f
+		? (AccumulatedImpactVelocity + ImpactVelocity).GetClampedToMaxSize(MaxStrength)
+		: FVector::ZeroVector;
+
+	if (bImpactReactionActive)
+	{
+		// 활성 반동 중 추가 충격은 CharacterMovement가 다음 Sweep에서 바로 반영하도록 속도도 갱신한다.
+		if (UCharacterMovementComponent* Movement = GetCharacterMovement())
+		{
+			Movement->MaxFlySpeed = FMath::Max(
+				GetRuntimeStat().MoveSpeed,
+				AccumulatedImpactVelocity.Size());
+			Movement->Velocity = AccumulatedImpactVelocity;
+		}
+	}
+
+	RefreshImpactReactionDuration();
+	if (IsEnemyImpactReactionDiagnosticsEnabled())
+	{
+		UE_LOG(
+			LogOutlier,
+			Warning,
+			TEXT("[EnemyImpactDiag] ImpactAccumulated Enemy=%s Strength=%.2f->%.2f PhysicalDuration=%.3f ControlDuration=%.3f Active=%s"),
+			*GetNameSafe(this),
+			PreviousStrength,
+			CurrentImpactStrength,
+			CurrentPhysicalKnockbackDuration,
+			CurrentControlRecoveryDuration,
+			bImpactReactionActive ? TEXT("true") : TEXT("false"));
+	}
+}
+
+void AEnemyBase::RefreshImpactReactionDuration()
+{
+	CurrentImpactStrength = AccumulatedImpactVelocity.Size();
+	const float MinStrength = FMath::Max(
+		RuntimeImpactReactionProfile.MinReactionStrength,
+		0.0f);
+	const float MaxStrength = FMath::Max(
+		RuntimeImpactReactionProfile.MaxAccumulatedStrength,
+		MinStrength);
+	const float StrengthAlpha = MaxStrength > MinStrength
+		? FMath::Clamp(
+			(CurrentImpactStrength - MinStrength) / (MaxStrength - MinStrength),
+			0.0f,
+			1.0f)
+		: 1.0f;
+	const float MinPhysicalDuration = FMath::Max(
+		RuntimeImpactReactionProfile.MinPhysicalKnockbackDuration,
+		0.0f);
+	const float MaxPhysicalDuration = FMath::Max(
+		RuntimeImpactReactionProfile.MaxPhysicalKnockbackDuration,
+		MinPhysicalDuration);
+	CurrentPhysicalKnockbackDuration = FMath::Lerp(
+		MinPhysicalDuration,
+		MaxPhysicalDuration,
+		StrengthAlpha);
+
+	const float MinControlDuration = FMath::Max(
+		RuntimeImpactReactionProfile.MinControlRecoveryDuration,
+		CurrentPhysicalKnockbackDuration);
+	const float MaxControlDuration = FMath::Max(
+		RuntimeImpactReactionProfile.MaxControlRecoveryDuration,
+		MinControlDuration);
+	CurrentControlRecoveryDuration = FMath::Lerp(
+		MinControlDuration,
+		MaxControlDuration,
+		StrengthAlpha);
+}
+
+bool AEnemyBase::BeginImpactReaction()
+{
+	if (!HasAuthority()
+		|| CurrentHealth <= 0.0f
+		|| bIsPossessed
+		|| bPossessionInProgress
+		|| CurrentImpactStrength < RuntimeImpactReactionProfile.MinReactionStrength)
+	{
+		if (IsEnemyImpactReactionDiagnosticsEnabled())
+		{
+			UE_LOG(
+				LogOutlier,
+				Warning,
+				TEXT("[EnemyImpactDiag] RecoveryBeginRejected Enemy=%s Authority=%s Health=%.2f Possessed=%s PossessionPending=%s Strength=%.2f MinStrength=%.2f"),
+				*GetNameSafe(this),
+				HasAuthority() ? TEXT("true") : TEXT("false"),
+				CurrentHealth,
+				bIsPossessed ? TEXT("true") : TEXT("false"),
+				bPossessionInProgress ? TEXT("true") : TEXT("false"),
+				CurrentImpactStrength,
+				RuntimeImpactReactionProfile.MinReactionStrength);
+		}
+		return false;
+	}
+
+	bImpactReactionActive = true;
+	StopCurrentAttack();
+	ReleaseSearchRingSlot();
+
+	AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(GetController());
+	if (!EnemyAIController)
+	{
+		EnemyAIController = Cast<AEnemyAIController>(CachedAIController.Get());
+	}
+	if (EnemyAIController)
+	{
+		EnemyAIController->StopMovement();
+		EnemyAIController->SetEnemyPerceptionEnabled(false);
+	}
+
+	if (UCharacterMovementComponent* Movement = GetCharacterMovement())
+	{
+		Movement->SetMovementMode(MOVE_Flying);
+		Movement->MaxFlySpeed = FMath::Max(
+			GetRuntimeStat().MoveSpeed,
+			AccumulatedImpactVelocity.Size());
+		Movement->Velocity = AccumulatedImpactVelocity;
+	}
+	if (IsEnemyImpactReactionDiagnosticsEnabled())
+	{
+		UE_LOG(
+			LogOutlier,
+			Warning,
+			TEXT("[EnemyImpactDiag] RecoveryStateBegin Enemy=%s Strength=%.2f InertiaHold=%.3f PhysicalDuration=%.3f ControlDuration=%.3f"),
+			*GetNameSafe(this),
+			CurrentImpactStrength,
+			RuntimeImpactReactionProfile.InitialInertiaHoldDuration,
+			CurrentPhysicalKnockbackDuration,
+			CurrentControlRecoveryDuration);
+	}
+	return true;
+}
+
+bool AEnemyBase::UpdateImpactRecovery(float DeltaTime, float ElapsedTime)
+{
+	(void)ElapsedTime;
+	if (!HasAuthority() || !bImpactReactionActive || CurrentHealth <= 0.0f)
+	{
+		return true;
+	}
+
+	UCharacterMovementComponent* Movement = GetCharacterMovement();
+	if (!Movement)
+	{
+		if (IsEnemyImpactReactionDiagnosticsEnabled())
+		{
+			UE_LOG(
+				LogOutlier,
+				Warning,
+				TEXT("[EnemyImpactDiag] RecoveryUpdateEnded Enemy=%s Reason=MissingCharacterMovement"),
+				*GetNameSafe(this));
+		}
+		return true;
+	}
+	const float PreviousElapsedTime = ImpactRecoveryElapsedTime;
+	const float PreviousStrength = CurrentImpactStrength;
+	ImpactRecoveryElapsedTime += FMath::Max(DeltaTime, 0.0f);
+	const float InertiaHoldDuration = FMath::Max(
+		RuntimeImpactReactionProfile.InitialInertiaHoldDuration,
+		0.0f);
+
+	// CharacterMovement가 직전 프레임 충돌면을 따라 보정한 속도를 다음 감속의 기준으로 사용한다.
+	if (ImpactRecoveryElapsedTime >= InertiaHoldDuration
+		&& ImpactRecoveryElapsedTime < CurrentPhysicalKnockbackDuration)
+	{
+		const float Damping = FMath::Max(RuntimeImpactReactionProfile.KnockbackDamping, 0.0f);
+		AccumulatedImpactVelocity = Movement->Velocity
+			* FMath::Exp(-Damping * FMath::Max(DeltaTime, 0.0f));
+	}
+	else if (ImpactRecoveryElapsedTime >= CurrentPhysicalKnockbackDuration)
+	{
+		AccumulatedImpactVelocity = FVector::ZeroVector;
+	}
+	Movement->Velocity = AccumulatedImpactVelocity;
+	CurrentImpactStrength = AccumulatedImpactVelocity.Size();
+
+	if (CurrentImpactStrength <= FMath::Max(RuntimeImpactReactionProfile.RecoverySpeedThreshold, 0.0f))
+	{
+		AccumulatedImpactVelocity = FVector::ZeroVector;
+		Movement->Velocity = FVector::ZeroVector;
+	}
+
+	if (IsEnemyImpactReactionDiagnosticsEnabled())
+	{
+		if (InertiaHoldDuration > 0.0f
+			&& PreviousElapsedTime < InertiaHoldDuration
+			&& ImpactRecoveryElapsedTime >= InertiaHoldDuration)
+		{
+			UE_LOG(
+				LogOutlier,
+				Warning,
+				TEXT("[EnemyImpactDiag] InertiaHoldFinished Enemy=%s Elapsed=%.3f Strength=%.2f"),
+				*GetNameSafe(this),
+				ImpactRecoveryElapsedTime,
+				CurrentImpactStrength);
+		}
+
+		if (PreviousElapsedTime < CurrentPhysicalKnockbackDuration
+			&& ImpactRecoveryElapsedTime >= CurrentPhysicalKnockbackDuration)
+		{
+			UE_LOG(
+				LogOutlier,
+				Warning,
+				TEXT("[EnemyImpactDiag] PhysicalKnockbackFinished Enemy=%s Elapsed=%.3f ControlDuration=%.3f"),
+				*GetNameSafe(this),
+				ImpactRecoveryElapsedTime,
+				CurrentControlRecoveryDuration);
+		}
+
+		const float RecoverySpeedThreshold = FMath::Max(
+			RuntimeImpactReactionProfile.RecoverySpeedThreshold,
+			0.0f);
+		if (PreviousStrength > RecoverySpeedThreshold
+			&& CurrentImpactStrength <= RecoverySpeedThreshold)
+		{
+			UE_LOG(
+				LogOutlier,
+				Warning,
+				TEXT("[EnemyImpactDiag] RecoverySpeedReached Enemy=%s Elapsed=%.3f Threshold=%.2f"),
+				*GetNameSafe(this),
+				ImpactRecoveryElapsedTime,
+				RecoverySpeedThreshold);
+		}
+	}
+
+	const bool bRecoveryComplete =
+		ImpactRecoveryElapsedTime >= CurrentControlRecoveryDuration;
+	if (bRecoveryComplete && IsEnemyImpactReactionDiagnosticsEnabled())
+	{
+		UE_LOG(
+			LogOutlier,
+			Warning,
+			TEXT("[EnemyImpactDiag] RecoveryComplete Enemy=%s Elapsed=%.3f ControlDuration=%.3f"),
+			*GetNameSafe(this),
+			ImpactRecoveryElapsedTime,
+			CurrentControlRecoveryDuration);
+	}
+	return bRecoveryComplete;
+}
+
+void AEnemyBase::EndImpactReaction()
+{
+	if (!HasAuthority() || !bImpactReactionActive)
+	{
+		return;
+	}
+	if (IsEnemyImpactReactionDiagnosticsEnabled())
+	{
+		UE_LOG(
+			LogOutlier,
+			Warning,
+			TEXT("[EnemyImpactDiag] RecoveryStateEnd Enemy=%s Elapsed=%.3f ControlDuration=%.3f Strength=%.2f Completed=%s"),
+			*GetNameSafe(this),
+			ImpactRecoveryElapsedTime,
+			CurrentControlRecoveryDuration,
+			CurrentImpactStrength,
+			ImpactRecoveryElapsedTime >= CurrentControlRecoveryDuration
+				? TEXT("true")
+				: TEXT("false"));
+	}
+
+	bImpactReactionActive = false;
+	AccumulatedImpactVelocity = FVector::ZeroVector;
+	CurrentImpactStrength = 0.0f;
+	CurrentPhysicalKnockbackDuration = 0.0f;
+	CurrentControlRecoveryDuration = 0.0f;
+	ImpactRecoveryElapsedTime = 0.0f;
+	if (UCharacterMovementComponent* Movement = GetCharacterMovement())
+	{
+		Movement->StopMovementImmediately();
+		Movement->MaxFlySpeed = FMath::Max(GetRuntimeStat().MoveSpeed, 0.0f);
+	}
+
+	AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(GetController());
+	if (!EnemyAIController)
+	{
+		EnemyAIController = Cast<AEnemyAIController>(CachedAIController.Get());
+	}
+	if (EnemyAIController
+		&& CurrentHealth > 0.0f
+		&& CombatState != EEnemyCombatState::Stun
+		&& !IsAIControlSuppressed())
+	{
+		EnemyAIController->SetEnemyPerceptionEnabled(true);
+		EnemyAIController->RefreshPerceptionConfigFromPawn();
+	}
+}
+
+bool AEnemyBase::TryApplyCommittedImpactVelocity(const FVector& ImpactVelocity)
+{
+	(void)ImpactVelocity;
+	return false;
+}
+
+void AEnemyBase::CancelCommittedAction()
+{
 }
 
 void AEnemyBase::MulticastExplosionReaction_Implementation(
@@ -874,7 +1323,50 @@ void AEnemyBase::MulticastExplosionReaction_Implementation(
 {
 	if (GetNetMode() != NM_DedicatedServer)
 	{
-		OnExplosionReaction(Direction, ReactionScale);
+		ApplyExplosionReactionPresentation(Direction, ReactionScale);
+	}
+}
+
+void AEnemyBase::ApplyExplosionReactionPresentation(
+	const FVector& Direction,
+	float ReactionScale)
+{
+	OnExplosionReaction(Direction, ReactionScale);
+}
+
+void AEnemyBase::BeginPossessedImpactInputLock()
+{
+	if (!HasAuthority() || !bIsPossessed)
+	{
+		return;
+	}
+
+	bPossessedImpactInputLocked = true;
+	bPossessedAttackQueued = false;
+	GetWorldTimerManager().ClearTimer(PossessedImpactInputLockTimerHandle);
+	GetWorldTimerManager().SetTimer(
+		PossessedImpactInputLockTimerHandle,
+		this,
+		&AEnemyBase::EndPossessedImpactInputLock,
+		FMath::Max(RuntimeImpactReactionProfile.InputLockDuration, KINDA_SMALL_NUMBER),
+		false);
+}
+
+void AEnemyBase::EndPossessedImpactInputLock()
+{
+	GetWorldTimerManager().ClearTimer(PossessedImpactInputLockTimerHandle);
+	const bool bShouldResumeHeldAttack = HasAuthority()
+		&& bPossessedImpactInputLocked
+		&& bIsPossessed
+		&& bPossessedAttackHeld
+		&& CurrentHealth > 0.0f;
+	bPossessedImpactInputLocked = false;
+
+	if (bShouldResumeHeldAttack)
+	{
+		bPossessedAttackQueued = true;
+		SendEnemyStateTreeEvent(
+			FGameplayTag::RequestGameplayTag(TEXT("Enemy.Event.Attack.InputPressed")));
 	}
 }
 
@@ -1156,6 +1648,7 @@ bool AEnemyBase::StartPossessedAttackBurst()
 {
 	if (!HasAuthority()
 		|| !bIsPossessed
+		|| bPossessedImpactInputLocked
 		|| !HasPossessedAttackRequest()
 		|| CombatState == EEnemyCombatState::Stun
 		|| !IsValid(CurrentWeapon)
@@ -1297,6 +1790,8 @@ void AEnemyBase::RemoveRoomTargetObserver()
 
 void AEnemyBase::HandleDeath()
 {
+	EndPossessedImpactInputLock();
+	EndImpactReaction();
 	ResetPossessedAttackInput();
 	StopCurrentAttack();
 
@@ -1408,6 +1903,13 @@ void AEnemyBase::SetPossessedAttackHeld(bool bHeld)
 				FGameplayTag::RequestGameplayTag(
 					TEXT("Enemy.Event.Attack.InputReleased")));
 		}
+		return;
+	}
+
+	if (bPossessedImpactInputLocked)
+	{
+		bPossessedAttackHeld = true;
+		bPossessedAttackQueued = false;
 		return;
 	}
 

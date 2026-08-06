@@ -2,16 +2,75 @@
 
 
 #include "FirstPersonPlayerCameraManager.h"
+#include "Camera/CameraShakeBase.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Enemy/VECDrone.h"
 #include "GameFramework/PlayerController.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Outlier.h"
 
 AFirstPersonPlayerCameraManager::AFirstPersonPlayerCameraManager()
 {
 	// set the min/max pitch
 	ViewPitchMin = -70.0f;
 	ViewPitchMax = 80.0f;
+}
+
+void AFirstPersonPlayerCameraManager::PlayExplosionCameraShake(
+	TSubclassOf<UCameraShakeBase> CameraShakeClass,
+	float Scale,
+	bool bAllowInactivePawn)
+{
+	if (!PCOwner || !PCOwner->IsLocalController() || !CameraShakeClass)
+	{
+		return;
+	}
+
+	const APawn* ControlledPawn = PCOwner->GetPawn();
+	if (!bAllowInactivePawn && (!ControlledPawn || GetViewTarget() != ControlledPawn))
+	{
+		return;
+	}
+
+	const float WorldTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	if (WorldTime >= ActiveExplosionShakeEndTime)
+	{
+		ActiveExplosionShake.Reset();
+		ActiveExplosionShakeScale = 0.0f;
+	}
+
+	const float FinalScale = FMath::Clamp(
+		Scale * MasterCameraMotionScale * ExplosionShakeScale,
+		0.0f,
+		MaxExplosionShakeScale);
+	if (FinalScale <= 0.0f
+		|| WorldTime - LastExplosionShakeStartTime < ExplosionShakeRestartCooldownSeconds
+		|| (ActiveExplosionShake.IsValid() && FinalScale <= ActiveExplosionShakeScale))
+	{
+		return;
+	}
+
+	if (UCameraShakeBase* ExistingShake = ActiveExplosionShake.Get())
+	{
+		StopCameraShake(ExistingShake, true);
+	}
+
+	ActiveExplosionShake = StartCameraShake(
+		CameraShakeClass,
+		FinalScale,
+		ECameraShakePlaySpace::CameraLocal,
+		FRotator::ZeroRotator);
+	ActiveExplosionShakeScale = FinalScale;
+	LastExplosionShakeStartTime = WorldTime;
+	ActiveExplosionShakeEndTime = WorldTime + ExplosionShakeDurationSeconds;
+
+	UE_LOG(
+		LogOutlier,
+		Verbose,
+		TEXT("[CameraShake] Explosion shake started. Controller=%s Scale=%.3f Class=%s"),
+		*GetNameSafe(PCOwner),
+		FinalScale,
+		*GetNameSafe(CameraShakeClass.Get()));
 }
 
 void AFirstPersonPlayerCameraManager::ProcessViewRotation(float DeltaTime, FRotator& OutViewRotation, FRotator& OutDeltaRot)
@@ -40,7 +99,8 @@ void AFirstPersonPlayerCameraManager::ProcessViewRotation(float DeltaTime, FRota
 	const APartnerCharacter* PartnerCharacter = Cast<APartnerCharacter>(OwningController->GetPawn());
 	if (PartnerCharacter)
 	{
-		const float InertialRoll = PartnerCharacter->GetCurrentInertialCameraRollDegrees();
+		const float MotionScale = MasterCameraMotionScale * MovementTiltScale;
+		const float InertialRoll = PartnerCharacter->GetCurrentInertialCameraRollDegrees() * MotionScale;
 		const float MaxInertialRoll = PartnerCharacter->GetMaxInertialCameraRollDegrees();
 
 		OutViewRotation.Roll = FMath::Clamp(
@@ -54,7 +114,8 @@ void AFirstPersonPlayerCameraManager::ProcessViewRotation(float DeltaTime, FRota
 	const AVECDrone* VECDrone = Cast<AVECDrone>(OwningController->GetPawn());
 	if (VECDrone)
 	{
-		const float DroneRoll = VECDrone->GetCurrentCameraRollDegrees();
+		const float MotionScale = MasterCameraMotionScale * MovementTiltScale;
+		const float DroneRoll = VECDrone->GetCurrentCameraRollDegrees() * MotionScale;
 		const float MaxDroneRoll = VECDrone->GetMaxCameraRollDegrees();
 
 		OutViewRotation.Roll = FMath::Clamp(
@@ -83,7 +144,7 @@ void AFirstPersonPlayerCameraManager::UpdateViewTarget(FTViewTarget& OutVT, floa
 	{
 		const float MaxDronePitch = VECDrone->GetMaxCameraPitchDegrees();
 		const float InertialPitch = FMath::Clamp(
-			VECDrone->GetCurrentCameraPitchDegrees(),
+			VECDrone->GetCurrentCameraPitchDegrees() * MasterCameraMotionScale * MovementTiltScale,
 			-1.0f * MaxDronePitch,
 			MaxDronePitch
 		);
@@ -102,7 +163,7 @@ void AFirstPersonPlayerCameraManager::UpdateViewTarget(FTViewTarget& OutVT, floa
 	}
 
 	const float InertialPitch = FMath::Clamp(
-		PartnerCharacter->GetCurrentInertialCameraPitchDegrees(),
+		PartnerCharacter->GetCurrentInertialCameraPitchDegrees() * MasterCameraMotionScale * MovementTiltScale,
 		-1.0f * PartnerCharacter->GetMaxInertialCameraPitchDegrees(),
 		PartnerCharacter->GetMaxInertialCameraPitchDegrees()
 	);

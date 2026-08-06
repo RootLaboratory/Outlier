@@ -79,7 +79,6 @@ AVECDrone::AVECDrone()
 	FirstPersonMesh->SetupAttachment(FirstPersonViewModelRoot);
 	FirstPersonMesh->SetOnlyOwnerSee(true);
 	FirstPersonMesh->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::FirstPerson;
-	FirstPersonMesh->SetRelativeLocation(FVector(-2.0f, 0.0f, -130.0f));
 	FirstPersonMesh->SetRelativeRotation(FRotator::ZeroRotator);
 	FirstPersonMesh->SetCollisionProfileName(FName("NoCollision"));
 
@@ -119,6 +118,20 @@ void AVECDrone::BeginPlay()
 	}
 
 	Super::BeginPlay();
+}
+
+void AVECDrone::ApplyExplosionReactionPresentation(const FVector& Direction, float ReactionScale)
+{
+	if (VECMovementComponent)
+	{
+		VECMovementComponent->ApplyExternalImpactTilt(
+			Direction,
+			ReactionScale,
+			RuntimeImpactReactionProfile.MaxMeshImpactTiltDegrees,
+			RuntimeImpactReactionProfile.MeshImpactTiltInterpSpeed);
+	}
+
+	Super::ApplyExplosionReactionPresentation(Direction, ReactionScale);
 }
 
 float AVECDrone::GetCurrentCameraPitchDegrees() const

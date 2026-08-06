@@ -53,6 +53,11 @@ public:
 	void ClearFlightInput();
 	void ResetMovementFeel();
 	void RefreshTickEnabled();
+	void ApplyExternalImpactTilt(
+		const FVector& WorldDirection,
+		float NormalizedStrength,
+		float MaxTiltDegrees,
+		float RecoveryInterpSpeed);
 
 	float GetCurrentCameraPitchDegrees() const { return CurrentCameraPitch; }
 	float GetCurrentCameraRollDegrees() const { return CurrentCameraRoll; }
@@ -213,4 +218,8 @@ private:
 	bool bMeshRotationInitialized = false;
 	FVector LastLocation = FVector::ZeroVector;
 	FVector SmoothedVelocity = FVector::ZeroVector;
+	float CurrentImpactMeshPitch = 0.0f;
+	float CurrentImpactMeshRoll = 0.0f;
+	float ImpactMeshTiltInterpSpeed = 8.0f;
+	uint8 bExternalImpactTiltActive : 1 = false;
 };

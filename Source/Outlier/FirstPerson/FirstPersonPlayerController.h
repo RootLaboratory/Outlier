@@ -10,6 +10,7 @@
 #include "FirstPersonPlayerController.generated.h"
 
 class UInputMappingContext;
+class UCameraShakeBase;
 
 namespace FirstPersonInputModeTags
 {
@@ -44,6 +45,13 @@ public:
 
 	UFUNCTION(Server, Reliable)
 	void ServerNotifyArenaReady();
+
+	// 서버에서 계산한 폭발 충격을 소유 클라이언트의 CameraManager에 전달한다.
+	UFUNCTION(Client, Unreliable)
+	void ClientPlayExplosionCameraShake(
+		TSubclassOf<UCameraShakeBase> CameraShakeClass,
+		float Scale,
+		bool bAllowInactivePawn);
 
 	// 디버그: 요청한 페어의 arena를 서버 권위로 리로드
 	UFUNCTION(Server, Reliable)

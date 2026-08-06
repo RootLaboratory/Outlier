@@ -6,7 +6,8 @@
 #include "Explosion/ExplosionTypes.h"
 #include "ExplosiveProp.generated.h"
 
-class UBoxComponent;
+class ASelfDestructDrone;
+class UCapsuleComponent;
 class UExplosionComponent;
 class UNiagaraSystem;
 class USceneComponent;
@@ -29,6 +30,9 @@ public:
 		AController* EventInstigator,
 		AActor* DamageCauser) override;
 
+	// 자폭 드론이 Deferred Spawn을 완료하기 전에 1P/3P가 공유할 소켓 이름을 전달한다.
+	void InitializeMountedSocket(FName InMountedSocketName);
+
 	// 외부 SaveGame 복구 시스템이 서버에서 호출할 초기 상태 복구 함수다.
 	UFUNCTION(BlueprintCallable, Category = "Explosive Prop")
 	void ResetToInitialState();
@@ -39,6 +43,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Explosive Prop")
 	float GetCurrentHP() const { return CurrentHP; }
 
+	// 자폭 드론이 Owner로 지정된 경우에는 자체 HP 대신 드론 HP로 무기 피해를 전달한다.
+	UFUNCTION(BlueprintPure, Category = "Explosive Prop")
+	bool IsMountedOnSelfDestructDrone() const { return CachedOwningDrone.IsValid(); }
+
 protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Explosive Prop")
 	TObjectPtr<USceneComponent> SceneRoot;
@@ -47,7 +55,10 @@ protected:
 	TObjectPtr<UStaticMeshComponent> ExplosiveMesh;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Explosive Prop")
-	TObjectPtr<UBoxComponent> HitCollision;
+	TObjectPtr<UStaticMeshComponent> FirstPersonExplosiveMesh;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Explosive Prop")
+	TObjectPtr<UCapsuleComponent> HitCollision;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Explosive Prop")
 	TObjectPtr<UExplosionComponent> ExplosionComponent;
@@ -66,6 +77,8 @@ protected:
 	void OnHitFeedback(float HitFlashDuration);
 
 private:
+	void SetupMountedPresentation();
+
 	// 배치 폭발물의 HP와 피격 연출 값을 DataTable에서 읽는다.
 	bool InitializeFromDataTable();
 
@@ -91,6 +104,10 @@ private:
 	UPROPERTY(ReplicatedUsing = OnRep_Exploded)
 	bool bExploded = false;
 
+	UPROPERTY(Replicated)
+	FName MountedSocketName = NAME_None;
+
 	float CurrentHP = 0.0f;
 	TOptional<FExplosivePropRow> RuntimePropRow;
+	TWeakObjectPtr<ASelfDestructDrone> CachedOwningDrone;
 };

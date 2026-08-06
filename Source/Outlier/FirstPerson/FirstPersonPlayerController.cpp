@@ -20,6 +20,18 @@ AFirstPersonPlayerController::AFirstPersonPlayerController()
 	PlayerCameraManagerClass = AFirstPersonPlayerCameraManager::StaticClass();
 }
 
+void AFirstPersonPlayerController::ClientPlayExplosionCameraShake_Implementation(
+	TSubclassOf<UCameraShakeBase> CameraShakeClass,
+	float Scale,
+	bool bAllowInactivePawn)
+{
+	if (AFirstPersonPlayerCameraManager* CameraManager =
+		Cast<AFirstPersonPlayerCameraManager>(PlayerCameraManager))
+	{
+		CameraManager->PlayExplosionCameraShake(CameraShakeClass, Scale, bAllowInactivePawn);
+	}
+}
+
 bool AFirstPersonPlayerController::SetFirstPersonInputMode(FGameplayTag NewInputMode)
 {
 	if (!IsLocalController() || !NewInputMode.IsValid())
