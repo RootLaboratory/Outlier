@@ -38,8 +38,14 @@ public:
 		float ChargeSpeed,
 		float MaxChargeDistance,
 		float TargetStopDistance);
+	bool BeginCommittedSelfDestructDirection(
+		const FVector& ChargeDirection,
+		float TelegraphDuration,
+		float ChargeSpeed,
+		float MaxChargeDistance);
 	bool UpdateCommittedSelfDestructMovement(float DeltaTime, float ChargeSpeed);
 	void CancelCommittedSelfDestruct();
+	virtual bool IsPossessedActionCommitted() const override { return bHasCommittedSelfDestruct; }
 
 	UFUNCTION(BlueprintPure, Category = "Self Destruct Drone")
 	bool IsSelfDestructCommitted() const { return bHasCommittedSelfDestruct; }
@@ -79,8 +85,15 @@ protected:
 private:
 	void SpawnAndAttachMountedExplosives();
 	void DestroyMountedExplosives();
+	bool BeginCommittedSelfDestructInternal(
+		const FVector& ChargeDirection,
+		float TelegraphDuration,
+		float ChargeSpeed,
+		float ChargeDistanceLimit);
 
 	bool bDeathHandling = false;
+
+	UPROPERTY(Replicated)
 	bool bHasCommittedSelfDestruct = false;
 	FVector CommittedChargeDirection = FVector::ForwardVector;
 	FVector CommittedChargeTargetDirection = FVector::ForwardVector;

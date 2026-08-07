@@ -11,4 +11,8 @@ class OUTLIER_API UEnemyStateTreeComponent : public UStateTreeComponent
 
 public:
 	virtual TSubclassOf<UStateTreeSchema> GetSchema() const override;
+
+	// 런타임 진단에서 실제 공용 StateTree와 Linked Asset Override 등록 결과를 확인할 때 사용합니다.
+	const FStateTreeReference& GetConfiguredStateTreeReference() const { return StateTreeRef; }
+	const FStateTreeReference* FindLinkedStateTreeOverride(const FGameplayTag StateTag) const;
 };

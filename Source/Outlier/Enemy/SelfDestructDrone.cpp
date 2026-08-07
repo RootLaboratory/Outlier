@@ -3,6 +3,7 @@
 #include "Components/PrimitiveComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Enemy/EnemyAIController.h"
+#include "Enemy/VECDroneMovementComponent.h"
 #include "Explosion/ExplosionComponent.h"
 #include "Explosion/ExplosiveProp.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -54,6 +55,7 @@ void ASelfDestructDrone::GetLifetimeReplicatedProps(
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(ASelfDestructDrone, MountedExplosives);
+	DOREPLIFETIME(ASelfDestructDrone, bHasCommittedSelfDestruct);
 }
 
 float ASelfDestructDrone::GetWeakPointDamageMultiplier(const UPrimitiveComponent* HitComponent) const
@@ -162,17 +164,50 @@ bool ASelfDestructDrone::BeginCommittedSelfDestruct(
 	float MaxChargeDistance,
 	float TargetStopDistance)
 {
-	if (!HasAuthority()
-		|| bDeathHandling
-		|| CurrentHealth <= 0.0f
-		|| bHasCommittedSelfDestruct
-		|| !IsValid(TargetActor))
+	if (!IsValid(TargetActor))
 	{
 		return false;
 	}
 
 	const FVector ToTarget = TargetActor->GetActorLocation() - GetActorLocation();
-	CommittedChargeDirection = ToTarget.GetSafeNormal();
+	const float ChargeDistanceLimit = FMath::Min(
+		FMath::Max(MaxChargeDistance, 0.0f),
+		FMath::Max(ToTarget.Size() - FMath::Max(TargetStopDistance, 0.0f), 0.0f));
+	return BeginCommittedSelfDestructInternal(
+		ToTarget,
+		TelegraphDuration,
+		ChargeSpeed,
+		ChargeDistanceLimit);
+}
+
+bool ASelfDestructDrone::BeginCommittedSelfDestructDirection(
+	const FVector& ChargeDirection,
+	float TelegraphDuration,
+	float ChargeSpeed,
+	float MaxChargeDistance)
+{
+	return BeginCommittedSelfDestructInternal(
+		ChargeDirection,
+		TelegraphDuration,
+		ChargeSpeed,
+		FMath::Max(MaxChargeDistance, 0.0f));
+}
+
+bool ASelfDestructDrone::BeginCommittedSelfDestructInternal(
+	const FVector& ChargeDirection,
+	float TelegraphDuration,
+	float ChargeSpeed,
+	float ChargeDistanceLimit)
+{
+	if (!HasAuthority()
+		|| bDeathHandling
+		|| CurrentHealth <= 0.0f
+		|| bHasCommittedSelfDestruct)
+	{
+		return false;
+	}
+
+	CommittedChargeDirection = ChargeDirection.GetSafeNormal();
 	if (CommittedChargeDirection.IsNearlyZero())
 	{
 		CommittedChargeDirection = GetActorForwardVector().GetSafeNormal();
@@ -180,12 +215,14 @@ bool ASelfDestructDrone::BeginCommittedSelfDestruct(
 	CommittedChargeTargetDirection = CommittedChargeDirection;
 	CommittedChargeStartLocation = GetActorLocation();
 	CommittedChargeSpeed = FMath::Max(ChargeSpeed, 0.0f);
-	CommittedChargeDistanceLimit = FMath::Min(
-		FMath::Max(MaxChargeDistance, 0.0f),
-		FMath::Max(ToTarget.Size() - FMath::Max(TargetStopDistance, 0.0f), 0.0f));
+	CommittedChargeDistanceLimit = FMath::Max(ChargeDistanceLimit, 0.0f);
 	CommittedImpactElapsedTime = 0.0f;
 
 	bHasCommittedSelfDestruct = true;
+	if (VECMovementComponent)
+	{
+		VECMovementComponent->ClearFlightInput();
+	}
 	StopCurrentAttack();
 	ReleaseSearchRingSlot();
 	if (AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(GetController()))
@@ -201,6 +238,7 @@ bool ASelfDestructDrone::BeginCommittedSelfDestruct(
 	}
 	SetActorRotation(FRotator(0.0f, ChargeRotation.Yaw, 0.0f));
 	MulticastSelfDestructTelegraphStarted(FMath::Max(TelegraphDuration, 0.0f));
+	ForceNetUpdate();
 	return true;
 }
 
@@ -299,6 +337,7 @@ void ASelfDestructDrone::CancelCommittedSelfDestruct()
 		Movement->MaxFlySpeed = FMath::Max(GetRuntimeStat().MoveSpeed, 0.0f);
 	}
 	MulticastSelfDestructTelegraphCancelled();
+	ForceNetUpdate();
 }
 
 bool ASelfDestructDrone::TryApplyCommittedImpactVelocity(const FVector& ImpactVelocity)

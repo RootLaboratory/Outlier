@@ -86,6 +86,15 @@ protected:
 		meta = (Schema = "/Script/Outlier.EnemyStateTreeSchema", SchemaCanBeOverriden))
 	FStateTreeReference BattleStateTreeReference;
 
+	// 공용 StateTree의 Enemy.StateTree.PossessedAttack Linked Asset을 개체 유형별 빙의 공격 Tree로 교체한다.
+	// 지정하지 않은 개체는 빙의 중 공격 입력을 처리하지 않는다.
+	UPROPERTY(
+		EditDefaultsOnly,
+		BlueprintReadOnly,
+		Category = "Enemy|AI",
+		meta = (Schema = "/Script/Outlier.EnemyStateTreeSchema", SchemaCanBeOverriden))
+	FStateTreeReference PossessedAttackStateTreeReference;
+
 	// Enemy BP에서 비전투 시 제자리 경계와 경로 순찰 중 사용할 행동을 선택한다.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|AI")
 	EEnemyNonCombatBehavior NonCombatBehavior = EEnemyNonCombatBehavior::Stationary;
@@ -207,6 +216,8 @@ protected:
 	EEnemyCombatState PreStunCombatState = EEnemyCombatState::NonCombat;
 
 public:
+	static bool IsPossessedAttackDiagnosticsEnabled();
+
 	virtual FGenericTeamId GetGenericTeamId() const override;
 
 	virtual FGameplayTag GetCurrentRoomTag() const override;
@@ -270,6 +281,7 @@ public:
 		return bPossessedAttackHeld || bPossessedAttackQueued;
 	}
 	bool ConsumePossessedAttackRequest();
+	virtual bool IsPossessedActionCommitted() const { return false; }
 
 	// StateTree 공격 Task가 서버에서 호출한다. 클라이언트 BP에는 OnAttackPhaseChanged로 전달된다.
 	void SetAttackPhase(EEnemyAttackPhase NewPhase);
@@ -372,6 +384,7 @@ public:
 	// ImpactReaction State의 진입, 활성 Tick, 종료 시점에만 호출한다.
 	bool BeginImpactReaction();
 	bool UpdateImpactRecovery(float DeltaTime, float ElapsedTime);
+	void UpdatePossessedImpactRecovery(float DeltaTime);
 	void EndImpactReaction();
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|Impact")

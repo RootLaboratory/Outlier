@@ -21,6 +21,8 @@
 #include "HAL/IConsoleManager.h"
 #include "Net/UnrealNetwork.h"
 #include "Perception/AIPerceptionSystem.h"
+#include "StateTree.h"
+#include "Components/StateTreeComponentSchema.h"
 #include "Team/OutlierTeamIds.h"
 #include "TimerManager.h"
 #include "Room/RoomTagComponent.h"
@@ -39,6 +41,23 @@ namespace
 	{
 		return CVarEnemyImpactReactionDiagnostics.GetValueOnGameThread() != 0;
 	}
+
+	TAutoConsoleVariable<int32> CVarEnemyPossessedStateTreeDiagnostics(
+		TEXT("outlier.Enemy.PossessedStateTreeDiagnostics"),
+		0,
+		TEXT("빙의 공격 StateTree Override와 Schema 호환성 진단 로그를 출력합니다. 0: 끔, 1: 켬"),
+		ECVF_Cheat);
+
+	bool IsEnemyPossessedStateTreeDiagnosticsEnabled()
+	{
+		return CVarEnemyPossessedStateTreeDiagnostics.GetValueOnGameThread() != 0;
+	}
+
+	TAutoConsoleVariable<int32> CVarEnemyPossessedAttackDiagnostics(
+		TEXT("outlier.Enemy.PossessedAttackDiagnostics"),
+		0,
+		TEXT("빙의 공격 입력부터 StateTree Task 실행까지의 진단 로그를 출력합니다. 0: 끔, 1: 켬"),
+		ECVF_Cheat);
 }
 
 AEnemyBase::AEnemyBase()
@@ -89,17 +108,94 @@ void AEnemyBase::PostInitializeComponents()
 	PatrolPointA = GetActorLocation();
 	PatrolPointB = GetActorTransform().TransformPositionNoScale(PatrolPointBLocalOffset);
 
-	if (!StateTreeComponent || !BattleStateTreeReference.IsValid())
+	if (!StateTreeComponent)
 	{
 		return;
 	}
 
-	// BP 기본값이 확정된 뒤, StateTreeComponent가 BeginPlay에서 자동 시작되기 전에 Override를 등록한다.
-	const FGameplayTag BattleStateTag = FGameplayTag::RequestGameplayTag(
-		TEXT("Enemy.StateTree.Battle"));
-	StateTreeComponent->AddLinkedStateTreeOverrides(
-		BattleStateTag,
-		BattleStateTreeReference);
+	// BP 기본값이 확정된 뒤, StateTreeComponent가 시작되기 전에 유형별 Linked Asset Override를 등록한다.
+	if (BattleStateTreeReference.IsValid())
+	{
+		StateTreeComponent->AddLinkedStateTreeOverrides(
+			FGameplayTag::RequestGameplayTag(TEXT("Enemy.StateTree.Battle")),
+			BattleStateTreeReference);
+	}
+
+	if (PossessedAttackStateTreeReference.IsValid())
+	{
+		const FGameplayTag PossessedAttackTag = FGameplayTag::RequestGameplayTag(
+			TEXT("Enemy.StateTree.PossessedAttack"));
+		StateTreeComponent->AddLinkedStateTreeOverrides(
+			PossessedAttackTag,
+			PossessedAttackStateTreeReference);
+
+		if (IsEnemyPossessedStateTreeDiagnosticsEnabled())
+		{
+			const UEnemyStateTreeComponent* EnemyStateTreeComponent =
+				Cast<UEnemyStateTreeComponent>(StateTreeComponent);
+			const UStateTree* MainTree = EnemyStateTreeComponent
+				? EnemyStateTreeComponent->GetConfiguredStateTreeReference().GetStateTree()
+				: nullptr;
+			const UStateTree* PossessedTree = PossessedAttackStateTreeReference.GetStateTree();
+			const UStateTreeSchema* MainSchema = MainTree ? MainTree->GetSchema() : nullptr;
+			const UStateTreeSchema* PossessedSchema = PossessedTree ? PossessedTree->GetSchema() : nullptr;
+			const UStateTreeComponentSchema* MainComponentSchema = Cast<UStateTreeComponentSchema>(MainSchema);
+			const UStateTreeComponentSchema* PossessedComponentSchema = Cast<UStateTreeComponentSchema>(PossessedSchema);
+			const UClass* MainContextClass = MainComponentSchema ? MainComponentSchema->GetContextActorClass() : nullptr;
+			const UClass* PossessedContextClass = PossessedComponentSchema
+				? PossessedComponentSchema->GetContextActorClass()
+				: nullptr;
+			const bool bSchemaCompatible = MainSchema && PossessedSchema
+				&& PossessedSchema->GetClass()->IsChildOf(MainSchema->GetClass());
+			const bool bMainContextCompatible = MainContextClass && IsA(MainContextClass);
+			const bool bPossessedContextCompatible = PossessedContextClass && IsA(PossessedContextClass);
+			const FStateTreeReference* RegisteredOverride = EnemyStateTreeComponent
+				? EnemyStateTreeComponent->FindLinkedStateTreeOverride(PossessedAttackTag)
+				: nullptr;
+			const bool bOverrideRegistered = RegisteredOverride
+				&& RegisteredOverride->GetStateTree() == PossessedTree;
+
+			UE_LOG(
+				LogOutlier,
+				Warning,
+				TEXT("[EnemyPossessedSchema] Enemy=%s MainTree=%s MainSchema=%s MainContext=%s "
+					"PossessedTree=%s PossessedSchema=%s PossessedContext=%s "
+					"SchemaCompatible=%s MainContextCompatible=%s PossessedContextCompatible=%s "
+					"OverrideTag=%s OverrideRegistered=%s"),
+				*GetNameSafe(this),
+				*GetNameSafe(MainTree),
+				*GetNameSafe(MainSchema ? MainSchema->GetClass() : nullptr),
+				*GetNameSafe(MainContextClass),
+				*GetNameSafe(PossessedTree),
+				*GetNameSafe(PossessedSchema ? PossessedSchema->GetClass() : nullptr),
+				*GetNameSafe(PossessedContextClass),
+				bSchemaCompatible ? TEXT("true") : TEXT("false"),
+				bMainContextCompatible ? TEXT("true") : TEXT("false"),
+				bPossessedContextCompatible ? TEXT("true") : TEXT("false"),
+				*PossessedAttackTag.ToString(),
+				bOverrideRegistered ? TEXT("true") : TEXT("false"));
+
+			if (!bSchemaCompatible || !bMainContextCompatible
+				|| !bPossessedContextCompatible || !bOverrideRegistered)
+			{
+				UE_LOG(
+					LogOutlier,
+					Error,
+					TEXT("[EnemyPossessedSchema] Invalid possessed StateTree setup. Enemy=%s "
+						"공용 트리와 빙의 트리의 Schema/Context Actor Class 및 Override 등록 결과를 확인하세요."),
+					*GetNameSafe(this));
+			}
+		}
+	}
+	else if (HackableComponent
+		&& HackableComponent->HackTags.HasTagExact(HackGameplayTags::Target::Possessable()))
+	{
+		UE_LOG(
+			LogOutlier,
+			Warning,
+			TEXT("[EnemyPossessedAttack] Possessed attack StateTree is not configured. Enemy=%s"),
+			*GetNameSafe(this));
+	}
 }
 
 void AEnemyBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -226,12 +322,83 @@ void AEnemyBase::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent
 
 void AEnemyBase::SendEnemyStateTreeEvent(FGameplayTag Tag)
 {
+	const bool bPossessionDiagnosticEvent = Tag.ToString().StartsWith(
+		TEXT("Enemy.Event.Possession"));
+	const bool bAttackDiagnosticEvent = Tag.ToString().StartsWith(
+		TEXT("Enemy.Event.Attack"));
 	if (!HasAuthority() || !Tag.IsValid() || !StateTreeComponent)
 	{
+		if (IsPossessedAttackDiagnosticsEnabled()
+			&& (bAttackDiagnosticEvent || bPossessionDiagnosticEvent))
+		{
+			UE_LOG(
+				LogOutlier,
+				Error,
+				TEXT("[EnemyPossessedAttackDiag] EventRejected Enemy=%s Tag=%s Authority=%s "
+					"TagValid=%s StateTreeComponent=%s"),
+				*GetNameSafe(this),
+				*Tag.ToString(),
+				HasAuthority() ? TEXT("true") : TEXT("false"),
+				Tag.IsValid() ? TEXT("true") : TEXT("false"),
+				*GetNameSafe(StateTreeComponent));
+		}
 		return;
 	}
 
 	StateTreeComponent->SendStateTreeEvent(Tag);
+
+	if (IsPossessedAttackDiagnosticsEnabled()
+		&& (bAttackDiagnosticEvent || bPossessionDiagnosticEvent))
+	{
+		UE_LOG(
+			LogOutlier,
+			Warning,
+			TEXT("[EnemyPossessedAttackDiag] EventSent Enemy=%s Tag=%s RunStatus=%s "
+				"Possessed=%s Held=%s Queued=%s Committed=%s"),
+			*GetNameSafe(this),
+			*Tag.ToString(),
+			*UEnum::GetValueAsString(StateTreeComponent->GetStateTreeRunStatus()),
+			bIsPossessed ? TEXT("true") : TEXT("false"),
+			bPossessedAttackHeld ? TEXT("true") : TEXT("false"),
+			bPossessedAttackQueued ? TEXT("true") : TEXT("false"),
+			IsPossessedActionCommitted() ? TEXT("true") : TEXT("false"));
+
+#if WITH_GAMEPLAY_DEBUGGER
+		GetWorldTimerManager().SetTimerForNextTick(
+			FTimerDelegate::CreateWeakLambda(
+				this,
+				[this, Tag]()
+				{
+					if (!StateTreeComponent || !IsPossessedAttackDiagnosticsEnabled())
+					{
+						return;
+					}
+
+					FString ActiveStates;
+					for (const FName StateName : StateTreeComponent->GetActiveStateNames())
+					{
+						if (!ActiveStates.IsEmpty())
+						{
+							ActiveStates += TEXT(" > ");
+						}
+						ActiveStates += StateName.ToString();
+					}
+
+					UE_LOG(
+						LogOutlier,
+						Warning,
+						TEXT("[EnemyPossessedAttackDiag] ActiveStatesAfterEvent Enemy=%s Tag=%s States=%s"),
+						*GetNameSafe(this),
+						*Tag.ToString(),
+						ActiveStates.IsEmpty() ? TEXT("<None>") : *ActiveStates);
+				}));
+#endif
+	}
+}
+
+bool AEnemyBase::IsPossessedAttackDiagnosticsEnabled()
+{
+	return CVarEnemyPossessedAttackDiagnostics.GetValueOnGameThread() != 0;
 }
 
 void AEnemyBase::SendEnemyStateTreeEventNextTick(FGameplayTag Tag)
@@ -314,7 +481,6 @@ void AEnemyBase::SetEnemyPossessed(bool bNewIsPossessed)
 		return;
 	}
 
-	const bool bWasPossessionInProgress = bPossessionInProgress;
 	bPossessedAttackHeld = false;
 	EndPossessedImpactInputLock();
 	bIsPossessed = bNewIsPossessed;
@@ -354,14 +520,24 @@ void AEnemyBase::SetEnemyPossessed(bool bNewIsPossessed)
 	RefreshPerceptionTeamRegistration();
 	ForceNetUpdate();
 
-	if (!bIsPossessed || !bWasPossessionInProgress)
+	if (IsPossessedAttackDiagnosticsEnabled())
 	{
-		SendEnemyStateTreeEvent(
-			FGameplayTag::RequestGameplayTag(
-				bIsPossessed
-				? TEXT("Enemy.Event.Possession.Started")
-				: TEXT("Enemy.Event.Possession.Ended")));
+		UE_LOG(
+			LogOutlier,
+			Warning,
+			TEXT("[EnemyPossessedAttackDiag] PossessionStateChanged Enemy=%s Possessed=%s Controller=%s"),
+			*GetNameSafe(this),
+			bIsPossessed ? TEXT("true") : TEXT("false"),
+			*GetNameSafe(GetController()));
 	}
+
+	// 해킹 성공 확인 시점이 아니라 실제 Controller 소유권이 바뀐 뒤 전환해야
+	// Global Sync의 bIsPossessed 조건과 Possession.Started 이벤트가 같은 프레임에 일치한다.
+	SendEnemyStateTreeEvent(
+		FGameplayTag::RequestGameplayTag(
+			bIsPossessed
+			? TEXT("Enemy.Event.Possession.Started")
+			: TEXT("Enemy.Event.Possession.Ended")));
 }
 
 bool AEnemyBase::BeginPossessionProcess(APartnerCharacter* PartnerCharacter)
@@ -391,15 +567,27 @@ bool AEnemyBase::BeginPossessionProcess(APartnerCharacter* PartnerCharacter)
 
 	if (AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(GetCachedAIController()))
 	{
+		EnemyAIController->StopMovement();
 		EnemyAIController->SetEnemyPerceptionEnabled(false);
 	}
 
 	PartnerCharacter->SetEnemyPossessionProtection(true);
 	ForceNetUpdate();
 
-	SendEnemyStateTreeEvent(
+	// Global Sync가 bPossessionInProgress=true를 먼저 읽은 뒤 Pending 상태를 선택하게 한다.
+	SendEnemyStateTreeEventNextTick(
 		FGameplayTag::RequestGameplayTag(
 			TEXT("Enemy.Event.Possession.Pending")));
+
+	if (IsPossessedAttackDiagnosticsEnabled())
+	{
+		UE_LOG(
+			LogOutlier,
+			Warning,
+			TEXT("[EnemyPossessedAttackDiag] PossessionPendingStarted Enemy=%s Partner=%s EventDeferred=true"),
+			*GetNameSafe(this),
+			*GetNameSafe(PartnerCharacter));
+	}
 
 	return true;
 }
@@ -414,9 +602,14 @@ void AEnemyBase::ConfirmPossessionProcess()
 	HackableComponent->HackTags.RemoveTag(
 		OutlierGameplayTags::State::PossessPending());
 
-	SendEnemyStateTreeEvent(
-		FGameplayTag::RequestGameplayTag(
-			TEXT("Enemy.Event.Possession.Started")));
+	if (IsPossessedAttackDiagnosticsEnabled())
+	{
+		UE_LOG(
+			LogOutlier,
+			Warning,
+			TEXT("[EnemyPossessedAttackDiag] PossessionConfirmed Enemy=%s AwaitingControllerPossession=true"),
+			*GetNameSafe(this));
+	}
 }
 
 void AEnemyBase::CancelPossessionProcess()
@@ -457,7 +650,8 @@ void AEnemyBase::CancelPossessionProcess()
 
 	if (!bIsPossessed)
 	{
-		SendEnemyStateTreeEvent(
+		// Global Sync가 bPossessionInProgress=false를 반영한 뒤 Pending 상태를 빠져나가게 한다.
+		SendEnemyStateTreeEventNextTick(
 			FGameplayTag::RequestGameplayTag(
 				TEXT("Enemy.Event.Possession.Cancelled")));
 	}
@@ -943,24 +1137,7 @@ void AEnemyBase::ApplyExplosionReaction(
 			bIsPossessed ? TEXT("true") : TEXT("false"));
 	}
 
-	// 직접 빙의된 V.E.C.는 StateTree를 중단하지 않고 기존 Pawn 반동 경로를 사용한다.
-	if (bIsPossessed)
-	{
-		if (IsEnemyImpactReactionDiagnosticsEnabled())
-		{
-			UE_LOG(
-				LogOutlier,
-				Warning,
-				TEXT("[EnemyImpactDiag] PossessedImpactApplied Enemy=%s CommonRecoveryState=false"),
-				*GetNameSafe(this));
-		}
-		LaunchCharacter(ImpactVelocity, true, true);
-		BeginPossessedImpactInputLock();
-		MulticastExplosionReaction(Direction, EffectRatio);
-		return;
-	}
-
-	// 자폭 전조가 Commit된 드론은 카운트다운을 유지하고 돌진 속도에 반동만 더한다.
+	// 자폭 전조가 확정된 드론은 빙의 여부와 무관하게 돌진 방향과 반동 속도를 합성한다.
 	if (TryApplyCommittedImpactVelocity(ImpactVelocity))
 	{
 		if (IsEnemyImpactReactionDiagnosticsEnabled())
@@ -970,6 +1147,46 @@ void AEnemyBase::ApplyExplosionReaction(
 				Warning,
 				TEXT("[EnemyImpactDiag] CommittedImpactApplied Enemy=%s CommonRecoveryState=false Reason=CommittedAction"),
 				*GetNameSafe(this));
+		}
+		MulticastExplosionReaction(Direction, EffectRatio);
+		return;
+	}
+
+	// 직접 빙의된 V.E.C.는 StateTree를 전환하지 않고 Pawn에서 물리 반동만 회복한다.
+	if (bIsPossessed)
+	{
+		AccumulateImpactVelocity(ImpactVelocity);
+		if (CurrentImpactStrength >= RuntimeImpactReactionProfile.MinReactionStrength)
+		{
+			bImpactReactionActive = true;
+			if (UCharacterMovementComponent* Movement = GetCharacterMovement())
+			{
+				Movement->SetMovementMode(MOVE_Flying);
+				Movement->MaxFlySpeed = FMath::Max(
+					GetRuntimeStat().MoveSpeed,
+					AccumulatedImpactVelocity.Size());
+				Movement->Velocity = AccumulatedImpactVelocity;
+			}
+			BeginPossessedImpactInputLock();
+		}
+		else
+		{
+			AccumulatedImpactVelocity = FVector::ZeroVector;
+			CurrentImpactStrength = 0.0f;
+			CurrentPhysicalKnockbackDuration = 0.0f;
+			CurrentControlRecoveryDuration = 0.0f;
+		}
+
+		if (IsEnemyImpactReactionDiagnosticsEnabled())
+		{
+			UE_LOG(
+				LogOutlier,
+				Warning,
+				TEXT("[EnemyImpactDiag] PossessedImpactApplied Enemy=%s PawnRecovery=%s Strength=%.2f PhysicalDuration=%.3f"),
+				*GetNameSafe(this),
+				bImpactReactionActive ? TEXT("true") : TEXT("false"),
+				CurrentImpactStrength,
+				CurrentPhysicalKnockbackDuration);
 		}
 		MulticastExplosionReaction(Direction, EffectRatio);
 		return;
@@ -1259,6 +1476,32 @@ bool AEnemyBase::UpdateImpactRecovery(float DeltaTime, float ElapsedTime)
 	return bRecoveryComplete;
 }
 
+void AEnemyBase::UpdatePossessedImpactRecovery(float DeltaTime)
+{
+	if (!HasAuthority() || !bIsPossessed || !bImpactReactionActive)
+	{
+		return;
+	}
+
+	UpdateImpactRecovery(DeltaTime, ImpactRecoveryElapsedTime);
+	if (ImpactRecoveryElapsedTime < CurrentPhysicalKnockbackDuration)
+	{
+		return;
+	}
+
+	if (IsEnemyImpactReactionDiagnosticsEnabled())
+	{
+		UE_LOG(
+			LogOutlier,
+			Warning,
+			TEXT("[EnemyImpactDiag] PossessedRecoveryComplete Enemy=%s Elapsed=%.3f PhysicalDuration=%.3f"),
+			*GetNameSafe(this),
+			ImpactRecoveryElapsedTime,
+			CurrentPhysicalKnockbackDuration);
+	}
+	EndImpactReaction();
+}
+
 void AEnemyBase::EndImpactReaction()
 {
 	if (!HasAuthority() || !bImpactReactionActive)
@@ -1471,16 +1714,53 @@ void AEnemyBase::HandleHackStarted(const FHackQueryContext& Context)
 {
 	if (!HasAuthority() || !HackableComponent || IsAIControlSuppressed())
 	{
+		if (IsPossessedAttackDiagnosticsEnabled())
+		{
+			UE_LOG(
+				LogOutlier,
+				Error,
+				TEXT("[EnemyPossessedAttackDiag] HackStartRejected Enemy=%s Authority=%s Hackable=%s "
+					"AISuppressed=%s Possessed=%s Pending=%s Impact=%s"),
+				*GetNameSafe(this),
+				HasAuthority() ? TEXT("true") : TEXT("false"),
+				*GetNameSafe(HackableComponent),
+				IsAIControlSuppressed() ? TEXT("true") : TEXT("false"),
+				bIsPossessed ? TEXT("true") : TEXT("false"),
+				bPossessionInProgress ? TEXT("true") : TEXT("false"),
+				bImpactReactionActive ? TEXT("true") : TEXT("false"));
+		}
 		return;
 	}
 
 	APartnerCharacter* PartnerCharacter = Cast<APartnerCharacter>(Context.InstigatorActor);
 	if (!IsValid(PartnerCharacter))
 	{
+		if (IsPossessedAttackDiagnosticsEnabled())
+		{
+			UE_LOG(
+				LogOutlier,
+				Error,
+				TEXT("[EnemyPossessedAttackDiag] HackStartRejected Enemy=%s Reason=InvalidPartner Instigator=%s"),
+				*GetNameSafe(this),
+				*GetNameSafe(Context.InstigatorActor));
+		}
 		return;
 	}
 
-	if (BeginPossessionProcess(PartnerCharacter))
+	if (!BeginPossessionProcess(PartnerCharacter))
+	{
+		if (IsPossessedAttackDiagnosticsEnabled())
+		{
+			UE_LOG(
+				LogOutlier,
+				Error,
+				TEXT("[EnemyPossessedAttackDiag] HackStartRejected Enemy=%s Reason=BeginPossessionProcessFailed"),
+				*GetNameSafe(this));
+		}
+		return;
+	}
+
+	if (HackableComponent)
 	{
 		HackableComponent->HackTags.RemoveTag(HackGameplayTags::Target::Possessable());
 		HackableComponent->HackTags.AddTag(HackGameplayTags::Target::NonPossessable());
@@ -1793,6 +2073,10 @@ void AEnemyBase::HandleDeath()
 	EndPossessedImpactInputLock();
 	EndImpactReaction();
 	ResetPossessedAttackInput();
+	if (IsValid(CurrentWeapon))
+	{
+		CurrentWeapon->CancelLocalRecoilPresentation();
+	}
 	StopCurrentAttack();
 
 	if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
@@ -1841,6 +2125,20 @@ void AEnemyBase::HandleDeath()
 
 void AEnemyBase::HandleStartAttackInput()
 {
+	if (IsPossessedAttackDiagnosticsEnabled())
+	{
+		UE_LOG(
+			LogOutlier,
+			Warning,
+			TEXT("[EnemyPossessedAttackDiag] StartInput Enemy=%s Authority=%s Local=%s "
+				"Possessed=%s Controller=%s"),
+			*GetNameSafe(this),
+			HasAuthority() ? TEXT("true") : TEXT("false"),
+			IsLocallyControlled() ? TEXT("true") : TEXT("false"),
+			bIsPossessed ? TEXT("true") : TEXT("false"),
+			*GetNameSafe(GetController()));
+	}
+
 	if (!HasAuthority())
 	{
 		if (IsLocallyControlled())
@@ -1870,6 +2168,16 @@ void AEnemyBase::HandleStopAttackInput()
 void AEnemyBase::ServerStartWeaponAttack_Implementation()
 {
 	// 서버에서 HandleStartAttackInput을 다시 거쳐 bIsPossessed와 CurrentWeapon을 검증한다.
+	if (IsPossessedAttackDiagnosticsEnabled())
+	{
+		UE_LOG(
+			LogOutlier,
+			Warning,
+			TEXT("[EnemyPossessedAttackDiag] StartRPCReceived Enemy=%s Possessed=%s Controller=%s"),
+			*GetNameSafe(this),
+			bIsPossessed ? TEXT("true") : TEXT("false"),
+			*GetNameSafe(GetController()));
+	}
 	HandleStartAttackInput();
 }
 
@@ -1882,11 +2190,19 @@ void AEnemyBase::SetPossessedAttackHeld(bool bHeld)
 {
 	if (!HasAuthority())
 	{
+		if (IsPossessedAttackDiagnosticsEnabled())
+		{
+			UE_LOG(LogOutlier, Error, TEXT("[EnemyPossessedAttackDiag] SetHeldRejected Enemy=%s Reason=NoAuthority"), *GetNameSafe(this));
+		}
 		return;
 	}
 
 	if (!bIsPossessed)
 	{
+		if (IsPossessedAttackDiagnosticsEnabled())
+		{
+			UE_LOG(LogOutlier, Error, TEXT("[EnemyPossessedAttackDiag] SetHeldRejected Enemy=%s Reason=NotPossessed"), *GetNameSafe(this));
+		}
 		ResetPossessedAttackInput();
 		return;
 	}
@@ -1910,19 +2226,46 @@ void AEnemyBase::SetPossessedAttackHeld(bool bHeld)
 	{
 		bPossessedAttackHeld = true;
 		bPossessedAttackQueued = false;
+		if (IsPossessedAttackDiagnosticsEnabled())
+		{
+			UE_LOG(LogOutlier, Warning, TEXT("[EnemyPossessedAttackDiag] SetHeldDeferred Enemy=%s Reason=ImpactInputLocked"), *GetNameSafe(this));
+		}
 		return;
 	}
 
 	if (CombatState == EEnemyCombatState::Stun
 		|| CurrentHealth <= 0.0f
-		|| !IsValid(CurrentWeapon)
+		|| !PossessedAttackStateTreeReference.IsValid()
+		|| IsPossessedActionCommitted()
 		|| bPossessedAttackHeld)
 	{
+		if (IsPossessedAttackDiagnosticsEnabled())
+		{
+			UE_LOG(
+				LogOutlier,
+				Error,
+				TEXT("[EnemyPossessedAttackDiag] SetHeldRejected Enemy=%s Reason=Guard "
+					"Stun=%s Health=%.2f PossessedTreeValid=%s Committed=%s AlreadyHeld=%s"),
+				*GetNameSafe(this),
+				CombatState == EEnemyCombatState::Stun ? TEXT("true") : TEXT("false"),
+				CurrentHealth,
+				PossessedAttackStateTreeReference.IsValid() ? TEXT("true") : TEXT("false"),
+				IsPossessedActionCommitted() ? TEXT("true") : TEXT("false"),
+				bPossessedAttackHeld ? TEXT("true") : TEXT("false"));
+		}
 		return;
 	}
 
 	bPossessedAttackHeld = true;
 	bPossessedAttackQueued = true;
+	if (IsPossessedAttackDiagnosticsEnabled())
+	{
+		UE_LOG(
+			LogOutlier,
+			Warning,
+			TEXT("[EnemyPossessedAttackDiag] AttackRequestAccepted Enemy=%s Held=true Queued=true"),
+			*GetNameSafe(this));
+	}
 
 	SendEnemyStateTreeEvent(
 		FGameplayTag::RequestGameplayTag(
@@ -1938,6 +2281,10 @@ void AEnemyBase::ResetPossessedAttackInput()
 void AEnemyBase::HandleReleasePossessionInput(const FInputActionValue& Value)
 {
 	(void)Value;
+	if (IsPossessedActionCommitted())
+	{
+		return;
+	}
 
 	APartnerPlayerController* PartnerController = Cast<APartnerPlayerController>(GetController());
 	if (!PartnerController)

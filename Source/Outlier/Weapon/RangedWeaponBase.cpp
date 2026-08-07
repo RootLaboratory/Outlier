@@ -10,6 +10,7 @@
 #include "Components/SphereComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "GameFramework/Character.h"
+#include "GameFramework/PlayerController.h"
 #include "TimerManager.h"
 #include "Kismet/GameplayStatics.h"
 #include "VisualEventSubsystem.h"
@@ -31,6 +32,7 @@
 #include "Weapon/WeaponFeedbackDefinition.h"
 #include "Weapon/WeaponProjectileRow.h"
 #include "Weapon/WeaponRecoilRow.h"
+#include "FirstPerson/FirstPersonPlayerCameraManager.h"
 #include "Shooter/ShooterAnimInstance.h"
 #include "Shooter/ShooterFirstPersonAnimInstance.h"
 #include "Enemy/EnemyRoomSubsystem.h"
@@ -41,6 +43,8 @@
 namespace
 {
 	constexpr float BloomRecoveryTickInterval = 0.05f;
+	constexpr float ControlKickTimerInterval = 1.0f / 120.0f;
+	constexpr float MaxControlKickDurationSeconds = 0.025f;
 }
 
 void ARangedWeaponBase::StartAttackCooldown()
@@ -297,8 +301,6 @@ void ARangedWeaponBase::FireShot()
 			HitActor->TakeDamage(DamageToApply, DamageEvent, OwnerCharacter->GetController(), this);
 		}
 	}
-	ClientNotifyShotFired(GetNormalizedLastShotDirection());
-
 	{
 		AActor* HitActor = Hit.GetActor();
 		const FVector TraceEndPoint = bHit ? Hit.ImpactPoint : End;
@@ -344,10 +346,61 @@ void ARangedWeaponBase::FireShot()
 	);*/
 }
 
-// 반동, 탄 퍼짐은 추후 작업 예정
+// 서버에서 연사 누적 반동을 확정하고 소유 플레이어에게 짧은 화면 피드백을 전달한다.
 void ARangedWeaponBase::ApplyRecoil()
 {
-	ApplyRecoilWithShotDirection(GetNormalizedLastShotDirection());
+	LastCalculatedControlRecoil = FVector2D::ZeroVector;
+	LastWeaponCameraShakeScale = 0.0f;
+	LastWeaponCameraShakeDuration = 0.0f;
+
+	ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
+	if (!HasAuthority()
+		|| !OwnerCharacter
+		|| !OwnerCharacter->IsPlayerControlled()
+		|| !bHasActiveRecoilProfile
+		|| RecoilMultiplier <= 0.0f)
+	{
+		return;
+	}
+
+	++RecoilShotSequence;
+	LastCalculatedControlRecoil = OutlierWeaponRecoil::CalculateControlRecoil(
+		ActiveRecoilProfile,
+		RecoilMultiplier,
+		RecoilShotSequence,
+		RecoilRuntimeState);
+	LastWeaponCameraShakeScale = FMath::Max(ActiveRecoilProfile.CameraShakeScale, 0.0f);
+	LastWeaponCameraShakeDuration = FMath::Max(ActiveRecoilProfile.CameraShakeDuration, 0.0f);
+
+	const float ResetDelay = FMath::Max(ActiveRecoilProfile.RecoilResetDelay, 0.0f);
+	if (ResetDelay <= 0.0f)
+	{
+		ResetRecoilRuntimeState();
+	}
+	else if (GetWorld())
+	{
+		GetWorld()->GetTimerManager().SetTimer(
+			RecoilResetTimerHandle,
+			this,
+			&ARangedWeaponBase::ResetRecoilRuntimeState,
+			ResetDelay,
+			false);
+	}
+
+	if (OwnerCharacter->IsLocallyControlled())
+	{
+		ApplyLocalRecoilPresentation(
+			GetNormalizedLastShotDirection(),
+			LastCalculatedControlRecoil,
+			ActiveRecoilProfile.ControlKickInterpSpeed,
+			LastWeaponCameraShakeScale,
+			LastWeaponCameraShakeDuration);
+	}
+	else
+	{
+		// 원격 소유자의 다음 서버 발사도 반동 방향을 사용하도록 권한 ControlRotation을 먼저 갱신한다.
+		ApplyAuthoritativeControlRecoil(LastCalculatedControlRecoil);
+	}
 }
 
 FVector2D ARangedWeaponBase::GetNormalizedLastShotDirection() const
@@ -367,22 +420,38 @@ FVector2D ARangedWeaponBase::GetNormalizedLastShotDirection() const
 	);
 }
 
-void ARangedWeaponBase::ApplyRecoilWithShotDirection(const FVector2D& NormalizedShotDirection)
+void ARangedWeaponBase::ApplyLocalRecoilPresentation(
+	const FVector2D& NormalizedShotDirection,
+	const FVector2D& ControlRecoilDelta,
+	float ControlKickInterpSpeed,
+	float CameraShakeScale,
+	float CameraShakeDuration)
 {
-	AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
-	if (!Shooter || !Shooter->IsLocallyControlled())
+	ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
+	if (!OwnerCharacter || !OwnerCharacter->IsLocallyControlled())
 	{
 		return;
 	}
 
-	Shooter->AddWeaponCameraRecoil(
-		RecoilPitchAmplitude * RecoilMultiplier,
-		RecoilLocationXAmplitude * RecoilMultiplier,
-		RecoilLocationYAmplitude * RecoilMultiplier,
-		RecoilFovAmplitude * RecoilMultiplier,
-		RecoilRecoverySpeed,
-		NormalizedShotDirection
-	);
+	QueueLocalControlRecoil(ControlRecoilDelta, ControlKickInterpSpeed);
+
+	if (APlayerController* PlayerController = Cast<APlayerController>(OwnerCharacter->GetController()))
+	{
+		if (AFirstPersonPlayerCameraManager* CameraManager =
+			Cast<AFirstPersonPlayerCameraManager>(PlayerController->PlayerCameraManager))
+		{
+			CameraManager->PlayWeaponCameraShake(
+				CameraShakeScale,
+				CameraShakeDuration,
+				OwnerCharacter);
+		}
+	}
+
+	AShooterCharacter* Shooter = Cast<AShooterCharacter>(OwnerCharacter);
+	if (!Shooter)
+	{
+		return;
+	}
 
 	USkeletalMeshComponent* FirstPersonMesh = Shooter->GetFirstPersonMesh();
 	if (!FirstPersonMesh)
@@ -399,6 +468,115 @@ void ARangedWeaponBase::ApplyRecoilWithShotDirection(const FVector2D& Normalized
 			RecoilMultiplier * GetFirstPersonProceduralRecoilMultiplier(),
 			NormalizedShotDirection
 		);
+	}
+}
+
+void ARangedWeaponBase::ApplyAuthoritativeControlRecoil(const FVector2D& ControlRecoilDelta)
+{
+	ApplyControlRotationDelta(ControlRecoilDelta);
+}
+
+void ARangedWeaponBase::QueueLocalControlRecoil(
+	const FVector2D& ControlRecoilDelta,
+	float ControlKickInterpSpeed)
+{
+	if (ControlRecoilDelta.IsNearlyZero())
+	{
+		return;
+	}
+
+	PendingLocalControlRecoil += ControlRecoilDelta;
+	LocalControlKickInterpSpeed = FMath::Max(ControlKickInterpSpeed, 1.0f);
+	LocalControlKickElapsedTime = 0.0f;
+
+	// 첫 프레임에 대부분을 반영하고 남은 값만 짧은 활성 Timer로 마무리한다.
+	HandleLocalControlKick();
+	if (!PendingLocalControlRecoil.IsNearlyZero() && GetWorld())
+	{
+		GetWorld()->GetTimerManager().SetTimer(
+			LocalControlKickTimerHandle,
+			this,
+			&ARangedWeaponBase::HandleLocalControlKick,
+			ControlKickTimerInterval,
+			true);
+	}
+}
+
+void ARangedWeaponBase::HandleLocalControlKick()
+{
+	ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
+	if (!OwnerCharacter || !OwnerCharacter->IsLocallyControlled() || PendingLocalControlRecoil.IsNearlyZero())
+	{
+		if (GetWorld())
+		{
+			GetWorld()->GetTimerManager().ClearTimer(LocalControlKickTimerHandle);
+		}
+		PendingLocalControlRecoil = FVector2D::ZeroVector;
+		return;
+	}
+
+	LocalControlKickElapsedTime += ControlKickTimerInterval;
+	const float StepAlpha = 1.0f - FMath::Exp(-LocalControlKickInterpSpeed * ControlKickTimerInterval);
+	FVector2D AppliedDelta = PendingLocalControlRecoil * StepAlpha;
+	if (LocalControlKickElapsedTime >= MaxControlKickDurationSeconds
+		|| PendingLocalControlRecoil.SizeSquared() <= FMath::Square(0.001f))
+	{
+		AppliedDelta = PendingLocalControlRecoil;
+	}
+
+	ApplyControlRotationDelta(AppliedDelta);
+	PendingLocalControlRecoil -= AppliedDelta;
+
+	if (PendingLocalControlRecoil.IsNearlyZero(0.001f) && GetWorld())
+	{
+		PendingLocalControlRecoil = FVector2D::ZeroVector;
+		GetWorld()->GetTimerManager().ClearTimer(LocalControlKickTimerHandle);
+	}
+}
+
+void ARangedWeaponBase::ApplyControlRotationDelta(const FVector2D& ControlRecoilDelta) const
+{
+	const ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
+	AController* OwnerController = OwnerCharacter ? OwnerCharacter->GetController() : nullptr;
+	if (!OwnerController || ControlRecoilDelta.IsNearlyZero())
+	{
+		return;
+	}
+
+	FRotator ControlRotation = OwnerController->GetControlRotation();
+	ControlRotation.Pitch = FMath::ClampAngle(
+		ControlRotation.Pitch + ControlRecoilDelta.X,
+		-89.0f,
+		89.0f);
+	ControlRotation.Yaw = FRotator::NormalizeAxis(ControlRotation.Yaw + ControlRecoilDelta.Y);
+	OwnerController->SetControlRotation(ControlRotation);
+}
+
+void ARangedWeaponBase::ResetRecoilRuntimeState()
+{
+	RecoilRuntimeState.Reset();
+}
+
+void ARangedWeaponBase::CancelLocalRecoilPresentation()
+{
+	if (GetWorld())
+	{
+		GetWorld()->GetTimerManager().ClearTimer(LocalControlKickTimerHandle);
+	}
+	PendingLocalControlRecoil = FVector2D::ZeroVector;
+	LocalControlKickElapsedTime = 0.0f;
+
+	const ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
+	const APlayerController* PlayerController = OwnerCharacter
+		? Cast<APlayerController>(OwnerCharacter->GetController())
+		: nullptr;
+	if (PlayerController)
+	{
+		if (AFirstPersonPlayerCameraManager* CameraManager =
+			Cast<AFirstPersonPlayerCameraManager>(PlayerController->PlayerCameraManager))
+		{
+			CameraManager->StopWeaponCameraShake(true);
+		}
 	}
 }
 
@@ -887,7 +1065,12 @@ int32 ARangedWeaponBase::ResolveADSBlurStencil()
 	return StencilValue > 0 ? StencilValue : DefaultADSWeaponStencil;
 }
 
-void ARangedWeaponBase::ClientNotifyShotFired_Implementation(FVector2D NormalizedShotDirection)
+void ARangedWeaponBase::ClientNotifyShotFired_Implementation(
+	FVector2D NormalizedShotDirection,
+	FVector2D ControlRecoilDelta,
+	float ControlKickInterpSpeed,
+	float CameraShakeScale,
+	float CameraShakeDuration)
 {
 	ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
 	if (OwnerCharacter && OwnerCharacter->IsLocallyControlled())
@@ -899,7 +1082,12 @@ void ARangedWeaponBase::ClientNotifyShotFired_Implementation(FVector2D Normalize
 
 		if (!HasAuthority())
 		{
-			ApplyRecoilWithShotDirection(NormalizedShotDirection);
+			ApplyLocalRecoilPresentation(
+				NormalizedShotDirection,
+				ControlRecoilDelta,
+				ControlKickInterpSpeed,
+				CameraShakeScale,
+				CameraShakeDuration);
 		}
 	}
 }
@@ -1108,6 +1296,18 @@ ARangedWeaponBase::ARangedWeaponBase() : AWeaponBase()
 	ShadowHandMagazineMesh->SetHiddenInGame(true);
 }
 
+void ARangedWeaponBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	CancelLocalRecoilPresentation();
+	if (GetWorld())
+	{
+		GetWorld()->GetTimerManager().ClearTimer(RecoilResetTimerHandle);
+	}
+	ResetRecoilRuntimeState();
+
+	Super::EndPlay(EndPlayReason);
+}
+
 void ARangedWeaponBase::OnConstruction(const FTransform& Transform)
 {
 	Super::OnConstruction(Transform);
@@ -1217,7 +1417,6 @@ void ARangedWeaponBase::InitializeFromDataTables()
 		bIsAutomatic = FireMode == EWeaponFireMode::FullAuto;
 		BloomProfileId = CoreRow->BloomProfileId;
 		ProjectileProfileId = CoreRow->ProjectileProfileId;
-		RecoilProfileId = CoreRow->RecoilProfileId;
 	}
 
 	InitializeBloomFromDataTable();
@@ -1235,59 +1434,58 @@ void ARangedWeaponBase::InitializeBloomFromDataTable()
 
 void ARangedWeaponBase::InitializeRecoilFromDataTable()
 {
+	CacheRecoilProfiles();
 	RefreshRecoilSettingsFromState();
+}
+
+void ARangedWeaponBase::CacheRecoilProfiles()
+{
+	bHasCachedHipRecoilProfile = false;
+	bHasCachedADSRecoilProfile = false;
+	bHasCachedAnyRecoilProfile = false;
+
+	if (const FWeaponRecoilRow* HipRow =
+		HipRecoilDataRow.GetRow<FWeaponRecoilRow>(TEXT("CacheHipWeaponRecoil")))
+	{
+		CachedHipRecoilProfile = *HipRow;
+		bHasCachedHipRecoilProfile = true;
+	}
+
+	if (const FWeaponRecoilRow* ADSRow =
+		ADSRecoilDataRow.GetRow<FWeaponRecoilRow>(TEXT("CacheADSWeaponRecoil")))
+	{
+		CachedADSRecoilProfile = *ADSRow;
+		bHasCachedADSRecoilProfile = true;
+	}
+
+	if (const FWeaponRecoilRow* DefaultRow =
+		DefaultRecoilDataRow.GetRow<FWeaponRecoilRow>(TEXT("CacheDefaultWeaponRecoil")))
+	{
+		CachedAnyRecoilProfile = *DefaultRow;
+		bHasCachedAnyRecoilProfile = true;
+	}
 }
 
 void ARangedWeaponBase::RefreshRecoilSettingsFromState()
 {
-	const EWeaponAimMode DesiredAimMode = bIsAiming ? EWeaponAimMode::ADS : EWeaponAimMode::Hip;
 	const FWeaponRecoilRow* RecoilRow = nullptr;
-
-	if (WeaponRecoilTable && !RecoilProfileId.IsNone())
+	if (bIsAiming && bHasCachedADSRecoilProfile)
 	{
-		TArray<FWeaponRecoilRow*> RecoilRows;
-		WeaponRecoilTable->GetAllRows<FWeaponRecoilRow>(TEXT("RefreshWeaponRecoil"), RecoilRows);
-
-		for (const FWeaponRecoilRow* CandidateRow : RecoilRows)
-		{
-			if (!CandidateRow || CandidateRow->RecoilProfileId != RecoilProfileId)
-			{
-				continue;
-			}
-
-			if (CandidateRow->AimMode == DesiredAimMode)
-			{
-				RecoilRow = CandidateRow;
-				break;
-			}
-
-			if (CandidateRow->AimMode == EWeaponAimMode::Any)
-			{
-				RecoilRow = CandidateRow;
-			}
-		}
+		RecoilRow = &CachedADSRecoilProfile;
+	}
+	else if (!bIsAiming && bHasCachedHipRecoilProfile)
+	{
+		RecoilRow = &CachedHipRecoilProfile;
+	}
+	else if (bHasCachedAnyRecoilProfile)
+	{
+		RecoilRow = &CachedAnyRecoilProfile;
 	}
 
-	if (!RecoilRow && WeaponRecoilTable && !RecoilProfileId.IsNone())
-	{
-		RecoilRow = WeaponRecoilTable->FindRow<FWeaponRecoilRow>(RecoilProfileId, TEXT("RefreshWeaponRecoil"));
-	}
+	bHasActiveRecoilProfile = RecoilRow != nullptr;
+	ActiveRecoilProfile = RecoilRow ? *RecoilRow : FWeaponRecoilRow();
 
-	if (!RecoilRow)
-	{
-		RecoilRow = RecoilDataRow.GetRow<FWeaponRecoilRow>(TEXT("RefreshWeaponRecoil"));
-	}
-
-	if (!RecoilRow)
-	{
-		return;
-	}
-
-	RecoilPitchAmplitude = RecoilRow->ControlPitchAmplitude;
-	RecoilLocationXAmplitude = RecoilRow->CameraLocationXAmplitude;
-	RecoilLocationYAmplitude = RecoilRow->CameraLocationYAmplitude;
-	RecoilFovAmplitude = RecoilRow->CameraFovKickAmplitude;
-	RecoilRecoverySpeed = RecoilRow->ControlRecoverySpeed;
+	// 조준 모드가 바뀌어도 이미 진행 중인 연사 누적 상태와 Reset Timer는 유지한다.
 }
 
 void ARangedWeaponBase::InitializeProjectileFromDataTable()
@@ -1497,6 +1695,12 @@ void ARangedWeaponBase::PerformAttack()
 
 	ApplyBloomPerShot();
 	ApplyRecoil();
+	ClientNotifyShotFired(
+		GetNormalizedLastShotDirection(),
+		LastCalculatedControlRecoil,
+		bHasActiveRecoilProfile ? ActiveRecoilProfile.ControlKickInterpSpeed : 0.0f,
+		LastWeaponCameraShakeScale,
+		LastWeaponCameraShakeDuration);
 
 	if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner))
 	{

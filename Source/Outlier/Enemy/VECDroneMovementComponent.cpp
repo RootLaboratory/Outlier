@@ -43,8 +43,8 @@ bool UVECDroneMovementComponent::CanRunInputMovement() const
 	}
 
 	return Drone->HasAuthority()
-		? Drone->IsEnemyPossessed()
-		: Drone->IsLocallyControlled();
+		? Drone->IsEnemyPossessed() && !Drone->IsPossessedImpactInputLocked()
+		: Drone->IsLocallyControlled() && !Drone->IsPossessedImpactInputLocked();
 }
 
 bool UVECDroneMovementComponent::ShouldUpdateMovementFeel() const
@@ -71,6 +71,12 @@ EFlightInputMode UVECDroneMovementComponent::GetFlightInputMode() const
 void UVECDroneMovementComponent::OnAfterInputMovement(float DeltaTime)
 {
 	Super::OnAfterInputMovement(DeltaTime);
+
+	// 빙의 중에는 공용 StateTree 대신 Pawn이 짧은 물리 반동 감쇠를 직접 갱신한다.
+	if (AVECDrone* Drone = GetVECDroneOwner())
+	{
+		Drone->UpdatePossessedImpactRecovery(DeltaTime);
+	}
 
 	if (ShouldUpdateMovementFeel())
 	{
