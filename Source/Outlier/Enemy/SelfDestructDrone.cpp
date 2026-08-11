@@ -4,9 +4,11 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Enemy/EnemyAIController.h"
 #include "Enemy/VECDroneMovementComponent.h"
+#include "Drone/Partner/HackableComponent.h"
 #include "Explosion/ExplosionComponent.h"
 #include "Explosion/ExplosiveProp.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "GameplayTags/OutlierGameplayTags.h"
 #include "Engine/World.h"
 #include "Net/UnrealNetwork.h"
 #include "Outlier.h"
@@ -219,6 +221,11 @@ bool ASelfDestructDrone::BeginCommittedSelfDestructInternal(
 	CommittedImpactElapsedTime = 0.0f;
 
 	bHasCommittedSelfDestruct = true;
+	if (HackableComponent)
+	{
+		// 전조가 시작된 자폭은 더 이상 취소 가능한 해킹 대상으로 노출하지 않는다.
+		HackableComponent->HackTags.AddTag(OutlierGameplayTags::State::Locked());
+	}
 	if (VECMovementComponent)
 	{
 		VECMovementComponent->ClearFlightInput();
@@ -321,6 +328,11 @@ void ASelfDestructDrone::CancelCommittedSelfDestruct()
 	}
 
 	bHasCommittedSelfDestruct = false;
+	if (HackableComponent)
+	{
+		// 기절 등으로 자폭 커밋이 취소되면 살아 있는 드론은 다시 해킹 후보가 될 수 있다.
+		HackableComponent->HackTags.RemoveTag(OutlierGameplayTags::State::Locked());
+	}
 	CommittedChargeDirection = FVector::ForwardVector;
 	CommittedChargeTargetDirection = FVector::ForwardVector;
 	CommittedChargeStartLocation = FVector::ZeroVector;
