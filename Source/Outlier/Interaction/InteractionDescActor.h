@@ -6,7 +6,6 @@
 #include "InteractionDescActor.generated.h"
 
 class AFirstPersonCharacter;
-class AInteractionNode;
 class APlayerController;
 class UBoxComponent;
 class UInteractableComponent;
@@ -23,8 +22,6 @@ public:
 	AInteractionDescActor();
 
 	virtual void Tick(float DeltaSeconds) override;
-
-	void SetSourceInteractionNode(AInteractionNode* SourceNode);
 
 	UFUNCTION(BlueprintCallable, Category = "Interaction|Desc")
 	void ActivateDesc(AFirstPersonCharacter* Interactor);
@@ -79,6 +76,4 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UInteractionDescWidget> InteractionDescWidget;
 
-	UPROPERTY(Transient)
-	TWeakObjectPtr<AInteractionNode> SourceInteractionNode;
 };

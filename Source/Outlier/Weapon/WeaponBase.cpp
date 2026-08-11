@@ -691,12 +691,12 @@ void AWeaponBase::OnDropped(const FTransform& DropTransform, AFirstPersonCharact
 	ForceNetUpdate();
 }
 
-void AWeaponBase::Interact(class AFirstPersonCharacter* Interactor)
+bool AWeaponBase::Interact(class AFirstPersonCharacter* Interactor)
 {
 	if (!Interactor)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("%s [%s] Interact blocked: interactor is null"), OutlierNet::GetNetPrefix(this), *GetName());
-		return;
+		return false;
 	}
 
 	if (!CanBePickedUpBy(Interactor))
@@ -710,12 +710,13 @@ void AWeaponBase::Interact(class AFirstPersonCharacter* Interactor)
 			*GetNameSafe(WeaponOwner),
 			bIsEquipped ? 1 : 0,
 			*GetNameSafe(Interactor));
-		return;
+		return false;
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("%s [%s] Interact Interactor=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(Interactor));
 
 	Interactor->EquipWeapon(this);
+	return Interactor->GetCurrentWeapon() == this;
 }
 
 UInteractableComponent* AWeaponBase::GetInteractableComponent() const

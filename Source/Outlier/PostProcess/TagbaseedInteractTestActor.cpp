@@ -28,12 +28,12 @@ UInteractableComponent* ATagbaseedInteractTestActor::GetInteractableComponent() 
 	return InteractableComponent;
 }
 
-void ATagbaseedInteractTestActor::Interact(AFirstPersonCharacter* Interactor) 
+bool ATagbaseedInteractTestActor::Interact(AFirstPersonCharacter* Interactor)
 {
 
 	if (!Interactor || !InteractableComponent)
 	{
-		return;
+		return false;
 	}
 
 	const FGameplayTagContainer InteractorTags =
@@ -42,11 +42,11 @@ void ATagbaseedInteractTestActor::Interact(AFirstPersonCharacter* Interactor)
 	if (!InteractableComponent->CanInteract(InteractorTags))
 	{
 		UE_LOG(LogTemp, Warning, TEXT("Interact blocked by tags"));
-		return;
+		return false;
 	}
 
-	UE_LOG(LogTemp, Warning, TEXT("Interact valid"));
+	//UE_LOG(LogTemp, Warning, TEXT("Interact valid"));
+	return true;
 }
-
 
 

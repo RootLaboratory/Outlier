@@ -35,6 +35,7 @@
 #include "Room/RoomTagComponent.h"
 #include "Interface/RoomTagInterface.h"
 #include "Interface/WeaponMuzzleProvider.h"
+#include "Audio/OutlierAudioSubsystem.h"
 
 namespace
 {
@@ -227,7 +228,6 @@ void ARangedWeaponBase::FireShot()
 		ECC_PhysicsBody,
 		Params
 	);
-
 	//DrawDebugLine(
 	//	GetWorld(),
 	//	Start,
@@ -277,14 +277,14 @@ void ARangedWeaponBase::FireShot()
 					break;
 				}
 			}
-			/*if (bIsCoreHit)
+			if (bIsCoreHit)
 			{
 				GetLocalUISubsystem()->OnRep_AttackSign(EAttackSign::Critical);
 			}
 			else
 			{
 				GetLocalUISubsystem()->OnRep_AttackSign(EAttackSign::Default);
-			}*/
+			}
 
 			HitEnemy->ApplyDamageInternal(DamageToApply, bIsCoreHit);
 		}

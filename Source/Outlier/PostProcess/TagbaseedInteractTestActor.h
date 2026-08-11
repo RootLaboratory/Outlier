@@ -25,7 +25,7 @@ protected:
 
 public:	
 	virtual UInteractableComponent* GetInteractableComponent() const override; //Tag 사용으로 Component로 확장. 
-	virtual void Interact(class AFirstPersonCharacter* Interactor)  override;
+	virtual bool Interact(class AFirstPersonCharacter* Interactor) override;
 
 public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")

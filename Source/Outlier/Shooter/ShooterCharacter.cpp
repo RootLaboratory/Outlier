@@ -50,6 +50,7 @@ FName AShooterCharacter::GetThirdPersonWeaponSocketByType(EWeaponType WeaponType
 AShooterCharacter::AShooterCharacter() : AFirstPersonCharacter()
 {
 	PrimaryActorTick.bCanEverTick = true;
+	OwnedQueryTags.AddTag(OutlierGameplayTags::Actor::Role::Shooter());
 
 	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
 

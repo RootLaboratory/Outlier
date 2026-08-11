@@ -5,6 +5,18 @@
 
 namespace OutlierGameplayTags
 {
+	namespace Actor
+	{
+		namespace Role
+		{
+			inline FGameplayTag Shooter()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Actor.Role.Shooter")));
+				return Tag;
+			}
+		}
+	}
+
 	namespace Ability
 	{
 		namespace Partner
@@ -58,6 +70,12 @@ namespace OutlierGameplayTags
 		inline FGameplayTag Disabled()
 		{
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("State.Disabled")));
+			return Tag;
+		}
+
+		inline FGameplayTag Used()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("State.Used")));
 			return Tag;
 		}
 

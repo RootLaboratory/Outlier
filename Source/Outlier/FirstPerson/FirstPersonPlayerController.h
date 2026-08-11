@@ -7,6 +7,7 @@
 #include "GameplayTagContainer.h"
 #include "OutlierPlayerState.h"
 #include "PlayerUIProvider.h"
+#include "UI/UILayerTypes.h"
 #include "FirstPersonPlayerController.generated.h"
 
 class UInputMappingContext;
@@ -26,6 +27,13 @@ namespace FirstPersonInputModeTags
 			FGameplayTag::RequestGameplayTag(FName(TEXT("Input.Mode.Hack")));
 		return Tag;
 	}
+
+	inline FGameplayTag StatAllocator()
+	{
+		static const FGameplayTag Tag =
+			FGameplayTag::RequestGameplayTag(FName(TEXT("Input.Mode.UI.StatAllocator")));
+		return Tag;
+	}
 }
 
 /**
@@ -41,6 +49,9 @@ public:
 
 	UFUNCTION(Client, Reliable)
 	void ClientArenaLoad(int32 ArenaId);
+
+	UFUNCTION(Client, Reliable)
+	void ClientPushUILayer(const FUILayerPushRequest& Request);
 
 	UFUNCTION(Server, Reliable)
 	void ServerNotifyArenaReady();
@@ -62,6 +73,9 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Input|Input Mode")
 	bool TryRestoreFirstPersonDefaultInputMode(FGameplayTag ExpectedInputMode);
+
+	UFUNCTION(BlueprintCallable, Category = "Input|Input Mode")
+	bool RestoreFirstPersonDefaultInputMode();
 
 	UFUNCTION(BlueprintPure, Category = "Input|Input Mode")
 	FGameplayTag GetFirstPersonInputMode()const; 

@@ -7,7 +7,6 @@
 #include "Engine/LocalPlayer.h"
 #include "FirstPerson/FirstPersonCharacter.h"
 #include "GameFramework/PlayerController.h"
-#include "Interaction/InteractionNode.h"
 #include "Interaction/InteractableComponent.h"
 #include "Interaction/InteractInfoSubsystem.h"
 #include "UI/InteractionDescWidget.h"
@@ -61,11 +60,6 @@ void AInteractionDescActor::Tick(float DeltaSeconds)
 			2.0f
 		);
 	}
-}
-
-void AInteractionDescActor::SetSourceInteractionNode(AInteractionNode* SourceNode)
-{
-	SourceInteractionNode = SourceNode;
 }
 
 void AInteractionDescActor::ActivateDesc(AFirstPersonCharacter* Interactor)
