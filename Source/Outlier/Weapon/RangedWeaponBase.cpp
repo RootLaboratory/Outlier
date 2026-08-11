@@ -331,6 +331,7 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 		const float HitDistance = FVector::Distance(Start, Hit.ImpactPoint);
 		const float DamageToApply = GetDamageAtDistance(HitDistance);
 		FHitResult ResolvedDamageHit = Hit;
+		bool bIsCoreHit = false;
 
 		if (AEnemyBase* HitEnemy = Cast<AEnemyBase>(HitActor);
 			HitEnemy && HitEnemy->HasCoreWeakPoint())
@@ -359,6 +360,7 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 					{
 						BestWeakPointMultiplier = CandidateMultiplier;
 						ResolvedDamageHit = BodyHit;
+						bIsCoreHit = true;
 					}
 				}
 			}

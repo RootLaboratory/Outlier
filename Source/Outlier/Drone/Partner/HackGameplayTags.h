@@ -69,7 +69,6 @@ namespace HackGameplayTags
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Effect.ChangeTeam")));
 			return Tag;
 		}
-	}
 
 		inline FGameplayTag Unblock()
 		{
