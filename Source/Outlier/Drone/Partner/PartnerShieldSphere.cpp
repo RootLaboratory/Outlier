@@ -66,6 +66,21 @@ void APartnerShieldSphere::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>&
 	DOREPLIFETIME(APartnerShieldSphere, TargetRelativeLocation);
 }
 
+float APartnerShieldSphere::TakeDamage(
+	float DamageAmount,
+	FDamageEvent const& DamageEvent,
+	AController* EventInstigator,
+	AActor* DamageCauser)
+{
+	if (!HasAuthority() || !ShieldTarget || DamageAmount <= 0.0f)
+	{
+		return 0.0f;
+	}
+
+	const float AppliedDamage = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
+	return ShieldTarget->TakeDamage(AppliedDamage, DamageEvent, EventInstigator, DamageCauser);
+}
+
 void APartnerShieldSphere::InitializeShield(AShooterCharacter* InShieldTarget, APartnerCharacter* InSourcePartner)
 {
 	if (!HasAuthority())
@@ -110,16 +125,6 @@ void APartnerShieldSphere::SetTargetRelativeLocation(FVector InTargetRelativeLoc
 	{
 		ForceNetUpdate();
 	}
-}
-
-void APartnerShieldSphere::ApplyShieldDamage(float DamageAmount)
-{
-	if (!HasAuthority() || !ShieldTarget || DamageAmount <= 0.0f)
-	{
-		return;
-	}
-
-	ShieldTarget->ApplyDamageInternal(DamageAmount);
 }
 
 void APartnerShieldSphere::EndShield()
@@ -232,4 +237,3 @@ void APartnerShieldSphere::EnsureDynamicMaterial()
 		ShieldMID = ShieldVisual->CreateAndSetMaterialInstanceDynamicFromMaterial(0, CurrentMaterial);
 	}
 }
-

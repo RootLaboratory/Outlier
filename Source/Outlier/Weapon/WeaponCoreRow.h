@@ -71,8 +71,5 @@ struct OUTLIER_API FWeaponCoreRow : public FTableRowBase
 	FName BloomProfileId;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
-	FName RecoilProfileId;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly)
 	FName ProjectileProfileId;
 };

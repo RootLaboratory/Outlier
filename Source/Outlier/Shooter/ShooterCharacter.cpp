@@ -27,6 +27,7 @@
 #include "ShooterHealthComponent.h"
 #include "ShooterInventoryComponent.h"
 #include "ShooterCombatComponent.h"
+#include "Weapon/RangedWeaponBase.h"
 #include "ShooterFirstPersonAnimInstance.h"
 #include "ShooterMovementComponent.h"
 #include "LocalPlayerPostProcessSubsystem.h"
@@ -134,7 +135,6 @@ void AShooterCharacter::Tick(float DeltaSeconds)
 
 	UpdateSlideCameraEffect(DeltaSeconds);
 	UpdateCameraFOV(DeltaSeconds);
-	UpdateCameraRecoil(DeltaSeconds);
 }
 
 void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -977,6 +977,23 @@ void AShooterCharacter::ApplyDamageInternal(float DamageAmount)
 	}
 }
 
+float AShooterCharacter::TakeDamage(
+	float DamageAmount,
+	FDamageEvent const& DamageEvent,
+	AController* EventInstigator,
+	AActor* DamageCauser)
+{
+	if (!HasAuthority() || DamageAmount <= 0.0f)
+	{
+		return 0.0f;
+	}
+
+	const float AppliedDamage = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
+	// 폭발 등 공통 피해를 기존 Shooter 실드 및 HP 처리로 전달한다.
+	ApplyDamageInternal(AppliedDamage);
+	return AppliedDamage;
+}
+
 void AShooterCharacter::HandleWeaponAttackStoppedInternal()
 {
 	if (CombatComponent)
@@ -1085,8 +1102,6 @@ void AShooterCharacter::UpdateCameraFOV(float DeltaSeconds)
 		FOVInterpSpeed = AimCameraFOVInterpOutSpeed;
 	}
 
-	TargetFOV += CameraRecoilFOVOffset;
-
 	const float NewFOV = FMath::FInterpTo(
 		FirstPersonCamera->FieldOfView,
 		TargetFOV,
@@ -1110,59 +1125,6 @@ float AShooterCharacter::GetEffectiveFirstPersonAimAlpha() const
 	return FirstPersonAnimInstance
 		? FMath::Clamp(FirstPersonAnimInstance->GetViewModelAimAlpha(), 0.0f, 1.0f)
 		: 1.0f;
-}
-
-void AShooterCharacter::AddWeaponCameraRecoil(
-	float PitchAmplitude,
-	float YawAmplitude,
-	float DirectionPitchAmplitude,
-	float FOVAmplitude,
-	float RecoverySpeed,
-	const FVector2D& NormalizedShotDirection
-)
-{
-	if (!IsLocallyControlled())
-	{
-		return;
-	}
-
-	CameraRecoilTarget.Pitch += PitchAmplitude + (NormalizedShotDirection.Y * DirectionPitchAmplitude);
-	CameraRecoilTarget.Yaw += NormalizedShotDirection.X * YawAmplitude;
-	CameraRecoilRecoverySpeed = FMath::Max(RecoverySpeed, 0.0f);
-	CameraRecoilFOVOffset = FMath::Max(CameraRecoilFOVOffset, FMath::Max(FOVAmplitude, 0.0f));
-}
-
-void AShooterCharacter::UpdateCameraRecoil(float DeltaSeconds)
-{
-	if (!IsLocallyControlled())
-	{
-		return;
-	}
-
-	const FRotator NewRecoil = FMath::RInterpTo(
-		CameraRecoilCurrent,
-		CameraRecoilTarget,
-		DeltaSeconds,
-		CameraRecoilKickInterpSpeed
-	);
-	const FRotator DeltaRecoil = NewRecoil - CameraRecoilCurrent;
-
-	AddControllerPitchInput(-DeltaRecoil.Pitch);
-	AddControllerYawInput(DeltaRecoil.Yaw);
-
-	CameraRecoilCurrent = NewRecoil;
-	CameraRecoilTarget = FMath::RInterpTo(
-		CameraRecoilTarget,
-		FRotator::ZeroRotator,
-		DeltaSeconds,
-		CameraRecoilRecoverySpeed
-	);
-	CameraRecoilFOVOffset = FMath::FInterpTo(
-		CameraRecoilFOVOffset,
-		0.0f,
-		DeltaSeconds,
-		CameraRecoilFOVRecoverySpeed
-	);
 }
 
 float AShooterCharacter::GetLookSensitivityScale() const
@@ -1335,9 +1297,10 @@ void AShooterCharacter::HandleDeath()
 	bIsEquipping = false;
 	TargetLeanAlpha = 0.0f;
 	CurrentLeanAlpha = 0.0f;
-	CameraRecoilCurrent = FRotator::ZeroRotator;
-	CameraRecoilTarget = FRotator::ZeroRotator;
-	CameraRecoilFOVOffset = 0.0f;
+	if (ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(CurrentWeapon))
+	{
+		RangedWeapon->CancelLocalRecoilPresentation();
+	}
 
 	if (IsSliding())
 	{

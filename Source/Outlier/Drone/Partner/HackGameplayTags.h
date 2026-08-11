@@ -63,6 +63,12 @@ namespace HackGameplayTags
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Effect.RevealInfo")));
 			return Tag;
 		}
+
+		inline FGameplayTag ChangeTeam()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Effect.ChangeTeam")));
+			return Tag;
+		}
 	}
 
 	namespace MiniGame

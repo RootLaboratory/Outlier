@@ -3,6 +3,7 @@
 
 #include "VisualEventSubsystem.h"
 #include "Components/DecalComponent.h"
+#include "Particles/ParticleSystemComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "ProjectionMarkDefinition.h"
 #include "TrailEffectDefinition.h"

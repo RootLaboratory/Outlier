@@ -9,6 +9,7 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "InputActionValue.h"
 #include "Enemy/VECDroneMovementComponent.h"
+#include "Outlier.h"
 
 namespace
 {
@@ -79,7 +80,6 @@ AVECDrone::AVECDrone()
 	FirstPersonMesh->SetupAttachment(FirstPersonViewModelRoot);
 	FirstPersonMesh->SetOnlyOwnerSee(true);
 	FirstPersonMesh->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::FirstPerson;
-	FirstPersonMesh->SetRelativeLocation(FVector(-2.0f, 0.0f, -130.0f));
 	FirstPersonMesh->SetRelativeRotation(FRotator::ZeroRotator);
 	FirstPersonMesh->SetCollisionProfileName(FName("NoCollision"));
 
@@ -119,6 +119,20 @@ void AVECDrone::BeginPlay()
 	}
 
 	Super::BeginPlay();
+}
+
+void AVECDrone::ApplyExplosionReactionPresentation(const FVector& Direction, float ReactionScale)
+{
+	if (VECMovementComponent)
+	{
+		VECMovementComponent->ApplyExternalImpactTilt(
+			Direction,
+			ReactionScale,
+			RuntimeImpactReactionProfile.MaxMeshImpactTiltDegrees,
+			RuntimeImpactReactionProfile.MeshImpactTiltInterpSpeed);
+	}
+
+	Super::ApplyExplosionReactionPresentation(Direction, ReactionScale);
 }
 
 float AVECDrone::GetCurrentCameraPitchDegrees() const
@@ -182,6 +196,16 @@ void AVECDrone::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 	UEnhancedInputComponent* EnhancedInputComponent = Cast<UEnhancedInputComponent>(PlayerInputComponent);
 	if (!EnhancedInputComponent || !InputConfig)
 	{
+		if (IsPossessedAttackDiagnosticsEnabled())
+		{
+			UE_LOG(
+				LogOutlier,
+				Error,
+				TEXT("[EnemyPossessedAttackDiag] InputBindingFailed Enemy=%s EnhancedInput=%s InputConfig=%s"),
+				*GetNameSafe(this),
+				EnhancedInputComponent ? TEXT("true") : TEXT("false"),
+				*GetNameSafe(InputConfig));
+		}
 		return;
 	}
 
@@ -196,6 +220,16 @@ void AVECDrone::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 	EnhancedInputComponent->BindAction(InputConfig->AttackAction, ETriggerEvent::Started, this, &AVECDrone::StartAttackInput);
 	EnhancedInputComponent->BindAction(InputConfig->AttackAction, ETriggerEvent::Completed, this, &AVECDrone::StopAttackInput);
 	EnhancedInputComponent->BindAction(InputConfig->AttackAction, ETriggerEvent::Canceled, this, &AVECDrone::StopAttackInput);
+	if (IsPossessedAttackDiagnosticsEnabled())
+	{
+		UE_LOG(
+			LogOutlier,
+			Warning,
+			TEXT("[EnemyPossessedAttackDiag] InputBound Enemy=%s InputConfig=%s AttackAction=%s"),
+			*GetNameSafe(this),
+			*GetNameSafe(InputConfig),
+			*GetNameSafe(InputConfig->AttackAction));
+	}
 }
 
 void AVECDrone::ApplyMovementFromRuntimeStat()
@@ -221,7 +255,7 @@ void AVECDrone::ApplyMovementFromRuntimeStat()
 
 void AVECDrone::MoveInput(const FInputActionValue& Value)
 {
-	if (!VECMovementComponent)
+	if (!VECMovementComponent || IsPossessedActionCommitted())
 	{
 		return;
 	}
@@ -231,7 +265,7 @@ void AVECDrone::MoveInput(const FInputActionValue& Value)
 
 void AVECDrone::LookInput(const FInputActionValue& Value)
 {
-	if (!Controller)
+	if (!Controller || IsPossessedActionCommitted())
 	{
 		return;
 	}
@@ -258,7 +292,7 @@ void AVECDrone::LookInput(const FInputActionValue& Value)
 
 void AVECDrone::VerticalMove(const FInputActionValue& Value)
 {
-	if (VECMovementComponent)
+	if (VECMovementComponent && !IsPossessedActionCommitted())
 	{
 		VECMovementComponent->SetVerticalInput(Value.Get<float>());
 	}
@@ -274,6 +308,20 @@ void AVECDrone::StopVerticalMove()
 
 void AVECDrone::StartAttackInput()
 {
+	if (IsPossessedActionCommitted())
+	{
+		if (IsPossessedAttackDiagnosticsEnabled())
+		{
+			UE_LOG(LogOutlier, Warning, TEXT("[EnemyPossessedAttackDiag] VECStartInputIgnored Enemy=%s Reason=Committed"), *GetNameSafe(this));
+		}
+		return;
+	}
+
+	if (IsPossessedAttackDiagnosticsEnabled())
+	{
+		UE_LOG(LogOutlier, Warning, TEXT("[EnemyPossessedAttackDiag] VECStartInputForwarded Enemy=%s"), *GetNameSafe(this));
+	}
+
 	// 부모의 보호된 입력 경로를 거쳐 클라이언트 RPC와 서버 권한 검증을 동일하게 사용한다.
 	HandleStartAttackInput();
 }

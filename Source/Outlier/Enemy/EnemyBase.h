@@ -57,6 +57,12 @@ public:
 	AEnemyBase();
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	// Unreal 공통 피해 진입점을 기존 Enemy HP 및 사망 처리로 연결한다.
+	virtual float TakeDamage(
+		float DamageAmount,
+		FDamageEvent const& DamageEvent,
+		AController* EventInstigator,
+		AActor* DamageCauser) override;
 
 protected:
 	virtual void PostInitializeComponents() override;
@@ -79,6 +85,15 @@ protected:
 		Category = "Enemy|AI",
 		meta = (Schema = "/Script/Outlier.EnemyStateTreeSchema", SchemaCanBeOverriden))
 	FStateTreeReference BattleStateTreeReference;
+
+	// 공용 StateTree의 Enemy.StateTree.PossessedAttack Linked Asset을 개체 유형별 빙의 공격 Tree로 교체한다.
+	// 지정하지 않은 개체는 빙의 중 공격 입력을 처리하지 않는다.
+	UPROPERTY(
+		EditDefaultsOnly,
+		BlueprintReadOnly,
+		Category = "Enemy|AI",
+		meta = (Schema = "/Script/Outlier.EnemyStateTreeSchema", SchemaCanBeOverriden))
+	FStateTreeReference PossessedAttackStateTreeReference;
 
 	// Enemy BP에서 비전투 시 제자리 경계와 경로 순찰 중 사용할 행동을 선택한다.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|AI")
@@ -108,8 +123,19 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|Damage")
 	TObjectPtr<USphereComponent> CoreHitboxComponent;
 
+	// 코어가 없는 Enemy는 전용 콜리전과 무기의 추가 코어 탐색을 모두 생략한다.
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Damage")
+	uint8 bUseCoreWeakPoint : 1 = true;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Enemy|Data")
 	FDataTableRowHandle EnemyStatRow;
+
+	// 충격이 발생할 때마다 DataTable을 조회하지 않도록 초기화 시 RuntimeImpactReactionProfile에 복사한다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Enemy|Data")
+	FDataTableRowHandle ImpactReactionProfileRow;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Enemy|Impact")
+	FEnemyImpactReactionProfileRow RuntimeImpactReactionProfile;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Input")
 	TObjectPtr<UInputAction> ReleasePossessionAction;
@@ -147,6 +173,9 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "Enemy|State")
 	uint8 bPossessionInProgress : 1 = false;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "Enemy|Impact")
+	uint8 bPossessedImpactInputLocked : 1 = false;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "Enemy|State")
 	uint8 bPlayerCurrentlyVisible : 1 = false;
@@ -191,7 +220,15 @@ protected:
 	EEnemyCombatState PreStunCombatState = EEnemyCombatState::NonCombat;
 
 public:
+	static bool IsPossessedAttackDiagnosticsEnabled();
+
 	virtual FGenericTeamId GetGenericTeamId() const override;
+
+	// Enemy 유형별로 감지/공유 정책을 바꿀 때 AIController와 RoomSubsystem이 공통으로 조회한다.
+	virtual bool CanUseEnemyPerception() const { return !IsAIControlSuppressed(); }
+	virtual bool UsesHearingPerception() const { return true; }
+	virtual bool CanUseRoomTargetSharing() const { return !bIsPossessed; }
+	virtual FVector GetCombatAimPoint(const AActor* TargetActor) const;
 
 	virtual FGameplayTag GetCurrentRoomTag() const override;
 
@@ -212,7 +249,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Enemy|State")
 	bool IsPossessionInProgress() const { return bPossessionInProgress; }
 
-	bool IsAIControlSuppressed() const { return bIsPossessed || bPossessionInProgress; }
+	bool IsAIControlSuppressed() const
+	{
+		return bIsPossessed || bPossessionInProgress || bImpactReactionActive;
+	}
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|State")
 	bool IsInCombat() const { return bInCombat; }
@@ -251,6 +291,7 @@ public:
 		return bPossessedAttackHeld || bPossessedAttackQueued;
 	}
 	bool ConsumePossessedAttackRequest();
+	virtual bool IsPossessedActionCommitted() const { return false; }
 
 	// StateTree 공격 Task가 서버에서 호출한다. 클라이언트 BP에는 OnAttackPhaseChanged로 전달된다.
 	void SetAttackPhase(EEnemyAttackPhase NewPhase);
@@ -265,7 +306,7 @@ public:
 	bool StartPossessedAttackBurst();
 
 	// 반복 공격 중 조준 방향만 갱신한다. 무기 발사 주기 자체는 ARangedWeaponBase가 관리한다.
-	bool UpdateAttackLocation(const FVector& TargetLocation);
+	virtual bool UpdateAttackLocation(const FVector& TargetLocation);
 	void StopCurrentWeaponAttack();
 	void StopCurrentAttack();
 
@@ -340,8 +381,36 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Enemy|Possession")
 	AController* GetCachedAIController() const { return CachedAIController.IsValid() ? CachedAIController.Get() : nullptr; }
 
-	UFUNCTION(BlueprintCallable, Category = "Enemy|Damage")
-	void ApplyDamageInternal(float DamageAmount, bool bIsCoreHit);
+	// WeakPoint: Core처럼 일반 부위보다 높은 피해 배율을 사용하는 피격 부위다.
+	virtual float GetWeakPointDamageMultiplier(const UPrimitiveComponent* HitComponent) const;
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Damage")
+	bool HasCoreWeakPoint() const { return bUseCoreWeakPoint; }
+
+	// 폭발 거리와 차폐가 반영된 비율로 이동형 Enemy 반동 또는 Turret 연출을 요청한다.
+	virtual void ApplyExplosionReaction(
+		const FVector& ExplosionOrigin,
+		float EnemyImpulseScale,
+		float TurretReactionScale,
+		float EffectRatio);
+
+	// ImpactReaction State의 진입, 활성 Tick, 종료 시점에만 호출한다.
+	bool BeginImpactReaction();
+	bool UpdateImpactRecovery(float DeltaTime, float ElapsedTime);
+	void UpdatePossessedImpactRecovery(float DeltaTime);
+	void EndImpactReaction();
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Impact")
+	bool IsImpactReactionActive() const { return bImpactReactionActive; }
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Impact")
+	FVector GetAccumulatedImpactVelocity() const { return AccumulatedImpactVelocity; }
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Impact")
+	float GetImpactCameraShakeScale() const { return RuntimeImpactReactionProfile.CameraShakeScale; }
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Impact")
+	bool IsPossessedImpactInputLocked() const { return bPossessedImpactInputLocked; }
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|Damage")
 	USphereComponent* GetCoreHitboxComponent() const { return CoreHitboxComponent; }
@@ -364,11 +433,14 @@ protected:
 	void OnRep_CurrentHealth(float PreviousHealth);
 
 	void HandleCurrentHealthChanged(float PreviousHealth);
+	void ApplyDamageInternal(float DamageAmount);
+	void ApplyCoreWeakPointRuntimeState();
 
 	void SendEnemyStateTreeEventNextTick(FGameplayTag Tag);
 	void SetDefaultEnemyType(EEnemyType EnemyType);
 	virtual void ApplyClassStatOverrides();
 	virtual void ApplyMovementFromRuntimeStat();
+	virtual void PrepareForStateTreeStart();
 	bool HasActiveStunTag() const;
 	bool BeginPossessionProcess(APartnerCharacter* PartnerCharacter);
 	void ConfirmPossessionProcess();
@@ -386,8 +458,30 @@ protected:
 	void HandleCurrentRoomTagChanged(FGameplayTag PreviousRoomTag, FGameplayTag NewRoomTag);
 	void RemoveRoomTargetObserver();
 	virtual void HandleDeath();
+	virtual float GetDeathDestroyDelay() const { return 0.0f; }
+	virtual bool TryApplyCommittedImpactVelocity(const FVector& ImpactVelocity);
+	virtual void CancelCommittedAction();
+	virtual void ApplyExplosionReactionPresentation(const FVector& Direction, float ReactionScale);
+	void AccumulateImpactVelocity(const FVector& ImpactVelocity);
+	void RefreshImpactReactionDuration();
+	void BeginPossessedImpactInputLock();
+	void EndPossessedImpactInputLock();
+
+	// 서버에서 모든 클라이언트에 폭발 반응 방향과 연출 강도를 전달한다.
+	UFUNCTION(NetMulticast, Unreliable)
+	void MulticastExplosionReaction(FVector_NetQuantizeNormal Direction, float ReactionScale);
+
+	UFUNCTION(BlueprintImplementableEvent, Category = "Enemy|Explosion")
+	void OnExplosionReaction(FVector Direction, float ReactionScale);
 
 	bool bCombatDecisionRefreshPending = false;
+	FVector AccumulatedImpactVelocity = FVector::ZeroVector;
+	float CurrentImpactStrength = 0.0f;
+	float CurrentPhysicalKnockbackDuration = 0.0f;
+	float CurrentControlRecoveryDuration = 0.0f;
+	float ImpactRecoveryElapsedTime = 0.0f;
+	bool bImpactReactionActive = false;
+	FTimerHandle PossessedImpactInputLockTimerHandle;
 
 	// 빙의된 VEC의 AttackAction 입력 진입점.
 	// 소유 클라이언트는 시작/종료 상태만 RPC로 보내고 실제 발사는 서버 무기가 수행한다.

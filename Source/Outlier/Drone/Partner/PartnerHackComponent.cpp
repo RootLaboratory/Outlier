@@ -102,7 +102,8 @@ void UPartnerHackComponent::TryHack_Implementation()
 	//MiniGame;
 	if (ActiveHackableComponent || HackMiniGameWidget)
 	{
-		ClientStopHackMiniGame();
+		// 취소 결과를 서버 대상에 먼저 반영한다. Listen Server에서는 Client RPC가 같은 인스턴스의
+		// ActiveHackableComponent를 즉시 지울 수 있으므로 UI를 먼저 닫으면 완료 처리가 유실된다.
 		CancelActiveHack();
 		return ;
 	}
@@ -476,8 +477,7 @@ void UPartnerHackComponent::ServerTryStartHack_Implementation(AActor* TargetActo
 	DeactivateUnselectedCandidates(HackableComponent);
 	bHackCandidateSearchActive = false;
 	SetActiveHackableComponent(HackableComponent);
-
-	//HackedOnce Marked
+	// 성공, 실패, 취소와 관계없이 미니게임을 시작한 대상은 다시 해킹할 수 없다.
 	ActiveHackableComponent->MarkAsHackedOnce();
 
 	//Actor Override

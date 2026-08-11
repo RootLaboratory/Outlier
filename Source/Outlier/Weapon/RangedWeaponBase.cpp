@@ -2,11 +2,15 @@
 
 
 #include "Weapon/RangedWeaponBase.h"
+
+#include "Damage/OutlierTaggedDamageEvent.h"
+#include "GameplayTags/OutlierGameplayTags.h"
 #include "DrawDebugHelpers.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/SphereComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "GameFramework/Character.h"
+#include "GameFramework/PlayerController.h"
 #include "TimerManager.h"
 #include "Kismet/GameplayStatics.h"
 #include "VisualEventSubsystem.h"
@@ -22,23 +26,78 @@
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Enemy/EnemyBase.h"
 #include "OutlierNetUtils.h"
-#include "Drone/Partner/PartnerShieldSphere.h"
 #include "Net/UnrealNetwork.h"
 #include "Weapon/WeaponCoreRow.h"
 #include "Weapon/WeaponBloomRow.h"
 #include "Weapon/WeaponFeedbackDefinition.h"
 #include "Weapon/WeaponProjectileRow.h"
 #include "Weapon/WeaponRecoilRow.h"
+#include "FirstPerson/FirstPersonPlayerCameraManager.h"
 #include "Shooter/ShooterAnimInstance.h"
 #include "Shooter/ShooterFirstPersonAnimInstance.h"
 #include "Enemy/EnemyRoomSubsystem.h"
+#include "Outlier.h"
 #include "Room/RoomTagComponent.h"
 #include "Interface/RoomTagInterface.h"
 #include "Interface/WeaponMuzzleProvider.h"
+#include "NiagaraFunctionLibrary.h"
+#include "NiagaraSystem.h"
+#include "Particles/ParticleSystem.h"
+
+namespace
+{
+	void SpawnAttachedMuzzleEffect(
+		const UTrailEffectDefinition* Def,
+		USceneComponent* AttachTarget,
+		FName SocketName,
+		const FVector& Location,
+		const FRotator& Rotation)
+	{
+		if (!Def || !Def->FXAsset || !AttachTarget)
+		{
+			return;
+		}
+
+		const FVector FinalLocation = Location + Def->RelativeLocation;
+		const FRotator FinalRotation = Rotation + Def->RelativeRotation + Def->RotationOffset;
+
+		if (UNiagaraSystem* Niagara = Cast<UNiagaraSystem>(Def->FXAsset))
+		{
+			UNiagaraFunctionLibrary::SpawnSystemAttached(
+				Niagara,
+				AttachTarget,
+				SocketName,
+				FinalLocation,
+				FinalRotation,
+				Def->Scale,
+				EAttachLocation::KeepWorldPosition,
+				true,
+				ENCPoolMethod::AutoRelease,
+				true,
+				true);
+		}
+		else if (UParticleSystem* Particle = Cast<UParticleSystem>(Def->FXAsset))
+		{
+			UGameplayStatics::SpawnEmitterAttached(
+				Particle,
+				AttachTarget,
+				SocketName,
+				FinalLocation,
+				FinalRotation,
+				Def->Scale,
+				EAttachLocation::KeepWorldPosition,
+				true,
+				EPSCPoolMethod::AutoRelease,
+				true);
+		}
+	}
+}
 
 namespace
 {
 	constexpr float BloomRecoveryTickInterval = 0.05f;
+	constexpr float ControlKickTimerInterval = 1.0f / 120.0f;
+	constexpr float MaxControlKickDurationSeconds = 0.025f;
 }
 
 void ARangedWeaponBase::StartAttackCooldown()
@@ -108,6 +167,16 @@ void ARangedWeaponBase::FinishPostBurstCooldown()
 	bOnPostBurstCooldown = false;
 }
 
+void ARangedWeaponBase::ForcePostBurstCooldown()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	StopAttack();
+	StartPostBurstCooldown();
+}
+
 bool ARangedWeaponBase::CanReload() const
 {
 	return !bIsReloading
@@ -174,6 +243,23 @@ void ARangedWeaponBase::ConsumeAmmo()
 
 void ARangedWeaponBase::FireShot()
 {
+	FireShotFromMuzzle(NAME_None, true);
+}
+
+void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPlayShotSound)
+{
+	if (Cast<APartnerCharacter>(WeaponOwner))
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[PartnerWeaponVFX][FireShot] Weapon=%s Authority=%d Owner=%s Controller=%s"),
+			*GetNameSafe(this),
+			HasAuthority() ? 1 : 0,
+			*GetNameSafe(WeaponOwner),
+			*GetNameSafe(WeaponOwner ? WeaponOwner->GetInstigatorController() : nullptr));
+	}
+
 	if (!HasAuthority())
 	{
 		return;
@@ -241,18 +327,13 @@ void ARangedWeaponBase::FireShot()
 
 	if (bHit)
 	{
+		AActor* HitActor = Hit.GetActor();
 		const float HitDistance = FVector::Distance(Start, Hit.ImpactPoint);
 		const float DamageToApply = GetDamageAtDistance(HitDistance);
+		FHitResult ResolvedDamageHit = Hit;
 
-		if (APartnerShieldSphere* Shield = Cast<APartnerShieldSphere>(Hit.GetActor()))
-		{
-			Shield->ApplyShieldDamage(DamageToApply);
-		}
-		else if (AShooterCharacter* HitCharacter = Cast<AShooterCharacter>(Hit.GetActor()))
-		{
-			HitCharacter->ApplyDamageInternal(DamageToApply);
-		}
-		else if (AEnemyBase* HitEnemy = Cast<AEnemyBase>(Hit.GetActor()))
+		if (AEnemyBase* HitEnemy = Cast<AEnemyBase>(HitActor);
+			HitEnemy && HitEnemy->HasCoreWeakPoint())
 		{
 			// 어떤 걸 맞았는지(HitEnemy 확정)는 위의 단일 트레이스 결과 그대로 사용 — 벽/다른 액터에 대한
 			// 판정은 절대 안 바뀜. CoreHitboxComponent가 Body(SkeletalMeshComponent)의 Physics Asset
@@ -268,13 +349,17 @@ void ARangedWeaponBase::FireShot()
 			TArray<FHitResult> BoneHitResults;
 			GetWorld()->LineTraceMultiByChannel(BoneHitResults, Start, ProbeEnd, ECC_PhysicsBody, CoreProbeParams);
 
-			bool bIsCoreHit = false;
+			float BestWeakPointMultiplier = HitEnemy->GetWeakPointDamageMultiplier(Hit.GetComponent());
 			for (const FHitResult& BodyHit : BoneHitResults)
 			{
-				if (BodyHit.GetActor() == HitEnemy && BodyHit.GetComponent() == HitEnemy->GetCoreHitboxComponent())
+				if (BodyHit.GetActor() == HitEnemy)
 				{
-					bIsCoreHit = true;
-					break;
+					const float CandidateMultiplier = HitEnemy->GetWeakPointDamageMultiplier(BodyHit.GetComponent());
+					if (CandidateMultiplier > BestWeakPointMultiplier)
+					{
+						BestWeakPointMultiplier = CandidateMultiplier;
+						ResolvedDamageHit = BodyHit;
+					}
 				}
 			}
 			/*if (bIsCoreHit)
@@ -286,24 +371,31 @@ void ARangedWeaponBase::FireShot()
 				GetLocalUISubsystem()->OnRep_AttackSign(EAttackSign::Default);
 			}*/
 
-			HitEnemy->ApplyDamageInternal(DamageToApply, bIsCoreHit);
 		}
-		else if (APartnerCharacter* PartnerCharacter = Cast<APartnerCharacter>(Hit.GetActor()))
+
+		FOutlierTaggedDamageEvent DamageEvent;
+		DamageEvent.DamageTag = OutlierGameplayTags::Damage::Weapon();
+		DamageEvent.HitResult = ResolvedDamageHit;
+		DamageEvent.DamageOrigin = Start;
+		if (HitActor)
 		{
-			PartnerCharacter->HandlePartnerHit();
+			HitActor->TakeDamage(DamageToApply, DamageEvent, OwnerCharacter->GetController(), this);
 		}
 	}
-	ClientNotifyShotFired(GetNormalizedLastShotDirection());
-
 	{
 		AActor* HitActor = Hit.GetActor();
 		const FVector TraceEndPoint = bHit ? Hit.ImpactPoint : End;
 		const FVector ImpactNormal = bHit ? Hit.ImpactNormal : -ShotDirection;
-		MulticastPlayFireFX(TraceEndPoint, ImpactNormal, HitActor, GetNormalizedLastShotDirection());
+		MulticastPlayFireFX(
+			TraceEndPoint,
+			ImpactNormal,
+			HitActor,
+			GetNormalizedLastShotDirection(),
+			FiredMuzzleSocketName);
 
 		if (UVisualEventSubsystem* VisualSubsystem = GetWorld()->GetSubsystem<UVisualEventSubsystem>())
 		{
-			if (GunSound)
+			if (bPlayShotSound && GunSound)
 			{
 				VisualSubsystem->PlaySoundAtLocation(GunSound, Start);
 			}
@@ -340,10 +432,61 @@ void ARangedWeaponBase::FireShot()
 	);*/
 }
 
-// 반동, 탄 퍼짐은 추후 작업 예정
+// 서버에서 연사 누적 반동을 확정하고 소유 플레이어에게 짧은 화면 피드백을 전달한다.
 void ARangedWeaponBase::ApplyRecoil()
 {
-	ApplyRecoilWithShotDirection(GetNormalizedLastShotDirection());
+	LastCalculatedControlRecoil = FVector2D::ZeroVector;
+	LastWeaponCameraShakeScale = 0.0f;
+	LastWeaponCameraShakeDuration = 0.0f;
+
+	ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
+	if (!HasAuthority()
+		|| !OwnerCharacter
+		|| !OwnerCharacter->IsPlayerControlled()
+		|| !bHasActiveRecoilProfile
+		|| RecoilMultiplier <= 0.0f)
+	{
+		return;
+	}
+
+	++RecoilShotSequence;
+	LastCalculatedControlRecoil = OutlierWeaponRecoil::CalculateControlRecoil(
+		ActiveRecoilProfile,
+		RecoilMultiplier,
+		RecoilShotSequence,
+		RecoilRuntimeState);
+	LastWeaponCameraShakeScale = FMath::Max(ActiveRecoilProfile.CameraShakeScale, 0.0f);
+	LastWeaponCameraShakeDuration = FMath::Max(ActiveRecoilProfile.CameraShakeDuration, 0.0f);
+
+	const float ResetDelay = FMath::Max(ActiveRecoilProfile.RecoilResetDelay, 0.0f);
+	if (ResetDelay <= 0.0f)
+	{
+		ResetRecoilRuntimeState();
+	}
+	else if (GetWorld())
+	{
+		GetWorld()->GetTimerManager().SetTimer(
+			RecoilResetTimerHandle,
+			this,
+			&ARangedWeaponBase::ResetRecoilRuntimeState,
+			ResetDelay,
+			false);
+	}
+
+	if (OwnerCharacter->IsLocallyControlled())
+	{
+		ApplyLocalRecoilPresentation(
+			GetNormalizedLastShotDirection(),
+			LastCalculatedControlRecoil,
+			ActiveRecoilProfile.ControlKickInterpSpeed,
+			LastWeaponCameraShakeScale,
+			LastWeaponCameraShakeDuration);
+	}
+	else
+	{
+		// 원격 소유자의 다음 서버 발사도 반동 방향을 사용하도록 권한 ControlRotation을 먼저 갱신한다.
+		ApplyAuthoritativeControlRecoil(LastCalculatedControlRecoil);
+	}
 }
 
 FVector2D ARangedWeaponBase::GetNormalizedLastShotDirection() const
@@ -363,22 +506,38 @@ FVector2D ARangedWeaponBase::GetNormalizedLastShotDirection() const
 	);
 }
 
-void ARangedWeaponBase::ApplyRecoilWithShotDirection(const FVector2D& NormalizedShotDirection)
+void ARangedWeaponBase::ApplyLocalRecoilPresentation(
+	const FVector2D& NormalizedShotDirection,
+	const FVector2D& ControlRecoilDelta,
+	float ControlKickInterpSpeed,
+	float CameraShakeScale,
+	float CameraShakeDuration)
 {
-	AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
-	if (!Shooter || !Shooter->IsLocallyControlled())
+	ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
+	if (!OwnerCharacter || !OwnerCharacter->IsLocallyControlled())
 	{
 		return;
 	}
 
-	Shooter->AddWeaponCameraRecoil(
-		RecoilPitchAmplitude * RecoilMultiplier,
-		RecoilLocationXAmplitude * RecoilMultiplier,
-		RecoilLocationYAmplitude * RecoilMultiplier,
-		RecoilFovAmplitude * RecoilMultiplier,
-		RecoilRecoverySpeed,
-		NormalizedShotDirection
-	);
+	QueueLocalControlRecoil(ControlRecoilDelta, ControlKickInterpSpeed);
+
+	if (APlayerController* PlayerController = Cast<APlayerController>(OwnerCharacter->GetController()))
+	{
+		if (AFirstPersonPlayerCameraManager* CameraManager =
+			Cast<AFirstPersonPlayerCameraManager>(PlayerController->PlayerCameraManager))
+		{
+			CameraManager->PlayWeaponCameraShake(
+				CameraShakeScale,
+				CameraShakeDuration,
+				OwnerCharacter);
+		}
+	}
+
+	AShooterCharacter* Shooter = Cast<AShooterCharacter>(OwnerCharacter);
+	if (!Shooter)
+	{
+		return;
+	}
 
 	USkeletalMeshComponent* FirstPersonMesh = Shooter->GetFirstPersonMesh();
 	if (!FirstPersonMesh)
@@ -395,6 +554,115 @@ void ARangedWeaponBase::ApplyRecoilWithShotDirection(const FVector2D& Normalized
 			RecoilMultiplier * GetFirstPersonProceduralRecoilMultiplier(),
 			NormalizedShotDirection
 		);
+	}
+}
+
+void ARangedWeaponBase::ApplyAuthoritativeControlRecoil(const FVector2D& ControlRecoilDelta)
+{
+	ApplyControlRotationDelta(ControlRecoilDelta);
+}
+
+void ARangedWeaponBase::QueueLocalControlRecoil(
+	const FVector2D& ControlRecoilDelta,
+	float ControlKickInterpSpeed)
+{
+	if (ControlRecoilDelta.IsNearlyZero())
+	{
+		return;
+	}
+
+	PendingLocalControlRecoil += ControlRecoilDelta;
+	LocalControlKickInterpSpeed = FMath::Max(ControlKickInterpSpeed, 1.0f);
+	LocalControlKickElapsedTime = 0.0f;
+
+	// 첫 프레임에 대부분을 반영하고 남은 값만 짧은 활성 Timer로 마무리한다.
+	HandleLocalControlKick();
+	if (!PendingLocalControlRecoil.IsNearlyZero() && GetWorld())
+	{
+		GetWorld()->GetTimerManager().SetTimer(
+			LocalControlKickTimerHandle,
+			this,
+			&ARangedWeaponBase::HandleLocalControlKick,
+			ControlKickTimerInterval,
+			true);
+	}
+}
+
+void ARangedWeaponBase::HandleLocalControlKick()
+{
+	ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
+	if (!OwnerCharacter || !OwnerCharacter->IsLocallyControlled() || PendingLocalControlRecoil.IsNearlyZero())
+	{
+		if (GetWorld())
+		{
+			GetWorld()->GetTimerManager().ClearTimer(LocalControlKickTimerHandle);
+		}
+		PendingLocalControlRecoil = FVector2D::ZeroVector;
+		return;
+	}
+
+	LocalControlKickElapsedTime += ControlKickTimerInterval;
+	const float StepAlpha = 1.0f - FMath::Exp(-LocalControlKickInterpSpeed * ControlKickTimerInterval);
+	FVector2D AppliedDelta = PendingLocalControlRecoil * StepAlpha;
+	if (LocalControlKickElapsedTime >= MaxControlKickDurationSeconds
+		|| PendingLocalControlRecoil.SizeSquared() <= FMath::Square(0.001f))
+	{
+		AppliedDelta = PendingLocalControlRecoil;
+	}
+
+	ApplyControlRotationDelta(AppliedDelta);
+	PendingLocalControlRecoil -= AppliedDelta;
+
+	if (PendingLocalControlRecoil.IsNearlyZero(0.001f) && GetWorld())
+	{
+		PendingLocalControlRecoil = FVector2D::ZeroVector;
+		GetWorld()->GetTimerManager().ClearTimer(LocalControlKickTimerHandle);
+	}
+}
+
+void ARangedWeaponBase::ApplyControlRotationDelta(const FVector2D& ControlRecoilDelta) const
+{
+	const ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
+	AController* OwnerController = OwnerCharacter ? OwnerCharacter->GetController() : nullptr;
+	if (!OwnerController || ControlRecoilDelta.IsNearlyZero())
+	{
+		return;
+	}
+
+	FRotator ControlRotation = OwnerController->GetControlRotation();
+	ControlRotation.Pitch = FMath::ClampAngle(
+		ControlRotation.Pitch + ControlRecoilDelta.X,
+		-89.0f,
+		89.0f);
+	ControlRotation.Yaw = FRotator::NormalizeAxis(ControlRotation.Yaw + ControlRecoilDelta.Y);
+	OwnerController->SetControlRotation(ControlRotation);
+}
+
+void ARangedWeaponBase::ResetRecoilRuntimeState()
+{
+	RecoilRuntimeState.Reset();
+}
+
+void ARangedWeaponBase::CancelLocalRecoilPresentation()
+{
+	if (GetWorld())
+	{
+		GetWorld()->GetTimerManager().ClearTimer(LocalControlKickTimerHandle);
+	}
+	PendingLocalControlRecoil = FVector2D::ZeroVector;
+	LocalControlKickElapsedTime = 0.0f;
+
+	const ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
+	const APlayerController* PlayerController = OwnerCharacter
+		? Cast<APlayerController>(OwnerCharacter->GetController())
+		: nullptr;
+	if (PlayerController)
+	{
+		if (AFirstPersonPlayerCameraManager* CameraManager =
+			Cast<AFirstPersonPlayerCameraManager>(PlayerController->PlayerCameraManager))
+		{
+			CameraManager->StopWeaponCameraShake(true);
+		}
 	}
 }
 
@@ -710,8 +978,27 @@ void ARangedWeaponBase::AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacte
 }
 
 
-void ARangedWeaponBase::MulticastPlayFireFX_Implementation(FVector_NetQuantize TraceEnd, FVector_NetQuantizeNormal ImpactNormal, AActor* Hit, FVector2D NormalizedShotDirection)
+void ARangedWeaponBase::MulticastPlayFireFX_Implementation(
+	FVector_NetQuantize TraceEnd,
+	FVector_NetQuantizeNormal ImpactNormal,
+	AActor* Hit,
+	FVector2D NormalizedShotDirection,
+	FName FiredMuzzleSocketName)
 {
+	const bool bPartnerWeapon = Cast<APartnerCharacter>(WeaponOwner) != nullptr;
+	if (bPartnerWeapon)
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[PartnerWeaponVFX][Multicast] Weapon=%s Owner=%s TraceEnd=%s MuzzleDef=%s TrailDef=%s"),
+			*GetNameSafe(this),
+			*GetNameSafe(WeaponOwner),
+			*TraceEnd.ToString(),
+			*GetNameSafe(WeaponMuzzle),
+			*GetNameSafe(WeaponTrail));
+	}
+
 	if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner))
 	{
 		if (USkeletalMeshComponent* ThirdPersonMesh = Shooter->GetMesh())
@@ -734,13 +1021,24 @@ void ARangedWeaponBase::MulticastPlayFireFX_Implementation(FVector_NetQuantize T
 
 	const bool bUseFirstPersonPresentation =
 		OwnerCharacter->IsPlayerControlled() && OwnerCharacter->IsLocallyControlled();
+	if (bPartnerWeapon)
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[PartnerWeaponVFX][Presentation] FirstPerson=%d PlayerControlled=%d LocallyControlled=%d"),
+			bUseFirstPersonPresentation ? 1 : 0,
+			OwnerCharacter->IsPlayerControlled() ? 1 : 0,
+			OwnerCharacter->IsLocallyControlled() ? 1 : 0);
+	}
+
 	if (bUseFirstPersonPresentation)
 	{
-		PlayFirstPersonFireFX(TraceEnd, ImpactNormal, Hit);
+		PlayFirstPersonFireFX(TraceEnd, ImpactNormal, Hit, FiredMuzzleSocketName);
 		return;
 	}
 
-	PlayThirdPersonFireFX(TraceEnd, ImpactNormal, Hit);
+	PlayThirdPersonFireFX(TraceEnd, ImpactNormal, Hit, FiredMuzzleSocketName);
 }
 
 
@@ -883,7 +1181,12 @@ int32 ARangedWeaponBase::ResolveADSBlurStencil()
 	return StencilValue > 0 ? StencilValue : DefaultADSWeaponStencil;
 }
 
-void ARangedWeaponBase::ClientNotifyShotFired_Implementation(FVector2D NormalizedShotDirection)
+void ARangedWeaponBase::ClientNotifyShotFired_Implementation(
+	FVector2D NormalizedShotDirection,
+	FVector2D ControlRecoilDelta,
+	float ControlKickInterpSpeed,
+	float CameraShakeScale,
+	float CameraShakeDuration)
 {
 	ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
 	if (OwnerCharacter && OwnerCharacter->IsLocallyControlled())
@@ -895,17 +1198,27 @@ void ARangedWeaponBase::ClientNotifyShotFired_Implementation(FVector2D Normalize
 
 		if (!HasAuthority())
 		{
-			ApplyRecoilWithShotDirection(NormalizedShotDirection);
+			ApplyLocalRecoilPresentation(
+				NormalizedShotDirection,
+				ControlRecoilDelta,
+				ControlKickInterpSpeed,
+				CameraShakeScale,
+				CameraShakeDuration);
 		}
 	}
 }
 
-void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit)
+void ARangedWeaponBase::PlayThirdPersonFireFX(
+	FVector TraceEnd, FVector ImpactNormal, AActor* Hit, FName FiredMuzzleSocketName)
 {
 	TArray<FTransform> MuzzleTransforms;
-	ResolveMuzzleTransforms(false, MuzzleTransforms);
+	ResolveMuzzleTransforms(false, FiredMuzzleSocketName, MuzzleTransforms);
 	if (MuzzleTransforms.IsEmpty())
 	{
+		if (Cast<APartnerCharacter>(WeaponOwner))
+		{
+			UE_LOG(LogTemp, Error, TEXT("[PartnerWeaponVFX][TP] Failed: no valid muzzle transform."));
+		}
 		return;
 	}
 
@@ -918,7 +1231,30 @@ void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, FVector ImpactNo
 
 			if (WeaponMuzzle)
 			{
-				VisualSubsystem->SpawnMuzzleEffect(WeaponMuzzle, Start, MuzzleRotation);
+				if (APartnerCharacter* Partner = Cast<APartnerCharacter>(WeaponOwner))
+				{
+					SpawnAttachedMuzzleEffect(
+						WeaponMuzzle,
+						Partner->GetWeaponMuzzleComponent(false),
+						Partner->GetWeaponMuzzleSocketName(false),
+						Start,
+						MuzzleRotation);
+					UE_LOG(
+						LogTemp,
+						Warning,
+						TEXT("[PartnerWeaponVFX][TP][Muzzle] Attached spawn requested. Definition=%s Location=%s Rotation=%s"),
+						*GetNameSafe(WeaponMuzzle),
+						*Start.ToString(),
+						*MuzzleRotation.ToString());
+				}
+				else
+				{
+					VisualSubsystem->SpawnMuzzleEffect(WeaponMuzzle, Start, MuzzleRotation);
+				}
+			}
+			else if (Cast<APartnerCharacter>(WeaponOwner))
+			{
+				UE_LOG(LogTemp, Error, TEXT("[PartnerWeaponVFX][TP][Muzzle] Failed: WeaponMuzzle definition is null."));
 			}
 
 
@@ -955,14 +1291,23 @@ void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, FVector ImpactNo
 		}
 
 	}
+	else if (Cast<APartnerCharacter>(WeaponOwner))
+	{
+		UE_LOG(LogTemp, Error, TEXT("[PartnerWeaponVFX][TP] Failed: VisualEventSubsystem is null."));
+	}
 }
 
-void ARangedWeaponBase::PlayFirstPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit)
+void ARangedWeaponBase::PlayFirstPersonFireFX(
+	FVector TraceEnd, FVector ImpactNormal, AActor* Hit, FName FiredMuzzleSocketName)
 {
 	TArray<FTransform> MuzzleTransforms;
-	ResolveMuzzleTransforms(true, MuzzleTransforms);
+	ResolveMuzzleTransforms(true, FiredMuzzleSocketName, MuzzleTransforms);
 	if (MuzzleTransforms.IsEmpty())
 	{
+		if (Cast<APartnerCharacter>(WeaponOwner))
+		{
+			UE_LOG(LogTemp, Error, TEXT("[PartnerWeaponVFX][FP] Failed: no valid muzzle transform."));
+		}
 		return;
 	}
 
@@ -970,13 +1315,38 @@ void ARangedWeaponBase::PlayFirstPersonFireFX(FVector TraceEnd, FVector ImpactNo
 	{
 		for (const FTransform& MuzzleTransform : MuzzleTransforms)
 		{
-			const FVector Start =
-				MuzzleTransform.GetLocation() + MuzzleTransform.GetRotation().GetForwardVector() * 10.0f;
+			const bool bPartnerWeapon = Cast<APartnerCharacter>(WeaponOwner) != nullptr;
+			const FVector Start = bPartnerWeapon
+				? MuzzleTransform.GetLocation()
+				: MuzzleTransform.GetLocation() + MuzzleTransform.GetRotation().GetForwardVector() * 10.0f;
 			const FRotator MuzzleRotation = MuzzleTransform.Rotator();
 
 			if (WeaponMuzzle)
 			{
-				VisualSubsystem->SpawnMuzzleEffect(WeaponMuzzle, Start, MuzzleRotation);
+				if (APartnerCharacter* Partner = Cast<APartnerCharacter>(WeaponOwner))
+				{
+					SpawnAttachedMuzzleEffect(
+						WeaponMuzzle,
+						Partner->GetWeaponMuzzleComponent(true),
+						Partner->GetWeaponMuzzleSocketName(true),
+						Start,
+						MuzzleRotation);
+					UE_LOG(
+						LogTemp,
+						Warning,
+						TEXT("[PartnerWeaponVFX][FP][Muzzle] Attached spawn requested. Definition=%s Location=%s Rotation=%s"),
+						*GetNameSafe(WeaponMuzzle),
+						*Start.ToString(),
+						*MuzzleRotation.ToString());
+				}
+				else
+				{
+					VisualSubsystem->SpawnMuzzleEffect(WeaponMuzzle, Start, MuzzleRotation);
+				}
+			}
+			else if (Cast<APartnerCharacter>(WeaponOwner))
+			{
+				UE_LOG(LogTemp, Error, TEXT("[PartnerWeaponVFX][FP][Muzzle] Failed: WeaponMuzzle definition is null."));
 			}
 
 			if (WeaponTrail)
@@ -1011,9 +1381,14 @@ void ARangedWeaponBase::PlayFirstPersonFireFX(FVector TraceEnd, FVector ImpactNo
 		}
 
 	}
+	else if (Cast<APartnerCharacter>(WeaponOwner))
+	{
+		UE_LOG(LogTemp, Error, TEXT("[PartnerWeaponVFX][FP] Failed: VisualEventSubsystem is null."));
+	}
 }
 
-void ARangedWeaponBase::ResolveMuzzleTransforms(bool bFirstPerson, TArray<FTransform>& OutMuzzleTransforms) const
+void ARangedWeaponBase::ResolveMuzzleTransforms(
+	bool bFirstPerson, FName FiredMuzzleSocketName, TArray<FTransform>& OutMuzzleTransforms) const
 {
 	USkeletalMeshComponent* MuzzleComponent = nullptr;
 	TArray<FName> SocketNames;
@@ -1022,7 +1397,14 @@ void ARangedWeaponBase::ResolveMuzzleTransforms(bool bFirstPerson, TArray<FTrans
 	if (const IWeaponMuzzleProvider* MuzzleProvider = Cast<IWeaponMuzzleProvider>(WeaponOwner))
 	{
 		MuzzleComponent = MuzzleProvider->GetWeaponMuzzleComponent(bFirstPerson);
-		MuzzleProvider->GetWeaponMuzzleSocketNames(bFirstPerson, SocketNames);
+		if (!FiredMuzzleSocketName.IsNone())
+		{
+			SocketNames.Add(FiredMuzzleSocketName);
+		}
+		else
+		{
+			MuzzleProvider->GetWeaponMuzzleSocketNames(bFirstPerson, SocketNames);
+		}
 	}
 
 	// Shooter처럼 독립 무기 메시를 쓰는 기존 무기는 원래 경로를 유지한다.
@@ -1034,12 +1416,33 @@ void ARangedWeaponBase::ResolveMuzzleTransforms(bool bFirstPerson, TArray<FTrans
 
 	if (!MuzzleComponent)
 	{
+		if (Cast<APartnerCharacter>(WeaponOwner))
+		{
+			UE_LOG(LogTemp, Error, TEXT("[PartnerWeaponVFX][Resolve] Failed: muzzle component is null. FirstPerson=%d"), bFirstPerson ? 1 : 0);
+		}
 		return;
 	}
 
 	for (const FName SocketName : SocketNames)
 	{
-		if (!SocketName.IsNone() && MuzzleComponent->DoesSocketExist(SocketName))
+		const bool bSocketExists = !SocketName.IsNone() && MuzzleComponent->DoesSocketExist(SocketName);
+		if (Cast<APartnerCharacter>(WeaponOwner))
+		{
+			const FVector SocketLocation = bSocketExists
+				? MuzzleComponent->GetSocketLocation(SocketName)
+				: FVector::ZeroVector;
+			UE_LOG(
+				LogTemp,
+				Warning,
+				TEXT("[PartnerWeaponVFX][Resolve] FirstPerson=%d Component=%s Socket=%s Exists=%d SocketLocation=%s"),
+				bFirstPerson ? 1 : 0,
+				*GetNameSafe(MuzzleComponent),
+				*SocketName.ToString(),
+				bSocketExists ? 1 : 0,
+				*SocketLocation.ToString());
+		}
+
+		if (bSocketExists)
 		{
 			OutMuzzleTransforms.Add(MuzzleComponent->GetSocketTransform(SocketName, RTS_World));
 		}
@@ -1102,6 +1505,18 @@ ARangedWeaponBase::ARangedWeaponBase() : AWeaponBase()
 	ShadowHandMagazineMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ShadowHandMagazine"));
 	ShadowHandMagazineMesh->SetupAttachment(ShadowWeaponMesh);
 	ShadowHandMagazineMesh->SetHiddenInGame(true);
+}
+
+void ARangedWeaponBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	CancelLocalRecoilPresentation();
+	if (GetWorld())
+	{
+		GetWorld()->GetTimerManager().ClearTimer(RecoilResetTimerHandle);
+	}
+	ResetRecoilRuntimeState();
+
+	Super::EndPlay(EndPlayReason);
 }
 
 void ARangedWeaponBase::OnConstruction(const FTransform& Transform)
@@ -1213,7 +1628,6 @@ void ARangedWeaponBase::InitializeFromDataTables()
 		bIsAutomatic = FireMode == EWeaponFireMode::FullAuto;
 		BloomProfileId = CoreRow->BloomProfileId;
 		ProjectileProfileId = CoreRow->ProjectileProfileId;
-		RecoilProfileId = CoreRow->RecoilProfileId;
 	}
 
 	InitializeBloomFromDataTable();
@@ -1231,59 +1645,58 @@ void ARangedWeaponBase::InitializeBloomFromDataTable()
 
 void ARangedWeaponBase::InitializeRecoilFromDataTable()
 {
+	CacheRecoilProfiles();
 	RefreshRecoilSettingsFromState();
+}
+
+void ARangedWeaponBase::CacheRecoilProfiles()
+{
+	bHasCachedHipRecoilProfile = false;
+	bHasCachedADSRecoilProfile = false;
+	bHasCachedAnyRecoilProfile = false;
+
+	if (const FWeaponRecoilRow* HipRow =
+		HipRecoilDataRow.GetRow<FWeaponRecoilRow>(TEXT("CacheHipWeaponRecoil")))
+	{
+		CachedHipRecoilProfile = *HipRow;
+		bHasCachedHipRecoilProfile = true;
+	}
+
+	if (const FWeaponRecoilRow* ADSRow =
+		ADSRecoilDataRow.GetRow<FWeaponRecoilRow>(TEXT("CacheADSWeaponRecoil")))
+	{
+		CachedADSRecoilProfile = *ADSRow;
+		bHasCachedADSRecoilProfile = true;
+	}
+
+	if (const FWeaponRecoilRow* DefaultRow =
+		DefaultRecoilDataRow.GetRow<FWeaponRecoilRow>(TEXT("CacheDefaultWeaponRecoil")))
+	{
+		CachedAnyRecoilProfile = *DefaultRow;
+		bHasCachedAnyRecoilProfile = true;
+	}
 }
 
 void ARangedWeaponBase::RefreshRecoilSettingsFromState()
 {
-	const EWeaponAimMode DesiredAimMode = bIsAiming ? EWeaponAimMode::ADS : EWeaponAimMode::Hip;
 	const FWeaponRecoilRow* RecoilRow = nullptr;
-
-	if (WeaponRecoilTable && !RecoilProfileId.IsNone())
+	if (bIsAiming && bHasCachedADSRecoilProfile)
 	{
-		TArray<FWeaponRecoilRow*> RecoilRows;
-		WeaponRecoilTable->GetAllRows<FWeaponRecoilRow>(TEXT("RefreshWeaponRecoil"), RecoilRows);
-
-		for (const FWeaponRecoilRow* CandidateRow : RecoilRows)
-		{
-			if (!CandidateRow || CandidateRow->RecoilProfileId != RecoilProfileId)
-			{
-				continue;
-			}
-
-			if (CandidateRow->AimMode == DesiredAimMode)
-			{
-				RecoilRow = CandidateRow;
-				break;
-			}
-
-			if (CandidateRow->AimMode == EWeaponAimMode::Any)
-			{
-				RecoilRow = CandidateRow;
-			}
-		}
+		RecoilRow = &CachedADSRecoilProfile;
+	}
+	else if (!bIsAiming && bHasCachedHipRecoilProfile)
+	{
+		RecoilRow = &CachedHipRecoilProfile;
+	}
+	else if (bHasCachedAnyRecoilProfile)
+	{
+		RecoilRow = &CachedAnyRecoilProfile;
 	}
 
-	if (!RecoilRow && WeaponRecoilTable && !RecoilProfileId.IsNone())
-	{
-		RecoilRow = WeaponRecoilTable->FindRow<FWeaponRecoilRow>(RecoilProfileId, TEXT("RefreshWeaponRecoil"));
-	}
+	bHasActiveRecoilProfile = RecoilRow != nullptr;
+	ActiveRecoilProfile = RecoilRow ? *RecoilRow : FWeaponRecoilRow();
 
-	if (!RecoilRow)
-	{
-		RecoilRow = RecoilDataRow.GetRow<FWeaponRecoilRow>(TEXT("RefreshWeaponRecoil"));
-	}
-
-	if (!RecoilRow)
-	{
-		return;
-	}
-
-	RecoilPitchAmplitude = RecoilRow->ControlPitchAmplitude;
-	RecoilLocationXAmplitude = RecoilRow->CameraLocationXAmplitude;
-	RecoilLocationYAmplitude = RecoilRow->CameraLocationYAmplitude;
-	RecoilFovAmplitude = RecoilRow->CameraFovKickAmplitude;
-	RecoilRecoverySpeed = RecoilRow->ControlRecoverySpeed;
+	// 조준 모드가 바뀌어도 이미 진행 중인 연사 누적 상태와 Reset Timer는 유지한다.
 }
 
 void ARangedWeaponBase::InitializeProjectileFromDataTable()
@@ -1399,6 +1812,12 @@ void ARangedWeaponBase::HandleAutoFire()
 	PerformAttack();
 }
 
+float ARangedWeaponBase::GetAutomaticFireInterval() const
+{
+	// AttackInterval은 개별 탄환 간격이다. 두 총구가 동시에 발사되면 다음 그룹까지 두 탄환 분량을 기다린다.
+	return FMath::Max(AttackInterval * FMath::Max(LastAttackMuzzleShotCount, 1), KINDA_SMALL_NUMBER);
+}
+
 void ARangedWeaponBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
@@ -1418,6 +1837,20 @@ bool ARangedWeaponBase::CanAttack() const
 
 void ARangedWeaponBase::StartAttack()
 {
+	if (Cast<APartnerCharacter>(WeaponOwner))
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[PartnerWeaponVFX][StartAttack] Weapon=%s Authority=%d CanAttack=%d IsAttacking=%d Ammo=%d InfiniteAmmo=%d"),
+			*GetNameSafe(this),
+			HasAuthority() ? 1 : 0,
+			CanAttack() ? 1 : 0,
+			bIsAttacking ? 1 : 0,
+			CurrentAmmo,
+			bInfiniteAmmo ? 1 : 0);
+	}
+
 	if (!HasAuthority())
 	{
 		return;
@@ -1433,7 +1866,14 @@ void ARangedWeaponBase::StartAttack()
 		return;
 	}
 
+	if (IWeaponMuzzleProvider* MuzzleProvider = Cast<IWeaponMuzzleProvider>(WeaponOwner);
+		MuzzleProvider && MuzzleProvider->UsesIndependentMuzzleShots())
+	{
+		MuzzleProvider->ResetWeaponMuzzleSequence();
+	}
+
 	CurrentBurstShotCount = 0;
+	LastAttackMuzzleShotCount = 1;
 	bIsAttacking = true;
 	PerformAttack(); // 첫 발 즉시 발사
 
@@ -1450,7 +1890,7 @@ void ARangedWeaponBase::StartAttack()
 			AutoFireTimerHandle,
 			this,
 			&ARangedWeaponBase::HandleAutoFire,
-			AttackInterval,
+			GetAutomaticFireInterval(),
 			true
 		);
 	}
@@ -1487,12 +1927,70 @@ void ARangedWeaponBase::PerformAttack()
 	}
 
 	RefreshBloomSettingsFromState();
-	ConsumeAmmo();
-	FireShot();
-	++CurrentBurstShotCount;
 
-	ApplyBloomPerShot();
+	IWeaponMuzzleProvider* MuzzleProvider = Cast<IWeaponMuzzleProvider>(WeaponOwner);
+	const bool bIndependentMuzzleShots =
+		MuzzleProvider && MuzzleProvider->UsesIndependentMuzzleShots();
+	TArray<FName> MuzzleSockets;
+	if (bIndependentMuzzleShots)
+	{
+		MuzzleProvider->GetWeaponMuzzleSocketNames(false, MuzzleSockets);
+	}
+	if (MuzzleSockets.IsEmpty())
+	{
+		if (bIndependentMuzzleShots)
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[WeaponMuzzleGroup] No socket matched the active group. Weapon=%s Owner=%s Group=%s"),
+				*GetNameSafe(this),
+				*GetNameSafe(WeaponOwner),
+				*MuzzleProvider->GetWeaponMuzzleSocketName(false).ToString());
+			StopAttack();
+			return;
+		}
+		MuzzleSockets.Add(NAME_None);
+	}
+
+	LastAttackMuzzleShotCount = 0;
+	for (const FName MuzzleSocket : MuzzleSockets)
+	{
+		if ((BurstShotCount > 0 && CurrentBurstShotCount >= BurstShotCount)
+			|| (!bInfiniteAmmo && CurrentAmmo <= 0))
+		{
+			break;
+		}
+
+		ConsumeAmmo();
+		FireShotFromMuzzle(MuzzleSocket, LastAttackMuzzleShotCount == 0);
+		++CurrentBurstShotCount;
+		++LastAttackMuzzleShotCount;
+	}
+
+	if (LastAttackMuzzleShotCount <= 0)
+	{
+		StopAttack();
+		return;
+	}
+
+	if (bIndependentMuzzleShots)
+	{
+		MuzzleProvider->AdvanceWeaponMuzzleSequence();
+	}
+
+	// 같은 그룹의 총구는 동일한 Bloom 값으로 방향을 계산하고, 발사된 탄환 수만큼 다음 Bloom을 누적한다.
+	for (int32 ShotIndex = 0; ShotIndex < LastAttackMuzzleShotCount; ++ShotIndex)
+	{
+		ApplyBloomPerShot();
+	}
 	ApplyRecoil();
+	ClientNotifyShotFired(
+		GetNormalizedLastShotDirection(),
+		LastCalculatedControlRecoil,
+		bHasActiveRecoilProfile ? ActiveRecoilProfile.ControlKickInterpSpeed : 0.0f,
+		LastWeaponCameraShakeScale,
+		LastWeaponCameraShakeDuration);
 
 	if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner))
 	{
