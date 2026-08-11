@@ -210,6 +210,7 @@ protected:
 	FVector LastShotDirection = FVector::ForwardVector;
 	float LastShotSpreadDegrees = 0.0f;
 	int32 CurrentBurstShotCount = 0;
+	int32 LastAttackMuzzleShotCount = 1;
 	uint8 bHasLastShotDirection : 1 = false;
 
 protected:
@@ -240,6 +241,7 @@ protected:
 	void ResetRecoilRuntimeState();
 
 	void HandleAutoFire();
+	float GetAutomaticFireInterval() const;
 	void StartAttackCooldown();
 	void ResetAttackCooldown();
 	void StartReuseCooldown();
@@ -264,6 +266,10 @@ public:
 	virtual void StopAttack() override;
 	virtual void PerformAttack() override;
 	bool HasFixedBurst() const { return BurstShotCount > 0; }
+	int32 GetCurrentBurstShotCount() const { return CurrentBurstShotCount; }
+	bool IsOnPostBurstCooldown() const { return bOnPostBurstCooldown; }
+	// 공격이 중간에 취소돼도 정상 버스트와 같은 후딜레이를 적용한다.
+	void ForcePostBurstCooldown();
 
 	virtual bool CanReload() const;
 	virtual void Reload();
@@ -314,13 +320,16 @@ protected:
 		float CameraShakeDuration);
 
 	UFUNCTION(NetMulticast, Unreliable)
-	void MulticastPlayFireFX(FVector_NetQuantize TraceEnd, FVector_NetQuantizeNormal ImpactNormal, AActor* Hit, FVector2D NormalizedShotDirection);
+	void MulticastPlayFireFX(FVector_NetQuantize TraceEnd, FVector_NetQuantizeNormal ImpactNormal,
+		AActor* Hit, FVector2D NormalizedShotDirection, FName FiredMuzzleSocketName);
 
-	void PlayThirdPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit);
+	void PlayThirdPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit, FName FiredMuzzleSocketName);
 
-	void PlayFirstPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit);
+	void PlayFirstPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit, FName FiredMuzzleSocketName);
 
-	void ResolveMuzzleTransforms(bool bFirstPerson, TArray<FTransform>& OutMuzzleTransforms) const;
+	void ResolveMuzzleTransforms(bool bFirstPerson, FName FiredMuzzleSocketName,
+		TArray<FTransform>& OutMuzzleTransforms) const;
+	void FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPlayShotSound);
 
 	ULocalPlayerUISubSystem* GetLocalUISubsystem() const; //Helper
 };

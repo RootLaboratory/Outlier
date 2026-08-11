@@ -36,9 +36,62 @@
 #include "Shooter/ShooterAnimInstance.h"
 #include "Shooter/ShooterFirstPersonAnimInstance.h"
 #include "Enemy/EnemyRoomSubsystem.h"
+#include "Outlier.h"
 #include "Room/RoomTagComponent.h"
 #include "Interface/RoomTagInterface.h"
 #include "Interface/WeaponMuzzleProvider.h"
+#include "NiagaraFunctionLibrary.h"
+#include "NiagaraSystem.h"
+#include "Particles/ParticleSystem.h"
+
+namespace
+{
+	void SpawnAttachedMuzzleEffect(
+		const UTrailEffectDefinition* Def,
+		USceneComponent* AttachTarget,
+		FName SocketName,
+		const FVector& Location,
+		const FRotator& Rotation)
+	{
+		if (!Def || !Def->FXAsset || !AttachTarget)
+		{
+			return;
+		}
+
+		const FVector FinalLocation = Location + Def->RelativeLocation;
+		const FRotator FinalRotation = Rotation + Def->RelativeRotation + Def->RotationOffset;
+
+		if (UNiagaraSystem* Niagara = Cast<UNiagaraSystem>(Def->FXAsset))
+		{
+			UNiagaraFunctionLibrary::SpawnSystemAttached(
+				Niagara,
+				AttachTarget,
+				SocketName,
+				FinalLocation,
+				FinalRotation,
+				Def->Scale,
+				EAttachLocation::KeepWorldPosition,
+				true,
+				ENCPoolMethod::AutoRelease,
+				true,
+				true);
+		}
+		else if (UParticleSystem* Particle = Cast<UParticleSystem>(Def->FXAsset))
+		{
+			UGameplayStatics::SpawnEmitterAttached(
+				Particle,
+				AttachTarget,
+				SocketName,
+				FinalLocation,
+				FinalRotation,
+				Def->Scale,
+				EAttachLocation::KeepWorldPosition,
+				true,
+				EPSCPoolMethod::AutoRelease,
+				true);
+		}
+	}
+}
 
 namespace
 {
@@ -114,6 +167,16 @@ void ARangedWeaponBase::FinishPostBurstCooldown()
 	bOnPostBurstCooldown = false;
 }
 
+void ARangedWeaponBase::ForcePostBurstCooldown()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	StopAttack();
+	StartPostBurstCooldown();
+}
+
 bool ARangedWeaponBase::CanReload() const
 {
 	return !bIsReloading
@@ -180,6 +243,23 @@ void ARangedWeaponBase::ConsumeAmmo()
 
 void ARangedWeaponBase::FireShot()
 {
+	FireShotFromMuzzle(NAME_None, true);
+}
+
+void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPlayShotSound)
+{
+	if (Cast<APartnerCharacter>(WeaponOwner))
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[PartnerWeaponVFX][FireShot] Weapon=%s Authority=%d Owner=%s Controller=%s"),
+			*GetNameSafe(this),
+			HasAuthority() ? 1 : 0,
+			*GetNameSafe(WeaponOwner),
+			*GetNameSafe(WeaponOwner ? WeaponOwner->GetInstigatorController() : nullptr));
+	}
+
 	if (!HasAuthority())
 	{
 		return;
@@ -252,7 +332,8 @@ void ARangedWeaponBase::FireShot()
 		const float DamageToApply = GetDamageAtDistance(HitDistance);
 		FHitResult ResolvedDamageHit = Hit;
 
-		if (AEnemyBase* HitEnemy = Cast<AEnemyBase>(HitActor))
+		if (AEnemyBase* HitEnemy = Cast<AEnemyBase>(HitActor);
+			HitEnemy && HitEnemy->HasCoreWeakPoint())
 		{
 			// 어떤 걸 맞았는지(HitEnemy 확정)는 위의 단일 트레이스 결과 그대로 사용 — 벽/다른 액터에 대한
 			// 판정은 절대 안 바뀜. CoreHitboxComponent가 Body(SkeletalMeshComponent)의 Physics Asset
@@ -305,11 +386,16 @@ void ARangedWeaponBase::FireShot()
 		AActor* HitActor = Hit.GetActor();
 		const FVector TraceEndPoint = bHit ? Hit.ImpactPoint : End;
 		const FVector ImpactNormal = bHit ? Hit.ImpactNormal : -ShotDirection;
-		MulticastPlayFireFX(TraceEndPoint, ImpactNormal, HitActor, GetNormalizedLastShotDirection());
+		MulticastPlayFireFX(
+			TraceEndPoint,
+			ImpactNormal,
+			HitActor,
+			GetNormalizedLastShotDirection(),
+			FiredMuzzleSocketName);
 
 		if (UVisualEventSubsystem* VisualSubsystem = GetWorld()->GetSubsystem<UVisualEventSubsystem>())
 		{
-			if (GunSound)
+			if (bPlayShotSound && GunSound)
 			{
 				VisualSubsystem->PlaySoundAtLocation(GunSound, Start);
 			}
@@ -892,8 +978,27 @@ void ARangedWeaponBase::AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacte
 }
 
 
-void ARangedWeaponBase::MulticastPlayFireFX_Implementation(FVector_NetQuantize TraceEnd, FVector_NetQuantizeNormal ImpactNormal, AActor* Hit, FVector2D NormalizedShotDirection)
+void ARangedWeaponBase::MulticastPlayFireFX_Implementation(
+	FVector_NetQuantize TraceEnd,
+	FVector_NetQuantizeNormal ImpactNormal,
+	AActor* Hit,
+	FVector2D NormalizedShotDirection,
+	FName FiredMuzzleSocketName)
 {
+	const bool bPartnerWeapon = Cast<APartnerCharacter>(WeaponOwner) != nullptr;
+	if (bPartnerWeapon)
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[PartnerWeaponVFX][Multicast] Weapon=%s Owner=%s TraceEnd=%s MuzzleDef=%s TrailDef=%s"),
+			*GetNameSafe(this),
+			*GetNameSafe(WeaponOwner),
+			*TraceEnd.ToString(),
+			*GetNameSafe(WeaponMuzzle),
+			*GetNameSafe(WeaponTrail));
+	}
+
 	if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner))
 	{
 		if (USkeletalMeshComponent* ThirdPersonMesh = Shooter->GetMesh())
@@ -916,13 +1021,24 @@ void ARangedWeaponBase::MulticastPlayFireFX_Implementation(FVector_NetQuantize T
 
 	const bool bUseFirstPersonPresentation =
 		OwnerCharacter->IsPlayerControlled() && OwnerCharacter->IsLocallyControlled();
+	if (bPartnerWeapon)
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[PartnerWeaponVFX][Presentation] FirstPerson=%d PlayerControlled=%d LocallyControlled=%d"),
+			bUseFirstPersonPresentation ? 1 : 0,
+			OwnerCharacter->IsPlayerControlled() ? 1 : 0,
+			OwnerCharacter->IsLocallyControlled() ? 1 : 0);
+	}
+
 	if (bUseFirstPersonPresentation)
 	{
-		PlayFirstPersonFireFX(TraceEnd, ImpactNormal, Hit);
+		PlayFirstPersonFireFX(TraceEnd, ImpactNormal, Hit, FiredMuzzleSocketName);
 		return;
 	}
 
-	PlayThirdPersonFireFX(TraceEnd, ImpactNormal, Hit);
+	PlayThirdPersonFireFX(TraceEnd, ImpactNormal, Hit, FiredMuzzleSocketName);
 }
 
 
@@ -1092,12 +1208,17 @@ void ARangedWeaponBase::ClientNotifyShotFired_Implementation(
 	}
 }
 
-void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit)
+void ARangedWeaponBase::PlayThirdPersonFireFX(
+	FVector TraceEnd, FVector ImpactNormal, AActor* Hit, FName FiredMuzzleSocketName)
 {
 	TArray<FTransform> MuzzleTransforms;
-	ResolveMuzzleTransforms(false, MuzzleTransforms);
+	ResolveMuzzleTransforms(false, FiredMuzzleSocketName, MuzzleTransforms);
 	if (MuzzleTransforms.IsEmpty())
 	{
+		if (Cast<APartnerCharacter>(WeaponOwner))
+		{
+			UE_LOG(LogTemp, Error, TEXT("[PartnerWeaponVFX][TP] Failed: no valid muzzle transform."));
+		}
 		return;
 	}
 
@@ -1110,7 +1231,30 @@ void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, FVector ImpactNo
 
 			if (WeaponMuzzle)
 			{
-				VisualSubsystem->SpawnMuzzleEffect(WeaponMuzzle, Start, MuzzleRotation);
+				if (APartnerCharacter* Partner = Cast<APartnerCharacter>(WeaponOwner))
+				{
+					SpawnAttachedMuzzleEffect(
+						WeaponMuzzle,
+						Partner->GetWeaponMuzzleComponent(false),
+						Partner->GetWeaponMuzzleSocketName(false),
+						Start,
+						MuzzleRotation);
+					UE_LOG(
+						LogTemp,
+						Warning,
+						TEXT("[PartnerWeaponVFX][TP][Muzzle] Attached spawn requested. Definition=%s Location=%s Rotation=%s"),
+						*GetNameSafe(WeaponMuzzle),
+						*Start.ToString(),
+						*MuzzleRotation.ToString());
+				}
+				else
+				{
+					VisualSubsystem->SpawnMuzzleEffect(WeaponMuzzle, Start, MuzzleRotation);
+				}
+			}
+			else if (Cast<APartnerCharacter>(WeaponOwner))
+			{
+				UE_LOG(LogTemp, Error, TEXT("[PartnerWeaponVFX][TP][Muzzle] Failed: WeaponMuzzle definition is null."));
 			}
 
 
@@ -1147,14 +1291,23 @@ void ARangedWeaponBase::PlayThirdPersonFireFX(FVector TraceEnd, FVector ImpactNo
 		}
 
 	}
+	else if (Cast<APartnerCharacter>(WeaponOwner))
+	{
+		UE_LOG(LogTemp, Error, TEXT("[PartnerWeaponVFX][TP] Failed: VisualEventSubsystem is null."));
+	}
 }
 
-void ARangedWeaponBase::PlayFirstPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit)
+void ARangedWeaponBase::PlayFirstPersonFireFX(
+	FVector TraceEnd, FVector ImpactNormal, AActor* Hit, FName FiredMuzzleSocketName)
 {
 	TArray<FTransform> MuzzleTransforms;
-	ResolveMuzzleTransforms(true, MuzzleTransforms);
+	ResolveMuzzleTransforms(true, FiredMuzzleSocketName, MuzzleTransforms);
 	if (MuzzleTransforms.IsEmpty())
 	{
+		if (Cast<APartnerCharacter>(WeaponOwner))
+		{
+			UE_LOG(LogTemp, Error, TEXT("[PartnerWeaponVFX][FP] Failed: no valid muzzle transform."));
+		}
 		return;
 	}
 
@@ -1162,13 +1315,38 @@ void ARangedWeaponBase::PlayFirstPersonFireFX(FVector TraceEnd, FVector ImpactNo
 	{
 		for (const FTransform& MuzzleTransform : MuzzleTransforms)
 		{
-			const FVector Start =
-				MuzzleTransform.GetLocation() + MuzzleTransform.GetRotation().GetForwardVector() * 10.0f;
+			const bool bPartnerWeapon = Cast<APartnerCharacter>(WeaponOwner) != nullptr;
+			const FVector Start = bPartnerWeapon
+				? MuzzleTransform.GetLocation()
+				: MuzzleTransform.GetLocation() + MuzzleTransform.GetRotation().GetForwardVector() * 10.0f;
 			const FRotator MuzzleRotation = MuzzleTransform.Rotator();
 
 			if (WeaponMuzzle)
 			{
-				VisualSubsystem->SpawnMuzzleEffect(WeaponMuzzle, Start, MuzzleRotation);
+				if (APartnerCharacter* Partner = Cast<APartnerCharacter>(WeaponOwner))
+				{
+					SpawnAttachedMuzzleEffect(
+						WeaponMuzzle,
+						Partner->GetWeaponMuzzleComponent(true),
+						Partner->GetWeaponMuzzleSocketName(true),
+						Start,
+						MuzzleRotation);
+					UE_LOG(
+						LogTemp,
+						Warning,
+						TEXT("[PartnerWeaponVFX][FP][Muzzle] Attached spawn requested. Definition=%s Location=%s Rotation=%s"),
+						*GetNameSafe(WeaponMuzzle),
+						*Start.ToString(),
+						*MuzzleRotation.ToString());
+				}
+				else
+				{
+					VisualSubsystem->SpawnMuzzleEffect(WeaponMuzzle, Start, MuzzleRotation);
+				}
+			}
+			else if (Cast<APartnerCharacter>(WeaponOwner))
+			{
+				UE_LOG(LogTemp, Error, TEXT("[PartnerWeaponVFX][FP][Muzzle] Failed: WeaponMuzzle definition is null."));
 			}
 
 			if (WeaponTrail)
@@ -1203,9 +1381,14 @@ void ARangedWeaponBase::PlayFirstPersonFireFX(FVector TraceEnd, FVector ImpactNo
 		}
 
 	}
+	else if (Cast<APartnerCharacter>(WeaponOwner))
+	{
+		UE_LOG(LogTemp, Error, TEXT("[PartnerWeaponVFX][FP] Failed: VisualEventSubsystem is null."));
+	}
 }
 
-void ARangedWeaponBase::ResolveMuzzleTransforms(bool bFirstPerson, TArray<FTransform>& OutMuzzleTransforms) const
+void ARangedWeaponBase::ResolveMuzzleTransforms(
+	bool bFirstPerson, FName FiredMuzzleSocketName, TArray<FTransform>& OutMuzzleTransforms) const
 {
 	USkeletalMeshComponent* MuzzleComponent = nullptr;
 	TArray<FName> SocketNames;
@@ -1214,7 +1397,14 @@ void ARangedWeaponBase::ResolveMuzzleTransforms(bool bFirstPerson, TArray<FTrans
 	if (const IWeaponMuzzleProvider* MuzzleProvider = Cast<IWeaponMuzzleProvider>(WeaponOwner))
 	{
 		MuzzleComponent = MuzzleProvider->GetWeaponMuzzleComponent(bFirstPerson);
-		MuzzleProvider->GetWeaponMuzzleSocketNames(bFirstPerson, SocketNames);
+		if (!FiredMuzzleSocketName.IsNone())
+		{
+			SocketNames.Add(FiredMuzzleSocketName);
+		}
+		else
+		{
+			MuzzleProvider->GetWeaponMuzzleSocketNames(bFirstPerson, SocketNames);
+		}
 	}
 
 	// Shooter처럼 독립 무기 메시를 쓰는 기존 무기는 원래 경로를 유지한다.
@@ -1226,12 +1416,33 @@ void ARangedWeaponBase::ResolveMuzzleTransforms(bool bFirstPerson, TArray<FTrans
 
 	if (!MuzzleComponent)
 	{
+		if (Cast<APartnerCharacter>(WeaponOwner))
+		{
+			UE_LOG(LogTemp, Error, TEXT("[PartnerWeaponVFX][Resolve] Failed: muzzle component is null. FirstPerson=%d"), bFirstPerson ? 1 : 0);
+		}
 		return;
 	}
 
 	for (const FName SocketName : SocketNames)
 	{
-		if (!SocketName.IsNone() && MuzzleComponent->DoesSocketExist(SocketName))
+		const bool bSocketExists = !SocketName.IsNone() && MuzzleComponent->DoesSocketExist(SocketName);
+		if (Cast<APartnerCharacter>(WeaponOwner))
+		{
+			const FVector SocketLocation = bSocketExists
+				? MuzzleComponent->GetSocketLocation(SocketName)
+				: FVector::ZeroVector;
+			UE_LOG(
+				LogTemp,
+				Warning,
+				TEXT("[PartnerWeaponVFX][Resolve] FirstPerson=%d Component=%s Socket=%s Exists=%d SocketLocation=%s"),
+				bFirstPerson ? 1 : 0,
+				*GetNameSafe(MuzzleComponent),
+				*SocketName.ToString(),
+				bSocketExists ? 1 : 0,
+				*SocketLocation.ToString());
+		}
+
+		if (bSocketExists)
 		{
 			OutMuzzleTransforms.Add(MuzzleComponent->GetSocketTransform(SocketName, RTS_World));
 		}
@@ -1601,6 +1812,12 @@ void ARangedWeaponBase::HandleAutoFire()
 	PerformAttack();
 }
 
+float ARangedWeaponBase::GetAutomaticFireInterval() const
+{
+	// AttackInterval은 개별 탄환 간격이다. 두 총구가 동시에 발사되면 다음 그룹까지 두 탄환 분량을 기다린다.
+	return FMath::Max(AttackInterval * FMath::Max(LastAttackMuzzleShotCount, 1), KINDA_SMALL_NUMBER);
+}
+
 void ARangedWeaponBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
@@ -1620,6 +1837,20 @@ bool ARangedWeaponBase::CanAttack() const
 
 void ARangedWeaponBase::StartAttack()
 {
+	if (Cast<APartnerCharacter>(WeaponOwner))
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[PartnerWeaponVFX][StartAttack] Weapon=%s Authority=%d CanAttack=%d IsAttacking=%d Ammo=%d InfiniteAmmo=%d"),
+			*GetNameSafe(this),
+			HasAuthority() ? 1 : 0,
+			CanAttack() ? 1 : 0,
+			bIsAttacking ? 1 : 0,
+			CurrentAmmo,
+			bInfiniteAmmo ? 1 : 0);
+	}
+
 	if (!HasAuthority())
 	{
 		return;
@@ -1635,7 +1866,14 @@ void ARangedWeaponBase::StartAttack()
 		return;
 	}
 
+	if (IWeaponMuzzleProvider* MuzzleProvider = Cast<IWeaponMuzzleProvider>(WeaponOwner);
+		MuzzleProvider && MuzzleProvider->UsesIndependentMuzzleShots())
+	{
+		MuzzleProvider->ResetWeaponMuzzleSequence();
+	}
+
 	CurrentBurstShotCount = 0;
+	LastAttackMuzzleShotCount = 1;
 	bIsAttacking = true;
 	PerformAttack(); // 첫 발 즉시 발사
 
@@ -1652,7 +1890,7 @@ void ARangedWeaponBase::StartAttack()
 			AutoFireTimerHandle,
 			this,
 			&ARangedWeaponBase::HandleAutoFire,
-			AttackInterval,
+			GetAutomaticFireInterval(),
 			true
 		);
 	}
@@ -1689,11 +1927,63 @@ void ARangedWeaponBase::PerformAttack()
 	}
 
 	RefreshBloomSettingsFromState();
-	ConsumeAmmo();
-	FireShot();
-	++CurrentBurstShotCount;
 
-	ApplyBloomPerShot();
+	IWeaponMuzzleProvider* MuzzleProvider = Cast<IWeaponMuzzleProvider>(WeaponOwner);
+	const bool bIndependentMuzzleShots =
+		MuzzleProvider && MuzzleProvider->UsesIndependentMuzzleShots();
+	TArray<FName> MuzzleSockets;
+	if (bIndependentMuzzleShots)
+	{
+		MuzzleProvider->GetWeaponMuzzleSocketNames(false, MuzzleSockets);
+	}
+	if (MuzzleSockets.IsEmpty())
+	{
+		if (bIndependentMuzzleShots)
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[WeaponMuzzleGroup] No socket matched the active group. Weapon=%s Owner=%s Group=%s"),
+				*GetNameSafe(this),
+				*GetNameSafe(WeaponOwner),
+				*MuzzleProvider->GetWeaponMuzzleSocketName(false).ToString());
+			StopAttack();
+			return;
+		}
+		MuzzleSockets.Add(NAME_None);
+	}
+
+	LastAttackMuzzleShotCount = 0;
+	for (const FName MuzzleSocket : MuzzleSockets)
+	{
+		if ((BurstShotCount > 0 && CurrentBurstShotCount >= BurstShotCount)
+			|| (!bInfiniteAmmo && CurrentAmmo <= 0))
+		{
+			break;
+		}
+
+		ConsumeAmmo();
+		FireShotFromMuzzle(MuzzleSocket, LastAttackMuzzleShotCount == 0);
+		++CurrentBurstShotCount;
+		++LastAttackMuzzleShotCount;
+	}
+
+	if (LastAttackMuzzleShotCount <= 0)
+	{
+		StopAttack();
+		return;
+	}
+
+	if (bIndependentMuzzleShots)
+	{
+		MuzzleProvider->AdvanceWeaponMuzzleSequence();
+	}
+
+	// 같은 그룹의 총구는 동일한 Bloom 값으로 방향을 계산하고, 발사된 탄환 수만큼 다음 Bloom을 누적한다.
+	for (int32 ShotIndex = 0; ShotIndex < LastAttackMuzzleShotCount; ++ShotIndex)
+	{
+		ApplyBloomPerShot();
+	}
 	ApplyRecoil();
 	ClientNotifyShotFired(
 		GetNormalizedLastShotDirection(),
