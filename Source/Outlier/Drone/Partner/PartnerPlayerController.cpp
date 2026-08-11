@@ -13,6 +13,7 @@
 #include "Shooter/ShooterCharacter.h"
 #include "Enemy/EnemyBase.h"
 #include "TimerManager.h"
+#include "UI/LocalPlayerUILayerSubsystem.h"
 
 APartnerPlayerController::APartnerPlayerController()
 {
@@ -638,6 +639,12 @@ void APartnerPlayerController::BindMainUI()
 		else
 		{
 			UE_LOG(LogTemp, Error, TEXT("[PartnerPC] No GetLocalPlayer"));
+		}
+
+		if (ULocalPlayerUILayerSubsystem* LayerSubsystem =
+			LP->GetSubsystem<ULocalPlayerUILayerSubsystem>())
+		{
+			LayerSubsystem->RegisterMainUI(ShooterUIInstance);
 		}
 	}
 }

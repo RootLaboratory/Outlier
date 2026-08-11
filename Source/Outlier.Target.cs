@@ -13,11 +13,6 @@ public class OutlierTarget : TargetRules
 
         bUseLoggingInShipping = true;
 
-        if (Target.Configuration == UnrealTargetConfiguration.Shipping)
-        {
-            bUseConsoleInShipping = true;                 // 콘솔(~) + stat 명령 입력 허용
-            GlobalDefinitions.Add("FORCE_USE_STATS=1");   // stat unit / stat gpu 활성화
-            GlobalDefinitions.Add("HAS_GPU_STATS=1");
-        }
+
     }
 }

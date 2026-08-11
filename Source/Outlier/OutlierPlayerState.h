@@ -22,6 +22,7 @@ enum class EOutlierPlayerRole : uint8
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnPlayerRoleChanged, AOutlierPlayerState*);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnPendingLobbyStateChanged, AOutlierPlayerState*);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnPlayerCharactersChanged, AOutlierPlayerState*);
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnNodeCountChanged, int32);
 
 
 /**
@@ -66,6 +67,18 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Pair")
 	int32 GetPairId() const { return PairId; }
 
+	UFUNCTION(BlueprintCallable, Category = "Node")
+	bool AddNode(int32 Amount);
+
+	UFUNCTION(BlueprintPure, Category = "Node")
+	int32 GetNodeCount() const { return NodeCount; }
+
+	UFUNCTION(BlueprintCallable, Category = "Node")
+	bool ShareNode(int32 Amount);
+
+	UFUNCTION(BlueprintCallable, Category = "Node")
+	bool ConsumeNode(int32 Amount);
+
 	UFUNCTION(BlueprintCallable, Category = "Pair")
 	void SetArenaId(int32 NewArenaId);
 
@@ -96,6 +109,12 @@ protected:
 
 	UPROPERTY(Replicated)
 	int32 PairId = INDEX_NONE;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Node", meta = (ClampMin = "0"))
+	int32 InitialNodeCount = 0;
+
+	UPROPERTY(ReplicatedUsing = OnRep_NodeCount, VisibleInstanceOnly, BlueprintReadOnly, Category = "Node")
+	int32 NodeCount = 0;
 
 	UPROPERTY(ReplicatedUsing = OnRep_PendingLobbyMatchId)
 	int32 PendingLobbyMatchId = INDEX_NONE;
@@ -140,11 +159,16 @@ protected:
 	UFUNCTION()
 	void OnRep_PendingLobbyRole();
 
+	UFUNCTION()
+	void OnRep_NodeCount();
+
 	void HandlePlayerRoleChanged();
 	void HandlePendingLobbyStateChanged();
+	void SetNodeCountInternal(int32 NewNodeCount);
 
 public:
 
 	FOnPlayerRoleChanged OnPlayerRoleChanged;
 	FOnPendingLobbyStateChanged OnPendingLobbyStateChanged;
+	FOnNodeCountChanged OnNodeCountChanged;
 };

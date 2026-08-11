@@ -63,10 +63,22 @@ namespace HackGameplayTags
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Effect.RevealInfo")));
 			return Tag;
 		}
+
+		inline FGameplayTag Unblock()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Effect.Unblock")));
+			return Tag;
+		}
 	}
 
 	namespace MiniGame
 	{
+		inline FGameplayTag None()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.MiniGame.None")));
+			return Tag;
+		}
+
 		inline FGameplayTag SpinningCircle()
 		{
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.MiniGame.SpinningCircle")));
@@ -139,6 +151,12 @@ namespace HackGameplayTags
 		inline FGameplayTag Jump()
 		{
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Info.Jump")));
+			return Tag;
+		}
+
+		inline FGameplayTag StatMachines()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Info.StatMachine")));
 			return Tag;
 		}
 	}
