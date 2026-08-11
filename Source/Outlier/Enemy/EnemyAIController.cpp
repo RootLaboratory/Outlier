@@ -1,5 +1,7 @@
 #include "Enemy/EnemyAIController.h"
 
+#include "Enemy/AutoTurret.h"
+
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Enemy/EnemyBase.h"
 #include "Enemy/EnemyRoomSubsystem.h"
@@ -110,6 +112,7 @@ namespace
 		PossessedDrone,
 		Shooter,
 		Partner,
+		EnemyUnit,
 		Invalid
 	};
 
@@ -117,14 +120,14 @@ namespace
 	{
 		if (const AEnemyBase* Enemy = Cast<AEnemyBase>(TargetActor))
 		{
-			if (!Enemy->IsEnemyPossessed())
+			if (Enemy->GetGenericTeamId() == FGenericTeamId(OutlierTeamIds::Player))
 			{
-				return EEnemyTargetPriority::Invalid;
-			}
-
-			return Enemy->GetRuntimeStat().Type == EEnemyType::Turret
+				return Enemy->GetRuntimeStat().Type == EEnemyType::Turret
 				? EEnemyTargetPriority::HackedTurret
 				: EEnemyTargetPriority::PossessedDrone;
+			}
+
+			return EEnemyTargetPriority::EnemyUnit;
 		}
 
 		if (TargetActor->IsA<AShooterCharacter>())
@@ -176,8 +179,7 @@ void AEnemyAIController::OnPossess(APawn* InPawn)
 
 	if (AEnemyBase* Enemy = Cast<AEnemyBase>(InPawn))
 	{
-		RefreshPerceptionConfigFromPawn();
-		SetEnemyPerceptionEnabled(!Enemy->IsAIControlSuppressed());
+		RefreshTeamAndPerceptionFromPawn();
 	}
 }
 
@@ -194,8 +196,9 @@ void AEnemyAIController::UpdateControlRotation(float DeltaTime, bool bUpdatePawn
 	const float TaskPitch = GetControlRotation().Pitch;
 	Super::UpdateControlRotation(DeltaTime, bUpdatePawn);
 
-	// LookAround Task가 Pitch를 제어하는 동안에는 AIController의 기본 Pitch 초기화를 막는다.
-	if (TaskDrivenControlPitchCount > 0)
+	// 터렛은 총구의 상하 조준값이 실제 Hitscan 방향이므로 AIController의 기본 Pitch 초기화를 막는다.
+	const bool bPreserveTurretPitch = Cast<AAutoTurret>(GetPawn()) != nullptr;
+	if (TaskDrivenControlPitchCount > 0 || bPreserveTurretPitch)
 	{
 		FRotator EnemyControlRotation = GetControlRotation();
 		EnemyControlRotation.Pitch = TaskPitch;
@@ -256,6 +259,24 @@ void AEnemyAIController::RefreshPerceptionConfigFromPawn()
 	}
 }
 
+void AEnemyAIController::RefreshTeamAndPerceptionFromPawn()
+{
+	AEnemyBase* Enemy = Cast<AEnemyBase>(GetPawn());
+	if (!Enemy)
+	{
+		return;
+	}
+
+	SetGenericTeamId(Enemy->GetGenericTeamId());
+	if (EnemyPerceptionComponent)
+	{
+		EnemyPerceptionComponent->ForgetAll();
+		ProcessedStealthedTargets.Reset();
+	}
+	RefreshPerceptionConfigFromPawn();
+	SetEnemyPerceptionEnabled(Enemy->CanUseEnemyPerception());
+}
+
 void AEnemyAIController::SetEnemyPerceptionEnabled(bool bEnabled)
 {
 	if (!EnemyPerceptionComponent)
@@ -265,7 +286,15 @@ void AEnemyAIController::SetEnemyPerceptionEnabled(bool bEnabled)
 
 	EnemyPerceptionComponent->SetComponentTickEnabled(bEnabled);
 	EnemyPerceptionComponent->SetSenseEnabled(UAISense_Sight::StaticClass(), bEnabled);
-	EnemyPerceptionComponent->SetSenseEnabled(UAISense_Hearing::StaticClass(), bEnabled);
+	const AEnemyBase* Enemy = Cast<AEnemyBase>(GetPawn());
+	EnemyPerceptionComponent->SetSenseEnabled(
+		UAISense_Hearing::StaticClass(),
+		bEnabled && (!Enemy || Enemy->UsesHearingPerception()));
+	if (!bEnabled)
+	{
+		EnemyPerceptionComponent->ForgetAll();
+		ProcessedStealthedTargets.Reset();
+	}
 
 	if (bEnabled)
 	{
@@ -332,7 +361,7 @@ AActor* AEnemyAIController::SelectPreferredVisibleTarget(
 void AEnemyAIController::HandleTargetPerceptionUpdated(AActor* Actor, FAIStimulus Stimulus)
 {
 	AEnemyBase* Enemy = Cast<AEnemyBase>(GetPawn());
-	if (!Enemy || !Actor || Enemy->IsAIControlSuppressed())
+	if (!Enemy || !Actor || !Enemy->CanUseEnemyPerception())
 	{
 		return;
 	}
@@ -352,7 +381,7 @@ void AEnemyAIController::HandleTargetPerceptionUpdated(AActor* Actor, FAIStimulu
 		AActor* PreferredTarget = GetPreferredVisibleTarget();
 		const bool bAnyPlayerVisible = IsValid(PreferredTarget);
 		Enemy->SetPlayerCurrentlyVisible(bAnyPlayerVisible);
-		if (bAnyPlayerVisible)
+		if (bAnyPlayerVisible && Enemy->CanUseRoomTargetSharing())
 		{
 			StartSharedTargetReporting();
 			ReportSharedTargetContact(Enemy, PreferredTarget);
@@ -403,14 +432,17 @@ void AEnemyAIController::HandleSightStimulus(AEnemyBase* Enemy, AActor* Actor, c
 				ResolveArenaIdFromTarget(LocationSource));
 		}
 
-		StartSharedTargetReporting();
-		ReportSharedTargetContact(Enemy, LocationSource);
+		if (Enemy->CanUseRoomTargetSharing())
+		{
+			StartSharedTargetReporting();
+			ReportSharedTargetContact(Enemy, LocationSource);
+		}
 		return;
 	}
 
 	AActor* PreferredTarget = GetPreferredVisibleTarget();
 	const bool bAnyPlayerVisible = IsValid(PreferredTarget);
-	if (bAnyPlayerVisible)
+	if (bAnyPlayerVisible && Enemy->CanUseRoomTargetSharing())
 	{
 		StartSharedTargetReporting();
 		ReportSharedTargetContact(Enemy, PreferredTarget);
@@ -425,6 +457,10 @@ void AEnemyAIController::HandleSightStimulus(AEnemyBase* Enemy, AActor* Actor, c
 void AEnemyAIController::HandleHearingStimulus(AEnemyBase* Enemy, AActor* Actor, const FAIStimulus& Stimulus)
 {
 	if (!Stimulus.WasSuccessfullySensed())
+	{
+		return;
+	}
+	if (!Enemy->UsesHearingPerception())
 	{
 		return;
 	}
@@ -510,7 +546,7 @@ void AEnemyAIController::ReportSharedTargetContact(
 	AActor* TargetActor)
 {
 	if (!Enemy
-		|| Enemy->IsAIControlSuppressed()
+		|| !Enemy->CanUseRoomTargetSharing()
 		|| !IsValid(TargetActor))
 	{
 		StopSharedTargetReporting(true);
@@ -576,9 +612,9 @@ void AEnemyAIController::ConfigureSightFromEnemy(AEnemyBase* Enemy)
 	}
 
 	const FEnemyStat& RuntimeStat = Enemy->GetRuntimeStat();
-	const float PeripheralVisionAngle = RuntimeStat.Type == EEnemyType::Turret
-		? 180.0f
-		: Enemy->IsInCombat() ? RuntimeStat.BattlePeripheralVisionAngle : RuntimeStat.PeripheralVisionAngle;
+	const float PeripheralVisionAngle = Enemy->IsInCombat()
+		? RuntimeStat.BattlePeripheralVisionAngle
+		: RuntimeStat.PeripheralVisionAngle;
 
 	SightConfig->SightRadius = FMath::Max(RuntimeStat.SightRadius, 0.0f);
 	SightConfig->LoseSightRadius = FMath::Max(RuntimeStat.LoseSightRadius, SightConfig->SightRadius);
@@ -612,6 +648,13 @@ void AEnemyAIController::ConfigureHearingFromEnemy(AEnemyBase* Enemy)
 	}
 
 	const FEnemyStat& RuntimeStat = Enemy->GetRuntimeStat();
+	if (!Enemy->UsesHearingPerception())
+	{
+		HearingConfig->HearingRange = 0.0f;
+		EnemyPerceptionComponent->ConfigureSense(*HearingConfig);
+		EnemyPerceptionComponent->SetSenseEnabled(UAISense_Hearing::StaticClass(), false);
+		return;
+	}
 	const float HearingRange = Enemy->IsInCombat() ? RuntimeStat.BattleHearingRange : RuntimeStat.HearingRange;
 
 	HearingConfig->HearingRange = FMath::Max(HearingRange, 0.0f);
@@ -634,9 +677,28 @@ int32 AEnemyAIController::ResolveArenaIdFromTarget(const AActor* TargetActor) co
 bool AEnemyAIController::IsValidDetectionTarget(const AActor* TargetActor) const
 {
 	const APawn* TargetPawn = Cast<APawn>(TargetActor);
-	if (!TargetPawn
-		|| TargetPawn->GetPlayerState<AOutlierPlayerState>() == nullptr
-		|| IsStealthedDetectionTarget(TargetActor))
+	if (!TargetPawn || IsStealthedDetectionTarget(TargetActor))
+	{
+		return false;
+	}
+
+	const AEnemyBase* ControlledEnemy = Cast<AEnemyBase>(GetPawn());
+	if (!ControlledEnemy)
+	{
+		return false;
+	}
+
+	FGenericTeamId TargetTeamId(OutlierTeamIds::Player);
+	if (const AEnemyBase* EnemyTarget = Cast<AEnemyBase>(TargetActor))
+	{
+		TargetTeamId = EnemyTarget->GetGenericTeamId();
+	}
+	else if (!TargetActor->IsA<AShooterCharacter>() && !TargetActor->IsA<APartnerCharacter>())
+	{
+		return false;
+	}
+
+	if (ControlledEnemy->GetGenericTeamId() == TargetTeamId)
 	{
 		return false;
 	}

@@ -44,6 +44,7 @@ struct FEnemyRoomTargetContactState
 	TWeakObjectPtr<AActor> TargetActor;
 	FVector LastReportedLocation = FVector::ZeroVector;
 	TSet<TWeakObjectPtr<AEnemyBase>> DirectObservers;
+	FTimerHandle ForcedShareTimerHandle;
 };
 
 UCLASS()
@@ -101,6 +102,8 @@ private:
 	void BroadcastSharedTargetContact(const FEnemyRoomSearchKey& Key, const FVector& TargetLocation);
 	void BroadcastSharedTargetLost(const FEnemyRoomSearchKey& Key);
 	void CompactTargetContactState(FEnemyRoomTargetContactState& ContactState);
+	void ScheduleForcedTargetShare(const FEnemyRoomSearchKey& Key);
+	void HandleForcedTargetShare(FEnemyRoomSearchKey Key);
 	FEnemyRoomSearchKey ResolveEnemyRegistrationKey(const AEnemyBase* Enemy) const;
 	FGameplayTag ResolveEnemyRoomTag(const AEnemyBase* Enemy) const;
 	void CompactRegisteredEnemies(const FEnemyRoomSearchKey& Key);
@@ -114,4 +117,8 @@ private:
 	// Arena 해제 시 HandleArenaReleased에서 함께 제거한다.
 	TMap<FEnemyRoomSearchKey, FEnemyRoomSearchState> SearchStates;
 	TMap<FEnemyRoomSearchKey, FEnemyRoomTargetContactState> TargetContactStates;
+
+	// 방의 모든 직접 시야가 끊긴 뒤 이 시간이 지나면 마지막 타겟의 현재 위치를 한 번 공유한다.
+	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Room", meta = (ClampMin = "0.0"))
+	float ForcedTargetShareDelay = 8.0f;
 };

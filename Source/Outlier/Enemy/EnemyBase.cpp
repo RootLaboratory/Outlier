@@ -104,6 +104,7 @@ AEnemyBase::AEnemyBase()
 void AEnemyBase::PostInitializeComponents()
 {
 	Super::PostInitializeComponents();
+	ApplyCoreWeakPointRuntimeState();
 
 	PatrolPointA = GetActorLocation();
 	PatrolPointB = GetActorTransform().TransformPositionNoScale(PatrolPointBLocalOffset);
@@ -239,6 +240,7 @@ void AEnemyBase::BeginPlay()
 
 	InitializeFromEnemyStatRow();
 	EquipDefaultWeapon();
+	PrepareForStateTreeStart();
 
 	if (HasAuthority() && StateTreeComponent)
 	{
@@ -459,6 +461,16 @@ FGenericTeamId AEnemyBase::GetGenericTeamId() const
 	return FGenericTeamId(bIsPossessed ? OutlierTeamIds::Player : OutlierTeamIds::Enemy);
 }
 
+FVector AEnemyBase::GetCombatAimPoint(const AActor* TargetActor) const
+{
+	if (const APawn* TargetPawn = Cast<APawn>(TargetActor))
+	{
+		return TargetPawn->GetPawnViewLocation();
+	}
+
+	return IsValid(TargetActor) ? TargetActor->GetActorLocation() : FVector::ZeroVector;
+}
+
 FGameplayTag AEnemyBase::GetCurrentRoomTag() const
 {
 	return RoomTagComponent ? RoomTagComponent->GetCurrentRoomTag() : FGameplayTag();
@@ -514,7 +526,7 @@ void AEnemyBase::SetEnemyPossessed(bool bNewIsPossessed)
 
 	if (AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(GetCachedAIController()))
 	{
-		EnemyAIController->SetEnemyPerceptionEnabled(!IsAIControlSuppressed());
+		EnemyAIController->SetEnemyPerceptionEnabled(CanUseEnemyPerception());
 	}
 
 	RefreshPerceptionTeamRegistration();
@@ -546,6 +558,7 @@ bool AEnemyBase::BeginPossessionProcess(APartnerCharacter* PartnerCharacter)
 		|| !IsValid(PartnerCharacter)
 		|| bIsPossessed
 		|| bPossessionInProgress
+		|| IsPossessedActionCommitted()
 		|| !HackableComponent)
 	{
 		return false;
@@ -643,7 +656,7 @@ void AEnemyBase::CancelPossessionProcess()
 
 	if (AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(GetCachedAIController()))
 	{
-		EnemyAIController->SetEnemyPerceptionEnabled(!bIsPossessed);
+		EnemyAIController->SetEnemyPerceptionEnabled(CanUseEnemyPerception());
 	}
 
 	ForceNetUpdate();
@@ -770,7 +783,8 @@ void AEnemyBase::ApplySharedTargetContact(const FVector& TargetLocation)
 {
 	if (!HasAuthority()
 		|| CombatState != EEnemyCombatState::Combat
-		|| IsAIControlSuppressed())
+		|| IsAIControlSuppressed()
+		|| !CanUseRoomTargetSharing())
 	{
 		return;
 	}
@@ -1056,7 +1070,7 @@ float AEnemyBase::TakeDamage(
 		if (TaggedEvent.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Weapon()))
 		{
 			const UPrimitiveComponent* HitComponent = TaggedEvent.HitResult.GetComponent();
-			bCoreWeakPointHit = HitComponent == CoreHitboxComponent;
+			bCoreWeakPointHit = bUseCoreWeakPoint && HitComponent == CoreHitboxComponent;
 			DamageMultiplier = GetWeakPointDamageMultiplier(HitComponent);
 		}
 	}
@@ -1085,7 +1099,19 @@ float AEnemyBase::TakeDamage(
 
 float AEnemyBase::GetWeakPointDamageMultiplier(const UPrimitiveComponent* HitComponent) const
 {
-	return HitComponent == CoreHitboxComponent ? CoreCriticalMultiplier : 1.0f;
+	return bUseCoreWeakPoint && HitComponent == CoreHitboxComponent
+		? CoreCriticalMultiplier : 1.0f;
+}
+
+void AEnemyBase::ApplyCoreWeakPointRuntimeState()
+{
+	if (!CoreHitboxComponent)
+	{
+		return;
+	}
+
+	CoreHitboxComponent->SetCollisionEnabled(
+		bUseCoreWeakPoint ? ECollisionEnabled::QueryOnly : ECollisionEnabled::NoCollision);
 }
 
 void AEnemyBase::ApplyExplosionReaction(
@@ -1545,7 +1571,7 @@ void AEnemyBase::EndImpactReaction()
 		&& CombatState != EEnemyCombatState::Stun
 		&& !IsAIControlSuppressed())
 	{
-		EnemyAIController->SetEnemyPerceptionEnabled(true);
+		EnemyAIController->SetEnemyPerceptionEnabled(CanUseEnemyPerception());
 		EnemyAIController->RefreshPerceptionConfigFromPawn();
 	}
 }
@@ -1803,6 +1829,10 @@ void AEnemyBase::SetDefaultEnemyType(EEnemyType EnemyType)
 	RuntimeStat.Type = EnemyType;
 }
 
+void AEnemyBase::PrepareForStateTreeStart()
+{
+}
+
 void AEnemyBase::ApplyClassStatOverrides()
 {
 }
@@ -1903,7 +1933,7 @@ bool AEnemyBase::StartAttackTarget(AActor* TargetActor)
 		return false;
 	}
 
-	const bool bStarted = StartAttackLocation(TargetActor->GetActorLocation());
+	const bool bStarted = StartAttackLocation(GetCombatAimPoint(TargetActor));
 	return bStarted;
 }
 
@@ -2120,7 +2150,15 @@ void AEnemyBase::HandleDeath()
 	}
 
 	CachedAIController.Reset();
-	Destroy();
+	const float DestroyDelay = FMath::Max(GetDeathDestroyDelay(), 0.0f);
+	if (DestroyDelay > KINDA_SMALL_NUMBER)
+	{
+		SetLifeSpan(DestroyDelay);
+	}
+	else
+	{
+		Destroy();
+	}
 }
 
 void AEnemyBase::HandleStartAttackInput()

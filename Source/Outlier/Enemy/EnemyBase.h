@@ -123,6 +123,10 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|Damage")
 	TObjectPtr<USphereComponent> CoreHitboxComponent;
 
+	// 코어가 없는 Enemy는 전용 콜리전과 무기의 추가 코어 탐색을 모두 생략한다.
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Damage")
+	uint8 bUseCoreWeakPoint : 1 = true;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Enemy|Data")
 	FDataTableRowHandle EnemyStatRow;
 
@@ -220,6 +224,12 @@ public:
 
 	virtual FGenericTeamId GetGenericTeamId() const override;
 
+	// Enemy 유형별로 감지/공유 정책을 바꿀 때 AIController와 RoomSubsystem이 공통으로 조회한다.
+	virtual bool CanUseEnemyPerception() const { return !IsAIControlSuppressed(); }
+	virtual bool UsesHearingPerception() const { return true; }
+	virtual bool CanUseRoomTargetSharing() const { return !bIsPossessed; }
+	virtual FVector GetCombatAimPoint(const AActor* TargetActor) const;
+
 	virtual FGameplayTag GetCurrentRoomTag() const override;
 
 	virtual FGameplayTag GetDefaultRoomTag() const override;
@@ -296,7 +306,7 @@ public:
 	bool StartPossessedAttackBurst();
 
 	// 반복 공격 중 조준 방향만 갱신한다. 무기 발사 주기 자체는 ARangedWeaponBase가 관리한다.
-	bool UpdateAttackLocation(const FVector& TargetLocation);
+	virtual bool UpdateAttackLocation(const FVector& TargetLocation);
 	void StopCurrentWeaponAttack();
 	void StopCurrentAttack();
 
@@ -374,8 +384,11 @@ public:
 	// WeakPoint: Core처럼 일반 부위보다 높은 피해 배율을 사용하는 피격 부위다.
 	virtual float GetWeakPointDamageMultiplier(const UPrimitiveComponent* HitComponent) const;
 
+	UFUNCTION(BlueprintPure, Category = "Enemy|Damage")
+	bool HasCoreWeakPoint() const { return bUseCoreWeakPoint; }
+
 	// 폭발 거리와 차폐가 반영된 비율로 이동형 Enemy 반동 또는 Turret 연출을 요청한다.
-	void ApplyExplosionReaction(
+	virtual void ApplyExplosionReaction(
 		const FVector& ExplosionOrigin,
 		float EnemyImpulseScale,
 		float TurretReactionScale,
@@ -421,11 +434,13 @@ protected:
 
 	void HandleCurrentHealthChanged(float PreviousHealth);
 	void ApplyDamageInternal(float DamageAmount);
+	void ApplyCoreWeakPointRuntimeState();
 
 	void SendEnemyStateTreeEventNextTick(FGameplayTag Tag);
 	void SetDefaultEnemyType(EEnemyType EnemyType);
 	virtual void ApplyClassStatOverrides();
 	virtual void ApplyMovementFromRuntimeStat();
+	virtual void PrepareForStateTreeStart();
 	bool HasActiveStunTag() const;
 	bool BeginPossessionProcess(APartnerCharacter* PartnerCharacter);
 	void ConfirmPossessionProcess();
@@ -443,6 +458,7 @@ protected:
 	void HandleCurrentRoomTagChanged(FGameplayTag PreviousRoomTag, FGameplayTag NewRoomTag);
 	void RemoveRoomTargetObserver();
 	virtual void HandleDeath();
+	virtual float GetDeathDestroyDelay() const { return 0.0f; }
 	virtual bool TryApplyCommittedImpactVelocity(const FVector& ImpactVelocity);
 	virtual void CancelCommittedAction();
 	virtual void ApplyExplosionReactionPresentation(const FVector& Direction, float ReactionScale);
