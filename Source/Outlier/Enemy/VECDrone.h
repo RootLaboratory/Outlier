@@ -55,6 +55,7 @@ protected:
 	virtual void UnPossessed() override;
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 	virtual void ApplyMovementFromRuntimeStat() override;
+	virtual void ApplyExplosionReactionPresentation(const FVector& Direction, float ReactionScale) override;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|Movement")
 	TObjectPtr<UVECDroneMovementComponent> VECMovementComponent;

@@ -8,6 +8,7 @@
 #include "Components/CapsuleComponent.h"
 #include "Components/SceneComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Camera/CameraComponent.h"
 #include "Drone/Partner/PartnerDistanceComponent.h"
 #include "Drone/Partner/PartnerMovementComponent.h"
 #include "Drone/Partner/PartnerSupportComponent.h"
@@ -35,6 +36,7 @@
 #include "Enemy/EnemyRoomSubsystem.h"
 #include "NiagaraComponent.h"
 #include "NiagaraFunctionLibrary.h"
+#include "Weapon/WeaponBase.h"
 
 namespace
 {
@@ -157,6 +159,15 @@ void APartnerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 		MovementComponent->ClearFlightInput();
 	}
 
+	if (ToggleTestWeaponAttachmentKey.IsValid())
+	{
+		PlayerInputComponent->BindKey(
+			ToggleTestWeaponAttachmentKey,
+			IE_Pressed,
+			this,
+			&APartnerCharacter::ToggleTestWeaponEquipment);
+	}
+
 	// Set up Action Bindings
 	UEnhancedInputComponent* EnhancedInputComponent = Cast<UEnhancedInputComponent>(PlayerInputComponent);
 	UPartnerInputConfig* PartnerInputConfig = Cast<UPartnerInputConfig>(InputConfig);
@@ -234,6 +245,13 @@ void APartnerCharacter::OnMoveInputUpdated(const FVector2D& MoveValue)
 
 void APartnerCharacter::TryStartAttack()
 {
+	UE_LOG(
+		LogTemp,
+		Warning,
+		TEXT("[PartnerWeaponVFX][AttackInput] Character=%s Authority=%d CurrentWeapon=%s"),
+		*GetNameSafe(this),
+		HasAuthority() ? 1 : 0,
+		*GetNameSafe(GetCurrentWeapon()));
 	StartWeaponAttack();
 }
 
@@ -284,6 +302,24 @@ void APartnerCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	DOREPLIFETIME(APartnerCharacter, bIsRebooting);
 	DOREPLIFETIME(APartnerCharacter, bIsInvincible);
 	DOREPLIFETIME(APartnerCharacter, CurrentHitCount);
+}
+
+void APartnerCharacter::ToggleTestWeaponEquipment()
+{
+	UE_LOG(
+		LogTemp,
+		Warning,
+		TEXT("[PartnerWeaponToggle][Input] Character=%s Authority=%d LocallyControlled=%d CurrentWeapon=%s CombatComponent=%s"),
+		*GetNameSafe(this),
+		HasAuthority() ? 1 : 0,
+		IsLocallyControlled() ? 1 : 0,
+		*GetNameSafe(GetCurrentWeapon()),
+		*GetNameSafe(CombatComponent));
+
+	if (CombatComponent)
+	{
+		CombatComponent->ToggleTestWeaponEquipped();
+	}
 }
 
 FGameplayTagContainer APartnerCharacter::GetOwnedGameplayTagsForQuery() const
@@ -1194,6 +1230,9 @@ APartnerCharacter::APartnerCharacter()
 	ThirdPersonTiltRoot->SetupAttachment(GetCapsuleComponent());
 	GetMesh()->SetupAttachment(ThirdPersonTiltRoot);
 
+	FirstPersonWeaponRoot = CreateDefaultSubobject<USceneComponent>(TEXT("First Person Weapon Root"));
+	FirstPersonWeaponRoot->SetupAttachment(GetFirstPersonCameraComponent());
+
 	if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
 	{
 		MoveComp->DefaultLandMovementMode = MOVE_Flying;
@@ -1212,6 +1251,23 @@ APartnerCharacter::APartnerCharacter()
 	EMPComponent      = CreateDefaultSubobject<UPartnerEMPComponent>     (TEXT("EMPComponent"));
 
 	FaceSpriteAnimationComponent = CreateDefaultSubobject<UPartnerSpriteAnimationComponent>(TEXT("SpriteAnimationComponent"));
+}
+
+USkeletalMeshComponent* APartnerCharacter::GetWeaponMuzzleComponent(bool bFirstPerson) const
+{
+	const FName MuzzleSocketName = GetWeaponMuzzleSocketName(bFirstPerson);
+	if (const AWeaponBase* Weapon = GetCurrentWeapon())
+	{
+		USkeletalMeshComponent* WeaponMesh = bFirstPerson
+			? Weapon->GetFirstPersonWeaponMesh()
+			: Weapon->GetThirdPersonWeaponMesh();
+		if (WeaponMesh && WeaponMesh->DoesSocketExist(MuzzleSocketName))
+		{
+			return WeaponMesh;
+		}
+	}
+
+	return bFirstPerson ? GetFirstPersonMesh() : GetMesh();
 }
 
 void APartnerCharacter::OnRep_DroneMovementState()

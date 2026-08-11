@@ -154,12 +154,6 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera|Sensitivity", meta = (ClampMin = "0.0"))
 	float SprintLookSensitivityScale = 1.0f;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera|Recoil", meta = (ClampMin = "0.0"))
-	float CameraRecoilKickInterpSpeed = 28.0f;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera|Recoil", meta = (ClampMin = "0.0"))
-	float CameraRecoilFOVRecoverySpeed = 16.0f;
-
 	UPROPERTY(EditDefaultsOnly, Category = "Slide")
 	float SlideDuration = 1.0f;
 
@@ -261,11 +255,6 @@ protected:
 	FRotator BaseFirstPersonViewModelRootRotation = FRotator::ZeroRotator;
 	FRotator BaseFirstPersonMeshRotation = FRotator::ZeroRotator;
 	float BaseCameraFOV = 90.0f;
-	FRotator CameraRecoilCurrent = FRotator::ZeroRotator;
-	FRotator CameraRecoilTarget = FRotator::ZeroRotator;
-	float CameraRecoilRecoverySpeed = 10.0f;
-	float CameraRecoilFOVOffset = 0.0f;
-
 	// Timers
 	FTimerHandle LeanUpdateTimerHandle;
 
@@ -374,6 +363,12 @@ public:
 	void OnRep_IsStealthed();
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	// Unreal 공통 피해 진입점을 기존 Shooter 실드 및 HP 처리로 연결한다.
+	virtual float TakeDamage(
+		float DamageAmount,
+		FDamageEvent const& DamageEvent,
+		AController* EventInstigator,
+		AActor* DamageCauser) override;
 	virtual void EquipWeapon(AWeaponBase* Weapon) override;
 	virtual FGameplayTagContainer GetOwnedGameplayTagsForQuery() const override;
 
@@ -439,19 +434,9 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Suit|Stealth")
 	bool IsStealthed() const { return bIsStealthed; }
 
-	void ApplyDamageInternal(float DamageAmount);
 	void HandleWeaponAttackStoppedInternal();
 	void HandleAutoReloadRequested();
 	void HandleFireShotAnimation();
-	void AddWeaponCameraRecoil(
-		float PitchAmplitude,
-		float YawAmplitude,
-		float DirectionPitchAmplitude,
-		float FOVAmplitude,
-		float RecoverySpeed,
-		const FVector2D& NormalizedShotDirection
-	);
-
 	// Blueprint / Notify Entry Points
 	UFUNCTION(BlueprintCallable, Category = "Animation|Notify")
 	void HandleReloadCommitNotify();
@@ -460,6 +445,7 @@ public:
 
 	void DoJumpEnd();
 protected:
+	void ApplyDamageInternal(float DamageAmount);
 	void UpdatePartnerShieldDecay();
 
 	// Input Handlers
@@ -560,7 +546,6 @@ public:
 	void StopLeanUpdateIfSettled();
 	void UpdateLeanStep();
 	void UpdateCameraFOV(float DeltaSeconds);
-	void UpdateCameraRecoil(float DeltaSeconds);
 	float GetEffectiveFirstPersonAimAlpha() const;
 	float GetLookSensitivityScale() const;
 

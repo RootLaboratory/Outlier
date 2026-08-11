@@ -2,6 +2,7 @@
 
 #include "AIController.h"
 #include "Enemy/EnemyAIController.h"
+#include "Outlier.h"
 
 FEnemyStateTreeSyncTask::FEnemyStateTreeSyncTask()
 {
@@ -46,6 +47,19 @@ void FEnemyStateTreeSyncTask::SyncFromEnemy(FInstanceDataType& InstanceData) con
 	InstanceData.bPossessedAttackHeld = InstanceData.Enemy->IsPossessedAttackHeld();
 	InstanceData.bPossessedAttackQueued = InstanceData.Enemy->HasPossessedAttackQueued();
 	InstanceData.bHasPossessedAttackRequest = InstanceData.Enemy->HasPossessedAttackRequest();
+	if (AEnemyBase::IsPossessedAttackDiagnosticsEnabled()
+		&& InstanceData.bIsPossessed
+		&& InstanceData.bHasPossessedAttackRequest)
+	{
+		UE_LOG(
+			LogOutlier,
+			Warning,
+			TEXT("[EnemyPossessedAttackDiag] StateTreeSync Enemy=%s Held=%s Queued=%s HasRequest=%s"),
+			*GetNameSafe(InstanceData.Enemy),
+			InstanceData.bPossessedAttackHeld ? TEXT("true") : TEXT("false"),
+			InstanceData.bPossessedAttackQueued ? TEXT("true") : TEXT("false"),
+			InstanceData.bHasPossessedAttackRequest ? TEXT("true") : TEXT("false"));
+	}
 	InstanceData.bPlayerCurrentlyVisible = InstanceData.Enemy->IsPlayerCurrentlyVisible();
 	InstanceData.bHasSharedTargetContact = InstanceData.Enemy->HasSharedTargetContact();
 	InstanceData.SharedTargetLocation = InstanceData.Enemy->GetSharedTargetLocation();

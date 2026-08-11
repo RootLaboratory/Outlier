@@ -4,8 +4,11 @@
 #include "Enemy/EnemyBase.h"
 #include "Engine/Level.h"
 #include "Engine/World.h"
+#include "GameplayTags/OutlierGameplayTags.h"
+#include "Interface/GameplayTagProviderInterface.h"
 #include "Network/OutlierArenaPoolSubsystem.h"
 #include "Subsystems/SubsystemCollection.h"
+#include "TimerManager.h"
 
 void UEnemyRoomSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -22,6 +25,10 @@ void UEnemyRoomSubsystem::Deinitialize()
 {
 	if (UWorld* World = GetWorld())
 	{
+		for (TPair<FEnemyRoomSearchKey, FEnemyRoomTargetContactState>& ContactEntry : TargetContactStates)
+		{
+			World->GetTimerManager().ClearTimer(ContactEntry.Value.ForcedShareTimerHandle);
+		}
 		if (UOutlierArenaPoolSubsystem* ArenaPool = World->GetSubsystem<UOutlierArenaPoolSubsystem>())
 		{
 			ArenaPool->OnArenaReleased.RemoveAll(this);
@@ -172,7 +179,8 @@ void UEnemyRoomSubsystem::ReportRoomTargetContact(
 		|| World->GetNetMode() == NM_Client
 		|| !IsValid(Observer)
 		|| !IsValid(TargetActor)
-		|| !Observer->HasAuthority())
+		|| !Observer->HasAuthority()
+		|| !Observer->CanUseRoomTargetSharing())
 	{
 		return;
 	}
@@ -189,6 +197,7 @@ void UEnemyRoomSubsystem::ReportRoomTargetContact(
 	const FEnemyRoomSearchKey Key{ResolvedArenaId, RoomTag};
 	FEnemyRoomTargetContactState& ContactState = TargetContactStates.FindOrAdd(Key);
 	CompactTargetContactState(ContactState);
+	World->GetTimerManager().ClearTimer(ContactState.ForcedShareTimerHandle);
 	ContactState.DirectObservers.Add(TWeakObjectPtr<AEnemyBase>(Observer));
 
 	const bool bTargetChanged = ContactState.TargetActor.Get() != TargetActor;
@@ -225,8 +234,58 @@ void UEnemyRoomSubsystem::RemoveRoomTargetObserver(AEnemyBase* Observer)
 		}
 
 		BroadcastSharedTargetLost(ContactIt.Key());
-		ContactIt.RemoveCurrent();
+		ScheduleForcedTargetShare(ContactIt.Key());
 	}
+}
+
+void UEnemyRoomSubsystem::ScheduleForcedTargetShare(const FEnemyRoomSearchKey& Key)
+{
+	UWorld* World = GetWorld();
+	FEnemyRoomTargetContactState* ContactState = TargetContactStates.Find(Key);
+	if (!World || !ContactState || !ContactState->TargetActor.IsValid())
+	{
+		return;
+	}
+
+	World->GetTimerManager().ClearTimer(ContactState->ForcedShareTimerHandle);
+	World->GetTimerManager().SetTimer(
+		ContactState->ForcedShareTimerHandle,
+		FTimerDelegate::CreateUObject(this, &UEnemyRoomSubsystem::HandleForcedTargetShare, Key),
+		FMath::Max(ForcedTargetShareDelay, KINDA_SMALL_NUMBER),
+		false);
+}
+
+void UEnemyRoomSubsystem::HandleForcedTargetShare(FEnemyRoomSearchKey Key)
+{
+	FEnemyRoomTargetContactState* ContactState = TargetContactStates.Find(Key);
+	if (!ContactState)
+	{
+		return;
+	}
+	CompactTargetContactState(*ContactState);
+	if (!ContactState->DirectObservers.IsEmpty())
+	{
+		return;
+	}
+
+	AActor* TargetActor = ContactState->TargetActor.Get();
+	if (!IsValid(TargetActor))
+	{
+		TargetContactStates.Remove(Key);
+		return;
+	}
+
+	const IGameplayTagProviderInterface* TagProvider = Cast<IGameplayTagProviderInterface>(TargetActor);
+	if (TagProvider && TagProvider->GetOwnedGameplayTagsForQuery().HasTagExact(
+		OutlierGameplayTags::State::Stealthed()))
+	{
+		// Stealth 중 경과 시간을 인정하지 않고 해제 뒤 다시 8초를 계산한다.
+		ScheduleForcedTargetShare(Key);
+		return;
+	}
+
+	ContactState->LastReportedLocation = TargetActor->GetActorLocation();
+	BroadcastSharedTargetContact(Key, ContactState->LastReportedLocation);
 }
 
 void UEnemyRoomSubsystem::NotifyTargetActorRemoved(AActor* TargetActor)
@@ -243,6 +302,7 @@ void UEnemyRoomSubsystem::NotifyTargetActorRemoved(AActor* TargetActor)
 		if (ContactIt.Value().TargetActor.Get() == TargetActor
 			|| !ContactIt.Value().TargetActor.IsValid())
 		{
+			World->GetTimerManager().ClearTimer(ContactIt.Value().ForcedShareTimerHandle);
 			RemovedContactKeys.Add(ContactIt.Key());
 			ContactIt.RemoveCurrent();
 		}
@@ -299,6 +359,8 @@ bool UEnemyRoomSubsystem::RequestSearchRingSlot(
 	const FGameplayTag RoomTag = ResolveEnemyRoomTag(Enemy);
 	if (!Enemy->HasAuthority()
 		|| Enemy->GetLastKnownArenaId() == INDEX_NONE
+		// 고정형 터렛은 능력치가 바뀌어도 이동용 수색 Ring에 참여하지 않는다.
+		|| Enemy->GetRuntimeStat().Type == EEnemyType::Turret
 		|| Enemy->GetRuntimeStat().MoveSpeed <= KINDA_SMALL_NUMBER
 		|| Enemy->GetCombatState() != EEnemyCombatState::Combat
 		|| Enemy->IsPlayerCurrentlyVisible()
@@ -409,6 +471,7 @@ bool UEnemyRoomSubsystem::RebuildSearchRingAssignments(
 			|| Candidate->IsPlayerCurrentlyVisible()
 			|| Candidate->HasSharedTargetContact()
 			|| Candidate->IsEnemyPossessed()
+			|| Candidate->GetRuntimeStat().Type == EEnemyType::Turret
 			|| Candidate->GetRuntimeStat().MoveSpeed <= KINDA_SMALL_NUMBER)
 		{
 			continue;
@@ -567,7 +630,7 @@ void UEnemyRoomSubsystem::BroadcastSharedTargetContact(
 		AEnemyBase* Enemy = EnemyPtr.Get();
 		if (!IsValid(Enemy)
 			|| Enemy->GetCombatState() != EEnemyCombatState::Combat
-			|| Enemy->IsEnemyPossessed())
+			|| !Enemy->CanUseRoomTargetSharing())
 		{
 			continue;
 		}
@@ -723,6 +786,7 @@ void UEnemyRoomSubsystem::CompactAllRegisteredEnemies()
 
 void UEnemyRoomSubsystem::HandleArenaReleased(int32 ArenaId)
 {
+	UWorld* World = GetWorld();
 	CombatRoomsByArena.Remove(ArenaId);
 
 	for (auto RoomIt = RegisteredEnemiesByRoom.CreateIterator(); RoomIt; ++RoomIt)
@@ -751,6 +815,10 @@ void UEnemyRoomSubsystem::HandleArenaReleased(int32 ArenaId)
 	{
 		if (ContactIt.Key().ArenaId == ArenaId)
 		{
+			if (World)
+			{
+				World->GetTimerManager().ClearTimer(ContactIt.Value().ForcedShareTimerHandle);
+			}
 			ContactIt.RemoveCurrent();
 		}
 	}

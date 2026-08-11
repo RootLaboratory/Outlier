@@ -122,7 +122,10 @@ EStateTreeRunStatus FEnemySelectHorizontalOrbitLocationTask::EnterState(
 {
 	FInstanceDataType& InstanceData = Context.GetInstanceData(*this);
 	AEnemyBase* Enemy = InstanceData.Enemy;
-	if (!Enemy || !Enemy->HasAuthority() || !Enemy->GetWorld())
+	if (!Enemy
+		|| !Enemy->HasAuthority()
+		|| !Enemy->GetWorld()
+		|| Enemy->GetRuntimeStat().Type == EEnemyType::Melee)
 	{
 		return EStateTreeRunStatus::Failed;
 	}

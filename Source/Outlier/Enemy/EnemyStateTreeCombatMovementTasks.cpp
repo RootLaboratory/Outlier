@@ -296,9 +296,12 @@ EStateTreeRunStatus FEnemyApproachTargetTask::Tick(
 		EnemyLocation,
 		TargetLocation,
 		InstanceData.DistanceMode);
+	const bool bSupportsOrbit =
+		Enemy->GetRuntimeStat().Type != EEnemyType::Melee;
 	// Approach와 Orbit이 서로 다른 경계를 사용하므로 경계 부근에서 상태가 흔들리지 않는다.
 	InstanceData.bShouldEnterOrbit =
-		InstanceData.TargetDistance <= InstanceData.OrbitEnterDistance;
+		bSupportsOrbit
+		&& InstanceData.TargetDistance <= InstanceData.OrbitEnterDistance;
 
 	InstanceData.RefreshElapsedTime += DeltaTime;
 	if (InstanceData.RefreshElapsedTime < InstanceData.TargetRefreshInterval)
@@ -320,7 +323,9 @@ EStateTreeRunStatus FEnemyApproachTargetTask::Tick(
 	InstanceData.RefreshElapsedTime = 0.0f;
 
 	FVector HorizontalDestination = TargetLocation;
-	if (InstanceData.TargetDistance <= InstanceData.OrbitEntryPlanningDistance)
+	// 자폭형은 선회 진입점을 만들지 않고 공유 위치나 직접 타겟으로 곧바로 접근한다.
+	if (bSupportsOrbit
+		&& InstanceData.TargetDistance <= InstanceData.OrbitEntryPlanningDistance)
 	{
 		// 선회 반경에 가까워지면 중심으로 돌진하지 않고 원의 앞쪽 접선 진입점을 향한다.
 		EEnemyOrbitDirection EntryDirection = EEnemyOrbitDirection::Left;
@@ -424,7 +429,8 @@ EStateTreeRunStatus FEnemyOrbitTargetTask::EnterState(
 	if (!InstanceData.Enemy
 		|| !InstanceData.Enemy->HasAuthority()
 		|| !AIController
-		|| !Target)
+		|| !Target
+		|| InstanceData.Enemy->GetRuntimeStat().Type == EEnemyType::Melee)
 	{
 		return EStateTreeRunStatus::Failed;
 	}

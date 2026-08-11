@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "FirstPerson/FirstPersonCharacter.h"
 #include "Engine/DataTable.h"
+#include "InputCoreTypes.h"
 #include "Interface/WeaponMuzzleProvider.h"
 #include "PartnerCharacter.generated.h"
 
@@ -106,6 +107,18 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<USceneComponent> ThirdPersonTiltRoot;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<USceneComponent> FirstPersonWeaponRoot;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Attachment")
+	FName FirstPersonWeaponAttachSocketName = TEXT("FirstPerson");
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Attachment")
+	FName ThirdPersonWeaponAttachSocketName = TEXT("ThirdPerson");
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Test|Weapon")
+	FKey ToggleTestWeaponAttachmentKey = EKeys::T;
 
 	// Partner 무기는 본체 메시와 일체형이므로 Weapon Actor 대신 이 소켓에서 총구 연출을 시작한다.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Presentation")
@@ -457,6 +470,7 @@ protected:
 	void StopFreeMove();
 	void VerticalMove(const FInputActionValue& Value);
 	void StopVerticalMove();
+	void ToggleTestWeaponEquipment();
 
 	void SetBoundaryOutside(bool bOutside);
 	EPartnerBoundaryState GetBoundaryOutside();
@@ -503,15 +517,16 @@ public:
 public:
 	APartnerCharacter();
 
-	virtual USkeletalMeshComponent* GetWeaponMuzzleComponent(bool bFirstPerson) const override
-	{
-		return bFirstPerson ? GetFirstPersonMesh() : GetMesh();
-	}
+	virtual USkeletalMeshComponent* GetWeaponMuzzleComponent(bool bFirstPerson) const override;
 
 	virtual FName GetWeaponMuzzleSocketName(bool bFirstPerson) const override
 	{
 		return bFirstPerson ? FirstPersonWeaponMuzzleSocketName : ThirdPersonWeaponMuzzleSocketName;
 	}
+
+	FName GetFirstPersonWeaponAttachSocketName() const { return FirstPersonWeaponAttachSocketName; }
+	FName GetThirdPersonWeaponAttachSocketName() const { return ThirdPersonWeaponAttachSocketName; }
+	USceneComponent* GetFirstPersonWeaponRoot() const { return FirstPersonWeaponRoot; }
 
 	UFUNCTION()
 	void OnRep_DroneMovementState();

@@ -113,6 +113,38 @@ void UFlightMovementComponentBase::ResetMovementFeel()
 	PreviousMeshTargetPitch = 0.0f;
 	PreviousMeshTargetRoll = 0.0f;
 	bMeshRotationInitialized = false;
+	CurrentImpactMeshPitch = 0.0f;
+	CurrentImpactMeshRoll = 0.0f;
+	bExternalImpactTiltActive = false;
+}
+
+void UFlightMovementComponentBase::ApplyExternalImpactTilt(
+	const FVector& WorldDirection,
+	float NormalizedStrength,
+	float MaxTiltDegrees,
+	float RecoveryInterpSpeed)
+{
+	const ACharacter* OwnerCharacter = GetFlightOwnerCharacter();
+	if (!OwnerCharacter)
+	{
+		return;
+	}
+
+	const FVector LocalDirection = OwnerCharacter->GetActorTransform()
+		.InverseTransformVectorNoScale(WorldDirection.GetSafeNormal());
+	const float TiltDegrees = FMath::Max(MaxTiltDegrees, 0.0f)
+		* FMath::Clamp(NormalizedStrength, 0.0f, 1.0f);
+	CurrentImpactMeshPitch = FMath::Clamp(
+		CurrentImpactMeshPitch - LocalDirection.Z * TiltDegrees,
+		-TiltDegrees,
+		TiltDegrees);
+	CurrentImpactMeshRoll = FMath::Clamp(
+		CurrentImpactMeshRoll + LocalDirection.Y * TiltDegrees,
+		-TiltDegrees,
+		TiltDegrees);
+	ImpactMeshTiltInterpSpeed = FMath::Max(RecoveryInterpSpeed, 0.0f);
+	bExternalImpactTiltActive = true;
+	RefreshTickEnabled();
 }
 
 void UFlightMovementComponentBase::RefreshTickEnabled()
@@ -241,7 +273,7 @@ bool UFlightMovementComponentBase::CanRunInputMovement() const
 bool UFlightMovementComponentBase::ShouldUpdateMovementFeel() const
 {
 	const ACharacter* OwnerCharacter = GetFlightOwnerCharacter();
-	return OwnerCharacter && OwnerCharacter->IsLocallyControlled();
+	return OwnerCharacter && (OwnerCharacter->IsLocallyControlled() || bExternalImpactTiltActive);
 }
 
 EFlightInputMode UFlightMovementComponentBase::GetFlightInputMode() const
@@ -340,6 +372,18 @@ void UFlightMovementComponentBase::UpdateMovementFeel(float DeltaTime)
 
 	UpdateInertialTilt(DesiredTarget, Kinematics, DeltaTime);
 	UpdateMeshInertialTilt(Kinematics, DeltaTime);
+	CurrentImpactMeshPitch = FMath::FInterpTo(
+		CurrentImpactMeshPitch,
+		0.0f,
+		DeltaTime,
+		ImpactMeshTiltInterpSpeed);
+	CurrentImpactMeshRoll = FMath::FInterpTo(
+		CurrentImpactMeshRoll,
+		0.0f,
+		DeltaTime,
+		ImpactMeshTiltInterpSpeed);
+	bExternalImpactTiltActive = !FMath::IsNearlyZero(CurrentImpactMeshPitch, 0.05f)
+		|| !FMath::IsNearlyZero(CurrentImpactMeshRoll, 0.05f);
 	ApplyCameraTilt();
 	ApplyVisualTilt(DeltaTime);
 
@@ -656,9 +700,9 @@ void UFlightMovementComponentBase::ApplyMeshTilt()
 	const FRotator TargetMeshRot =
 		BaseMeshRelativeRotation +
 		FRotator(
-			CurrentMeshPitch * MeshInertialTiltScale * MeshPitchInertialTiltScale,
+			CurrentMeshPitch * MeshInertialTiltScale * MeshPitchInertialTiltScale + CurrentImpactMeshPitch,
 			0.0f,
-			CurrentMeshRoll * MeshInertialTiltScale * MeshRollInertialTiltScale
+			CurrentMeshRoll * MeshInertialTiltScale * MeshRollInertialTiltScale + CurrentImpactMeshRoll
 		);
 
 	VisualTiltRoot->SetRelativeRotation(TargetMeshRot);

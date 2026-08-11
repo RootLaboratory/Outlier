@@ -4,6 +4,8 @@
 
 #include "CoreMinimal.h"
 #include "Weapon/WeaponBase.h"
+#include "Weapon/WeaponRecoilCalculation.h"
+#include "Weapon/WeaponRecoilRow.h"
 #include "Engine/DataTable.h"
 #include "RangedWeaponBase.generated.h"
 
@@ -85,19 +87,7 @@ protected:
 	FName MuzzleSocketName = TEXT("Muzzle");
 
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Recoil")
-	float RecoilPitchAmplitude = 0.0f;
-
-	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Recoil")
-	float RecoilLocationXAmplitude = 0.0f;
-
-	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Recoil")
-	float RecoilLocationYAmplitude = 0.0f;
-
-	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Recoil")
-	float RecoilFovAmplitude = 0.0f;
-
-	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Recoil")
-	float RecoilRecoverySpeed = 0.0f;
+	FWeaponRecoilRow ActiveRecoilProfile;
 
 	// Bloom : 탄퍼짐
 
@@ -164,14 +154,15 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Data")
 	FDataTableRowHandle ProjectileDataRow;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Data")
-	TObjectPtr<UDataTable> WeaponRecoilTable;
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Data|Recoil")
+	FDataTableRowHandle HipRecoilDataRow;
 
-	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Data")
-	FName RecoilProfileId;
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Data|Recoil")
+	FDataTableRowHandle ADSRecoilDataRow;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Data")
-	FDataTableRowHandle RecoilDataRow;
+	// Hip/ADS 구분이 없는 빙의 드론 등의 무기는 이 Row만 지정한다.
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Data|Recoil")
+	FDataTableRowHandle DefaultRecoilDataRow;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Data")
 	TObjectPtr<UWeaponFeedbackDefinition> FeedbackDefinition;
@@ -196,11 +187,30 @@ protected:
 	FTimerHandle ReuseCooldownTimerHandle;
 	FTimerHandle PostBurstCooldownTimerHandle;
 	FTimerHandle BloomRecoveryTimerHandle;
+	FTimerHandle RecoilResetTimerHandle;
+	FTimerHandle LocalControlKickTimerHandle;
+
+	FWeaponRecoilRow CachedHipRecoilProfile;
+	FWeaponRecoilRow CachedADSRecoilProfile;
+	FWeaponRecoilRow CachedAnyRecoilProfile;
+	FWeaponRecoilRuntimeState RecoilRuntimeState;
+	FVector2D PendingLocalControlRecoil = FVector2D::ZeroVector;
+	FVector2D LastCalculatedControlRecoil = FVector2D::ZeroVector;
+	float LocalControlKickInterpSpeed = 100.0f;
+	float LocalControlKickElapsedTime = 0.0f;
+	float LastWeaponCameraShakeScale = 0.0f;
+	float LastWeaponCameraShakeDuration = 0.0f;
+	uint32 RecoilShotSequence = 0;
+	uint8 bHasCachedHipRecoilProfile : 1 = false;
+	uint8 bHasCachedADSRecoilProfile : 1 = false;
+	uint8 bHasCachedAnyRecoilProfile : 1 = false;
+	uint8 bHasActiveRecoilProfile : 1 = false;
 
 	FVector LastShotBaseDirection = FVector::ForwardVector;
 	FVector LastShotDirection = FVector::ForwardVector;
 	float LastShotSpreadDegrees = 0.0f;
 	int32 CurrentBurstShotCount = 0;
+	int32 LastAttackMuzzleShotCount = 1;
 	uint8 bHasLastShotDirection : 1 = false;
 
 protected:
@@ -216,10 +226,22 @@ protected:
 	void HideHandMagazine();
 	void RefreshBloomSettingsFromState();
 	void RefreshRecoilSettingsFromState();
+	void CacheRecoilProfiles();
 	FVector2D GetNormalizedLastShotDirection() const;
-	void ApplyRecoilWithShotDirection(const FVector2D& NormalizedShotDirection);
+	void ApplyLocalRecoilPresentation(
+		const FVector2D& NormalizedShotDirection,
+		const FVector2D& ControlRecoilDelta,
+		float ControlKickInterpSpeed,
+		float CameraShakeScale,
+		float CameraShakeDuration);
+	void ApplyAuthoritativeControlRecoil(const FVector2D& ControlRecoilDelta);
+	void QueueLocalControlRecoil(const FVector2D& ControlRecoilDelta, float ControlKickInterpSpeed);
+	void HandleLocalControlKick();
+	void ApplyControlRotationDelta(const FVector2D& ControlRecoilDelta) const;
+	void ResetRecoilRuntimeState();
 
 	void HandleAutoFire();
+	float GetAutomaticFireInterval() const;
 	void StartAttackCooldown();
 	void ResetAttackCooldown();
 	void StartReuseCooldown();
@@ -233,6 +255,7 @@ protected:
 	void ReportArenaWideNoise(ACharacter* OwnerCharacter);
 
 public:
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const;
 	virtual void OnEquipped(ACharacter* NewOwner) override;
 	virtual void ShowEquippedPresentation() override;
@@ -243,6 +266,10 @@ public:
 	virtual void StopAttack() override;
 	virtual void PerformAttack() override;
 	bool HasFixedBurst() const { return BurstShotCount > 0; }
+	int32 GetCurrentBurstShotCount() const { return CurrentBurstShotCount; }
+	bool IsOnPostBurstCooldown() const { return bOnPostBurstCooldown; }
+	// 공격이 중간에 취소돼도 정상 버스트와 같은 후딜레이를 적용한다.
+	void ForcePostBurstCooldown();
 
 	virtual bool CanReload() const;
 	virtual void Reload();
@@ -257,6 +284,7 @@ public:
 	virtual float GetCurrentSpread() const;
 
 	virtual void SetAiming(bool bAiming);
+	void CancelLocalRecoilPresentation();
 
 	virtual void AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacter* NewOwner) override;
 
@@ -284,16 +312,24 @@ protected:
 	virtual void OnRep_EquippedState() override;
 
 	UFUNCTION(Client, Unreliable)
-	void ClientNotifyShotFired(FVector2D NormalizedShotDirection);
+	void ClientNotifyShotFired(
+		FVector2D NormalizedShotDirection,
+		FVector2D ControlRecoilDelta,
+		float ControlKickInterpSpeed,
+		float CameraShakeScale,
+		float CameraShakeDuration);
 
 	UFUNCTION(NetMulticast, Unreliable)
-	void MulticastPlayFireFX(FVector_NetQuantize TraceEnd, FVector_NetQuantizeNormal ImpactNormal, AActor* Hit, FVector2D NormalizedShotDirection);
+	void MulticastPlayFireFX(FVector_NetQuantize TraceEnd, FVector_NetQuantizeNormal ImpactNormal,
+		AActor* Hit, FVector2D NormalizedShotDirection, FName FiredMuzzleSocketName);
 
-	void PlayThirdPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit);
+	void PlayThirdPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit, FName FiredMuzzleSocketName);
 
-	void PlayFirstPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit);
+	void PlayFirstPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit, FName FiredMuzzleSocketName);
 
-	void ResolveMuzzleTransforms(bool bFirstPerson, TArray<FTransform>& OutMuzzleTransforms) const;
+	void ResolveMuzzleTransforms(bool bFirstPerson, FName FiredMuzzleSocketName,
+		TArray<FTransform>& OutMuzzleTransforms) const;
+	void FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPlayShotSound);
 
 	ULocalPlayerUISubSystem* GetLocalUISubsystem() const; //Helper
 };

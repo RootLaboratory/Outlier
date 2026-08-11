@@ -73,7 +73,7 @@ private:
 		int32 OtherBodyIndex
 	);
 
-	void ApplyDamageToShooter(AShooterCharacter* Shooter) const;
+	void ApplyDamageToShooter(AShooterCharacter* Shooter);
 
 private:
 	

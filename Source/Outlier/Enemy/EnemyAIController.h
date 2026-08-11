@@ -24,6 +24,7 @@ public:
 
 	void SetEnemyPerceptionEnabled(bool bEnabled);
 	void RefreshPerceptionConfigFromPawn();
+	void RefreshTeamAndPerceptionFromPawn();
 	void BeginTaskDrivenControlPitch();
 	void EndTaskDrivenControlPitch();
 	// 사망 또는 리스폰으로 교체되는 액터를 감지 캐시에서 제거하고 남은 타겟을 즉시 재평가한다.
