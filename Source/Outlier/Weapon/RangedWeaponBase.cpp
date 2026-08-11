@@ -335,6 +335,7 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 		FHitResult ResolvedDamageHit = Hit;
 		bool bIsCoreHit = false;
 
+		//Enemy 혹은 selfdestructdrone의 폭발물인 경우에는 critical
 		if (AEnemyBase* HitEnemy = Cast<AEnemyBase>(HitActor))
 		{
 			// 어떤 걸 맞았는지(HitEnemy 확정)는 위의 단일 트레이스 결과 그대로 사용 — 벽/다른 액터에 대한
@@ -370,12 +371,18 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 				}
 
 				bIsCoreHit = BestWeakPointMultiplier > 1.0f;
+
+				if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
+				{
+					UISubsystem->OnRep_AttackSign(bIsCoreHit ? EAttackSign::Critical : EAttackSign::Default);
+				}
 			}
 			
 			
 
 		}
 
+		// 구조 결정나면 처리.
 		/*else if (AExplosiveProp* HitExplosive = Cast<AExplosiveProp>(HitActor))
 		{
 			bIsCoreHit =
@@ -383,13 +390,9 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 				&& Cast<ASelfDestructDrone>(HitExplosive->GetOwner()) != nullptr;
 
 			UE_LOG(LogTemp, Error, TEXT("HitExplosive hit called"));
-
 		}*/
 
-		if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
-		{
-			UISubsystem->OnRep_AttackSign(bIsCoreHit ? EAttackSign::Critical : EAttackSign::Default);
-		}
+		
 		
 
 		FOutlierTaggedDamageEvent DamageEvent;
