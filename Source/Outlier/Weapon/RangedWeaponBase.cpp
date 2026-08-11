@@ -21,7 +21,6 @@
 #include "MainUIBase.h"
 #include "LocalPlayerUISubSystem.h"
 #include "CrossHairBase.h"
-#include "Shooter/ShooterPlayerController.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Enemy/EnemyBase.h"
@@ -37,6 +36,7 @@
 #include "Shooter/ShooterFirstPersonAnimInstance.h"
 #include "Enemy/EnemyRoomSubsystem.h"
 #include "Outlier.h"
+#include "OutlierPlayerState.h"
 #include "Room/RoomTagComponent.h"
 #include "Interface/RoomTagInterface.h"
 #include "Interface/WeaponMuzzleProvider.h"
@@ -333,11 +333,13 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 		const float HitDistance = FVector::Distance(Start, Hit.ImpactPoint);
 		const float DamageToApply = GetDamageAtDistance(HitDistance);
 		FHitResult ResolvedDamageHit = Hit;
-		bool bIsCoreHit = false;
+		bool bShouldNotifyAttackSign = false;
+		bool bIsWeakPointHit = false;
 
-		//Enemy 혹은 selfdestructdrone의 폭발물인 경우에는 critical
+		// 적 본체는 실제 약점 배율을 기준으로 Critical 표시 여부를 결정한다.
 		if (AEnemyBase* HitEnemy = Cast<AEnemyBase>(HitActor))
 		{
+			bShouldNotifyAttackSign = true;
 			// 어떤 걸 맞았는지(HitEnemy 확정)는 위의 단일 트레이스 결과 그대로 사용 — 벽/다른 액터에 대한
 			// 판정은 절대 안 바뀜. CoreHitboxComponent가 Body(SkeletalMeshComponent)의 Physics Asset
 			// 바디 안쪽에 겹쳐 있으면, 별도 컴포넌트로 분리했음에도 여전히 더 가까운 Body 바디에 가려져서
@@ -345,7 +347,7 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 			// 자체를 무시해서, Core가 Body 안쪽 어디에 있든 상관없이 확실히 잡히게 함
 
 
-			if (HitEnemy && HitEnemy->HasCoreWeakPoint())
+			if (HitEnemy->HasCoreWeakPoint())
 			{
 				constexpr float CoreProbeExtraDistance = 1000.0f;
 				const FVector ProbeEnd = Start + (ShotDirection * (HitDistance + CoreProbeExtraDistance));
@@ -370,27 +372,24 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 					}
 				}
 
-				bIsCoreHit = BestWeakPointMultiplier > 1.0f;
-
-				if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
-				{
-					UISubsystem->OnRep_AttackSign(bIsCoreHit ? EAttackSign::Critical : EAttackSign::Default);
-				}
+				bIsWeakPointHit = BestWeakPointMultiplier > 1.0f;
 			}
 			
 			
 
 		}
 
-		// 구조 결정나면 처리.
-		/*else if (AExplosiveProp* HitExplosive = Cast<AExplosiveProp>(HitActor))
+		else if (AExplosiveProp* HitExplosive = Cast<AExplosiveProp>(HitActor))
 		{
-			bIsCoreHit =
-				HitExplosive->IsMountedOnSelfDestructDrone()
-				&& Cast<ASelfDestructDrone>(HitExplosive->GetOwner()) != nullptr;
+			// 맵 배치 폭발물은 일반 피격이고, 자폭드론 부착 폭발물만 코어와 같은 약점으로 표시한다.
+			bShouldNotifyAttackSign = true;
+			bIsWeakPointHit = HitExplosive->IsMountedOnSelfDestructDrone();
+		}
 
-			UE_LOG(LogTemp, Error, TEXT("HitExplosive hit called"));
-		}*/
+		if (bShouldNotifyAttackSign)
+		{
+			ClientNotifyAttackSign(bIsWeakPointHit);
+		}
 
 		
 		
@@ -1231,6 +1230,15 @@ void ARangedWeaponBase::ClientNotifyShotFired_Implementation(
 	}
 }
 
+void ARangedWeaponBase::ClientNotifyAttackSign_Implementation(bool bCriticalHit)
+{
+	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
+	{
+		UISubsystem->OnRep_AttackSign(
+			bCriticalHit ? EAttackSign::Critical : EAttackSign::Default);
+	}
+}
+
 void ARangedWeaponBase::PlayThirdPersonFireFX(
 	FVector TraceEnd, FVector ImpactNormal, AActor* Hit, FName FiredMuzzleSocketName)
 {
@@ -1478,7 +1486,7 @@ ULocalPlayerUISubSystem* ARangedWeaponBase::GetLocalUISubsystem() const
 
 	if (PlayerCharacter)
 	{
-		AShooterPlayerController* Player = Cast<AShooterPlayerController>(PlayerCharacter->GetController());
+		APlayerController* Player = Cast<APlayerController>(PlayerCharacter->GetController());
 		if (!Player)
 		{
 			return nullptr;

@@ -13,12 +13,22 @@
 #include "Enemy/EnemyRoomSubsystem.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameplayTags/OutlierGameplayTags.h"
+#include "HAL/IConsoleManager.h"
 #include "Net/UnrealNetwork.h"
 #include "Outlier.h"
 #include "PhysicsEngine/BodyInstance.h"
 #include "Team/OutlierTeamIds.h"
 #include "TimerManager.h"
 #include "Weapon/RangedWeaponBase.h"
+
+namespace
+{
+	TAutoConsoleVariable<int32> CVarTurretDiagnostics(
+		TEXT("outlier.Enemy.TurretDiagnostics"),
+		0,
+		TEXT("Logs AutoTurret task failures, rejected damage, and applied impact reactions. 0: off, 1: on"),
+		ECVF_Cheat);
+}
 
 AAutoTurret::AAutoTurret()
 {
@@ -65,6 +75,11 @@ AAutoTurret::AAutoTurret()
 	ConfigureTurretHackPolicy();
 }
 
+bool AAutoTurret::IsTurretDiagnosticsEnabled()
+{
+	return CVarTurretDiagnostics.GetValueOnGameThread() != 0;
+}
+
 void AAutoTurret::OnConstruction(const FTransform& Transform)
 {
 	Super::OnConstruction(Transform);
@@ -91,18 +106,21 @@ float AAutoTurret::TakeDamage(float DamageAmount, const FDamageEvent& DamageEven
 
 	if (!bDeployed)
 	{
-		UE_LOG(
-			LogOutlier,
-			Warning,
-			TEXT("[TurretDamageDiag] Rejected Reason=NotDeployed Turret=%s Authority=%s Damage=%.2f HP=%.2f Component=%s Bone=%s Tag=%s Causer=%s"),
-			*GetNameSafe(this),
-			HasAuthority() ? TEXT("true") : TEXT("false"),
-			DamageAmount,
-			GetCurrentHealth(),
-			*GetNameSafe(HitComponent),
-			*HitBoneName.ToString(),
-			*DamageTagString,
-			*GetNameSafe(DamageCauser));
+		if (IsTurretDiagnosticsEnabled())
+		{
+			UE_LOG(
+				LogOutlier,
+				Warning,
+				TEXT("[TurretDiag][Damage] Rejected Reason=NotDeployed Turret=%s Authority=%s Damage=%.2f HP=%.2f Component=%s Bone=%s Tag=%s Causer=%s"),
+				*GetNameSafe(this),
+				HasAuthority() ? TEXT("true") : TEXT("false"),
+				DamageAmount,
+				GetCurrentHealth(),
+				*GetNameSafe(HitComponent),
+				*HitBoneName.ToString(),
+				*DamageTagString,
+				*GetNameSafe(DamageCauser));
+		}
 		return 0.0f;
 	}
 
@@ -112,39 +130,26 @@ float AAutoTurret::TakeDamage(float DamageAmount, const FDamageEvent& DamageEven
 			&& HitComponent == GetMesh()
 			&& IsNoDamageBone(HitBoneName))
 		{
-			UE_LOG(
-				LogOutlier,
-				Warning,
-				TEXT("[TurretDamageDiag] Rejected Reason=NoDamageBone Turret=%s Authority=%s Damage=%.2f HP=%.2f Component=%s Bone=%s Tag=%s Causer=%s"),
-				*GetNameSafe(this),
-				HasAuthority() ? TEXT("true") : TEXT("false"),
-				DamageAmount,
-				GetCurrentHealth(),
-				*GetNameSafe(HitComponent),
-				*HitBoneName.ToString(),
-				*DamageTagString,
-				*GetNameSafe(DamageCauser));
+			if (IsTurretDiagnosticsEnabled())
+			{
+				UE_LOG(
+					LogOutlier,
+					Warning,
+					TEXT("[TurretDiag][Damage] Rejected Reason=NoDamageBone Turret=%s Authority=%s Damage=%.2f HP=%.2f Component=%s Bone=%s Tag=%s Causer=%s"),
+					*GetNameSafe(this),
+					HasAuthority() ? TEXT("true") : TEXT("false"),
+					DamageAmount,
+					GetCurrentHealth(),
+					*GetNameSafe(HitComponent),
+					*HitBoneName.ToString(),
+					*DamageTagString,
+					*GetNameSafe(DamageCauser));
+			}
 			return 0.0f;
 		}
 	}
 
-	const float PreviousHealth = GetCurrentHealth();
 	const float AppliedDamage = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
-	UE_LOG(
-		LogOutlier,
-		Warning,
-		TEXT("[TurretDamageDiag] Applied Turret=%s Authority=%s Requested=%.2f Applied=%.2f HP=%.2f->%.2f Component=%s Bone=%s Tag=%s Causer=%s CanBeDamaged=%s"),
-		*GetNameSafe(this),
-		HasAuthority() ? TEXT("true") : TEXT("false"),
-		DamageAmount,
-		AppliedDamage,
-		PreviousHealth,
-		GetCurrentHealth(),
-		*GetNameSafe(HitComponent),
-		*HitBoneName.ToString(),
-		*DamageTagString,
-		*GetNameSafe(DamageCauser),
-		CanBeDamaged() ? TEXT("true") : TEXT("false"));
 	return AppliedDamage;
 }
 
@@ -658,8 +663,11 @@ bool AAutoTurret::UpdateTurretAimAtLocation(
 		DesiredOffset.Pitch = FMath::Clamp(DesiredOffset.Pitch,
 			-RuntimeTurretBehavior.MaxPitchDegrees, RuntimeTurretBehavior.MaxPitchDegrees);
 	}
-	DesiredOffset.Yaw = FMath::Clamp(DesiredOffset.Yaw,
-		-RuntimeTurretBehavior.MaxYawDegrees, RuntimeTurretBehavior.MaxYawDegrees);
+	const float ConfiguredMaxYawDegrees = bAttackRotation
+		? RuntimeTurretBehavior.AttackMaxYawDegrees
+		: RuntimeTurretBehavior.MaxYawDegrees;
+	const float MaxYawDegrees = FMath::Clamp(ConfiguredMaxYawDegrees, 0.0f, 180.0f);
+	DesiredOffset.Yaw = FMath::Clamp(DesiredOffset.Yaw, -MaxYawDegrees, MaxYawDegrees);
 	DesiredOffset.Roll = 0.0f;
 
 	const float RotationSpeed = bAttackRotation
@@ -721,16 +729,18 @@ void AAutoTurret::ApplyExplosionReaction(const FVector& ExplosionOrigin, float E
 		ImpactRotationOffset.Pitch + PitchDirection * RuntimeTurretBehavior.MaxImpactPitchDegrees * ReactionAlpha,
 		-RuntimeTurretBehavior.MaxImpactPitchDegrees, RuntimeTurretBehavior.MaxImpactPitchDegrees);
 	const FRotator AppliedImpactDelta = (ImpactRotationOffset - PreviousImpactOffset).GetNormalized();
-	if (!AppliedImpactDelta.IsNearlyZero(0.01f))
+	if (!AppliedImpactDelta.IsNearlyZero(0.01f) && IsTurretDiagnosticsEnabled())
 	{
 		UE_LOG(
 			LogOutlier,
 			Warning,
-			TEXT("[TurretImpactDiag] ReactionApplied Turret=%s Strength=%.3f Delta=%s Offset=%s"),
+			TEXT("[TurretDiag][Impact] ReactionApplied Turret=%s Strength=%.3f Delta=%s Offset=%s Mode=%s"),
 			*GetNameSafe(this),
 			ReactionAlpha,
 			*AppliedImpactDelta.ToString(),
-			*ImpactRotationOffset.ToString());
+			*ImpactRotationOffset.ToString(),
+			ImpactReactionMode == EAutoTurretImpactReactionMode::StateTreeInterrupt
+				? TEXT("StateTreeInterrupt") : TEXT("ConcurrentRecovery"));
 	}
 
 	ApplyHeadRotation();
@@ -859,7 +869,6 @@ void AAutoTurret::HandleHackStarted(const FHackQueryContext& Context)
 	{
 		return;
 	}
-
 	if (CurrentWeapon && GetAttackPhase() == EEnemyAttackPhase::Firing)
 	{
 		CurrentWeapon->ForcePostBurstCooldown();

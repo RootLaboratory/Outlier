@@ -1,6 +1,7 @@
 #include "Enemy/EnemyStateTreeTurretTasks.h"
 
 #include "Enemy/EnemyAIController.h"
+#include "Outlier.h"
 #include "Weapon/RangedWeaponBase.h"
 
 namespace
@@ -34,14 +35,24 @@ EStateTreeRunStatus FEnemyDeployTurretTask::EnterState(
 	FInstanceDataType& Data = Context.GetInstanceData(*this);
 	if (!Data.Turret || !Data.Turret->HasAuthority())
 	{
+		if (AAutoTurret::IsTurretDiagnosticsEnabled())
+		{
+			UE_LOG(LogOutlier, Error, TEXT("[TurretDiag][DeployTask] EnterFailed Turret=%s Reason=InvalidTurretOrAuthority"), *GetNameSafe(Data.Turret));
+		}
 		return EStateTreeRunStatus::Failed;
 	}
 	if (Data.Turret->IsDeployed())
 	{
 		return EStateTreeRunStatus::Succeeded;
 	}
-	return Data.Turret->BeginTurretDeployment()
-		? EStateTreeRunStatus::Running : EStateTreeRunStatus::Failed;
+	const bool bStarted = Data.Turret->BeginTurretDeployment();
+	if (!bStarted && AAutoTurret::IsTurretDiagnosticsEnabled())
+	{
+		UE_LOG(LogOutlier, Error,
+			TEXT("[TurretDiag][DeployTask] EnterFailed Turret=%s Reason=DeploymentRejected"),
+			*GetNameSafe(Data.Turret));
+	}
+	return bStarted ? EStateTreeRunStatus::Running : EStateTreeRunStatus::Failed;
 }
 
 EStateTreeRunStatus FEnemyDeployTurretTask::Tick(FStateTreeExecutionContext& Context, float DeltaTime) const
@@ -51,7 +62,11 @@ EStateTreeRunStatus FEnemyDeployTurretTask::Tick(FStateTreeExecutionContext& Con
 	{
 		return EStateTreeRunStatus::Failed;
 	}
-	return Data.Turret->IsDeployed() ? EStateTreeRunStatus::Succeeded : EStateTreeRunStatus::Running;
+	if (Data.Turret->IsDeployed())
+	{
+		return EStateTreeRunStatus::Succeeded;
+	}
+	return EStateTreeRunStatus::Running;
 }
 
 FEnemyRotateTurretHeadTask::FEnemyRotateTurretHeadTask()
@@ -63,8 +78,8 @@ EStateTreeRunStatus FEnemyRotateTurretHeadTask::EnterState(
 	FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const
 {
 	const FInstanceDataType& Data = Context.GetInstanceData(*this);
-	return Data.Turret && Data.Turret->HasAuthority()
-		? EStateTreeRunStatus::Running : EStateTreeRunStatus::Failed;
+	const bool bValid = Data.Turret && Data.Turret->HasAuthority();
+	return bValid ? EStateTreeRunStatus::Running : EStateTreeRunStatus::Failed;
 }
 
 EStateTreeRunStatus FEnemyRotateTurretHeadTask::Tick(FStateTreeExecutionContext& Context, float DeltaTime) const
@@ -76,14 +91,21 @@ EStateTreeRunStatus FEnemyRotateTurretHeadTask::Tick(FStateTreeExecutionContext&
 	}
 	if (Data.bUseTargetActor && !IsValid(Data.TargetActor))
 	{
+		if (AAutoTurret::IsTurretDiagnosticsEnabled())
+		{
+			UE_LOG(LogOutlier, Error, TEXT("[TurretDiag][RotateTask] Failed Turret=%s Reason=InvalidTarget"), *GetNameSafe(Data.Turret));
+		}
 		return EStateTreeRunStatus::Failed;
 	}
 	const bool bAligned = Data.bUseTargetActor
 		? Data.Turret->UpdateTurretAimAtActor(Data.TargetActor, DeltaTime, Data.bAttackRotation)
 		: Data.Turret->UpdateTurretAimAtLocation(
 			Data.TargetLocation, DeltaTime, Data.bAttackRotation, Data.bUseSearchPitch);
-	return bAligned && Data.bFinishWhenAligned
-		? EStateTreeRunStatus::Succeeded : EStateTreeRunStatus::Running;
+	if (bAligned && Data.bFinishWhenAligned)
+	{
+		return EStateTreeRunStatus::Succeeded;
+	}
+	return EStateTreeRunStatus::Running;
 }
 
 FEnemyTurretSearchTask::FEnemyTurretSearchTask()
@@ -123,7 +145,6 @@ EStateTreeRunStatus FEnemyTurretSearchTask::Tick(FStateTreeExecutionContext& Con
 	Data.Turret->UpdateTurretAimAtLocation(SearchLocation, DeltaTime, false, true);
 	return EStateTreeRunStatus::Running;
 }
-
 FEnemyTurretBurstFireTask::FEnemyTurretBurstFireTask()
 {
 	bShouldStateChangeOnReselect = false;
@@ -137,6 +158,15 @@ EStateTreeRunStatus FEnemyTurretBurstFireTask::EnterState(
 	if (!Data.Turret || !Data.Turret->HasAuthority() || !IsValid(Target)
 		|| !IsValid(Data.Turret->GetCurrentWeapon()))
 	{
+		if (AAutoTurret::IsTurretDiagnosticsEnabled())
+		{
+			UE_LOG(LogOutlier, Error,
+				TEXT("[TurretDiag][Rifle] EnterFailed Turret=%s Authority=%s Visible=%s BoundTarget=%s ResolvedTarget=%s Weapon=%s"),
+				*GetNameSafe(Data.Turret), Data.Turret && Data.Turret->HasAuthority() ? TEXT("true") : TEXT("false"),
+				Data.Turret && Data.Turret->IsPlayerCurrentlyVisible() ? TEXT("true") : TEXT("false"),
+				*GetNameSafe(Data.TargetActor), *GetNameSafe(Target),
+				*GetNameSafe(Data.Turret ? Data.Turret->GetCurrentWeapon() : nullptr));
+		}
 		return EStateTreeRunStatus::Failed;
 	}
 	Data.TargetActor = Target;
@@ -242,6 +272,15 @@ EStateTreeRunStatus FEnemyTurretSniperShotTask::EnterState(
 	if (!Data.Turret || !Data.Turret->HasAuthority() || !IsValid(Target)
 		|| !IsValid(Data.Turret->GetCurrentWeapon()))
 	{
+		if (AAutoTurret::IsTurretDiagnosticsEnabled())
+		{
+			UE_LOG(LogOutlier, Error,
+				TEXT("[TurretDiag][Laser] EnterFailed Turret=%s Authority=%s Visible=%s BoundTarget=%s ResolvedTarget=%s Weapon=%s"),
+				*GetNameSafe(Data.Turret), Data.Turret && Data.Turret->HasAuthority() ? TEXT("true") : TEXT("false"),
+				Data.Turret && Data.Turret->IsPlayerCurrentlyVisible() ? TEXT("true") : TEXT("false"),
+				*GetNameSafe(Data.TargetActor), *GetNameSafe(Target),
+				*GetNameSafe(Data.Turret ? Data.Turret->GetCurrentWeapon() : nullptr));
+		}
 		return EStateTreeRunStatus::Failed;
 	}
 	Data.TargetActor = Target;
@@ -350,9 +389,11 @@ EStateTreeRunStatus FEnemyRecoverTurretImpactOffsetTask::Tick(
 		return EStateTreeRunStatus::Failed;
 	}
 
-	return Data.Turret->UpdateTurretImpactRecovery(FMath::Max(DeltaTime, 0.0f))
-		? EStateTreeRunStatus::Succeeded
-		: EStateTreeRunStatus::Running;
+	if (Data.Turret->UpdateTurretImpactRecovery(FMath::Max(DeltaTime, 0.0f)))
+	{
+		return EStateTreeRunStatus::Succeeded;
+	}
+	return EStateTreeRunStatus::Running;
 }
 
 void FEnemyRecoverTurretImpactOffsetTask::ExitState(

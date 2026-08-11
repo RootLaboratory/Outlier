@@ -91,7 +91,7 @@ protected:
 	UPROPERTY(
 		EditDefaultsOnly,
 		BlueprintReadOnly,
-		Category = "Enemy|AI",
+		Category = "Enemy|AI", 
 		meta = (Schema = "/Script/Outlier.EnemyStateTreeSchema", SchemaCanBeOverriden))
 	FStateTreeReference PossessedAttackStateTreeReference;
 

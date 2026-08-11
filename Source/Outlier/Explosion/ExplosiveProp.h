@@ -45,7 +45,7 @@ public:
 
 	// 자폭 드론이 Owner로 지정된 경우에는 자체 HP 대신 드론 HP로 무기 피해를 전달한다.
 	UFUNCTION(BlueprintPure, Category = "Explosive Prop")
-	bool IsMountedOnSelfDestructDrone() const { return CachedOwningDrone.IsValid(); }
+	bool IsMountedOnSelfDestructDrone() const;
 
 protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Explosive Prop")
