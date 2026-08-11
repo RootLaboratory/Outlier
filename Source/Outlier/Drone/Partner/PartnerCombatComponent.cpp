@@ -25,21 +25,42 @@ void UPartnerCombatComponent::BeginPlay()
 void UPartnerCombatComponent::TryStartAttack()
 {
 	// 서버 RPC가 다시 이 함수로 들어오므로 입력 가능 여부는 서버에서도 동일하게 검증된다.
-	if (!PartnerCharacter || !PartnerCharacter->CanAcceptInput())
+	if (!PartnerCharacter)
 	{
+		UE_LOG(LogTemp, Error, TEXT("[PartnerWeaponVFX][Combat] Attack blocked: PartnerCharacter is null."));
+		return;
+	}
+
+	UE_LOG(
+		LogTemp,
+		Warning,
+		TEXT("[PartnerWeaponVFX][Combat] Attack request. Authority=%d CanAcceptInput=%d CurrentWeapon=%s"),
+		PartnerCharacter->HasAuthority() ? 1 : 0,
+		PartnerCharacter->CanAcceptInput() ? 1 : 0,
+		*GetNameSafe(PartnerCharacter->GetCurrentWeapon()));
+
+	if (!PartnerCharacter->CanAcceptInput())
+	{
+		UE_LOG(LogTemp, Error, TEXT("[PartnerWeaponVFX][Combat] Attack blocked: CanAcceptInput returned false."));
 		return;
 	}
 
 	if (!PartnerCharacter->HasAuthority())
 	{
 		// 이 컴포넌트의 Owner인 Partner를 소유한 클라이언트만 서버 RPC를 전송할 수 있다.
+		UE_LOG(LogTemp, Warning, TEXT("[PartnerWeaponVFX][Combat] Sending ServerStartAttack RPC."));
 		ServerStartAttack();
 		return;
 	}
 
 	if (AWeaponBase* Weapon = PartnerCharacter->GetCurrentWeapon())
 	{
+		UE_LOG(LogTemp, Warning, TEXT("[PartnerWeaponVFX][Combat] Calling StartAttack on %s."), *GetNameSafe(Weapon));
 		Weapon->StartAttack();
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT("[PartnerWeaponVFX][Combat] Attack blocked: CurrentWeapon is null."));
 	}
 }
 
@@ -112,14 +133,77 @@ void UPartnerCombatComponent::ForceStopAttack()
 	}
 }
 
+void UPartnerCombatComponent::ToggleTestWeaponEquipped()
+{
+	if (!PartnerCharacter)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[PartnerWeaponToggle][Combat] Failed: PartnerCharacter is null."));
+		return;
+	}
+
+	UE_LOG(
+		LogTemp,
+		Warning,
+		TEXT("[PartnerWeaponToggle][Combat] Character=%s Authority=%d CurrentWeapon=%s SavedWeapon=%s DefaultClass=%s"),
+		*GetNameSafe(PartnerCharacter),
+		PartnerCharacter->HasAuthority() ? 1 : 0,
+		*GetNameSafe(PartnerCharacter->GetCurrentWeapon()),
+		*GetNameSafe(TestUnequippedWeapon.Get()),
+		*GetNameSafe(DefaultWeaponClass));
+
+	if (!PartnerCharacter->HasAuthority())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[PartnerWeaponToggle][Client] Sending ServerToggleTestWeaponEquipped RPC."));
+		ServerToggleTestWeaponEquipped();
+		return;
+	}
+
+	if (AWeaponBase* CurrentWeapon = PartnerCharacter->GetCurrentWeapon())
+	{
+		TestUnequippedWeapon = CurrentWeapon;
+		PartnerCharacter->EquipWeapon(nullptr);
+		CurrentWeapon->ForceNetUpdate();
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[PartnerWeaponToggle][Server] Unequipped Weapon=%s CurrentWeapon=%s"),
+			*GetNameSafe(CurrentWeapon),
+			*GetNameSafe(PartnerCharacter->GetCurrentWeapon()));
+		return;
+	}
+
+	if (AWeaponBase* PreviousWeapon = TestUnequippedWeapon.Get())
+	{
+		PartnerCharacter->EquipWeapon(PreviousWeapon);
+		PreviousWeapon->ShowEquippedPresentation();
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[PartnerWeaponToggle][Server] Re-equipped Weapon=%s CurrentWeapon=%s"),
+			*GetNameSafe(PreviousWeapon),
+			*GetNameSafe(PartnerCharacter->GetCurrentWeapon()));
+		return;
+	}
+
+	UE_LOG(LogTemp, Warning, TEXT("[PartnerWeaponToggle][Server] No saved weapon. Trying DefaultWeaponClass spawn."));
+	EquipDefaultWeapon_Server();
+}
+
 void UPartnerCombatComponent::ServerStartAttack_Implementation()
 {
+	UE_LOG(LogTemp, Warning, TEXT("[PartnerWeaponVFX][ServerRPC] ServerStartAttack received."));
 	TryStartAttack();
 }
 
 void UPartnerCombatComponent::ServerStopAttack_Implementation()
 {
 	TryStopAttack();
+}
+
+void UPartnerCombatComponent::ServerToggleTestWeaponEquipped_Implementation()
+{
+	UE_LOG(LogTemp, Warning, TEXT("[PartnerWeaponToggle][ServerRPC] RPC received."));
+	ToggleTestWeaponEquipped();
 }
 
 void UPartnerCombatComponent::FinishReload()
@@ -145,8 +229,35 @@ void UPartnerCombatComponent::FinishReload()
 
 void UPartnerCombatComponent::EquipDefaultWeapon_Server()
 {
-	if (!PartnerCharacter || !PartnerCharacter->HasAuthority() || !DefaultWeaponClass || PartnerCharacter->GetCurrentWeapon())
+	if (!PartnerCharacter)
 	{
+		UE_LOG(LogTemp, Error, TEXT("[PartnerWeaponToggle][Spawn] Failed: PartnerCharacter is null."));
+		return;
+	}
+
+	if (!PartnerCharacter->HasAuthority())
+	{
+		UE_LOG(LogTemp, Error, TEXT("[PartnerWeaponToggle][Spawn] Failed: called without authority."));
+		return;
+	}
+
+	if (!DefaultWeaponClass)
+	{
+		UE_LOG(
+			LogTemp,
+			Error,
+			TEXT("[PartnerWeaponToggle][Spawn] Failed: DefaultWeaponClass is not set on CombatComponent of %s."),
+			*GetNameSafe(PartnerCharacter));
+		return;
+	}
+
+	if (PartnerCharacter->GetCurrentWeapon())
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[PartnerWeaponToggle][Spawn] Skipped: CurrentWeapon already exists (%s)."),
+			*GetNameSafe(PartnerCharacter->GetCurrentWeapon()));
 		return;
 	}
 
@@ -164,5 +275,21 @@ void UPartnerCombatComponent::EquipDefaultWeapon_Server()
 	if (DefaultWeapon)
 	{
 		PartnerCharacter->EquipWeapon(DefaultWeapon);
+		DefaultWeapon->ShowEquippedPresentation();
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[PartnerWeaponToggle][Spawn] Spawned and equipped Weapon=%s Class=%s CurrentWeapon=%s"),
+			*GetNameSafe(DefaultWeapon),
+			*GetNameSafe(DefaultWeaponClass),
+			*GetNameSafe(PartnerCharacter->GetCurrentWeapon()));
+	}
+	else
+	{
+		UE_LOG(
+			LogTemp,
+			Error,
+			TEXT("[PartnerWeaponToggle][Spawn] Failed: SpawnActor returned null for Class=%s."),
+			*GetNameSafe(DefaultWeaponClass));
 	}
 }

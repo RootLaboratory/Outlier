@@ -7,6 +7,7 @@
 #include "PartnerCombatComponent.generated.h"
 
 class ARangedWeaponBase;
+class AWeaponBase;
 
 UCLASS(ClassGroup = (Custom), meta = (BlueprintSpawnableComponent))
 class OUTLIER_API UPartnerCombatComponent : public UPartnerCharacterComponentBase
@@ -23,6 +24,7 @@ public:
 	void TryStartAttack();
 	void TryStopAttack();
 	void StartAutoReload();
+	void ToggleTestWeaponEquipped();
 
 	// 빙의 해제, 리부트처럼 입력과 무관하게 공격을 끝내야 하는 서버 전용 정리 함수.
 	void ForceStopAttack();
@@ -34,7 +36,7 @@ protected:
 
 	// true면 BeginPlay에서 서버가 기본 무기를 한 번 스폰해 CurrentWeapon으로 장착한다.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Partner|Weapon")
-	uint8 bEquipDefaultWeaponOnBeginPlay : 1 = true;
+	uint8 bEquipDefaultWeaponOnBeginPlay : 1 = false;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Partner|Weapon", meta = (ClampMin = "0.0"))
 	float ReloadDurationSeconds = 1.0f;
@@ -48,6 +50,9 @@ protected:
 	UFUNCTION(Server, Reliable)
 	void ServerStopAttack();
 
+	UFUNCTION(Server, Reliable)
+	void ServerToggleTestWeaponEquipped();
+
 private:
 	// 무기 스폰과 장착은 서버에서만 수행한다.
 	void EquipDefaultWeapon_Server();
@@ -55,4 +60,5 @@ private:
 
 	FTimerHandle ReloadTimerHandle;
 	TWeakObjectPtr<ARangedWeaponBase> ReloadingWeapon;
+	TWeakObjectPtr<AWeaponBase> TestUnequippedWeapon;
 };

@@ -6,6 +6,7 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/SphereComponent.h"
 #include "FirstPerson/FirstPersonCharacter.h"
+#include "Drone/Partner/PartnerCharacter.h"
 #include "GameFramework/Character.h"
 #include "OutlierNetUtils.h"
 #include "Shooter/ShooterCharacter.h"
@@ -483,6 +484,63 @@ void AWeaponBase::AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacter* New
 {
 	if (!Weapon || !NewOwner)
 	{
+		return;
+	}
+
+	if (APartnerCharacter* Partner = Cast<APartnerCharacter>(NewOwner))
+	{
+		const FAttachmentTransformRules PartnerAttachRules =
+			FAttachmentTransformRules::SnapToTargetNotIncludingScale;
+		const FName FirstPersonSocketName = Partner->GetFirstPersonWeaponAttachSocketName();
+		const FName ThirdPersonSocketName = Partner->GetThirdPersonWeaponAttachSocketName();
+
+		if (USkeletalMeshComponent* FirstPersonReferenceMesh = Partner->GetFirstPersonMesh())
+		{
+			USceneComponent* FirstPersonParent = Partner->GetFirstPersonWeaponRoot();
+			const bool bSocketExists = FirstPersonReferenceMesh->DoesSocketExist(FirstPersonSocketName);
+			if (FirstPersonParent && bSocketExists)
+			{
+				FirstPersonParent->SetWorldTransform(
+					FirstPersonReferenceMesh->GetSocketTransform(FirstPersonSocketName, RTS_World));
+			}
+
+			if (FirstPersonParent)
+			{
+				Weapon->GetFirstPersonWeaponMesh()->AttachToComponent(
+					FirstPersonParent,
+					PartnerAttachRules);
+			}
+
+			UE_LOG(
+				LogTemp,
+				Warning,
+				TEXT("[PartnerWeaponToggle][Attach][FP] Weapon=%s Mesh=%s StableRoot=%s ReferenceMesh=%s Socket=%s Exists=%d"),
+				*GetNameSafe(Weapon),
+				*GetNameSafe(Weapon->GetFirstPersonWeaponMesh()),
+				*GetNameSafe(FirstPersonParent),
+				*GetNameSafe(FirstPersonReferenceMesh),
+				*FirstPersonSocketName.ToString(),
+				bSocketExists ? 1 : 0);
+		}
+
+		if (USkeletalMeshComponent* ThirdPersonParent = Partner->GetMesh())
+		{
+			Weapon->GetThirdPersonWeaponMesh()->AttachToComponent(
+				ThirdPersonParent,
+				PartnerAttachRules,
+				ThirdPersonSocketName);
+
+			UE_LOG(
+				LogTemp,
+				Warning,
+				TEXT("[PartnerWeaponToggle][Attach][TP] Weapon=%s Mesh=%s Parent=%s Socket=%s Exists=%d"),
+				*GetNameSafe(Weapon),
+				*GetNameSafe(Weapon->GetThirdPersonWeaponMesh()),
+				*GetNameSafe(ThirdPersonParent),
+				*ThirdPersonSocketName.ToString(),
+				ThirdPersonParent->DoesSocketExist(ThirdPersonSocketName) ? 1 : 0);
+		}
+
 		return;
 	}
 
