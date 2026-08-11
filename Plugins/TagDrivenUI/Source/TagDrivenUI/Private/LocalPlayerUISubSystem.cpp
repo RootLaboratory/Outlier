@@ -253,7 +253,7 @@ void ULocalPlayerUISubSystem::OnRep_AttackSign(EAttackSign InType)
 	{
 		//UE_LOG(LogTemp, Error, TEXT("CrossHair Instance Class: %s"), *GetNameSafe(CrossHairBase->GetClass()));
 		//UE_LOG(LogTemp, Error, TEXT("OnRep_AttackSign %d"), (uint8)InType);
-		CrossHairBase->SpawnAttckSign(InType);
+		CrossHairBase->SpawnAttackSign(InType);
 	}
 }
 

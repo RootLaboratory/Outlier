@@ -9,6 +9,10 @@
 
 
 class ULocalPlayerUISubSystem;
+class UImage;
+class UMaterialInstanceDynamic;
+class UMaterialInterface;
+class UTexture;
 
 
 
@@ -30,6 +34,11 @@ public:
 	virtual void OnAiming()override; 
 
 	virtual void OnAimingOff() override; 
+
+	void SpawnAttackSign(EAttackSign InAttackSign) override;
+
+	UFUNCTION(BlueprintImplementableEvent, Category ="Crosshair")
+	void BP_SpawnAttackSign(EAttackSign InAttackSign);
 
 	UFUNCTION(BlueprintImplementableEvent, Category = "UI")
 
@@ -54,7 +63,41 @@ public:
 	void UpdateMoveSpreadRecovery(float InDeltaTime);
 
 	void UpdateFinalSpread();
+
 public:
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Attack Sign")
+	TObjectPtr<UMaterialInterface> AttackSignMaterial;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Attack Sign")
+	TObjectPtr<UMaterialInterface> Adjusted;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Attack Sign")
+	TObjectPtr<UMaterialInterface> Critical;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Attack Sign")
+	TObjectPtr<UMaterialInterface> Kill;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Attack Sign")
+	FName AttackSignTextureParameterName = TEXT("Texture");
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Attack Sign")
+	FName AttackSignTimeParameterName = TEXT("Time");
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Attack Sign", meta = (ClampMin = "0.01"))
+	float AttackSignDuration = 0.25f;
+
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	TObjectPtr<UImage> AttackSign_LeftTop;
+
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	TObjectPtr<UImage> AttackSign_LeftDown;
+
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	TObjectPtr<UImage> AttackSign_RightTop;
+
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	TObjectPtr<UImage> AttackSign_RightDown;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Data")
 	float CrossHairLength;
 
@@ -108,7 +151,25 @@ public:
 
 
 private:
+	void InitializeAttackSignImages();
+	UMaterialInterface* ResolveAttackSignMaterial(EAttackSign InAttackSign) const;
+	bool ApplyAttackSignMaterial(UMaterialInterface* InMaterial);
+	bool CanReuseAttackSignMIDs(EAttackSign InAttackSign) const;
+	void UpdateAttackSign(float InDeltaTime);
+	void SetAttackSignTime(float InNormalizedTime);
+	void StopAttackSign();
+	void SetAttackSignVisibility(ESlateVisibility InVisibility);
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UTexture>> AttackSignTextures;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> AttackSignMIDs;
+
+	EAttackSign CachedAttackSignType = EAttackSign::None;
+	float AttackSignElapsedTime = 0.f;
+	bool bAttackSignActive = false;
+
 	UPROPERTY()
 	TObjectPtr<ULocalPlayerUISubSystem> CachedUISubsystem;
 };
-
