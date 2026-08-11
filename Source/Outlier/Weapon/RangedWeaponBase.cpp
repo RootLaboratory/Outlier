@@ -43,6 +43,8 @@
 #include "NiagaraFunctionLibrary.h"
 #include "NiagaraSystem.h"
 #include "Particles/ParticleSystem.h"
+#include "Enemy/SelfDestructDrone.h"
+#include "Explosion/ExplosiveProp.h"
 #include "Audio/OutlierAudioSubsystem.h"
 
 namespace
@@ -333,52 +335,68 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 		FHitResult ResolvedDamageHit = Hit;
 		bool bIsCoreHit = false;
 
-		if (AEnemyBase* HitEnemy = Cast<AEnemyBase>(HitActor);
-			HitEnemy && HitEnemy->HasCoreWeakPoint())
+		if (AEnemyBase* HitEnemy = Cast<AEnemyBase>(HitActor))
 		{
 			// 어떤 걸 맞았는지(HitEnemy 확정)는 위의 단일 트레이스 결과 그대로 사용 — 벽/다른 액터에 대한
 			// 판정은 절대 안 바뀜. CoreHitboxComponent가 Body(SkeletalMeshComponent)의 Physics Asset
 			// 바디 안쪽에 겹쳐 있으면, 별도 컴포넌트로 분리했음에도 여전히 더 가까운 Body 바디에 가려져서
 			// 안 잡히는 것으로 보임 — 그래서 이 2차 프로브에서는 아예 Mesh(Body/Gun이 붙어있는 컴포넌트)
 			// 자체를 무시해서, Core가 Body 안쪽 어디에 있든 상관없이 확실히 잡히게 함
-			constexpr float CoreProbeExtraDistance = 1000.0f;
-			const FVector ProbeEnd = Start + (ShotDirection * (HitDistance + CoreProbeExtraDistance));
 
-			FCollisionQueryParams CoreProbeParams = Params;
-			CoreProbeParams.AddIgnoredComponent(HitEnemy->GetMesh());
 
-			TArray<FHitResult> BoneHitResults;
-			GetWorld()->LineTraceMultiByChannel(BoneHitResults, Start, ProbeEnd, ECC_PhysicsBody, CoreProbeParams);
-
-			float BestWeakPointMultiplier = HitEnemy->GetWeakPointDamageMultiplier(Hit.GetComponent());
-			for (const FHitResult& BodyHit : BoneHitResults)
+			if (HitEnemy && HitEnemy->HasCoreWeakPoint())
 			{
-				if (BodyHit.GetActor() == HitEnemy)
+				constexpr float CoreProbeExtraDistance = 1000.0f;
+				const FVector ProbeEnd = Start + (ShotDirection * (HitDistance + CoreProbeExtraDistance));
+
+				FCollisionQueryParams CoreProbeParams = Params;
+				CoreProbeParams.AddIgnoredComponent(HitEnemy->GetMesh());
+
+				TArray<FHitResult> BoneHitResults;
+				GetWorld()->LineTraceMultiByChannel(BoneHitResults, Start, ProbeEnd, ECC_PhysicsBody, CoreProbeParams);
+
+				float BestWeakPointMultiplier = HitEnemy->GetWeakPointDamageMultiplier(Hit.GetComponent());
+				for (const FHitResult& BodyHit : BoneHitResults)
 				{
-					const float CandidateMultiplier = HitEnemy->GetWeakPointDamageMultiplier(BodyHit.GetComponent());
-					if (CandidateMultiplier > BestWeakPointMultiplier)
+					if (BodyHit.GetActor() == HitEnemy)
 					{
-						BestWeakPointMultiplier = CandidateMultiplier;
-						ResolvedDamageHit = BodyHit;
-						bIsCoreHit = true;
+						const float CandidateMultiplier = HitEnemy->GetWeakPointDamageMultiplier(BodyHit.GetComponent());
+						if (CandidateMultiplier > BestWeakPointMultiplier)
+						{
+							BestWeakPointMultiplier = CandidateMultiplier;
+							ResolvedDamageHit = BodyHit;
+						}
 					}
 				}
+
+				bIsCoreHit = BestWeakPointMultiplier > 1.0f;
 			}
-			if (bIsCoreHit)
-			{
-				GetLocalUISubsystem()->OnRep_AttackSign(EAttackSign::Critical);
-			}
-			else
-			{
-				GetLocalUISubsystem()->OnRep_AttackSign(EAttackSign::Default);
-			}
+			
+			
 
 		}
+
+		/*else if (AExplosiveProp* HitExplosive = Cast<AExplosiveProp>(HitActor))
+		{
+			bIsCoreHit =
+				HitExplosive->IsMountedOnSelfDestructDrone()
+				&& Cast<ASelfDestructDrone>(HitExplosive->GetOwner()) != nullptr;
+
+			UE_LOG(LogTemp, Error, TEXT("HitExplosive hit called"));
+
+		}*/
+
+		if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
+		{
+			UISubsystem->OnRep_AttackSign(bIsCoreHit ? EAttackSign::Critical : EAttackSign::Default);
+		}
+		
 
 		FOutlierTaggedDamageEvent DamageEvent;
 		DamageEvent.DamageTag = OutlierGameplayTags::Damage::Weapon();
 		DamageEvent.HitResult = ResolvedDamageHit;
 		DamageEvent.DamageOrigin = Start;
+
 		if (HitActor)
 		{
 			HitActor->TakeDamage(DamageToApply, DamageEvent, OwnerCharacter->GetController(), this);
@@ -1453,11 +1471,11 @@ void ARangedWeaponBase::ResolveMuzzleTransforms(
 
 ULocalPlayerUISubSystem* ARangedWeaponBase::GetLocalUISubsystem() const
 {
-	AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
+	AFirstPersonCharacter* PlayerCharacter = Cast<AFirstPersonCharacter>(WeaponOwner);
 
-	if (Shooter)
+	if (PlayerCharacter)
 	{
-		AShooterPlayerController* Player = Cast<AShooterPlayerController>(Shooter->GetController());
+		AShooterPlayerController* Player = Cast<AShooterPlayerController>(PlayerCharacter->GetController());
 		if (!Player)
 		{
 			return nullptr;
