@@ -2,6 +2,7 @@
 #include "Drone/Partner/EMPGameplayTags.h"
 #include "Drone/Partner/EMPableComponent.h"
 #include "Drone/Partner/PartnerCharacter.h"
+#include "Engine/LocalPlayer.h"
 #include "Engine/OverlapResult.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "Drone/Partner/PartnerPlayerController.h"
@@ -10,8 +11,9 @@
 #include "Blueprint/WidgetBlueprintLibrary.h"
 #include "UI/EMPLayerWidget.h"
 #include "UI/EMPMarkWidget.h"
+#include "UI/LocalPlayerUILayerSubsystem.h"
+#include "UI/UILayerGameplayTags.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
-#include "Framework/Application/SlateApplication.h"
 #include "Net/UnrealNetwork.h"
 
 UPartnerEMPComponent::UPartnerEMPComponent()
@@ -252,33 +254,11 @@ void UPartnerEMPComponent::StopEMPCandidateSearch()
 
 void UPartnerEMPComponent::RefocusEMPInput()
 {
-	if (!PartnerCharacter)
+	if (ULocalPlayerUILayerSubsystem* LayerSubsystem = GetUILayerSubsystem())
 	{
-		return;
-	}
-
-	APartnerPlayerController* PlayerController =
-		Cast<APartnerPlayerController>(PartnerCharacter->GetController());
-	if (!PlayerController || !PlayerController->IsLocalController())
-	{
-		return;
-	}
-
-	if (!PlayerController->SetFirstPersonInputMode(FirstPersonInputModeTags::EMP()))
-	{
-		return;
-	}
-
-	FInputModeGameAndUI InputMode;
-	InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
-	InputMode.SetHideCursorDuringCapture(false);
-
-	PlayerController->SetInputMode(InputMode);
-	PlayerController->bShowMouseCursor = true;
-
-	if (FSlateApplication::IsInitialized())
-	{
-		FSlateApplication::Get().SetAllUserFocusToGameViewport();
+		LayerSubsystem->RefocusLayer(
+			EMPLayerHandle,
+			EUILayerFocusTarget::GameViewport);
 	}
 }
 
@@ -666,16 +646,31 @@ void UPartnerEMPComponent::EnsureEMPLayerWidget()
 
 	if (!IsValid(EMPLayerWidget))
 	{
-		RestoreGameInputMode();
 		return;
 	}
 
 	EMPLayerWidget->SetMarkWidgetClass(EMPMarkWidgetClass);
 	EMPLayerWidget->BindEMPComponent(this);
 	EMPLayerWidget->InitializeMarkingTimer(EMPMarkingTime);
-	EMPLayerWidget->AddToViewport(100);
 
-	ApplyEMPInputMode();
+	if (ULocalPlayerUILayerSubsystem* LayerSubsystem = GetUILayerSubsystem())
+	{
+		EMPLayerHandle = LayerSubsystem->PushWidget(
+			UILayerTags::Gameplay(),
+			EMPLayerWidget,
+			FirstPersonInputModeTags::EMP(),
+			this,
+			EUILayerFocusTarget::Widget,
+			true);
+	}
+
+	if (!EMPLayerHandle.IsValid())
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("[PartnerEMP] Failed to push EMP widget into the local UI layer"));
+		EMPLayerWidget->BindEMPComponent(nullptr);
+		EMPLayerWidget = nullptr;
+	}
 }
 
 void UPartnerEMPComponent::DestroyEMPLayerWidget()
@@ -683,19 +678,31 @@ void UPartnerEMPComponent::DestroyEMPLayerWidget()
 	//UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] DestroyEMPLayerWidget: ptr=%s IsValid=%d"),
 	//	*GetNameSafe(EMPLayerWidget), IsValid(EMPLayerWidget) ? 1 : 0);
 
-	APlayerController* PlayerController = PartnerCharacter ? Cast<APlayerController>(PartnerCharacter->GetController()) : nullptr;
-
 	if (!IsValid(EMPLayerWidget))
 	{
 		//DestroyRemainingEMPWidgets(PlayerController);
-		RestoreGameInputMode();
+		if (ULocalPlayerUILayerSubsystem* LayerSubsystem = GetUILayerSubsystem())
+		{
+			LayerSubsystem->PopLayer(EMPLayerHandle);
+		}
+		EMPLayerHandle.Reset();
 		return;
 	}
 
 	EMPLayerWidget->ClearMarkers();
 	EMPLayerWidget->SetVisibility(ESlateVisibility::Collapsed);
 	EMPLayerWidget->BindEMPComponent(nullptr);
-	EMPLayerWidget->RemoveFromParent();
+
+	bool bPoppedLayer = false;
+	if (ULocalPlayerUILayerSubsystem* LayerSubsystem = GetUILayerSubsystem())
+	{
+		bPoppedLayer = LayerSubsystem->PopLayer(EMPLayerHandle);
+	}
+	if (!bPoppedLayer)
+	{
+		EMPLayerWidget->RemoveFromParent();
+	}
+	EMPLayerHandle.Reset();
 
 	if (bDebugEMP)
 	{
@@ -706,7 +713,6 @@ void UPartnerEMPComponent::DestroyEMPLayerWidget()
 	EMPLayerWidget = nullptr;
 
 	//DestroyRemainingEMPWidgets(PlayerController);
-	RestoreGameInputMode();
 }
 
 void UPartnerEMPComponent::DestroyRemainingEMPWidgets(APlayerController* PlayerController)
@@ -762,62 +768,24 @@ void UPartnerEMPComponent::DestroyRemainingEMPWidgets(APlayerController* PlayerC
 	}
 }
 
-void UPartnerEMPComponent::ApplyEMPInputMode()
+ULocalPlayerUILayerSubsystem* UPartnerEMPComponent::GetUILayerSubsystem() const
 {
 	if (!PartnerCharacter)
 	{
-		return;
+		return nullptr;
 	}
 
-	APartnerPlayerController* PlayerController =
-		Cast<APartnerPlayerController>(PartnerCharacter->GetController());
+	APlayerController* PlayerController =
+		Cast<APlayerController>(PartnerCharacter->GetController());
 	if (!PlayerController || !PlayerController->IsLocalController())
 	{
-		return;
+		return nullptr;
 	}
 
-	if (!PlayerController->SetFirstPersonInputMode(FirstPersonInputModeTags::EMP()))
-	{
-		return;
-	}
-
-	FInputModeGameAndUI InputMode;
-	if (EMPLayerWidget)
-	{
-		InputMode.SetWidgetToFocus(EMPLayerWidget->TakeWidget());
-	}
-
-	InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
-	InputMode.SetHideCursorDuringCapture(false);
-
-	PlayerController->SetInputMode(InputMode);
-	PlayerController->bShowMouseCursor = true;
-
-	if (bDebugEMP)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] EMP input mode applied (GameAndUI) PC=%s"),
-			*GetNameSafe(PlayerController));
-	}
-}
-
-void UPartnerEMPComponent::RestoreGameInputMode()
-{
-	if (!PartnerCharacter)
-	{
-		return;
-	}
-
-	APartnerPlayerController* PlayerController =
-		Cast<APartnerPlayerController>(PartnerCharacter->GetController());
-	if (!PlayerController || !PlayerController->IsLocalController())
-	{
-		return;
-	}
-
-	if (PlayerController->TryRestoreFirstPersonDefaultInputMode(FirstPersonInputModeTags::EMP()))
-	{
-		PlayerController->ControlMainWidget(true);
-	}
+	ULocalPlayer* LocalPlayer = PlayerController->GetLocalPlayer();
+	return LocalPlayer
+		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()
+		: nullptr;
 }
 
 void UPartnerEMPComponent::AddEMPCandidate(AActor* Actor, UEMPableComponent* EMPableComp, const FVector2D& ScreenLocation)

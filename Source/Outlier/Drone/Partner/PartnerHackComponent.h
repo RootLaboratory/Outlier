@@ -6,6 +6,7 @@
 #include "Drone/Partner/PartnerCharacterComponentBase.h"
 #include "GameplayTagContainer.h"
 #include "HackType.h"
+#include "UI/UILayerTypes.h"
 #include "PartnerHackComponent.generated.h"
 
 class UHackableComponent;
@@ -13,6 +14,7 @@ class UHackCandidateLayerWidget;
 class UHackCandidateMarkerWidget;
 class UHackableInfoWidget;
 class UHackMiniGameWidget;
+class ULocalPlayerUILayerSubsystem;
 
 USTRUCT(BlueprintType)
 struct OUTLIER_API FPartnerHackAbilityData
@@ -155,6 +157,8 @@ private:
 
 	uint8 bHackCandidateSearchActive : 1 = false;
 	int32 LastDebugCandidateCount = INDEX_NONE;
+	FUILayerHandle HackCandidateLayerHandle;
+	FUILayerHandle HackMiniGameLayerHandle;
 
 	UPROPERTY(Transient)
 	TObjectPtr<AActor> HoveredHackActor;
@@ -171,9 +175,7 @@ private:
 	void DestroyCandidateLayerWidget();
 	bool EnsureHackMiniGameWidget(AActor* TargetActor, UHackableComponent* HackableComponent);
 	void DestroyHackMiniGameWidget();
-	void ApplyCandidateInputMode();
-	void ApplyHackMiniGameInputMode();
-	void RestoreGameInputMode();
+	ULocalPlayerUILayerSubsystem* GetUILayerSubsystem() const;
 	void AddHackCandidate(AActor* Actor, UHackableComponent* HackableComponent, const FVector2D& ScreenLocation);
 	void RemoveHackCandidateAt(int32 Index);
 	void DeactivateUnselectedCandidates(UHackableComponent* SelectedComponent);

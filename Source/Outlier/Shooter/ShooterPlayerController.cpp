@@ -13,6 +13,7 @@
 #include "ShooterInventoryComponent.h"
 #include "ShooterMainWidget.h"
 #include "OutlierGameMode.h"
+#include "UI/LocalPlayerUILayerSubsystem.h"
 
 AShooterPlayerController::AShooterPlayerController()
 {
@@ -304,6 +305,13 @@ void AShooterPlayerController::BindMainUI()
 				TEXT("[ShooterPC] MainUI registered to UISubsystem PC=%s UI=%s"),
 				*GetNameSafe(this),
 				*GetNameSafe(ShooterUIInstance));
+		}
+
+		//Layer
+		if (ULocalPlayerUILayerSubsystem* LayerSubsystem =
+			LP->GetSubsystem<ULocalPlayerUILayerSubsystem>())
+		{
+			LayerSubsystem->RegisterMainUI(ShooterUIInstance);
 		}
 	}
 
