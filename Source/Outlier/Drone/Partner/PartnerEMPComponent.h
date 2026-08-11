@@ -3,11 +3,13 @@
 #include "CoreMinimal.h"
 #include "Drone/Partner/PartnerCharacterComponentBase.h"
 #include "GameplayTagContainer.h"
+#include "UI/UILayerTypes.h"
 #include "PartnerEMPComponent.generated.h"
 
 class UEMPableComponent;
 class UEMPLayerWidget;
 class UEMPMarkWidget;
+class ULocalPlayerUILayerSubsystem;
 
 USTRUCT(BlueprintType)
 struct OUTLIER_API FPartnerEMPAbilityData
@@ -149,6 +151,7 @@ private:
 	int32 LastDebugCandidateCount = INDEX_NONE;
 
 	float EMPStartTimeSeconds = 0.0f;
+	FUILayerHandle EMPLayerHandle;
 
 	UEMPableComponent* ResolveEMPableComponent(AActor* Actor) const;
 	bool IsCandidateActorValid(AActor* Actor, UEMPableComponent* EMPableComponent, FVector2D& OutScreenLocation) const;
@@ -163,8 +166,7 @@ private:
 	void EnsureEMPLayerWidget();
 	void DestroyEMPLayerWidget();
 	void DestroyRemainingEMPWidgets(APlayerController* PlayerController);
-	void ApplyEMPInputMode();
-	void RestoreGameInputMode();
+	ULocalPlayerUILayerSubsystem* GetUILayerSubsystem() const;
 
 	void AddEMPCandidate(AActor* Actor, UEMPableComponent* EMPableComponent, const FVector2D& ScreenLocation);
 	void RemoveEMPCandidateAt(int32 Index);

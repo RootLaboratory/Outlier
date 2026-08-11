@@ -20,7 +20,7 @@ public:
 
 public:
 	virtual UInteractableComponent* GetInteractableComponent() const override;
-	virtual void Interact(AFirstPersonCharacter* Interactor) override;
+	virtual bool Interact(AFirstPersonCharacter* Interactor) override;
 
 protected:
 	UFUNCTION(BlueprintImplementableEvent, Category = "Switch")

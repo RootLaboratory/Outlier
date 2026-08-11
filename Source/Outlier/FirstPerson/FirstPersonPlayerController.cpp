@@ -13,11 +13,32 @@
 #include "MainUIBase.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Network/OutlierArenaPoolSubsystem.h"
+#include "UI/LocalPlayerUILayerSubsystem.h"
 
 AFirstPersonPlayerController::AFirstPersonPlayerController()
 {
 	// set the player camera manager
 	PlayerCameraManagerClass = AFirstPersonPlayerCameraManager::StaticClass();
+}
+
+void AFirstPersonPlayerController::ClientPushUILayer_Implementation(
+	const FUILayerPushRequest& Request)
+{
+	if (!IsLocalController())
+	{
+		return;
+	}
+
+	ULocalPlayer* LocalPlayer = GetLocalPlayer();
+	ULocalPlayerUILayerSubsystem* LayerSubsystem = LocalPlayer
+		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()
+		: nullptr;
+	if (!LayerSubsystem)
+	{
+		return;
+	}
+
+	LayerSubsystem->PushWidget(Request);
 }
 
 void AFirstPersonPlayerController::ClientPlayExplosionCameraShake_Implementation(
@@ -94,6 +115,29 @@ bool AFirstPersonPlayerController::TryRestoreFirstPersonDefaultInputMode(FGamepl
 	// A delayed cleanup from one ability must not replace a newer ability's input mode.
 	const FGameplayTagContainer CurrentInputMode = InputSubsystem->GetInputMode();
 	if (CurrentInputMode.Num() != 1 || !CurrentInputMode.HasTagExact(ExpectedInputMode))
+	{
+		return false;
+	}
+
+	return RestoreFirstPersonDefaultInputMode();
+}
+
+bool AFirstPersonPlayerController::RestoreFirstPersonDefaultInputMode()
+{
+	if (!IsLocalController())
+	{
+		return false;
+	}
+
+	ULocalPlayer* LocalPlayer = GetLocalPlayer();
+	if (!LocalPlayer)
+	{
+		return false;
+	}
+
+	UEnhancedInputLocalPlayerSubsystem* InputSubsystem =
+		LocalPlayer->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>();
+	if (!InputSubsystem)
 	{
 		return false;
 	}

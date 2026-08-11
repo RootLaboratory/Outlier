@@ -23,24 +23,24 @@ UInteractableComponent* AInteractableSwitch::GetInteractableComponent() const
 	return InteractableComponent;
 }
 
-void AInteractableSwitch::Interact(AFirstPersonCharacter* Interactor)
+bool AInteractableSwitch::Interact(AFirstPersonCharacter* Interactor)
 {
 	if (!Interactor || !InteractableComponent)
 	{
-		return;
+		return false;
 	}
 
 	const FGameplayTagContainer InteractorTags = Interactor->GetOwnedGameplayTagsForQuery();
 	if (!InteractableComponent->CanInteract(InteractorTags))
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[Switch] Interact blocked by tags"));
-		return;
+		return false;
 	}
 
 	if (!TargetDoor)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[Switch] TargetDoor is null Actor=%s"), *GetName());
-		return;
+		return false;
 	}
 
 	if (bCanToggleDoor)
@@ -53,6 +53,7 @@ void AInteractableSwitch::Interact(AFirstPersonCharacter* Interactor)
 	}
 
 	Multicast_OnSwitchActivated(Interactor);
+	return true;
 }
 
 void AInteractableSwitch::Multicast_OnSwitchActivated_Implementation(AFirstPersonCharacter* Interactor)

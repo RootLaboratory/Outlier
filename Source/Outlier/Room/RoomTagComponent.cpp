@@ -7,7 +7,6 @@
 void URoomTagComponent::BeginPlay()
 {
 	Super::BeginPlay();
-
 	RefreshCurrentRoom();
 }
 

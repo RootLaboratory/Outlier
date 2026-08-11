@@ -9,6 +9,7 @@
 #include "GenericTeamAgentInterface.h"
 #include "Interface/RoomTagInterface.h"
 #include "Interface/GameplayTagProviderInterface.h"
+#include "Interaction/InteractableComponent.h"
 #include "FirstPersonCharacter.generated.h"
 
 class USkeletalMeshComponent;
@@ -17,6 +18,7 @@ class USceneComponent;
 class UFirstPersonInputConfig;
 class UInputAction;
 class USceneCaptureComponent2D;
+class ULocalPlayerUILayerSubsystem;
 struct FInputActionValue;
 class URoomTagComponent;
 
@@ -91,6 +93,7 @@ public:
 	void TryInteract();
 	void EndInteract();
 	void NotifyHoldInteractCompleted(AActor* CompletedActor);
+	void NotifyHoldInteractInvalidated(AActor* TargetActor);
 
 protected:
 
@@ -107,6 +110,8 @@ protected:
 	void DoAim(float Yaw, float Pitch);
 
 	void TryCamToggle();
+	void HandleWidgetEscapeInput();
+	void HandleWidgetConfirmedInput();
 
 	virtual bool CanInteract() const;
 
@@ -114,10 +119,15 @@ protected:
 	void ServerInteract(AActor* TargetActor);
 
 	UFUNCTION(Server, Reliable)
+	void ServerBeginHoldInteract(AActor* TargetActor);
+
+	UFUNCTION(Server, Reliable)
 	void ServerCancelHoldInteract(AActor* TargetActor);
 
 	UFUNCTION(Client, Reliable)
-	void ClientOnInteractSucceeded(AActor* TargetActor);
+	void ClientOnInteractSucceeded(
+		AActor* TargetActor,
+		EInteractionFlowResult FlowResult);
 
 	UFUNCTION(Client, Reliable)
 	void ClientOnHoldInteractFailed(AActor* TargetActor);
@@ -180,6 +190,7 @@ private:
 	bool IsInteractTargetByTrace(AActor* TargetActor) const;
 
 	void ArenaReload();
+	ULocalPlayerUILayerSubsystem* GetUILayerSubsystem() const;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Interaction")
 	TEnumAsByte<ECollisionChannel> InteractionTraceChannel = ECC_Visibility;

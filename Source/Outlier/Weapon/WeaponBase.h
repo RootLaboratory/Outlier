@@ -173,7 +173,7 @@ public:
 
 	virtual UInteractableComponent* GetInteractableComponent() const override;
 
-	virtual void Interact(class AFirstPersonCharacter* Interactor) override;
+	virtual bool Interact(class AFirstPersonCharacter* Interactor) override;
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 

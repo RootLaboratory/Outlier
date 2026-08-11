@@ -10,11 +10,11 @@
 #include "DrawDebugHelpers.h"
 #include "FirstPersonInputConfig.h"
 #include "Interface/InteractableInterface.h"
-#include "Interaction/InteractionNode.h"
 #include "Interaction/InteractableComponent.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
 #include "LocalPlayerUISubSystem.h"
 #include "EnhancedInputComponent.h"
+#include "Engine/LocalPlayer.h"
 #include "InputActionValue.h"
 #include "Components/SceneCaptureComponent2D.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -26,6 +26,7 @@
 #include "Shooter/ShooterCharacter.h"
 #include "Team/OutlierTeamIds.h"
 #include "Room/RoomTagComponent.h"
+#include "UI/LocalPlayerUILayerSubsystem.h"
 
 
 // Sets default values
@@ -118,6 +119,11 @@ void AFirstPersonCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
 
 	EnhancedInputComponent->BindAction(InputConfig->CamToggleAction, ETriggerEvent::Started, this, &AFirstPersonCharacter::TryCamToggle);
 
+	EnhancedInputComponent->BindAction(InputConfig->WidgetEscapeAction,ETriggerEvent::Started,this, &AFirstPersonCharacter::HandleWidgetEscapeInput);
+
+	EnhancedInputComponent->BindAction(InputConfig->WidgetConfirmedAction,ETriggerEvent::Started,this,&AFirstPersonCharacter::HandleWidgetConfirmedInput);
+	
+
 	EnhancedInputComponent->BindAction(InputConfig->DebugArenaReload, ETriggerEvent::Started, this, &AFirstPersonCharacter::ArenaReload);
 }
 
@@ -162,6 +168,23 @@ void AFirstPersonCharacter::LookInput(const FInputActionValue& Value)
 
 	// 카메라 기준이라 Y를 뒤집음
 	DoAim(LookAxisVector.X, -LookAxisVector.Y);
+}
+
+void AFirstPersonCharacter::HandleWidgetEscapeInput()
+{
+	if (ULocalPlayerUILayerSubsystem* LayerSubsystem = GetUILayerSubsystem())
+	{
+		LayerSubsystem->RouteWidgetEscapeInput();
+	}
+}
+
+void AFirstPersonCharacter::HandleWidgetConfirmedInput()
+{
+	if (ULocalPlayerUILayerSubsystem* LayerSubsystem = GetUILayerSubsystem())
+	{
+		UE_LOG(LogTemp, Error, TEXT("Called"));
+		LayerSubsystem->RouteWidgetConfirmedInput();
+	}
 }
 
 void AFirstPersonCharacter::DoMove(float Right, float Forward)
@@ -276,7 +299,8 @@ void AFirstPersonCharacter::TryInteract()
 
 	if (IInteractableInterface* Interactable = Cast<IInteractableInterface>(TargetActor))
 	{
-		if (Interactable->RequiresHoldInteract()) //Interaction Hold Tag로 Query
+		if (UInteractableComponent* InteractableComponent = Interactable->GetInteractableComponent();
+			InteractableComponent && InteractableComponent->RequiresHoldInteract())
 		{
 			if (HoldingInteractActor == TargetActor)
 			{
@@ -288,8 +312,13 @@ void AFirstPersonCharacter::TryInteract()
 				CancelLocalHoldInteract(true);
 			}
 
+			if (!InteractableComponent->BeginHoldInteract(this))
+			{
+				return;
+			}
+
 			HoldingInteractActor = TargetActor;
-			Interactable->BeginHoldInteract(this);
+			ServerBeginHoldInteract(TargetActor);
 			return;
 		}
 	}
@@ -339,7 +368,10 @@ void AFirstPersonCharacter::CancelLocalHoldInteract(bool bNotifyServer)
 
 	if (IInteractableInterface* Interactable = Cast<IInteractableInterface>(CanceledActor))
 	{
-		Interactable->EndHoldInteract(this, true);
+		if (UInteractableComponent* InteractableComponent = Interactable->GetInteractableComponent())
+		{
+			InteractableComponent->EndHoldInteract(this, true);
+		}
 	}
 
 	if (FocusedInteractable == CanceledActor)
@@ -353,6 +385,36 @@ void AFirstPersonCharacter::CancelLocalHoldInteract(bool bNotifyServer)
 	if (bNotifyServer)
 	{
 		ServerCancelHoldInteract(CanceledActor);
+	}
+}
+
+void AFirstPersonCharacter::NotifyHoldInteractInvalidated(AActor* TargetActor)
+{
+	if (HasAuthority())
+	{
+		ClientOnHoldInteractFailed(TargetActor);
+	}
+}
+
+void AFirstPersonCharacter::ServerBeginHoldInteract_Implementation(AActor* TargetActor)
+{
+	IInteractableInterface* Interactable = Cast<IInteractableInterface>(TargetActor);
+	UInteractableComponent* InteractableComponent =
+		Interactable ? Interactable->GetInteractableComponent() : nullptr;
+
+	if (!TargetActor
+		|| !CanInteract()
+		|| !GetController()
+		|| !IsInteractTargetByTrace(TargetActor)
+		|| !InteractableComponent
+		|| !InteractableComponent->RequiresHoldInteract()
+		|| !InteractableComponent->BeginHoldInteract(this))
+	{
+		if (InteractableComponent)
+		{
+			InteractableComponent->EndHoldInteract(this, true);
+		}
+		ClientOnHoldInteractFailed(TargetActor);
 	}
 }
 
@@ -384,9 +446,46 @@ void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor)
 
 	if (IInteractableInterface* Interactable = Cast<IInteractableInterface>(TargetActor))
 	{
+		UInteractableComponent* InteractableComponent = Interactable->GetInteractableComponent();
+		if (!InteractableComponent
+			|| !InteractableComponent->CanInteract(GetOwnedGameplayTagsForQuery()))
+		{
+			ServerCancelHoldInteract_Implementation(TargetActor);
+			ClientOnHoldInteractFailed(TargetActor);
+			return;
+		}
+
+		const bool bHoldInteraction = InteractableComponent->RequiresHoldInteract();
+		if (bHoldInteraction && !InteractableComponent->CanCommitHoldInteraction(this))
+		{
+			ServerCancelHoldInteract_Implementation(TargetActor);
+			ClientOnHoldInteractFailed(TargetActor);
+			return;
+		}
+
+		if (!Interactable->Interact(this))
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("[Server] %s ServerInteract rejected by target Target=%s"),
+				*GetName(),
+				*GetNameSafe(TargetActor));
+			ServerCancelHoldInteract_Implementation(TargetActor);
+			ClientOnHoldInteractFailed(TargetActor);
+			return;
+		}
+
+		const EInteractionFlowResult FlowResult =
+			!bHoldInteraction && InteractableComponent->RequiresHoldInteract()
+				? EInteractionFlowResult::HoldReady
+				: EInteractionFlowResult::Completed;
+
+		if (bHoldInteraction)
+		{
+			InteractableComponent->CommitHoldInteraction(this);
+		}
+
 		UE_LOG(LogTemp, Log, TEXT("[Server] %s ServerInteract success Target=%s"), *GetName(), *GetNameSafe(TargetActor));
-		Interactable->Interact(this);
-		ClientOnInteractSucceeded(TargetActor); //InteractObject UI Update;
+		ClientOnInteractSucceeded(TargetActor, FlowResult); //InteractObject UI Update;
 	}
 	else
 	{
@@ -400,14 +499,16 @@ void AFirstPersonCharacter::ServerCancelHoldInteract_Implementation(AActor* Targ
 {
 	if (IInteractableInterface* Interactable = Cast<IInteractableInterface>(TargetActor))
 	{
-		if (Interactable->RequiresHoldInteract())
+		if (UInteractableComponent* InteractableComponent = Interactable->GetInteractableComponent())
 		{
-			Interactable->EndHoldInteract(this, true);
+			InteractableComponent->ResetHoldInteraction(this);
 		}
 	}
 }
 
-void AFirstPersonCharacter::ClientOnInteractSucceeded_Implementation(AActor* TargetActor)
+void AFirstPersonCharacter::ClientOnInteractSucceeded_Implementation(
+	AActor* TargetActor,
+	EInteractionFlowResult FlowResult)
 {
 	const bool bCompletedHoldInteract =
 		bAwaitingHoldInteractResult &&
@@ -417,7 +518,10 @@ void AFirstPersonCharacter::ClientOnInteractSucceeded_Implementation(AActor* Tar
 	{
 		if (IInteractableInterface* Interactable = Cast<IInteractableInterface>(TargetActor))
 		{
-			Interactable->EndHoldInteract(this, false);
+			if (UInteractableComponent* InteractableComponent = Interactable->GetInteractableComponent())
+			{
+				InteractableComponent->EndHoldInteract(this, false);
+			}
 		}
 
 		HoldingInteractActor = nullptr;
@@ -430,26 +534,11 @@ void AFirstPersonCharacter::ClientOnInteractSucceeded_Implementation(AActor* Tar
 	{
 		if (UInteractableComponent* InteractableComponent = Interactable->GetInteractableComponent())
 		{
-			InteractableComponent->InteractKeyWidgetDeactivate();
-		}
-
-		if (AInteractionNode* InteractionNode = Cast<AInteractionNode>(TargetActor))
-		{
-			if (HasAuthority())
-			{
-				return;
-			}
-
-			InteractionNode->SyncInteractionStateFromServer(bCompletedHoldInteract);
-
-			if (bCompletedHoldInteract)
-			{
-				InteractionNode->DeactivateInteractionDesc();
-			}
-			else
-			{
-				InteractionNode->ActivateInteractionDesc(this);
-			}
+			InteractableComponent->HandleInteractionSucceeded(
+				this,
+				FlowResult,
+				bCompletedHoldInteract,
+				!HasAuthority());
 		}
 	}
 }
@@ -810,6 +899,21 @@ void AFirstPersonCharacter::ArenaReload()
 	}
 }
 
+ULocalPlayerUILayerSubsystem* AFirstPersonCharacter::GetUILayerSubsystem() const
+{
+	if (!IsLocallyControlled())
+	{
+		return nullptr;
+	}
+
+	const AFirstPersonPlayerController* PlayerController =
+		Cast<AFirstPersonPlayerController>(GetController());
+	ULocalPlayer* LocalPlayer = PlayerController ? PlayerController->GetLocalPlayer() : nullptr;
+	return LocalPlayer
+		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()
+		: nullptr;
+}
+
 void AFirstPersonCharacter::SyncInteractableKeyWidgets(
 	const TArray<AActor*>& CurrentInteractables)
 {
@@ -837,20 +941,15 @@ void AFirstPersonCharacter::SyncInteractableKeyWidgets(
 			if (UInteractableComponent* PreviousComponent = PreviousInterface->GetInteractableComponent())
 			{
 				PreviousComponent->InteractKeyWidgetDeactivate();
-			}
-
-			if (AInteractionNode* PreviousInteractionNode =
-				Cast<AInteractionNode>(PreviousInteractable.Get()))
-			{
 				const bool bIsActiveInteraction =
 					FocusedInteractable == PreviousInteractable.Get() ||
 					HoldingInteractActor == PreviousInteractable.Get();
 
 				if (!bAwaitingHoldInteractResult &&
 					bIsActiveInteraction &&
-					PreviousInteractionNode->RequiresHoldInteract())
+					PreviousComponent->RequiresHoldInteract())
 				{
-					PreviousInteractionNode->ResetHoldInteraction(this);
+					PreviousComponent->ResetHoldInteraction(this);
 
 					if (HoldingInteractActor == PreviousInteractable.Get())
 					{
@@ -860,7 +959,7 @@ void AFirstPersonCharacter::SyncInteractableKeyWidgets(
 					ServerCancelHoldInteract(PreviousInteractable.Get());
 				}
 
-				PreviousInteractionNode->InteractInfoWidgetDeactivate();
+				PreviousComponent->InteractInfoWidgetDeactivate();
 			}
 		}
 

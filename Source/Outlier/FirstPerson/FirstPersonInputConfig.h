@@ -34,6 +34,14 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Input")
 	TObjectPtr<UInputAction> CamToggleAction;
 
+	UPROPERTY(EditAnywhere, Category = "Widget")
+	TObjectPtr<UInputAction> WidgetEscapeAction;
+
+
+	UPROPERTY(EditAnywhere, Category = "Widget")
+	TObjectPtr<UInputAction> WidgetConfirmedAction;
+
+
 	UPROPERTY(EditAnywhere, Category = "Debug")
 	TObjectPtr<UInputAction> DebugArenaReload;
 };

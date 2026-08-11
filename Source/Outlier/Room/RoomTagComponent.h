@@ -23,7 +23,7 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "RoomTag")
 	FGameplayTag CurrentRoomTag;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RoomTag")
+	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category = "RoomTag")
 	FGameplayTag DefaultRoomTag;
 
 public:

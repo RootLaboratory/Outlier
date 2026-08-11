@@ -214,7 +214,7 @@ bool UPartnerSpriteAnimationComponent::ApplyEmotionTexture(EPartnerEmotion Emoti
 		GetWorld()->GetTimeSeconds()
 	);
 
-	UE_LOG(LogTemp, Error, TEXT("Done->Texture"));
+	//UE_LOG(LogTemp, Error, TEXT("Done->Texture"));
 
 
 	DisplayedEmotion = Emotion;

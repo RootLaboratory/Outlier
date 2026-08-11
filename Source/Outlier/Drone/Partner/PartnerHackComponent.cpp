@@ -5,6 +5,7 @@
 #include "Drone/Partner/HackGameplayTags.h"
 #include "Drone/Partner/HackableComponent.h"
 #include "Drone/Partner/PartnerCharacter.h"
+#include "Engine/LocalPlayer.h"
 #include "Engine/OverlapResult.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "Drone/Partner/PartnerPlayerController.h"
@@ -14,6 +15,8 @@
 #include "UI/HackCandidateLayerWidget.h"
 #include "UI/HackCandidateMarkerWidget.h"
 #include "UI/HackMiniGameWidget.h"
+#include "UI/LocalPlayerUILayerSubsystem.h"
+#include "UI/UILayerGameplayTags.h"
 
 UPartnerHackComponent::UPartnerHackComponent()
 {
@@ -178,8 +181,22 @@ void UPartnerHackComponent::ClientStartHackMiniGame_Implementation(AActor* Targe
 		return;
 	}
 
+	ResetLocalHackHoldProgress();
+	HoveredMarkerWidget = nullptr;
+	HoveredHackActor = nullptr;
+	bHackCandidateSearchActive = false;
+
 	SetActiveHackableComponent(HackableComponent);
 	StartHackMiniGame(TargetActor, HackableComponent);
+
+	ClearHackCandidates();
+	LastDebugCandidateCount = INDEX_NONE;
+
+	// If the replacement failed, close the remaining candidate layer normally.
+	if (CandidateLayerWidget)
+	{
+		DestroyCandidateLayerWidget();
+	}
 }
 
 void UPartnerHackComponent::ClientStopHackMiniGame_Implementation()
@@ -486,8 +503,26 @@ void UPartnerHackComponent::ServerTryStartHack_Implementation(AActor* TargetActo
 		Handler->HandleHackStarted(Context);
 	}
 
-	//Widegt
-	ClientStopCandidateSearch();
+	if (HackableComponent->HackTags.HasTag(HackGameplayTags::MiniGame::None()))
+	{
+		ClientStopCandidateSearch();
+
+		FHackResultContext ResultContext;
+		ResultContext.TargetActor = TargetActor;
+		ResultContext.InstigatorActor = PartnerCharacter;
+		ResultContext.Result = EHackResult::Success;
+		CompleteActiveHack(ResultContext, true);
+
+		if (bDebugHack)
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("[PartnerHackDebug] Hack completed without minigame Target=%s Hackable=%s"),
+				*GetNameSafe(TargetActor),
+				*GetNameSafe(HackableComponent));
+		}
+		return;
+	}
+
 	ClientStartHackMiniGame(TargetActor, HackableComponent);
 
 	if (bDebugHack)
@@ -710,23 +745,52 @@ void UPartnerHackComponent::EnsureCandidateLayerWidget()
 	CandidateLayerWidget->SetMarkerWidgetClass(CandidateMarkerWidgetClass);
 	CandidateLayerWidget->SetHackableInfoWidgetClass(HackableInfoWidgetClass);
 	CandidateLayerWidget->BindHackComponent(this);
-	CandidateLayerWidget->AddToViewport(100);
 
-	ApplyCandidateInputMode();
+	if (ULocalPlayerUILayerSubsystem* LayerSubsystem = GetUILayerSubsystem())
+	{
+		HackCandidateLayerHandle = LayerSubsystem->PushWidget(
+			UILayerTags::Gameplay(),
+			CandidateLayerWidget,
+			FirstPersonInputModeTags::Hack(),
+			this,
+			EUILayerFocusTarget::Widget,
+			true);
+	}
+
+	if (!HackCandidateLayerHandle.IsValid())
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("[PartnerHack] Failed to push candidate widget into the local UI layer"));
+		CandidateLayerWidget->BindHackComponent(nullptr);
+		CandidateLayerWidget = nullptr;
+	}
 }
 
 void UPartnerHackComponent::DestroyCandidateLayerWidget()
 {
 	if (!CandidateLayerWidget)
 	{
+		if (ULocalPlayerUILayerSubsystem* LayerSubsystem = GetUILayerSubsystem())
+		{
+			LayerSubsystem->PopLayer(HackCandidateLayerHandle);
+		}
+		HackCandidateLayerHandle.Reset();
 		return;
 	}
 
 	CandidateLayerWidget->BindHackComponent(nullptr);
-	CandidateLayerWidget->RemoveFromParent();
-	CandidateLayerWidget = nullptr;
 
-	RestoreGameInputMode();
+	bool bPoppedLayer = false;
+	if (ULocalPlayerUILayerSubsystem* LayerSubsystem = GetUILayerSubsystem())
+	{
+		bPoppedLayer = LayerSubsystem->PopLayer(HackCandidateLayerHandle);
+	}
+	if (!bPoppedLayer)
+	{
+		CandidateLayerWidget->RemoveFromParent();
+	}
+	HackCandidateLayerHandle.Reset();
+	CandidateLayerWidget = nullptr;
 }
 
 bool UPartnerHackComponent::EnsureHackMiniGameWidget(AActor* TargetActor, UHackableComponent* HackableComponent)
@@ -762,9 +826,49 @@ bool UPartnerHackComponent::EnsureHackMiniGameWidget(AActor* TargetActor, UHacka
 	HackMiniGameWidget->InitializeHackMiniGame(TargetActor, HackableComponent, this);
 	HackMiniGameWidget->SetMiniGameTimeLimit(CachedAbilityData.MiniGameTime);
 	HackMiniGameWidget->OnHackMiniGameFinished.AddDynamic(this, &UPartnerHackComponent::HandleHackMiniGameFinished);
-	HackMiniGameWidget->AddToViewport(150);
 
-	ApplyHackMiniGameInputMode();
+	if (ULocalPlayerUILayerSubsystem* LayerSubsystem = GetUILayerSubsystem())
+	{
+		if (HackCandidateLayerHandle.IsValid())
+		{
+			HackMiniGameLayerHandle = LayerSubsystem->ReplaceWidget(
+				HackCandidateLayerHandle,
+				UILayerTags::Gameplay(),
+				HackMiniGameWidget,
+				FirstPersonInputModeTags::Hack(),
+				this,
+				EUILayerFocusTarget::Widget,
+				true);
+		}
+		else
+		{
+			HackMiniGameLayerHandle = LayerSubsystem->PushWidget(
+				UILayerTags::Gameplay(),
+				HackMiniGameWidget,
+				FirstPersonInputModeTags::Hack(),
+				this,
+				EUILayerFocusTarget::Widget,
+				true);
+		}
+	}
+
+	if (!HackMiniGameLayerHandle.IsValid())
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("[PartnerHack] Failed to push mini-game widget into the local UI layer"));
+		HackMiniGameWidget->OnHackMiniGameFinished.RemoveDynamic(
+			this,
+			&UPartnerHackComponent::HandleHackMiniGameFinished);
+		HackMiniGameWidget = nullptr;
+		return false;
+	}
+
+	if (CandidateLayerWidget)
+	{
+		CandidateLayerWidget->BindHackComponent(nullptr);
+		CandidateLayerWidget = nullptr;
+	}
+	HackCandidateLayerHandle.Reset();
 
 	return HackMiniGameWidget->StartHacking();
 }
@@ -774,117 +878,47 @@ void UPartnerHackComponent::DestroyHackMiniGameWidget()
 
 	if (!HackMiniGameWidget)
 	{
-		RestoreGameInputMode();
+		if (ULocalPlayerUILayerSubsystem* LayerSubsystem = GetUILayerSubsystem())
+		{
+			LayerSubsystem->PopLayer(HackMiniGameLayerHandle);
+		}
+		HackMiniGameLayerHandle.Reset();
 		return;
 	}
 
 	HackMiniGameWidget->OnHackMiniGameFinished.RemoveDynamic(this, &UPartnerHackComponent::HandleHackMiniGameFinished);
-	HackMiniGameWidget->RemoveFromParent();
+
+	bool bPoppedLayer = false;
+	if (ULocalPlayerUILayerSubsystem* LayerSubsystem = GetUILayerSubsystem())
+	{
+		bPoppedLayer = LayerSubsystem->PopLayer(HackMiniGameLayerHandle);
+	}
+	if (!bPoppedLayer)
+	{
+		HackMiniGameWidget->RemoveFromParent();
+	}
+	HackMiniGameLayerHandle.Reset();
 	HackMiniGameWidget = nullptr;
-
-	RestoreGameInputMode();
-
-
 }
 
-void UPartnerHackComponent::ApplyCandidateInputMode()
+ULocalPlayerUILayerSubsystem* UPartnerHackComponent::GetUILayerSubsystem() const
 {
 	if (!PartnerCharacter)
 	{
-		return;
+		return nullptr;
 	}
 
-	APartnerPlayerController* PlayerController =
-		Cast<APartnerPlayerController>(PartnerCharacter->GetController());
+	APlayerController* PlayerController =
+		Cast<APlayerController>(PartnerCharacter->GetController());
 	if (!PlayerController || !PlayerController->IsLocalController())
 	{
-		return;
+		return nullptr;
 	}
 
-	if (!PlayerController->SetFirstPersonInputMode(FirstPersonInputModeTags::Hack()))
-	{
-		return;
-	}
-
-	FInputModeGameAndUI InputMode;
-	if (CandidateLayerWidget)
-	{
-		InputMode.SetWidgetToFocus(CandidateLayerWidget->TakeWidget());
-	}
-	InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
-	InputMode.SetHideCursorDuringCapture(false);
-
-	PlayerController->SetInputMode(InputMode);
-	PlayerController->bShowMouseCursor = true;
-
-	if (bDebugHack)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[PartnerHackDebug] Candidate input mode applied PC=%s"),
-			*GetNameSafe(PlayerController));
-	}
-}
-
-void UPartnerHackComponent::ApplyHackMiniGameInputMode()
-{
-	if (!PartnerCharacter)
-	{
-		return;
-	}
-
-	APartnerPlayerController* PlayerController =
-		Cast<APartnerPlayerController>(PartnerCharacter->GetController());
-	if (!PlayerController || !PlayerController->IsLocalController())
-	{
-		return;
-	}
-
-	if (!PlayerController->SetFirstPersonInputMode(FirstPersonInputModeTags::Hack()))
-	{
-		return;
-	}
-
-	FInputModeGameAndUI InputMode;
-	if (HackMiniGameWidget)
-	{
-		InputMode.SetWidgetToFocus(HackMiniGameWidget->TakeWidget());
-	}
-
-	InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
-	InputMode.SetHideCursorDuringCapture(false);
-
-	PlayerController->SetInputMode(InputMode);
-	PlayerController->bShowMouseCursor = true;
-
-}
-
-void UPartnerHackComponent::RestoreGameInputMode()
-{
-	if (!PartnerCharacter)
-	{
-		return;
-	}
-
-	if (HackMiniGameWidget)
-	{
-		return;
-	}
-
-	APartnerPlayerController* PlayerController =
-		Cast<APartnerPlayerController>(PartnerCharacter->GetController());
-	if (!PlayerController || !PlayerController->IsLocalController())
-	{
-		return;
-	}
-
-	if (PlayerController->TryRestoreFirstPersonDefaultInputMode(FirstPersonInputModeTags::Hack()))
-	{
-		PlayerController->ControlMainWidget(true);
-	}
-
-
-	//UE_LOG(LogTemp, Error, TEXT("[HackInputDebug] RestoreGameInputMode called ??MiniGameWidget=%s CandidateWidget=%s"),
-	//	*GetNameSafe(HackMiniGameWidget),
-	//	*GetNameSafe(CandidateLayerWidget));
+	ULocalPlayer* LocalPlayer = PlayerController->GetLocalPlayer();
+	return LocalPlayer
+		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()
+		: nullptr;
 }
 
 void UPartnerHackComponent::AddHackCandidate(AActor* Actor, UHackableComponent* HackableComponent, const FVector2D& ScreenLocation)
@@ -1017,8 +1051,7 @@ void UPartnerHackComponent::AbortLocalHackForInvalidTarget()
 	HoveredHackActor = nullptr;
 	bHackCandidateSearchActive = false;
 
-	// Remove the completion delegate with the widget so the invalid target cannot
-	// report a late mini-game result back to the server.
+	
 	DestroyHackMiniGameWidget();
 	DestroyCandidateLayerWidget();
 	ClearHackCandidates();
