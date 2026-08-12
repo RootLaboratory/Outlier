@@ -28,6 +28,8 @@
 #include "Room/RoomTagComponent.h"
 #include "Weapon/RangedWeaponBase.h"
 #include "Outlier.h"
+#include "GAS/OutlierAbilitySystemComponent.h"
+#include "GAS/Attributes/OutlierVitalAttributeSet.h"
 
 namespace
 {
@@ -66,6 +68,11 @@ AEnemyBase::AEnemyBase()
 	bReplicates = true;
 	AIControllerClass = AEnemyAIController::StaticClass();
 	AutoPossessAI = EAutoPossessAI::PlacedInWorldOrSpawned;
+
+	OutlierAbilitySystemComponent = CreateDefaultSubobject<UOutlierAbilitySystemComponent>(
+		TEXT("AbilitySystemComponent"));
+	OutlierAbilitySystemComponent->SetReplicationMode(EGameplayEffectReplicationMode::Mixed);
+	VitalAttributeSet = CreateDefaultSubobject<UOutlierVitalAttributeSet>(TEXT("VitalAttributeSet"));
 
 	// 캡슐이 PhysicsBody 채널을 기본(Block)으로 막고 있으면, 무기 트레이스가 캡슐에 먼저 걸려서
 	// 캡슐 안쪽에 있는 몸통/코어 등 Physics Asset 본 바디까지 도달하지 못함 (팔다리처럼 캡슐 밖으로
@@ -222,6 +229,7 @@ void AEnemyBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifeti
 void AEnemyBase::BeginPlay()
 {
 	Super::BeginPlay();
+	RefreshAbilitySystemActorInfo();
 
 	if (RoomTagComponent)
 	{
@@ -278,12 +286,18 @@ void AEnemyBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		CurrentWeapon = nullptr;
 	}
 
+	if (OutlierAbilitySystemComponent)
+	{
+		OutlierAbilitySystemComponent->ClearForPawn(this);
+	}
+
 	Super::EndPlay(EndPlayReason);
 }
 
 void AEnemyBase::PossessedBy(AController* NewController)
 {
 	Super::PossessedBy(NewController);
+	RefreshAbilitySystemActorInfo();
 
 	if (NewController && !NewController->IsPlayerController())
 	{
@@ -300,8 +314,28 @@ void AEnemyBase::UnPossessed()
 {
 	StopCurrentAttack();
 	Super::UnPossessed();
+	RefreshAbilitySystemActorInfo();
 
 	SetEnemyPossessed(false);
+}
+
+void AEnemyBase::OnRep_Controller()
+{
+	Super::OnRep_Controller();
+	RefreshAbilitySystemActorInfo();
+}
+
+UAbilitySystemComponent* AEnemyBase::GetAbilitySystemComponent() const
+{
+	return OutlierAbilitySystemComponent;
+}
+
+void AEnemyBase::RefreshAbilitySystemActorInfo()
+{
+	if (OutlierAbilitySystemComponent)
+	{
+		OutlierAbilitySystemComponent->InitializeForPawn(this);
+	}
 }
 
 void AEnemyBase::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)

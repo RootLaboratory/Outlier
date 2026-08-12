@@ -7,6 +7,7 @@
 #include "Engine/DataTable.h"
 #include "InputCoreTypes.h"
 #include "Interface/WeaponMuzzleProvider.h"
+#include "AbilitySystemInterface.h"
 #include "PartnerCharacter.generated.h"
 
 UENUM(BlueprintType)
@@ -67,10 +68,12 @@ class UPartnerEMPComponent;
 class UPartnerSpriteAnimationComponent;
 class UNiagaraComponent;
 class UNiagaraSystem;
+class UOutlierAbilitySystemComponent;
+class UOutlierVitalAttributeSet;
 
 class USceneComponent;
 UCLASS()
-class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeaponMuzzleProvider
+class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeaponMuzzleProvider, public IAbilitySystemInterface
 {
 	GENERATED_BODY()
 
@@ -81,6 +84,13 @@ class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeap
 	friend class UPartnerAbilityComponent;
 protected:
 	// Components
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
+	TObjectPtr<UOutlierAbilitySystemComponent> OutlierAbilitySystemComponent;
+
+	// Slice 1 topology only. Legacy Partner health remains authoritative until its migration slice.
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
+	TObjectPtr<UOutlierVitalAttributeSet> VitalAttributeSet;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UPartnerDistanceComponent> DistanceComponent;
 
@@ -432,6 +442,7 @@ protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void PossessedBy(AController* NewController) override;
+	virtual void OnRep_Controller() override;
 	virtual float TakeDamage(
 		float DamageAmount,
 		struct FDamageEvent const& DamageEvent,
@@ -440,6 +451,7 @@ protected:
 	) override;
 
 	virtual void UnPossessed() override;
+	void RefreshAbilitySystemActorInfo();
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
 	virtual void DoMove(float Right, float Forward) override;
 	virtual void OnMoveInputUpdated(const FVector2D& MoveValue);
@@ -508,6 +520,12 @@ protected:
 
 	virtual void LookInput(const FInputActionValue& Value) override;
 public:
+	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
+	UOutlierAbilitySystemComponent* GetOutlierAbilitySystemComponent() const
+	{
+		return OutlierAbilitySystemComponent;
+	}
+	const UOutlierVitalAttributeSet* GetVitalAttributeSet() const { return VitalAttributeSet; }
 	UPROPERTY(BlueprintAssignable, Category = "Event")
 	FOnDroneMovementStateChanged OnDroneMovementStateChanged;
 

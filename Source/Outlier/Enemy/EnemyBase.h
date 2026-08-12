@@ -11,6 +11,7 @@
 #include "Interface/HackableInterface.h"
 #include "Interface/RoomTagInterface.h"
 #include "StateTreeReference.h"
+#include "AbilitySystemInterface.h"
 #include "EnemyBase.generated.h"
 
 class UStateTreeComponent;
@@ -22,6 +23,8 @@ struct FInputActionValue;
 class URoomTagComponent;
 class ARangedWeaponBase;
 class APartnerCharacter;
+class UOutlierAbilitySystemComponent;
+class UOutlierVitalAttributeSet;
 
 UENUM(BlueprintType)
 enum class EEnemyCombatState : uint8
@@ -49,12 +52,18 @@ enum class EEnemyAttackPhase : uint8
 };
 
 UCLASS()
-class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, public IEMPableInterface, public IScannableInterface, public IGenericTeamAgentInterface, public IRoomTagInterface
+class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, public IEMPableInterface, public IScannableInterface, public IGenericTeamAgentInterface, public IRoomTagInterface, public IAbilitySystemInterface
 {
 	GENERATED_BODY()
 
 public:
 	AEnemyBase();
+	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
+	UOutlierAbilitySystemComponent* GetOutlierAbilitySystemComponent() const
+	{
+		return OutlierAbilitySystemComponent;
+	}
+	const UOutlierVitalAttributeSet* GetVitalAttributeSet() const { return VitalAttributeSet; }
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	// Unreal 공통 피해 진입점을 기존 Enemy HP 및 사망 처리로 연결한다.
@@ -70,9 +79,18 @@ protected:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void PossessedBy(AController* NewController) override;
 	virtual void UnPossessed() override;
+	virtual void OnRep_Controller() override;
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
+	void RefreshAbilitySystemActorInfo();
 
 	void SendEnemyStateTreeEvent(FGameplayTag Tag);
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
+	TObjectPtr<UOutlierAbilitySystemComponent> OutlierAbilitySystemComponent;
+
+	// Slice 1 topology only. CurrentHealth remains authoritative until the health migration slice.
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
+	TObjectPtr<UOutlierVitalAttributeSet> VitalAttributeSet;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|AI")
 	TObjectPtr<UStateTreeComponent> StateTreeComponent;

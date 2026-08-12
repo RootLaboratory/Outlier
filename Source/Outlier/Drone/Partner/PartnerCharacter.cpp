@@ -37,6 +37,8 @@
 #include "NiagaraComponent.h"
 #include "NiagaraFunctionLibrary.h"
 #include "Weapon/WeaponBase.h"
+#include "GAS/OutlierAbilitySystemComponent.h"
+#include "GAS/Attributes/OutlierVitalAttributeSet.h"
 
 namespace
 {
@@ -79,6 +81,7 @@ void APartnerCharacter::BeginPlay()
 	}
 
 	Super::BeginPlay();
+	RefreshAbilitySystemActorInfo();
 
 	if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
 	{
@@ -95,6 +98,10 @@ void APartnerCharacter::BeginPlay()
 void APartnerCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	CleanupBoostVFXComponents();
+	if (OutlierAbilitySystemComponent)
+	{
+		OutlierAbilitySystemComponent->ClearForPawn(this);
+	}
 
 	Super::EndPlay(EndPlayReason);
 }
@@ -102,6 +109,7 @@ void APartnerCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 void APartnerCharacter::PossessedBy(AController* NewController)
 {
 	Super::PossessedBy(NewController);
+	RefreshAbilitySystemActorInfo();
 
 	if (bIsAccelerate)
 	{
@@ -148,6 +156,26 @@ void APartnerCharacter::UnPossessed()
 	}
 
 	Super::UnPossessed();
+	RefreshAbilitySystemActorInfo();
+}
+
+void APartnerCharacter::OnRep_Controller()
+{
+	Super::OnRep_Controller();
+	RefreshAbilitySystemActorInfo();
+}
+
+UAbilitySystemComponent* APartnerCharacter::GetAbilitySystemComponent() const
+{
+	return OutlierAbilitySystemComponent;
+}
+
+void APartnerCharacter::RefreshAbilitySystemActorInfo()
+{
+	if (OutlierAbilitySystemComponent)
+	{
+		OutlierAbilitySystemComponent->InitializeForPawn(this);
+	}
 }
 
 void APartnerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
@@ -1225,6 +1253,11 @@ void APartnerCharacter::LookInput(const FInputActionValue& Value)
 APartnerCharacter::APartnerCharacter()
 {
 	PrimaryActorTick.bCanEverTick = false;
+
+	OutlierAbilitySystemComponent = CreateDefaultSubobject<UOutlierAbilitySystemComponent>(
+		TEXT("AbilitySystemComponent"));
+	OutlierAbilitySystemComponent->SetReplicationMode(EGameplayEffectReplicationMode::Mixed);
+	VitalAttributeSet = CreateDefaultSubobject<UOutlierVitalAttributeSet>(TEXT("VitalAttributeSet"));
 
 	ThirdPersonTiltRoot = CreateDefaultSubobject<USceneComponent>(TEXT("Third Person Tilt Root"));
 	ThirdPersonTiltRoot->SetupAttachment(GetCapsuleComponent());

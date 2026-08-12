@@ -20,6 +20,7 @@
 #include "Team/OutlierTeamIds.h"
 #include "TimerManager.h"
 #include "Weapon/RangedWeaponBase.h"
+#include "GAS/OutlierAbilitySystemComponent.h"
 
 namespace
 {
@@ -32,6 +33,7 @@ namespace
 
 AAutoTurret::AAutoTurret()
 {
+	GetOutlierAbilitySystemComponent()->SetReplicationMode(EGameplayEffectReplicationMode::Minimal);
 	bUseCoreWeakPoint = false;
 	ApplyClassStatOverrides();
 

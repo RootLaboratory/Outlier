@@ -22,6 +22,8 @@ public class Outlier : ModuleRules
             "StateTreeModule",
             "GameplayStateTreeModule",
             "GameplayTags",
+            "GameplayAbilities",
+            "GameplayTasks",
             "UMG",
             "Slate",
             "AnimGraphRuntime",

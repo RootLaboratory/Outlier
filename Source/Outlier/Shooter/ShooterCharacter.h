@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "FirstPerson/FirstPersonCharacter.h"
 #include "GameplayTagContainer.h"
+#include "AbilitySystemInterface.h"
 #include "ShooterCharacter.generated.h"
 
 class UInputAction;
@@ -19,6 +20,9 @@ enum class EWeaponType : uint8;
 class UAnimMontage;
 class UCurveFloat;
 class APartnerCharacter;
+class UOutlierAbilitySystemComponent;
+class UOutlierVitalAttributeSet;
+class UOutlierShieldAttributeSet;
 
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnShooterHealthChanged, float /*CurrentHealth*/, float /*MaxHealth*/);
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnShooterShieldChanged, float /*CurrentShield*/, float /*MaxShield*/);
@@ -93,7 +97,7 @@ enum class EShooterMontageAction : uint8
  * 
  */
 UCLASS(abstract)
-class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter
+class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbilitySystemInterface
 {
 	GENERATED_BODY()
 
@@ -103,6 +107,17 @@ class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter
 	friend class UShooterMovementComponent;
 
 protected:
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
+	TObjectPtr<UOutlierAbilitySystemComponent> OutlierAbilitySystemComponent;
+
+	// Slice 1 topology only. Legacy health remains authoritative until its migration slice.
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
+	TObjectPtr<UOutlierVitalAttributeSet> VitalAttributeSet;
+
+	// Slice 1 topology only. Legacy shield remains authoritative until its migration slice.
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
+	TObjectPtr<UOutlierShieldAttributeSet> ShieldAttributeSet;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UShooterHealthComponent> HealthComponent;
 
@@ -308,6 +323,7 @@ protected:
 	virtual void Tick(float DeltaSeconds) override;
 	virtual void PossessedBy(AController* NewController) override;
 	virtual void OnRep_Controller() override;
+	void RefreshAbilitySystemActorInfo();
 
 	/** Initialize input action bindings */
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
@@ -327,6 +343,13 @@ public:
 	// Construction
 	/** Constructor */
 	AShooterCharacter();
+	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
+	UOutlierAbilitySystemComponent* GetOutlierAbilitySystemComponent() const
+	{
+		return OutlierAbilitySystemComponent;
+	}
+	const UOutlierVitalAttributeSet* GetVitalAttributeSet() const { return VitalAttributeSet; }
+	const UOutlierShieldAttributeSet* GetShieldAttributeSet() const { return ShieldAttributeSet; }
 
 	// Events
 	UPROPERTY(BlueprintAssignable, Category = "Event")

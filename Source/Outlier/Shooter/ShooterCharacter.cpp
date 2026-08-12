@@ -34,6 +34,9 @@
 #include "Weapon/WeaponBase.h"
 #include "Weapon/RangedWeaponBase.h"
 #include "GameplayTags/OutlierGameplayTags.h"
+#include "GAS/OutlierAbilitySystemComponent.h"
+#include "GAS/Attributes/OutlierVitalAttributeSet.h"
+#include "GAS/Attributes/OutlierShieldAttributeSet.h"
 #include "Net/UnrealNetwork.h"
 #include "OutlierNetUtils.h"
 #include "Outlier.h"
@@ -52,6 +55,12 @@ AShooterCharacter::AShooterCharacter() : AFirstPersonCharacter()
 {
 	PrimaryActorTick.bCanEverTick = true;
 	OwnedQueryTags.AddTag(OutlierGameplayTags::Actor::Role::Shooter());
+
+	OutlierAbilitySystemComponent = CreateDefaultSubobject<UOutlierAbilitySystemComponent>(
+		TEXT("AbilitySystemComponent"));
+	OutlierAbilitySystemComponent->SetReplicationMode(EGameplayEffectReplicationMode::Mixed);
+	VitalAttributeSet = CreateDefaultSubobject<UOutlierVitalAttributeSet>(TEXT("VitalAttributeSet"));
+	ShieldAttributeSet = CreateDefaultSubobject<UOutlierShieldAttributeSet>(TEXT("ShieldAttributeSet"));
 
 	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
 
@@ -83,6 +92,7 @@ AShooterCharacter::AShooterCharacter() : AFirstPersonCharacter()
 void AShooterCharacter::BeginPlay()
 {
 	Super::BeginPlay();
+	RefreshAbilitySystemActorInfo();
 
 	RefreshFirstPersonShadowPolicy();
 
@@ -147,12 +157,18 @@ void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		CleanupOwnedWeapons();
 	}
 
+	if (OutlierAbilitySystemComponent)
+	{
+		OutlierAbilitySystemComponent->ClearForPawn(this);
+	}
+
 	Super::EndPlay(EndPlayReason);
 }
 
 void AShooterCharacter::PossessedBy(AController* NewController)
 {
 	Super::PossessedBy(NewController);
+	RefreshAbilitySystemActorInfo();
 
 	RefreshFirstPersonShadowPolicy();
 }
@@ -160,8 +176,22 @@ void AShooterCharacter::PossessedBy(AController* NewController)
 void AShooterCharacter::OnRep_Controller()
 {
 	Super::OnRep_Controller();
+	RefreshAbilitySystemActorInfo();
 
 	RefreshFirstPersonShadowPolicy();
+}
+
+UAbilitySystemComponent* AShooterCharacter::GetAbilitySystemComponent() const
+{
+	return OutlierAbilitySystemComponent;
+}
+
+void AShooterCharacter::RefreshAbilitySystemActorInfo()
+{
+	if (OutlierAbilitySystemComponent)
+	{
+		OutlierAbilitySystemComponent->InitializeForPawn(this);
+	}
 }
 
 void AShooterCharacter::RefreshFirstPersonShadowPolicy()
