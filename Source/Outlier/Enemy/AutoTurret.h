@@ -35,6 +35,10 @@ struct OUTLIER_API FAutoTurretBehaviorRow : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aim", meta = (ClampMin = "0.0", ClampMax = "180.0"))
 	float MaxYawDegrees = 160.0f;
 
+	// 공격 중에는 정후방 표적까지 조준할 수 있도록 별도의 Yaw 범위를 사용한다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aim", meta = (ClampMin = "0.0", ClampMax = "180.0"))
+	float AttackMaxYawDegrees = 180.0f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aim", meta = (ClampMin = "0.0", ClampMax = "89.0"))
 	float MaxPitchDegrees = 60.0f;
 
@@ -82,6 +86,7 @@ class OUTLIER_API AAutoTurret : public AEnemyBase, public IWeaponMuzzleProvider
 
 public:
 	AAutoTurret();
+	static bool IsTurretDiagnosticsEnabled();
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual float TakeDamage(float DamageAmount, const FDamageEvent& DamageEvent,

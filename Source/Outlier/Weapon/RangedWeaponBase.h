@@ -319,6 +319,10 @@ protected:
 		float CameraShakeScale,
 		float CameraShakeDuration);
 
+	// 서버에서 확정한 약점 피격 결과를 무기 소유 클라이언트의 크로스헤어에 전달한다.
+	UFUNCTION(Client, Unreliable)
+	void ClientNotifyAttackSign(bool bCriticalHit);
+
 	UFUNCTION(NetMulticast, Unreliable)
 	void MulticastPlayFireFX(FVector_NetQuantize TraceEnd, FVector_NetQuantizeNormal ImpactNormal,
 		AActor* Hit, FVector2D NormalizedShotDirection, FName FiredMuzzleSocketName);

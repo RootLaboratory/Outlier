@@ -89,6 +89,14 @@ void AExplosiveProp::InitializeMountedSocket(FName InMountedSocketName)
 	}
 }
 
+bool AExplosiveProp::IsMountedOnSelfDestructDrone() const
+{
+	// Deferred Spawn 직후처럼 BeginPlay 캐시가 아직 준비되지 않은 시점에도 스폰 Owner로 판별한다.
+	return CachedOwningDrone.IsValid()
+		|| Cast<ASelfDestructDrone>(GetOwner()) != nullptr
+		|| Cast<ASelfDestructDrone>(GetAttachParentActor()) != nullptr;
+}
+
 void AExplosiveProp::SetupMountedPresentation()
 {
 	ASelfDestructDrone* OwningDrone = CachedOwningDrone.Get();
