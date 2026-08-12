@@ -33,6 +33,16 @@ EDataValidationResult UOutlierAudioEventDefinition::IsDataValid(FDataValidationC
 			*EventTag.ToString()));
 	}
 
+	if (VolumeMultiplier < 0.0f)
+	{
+		AddValidationError(TEXT("VolumeMultiplier cannot be negative."));
+	}
+
+	if (PitchMultiplier < 0.0f)
+	{
+		AddValidationError(TEXT("PitchMultiplier cannot be negative."));
+	}
+
 	if (Variants.IsEmpty())
 	{
 		AddValidationError(TEXT("Audio Event Definition requires at least one Variant."));

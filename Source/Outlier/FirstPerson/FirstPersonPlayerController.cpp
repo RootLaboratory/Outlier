@@ -2,6 +2,7 @@
 
 
 #include "FirstPersonPlayerController.h"
+#include "Audio/OutlierAudioSubsystem.h"
 #include "EnhancedInputDeveloperSettings.h"
 #include "EnhancedInputSubsystems.h"
 #include "Engine/LocalPlayer.h"
@@ -19,6 +20,35 @@ AFirstPersonPlayerController::AFirstPersonPlayerController()
 {
 	// set the player camera manager
 	PlayerCameraManagerClass = AFirstPersonPlayerCameraManager::StaticClass();
+}
+
+void AFirstPersonPlayerController::ServerRequestRelevantAudioAtLocation_Implementation(
+	const FOutlierAudioPlayRequest& Request)
+{
+	UOutlierAudioSubsystem* AudioSubsystem = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>()
+		: nullptr;
+	if (AudioSubsystem)
+	{
+		AudioSubsystem->HandleServerRelevantAtLocationRequest(this, Request);
+	}
+}
+
+void AFirstPersonPlayerController::ClientPlayResolvedAudio_Implementation(
+	const FOutlierResolvedAudioPlay& ResolvedPlay)
+{
+	if (!IsLocalController())
+	{
+		return;
+	}
+
+	UOutlierAudioSubsystem* AudioSubsystem = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>()
+		: nullptr;
+	if (AudioSubsystem)
+	{
+		AudioSubsystem->PlayResolvedAudioLocally(ResolvedPlay);
+	}
 }
 
 void AFirstPersonPlayerController::ClientPushUILayer_Implementation(

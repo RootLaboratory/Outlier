@@ -3,6 +3,7 @@
 
 #include "FirstPersonCharacter.h"
 #include "Animation/AnimInstance.h"
+#include "Audio/OutlierAudioSubsystem.h"
 #include "Camera/CameraComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/SceneComponent.h"
@@ -113,7 +114,7 @@ void AFirstPersonCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
 	EnhancedInputComponent->BindAction(InputConfig->AttackAction, ETriggerEvent::Completed, this, &AFirstPersonCharacter::TryStopAttack);
 
 	// Interaction
-	EnhancedInputComponent->BindAction(InputConfig->InteractionAction, ETriggerEvent::Started, this, &AFirstPersonCharacter::TryInteract);
+	EnhancedInputComponent->BindAction(InputConfig->InteractionAction, ETriggerEvent::Started, this, &AFirstPersonCharacter::HandleInteractionInputStarted);
 	EnhancedInputComponent->BindAction(InputConfig->InteractionAction, ETriggerEvent::Completed, this, &AFirstPersonCharacter::EndInteract);
 	EnhancedInputComponent->BindAction(InputConfig->InteractionAction, ETriggerEvent::Canceled, this, &AFirstPersonCharacter::EndInteract);
 
@@ -170,12 +171,68 @@ void AFirstPersonCharacter::LookInput(const FInputActionValue& Value)
 	DoAim(LookAxisVector.X, -LookAxisVector.Y);
 }
 
+void AFirstPersonCharacter::HandleInteractionInputStarted()
+{
+	PlayInteractionRelevantAtLocationAudio();
+	TryInteract();
+}
+
 void AFirstPersonCharacter::HandleWidgetEscapeInput()
 {
+	PlayWidgetEscapeLocal2DAudio();
+
 	if (ULocalPlayerUILayerSubsystem* LayerSubsystem = GetUILayerSubsystem())
 	{
 		LayerSubsystem->RouteWidgetEscapeInput();
 	}
+}
+
+bool AFirstPersonCharacter::PlayInteractionRelevantAtLocationAudio()
+{
+	if (!InteractionAudioEventTag.IsValid())
+	{
+		return false;
+	}
+
+	UOutlierAudioSubsystem* AudioSubsystem = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>()
+		: nullptr;
+	if (!AudioSubsystem)
+	{
+		return false;
+	}
+
+	FOutlierAudioPlayRequest Request;
+	Request.EventTag = InteractionAudioEventTag;
+	Request.ContextTags = InteractionAudioContextTags;
+	Request.EmitterActor = this;
+	Request.Location = GetActorLocation();
+	Request.bHasLocation = true;
+
+	return AudioSubsystem->PlayRelevantAtLocationFromOwningClient(Request);
+}
+
+bool AFirstPersonCharacter::PlayWidgetEscapeLocal2DAudio()
+{
+	if (!WidgetEscapeAudioEventTag.IsValid())
+	{
+		return false;
+	}
+
+	UOutlierAudioSubsystem* AudioSubsystem = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>()
+		: nullptr;
+	if (!AudioSubsystem)
+	{
+		return false;
+	}
+
+	FOutlierAudioPlayRequest Request;
+	Request.EventTag = WidgetEscapeAudioEventTag;
+	Request.ContextTags = WidgetEscapeAudioContextTags;
+	Request.EmitterActor = this;
+
+	return AudioSubsystem->PlayLocal2D(Request);
 }
 
 void AFirstPersonCharacter::HandleWidgetConfirmedInput()

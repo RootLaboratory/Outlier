@@ -138,7 +138,7 @@ void SAudioTagHelperPanel::Construct(const FArguments& InArgs)
 				.Padding(0.0f, 0.0f, 0.0f, 16.0f)
 				[
 					SNew(STextBlock)
-					.Text(LOCTEXT("Summary", "Select existing audio tags or add new children below the fixed Audio.Event and Audio.Context parents. All new tags are stored in AudioTags.ini."))
+					.Text(LOCTEXT("Summary", "Select existing audio tags or add new Event and Context children. Playback and network routing are selected by native call sites."))
 					.AutoWrapText(true)
 				]
 
@@ -758,7 +758,11 @@ FReply SAudioTagHelperPanel::CreateOrOpenDataAsset()
 	FString AssetName;
 	FString AssetFolder;
 	FText ValidationError;
-	if (!ValidateDataAssetInputs(EventTag, AssetName, AssetFolder, ValidationError))
+	if (!ValidateDataAssetInputs(
+		EventTag,
+		AssetName,
+		AssetFolder,
+		ValidationError))
 	{
 		AudioTagHelperPanel::ShowResultMessage(ValidationError);
 		return FReply::Handled();
@@ -807,6 +811,8 @@ FReply SAudioTagHelperPanel::CreateOrOpenDataAsset()
 
 	NewDefinition->Modify();
 	NewDefinition->EventTag = EventTag;
+	NewDefinition->VolumeMultiplier = 1.0f;
+	NewDefinition->PitchMultiplier = 1.0f;
 	FOutlierAudioVariant& InitialVariant = NewDefinition->Variants.AddDefaulted_GetRef();
 	if (SelectedContextTags.IsValid())
 	{

@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerController.h"
 #include "GameplayTagContainer.h"
+#include "Audio/OutlierAudioTypes.h"
 #include "OutlierPlayerState.h"
 #include "PlayerUIProvider.h"
 #include "UI/UILayerTypes.h"
@@ -47,6 +48,14 @@ class OUTLIER_API AFirstPersonPlayerController : public APlayerController ,  pub
 	
 public:
 	AFirstPersonPlayerController();
+
+	/** Client-owned transport for relevant AtLocation audio requests. */
+	UFUNCTION(Server, Unreliable)
+	void ServerRequestRelevantAudioAtLocation(const FOutlierAudioPlayRequest& Request);
+
+	/** Delivers an already resolved Owner/Relevant sound to this client. */
+	UFUNCTION(Client, Unreliable)
+	void ClientPlayResolvedAudio(const FOutlierResolvedAudioPlay& ResolvedPlay);
 
 	UFUNCTION(Client, Reliable)
 	void ClientArenaLoad(int32 ArenaId);

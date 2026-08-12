@@ -2,9 +2,59 @@
 
 #include "Engine/AssetManager.h"
 #include "Engine/StreamableManager.h"
+#include "Engine/World.h"
+#include "FirstPerson/FirstPersonPlayerController.h"
+#include "GameFramework/Pawn.h"
 #include "Kismet/GameplayStatics.h"
 #include "Outlier.h"
+#include "Sound/SoundAttenuation.h"
 #include "Sound/SoundBase.h"
+
+namespace
+{
+	const TCHAR* PlaybackModeName(EOutlierAudioPlaybackMode PlaybackMode)
+	{
+		switch (PlaybackMode)
+		{
+		case EOutlierAudioPlaybackMode::TwoD:
+			return TEXT("TwoD");
+		case EOutlierAudioPlaybackMode::AtLocation:
+			return TEXT("AtLocation");
+		default:
+			return TEXT("Unknown");
+		}
+	}
+
+	const TCHAR* AudienceName(EOutlierAudioAudience Audience)
+	{
+		switch (Audience)
+		{
+		case EOutlierAudioAudience::Local:
+			return TEXT("Local");
+		case EOutlierAudioAudience::Owner:
+			return TEXT("Owner");
+		case EOutlierAudioAudience::Relevant:
+			return TEXT("Relevant");
+		default:
+			return TEXT("Unknown");
+		}
+	}
+
+	const TCHAR* RequestAuthorityName(EOutlierAudioRequestAuthority RequestAuthority)
+	{
+		switch (RequestAuthority)
+		{
+		case EOutlierAudioRequestAuthority::Local:
+			return TEXT("Local");
+		case EOutlierAudioRequestAuthority::OwningClient:
+			return TEXT("OwningClient");
+		case EOutlierAudioRequestAuthority::Server:
+			return TEXT("Server");
+		default:
+			return TEXT("Unknown");
+		}
+	}
+}
 
 void UOutlierAudioSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -77,6 +127,15 @@ bool UOutlierAudioSubsystem::ReloadCatalog()
 			continue;
 		}
 
+		if (Definition->VolumeMultiplier < 0.0f
+			|| Definition->PitchMultiplier < 0.0f)
+		{
+			UE_LOG(LogOutlier, Error,
+				TEXT("[Audio] Definition '%s' has invalid multipliers and was skipped."),
+				*GetNameSafe(Definition));
+			continue;
+		}
+
 		if (const FName* ExistingDefinition = DefinitionByEvent.Find(Definition->EventTag))
 		{
 			UE_LOG(LogOutlier, Error,
@@ -109,7 +168,10 @@ bool UOutlierAudioSubsystem::ReloadCatalog()
 				VariantIndex);
 			Entry.RequiredContextTags = Variant.RequiredContextTags;
 			Entry.Sound = Variant.Sound;
+			Entry.VariantIndex = VariantIndex;
 			Entry.Weight = Variant.Weight;
+			Entry.VolumeMultiplier = Definition->VolumeMultiplier;
+			Entry.PitchMultiplier = Definition->PitchMultiplier;
 
 			CatalogEntriesByEvent.FindOrAdd(Definition->EventTag).Add(MoveTemp(Entry));
 			++LoadedVariantCount;
@@ -124,42 +186,169 @@ bool UOutlierAudioSubsystem::ReloadCatalog()
 	return LoadedVariantCount > 0;
 }
 
-bool UOutlierAudioSubsystem::PlayAudio2D(const FOutlierAudioPlayRequest& Request)
+bool UOutlierAudioSubsystem::PlayLocal2D(const FOutlierAudioPlayRequest& Request)
 {
-	const FRuntimeCatalogEntry* Entry = ResolveBestEntry(Request.EventTag, Request.ContextTags);
-	if (!Entry)
-	{
-		return false;
-	}
-
-	FPendingPlay PendingPlay;
-	PendingPlay.World = GetWorld();
-	PendingPlay.SourceName = Entry->SourceName;
-	PendingPlay.VolumeMultiplier = Request.VolumeMultiplier;
-	PendingPlay.PitchMultiplier = Request.PitchMultiplier;
-	PendingPlay.StartTime = Request.StartTime;
-
-	return QueueOrPlay(*Entry, PendingPlay);
+	return PlayAudio(Request, {
+		EOutlierAudioPlaybackMode::TwoD,
+		EOutlierAudioAudience::Local,
+		EOutlierAudioRequestAuthority::Local });
 }
 
-bool UOutlierAudioSubsystem::PlayAudioAtLocation(
-	const FOutlierAudioPlayRequest& Request,
-	FVector Location)
+bool UOutlierAudioSubsystem::PlayOwner2DFromServer(const FOutlierAudioPlayRequest& Request)
 {
+	return PlayAudio(Request, {
+		EOutlierAudioPlaybackMode::TwoD,
+		EOutlierAudioAudience::Owner,
+		EOutlierAudioRequestAuthority::Server });
+}
+
+bool UOutlierAudioSubsystem::PlayRelevantAtLocationFromOwningClient(
+	const FOutlierAudioPlayRequest& Request)
+{
+	return PlayAudio(Request, {
+		EOutlierAudioPlaybackMode::AtLocation,
+		EOutlierAudioAudience::Relevant,
+		EOutlierAudioRequestAuthority::OwningClient });
+}
+
+bool UOutlierAudioSubsystem::PlayRelevantAtLocationFromServer(
+	const FOutlierAudioPlayRequest& Request)
+{
+	return PlayAudio(Request, {
+		EOutlierAudioPlaybackMode::AtLocation,
+		EOutlierAudioAudience::Relevant,
+		EOutlierAudioRequestAuthority::Server });
+}
+
+bool UOutlierAudioSubsystem::PlayAudio(
+	const FOutlierAudioPlayRequest& Request,
+	const FOutlierAudioExecutionPolicy& Policy)
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return false;
+	}
+
+	if (Policy.RequestAuthority == EOutlierAudioRequestAuthority::Local
+		&& Policy.Audience != EOutlierAudioAudience::Local)
+	{
+		UE_LOG(LogOutlier, Error,
+			TEXT("[Audio] Local request authority only supports a Local audience. Event='%s'."),
+			*Request.EventTag.ToString());
+		return false;
+	}
+
+	if (Policy.RequestAuthority == EOutlierAudioRequestAuthority::Server
+		&& World->GetNetMode() == NM_Client)
+	{
+		UE_LOG(LogOutlier, Warning,
+			TEXT("[Audio] Server-authoritative event '%s' was rejected on a client."),
+			*Request.EventTag.ToString());
+		return false;
+	}
+
+	if (Policy.RequestAuthority == EOutlierAudioRequestAuthority::OwningClient
+		&& World->GetNetMode() == NM_Client)
+	{
+		AFirstPersonPlayerController* RequestingController =
+			ResolveLocalRequestController(Request.EmitterActor);
+		if (!RequestingController)
+		{
+			UE_LOG(LogOutlier, Warning,
+				TEXT("[Audio] OwningClient event '%s' needs an EmitterActor owned by the local player. Controller-less emitters must start this request on the server."),
+				*Request.EventTag.ToString());
+			return false;
+		}
+
+		RequestingController->ServerRequestRelevantAudioAtLocation(Request);
+		return true;
+	}
+
 	const FRuntimeCatalogEntry* Entry = ResolveBestEntry(Request.EventTag, Request.ContextTags);
 	if (!Entry)
 	{
 		return false;
 	}
 
+	FOutlierResolvedAudioPlay ResolvedPlay;
+	if (!BuildResolvedPlay(
+		Request.EventTag,
+		*Entry,
+		Request,
+		Policy.PlaybackMode,
+		ResolvedPlay))
+	{
+		return false;
+	}
+
+	UE_LOG(LogOutlier, Warning,
+		TEXT("[AudioSpatialDebug][ResolvedRequest] NetMode=%d Event='%s' Emitter='%s' Playback=%s Audience=%s Authority=%s ExplicitLocation=%d RequestLocation=%s ResolvedAtLocation=%d ResolvedLocation=%s Variant=%d"),
+		static_cast<int32>(World->GetNetMode()),
+		*Request.EventTag.ToString(),
+		*GetNameSafe(Request.EmitterActor),
+		PlaybackModeName(Policy.PlaybackMode),
+		AudienceName(Policy.Audience),
+		RequestAuthorityName(Policy.RequestAuthority),
+		Request.bHasLocation,
+		*Request.Location.ToCompactString(),
+		ResolvedPlay.bAtLocation,
+		*FVector(ResolvedPlay.Location).ToCompactString(),
+		ResolvedPlay.VariantIndex);
+
+	if (World->GetNetMode() == NM_Standalone)
+	{
+		return PlayResolvedAudioLocally(ResolvedPlay);
+	}
+
+	return RouteByAudience(Request, ResolvedPlay, Policy.Audience);
+}
+
+bool UOutlierAudioSubsystem::HandleServerRelevantAtLocationRequest(
+	AFirstPersonPlayerController* RequestingController,
+	const FOutlierAudioPlayRequest& Request)
+{
+	UWorld* World = GetWorld();
+	if (!World || World->GetNetMode() == NM_Client || !IsValid(RequestingController))
+	{
+		return false;
+	}
+
+	if (!IsEmitterOwnedByController(Request.EmitterActor, RequestingController))
+	{
+		UE_LOG(LogOutlier, Warning,
+			TEXT("[Audio] Rejected client world-audio request. Controller='%s' Emitter='%s' Event='%s'."),
+			*GetNameSafe(RequestingController),
+			*GetNameSafe(Request.EmitterActor),
+			*Request.EventTag.ToString());
+		return false;
+	}
+
+	return PlayRelevantAtLocationFromOwningClient(Request);
+}
+
+bool UOutlierAudioSubsystem::PlayResolvedAudioLocally(
+	const FOutlierResolvedAudioPlay& ResolvedPlay)
+{
+	const FRuntimeCatalogEntry* Entry =
+		FindResolvedEntry(ResolvedPlay.EventTag, ResolvedPlay.VariantIndex);
+	if (!Entry)
+	{
+		UE_LOG(LogOutlier, Warning,
+			TEXT("[Audio] Could not resolve delivered event '%s' variant %d."),
+			*ResolvedPlay.EventTag.ToString(),
+			ResolvedPlay.VariantIndex);
+		return false;
+	}
+
 	FPendingPlay PendingPlay;
 	PendingPlay.World = GetWorld();
 	PendingPlay.SourceName = Entry->SourceName;
-	PendingPlay.bAtLocation = true;
-	PendingPlay.Location = Location;
-	PendingPlay.VolumeMultiplier = Request.VolumeMultiplier;
-	PendingPlay.PitchMultiplier = Request.PitchMultiplier;
-	PendingPlay.StartTime = Request.StartTime;
+	PendingPlay.bAtLocation = ResolvedPlay.bAtLocation;
+	PendingPlay.Location = ResolvedPlay.Location;
+	PendingPlay.VolumeMultiplier = Entry->VolumeMultiplier;
+	PendingPlay.PitchMultiplier = Entry->PitchMultiplier;
+	PendingPlay.StartTime = ResolvedPlay.StartTime;
 
 	return QueueOrPlay(*Entry, PendingPlay);
 }
@@ -232,6 +421,263 @@ const UOutlierAudioSubsystem::FRuntimeCatalogEntry* UOutlierAudioSubsystem::Reso
 	}
 
 	return BestMatches.Last();
+}
+
+const UOutlierAudioSubsystem::FRuntimeCatalogEntry* UOutlierAudioSubsystem::FindResolvedEntry(
+	FGameplayTag EventTag,
+	int32 VariantIndex) const
+{
+	const TArray<FRuntimeCatalogEntry>* Entries = CatalogEntriesByEvent.Find(EventTag);
+	if (!Entries)
+	{
+		return nullptr;
+	}
+
+	return Entries->FindByPredicate([VariantIndex](const FRuntimeCatalogEntry& Entry)
+	{
+		return Entry.VariantIndex == VariantIndex;
+	});
+}
+
+bool UOutlierAudioSubsystem::BuildResolvedPlay(
+	FGameplayTag EventTag,
+	const FRuntimeCatalogEntry& Entry,
+	const FOutlierAudioPlayRequest& Request,
+	EOutlierAudioPlaybackMode PlaybackMode,
+	FOutlierResolvedAudioPlay& OutResolvedPlay) const
+{
+	OutResolvedPlay.EventTag = EventTag;
+	OutResolvedPlay.VariantIndex = Entry.VariantIndex;
+	OutResolvedPlay.StartTime = FMath::Max(0.0f, Request.StartTime);
+
+	if (PlaybackMode == EOutlierAudioPlaybackMode::TwoD)
+	{
+		OutResolvedPlay.bAtLocation = false;
+		return true;
+	}
+
+	if (PlaybackMode != EOutlierAudioPlaybackMode::AtLocation)
+	{
+		UE_LOG(LogOutlier, Error,
+			TEXT("[Audio] Event '%s' uses an unsupported native PlaybackMode."),
+			*EventTag.ToString());
+		return false;
+	}
+
+	OutResolvedPlay.bAtLocation = true;
+	if (Request.bHasLocation)
+	{
+		OutResolvedPlay.Location = Request.Location;
+		return true;
+	}
+
+	if (IsValid(Request.EmitterActor))
+	{
+		OutResolvedPlay.Location = Request.EmitterActor->GetActorLocation();
+		return true;
+	}
+
+	UE_LOG(LogOutlier, Warning,
+		TEXT("[Audio] AtLocation event '%s' requires an explicit Location or an EmitterActor."),
+		*EventTag.ToString());
+	return false;
+}
+
+bool UOutlierAudioSubsystem::RouteByAudience(
+	const FOutlierAudioPlayRequest& Request,
+	const FOutlierResolvedAudioPlay& ResolvedPlay,
+	EOutlierAudioAudience Audience)
+{
+	switch (Audience)
+	{
+	case EOutlierAudioAudience::Local:
+		if (GetWorld() && GetWorld()->GetNetMode() != NM_DedicatedServer)
+		{
+			return PlayResolvedAudioLocally(ResolvedPlay);
+		}
+		UE_LOG(LogOutlier, Warning,
+			TEXT("[Audio] Local event '%s' was requested on a dedicated server."),
+			*ResolvedPlay.EventTag.ToString());
+		return false;
+
+	case EOutlierAudioAudience::Owner:
+		return RouteOwner(Request, ResolvedPlay);
+
+	case EOutlierAudioAudience::Relevant:
+		return RouteRelevant(Request.EmitterActor, ResolvedPlay);
+
+	default:
+		UE_LOG(LogOutlier, Error,
+			TEXT("[Audio] Event '%s' uses an unsupported native Audience."),
+			*ResolvedPlay.EventTag.ToString());
+		return false;
+	}
+}
+
+bool UOutlierAudioSubsystem::RouteOwner(
+	const FOutlierAudioPlayRequest& Request,
+	const FOutlierResolvedAudioPlay& ResolvedPlay)
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return false;
+	}
+
+	AActor* Recipient = IsValid(Request.RecipientActor)
+		? Request.RecipientActor.Get()
+		: Request.EmitterActor.Get();
+
+	AFirstPersonPlayerController* TargetController =
+		ResolveOwningPlayerController(Recipient);
+	if (!TargetController)
+	{
+		UE_LOG(LogOutlier, Warning,
+			TEXT("[Audio] Owner audience event '%s' requires RecipientActor or EmitterActor with an owning player controller."),
+			*ResolvedPlay.EventTag.ToString());
+		return false;
+	}
+
+	TargetController->ClientPlayResolvedAudio(ResolvedPlay);
+	return true;
+}
+
+bool UOutlierAudioSubsystem::RouteRelevant(
+	AActor* EmitterActor,
+	const FOutlierResolvedAudioPlay& ResolvedPlay)
+{
+	UWorld* World = GetWorld();
+	if (!World || World->GetNetMode() == NM_Client)
+	{
+		return false;
+	}
+
+	if (World->GetNetMode() == NM_Standalone)
+	{
+		return PlayResolvedAudioLocally(ResolvedPlay);
+	}
+
+	int32 DeliveryCount = 0;
+	for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+	{
+		AFirstPersonPlayerController* PlayerController =
+			Cast<AFirstPersonPlayerController>(It->Get());
+		if (!PlayerController)
+		{
+			continue;
+		}
+
+		if (IsValid(EmitterActor))
+		{
+			const AActor* ViewTarget = PlayerController->GetViewTarget();
+			if (!EmitterActor->IsNetRelevantFor(
+				PlayerController,
+				ViewTarget,
+				PlayerController->GetFocalLocation()))
+			{
+				continue;
+			}
+		}
+
+		PlayerController->ClientPlayResolvedAudio(ResolvedPlay);
+
+		const float ApproximateDistance = ResolvedPlay.bAtLocation
+			? FVector::Distance(PlayerController->GetFocalLocation(), ResolvedPlay.Location)
+			: 0.0f;
+		UE_LOG(LogOutlier, Warning,
+			TEXT("[AudioSpatialDebug][RelevantDelivery] Event='%s' Controller='%s' AtLocation=%d Location=%s ApproxDistance=%.1f"),
+			*ResolvedPlay.EventTag.ToString(),
+			*GetNameSafe(PlayerController),
+			ResolvedPlay.bAtLocation,
+			*FVector(ResolvedPlay.Location).ToCompactString(),
+			ApproximateDistance);
+		++DeliveryCount;
+	}
+
+	if (DeliveryCount == 0)
+	{
+		UE_LOG(LogOutlier, Verbose,
+			TEXT("[Audio] Relevant event '%s' had no player recipients."),
+			*ResolvedPlay.EventTag.ToString());
+	}
+
+	return DeliveryCount > 0;
+}
+
+AFirstPersonPlayerController* UOutlierAudioSubsystem::ResolveOwningPlayerController(
+	AActor* Actor) const
+{
+	if (!IsValid(Actor))
+	{
+		return nullptr;
+	}
+
+	if (AFirstPersonPlayerController* PlayerController =
+		Cast<AFirstPersonPlayerController>(Actor))
+	{
+		return PlayerController;
+	}
+
+	if (APawn* Pawn = Cast<APawn>(Actor))
+	{
+		if (AFirstPersonPlayerController* PlayerController =
+			Cast<AFirstPersonPlayerController>(Pawn->GetController()))
+		{
+			return PlayerController;
+		}
+	}
+
+	if (AFirstPersonPlayerController* InstigatorController =
+		Cast<AFirstPersonPlayerController>(Actor->GetInstigatorController()))
+	{
+		return InstigatorController;
+	}
+
+	for (AActor* Owner = Actor->GetOwner(); IsValid(Owner); Owner = Owner->GetOwner())
+	{
+		if (AFirstPersonPlayerController* PlayerController =
+			Cast<AFirstPersonPlayerController>(Owner))
+		{
+			return PlayerController;
+		}
+
+		if (APawn* OwnerPawn = Cast<APawn>(Owner))
+		{
+			if (AFirstPersonPlayerController* PlayerController =
+				Cast<AFirstPersonPlayerController>(OwnerPawn->GetController()))
+			{
+				return PlayerController;
+			}
+		}
+	}
+
+	return nullptr;
+}
+
+AFirstPersonPlayerController* UOutlierAudioSubsystem::ResolveLocalRequestController(
+	AActor* EmitterActor) const
+{
+	AFirstPersonPlayerController* Controller = ResolveOwningPlayerController(EmitterActor);
+	return Controller && Controller->IsLocalController() ? Controller : nullptr;
+}
+
+bool UOutlierAudioSubsystem::IsEmitterOwnedByController(
+	const AActor* EmitterActor,
+	const AFirstPersonPlayerController* Controller) const
+{
+	if (!IsValid(EmitterActor) || !IsValid(Controller))
+	{
+		return false;
+	}
+
+	if (EmitterActor == Controller
+		|| EmitterActor == Controller->GetPawn()
+		|| EmitterActor->IsOwnedBy(Controller))
+	{
+		return true;
+	}
+
+	return EmitterActor->GetInstigatorController() == Controller;
 }
 
 bool UOutlierAudioSubsystem::QueueOrPlay(
@@ -316,6 +762,48 @@ void UOutlierAudioSubsystem::ExecutePlay(
 	if (!World || !Sound)
 	{
 		return;
+	}
+
+	FVector ListenerLocation = FVector::ZeroVector;
+	bool bHasLocalListener = false;
+	for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+	{
+		APlayerController* PlayerController = It->Get();
+		if (PlayerController && PlayerController->IsLocalController())
+		{
+			FRotator ListenerRotation;
+			PlayerController->GetPlayerViewPoint(ListenerLocation, ListenerRotation);
+			bHasLocalListener = true;
+			break;
+		}
+	}
+
+	const FSoundAttenuationSettings* Attenuation = Sound->GetAttenuationSettingsToApply();
+	const float ListenerDistance = PendingPlay.bAtLocation && bHasLocalListener
+		? FVector::Distance(ListenerLocation, PendingPlay.Location)
+		: -1.0f;
+
+	UE_LOG(LogOutlier, Warning,
+		TEXT("[AudioSpatialDebug][Execute] NetMode=%d Method=%s Sound='%s' Location=%s Listener=%s Distance=%.1f AttenuationAsset='%s' HasSettings=%d VolumeAttenuation=%d Spatialization=%d InnerExtents=%s Falloff=%.1f SoundMaxDistance=%.1f"),
+		static_cast<int32>(World->GetNetMode()),
+		PendingPlay.bAtLocation ? TEXT("AtLocation") : TEXT("2D"),
+		*GetNameSafe(Sound),
+		*PendingPlay.Location.ToCompactString(),
+		bHasLocalListener ? *ListenerLocation.ToCompactString() : TEXT("None"),
+		ListenerDistance,
+		*GetNameSafe(Sound->AttenuationSettings),
+		Attenuation != nullptr,
+		Attenuation ? Attenuation->bAttenuate : false,
+		Attenuation ? Attenuation->bSpatialize : false,
+		Attenuation ? *Attenuation->AttenuationShapeExtents.ToCompactString() : TEXT("None"),
+		Attenuation ? Attenuation->FalloffDistance : 0.0f,
+		Sound->GetMaxDistance());
+
+	if (PendingPlay.bAtLocation && (!Attenuation || !Attenuation->bAttenuate))
+	{
+		UE_LOG(LogOutlier, Warning,
+			TEXT("[AudioSpatialDebug][NoDistanceAttenuation] Sound='%s' is using PlaySoundAtLocation, but its Sound asset has no enabled volume attenuation. Distance will not reduce volume."),
+			*GetNameSafe(Sound));
 	}
 
 	if (PendingPlay.bAtLocation)

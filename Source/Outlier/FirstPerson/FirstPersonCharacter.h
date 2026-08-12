@@ -60,6 +60,22 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
 	TObjectPtr<UFirstPersonInputConfig> InputConfig;
 
+	/** Relevant AtLocation event requested by this owning client on Interaction input. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|Input", meta = (Categories = "Audio.Event"))
+	FGameplayTag InteractionAudioEventTag;
+
+	/** Runtime context supplied with the Interaction audio request. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|Input", meta = (Categories = "Audio.Context"))
+	FGameplayTagContainer InteractionAudioContextTags;
+
+	/** Local 2D event played on Widget Escape input. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|Input", meta = (Categories = "Audio.Event"))
+	FGameplayTag WidgetEscapeAudioEventTag;
+
+	/** Runtime context supplied with the Widget Escape audio request. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|Input", meta = (Categories = "Audio.Context"))
+	FGameplayTagContainer WidgetEscapeAudioContextTags;
+
 	UPROPERTY(EditDefaultsOnly, Category = "Interaction")
 	float InteractRange = 100.0f;
 
@@ -95,6 +111,14 @@ public:
 	void NotifyHoldInteractCompleted(AActor* CompletedActor);
 	void NotifyHoldInteractInvalidated(AActor* TargetActor);
 
+	/** Builds and submits the owning-client world request bound to InteractionAudioEventTag. */
+	UFUNCTION(BlueprintCallable, Category = "Outlier|Audio")
+	bool PlayInteractionRelevantAtLocationAudio();
+
+	/** Builds and submits the local 2D request bound to WidgetEscapeAudioEventTag. */
+	UFUNCTION(BlueprintCallable, Category = "Outlier|Audio")
+	bool PlayWidgetEscapeLocal2DAudio();
+
 protected:
 
 	virtual void TryStartAttack();
@@ -110,6 +134,7 @@ protected:
 	void DoAim(float Yaw, float Pitch);
 
 	void TryCamToggle();
+	void HandleInteractionInputStarted();
 	void HandleWidgetEscapeInput();
 	void HandleWidgetConfirmedInput();
 
