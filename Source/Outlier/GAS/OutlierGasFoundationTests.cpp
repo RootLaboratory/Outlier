@@ -2,6 +2,8 @@
 
 #include "Misc/AutomationTest.h"
 
+#include "Components/SphereComponent.h"
+#include "Damage/OutlierTaggedDamageEvent.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
@@ -159,23 +161,111 @@ bool FOutlierGasFoundationAttributeMaxClampTest::RunTest(const FString& Paramete
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FOutlierGasFoundationLegacyAuthorityBoundaryTest,
-	"Outlier.GAS.Foundation.LegacyAuthorityBoundary",
+	FOutlierGasEnemyAttributeAuthorityBoundaryTest,
+	"Outlier.GAS.Enemy.AttributeAuthorityBoundary",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FOutlierGasFoundationLegacyAuthorityBoundaryTest::RunTest(const FString& Parameters)
+bool FOutlierGasEnemyAttributeAuthorityBoundaryTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
 
 	const AEnemyBase* Enemy = GetDefault<AEnemyBase>();
 	TestEqual(
-		TEXT("Enemy legacy CurrentHealth remains independent during the topology slice"),
+		TEXT("Enemy health query reads the GAS Vital attribute"),
 		Enemy->GetCurrentHealth(),
-		0.0f);
+		Enemy->GetVitalAttributeSet()->GetHealth());
 	TestEqual(
-		TEXT("Enemy GAS Health is only its untouched foundation default"),
+		TEXT("Enemy CDO keeps the shared Vital foundation default"),
 		Enemy->GetVitalAttributeSet()->GetHealth(),
 		100.0f);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierGasEnemyDamageFlowTest,
+	"Outlier.GAS.Enemy.DamageFlow",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierGasEnemyDamageFlowTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	const FName WorldName = MakeUniqueObjectName(
+		nullptr,
+		UWorld::StaticClass(),
+		NAME_None,
+		EUniqueObjectNameOptions::GloballyUnique);
+	FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, WorldName, GetTransientPackage());
+	if (!TestNotNull(TEXT("Transient Enemy damage world is created"), World))
+	{
+		GEngine->DestroyWorldContext(World);
+		return false;
+	}
+
+	World->AddToRoot();
+	WorldContext.SetCurrentWorld(World);
+	World->InitializeActorsForPlay(FURL());
+
+	UClass* EnemyClass = LoadClass<AEnemyBase>(
+		nullptr,
+		TEXT("/Game/Blueprints/Enemy/VECDrone/BP_VECDrone_Gun.BP_VECDrone_Gun_C"));
+	AEnemyBase* Enemy = EnemyClass ? World->SpawnActor<AEnemyBase>(EnemyClass) : nullptr;
+	if (!TestNotNull(TEXT("Enemy spawns for GAS damage flow"), Enemy))
+	{
+		World->DestroyWorld(true);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+		return false;
+	}
+
+	UOutlierAbilitySystemComponent* AbilitySystem = Enemy->GetOutlierAbilitySystemComponent();
+	AbilitySystem->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetMaxHealthAttribute(), 100.0f);
+	AbilitySystem->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetHealthAttribute(), 100.0f);
+
+	USphereComponent* CoreHitbox = nullptr;
+	TInlineComponentArray<USphereComponent*> SphereComponents(Enemy);
+	for (USphereComponent* SphereComponent : SphereComponents)
+	{
+		if (SphereComponent && SphereComponent->GetFName() == TEXT("CoreHitboxComponent"))
+		{
+			CoreHitbox = SphereComponent;
+			break;
+		}
+	}
+	TestNotNull(TEXT("Enemy exposes its core weak-point component"), CoreHitbox);
+	FOutlierTaggedDamageEvent WeaponDamageEvent;
+	WeaponDamageEvent.DamageTag = OutlierGameplayTags::Damage::Weapon();
+	WeaponDamageEvent.HitResult.Component = CoreHitbox;
+	const float AppliedWeakPointDamage = Enemy->TakeDamage(
+		10.0f,
+		WeaponDamageEvent,
+		nullptr,
+		Enemy);
+	const float ExpectedWeakPointDamage = 10.0f * Enemy->GetWeakPointDamageMultiplier(CoreHitbox);
+	TestTrue(TEXT("Core hit is configured as a weak point"), ExpectedWeakPointDamage > 10.0f);
+	TestEqual(TEXT("Core weak-point multiplier is applied"), AppliedWeakPointDamage, ExpectedWeakPointDamage);
+	TestEqual(
+		TEXT("Weak-point damage is committed through GAS Health"),
+		Enemy->GetCurrentHealth(),
+		100.0f - ExpectedWeakPointDamage);
+
+	FOutlierTaggedDamageEvent ExplosionDamageEvent;
+	ExplosionDamageEvent.DamageTag = OutlierGameplayTags::Damage::Explosion();
+	Enemy->TakeDamage(Enemy->GetCurrentHealth(), ExplosionDamageEvent, nullptr, Enemy);
+	TestEqual(TEXT("Lethal Enemy damage clamps GAS Health to zero"), AbilitySystem->GetNumericAttribute(
+		UOutlierVitalAttributeSet::GetHealthAttribute()), 0.0f);
+	TestTrue(
+		TEXT("Lethal Enemy damage grants the authoritative dead tag"),
+		AbilitySystem->HasMatchingGameplayTag(OutlierGameplayTags::State::Dead()));
+	TestTrue(TEXT("Enemy death enters the existing destruction path"), Enemy->IsActorBeingDestroyed());
+
+	GEngine->ShutdownWorldNetDriver(World);
+	World->DestroyWorld(true);
+	World->SetPhysicsScene(nullptr);
+	GEngine->DestroyWorldContext(World);
+	World->RemoveFromRoot();
 
 	return true;
 }

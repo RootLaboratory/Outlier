@@ -25,6 +25,7 @@ class ARangedWeaponBase;
 class APartnerCharacter;
 class UOutlierAbilitySystemComponent;
 class UOutlierVitalAttributeSet;
+struct FOnAttributeChangeData;
 
 UENUM(BlueprintType)
 enum class EEnemyCombatState : uint8
@@ -66,7 +67,7 @@ public:
 	const UOutlierVitalAttributeSet* GetVitalAttributeSet() const { return VitalAttributeSet; }
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
-	// Unreal 공통 피해 진입점을 기존 Enemy HP 및 사망 처리로 연결한다.
+	// Unreal 공통 피해 진입점의 약점 판정을 보존하고 최종 피해를 GAS로 전달한다.
 	virtual float TakeDamage(
 		float DamageAmount,
 		FDamageEvent const& DamageEvent,
@@ -88,7 +89,6 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
 	TObjectPtr<UOutlierAbilitySystemComponent> OutlierAbilitySystemComponent;
 
-	// Slice 1 topology only. CurrentHealth remains authoritative until the health migration slice.
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
 	TObjectPtr<UOutlierVitalAttributeSet> VitalAttributeSet;
 
@@ -163,9 +163,6 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, ReplicatedUsing = OnRep_RuntimeStat, Category = "Enemy|Data")
 	FEnemyStat RuntimeStat;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, ReplicatedUsing = OnRep_CurrentHealth, Category = "Enemy|Data")
-	float CurrentHealth = 0.0f;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|Data")
 	float CoreCriticalMultiplier = 2.0f;
@@ -345,7 +342,10 @@ public:
 	const FEnemyStat& GetRuntimeStat() const { return RuntimeStat; }
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|Data")
-	float GetCurrentHealth() const { return CurrentHealth; }
+	float GetCurrentHealth() const;
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|State")
+	bool IsDead() const;
 
 	UFUNCTION(BlueprintCallable, Category = "Enemy|Data")
 	void InitializeFromEnemyStatRow();
@@ -447,11 +447,16 @@ protected:
 	UFUNCTION()
 	void OnRep_RuntimeStat();
 
-	UFUNCTION()
-	void OnRep_CurrentHealth(float PreviousHealth);
-
-	void HandleCurrentHealthChanged(float PreviousHealth);
-	void ApplyDamageInternal(float DamageAmount);
+	void InitializeGasVitality();
+	void BindGasVitalityObservers();
+	void UnbindGasVitalityObservers();
+	void HandleHealthChanged(const FOnAttributeChangeData& ChangeData);
+	void ApplyDamageInternal(
+		float DamageAmount,
+		AController* DamageInstigator,
+		AActor* DamageCauser,
+		const FGameplayTag& DamageTag);
+	void Die();
 	void ApplyCoreWeakPointRuntimeState();
 
 	void SendEnemyStateTreeEventNextTick(FGameplayTag Tag);
@@ -476,10 +481,12 @@ protected:
 	void HandleCurrentRoomTagChanged(FGameplayTag PreviousRoomTag, FGameplayTag NewRoomTag);
 	void RemoveRoomTargetObserver();
 	virtual void HandleDeath();
+	void PerformDeathCleanup();
 	virtual float GetDeathDestroyDelay() const { return 0.0f; }
 	virtual bool TryApplyCommittedImpactVelocity(const FVector& ImpactVelocity);
 	virtual void CancelCommittedAction();
 	virtual void ApplyExplosionReactionPresentation(const FVector& Direction, float ReactionScale);
+	FDelegateHandle HealthChangedHandle;
 	void AccumulateImpactVelocity(const FVector& ImpactVelocity);
 	void RefreshImpactReactionDuration();
 	void BeginPossessedImpactInputLock();

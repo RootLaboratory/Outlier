@@ -192,7 +192,7 @@ float AExplosiveProp::TakeDamage(
 			WeakPointMultiplier,
 			AppliedDamage,
 			PreviousDroneHealth,
-			FMath::Max(PreviousDroneHealth - AppliedDamage, 0.0f));
+			CachedOwningDrone->GetCurrentHealth());
 		return AppliedDamage;
 	}
 
