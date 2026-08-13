@@ -1,7 +1,30 @@
 #include "GAS/OutlierAbilitySystemComponent.h"
 
 #include "GameFramework/Pawn.h"
+#include "GAS/Effects/OutlierGameplayEffects.h"
+#include "GameplayTags/OutlierGameplayTags.h"
 #include "Outlier.h"
+
+namespace
+{
+FGameplayEffectSpecHandle MakeSelfEffectSpec(
+	UOutlierAbilitySystemComponent& AbilitySystem,
+	TSubclassOf<UGameplayEffect> EffectClass,
+	AController* Instigator,
+	AActor* EffectCauser)
+{
+	FGameplayEffectContextHandle Context = AbilitySystem.MakeEffectContext();
+	Context.AddInstigator(Instigator ? Instigator->GetPawn() : nullptr, EffectCauser);
+	Context.AddSourceObject(EffectCauser);
+	return AbilitySystem.MakeOutgoingSpec(EffectClass, 1.0f, Context);
+}
+
+bool ApplySpecToSelf(UOutlierAbilitySystemComponent& AbilitySystem, FGameplayEffectSpecHandle& SpecHandle)
+{
+	return SpecHandle.IsValid()
+		&& AbilitySystem.ApplyGameplayEffectSpecToSelf(*SpecHandle.Data.Get()).WasSuccessfullyApplied();
+}
+}
 
 UOutlierAbilitySystemComponent::UOutlierAbilitySystemComponent()
 {
@@ -41,4 +64,97 @@ void UOutlierAbilitySystemComponent::ClearForPawn(const APawn* Pawn)
 	{
 		ClearActorInfo();
 	}
+}
+
+bool UOutlierAbilitySystemComponent::ApplyDamageToSelf(
+	float DamageAmount,
+	AController* Instigator,
+	AActor* DamageCauser,
+	const FGameplayTag& DamageTag)
+{
+	if (!IsOwnerActorAuthoritative() || DamageAmount <= 0.0f)
+	{
+		return false;
+	}
+
+	FGameplayEffectSpecHandle SpecHandle = MakeSelfEffectSpec(
+		*this,
+		UOutlierDamageGameplayEffect::StaticClass(),
+		Instigator,
+		DamageCauser);
+	if (!SpecHandle.IsValid())
+	{
+		return false;
+	}
+
+	SpecHandle.Data->SetSetByCallerMagnitude(OutlierGameplayTags::Data::Damage(), DamageAmount);
+	if (DamageTag.IsValid())
+	{
+		SpecHandle.Data->AddDynamicAssetTag(DamageTag);
+	}
+	return ApplySpecToSelf(*this, SpecHandle);
+}
+
+bool UOutlierAbilitySystemComponent::ApplyShieldRecoveryToSelf(float Amount)
+{
+	if (!IsOwnerActorAuthoritative() || Amount <= 0.0f)
+	{
+		return false;
+	}
+
+	FGameplayEffectSpecHandle SpecHandle = MakeSelfEffectSpec(
+		*this,
+		UOutlierShieldRecoveryGameplayEffect::StaticClass(),
+		nullptr,
+		GetAvatarActor());
+	if (!SpecHandle.IsValid())
+	{
+		return false;
+	}
+
+	SpecHandle.Data->SetSetByCallerMagnitude(OutlierGameplayTags::Data::ShieldRecovery(), Amount);
+	return ApplySpecToSelf(*this, SpecHandle);
+}
+
+bool UOutlierAbilitySystemComponent::ApplyPartnerShieldDeltaToSelf(
+	float PartnerShieldDelta,
+	float MaxPartnerShieldDelta)
+{
+	if (!IsOwnerActorAuthoritative())
+	{
+		return false;
+	}
+
+	FGameplayEffectSpecHandle SpecHandle = MakeSelfEffectSpec(
+		*this,
+		UOutlierPartnerShieldGameplayEffect::StaticClass(),
+		nullptr,
+		GetAvatarActor());
+	if (!SpecHandle.IsValid())
+	{
+		return false;
+	}
+
+	SpecHandle.Data->SetSetByCallerMagnitude(
+		OutlierGameplayTags::Data::PartnerShield(),
+		PartnerShieldDelta);
+	SpecHandle.Data->SetSetByCallerMagnitude(
+		OutlierGameplayTags::Data::MaxPartnerShield(),
+		MaxPartnerShieldDelta);
+	return ApplySpecToSelf(*this, SpecHandle);
+}
+
+bool UOutlierAbilitySystemComponent::ApplyDeadStateToSelf()
+{
+	if (!IsOwnerActorAuthoritative() || HasMatchingGameplayTag(OutlierGameplayTags::State::Dead()))
+	{
+		return false;
+	}
+
+	FGameplayEffectSpecHandle SpecHandle = MakeSelfEffectSpec(
+		*this,
+		UOutlierDeadGameplayEffect::StaticClass(),
+		nullptr,
+		GetAvatarActor());
+	return ApplySpecToSelf(*this, SpecHandle);
 }

@@ -10,6 +10,7 @@
 #include "GAS/Attributes/OutlierShieldAttributeSet.h"
 #include "GAS/Attributes/OutlierVitalAttributeSet.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
+#include "GameplayTags/OutlierGameplayTags.h"
 #include "Shooter/ShooterCharacter.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -175,6 +176,96 @@ bool FOutlierGasFoundationLegacyAuthorityBoundaryTest::RunTest(const FString& Pa
 		TEXT("Enemy GAS Health is only its untouched foundation default"),
 		Enemy->GetVitalAttributeSet()->GetHealth(),
 		100.0f);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierGasShooterDamageFlowTest,
+	"Outlier.GAS.Shooter.DamageFlow",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierGasShooterDamageFlowTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	const FName WorldName = MakeUniqueObjectName(
+		nullptr,
+		UWorld::StaticClass(),
+		NAME_None,
+		EUniqueObjectNameOptions::GloballyUnique);
+	FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, WorldName, GetTransientPackage());
+	if (!TestNotNull(TEXT("Transient Shooter damage world is created"), World))
+	{
+		GEngine->DestroyWorldContext(World);
+		return false;
+	}
+
+	World->AddToRoot();
+	WorldContext.SetCurrentWorld(World);
+	World->InitializeActorsForPlay(FURL());
+
+	UClass* ShooterClass = LoadClass<AShooterCharacter>(
+		nullptr,
+		TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	AShooterCharacter* Shooter = ShooterClass
+		? World->SpawnActor<AShooterCharacter>(ShooterClass)
+		: nullptr;
+	if (!TestNotNull(TEXT("Shooter spawns for GAS damage flow"), Shooter))
+	{
+		World->DestroyWorld(true);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+		return false;
+	}
+	if (!Shooter->HasActorBegunPlay())
+	{
+		Shooter->DispatchBeginPlay();
+	}
+
+	UOutlierAbilitySystemComponent* AbilitySystem = Shooter->GetOutlierAbilitySystemComponent();
+	AbilitySystem->InitializeForPawn(Shooter);
+	AbilitySystem->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetMaxHealthAttribute(), 100.0f);
+	AbilitySystem->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetHealthAttribute(), 100.0f);
+	AbilitySystem->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetMaxShieldAttribute(), 5.0f);
+	AbilitySystem->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetShieldAttribute(), 5.0f);
+	TestTrue(
+		TEXT("Partner shield grant applies through a GameplayEffect"),
+		AbilitySystem->ApplyPartnerShieldDeltaToSelf(20.0f, 20.0f));
+	TestTrue(
+		TEXT("Shield recovery GameplayEffect applies"),
+		AbilitySystem->ApplyShieldRecoveryToSelf(20.0f));
+	TestEqual(TEXT("Shield recovery cannot exceed MaxShield"), Shooter->GetCurShield(), 5.0f);
+	TestTrue(
+		TEXT("Partner shield decay GameplayEffect applies"),
+		AbilitySystem->ApplyPartnerShieldDeltaToSelf(-25.0f, 0.0f));
+	TestEqual(TEXT("Partner shield cannot decay below zero"), Shooter->GetCurPartnerShield(), 0.0f);
+	TestTrue(
+		TEXT("Partner shield can be restored after the underflow clamp"),
+		AbilitySystem->ApplyPartnerShieldDeltaToSelf(20.0f, 0.0f));
+
+	TestTrue(
+		TEXT("Damage GameplayEffect applies on authority"),
+		AbilitySystem->ApplyDamageToSelf(30.0f, nullptr, Shooter, OutlierGameplayTags::Damage::Weapon()));
+	TestEqual(TEXT("Partner shield absorbs first"), Shooter->GetCurPartnerShield(), 0.0f);
+	TestEqual(TEXT("Personal shield absorbs second"), Shooter->GetCurShield(), 0.0f);
+	TestEqual(TEXT("Remaining damage reaches health"), Shooter->GetCurHealth(), 95.0f);
+
+	TestTrue(
+		TEXT("Lethal damage GameplayEffect applies"),
+		AbilitySystem->ApplyDamageToSelf(95.0f, nullptr, Shooter, OutlierGameplayTags::Damage::Explosion()));
+	TestEqual(TEXT("Lethal damage clamps health to zero"), Shooter->GetCurHealth(), 0.0f);
+	TestTrue(
+		TEXT("Health depletion grants the authoritative dead tag"),
+		AbilitySystem->HasMatchingGameplayTag(OutlierGameplayTags::State::Dead()));
+
+	Shooter->Destroy(true);
+	GEngine->ShutdownWorldNetDriver(World);
+	World->DestroyWorld(true);
+	World->SetPhysicsScene(nullptr);
+	GEngine->DestroyWorldContext(World);
+	World->RemoveFromRoot();
 
 	return true;
 }

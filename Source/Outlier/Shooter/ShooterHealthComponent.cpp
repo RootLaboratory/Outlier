@@ -2,6 +2,7 @@
 
 #include "Shooter/ShooterHealthComponent.h"
 #include "Shooter/ShooterCharacter.h"
+#include "GAS/OutlierAbilitySystemComponent.h"
 #include "OutlierNetUtils.h"
 #include "OutlierGameMode.h"
 
@@ -10,7 +11,11 @@ UShooterHealthComponent::UShooterHealthComponent()
 	PrimaryComponentTick.bCanEverTick = true;
 }
 
-void UShooterHealthComponent::ApplyDamage(float DamageAmount)
+void UShooterHealthComponent::ApplyDamage(
+	float DamageAmount,
+	AController* Instigator,
+	AActor* DamageCauser,
+	const FGameplayTag& DamageTag)
 {
 	if (!GetOwner()->HasAuthority()) return;
 
@@ -22,52 +27,30 @@ void UShooterHealthComponent::ApplyDamage(float DamageAmount)
 
 	GetHit();
 
-	if (ShooterCharacter->bIsDead || DamageAmount <= 0.0f)
+	if (ShooterCharacter->IsDead() || DamageAmount <= 0.0f)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("%s %s ApplyDamageInternal blocked Dead=%d Damage=%.1f"), OutlierNet::GetNetPrefix(ShooterCharacter), *ShooterCharacter->GetName(), ShooterCharacter->bIsDead ? 1 : 0, DamageAmount);
+		UE_LOG(LogTemp, Warning, TEXT("%s %s ApplyDamageInternal blocked Dead=%d Damage=%.1f"), OutlierNet::GetNetPrefix(ShooterCharacter), *ShooterCharacter->GetName(), ShooterCharacter->IsDead() ? 1 : 0, DamageAmount);
 		return;
 	}
 
-	float RemainingDamage = DamageAmount;
-
-	if (ShooterCharacter->CurPartnerShield > 0.0f)
+	if (UOutlierAbilitySystemComponent* AbilitySystem = ShooterCharacter->GetOutlierAbilitySystemComponent())
 	{
-		const float AbsorbedDamage = FMath::Min(ShooterCharacter->CurPartnerShield, RemainingDamage);
-		ShooterCharacter->CurPartnerShield -= AbsorbedDamage;
-		RemainingDamage -= AbsorbedDamage;
-		ShooterCharacter->BroadcastPartnerShieldState();
-	}
-
-	if (RemainingDamage > 0.0f && ShooterCharacter->CurShield > 0.0f)
-	{
-		const float AbsorbedDamage = FMath::Min(ShooterCharacter->CurShield, RemainingDamage);
-		ShooterCharacter->CurShield -= AbsorbedDamage;
-		RemainingDamage -= AbsorbedDamage;
-		ShooterCharacter->OnRep_CurShield();
-	}
-
-	if (RemainingDamage > 0.0f && ShooterCharacter->CurShield <= 0.0f)
-	{
-		ShooterCharacter->CurHP = FMath::Clamp(ShooterCharacter->CurHP - RemainingDamage, 0.0f, ShooterCharacter->MaxHP);
-		ShooterCharacter->OnRep_CurHP();
-	}
-
-	if (ShooterCharacter->CurHP <= 0.0f)
-	{
-		Die();
+		AbilitySystem->ApplyDamageToSelf(DamageAmount, Instigator, DamageCauser, DamageTag);
 	}
 }
 
 void UShooterHealthComponent::Die()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (!ShooterCharacter || ShooterCharacter->bIsDead)
+	if (!ShooterCharacter || ShooterCharacter->IsDead())
 	{
 		return;
 	}
 
-	ShooterCharacter->bIsDead = true;
-	ShooterCharacter->HandleDeath();
+	if (!ShooterCharacter->GetOutlierAbilitySystemComponent()->ApplyDeadStateToSelf())
+	{
+		return;
+	}
 
 	if (ShooterCharacter->HasAuthority())
 	{
@@ -126,7 +109,7 @@ void UShooterHealthComponent::TickComponent(float DeltaTime, ELevelTick TickType
 
 	// 경계 밖에서는 Shield 회복만 차단
 	if (ShooterCharacter->bSuitDisabledByPartnerBoundary ||
-		ShooterCharacter->CurShield >= ShooterCharacter->MaxShield)
+		ShooterCharacter->GetCurShield() >= ShooterCharacter->GetMaxShield())
 	{
 		return;
 	}
@@ -139,9 +122,8 @@ void UShooterHealthComponent::TickComponent(float DeltaTime, ELevelTick TickType
 	}
 
 	RecoveryAccumulated = 0.0f;
-	ShooterCharacter->CurShield = FMath::Min(
-		ShooterCharacter->MaxShield,
-		ShooterCharacter->CurShield + ShieldRecoveryValue);
-
-	ShooterCharacter->OnRep_CurShield();
+	if (UOutlierAbilitySystemComponent* AbilitySystem = ShooterCharacter->GetOutlierAbilitySystemComponent())
+	{
+		AbilitySystem->ApplyShieldRecoveryToSelf(ShieldRecoveryValue);
+	}
 }

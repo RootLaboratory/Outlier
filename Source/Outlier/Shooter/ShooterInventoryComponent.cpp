@@ -168,7 +168,7 @@ void UShooterInventoryComponent::HandleEquipWeapon(AWeaponBase* Weapon)
 void UShooterInventoryComponent::SelectWeaponSlot(EWeaponSlot Slot)
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (!ShooterCharacter || ShooterCharacter->bIsDead)
+	if (!ShooterCharacter || ShooterCharacter->IsDead())
 	{
 		return;
 	}

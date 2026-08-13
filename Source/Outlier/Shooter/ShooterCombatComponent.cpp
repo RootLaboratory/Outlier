@@ -999,7 +999,7 @@ bool UShooterCombatComponent::CanAimInCurrentState() const
 {
 	const AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 	return ShooterCharacter
-		&& !ShooterCharacter->bIsDead
+		&& !ShooterCharacter->IsDead()
 		&& !IsActionLockBlockingAimFire(*ShooterCharacter)
 		&& ShooterCharacter->GetCharacterMovement()->IsMovingOnGround()
 		&& (ShooterCharacter->WeaponMode == EWeaponMode::Primary || ShooterCharacter->WeaponMode == EWeaponMode::Secondary);
@@ -1008,7 +1008,7 @@ bool UShooterCombatComponent::CanAimInCurrentState() const
 bool UShooterCombatComponent::CanReloadInCurrentState() const
 {
 	const AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (!ShooterCharacter || ShooterCharacter->bIsDead)
+	if (!ShooterCharacter || ShooterCharacter->IsDead())
 	{
 		return false;
 	}
@@ -1024,7 +1024,7 @@ bool UShooterCombatComponent::CanReloadInCurrentState() const
 bool UShooterCombatComponent::CanFireInCurrentState() const
 {
 	const AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (!ShooterCharacter || ShooterCharacter->bIsDead || ShooterCharacter->CurrentWeapon == nullptr)
+	if (!ShooterCharacter || ShooterCharacter->IsDead() || ShooterCharacter->CurrentWeapon == nullptr)
 	{
 		return false;
 	}

@@ -21,6 +21,7 @@
 #include "LocalPlayerUISubSystem.h"
 #include "InputActionValue.h"
 #include "Drone/Partner/PartnerCharacter.h"
+#include "Damage/OutlierTaggedDamageEvent.h"
 #include "Enemy/EnemyRoomSubsystem.h"
 #include "TagDrivenUIGameplayTags.h"
 #include "ShooterInputConfig.h"
@@ -93,6 +94,8 @@ void AShooterCharacter::BeginPlay()
 {
 	Super::BeginPlay();
 	RefreshAbilitySystemActorInfo();
+	BindGasVitalityObservers();
+	InitializeGasVitality();
 
 	RefreshFirstPersonShadowPolicy();
 
@@ -129,12 +132,8 @@ void AShooterCharacter::BeginPlay()
 		}
 	}
 
-	if (HasAuthority())
-	{
-		CurHP = FMath::Clamp(CurHP, 0.0f, MaxHP);
-		CurShield = MaxShield;
-	}
-	
+	BroadcastCurrentUIState();
+
 	RefreshWeaponMode();
 	RefreshMovementState();
 	RefreshCombatState();
@@ -159,6 +158,7 @@ void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 
 	if (OutlierAbilitySystemComponent)
 	{
+		UnbindGasVitalityObservers();
 		OutlierAbilitySystemComponent->ClearForPawn(this);
 	}
 
@@ -186,11 +186,198 @@ UAbilitySystemComponent* AShooterCharacter::GetAbilitySystemComponent() const
 	return OutlierAbilitySystemComponent;
 }
 
+float AShooterCharacter::GetCurPartnerShield() const
+{
+	return ShieldAttributeSet ? ShieldAttributeSet->GetPartnerShield() : 0.0f;
+}
+
+float AShooterCharacter::GetMaxPartnerShield() const
+{
+	return ShieldAttributeSet ? ShieldAttributeSet->GetMaxPartnerShield() : 0.0f;
+}
+
+float AShooterCharacter::GetCurShield() const
+{
+	return ShieldAttributeSet ? ShieldAttributeSet->GetShield() : 0.0f;
+}
+
+float AShooterCharacter::GetMaxShield() const
+{
+	return ShieldAttributeSet ? ShieldAttributeSet->GetMaxShield() : 0.0f;
+}
+
+float AShooterCharacter::GetCurHealth() const
+{
+	return VitalAttributeSet ? VitalAttributeSet->GetHealth() : 0.0f;
+}
+
+float AShooterCharacter::GetMaxHealth() const
+{
+	return VitalAttributeSet ? VitalAttributeSet->GetMaxHealth() : 0.0f;
+}
+
+bool AShooterCharacter::IsDead() const
+{
+	return OutlierAbilitySystemComponent
+		&& OutlierAbilitySystemComponent->HasMatchingGameplayTag(OutlierGameplayTags::State::Dead());
+}
+
 void AShooterCharacter::RefreshAbilitySystemActorInfo()
 {
 	if (OutlierAbilitySystemComponent)
 	{
 		OutlierAbilitySystemComponent->InitializeForPawn(this);
+	}
+}
+
+void AShooterCharacter::InitializeGasVitality()
+{
+	if (!HasAuthority() || !OutlierAbilitySystemComponent)
+	{
+		return;
+	}
+
+	OutlierAbilitySystemComponent->SetNumericAttributeBase(
+		UOutlierVitalAttributeSet::GetMaxHealthAttribute(),
+		FMath::Max(MaxHP, 0.0f));
+	OutlierAbilitySystemComponent->SetNumericAttributeBase(
+		UOutlierVitalAttributeSet::GetHealthAttribute(),
+		FMath::Max(MaxHP, 0.0f));
+	OutlierAbilitySystemComponent->SetNumericAttributeBase(
+		UOutlierShieldAttributeSet::GetMaxShieldAttribute(),
+		FMath::Max(MaxShield, 0.0f));
+	OutlierAbilitySystemComponent->SetNumericAttributeBase(
+		UOutlierShieldAttributeSet::GetShieldAttribute(),
+		FMath::Max(MaxShield, 0.0f));
+	OutlierAbilitySystemComponent->SetNumericAttributeBase(
+		UOutlierShieldAttributeSet::GetMaxPartnerShieldAttribute(),
+		0.0f);
+	OutlierAbilitySystemComponent->SetNumericAttributeBase(
+		UOutlierShieldAttributeSet::GetPartnerShieldAttribute(),
+		0.0f);
+}
+
+void AShooterCharacter::BindGasVitalityObservers()
+{
+	if (!OutlierAbilitySystemComponent || HealthChangedHandle.IsValid())
+	{
+		return;
+	}
+
+	HealthChangedHandle = OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
+		UOutlierVitalAttributeSet::GetHealthAttribute()).AddUObject(
+			this, &AShooterCharacter::HandleHealthChanged);
+	MaxHealthChangedHandle = OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
+		UOutlierVitalAttributeSet::GetMaxHealthAttribute()).AddUObject(
+			this, &AShooterCharacter::HandleMaxHealthChanged);
+	ShieldChangedHandle = OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
+		UOutlierShieldAttributeSet::GetShieldAttribute()).AddUObject(
+			this, &AShooterCharacter::HandleShieldChanged);
+	MaxShieldChangedHandle = OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
+		UOutlierShieldAttributeSet::GetMaxShieldAttribute()).AddUObject(
+			this, &AShooterCharacter::HandleMaxShieldChanged);
+	PartnerShieldChangedHandle = OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
+		UOutlierShieldAttributeSet::GetPartnerShieldAttribute()).AddUObject(
+			this, &AShooterCharacter::HandlePartnerShieldChanged);
+	MaxPartnerShieldChangedHandle = OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
+		UOutlierShieldAttributeSet::GetMaxPartnerShieldAttribute()).AddUObject(
+			this, &AShooterCharacter::HandleMaxPartnerShieldChanged);
+	DeadTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::State::Dead()).AddUObject(
+			this, &AShooterCharacter::HandleDeadTagChanged);
+}
+
+void AShooterCharacter::UnbindGasVitalityObservers()
+{
+	if (!OutlierAbilitySystemComponent)
+	{
+		return;
+	}
+
+	OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
+		UOutlierVitalAttributeSet::GetHealthAttribute()).Remove(HealthChangedHandle);
+	OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
+		UOutlierVitalAttributeSet::GetMaxHealthAttribute()).Remove(MaxHealthChangedHandle);
+	OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
+		UOutlierShieldAttributeSet::GetShieldAttribute()).Remove(ShieldChangedHandle);
+	OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
+		UOutlierShieldAttributeSet::GetMaxShieldAttribute()).Remove(MaxShieldChangedHandle);
+	OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
+		UOutlierShieldAttributeSet::GetPartnerShieldAttribute()).Remove(PartnerShieldChangedHandle);
+	OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
+		UOutlierShieldAttributeSet::GetMaxPartnerShieldAttribute()).Remove(MaxPartnerShieldChangedHandle);
+	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::State::Dead()).Remove(DeadTagChangedHandle);
+
+	HealthChangedHandle.Reset();
+	MaxHealthChangedHandle.Reset();
+	ShieldChangedHandle.Reset();
+	MaxShieldChangedHandle.Reset();
+	PartnerShieldChangedHandle.Reset();
+	MaxPartnerShieldChangedHandle.Reset();
+	DeadTagChangedHandle.Reset();
+}
+
+void AShooterCharacter::HandleHealthChanged(const FOnAttributeChangeData& ChangeData)
+{
+	OnShooterHealthChanged.Broadcast(ChangeData.NewValue, GetMaxHealth());
+	OnShooterConditionChanged.Broadcast(ResolveShooterConditionTag());
+
+	if (HasAuthority() && ChangeData.OldValue > 0.0f && ChangeData.NewValue <= 0.0f)
+	{
+		Die();
+	}
+}
+
+void AShooterCharacter::HandleMaxHealthChanged(const FOnAttributeChangeData& ChangeData)
+{
+	(void)ChangeData;
+	OnShooterHealthChanged.Broadcast(GetCurHealth(), GetMaxHealth());
+}
+
+void AShooterCharacter::HandleShieldChanged(const FOnAttributeChangeData& ChangeData)
+{
+	OnShooterShieldChanged.Broadcast(ChangeData.NewValue, GetMaxShield());
+
+	if (IsLocallyControlled())
+	{
+		if (UMaterialPostProcessSubsystem* PPS = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
+		{
+			const float MaxValue = GetMaxShield();
+			PPS->UpdateDamagedPostProcess(
+				MaxValue > 0.0f ? ChangeData.NewValue / MaxValue : 0.0f,
+				FVector4(0, 0, 1, 0));
+			PPS->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Damaged, true);
+		}
+	}
+
+	OnShooterConditionChanged.Broadcast(ResolveShooterConditionTag());
+}
+
+void AShooterCharacter::HandleMaxShieldChanged(const FOnAttributeChangeData& ChangeData)
+{
+	(void)ChangeData;
+	OnShooterShieldChanged.Broadcast(GetCurShield(), GetMaxShield());
+}
+
+void AShooterCharacter::HandlePartnerShieldChanged(const FOnAttributeChangeData& ChangeData)
+{
+	(void)ChangeData;
+	BroadcastPartnerShieldState();
+}
+
+void AShooterCharacter::HandleMaxPartnerShieldChanged(const FOnAttributeChangeData& ChangeData)
+{
+	(void)ChangeData;
+	BroadcastPartnerShieldState();
+}
+
+void AShooterCharacter::HandleDeadTagChanged(const FGameplayTag Tag, int32 NewCount)
+{
+	(void)Tag;
+	if (NewCount > 0)
+	{
+		HandleDeath();
 	}
 }
 
@@ -462,7 +649,7 @@ void AShooterCharacter::HandleCrouchToggled()
 
 void AShooterCharacter::TryOpenSuitMenu()
 {
-	if (bIsDead)
+	if (IsDead())
 	{
 		return;
 	}
@@ -553,7 +740,7 @@ void AShooterCharacter::TryUseSuit()
 
 	constexpr float SuitAbilityCooldown = 5.0f;
 
-	if (bIsDead)
+	if (IsDead())
 	{
 		UE_LOG(LogTemp, Error, TEXT("ShooterController"));
 
@@ -611,7 +798,7 @@ void AShooterCharacter::TryUseSuit()
 
 void AShooterCharacter::ToggleStealth()
 {
-	if (!HasAuthority() || bIsDead)
+	if (!HasAuthority() || IsDead())
 	{
 		return;
 	}
@@ -725,40 +912,9 @@ void AShooterCharacter::UpdateSlideCameraEffect(float DeltaSeconds)
 	}
 }
 
-void AShooterCharacter::OnRep_CurHP()
-{
-	//UE_LOG(LogTemp, Log, TEXT("%s %s OnRep_CurHP CurHP=%.1f / %.1f"), OutlierNet::GetNetPrefix(this), *GetName(), CurHP, MaxHP);
-	OnShooterHealthChanged.Broadcast(CurHP, MaxHP);
-
-	OnShooterConditionChanged.Broadcast(ResolveShooterConditionTag());
-}
-
 void AShooterCharacter::OnRep_MovementState()
 {
 	OnMovementStateChanged.Broadcast(MovementState);
-}
-
-void AShooterCharacter::OnRep_CurShield()
-{
-	OnShooterShieldChanged.Broadcast(CurShield, MaxShield);
-
-	if (IsLocallyControlled())
-	{
-		UMaterialPostProcessSubsystem* PPS = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>();
-		if (PPS)
-		{
-			PPS->UpdateDamagedPostProcess(CurShield / MaxShield , FVector4(0,0,1,0));
-			PPS->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Damaged, true);
-		}
-	}
-
-	OnShooterConditionChanged.Broadcast(ResolveShooterConditionTag());
-
-}
-
-void AShooterCharacter::OnRep_CurPartnerShield()
-{
-	BroadcastPartnerShieldState();
 }
 
 void AShooterCharacter::OnRep_IsStealthed()
@@ -770,11 +926,6 @@ void AShooterCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
-	DOREPLIFETIME(AShooterCharacter, CurHP);
-	DOREPLIFETIME(AShooterCharacter, MaxPartnerShield);
-	DOREPLIFETIME(AShooterCharacter, CurPartnerShield);
-	DOREPLIFETIME(AShooterCharacter, CurShield);
-	DOREPLIFETIME(AShooterCharacter, bIsDead);
 	DOREPLIFETIME(AShooterCharacter, MovementState);
 	DOREPLIFETIME(AShooterCharacter, WeaponMode);
 	DOREPLIFETIME(AShooterCharacter, CombatState);
@@ -785,6 +936,12 @@ void AShooterCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 FGameplayTagContainer AShooterCharacter::GetOwnedGameplayTagsForQuery() const
 {
 	FGameplayTagContainer GameplayTags = Super::GetOwnedGameplayTagsForQuery();
+	if (OutlierAbilitySystemComponent)
+	{
+		FGameplayTagContainer AbilitySystemTags;
+		OutlierAbilitySystemComponent->GetOwnedGameplayTags(AbilitySystemTags);
+		GameplayTags.AppendTags(AbilitySystemTags);
+	}
 	if (bIsStealthed)
 	{
 		GameplayTags.AddTag(OutlierGameplayTags::State::Stealthed());
@@ -832,12 +989,12 @@ bool AShooterCharacter::CanFireInCurrentState() const
 
 bool AShooterCharacter::CanInteract() const
 {
-	return !bIsDead;
+	return !IsDead();
 }
 
 bool AShooterCharacter::CanLean() const
 {
-	return !bIsDead
+	return !IsDead()
 		&& !IsSprinting()
 		&& !GetCharacterMovement()->IsFalling()
 		&& !IsSliding()
@@ -976,7 +1133,7 @@ bool AShooterCharacter::CanStartAction(EShooterActionLock NextLock) const
 		ActionLock == EShooterActionLock::Slide &&
 		(NextLock == EShooterActionLock::Reload || NextLock == EShooterActionLock::Equip);
 
-	return !bIsDead
+	return !IsDead()
 		&& NextLock != EShooterActionLock::None
 		&& (ActionLock == EShooterActionLock::None || bCanOverrideSlideLock);
 }
@@ -1000,11 +1157,15 @@ void AShooterCharacter::EndActionLock(EShooterActionLock LockToEnd)
 	GetWorldTimerManager().ClearTimer(ActionLockTimerHandle);
 }
 
-void AShooterCharacter::ApplyDamageInternal(float DamageAmount)
+void AShooterCharacter::ApplyDamageInternal(
+	float DamageAmount,
+	AController* EventInstigator,
+	AActor* DamageCauser,
+	const FGameplayTag& DamageTag)
 {
 	if (HealthComponent)
 	{
-		HealthComponent->ApplyDamage(DamageAmount);
+		HealthComponent->ApplyDamage(DamageAmount, EventInstigator, DamageCauser, DamageTag);
 	}
 }
 
@@ -1021,7 +1182,12 @@ float AShooterCharacter::TakeDamage(
 
 	const float AppliedDamage = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
 	// 폭발 등 공통 피해를 기존 Shooter 실드 및 HP 처리로 전달한다.
-	ApplyDamageInternal(AppliedDamage);
+	FGameplayTag DamageTag;
+	if (DamageEvent.IsOfType(FOutlierTaggedDamageEvent::ClassID))
+	{
+		DamageTag = static_cast<const FOutlierTaggedDamageEvent&>(DamageEvent).DamageTag;
+	}
+	ApplyDamageInternal(AppliedDamage, EventInstigator, DamageCauser, DamageTag);
 	return AppliedDamage;
 }
 
@@ -1264,21 +1430,17 @@ void AShooterCharacter::UpdatePartnerShieldDecay()
 
 	if (PartnerShieldDuration <= KINDA_SMALL_NUMBER)
 	{
-		CurPartnerShield = 0.0f;
-		BroadcastPartnerShieldState();
+		OutlierAbilitySystemComponent->ApplyPartnerShieldDeltaToSelf(
+			-GetCurPartnerShield(),
+			-GetMaxPartnerShield());
 		GetWorldTimerManager().ClearTimer(PartnerShieldTimerHandle);
 		return;
 	}
 
-	const float DecayAmount = (MaxPartnerShield / PartnerShieldDuration) * DeltaTime;
-	CurPartnerShield = FMath::Max(0.0f, CurPartnerShield - DecayAmount);
+	const float DecayAmount = (GetMaxPartnerShield() / PartnerShieldDuration) * DeltaTime;
+	OutlierAbilitySystemComponent->ApplyPartnerShieldDeltaToSelf(-DecayAmount, 0.0f);
 
-	if (GetNetMode() != NM_DedicatedServer)
-	{
-		BroadcastPartnerShieldState();
-	}
-
-	if (CurPartnerShield <= 0.0f)
+	if (GetCurPartnerShield() <= 0.0f)
 	{
 		GetWorldTimerManager().ClearTimer(PartnerShieldTimerHandle);
 	}
@@ -1398,12 +1560,12 @@ FGameplayTag AShooterCharacter::ResolveShooterConditionTag() const
 {
 	FGameplayTag ConditionTag = TagDrivenUITags::Condition::Shooter::HP();
 
-	if (CurShield > 0.0f)
+	if (GetCurShield() > 0.0f)
 	{
 		ConditionTag = TagDrivenUITags::Condition::Shooter::Shield();
 	}
 
-	if (CurPartnerShield > 0.0f)
+	if (GetCurPartnerShield() > 0.0f)
 	{
 		ConditionTag = TagDrivenUITags::Condition::Shooter::PartnerShield();
 	}
@@ -1418,15 +1580,15 @@ void AShooterCharacter::RefreshUIForRespawn()
 
 void AShooterCharacter::BroadcastCurrentUIState()
 {
-	OnShooterHealthChanged.Broadcast(CurHP, MaxHP);
-	OnShooterShieldChanged.Broadcast(CurShield, MaxShield);
+	OnShooterHealthChanged.Broadcast(GetCurHealth(), GetMaxHealth());
+	OnShooterShieldChanged.Broadcast(GetCurShield(), GetMaxShield());
 	OnWeaponChanged.Broadcast(GetWeaponType());
 	BroadcastPartnerShieldState();
 }
 
 void AShooterCharacter::BroadcastPartnerShieldState()
 {
-	OnShooterPartnerShieldChanged.Broadcast(CurPartnerShield, MaxPartnerShield);
+	OnShooterPartnerShieldChanged.Broadcast(GetCurPartnerShield(), GetMaxPartnerShield());
 	OnShooterConditionChanged.Broadcast(ResolveShooterConditionTag());
 }
 
@@ -1943,13 +2105,16 @@ void AShooterCharacter::SetSuitDisabledByPartnerBoundary(bool bDisabled)
 }
 void AShooterCharacter::ApplyPartnerShield(float Amount, float Duration)
 {
-	CurPartnerShield = Amount;
-	MaxPartnerShield = Amount;
-	PartnerShieldDuration = Duration;
-	if (GetNetMode() != NM_DedicatedServer)
+	if (!HasAuthority() || !OutlierAbilitySystemComponent)
 	{
-		BroadcastPartnerShieldState();
+		return;
 	}
+
+	const float ClampedAmount = FMath::Max(Amount, 0.0f);
+	OutlierAbilitySystemComponent->ApplyPartnerShieldDeltaToSelf(
+		ClampedAmount - GetCurPartnerShield(),
+		ClampedAmount - GetMaxPartnerShield());
+	PartnerShieldDuration = Duration;
 
 	GetWorldTimerManager().SetTimer(
 		PartnerShieldTimerHandle,

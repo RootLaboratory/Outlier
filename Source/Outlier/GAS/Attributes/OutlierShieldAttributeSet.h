@@ -14,6 +14,7 @@ class OUTLIER_API UOutlierShieldAttributeSet : public UAttributeSet
 public:
 	UOutlierShieldAttributeSet();
 
+	virtual void PreAttributeBaseChange(const FGameplayAttribute& Attribute, float& NewValue) const override;
 	virtual void PreAttributeChange(const FGameplayAttribute& Attribute, float& NewValue) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 

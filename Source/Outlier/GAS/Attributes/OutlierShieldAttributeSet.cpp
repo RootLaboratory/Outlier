@@ -10,6 +10,26 @@ UOutlierShieldAttributeSet::UOutlierShieldAttributeSet()
 {
 }
 
+void UOutlierShieldAttributeSet::PreAttributeBaseChange(
+	const FGameplayAttribute& Attribute,
+	float& NewValue) const
+{
+	Super::PreAttributeBaseChange(Attribute, NewValue);
+
+	if (Attribute == GetMaxShieldAttribute() || Attribute == GetMaxPartnerShieldAttribute())
+	{
+		NewValue = FMath::Max(NewValue, 0.0f);
+	}
+	else if (Attribute == GetShieldAttribute())
+	{
+		NewValue = FMath::Clamp(NewValue, 0.0f, GetMaxShield());
+	}
+	else if (Attribute == GetPartnerShieldAttribute())
+	{
+		NewValue = FMath::Clamp(NewValue, 0.0f, GetMaxPartnerShield());
+	}
+}
+
 void UOutlierShieldAttributeSet::PreAttributeChange(
 	const FGameplayAttribute& Attribute,
 	float& NewValue)

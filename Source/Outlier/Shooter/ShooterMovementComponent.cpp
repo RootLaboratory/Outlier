@@ -45,7 +45,7 @@ void UShooterMovementComponent::HandleSprintPressed()
 			TEXT("%s %s HandleSprintPressed blocked Dead=%d Crouching=%d WantsAim=%d Reloading=%d MoveState=%d CombatState=%d"),
 			OutlierNet::GetNetPrefix(ShooterCharacter),
 			*ShooterCharacter->GetName(),
-			ShooterCharacter->bIsDead ? 1 : 0,
+			ShooterCharacter->IsDead() ? 1 : 0,
 			ShooterCharacter->GetCharacterMovement()->IsCrouching() ? 1 : 0,
 			ShooterCharacter->WantsToAim() ? 1 : 0,
 			ShooterCharacter->IsReloading() ? 1 : 0,
@@ -117,7 +117,7 @@ void UShooterMovementComponent::RequestCrouchOrSlide()
 		ShooterCharacter->ServerRequestCrouchOrSlide();
 	}
 
-	if (ShooterCharacter->bIsDead)
+	if (ShooterCharacter->IsDead())
 	{
 		return;
 	}
@@ -480,7 +480,7 @@ bool UShooterMovementComponent::CanStartSlide() const
 {
 	const AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 	return ShooterCharacter
-		&& !ShooterCharacter->bIsDead
+		&& !ShooterCharacter->IsDead()
 		&& !bIsSliding
 		&& !ShooterCharacter->GetCharacterMovement()->IsFalling()
 		&& ShooterCharacter->GetCharacterMovement()->IsMovingOnGround()
@@ -493,7 +493,7 @@ bool UShooterMovementComponent::CanSprint() const
 {
 	const AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 
-	return !ShooterCharacter->bIsDead && !ShooterCharacter->GetCharacterMovement()->IsCrouching()
+	return !ShooterCharacter->IsDead() && !ShooterCharacter->GetCharacterMovement()->IsCrouching()
 		&& !ShooterCharacter->WantsToAim()
 		&& !ShooterCharacter->IsReloading()
 		&& !ShooterCharacter->IsActionLocked();

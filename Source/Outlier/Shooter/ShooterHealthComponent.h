@@ -6,6 +6,9 @@
 #include "Shooter/ShooterCharacterComponentBase.h"
 #include "ShooterHealthComponent.generated.h"
 
+class AController;
+struct FGameplayTag;
+
 UCLASS(ClassGroup=(Shooter), meta=(BlueprintSpawnableComponent))
 class OUTLIER_API UShooterHealthComponent : public UShooterCharacterComponentBase
 {
@@ -14,7 +17,11 @@ class OUTLIER_API UShooterHealthComponent : public UShooterCharacterComponentBas
 public:
 	UShooterHealthComponent();
 
-	void ApplyDamage(float DamageAmount);
+	void ApplyDamage(
+		float DamageAmount,
+		AController* Instigator,
+		AActor* DamageCauser,
+		const FGameplayTag& DamageTag);
 	void Die();
 	void GetHit();
 	void HitHistoryRefresh();

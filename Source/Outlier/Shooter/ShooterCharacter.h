@@ -23,6 +23,7 @@ class APartnerCharacter;
 class UOutlierAbilitySystemComponent;
 class UOutlierVitalAttributeSet;
 class UOutlierShieldAttributeSet;
+struct FOnAttributeChangeData;
 
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnShooterHealthChanged, float /*CurrentHealth*/, float /*MaxHealth*/);
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnShooterShieldChanged, float /*CurrentShield*/, float /*MaxShield*/);
@@ -110,11 +111,9 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
 	TObjectPtr<UOutlierAbilitySystemComponent> OutlierAbilitySystemComponent;
 
-	// Slice 1 topology only. Legacy health remains authoritative until its migration slice.
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
 	TObjectPtr<UOutlierVitalAttributeSet> VitalAttributeSet;
 
-	// Slice 1 topology only. Legacy shield remains authoritative until its migration slice.
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
 	TObjectPtr<UOutlierShieldAttributeSet> ShieldAttributeSet;
 
@@ -130,7 +129,7 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UShooterMovementComponent> MovementComponent;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Health")
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Health")
 	float MaxHP = 100.0f;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Movement")
@@ -226,9 +225,6 @@ protected:
 	FName DefaultMontageSectionName = TEXT("Default");
 
 	// Replicated Gameplay State
-	UPROPERTY(ReplicatedUsing = OnRep_CurHP, EditAnywhere, BlueprintReadWrite, Category = "Health")
-	float CurHP = 100.0f;
-
 	UPROPERTY(ReplicatedUsing = OnRep_MovementState, VisibleAnywhere, BlueprintReadOnly, Category = "State")
 	EMovementState MovementState = EMovementState::Idle;
 
@@ -240,9 +236,6 @@ protected:
 
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "State")
 	EShooterActionLock ActionLock = EShooterActionLock::None;
-
-	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Status")
-	uint8 bIsDead : 1 = false;
 
 	UPROPERTY(ReplicatedUsing = OnRep_IsStealthed, VisibleAnywhere, BlueprintReadOnly, Category = "Status")
 	uint8 bIsStealthed : 1 = false;
@@ -277,19 +270,17 @@ protected:
 
 	FTimerHandle PartnerShieldTimerHandle;
 
-	UPROPERTY(ReplicatedUsing = OnRep_CurShield, EditAnywhere, BlueprintReadWrite, Category = "Shield")
-	float CurShield = 100.0f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shield")
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Shield")
 	float MaxShield = 100.0f;
 
-	UPROPERTY(ReplicatedUsing = OnRep_CurPartnerShield, EditAnywhere, BlueprintReadWrite, Category = "Shield")
-	float CurPartnerShield = 0.0f;
-
-	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = "Shield")
-	float MaxPartnerShield = 0.0f;
-
 	float PartnerShieldDuration = 0.0f;
+	FDelegateHandle HealthChangedHandle;
+	FDelegateHandle MaxHealthChangedHandle;
+	FDelegateHandle ShieldChangedHandle;
+	FDelegateHandle MaxShieldChangedHandle;
+	FDelegateHandle PartnerShieldChangedHandle;
+	FDelegateHandle MaxPartnerShieldChangedHandle;
+	FDelegateHandle DeadTagChangedHandle;
 
 	UPROPERTY()
 	TObjectPtr<APartnerCharacter> CachedPartnerCharacter;
@@ -324,6 +315,16 @@ protected:
 	virtual void PossessedBy(AController* NewController) override;
 	virtual void OnRep_Controller() override;
 	void RefreshAbilitySystemActorInfo();
+	void InitializeGasVitality();
+	void BindGasVitalityObservers();
+	void UnbindGasVitalityObservers();
+	void HandleHealthChanged(const FOnAttributeChangeData& ChangeData);
+	void HandleMaxHealthChanged(const FOnAttributeChangeData& ChangeData);
+	void HandleShieldChanged(const FOnAttributeChangeData& ChangeData);
+	void HandleMaxShieldChanged(const FOnAttributeChangeData& ChangeData);
+	void HandlePartnerShieldChanged(const FOnAttributeChangeData& ChangeData);
+	void HandleMaxPartnerShieldChanged(const FOnAttributeChangeData& ChangeData);
+	void HandleDeadTagChanged(const FGameplayTag Tag, int32 NewCount);
 
 	/** Initialize input action bindings */
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
@@ -371,16 +372,7 @@ public:
 
 	// Replication / Engine Hooks
 	UFUNCTION()
-	void OnRep_CurHP();
-
-	UFUNCTION()
 	void OnRep_MovementState();
-
-	UFUNCTION()
-	void OnRep_CurShield();
-
-	UFUNCTION()
-	void OnRep_CurPartnerShield();
 
 	UFUNCTION()
 	void OnRep_IsStealthed();
@@ -416,7 +408,12 @@ public:
 	void SetSuitDisabledByPartnerBoundary(bool bDisabled);
 
 	void ApplyPartnerShield(float Amount, float Duration);
-	float GetCurPartnerShield() const { return CurPartnerShield; }
+	float GetCurPartnerShield() const;
+	float GetMaxPartnerShield() const;
+	float GetCurShield() const;
+	float GetMaxShield() const;
+	float GetCurHealth() const;
+	float GetMaxHealth() const;
 	void BroadcastCurrentUIState();
 
 	UFUNCTION(BlueprintPure)
@@ -452,7 +449,7 @@ public:
 	bool IsReloading() const;
 
 	UFUNCTION(BlueprintPure)
-	bool IsDead() const { return bIsDead; }
+	bool IsDead() const;
 
 	UFUNCTION(BlueprintPure, Category = "Suit|Stealth")
 	bool IsStealthed() const { return bIsStealthed; }
@@ -468,7 +465,11 @@ public:
 
 	void DoJumpEnd();
 protected:
-	void ApplyDamageInternal(float DamageAmount);
+	void ApplyDamageInternal(
+		float DamageAmount,
+		AController* EventInstigator,
+		AActor* DamageCauser,
+		const FGameplayTag& DamageTag);
 	void UpdatePartnerShieldDecay();
 
 	// Input Handlers

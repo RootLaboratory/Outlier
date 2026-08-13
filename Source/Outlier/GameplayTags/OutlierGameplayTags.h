@@ -5,6 +5,33 @@
 
 namespace OutlierGameplayTags
 {
+	namespace Data
+	{
+		inline FGameplayTag Damage()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Data.Damage")));
+			return Tag;
+		}
+
+		inline FGameplayTag ShieldRecovery()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Data.ShieldRecovery")));
+			return Tag;
+		}
+
+		inline FGameplayTag PartnerShield()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Data.PartnerShield")));
+			return Tag;
+		}
+
+		inline FGameplayTag MaxPartnerShield()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Data.MaxPartnerShield")));
+			return Tag;
+		}
+	}
+
 	namespace Damage
 	{
 		inline FGameplayTag Weapon()
