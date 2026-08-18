@@ -75,3 +75,51 @@ class OUTLIER_API UOutlierDeadGameplayEffect : public UGameplayEffect
 public:
 	UOutlierDeadGameplayEffect(const FObjectInitializer& ObjectInitializer);
 };
+
+UCLASS(Abstract)
+class OUTLIER_API UOutlierPartnerCooldownGameplayEffect : public UGameplayEffect
+{
+	GENERATED_BODY()
+
+protected:
+	UOutlierPartnerCooldownGameplayEffect(const FObjectInitializer& ObjectInitializer);
+	void ConfigureCooldownTag(
+		const FObjectInitializer& ObjectInitializer,
+		const FGameplayTag& CooldownTag);
+};
+
+UCLASS()
+class OUTLIER_API UOutlierPartnerEMPCooldownGameplayEffect : public UOutlierPartnerCooldownGameplayEffect
+{
+	GENERATED_BODY()
+
+public:
+	UOutlierPartnerEMPCooldownGameplayEffect(const FObjectInitializer& ObjectInitializer);
+};
+
+UCLASS()
+class OUTLIER_API UOutlierPartnerShieldCooldownGameplayEffect : public UOutlierPartnerCooldownGameplayEffect
+{
+	GENERATED_BODY()
+
+public:
+	UOutlierPartnerShieldCooldownGameplayEffect(const FObjectInitializer& ObjectInitializer);
+};
+
+UCLASS()
+class OUTLIER_API UOutlierPartnerHackCooldownGameplayEffect : public UOutlierPartnerCooldownGameplayEffect
+{
+	GENERATED_BODY()
+
+public:
+	UOutlierPartnerHackCooldownGameplayEffect(const FObjectInitializer& ObjectInitializer);
+};
+
+UCLASS()
+class OUTLIER_API UOutlierPartnerScanCooldownGameplayEffect : public UOutlierPartnerCooldownGameplayEffect
+{
+	GENERATED_BODY()
+
+public:
+	UOutlierPartnerScanCooldownGameplayEffect(const FObjectInitializer& ObjectInitializer);
+};

@@ -11,6 +11,8 @@ class UEMPLayerWidget;
 class UEMPMarkWidget;
 class ULocalPlayerUILayerSubsystem;
 
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnPartnerEMPFinished, bool, bool);
+
 USTRUCT(BlueprintType)
 struct OUTLIER_API FPartnerEMPAbilityData
 {
@@ -110,6 +112,7 @@ public:
 
 	void RefocusEMPInput();
 	void CancelForReboot();
+	FOnPartnerEMPFinished OnEMPFinished;
 
 	UFUNCTION(BlueprintCallable, Category = "EMP")
 	bool IsEMPCandidateSearchActive() const { return bEMPCandidateSearchActive; }

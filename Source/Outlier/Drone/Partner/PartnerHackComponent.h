@@ -16,6 +16,8 @@ class UHackableInfoWidget;
 class UHackMiniGameWidget;
 class ULocalPlayerUILayerSubsystem;
 
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnPartnerHackFinished, EHackResult, bool);
+
 USTRUCT(BlueprintType)
 struct OUTLIER_API FPartnerHackAbilityData
 {
@@ -82,6 +84,7 @@ public:
 
 	void EndHackHold();
 	void CancelForReboot();
+	FOnPartnerHackFinished OnHackFinished;
 
 	UFUNCTION(BlueprintCallable, Category = "Hack")
 	void CacheAbilityData(const FPartnerHackAbilityData& InAbilityData);

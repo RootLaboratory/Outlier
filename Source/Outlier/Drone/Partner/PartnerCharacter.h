@@ -63,7 +63,6 @@ class UPartnerMovementComponent;
 class UPartnerSupportComponent;
 class UPartnerCombatComponent;
 class UPartnerHackComponent;
-class UPartnerAbilityComponent;
 class UPartnerEMPComponent;
 class UPartnerSpriteAnimationComponent;
 class UNiagaraComponent;
@@ -73,6 +72,8 @@ class UOutlierVitalAttributeSet;
 class UPartnerVitalityComponent;
 
 class USceneComponent;
+struct FGameplayEffectSpec;
+struct FActiveGameplayEffectHandle;
 UCLASS()
 class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeaponMuzzleProvider, public IAbilitySystemInterface
 {
@@ -82,7 +83,6 @@ class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeap
 	friend class UPartnerSupportComponent;
 	friend class UPartnerCombatComponent;
 	friend class UPartnerDistanceComponent;
-	friend class UPartnerAbilityComponent;
 	friend class UPartnerHackComponent;
 	friend class UPartnerEMPComponent;
 protected:
@@ -107,9 +107,6 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UPartnerSupportComponent> SupportComponent;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TestAbilityComponents")
-	TObjectPtr<UPartnerAbilityComponent> TestAbilityComponent;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UPartnerCombatComponent> CombatComponent;
@@ -360,9 +357,6 @@ protected:
 	UPROPERTY(Replicated)
 	uint8 bScanning : 1;
 
-	UPROPERTY(Replicated)
-	float LastHackServerTime = -999.0f;
-
 	FTimerHandle BoostNoiseTimerHandle;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Noise|Boost", meta = (ClampMin = "0.05"))
@@ -452,7 +446,6 @@ protected:
 	void Hacking(AActor* TargetActor);
 	void TryEMP();
 	//
-	void TestAbilityScan();
 	void Scan();
 	void Shield();
 	void SyncMove();
@@ -487,11 +480,17 @@ protected:
 	UFUNCTION(Server, Reliable)
 	void ServerSetAccelerate(bool bNewAccelerate);
 
-	UFUNCTION(Server, Reliable)
-	void ServerUseSkill(EPartnerSkillType SkillType);
-
 	void EnsurePartnerDataInitialized();
 	void InitializeFromDataTables();
+	void BindPartnerCooldownUIObserver();
+	void UnbindPartnerCooldownUIObserver();
+	void HandlePartnerCooldownEffectAdded(
+		UAbilitySystemComponent* AbilitySystem,
+		const FGameplayEffectSpec& EffectSpec,
+		FActiveGameplayEffectHandle EffectHandle);
+	void RefreshPartnerCooldownUI();
+	void NotifyPartnerCooldownUI(const FGameplayTag& CooldownTag);
+	FDelegateHandle PartnerCooldownEffectAddedHandle;
 
 	virtual void LookInput(const FInputActionValue& Value) override;
 public:

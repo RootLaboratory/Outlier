@@ -101,6 +101,36 @@ namespace OutlierGameplayTags
 		}
 	}
 
+	namespace Cooldown
+	{
+		namespace Partner
+		{
+			inline FGameplayTag EMP()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Cooldown.Partner.EMP")));
+				return Tag;
+			}
+
+			inline FGameplayTag Shield()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Cooldown.Partner.Shield")));
+				return Tag;
+			}
+
+			inline FGameplayTag Hacking()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Cooldown.Partner.Hacking")));
+				return Tag;
+			}
+
+			inline FGameplayTag Scan()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Cooldown.Partner.Scan")));
+				return Tag;
+			}
+		}
+	}
+
 	namespace State
 	{
 		inline FGameplayTag Rebooting()

@@ -32,7 +32,6 @@
 #include "Shooter/ShooterCharacter.h"
 #include "OutlierPlayerState.h"
 #include "LocalPlayerUISubSystem.h"
-#include "PartnerAbilityComponent.h"
 #include "TagDrivenUIGameplayTags.h"
 #include "Perception/AISense_Hearing.h"
 #include "Enemy/EnemyRoomSubsystem.h"
@@ -41,6 +40,7 @@
 #include "Weapon/WeaponBase.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "GAS/Attributes/OutlierVitalAttributeSet.h"
+#include "GameplayEffect.h"
 
 namespace
 {
@@ -84,10 +84,7 @@ void APartnerCharacter::BeginPlay()
 
 	Super::BeginPlay();
 	RefreshAbilitySystemActorInfo();
-	if (PartnerVitalityComponent)
-	{
-		PartnerVitalityComponent->BindObservers();
-	}
+	BindPartnerCooldownUIObserver();
 
 	if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
 	{
@@ -103,6 +100,7 @@ void APartnerCharacter::BeginPlay()
 
 void APartnerCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	UnbindPartnerCooldownUIObserver();
 	CleanupBoostVFXComponents();
 	if (PartnerVitalityComponent)
 	{
@@ -188,6 +186,7 @@ void APartnerCharacter::OnRep_Controller()
 {
 	Super::OnRep_Controller();
 	RefreshAbilitySystemActorInfo();
+	RefreshPartnerCooldownUI();
 }
 
 UAbilitySystemComponent* APartnerCharacter::GetAbilitySystemComponent() const
@@ -204,6 +203,120 @@ void APartnerCharacter::RefreshAbilitySystemActorInfo()
 	if (PartnerVitalityComponent)
 	{
 		PartnerVitalityComponent->BindObservers();
+	}
+}
+
+void APartnerCharacter::BindPartnerCooldownUIObserver()
+{
+	if (!OutlierAbilitySystemComponent || PartnerCooldownEffectAddedHandle.IsValid())
+	{
+		return;
+	}
+
+	PartnerCooldownEffectAddedHandle =
+		OutlierAbilitySystemComponent->OnActiveGameplayEffectAddedDelegateToSelf.AddUObject(
+			this,
+			&APartnerCharacter::HandlePartnerCooldownEffectAdded);
+}
+
+void APartnerCharacter::UnbindPartnerCooldownUIObserver()
+{
+	if (OutlierAbilitySystemComponent && PartnerCooldownEffectAddedHandle.IsValid())
+	{
+		OutlierAbilitySystemComponent->OnActiveGameplayEffectAddedDelegateToSelf.Remove(
+			PartnerCooldownEffectAddedHandle);
+	}
+	PartnerCooldownEffectAddedHandle.Reset();
+}
+
+void APartnerCharacter::HandlePartnerCooldownEffectAdded(
+	UAbilitySystemComponent* AbilitySystem,
+	const FGameplayEffectSpec& EffectSpec,
+	FActiveGameplayEffectHandle EffectHandle)
+{
+	(void)AbilitySystem;
+	(void)EffectHandle;
+	if (!EffectSpec.Def)
+	{
+		return;
+	}
+
+	const FGameplayTagContainer& GrantedTags = EffectSpec.Def->GetGrantedTags();
+	const FGameplayTag CooldownTags[] =
+	{
+		OutlierGameplayTags::Cooldown::Partner::EMP(),
+		OutlierGameplayTags::Cooldown::Partner::Shield(),
+		OutlierGameplayTags::Cooldown::Partner::Hacking(),
+		OutlierGameplayTags::Cooldown::Partner::Scan()
+	};
+	for (const FGameplayTag& CooldownTag : CooldownTags)
+	{
+		if (GrantedTags.HasTagExact(CooldownTag))
+		{
+			NotifyPartnerCooldownUI(CooldownTag);
+			return;
+		}
+	}
+}
+
+void APartnerCharacter::RefreshPartnerCooldownUI()
+{
+	const FGameplayTag CooldownTags[] =
+	{
+		OutlierGameplayTags::Cooldown::Partner::EMP(),
+		OutlierGameplayTags::Cooldown::Partner::Shield(),
+		OutlierGameplayTags::Cooldown::Partner::Hacking(),
+		OutlierGameplayTags::Cooldown::Partner::Scan()
+	};
+	for (const FGameplayTag& CooldownTag : CooldownTags)
+	{
+		NotifyPartnerCooldownUI(CooldownTag);
+	}
+}
+
+void APartnerCharacter::NotifyPartnerCooldownUI(const FGameplayTag& CooldownTag)
+{
+	if (!IsLocallyControlled() || !OutlierAbilitySystemComponent)
+	{
+		return;
+	}
+
+	const float Remaining = OutlierAbilitySystemComponent->GetPartnerCooldownRemaining(CooldownTag);
+	if (Remaining <= 0.0f)
+	{
+		return;
+	}
+
+	APlayerController* PlayerController = Cast<APlayerController>(GetController());
+	ULocalPlayer* LocalPlayer = PlayerController ? PlayerController->GetLocalPlayer() : nullptr;
+	ULocalPlayerUISubSystem* UISubsystem = LocalPlayer
+		? LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>()
+		: nullptr;
+	if (!UISubsystem)
+	{
+		return;
+	}
+
+	FGameplayTag AbilityTag;
+	if (CooldownTag == OutlierGameplayTags::Cooldown::Partner::EMP())
+	{
+		AbilityTag = TagDrivenUITags::Ability::Partner::EMP();
+	}
+	else if (CooldownTag == OutlierGameplayTags::Cooldown::Partner::Shield())
+	{
+		AbilityTag = TagDrivenUITags::Ability::Partner::Shield();
+	}
+	else if (CooldownTag == OutlierGameplayTags::Cooldown::Partner::Hacking())
+	{
+		AbilityTag = TagDrivenUITags::Ability::Partner::Hacking();
+	}
+	else if (CooldownTag == OutlierGameplayTags::Cooldown::Partner::Scan())
+	{
+		AbilityTag = TagDrivenUITags::Ability::Partner::Scan();
+	}
+	if (AbilityTag.IsValid())
+	{
+		UISubsystem->OnAbilityUsed(AbilityTag, Remaining);
 	}
 }
 
@@ -352,7 +465,6 @@ void APartnerCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	DOREPLIFETIME(APartnerCharacter, SyncLocalOffset);
 	DOREPLIFETIME(APartnerCharacter, bShieldActive);
 	DOREPLIFETIME(APartnerCharacter, bScanning);
-	DOREPLIFETIME(APartnerCharacter, LastHackServerTime);
 	DOREPLIFETIME(APartnerCharacter, bIsAccelerate);
 	DOREPLIFETIME(APartnerCharacter, bTestStealthed);
 	DOREPLIFETIME(APartnerCharacter, bHiddenForEnemyPossession);
@@ -431,14 +543,20 @@ void APartnerCharacter::TryHacking()
 		{
 			return;
 		}
+		if (RuntimeHackComponent->IsHackInteractionActive())
+		{
+			RuntimeHackComponent->TryHack();
+			return;
+		}
 	}
 
-	if (!TestAbilityComponent)
+	if (!OutlierAbilitySystemComponent)
 	{
 		return;
 	}
 
-	TestAbilityComponent->TryActivateAbilityByTag(OutlierGameplayTags::Ability::Partner::Hacking());
+	OutlierAbilitySystemComponent->TryActivatePartnerAbility(
+		OutlierGameplayTags::Ability::Partner::Hacking());
 	FaceSpriteAnimationComponent->SetEmotion(EPartnerEmotion::Happy);
 }
 
@@ -452,12 +570,20 @@ void APartnerCharacter::EndHacking()
 
 void APartnerCharacter::TryEMP()
 {
-	if (!CanAcceptInput() || !TestAbilityComponent)
+	if (!CanAcceptInput() || !OutlierAbilitySystemComponent)
 	{
 		return;
 	}
 
-	TestAbilityComponent->TryActivateAbilityByTag(OutlierGameplayTags::Ability::Partner::EMP());
+	if (UPartnerEMPComponent* RuntimeEMPComponent = GetRuntimeEMPComponent();
+		RuntimeEMPComponent && RuntimeEMPComponent->IsEMPInteractionActive())
+	{
+		RuntimeEMPComponent->TryEMP();
+		return;
+	}
+
+	OutlierAbilitySystemComponent->TryActivatePartnerAbility(
+		OutlierGameplayTags::Ability::Partner::EMP());
 	FaceSpriteAnimationComponent->SetEmotion(EPartnerEmotion::Surprised);
 
 }
@@ -474,19 +600,6 @@ void APartnerCharacter::Hacking(AActor* TargetActor)
 	// 해킹 로직
 }
 
-void APartnerCharacter::TestAbilityScan()
-{
-	if (!CanAcceptInput())
-	{
-		return;
-	}
-	UE_LOG(LogTemp, Error, TEXT("Scan Valid"));
-
-
-	TestAbilityComponent->TryActivateAbilityByTag(OutlierGameplayTags::Ability::Partner::Scan());
-
-}
-
 void APartnerCharacter::Scan()
 {
 	if (!CanAcceptInput())
@@ -496,7 +609,11 @@ void APartnerCharacter::Scan()
 	UE_LOG(LogTemp, Error, TEXT("Scan Valid"));
 	FaceSpriteAnimationComponent->SetEmotion(EPartnerEmotion::Sad);
 
-	ServerUseSkill(EPartnerSkillType::Scan);
+	if (OutlierAbilitySystemComponent)
+	{
+		OutlierAbilitySystemComponent->TryActivatePartnerAbility(
+			OutlierGameplayTags::Ability::Partner::Scan());
+	}
 }
 
 void APartnerCharacter::Shield()
@@ -508,7 +625,11 @@ void APartnerCharacter::Shield()
 
 	UE_LOG(LogTemp, Error, TEXT("Shield Valid"));
 
-	ServerUseSkill(EPartnerSkillType::Shield);
+	if (OutlierAbilitySystemComponent)
+	{
+		OutlierAbilitySystemComponent->TryActivatePartnerAbility(
+			OutlierGameplayTags::Ability::Partner::Shield());
+	}
 	FaceSpriteAnimationComponent->SetEmotion(EPartnerEmotion::Angry);
 
 }
@@ -720,7 +841,6 @@ void APartnerCharacter::StopActionsForReboot()
 	{
 		return;
 	}
-
 	if (CombatComponent)
 	{
 		CombatComponent->CancelForReboot();
@@ -993,38 +1113,6 @@ void APartnerCharacter::ServerSetAccelerate_Implementation(bool bNewAccelerate)
 	ForceNetUpdate();
 }
 
-void APartnerCharacter::ServerUseSkill_Implementation(EPartnerSkillType SkillType)
-{
-	if (!CanAcceptInput() || !SupportComponent)
-	{
-		return;
-	}
-
-	switch (SkillType)
-	{
-	case EPartnerSkillType::AreaOfEffect:
-
-			SupportComponent->TryAreaOfEffect_Server();
-
-		break;
-	case EPartnerSkillType::Shield:
-
-			SupportComponent->TryShield_Server();
-		break;
-
-	case EPartnerSkillType::Scan:
-
-			SupportComponent->TryScan_Server();
-
-		break;
-	case EPartnerSkillType::Hack:
-		break;
-	default:
-		break;
-	}
-}
-
-
 void APartnerCharacter::ServerSetMoveMode_Implementation(EPartnerMoveMode NewMode)
 {
 	if (!CanApplyMoveMode(NewMode))
@@ -1043,6 +1131,12 @@ void APartnerCharacter::EnsurePartnerDataInitialized()
 	}
 
 	InitializeFromDataTables();
+	if (HasAuthority()
+		&& (!OutlierAbilitySystemComponent
+			|| OutlierAbilitySystemComponent->GetGrantedPartnerAbilityCount() != 4))
+	{
+		return;
+	}
 	if (HasAuthority()
 		&& (!PartnerVitalityComponent
 			|| !PartnerVitalityComponent->InitializeFromDataTables(VitalityDataRow, PartnerSurvivalDataRow)))
@@ -1090,7 +1184,32 @@ void  APartnerCharacter::InitializeFromDataTables()
 		CameraRollInterpSpeed	= ControlDataRow->CameraRollInterpSpeed;
 	}
 
-	if (const FPartnerSkillDataRow* SkillDataRow = PartnerSkillDataRow.GetRow<FPartnerSkillDataRow>(TEXT("InitializeSkillData")))
+	const bool bValidSkillHandle = PartnerSkillDataRow.DataTable
+		&& !PartnerSkillDataRow.RowName.IsNone()
+		&& PartnerSkillDataRow.DataTable->GetRowStruct() == FPartnerSkillDataRow::StaticStruct();
+#if UE_BUILD_SHIPPING
+	if (!bValidSkillHandle)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[PartnerAbility] Invalid Partner skill DataTable handle"));
+		return;
+	}
+#else
+	checkf(bValidSkillHandle, TEXT("[PartnerAbility] Invalid Partner skill DataTable handle"));
+#endif
+	const FPartnerSkillDataRow* SkillDataRow = PartnerSkillDataRow.DataTable->FindRow<FPartnerSkillDataRow>(
+		PartnerSkillDataRow.RowName,
+		TEXT("InitializeSkillData"),
+		false);
+#if UE_BUILD_SHIPPING
+	if (!SkillDataRow)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[PartnerAbility] Missing Partner skill row %s"), *PartnerSkillDataRow.RowName.ToString());
+		return;
+	}
+#else
+	checkf(SkillDataRow, TEXT("[PartnerAbility] Missing Partner skill row %s"), *PartnerSkillDataRow.RowName.ToString());
+#endif
+	if (SkillDataRow)
 	{
 		ScanRange			= SkillDataRow->ScanRange;
 		ScanDuration		= SkillDataRow->ScanDuration;
@@ -1139,9 +1258,45 @@ void  APartnerCharacter::InitializeFromDataTables()
 		AssistStrength			= CameraAssistDataRow->AssistStrength;
 	}
 
-	if (TestAbilityComponent)
+	FPartnerHackAbilityData HackAbilityData;
+	HackAbilityData.CandidateRange = HackRange;
+	HackAbilityData.EffectiveRange = HackEffectiveRange;
+	HackAbilityData.MiniGameTime = HackMiniGameTime;
+	HackAbilityData.FailPenaltyTime = HackFailPenaltyTime;
+	HackAbilityData.bRequireLineOfSight = bRequireLineOfSight;
+	if (UPartnerHackComponent* RuntimeHackComponent = GetRuntimeHackComponent())
 	{
-		TestAbilityComponent->RefreshCachedPartnerAbilityData();
+		RuntimeHackComponent->CacheAbilityData(HackAbilityData);
+	}
+
+	FPartnerEMPAbilityData EMPAbilityData;
+	EMPAbilityData.EMPRange = AreaOfEffectRange;
+	EMPAbilityData.MarkingTime = EMPMarkingTime;
+	EMPAbilityData.StunDuration = EMPStunDuration;
+	EMPAbilityData.MaxTargets = EMPMaxTargets;
+	if (UPartnerEMPComponent* RuntimeEMPComponent = GetRuntimeEMPComponent())
+	{
+		RuntimeEMPComponent->CacheAbilityData(EMPAbilityData);
+	}
+
+	if (HasAuthority() && OutlierAbilitySystemComponent)
+	{
+		FOutlierPartnerAbilityConfig AbilityConfig;
+		AbilityConfig.EMPCooldown = AreaOfEffectCooldown;
+		AbilityConfig.ShieldCooldown = ShieldCooldown;
+		AbilityConfig.HackCooldown = HackCooldown;
+		AbilityConfig.ScanCooldown = ScanCooldown;
+		AbilityConfig.ScanDuration = ScanDuration;
+		const bool bConfigured = OutlierAbilitySystemComponent->ConfigurePartnerAbilities(AbilityConfig);
+#if UE_BUILD_SHIPPING
+		if (!bConfigured)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[PartnerAbility] Failed to configure Partner GameplayAbilities"));
+			return;
+		}
+#else
+		checkf(bConfigured, TEXT("[PartnerAbility] Failed to configure Partner GameplayAbilities"));
+#endif
 	}
 
 	if (MovementComponent)
@@ -1221,7 +1376,6 @@ APartnerCharacter::APartnerCharacter()
 	DistanceComponent = CreateDefaultSubobject<UPartnerDistanceComponent>(TEXT("DistanceComponent"));
 	MovementComponent = CreateDefaultSubobject<UPartnerMovementComponent>(TEXT("MovementComponent"));
 	SupportComponent  = CreateDefaultSubobject<UPartnerSupportComponent> (TEXT("SupportComponent"));
-	TestAbilityComponent = CreateDefaultSubobject<UPartnerAbilityComponent>(TEXT("AbilityComponent"));
 	CombatComponent   = CreateDefaultSubobject<UPartnerCombatComponent>  (TEXT("CombatComponent"));
 	HackComponent     = CreateDefaultSubobject<UPartnerHackComponent>    (TEXT("HackComponent"));
 	EMPComponent      = CreateDefaultSubobject<UPartnerEMPComponent>     (TEXT("EMPComponent"));
@@ -1310,56 +1464,6 @@ void APartnerCharacter::SetTestStealthed(bool bNewStealthed)
 void APartnerCharacter::ClientNotifySkillUseResult_Implementation(EPartnerSkillType SkillType, EPartnerSkillUseResult Result)
 {
 	OnPartnerSkillUseResult.Broadcast(SkillType, Result);
-
-	if (Result != EPartnerSkillUseResult::Success)
-	{
-		return;
-	}
-
-	APlayerController* PC = Cast<APlayerController>(GetController());
-	if (!PC)
-	{
-		return;
-	}
-
-	ULocalPlayer* LP = PC->GetLocalPlayer();
-	if (!LP)
-	{
-		return;
-	}
-
-	ULocalPlayerUISubSystem* SubSystem = LP->GetSubsystem<ULocalPlayerUISubSystem>();
-	if (!SubSystem)
-	{
-		return;
-	}
-
-	FGameplayTag AbilityTag;
-	float CoolTime = 0.f;
-
-	switch (SkillType)
-	{
-	case EPartnerSkillType::Shield:
-		AbilityTag = TagDrivenUITags::Ability::Partner::Shield();
-		CoolTime   = ShieldCooldown;
-		break;
-	case EPartnerSkillType::Scan:
-		AbilityTag = TagDrivenUITags::Ability::Partner::Scan();
-		CoolTime   = ScanCooldown;
-		break;
-	case EPartnerSkillType::Hack:
-		AbilityTag = TagDrivenUITags::Ability::Partner::Hacking();
-		CoolTime   = HackCooldown;
-		break;
-	case EPartnerSkillType::AreaOfEffect:
-		AbilityTag = TagDrivenUITags::Ability::Partner::EMP();
-		CoolTime   = AreaOfEffectCooldown;
-		break;
-	default:
-		return;
-	}
-
-	SubSystem->OnAbilityUsed(AbilityTag, CoolTime);
 }
 
 float APartnerCharacter::GetCurrentInertialCameraRollDegrees() const

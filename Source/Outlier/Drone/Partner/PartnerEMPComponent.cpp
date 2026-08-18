@@ -366,6 +366,7 @@ void UPartnerEMPComponent::CompleteEMPOnServer(const TArray<AActor*>& InMarkedAc
 		ResetEMPEarlyCompleteTimer();
 		ClientCompleteEMP();
 		DefaultWidgetControl(false);
+		OnEMPFinished.Broadcast(false, false);
 		return;
 	}
 	
@@ -418,6 +419,7 @@ void UPartnerEMPComponent::CompleteEMPOnServer(const TArray<AActor*>& InMarkedAc
 	ResetEMPEarlyCompleteTimer();
 	ClientCompleteEMP();
 	DefaultWidgetControl(false);
+	OnEMPFinished.Broadcast(AppliedTargetCount > 0, false);
 }
 
 void UPartnerEMPComponent::ServerCancelEMP_Implementation()
@@ -444,6 +446,7 @@ void UPartnerEMPComponent::ServerExpireEMP_Implementation()
 
 void UPartnerEMPComponent::CancelEMPOnServer()
 {
+	const bool bWasActive = bEMPActive;
 	if (bDebugEMP)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] ServerCancelEMP"));
@@ -454,6 +457,10 @@ void UPartnerEMPComponent::CancelEMPOnServer()
 	ResetEMPEarlyCompleteTimer();
 	ClientCompleteEMP();
 	DefaultWidgetControl(false);
+	if (bWasActive)
+	{
+		OnEMPFinished.Broadcast(false, true);
+	}
 }
 
 void UPartnerEMPComponent::ClientCompleteEMP_Implementation()

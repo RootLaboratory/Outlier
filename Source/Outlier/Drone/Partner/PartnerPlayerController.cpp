@@ -14,6 +14,8 @@
 #include "Enemy/EnemyBase.h"
 #include "TimerManager.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
+#include "GAS/OutlierAbilitySystemComponent.h"
+#include "GameplayTags/OutlierGameplayTags.h"
 
 APartnerPlayerController::APartnerPlayerController()
 {
@@ -28,6 +30,10 @@ void APartnerPlayerController::BeginPlay()
 
 void APartnerPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	if (HasAuthority())
+	{
+		DiscardCommittedPartnerAbilityCooldownSession(CachedPartnerCharacter.Get());
+	}
 	if (HasAuthority() && PendingEnemyPossessionTarget.IsValid())
 	{
 		CancelPendingEnemyPossessionTransition();
@@ -267,6 +273,29 @@ void APartnerPlayerController::CommitPendingEnemyPossession(AEnemyBase* Expected
 		CachedPartnerCharacter.Reset();
 		CancelPendingEnemyPossessionTransition();
 		return;
+	}
+
+	if (!BeginCommittedPartnerAbilityCooldownSession(PartnerCharacter))
+	{
+#if UE_BUILD_SHIPPING
+		UE_LOG(
+			LogTemp,
+			Error,
+			TEXT("[PartnerPossession] Failed to suspend Partner cooldowns after possession commit Partner=%s Enemy=%s"),
+			*GetNameSafe(PartnerCharacter),
+			*GetNameSafe(EnemyTarget));
+		ReleaseEnemyPossession();
+		PendingEnemyPossessionTarget.Reset();
+		PendingEnemyPossessionSource.Reset();
+		UnbindPossessionTargetEndPlay(EnemyTarget);
+		return;
+#else
+		checkf(
+			false,
+			TEXT("[PartnerPossession] Failed to suspend Partner cooldowns after possession commit Partner=%s Enemy=%s"),
+			*GetNameSafe(PartnerCharacter),
+			*GetNameSafe(EnemyTarget));
+#endif
 	}
 
 	PendingEnemyPossessionTarget.Reset();
@@ -520,6 +549,7 @@ void APartnerPlayerController::ReleaseEnemyPossession()
 
 	if (!CachedPartnerCharacter.IsValid())
 	{
+		DiscardCommittedPartnerAbilityCooldownSession(nullptr);
 		if (AController* CachedAIController = EnemyPawn->GetCachedAIController())
 		{
 			CachedAIController->Possess(EnemyPawn);
@@ -553,6 +583,7 @@ void APartnerPlayerController::ServerReleaseEnemyPossession_Implementation()
 APartnerCharacter* APartnerPlayerController::ExtractCachedPartnerCharacterForLogout()
 {
 	APartnerCharacter* Result = CachedPartnerCharacter.Get();
+	DiscardCommittedPartnerAbilityCooldownSession(Result);
 	CachedPartnerCharacter.Reset();
 	return Result;
 }
@@ -567,13 +598,102 @@ void APartnerPlayerController::RestoreCachedPartnerCharacter()
 	APartnerCharacter* PartnerCharacter = CachedPartnerCharacter.Get();
 	if (!PartnerCharacter)
 	{
+		DiscardCommittedPartnerAbilityCooldownSession(nullptr);
 		CachedPartnerCharacter.Reset();
 		return;
 	}
 
 	PartnerCharacter->SetEnemyPossessionProtection(false);
 	Possess(PartnerCharacter);
+	if (GetPawn() == PartnerCharacter)
+	{
+		const bool bFinalized = FinalizeCommittedPartnerAbilityCooldownSession(PartnerCharacter);
+#if UE_BUILD_SHIPPING
+		if (!bFinalized)
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[PartnerPossession] Failed to restore Partner cooldown session Partner=%s"),
+				*GetNameSafe(PartnerCharacter));
+		}
+#else
+		checkf(
+			bFinalized,
+			TEXT("[PartnerPossession] Failed to restore Partner cooldown session Partner=%s"),
+			*GetNameSafe(PartnerCharacter));
+#endif
+	}
+	else
+	{
+		DiscardCommittedPartnerAbilityCooldownSession(PartnerCharacter);
+	}
 	CachedPartnerCharacter.Reset();
+}
+
+bool APartnerPlayerController::BeginCommittedPartnerAbilityCooldownSession(
+	APartnerCharacter* PartnerCharacter)
+{
+	if (!HasAuthority() || !IsValid(PartnerCharacter) || bPartnerAbilityCooldownSessionCommitted)
+	{
+		return false;
+	}
+
+	UOutlierAbilitySystemComponent* AbilitySystem =
+		PartnerCharacter->GetOutlierAbilitySystemComponent();
+	if (!AbilitySystem || !AbilitySystem->SuspendPartnerSkillCooldownsForPossession())
+	{
+		return false;
+	}
+
+	bPartnerAbilityCooldownSessionCommitted = true;
+	return true;
+}
+
+bool APartnerPlayerController::FinalizeCommittedPartnerAbilityCooldownSession(
+	APartnerCharacter* PartnerCharacter)
+{
+	if (!HasAuthority() || !bPartnerAbilityCooldownSessionCommitted)
+	{
+		return false;
+	}
+
+	bPartnerAbilityCooldownSessionCommitted = false;
+	if (!IsValid(PartnerCharacter))
+	{
+		return false;
+	}
+
+	UOutlierAbilitySystemComponent* AbilitySystem =
+		PartnerCharacter->GetOutlierAbilitySystemComponent();
+	if (!AbilitySystem)
+	{
+		return false;
+	}
+
+	const bool bResumed = AbilitySystem->ResumePartnerSkillCooldownsAfterPossession();
+	const bool bHackCooldownCommitted = AbilitySystem->CommitPartnerCooldown(
+		OutlierGameplayTags::Cooldown::Partner::Hacking());
+	return bResumed && bHackCooldownCommitted;
+}
+
+void APartnerPlayerController::DiscardCommittedPartnerAbilityCooldownSession(
+	APartnerCharacter* PartnerCharacter)
+{
+	if (!HasAuthority() || !bPartnerAbilityCooldownSessionCommitted)
+	{
+		return;
+	}
+
+	bPartnerAbilityCooldownSessionCommitted = false;
+	if (IsValid(PartnerCharacter))
+	{
+		if (UOutlierAbilitySystemComponent* AbilitySystem =
+			PartnerCharacter->GetOutlierAbilitySystemComponent())
+		{
+			AbilitySystem->DiscardSuspendedPartnerSkillCooldowns();
+		}
+	}
 }
 
 void APartnerPlayerController::RestoreCachedPartnerCharacterNextTick()

@@ -117,3 +117,52 @@ UOutlierDeadGameplayEffect::UOutlierDeadGameplayEffect(const FObjectInitializer&
 	GEComponents.Add(TargetTags);
 	TargetTags->SetAndApplyTargetTagChanges(GrantedTags);
 }
+
+UOutlierPartnerCooldownGameplayEffect::UOutlierPartnerCooldownGameplayEffect(
+	const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	DurationPolicy = EGameplayEffectDurationType::HasDuration;
+}
+
+void UOutlierPartnerCooldownGameplayEffect::ConfigureCooldownTag(
+	const FObjectInitializer& ObjectInitializer,
+	const FGameplayTag& CooldownTag)
+{
+	FInheritedTagContainer GrantedTags;
+	GrantedTags.AddTag(CooldownTag);
+	UTargetTagsGameplayEffectComponent* TargetTags =
+		ObjectInitializer.CreateDefaultSubobject<UTargetTagsGameplayEffectComponent>(
+			this,
+			TEXT("CooldownTargetTags"));
+	GEComponents.Add(TargetTags);
+	TargetTags->SetAndApplyTargetTagChanges(GrantedTags);
+}
+
+UOutlierPartnerEMPCooldownGameplayEffect::UOutlierPartnerEMPCooldownGameplayEffect(
+	const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	ConfigureCooldownTag(ObjectInitializer, OutlierGameplayTags::Cooldown::Partner::EMP());
+}
+
+UOutlierPartnerShieldCooldownGameplayEffect::UOutlierPartnerShieldCooldownGameplayEffect(
+	const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	ConfigureCooldownTag(ObjectInitializer, OutlierGameplayTags::Cooldown::Partner::Shield());
+}
+
+UOutlierPartnerHackCooldownGameplayEffect::UOutlierPartnerHackCooldownGameplayEffect(
+	const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	ConfigureCooldownTag(ObjectInitializer, OutlierGameplayTags::Cooldown::Partner::Hacking());
+}
+
+UOutlierPartnerScanCooldownGameplayEffect::UOutlierPartnerScanCooldownGameplayEffect(
+	const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	ConfigureCooldownTag(ObjectInitializer, OutlierGameplayTags::Cooldown::Partner::Scan());
+}

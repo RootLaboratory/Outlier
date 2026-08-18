@@ -9,6 +9,8 @@
 
 class APartnerShieldSphere;
 
+DECLARE_MULTICAST_DELEGATE(FOnPartnerScanFinished);
+
 UCLASS( ClassGroup=(Custom), meta=(BlueprintSpawnableComponent) )
 class OUTLIER_API UPartnerSupportComponent : public UPartnerCharacterComponentBase
 {
@@ -24,11 +26,10 @@ protected:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 public:	
-	void TryHack_Server(AActor* TargetActor);
-	void TryAreaOfEffect_Server();
-	void TryScan_Server();
-	void TryShield_Server();
+	EPartnerSkillUseResult TryScan_Server();
+	EPartnerSkillUseResult TryShield_Server();
 	void CancelForReboot();
+	FOnPartnerScanFinished OnScanFinished;
 
 private:
 	static constexpr int32 DefaultScanStencilValue = 0;
@@ -46,8 +47,6 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<APartnerShieldSphere> ActiveShieldActor;
 
-	TMap<FName, float> LastUseTimes;
-
 	FTimerHandle ShieldMonitorTimerHandle;
 	FTimerHandle ScanServerStateTimerHandle;
 	FTimerHandle ScanClientUpdateTimerHandle;
@@ -62,10 +61,6 @@ private:
 	FVector ScanOrigin = FVector::ZeroVector;
 
 private:
-	bool CanUseSkill_Server(FName SkillName, float CoolDown) const;
-	void MarkSkillUsed(FName SkillName);
-
-	AActor* FindTarget(float Range) const;
 	void SpawnShieldActor_Server(AShooterCharacter* Shooter);
 	void DestroyShieldActor_Server();
 	void UpdateShield_Server();
@@ -78,15 +73,11 @@ private:
 	bool CanUseShield() const;
 	void NotifySkillResult(EPartnerSkillType SkillType, EPartnerSkillUseResult Result) const;
 
-	bool IsInsideView(AActor* Actor) const;
-	bool HasLineOfSight(AActor* Actor) const;
 	int32 ResolveScanStencilValue(AActor* Actor) const;
 
 	void ApplyScanEffect(AActor* Actor);
 	void ClearScanEffect(AActor* Actor);
 	bool ShouldProcessLocalScanVisual() const;
-
-	void ApplyAreaOfEffect(AActor* Actor);
 
 	UFUNCTION(Client, Reliable)
 	void ClientStartScanVisual(FVector InScanOrigin, float InScanRange, float InScanDuration);

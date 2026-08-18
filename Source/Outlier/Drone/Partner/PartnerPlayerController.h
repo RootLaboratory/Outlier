@@ -34,6 +34,7 @@ UCLASS()
 class OUTLIER_API APartnerPlayerController : public AFirstPersonPlayerController
 {
 	GENERATED_BODY()
+	friend class FOutlierGasPartnerPossessionCooldownSessionTest;
 
 protected:
 	/** Pawn class used when respawning the player. */
@@ -94,9 +95,13 @@ protected:
 
 	bool bHackTransitionInputBlocked = false;
 	bool bHackTransitionCoveredNotified = false;
+	bool bPartnerAbilityCooldownSessionCommitted = false;
 
 	void RestoreCachedPartnerCharacter();
 	void RestoreCachedPartnerCharacterNextTick();
+	bool BeginCommittedPartnerAbilityCooldownSession(APartnerCharacter* PartnerCharacter);
+	bool FinalizeCommittedPartnerAbilityCooldownSession(APartnerCharacter* PartnerCharacter);
+	void DiscardCommittedPartnerAbilityCooldownSession(APartnerCharacter* PartnerCharacter);
 	void CommitPendingEnemyPossession(AEnemyBase* ExpectedTarget);
 	void CancelPendingEnemyPossessionTransition();
 	void CancelLocalEnemyPossessionTransition(AEnemyBase* ExpectedTarget);
