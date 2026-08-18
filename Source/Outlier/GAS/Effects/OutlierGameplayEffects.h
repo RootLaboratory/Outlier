@@ -76,6 +76,15 @@ public:
 	UOutlierDeadGameplayEffect(const FObjectInitializer& ObjectInitializer);
 };
 
+UCLASS()
+class OUTLIER_API UOutlierWeaponReuseCooldownGameplayEffect : public UGameplayEffect
+{
+	GENERATED_BODY()
+
+public:
+	UOutlierWeaponReuseCooldownGameplayEffect(const FObjectInitializer& ObjectInitializer);
+};
+
 UCLASS(Abstract)
 class OUTLIER_API UOutlierPartnerCooldownGameplayEffect : public UGameplayEffect
 {

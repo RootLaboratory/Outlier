@@ -103,6 +103,15 @@ namespace OutlierGameplayTags
 
 	namespace Cooldown
 	{
+		namespace Weapon
+		{
+			inline FGameplayTag Reuse()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Cooldown.Weapon.Reuse")));
+				return Tag;
+			}
+		}
+
 		namespace Partner
 		{
 			inline FGameplayTag EMP()

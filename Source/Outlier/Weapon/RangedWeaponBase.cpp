@@ -5,6 +5,9 @@
 
 #include "Damage/OutlierTaggedDamageEvent.h"
 #include "GameplayTags/OutlierGameplayTags.h"
+#include "GAS/Effects/OutlierGameplayEffects.h"
+#include "GAS/OutlierAbilitySystemComponent.h"
+#include "AbilitySystemGlobals.h"
 #include "DrawDebugHelpers.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/SphereComponent.h"
@@ -126,25 +129,24 @@ void ARangedWeaponBase::ResetAttackCooldown()
 
 void ARangedWeaponBase::StartReuseCooldown()
 {
-	if (ReuseCooldown <= 0.0f || !GetWorld())
+	if (!HasAuthority() || ReuseCooldown <= 0.0f || !IsValid(WeaponOwner))
 	{
 		return;
 	}
 
-	bOnReuseCooldown = true;
-	GetWorld()->GetTimerManager().ClearTimer(ReuseCooldownTimerHandle);
-	GetWorld()->GetTimerManager().SetTimer(
-		ReuseCooldownTimerHandle,
-		this,
-		&ARangedWeaponBase::FinishReuseCooldown,
-		ReuseCooldown,
-		false
-	);
-}
+	UOutlierAbilitySystemComponent* AbilitySystem = Cast<UOutlierAbilitySystemComponent>(
+		UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(WeaponOwner));
+	if (!ensureMsgf(AbilitySystem, TEXT("Weapon owner %s must provide the Outlier ASC"), *GetNameSafe(WeaponOwner)))
+	{
+		return;
+	}
 
-void ARangedWeaponBase::FinishReuseCooldown()
-{
-	bOnReuseCooldown = false;
+	const FActiveGameplayEffectHandle CooldownHandle = AbilitySystem->CommitTimedCooldown(
+		UOutlierWeaponReuseCooldownGameplayEffect::StaticClass(),
+		OutlierGameplayTags::Cooldown::Weapon::Reuse(),
+		ReuseCooldown,
+		this);
+	ensureMsgf(CooldownHandle.IsValid(), TEXT("Failed to commit reuse cooldown for %s"), *GetName());
 }
 
 void ARangedWeaponBase::StartPostBurstCooldown()
@@ -1860,10 +1862,31 @@ bool ARangedWeaponBase::CanAttack() const
 {
 	return Super::CanAttack()
 		&& !bAttackOnCooldown
-		&& !bOnReuseCooldown
+		&& !IsOnReuseCooldown()
 		&& !bOnPostBurstCooldown
 		&& !bIsReloading
 		&& (bInfiniteAmmo || CurrentAmmo > 0);
+}
+
+bool ARangedWeaponBase::IsOnReuseCooldown() const
+{
+	const UOutlierAbilitySystemComponent* AbilitySystem = Cast<UOutlierAbilitySystemComponent>(
+		UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(WeaponOwner));
+	return AbilitySystem
+		&& AbilitySystem->IsTimedCooldownActive(
+			OutlierGameplayTags::Cooldown::Weapon::Reuse(),
+			this);
+}
+
+float ARangedWeaponBase::GetReuseCooldownRemaining() const
+{
+	const UOutlierAbilitySystemComponent* AbilitySystem = Cast<UOutlierAbilitySystemComponent>(
+		UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(WeaponOwner));
+	return AbilitySystem
+		? AbilitySystem->GetTimedCooldownRemaining(
+			OutlierGameplayTags::Cooldown::Weapon::Reuse(),
+			this)
+		: 0.0f;
 }
 
 void ARangedWeaponBase::StartAttack()

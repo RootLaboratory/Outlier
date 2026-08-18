@@ -558,10 +558,6 @@ public:
 	void BeginReloadInternal();
 	void CancelReloadInternal();
 	void FinishReloadInternal();
-	void BeginSecondaryCooldownInternal(float CooldownDuration);
-	void FinishSecondaryCooldownInternal();
-	void ResetSecondaryCooldownInternal();
-
 	bool CanStartAction(EShooterActionLock NextLock) const;
 	void BeginActionLock(EShooterActionLock NewLock);
 	void EndActionLock(EShooterActionLock LockToEnd);

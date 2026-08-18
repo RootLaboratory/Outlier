@@ -121,9 +121,6 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon|Fire")
 	uint8 bAttackOnCooldown : 1 = false;
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon|Cooldown")
-	uint8 bOnReuseCooldown : 1 = false;
-
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon|Burst")
 	uint8 bOnPostBurstCooldown : 1 = false;
 
@@ -184,7 +181,6 @@ protected:
 
 	FTimerHandle AutoFireTimerHandle;
 	FTimerHandle AttackCooldownTimerHandle;
-	FTimerHandle ReuseCooldownTimerHandle;
 	FTimerHandle PostBurstCooldownTimerHandle;
 	FTimerHandle BloomRecoveryTimerHandle;
 	FTimerHandle RecoilResetTimerHandle;
@@ -245,7 +241,6 @@ protected:
 	void StartAttackCooldown();
 	void ResetAttackCooldown();
 	void StartReuseCooldown();
-	void FinishReuseCooldown();
 	void StartPostBurstCooldown();
 	void FinishPostBurstCooldown();
 	void EnsureBloomRecoveryTimer();
@@ -297,7 +292,10 @@ public:
 	bool IsReloading() const { return bIsReloading; }
 
 	UFUNCTION(BlueprintPure, Category = "Weapon|Cooldown")
-	bool IsOnReuseCooldown() const { return bOnReuseCooldown; }
+	bool IsOnReuseCooldown() const;
+
+	UFUNCTION(BlueprintPure, Category = "Weapon|Cooldown")
+	float GetReuseCooldownRemaining() const;
 
 	UFUNCTION(BlueprintPure, Category = "Weapon|Cooldown")
 	float GetReuseCooldown() const { return ReuseCooldown; }

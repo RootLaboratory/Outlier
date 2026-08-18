@@ -12,6 +12,8 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Shooter/ShooterPlayerController.h"
+#include "GAS/OutlierAbilitySystemComponent.h"
+#include "GameplayTags/OutlierGameplayTags.h"
 #include "Net/UnrealNetwork.h"
 
 namespace
@@ -43,13 +45,24 @@ UShooterCombatComponent::UShooterCombatComponent()
 	SetIsReplicatedByDefault(true);
 }
 
+void UShooterCombatComponent::BeginPlay()
+{
+	Super::BeginPlay();
+	BindWeaponReuseCooldownObserver();
+}
+
+void UShooterCombatComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	UnbindWeaponReuseCooldownObserver();
+	Super::EndPlay(EndPlayReason);
+}
+
 void UShooterCombatComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
 	DOREPLIFETIME(UShooterCombatComponent, bIsAiming);
 	DOREPLIFETIME(UShooterCombatComponent, bIsReloading);
-	DOREPLIFETIME(UShooterCombatComponent, bSecondaryOnCooldown);
 	DOREPLIFETIME(UShooterCombatComponent, bIsMeleeAttacking);
 }
 
@@ -413,13 +426,6 @@ void UShooterCombatComponent::TryStartAttack()
 	case EWeaponMode::Primary:
 	case EWeaponMode::Secondary:
 		ShooterCharacter->CombatState = ECombatState::Fire;
-		if (ShooterCharacter->WeaponMode == EWeaponMode::Secondary)
-		{
-			if (ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(ShooterCharacter->CurrentWeapon))
-			{
-				BeginSecondaryCooldownInternal(RangedWeapon->GetReuseCooldown());
-			}
-		}
 		break;
 	case EWeaponMode::Melee:
 		bIsMeleeAttacking = true;
@@ -533,13 +539,12 @@ void UShooterCombatComponent::RefreshCombatState()
 	if (ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(ShooterCharacter->CurrentWeapon))
 	{
 		bIsReloading = bIsReloading || RangedWeapon->IsReloading();
-		bSecondaryOnCooldown = (ShooterCharacter->WeaponMode == EWeaponMode::Secondary) && RangedWeapon->IsOnReuseCooldown();
 	}
 	else
 	{
 		bIsReloading = false;
-		bSecondaryOnCooldown = false;
 	}
+	const bool bSecondaryOnCooldown = IsSecondaryOnCooldown();
 
 	if (ShooterCharacter->WeaponMode != EWeaponMode::Melee
 		&& ShooterCharacter->CurrentWeapon
@@ -910,54 +915,6 @@ void UShooterCombatComponent::HandleReloadMontageEnded(UAnimMontage* Montage, bo
 	FinishReloadInternal();
 }
 
-void UShooterCombatComponent::BeginSecondaryCooldownInternal(float CooldownDuration)
-{
-	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (!ShooterCharacter)
-	{
-		return;
-	}
-
-	if (CooldownDuration <= 0.0f)
-	{
-		bSecondaryOnCooldown = false;
-		return;
-	}
-
-	bSecondaryOnCooldown = true;
-	ShooterCharacter->GetWorldTimerManager().ClearTimer(SecondaryCooldownStateTimerHandle);
-	ShooterCharacter->GetWorldTimerManager().SetTimer(
-		SecondaryCooldownStateTimerHandle,
-		this,
-		&UShooterCombatComponent::FinishSecondaryCooldownInternal,
-		CooldownDuration,
-		false);
-}
-
-void UShooterCombatComponent::FinishSecondaryCooldownInternal()
-{
-	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (!ShooterCharacter)
-	{
-		return;
-	}
-
-	bSecondaryOnCooldown = false;
-	RefreshCombatState();
-}
-
-void UShooterCombatComponent::ResetSecondaryCooldown()
-{
-	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (!ShooterCharacter)
-	{
-		return;
-	}
-
-	ShooterCharacter->GetWorldTimerManager().ClearTimer(SecondaryCooldownStateTimerHandle);
-	bSecondaryOnCooldown = false;
-}
-
 void UShooterCombatComponent::HandleReloadCommitNotify()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
@@ -1044,12 +1001,66 @@ bool UShooterCombatComponent::CanFireInCurrentState() const
 		return false;
 	}
 
-	if (ShooterCharacter->WeaponMode == EWeaponMode::Secondary && bSecondaryOnCooldown)
+	if (ShooterCharacter->WeaponMode == EWeaponMode::Secondary && IsSecondaryOnCooldown())
 	{
 		return false;
 	}
 
 	return true;
+}
+
+bool UShooterCombatComponent::IsSecondaryOnCooldown() const
+{
+	const AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	const ARangedWeaponBase* RangedWeapon = ShooterCharacter
+		? Cast<ARangedWeaponBase>(ShooterCharacter->CurrentWeapon)
+		: nullptr;
+	return ShooterCharacter
+		&& ShooterCharacter->WeaponMode == EWeaponMode::Secondary
+		&& RangedWeapon
+		&& RangedWeapon->IsOnReuseCooldown();
+}
+
+void UShooterCombatComponent::BindWeaponReuseCooldownObserver()
+{
+	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	UOutlierAbilitySystemComponent* AbilitySystem = ShooterCharacter
+		? ShooterCharacter->GetOutlierAbilitySystemComponent()
+		: nullptr;
+	if (!AbilitySystem || WeaponReuseCooldownTagChangedHandle.IsValid())
+	{
+		return;
+	}
+
+	WeaponReuseCooldownTagChangedHandle = AbilitySystem->RegisterGameplayTagEvent(
+		OutlierGameplayTags::Cooldown::Weapon::Reuse(),
+		EGameplayTagEventType::AnyCountChange).AddUObject(
+			this,
+			&UShooterCombatComponent::HandleWeaponReuseCooldownTagChanged);
+}
+
+void UShooterCombatComponent::UnbindWeaponReuseCooldownObserver()
+{
+	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	UOutlierAbilitySystemComponent* AbilitySystem = ShooterCharacter
+		? ShooterCharacter->GetOutlierAbilitySystemComponent()
+		: nullptr;
+	if (AbilitySystem && WeaponReuseCooldownTagChangedHandle.IsValid())
+	{
+		AbilitySystem->RegisterGameplayTagEvent(
+			OutlierGameplayTags::Cooldown::Weapon::Reuse(),
+			EGameplayTagEventType::AnyCountChange).Remove(WeaponReuseCooldownTagChangedHandle);
+	}
+	WeaponReuseCooldownTagChangedHandle.Reset();
+}
+
+void UShooterCombatComponent::HandleWeaponReuseCooldownTagChanged(
+	const FGameplayTag CooldownTag,
+	int32 NewCount)
+{
+	(void)CooldownTag;
+	(void)NewCount;
+	RefreshCombatState();
 }
 
 void UShooterCombatComponent::ClearInputIntent()

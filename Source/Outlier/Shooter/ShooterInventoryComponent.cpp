@@ -202,7 +202,6 @@ void UShooterInventoryComponent::SelectWeaponSlot(EWeaponSlot Slot)
 		ShooterCharacter->CancelReloadInternal();
 	}
 
-	ShooterCharacter->ResetSecondaryCooldownInternal();
 	ShooterCharacter->StopAimInternal();
 
 	CurrentSlot = Slot;

@@ -302,6 +302,64 @@ bool UOutlierAbilitySystemComponent::RemoveActiveEffectFromSelf(FActiveGameplayE
 	return IsOwnerActorAuthoritative() && Handle.IsValid() && RemoveActiveGameplayEffect(Handle);
 }
 
+FActiveGameplayEffectHandle UOutlierAbilitySystemComponent::CommitTimedCooldown(
+	TSubclassOf<UGameplayEffect> EffectClass,
+	const FGameplayTag& CooldownTag,
+	float DurationSeconds,
+	UObject* SourceObject)
+{
+	if (!IsOwnerActorAuthoritative()
+		|| !EffectClass
+		|| !CooldownTag.IsValid()
+		|| DurationSeconds <= 0.0f
+		|| IsTimedCooldownActive(CooldownTag, SourceObject))
+	{
+		return FActiveGameplayEffectHandle();
+	}
+
+	FGameplayEffectContextHandle Context = MakeEffectContext();
+	Context.AddSourceObject(SourceObject ? SourceObject : GetAvatarActor());
+	FGameplayEffectSpecHandle SpecHandle = MakeOutgoingSpec(EffectClass, 1.0f, Context);
+	if (!SpecHandle.IsValid())
+	{
+		return FActiveGameplayEffectHandle();
+	}
+
+	SpecHandle.Data->SetDuration(DurationSeconds, true);
+	return ApplyGameplayEffectSpecToSelf(*SpecHandle.Data.Get());
+}
+
+bool UOutlierAbilitySystemComponent::IsTimedCooldownActive(
+	const FGameplayTag& CooldownTag,
+	const UObject* SourceObject) const
+{
+	return GetTimedCooldownRemaining(CooldownTag, SourceObject) > 0.0f;
+}
+
+float UOutlierAbilitySystemComponent::GetTimedCooldownRemaining(
+	const FGameplayTag& CooldownTag,
+	const UObject* SourceObject) const
+{
+	if (!CooldownTag.IsValid())
+	{
+		return 0.0f;
+	}
+
+	float MaxRemaining = 0.0f;
+	for (const FActiveGameplayEffectHandle& Handle : GetActiveEffects(MakeOwningTagQuery(CooldownTag)))
+	{
+		const FActiveGameplayEffect* ActiveEffect = GetActiveGameplayEffect(Handle);
+		if (!ActiveEffect
+			|| (SourceObject && ActiveEffect->Spec.GetContext().GetSourceObject() != SourceObject))
+		{
+			continue;
+		}
+
+		MaxRemaining = FMath::Max(MaxRemaining, ActiveEffect->GetTimeRemaining(GetWorld()->GetTimeSeconds()));
+	}
+	return MaxRemaining;
+}
+
 bool UOutlierAbilitySystemComponent::ConfigurePartnerAbilities(
 	const FOutlierPartnerAbilityConfig& Config)
 {

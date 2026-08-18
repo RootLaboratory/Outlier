@@ -1103,30 +1103,6 @@ void AShooterCharacter::HandleReloadCommitNotify()
 	}
 }
 
-void AShooterCharacter::BeginSecondaryCooldownInternal(float CooldownDuration)
-{
-	if (CombatComponent)
-	{
-		CombatComponent->BeginSecondaryCooldownInternal(CooldownDuration);
-	}
-}
-
-void AShooterCharacter::FinishSecondaryCooldownInternal()
-{
-	if (CombatComponent)
-	{
-		CombatComponent->FinishSecondaryCooldownInternal();
-	}
-}
-
-void AShooterCharacter::ResetSecondaryCooldownInternal()
-{
-	if (CombatComponent)
-	{
-		CombatComponent->ResetSecondaryCooldown();
-	}
-}
-
 bool AShooterCharacter::CanStartAction(EShooterActionLock NextLock) const
 {
 	const bool bCanOverrideSlideLock =

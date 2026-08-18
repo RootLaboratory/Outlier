@@ -25,6 +25,7 @@
 #include "GameplayEffectComponents/AssetTagsGameplayEffectComponent.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Weapon/RangedWeaponBase.h"
 #include "UObject/UnrealType.h"
 
 namespace
@@ -797,6 +798,119 @@ bool FOutlierEnemyTargetRulesTest::RunTest(const FString& Parameters)
 
 	PlainActor->Destroy(true);
 	Partner->Destroy(true);
+	GEngine->ShutdownWorldNetDriver(World);
+	World->DestroyWorld(true);
+	World->SetPhysicsScene(nullptr);
+	GEngine->DestroyWorldContext(World);
+	World->RemoveFromRoot();
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierGasWeaponReuseCooldownTest,
+	"Outlier.GAS.Weapon.ReuseCooldown",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierGasWeaponReuseCooldownTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	const FName WorldName = MakeUniqueObjectName(
+		nullptr,
+		UWorld::StaticClass(),
+		NAME_None,
+		EUniqueObjectNameOptions::GloballyUnique);
+	FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, WorldName, GetTransientPackage());
+	if (!TestNotNull(TEXT("Transient weapon cooldown world is created"), World))
+	{
+		GEngine->DestroyWorldContext(World);
+		return false;
+	}
+
+	World->AddToRoot();
+	WorldContext.SetCurrentWorld(World);
+	World->InitializeActorsForPlay(FURL());
+
+	UClass* ShooterClass = LoadClass<AShooterCharacter>(
+		nullptr,
+		TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	UClass* WeaponClass = LoadClass<ARangedWeaponBase>(
+		nullptr,
+		TEXT("/Game/Blueprints/Weapon/BP_Pistol.BP_Pistol_C"));
+	AShooterCharacter* Shooter = ShooterClass
+		? World->SpawnActor<AShooterCharacter>(ShooterClass)
+		: nullptr;
+	ARangedWeaponBase* FirstWeapon = WeaponClass
+		? World->SpawnActor<ARangedWeaponBase>(WeaponClass)
+		: nullptr;
+	ARangedWeaponBase* SecondWeapon = WeaponClass
+		? World->SpawnActor<ARangedWeaponBase>(WeaponClass)
+		: nullptr;
+	if (!TestNotNull(TEXT("Shooter is spawned"), Shooter)
+		|| !TestNotNull(TEXT("First weapon is spawned"), FirstWeapon)
+		|| !TestNotNull(TEXT("Second weapon is spawned"), SecondWeapon))
+	{
+		World->DestroyWorld(true);
+		World->SetPhysicsScene(nullptr);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+		return false;
+	}
+
+	if (!Shooter->HasActorBegunPlay())
+	{
+		Shooter->DispatchBeginPlay();
+	}
+	if (!FirstWeapon->HasActorBegunPlay())
+	{
+		FirstWeapon->DispatchBeginPlay();
+	}
+	if (!SecondWeapon->HasActorBegunPlay())
+	{
+		SecondWeapon->DispatchBeginPlay();
+	}
+	FirstWeapon->OnEquipped(Shooter);
+	SecondWeapon->OnEquipped(Shooter);
+	UOutlierAbilitySystemComponent* AbilitySystem = Shooter->GetOutlierAbilitySystemComponent();
+	TestNotNull(TEXT("Shooter ASC exists"), AbilitySystem);
+
+	const FGameplayTag ReuseCooldownTag = OutlierGameplayTags::Cooldown::Weapon::Reuse();
+	const FActiveGameplayEffectHandle CooldownHandle = AbilitySystem->CommitTimedCooldown(
+		UOutlierWeaponReuseCooldownGameplayEffect::StaticClass(),
+		ReuseCooldownTag,
+		0.05f,
+		FirstWeapon);
+	TestTrue(TEXT("Weapon reuse cooldown applies through a GameplayEffect"), CooldownHandle.IsValid());
+	TestTrue(TEXT("The source weapon is on cooldown"), FirstWeapon->IsOnReuseCooldown());
+	TestFalse(TEXT("A different weapon is not blocked by the source weapon cooldown"), SecondWeapon->IsOnReuseCooldown());
+	TestTrue(
+		TEXT("Remaining time comes from the active GameplayEffect"),
+		FMath::IsNearlyEqual(FirstWeapon->GetReuseCooldownRemaining(), 0.05f, 0.02f));
+	TestTrue(TEXT("The shared cooldown tag is present on the owner ASC"), AbilitySystem->HasMatchingGameplayTag(ReuseCooldownTag));
+	const FActiveGameplayEffectHandle SecondCooldownHandle = AbilitySystem->CommitTimedCooldown(
+		UOutlierWeaponReuseCooldownGameplayEffect::StaticClass(),
+		ReuseCooldownTag,
+		5.0f,
+		SecondWeapon);
+	TestTrue(TEXT("A second weapon can own an independent cooldown"), SecondCooldownHandle.IsValid());
+	TestTrue(TEXT("The second weapon now reports its own cooldown"), SecondWeapon->IsOnReuseCooldown());
+	Shooter->EquipWeapon(SecondWeapon);
+	for (int32 TickIndex = 0; TickIndex < 4; ++TickIndex)
+	{
+		World->Tick(LEVELTICK_All, 0.05f);
+		++GFrameCounter;
+	}
+	TestFalse(TEXT("The first weapon cooldown elapses while another weapon is equipped"), FirstWeapon->IsOnReuseCooldown());
+	TestTrue(TEXT("The equipped second weapon cooldown remains independent"), SecondWeapon->IsOnReuseCooldown());
+	TestTrue(TEXT("The shared tag remains while another weapon effect exists"), AbilitySystem->HasMatchingGameplayTag(ReuseCooldownTag));
+	TestTrue(TEXT("Removing the second cooldown succeeds"), AbilitySystem->RemoveActiveEffectFromSelf(SecondCooldownHandle));
+	TestFalse(TEXT("The shared tag clears after the final weapon cooldown"), AbilitySystem->HasMatchingGameplayTag(ReuseCooldownTag));
+
+	FirstWeapon->Destroy(true);
+	SecondWeapon->Destroy(true);
+	Shooter->Destroy(true);
 	GEngine->ShutdownWorldNetDriver(World);
 	World->DestroyWorld(true);
 	World->SetPhysicsScene(nullptr);

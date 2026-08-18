@@ -118,6 +118,22 @@ UOutlierDeadGameplayEffect::UOutlierDeadGameplayEffect(const FObjectInitializer&
 	TargetTags->SetAndApplyTargetTagChanges(GrantedTags);
 }
 
+UOutlierWeaponReuseCooldownGameplayEffect::UOutlierWeaponReuseCooldownGameplayEffect(
+	const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	DurationPolicy = EGameplayEffectDurationType::HasDuration;
+
+	FInheritedTagContainer GrantedTags;
+	GrantedTags.AddTag(OutlierGameplayTags::Cooldown::Weapon::Reuse());
+	UTargetTagsGameplayEffectComponent* TargetTags =
+		ObjectInitializer.CreateDefaultSubobject<UTargetTagsGameplayEffectComponent>(
+			this,
+			TEXT("WeaponReuseCooldownTargetTags"));
+	GEComponents.Add(TargetTags);
+	TargetTags->SetAndApplyTargetTagChanges(GrantedTags);
+}
+
 UOutlierPartnerCooldownGameplayEffect::UOutlierPartnerCooldownGameplayEffect(
 	const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)

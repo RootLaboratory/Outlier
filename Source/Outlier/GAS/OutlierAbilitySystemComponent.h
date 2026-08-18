@@ -45,6 +45,13 @@ public:
 	FActiveGameplayEffectHandle ApplyRebootStateToSelf(float DurationSeconds);
 	FActiveGameplayEffectHandle ApplyDamageImmuneStateToSelf();
 	bool RemoveActiveEffectFromSelf(FActiveGameplayEffectHandle Handle);
+	FActiveGameplayEffectHandle CommitTimedCooldown(
+		TSubclassOf<UGameplayEffect> EffectClass,
+		const FGameplayTag& CooldownTag,
+		float DurationSeconds,
+		UObject* SourceObject);
+	bool IsTimedCooldownActive(const FGameplayTag& CooldownTag, const UObject* SourceObject) const;
+	float GetTimedCooldownRemaining(const FGameplayTag& CooldownTag, const UObject* SourceObject) const;
 	bool ConfigurePartnerAbilities(const FOutlierPartnerAbilityConfig& Config);
 	bool TryActivatePartnerAbility(const FGameplayTag& AbilityTag);
 	int32 GetGrantedPartnerAbilityCount() const;
