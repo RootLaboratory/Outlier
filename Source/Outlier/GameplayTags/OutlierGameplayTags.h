@@ -7,6 +7,18 @@ namespace OutlierGameplayTags
 {
 	namespace Data
 	{
+		inline FGameplayTag Health()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Data.Health")));
+			return Tag;
+		}
+
+		inline FGameplayTag MaxHealth()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Data.MaxHealth")));
+			return Tag;
+		}
+
 		inline FGameplayTag Damage()
 		{
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Data.Damage")));
@@ -91,6 +103,18 @@ namespace OutlierGameplayTags
 
 	namespace State
 	{
+		inline FGameplayTag Rebooting()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("State.Rebooting")));
+			return Tag;
+		}
+
+		inline FGameplayTag DamageImmune()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("State.DamageImmune")));
+			return Tag;
+		}
+
 		inline FGameplayTag Dead()
 		{
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("State.Dead")));
@@ -142,6 +166,21 @@ namespace OutlierGameplayTags
 		inline FGameplayTag PossessPending()
 		{
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("State.PossessPending")));
+			return Tag;
+		}
+	}
+
+	namespace Effect
+	{
+		inline FGameplayTag Buff()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Effect.Buff")));
+			return Tag;
+		}
+
+		inline FGameplayTag Debuff()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Effect.Debuff")));
 			return Tag;
 		}
 	}

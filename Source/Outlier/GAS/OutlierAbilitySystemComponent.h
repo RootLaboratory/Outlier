@@ -25,5 +25,10 @@ public:
 	bool ApplyShieldRecoveryToSelf(float Amount);
 	bool ApplyPartnerShieldDeltaToSelf(float PartnerShieldDelta, float MaxPartnerShieldDelta);
 	bool ApplyDeadStateToSelf();
+	bool InitializeVitalityToSelf(float MaxHealth);
+	bool RestoreHealthToMax();
+	FActiveGameplayEffectHandle ApplyRebootStateToSelf(float DurationSeconds);
+	FActiveGameplayEffectHandle ApplyDamageImmuneStateToSelf();
+	bool RemoveActiveEffectFromSelf(FActiveGameplayEffectHandle Handle);
 	EGameplayEffectReplicationMode GetConfiguredReplicationMode() const { return ReplicationMode; }
 };

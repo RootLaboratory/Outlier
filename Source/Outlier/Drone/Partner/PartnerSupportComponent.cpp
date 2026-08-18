@@ -241,7 +241,10 @@ void UPartnerSupportComponent::TryShield_Server()
 bool UPartnerSupportComponent::CanUseSkill_Server(FName SkillName, float CoolDown) const
 {
 	const UWorld* World = GetWorld();
-	if (!World || !IsValid(PartnerCharacter) || !PartnerCharacter->HasAuthority())
+	if (!World
+		|| !IsValid(PartnerCharacter)
+		|| !PartnerCharacter->HasAuthority()
+		|| !PartnerCharacter->CanAcceptInput())
 	{
 		return false;
 	}
@@ -492,6 +495,21 @@ void UPartnerSupportComponent::EndScan_Server()
 	PartnerCharacter->bScanning = false;
 }
 
+void UPartnerSupportComponent::CancelForReboot()
+{
+	if (!PartnerCharacter || !PartnerCharacter->HasAuthority())
+	{
+		return;
+	}
+
+	EndScan_Server();
+	ClientCancelScanForReboot();
+	if (ShouldProcessLocalScanVisual())
+	{
+		EndScan_Client();
+	}
+}
+
 void UPartnerSupportComponent::EndScan_Client()
 {
 	UWorld* World = GetWorld();
@@ -696,4 +714,9 @@ void UPartnerSupportComponent::ClientStartScanVisual_Implementation(
 		ScanUpdateInterval,
 		true
 	);
+}
+
+void UPartnerSupportComponent::ClientCancelScanForReboot_Implementation()
+{
+	EndScan_Client();
 }

@@ -81,6 +81,7 @@ public:
 	void TryHack();
 
 	void EndHackHold();
+	void CancelForReboot();
 
 	UFUNCTION(BlueprintCallable, Category = "Hack")
 	void CacheAbilityData(const FPartnerHackAbilityData& InAbilityData);

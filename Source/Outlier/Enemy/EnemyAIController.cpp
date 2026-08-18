@@ -5,6 +5,7 @@
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Enemy/EnemyBase.h"
 #include "Enemy/EnemyRoomSubsystem.h"
+#include "Enemy/EnemyTargetRules.h"
 #include "Engine/World.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "HAL/IConsoleManager.h"
@@ -677,7 +678,7 @@ int32 AEnemyAIController::ResolveArenaIdFromTarget(const AActor* TargetActor) co
 bool AEnemyAIController::IsValidDetectionTarget(const AActor* TargetActor) const
 {
 	const APawn* TargetPawn = Cast<APawn>(TargetActor);
-	if (!TargetPawn || IsStealthedDetectionTarget(TargetActor))
+	if (!TargetPawn || OutlierEnemyTargetRules::IsUnavailable(TargetActor))
 	{
 		return false;
 	}

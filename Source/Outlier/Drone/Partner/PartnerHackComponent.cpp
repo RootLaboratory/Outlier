@@ -72,7 +72,7 @@ void UPartnerHackComponent::TickComponent(float DeltaTime, ELevelTick TickType, 
 
 void UPartnerHackComponent::TryHack_Implementation()
 {
-	if (!PartnerCharacter || !GetWorld())
+	if (!PartnerCharacter || !GetWorld() || !PartnerCharacter->CanAcceptInput())
 	{
 		if (bDebugHack)
 		{
@@ -140,6 +140,32 @@ void UPartnerHackComponent::TryHack_Implementation()
 void UPartnerHackComponent::EndHackHold()
 {
 	ResetLocalHackHoldProgress();
+}
+
+void UPartnerHackComponent::CancelForReboot()
+{
+	if (!PartnerCharacter || !PartnerCharacter->HasAuthority())
+	{
+		return;
+	}
+
+	if (IsValid(ActiveHackableComponent))
+	{
+		FHackResultContext ResultContext;
+		ResultContext.TargetActor = ActiveHackableComponent->GetOwner();
+		ResultContext.InstigatorActor = PartnerCharacter;
+		ResultContext.Result = EHackResult::Cancelled;
+		CompleteActiveHack(ResultContext, true);
+	}
+	else
+	{
+		ClientStopHackMiniGame();
+		DefaultWidgetControl(false);
+	}
+
+	ClientStopCandidateSearch();
+	StopHackCandidateSearch();
+	DestroyHackMiniGameWidget();
 }
 
 void UPartnerHackComponent::CacheAbilityData(const FPartnerHackAbilityData& InAbilityData)
@@ -257,6 +283,16 @@ void UPartnerHackComponent::CompleteActiveHack(
 				*GetNameSafe(ResultContext.TargetActor),
 				*GetNameSafe(ActiveHackableComponent->GetOwner()));
 		}
+		return;
+	}
+
+	if (PartnerCharacter
+		&& !PartnerCharacter->CanAcceptInput()
+		&& ResultContext.Result != EHackResult::Cancelled)
+	{
+		FHackResultContext CancelledContext = ResultContext;
+		CancelledContext.Result = EHackResult::Cancelled;
+		CompleteActiveHack(CancelledContext, bNotifyClient);
 		return;
 	}
 
@@ -448,7 +484,7 @@ void UPartnerHackComponent::ResetLocalHackHoldProgress()
 
 void UPartnerHackComponent::ServerTryStartHack_Implementation(AActor* TargetActor)
 {
-	if (!PartnerCharacter)
+	if (!PartnerCharacter || !PartnerCharacter->CanAcceptInput())
 	{
 		return;
 	}

@@ -9,17 +9,71 @@ namespace
 {
 FGameplayModifierInfo MakeSetByCallerModifier(
 	const FGameplayAttribute& Attribute,
-	const FGameplayTag& DataTag)
+	const FGameplayTag& DataTag,
+	EGameplayModOp::Type ModifierOp = EGameplayModOp::Additive)
 {
 	FSetByCallerFloat SetByCaller;
 	SetByCaller.DataTag = DataTag;
 
 	FGameplayModifierInfo Modifier;
 	Modifier.Attribute = Attribute;
-	Modifier.ModifierOp = EGameplayModOp::Additive;
+	Modifier.ModifierOp = ModifierOp;
 	Modifier.ModifierMagnitude = FGameplayEffectModifierMagnitude(SetByCaller);
 	return Modifier;
 }
+
+}
+
+UOutlierVitalityInitializationGameplayEffect::UOutlierVitalityInitializationGameplayEffect()
+{
+	DurationPolicy = EGameplayEffectDurationType::Instant;
+	Modifiers.Add(MakeSetByCallerModifier(
+		UOutlierVitalAttributeSet::GetMaxHealthAttribute(),
+		OutlierGameplayTags::Data::MaxHealth(),
+		EGameplayModOp::Override));
+	Modifiers.Add(MakeSetByCallerModifier(
+		UOutlierVitalAttributeSet::GetHealthAttribute(),
+		OutlierGameplayTags::Data::Health(),
+		EGameplayModOp::Override));
+}
+
+UOutlierHealthRecoveryGameplayEffect::UOutlierHealthRecoveryGameplayEffect()
+{
+	DurationPolicy = EGameplayEffectDurationType::Instant;
+	Modifiers.Add(MakeSetByCallerModifier(
+		UOutlierVitalAttributeSet::GetHealthAttribute(),
+		OutlierGameplayTags::Data::Health(),
+		EGameplayModOp::Override));
+}
+
+UOutlierRebootGameplayEffect::UOutlierRebootGameplayEffect(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	DurationPolicy = EGameplayEffectDurationType::HasDuration;
+	FInheritedTagContainer GrantedTags;
+	GrantedTags.AddTag(OutlierGameplayTags::State::Rebooting());
+	GrantedTags.AddTag(OutlierGameplayTags::State::DamageImmune());
+	UTargetTagsGameplayEffectComponent* TargetTags =
+		ObjectInitializer.CreateDefaultSubobject<UTargetTagsGameplayEffectComponent>(
+			this,
+			TEXT("TargetTags"));
+	GEComponents.Add(TargetTags);
+	TargetTags->SetAndApplyTargetTagChanges(GrantedTags);
+}
+
+UOutlierDamageImmuneGameplayEffect::UOutlierDamageImmuneGameplayEffect(
+	const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	DurationPolicy = EGameplayEffectDurationType::Infinite;
+	FInheritedTagContainer GrantedTags;
+	GrantedTags.AddTag(OutlierGameplayTags::State::DamageImmune());
+	UTargetTagsGameplayEffectComponent* TargetTags =
+		ObjectInitializer.CreateDefaultSubobject<UTargetTagsGameplayEffectComponent>(
+			this,
+			TEXT("TargetTags"));
+	GEComponents.Add(TargetTags);
+	TargetTags->SetAndApplyTargetTagChanges(GrantedTags);
 }
 
 UOutlierDamageGameplayEffect::UOutlierDamageGameplayEffect()

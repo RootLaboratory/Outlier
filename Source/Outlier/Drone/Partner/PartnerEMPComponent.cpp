@@ -66,7 +66,7 @@ void UPartnerEMPComponent::TickComponent(float DeltaTime, ELevelTick TickType, F
 
 void UPartnerEMPComponent::TryEMP_Implementation()
 {
-	if (!PartnerCharacter || !GetWorld())
+	if (!PartnerCharacter || !GetWorld() || !PartnerCharacter->CanAcceptInput())
 	{
 		return;
 	}
@@ -264,7 +264,7 @@ void UPartnerEMPComponent::RefocusEMPInput()
 
 void UPartnerEMPComponent::TryMarkEMPTarget_Implementation(AActor* TargetActor)
 {
-	if (!TargetActor)
+	if (!TargetActor || !PartnerCharacter || !PartnerCharacter->CanAcceptInput())
 	{
 		return;
 	}
@@ -345,6 +345,12 @@ void UPartnerEMPComponent::CompleteEMPOnServer(const TArray<AActor*>& InMarkedAc
 {
 	if (!bEMPActive)
 	{
+		return;
+	}
+
+	if (!PartnerCharacter || !PartnerCharacter->CanAcceptInput())
+	{
+		CancelEMPOnServer();
 		return;
 	}
 
@@ -452,6 +458,17 @@ void UPartnerEMPComponent::CancelEMPOnServer()
 
 void UPartnerEMPComponent::ClientCompleteEMP_Implementation()
 {
+	StopEMPCandidateSearch();
+}
+
+void UPartnerEMPComponent::CancelForReboot()
+{
+	if (!PartnerCharacter || !PartnerCharacter->HasAuthority())
+	{
+		return;
+	}
+
+	CancelEMPOnServer();
 	StopEMPCandidateSearch();
 }
 

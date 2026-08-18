@@ -1,6 +1,7 @@
 #include "GAS/OutlierAbilitySystemComponent.h"
 
 #include "GameFramework/Pawn.h"
+#include "GAS/Attributes/OutlierVitalAttributeSet.h"
 #include "GAS/Effects/OutlierGameplayEffects.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "Outlier.h"
@@ -72,7 +73,8 @@ bool UOutlierAbilitySystemComponent::ApplyDamageToSelf(
 	AActor* DamageCauser,
 	const FGameplayTag& DamageTag)
 {
-	if (!IsOwnerActorAuthoritative() || DamageAmount <= 0.0f)
+	if (!IsOwnerActorAuthoritative() || DamageAmount <= 0.0f
+		|| HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune()))
 	{
 		return false;
 	}
@@ -157,4 +159,96 @@ bool UOutlierAbilitySystemComponent::ApplyDeadStateToSelf()
 		nullptr,
 		GetAvatarActor());
 	return ApplySpecToSelf(*this, SpecHandle);
+}
+
+bool UOutlierAbilitySystemComponent::InitializeVitalityToSelf(float MaxHealth)
+{
+	if (!IsOwnerActorAuthoritative() || MaxHealth <= 0.0f)
+	{
+		return false;
+	}
+
+	FGameplayEffectSpecHandle SpecHandle = MakeSelfEffectSpec(
+		*this,
+		UOutlierVitalityInitializationGameplayEffect::StaticClass(),
+		nullptr,
+		GetAvatarActor());
+	if (!SpecHandle.IsValid())
+	{
+		return false;
+	}
+
+	SpecHandle.Data->SetSetByCallerMagnitude(OutlierGameplayTags::Data::MaxHealth(), MaxHealth);
+	SpecHandle.Data->SetSetByCallerMagnitude(OutlierGameplayTags::Data::Health(), MaxHealth);
+	return ApplySpecToSelf(*this, SpecHandle);
+}
+
+bool UOutlierAbilitySystemComponent::RestoreHealthToMax()
+{
+	if (!IsOwnerActorAuthoritative())
+	{
+		return false;
+	}
+
+	const float MaxHealth = GetNumericAttribute(UOutlierVitalAttributeSet::GetMaxHealthAttribute());
+	if (MaxHealth <= 0.0f)
+	{
+		return false;
+	}
+
+	FGameplayEffectSpecHandle SpecHandle = MakeSelfEffectSpec(
+		*this,
+		UOutlierHealthRecoveryGameplayEffect::StaticClass(),
+		nullptr,
+		GetAvatarActor());
+	if (!SpecHandle.IsValid())
+	{
+		return false;
+	}
+
+	SpecHandle.Data->SetSetByCallerMagnitude(OutlierGameplayTags::Data::Health(), MaxHealth);
+	return ApplySpecToSelf(*this, SpecHandle);
+}
+
+FActiveGameplayEffectHandle UOutlierAbilitySystemComponent::ApplyRebootStateToSelf(float DurationSeconds)
+{
+	if (!IsOwnerActorAuthoritative() || DurationSeconds <= 0.0f)
+	{
+		return FActiveGameplayEffectHandle();
+	}
+
+	FGameplayEffectSpecHandle SpecHandle = MakeSelfEffectSpec(
+		*this,
+		UOutlierRebootGameplayEffect::StaticClass(),
+		nullptr,
+		GetAvatarActor());
+	if (!SpecHandle.IsValid())
+	{
+		return FActiveGameplayEffectHandle();
+	}
+
+	SpecHandle.Data->SetDuration(DurationSeconds, true);
+	return ApplyGameplayEffectSpecToSelf(*SpecHandle.Data.Get());
+}
+
+FActiveGameplayEffectHandle UOutlierAbilitySystemComponent::ApplyDamageImmuneStateToSelf()
+{
+	if (!IsOwnerActorAuthoritative())
+	{
+		return FActiveGameplayEffectHandle();
+	}
+
+	FGameplayEffectSpecHandle SpecHandle = MakeSelfEffectSpec(
+		*this,
+		UOutlierDamageImmuneGameplayEffect::StaticClass(),
+		nullptr,
+		GetAvatarActor());
+	return SpecHandle.IsValid()
+		? ApplyGameplayEffectSpecToSelf(*SpecHandle.Data.Get())
+		: FActiveGameplayEffectHandle();
+}
+
+bool UOutlierAbilitySystemComponent::RemoveActiveEffectFromSelf(FActiveGameplayEffectHandle Handle)
+{
+	return IsOwnerActorAuthoritative() && Handle.IsValid() && RemoveActiveGameplayEffect(Handle);
 }

@@ -9,6 +9,7 @@
 #include "Components/SceneComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Camera/CameraComponent.h"
+#include "Damage/OutlierTaggedDamageEvent.h"
 #include "Drone/Partner/PartnerDistanceComponent.h"
 #include "Drone/Partner/PartnerMovementComponent.h"
 #include "Drone/Partner/PartnerSupportComponent.h"
@@ -25,6 +26,7 @@
 #include "Drone/Partner/PartnerSkillCommonRow.h"
 #include "Drone/Partner/PartnerSkillDataRow.h"
 #include "Drone/Partner/PartnerSurvivalDataRow.h"
+#include "Drone/Partner/PartnerVitalityComponent.h"
 #include "Drone/Partner/PartnerCameraAssistDataRow.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "Shooter/ShooterCharacter.h"
@@ -82,6 +84,10 @@ void APartnerCharacter::BeginPlay()
 
 	Super::BeginPlay();
 	RefreshAbilitySystemActorInfo();
+	if (PartnerVitalityComponent)
+	{
+		PartnerVitalityComponent->BindObservers();
+	}
 
 	if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
 	{
@@ -98,6 +104,10 @@ void APartnerCharacter::BeginPlay()
 void APartnerCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	CleanupBoostVFXComponents();
+	if (PartnerVitalityComponent)
+	{
+		PartnerVitalityComponent->BeginOwnerTeardown();
+	}
 	if (OutlierAbilitySystemComponent)
 	{
 		OutlierAbilitySystemComponent->ClearForPawn(this);
@@ -124,21 +134,36 @@ float APartnerCharacter::TakeDamage(
 	AController* EventInstigator,
 	AActor* DamageCauser)
 {
+	if (!HasAuthority() || DamageAmount <= 0.0f || !OutlierAbilitySystemComponent)
+	{
+		return 0.0f;
+	}
 
 	const float AppliedDamage = Super::TakeDamage(
 		DamageAmount,
 		DamageEvent,
 		EventInstigator,
-		DamageCauser
-	);
-
-	if (!HasAuthority() || AppliedDamage <= 0.0f || bIsInvincible || bIsRebooting)
+		DamageCauser);
+	if (AppliedDamage <= 0.0f)
 	{
-		return AppliedDamage;
+		return 0.0f;
 	}
 
-	HandlePartnerHit();
-	return AppliedDamage;
+	FGameplayTag DamageTag;
+	if (DamageEvent.IsOfType(FOutlierTaggedDamageEvent::ClassID))
+	{
+		const FOutlierTaggedDamageEvent& TaggedDamageEvent =
+			static_cast<const FOutlierTaggedDamageEvent&>(DamageEvent);
+		DamageTag = TaggedDamageEvent.DamageTag;
+	}
+
+	return OutlierAbilitySystemComponent->ApplyDamageToSelf(
+		AppliedDamage,
+		EventInstigator,
+		DamageCauser,
+		DamageTag)
+		? AppliedDamage
+		: 0.0f;
 }
 
 void APartnerCharacter::UnPossessed()
@@ -175,6 +200,10 @@ void APartnerCharacter::RefreshAbilitySystemActorInfo()
 	if (OutlierAbilitySystemComponent)
 	{
 		OutlierAbilitySystemComponent->InitializeForPawn(this);
+	}
+	if (PartnerVitalityComponent)
+	{
+		PartnerVitalityComponent->BindObservers();
 	}
 }
 
@@ -327,9 +356,6 @@ void APartnerCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	DOREPLIFETIME(APartnerCharacter, bIsAccelerate);
 	DOREPLIFETIME(APartnerCharacter, bTestStealthed);
 	DOREPLIFETIME(APartnerCharacter, bHiddenForEnemyPossession);
-	DOREPLIFETIME(APartnerCharacter, bIsRebooting);
-	DOREPLIFETIME(APartnerCharacter, bIsInvincible);
-	DOREPLIFETIME(APartnerCharacter, CurrentHitCount);
 }
 
 void APartnerCharacter::ToggleTestWeaponEquipment()
@@ -353,29 +379,17 @@ void APartnerCharacter::ToggleTestWeaponEquipment()
 FGameplayTagContainer APartnerCharacter::GetOwnedGameplayTagsForQuery() const
 {
 	FGameplayTagContainer GameplayTags = Super::GetOwnedGameplayTagsForQuery();
+	if (OutlierAbilitySystemComponent)
+	{
+		FGameplayTagContainer AbilitySystemTags;
+		OutlierAbilitySystemComponent->GetOwnedGameplayTags(AbilitySystemTags);
+		GameplayTags.AppendTags(AbilitySystemTags);
+	}
 	if (bTestStealthed || bHiddenForEnemyPossession)
 	{
 		GameplayTags.AddTag(OutlierGameplayTags::State::Stealthed());
 	}
 	return GameplayTags;
-}
-
-void APartnerCharacter::OnRep_CurrentHitCount()
-{
-	if (!IsLocallyControlled()) return;
-
-	if (CurrentHitCount <= 0)
-	{
-		NullifyDamagedEvenet();
-		return;
-	}
-
-	if (MaxHitCount <= 0)
-	{
-		return;
-	}
-
-	ApplyDamagedEvent(static_cast<float>(MaxHitCount-CurrentHitCount) / static_cast<float>(MaxHitCount));
 }
 
 void APartnerCharacter::AreaOfEffect()
@@ -546,6 +560,11 @@ void APartnerCharacter::ApplyDamagedEvent(float InRatio) const
 
 void APartnerCharacter::NullifyDamagedEvenet() const
 {
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+
 	UMaterialPostProcessSubsystem* MaterialSub = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>();
 	if (MaterialSub)
 	{
@@ -667,58 +686,6 @@ EPartnerBoundaryState APartnerCharacter::GetBoundaryOutside()
 	return BoundaryState;
 }
 
-void APartnerCharacter::HandlePartnerHit()
-{
-	if (!HasAuthority() || MaxHitCount <= 0 || bIsInvincible || bIsRebooting)
-	{
-		return;
-	}
-
-	++CurrentHitCount;
-	bIsInvincible = true;
-
-	GetWorldTimerManager().SetTimer(
-		HitInvincibleTimerHandle,
-		this,
-		&APartnerCharacter::ClearHitInvincible,
-		HitInvincibleTime,
-		false
-	);
-
-	if (IsLocallyControlled())
-	{
-		OnRep_CurrentHitCount();
-	}
-
-	if (CurrentHitCount >= MaxHitCount)
-	{
-		StartReboot();
-	}
-}
-
-void APartnerCharacter::SetInvincibleForEnemyPossession(bool bNewInvincible)
-{
-	if (!HasAuthority())
-	{
-		return;
-	}
-
-	bInvincibleForEnemyPossession = bNewInvincible;
-
-	if (bNewInvincible)
-	{
-		GetWorldTimerManager().ClearTimer(HitInvincibleTimerHandle);
-		GetWorldTimerManager().ClearTimer(RebootInvincibleTimerHandle);
-		bIsInvincible = true;
-		return;
-	}
-
-	if (!bIsRebooting)
-	{
-		bIsInvincible = false;
-	}
-}
-
 void APartnerCharacter::SetEnemyPossessionProtection(bool bEnabled)
 {
 	if (!HasAuthority())
@@ -726,7 +693,10 @@ void APartnerCharacter::SetEnemyPossessionProtection(bool bEnabled)
 		return;
 	}
 
-	SetInvincibleForEnemyPossession(bEnabled);
+	if (PartnerVitalityComponent)
+	{
+		PartnerVitalityComponent->SetEnemyPossessionProtection(bEnabled);
+	}
 
 	if (bHiddenForEnemyPossession == bEnabled)
 	{
@@ -744,84 +714,58 @@ void APartnerCharacter::SetEnemyPossessionProtection(bool bEnabled)
 	}
 }
 
-void APartnerCharacter::StartReboot()
-{
-	if (!HasAuthority() || bIsRebooting)
-	{
-		return;
-	}
-
-	bIsRebooting = true;
-	bIsInvincible = true;
-	CurrentHitCount = 0;
-
-	if (CombatComponent)
-	{
-		CombatComponent->ForceStopAttack();
-	}
-
-	if (IsLocallyControlled())
-	{
-		OnRep_CurrentHitCount();
-	}
-
-	ApplyAccelerateState(false);
-
-	if (MovementComponent)
-	{
-		MovementComponent->SetMoveInput(FVector2D::ZeroVector);
-		MovementComponent->SetVerticalInput(0.0f);
-		SetMoveMode(EPartnerMoveMode::Normal);
-	}
-
-	GetWorldTimerManager().ClearTimer(HitInvincibleTimerHandle);
-	GetWorldTimerManager().SetTimer(
-		RebootTimerHandle,
-		this,
-		&APartnerCharacter::FinishReboot,
-		RebootTime,
-		false
-	);
-}
-
-void APartnerCharacter::FinishReboot()
+void APartnerCharacter::StopActionsForReboot()
 {
 	if (!HasAuthority())
 	{
 		return;
 	}
 
-	bIsRebooting = false;
-	bIsInvincible = true;
-
-	GetWorldTimerManager().SetTimer(
-		RebootInvincibleTimerHandle,
-		this,
-		&APartnerCharacter::ClearRebootInvincible,
-		InvincibleAfterRebootTime,
-		false
-	);
-}
-
-void APartnerCharacter::ClearHitInvincible()
-{
-	if (!bIsRebooting && !bInvincibleForEnemyPossession)
+	if (CombatComponent)
 	{
-		bIsInvincible = false;
+		CombatComponent->CancelForReboot();
+	}
+	if (UPartnerHackComponent* RuntimeHackComponent = GetRuntimeHackComponent())
+	{
+		RuntimeHackComponent->CancelForReboot();
+	}
+	if (UPartnerEMPComponent* RuntimeEMPComponent = GetRuntimeEMPComponent())
+	{
+		RuntimeEMPComponent->CancelForReboot();
+	}
+	if (SupportComponent)
+	{
+		SupportComponent->CancelForReboot();
+	}
+
+	ApplyAccelerateState(false);
+	if (MovementComponent)
+	{
+		MovementComponent->ClearFlightInput();
+		MovementComponent->StopCameraAssist();
+		ApplyMoveMode(EPartnerMoveMode::Normal);
 	}
 }
 
-void APartnerCharacter::ClearRebootInvincible()
+void APartnerCharacter::RefreshEnemyDetectionForVitality()
 {
-	if (!bInvincibleForEnemyPossession)
+	if (!HasAuthority())
 	{
-		bIsInvincible = false;
+		return;
+	}
+
+	if (UEnemyRoomSubsystem* EnemyRoomSubsystem = GetWorld()
+		? GetWorld()->GetSubsystem<UEnemyRoomSubsystem>()
+		: nullptr)
+	{
+		EnemyRoomSubsystem->RefreshDetectionTarget(this);
 	}
 }
 
 bool APartnerCharacter::CanAcceptInput() const
 {
-	return !bIsRebooting;
+	return !OutlierAbilitySystemComponent
+		|| !OutlierAbilitySystemComponent->HasMatchingGameplayTag(OutlierGameplayTags::State::Rebooting());
 }
 
 UPartnerEMPComponent* APartnerCharacter::GetRuntimeEMPComponent() const
@@ -1051,7 +995,7 @@ void APartnerCharacter::ServerSetAccelerate_Implementation(bool bNewAccelerate)
 
 void APartnerCharacter::ServerUseSkill_Implementation(EPartnerSkillType SkillType)
 {
-	if (!CanAcceptInput() && !SupportComponent)
+	if (!CanAcceptInput() || !SupportComponent)
 	{
 		return;
 	}
@@ -1099,6 +1043,12 @@ void APartnerCharacter::EnsurePartnerDataInitialized()
 	}
 
 	InitializeFromDataTables();
+	if (HasAuthority()
+		&& (!PartnerVitalityComponent
+			|| !PartnerVitalityComponent->InitializeFromDataTables(VitalityDataRow, PartnerSurvivalDataRow)))
+	{
+		return;
+	}
 	bPartnerDataInitialized = true;
 }
 
@@ -1189,14 +1139,6 @@ void  APartnerCharacter::InitializeFromDataTables()
 		AssistStrength			= CameraAssistDataRow->AssistStrength;
 	}
 
-	if (const FPartnerSurvivalDataRow* SurvivalDataRow = PartnerSurvivalDataRow.GetRow<FPartnerSurvivalDataRow>(TEXT("InitializeSurvivalData")))
-	{
-		MaxHitCount				  = SurvivalDataRow->MaxHitCount;
-		RebootTime				  = SurvivalDataRow->RebootTime;
-		InvincibleAfterRebootTime = SurvivalDataRow->InvincibleAfterRebootTime;
-		HitInvincibleTime		  = SurvivalDataRow->HitInvincibleTime;
-	}
-
 	if (TestAbilityComponent)
 	{
 		TestAbilityComponent->RefreshCachedPartnerAbilityData();
@@ -1258,6 +1200,7 @@ APartnerCharacter::APartnerCharacter()
 		TEXT("AbilitySystemComponent"));
 	OutlierAbilitySystemComponent->SetReplicationMode(EGameplayEffectReplicationMode::Mixed);
 	VitalAttributeSet = CreateDefaultSubobject<UOutlierVitalAttributeSet>(TEXT("VitalAttributeSet"));
+	PartnerVitalityComponent = CreateDefaultSubobject<UPartnerVitalityComponent>(TEXT("PartnerVitalityComponent"));
 
 	ThirdPersonTiltRoot = CreateDefaultSubobject<USceneComponent>(TEXT("Third Person Tilt Root"));
 	ThirdPersonTiltRoot->SetupAttachment(GetCapsuleComponent());

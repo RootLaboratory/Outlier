@@ -28,6 +28,7 @@ public:
 	void TryAreaOfEffect_Server();
 	void TryScan_Server();
 	void TryShield_Server();
+	void CancelForReboot();
 
 private:
 	static constexpr int32 DefaultScanStencilValue = 0;
@@ -89,4 +90,7 @@ private:
 
 	UFUNCTION(Client, Reliable)
 	void ClientStartScanVisual(FVector InScanOrigin, float InScanRange, float InScanDuration);
+
+	UFUNCTION(Client, Reliable)
+	void ClientCancelScanForReboot();
 };

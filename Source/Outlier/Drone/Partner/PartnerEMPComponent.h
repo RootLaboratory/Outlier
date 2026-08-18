@@ -109,6 +109,7 @@ public:
 	void StopEMPCandidateSearch();
 
 	void RefocusEMPInput();
+	void CancelForReboot();
 
 	UFUNCTION(BlueprintCallable, Category = "EMP")
 	bool IsEMPCandidateSearchActive() const { return bEMPCandidateSearchActive; }

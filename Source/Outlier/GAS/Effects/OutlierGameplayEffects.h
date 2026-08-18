@@ -14,6 +14,42 @@ public:
 };
 
 UCLASS()
+class OUTLIER_API UOutlierVitalityInitializationGameplayEffect : public UGameplayEffect
+{
+	GENERATED_BODY()
+
+public:
+	UOutlierVitalityInitializationGameplayEffect();
+};
+
+UCLASS()
+class OUTLIER_API UOutlierHealthRecoveryGameplayEffect : public UGameplayEffect
+{
+	GENERATED_BODY()
+
+public:
+	UOutlierHealthRecoveryGameplayEffect();
+};
+
+UCLASS()
+class OUTLIER_API UOutlierRebootGameplayEffect : public UGameplayEffect
+{
+	GENERATED_BODY()
+
+public:
+	UOutlierRebootGameplayEffect(const FObjectInitializer& ObjectInitializer);
+};
+
+UCLASS()
+class OUTLIER_API UOutlierDamageImmuneGameplayEffect : public UGameplayEffect
+{
+	GENERATED_BODY()
+
+public:
+	UOutlierDamageImmuneGameplayEffect(const FObjectInitializer& ObjectInitializer);
+};
+
+UCLASS()
 class OUTLIER_API UOutlierShieldRecoveryGameplayEffect : public UGameplayEffect
 {
 	GENERATED_BODY()
