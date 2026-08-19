@@ -134,6 +134,21 @@ UOutlierWeaponReuseCooldownGameplayEffect::UOutlierWeaponReuseCooldownGameplayEf
 	TargetTags->SetAndApplyTargetTagChanges(GrantedTags);
 }
 
+UOutlierShooterQuantumLeapCooldownGameplayEffect::UOutlierShooterQuantumLeapCooldownGameplayEffect(
+	const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	DurationPolicy = EGameplayEffectDurationType::HasDuration;
+	FInheritedTagContainer GrantedTags;
+	GrantedTags.AddTag(OutlierGameplayTags::Cooldown::Shooter::QuantumLeap());
+	UTargetTagsGameplayEffectComponent* TargetTags =
+		ObjectInitializer.CreateDefaultSubobject<UTargetTagsGameplayEffectComponent>(
+			this,
+			TEXT("QuantumLeapCooldownTargetTags"));
+	GEComponents.Add(TargetTags);
+	TargetTags->SetAndApplyTargetTagChanges(GrantedTags);
+}
+
 UOutlierShooterStealthGameplayEffect::UOutlierShooterStealthGameplayEffect(
 	const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)

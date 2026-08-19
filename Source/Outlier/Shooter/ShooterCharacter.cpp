@@ -156,6 +156,7 @@ void AShooterCharacter::Tick(float DeltaSeconds)
 
 void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	CancelActiveQuantumLeap();
 	EndActiveStealth(false);
 	SetStealthVisualEnabled(false);
 
@@ -332,6 +333,9 @@ void AShooterCharacter::BindGasVitalityObservers()
 	StealthTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::Stealthed()).AddUObject(
 			this, &AShooterCharacter::HandleStealthTagChanged);
+	QuantumLeapCooldownTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::Cooldown::Shooter::QuantumLeap()).AddUObject(
+			this, &AShooterCharacter::HandleQuantumLeapCooldownTagChanged);
 	StealthCooldownTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::Cooldown::Shooter::Stealth()).AddUObject(
 			this, &AShooterCharacter::HandleStealthCooldownTagChanged);
@@ -361,6 +365,8 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::Stealthed()).Remove(StealthTagChangedHandle);
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::Cooldown::Shooter::QuantumLeap()).Remove(QuantumLeapCooldownTagChangedHandle);
+	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::Cooldown::Shooter::Stealth()).Remove(StealthCooldownTagChangedHandle);
 
 	HealthChangedHandle.Reset();
@@ -371,6 +377,7 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 	MaxPartnerShieldChangedHandle.Reset();
 	DeadTagChangedHandle.Reset();
 	StealthTagChangedHandle.Reset();
+	QuantumLeapCooldownTagChangedHandle.Reset();
 	StealthCooldownTagChangedHandle.Reset();
 }
 
@@ -444,6 +451,7 @@ void AShooterCharacter::HandleDeadTagChanged(const FGameplayTag Tag, int32 NewCo
 	(void)Tag;
 	if (NewCount > 0)
 	{
+		CancelActiveQuantumLeap(false);
 		EndActiveStealth(false);
 		HandleDeath();
 	}
@@ -465,6 +473,15 @@ void AShooterCharacter::HandleStealthCooldownTagChanged(const FGameplayTag Tag, 
 	RefreshShooterSuitCooldownUI();
 }
 
+void AShooterCharacter::HandleQuantumLeapCooldownTagChanged(const FGameplayTag Tag, int32 NewCount)
+{
+	(void)Tag;
+	if (NewCount > 0 && IsLocallyControlled())
+	{
+		RefreshShooterSuitCooldownUI();
+	}
+}
+
 void AShooterCharacter::RefreshShooterSuitCooldownUI()
 {
 	if (!IsLocallyControlled() || !OutlierAbilitySystemComponent)
@@ -472,28 +489,39 @@ void AShooterCharacter::RefreshShooterSuitCooldownUI()
 		return;
 	}
 
-	const float Cooldown = OutlierAbilitySystemComponent->GetShooterStealthCooldownRemaining();
-	if (Cooldown <= 0.0f)
-	{
-		return;
-	}
 	AShooterPlayerController* ShooterController = Cast<AShooterPlayerController>(GetController());
 	if (!ShooterController)
 	{
 		return;
 	}
-	if (ShooterController->AbilityUIInstance)
-	{
-		ShooterController->AbilityUIInstance->ApplyCooldownIfMatches(
-			OutlierGameplayTags::Ability::Shooter::Stealth(), Cooldown);
-	}
+	ULocalPlayerUISubSystem* UISubsystem = nullptr;
 	if (ULocalPlayer* LocalPlayer = ShooterController->GetLocalPlayer())
 	{
-		if (ULocalPlayerUISubSystem* UISubsystem = LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>())
-		{
-			UISubsystem->OnAbilityUsed(OutlierGameplayTags::Ability::Shooter::Stealth(), Cooldown);
-		}
+		UISubsystem = LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>();
 	}
+	const auto ApplyCooldown = [ShooterController, UISubsystem](
+		const FGameplayTag& AbilityTag,
+		float Remaining)
+	{
+		if (Remaining <= 0.0f)
+		{
+			return;
+		}
+		if (ShooterController->AbilityUIInstance)
+		{
+			ShooterController->AbilityUIInstance->ApplyCooldownIfMatches(AbilityTag, Remaining);
+		}
+		if (UISubsystem)
+		{
+			UISubsystem->OnAbilityUsed(AbilityTag, Remaining);
+		}
+	};
+	ApplyCooldown(
+		OutlierGameplayTags::Ability::Shooter::QuantumLeap(),
+		OutlierAbilitySystemComponent->GetShooterQuantumLeapCooldownRemaining());
+	ApplyCooldown(
+		OutlierGameplayTags::Ability::Shooter::Stealth(),
+		OutlierAbilitySystemComponent->GetShooterStealthCooldownRemaining());
 }
 
 void AShooterCharacter::RefreshFirstPersonShadowPolicy()
@@ -798,7 +826,24 @@ void AShooterCharacter::TryHandleSuitMenuHover()
 		return;
 	}
 
-	ShooterController->AbilityUIInstance->TryHovering();
+	UShooterAbilityUI* AbilityUI = ShooterController->AbilityUIInstance;
+	AbilityUI->TryHovering();
+
+	// 휠을 닫는 한 프레임에만 선택을 계산하면 위젯 Geometry가 사라져 기본 Stealth가 남을 수 있다.
+	// 유효한 영역을 가리키는 동안 선택 태그를 보존하되, 매 프레임 UI 선택 이벤트는 방송하지 않는다.
+	FGameplayTag HoveredAbilityTag;
+	if (AbilityUI->TryGetHoveredAbility(HoveredAbilityTag, false)
+		&& HoveredAbilityTag != SelectedAbilityTag)
+	{
+		UE_LOG(
+			LogOutlier,
+			Warning,
+			TEXT("[GAS.ShooterSuit.Trace][UI] HoverSelection Shooter=%s Previous=%s New=%s"),
+			*GetName(),
+			*SelectedAbilityTag.ToString(),
+			*HoveredAbilityTag.ToString());
+		SelectedAbilityTag = HoveredAbilityTag;
+	}
 
 }
 
@@ -817,8 +862,21 @@ void AShooterCharacter::TryCloseSuitMenu()
 	AShooterPlayerController* ShooterController = Cast<AShooterPlayerController>(GetController());
 	if (ShooterController && ShooterController->AbilityUIInstance)
 	{
-		ShooterController->AbilityUIInstance->SetVisibility(ESlateVisibility::Collapsed);
-		ShooterController->AbilityUIInstance->TryGetHoveredAbility(SelectedAbilityTag);
+		UShooterAbilityUI* AbilityUI = ShooterController->AbilityUIInstance;
+		// Collapsed 이후에는 CachedGeometry를 신뢰할 수 없으므로 반드시 위젯을 숨기기 전에 최종 선택을 확정한다.
+		FGameplayTag FinalAbilityTag;
+		if (AbilityUI->TryGetHoveredAbility(FinalAbilityTag))
+		{
+			UE_LOG(
+				LogOutlier,
+				Warning,
+				TEXT("[GAS.ShooterSuit.Trace][UI] SelectionCommitted Shooter=%s Previous=%s Final=%s"),
+				*GetName(),
+				*SelectedAbilityTag.ToString(),
+				*FinalAbilityTag.ToString());
+			SelectedAbilityTag = FinalAbilityTag;
+		}
+		AbilityUI->SetVisibility(ESlateVisibility::Collapsed);
 	}
 	else if (!ShooterController || !ShooterController->AbilityUIInstance)
 	{
@@ -2088,6 +2146,7 @@ void AShooterCharacter::SetSuitDisabledByPartnerBoundary(bool bDisabled)
 	bSuitDisabledByPartnerBoundary = bDisabled;
 	if (HasAuthority() && bDisabled)
 	{
+		CancelActiveQuantumLeap(true);
 		EndActiveStealth(true);
 	}
 
@@ -2142,6 +2201,13 @@ bool AShooterCharacter::EndActiveStealth(bool bCommitCooldown)
 	return HasAuthority()
 		&& OutlierAbilitySystemComponent
 		&& OutlierAbilitySystemComponent->EndActiveShooterStealth(bCommitCooldown);
+}
+
+bool AShooterCharacter::CancelActiveQuantumLeap(bool bCommitFailureCooldown)
+{
+	return HasAuthority()
+		&& OutlierAbilitySystemComponent
+		&& OutlierAbilitySystemComponent->CancelActiveShooterQuantumLeap(bCommitFailureCooldown);
 }
 void AShooterCharacter::ApplyPartnerShield(float Amount, float Duration)
 {

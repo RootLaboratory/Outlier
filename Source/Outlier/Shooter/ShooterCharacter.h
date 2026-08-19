@@ -284,6 +284,7 @@ protected:
 	FDelegateHandle MaxPartnerShieldChangedHandle;
 	FDelegateHandle DeadTagChangedHandle;
 	FDelegateHandle StealthTagChangedHandle;
+	FDelegateHandle QuantumLeapCooldownTagChangedHandle;
 	FDelegateHandle StealthCooldownTagChangedHandle;
 
 	UPROPERTY()
@@ -334,6 +335,7 @@ protected:
 	void HandleMaxPartnerShieldChanged(const FOnAttributeChangeData& ChangeData);
 	void HandleDeadTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleStealthTagChanged(const FGameplayTag Tag, int32 NewCount);
+	void HandleQuantumLeapCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleStealthCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void RefreshShooterSuitCooldownUI();
 
@@ -419,6 +421,7 @@ public:
 	void NotifyOffensiveActionExecuted();
 	UFUNCTION(BlueprintCallable, Category = "Suit|Stealth")
 	void NotifyStealthDetected();
+	bool CancelActiveQuantumLeap(bool bCommitFailureCooldown = false);
 	bool EndActiveStealth(bool bCommitCooldown);
 
 	void ApplyPartnerShield(float Amount, float Duration);

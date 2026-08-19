@@ -2,6 +2,7 @@
 
 #include "Misc/AutomationTest.h"
 
+#include "Components/BoxComponent.h"
 #include "Components/SphereComponent.h"
 #include "Damage/OutlierTaggedDamageEvent.h"
 #include "Drone/Partner/PartnerCharacter.h"
@@ -1446,6 +1447,8 @@ bool FOutlierGasShooterSuitDataContractTest::RunTest(const FString& Parameters)
 	}
 	TestTrue(TEXT("Disk Shooter suit table satisfies the exact schema"), OutlierShooterSuitData::TryResolveConfiguration(DiskTable, Config, Error));
 	TestEqual(TEXT("Disk Quantum Leap cooldown is 8 seconds"), Config.QuantumLeap.CooldownSeconds, 8.0f);
+	TestEqual(TEXT("Disk Quantum Leap cast time is 1 second"), Config.QuantumLeap.CastTimeSeconds, 1.0f);
+	TestEqual(TEXT("Disk Quantum Leap Partner offset is 50 centimeters"), Config.QuantumLeap.PartnerOffset, 50.0f);
 	TestEqual(TEXT("Disk Bullet Reflection radius is 20 meters"), Config.BulletReflection.ReflectionRadius, 2000.0f);
 	TestEqual(TEXT("Disk Stealth duration is 5 seconds"), Config.Stealth.DurationSeconds, 5.0f);
 	TestEqual(TEXT("Disk Stealth cooldown is 20 seconds"), Config.Stealth.CooldownSeconds, 20.0f);
@@ -1515,6 +1518,9 @@ bool FOutlierGasShooterStealthLifecycleTest::RunTest(const FString& Parameters)
 	TestFalse(
 		TEXT("Active Stealth input is ignored"),
 		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::Stealth()));
+	TestFalse(
+		TEXT("Active Stealth blocks Quantum Leap through the shared suit exclusion"),
+		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::QuantumLeap()));
 	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetMaxPartnerShieldAttribute(), 20.0f);
 	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetPartnerShieldAttribute(), 20.0f);
 	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetPartnerShieldAttribute(), 10.0f);
@@ -1582,6 +1588,181 @@ bool FOutlierGasShooterStealthLifecycleTest::RunTest(const FString& Parameters)
 
 	Shooter->Destroy(true);
 	Partner->Destroy(true);
+	GEngine->ShutdownWorldNetDriver(World);
+	World->DestroyWorld(true);
+	World->SetPhysicsScene(nullptr);
+	GEngine->DestroyWorldContext(World);
+	World->RemoveFromRoot();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierGasShooterQuantumLeapTest,
+	"Outlier.GAS.ShooterSuit.QuantumLeap",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierGasShooterQuantumLeapTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const FName WorldName = MakeUniqueObjectName(
+		nullptr, UWorld::StaticClass(), NAME_None, EUniqueObjectNameOptions::GloballyUnique);
+	FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, WorldName, GetTransientPackage());
+	if (!TestNotNull(TEXT("Transient Quantum Leap world is created"), World))
+	{
+		GEngine->DestroyWorldContext(World);
+		return false;
+	}
+	World->AddToRoot();
+	WorldContext.SetCurrentWorld(World);
+	World->SetGameInstance(NewObject<UGameInstance>(GEngine));
+	TestTrue(TEXT("Quantum Leap world creates an authority game mode"), World->SetGameMode(FURL()));
+	World->InitializeActorsForPlay(FURL());
+
+	UClass* ShooterClass = LoadClass<AShooterCharacter>(
+		nullptr, TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	UClass* PartnerClass = LoadClass<APartnerCharacter>(
+		nullptr, TEXT("/Game/Blueprints/Partner/BP_PartnerCharacter.BP_PartnerCharacter_C"));
+	AShooterCharacter* Shooter = ShooterClass ? World->SpawnActor<AShooterCharacter>(ShooterClass) : nullptr;
+	APartnerCharacter* Partner = PartnerClass ? World->SpawnActor<APartnerCharacter>(PartnerClass) : nullptr;
+	if (!TestNotNull(TEXT("Shooter spawns for Quantum Leap"), Shooter)
+		|| !TestNotNull(TEXT("Partner spawns for Quantum Leap"), Partner))
+	{
+		World->DestroyWorld(true);
+		World->SetPhysicsScene(nullptr);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+		return false;
+	}
+	if (!Shooter->HasActorBegunPlay())
+	{
+		Shooter->DispatchBeginPlay();
+	}
+	if (!Partner->HasActorBegunPlay())
+	{
+		Partner->DispatchBeginPlay();
+	}
+	Shooter->SetPartnerCharacter(Partner);
+	Partner->SetShooterCharacter(Shooter);
+	Partner->SetActorEnableCollision(false);
+	Shooter->SetActorLocationAndRotation(FVector::ZeroVector, FRotator(0.0f, 45.0f, 0.0f));
+	Partner->SetActorLocationAndRotation(FVector(300.0f, 0.0f, 0.0f), FRotator::ZeroRotator);
+
+	UOutlierAbilitySystemComponent* ShooterASC = Shooter->GetOutlierAbilitySystemComponent();
+	UOutlierAbilitySystemComponent* PartnerASC = Partner->GetOutlierAbilitySystemComponent();
+	ShooterASC->InitializeForPawn(Shooter);
+	PartnerASC->InitializeForPawn(Partner);
+	TestEqual(TEXT("Quantum Leap and Stealth are granted exactly once"), ShooterASC->GetGrantedShooterSuitAbilityCount(), 2);
+
+	AActor* Blocker = World->SpawnActor<AActor>();
+	UBoxComponent* BlockingBox = Blocker ? NewObject<UBoxComponent>(Blocker) : nullptr;
+	if (TestNotNull(TEXT("Blocked-destination fixture is created"), Blocker)
+		&& TestNotNull(TEXT("Blocked-destination collision is created"), BlockingBox))
+	{
+		Blocker->SetRootComponent(BlockingBox);
+		BlockingBox->SetBoxExtent(FVector(140.0f, 140.0f, 200.0f));
+		BlockingBox->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+		BlockingBox->SetCollisionResponseToAllChannels(ECR_Block);
+		BlockingBox->RegisterComponent();
+		Blocker->SetActorLocation(Partner->GetActorLocation());
+	}
+	TestTrue(
+		TEXT("A valid Quantum Leap input reaches the authoritative attempt even when all destinations are blocked"),
+		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::QuantumLeap()));
+	TestFalse(
+		TEXT("Blocked Quantum Leap ends without leaving damage immunity active"),
+		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune()));
+	TestTrue(TEXT("Blocked Quantum Leap starts a failure cooldown"), ShooterASC->IsShooterQuantumLeapCooldownActive());
+	const float FailureCooldown = ShooterASC->GetShooterQuantumLeapCooldownRemaining();
+	TestTrue(TEXT("Quantum Leap failure cooldown is half of 8 seconds"), FailureCooldown > 3.5f && FailureCooldown <= 4.0f);
+
+	FGameplayTagContainer QuantumCooldownTags;
+	QuantumCooldownTags.AddTag(OutlierGameplayTags::Cooldown::Shooter::QuantumLeap());
+	TestEqual(
+		TEXT("Test fixture removes the failed-attempt Quantum Leap cooldown"),
+		ShooterASC->RemoveActiveEffectsWithGrantedTags(QuantumCooldownTags),
+		1);
+	if (Blocker)
+	{
+		Blocker->SetActorEnableCollision(false);
+		Blocker->Destroy();
+	}
+
+	const FVector SnapshotDestination(250.0f, 0.0f, 0.0f);
+	const FRotator PreservedRotation = Shooter->GetActorRotation();
+	TestTrue(
+		TEXT("Quantum Leap starts when the Partner is in range and a destination is clear"),
+		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::QuantumLeap()));
+	TestTrue(
+		TEXT("Quantum Leap grants exact damage immunity during its cast"),
+		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune()));
+	TestFalse(
+		TEXT("An active Quantum Leap blocks Stealth through the shared suit exclusion"),
+		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::Stealth()));
+	TestFalse(
+		TEXT("Damage is rejected while Quantum Leap is casting"),
+		ShooterASC->ApplyDamageToSelf(10.0f, nullptr, Shooter, OutlierGameplayTags::Damage::Weapon()));
+	Partner->SetActorLocation(FVector(400.0f, 0.0f, 0.0f));
+	for (int32 TickIndex = 0; TickIndex < 55; ++TickIndex)
+	{
+		++GFrameCounter;
+		World->Tick(LEVELTICK_All, 0.02f);
+	}
+	TestTrue(
+		TEXT("Quantum Leap uses the Partner position captured when the cast started"),
+		Shooter->GetActorLocation().Equals(SnapshotDestination, 1.0f));
+	TestTrue(TEXT("Quantum Leap preserves Shooter facing"), Shooter->GetActorRotation().Equals(PreservedRotation, 0.01f));
+	TestFalse(
+		TEXT("Quantum Leap removes its exact damage immunity after relocation"),
+		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune()));
+	TestTrue(TEXT("Successful Quantum Leap starts its full cooldown"), ShooterASC->IsShooterQuantumLeapCooldownActive());
+	TestTrue(
+		TEXT("Successful Quantum Leap cooldown is approximately 8 seconds"),
+		ShooterASC->GetShooterQuantumLeapCooldownRemaining() > 7.0f);
+	TestFalse(
+		TEXT("Quantum Leap cooldown blocks reactivation"),
+		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::QuantumLeap()));
+
+	TestEqual(
+		TEXT("Test fixture removes the successful Quantum Leap cooldown"),
+		ShooterASC->RemoveActiveEffectsWithGrantedTags(QuantumCooldownTags),
+		1);
+	Shooter->SetActorLocation(FVector::ZeroVector);
+	Partner->SetActorLocation(FVector(1000.0f, 0.0f, 0.0f));
+	TestFalse(
+		TEXT("Out-of-range Quantum Leap is rejected before an attempt starts"),
+		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::QuantumLeap()));
+	TestFalse(
+		TEXT("An invalid out-of-range input does not start a failure cooldown"),
+		ShooterASC->IsShooterQuantumLeapCooldownActive());
+
+	Partner->SetActorLocation(FVector(300.0f, 0.0f, 0.0f));
+	TestTrue(
+		TEXT("Quantum Leap starts for Partner teardown cleanup coverage"),
+		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::QuantumLeap()));
+	TestTrue(
+		TEXT("Teardown coverage starts with cast damage immunity"),
+		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune()));
+	Partner->Destroy(true);
+	TestFalse(
+		TEXT("Partner teardown removes Quantum Leap cast damage immunity"),
+		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune()));
+	TestFalse(
+		TEXT("Partner teardown does not start a Quantum Leap cooldown"),
+		ShooterASC->IsShooterQuantumLeapCooldownActive());
+	for (int32 TickIndex = 0; TickIndex < 55; ++TickIndex)
+	{
+		++GFrameCounter;
+		World->Tick(LEVELTICK_All, 0.02f);
+	}
+	TestTrue(
+		TEXT("Partner teardown leaves Shooter at the pre-cast location"),
+		Shooter->GetActorLocation().Equals(FVector::ZeroVector, 1.0f));
+	TestFalse(
+		TEXT("Partner teardown remains cooldown-free after the former cast delay"),
+		ShooterASC->IsShooterQuantumLeapCooldownActive());
+
+	Shooter->Destroy(true);
 	GEngine->ShutdownWorldNetDriver(World);
 	World->DestroyWorld(true);
 	World->SetPhysicsScene(nullptr);

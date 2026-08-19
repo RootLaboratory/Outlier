@@ -23,6 +23,52 @@ protected:
 };
 
 UCLASS()
+class OUTLIER_API UOutlierShooterQuantumLeapAbility : public UOutlierShooterGameplayAbility
+{
+	GENERATED_BODY()
+
+public:
+	UOutlierShooterQuantumLeapAbility();
+	bool CancelQuantumLeap(bool bInCommitFailureCooldown);
+
+protected:
+	virtual bool CanActivateAbility(
+		const FGameplayAbilitySpecHandle Handle,
+		const FGameplayAbilityActorInfo* ActorInfo,
+		const FGameplayTagContainer* SourceTags = nullptr,
+		const FGameplayTagContainer* TargetTags = nullptr,
+		FGameplayTagContainer* OptionalRelevantTags = nullptr) const override;
+	virtual void ActivateAbility(
+		const FGameplayAbilitySpecHandle Handle,
+		const FGameplayAbilityActorInfo* ActorInfo,
+		const FGameplayAbilityActivationInfo ActivationInfo,
+		const FGameplayEventData* TriggerEventData) override;
+	virtual void EndAbility(
+		const FGameplayAbilitySpecHandle Handle,
+		const FGameplayAbilityActorInfo* ActorInfo,
+		const FGameplayAbilityActivationInfo ActivationInfo,
+		bool bReplicateEndAbility,
+		bool bWasCancelled) override;
+
+private:
+	bool TryResolveDestination(
+		const AShooterCharacter& Shooter,
+		const APartnerCharacter& Partner,
+		FVector& OutDestination) const;
+	bool IsDestinationClear(
+		const AShooterCharacter& Shooter,
+		const APartnerCharacter& Partner,
+		const FVector& Destination) const;
+	void CompleteQuantumLeap();
+
+	FVector Destination = FVector::ZeroVector;
+	FActiveGameplayEffectHandle DamageImmuneHandle;
+	FTimerHandle CastTimerHandle;
+	bool bCommitFailureCooldown = false;
+	bool bTeleportSucceeded = false;
+};
+
+UCLASS()
 class OUTLIER_API UOutlierShooterStealthAbility : public UOutlierShooterGameplayAbility
 {
 	GENERATED_BODY()

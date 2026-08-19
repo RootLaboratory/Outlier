@@ -4,7 +4,6 @@
 #include "AbilityIconUI.h"
 #include "MainUIBase.h"
 #include "TagDrivenUIGameplayTags.h"
-#include "Blueprint/WidgetLayoutLibrary.h"
 #include "Components/Border.h"
 #include "Framework/Application/SlateApplication.h"
 
@@ -64,11 +63,15 @@ void UShooterAbilityUI::NativeTick(const FGeometry& MyGeometry, float InDeltaTim
 	}
 }
 
-bool UShooterAbilityUI::TryGetHoveredAbility(FGameplayTag& OutAbilityTag)
+bool UShooterAbilityUI::TryGetHoveredAbility(FGameplayTag& OutAbilityTag, bool bBroadcastSelection)
 {
 	OutAbilityTag = FGameplayTag();
 
-	const float AngleDeg = CalculateCoordinate();
+	float AngleDeg = 0.0f;
+	if (!TryCalculateCoordinate(AngleDeg))
+	{
+		return false;
+	}
 	const FGameplayTag HoveredAbilityTag = GetAbilityTagByAngle(AngleDeg);
 	UAbilityIconUI* HoveredIcon = GetAbilityIcon(HoveredAbilityTag);
 	if (!HoveredIcon || !HoveredIcon->IsUnLock())
@@ -78,7 +81,10 @@ bool UShooterAbilityUI::TryGetHoveredAbility(FGameplayTag& OutAbilityTag)
 
 	OutAbilityTag = HoveredAbilityTag;
 
-	OnAbilitySelected.Broadcast(HoveredAbilityTag);
+	if (bBroadcastSelection)
+	{
+		OnAbilitySelected.Broadcast(HoveredAbilityTag);
+	}
 
 	return true;
 }
@@ -107,9 +113,12 @@ void UShooterAbilityUI::TryHovering()
 		return;
 	}
 
-	const float AngleDeg = CalculateCoordinate();
-
 	ShooterAbilityMID->SetScalarParameterValue(TEXT("Direction"), -1);
+	float AngleDeg = 0.0f;
+	if (!TryCalculateCoordinate(AngleDeg))
+	{
+		return;
+	}
 
 	if (AngleDeg >= -45.f && AngleDeg < 45.f)
 	{
@@ -191,11 +200,12 @@ bool UShooterAbilityUI::IsAbilityUnlocked(const FGameplayTag& AbilityTag) const
 	return false;
 }
 
-float UShooterAbilityUI::CalculateCoordinate()
+bool UShooterAbilityUI::TryCalculateCoordinate(float& OutAngleDeg) const
 {
+	OutAngleDeg = 0.0f;
 	if (!CenterCircle || !BigCircle)
 	{
-		return 0;
+		return false;
 	}
 
 	const FGeometry& SmallGeometry = CenterCircle->GetCachedGeometry();
@@ -206,7 +216,6 @@ float UShooterAbilityUI::CalculateCoordinate()
 	const FVector2D BigCenterScreen =
 		BigGeometry.LocalToAbsolute(BigGeometry.GetLocalSize() * 0.5f);
 	const FVector2D MouseScreen = FSlateApplication::Get().GetCursorPos();
-	const FVector2D MouseViewport = UWidgetLayoutLibrary::GetMousePositionOnViewport(this);
 
 	const float BigRadius = FMath::Min(BigGeometry.GetLocalSize().X, BigGeometry.GetLocalSize().Y) * 0.5f;
 	const float SmallRadius = FMath::Min(SmallGeometry.GetLocalSize().X, SmallGeometry.GetLocalSize().Y) * 0.5f;
@@ -217,10 +226,10 @@ float UShooterAbilityUI::CalculateCoordinate()
 	const bool bOutsideSmallCircle = ToSmallCenter.SizeSquared() >= FMath::Square(SmallRadius);
 	if (!bInsideBigCircle || !bOutsideSmallCircle || ToSmallCenter.IsNearlyZero())
 	{
-		return 0;
+		// 잘못된 영역을 각도 0으로 반환하면 오른쪽 Quantum Leap 선택으로 오인되므로 선택 자체를 무효화한다.
+		return false;
 	}
 
-	float AngleDeg = FMath::RadiansToDegrees(FMath::Atan2(ToSmallCenter.Y, ToSmallCenter.X));
-
-	return AngleDeg;
+	OutAngleDeg = FMath::RadiansToDegrees(FMath::Atan2(ToSmallCenter.Y, ToSmallCenter.X));
+	return true;
 }

@@ -74,6 +74,11 @@ public:
 	bool TryActivateShooterSuitAbility(const FGameplayTag& AbilityTag);
 	bool IsShooterSuitConfigured() const { return bShooterSuitConfigured; }
 	const FOutlierShooterSuitConfig& GetShooterSuitConfig() const { return ShooterSuitConfig; }
+	int32 GetGrantedShooterSuitAbilityCount() const;
+	bool CommitShooterQuantumLeapCooldown(float DurationMultiplier = 1.0f);
+	bool IsShooterQuantumLeapCooldownActive() const;
+	float GetShooterQuantumLeapCooldownRemaining() const;
+	bool CancelActiveShooterQuantumLeap(bool bCommitFailureCooldown = false);
 	bool CommitShooterStealthCooldown();
 	bool IsShooterStealthCooldownActive() const;
 	float GetShooterStealthCooldownRemaining() const;
@@ -90,6 +95,7 @@ private:
 	bool bPartnerAbilitiesConfigured = false;
 	bool bPartnerSkillCooldownsSuspended = false;
 	FOutlierShooterSuitConfig ShooterSuitConfig;
+	FGameplayAbilitySpecHandle GrantedShooterQuantumLeapAbilityHandle;
 	FGameplayAbilitySpecHandle GrantedShooterStealthAbilityHandle;
 	bool bShooterSuitConfigured = false;
 };

@@ -86,6 +86,15 @@ public:
 };
 
 UCLASS()
+class OUTLIER_API UOutlierShooterQuantumLeapCooldownGameplayEffect : public UGameplayEffect
+{
+	GENERATED_BODY()
+
+public:
+	UOutlierShooterQuantumLeapCooldownGameplayEffect(const FObjectInitializer& ObjectInitializer);
+};
+
+UCLASS()
 class OUTLIER_API UOutlierShooterStealthGameplayEffect : public UGameplayEffect
 {
 	GENERATED_BODY()
