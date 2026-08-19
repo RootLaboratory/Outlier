@@ -378,10 +378,6 @@ protected:
 	uint8 bIsAccelerate : 1 = false;
 	uint8 bPartnerDataInitialized : 1 = false;
 
-	// Shooter 은신 토글과 함께 AI 감지 대상에서 제외하기 위한 테스트 상태다.
-	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Test|Stealth")
-	uint8 bTestStealthed : 1 = false;
-
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Partner|EnemyPossession")
 	uint8 bHiddenForEnemyPossession : 1 = false;
 
@@ -533,7 +529,8 @@ public:
 	void OnRep_IsAccelerate();
 
 	void SetShooterCharacter(AShooterCharacter* NewShooter);
-	void SetTestStealthed(bool bNewStealthed);
+	void ConfigureSuitDisableBoundaryRadius(float Radius);
+	void NotifyOffensiveActionExecuted();
 	
 	UFUNCTION(Client, Reliable)
 	void ClientNotifySkillUseResult(EPartnerSkillType SkillType, EPartnerSkillUseResult Result);

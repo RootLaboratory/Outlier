@@ -134,6 +134,36 @@ UOutlierWeaponReuseCooldownGameplayEffect::UOutlierWeaponReuseCooldownGameplayEf
 	TargetTags->SetAndApplyTargetTagChanges(GrantedTags);
 }
 
+UOutlierShooterStealthGameplayEffect::UOutlierShooterStealthGameplayEffect(
+	const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	DurationPolicy = EGameplayEffectDurationType::HasDuration;
+	FInheritedTagContainer GrantedTags;
+	GrantedTags.AddTag(OutlierGameplayTags::State::Stealthed());
+	UTargetTagsGameplayEffectComponent* TargetTags =
+		ObjectInitializer.CreateDefaultSubobject<UTargetTagsGameplayEffectComponent>(
+			this,
+			TEXT("StealthTargetTags"));
+	GEComponents.Add(TargetTags);
+	TargetTags->SetAndApplyTargetTagChanges(GrantedTags);
+}
+
+UOutlierShooterStealthCooldownGameplayEffect::UOutlierShooterStealthCooldownGameplayEffect(
+	const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	DurationPolicy = EGameplayEffectDurationType::HasDuration;
+	FInheritedTagContainer GrantedTags;
+	GrantedTags.AddTag(OutlierGameplayTags::Cooldown::Shooter::Stealth());
+	UTargetTagsGameplayEffectComponent* TargetTags =
+		ObjectInitializer.CreateDefaultSubobject<UTargetTagsGameplayEffectComponent>(
+			this,
+			TEXT("StealthCooldownTargetTags"));
+	GEComponents.Add(TargetTags);
+	TargetTags->SetAndApplyTargetTagChanges(GrantedTags);
+}
+
 UOutlierPartnerCooldownGameplayEffect::UOutlierPartnerCooldownGameplayEffect(
 	const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)

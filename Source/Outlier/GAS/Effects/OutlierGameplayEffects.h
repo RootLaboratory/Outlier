@@ -85,6 +85,24 @@ public:
 	UOutlierWeaponReuseCooldownGameplayEffect(const FObjectInitializer& ObjectInitializer);
 };
 
+UCLASS()
+class OUTLIER_API UOutlierShooterStealthGameplayEffect : public UGameplayEffect
+{
+	GENERATED_BODY()
+
+public:
+	UOutlierShooterStealthGameplayEffect(const FObjectInitializer& ObjectInitializer);
+};
+
+UCLASS()
+class OUTLIER_API UOutlierShooterStealthCooldownGameplayEffect : public UGameplayEffect
+{
+	GENERATED_BODY()
+
+public:
+	UOutlierShooterStealthCooldownGameplayEffect(const FObjectInitializer& ObjectInitializer);
+};
+
 UCLASS(Abstract)
 class OUTLIER_API UOutlierPartnerCooldownGameplayEffect : public UGameplayEffect
 {

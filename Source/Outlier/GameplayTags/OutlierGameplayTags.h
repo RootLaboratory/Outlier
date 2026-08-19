@@ -73,6 +73,33 @@ namespace OutlierGameplayTags
 
 	namespace Ability
 	{
+		namespace Shooter
+		{
+			inline FGameplayTag QuantumLeap()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.QuantumLeap")));
+				return Tag;
+			}
+
+			inline FGameplayTag BulletReflection()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.BulletReflection")));
+				return Tag;
+			}
+
+			inline FGameplayTag Stealth()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.Stealth")));
+				return Tag;
+			}
+
+			inline FGameplayTag WeaponOvercharge()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.WeaponOvercharge")));
+				return Tag;
+			}
+		}
+
 		namespace Partner
 		{
 			inline FGameplayTag EMP()
@@ -103,6 +130,33 @@ namespace OutlierGameplayTags
 
 	namespace Cooldown
 	{
+		namespace Shooter
+		{
+			inline FGameplayTag QuantumLeap()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Cooldown.Shooter.QuantumLeap")));
+				return Tag;
+			}
+
+			inline FGameplayTag BulletReflection()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Cooldown.Shooter.BulletReflection")));
+				return Tag;
+			}
+
+			inline FGameplayTag Stealth()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Cooldown.Shooter.Stealth")));
+				return Tag;
+			}
+
+			inline FGameplayTag WeaponOvercharge()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Cooldown.Shooter.WeaponOvercharge")));
+				return Tag;
+			}
+		}
+
 		namespace Weapon
 		{
 			inline FGameplayTag Reuse()

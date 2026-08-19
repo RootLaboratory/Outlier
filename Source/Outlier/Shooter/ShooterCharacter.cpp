@@ -96,6 +96,11 @@ void AShooterCharacter::BeginPlay()
 	RefreshAbilitySystemActorInfo();
 	BindGasVitalityObservers();
 	InitializeGasVitality();
+	InitializeGasSuitAbilities();
+	if (!SelectedAbilityTag.IsValid())
+	{
+		SelectedAbilityTag = OutlierGameplayTags::Ability::Shooter::Stealth();
+	}
 
 	RefreshFirstPersonShadowPolicy();
 
@@ -137,6 +142,8 @@ void AShooterCharacter::BeginPlay()
 	RefreshWeaponMode();
 	RefreshMovementState();
 	RefreshCombatState();
+	SetStealthVisualEnabled(IsStealthed());
+	RefreshShooterSuitCooldownUI();
 }
 
 void AShooterCharacter::Tick(float DeltaSeconds)
@@ -149,6 +156,7 @@ void AShooterCharacter::Tick(float DeltaSeconds)
 
 void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	EndActiveStealth(false);
 	SetStealthVisualEnabled(false);
 
 	if (HasAuthority())
@@ -171,12 +179,14 @@ void AShooterCharacter::PossessedBy(AController* NewController)
 	RefreshAbilitySystemActorInfo();
 
 	RefreshFirstPersonShadowPolicy();
+	RefreshShooterSuitCooldownUI();
 }
 
 void AShooterCharacter::OnRep_Controller()
 {
 	Super::OnRep_Controller();
 	RefreshAbilitySystemActorInfo();
+	RefreshShooterSuitCooldownUI();
 
 	RefreshFirstPersonShadowPolicy();
 }
@@ -257,6 +267,40 @@ void AShooterCharacter::InitializeGasVitality()
 		0.0f);
 }
 
+void AShooterCharacter::InitializeGasSuitAbilities()
+{
+	if (bShooterSuitDataInitialized || !OutlierAbilitySystemComponent)
+	{
+		return;
+	}
+
+	FString Error;
+	FOutlierShooterSuitConfig ResolvedConfig;
+	if (!OutlierShooterSuitData::TryResolveConfiguration(
+		ShooterSuitAbilityDataTable, ResolvedConfig, Error))
+	{
+#if UE_BUILD_SHIPPING
+		UE_LOG(LogOutlier, Error, TEXT("[GAS.ShooterSuit] %s"), *Error);
+		return;
+#else
+		checkf(false, TEXT("[GAS.ShooterSuit] %s"), *Error);
+		return;
+#endif
+	}
+
+	ShooterSuitConfig = ResolvedConfig;
+	bShooterSuitDataInitialized = true;
+	if (HasAuthority())
+	{
+		const bool bConfigured = OutlierAbilitySystemComponent->ConfigureShooterSuitAbilities(ShooterSuitConfig);
+		checkf(bConfigured, TEXT("Shooter suit abilities must configure on authority."));
+		if (CachedPartnerCharacter)
+		{
+			CachedPartnerCharacter->ConfigureSuitDisableBoundaryRadius(ShooterSuitConfig.MaxPartnerDistance);
+		}
+	}
+}
+
 void AShooterCharacter::BindGasVitalityObservers()
 {
 	if (!OutlierAbilitySystemComponent || HealthChangedHandle.IsValid())
@@ -285,6 +329,12 @@ void AShooterCharacter::BindGasVitalityObservers()
 	DeadTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::Dead()).AddUObject(
 			this, &AShooterCharacter::HandleDeadTagChanged);
+	StealthTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::State::Stealthed()).AddUObject(
+			this, &AShooterCharacter::HandleStealthTagChanged);
+	StealthCooldownTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::Cooldown::Shooter::Stealth()).AddUObject(
+			this, &AShooterCharacter::HandleStealthCooldownTagChanged);
 }
 
 void AShooterCharacter::UnbindGasVitalityObservers()
@@ -308,6 +358,10 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 		UOutlierShieldAttributeSet::GetMaxPartnerShieldAttribute()).Remove(MaxPartnerShieldChangedHandle);
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::Dead()).Remove(DeadTagChangedHandle);
+	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::State::Stealthed()).Remove(StealthTagChangedHandle);
+	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::Cooldown::Shooter::Stealth()).Remove(StealthCooldownTagChangedHandle);
 
 	HealthChangedHandle.Reset();
 	MaxHealthChangedHandle.Reset();
@@ -316,12 +370,18 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 	PartnerShieldChangedHandle.Reset();
 	MaxPartnerShieldChangedHandle.Reset();
 	DeadTagChangedHandle.Reset();
+	StealthTagChangedHandle.Reset();
+	StealthCooldownTagChangedHandle.Reset();
 }
 
 void AShooterCharacter::HandleHealthChanged(const FOnAttributeChangeData& ChangeData)
 {
 	OnShooterHealthChanged.Broadcast(ChangeData.NewValue, GetMaxHealth());
 	OnShooterConditionChanged.Broadcast(ResolveShooterConditionTag());
+	if (HasAuthority() && bApplyingGameplayDamage && ChangeData.NewValue < ChangeData.OldValue)
+	{
+		EndActiveStealth(true);
+	}
 
 	if (HasAuthority() && ChangeData.OldValue > 0.0f && ChangeData.NewValue <= 0.0f)
 	{
@@ -337,6 +397,10 @@ void AShooterCharacter::HandleMaxHealthChanged(const FOnAttributeChangeData& Cha
 
 void AShooterCharacter::HandleShieldChanged(const FOnAttributeChangeData& ChangeData)
 {
+	if (HasAuthority() && bApplyingGameplayDamage && ChangeData.NewValue < ChangeData.OldValue)
+	{
+		EndActiveStealth(true);
+	}
 	OnShooterShieldChanged.Broadcast(ChangeData.NewValue, GetMaxShield());
 
 	if (IsLocallyControlled())
@@ -362,7 +426,10 @@ void AShooterCharacter::HandleMaxShieldChanged(const FOnAttributeChangeData& Cha
 
 void AShooterCharacter::HandlePartnerShieldChanged(const FOnAttributeChangeData& ChangeData)
 {
-	(void)ChangeData;
+	if (HasAuthority() && bApplyingGameplayDamage && ChangeData.NewValue < ChangeData.OldValue)
+	{
+		EndActiveStealth(true);
+	}
 	BroadcastPartnerShieldState();
 }
 
@@ -377,7 +444,55 @@ void AShooterCharacter::HandleDeadTagChanged(const FGameplayTag Tag, int32 NewCo
 	(void)Tag;
 	if (NewCount > 0)
 	{
+		EndActiveStealth(false);
 		HandleDeath();
+	}
+}
+
+void AShooterCharacter::HandleStealthTagChanged(const FGameplayTag Tag, int32 NewCount)
+{
+	(void)Tag;
+	SetStealthVisualEnabled(NewCount > 0);
+}
+
+void AShooterCharacter::HandleStealthCooldownTagChanged(const FGameplayTag Tag, int32 NewCount)
+{
+	(void)Tag;
+	if (NewCount <= 0 || !IsLocallyControlled())
+	{
+		return;
+	}
+	RefreshShooterSuitCooldownUI();
+}
+
+void AShooterCharacter::RefreshShooterSuitCooldownUI()
+{
+	if (!IsLocallyControlled() || !OutlierAbilitySystemComponent)
+	{
+		return;
+	}
+
+	const float Cooldown = OutlierAbilitySystemComponent->GetShooterStealthCooldownRemaining();
+	if (Cooldown <= 0.0f)
+	{
+		return;
+	}
+	AShooterPlayerController* ShooterController = Cast<AShooterPlayerController>(GetController());
+	if (!ShooterController)
+	{
+		return;
+	}
+	if (ShooterController->AbilityUIInstance)
+	{
+		ShooterController->AbilityUIInstance->ApplyCooldownIfMatches(
+			OutlierGameplayTags::Ability::Shooter::Stealth(), Cooldown);
+	}
+	if (ULocalPlayer* LocalPlayer = ShooterController->GetLocalPlayer())
+	{
+		if (ULocalPlayerUISubSystem* UISubsystem = LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>())
+		{
+			UISubsystem->OnAbilityUsed(OutlierGameplayTags::Ability::Shooter::Stealth(), Cooldown);
+		}
 	}
 }
 
@@ -735,94 +850,18 @@ void AShooterCharacter::UpdateSuitSelection(const FInputActionValue& Value)
 
 void AShooterCharacter::TryUseSuit()
 {
-	UE_LOG(LogTemp, Error, TEXT("TryUseSuit"));
-
-
-	constexpr float SuitAbilityCooldown = 5.0f;
-
-	if (IsDead())
+	if (IsDead() || bSuitDisabledByPartnerBoundary || !SelectedAbilityTag.IsValid())
 	{
-		UE_LOG(LogTemp, Error, TEXT("ShooterController"));
-
 		return;
 	}
-
-	//if (bSuitDisabledByPartnerBoundary)
-	//{
-	//	UE_LOG(LogTemp, Error, TEXT("bSuitDisabledByPartnerBoundary"));
-
-	//	return;
-	//}
-
-	/*if (!SelectedAbilityTag.IsValid())
-	{
-		UE_LOG(LogTemp, Error, TEXT("SelectedAbilityTag"));
-
-		return;
-	}*/
-
-	AShooterPlayerController* ShooterController = Cast<AShooterPlayerController>(GetController());
-	if (!ShooterController)
-	{
-		UE_LOG(LogTemp, Error, TEXT("ShooterController"));
-		return;
-	}
-
-	ULocalPlayerUISubSystem* UISubsystem = nullptr;
-	if (ULocalPlayer* LocalPlayer = ShooterController->GetLocalPlayer())
-	{
-		UISubsystem = LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>();
-	}
-
-	/*if (!UISubsystem || !UISubsystem->ApplyCurrentAbilityCooldownIfMatches(SelectedAbilityTag, SuitAbilityCooldown))
-	{
-		UE_LOG(LogTemp, Error, TEXT("ApplyCurrentAbilityCooldownIfMatches"));
-
-		return;
-	}*/
-
-	if (ShooterController->AbilityUIInstance)
-	{
-		ShooterController->AbilityUIInstance->ApplyCooldownIfMatches(SelectedAbilityTag, SuitAbilityCooldown);
-	}
-
 	if (HasAuthority())
 	{
-		ToggleStealth();
+		OutlierAbilitySystemComponent->TryActivateShooterSuitAbility(SelectedAbilityTag);
 	}
 	else
 	{
-		ServerToggleStealth();
+		ServerUseSuitAbility(SelectedAbilityTag);
 	}
-}
-
-void AShooterCharacter::ToggleStealth()
-{
-	if (!HasAuthority() || IsDead())
-	{
-		return;
-	}
-
-	bIsStealthed = !bIsStealthed;
-	if (CachedPartnerCharacter)
-	{
-		CachedPartnerCharacter->SetTestStealthed(bIsStealthed);
-	}
-
-	if (!bIsStealthed)
-	{
-		if (UEnemyRoomSubsystem* EnemyRoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
-		{
-			EnemyRoomSubsystem->RefreshDetectionTarget(this);
-			if (IsValid(CachedPartnerCharacter))
-			{
-				EnemyRoomSubsystem->RefreshDetectionTarget(CachedPartnerCharacter);
-			}
-		}
-	}
-
-	OnRep_IsStealthed();
-	ForceNetUpdate();
 }
 
 void AShooterCharacter::SetStealthVisualEnabled(bool bEnabled)
@@ -838,9 +877,12 @@ void AShooterCharacter::SetStealthVisualEnabled(bool bEnabled)
 	}
 }
 
-void AShooterCharacter::ServerToggleStealth_Implementation()
+void AShooterCharacter::ServerUseSuitAbility_Implementation(FGameplayTag AbilityTag)
 {
-	ToggleStealth();
+	if (!IsDead() && !bSuitDisabledByPartnerBoundary && OutlierAbilitySystemComponent)
+	{
+		OutlierAbilitySystemComponent->TryActivateShooterSuitAbility(AbilityTag);
+	}
 }
 
 void AShooterCharacter::TrySlide()
@@ -917,11 +959,6 @@ void AShooterCharacter::OnRep_MovementState()
 	OnMovementStateChanged.Broadcast(MovementState);
 }
 
-void AShooterCharacter::OnRep_IsStealthed()
-{
-	SetStealthVisualEnabled(bIsStealthed);
-}
-
 void AShooterCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
@@ -930,7 +967,6 @@ void AShooterCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	DOREPLIFETIME(AShooterCharacter, WeaponMode);
 	DOREPLIFETIME(AShooterCharacter, CombatState);
 	DOREPLIFETIME(AShooterCharacter, ActionLock);
-	DOREPLIFETIME(AShooterCharacter, bIsStealthed);
 }
 
 FGameplayTagContainer AShooterCharacter::GetOwnedGameplayTagsForQuery() const
@@ -942,11 +978,13 @@ FGameplayTagContainer AShooterCharacter::GetOwnedGameplayTagsForQuery() const
 		OutlierAbilitySystemComponent->GetOwnedGameplayTags(AbilitySystemTags);
 		GameplayTags.AppendTags(AbilitySystemTags);
 	}
-	if (bIsStealthed)
-	{
-		GameplayTags.AddTag(OutlierGameplayTags::State::Stealthed());
-	}
 	return GameplayTags;
+}
+
+bool AShooterCharacter::IsStealthed() const
+{
+	return OutlierAbilitySystemComponent
+		&& OutlierAbilitySystemComponent->HasMatchingGameplayTag(OutlierGameplayTags::State::Stealthed());
 }
 
 void AShooterCharacter::EquipWeapon(AWeaponBase* Weapon)
@@ -2039,16 +2077,19 @@ void AShooterCharacter::MulticastPlayThirdPersonActionMontage_Implementation(ESh
 void AShooterCharacter::SetPartnerCharacter(APartnerCharacter* NewPartner)
 {
 	CachedPartnerCharacter = NewPartner;
-
-	if (HasAuthority() && CachedPartnerCharacter)
+	if (HasAuthority() && CachedPartnerCharacter && bShooterSuitDataInitialized)
 	{
-		CachedPartnerCharacter->SetTestStealthed(bIsStealthed);
+		CachedPartnerCharacter->ConfigureSuitDisableBoundaryRadius(ShooterSuitConfig.MaxPartnerDistance);
 	}
 }
 
 void AShooterCharacter::SetSuitDisabledByPartnerBoundary(bool bDisabled)
 {
 	bSuitDisabledByPartnerBoundary = bDisabled;
+	if (HasAuthority() && bDisabled)
+	{
+		EndActiveStealth(true);
+	}
 
 	if (!IsLocallyControlled())
 	{
@@ -2078,6 +2119,29 @@ void AShooterCharacter::SetSuitDisabledByPartnerBoundary(bool bDisabled)
 			SubSystem->OnAbilityEnabledByDistance();
 		}
 	}
+}
+
+void AShooterCharacter::NotifyOffensiveActionExecuted()
+{
+	if (HasAuthority())
+	{
+		EndActiveStealth(true);
+	}
+}
+
+void AShooterCharacter::NotifyStealthDetected()
+{
+	if (HasAuthority())
+	{
+		EndActiveStealth(true);
+	}
+}
+
+bool AShooterCharacter::EndActiveStealth(bool bCommitCooldown)
+{
+	return HasAuthority()
+		&& OutlierAbilitySystemComponent
+		&& OutlierAbilitySystemComponent->EndActiveShooterStealth(bCommitCooldown);
 }
 void AShooterCharacter::ApplyPartnerShield(float Amount, float Duration)
 {

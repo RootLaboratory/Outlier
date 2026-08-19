@@ -4,6 +4,7 @@
 #include "GAS/Attributes/OutlierVitalAttributeSet.h"
 #include "GAS/Effects/OutlierGameplayEffects.h"
 #include "GAS/Abilities/Partner/OutlierPartnerGameplayAbilities.h"
+#include "GAS/Abilities/Shooter/OutlierShooterGameplayAbilities.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "Outlier.h"
 
@@ -297,6 +298,27 @@ FActiveGameplayEffectHandle UOutlierAbilitySystemComponent::ApplyDamageImmuneSta
 		: FActiveGameplayEffectHandle();
 }
 
+FActiveGameplayEffectHandle UOutlierAbilitySystemComponent::ApplyTimedGameplayEffectToSelf(
+	TSubclassOf<UGameplayEffect> EffectClass,
+	float DurationSeconds,
+	UObject* SourceObject)
+{
+	if (!IsOwnerActorAuthoritative() || !EffectClass || DurationSeconds <= 0.0f)
+	{
+		return FActiveGameplayEffectHandle();
+	}
+
+	FGameplayEffectContextHandle Context = MakeEffectContext();
+	Context.AddSourceObject(SourceObject ? SourceObject : GetAvatarActor());
+	FGameplayEffectSpecHandle SpecHandle = MakeOutgoingSpec(EffectClass, 1.0f, Context);
+	if (!SpecHandle.IsValid())
+	{
+		return FActiveGameplayEffectHandle();
+	}
+	SpecHandle.Data->SetDuration(DurationSeconds, true);
+	return ApplyGameplayEffectSpecToSelf(*SpecHandle.Data.Get());
+}
+
 bool UOutlierAbilitySystemComponent::RemoveActiveEffectFromSelf(FActiveGameplayEffectHandle Handle)
 {
 	return IsOwnerActorAuthoritative() && Handle.IsValid() && RemoveActiveGameplayEffect(Handle);
@@ -461,6 +483,105 @@ bool UOutlierAbilitySystemComponent::TryActivatePartnerAbility(const FGameplayTa
 	FGameplayTagContainer AbilityTags;
 	AbilityTags.AddTag(AbilityTag);
 	return TryActivateAbilitiesByTag(AbilityTags, true);
+}
+
+bool UOutlierAbilitySystemComponent::ConfigureShooterSuitAbilities(
+	const FOutlierShooterSuitConfig& Config)
+{
+	FString Error;
+	if (!Config.IsValid(Error))
+	{
+#if UE_BUILD_SHIPPING
+		UE_LOG(LogOutlier, Error, TEXT("[GAS.ShooterSuit] Invalid configuration: %s"), *Error);
+		return false;
+#else
+		checkf(false, TEXT("[GAS.ShooterSuit] Invalid configuration: %s"), *Error);
+		return false;
+#endif
+	}
+	if (!IsOwnerActorAuthoritative())
+	{
+		return false;
+	}
+	if (bShooterSuitConfigured)
+	{
+#if UE_BUILD_SHIPPING
+		return ShooterSuitConfig.Equals(Config);
+#else
+		checkf(ShooterSuitConfig.Equals(Config), TEXT("[GAS.ShooterSuit] Configuration changed after grant"));
+		return true;
+#endif
+	}
+
+	for (const FGameplayAbilitySpec& ExistingSpec : GetActivatableAbilities())
+	{
+		if (ExistingSpec.Ability
+			&& ExistingSpec.Ability->GetClass() == UOutlierShooterStealthAbility::StaticClass())
+		{
+#if UE_BUILD_SHIPPING
+			UE_LOG(LogOutlier, Error, TEXT("[GAS.ShooterSuit] Stealth ability was already granted before configuration"));
+			return false;
+#else
+			checkf(false, TEXT("[GAS.ShooterSuit] Stealth ability was already granted before configuration"));
+			return false;
+#endif
+		}
+	}
+	ShooterSuitConfig = Config;
+	GrantedShooterStealthAbilityHandle = GiveAbility(FGameplayAbilitySpec(
+		UOutlierShooterStealthAbility::StaticClass(), 1, INDEX_NONE, GetOwnerActor()));
+	if (!GrantedShooterStealthAbilityHandle.IsValid())
+	{
+		return false;
+	}
+	bShooterSuitConfigured = true;
+	return true;
+}
+
+bool UOutlierAbilitySystemComponent::TryActivateShooterSuitAbility(const FGameplayTag& AbilityTag)
+{
+	if (!bShooterSuitConfigured || !AbilityTag.IsValid())
+	{
+		return false;
+	}
+	FGameplayTagContainer AbilityTags;
+	AbilityTags.AddTag(AbilityTag);
+	return TryActivateAbilitiesByTag(AbilityTags, true);
+}
+
+bool UOutlierAbilitySystemComponent::CommitShooterStealthCooldown()
+{
+	return CommitTimedCooldown(
+		UOutlierShooterStealthCooldownGameplayEffect::StaticClass(),
+		OutlierGameplayTags::Cooldown::Shooter::Stealth(),
+		ShooterSuitConfig.Stealth.CooldownSeconds,
+		GetAvatarActor()).WasSuccessfullyApplied();
+}
+
+bool UOutlierAbilitySystemComponent::IsShooterStealthCooldownActive() const
+{
+	return IsTimedCooldownActive(
+		OutlierGameplayTags::Cooldown::Shooter::Stealth(),
+		GetAvatarActor());
+}
+
+float UOutlierAbilitySystemComponent::GetShooterStealthCooldownRemaining() const
+{
+	return GetTimedCooldownRemaining(
+		OutlierGameplayTags::Cooldown::Shooter::Stealth(),
+		GetAvatarActor());
+}
+
+bool UOutlierAbilitySystemComponent::EndActiveShooterStealth(bool bCommitCooldown)
+{
+	FGameplayAbilitySpec* Spec = FindAbilitySpecFromHandle(GrantedShooterStealthAbilityHandle);
+	if (!Spec || !Spec->IsActive())
+	{
+		return false;
+	}
+	UOutlierShooterStealthAbility* Ability = Cast<UOutlierShooterStealthAbility>(
+		Spec->GetPrimaryInstance());
+	return Ability && Ability->EndStealth(bCommitCooldown);
 }
 
 int32 UOutlierAbilitySystemComponent::GetGrantedPartnerAbilityCount() const

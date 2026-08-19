@@ -75,12 +75,12 @@ bool UShooterCurrentAbilityIcon::ApplyCooldownIfMatches(const FGameplayTag& Abil
 
 UTexture2D* UShooterCurrentAbilityIcon::GetTextureForAbility(const FGameplayTag& AbilityTag) const
 {
-	if (AbilityTag == TagDrivenUITags::Ability::Shooter::Teleport())
+	if (AbilityTag == TagDrivenUITags::Ability::Shooter::QuantumLeap())
 	{
 		return TeleportTexture;
 	}
 
-	if (AbilityTag == TagDrivenUITags::Ability::Shooter::Shield())
+	if (AbilityTag == TagDrivenUITags::Ability::Shooter::BulletReflection())
 	{
 		return ShieldTexture;
 	}
@@ -90,7 +90,7 @@ UTexture2D* UShooterCurrentAbilityIcon::GetTextureForAbility(const FGameplayTag&
 		return StealthTexture;
 	}
 
-	if (AbilityTag == TagDrivenUITags::Ability::Shooter::StimPack())
+	if (AbilityTag == TagDrivenUITags::Ability::Shooter::WeaponOvercharge())
 	{
 		return StimPackTexture;
 	}

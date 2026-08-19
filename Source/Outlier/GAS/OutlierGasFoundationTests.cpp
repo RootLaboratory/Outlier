@@ -18,6 +18,7 @@
 #include "Enemy/EnemyBase.h"
 #include "Enemy/EnemyTargetRules.h"
 #include "GAS/Data/OutlierVitalityDataRow.h"
+#include "GAS/Data/OutlierShooterSuitAbilityDataRow.h"
 #include "GAS/Attributes/OutlierShieldAttributeSet.h"
 #include "GAS/Attributes/OutlierVitalAttributeSet.h"
 #include "GAS/Effects/OutlierGameplayEffects.h"
@@ -777,11 +778,13 @@ bool FOutlierEnemyTargetRulesTest::RunTest(const FString& Parameters)
 		TEXT("Initial Partner target remains available"),
 		OutlierEnemyTargetRules::IsUnavailable(Partner));
 
-	Partner->SetTestStealthed(true);
+	const FActiveGameplayEffectHandle StealthHandle = AbilitySystem->ApplyTimedGameplayEffectToSelf(
+		UOutlierShooterStealthGameplayEffect::StaticClass(), 1.0f, Partner);
+	TestTrue(TEXT("Stealth state applies for target rules"), StealthHandle.IsValid());
 	TestTrue(
 		TEXT("Exact Stealthed tag makes Partner unavailable"),
 		OutlierEnemyTargetRules::IsUnavailable(Partner));
-	Partner->SetTestStealthed(false);
+	TestTrue(TEXT("Exact Stealthed effect removal succeeds"), AbilitySystem->RemoveActiveEffectFromSelf(StealthHandle));
 	TestFalse(
 		TEXT("Removing exact Stealthed tag makes Partner available"),
 		OutlierEnemyTargetRules::IsUnavailable(Partner));
@@ -1380,6 +1383,210 @@ bool FOutlierGasShooterDamageFlowTest::RunTest(const FString& Parameters)
 	GEngine->DestroyWorldContext(World);
 	World->RemoveFromRoot();
 
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierGasShooterSuitDataContractTest,
+	"Outlier.GAS.ShooterSuit.DataContract",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierGasShooterSuitDataContractTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UDataTable* Table = NewObject<UDataTable>();
+	Table->RowStruct = FOutlierShooterSuitAbilityDataRow::StaticStruct();
+
+	FOutlierShooterSuitAbilityDataRow Common;
+	Common.MaxPartnerDistance = 500.0f;
+	Table->AddRow(TEXT("Common"), Common);
+	FOutlierShooterSuitAbilityDataRow QuantumLeap;
+	QuantumLeap.CastTimeSeconds = 1.0f;
+	QuantumLeap.CooldownSeconds = 8.0f;
+	QuantumLeap.PartnerOffset = 50.0f;
+	Table->AddRow(TEXT("QuantumLeap"), QuantumLeap);
+	FOutlierShooterSuitAbilityDataRow BulletReflection;
+	BulletReflection.DurationSeconds = 4.0f;
+	BulletReflection.CooldownSeconds = 20.0f;
+	BulletReflection.ReflectionRadius = 2000.0f;
+	Table->AddRow(TEXT("BulletReflection"), BulletReflection);
+	FOutlierShooterSuitAbilityDataRow Stealth;
+	Stealth.DurationSeconds = 5.0f;
+	Stealth.CooldownSeconds = 20.0f;
+	Table->AddRow(TEXT("Stealth"), Stealth);
+	FOutlierShooterSuitAbilityDataRow WeaponOvercharge;
+	WeaponOvercharge.DurationSeconds = 8.0f;
+	WeaponOvercharge.CooldownSeconds = 25.0f;
+	WeaponOvercharge.ShieldDrainPerSecond = 12.5f;
+	WeaponOvercharge.FireRateMultiplier = 1.25f;
+	WeaponOvercharge.SpreadMultiplier = 0.5f;
+	WeaponOvercharge.ShieldRecoveryDelay = 3.0f;
+	Table->AddRow(TEXT("WeaponOvercharge"), WeaponOvercharge);
+
+	FOutlierShooterSuitConfig Config;
+	FString Error;
+	TestTrue(TEXT("Exact Shooter suit table resolves"), OutlierShooterSuitData::TryResolveConfiguration(Table, Config, Error));
+	TestEqual(TEXT("Stealth duration comes from the table"), Config.Stealth.DurationSeconds, 5.0f);
+	TestEqual(TEXT("Stealth cooldown comes from the table"), Config.Stealth.CooldownSeconds, 20.0f);
+	TestEqual(TEXT("Common boundary comes from the table"), Config.MaxPartnerDistance, 500.0f);
+
+	Table->RemoveRow(TEXT("WeaponOvercharge"));
+	TestFalse(TEXT("Missing required row fails validation"), OutlierShooterSuitData::TryResolveConfiguration(Table, Config, Error));
+	Table->AddRow(TEXT("WeaponOvercharge"), WeaponOvercharge);
+	Stealth.DurationSeconds = 0.0f;
+	Table->AddRow(TEXT("Stealth"), Stealth);
+	TestFalse(TEXT("Non-positive gameplay value fails validation"), OutlierShooterSuitData::TryResolveConfiguration(Table, Config, Error));
+
+	UDataTable* DiskTable = LoadObject<UDataTable>(
+		nullptr,
+		TEXT("/Game/Datas/Character/Ability/Shooter/DT_AbilityShooter.DT_AbilityShooter"));
+	if (!TestNotNull(TEXT("Shooter suit DataTable asset exists on disk"), DiskTable))
+	{
+		return false;
+	}
+	TestTrue(TEXT("Disk Shooter suit table satisfies the exact schema"), OutlierShooterSuitData::TryResolveConfiguration(DiskTable, Config, Error));
+	TestEqual(TEXT("Disk Quantum Leap cooldown is 8 seconds"), Config.QuantumLeap.CooldownSeconds, 8.0f);
+	TestEqual(TEXT("Disk Bullet Reflection radius is 20 meters"), Config.BulletReflection.ReflectionRadius, 2000.0f);
+	TestEqual(TEXT("Disk Stealth duration is 5 seconds"), Config.Stealth.DurationSeconds, 5.0f);
+	TestEqual(TEXT("Disk Stealth cooldown is 20 seconds"), Config.Stealth.CooldownSeconds, 20.0f);
+	TestEqual(TEXT("Disk Weapon Overcharge shield drain is 12.5 per second"), Config.WeaponOvercharge.ShieldDrainPerSecond, 12.5f);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierGasShooterStealthLifecycleTest,
+	"Outlier.GAS.ShooterSuit.StealthLifecycle",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierGasShooterStealthLifecycleTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const FName WorldName = MakeUniqueObjectName(
+		nullptr, UWorld::StaticClass(), NAME_None, EUniqueObjectNameOptions::GloballyUnique);
+	FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, WorldName, GetTransientPackage());
+	if (!TestNotNull(TEXT("Transient Shooter stealth world is created"), World))
+	{
+		GEngine->DestroyWorldContext(World);
+		return false;
+	}
+	World->AddToRoot();
+	WorldContext.SetCurrentWorld(World);
+	World->SetGameInstance(NewObject<UGameInstance>(GEngine));
+	TestTrue(TEXT("Shooter stealth world creates an authority game mode"), World->SetGameMode(FURL()));
+	World->InitializeActorsForPlay(FURL());
+
+	UClass* ShooterClass = LoadClass<AShooterCharacter>(
+		nullptr, TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	UClass* PartnerClass = LoadClass<APartnerCharacter>(
+		nullptr, TEXT("/Game/Blueprints/Partner/BP_PartnerCharacter.BP_PartnerCharacter_C"));
+	AShooterCharacter* Shooter = ShooterClass ? World->SpawnActor<AShooterCharacter>(ShooterClass) : nullptr;
+	APartnerCharacter* Partner = PartnerClass ? World->SpawnActor<APartnerCharacter>(PartnerClass) : nullptr;
+	if (!TestNotNull(TEXT("Shooter spawns for stealth lifecycle"), Shooter)
+		|| !TestNotNull(TEXT("Partner spawns for stealth lifecycle"), Partner))
+	{
+		World->DestroyWorld(true);
+		World->SetPhysicsScene(nullptr);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+		return false;
+	}
+	if (!Shooter->HasActorBegunPlay())
+	{
+		Shooter->DispatchBeginPlay();
+	}
+	if (!Partner->HasActorBegunPlay())
+	{
+		Partner->DispatchBeginPlay();
+	}
+	Shooter->SetPartnerCharacter(Partner);
+	Partner->SetShooterCharacter(Shooter);
+	UOutlierAbilitySystemComponent* ShooterASC = Shooter->GetOutlierAbilitySystemComponent();
+	UOutlierAbilitySystemComponent* PartnerASC = Partner->GetOutlierAbilitySystemComponent();
+	ShooterASC->InitializeForPawn(Shooter);
+	PartnerASC->InitializeForPawn(Partner);
+	TestTrue(TEXT("Shooter suit abilities are configured from the Blueprint DataTable"), ShooterASC->IsShooterSuitConfigured());
+	TestTrue(
+		TEXT("Stealth activates through the authoritative Shooter ASC"),
+		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::Stealth()));
+	TestTrue(TEXT("Shooter receives exact Stealthed state"), ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Stealthed()));
+	TestTrue(TEXT("Partner receives exact Stealthed state"), PartnerASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Stealthed()));
+	TestFalse(TEXT("Cooldown does not run while Stealth is active"), ShooterASC->IsShooterStealthCooldownActive());
+	TestFalse(
+		TEXT("Active Stealth input is ignored"),
+		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::Stealth()));
+	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetMaxPartnerShieldAttribute(), 20.0f);
+	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetPartnerShieldAttribute(), 20.0f);
+	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetPartnerShieldAttribute(), 10.0f);
+	TestTrue(TEXT("Non-damage Partner shield decay does not break Stealth"), Shooter->IsStealthed());
+
+	TestTrue(TEXT("Gameplay break ends active Stealth"), Shooter->EndActiveStealth(true));
+	TestFalse(TEXT("Shooter Stealthed state is removed together"), ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Stealthed()));
+	TestFalse(TEXT("Partner Stealthed state is removed together"), PartnerASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Stealthed()));
+	TestTrue(TEXT("Full configured cooldown starts only after Stealth ends"), ShooterASC->IsShooterStealthCooldownActive());
+	TestTrue(TEXT("Stealth cooldown is approximately 20 seconds"), ShooterASC->GetShooterStealthCooldownRemaining() > 19.0f);
+	TestFalse(
+		TEXT("Cooldown blocks Stealth reactivation"),
+		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::Stealth()));
+
+	FGameplayTagContainer StealthCooldownTags;
+	StealthCooldownTags.AddTag(OutlierGameplayTags::Cooldown::Shooter::Stealth());
+	TestEqual(
+		TEXT("Test fixture removes the first exact Stealth cooldown"),
+		ShooterASC->RemoveActiveEffectsWithGrantedTags(StealthCooldownTags),
+		1);
+	TestTrue(
+		TEXT("Stealth reactivates after its cooldown is removed"),
+		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::Stealth()));
+	for (int32 TickIndex = 0; TickIndex < 260; ++TickIndex)
+	{
+		++GFrameCounter;
+		World->Tick(LEVELTICK_All, 0.02f);
+	}
+	TestFalse(TEXT("Natural expiry removes Shooter Stealth"), ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Stealthed()));
+	TestFalse(TEXT("Natural expiry removes Partner Stealth together"), PartnerASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Stealthed()));
+	TestTrue(TEXT("Natural expiry starts the full configured cooldown"), ShooterASC->IsShooterStealthCooldownActive());
+
+	TestEqual(
+		TEXT("Test fixture removes natural-expiry cooldown"),
+		ShooterASC->RemoveActiveEffectsWithGrantedTags(StealthCooldownTags),
+		1);
+	TestTrue(
+		TEXT("Stealth activates for detector break coverage"),
+		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::Stealth()));
+	Shooter->NotifyStealthDetected();
+	TestFalse(TEXT("Detector notification removes paired Stealth"), Shooter->IsStealthed());
+	TestTrue(TEXT("Detector notification starts full cooldown"), ShooterASC->IsShooterStealthCooldownActive());
+
+	TestEqual(
+		TEXT("Test fixture removes detector cooldown"),
+		ShooterASC->RemoveActiveEffectsWithGrantedTags(StealthCooldownTags),
+		1);
+	ShooterASC->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetMaxHealthAttribute(), 100.0f);
+	ShooterASC->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetHealthAttribute(), 100.0f);
+	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetMaxShieldAttribute(), 0.0f);
+	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetShieldAttribute(), 0.0f);
+	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetMaxPartnerShieldAttribute(), 0.0f);
+	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetPartnerShieldAttribute(), 0.0f);
+	TestTrue(
+		TEXT("Stealth activates for lethal damage ordering coverage"),
+		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::Stealth()));
+	FOutlierTaggedDamageEvent LethalDamageEvent;
+	LethalDamageEvent.DamageTag = OutlierGameplayTags::Damage::Weapon();
+	TestEqual(
+		TEXT("Lethal damage applies through the Shooter damage boundary while Stealth is active"),
+		Shooter->TakeDamage(100.0f, LethalDamageEvent, nullptr, Shooter),
+		100.0f);
+	TestTrue(TEXT("Lethal damage still commits the gameplay-break cooldown"), ShooterASC->IsShooterStealthCooldownActive());
+	TestTrue(TEXT("Lethal damage applies Dead after the Stealth break"), Shooter->IsDead());
+
+	Shooter->Destroy(true);
+	Partner->Destroy(true);
+	GEngine->ShutdownWorldNetDriver(World);
+	World->DestroyWorld(true);
+	World->SetPhysicsScene(nullptr);
+	GEngine->DestroyWorldContext(World);
+	World->RemoveFromRoot();
 	return true;
 }
 

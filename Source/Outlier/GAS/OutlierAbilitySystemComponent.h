@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "AbilitySystemComponent.h"
+#include "GAS/Data/OutlierShooterSuitAbilityDataRow.h"
 #include "OutlierAbilitySystemComponent.generated.h"
 
 class APawn;
@@ -44,6 +45,10 @@ public:
 	bool RestoreHealthToMax();
 	FActiveGameplayEffectHandle ApplyRebootStateToSelf(float DurationSeconds);
 	FActiveGameplayEffectHandle ApplyDamageImmuneStateToSelf();
+	FActiveGameplayEffectHandle ApplyTimedGameplayEffectToSelf(
+		TSubclassOf<UGameplayEffect> EffectClass,
+		float DurationSeconds,
+		UObject* SourceObject);
 	bool RemoveActiveEffectFromSelf(FActiveGameplayEffectHandle Handle);
 	FActiveGameplayEffectHandle CommitTimedCooldown(
 		TSubclassOf<UGameplayEffect> EffectClass,
@@ -65,6 +70,14 @@ public:
 	float GetSuspendedPartnerCooldownRemaining(const FGameplayTag& CooldownTag) const;
 	bool ArePartnerSkillCooldownsSuspended() const { return bPartnerSkillCooldownsSuspended; }
 	void CancelActivePartnerAbilities();
+	bool ConfigureShooterSuitAbilities(const FOutlierShooterSuitConfig& Config);
+	bool TryActivateShooterSuitAbility(const FGameplayTag& AbilityTag);
+	bool IsShooterSuitConfigured() const { return bShooterSuitConfigured; }
+	const FOutlierShooterSuitConfig& GetShooterSuitConfig() const { return ShooterSuitConfig; }
+	bool CommitShooterStealthCooldown();
+	bool IsShooterStealthCooldownActive() const;
+	float GetShooterStealthCooldownRemaining() const;
+	bool EndActiveShooterStealth(bool bCommitCooldown);
 	EGameplayEffectReplicationMode GetConfiguredReplicationMode() const { return ReplicationMode; }
 
 private:
@@ -76,4 +89,7 @@ private:
 	TMap<FGameplayTag, float> SuspendedPartnerCooldowns;
 	bool bPartnerAbilitiesConfigured = false;
 	bool bPartnerSkillCooldownsSuspended = false;
+	FOutlierShooterSuitConfig ShooterSuitConfig;
+	FGameplayAbilitySpecHandle GrantedShooterStealthAbilityHandle;
+	bool bShooterSuitConfigured = false;
 };

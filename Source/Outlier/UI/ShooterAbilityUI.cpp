@@ -14,10 +14,10 @@ void UShooterAbilityUI::NativeConstruct()
 
 	AbilitySections.Reset();
 
-	RightAbilityTag  = TagDrivenUITags::Ability::Shooter::Teleport();
-	BottomAbilityTag = TagDrivenUITags::Ability::Shooter::Shield();
+	RightAbilityTag  = TagDrivenUITags::Ability::Shooter::QuantumLeap();
+	BottomAbilityTag = TagDrivenUITags::Ability::Shooter::BulletReflection();
 	LeftAbilityTag   = TagDrivenUITags::Ability::Shooter::Stealth();
-	TopAbilityTag    = TagDrivenUITags::Ability::Shooter::StimPack();
+	TopAbilityTag    = TagDrivenUITags::Ability::Shooter::WeaponOvercharge();
 
 	RegisterAbilityIcon(IconTeleport, RightAbilityTag, true);
 	RegisterAbilityIcon(IconShield, BottomAbilityTag, true);

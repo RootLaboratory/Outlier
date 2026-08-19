@@ -6,6 +6,7 @@
 #include "FirstPerson/FirstPersonCharacter.h"
 #include "GameplayTagContainer.h"
 #include "AbilitySystemInterface.h"
+#include "GAS/Data/OutlierShooterSuitAbilityDataRow.h"
 #include "ShooterCharacter.generated.h"
 
 class UInputAction;
@@ -23,6 +24,7 @@ class APartnerCharacter;
 class UOutlierAbilitySystemComponent;
 class UOutlierVitalAttributeSet;
 class UOutlierShieldAttributeSet;
+class UDataTable;
 struct FOnAttributeChangeData;
 
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnShooterHealthChanged, float /*CurrentHealth*/, float /*MaxHealth*/);
@@ -237,8 +239,8 @@ protected:
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "State")
 	EShooterActionLock ActionLock = EShooterActionLock::None;
 
-	UPROPERTY(ReplicatedUsing = OnRep_IsStealthed, VisibleAnywhere, BlueprintReadOnly, Category = "Status")
-	uint8 bIsStealthed : 1 = false;
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "GAS|Suit")
+	TObjectPtr<UDataTable> ShooterSuitAbilityDataTable;
 
 	// Local Runtime State
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
@@ -281,11 +283,16 @@ protected:
 	FDelegateHandle PartnerShieldChangedHandle;
 	FDelegateHandle MaxPartnerShieldChangedHandle;
 	FDelegateHandle DeadTagChangedHandle;
+	FDelegateHandle StealthTagChangedHandle;
+	FDelegateHandle StealthCooldownTagChangedHandle;
 
 	UPROPERTY()
 	TObjectPtr<APartnerCharacter> CachedPartnerCharacter;
 
 	bool bSuitDisabledByPartnerBoundary = false;
+	bool bApplyingGameplayDamage = false;
+	bool bShooterSuitDataInitialized = false;
+	FOutlierShooterSuitConfig ShooterSuitConfig;
 
 	// Slide
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera|Slide")
@@ -316,6 +323,7 @@ protected:
 	virtual void OnRep_Controller() override;
 	void RefreshAbilitySystemActorInfo();
 	void InitializeGasVitality();
+	void InitializeGasSuitAbilities();
 	void BindGasVitalityObservers();
 	void UnbindGasVitalityObservers();
 	void HandleHealthChanged(const FOnAttributeChangeData& ChangeData);
@@ -325,6 +333,9 @@ protected:
 	void HandlePartnerShieldChanged(const FOnAttributeChangeData& ChangeData);
 	void HandleMaxPartnerShieldChanged(const FOnAttributeChangeData& ChangeData);
 	void HandleDeadTagChanged(const FGameplayTag Tag, int32 NewCount);
+	void HandleStealthTagChanged(const FGameplayTag Tag, int32 NewCount);
+	void HandleStealthCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
+	void RefreshShooterSuitCooldownUI();
 
 	/** Initialize input action bindings */
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
@@ -374,9 +385,6 @@ public:
 	UFUNCTION()
 	void OnRep_MovementState();
 
-	UFUNCTION()
-	void OnRep_IsStealthed();
-
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	// Unreal 공통 피해 진입점을 기존 Shooter 실드 및 HP 처리로 연결한다.
 	virtual float TakeDamage(
@@ -406,6 +414,12 @@ public:
 
 	void SetPartnerCharacter(APartnerCharacter* NewPartner);
 	void SetSuitDisabledByPartnerBoundary(bool bDisabled);
+	APartnerCharacter* GetPartnerCharacter() const { return CachedPartnerCharacter; }
+	bool IsSuitDisabledByPartnerBoundary() const { return bSuitDisabledByPartnerBoundary; }
+	void NotifyOffensiveActionExecuted();
+	UFUNCTION(BlueprintCallable, Category = "Suit|Stealth")
+	void NotifyStealthDetected();
+	bool EndActiveStealth(bool bCommitCooldown);
 
 	void ApplyPartnerShield(float Amount, float Duration);
 	float GetCurPartnerShield() const;
@@ -452,7 +466,7 @@ public:
 	bool IsDead() const;
 
 	UFUNCTION(BlueprintPure, Category = "Suit|Stealth")
-	bool IsStealthed() const { return bIsStealthed; }
+	bool IsStealthed() const;
 
 	void HandleWeaponAttackStoppedInternal();
 	void HandleAutoReloadRequested();
@@ -495,7 +509,6 @@ protected:
 	void TryCloseSuitMenu();
 	void UpdateSuitSelection(const FInputActionValue& Value);
 	void TryUseSuit();
-	void ToggleStealth();
 	void SetStealthVisualEnabled(bool bEnabled);
 	void TrySlide();
 	void TryLean(const FInputActionValue& Value);
@@ -536,7 +549,7 @@ protected:
 	void ServerJumpEnd();
 
 	UFUNCTION(Server, Reliable)
-	void ServerToggleStealth();
+	void ServerUseSuitAbility(FGameplayTag AbilityTag);
 
 	UFUNCTION(Client, Reliable)
 	void ClientPlayFirstPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType);

@@ -155,13 +155,16 @@ float APartnerCharacter::TakeDamage(
 		DamageTag = TaggedDamageEvent.DamageTag;
 	}
 
-	return OutlierAbilitySystemComponent->ApplyDamageToSelf(
+	const bool bApplied = OutlierAbilitySystemComponent->ApplyDamageToSelf(
 		AppliedDamage,
 		EventInstigator,
 		DamageCauser,
-		DamageTag)
-		? AppliedDamage
-		: 0.0f;
+		DamageTag);
+	if (bApplied && CachedShooterCharacter)
+	{
+		CachedShooterCharacter->EndActiveStealth(true);
+	}
+	return bApplied ? AppliedDamage : 0.0f;
 }
 
 void APartnerCharacter::UnPossessed()
@@ -466,7 +469,6 @@ void APartnerCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	DOREPLIFETIME(APartnerCharacter, bShieldActive);
 	DOREPLIFETIME(APartnerCharacter, bScanning);
 	DOREPLIFETIME(APartnerCharacter, bIsAccelerate);
-	DOREPLIFETIME(APartnerCharacter, bTestStealthed);
 	DOREPLIFETIME(APartnerCharacter, bHiddenForEnemyPossession);
 }
 
@@ -497,7 +499,7 @@ FGameplayTagContainer APartnerCharacter::GetOwnedGameplayTagsForQuery() const
 		OutlierAbilitySystemComponent->GetOwnedGameplayTags(AbilitySystemTags);
 		GameplayTags.AppendTags(AbilitySystemTags);
 	}
-	if (bTestStealthed || bHiddenForEnemyPossession)
+	if (bHiddenForEnemyPossession)
 	{
 		GameplayTags.AddTag(OutlierGameplayTags::State::Stealthed());
 	}
@@ -840,6 +842,10 @@ void APartnerCharacter::StopActionsForReboot()
 	if (!HasAuthority())
 	{
 		return;
+	}
+	if (CachedShooterCharacter)
+	{
+		CachedShooterCharacter->EndActiveStealth(true);
 	}
 	if (CombatComponent)
 	{
@@ -1450,15 +1456,18 @@ void APartnerCharacter::SetShooterCharacter(AShooterCharacter* NewShooter)
 	}
 }
 
-void APartnerCharacter::SetTestStealthed(bool bNewStealthed)
+void APartnerCharacter::ConfigureSuitDisableBoundaryRadius(float Radius)
 {
-	if (!HasAuthority() || bTestStealthed == bNewStealthed)
-	{
-		return;
-	}
+	checkf(Radius > 0.0f, TEXT("Partner suit disable boundary radius must be positive."));
+	SuitDisableBoundaryRadius = Radius;
+}
 
-	bTestStealthed = bNewStealthed;
-	ForceNetUpdate();
+void APartnerCharacter::NotifyOffensiveActionExecuted()
+{
+	if (HasAuthority() && CachedShooterCharacter)
+	{
+		CachedShooterCharacter->EndActiveStealth(true);
+	}
 }
 
 void APartnerCharacter::ClientNotifySkillUseResult_Implementation(EPartnerSkillType SkillType, EPartnerSkillUseResult Result)

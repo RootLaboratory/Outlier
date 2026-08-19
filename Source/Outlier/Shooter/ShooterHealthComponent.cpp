@@ -35,6 +35,7 @@ void UShooterHealthComponent::ApplyDamage(
 
 	if (UOutlierAbilitySystemComponent* AbilitySystem = ShooterCharacter->GetOutlierAbilitySystemComponent())
 	{
+		TGuardValue<bool> DamageApplicationGuard(ShooterCharacter->bApplyingGameplayDamage, true);
 		AbilitySystem->ApplyDamageToSelf(DamageAmount, Instigator, DamageCauser, DamageTag);
 	}
 }

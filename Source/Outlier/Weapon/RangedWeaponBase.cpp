@@ -2048,7 +2048,12 @@ void ARangedWeaponBase::PerformAttack()
 
 	if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner))
 	{
+		Shooter->NotifyOffensiveActionExecuted();
 		Shooter->HandleFireShotAnimation();
+	}
+	else if (APartnerCharacter* Partner = Cast<APartnerCharacter>(WeaponOwner))
+	{
+		Partner->NotifyOffensiveActionExecuted();
 	}
 
 	StartAttackCooldown();

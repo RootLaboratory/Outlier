@@ -51,15 +51,15 @@ namespace TagDrivenUITags
 			return Tag;
 		}
 
-		inline FGameplayTag ShieldSkill()
+		inline FGameplayTag BulletReflectionSkill()
 		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("UI.Player.Shooter.Skill.Shield")));
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("UI.Player.Shooter.Skill.BulletReflection")));
 			return Tag;
 		}
 
-		inline FGameplayTag StimPackSkill()
+		inline FGameplayTag WeaponOverchargeSkill()
 		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("UI.Player.Shooter.Skill.StimPack")));
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("UI.Player.Shooter.Skill.WeaponOvercharge")));
 			return Tag;
 		}
 
@@ -69,9 +69,9 @@ namespace TagDrivenUITags
 			return Tag;
 		}
 
-		inline FGameplayTag TeleportSkill()
+		inline FGameplayTag QuantumLeapSkill()
 		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("UI.Player.Shooter.Skill.Teleport")));
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("UI.Player.Shooter.Skill.QuantumLeap")));
 			return Tag;
 		}
 
@@ -155,15 +155,15 @@ namespace TagDrivenUITags
 	{
 		namespace Shooter
 		{
-			inline FGameplayTag Teleport()
+			inline FGameplayTag QuantumLeap()
 			{
-				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.Teleport")));
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.QuantumLeap")));
 				return Tag;
 			}
 
-			inline FGameplayTag Shield()
+			inline FGameplayTag BulletReflection()
 			{
-				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.Shield")));
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.BulletReflection")));
 				return Tag;
 			}
 
@@ -173,9 +173,9 @@ namespace TagDrivenUITags
 				return Tag;
 			}
 
-			inline FGameplayTag StimPack()
+			inline FGameplayTag WeaponOvercharge()
 			{
-				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.StimPack")));
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.WeaponOvercharge")));
 				return Tag;
 			}
 		}
