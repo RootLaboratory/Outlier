@@ -9,6 +9,7 @@
 #include "Outlier.h"
 #include "Shooter/ShooterCharacter.h"
 #include "TimerManager.h"
+#include "Weapon/RangedWeaponBase.h"
 
 namespace
 {
@@ -112,7 +113,7 @@ bool UOutlierShooterQuantumLeapAbility::CanActivateAbility(
 		UE_LOG(LogOutlier, Warning, TEXT("[GAS.ShooterSuit.Trace][QuantumLeap] CanActivate=0 Reason=OutOfRange Shooter=%s Partner=%s Distance=%.1f Max=%.1f"), *GetNameSafe(Shooter), *GetNameSafe(Partner), Distance, MaxDistance);
 		return false;
 	}
-	UE_LOG(LogOutlier, Warning, TEXT("[GAS.ShooterSuit.Trace][QuantumLeap] CanActivate=1 Shooter=%s Partner=%s Distance=%.1f"), *GetNameSafe(Shooter), *GetNameSafe(Partner), Distance);
+	UE_LOG(LogOutlier, Verbose, TEXT("[GAS.ShooterSuit.Trace][QuantumLeap] CanActivate=1 Shooter=%s Partner=%s Distance=%.1f"), *GetNameSafe(Shooter), *GetNameSafe(Partner), Distance);
 	return true;
 }
 
@@ -154,7 +155,7 @@ void UOutlierShooterQuantumLeapAbility::ActivateAbility(
 
 	UE_LOG(
 		LogOutlier,
-		Warning,
+		Verbose,
 		TEXT("[GAS.ShooterSuit.Trace][QuantumLeap] Activated Shooter=%s Partner=%s Destination=%s CastTime=%.2f Stealthed=%d"),
 		*GetNameSafe(Shooter),
 		*GetNameSafe(Partner),
@@ -177,7 +178,7 @@ bool UOutlierShooterQuantumLeapAbility::CancelQuantumLeap(bool bInCommitFailureC
 		UE_LOG(LogOutlier, Warning, TEXT("[GAS.ShooterSuit.Trace][QuantumLeap] CancelIgnored Reason=NotActive FailureCooldown=%d"), bInCommitFailureCooldown ? 1 : 0);
 		return false;
 	}
-	UE_LOG(LogOutlier, Warning, TEXT("[GAS.ShooterSuit.Trace][QuantumLeap] CancelRequested Shooter=%s FailureCooldown=%d"), *GetNameSafe(GetShooterCharacter()), bInCommitFailureCooldown ? 1 : 0);
+	UE_LOG(LogOutlier, Verbose, TEXT("[GAS.ShooterSuit.Trace][QuantumLeap] CancelRequested Shooter=%s FailureCooldown=%d"), *GetNameSafe(GetShooterCharacter()), bInCommitFailureCooldown ? 1 : 0);
 	bCommitFailureCooldown = bInCommitFailureCooldown;
 	EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
 	return true;
@@ -213,7 +214,7 @@ void UOutlierShooterQuantumLeapAbility::EndAbility(
 	}
 	UE_LOG(
 		LogOutlier,
-		Warning,
+		Verbose,
 		TEXT("[GAS.ShooterSuit.Trace][QuantumLeap] Ended Shooter=%s Cancelled=%d TeleportSucceeded=%d FailureCooldown=%d CooldownMultiplier=%.2f CooldownCommitted=%d"),
 		*GetNameSafe(Shooter),
 		bWasCancelled ? 1 : 0,
@@ -347,7 +348,7 @@ void UOutlierShooterQuantumLeapAbility::CompleteQuantumLeap()
 	}
 	else
 	{
-		UE_LOG(LogOutlier, Warning, TEXT("[GAS.ShooterSuit.Trace][QuantumLeap] TeleportSucceeded Shooter=%s Destination=%s"), *GetNameSafe(Shooter), *Destination.ToCompactString());
+		UE_LOG(LogOutlier, Verbose, TEXT("[GAS.ShooterSuit.Trace][QuantumLeap] TeleportSucceeded Shooter=%s Destination=%s"), *GetNameSafe(Shooter), *Destination.ToCompactString());
 		Shooter->ForceNetUpdate();
 	}
 	EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, !bTeleportSucceeded);
@@ -478,6 +479,186 @@ void UOutlierShooterBulletReflectionAbility::HandleReflectionEffectRemoved(
 	}
 }
 
+UOutlierShooterWeaponOverchargeAbility::UOutlierShooterWeaponOverchargeAbility()
+{
+	FGameplayTagContainer Tags;
+	Tags.AddTag(OutlierGameplayTags::Ability::Shooter::WeaponOvercharge());
+	SetAssetTags(Tags);
+}
+
+bool UOutlierShooterWeaponOverchargeAbility::CanActivateAbility(
+	const FGameplayAbilitySpecHandle Handle,
+	const FGameplayAbilityActorInfo* ActorInfo,
+	const FGameplayTagContainer* SourceTags,
+	const FGameplayTagContainer* TargetTags,
+	FGameplayTagContainer* OptionalRelevantTags) const
+{
+	if (!Super::CanActivateAbility(Handle, ActorInfo, SourceTags, TargetTags, OptionalRelevantTags))
+	{
+		return false;
+	}
+
+	const AShooterCharacter* Shooter = ActorInfo
+		? Cast<AShooterCharacter>(ActorInfo->AvatarActor.Get())
+		: nullptr;
+	const UOutlierAbilitySystemComponent* AbilitySystem = ActorInfo
+		? Cast<UOutlierAbilitySystemComponent>(ActorInfo->AbilitySystemComponent.Get())
+		: nullptr;
+	const APartnerCharacter* Partner = Shooter ? Shooter->GetPartnerCharacter() : nullptr;
+	const UAbilitySystemComponent* PartnerASC = Partner ? Partner->GetAbilitySystemComponent() : nullptr;
+	return Shooter
+		&& AbilitySystem
+		&& AbilitySystem->IsShooterSuitConfigured()
+		&& !AbilitySystem->IsShooterWeaponOverchargeCooldownActive()
+		&& Shooter->GetWeaponMode() == EWeaponMode::Primary
+		&& Cast<ARangedWeaponBase>(Shooter->GetCurrentWeapon())
+		&& !Shooter->IsSuitDisabledByPartnerBoundary()
+		&& IsValid(Partner)
+		&& PartnerASC
+		&& !PartnerASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Rebooting());
+}
+
+void UOutlierShooterWeaponOverchargeAbility::ActivateAbility(
+	const FGameplayAbilitySpecHandle Handle,
+	const FGameplayAbilityActorInfo* ActorInfo,
+	const FGameplayAbilityActivationInfo ActivationInfo,
+	const FGameplayEventData* TriggerEventData)
+{
+	Super::ActivateAbility(Handle, ActorInfo, ActivationInfo, TriggerEventData);
+
+	AShooterCharacter* Shooter = GetShooterCharacter();
+	UOutlierAbilitySystemComponent* ShooterASC = GetOutlierAbilitySystem();
+	if (!Shooter || !ShooterASC)
+	{
+		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
+		return;
+	}
+
+	ShooterAbilitySystem = ShooterASC;
+	EffectRemovedDelegateHandle = ShooterASC->OnAnyGameplayEffectRemovedDelegate().AddUObject(
+		this, &UOutlierShooterWeaponOverchargeAbility::HandleOverchargeEffectRemoved);
+	checkf(EffectRemovedDelegateHandle.IsValid(), TEXT("Shooter weapon overcharge removal observer must bind."));
+
+	OverchargeEffectHandle = ShooterASC->ApplyTimedGameplayEffectToSelf(
+		UOutlierShooterWeaponOverchargeGameplayEffect::StaticClass(),
+		ShooterASC->GetShooterSuitConfig().WeaponOvercharge.DurationSeconds,
+		Shooter);
+	if (!OverchargeEffectHandle.IsValid())
+	{
+		EndWeaponOvercharge(false);
+		return;
+	}
+	if (!Shooter->BeginWeaponOvercharge())
+	{
+		EndWeaponOvercharge(false);
+		return;
+	}
+
+	constexpr float DrainInterval = 0.05f;
+	Shooter->GetWorldTimerManager().SetTimer(
+		ShieldDrainTimerHandle,
+		this,
+		&UOutlierShooterWeaponOverchargeAbility::DrainShield,
+		DrainInterval,
+		true);
+}
+
+bool UOutlierShooterWeaponOverchargeAbility::EndWeaponOvercharge(bool bCommitCooldown)
+{
+	if (!IsActive() || bEndingOvercharge)
+	{
+		return false;
+	}
+	bCommitCooldownOnEnd = bCommitCooldown;
+	EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, !bCommitCooldown);
+	return true;
+}
+
+void UOutlierShooterWeaponOverchargeAbility::EndAbility(
+	const FGameplayAbilitySpecHandle Handle,
+	const FGameplayAbilityActorInfo* ActorInfo,
+	const FGameplayAbilityActivationInfo ActivationInfo,
+	bool bReplicateEndAbility,
+	bool bWasCancelled)
+{
+	bEndingOvercharge = true;
+	AShooterCharacter* Shooter = GetShooterCharacter();
+	if (Shooter)
+	{
+		Shooter->GetWorldTimerManager().ClearTimer(ShieldDrainTimerHandle);
+	}
+
+	UOutlierAbilitySystemComponent* ShooterASC = ShooterAbilitySystem.Get();
+	if (ShooterASC)
+	{
+		ShooterASC->OnAnyGameplayEffectRemovedDelegate().Remove(EffectRemovedDelegateHandle);
+	}
+	EffectRemovedDelegateHandle.Reset();
+	if (ShooterASC && OverchargeEffectHandle.IsValid())
+	{
+		ShooterASC->RemoveActiveEffectFromSelf(OverchargeEffectHandle);
+	}
+	OverchargeEffectHandle.Invalidate();
+
+	if (bCommitCooldownOnEnd && ShooterASC)
+	{
+		ensureMsgf(
+			ShooterASC->CommitShooterWeaponOverchargeCooldown(),
+			TEXT("Shooter weapon overcharge must commit its configured cooldown on a gameplay end."));
+		if (Shooter)
+		{
+			Shooter->FinishWeaponOvercharge(
+				ShooterASC->GetShooterSuitConfig().WeaponOvercharge.ShieldRecoveryDelay);
+		}
+	}
+
+	ShooterAbilitySystem.Reset();
+	bCommitCooldownOnEnd = false;
+	bEndingOvercharge = false;
+	Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);
+}
+
+void UOutlierShooterWeaponOverchargeAbility::DrainShield()
+{
+	AShooterCharacter* Shooter = GetShooterCharacter();
+	UOutlierAbilitySystemComponent* ShooterASC = ShooterAbilitySystem.Get();
+	if (!Shooter || !ShooterASC)
+	{
+		EndWeaponOvercharge(false);
+		return;
+	}
+
+	constexpr float DrainInterval = 0.05f;
+	float RemainingDrain = ShooterASC->GetShooterSuitConfig().WeaponOvercharge.ShieldDrainPerSecond * DrainInterval;
+	const float PartnerDrain = FMath::Min(Shooter->GetCurPartnerShield(), RemainingDrain);
+	if (PartnerDrain > 0.0f)
+	{
+		ShooterASC->ApplyPartnerShieldDeltaToSelf(-PartnerDrain, 0.0f);
+		RemainingDrain -= PartnerDrain;
+	}
+	if (RemainingDrain > 0.0f && Shooter->GetCurShield() > 0.0f)
+	{
+		ShooterASC->ApplyShieldDeltaToSelf(-FMath::Min(Shooter->GetCurShield(), RemainingDrain));
+	}
+
+	if (Shooter->GetCurPartnerShield() <= KINDA_SMALL_NUMBER
+		&& Shooter->GetCurShield() <= KINDA_SMALL_NUMBER)
+	{
+		// 쉴드가 연료이므로 둘 다 소진된 프레임에 지속시간을 기다리지 않고 종료한다.
+		EndWeaponOvercharge(true);
+	}
+}
+
+void UOutlierShooterWeaponOverchargeAbility::HandleOverchargeEffectRemoved(
+	const FActiveGameplayEffect& RemovedEffect)
+{
+	if (RemovedEffect.Handle == OverchargeEffectHandle)
+	{
+		OverchargeEffectHandle.Invalidate();
+		EndWeaponOvercharge(true);
+	}
+}
+
 UOutlierShooterStealthAbility::UOutlierShooterStealthAbility()
 {
 	FGameplayTagContainer Tags;
@@ -540,7 +721,7 @@ bool UOutlierShooterStealthAbility::CanActivateAbility(
 		UE_LOG(LogOutlier, Warning, TEXT("[GAS.ShooterSuit.Trace][Stealth] CanActivate=0 Reason=PartnerRebooting Shooter=%s Partner=%s"), *GetNameSafe(Shooter), *GetNameSafe(Partner));
 		return false;
 	}
-	UE_LOG(LogOutlier, Warning, TEXT("[GAS.ShooterSuit.Trace][Stealth] CanActivate=1 Shooter=%s Partner=%s"), *GetNameSafe(Shooter), *GetNameSafe(Partner));
+	UE_LOG(LogOutlier, Verbose, TEXT("[GAS.ShooterSuit.Trace][Stealth] CanActivate=1 Shooter=%s Partner=%s"), *GetNameSafe(Shooter), *GetNameSafe(Partner));
 	return true;
 }
 
@@ -576,6 +757,7 @@ void UOutlierShooterStealthAbility::ActivateAbility(
 		TEXT("Shooter stealth removal observers must bind to both AbilitySystemComponents."));
 
 	const float Duration = ShooterASC->GetShooterSuitConfig().Stealth.DurationSeconds;
+	// 은신은 원래 Pair의 두 ASC에만 적용한다. Partner가 빙의한 Enemy ASC에는 공유하지 않는다.
 	ShooterStealthHandle = ShooterASC->ApplyTimedGameplayEffectToSelf(
 		UOutlierShooterStealthGameplayEffect::StaticClass(), Duration, Shooter);
 	PartnerStealthHandle = PartnerASC->ApplyTimedGameplayEffectToSelf(
@@ -586,7 +768,7 @@ void UOutlierShooterStealthAbility::ActivateAbility(
 		EndStealth(false);
 		return;
 	}
-	UE_LOG(LogOutlier, Warning, TEXT("[GAS.ShooterSuit.Trace][Stealth] Activated Shooter=%s Partner=%s Duration=%.2f ShooterEffect=1 PartnerEffect=1"), *GetNameSafe(Shooter), *GetNameSafe(Partner), Duration);
+	UE_LOG(LogOutlier, Verbose, TEXT("[GAS.ShooterSuit.Trace][Stealth] Activated Shooter=%s Partner=%s Duration=%.2f ShooterEffect=1 PartnerEffect=1"), *GetNameSafe(Shooter), *GetNameSafe(Partner), Duration);
 	RefreshEnemyDetection();
 }
 
@@ -597,7 +779,7 @@ bool UOutlierShooterStealthAbility::EndStealth(bool bCommitCooldown)
 		UE_LOG(LogOutlier, Warning, TEXT("[GAS.ShooterSuit.Trace][Stealth] EndIgnored Active=%d Ending=%d CommitCooldown=%d"), IsActive() ? 1 : 0, bEndingStealth ? 1 : 0, bCommitCooldown ? 1 : 0);
 		return false;
 	}
-	UE_LOG(LogOutlier, Warning, TEXT("[GAS.ShooterSuit.Trace][Stealth] EndRequested Shooter=%s CommitCooldown=%d"), *GetNameSafe(GetShooterCharacter()), bCommitCooldown ? 1 : 0);
+	UE_LOG(LogOutlier, Verbose, TEXT("[GAS.ShooterSuit.Trace][Stealth] EndRequested Shooter=%s CommitCooldown=%d"), *GetNameSafe(GetShooterCharacter()), bCommitCooldown ? 1 : 0);
 	bCommitCooldownOnEnd = bCommitCooldown;
 	EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, !bCommitCooldown);
 	return true;
@@ -644,7 +826,7 @@ void UOutlierShooterStealthAbility::EndAbility(
 	}
 	UE_LOG(
 		LogOutlier,
-		Warning,
+		Verbose,
 		TEXT("[GAS.ShooterSuit.Trace][Stealth] Ended Shooter=%s Cancelled=%d CommitCooldown=%d CooldownCommitted=%d"),
 		*GetNameSafe(GetShooterCharacter()),
 		bWasCancelled ? 1 : 0,
@@ -662,7 +844,7 @@ void UOutlierShooterStealthAbility::HandleShooterEffectRemoved(
 {
 	if (RemovedEffect.Handle == ShooterStealthHandle)
 	{
-		UE_LOG(LogOutlier, Warning, TEXT("[GAS.ShooterSuit.Trace][Stealth] EffectRemoved Side=Shooter Shooter=%s"), *GetNameSafe(GetShooterCharacter()));
+		UE_LOG(LogOutlier, Verbose, TEXT("[GAS.ShooterSuit.Trace][Stealth] EffectRemoved Side=Shooter Shooter=%s"), *GetNameSafe(GetShooterCharacter()));
 		ShooterStealthHandle.Invalidate();
 		EndStealth(true);
 	}
@@ -673,7 +855,7 @@ void UOutlierShooterStealthAbility::HandlePartnerEffectRemoved(
 {
 	if (RemovedEffect.Handle == PartnerStealthHandle)
 	{
-		UE_LOG(LogOutlier, Warning, TEXT("[GAS.ShooterSuit.Trace][Stealth] EffectRemoved Side=Partner Shooter=%s"), *GetNameSafe(GetShooterCharacter()));
+		UE_LOG(LogOutlier, Verbose, TEXT("[GAS.ShooterSuit.Trace][Stealth] EffectRemoved Side=Partner Shooter=%s"), *GetNameSafe(GetShooterCharacter()));
 		PartnerStealthHandle.Invalidate();
 		EndStealth(true);
 	}

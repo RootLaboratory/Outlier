@@ -1013,6 +1013,7 @@ bool FOutlierGasFoundationVitalityPrimitiveTest::RunTest(const FString& Paramete
 	TestTrue(TEXT("Rebooting state tag is registered"), OutlierGameplayTags::State::Rebooting().IsValid());
 	TestTrue(TEXT("DamageImmune state tag is registered"), OutlierGameplayTags::State::DamageImmune().IsValid());
 	TestTrue(TEXT("BulletReflecting state tag is registered"), OutlierGameplayTags::State::BulletReflecting().IsValid());
+	TestTrue(TEXT("WeaponOvercharged state tag is registered"), OutlierGameplayTags::State::WeaponOvercharged().IsValid());
 	TestTrue(TEXT("Buff effect tag is registered"), OutlierGameplayTags::Effect::Buff().IsValid());
 	TestTrue(TEXT("Debuff effect tag is registered"), OutlierGameplayTags::Effect::Debuff().IsValid());
 
@@ -1517,17 +1518,30 @@ bool FOutlierGasShooterStealthLifecycleTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Partner receives exact Stealthed state"), PartnerASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Stealthed()));
 	TestFalse(TEXT("Cooldown does not run while Stealth is active"), ShooterASC->IsShooterStealthCooldownActive());
 	TestFalse(
-		TEXT("Active Stealth input is ignored"),
-		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::Stealth()));
-	TestFalse(
 		TEXT("Active Stealth blocks Quantum Leap through the shared suit exclusion"),
 		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::QuantumLeap()));
 	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetMaxPartnerShieldAttribute(), 20.0f);
 	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetPartnerShieldAttribute(), 20.0f);
 	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetPartnerShieldAttribute(), 10.0f);
 	TestTrue(TEXT("Non-damage Partner shield decay does not break Stealth"), Shooter->IsStealthed());
+	FOutlierTaggedDamageEvent NonLethalDamageEvent;
+	NonLethalDamageEvent.DamageTag = OutlierGameplayTags::Damage::Weapon();
+	TestEqual(
+		TEXT("Incoming damage is applied while Stealth remains active"),
+		Shooter->TakeDamage(5.0f, NonLethalDamageEvent, nullptr, Shooter),
+		5.0f);
+	TestTrue(TEXT("Incoming damage does not break Stealth"), Shooter->IsStealthed());
+	Shooter->NotifyStealthDetected();
+	TestTrue(TEXT("Detector notification does not break Stealth"), Shooter->IsStealthed());
+	Shooter->SetSuitDisabledByPartnerBoundary(true);
+	TestTrue(TEXT("Crossing the Partner boundary does not break an active Stealth"), Shooter->IsStealthed());
+	Shooter->SetSuitDisabledByPartnerBoundary(false);
+	Partner->StopActionsForReboot();
+	TestTrue(TEXT("Partner Reboot cleanup does not break Shooter Stealth"), Shooter->IsStealthed());
 
-	TestTrue(TEXT("Gameplay break ends active Stealth"), Shooter->EndActiveStealth(true));
+	TestTrue(
+		TEXT("Pressing Stealth again intentionally cancels the active Stealth"),
+		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::Stealth()));
 	TestFalse(TEXT("Shooter Stealthed state is removed together"), ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Stealthed()));
 	TestFalse(TEXT("Partner Stealthed state is removed together"), PartnerASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Stealthed()));
 	TestTrue(TEXT("Full configured cooldown starts only after Stealth ends"), ShooterASC->IsShooterStealthCooldownActive());
@@ -1559,14 +1573,14 @@ bool FOutlierGasShooterStealthLifecycleTest::RunTest(const FString& Parameters)
 		ShooterASC->RemoveActiveEffectsWithGrantedTags(StealthCooldownTags),
 		1);
 	TestTrue(
-		TEXT("Stealth activates for detector break coverage"),
+		TEXT("Stealth activates for Partner attack break coverage"),
 		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::Stealth()));
-	Shooter->NotifyStealthDetected();
-	TestFalse(TEXT("Detector notification removes paired Stealth"), Shooter->IsStealthed());
-	TestTrue(TEXT("Detector notification starts full cooldown"), ShooterASC->IsShooterStealthCooldownActive());
+	Partner->NotifyOffensiveActionExecuted();
+	TestFalse(TEXT("Partner attack removes paired Stealth"), Shooter->IsStealthed());
+	TestTrue(TEXT("Partner attack starts full cooldown"), ShooterASC->IsShooterStealthCooldownActive());
 
 	TestEqual(
-		TEXT("Test fixture removes detector cooldown"),
+		TEXT("Test fixture removes Partner attack cooldown"),
 		ShooterASC->RemoveActiveEffectsWithGrantedTags(StealthCooldownTags),
 		1);
 	ShooterASC->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetMaxHealthAttribute(), 100.0f);
@@ -1584,8 +1598,9 @@ bool FOutlierGasShooterStealthLifecycleTest::RunTest(const FString& Parameters)
 		TEXT("Lethal damage applies through the Shooter damage boundary while Stealth is active"),
 		Shooter->TakeDamage(100.0f, LethalDamageEvent, nullptr, Shooter),
 		100.0f);
-	TestTrue(TEXT("Lethal damage still commits the gameplay-break cooldown"), ShooterASC->IsShooterStealthCooldownActive());
-	TestTrue(TEXT("Lethal damage applies Dead after the Stealth break"), Shooter->IsDead());
+	TestFalse(TEXT("Death cleanup removes Stealth without committing a gameplay cooldown"), ShooterASC->IsShooterStealthCooldownActive());
+	TestFalse(TEXT("Death cleanup removes the active Stealth state"), Shooter->IsStealthed());
+	TestTrue(TEXT("Lethal damage applies Dead after Stealth cleanup"), Shooter->IsDead());
 
 	Shooter->Destroy(true);
 	Partner->Destroy(true);
@@ -1768,6 +1783,170 @@ bool FOutlierGasShooterBulletReflectionTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierGasShooterWeaponOverchargeTest,
+	"Outlier.GAS.ShooterSuit.WeaponOvercharge",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierGasShooterWeaponOverchargeTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const FName WorldName = MakeUniqueObjectName(
+		nullptr, UWorld::StaticClass(), NAME_None, EUniqueObjectNameOptions::GloballyUnique);
+	FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, WorldName, GetTransientPackage());
+	if (!TestNotNull(TEXT("Transient Weapon Overcharge world is created"), World))
+	{
+		GEngine->DestroyWorldContext(World);
+		return false;
+	}
+	World->AddToRoot();
+	WorldContext.SetCurrentWorld(World);
+	World->SetGameInstance(NewObject<UGameInstance>(GEngine));
+	TestTrue(TEXT("Weapon Overcharge world creates an authority game mode"), World->SetGameMode(FURL()));
+	World->InitializeActorsForPlay(FURL());
+
+	UClass* ShooterClass = LoadClass<AShooterCharacter>(
+		nullptr, TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	UClass* PartnerClass = LoadClass<APartnerCharacter>(
+		nullptr, TEXT("/Game/Blueprints/Partner/BP_PartnerCharacter.BP_PartnerCharacter_C"));
+	UClass* RifleClass = LoadClass<ARangedWeaponBase>(
+		nullptr, TEXT("/Game/Blueprints/Weapon/BP_Rifle.BP_Rifle_C"));
+	AShooterCharacter* Shooter = ShooterClass ? World->SpawnActor<AShooterCharacter>(ShooterClass) : nullptr;
+	APartnerCharacter* Partner = PartnerClass ? World->SpawnActor<APartnerCharacter>(PartnerClass) : nullptr;
+	ARangedWeaponBase* Rifle = RifleClass ? World->SpawnActor<ARangedWeaponBase>(RifleClass) : nullptr;
+	if (!TestNotNull(TEXT("Shooter spawns for Weapon Overcharge"), Shooter)
+		|| !TestNotNull(TEXT("Partner spawns for Weapon Overcharge"), Partner)
+		|| !TestNotNull(TEXT("Primary rifle spawns for Weapon Overcharge"), Rifle))
+	{
+		World->DestroyWorld(true);
+		World->SetPhysicsScene(nullptr);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+		return false;
+	}
+	if (!Shooter->HasActorBegunPlay()) Shooter->DispatchBeginPlay();
+	if (!Partner->HasActorBegunPlay()) Partner->DispatchBeginPlay();
+	if (!Rifle->HasActorBegunPlay()) Rifle->DispatchBeginPlay();
+	Shooter->SetPartnerCharacter(Partner);
+	Partner->SetShooterCharacter(Shooter);
+
+	UOutlierAbilitySystemComponent* ShooterASC = Shooter->GetOutlierAbilitySystemComponent();
+	UOutlierAbilitySystemComponent* PartnerASC = Partner->GetOutlierAbilitySystemComponent();
+	ShooterASC->InitializeForPawn(Shooter);
+	PartnerASC->InitializeForPawn(Partner);
+	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetMaxShieldAttribute(), 100.0f);
+	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetShieldAttribute(), 40.0f);
+	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetMaxPartnerShieldAttribute(), 5.0f);
+	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetPartnerShieldAttribute(), 5.0f);
+
+	TestFalse(
+		TEXT("Weapon Overcharge rejects activation without a primary rifle"),
+		ShooterASC->TryActivateShooterSuitAbility(
+			OutlierGameplayTags::Ability::Shooter::WeaponOvercharge()));
+	Shooter->EquipWeapon(Rifle);
+	TestEqual(TEXT("Rifle is equipped as the primary weapon"), Shooter->GetWeaponMode(), EWeaponMode::Primary);
+	const FActiveGameplayEffectHandle PartnerRebootHandle = PartnerASC->ApplyRebootStateToSelf(1.0f);
+	TestTrue(TEXT("Partner Reboot fixture effect is applied"), PartnerRebootHandle.IsValid());
+	TestTrue(
+		TEXT("Partner Reboot disables the Shooter suit even inside the distance boundary"),
+		Shooter->IsShooterSuitUseDisabled());
+	const TArray<FGameplayTag> SuitAbilitiesBlockedByPartnerReboot = {
+		OutlierGameplayTags::Ability::Shooter::QuantumLeap(),
+		OutlierGameplayTags::Ability::Shooter::BulletReflection(),
+		OutlierGameplayTags::Ability::Shooter::WeaponOvercharge(),
+		OutlierGameplayTags::Ability::Shooter::Stealth()
+	};
+	for (const FGameplayTag& AbilityTag : SuitAbilitiesBlockedByPartnerReboot)
+	{
+		TestFalse(
+			*FString::Printf(TEXT("Partner Reboot blocks %s"), *AbilityTag.ToString()),
+			ShooterASC->TryActivateShooterSuitAbility(AbilityTag));
+	}
+	TestTrue(
+		TEXT("Partner Reboot fixture effect is removed"),
+		PartnerASC->RemoveActiveEffectFromSelf(PartnerRebootHandle));
+	TestFalse(
+		TEXT("Removing Partner Reboot restores Shooter suit availability inside the boundary"),
+		Shooter->IsShooterSuitUseDisabled());
+	Rifle->ConsumeAmmo();
+	Rifle->BeginReload();
+	TestTrue(TEXT("Fixture begins a rifle reload"), Rifle->IsReloading());
+	const float BaseSpread = Rifle->GetCurrentSpread();
+	TestTrue(
+		TEXT("Weapon Overcharge activates with a primary rifle and valid Partner"),
+		ShooterASC->TryActivateShooterSuitAbility(
+			OutlierGameplayTags::Ability::Shooter::WeaponOvercharge()));
+	TestTrue(TEXT("Weapon Overcharge grants its exact state"), Shooter->IsWeaponOvercharged());
+	TestFalse(TEXT("Activation cancels the in-progress reload"), Rifle->IsReloading());
+	TestEqual(TEXT("Activation immediately fills the magazine"), Rifle->GetCurrentAmmo(), Rifle->GetMagazineSize());
+	TestEqual(TEXT("Activation fills only the base Shield"), Shooter->GetCurShield(), 100.0f);
+	TestEqual(TEXT("Activation preserves Partner Shield"), Shooter->GetCurPartnerShield(), 5.0f);
+	TestFalse(TEXT("Reload input is ignored while overcharged"), Rifle->CanReload());
+	Rifle->ConsumeAmmo();
+	TestEqual(TEXT("Shots do not consume magazine ammo while overcharged"), Rifle->GetCurrentAmmo(), Rifle->GetMagazineSize());
+	TestTrue(
+		TEXT("Active overcharge applies the configured spread multiplier"),
+		FMath::IsNearlyEqual(Rifle->GetCurrentSpread(), BaseSpread * 0.5f, 0.01f));
+	TestFalse(
+		TEXT("Active Weapon Overcharge blocks other suit abilities"),
+		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::Stealth()));
+	TestFalse(
+		TEXT("Weapon Overcharge cooldown does not run while active"),
+		ShooterASC->IsShooterWeaponOverchargeCooldownActive());
+
+	for (int32 TickIndex = 0; TickIndex < 24; ++TickIndex)
+	{
+		++GFrameCounter;
+		World->Tick(LEVELTICK_All, 0.05f);
+	}
+	TestEqual(TEXT("Shield drain consumes Partner Shield first"), Shooter->GetCurPartnerShield(), 0.0f);
+	TestTrue(
+		TEXT("Shield drain continues into base Shield after Partner Shield"),
+		Shooter->GetCurShield() < 92.0f && Shooter->GetCurShield() > 88.0f);
+
+	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetShieldAttribute(), 0.25f);
+	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetPartnerShieldAttribute(), 0.25f);
+	++GFrameCounter;
+	World->Tick(LEVELTICK_All, 0.05f);
+	TestFalse(TEXT("Shield depletion ends Weapon Overcharge immediately"), Shooter->IsWeaponOvercharged());
+	TestTrue(
+		TEXT("Full configured cooldown starts after Weapon Overcharge ends"),
+		ShooterASC->IsShooterWeaponOverchargeCooldownActive());
+	TestTrue(
+		TEXT("Weapon Overcharge cooldown is approximately 25 seconds"),
+		ShooterASC->GetShooterWeaponOverchargeCooldownRemaining() > 24.0f);
+	FGameplayTagContainer OverchargeCooldownTags;
+	OverchargeCooldownTags.AddTag(OutlierGameplayTags::Cooldown::Shooter::WeaponOvercharge());
+	TestEqual(
+		TEXT("Fixture removes the first exact Weapon Overcharge cooldown"),
+		ShooterASC->RemoveActiveEffectsWithGrantedTags(OverchargeCooldownTags),
+		1);
+	TestTrue(
+		TEXT("Weapon Overcharge reactivates after cooldown removal"),
+		ShooterASC->TryActivateShooterSuitAbility(
+			OutlierGameplayTags::Ability::Shooter::WeaponOvercharge()));
+	for (int32 TickIndex = 0; TickIndex < 165; ++TickIndex)
+	{
+		++GFrameCounter;
+		World->Tick(LEVELTICK_All, 0.05f);
+	}
+	TestFalse(TEXT("Natural eight-second expiry removes Weapon Overcharge"), Shooter->IsWeaponOvercharged());
+	TestTrue(
+		TEXT("Natural expiry starts the full configured cooldown"),
+		ShooterASC->IsShooterWeaponOverchargeCooldownActive());
+
+	Rifle->Destroy(true);
+	Shooter->Destroy(true);
+	Partner->Destroy(true);
+	GEngine->ShutdownWorldNetDriver(World);
+	World->DestroyWorld(true);
+	World->SetPhysicsScene(nullptr);
+	GEngine->DestroyWorldContext(World);
+	World->RemoveFromRoot();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FOutlierGasShooterQuantumLeapTest,
 	"Outlier.GAS.ShooterSuit.QuantumLeap",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -1823,7 +2002,7 @@ bool FOutlierGasShooterQuantumLeapTest::RunTest(const FString& Parameters)
 	UOutlierAbilitySystemComponent* PartnerASC = Partner->GetOutlierAbilitySystemComponent();
 	ShooterASC->InitializeForPawn(Shooter);
 	PartnerASC->InitializeForPawn(Partner);
-	TestEqual(TEXT("Three implemented Shooter suit abilities are granted exactly once"), ShooterASC->GetGrantedShooterSuitAbilityCount(), 3);
+	TestEqual(TEXT("Four implemented Shooter suit abilities are granted exactly once"), ShooterASC->GetGrantedShooterSuitAbilityCount(), 4);
 
 	AActor* Blocker = World->SpawnActor<AActor>();
 	UBoxComponent* BlockingBox = Blocker ? NewObject<UBoxComponent>(Blocker) : nullptr;

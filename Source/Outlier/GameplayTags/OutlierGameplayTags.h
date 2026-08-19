@@ -214,6 +214,12 @@ namespace OutlierGameplayTags
 			return Tag;
 		}
 
+		inline FGameplayTag WeaponOvercharged()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("State.WeaponOvercharged")));
+			return Tag;
+		}
+
 		inline FGameplayTag Dead()
 		{
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("State.Dead")));

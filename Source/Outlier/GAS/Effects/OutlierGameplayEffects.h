@@ -113,6 +113,24 @@ public:
 };
 
 UCLASS()
+class OUTLIER_API UOutlierShooterWeaponOverchargeGameplayEffect : public UGameplayEffect
+{
+	GENERATED_BODY()
+
+public:
+	UOutlierShooterWeaponOverchargeGameplayEffect(const FObjectInitializer& ObjectInitializer);
+};
+
+UCLASS()
+class OUTLIER_API UOutlierShooterWeaponOverchargeCooldownGameplayEffect : public UGameplayEffect
+{
+	GENERATED_BODY()
+
+public:
+	UOutlierShooterWeaponOverchargeCooldownGameplayEffect(const FObjectInitializer& ObjectInitializer);
+};
+
+UCLASS()
 class OUTLIER_API UOutlierShooterStealthGameplayEffect : public UGameplayEffect
 {
 	GENERATED_BODY()

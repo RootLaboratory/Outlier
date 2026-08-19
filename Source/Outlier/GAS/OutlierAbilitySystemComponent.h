@@ -39,6 +39,7 @@ public:
 		AActor* DamageCauser,
 		const FGameplayTag& DamageTag);
 	bool ApplyShieldRecoveryToSelf(float Amount);
+	bool ApplyShieldDeltaToSelf(float Amount);
 	bool ApplyPartnerShieldDeltaToSelf(float PartnerShieldDelta, float MaxPartnerShieldDelta);
 	bool ApplyDeadStateToSelf();
 	bool InitializeVitalityToSelf(float MaxHealth);
@@ -83,6 +84,10 @@ public:
 	bool IsShooterBulletReflectionCooldownActive() const;
 	float GetShooterBulletReflectionCooldownRemaining() const;
 	bool EndActiveShooterBulletReflection(bool bCommitCooldown);
+	bool CommitShooterWeaponOverchargeCooldown();
+	bool IsShooterWeaponOverchargeCooldownActive() const;
+	float GetShooterWeaponOverchargeCooldownRemaining() const;
+	bool EndActiveShooterWeaponOvercharge(bool bCommitCooldown);
 	bool CommitShooterStealthCooldown();
 	bool IsShooterStealthCooldownActive() const;
 	float GetShooterStealthCooldownRemaining() const;
@@ -101,6 +106,7 @@ private:
 	FOutlierShooterSuitConfig ShooterSuitConfig;
 	FGameplayAbilitySpecHandle GrantedShooterQuantumLeapAbilityHandle;
 	FGameplayAbilitySpecHandle GrantedShooterBulletReflectionAbilityHandle;
+	FGameplayAbilitySpecHandle GrantedShooterWeaponOverchargeAbilityHandle;
 	FGameplayAbilitySpecHandle GrantedShooterStealthAbilityHandle;
 	bool bShooterSuitConfigured = false;
 };

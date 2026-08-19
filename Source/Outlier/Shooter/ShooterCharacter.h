@@ -286,15 +286,17 @@ protected:
 	FDelegateHandle DeadTagChangedHandle;
 	FDelegateHandle StealthTagChangedHandle;
 	FDelegateHandle BulletReflectionTagChangedHandle;
+	FDelegateHandle WeaponOverchargeTagChangedHandle;
 	FDelegateHandle QuantumLeapCooldownTagChangedHandle;
 	FDelegateHandle BulletReflectionCooldownTagChangedHandle;
+	FDelegateHandle WeaponOverchargeCooldownTagChangedHandle;
 	FDelegateHandle StealthCooldownTagChangedHandle;
+	FDelegateHandle PartnerRebootTagChangedHandle;
 
 	UPROPERTY()
 	TObjectPtr<APartnerCharacter> CachedPartnerCharacter;
 
 	bool bSuitDisabledByPartnerBoundary = false;
-	bool bApplyingGameplayDamage = false;
 	bool bShooterSuitDataInitialized = false;
 	FOutlierShooterSuitConfig ShooterSuitConfig;
 
@@ -339,13 +341,22 @@ protected:
 	void HandleDeadTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleStealthTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleBulletReflectionTagChanged(const FGameplayTag Tag, int32 NewCount);
+	void HandleWeaponOverchargeTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleQuantumLeapCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleBulletReflectionCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
+	void HandleWeaponOverchargeCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleStealthCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void RefreshShooterSuitCooldownUI();
+	void BindPartnerSuitStateObserver();
+	void UnbindPartnerSuitStateObserver();
+	void HandlePartnerRebootTagChanged(const FGameplayTag Tag, int32 NewCount);
+	void RefreshShooterSuitAvailabilityUI();
 
 	UFUNCTION(BlueprintImplementableEvent, Category = "Suit|Bullet Reflection")
 	void BP_OnBulletReflectionStateChanged(bool bActive);
+
+	UFUNCTION(BlueprintImplementableEvent, Category = "Suit|Weapon Overcharge")
+	void BP_OnWeaponOverchargeStateChanged(bool bActive);
 
 	UFUNCTION(NetMulticast, Unreliable)
 	void MulticastNotifyBulletReflected(FVector ReflectionStart, FVector ReflectionEnd);
@@ -432,12 +443,17 @@ public:
 	void SetSuitDisabledByPartnerBoundary(bool bDisabled);
 	APartnerCharacter* GetPartnerCharacter() const { return CachedPartnerCharacter; }
 	bool IsSuitDisabledByPartnerBoundary() const { return bSuitDisabledByPartnerBoundary; }
+	bool IsShooterSuitUseDisabled() const;
 	bool IsBulletReflecting() const;
+	bool IsWeaponOvercharged() const;
+	bool BeginWeaponOvercharge();
+	void FinishWeaponOvercharge(float ShieldRecoveryDelay);
 	void NotifyOffensiveActionExecuted();
 	UFUNCTION(BlueprintCallable, Category = "Suit|Stealth")
 	void NotifyStealthDetected();
 	bool CancelActiveQuantumLeap(bool bCommitFailureCooldown = false);
 	bool EndActiveBulletReflection(bool bCommitCooldown);
+	bool EndActiveWeaponOvercharge(bool bCommitCooldown);
 	bool EndActiveStealth(bool bCommitCooldown);
 
 	void ApplyPartnerShield(float Amount, float Duration);

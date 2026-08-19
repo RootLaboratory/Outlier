@@ -238,6 +238,9 @@ protected:
 
 	void HandleAutoFire();
 	float GetAutomaticFireInterval() const;
+	float GetEffectiveAttackInterval() const;
+	bool IsWeaponOvercharged() const;
+	bool HasUsableAmmo() const;
 	void StartAttackCooldown();
 	void ResetAttackCooldown();
 	void StartReuseCooldown();
@@ -277,6 +280,9 @@ public:
 	virtual void ApplyBloomPerShot();
 	virtual void RecoverBloom(float DeltaTime);
 	virtual float GetCurrentSpread() const;
+	int32 GetCurrentAmmo() const { return CurrentAmmo; }
+	int32 GetMagazineSize() const { return MagazineSize; }
+	void RefillMagazineForWeaponOvercharge();
 
 	virtual void SetAiming(bool bAiming);
 	void CancelLocalRecoilPresentation();

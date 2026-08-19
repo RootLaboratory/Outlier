@@ -178,8 +178,10 @@ void AShooterCharacter::Tick(float DeltaSeconds)
 
 void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	UnbindPartnerSuitStateObserver();
 	CancelActiveQuantumLeap();
 	EndActiveBulletReflection(false);
+	EndActiveWeaponOvercharge(false);
 	EndActiveStealth(false);
 	SetStealthVisualEnabled(false);
 
@@ -359,12 +361,18 @@ void AShooterCharacter::BindGasVitalityObservers()
 	BulletReflectionTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::BulletReflecting()).AddUObject(
 			this, &AShooterCharacter::HandleBulletReflectionTagChanged);
+	WeaponOverchargeTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::State::WeaponOvercharged()).AddUObject(
+			this, &AShooterCharacter::HandleWeaponOverchargeTagChanged);
 	QuantumLeapCooldownTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::Cooldown::Shooter::QuantumLeap()).AddUObject(
 			this, &AShooterCharacter::HandleQuantumLeapCooldownTagChanged);
 	BulletReflectionCooldownTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::Cooldown::Shooter::BulletReflection()).AddUObject(
 			this, &AShooterCharacter::HandleBulletReflectionCooldownTagChanged);
+	WeaponOverchargeCooldownTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::Cooldown::Shooter::WeaponOvercharge()).AddUObject(
+			this, &AShooterCharacter::HandleWeaponOverchargeCooldownTagChanged);
 	StealthCooldownTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::Cooldown::Shooter::Stealth()).AddUObject(
 			this, &AShooterCharacter::HandleStealthCooldownTagChanged);
@@ -396,9 +404,13 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::BulletReflecting()).Remove(BulletReflectionTagChangedHandle);
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::State::WeaponOvercharged()).Remove(WeaponOverchargeTagChangedHandle);
+	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::Cooldown::Shooter::QuantumLeap()).Remove(QuantumLeapCooldownTagChangedHandle);
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::Cooldown::Shooter::BulletReflection()).Remove(BulletReflectionCooldownTagChangedHandle);
+	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::Cooldown::Shooter::WeaponOvercharge()).Remove(WeaponOverchargeCooldownTagChangedHandle);
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::Cooldown::Shooter::Stealth()).Remove(StealthCooldownTagChangedHandle);
 
@@ -411,8 +423,10 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 	DeadTagChangedHandle.Reset();
 	StealthTagChangedHandle.Reset();
 	BulletReflectionTagChangedHandle.Reset();
+	WeaponOverchargeTagChangedHandle.Reset();
 	QuantumLeapCooldownTagChangedHandle.Reset();
 	BulletReflectionCooldownTagChangedHandle.Reset();
+	WeaponOverchargeCooldownTagChangedHandle.Reset();
 	StealthCooldownTagChangedHandle.Reset();
 }
 
@@ -420,10 +434,6 @@ void AShooterCharacter::HandleHealthChanged(const FOnAttributeChangeData& Change
 {
 	OnShooterHealthChanged.Broadcast(ChangeData.NewValue, GetMaxHealth());
 	OnShooterConditionChanged.Broadcast(ResolveShooterConditionTag());
-	if (HasAuthority() && bApplyingGameplayDamage && ChangeData.NewValue < ChangeData.OldValue)
-	{
-		EndActiveStealth(true);
-	}
 
 	if (HasAuthority() && ChangeData.OldValue > 0.0f && ChangeData.NewValue <= 0.0f)
 	{
@@ -439,10 +449,6 @@ void AShooterCharacter::HandleMaxHealthChanged(const FOnAttributeChangeData& Cha
 
 void AShooterCharacter::HandleShieldChanged(const FOnAttributeChangeData& ChangeData)
 {
-	if (HasAuthority() && bApplyingGameplayDamage && ChangeData.NewValue < ChangeData.OldValue)
-	{
-		EndActiveStealth(true);
-	}
 	OnShooterShieldChanged.Broadcast(ChangeData.NewValue, GetMaxShield());
 
 	if (IsLocallyControlled())
@@ -468,10 +474,6 @@ void AShooterCharacter::HandleMaxShieldChanged(const FOnAttributeChangeData& Cha
 
 void AShooterCharacter::HandlePartnerShieldChanged(const FOnAttributeChangeData& ChangeData)
 {
-	if (HasAuthority() && bApplyingGameplayDamage && ChangeData.NewValue < ChangeData.OldValue)
-	{
-		EndActiveStealth(true);
-	}
 	BroadcastPartnerShieldState();
 }
 
@@ -488,6 +490,7 @@ void AShooterCharacter::HandleDeadTagChanged(const FGameplayTag Tag, int32 NewCo
 	{
 		CancelActiveQuantumLeap(false);
 		EndActiveBulletReflection(false);
+		EndActiveWeaponOvercharge(false);
 		EndActiveStealth(false);
 		HandleDeath();
 	}
@@ -503,6 +506,12 @@ void AShooterCharacter::HandleBulletReflectionTagChanged(const FGameplayTag Tag,
 {
 	(void)Tag;
 	BP_OnBulletReflectionStateChanged(NewCount > 0);
+}
+
+void AShooterCharacter::HandleWeaponOverchargeTagChanged(const FGameplayTag Tag, int32 NewCount)
+{
+	(void)Tag;
+	BP_OnWeaponOverchargeStateChanged(NewCount > 0);
 }
 
 void AShooterCharacter::HandleStealthCooldownTagChanged(const FGameplayTag Tag, int32 NewCount)
@@ -525,6 +534,15 @@ void AShooterCharacter::HandleQuantumLeapCooldownTagChanged(const FGameplayTag T
 }
 
 void AShooterCharacter::HandleBulletReflectionCooldownTagChanged(const FGameplayTag Tag, int32 NewCount)
+{
+	(void)Tag;
+	if (NewCount > 0 && IsLocallyControlled())
+	{
+		RefreshShooterSuitCooldownUI();
+	}
+}
+
+void AShooterCharacter::HandleWeaponOverchargeCooldownTagChanged(const FGameplayTag Tag, int32 NewCount)
 {
 	(void)Tag;
 	if (NewCount > 0 && IsLocallyControlled())
@@ -573,6 +591,9 @@ void AShooterCharacter::RefreshShooterSuitCooldownUI()
 	ApplyCooldown(
 		OutlierGameplayTags::Ability::Shooter::BulletReflection(),
 		OutlierAbilitySystemComponent->GetShooterBulletReflectionCooldownRemaining());
+	ApplyCooldown(
+		OutlierGameplayTags::Ability::Shooter::WeaponOvercharge(),
+		OutlierAbilitySystemComponent->GetShooterWeaponOverchargeCooldownRemaining());
 	ApplyCooldown(
 		OutlierGameplayTags::Ability::Shooter::Stealth(),
 		OutlierAbilitySystemComponent->GetShooterStealthCooldownRemaining());
@@ -891,7 +912,7 @@ void AShooterCharacter::TryHandleSuitMenuHover()
 	{
 		UE_LOG(
 			LogOutlier,
-			Warning,
+			VeryVerbose,
 			TEXT("[GAS.ShooterSuit.Trace][UI] HoverSelection Shooter=%s Previous=%s New=%s"),
 			*GetName(),
 			*SelectedAbilityTag.ToString(),
@@ -923,7 +944,7 @@ void AShooterCharacter::TryCloseSuitMenu()
 		{
 			UE_LOG(
 				LogOutlier,
-				Warning,
+				Verbose,
 				TEXT("[GAS.ShooterSuit.Trace][UI] SelectionCommitted Shooter=%s Previous=%s Final=%s"),
 				*GetName(),
 				*SelectedAbilityTag.ToString(),
@@ -962,7 +983,11 @@ void AShooterCharacter::UpdateSuitSelection(const FInputActionValue& Value)
 
 void AShooterCharacter::TryUseSuit()
 {
-	if (IsDead() || bSuitDisabledByPartnerBoundary || !SelectedAbilityTag.IsValid())
+	const bool bCancellingActiveStealth = IsStealthed()
+		&& SelectedAbilityTag.MatchesTagExact(OutlierGameplayTags::Ability::Shooter::Stealth());
+	if (IsDead()
+		|| !SelectedAbilityTag.IsValid()
+		|| (IsShooterSuitUseDisabled() && !bCancellingActiveStealth))
 	{
 		return;
 	}
@@ -991,7 +1016,11 @@ void AShooterCharacter::SetStealthVisualEnabled(bool bEnabled)
 
 void AShooterCharacter::ServerUseSuitAbility_Implementation(FGameplayTag AbilityTag)
 {
-	if (!IsDead() && !bSuitDisabledByPartnerBoundary && OutlierAbilitySystemComponent)
+	const bool bCancellingActiveStealth = IsStealthed()
+		&& AbilityTag.MatchesTagExact(OutlierGameplayTags::Ability::Shooter::Stealth());
+	if (!IsDead()
+		&& (!IsShooterSuitUseDisabled() || bCancellingActiveStealth)
+		&& OutlierAbilitySystemComponent)
 	{
 		OutlierAbilitySystemComponent->TryActivateShooterSuitAbility(AbilityTag);
 	}
@@ -1343,7 +1372,7 @@ bool AShooterCharacter::TryReflectIncomingDamage(
 	{
 		UE_LOG(
 			LogOutlier,
-			Warning,
+			VeryVerbose,
 			TEXT("[GAS.ShooterSuit.Trace][BulletReflection] Ignored Reason=AlreadyReflected Shooter=%s Source=%s Damage=%.2f Tag=%s"),
 			*GetNameSafe(this),
 			*GetNameSafe(DamageCauser),
@@ -1356,7 +1385,7 @@ bool AShooterCharacter::TryReflectIncomingDamage(
 	{
 		UE_LOG(
 			LogOutlier,
-			Warning,
+			VeryVerbose,
 			TEXT("[GAS.ShooterSuit.Trace][BulletReflection] Ignored Reason=UnsupportedDamageTag Shooter=%s Source=%s Damage=%.2f Tag=%s"),
 			*GetNameSafe(this),
 			*GetNameSafe(DamageCauser),
@@ -1385,7 +1414,7 @@ bool AShooterCharacter::TryReflectIncomingDamage(
 	{
 		UE_LOG(
 			LogOutlier,
-			Warning,
+			Verbose,
 			TEXT("[GAS.ShooterSuit.Trace][BulletReflection] Ignored Reason=OutOfRange Shooter=%s Source=%s Damage=%.2f Tag=%s Distance=%.1f Radius=%.1f"),
 			*GetNameSafe(this),
 			*GetNameSafe(DamageSource),
@@ -1451,7 +1480,7 @@ bool AShooterCharacter::TryReflectIncomingDamage(
 	}
 	UE_LOG(
 		LogOutlier,
-		Warning,
+		Verbose,
 		TEXT("[GAS.ShooterSuit.Trace][BulletReflection] Reflected Shooter=%s Source=%s Target=%s Damage=%.2f Tag=%s Start=%s End=%s TraceHit=%d IncomingSuppressed=1"),
 		*GetNameSafe(this),
 		*GetNameSafe(DamageSource),
@@ -2347,11 +2376,24 @@ void AShooterCharacter::MulticastPlayThirdPersonActionMontage_Implementation(ESh
 
 void AShooterCharacter::SetPartnerCharacter(APartnerCharacter* NewPartner)
 {
+	if (CachedPartnerCharacter == NewPartner)
+	{
+		RefreshShooterSuitAvailabilityUI();
+		return;
+	}
+
+	if (HasAuthority() && CachedPartnerCharacter && !NewPartner)
+	{
+		EndActiveWeaponOvercharge(false);
+	}
+	UnbindPartnerSuitStateObserver();
 	CachedPartnerCharacter = NewPartner;
+	BindPartnerSuitStateObserver();
 	if (HasAuthority() && CachedPartnerCharacter && bShooterSuitDataInitialized)
 	{
 		CachedPartnerCharacter->ConfigureSuitDisableBoundaryRadius(ShooterSuitConfig.MaxPartnerDistance);
 	}
+	RefreshShooterSuitAvailabilityUI();
 }
 
 void AShooterCharacter::SetSuitDisabledByPartnerBoundary(bool bDisabled)
@@ -2361,9 +2403,59 @@ void AShooterCharacter::SetSuitDisabledByPartnerBoundary(bool bDisabled)
 	{
 		CancelActiveQuantumLeap(true);
 		EndActiveBulletReflection(true);
-		EndActiveStealth(true);
+		EndActiveWeaponOvercharge(true);
 	}
 
+	RefreshShooterSuitAvailabilityUI();
+}
+
+bool AShooterCharacter::IsShooterSuitUseDisabled() const
+{
+	const UAbilitySystemComponent* PartnerAbilitySystem = IsValid(CachedPartnerCharacter)
+		? CachedPartnerCharacter->GetAbilitySystemComponent()
+		: nullptr;
+	return bSuitDisabledByPartnerBoundary
+		|| (PartnerAbilitySystem
+			&& PartnerAbilitySystem->HasMatchingGameplayTag(OutlierGameplayTags::State::Rebooting()));
+}
+
+void AShooterCharacter::BindPartnerSuitStateObserver()
+{
+	if (!IsValid(CachedPartnerCharacter) || PartnerRebootTagChangedHandle.IsValid())
+	{
+		return;
+	}
+
+	if (UAbilitySystemComponent* PartnerAbilitySystem = CachedPartnerCharacter->GetAbilitySystemComponent())
+	{
+		PartnerRebootTagChangedHandle = PartnerAbilitySystem->RegisterGameplayTagEvent(
+			OutlierGameplayTags::State::Rebooting()).AddUObject(
+				this, &AShooterCharacter::HandlePartnerRebootTagChanged);
+	}
+}
+
+void AShooterCharacter::UnbindPartnerSuitStateObserver()
+{
+	if (PartnerRebootTagChangedHandle.IsValid() && IsValid(CachedPartnerCharacter))
+	{
+		if (UAbilitySystemComponent* PartnerAbilitySystem = CachedPartnerCharacter->GetAbilitySystemComponent())
+		{
+			PartnerAbilitySystem->RegisterGameplayTagEvent(
+				OutlierGameplayTags::State::Rebooting()).Remove(PartnerRebootTagChangedHandle);
+		}
+	}
+	PartnerRebootTagChangedHandle.Reset();
+}
+
+void AShooterCharacter::HandlePartnerRebootTagChanged(const FGameplayTag Tag, int32 NewCount)
+{
+	(void)Tag;
+	(void)NewCount;
+	RefreshShooterSuitAvailabilityUI();
+}
+
+void AShooterCharacter::RefreshShooterSuitAvailabilityUI()
+{
 	if (!IsLocallyControlled())
 	{
 		return;
@@ -2383,7 +2475,7 @@ void AShooterCharacter::SetSuitDisabledByPartnerBoundary(bool bDisabled)
 
 	if (ULocalPlayerUISubSystem* SubSystem = LP->GetSubsystem<ULocalPlayerUISubSystem>())
 	{
-		if (bDisabled)
+		if (IsShooterSuitUseDisabled())
 		{
 			SubSystem->OnAbilityDisabledByDistance();
 		}
@@ -2404,10 +2496,7 @@ void AShooterCharacter::NotifyOffensiveActionExecuted()
 
 void AShooterCharacter::NotifyStealthDetected()
 {
-	if (HasAuthority())
-	{
-		EndActiveStealth(true);
-	}
+	// 감지는 더 이상 은신 해제 조건이 아니다. 기존 Blueprint 호출 호환성을 위해 진입점만 유지한다.
 }
 
 bool AShooterCharacter::EndActiveStealth(bool bCommitCooldown)
@@ -2424,6 +2513,13 @@ bool AShooterCharacter::EndActiveBulletReflection(bool bCommitCooldown)
 		&& OutlierAbilitySystemComponent->EndActiveShooterBulletReflection(bCommitCooldown);
 }
 
+bool AShooterCharacter::EndActiveWeaponOvercharge(bool bCommitCooldown)
+{
+	return HasAuthority()
+		&& OutlierAbilitySystemComponent
+		&& OutlierAbilitySystemComponent->EndActiveShooterWeaponOvercharge(bCommitCooldown);
+}
+
 bool AShooterCharacter::CancelActiveQuantumLeap(bool bCommitFailureCooldown)
 {
 	return HasAuthority()
@@ -2436,6 +2532,47 @@ bool AShooterCharacter::IsBulletReflecting() const
 	return OutlierAbilitySystemComponent
 		&& OutlierAbilitySystemComponent->HasMatchingGameplayTag(
 			OutlierGameplayTags::State::BulletReflecting());
+}
+
+bool AShooterCharacter::IsWeaponOvercharged() const
+{
+	return OutlierAbilitySystemComponent
+		&& OutlierAbilitySystemComponent->HasMatchingGameplayTag(
+			OutlierGameplayTags::State::WeaponOvercharged());
+}
+
+bool AShooterCharacter::BeginWeaponOvercharge()
+{
+	if (!HasAuthority() || GetWeaponMode() != EWeaponMode::Primary)
+	{
+		return false;
+	}
+
+	ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(GetCurrentWeapon());
+	if (!RangedWeapon || !OutlierAbilitySystemComponent)
+	{
+		return false;
+	}
+
+	// 과충전은 재장전을 즉시 취소한 뒤 현재 주무기 탄창을 가득 채운 상태로 시작한다.
+	CancelReloadInternal();
+	RangedWeapon->CancelReload();
+	RangedWeapon->CancelLocalRecoilPresentation();
+	RangedWeapon->RefillMagazineForWeaponOvercharge();
+	const float MissingShield = FMath::Max(GetMaxShield() - GetCurShield(), 0.0f);
+	if (MissingShield > 0.0f)
+	{
+		OutlierAbilitySystemComponent->ApplyShieldRecoveryToSelf(MissingShield);
+	}
+	return true;
+}
+
+void AShooterCharacter::FinishWeaponOvercharge(float ShieldRecoveryDelay)
+{
+	if (HasAuthority() && HealthComponent)
+	{
+		HealthComponent->DelayShieldRecovery(ShieldRecoveryDelay);
+	}
 }
 void AShooterCharacter::ApplyPartnerShield(float Amount, float Duration)
 {

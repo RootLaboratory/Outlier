@@ -25,6 +25,7 @@ public:
 	void Die();
 	void GetHit();
 	void HitHistoryRefresh();
+	void DelayShieldRecovery(float DelaySeconds);
 
 private:
 	virtual void TickComponent(
@@ -44,6 +45,6 @@ public:
 
 private:
 	uint8 bShieldRecoveryAbled : 1 = true;
-	float HitAccumulated = 0.f;
+	float ShieldRecoveryDelayRemaining = 0.f;
 	float RecoveryAccumulated = 0.f;
 };

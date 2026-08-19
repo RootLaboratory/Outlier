@@ -142,6 +142,10 @@ void UShooterInventoryComponent::HandleEquipWeapon(AWeaponBase* Weapon)
 	{
 		return;
 	}
+	if (Slot != EWeaponSlot::Primary)
+	{
+		ShooterCharacter->EndActiveWeaponOvercharge(true);
+	}
 
 
 	AWeaponBase* OldWeapon = WeaponSlots[SlotIndex];
@@ -200,6 +204,10 @@ void UShooterInventoryComponent::SelectWeaponSlot(EWeaponSlot Slot)
 	if (ShooterCharacter->IsReloading())
 	{
 		ShooterCharacter->CancelReloadInternal();
+	}
+	if (Slot != EWeaponSlot::Primary)
+	{
+		ShooterCharacter->EndActiveWeaponOvercharge(true);
 	}
 
 	ShooterCharacter->StopAimInternal();

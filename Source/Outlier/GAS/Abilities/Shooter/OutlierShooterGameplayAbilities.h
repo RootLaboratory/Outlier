@@ -107,6 +107,46 @@ private:
 };
 
 UCLASS()
+class OUTLIER_API UOutlierShooterWeaponOverchargeAbility : public UOutlierShooterGameplayAbility
+{
+	GENERATED_BODY()
+
+public:
+	UOutlierShooterWeaponOverchargeAbility();
+	bool EndWeaponOvercharge(bool bCommitCooldown);
+
+protected:
+	virtual bool CanActivateAbility(
+		const FGameplayAbilitySpecHandle Handle,
+		const FGameplayAbilityActorInfo* ActorInfo,
+		const FGameplayTagContainer* SourceTags = nullptr,
+		const FGameplayTagContainer* TargetTags = nullptr,
+		FGameplayTagContainer* OptionalRelevantTags = nullptr) const override;
+	virtual void ActivateAbility(
+		const FGameplayAbilitySpecHandle Handle,
+		const FGameplayAbilityActorInfo* ActorInfo,
+		const FGameplayAbilityActivationInfo ActivationInfo,
+		const FGameplayEventData* TriggerEventData) override;
+	virtual void EndAbility(
+		const FGameplayAbilitySpecHandle Handle,
+		const FGameplayAbilityActorInfo* ActorInfo,
+		const FGameplayAbilityActivationInfo ActivationInfo,
+		bool bReplicateEndAbility,
+		bool bWasCancelled) override;
+
+private:
+	void DrainShield();
+	void HandleOverchargeEffectRemoved(const FActiveGameplayEffect& RemovedEffect);
+
+	TWeakObjectPtr<UOutlierAbilitySystemComponent> ShooterAbilitySystem;
+	FActiveGameplayEffectHandle OverchargeEffectHandle;
+	FDelegateHandle EffectRemovedDelegateHandle;
+	FTimerHandle ShieldDrainTimerHandle;
+	bool bEndingOvercharge = false;
+	bool bCommitCooldownOnEnd = false;
+};
+
+UCLASS()
 class OUTLIER_API UOutlierShooterStealthAbility : public UOutlierShooterGameplayAbility
 {
 	GENERATED_BODY()

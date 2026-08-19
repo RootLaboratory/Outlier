@@ -104,6 +104,7 @@ void APartnerCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	{
 		CachedShooterCharacter->CancelActiveQuantumLeap(false);
 		CachedShooterCharacter->EndActiveBulletReflection(false);
+		CachedShooterCharacter->EndActiveWeaponOvercharge(false);
 	}
 	UnbindPartnerCooldownUIObserver();
 	CleanupBoostVFXComponents();
@@ -165,10 +166,6 @@ float APartnerCharacter::TakeDamage(
 		EventInstigator,
 		DamageCauser,
 		DamageTag);
-	if (bApplied && CachedShooterCharacter)
-	{
-		CachedShooterCharacter->EndActiveStealth(true);
-	}
 	return bApplied ? AppliedDamage : 0.0f;
 }
 
@@ -852,7 +849,7 @@ void APartnerCharacter::StopActionsForReboot()
 	{
 		CachedShooterCharacter->CancelActiveQuantumLeap(true);
 		CachedShooterCharacter->EndActiveBulletReflection(true);
-		CachedShooterCharacter->EndActiveStealth(true);
+		CachedShooterCharacter->EndActiveWeaponOvercharge(true);
 	}
 	if (CombatComponent)
 	{
