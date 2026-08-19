@@ -1012,6 +1012,7 @@ bool FOutlierGasFoundationVitalityPrimitiveTest::RunTest(const FString& Paramete
 	TestTrue(TEXT("MaxHealth data tag is registered"), OutlierGameplayTags::Data::MaxHealth().IsValid());
 	TestTrue(TEXT("Rebooting state tag is registered"), OutlierGameplayTags::State::Rebooting().IsValid());
 	TestTrue(TEXT("DamageImmune state tag is registered"), OutlierGameplayTags::State::DamageImmune().IsValid());
+	TestTrue(TEXT("BulletReflecting state tag is registered"), OutlierGameplayTags::State::BulletReflecting().IsValid());
 	TestTrue(TEXT("Buff effect tag is registered"), OutlierGameplayTags::Effect::Buff().IsValid());
 	TestTrue(TEXT("Debuff effect tag is registered"), OutlierGameplayTags::Effect::Debuff().IsValid());
 
@@ -1597,6 +1598,176 @@ bool FOutlierGasShooterStealthLifecycleTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierGasShooterBulletReflectionTest,
+	"Outlier.GAS.ShooterSuit.BulletReflection",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierGasShooterBulletReflectionTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const FName WorldName = MakeUniqueObjectName(
+		nullptr, UWorld::StaticClass(), NAME_None, EUniqueObjectNameOptions::GloballyUnique);
+	FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, WorldName, GetTransientPackage());
+	if (!TestNotNull(TEXT("Transient Bullet Reflection world is created"), World))
+	{
+		GEngine->DestroyWorldContext(World);
+		return false;
+	}
+	World->AddToRoot();
+	WorldContext.SetCurrentWorld(World);
+	World->SetGameInstance(NewObject<UGameInstance>(GEngine));
+	TestTrue(TEXT("Bullet Reflection world creates an authority game mode"), World->SetGameMode(FURL()));
+	World->InitializeActorsForPlay(FURL());
+
+	UClass* ShooterClass = LoadClass<AShooterCharacter>(
+		nullptr, TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	UClass* PartnerClass = LoadClass<APartnerCharacter>(
+		nullptr, TEXT("/Game/Blueprints/Partner/BP_PartnerCharacter.BP_PartnerCharacter_C"));
+	UClass* EnemyClass = LoadClass<AEnemyBase>(
+		nullptr, TEXT("/Game/Blueprints/Enemy/VECDrone/BP_VECDrone_Gun.BP_VECDrone_Gun_C"));
+	AShooterCharacter* Shooter = ShooterClass ? World->SpawnActor<AShooterCharacter>(ShooterClass) : nullptr;
+	APartnerCharacter* Partner = PartnerClass ? World->SpawnActor<APartnerCharacter>(PartnerClass) : nullptr;
+	AEnemyBase* Enemy = EnemyClass ? World->SpawnActor<AEnemyBase>(EnemyClass) : nullptr;
+	if (!TestNotNull(TEXT("Shooter spawns for Bullet Reflection"), Shooter)
+		|| !TestNotNull(TEXT("Partner spawns for Bullet Reflection"), Partner)
+		|| !TestNotNull(TEXT("Enemy spawns for Bullet Reflection"), Enemy))
+	{
+		World->DestroyWorld(true);
+		World->SetPhysicsScene(nullptr);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+		return false;
+	}
+	if (!Shooter->HasActorBegunPlay()) Shooter->DispatchBeginPlay();
+	if (!Partner->HasActorBegunPlay()) Partner->DispatchBeginPlay();
+	if (!Enemy->HasActorBegunPlay()) Enemy->DispatchBeginPlay();
+	Shooter->SetPartnerCharacter(Partner);
+	Partner->SetShooterCharacter(Shooter);
+	Shooter->SetActorLocation(FVector::ZeroVector);
+	Partner->SetActorLocation(FVector(200.0f, 200.0f, 0.0f));
+	Enemy->SetActorLocation(FVector(500.0f, 0.0f, 0.0f));
+
+	UOutlierAbilitySystemComponent* ShooterASC = Shooter->GetOutlierAbilitySystemComponent();
+	UOutlierAbilitySystemComponent* PartnerASC = Partner->GetOutlierAbilitySystemComponent();
+	UOutlierAbilitySystemComponent* EnemyASC = Enemy->GetOutlierAbilitySystemComponent();
+	ShooterASC->InitializeForPawn(Shooter);
+	PartnerASC->InitializeForPawn(Partner);
+	EnemyASC->InitializeForPawn(Enemy);
+	ShooterASC->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetMaxHealthAttribute(), 100.0f);
+	ShooterASC->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetHealthAttribute(), 100.0f);
+	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetMaxShieldAttribute(), 0.0f);
+	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetShieldAttribute(), 0.0f);
+	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetMaxPartnerShieldAttribute(), 0.0f);
+	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetPartnerShieldAttribute(), 0.0f);
+	PartnerASC->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetMaxHealthAttribute(), 100.0f);
+	PartnerASC->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetHealthAttribute(), 100.0f);
+	EnemyASC->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetMaxHealthAttribute(), 100.0f);
+	EnemyASC->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetHealthAttribute(), 100.0f);
+
+	TestNull(TEXT("Bullet Reflection fixture starts without an equipped weapon"), Shooter->GetCurrentWeapon());
+	TestTrue(
+		TEXT("Bullet Reflection activates independently of the equipped weapon"),
+		ShooterASC->TryActivateShooterSuitAbility(
+			OutlierGameplayTags::Ability::Shooter::BulletReflection()));
+	TestTrue(TEXT("Bullet Reflection grants its exact replicated state"), Shooter->IsBulletReflecting());
+	TestFalse(
+		TEXT("Active Bullet Reflection blocks Stealth through suit mutual exclusion"),
+		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::Stealth()));
+	TestFalse(
+		TEXT("Bullet Reflection cooldown does not run while active"),
+		ShooterASC->IsShooterBulletReflectionCooldownActive());
+
+	FOutlierTaggedDamageEvent WeaponDamageEvent;
+	WeaponDamageEvent.DamageTag = OutlierGameplayTags::Damage::Weapon();
+	WeaponDamageEvent.DamageOrigin = Enemy->GetActorLocation();
+	WeaponDamageEvent.HitResult.ImpactPoint = Shooter->GetActorLocation();
+	TestEqual(
+		TEXT("Eligible enemy weapon damage is fully rejected by Shooter"),
+		Shooter->TakeDamage(25.0f, WeaponDamageEvent, nullptr, Enemy),
+		0.0f);
+	TestEqual(TEXT("Reflected weapon damage preserves Shooter Health"), Shooter->GetCurHealth(), 100.0f);
+	TestEqual(TEXT("Reflected weapon damage applies the same amount to the source"), Enemy->GetCurrentHealth(), 75.0f);
+
+	FOutlierTaggedDamageEvent ExplosionDamageEvent;
+	ExplosionDamageEvent.DamageTag = OutlierGameplayTags::Damage::Explosion();
+	ExplosionDamageEvent.DamageOrigin = Enemy->GetActorLocation();
+	ExplosionDamageEvent.HitResult.ImpactPoint = Shooter->GetActorLocation();
+	TestEqual(
+		TEXT("Eligible enemy explosion damage is also reflected"),
+		Shooter->TakeDamage(10.0f, ExplosionDamageEvent, nullptr, Enemy),
+		0.0f);
+	TestEqual(TEXT("Reflected explosion applies the same amount to the source"), Enemy->GetCurrentHealth(), 65.0f);
+
+	FOutlierTaggedDamageEvent FriendlyDamageEvent = WeaponDamageEvent;
+	FriendlyDamageEvent.DamageOrigin = Partner->GetActorLocation();
+	TestEqual(
+		TEXT("Friendly weapon damage is reflected without a team restriction"),
+		Shooter->TakeDamage(5.0f, FriendlyDamageEvent, nullptr, Partner),
+		0.0f);
+	TestEqual(TEXT("Reflected friendly damage preserves Shooter Health"), Shooter->GetCurHealth(), 100.0f);
+	TestEqual(
+		TEXT("The friendly source can receive its reflected damage"),
+		Partner->GetVitalAttributeSet()->GetHealth(),
+		95.0f);
+
+	FOutlierTaggedDamageEvent ReflectedDamageEvent = WeaponDamageEvent;
+	ReflectedDamageEvent.bReflectedDamage = true;
+	TestEqual(
+		TEXT("Already-reflected damage cannot recurse through Bullet Reflection"),
+		Shooter->TakeDamage(5.0f, ReflectedDamageEvent, nullptr, Enemy),
+		5.0f);
+	TestEqual(TEXT("Non-recursive reflected damage follows the normal damage path"), Shooter->GetCurHealth(), 95.0f);
+
+	FOutlierTaggedDamageEvent OutOfRangeDamageEvent = WeaponDamageEvent;
+	OutOfRangeDamageEvent.DamageOrigin = FVector(2500.0f, 0.0f, 0.0f);
+	TestEqual(
+		TEXT("Enemy damage outside the configured 20 meter radius is not reflected"),
+		Shooter->TakeDamage(5.0f, OutOfRangeDamageEvent, nullptr, Enemy),
+		5.0f);
+	TestEqual(TEXT("Out-of-range damage reaches Shooter Health"), Shooter->GetCurHealth(), 90.0f);
+
+	TestTrue(TEXT("Gameplay end removes Bullet Reflection"), Shooter->EndActiveBulletReflection(true));
+	TestFalse(TEXT("Bullet Reflection state is removed on end"), Shooter->IsBulletReflecting());
+	TestTrue(
+		TEXT("Full configured cooldown starts after Bullet Reflection ends"),
+		ShooterASC->IsShooterBulletReflectionCooldownActive());
+	TestTrue(
+		TEXT("Bullet Reflection cooldown is approximately 20 seconds"),
+		ShooterASC->GetShooterBulletReflectionCooldownRemaining() > 19.0f);
+
+	FGameplayTagContainer ReflectionCooldownTags;
+	ReflectionCooldownTags.AddTag(OutlierGameplayTags::Cooldown::Shooter::BulletReflection());
+	TestEqual(
+		TEXT("Fixture removes the first exact Bullet Reflection cooldown"),
+		ShooterASC->RemoveActiveEffectsWithGrantedTags(ReflectionCooldownTags),
+		1);
+	TestTrue(
+		TEXT("Bullet Reflection reactivates after cooldown removal"),
+		ShooterASC->TryActivateShooterSuitAbility(
+			OutlierGameplayTags::Ability::Shooter::BulletReflection()));
+	for (int32 TickIndex = 0; TickIndex < 210; ++TickIndex)
+	{
+		++GFrameCounter;
+		World->Tick(LEVELTICK_All, 0.02f);
+	}
+	TestFalse(TEXT("Natural four-second expiry removes Bullet Reflection"), Shooter->IsBulletReflecting());
+	TestTrue(
+		TEXT("Natural expiry starts the full configured cooldown"),
+		ShooterASC->IsShooterBulletReflectionCooldownActive());
+
+	Shooter->Destroy(true);
+	Partner->Destroy(true);
+	Enemy->Destroy(true);
+	GEngine->ShutdownWorldNetDriver(World);
+	World->DestroyWorld(true);
+	World->SetPhysicsScene(nullptr);
+	GEngine->DestroyWorldContext(World);
+	World->RemoveFromRoot();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FOutlierGasShooterQuantumLeapTest,
 	"Outlier.GAS.ShooterSuit.QuantumLeap",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -1652,7 +1823,7 @@ bool FOutlierGasShooterQuantumLeapTest::RunTest(const FString& Parameters)
 	UOutlierAbilitySystemComponent* PartnerASC = Partner->GetOutlierAbilitySystemComponent();
 	ShooterASC->InitializeForPawn(Shooter);
 	PartnerASC->InitializeForPawn(Partner);
-	TestEqual(TEXT("Quantum Leap and Stealth are granted exactly once"), ShooterASC->GetGrantedShooterSuitAbilityCount(), 2);
+	TestEqual(TEXT("Three implemented Shooter suit abilities are granted exactly once"), ShooterASC->GetGrantedShooterSuitAbilityCount(), 3);
 
 	AActor* Blocker = World->SpawnActor<AActor>();
 	UBoxComponent* BlockingBox = Blocker ? NewObject<UBoxComponent>(Blocker) : nullptr;

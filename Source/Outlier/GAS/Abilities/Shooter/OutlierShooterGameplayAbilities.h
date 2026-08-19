@@ -69,6 +69,44 @@ private:
 };
 
 UCLASS()
+class OUTLIER_API UOutlierShooterBulletReflectionAbility : public UOutlierShooterGameplayAbility
+{
+	GENERATED_BODY()
+
+public:
+	UOutlierShooterBulletReflectionAbility();
+	bool EndBulletReflection(bool bCommitCooldown);
+
+protected:
+	virtual bool CanActivateAbility(
+		const FGameplayAbilitySpecHandle Handle,
+		const FGameplayAbilityActorInfo* ActorInfo,
+		const FGameplayTagContainer* SourceTags = nullptr,
+		const FGameplayTagContainer* TargetTags = nullptr,
+		FGameplayTagContainer* OptionalRelevantTags = nullptr) const override;
+	virtual void ActivateAbility(
+		const FGameplayAbilitySpecHandle Handle,
+		const FGameplayAbilityActorInfo* ActorInfo,
+		const FGameplayAbilityActivationInfo ActivationInfo,
+		const FGameplayEventData* TriggerEventData) override;
+	virtual void EndAbility(
+		const FGameplayAbilitySpecHandle Handle,
+		const FGameplayAbilityActorInfo* ActorInfo,
+		const FGameplayAbilityActivationInfo ActivationInfo,
+		bool bReplicateEndAbility,
+		bool bWasCancelled) override;
+
+private:
+	void HandleReflectionEffectRemoved(const FActiveGameplayEffect& RemovedEffect);
+
+	TWeakObjectPtr<UOutlierAbilitySystemComponent> ShooterAbilitySystem;
+	FActiveGameplayEffectHandle ReflectionEffectHandle;
+	FDelegateHandle EffectRemovedDelegateHandle;
+	bool bEndingReflection = false;
+	bool bCommitCooldownOnEnd = false;
+};
+
+UCLASS()
 class OUTLIER_API UOutlierShooterStealthAbility : public UOutlierShooterGameplayAbility
 {
 	GENERATED_BODY()

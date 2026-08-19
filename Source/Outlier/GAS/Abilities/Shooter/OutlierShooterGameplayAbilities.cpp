@@ -353,6 +353,131 @@ void UOutlierShooterQuantumLeapAbility::CompleteQuantumLeap()
 	EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, !bTeleportSucceeded);
 }
 
+UOutlierShooterBulletReflectionAbility::UOutlierShooterBulletReflectionAbility()
+{
+	FGameplayTagContainer Tags;
+	Tags.AddTag(OutlierGameplayTags::Ability::Shooter::BulletReflection());
+	SetAssetTags(Tags);
+}
+
+bool UOutlierShooterBulletReflectionAbility::CanActivateAbility(
+	const FGameplayAbilitySpecHandle Handle,
+	const FGameplayAbilityActorInfo* ActorInfo,
+	const FGameplayTagContainer* SourceTags,
+	const FGameplayTagContainer* TargetTags,
+	FGameplayTagContainer* OptionalRelevantTags) const
+{
+	if (!Super::CanActivateAbility(Handle, ActorInfo, SourceTags, TargetTags, OptionalRelevantTags))
+	{
+		return false;
+	}
+
+	const AShooterCharacter* Shooter = ActorInfo
+		? Cast<AShooterCharacter>(ActorInfo->AvatarActor.Get())
+		: nullptr;
+	const UOutlierAbilitySystemComponent* AbilitySystem = ActorInfo
+		? Cast<UOutlierAbilitySystemComponent>(ActorInfo->AbilitySystemComponent.Get())
+		: nullptr;
+	const APartnerCharacter* Partner = Shooter ? Shooter->GetPartnerCharacter() : nullptr;
+	const UAbilitySystemComponent* PartnerASC = Partner ? Partner->GetAbilitySystemComponent() : nullptr;
+	return Shooter
+		&& AbilitySystem
+		&& AbilitySystem->IsShooterSuitConfigured()
+		&& !AbilitySystem->IsShooterBulletReflectionCooldownActive()
+		&& !Shooter->IsSuitDisabledByPartnerBoundary()
+		&& IsValid(Partner)
+		&& PartnerASC
+		&& !PartnerASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Rebooting());
+}
+
+void UOutlierShooterBulletReflectionAbility::ActivateAbility(
+	const FGameplayAbilitySpecHandle Handle,
+	const FGameplayAbilityActorInfo* ActorInfo,
+	const FGameplayAbilityActivationInfo ActivationInfo,
+	const FGameplayEventData* TriggerEventData)
+{
+	Super::ActivateAbility(Handle, ActorInfo, ActivationInfo, TriggerEventData);
+
+	AShooterCharacter* Shooter = GetShooterCharacter();
+	UOutlierAbilitySystemComponent* ShooterASC = GetOutlierAbilitySystem();
+	if (!Shooter || !ShooterASC)
+	{
+		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
+		return;
+	}
+
+	ShooterAbilitySystem = ShooterASC;
+	EffectRemovedDelegateHandle = ShooterASC->OnAnyGameplayEffectRemovedDelegate().AddUObject(
+		this, &UOutlierShooterBulletReflectionAbility::HandleReflectionEffectRemoved);
+	checkf(
+		EffectRemovedDelegateHandle.IsValid(),
+		TEXT("Shooter bullet reflection removal observer must bind."));
+
+	ReflectionEffectHandle = ShooterASC->ApplyTimedGameplayEffectToSelf(
+		UOutlierShooterBulletReflectionGameplayEffect::StaticClass(),
+		ShooterASC->GetShooterSuitConfig().BulletReflection.DurationSeconds,
+		Shooter);
+	if (!ReflectionEffectHandle.IsValid())
+	{
+		EndBulletReflection(false);
+	}
+}
+
+bool UOutlierShooterBulletReflectionAbility::EndBulletReflection(bool bCommitCooldown)
+{
+	if (!IsActive() || bEndingReflection)
+	{
+		return false;
+	}
+	bCommitCooldownOnEnd = bCommitCooldown;
+	EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, !bCommitCooldown);
+	return true;
+}
+
+void UOutlierShooterBulletReflectionAbility::EndAbility(
+	const FGameplayAbilitySpecHandle Handle,
+	const FGameplayAbilityActorInfo* ActorInfo,
+	const FGameplayAbilityActivationInfo ActivationInfo,
+	bool bReplicateEndAbility,
+	bool bWasCancelled)
+{
+	bEndingReflection = true;
+	UOutlierAbilitySystemComponent* ShooterASC = ShooterAbilitySystem.Get();
+	if (ShooterASC)
+	{
+		ShooterASC->OnAnyGameplayEffectRemovedDelegate().Remove(EffectRemovedDelegateHandle);
+	}
+	EffectRemovedDelegateHandle.Reset();
+	if (ShooterASC && ReflectionEffectHandle.IsValid())
+	{
+		ShooterASC->RemoveActiveEffectFromSelf(ReflectionEffectHandle);
+	}
+	ReflectionEffectHandle.Invalidate();
+
+	if (bCommitCooldownOnEnd && ShooterASC)
+	{
+		const bool bCooldownCommitted = ShooterASC->CommitShooterBulletReflectionCooldown();
+		ensureMsgf(
+			bCooldownCommitted,
+			TEXT("Shooter bullet reflection must commit its configured cooldown on a gameplay end."));
+	}
+
+	ShooterAbilitySystem.Reset();
+	bCommitCooldownOnEnd = false;
+	bEndingReflection = false;
+	Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);
+}
+
+void UOutlierShooterBulletReflectionAbility::HandleReflectionEffectRemoved(
+	const FActiveGameplayEffect& RemovedEffect)
+{
+	if (RemovedEffect.Handle == ReflectionEffectHandle)
+	{
+		ReflectionEffectHandle.Invalidate();
+		EndBulletReflection(true);
+	}
+}
+
 UOutlierShooterStealthAbility::UOutlierShooterStealthAbility()
 {
 	FGameplayTagContainer Tags;

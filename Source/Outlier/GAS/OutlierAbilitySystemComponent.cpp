@@ -517,6 +517,7 @@ bool UOutlierAbilitySystemComponent::ConfigureShooterSuitAbilities(
 	{
 		if (ExistingSpec.Ability
 			&& (ExistingSpec.Ability->GetClass() == UOutlierShooterQuantumLeapAbility::StaticClass()
+				|| ExistingSpec.Ability->GetClass() == UOutlierShooterBulletReflectionAbility::StaticClass()
 				|| ExistingSpec.Ability->GetClass() == UOutlierShooterStealthAbility::StaticClass()))
 		{
 #if UE_BUILD_SHIPPING
@@ -531,15 +532,23 @@ bool UOutlierAbilitySystemComponent::ConfigureShooterSuitAbilities(
 	ShooterSuitConfig = Config;
 	GrantedShooterQuantumLeapAbilityHandle = GiveAbility(FGameplayAbilitySpec(
 		UOutlierShooterQuantumLeapAbility::StaticClass(), 1, INDEX_NONE, GetOwnerActor()));
+	GrantedShooterBulletReflectionAbilityHandle = GiveAbility(FGameplayAbilitySpec(
+		UOutlierShooterBulletReflectionAbility::StaticClass(), 1, INDEX_NONE, GetOwnerActor()));
 	GrantedShooterStealthAbilityHandle = GiveAbility(FGameplayAbilitySpec(
 		UOutlierShooterStealthAbility::StaticClass(), 1, INDEX_NONE, GetOwnerActor()));
 	if (!GrantedShooterQuantumLeapAbilityHandle.IsValid()
+		|| !GrantedShooterBulletReflectionAbilityHandle.IsValid()
 		|| !GrantedShooterStealthAbilityHandle.IsValid())
 	{
 		if (GrantedShooterQuantumLeapAbilityHandle.IsValid())
 		{
 			ClearAbility(GrantedShooterQuantumLeapAbilityHandle);
 			GrantedShooterQuantumLeapAbilityHandle = FGameplayAbilitySpecHandle();
+		}
+		if (GrantedShooterBulletReflectionAbilityHandle.IsValid())
+		{
+			ClearAbility(GrantedShooterBulletReflectionAbilityHandle);
+			GrantedShooterBulletReflectionAbilityHandle = FGameplayAbilitySpecHandle();
 		}
 		if (GrantedShooterStealthAbilityHandle.IsValid())
 		{
@@ -568,18 +577,21 @@ bool UOutlierAbilitySystemComponent::TryActivateShooterSuitAbility(const FGamepl
 	}
 
 	const FGameplayAbilitySpec* QuantumLeapSpec = FindAbilitySpecFromHandle(GrantedShooterQuantumLeapAbilityHandle);
+	const FGameplayAbilitySpec* BulletReflectionSpec = FindAbilitySpecFromHandle(GrantedShooterBulletReflectionAbilityHandle);
 	const FGameplayAbilitySpec* StealthSpec = FindAbilitySpecFromHandle(GrantedShooterStealthAbilityHandle);
 	UE_LOG(
 		LogOutlier,
 		Warning,
-		TEXT("[GAS.ShooterSuit.Trace] Request Owner=%s Ability=%s Authority=%d QuantumActive=%d StealthActive=%d Stealthed=%d QuantumCooldown=%.2f StealthCooldown=%.2f"),
+		TEXT("[GAS.ShooterSuit.Trace] Request Owner=%s Ability=%s Authority=%d QuantumActive=%d ReflectionActive=%d StealthActive=%d Stealthed=%d QuantumCooldown=%.2f ReflectionCooldown=%.2f StealthCooldown=%.2f"),
 		*GetNameSafe(GetAvatarActor()),
 		*AbilityTag.ToString(),
 		IsOwnerActorAuthoritative() ? 1 : 0,
 		QuantumLeapSpec && QuantumLeapSpec->IsActive() ? 1 : 0,
+		BulletReflectionSpec && BulletReflectionSpec->IsActive() ? 1 : 0,
 		StealthSpec && StealthSpec->IsActive() ? 1 : 0,
 		HasMatchingGameplayTag(OutlierGameplayTags::State::Stealthed()) ? 1 : 0,
 		GetShooterQuantumLeapCooldownRemaining(),
+		GetShooterBulletReflectionCooldownRemaining(),
 		GetShooterStealthCooldownRemaining());
 
 	FGameplayTagContainer AbilityTags;
@@ -588,11 +600,12 @@ bool UOutlierAbilitySystemComponent::TryActivateShooterSuitAbility(const FGamepl
 	UE_LOG(
 		LogOutlier,
 		Warning,
-		TEXT("[GAS.ShooterSuit.Trace] RequestResult Owner=%s Ability=%s Activated=%d QuantumActive=%d StealthActive=%d Stealthed=%d"),
+		TEXT("[GAS.ShooterSuit.Trace] RequestResult Owner=%s Ability=%s Activated=%d QuantumActive=%d ReflectionActive=%d StealthActive=%d Stealthed=%d"),
 		*GetNameSafe(GetAvatarActor()),
 		*AbilityTag.ToString(),
 		bActivated ? 1 : 0,
 		QuantumLeapSpec && QuantumLeapSpec->IsActive() ? 1 : 0,
+		BulletReflectionSpec && BulletReflectionSpec->IsActive() ? 1 : 0,
 		StealthSpec && StealthSpec->IsActive() ? 1 : 0,
 		HasMatchingGameplayTag(OutlierGameplayTags::State::Stealthed()) ? 1 : 0);
 	return bActivated;
@@ -602,6 +615,7 @@ int32 UOutlierAbilitySystemComponent::GetGrantedShooterSuitAbilityCount() const
 {
 	int32 Count = 0;
 	Count += FindAbilitySpecFromHandle(GrantedShooterQuantumLeapAbilityHandle) ? 1 : 0;
+	Count += FindAbilitySpecFromHandle(GrantedShooterBulletReflectionAbilityHandle) ? 1 : 0;
 	Count += FindAbilitySpecFromHandle(GrantedShooterStealthAbilityHandle) ? 1 : 0;
 	return Count;
 }
@@ -639,6 +653,41 @@ bool UOutlierAbilitySystemComponent::CancelActiveShooterQuantumLeap(bool bCommit
 	UOutlierShooterQuantumLeapAbility* Ability = Cast<UOutlierShooterQuantumLeapAbility>(
 		Spec->GetPrimaryInstance());
 	return Ability && Ability->CancelQuantumLeap(bCommitFailureCooldown);
+}
+
+bool UOutlierAbilitySystemComponent::CommitShooterBulletReflectionCooldown()
+{
+	return CommitTimedCooldown(
+		UOutlierShooterBulletReflectionCooldownGameplayEffect::StaticClass(),
+		OutlierGameplayTags::Cooldown::Shooter::BulletReflection(),
+		ShooterSuitConfig.BulletReflection.CooldownSeconds,
+		GetAvatarActor()).WasSuccessfullyApplied();
+}
+
+bool UOutlierAbilitySystemComponent::IsShooterBulletReflectionCooldownActive() const
+{
+	return IsTimedCooldownActive(
+		OutlierGameplayTags::Cooldown::Shooter::BulletReflection(),
+		GetAvatarActor());
+}
+
+float UOutlierAbilitySystemComponent::GetShooterBulletReflectionCooldownRemaining() const
+{
+	return GetTimedCooldownRemaining(
+		OutlierGameplayTags::Cooldown::Shooter::BulletReflection(),
+		GetAvatarActor());
+}
+
+bool UOutlierAbilitySystemComponent::EndActiveShooterBulletReflection(bool bCommitCooldown)
+{
+	FGameplayAbilitySpec* Spec = FindAbilitySpecFromHandle(GrantedShooterBulletReflectionAbilityHandle);
+	if (!Spec || !Spec->IsActive())
+	{
+		return false;
+	}
+	UOutlierShooterBulletReflectionAbility* Ability = Cast<UOutlierShooterBulletReflectionAbility>(
+		Spec->GetPrimaryInstance());
+	return Ability && Ability->EndBulletReflection(bCommitCooldown);
 }
 
 bool UOutlierAbilitySystemComponent::CommitShooterStealthCooldown()

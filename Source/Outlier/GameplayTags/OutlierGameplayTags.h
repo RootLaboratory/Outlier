@@ -208,6 +208,12 @@ namespace OutlierGameplayTags
 			return Tag;
 		}
 
+		inline FGameplayTag BulletReflecting()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("State.BulletReflecting")));
+			return Tag;
+		}
+
 		inline FGameplayTag Dead()
 		{
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("State.Dead")));

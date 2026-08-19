@@ -42,6 +42,28 @@
 #include "OutlierNetUtils.h"
 #include "Outlier.h"
 
+namespace
+{
+AActor* ResolveDamageSource(AController* EventInstigator, AActor* DamageCauser)
+{
+	APawn* InstigatorPawn = EventInstigator ? EventInstigator->GetPawn() : nullptr;
+	AActor* CauserOwner = DamageCauser ? DamageCauser->GetOwner() : nullptr;
+	if (IsValid(InstigatorPawn))
+	{
+		return InstigatorPawn;
+	}
+	if (IsValid(EventInstigator))
+	{
+		return EventInstigator;
+	}
+	if (IsValid(CauserOwner))
+	{
+		return CauserOwner;
+	}
+	return IsValid(DamageCauser) ? DamageCauser : nullptr;
+}
+}
+
 FName AShooterCharacter::GetFirstPersonWeaponSocketByType(EWeaponType WeaponType) const
 {
 	return InventoryComponent ? InventoryComponent->GetFirstPersonWeaponSocketByType(WeaponType) : NAME_None;
@@ -157,6 +179,7 @@ void AShooterCharacter::Tick(float DeltaSeconds)
 void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	CancelActiveQuantumLeap();
+	EndActiveBulletReflection(false);
 	EndActiveStealth(false);
 	SetStealthVisualEnabled(false);
 
@@ -333,9 +356,15 @@ void AShooterCharacter::BindGasVitalityObservers()
 	StealthTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::Stealthed()).AddUObject(
 			this, &AShooterCharacter::HandleStealthTagChanged);
+	BulletReflectionTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::State::BulletReflecting()).AddUObject(
+			this, &AShooterCharacter::HandleBulletReflectionTagChanged);
 	QuantumLeapCooldownTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::Cooldown::Shooter::QuantumLeap()).AddUObject(
 			this, &AShooterCharacter::HandleQuantumLeapCooldownTagChanged);
+	BulletReflectionCooldownTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::Cooldown::Shooter::BulletReflection()).AddUObject(
+			this, &AShooterCharacter::HandleBulletReflectionCooldownTagChanged);
 	StealthCooldownTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::Cooldown::Shooter::Stealth()).AddUObject(
 			this, &AShooterCharacter::HandleStealthCooldownTagChanged);
@@ -365,7 +394,11 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::Stealthed()).Remove(StealthTagChangedHandle);
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::State::BulletReflecting()).Remove(BulletReflectionTagChangedHandle);
+	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::Cooldown::Shooter::QuantumLeap()).Remove(QuantumLeapCooldownTagChangedHandle);
+	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::Cooldown::Shooter::BulletReflection()).Remove(BulletReflectionCooldownTagChangedHandle);
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::Cooldown::Shooter::Stealth()).Remove(StealthCooldownTagChangedHandle);
 
@@ -377,7 +410,9 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 	MaxPartnerShieldChangedHandle.Reset();
 	DeadTagChangedHandle.Reset();
 	StealthTagChangedHandle.Reset();
+	BulletReflectionTagChangedHandle.Reset();
 	QuantumLeapCooldownTagChangedHandle.Reset();
+	BulletReflectionCooldownTagChangedHandle.Reset();
 	StealthCooldownTagChangedHandle.Reset();
 }
 
@@ -452,6 +487,7 @@ void AShooterCharacter::HandleDeadTagChanged(const FGameplayTag Tag, int32 NewCo
 	if (NewCount > 0)
 	{
 		CancelActiveQuantumLeap(false);
+		EndActiveBulletReflection(false);
 		EndActiveStealth(false);
 		HandleDeath();
 	}
@@ -461,6 +497,12 @@ void AShooterCharacter::HandleStealthTagChanged(const FGameplayTag Tag, int32 Ne
 {
 	(void)Tag;
 	SetStealthVisualEnabled(NewCount > 0);
+}
+
+void AShooterCharacter::HandleBulletReflectionTagChanged(const FGameplayTag Tag, int32 NewCount)
+{
+	(void)Tag;
+	BP_OnBulletReflectionStateChanged(NewCount > 0);
 }
 
 void AShooterCharacter::HandleStealthCooldownTagChanged(const FGameplayTag Tag, int32 NewCount)
@@ -474,6 +516,15 @@ void AShooterCharacter::HandleStealthCooldownTagChanged(const FGameplayTag Tag, 
 }
 
 void AShooterCharacter::HandleQuantumLeapCooldownTagChanged(const FGameplayTag Tag, int32 NewCount)
+{
+	(void)Tag;
+	if (NewCount > 0 && IsLocallyControlled())
+	{
+		RefreshShooterSuitCooldownUI();
+	}
+}
+
+void AShooterCharacter::HandleBulletReflectionCooldownTagChanged(const FGameplayTag Tag, int32 NewCount)
 {
 	(void)Tag;
 	if (NewCount > 0 && IsLocallyControlled())
@@ -519,6 +570,9 @@ void AShooterCharacter::RefreshShooterSuitCooldownUI()
 	ApplyCooldown(
 		OutlierGameplayTags::Ability::Shooter::QuantumLeap(),
 		OutlierAbilitySystemComponent->GetShooterQuantumLeapCooldownRemaining());
+	ApplyCooldown(
+		OutlierGameplayTags::Ability::Shooter::BulletReflection(),
+		OutlierAbilitySystemComponent->GetShooterBulletReflectionCooldownRemaining());
 	ApplyCooldown(
 		OutlierGameplayTags::Ability::Shooter::Stealth(),
 		OutlierAbilitySystemComponent->GetShooterStealthCooldownRemaining());
@@ -1251,6 +1305,15 @@ float AShooterCharacter::TakeDamage(
 	{
 		return 0.0f;
 	}
+	if (DamageEvent.IsOfType(FOutlierTaggedDamageEvent::ClassID)
+		&& TryReflectIncomingDamage(
+			DamageAmount,
+			static_cast<const FOutlierTaggedDamageEvent&>(DamageEvent),
+			EventInstigator,
+			DamageCauser))
+	{
+		return 0.0f;
+	}
 
 	const float AppliedDamage = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
 	// 폭발 등 공통 피해를 기존 Shooter 실드 및 HP 처리로 전달한다.
@@ -1261,6 +1324,156 @@ float AShooterCharacter::TakeDamage(
 	}
 	ApplyDamageInternal(AppliedDamage, EventInstigator, DamageCauser, DamageTag);
 	return AppliedDamage;
+}
+
+bool AShooterCharacter::TryReflectIncomingDamage(
+	float DamageAmount,
+	const FOutlierTaggedDamageEvent& DamageEvent,
+	AController* EventInstigator,
+	AActor* DamageCauser)
+{
+	if (!OutlierAbilitySystemComponent
+		|| !GetWorld()
+		|| !OutlierAbilitySystemComponent->HasMatchingGameplayTag(
+			OutlierGameplayTags::State::BulletReflecting()))
+	{
+		return false;
+	}
+	if (DamageEvent.bReflectedDamage)
+	{
+		UE_LOG(
+			LogOutlier,
+			Warning,
+			TEXT("[GAS.ShooterSuit.Trace][BulletReflection] Ignored Reason=AlreadyReflected Shooter=%s Source=%s Damage=%.2f Tag=%s"),
+			*GetNameSafe(this),
+			*GetNameSafe(DamageCauser),
+			DamageAmount,
+			*DamageEvent.DamageTag.ToString());
+		return false;
+	}
+	if (!DamageEvent.DamageTag.MatchesTagExact(OutlierGameplayTags::Damage::Weapon())
+		&& !DamageEvent.DamageTag.MatchesTagExact(OutlierGameplayTags::Damage::Explosion()))
+	{
+		UE_LOG(
+			LogOutlier,
+			Warning,
+			TEXT("[GAS.ShooterSuit.Trace][BulletReflection] Ignored Reason=UnsupportedDamageTag Shooter=%s Source=%s Damage=%.2f Tag=%s"),
+			*GetNameSafe(this),
+			*GetNameSafe(DamageCauser),
+			DamageAmount,
+			*DamageEvent.DamageTag.ToString());
+		return false;
+	}
+
+	AActor* DamageSource = ResolveDamageSource(EventInstigator, DamageCauser);
+	if (!DamageSource)
+	{
+		UE_LOG(
+			LogOutlier,
+			Warning,
+			TEXT("[GAS.ShooterSuit.Trace][BulletReflection] Ignored Reason=MissingDamageSource Shooter=%s Damage=%.2f Tag=%s"),
+			*GetNameSafe(this),
+			DamageAmount,
+			*DamageEvent.DamageTag.ToString());
+		return false;
+	}
+
+	const float ReflectionRadius = ShooterSuitConfig.BulletReflection.ReflectionRadius;
+	const FVector ReflectionEnd = DamageEvent.DamageOrigin;
+	if (ReflectionRadius <= 0.0f
+		|| FVector::DistSquared(GetActorLocation(), ReflectionEnd) > FMath::Square(ReflectionRadius))
+	{
+		UE_LOG(
+			LogOutlier,
+			Warning,
+			TEXT("[GAS.ShooterSuit.Trace][BulletReflection] Ignored Reason=OutOfRange Shooter=%s Source=%s Damage=%.2f Tag=%s Distance=%.1f Radius=%.1f"),
+			*GetNameSafe(this),
+			*GetNameSafe(DamageSource),
+			DamageAmount,
+			*DamageEvent.DamageTag.ToString(),
+			FVector::Distance(GetActorLocation(), ReflectionEnd),
+			ReflectionRadius);
+		return false;
+	}
+
+	FVector ReflectionStart = DamageEvent.HitResult.ImpactPoint;
+	if (ReflectionStart.IsNearlyZero())
+	{
+		ReflectionStart = GetActorLocation();
+	}
+	if (ReflectionStart.Equals(ReflectionEnd, KINDA_SMALL_NUMBER))
+	{
+		UE_LOG(
+			LogOutlier,
+			Warning,
+			TEXT("[GAS.ShooterSuit.Trace][BulletReflection] Ignored Reason=ZeroLengthDirection Shooter=%s Source=%s Damage=%.2f Tag=%s"),
+			*GetNameSafe(this),
+			*GetNameSafe(DamageSource),
+			DamageAmount,
+			*DamageEvent.DamageTag.ToString());
+		return false;
+	}
+
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(ShooterBulletReflection), false, this);
+	if (CurrentWeapon)
+	{
+		Params.AddIgnoredActor(CurrentWeapon);
+	}
+	FHitResult ReflectedHit;
+	const bool bHit = GetWorld()->LineTraceSingleByChannel(
+		ReflectedHit,
+		ReflectionStart,
+		ReflectionEnd,
+		ECC_PhysicsBody,
+		Params);
+	AActor* ReflectedTarget = bHit ? ReflectedHit.GetActor() : nullptr;
+	if (!ReflectedTarget && DamageSource->GetActorLocation().Equals(ReflectionEnd, 100.0f))
+	{
+		ReflectedTarget = DamageSource;
+		ReflectedHit.HitObjectHandle = FActorInstanceHandle(DamageSource);
+		ReflectedHit.bBlockingHit = true;
+		ReflectedHit.Location = ReflectionEnd;
+		ReflectedHit.ImpactPoint = ReflectionEnd;
+	}
+
+	if (ReflectedTarget && ReflectedTarget != this)
+	{
+		FOutlierTaggedDamageEvent ReflectedDamageEvent;
+		ReflectedDamageEvent.DamageTag = DamageEvent.DamageTag;
+		ReflectedDamageEvent.HitResult = ReflectedHit;
+		ReflectedDamageEvent.DamageOrigin = ReflectionStart;
+		ReflectedDamageEvent.bReflectedDamage = true;
+		ReflectedTarget->TakeDamage(
+			DamageAmount,
+			ReflectedDamageEvent,
+			GetController(),
+			CurrentWeapon ? static_cast<AActor*>(CurrentWeapon) : this);
+	}
+	UE_LOG(
+		LogOutlier,
+		Warning,
+		TEXT("[GAS.ShooterSuit.Trace][BulletReflection] Reflected Shooter=%s Source=%s Target=%s Damage=%.2f Tag=%s Start=%s End=%s TraceHit=%d IncomingSuppressed=1"),
+		*GetNameSafe(this),
+		*GetNameSafe(DamageSource),
+		*GetNameSafe(ReflectedTarget),
+		DamageAmount,
+		*DamageEvent.DamageTag.ToString(),
+		*ReflectionStart.ToCompactString(),
+		*(bHit ? ReflectedHit.ImpactPoint : ReflectionEnd).ToCompactString(),
+		bHit ? 1 : 0);
+	MulticastNotifyBulletReflected(
+		ReflectionStart,
+		bHit ? ReflectedHit.ImpactPoint : ReflectionEnd);
+
+	// 팀과 관계없이 유효한 공격은 중간 충돌체 유무와 관계없이 보호막에서 소거된다.
+	return true;
+}
+
+void AShooterCharacter::MulticastNotifyBulletReflected_Implementation(
+	FVector ReflectionStart,
+	FVector ReflectionEnd)
+{
+	BP_OnBulletReflected(ReflectionStart, ReflectionEnd);
 }
 
 void AShooterCharacter::HandleWeaponAttackStoppedInternal()
@@ -2147,6 +2360,7 @@ void AShooterCharacter::SetSuitDisabledByPartnerBoundary(bool bDisabled)
 	if (HasAuthority() && bDisabled)
 	{
 		CancelActiveQuantumLeap(true);
+		EndActiveBulletReflection(true);
 		EndActiveStealth(true);
 	}
 
@@ -2203,11 +2417,25 @@ bool AShooterCharacter::EndActiveStealth(bool bCommitCooldown)
 		&& OutlierAbilitySystemComponent->EndActiveShooterStealth(bCommitCooldown);
 }
 
+bool AShooterCharacter::EndActiveBulletReflection(bool bCommitCooldown)
+{
+	return HasAuthority()
+		&& OutlierAbilitySystemComponent
+		&& OutlierAbilitySystemComponent->EndActiveShooterBulletReflection(bCommitCooldown);
+}
+
 bool AShooterCharacter::CancelActiveQuantumLeap(bool bCommitFailureCooldown)
 {
 	return HasAuthority()
 		&& OutlierAbilitySystemComponent
 		&& OutlierAbilitySystemComponent->CancelActiveShooterQuantumLeap(bCommitFailureCooldown);
+}
+
+bool AShooterCharacter::IsBulletReflecting() const
+{
+	return OutlierAbilitySystemComponent
+		&& OutlierAbilitySystemComponent->HasMatchingGameplayTag(
+			OutlierGameplayTags::State::BulletReflecting());
 }
 void AShooterCharacter::ApplyPartnerShield(float Amount, float Duration)
 {

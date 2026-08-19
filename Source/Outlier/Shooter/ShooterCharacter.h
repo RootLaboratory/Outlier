@@ -26,6 +26,7 @@ class UOutlierVitalAttributeSet;
 class UOutlierShieldAttributeSet;
 class UDataTable;
 struct FOnAttributeChangeData;
+struct FOutlierTaggedDamageEvent;
 
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnShooterHealthChanged, float /*CurrentHealth*/, float /*MaxHealth*/);
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnShooterShieldChanged, float /*CurrentShield*/, float /*MaxShield*/);
@@ -284,7 +285,9 @@ protected:
 	FDelegateHandle MaxPartnerShieldChangedHandle;
 	FDelegateHandle DeadTagChangedHandle;
 	FDelegateHandle StealthTagChangedHandle;
+	FDelegateHandle BulletReflectionTagChangedHandle;
 	FDelegateHandle QuantumLeapCooldownTagChangedHandle;
+	FDelegateHandle BulletReflectionCooldownTagChangedHandle;
 	FDelegateHandle StealthCooldownTagChangedHandle;
 
 	UPROPERTY()
@@ -335,9 +338,20 @@ protected:
 	void HandleMaxPartnerShieldChanged(const FOnAttributeChangeData& ChangeData);
 	void HandleDeadTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleStealthTagChanged(const FGameplayTag Tag, int32 NewCount);
+	void HandleBulletReflectionTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleQuantumLeapCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
+	void HandleBulletReflectionCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleStealthCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void RefreshShooterSuitCooldownUI();
+
+	UFUNCTION(BlueprintImplementableEvent, Category = "Suit|Bullet Reflection")
+	void BP_OnBulletReflectionStateChanged(bool bActive);
+
+	UFUNCTION(NetMulticast, Unreliable)
+	void MulticastNotifyBulletReflected(FVector ReflectionStart, FVector ReflectionEnd);
+
+	UFUNCTION(BlueprintImplementableEvent, Category = "Suit|Bullet Reflection")
+	void BP_OnBulletReflected(FVector ReflectionStart, FVector ReflectionEnd);
 
 	/** Initialize input action bindings */
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
@@ -418,10 +432,12 @@ public:
 	void SetSuitDisabledByPartnerBoundary(bool bDisabled);
 	APartnerCharacter* GetPartnerCharacter() const { return CachedPartnerCharacter; }
 	bool IsSuitDisabledByPartnerBoundary() const { return bSuitDisabledByPartnerBoundary; }
+	bool IsBulletReflecting() const;
 	void NotifyOffensiveActionExecuted();
 	UFUNCTION(BlueprintCallable, Category = "Suit|Stealth")
 	void NotifyStealthDetected();
 	bool CancelActiveQuantumLeap(bool bCommitFailureCooldown = false);
+	bool EndActiveBulletReflection(bool bCommitCooldown);
 	bool EndActiveStealth(bool bCommitCooldown);
 
 	void ApplyPartnerShield(float Amount, float Duration);
@@ -482,6 +498,11 @@ public:
 
 	void DoJumpEnd();
 protected:
+	bool TryReflectIncomingDamage(
+		float DamageAmount,
+		const FOutlierTaggedDamageEvent& DamageEvent,
+		AController* EventInstigator,
+		AActor* DamageCauser);
 	void ApplyDamageInternal(
 		float DamageAmount,
 		AController* EventInstigator,

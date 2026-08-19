@@ -149,6 +149,36 @@ UOutlierShooterQuantumLeapCooldownGameplayEffect::UOutlierShooterQuantumLeapCool
 	TargetTags->SetAndApplyTargetTagChanges(GrantedTags);
 }
 
+UOutlierShooterBulletReflectionGameplayEffect::UOutlierShooterBulletReflectionGameplayEffect(
+	const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	DurationPolicy = EGameplayEffectDurationType::HasDuration;
+	FInheritedTagContainer GrantedTags;
+	GrantedTags.AddTag(OutlierGameplayTags::State::BulletReflecting());
+	UTargetTagsGameplayEffectComponent* TargetTags =
+		ObjectInitializer.CreateDefaultSubobject<UTargetTagsGameplayEffectComponent>(
+			this,
+			TEXT("BulletReflectionTargetTags"));
+	GEComponents.Add(TargetTags);
+	TargetTags->SetAndApplyTargetTagChanges(GrantedTags);
+}
+
+UOutlierShooterBulletReflectionCooldownGameplayEffect::UOutlierShooterBulletReflectionCooldownGameplayEffect(
+	const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	DurationPolicy = EGameplayEffectDurationType::HasDuration;
+	FInheritedTagContainer GrantedTags;
+	GrantedTags.AddTag(OutlierGameplayTags::Cooldown::Shooter::BulletReflection());
+	UTargetTagsGameplayEffectComponent* TargetTags =
+		ObjectInitializer.CreateDefaultSubobject<UTargetTagsGameplayEffectComponent>(
+			this,
+			TEXT("BulletReflectionCooldownTargetTags"));
+	GEComponents.Add(TargetTags);
+	TargetTags->SetAndApplyTargetTagChanges(GrantedTags);
+}
+
 UOutlierShooterStealthGameplayEffect::UOutlierShooterStealthGameplayEffect(
 	const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)

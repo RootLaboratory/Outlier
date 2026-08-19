@@ -15,6 +15,8 @@ struct OUTLIER_API FOutlierTaggedDamageEvent : public FDamageEvent
 	FGameplayTag DamageTag;
 	FHitResult HitResult;
 	FVector DamageOrigin = FVector::ZeroVector;
+	// 반사 피해가 다시 반사되어 재귀하는 것을 막는 서버 런타임 표식이다.
+	bool bReflectedDamage = false;
 
 	// 전달받은 FDamageEvent가 이 사용자 정의 타입인지 안전하게 확인할 때 사용한다.
 	virtual int32 GetTypeID() const override

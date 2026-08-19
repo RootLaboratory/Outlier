@@ -103,6 +103,7 @@ void APartnerCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	if (HasAuthority() && CachedShooterCharacter)
 	{
 		CachedShooterCharacter->CancelActiveQuantumLeap(false);
+		CachedShooterCharacter->EndActiveBulletReflection(false);
 	}
 	UnbindPartnerCooldownUIObserver();
 	CleanupBoostVFXComponents();
@@ -850,6 +851,7 @@ void APartnerCharacter::StopActionsForReboot()
 	if (CachedShooterCharacter)
 	{
 		CachedShooterCharacter->CancelActiveQuantumLeap(true);
+		CachedShooterCharacter->EndActiveBulletReflection(true);
 		CachedShooterCharacter->EndActiveStealth(true);
 	}
 	if (CombatComponent)

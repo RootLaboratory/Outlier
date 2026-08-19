@@ -95,6 +95,24 @@ public:
 };
 
 UCLASS()
+class OUTLIER_API UOutlierShooterBulletReflectionGameplayEffect : public UGameplayEffect
+{
+	GENERATED_BODY()
+
+public:
+	UOutlierShooterBulletReflectionGameplayEffect(const FObjectInitializer& ObjectInitializer);
+};
+
+UCLASS()
+class OUTLIER_API UOutlierShooterBulletReflectionCooldownGameplayEffect : public UGameplayEffect
+{
+	GENERATED_BODY()
+
+public:
+	UOutlierShooterBulletReflectionCooldownGameplayEffect(const FObjectInitializer& ObjectInitializer);
+};
+
+UCLASS()
 class OUTLIER_API UOutlierShooterStealthGameplayEffect : public UGameplayEffect
 {
 	GENERATED_BODY()
