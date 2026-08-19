@@ -4,6 +4,7 @@
 
 #include "Components/BoxComponent.h"
 #include "Components/SphereComponent.h"
+#include "Damage/OutlierDamageReceiver.h"
 #include "Damage/OutlierTaggedDamageEvent.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Drone/Partner/PartnerEMPComponent.h"
@@ -38,6 +39,22 @@ namespace
 		Handle.DataTable = DataTable;
 		Handle.RowName = RowName;
 		return Handle;
+	}
+
+	float ApplyTaggedDamage(
+		AActor* TargetActor,
+		float DamageAmount,
+		const FOutlierTaggedDamageEvent& DamageEvent,
+		AController* EventInstigator,
+		AActor* DamageCauser)
+	{
+		return OutlierDamage::Apply(
+			TargetActor,
+			FOutlierDamageRequest::FromDamageEvent(
+				DamageAmount,
+				DamageEvent,
+				EventInstigator,
+				DamageCauser));
 	}
 
 	bool ReadBoolProperty(const UObject* Object, FName PropertyName)
@@ -414,13 +431,14 @@ bool FOutlierGasPartnerDamageBoundaryTest::RunTest(const FString& Parameters)
 
 	FOutlierTaggedDamageEvent TaggedDamageEvent;
 	TaggedDamageEvent.DamageTag = OutlierGameplayTags::Damage::Weapon();
-	const float AppliedDamage = static_cast<AActor*>(Partner)->TakeDamage(
+	const float AppliedDamage = ApplyTaggedDamage(
+		Partner,
 		25.0f,
 		TaggedDamageEvent,
 		nullptr,
 		Partner);
-	TestEqual(TEXT("Partner TakeDamage reports applied GAS damage"), AppliedDamage, 25.0f);
-	TestEqual(TEXT("Partner TakeDamage reduces GAS Health"), Partner->GetVitalAttributeSet()->GetHealth(), 75.0f);
+	TestEqual(TEXT("Partner damage request reports applied GAS damage"), AppliedDamage, 25.0f);
+	TestEqual(TEXT("Partner damage request reduces GAS Health"), Partner->GetVitalAttributeSet()->GetHealth(), 75.0f);
 	TestFalse(TEXT("Non-lethal Partner damage does not enter Reboot"), VitalityComponent->IsRebooting());
 
 	UPartnerHackComponent* HackComponent = Partner->FindComponentByClass<UPartnerHackComponent>();
@@ -1267,7 +1285,8 @@ bool FOutlierGasEnemyDamageFlowTest::RunTest(const FString& Parameters)
 	FOutlierTaggedDamageEvent WeaponDamageEvent;
 	WeaponDamageEvent.DamageTag = OutlierGameplayTags::Damage::Weapon();
 	WeaponDamageEvent.HitResult.Component = CoreHitbox;
-	const float AppliedWeakPointDamage = Enemy->TakeDamage(
+	const float AppliedWeakPointDamage = ApplyTaggedDamage(
+		Enemy,
 		10.0f,
 		WeaponDamageEvent,
 		nullptr,
@@ -1699,7 +1718,7 @@ bool FOutlierGasShooterBulletReflectionTest::RunTest(const FString& Parameters)
 	WeaponDamageEvent.HitResult.ImpactPoint = Shooter->GetActorLocation();
 	TestEqual(
 		TEXT("Eligible enemy weapon damage is fully rejected by Shooter"),
-		Shooter->TakeDamage(25.0f, WeaponDamageEvent, nullptr, Enemy),
+		ApplyTaggedDamage(Shooter, 25.0f, WeaponDamageEvent, nullptr, Enemy),
 		0.0f);
 	TestEqual(TEXT("Reflected weapon damage preserves Shooter Health"), Shooter->GetCurHealth(), 100.0f);
 	TestEqual(TEXT("Reflected weapon damage applies the same amount to the source"), Enemy->GetCurrentHealth(), 75.0f);

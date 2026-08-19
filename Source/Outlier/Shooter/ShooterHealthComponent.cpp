@@ -11,18 +11,18 @@ UShooterHealthComponent::UShooterHealthComponent()
 	PrimaryComponentTick.bCanEverTick = true;
 }
 
-void UShooterHealthComponent::ApplyDamage(
+bool UShooterHealthComponent::ApplyDamage(
 	float DamageAmount,
 	AController* Instigator,
 	AActor* DamageCauser,
 	const FGameplayTag& DamageTag)
 {
-	if (!GetOwner()->HasAuthority()) return;
+	if (!GetOwner()->HasAuthority()) return false;
 
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 	if (!ShooterCharacter)
 	{
-		return;
+		return false;
 	}
 
 	GetHit();
@@ -30,13 +30,15 @@ void UShooterHealthComponent::ApplyDamage(
 	if (ShooterCharacter->IsDead() || DamageAmount <= 0.0f)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("%s %s ApplyDamageInternal blocked Dead=%d Damage=%.1f"), OutlierNet::GetNetPrefix(ShooterCharacter), *ShooterCharacter->GetName(), ShooterCharacter->IsDead() ? 1 : 0, DamageAmount);
-		return;
+		return false;
 	}
 
 	if (UOutlierAbilitySystemComponent* AbilitySystem = ShooterCharacter->GetOutlierAbilitySystemComponent())
 	{
-		AbilitySystem->ApplyDamageToSelf(DamageAmount, Instigator, DamageCauser, DamageTag);
+		return AbilitySystem->ApplyDamageToSelf(DamageAmount, Instigator, DamageCauser, DamageTag);
 	}
+
+	return false;
 }
 
 void UShooterHealthComponent::Die()

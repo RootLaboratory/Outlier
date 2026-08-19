@@ -9,7 +9,6 @@
 #include "Components/SceneComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Camera/CameraComponent.h"
-#include "Damage/OutlierTaggedDamageEvent.h"
 #include "Drone/Partner/PartnerDistanceComponent.h"
 #include "Drone/Partner/PartnerMovementComponent.h"
 #include "Drone/Partner/PartnerSupportComponent.h"
@@ -148,25 +147,25 @@ float APartnerCharacter::TakeDamage(
 		DamageEvent,
 		EventInstigator,
 		DamageCauser);
-	if (AppliedDamage <= 0.0f)
+	return ReceiveOutlierDamage(FOutlierDamageRequest::FromDamageEvent(
+		AppliedDamage,
+		DamageEvent,
+		EventInstigator,
+		DamageCauser));
+}
+
+float APartnerCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
+{
+	if (!HasAuthority() || !CanBeDamaged() || Request.DamageAmount <= 0.0f || !OutlierAbilitySystemComponent)
 	{
 		return 0.0f;
 	}
-
-	FGameplayTag DamageTag;
-	if (DamageEvent.IsOfType(FOutlierTaggedDamageEvent::ClassID))
-	{
-		const FOutlierTaggedDamageEvent& TaggedDamageEvent =
-			static_cast<const FOutlierTaggedDamageEvent&>(DamageEvent);
-		DamageTag = TaggedDamageEvent.DamageTag;
-	}
-
 	const bool bApplied = OutlierAbilitySystemComponent->ApplyDamageToSelf(
-		AppliedDamage,
-		EventInstigator,
-		DamageCauser,
-		DamageTag);
-	return bApplied ? AppliedDamage : 0.0f;
+		Request.DamageAmount,
+		Request.EventInstigator,
+		Request.DamageCauser,
+		Request.DamageTag);
+	return bApplied ? Request.DamageAmount : 0.0f;
 }
 
 void APartnerCharacter::UnPossessed()

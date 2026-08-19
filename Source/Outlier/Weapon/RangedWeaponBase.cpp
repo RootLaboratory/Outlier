@@ -3,7 +3,7 @@
 
 #include "Weapon/RangedWeaponBase.h"
 
-#include "Damage/OutlierTaggedDamageEvent.h"
+#include "Damage/OutlierDamageReceiver.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "GAS/Effects/OutlierGameplayEffects.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
@@ -408,14 +408,16 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 		
 		
 
-		FOutlierTaggedDamageEvent DamageEvent;
-		DamageEvent.DamageTag = OutlierGameplayTags::Damage::Weapon();
-		DamageEvent.HitResult = ResolvedDamageHit;
-		DamageEvent.DamageOrigin = Start;
-
 		if (HitActor)
 		{
-			HitActor->TakeDamage(DamageToApply, DamageEvent, OwnerCharacter->GetController(), this);
+			FOutlierDamageRequest DamageRequest;
+			DamageRequest.DamageAmount = DamageToApply;
+			DamageRequest.DamageTag = OutlierGameplayTags::Damage::Weapon();
+			DamageRequest.HitResult = ResolvedDamageHit;
+			DamageRequest.DamageOrigin = Start;
+			DamageRequest.EventInstigator = OwnerCharacter->GetController();
+			DamageRequest.DamageCauser = this;
+			OutlierDamage::Apply(HitActor, DamageRequest);
 		}
 	}
 	{

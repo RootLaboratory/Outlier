@@ -12,6 +12,7 @@
 #include "Interface/RoomTagInterface.h"
 #include "StateTreeReference.h"
 #include "AbilitySystemInterface.h"
+#include "Damage/OutlierDamageReceiver.h"
 #include "EnemyBase.generated.h"
 
 class UStateTreeComponent;
@@ -53,7 +54,7 @@ enum class EEnemyAttackPhase : uint8
 };
 
 UCLASS()
-class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, public IEMPableInterface, public IScannableInterface, public IGenericTeamAgentInterface, public IRoomTagInterface, public IAbilitySystemInterface
+class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, public IEMPableInterface, public IScannableInterface, public IGenericTeamAgentInterface, public IRoomTagInterface, public IAbilitySystemInterface, public IOutlierDamageReceiver
 {
 	GENERATED_BODY()
 
@@ -73,6 +74,7 @@ public:
 		FDamageEvent const& DamageEvent,
 		AController* EventInstigator,
 		AActor* DamageCauser) override;
+	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
 
 protected:
 	virtual void PostInitializeComponents() override;
@@ -451,7 +453,7 @@ protected:
 	void BindGasVitalityObservers();
 	void UnbindGasVitalityObservers();
 	void HandleHealthChanged(const FOnAttributeChangeData& ChangeData);
-	void ApplyDamageInternal(
+	bool ApplyDamageInternal(
 		float DamageAmount,
 		AController* DamageInstigator,
 		AActor* DamageCauser,

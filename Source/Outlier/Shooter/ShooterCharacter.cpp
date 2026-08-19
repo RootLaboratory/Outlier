@@ -21,7 +21,6 @@
 #include "LocalPlayerUISubSystem.h"
 #include "InputActionValue.h"
 #include "Drone/Partner/PartnerCharacter.h"
-#include "Damage/OutlierTaggedDamageEvent.h"
 #include "Enemy/EnemyRoomSubsystem.h"
 #include "TagDrivenUIGameplayTags.h"
 #include "ShooterInputConfig.h"
@@ -158,8 +157,6 @@ void AShooterCharacter::BeginPlay()
 			FirstPersonMesh->SetRelativeLocation(BaseFirstPersonMeshLocation);
 		}
 	}
-
-	BroadcastCurrentUIState();
 
 	RefreshWeaponMode();
 	RefreshMovementState();
@@ -337,21 +334,9 @@ void AShooterCharacter::BindGasVitalityObservers()
 	HealthChangedHandle = OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
 		UOutlierVitalAttributeSet::GetHealthAttribute()).AddUObject(
 			this, &AShooterCharacter::HandleHealthChanged);
-	MaxHealthChangedHandle = OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
-		UOutlierVitalAttributeSet::GetMaxHealthAttribute()).AddUObject(
-			this, &AShooterCharacter::HandleMaxHealthChanged);
 	ShieldChangedHandle = OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
 		UOutlierShieldAttributeSet::GetShieldAttribute()).AddUObject(
 			this, &AShooterCharacter::HandleShieldChanged);
-	MaxShieldChangedHandle = OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
-		UOutlierShieldAttributeSet::GetMaxShieldAttribute()).AddUObject(
-			this, &AShooterCharacter::HandleMaxShieldChanged);
-	PartnerShieldChangedHandle = OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
-		UOutlierShieldAttributeSet::GetPartnerShieldAttribute()).AddUObject(
-			this, &AShooterCharacter::HandlePartnerShieldChanged);
-	MaxPartnerShieldChangedHandle = OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
-		UOutlierShieldAttributeSet::GetMaxPartnerShieldAttribute()).AddUObject(
-			this, &AShooterCharacter::HandleMaxPartnerShieldChanged);
 	DeadTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::Dead()).AddUObject(
 			this, &AShooterCharacter::HandleDeadTagChanged);
@@ -388,15 +373,7 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 	OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
 		UOutlierVitalAttributeSet::GetHealthAttribute()).Remove(HealthChangedHandle);
 	OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
-		UOutlierVitalAttributeSet::GetMaxHealthAttribute()).Remove(MaxHealthChangedHandle);
-	OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
 		UOutlierShieldAttributeSet::GetShieldAttribute()).Remove(ShieldChangedHandle);
-	OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
-		UOutlierShieldAttributeSet::GetMaxShieldAttribute()).Remove(MaxShieldChangedHandle);
-	OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
-		UOutlierShieldAttributeSet::GetPartnerShieldAttribute()).Remove(PartnerShieldChangedHandle);
-	OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
-		UOutlierShieldAttributeSet::GetMaxPartnerShieldAttribute()).Remove(MaxPartnerShieldChangedHandle);
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::Dead()).Remove(DeadTagChangedHandle);
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
@@ -415,11 +392,7 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 		OutlierGameplayTags::Cooldown::Shooter::Stealth()).Remove(StealthCooldownTagChangedHandle);
 
 	HealthChangedHandle.Reset();
-	MaxHealthChangedHandle.Reset();
 	ShieldChangedHandle.Reset();
-	MaxShieldChangedHandle.Reset();
-	PartnerShieldChangedHandle.Reset();
-	MaxPartnerShieldChangedHandle.Reset();
 	DeadTagChangedHandle.Reset();
 	StealthTagChangedHandle.Reset();
 	BulletReflectionTagChangedHandle.Reset();
@@ -432,25 +405,14 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 
 void AShooterCharacter::HandleHealthChanged(const FOnAttributeChangeData& ChangeData)
 {
-	OnShooterHealthChanged.Broadcast(ChangeData.NewValue, GetMaxHealth());
-	OnShooterConditionChanged.Broadcast(ResolveShooterConditionTag());
-
 	if (HasAuthority() && ChangeData.OldValue > 0.0f && ChangeData.NewValue <= 0.0f)
 	{
 		Die();
 	}
 }
 
-void AShooterCharacter::HandleMaxHealthChanged(const FOnAttributeChangeData& ChangeData)
-{
-	(void)ChangeData;
-	OnShooterHealthChanged.Broadcast(GetCurHealth(), GetMaxHealth());
-}
-
 void AShooterCharacter::HandleShieldChanged(const FOnAttributeChangeData& ChangeData)
 {
-	OnShooterShieldChanged.Broadcast(ChangeData.NewValue, GetMaxShield());
-
 	if (IsLocallyControlled())
 	{
 		if (UMaterialPostProcessSubsystem* PPS = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
@@ -463,24 +425,6 @@ void AShooterCharacter::HandleShieldChanged(const FOnAttributeChangeData& Change
 		}
 	}
 
-	OnShooterConditionChanged.Broadcast(ResolveShooterConditionTag());
-}
-
-void AShooterCharacter::HandleMaxShieldChanged(const FOnAttributeChangeData& ChangeData)
-{
-	(void)ChangeData;
-	OnShooterShieldChanged.Broadcast(GetCurShield(), GetMaxShield());
-}
-
-void AShooterCharacter::HandlePartnerShieldChanged(const FOnAttributeChangeData& ChangeData)
-{
-	BroadcastPartnerShieldState();
-}
-
-void AShooterCharacter::HandleMaxPartnerShieldChanged(const FOnAttributeChangeData& ChangeData)
-{
-	(void)ChangeData;
-	BroadcastPartnerShieldState();
 }
 
 void AShooterCharacter::HandleDeadTagChanged(const FGameplayTag Tag, int32 NewCount)
@@ -1312,16 +1256,14 @@ void AShooterCharacter::EndActionLock(EShooterActionLock LockToEnd)
 	GetWorldTimerManager().ClearTimer(ActionLockTimerHandle);
 }
 
-void AShooterCharacter::ApplyDamageInternal(
+bool AShooterCharacter::ApplyDamageInternal(
 	float DamageAmount,
 	AController* EventInstigator,
 	AActor* DamageCauser,
 	const FGameplayTag& DamageTag)
 {
-	if (HealthComponent)
-	{
-		HealthComponent->ApplyDamage(DamageAmount, EventInstigator, DamageCauser, DamageTag);
-	}
+	return HealthComponent
+		&& HealthComponent->ApplyDamage(DamageAmount, EventInstigator, DamageCauser, DamageTag);
 }
 
 float AShooterCharacter::TakeDamage(
@@ -1334,32 +1276,35 @@ float AShooterCharacter::TakeDamage(
 	{
 		return 0.0f;
 	}
-	if (DamageEvent.IsOfType(FOutlierTaggedDamageEvent::ClassID)
-		&& TryReflectIncomingDamage(
-			DamageAmount,
-			static_cast<const FOutlierTaggedDamageEvent&>(DamageEvent),
-			EventInstigator,
-			DamageCauser))
+
+	const float AppliedDamage = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
+	return ReceiveOutlierDamage(FOutlierDamageRequest::FromDamageEvent(
+		AppliedDamage,
+		DamageEvent,
+		EventInstigator,
+		DamageCauser));
+}
+
+float AShooterCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
+{
+	if (!HasAuthority() || !CanBeDamaged() || Request.DamageAmount <= 0.0f)
+	{
+		return 0.0f;
+	}
+	if (TryReflectIncomingDamage(Request))
 	{
 		return 0.0f;
 	}
 
-	const float AppliedDamage = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
-	// 폭발 등 공통 피해를 기존 Shooter 실드 및 HP 처리로 전달한다.
-	FGameplayTag DamageTag;
-	if (DamageEvent.IsOfType(FOutlierTaggedDamageEvent::ClassID))
-	{
-		DamageTag = static_cast<const FOutlierTaggedDamageEvent&>(DamageEvent).DamageTag;
-	}
-	ApplyDamageInternal(AppliedDamage, EventInstigator, DamageCauser, DamageTag);
-	return AppliedDamage;
+	return ApplyDamageInternal(
+		Request.DamageAmount,
+		Request.EventInstigator,
+		Request.DamageCauser,
+		Request.DamageTag)
+		? Request.DamageAmount : 0.0f;
 }
 
-bool AShooterCharacter::TryReflectIncomingDamage(
-	float DamageAmount,
-	const FOutlierTaggedDamageEvent& DamageEvent,
-	AController* EventInstigator,
-	AActor* DamageCauser)
+bool AShooterCharacter::TryReflectIncomingDamage(const FOutlierDamageRequest& Request)
 {
 	if (!OutlierAbilitySystemComponent
 		|| !GetWorld()
@@ -1368,33 +1313,33 @@ bool AShooterCharacter::TryReflectIncomingDamage(
 	{
 		return false;
 	}
-	if (DamageEvent.bReflectedDamage)
+	if (Request.bReflectedDamage)
 	{
 		UE_LOG(
 			LogOutlier,
 			VeryVerbose,
 			TEXT("[GAS.ShooterSuit.Trace][BulletReflection] Ignored Reason=AlreadyReflected Shooter=%s Source=%s Damage=%.2f Tag=%s"),
 			*GetNameSafe(this),
-			*GetNameSafe(DamageCauser),
-			DamageAmount,
-			*DamageEvent.DamageTag.ToString());
+			*GetNameSafe(Request.DamageCauser),
+			Request.DamageAmount,
+			*Request.DamageTag.ToString());
 		return false;
 	}
-	if (!DamageEvent.DamageTag.MatchesTagExact(OutlierGameplayTags::Damage::Weapon())
-		&& !DamageEvent.DamageTag.MatchesTagExact(OutlierGameplayTags::Damage::Explosion()))
+	if (!Request.DamageTag.MatchesTagExact(OutlierGameplayTags::Damage::Weapon())
+		&& !Request.DamageTag.MatchesTagExact(OutlierGameplayTags::Damage::Explosion()))
 	{
 		UE_LOG(
 			LogOutlier,
 			VeryVerbose,
 			TEXT("[GAS.ShooterSuit.Trace][BulletReflection] Ignored Reason=UnsupportedDamageTag Shooter=%s Source=%s Damage=%.2f Tag=%s"),
 			*GetNameSafe(this),
-			*GetNameSafe(DamageCauser),
-			DamageAmount,
-			*DamageEvent.DamageTag.ToString());
+			*GetNameSafe(Request.DamageCauser),
+			Request.DamageAmount,
+			*Request.DamageTag.ToString());
 		return false;
 	}
 
-	AActor* DamageSource = ResolveDamageSource(EventInstigator, DamageCauser);
+	AActor* DamageSource = ResolveDamageSource(Request.EventInstigator, Request.DamageCauser);
 	if (!DamageSource)
 	{
 		UE_LOG(
@@ -1402,13 +1347,13 @@ bool AShooterCharacter::TryReflectIncomingDamage(
 			Warning,
 			TEXT("[GAS.ShooterSuit.Trace][BulletReflection] Ignored Reason=MissingDamageSource Shooter=%s Damage=%.2f Tag=%s"),
 			*GetNameSafe(this),
-			DamageAmount,
-			*DamageEvent.DamageTag.ToString());
+			Request.DamageAmount,
+			*Request.DamageTag.ToString());
 		return false;
 	}
 
 	const float ReflectionRadius = ShooterSuitConfig.BulletReflection.ReflectionRadius;
-	const FVector ReflectionEnd = DamageEvent.DamageOrigin;
+	const FVector ReflectionEnd = Request.DamageOrigin;
 	if (ReflectionRadius <= 0.0f
 		|| FVector::DistSquared(GetActorLocation(), ReflectionEnd) > FMath::Square(ReflectionRadius))
 	{
@@ -1418,14 +1363,14 @@ bool AShooterCharacter::TryReflectIncomingDamage(
 			TEXT("[GAS.ShooterSuit.Trace][BulletReflection] Ignored Reason=OutOfRange Shooter=%s Source=%s Damage=%.2f Tag=%s Distance=%.1f Radius=%.1f"),
 			*GetNameSafe(this),
 			*GetNameSafe(DamageSource),
-			DamageAmount,
-			*DamageEvent.DamageTag.ToString(),
+			Request.DamageAmount,
+			*Request.DamageTag.ToString(),
 			FVector::Distance(GetActorLocation(), ReflectionEnd),
 			ReflectionRadius);
 		return false;
 	}
 
-	FVector ReflectionStart = DamageEvent.HitResult.ImpactPoint;
+	FVector ReflectionStart = Request.HitResult.ImpactPoint;
 	if (ReflectionStart.IsNearlyZero())
 	{
 		ReflectionStart = GetActorLocation();
@@ -1438,8 +1383,8 @@ bool AShooterCharacter::TryReflectIncomingDamage(
 			TEXT("[GAS.ShooterSuit.Trace][BulletReflection] Ignored Reason=ZeroLengthDirection Shooter=%s Source=%s Damage=%.2f Tag=%s"),
 			*GetNameSafe(this),
 			*GetNameSafe(DamageSource),
-			DamageAmount,
-			*DamageEvent.DamageTag.ToString());
+			Request.DamageAmount,
+			*Request.DamageTag.ToString());
 		return false;
 	}
 
@@ -1467,16 +1412,15 @@ bool AShooterCharacter::TryReflectIncomingDamage(
 
 	if (ReflectedTarget && ReflectedTarget != this)
 	{
-		FOutlierTaggedDamageEvent ReflectedDamageEvent;
-		ReflectedDamageEvent.DamageTag = DamageEvent.DamageTag;
-		ReflectedDamageEvent.HitResult = ReflectedHit;
-		ReflectedDamageEvent.DamageOrigin = ReflectionStart;
-		ReflectedDamageEvent.bReflectedDamage = true;
-		ReflectedTarget->TakeDamage(
-			DamageAmount,
-			ReflectedDamageEvent,
-			GetController(),
-			CurrentWeapon ? static_cast<AActor*>(CurrentWeapon) : this);
+		FOutlierDamageRequest ReflectedRequest;
+		ReflectedRequest.DamageAmount = Request.DamageAmount;
+		ReflectedRequest.DamageTag = Request.DamageTag;
+		ReflectedRequest.HitResult = ReflectedHit;
+		ReflectedRequest.DamageOrigin = ReflectionStart;
+		ReflectedRequest.bReflectedDamage = true;
+		ReflectedRequest.EventInstigator = GetController();
+		ReflectedRequest.DamageCauser = CurrentWeapon ? static_cast<AActor*>(CurrentWeapon) : this;
+		OutlierDamage::Apply(ReflectedTarget, ReflectedRequest);
 	}
 	UE_LOG(
 		LogOutlier,
@@ -1485,8 +1429,8 @@ bool AShooterCharacter::TryReflectIncomingDamage(
 		*GetNameSafe(this),
 		*GetNameSafe(DamageSource),
 		*GetNameSafe(ReflectedTarget),
-		DamageAmount,
-		*DamageEvent.DamageTag.ToString(),
+		Request.DamageAmount,
+		*Request.DamageTag.ToString(),
 		*ReflectionStart.ToCompactString(),
 		*(bHit ? ReflectedHit.ImpactPoint : ReflectionEnd).ToCompactString(),
 		bHit ? 1 : 0);
@@ -1885,25 +1829,6 @@ FGameplayTag AShooterCharacter::ResolveShooterConditionTag() const
 	}
 
 	return ConditionTag;
-}
-
-void AShooterCharacter::RefreshUIForRespawn()
-{
-	BroadcastCurrentUIState();
-}
-
-void AShooterCharacter::BroadcastCurrentUIState()
-{
-	OnShooterHealthChanged.Broadcast(GetCurHealth(), GetMaxHealth());
-	OnShooterShieldChanged.Broadcast(GetCurShield(), GetMaxShield());
-	OnWeaponChanged.Broadcast(GetWeaponType());
-	BroadcastPartnerShieldState();
-}
-
-void AShooterCharacter::BroadcastPartnerShieldState()
-{
-	OnShooterPartnerShieldChanged.Broadcast(GetCurPartnerShield(), GetMaxPartnerShield());
-	OnShooterConditionChanged.Broadcast(ResolveShooterConditionTag());
 }
 
 FName AShooterCharacter::ResolveMontageSectionNameForWeapon(EWeaponType WeaponType) const

@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "Damage/OutlierDamageReceiver.h"
 #include "PartnerShieldSphere.generated.h"
 
 class APartnerCharacter;
@@ -13,7 +14,7 @@ class USphereComponent;
 class UStaticMeshComponent;
 
 UCLASS()
-class OUTLIER_API APartnerShieldSphere : public AActor
+class OUTLIER_API APartnerShieldSphere : public AActor, public IOutlierDamageReceiver
 {
 	GENERATED_BODY()
 	
@@ -27,6 +28,7 @@ public:
 		FDamageEvent const& DamageEvent,
 		AController* EventInstigator,
 		AActor* DamageCauser) override;
+	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
 
 	UFUNCTION(BlueprintCallable, Category = "Shield")
 	void InitializeShield(AShooterCharacter* InShieldTarget, APartnerCharacter* InSourcePartner);

@@ -78,7 +78,21 @@ float APartnerShieldSphere::TakeDamage(
 	}
 
 	const float AppliedDamage = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
-	return ShieldTarget->TakeDamage(AppliedDamage, DamageEvent, EventInstigator, DamageCauser);
+	return ReceiveOutlierDamage(FOutlierDamageRequest::FromDamageEvent(
+		AppliedDamage,
+		DamageEvent,
+		EventInstigator,
+		DamageCauser));
+}
+
+float APartnerShieldSphere::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
+{
+	if (!HasAuthority() || !ShieldTarget || Request.DamageAmount <= 0.0f)
+	{
+		return 0.0f;
+	}
+
+	return OutlierDamage::Apply(ShieldTarget, Request);
 }
 
 void APartnerShieldSphere::InitializeShield(AShooterCharacter* InShieldTarget, APartnerCharacter* InSourcePartner)

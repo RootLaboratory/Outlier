@@ -11,6 +11,8 @@ class AShooterCharacter;
 class AEnemyBase;
 class AOutlierPlayerState;
 class ULocalPlayerUISubSystem;
+class UOutlierAbilitySystemComponent;
+struct FOnAttributeChangeData;
 
 UENUM(BlueprintType)
 enum class EPartnerPossessionState : uint8
@@ -68,6 +70,10 @@ protected:
 	void HandlePlayerCharactersChanged(AOutlierPlayerState* ChangedPlayerState);
 	void BindShooterCharacterDelegatesFromPlayerState();
 	void UnbindShooterCharacterDelegates();
+	void RefreshShooterVitalityUI();
+	void HandleShooterHealthAttributeChanged(const FOnAttributeChangeData& ChangeData);
+	void HandleShooterShieldAttributeChanged(const FOnAttributeChangeData& ChangeData);
+	void HandleShooterPartnerShieldAttributeChanged(const FOnAttributeChangeData& ChangeData);
 	ULocalPlayerUISubSystem* GetLocalUISubsystem() const;
 
 	void HandleShooterHealthChanged(float CurrentHealth, float MaxHealth);
@@ -77,6 +83,16 @@ protected:
 
 	UPROPERTY()
 	TObjectPtr<AShooterCharacter> BoundShooterCharacter;
+
+	UPROPERTY()
+	TObjectPtr<UOutlierAbilitySystemComponent> BoundShooterAbilitySystem;
+
+	FDelegateHandle HealthChangedHandle;
+	FDelegateHandle MaxHealthChangedHandle;
+	FDelegateHandle ShieldChangedHandle;
+	FDelegateHandle MaxShieldChangedHandle;
+	FDelegateHandle PartnerShieldChangedHandle;
+	FDelegateHandle MaxPartnerShieldChangedHandle;
 
 	UPROPERTY()
 	TObjectPtr<AOutlierPlayerState> BoundOutlierPlayerState;

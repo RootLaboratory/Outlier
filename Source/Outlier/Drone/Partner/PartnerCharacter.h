@@ -8,6 +8,7 @@
 #include "InputCoreTypes.h"
 #include "Interface/WeaponMuzzleProvider.h"
 #include "AbilitySystemInterface.h"
+#include "Damage/OutlierDamageReceiver.h"
 #include "PartnerCharacter.generated.h"
 
 UENUM(BlueprintType)
@@ -75,7 +76,7 @@ class USceneComponent;
 struct FGameplayEffectSpec;
 struct FActiveGameplayEffectHandle;
 UCLASS()
-class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeaponMuzzleProvider, public IAbilitySystemInterface
+class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeaponMuzzleProvider, public IAbilitySystemInterface, public IOutlierDamageReceiver
 {
 	GENERATED_BODY()
 
@@ -420,6 +421,7 @@ protected:
 		class AController* EventInstigator,
 		AActor* DamageCauser
 	) override;
+	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
 
 	virtual void UnPossessed() override;
 	void RefreshAbilitySystemActorInfo();

@@ -4,6 +4,7 @@
 #include "GameFramework/Actor.h"
 #include "Engine/DataTable.h"
 #include "Explosion/ExplosionTypes.h"
+#include "Damage/OutlierDamageReceiver.h"
 #include "ExplosiveProp.generated.h"
 
 class ASelfDestructDrone;
@@ -15,7 +16,7 @@ class USoundBase;
 class UStaticMeshComponent;
 
 UCLASS()
-class OUTLIER_API AExplosiveProp : public AActor
+class OUTLIER_API AExplosiveProp : public AActor, public IOutlierDamageReceiver
 {
 	GENERATED_BODY()
 
@@ -29,6 +30,7 @@ public:
 		FDamageEvent const& DamageEvent,
 		AController* EventInstigator,
 		AActor* DamageCauser) override;
+	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
 
 	// 자폭 드론이 Deferred Spawn을 완료하기 전에 1P/3P가 공유할 소켓 이름을 전달한다.
 	void InitializeMountedSocket(FName InMountedSocketName);

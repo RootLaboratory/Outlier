@@ -4,7 +4,6 @@
 #include "Components/SceneComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
-#include "Damage/OutlierTaggedDamageEvent.h"
 #include "Explosion/ExplosionComponent.h"
 #include "Enemy/SelfDestructDrone.h"
 #include "GameplayTags/OutlierGameplayTags.h"
@@ -152,19 +151,31 @@ float AExplosiveProp::TakeDamage(
 	AController* EventInstigator,
 	AActor* DamageCauser)
 {
+	if (!HasAuthority() || DamageAmount <= 0.0f)
+	{
+		return 0.0f;
+	}
+
+	const float AppliedDamage = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
+	return ReceiveOutlierDamage(FOutlierDamageRequest::FromDamageEvent(
+		AppliedDamage,
+		DamageEvent,
+		EventInstigator,
+		DamageCauser));
+}
+
+float AExplosiveProp::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
+{
 	if (CachedOwningDrone.IsValid())
 	{
 		if (!HasAuthority()
-			|| DamageAmount <= 0.0f
-			|| !DamageEvent.IsOfType(FOutlierTaggedDamageEvent::ClassID))
+			|| Request.DamageAmount <= 0.0f)
 		{
 			return 0.0f;
 		}
 
-		const FOutlierTaggedDamageEvent& MountedDamageEvent =
-			static_cast<const FOutlierTaggedDamageEvent&>(DamageEvent);
 		// 폭발 범위에는 드론과 부착물이 함께 잡히므로 무기 피격만 본체로 전달한다.
-		if (!MountedDamageEvent.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Weapon()))
+		if (!Request.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Weapon()))
 		{
 			return 0.0f;
 		}
@@ -175,12 +186,8 @@ float AExplosiveProp::TakeDamage(
 			1.0f);
 		const FString DroneName = GetNameSafe(CachedOwningDrone.Get());
 		const FString ExplosiveName = GetNameSafe(this);
-		const FString ComponentName = GetNameSafe(MountedDamageEvent.HitResult.GetComponent());
-		const float AppliedDamage = CachedOwningDrone->TakeDamage(
-			DamageAmount,
-			DamageEvent,
-			EventInstigator,
-			DamageCauser);
+		const FString ComponentName = GetNameSafe(Request.HitResult.GetComponent());
+		const float AppliedDamage = OutlierDamage::Apply(CachedOwningDrone.Get(), Request);
 		UE_LOG(
 			LogOutlier,
 			Warning,
@@ -188,7 +195,7 @@ float AExplosiveProp::TakeDamage(
 			*DroneName,
 			*ExplosiveName,
 			*ComponentName,
-			DamageAmount,
+			Request.DamageAmount,
 			WeakPointMultiplier,
 			AppliedDamage,
 			PreviousDroneHealth,
@@ -199,13 +206,13 @@ float AExplosiveProp::TakeDamage(
 	UE_LOG(
 		LogOutlier,
 		Warning,
-		TEXT("[ExplosiveProp] TakeDamage called. Actor=%s Damage=%.2f CurrentHP=%.2f Authority=%s Exploded=%s EventType=%d"),
+		TEXT("[ExplosiveProp] Damage requested. Actor=%s Damage=%.2f CurrentHP=%.2f Authority=%s Exploded=%s Tag=%s"),
 		*GetNameSafe(this),
-		DamageAmount,
+		Request.DamageAmount,
 		CurrentHP,
 		HasAuthority() ? TEXT("true") : TEXT("false"),
 		bExploded ? TEXT("true") : TEXT("false"),
-		DamageEvent.GetTypeID());
+		*Request.DamageTag.ToString());
 
 	if (!HasAuthority())
 	{
@@ -219,28 +226,15 @@ float AExplosiveProp::TakeDamage(
 		return 0.0f;
 	}
 
-	if (DamageAmount <= 0.0f)
+	if (Request.DamageAmount <= 0.0f)
 	{
 		UE_LOG(LogOutlier, Warning, TEXT("[ExplosiveProp] Damage rejected: damage is not positive. Actor=%s"), *GetNameSafe(this));
 		return 0.0f;
 	}
 
-	if (!DamageEvent.IsOfType(FOutlierTaggedDamageEvent::ClassID))
-	{
-		UE_LOG(
-			LogOutlier,
-			Warning,
-			TEXT("[ExplosiveProp] Damage rejected: event is not FOutlierTaggedDamageEvent. Actor=%s EventType=%d ExpectedType=%d"),
-			*GetNameSafe(this),
-			DamageEvent.GetTypeID(),
-			FOutlierTaggedDamageEvent::ClassID);
-		return 0.0f;
-	}
-
-	const FOutlierTaggedDamageEvent& TaggedEvent = static_cast<const FOutlierTaggedDamageEvent&>(DamageEvent);
 	// 배치 폭발물은 일반 물리 충돌이 아니라 무기와 폭발 계열 피해에만 반응한다.
-	const bool bAllowedDamage = TaggedEvent.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Weapon())
-		|| TaggedEvent.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Explosion());
+	const bool bAllowedDamage = Request.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Weapon())
+		|| Request.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Explosion());
 	if (!bAllowedDamage)
 	{
 		UE_LOG(
@@ -248,32 +242,31 @@ float AExplosiveProp::TakeDamage(
 			Warning,
 			TEXT("[ExplosiveProp] Damage rejected: unsupported damage tag. Actor=%s Tag=%s"),
 			*GetNameSafe(this),
-			*TaggedEvent.DamageTag.ToString());
+			*Request.DamageTag.ToString());
 		return 0.0f;
 	}
 
-	const float AppliedDamage = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
-	if (AppliedDamage <= 0.0f)
+	if (!CanBeDamaged())
 	{
 		UE_LOG(
 			LogOutlier,
 			Warning,
 			TEXT("[ExplosiveProp] Damage rejected by AActor::TakeDamage. Actor=%s RequestedDamage=%.2f CanBeDamaged=%s"),
 			*GetNameSafe(this),
-			DamageAmount,
+			Request.DamageAmount,
 			CanBeDamaged() ? TEXT("true") : TEXT("false"));
 		return 0.0f;
 	}
 
 	const float PreviousHP = CurrentHP;
-	CurrentHP = FMath::Max(CurrentHP - AppliedDamage, 0.0f);
+	CurrentHP = FMath::Max(CurrentHP - Request.DamageAmount, 0.0f);
 	UE_LOG(
 		LogOutlier,
 		Warning,
 		TEXT("[ExplosiveProp] Damage applied. Actor=%s Tag=%s AppliedDamage=%.2f HP=%.2f->%.2f"),
 		*GetNameSafe(this),
-		*TaggedEvent.DamageTag.ToString(),
-		AppliedDamage,
+		*Request.DamageTag.ToString(),
+		Request.DamageAmount,
 		PreviousHP,
 		CurrentHP);
 
@@ -282,7 +275,7 @@ float AExplosiveProp::TakeDamage(
 		// 실제 폭발과 연쇄 처리는 Subsystem Queue에 위임한다.
 		if (ExplosionComponent)
 		{
-			const bool bDetonationRequested = ExplosionComponent->DetonateAt(GetActorLocation(), EventInstigator);
+			const bool bDetonationRequested = ExplosionComponent->DetonateAt(GetActorLocation(), Request.EventInstigator);
 			if (bDetonationRequested)
 			{
 				UE_LOG(LogOutlier, Warning, TEXT("[ExplosiveProp] HP reached zero. DetonateAt succeeded. Actor=%s"), *GetNameSafe(this));
@@ -300,9 +293,9 @@ float AExplosiveProp::TakeDamage(
 	else if (RuntimePropRow.IsSet())
 	{
 		FVector ImpactPoint = GetActorLocation();
-		if (TaggedEvent.HitResult.bBlockingHit)
+		if (Request.HitResult.bBlockingHit)
 		{
-			ImpactPoint = TaggedEvent.HitResult.ImpactPoint;
+			ImpactPoint = Request.HitResult.ImpactPoint;
 		}
 
 		MulticastPlayHitFeedback(
@@ -312,7 +305,7 @@ float AExplosiveProp::TakeDamage(
 			RuntimePropRow->HitFlashDuration);
 	}
 
-	return AppliedDamage;
+	return Request.DamageAmount;
 }
 
 void AExplosiveProp::ResetToInitialState()

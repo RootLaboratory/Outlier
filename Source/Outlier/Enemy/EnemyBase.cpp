@@ -1,7 +1,6 @@
 #include "Enemy/EnemyBase.h"
 #include "Camera/CameraComponent.h"
 #include "Enemy/EnemyStateTreeComponent.h"
-#include "Damage/OutlierTaggedDamageEvent.h"
 #include "Drone/Partner/HackableComponent.h"
 #include "Drone/Partner/EMPableComponent.h"
 #include "Drone/Partner/EMPGameplayTags.h"
@@ -1080,7 +1079,7 @@ void AEnemyBase::RestoreStateAfterStun()
 			TEXT("Enemy.Event.Status.StunEnded")));
 }
 
-void AEnemyBase::ApplyDamageInternal(
+bool AEnemyBase::ApplyDamageInternal(
 	float DamageAmount,
 	AController* DamageInstigator,
 	AActor* DamageCauser,
@@ -1088,10 +1087,10 @@ void AEnemyBase::ApplyDamageInternal(
 {
 	if (!HasAuthority() || DamageAmount <= 0.0f || IsDead() || !OutlierAbilitySystemComponent)
 	{
-		return;
+		return false;
 	}
 
-	OutlierAbilitySystemComponent->ApplyDamageToSelf(
+	return OutlierAbilitySystemComponent->ApplyDamageToSelf(
 		DamageAmount,
 		DamageInstigator,
 		DamageCauser,
@@ -1109,26 +1108,38 @@ float AEnemyBase::TakeDamage(
 		return 0.0f;
 	}
 
+	const float AppliedDamage = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
+	return ReceiveOutlierDamage(FOutlierDamageRequest::FromDamageEvent(
+		AppliedDamage,
+		DamageEvent,
+		EventInstigator,
+		DamageCauser));
+}
+
+float AEnemyBase::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
+{
+	if (!HasAuthority() || !CanBeDamaged() || Request.DamageAmount <= 0.0f || IsDead() || GetCurrentHealth() <= 0.0f)
+	{
+		return 0.0f;
+	}
+
 	float DamageMultiplier = 1.0f;
 	bool bCoreWeakPointHit = false;
-	if (DamageEvent.IsOfType(FOutlierTaggedDamageEvent::ClassID))
+	if (Request.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Weapon()))
 	{
-		const FOutlierTaggedDamageEvent& TaggedEvent = static_cast<const FOutlierTaggedDamageEvent&>(DamageEvent);
-		if (TaggedEvent.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Weapon()))
-		{
-			const UPrimitiveComponent* HitComponent = TaggedEvent.HitResult.GetComponent();
-			bCoreWeakPointHit = bUseCoreWeakPoint && HitComponent == CoreHitboxComponent;
-			DamageMultiplier = GetWeakPointDamageMultiplier(HitComponent);
-		}
+		const UPrimitiveComponent* HitComponent = Request.HitResult.GetComponent();
+		bCoreWeakPointHit = bUseCoreWeakPoint && HitComponent == CoreHitboxComponent;
+		DamageMultiplier = GetWeakPointDamageMultiplier(HitComponent);
 	}
 
 	const float PreviousHealth = GetCurrentHealth();
-	const float FinalDamage = DamageAmount * FMath::Max(DamageMultiplier, 0.0f);
-	const float AppliedDamage = Super::TakeDamage(FinalDamage, DamageEvent, EventInstigator, DamageCauser);
-	const FGameplayTag DamageTag = DamageEvent.IsOfType(FOutlierTaggedDamageEvent::ClassID)
-		? static_cast<const FOutlierTaggedDamageEvent&>(DamageEvent).DamageTag
-		: FGameplayTag();
-	ApplyDamageInternal(AppliedDamage, EventInstigator, DamageCauser, DamageTag);
+	const float FinalDamage = Request.DamageAmount * FMath::Max(DamageMultiplier, 0.0f);
+	const float AppliedDamage = ApplyDamageInternal(
+		FinalDamage,
+		Request.EventInstigator,
+		Request.DamageCauser,
+		Request.DamageTag)
+		? FinalDamage : 0.0f;
 	if (bCoreWeakPointHit)
 	{
 		UE_LOG(
@@ -1137,7 +1148,7 @@ float AEnemyBase::TakeDamage(
 			TEXT("[EnemyWeakPoint] Type=Core Actor=%s Component=%s RawDamage=%.2f Multiplier=%.2f AppliedDamage=%.2f HP=%.2f->%.2f"),
 			*GetNameSafe(this),
 			*GetNameSafe(CoreHitboxComponent),
-			DamageAmount,
+			Request.DamageAmount,
 			DamageMultiplier,
 			AppliedDamage,
 			PreviousHealth,

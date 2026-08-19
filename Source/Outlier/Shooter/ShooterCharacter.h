@@ -6,6 +6,7 @@
 #include "FirstPerson/FirstPersonCharacter.h"
 #include "GameplayTagContainer.h"
 #include "AbilitySystemInterface.h"
+#include "Damage/OutlierDamageReceiver.h"
 #include "GAS/Data/OutlierShooterSuitAbilityDataRow.h"
 #include "ShooterCharacter.generated.h"
 
@@ -28,10 +29,6 @@ class UDataTable;
 struct FOnAttributeChangeData;
 struct FOutlierTaggedDamageEvent;
 
-DECLARE_MULTICAST_DELEGATE_TwoParams(FOnShooterHealthChanged, float /*CurrentHealth*/, float /*MaxHealth*/);
-DECLARE_MULTICAST_DELEGATE_TwoParams(FOnShooterShieldChanged, float /*CurrentShield*/, float /*MaxShield*/);
-DECLARE_MULTICAST_DELEGATE_TwoParams(FOnShooterPartnerShieldChanged, float /*CurrentPartnerShield*/, float /*MaxPartnerShield*/);
-DECLARE_MULTICAST_DELEGATE_OneParam(FOnShooterConditionChanged, const FGameplayTag& /*ConditionTag*/);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnShooterDynamicCrosshairChanged, bool /*bAiming*/);
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnShooterAim, bool /*bAiming*/, int32 /*WeaponStencilValue*/);
 
@@ -101,7 +98,7 @@ enum class EShooterMontageAction : uint8
  * 
  */
 UCLASS(abstract)
-class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbilitySystemInterface
+class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbilitySystemInterface, public IOutlierDamageReceiver
 {
 	GENERATED_BODY()
 
@@ -278,11 +275,7 @@ protected:
 
 	float PartnerShieldDuration = 0.0f;
 	FDelegateHandle HealthChangedHandle;
-	FDelegateHandle MaxHealthChangedHandle;
 	FDelegateHandle ShieldChangedHandle;
-	FDelegateHandle MaxShieldChangedHandle;
-	FDelegateHandle PartnerShieldChangedHandle;
-	FDelegateHandle MaxPartnerShieldChangedHandle;
 	FDelegateHandle DeadTagChangedHandle;
 	FDelegateHandle StealthTagChangedHandle;
 	FDelegateHandle BulletReflectionTagChangedHandle;
@@ -333,11 +326,7 @@ protected:
 	void BindGasVitalityObservers();
 	void UnbindGasVitalityObservers();
 	void HandleHealthChanged(const FOnAttributeChangeData& ChangeData);
-	void HandleMaxHealthChanged(const FOnAttributeChangeData& ChangeData);
 	void HandleShieldChanged(const FOnAttributeChangeData& ChangeData);
-	void HandleMaxShieldChanged(const FOnAttributeChangeData& ChangeData);
-	void HandlePartnerShieldChanged(const FOnAttributeChangeData& ChangeData);
-	void HandleMaxPartnerShieldChanged(const FOnAttributeChangeData& ChangeData);
 	void HandleDeadTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleStealthTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleBulletReflectionTagChanged(const FGameplayTag Tag, int32 NewCount);
@@ -397,10 +386,6 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Event")
 	FOnMovementStateChanged OnMovementStateChanged;
 
-	FOnShooterHealthChanged OnShooterHealthChanged;
-	FOnShooterShieldChanged OnShooterShieldChanged;
-	FOnShooterPartnerShieldChanged OnShooterPartnerShieldChanged;
-	FOnShooterConditionChanged OnShooterConditionChanged;
 	FOnShooterDynamicCrosshairChanged OnShooterDynamicCrosshairChanged;
 	FOnShooterAim OnShooterAimingBlur;
 	// Weapon Socket Queries
@@ -419,6 +404,7 @@ public:
 		FDamageEvent const& DamageEvent,
 		AController* EventInstigator,
 		AActor* DamageCauser) override;
+	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
 	virtual void EquipWeapon(AWeaponBase* Weapon) override;
 	virtual FGameplayTagContainer GetOwnedGameplayTagsForQuery() const override;
 
@@ -463,7 +449,7 @@ public:
 	float GetMaxShield() const;
 	float GetCurHealth() const;
 	float GetMaxHealth() const;
-	void BroadcastCurrentUIState();
+	FGameplayTag GetShooterConditionTagForUI() const { return ResolveShooterConditionTag(); }
 
 	UFUNCTION(BlueprintPure)
 	float GetCurrentLeanAlpha() const { return CurrentLeanAlpha; }
@@ -515,11 +501,8 @@ public:
 	void DoJumpEnd();
 protected:
 	bool TryReflectIncomingDamage(
-		float DamageAmount,
-		const FOutlierTaggedDamageEvent& DamageEvent,
-		AController* EventInstigator,
-		AActor* DamageCauser);
-	void ApplyDamageInternal(
+		const FOutlierDamageRequest& Request);
+	bool ApplyDamageInternal(
 		float DamageAmount,
 		AController* EventInstigator,
 		AActor* DamageCauser,
@@ -632,8 +615,6 @@ public:
 	void HandleDeath();
 
 	FGameplayTag ResolveShooterConditionTag() const;
-	void BroadcastPartnerShieldState();
-	void RefreshUIForRespawn();
 
 	FName ResolveMontageSectionNameForWeapon(EWeaponType WeaponType) const;
 	void PlayFirstPersonMontage(UAnimMontage* Montage);

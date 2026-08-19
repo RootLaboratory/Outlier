@@ -6,7 +6,6 @@
 #include "Components/CapsuleComponent.h"
 #include "Components/SceneComponent.h"
 #include "Components/SkeletalMeshComponent.h"
-#include "Damage/OutlierTaggedDamageEvent.h"
 #include "Drone/Partner/HackableComponent.h"
 #include "Drone/Partner/HackGameplayTags.h"
 #include "Enemy/EnemyAIController.h"
@@ -99,12 +98,14 @@ void AAutoTurret::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifet
 float AAutoTurret::TakeDamage(float DamageAmount, const FDamageEvent& DamageEvent,
 	AController* EventInstigator, AActor* DamageCauser)
 {
-	const FOutlierTaggedDamageEvent* TaggedEvent = DamageEvent.IsOfType(FOutlierTaggedDamageEvent::ClassID)
-		? static_cast<const FOutlierTaggedDamageEvent*>(&DamageEvent)
-		: nullptr;
-	const UPrimitiveComponent* HitComponent = TaggedEvent ? TaggedEvent->HitResult.GetComponent() : nullptr;
-	const FName HitBoneName = TaggedEvent ? TaggedEvent->HitResult.BoneName : NAME_None;
-	const FString DamageTagString = TaggedEvent ? TaggedEvent->DamageTag.ToString() : TEXT("None");
+	return Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
+}
+
+float AAutoTurret::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
+{
+	const UPrimitiveComponent* HitComponent = Request.HitResult.GetComponent();
+	const FName HitBoneName = Request.HitResult.BoneName;
+	const FString DamageTagString = Request.DamageTag.ToString();
 
 	if (!bDeployed)
 	{
@@ -116,19 +117,19 @@ float AAutoTurret::TakeDamage(float DamageAmount, const FDamageEvent& DamageEven
 				TEXT("[TurretDiag][Damage] Rejected Reason=NotDeployed Turret=%s Authority=%s Damage=%.2f HP=%.2f Component=%s Bone=%s Tag=%s Causer=%s"),
 				*GetNameSafe(this),
 				HasAuthority() ? TEXT("true") : TEXT("false"),
-				DamageAmount,
+				Request.DamageAmount,
 				GetCurrentHealth(),
 				*GetNameSafe(HitComponent),
 				*HitBoneName.ToString(),
 				*DamageTagString,
-				*GetNameSafe(DamageCauser));
+				*GetNameSafe(Request.DamageCauser));
 		}
 		return 0.0f;
 	}
 
-	if (TaggedEvent)
+	if (Request.DamageTag.IsValid())
 	{
-		if (TaggedEvent->DamageTag.MatchesTag(OutlierGameplayTags::Damage::Weapon())
+		if (Request.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Weapon())
 			&& HitComponent == GetMesh()
 			&& IsNoDamageBone(HitBoneName))
 		{
@@ -140,19 +141,18 @@ float AAutoTurret::TakeDamage(float DamageAmount, const FDamageEvent& DamageEven
 					TEXT("[TurretDiag][Damage] Rejected Reason=NoDamageBone Turret=%s Authority=%s Damage=%.2f HP=%.2f Component=%s Bone=%s Tag=%s Causer=%s"),
 					*GetNameSafe(this),
 					HasAuthority() ? TEXT("true") : TEXT("false"),
-					DamageAmount,
+					Request.DamageAmount,
 					GetCurrentHealth(),
 					*GetNameSafe(HitComponent),
 					*HitBoneName.ToString(),
 					*DamageTagString,
-					*GetNameSafe(DamageCauser));
+					*GetNameSafe(Request.DamageCauser));
 			}
 			return 0.0f;
 		}
 	}
 
-	const float AppliedDamage = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
-	return AppliedDamage;
+	return Super::ReceiveOutlierDamage(Request);
 }
 
 FGenericTeamId AAutoTurret::GetGenericTeamId() const

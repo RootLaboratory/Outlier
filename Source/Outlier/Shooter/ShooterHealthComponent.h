@@ -17,7 +17,7 @@ class OUTLIER_API UShooterHealthComponent : public UShooterCharacterComponentBas
 public:
 	UShooterHealthComponent();
 
-	void ApplyDamage(
+	bool ApplyDamage(
 		float DamageAmount,
 		AController* Instigator,
 		AActor* DamageCauser,
