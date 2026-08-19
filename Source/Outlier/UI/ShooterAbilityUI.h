@@ -37,6 +37,7 @@ public:
 public:
 	bool TryGetHoveredAbility(FGameplayTag& OutAbilityTag, bool bBroadcastSelection = true);
 	bool ApplyCooldownIfMatches(const FGameplayTag& AbilityTag, float CoolTime);
+	void ResetCooldowns();
 	void TryHovering();
 	UAbilityIconUI* GetAbilityIcon(const FGameplayTag& AbilityTag) const;
 

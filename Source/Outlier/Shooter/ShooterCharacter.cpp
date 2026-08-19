@@ -543,6 +543,27 @@ void AShooterCharacter::RefreshShooterSuitCooldownUI()
 		OutlierAbilitySystemComponent->GetShooterStealthCooldownRemaining());
 }
 
+void AShooterCharacter::RefreshShooterSuitUI()
+{
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+
+	if (AShooterPlayerController* ShooterController = Cast<AShooterPlayerController>(GetController()))
+	{
+		if (ULocalPlayerUISubSystem* UISubsystem = ShooterController->GetLocalPlayer()
+			? ShooterController->GetLocalPlayer()->GetSubsystem<ULocalPlayerUISubSystem>()
+			: nullptr)
+		{
+			UISubsystem->OnCurrentAbilityChanged(SelectedAbilityTag);
+		}
+	}
+
+	RefreshShooterSuitAvailabilityUI();
+	RefreshShooterSuitCooldownUI();
+}
+
 void AShooterCharacter::RefreshFirstPersonShadowPolicy()
 {
 	const bool bLocalView = IsLocallyControlled();

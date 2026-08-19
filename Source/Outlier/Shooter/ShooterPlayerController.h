@@ -47,6 +47,7 @@ protected:
 	void BindShooterCharacterDelegates(AShooterCharacter* ShooterCharacter);
 	void UnbindShooterCharacterDelegates();
 	void RefreshShooterVitalityUI();
+	void RefreshShooterSuitUI();
 	void HandleShooterHealthAttributeChanged(const FOnAttributeChangeData& ChangeData);
 	void HandleShooterShieldAttributeChanged(const FOnAttributeChangeData& ChangeData);
 	void HandleShooterPartnerShieldAttributeChanged(const FOnAttributeChangeData& ChangeData);

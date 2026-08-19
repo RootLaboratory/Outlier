@@ -106,6 +106,17 @@ bool UShooterAbilityUI::ApplyCooldownIfMatches(const FGameplayTag& AbilityTag, f
 	return true;
 }
 
+void UShooterAbilityUI::ResetCooldowns()
+{
+	for (const TPair<FGameplayTag, TObjectPtr<UAbilityIconUI>>& AbilitySection : AbilitySections)
+	{
+		if (UAbilityIconUI* Icon = AbilitySection.Value)
+		{
+			Icon->CooldownDone();
+		}
+	}
+}
+
 void UShooterAbilityUI::TryHovering()
 {
 	if (!ShooterAbilityMID)

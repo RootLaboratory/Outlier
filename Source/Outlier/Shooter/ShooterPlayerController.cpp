@@ -160,6 +160,7 @@ void AShooterPlayerController::BindShooterCharacterDelegates(AShooterCharacter* 
 
 	RefreshShooterVitalityUI();
 	OnWeaponChanged(ShooterCharacter->GetWeaponType());
+	RefreshShooterSuitUI();
 }
 
 void AShooterPlayerController::UnbindShooterCharacterDelegates()
@@ -214,6 +215,28 @@ void AShooterPlayerController::RefreshShooterVitalityUI()
 		BoundShooterCharacter->GetCurPartnerShield(),
 		BoundShooterCharacter->GetMaxPartnerShield());
 	HandleShooterConditionChanged(BoundShooterCharacter->GetShooterConditionTagForUI());
+}
+
+void AShooterPlayerController::RefreshShooterSuitUI()
+{
+	if (!BoundShooterCharacter)
+	{
+		return;
+	}
+
+	// The controller keeps its widgets across respawn, while the new Pawn owns a
+	// fresh ASC. Clear presentation cached from the old Pawn before projecting the
+	// new Pawn's selected ability, availability, and actual cooldown effects.
+	if (AbilityUIInstance)
+	{
+		AbilityUIInstance->ResetCooldowns();
+	}
+	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
+	{
+		UISubsystem->ResetShooterAbilityState(BoundShooterCharacter->GetSelectedAbilityTag());
+	}
+
+	BoundShooterCharacter->RefreshShooterSuitUI();
 }
 
 void AShooterPlayerController::HandleShooterHealthAttributeChanged(const FOnAttributeChangeData& ChangeData)
@@ -334,6 +357,7 @@ void AShooterPlayerController::BindMainUI()
 
 	if (ShooterUIInstance)
 	{
+		RefreshShooterSuitUI();
 		UE_LOG(LogTemp, Warning,
 			TEXT("[ShooterPC] BindMainUI skipped: already exists PC=%s UI=%s"),
 			*GetNameSafe(this),
@@ -421,6 +445,7 @@ void AShooterPlayerController::BindMainUI()
 		*GetNameSafe(this),
 		*GetNameSafe(AbilityUIInstance),
 		*GetNameSafe(AbilityUIClass));
+	RefreshShooterSuitUI();
 }
 
 void AShooterPlayerController::BindPostProcessSubSystem()

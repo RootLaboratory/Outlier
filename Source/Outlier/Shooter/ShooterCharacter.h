@@ -435,6 +435,8 @@ public:
 	bool EndActiveBulletReflection(bool bCommitCooldown);
 	bool EndActiveWeaponOvercharge(bool bCommitCooldown);
 	bool EndActiveStealth(bool bCommitCooldown);
+	const FGameplayTag& GetSelectedAbilityTag() const { return SelectedAbilityTag; }
+	void RefreshShooterSuitUI();
 
 	void ApplyPartnerShield(float Amount, float Duration);
 	float GetCurPartnerShield() const;
