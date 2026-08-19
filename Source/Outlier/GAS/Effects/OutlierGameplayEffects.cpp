@@ -118,6 +118,13 @@ UOutlierDeadGameplayEffect::UOutlierDeadGameplayEffect(const FObjectInitializer&
 	TargetTags->SetAndApplyTargetTagChanges(GrantedTags);
 }
 
+UOutlierPossessPendingGameplayEffect::UOutlierPossessPendingGameplayEffect(
+	const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	DurationPolicy = EGameplayEffectDurationType::Infinite;
+}
+
 UOutlierWeaponReuseCooldownGameplayEffect::UOutlierWeaponReuseCooldownGameplayEffect(
 	const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)

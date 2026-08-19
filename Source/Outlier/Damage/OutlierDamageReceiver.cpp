@@ -1,30 +1,61 @@
 #include "Damage/OutlierDamageReceiver.h"
 
-#include "Damage/OutlierTaggedDamageEvent.h"
+#include "GenericTeamAgentInterface.h"
+#include "GameFramework/Controller.h"
+#include "GameFramework/Pawn.h"
 #include "GameFramework/Actor.h"
+#include "Outlier.h"
+#include "Team/OutlierTeamIds.h"
 
-FOutlierDamageRequest FOutlierDamageRequest::FromDamageEvent(
-	float DamageAmount,
-	const FDamageEvent& DamageEvent,
-	AController* EventInstigator,
-	AActor* DamageCauser)
+namespace
 {
-	FOutlierDamageRequest Request;
-	Request.DamageAmount = DamageAmount;
-	Request.EventInstigator = EventInstigator;
-	Request.DamageCauser = DamageCauser;
-
-	if (DamageEvent.IsOfType(FOutlierTaggedDamageEvent::ClassID))
+	FGenericTeamId ResolveActorTeam(const AActor* Actor)
 	{
-		const FOutlierTaggedDamageEvent& TaggedEvent =
-			static_cast<const FOutlierTaggedDamageEvent&>(DamageEvent);
-		Request.DamageTag = TaggedEvent.DamageTag;
-		Request.HitResult = TaggedEvent.HitResult;
-		Request.DamageOrigin = TaggedEvent.DamageOrigin;
-		Request.bReflectedDamage = TaggedEvent.bReflectedDamage;
+		return IsValid(Actor)
+			? FGenericTeamId::GetTeamIdentifier(Actor)
+			: FGenericTeamId::NoTeam;
 	}
 
-	return Request;
+	FGenericTeamId ResolveDamageSourceTeam(const FOutlierDamageRequest& Request)
+	{
+		if (const APawn* InstigatorPawn = Request.EventInstigator
+			? Request.EventInstigator->GetPawn()
+			: nullptr)
+		{
+			const FGenericTeamId PawnTeam = ResolveActorTeam(InstigatorPawn);
+			if (PawnTeam.GetId() != FGenericTeamId::NoTeam.GetId())
+			{
+				return PawnTeam;
+			}
+		}
+
+		const FGenericTeamId ControllerTeam = ResolveActorTeam(Request.EventInstigator);
+		if (ControllerTeam.GetId() != FGenericTeamId::NoTeam.GetId())
+		{
+			return ControllerTeam;
+		}
+
+		const FGenericTeamId CauserTeam = ResolveActorTeam(Request.DamageCauser);
+		if (CauserTeam.GetId() != FGenericTeamId::NoTeam.GetId())
+		{
+			return CauserTeam;
+		}
+
+		// Weapons and attached damage actors inherit the faction of their direct owner.
+		return ResolveActorTeam(IsValid(Request.DamageCauser) ? Request.DamageCauser->GetOwner() : nullptr);
+	}
+
+	bool IsEnemyFriendlyFire(const AActor* TargetActor, const FOutlierDamageRequest& Request)
+	{
+		if (Request.bReflectedDamage)
+		{
+			return false;
+		}
+
+		const uint8 EnemyTeamId = OutlierTeamIds::Enemy;
+		return ResolveActorTeam(TargetActor).GetId() == EnemyTeamId
+			&& ResolveDamageSourceTeam(Request).GetId() == EnemyTeamId;
+	}
 }
 
 float OutlierDamage::Apply(AActor* TargetActor, const FOutlierDamageRequest& Request)
@@ -34,21 +65,24 @@ float OutlierDamage::Apply(AActor* TargetActor, const FOutlierDamageRequest& Req
 		return 0.0f;
 	}
 
+	// Target selection alone cannot prevent stray projectiles or explosions from
+	// reaching another Enemy. Enforce the faction rule at the shared damage gate.
+	if (IsEnemyFriendlyFire(TargetActor, Request))
+	{
+		return 0.0f;
+	}
+
 	if (IOutlierDamageReceiver* Receiver = Cast<IOutlierDamageReceiver>(TargetActor))
 	{
 		return Receiver->ReceiveOutlierDamage(Request);
 	}
 
-	// Non-Outlier Blueprint actors retain the engine damage contract through one
-	// centralized compatibility boundary. GAS combatants never use this fallback.
-	FOutlierTaggedDamageEvent DamageEvent;
-	DamageEvent.DamageTag = Request.DamageTag;
-	DamageEvent.HitResult = Request.HitResult;
-	DamageEvent.DamageOrigin = Request.DamageOrigin;
-	DamageEvent.bReflectedDamage = Request.bReflectedDamage;
-	return TargetActor->TakeDamage(
+	UE_LOG(
+		LogOutlier,
+		Warning,
+		TEXT("[Damage] Rejected damage for actor without IOutlierDamageReceiver. Target=%s Damage=%.2f Tag=%s"),
+		*GetNameSafe(TargetActor),
 		Request.DamageAmount,
-		DamageEvent,
-		Request.EventInstigator,
-		Request.DamageCauser);
+		*Request.DamageTag.ToString());
+	return 0.0f;
 }

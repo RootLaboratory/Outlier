@@ -27,7 +27,6 @@ class UOutlierVitalAttributeSet;
 class UOutlierShieldAttributeSet;
 class UDataTable;
 struct FOnAttributeChangeData;
-struct FOutlierTaggedDamageEvent;
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnShooterDynamicCrosshairChanged, bool /*bAiming*/);
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnShooterAim, bool /*bAiming*/, int32 /*WeaponStencilValue*/);
@@ -399,11 +398,6 @@ public:
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	// Unreal 공통 피해 진입점을 기존 Shooter 실드 및 HP 처리로 연결한다.
-	virtual float TakeDamage(
-		float DamageAmount,
-		FDamageEvent const& DamageEvent,
-		AController* EventInstigator,
-		AActor* DamageCauser) override;
 	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
 	virtual void EquipWeapon(AWeaponBase* Weapon) override;
 	virtual FGameplayTagContainer GetOwnedGameplayTagsForQuery() const override;

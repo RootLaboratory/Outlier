@@ -5,8 +5,9 @@
 #include "GAS/Data/OutlierShooterSuitAbilityDataRow.h"
 #include "OutlierAbilitySystemComponent.generated.h"
 
-class APawn;
 class AController;
+class AActor;
+class APawn;
 
 USTRUCT()
 struct OUTLIER_API FOutlierPartnerAbilityConfig
@@ -31,7 +32,9 @@ class OUTLIER_API UOutlierAbilitySystemComponent : public UAbilitySystemComponen
 public:
 	UOutlierAbilitySystemComponent();
 
+	void InitializeForActor(AActor* Actor);
 	void InitializeForPawn(APawn* Pawn);
+	void ClearForActor(const AActor* Actor);
 	void ClearForPawn(const APawn* Pawn);
 	bool ApplyDamageToSelf(
 		float DamageAmount,
@@ -46,6 +49,7 @@ public:
 	bool RestoreHealthToMax();
 	FActiveGameplayEffectHandle ApplyRebootStateToSelf(float DurationSeconds);
 	FActiveGameplayEffectHandle ApplyDamageImmuneStateToSelf();
+	FActiveGameplayEffectHandle ApplyPossessPendingStateToSelf();
 	FActiveGameplayEffectHandle ApplyTimedGameplayEffectToSelf(
 		TSubclassOf<UGameplayEffect> EffectClass,
 		float DurationSeconds,

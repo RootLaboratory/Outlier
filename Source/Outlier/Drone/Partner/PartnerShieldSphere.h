@@ -23,11 +23,6 @@ public:
 
 	virtual void Tick(float DeltaTime) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
-	virtual float TakeDamage(
-		float DamageAmount,
-		FDamageEvent const& DamageEvent,
-		AController* EventInstigator,
-		AActor* DamageCauser) override;
 	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
 
 	UFUNCTION(BlueprintCallable, Category = "Shield")

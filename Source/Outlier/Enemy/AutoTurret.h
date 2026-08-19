@@ -89,8 +89,6 @@ public:
 	static bool IsTurretDiagnosticsEnabled();
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
-	virtual float TakeDamage(float DamageAmount, const FDamageEvent& DamageEvent,
-		AController* EventInstigator, AActor* DamageCauser) override;
 	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
 	virtual FGenericTeamId GetGenericTeamId() const override;
 	virtual FVector GetPawnViewLocation() const override;

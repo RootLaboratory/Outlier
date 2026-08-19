@@ -95,12 +95,6 @@ void AAutoTurret::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifet
 	DOREPLIFETIME(AAutoTurret, bHackedToPlayerTeam);
 }
 
-float AAutoTurret::TakeDamage(float DamageAmount, const FDamageEvent& DamageEvent,
-	AController* EventInstigator, AActor* DamageCauser)
-{
-	return Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
-}
-
 float AAutoTurret::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 {
 	const UPrimitiveComponent* HitComponent = Request.HitResult.GetComponent();

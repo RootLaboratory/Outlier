@@ -5,7 +5,6 @@
 #include "GameplayTagContainer.h"
 #include "OutlierDamageReceiver.generated.h"
 
-struct FDamageEvent;
 class AActor;
 class AController;
 
@@ -18,12 +17,6 @@ struct OUTLIER_API FOutlierDamageRequest
 	bool bReflectedDamage = false;
 	AController* EventInstigator = nullptr;
 	AActor* DamageCauser = nullptr;
-
-	static FOutlierDamageRequest FromDamageEvent(
-		float DamageAmount,
-		const FDamageEvent& DamageEvent,
-		AController* EventInstigator,
-		AActor* DamageCauser);
 };
 
 UINTERFACE(MinimalAPI)

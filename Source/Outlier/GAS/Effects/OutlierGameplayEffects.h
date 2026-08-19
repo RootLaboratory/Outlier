@@ -77,6 +77,15 @@ public:
 };
 
 UCLASS()
+class OUTLIER_API UOutlierPossessPendingGameplayEffect : public UGameplayEffect
+{
+	GENERATED_BODY()
+
+public:
+	UOutlierPossessPendingGameplayEffect(const FObjectInitializer& ObjectInitializer);
+};
+
+UCLASS()
 class OUTLIER_API UOutlierWeaponReuseCooldownGameplayEffect : public UGameplayEffect
 {
 	GENERATED_BODY()

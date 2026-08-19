@@ -1,5 +1,6 @@
 #include "GAS/OutlierAbilitySystemComponent.h"
 
+#include "GameFramework/Actor.h"
 #include "GameFramework/Pawn.h"
 #include "GAS/Attributes/OutlierVitalAttributeSet.h"
 #include "GAS/Effects/OutlierGameplayEffects.h"
@@ -82,16 +83,16 @@ UOutlierAbilitySystemComponent::UOutlierAbilitySystemComponent()
 	SetIsReplicatedByDefault(true);
 }
 
-void UOutlierAbilitySystemComponent::InitializeForPawn(APawn* Pawn)
+void UOutlierAbilitySystemComponent::InitializeForActor(AActor* Actor)
 {
-	if (!ensure(Pawn) || GetOwner() != Pawn)
+	if (!ensure(Actor) || GetOwner() != Actor)
 	{
 		return;
 	}
 
-	if (GetOwnerActor() != Pawn || GetAvatarActor() != Pawn)
+	if (GetOwnerActor() != Actor || GetAvatarActor() != Actor)
 	{
-		InitAbilityActorInfo(Pawn, Pawn);
+		InitAbilityActorInfo(Actor, Actor);
 	}
 	else
 	{
@@ -102,19 +103,29 @@ void UOutlierAbilitySystemComponent::InitializeForPawn(APawn* Pawn)
 		LogOutlier,
 		Verbose,
 		TEXT("[GAS.Init] Actor=%s Owner=%s Avatar=%s Role=%d RepMode=%d"),
-		*GetNameSafe(Pawn),
+		*GetNameSafe(Actor),
 		*GetNameSafe(GetOwnerActor()),
 		*GetNameSafe(GetAvatarActor()),
-		static_cast<int32>(Pawn->GetLocalRole()),
+		static_cast<int32>(Actor->GetLocalRole()),
 		static_cast<int32>(ReplicationMode));
+}
+
+void UOutlierAbilitySystemComponent::InitializeForPawn(APawn* Pawn)
+{
+	InitializeForActor(Pawn);
+}
+
+void UOutlierAbilitySystemComponent::ClearForActor(const AActor* Actor)
+{
+	if (GetOwnerActor() == Actor || GetAvatarActor() == Actor)
+	{
+		ClearActorInfo();
+	}
 }
 
 void UOutlierAbilitySystemComponent::ClearForPawn(const APawn* Pawn)
 {
-	if (GetOwnerActor() == Pawn || GetAvatarActor() == Pawn)
-	{
-		ClearActorInfo();
-	}
+	ClearForActor(Pawn);
 }
 
 bool UOutlierAbilitySystemComponent::ApplyDamageToSelf(
@@ -305,6 +316,39 @@ FActiveGameplayEffectHandle UOutlierAbilitySystemComponent::ApplyDamageImmuneSta
 	return SpecHandle.IsValid()
 		? ApplyGameplayEffectSpecToSelf(*SpecHandle.Data.Get())
 		: FActiveGameplayEffectHandle();
+}
+
+FActiveGameplayEffectHandle UOutlierAbilitySystemComponent::ApplyPossessPendingStateToSelf()
+{
+	if (!IsOwnerActorAuthoritative()
+		|| HasMatchingGameplayTag(OutlierGameplayTags::State::PossessPending()))
+	{
+		return FActiveGameplayEffectHandle();
+	}
+
+	FGameplayEffectSpecHandle SpecHandle = MakeSelfEffectSpec(
+		*this,
+		UOutlierPossessPendingGameplayEffect::StaticClass(),
+		nullptr,
+		GetAvatarActor());
+	if (SpecHandle.IsValid())
+	{
+		// PossessPending belongs to this exact runtime instance, so the tag and
+		// removable effect handle are created from the same authoritative spec.
+		SpecHandle.Data->DynamicGrantedTags.AddTag(
+			OutlierGameplayTags::State::PossessPending());
+	}
+	FActiveGameplayEffectHandle AppliedHandle = SpecHandle.IsValid()
+		? ApplyGameplayEffectSpecToSelf(*SpecHandle.Data.Get())
+		: FActiveGameplayEffectHandle();
+	const FActiveGameplayEffect* ActiveEffect = GetActiveGameplayEffect(AppliedHandle);
+	if (ActiveEffect && ActiveEffect->bIsInhibited)
+	{
+		// Possession gating must be visible before BeginPossessionProcess returns;
+		// explicitly activate a newly stored GE if GAS left it initially inhibited.
+		AppliedHandle = SetActiveGameplayEffectInhibit(MoveTemp(AppliedHandle), false, true);
+	}
+	return AppliedHandle;
 }
 
 FActiveGameplayEffectHandle UOutlierAbilitySystemComponent::ApplyTimedGameplayEffectToSelf(

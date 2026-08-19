@@ -5,7 +5,7 @@
 #include "Components/BoxComponent.h"
 #include "Components/SphereComponent.h"
 #include "Damage/OutlierDamageReceiver.h"
-#include "Damage/OutlierTaggedDamageEvent.h"
+#include "Drone/Partner/HackableComponent.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Drone/Partner/PartnerEMPComponent.h"
 #include "Drone/Partner/PartnerHackComponent.h"
@@ -19,6 +19,9 @@
 #include "Enemy/AutoTurret.h"
 #include "Enemy/EnemyBase.h"
 #include "Enemy/EnemyTargetRules.h"
+#include "Explosion/ExplosionComponent.h"
+#include "Explosion/ExplosiveProp.h"
+#include "Explosion/ExplosionTypes.h"
 #include "GAS/Data/OutlierVitalityDataRow.h"
 #include "GAS/Data/OutlierShooterSuitAbilityDataRow.h"
 #include "GAS/Attributes/OutlierShieldAttributeSet.h"
@@ -41,20 +44,17 @@ namespace
 		return Handle;
 	}
 
-	float ApplyTaggedDamage(
+	float ApplyDamageRequest(
 		AActor* TargetActor,
 		float DamageAmount,
-		const FOutlierTaggedDamageEvent& DamageEvent,
+		FOutlierDamageRequest DamageRequest,
 		AController* EventInstigator,
 		AActor* DamageCauser)
 	{
-		return OutlierDamage::Apply(
-			TargetActor,
-			FOutlierDamageRequest::FromDamageEvent(
-				DamageAmount,
-				DamageEvent,
-				EventInstigator,
-				DamageCauser));
+		DamageRequest.DamageAmount = DamageAmount;
+		DamageRequest.EventInstigator = EventInstigator;
+		DamageRequest.DamageCauser = DamageCauser;
+		return OutlierDamage::Apply(TargetActor, DamageRequest);
 	}
 
 	bool ReadBoolProperty(const UObject* Object, FName PropertyName)
@@ -82,6 +82,201 @@ namespace
 			1.0f,
 			AbilitySystem->MakeEffectContext());
 	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierGasEnemyPossessPendingStateTest,
+	"Outlier.GAS.Enemy.PossessPendingState",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierGasEnemyPossessPendingStateTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	const FName WorldName = MakeUniqueObjectName(
+		nullptr,
+		UWorld::StaticClass(),
+		NAME_None,
+		EUniqueObjectNameOptions::GloballyUnique);
+	FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, WorldName, GetTransientPackage());
+	if (!TestNotNull(TEXT("Transient Enemy possession pending world is created"), World))
+	{
+		GEngine->DestroyWorldContext(World);
+		return false;
+	}
+
+	World->AddToRoot();
+	WorldContext.SetCurrentWorld(World);
+	World->SetGameInstance(NewObject<UGameInstance>(GEngine));
+	TestTrue(TEXT("Enemy possession pending world creates an authority game mode"), World->SetGameMode(FURL()));
+	World->InitializeActorsForPlay(FURL());
+
+	AEnemyBase* Enemy = World->SpawnActor<AEnemyBase>(AEnemyBase::StaticClass());
+	APartnerCharacter* Partner = World->SpawnActor<APartnerCharacter>(APartnerCharacter::StaticClass());
+	if (!TestNotNull(TEXT("Enemy spawns for possession pending GAS state"), Enemy)
+		|| !TestNotNull(TEXT("Partner spawns for possession pending GAS state"), Partner))
+	{
+		World->DestroyWorld(true);
+		World->SetPhysicsScene(nullptr);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+		return false;
+	}
+	if (!Enemy->HasActorBegunPlay())
+	{
+		Enemy->DispatchBeginPlay();
+	}
+	// This fixture only needs the Partner as the possession instigator. Initializing
+	// its ASC directly avoids running the production BeginPlay DataTable contract.
+	Partner->GetOutlierAbilitySystemComponent()->InitializeForPawn(Partner);
+
+	UOutlierAbilitySystemComponent* EnemyASC = Enemy->GetOutlierAbilitySystemComponent();
+	TestNotNull(TEXT("Enemy owns an ASC for possession pending"), EnemyASC);
+	const FGameplayTag PossessPendingTag = OutlierGameplayTags::State::PossessPending();
+	TestFalse(TEXT("Enemy starts without PossessPending"), Enemy->IsPossessionInProgress());
+	TestEqual(TEXT("Enemy starts with no PossessPending GAS tag"), EnemyASC->GetGameplayTagCount(PossessPendingTag), 0);
+	TestFalse(
+		TEXT("PossessPending is no longer written into HackTags"),
+		Enemy->GetHackableComponent()->HasHackTag(PossessPendingTag));
+
+	FHackQueryContext QueryContext;
+	QueryContext.InstigatorActor = Partner;
+	Enemy->HandleHackStarted(QueryContext);
+	TestTrue(TEXT("Hack start applies PossessPending through ASC"), Enemy->IsPossessionInProgress());
+	TestEqual(TEXT("PossessPending GE grants exactly one tag"), EnemyASC->GetGameplayTagCount(PossessPendingTag), 1);
+	TestFalse(
+		TEXT("HackTags remain free of the GAS-owned PossessPending tag"),
+		Enemy->GetHackableComponent()->HasHackTag(PossessPendingTag));
+
+	Enemy->HandleHackStarted(QueryContext);
+	TestEqual(TEXT("Repeated hack start does not stack PossessPending"), EnemyASC->GetGameplayTagCount(PossessPendingTag), 1);
+
+	FHackResultContext FailedContext;
+	FailedContext.InstigatorActor = Partner;
+	FailedContext.TargetActor = Enemy;
+	FailedContext.Result = EHackResult::Fail;
+	Enemy->HandleHackCompleted(FailedContext);
+	TestFalse(TEXT("Failed hack removes PossessPending"), Enemy->IsPossessionInProgress());
+	TestEqual(TEXT("Failed hack removes the exact PossessPending effect"), EnemyASC->GetGameplayTagCount(PossessPendingTag), 0);
+
+	Enemy->Destroy(true);
+	Partner->Destroy(true);
+	GEngine->ShutdownWorldNetDriver(World);
+	World->DestroyWorld(true);
+	World->SetPhysicsScene(nullptr);
+	GEngine->DestroyWorldContext(World);
+	World->RemoveFromRoot();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierGasExplosivePropVitalityTest,
+	"Outlier.GAS.ExplosiveProp.Vitality",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierGasExplosivePropVitalityTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	UDataTable* PropTable = NewObject<UDataTable>();
+	PropTable->RowStruct = FExplosivePropRow::StaticStruct();
+	FExplosivePropRow PropRow;
+	PropRow.MaxHP = 30.0f;
+	PropRow.HitFlashDuration = 0.05f;
+	PropTable->AddRow(TEXT("Default"), PropRow);
+
+	UDataTable* ExplosionTable = NewObject<UDataTable>();
+	ExplosionTable->RowStruct = FExplosionProfileRow::StaticStruct();
+	FExplosionProfileRow ExplosionRow;
+	ExplosionRow.ExplosionId = TEXT("TestExplosion");
+	ExplosionRow.MaxDamage = 0.0f;
+	ExplosionRow.OuterRadiusCm = 1.0f;
+	ExplosionTable->AddRow(TEXT("Default"), ExplosionRow);
+
+	const FName WorldName = MakeUniqueObjectName(
+		nullptr,
+		UWorld::StaticClass(),
+		NAME_None,
+		EUniqueObjectNameOptions::GloballyUnique);
+	FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, WorldName, GetTransientPackage());
+	if (!TestNotNull(TEXT("Transient ExplosiveProp vitality world is created"), World))
+	{
+		GEngine->DestroyWorldContext(World);
+		return false;
+	}
+
+	World->AddToRoot();
+	WorldContext.SetCurrentWorld(World);
+	World->SetGameInstance(NewObject<UGameInstance>(GEngine));
+	TestTrue(TEXT("ExplosiveProp vitality world creates an authority game mode"), World->SetGameMode(FURL()));
+	World->InitializeActorsForPlay(FURL());
+
+	FActorSpawnParameters SpawnParameters;
+	SpawnParameters.bDeferConstruction = true;
+	AExplosiveProp* Prop = World->SpawnActor<AExplosiveProp>(
+		AExplosiveProp::StaticClass(),
+		FTransform::Identity,
+		SpawnParameters);
+	if (!TestNotNull(TEXT("Deferred ExplosiveProp spawns for vitality"), Prop))
+	{
+		World->DestroyWorld(true);
+		World->SetPhysicsScene(nullptr);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+		return false;
+	}
+
+	FDataTableRowHandle PropHandle = MakeDataTableRowHandle(PropTable, TEXT("Default"));
+	FStructProperty* PropRowProperty = FindFProperty<FStructProperty>(
+		Prop->GetClass(),
+		TEXT("ExplosivePropRow"));
+	if (TestNotNull(TEXT("ExplosivePropRow property is reflected"), PropRowProperty)
+		&& TestTrue(TEXT("ExplosivePropRow uses FDataTableRowHandle"), PropRowProperty->Struct == FDataTableRowHandle::StaticStruct()))
+	{
+		*PropRowProperty->ContainerPtrToValuePtr<FDataTableRowHandle>(Prop) = PropHandle;
+	}
+
+	if (UExplosionComponent* ExplosionComponent = Prop->FindComponentByClass<UExplosionComponent>())
+	{
+		ExplosionComponent->SetExplosionProfileRow(MakeDataTableRowHandle(ExplosionTable, TEXT("Default")));
+	}
+
+	Prop->FinishSpawning(FTransform::Identity);
+	if (!Prop->HasActorBegunPlay())
+	{
+		Prop->DispatchBeginPlay();
+	}
+
+	UOutlierAbilitySystemComponent* PropASC =
+		Cast<UOutlierAbilitySystemComponent>(Prop->GetAbilitySystemComponent());
+	TestNotNull(TEXT("ExplosiveProp owns an ASC"), PropASC);
+	TestEqual(TEXT("ExplosiveProp MaxHP initializes as GAS MaxHealth"), Prop->GetCurrentHP(), 30.0f);
+
+	FOutlierDamageRequest DamageRequest;
+	DamageRequest.DamageAmount = 12.0f;
+	DamageRequest.DamageTag = OutlierGameplayTags::Damage::Weapon();
+	DamageRequest.DamageCauser = Prop;
+	TestEqual(TEXT("ExplosiveProp accepts weapon damage through receiver"), OutlierDamage::Apply(Prop, DamageRequest), 12.0f);
+	TestEqual(TEXT("ExplosiveProp damage reduces GAS Health"), Prop->GetCurrentHP(), 18.0f);
+
+	DamageRequest.DamageAmount = 18.0f;
+	TestEqual(TEXT("Lethal ExplosiveProp damage is accepted through GAS"), OutlierDamage::Apply(Prop, DamageRequest), 18.0f);
+	TestEqual(TEXT("Lethal ExplosiveProp damage clamps GAS Health to zero"), Prop->GetCurrentHP(), 0.0f);
+	TestTrue(TEXT("Lethal ExplosiveProp damage requests explosion"), Prop->IsExploded());
+
+	Prop->ResetToInitialState();
+	TestFalse(TEXT("Reset clears exploded state"), Prop->IsExploded());
+	TestEqual(TEXT("Reset restores GAS Health from the row"), Prop->GetCurrentHP(), 30.0f);
+
+	Prop->Destroy(true);
+	GEngine->ShutdownWorldNetDriver(World);
+	World->DestroyWorld(true);
+	World->SetPhysicsScene(nullptr);
+	GEngine->DestroyWorldContext(World);
+	World->RemoveFromRoot();
+	return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -429,9 +624,9 @@ bool FOutlierGasPartnerDamageBoundaryTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
-	FOutlierTaggedDamageEvent TaggedDamageEvent;
+	FOutlierDamageRequest TaggedDamageEvent;
 	TaggedDamageEvent.DamageTag = OutlierGameplayTags::Damage::Weapon();
-	const float AppliedDamage = ApplyTaggedDamage(
+	const float AppliedDamage = ApplyDamageRequest(
 		Partner,
 		25.0f,
 		TaggedDamageEvent,
@@ -460,14 +655,15 @@ bool FOutlierGasPartnerDamageBoundaryTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("EMP interaction starts before Reboot"), EMPComponent->IsEMPInteractionActive());
 	TestTrue(TEXT("Scan starts before Reboot"), ReadBoolProperty(Partner, TEXT("bScanning")));
 
-	const float LethalDamage = static_cast<AActor*>(Partner)->TakeDamage(
+	const float LethalDamage = ApplyDamageRequest(
+		Partner,
 		75.0f,
 		TaggedDamageEvent,
 		nullptr,
 		Partner);
-	TestEqual(TEXT("Lethal Partner TakeDamage reports applied GAS damage"), LethalDamage, 75.0f);
-	TestEqual(TEXT("Lethal Partner TakeDamage clamps Health to zero"), Partner->GetVitalAttributeSet()->GetHealth(), 0.0f);
-	TestTrue(TEXT("Lethal Partner TakeDamage enters Reboot"), VitalityComponent->IsRebooting());
+	TestEqual(TEXT("Lethal Partner damage request reports applied GAS damage"), LethalDamage, 75.0f);
+	TestEqual(TEXT("Lethal Partner damage request clamps Health to zero"), Partner->GetVitalAttributeSet()->GetHealth(), 0.0f);
+	TestTrue(TEXT("Lethal Partner damage request enters Reboot"), VitalityComponent->IsRebooting());
 	TestFalse(TEXT("Reboot tag blocks new Partner input"), Partner->CanAcceptInput());
 	TestFalse(TEXT("Reboot cancels an active Hack interaction"), HackComponent->IsHackInteractionActive());
 	TestFalse(TEXT("Reboot cancels an active EMP interaction"), EMPComponent->IsEMPInteractionActive());
@@ -491,12 +687,13 @@ bool FOutlierGasPartnerDamageBoundaryTest::RunTest(const FString& Parameters)
 		TEXT("Partner query tags include ASC Reboot tag"),
 		OwnedTags.HasTagExact(OutlierGameplayTags::State::Rebooting()));
 
-	const float RejectedDamage = static_cast<AActor*>(Partner)->TakeDamage(
+	const float RejectedDamage = ApplyDamageRequest(
+		Partner,
 		10.0f,
 		TaggedDamageEvent,
 		nullptr,
 		Partner);
-	TestEqual(TEXT("Partner TakeDamage reports zero when GAS immunity rejects damage"), RejectedDamage, 0.0f);
+	TestEqual(TEXT("Partner damage request reports zero when GAS immunity rejects damage"), RejectedDamage, 0.0f);
 	TestEqual(TEXT("Rejected Partner damage leaves Health unchanged"), Partner->GetVitalAttributeSet()->GetHealth(), 0.0f);
 
 	TestTrue(TEXT("Explicit Reboot removal completes Partner recovery"), VitalityComponent->RemoveRebootEffect());
@@ -508,12 +705,13 @@ bool FOutlierGasPartnerDamageBoundaryTest::RunTest(const FString& Parameters)
 		TEXT("Possession protection grants one damage immunity tag"),
 		AbilitySystem->GetGameplayTagCount(OutlierGameplayTags::State::DamageImmune()),
 		1);
-	const float ProtectedDamage = static_cast<AActor*>(Partner)->TakeDamage(
+	const float ProtectedDamage = ApplyDamageRequest(
+		Partner,
 		10.0f,
 		TaggedDamageEvent,
 		nullptr,
 		Partner);
-	TestEqual(TEXT("Possession protection makes TakeDamage report zero"), ProtectedDamage, 0.0f);
+	TestEqual(TEXT("Possession protection makes damage request report zero"), ProtectedDamage, 0.0f);
 	TestEqual(TEXT("Possession protection leaves Health unchanged"), Partner->GetVitalAttributeSet()->GetHealth(), 100.0f);
 	Partner->SetEnemyPossessionProtection(false);
 	TestEqual(
@@ -1282,15 +1480,27 @@ bool FOutlierGasEnemyDamageFlowTest::RunTest(const FString& Parameters)
 		}
 	}
 	TestNotNull(TEXT("Enemy exposes its core weak-point component"), CoreHitbox);
-	FOutlierTaggedDamageEvent WeaponDamageEvent;
+	FOutlierDamageRequest WeaponDamageEvent;
 	WeaponDamageEvent.DamageTag = OutlierGameplayTags::Damage::Weapon();
 	WeaponDamageEvent.HitResult.Component = CoreHitbox;
-	const float AppliedWeakPointDamage = ApplyTaggedDamage(
+	TestEqual(
+		TEXT("Enemy-team weapon damage cannot damage another Enemy-team actor"),
+		ApplyDamageRequest(Enemy, 10.0f, WeaponDamageEvent, nullptr, Enemy),
+		0.0f);
+	FOutlierDamageRequest FriendlyExplosionDamageEvent;
+	FriendlyExplosionDamageEvent.DamageTag = OutlierGameplayTags::Damage::Explosion();
+	TestEqual(
+		TEXT("Enemy-team explosion damage cannot damage another Enemy-team actor"),
+		ApplyDamageRequest(Enemy, 10.0f, FriendlyExplosionDamageEvent, nullptr, Enemy),
+		0.0f);
+	TestEqual(TEXT("Rejected Enemy friendly fire preserves GAS Health"), Enemy->GetCurrentHealth(), 100.0f);
+
+	const float AppliedWeakPointDamage = ApplyDamageRequest(
 		Enemy,
 		10.0f,
 		WeaponDamageEvent,
 		nullptr,
-		Enemy);
+		nullptr);
 	const float ExpectedWeakPointDamage = 10.0f * Enemy->GetWeakPointDamageMultiplier(CoreHitbox);
 	TestTrue(TEXT("Core hit is configured as a weak point"), ExpectedWeakPointDamage > 10.0f);
 	TestEqual(TEXT("Core weak-point multiplier is applied"), AppliedWeakPointDamage, ExpectedWeakPointDamage);
@@ -1299,9 +1509,9 @@ bool FOutlierGasEnemyDamageFlowTest::RunTest(const FString& Parameters)
 		Enemy->GetCurrentHealth(),
 		100.0f - ExpectedWeakPointDamage);
 
-	FOutlierTaggedDamageEvent ExplosionDamageEvent;
+	FOutlierDamageRequest ExplosionDamageEvent;
 	ExplosionDamageEvent.DamageTag = OutlierGameplayTags::Damage::Explosion();
-	Enemy->TakeDamage(Enemy->GetCurrentHealth(), ExplosionDamageEvent, nullptr, Enemy);
+	ApplyDamageRequest(Enemy, Enemy->GetCurrentHealth(), ExplosionDamageEvent, nullptr, nullptr);
 	TestEqual(TEXT("Lethal Enemy damage clamps GAS Health to zero"), AbilitySystem->GetNumericAttribute(
 		UOutlierVitalAttributeSet::GetHealthAttribute()), 0.0f);
 	TestTrue(
@@ -1543,11 +1753,11 @@ bool FOutlierGasShooterStealthLifecycleTest::RunTest(const FString& Parameters)
 	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetPartnerShieldAttribute(), 20.0f);
 	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetPartnerShieldAttribute(), 10.0f);
 	TestTrue(TEXT("Non-damage Partner shield decay does not break Stealth"), Shooter->IsStealthed());
-	FOutlierTaggedDamageEvent NonLethalDamageEvent;
+	FOutlierDamageRequest NonLethalDamageEvent;
 	NonLethalDamageEvent.DamageTag = OutlierGameplayTags::Damage::Weapon();
 	TestEqual(
 		TEXT("Incoming damage is applied while Stealth remains active"),
-		Shooter->TakeDamage(5.0f, NonLethalDamageEvent, nullptr, Shooter),
+		ApplyDamageRequest(Shooter, 5.0f, NonLethalDamageEvent, nullptr, Shooter),
 		5.0f);
 	TestTrue(TEXT("Incoming damage does not break Stealth"), Shooter->IsStealthed());
 	Shooter->NotifyStealthDetected();
@@ -1611,11 +1821,11 @@ bool FOutlierGasShooterStealthLifecycleTest::RunTest(const FString& Parameters)
 	TestTrue(
 		TEXT("Stealth activates for lethal damage ordering coverage"),
 		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::Stealth()));
-	FOutlierTaggedDamageEvent LethalDamageEvent;
+	FOutlierDamageRequest LethalDamageEvent;
 	LethalDamageEvent.DamageTag = OutlierGameplayTags::Damage::Weapon();
 	TestEqual(
 		TEXT("Lethal damage applies through the Shooter damage boundary while Stealth is active"),
-		Shooter->TakeDamage(100.0f, LethalDamageEvent, nullptr, Shooter),
+		ApplyDamageRequest(Shooter, 100.0f, LethalDamageEvent, nullptr, Shooter),
 		100.0f);
 	TestFalse(TEXT("Death cleanup removes Stealth without committing a gameplay cooldown"), ShooterASC->IsShooterStealthCooldownActive());
 	TestFalse(TEXT("Death cleanup removes the active Stealth state"), Shooter->IsStealthed());
@@ -1712,32 +1922,32 @@ bool FOutlierGasShooterBulletReflectionTest::RunTest(const FString& Parameters)
 		TEXT("Bullet Reflection cooldown does not run while active"),
 		ShooterASC->IsShooterBulletReflectionCooldownActive());
 
-	FOutlierTaggedDamageEvent WeaponDamageEvent;
+	FOutlierDamageRequest WeaponDamageEvent;
 	WeaponDamageEvent.DamageTag = OutlierGameplayTags::Damage::Weapon();
 	WeaponDamageEvent.DamageOrigin = Enemy->GetActorLocation();
 	WeaponDamageEvent.HitResult.ImpactPoint = Shooter->GetActorLocation();
 	TestEqual(
 		TEXT("Eligible enemy weapon damage is fully rejected by Shooter"),
-		ApplyTaggedDamage(Shooter, 25.0f, WeaponDamageEvent, nullptr, Enemy),
+		ApplyDamageRequest(Shooter, 25.0f, WeaponDamageEvent, nullptr, Enemy),
 		0.0f);
 	TestEqual(TEXT("Reflected weapon damage preserves Shooter Health"), Shooter->GetCurHealth(), 100.0f);
 	TestEqual(TEXT("Reflected weapon damage applies the same amount to the source"), Enemy->GetCurrentHealth(), 75.0f);
 
-	FOutlierTaggedDamageEvent ExplosionDamageEvent;
+	FOutlierDamageRequest ExplosionDamageEvent;
 	ExplosionDamageEvent.DamageTag = OutlierGameplayTags::Damage::Explosion();
 	ExplosionDamageEvent.DamageOrigin = Enemy->GetActorLocation();
 	ExplosionDamageEvent.HitResult.ImpactPoint = Shooter->GetActorLocation();
 	TestEqual(
 		TEXT("Eligible enemy explosion damage is also reflected"),
-		Shooter->TakeDamage(10.0f, ExplosionDamageEvent, nullptr, Enemy),
+		ApplyDamageRequest(Shooter, 10.0f, ExplosionDamageEvent, nullptr, Enemy),
 		0.0f);
 	TestEqual(TEXT("Reflected explosion applies the same amount to the source"), Enemy->GetCurrentHealth(), 65.0f);
 
-	FOutlierTaggedDamageEvent FriendlyDamageEvent = WeaponDamageEvent;
+	FOutlierDamageRequest FriendlyDamageEvent = WeaponDamageEvent;
 	FriendlyDamageEvent.DamageOrigin = Partner->GetActorLocation();
 	TestEqual(
 		TEXT("Friendly weapon damage is reflected without a team restriction"),
-		Shooter->TakeDamage(5.0f, FriendlyDamageEvent, nullptr, Partner),
+		ApplyDamageRequest(Shooter, 5.0f, FriendlyDamageEvent, nullptr, Partner),
 		0.0f);
 	TestEqual(TEXT("Reflected friendly damage preserves Shooter Health"), Shooter->GetCurHealth(), 100.0f);
 	TestEqual(
@@ -1745,19 +1955,19 @@ bool FOutlierGasShooterBulletReflectionTest::RunTest(const FString& Parameters)
 		Partner->GetVitalAttributeSet()->GetHealth(),
 		95.0f);
 
-	FOutlierTaggedDamageEvent ReflectedDamageEvent = WeaponDamageEvent;
+	FOutlierDamageRequest ReflectedDamageEvent = WeaponDamageEvent;
 	ReflectedDamageEvent.bReflectedDamage = true;
 	TestEqual(
 		TEXT("Already-reflected damage cannot recurse through Bullet Reflection"),
-		Shooter->TakeDamage(5.0f, ReflectedDamageEvent, nullptr, Enemy),
+		ApplyDamageRequest(Shooter, 5.0f, ReflectedDamageEvent, nullptr, Enemy),
 		5.0f);
 	TestEqual(TEXT("Non-recursive reflected damage follows the normal damage path"), Shooter->GetCurHealth(), 95.0f);
 
-	FOutlierTaggedDamageEvent OutOfRangeDamageEvent = WeaponDamageEvent;
+	FOutlierDamageRequest OutOfRangeDamageEvent = WeaponDamageEvent;
 	OutOfRangeDamageEvent.DamageOrigin = FVector(2500.0f, 0.0f, 0.0f);
 	TestEqual(
 		TEXT("Enemy damage outside the configured 20 meter radius is not reflected"),
-		Shooter->TakeDamage(5.0f, OutOfRangeDamageEvent, nullptr, Enemy),
+		ApplyDamageRequest(Shooter, 5.0f, OutOfRangeDamageEvent, nullptr, Enemy),
 		5.0f);
 	TestEqual(TEXT("Out-of-range damage reaches Shooter Health"), Shooter->GetCurHealth(), 90.0f);
 

@@ -66,25 +66,6 @@ void APartnerShieldSphere::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>&
 	DOREPLIFETIME(APartnerShieldSphere, TargetRelativeLocation);
 }
 
-float APartnerShieldSphere::TakeDamage(
-	float DamageAmount,
-	FDamageEvent const& DamageEvent,
-	AController* EventInstigator,
-	AActor* DamageCauser)
-{
-	if (!HasAuthority() || !ShieldTarget || DamageAmount <= 0.0f)
-	{
-		return 0.0f;
-	}
-
-	const float AppliedDamage = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
-	return ReceiveOutlierDamage(FOutlierDamageRequest::FromDamageEvent(
-		AppliedDamage,
-		DamageEvent,
-		EventInstigator,
-		DamageCauser));
-}
-
 float APartnerShieldSphere::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 {
 	if (!HasAuthority() || !ShieldTarget || Request.DamageAmount <= 0.0f)

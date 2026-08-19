@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
 #include "Engine/DataTable.h"
+#include "GameplayEffectTypes.h"
 #include "GameplayTagContainer.h"
 #include "GenericTeamAgentInterface.h"
 #include "Enemy/EnemyStat.h"
@@ -68,12 +69,6 @@ public:
 	const UOutlierVitalAttributeSet* GetVitalAttributeSet() const { return VitalAttributeSet; }
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
-	// Unreal 공통 피해 진입점의 약점 판정을 보존하고 최종 피해를 GAS로 전달한다.
-	virtual float TakeDamage(
-		float DamageAmount,
-		FDamageEvent const& DamageEvent,
-		AController* EventInstigator,
-		AActor* DamageCauser) override;
 	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
 
 protected:
@@ -188,9 +183,6 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "Enemy|State")
 	uint8 bIsPossessed : 1 = false;
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "Enemy|State")
-	uint8 bPossessionInProgress : 1 = false;
-
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "Enemy|Impact")
 	uint8 bPossessedImpactInputLocked : 1 = false;
 
@@ -264,11 +256,11 @@ public:
 	bool IsEnemyPossessed() const { return bIsPossessed; }
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|State")
-	bool IsPossessionInProgress() const { return bPossessionInProgress; }
+	bool IsPossessionInProgress() const;
 
 	bool IsAIControlSuppressed() const
 	{
-		return bIsPossessed || bPossessionInProgress || bImpactReactionActive;
+		return bIsPossessed || IsPossessionInProgress() || bImpactReactionActive;
 	}
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|State")
@@ -469,6 +461,8 @@ protected:
 	bool HasActiveStunTag() const;
 	bool BeginPossessionProcess(APartnerCharacter* PartnerCharacter);
 	void ConfirmPossessionProcess();
+	bool ApplyPossessionPendingState();
+	bool RemovePossessionPendingState();
 	void PromotePreStunState(EEnemyCombatState DetectedState);
 	void RefreshPerceptionConfigForCurrentState();
 	void RefreshPerceptionTeamRegistration();
@@ -509,6 +503,7 @@ protected:
 	float ImpactRecoveryElapsedTime = 0.0f;
 	bool bImpactReactionActive = false;
 	FTimerHandle PossessedImpactInputLockTimerHandle;
+	FActiveGameplayEffectHandle PossessionPendingEffectHandle;
 
 	// 빙의된 VEC의 AttackAction 입력 진입점.
 	// 소유 클라이언트는 시작/종료 상태만 RPC로 보내고 실제 발사는 서버 무기가 수행한다.

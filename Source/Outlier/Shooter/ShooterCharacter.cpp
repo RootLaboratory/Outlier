@@ -1266,25 +1266,6 @@ bool AShooterCharacter::ApplyDamageInternal(
 		&& HealthComponent->ApplyDamage(DamageAmount, EventInstigator, DamageCauser, DamageTag);
 }
 
-float AShooterCharacter::TakeDamage(
-	float DamageAmount,
-	FDamageEvent const& DamageEvent,
-	AController* EventInstigator,
-	AActor* DamageCauser)
-{
-	if (!HasAuthority() || DamageAmount <= 0.0f)
-	{
-		return 0.0f;
-	}
-
-	const float AppliedDamage = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
-	return ReceiveOutlierDamage(FOutlierDamageRequest::FromDamageEvent(
-		AppliedDamage,
-		DamageEvent,
-		EventInstigator,
-		DamageCauser));
-}
-
 float AShooterCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 {
 	if (!HasAuthority() || !CanBeDamaged() || Request.DamageAmount <= 0.0f)

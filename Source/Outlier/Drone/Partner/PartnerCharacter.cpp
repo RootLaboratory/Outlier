@@ -131,29 +131,6 @@ void APartnerCharacter::PossessedBy(AController* NewController)
 }
 
 
-float APartnerCharacter::TakeDamage(
-	float DamageAmount,
-	FDamageEvent const& DamageEvent,
-	AController* EventInstigator,
-	AActor* DamageCauser)
-{
-	if (!HasAuthority() || DamageAmount <= 0.0f || !OutlierAbilitySystemComponent)
-	{
-		return 0.0f;
-	}
-
-	const float AppliedDamage = Super::TakeDamage(
-		DamageAmount,
-		DamageEvent,
-		EventInstigator,
-		DamageCauser);
-	return ReceiveOutlierDamage(FOutlierDamageRequest::FromDamageEvent(
-		AppliedDamage,
-		DamageEvent,
-		EventInstigator,
-		DamageCauser));
-}
-
 float APartnerCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 {
 	if (!HasAuthority() || !CanBeDamaged() || Request.DamageAmount <= 0.0f || !OutlierAbilitySystemComponent)

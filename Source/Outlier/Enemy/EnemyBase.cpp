@@ -215,7 +215,6 @@ void AEnemyBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifeti
 	DOREPLIFETIME(AEnemyBase, PatternStartPlayerLocation);
 	DOREPLIFETIME(AEnemyBase, CombatState);
 	DOREPLIFETIME(AEnemyBase, bIsPossessed);
-	DOREPLIFETIME(AEnemyBase, bPossessionInProgress);
 	DOREPLIFETIME(AEnemyBase, bPossessedImpactInputLocked);
 	DOREPLIFETIME(AEnemyBase, bPlayerCurrentlyVisible);
 	DOREPLIFETIME(AEnemyBase, bHasSharedTargetContact);
@@ -339,6 +338,13 @@ bool AEnemyBase::IsDead() const
 {
 	return OutlierAbilitySystemComponent
 		&& OutlierAbilitySystemComponent->HasMatchingGameplayTag(OutlierGameplayTags::State::Dead());
+}
+
+bool AEnemyBase::IsPossessionInProgress() const
+{
+	return OutlierAbilitySystemComponent
+		&& OutlierAbilitySystemComponent->HasMatchingGameplayTag(
+			OutlierGameplayTags::State::PossessPending());
 }
 
 void AEnemyBase::RefreshAbilitySystemActorInfo()
@@ -550,13 +556,8 @@ void AEnemyBase::SetEnemyPossessed(bool bNewIsPossessed)
 
 	if (bIsPossessed)
 	{
-		bPossessionInProgress = false;
 		PossessionInstigatorPartner.Reset();
-		if (HackableComponent)
-		{
-			HackableComponent->HackTags.RemoveTag(
-				OutlierGameplayTags::State::PossessPending());
-		}
+		RemovePossessionPendingState();
 
 		StopCurrentAttack();
 		RemoveRoomTargetObserver();
@@ -602,20 +603,22 @@ bool AEnemyBase::BeginPossessionProcess(APartnerCharacter* PartnerCharacter)
 	if (!HasAuthority()
 		|| !IsValid(PartnerCharacter)
 		|| bIsPossessed
-		|| bPossessionInProgress
+		|| IsPossessionInProgress()
 		|| IsPossessedActionCommitted()
 		|| !HackableComponent)
 	{
 		return false;
 	}
 
-	bPossessionInProgress = true;
 	CancelCommittedAction();
 	EndImpactReaction();
 	PossessionInstigatorPartner = PartnerCharacter;
 	ResetPossessedAttackInput();
-	HackableComponent->HackTags.AddTag(
-		OutlierGameplayTags::State::PossessPending());
+	if (!ApplyPossessionPendingState())
+	{
+		PossessionInstigatorPartner.Reset();
+		return false;
+	}
 
 	StopCurrentAttack();
 	RemoveRoomTargetObserver();
@@ -632,7 +635,7 @@ bool AEnemyBase::BeginPossessionProcess(APartnerCharacter* PartnerCharacter)
 	PartnerCharacter->SetEnemyPossessionProtection(true);
 	ForceNetUpdate();
 
-	// Global Sync가 bPossessionInProgress=true를 먼저 읽은 뒤 Pending 상태를 선택하게 한다.
+	// Global Sync가 ASC PossessPending 태그를 먼저 읽은 뒤 Pending 상태를 선택하게 한다.
 	SendEnemyStateTreeEventNextTick(
 		FGameplayTag::RequestGameplayTag(
 			TEXT("Enemy.Event.Possession.Pending")));
@@ -652,13 +655,10 @@ bool AEnemyBase::BeginPossessionProcess(APartnerCharacter* PartnerCharacter)
 
 void AEnemyBase::ConfirmPossessionProcess()
 {
-	if (!HasAuthority() || !bPossessionInProgress || !HackableComponent)
+	if (!HasAuthority() || !IsPossessionInProgress() || !HackableComponent)
 	{
 		return;
 	}
-
-	HackableComponent->HackTags.RemoveTag(
-		OutlierGameplayTags::State::PossessPending());
 
 	if (IsPossessedAttackDiagnosticsEnabled())
 	{
@@ -677,21 +677,13 @@ void AEnemyBase::CancelPossessionProcess()
 		return;
 	}
 
-	const bool bHadPossessionProcess = bPossessionInProgress
-		|| (HackableComponent
-			&& HackableComponent->HasHackTag(
-				OutlierGameplayTags::State::PossessPending()));
+	const bool bHadPossessionProcess = IsPossessionInProgress();
 	if (!bHadPossessionProcess)
 	{
 		return;
 	}
 
-	bPossessionInProgress = false;
-	if (HackableComponent)
-	{
-		HackableComponent->HackTags.RemoveTag(
-			OutlierGameplayTags::State::PossessPending());
-	}
+	RemovePossessionPendingState();
 
 	if (APartnerCharacter* PartnerCharacter = PossessionInstigatorPartner.Get())
 	{
@@ -708,7 +700,7 @@ void AEnemyBase::CancelPossessionProcess()
 
 	if (!bIsPossessed)
 	{
-		// Global Sync가 bPossessionInProgress=false를 반영한 뒤 Pending 상태를 빠져나가게 한다.
+		// Global Sync가 ASC PossessPending 제거를 반영한 뒤 Pending 상태를 빠져나가게 한다.
 		SendEnemyStateTreeEventNextTick(
 			FGameplayTag::RequestGameplayTag(
 				TEXT("Enemy.Event.Possession.Cancelled")));
@@ -1097,25 +1089,6 @@ bool AEnemyBase::ApplyDamageInternal(
 		DamageTag);
 }
 
-float AEnemyBase::TakeDamage(
-	float DamageAmount,
-	FDamageEvent const& DamageEvent,
-	AController* EventInstigator,
-	AActor* DamageCauser)
-{
-	if (!HasAuthority() || DamageAmount <= 0.0f || IsDead() || GetCurrentHealth() <= 0.0f)
-	{
-		return 0.0f;
-	}
-
-	const float AppliedDamage = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
-	return ReceiveOutlierDamage(FOutlierDamageRequest::FromDamageEvent(
-		AppliedDamage,
-		DamageEvent,
-		EventInstigator,
-		DamageCauser));
-}
-
 float AEnemyBase::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 {
 	if (!HasAuthority() || !CanBeDamaged() || Request.DamageAmount <= 0.0f || IsDead() || GetCurrentHealth() <= 0.0f)
@@ -1397,7 +1370,7 @@ bool AEnemyBase::BeginImpactReaction()
 	if (!HasAuthority()
 		|| IsDead()
 		|| bIsPossessed
-		|| bPossessionInProgress
+		|| IsPossessionInProgress()
 		|| CurrentImpactStrength < RuntimeImpactReactionProfile.MinReactionStrength)
 	{
 		if (IsEnemyImpactReactionDiagnosticsEnabled())
@@ -1410,7 +1383,7 @@ bool AEnemyBase::BeginImpactReaction()
 				HasAuthority() ? TEXT("true") : TEXT("false"),
 				GetCurrentHealth(),
 				bIsPossessed ? TEXT("true") : TEXT("false"),
-				bPossessionInProgress ? TEXT("true") : TEXT("false"),
+				IsPossessionInProgress() ? TEXT("true") : TEXT("false"),
 				CurrentImpactStrength,
 				RuntimeImpactReactionProfile.MinReactionStrength);
 		}
@@ -1792,7 +1765,7 @@ UHackableComponent* AEnemyBase::GetHackableComponent() const
 void AEnemyBase::HandleHackCompleted(const FHackResultContext& Context)
 {
 	if (HasAuthority()
-		&& bPossessionInProgress
+		&& IsPossessionInProgress()
 		&& Context.Result != EHackResult::Success)
 	{
 		CancelPossessionProcess();
@@ -1811,7 +1784,7 @@ void AEnemyBase::HandleHackEffect(FGameplayTag EffectTag, const FHackResultConte
 		return;
 	}
 
-	if (IsEnemyPossessed() || !bPossessionInProgress)
+	if (IsEnemyPossessed() || !IsPossessionInProgress())
 	{
 		return;
 	}
@@ -1865,7 +1838,7 @@ void AEnemyBase::HandleHackStarted(const FHackQueryContext& Context)
 				*GetNameSafe(HackableComponent),
 				IsAIControlSuppressed() ? TEXT("true") : TEXT("false"),
 				bIsPossessed ? TEXT("true") : TEXT("false"),
-				bPossessionInProgress ? TEXT("true") : TEXT("false"),
+				IsPossessionInProgress() ? TEXT("true") : TEXT("false"),
 				bImpactReactionActive ? TEXT("true") : TEXT("false"));
 		}
 		return;
@@ -1964,6 +1937,61 @@ bool AEnemyBase::HasActiveStunTag() const
 	const FGameplayTag StunnedTag = OutlierGameplayTags::State::Stunned();
 	return (HackableComponent && HackableComponent->HasHackTag(StunnedTag))
 		|| (EmpableComponent && EmpableComponent->HasEMPTag(StunnedTag));
+}
+
+bool AEnemyBase::ApplyPossessionPendingState()
+{
+	if (!HasAuthority() || !OutlierAbilitySystemComponent || PossessionPendingEffectHandle.IsValid())
+	{
+		UE_LOG(
+			LogOutlier,
+			Error,
+			TEXT("[Enemy.Possession] Cannot apply PossessPending. Enemy=%s Authority=%d ASC=%s ExistingHandle=%d"),
+			*GetNameSafe(this),
+			HasAuthority() ? 1 : 0,
+			*GetNameSafe(OutlierAbilitySystemComponent),
+			PossessionPendingEffectHandle.IsValid() ? 1 : 0);
+		return false;
+	}
+
+	PossessionPendingEffectHandle =
+		OutlierAbilitySystemComponent->ApplyPossessPendingStateToSelf();
+	if (!PossessionPendingEffectHandle.IsValid()
+		|| OutlierAbilitySystemComponent->GetGameplayTagCount(
+			OutlierGameplayTags::State::PossessPending()) != 1)
+	{
+		UE_LOG(
+			LogOutlier,
+			Error,
+			TEXT("[Enemy.Possession] PossessPending GameplayEffect was rejected. Enemy=%s Owner=%s Avatar=%s TagCount=%d"),
+			*GetNameSafe(this),
+			*GetNameSafe(OutlierAbilitySystemComponent->GetOwnerActor()),
+			*GetNameSafe(OutlierAbilitySystemComponent->GetAvatarActor()),
+			OutlierAbilitySystemComponent->GetGameplayTagCount(
+				OutlierGameplayTags::State::PossessPending()));
+		if (PossessionPendingEffectHandle.IsValid())
+		{
+			OutlierAbilitySystemComponent->RemoveActiveEffectFromSelf(
+				PossessionPendingEffectHandle);
+			PossessionPendingEffectHandle.Invalidate();
+		}
+		return false;
+	}
+	return true;
+}
+
+bool AEnemyBase::RemovePossessionPendingState()
+{
+	if (!HasAuthority() || !OutlierAbilitySystemComponent || !PossessionPendingEffectHandle.IsValid())
+	{
+		PossessionPendingEffectHandle = FActiveGameplayEffectHandle();
+		return false;
+	}
+
+	const bool bRemoved =
+		OutlierAbilitySystemComponent->RemoveActiveEffectFromSelf(PossessionPendingEffectHandle);
+	PossessionPendingEffectHandle = FActiveGameplayEffectHandle();
+	return bRemoved;
 }
 
 void AEnemyBase::PromotePreStunState(EEnemyCombatState DetectedState)
