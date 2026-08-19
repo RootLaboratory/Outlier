@@ -3,7 +3,6 @@
 #include "Shooter/ShooterHealthComponent.h"
 #include "Shooter/ShooterCharacter.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
-#include "OutlierNetUtils.h"
 #include "OutlierGameMode.h"
 
 UShooterHealthComponent::UShooterHealthComponent()
@@ -29,7 +28,6 @@ bool UShooterHealthComponent::ApplyDamage(
 
 	if (ShooterCharacter->IsDead() || DamageAmount <= 0.0f)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("%s %s ApplyDamageInternal blocked Dead=%d Damage=%.1f"), OutlierNet::GetNetPrefix(ShooterCharacter), *ShooterCharacter->GetName(), ShooterCharacter->IsDead() ? 1 : 0, DamageAmount);
 		return false;
 	}
 

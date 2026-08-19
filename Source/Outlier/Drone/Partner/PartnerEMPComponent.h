@@ -65,9 +65,6 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "EMP|Candidate")
 	uint8 bRequireLineOfSight : 1 = true;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "EMP|Debug")
-	uint8 bDebugEMP : 1 = true;
-
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "EMP|UI")
 	TSubclassOf<UEMPLayerWidget> EMPLayerWidgetClass;
 
@@ -152,8 +149,6 @@ private:
 
 	uint8 bEMPCandidateSearchActive : 1 = false;
 
-	int32 LastDebugCandidateCount = INDEX_NONE;
-
 	float EMPStartTimeSeconds = 0.0f;
 	FUILayerHandle EMPLayerHandle;
 
@@ -169,7 +164,6 @@ private:
 
 	void EnsureEMPLayerWidget();
 	void DestroyEMPLayerWidget();
-	void DestroyRemainingEMPWidgets(APlayerController* PlayerController);
 	ULocalPlayerUILayerSubsystem* GetUILayerSubsystem() const;
 
 	void AddEMPCandidate(AActor* Actor, UEMPableComponent* EMPableComponent, const FVector2D& ScreenLocation);

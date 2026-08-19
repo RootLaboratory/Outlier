@@ -1113,6 +1113,15 @@ float AEnemyBase::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 		Request.DamageCauser,
 		Request.DamageTag)
 		? FinalDamage : 0.0f;
+	if (AppliedDamage > 0.0f
+		&& !IsDead()
+		&& Request.StunDurationSeconds > 0.0f
+		&& Request.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Weapon()))
+	{
+		OutlierAbilitySystemComponent->ApplyStunStateToSelf(
+			Request.StunDurationSeconds,
+			Request.DamageCauser);
+	}
 	if (bCoreWeakPointHit)
 	{
 		UE_LOG(
@@ -1695,26 +1704,48 @@ void AEnemyBase::InitializeGasVitality()
 
 void AEnemyBase::BindGasVitalityObservers()
 {
-	if (!OutlierAbilitySystemComponent || HealthChangedHandle.IsValid())
+	if (!OutlierAbilitySystemComponent)
 	{
 		return;
 	}
 
-	HealthChangedHandle = OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
-		UOutlierVitalAttributeSet::GetHealthAttribute()).AddUObject(
-			this, &AEnemyBase::HandleHealthChanged);
+	if (!HealthChangedHandle.IsValid())
+	{
+		HealthChangedHandle = OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
+			UOutlierVitalAttributeSet::GetHealthAttribute()).AddUObject(
+				this, &AEnemyBase::HandleHealthChanged);
+	}
+
+	if (!StunnedTagChangedHandle.IsValid())
+	{
+		StunnedTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+			OutlierGameplayTags::State::Stunned(),
+			EGameplayTagEventType::NewOrRemoved).AddUObject(
+				this, &AEnemyBase::HandleStunnedTagChanged);
+	}
 }
 
 void AEnemyBase::UnbindGasVitalityObservers()
 {
-	if (!OutlierAbilitySystemComponent || !HealthChangedHandle.IsValid())
+	if (!OutlierAbilitySystemComponent)
 	{
 		return;
 	}
 
-	OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
-		UOutlierVitalAttributeSet::GetHealthAttribute()).Remove(HealthChangedHandle);
-	HealthChangedHandle.Reset();
+	if (HealthChangedHandle.IsValid())
+	{
+		OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
+			UOutlierVitalAttributeSet::GetHealthAttribute()).Remove(HealthChangedHandle);
+		HealthChangedHandle.Reset();
+	}
+
+	if (StunnedTagChangedHandle.IsValid())
+	{
+		OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+			OutlierGameplayTags::State::Stunned(),
+			EGameplayTagEventType::NewOrRemoved).Remove(StunnedTagChangedHandle);
+		StunnedTagChangedHandle.Reset();
+	}
 }
 
 void AEnemyBase::HandleHealthChanged(const FOnAttributeChangeData& ChangeData)
@@ -1741,6 +1772,23 @@ void AEnemyBase::HandleHealthChanged(const FOnAttributeChangeData& ChangeData)
 		const float HealthRatio = FMath::Clamp(ChangeData.NewValue / MaxHealth, 0.0f, 1.0f);
 		PPS->UpdateDamagedPostProcess(HealthRatio, FVector4(0.0f, 0.0f, 1.0f, 0.0f));
 		PPS->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Damaged, true);
+	}
+}
+
+void AEnemyBase::HandleStunnedTagChanged(const FGameplayTag StunnedTag, int32 NewCount)
+{
+	if (!HasAuthority() || StunnedTag != OutlierGameplayTags::State::Stunned())
+	{
+		return;
+	}
+
+	if (NewCount > 0)
+	{
+		EnterStun();
+	}
+	else if (!HasActiveStunTag())
+	{
+		RestoreStateAfterStun();
 	}
 }
 
@@ -1933,10 +1981,9 @@ void AEnemyBase::ApplyMovementFromRuntimeStat()
 
 bool AEnemyBase::HasActiveStunTag() const
 {
-	//스턴 판정이 일단 두 개라서; 임시로 처리. 
-	const FGameplayTag StunnedTag = OutlierGameplayTags::State::Stunned();
-	return (HackableComponent && HackableComponent->HasHackTag(StunnedTag))
-		|| (EmpableComponent && EmpableComponent->HasEMPTag(StunnedTag));
+	return OutlierAbilitySystemComponent
+		&& OutlierAbilitySystemComponent->HasMatchingGameplayTag(
+			OutlierGameplayTags::State::Stunned());
 }
 
 bool AEnemyBase::ApplyPossessionPendingState()

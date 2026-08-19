@@ -198,61 +198,26 @@ float AExplosiveProp::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 			return 0.0f;
 		}
 
-		const float PreviousDroneHealth = CachedOwningDrone->GetCurrentHealth();
-		const float WeakPointMultiplier = FMath::Max(
-			CachedOwningDrone->GetRuntimeStat().ExplosiveWeakPointMultiplier,
-			1.0f);
-		const FString DroneName = GetNameSafe(CachedOwningDrone.Get());
-		const FString ExplosiveName = GetNameSafe(this);
-		const FString ComponentName = GetNameSafe(Request.HitResult.GetComponent());
-		const float AppliedDamage = OutlierDamage::Apply(CachedOwningDrone.Get(), Request);
-		UE_LOG(
-			LogOutlier,
-			Warning,
-			TEXT("[EnemyWeakPoint] Type=MountedExplosive Drone=%s Explosive=%s Component=%s RawDamage=%.2f Multiplier=%.2f AppliedDamage=%.2f HP=%.2f->%.2f"),
-			*DroneName,
-			*ExplosiveName,
-			*ComponentName,
-			Request.DamageAmount,
-			WeakPointMultiplier,
-			AppliedDamage,
-			PreviousDroneHealth,
-			CachedOwningDrone->GetCurrentHealth());
-		return AppliedDamage;
+		return OutlierDamage::Apply(CachedOwningDrone.Get(), Request);
 	}
-
-	UE_LOG(
-		LogOutlier,
-		Warning,
-		TEXT("[ExplosiveProp] Damage requested. Actor=%s Damage=%.2f CurrentHP=%.2f Authority=%s Exploded=%s Tag=%s"),
-		*GetNameSafe(this),
-		Request.DamageAmount,
-		GetCurrentHP(),
-		HasAuthority() ? TEXT("true") : TEXT("false"),
-		bExploded ? TEXT("true") : TEXT("false"),
-		*Request.DamageTag.ToString());
 
 	if (!HasAuthority())
 	{
-		UE_LOG(LogOutlier, Warning, TEXT("[ExplosiveProp] Damage rejected: actor has no server authority. Actor=%s"), *GetNameSafe(this));
 		return 0.0f;
 	}
 
 	if (bExploded)
 	{
-		UE_LOG(LogOutlier, Warning, TEXT("[ExplosiveProp] Damage rejected: actor already exploded. Actor=%s"), *GetNameSafe(this));
 		return 0.0f;
 	}
 
 	if (GetCurrentHP() <= 0.0f)
 	{
-		UE_LOG(LogOutlier, Warning, TEXT("[ExplosiveProp] Damage rejected: actor HP is already depleted. Actor=%s"), *GetNameSafe(this));
 		return 0.0f;
 	}
 
 	if (Request.DamageAmount <= 0.0f)
 	{
-		UE_LOG(LogOutlier, Warning, TEXT("[ExplosiveProp] Damage rejected: damage is not positive. Actor=%s"), *GetNameSafe(this));
 		return 0.0f;
 	}
 
@@ -261,28 +226,14 @@ float AExplosiveProp::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 		|| Request.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Explosion());
 	if (!bAllowedDamage)
 	{
-		UE_LOG(
-			LogOutlier,
-			Warning,
-			TEXT("[ExplosiveProp] Damage rejected: unsupported damage tag. Actor=%s Tag=%s"),
-			*GetNameSafe(this),
-			*Request.DamageTag.ToString());
 		return 0.0f;
 	}
 
 	if (!CanBeDamaged())
 	{
-		UE_LOG(
-			LogOutlier,
-			Warning,
-			TEXT("[ExplosiveProp] Damage rejected: CanBeDamaged is false. Actor=%s RequestedDamage=%.2f CanBeDamaged=%s"),
-			*GetNameSafe(this),
-			Request.DamageAmount,
-			CanBeDamaged() ? TEXT("true") : TEXT("false"));
 		return 0.0f;
 	}
 
-	const float PreviousHP = GetCurrentHP();
 	PendingDamageInstigator = Request.EventInstigator;
 	const bool bDamageApplied = OutlierAbilitySystemComponent
 		&& OutlierAbilitySystemComponent->ApplyDamageToSelf(
@@ -297,21 +248,7 @@ float AExplosiveProp::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 	}
 
 	const float CurrentHP = GetCurrentHP();
-	UE_LOG(
-		LogOutlier,
-		Warning,
-		TEXT("[ExplosiveProp] Damage applied. Actor=%s Tag=%s AppliedDamage=%.2f HP=%.2f->%.2f"),
-		*GetNameSafe(this),
-		*Request.DamageTag.ToString(),
-		Request.DamageAmount,
-		PreviousHP,
-		CurrentHP);
-
-	if (CurrentHP <= 0.0f)
-	{
-		UE_LOG(LogOutlier, Warning, TEXT("[ExplosiveProp] HP reached zero. Actor=%s"), *GetNameSafe(this));
-	}
-	else if (RuntimePropRow.IsSet())
+	if (CurrentHP > 0.0f && RuntimePropRow.IsSet())
 	{
 		FVector ImpactPoint = GetActorLocation();
 		if (Request.HitResult.bBlockingHit)
@@ -365,13 +302,6 @@ bool AExplosiveProp::InitializeFromDataTable()
 		}
 
 		RuntimePropRow.Emplace(*Row);
-		UE_LOG(
-			LogOutlier,
-			Warning,
-			TEXT("[ExplosiveProp] Prop row loaded. Actor=%s RowName=%s MaxHP=%.2f"),
-			*GetNameSafe(this),
-			*ExplosivePropRow.RowName.ToString(),
-			RuntimePropRow->MaxHP);
 	}
 
 	return !HasAuthority()
@@ -418,11 +348,7 @@ void AExplosiveProp::HandleHealthChanged(const FOnAttributeChangeData& ChangeDat
 		const bool bDetonationRequested = ExplosionComponent->DetonateAt(
 			GetActorLocation(),
 			PendingDamageInstigator.IsValid() ? PendingDamageInstigator.Get() : GetInstigatorController());
-		if (bDetonationRequested)
-		{
-			UE_LOG(LogOutlier, Warning, TEXT("[ExplosiveProp] HP reached zero. DetonateAt succeeded. Actor=%s"), *GetNameSafe(this));
-		}
-		else
+		if (!bDetonationRequested)
 		{
 			UE_LOG(LogOutlier, Error, TEXT("[ExplosiveProp] HP reached zero. DetonateAt failed. Actor=%s"), *GetNameSafe(this));
 		}

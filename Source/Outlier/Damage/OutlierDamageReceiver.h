@@ -12,6 +12,7 @@ struct OUTLIER_API FOutlierDamageRequest
 {
 	float DamageAmount = 0.0f;
 	FGameplayTag DamageTag;
+	float StunDurationSeconds = 0.0f;
 	FHitResult HitResult;
 	FVector DamageOrigin = FVector::ZeroVector;
 	bool bReflectedDamage = false;

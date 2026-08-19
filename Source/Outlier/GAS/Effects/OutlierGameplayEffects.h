@@ -41,6 +41,15 @@ public:
 };
 
 UCLASS()
+class OUTLIER_API UOutlierStunGameplayEffect : public UGameplayEffect
+{
+	GENERATED_BODY()
+
+public:
+	UOutlierStunGameplayEffect(const FObjectInitializer& ObjectInitializer);
+};
+
+UCLASS()
 class OUTLIER_API UOutlierDamageImmuneGameplayEffect : public UGameplayEffect
 {
 	GENERATED_BODY()

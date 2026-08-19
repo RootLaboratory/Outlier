@@ -2,13 +2,13 @@
 #include "Drone/Partner/EMPGameplayTags.h"
 #include "Drone/Partner/EMPableComponent.h"
 #include "Drone/Partner/PartnerCharacter.h"
+#include "AbilitySystemInterface.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/OverlapResult.h"
-#include "GameplayTags/OutlierGameplayTags.h"
+#include "GAS/OutlierAbilitySystemComponent.h"
 #include "Drone/Partner/PartnerPlayerController.h"
 #include "GameFramework/PlayerController.h"
 #include "Interface/EMPableInterface.h"
-#include "Blueprint/WidgetBlueprintLibrary.h"
 #include "UI/EMPLayerWidget.h"
 #include "UI/EMPMarkWidget.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
@@ -80,7 +80,6 @@ void UPartnerEMPComponent::TryEMP_Implementation()
 		{
 			const TArray<AActor*> ConfirmedActors = MarkedActors;
 			CompleteEMPOnServer(ConfirmedActors);
-			//UE_LOG(LogTemp, Error, TEXT("Confirmed Called"));
 		}
 		return;
 	}
@@ -90,12 +89,6 @@ void UPartnerEMPComponent::TryEMP_Implementation()
 	InitializeEMPEarlyCompleteTimer();
 	ClientStartEMPSearch();
 	DefaultWidgetControl(true);
-
-	if (bDebugEMP)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] TryEMP started Partner=%s Range=%.1f"),
-			*GetNameSafe(PartnerCharacter), EMPRange);
-	}
 }
 
 void UPartnerEMPComponent::CacheAbilityData(const FPartnerEMPAbilityData& InAbilityData)
@@ -222,13 +215,6 @@ void UPartnerEMPComponent::RefreshEMPCandidates()
 
 	DeduplicateEMPCandidates();
 
-	if (bDebugEMP && LastDebugCandidateCount != EMPCandidateComponents.Num())
-	{
-		LastDebugCandidateCount = EMPCandidateComponents.Num();
-		UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] Candidate count changed Count=%d Overlaps=%d"),
-			EMPCandidateComponents.Num(),
-			OverlapResults.Num());
-	}
 }
 
 void UPartnerEMPComponent::ClearEMPCandidates()
@@ -244,12 +230,6 @@ void UPartnerEMPComponent::StopEMPCandidateSearch()
 	bEMPCandidateSearchActive = false;
 	ClearEMPCandidates();
 	DestroyEMPLayerWidget();
-	LastDebugCandidateCount = INDEX_NONE;
-
-	if (bDebugEMP)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] Candidate search stopped"));
-	}
 }
 
 void UPartnerEMPComponent::RefocusEMPInput()
@@ -278,11 +258,6 @@ void UPartnerEMPComponent::TryMarkEMPTarget_Implementation(AActor* TargetActor)
 	FVector2D ScreenLocation = FVector2D::ZeroVector;
 	if (!IsCandidateActorValid(TargetActor, EMPableComponent, ScreenLocation))
 	{
-		if (bDebugEMP)
-		{
-			UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] TryMarkEMPTarget ignored invalid target Actor=%s"),
-				*GetNameSafe(TargetActor));
-		}
 
 		return;
 	}
@@ -291,22 +266,11 @@ void UPartnerEMPComponent::TryMarkEMPTarget_Implementation(AActor* TargetActor)
 		&& CachedAbilityData.MaxTargets > 0
 		&& MarkedActors.Num() >= CachedAbilityData.MaxTargets)
 	{
-		if (bDebugEMP)
-		{
-			UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] TryMarkEMPTarget ignored: max targets reached MaxTargets=%d"),
-				CachedAbilityData.MaxTargets);
-		}
 
 		return;
 	}
 
 	MarkedActors.AddUnique(TargetActor);
-
-	if (bDebugEMP)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] TryMarkEMPTarget Actor=%s TotalMarked=%d"),
-			*GetNameSafe(TargetActor), MarkedActors.Num());
-	}
 }
 
 bool UPartnerEMPComponent::NotifyEMPConfirmed()
@@ -325,11 +289,6 @@ void UPartnerEMPComponent::NotifyEMPExpired()
 	if (!bEMPCandidateSearchActive)
 	{
 		return;
-	}
-
-	if (bDebugEMP)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] NotifyEMPExpired"));
 	}
 
 	StopEMPCandidateSearch();
@@ -356,10 +315,6 @@ void UPartnerEMPComponent::CompleteEMPOnServer(const TArray<AActor*>& InMarkedAc
 
 	if (InMarkedActors.Num() <= 0)
 	{
-		if (bDebugEMP)
-		{
-			UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] ServerCompleteEMP ignored: no marked actors"));
-		}
 
 		bEMPActive = false;
 		MarkedActors.Empty();
@@ -368,11 +323,6 @@ void UPartnerEMPComponent::CompleteEMPOnServer(const TArray<AActor*>& InMarkedAc
 		DefaultWidgetControl(false);
 		OnEMPFinished.Broadcast(false, false);
 		return;
-	}
-	
-	if (bDebugEMP)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] ServerCompleteEMP MarkedCount=%d"), InMarkedActors.Num());
 	}
 
 	int32 AppliedTargetCount = 0;
@@ -392,23 +342,25 @@ void UPartnerEMPComponent::CompleteEMPOnServer(const TArray<AActor*>& InMarkedAc
 		FVector2D ScreenLocation = FVector2D::ZeroVector;
 		if (!IsCandidateActorValid(MarkedActor, EMPableComponent, ScreenLocation))
 		{
-			if (bDebugEMP)
-			{
-				UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] ServerCompleteEMP skipped: invalid target Actor=%s"),
-					*GetNameSafe(MarkedActor));
-			}
 			continue;
 		}
 
-		//Component에서는 Tag 주입과 Duration에 대한 EMP 만료 처리, Tag에 대한 상태 처리는 인터페이스 함수에서 구체화
-		EMPableComponent->ApplyEMPTagForDuration(
-			OutlierGameplayTags::State::Stunned(),
-			CachedAbilityData.StunDuration
-		);
-
-		if (IEMPableInterface* Handler = Cast<IEMPableInterface>(MarkedActor))
+		IAbilitySystemInterface* AbilitySystemActor = Cast<IAbilitySystemInterface>(MarkedActor);
+		UOutlierAbilitySystemComponent* TargetAbilitySystem = AbilitySystemActor
+			? Cast<UOutlierAbilitySystemComponent>(AbilitySystemActor->GetAbilitySystemComponent())
+			: nullptr;
+		if (!TargetAbilitySystem
+			|| !TargetAbilitySystem->ApplyStunStateToSelf(
+				CachedAbilityData.StunDuration,
+				PartnerCharacter).IsValid())
 		{
-			Handler->HandleEMPStarted(OutlierGameplayTags::State::Stunned());
+			UE_LOG(
+				LogTemp,
+				Warning,
+				TEXT("[PartnerEMP] Target has no compatible ASC or rejected Stun GameplayEffect. Target=%s Duration=%.2f"),
+				*GetNameSafe(MarkedActor),
+				CachedAbilityData.StunDuration);
+			continue;
 		}
 
 		++AppliedTargetCount;
@@ -429,10 +381,6 @@ void UPartnerEMPComponent::ServerCancelEMP_Implementation()
 
 void UPartnerEMPComponent::ServerExpireEMP_Implementation()
 {
-	if (bDebugEMP)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] ServerExpireEMP"));
-	}
 
 	if (!MarkedActors.IsEmpty())
 	{
@@ -447,10 +395,6 @@ void UPartnerEMPComponent::ServerExpireEMP_Implementation()
 void UPartnerEMPComponent::CancelEMPOnServer()
 {
 	const bool bWasActive = bEMPActive;
-	if (bDebugEMP)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] ServerCancelEMP"));
-	}
 
 	bEMPActive = false;
 	MarkedActors.Empty();
@@ -493,12 +437,6 @@ UEMPableComponent* UPartnerEMPComponent::ResolveEMPableComponent(AActor* Actor) 
 
 	UEMPableComponent* EMPableComp = Cast<IEMPableInterface>(Actor)->GetEMPableComponent();
 
-	if (bDebugEMP && !EMPableComp)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] Interface actor returned null component Actor=%s"),
-			*GetNameSafe(Actor));
-	}
-
 	return EMPableComp;
 }
 
@@ -516,13 +454,6 @@ bool UPartnerEMPComponent::IsCandidateActorValid(AActor* Actor, UEMPableComponen
 
 	if (Actor->GetWorld() != GetWorld())
 	{
-		if (bDebugEMP)
-		{
-			UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] Candidate ignored: different world Actor=%s ActorWorld=%s ComponentWorld=%s"),
-				*GetPathNameSafe(Actor),
-				*GetNameSafe(Actor->GetWorld()),
-				*GetNameSafe(GetWorld()));
-		}
 
 		return false;
 	}
@@ -640,20 +571,17 @@ void UPartnerEMPComponent::EnsureEMPLayerWidget()
 {
 	if (IsValid(EMPLayerWidget))
 	{
-		//UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] EnsureEMPLayerWidget: already exists Widget=%s"), *GetNameSafe(EMPLayerWidget));
 		return;
 	}
 
 	if (!PartnerCharacter)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] EnsureEMPLayerWidget: no PartnerCharacter"));
 		return;
 	}
 
 	APlayerController* PlayerController = Cast<APlayerController>(PartnerCharacter->GetController());
 	if (!PlayerController || !PlayerController->IsLocalController())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] EnsureEMPLayerWidget: no local PlayerController PC=%s"), *GetNameSafe(PlayerController));
 		return;
 	}
 
@@ -665,8 +593,6 @@ void UPartnerEMPComponent::EnsureEMPLayerWidget()
 
 	EMPLayerWidget = CreateWidget<UEMPLayerWidget>(PlayerController, EffectiveClass);
 
-	//UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] EnsureEMPLayerWidget: CreateWidget result=%s Class=%s"),
-	//	*GetNameSafe(EMPLayerWidget), *GetNameSafe(EffectiveClass));
 
 	if (!IsValid(EMPLayerWidget))
 	{
@@ -699,12 +625,9 @@ void UPartnerEMPComponent::EnsureEMPLayerWidget()
 
 void UPartnerEMPComponent::DestroyEMPLayerWidget()
 {
-	//UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] DestroyEMPLayerWidget: ptr=%s IsValid=%d"),
-	//	*GetNameSafe(EMPLayerWidget), IsValid(EMPLayerWidget) ? 1 : 0);
 
 	if (!IsValid(EMPLayerWidget))
 	{
-		//DestroyRemainingEMPWidgets(PlayerController);
 		if (ULocalPlayerUILayerSubsystem* LayerSubsystem = GetUILayerSubsystem())
 		{
 			LayerSubsystem->PopLayer(EMPLayerHandle);
@@ -728,68 +651,8 @@ void UPartnerEMPComponent::DestroyEMPLayerWidget()
 	}
 	EMPLayerHandle.Reset();
 
-	if (bDebugEMP)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] DestroyEMPLayerWidget: after RemoveFromParent IsInViewport=%d"),
-			EMPLayerWidget->IsInViewport() ? 1 : 0);
-	}
-
 	EMPLayerWidget = nullptr;
 
-	//DestroyRemainingEMPWidgets(PlayerController);
-}
-
-void UPartnerEMPComponent::DestroyRemainingEMPWidgets(APlayerController* PlayerController)
-{
-	if (!PlayerController)
-	{
-		return;
-	}
-
-	TArray<UUserWidget*> RemainingLayers;
-	UWidgetBlueprintLibrary::GetAllWidgetsOfClass(PlayerController, RemainingLayers, UEMPLayerWidget::StaticClass(), true);
-	int32 RemovedLayerCount = 0;
-	for (UUserWidget* Widget : RemainingLayers)
-	{
-		if (UEMPLayerWidget* LayerWidget = Cast<UEMPLayerWidget>(Widget))
-		{
-			if (!LayerWidget->IsInViewport() && !LayerWidget->GetParent())
-			{
-				UE_LOG(LogTemp, Error, TEXT("NON SIKE!"));
-				continue;
-			}
-
-			LayerWidget->ClearMarkers();
-			LayerWidget->SetVisibility(ESlateVisibility::Collapsed);
-			LayerWidget->RemoveFromParent();
-			++RemovedLayerCount;
-		}
-	}
-
-	TArray<UUserWidget*> RemainingMarks;
-	UWidgetBlueprintLibrary::GetAllWidgetsOfClass(PlayerController, RemainingMarks, UEMPMarkWidget::StaticClass(), false);
-	int32 RemovedMarkCount = 0;
-	for (UUserWidget* Widget : RemainingMarks)
-	{
-		if (Widget)
-		{
-			if (!Widget->IsInViewport() && !Widget->GetParent())
-			{
-				continue;
-			}
-
-			Widget->SetVisibility(ESlateVisibility::Collapsed);
-			Widget->RemoveFromParent();
-			++RemovedMarkCount;
-		}
-	}
-
-	if (bDebugEMP && (RemovedLayerCount > 0 || RemovedMarkCount > 0))
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] DestroyEMPLayerWidget: removed attached remaining Layers=%d Marks=%d"),
-			RemovedLayerCount,
-			RemovedMarkCount);
-	}
 }
 
 ULocalPlayerUILayerSubsystem* UPartnerEMPComponent::GetUILayerSubsystem() const
@@ -831,24 +694,6 @@ void UPartnerEMPComponent::AddEMPCandidate(AActor* Actor, UEMPableComponent* EMP
 	{
 		EMPLayerWidget->AddCandidate(Actor, EMPableComp);
 	}
-
-	if (bDebugEMP)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] Candidate added Comp=%s NetMode=%d Local=%d Actor=%s ActorPtr=%p ActorWorld=%s ActorPath=%s EMPable=%s EMPablePtr=%p CountBefore=%d Screen=(%.1f, %.1f) Tags=%s"),
-			*GetNameSafe(this),
-			GetWorld() ? static_cast<int32>(GetWorld()->GetNetMode()) : -1,
-			PartnerCharacter && PartnerCharacter->IsLocallyControlled() ? 1 : 0,
-			*GetNameSafe(Actor),
-			Actor,
-			*GetNameSafe(Actor->GetWorld()),
-			*GetPathNameSafe(Actor),
-			*GetNameSafe(EMPableComp),
-			EMPableComp,
-			EMPCandidateComponents.Num(),
-			ScreenLocation.X,
-			ScreenLocation.Y,
-			*EMPableComp->EMPTags.ToStringSimple());
-	}
 }
 
 void UPartnerEMPComponent::RemoveEMPCandidateAt(int32 Index)
@@ -864,15 +709,6 @@ void UPartnerEMPComponent::RemoveEMPCandidateAt(int32 Index)
 	if (EMPLayerWidget)
 	{
 		EMPLayerWidget->RemoveCandidate(Actor, EMPableComp);
-	}
-
-	if (bDebugEMP)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[PartnerEMPDebug] Candidate removed Comp=%s NetMode=%d Local=%d Actor=%s"),
-			*GetNameSafe(this),
-			GetWorld() ? static_cast<int32>(GetWorld()->GetNetMode()) : -1,
-			PartnerCharacter && PartnerCharacter->IsLocallyControlled() ? 1 : 0,
-			*GetNameSafe(Actor));
 	}
 
 	EMPCandidateComponents.RemoveAtSwap(Index);

@@ -3,12 +3,14 @@
 #include "Misc/AutomationTest.h"
 
 #include "Drone/Partner/PartnerCharacter.h"
+#include "Drone/Partner/EMPableComponent.h"
 #include "Drone/Partner/PartnerEMPComponent.h"
 #include "Drone/Partner/PartnerHackComponent.h"
 #include "Drone/Partner/PartnerPlayerController.h"
 #include "Drone/Partner/PartnerSupportComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
+#include "Enemy/EnemyBase.h"
 #include "GAS/Abilities/Partner/OutlierPartnerGameplayAbilities.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "GameplayTags/OutlierGameplayTags.h"
@@ -314,12 +316,46 @@ bool FOutlierGasPartnerAbilityExecutionTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Normal confirmed Hack success commits cooldown"), AbilitySystem->IsPartnerCooldownActive(HackCooldown));
 
 	const FGameplayTag EMPCooldown = OutlierGameplayTags::Cooldown::Partner::EMP();
+	AEnemyBase* EMPEnemy = Fixture.World->SpawnActor<AEnemyBase>();
+	if (!TestNotNull(TEXT("EMP target Enemy is spawned"), EMPEnemy))
+	{
+		return false;
+	}
+	EMPEnemy->SetActorLocation(Fixture.Partner->GetActorLocation() + FVector(100.0f, 0.0f, 0.0f));
+	UPartnerEMPComponent* EMPComponent = Fixture.Partner->FindComponentByClass<UPartnerEMPComponent>();
+	if (!TestNotNull(TEXT("Partner owns its EMP execution component"), EMPComponent))
+	{
+		EMPEnemy->Destroy(true);
+		return false;
+	}
+	EMPComponent->bRequireLineOfSight = false;
+	FPartnerEMPAbilityData EMPData;
+	EMPData.StunDuration = 0.05f;
+	EMPComponent->CacheAbilityData(EMPData);
 	TestTrue(TEXT("EMP starts through its granted native AbilitySpec"), AbilitySystem->TryActivatePartnerAbility(EMPAbility));
 	TestTrue(TEXT("EMP commits cooldown when target selection starts"), AbilitySystem->IsPartnerCooldownActive(EMPCooldown));
+	EMPComponent->ServerCompleteEMP(TArray<AActor*>{EMPEnemy});
+	TestTrue(
+		TEXT("Partner EMP grants Stunned through the target Enemy ASC"),
+		EMPEnemy->GetOutlierAbilitySystemComponent()->HasMatchingGameplayTag(
+			OutlierGameplayTags::State::Stunned()));
+	TestFalse(
+		TEXT("Partner EMP does not mirror migrated Stunned state into EMPTags"),
+		EMPEnemy->GetEMPableComponent()->HasEMPTag(OutlierGameplayTags::State::Stunned()));
+	for (int32 TickIndex = 0; TickIndex < 4; ++TickIndex)
+	{
+		++GFrameCounter;
+		Fixture.World->Tick(ELevelTick::LEVELTICK_All, 0.05f);
+	}
+	TestFalse(
+		TEXT("Partner EMP Stunned GameplayEffect expires at its configured duration"),
+		EMPEnemy->GetOutlierAbilitySystemComponent()->HasMatchingGameplayTag(
+			OutlierGameplayTags::State::Stunned()));
 	const float EMPRemainingAfterStart = AbilitySystem->GetPartnerCooldownRemaining(EMPCooldown);
 	TestFalse(TEXT("Repeated EMP activation cannot create a second ability instance"), AbilitySystem->TryActivatePartnerAbility(EMPAbility));
 	TestTrue(TEXT("Repeated EMP activation does not refresh its cooldown"), IsNearlyEqualDuration(AbilitySystem->GetPartnerCooldownRemaining(EMPCooldown), EMPRemainingAfterStart));
 	AbilitySystem->CancelActivePartnerAbilities();
+	EMPEnemy->Destroy(true);
 
 	const FGameplayTag ShieldAbility = OutlierGameplayTags::Ability::Partner::Shield();
 	const FGameplayTag ShieldCooldown = OutlierGameplayTags::Cooldown::Partner::Shield();

@@ -445,6 +445,7 @@ protected:
 	void BindGasVitalityObservers();
 	void UnbindGasVitalityObservers();
 	void HandleHealthChanged(const FOnAttributeChangeData& ChangeData);
+	void HandleStunnedTagChanged(const FGameplayTag StunnedTag, int32 NewCount);
 	bool ApplyDamageInternal(
 		float DamageAmount,
 		AController* DamageInstigator,
@@ -483,6 +484,7 @@ protected:
 	virtual void CancelCommittedAction();
 	virtual void ApplyExplosionReactionPresentation(const FVector& Direction, float ReactionScale);
 	FDelegateHandle HealthChangedHandle;
+	FDelegateHandle StunnedTagChangedHandle;
 	void AccumulateImpactVelocity(const FVector& ImpactVelocity);
 	void RefreshImpactReactionDuration();
 	void BeginPossessedImpactInputLock();

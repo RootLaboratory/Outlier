@@ -413,6 +413,7 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 			FOutlierDamageRequest DamageRequest;
 			DamageRequest.DamageAmount = DamageToApply;
 			DamageRequest.DamageTag = OutlierGameplayTags::Damage::Weapon();
+			DamageRequest.StunDurationSeconds = ProjectileStunTime;
 			DamageRequest.HitResult = ResolvedDamageHit;
 			DamageRequest.DamageOrigin = Start;
 			DamageRequest.EventInstigator = OwnerCharacter->GetController();

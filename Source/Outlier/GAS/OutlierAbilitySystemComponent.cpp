@@ -99,15 +99,6 @@ void UOutlierAbilitySystemComponent::InitializeForActor(AActor* Actor)
 		RefreshAbilityActorInfo();
 	}
 
-	UE_LOG(
-		LogOutlier,
-		Verbose,
-		TEXT("[GAS.Init] Actor=%s Owner=%s Avatar=%s Role=%d RepMode=%d"),
-		*GetNameSafe(Actor),
-		*GetNameSafe(GetOwnerActor()),
-		*GetNameSafe(GetAvatarActor()),
-		static_cast<int32>(Actor->GetLocalRole()),
-		static_cast<int32>(ReplicationMode));
 }
 
 void UOutlierAbilitySystemComponent::InitializeForPawn(APawn* Pawn)
@@ -299,6 +290,16 @@ FActiveGameplayEffectHandle UOutlierAbilitySystemComponent::ApplyRebootStateToSe
 
 	SpecHandle.Data->SetDuration(DurationSeconds, true);
 	return ApplyGameplayEffectSpecToSelf(*SpecHandle.Data.Get());
+}
+
+FActiveGameplayEffectHandle UOutlierAbilitySystemComponent::ApplyStunStateToSelf(
+	float DurationSeconds,
+	UObject* SourceObject)
+{
+	return ApplyTimedGameplayEffectToSelf(
+		UOutlierStunGameplayEffect::StaticClass(),
+		DurationSeconds,
+		SourceObject);
 }
 
 FActiveGameplayEffectHandle UOutlierAbilitySystemComponent::ApplyDamageImmuneStateToSelf()
@@ -627,37 +628,10 @@ bool UOutlierAbilitySystemComponent::TryActivateShooterSuitAbility(const FGamepl
 {
 	if (!bShooterSuitConfigured || !AbilityTag.IsValid())
 	{
-		UE_LOG(
-			LogOutlier,
-			Warning,
-			TEXT("[GAS.ShooterSuit.Trace] RequestRejected Owner=%s Ability=%s Configured=%d ValidTag=%d"),
-			*GetNameSafe(GetAvatarActor()),
-			*AbilityTag.ToString(),
-			bShooterSuitConfigured ? 1 : 0,
-			AbilityTag.IsValid() ? 1 : 0);
 		return false;
 	}
 
-	const FGameplayAbilitySpec* QuantumLeapSpec = FindAbilitySpecFromHandle(GrantedShooterQuantumLeapAbilityHandle);
-	const FGameplayAbilitySpec* BulletReflectionSpec = FindAbilitySpecFromHandle(GrantedShooterBulletReflectionAbilityHandle);
-	const FGameplayAbilitySpec* WeaponOverchargeSpec = FindAbilitySpecFromHandle(GrantedShooterWeaponOverchargeAbilityHandle);
 	const FGameplayAbilitySpec* StealthSpec = FindAbilitySpecFromHandle(GrantedShooterStealthAbilityHandle);
-	UE_LOG(
-		LogOutlier,
-		Verbose,
-		TEXT("[GAS.ShooterSuit.Trace] Request Owner=%s Ability=%s Authority=%d QuantumActive=%d ReflectionActive=%d OverchargeActive=%d StealthActive=%d Stealthed=%d QuantumCooldown=%.2f ReflectionCooldown=%.2f OverchargeCooldown=%.2f StealthCooldown=%.2f"),
-		*GetNameSafe(GetAvatarActor()),
-		*AbilityTag.ToString(),
-		IsOwnerActorAuthoritative() ? 1 : 0,
-		QuantumLeapSpec && QuantumLeapSpec->IsActive() ? 1 : 0,
-		BulletReflectionSpec && BulletReflectionSpec->IsActive() ? 1 : 0,
-		WeaponOverchargeSpec && WeaponOverchargeSpec->IsActive() ? 1 : 0,
-		StealthSpec && StealthSpec->IsActive() ? 1 : 0,
-		HasMatchingGameplayTag(OutlierGameplayTags::State::Stealthed()) ? 1 : 0,
-		GetShooterQuantumLeapCooldownRemaining(),
-		GetShooterBulletReflectionCooldownRemaining(),
-		GetShooterWeaponOverchargeCooldownRemaining(),
-		GetShooterStealthCooldownRemaining());
 
 	if (AbilityTag.MatchesTagExact(OutlierGameplayTags::Ability::Shooter::Stealth())
 		&& StealthSpec
@@ -670,18 +644,6 @@ bool UOutlierAbilitySystemComponent::TryActivateShooterSuitAbility(const FGamepl
 	FGameplayTagContainer AbilityTags;
 	AbilityTags.AddTag(AbilityTag);
 	const bool bActivated = TryActivateAbilitiesByTag(AbilityTags, true);
-	UE_LOG(
-		LogOutlier,
-		Verbose,
-		TEXT("[GAS.ShooterSuit.Trace] RequestResult Owner=%s Ability=%s Activated=%d QuantumActive=%d ReflectionActive=%d OverchargeActive=%d StealthActive=%d Stealthed=%d"),
-		*GetNameSafe(GetAvatarActor()),
-		*AbilityTag.ToString(),
-		bActivated ? 1 : 0,
-		QuantumLeapSpec && QuantumLeapSpec->IsActive() ? 1 : 0,
-		BulletReflectionSpec && BulletReflectionSpec->IsActive() ? 1 : 0,
-		WeaponOverchargeSpec && WeaponOverchargeSpec->IsActive() ? 1 : 0,
-		StealthSpec && StealthSpec->IsActive() ? 1 : 0,
-		HasMatchingGameplayTag(OutlierGameplayTags::State::Stealthed()) ? 1 : 0);
 	return bActivated;
 }
 

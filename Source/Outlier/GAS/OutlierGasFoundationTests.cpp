@@ -7,6 +7,7 @@
 #include "Damage/OutlierDamageReceiver.h"
 #include "Drone/Partner/HackableComponent.h"
 #include "Drone/Partner/PartnerCharacter.h"
+#include "Drone/Partner/PartnerCombatComponent.h"
 #include "Drone/Partner/PartnerEMPComponent.h"
 #include "Drone/Partner/PartnerHackComponent.h"
 #include "Drone/Partner/PartnerSurvivalDataRow.h"
@@ -63,6 +64,30 @@ namespace
 			? FindFProperty<FBoolProperty>(Object->GetClass(), PropertyName)
 			: nullptr;
 		return Property && Property->GetPropertyValue_InContainer(Object);
+	}
+
+	float ReadFloatProperty(const UObject* Object, FName PropertyName)
+	{
+		const FFloatProperty* Property = Object
+			? FindFProperty<FFloatProperty>(Object->GetClass(), PropertyName)
+			: nullptr;
+		return Property ? Property->GetPropertyValue_InContainer(Object) : 0.0f;
+	}
+
+	FName ReadNameProperty(const UObject* Object, FName PropertyName)
+	{
+		const FNameProperty* Property = Object
+			? FindFProperty<FNameProperty>(Object->GetClass(), PropertyName)
+			: nullptr;
+		return Property ? Property->GetPropertyValue_InContainer(Object) : NAME_None;
+	}
+
+	UClass* ReadClassProperty(const UObject* Object, FName PropertyName)
+	{
+		const FClassProperty* Property = Object
+			? FindFProperty<FClassProperty>(Object->GetClass(), PropertyName)
+			: nullptr;
+		return Property ? Cast<UClass>(Property->GetObjectPropertyValue_InContainer(Object)) : nullptr;
 	}
 
 	FActiveGameplayEffectHandle ApplyTaggedInfiniteEffect(
@@ -1059,6 +1084,16 @@ bool FOutlierGasWeaponReuseCooldownTest::RunTest(const FString& Parameters)
 	UClass* WeaponClass = LoadClass<ARangedWeaponBase>(
 		nullptr,
 		TEXT("/Game/Blueprints/Weapon/BP_Pistol.BP_Pistol_C"));
+	UClass* PartnerClass = LoadClass<APartnerCharacter>(
+		nullptr,
+		TEXT("/Game/Blueprints/Partner/BP_PartnerCharacter.BP_PartnerCharacter_C"));
+	const APartnerCharacter* PartnerCDO = PartnerClass
+		? Cast<APartnerCharacter>(PartnerClass->GetDefaultObject())
+		: nullptr;
+	const UPartnerCombatComponent* PartnerCombat = PartnerCDO
+		? PartnerCDO->FindComponentByClass<UPartnerCombatComponent>()
+		: nullptr;
+	UClass* PartnerWeaponClass = ReadClassProperty(PartnerCombat, TEXT("DefaultWeaponClass"));
 	AShooterCharacter* Shooter = ShooterClass
 		? World->SpawnActor<AShooterCharacter>(ShooterClass)
 		: nullptr;
@@ -1068,9 +1103,13 @@ bool FOutlierGasWeaponReuseCooldownTest::RunTest(const FString& Parameters)
 	ARangedWeaponBase* SecondWeapon = WeaponClass
 		? World->SpawnActor<ARangedWeaponBase>(WeaponClass)
 		: nullptr;
+	ARangedWeaponBase* PartnerWeapon = PartnerWeaponClass
+		? World->SpawnActor<ARangedWeaponBase>(PartnerWeaponClass)
+		: nullptr;
 	if (!TestNotNull(TEXT("Shooter is spawned"), Shooter)
 		|| !TestNotNull(TEXT("First weapon is spawned"), FirstWeapon)
-		|| !TestNotNull(TEXT("Second weapon is spawned"), SecondWeapon))
+		|| !TestNotNull(TEXT("Second weapon is spawned"), SecondWeapon)
+		|| !TestNotNull(TEXT("Partner Blueprint has a default ranged weapon class"), PartnerWeapon))
 	{
 		World->DestroyWorld(true);
 		World->SetPhysicsScene(nullptr);
@@ -1091,8 +1130,21 @@ bool FOutlierGasWeaponReuseCooldownTest::RunTest(const FString& Parameters)
 	{
 		SecondWeapon->DispatchBeginPlay();
 	}
+	if (!PartnerWeapon->HasActorBegunPlay())
+	{
+		PartnerWeapon->DispatchBeginPlay();
+	}
 	FirstWeapon->OnEquipped(Shooter);
 	SecondWeapon->OnEquipped(Shooter);
+	TestTrue(
+		TEXT("BP_Pistol caches its positive StunTime from the projectile DataTable"),
+		ReadFloatProperty(FirstWeapon, TEXT("ProjectileStunTime")) > 0.0f);
+	TestFalse(
+		TEXT("Partner default weapon resolves a projectile profile"),
+		ReadNameProperty(PartnerWeapon, TEXT("ProjectileProfileId")).IsNone());
+	TestTrue(
+		TEXT("Partner default weapon caches a positive StunTime from its configured projectile row"),
+		ReadFloatProperty(PartnerWeapon, TEXT("ProjectileStunTime")) > 0.0f);
 	UOutlierAbilitySystemComponent* AbilitySystem = Shooter->GetOutlierAbilitySystemComponent();
 	TestNotNull(TEXT("Shooter ASC exists"), AbilitySystem);
 
@@ -1483,10 +1535,14 @@ bool FOutlierGasEnemyDamageFlowTest::RunTest(const FString& Parameters)
 	FOutlierDamageRequest WeaponDamageEvent;
 	WeaponDamageEvent.DamageTag = OutlierGameplayTags::Damage::Weapon();
 	WeaponDamageEvent.HitResult.Component = CoreHitbox;
+	WeaponDamageEvent.StunDurationSeconds = 2.5f;
 	TestEqual(
 		TEXT("Enemy-team weapon damage cannot damage another Enemy-team actor"),
 		ApplyDamageRequest(Enemy, 10.0f, WeaponDamageEvent, nullptr, Enemy),
 		0.0f);
+	TestFalse(
+		TEXT("Rejected Enemy friendly fire cannot apply its carried weapon stun"),
+		AbilitySystem->HasMatchingGameplayTag(OutlierGameplayTags::State::Stunned()));
 	FOutlierDamageRequest FriendlyExplosionDamageEvent;
 	FriendlyExplosionDamageEvent.DamageTag = OutlierGameplayTags::Damage::Explosion();
 	TestEqual(
@@ -1494,6 +1550,7 @@ bool FOutlierGasEnemyDamageFlowTest::RunTest(const FString& Parameters)
 		ApplyDamageRequest(Enemy, 10.0f, FriendlyExplosionDamageEvent, nullptr, Enemy),
 		0.0f);
 	TestEqual(TEXT("Rejected Enemy friendly fire preserves GAS Health"), Enemy->GetCurrentHealth(), 100.0f);
+	WeaponDamageEvent.StunDurationSeconds = 0.0f;
 
 	const float AppliedWeakPointDamage = ApplyDamageRequest(
 		Enemy,
@@ -1508,6 +1565,33 @@ bool FOutlierGasEnemyDamageFlowTest::RunTest(const FString& Parameters)
 		TEXT("Weak-point damage is committed through GAS Health"),
 		Enemy->GetCurrentHealth(),
 		100.0f - ExpectedWeakPointDamage);
+
+	FOutlierDamageRequest StunWeaponDamageEvent;
+	StunWeaponDamageEvent.DamageTag = OutlierGameplayTags::Damage::Weapon();
+	StunWeaponDamageEvent.StunDurationSeconds = 0.05f;
+	TestEqual(
+		TEXT("Weapon damage carrying StunTime is accepted"),
+		ApplyDamageRequest(Enemy, 1.0f, StunWeaponDamageEvent, nullptr, nullptr),
+		1.0f);
+	TestTrue(
+		TEXT("Accepted weapon StunTime grants the authoritative stunned tag"),
+		AbilitySystem->HasMatchingGameplayTag(OutlierGameplayTags::State::Stunned()));
+	TestEqual(
+		TEXT("The Enemy enters its existing Stun combat state from the ASC tag"),
+		Enemy->GetCombatState(),
+		EEnemyCombatState::Stun);
+	for (int32 TickIndex = 0; TickIndex < 4; ++TickIndex)
+	{
+		++GFrameCounter;
+		World->Tick(ELevelTick::LEVELTICK_All, 0.05f);
+	}
+	TestFalse(
+		TEXT("The stunned tag expires after the configured weapon duration"),
+		AbilitySystem->HasMatchingGameplayTag(OutlierGameplayTags::State::Stunned()));
+	TestNotEqual(
+		TEXT("The Enemy restores its previous state after the weapon stun expires"),
+		Enemy->GetCombatState(),
+		EEnemyCombatState::Stun);
 
 	FOutlierDamageRequest ExplosionDamageEvent;
 	ExplosionDamageEvent.DamageTag = OutlierGameplayTags::Damage::Explosion();

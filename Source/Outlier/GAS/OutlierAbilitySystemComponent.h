@@ -48,6 +48,7 @@ public:
 	bool InitializeVitalityToSelf(float MaxHealth);
 	bool RestoreHealthToMax();
 	FActiveGameplayEffectHandle ApplyRebootStateToSelf(float DurationSeconds);
+	FActiveGameplayEffectHandle ApplyStunStateToSelf(float DurationSeconds, UObject* SourceObject);
 	FActiveGameplayEffectHandle ApplyDamageImmuneStateToSelf();
 	FActiveGameplayEffectHandle ApplyPossessPendingStateToSelf();
 	FActiveGameplayEffectHandle ApplyTimedGameplayEffectToSelf(

@@ -59,11 +59,6 @@ bool UOutlierShooterQuantumLeapAbility::CanActivateAbility(
 {
 	if (!Super::CanActivateAbility(Handle, ActorInfo, SourceTags, TargetTags, OptionalRelevantTags))
 	{
-		UE_LOG(
-			LogOutlier,
-			Verbose,
-			TEXT("[GAS.ShooterSuit.Trace][QuantumLeap] CanActivate=0 Reason=GASBlockOrDead Shooter=%s"),
-			*GetNameSafe(ActorInfo ? ActorInfo->AvatarActor.Get() : nullptr));
 		return false;
 	}
 
@@ -77,32 +72,26 @@ bool UOutlierShooterQuantumLeapAbility::CanActivateAbility(
 	const UAbilitySystemComponent* PartnerASC = Partner ? Partner->GetAbilitySystemComponent() : nullptr;
 	if (!Shooter || !AbilitySystem)
 	{
-		UE_LOG(LogOutlier, Warning, TEXT("[GAS.ShooterSuit.Trace][QuantumLeap] CanActivate=0 Reason=MissingShooterOrASC"));
 		return false;
 	}
 	if (!AbilitySystem->IsShooterSuitConfigured())
 	{
-		UE_LOG(LogOutlier, Warning, TEXT("[GAS.ShooterSuit.Trace][QuantumLeap] CanActivate=0 Reason=NotConfigured Shooter=%s"), *GetNameSafe(Shooter));
 		return false;
 	}
 	if (AbilitySystem->IsShooterQuantumLeapCooldownActive())
 	{
-		UE_LOG(LogOutlier, Verbose, TEXT("[GAS.ShooterSuit.Trace][QuantumLeap] CanActivate=0 Reason=Cooldown Shooter=%s Remaining=%.2f"), *GetNameSafe(Shooter), AbilitySystem->GetShooterQuantumLeapCooldownRemaining());
 		return false;
 	}
 	if (Shooter->IsSuitDisabledByPartnerBoundary())
 	{
-		UE_LOG(LogOutlier, Verbose, TEXT("[GAS.ShooterSuit.Trace][QuantumLeap] CanActivate=0 Reason=PartnerBoundary Shooter=%s"), *GetNameSafe(Shooter));
 		return false;
 	}
 	if (!IsValid(Partner) || !PartnerASC)
 	{
-		UE_LOG(LogOutlier, Warning, TEXT("[GAS.ShooterSuit.Trace][QuantumLeap] CanActivate=0 Reason=MissingPartnerOrASC Shooter=%s Partner=%s"), *GetNameSafe(Shooter), *GetNameSafe(Partner));
 		return false;
 	}
 	if (PartnerASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Rebooting()))
 	{
-		UE_LOG(LogOutlier, Verbose, TEXT("[GAS.ShooterSuit.Trace][QuantumLeap] CanActivate=0 Reason=PartnerRebooting Shooter=%s Partner=%s"), *GetNameSafe(Shooter), *GetNameSafe(Partner));
 		return false;
 	}
 
@@ -110,10 +99,8 @@ bool UOutlierShooterQuantumLeapAbility::CanActivateAbility(
 	const float MaxDistance = AbilitySystem->GetShooterSuitConfig().MaxPartnerDistance;
 	if (Distance > MaxDistance)
 	{
-		UE_LOG(LogOutlier, Verbose, TEXT("[GAS.ShooterSuit.Trace][QuantumLeap] CanActivate=0 Reason=OutOfRange Shooter=%s Partner=%s Distance=%.1f Max=%.1f"), *GetNameSafe(Shooter), *GetNameSafe(Partner), Distance, MaxDistance);
 		return false;
 	}
-	UE_LOG(LogOutlier, Verbose, TEXT("[GAS.ShooterSuit.Trace][QuantumLeap] CanActivate=1 Shooter=%s Partner=%s Distance=%.1f"), *GetNameSafe(Shooter), *GetNameSafe(Partner), Distance);
 	return true;
 }
 
@@ -132,14 +119,12 @@ void UOutlierShooterQuantumLeapAbility::ActivateAbility(
 	UOutlierAbilitySystemComponent* ShooterASC = GetOutlierAbilitySystem();
 	if (!Shooter || !Partner || !ShooterASC)
 	{
-		UE_LOG(LogOutlier, Warning, TEXT("[GAS.ShooterSuit.Trace][QuantumLeap] ActivateFailed Reason=RuntimeContextInvalid Shooter=%s Partner=%s ASC=%s"), *GetNameSafe(Shooter), *GetNameSafe(Partner), *GetNameSafe(ShooterASC));
 		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
 		return;
 	}
 
 	if (!TryResolveDestination(*Shooter, *Partner, Destination))
 	{
-		UE_LOG(LogOutlier, Warning, TEXT("[GAS.ShooterSuit.Trace][QuantumLeap] ActivateFailed Reason=NoClearDestination Shooter=%s Partner=%s FailureCooldown=1"), *GetNameSafe(Shooter), *GetNameSafe(Partner));
 		bCommitFailureCooldown = true;
 		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
 		return;
@@ -148,20 +133,10 @@ void UOutlierShooterQuantumLeapAbility::ActivateAbility(
 	DamageImmuneHandle = ShooterASC->ApplyDamageImmuneStateToSelf();
 	if (!DamageImmuneHandle.IsValid())
 	{
-		UE_LOG(LogOutlier, Warning, TEXT("[GAS.ShooterSuit.Trace][QuantumLeap] ActivateFailed Reason=DamageImmuneApplyFailed Shooter=%s"), *GetNameSafe(Shooter));
 		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
 		return;
 	}
 
-	UE_LOG(
-		LogOutlier,
-		Verbose,
-		TEXT("[GAS.ShooterSuit.Trace][QuantumLeap] Activated Shooter=%s Partner=%s Destination=%s CastTime=%.2f Stealthed=%d"),
-		*GetNameSafe(Shooter),
-		*GetNameSafe(Partner),
-		*Destination.ToCompactString(),
-		ShooterASC->GetShooterSuitConfig().QuantumLeap.CastTimeSeconds,
-		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Stealthed()) ? 1 : 0);
 
 	Shooter->GetWorldTimerManager().SetTimer(
 		CastTimerHandle,
@@ -175,10 +150,8 @@ bool UOutlierShooterQuantumLeapAbility::CancelQuantumLeap(bool bInCommitFailureC
 {
 	if (!IsActive())
 	{
-		UE_LOG(LogOutlier, Verbose, TEXT("[GAS.ShooterSuit.Trace][QuantumLeap] CancelIgnored Reason=NotActive FailureCooldown=%d"), bInCommitFailureCooldown ? 1 : 0);
 		return false;
 	}
-	UE_LOG(LogOutlier, Verbose, TEXT("[GAS.ShooterSuit.Trace][QuantumLeap] CancelRequested Shooter=%s FailureCooldown=%d"), *GetNameSafe(GetShooterCharacter()), bInCommitFailureCooldown ? 1 : 0);
 	bCommitFailureCooldown = bInCommitFailureCooldown;
 	EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
 	return true;
@@ -212,16 +185,6 @@ void UOutlierShooterQuantumLeapAbility::EndAbility(
 		bCooldownCommitted = ShooterASC->CommitShooterQuantumLeapCooldown(CooldownMultiplier);
 		ensureMsgf(bCooldownCommitted, TEXT("Quantum Leap must commit its configured cooldown after a resolved attempt."));
 	}
-	UE_LOG(
-		LogOutlier,
-		Verbose,
-		TEXT("[GAS.ShooterSuit.Trace][QuantumLeap] Ended Shooter=%s Cancelled=%d TeleportSucceeded=%d FailureCooldown=%d CooldownMultiplier=%.2f CooldownCommitted=%d"),
-		*GetNameSafe(Shooter),
-		bWasCancelled ? 1 : 0,
-		bTeleportSucceeded ? 1 : 0,
-		bCommitFailureCooldown ? 1 : 0,
-		CooldownMultiplier,
-		bCooldownCommitted ? 1 : 0);
 
 	Destination = FVector::ZeroVector;
 	bCommitFailureCooldown = false;
@@ -306,7 +269,6 @@ void UOutlierShooterQuantumLeapAbility::CompleteQuantumLeap()
 	UOutlierAbilitySystemComponent* ShooterASC = GetOutlierAbilitySystem();
 	if (!Shooter || !ShooterASC || Shooter->IsDead() || !IsValid(Partner))
 	{
-		UE_LOG(LogOutlier, Warning, TEXT("[GAS.ShooterSuit.Trace][QuantumLeap] CompleteFailed Reason=InvalidRuntimeOrDead Shooter=%s Dead=%d Partner=%s FailureCooldown=0"), *GetNameSafe(Shooter), Shooter && Shooter->IsDead() ? 1 : 0, *GetNameSafe(Partner));
 		EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
 		return;
 	}
@@ -314,7 +276,6 @@ void UOutlierShooterQuantumLeapAbility::CompleteQuantumLeap()
 	const UAbilitySystemComponent* PartnerASC = Partner->GetAbilitySystemComponent();
 	if (!PartnerASC)
 	{
-		UE_LOG(LogOutlier, Warning, TEXT("[GAS.ShooterSuit.Trace][QuantumLeap] CompleteFailed Reason=MissingPartnerASC Shooter=%s Partner=%s FailureCooldown=0"), *GetNameSafe(Shooter), *GetNameSafe(Partner));
 		EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
 		return;
 	}
@@ -325,15 +286,6 @@ void UOutlierShooterQuantumLeapAbility::CompleteQuantumLeap()
 	const bool bDestinationBlocked = !IsDestinationClear(*Shooter, *Partner, Destination);
 	if (bBoundaryDisabled || bPartnerRebooting || bOutOfRange || bDestinationBlocked)
 	{
-		UE_LOG(
-			LogOutlier,
-			Verbose,
-			TEXT("[GAS.ShooterSuit.Trace][QuantumLeap] CompleteFailed Reason=Revalidation Boundary=%d PartnerRebooting=%d OutOfRange=%d DestinationBlocked=%d Distance=%.1f FailureCooldown=1"),
-			bBoundaryDisabled ? 1 : 0,
-			bPartnerRebooting ? 1 : 0,
-			bOutOfRange ? 1 : 0,
-			bDestinationBlocked ? 1 : 0,
-			Distance);
 		bCommitFailureCooldown = true;
 		EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
 		return;
@@ -343,12 +295,10 @@ void UOutlierShooterQuantumLeapAbility::CompleteQuantumLeap()
 	bTeleportSucceeded = Shooter->TeleportTo(Destination, PreservedRotation, false, true);
 	if (!bTeleportSucceeded)
 	{
-		UE_LOG(LogOutlier, Warning, TEXT("[GAS.ShooterSuit.Trace][QuantumLeap] TeleportFailed Shooter=%s Destination=%s FailureCooldown=1"), *GetNameSafe(Shooter), *Destination.ToCompactString());
 		bCommitFailureCooldown = true;
 	}
 	else
 	{
-		UE_LOG(LogOutlier, Verbose, TEXT("[GAS.ShooterSuit.Trace][QuantumLeap] TeleportSucceeded Shooter=%s Destination=%s"), *GetNameSafe(Shooter), *Destination.ToCompactString());
 		Shooter->ForceNetUpdate();
 	}
 	EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, !bTeleportSucceeded);
@@ -675,11 +625,6 @@ bool UOutlierShooterStealthAbility::CanActivateAbility(
 {
 	if (!Super::CanActivateAbility(Handle, ActorInfo, SourceTags, TargetTags, OptionalRelevantTags))
 	{
-		UE_LOG(
-			LogOutlier,
-			Warning,
-			TEXT("[GAS.ShooterSuit.Trace][Stealth] CanActivate=0 Reason=GASBlockOrDead Shooter=%s"),
-			*GetNameSafe(ActorInfo ? ActorInfo->AvatarActor.Get() : nullptr));
 		return false;
 	}
 
@@ -693,35 +638,28 @@ bool UOutlierShooterStealthAbility::CanActivateAbility(
 	const UAbilitySystemComponent* PartnerASC = Partner ? Partner->GetAbilitySystemComponent() : nullptr;
 	if (!Shooter || !AbilitySystem)
 	{
-		UE_LOG(LogOutlier, Warning, TEXT("[GAS.ShooterSuit.Trace][Stealth] CanActivate=0 Reason=MissingShooterOrASC"));
 		return false;
 	}
 	if (!AbilitySystem->IsShooterSuitConfigured())
 	{
-		UE_LOG(LogOutlier, Warning, TEXT("[GAS.ShooterSuit.Trace][Stealth] CanActivate=0 Reason=NotConfigured Shooter=%s"), *GetNameSafe(Shooter));
 		return false;
 	}
 	if (AbilitySystem->IsShooterStealthCooldownActive())
 	{
-		UE_LOG(LogOutlier, Verbose, TEXT("[GAS.ShooterSuit.Trace][Stealth] CanActivate=0 Reason=Cooldown Shooter=%s Remaining=%.2f"), *GetNameSafe(Shooter), AbilitySystem->GetShooterStealthCooldownRemaining());
 		return false;
 	}
 	if (Shooter->IsSuitDisabledByPartnerBoundary())
 	{
-		UE_LOG(LogOutlier, Verbose, TEXT("[GAS.ShooterSuit.Trace][Stealth] CanActivate=0 Reason=PartnerBoundary Shooter=%s"), *GetNameSafe(Shooter));
 		return false;
 	}
 	if (!IsValid(Partner) || !PartnerASC)
 	{
-		UE_LOG(LogOutlier, Warning, TEXT("[GAS.ShooterSuit.Trace][Stealth] CanActivate=0 Reason=MissingPartnerOrASC Shooter=%s Partner=%s"), *GetNameSafe(Shooter), *GetNameSafe(Partner));
 		return false;
 	}
 	if (PartnerASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Rebooting()))
 	{
-		UE_LOG(LogOutlier, Verbose, TEXT("[GAS.ShooterSuit.Trace][Stealth] CanActivate=0 Reason=PartnerRebooting Shooter=%s Partner=%s"), *GetNameSafe(Shooter), *GetNameSafe(Partner));
 		return false;
 	}
-	UE_LOG(LogOutlier, Verbose, TEXT("[GAS.ShooterSuit.Trace][Stealth] CanActivate=1 Shooter=%s Partner=%s"), *GetNameSafe(Shooter), *GetNameSafe(Partner));
 	return true;
 }
 
@@ -741,7 +679,6 @@ void UOutlierShooterStealthAbility::ActivateAbility(
 		: nullptr;
 	if (!Shooter || !Partner || !ShooterASC || !PartnerASC)
 	{
-		UE_LOG(LogOutlier, Warning, TEXT("[GAS.ShooterSuit.Trace][Stealth] ActivateFailed Reason=RuntimeContextInvalid Shooter=%s Partner=%s ShooterASC=%s PartnerASC=%s"), *GetNameSafe(Shooter), *GetNameSafe(Partner), *GetNameSafe(ShooterASC), *GetNameSafe(PartnerASC));
 		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
 		return;
 	}
@@ -764,11 +701,9 @@ void UOutlierShooterStealthAbility::ActivateAbility(
 		UOutlierShooterStealthGameplayEffect::StaticClass(), Duration, Shooter);
 	if (!ShooterStealthHandle.IsValid() || !PartnerStealthHandle.IsValid())
 	{
-		UE_LOG(LogOutlier, Warning, TEXT("[GAS.ShooterSuit.Trace][Stealth] ActivateFailed Reason=EffectApplyFailed ShooterEffect=%d PartnerEffect=%d"), ShooterStealthHandle.IsValid() ? 1 : 0, PartnerStealthHandle.IsValid() ? 1 : 0);
 		EndStealth(false);
 		return;
 	}
-	UE_LOG(LogOutlier, Verbose, TEXT("[GAS.ShooterSuit.Trace][Stealth] Activated Shooter=%s Partner=%s Duration=%.2f ShooterEffect=1 PartnerEffect=1"), *GetNameSafe(Shooter), *GetNameSafe(Partner), Duration);
 	RefreshEnemyDetection();
 }
 
@@ -776,10 +711,8 @@ bool UOutlierShooterStealthAbility::EndStealth(bool bCommitCooldown)
 {
 	if (!IsActive() || bEndingStealth)
 	{
-		UE_LOG(LogOutlier, Verbose, TEXT("[GAS.ShooterSuit.Trace][Stealth] EndIgnored Active=%d Ending=%d CommitCooldown=%d"), IsActive() ? 1 : 0, bEndingStealth ? 1 : 0, bCommitCooldown ? 1 : 0);
 		return false;
 	}
-	UE_LOG(LogOutlier, Verbose, TEXT("[GAS.ShooterSuit.Trace][Stealth] EndRequested Shooter=%s CommitCooldown=%d"), *GetNameSafe(GetShooterCharacter()), bCommitCooldown ? 1 : 0);
 	bCommitCooldownOnEnd = bCommitCooldown;
 	EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, !bCommitCooldown);
 	return true;
@@ -824,14 +757,6 @@ void UOutlierShooterStealthAbility::EndAbility(
 		bCooldownCommitted = ShooterASC->CommitShooterStealthCooldown();
 		ensureMsgf(bCooldownCommitted, TEXT("Shooter stealth must commit its configured cooldown on a gameplay end."));
 	}
-	UE_LOG(
-		LogOutlier,
-		Verbose,
-		TEXT("[GAS.ShooterSuit.Trace][Stealth] Ended Shooter=%s Cancelled=%d CommitCooldown=%d CooldownCommitted=%d"),
-		*GetNameSafe(GetShooterCharacter()),
-		bWasCancelled ? 1 : 0,
-		bCommitCooldownOnEnd ? 1 : 0,
-		bCooldownCommitted ? 1 : 0);
 	ShooterAbilitySystem.Reset();
 	PartnerAbilitySystem.Reset();
 	bCommitCooldownOnEnd = false;
@@ -844,7 +769,6 @@ void UOutlierShooterStealthAbility::HandleShooterEffectRemoved(
 {
 	if (RemovedEffect.Handle == ShooterStealthHandle)
 	{
-		UE_LOG(LogOutlier, Verbose, TEXT("[GAS.ShooterSuit.Trace][Stealth] EffectRemoved Side=Shooter Shooter=%s"), *GetNameSafe(GetShooterCharacter()));
 		ShooterStealthHandle.Invalidate();
 		EndStealth(true);
 	}
@@ -855,7 +779,6 @@ void UOutlierShooterStealthAbility::HandlePartnerEffectRemoved(
 {
 	if (RemovedEffect.Handle == PartnerStealthHandle)
 	{
-		UE_LOG(LogOutlier, Verbose, TEXT("[GAS.ShooterSuit.Trace][Stealth] EffectRemoved Side=Partner Shooter=%s"), *GetNameSafe(GetShooterCharacter()));
 		PartnerStealthHandle.Invalidate();
 		EndStealth(true);
 	}

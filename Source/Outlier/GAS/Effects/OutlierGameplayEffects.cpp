@@ -61,6 +61,20 @@ UOutlierRebootGameplayEffect::UOutlierRebootGameplayEffect(const FObjectInitiali
 	TargetTags->SetAndApplyTargetTagChanges(GrantedTags);
 }
 
+UOutlierStunGameplayEffect::UOutlierStunGameplayEffect(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	DurationPolicy = EGameplayEffectDurationType::HasDuration;
+	FInheritedTagContainer GrantedTags;
+	GrantedTags.AddTag(OutlierGameplayTags::State::Stunned());
+	UTargetTagsGameplayEffectComponent* TargetTags =
+		ObjectInitializer.CreateDefaultSubobject<UTargetTagsGameplayEffectComponent>(
+			this,
+			TEXT("StunTargetTags"));
+	GEComponents.Add(TargetTags);
+	TargetTags->SetAndApplyTargetTagChanges(GrantedTags);
+}
+
 UOutlierDamageImmuneGameplayEffect::UOutlierDamageImmuneGameplayEffect(
 	const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
