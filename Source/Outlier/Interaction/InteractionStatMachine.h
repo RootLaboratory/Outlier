@@ -9,6 +9,7 @@
 
 class AFirstPersonCharacter;
 class AFirstPersonPlayerController;
+class AOutlierPlayerState;
 class APartnerCharacter;
 class AShooterCharacter;
 class UHackableComponent;
@@ -60,7 +61,9 @@ protected:
 
 private:
 	UPROPERTY(Transient)
-	TWeakObjectPtr<APartnerCharacter> CachedHackingPartner;
+	TWeakObjectPtr<AOutlierPlayerState> CachedHackingPartnerPlayerState;
+
+	int32 CachedHackingPairId = INDEX_NONE;
 
 	void ResolvePairCharacters(
 		AFirstPersonCharacter* Interactor,

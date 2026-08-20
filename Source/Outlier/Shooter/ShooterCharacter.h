@@ -14,6 +14,8 @@ class UShooterHealthComponent;
 class UShooterInventoryComponent;
 class UShooterCombatComponent;
 class UShooterMovementComponent;
+class UShooterTestingAbilityComponent;
+class UOutlierUpgradeComponent;
 class ULocalPlayerUISubSystem;
 enum class EWeaponType : uint8;
 class UAnimMontage;
@@ -101,6 +103,7 @@ class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter
 	friend class UShooterInventoryComponent;
 	friend class UShooterCombatComponent;
 	friend class UShooterMovementComponent;
+	friend class UShooterTestingAbilityComponent;
 
 protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
@@ -114,6 +117,12 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UShooterMovementComponent> MovementComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UOutlierUpgradeComponent> UpgradeComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TestAbilityComponents")
+	TObjectPtr<UShooterTestingAbilityComponent> TestAbilityComponent;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Health")
 	float MaxHP = 100.0f;
@@ -424,6 +433,12 @@ public:
 	bool IsActionLocked() const { return ActionLock != EShooterActionLock::None; }
 
 	UShooterInventoryComponent* GetInventoryComponent() { return InventoryComponent; }
+
+	UFUNCTION(BlueprintPure, Category = "Upgrade")
+	UOutlierUpgradeComponent* GetUpgradeComponent() const;
+
+	UFUNCTION(BlueprintPure, Category = "Ability")
+	UShooterTestingAbilityComponent* GetTestAbilityComponent() const { return TestAbilityComponent; }
 
 	UFUNCTION(BlueprintPure)
 	bool IsReloading() const;

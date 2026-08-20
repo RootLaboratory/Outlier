@@ -65,13 +65,24 @@ bool AInteractionStatMachine::Interact(AFirstPersonCharacter* Interactor)
 	AShooterCharacter* ShooterCharacter = nullptr;
 	APartnerCharacter* PartnerCharacter = nullptr;
 	ResolvePairCharacters(Interactor, ShooterCharacter, PartnerCharacter);
-	APartnerCharacter* HackingPartner = CachedHackingPartner.Get();
+	AOutlierPlayerState* ShooterPlayerState = ShooterCharacter
+		? ShooterCharacter->GetPlayerState<AOutlierPlayerState>()
+		: nullptr;
+	AOutlierPlayerState* PartnerPlayerState = PartnerCharacter
+		? PartnerCharacter->GetPlayerState<AOutlierPlayerState>()
+		: nullptr;
+	AOutlierPlayerState* HackingPartnerPlayerState = CachedHackingPartnerPlayerState.Get();
 
 	if (!ShooterCharacter
 		|| !PartnerCharacter
-		|| !IsValid(HackingPartner)
+		|| !ShooterPlayerState
+		|| !PartnerPlayerState
+		|| !HackingPartnerPlayerState
 		|| Interactor != ShooterCharacter
-		|| PartnerCharacter != HackingPartner)
+		|| PartnerPlayerState != HackingPartnerPlayerState
+		|| CachedHackingPairId == INDEX_NONE
+		|| ShooterPlayerState->GetPairId() != CachedHackingPairId
+		|| PartnerPlayerState->GetPairId() != CachedHackingPairId)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[StatMachine] Unsupported interactor Actor=%s Interactor=%s"),
 			*GetName(), *GetNameSafe(Interactor));
@@ -79,13 +90,13 @@ bool AInteractionStatMachine::Interact(AFirstPersonCharacter* Interactor)
 	}
 
 	const FGameplayTag MachineRoomTag = GetCurrentRoomTag();
-	const FGameplayTag PartnerRoomTag = HackingPartner->GetCurrentRoomTag();
+	const FGameplayTag PartnerRoomTag = PartnerCharacter->GetCurrentRoomTag();
 	if (!MachineRoomTag.IsValid() || PartnerRoomTag != MachineRoomTag)
 	{
 		UE_LOG(LogTemp, Warning,
 			TEXT("[StatMachine] Partner room mismatch Actor=%s Partner=%s MachineRoom=%s PartnerRoom=%s"),
 			*GetName(),
-			*GetNameSafe(HackingPartner),
+			*GetNameSafe(PartnerCharacter),
 			*MachineRoomTag.ToString(),
 			*PartnerRoomTag.ToString());
 		return false;
@@ -95,7 +106,7 @@ bool AInteractionStatMachine::Interact(AFirstPersonCharacter* Interactor)
 		Cast<AFirstPersonPlayerController>(ShooterCharacter->GetController());
 
 	AFirstPersonPlayerController* PartnerController =
-		Cast<AFirstPersonPlayerController>(HackingPartner->GetController());
+		Cast<AFirstPersonPlayerController>(PartnerCharacter->GetController());
 	if (!ShooterController || !PartnerController)
 	{
 		UE_LOG(LogTemp, Warning,
@@ -106,12 +117,22 @@ bool AInteractionStatMachine::Interact(AFirstPersonCharacter* Interactor)
 		return false;
 	}
 
+	if (ShooterPlayerState)
+	{
+		ShooterPlayerState->SetStatAllocatorExitPending(false);
+	}
+
+	if (PartnerPlayerState)
+	{
+		PartnerPlayerState->SetStatAllocatorExitPending(false);
+	}
+
 	FUILayerPushRequest PushRequest;
 	PushRequest.WidgetClass = StatAllocatorWidgetClass;
 	PushRequest.LayerTag = UILayerTags::GameMenu();
-	PushRequest.InputModeTag = FirstPersonInputModeTags::StatAllocator();
+	PushRequest.InputModeTag = FirstPersonInputModeTags::UI();
 	PushRequest.RequestOwner = this;
-	PushRequest.ContextActors = {ShooterCharacter, HackingPartner};
+	PushRequest.ContextActors = {ShooterCharacter, PartnerCharacter};
 	PushRequest.FocusTarget = EUILayerFocusTarget::Widget;
 	PushRequest.bShowCursor = true;
 
@@ -205,7 +226,21 @@ void AInteractionStatMachine::ApplyUnblockEffect(const FHackResultContext& Conte
 		return;
 	}
 
-	CachedHackingPartner = HackingPartner;
+	AOutlierPlayerState* HackingPartnerPlayerState =
+		HackingPartner->GetPlayerState<AOutlierPlayerState>();
+	if (!HackingPartnerPlayerState || HackingPartnerPlayerState->GetPairId() == INDEX_NONE)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[StatMachine] Unblock rejected: hacking partner PlayerState invalid Actor=%s Partner=%s PlayerState=%s PairId=%d"),
+			*GetName(),
+			*GetNameSafe(HackingPartner),
+			*GetNameSafe(HackingPartnerPlayerState),
+			HackingPartnerPlayerState ? HackingPartnerPlayerState->GetPairId() : INDEX_NONE);
+		return;
+	}
+
+	CachedHackingPartnerPlayerState = HackingPartnerPlayerState;
+	CachedHackingPairId = HackingPartnerPlayerState->GetPairId();
 
 	const FGameplayTag LockedTag = InteractionStatMachineTags::Locked();
 	const FGameplayTag ConcurrentTag = InteractionStatMachineTags::Concurrent();

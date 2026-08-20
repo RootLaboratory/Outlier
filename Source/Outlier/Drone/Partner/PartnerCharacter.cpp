@@ -36,6 +36,7 @@
 #include "Enemy/EnemyRoomSubsystem.h"
 #include "NiagaraComponent.h"
 #include "NiagaraFunctionLibrary.h"
+#include "Upgrade/OutlierUpgradeComponent.h"
 #include "Weapon/WeaponBase.h"
 
 namespace
@@ -1249,6 +1250,11 @@ APartnerCharacter::APartnerCharacter()
 	CombatComponent   = CreateDefaultSubobject<UPartnerCombatComponent>  (TEXT("CombatComponent"));
 	HackComponent     = CreateDefaultSubobject<UPartnerHackComponent>    (TEXT("HackComponent"));
 	EMPComponent      = CreateDefaultSubobject<UPartnerEMPComponent>     (TEXT("EMPComponent"));
+	UpgradeComponent  = CreateDefaultSubobject<UOutlierUpgradeComponent> (TEXT("UpgradeComponent"));
+	if (UpgradeComponent)
+	{
+		UpgradeComponent->SetUpgradeRole(EOutlierUpgradeRole::Partner);
+	}
 
 	FaceSpriteAnimationComponent = CreateDefaultSubobject<UPartnerSpriteAnimationComponent>(TEXT("SpriteAnimationComponent"));
 }

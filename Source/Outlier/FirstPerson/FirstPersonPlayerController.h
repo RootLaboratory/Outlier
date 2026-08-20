@@ -9,10 +9,12 @@
 #include "OutlierPlayerState.h"
 #include "PlayerUIProvider.h"
 #include "UI/UILayerTypes.h"
+#include "Upgrade/OutlierUpgradeTypes.h"
 #include "FirstPersonPlayerController.generated.h"
 
 class UInputMappingContext;
 class UCameraShakeBase;
+class UOutlierUpgradeSetData;
 
 namespace FirstPersonInputModeTags
 {
@@ -30,10 +32,10 @@ namespace FirstPersonInputModeTags
 		return Tag;
 	}
 
-	inline FGameplayTag StatAllocator()
+	inline FGameplayTag UI()
 	{
 		static const FGameplayTag Tag =
-			FGameplayTag::RequestGameplayTag(FName(TEXT("Input.Mode.UI.StatAllocator")));
+			FGameplayTag::RequestGameplayTag(FName(TEXT("Input.Mode.UI")));
 		return Tag;
 	}
 }
@@ -62,6 +64,12 @@ public:
 
 	UFUNCTION(Client, Reliable)
 	void ClientPushUILayer(const FUILayerPushRequest& Request);
+
+	UFUNCTION(Server, Reliable)
+	void ServerTryActivateUpgradeNode(
+		AActor* UpgradeOwner,
+		FName NodeIdOrRowName,
+		UOutlierUpgradeSetData* UpgradeSetData);
 
 	UFUNCTION(Server, Reliable)
 	void ServerNotifyArenaReady();

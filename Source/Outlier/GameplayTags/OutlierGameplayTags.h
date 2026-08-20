@@ -34,6 +34,39 @@ namespace OutlierGameplayTags
 
 	namespace Ability
 	{
+		namespace Shooter
+		{
+			inline FGameplayTag Teleport()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.Teleport")));
+				return Tag;
+			}
+
+			inline FGameplayTag Shield()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.Shield")));
+				return Tag;
+			}
+
+			inline FGameplayTag Stealth()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.Stealth")));
+				return Tag;
+			}
+
+			inline FGameplayTag StimPack()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.StimPack")));
+				return Tag;
+			}
+
+			inline FGameplayTag Combat()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.Combat")));
+				return Tag;
+			}
+		}
+
 		namespace Partner
 		{
 			inline FGameplayTag EMP()

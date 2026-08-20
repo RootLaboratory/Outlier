@@ -15,6 +15,8 @@
 #include "Shooter/ShooterCharacter.h"
 #include "Network/OutlierArenaPoolSubsystem.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
+#include "Upgrade/OutlierUpgradeComponent.h"
+#include "Upgrade/OutlierUpgradeSetData.h"
 
 AFirstPersonPlayerController::AFirstPersonPlayerController()
 {
@@ -69,6 +71,36 @@ void AFirstPersonPlayerController::ClientPushUILayer_Implementation(
 	}
 
 	LayerSubsystem->PushWidget(Request);
+}
+
+void AFirstPersonPlayerController::ServerTryActivateUpgradeNode_Implementation(
+	AActor* UpgradeOwner,
+	FName NodeIdOrRowName,
+	UOutlierUpgradeSetData* UpgradeSetData)
+{
+	AOutlierPlayerState* OutlierPlayerState = GetPlayerState<AOutlierPlayerState>();
+	UOutlierUpgradeComponent* UpgradeComponent = UpgradeOwner
+		? UpgradeOwner->FindComponentByClass<UOutlierUpgradeComponent>()
+		: nullptr;
+	if (!UpgradeComponent)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[Upgrade] Server activate failed: component not found Controller=%s Owner=%s PlayerState=%s Node=%s"),
+			*GetNameSafe(this),
+			*GetNameSafe(UpgradeOwner),
+			*GetNameSafe(OutlierPlayerState),
+			*NodeIdOrRowName.ToString());
+		return;
+	}
+
+	if (UpgradeSetData)
+	{
+		UpgradeComponent->SetUpgradeSetData(UpgradeSetData);
+	}
+
+	UpgradeComponent->TryActivateNodeForPlayerState(
+		NodeIdOrRowName,
+		OutlierPlayerState);
 }
 
 void AFirstPersonPlayerController::ClientPlayExplosionCameraShake_Implementation(

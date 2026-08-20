@@ -27,6 +27,7 @@
 #include "ShooterHealthComponent.h"
 #include "ShooterInventoryComponent.h"
 #include "ShooterCombatComponent.h"
+#include "Shooter/Ability/ShooterTestingAbilityComponent.h"
 #include "Weapon/RangedWeaponBase.h"
 #include "ShooterFirstPersonAnimInstance.h"
 #include "ShooterMovementComponent.h"
@@ -34,7 +35,9 @@
 #include "Weapon/WeaponBase.h"
 #include "Weapon/RangedWeaponBase.h"
 #include "GameplayTags/OutlierGameplayTags.h"
+#include "Upgrade/OutlierUpgradeComponent.h"
 #include "Net/UnrealNetwork.h"
+#include "OutlierPlayerState.h"
 #include "OutlierNetUtils.h"
 #include "Outlier.h"
 
@@ -46,6 +49,11 @@ FName AShooterCharacter::GetFirstPersonWeaponSocketByType(EWeaponType WeaponType
 FName AShooterCharacter::GetThirdPersonWeaponSocketByType(EWeaponType WeaponType) const
 {
 	return InventoryComponent ? InventoryComponent->GetThirdPersonWeaponSocketByType(WeaponType) : NAME_None;
+}
+
+UOutlierUpgradeComponent* AShooterCharacter::GetUpgradeComponent() const
+{
+	return UpgradeComponent;
 }
 
 AShooterCharacter::AShooterCharacter() : AFirstPersonCharacter()
@@ -70,6 +78,12 @@ AShooterCharacter::AShooterCharacter() : AFirstPersonCharacter()
 	InventoryComponent = CreateDefaultSubobject<UShooterInventoryComponent>(TEXT("InventoryComponent"));
 	CombatComponent = CreateDefaultSubobject<UShooterCombatComponent>(TEXT("CombatComponent"));
 	MovementComponent = CreateDefaultSubobject<UShooterMovementComponent>(TEXT("MovementComponent"));
+	UpgradeComponent = CreateDefaultSubobject<UOutlierUpgradeComponent>(TEXT("UpgradeComponent"));
+	if (UpgradeComponent)
+	{
+		UpgradeComponent->SetUpgradeRole(EOutlierUpgradeRole::Shooter);
+	}
+	TestAbilityComponent = CreateDefaultSubobject<UShooterTestingAbilityComponent>(TEXT("AbilityComponent"));
 
 	if (CaptureComponent)
 	{
@@ -551,12 +565,6 @@ void AShooterCharacter::TryUseSuit()
 		return;
 	}
 
-	ULocalPlayerUISubSystem* UISubsystem = nullptr;
-	if (ULocalPlayer* LocalPlayer = ShooterController->GetLocalPlayer())
-	{
-		UISubsystem = LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>();
-	}
-
 	/*if (!UISubsystem || !UISubsystem->ApplyCurrentAbilityCooldownIfMatches(SelectedAbilityTag, SuitAbilityCooldown))
 	{
 		UE_LOG(LogTemp, Error, TEXT("ApplyCurrentAbilityCooldownIfMatches"));
@@ -564,12 +572,18 @@ void AShooterCharacter::TryUseSuit()
 		return;
 	}*/
 
+	const FGameplayTag StealthAbilityTag = OutlierGameplayTags::Ability::Shooter::Stealth();
+
 	if (ShooterController->AbilityUIInstance)
 	{
-		ShooterController->AbilityUIInstance->ApplyCooldownIfMatches(SelectedAbilityTag, SuitAbilityCooldown);
+		ShooterController->AbilityUIInstance->ApplyCooldownIfMatches(StealthAbilityTag, SuitAbilityCooldown);
 	}
 
-	if (HasAuthority())
+	if (TestAbilityComponent)
+	{
+		TestAbilityComponent->TryActivateAbilityByTag(StealthAbilityTag);
+	}
+	else if (HasAuthority())
 	{
 		ToggleStealth();
 	}
