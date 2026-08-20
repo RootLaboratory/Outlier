@@ -60,4 +60,7 @@ struct FUILayerPushRequest
 
 	UPROPERTY()
 	bool bShowCursor = true;
+
+	UPROPERTY()
+	bool bReceivesInput = true;
 };

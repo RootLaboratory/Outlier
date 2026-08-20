@@ -1,11 +1,13 @@
 #include "UI/LocalPlayerUILayerSubsystem.h"
 
 #include "Blueprint/UserWidget.h"
+#include "Components/Button.h"
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
 #include "Components/PanelWidget.h"
 #include "Engine/LocalPlayer.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
+#include "FrontendPlayerController.h"
 #include "Framework/Application/SlateApplication.h"
 #include "MainUIBase.h"
 #include "UI/UILayerGameplayTags.h"
@@ -24,6 +26,11 @@ void ULocalPlayerUILayerSubsystem::Deinitialize()
 
 	for (FUILayerEntry& Entry : LayerEntries)
 	{
+		if (UWidget* HitTestBlocker = Entry.HitTestBlocker.Get())
+		{
+			HitTestBlocker->RemoveFromParent();
+		}
+
 		if (UUserWidget* Widget = Entry.Widget.Get())
 		{
 			Widget->RemoveFromParent();
@@ -70,7 +77,7 @@ bool ULocalPlayerUILayerSubsystem::EnsureLayerRoot()
 		return true;
 	}
 
-	AFirstPersonPlayerController* PlayerController = GetLocalFirstPersonController();
+	APlayerController* PlayerController = GetLocalPlayerController();
 	if (!PlayerController)
 	{
 		return false;
@@ -87,10 +94,7 @@ bool ULocalPlayerUILayerSubsystem::EnsureLayerRoot()
 		return false;
 	}
 
-	if (!LayerRootWidget->AddToPlayerScreen(1000))
-	{
-		LayerRootWidget->AddToViewport(1000);
-	}
+	LayerRootWidget->AddToViewport(1000);
 
 	RegisterLayerContainer(UILayerTags::Gameplay(), LayerRootWidget->GetGameplayLayer());
 	RegisterLayerContainer(UILayerTags::GameMenu(), LayerRootWidget->GetGameMenuLayer());
@@ -170,7 +174,7 @@ FUILayerHandle ULocalPlayerUILayerSubsystem::PushWidget(
 		}
 	}
 
-	AFirstPersonPlayerController* PlayerController = GetLocalFirstPersonController();
+	APlayerController* PlayerController = GetLocalPlayerController();
 	if (!PlayerController)
 	{
 		return {};
@@ -204,7 +208,8 @@ FUILayerHandle ULocalPlayerUILayerSubsystem::PushWidget(
 		Request.InputModeTag,
 		Request.RequestOwner,
 		Request.FocusTarget,
-		Request.bShowCursor);
+		Request.bShowCursor,
+		Request.bReceivesInput);
 }
 
 FUILayerHandle ULocalPlayerUILayerSubsystem::PushWidget(
@@ -213,7 +218,8 @@ FUILayerHandle ULocalPlayerUILayerSubsystem::PushWidget(
 	FGameplayTag InputModeTag,
 	UObject* RequestOwner,
 	EUILayerFocusTarget FocusTarget,
-	bool bShowCursor)
+	bool bShowCursor,
+	bool bReceivesInput)
 {
 	if (!LayerTag.IsValid() || !InputModeTag.IsValid() || !IsValid(Widget))
 	{
@@ -234,7 +240,13 @@ FUILayerHandle ULocalPlayerUILayerSubsystem::PushWidget(
 	}
 
 	const FUILayerHandle Handle{NextLayerId++};
-	if (!AttachWidgetToLayer(LayerTag, Widget, Handle.Id))
+	UWidget* HitTestBlocker = nullptr;
+	if (!AttachWidgetToLayer(
+		LayerTag,
+		Widget,
+		FocusTarget,
+		Handle.Id,
+		HitTestBlocker))
 	{
 		return {};
 	}
@@ -244,9 +256,11 @@ FUILayerHandle ULocalPlayerUILayerSubsystem::PushWidget(
 	Entry.LayerTag = LayerTag;
 	Entry.InputModeTag = InputModeTag;
 	Entry.Widget = Widget;
+	Entry.HitTestBlocker = HitTestBlocker;
 	Entry.RequestOwner = RequestOwner;
 	Entry.FocusTarget = FocusTarget;
 	Entry.bShowCursor = bShowCursor;
+	Entry.bReceivesInput = bReceivesInput;
 
 	RefreshTopLayerInput();
 	return Handle;
@@ -257,7 +271,8 @@ FUILayerHandle ULocalPlayerUILayerSubsystem::PushInputScope(
 	FGameplayTag InputModeTag,
 	UObject* RequestOwner,
 	EUILayerFocusTarget FocusTarget,
-	bool bShowCursor)
+	bool bShowCursor,
+	bool bReceivesInput)
 {
 	if (!LayerTag.IsValid() || !InputModeTag.IsValid())
 	{
@@ -271,6 +286,7 @@ FUILayerHandle ULocalPlayerUILayerSubsystem::PushInputScope(
 	Entry.RequestOwner = RequestOwner;
 	Entry.FocusTarget = FocusTarget;
 	Entry.bShowCursor = bShowCursor;
+	Entry.bReceivesInput = bReceivesInput;
 
 	RefreshTopLayerInput();
 	return Entry.Handle;
@@ -283,7 +299,8 @@ FUILayerHandle ULocalPlayerUILayerSubsystem::ReplaceWidget(
 	FGameplayTag InputModeTag,
 	UObject* RequestOwner,
 	EUILayerFocusTarget FocusTarget,
-	bool bShowCursor)
+	bool bShowCursor,
+	bool bReceivesInput)
 {
 	if (!PreviousHandle.IsValid()
 		|| !LayerTag.IsValid()
@@ -305,9 +322,20 @@ FUILayerHandle ULocalPlayerUILayerSubsystem::ReplaceWidget(
 	}
 
 	const FUILayerHandle NewHandle{NextLayerId++};
-	if (!AttachWidgetToLayer(LayerTag, Widget, NewHandle.Id))
+	UWidget* HitTestBlocker = nullptr;
+	if (!AttachWidgetToLayer(
+		LayerTag,
+		Widget,
+		FocusTarget,
+		NewHandle.Id,
+		HitTestBlocker))
 	{
 		return {};
+	}
+
+	if (UWidget* PreviousBlocker = LayerEntries[Index].HitTestBlocker.Get())
+	{
+		PreviousBlocker->RemoveFromParent();
 	}
 
 	if (UUserWidget* PreviousWidget = LayerEntries[Index].Widget.Get();
@@ -321,9 +349,11 @@ FUILayerHandle ULocalPlayerUILayerSubsystem::ReplaceWidget(
 	Entry.LayerTag = LayerTag;
 	Entry.InputModeTag = InputModeTag;
 	Entry.Widget = Widget;
+	Entry.HitTestBlocker = HitTestBlocker;
 	Entry.RequestOwner = RequestOwner;
 	Entry.FocusTarget = FocusTarget;
 	Entry.bShowCursor = bShowCursor;
+	Entry.bReceivesInput = bReceivesInput;
 
 	RefreshTopLayerInput();
 	return NewHandle;
@@ -352,9 +382,35 @@ bool ULocalPlayerUILayerSubsystem::PopLayer(FUILayerHandle Handle)
 		Widget->RemoveFromParent();
 	}
 
+	if (UWidget* HitTestBlocker = LayerEntries[Index].HitTestBlocker.Get())
+	{
+		HitTestBlocker->RemoveFromParent();
+	}
+
 	LayerEntries.RemoveAt(Index);
 	RefreshTopLayerInput();
 	return true;
+}
+
+bool ULocalPlayerUILayerSubsystem::PopWidget(UUserWidget* Widget)
+{
+	if (!IsValid(Widget))
+	{
+		return false;
+	}
+
+	const int32 Index = LayerEntries.IndexOfByPredicate(
+		[Widget](const FUILayerEntry& Entry)
+		{
+			return Entry.Widget.Get() == Widget;
+		});
+
+	if (Index == INDEX_NONE)
+	{
+		return false;
+	}
+
+	return PopLayer(LayerEntries[Index].Handle);
 }
 
 int32 ULocalPlayerUILayerSubsystem::PopLayersByOwner(UObject* RequestOwner)
@@ -377,6 +433,11 @@ int32 ULocalPlayerUILayerSubsystem::PopLayersByOwner(UObject* RequestOwner)
 			Widget->RemoveFromParent();
 		}
 
+		if (UWidget* HitTestBlocker = LayerEntries[Index].HitTestBlocker.Get())
+		{
+			HitTestBlocker->RemoveFromParent();
+		}
+
 		LayerEntries.RemoveAt(Index);
 		++RemovedCount;
 	}
@@ -393,6 +454,11 @@ void ULocalPlayerUILayerSubsystem::ClearAllLayers()
 {
 	for (FUILayerEntry& Entry : LayerEntries)
 	{
+		if (UWidget* HitTestBlocker = Entry.HitTestBlocker.Get())
+		{
+			HitTestBlocker->RemoveFromParent();
+		}
+
 		if (UUserWidget* Widget = Entry.Widget.Get())
 		{
 			Widget->RemoveFromParent();
@@ -449,6 +515,50 @@ FGameplayTag ULocalPlayerUILayerSubsystem::GetActiveInputModeTag() const
 
 bool ULocalPlayerUILayerSubsystem::RouteWidgetEscapeInput()
 {
+	return RouteWidgetInput(
+		&IUILayerInputReceiver::Execute_HandleUILayerEscape,
+		true);
+}
+
+bool ULocalPlayerUILayerSubsystem::RouteWidgetConfirmedInput()
+{
+	return RouteWidgetInput(
+		&IUILayerInputReceiver::Execute_HandleUILayerConfirmed,
+		false);
+}
+
+bool ULocalPlayerUILayerSubsystem::RouteWidgetUpInput()
+{
+	return RouteWidgetInput(
+		&IUILayerInputReceiver::Execute_HandleUILayerUp,
+		false);
+}
+
+bool ULocalPlayerUILayerSubsystem::RouteWidgetDownInput()
+{
+	return RouteWidgetInput(
+		&IUILayerInputReceiver::Execute_HandleUILayerDown,
+		false);
+}
+
+bool ULocalPlayerUILayerSubsystem::RouteWidgetLeftInput()
+{
+	return RouteWidgetInput(
+		&IUILayerInputReceiver::Execute_HandleUILayerLeft,
+		false);
+}
+
+bool ULocalPlayerUILayerSubsystem::RouteWidgetRightInput()
+{
+	return RouteWidgetInput(
+		&IUILayerInputReceiver::Execute_HandleUILayerRight,
+		false);
+}
+
+bool ULocalPlayerUILayerSubsystem::RouteWidgetInput(
+	bool (*InputExecutor)(UObject*),
+	bool bPopUnhandledInput)
+{
 	UUserWidget* InputWidget = CachedInputWidget.Get();
 	if (!IsValid(InputWidget)
 		|| !InputWidget->GetClass()->ImplementsInterface(UUILayerInputReceiver::StaticClass()))
@@ -457,32 +567,29 @@ bool ULocalPlayerUILayerSubsystem::RouteWidgetEscapeInput()
 	}
 
 	const FUILayerHandle RoutedLayerHandle = CachedTopLayerHandle;
-	if (IUILayerInputReceiver::Execute_HandleUILayerEscape(InputWidget))
+	if (InputExecutor(InputWidget))
 	{
 		return true;
+	}
+
+	if (!bPopUnhandledInput)
+	{
+		return false;
 	}
 
 	// An unhandled escape request closes only the layer that received the input.
 	return PopLayer(RoutedLayerHandle);
 }
 
-bool ULocalPlayerUILayerSubsystem::RouteWidgetConfirmedInput()
-{
-	UUserWidget* InputWidget = CachedInputWidget.Get();
-	if (!IsValid(InputWidget)
-		|| !InputWidget->GetClass()->ImplementsInterface(UUILayerInputReceiver::StaticClass()))
-	{
-		return false;
-	}
-
-	return IUILayerInputReceiver::Execute_HandleUILayerConfirmed(InputWidget);
-}
-
 bool ULocalPlayerUILayerSubsystem::AttachWidgetToLayer(
 	FGameplayTag LayerTag,
 	UUserWidget* Widget,
-	int32 ZOrder)
+	EUILayerFocusTarget FocusTarget,
+	int32 ZOrder,
+	UWidget*& OutHitTestBlocker)
 {
+	OutHitTestBlocker = nullptr;
+
 	const TObjectPtr<UPanelWidget>* ContainerPtr = LayerContainers.Find(LayerTag);
 	UPanelWidget* Container = ContainerPtr ? ContainerPtr->Get() : nullptr;
 	if (!Container || !Widget)
@@ -497,16 +604,58 @@ bool ULocalPlayerUILayerSubsystem::AttachWidgetToLayer(
 
 	if (UCanvasPanel* Canvas = Cast<UCanvasPanel>(Container))
 	{
+		const int32 BaseZOrder = ZOrder * 2;
+		if (FocusTarget == EUILayerFocusTarget::Widget)
+		{
+			UButton* HitTestBlocker = NewObject<UButton>(Canvas);
+			if (!HitTestBlocker)
+			{
+				return false;
+			}
+
+			FButtonStyle TransparentButtonStyle;
+			FSlateBrush TransparentBrush;
+			TransparentBrush.DrawAs = ESlateBrushDrawType::NoDrawType;
+			TransparentBrush.TintColor = FSlateColor(FLinearColor::Transparent);
+			TransparentButtonStyle
+				.SetNormal(TransparentBrush)
+				.SetHovered(TransparentBrush)
+				.SetPressed(TransparentBrush)
+				.SetDisabled(TransparentBrush);
+
+			HitTestBlocker->SetStyle(TransparentButtonStyle);
+			HitTestBlocker->SetVisibility(ESlateVisibility::Visible);
+
+			if (UCanvasPanelSlot* BlockerSlot = Canvas->AddChildToCanvas(HitTestBlocker))
+			{
+				BlockerSlot->SetAnchors(FAnchors(0.0f, 0.0f, 1.0f, 1.0f));
+				BlockerSlot->SetOffsets(FMargin(0.0f));
+				BlockerSlot->SetAlignment(FVector2D::ZeroVector);
+				BlockerSlot->SetAutoSize(false);
+				BlockerSlot->SetZOrder(BaseZOrder);
+				OutHitTestBlocker = HitTestBlocker;
+			}
+			else
+			{
+				return false;
+			}
+		}
+
 		if (UCanvasPanelSlot* Slot = Canvas->AddChildToCanvas(Widget))
 		{
 			Slot->SetAnchors(FAnchors(0.0f, 0.0f, 1.0f, 1.0f));
 			Slot->SetOffsets(FMargin(0.0f));
 			Slot->SetAlignment(FVector2D::ZeroVector);
 			Slot->SetAutoSize(false);
-			Slot->SetZOrder(ZOrder);
+			Slot->SetZOrder(BaseZOrder + 1);
 			return true;
 		}
 
+		if (OutHitTestBlocker)
+		{
+			OutHitTestBlocker->RemoveFromParent();
+			OutHitTestBlocker = nullptr;
+		}
 		return false;
 	}
 
@@ -533,6 +682,11 @@ const FUILayerEntry* ULocalPlayerUILayerSubsystem::FindTopInputLayer() const
 
 	for (const FUILayerEntry& Entry : LayerEntries)
 	{
+		if (!Entry.bReceivesInput)
+		{
+			continue;
+		}
+
 		const int32 Priority = GetLayerPriority(Entry.LayerTag);
 		if (!BestEntry
 			|| Priority > BestPriority
@@ -594,8 +748,25 @@ void ULocalPlayerUILayerSubsystem::RefreshTopLayerInput()
 
 void ULocalPlayerUILayerSubsystem::ApplyLayerInput(const FUILayerEntry& Layer)
 {
-	AFirstPersonPlayerController* PlayerController = GetLocalFirstPersonController();
-	if (!PlayerController || !PlayerController->SetFirstPersonInputMode(Layer.InputModeTag))
+	APlayerController* PlayerController = GetLocalPlayerController();
+	if (!PlayerController)
+	{
+		return;
+	}
+
+	bool bInputModeApplied = false;
+	if (AFirstPersonPlayerController* FirstPersonController =
+		Cast<AFirstPersonPlayerController>(PlayerController))
+	{
+		bInputModeApplied = FirstPersonController->SetFirstPersonInputMode(Layer.InputModeTag);
+	}
+	else if (AFrontendPlayerController* FrontendController =
+		Cast<AFrontendPlayerController>(PlayerController))
+	{
+		bInputModeApplied = FrontendController->SetFrontendInputMode(Layer.InputModeTag);
+	}
+
+	if (!bInputModeApplied)
 	{
 		return;
 	}
@@ -623,21 +794,26 @@ void ULocalPlayerUILayerSubsystem::ApplyLayerInput(const FUILayerEntry& Layer)
 
 void ULocalPlayerUILayerSubsystem::ApplyDefaultInput()
 {
-	if (AFirstPersonPlayerController* PlayerController = GetLocalFirstPersonController())
+	APlayerController* PlayerController = GetLocalPlayerController();
+	if (AFirstPersonPlayerController* FirstPersonController =
+		Cast<AFirstPersonPlayerController>(PlayerController))
 	{
-		PlayerController->RestoreFirstPersonDefaultInputMode();
+		FirstPersonController->RestoreFirstPersonDefaultInputMode();
+	}
+	else if (AFrontendPlayerController* FrontendController =
+		Cast<AFrontendPlayerController>(PlayerController))
+	{
+		FrontendController->RestoreFrontendDefaultInputMode();
 	}
 }
 
-AFirstPersonPlayerController* ULocalPlayerUILayerSubsystem::GetLocalFirstPersonController() const
+APlayerController* ULocalPlayerUILayerSubsystem::GetLocalPlayerController() const
 {
 	const ULocalPlayer* LocalPlayer = GetLocalPlayer();
 	APlayerController* PlayerController = LocalPlayer && GetWorld()
 		? LocalPlayer->GetPlayerController(GetWorld())
 		: nullptr;
-	AFirstPersonPlayerController* FirstPersonController =
-		Cast<AFirstPersonPlayerController>(PlayerController);
-	return FirstPersonController && FirstPersonController->IsLocalController()
-		? FirstPersonController
+	return PlayerController && PlayerController->IsLocalController()
+		? PlayerController
 		: nullptr;
 }

@@ -20,4 +20,16 @@ public:
 
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "UI Layer|Input")
 	bool HandleUILayerConfirmed();
+
+	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "UI Layer|Input")
+	bool HandleUILayerUp();
+
+	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "UI Layer|Input")
+	bool HandleUILayerDown();
+
+	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "UI Layer|Input")
+	bool HandleUILayerLeft();
+
+	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "UI Layer|Input")
+	bool HandleUILayerRight();
 };
