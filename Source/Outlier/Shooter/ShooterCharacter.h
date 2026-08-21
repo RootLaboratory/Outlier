@@ -6,6 +6,7 @@
 #include "FirstPerson/FirstPersonCharacter.h"
 #include "GameplayTagContainer.h"
 #include "AbilitySystemInterface.h"
+#include "Perception/AISightTargetInterface.h"
 #include "Damage/OutlierDamageReceiver.h"
 #include "GAS/Data/OutlierShooterSuitAbilityDataRow.h"
 #include "ShooterCharacter.generated.h"
@@ -26,6 +27,7 @@ class UOutlierAbilitySystemComponent;
 class UOutlierVitalAttributeSet;
 class UOutlierShieldAttributeSet;
 class UDataTable;
+class USphereComponent;
 struct FOnAttributeChangeData;
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnShooterDynamicCrosshairChanged, bool /*bAiming*/);
@@ -97,7 +99,7 @@ enum class EShooterMontageAction : uint8
  * 
  */
 UCLASS(abstract)
-class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbilitySystemInterface, public IOutlierDamageReceiver
+class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbilitySystemInterface, public IOutlierDamageReceiver, public IAISightTargetInterface
 {
 	GENERATED_BODY()
 
@@ -141,7 +143,28 @@ protected:
 	float LeanInterpSpeed = 8.0f;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat")
-	float MaxLeanAngle = 15.0f;
+	float MaxLeanAngle = 11.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Lean", meta = (ClampMin = "0.0"))
+	float FirstPersonLeanWeaponYawDegrees = 5.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Lean", meta = (ClampMin = "0.0"))
+	float FirstPersonLeanWeaponInterpSpeed = 8.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Lean", meta = (ClampMin = "0.0"))
+	float LeanCameraSideOffset = 10.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Lean", meta = (ClampMin = "0.0"))
+	float LeanCameraDownOffset = 4.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Lean", meta = (ClampMin = "0.0"))
+	float LeanCameraBackwardOffset = 1.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Lean", meta = (ClampMin = "0.0"))
+	float LeanCollisionRadius = 12.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Lean", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float LeanExposureCollisionMinAlpha = 0.1f;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera")
 	float AimCameraFOV = 80.0f;
@@ -184,6 +207,9 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Components, meta = (AllowPrivateAccess = "true"))
 	USkeletalMeshComponent* ShadowMesh;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Components, meta = (AllowPrivateAccess = "true"))
+	TObjectPtr<USphereComponent> LeanExposureCollision;
 
 	/// Animation Assets
 	// Fire
@@ -250,13 +276,14 @@ protected:
 	FGameplayTag SelectedAbilityTag;
 
 	// Lean Runtime Data
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
+	UPROPERTY(ReplicatedUsing = OnRep_CurrentLeanAlpha, VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
 	float CurrentLeanAlpha = 0.0f;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
 	float TargetLeanAlpha = 0.0f;
 
 	FVector  BaseFirstPersonMeshLocation = FVector::ZeroVector;
+	FVector  BaseFirstPersonCameraRootLocation = FVector::ZeroVector;
 	FVector  BaseFirstPersonViewModelRootLocation = FVector::ZeroVector;
 	FRotator BaseFirstPersonCameraRootRotation = FRotator::ZeroRotator;
 	FRotator BaseFirstPersonViewModelRootRotation = FRotator::ZeroRotator;
@@ -396,7 +423,19 @@ public:
 	UFUNCTION()
 	void OnRep_MovementState();
 
+	UFUNCTION()
+	void OnRep_CurrentLeanAlpha();
+
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	virtual FVector GetPawnViewLocation() const override;
+	virtual UAISense_Sight::EVisibilityResult CanBeSeenFrom(
+		const FCanBeSeenFromContext& Context,
+		FVector& OutSeenLocation,
+		int32& OutNumberOfLoSChecksPerformed,
+		int32& OutNumberOfAsyncLosCheckRequested,
+		float& OutSightStrength,
+		int32* UserData = nullptr,
+		const FOnPendingVisibilityQueryProcessedDelegate* Delegate = nullptr) override;
 	// Unreal 공통 피해 진입점을 기존 Shooter 실드 및 HP 처리로 연결한다.
 	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
 	virtual void EquipWeapon(AWeaponBase* Weapon) override;
@@ -454,10 +493,19 @@ public:
 	float GetCurrentLeanRollDegrees() const { return CurrentLeanAlpha * MaxLeanAngle; }
 
 	UFUNCTION(BlueprintPure)
+	FVector GetCurrentLeanViewOffsetWorld() const { return GetLeanViewOffsetWorld(CurrentLeanAlpha); }
+
+	UFUNCTION(BlueprintPure)
 	float GetCurrentSlideCameraRollDegrees() const { return ActiveSlideCameraRollDegrees; }
 
 	UFUNCTION(BlueprintPure)
 	float GetMaxLeanAngle() const { return MaxLeanAngle; }
+
+	UFUNCTION(BlueprintPure)
+	float GetFirstPersonLeanWeaponYawDegrees() const { return FirstPersonLeanWeaponYawDegrees; }
+
+	UFUNCTION(BlueprintPure)
+	float GetFirstPersonLeanWeaponInterpSpeed() const { return FirstPersonLeanWeaponInterpSpeed; }
 
 	UFUNCTION(BlueprintPure)
 	EMovementState GetMovementState() const { return MovementState; }
@@ -568,6 +616,9 @@ protected:
 	void ServerJumpEnd();
 
 	UFUNCTION(Server, Reliable)
+	void ServerSetLeanTarget(float NewLeanAlpha);
+
+	UFUNCTION(Server, Reliable)
 	void ServerUseSuitAbility(FGameplayTag AbilityTag);
 
 	UFUNCTION(Client, Reliable)
@@ -597,6 +648,12 @@ public:
 	void StartLeanUpdate();
 	void StopLeanUpdateIfSettled();
 	void UpdateLeanStep();
+	void SetLeanTarget(float NewLeanAlpha, bool bSendToServer);
+	float ResolveLeanAlphaForCollision(float DesiredLeanAlpha) const;
+	FVector GetLeanViewOffsetWorld(float LeanAlpha) const;
+	FVector GetBaseLeanViewLocation() const;
+	void ApplyLeanPresentation();
+	void UpdateLeanExposureCollision();
 	void UpdateCameraFOV(float DeltaSeconds);
 	float GetEffectiveFirstPersonAimAlpha() const;
 	float GetLookSensitivityScale() const;

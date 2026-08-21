@@ -840,6 +840,18 @@ void ARangedWeaponBase::ApplySightMesh()
 	}
 }
 
+void ARangedWeaponBase::HideSightPresentation()
+{
+	UStaticMeshComponent* SightComponents[] = { FirstSight, ThirdSight, ShadowSight };
+	for (UStaticMeshComponent* SightComponent : SightComponents)
+	{
+		if (SightComponent)
+		{
+			SightComponent->SetHiddenInGame(true);
+		}
+	}
+}
+
 void ARangedWeaponBase::ApplyMagazineMeshSettings()
 {
 	UStaticMeshComponent* MagazineComponents[] = { FirstHandMagazineMesh, ThirdHandMagazineMesh, ShadowHandMagazineMesh };
@@ -1095,17 +1107,9 @@ void ARangedWeaponBase::MulticastPlayFireFX_Implementation(
 void ARangedWeaponBase::OnEquipped(ACharacter* NewOwner)
 {
 	Super::OnEquipped(NewOwner);
-	if (FirstSight)
-	{
-		FirstSight->SetHiddenInGame(true);
-	}
-	if (ThirdSight)
-	{
-		ThirdSight->SetHiddenInGame(true);
-	}
+	HideSightPresentation();
 	if (ShadowSight)
 	{
-		ShadowSight->SetHiddenInGame(true);
 		ShadowSight->SetCastShadow(false);
 		ShadowSight->SetCastHiddenShadow(false);
 	}
@@ -1124,6 +1128,18 @@ void ARangedWeaponBase::OnEquipped(ACharacter* NewOwner)
 		ShadowHandMagazineMesh->SetCastHiddenShadow(false);
 	}
 	UpdateLocalAmmoUI();
+}
+
+void ARangedWeaponBase::OnUnequipped()
+{
+	Super::OnUnequipped();
+	HideSightPresentation();
+}
+
+void ARangedWeaponBase::OnDropped(const FTransform& DropTransform, AFirstPersonCharacter* DroppedBy)
+{
+	Super::OnDropped(DropTransform, DroppedBy);
+	HideSightPresentation();
 }
 
 void ARangedWeaponBase::ShowEquippedPresentation()
@@ -1215,6 +1231,10 @@ void ARangedWeaponBase::OnRep_EquippedState()
 	if (IsEquipped())
 	{
 		UpdateLocalAmmoUI();
+	}
+	else
+	{
+		HideSightPresentation();
 	}
 }
 
@@ -1547,8 +1567,10 @@ ARangedWeaponBase::ARangedWeaponBase() : AWeaponBase()
 {
 	FirstSight = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("FirstSight"));
 	FirstSight->SetupAttachment(FirstPersonWeaponMesh);
+	FirstSight->SetHiddenInGame(true);
 	ThirdSight = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ThirdSight"));
 	ThirdSight->SetupAttachment(ThirdPersonWeaponMesh);
+	ThirdSight->SetHiddenInGame(true);
 	ShadowSight = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ShadowSight"));
 	ShadowSight->SetupAttachment(ShadowWeaponMesh);
 	ShadowSight->SetHiddenInGame(true);
@@ -1564,6 +1586,16 @@ ARangedWeaponBase::ARangedWeaponBase() : AWeaponBase()
 	ShadowHandMagazineMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ShadowHandMagazine"));
 	ShadowHandMagazineMesh->SetupAttachment(ShadowWeaponMesh);
 	ShadowHandMagazineMesh->SetHiddenInGame(true);
+}
+
+void ARangedWeaponBase::BeginPlay()
+{
+	Super::BeginPlay();
+
+	if (!IsEquipped())
+	{
+		HideSightPresentation();
+	}
 }
 
 void ARangedWeaponBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -1585,6 +1617,10 @@ void ARangedWeaponBase::OnConstruction(const FTransform& Transform)
 	ApplySightMesh();
 	ApplyMagazineMeshSettings();
 	CacheSightAimMaterials();
+	if (!IsEquipped())
+	{
+		HideSightPresentation();
+	}
 }
 
 void ARangedWeaponBase::CacheSightAimMaterials()

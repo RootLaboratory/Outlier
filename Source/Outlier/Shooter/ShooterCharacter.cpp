@@ -6,9 +6,11 @@
 #include "Engine/LocalPlayer.h"
 #include "Camera/CameraComponent.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/SphereComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/SceneCaptureComponent2D.h"
 #include "Curves/CurveFloat.h"
+#include "Engine/SkeletalMesh.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Controller.h"
 #include "GameFramework/PlayerController.h"
@@ -96,6 +98,15 @@ AShooterCharacter::AShooterCharacter() : AFirstPersonCharacter()
 	ShadowMesh->SetRenderInMainPass(true);
 	ShadowMesh->SetRenderInDepthPass(false);
 
+	LeanExposureCollision = CreateDefaultSubobject<USphereComponent>(TEXT("LeanExposureCollision"));
+	LeanExposureCollision->SetupAttachment(GetCapsuleComponent());
+	LeanExposureCollision->InitSphereRadius(LeanCollisionRadius);
+	LeanExposureCollision->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	LeanExposureCollision->SetCollisionResponseToAllChannels(ECR_Ignore);
+	LeanExposureCollision->SetCollisionResponseToChannel(ECC_PhysicsBody, ECR_Block);
+	LeanExposureCollision->SetGenerateOverlapEvents(false);
+	LeanExposureCollision->SetCanEverAffectNavigation(false);
+
 	
 	HealthComponent = CreateDefaultSubobject<UShooterHealthComponent>(TEXT("HealthComponent"));
 	InventoryComponent = CreateDefaultSubobject<UShooterInventoryComponent>(TEXT("InventoryComponent"));
@@ -127,7 +138,13 @@ void AShooterCharacter::BeginPlay()
 
 	if (USceneComponent* CameraRoot = GetFirstPersonCameraRoot())
 	{
+		BaseFirstPersonCameraRootLocation = CameraRoot->GetRelativeLocation();
 		BaseFirstPersonCameraRootRotation = CameraRoot->GetRelativeRotation();
+	}
+	if (LeanExposureCollision)
+	{
+		LeanExposureCollision->SetSphereRadius(LeanCollisionRadius, false);
+		UpdateLeanExposureCollision();
 	}
 	if (FirstPersonCamera)
 	{
@@ -146,6 +163,21 @@ void AShooterCharacter::BeginPlay()
 		BaseFirstPersonMeshRotation = FirstPersonMesh->GetRelativeRotation();
 	}
 
+	UE_LOG(
+		LogTemp,
+		Log,
+		TEXT("%s [FPAnimDiag][FramingBefore] Owner=%s ViewRootRelLoc=%s ViewRootRelRot=%s Mesh=%s Asset=%s Skeleton=%s MeshRelLoc=%s MeshRelRot=%s MeshRelScale=%s"),
+		OutlierNet::GetNetPrefix(this),
+		*GetName(),
+		GetFirstPersonViewModelRoot() ? *GetFirstPersonViewModelRoot()->GetRelativeLocation().ToCompactString() : TEXT("None"),
+		GetFirstPersonViewModelRoot() ? *GetFirstPersonViewModelRoot()->GetRelativeRotation().ToCompactString() : TEXT("None"),
+		*GetNameSafe(FirstPersonMesh),
+		FirstPersonMesh ? *GetNameSafe(FirstPersonMesh->GetSkeletalMeshAsset()) : TEXT("None"),
+		FirstPersonMesh && FirstPersonMesh->GetSkeletalMeshAsset() ? *GetNameSafe(FirstPersonMesh->GetSkeletalMeshAsset()->GetSkeleton()) : TEXT("None"),
+		FirstPersonMesh ? *FirstPersonMesh->GetRelativeLocation().ToCompactString() : TEXT("None"),
+		FirstPersonMesh ? *FirstPersonMesh->GetRelativeRotation().ToCompactString() : TEXT("None"),
+		FirstPersonMesh ? *FirstPersonMesh->GetRelativeScale3D().ToCompactString() : TEXT("None"));
+
 	if (USceneComponent* ViewModelRoot = GetFirstPersonViewModelRoot())
 	{
 		if (FirstPersonMesh && !BaseFirstPersonMeshLocation.IsNearlyZero())
@@ -157,6 +189,18 @@ void AShooterCharacter::BeginPlay()
 			FirstPersonMesh->SetRelativeLocation(BaseFirstPersonMeshLocation);
 		}
 	}
+
+	UE_LOG(
+		LogTemp,
+		Log,
+		TEXT("%s [FPAnimDiag][FramingAfter] Owner=%s ViewRootRelLoc=%s ViewRootRelRot=%s MeshRelLoc=%s MeshRelRot=%s MeshWorldLoc=%s"),
+		OutlierNet::GetNetPrefix(this),
+		*GetName(),
+		GetFirstPersonViewModelRoot() ? *GetFirstPersonViewModelRoot()->GetRelativeLocation().ToCompactString() : TEXT("None"),
+		GetFirstPersonViewModelRoot() ? *GetFirstPersonViewModelRoot()->GetRelativeRotation().ToCompactString() : TEXT("None"),
+		FirstPersonMesh ? *FirstPersonMesh->GetRelativeLocation().ToCompactString() : TEXT("None"),
+		FirstPersonMesh ? *FirstPersonMesh->GetRelativeRotation().ToCompactString() : TEXT("None"),
+		FirstPersonMesh ? *FirstPersonMesh->GetComponentLocation().ToCompactString() : TEXT("None"));
 
 	RefreshWeaponMode();
 	RefreshMovementState();
@@ -987,21 +1031,12 @@ void AShooterCharacter::TrySlide()
 
 void AShooterCharacter::TryLean(const FInputActionValue& Value)
 {
-	if (!CanLean())
-	{
-		StopLean();
-		return;
-	}
-
-	const float LeanAlpha = Value.Get<float>();
-	TargetLeanAlpha = FMath::Abs(LeanAlpha) > KINDA_SMALL_NUMBER ? LeanAlpha : 0.0f;
-	StartLeanUpdate();
+	SetLeanTarget(Value.Get<float>(), true);
 }
 
 void AShooterCharacter::StopLean()
 {
-	TargetLeanAlpha = 0.0f;
-	StartLeanUpdate();
+	SetLeanTarget(0.0f, true);
 }
 
 void AShooterCharacter::UpdateSlideCameraEffect(float DeltaSeconds)
@@ -1051,6 +1086,11 @@ void AShooterCharacter::OnRep_MovementState()
 	OnMovementStateChanged.Broadcast(MovementState);
 }
 
+void AShooterCharacter::OnRep_CurrentLeanAlpha()
+{
+	ApplyLeanPresentation();
+}
+
 void AShooterCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
@@ -1059,6 +1099,97 @@ void AShooterCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	DOREPLIFETIME(AShooterCharacter, WeaponMode);
 	DOREPLIFETIME(AShooterCharacter, CombatState);
 	DOREPLIFETIME(AShooterCharacter, ActionLock);
+	DOREPLIFETIME(AShooterCharacter, CurrentLeanAlpha);
+}
+
+FVector AShooterCharacter::GetBaseLeanViewLocation() const
+{
+	if (!HasActorBegunPlay())
+	{
+		return Super::GetPawnViewLocation();
+	}
+
+	return GetActorTransform().TransformPosition(BaseFirstPersonCameraRootLocation);
+}
+
+FVector AShooterCharacter::GetLeanViewOffsetWorld(float LeanAlpha) const
+{
+	const float ClampedLeanAlpha = FMath::Clamp(LeanAlpha, -1.0f, 1.0f);
+	const float LeanAbs = FMath::Abs(ClampedLeanAlpha);
+	if (LeanAbs <= KINDA_SMALL_NUMBER)
+	{
+		return FVector::ZeroVector;
+	}
+
+	const FRotator ViewYawRotation(0.0f, GetControlRotation().Yaw, 0.0f);
+	const FVector ViewForward = ViewYawRotation.Vector();
+	const FVector ViewRight = FRotationMatrix(ViewYawRotation).GetScaledAxis(EAxis::Y);
+	const float EasedLeanAbs = FMath::InterpEaseInOut(0.0f, 1.0f, LeanAbs, 2.0f);
+
+	return
+		(ViewRight * ClampedLeanAlpha * LeanCameraSideOffset) -
+		(FVector::UpVector * EasedLeanAbs * LeanCameraDownOffset) -
+		(ViewForward * EasedLeanAbs * LeanCameraBackwardOffset);
+}
+
+FVector AShooterCharacter::GetPawnViewLocation() const
+{
+	return GetBaseLeanViewLocation() + GetLeanViewOffsetWorld(CurrentLeanAlpha);
+}
+
+UAISense_Sight::EVisibilityResult AShooterCharacter::CanBeSeenFrom(
+	const FCanBeSeenFromContext& Context,
+	FVector& OutSeenLocation,
+	int32& OutNumberOfLoSChecksPerformed,
+	int32& OutNumberOfAsyncLosCheckRequested,
+	float& OutSightStrength,
+	int32* UserData,
+	const FOnPendingVisibilityQueryProcessedDelegate* Delegate)
+{
+	OutNumberOfAsyncLosCheckRequested = 0;
+	OutSightStrength = 0.0f;
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return UAISense_Sight::EVisibilityResult::NotVisible;
+	}
+
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(ShooterLeanAISight), true, Context.IgnoreActor);
+	if (Context.IgnoreActor)
+	{
+		QueryParams.AddIgnoredActor(Context.IgnoreActor);
+	}
+
+	const auto IsVisibleAt = [&](const FVector& TargetLocation)
+	{
+		FHitResult Hit;
+		++OutNumberOfLoSChecksPerformed;
+		const bool bBlocked = World->LineTraceSingleByChannel(
+			Hit,
+			Context.ObserverLocation,
+			TargetLocation,
+			ECC_Visibility,
+			QueryParams);
+		if (!bBlocked || Hit.GetActor() == this)
+		{
+			OutSeenLocation = TargetLocation;
+			OutSightStrength = 1.0f;
+			return true;
+		}
+		return false;
+	};
+
+	if (FMath::Abs(CurrentLeanAlpha) >= LeanExposureCollisionMinAlpha && IsVisibleAt(GetPawnViewLocation()))
+	{
+		return UAISense_Sight::EVisibilityResult::Visible;
+	}
+	if (IsVisibleAt(GetActorLocation()))
+	{
+		return UAISense_Sight::EVisibilityResult::Visible;
+	}
+
+	return UAISense_Sight::EVisibilityResult::NotVisible;
 }
 
 FGameplayTagContainer AShooterCharacter::GetOwnedGameplayTagsForQuery() const
@@ -1444,18 +1575,114 @@ void AShooterCharacter::StartLeanUpdate()
 	);
 }
 
+void AShooterCharacter::SetLeanTarget(float NewLeanAlpha, bool bSendToServer)
+{
+	if (!FMath::IsFinite(NewLeanAlpha))
+	{
+		NewLeanAlpha = 0.0f;
+	}
+
+	float ClampedLeanAlpha = FMath::Clamp(NewLeanAlpha, -1.0f, 1.0f);
+	if (FMath::Abs(ClampedLeanAlpha) <= KINDA_SMALL_NUMBER || !CanLean())
+	{
+		ClampedLeanAlpha = 0.0f;
+	}
+
+	if (FMath::IsNearlyEqual(TargetLeanAlpha, ClampedLeanAlpha, 0.01f))
+	{
+		return;
+	}
+
+	TargetLeanAlpha = ClampedLeanAlpha;
+	StartLeanUpdate();
+
+	if (bSendToServer && !HasAuthority())
+	{
+		ServerSetLeanTarget(ClampedLeanAlpha);
+	}
+}
+
+float AShooterCharacter::ResolveLeanAlphaForCollision(float DesiredLeanAlpha) const
+{
+	const FVector TraceStart = GetBaseLeanViewLocation();
+	const FVector DesiredOffset = GetLeanViewOffsetWorld(DesiredLeanAlpha);
+	if (DesiredOffset.IsNearlyZero() || LeanCollisionRadius <= KINDA_SMALL_NUMBER)
+	{
+		return DesiredLeanAlpha;
+	}
+
+	FHitResult Hit;
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(ShooterLeanCamera), false, this);
+	QueryParams.AddIgnoredActor(this);
+	const bool bHit = GetWorld() && GetWorld()->SweepSingleByChannel(
+		Hit,
+		TraceStart,
+		TraceStart + DesiredOffset,
+		FQuat::Identity,
+		ECC_Visibility,
+		FCollisionShape::MakeSphere(LeanCollisionRadius),
+		QueryParams);
+	if (!bHit)
+	{
+		return DesiredLeanAlpha;
+	}
+
+	return Hit.bStartPenetrating
+		? 0.0f
+		: DesiredLeanAlpha * FMath::Clamp(Hit.Time, 0.0f, 1.0f);
+}
+
+void AShooterCharacter::ApplyLeanPresentation()
+{
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+
+	if (USceneComponent* CameraRoot = GetFirstPersonCameraRoot())
+	{
+		const FVector LocalLeanOffset = GetActorTransform().InverseTransformVectorNoScale(
+			GetLeanViewOffsetWorld(CurrentLeanAlpha));
+		CameraRoot->SetRelativeLocation(BaseFirstPersonCameraRootLocation + LocalLeanOffset);
+	}
+}
+
+void AShooterCharacter::UpdateLeanExposureCollision()
+{
+	if (!LeanExposureCollision || !HasAuthority())
+	{
+		return;
+	}
+
+	LeanExposureCollision->SetWorldLocation(GetPawnViewLocation());
+	const bool bExposeLeanHead = !IsDead()
+		&& FMath::Abs(CurrentLeanAlpha) >= LeanExposureCollisionMinAlpha;
+	LeanExposureCollision->SetCollisionEnabled(
+		bExposeLeanHead ? ECollisionEnabled::QueryOnly : ECollisionEnabled::NoCollision);
+}
+
 void AShooterCharacter::StopLeanUpdateIfSettled()
 {
 	if (FMath::IsNearlyEqual(CurrentLeanAlpha, TargetLeanAlpha, KINDA_SMALL_NUMBER))
 	{
 		CurrentLeanAlpha = TargetLeanAlpha;
-		GetWorldTimerManager().ClearTimer(LeanUpdateTimerHandle);
+		if (FMath::IsNearlyZero(TargetLeanAlpha, KINDA_SMALL_NUMBER))
+		{
+			GetWorldTimerManager().ClearTimer(LeanUpdateTimerHandle);
+		}
 	}
 }
 
 void AShooterCharacter::UpdateLeanStep()
 {
-	CurrentLeanAlpha = FMath::FInterpTo(CurrentLeanAlpha, TargetLeanAlpha, 1.0f / 60.0f, LeanInterpSpeed);
+	const float DesiredLeanAlpha = FMath::FInterpTo(
+		CurrentLeanAlpha,
+		TargetLeanAlpha,
+		1.0f / 60.0f,
+		LeanInterpSpeed);
+	CurrentLeanAlpha = ResolveLeanAlphaForCollision(DesiredLeanAlpha);
+	ApplyLeanPresentation();
+	UpdateLeanExposureCollision();
 
 	if (FirstPersonMesh)
 	{
@@ -1704,8 +1931,10 @@ void AShooterCharacter::HandleDeath()
 
 	if (USceneComponent* CameraRoot = GetFirstPersonCameraRoot())
 	{
+		CameraRoot->SetRelativeLocation(BaseFirstPersonCameraRootLocation);
 		CameraRoot->SetRelativeRotation(BaseFirstPersonCameraRootRotation);
 	}
+	UpdateLeanExposureCollision();
 
 	if (FirstPersonMesh)
 	{
@@ -2200,6 +2429,11 @@ void AShooterCharacter::ServerJumpEnd_Implementation()
 	{
 		MovementComponent->DoJumpEnd();
 	}
+}
+
+void AShooterCharacter::ServerSetLeanTarget_Implementation(float NewLeanAlpha)
+{
+	SetLeanTarget(NewLeanAlpha, false);
 }
 
 void AShooterCharacter::ClientPlayFirstPersonActionMontage_Implementation(EShooterMontageAction Action, EWeaponType WeaponType)

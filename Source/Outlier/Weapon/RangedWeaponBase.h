@@ -218,6 +218,7 @@ protected:
 	virtual void ApplyFeedbackDefinition();
 
 	void ApplySightMesh();
+	void HideSightPresentation();
 	void ApplyMagazineMeshSettings();
 	void HideHandMagazine();
 	void RefreshBloomSettingsFromState();
@@ -253,9 +254,12 @@ protected:
 	void ReportArenaWideNoise(ACharacter* OwnerCharacter);
 
 public:
+	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const;
 	virtual void OnEquipped(ACharacter* NewOwner) override;
+	virtual void OnUnequipped() override;
+	virtual void OnDropped(const FTransform& DropTransform, AFirstPersonCharacter* DroppedBy = nullptr) override;
 	virtual void ShowEquippedPresentation() override;
 	virtual void RefreshShadowWeaponPresentation() override;
 
