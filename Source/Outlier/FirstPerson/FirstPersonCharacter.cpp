@@ -79,6 +79,10 @@ AFirstPersonCharacter::AFirstPersonCharacter()
 	//Capture Component
 	CaptureComponent = CreateDefaultSubobject< USceneCaptureComponent2D>(TEXT("PartnerCameraCapture"));
 	CaptureComponent->SetupAttachment(FirstPersonCamera);
+	// 시작 시 PartnerCam 캡처는 꺼진 상태. PartnerCameraToggle에서 SetPartnerCameraCaptureUpdating(true)로 켠다.
+	CaptureComponent->bCaptureEveryFrame = false;
+	CaptureComponent->bCaptureOnMovement = false;
+	CaptureComponent->PrimaryComponentTick.bStartWithTickEnabled = false;
 }
 
 FGenericTeamId AFirstPersonCharacter::GetGenericTeamId() const

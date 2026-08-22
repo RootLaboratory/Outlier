@@ -111,6 +111,8 @@ void UShooterMainWidget::SuitOnModuleInit()
 	{
 		//UE_LOG(LogTemp, Error, TEXT("SuitOnModuleInit PartnerCamModule"));
 
+		// 모듈은 Activate로 마운트(토글 동작 위해 bHudActive=true 필요).
+		// 카메라 피드 자체는 PartnerCamUI::bCameraActive 기본 false라 시작 시 collapse됨.
 		PartnerCamModule->Activate();
 	}
 	else

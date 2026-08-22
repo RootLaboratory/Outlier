@@ -58,16 +58,15 @@ void ATestGeometryCollection::HandleDeath()
 
 	if (IsEnemyPossessed())
 	{
-		ClearPossessedPlayerState();
-	}
-
-	if (AController* CurrentController = GetController())
-	{
-		CurrentController->UnPossess();
+		if (AController* CurrentController = GetController())
+		{
+			CurrentController->PawnPendingDestroy(this);
+		}
 	}
 
 	SetReplicateMovement(false);
 	MulticastActivateDeathGeometry(DeathVelocity);
+	PerformDeathCleanup();
 
 	if (DeathProfile.DebrisLifetime > 0.0f)
 	{

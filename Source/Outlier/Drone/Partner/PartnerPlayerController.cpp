@@ -14,6 +14,10 @@
 #include "Enemy/EnemyBase.h"
 #include "TimerManager.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
+#include "GAS/OutlierAbilitySystemComponent.h"
+#include "GAS/Attributes/OutlierShieldAttributeSet.h"
+#include "GAS/Attributes/OutlierVitalAttributeSet.h"
+#include "GameplayTags/OutlierGameplayTags.h"
 
 APartnerPlayerController::APartnerPlayerController()
 {
@@ -28,6 +32,10 @@ void APartnerPlayerController::BeginPlay()
 
 void APartnerPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	if (HasAuthority())
+	{
+		DiscardCommittedPartnerAbilityCooldownSession(CachedPartnerCharacter.Get());
+	}
 	if (HasAuthority() && PendingEnemyPossessionTarget.IsValid())
 	{
 		CancelPendingEnemyPossessionTransition();
@@ -267,6 +275,29 @@ void APartnerPlayerController::CommitPendingEnemyPossession(AEnemyBase* Expected
 		CachedPartnerCharacter.Reset();
 		CancelPendingEnemyPossessionTransition();
 		return;
+	}
+
+	if (!BeginCommittedPartnerAbilityCooldownSession(PartnerCharacter))
+	{
+#if UE_BUILD_SHIPPING
+		UE_LOG(
+			LogTemp,
+			Error,
+			TEXT("[PartnerPossession] Failed to suspend Partner cooldowns after possession commit Partner=%s Enemy=%s"),
+			*GetNameSafe(PartnerCharacter),
+			*GetNameSafe(EnemyTarget));
+		ReleaseEnemyPossession();
+		PendingEnemyPossessionTarget.Reset();
+		PendingEnemyPossessionSource.Reset();
+		UnbindPossessionTargetEndPlay(EnemyTarget);
+		return;
+#else
+		checkf(
+			false,
+			TEXT("[PartnerPossession] Failed to suspend Partner cooldowns after possession commit Partner=%s Enemy=%s"),
+			*GetNameSafe(PartnerCharacter),
+			*GetNameSafe(EnemyTarget));
+#endif
 	}
 
 	PendingEnemyPossessionTarget.Reset();
@@ -520,6 +551,7 @@ void APartnerPlayerController::ReleaseEnemyPossession()
 
 	if (!CachedPartnerCharacter.IsValid())
 	{
+		DiscardCommittedPartnerAbilityCooldownSession(nullptr);
 		if (AController* CachedAIController = EnemyPawn->GetCachedAIController())
 		{
 			CachedAIController->Possess(EnemyPawn);
@@ -553,6 +585,7 @@ void APartnerPlayerController::ServerReleaseEnemyPossession_Implementation()
 APartnerCharacter* APartnerPlayerController::ExtractCachedPartnerCharacterForLogout()
 {
 	APartnerCharacter* Result = CachedPartnerCharacter.Get();
+	DiscardCommittedPartnerAbilityCooldownSession(Result);
 	CachedPartnerCharacter.Reset();
 	return Result;
 }
@@ -567,13 +600,102 @@ void APartnerPlayerController::RestoreCachedPartnerCharacter()
 	APartnerCharacter* PartnerCharacter = CachedPartnerCharacter.Get();
 	if (!PartnerCharacter)
 	{
+		DiscardCommittedPartnerAbilityCooldownSession(nullptr);
 		CachedPartnerCharacter.Reset();
 		return;
 	}
 
 	PartnerCharacter->SetEnemyPossessionProtection(false);
 	Possess(PartnerCharacter);
+	if (GetPawn() == PartnerCharacter)
+	{
+		const bool bFinalized = FinalizeCommittedPartnerAbilityCooldownSession(PartnerCharacter);
+#if UE_BUILD_SHIPPING
+		if (!bFinalized)
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[PartnerPossession] Failed to restore Partner cooldown session Partner=%s"),
+				*GetNameSafe(PartnerCharacter));
+		}
+#else
+		checkf(
+			bFinalized,
+			TEXT("[PartnerPossession] Failed to restore Partner cooldown session Partner=%s"),
+			*GetNameSafe(PartnerCharacter));
+#endif
+	}
+	else
+	{
+		DiscardCommittedPartnerAbilityCooldownSession(PartnerCharacter);
+	}
 	CachedPartnerCharacter.Reset();
+}
+
+bool APartnerPlayerController::BeginCommittedPartnerAbilityCooldownSession(
+	APartnerCharacter* PartnerCharacter)
+{
+	if (!HasAuthority() || !IsValid(PartnerCharacter) || bPartnerAbilityCooldownSessionCommitted)
+	{
+		return false;
+	}
+
+	UOutlierAbilitySystemComponent* AbilitySystem =
+		PartnerCharacter->GetOutlierAbilitySystemComponent();
+	if (!AbilitySystem || !AbilitySystem->SuspendPartnerSkillCooldownsForPossession())
+	{
+		return false;
+	}
+
+	bPartnerAbilityCooldownSessionCommitted = true;
+	return true;
+}
+
+bool APartnerPlayerController::FinalizeCommittedPartnerAbilityCooldownSession(
+	APartnerCharacter* PartnerCharacter)
+{
+	if (!HasAuthority() || !bPartnerAbilityCooldownSessionCommitted)
+	{
+		return false;
+	}
+
+	bPartnerAbilityCooldownSessionCommitted = false;
+	if (!IsValid(PartnerCharacter))
+	{
+		return false;
+	}
+
+	UOutlierAbilitySystemComponent* AbilitySystem =
+		PartnerCharacter->GetOutlierAbilitySystemComponent();
+	if (!AbilitySystem)
+	{
+		return false;
+	}
+
+	const bool bResumed = AbilitySystem->ResumePartnerSkillCooldownsAfterPossession();
+	const bool bHackCooldownCommitted = AbilitySystem->CommitPartnerCooldown(
+		OutlierGameplayTags::Cooldown::Partner::Hacking());
+	return bResumed && bHackCooldownCommitted;
+}
+
+void APartnerPlayerController::DiscardCommittedPartnerAbilityCooldownSession(
+	APartnerCharacter* PartnerCharacter)
+{
+	if (!HasAuthority() || !bPartnerAbilityCooldownSessionCommitted)
+	{
+		return;
+	}
+
+	bPartnerAbilityCooldownSessionCommitted = false;
+	if (IsValid(PartnerCharacter))
+	{
+		if (UOutlierAbilitySystemComponent* AbilitySystem =
+			PartnerCharacter->GetOutlierAbilitySystemComponent())
+		{
+			AbilitySystem->DiscardSuspendedPartnerSkillCooldowns();
+		}
+	}
 }
 
 void APartnerPlayerController::RestoreCachedPartnerCharacterNextTick()
@@ -797,42 +919,110 @@ void APartnerPlayerController::BindShooterCharacterDelegatesFromPlayerState()
 
 	UnbindShooterCharacterDelegates();
 	BoundShooterCharacter = ShooterCharacter;
+	BoundShooterAbilitySystem = ShooterCharacter->GetOutlierAbilitySystemComponent();
 
-	ShooterCharacter->OnShooterHealthChanged.AddUObject(
-		this,
-		&APartnerPlayerController::HandleShooterHealthChanged
-	);
+	if (BoundShooterAbilitySystem)
+	{
+		HealthChangedHandle = BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierVitalAttributeSet::GetHealthAttribute()).AddUObject(
+				this, &APartnerPlayerController::HandleShooterHealthAttributeChanged);
+		MaxHealthChangedHandle = BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierVitalAttributeSet::GetMaxHealthAttribute()).AddUObject(
+				this, &APartnerPlayerController::HandleShooterHealthAttributeChanged);
+		ShieldChangedHandle = BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierShieldAttributeSet::GetShieldAttribute()).AddUObject(
+				this, &APartnerPlayerController::HandleShooterShieldAttributeChanged);
+		MaxShieldChangedHandle = BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierShieldAttributeSet::GetMaxShieldAttribute()).AddUObject(
+				this, &APartnerPlayerController::HandleShooterShieldAttributeChanged);
+		PartnerShieldChangedHandle = BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierShieldAttributeSet::GetPartnerShieldAttribute()).AddUObject(
+				this, &APartnerPlayerController::HandleShooterPartnerShieldAttributeChanged);
+		MaxPartnerShieldChangedHandle = BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierShieldAttributeSet::GetMaxPartnerShieldAttribute()).AddUObject(
+				this, &APartnerPlayerController::HandleShooterPartnerShieldAttributeChanged);
+	}
 
-	ShooterCharacter->OnShooterShieldChanged.AddUObject(
-		this,
-		&APartnerPlayerController::HandleShooterShieldChanged
-	);
-
-	ShooterCharacter->OnShooterPartnerShieldChanged.AddUObject(
-		this,
-		&APartnerPlayerController::HandleShooterPartnerShieldChanged
-	);
-
-	ShooterCharacter->OnShooterConditionChanged.AddUObject(
-		this,
-		&APartnerPlayerController::HandleShooterConditionChanged
-	);
-
-	ShooterCharacter->BroadcastCurrentUIState();
+	RefreshShooterVitalityUI();
 }
 
 void APartnerPlayerController::UnbindShooterCharacterDelegates()
+{
+	if (!BoundShooterCharacter && !BoundShooterAbilitySystem)
+	{
+		return;
+	}
+
+	if (BoundShooterAbilitySystem)
+	{
+		BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierVitalAttributeSet::GetHealthAttribute()).Remove(HealthChangedHandle);
+		BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierVitalAttributeSet::GetMaxHealthAttribute()).Remove(MaxHealthChangedHandle);
+		BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierShieldAttributeSet::GetShieldAttribute()).Remove(ShieldChangedHandle);
+		BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierShieldAttributeSet::GetMaxShieldAttribute()).Remove(MaxShieldChangedHandle);
+		BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierShieldAttributeSet::GetPartnerShieldAttribute()).Remove(PartnerShieldChangedHandle);
+		BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierShieldAttributeSet::GetMaxPartnerShieldAttribute()).Remove(MaxPartnerShieldChangedHandle);
+	}
+	BoundShooterAbilitySystem = nullptr;
+	HealthChangedHandle.Reset();
+	MaxHealthChangedHandle.Reset();
+	ShieldChangedHandle.Reset();
+	MaxShieldChangedHandle.Reset();
+	PartnerShieldChangedHandle.Reset();
+	MaxPartnerShieldChangedHandle.Reset();
+	BoundShooterCharacter = nullptr;
+}
+
+void APartnerPlayerController::RefreshShooterVitalityUI()
 {
 	if (!BoundShooterCharacter)
 	{
 		return;
 	}
 
-	BoundShooterCharacter->OnShooterHealthChanged.RemoveAll(this);
-	BoundShooterCharacter->OnShooterShieldChanged.RemoveAll(this);
-	BoundShooterCharacter->OnShooterPartnerShieldChanged.RemoveAll(this);
-	BoundShooterCharacter->OnShooterConditionChanged.RemoveAll(this);
-	BoundShooterCharacter = nullptr;
+	HandleShooterHealthChanged(BoundShooterCharacter->GetCurHealth(), BoundShooterCharacter->GetMaxHealth());
+	HandleShooterShieldChanged(BoundShooterCharacter->GetCurShield(), BoundShooterCharacter->GetMaxShield());
+	HandleShooterPartnerShieldChanged(
+		BoundShooterCharacter->GetCurPartnerShield(),
+		BoundShooterCharacter->GetMaxPartnerShield());
+	HandleShooterConditionChanged(BoundShooterCharacter->GetShooterConditionTagForUI());
+}
+
+void APartnerPlayerController::HandleShooterHealthAttributeChanged(const FOnAttributeChangeData& ChangeData)
+{
+	(void)ChangeData;
+	if (BoundShooterCharacter)
+	{
+		HandleShooterHealthChanged(BoundShooterCharacter->GetCurHealth(), BoundShooterCharacter->GetMaxHealth());
+		HandleShooterConditionChanged(BoundShooterCharacter->GetShooterConditionTagForUI());
+	}
+}
+
+void APartnerPlayerController::HandleShooterShieldAttributeChanged(const FOnAttributeChangeData& ChangeData)
+{
+	(void)ChangeData;
+	if (BoundShooterCharacter)
+	{
+		HandleShooterShieldChanged(BoundShooterCharacter->GetCurShield(), BoundShooterCharacter->GetMaxShield());
+		HandleShooterConditionChanged(BoundShooterCharacter->GetShooterConditionTagForUI());
+	}
+}
+
+void APartnerPlayerController::HandleShooterPartnerShieldAttributeChanged(const FOnAttributeChangeData& ChangeData)
+{
+	(void)ChangeData;
+	if (BoundShooterCharacter)
+	{
+		HandleShooterPartnerShieldChanged(
+			BoundShooterCharacter->GetCurPartnerShield(),
+			BoundShooterCharacter->GetMaxPartnerShield());
+		HandleShooterConditionChanged(BoundShooterCharacter->GetShooterConditionTagForUI());
+	}
 }
 
 ULocalPlayerUISubSystem* APartnerPlayerController::GetLocalUISubsystem() const

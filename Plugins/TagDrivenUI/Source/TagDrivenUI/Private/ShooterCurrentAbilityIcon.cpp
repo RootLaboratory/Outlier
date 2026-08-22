@@ -73,6 +73,14 @@ bool UShooterCurrentAbilityIcon::ApplyCooldownIfMatches(const FGameplayTag& Abil
 	return true;
 }
 
+void UShooterCurrentAbilityIcon::ResetCooldown()
+{
+	if (CurrentAbilityIcon)
+	{
+		CurrentAbilityIcon->CooldownDone();
+	}
+}
+
 UTexture2D* UShooterCurrentAbilityIcon::GetTextureForAbility(const FGameplayTag& AbilityTag) const
 {
 	if (AbilityTag == TagDrivenUITags::Ability::Shooter::QuantumLeap())

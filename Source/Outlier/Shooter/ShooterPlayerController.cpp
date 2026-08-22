@@ -14,6 +14,9 @@
 #include "ShooterMainWidget.h"
 #include "OutlierGameMode.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
+#include "GAS/OutlierAbilitySystemComponent.h"
+#include "GAS/Attributes/OutlierShieldAttributeSet.h"
+#include "GAS/Attributes/OutlierVitalAttributeSet.h"
 
 AShooterPlayerController::AShooterPlayerController()
 {
@@ -93,11 +96,6 @@ void AShooterPlayerController::AcknowledgePossession(APawn* P)
 	Super::AcknowledgePossession(P);
 	BindShooterCharacterDelegates(Cast<AShooterCharacter>(P));
 
-	if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(P))
-	{
-		Shooter->RefreshUIForRespawn();
-	}
-
 	if (IsLocalController())
 	{
 		if (UMaterialPostProcessSubsystem* PPS = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
@@ -117,6 +115,7 @@ void AShooterPlayerController::BindShooterCharacterDelegates(AShooterCharacter* 
 	}
 
 	BoundShooterCharacter = ShooterCharacter;
+	BoundShooterAbilitySystem = ShooterCharacter->GetOutlierAbilitySystemComponent();
 
 	ShooterCharacter->OnMovementStateChanged.AddDynamic(
 		this,
@@ -128,25 +127,27 @@ void AShooterPlayerController::BindShooterCharacterDelegates(AShooterCharacter* 
 		&AShooterPlayerController::OnWeaponChanged
 	);
 
-	ShooterCharacter->OnShooterHealthChanged.AddUObject(
-		this,
-		&AShooterPlayerController::HandleShooterHealthChanged
-	);
-
-	ShooterCharacter->OnShooterShieldChanged.AddUObject(
-		this,
-		&AShooterPlayerController::HandleShooterShieldChanged
-	);
-
-	ShooterCharacter->OnShooterPartnerShieldChanged.AddUObject(
-		this,
-		&AShooterPlayerController::HandleShooterPartnerShieldChanged
-	);
-
-	ShooterCharacter->OnShooterConditionChanged.AddUObject(
-		this,
-		&AShooterPlayerController::HandleShooterConditionChanged
-	);
+	if (BoundShooterAbilitySystem)
+	{
+		HealthChangedHandle = BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierVitalAttributeSet::GetHealthAttribute()).AddUObject(
+				this, &AShooterPlayerController::HandleShooterHealthAttributeChanged);
+		MaxHealthChangedHandle = BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierVitalAttributeSet::GetMaxHealthAttribute()).AddUObject(
+				this, &AShooterPlayerController::HandleShooterHealthAttributeChanged);
+		ShieldChangedHandle = BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierShieldAttributeSet::GetShieldAttribute()).AddUObject(
+				this, &AShooterPlayerController::HandleShooterShieldAttributeChanged);
+		MaxShieldChangedHandle = BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierShieldAttributeSet::GetMaxShieldAttribute()).AddUObject(
+				this, &AShooterPlayerController::HandleShooterShieldAttributeChanged);
+		PartnerShieldChangedHandle = BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierShieldAttributeSet::GetPartnerShieldAttribute()).AddUObject(
+				this, &AShooterPlayerController::HandleShooterPartnerShieldAttributeChanged);
+		MaxPartnerShieldChangedHandle = BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierShieldAttributeSet::GetMaxPartnerShieldAttribute()).AddUObject(
+				this, &AShooterPlayerController::HandleShooterPartnerShieldAttributeChanged);
+	}
 
 	ShooterCharacter->OnShooterDynamicCrosshairChanged.AddUObject(
 		this,
@@ -156,24 +157,118 @@ void AShooterPlayerController::BindShooterCharacterDelegates(AShooterCharacter* 
 	ShooterCharacter->OnShooterAimingBlur.AddUObject(
 		this, &AShooterPlayerController::HandleShooterAimingBlur
 	);
+
+	RefreshShooterVitalityUI();
+	OnWeaponChanged(ShooterCharacter->GetWeaponType());
+	RefreshShooterSuitUI();
 }
 
 void AShooterPlayerController::UnbindShooterCharacterDelegates()
+{
+	if (!BoundShooterCharacter && !BoundShooterAbilitySystem)
+	{
+		return;
+	}
+
+	if (BoundShooterCharacter)
+	{
+		BoundShooterCharacter->OnMovementStateChanged.RemoveAll(this);
+		BoundShooterCharacter->OnWeaponChanged.RemoveAll(this);
+		BoundShooterCharacter->OnShooterDynamicCrosshairChanged.RemoveAll(this);
+		BoundShooterCharacter->OnShooterAimingBlur.RemoveAll(this);
+	}
+	if (BoundShooterAbilitySystem)
+	{
+		BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierVitalAttributeSet::GetHealthAttribute()).Remove(HealthChangedHandle);
+		BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierVitalAttributeSet::GetMaxHealthAttribute()).Remove(MaxHealthChangedHandle);
+		BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierShieldAttributeSet::GetShieldAttribute()).Remove(ShieldChangedHandle);
+		BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierShieldAttributeSet::GetMaxShieldAttribute()).Remove(MaxShieldChangedHandle);
+		BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierShieldAttributeSet::GetPartnerShieldAttribute()).Remove(PartnerShieldChangedHandle);
+		BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierShieldAttributeSet::GetMaxPartnerShieldAttribute()).Remove(MaxPartnerShieldChangedHandle);
+	}
+	BoundShooterAbilitySystem = nullptr;
+	HealthChangedHandle.Reset();
+	MaxHealthChangedHandle.Reset();
+	ShieldChangedHandle.Reset();
+	MaxShieldChangedHandle.Reset();
+	PartnerShieldChangedHandle.Reset();
+	MaxPartnerShieldChangedHandle.Reset();
+	BoundShooterCharacter = nullptr;
+}
+
+void AShooterPlayerController::RefreshShooterVitalityUI()
 {
 	if (!BoundShooterCharacter)
 	{
 		return;
 	}
 
-	BoundShooterCharacter->OnMovementStateChanged.RemoveAll(this);
-	BoundShooterCharacter->OnWeaponChanged.RemoveAll(this);
-	BoundShooterCharacter->OnShooterHealthChanged.RemoveAll(this);
-	BoundShooterCharacter->OnShooterShieldChanged.RemoveAll(this);
-	BoundShooterCharacter->OnShooterPartnerShieldChanged.RemoveAll(this);
-	BoundShooterCharacter->OnShooterConditionChanged.RemoveAll(this);
-	BoundShooterCharacter->OnShooterDynamicCrosshairChanged.RemoveAll(this);
-	BoundShooterCharacter->OnShooterAimingBlur.RemoveAll(this);
-	BoundShooterCharacter = nullptr;
+	HandleShooterHealthChanged(BoundShooterCharacter->GetCurHealth(), BoundShooterCharacter->GetMaxHealth());
+	HandleShooterShieldChanged(BoundShooterCharacter->GetCurShield(), BoundShooterCharacter->GetMaxShield());
+	HandleShooterPartnerShieldChanged(
+		BoundShooterCharacter->GetCurPartnerShield(),
+		BoundShooterCharacter->GetMaxPartnerShield());
+	HandleShooterConditionChanged(BoundShooterCharacter->GetShooterConditionTagForUI());
+}
+
+void AShooterPlayerController::RefreshShooterSuitUI()
+{
+	if (!BoundShooterCharacter)
+	{
+		return;
+	}
+
+	// The controller keeps its widgets across respawn, while the new Pawn owns a
+	// fresh ASC. Clear presentation cached from the old Pawn before projecting the
+	// new Pawn's selected ability, availability, and actual cooldown effects.
+	if (AbilityUIInstance)
+	{
+		AbilityUIInstance->ResetCooldowns();
+	}
+	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
+	{
+		UISubsystem->ResetShooterAbilityState(BoundShooterCharacter->GetSelectedAbilityTag());
+	}
+
+	BoundShooterCharacter->RefreshShooterSuitUI();
+}
+
+void AShooterPlayerController::HandleShooterHealthAttributeChanged(const FOnAttributeChangeData& ChangeData)
+{
+	(void)ChangeData;
+	if (BoundShooterCharacter)
+	{
+		HandleShooterHealthChanged(BoundShooterCharacter->GetCurHealth(), BoundShooterCharacter->GetMaxHealth());
+		HandleShooterConditionChanged(BoundShooterCharacter->GetShooterConditionTagForUI());
+	}
+}
+
+void AShooterPlayerController::HandleShooterShieldAttributeChanged(const FOnAttributeChangeData& ChangeData)
+{
+	(void)ChangeData;
+	if (BoundShooterCharacter)
+	{
+		HandleShooterShieldChanged(BoundShooterCharacter->GetCurShield(), BoundShooterCharacter->GetMaxShield());
+		HandleShooterConditionChanged(BoundShooterCharacter->GetShooterConditionTagForUI());
+	}
+}
+
+void AShooterPlayerController::HandleShooterPartnerShieldAttributeChanged(const FOnAttributeChangeData& ChangeData)
+{
+	(void)ChangeData;
+	if (BoundShooterCharacter)
+	{
+		HandleShooterPartnerShieldChanged(
+			BoundShooterCharacter->GetCurPartnerShield(),
+			BoundShooterCharacter->GetMaxPartnerShield());
+		HandleShooterConditionChanged(BoundShooterCharacter->GetShooterConditionTagForUI());
+	}
 }
 
 ULocalPlayerUISubSystem* AShooterPlayerController::GetLocalUISubsystem() const
@@ -262,6 +357,7 @@ void AShooterPlayerController::BindMainUI()
 
 	if (ShooterUIInstance)
 	{
+		RefreshShooterSuitUI();
 		UE_LOG(LogTemp, Warning,
 			TEXT("[ShooterPC] BindMainUI skipped: already exists PC=%s UI=%s"),
 			*GetNameSafe(this),
@@ -349,6 +445,7 @@ void AShooterPlayerController::BindMainUI()
 		*GetNameSafe(this),
 		*GetNameSafe(AbilityUIInstance),
 		*GetNameSafe(AbilityUIClass));
+	RefreshShooterSuitUI();
 }
 
 void AShooterPlayerController::BindPostProcessSubSystem()

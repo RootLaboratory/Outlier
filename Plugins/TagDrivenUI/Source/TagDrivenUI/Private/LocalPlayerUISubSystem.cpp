@@ -218,6 +218,21 @@ void ULocalPlayerUISubSystem::OnCurrentAbilityChanged(const FGameplayTag& Abilit
 	}
 }
 
+void ULocalPlayerUISubSystem::ResetShooterAbilityState(const FGameplayTag& SelectedAbilityTag)
+{
+	if (UMainUIBase* MainUI = GetMainUI())
+	{
+		MainUI->ResetAbilityCooldowns();
+	}
+
+	if (UShooterCurrentAbilityIcon* CurrentAbilityIcon = Cast<UShooterCurrentAbilityIcon>(
+		GetModule(TagDrivenUITags::Shooter::CurrentAbility())))
+	{
+		CurrentAbilityIcon->ResetCooldown();
+		CurrentAbilityIcon->SetCurrentAbility(SelectedAbilityTag);
+	}
+}
+
 bool ULocalPlayerUISubSystem::ApplyCurrentAbilityCooldownIfMatches(const FGameplayTag& AbilityTag, float CoolTime)
 {
 	if (UShooterCurrentAbilityIcon* CurrentAbilityIcon = Cast<UShooterCurrentAbilityIcon>(GetModule(TagDrivenUITags::Shooter::CurrentAbility())))

@@ -6,6 +6,9 @@
 #include "Shooter/ShooterCharacterComponentBase.h"
 #include "ShooterHealthComponent.generated.h"
 
+class AController;
+struct FGameplayTag;
+
 UCLASS(ClassGroup=(Shooter), meta=(BlueprintSpawnableComponent))
 class OUTLIER_API UShooterHealthComponent : public UShooterCharacterComponentBase
 {
@@ -14,10 +17,15 @@ class OUTLIER_API UShooterHealthComponent : public UShooterCharacterComponentBas
 public:
 	UShooterHealthComponent();
 
-	void ApplyDamage(float DamageAmount);
+	bool ApplyDamage(
+		float DamageAmount,
+		AController* Instigator,
+		AActor* DamageCauser,
+		const FGameplayTag& DamageTag);
 	void Die();
 	void GetHit();
 	void HitHistoryRefresh();
+	void DelayShieldRecovery(float DelaySeconds);
 
 private:
 	virtual void TickComponent(
@@ -37,6 +45,6 @@ public:
 
 private:
 	uint8 bShieldRecoveryAbled : 1 = true;
-	float HitAccumulated = 0.f;
+	float ShieldRecoveryDelayRemaining = 0.f;
 	float RecoveryAccumulated = 0.f;
 };

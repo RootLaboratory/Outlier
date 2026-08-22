@@ -1,6 +1,5 @@
 #include "Upgrade/OutlierUpgradeComponent.h"
 
-#include "Ability/OutlierAbilityComponent.h"
 #include "Engine/DataTable.h"
 #include "GameFramework/Controller.h"
 #include "GameFramework/Pawn.h"
@@ -459,32 +458,10 @@ void UOutlierUpgradeComponent::RebuildUnlockedNodes()
 
 void UOutlierUpgradeComponent::SyncActiveTagsToAbilityComponent() const
 {
-	const AActor* Owner = GetOwner();
-	if (!Owner)
-	{
-		return;
-	}
-
-	const AActor* AbilityOwner = Owner;
-	if (const AOutlierPlayerState* PlayerStateOwner = Cast<AOutlierPlayerState>(Owner))
-	{
-		AbilityOwner = PlayerStateOwner->GetShooterCharacter();
-	}
-
-	//Upcast 시켜서 부모 AbilityComponent가 자식 UpgradeTag 모두 갖고 있음. 
-	UOutlierAbilityComponent* AbilityComponent = AbilityOwner
-		? AbilityOwner->FindComponentByClass<UOutlierAbilityComponent>()
-		: nullptr;
-	if (!AbilityComponent)
-	{
-		return;
-	}
-
-	//Data Table에 있는 Tag 주입, 해당 Tag를 읽어서 런타임에 함수 호출 시, 분기 처리. 
-	for (const FGameplayTag& UpgradeTag : ActiveUpgradeTags)
-	{
-		AbilityComponent->AddRuntimeTag(UpgradeTag);
-	}
+	// TODO(GAS): 커스텀 UOutlierAbilityComponent는 GAS 머지로 제거됨.
+	// 업그레이드 태그를 ASC(UOutlierAbilitySystemComponent)로 투영하는 경로를 아직 정하지 않아 no-op 처리.
+	// 설계 확정 시(loose 태그 vs 업그레이드 GE) 여기서 PlayerState 기준으로 ASC에 재적용할 것.
+	// 현재 업그레이드는 ActiveUpgradeTags / HasUpgradeTag 로 내부 추적은 유지됨.
 }
 
 bool UOutlierUpgradeComponent::ConsumeNodeCost(int32 Cost, AOutlierPlayerState* InPlayerState) const

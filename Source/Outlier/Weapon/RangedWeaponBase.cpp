@@ -3,8 +3,11 @@
 
 #include "Weapon/RangedWeaponBase.h"
 
-#include "Damage/OutlierTaggedDamageEvent.h"
+#include "Damage/OutlierDamageReceiver.h"
 #include "GameplayTags/OutlierGameplayTags.h"
+#include "GAS/Effects/OutlierGameplayEffects.h"
+#include "GAS/OutlierAbilitySystemComponent.h"
+#include "AbilitySystemGlobals.h"
 #include "DrawDebugHelpers.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/SphereComponent.h"
@@ -113,7 +116,7 @@ void ARangedWeaponBase::StartAttackCooldown()
 			AttackCooldownTimerHandle,
 			this,
 			&ARangedWeaponBase::ResetAttackCooldown,
-			AttackInterval,
+			GetEffectiveAttackInterval(),
 			false
 		);
 	}
@@ -126,25 +129,24 @@ void ARangedWeaponBase::ResetAttackCooldown()
 
 void ARangedWeaponBase::StartReuseCooldown()
 {
-	if (ReuseCooldown <= 0.0f || !GetWorld())
+	if (!HasAuthority() || ReuseCooldown <= 0.0f || !IsValid(WeaponOwner))
 	{
 		return;
 	}
 
-	bOnReuseCooldown = true;
-	GetWorld()->GetTimerManager().ClearTimer(ReuseCooldownTimerHandle);
-	GetWorld()->GetTimerManager().SetTimer(
-		ReuseCooldownTimerHandle,
-		this,
-		&ARangedWeaponBase::FinishReuseCooldown,
-		ReuseCooldown,
-		false
-	);
-}
+	UOutlierAbilitySystemComponent* AbilitySystem = Cast<UOutlierAbilitySystemComponent>(
+		UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(WeaponOwner));
+	if (!ensureMsgf(AbilitySystem, TEXT("Weapon owner %s must provide the Outlier ASC"), *GetNameSafe(WeaponOwner)))
+	{
+		return;
+	}
 
-void ARangedWeaponBase::FinishReuseCooldown()
-{
-	bOnReuseCooldown = false;
+	const FActiveGameplayEffectHandle CooldownHandle = AbilitySystem->CommitTimedCooldown(
+		UOutlierWeaponReuseCooldownGameplayEffect::StaticClass(),
+		OutlierGameplayTags::Cooldown::Weapon::Reuse(),
+		ReuseCooldown,
+		this);
+	ensureMsgf(CooldownHandle.IsValid(), TEXT("Failed to commit reuse cooldown for %s"), *GetName());
 }
 
 void ARangedWeaponBase::StartPostBurstCooldown()
@@ -183,6 +185,7 @@ void ARangedWeaponBase::ForcePostBurstCooldown()
 bool ARangedWeaponBase::CanReload() const
 {
 	return !bIsReloading
+		&& !IsWeaponOvercharged()
 		&& !bInfiniteAmmo
 		&& CurrentAmmo < MagazineSize;
 }
@@ -234,13 +237,24 @@ void ARangedWeaponBase::CancelReload()
 
 void ARangedWeaponBase::ConsumeAmmo()
 {
-	if (bInfiniteAmmo)
+	if (bInfiniteAmmo || IsWeaponOvercharged())
 	{
 		return;
 	}
 
 	CurrentAmmo = FMath::Max(CurrentAmmo - 1, 0);
 	UpdateLocalAmmoUI();
+}
+
+void ARangedWeaponBase::RefillMagazineForWeaponOvercharge()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	CurrentAmmo = MagazineSize;
+	UpdateLocalAmmoUI();
+	ForceNetUpdate();
 }
 
 
@@ -291,7 +305,7 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 
 	FVector Start = CameraLocation;
 	const FVector BaseDirection = CameraRotation.Vector().GetSafeNormal();
-	const float ShotSpreadDegrees = FMath::Max(BloomCurrent, 0.0f);
+	const float ShotSpreadDegrees = FMath::Max(GetCurrentSpread(), 0.0f);
 	const FVector ShotDirection = ShotSpreadDegrees > KINDA_SMALL_NUMBER
 		? FMath::VRandCone(BaseDirection, FMath::DegreesToRadians(ShotSpreadDegrees)).GetSafeNormal()
 		: BaseDirection;
@@ -394,14 +408,17 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 		
 		
 
-		FOutlierTaggedDamageEvent DamageEvent;
-		DamageEvent.DamageTag = OutlierGameplayTags::Damage::Weapon();
-		DamageEvent.HitResult = ResolvedDamageHit;
-		DamageEvent.DamageOrigin = Start;
-
 		if (HitActor)
 		{
-			HitActor->TakeDamage(DamageToApply, DamageEvent, OwnerCharacter->GetController(), this);
+			FOutlierDamageRequest DamageRequest;
+			DamageRequest.DamageAmount = DamageToApply;
+			DamageRequest.DamageTag = OutlierGameplayTags::Damage::Weapon();
+			DamageRequest.StunDurationSeconds = ProjectileStunTime;
+			DamageRequest.HitResult = ResolvedDamageHit;
+			DamageRequest.DamageOrigin = Start;
+			DamageRequest.EventInstigator = OwnerCharacter->GetController();
+			DamageRequest.DamageCauser = this;
+			OutlierDamage::Apply(HitActor, DamageRequest);
 		}
 	}
 	{
@@ -460,6 +477,10 @@ void ARangedWeaponBase::ApplyRecoil()
 	LastCalculatedControlRecoil = FVector2D::ZeroVector;
 	LastWeaponCameraShakeScale = 0.0f;
 	LastWeaponCameraShakeDuration = 0.0f;
+	if (IsWeaponOvercharged())
+	{
+		return;
+	}
 
 	ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
 	if (!HasAuthority()
@@ -740,7 +761,14 @@ void ARangedWeaponBase::HandleBloomRecoveryTimer()
 
 float ARangedWeaponBase::GetCurrentSpread() const
 {
-	return BloomCurrent;
+	const AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
+	const UOutlierAbilitySystemComponent* AbilitySystem = Shooter
+		? Shooter->GetOutlierAbilitySystemComponent()
+		: nullptr;
+	const float Multiplier = IsWeaponOvercharged() && AbilitySystem
+		? AbilitySystem->GetShooterSuitConfig().WeaponOvercharge.SpreadMultiplier
+		: 1.0f;
+	return BloomCurrent * Multiplier;
 }
 
 void ARangedWeaponBase::SetAiming(bool bAiming)
@@ -809,6 +837,18 @@ void ARangedWeaponBase::ApplySightMesh()
 		ShadowSight->SetRenderInDepthPass(false);
 		ShadowSight->SetOwnerNoSee(false);
 		ShadowSight->SetOnlyOwnerSee(false);
+	}
+}
+
+void ARangedWeaponBase::HideSightPresentation()
+{
+	UStaticMeshComponent* SightComponents[] = { FirstSight, ThirdSight, ShadowSight };
+	for (UStaticMeshComponent* SightComponent : SightComponents)
+	{
+		if (SightComponent)
+		{
+			SightComponent->SetHiddenInGame(true);
+		}
 	}
 }
 
@@ -1067,17 +1107,9 @@ void ARangedWeaponBase::MulticastPlayFireFX_Implementation(
 void ARangedWeaponBase::OnEquipped(ACharacter* NewOwner)
 {
 	Super::OnEquipped(NewOwner);
-	if (FirstSight)
-	{
-		FirstSight->SetHiddenInGame(true);
-	}
-	if (ThirdSight)
-	{
-		ThirdSight->SetHiddenInGame(true);
-	}
+	HideSightPresentation();
 	if (ShadowSight)
 	{
-		ShadowSight->SetHiddenInGame(true);
 		ShadowSight->SetCastShadow(false);
 		ShadowSight->SetCastHiddenShadow(false);
 	}
@@ -1096,6 +1128,18 @@ void ARangedWeaponBase::OnEquipped(ACharacter* NewOwner)
 		ShadowHandMagazineMesh->SetCastHiddenShadow(false);
 	}
 	UpdateLocalAmmoUI();
+}
+
+void ARangedWeaponBase::OnUnequipped()
+{
+	Super::OnUnequipped();
+	HideSightPresentation();
+}
+
+void ARangedWeaponBase::OnDropped(const FTransform& DropTransform, AFirstPersonCharacter* DroppedBy)
+{
+	Super::OnDropped(DropTransform, DroppedBy);
+	HideSightPresentation();
 }
 
 void ARangedWeaponBase::ShowEquippedPresentation()
@@ -1187,6 +1231,10 @@ void ARangedWeaponBase::OnRep_EquippedState()
 	if (IsEquipped())
 	{
 		UpdateLocalAmmoUI();
+	}
+	else
+	{
+		HideSightPresentation();
 	}
 }
 
@@ -1519,8 +1567,10 @@ ARangedWeaponBase::ARangedWeaponBase() : AWeaponBase()
 {
 	FirstSight = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("FirstSight"));
 	FirstSight->SetupAttachment(FirstPersonWeaponMesh);
+	FirstSight->SetHiddenInGame(true);
 	ThirdSight = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ThirdSight"));
 	ThirdSight->SetupAttachment(ThirdPersonWeaponMesh);
+	ThirdSight->SetHiddenInGame(true);
 	ShadowSight = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ShadowSight"));
 	ShadowSight->SetupAttachment(ShadowWeaponMesh);
 	ShadowSight->SetHiddenInGame(true);
@@ -1536,6 +1586,16 @@ ARangedWeaponBase::ARangedWeaponBase() : AWeaponBase()
 	ShadowHandMagazineMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ShadowHandMagazine"));
 	ShadowHandMagazineMesh->SetupAttachment(ShadowWeaponMesh);
 	ShadowHandMagazineMesh->SetHiddenInGame(true);
+}
+
+void ARangedWeaponBase::BeginPlay()
+{
+	Super::BeginPlay();
+
+	if (!IsEquipped())
+	{
+		HideSightPresentation();
+	}
 }
 
 void ARangedWeaponBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -1557,6 +1617,10 @@ void ARangedWeaponBase::OnConstruction(const FTransform& Transform)
 	ApplySightMesh();
 	ApplyMagazineMeshSettings();
 	CacheSightAimMaterials();
+	if (!IsEquipped())
+	{
+		HideSightPresentation();
+	}
 }
 
 void ARangedWeaponBase::CacheSightAimMaterials()
@@ -1834,7 +1898,7 @@ void ARangedWeaponBase::RefreshBloomSettingsFromState()
 
 void ARangedWeaponBase::HandleAutoFire()
 {
-	if (!bIsAttacking || !Super::CanAttack() || bIsReloading || bOnPostBurstCooldown || (!bInfiniteAmmo && CurrentAmmo <= 0))
+	if (!bIsAttacking || !Super::CanAttack() || bIsReloading || bOnPostBurstCooldown || !HasUsableAmmo())
 	{
 		StopAttack();
 		return;
@@ -1846,7 +1910,33 @@ void ARangedWeaponBase::HandleAutoFire()
 float ARangedWeaponBase::GetAutomaticFireInterval() const
 {
 	// AttackInterval은 개별 탄환 간격이다. 두 총구가 동시에 발사되면 다음 그룹까지 두 탄환 분량을 기다린다.
-	return FMath::Max(AttackInterval * FMath::Max(LastAttackMuzzleShotCount, 1), KINDA_SMALL_NUMBER);
+	return FMath::Max(GetEffectiveAttackInterval() * FMath::Max(LastAttackMuzzleShotCount, 1), KINDA_SMALL_NUMBER);
+}
+
+float ARangedWeaponBase::GetEffectiveAttackInterval() const
+{
+	const AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
+	const UOutlierAbilitySystemComponent* AbilitySystem = Shooter
+		? Shooter->GetOutlierAbilitySystemComponent()
+		: nullptr;
+	const float FireRateMultiplier = IsWeaponOvercharged() && AbilitySystem
+		? AbilitySystem->GetShooterSuitConfig().WeaponOvercharge.FireRateMultiplier
+		: 1.0f;
+	return FMath::Max(AttackInterval / FMath::Max(FireRateMultiplier, KINDA_SMALL_NUMBER), KINDA_SMALL_NUMBER);
+}
+
+bool ARangedWeaponBase::IsWeaponOvercharged() const
+{
+	const AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
+	return Shooter
+		&& Shooter->GetCurrentWeapon() == this
+		&& Shooter->GetWeaponMode() == EWeaponMode::Primary
+		&& Shooter->IsWeaponOvercharged();
+}
+
+bool ARangedWeaponBase::HasUsableAmmo() const
+{
+	return bInfiniteAmmo || IsWeaponOvercharged() || CurrentAmmo > 0;
 }
 
 void ARangedWeaponBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -1860,10 +1950,31 @@ bool ARangedWeaponBase::CanAttack() const
 {
 	return Super::CanAttack()
 		&& !bAttackOnCooldown
-		&& !bOnReuseCooldown
+		&& !IsOnReuseCooldown()
 		&& !bOnPostBurstCooldown
 		&& !bIsReloading
-		&& (bInfiniteAmmo || CurrentAmmo > 0);
+		&& HasUsableAmmo();
+}
+
+bool ARangedWeaponBase::IsOnReuseCooldown() const
+{
+	const UOutlierAbilitySystemComponent* AbilitySystem = Cast<UOutlierAbilitySystemComponent>(
+		UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(WeaponOwner));
+	return AbilitySystem
+		&& AbilitySystem->IsTimedCooldownActive(
+			OutlierGameplayTags::Cooldown::Weapon::Reuse(),
+			this);
+}
+
+float ARangedWeaponBase::GetReuseCooldownRemaining() const
+{
+	const UOutlierAbilitySystemComponent* AbilitySystem = Cast<UOutlierAbilitySystemComponent>(
+		UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(WeaponOwner));
+	return AbilitySystem
+		? AbilitySystem->GetTimedCooldownRemaining(
+			OutlierGameplayTags::Cooldown::Weapon::Reuse(),
+			this)
+		: 0.0f;
 }
 
 void ARangedWeaponBase::StartAttack()
@@ -1908,7 +2019,7 @@ void ARangedWeaponBase::StartAttack()
 	bIsAttacking = true;
 	PerformAttack(); // 첫 발 즉시 발사
 
-	if (!bIsAttacking || !Super::CanAttack() || bIsReloading || bOnPostBurstCooldown || (!bInfiniteAmmo && CurrentAmmo <= 0))
+	if (!bIsAttacking || !Super::CanAttack() || bIsReloading || bOnPostBurstCooldown || !HasUsableAmmo())
 	{
 		return;
 	}
@@ -1948,9 +2059,9 @@ void ARangedWeaponBase::PerformAttack()
 		return;
 	}
 
-	if (!Super::CanAttack() || bIsReloading || bOnPostBurstCooldown || (!bInfiniteAmmo && CurrentAmmo <= 0))
+	if (!Super::CanAttack() || bIsReloading || bOnPostBurstCooldown || !HasUsableAmmo())
 	{
-		if (!bInfiniteAmmo && CurrentAmmo <= 0)
+		if (!HasUsableAmmo())
 		{
 			StopAttack();
 		}
@@ -1988,7 +2099,7 @@ void ARangedWeaponBase::PerformAttack()
 	for (const FName MuzzleSocket : MuzzleSockets)
 	{
 		if ((BurstShotCount > 0 && CurrentBurstShotCount >= BurstShotCount)
-			|| (!bInfiniteAmmo && CurrentAmmo <= 0))
+			|| !HasUsableAmmo())
 		{
 			break;
 		}
@@ -2025,7 +2136,23 @@ void ARangedWeaponBase::PerformAttack()
 
 	if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner))
 	{
+		Shooter->NotifyOffensiveActionExecuted();
 		Shooter->HandleFireShotAnimation();
+	}
+	else if (APartnerCharacter* Partner = Cast<APartnerCharacter>(WeaponOwner))
+	{
+		Partner->NotifyOffensiveActionExecuted();
+	}
+	else if (AEnemyBase* Enemy = Cast<AEnemyBase>(WeaponOwner); Enemy && Enemy->IsEnemyPossessed())
+	{
+		// 빙의 Enemy는 은신을 공유하지 않지만, 그 Enemy로 실제 사격하면 원래 Pair의 은신은 해제한다.
+		if (AOutlierPlayerState* OutlierPlayerState = Enemy->GetPlayerState<AOutlierPlayerState>())
+		{
+			if (AShooterCharacter* PairShooter = OutlierPlayerState->GetShooterCharacter())
+			{
+				PairShooter->NotifyOffensiveActionExecuted();
+			}
+		}
 	}
 
 	StartAttackCooldown();

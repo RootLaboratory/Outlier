@@ -1,6 +1,6 @@
 #include "Explosion/ExplosionSubsystem.h"
 
-#include "Damage/OutlierTaggedDamageEvent.h"
+#include "Damage/OutlierDamageReceiver.h"
 #include "Enemy/EnemyBase.h"
 #include "Engine/OverlapResult.h"
 #include "Engine/World.h"
@@ -170,14 +170,13 @@ void UExplosionSubsystem::ProcessExplosion(const FPendingExplosion& Request)
 
 			if (FinalDamage > 0.0f)
 			{
-				FOutlierTaggedDamageEvent DamageEvent;
-				DamageEvent.DamageTag = OutlierGameplayTags::Damage::Explosion();
-				DamageEvent.DamageOrigin = Request.Location;
-				TargetActor->TakeDamage(
-					FinalDamage,
-					DamageEvent,
-					Request.EventInstigator.Get(),
-					SourceActor);
+				FOutlierDamageRequest DamageRequest;
+				DamageRequest.DamageAmount = FinalDamage;
+				DamageRequest.DamageTag = OutlierGameplayTags::Damage::Explosion();
+				DamageRequest.DamageOrigin = Request.Location;
+				DamageRequest.EventInstigator = Request.EventInstigator.Get();
+				DamageRequest.DamageCauser = SourceActor;
+				OutlierDamage::Apply(TargetActor, DamageRequest);
 			}
 		}
 	}

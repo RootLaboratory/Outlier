@@ -52,6 +52,7 @@ public:
 	void PartnerDistanceUpdate(const float Distance);
 	void OnCurrentWeaponChanged(EWidgetWeaponType WeaponType);
 	void OnCurrentAbilityChanged(const FGameplayTag& AbilityTag);
+	void ResetShooterAbilityState(const FGameplayTag& SelectedAbilityTag);
 	bool ApplyCurrentAbilityCooldownIfMatches(const FGameplayTag& AbilityTag, float CoolTime);
 	void OnAbilityUsed(const FGameplayTag& AbilityTag, float CoolTime);
 	void OnAbilityDisabledByDistance();

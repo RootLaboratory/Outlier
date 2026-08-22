@@ -25,12 +25,12 @@
 #include "Drone/Partner/PartnerSkillCommonRow.h"
 #include "Drone/Partner/PartnerSkillDataRow.h"
 #include "Drone/Partner/PartnerSurvivalDataRow.h"
+#include "Drone/Partner/PartnerVitalityComponent.h"
 #include "Drone/Partner/PartnerCameraAssistDataRow.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "Shooter/ShooterCharacter.h"
 #include "OutlierPlayerState.h"
 #include "LocalPlayerUISubSystem.h"
-#include "PartnerAbilityComponent.h"
 #include "TagDrivenUIGameplayTags.h"
 #include "Perception/AISense_Hearing.h"
 #include "Enemy/EnemyRoomSubsystem.h"
@@ -38,6 +38,9 @@
 #include "NiagaraFunctionLibrary.h"
 #include "Upgrade/OutlierUpgradeComponent.h"
 #include "Weapon/WeaponBase.h"
+#include "GAS/OutlierAbilitySystemComponent.h"
+#include "GAS/Attributes/OutlierVitalAttributeSet.h"
+#include "GameplayEffect.h"
 
 namespace
 {
@@ -80,6 +83,8 @@ void APartnerCharacter::BeginPlay()
 	}
 
 	Super::BeginPlay();
+	RefreshAbilitySystemActorInfo();
+	BindPartnerCooldownUIObserver();
 
 	if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
 	{
@@ -95,7 +100,22 @@ void APartnerCharacter::BeginPlay()
 
 void APartnerCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	if (HasAuthority() && CachedShooterCharacter)
+	{
+		CachedShooterCharacter->CancelActiveQuantumLeap(false);
+		CachedShooterCharacter->EndActiveBulletReflection(false);
+		CachedShooterCharacter->EndActiveWeaponOvercharge(false);
+	}
+	UnbindPartnerCooldownUIObserver();
 	CleanupBoostVFXComponents();
+	if (PartnerVitalityComponent)
+	{
+		PartnerVitalityComponent->BeginOwnerTeardown();
+	}
+	if (OutlierAbilitySystemComponent)
+	{
+		OutlierAbilitySystemComponent->ClearForPawn(this);
+	}
 
 	Super::EndPlay(EndPlayReason);
 }
@@ -103,6 +123,7 @@ void APartnerCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 void APartnerCharacter::PossessedBy(AController* NewController)
 {
 	Super::PossessedBy(NewController);
+	RefreshAbilitySystemActorInfo();
 
 	if (bIsAccelerate)
 	{
@@ -111,27 +132,18 @@ void APartnerCharacter::PossessedBy(AController* NewController)
 }
 
 
-float APartnerCharacter::TakeDamage(
-	float DamageAmount,
-	FDamageEvent const& DamageEvent,
-	AController* EventInstigator,
-	AActor* DamageCauser)
+float APartnerCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 {
-
-	const float AppliedDamage = Super::TakeDamage(
-		DamageAmount,
-		DamageEvent,
-		EventInstigator,
-		DamageCauser
-	);
-
-	if (!HasAuthority() || AppliedDamage <= 0.0f || bIsInvincible || bIsRebooting)
+	if (!HasAuthority() || !CanBeDamaged() || Request.DamageAmount <= 0.0f || !OutlierAbilitySystemComponent)
 	{
-		return AppliedDamage;
+		return 0.0f;
 	}
-
-	HandlePartnerHit();
-	return AppliedDamage;
+	const bool bApplied = OutlierAbilitySystemComponent->ApplyDamageToSelf(
+		Request.DamageAmount,
+		Request.EventInstigator,
+		Request.DamageCauser,
+		Request.DamageTag);
+	return bApplied ? Request.DamageAmount : 0.0f;
 }
 
 void APartnerCharacter::UnPossessed()
@@ -149,6 +161,145 @@ void APartnerCharacter::UnPossessed()
 	}
 
 	Super::UnPossessed();
+	RefreshAbilitySystemActorInfo();
+}
+
+void APartnerCharacter::OnRep_Controller()
+{
+	Super::OnRep_Controller();
+	RefreshAbilitySystemActorInfo();
+	RefreshPartnerCooldownUI();
+}
+
+UAbilitySystemComponent* APartnerCharacter::GetAbilitySystemComponent() const
+{
+	return OutlierAbilitySystemComponent;
+}
+
+void APartnerCharacter::RefreshAbilitySystemActorInfo()
+{
+	if (OutlierAbilitySystemComponent)
+	{
+		OutlierAbilitySystemComponent->InitializeForPawn(this);
+	}
+	if (PartnerVitalityComponent)
+	{
+		PartnerVitalityComponent->BindObservers();
+	}
+}
+
+void APartnerCharacter::BindPartnerCooldownUIObserver()
+{
+	if (!OutlierAbilitySystemComponent || PartnerCooldownEffectAddedHandle.IsValid())
+	{
+		return;
+	}
+
+	PartnerCooldownEffectAddedHandle =
+		OutlierAbilitySystemComponent->OnActiveGameplayEffectAddedDelegateToSelf.AddUObject(
+			this,
+			&APartnerCharacter::HandlePartnerCooldownEffectAdded);
+}
+
+void APartnerCharacter::UnbindPartnerCooldownUIObserver()
+{
+	if (OutlierAbilitySystemComponent && PartnerCooldownEffectAddedHandle.IsValid())
+	{
+		OutlierAbilitySystemComponent->OnActiveGameplayEffectAddedDelegateToSelf.Remove(
+			PartnerCooldownEffectAddedHandle);
+	}
+	PartnerCooldownEffectAddedHandle.Reset();
+}
+
+void APartnerCharacter::HandlePartnerCooldownEffectAdded(
+	UAbilitySystemComponent* AbilitySystem,
+	const FGameplayEffectSpec& EffectSpec,
+	FActiveGameplayEffectHandle EffectHandle)
+{
+	(void)AbilitySystem;
+	(void)EffectHandle;
+	if (!EffectSpec.Def)
+	{
+		return;
+	}
+
+	const FGameplayTagContainer& GrantedTags = EffectSpec.Def->GetGrantedTags();
+	const FGameplayTag CooldownTags[] =
+	{
+		OutlierGameplayTags::Cooldown::Partner::EMP(),
+		OutlierGameplayTags::Cooldown::Partner::Shield(),
+		OutlierGameplayTags::Cooldown::Partner::Hacking(),
+		OutlierGameplayTags::Cooldown::Partner::Scan()
+	};
+	for (const FGameplayTag& CooldownTag : CooldownTags)
+	{
+		if (GrantedTags.HasTagExact(CooldownTag))
+		{
+			NotifyPartnerCooldownUI(CooldownTag);
+			return;
+		}
+	}
+}
+
+void APartnerCharacter::RefreshPartnerCooldownUI()
+{
+	const FGameplayTag CooldownTags[] =
+	{
+		OutlierGameplayTags::Cooldown::Partner::EMP(),
+		OutlierGameplayTags::Cooldown::Partner::Shield(),
+		OutlierGameplayTags::Cooldown::Partner::Hacking(),
+		OutlierGameplayTags::Cooldown::Partner::Scan()
+	};
+	for (const FGameplayTag& CooldownTag : CooldownTags)
+	{
+		NotifyPartnerCooldownUI(CooldownTag);
+	}
+}
+
+void APartnerCharacter::NotifyPartnerCooldownUI(const FGameplayTag& CooldownTag)
+{
+	if (!IsLocallyControlled() || !OutlierAbilitySystemComponent)
+	{
+		return;
+	}
+
+	const float Remaining = OutlierAbilitySystemComponent->GetPartnerCooldownRemaining(CooldownTag);
+	if (Remaining <= 0.0f)
+	{
+		return;
+	}
+
+	APlayerController* PlayerController = Cast<APlayerController>(GetController());
+	ULocalPlayer* LocalPlayer = PlayerController ? PlayerController->GetLocalPlayer() : nullptr;
+	ULocalPlayerUISubSystem* UISubsystem = LocalPlayer
+		? LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>()
+		: nullptr;
+	if (!UISubsystem)
+	{
+		return;
+	}
+
+	FGameplayTag AbilityTag;
+	if (CooldownTag == OutlierGameplayTags::Cooldown::Partner::EMP())
+	{
+		AbilityTag = TagDrivenUITags::Ability::Partner::EMP();
+	}
+	else if (CooldownTag == OutlierGameplayTags::Cooldown::Partner::Shield())
+	{
+		AbilityTag = TagDrivenUITags::Ability::Partner::Shield();
+	}
+	else if (CooldownTag == OutlierGameplayTags::Cooldown::Partner::Hacking())
+	{
+		AbilityTag = TagDrivenUITags::Ability::Partner::Hacking();
+	}
+	else if (CooldownTag == OutlierGameplayTags::Cooldown::Partner::Scan())
+	{
+		AbilityTag = TagDrivenUITags::Ability::Partner::Scan();
+	}
+	if (AbilityTag.IsValid())
+	{
+		UISubsystem->OnAbilityUsed(AbilityTag, Remaining);
+	}
 }
 
 void APartnerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
@@ -296,13 +447,8 @@ void APartnerCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	DOREPLIFETIME(APartnerCharacter, SyncLocalOffset);
 	DOREPLIFETIME(APartnerCharacter, bShieldActive);
 	DOREPLIFETIME(APartnerCharacter, bScanning);
-	DOREPLIFETIME(APartnerCharacter, LastHackServerTime);
 	DOREPLIFETIME(APartnerCharacter, bIsAccelerate);
-	DOREPLIFETIME(APartnerCharacter, bTestStealthed);
 	DOREPLIFETIME(APartnerCharacter, bHiddenForEnemyPossession);
-	DOREPLIFETIME(APartnerCharacter, bIsRebooting);
-	DOREPLIFETIME(APartnerCharacter, bIsInvincible);
-	DOREPLIFETIME(APartnerCharacter, CurrentHitCount);
 }
 
 void APartnerCharacter::ToggleTestWeaponEquipment()
@@ -326,29 +472,17 @@ void APartnerCharacter::ToggleTestWeaponEquipment()
 FGameplayTagContainer APartnerCharacter::GetOwnedGameplayTagsForQuery() const
 {
 	FGameplayTagContainer GameplayTags = Super::GetOwnedGameplayTagsForQuery();
-	if (bTestStealthed || bHiddenForEnemyPossession)
+	if (OutlierAbilitySystemComponent)
+	{
+		FGameplayTagContainer AbilitySystemTags;
+		OutlierAbilitySystemComponent->GetOwnedGameplayTags(AbilitySystemTags);
+		GameplayTags.AppendTags(AbilitySystemTags);
+	}
+	if (bHiddenForEnemyPossession)
 	{
 		GameplayTags.AddTag(OutlierGameplayTags::State::Stealthed());
 	}
 	return GameplayTags;
-}
-
-void APartnerCharacter::OnRep_CurrentHitCount()
-{
-	if (!IsLocallyControlled()) return;
-
-	if (CurrentHitCount <= 0)
-	{
-		NullifyDamagedEvenet();
-		return;
-	}
-
-	if (MaxHitCount <= 0)
-	{
-		return;
-	}
-
-	ApplyDamagedEvent(static_cast<float>(MaxHitCount-CurrentHitCount) / static_cast<float>(MaxHitCount));
 }
 
 void APartnerCharacter::AreaOfEffect()
@@ -390,14 +524,20 @@ void APartnerCharacter::TryHacking()
 		{
 			return;
 		}
+		if (RuntimeHackComponent->IsHackInteractionActive())
+		{
+			RuntimeHackComponent->TryHack();
+			return;
+		}
 	}
 
-	if (!TestAbilityComponent)
+	if (!OutlierAbilitySystemComponent)
 	{
 		return;
 	}
 
-	TestAbilityComponent->TryActivateAbilityByTag(OutlierGameplayTags::Ability::Partner::Hacking());
+	OutlierAbilitySystemComponent->TryActivatePartnerAbility(
+		OutlierGameplayTags::Ability::Partner::Hacking());
 	FaceSpriteAnimationComponent->SetEmotion(EPartnerEmotion::Happy);
 }
 
@@ -411,12 +551,20 @@ void APartnerCharacter::EndHacking()
 
 void APartnerCharacter::TryEMP()
 {
-	if (!CanAcceptInput() || !TestAbilityComponent)
+	if (!CanAcceptInput() || !OutlierAbilitySystemComponent)
 	{
 		return;
 	}
 
-	TestAbilityComponent->TryActivateAbilityByTag(OutlierGameplayTags::Ability::Partner::EMP());
+	if (UPartnerEMPComponent* RuntimeEMPComponent = GetRuntimeEMPComponent();
+		RuntimeEMPComponent && RuntimeEMPComponent->IsEMPInteractionActive())
+	{
+		RuntimeEMPComponent->TryEMP();
+		return;
+	}
+
+	OutlierAbilitySystemComponent->TryActivatePartnerAbility(
+		OutlierGameplayTags::Ability::Partner::EMP());
 	FaceSpriteAnimationComponent->SetEmotion(EPartnerEmotion::Surprised);
 
 }
@@ -433,19 +581,6 @@ void APartnerCharacter::Hacking(AActor* TargetActor)
 	// 해킹 로직
 }
 
-void APartnerCharacter::TestAbilityScan()
-{
-	if (!CanAcceptInput())
-	{
-		return;
-	}
-	UE_LOG(LogTemp, Error, TEXT("Scan Valid"));
-
-
-	TestAbilityComponent->TryActivateAbilityByTag(OutlierGameplayTags::Ability::Partner::Scan());
-
-}
-
 void APartnerCharacter::Scan()
 {
 	if (!CanAcceptInput())
@@ -455,7 +590,11 @@ void APartnerCharacter::Scan()
 	UE_LOG(LogTemp, Error, TEXT("Scan Valid"));
 	FaceSpriteAnimationComponent->SetEmotion(EPartnerEmotion::Sad);
 
-	ServerUseSkill(EPartnerSkillType::Scan);
+	if (OutlierAbilitySystemComponent)
+	{
+		OutlierAbilitySystemComponent->TryActivatePartnerAbility(
+			OutlierGameplayTags::Ability::Partner::Scan());
+	}
 }
 
 void APartnerCharacter::Shield()
@@ -467,7 +606,11 @@ void APartnerCharacter::Shield()
 
 	UE_LOG(LogTemp, Error, TEXT("Shield Valid"));
 
-	ServerUseSkill(EPartnerSkillType::Shield);
+	if (OutlierAbilitySystemComponent)
+	{
+		OutlierAbilitySystemComponent->TryActivatePartnerAbility(
+			OutlierGameplayTags::Ability::Partner::Shield());
+	}
 	FaceSpriteAnimationComponent->SetEmotion(EPartnerEmotion::Angry);
 
 }
@@ -519,6 +662,11 @@ void APartnerCharacter::ApplyDamagedEvent(float InRatio) const
 
 void APartnerCharacter::NullifyDamagedEvenet() const
 {
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+
 	UMaterialPostProcessSubsystem* MaterialSub = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>();
 	if (MaterialSub)
 	{
@@ -640,58 +788,6 @@ EPartnerBoundaryState APartnerCharacter::GetBoundaryOutside()
 	return BoundaryState;
 }
 
-void APartnerCharacter::HandlePartnerHit()
-{
-	if (!HasAuthority() || MaxHitCount <= 0 || bIsInvincible || bIsRebooting)
-	{
-		return;
-	}
-
-	++CurrentHitCount;
-	bIsInvincible = true;
-
-	GetWorldTimerManager().SetTimer(
-		HitInvincibleTimerHandle,
-		this,
-		&APartnerCharacter::ClearHitInvincible,
-		HitInvincibleTime,
-		false
-	);
-
-	if (IsLocallyControlled())
-	{
-		OnRep_CurrentHitCount();
-	}
-
-	if (CurrentHitCount >= MaxHitCount)
-	{
-		StartReboot();
-	}
-}
-
-void APartnerCharacter::SetInvincibleForEnemyPossession(bool bNewInvincible)
-{
-	if (!HasAuthority())
-	{
-		return;
-	}
-
-	bInvincibleForEnemyPossession = bNewInvincible;
-
-	if (bNewInvincible)
-	{
-		GetWorldTimerManager().ClearTimer(HitInvincibleTimerHandle);
-		GetWorldTimerManager().ClearTimer(RebootInvincibleTimerHandle);
-		bIsInvincible = true;
-		return;
-	}
-
-	if (!bIsRebooting)
-	{
-		bIsInvincible = false;
-	}
-}
-
 void APartnerCharacter::SetEnemyPossessionProtection(bool bEnabled)
 {
 	if (!HasAuthority())
@@ -699,7 +795,10 @@ void APartnerCharacter::SetEnemyPossessionProtection(bool bEnabled)
 		return;
 	}
 
-	SetInvincibleForEnemyPossession(bEnabled);
+	if (PartnerVitalityComponent)
+	{
+		PartnerVitalityComponent->SetEnemyPossessionProtection(bEnabled);
+	}
 
 	if (bHiddenForEnemyPossession == bEnabled)
 	{
@@ -717,84 +816,63 @@ void APartnerCharacter::SetEnemyPossessionProtection(bool bEnabled)
 	}
 }
 
-void APartnerCharacter::StartReboot()
+void APartnerCharacter::StopActionsForReboot()
 {
-	if (!HasAuthority() || bIsRebooting)
+	if (!HasAuthority())
 	{
 		return;
 	}
-
-	bIsRebooting = true;
-	bIsInvincible = true;
-	CurrentHitCount = 0;
-
+	if (CachedShooterCharacter)
+	{
+		CachedShooterCharacter->CancelActiveQuantumLeap(true);
+		CachedShooterCharacter->EndActiveBulletReflection(true);
+		CachedShooterCharacter->EndActiveWeaponOvercharge(true);
+	}
 	if (CombatComponent)
 	{
-		CombatComponent->ForceStopAttack();
+		CombatComponent->CancelForReboot();
 	}
-
-	if (IsLocallyControlled())
+	if (UPartnerHackComponent* RuntimeHackComponent = GetRuntimeHackComponent())
 	{
-		OnRep_CurrentHitCount();
+		RuntimeHackComponent->CancelForReboot();
+	}
+	if (UPartnerEMPComponent* RuntimeEMPComponent = GetRuntimeEMPComponent())
+	{
+		RuntimeEMPComponent->CancelForReboot();
+	}
+	if (SupportComponent)
+	{
+		SupportComponent->CancelForReboot();
 	}
 
 	ApplyAccelerateState(false);
-
 	if (MovementComponent)
 	{
-		MovementComponent->SetMoveInput(FVector2D::ZeroVector);
-		MovementComponent->SetVerticalInput(0.0f);
-		SetMoveMode(EPartnerMoveMode::Normal);
+		MovementComponent->ClearFlightInput();
+		MovementComponent->StopCameraAssist();
+		ApplyMoveMode(EPartnerMoveMode::Normal);
 	}
-
-	GetWorldTimerManager().ClearTimer(HitInvincibleTimerHandle);
-	GetWorldTimerManager().SetTimer(
-		RebootTimerHandle,
-		this,
-		&APartnerCharacter::FinishReboot,
-		RebootTime,
-		false
-	);
 }
 
-void APartnerCharacter::FinishReboot()
+void APartnerCharacter::RefreshEnemyDetectionForVitality()
 {
 	if (!HasAuthority())
 	{
 		return;
 	}
 
-	bIsRebooting = false;
-	bIsInvincible = true;
-
-	GetWorldTimerManager().SetTimer(
-		RebootInvincibleTimerHandle,
-		this,
-		&APartnerCharacter::ClearRebootInvincible,
-		InvincibleAfterRebootTime,
-		false
-	);
-}
-
-void APartnerCharacter::ClearHitInvincible()
-{
-	if (!bIsRebooting && !bInvincibleForEnemyPossession)
+	if (UEnemyRoomSubsystem* EnemyRoomSubsystem = GetWorld()
+		? GetWorld()->GetSubsystem<UEnemyRoomSubsystem>()
+		: nullptr)
 	{
-		bIsInvincible = false;
-	}
-}
-
-void APartnerCharacter::ClearRebootInvincible()
-{
-	if (!bInvincibleForEnemyPossession)
-	{
-		bIsInvincible = false;
+		EnemyRoomSubsystem->RefreshDetectionTarget(this);
 	}
 }
 
 bool APartnerCharacter::CanAcceptInput() const
 {
-	return !bIsRebooting;
+	return !OutlierAbilitySystemComponent
+		|| !OutlierAbilitySystemComponent->HasMatchingGameplayTag(OutlierGameplayTags::State::Rebooting());
 }
 
 UPartnerEMPComponent* APartnerCharacter::GetRuntimeEMPComponent() const
@@ -1022,38 +1100,6 @@ void APartnerCharacter::ServerSetAccelerate_Implementation(bool bNewAccelerate)
 	ForceNetUpdate();
 }
 
-void APartnerCharacter::ServerUseSkill_Implementation(EPartnerSkillType SkillType)
-{
-	if (!CanAcceptInput() && !SupportComponent)
-	{
-		return;
-	}
-
-	switch (SkillType)
-	{
-	case EPartnerSkillType::AreaOfEffect:
-
-			SupportComponent->TryAreaOfEffect_Server();
-
-		break;
-	case EPartnerSkillType::Shield:
-
-			SupportComponent->TryShield_Server();
-		break;
-
-	case EPartnerSkillType::Scan:
-
-			SupportComponent->TryScan_Server();
-
-		break;
-	case EPartnerSkillType::Hack:
-		break;
-	default:
-		break;
-	}
-}
-
-
 void APartnerCharacter::ServerSetMoveMode_Implementation(EPartnerMoveMode NewMode)
 {
 	if (!CanApplyMoveMode(NewMode))
@@ -1072,6 +1118,18 @@ void APartnerCharacter::EnsurePartnerDataInitialized()
 	}
 
 	InitializeFromDataTables();
+	if (HasAuthority()
+		&& (!OutlierAbilitySystemComponent
+			|| OutlierAbilitySystemComponent->GetGrantedPartnerAbilityCount() != 4))
+	{
+		return;
+	}
+	if (HasAuthority()
+		&& (!PartnerVitalityComponent
+			|| !PartnerVitalityComponent->InitializeFromDataTables(VitalityDataRow, PartnerSurvivalDataRow)))
+	{
+		return;
+	}
 	bPartnerDataInitialized = true;
 }
 
@@ -1113,7 +1171,32 @@ void  APartnerCharacter::InitializeFromDataTables()
 		CameraRollInterpSpeed	= ControlDataRow->CameraRollInterpSpeed;
 	}
 
-	if (const FPartnerSkillDataRow* SkillDataRow = PartnerSkillDataRow.GetRow<FPartnerSkillDataRow>(TEXT("InitializeSkillData")))
+	const bool bValidSkillHandle = PartnerSkillDataRow.DataTable
+		&& !PartnerSkillDataRow.RowName.IsNone()
+		&& PartnerSkillDataRow.DataTable->GetRowStruct() == FPartnerSkillDataRow::StaticStruct();
+#if UE_BUILD_SHIPPING
+	if (!bValidSkillHandle)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[PartnerAbility] Invalid Partner skill DataTable handle"));
+		return;
+	}
+#else
+	checkf(bValidSkillHandle, TEXT("[PartnerAbility] Invalid Partner skill DataTable handle"));
+#endif
+	const FPartnerSkillDataRow* SkillDataRow = PartnerSkillDataRow.DataTable->FindRow<FPartnerSkillDataRow>(
+		PartnerSkillDataRow.RowName,
+		TEXT("InitializeSkillData"),
+		false);
+#if UE_BUILD_SHIPPING
+	if (!SkillDataRow)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[PartnerAbility] Missing Partner skill row %s"), *PartnerSkillDataRow.RowName.ToString());
+		return;
+	}
+#else
+	checkf(SkillDataRow, TEXT("[PartnerAbility] Missing Partner skill row %s"), *PartnerSkillDataRow.RowName.ToString());
+#endif
+	if (SkillDataRow)
 	{
 		ScanRange			= SkillDataRow->ScanRange;
 		ScanDuration		= SkillDataRow->ScanDuration;
@@ -1162,17 +1245,45 @@ void  APartnerCharacter::InitializeFromDataTables()
 		AssistStrength			= CameraAssistDataRow->AssistStrength;
 	}
 
-	if (const FPartnerSurvivalDataRow* SurvivalDataRow = PartnerSurvivalDataRow.GetRow<FPartnerSurvivalDataRow>(TEXT("InitializeSurvivalData")))
+	FPartnerHackAbilityData HackAbilityData;
+	HackAbilityData.CandidateRange = HackRange;
+	HackAbilityData.EffectiveRange = HackEffectiveRange;
+	HackAbilityData.MiniGameTime = HackMiniGameTime;
+	HackAbilityData.FailPenaltyTime = HackFailPenaltyTime;
+	HackAbilityData.bRequireLineOfSight = bRequireLineOfSight;
+	if (UPartnerHackComponent* RuntimeHackComponent = GetRuntimeHackComponent())
 	{
-		MaxHitCount				  = SurvivalDataRow->MaxHitCount;
-		RebootTime				  = SurvivalDataRow->RebootTime;
-		InvincibleAfterRebootTime = SurvivalDataRow->InvincibleAfterRebootTime;
-		HitInvincibleTime		  = SurvivalDataRow->HitInvincibleTime;
+		RuntimeHackComponent->CacheAbilityData(HackAbilityData);
 	}
 
-	if (TestAbilityComponent)
+	FPartnerEMPAbilityData EMPAbilityData;
+	EMPAbilityData.EMPRange = AreaOfEffectRange;
+	EMPAbilityData.MarkingTime = EMPMarkingTime;
+	EMPAbilityData.StunDuration = EMPStunDuration;
+	EMPAbilityData.MaxTargets = EMPMaxTargets;
+	if (UPartnerEMPComponent* RuntimeEMPComponent = GetRuntimeEMPComponent())
 	{
-		TestAbilityComponent->RefreshCachedPartnerAbilityData();
+		RuntimeEMPComponent->CacheAbilityData(EMPAbilityData);
+	}
+
+	if (HasAuthority() && OutlierAbilitySystemComponent)
+	{
+		FOutlierPartnerAbilityConfig AbilityConfig;
+		AbilityConfig.EMPCooldown = AreaOfEffectCooldown;
+		AbilityConfig.ShieldCooldown = ShieldCooldown;
+		AbilityConfig.HackCooldown = HackCooldown;
+		AbilityConfig.ScanCooldown = ScanCooldown;
+		AbilityConfig.ScanDuration = ScanDuration;
+		const bool bConfigured = OutlierAbilitySystemComponent->ConfigurePartnerAbilities(AbilityConfig);
+#if UE_BUILD_SHIPPING
+		if (!bConfigured)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[PartnerAbility] Failed to configure Partner GameplayAbilities"));
+			return;
+		}
+#else
+		checkf(bConfigured, TEXT("[PartnerAbility] Failed to configure Partner GameplayAbilities"));
+#endif
 	}
 
 	if (MovementComponent)
@@ -1227,6 +1338,12 @@ APartnerCharacter::APartnerCharacter()
 {
 	PrimaryActorTick.bCanEverTick = false;
 
+	OutlierAbilitySystemComponent = CreateDefaultSubobject<UOutlierAbilitySystemComponent>(
+		TEXT("AbilitySystemComponent"));
+	OutlierAbilitySystemComponent->SetReplicationMode(EGameplayEffectReplicationMode::Mixed);
+	VitalAttributeSet = CreateDefaultSubobject<UOutlierVitalAttributeSet>(TEXT("VitalAttributeSet"));
+	PartnerVitalityComponent = CreateDefaultSubobject<UPartnerVitalityComponent>(TEXT("PartnerVitalityComponent"));
+
 	ThirdPersonTiltRoot = CreateDefaultSubobject<USceneComponent>(TEXT("Third Person Tilt Root"));
 	ThirdPersonTiltRoot->SetupAttachment(GetCapsuleComponent());
 	GetMesh()->SetupAttachment(ThirdPersonTiltRoot);
@@ -1246,7 +1363,6 @@ APartnerCharacter::APartnerCharacter()
 	DistanceComponent = CreateDefaultSubobject<UPartnerDistanceComponent>(TEXT("DistanceComponent"));
 	MovementComponent = CreateDefaultSubobject<UPartnerMovementComponent>(TEXT("MovementComponent"));
 	SupportComponent  = CreateDefaultSubobject<UPartnerSupportComponent> (TEXT("SupportComponent"));
-	TestAbilityComponent = CreateDefaultSubobject<UPartnerAbilityComponent>(TEXT("AbilityComponent"));
 	CombatComponent   = CreateDefaultSubobject<UPartnerCombatComponent>  (TEXT("CombatComponent"));
 	HackComponent     = CreateDefaultSubobject<UPartnerHackComponent>    (TEXT("HackComponent"));
 	EMPComponent      = CreateDefaultSubobject<UPartnerEMPComponent>     (TEXT("EMPComponent"));
@@ -1326,70 +1442,23 @@ void APartnerCharacter::SetShooterCharacter(AShooterCharacter* NewShooter)
 	}
 }
 
-void APartnerCharacter::SetTestStealthed(bool bNewStealthed)
+void APartnerCharacter::ConfigureSuitDisableBoundaryRadius(float Radius)
 {
-	if (!HasAuthority() || bTestStealthed == bNewStealthed)
-	{
-		return;
-	}
+	checkf(Radius > 0.0f, TEXT("Partner suit disable boundary radius must be positive."));
+	SuitDisableBoundaryRadius = Radius;
+}
 
-	bTestStealthed = bNewStealthed;
-	ForceNetUpdate();
+void APartnerCharacter::NotifyOffensiveActionExecuted()
+{
+	if (HasAuthority() && CachedShooterCharacter)
+	{
+		CachedShooterCharacter->EndActiveStealth(true);
+	}
 }
 
 void APartnerCharacter::ClientNotifySkillUseResult_Implementation(EPartnerSkillType SkillType, EPartnerSkillUseResult Result)
 {
 	OnPartnerSkillUseResult.Broadcast(SkillType, Result);
-
-	if (Result != EPartnerSkillUseResult::Success)
-	{
-		return;
-	}
-
-	APlayerController* PC = Cast<APlayerController>(GetController());
-	if (!PC)
-	{
-		return;
-	}
-
-	ULocalPlayer* LP = PC->GetLocalPlayer();
-	if (!LP)
-	{
-		return;
-	}
-
-	ULocalPlayerUISubSystem* SubSystem = LP->GetSubsystem<ULocalPlayerUISubSystem>();
-	if (!SubSystem)
-	{
-		return;
-	}
-
-	FGameplayTag AbilityTag;
-	float CoolTime = 0.f;
-
-	switch (SkillType)
-	{
-	case EPartnerSkillType::Shield:
-		AbilityTag = TagDrivenUITags::Ability::Partner::Shield();
-		CoolTime   = ShieldCooldown;
-		break;
-	case EPartnerSkillType::Scan:
-		AbilityTag = TagDrivenUITags::Ability::Partner::Scan();
-		CoolTime   = ScanCooldown;
-		break;
-	case EPartnerSkillType::Hack:
-		AbilityTag = TagDrivenUITags::Ability::Partner::Hacking();
-		CoolTime   = HackCooldown;
-		break;
-	case EPartnerSkillType::AreaOfEffect:
-		AbilityTag = TagDrivenUITags::Ability::Partner::EMP();
-		CoolTime   = AreaOfEffectCooldown;
-		break;
-	default:
-		return;
-	}
-
-	SubSystem->OnAbilityUsed(AbilityTag, CoolTime);
 }
 
 float APartnerCharacter::GetCurrentInertialCameraRollDegrees() const

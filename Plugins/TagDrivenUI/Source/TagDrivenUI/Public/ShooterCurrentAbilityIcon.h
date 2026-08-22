@@ -25,6 +25,8 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Ability")
 	bool ApplyCooldownIfMatches(const FGameplayTag& AbilityTag, float CoolTime);
 
+	void ResetCooldown();
+
 	UFUNCTION(BlueprintPure, Category = "Ability")
 	FGameplayTag GetCurrentAbilityTag() const { return CurrentAbilityTag; }
 

@@ -381,10 +381,10 @@ struct OUTLIER_API FWeaponValues
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Idle", meta = (ClampMin = "0.0"))
 	float FingerMovementIntervalMaxTime = 2.5f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Lean")
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "Lean is character-wide. Use AShooterCharacter::FirstPersonLeanWeaponYawDegrees."))
 	float FirstPersonLeanYawDegrees = 25.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Lean", meta = (ClampMin = "0.0"))
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "Lean is character-wide. Use AShooterCharacter::FirstPersonLeanWeaponInterpSpeed."))
 	float FirstPersonLeanInterpSpeed = 12.0f;
 
 	// Walk

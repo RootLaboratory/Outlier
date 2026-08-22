@@ -51,5 +51,6 @@ private:
 	void HandlePopupClosed();
 
 	bool bHudActive = false;
-	bool bCameraActive = true;
+	// 시작 시 PartnerCam 피드는 꺼짐. PartnerCameraToggle 첫 입력에 캡처와 함께 켜진다.
+	bool bCameraActive = false;
 };

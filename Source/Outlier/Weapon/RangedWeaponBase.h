@@ -121,9 +121,6 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon|Fire")
 	uint8 bAttackOnCooldown : 1 = false;
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon|Cooldown")
-	uint8 bOnReuseCooldown : 1 = false;
-
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon|Burst")
 	uint8 bOnPostBurstCooldown : 1 = false;
 
@@ -184,7 +181,6 @@ protected:
 
 	FTimerHandle AutoFireTimerHandle;
 	FTimerHandle AttackCooldownTimerHandle;
-	FTimerHandle ReuseCooldownTimerHandle;
 	FTimerHandle PostBurstCooldownTimerHandle;
 	FTimerHandle BloomRecoveryTimerHandle;
 	FTimerHandle RecoilResetTimerHandle;
@@ -222,6 +218,7 @@ protected:
 	virtual void ApplyFeedbackDefinition();
 
 	void ApplySightMesh();
+	void HideSightPresentation();
 	void ApplyMagazineMeshSettings();
 	void HideHandMagazine();
 	void RefreshBloomSettingsFromState();
@@ -242,10 +239,12 @@ protected:
 
 	void HandleAutoFire();
 	float GetAutomaticFireInterval() const;
+	float GetEffectiveAttackInterval() const;
+	bool IsWeaponOvercharged() const;
+	bool HasUsableAmmo() const;
 	void StartAttackCooldown();
 	void ResetAttackCooldown();
 	void StartReuseCooldown();
-	void FinishReuseCooldown();
 	void StartPostBurstCooldown();
 	void FinishPostBurstCooldown();
 	void EnsureBloomRecoveryTimer();
@@ -255,9 +254,12 @@ protected:
 	void ReportArenaWideNoise(ACharacter* OwnerCharacter);
 
 public:
+	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const;
 	virtual void OnEquipped(ACharacter* NewOwner) override;
+	virtual void OnUnequipped() override;
+	virtual void OnDropped(const FTransform& DropTransform, AFirstPersonCharacter* DroppedBy = nullptr) override;
 	virtual void ShowEquippedPresentation() override;
 	virtual void RefreshShadowWeaponPresentation() override;
 
@@ -282,6 +284,9 @@ public:
 	virtual void ApplyBloomPerShot();
 	virtual void RecoverBloom(float DeltaTime);
 	virtual float GetCurrentSpread() const;
+	int32 GetCurrentAmmo() const { return CurrentAmmo; }
+	int32 GetMagazineSize() const { return MagazineSize; }
+	void RefillMagazineForWeaponOvercharge();
 
 	virtual void SetAiming(bool bAiming);
 	void CancelLocalRecoilPresentation();
@@ -297,7 +302,10 @@ public:
 	bool IsReloading() const { return bIsReloading; }
 
 	UFUNCTION(BlueprintPure, Category = "Weapon|Cooldown")
-	bool IsOnReuseCooldown() const { return bOnReuseCooldown; }
+	bool IsOnReuseCooldown() const;
+
+	UFUNCTION(BlueprintPure, Category = "Weapon|Cooldown")
+	float GetReuseCooldownRemaining() const;
 
 	UFUNCTION(BlueprintPure, Category = "Weapon|Cooldown")
 	float GetReuseCooldown() const { return ReuseCooldown; }

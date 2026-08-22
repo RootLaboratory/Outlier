@@ -240,7 +240,7 @@ private:
 	UPROPERTY()
 	TArray<TObjectPtr<AActor>> NearbyInteractables;
 
-	uint8 bPartnerCameraCaptureActive : 1 = true;
+	uint8 bPartnerCameraCaptureActive : 1 = false;
 
 	FTimerHandle InteractionTraceTimerHandle;
 

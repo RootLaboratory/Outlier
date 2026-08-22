@@ -18,7 +18,7 @@ public:
 
 	virtual float GetWeakPointDamageMultiplier(const UPrimitiveComponent* HitComponent) const override;
 
-	// StateTree 전조가 끝났을 때 호출한다. 현재 HP를 0으로 만들고 즉시 폭발 및 사망 처리한다.
+	// StateTree 전조가 끝났을 때 호출한다. GAS로 치명 피해를 적용해 폭발 및 사망 처리에 진입한다.
 	UFUNCTION(BlueprintCallable, Category = "Self Destruct Drone")
 	void TriggerSelfDestruct();
 

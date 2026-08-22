@@ -1,9 +1,11 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "AbilitySystemInterface.h"
 #include "GameFramework/Actor.h"
 #include "Engine/DataTable.h"
 #include "Explosion/ExplosionTypes.h"
+#include "Damage/OutlierDamageReceiver.h"
 #include "ExplosiveProp.generated.h"
 
 class ASelfDestructDrone;
@@ -13,22 +15,23 @@ class UNiagaraSystem;
 class USceneComponent;
 class USoundBase;
 class UStaticMeshComponent;
+class UOutlierAbilitySystemComponent;
+class UOutlierVitalAttributeSet;
+struct FOnAttributeChangeData;
 
 UCLASS()
-class OUTLIER_API AExplosiveProp : public AActor
+class OUTLIER_API AExplosiveProp : public AActor, public IAbilitySystemInterface, public IOutlierDamageReceiver
 {
 	GENERATED_BODY()
 
 public:
 	AExplosiveProp();
 
+	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
-	virtual float TakeDamage(
-		float DamageAmount,
-		FDamageEvent const& DamageEvent,
-		AController* EventInstigator,
-		AActor* DamageCauser) override;
+	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
 
 	// 자폭 드론이 Deferred Spawn을 완료하기 전에 1P/3P가 공유할 소켓 이름을 전달한다.
 	void InitializeMountedSocket(FName InMountedSocketName);
@@ -41,7 +44,7 @@ public:
 	bool IsExploded() const { return bExploded; }
 
 	UFUNCTION(BlueprintPure, Category = "Explosive Prop")
-	float GetCurrentHP() const { return CurrentHP; }
+	float GetCurrentHP() const;
 
 	// 자폭 드론이 Owner로 지정된 경우에는 자체 HP 대신 드론 HP로 무기 피해를 전달한다.
 	UFUNCTION(BlueprintPure, Category = "Explosive Prop")
@@ -63,6 +66,12 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Explosive Prop")
 	TObjectPtr<UExplosionComponent> ExplosionComponent;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
+	TObjectPtr<UOutlierAbilitySystemComponent> OutlierAbilitySystemComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
+	TObjectPtr<UOutlierVitalAttributeSet> VitalAttributeSet;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Explosive Prop|Data")
 	FDataTableRowHandle ExplosivePropRow;
 
@@ -81,6 +90,9 @@ private:
 
 	// 배치 폭발물의 HP와 피격 연출 값을 DataTable에서 읽는다.
 	bool InitializeFromDataTable();
+	void BindGasVitalityObservers();
+	void UnbindGasVitalityObservers();
+	void HandleHealthChanged(const FOnAttributeChangeData& ChangeData);
 
 	// 폭발 여부에 맞춰 Mesh 표시와 피격 Collision을 함께 변경한다.
 	void ApplyExplodedState();
@@ -107,7 +119,8 @@ private:
 	UPROPERTY(Replicated)
 	FName MountedSocketName = NAME_None;
 
-	float CurrentHP = 0.0f;
 	TOptional<FExplosivePropRow> RuntimePropRow;
 	TWeakObjectPtr<ASelfDestructDrone> CachedOwningDrone;
+	TWeakObjectPtr<AController> PendingDamageInstigator;
+	FDelegateHandle HealthChangedHandle;
 };

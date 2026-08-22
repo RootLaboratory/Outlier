@@ -2,10 +2,9 @@
 
 #include "Enemy/EnemyAIController.h"
 #include "Enemy/EnemyBase.h"
+#include "Enemy/EnemyTargetRules.h"
 #include "Engine/Level.h"
 #include "Engine/World.h"
-#include "GameplayTags/OutlierGameplayTags.h"
-#include "Interface/GameplayTagProviderInterface.h"
 #include "Network/OutlierArenaPoolSubsystem.h"
 #include "Subsystems/SubsystemCollection.h"
 #include "TimerManager.h"
@@ -275,11 +274,9 @@ void UEnemyRoomSubsystem::HandleForcedTargetShare(FEnemyRoomSearchKey Key)
 		return;
 	}
 
-	const IGameplayTagProviderInterface* TagProvider = Cast<IGameplayTagProviderInterface>(TargetActor);
-	if (TagProvider && TagProvider->GetOwnedGameplayTagsForQuery().HasTagExact(
-		OutlierGameplayTags::State::Stealthed()))
+	if (OutlierEnemyTargetRules::IsUnavailable(TargetActor))
 	{
-		// Stealth 중 경과 시간을 인정하지 않고 해제 뒤 다시 8초를 계산한다.
+		// 타겟 불가 상태 중 경과 시간을 인정하지 않고 해제 뒤 다시 8초를 계산한다.
 		ScheduleForcedTargetShare(Key);
 		return;
 	}

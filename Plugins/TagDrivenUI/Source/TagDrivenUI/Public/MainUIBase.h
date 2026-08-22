@@ -36,6 +36,7 @@ public:
 	UEventDrivenUI* GetModule(const FGameplayTag& ModuleTag) const;
 	UAbilityIconUI* GetAbilityIcon(const FGameplayTag& AbilityTag) const;
 	void AddAbilityIconEntry(UAbilityIconUI* Icon, const FGameplayTag& AbilityTag);
+	void ResetAbilityCooldowns();
 	virtual void On_RepAbilityDisabledByDistance();
 	virtual void On_RepAbilityabledByDistance();
 

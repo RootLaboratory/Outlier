@@ -11,6 +11,8 @@ class AShooterCharacter;
 class AEnemyBase;
 class AOutlierPlayerState;
 class ULocalPlayerUISubSystem;
+class UOutlierAbilitySystemComponent;
+struct FOnAttributeChangeData;
 
 UENUM(BlueprintType)
 enum class EPartnerPossessionState : uint8
@@ -34,6 +36,7 @@ UCLASS()
 class OUTLIER_API APartnerPlayerController : public AFirstPersonPlayerController
 {
 	GENERATED_BODY()
+	friend class FOutlierGasPartnerPossessionCooldownSessionTest;
 
 protected:
 	/** Pawn class used when respawning the player. */
@@ -67,6 +70,10 @@ protected:
 	void HandlePlayerCharactersChanged(AOutlierPlayerState* ChangedPlayerState);
 	void BindShooterCharacterDelegatesFromPlayerState();
 	void UnbindShooterCharacterDelegates();
+	void RefreshShooterVitalityUI();
+	void HandleShooterHealthAttributeChanged(const FOnAttributeChangeData& ChangeData);
+	void HandleShooterShieldAttributeChanged(const FOnAttributeChangeData& ChangeData);
+	void HandleShooterPartnerShieldAttributeChanged(const FOnAttributeChangeData& ChangeData);
 	ULocalPlayerUISubSystem* GetLocalUISubsystem() const;
 
 	void HandleShooterHealthChanged(float CurrentHealth, float MaxHealth);
@@ -76,6 +83,16 @@ protected:
 
 	UPROPERTY()
 	TObjectPtr<AShooterCharacter> BoundShooterCharacter;
+
+	UPROPERTY()
+	TObjectPtr<UOutlierAbilitySystemComponent> BoundShooterAbilitySystem;
+
+	FDelegateHandle HealthChangedHandle;
+	FDelegateHandle MaxHealthChangedHandle;
+	FDelegateHandle ShieldChangedHandle;
+	FDelegateHandle MaxShieldChangedHandle;
+	FDelegateHandle PartnerShieldChangedHandle;
+	FDelegateHandle MaxPartnerShieldChangedHandle;
 
 	UPROPERTY()
 	TObjectPtr<AOutlierPlayerState> BoundOutlierPlayerState;
@@ -94,9 +111,13 @@ protected:
 
 	bool bHackTransitionInputBlocked = false;
 	bool bHackTransitionCoveredNotified = false;
+	bool bPartnerAbilityCooldownSessionCommitted = false;
 
 	void RestoreCachedPartnerCharacter();
 	void RestoreCachedPartnerCharacterNextTick();
+	bool BeginCommittedPartnerAbilityCooldownSession(APartnerCharacter* PartnerCharacter);
+	bool FinalizeCommittedPartnerAbilityCooldownSession(APartnerCharacter* PartnerCharacter);
+	void DiscardCommittedPartnerAbilityCooldownSession(APartnerCharacter* PartnerCharacter);
 	void CommitPendingEnemyPossession(AEnemyBase* ExpectedTarget);
 	void CancelPendingEnemyPossessionTransition();
 	void CancelLocalEnemyPossessionTransition(AEnemyBase* ExpectedTarget);

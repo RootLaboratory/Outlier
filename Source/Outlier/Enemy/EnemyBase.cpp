@@ -1,7 +1,6 @@
 #include "Enemy/EnemyBase.h"
 #include "Camera/CameraComponent.h"
 #include "Enemy/EnemyStateTreeComponent.h"
-#include "Damage/OutlierTaggedDamageEvent.h"
 #include "Drone/Partner/HackableComponent.h"
 #include "Drone/Partner/EMPableComponent.h"
 #include "Drone/Partner/EMPGameplayTags.h"
@@ -28,6 +27,8 @@
 #include "Room/RoomTagComponent.h"
 #include "Weapon/RangedWeaponBase.h"
 #include "Outlier.h"
+#include "GAS/OutlierAbilitySystemComponent.h"
+#include "GAS/Attributes/OutlierVitalAttributeSet.h"
 
 namespace
 {
@@ -66,6 +67,11 @@ AEnemyBase::AEnemyBase()
 	bReplicates = true;
 	AIControllerClass = AEnemyAIController::StaticClass();
 	AutoPossessAI = EAutoPossessAI::PlacedInWorldOrSpawned;
+
+	OutlierAbilitySystemComponent = CreateDefaultSubobject<UOutlierAbilitySystemComponent>(
+		TEXT("AbilitySystemComponent"));
+	OutlierAbilitySystemComponent->SetReplicationMode(EGameplayEffectReplicationMode::Mixed);
+	VitalAttributeSet = CreateDefaultSubobject<UOutlierVitalAttributeSet>(TEXT("VitalAttributeSet"));
 
 	// 캡슐이 PhysicsBody 채널을 기본(Block)으로 막고 있으면, 무기 트레이스가 캡슐에 먼저 걸려서
 	// 캡슐 안쪽에 있는 몸통/코어 등 Physics Asset 본 바디까지 도달하지 못함 (팔다리처럼 캡슐 밖으로
@@ -204,13 +210,11 @@ void AEnemyBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifeti
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
 	DOREPLIFETIME(AEnemyBase, RuntimeStat);
-	DOREPLIFETIME(AEnemyBase, CurrentHealth);
 	DOREPLIFETIME(AEnemyBase, bInCombat);
 	DOREPLIFETIME(AEnemyBase, LastKnownPlayerLocation);
 	DOREPLIFETIME(AEnemyBase, PatternStartPlayerLocation);
 	DOREPLIFETIME(AEnemyBase, CombatState);
 	DOREPLIFETIME(AEnemyBase, bIsPossessed);
-	DOREPLIFETIME(AEnemyBase, bPossessionInProgress);
 	DOREPLIFETIME(AEnemyBase, bPossessedImpactInputLocked);
 	DOREPLIFETIME(AEnemyBase, bPlayerCurrentlyVisible);
 	DOREPLIFETIME(AEnemyBase, bHasSharedTargetContact);
@@ -222,6 +226,8 @@ void AEnemyBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifeti
 void AEnemyBase::BeginPlay()
 {
 	Super::BeginPlay();
+	RefreshAbilitySystemActorInfo();
+	BindGasVitalityObservers();
 
 	if (RoomTagComponent)
 	{
@@ -278,12 +284,19 @@ void AEnemyBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		CurrentWeapon = nullptr;
 	}
 
+	if (OutlierAbilitySystemComponent)
+	{
+		UnbindGasVitalityObservers();
+		OutlierAbilitySystemComponent->ClearForPawn(this);
+	}
+
 	Super::EndPlay(EndPlayReason);
 }
 
 void AEnemyBase::PossessedBy(AController* NewController)
 {
 	Super::PossessedBy(NewController);
+	RefreshAbilitySystemActorInfo();
 
 	if (NewController && !NewController->IsPlayerController())
 	{
@@ -300,8 +313,46 @@ void AEnemyBase::UnPossessed()
 {
 	StopCurrentAttack();
 	Super::UnPossessed();
+	RefreshAbilitySystemActorInfo();
 
 	SetEnemyPossessed(false);
+}
+
+void AEnemyBase::OnRep_Controller()
+{
+	Super::OnRep_Controller();
+	RefreshAbilitySystemActorInfo();
+}
+
+UAbilitySystemComponent* AEnemyBase::GetAbilitySystemComponent() const
+{
+	return OutlierAbilitySystemComponent;
+}
+
+float AEnemyBase::GetCurrentHealth() const
+{
+	return VitalAttributeSet ? VitalAttributeSet->GetHealth() : 0.0f;
+}
+
+bool AEnemyBase::IsDead() const
+{
+	return OutlierAbilitySystemComponent
+		&& OutlierAbilitySystemComponent->HasMatchingGameplayTag(OutlierGameplayTags::State::Dead());
+}
+
+bool AEnemyBase::IsPossessionInProgress() const
+{
+	return OutlierAbilitySystemComponent
+		&& OutlierAbilitySystemComponent->HasMatchingGameplayTag(
+			OutlierGameplayTags::State::PossessPending());
+}
+
+void AEnemyBase::RefreshAbilitySystemActorInfo()
+{
+	if (OutlierAbilitySystemComponent)
+	{
+		OutlierAbilitySystemComponent->InitializeForPawn(this);
+	}
 }
 
 void AEnemyBase::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
@@ -505,13 +556,8 @@ void AEnemyBase::SetEnemyPossessed(bool bNewIsPossessed)
 
 	if (bIsPossessed)
 	{
-		bPossessionInProgress = false;
 		PossessionInstigatorPartner.Reset();
-		if (HackableComponent)
-		{
-			HackableComponent->HackTags.RemoveTag(
-				OutlierGameplayTags::State::PossessPending());
-		}
+		RemovePossessionPendingState();
 
 		StopCurrentAttack();
 		RemoveRoomTargetObserver();
@@ -557,20 +603,22 @@ bool AEnemyBase::BeginPossessionProcess(APartnerCharacter* PartnerCharacter)
 	if (!HasAuthority()
 		|| !IsValid(PartnerCharacter)
 		|| bIsPossessed
-		|| bPossessionInProgress
+		|| IsPossessionInProgress()
 		|| IsPossessedActionCommitted()
 		|| !HackableComponent)
 	{
 		return false;
 	}
 
-	bPossessionInProgress = true;
 	CancelCommittedAction();
 	EndImpactReaction();
 	PossessionInstigatorPartner = PartnerCharacter;
 	ResetPossessedAttackInput();
-	HackableComponent->HackTags.AddTag(
-		OutlierGameplayTags::State::PossessPending());
+	if (!ApplyPossessionPendingState())
+	{
+		PossessionInstigatorPartner.Reset();
+		return false;
+	}
 
 	StopCurrentAttack();
 	RemoveRoomTargetObserver();
@@ -587,7 +635,7 @@ bool AEnemyBase::BeginPossessionProcess(APartnerCharacter* PartnerCharacter)
 	PartnerCharacter->SetEnemyPossessionProtection(true);
 	ForceNetUpdate();
 
-	// Global Sync가 bPossessionInProgress=true를 먼저 읽은 뒤 Pending 상태를 선택하게 한다.
+	// Global Sync가 ASC PossessPending 태그를 먼저 읽은 뒤 Pending 상태를 선택하게 한다.
 	SendEnemyStateTreeEventNextTick(
 		FGameplayTag::RequestGameplayTag(
 			TEXT("Enemy.Event.Possession.Pending")));
@@ -607,13 +655,10 @@ bool AEnemyBase::BeginPossessionProcess(APartnerCharacter* PartnerCharacter)
 
 void AEnemyBase::ConfirmPossessionProcess()
 {
-	if (!HasAuthority() || !bPossessionInProgress || !HackableComponent)
+	if (!HasAuthority() || !IsPossessionInProgress() || !HackableComponent)
 	{
 		return;
 	}
-
-	HackableComponent->HackTags.RemoveTag(
-		OutlierGameplayTags::State::PossessPending());
 
 	if (IsPossessedAttackDiagnosticsEnabled())
 	{
@@ -632,21 +677,13 @@ void AEnemyBase::CancelPossessionProcess()
 		return;
 	}
 
-	const bool bHadPossessionProcess = bPossessionInProgress
-		|| (HackableComponent
-			&& HackableComponent->HasHackTag(
-				OutlierGameplayTags::State::PossessPending()));
+	const bool bHadPossessionProcess = IsPossessionInProgress();
 	if (!bHadPossessionProcess)
 	{
 		return;
 	}
 
-	bPossessionInProgress = false;
-	if (HackableComponent)
-	{
-		HackableComponent->HackTags.RemoveTag(
-			OutlierGameplayTags::State::PossessPending());
-	}
+	RemovePossessionPendingState();
 
 	if (APartnerCharacter* PartnerCharacter = PossessionInstigatorPartner.Get())
 	{
@@ -663,7 +700,7 @@ void AEnemyBase::CancelPossessionProcess()
 
 	if (!bIsPossessed)
 	{
-		// Global Sync가 bPossessionInProgress=false를 반영한 뒤 Pending 상태를 빠져나가게 한다.
+		// Global Sync가 ASC PossessPending 제거를 반영한 뒤 Pending 상태를 빠져나가게 한다.
 		SendEnemyStateTreeEventNextTick(
 			FGameplayTag::RequestGameplayTag(
 				TEXT("Enemy.Event.Possession.Cancelled")));
@@ -709,7 +746,7 @@ void AEnemyBase::InitializeFromEnemyStatRow()
 
 	ApplyClassStatOverrides();
 	ApplyMovementFromRuntimeStat();
-	CurrentHealth = RuntimeStat.Health;
+	InitializeGasVitality();
 
 	if (AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(GetController()))
 	{
@@ -1034,52 +1071,57 @@ void AEnemyBase::RestoreStateAfterStun()
 			TEXT("Enemy.Event.Status.StunEnded")));
 }
 
-void AEnemyBase::ApplyDamageInternal(float DamageAmount)
+bool AEnemyBase::ApplyDamageInternal(
+	float DamageAmount,
+	AController* DamageInstigator,
+	AActor* DamageCauser,
+	const FGameplayTag& DamageTag)
 {
-	if (!HasAuthority() || DamageAmount <= 0.0f || CurrentHealth <= 0.0f)
+	if (!HasAuthority() || DamageAmount <= 0.0f || IsDead() || !OutlierAbilitySystemComponent)
 	{
-		return;
+		return false;
 	}
 
-	const float PreviousHealth = CurrentHealth;
-	CurrentHealth = FMath::Max(CurrentHealth - DamageAmount, 0.0f);
-	HandleCurrentHealthChanged(PreviousHealth);
-
-	if (CurrentHealth <= 0.0f)
-	{
-		HandleDeath();
-	}
+	return OutlierAbilitySystemComponent->ApplyDamageToSelf(
+		DamageAmount,
+		DamageInstigator,
+		DamageCauser,
+		DamageTag);
 }
 
-float AEnemyBase::TakeDamage(
-	float DamageAmount,
-	FDamageEvent const& DamageEvent,
-	AController* EventInstigator,
-	AActor* DamageCauser)
+float AEnemyBase::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 {
-	if (!HasAuthority() || DamageAmount <= 0.0f || CurrentHealth <= 0.0f)
+	if (!HasAuthority() || !CanBeDamaged() || Request.DamageAmount <= 0.0f || IsDead() || GetCurrentHealth() <= 0.0f)
 	{
 		return 0.0f;
 	}
 
 	float DamageMultiplier = 1.0f;
 	bool bCoreWeakPointHit = false;
-	if (DamageEvent.IsOfType(FOutlierTaggedDamageEvent::ClassID))
+	if (Request.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Weapon()))
 	{
-		const FOutlierTaggedDamageEvent& TaggedEvent = static_cast<const FOutlierTaggedDamageEvent&>(DamageEvent);
-		if (TaggedEvent.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Weapon()))
-		{
-			const UPrimitiveComponent* HitComponent = TaggedEvent.HitResult.GetComponent();
-			bCoreWeakPointHit = bUseCoreWeakPoint && HitComponent == CoreHitboxComponent;
-			DamageMultiplier = GetWeakPointDamageMultiplier(HitComponent);
-		}
+		const UPrimitiveComponent* HitComponent = Request.HitResult.GetComponent();
+		bCoreWeakPointHit = bUseCoreWeakPoint && HitComponent == CoreHitboxComponent;
+		DamageMultiplier = GetWeakPointDamageMultiplier(HitComponent);
 	}
 
-	const float PreviousHealth = CurrentHealth;
-	const float FinalDamage = DamageAmount * FMath::Max(DamageMultiplier, 0.0f);
-	const float AppliedDamage = Super::TakeDamage(FinalDamage, DamageEvent, EventInstigator, DamageCauser);
-	// 공통 TakeDamage 진입점을 기존 Enemy HP 및 사망 처리로 연결한다.
-	ApplyDamageInternal(AppliedDamage);
+	const float PreviousHealth = GetCurrentHealth();
+	const float FinalDamage = Request.DamageAmount * FMath::Max(DamageMultiplier, 0.0f);
+	const float AppliedDamage = ApplyDamageInternal(
+		FinalDamage,
+		Request.EventInstigator,
+		Request.DamageCauser,
+		Request.DamageTag)
+		? FinalDamage : 0.0f;
+	if (AppliedDamage > 0.0f
+		&& !IsDead()
+		&& Request.StunDurationSeconds > 0.0f
+		&& Request.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Weapon()))
+	{
+		OutlierAbilitySystemComponent->ApplyStunStateToSelf(
+			Request.StunDurationSeconds,
+			Request.DamageCauser);
+	}
 	if (bCoreWeakPointHit)
 	{
 		UE_LOG(
@@ -1088,11 +1130,11 @@ float AEnemyBase::TakeDamage(
 			TEXT("[EnemyWeakPoint] Type=Core Actor=%s Component=%s RawDamage=%.2f Multiplier=%.2f AppliedDamage=%.2f HP=%.2f->%.2f"),
 			*GetNameSafe(this),
 			*GetNameSafe(CoreHitboxComponent),
-			DamageAmount,
+			Request.DamageAmount,
 			DamageMultiplier,
 			AppliedDamage,
 			PreviousHealth,
-			CurrentHealth);
+			GetCurrentHealth());
 	}
 	return AppliedDamage;
 }
@@ -1120,7 +1162,7 @@ void AEnemyBase::ApplyExplosionReaction(
 	float TurretReactionScale,
 	float EffectRatio)
 {
-	if (!HasAuthority() || EffectRatio <= 0.0f || CurrentHealth <= 0.0f)
+	if (!HasAuthority() || EffectRatio <= 0.0f || IsDead())
 	{
 		return;
 	}
@@ -1335,9 +1377,9 @@ void AEnemyBase::RefreshImpactReactionDuration()
 bool AEnemyBase::BeginImpactReaction()
 {
 	if (!HasAuthority()
-		|| CurrentHealth <= 0.0f
+		|| IsDead()
 		|| bIsPossessed
-		|| bPossessionInProgress
+		|| IsPossessionInProgress()
 		|| CurrentImpactStrength < RuntimeImpactReactionProfile.MinReactionStrength)
 	{
 		if (IsEnemyImpactReactionDiagnosticsEnabled())
@@ -1348,9 +1390,9 @@ bool AEnemyBase::BeginImpactReaction()
 				TEXT("[EnemyImpactDiag] RecoveryBeginRejected Enemy=%s Authority=%s Health=%.2f Possessed=%s PossessionPending=%s Strength=%.2f MinStrength=%.2f"),
 				*GetNameSafe(this),
 				HasAuthority() ? TEXT("true") : TEXT("false"),
-				CurrentHealth,
+				GetCurrentHealth(),
 				bIsPossessed ? TEXT("true") : TEXT("false"),
-				bPossessionInProgress ? TEXT("true") : TEXT("false"),
+				IsPossessionInProgress() ? TEXT("true") : TEXT("false"),
 				CurrentImpactStrength,
 				RuntimeImpactReactionProfile.MinReactionStrength);
 		}
@@ -1398,7 +1440,7 @@ bool AEnemyBase::BeginImpactReaction()
 bool AEnemyBase::UpdateImpactRecovery(float DeltaTime, float ElapsedTime)
 {
 	(void)ElapsedTime;
-	if (!HasAuthority() || !bImpactReactionActive || CurrentHealth <= 0.0f)
+	if (!HasAuthority() || !bImpactReactionActive || IsDead())
 	{
 		return true;
 	}
@@ -1567,7 +1609,7 @@ void AEnemyBase::EndImpactReaction()
 		EnemyAIController = Cast<AEnemyAIController>(CachedAIController.Get());
 	}
 	if (EnemyAIController
-		&& CurrentHealth > 0.0f
+		&& !IsDead()
 		&& CombatState != EEnemyCombatState::Stun
 		&& !IsAIControlSuppressed())
 	{
@@ -1628,7 +1670,7 @@ void AEnemyBase::EndPossessedImpactInputLock()
 		&& bPossessedImpactInputLocked
 		&& bIsPossessed
 		&& bPossessedAttackHeld
-		&& CurrentHealth > 0.0f;
+		&& !IsDead();
 	bPossessedImpactInputLocked = false;
 
 	if (bShouldResumeHeldAttack)
@@ -1644,20 +1686,82 @@ void AEnemyBase::OnRep_RuntimeStat()
 	ApplyMovementFromRuntimeStat();
 }
 
-void AEnemyBase::OnRep_CurrentHealth(float PreviousHealth)
+void AEnemyBase::InitializeGasVitality()
 {
-	HandleCurrentHealthChanged(PreviousHealth);
+	if (!HasAuthority() || !OutlierAbilitySystemComponent)
+	{
+		return;
+	}
+
+	const float InitialHealth = FMath::Max(RuntimeStat.Health, 0.0f);
+	OutlierAbilitySystemComponent->SetNumericAttributeBase(
+		UOutlierVitalAttributeSet::GetMaxHealthAttribute(),
+		InitialHealth);
+	OutlierAbilitySystemComponent->SetNumericAttributeBase(
+		UOutlierVitalAttributeSet::GetHealthAttribute(),
+		InitialHealth);
 }
 
-void AEnemyBase::HandleCurrentHealthChanged(float PreviousHealth)
+void AEnemyBase::BindGasVitalityObservers()
 {
-	if (!bIsPossessed || !IsLocallyControlled() || CurrentHealth >= PreviousHealth)
+	if (!OutlierAbilitySystemComponent)
+	{
+		return;
+	}
+
+	if (!HealthChangedHandle.IsValid())
+	{
+		HealthChangedHandle = OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
+			UOutlierVitalAttributeSet::GetHealthAttribute()).AddUObject(
+				this, &AEnemyBase::HandleHealthChanged);
+	}
+
+	if (!StunnedTagChangedHandle.IsValid())
+	{
+		StunnedTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+			OutlierGameplayTags::State::Stunned(),
+			EGameplayTagEventType::NewOrRemoved).AddUObject(
+				this, &AEnemyBase::HandleStunnedTagChanged);
+	}
+}
+
+void AEnemyBase::UnbindGasVitalityObservers()
+{
+	if (!OutlierAbilitySystemComponent)
+	{
+		return;
+	}
+
+	if (HealthChangedHandle.IsValid())
+	{
+		OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
+			UOutlierVitalAttributeSet::GetHealthAttribute()).Remove(HealthChangedHandle);
+		HealthChangedHandle.Reset();
+	}
+
+	if (StunnedTagChangedHandle.IsValid())
+	{
+		OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+			OutlierGameplayTags::State::Stunned(),
+			EGameplayTagEventType::NewOrRemoved).Remove(StunnedTagChangedHandle);
+		StunnedTagChangedHandle.Reset();
+	}
+}
+
+void AEnemyBase::HandleHealthChanged(const FOnAttributeChangeData& ChangeData)
+{
+	if (HasAuthority() && ChangeData.OldValue > 0.0f && ChangeData.NewValue <= 0.0f)
+	{
+		Die();
+	}
+
+	if (!bIsPossessed || !IsLocallyControlled() || ChangeData.NewValue >= ChangeData.OldValue)
 	{
 		return;
 	}
 
 	UWorld* World = GetWorld();
-	const float MaxHealth = RuntimeStat.Health;
+	const float MaxHealth = VitalAttributeSet ? VitalAttributeSet->GetMaxHealth() : 0.0f;
 	if (!World || MaxHealth <= KINDA_SMALL_NUMBER)
 	{
 		return;
@@ -1665,9 +1769,39 @@ void AEnemyBase::HandleCurrentHealthChanged(float PreviousHealth)
 
 	if (UMaterialPostProcessSubsystem* PPS = World->GetSubsystem<UMaterialPostProcessSubsystem>())
 	{
-		const float HealthRatio = FMath::Clamp(CurrentHealth / MaxHealth, 0.0f, 1.0f);
+		const float HealthRatio = FMath::Clamp(ChangeData.NewValue / MaxHealth, 0.0f, 1.0f);
 		PPS->UpdateDamagedPostProcess(HealthRatio, FVector4(0.0f, 0.0f, 1.0f, 0.0f));
 		PPS->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Damaged, true);
+	}
+}
+
+void AEnemyBase::HandleStunnedTagChanged(const FGameplayTag StunnedTag, int32 NewCount)
+{
+	if (!HasAuthority() || StunnedTag != OutlierGameplayTags::State::Stunned())
+	{
+		return;
+	}
+
+	if (NewCount > 0)
+	{
+		EnterStun();
+	}
+	else if (!HasActiveStunTag())
+	{
+		RestoreStateAfterStun();
+	}
+}
+
+void AEnemyBase::Die()
+{
+	if (!HasAuthority() || IsDead() || !OutlierAbilitySystemComponent)
+	{
+		return;
+	}
+
+	if (OutlierAbilitySystemComponent->ApplyDeadStateToSelf())
+	{
+		HandleDeath();
 	}
 }
 
@@ -1679,7 +1813,7 @@ UHackableComponent* AEnemyBase::GetHackableComponent() const
 void AEnemyBase::HandleHackCompleted(const FHackResultContext& Context)
 {
 	if (HasAuthority()
-		&& bPossessionInProgress
+		&& IsPossessionInProgress()
 		&& Context.Result != EHackResult::Success)
 	{
 		CancelPossessionProcess();
@@ -1698,7 +1832,7 @@ void AEnemyBase::HandleHackEffect(FGameplayTag EffectTag, const FHackResultConte
 		return;
 	}
 
-	if (IsEnemyPossessed() || !bPossessionInProgress)
+	if (IsEnemyPossessed() || !IsPossessionInProgress())
 	{
 		return;
 	}
@@ -1752,7 +1886,7 @@ void AEnemyBase::HandleHackStarted(const FHackQueryContext& Context)
 				*GetNameSafe(HackableComponent),
 				IsAIControlSuppressed() ? TEXT("true") : TEXT("false"),
 				bIsPossessed ? TEXT("true") : TEXT("false"),
-				bPossessionInProgress ? TEXT("true") : TEXT("false"),
+				IsPossessionInProgress() ? TEXT("true") : TEXT("false"),
 				bImpactReactionActive ? TEXT("true") : TEXT("false"));
 		}
 		return;
@@ -1847,10 +1981,64 @@ void AEnemyBase::ApplyMovementFromRuntimeStat()
 
 bool AEnemyBase::HasActiveStunTag() const
 {
-	//스턴 판정이 일단 두 개라서; 임시로 처리. 
-	const FGameplayTag StunnedTag = OutlierGameplayTags::State::Stunned();
-	return (HackableComponent && HackableComponent->HasHackTag(StunnedTag))
-		|| (EmpableComponent && EmpableComponent->HasEMPTag(StunnedTag));
+	return OutlierAbilitySystemComponent
+		&& OutlierAbilitySystemComponent->HasMatchingGameplayTag(
+			OutlierGameplayTags::State::Stunned());
+}
+
+bool AEnemyBase::ApplyPossessionPendingState()
+{
+	if (!HasAuthority() || !OutlierAbilitySystemComponent || PossessionPendingEffectHandle.IsValid())
+	{
+		UE_LOG(
+			LogOutlier,
+			Error,
+			TEXT("[Enemy.Possession] Cannot apply PossessPending. Enemy=%s Authority=%d ASC=%s ExistingHandle=%d"),
+			*GetNameSafe(this),
+			HasAuthority() ? 1 : 0,
+			*GetNameSafe(OutlierAbilitySystemComponent),
+			PossessionPendingEffectHandle.IsValid() ? 1 : 0);
+		return false;
+	}
+
+	PossessionPendingEffectHandle =
+		OutlierAbilitySystemComponent->ApplyPossessPendingStateToSelf();
+	if (!PossessionPendingEffectHandle.IsValid()
+		|| OutlierAbilitySystemComponent->GetGameplayTagCount(
+			OutlierGameplayTags::State::PossessPending()) != 1)
+	{
+		UE_LOG(
+			LogOutlier,
+			Error,
+			TEXT("[Enemy.Possession] PossessPending GameplayEffect was rejected. Enemy=%s Owner=%s Avatar=%s TagCount=%d"),
+			*GetNameSafe(this),
+			*GetNameSafe(OutlierAbilitySystemComponent->GetOwnerActor()),
+			*GetNameSafe(OutlierAbilitySystemComponent->GetAvatarActor()),
+			OutlierAbilitySystemComponent->GetGameplayTagCount(
+				OutlierGameplayTags::State::PossessPending()));
+		if (PossessionPendingEffectHandle.IsValid())
+		{
+			OutlierAbilitySystemComponent->RemoveActiveEffectFromSelf(
+				PossessionPendingEffectHandle);
+			PossessionPendingEffectHandle.Invalidate();
+		}
+		return false;
+	}
+	return true;
+}
+
+bool AEnemyBase::RemovePossessionPendingState()
+{
+	if (!HasAuthority() || !OutlierAbilitySystemComponent || !PossessionPendingEffectHandle.IsValid())
+	{
+		PossessionPendingEffectHandle = FActiveGameplayEffectHandle();
+		return false;
+	}
+
+	const bool bRemoved =
+		OutlierAbilitySystemComponent->RemoveActiveEffectFromSelf(PossessionPendingEffectHandle);
+	PossessionPendingEffectHandle = FActiveGameplayEffectHandle();
+	return bRemoved;
 }
 
 void AEnemyBase::PromotePreStunState(EEnemyCombatState DetectedState)
@@ -2100,6 +2288,21 @@ void AEnemyBase::RemoveRoomTargetObserver()
 
 void AEnemyBase::HandleDeath()
 {
+	PerformDeathCleanup();
+
+	const float DestroyDelay = FMath::Max(GetDeathDestroyDelay(), 0.0f);
+	if (DestroyDelay > KINDA_SMALL_NUMBER)
+	{
+		SetLifeSpan(DestroyDelay);
+	}
+	else
+	{
+		Destroy();
+	}
+}
+
+void AEnemyBase::PerformDeathCleanup()
+{
 	EndPossessedImpactInputLock();
 	EndImpactReaction();
 	ResetPossessedAttackInput();
@@ -2150,15 +2353,6 @@ void AEnemyBase::HandleDeath()
 	}
 
 	CachedAIController.Reset();
-	const float DestroyDelay = FMath::Max(GetDeathDestroyDelay(), 0.0f);
-	if (DestroyDelay > KINDA_SMALL_NUMBER)
-	{
-		SetLifeSpan(DestroyDelay);
-	}
-	else
-	{
-		Destroy();
-	}
 }
 
 void AEnemyBase::HandleStartAttackInput()
@@ -2272,7 +2466,7 @@ void AEnemyBase::SetPossessedAttackHeld(bool bHeld)
 	}
 
 	if (CombatState == EEnemyCombatState::Stun
-		|| CurrentHealth <= 0.0f
+		|| IsDead()
 		|| !PossessedAttackStateTreeReference.IsValid()
 		|| IsPossessedActionCommitted()
 		|| bPossessedAttackHeld)
@@ -2286,7 +2480,7 @@ void AEnemyBase::SetPossessedAttackHeld(bool bHeld)
 					"Stun=%s Health=%.2f PossessedTreeValid=%s Committed=%s AlreadyHeld=%s"),
 				*GetNameSafe(this),
 				CombatState == EEnemyCombatState::Stun ? TEXT("true") : TEXT("false"),
-				CurrentHealth,
+				GetCurrentHealth(),
 				PossessedAttackStateTreeReference.IsValid() ? TEXT("true") : TEXT("false"),
 				IsPossessedActionCommitted() ? TEXT("true") : TEXT("false"),
 				bPossessedAttackHeld ? TEXT("true") : TEXT("false"));

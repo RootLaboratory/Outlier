@@ -5,6 +5,45 @@
 
 namespace OutlierGameplayTags
 {
+	namespace Data
+	{
+		inline FGameplayTag Health()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Data.Health")));
+			return Tag;
+		}
+
+		inline FGameplayTag MaxHealth()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Data.MaxHealth")));
+			return Tag;
+		}
+
+		inline FGameplayTag Damage()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Data.Damage")));
+			return Tag;
+		}
+
+		inline FGameplayTag ShieldRecovery()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Data.ShieldRecovery")));
+			return Tag;
+		}
+
+		inline FGameplayTag PartnerShield()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Data.PartnerShield")));
+			return Tag;
+		}
+
+		inline FGameplayTag MaxPartnerShield()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Data.MaxPartnerShield")));
+			return Tag;
+		}
+	}
+
 	namespace Damage
 	{
 		inline FGameplayTag Weapon()
@@ -59,12 +98,6 @@ namespace OutlierGameplayTags
 				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.WeaponOvercharge")));
 				return Tag;
 			}
-
-			inline FGameplayTag Combat()
-			{
-				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.Combat")));
-				return Tag;
-			}
 		}
 
 		namespace Partner
@@ -95,8 +128,98 @@ namespace OutlierGameplayTags
 		}
 	}
 
+	namespace Cooldown
+	{
+		namespace Shooter
+		{
+			inline FGameplayTag QuantumLeap()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Cooldown.Shooter.QuantumLeap")));
+				return Tag;
+			}
+
+			inline FGameplayTag BulletReflection()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Cooldown.Shooter.BulletReflection")));
+				return Tag;
+			}
+
+			inline FGameplayTag Stealth()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Cooldown.Shooter.Stealth")));
+				return Tag;
+			}
+
+			inline FGameplayTag WeaponOvercharge()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Cooldown.Shooter.WeaponOvercharge")));
+				return Tag;
+			}
+		}
+
+		namespace Weapon
+		{
+			inline FGameplayTag Reuse()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Cooldown.Weapon.Reuse")));
+				return Tag;
+			}
+		}
+
+		namespace Partner
+		{
+			inline FGameplayTag EMP()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Cooldown.Partner.EMP")));
+				return Tag;
+			}
+
+			inline FGameplayTag Shield()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Cooldown.Partner.Shield")));
+				return Tag;
+			}
+
+			inline FGameplayTag Hacking()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Cooldown.Partner.Hacking")));
+				return Tag;
+			}
+
+			inline FGameplayTag Scan()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Cooldown.Partner.Scan")));
+				return Tag;
+			}
+		}
+	}
+
 	namespace State
 	{
+		inline FGameplayTag Rebooting()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("State.Rebooting")));
+			return Tag;
+		}
+
+		inline FGameplayTag DamageImmune()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("State.DamageImmune")));
+			return Tag;
+		}
+
+		inline FGameplayTag BulletReflecting()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("State.BulletReflecting")));
+			return Tag;
+		}
+
+		inline FGameplayTag WeaponOvercharged()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("State.WeaponOvercharged")));
+			return Tag;
+		}
+
 		inline FGameplayTag Dead()
 		{
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("State.Dead")));
@@ -148,6 +271,21 @@ namespace OutlierGameplayTags
 		inline FGameplayTag PossessPending()
 		{
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("State.PossessPending")));
+			return Tag;
+		}
+	}
+
+	namespace Effect
+	{
+		inline FGameplayTag Buff()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Effect.Buff")));
+			return Tag;
+		}
+
+		inline FGameplayTag Debuff()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Effect.Debuff")));
 			return Tag;
 		}
 	}

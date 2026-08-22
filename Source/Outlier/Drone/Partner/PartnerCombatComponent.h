@@ -28,6 +28,7 @@ public:
 
 	// 빙의 해제, 리부트처럼 입력과 무관하게 공격을 끝내야 하는 서버 전용 정리 함수.
 	void ForceStopAttack();
+	void CancelForReboot();
 
 protected:
 	// Partner BP의 CombatComponent 기본값에서 ARangedWeaponBase 파생 BP를 지정한다.

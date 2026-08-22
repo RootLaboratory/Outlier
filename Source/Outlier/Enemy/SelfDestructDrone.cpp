@@ -155,8 +155,11 @@ void ASelfDestructDrone::TriggerSelfDestruct()
 		return;
 	}
 
-	CurrentHealth = 0.0f;
-	HandleDeath();
+	ApplyDamageInternal(
+		FMath::Max(GetCurrentHealth(), 1.0f),
+		GetController(),
+		this,
+		OutlierGameplayTags::Damage::Explosion());
 }
 
 bool ASelfDestructDrone::BeginCommittedSelfDestruct(
@@ -203,7 +206,7 @@ bool ASelfDestructDrone::BeginCommittedSelfDestructInternal(
 {
 	if (!HasAuthority()
 		|| bDeathHandling
-		|| CurrentHealth <= 0.0f
+		|| IsDead()
 		|| bHasCommittedSelfDestruct)
 	{
 		return false;
@@ -256,7 +259,7 @@ bool ASelfDestructDrone::UpdateCommittedSelfDestructMovement(
 	if (!HasAuthority()
 		|| !bHasCommittedSelfDestruct
 		|| bDeathHandling
-		|| CurrentHealth <= 0.0f)
+		|| IsDead())
 	{
 		return false;
 	}

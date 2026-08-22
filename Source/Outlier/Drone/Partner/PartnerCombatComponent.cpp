@@ -86,7 +86,7 @@ void UPartnerCombatComponent::TryStopAttack()
 
 void UPartnerCombatComponent::StartAutoReload()
 {
-	if (!PartnerCharacter || !PartnerCharacter->HasAuthority())
+	if (!PartnerCharacter || !PartnerCharacter->HasAuthority() || !PartnerCharacter->CanAcceptInput())
 	{
 		return;
 	}
@@ -133,11 +133,40 @@ void UPartnerCombatComponent::ForceStopAttack()
 	}
 }
 
+void UPartnerCombatComponent::CancelForReboot()
+{
+	if (!PartnerCharacter || !PartnerCharacter->HasAuthority())
+	{
+		return;
+	}
+
+	ForceStopAttack();
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(ReloadTimerHandle);
+	}
+
+	if (ARangedWeaponBase* Weapon = ReloadingWeapon.Get())
+	{
+		Weapon->CancelReload();
+	}
+	else if (ARangedWeaponBase* CurrentRangedWeapon = Cast<ARangedWeaponBase>(PartnerCharacter->GetCurrentWeapon()))
+	{
+		CurrentRangedWeapon->CancelReload();
+	}
+	ReloadingWeapon.Reset();
+}
+
 void UPartnerCombatComponent::ToggleTestWeaponEquipped()
 {
 	if (!PartnerCharacter)
 	{
 		UE_LOG(LogTemp, Error, TEXT("[PartnerWeaponToggle][Combat] Failed: PartnerCharacter is null."));
+		return;
+	}
+
+	if (!PartnerCharacter->CanAcceptInput())
+	{
 		return;
 	}
 
@@ -215,6 +244,16 @@ void UPartnerCombatComponent::FinishReload()
 	}
 
 	ARangedWeaponBase* Weapon = ReloadingWeapon.Get();
+	if (!PartnerCharacter->CanAcceptInput())
+	{
+		if (Weapon)
+		{
+			Weapon->CancelReload();
+		}
+		ReloadingWeapon.Reset();
+		return;
+	}
+
 	if (Weapon && Weapon == PartnerCharacter->GetCurrentWeapon())
 	{
 		Weapon->FinishReload();
@@ -232,6 +271,11 @@ void UPartnerCombatComponent::EquipDefaultWeapon_Server()
 	if (!PartnerCharacter)
 	{
 		UE_LOG(LogTemp, Error, TEXT("[PartnerWeaponToggle][Spawn] Failed: PartnerCharacter is null."));
+		return;
+	}
+
+	if (!PartnerCharacter->CanAcceptInput())
+	{
 		return;
 	}
 
