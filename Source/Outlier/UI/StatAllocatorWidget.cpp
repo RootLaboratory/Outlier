@@ -278,12 +278,6 @@ void UStatAllocatorWidget::RebuildUpgradeNodeGroup()
 		return;
 	}
 
-	if (ActiveNodeGroupWidget)
-	{
-		ActiveNodeGroupWidget->RemoveFromParent();
-	}
-	ActiveNodeGroupWidget = nullptr;
-
 	TSubclassOf<UUpgradeNodeGroupWidget> NodeGroupClass = ResolveNodeGroupWidgetClass();
 	if (!NodeGroupClass)
 	{
@@ -291,25 +285,40 @@ void UStatAllocatorWidget::RebuildUpgradeNodeGroup()
 	}
 
 	APlayerController* OwningPlayer = GetOwningPlayer();
-	ActiveNodeGroupWidget = CreateWidget<UUpgradeNodeGroupWidget>(OwningPlayer, NodeGroupClass);
-	if (!ActiveNodeGroupWidget)
-	{
-		return;
-	}
 
-	if (UCanvasPanel* CanvasHost = Cast<UCanvasPanel>(Host))
+	// 이미 같은 클래스의 노드 그룹이 붙어있으면 파괴/재생성 없이 컨텍스트만 재주입한다.
+	// InjectUpgradeContext는 재호출 안전(idempotent)하므로 재주입만으로 상태가 완전 갱신된다.
+	const bool bReuseNodeGroup = ActiveNodeGroupWidget
+		&& ActiveNodeGroupWidget->GetClass() == NodeGroupClass.Get();
+
+	if (!bReuseNodeGroup)
 	{
-		if (UCanvasPanelSlot* CanvasSlot = CanvasHost->AddChildToCanvas(ActiveNodeGroupWidget))
+		if (ActiveNodeGroupWidget)
 		{
-			CanvasSlot->SetAnchors(FAnchors(0.0f, 0.0f, 1.0f, 1.0f));
-			CanvasSlot->SetOffsets(FMargin(0.0f));
-			CanvasSlot->SetAlignment(FVector2D::ZeroVector);
-			CanvasSlot->SetZOrder(0);
+			ActiveNodeGroupWidget->RemoveFromParent();
 		}
-	}
-	else
-	{
-		Host->AddChild(ActiveNodeGroupWidget);
+		ActiveNodeGroupWidget = nullptr;
+
+		ActiveNodeGroupWidget = CreateWidget<UUpgradeNodeGroupWidget>(OwningPlayer, NodeGroupClass);
+		if (!ActiveNodeGroupWidget)
+		{
+			return;
+		}
+
+		if (UCanvasPanel* CanvasHost = Cast<UCanvasPanel>(Host))
+		{
+			if (UCanvasPanelSlot* CanvasSlot = CanvasHost->AddChildToCanvas(ActiveNodeGroupWidget))
+			{
+				CanvasSlot->SetAnchors(FAnchors(0.0f, 0.0f, 1.0f, 1.0f));
+				CanvasSlot->SetOffsets(FMargin(0.0f));
+				CanvasSlot->SetAlignment(FVector2D::ZeroVector);
+				CanvasSlot->SetZOrder(0);
+			}
+		}
+		else
+		{
+			Host->AddChild(ActiveNodeGroupWidget);
+		}
 	}
 
 	AOutlierPlayerState* PlayerState = BoundPlayerState.Get();

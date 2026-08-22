@@ -36,15 +36,15 @@ namespace OutlierGameplayTags
 	{
 		namespace Shooter
 		{
-			inline FGameplayTag Teleport()
+			inline FGameplayTag QuantumLeap()
 			{
-				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.Teleport")));
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.QuantumLeap")));
 				return Tag;
 			}
 
-			inline FGameplayTag Shield()
+			inline FGameplayTag BulletReflection()
 			{
-				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.Shield")));
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.BulletReflection")));
 				return Tag;
 			}
 
@@ -54,9 +54,9 @@ namespace OutlierGameplayTags
 				return Tag;
 			}
 
-			inline FGameplayTag StimPack()
+			inline FGameplayTag WeaponOvercharge()
 			{
-				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.StimPack")));
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Ability.Shooter.WeaponOvercharge")));
 				return Tag;
 			}
 
