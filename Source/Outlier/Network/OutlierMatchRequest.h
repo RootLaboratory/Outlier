@@ -18,6 +18,9 @@ struct OUTLIER_API FOutlierMatchRequest
 	EOutlierPlayerRole DesiredRole = EOutlierPlayerRole::None;
 
 	UPROPERTY()
+	int32 PendingLobbySlotIndex = INDEX_NONE;
+
+	UPROPERTY()
 	double RequestTime = 0.0;
 };
 

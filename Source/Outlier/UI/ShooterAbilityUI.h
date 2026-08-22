@@ -49,16 +49,16 @@ public:
 	TObjectPtr<UBorder> BigCircle;
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr<UAbilityIconUI> IconTeleport; // Teleport
+	TObjectPtr<UAbilityIconUI> IconQuantumLeap; // QuantumLeap
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr<UAbilityIconUI> IconShield; // Shield
+	TObjectPtr<UAbilityIconUI> IconBulletReflection; // BulletReflection
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UAbilityIconUI> IconStealth; // Stealth
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr<UAbilityIconUI> IconStimpack; // Stimpack
+	TObjectPtr<UAbilityIconUI> IconWeaponOvercharge; // WeaponOvercharge
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Ability UI|Material")
 	TObjectPtr<UMaterialInterface> M_ShooterAbilityUI;

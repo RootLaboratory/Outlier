@@ -70,7 +70,9 @@ void UOutlierMatchmakingSubsystem::EnqueueByRole(AController* Controller, EOutli
 bool UOutlierMatchmakingSubsystem::SelectRoleInPendingMatch(AController* Controller, EOutlierPlayerRole DesiredRole)
 {
 	if (!Controller ||
-		(DesiredRole != EOutlierPlayerRole::Shooter && DesiredRole != EOutlierPlayerRole::Partner))
+		(DesiredRole != EOutlierPlayerRole::None
+			&& DesiredRole != EOutlierPlayerRole::Shooter
+			&& DesiredRole != EOutlierPlayerRole::Partner))
 	{
 		return false;
 	}
@@ -110,7 +112,7 @@ bool UOutlierMatchmakingSubsystem::SelectRoleInPendingMatch(AController* Control
 		{
 			Match.ShooterController = Controller;
 		}
-		else
+		else if (DesiredRole == EOutlierPlayerRole::Partner)
 		{
 			Match.PartnerController = Controller;
 		}
@@ -119,6 +121,21 @@ bool UOutlierMatchmakingSubsystem::SelectRoleInPendingMatch(AController* Control
 		{
 			PS->SetPendingLobbyMatchId(Match.PendingMatchId);
 			PS->SetPendingLobbyRole(DesiredRole);
+		}
+
+		if (Match.IsReady())
+		{
+			AController* ShooterController = Match.ShooterController;
+			AController* PartnerController = Match.PartnerController;
+
+			PendingRolePickMatches.RemoveAt(MatchIndex);
+
+			CreateMatch(
+				ShooterController,
+				PartnerController,
+				EOutlierPlayerRole::Shooter,
+				EOutlierPlayerRole::Partner
+			);
 		}
 
 		return true;
@@ -205,13 +222,16 @@ void UOutlierMatchmakingSubsystem::Cancel(AController* Controller)
 
 		if (OtherController)
 		{
+			int32 OtherSlotIndex = INDEX_NONE;
 			if (AOutlierPlayerState* OtherPS = OtherController->GetPlayerState<AOutlierPlayerState>())
 			{
+				OtherSlotIndex = OtherPS->GetPendingLobbySlotIndex();
 				OtherPS->ClearPendingLobbyState();
 			}
 
 			FOutlierMatchRequest Request;
 			Request.Controller = OtherController;
+			Request.PendingLobbySlotIndex = OtherSlotIndex;
 			Request.RequestTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
 			WaitingPlayers.Add(Request);
 		}
@@ -281,12 +301,40 @@ void UOutlierMatchmakingSubsystem::TryCreatePairThenRolePickMatch()
 		PendingMatch.SecondController = Second.Controller;
 		PendingMatch.CreatedTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
 
+		const auto IsValidLobbySlot = [](int32 SlotIndex)
+		{
+			return SlotIndex == 0 || SlotIndex == 1;
+		};
+
+		int32 FirstSlotIndex = 0;
+		int32 SecondSlotIndex = 1;
+		const bool bFirstHasPreferredSlot = IsValidLobbySlot(First.PendingLobbySlotIndex);
+		const bool bSecondHasPreferredSlot = IsValidLobbySlot(Second.PendingLobbySlotIndex);
+		if (bFirstHasPreferredSlot && bSecondHasPreferredSlot)
+		{
+			FirstSlotIndex = First.PendingLobbySlotIndex;
+			SecondSlotIndex = First.PendingLobbySlotIndex != Second.PendingLobbySlotIndex
+				? Second.PendingLobbySlotIndex
+				: 1 - FirstSlotIndex;
+		}
+		else if (bFirstHasPreferredSlot)
+		{
+			FirstSlotIndex = First.PendingLobbySlotIndex;
+			SecondSlotIndex = 1 - FirstSlotIndex;
+		}
+		else if (bSecondHasPreferredSlot)
+		{
+			SecondSlotIndex = Second.PendingLobbySlotIndex;
+			FirstSlotIndex = 1 - SecondSlotIndex;
+		}
+
 		UE_LOG(LogTemp, Warning, TEXT("[Matchmaking] PendingMatch created: Id=%d, First=%s, Second=%s"),
 			PendingMatch.PendingMatchId, *First.Controller->GetName(), *Second.Controller->GetName());
 
 		if (AOutlierPlayerState* FirstPS = First.Controller->GetPlayerState<AOutlierPlayerState>())
 		{
 			FirstPS->SetPendingLobbyMatchId(PendingMatch.PendingMatchId);
+			FirstPS->SetPendingLobbySlotIndex(FirstSlotIndex);
 			FirstPS->SetPendingLobbyRole(EOutlierPlayerRole::None);
 			UE_LOG(LogTemp, Warning, TEXT("[Matchmaking] FirstPS PendingLobbyMatchId set to %d"), PendingMatch.PendingMatchId);
 		}
@@ -294,6 +342,7 @@ void UOutlierMatchmakingSubsystem::TryCreatePairThenRolePickMatch()
 		if (AOutlierPlayerState* SecondPS = Second.Controller->GetPlayerState<AOutlierPlayerState>())
 		{
 			SecondPS->SetPendingLobbyMatchId(PendingMatch.PendingMatchId);
+			SecondPS->SetPendingLobbySlotIndex(SecondSlotIndex);
 			SecondPS->SetPendingLobbyRole(EOutlierPlayerRole::None);
 			UE_LOG(LogTemp, Warning, TEXT("[Matchmaking] SecondPS PendingLobbyMatchId set to %d"), PendingMatch.PendingMatchId);
 		}

@@ -18,6 +18,7 @@ class UShooterHealthComponent;
 class UShooterInventoryComponent;
 class UShooterCombatComponent;
 class UShooterMovementComponent;
+class UOutlierUpgradeComponent;
 class ULocalPlayerUISubSystem;
 enum class EWeaponType : uint8;
 class UAnimMontage;
@@ -129,6 +130,9 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UShooterMovementComponent> MovementComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UOutlierUpgradeComponent> UpgradeComponent;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Health")
 	float MaxHP = 100.0f;
@@ -523,6 +527,9 @@ public:
 	bool IsActionLocked() const { return ActionLock != EShooterActionLock::None; }
 
 	UShooterInventoryComponent* GetInventoryComponent() { return InventoryComponent; }
+
+	UFUNCTION(BlueprintPure, Category = "Upgrade")
+	UOutlierUpgradeComponent* GetUpgradeComponent() const;
 
 	UFUNCTION(BlueprintPure)
 	bool IsReloading() const;

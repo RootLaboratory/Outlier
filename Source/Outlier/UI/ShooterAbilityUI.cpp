@@ -18,10 +18,10 @@ void UShooterAbilityUI::NativeConstruct()
 	LeftAbilityTag   = TagDrivenUITags::Ability::Shooter::Stealth();
 	TopAbilityTag    = TagDrivenUITags::Ability::Shooter::WeaponOvercharge();
 
-	RegisterAbilityIcon(IconTeleport, RightAbilityTag, true);
-	RegisterAbilityIcon(IconShield, BottomAbilityTag, true);
+	RegisterAbilityIcon(IconQuantumLeap, RightAbilityTag, true);
+	RegisterAbilityIcon(IconBulletReflection, BottomAbilityTag, true);
 	RegisterAbilityIcon(IconStealth, LeftAbilityTag, true);
-	RegisterAbilityIcon(IconStimpack, TopAbilityTag, true);
+	RegisterAbilityIcon(IconWeaponOvercharge, TopAbilityTag, true);
 
 	// 부모 ShooterMainWidget(MainUIBase)의 AbilitySections에도 등록
 	// → OnAbilityDisabledByDistance 등 거리 lock 신호를 받을 수 있도록

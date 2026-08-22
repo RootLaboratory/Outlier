@@ -39,7 +39,9 @@
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "GAS/Attributes/OutlierVitalAttributeSet.h"
 #include "GAS/Attributes/OutlierShieldAttributeSet.h"
+#include "Upgrade/OutlierUpgradeComponent.h"
 #include "Net/UnrealNetwork.h"
+#include "OutlierPlayerState.h"
 #include "OutlierNetUtils.h"
 #include "Outlier.h"
 
@@ -73,6 +75,11 @@ FName AShooterCharacter::GetFirstPersonWeaponSocketByType(EWeaponType WeaponType
 FName AShooterCharacter::GetThirdPersonWeaponSocketByType(EWeaponType WeaponType) const
 {
 	return InventoryComponent ? InventoryComponent->GetThirdPersonWeaponSocketByType(WeaponType) : NAME_None;
+}
+
+UOutlierUpgradeComponent* AShooterCharacter::GetUpgradeComponent() const
+{
+	return UpgradeComponent;
 }
 
 AShooterCharacter::AShooterCharacter() : AFirstPersonCharacter()
@@ -112,6 +119,11 @@ AShooterCharacter::AShooterCharacter() : AFirstPersonCharacter()
 	InventoryComponent = CreateDefaultSubobject<UShooterInventoryComponent>(TEXT("InventoryComponent"));
 	CombatComponent = CreateDefaultSubobject<UShooterCombatComponent>(TEXT("CombatComponent"));
 	MovementComponent = CreateDefaultSubobject<UShooterMovementComponent>(TEXT("MovementComponent"));
+	UpgradeComponent = CreateDefaultSubobject<UOutlierUpgradeComponent>(TEXT("UpgradeComponent"));
+	if (UpgradeComponent)
+	{
+		UpgradeComponent->SetUpgradeRole(EOutlierUpgradeRole::Shooter);
+	}
 
 	if (CaptureComponent)
 	{

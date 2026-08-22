@@ -2,6 +2,7 @@
 
 
 #include "FirstPersonPlayerController.h"
+#include "Audio/OutlierAudioSubsystem.h"
 #include "EnhancedInputDeveloperSettings.h"
 #include "EnhancedInputSubsystems.h"
 #include "Engine/LocalPlayer.h"
@@ -14,11 +15,42 @@
 #include "Shooter/ShooterCharacter.h"
 #include "Network/OutlierArenaPoolSubsystem.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
+#include "Upgrade/OutlierUpgradeComponent.h"
+#include "Upgrade/OutlierUpgradeSetData.h"
 
 AFirstPersonPlayerController::AFirstPersonPlayerController()
 {
 	// set the player camera manager
 	PlayerCameraManagerClass = AFirstPersonPlayerCameraManager::StaticClass();
+}
+
+void AFirstPersonPlayerController::ServerRequestRelevantAudioAtLocation_Implementation(
+	const FOutlierAudioPlayRequest& Request)
+{
+	UOutlierAudioSubsystem* AudioSubsystem = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>()
+		: nullptr;
+	if (AudioSubsystem)
+	{
+		AudioSubsystem->HandleServerRelevantAtLocationRequest(this, Request);
+	}
+}
+
+void AFirstPersonPlayerController::ClientPlayResolvedAudio_Implementation(
+	const FOutlierResolvedAudioPlay& ResolvedPlay)
+{
+	if (!IsLocalController())
+	{
+		return;
+	}
+
+	UOutlierAudioSubsystem* AudioSubsystem = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>()
+		: nullptr;
+	if (AudioSubsystem)
+	{
+		AudioSubsystem->PlayResolvedAudioLocally(ResolvedPlay);
+	}
 }
 
 void AFirstPersonPlayerController::ClientPushUILayer_Implementation(
@@ -39,6 +71,36 @@ void AFirstPersonPlayerController::ClientPushUILayer_Implementation(
 	}
 
 	LayerSubsystem->PushWidget(Request);
+}
+
+void AFirstPersonPlayerController::ServerTryActivateUpgradeNode_Implementation(
+	AActor* UpgradeOwner,
+	FName NodeIdOrRowName,
+	UOutlierUpgradeSetData* UpgradeSetData)
+{
+	AOutlierPlayerState* OutlierPlayerState = GetPlayerState<AOutlierPlayerState>();
+	UOutlierUpgradeComponent* UpgradeComponent = UpgradeOwner
+		? UpgradeOwner->FindComponentByClass<UOutlierUpgradeComponent>()
+		: nullptr;
+	if (!UpgradeComponent)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[Upgrade] Server activate failed: component not found Controller=%s Owner=%s PlayerState=%s Node=%s"),
+			*GetNameSafe(this),
+			*GetNameSafe(UpgradeOwner),
+			*GetNameSafe(OutlierPlayerState),
+			*NodeIdOrRowName.ToString());
+		return;
+	}
+
+	if (UpgradeSetData)
+	{
+		UpgradeComponent->SetUpgradeSetData(UpgradeSetData);
+	}
+
+	UpgradeComponent->TryActivateNodeForPlayerState(
+		NodeIdOrRowName,
+		OutlierPlayerState);
 }
 
 void AFirstPersonPlayerController::ClientPlayExplosionCameraShake_Implementation(

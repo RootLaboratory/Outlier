@@ -85,12 +85,12 @@ UTexture2D* UShooterCurrentAbilityIcon::GetTextureForAbility(const FGameplayTag&
 {
 	if (AbilityTag == TagDrivenUITags::Ability::Shooter::QuantumLeap())
 	{
-		return TeleportTexture;
+		return QuantumLeapTexture;
 	}
 
 	if (AbilityTag == TagDrivenUITags::Ability::Shooter::BulletReflection())
 	{
-		return ShieldTexture;
+		return BulletReflectionTexture;
 	}
 
 	if (AbilityTag == TagDrivenUITags::Ability::Shooter::Stealth())
@@ -100,7 +100,7 @@ UTexture2D* UShooterCurrentAbilityIcon::GetTextureForAbility(const FGameplayTag&
 
 	if (AbilityTag == TagDrivenUITags::Ability::Shooter::WeaponOvercharge())
 	{
-		return StimPackTexture;
+		return WeaponOverchargeTexture;
 	}
 
 	return nullptr;

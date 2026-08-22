@@ -5,13 +5,16 @@
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerController.h"
 #include "GameplayTagContainer.h"
+#include "Audio/OutlierAudioTypes.h"
 #include "OutlierPlayerState.h"
 #include "PlayerUIProvider.h"
 #include "UI/UILayerTypes.h"
+#include "Upgrade/OutlierUpgradeTypes.h"
 #include "FirstPersonPlayerController.generated.h"
 
 class UInputMappingContext;
 class UCameraShakeBase;
+class UOutlierUpgradeSetData;
 
 namespace FirstPersonInputModeTags
 {
@@ -29,10 +32,10 @@ namespace FirstPersonInputModeTags
 		return Tag;
 	}
 
-	inline FGameplayTag StatAllocator()
+	inline FGameplayTag UI()
 	{
 		static const FGameplayTag Tag =
-			FGameplayTag::RequestGameplayTag(FName(TEXT("Input.Mode.UI.StatAllocator")));
+			FGameplayTag::RequestGameplayTag(FName(TEXT("Input.Mode.UI")));
 		return Tag;
 	}
 }
@@ -48,11 +51,25 @@ class OUTLIER_API AFirstPersonPlayerController : public APlayerController ,  pub
 public:
 	AFirstPersonPlayerController();
 
+	/** Client-owned transport for relevant AtLocation audio requests. */
+	UFUNCTION(Server, Unreliable)
+	void ServerRequestRelevantAudioAtLocation(const FOutlierAudioPlayRequest& Request);
+
+	/** Delivers an already resolved Owner/Relevant sound to this client. */
+	UFUNCTION(Client, Unreliable)
+	void ClientPlayResolvedAudio(const FOutlierResolvedAudioPlay& ResolvedPlay);
+
 	UFUNCTION(Client, Reliable)
 	void ClientArenaLoad(int32 ArenaId);
 
 	UFUNCTION(Client, Reliable)
 	void ClientPushUILayer(const FUILayerPushRequest& Request);
+
+	UFUNCTION(Server, Reliable)
+	void ServerTryActivateUpgradeNode(
+		AActor* UpgradeOwner,
+		FName NodeIdOrRowName,
+		UOutlierUpgradeSetData* UpgradeSetData);
 
 	UFUNCTION(Server, Reliable)
 	void ServerNotifyArenaReady();

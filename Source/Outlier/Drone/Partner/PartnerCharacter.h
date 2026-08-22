@@ -66,6 +66,7 @@ class UPartnerCombatComponent;
 class UPartnerHackComponent;
 class UPartnerEMPComponent;
 class UPartnerSpriteAnimationComponent;
+class UOutlierUpgradeComponent;
 class UNiagaraComponent;
 class UNiagaraSystem;
 class UOutlierAbilitySystemComponent;
@@ -117,6 +118,9 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UPartnerEMPComponent> EMPComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UOutlierUpgradeComponent> UpgradeComponent;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<USceneComponent> ThirdPersonTiltRoot;
@@ -553,6 +557,9 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Partner|Combat")
 	void StopWeaponAttack();
+
+	UFUNCTION(BlueprintPure, Category = "Upgrade")
+	UOutlierUpgradeComponent* GetUpgradeComponent() const { return UpgradeComponent; }
 
 	void HandleAutoReloadRequested();
 };

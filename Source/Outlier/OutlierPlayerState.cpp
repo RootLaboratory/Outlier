@@ -111,6 +111,7 @@ void AOutlierPlayerState::SetPairId(int32 NewPairId)
 
 	PairId = NewPairId;
 	SetNodeCountInternal(NewPairId == INDEX_NONE ? 0 : FMath::Max(0, InitialNodeCount));
+	SetStatAllocatorExitPending(false);
 	ForceNetUpdate();
 }
 
@@ -232,6 +233,24 @@ bool AOutlierPlayerState::ConsumeNode(int32 Amount)
 	return true;
 }
 
+void AOutlierPlayerState::SetStatAllocatorExitPending(bool bPending)
+{
+	if (!HasAuthority())
+	{
+		ServerSetStatAllocatorExitPending(bPending);
+		return;
+	}
+
+	if (bStatAllocatorExitPending == bPending)
+	{
+		return;
+	}
+
+	bStatAllocatorExitPending = bPending;
+	HandleStatAllocatorExitPendingChanged();
+	ForceNetUpdate();
+}
+
 void AOutlierPlayerState::SetArenaId(int32 NewArenaId)
 {
 	if (!HasAuthority())
@@ -267,6 +286,17 @@ void AOutlierPlayerState::SetPendingLobbyRole(EOutlierPlayerRole NewPendingLobby
 	HandlePendingLobbyStateChanged();
 }
 
+void AOutlierPlayerState::SetPendingLobbySlotIndex(int32 NewPendingLobbySlotIndex)
+{
+	if (!HasAuthority() || PendingLobbySlotIndex == NewPendingLobbySlotIndex)
+	{
+		return;
+	}
+
+	PendingLobbySlotIndex = NewPendingLobbySlotIndex;
+	HandlePendingLobbyStateChanged();
+}
+
 void AOutlierPlayerState::ClearPendingLobbyState()
 {
 	if (!HasAuthority())
@@ -276,10 +306,12 @@ void AOutlierPlayerState::ClearPendingLobbyState()
 
 	const bool bChanged =
 		PendingLobbyMatchId != INDEX_NONE ||
-		PendingLobbyRole != EOutlierPlayerRole::None;
+		PendingLobbyRole != EOutlierPlayerRole::None ||
+		PendingLobbySlotIndex != INDEX_NONE;
 
 	PendingLobbyMatchId = INDEX_NONE;
 	PendingLobbyRole = EOutlierPlayerRole::None;
+	PendingLobbySlotIndex = INDEX_NONE;
 
 	if (bChanged)
 	{
@@ -320,9 +352,29 @@ void AOutlierPlayerState::OnRep_PendingLobbyRole()
 	HandlePendingLobbyStateChanged();
 }
 
+void AOutlierPlayerState::OnRep_PendingLobbySlotIndex()
+{
+	HandlePendingLobbyStateChanged();
+}
+
 void AOutlierPlayerState::OnRep_NodeCount()
 {
 	OnNodeCountChanged.Broadcast(NodeCount);
+}
+
+void AOutlierPlayerState::OnRep_StatAllocatorExitPending()
+{
+	HandleStatAllocatorExitPendingChanged();
+}
+
+void AOutlierPlayerState::OnRep_ActivatedUpgradeNodes()
+{
+	HandleActivatedUpgradeNodesChanged();
+}
+
+void AOutlierPlayerState::ServerSetStatAllocatorExitPending_Implementation(bool bPending)
+{
+	SetStatAllocatorExitPending(bPending);
 }
 
 void AOutlierPlayerState::HandlePlayerRoleChanged()
@@ -333,6 +385,16 @@ void AOutlierPlayerState::HandlePlayerRoleChanged()
 void AOutlierPlayerState::HandlePendingLobbyStateChanged()
 {
 	OnPendingLobbyStateChanged.Broadcast(this);
+}
+
+void AOutlierPlayerState::HandleStatAllocatorExitPendingChanged()
+{
+	OnStatAllocatorExitPendingChanged.Broadcast(this);
+}
+
+void AOutlierPlayerState::HandleActivatedUpgradeNodesChanged()
+{
+	OnActivatedUpgradeNodesChanged.Broadcast();
 }
 
 void AOutlierPlayerState::SetNodeCountInternal(int32 NewNodeCount)
@@ -358,6 +420,56 @@ void AOutlierPlayerState::SetCheckpointData(const FOutlierCheckpointData& NewDat
 	CheckpointData = NewData;
 }
 
+bool AOutlierPlayerState::AddActivatedUpgradeNode(EOutlierUpgradeRole UpgradeRole, FName RowName)
+{
+	if (!HasAuthority() || RowName.IsNone())
+	{
+		return false;
+	}
+
+	TArray<FName>* ActivatedNodeIds = nullptr;
+	switch (UpgradeRole)
+	{
+	case EOutlierUpgradeRole::Shooter:
+		ActivatedNodeIds = &ShooterActivatedUpgradeNodeIds;
+		break;
+
+	case EOutlierUpgradeRole::Partner:
+		ActivatedNodeIds = &PartnerActivatedUpgradeNodeIds;
+		break;
+
+	default:
+		return false;
+	}
+
+	if (ActivatedNodeIds->Contains(RowName))
+	{
+		return false;
+	}
+
+	ActivatedNodeIds->Add(RowName);
+	HandleActivatedUpgradeNodesChanged();
+	ForceNetUpdate();
+	return true;
+}
+
+const TArray<FName>& AOutlierPlayerState::GetActivatedUpgradeNodeIds(EOutlierUpgradeRole UpgradeRole) const
+{
+	static const TArray<FName> EmptyActivatedNodeIds;
+
+	switch (UpgradeRole)
+	{
+	case EOutlierUpgradeRole::Shooter:
+		return ShooterActivatedUpgradeNodeIds;
+
+	case EOutlierUpgradeRole::Partner:
+		return PartnerActivatedUpgradeNodeIds;
+
+	default:
+		return EmptyActivatedNodeIds;
+	}
+}
+
 void AOutlierPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
@@ -365,13 +477,17 @@ void AOutlierPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& 
 	DOREPLIFETIME(AOutlierPlayerState, PlayerRole);
 	DOREPLIFETIME(AOutlierPlayerState, PairId);
 	DOREPLIFETIME_CONDITION(AOutlierPlayerState, NodeCount, COND_OwnerOnly); //공유될 필요는 없어서 소유자만 복제
+	DOREPLIFETIME(AOutlierPlayerState, bStatAllocatorExitPending);
 	DOREPLIFETIME(AOutlierPlayerState, ArenaId);
 	DOREPLIFETIME(AOutlierPlayerState, PendingLobbyMatchId);
 	DOREPLIFETIME(AOutlierPlayerState, PendingLobbyRole);
+	DOREPLIFETIME(AOutlierPlayerState, PendingLobbySlotIndex);
 	DOREPLIFETIME(AOutlierPlayerState, CheckpointData);
 	DOREPLIFETIME(AOutlierPlayerState, ShooterCharacter);
 	DOREPLIFETIME(AOutlierPlayerState, PartnerCharacter);
 	DOREPLIFETIME(AOutlierPlayerState, bSuitDisabledByPartnerBoundary);
+	DOREPLIFETIME_CONDITION(AOutlierPlayerState, ShooterActivatedUpgradeNodeIds, COND_OwnerOnly);
+	DOREPLIFETIME_CONDITION(AOutlierPlayerState, PartnerActivatedUpgradeNodeIds, COND_OwnerOnly);
 }
 
 

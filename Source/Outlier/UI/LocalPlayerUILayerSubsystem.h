@@ -6,11 +6,11 @@
 #include "UI/UILayerTypes.h"
 #include "LocalPlayerUILayerSubsystem.generated.h"
 
-class AFirstPersonPlayerController;
 class UMainUIBase;
 class UPanelWidget;
 class UUILayerRootWidget;
 class UUserWidget;
+class UWidget;
 
 struct FUILayerEntry
 {
@@ -18,9 +18,11 @@ struct FUILayerEntry
 	FGameplayTag LayerTag;
 	FGameplayTag InputModeTag;
 	TWeakObjectPtr<UUserWidget> Widget;
+	TWeakObjectPtr<UWidget> HitTestBlocker;
 	TWeakObjectPtr<UObject> RequestOwner;
 	EUILayerFocusTarget FocusTarget = EUILayerFocusTarget::Widget;
 	bool bShowCursor = true;
+	bool bReceivesInput = true;
 };
 
 UCLASS()
@@ -49,14 +51,16 @@ public:
 		FGameplayTag InputModeTag,
 		UObject* RequestOwner,
 		EUILayerFocusTarget FocusTarget = EUILayerFocusTarget::Widget,
-		bool bShowCursor = true);
+		bool bShowCursor = true,
+		bool bReceivesInput = true);
 
 	FUILayerHandle PushInputScope(
 		FGameplayTag LayerTag,
 		FGameplayTag InputModeTag,
 		UObject* RequestOwner,
 		EUILayerFocusTarget FocusTarget = EUILayerFocusTarget::GameViewport,
-		bool bShowCursor = false);
+		bool bShowCursor = false,
+		bool bReceivesInput = true);
 
 	FUILayerHandle ReplaceWidget(
 		FUILayerHandle PreviousHandle,
@@ -65,9 +69,11 @@ public:
 		FGameplayTag InputModeTag,
 		UObject* RequestOwner,
 		EUILayerFocusTarget FocusTarget = EUILayerFocusTarget::Widget,
-		bool bShowCursor = true);
+		bool bShowCursor = true,
+		bool bReceivesInput = true);
 
 	bool PopLayer(FUILayerHandle Handle);
+	bool PopWidget(UUserWidget* Widget);
 	int32 PopLayersByOwner(UObject* RequestOwner);
 	void ClearAllLayers();
 
@@ -77,19 +83,31 @@ public:
 	FGameplayTag GetActiveInputModeTag() const;
 	bool RouteWidgetEscapeInput();
 	bool RouteWidgetConfirmedInput();
+	bool RouteWidgetUpInput();
+	bool RouteWidgetDownInput();
+	bool RouteWidgetLeftInput();
+	bool RouteWidgetRightInput();
 
 private:
-	bool AttachWidgetToLayer(FGameplayTag LayerTag, UUserWidget* Widget, int32 ZOrder);
+	bool AttachWidgetToLayer(
+		FGameplayTag LayerTag,
+		UUserWidget* Widget,
+		EUILayerFocusTarget FocusTarget,
+		int32 ZOrder,
+		UWidget*& OutHitTestBlocker);
 	void RemoveInvalidLayers();
 	const FUILayerEntry* FindTopInputLayer() const;
 	FUILayerEntry* FindLayer(FUILayerHandle Handle);
 	int32 GetLayerPriority(FGameplayTag LayerTag) const;
+	bool RouteWidgetInput(
+		bool (*InputExecutor)(UObject*),
+		bool bPopUnhandledInput);
 
 	void RefreshTopLayerInput();
 	void ApplyLayerInput(const FUILayerEntry& Layer);
 	void ApplyDefaultInput();
 
-	AFirstPersonPlayerController* GetLocalFirstPersonController() const;
+	APlayerController* GetLocalPlayerController() const;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UUILayerRootWidget> LayerRootWidget;

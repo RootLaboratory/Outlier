@@ -39,16 +39,16 @@ public:
 	TObjectPtr<UAbilityIconUI> CurrentAbilityIcon;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ability")
-	TObjectPtr<UTexture2D> TeleportTexture;
+	TObjectPtr<UTexture2D> QuantumLeapTexture;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ability")
-	TObjectPtr<UTexture2D> ShieldTexture;
+	TObjectPtr<UTexture2D> BulletReflectionTexture;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ability")
 	TObjectPtr<UTexture2D> StealthTexture;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ability")
-	TObjectPtr<UTexture2D> StimPackTexture;
+	TObjectPtr<UTexture2D> WeaponOverchargeTexture;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ability", meta = (Categories = "Ability.Shooter"))
 	FGameplayTag CurrentAbilityTag;

@@ -1,7 +1,9 @@
 #include "Interaction/InteractableDoor.h"
+#include "Audio/OutlierAudioSubsystem.h"
 #include "Components/StaticMeshComponent.h"
-#include "Net/UnrealNetwork.h"
 #include "Curves/CurveFloat.h"
+#include "Net/UnrealNetwork.h"
+#include "Outlier.h"
 
 AInteractableDoor::AInteractableDoor()
 {
@@ -71,11 +73,71 @@ void AInteractableDoor::SetDoorOpen(bool bOpen)
 
 	bIsOpen = bOpen;
 	Multicast_SetDoorState(bIsOpen);
+
+	if (DoorCurve)
+	{
+		PlayDoorMovementAudio();
+	}
 }
 
 void AInteractableDoor::ToggleDoor()
 {
 	SetDoorOpen(!bIsOpen);
+}
+
+bool AInteractableDoor::PlayDoorMovementAudio()
+{
+	// A door normally has no owning connection, so replicated playback must
+	// originate on the authority instead of trying a client Server RPC.
+	if (!HasAuthority())
+	{
+		UE_LOG(LogOutlier, Warning,
+			TEXT("[AudioSpatialDebug][DoorRequestSkipped] Door='%s' Reason=NoAuthority"),
+			*GetName());
+		return false;
+	}
+
+	if (!DoorMovementAudioEventTag.IsValid())
+	{
+		UE_LOG(LogOutlier, Warning,
+			TEXT("[AudioSpatialDebug][DoorRequestSkipped] Door='%s' Reason=NoEventTag"),
+			*GetName());
+		return false;
+	}
+
+	UOutlierAudioSubsystem* AudioSubsystem = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>()
+		: nullptr;
+	if (!AudioSubsystem)
+	{
+		UE_LOG(LogOutlier, Warning,
+			TEXT("[AudioSpatialDebug][DoorRequestSkipped] Door='%s' Event='%s' Reason=NoSubsystem"),
+			*GetName(),
+			*DoorMovementAudioEventTag.ToString());
+		return false;
+	}
+
+	FOutlierAudioPlayRequest Request;
+	Request.EventTag = DoorMovementAudioEventTag;
+	Request.ContextTags = DoorMovementAudioContextTags;
+	Request.EmitterActor = this;
+	Request.Location = GetActorLocation();
+	Request.bHasLocation = true;
+
+	UE_LOG(LogOutlier, Warning,
+		TEXT("[AudioSpatialDebug][DoorRequest] Door='%s' Event='%s' Location=%s Context='%s'"),
+		*GetName(),
+		*Request.EventTag.ToString(),
+		*Request.Location.ToCompactString(),
+		*Request.ContextTags.ToStringSimple());
+
+	const bool bAccepted = AudioSubsystem->PlayRelevantAtLocationFromServer(Request);
+	UE_LOG(LogOutlier, Warning,
+		TEXT("[AudioSpatialDebug][DoorRequestResult] Door='%s' Event='%s' Accepted=%d"),
+		*GetName(),
+		*Request.EventTag.ToString(),
+		bAccepted);
+	return bAccepted;
 }
 
 void AInteractableDoor::Multicast_SetDoorState_Implementation(bool bOpen)
