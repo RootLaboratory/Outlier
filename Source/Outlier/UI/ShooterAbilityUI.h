@@ -35,10 +35,10 @@ public:
 	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
 
 public:
-	bool TryGetHoveredAbility(FGameplayTag& OutAbilityTag);
+	bool TryGetHoveredAbility(FGameplayTag& OutAbilityTag, bool bBroadcastSelection = true);
 	bool ApplyCooldownIfMatches(const FGameplayTag& AbilityTag, float CoolTime);
+	void ResetCooldowns();
 	void TryHovering();
-	float CalculateCoordinate();
 	UAbilityIconUI* GetAbilityIcon(const FGameplayTag& AbilityTag) const;
 
 public:
@@ -73,6 +73,7 @@ public:
 	FOnShooterAbilitySelected OnAbilitySelected;
 	
 private:
+	bool TryCalculateCoordinate(float& OutAngleDeg) const;
 	void RegisterAbilityIcon(UAbilityIconUI* Icon, const FGameplayTag& AbilityTag, bool bUnlock = false);
 	FGameplayTag GetAbilityTagByAngle(float AngleDeg) const;
 	bool IsAbilityUnlocked(const FGameplayTag& AbilityTag) const;

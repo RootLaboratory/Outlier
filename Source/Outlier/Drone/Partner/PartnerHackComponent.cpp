@@ -45,6 +45,10 @@ void UPartnerHackComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		ResultContext.Result = EHackResult::Cancelled;
 		CompleteActiveHack(ResultContext, false);
 	}
+	else if (GetOwner() && GetOwner()->HasAuthority() && bHackCandidateSearchActive)
+	{
+		OnHackFinished.Broadcast(EHackResult::Cancelled, false);
+	}
 
 	ClearActiveHackableComponent();
 	DestroyHackMiniGameWidget();
@@ -72,7 +76,7 @@ void UPartnerHackComponent::TickComponent(float DeltaTime, ELevelTick TickType, 
 
 void UPartnerHackComponent::TryHack_Implementation()
 {
-	if (!PartnerCharacter || !GetWorld())
+	if (!PartnerCharacter || !GetWorld() || !PartnerCharacter->CanAcceptInput())
 	{
 		if (bDebugHack)
 		{
@@ -116,6 +120,7 @@ void UPartnerHackComponent::TryHack_Implementation()
 		bHackCandidateSearchActive = false;
 		ClientStopCandidateSearch();
 		DefaultWidgetControl(bHackCandidateSearchActive);
+		OnHackFinished.Broadcast(EHackResult::Cancelled, false);
 	}
 	else
 	{
@@ -140,6 +145,37 @@ void UPartnerHackComponent::TryHack_Implementation()
 void UPartnerHackComponent::EndHackHold()
 {
 	ResetLocalHackHoldProgress();
+}
+
+void UPartnerHackComponent::CancelForReboot()
+{
+	if (!PartnerCharacter || !PartnerCharacter->HasAuthority())
+	{
+		return;
+	}
+
+	if (IsValid(ActiveHackableComponent))
+	{
+		FHackResultContext ResultContext;
+		ResultContext.TargetActor = ActiveHackableComponent->GetOwner();
+		ResultContext.InstigatorActor = PartnerCharacter;
+		ResultContext.Result = EHackResult::Cancelled;
+		CompleteActiveHack(ResultContext, true);
+	}
+	else
+	{
+		const bool bWasSearching = bHackCandidateSearchActive;
+		ClientStopHackMiniGame();
+		DefaultWidgetControl(false);
+		if (bWasSearching)
+		{
+			OnHackFinished.Broadcast(EHackResult::Cancelled, false);
+		}
+	}
+
+	ClientStopCandidateSearch();
+	StopHackCandidateSearch();
+	DestroyHackMiniGameWidget();
 }
 
 void UPartnerHackComponent::CacheAbilityData(const FPartnerHackAbilityData& InAbilityData)
@@ -245,6 +281,7 @@ void UPartnerHackComponent::CompleteActiveHack(
 			ClientAbortHackForInvalidTarget();
 			DefaultWidgetControl(false);
 		}
+		OnHackFinished.Broadcast(EHackResult::Cancelled, false);
 		return;
 	}
 
@@ -260,8 +297,20 @@ void UPartnerHackComponent::CompleteActiveHack(
 		return;
 	}
 
+	if (PartnerCharacter
+		&& !PartnerCharacter->CanAcceptInput()
+		&& ResultContext.Result != EHackResult::Cancelled)
+	{
+		FHackResultContext CancelledContext = ResultContext;
+		CancelledContext.Result = EHackResult::Cancelled;
+		CompleteActiveHack(CancelledContext, bNotifyClient);
+		return;
+	}
+
 	UHackableComponent* CompletedHackableComponent = ActiveHackableComponent;
 	AActor* CompletedTargetActor = CompletedHackableComponent->GetOwner();
+	const bool bPossessionTarget = CompletedHackableComponent->SuccessEffectTags.HasTagExact(
+		HackGameplayTags::Effect::Possess());
 	ClearActiveHackableComponent();
 
 	//possess 전, Input widget 정리. -> Enemy Widget이 생긴다면 수정 해야 할 부분.
@@ -281,6 +330,7 @@ void UPartnerHackComponent::CompleteActiveHack(
 	}
 
 	CompletedHackableComponent->CompleteHack(MutableResultContext);
+	OnHackFinished.Broadcast(MutableResultContext.Result, bPossessionTarget);
 }
 
 void UPartnerHackComponent::DefaultWidgetControl_Implementation(bool InFlag)
@@ -448,7 +498,7 @@ void UPartnerHackComponent::ResetLocalHackHoldProgress()
 
 void UPartnerHackComponent::ServerTryStartHack_Implementation(AActor* TargetActor)
 {
-	if (!PartnerCharacter)
+	if (!PartnerCharacter || !PartnerCharacter->CanAcceptInput())
 	{
 		return;
 	}

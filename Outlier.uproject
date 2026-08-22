@@ -1,6 +1,6 @@
 {
 	"FileVersion": 3,
-	"EngineAssociation": "{2390827C-40D9-8BC0-BAA6-2B86F8EF1BA8}",
+	"EngineAssociation": "{1F286C2D-47FC-7A19-E19D-5A894078A138}",
 	"Category": "",
 	"Description": "",
 	"Modules": [
@@ -18,7 +18,9 @@
 				"CoreUObject",
 				"RDG",
 				"CoreUObject",
-				"GameplayTags"
+				"GameplayTags",
+				"GameplayAbilities",
+				"GameplayTasks"
 			]
 		}
 	],
@@ -36,6 +38,10 @@
 		},
 		{
 			"Name": "GameplayStateTree",
+			"Enabled": true
+		},
+		{
+			"Name": "GameplayAbilities",
 			"Enabled": true
 		},
 		{

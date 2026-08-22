@@ -7,6 +7,8 @@
 #include "Engine/DataTable.h"
 #include "InputCoreTypes.h"
 #include "Interface/WeaponMuzzleProvider.h"
+#include "AbilitySystemInterface.h"
+#include "Damage/OutlierDamageReceiver.h"
 #include "PartnerCharacter.generated.h"
 
 UENUM(BlueprintType)
@@ -62,15 +64,19 @@ class UPartnerMovementComponent;
 class UPartnerSupportComponent;
 class UPartnerCombatComponent;
 class UPartnerHackComponent;
-class UPartnerAbilityComponent;
 class UPartnerEMPComponent;
 class UPartnerSpriteAnimationComponent;
 class UNiagaraComponent;
 class UNiagaraSystem;
+class UOutlierAbilitySystemComponent;
+class UOutlierVitalAttributeSet;
+class UPartnerVitalityComponent;
 
 class USceneComponent;
+struct FGameplayEffectSpec;
+struct FActiveGameplayEffectHandle;
 UCLASS()
-class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeaponMuzzleProvider
+class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeaponMuzzleProvider, public IAbilitySystemInterface, public IOutlierDamageReceiver
 {
 	GENERATED_BODY()
 
@@ -78,9 +84,19 @@ class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeap
 	friend class UPartnerSupportComponent;
 	friend class UPartnerCombatComponent;
 	friend class UPartnerDistanceComponent;
-	friend class UPartnerAbilityComponent;
+	friend class UPartnerHackComponent;
+	friend class UPartnerEMPComponent;
 protected:
 	// Components
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
+	TObjectPtr<UOutlierAbilitySystemComponent> OutlierAbilitySystemComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
+	TObjectPtr<UOutlierVitalAttributeSet> VitalAttributeSet;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
+	TObjectPtr<UPartnerVitalityComponent> PartnerVitalityComponent;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UPartnerDistanceComponent> DistanceComponent;
 
@@ -92,9 +108,6 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UPartnerSupportComponent> SupportComponent;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TestAbilityComponents")
-	TObjectPtr<UPartnerAbilityComponent> TestAbilityComponent;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UPartnerCombatComponent> CombatComponent;
@@ -326,19 +339,6 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "CameraAssist")
 	float AssistStrength = 100.0f;
 
-	// Survival Data
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Survival")
-	int32 MaxHitCount = 0;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Survival")
-	float RebootTime = 10.0f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Survival")
-	float InvincibleAfterRebootTime = 1.0f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Survival")
-	float HitInvincibleTime = 0.25f;
-
 	// Replicated 
 	UPROPERTY(ReplicatedUsing = OnRep_DroneMovementState, VisibleAnywhere, BlueprintReadOnly, Category = "State")
 	EDroneMovementState MovementState = EDroneMovementState::Follow;
@@ -358,12 +358,6 @@ protected:
 	UPROPERTY(Replicated)
 	uint8 bScanning : 1;
 
-	UPROPERTY(Replicated)
-	float LastHackServerTime = -999.0f;
-
-	FTimerHandle RebootTimerHandle;
-	FTimerHandle HitInvincibleTimerHandle;
-	FTimerHandle RebootInvincibleTimerHandle;
 	FTimerHandle BoostNoiseTimerHandle;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Noise|Boost", meta = (ClampMin = "0.05"))
@@ -385,23 +379,8 @@ protected:
 	uint8 bIsAccelerate : 1 = false;
 	uint8 bPartnerDataInitialized : 1 = false;
 
-	// Shooter 은신 토글과 함께 AI 감지 대상에서 제외하기 위한 테스트 상태다.
-	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Test|Stealth")
-	uint8 bTestStealthed : 1 = false;
-
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Partner|EnemyPossession")
 	uint8 bHiddenForEnemyPossession : 1 = false;
-
-	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Survival")
-	uint8 bIsRebooting : 1 = false;
-
-	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Survival")
-	uint8 bIsInvincible : 1 = false;
-
-	uint8 bInvincibleForEnemyPossession : 1 = false;
-
-	UPROPERTY(ReplicatedUsing = OnRep_CurrentHitCount, VisibleAnywhere, BlueprintReadOnly, Category = "Survival")
-	int32 CurrentHitCount = 0;
 
 	// DataTable
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Data")
@@ -420,6 +399,9 @@ protected:
 	FDataTableRowHandle PartnerSurvivalDataRow;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Data")
+	FDataTableRowHandle VitalityDataRow;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Data")
 	FDataTableRowHandle PartnerCameraAssistDataRow;
 
 	UPROPERTY()
@@ -432,19 +414,15 @@ protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void PossessedBy(AController* NewController) override;
-	virtual float TakeDamage(
-		float DamageAmount,
-		struct FDamageEvent const& DamageEvent,
-		class AController* EventInstigator,
-		AActor* DamageCauser
-	) override;
+	virtual void OnRep_Controller() override;
+	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
 
 	virtual void UnPossessed() override;
+	void RefreshAbilitySystemActorInfo();
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
 	virtual void DoMove(float Right, float Forward) override;
 	virtual void OnMoveInputUpdated(const FVector2D& MoveValue);
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
-	virtual FGameplayTagContainer GetOwnedGameplayTagsForQuery() const override;
 
 	// AFirstPersonCharacter의 AttackAction 입력 진입점.
 	// 실제 권한 처리와 무기 호출은 CombatComponent의 공개 공격 API에 위임한다.
@@ -460,7 +438,6 @@ protected:
 	void Hacking(AActor* TargetActor);
 	void TryEMP();
 	//
-	void TestAbilityScan();
 	void Scan();
 	void Shield();
 	void SyncMove();
@@ -475,11 +452,6 @@ protected:
 	void SetBoundaryOutside(bool bOutside);
 	EPartnerBoundaryState GetBoundaryOutside();
 
-	void StartReboot();
-	void FinishReboot();
-	void ClearHitInvincible();
-	void ClearRebootInvincible();
-	bool CanAcceptInput() const;
 	UPartnerHackComponent* GetRuntimeHackComponent() const;
 	UPartnerEMPComponent* GetRuntimeEMPComponent() const;
 
@@ -500,14 +472,29 @@ protected:
 	UFUNCTION(Server, Reliable)
 	void ServerSetAccelerate(bool bNewAccelerate);
 
-	UFUNCTION(Server, Reliable)
-	void ServerUseSkill(EPartnerSkillType SkillType);
-
 	void EnsurePartnerDataInitialized();
 	void InitializeFromDataTables();
+	void BindPartnerCooldownUIObserver();
+	void UnbindPartnerCooldownUIObserver();
+	void HandlePartnerCooldownEffectAdded(
+		UAbilitySystemComponent* AbilitySystem,
+		const FGameplayEffectSpec& EffectSpec,
+		FActiveGameplayEffectHandle EffectHandle);
+	void RefreshPartnerCooldownUI();
+	void NotifyPartnerCooldownUI(const FGameplayTag& CooldownTag);
+	FDelegateHandle PartnerCooldownEffectAddedHandle;
 
 	virtual void LookInput(const FInputActionValue& Value) override;
 public:
+	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
+	virtual FGameplayTagContainer GetOwnedGameplayTagsForQuery() const override;
+	UOutlierAbilitySystemComponent* GetOutlierAbilitySystemComponent() const
+	{
+		return OutlierAbilitySystemComponent;
+	}
+	const UOutlierVitalAttributeSet* GetVitalAttributeSet() const { return VitalAttributeSet; }
+	UPartnerVitalityComponent* GetPartnerVitalityComponent() const { return PartnerVitalityComponent; }
+	bool CanAcceptInput() const;
 	UPROPERTY(BlueprintAssignable, Category = "Event")
 	FOnDroneMovementStateChanged OnDroneMovementStateChanged;
 
@@ -537,11 +524,9 @@ public:
 	UFUNCTION()
 	void OnRep_IsAccelerate();
 
-	UFUNCTION()
-	void OnRep_CurrentHitCount();
-
 	void SetShooterCharacter(AShooterCharacter* NewShooter);
-	void SetTestStealthed(bool bNewStealthed);
+	void ConfigureSuitDisableBoundaryRadius(float Radius);
+	void NotifyOffensiveActionExecuted();
 	
 	UFUNCTION(Client, Reliable)
 	void ClientNotifySkillUseResult(EPartnerSkillType SkillType, EPartnerSkillUseResult Result);
@@ -557,9 +542,9 @@ public:
 	void ApplyDamagedEvent(float InRatio) const;
 	void NullifyDamagedEvenet() const;
 
-	void HandlePartnerHit();
-	void SetInvincibleForEnemyPossession(bool bNewInvincible);
 	void SetEnemyPossessionProtection(bool bEnabled);
+	void StopActionsForReboot();
+	void RefreshEnemyDetectionForVitality();
 
 	// 입력뿐 아니라 Ability/BP에서도 사용할 수 있는 Partner 공격 API.
 	// 소유 클라이언트에서 호출하면 CombatComponent가 서버 RPC로 전달한다.

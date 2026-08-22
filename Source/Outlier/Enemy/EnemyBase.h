@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
 #include "Engine/DataTable.h"
+#include "GameplayEffectTypes.h"
 #include "GameplayTagContainer.h"
 #include "GenericTeamAgentInterface.h"
 #include "Enemy/EnemyStat.h"
@@ -11,6 +12,8 @@
 #include "Interface/HackableInterface.h"
 #include "Interface/RoomTagInterface.h"
 #include "StateTreeReference.h"
+#include "AbilitySystemInterface.h"
+#include "Damage/OutlierDamageReceiver.h"
 #include "EnemyBase.generated.h"
 
 class UStateTreeComponent;
@@ -22,6 +25,9 @@ struct FInputActionValue;
 class URoomTagComponent;
 class ARangedWeaponBase;
 class APartnerCharacter;
+class UOutlierAbilitySystemComponent;
+class UOutlierVitalAttributeSet;
+struct FOnAttributeChangeData;
 
 UENUM(BlueprintType)
 enum class EEnemyCombatState : uint8
@@ -49,20 +55,21 @@ enum class EEnemyAttackPhase : uint8
 };
 
 UCLASS()
-class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, public IEMPableInterface, public IScannableInterface, public IGenericTeamAgentInterface, public IRoomTagInterface
+class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, public IEMPableInterface, public IScannableInterface, public IGenericTeamAgentInterface, public IRoomTagInterface, public IAbilitySystemInterface, public IOutlierDamageReceiver
 {
 	GENERATED_BODY()
 
 public:
 	AEnemyBase();
+	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
+	UOutlierAbilitySystemComponent* GetOutlierAbilitySystemComponent() const
+	{
+		return OutlierAbilitySystemComponent;
+	}
+	const UOutlierVitalAttributeSet* GetVitalAttributeSet() const { return VitalAttributeSet; }
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
-	// Unreal 공통 피해 진입점을 기존 Enemy HP 및 사망 처리로 연결한다.
-	virtual float TakeDamage(
-		float DamageAmount,
-		FDamageEvent const& DamageEvent,
-		AController* EventInstigator,
-		AActor* DamageCauser) override;
+	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
 
 protected:
 	virtual void PostInitializeComponents() override;
@@ -70,9 +77,17 @@ protected:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void PossessedBy(AController* NewController) override;
 	virtual void UnPossessed() override;
+	virtual void OnRep_Controller() override;
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
+	void RefreshAbilitySystemActorInfo();
 
 	void SendEnemyStateTreeEvent(FGameplayTag Tag);
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
+	TObjectPtr<UOutlierAbilitySystemComponent> OutlierAbilitySystemComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
+	TObjectPtr<UOutlierVitalAttributeSet> VitalAttributeSet;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|AI")
 	TObjectPtr<UStateTreeComponent> StateTreeComponent;
@@ -146,9 +161,6 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, ReplicatedUsing = OnRep_RuntimeStat, Category = "Enemy|Data")
 	FEnemyStat RuntimeStat;
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, ReplicatedUsing = OnRep_CurrentHealth, Category = "Enemy|Data")
-	float CurrentHealth = 0.0f;
-
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|Data")
 	float CoreCriticalMultiplier = 2.0f;
 
@@ -170,9 +182,6 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "Enemy|State")
 	uint8 bIsPossessed : 1 = false;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "Enemy|State")
-	uint8 bPossessionInProgress : 1 = false;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "Enemy|Impact")
 	uint8 bPossessedImpactInputLocked : 1 = false;
@@ -247,11 +256,11 @@ public:
 	bool IsEnemyPossessed() const { return bIsPossessed; }
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|State")
-	bool IsPossessionInProgress() const { return bPossessionInProgress; }
+	bool IsPossessionInProgress() const;
 
 	bool IsAIControlSuppressed() const
 	{
-		return bIsPossessed || bPossessionInProgress || bImpactReactionActive;
+		return bIsPossessed || IsPossessionInProgress() || bImpactReactionActive;
 	}
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|State")
@@ -327,7 +336,10 @@ public:
 	const FEnemyStat& GetRuntimeStat() const { return RuntimeStat; }
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|Data")
-	float GetCurrentHealth() const { return CurrentHealth; }
+	float GetCurrentHealth() const;
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|State")
+	bool IsDead() const;
 
 	UFUNCTION(BlueprintCallable, Category = "Enemy|Data")
 	void InitializeFromEnemyStatRow();
@@ -429,11 +441,17 @@ protected:
 	UFUNCTION()
 	void OnRep_RuntimeStat();
 
-	UFUNCTION()
-	void OnRep_CurrentHealth(float PreviousHealth);
-
-	void HandleCurrentHealthChanged(float PreviousHealth);
-	void ApplyDamageInternal(float DamageAmount);
+	void InitializeGasVitality();
+	void BindGasVitalityObservers();
+	void UnbindGasVitalityObservers();
+	void HandleHealthChanged(const FOnAttributeChangeData& ChangeData);
+	void HandleStunnedTagChanged(const FGameplayTag StunnedTag, int32 NewCount);
+	bool ApplyDamageInternal(
+		float DamageAmount,
+		AController* DamageInstigator,
+		AActor* DamageCauser,
+		const FGameplayTag& DamageTag);
+	void Die();
 	void ApplyCoreWeakPointRuntimeState();
 
 	void SendEnemyStateTreeEventNextTick(FGameplayTag Tag);
@@ -444,6 +462,8 @@ protected:
 	bool HasActiveStunTag() const;
 	bool BeginPossessionProcess(APartnerCharacter* PartnerCharacter);
 	void ConfirmPossessionProcess();
+	bool ApplyPossessionPendingState();
+	bool RemovePossessionPendingState();
 	void PromotePreStunState(EEnemyCombatState DetectedState);
 	void RefreshPerceptionConfigForCurrentState();
 	void RefreshPerceptionTeamRegistration();
@@ -458,10 +478,13 @@ protected:
 	void HandleCurrentRoomTagChanged(FGameplayTag PreviousRoomTag, FGameplayTag NewRoomTag);
 	void RemoveRoomTargetObserver();
 	virtual void HandleDeath();
+	void PerformDeathCleanup();
 	virtual float GetDeathDestroyDelay() const { return 0.0f; }
 	virtual bool TryApplyCommittedImpactVelocity(const FVector& ImpactVelocity);
 	virtual void CancelCommittedAction();
 	virtual void ApplyExplosionReactionPresentation(const FVector& Direction, float ReactionScale);
+	FDelegateHandle HealthChangedHandle;
+	FDelegateHandle StunnedTagChangedHandle;
 	void AccumulateImpactVelocity(const FVector& ImpactVelocity);
 	void RefreshImpactReactionDuration();
 	void BeginPossessedImpactInputLock();
@@ -482,6 +505,7 @@ protected:
 	float ImpactRecoveryElapsedTime = 0.0f;
 	bool bImpactReactionActive = false;
 	FTimerHandle PossessedImpactInputLockTimerHandle;
+	FActiveGameplayEffectHandle PossessionPendingEffectHandle;
 
 	// 빙의된 VEC의 AttackAction 입력 진입점.
 	// 소유 클라이언트는 시작/종료 상태만 RPC로 보내고 실제 발사는 서버 무기가 수행한다.

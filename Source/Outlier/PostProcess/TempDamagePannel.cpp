@@ -2,7 +2,7 @@
 #include "PostProcess/TempDamagePannel.h"
 #include "Components/BoxComponent.h"
 #include "Components/StaticMeshComponent.h"
-#include "Engine/DamageEvents.h"
+#include "Damage/OutlierDamageReceiver.h"
 #include "Shooter/ShooterCharacter.h"
 
 ATempDamagePannel::ATempDamagePannel()
@@ -144,6 +144,8 @@ void ATempDamagePannel::ApplyDamageToShooter(AShooterCharacter* Shooter)
 		return;
 	}
 
-	FDamageEvent DamageEvent;
-	Shooter->TakeDamage(DamageAmount, DamageEvent, nullptr, this);
+	FOutlierDamageRequest DamageRequest;
+	DamageRequest.DamageAmount = DamageAmount;
+	DamageRequest.DamageCauser = this;
+	OutlierDamage::Apply(Shooter, DamageRequest);
 }

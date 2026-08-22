@@ -1,5 +1,6 @@
 #include "Drone/Partner/EMPableComponent.h"
 #include "Drone/Partner/EMPGameplayTags.h"
+#include "GameplayTags/OutlierGameplayTags.h"
 #include "Interface/EMPableInterface.h"
 #include "Net/UnrealNetwork.h"
 
@@ -63,11 +64,23 @@ bool UEMPableComponent::HasEMPTag(FGameplayTag Tag) const
 
 void UEMPableComponent::AddEMPTag(FGameplayTag Tag)
 {
+	if (Tag == OutlierGameplayTags::State::Stunned())
+	{
+		ensureAlwaysMsgf(false, TEXT("State.Stunned is ASC-owned and cannot be written to EMPTags."));
+		return;
+	}
+
 	EMPTags.AddTag(Tag);
 }
 
 void UEMPableComponent::ApplyEMPTagForDuration(FGameplayTag Tag, float Duration)
 {
+	if (Tag == OutlierGameplayTags::State::Stunned())
+	{
+		ensureAlwaysMsgf(false, TEXT("State.Stunned duration must be applied through a GameplayEffect."));
+		return;
+	}
+
 	AActor* OwnerActor = GetOwner();
 	if (!OwnerActor || !OwnerActor->HasAuthority())
 	{
@@ -103,6 +116,12 @@ void UEMPableComponent::ApplyEMPTagForDuration(FGameplayTag Tag, float Duration)
 
 void UEMPableComponent::RemoveEMPTag(FGameplayTag Tag)
 {
+	if (Tag == OutlierGameplayTags::State::Stunned())
+	{
+		ensureAlwaysMsgf(false, TEXT("State.Stunned removal must be performed by the owning ASC."));
+		return;
+	}
+
 	ClearEMPDurationTimer(Tag);
 	EMPTags.RemoveTag(Tag);
 }

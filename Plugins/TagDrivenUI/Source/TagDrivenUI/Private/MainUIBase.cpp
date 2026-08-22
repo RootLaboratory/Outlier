@@ -42,6 +42,17 @@ UAbilityIconUI* UMainUIBase::GetAbilityIcon(const FGameplayTag& AbilityTag) cons
 	return Found ? Found->Get() : nullptr;
 }
 
+void UMainUIBase::ResetAbilityCooldowns()
+{
+	for (const TPair<FGameplayTag, TObjectPtr<UAbilityIconUI>>& AbilitySection : AbilitySections)
+	{
+		if (UAbilityIconUI* Icon = AbilitySection.Value)
+		{
+			Icon->CooldownDone();
+		}
+	}
+}
+
 void UMainUIBase::On_RepAbilityDisabledByDistance()
 {
 	for (const TPair<FGameplayTag, TObjectPtr<UAbilityIconUI>>& AbilitySection : AbilitySections)
