@@ -318,6 +318,75 @@ void AFrontendPlayerController::ServerRequestMatchmaking_Implementation()
 	Matchmaking->EnqueueForPairThenRolePick(this);
 }
 
+void AFrontendPlayerController::RequestCreateParty()
+{
+	ServerRequestCreateParty();
+}
+
+void AFrontendPlayerController::RequestJoinParty(const FString& PartyCode)
+{
+	ServerRequestJoinParty(PartyCode);
+}
+
+void AFrontendPlayerController::RequestLeaveParty()
+{
+	ServerRequestLeaveParty();
+}
+
+void AFrontendPlayerController::ServerRequestCreateParty_Implementation()
+{
+	if (UOutlierMatchmakingSubsystem* Matchmaking = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierMatchmakingSubsystem>()
+		: nullptr)
+	{
+		Matchmaking->CreateParty(this);
+	}
+}
+
+void AFrontendPlayerController::ServerRequestJoinParty_Implementation(const FString& PartyCode)
+{
+	if (UOutlierMatchmakingSubsystem* Matchmaking = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierMatchmakingSubsystem>()
+		: nullptr)
+	{
+		Matchmaking->JoinParty(this, PartyCode);
+	}
+}
+
+void AFrontendPlayerController::ServerRequestLeaveParty_Implementation()
+{
+	if (UOutlierMatchmakingSubsystem* Matchmaking = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierMatchmakingSubsystem>()
+		: nullptr)
+	{
+		Matchmaking->LeaveParty(this);
+	}
+}
+
+void AFrontendPlayerController::ClientNotifyPartyResult_Implementation(
+	EOutlierPartyRequestResult Result,
+	const FString& PartyCode)
+{
+	switch (Result)
+	{
+	case EOutlierPartyRequestResult::Created:
+	case EOutlierPartyRequestResult::MemberJoined:
+	case EOutlierPartyRequestResult::Joined:
+		CurrentPartyCode = PartyCode;
+		break;
+
+	case EOutlierPartyRequestResult::Left:
+	case EOutlierPartyRequestResult::Disbanded:
+		CurrentPartyCode.Reset();
+		break;
+
+	default:
+		break;
+	}
+
+	OnPartyRequestResult.Broadcast(Result, PartyCode);
+}
+
 void AFrontendPlayerController::RequestSelectLobbyRole(EOutlierPlayerRole DesiredRole)
 {
 	ServerRequestSelectLobbyRole(DesiredRole);

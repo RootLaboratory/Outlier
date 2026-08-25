@@ -30,6 +30,11 @@ namespace FrontendInputModeTags
 	}
 }
 
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
+	FOnPartyRequestResult,
+	EOutlierPartyRequestResult, Result,
+	const FString&, PartyCode);
+
 UCLASS()
 class OUTLIER_API AFrontendPlayerController : public APlayerController
 {
@@ -44,6 +49,32 @@ public:
 public:
 	UFUNCTION(Server, Reliable)
 	void ServerRequestMatchmaking();
+
+	UFUNCTION(BlueprintCallable, Category = "Party")
+	void RequestCreateParty();
+
+	UFUNCTION(BlueprintCallable, Category = "Party")
+	void RequestJoinParty(const FString& PartyCode);
+
+	UFUNCTION(BlueprintCallable, Category = "Party")
+	void RequestLeaveParty();
+
+	UFUNCTION(Server, Reliable)
+	void ServerRequestCreateParty();
+
+	UFUNCTION(Server, Reliable)
+	void ServerRequestJoinParty(const FString& PartyCode);
+
+	UFUNCTION(Server, Reliable)
+	void ServerRequestLeaveParty();
+
+	UFUNCTION(Client, Reliable)
+	void ClientNotifyPartyResult(
+		EOutlierPartyRequestResult Result,
+		const FString& PartyCode);
+
+	UFUNCTION(BlueprintPure, Category = "Party")
+	const FString& GetCurrentPartyCode() const { return CurrentPartyCode; }
 
 	UFUNCTION(BlueprintCallable)
 	void RequestSelectLobbyRole(EOutlierPlayerRole DesiredRole);
@@ -120,6 +151,9 @@ protected:
 	void HandleWidgetRightInput();
 
 public:
+	UPROPERTY(BlueprintAssignable, Category = "Party")
+	FOnPartyRequestResult OnPartyRequestResult;
+
 	UPROPERTY(BlueprintReadOnly)
 	TObjectPtr<UTitleWidget> TitleWidget;
 

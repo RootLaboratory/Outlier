@@ -8,6 +8,7 @@
 #include "OutlierGameState.h"
 #include "FrontendPlayerController.h"
 #include "Network/OutlierArenaPoolSubsystem.h"
+#include "Network/OutlierMatchmakingSubsystem.h"
 #include "Save/OutlierSaveSubSystem.h"
 #include "GameFramework/GameStateBase.h"
 #include "Shooter/ShooterPlayerController.h"
@@ -546,7 +547,15 @@ void AOutlierGameMode::Logout(AController* Exiting)
 		}
 	}
 
-	Super::Logout(Exiting);
+	if (Cast<AFrontendPlayerController>(Exiting))
+	{
+		if (UOutlierMatchmakingSubsystem* Matchmaking = GetGameInstance()
+			? GetGameInstance()->GetSubsystem<UOutlierMatchmakingSubsystem>()
+			: nullptr)
+		{
+			Matchmaking->Cancel(Exiting);
+		}
+	}
 
 	if (UOutlierLobbyIdentitySubsystem* Identity = GetGameInstance()
 		? GetGameInstance()->GetSubsystem<UOutlierLobbyIdentitySubsystem>()

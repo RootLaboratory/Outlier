@@ -76,6 +76,143 @@ void UOutlierMatchmakingSubsystem::EnqueueByRole(AController* Controller, EOutli
 	TryCreateMatch();
 }
 
+void UOutlierMatchmakingSubsystem::CreateParty(AController* Controller)
+{
+	if (!Controller)
+	{
+		return;
+	}
+
+	Cancel(Controller);
+
+	UOutlierLobbyIdentitySubsystem* Identity = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierLobbyIdentitySubsystem>()
+		: nullptr;
+	FGuid LeaderPlayerId;
+	if (!Identity || !Identity->TryGetPlayerId(Controller, LeaderPlayerId))
+	{
+		NotifyPartyResult(Controller, EOutlierPartyRequestResult::Failed);
+		return;
+	}
+
+	const FString PartyCode = GenerateUniquePartyCode();
+	if (PartyCode.IsEmpty())
+	{
+		NotifyPartyResult(Controller, EOutlierPartyRequestResult::Failed);
+		return;
+	}
+
+	FOutlierPendingParty Party;
+	Party.PartyCode = PartyCode;
+	Party.LeaderPlayerId = LeaderPlayerId;
+	Party.LeaderController = Controller;
+	PendingPartiesByCode.Add(PartyCode, Party);
+
+	NotifyPartyResult(Controller, EOutlierPartyRequestResult::Created, PartyCode);
+}
+
+void UOutlierMatchmakingSubsystem::JoinParty(AController* Controller, const FString& PartyCode)
+{
+	if (!Controller)
+	{
+		return;
+	}
+
+	const double CurrentTime = GetWorld()
+		? GetWorld()->GetTimeSeconds()
+		: FPlatformTime::Seconds();
+	const TWeakObjectPtr<AController> ControllerKey(Controller);
+	if (const double* LastAttemptTime = LastPartyJoinAttemptTimes.Find(ControllerKey))
+	{
+		if (CurrentTime - *LastAttemptTime < PartyJoinRateLimitSeconds)
+		{
+			NotifyPartyResult(Controller, EOutlierPartyRequestResult::RateLimited);
+			return;
+		}
+	}
+	LastPartyJoinAttemptTimes.Add(ControllerKey, CurrentTime);
+
+	if (PartyCode.Len() > 32)
+	{
+		NotifyPartyResult(Controller, EOutlierPartyRequestResult::InvalidCode);
+		return;
+	}
+
+	const FString NormalizedCode = OutlierPartyCode::Normalize(PartyCode);
+	if (!OutlierPartyCode::IsValid(NormalizedCode))
+	{
+		NotifyPartyResult(Controller, EOutlierPartyRequestResult::InvalidCode);
+		return;
+	}
+
+	const FOutlierPendingParty* FoundParty = PendingPartiesByCode.Find(NormalizedCode);
+	if (!FoundParty || !FoundParty->IsValid())
+	{
+		PendingPartiesByCode.Remove(NormalizedCode);
+		NotifyPartyResult(Controller, EOutlierPartyRequestResult::PartyNotFound);
+		return;
+	}
+
+	AController* LeaderController = FoundParty->LeaderController.Get();
+	if (!LeaderController || LeaderController == Controller)
+	{
+		NotifyPartyResult(Controller, EOutlierPartyRequestResult::Failed);
+		return;
+	}
+
+	UOutlierLobbyIdentitySubsystem* Identity = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierLobbyIdentitySubsystem>()
+		: nullptr;
+	FGuid JoiningPlayerId;
+	if (!Identity
+		|| !Identity->TryGetPlayerId(Controller, JoiningPlayerId)
+		|| JoiningPlayerId == FoundParty->LeaderPlayerId)
+	{
+		NotifyPartyResult(Controller, EOutlierPartyRequestResult::Failed);
+		return;
+	}
+
+	// 참가자가 다른 큐나 파티에 속해 있다면 먼저 그 상태를 정리한다.
+	Cancel(Controller);
+
+	FoundParty = PendingPartiesByCode.Find(NormalizedCode);
+	if (!FoundParty || FoundParty->LeaderController != LeaderController)
+	{
+		NotifyPartyResult(Controller, EOutlierPartyRequestResult::PartyNotFound);
+		return;
+	}
+
+	PendingPartiesByCode.Remove(NormalizedCode);
+
+	FOutlierMatchRequest LeaderRequest;
+	LeaderRequest.Controller = LeaderController;
+	LeaderRequest.PendingLobbySlotIndex = 0;
+	LeaderRequest.RequestTime = CurrentTime;
+
+	FOutlierMatchRequest MemberRequest;
+	MemberRequest.Controller = Controller;
+	MemberRequest.PendingLobbySlotIndex = 1;
+	MemberRequest.RequestTime = CurrentTime;
+
+	if (!CreatePendingRolePickMatch(
+		LeaderRequest,
+		MemberRequest,
+		EOutlierPendingMatchSource::PremadeParty))
+	{
+		NotifyPartyResult(LeaderController, EOutlierPartyRequestResult::Failed);
+		NotifyPartyResult(Controller, EOutlierPartyRequestResult::Failed);
+		return;
+	}
+
+	NotifyPartyResult(LeaderController, EOutlierPartyRequestResult::MemberJoined, NormalizedCode);
+	NotifyPartyResult(Controller, EOutlierPartyRequestResult::Joined, NormalizedCode);
+}
+
+void UOutlierMatchmakingSubsystem::LeaveParty(AController* Controller)
+{
+	Cancel(Controller);
+}
+
 bool UOutlierMatchmakingSubsystem::SelectRoleInPendingMatch(AController* Controller, EOutlierPlayerRole DesiredRole)
 {
 	if (!Controller ||
@@ -215,6 +352,18 @@ void UOutlierMatchmakingSubsystem::Cancel(AController* Controller)
 	RemoveController(WaitingShooters);
 	RemoveController(WaitingPartners);
 
+	for (auto PartyIt = PendingPartiesByCode.CreateIterator(); PartyIt; ++PartyIt)
+	{
+		if (PartyIt.Value().LeaderController != Controller)
+		{
+			continue;
+		}
+
+		const FString RemovedPartyCode = PartyIt.Key();
+		PartyIt.RemoveCurrent();
+		NotifyPartyResult(Controller, EOutlierPartyRequestResult::Left, RemovedPartyCode);
+	}
+
 	for (int32 MatchIndex = PendingRolePickMatches.Num() - 1; MatchIndex >= 0; --MatchIndex)
 	{
 		FOutlierPendingRolePickMatch& Match = PendingRolePickMatches[MatchIndex];
@@ -226,6 +375,7 @@ void UOutlierMatchmakingSubsystem::Cancel(AController* Controller)
 		AController* OtherController = Match.FirstController == Controller
 			? Match.SecondController.Get()
 			: Match.FirstController.Get();
+		const bool bRequeueRemainingPlayer = Match.ShouldRequeueRemainingPlayer();
 
 		PendingRolePickMatches.RemoveAt(MatchIndex);
 
@@ -238,13 +388,27 @@ void UOutlierMatchmakingSubsystem::Cancel(AController* Controller)
 				OtherPS->ClearPendingLobbyState();
 			}
 
-			FOutlierMatchRequest Request;
-			Request.Controller = OtherController;
-			Request.PendingLobbySlotIndex = OtherSlotIndex;
-			Request.RequestTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
-			WaitingPlayers.Add(Request);
+			if (bRequeueRemainingPlayer)
+			{
+				FOutlierMatchRequest Request;
+				Request.Controller = OtherController;
+				Request.PendingLobbySlotIndex = OtherSlotIndex;
+				Request.RequestTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+				WaitingPlayers.Add(Request);
+			}
+			else
+			{
+				NotifyPartyResult(OtherController, EOutlierPartyRequestResult::Disbanded);
+			}
+		}
+
+		if (!bRequeueRemainingPlayer)
+		{
+			NotifyPartyResult(Controller, EOutlierPartyRequestResult::Left);
 		}
 	}
+
+	LastPartyJoinAttemptTimes.Remove(TWeakObjectPtr<AController>(Controller));
 
 	TryCreateMatch();
 }
@@ -357,7 +521,7 @@ void UOutlierMatchmakingSubsystem::TryCreateMatch()
 
 void UOutlierMatchmakingSubsystem::TryCreatePairThenRolePickMatch()
 {
-	UE_LOG(LogTemp, Warning, TEXT("[Matchmaking] TryCreatePairThenRolePickMatch: WaitingPlayers=%d"), WaitingPlayers.Num());
+	UE_LOG(LogTemp, Verbose, TEXT("[Matchmaking] TryCreatePairThenRolePickMatch: WaitingPlayers=%d"), WaitingPlayers.Num());
 
 	while (WaitingPlayers.Num() >= 2)
 	{
@@ -372,59 +536,108 @@ void UOutlierMatchmakingSubsystem::TryCreatePairThenRolePickMatch()
 			continue;
 		}
 
-		FOutlierPendingRolePickMatch PendingMatch;
-		PendingMatch.PendingMatchId = NextPendingMatchId++;
-		PendingMatch.FirstController = First.Controller;
-		PendingMatch.SecondController = Second.Controller;
-		PendingMatch.CreatedTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+		CreatePendingRolePickMatch(
+			First,
+			Second,
+			EOutlierPendingMatchSource::SoloQueue);
+	}
+}
 
-		const auto IsValidLobbySlot = [](int32 SlotIndex)
-		{
-			return SlotIndex == 0 || SlotIndex == 1;
-		};
+bool UOutlierMatchmakingSubsystem::CreatePendingRolePickMatch(
+	const FOutlierMatchRequest& First,
+	const FOutlierMatchRequest& Second,
+	EOutlierPendingMatchSource Source)
+{
+	if (!First.Controller || !Second.Controller || First.Controller == Second.Controller)
+	{
+		return false;
+	}
 
-		int32 FirstSlotIndex = 0;
-		int32 SecondSlotIndex = 1;
-		const bool bFirstHasPreferredSlot = IsValidLobbySlot(First.PendingLobbySlotIndex);
-		const bool bSecondHasPreferredSlot = IsValidLobbySlot(Second.PendingLobbySlotIndex);
-		if (bFirstHasPreferredSlot && bSecondHasPreferredSlot)
+	AOutlierPlayerState* FirstPS = First.Controller->GetPlayerState<AOutlierPlayerState>();
+	AOutlierPlayerState* SecondPS = Second.Controller->GetPlayerState<AOutlierPlayerState>();
+	if (!FirstPS || !SecondPS)
+	{
+		return false;
+	}
+
+	const auto IsValidLobbySlot = [](int32 SlotIndex)
+	{
+		return SlotIndex == 0 || SlotIndex == 1;
+	};
+
+	int32 FirstSlotIndex = 0;
+	int32 SecondSlotIndex = 1;
+	const bool bFirstHasPreferredSlot = IsValidLobbySlot(First.PendingLobbySlotIndex);
+	const bool bSecondHasPreferredSlot = IsValidLobbySlot(Second.PendingLobbySlotIndex);
+	if (bFirstHasPreferredSlot && bSecondHasPreferredSlot)
+	{
+		FirstSlotIndex = First.PendingLobbySlotIndex;
+		SecondSlotIndex = First.PendingLobbySlotIndex != Second.PendingLobbySlotIndex
+			? Second.PendingLobbySlotIndex
+			: 1 - FirstSlotIndex;
+	}
+	else if (bFirstHasPreferredSlot)
+	{
+		FirstSlotIndex = First.PendingLobbySlotIndex;
+		SecondSlotIndex = 1 - FirstSlotIndex;
+	}
+	else if (bSecondHasPreferredSlot)
+	{
+		SecondSlotIndex = Second.PendingLobbySlotIndex;
+		FirstSlotIndex = 1 - SecondSlotIndex;
+	}
+
+	FOutlierPendingRolePickMatch PendingMatch;
+	PendingMatch.PendingMatchId = NextPendingMatchId++;
+	PendingMatch.FirstController = First.Controller;
+	PendingMatch.SecondController = Second.Controller;
+	PendingMatch.CreatedTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+	PendingMatch.Source = Source;
+
+	FirstPS->SetPendingLobbyMatchId(PendingMatch.PendingMatchId);
+	FirstPS->SetPendingLobbySlotIndex(FirstSlotIndex);
+	FirstPS->SetPendingLobbyRole(EOutlierPlayerRole::None);
+
+	SecondPS->SetPendingLobbyMatchId(PendingMatch.PendingMatchId);
+	SecondPS->SetPendingLobbySlotIndex(SecondSlotIndex);
+	SecondPS->SetPendingLobbyRole(EOutlierPlayerRole::None);
+
+	PendingRolePickMatches.Add(PendingMatch);
+
+	UE_LOG(LogTemp, Display,
+		TEXT("[Matchmaking] Pending role pick created Id=%d Source=%s First=%s Second=%s"),
+		PendingMatch.PendingMatchId,
+		Source == EOutlierPendingMatchSource::PremadeParty
+			? TEXT("Party")
+			: TEXT("Solo"),
+		*First.Controller->GetName(),
+		*Second.Controller->GetName());
+	return true;
+}
+
+FString UOutlierMatchmakingSubsystem::GenerateUniquePartyCode() const
+{
+	for (int32 Attempt = 0; Attempt < MaxPartyCodeGenerationAttempts; ++Attempt)
+	{
+		const FString PartyCode = OutlierPartyCode::Generate();
+		if (!PendingPartiesByCode.Contains(PartyCode))
 		{
-			FirstSlotIndex = First.PendingLobbySlotIndex;
-			SecondSlotIndex = First.PendingLobbySlotIndex != Second.PendingLobbySlotIndex
-				? Second.PendingLobbySlotIndex
-				: 1 - FirstSlotIndex;
+			return PartyCode;
 		}
-		else if (bFirstHasPreferredSlot)
-		{
-			FirstSlotIndex = First.PendingLobbySlotIndex;
-			SecondSlotIndex = 1 - FirstSlotIndex;
-		}
-		else if (bSecondHasPreferredSlot)
-		{
-			SecondSlotIndex = Second.PendingLobbySlotIndex;
-			FirstSlotIndex = 1 - SecondSlotIndex;
-		}
+	}
 
-		UE_LOG(LogTemp, Warning, TEXT("[Matchmaking] PendingMatch created: Id=%d, First=%s, Second=%s"),
-			PendingMatch.PendingMatchId, *First.Controller->GetName(), *Second.Controller->GetName());
+	return FString();
+}
 
-		if (AOutlierPlayerState* FirstPS = First.Controller->GetPlayerState<AOutlierPlayerState>())
-		{
-			FirstPS->SetPendingLobbyMatchId(PendingMatch.PendingMatchId);
-			FirstPS->SetPendingLobbySlotIndex(FirstSlotIndex);
-			FirstPS->SetPendingLobbyRole(EOutlierPlayerRole::None);
-			UE_LOG(LogTemp, Warning, TEXT("[Matchmaking] FirstPS PendingLobbyMatchId set to %d"), PendingMatch.PendingMatchId);
-		}
-
-		if (AOutlierPlayerState* SecondPS = Second.Controller->GetPlayerState<AOutlierPlayerState>())
-		{
-			SecondPS->SetPendingLobbyMatchId(PendingMatch.PendingMatchId);
-			SecondPS->SetPendingLobbySlotIndex(SecondSlotIndex);
-			SecondPS->SetPendingLobbyRole(EOutlierPlayerRole::None);
-			UE_LOG(LogTemp, Warning, TEXT("[Matchmaking] SecondPS PendingLobbyMatchId set to %d"), PendingMatch.PendingMatchId);
-		}
-
-		PendingRolePickMatches.Add(PendingMatch);
+void UOutlierMatchmakingSubsystem::NotifyPartyResult(
+	AController* Controller,
+	EOutlierPartyRequestResult Result,
+	const FString& PartyCode) const
+{
+	if (AFrontendPlayerController* FrontendController =
+		Cast<AFrontendPlayerController>(Controller))
+	{
+		FrontendController->ClientNotifyPartyResult(Result, PartyCode);
 	}
 }
 
