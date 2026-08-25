@@ -6,8 +6,11 @@
 #include "EnhancedInputSubsystems.h"
 #include "Engine/LocalPlayer.h"
 #include "InputMappingContext.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "Network/OutlierMatchmakingSubsystem.h"
 #include "OutlierGameInstance.h"
+#include "TimerManager.h"
 #include "UI/LoadingWidget.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
 #include "UI/TitleWidget.h"
@@ -44,6 +47,8 @@ void AFrontendPlayerController::BeginPlay()
 			}
 		}
 	}
+
+	TryStartNetworkMvpSmoke();
 }
 
 void AFrontendPlayerController::AcknowledgePossession(APawn* P)
@@ -81,7 +86,90 @@ void AFrontendPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason
 	//	HasAuthority(),
 	//	*GetNameSafe(GetPawn()));
 
+	GetWorldTimerManager().ClearTimer(NetworkMvpSmokeTimerHandle);
 	Super::EndPlay(EndPlayReason);
+}
+
+void AFrontendPlayerController::TryStartNetworkMvpSmoke()
+{
+	if (!IsLocalController() || GetNetMode() != NM_Client)
+	{
+		return;
+	}
+
+	FString RoleText;
+	if (!FParse::Value(
+		FCommandLine::Get(),
+		TEXT("OutlierNetworkSmokeRole="),
+		RoleText))
+	{
+		return;
+	}
+
+	if (RoleText.Equals(TEXT("Shooter"), ESearchCase::IgnoreCase))
+	{
+		NetworkMvpSmokeRole = EOutlierPlayerRole::Shooter;
+	}
+	else if (RoleText.Equals(TEXT("Partner"), ESearchCase::IgnoreCase))
+	{
+		NetworkMvpSmokeRole = EOutlierPlayerRole::Partner;
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("[NetworkMVP] Unsupported Smoke role: %s"),
+			*RoleText);
+		return;
+	}
+
+	UE_LOG(LogTemp, Display,
+		TEXT("[NetworkMVP] Lobby Smoke driver started Role=%s"),
+		*RoleText);
+	GetWorldTimerManager().SetTimer(
+		NetworkMvpSmokeTimerHandle,
+		this,
+		&AFrontendPlayerController::DriveNetworkMvpSmoke,
+		0.25f,
+		true,
+		0.25f);
+}
+
+void AFrontendPlayerController::DriveNetworkMvpSmoke()
+{
+	AOutlierPlayerState* OutlierPlayerState = GetPlayerState<AOutlierPlayerState>();
+	if (!OutlierPlayerState || NetworkMvpSmokeRole == EOutlierPlayerRole::None)
+	{
+		return;
+	}
+
+	if (OutlierPlayerState->GetPendingLobbyMatchId() == INDEX_NONE)
+	{
+		if (!bNetworkMvpSmokeMatchmakingRequested)
+		{
+			bNetworkMvpSmokeMatchmakingRequested = true;
+			UE_LOG(LogTemp, Display,
+				TEXT("[NetworkMVP] Requesting Lobby matchmaking"));
+			ServerRequestMatchmaking();
+		}
+		return;
+	}
+
+	if (OutlierPlayerState->GetPendingLobbyRole() != NetworkMvpSmokeRole)
+	{
+		if (!bNetworkMvpSmokeRoleRequested)
+		{
+			bNetworkMvpSmokeRoleRequested = true;
+			UE_LOG(LogTemp, Display,
+				TEXT("[NetworkMVP] Requesting Lobby role %d"),
+				static_cast<int32>(NetworkMvpSmokeRole));
+			RequestSelectLobbyRole(NetworkMvpSmokeRole);
+		}
+		return;
+	}
+
+	UE_LOG(LogTemp, Display,
+		TEXT("[NetworkMVP] Lobby role selection confirmed"));
+	GetWorldTimerManager().ClearTimer(NetworkMvpSmokeTimerHandle);
 }
 
 void AFrontendPlayerController::SetupInputComponent()

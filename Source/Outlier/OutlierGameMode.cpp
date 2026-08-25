@@ -350,6 +350,11 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 	PossessMatchedPawn(NewShooterPC, Shooter, ArenaId);
 	PossessMatchedPawn(NewPartnerPC, Partner, ArenaId);
 
+	if (NewShooterPC && NewPartnerPC && Shooter && Partner)
+	{
+		TryScheduleArenaWorkerAutoComplete();
+	}
+
 }
 
 bool AOutlierGameMode::CompleteArenaMatch()
@@ -376,6 +381,7 @@ bool AOutlierGameMode::CompleteArenaMatch()
 	}
 
 	bArenaWorkerMatchCompleting = true;
+	GetWorldTimerManager().ClearTimer(ArenaWorkerAutoCompleteTimerHandle);
 
 	UE_LOG(LogTemp, Display,
 		TEXT("[ArenaReturn] Match completed. Returning players to %s"),
@@ -1055,6 +1061,45 @@ void AOutlierGameMode::RequestArenaWorkerExit()
 	UE_LOG(LogTemp, Display,
 		TEXT("[ArenaReturn] Arena Worker exit requested after Match completion"));
 	RequestEngineExit(TEXT("Outlier Arena Worker match completed"));
+}
+
+void AOutlierGameMode::TryScheduleArenaWorkerAutoComplete()
+{
+	if (!IsArenaWorkerProcess() || bArenaWorkerMatchCompleting)
+	{
+		return;
+	}
+
+	float AutoCompleteSeconds = 0.0f;
+	// N7 멀티 프로세스 Smoke에서만 명시적으로 활성화하는 임시 종료 경로다.
+	if (!FParse::Value(
+		FCommandLine::Get(),
+		TEXT("OutlierArenaAutoCompleteSeconds="),
+		AutoCompleteSeconds)
+		|| AutoCompleteSeconds <= 0.0f)
+	{
+		return;
+	}
+
+	AutoCompleteSeconds = FMath::Max(AutoCompleteSeconds, 0.1f);
+	UE_LOG(LogTemp, Display,
+		TEXT("[NetworkMVP] Arena Match auto-complete scheduled in %.1f seconds"),
+		AutoCompleteSeconds);
+	GetWorldTimerManager().SetTimer(
+		ArenaWorkerAutoCompleteTimerHandle,
+		this,
+		&AOutlierGameMode::HandleArenaWorkerAutoComplete,
+		AutoCompleteSeconds,
+		false);
+}
+
+void AOutlierGameMode::HandleArenaWorkerAutoComplete()
+{
+	if (!CompleteArenaMatch())
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("[NetworkMVP] Arena Match auto-complete request was rejected"));
+	}
 }
 
 void AOutlierGameMode::HandleServerArenaReloaded(int32 ReloadedArenaId)

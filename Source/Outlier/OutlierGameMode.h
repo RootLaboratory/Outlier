@@ -114,6 +114,8 @@ private:
 	bool UsesStaticArenaHandoff() const;
 	void TryStartArenaWorkerPair();
 	void PossessMatchedPawn(APlayerController* PlayerController, APawn* Pawn, int32 ArenaId);
+	void TryScheduleArenaWorkerAutoComplete();
+	void HandleArenaWorkerAutoComplete();
 	void RequestArenaWorkerExit();
 
 	TArray<TWeakObjectPtr<APlayerController>> ArenaWorkerPlayers;
@@ -124,5 +126,6 @@ private:
 	bool bArenaWorkerPairStarted = false;
 	bool bArenaWorkerMatchCompleting = false;
 	bool bArenaWorkerExitRequested = false;
+	FTimerHandle ArenaWorkerAutoCompleteTimerHandle;
 	FTimerHandle ArenaWorkerExitTimerHandle;
 };

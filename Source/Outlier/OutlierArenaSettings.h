@@ -25,7 +25,7 @@ public:
 	int32 MaxArenaCount = 8;
 
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Network")
-	bool bUseStaticArenaHandoff = false;
+	bool bUseStaticArenaHandoff = true;
 
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Network")
 	FString StaticArenaAddress = TEXT("127.0.0.1:7780");

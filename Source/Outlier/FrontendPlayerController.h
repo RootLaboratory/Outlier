@@ -162,9 +162,15 @@ public:
 
 private:
 	void PrepareForMatch();
+	void TryStartNetworkMvpSmoke();
+	void DriveNetworkMvpSmoke();
 
 	UPROPERTY(Transient)
 	FString CurrentPartyCode;
 
+	EOutlierPlayerRole NetworkMvpSmokeRole = EOutlierPlayerRole::None;
+	bool bNetworkMvpSmokeMatchmakingRequested = false;
+	bool bNetworkMvpSmokeRoleRequested = false;
+	FTimerHandle NetworkMvpSmokeTimerHandle;
 	FUILayerHandle TitleLayerHandle;
 };

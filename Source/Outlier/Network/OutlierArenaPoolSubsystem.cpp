@@ -29,6 +29,13 @@ void UOutlierArenaPoolSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 		*ArenaLevel.ToSoftObjectPath().ToString(),
 		MaxArenaCount);
 
+	if (Settings->bUseStaticArenaHandoff && !IsPersistentArenaWorld())
+	{
+		UE_LOG(LogTemp, Display,
+			TEXT("[ArenaPool] Skipping Arena preload because Static Handoff uses an external Worker"));
+		return;
+	}
+
 	if (IsPersistentArenaWorld())
 	{
 		// 설정된 Arena가 이미 Persistent World이므로 다시 스트리밍하면 게임플레이 액터가 중복 생성됨.

@@ -205,6 +205,9 @@ bool FOutlierArenaReturnLifecycleTest::RunTest(const FString& Parameters)
 	TestTrue(
 		TEXT("Arena workers return players to the Lobby by default"),
 		Settings->bReturnToLobbyOnMatchEnd);
+	TestTrue(
+		TEXT("Static cross-process Handoff is the default Network MVP path"),
+		Settings->bUseStaticArenaHandoff);
 	TestEqual(
 		TEXT("Arena workers have a disconnect fallback timeout"),
 		Settings->ArenaWorkerExitTimeoutSeconds,
