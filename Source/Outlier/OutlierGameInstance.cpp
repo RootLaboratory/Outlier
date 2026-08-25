@@ -3,6 +3,7 @@
 
 #include "OutlierGameInstance.h"
 #include "OutlierArenaSettings.h"
+#include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "Misc/CommandLine.h"
@@ -15,11 +16,35 @@ void UOutlierGameInstance::Init()
 
 	FCoreUObjectDelegates::PreLoadMap.AddUObject(this, &UOutlierGameInstance::HandlePreLoadMap);
 	FCoreUObjectDelegates::PostLoadMapWithWorld.AddUObject(this, &UOutlierGameInstance::HandlePostLoadMap);
+	if (GEngine)
+	{
+		NetworkFailureHandle = GEngine->OnNetworkFailure().AddUObject(
+			this,
+			&UOutlierGameInstance::HandleNetworkFailure);
+	}
+}
+
+void UOutlierGameInstance::Shutdown()
+{
+	if (GEngine && NetworkFailureHandle.IsValid())
+	{
+		GEngine->OnNetworkFailure().Remove(NetworkFailureHandle);
+		NetworkFailureHandle.Reset();
+	}
+
+	Super::Shutdown();
+}
+
+void UOutlierGameInstance::NotifyArenaHandoffStarted()
+{
+	bArenaHandoffActive = true;
+	bLobbyRecoveryQueued = false;
+	bLobbyRecoveryAttempted = false;
 }
 
 void UOutlierGameInstance::HandlePostLoadMap(UWorld* LoadedWorld)
 {
-	if (bTriedConnect || !LoadedWorld)
+	if (!LoadedWorld)
 	{
 		return;
 	}
@@ -27,6 +52,27 @@ void UOutlierGameInstance::HandlePostLoadMap(UWorld* LoadedWorld)
 	if (LoadedWorld->GetNetMode() == NM_DedicatedServer)
 	{
 		TryBootstrapArenaWorker(LoadedWorld);
+		return;
+	}
+
+	if (bLobbyRecoveryQueued)
+	{
+		bLobbyRecoveryQueued = false;
+		TravelToLobby(LoadedWorld);
+		return;
+	}
+
+	if (bArenaHandoffActive)
+	{
+		const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
+		if (!Settings || !Settings->IsArenaWorld(LoadedWorld))
+		{
+			ResetArenaHandoffState();
+		}
+	}
+
+	if (bTriedConnect)
+	{
 		return;
 	}
 
@@ -47,6 +93,26 @@ void UOutlierGameInstance::HandlePostLoadMap(UWorld* LoadedWorld)
 	{
 		PC->ClientTravel(ConnectAddress, TRAVEL_Absolute);
 	}
+}
+
+void UOutlierGameInstance::HandleNetworkFailure(
+	UWorld* World,
+	UNetDriver* NetDriver,
+	ENetworkFailure::Type FailureType,
+	const FString& ErrorString)
+{
+	(void)World;
+	(void)NetDriver;
+
+	if (!TryQueueLobbyRecovery())
+	{
+		return;
+	}
+
+	UE_LOG(LogTemp, Warning,
+		TEXT("[ArenaReturn] Arena connection failed. Lobby recovery queued Type=%s Error=%s"),
+		ENetworkFailure::ToString(FailureType),
+		*ErrorString);
 }
 
 void UOutlierGameInstance::TryBootstrapArenaWorker(UWorld* LoadedWorld)
@@ -90,4 +156,49 @@ void UOutlierGameInstance::HandlePreLoadMap(const FString& MapName)
 {
 	if (IsRunningDedicatedServer()) return;
 	// Loading Widget 표시
+}
+
+bool UOutlierGameInstance::TryQueueLobbyRecovery()
+{
+	if (!bArenaHandoffActive || bLobbyRecoveryAttempted)
+	{
+		return false;
+	}
+
+	bLobbyRecoveryQueued = true;
+	bLobbyRecoveryAttempted = true;
+	return true;
+}
+
+bool UOutlierGameInstance::TravelToLobby(UWorld* World)
+{
+	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
+	const FString LobbyAddress = Settings
+		? Settings->LobbyAddress.TrimStartAndEnd()
+		: FString();
+	APlayerController* PlayerController = World
+		? World->GetFirstPlayerController()
+		: nullptr;
+	if (!Settings
+		|| !Settings->bReturnToLobbyOnMatchEnd
+		|| LobbyAddress.IsEmpty()
+		|| !PlayerController)
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("[ArenaReturn] Lobby recovery is not configured"));
+		return false;
+	}
+
+	UE_LOG(LogTemp, Display,
+		TEXT("[ArenaReturn] Traveling to Lobby %s"),
+		*LobbyAddress);
+	PlayerController->ClientTravel(LobbyAddress, TRAVEL_Absolute);
+	return true;
+}
+
+void UOutlierGameInstance::ResetArenaHandoffState()
+{
+	bArenaHandoffActive = false;
+	bLobbyRecoveryQueued = false;
+	bLobbyRecoveryAttempted = false;
 }

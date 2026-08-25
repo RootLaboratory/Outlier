@@ -750,6 +750,7 @@ void UOutlierMatchmakingSubsystem::CreateMatch(
 
 		FrontendShooter->ClientHandoffToArena(ShooterUrl);
 		FrontendPartner->ClientHandoffToArena(PartnerUrl);
+		ReleaseMatch(PairId);
 		return;
 	}
 

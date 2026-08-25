@@ -47,6 +47,9 @@ public:
 
 	void OnClientArenaReady(APlayerController* PC);
 
+	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "Network|Arena")
+	bool CompleteArenaMatch();
+
 	// 디버그: 요청한 페어의 arena를 통째로 리로드하고 시작점에 재스폰
 	void DebugReloadArena(AController* Requester);
 
@@ -111,6 +114,7 @@ private:
 	bool UsesStaticArenaHandoff() const;
 	void TryStartArenaWorkerPair();
 	void PossessMatchedPawn(APlayerController* PlayerController, APawn* Pawn, int32 ArenaId);
+	void RequestArenaWorkerExit();
 
 	TArray<TWeakObjectPtr<APlayerController>> ArenaWorkerPlayers;
 	FOutlierArenaAdmissionState ArenaWorkerAdmission;
@@ -118,4 +122,7 @@ private:
 	TWeakObjectPtr<APlayerController> ArenaWorkerPartnerController;
 	bool bArenaWorkerPairStartScheduled = false;
 	bool bArenaWorkerPairStarted = false;
+	bool bArenaWorkerMatchCompleting = false;
+	bool bArenaWorkerExitRequested = false;
+	FTimerHandle ArenaWorkerExitTimerHandle;
 };

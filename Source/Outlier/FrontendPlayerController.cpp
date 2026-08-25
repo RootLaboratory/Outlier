@@ -7,6 +7,7 @@
 #include "Engine/LocalPlayer.h"
 #include "InputMappingContext.h"
 #include "Network/OutlierMatchmakingSubsystem.h"
+#include "OutlierGameInstance.h"
 #include "UI/LoadingWidget.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
 #include "UI/TitleWidget.h"
@@ -437,6 +438,11 @@ void AFrontendPlayerController::ClientHandoffToArena_Implementation(const FStrin
 	if (ArenaUrl.IsEmpty())
 	{
 		return;
+	}
+
+	if (UOutlierGameInstance* OutlierGameInstance = Cast<UOutlierGameInstance>(GetGameInstance()))
+	{
+		OutlierGameInstance->NotifyArenaHandoffStarted();
 	}
 
 	PrepareForMatch();

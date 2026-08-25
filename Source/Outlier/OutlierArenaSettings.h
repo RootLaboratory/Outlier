@@ -30,6 +30,15 @@ public:
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Network")
 	FString StaticArenaAddress = TEXT("127.0.0.1:7780");
 
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Network")
+	FString LobbyAddress = TEXT("127.0.0.1:7777");
+
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Network")
+	bool bReturnToLobbyOnMatchEnd = true;
+
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Network", meta = (ClampMin = "0.1"))
+	float ArenaWorkerExitTimeoutSeconds = 5.0f;
+
 	FString GetArenaPackageName() const;
 	bool MatchesArenaPackageName(const FString& WorldPackageName) const;
 	bool IsArenaWorld(const UWorld* World) const;

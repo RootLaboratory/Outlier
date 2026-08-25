@@ -3,6 +3,7 @@
 #include "Misc/AutomationTest.h"
 #include "Network/OutlierMatchRequest.h"
 #include "OutlierArenaSettings.h"
+#include "OutlierGameInstance.h"
 
 namespace
 {
@@ -178,6 +179,57 @@ bool FOutlierArenaAdmissionContractTest::RunTest(const FString& Parameters)
 	ReleasedAdmission.Release(ShooterId);
 	TestFalse(TEXT("Releasing the only participant clears the worker match"), ReleasedAdmission.MatchId.IsValid());
 	TestTrue(TEXT("The released role can be admitted again"), ReleasedAdmission.CanAccept(Shooter, Error));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierArenaReturnLifecycleTest,
+	"Outlier.Network.ArenaWorker.ReturnLifecycle",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierArenaReturnLifecycleTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	UOutlierArenaSettings* Settings = NewObject<UOutlierArenaSettings>();
+	if (!TestNotNull(TEXT("Arena settings can be created for the return contract test"), Settings))
+	{
+		return false;
+	}
+
+	TestEqual(
+		TEXT("The default Lobby address targets the local Lobby server"),
+		Settings->LobbyAddress,
+		FString(TEXT("127.0.0.1:7777")));
+	TestTrue(
+		TEXT("Arena workers return players to the Lobby by default"),
+		Settings->bReturnToLobbyOnMatchEnd);
+	TestEqual(
+		TEXT("Arena workers have a disconnect fallback timeout"),
+		Settings->ArenaWorkerExitTimeoutSeconds,
+		5.0f);
+
+	UOutlierGameInstance* GameInstance = NewObject<UOutlierGameInstance>();
+	if (!TestNotNull(TEXT("The game instance can be created for the return lifecycle test"), GameInstance))
+	{
+		return false;
+	}
+
+	GameInstance->NotifyArenaHandoffStarted();
+	TestTrue(TEXT("Arena handoff activates Lobby recovery"), GameInstance->bArenaHandoffActive);
+	TestFalse(TEXT("Lobby recovery is initially not queued"), GameInstance->bLobbyRecoveryQueued);
+	TestFalse(TEXT("Lobby recovery is initially not attempted"), GameInstance->bLobbyRecoveryAttempted);
+
+	TestTrue(TEXT("The first network failure queues Lobby recovery"), GameInstance->TryQueueLobbyRecovery());
+	TestTrue(TEXT("Lobby recovery is queued after the first failure"), GameInstance->bLobbyRecoveryQueued);
+	TestTrue(TEXT("The first recovery attempt is recorded"), GameInstance->bLobbyRecoveryAttempted);
+	TestFalse(TEXT("A second network failure cannot queue another recovery"), GameInstance->TryQueueLobbyRecovery());
+
+	GameInstance->ResetArenaHandoffState();
+	TestFalse(TEXT("Completing Lobby travel clears the handoff state"), GameInstance->bArenaHandoffActive);
+	TestFalse(TEXT("Completing Lobby travel clears queued recovery"), GameInstance->bLobbyRecoveryQueued);
+	TestFalse(TEXT("Completing Lobby travel clears the recovery attempt"), GameInstance->bLobbyRecoveryAttempted);
 
 	return true;
 }

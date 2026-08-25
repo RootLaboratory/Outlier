@@ -23,6 +23,7 @@
 #include "GameFramework/PlayerState.h"
 #include "OutlierLobbyIdentitySubsystem.h"
 #include "OutlierArenaSettings.h"
+#include "CoreGlobals.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
 #include "TimerManager.h"
@@ -338,12 +339,67 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 		NewPartnerPS->ClearPendingLobbyState();
 	}
 
+	if (IsArenaWorkerProcess())
+	{
+		ArenaWorkerShooterController = NewShooterPC;
+		ArenaWorkerPartnerController = NewPartnerPC;
+	}
 
 	RegisterSpawnedPair(NewShooterPS, NewPartnerPS, Shooter, Partner);
 
 	PossessMatchedPawn(NewShooterPC, Shooter, ArenaId);
 	PossessMatchedPawn(NewPartnerPC, Partner, ArenaId);
 
+}
+
+bool AOutlierGameMode::CompleteArenaMatch()
+{
+	if (!HasAuthority()
+		|| !IsArenaWorkerProcess()
+		|| !bArenaWorkerPairStarted
+		|| bArenaWorkerMatchCompleting)
+	{
+		return false;
+	}
+
+	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
+	const FString LobbyAddress = Settings
+		? Settings->LobbyAddress.TrimStartAndEnd()
+		: FString();
+	if (!Settings
+		|| !Settings->bReturnToLobbyOnMatchEnd
+		|| LobbyAddress.IsEmpty())
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("[ArenaReturn] Lobby return is not configured"));
+		return false;
+	}
+
+	bArenaWorkerMatchCompleting = true;
+
+	UE_LOG(LogTemp, Display,
+		TEXT("[ArenaReturn] Match completed. Returning players to %s"),
+		*LobbyAddress);
+
+	if (APlayerController* ShooterController = ArenaWorkerShooterController.Get())
+	{
+		ShooterController->ClientTravel(LobbyAddress, TRAVEL_Absolute);
+	}
+	if (APlayerController* PartnerController = ArenaWorkerPartnerController.Get())
+	{
+		PartnerController->ClientTravel(LobbyAddress, TRAVEL_Absolute);
+	}
+
+	const float ExitTimeout = FMath::Max(
+		Settings->ArenaWorkerExitTimeoutSeconds,
+		0.1f);
+	GetWorldTimerManager().SetTimer(
+		ArenaWorkerExitTimerHandle,
+		this,
+		&AOutlierGameMode::RequestArenaWorkerExit,
+		ExitTimeout,
+		false);
+	return true;
 }
 
 void AOutlierGameMode::PossessMatchedPawn(
@@ -508,15 +564,15 @@ void AOutlierGameMode::Logout(AController* Exiting)
 		{
 			ArenaWorkerAdmission.Release(PlayerState->GetTemporaryPlayerId());
 		}
+	}
 
-		if (ArenaWorkerShooterController.Get() == Exiting)
-		{
-			ArenaWorkerShooterController.Reset();
-		}
-		if (ArenaWorkerPartnerController.Get() == Exiting)
-		{
-			ArenaWorkerPartnerController.Reset();
-		}
+	if (ArenaWorkerShooterController.Get() == Exiting)
+	{
+		ArenaWorkerShooterController.Reset();
+	}
+	if (ArenaWorkerPartnerController.Get() == Exiting)
+	{
+		ArenaWorkerPartnerController.Reset();
 	}
 
 	if (Exiting)
@@ -565,6 +621,13 @@ void AOutlierGameMode::Logout(AController* Exiting)
 	}
 
 	Super::Logout(Exiting);
+
+	if (bArenaWorkerMatchCompleting
+		&& !ArenaWorkerShooterController.IsValid()
+		&& !ArenaWorkerPartnerController.IsValid())
+	{
+		RequestArenaWorkerExit();
+	}
 }
 
 
@@ -975,6 +1038,23 @@ void AOutlierGameMode::TryStartArenaWorkerPair()
 		/*ArenaId=*/0,
 		EOutlierPlayerRole::Shooter,
 		EOutlierPlayerRole::Partner);
+}
+
+void AOutlierGameMode::RequestArenaWorkerExit()
+{
+	if (bArenaWorkerExitRequested
+		|| !bArenaWorkerMatchCompleting
+		|| !IsArenaWorkerProcess()
+		|| !IsRunningDedicatedServer())
+	{
+		return;
+	}
+
+	bArenaWorkerExitRequested = true;
+	GetWorldTimerManager().ClearTimer(ArenaWorkerExitTimerHandle);
+	UE_LOG(LogTemp, Display,
+		TEXT("[ArenaReturn] Arena Worker exit requested after Match completion"));
+	RequestEngineExit(TEXT("Outlier Arena Worker match completed"));
 }
 
 void AOutlierGameMode::HandleServerArenaReloaded(int32 ReloadedArenaId)
