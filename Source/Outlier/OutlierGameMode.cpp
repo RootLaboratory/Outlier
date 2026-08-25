@@ -20,10 +20,28 @@
 #include "GameFramework/PlayerStart.h"
 #include "Kismet/GameplayStatics.h"
 #include "GameFramework/PlayerState.h"
+#include "OutlierLobbyIdentitySubsystem.h"
+#include "OutlierArenaSettings.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
+#include "TimerManager.h"
 
 AOutlierGameMode::AOutlierGameMode()
 {
 
+}
+
+bool AOutlierGameMode::IsArenaWorkerProcess() const
+{
+	return FParse::Param(FCommandLine::Get(), TEXT("OutlierArenaWorker"));
+}
+
+bool AOutlierGameMode::UsesStaticArenaHandoff() const
+{
+	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
+	return IsArenaWorkerProcess()
+		&& Settings
+		&& Settings->bUseStaticArenaHandoff;
 }
 
 void AOutlierGameMode::RegisterCheckpoint(AController* Controller, AOutlierCheckpoint* Checkpoint)
@@ -224,6 +242,20 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 			*PartnerSpawn.ToHumanReadableString());
 	}
 
+	UOutlierLobbyIdentitySubsystem* Identity =
+		GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierLobbyIdentitySubsystem>()
+		: nullptr;
+
+	FGuid ShooterPlayerId;
+	FGuid PartnerPlayerId;
+
+	const bool bHasShooterPlayerId =
+		Identity && Identity->TryGetPlayerId(ShooterController, ShooterPlayerId);
+
+	const bool bHasPartnerPlayerId =
+		Identity && Identity->TryGetPlayerId(PartnerController, PartnerPlayerId);
+
 	AShooterCharacter* Shooter = GetWorld()->SpawnActor<AShooterCharacter>(
 		ShooterClass,
 		ShooterSpawn
@@ -251,11 +283,39 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 
 	if (ShooterController && NewShooterPC)
 	{
-		SwapPlayerControllers(Cast<APlayerController>(ShooterController), NewShooterPC);
+		APlayerController* OldShooterPC =
+			Cast<APlayerController>(ShooterController);
+
+		if (OldShooterPC && NewShooterPC)
+		{
+			SwapPlayerControllers(OldShooterPC, NewShooterPC);
+
+			if (bHasShooterPlayerId &&
+				!Identity->RebindPlayer(ShooterPlayerId, NewShooterPC))
+			{
+				UE_LOG(LogTemp, Error,
+					TEXT("[LobbyIdentity] Shooter rebind failed: %s"),
+					*ShooterPlayerId.ToString());
+			}
+		}
 	}
 	if (PartnerController && NewPartnerPC)
 	{
-		SwapPlayerControllers(Cast<APlayerController>(PartnerController), NewPartnerPC);
+		APlayerController* OldPartnerPC =
+			Cast<APlayerController>(PartnerController);
+
+		if(OldPartnerPC && NewPartnerPC)
+		{
+			SwapPlayerControllers(OldPartnerPC, NewPartnerPC);
+
+			if (bHasPartnerPlayerId &&
+				!Identity->RebindPlayer(PartnerPlayerId, NewPartnerPC))
+			{
+				UE_LOG(LogTemp, Error,
+					TEXT("[LobbyIdentity] Failed to rebind Partner PlayerId=%s"),
+					*PartnerPlayerId.ToString());
+			}
+		}
 	}
 
 	AOutlierPlayerState* NewShooterPS = NewShooterPC ? NewShooterPC->GetPlayerState<AOutlierPlayerState>() : nullptr;
@@ -280,53 +340,33 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 
 	RegisterSpawnedPair(NewShooterPS, NewPartnerPS, Shooter, Partner);
 
-	if (AFirstPersonPlayerController* FPC = Cast<AFirstPersonPlayerController>(NewShooterPC))
+	PossessMatchedPawn(NewShooterPC, Shooter, ArenaId);
+	PossessMatchedPawn(NewPartnerPC, Partner, ArenaId);
+
+}
+
+void AOutlierGameMode::PossessMatchedPawn(
+	APlayerController* PlayerController,
+	APawn* Pawn,
+	int32 ArenaId)
+{
+	if (!PlayerController || !Pawn)
 	{
-		if (!FPC->IsLocalController())
-		{
-			//UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][0] ClientArenaLoad → ShooterPC=%s ArenaId=%d"), *GetNameSafe(FPC), ArenaId);
-			FPC->ClientArenaLoad(ArenaId);
-		}
-	}
-	if (AFirstPersonPlayerController* FPC = Cast<AFirstPersonPlayerController>(NewPartnerPC))
-	{
-		if (!FPC->IsLocalController())
-		{
-			//UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][0] ClientArenaLoad → PartnerPC=%s ArenaId=%d"), *GetNameSafe(FPC), ArenaId);
-			FPC->ClientArenaLoad(ArenaId);
-		}
+		return;
 	}
 
-	if (NewShooterPC && Shooter)
+	if (IsArenaWorkerProcess() || PlayerController->IsLocalController())
 	{
-		if (NewShooterPC->IsLocalController())
-		{
-			//UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][0] ShooterPC is local → Possess immediately"));
-			NewShooterPC->Possess(Shooter);
-		}
-		else
-		{
-			/*UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][0] ShooterPC is remote → PendingPossessions PC=%s Pawn=%s"),
-			*GetNameSafe(NewShooterPC), *GetNameSafe(Shooter));*/
-			PendingPossessions.Add(NewShooterPC, Shooter);
-		}
+		PlayerController->Possess(Pawn);
+		return;
 	}
 
-	if (NewPartnerPC && Partner)
+	PendingPossessions.Add(PlayerController, Pawn);
+	if (AFirstPersonPlayerController* FirstPersonController =
+		Cast<AFirstPersonPlayerController>(PlayerController))
 	{
-		if (NewPartnerPC->IsLocalController())
-		{
-			//UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][0] PartnerPC is local → Possess immediately"));
-			NewPartnerPC->Possess(Partner);
-		}
-		else
-		{
-			/*UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][0] PartnerPC is remote → PendingPossessions PC=%s Pawn=%s"),
-				*GetNameSafe(NewPartnerPC), *GetNameSafe(Partner));*/
-			PendingPossessions.Add(NewPartnerPC, Partner);
-		}
+		FirstPersonController->ClientArenaLoad(ArenaId);
 	}
-
 }
 
 
@@ -351,8 +391,133 @@ void AOutlierGameMode::OnClientArenaReady(APlayerController* PC)
 	PC->Possess(Pawn);
 }
 
+void AOutlierGameMode::PreLogin(
+	const FString& Options,
+	const FString& Address,
+	const FUniqueNetIdRepl& UniqueId,
+	FString& ErrorMessage)
+{
+	Super::PreLogin(Options, Address, UniqueId, ErrorMessage);
+
+	if (!ErrorMessage.IsEmpty() || !IsArenaWorkerProcess())
+	{
+		return;
+	}
+
+	if (GetNumPlayers() >= 2)
+	{
+		ErrorMessage = TEXT("Arena worker already has two players");
+		return;
+	}
+
+	if (!UsesStaticArenaHandoff())
+	{
+		return;
+	}
+
+	FOutlierArenaHandoffRequest Request;
+	if (!OutlierArenaHandoff::TryParseOptions(Options, Request, ErrorMessage))
+	{
+		return;
+	}
+
+	ArenaWorkerAdmission.CanAccept(Request, ErrorMessage);
+}
+
+FString AOutlierGameMode::InitNewPlayer(
+	APlayerController* NewPlayerController,
+	const FUniqueNetIdRepl& UniqueId,
+	const FString& Options,
+	const FString& Portal)
+{
+	FString ErrorMessage = Super::InitNewPlayer(
+		NewPlayerController,
+		UniqueId,
+		Options,
+		Portal);
+	if (!ErrorMessage.IsEmpty() || !UsesStaticArenaHandoff())
+	{
+		return ErrorMessage;
+	}
+
+	FOutlierArenaHandoffRequest Request;
+	if (!OutlierArenaHandoff::TryParseOptions(Options, Request, ErrorMessage)
+		|| !ArenaWorkerAdmission.CanAccept(Request, ErrorMessage))
+	{
+		return ErrorMessage;
+	}
+
+	UOutlierLobbyIdentitySubsystem* Identity = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierLobbyIdentitySubsystem>()
+		: nullptr;
+	AOutlierPlayerState* PlayerState = NewPlayerController
+		? NewPlayerController->GetPlayerState<AOutlierPlayerState>()
+		: nullptr;
+	if (!Identity || !PlayerState
+		|| !Identity->RebindPlayer(Request.PlayerId, NewPlayerController))
+	{
+		return TEXT("Failed to restore arena player identity");
+	}
+
+	PlayerState->SetPlayerRole(Request.Role);
+	if (!ArenaWorkerAdmission.Commit(Request, ErrorMessage))
+	{
+		Identity->UnregisterPlayer(NewPlayerController);
+		return ErrorMessage;
+	}
+
+	if (Request.Role == EOutlierPlayerRole::Shooter)
+	{
+		ArenaWorkerShooterController = NewPlayerController;
+	}
+	else
+	{
+		ArenaWorkerPartnerController = NewPlayerController;
+	}
+
+	UE_LOG(LogTemp, Display,
+		TEXT("[ArenaWorker] Admitted Match=%s Player=%s Role=%s"),
+		*Request.MatchId.ToString(),
+		*Request.PlayerId.ToString(),
+		Request.Role == EOutlierPlayerRole::Shooter
+			? TEXT("Shooter")
+			: TEXT("Partner"));
+	return FString();
+}
+
+void AOutlierGameMode::HandleStartingNewPlayer_Implementation(APlayerController* NewPlayer)
+{
+	if (IsArenaWorkerProcess())
+	{
+		// StartMatchedPair에서 Pawn 생성과 Possess를 처리하므로 기본 Spawn은 생략.
+		return;
+	}
+
+	Super::HandleStartingNewPlayer_Implementation(NewPlayer);
+}
+
 void AOutlierGameMode::Logout(AController* Exiting)
 {
+	ArenaWorkerPlayers.Remove(Cast<APlayerController>(Exiting));
+
+	if (UsesStaticArenaHandoff() && !bArenaWorkerPairStarted && Exiting)
+	{
+		if (AOutlierPlayerState* PlayerState =
+			Exiting->GetPlayerState<AOutlierPlayerState>())
+		{
+			ArenaWorkerAdmission.Release(PlayerState->GetTemporaryPlayerId());
+		}
+
+		if (ArenaWorkerShooterController.Get() == Exiting)
+		{
+			ArenaWorkerShooterController.Reset();
+		}
+		if (ArenaWorkerPartnerController.Get() == Exiting)
+		{
+			ArenaWorkerPartnerController.Reset();
+		}
+	}
+
 	if (Exiting)
 	{
 		if (AShooterCharacter* ShooterCharacter = Cast<AShooterCharacter>(Exiting->GetPawn()))
@@ -383,6 +548,14 @@ void AOutlierGameMode::Logout(AController* Exiting)
 
 	Super::Logout(Exiting);
 
+	if (UOutlierLobbyIdentitySubsystem* Identity = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierLobbyIdentitySubsystem>()
+		: nullptr)
+	{
+		Identity->UnregisterPlayer(Exiting);
+	}
+
+	Super::Logout(Exiting);
 }
 
 
@@ -680,6 +853,119 @@ void AOutlierGameMode::DebugReloadArena(AController* Requester)
 	UE_LOG(LogTemp, Warning, TEXT("[DebugReload] Calling ReloadArena ArenaId=%d LocalPending=%d RemotePending=%d"),
 		ArenaId, PendingLocalPossessions.Num(), PendingPossessions.Num());
 	ArenaPool->ReloadArena(ArenaId);
+}
+
+void AOutlierGameMode::PostLogin(APlayerController* NewPlayer)
+{
+	Super::PostLogin(NewPlayer);
+
+	if (Cast<AFrontendPlayerController>(NewPlayer))
+	{
+		if (UOutlierLobbyIdentitySubsystem* Identity = GetGameInstance()
+			? GetGameInstance()->GetSubsystem<UOutlierLobbyIdentitySubsystem>()
+			: nullptr)
+		{
+			Identity->RegisterPlayer(NewPlayer);
+		}
+	}
+
+	if (!IsArenaWorkerProcess() || bArenaWorkerPairStarted)
+	{
+		return;
+	}
+
+	if (UsesStaticArenaHandoff())
+	{
+		if (ArenaWorkerAdmission.IsReady()
+			&& ArenaWorkerShooterController.IsValid()
+			&& ArenaWorkerPartnerController.IsValid()
+			&& !bArenaWorkerPairStartScheduled)
+		{
+			bArenaWorkerPairStartScheduled = true;
+			// 두 번째 PostLogin이 끝난 뒤 Controller 교체를 시작한다.
+			GetWorldTimerManager().SetTimerForNextTick(
+				FTimerDelegate::CreateUObject(this, &AOutlierGameMode::TryStartArenaWorkerPair));
+		}
+		return;
+	}
+
+	ArenaWorkerPlayers.AddUnique(NewPlayer);
+	ArenaWorkerPlayers.RemoveAll([](const TWeakObjectPtr<APlayerController>& Player)
+	{
+		return !Player.IsValid();
+	});
+
+	if (ArenaWorkerPlayers.Num() == 2
+		&& !bArenaWorkerPairStartScheduled)
+	{
+		bArenaWorkerPairStartScheduled = true;
+		// 두 번째 PostLogin이 완전히 끝난 뒤 PlayerController 교체를 시작하도록 다음 틱까지 지연.
+		GetWorldTimerManager().SetTimerForNextTick(
+			FTimerDelegate::CreateUObject(this, &AOutlierGameMode::TryStartArenaWorkerPair));
+	}
+}
+
+void AOutlierGameMode::TryStartArenaWorkerPair()
+{
+	bArenaWorkerPairStartScheduled = false;
+
+	if (UsesStaticArenaHandoff())
+	{
+		APlayerController* ShooterController = ArenaWorkerShooterController.Get();
+		APlayerController* PartnerController = ArenaWorkerPartnerController.Get();
+		if (bArenaWorkerPairStarted
+			|| !ArenaWorkerAdmission.IsReady()
+			|| !ShooterController
+			|| !PartnerController)
+		{
+			return;
+		}
+
+		bArenaWorkerPairStarted = true;
+		ArenaWorkerAdmission.bPairStarted = true;
+
+		UE_LOG(LogTemp, Display,
+			TEXT("[ArenaWorker] Starting assigned pair Match=%s ArenaId=0"),
+			*ArenaWorkerAdmission.MatchId.ToString());
+		StartMatchedPair(
+			ShooterController,
+			PartnerController,
+			/*PairId=*/0,
+			/*ArenaId=*/0,
+			EOutlierPlayerRole::Shooter,
+			EOutlierPlayerRole::Partner);
+		return;
+	}
+
+	ArenaWorkerPlayers.RemoveAll([](const TWeakObjectPtr<APlayerController>& Player)
+	{
+		return !Player.IsValid();
+	});
+
+	if (bArenaWorkerPairStarted || ArenaWorkerPlayers.Num() != 2)
+	{
+		return;
+	}
+
+	APlayerController* ShooterController = ArenaWorkerPlayers[0].Get();
+	APlayerController* PartnerController = ArenaWorkerPlayers[1].Get();
+	if (!ShooterController || !PartnerController)
+	{
+		return;
+	}
+
+	bArenaWorkerPairStarted = true;
+	ArenaWorkerPlayers.Reset();
+
+	UE_LOG(LogTemp, Display,
+		TEXT("[ArenaWorker] Starting direct-connect pair with ArenaId=0"));
+	StartMatchedPair(
+		ShooterController,
+		PartnerController,
+		/*PairId=*/0,
+		/*ArenaId=*/0,
+		EOutlierPlayerRole::Shooter,
+		EOutlierPlayerRole::Partner);
 }
 
 void AOutlierGameMode::HandleServerArenaReloaded(int32 ReloadedArenaId)

@@ -6,6 +6,7 @@
 #include "GameFramework/PlayerController.h"
 #include "GameplayTagContainer.h"
 #include "OutlierPlayerState.h"
+#include "Network/OutlierMatchRequest.h"
 #include "UI/UILayerTypes.h"
 #include "FrontendPlayerController.generated.h"
 
@@ -58,6 +59,9 @@ public:
 
 	UFUNCTION(Client, Reliable)
 	void ClientPrepareForMatch();
+
+	UFUNCTION(Client, Reliable)
+	void ClientHandoffToArena(const FString& ArenaUrl);
 
 	UFUNCTION(BlueprintCallable)
 	void RequestCancelMatchmaking();
@@ -123,5 +127,10 @@ public:
 	TSubclassOf<UTitleWidget> TitleWidgetClass;
 
 private:
+	void PrepareForMatch();
+
+	UPROPERTY(Transient)
+	FString CurrentPartyCode;
+
 	FUILayerHandle TitleLayerHandle;
 };

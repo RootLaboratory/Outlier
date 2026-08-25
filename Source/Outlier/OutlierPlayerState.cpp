@@ -410,6 +410,19 @@ void AOutlierPlayerState::SetNodeCountInternal(int32 NewNodeCount)
 	ForceNetUpdate();
 }
 
+void AOutlierPlayerState::SetTemporaryPlayerId(const FGuid& NewPlayerId)
+{
+	if (!HasAuthority()
+		|| !NewPlayerId.IsValid()
+		|| (TemporaryPlayerId.IsValid() && TemporaryPlayerId != NewPlayerId))
+	{
+		return;
+	}
+
+	TemporaryPlayerId = NewPlayerId;
+	ForceNetUpdate();
+}
+
 void AOutlierPlayerState::SetCheckpointData(const FOutlierCheckpointData& NewData)
 {
 	if (!HasAuthority())
@@ -488,6 +501,7 @@ void AOutlierPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& 
 	DOREPLIFETIME(AOutlierPlayerState, bSuitDisabledByPartnerBoundary);
 	DOREPLIFETIME_CONDITION(AOutlierPlayerState, ShooterActivatedUpgradeNodeIds, COND_OwnerOnly);
 	DOREPLIFETIME_CONDITION(AOutlierPlayerState, PartnerActivatedUpgradeNodeIds, COND_OwnerOnly);
+	DOREPLIFETIME_CONDITION(AOutlierPlayerState, TemporaryPlayerId, COND_OwnerOnly);
 }
 
 

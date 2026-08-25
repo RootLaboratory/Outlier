@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/GameModeBase.h"
 #include "GameFramework/GameMode.h"
+#include "Network/OutlierMatchRequest.h"
 #include "OutlierGameMode.generated.h"
 
 class APlayerController;
@@ -76,7 +77,19 @@ protected:
 	TSubclassOf<APartnerPlayerController> PartnerControllerClass;
 
 protected:
+	virtual void PreLogin(
+		const FString& Options,
+		const FString& Address,
+		const FUniqueNetIdRepl& UniqueId,
+		FString& ErrorMessage) override;
+	virtual FString InitNewPlayer(
+		APlayerController* NewPlayerController,
+		const FUniqueNetIdRepl& UniqueId,
+		const FString& Options,
+		const FString& Portal = TEXT("")) override;
+	virtual void HandleStartingNewPlayer_Implementation(APlayerController* NewPlayer) override;
 	virtual void Logout(AController* Exiting) override;
+	virtual void PostLogin(APlayerController* NewPlayer) override;
 
 	void RespawnPairAtCheckpoint(AController* Controller);
 	bool ResolveCheckpointTransform(AController* Controller, int32 ArenaId, FTransform& OutTransform) const;
@@ -92,4 +105,17 @@ protected:
 		int32 ArenaId,
 		FTransform& OutShooterSpawn,
 		FTransform& OutPartnerSpawn) const;
+
+private:
+	bool IsArenaWorkerProcess() const;
+	bool UsesStaticArenaHandoff() const;
+	void TryStartArenaWorkerPair();
+	void PossessMatchedPawn(APlayerController* PlayerController, APawn* Pawn, int32 ArenaId);
+
+	TArray<TWeakObjectPtr<APlayerController>> ArenaWorkerPlayers;
+	FOutlierArenaAdmissionState ArenaWorkerAdmission;
+	TWeakObjectPtr<APlayerController> ArenaWorkerShooterController;
+	TWeakObjectPtr<APlayerController> ArenaWorkerPartnerController;
+	bool bArenaWorkerPairStartScheduled = false;
+	bool bArenaWorkerPairStarted = false;
 };

@@ -24,6 +24,7 @@ private:
 
 	void HandlePostLoadMap(UWorld* LoadedWorld);
 	void HandlePreLoadMap(const FString& MapName);
+	void TryBootstrapArenaWorker(UWorld* LoadedWorld);
 
 public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "UI")
@@ -34,5 +35,6 @@ public:
 private:
 
 	bool bTriedConnect = false;
+	bool bArenaWorkerTravelRequested = false;
 
 };

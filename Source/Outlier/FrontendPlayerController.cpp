@@ -344,6 +344,11 @@ void AFrontendPlayerController::ServerRequestCancelMatchmaking_Implementation()
 
 void AFrontendPlayerController::ClientPrepareForMatch_Implementation()
 {
+	PrepareForMatch();
+}
+
+void AFrontendPlayerController::PrepareForMatch()
+{
 	if (ULocalPlayerUILayerSubsystem* LayerSubsystem = GetLocalPlayer()
 		? GetLocalPlayer()->GetSubsystem<ULocalPlayerUILayerSubsystem>()
 		: nullptr)
@@ -356,6 +361,17 @@ void AFrontendPlayerController::ClientPrepareForMatch_Implementation()
 
 	SetInputMode(FInputModeGameOnly());
 	bShowMouseCursor = false;
+}
+
+void AFrontendPlayerController::ClientHandoffToArena_Implementation(const FString& ArenaUrl)
+{
+	if (ArenaUrl.IsEmpty())
+	{
+		return;
+	}
+
+	PrepareForMatch();
+	ClientTravel(ArenaUrl, TRAVEL_Absolute);
 }
 
 

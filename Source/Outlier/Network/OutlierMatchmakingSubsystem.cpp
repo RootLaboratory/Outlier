@@ -5,7 +5,16 @@
 #include "Network/OutlierArenaPoolSubsystem.h"
 #include "OutlierGameMode.h"
 #include "OutlierPlayerState.h"
+#include "OutlierArenaSettings.h"
+#include "FrontendPlayerController.h"
 #include "GameFramework/Controller.h"
+#include "OutlierLobbyIdentitySubsystem.h"
+
+namespace
+{
+constexpr double PartyJoinRateLimitSeconds = 0.5;
+constexpr int32 MaxPartyCodeGenerationAttempts = 32;
+}
 
 void UOutlierMatchmakingSubsystem::SetMatchmakingMode(EOutlierMatchmakingMode NewMode)
 {
@@ -259,6 +268,74 @@ void UOutlierMatchmakingSubsystem::ReleaseMatch(int32 PairId)
 
 		ActivePairArenaIds.Remove(PairId);
 	}
+
+	if (const FGuid* MatchId = ActivePairMatchIds.Find(PairId))
+	{
+		ActiveMatchAssignments.Remove(*MatchId);
+		ActivePairMatchIds.Remove(PairId);
+	}
+}
+
+bool UOutlierMatchmakingSubsystem::BuildMatchAssignment(AController* FirstController, AController* SecondController, EOutlierPlayerRole FirstRole, EOutlierPlayerRole SecondRole, FOutlierMatchAssignment& OutAssignment) const
+{
+	OutAssignment = FOutlierMatchAssignment();
+
+	const bool bRolesAreComplementary =
+		(FirstRole == EOutlierPlayerRole::Shooter &&
+			SecondRole == EOutlierPlayerRole::Partner) ||
+		(FirstRole == EOutlierPlayerRole::Partner &&
+			SecondRole == EOutlierPlayerRole::Shooter);
+
+	if (!FirstController
+		|| !SecondController
+		|| FirstController == SecondController
+		|| !bRolesAreComplementary)
+	{
+		return false;
+	}
+
+	UOutlierLobbyIdentitySubsystem* Identity =
+		GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierLobbyIdentitySubsystem>()
+		: nullptr;
+
+	if (!Identity)
+	{
+		return false;
+	}
+
+	FGuid FirstPlayerId;
+	FGuid SecondPlayerId;
+
+	if (!Identity->TryGetPlayerId(FirstController, FirstPlayerId)
+		|| !Identity->TryGetPlayerId(SecondController, SecondPlayerId))
+	{
+		return false;
+	}
+
+	const bool bFirstIsShooter =
+		FirstRole == EOutlierPlayerRole::Shooter;
+
+	OutAssignment.MatchId = FGuid::NewGuid();
+	OutAssignment.Shooter.PlayerId = bFirstIsShooter ? FirstPlayerId : SecondPlayerId;
+	OutAssignment.Shooter.Role	   = EOutlierPlayerRole::Shooter;
+	OutAssignment.Partner.PlayerId = bFirstIsShooter ? SecondPlayerId : FirstPlayerId;
+	OutAssignment.Partner.Role     = EOutlierPlayerRole::Partner;
+
+	return OutAssignment.IsValid();
+}
+
+bool UOutlierMatchmakingSubsystem::TryGetMatchAssignment(const FGuid& MatchId, FOutlierMatchAssignment& OutAssignment) const
+{
+	OutAssignment = FOutlierMatchAssignment();
+
+	if (const FOutlierMatchAssignment* Found = ActiveMatchAssignments.Find(MatchId))
+	{
+		OutAssignment = *Found;
+		return true;
+	}
+
+	return false;
 }
 
 void UOutlierMatchmakingSubsystem::TryCreateMatch()
@@ -383,9 +460,83 @@ void UOutlierMatchmakingSubsystem::CreateMatch(
 		return;
 	}
 
+	FOutlierMatchAssignment Assignment;
+
+	if (!BuildMatchAssignment(
+		FirstController,
+		SecondController,
+		FirstRole,
+		SecondRole,
+		Assignment))
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("[Matchmaking] Failed to build MatchAssignment"));
+		return;
+	}
+
+	UE_LOG(LogTemp, Warning,
+		TEXT("[Matchmaking] Assignment Match=%s Shooter=%s Partner=%s"),
+		*Assignment.MatchId.ToString(),
+		*Assignment.Shooter.PlayerId.ToString(),
+		*Assignment.Partner.PlayerId.ToString());
+
 	UWorld* World = GetWorld();
 	if (!World)
 	{
+		return;
+	}
+
+	const UOutlierArenaSettings* ArenaSettings = GetDefault<UOutlierArenaSettings>();
+	if (ArenaSettings && ArenaSettings->bUseStaticArenaHandoff)
+	{
+		AController* ShooterController = FirstRole == EOutlierPlayerRole::Shooter
+			? FirstController
+			: SecondController;
+		AController* PartnerController = FirstRole == EOutlierPlayerRole::Partner
+			? FirstController
+			: SecondController;
+
+		AFrontendPlayerController* FrontendShooter =
+			Cast<AFrontendPlayerController>(ShooterController);
+		AFrontendPlayerController* FrontendPartner =
+			Cast<AFrontendPlayerController>(PartnerController);
+
+		FOutlierArenaHandoffRequest ShooterRequest;
+		ShooterRequest.MatchId = Assignment.MatchId;
+		ShooterRequest.PlayerId = Assignment.Shooter.PlayerId;
+		ShooterRequest.Role = EOutlierPlayerRole::Shooter;
+
+		FOutlierArenaHandoffRequest PartnerRequest;
+		PartnerRequest.MatchId = Assignment.MatchId;
+		PartnerRequest.PlayerId = Assignment.Partner.PlayerId;
+		PartnerRequest.Role = EOutlierPlayerRole::Partner;
+
+		const FString ShooterUrl = OutlierArenaHandoff::BuildTravelUrl(
+			ArenaSettings->StaticArenaAddress,
+			ShooterRequest);
+		const FString PartnerUrl = OutlierArenaHandoff::BuildTravelUrl(
+			ArenaSettings->StaticArenaAddress,
+			PartnerRequest);
+
+		if (!FrontendShooter || !FrontendPartner
+			|| ShooterUrl.IsEmpty() || PartnerUrl.IsEmpty())
+		{
+			UE_LOG(LogTemp, Error,
+				TEXT("[Matchmaking] Static arena handoff setup is invalid"));
+			return;
+		}
+
+		const int32 PairId = NextPairId++;
+		ActiveMatchAssignments.Add(Assignment.MatchId, Assignment);
+		ActivePairMatchIds.Add(PairId, Assignment.MatchId);
+
+		UE_LOG(LogTemp, Display,
+			TEXT("[Matchmaking] Handoff Match=%s Address=%s"),
+			*Assignment.MatchId.ToString(),
+			*ArenaSettings->StaticArenaAddress);
+
+		FrontendShooter->ClientHandoffToArena(ShooterUrl);
+		FrontendPartner->ClientHandoffToArena(PartnerUrl);
 		return;
 	}
 
@@ -414,6 +565,8 @@ void UOutlierMatchmakingSubsystem::CreateMatch(
 
 	Arena->PairId = PairId;
 	ActivePairArenaIds.Add(PairId, Arena->ArenaId);
+	ActiveMatchAssignments.Add(Assignment.MatchId, Assignment);
+	ActivePairMatchIds.Add(PairId, Assignment.MatchId);
 
 	GameMode->StartMatchedPair(
 		FirstController,

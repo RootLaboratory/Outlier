@@ -6,6 +6,8 @@
 #include "Engine/DeveloperSettings.h"
 #include "OutlierArenaSettings.generated.h"
 
+class UWorld;
+
 /**
  * 
  */
@@ -21,4 +23,14 @@ public:
 
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly)
 	int32 MaxArenaCount = 8;
+
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Network")
+	bool bUseStaticArenaHandoff = false;
+
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Network")
+	FString StaticArenaAddress = TEXT("127.0.0.1:7780");
+
+	FString GetArenaPackageName() const;
+	bool MatchesArenaPackageName(const FString& WorldPackageName) const;
+	bool IsArenaWorld(const UWorld* World) const;
 };
