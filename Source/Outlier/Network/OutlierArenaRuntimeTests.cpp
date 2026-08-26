@@ -122,6 +122,41 @@ bool FOutlierArenaHandoffUrlContractTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierArenaHandoffModeContractTest,
+	"Outlier.Network.ArenaWorker.HandoffMode",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierArenaHandoffModeContractTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	UOutlierArenaSettings* Settings = NewObject<UOutlierArenaSettings>();
+	if (!TestNotNull(TEXT("Arena settings can be created for the handoff mode test"), Settings))
+	{
+		return false;
+	}
+
+	TestTrue(
+		TEXT("A Dedicated Lobby uses the external Arena Worker handoff"),
+		Settings->ShouldUseExternalArenaHandoff(NM_DedicatedServer));
+	TestFalse(
+		TEXT("A PIE Listen Server keeps the in-process ArenaPool path"),
+		Settings->ShouldUseExternalArenaHandoff(NM_ListenServer));
+	TestFalse(
+		TEXT("A standalone session keeps the in-process ArenaPool path"),
+		Settings->ShouldUseExternalArenaHandoff(NM_Standalone));
+	TestFalse(
+		TEXT("A client does not own the external Arena handoff"),
+		Settings->ShouldUseExternalArenaHandoff(NM_Client));
+
+	Settings->bUseStaticArenaHandoff = false;
+	TestFalse(
+		TEXT("Disabling static handoff also disables it for a Dedicated Lobby"),
+		Settings->ShouldUseExternalArenaHandoff(NM_DedicatedServer));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FOutlierArenaAdmissionContractTest,
 	"Outlier.Network.ArenaWorker.Admission",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

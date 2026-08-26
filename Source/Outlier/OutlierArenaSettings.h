@@ -76,4 +76,5 @@ public:
 	FString GetArenaPackageName() const;
 	bool MatchesArenaPackageName(const FString& WorldPackageName) const;
 	bool IsArenaWorld(const UWorld* World) const;
+	bool ShouldUseExternalArenaHandoff(ENetMode NetMode) const;
 };

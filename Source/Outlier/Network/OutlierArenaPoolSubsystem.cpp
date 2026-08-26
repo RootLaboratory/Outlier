@@ -29,7 +29,8 @@ void UOutlierArenaPoolSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 		*ArenaLevel.ToSoftObjectPath().ToString(),
 		MaxArenaCount);
 
-	if (Settings->bUseStaticArenaHandoff && !IsPersistentArenaWorld())
+	if (Settings->ShouldUseExternalArenaHandoff(InWorld.GetNetMode())
+		&& !IsPersistentArenaWorld())
 	{
 		UE_LOG(LogTemp, Display,
 			TEXT("[ArenaPool] Skipping Arena preload because Static Handoff uses an external Worker"));

@@ -297,18 +297,7 @@ bool UOutlierMatchmakingSubsystem::SelectRoleInPendingMatch(AController* Control
 
 		if (Match.IsReady())
 		{
-			AController* ShooterController = Match.ShooterController;
-			AController* PartnerController = Match.PartnerController;
-
-			if (CreateMatch(
-				ShooterController,
-				PartnerController,
-				EOutlierPlayerRole::Shooter,
-				EOutlierPlayerRole::Partner
-			))
-			{
-				PendingRolePickMatches.RemoveAt(MatchIndex);
-			}
+			TryCreatePendingRolePickMatch(MatchIndex);
 		}
 
 		return true;
@@ -337,18 +326,7 @@ bool UOutlierMatchmakingSubsystem::TryStartPendingMatch(AController* Controller)
 			return false;
 		}
 
-		AController* ShooterController = Match.ShooterController;
-		AController* PartnerController = Match.PartnerController;
-
-		if (CreateMatch(
-			ShooterController,
-			PartnerController,
-			EOutlierPlayerRole::Shooter,
-			EOutlierPlayerRole::Partner
-		))
-		{
-			PendingRolePickMatches.RemoveAt(MatchIndex);
-		}
+		TryCreatePendingRolePickMatch(MatchIndex);
 
 		return true;
 	}
@@ -675,17 +653,21 @@ void UOutlierMatchmakingSubsystem::TryCreateRoleQueueMatch()
 	{
 		const FOutlierMatchRequest Shooter = WaitingShooters[0];
 		const FOutlierMatchRequest Partner = WaitingPartners[0];
+		WaitingShooters.RemoveAt(0);
+		WaitingPartners.RemoveAt(0);
+
+		// Listen Server에서는 매치 생성 중 Controller 교체가 Logout과 Cancel을 동기적으로 호출할 수 있다.
+		// 큐 항목을 먼저 소비해야 같은 항목을 재진입 경로에서 다시 제거하지 않는다.
 		if (!CreateMatch(
 			Shooter.Controller,
 			Partner.Controller,
 			EOutlierPlayerRole::Shooter,
 			EOutlierPlayerRole::Partner))
 		{
+			WaitingShooters.Insert(Shooter, 0);
+			WaitingPartners.Insert(Partner, 0);
 			break;
 		}
-
-		WaitingShooters.RemoveAt(0);
-		WaitingPartners.RemoveAt(0);
 	}
 }
 
@@ -727,7 +709,7 @@ bool UOutlierMatchmakingSubsystem::CreateMatch(
 	}
 
 	const UOutlierArenaSettings* ArenaSettings = GetDefault<UOutlierArenaSettings>();
-	if (ArenaSettings && ArenaSettings->bUseStaticArenaHandoff)
+	if (ArenaSettings && ArenaSettings->ShouldUseExternalArenaHandoff(World->GetNetMode()))
 	{
 		UOutlierArenaProcessSubsystem* ProcessSubsystem = GetGameInstance()
 			? GetGameInstance()->GetSubsystem<UOutlierArenaProcessSubsystem>()
@@ -861,15 +843,37 @@ void UOutlierMatchmakingSubsystem::TryDispatchReadyPendingMatches()
 			continue;
 		}
 
-		if (!CreateMatch(
-			Match.ShooterController.Get(),
-			Match.PartnerController.Get(),
-			EOutlierPlayerRole::Shooter,
-			EOutlierPlayerRole::Partner))
+		if (!TryCreatePendingRolePickMatch(MatchIndex))
 		{
 			break;
 		}
-
-		PendingRolePickMatches.RemoveAt(MatchIndex);
 	}
+}
+
+bool UOutlierMatchmakingSubsystem::TryCreatePendingRolePickMatch(int32 MatchIndex)
+{
+	if (!PendingRolePickMatches.IsValidIndex(MatchIndex)
+		|| !PendingRolePickMatches[MatchIndex].IsReady())
+	{
+		return false;
+	}
+
+	FOutlierPendingRolePickMatch PendingMatch = PendingRolePickMatches[MatchIndex];
+	PendingRolePickMatches.RemoveAt(MatchIndex);
+
+	// StartMatchedPair가 기존 Frontend Controller를 교체하면 Logout -> Cancel이 재진입한다.
+	// 매치를 먼저 소비하고, Arena가 아직 준비되지 않은 경우에만 원래 위치로 복구한다.
+	if (!CreateMatch(
+		PendingMatch.ShooterController.Get(),
+		PendingMatch.PartnerController.Get(),
+		EOutlierPlayerRole::Shooter,
+		EOutlierPlayerRole::Partner))
+	{
+		PendingRolePickMatches.Insert(
+			MoveTemp(PendingMatch),
+			FMath::Min(MatchIndex, PendingRolePickMatches.Num()));
+		return false;
+	}
+
+	return true;
 }

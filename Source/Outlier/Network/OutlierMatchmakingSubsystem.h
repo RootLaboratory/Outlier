@@ -72,6 +72,7 @@ private:
 		const FString& PartyCode = FString()) const;
 	void HandleArenaSlotReady();
 	void TryDispatchReadyPendingMatches();
+	bool TryCreatePendingRolePickMatch(int32 MatchIndex);
 
 	bool CreateMatch(
 		AController* FirstController,
