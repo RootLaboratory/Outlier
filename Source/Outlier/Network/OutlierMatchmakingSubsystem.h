@@ -25,6 +25,9 @@ class OUTLIER_API UOutlierMatchmakingSubsystem : public UGameInstanceSubsystem
 	GENERATED_BODY()
 
 public:
+	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
+	virtual void Deinitialize() override;
+
 	void SetMatchmakingMode(EOutlierMatchmakingMode NewMode);
 
 	void EnqueueForPairThenRolePick(AController* Controller);
@@ -67,8 +70,10 @@ private:
 		AController* Controller,
 		EOutlierPartyRequestResult Result,
 		const FString& PartyCode = FString()) const;
+	void HandleArenaSlotReady();
+	void TryDispatchReadyPendingMatches();
 
-	void CreateMatch(
+	bool CreateMatch(
 		AController* FirstController,
 		AController* SecondController,
 		EOutlierPlayerRole FirstRole,

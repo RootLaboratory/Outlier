@@ -32,7 +32,10 @@ public class Outlier : ModuleRules
             "VisualEvent",
             "Niagara",
             "PhysicsCore",
-            "GeometryCollectionEngine"
+            "GeometryCollectionEngine",
+            "Sockets",
+            "Networking",
+            "Json"
         });
 
         PrivateDependencyModuleNames.AddRange(new string[]

@@ -7,6 +7,7 @@
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "Misc/CommandLine.h"
+#include "Network/OutlierArenaProcessSubsystem.h"
 #include "UI/LoadingWidget.h"
 #include "Misc/Parse.h"
 
@@ -135,6 +136,11 @@ void UOutlierGameInstance::TryBootstrapArenaWorker(UWorld* LoadedWorld)
 		UE_LOG(LogTemp, Display,
 			TEXT("[ArenaWorker] Ready on persistent arena map %s"),
 			*Settings->GetArenaPackageName());
+		if (UOutlierArenaProcessSubsystem* ProcessSubsystem =
+			GetSubsystem<UOutlierArenaProcessSubsystem>())
+		{
+			ProcessSubsystem->NotifyArenaWorldReady();
+		}
 		return;
 	}
 

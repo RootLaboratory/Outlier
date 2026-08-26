@@ -3,6 +3,7 @@
 
 #include "Network/OutlierMatchmakingSubsystem.h"
 #include "Network/OutlierArenaPoolSubsystem.h"
+#include "Network/OutlierArenaProcessSubsystem.h"
 #include "OutlierGameMode.h"
 #include "OutlierPlayerState.h"
 #include "OutlierArenaSettings.h"
@@ -14,6 +15,31 @@ namespace
 {
 constexpr double PartyJoinRateLimitSeconds = 0.5;
 constexpr int32 MaxPartyCodeGenerationAttempts = 32;
+}
+
+void UOutlierMatchmakingSubsystem::Initialize(FSubsystemCollectionBase& Collection)
+{
+	Super::Initialize(Collection);
+	Collection.InitializeDependency<UOutlierArenaProcessSubsystem>();
+	if (UOutlierArenaProcessSubsystem* ProcessSubsystem = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierArenaProcessSubsystem>()
+		: nullptr)
+	{
+		ProcessSubsystem->OnSlotReady.AddUObject(
+			this,
+			&UOutlierMatchmakingSubsystem::HandleArenaSlotReady);
+	}
+}
+
+void UOutlierMatchmakingSubsystem::Deinitialize()
+{
+	if (UOutlierArenaProcessSubsystem* ProcessSubsystem = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierArenaProcessSubsystem>()
+		: nullptr)
+	{
+		ProcessSubsystem->OnSlotReady.RemoveAll(this);
+	}
+	Super::Deinitialize();
 }
 
 void UOutlierMatchmakingSubsystem::SetMatchmakingMode(EOutlierMatchmakingMode NewMode)
@@ -274,14 +300,15 @@ bool UOutlierMatchmakingSubsystem::SelectRoleInPendingMatch(AController* Control
 			AController* ShooterController = Match.ShooterController;
 			AController* PartnerController = Match.PartnerController;
 
-			PendingRolePickMatches.RemoveAt(MatchIndex);
-
-			CreateMatch(
+			if (CreateMatch(
 				ShooterController,
 				PartnerController,
 				EOutlierPlayerRole::Shooter,
 				EOutlierPlayerRole::Partner
-			);
+			))
+			{
+				PendingRolePickMatches.RemoveAt(MatchIndex);
+			}
 		}
 
 		return true;
@@ -313,14 +340,15 @@ bool UOutlierMatchmakingSubsystem::TryStartPendingMatch(AController* Controller)
 		AController* ShooterController = Match.ShooterController;
 		AController* PartnerController = Match.PartnerController;
 
-		PendingRolePickMatches.RemoveAt(MatchIndex);
-
-		CreateMatch(
+		if (CreateMatch(
 			ShooterController,
 			PartnerController,
 			EOutlierPlayerRole::Shooter,
 			EOutlierPlayerRole::Partner
-		);
+		))
+		{
+			PendingRolePickMatches.RemoveAt(MatchIndex);
+		}
 
 		return true;
 	}
@@ -643,26 +671,25 @@ void UOutlierMatchmakingSubsystem::NotifyPartyResult(
 
 void UOutlierMatchmakingSubsystem::TryCreateRoleQueueMatch()
 {
-	if (WaitingShooters.Num() <= 0 || WaitingPartners.Num() <= 0)
+	while (WaitingShooters.Num() > 0 && WaitingPartners.Num() > 0)
 	{
-		return;
+		const FOutlierMatchRequest Shooter = WaitingShooters[0];
+		const FOutlierMatchRequest Partner = WaitingPartners[0];
+		if (!CreateMatch(
+			Shooter.Controller,
+			Partner.Controller,
+			EOutlierPlayerRole::Shooter,
+			EOutlierPlayerRole::Partner))
+		{
+			break;
+		}
+
+		WaitingShooters.RemoveAt(0);
+		WaitingPartners.RemoveAt(0);
 	}
-
-	FOutlierMatchRequest Shooter = WaitingShooters[0];
-	FOutlierMatchRequest Partner = WaitingPartners[0];
-
-	WaitingShooters.RemoveAt(0);
-	WaitingPartners.RemoveAt(0);
-
-	CreateMatch(
-		Shooter.Controller,
-		Partner.Controller,
-		EOutlierPlayerRole::Shooter,
-		EOutlierPlayerRole::Partner
-	);
 }
 
-void UOutlierMatchmakingSubsystem::CreateMatch(
+bool UOutlierMatchmakingSubsystem::CreateMatch(
 	AController* FirstController,
 	AController* SecondController,
 	EOutlierPlayerRole FirstRole,
@@ -670,7 +697,7 @@ void UOutlierMatchmakingSubsystem::CreateMatch(
 {
 	if (!FirstController || !SecondController)
 	{
-		return;
+		return false;
 	}
 
 	FOutlierMatchAssignment Assignment;
@@ -684,7 +711,7 @@ void UOutlierMatchmakingSubsystem::CreateMatch(
 	{
 		UE_LOG(LogTemp, Error,
 			TEXT("[Matchmaking] Failed to build MatchAssignment"));
-		return;
+		return false;
 	}
 
 	UE_LOG(LogTemp, Warning,
@@ -696,12 +723,31 @@ void UOutlierMatchmakingSubsystem::CreateMatch(
 	UWorld* World = GetWorld();
 	if (!World)
 	{
-		return;
+		return false;
 	}
 
 	const UOutlierArenaSettings* ArenaSettings = GetDefault<UOutlierArenaSettings>();
 	if (ArenaSettings && ArenaSettings->bUseStaticArenaHandoff)
 	{
+		UOutlierArenaProcessSubsystem* ProcessSubsystem = GetGameInstance()
+			? GetGameInstance()->GetSubsystem<UOutlierArenaProcessSubsystem>()
+			: nullptr;
+		FString ArenaAddress = ArenaSettings->StaticArenaAddress;
+		int32 ArenaSlotId = INDEX_NONE;
+		const bool bUseProcessManager = ArenaSettings->bUseProcessManager;
+		if (bUseProcessManager
+			&& (!ProcessSubsystem
+				|| !ProcessSubsystem->IsLobbyManagerActive()
+				|| !ProcessSubsystem->TryAllocateReadySlot(
+					Assignment.MatchId,
+					ArenaAddress,
+					ArenaSlotId)))
+		{
+			UE_LOG(LogTemp, Verbose,
+				TEXT("[Matchmaking] Waiting for a Ready Arena Slot"));
+			return false;
+		}
+
 		AController* ShooterController = FirstRole == EOutlierPlayerRole::Shooter
 			? FirstController
 			: SecondController;
@@ -725,18 +771,22 @@ void UOutlierMatchmakingSubsystem::CreateMatch(
 		PartnerRequest.Role = EOutlierPlayerRole::Partner;
 
 		const FString ShooterUrl = OutlierArenaHandoff::BuildTravelUrl(
-			ArenaSettings->StaticArenaAddress,
+			ArenaAddress,
 			ShooterRequest);
 		const FString PartnerUrl = OutlierArenaHandoff::BuildTravelUrl(
-			ArenaSettings->StaticArenaAddress,
+			ArenaAddress,
 			PartnerRequest);
 
 		if (!FrontendShooter || !FrontendPartner
 			|| ShooterUrl.IsEmpty() || PartnerUrl.IsEmpty())
 		{
+			if (bUseProcessManager && ProcessSubsystem)
+			{
+				ProcessSubsystem->ReleaseAllocation(Assignment.MatchId);
+			}
 			UE_LOG(LogTemp, Error,
 				TEXT("[Matchmaking] Static arena handoff setup is invalid"));
-			return;
+			return false;
 		}
 
 		const int32 PairId = NextPairId++;
@@ -744,14 +794,15 @@ void UOutlierMatchmakingSubsystem::CreateMatch(
 		ActivePairMatchIds.Add(PairId, Assignment.MatchId);
 
 		UE_LOG(LogTemp, Display,
-			TEXT("[Matchmaking] Handoff Match=%s Address=%s"),
+			TEXT("[Matchmaking] Handoff Match=%s Slot=%d Address=%s"),
 			*Assignment.MatchId.ToString(),
-			*ArenaSettings->StaticArenaAddress);
+			ArenaSlotId,
+			*ArenaAddress);
 
 		FrontendShooter->ClientHandoffToArena(ShooterUrl);
 		FrontendPartner->ClientHandoffToArena(PartnerUrl);
 		ReleaseMatch(PairId);
-		return;
+		return true;
 	}
 
 	UOutlierArenaPoolSubsystem* ArenaPool =
@@ -759,13 +810,13 @@ void UOutlierMatchmakingSubsystem::CreateMatch(
 
 	if (!ArenaPool)
 	{
-		return;
+		return false;
 	}
 
 	FOutlierArenaInstance* Arena = ArenaPool->AcquireArena();
 	if (!Arena)
 	{
-		return;
+		return false;
 	}
 
 	const int32 PairId = NextPairId++;
@@ -774,7 +825,7 @@ void UOutlierMatchmakingSubsystem::CreateMatch(
 	if (!GameMode)
 	{
 		ArenaPool->ReleaseArena(Arena->ArenaId);
-		return;
+		return false;
 	}
 
 	Arena->PairId = PairId;
@@ -790,4 +841,35 @@ void UOutlierMatchmakingSubsystem::CreateMatch(
 		FirstRole,
 		SecondRole
 	);
+	return true;
+}
+
+void UOutlierMatchmakingSubsystem::HandleArenaSlotReady()
+{
+	TryDispatchReadyPendingMatches();
+	TryCreateRoleQueueMatch();
+}
+
+void UOutlierMatchmakingSubsystem::TryDispatchReadyPendingMatches()
+{
+	for (int32 MatchIndex = 0; MatchIndex < PendingRolePickMatches.Num();)
+	{
+		FOutlierPendingRolePickMatch& Match = PendingRolePickMatches[MatchIndex];
+		if (!Match.IsReady())
+		{
+			++MatchIndex;
+			continue;
+		}
+
+		if (!CreateMatch(
+			Match.ShooterController.Get(),
+			Match.PartnerController.Get(),
+			EOutlierPlayerRole::Shooter,
+			EOutlierPlayerRole::Partner))
+		{
+			break;
+		}
+
+		PendingRolePickMatches.RemoveAt(MatchIndex);
+	}
 }

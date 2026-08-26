@@ -8,6 +8,7 @@
 #include "OutlierGameState.h"
 #include "FrontendPlayerController.h"
 #include "Network/OutlierArenaPoolSubsystem.h"
+#include "Network/OutlierArenaProcessSubsystem.h"
 #include "Network/OutlierMatchmakingSubsystem.h"
 #include "Save/OutlierSaveSubSystem.h"
 #include "GameFramework/GameStateBase.h"
@@ -382,6 +383,12 @@ bool AOutlierGameMode::CompleteArenaMatch()
 
 	bArenaWorkerMatchCompleting = true;
 	GetWorldTimerManager().ClearTimer(ArenaWorkerAutoCompleteTimerHandle);
+	if (UOutlierArenaProcessSubsystem* ProcessSubsystem = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierArenaProcessSubsystem>()
+		: nullptr)
+	{
+		ProcessSubsystem->NotifyWorkerReleasing(ArenaWorkerAdmission.MatchId);
+	}
 
 	UE_LOG(LogTemp, Display,
 		TEXT("[ArenaReturn] Match completed. Returning players to %s"),
@@ -484,6 +491,15 @@ void AOutlierGameMode::PreLogin(
 		return;
 	}
 
+	if (const UOutlierArenaProcessSubsystem* ProcessSubsystem = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierArenaProcessSubsystem>()
+		: nullptr;
+		ProcessSubsystem && !ProcessSubsystem->CanWorkerAcceptMatch(Request.MatchId))
+	{
+		ErrorMessage = TEXT("Arena worker is reserved for another match");
+		return;
+	}
+
 	ArenaWorkerAdmission.CanAccept(Request, ErrorMessage);
 }
 
@@ -508,6 +524,14 @@ FString AOutlierGameMode::InitNewPlayer(
 		|| !ArenaWorkerAdmission.CanAccept(Request, ErrorMessage))
 	{
 		return ErrorMessage;
+	}
+
+	if (const UOutlierArenaProcessSubsystem* ProcessSubsystem = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierArenaProcessSubsystem>()
+		: nullptr;
+		ProcessSubsystem && !ProcessSubsystem->CanWorkerAcceptMatch(Request.MatchId))
+	{
+		return TEXT("Arena worker is reserved for another match");
 	}
 
 	UOutlierLobbyIdentitySubsystem* Identity = GetGameInstance()
@@ -1001,6 +1025,12 @@ void AOutlierGameMode::TryStartArenaWorkerPair()
 
 		bArenaWorkerPairStarted = true;
 		ArenaWorkerAdmission.bPairStarted = true;
+		if (UOutlierArenaProcessSubsystem* ProcessSubsystem = GetGameInstance()
+			? GetGameInstance()->GetSubsystem<UOutlierArenaProcessSubsystem>()
+			: nullptr)
+		{
+			ProcessSubsystem->NotifyWorkerInMatch(ArenaWorkerAdmission.MatchId);
+		}
 
 		UE_LOG(LogTemp, Display,
 			TEXT("[ArenaWorker] Starting assigned pair Match=%s ArenaId=0"),
