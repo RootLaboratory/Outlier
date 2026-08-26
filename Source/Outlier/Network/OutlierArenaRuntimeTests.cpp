@@ -212,6 +212,10 @@ bool FOutlierArenaReturnLifecycleTest::RunTest(const FString& Parameters)
 		TEXT("Arena workers have a disconnect fallback timeout"),
 		Settings->ArenaWorkerExitTimeoutSeconds,
 		5.0f);
+	TestEqual(
+		TEXT("Arena gameplay starts one second after both clients are ready"),
+		Settings->ArenaMatchStartDelaySeconds,
+		1.0f);
 
 	UOutlierGameInstance* GameInstance = NewObject<UOutlierGameInstance>();
 	if (!TestNotNull(TEXT("The game instance can be created for the return lifecycle test"), GameInstance))

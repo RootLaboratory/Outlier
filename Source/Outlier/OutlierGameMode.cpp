@@ -8,6 +8,7 @@
 #include "OutlierGameState.h"
 #include "FrontendPlayerController.h"
 #include "Network/OutlierArenaPoolSubsystem.h"
+#include "Network/OutlierArenaPausePlayerState.h"
 #include "Network/OutlierArenaProcessSubsystem.h"
 #include "Network/OutlierMatchmakingSubsystem.h"
 #include "Save/OutlierSaveSubSystem.h"
@@ -22,16 +23,41 @@
 #include "GameFramework/PlayerStart.h"
 #include "Kismet/GameplayStatics.h"
 #include "GameFramework/PlayerState.h"
+#include "GameFramework/WorldSettings.h"
 #include "OutlierLobbyIdentitySubsystem.h"
 #include "OutlierArenaSettings.h"
 #include "CoreGlobals.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
 #include "TimerManager.h"
+#include "Containers/Ticker.h"
 
 AOutlierGameMode::AOutlierGameMode()
 {
 
+}
+
+void AOutlierGameMode::InitGameState()
+{
+	Super::InitGameState();
+	PauseArenaWorkerWorld();
+}
+
+void AOutlierGameMode::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (ArenaWorkerPairSetupTickerHandle.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(ArenaWorkerPairSetupTickerHandle);
+		ArenaWorkerPairSetupTickerHandle.Reset();
+	}
+	if (ArenaWorkerGameplayStartTickerHandle.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(ArenaWorkerGameplayStartTickerHandle);
+		ArenaWorkerGameplayStartTickerHandle.Reset();
+	}
+
+	ClearArenaWorkerWorldPause();
+	Super::EndPlay(EndPlayReason);
 }
 
 bool AOutlierGameMode::IsArenaWorkerProcess() const
@@ -45,6 +71,77 @@ bool AOutlierGameMode::UsesStaticArenaHandoff() const
 	return IsArenaWorkerProcess()
 		&& Settings
 		&& Settings->bUseStaticArenaHandoff;
+}
+
+void AOutlierGameMode::PauseArenaWorkerWorld()
+{
+	UWorld* World = GetWorld();
+	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
+	if (!HasAuthority()
+		|| !IsArenaWorkerProcess()
+		|| bArenaWorkerGameplayStarted
+		|| !World
+		|| !Settings
+		|| !Settings->IsArenaWorld(World)
+		|| World->IsPaused())
+	{
+		return;
+	}
+
+	AOutlierArenaPausePlayerState* PauseOwner =
+		World->SpawnActorDeferred<AOutlierArenaPausePlayerState>(
+		AOutlierArenaPausePlayerState::StaticClass(),
+		FTransform::Identity,
+		nullptr,
+		nullptr,
+		ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+	if (!PauseOwner)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[ArenaWorker] Failed to create the pre-match pause owner"));
+		return;
+	}
+
+	PauseOwner->SetFlags(RF_Transient);
+	UGameplayStatics::FinishSpawningActor(PauseOwner, FTransform::Identity);
+
+	ArenaWorkerPauseOwner = PauseOwner;
+	World->GetWorldSettings()->SetPauserPlayerState(PauseOwner);
+	UE_LOG(LogTemp, Display, TEXT("[ArenaWorker] Arena world paused until both clients are ready"));
+}
+
+void AOutlierGameMode::ClearArenaWorkerWorldPause()
+{
+	UWorld* World = GetWorld();
+	if (World && World->GetWorldSettings()->GetPauserPlayerState() == ArenaWorkerPauseOwner)
+	{
+		World->GetWorldSettings()->SetPauserPlayerState(nullptr);
+	}
+
+	if (ArenaWorkerPauseOwner)
+	{
+		ArenaWorkerPauseOwner->Destroy();
+		ArenaWorkerPauseOwner = nullptr;
+	}
+}
+
+void AOutlierGameMode::ScheduleArenaWorkerPairSetup()
+{
+	if (bArenaWorkerPairStartScheduled || bArenaWorkerPairStarted)
+	{
+		return;
+	}
+
+	bArenaWorkerPairStartScheduled = true;
+	ArenaWorkerPairSetupTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+		FTickerDelegate::CreateUObject(this, &AOutlierGameMode::HandleArenaWorkerPairSetupTick));
+}
+
+bool AOutlierGameMode::HandleArenaWorkerPairSetupTick(float DeltaTime)
+{
+	(void)DeltaTime;
+	ArenaWorkerPairSetupTickerHandle.Reset();
+	TryStartArenaWorkerPair();
+	return false;
 }
 
 void AOutlierGameMode::RegisterCheckpoint(AController* Controller, AOutlierCheckpoint* Checkpoint)
@@ -363,6 +460,7 @@ bool AOutlierGameMode::CompleteArenaMatch()
 	if (!HasAuthority()
 		|| !IsArenaWorkerProcess()
 		|| !bArenaWorkerPairStarted
+		|| !bArenaWorkerGameplayStarted
 		|| bArenaWorkerMatchCompleting)
 	{
 		return false;
@@ -427,6 +525,14 @@ void AOutlierGameMode::PossessMatchedPawn(
 
 	if (IsArenaWorkerProcess() || PlayerController->IsLocalController())
 	{
+		if (IsArenaWorkerProcess())
+		{
+			if (AFirstPersonPlayerController* FirstPersonController =
+				Cast<AFirstPersonPlayerController>(PlayerController))
+			{
+				FirstPersonController->ClientPrepareForArenaStart();
+			}
+		}
 		PlayerController->Possess(Pawn);
 		return;
 	}
@@ -443,6 +549,25 @@ void AOutlierGameMode::PossessMatchedPawn(
 
 void AOutlierGameMode::OnClientArenaReady(APlayerController* PC)
 {
+	if (IsArenaWorkerProcess())
+	{
+		if (!bArenaWorkerPairStarted
+			|| bArenaWorkerGameplayStarted
+			|| (PC != ArenaWorkerShooterController.Get()
+				&& PC != ArenaWorkerPartnerController.Get()))
+		{
+			return;
+		}
+
+		ArenaWorkerReadyPlayers.Add(PC);
+		if (ArenaWorkerReadyPlayers.Contains(ArenaWorkerShooterController)
+			&& ArenaWorkerReadyPlayers.Contains(ArenaWorkerPartnerController))
+		{
+			ScheduleArenaWorkerGameplayStart();
+		}
+		return;
+	}
+
 	/*UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][5] OnClientArenaReady PC=%s PendingCount=%d"),
 		*GetNameSafe(PC), PendingPossessions.Num());*/
 
@@ -983,10 +1108,8 @@ void AOutlierGameMode::PostLogin(APlayerController* NewPlayer)
 			&& ArenaWorkerPartnerController.IsValid()
 			&& !bArenaWorkerPairStartScheduled)
 		{
-			bArenaWorkerPairStartScheduled = true;
 			// 두 번째 PostLogin이 끝난 뒤 Controller 교체를 시작한다.
-			GetWorldTimerManager().SetTimerForNextTick(
-				FTimerDelegate::CreateUObject(this, &AOutlierGameMode::TryStartArenaWorkerPair));
+			ScheduleArenaWorkerPairSetup();
 		}
 		return;
 	}
@@ -1000,10 +1123,8 @@ void AOutlierGameMode::PostLogin(APlayerController* NewPlayer)
 	if (ArenaWorkerPlayers.Num() == 2
 		&& !bArenaWorkerPairStartScheduled)
 	{
-		bArenaWorkerPairStartScheduled = true;
 		// 두 번째 PostLogin이 완전히 끝난 뒤 PlayerController 교체를 시작하도록 다음 틱까지 지연.
-		GetWorldTimerManager().SetTimerForNextTick(
-			FTimerDelegate::CreateUObject(this, &AOutlierGameMode::TryStartArenaWorkerPair));
+		ScheduleArenaWorkerPairSetup();
 	}
 }
 
@@ -1025,15 +1146,9 @@ void AOutlierGameMode::TryStartArenaWorkerPair()
 
 		bArenaWorkerPairStarted = true;
 		ArenaWorkerAdmission.bPairStarted = true;
-		if (UOutlierArenaProcessSubsystem* ProcessSubsystem = GetGameInstance()
-			? GetGameInstance()->GetSubsystem<UOutlierArenaProcessSubsystem>()
-			: nullptr)
-		{
-			ProcessSubsystem->NotifyWorkerInMatch(ArenaWorkerAdmission.MatchId);
-		}
 
 		UE_LOG(LogTemp, Display,
-			TEXT("[ArenaWorker] Starting assigned pair Match=%s ArenaId=0"),
+			TEXT("[ArenaWorker] Preparing assigned pair Match=%s ArenaId=0"),
 			*ArenaWorkerAdmission.MatchId.ToString());
 		StartMatchedPair(
 			ShooterController,
@@ -1074,6 +1189,62 @@ void AOutlierGameMode::TryStartArenaWorkerPair()
 		/*ArenaId=*/0,
 		EOutlierPlayerRole::Shooter,
 		EOutlierPlayerRole::Partner);
+}
+
+void AOutlierGameMode::ScheduleArenaWorkerGameplayStart()
+{
+	if (bArenaWorkerGameplayStartScheduled || bArenaWorkerGameplayStarted)
+	{
+		return;
+	}
+
+	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
+	const float StartDelay = Settings
+		? FMath::Max(Settings->ArenaMatchStartDelaySeconds, 0.0f)
+		: 1.0f;
+	bArenaWorkerGameplayStartScheduled = true;
+	ArenaWorkerGameplayStartTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+		FTickerDelegate::CreateUObject(this, &AOutlierGameMode::HandleArenaWorkerGameplayStartTick),
+		StartDelay);
+}
+
+bool AOutlierGameMode::HandleArenaWorkerGameplayStartTick(float DeltaTime)
+{
+	(void)DeltaTime;
+	ArenaWorkerGameplayStartTickerHandle.Reset();
+	bArenaWorkerGameplayStartScheduled = false;
+	StartArenaWorkerGameplay();
+	return false;
+}
+
+void AOutlierGameMode::StartArenaWorkerGameplay()
+{
+	APlayerController* ShooterController = ArenaWorkerShooterController.Get();
+	APlayerController* PartnerController = ArenaWorkerPartnerController.Get();
+	if (bArenaWorkerGameplayStarted
+		|| !bArenaWorkerPairStarted
+		|| !ShooterController
+		|| !PartnerController
+		|| !ArenaWorkerReadyPlayers.Contains(ShooterController)
+		|| !ArenaWorkerReadyPlayers.Contains(PartnerController))
+	{
+		return;
+	}
+
+	bArenaWorkerGameplayStarted = true;
+	ClearArenaWorkerWorldPause();
+
+	if (UsesStaticArenaHandoff())
+	{
+		if (UOutlierArenaProcessSubsystem* ProcessSubsystem = GetGameInstance()
+			? GetGameInstance()->GetSubsystem<UOutlierArenaProcessSubsystem>()
+			: nullptr)
+		{
+			ProcessSubsystem->NotifyWorkerInMatch(ArenaWorkerAdmission.MatchId);
+		}
+	}
+
+	UE_LOG(LogTemp, Display, TEXT("[ArenaWorker] Both clients are ready. Gameplay started"));
 }
 
 void AOutlierGameMode::RequestArenaWorkerExit()

@@ -70,6 +70,9 @@ public:
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Network", meta = (ClampMin = "0.1"))
 	float ArenaWorkerExitTimeoutSeconds = 5.0f;
 
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Network", meta = (ClampMin = "0.0"))
+	float ArenaMatchStartDelaySeconds = 1.0f;
+
 	FString GetArenaPackageName() const;
 	bool MatchesArenaPackageName(const FString& WorldPackageName) const;
 	bool IsArenaWorld(const UWorld* World) const;

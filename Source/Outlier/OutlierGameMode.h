@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Containers/Ticker.h"
 #include "GameFramework/GameModeBase.h"
 #include "GameFramework/GameMode.h"
 #include "Network/OutlierMatchRequest.h"
@@ -15,6 +16,7 @@ class AShooterCharacter;
 class APartnerCharacter;
 class AOutlierCheckpoint;
 class AOutlierPlayerState;
+class AOutlierArenaPausePlayerState;
 enum class EOutlierPlayerRole : uint8;
 struct FOutlierCheckpointData;
 
@@ -93,6 +95,8 @@ protected:
 	virtual void HandleStartingNewPlayer_Implementation(APlayerController* NewPlayer) override;
 	virtual void Logout(AController* Exiting) override;
 	virtual void PostLogin(APlayerController* NewPlayer) override;
+	virtual void InitGameState() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 	void RespawnPairAtCheckpoint(AController* Controller);
 	bool ResolveCheckpointTransform(AController* Controller, int32 ArenaId, FTransform& OutTransform) const;
@@ -112,7 +116,14 @@ protected:
 private:
 	bool IsArenaWorkerProcess() const;
 	bool UsesStaticArenaHandoff() const;
+	void PauseArenaWorkerWorld();
+	void ClearArenaWorkerWorldPause();
+	void ScheduleArenaWorkerPairSetup();
+	bool HandleArenaWorkerPairSetupTick(float DeltaTime);
 	void TryStartArenaWorkerPair();
+	void ScheduleArenaWorkerGameplayStart();
+	bool HandleArenaWorkerGameplayStartTick(float DeltaTime);
+	void StartArenaWorkerGameplay();
 	void PossessMatchedPawn(APlayerController* PlayerController, APawn* Pawn, int32 ArenaId);
 	void TryScheduleArenaWorkerAutoComplete();
 	void HandleArenaWorkerAutoComplete();
@@ -122,10 +133,17 @@ private:
 	FOutlierArenaAdmissionState ArenaWorkerAdmission;
 	TWeakObjectPtr<APlayerController> ArenaWorkerShooterController;
 	TWeakObjectPtr<APlayerController> ArenaWorkerPartnerController;
+	TSet<TWeakObjectPtr<APlayerController>> ArenaWorkerReadyPlayers;
+	UPROPERTY(Transient)
+	TObjectPtr<AOutlierArenaPausePlayerState> ArenaWorkerPauseOwner;
 	bool bArenaWorkerPairStartScheduled = false;
 	bool bArenaWorkerPairStarted = false;
+	bool bArenaWorkerGameplayStartScheduled = false;
+	bool bArenaWorkerGameplayStarted = false;
 	bool bArenaWorkerMatchCompleting = false;
 	bool bArenaWorkerExitRequested = false;
 	FTimerHandle ArenaWorkerAutoCompleteTimerHandle;
 	FTimerHandle ArenaWorkerExitTimerHandle;
+	FTSTicker::FDelegateHandle ArenaWorkerPairSetupTickerHandle;
+	FTSTicker::FDelegateHandle ArenaWorkerGameplayStartTickerHandle;
 };
