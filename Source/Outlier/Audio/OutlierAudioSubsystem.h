@@ -7,6 +7,7 @@
 
 struct FStreamableHandle;
 class USoundBase;
+class UAudioComponent;
 class AActor;
 class AFirstPersonPlayerController;
 
@@ -50,6 +51,15 @@ public:
 	/** RPC/GAS delivery endpoint. Never routes across the network again. */
 	bool PlayResolvedAudioLocally(const FOutlierResolvedAudioPlay& ResolvedPlay);
 
+	UFUNCTION(BlueprintCallable, Category = "Outlier|Audio|Settings")
+	void SetVolumeMultiplier(EOutlierAudioVolumeType VolumeType, float NewMultiplier);
+
+	UFUNCTION(BlueprintPure, Category = "Outlier|Audio|Settings")
+	float GetVolumeMultiplier(EOutlierAudioVolumeType VolumeType) const;
+
+	UFUNCTION(BlueprintCallable, Category = "Outlier|Audio|Playback")
+	void StopAllLocalAudio();
+
 private:
 	struct FRuntimeCatalogEntry
 	{
@@ -60,6 +70,14 @@ private:
 		float Weight = 1.0f;
 		float VolumeMultiplier = 1.0f;
 		float PitchMultiplier = 1.0f;
+		EOutlierAudioVolumeType VolumeType = EOutlierAudioVolumeType::SFX;
+	};
+
+	struct FActiveAudioPlayback
+	{
+		TWeakObjectPtr<UAudioComponent> Component;
+		float BaseVolumeMultiplier = 1.0f;
+		EOutlierAudioVolumeType VolumeType = EOutlierAudioVolumeType::SFX;
 	};
 
 	struct FPendingPlay
@@ -71,6 +89,7 @@ private:
 		float VolumeMultiplier = 1.0f;
 		float PitchMultiplier = 1.0f;
 		float StartTime = 0.0f;
+		EOutlierAudioVolumeType VolumeType = EOutlierAudioVolumeType::SFX;
 	};
 
 	const FRuntimeCatalogEntry* ResolveBestEntry(
@@ -107,7 +126,14 @@ private:
 
 	bool QueueOrPlay(const FRuntimeCatalogEntry& Entry, const FPendingPlay& PendingPlay);
 	void HandleSoundLoaded(FSoftObjectPath SoundPath);
-	void ExecutePlay(USoundBase* Sound, const FPendingPlay& PendingPlay) const;
+	void ExecutePlay(USoundBase* Sound, const FPendingPlay& PendingPlay);
+	void TrackActiveAudioComponent(
+		UAudioComponent* AudioComponent,
+		float BaseVolumeMultiplier,
+		EOutlierAudioVolumeType VolumeType);
+	void RemoveInactiveAudioComponents();
+	void RefreshActiveAudioComponentVolumes(EOutlierAudioVolumeType ChangedVolumeType);
+	float GetCombinedVolumeMultiplier(EOutlierAudioVolumeType VolumeType) const;
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UOutlierAudioEventDefinition>> LoadedDefinitions;
@@ -115,4 +141,6 @@ private:
 	TMap<FGameplayTag, TArray<FRuntimeCatalogEntry>> CatalogEntriesByEvent;
 	TMap<FSoftObjectPath, TArray<FPendingPlay>> PendingPlaysBySound;
 	TMap<FSoftObjectPath, TSharedPtr<FStreamableHandle>> ActiveLoadHandles;
+	TMap<EOutlierAudioVolumeType, float> VolumeMultipliers;
+	TArray<FActiveAudioPlayback> ActiveAudioPlaybacks;
 };

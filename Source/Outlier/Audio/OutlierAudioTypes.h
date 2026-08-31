@@ -8,6 +8,15 @@
 class USoundBase;
 class AActor;
 
+UENUM(BlueprintType)
+enum class EOutlierAudioVolumeType : uint8
+{
+	Master UMETA(DisplayName = "Master"),
+	BGM UMETA(DisplayName = "BGM"),
+	SFX UMETA(DisplayName = "SFX"),
+	Voice UMETA(DisplayName = "Voice")
+};
+
 USTRUCT(BlueprintType)
 struct OUTLIER_API FOutlierAudioVariant
 {
@@ -45,6 +54,9 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Audio", meta = (ClampMin = "0.0"))
 	float PitchMultiplier = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Audio")
+	EOutlierAudioVolumeType VolumeType = EOutlierAudioVolumeType::SFX;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Audio")
 	TArray<FOutlierAudioVariant> Variants;

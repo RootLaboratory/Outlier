@@ -16,6 +16,7 @@
 #include "LocalPlayerUISubSystem.h"
 #include "EnhancedInputComponent.h"
 #include "Engine/LocalPlayer.h"
+#include "InputAction.h"
 #include "InputActionValue.h"
 #include "Components/SceneCaptureComponent2D.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -106,6 +107,18 @@ void AFirstPersonCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
 		return;
 	}
 
+	auto EnableTriggerWhenPaused = [](UInputAction* Action)
+	{
+		if (Action)
+		{
+			Action->bTriggerWhenPaused = true;
+		}
+	};
+
+	EnableTriggerWhenPaused(InputConfig->WidgetEscapeAction);
+	EnableTriggerWhenPaused(InputConfig->InGameSettingAction);
+	EnableTriggerWhenPaused(InputConfig->WidgetConfirmedAction);
+
 	// Move
 	EnhancedInputComponent->BindAction(InputConfig->MoveAction, ETriggerEvent::Triggered, this, &AFirstPersonCharacter::MoveInput);
 	EnhancedInputComponent->BindAction(InputConfig->MoveAction, ETriggerEvent::Completed, this, &AFirstPersonCharacter::MoveInput);
@@ -125,6 +138,8 @@ void AFirstPersonCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
 	EnhancedInputComponent->BindAction(InputConfig->CamToggleAction, ETriggerEvent::Started, this, &AFirstPersonCharacter::TryCamToggle);
 
 	EnhancedInputComponent->BindAction(InputConfig->WidgetEscapeAction,ETriggerEvent::Started,this, &AFirstPersonCharacter::HandleWidgetEscapeInput);
+
+	EnhancedInputComponent->BindAction(InputConfig->InGameSettingAction, ETriggerEvent::Started, this, &AFirstPersonCharacter::HandleWidgetEscapeInput);
 
 	EnhancedInputComponent->BindAction(InputConfig->WidgetConfirmedAction,ETriggerEvent::Started,this,&AFirstPersonCharacter::HandleWidgetConfirmedInput);
 	
@@ -187,7 +202,16 @@ void AFirstPersonCharacter::HandleWidgetEscapeInput()
 
 	if (ULocalPlayerUILayerSubsystem* LayerSubsystem = GetUILayerSubsystem())
 	{
-		LayerSubsystem->RouteWidgetEscapeInput();
+		if (LayerSubsystem->RouteWidgetEscapeInput(false))
+		{
+			return;
+		}
+	}
+
+	if (AFirstPersonPlayerController* FirstPersonController =
+		Cast<AFirstPersonPlayerController>(GetController()))
+	{
+		FirstPersonController->RequestOpenInGameSetting();
 	}
 }
 

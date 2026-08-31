@@ -1,5 +1,6 @@
 #include "Audio/OutlierAudioSubsystem.h"
 
+#include "Components/AudioComponent.h"
 #include "Engine/AssetManager.h"
 #include "Engine/StreamableManager.h"
 #include "Engine/World.h"
@@ -59,6 +60,10 @@ namespace
 void UOutlierAudioSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
+	VolumeMultipliers.Add(EOutlierAudioVolumeType::Master, 1.0f);
+	VolumeMultipliers.Add(EOutlierAudioVolumeType::BGM, 1.0f);
+	VolumeMultipliers.Add(EOutlierAudioVolumeType::SFX, 1.0f);
+	VolumeMultipliers.Add(EOutlierAudioVolumeType::Voice, 1.0f);
 	ReloadCatalog();
 }
 
@@ -73,6 +78,8 @@ void UOutlierAudioSubsystem::Deinitialize()
 	}
 
 	ActiveLoadHandles.Empty();
+	VolumeMultipliers.Empty();
+	ActiveAudioPlaybacks.Empty();
 	PendingPlaysBySound.Empty();
 	CatalogEntriesByEvent.Empty();
 	LoadedDefinitions.Empty();
@@ -172,6 +179,7 @@ bool UOutlierAudioSubsystem::ReloadCatalog()
 			Entry.Weight = Variant.Weight;
 			Entry.VolumeMultiplier = Definition->VolumeMultiplier;
 			Entry.PitchMultiplier = Definition->PitchMultiplier;
+			Entry.VolumeType = Definition->VolumeType;
 
 			CatalogEntriesByEvent.FindOrAdd(Definition->EventTag).Add(MoveTemp(Entry));
 			++LoadedVariantCount;
@@ -349,8 +357,41 @@ bool UOutlierAudioSubsystem::PlayResolvedAudioLocally(
 	PendingPlay.VolumeMultiplier = Entry->VolumeMultiplier;
 	PendingPlay.PitchMultiplier = Entry->PitchMultiplier;
 	PendingPlay.StartTime = ResolvedPlay.StartTime;
+	PendingPlay.VolumeType = Entry->VolumeType;
 
 	return QueueOrPlay(*Entry, PendingPlay);
+}
+
+void UOutlierAudioSubsystem::SetVolumeMultiplier(
+	EOutlierAudioVolumeType VolumeType,
+	float NewMultiplier)
+{
+	VolumeMultipliers.FindOrAdd(VolumeType) = FMath::Clamp(NewMultiplier, 0.0f, 1.0f);
+	RefreshActiveAudioComponentVolumes(VolumeType);
+}
+
+float UOutlierAudioSubsystem::GetVolumeMultiplier(EOutlierAudioVolumeType VolumeType) const
+{
+	if (const float* VolumeMultiplier = VolumeMultipliers.Find(VolumeType))
+	{
+		return *VolumeMultiplier;
+	}
+
+	return 1.0f;
+}
+
+void UOutlierAudioSubsystem::StopAllLocalAudio()
+{
+	for (FActiveAudioPlayback& ActivePlayback : ActiveAudioPlaybacks)
+	{
+		if (UAudioComponent* AudioComponent = ActivePlayback.Component.Get())
+		{
+			AudioComponent->Stop();
+		}
+	}
+
+	ActiveAudioPlaybacks.Empty();
+	PendingPlaysBySound.Empty();
 }
 
 const UOutlierAudioSubsystem::FRuntimeCatalogEntry* UOutlierAudioSubsystem::ResolveBestEntry(
@@ -756,7 +797,7 @@ void UOutlierAudioSubsystem::HandleSoundLoaded(FSoftObjectPath SoundPath)
 
 void UOutlierAudioSubsystem::ExecutePlay(
 	USoundBase* Sound,
-	const FPendingPlay& PendingPlay) const
+	const FPendingPlay& PendingPlay)
 {
 	UWorld* World = PendingPlay.World.Get();
 	if (!World || !Sound)
@@ -808,20 +849,98 @@ void UOutlierAudioSubsystem::ExecutePlay(
 
 	if (PendingPlay.bAtLocation)
 	{
-		UGameplayStatics::PlaySoundAtLocation(
+		UAudioComponent* AudioComponent = UGameplayStatics::SpawnSoundAtLocation(
 			World,
 			Sound,
 			PendingPlay.Location,
-			PendingPlay.VolumeMultiplier,
+			FRotator::ZeroRotator,
+			PendingPlay.VolumeMultiplier * GetCombinedVolumeMultiplier(PendingPlay.VolumeType),
 			PendingPlay.PitchMultiplier,
-			PendingPlay.StartTime);
+			PendingPlay.StartTime,
+			Sound->AttenuationSettings,
+			nullptr,
+			true);
+		TrackActiveAudioComponent(
+			AudioComponent,
+			PendingPlay.VolumeMultiplier,
+			PendingPlay.VolumeType);
 		return;
 	}
 
-	UGameplayStatics::PlaySound2D(
+	UAudioComponent* AudioComponent = UGameplayStatics::SpawnSound2D(
 		World,
 		Sound,
-		PendingPlay.VolumeMultiplier,
+		PendingPlay.VolumeMultiplier * GetCombinedVolumeMultiplier(PendingPlay.VolumeType),
 		PendingPlay.PitchMultiplier,
-		PendingPlay.StartTime);
+		PendingPlay.StartTime,
+		nullptr,
+		false,
+		true);
+	TrackActiveAudioComponent(
+		AudioComponent,
+		PendingPlay.VolumeMultiplier,
+		PendingPlay.VolumeType);
+}
+
+void UOutlierAudioSubsystem::TrackActiveAudioComponent(
+	UAudioComponent* AudioComponent,
+	float BaseVolumeMultiplier,
+	EOutlierAudioVolumeType VolumeType)
+{
+	if (!AudioComponent)
+	{
+		return;
+	}
+
+	RemoveInactiveAudioComponents();
+
+	FActiveAudioPlayback& ActivePlayback = ActiveAudioPlaybacks.AddDefaulted_GetRef();
+	ActivePlayback.Component = AudioComponent;
+	ActivePlayback.BaseVolumeMultiplier = BaseVolumeMultiplier;
+	ActivePlayback.VolumeType = VolumeType;
+}
+
+void UOutlierAudioSubsystem::RemoveInactiveAudioComponents()
+{
+	ActiveAudioPlaybacks.RemoveAll(
+		[](const FActiveAudioPlayback& ActivePlayback)
+		{
+			const UAudioComponent* AudioComponent = ActivePlayback.Component.Get();
+			return !AudioComponent || !AudioComponent->IsPlaying();
+		});
+}
+
+void UOutlierAudioSubsystem::RefreshActiveAudioComponentVolumes(
+	EOutlierAudioVolumeType ChangedVolumeType)
+{
+	RemoveInactiveAudioComponents();
+
+	for (FActiveAudioPlayback& ActivePlayback : ActiveAudioPlaybacks)
+	{
+		if (ChangedVolumeType != EOutlierAudioVolumeType::Master
+			&& ActivePlayback.VolumeType != ChangedVolumeType)
+		{
+			continue;
+		}
+
+		if (UAudioComponent* AudioComponent = ActivePlayback.Component.Get())
+		{
+			AudioComponent->SetVolumeMultiplier(
+				ActivePlayback.BaseVolumeMultiplier
+				* GetCombinedVolumeMultiplier(ActivePlayback.VolumeType));
+		}
+	}
+}
+
+float UOutlierAudioSubsystem::GetCombinedVolumeMultiplier(
+	EOutlierAudioVolumeType VolumeType) const
+{
+	const float MasterMultiplier =
+		GetVolumeMultiplier(EOutlierAudioVolumeType::Master);
+	if (VolumeType == EOutlierAudioVolumeType::Master)
+	{
+		return MasterMultiplier;
+	}
+
+	return MasterMultiplier * GetVolumeMultiplier(VolumeType);
 }
