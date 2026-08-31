@@ -2,6 +2,44 @@
 
 #include "Engine/DataTable.h"
 #include "Engine/Texture2D.h"
+#if WITH_EDITOR
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#endif
+
+TArray<FName> UOutlierUpgradeSetData::GetApplyEffectKeyOptions()
+{
+	TArray<FName> Keys;
+
+#if WITH_EDITOR
+	IAssetRegistry& AssetRegistry =
+		FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+
+	TArray<FAssetData> Assets;
+	AssetRegistry.GetAssetsByClass(UOutlierUpgradeSetData::StaticClass()->GetClassPathName(), Assets);
+
+	for (const FAssetData& AssetData : Assets)
+	{
+		const UOutlierUpgradeSetData* SetData = Cast<UOutlierUpgradeSetData>(AssetData.GetAsset());
+		if (!SetData)
+		{
+			continue;
+		}
+
+		for (const TPair<FName, TSubclassOf<UGameplayEffect>>& Pair : SetData->ApplyEffectClasses)
+		{
+			if (!Pair.Key.IsNone())
+			{
+				Keys.AddUnique(Pair.Key);
+			}
+		}
+	}
+
+	Keys.Sort(FNameLexicalLess());
+#endif
+
+	return Keys;
+}
 
 void UOutlierUpgradeSetData::RefreshUnlockedNodeTextureBindings()
 {

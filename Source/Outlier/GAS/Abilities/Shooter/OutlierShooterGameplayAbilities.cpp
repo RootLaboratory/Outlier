@@ -309,6 +309,10 @@ UOutlierShooterBulletReflectionAbility::UOutlierShooterBulletReflectionAbility()
 	FGameplayTagContainer Tags;
 	Tags.AddTag(OutlierGameplayTags::Ability::Shooter::BulletReflection());
 	SetAssetTags(Tags);
+
+	// 업그레이드로 획득하기 전에는 발동 불가. UpgradeComponent 의 GrantAbility 투영이
+	// 이 태그를 ASC 에 loose 태그로 부여하면 그때부터 발동 가능해진다.
+	ActivationRequiredTags.AddTag(OutlierGameplayTags::Ability::Shooter::BulletReflection());
 }
 
 bool UOutlierShooterBulletReflectionAbility::CanActivateAbility(
@@ -434,6 +438,9 @@ UOutlierShooterWeaponOverchargeAbility::UOutlierShooterWeaponOverchargeAbility()
 	FGameplayTagContainer Tags;
 	Tags.AddTag(OutlierGameplayTags::Ability::Shooter::WeaponOvercharge());
 	SetAssetTags(Tags);
+
+	// 업그레이드로 획득하기 전에는 발동 불가 ( GrantAbility 투영이 grant 태그 부여 시 해금 ).
+	ActivationRequiredTags.AddTag(OutlierGameplayTags::Ability::Shooter::WeaponOvercharge());
 }
 
 bool UOutlierShooterWeaponOverchargeAbility::CanActivateAbility(

@@ -39,6 +39,11 @@ public class Outlier : ModuleRules
         {
         });
 
+        if (Target.bBuildEditor)
+        {
+            PrivateDependencyModuleNames.Add("AssetRegistry");
+        }
+
         PublicIncludePaths.AddRange(new string[] {
             ModuleDirectory
         });

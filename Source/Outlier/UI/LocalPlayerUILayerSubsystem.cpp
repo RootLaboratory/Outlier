@@ -23,24 +23,7 @@ void ULocalPlayerUILayerSubsystem::Initialize(FSubsystemCollectionBase& Collecti
 void ULocalPlayerUILayerSubsystem::Deinitialize()
 {
 	bIsDeinitializing = true;
-
-	for (FUILayerEntry& Entry : LayerEntries)
-	{
-		if (UWidget* HitTestBlocker = Entry.HitTestBlocker.Get())
-		{
-			HitTestBlocker->RemoveFromParent();
-		}
-
-		if (UUserWidget* Widget = Entry.Widget.Get())
-		{
-			Widget->RemoveFromParent();
-		}
-	}
-
-	LayerEntries.Reset();
-	CachedTopLayerHandle.Reset();
-	CachedInputWidget.Reset();
-	CachedInputModeTag = FGameplayTag();
+	ClearAllLayersInternal(false);
 	DestroyLayerRoot();
 	RegisteredMainUI.Reset();
 
@@ -72,16 +55,23 @@ void ULocalPlayerUILayerSubsystem::UnregisterMainUI(UMainUIBase* MainUI)
 
 bool ULocalPlayerUILayerSubsystem::EnsureLayerRoot()
 {
-	if (IsValid(LayerRootWidget))
-	{
-		return true;
-	}
-
 	APlayerController* PlayerController = GetLocalPlayerController();
 	if (!PlayerController)
 	{
 		return false;
 	}
+
+	if (IsValid(LayerRootWidget)
+		&& LayerRootWidget->GetOwningPlayer() == PlayerController
+		&& LayerRootWidget->IsInViewport())
+	{
+		return true;
+	}
+
+	// Local player subsystems survive travel, but viewport widgets and player
+	// controllers do not. Discard any layer state owned by the previous world.
+	ClearAllLayersInternal(false);
+	DestroyLayerRoot();
 
 	//Layer 관리를 위해서 만드는 Canvas.
 
@@ -452,7 +442,25 @@ int32 ULocalPlayerUILayerSubsystem::PopLayersByOwner(UObject* RequestOwner)
 
 void ULocalPlayerUILayerSubsystem::ClearAllLayers()
 {
-	for (FUILayerEntry& Entry : LayerEntries)
+	ClearAllLayersInternal(true);
+}
+
+void ULocalPlayerUILayerSubsystem::ClearAllLayersInternal(
+	bool bRestoreDefaultInput)
+{
+	if (bIsClearingLayers)
+	{
+		return;
+	}
+
+	TGuardValue<bool> ClearingGuard(bIsClearingLayers, true);
+	TArray<FUILayerEntry> EntriesToRemove = MoveTemp(LayerEntries);
+
+	CachedTopLayerHandle.Reset();
+	CachedInputWidget.Reset();
+	CachedInputModeTag = FGameplayTag();
+
+	for (FUILayerEntry& Entry : EntriesToRemove)
 	{
 		if (UWidget* HitTestBlocker = Entry.HitTestBlocker.Get())
 		{
@@ -465,11 +473,7 @@ void ULocalPlayerUILayerSubsystem::ClearAllLayers()
 		}
 	}
 
-	LayerEntries.Reset();
-	CachedTopLayerHandle.Reset();
-	CachedInputWidget.Reset();
-	CachedInputModeTag = FGameplayTag();
-	if (!bIsDeinitializing)
+	if (bRestoreDefaultInput && !bIsDeinitializing)
 	{
 		ApplyDefaultInput();
 	}
@@ -513,11 +517,11 @@ FGameplayTag ULocalPlayerUILayerSubsystem::GetActiveInputModeTag() const
 	return CachedInputModeTag;
 }
 
-bool ULocalPlayerUILayerSubsystem::RouteWidgetEscapeInput()
+bool ULocalPlayerUILayerSubsystem::RouteWidgetEscapeInput(bool bPopUnhandledInput)
 {
 	return RouteWidgetInput(
 		&IUILayerInputReceiver::Execute_HandleUILayerEscape,
-		true);
+		bPopUnhandledInput);
 }
 
 bool ULocalPlayerUILayerSubsystem::RouteWidgetConfirmedInput()

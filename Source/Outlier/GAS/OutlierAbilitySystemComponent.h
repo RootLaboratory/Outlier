@@ -77,6 +77,9 @@ public:
 	bool ArePartnerSkillCooldownsSuspended() const { return bPartnerSkillCooldownsSuspended; }
 	void CancelActivePartnerAbilities();
 	bool ConfigureShooterSuitAbilities(const FOutlierShooterSuitConfig& Config);
+	// 능력 재-grant 없이 런타임에 SuitConfig 값만 교체한다 ( 업그레이드 AbilityConfig 투영용 ).
+	// ConfigureShooterSuitAbilities 의 grant 락과 무관하게 authority 에서 config 만 갱신한다.
+	bool UpdateShooterSuitConfig(const FOutlierShooterSuitConfig& Config);
 	bool TryActivateShooterSuitAbility(const FGameplayTag& AbilityTag);
 	bool IsShooterSuitConfigured() const { return bShooterSuitConfigured; }
 	const FOutlierShooterSuitConfig& GetShooterSuitConfig() const { return ShooterSuitConfig; }

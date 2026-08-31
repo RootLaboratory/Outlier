@@ -81,7 +81,7 @@ public:
 	bool IsLayerActive(FGameplayTag LayerTag) const;
 	UUserWidget* GetTopLayerWidget() const;
 	FGameplayTag GetActiveInputModeTag() const;
-	bool RouteWidgetEscapeInput();
+	bool RouteWidgetEscapeInput(bool bPopUnhandledInput = true);
 	bool RouteWidgetConfirmedInput();
 	bool RouteWidgetUpInput();
 	bool RouteWidgetDownInput();
@@ -102,6 +102,7 @@ private:
 	bool RouteWidgetInput(
 		bool (*InputExecutor)(UObject*),
 		bool bPopUnhandledInput);
+	void ClearAllLayersInternal(bool bRestoreDefaultInput);
 
 	void RefreshTopLayerInput();
 	void ApplyLayerInput(const FUILayerEntry& Layer);
@@ -122,4 +123,5 @@ private:
 	FGameplayTag CachedInputModeTag;
 	int32 NextLayerId = 1;
 	bool bIsDeinitializing = false;
+	bool bIsClearingLayers = false;
 };

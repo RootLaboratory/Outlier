@@ -5,6 +5,7 @@
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
 #include "Engine/LocalPlayer.h"
+#include "GameFramework/GameModeBase.h" //디버깅
 #include "InputMappingContext.h"
 #include "Network/OutlierMatchmakingSubsystem.h"
 #include "UI/LoadingWidget.h"
@@ -16,6 +17,14 @@
 void AFrontendPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
+
+	/*UE_LOG(LogTemp, Warning,
+		TEXT("[TitleDiag] FrontendPC BeginPlay PC=%s Local=%d TitleWidgetClass=%s GameMode=%s Map=%s"),
+		*GetNameSafe(this),
+		IsLocalController(),
+		*GetNameSafe(TitleWidgetClass),
+		*GetNameSafe(GetWorld() ? GetWorld()->GetAuthGameMode() : nullptr),
+		GetWorld() ? *GetWorld()->GetMapName() : TEXT("None"));*/
 
 	if (IsLocalController())
 	{
@@ -43,32 +52,20 @@ void AFrontendPlayerController::BeginPlay()
 			}
 		}
 	}
+
+
 }
 
 void AFrontendPlayerController::AcknowledgePossession(APawn* P)
 {
 	Super::AcknowledgePossession(P);
 
-	//UE_LOG(LogTemp, Warning, TEXT("[FrontendPC] AcknowledgePossession: Pawn=%s"), *GetNameSafe(P));
-
-	if (!P)
-	{
-		return;
-	}
-
-	if (ULocalPlayerUILayerSubsystem* LayerSubsystem = GetLocalPlayer()
-		? GetLocalPlayer()->GetSubsystem<ULocalPlayerUILayerSubsystem>()
-		: nullptr)
-	{
-		LayerSubsystem->ClearAllLayers();
-	}
-
-	TitleLayerHandle.Reset();
-	TitleWidget = nullptr;
-
-	FInputModeGameOnly InputMode;
-	SetInputMode(InputMode);
-	bShowMouseCursor = false;
+	UE_LOG(
+		LogTemp,
+		Warning,
+		TEXT("[TitleDiag] FrontendPC AcknowledgePossession Pawn=%s TitleWidget=%s KeepTitleLayer=1"),
+		*GetNameSafe(P),
+		*GetNameSafe(TitleWidget));
 }
 
 void AFrontendPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)

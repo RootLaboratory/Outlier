@@ -647,6 +647,30 @@ bool UOutlierAbilitySystemComponent::TryActivateShooterSuitAbility(const FGamepl
 	return bActivated;
 }
 
+bool UOutlierAbilitySystemComponent::UpdateShooterSuitConfig(const FOutlierShooterSuitConfig& Config)
+{
+	if (!IsOwnerActorAuthoritative() || !bShooterSuitConfigured)
+	{
+		return false;
+	}
+
+	FString Error;
+	if (!Config.IsValid(Error))
+	{
+#if UE_BUILD_SHIPPING
+		UE_LOG(LogOutlier, Error, TEXT("[GAS.ShooterSuit] Invalid runtime config: %s"), *Error);
+		return false;
+#else
+		checkf(false, TEXT("[GAS.ShooterSuit] Invalid runtime config: %s"), *Error);
+		return false;
+#endif
+	}
+
+	// 능력은 이미 grant 된 상태. 값만 교체하면 다음 발동부터 반영된다.
+	ShooterSuitConfig = Config;
+	return true;
+}
+
 int32 UOutlierAbilitySystemComponent::GetGrantedShooterSuitAbilityCount() const
 {
 	int32 Count = 0;
