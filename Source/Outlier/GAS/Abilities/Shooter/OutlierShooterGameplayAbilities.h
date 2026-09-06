@@ -20,6 +20,9 @@ public:
 protected:
 	AShooterCharacter* GetShooterCharacter() const;
 	UOutlierAbilitySystemComponent* GetOutlierAbilitySystem() const;
+	bool PassesUpgradeGrantGate(
+		const FGameplayAbilityActorInfo* ActorInfo,
+		const FGameplayTag& AbilityTag) const;
 };
 
 UCLASS()

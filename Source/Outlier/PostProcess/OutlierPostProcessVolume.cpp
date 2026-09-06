@@ -4,6 +4,7 @@
 #include "PostProcess/OutlierPostProcessVolume.h"
 
 #include "PostProcess/MaterialPostProcessSubsystem.h"
+#include "Curves/CurveFloat.h"
 #include "Engine/Scene.h"
 #include "Engine/World.h"
 #include "Engine/GameInstance.h"
@@ -18,6 +19,13 @@ void AOutlierPostProcessVolume::BeginPlay()
 {
 	Super::BeginPlay();
 
+	if (ThirdPersonStealthPostProcessMaterial)
+	{
+		PostProcessMaterials.FindOrAdd(EOutlierPostProcessMaterialType::Stealth) =
+			ThirdPersonStealthPostProcessMaterial;
+	}
+
+	InitializeRuntimePostProcessMaterial(EOutlierPostProcessMaterialType::Stealth);
 	InitializeRuntimePostProcessMaterial(EOutlierPostProcessMaterialType::Damaged);
 
 	if (!HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::Stealth))
@@ -172,6 +180,7 @@ void AOutlierPostProcessVolume::SetDamagedMaterialParameters(float InRatio)
 void AOutlierPostProcessVolume::ResetPostProcessMaterialParameters()
 {
 	SetScanMaterialParameters(FVector::ZeroVector, 0.0f, 0.0f);
+	UpdateStealthMaterialParameters(0.0f);
 	UpdateDamagedMaterialParameters(1.0f);
 	ScanRangeRange = 0.0f;
 }
@@ -251,6 +260,29 @@ void AOutlierPostProcessVolume::UpdateScanMaterialParameters(FVector ScanLocatio
 		ScanProgressParameterName,
 		Progress
 	);
+}
+
+void AOutlierPostProcessVolume::UpdateStealthMaterialParameters(float InFade) const
+{
+	const TObjectPtr<UMaterialInterface>* StealthMaterial =
+		PostProcessMaterials.Find(EOutlierPostProcessMaterialType::Stealth);
+	UMaterialInstanceDynamic* StealthMID = StealthMaterial
+		? Cast<UMaterialInstanceDynamic>(StealthMaterial->Get())
+		: nullptr;
+
+	if (StealthMID && !StealthFadeParameterName.IsNone())
+	{
+		const float LinearFade = FMath::Clamp(InFade, 0.0f, 1.0f);
+		const float FadeWeight = LinearFade <= 0.0f || LinearFade >= 1.0f
+			? LinearFade
+			: StealthFadeCurve
+				? FMath::Clamp(StealthFadeCurve->GetFloatValue(LinearFade), 0.0f, 1.0f)
+				: LinearFade;
+
+		StealthMID->SetScalarParameterValue(
+			StealthFadeParameterName,
+			FadeWeight);
+	}
 }
 
 void AOutlierPostProcessVolume::UpdateDamagedMaterialParameters(float InPlayerHPRatio)  const

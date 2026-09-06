@@ -86,6 +86,23 @@ void UMaterialPostProcessSubsystem::UpdateScanPostProcess(
 	BoundPostProcessVolume->UpdateScanMaterialParameters(ScanOrigin, CurrentScanRadius);
 }
 
+void UMaterialPostProcessSubsystem::UpdateStealthPostProcess(float InFade)
+{
+	if (ShouldSkipRenderingWork() || !BoundPostProcessVolume)
+	{
+		return;
+	}
+
+	BoundPostProcessVolume->UpdateStealthMaterialParameters(InFade);
+}
+
+UMaterialInterface* UMaterialPostProcessSubsystem::GetFirstPersonStealthGlassMaterial() const
+{
+	return BoundPostProcessVolume
+		? BoundPostProcessVolume->GetFirstPersonStealthGlassMaterial()
+		: nullptr;
+}
+
 void UMaterialPostProcessSubsystem::UpdateDamagedPostProcess(float InHPRatio)
 {
 	if (ShouldSkipRenderingWork() || !BoundPostProcessVolume)

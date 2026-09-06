@@ -203,7 +203,8 @@ bool ULocalPlayerSettingsSubsystem::ApplyResolutionPreset()
 		return false;
 	}
 
-	GameUserSettings->SetScreenResolution(ResolutionOptions[ResolutionIndex].Resolution);
+	const FOutlierResolutionOption& ResolutionOption = ResolutionOptions[ResolutionIndex];
+	GameUserSettings->SetScreenResolution(ResolutionOption.Resolution);
 	GameUserSettings->ApplySettings(false);
 	GameUserSettings->SaveSettings();
 	return true;

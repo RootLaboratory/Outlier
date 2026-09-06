@@ -6,7 +6,6 @@
 #include "GAS/Effects/OutlierGameplayEffects.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "GameplayTags/OutlierGameplayTags.h"
-#include "Outlier.h"
 #include "Shooter/ShooterCharacter.h"
 #include "TimerManager.h"
 #include "Weapon/RangedWeaponBase.h"
@@ -43,6 +42,33 @@ UOutlierAbilitySystemComponent* UOutlierShooterGameplayAbility::GetOutlierAbilit
 	return Cast<UOutlierAbilitySystemComponent>(GetAbilitySystemComponentFromActorInfo());
 }
 
+bool UOutlierShooterGameplayAbility::PassesUpgradeGrantGate(
+	const FGameplayAbilityActorInfo* ActorInfo,
+	const FGameplayTag& AbilityTag) const
+{
+	const UOutlierAbilitySystemComponent* AbilitySystem = ActorInfo
+		? Cast<UOutlierAbilitySystemComponent>(ActorInfo->AbilitySystemComponent.Get())
+		: nullptr;
+	if (!AbilitySystem || !AbilityTag.IsValid())
+	{
+		return false;
+	}
+
+	// 그랜트가 필요 없는 능력(false)은 항상 통과, 필요한 능력(true)은 실제 태그가 있어야 통과.
+	// Shipping 에서는 이 판정을 절대 안 건너뛴다.
+	const bool bRealGrantPass = !AbilitySystem->IsShooterSuitAbilityUpgradeGrantRequired(AbilityTag)
+		|| AbilitySystem->HasMatchingGameplayTag(AbilityTag);
+
+#if UE_BUILD_SHIPPING
+	return bRealGrantPass;
+#else
+	// 테스트 전용 마스터 스위치( bNoGrantMode, 기본 true ): 켜져 있으면 업그레이드 트리를 하나도 안
+	// 찍었어도 Shooter 슈트 능력을 전부 바로 테스트할 수 있도록 위 판정을 통째로 건너뛰고 무조건 통과.
+	// 꺼두면 에디터/개발 빌드에서도 Shipping 과 완전히 같은 판정(bRealGrantPass)을 그대로 탄다.
+	return AbilitySystem->IsUpgradeGrantTestModeEnabled() || bRealGrantPass;
+#endif
+}
+
 UOutlierShooterQuantumLeapAbility::UOutlierShooterQuantumLeapAbility()
 {
 	FGameplayTagContainer Tags;
@@ -57,6 +83,10 @@ bool UOutlierShooterQuantumLeapAbility::CanActivateAbility(
 	const FGameplayTagContainer* TargetTags,
 	FGameplayTagContainer* OptionalRelevantTags) const
 {
+	if (!PassesUpgradeGrantGate(ActorInfo, OutlierGameplayTags::Ability::Shooter::QuantumLeap()))
+	{
+		return false;
+	}
 	if (!Super::CanActivateAbility(Handle, ActorInfo, SourceTags, TargetTags, OptionalRelevantTags))
 	{
 		return false;
@@ -309,10 +339,6 @@ UOutlierShooterBulletReflectionAbility::UOutlierShooterBulletReflectionAbility()
 	FGameplayTagContainer Tags;
 	Tags.AddTag(OutlierGameplayTags::Ability::Shooter::BulletReflection());
 	SetAssetTags(Tags);
-
-	// 업그레이드로 획득하기 전에는 발동 불가. UpgradeComponent 의 GrantAbility 투영이
-	// 이 태그를 ASC 에 loose 태그로 부여하면 그때부터 발동 가능해진다.
-	ActivationRequiredTags.AddTag(OutlierGameplayTags::Ability::Shooter::BulletReflection());
 }
 
 bool UOutlierShooterBulletReflectionAbility::CanActivateAbility(
@@ -322,6 +348,10 @@ bool UOutlierShooterBulletReflectionAbility::CanActivateAbility(
 	const FGameplayTagContainer* TargetTags,
 	FGameplayTagContainer* OptionalRelevantTags) const
 {
+	if (!PassesUpgradeGrantGate(ActorInfo, OutlierGameplayTags::Ability::Shooter::BulletReflection()))
+	{
+		return false;
+	}
 	if (!Super::CanActivateAbility(Handle, ActorInfo, SourceTags, TargetTags, OptionalRelevantTags))
 	{
 		return false;
@@ -438,9 +468,6 @@ UOutlierShooterWeaponOverchargeAbility::UOutlierShooterWeaponOverchargeAbility()
 	FGameplayTagContainer Tags;
 	Tags.AddTag(OutlierGameplayTags::Ability::Shooter::WeaponOvercharge());
 	SetAssetTags(Tags);
-
-	// 업그레이드로 획득하기 전에는 발동 불가 ( GrantAbility 투영이 grant 태그 부여 시 해금 ).
-	ActivationRequiredTags.AddTag(OutlierGameplayTags::Ability::Shooter::WeaponOvercharge());
 }
 
 bool UOutlierShooterWeaponOverchargeAbility::CanActivateAbility(
@@ -450,6 +477,10 @@ bool UOutlierShooterWeaponOverchargeAbility::CanActivateAbility(
 	const FGameplayTagContainer* TargetTags,
 	FGameplayTagContainer* OptionalRelevantTags) const
 {
+	if (!PassesUpgradeGrantGate(ActorInfo, OutlierGameplayTags::Ability::Shooter::WeaponOvercharge()))
+	{
+		return false;
+	}
 	if (!Super::CanActivateAbility(Handle, ActorInfo, SourceTags, TargetTags, OptionalRelevantTags))
 	{
 		return false;
@@ -630,6 +661,10 @@ bool UOutlierShooterStealthAbility::CanActivateAbility(
 	const FGameplayTagContainer* TargetTags,
 	FGameplayTagContainer* OptionalRelevantTags) const
 {
+	if (!PassesUpgradeGrantGate(ActorInfo, OutlierGameplayTags::Ability::Shooter::Stealth()))
+	{
+		return false;
+	}
 	if (!Super::CanActivateAbility(Handle, ActorInfo, SourceTags, TargetTags, OptionalRelevantTags))
 	{
 		return false;
@@ -706,6 +741,7 @@ void UOutlierShooterStealthAbility::ActivateAbility(
 		UOutlierShooterStealthGameplayEffect::StaticClass(), Duration, Shooter);
 	PartnerStealthHandle = PartnerASC->ApplyTimedGameplayEffectToSelf(
 		UOutlierShooterStealthGameplayEffect::StaticClass(), Duration, Shooter);
+
 	if (!ShooterStealthHandle.IsValid() || !PartnerStealthHandle.IsValid())
 	{
 		EndStealth(false);

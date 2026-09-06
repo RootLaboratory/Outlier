@@ -44,6 +44,9 @@
 #include "OutlierPlayerState.h"
 #include "OutlierNetUtils.h"
 #include "Outlier.h"
+#include "UI/LocalPlayerUILayerSubsystem.h"
+#include "UI/ShooterReflectionBarrier.h"
+#include "UI/UILayerGameplayTags.h"
 
 namespace
 {
@@ -225,18 +228,20 @@ void AShooterCharacter::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 
+	UpdateStealthPostProcessFade(DeltaSeconds);
 	UpdateSlideCameraEffect(DeltaSeconds);
 	UpdateCameraFOV(DeltaSeconds);
 }
 
 void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	PopReflectionBarrierWidget();
 	UnbindPartnerSuitStateObserver();
 	CancelActiveQuantumLeap();
 	EndActiveBulletReflection(false);
 	EndActiveWeaponOvercharge(false);
 	EndActiveStealth(false);
-	SetStealthVisualEnabled(false);
+	ResetStealthVisualsImmediately();
 
 	if (HasAuthority())
 	{
@@ -316,6 +321,11 @@ void AShooterCharacter::RefreshAbilitySystemActorInfo()
 	if (OutlierAbilitySystemComponent)
 	{
 		OutlierAbilitySystemComponent->InitializeForPawn(this);
+	}
+
+	if (UpgradeComponent)
+	{
+		UpgradeComponent->SyncFromPlayerState();
 	}
 }
 
@@ -505,13 +515,131 @@ void AShooterCharacter::HandleStealthTagChanged(const FGameplayTag Tag, int32 Ne
 void AShooterCharacter::HandleBulletReflectionTagChanged(const FGameplayTag Tag, int32 NewCount)
 {
 	(void)Tag;
-	BP_OnBulletReflectionStateChanged(NewCount > 0);
+	const bool bReflectionActive = NewCount > 0;
+	BP_OnBulletReflectionStateChanged(bReflectionActive);
+
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+
+	if (bReflectionActive)
+	{
+		PushReflectionBarrierWidget();
+	}
+	else
+	{
+		PopReflectionBarrierWidget();
+	}
+}
+
+void AShooterCharacter::PushReflectionBarrierWidget()
+{
+	if (ReflectionBarrierLayerHandle.IsValid() || !ReflectionBarrierWidgetClass)
+	{
+		return;
+	}
+
+	APlayerController* PlayerController = Cast<APlayerController>(GetController());
+	ULocalPlayer* LocalPlayer = PlayerController ? PlayerController->GetLocalPlayer() : nullptr;
+	ULocalPlayerUILayerSubsystem* LayerSubsystem = LocalPlayer
+		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()
+		: nullptr;
+	if (!LayerSubsystem)
+	{
+		return;
+	}
+
+	UShooterReflectionBarrier* BarrierWidget = CreateWidget<UShooterReflectionBarrier>(
+		PlayerController,
+		ReflectionBarrierWidgetClass);
+	if (!BarrierWidget)
+	{
+		return;
+	}
+	ReflectionBarrierWidgetInstance = BarrierWidget;
+
+	ReflectionBarrierLayerHandle = LayerSubsystem->PushWidget(
+		UILayerTags::Gameplay(),
+		BarrierWidget,
+		FirstPersonInputModeTags::UI(),
+		this,
+		EUILayerFocusTarget::None,
+		false,
+		false);
+	if (!ReflectionBarrierLayerHandle.IsValid())
+	{
+		ReflectionBarrierWidgetInstance = nullptr;
+		return;
+	}
+
+	if (bHasPendingReflectionVisual)
+	{
+		ReflectionBarrierWidgetInstance->PlayHitRipple(PendingReflectionVisualOrigin);
+		bHasPendingReflectionVisual = false;
+	}
+}
+
+void AShooterCharacter::PopReflectionBarrierWidget()
+{
+	if (!ReflectionBarrierLayerHandle.IsValid())
+	{
+		return;
+	}
+
+	APlayerController* PlayerController = Cast<APlayerController>(GetController());
+	ULocalPlayer* LocalPlayer = PlayerController ? PlayerController->GetLocalPlayer() : nullptr;
+	if (ULocalPlayerUILayerSubsystem* LayerSubsystem = LocalPlayer
+		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()
+		: nullptr)
+	{
+		LayerSubsystem->PopLayer(ReflectionBarrierLayerHandle);
+	}
+
+	ReflectionBarrierLayerHandle.Reset();
+	ReflectionBarrierWidgetInstance = nullptr;
+	bHasPendingReflectionVisual = false;
+}
+
+void AShooterCharacter::NotifyLocalBulletReflected(const FVector& IncomingOrigin)
+{
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+
+	if (IsValid(ReflectionBarrierWidgetInstance))
+	{
+		ReflectionBarrierWidgetInstance->PlayHitRipple(IncomingOrigin);
+		return;
+	}
+
+	// The cosmetic multicast can arrive before the replicated reflection tag
+	// creates the local barrier widget. Preserve the latest hit for that frame.
+	PendingReflectionVisualOrigin = IncomingOrigin;
+	bHasPendingReflectionVisual = true;
 }
 
 void AShooterCharacter::HandleWeaponOverchargeTagChanged(const FGameplayTag Tag, int32 NewCount)
 {
 	(void)Tag;
-	BP_OnWeaponOverchargeStateChanged(NewCount > 0);
+	const bool bOverchargeActive = NewCount > 0;
+	if (IsLocallyControlled())
+	{
+		if (const APlayerController* PlayerController = Cast<APlayerController>(GetController()))
+		{
+			if (ULocalPlayer* LocalPlayer = PlayerController->GetLocalPlayer())
+			{
+				if (ULocalPlayerPostProcessSubsystem* PPSubsystem =
+					LocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
+				{
+					PPSubsystem->SetOverlayEnabled(bOverchargeActive);
+				}
+			}
+		}
+	}
+
+	BP_OnWeaponOverchargeStateChanged(bOverchargeActive);
 }
 
 void AShooterCharacter::HandleStealthCooldownTagChanged(const FGameplayTag Tag, int32 NewCount)
@@ -1010,14 +1138,219 @@ void AShooterCharacter::TryUseSuit()
 
 void AShooterCharacter::SetStealthVisualEnabled(bool bEnabled)
 {
-	if (!IsLocallyControlled())
+	if (bEnabled)
+	{
+		SetStealthMeshState(true, true);
+	}
+	else
+	{
+		// Restore first-person materials immediately, but keep third-person stencil
+		// until the post-process fade reaches zero.
+		SetStealthMeshState(false, CurrentStealthPostProcessFade > 0.0f);
+	}
+
+	TargetStealthPostProcessFade = bEnabled ? 1.0f : 0.0f;
+	bStealthStencilCleanupPending = !bEnabled;
+
+	if (UMaterialPostProcessSubsystem* MaterialSub = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
+	{
+		if (bEnabled)
+		{
+			MaterialSub->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Stealth, true);
+		}
+		MaterialSub->UpdateStealthPostProcess(CurrentStealthPostProcessFade);
+	}
+
+	if (StealthPostProcessFadeDuration <= 0.0f)
+	{
+		CurrentStealthPostProcessFade = TargetStealthPostProcessFade;
+		bStealthPostProcessFadeActive = false;
+
+		if (UMaterialPostProcessSubsystem* MaterialSub = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
+		{
+			MaterialSub->UpdateStealthPostProcess(CurrentStealthPostProcessFade);
+		}
+
+		if (!bEnabled)
+		{
+			FinishStealthFadeOut();
+		}
+		return;
+	}
+
+	bStealthPostProcessFadeActive = !FMath::IsNearlyEqual(
+		CurrentStealthPostProcessFade,
+		TargetStealthPostProcessFade);
+
+	if (!bStealthPostProcessFadeActive && !bEnabled)
+	{
+		FinishStealthFadeOut();
+	}
+}
+
+void AShooterCharacter::SetStealthMeshState(
+	bool bUseFirstPersonGlass,
+	bool bWriteThirdPersonStencil)
+{
+	constexpr int32 StealthStencilValue = 5;
+	auto ApplyThirdPersonStencil = [bWriteThirdPersonStencil, StealthStencilValue](
+		USkeletalMeshComponent* MeshComponent)
+	{
+		if (!MeshComponent)
+		{
+			return;
+		}
+
+		MeshComponent->SetCustomDepthStencilValue(
+			bWriteThirdPersonStencil ? StealthStencilValue : 0);
+		MeshComponent->SetRenderCustomDepth(bWriteThirdPersonStencil);
+	};
+
+	UMaterialInterface* FirstPersonGlassMaterial = nullptr;
+	if (UWorld* World = GetWorld())
+	{
+		if (UMaterialPostProcessSubsystem* MaterialSub =
+			World->GetSubsystem<UMaterialPostProcessSubsystem>())
+		{
+			FirstPersonGlassMaterial = MaterialSub->GetFirstPersonStealthGlassMaterial();
+		}
+	}
+
+	SetFirstPersonStealthMaterial(bUseFirstPersonGlass, FirstPersonGlassMaterial);
+	ApplyThirdPersonStencil(GetMesh());
+	if (AWeaponBase* EquippedWeapon = GetCurrentWeapon())
+	{
+		EquippedWeapon->SetStealthVisualState(
+			bUseFirstPersonGlass,
+			bWriteThirdPersonStencil,
+			FirstPersonGlassMaterial,
+			StealthStencilValue);
+	}
+	if (APartnerCharacter* Partner = GetPartnerCharacter())
+	{
+		ApplyThirdPersonStencil(Partner->GetMesh());
+	}
+}
+
+void AShooterCharacter::SetFirstPersonStealthMaterial(
+	bool bEnabled,
+	UMaterialInterface* GlassMaterial)
+{
+	if (!FirstPersonMesh)
 	{
 		return;
 	}
 
+	if (bEnabled)
+	{
+		if (!GlassMaterial || bFirstPersonStealthMaterialApplied)
+		{
+			return;
+		}
+
+		FirstPersonStealthOriginalMaterials.Reset();
+		const int32 MaterialCount = FirstPersonMesh->GetNumMaterials();
+		FirstPersonStealthOriginalMaterials.Reserve(MaterialCount);
+		for (int32 MaterialIndex = 0; MaterialIndex < MaterialCount; ++MaterialIndex)
+		{
+			FirstPersonStealthOriginalMaterials.Add(
+				FirstPersonMesh->GetMaterial(MaterialIndex));
+			FirstPersonMesh->SetMaterial(MaterialIndex, GlassMaterial);
+		}
+
+		bFirstPersonStealthMaterialApplied = true;
+		return;
+	}
+
+	if (!bFirstPersonStealthMaterialApplied)
+	{
+		return;
+	}
+
+	for (int32 MaterialIndex = 0;
+		MaterialIndex < FirstPersonStealthOriginalMaterials.Num();
+		++MaterialIndex)
+	{
+		FirstPersonMesh->SetMaterial(
+			MaterialIndex,
+			FirstPersonStealthOriginalMaterials[MaterialIndex]);
+	}
+
+	FirstPersonStealthOriginalMaterials.Reset();
+	bFirstPersonStealthMaterialApplied = false;
+}
+
+void AShooterCharacter::UpdateStealthPostProcessFade(float DeltaSeconds)
+{
+	if (!bStealthPostProcessFadeActive)
+	{
+		return;
+	}
+
+	const float FadeSpeed = StealthPostProcessFadeDuration > 0.0f
+		? 1.0f / StealthPostProcessFadeDuration
+		: 0.0f;
+	CurrentStealthPostProcessFade = FMath::FInterpConstantTo(
+		CurrentStealthPostProcessFade,
+		TargetStealthPostProcessFade,
+		DeltaSeconds,
+		FadeSpeed);
+	const bool bReachedTarget = FMath::IsNearlyEqual(
+		CurrentStealthPostProcessFade,
+		TargetStealthPostProcessFade);
+	if (bReachedTarget)
+	{
+		CurrentStealthPostProcessFade = TargetStealthPostProcessFade;
+	}
+
 	if (UMaterialPostProcessSubsystem* MaterialSub = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
 	{
-		MaterialSub->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Stealth, bEnabled);
+		MaterialSub->UpdateStealthPostProcess(CurrentStealthPostProcessFade);
+	}
+
+	if (!bReachedTarget)
+	{
+		return;
+	}
+
+	bStealthPostProcessFadeActive = false;
+
+	if (bStealthStencilCleanupPending && CurrentStealthPostProcessFade <= 0.0f)
+	{
+		FinishStealthFadeOut();
+	}
+}
+
+void AShooterCharacter::FinishStealthFadeOut()
+{
+	bStealthStencilCleanupPending = false;
+	SetStealthMeshState(false, false);
+
+	if (UWorld* World = GetWorld())
+	{
+		if (UMaterialPostProcessSubsystem* MaterialSub = World->GetSubsystem<UMaterialPostProcessSubsystem>())
+		{
+			MaterialSub->UpdateStealthPostProcess(0.0f);
+			MaterialSub->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Stealth, false);
+		}
+	}
+}
+
+void AShooterCharacter::ResetStealthVisualsImmediately()
+{
+	CurrentStealthPostProcessFade = 0.0f;
+	TargetStealthPostProcessFade = 0.0f;
+	bStealthPostProcessFadeActive = false;
+	bStealthStencilCleanupPending = false;
+	SetStealthMeshState(false, false);
+
+	if (UWorld* World = GetWorld())
+	{
+		if (UMaterialPostProcessSubsystem* MaterialSub = World->GetSubsystem<UMaterialPostProcessSubsystem>())
+		{
+			MaterialSub->UpdateStealthPostProcess(0.0f);
+			MaterialSub->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Stealth, false);
+		}
 	}
 }
 
@@ -1503,7 +1836,9 @@ bool AShooterCharacter::TryReflectIncomingDamage(const FOutlierDamageRequest& Re
 	if (ReflectedTarget && ReflectedTarget != this)
 	{
 		FOutlierDamageRequest ReflectedRequest;
-		ReflectedRequest.DamageAmount = Request.DamageAmount;
+		const float ReflectDamageMult = OutlierAbilitySystemComponent
+			->GetShooterSuitConfig().BulletReflection.ReflectDamageMult;
+		ReflectedRequest.DamageAmount = Request.DamageAmount * ReflectDamageMult;
 		ReflectedRequest.DamageTag = Request.DamageTag;
 		ReflectedRequest.HitResult = ReflectedHit;
 		ReflectedRequest.DamageOrigin = ReflectionStart;
@@ -1512,19 +1847,16 @@ bool AShooterCharacter::TryReflectIncomingDamage(const FOutlierDamageRequest& Re
 		ReflectedRequest.DamageCauser = CurrentWeapon ? static_cast<AActor*>(CurrentWeapon) : this;
 		OutlierDamage::Apply(ReflectedTarget, ReflectedRequest);
 	}
-	MulticastNotifyBulletReflected(
-		ReflectionStart,
-		bHit ? ReflectedHit.ImpactPoint : ReflectionEnd);
+	ClientPlayReflectionRipple(Request.DamageOrigin);
 
 	// 팀과 관계없이 유효한 공격은 중간 충돌체 유무와 관계없이 보호막에서 소거된다.
 	return true;
 }
 
-void AShooterCharacter::MulticastNotifyBulletReflected_Implementation(
-	FVector ReflectionStart,
-	FVector ReflectionEnd)
+void AShooterCharacter::ClientPlayReflectionRipple_Implementation(
+	FVector_NetQuantize IncomingOrigin)
 {
-	BP_OnBulletReflected(ReflectionStart, ReflectionEnd);
+	NotifyLocalBulletReflected(IncomingOrigin);
 }
 
 void AShooterCharacter::HandleWeaponAttackStoppedInternal()

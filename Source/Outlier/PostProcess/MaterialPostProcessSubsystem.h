@@ -7,6 +7,7 @@
 #include "MaterialPostProcessSubsystem.generated.h"
 
 class AOutlierPostProcessVolume;
+class UMaterialInterface;
 class UPrimitiveComponent;
 enum class EOutlierPostProcessMaterialType : uint8;
 
@@ -37,6 +38,10 @@ public:
 	void ApplyScanStencil(AActor* Actor, int32 StencilValue);
 	void ClearScanStencil(AActor* Actor);
 	void EndScanPostProcess();
+
+	// Stealth
+	void UpdateStealthPostProcess(float InFade);
+	UMaterialInterface* GetFirstPersonStealthGlassMaterial() const;
 
 	//Damaged
 	void UpdateDamagedPostProcess(float InHPRatio);

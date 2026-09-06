@@ -10,12 +10,29 @@
 #include "WeaponBase.generated.h"
 
 class USkeletalMeshComponent;
+class UMeshComponent;
 class USceneComponent;
 class USphereComponent;
 class AWeaponSpawnPoint;
 class AFirstPersonCharacter;
 class UInteractableComponent;
 class UProceduralAnimValues;
+class UMaterialInterface;
+
+USTRUCT()
+struct FWeaponStealthMeshRestoreState
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	bool bRenderCustomDepth = false;
+
+	UPROPERTY()
+	int32 CustomDepthStencilValue = 0;
+
+	UPROPERTY()
+	TArray<TObjectPtr<UMaterialInterface>> Materials;
+};
 
 UENUM(BlueprintType)
 enum class EWeaponType : uint8
@@ -128,6 +145,9 @@ protected:
 	UPROPERTY(Transient)
 	float DropPickupBlockedUntilTime = 0.0f;
 
+	UPROPERTY(Transient)
+	TMap<TObjectPtr<UMeshComponent>, FWeaponStealthMeshRestoreState> StealthMeshRestoreStates;
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Animation")
 	TObjectPtr<UProceduralAnimValues> FirstPersonProceduralValues = nullptr;
 
@@ -166,6 +186,11 @@ public:
 	void AttachWeaponMeshesToOwnerMeshes();
 	virtual void ShowEquippedPresentation();
 	virtual void RefreshShadowWeaponPresentation();
+	void SetStealthVisualState(
+		bool bUseFirstPersonGlass,
+		bool bWriteThirdPersonStencil,
+		UMaterialInterface* FirstPersonGlassMaterial,
+		int32 StencilValue = 5);
 
 	virtual void OnUnequipped();
 

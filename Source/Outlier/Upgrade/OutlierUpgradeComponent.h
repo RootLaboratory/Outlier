@@ -108,10 +108,6 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Upgrade")
 	void ReconcileUpgradeProjection();
 
-	// 현재 투영 상태( 활성 노드 / attribute / config / 태그 )를 로그로 덤프한다 ( 검증용 ).
-	UFUNCTION(BlueprintCallable, Category = "Upgrade|Debug")
-	void DumpUpgradeProjectionState() const;
-
 	UPROPERTY(BlueprintAssignable, Category = "Upgrade")
 	FOnOutlierUpgradeStateChanged OnUpgradeStateChanged;
 
@@ -170,7 +166,6 @@ private:
 	void ProjectAttributes(UOutlierAbilitySystemComponent* ASC, const TArray<const FOutlierUpgradeEffectRow*>& Effects);
 	void ProjectAbilityConfig(UOutlierAbilitySystemComponent* ASC, const TArray<const FOutlierUpgradeEffectRow*>& Effects);
 	static FGameplayAttribute ResolveAttribute(const FGameplayTag& Tag);
-	void LogUpgradeProjectionState(UOutlierAbilitySystemComponent* ASC) const;
 
 	//실질적인 핵심 관리.
 	TMap<FName, FOutlierUpgradeNodeRow> NodeRowsByRowName;

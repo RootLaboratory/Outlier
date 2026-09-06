@@ -110,6 +110,11 @@ FOutlierPartnerAbilityConfig MakeTestConfig()
 	Config.HackCooldown = 3.0f;
 	Config.ScanCooldown = 10.0f;
 	Config.ScanDuration = 3.0f;
+	Config.ScanRange = 1000.0f;
+	Config.HackEffectiveRange = 500.0f;
+	Config.ShieldAmount = 100.0f;
+	Config.MarkDuration = 3.0f;
+	Config.StunDuration = 3.0f;
 	return Config;
 }
 
@@ -329,9 +334,11 @@ bool FOutlierGasPartnerAbilityExecutionTest::RunTest(const FString& Parameters)
 		return false;
 	}
 	EMPComponent->bRequireLineOfSight = false;
-	FPartnerEMPAbilityData EMPData;
-	EMPData.StunDuration = 0.05f;
-	EMPComponent->CacheAbilityData(EMPData);
+	FOutlierPartnerAbilityConfig RuntimeConfig = AbilitySystem->GetPartnerAbilityConfig();
+	RuntimeConfig.StunDuration = 0.05f;
+	TestTrue(
+		TEXT("EMP runtime values update through the Partner ASC config"),
+		AbilitySystem->UpdatePartnerAbilityConfig(RuntimeConfig));
 	TestTrue(TEXT("EMP starts through its granted native AbilitySpec"), AbilitySystem->TryActivatePartnerAbility(EMPAbility));
 	TestTrue(TEXT("EMP commits cooldown when target selection starts"), AbilitySystem->IsPartnerCooldownActive(EMPCooldown));
 	EMPComponent->ServerCompleteEMP(TArray<AActor*>{EMPEnemy});

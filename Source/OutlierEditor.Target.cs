@@ -10,5 +10,6 @@ public class OutlierEditorTarget : TargetRules
         DefaultBuildSettings = BuildSettingsVersion.V6;
         IncludeOrderVersion = EngineIncludeOrderVersion.Unreal5_7;
         ExtraModuleNames.Add("Outlier");
+        ExtraModuleNames.Add("OutlierEditor");
     }
 }

@@ -37,47 +37,6 @@ FGameplayEffectQuery MakeOwningTagQuery(const FGameplayTag& Tag)
 }
 }
 
-bool FOutlierPartnerAbilityConfig::IsValid(FString& OutError) const
-{
-	if (EMPCooldown <= 0.0f)
-	{
-		OutError = TEXT("EMP cooldown must be positive");
-		return false;
-	}
-	if (ShieldCooldown <= 0.0f)
-	{
-		OutError = TEXT("Shield cooldown must be positive");
-		return false;
-	}
-	if (HackCooldown <= 0.0f)
-	{
-		OutError = TEXT("Hack cooldown must be positive");
-		return false;
-	}
-	if (ScanCooldown <= 0.0f)
-	{
-		OutError = TEXT("Scan cooldown must be positive");
-		return false;
-	}
-	if (ScanDuration <= 0.0f)
-	{
-		OutError = TEXT("Scan duration must be positive");
-		return false;
-	}
-
-	OutError.Reset();
-	return true;
-}
-
-bool FOutlierPartnerAbilityConfig::Equals(const FOutlierPartnerAbilityConfig& Other) const
-{
-	return FMath::IsNearlyEqual(EMPCooldown, Other.EMPCooldown)
-		&& FMath::IsNearlyEqual(ShieldCooldown, Other.ShieldCooldown)
-		&& FMath::IsNearlyEqual(HackCooldown, Other.HackCooldown)
-		&& FMath::IsNearlyEqual(ScanCooldown, Other.ScanCooldown)
-		&& FMath::IsNearlyEqual(ScanDuration, Other.ScanDuration);
-}
-
 UOutlierAbilitySystemComponent::UOutlierAbilitySystemComponent()
 {
 	SetIsReplicatedByDefault(true);
@@ -527,6 +486,30 @@ bool UOutlierAbilitySystemComponent::ConfigurePartnerAbilities(
 	return true;
 }
 
+bool UOutlierAbilitySystemComponent::UpdatePartnerAbilityConfig(const FOutlierPartnerAbilityConfig& Config)
+{
+	if (!IsOwnerActorAuthoritative() || !bPartnerAbilitiesConfigured)
+	{
+		return false;
+	}
+
+	FString Error;
+	if (!Config.IsValid(Error))
+	{
+#if UE_BUILD_SHIPPING
+		UE_LOG(LogOutlier, Error, TEXT("[GAS.PartnerAbility] Invalid runtime config: %s"), *Error);
+		return false;
+#else
+		checkf(false, TEXT("[GAS.PartnerAbility] Invalid runtime config: %s"), *Error);
+		return false;
+#endif
+	}
+
+	// 능력은 이미 grant 된 상태. 값만 교체하면 다음 발동부터 반영된다.
+	PartnerAbilityConfig = Config;
+	return true;
+}
+
 bool UOutlierAbilitySystemComponent::TryActivatePartnerAbility(const FGameplayTag& AbilityTag)
 {
 	if (!AbilityTag.IsValid())
@@ -643,8 +626,30 @@ bool UOutlierAbilitySystemComponent::TryActivateShooterSuitAbility(const FGamepl
 
 	FGameplayTagContainer AbilityTags;
 	AbilityTags.AddTag(AbilityTag);
-	const bool bActivated = TryActivateAbilitiesByTag(AbilityTags, true);
-	return bActivated;
+	return TryActivateAbilitiesByTag(AbilityTags, true);
+}
+
+bool UOutlierAbilitySystemComponent::IsShooterSuitAbilityUpgradeGrantRequired(
+	const FGameplayTag& AbilityTag) const
+{
+	if (AbilityTag.MatchesTagExact(OutlierGameplayTags::Ability::Shooter::QuantumLeap()))
+	{
+		return bQuantumLeapRequiresUpgradeGrant;
+	}
+	if (AbilityTag.MatchesTagExact(OutlierGameplayTags::Ability::Shooter::BulletReflection()))
+	{
+		return bBulletReflectionRequiresUpgradeGrant;
+	}
+	if (AbilityTag.MatchesTagExact(OutlierGameplayTags::Ability::Shooter::WeaponOvercharge()))
+	{
+		return bWeaponOverchargeRequiresUpgradeGrant;
+	}
+	if (AbilityTag.MatchesTagExact(OutlierGameplayTags::Ability::Shooter::Stealth()))
+	{
+		return bStealthRequiresUpgradeGrant;
+	}
+
+	return false;
 }
 
 bool UOutlierAbilitySystemComponent::UpdateShooterSuitConfig(const FOutlierShooterSuitConfig& Config)
@@ -666,7 +671,6 @@ bool UOutlierAbilitySystemComponent::UpdateShooterSuitConfig(const FOutlierShoot
 #endif
 	}
 
-	// 능력은 이미 grant 된 상태. 값만 교체하면 다음 발동부터 반영된다.
 	ShooterSuitConfig = Config;
 	return true;
 }
@@ -849,9 +853,19 @@ bool UOutlierAbilitySystemComponent::CommitPartnerCooldown(
 		? OverrideDuration
 		: ResolvePartnerCooldownDuration(CooldownTag);
 	const TSubclassOf<UGameplayEffect> EffectClass = ResolvePartnerCooldownEffectClass(CooldownTag);
-	if (Duration <= 0.0f || !EffectClass)
+	if (!EffectClass)
 	{
+		// CooldownTag 가 알려진 Partner 쿨다운(EMP/Shield/Hacking/Scan) 에 매핑되지 않는 경우.
+		// 이건 진짜 설정 오류이므로 실패로 취급한다.
 		return false;
+	}
+
+	// 업그레이드 델타로 HackCooldown/EMPCooldown 등이 0까지 깎인 경우, Duration 이 0 이 될 수 있다.
+	// 이 경우 걸어줄 GE 가 없을 뿐 "쿨다운 없음" 은 정상적인 성공 상태다.
+	// 여기서 실패로 취급하면 CommitConfiguredCooldown() 의 checkf(bCommitted, ...) 가 크래시한다.
+	if (Duration <= 0.0f)
+	{
+		return true;
 	}
 
 	FGameplayEffectContextHandle Context = MakeEffectContext();
