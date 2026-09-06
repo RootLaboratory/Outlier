@@ -47,27 +47,6 @@ namespace
 			*Row.DefaultKey.ToString());
 	}
 
-	EOutlierInputBindingKind ResolveBindingKind(const FEnhancedActionKeyMapping& Mapping)
-	{
-		if (Mapping.Key.IsGamepadKey())
-		{
-			return EOutlierInputBindingKind::Gamepad;
-		}
-
-		if (Mapping.Key.IsMouseButton())
-		{
-			return EOutlierInputBindingKind::Mouse;
-		}
-
-		const UInputAction* InputAction = Mapping.Action.Get();
-		if (InputAction && InputAction->ValueType != EInputActionValueType::Boolean)
-		{
-			return EOutlierInputBindingKind::Axis;
-		}
-
-		return EOutlierInputBindingKind::Action;
-	}
-
 	const UPlayerMappableKeySettings* GetMappingOwnedMappableSettings(
 		const FEnhancedActionKeyMapping& Mapping)
 	{
@@ -179,9 +158,17 @@ namespace
 TArray<FOutlierInputBindingTableRow> UOutlierInputBindingTable::GetVisibleRowsSorted() const
 {
 	TArray<FOutlierInputBindingTableRow> VisibleRows;
-	for (const FOutlierInputBindingTableRow& Row : Rows)
+	for (const FOutlierInputBindingTableRow& Row : KeyboardRows)
 	{
-		if (Row.bVisibleInSettings)
+		if (Row.bRebindable)
+		{
+			VisibleRows.Add(Row);
+		}
+	}
+
+	for (const FOutlierInputBindingTableRow& Row : MouseRows)
+	{
+		if (Row.bRebindable)
 		{
 			VisibleRows.Add(Row);
 		}
@@ -241,12 +228,17 @@ void UOutlierInputBindingTable::RebuildRowsFromConfiguredIMCs()
 		});
 
 	TMap<FString, FOutlierInputBindingTableRow> ExistingRowsByKey;
-	for (const FOutlierInputBindingTableRow& ExistingRow : Rows)
+	for (const FOutlierInputBindingTableRow& ExistingRow : KeyboardRows)
+	{
+		ExistingRowsByKey.Add(MakeInputBindingRowKey(ExistingRow), ExistingRow);
+	}
+	for (const FOutlierInputBindingTableRow& ExistingRow : MouseRows)
 	{
 		ExistingRowsByKey.Add(MakeInputBindingRowKey(ExistingRow), ExistingRow);
 	}
 
-	TArray<FOutlierInputBindingTableRow> RebuiltRows;
+	TArray<FOutlierInputBindingTableRow> RebuiltKeyboardRows;
+	TArray<FOutlierInputBindingTableRow> RebuiltMouseRows;
 	for (int32 ContextIndex = 0; ContextIndex < MappingContexts.Num(); ++ContextIndex)
 	{
 		UInputMappingContext* MappingContext = MappingContexts[ContextIndex];
@@ -266,6 +258,15 @@ void UOutlierInputBindingTable::RebuildRowsFromConfiguredIMCs()
 				continue;
 			}
 
+			// Gamepad mappings have no home in this table (Keyboard/Mouse only).
+			if (Mapping.Key.IsGamepadKey())
+			{
+				continue;
+			}
+
+			// A mapping is only pulled in once it's been made mappable/rebindable
+			// on the IMC side (i.e. the Outlier Input Mappable Tool's "Use" was
+			// applied to it, giving it a Name there).
 			const FName MappingName = ResolveMappingName(Mapping);
 			if (MappingName.IsNone())
 			{
@@ -282,7 +283,6 @@ void UOutlierInputBindingTable::RebuildRowsFromConfiguredIMCs()
 			NewRow.MappingContextName = FText::FromString(MappingContext->GetName());
 			NewRow.ConflictGroup =
 				ResolveConflictGroup(MappingContext, InputBindingSettings);
-			NewRow.BindingKind = ResolveBindingKind(Mapping);
 			NewRow.SortOrder = ContextIndex * 1000 + MappingIndex;
 			NewRow.MappingContextOrder = ContextIndex;
 			NewRow.SourceMappingIndex = MappingIndex;
@@ -292,21 +292,25 @@ void UOutlierInputBindingTable::RebuildRowsFromConfiguredIMCs()
 			if (const FOutlierInputBindingTableRow* ExistingRow =
 				ExistingRowsByKey.Find(RowKey))
 			{
-				const int32 ExistingSortOrder = ExistingRow->SortOrder;
-				const bool bExistingVisible = ExistingRow->bVisibleInSettings;
-				const bool bExistingRebindable = ExistingRow->bRebindable;
-
-				NewRow.SortOrder = ExistingSortOrder;
-				NewRow.bVisibleInSettings = bExistingVisible;
-				NewRow.bRebindable = bExistingRebindable;
+				NewRow.SortOrder = ExistingRow->SortOrder;
+				NewRow.bRebindable = ExistingRow->bRebindable;
 			}
 
-			RebuiltRows.Add(MoveTemp(NewRow));
+			if (Mapping.Key.IsMouseButton())
+			{
+				RebuiltMouseRows.Add(MoveTemp(NewRow));
+			}
+			else
+			{
+				RebuiltKeyboardRows.Add(MoveTemp(NewRow));
+			}
 		}
 	}
 
-	Rows = MoveTemp(RebuiltRows);
-	SortInputBindingRows(Rows);
+	KeyboardRows = MoveTemp(RebuiltKeyboardRows);
+	MouseRows = MoveTemp(RebuiltMouseRows);
+	SortInputBindingRows(KeyboardRows);
+	SortInputBindingRows(MouseRows);
 	Modify();
 	MarkPackageDirty();
 }
@@ -314,7 +318,8 @@ void UOutlierInputBindingTable::RebuildRowsFromConfiguredIMCs()
 void UOutlierInputBindingTable::SortRowsByMappingContext()
 {
 	Modify();
-	SortInputBindingRows(Rows);
+	SortInputBindingRows(KeyboardRows);
+	SortInputBindingRows(MouseRows);
 	MarkPackageDirty();
 }
 #endif

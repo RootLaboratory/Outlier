@@ -26,6 +26,7 @@ public class TagDrivenUI : ModuleRules
 			new string[]
 			{
 				"Core",
+				"CoreUObject",
 				"GameplayTags",
 				"UMG",
 				"Slate",
@@ -41,7 +42,6 @@ public class TagDrivenUI : ModuleRules
 		PrivateDependencyModuleNames.AddRange(
 			new string[]
 			{
-				"CoreUObject",
 				"Engine",
 				"Slate",
 				"SlateCore",

@@ -169,9 +169,19 @@ struct FUIChromaticAberrationParameters
 	float Padding = 0.0f;
 };
 
+// Slate가 렌더링을 마친 backbuffer 색상에 적용하는 Overlay 블렌드 효과.
+struct FOverlayParameters
+{
+	int32 bEnabled = false;
+	FLinearColor TintColor = FLinearColor::Red;
+	float AccumulatedValue = 0.0f;
+	float GoalValue = 0.3f;
+};
+
 struct FPostProcessStrctureUI
 {
 	FUIChromaticAberrationParameters ChromaticAberration;
+	FOverlayParameters Overlay;
 };
 
 struct FPostProcessStrcture

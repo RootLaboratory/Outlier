@@ -17,6 +17,7 @@
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "Subsystems/EditorAssetSubsystem.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SComboBox.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SGridPanel.h"
@@ -29,9 +30,10 @@
 namespace AudioTagHelperPanel
 {
 	const FName AudioTagSourceName(TEXT("AudioTags.ini"));
-	const FString AudioEventRoot(TEXT("Audio.Event"));
+	const FString AudioTypeRoot(TEXT("Audio.Type"));
 	const FString AudioContextRoot(TEXT("Audio.Context"));
 	const FString DefaultAssetFolder(TEXT("/Game/Audio/Definitions"));
+	const FString DefaultBankFolder(TEXT("/Game/Audio/Banks"));
 
 	FString MakeFullAudioTag(const FString& RootTag, FString RawRelativePath)
 	{
@@ -80,16 +82,33 @@ namespace AudioTagHelperPanel
 		return bFound && bIsExplicit && SourceNames.Contains(AudioTagSourceName);
 	}
 
-	FString MakeAssetName(const FString& RawAssetName, const FString& FullEventTag)
+	// Bank 이름은 Type 태그에서 자동 파생된다 ( 카테고리당 보통 1개, 디자이너가 직접 지을 필요 없음 ).
+	FString MakeBankAssetName(const FString& FullTypeTag)
+	{
+		FString LeafName = FullTypeTag;
+		LeafName.RemoveFromStart(AudioTypeRoot + TEXT("."));
+		LeafName.ReplaceInline(TEXT("."), TEXT("_"));
+
+		FString BaseName = TEXT("AB_") + LeafName;
+		return ObjectTools::SanitizeObjectName(BaseName);
+	}
+
+	// Definition 이름. 비워두면 <TypeLeaf>_<Bank 안의 순번> 으로 자동 넘버링한다 —
+	// 하나의 Type 아래 여러 Definition 이 생기는 게 정상이라 Event 때처럼 이름이 유일하지 않다.
+	FString MakeDefinitionAssetName(
+		const FString& RawAssetName,
+		const FString& FullTypeTag,
+		int32 ExistingDefinitionCountInBank)
 	{
 		FString BaseName = RawAssetName;
 		BaseName.TrimStartAndEndInline();
 
 		if (BaseName.IsEmpty())
 		{
-			BaseName = FullEventTag;
-			BaseName.RemoveFromStart(AudioEventRoot + TEXT("."));
-			BaseName.ReplaceInline(TEXT("."), TEXT("_"));
+			FString LeafName = FullTypeTag;
+			LeafName.RemoveFromStart(AudioTypeRoot + TEXT("."));
+			LeafName.ReplaceInline(TEXT("."), TEXT("_"));
+			BaseName = FString::Printf(TEXT("%s_%02d"), *LeafName, ExistingDefinitionCountInBank + 1);
 		}
 
 		if (!BaseName.StartsWith(TEXT("DA_")))
@@ -108,11 +127,11 @@ namespace AudioTagHelperPanel
 
 void SAudioTagHelperPanel::Construct(const FArguments& InArgs)
 {
-	SelectedEventTags = MakeShared<FGameplayTagContainer>();
+	SelectedTypeTags = MakeShared<FGameplayTagContainer>();
 	SelectedContextTags = MakeShared<FGameplayTagContainer>();
 
-	TArray<SGameplayTagWidget::FEditableGameplayTagContainerDatum> EventTagContainers;
-	EventTagContainers.Emplace(nullptr, SelectedEventTags.Get());
+	TArray<SGameplayTagWidget::FEditableGameplayTagContainerDatum> TypeTagContainers;
+	TypeTagContainers.Emplace(nullptr, SelectedTypeTags.Get());
 	TArray<SGameplayTagWidget::FEditableGameplayTagContainerDatum> ContextTagContainers;
 	ContextTagContainers.Emplace(nullptr, SelectedContextTags.Get());
 
@@ -138,25 +157,25 @@ void SAudioTagHelperPanel::Construct(const FArguments& InArgs)
 				.Padding(0.0f, 0.0f, 0.0f, 16.0f)
 				[
 					SNew(STextBlock)
-					.Text(LOCTEXT("Summary", "Select existing audio tags or add new Event and Context children. Playback and network routing are selected by native call sites."))
+					.Text(LOCTEXT("Summary", "Select existing audio tags or add new Type and Context children. Playback and network routing are selected by native call sites."))
 					.AutoWrapText(true)
 				]
 
-				// Existing Event selection
+				// Existing Type selection
 				+ SVerticalBox::Slot()
 				.AutoHeight()
 				.Padding(0.0f, 0.0f, 0.0f, 4.0f)
 				[
 					SNew(STextBlock)
-					.Text(LOCTEXT("ExistingEventLabel", "Existing Event Tag"))
+					.Text(LOCTEXT("ExistingTypeLabel", "Existing Type Tag (Audio Bank category)"))
 				]
 				+ SVerticalBox::Slot()
 				.AutoHeight()
 				.Padding(0.0f, 0.0f, 0.0f, 4.0f)
 				[
-					SAssignNew(EventTagWidget, SGameplayTagWidget, EventTagContainers)
-					.Filter(AudioTagHelperPanel::AudioEventRoot)
-					.TagContainerName(TEXT("AudioTagHelper.Event"))
+					SAssignNew(TypeTagWidget, SGameplayTagWidget, TypeTagContainers)
+					.Filter(AudioTagHelperPanel::AudioTypeRoot)
+					.TagContainerName(TEXT("AudioTagHelper.Type"))
 					.MultiSelect(false)
 					.GameplayTagUIMode(EGameplayTagUIMode::SelectionMode)
 					.MaxHeight(180.0f)
@@ -170,14 +189,14 @@ void SAudioTagHelperPanel::Construct(const FArguments& InArgs)
 					SNew(SButton)
 					.ButtonStyle(FAppStyle::Get(), TEXT("NoBorder"))
 					.ContentPadding(0.0f)
-					.OnClicked(this, &SAudioTagHelperPanel::ToggleEventAddForm)
+					.OnClicked(this, &SAudioTagHelperPanel::ToggleTypeAddForm)
 					[
 						SNew(SHorizontalBox)
 						+ SHorizontalBox::Slot()
 						.AutoWidth()
 						[
 							SNew(STextBlock)
-							.Text(this, &SAudioTagHelperPanel::GetEventAddToggleText)
+							.Text(this, &SAudioTagHelperPanel::GetTypeAddToggleText)
 							.ColorAndOpacity(FLinearColor(0.35f, 1.0f, 0.15f))
 							.Font(FCoreStyle::GetDefaultFontStyle(TEXT("Bold"), 18))
 						]
@@ -187,7 +206,7 @@ void SAudioTagHelperPanel::Construct(const FArguments& InArgs)
 						.Padding(6.0f, 0.0f, 0.0f, 0.0f)
 						[
 							SNew(STextBlock)
-							.Text(LOCTEXT("AddEventToggleLabel", "Add Event Tag"))
+							.Text(LOCTEXT("AddTypeToggleLabel", "Add Type Tag"))
 						]
 					]
 				]
@@ -196,13 +215,13 @@ void SAudioTagHelperPanel::Construct(const FArguments& InArgs)
 				.Padding(8.0f, 0.0f, 0.0f, 16.0f)
 				[
 					SNew(SGridPanel)
-					.Visibility(this, &SAudioTagHelperPanel::GetEventAddFormVisibility)
+					.Visibility(this, &SAudioTagHelperPanel::GetTypeAddFormVisibility)
 					.FillColumn(1, 1.0f)
 					+ SGridPanel::Slot(0, 0)
 					.Padding(2.0f)
 					.VAlign(VAlign_Center)
 					[
-						SNew(STextBlock).Text(LOCTEXT("EventNameLabel", "Name:"))
+						SNew(STextBlock).Text(LOCTEXT("TypeNameLabel", "Name:"))
 					]
 					+ SGridPanel::Slot(1, 0)
 					.Padding(2.0f)
@@ -213,32 +232,32 @@ void SAudioTagHelperPanel::Construct(const FArguments& InArgs)
 						.VAlign(VAlign_Center)
 						.Padding(0.0f, 0.0f, 6.0f, 0.0f)
 						[
-							SNew(STextBlock).Text(LOCTEXT("EventParentPrefix", "Audio.Event."))
+							SNew(STextBlock).Text(LOCTEXT("TypeParentPrefix", "Audio.Type."))
 						]
 						+ SHorizontalBox::Slot()
 						.FillWidth(1.0f)
 						[
-							SAssignNew(NewEventNameTextBox, SEditableTextBox)
-							.HintText(LOCTEXT("EventNameHint", "Shooter.Fire"))
+							SAssignNew(NewTypeNameTextBox, SEditableTextBox)
+							.HintText(LOCTEXT("TypeNameHint", "Weapon"))
 						]
 					]
 					+ SGridPanel::Slot(0, 1)
 					.Padding(2.0f)
 					.VAlign(VAlign_Center)
 					[
-						SNew(STextBlock).Text(LOCTEXT("EventCommentLabel", "Comment:"))
+						SNew(STextBlock).Text(LOCTEXT("TypeCommentLabel", "Comment:"))
 					]
 					+ SGridPanel::Slot(1, 1)
 					.Padding(2.0f)
 					[
-						SAssignNew(NewEventCommentTextBox, SEditableTextBox)
-						.HintText(LOCTEXT("EventCommentHint", "Comment"))
+						SAssignNew(NewTypeCommentTextBox, SEditableTextBox)
+						.HintText(LOCTEXT("TypeCommentHint", "Comment"))
 					]
 					+ SGridPanel::Slot(0, 2)
 					.Padding(2.0f)
 					.VAlign(VAlign_Center)
 					[
-						SNew(STextBlock).Text(LOCTEXT("EventSourceLabel", "Source:"))
+						SNew(STextBlock).Text(LOCTEXT("TypeSourceLabel", "Source:"))
 					]
 					+ SGridPanel::Slot(1, 2)
 					.Padding(2.0f)
@@ -253,8 +272,44 @@ void SAudioTagHelperPanel::Construct(const FArguments& InArgs)
 					.HAlign(HAlign_Right)
 					[
 						SNew(SButton)
-						.Text(LOCTEXT("AddEventButton", "Add New Tag"))
-						.OnClicked(this, &SAudioTagHelperPanel::AddEventTag)
+						.Text(LOCTEXT("AddTypeButton", "Add New Tag"))
+						.OnClicked(this, &SAudioTagHelperPanel::AddTypeTag)
+					]
+				]
+
+				// Target Definition: 기존 Definition 에 Variant 를 추가할지, 새로 만들지.
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(0.0f, 0.0f, 0.0f, 4.0f)
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("TargetDefinitionLabel", "Target Data Asset (add as a new Variant, or create a new Data Asset)"))
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(0.0f, 0.0f, 0.0f, 16.0f)
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot()
+					.FillWidth(1.0f)
+					[
+						SAssignNew(DefinitionChoiceCombo, SComboBox<TSharedPtr<FString>>)
+						.OptionsSource(&DefinitionChoiceLabels)
+						.OnComboBoxOpening(this, &SAudioTagHelperPanel::HandleDefinitionComboOpening)
+						.OnGenerateWidget(this, &SAudioTagHelperPanel::GenerateDefinitionChoiceWidget)
+						.OnSelectionChanged(this, &SAudioTagHelperPanel::OnDefinitionChoiceSelected)
+						[
+							SNew(STextBlock).Text(this, &SAudioTagHelperPanel::GetSelectedDefinitionChoiceText)
+						]
+					]
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.Padding(6.0f, 0.0f, 0.0f, 0.0f)
+					[
+						SNew(SButton)
+						.Text(LOCTEXT("RefreshDefinitionsButton", "Refresh"))
+						.ToolTipText(LOCTEXT("RefreshDefinitionsTooltip", "Re-scan the selected Type's Bank for existing Data Assets."))
+						.OnClicked(this, &SAudioTagHelperPanel::RefreshDefinitionChoices)
 					]
 				]
 
@@ -264,7 +319,7 @@ void SAudioTagHelperPanel::Construct(const FArguments& InArgs)
 				.Padding(0.0f, 0.0f, 0.0f, 4.0f)
 				[
 					SNew(STextBlock)
-					.Text(LOCTEXT("ExistingContextLabel", "Existing Context Tags for Initial Variant"))
+					.Text(LOCTEXT("ExistingContextLabel", "Context Tag for this Sound (one tag = one sound; use Weight for random variety)"))
 				]
 				+ SVerticalBox::Slot()
 				.AutoHeight()
@@ -273,7 +328,7 @@ void SAudioTagHelperPanel::Construct(const FArguments& InArgs)
 					SAssignNew(ContextTagWidget, SGameplayTagWidget, ContextTagContainers)
 					.Filter(AudioTagHelperPanel::AudioContextRoot)
 					.TagContainerName(TEXT("AudioTagHelper.Context"))
-					.MultiSelect(true)
+					.MultiSelect(false)
 					.GameplayTagUIMode(EGameplayTagUIMode::SelectionMode)
 					.MaxHeight(220.0f)
 					.ForceHideAddNewTag(true)
@@ -380,14 +435,14 @@ void SAudioTagHelperPanel::Construct(const FArguments& InArgs)
 				.Padding(0.0f, 0.0f, 0.0f, 4.0f)
 				[
 					SNew(STextBlock)
-					.Text(LOCTEXT("AssetNameLabel", "Data Asset Name (DA_ is added automatically)"))
+					.Text(LOCTEXT("AssetNameLabel", "Data Asset Name (DA_ is added automatically; empty auto-numbers within the Bank)"))
 				]
 				+ SVerticalBox::Slot()
 				.AutoHeight()
 				.Padding(0.0f, 0.0f, 0.0f, 12.0f)
 				[
 					SAssignNew(AssetNameTextBox, SEditableTextBox)
-					.HintText(LOCTEXT("AssetNameHint", "Empty uses the selected Event path"))
+					.HintText(LOCTEXT("AssetNameHint", "Empty auto-numbers using the selected Type"))
 				]
 				+ SVerticalBox::Slot()
 				.AutoHeight()
@@ -426,11 +481,13 @@ void SAudioTagHelperPanel::Construct(const FArguments& InArgs)
 			]
 		]
 	];
+
+	RefreshDefinitionChoices();
 }
 
-FReply SAudioTagHelperPanel::ToggleEventAddForm()
+FReply SAudioTagHelperPanel::ToggleTypeAddForm()
 {
-	bEventAddFormExpanded = !bEventAddFormExpanded;
+	bTypeAddFormExpanded = !bTypeAddFormExpanded;
 	return FReply::Handled();
 }
 
@@ -440,9 +497,9 @@ FReply SAudioTagHelperPanel::ToggleContextAddForm()
 	return FReply::Handled();
 }
 
-EVisibility SAudioTagHelperPanel::GetEventAddFormVisibility() const
+EVisibility SAudioTagHelperPanel::GetTypeAddFormVisibility() const
 {
-	return bEventAddFormExpanded ? EVisibility::Visible : EVisibility::Collapsed;
+	return bTypeAddFormExpanded ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
 EVisibility SAudioTagHelperPanel::GetContextAddFormVisibility() const
@@ -450,9 +507,9 @@ EVisibility SAudioTagHelperPanel::GetContextAddFormVisibility() const
 	return bContextAddFormExpanded ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
-FText SAudioTagHelperPanel::GetEventAddToggleText() const
+FText SAudioTagHelperPanel::GetTypeAddToggleText() const
 {
-	return bEventAddFormExpanded ? FText::FromString(TEXT("-")) : FText::FromString(TEXT("+"));
+	return bTypeAddFormExpanded ? FText::FromString(TEXT("-")) : FText::FromString(TEXT("+"));
 }
 
 FText SAudioTagHelperPanel::GetContextAddToggleText() const
@@ -542,27 +599,28 @@ bool SAudioTagHelperPanel::CreateOrReuseAudioTag(
 	return true;
 }
 
-FReply SAudioTagHelperPanel::AddEventTag()
+FReply SAudioTagHelperPanel::AddTypeTag()
 {
-	FGameplayTag EventTag;
+	FGameplayTag TypeTag;
 	FText Error;
 	if (!CreateOrReuseAudioTag(
-		AudioTagHelperPanel::AudioEventRoot,
-		NewEventNameTextBox,
-		NewEventCommentTextBox,
-		EventTag,
+		AudioTagHelperPanel::AudioTypeRoot,
+		NewTypeNameTextBox,
+		NewTypeCommentTextBox,
+		TypeTag,
 		Error))
 	{
 		AudioTagHelperPanel::ShowResultMessage(Error);
 		return FReply::Handled();
 	}
 
-	SelectedEventTags->Reset();
-	SelectedEventTags->AddTag(EventTag);
-	NewEventNameTextBox->SetText(FText());
-	NewEventCommentTextBox->SetText(FText());
-	bEventAddFormExpanded = false;
-	EventTagWidget->RefreshOnNextTick();
+	SelectedTypeTags->Reset();
+	SelectedTypeTags->AddTag(TypeTag);
+	NewTypeNameTextBox->SetText(FText());
+	NewTypeCommentTextBox->SetText(FText());
+	bTypeAddFormExpanded = false;
+	TypeTagWidget->RefreshOnNextTick();
+	RefreshDefinitionChoices();
 	return FReply::Handled();
 }
 
@@ -591,16 +649,16 @@ FReply SAudioTagHelperPanel::AddContextTag()
 
 FText SAudioTagHelperPanel::GetOutputPreview() const
 {
-	FString EventName;
-	if (SelectedEventTags.IsValid() && SelectedEventTags->Num() > 0)
+	FString TypeName;
+	if (SelectedTypeTags.IsValid() && SelectedTypeTags->Num() > 0)
 	{
-		EventName = SelectedEventTags->First().ToString();
+		TypeName = SelectedTypeTags->First().ToString();
 	}
-	else if (NewEventNameTextBox.IsValid())
+	else if (NewTypeNameTextBox.IsValid())
 	{
-		EventName = AudioTagHelperPanel::MakeFullAudioTag(
-			AudioTagHelperPanel::AudioEventRoot,
-			NewEventNameTextBox->GetText().ToString());
+		TypeName = AudioTagHelperPanel::MakeFullAudioTag(
+			AudioTagHelperPanel::AudioTypeRoot,
+			NewTypeNameTextBox->GetText().ToString());
 	}
 
 	TArray<FString> ContextNames;
@@ -623,10 +681,13 @@ FText SAudioTagHelperPanel::GetOutputPreview() const
 	}
 	ContextNames.Sort();
 
-	const FString RawAssetName = AssetNameTextBox.IsValid() ? AssetNameTextBox->GetText().ToString() : FString();
-	const FString AssetName = EventName.IsEmpty() && RawAssetName.TrimStartAndEnd().IsEmpty()
-		? TEXT("<select or add Event tag>")
-		: AudioTagHelperPanel::MakeAssetName(RawAssetName, EventName);
+	const FString RawAssetName = AssetNameTextBox.IsValid() ? AssetNameTextBox->GetText().ToString().TrimStartAndEnd() : FString();
+	const FString AssetNamePreview = TypeName.IsEmpty()
+		? TEXT("<select or add Type tag>")
+		: (RawAssetName.IsEmpty()
+			? TEXT("<auto-numbered DA_ in the Bank>")
+			: AudioTagHelperPanel::MakeDefinitionAssetName(RawAssetName, TypeName, 0));
+
 	FString AssetFolder = AssetFolderTextBox.IsValid()
 		? AssetFolderTextBox->GetText().ToString().TrimStartAndEnd()
 		: AudioTagHelperPanel::DefaultAssetFolder;
@@ -635,36 +696,42 @@ FText SAudioTagHelperPanel::GetOutputPreview() const
 		AssetFolder.LeftChopInline(1);
 	}
 
+	const FString BankNamePreview = TypeName.IsEmpty()
+		? TEXT("<select or add Type tag>")
+		: AudioTagHelperPanel::MakeBankAssetName(TypeName);
+
 	return FText::FromString(FString::Printf(
-		TEXT("Output Preview\nEvent: %s\nInitial Variant Contexts: %s\nData Asset: %s/%s\nTag Source: %s"),
-		EventName.IsEmpty() ? TEXT("<select or add Event tag>") : *EventName,
+		TEXT("Output Preview\nType: %s\nBank: %s/%s (created if missing, reused otherwise)\nInitial Variant Contexts: %s\nData Asset: %s/%s\nTag Source: %s"),
+		TypeName.IsEmpty() ? TEXT("<select or add Type tag>") : *TypeName,
+		*AudioTagHelperPanel::DefaultBankFolder,
+		*BankNamePreview,
 		ContextNames.IsEmpty() ? TEXT("<none>") : *FString::Join(ContextNames, TEXT(", ")),
 		*AssetFolder,
-		*AssetName,
+		*AssetNamePreview,
 		*AudioTagHelperPanel::AudioTagSourceName.ToString()));
 }
 
 bool SAudioTagHelperPanel::ValidateDataAssetInputs(
-	FGameplayTag& OutEventTag,
-	FString& OutAssetName,
+	FGameplayTag& OutTypeTag,
+	FString& OutRawAssetName,
 	FString& OutAssetFolder,
 	FText& OutError) const
 {
-	if (!SelectedEventTags.IsValid() || SelectedEventTags->Num() != 1)
+	if (!SelectedTypeTags.IsValid() || SelectedTypeTags->Num() != 1)
 	{
-		OutError = LOCTEXT("SelectEventError", "Select one existing Event tag or add a new Event tag first.");
+		OutError = LOCTEXT("SelectTypeError", "Select one existing Type tag or add a new Type tag first.");
 		return false;
 	}
 
-	OutEventTag = SelectedEventTags->First();
-	if (!AudioTagHelperPanel::IsTagUnderRoot(OutEventTag, AudioTagHelperPanel::AudioEventRoot))
+	OutTypeTag = SelectedTypeTags->First();
+	if (!AudioTagHelperPanel::IsTagUnderRoot(OutTypeTag, AudioTagHelperPanel::AudioTypeRoot))
 	{
-		OutError = LOCTEXT("InvalidSelectedEventError", "The selected Event must be below Audio.Event.");
+		OutError = LOCTEXT("InvalidSelectedTypeError", "The selected tag must be below Audio.Type.");
 		return false;
 	}
-	if (!AudioTagHelperPanel::IsTagFromAudioTagSource(OutEventTag))
+	if (!AudioTagHelperPanel::IsTagFromAudioTagSource(OutTypeTag))
 	{
-		OutError = LOCTEXT("SelectedEventSourceError", "The selected Event must be explicitly stored in AudioTags.ini.");
+		OutError = LOCTEXT("SelectedTypeSourceError", "The selected Type must be explicitly stored in AudioTags.ini.");
 		return false;
 	}
 
@@ -689,13 +756,7 @@ bool SAudioTagHelperPanel::ValidateDataAssetInputs(
 		}
 	}
 
-	const FString RawAssetName = AssetNameTextBox.IsValid() ? AssetNameTextBox->GetText().ToString() : FString();
-	OutAssetName = AudioTagHelperPanel::MakeAssetName(RawAssetName, OutEventTag.ToString());
-	if (OutAssetName.IsEmpty() || OutAssetName == TEXT("DA_"))
-	{
-		OutError = LOCTEXT("InvalidAssetNameError", "Enter a valid Data Asset name.");
-		return false;
-	}
+	OutRawAssetName = AssetNameTextBox.IsValid() ? AssetNameTextBox->GetText().ToString() : FString();
 
 	OutAssetFolder = AssetFolderTextBox.IsValid()
 		? AssetFolderTextBox->GetText().ToString().TrimStartAndEnd()
@@ -718,22 +779,22 @@ bool SAudioTagHelperPanel::ValidateDataAssetInputs(
 	return true;
 }
 
-UOutlierAudioEventDefinition* SAudioTagHelperPanel::FindDefinitionForEvent(const FGameplayTag& EventTag) const
+UOutlierAudioBank* SAudioTagHelperPanel::FindBankForType(const FGameplayTag& TypeTag) const
 {
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-	TArray<FAssetData> DefinitionAssets;
+	TArray<FAssetData> BankAssets;
 	AssetRegistryModule.Get().GetAssetsByClass(
-		UOutlierAudioEventDefinition::StaticClass()->GetClassPathName(),
-		DefinitionAssets,
+		UOutlierAudioBank::StaticClass()->GetClassPathName(),
+		BankAssets,
 		true);
 
-	for (const FAssetData& AssetData : DefinitionAssets)
+	for (const FAssetData& AssetData : BankAssets)
 	{
-		if (UOutlierAudioEventDefinition* Definition = Cast<UOutlierAudioEventDefinition>(AssetData.GetAsset()))
+		if (UOutlierAudioBank* Bank = Cast<UOutlierAudioBank>(AssetData.GetAsset()))
 		{
-			if (Definition->EventTag == EventTag)
+			if (Bank->TypeTag == TypeTag)
 			{
-				return Definition;
+				return Bank;
 			}
 		}
 	}
@@ -741,26 +802,131 @@ UOutlierAudioEventDefinition* SAudioTagHelperPanel::FindDefinitionForEvent(const
 	return nullptr;
 }
 
-void SAudioTagHelperPanel::OpenDefinition(UOutlierAudioEventDefinition* Definition) const
+UOutlierAudioBank* SAudioTagHelperPanel::CreateBankForType(const FGameplayTag& TypeTag, FText& OutError) const
 {
-	if (GEditor && Definition)
+	const FString AssetName = AudioTagHelperPanel::MakeBankAssetName(TypeTag.ToString());
+	const FString PackageName = AudioTagHelperPanel::DefaultBankFolder / AssetName;
+	const FString ObjectPath = PackageName + TEXT(".") + AssetName;
+
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+	if (FPackageName::DoesPackageExist(PackageName)
+		|| FindObject<UObject>(nullptr, *ObjectPath) != nullptr
+		|| AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(ObjectPath)).IsValid())
+	{
+		OutError = FText::Format(
+			LOCTEXT("BankNameCollisionError", "An asset already exists at {0}, but it is not an Audio Bank for Type '{1}'. Rename or remove it first."),
+			FText::FromString(ObjectPath),
+			FText::FromString(TypeTag.ToString()));
+		return nullptr;
+	}
+
+	UDataAssetFactory* Factory = NewObject<UDataAssetFactory>();
+	Factory->DataAssetClass = UOutlierAudioBank::StaticClass();
+
+	FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>(TEXT("AssetTools"));
+	UOutlierAudioBank* NewBank = Cast<UOutlierAudioBank>(
+		AssetToolsModule.Get().CreateAsset(
+			AssetName,
+			AudioTagHelperPanel::DefaultBankFolder,
+			UOutlierAudioBank::StaticClass(),
+			Factory));
+
+	if (!NewBank)
+	{
+		OutError = FText::Format(
+			LOCTEXT("BankCreationFailedError", "Audio Bank creation failed for Type '{0}'."),
+			FText::FromString(TypeTag.ToString()));
+		return nullptr;
+	}
+
+	NewBank->Modify();
+	NewBank->TypeTag = TypeTag;
+	NewBank->PostEditChange();
+	NewBank->MarkPackageDirty();
+
+	// 여기서 바로 저장하지 않는다 — 이 시점엔 Definitions 가 아직 비어있어 IsDataValid 가
+	// "Definition 이 하나도 없다" 로 실패하고, 저장 시 데이터 검증 경고가 뜬다.
+	// 호출부( CreateOrOpenDataAsset )가 Definitions 에 최소 1개를 채운 뒤 저장한다.
+	return NewBank;
+}
+
+FReply SAudioTagHelperPanel::RefreshDefinitionChoices()
+{
+	DefinitionChoiceLabels.Reset();
+	DefinitionChoiceObjects.Reset();
+
+	// index 0: 항상 "새로 만들기" 센티널.
+	DefinitionChoiceLabels.Add(MakeShared<FString>(TEXT("<Create New Definition>")));
+	DefinitionChoiceObjects.Add(TSoftObjectPtr<UOutlierAudioEventDefinition>());
+
+	if (SelectedTypeTags.IsValid() && SelectedTypeTags->Num() == 1)
+	{
+		if (UOutlierAudioBank* Bank = FindBankForType(SelectedTypeTags->First()))
+		{
+			for (const TSoftObjectPtr<UOutlierAudioEventDefinition>& DefinitionSoftPtr : Bank->Definitions)
+			{
+				const FString Label = DefinitionSoftPtr.IsNull()
+					? TEXT("<invalid entry>")
+					: DefinitionSoftPtr.GetAssetName();
+				DefinitionChoiceLabels.Add(MakeShared<FString>(Label));
+				DefinitionChoiceObjects.Add(DefinitionSoftPtr);
+			}
+		}
+	}
+
+	SelectedDefinitionChoiceLabel = DefinitionChoiceLabels[0];
+	if (DefinitionChoiceCombo.IsValid())
+	{
+		DefinitionChoiceCombo->RefreshOptions();
+		DefinitionChoiceCombo->SetSelectedItem(SelectedDefinitionChoiceLabel);
+	}
+
+	return FReply::Handled();
+}
+
+void SAudioTagHelperPanel::HandleDefinitionComboOpening()
+{
+	RefreshDefinitionChoices();
+}
+
+TSharedRef<SWidget> SAudioTagHelperPanel::GenerateDefinitionChoiceWidget(TSharedPtr<FString> Item) const
+{
+	return SNew(STextBlock).Text(FText::FromString(Item.IsValid() ? *Item : FString()));
+}
+
+void SAudioTagHelperPanel::OnDefinitionChoiceSelected(TSharedPtr<FString> Item, ESelectInfo::Type SelectInfo)
+{
+	(void)SelectInfo;
+	SelectedDefinitionChoiceLabel = Item;
+}
+
+FText SAudioTagHelperPanel::GetSelectedDefinitionChoiceText() const
+{
+	return FText::FromString(SelectedDefinitionChoiceLabel.IsValid()
+		? *SelectedDefinitionChoiceLabel
+		: TEXT("<Create New Definition>"));
+}
+
+void SAudioTagHelperPanel::OpenAsset(UObject* Asset) const
+{
+	if (GEditor && Asset)
 	{
 		if (UAssetEditorSubsystem* AssetEditorSubsystem = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>())
 		{
-			AssetEditorSubsystem->OpenEditorForAsset(Definition);
+			AssetEditorSubsystem->OpenEditorForAsset(Asset);
 		}
 	}
 }
 
 FReply SAudioTagHelperPanel::CreateOrOpenDataAsset()
 {
-	FGameplayTag EventTag;
-	FString AssetName;
+	FGameplayTag TypeTag;
+	FString RawAssetName;
 	FString AssetFolder;
 	FText ValidationError;
 	if (!ValidateDataAssetInputs(
-		EventTag,
-		AssetName,
+		TypeTag,
+		RawAssetName,
 		AssetFolder,
 		ValidationError))
 	{
@@ -768,12 +934,88 @@ FReply SAudioTagHelperPanel::CreateOrOpenDataAsset()
 		return FReply::Handled();
 	}
 
-	if (UOutlierAudioEventDefinition* ExistingDefinition = FindDefinitionForEvent(EventTag))
+	UOutlierAudioBank* Bank = FindBankForType(TypeTag);
+	const bool bCreatedBank = (Bank == nullptr);
+	if (!Bank)
 	{
-		OpenDefinition(ExistingDefinition);
+		FText BankError;
+		Bank = CreateBankForType(TypeTag, BankError);
+		if (!Bank)
+		{
+			AudioTagHelperPanel::ShowResultMessage(BankError);
+			return FReply::Handled();
+		}
+	}
+
+	// "새로 만들기" 센티널이 아닌 기존 Definition 이 선택돼 있으면, 새 에셋을 만들지 않고
+	// 그 Definition 에 Variant 하나만 추가한다 ( Context 개수만큼 DA 가 늘어나는 것을 피함 ).
+	const int32 SelectedChoiceIndex = SelectedDefinitionChoiceLabel.IsValid()
+		? DefinitionChoiceLabels.IndexOfByPredicate(
+			[this](const TSharedPtr<FString>& Candidate) { return Candidate == SelectedDefinitionChoiceLabel; })
+		: INDEX_NONE;
+
+	// 콤보가 다른 Type 을 보던 시점에 채워졌을 수도 있으니, 실제로 지금 이 Bank 에 속한
+	// 항목인지 다시 확인한다. 아니면( 즉, 없으면 ) 그냥 New 로 처리한다.
+	const bool bChoiceBelongsToCurrentBank = SelectedChoiceIndex > 0
+		&& DefinitionChoiceObjects.IsValidIndex(SelectedChoiceIndex)
+		&& !DefinitionChoiceObjects[SelectedChoiceIndex].IsNull()
+		&& Bank->Definitions.Contains(DefinitionChoiceObjects[SelectedChoiceIndex]);
+
+	if (bChoiceBelongsToCurrentBank)
+	{
+		const FSoftObjectPath FailingPath = DefinitionChoiceObjects[SelectedChoiceIndex].ToSoftObjectPath();
+		UOutlierAudioEventDefinition* ExistingDefinition = DefinitionChoiceObjects[SelectedChoiceIndex].LoadSynchronous();
+		if (!ExistingDefinition)
+		{
+			UE_LOG(LogTemp, Error,
+				TEXT("[AudioTagHelper] Failed to load existing Definition at '%s'. Bank='%s' Type='%s'. The asset likely was never saved to disk (leftover from a broken earlier create) or its package file is missing/renamed."),
+				*FailingPath.ToString(),
+				*GetNameSafe(Bank),
+				*TypeTag.ToString());
+			AudioTagHelperPanel::ShowResultMessage(FText::Format(
+				LOCTEXT("ExistingDefinitionLoadFailedError", "Failed to load '{0}'.\n\nThis usually means the asset was never actually saved to disk (a leftover from an earlier failed create). Check the Output Log for the exact path, then remove that entry from the Bank's Definitions list (or delete the stale asset) and try again."),
+				FText::FromString(FailingPath.ToString())));
+			return FReply::Handled();
+		}
+
+		ExistingDefinition->Modify();
+		FOutlierAudioVariant& NewVariant = ExistingDefinition->Variants.AddDefaulted_GetRef();
+		if (SelectedContextTags.IsValid() && SelectedContextTags->Num() > 0)
+		{
+			NewVariant.RequiredContext = SelectedContextTags->First();
+		}
+		NewVariant.Weight = 1.0f;
+		ExistingDefinition->PostEditChange();
+		ExistingDefinition->MarkPackageDirty();
+
+		bool bVariantSaved = false;
+		if (GEditor)
+		{
+			if (UEditorAssetSubsystem* EditorAssetSubsystem = GEditor->GetEditorSubsystem<UEditorAssetSubsystem>())
+			{
+				bVariantSaved = EditorAssetSubsystem->SaveLoadedAsset(ExistingDefinition, false);
+			}
+		}
+
+		OpenAsset(ExistingDefinition);
+
 		AudioTagHelperPanel::ShowResultMessage(FText::Format(
-			LOCTEXT("ExistingDefinitionMessage", "'{0}' already has a Data Asset. The existing asset was opened instead."),
-			FText::FromString(EventTag.ToString())));
+			bVariantSaved
+				? LOCTEXT("VariantAddedSuccessMessage", "Added a new Variant to existing Data Asset '{0}' (Type '{1}').\n\nAssign Sound in the opened Data Asset.")
+				: LOCTEXT("VariantAddedUnsavedMessage", "Added a new Variant to existing Data Asset '{0}' (Type '{1}'), but automatic saving failed. Save it manually."),
+			FText::FromString(GetNameSafe(ExistingDefinition)),
+			FText::FromString(TypeTag.ToString())));
+
+		return FReply::Handled();
+	}
+
+	const FString AssetName = AudioTagHelperPanel::MakeDefinitionAssetName(
+		RawAssetName,
+		TypeTag.ToString(),
+		Bank->Definitions.Num());
+	if (AssetName.IsEmpty() || AssetName == TEXT("DA_"))
+	{
+		AudioTagHelperPanel::ShowResultMessage(LOCTEXT("InvalidAssetNameError", "Enter a valid Data Asset name."));
 		return FReply::Handled();
 	}
 
@@ -790,8 +1032,8 @@ FReply SAudioTagHelperPanel::CreateOrOpenDataAsset()
 		return FReply::Handled();
 	}
 
-	UDataAssetFactory* Factory = NewObject<UDataAssetFactory>();
-	Factory->DataAssetClass = UOutlierAudioEventDefinition::StaticClass();
+	UDataAssetFactory* DefinitionFactory = NewObject<UDataAssetFactory>();
+	DefinitionFactory->DataAssetClass = UOutlierAudioEventDefinition::StaticClass();
 
 	FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>(TEXT("AssetTools"));
 	UOutlierAudioEventDefinition* NewDefinition = Cast<UOutlierAudioEventDefinition>(
@@ -799,47 +1041,67 @@ FReply SAudioTagHelperPanel::CreateOrOpenDataAsset()
 			AssetName,
 			AssetFolder,
 			UOutlierAudioEventDefinition::StaticClass(),
-			Factory));
+			DefinitionFactory));
 
 	if (!NewDefinition)
 	{
 		AudioTagHelperPanel::ShowResultMessage(FText::Format(
-			LOCTEXT("AssetCreationFailedMessage", "Data Asset creation failed for Event '{0}'. Check the asset path and source-control state."),
-			FText::FromString(EventTag.ToString())));
+			LOCTEXT("AssetCreationFailedMessage", "Data Asset creation failed for Type '{0}'. Check the asset path and source-control state."),
+			FText::FromString(TypeTag.ToString())));
 		return FReply::Handled();
 	}
 
 	NewDefinition->Modify();
-	NewDefinition->EventTag = EventTag;
 	NewDefinition->VolumeMultiplier = 1.0f;
 	NewDefinition->PitchMultiplier = 1.0f;
 	FOutlierAudioVariant& InitialVariant = NewDefinition->Variants.AddDefaulted_GetRef();
-	if (SelectedContextTags.IsValid())
+	if (SelectedContextTags.IsValid() && SelectedContextTags->Num() > 0)
 	{
-		InitialVariant.RequiredContextTags = *SelectedContextTags;
+		InitialVariant.RequiredContext = SelectedContextTags->First();
 	}
 	InitialVariant.Weight = 1.0f;
 	NewDefinition->PostEditChange();
 	NewDefinition->MarkPackageDirty();
 
-	bool bSaved = false;
+	bool bDefinitionSaved = false;
 	if (GEditor)
 	{
 		if (UEditorAssetSubsystem* EditorAssetSubsystem = GEditor->GetEditorSubsystem<UEditorAssetSubsystem>())
 		{
-			bSaved = EditorAssetSubsystem->SaveLoadedAsset(NewDefinition, false);
+			bDefinitionSaved = EditorAssetSubsystem->SaveLoadedAsset(NewDefinition, false);
 		}
 	}
 
-	OpenDefinition(NewDefinition);
+	Bank->Modify();
+	Bank->Definitions.Add(NewDefinition);
+	Bank->PostEditChange();
+	Bank->MarkPackageDirty();
+
+	bool bBankSaved = false;
+	if (GEditor)
+	{
+		if (UEditorAssetSubsystem* EditorAssetSubsystem = GEditor->GetEditorSubsystem<UEditorAssetSubsystem>())
+		{
+			bBankSaved = EditorAssetSubsystem->SaveLoadedAsset(Bank, false);
+		}
+	}
+
+	OpenAsset(NewDefinition);
+
+	const FText BankWord = bCreatedBank
+		? LOCTEXT("CreatedWord", "Created")
+		: LOCTEXT("ReusedWord", "Reused existing");
 
 	AudioTagHelperPanel::ShowResultMessage(FText::Format(
-		bSaved
-			? LOCTEXT("CreationSuccessMessage", "Created Data Asset '{0}' for Event '{1}'.\n\nAssign Sound in the opened Data Asset.")
-			: LOCTEXT("CreationUnsavedMessage", "Created Data Asset '{0}' for Event '{1}', but automatic saving failed. Save the opened asset manually."),
-		FText::FromString(AssetFolder / AssetName),
-		FText::FromString(EventTag.ToString())));
+		(bDefinitionSaved && bBankSaved)
+			? LOCTEXT("CreationSuccessMessage", "{0} Bank '{1}' for Type '{2}', and added Data Asset '{3}' to it.\n\nAssign Sound in the opened Data Asset.")
+			: LOCTEXT("CreationUnsavedMessage", "{0} Bank '{1}' for Type '{2}', and added Data Asset '{3}' to it, but automatic saving failed for at least one asset. Save both manually."),
+		BankWord,
+		FText::FromString(Bank->GetName()),
+		FText::FromString(TypeTag.ToString()),
+		FText::FromString(AssetFolder / AssetName)));
 
+	RefreshDefinitionChoices();
 	return FReply::Handled();
 }
 

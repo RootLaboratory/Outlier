@@ -69,6 +69,21 @@ void UOutlierAudioSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 void UOutlierAudioSubsystem::Deinitialize()
 {
+	if (BankMetadataLoadHandle.IsValid())
+	{
+		BankMetadataLoadHandle->CancelHandle();
+	}
+	BankMetadataLoadHandle.Reset();
+
+	for (TPair<FGameplayTag, TSharedPtr<FStreamableHandle>>& Pair : BankContentLoadHandles)
+	{
+		if (Pair.Value.IsValid())
+		{
+			Pair.Value->CancelHandle();
+		}
+	}
+	BankContentLoadHandles.Empty();
+
 	for (TPair<FSoftObjectPath, TSharedPtr<FStreamableHandle>>& Pair : ActiveLoadHandles)
 	{
 		if (Pair.Value.IsValid())
@@ -81,56 +96,244 @@ void UOutlierAudioSubsystem::Deinitialize()
 	VolumeMultipliers.Empty();
 	ActiveAudioPlaybacks.Empty();
 	PendingPlaysBySound.Empty();
-	CatalogEntriesByEvent.Empty();
-	LoadedDefinitions.Empty();
+	PendingPlaysByType.Empty();
+	CatalogEntriesByType.Empty();
+	DiscoveredBanksByType.Empty();
+	LoadedBanks.Empty();
 
 	Super::Deinitialize();
 }
 
 bool UOutlierAudioSubsystem::ReloadCatalog()
 {
-	CatalogEntriesByEvent.Empty();
-	LoadedDefinitions.Empty();
+	if (BankMetadataLoadHandle.IsValid())
+	{
+		BankMetadataLoadHandle->CancelHandle();
+		BankMetadataLoadHandle.Reset();
+	}
+	for (TPair<FGameplayTag, TSharedPtr<FStreamableHandle>>& Pair : BankContentLoadHandles)
+	{
+		if (Pair.Value.IsValid())
+		{
+			Pair.Value->CancelHandle();
+		}
+	}
+	BankContentLoadHandles.Empty();
 
+	CatalogEntriesByType.Empty();
+	DiscoveredBanksByType.Empty();
+	LoadedBanks.Empty();
+	PendingPlaysByType.Empty();
+
+	DiscoverAudioBanks();
+
+	// 발견/로드는 비동기로 진행된다. 완료 여부는 IsCatalogReady() 로 확인한다.
+	return true;
+}
+
+void UOutlierAudioSubsystem::DiscoverAudioBanks()
+{
 	UAssetManager* AssetManager = UAssetManager::GetIfInitialized();
 	if (!AssetManager)
 	{
 		UE_LOG(LogOutlier, Error, TEXT("[Audio] Asset Manager is not initialized."));
-		return false;
+		return;
 	}
 
-	TArray<FPrimaryAssetId> DefinitionIds;
-	if (!AssetManager->GetPrimaryAssetIdList(
-		UOutlierAudioEventDefinition::PrimaryAssetType,
-		DefinitionIds))
+	TArray<FPrimaryAssetId> BankIds;
+	if (!AssetManager->GetPrimaryAssetIdList(UOutlierAudioBank::PrimaryAssetType, BankIds)
+		|| BankIds.IsEmpty())
 	{
 		UE_LOG(LogOutlier, Warning,
-			TEXT("[Audio] No Audio Event Definitions were found under /Game/Audio/Definitions."));
-		return false;
+			TEXT("[Audio] No Audio Banks were found under /Game/Audio/Banks."));
+		return;
 	}
 
-	TMap<FGameplayTag, FName> DefinitionByEvent;
-	int32 LoadedVariantCount = 0;
-
-	for (const FPrimaryAssetId& DefinitionId : DefinitionIds)
+	TArray<FSoftObjectPath> BankPaths;
+	BankPaths.Reserve(BankIds.Num());
+	for (const FPrimaryAssetId& BankId : BankIds)
 	{
-		const FSoftObjectPath DefinitionPath = AssetManager->GetPrimaryAssetPath(DefinitionId);
-		UOutlierAudioEventDefinition* Definition =
-			Cast<UOutlierAudioEventDefinition>(DefinitionPath.TryLoad());
+		BankPaths.Add(AssetManager->GetPrimaryAssetPath(BankId));
+	}
 
-		if (!Definition)
+	BankMetadataLoadHandle = UAssetManager::GetStreamableManager().RequestAsyncLoad(
+		BankPaths,
+		FStreamableDelegate::CreateUObject(
+			this,
+			&UOutlierAudioSubsystem::HandleBankMetadataLoaded,
+			BankIds));
+
+	if (!BankMetadataLoadHandle.IsValid())
+	{
+		UE_LOG(LogOutlier, Error, TEXT("[Audio] Failed to start async load for Audio Banks."));
+	}
+}
+
+void UOutlierAudioSubsystem::HandleBankMetadataLoaded(TArray<FPrimaryAssetId> BankIds)
+{
+	BankMetadataLoadHandle.Reset();
+
+	UAssetManager* AssetManager = UAssetManager::GetIfInitialized();
+	if (!AssetManager)
+	{
+		return;
+	}
+
+	int32 EagerBankCount = 0;
+	for (const FPrimaryAssetId& BankId : BankIds)
+	{
+		const FSoftObjectPath BankPath = AssetManager->GetPrimaryAssetPath(BankId);
+		UOutlierAudioBank* Bank = Cast<UOutlierAudioBank>(BankPath.ResolveObject());
+		if (!Bank)
 		{
 			UE_LOG(LogOutlier, Error,
-				TEXT("[Audio] Failed to load Audio Event Definition '%s'."),
-				*DefinitionId.ToString());
+				TEXT("[Audio] Failed to resolve loaded Audio Bank '%s'."),
+				*BankId.ToString());
 			continue;
 		}
 
-		if (!Definition->EventTag.IsValid())
+		if (!Bank->TypeTag.IsValid())
 		{
 			UE_LOG(LogOutlier, Error,
-				TEXT("[Audio] Definition '%s' has an invalid EventTag and was skipped."),
-				*GetNameSafe(Definition));
+				TEXT("[Audio] Bank '%s' has an invalid TypeTag and was skipped."),
+				*GetNameSafe(Bank));
+			continue;
+		}
+
+		if (DiscoveredBanksByType.Contains(Bank->TypeTag))
+		{
+			UE_LOG(LogOutlier, Error,
+				TEXT("[Audio] Multiple Audio Banks use TypeTag '%s'. Only the first discovered is used."),
+				*Bank->TypeTag.ToString());
+			continue;
+		}
+
+		LoadedBanks.Add(Bank);
+
+		FDiscoveredBank& Discovered = DiscoveredBanksByType.Add(Bank->TypeTag);
+		Discovered.BankId = BankId;
+		Discovered.bLoadImmediately = Bank->bLoadImmediately;
+		Discovered.bContentLoaded = false;
+
+		if (Bank->bLoadImmediately)
+		{
+			++EagerBankCount;
+			LoadBankContent(Bank->TypeTag);
+		}
+	}
+
+	UE_LOG(LogOutlier, Log,
+		TEXT("[Audio] Discovered %d Audio Banks (%d eager)."),
+		DiscoveredBanksByType.Num(),
+		EagerBankCount);
+}
+
+void UOutlierAudioSubsystem::LoadBankContent(FGameplayTag TypeTag)
+{
+	FDiscoveredBank* Discovered = DiscoveredBanksByType.Find(TypeTag);
+	if (!Discovered || Discovered->bContentLoaded || BankContentLoadHandles.Contains(TypeTag))
+	{
+		return;
+	}
+
+	UAssetManager* AssetManager = UAssetManager::GetIfInitialized();
+	UOutlierAudioBank* Bank = AssetManager
+		? Cast<UOutlierAudioBank>(AssetManager->GetPrimaryAssetPath(Discovered->BankId).ResolveObject())
+		: nullptr;
+	if (!Bank)
+	{
+		UE_LOG(LogOutlier, Error,
+			TEXT("[Audio] LoadBankContent: Bank for Type '%s' is not resolved."),
+			*TypeTag.ToString());
+		return;
+	}
+
+	TArray<FSoftObjectPath> DefinitionPaths;
+	DefinitionPaths.Reserve(Bank->Definitions.Num());
+	for (const TSoftObjectPtr<UOutlierAudioEventDefinition>& DefinitionSoftPtr : Bank->Definitions)
+	{
+		const FSoftObjectPath Path = DefinitionSoftPtr.ToSoftObjectPath();
+		if (Path.IsValid())
+		{
+			DefinitionPaths.Add(Path);
+		}
+	}
+
+	if (DefinitionPaths.IsEmpty())
+	{
+		UE_LOG(LogOutlier, Warning,
+			TEXT("[Audio] Bank '%s' (Type '%s') has no Definitions."),
+			*GetNameSafe(Bank),
+			*TypeTag.ToString());
+		Discovered->bContentLoaded = true;
+		return;
+	}
+
+	TSharedPtr<FStreamableHandle> LoadHandle = UAssetManager::GetStreamableManager().RequestAsyncLoad(
+		DefinitionPaths,
+		FStreamableDelegate::CreateUObject(
+			this,
+			&UOutlierAudioSubsystem::HandleBankContentLoaded,
+			TypeTag));
+
+	if (!LoadHandle.IsValid())
+	{
+		UE_LOG(LogOutlier, Error,
+			TEXT("[Audio] Failed to start async load for Bank content '%s'."),
+			*TypeTag.ToString());
+		return;
+	}
+
+	BankContentLoadHandles.Add(TypeTag, MoveTemp(LoadHandle));
+}
+
+void UOutlierAudioSubsystem::HandleBankContentLoaded(FGameplayTag TypeTag)
+{
+	BankContentLoadHandles.Remove(TypeTag);
+
+	FDiscoveredBank* Discovered = DiscoveredBanksByType.Find(TypeTag);
+	if (!Discovered)
+	{
+		return;
+	}
+	Discovered->bContentLoaded = true;
+
+	UAssetManager* AssetManager = UAssetManager::GetIfInitialized();
+	UOutlierAudioBank* Bank = AssetManager
+		? Cast<UOutlierAudioBank>(AssetManager->GetPrimaryAssetPath(Discovered->BankId).ResolveObject())
+		: nullptr;
+	if (!Bank)
+	{
+		UE_LOG(LogOutlier, Error,
+			TEXT("[Audio] HandleBankContentLoaded: Bank for Type '%s' failed to resolve."),
+			*TypeTag.ToString());
+		return;
+	}
+
+	IngestBank(Bank);
+	FlushPendingPlaysForType(TypeTag);
+}
+
+void UOutlierAudioSubsystem::IngestBank(UOutlierAudioBank* Bank)
+{
+	if (!Bank || !Bank->TypeTag.IsValid())
+	{
+		return;
+	}
+
+	TArray<FRuntimeCatalogEntry>& Entries = CatalogEntriesByType.FindOrAdd(Bank->TypeTag);
+	Entries.Reset();
+
+	int32 FlatVariantIndex = 0;
+	int32 IngestedCount = 0;
+	for (const TSoftObjectPtr<UOutlierAudioEventDefinition>& DefinitionSoftPtr : Bank->Definitions)
+	{
+		UOutlierAudioEventDefinition* Definition = DefinitionSoftPtr.Get();
+		if (!Definition)
+		{
+			UE_LOG(LogOutlier, Error,
+				TEXT("[Audio] Bank '%s' has a Definition entry that failed to resolve."),
+				*GetNameSafe(Bank));
 			continue;
 		}
 
@@ -142,19 +345,6 @@ bool UOutlierAudioSubsystem::ReloadCatalog()
 				*GetNameSafe(Definition));
 			continue;
 		}
-
-		if (const FName* ExistingDefinition = DefinitionByEvent.Find(Definition->EventTag))
-		{
-			UE_LOG(LogOutlier, Error,
-				TEXT("[Audio] Definitions '%s' and '%s' both use EventTag '%s'. The latter was skipped."),
-				*ExistingDefinition->ToString(),
-				*GetNameSafe(Definition),
-				*Definition->EventTag.ToString());
-			continue;
-		}
-
-		DefinitionByEvent.Add(Definition->EventTag, Definition->GetFName());
-		LoadedDefinitions.Add(Definition);
 
 		for (int32 VariantIndex = 0; VariantIndex < Definition->Variants.Num(); ++VariantIndex)
 		{
@@ -170,28 +360,38 @@ bool UOutlierAudioSubsystem::ReloadCatalog()
 
 			FRuntimeCatalogEntry Entry;
 			Entry.SourceName = FString::Printf(
-				TEXT("%s[%d]"),
+				TEXT("%s/%s[%d]"),
+				*Bank->TypeTag.ToString(),
 				*GetNameSafe(Definition),
 				VariantIndex);
-			Entry.RequiredContextTags = Variant.RequiredContextTags;
+			Entry.RequiredContext = Variant.RequiredContext;
 			Entry.Sound = Variant.Sound;
-			Entry.VariantIndex = VariantIndex;
+			Entry.VariantIndex = FlatVariantIndex++;
 			Entry.Weight = Variant.Weight;
 			Entry.VolumeMultiplier = Definition->VolumeMultiplier;
 			Entry.PitchMultiplier = Definition->PitchMultiplier;
 			Entry.VolumeType = Definition->VolumeType;
 
-			CatalogEntriesByEvent.FindOrAdd(Definition->EventTag).Add(MoveTemp(Entry));
-			++LoadedVariantCount;
+			Entries.Add(MoveTemp(Entry));
+			++IngestedCount;
 		}
 	}
 
 	UE_LOG(LogOutlier, Log,
-		TEXT("[Audio] Loaded %d variants from %d Audio Event Definitions."),
-		LoadedVariantCount,
-		LoadedDefinitions.Num());
+		TEXT("[Audio] Ingested %d variants for Bank Type '%s'."),
+		IngestedCount,
+		*Bank->TypeTag.ToString());
+}
 
-	return LoadedVariantCount > 0;
+void UOutlierAudioSubsystem::FlushPendingPlaysForType(FGameplayTag TypeTag)
+{
+	TArray<TPair<FOutlierAudioPlayRequest, FOutlierAudioExecutionPolicy>> Pending;
+	PendingPlaysByType.RemoveAndCopyValue(TypeTag, Pending);
+
+	for (const TPair<FOutlierAudioPlayRequest, FOutlierAudioExecutionPolicy>& Item : Pending)
+	{
+		PlayAudio(Item.Key, Item.Value);
+	}
 }
 
 bool UOutlierAudioSubsystem::PlayLocal2D(const FOutlierAudioPlayRequest& Request)
@@ -242,7 +442,7 @@ bool UOutlierAudioSubsystem::PlayAudio(
 		&& Policy.Audience != EOutlierAudioAudience::Local)
 	{
 		UE_LOG(LogOutlier, Error,
-			TEXT("[Audio] Local request authority only supports a Local audience. Event='%s'."),
+			TEXT("[Audio] Local request authority only supports a Local audience. Type='%s'."),
 			*Request.EventTag.ToString());
 		return false;
 	}
@@ -251,7 +451,7 @@ bool UOutlierAudioSubsystem::PlayAudio(
 		&& World->GetNetMode() == NM_Client)
 	{
 		UE_LOG(LogOutlier, Warning,
-			TEXT("[Audio] Server-authoritative event '%s' was rejected on a client."),
+			TEXT("[Audio] Server-authoritative Type '%s' was rejected on a client."),
 			*Request.EventTag.ToString());
 		return false;
 	}
@@ -264,13 +464,36 @@ bool UOutlierAudioSubsystem::PlayAudio(
 		if (!RequestingController)
 		{
 			UE_LOG(LogOutlier, Warning,
-				TEXT("[Audio] OwningClient event '%s' needs an EmitterActor owned by the local player. Controller-less emitters must start this request on the server."),
+				TEXT("[Audio] OwningClient Type '%s' needs an EmitterActor owned by the local player. Controller-less emitters must start this request on the server."),
 				*Request.EventTag.ToString());
 			return false;
 		}
 
 		RequestingController->ServerRequestRelevantAudioAtLocation(Request);
 		return true;
+	}
+
+	// Type 콘텐츠가 아직 로드되지 않은 Deferred Bank( BGM/Voice 등 )라면, 재생 요청 자체가
+	// 로드 트리거가 된다. 큐잉해두고 로드가 끝나면 FlushPendingPlaysForType 이 재시도한다.
+	if (!CatalogEntriesByType.Contains(Request.EventTag))
+	{
+		const FDiscoveredBank* Discovered = DiscoveredBanksByType.Find(Request.EventTag);
+		if (!Discovered)
+		{
+			UE_LOG(LogOutlier, Warning,
+				TEXT("[Audio] Unknown audio Type '%s'."),
+				*Request.EventTag.ToString());
+			return false;
+		}
+
+		if (!Discovered->bContentLoaded)
+		{
+			PendingPlaysByType.FindOrAdd(Request.EventTag).Emplace(Request, Policy);
+			LoadBankContent(Request.EventTag);
+			return true;
+		}
+		// bContentLoaded 인데 카탈로그에 없다 = 그 Bank 에 유효한 Variant 가 하나도 없었던 경우.
+		// ResolveBestEntry 에서 통상적인 실패 로그를 남기도록 그대로 진행한다.
 	}
 
 	const FRuntimeCatalogEntry* Entry = ResolveBestEntry(Request.EventTag, Request.ContextTags);
@@ -291,7 +514,7 @@ bool UOutlierAudioSubsystem::PlayAudio(
 	}
 
 	UE_LOG(LogOutlier, Warning,
-		TEXT("[AudioSpatialDebug][ResolvedRequest] NetMode=%d Event='%s' Emitter='%s' Playback=%s Audience=%s Authority=%s ExplicitLocation=%d RequestLocation=%s ResolvedAtLocation=%d ResolvedLocation=%s Variant=%d"),
+		TEXT("[AudioSpatialDebug][ResolvedRequest] NetMode=%d Type='%s' Emitter='%s' Playback=%s Audience=%s Authority=%s ExplicitLocation=%d RequestLocation=%s ResolvedAtLocation=%d ResolvedLocation=%s Variant=%d"),
 		static_cast<int32>(World->GetNetMode()),
 		*Request.EventTag.ToString(),
 		*GetNameSafe(Request.EmitterActor),
@@ -325,7 +548,7 @@ bool UOutlierAudioSubsystem::HandleServerRelevantAtLocationRequest(
 	if (!IsEmitterOwnedByController(Request.EmitterActor, RequestingController))
 	{
 		UE_LOG(LogOutlier, Warning,
-			TEXT("[Audio] Rejected client world-audio request. Controller='%s' Emitter='%s' Event='%s'."),
+			TEXT("[Audio] Rejected client world-audio request. Controller='%s' Emitter='%s' Type='%s'."),
 			*GetNameSafe(RequestingController),
 			*GetNameSafe(Request.EmitterActor),
 			*Request.EventTag.ToString());
@@ -343,7 +566,7 @@ bool UOutlierAudioSubsystem::PlayResolvedAudioLocally(
 	if (!Entry)
 	{
 		UE_LOG(LogOutlier, Warning,
-			TEXT("[Audio] Could not resolve delivered event '%s' variant %d."),
+			TEXT("[Audio] Could not resolve delivered Type '%s' variant %d."),
 			*ResolvedPlay.EventTag.ToString(),
 			ResolvedPlay.VariantIndex);
 		return false;
@@ -395,21 +618,21 @@ void UOutlierAudioSubsystem::StopAllLocalAudio()
 }
 
 const UOutlierAudioSubsystem::FRuntimeCatalogEntry* UOutlierAudioSubsystem::ResolveBestEntry(
-	FGameplayTag EventTag,
+	FGameplayTag TypeTag,
 	const FGameplayTagContainer& ContextTags) const
 {
-	if (!EventTag.IsValid())
+	if (!TypeTag.IsValid())
 	{
-		UE_LOG(LogOutlier, Warning, TEXT("[Audio] Play request contains an invalid EventTag."));
+		UE_LOG(LogOutlier, Warning, TEXT("[Audio] Play request contains an invalid Type tag."));
 		return nullptr;
 	}
 
-	const TArray<FRuntimeCatalogEntry>* Candidates = CatalogEntriesByEvent.Find(EventTag);
+	const TArray<FRuntimeCatalogEntry>* Candidates = CatalogEntriesByType.Find(TypeTag);
 	if (!Candidates)
 	{
 		UE_LOG(LogOutlier, Warning,
-			TEXT("[Audio] No catalog rows exist for event '%s'."),
-			*EventTag.ToString());
+			TEXT("[Audio] No catalog rows exist for Type '%s'."),
+			*TypeTag.ToString());
 		return nullptr;
 	}
 
@@ -418,13 +641,14 @@ const UOutlierAudioSubsystem::FRuntimeCatalogEntry* UOutlierAudioSubsystem::Reso
 
 	for (const FRuntimeCatalogEntry& Candidate : *Candidates)
 	{
-		if (Candidate.RequiredContextTags.Num() > 0
-			&& !ContextTags.HasAll(Candidate.RequiredContextTags))
+		if (Candidate.RequiredContext.IsValid()
+			&& !ContextTags.HasTag(Candidate.RequiredContext))
 		{
 			continue;
 		}
 
-		const int32 Specificity = Candidate.RequiredContextTags.Num();
+		// Context 가 없는( Invalid ) 후보는 항상 통과하는 기본값 후보 ( Specificity 0 = 최하위 우선순위 ).
+		const int32 Specificity = Candidate.RequiredContext.IsValid() ? 1 : 0;
 		if (Specificity > BestSpecificity)
 		{
 			BestSpecificity = Specificity;
@@ -440,8 +664,8 @@ const UOutlierAudioSubsystem::FRuntimeCatalogEntry* UOutlierAudioSubsystem::Reso
 	if (BestMatches.IsEmpty())
 	{
 		UE_LOG(LogOutlier, Warning,
-			TEXT("[Audio] Event '%s' has no row matching the supplied context tags."),
-			*EventTag.ToString());
+			TEXT("[Audio] Type '%s' has no row matching the supplied context tags."),
+			*TypeTag.ToString());
 		return nullptr;
 	}
 
@@ -465,10 +689,10 @@ const UOutlierAudioSubsystem::FRuntimeCatalogEntry* UOutlierAudioSubsystem::Reso
 }
 
 const UOutlierAudioSubsystem::FRuntimeCatalogEntry* UOutlierAudioSubsystem::FindResolvedEntry(
-	FGameplayTag EventTag,
+	FGameplayTag TypeTag,
 	int32 VariantIndex) const
 {
-	const TArray<FRuntimeCatalogEntry>* Entries = CatalogEntriesByEvent.Find(EventTag);
+	const TArray<FRuntimeCatalogEntry>* Entries = CatalogEntriesByType.Find(TypeTag);
 	if (!Entries)
 	{
 		return nullptr;
@@ -481,13 +705,13 @@ const UOutlierAudioSubsystem::FRuntimeCatalogEntry* UOutlierAudioSubsystem::Find
 }
 
 bool UOutlierAudioSubsystem::BuildResolvedPlay(
-	FGameplayTag EventTag,
+	FGameplayTag TypeTag,
 	const FRuntimeCatalogEntry& Entry,
 	const FOutlierAudioPlayRequest& Request,
 	EOutlierAudioPlaybackMode PlaybackMode,
 	FOutlierResolvedAudioPlay& OutResolvedPlay) const
 {
-	OutResolvedPlay.EventTag = EventTag;
+	OutResolvedPlay.EventTag = TypeTag;
 	OutResolvedPlay.VariantIndex = Entry.VariantIndex;
 	OutResolvedPlay.StartTime = FMath::Max(0.0f, Request.StartTime);
 
@@ -500,8 +724,8 @@ bool UOutlierAudioSubsystem::BuildResolvedPlay(
 	if (PlaybackMode != EOutlierAudioPlaybackMode::AtLocation)
 	{
 		UE_LOG(LogOutlier, Error,
-			TEXT("[Audio] Event '%s' uses an unsupported native PlaybackMode."),
-			*EventTag.ToString());
+			TEXT("[Audio] Type '%s' uses an unsupported native PlaybackMode."),
+			*TypeTag.ToString());
 		return false;
 	}
 
@@ -519,8 +743,8 @@ bool UOutlierAudioSubsystem::BuildResolvedPlay(
 	}
 
 	UE_LOG(LogOutlier, Warning,
-		TEXT("[Audio] AtLocation event '%s' requires an explicit Location or an EmitterActor."),
-		*EventTag.ToString());
+		TEXT("[Audio] AtLocation Type '%s' requires an explicit Location or an EmitterActor."),
+		*TypeTag.ToString());
 	return false;
 }
 
@@ -537,7 +761,7 @@ bool UOutlierAudioSubsystem::RouteByAudience(
 			return PlayResolvedAudioLocally(ResolvedPlay);
 		}
 		UE_LOG(LogOutlier, Warning,
-			TEXT("[Audio] Local event '%s' was requested on a dedicated server."),
+			TEXT("[Audio] Local Type '%s' was requested on a dedicated server."),
 			*ResolvedPlay.EventTag.ToString());
 		return false;
 
@@ -549,7 +773,7 @@ bool UOutlierAudioSubsystem::RouteByAudience(
 
 	default:
 		UE_LOG(LogOutlier, Error,
-			TEXT("[Audio] Event '%s' uses an unsupported native Audience."),
+			TEXT("[Audio] Type '%s' uses an unsupported native Audience."),
 			*ResolvedPlay.EventTag.ToString());
 		return false;
 	}
@@ -574,7 +798,7 @@ bool UOutlierAudioSubsystem::RouteOwner(
 	if (!TargetController)
 	{
 		UE_LOG(LogOutlier, Warning,
-			TEXT("[Audio] Owner audience event '%s' requires RecipientActor or EmitterActor with an owning player controller."),
+			TEXT("[Audio] Owner audience Type '%s' requires RecipientActor or EmitterActor with an owning player controller."),
 			*ResolvedPlay.EventTag.ToString());
 		return false;
 	}
@@ -626,7 +850,7 @@ bool UOutlierAudioSubsystem::RouteRelevant(
 			? FVector::Distance(PlayerController->GetFocalLocation(), ResolvedPlay.Location)
 			: 0.0f;
 		UE_LOG(LogOutlier, Warning,
-			TEXT("[AudioSpatialDebug][RelevantDelivery] Event='%s' Controller='%s' AtLocation=%d Location=%s ApproxDistance=%.1f"),
+			TEXT("[AudioSpatialDebug][RelevantDelivery] Type='%s' Controller='%s' AtLocation=%d Location=%s ApproxDistance=%.1f"),
 			*ResolvedPlay.EventTag.ToString(),
 			*GetNameSafe(PlayerController),
 			ResolvedPlay.bAtLocation,
@@ -638,7 +862,7 @@ bool UOutlierAudioSubsystem::RouteRelevant(
 	if (DeliveryCount == 0)
 	{
 		UE_LOG(LogOutlier, Verbose,
-			TEXT("[Audio] Relevant event '%s' had no player recipients."),
+			TEXT("[Audio] Relevant Type '%s' had no player recipients."),
 			*ResolvedPlay.EventTag.ToString());
 	}
 

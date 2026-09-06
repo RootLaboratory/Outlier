@@ -245,6 +245,11 @@ bool USettingWidget::SetResolutionPresetIndex(int32 PresetIndex)
 		return false;
 	}
 
+	if (!SettingsSubsystem->GetResolutionOptions().IsValidIndex(PresetIndex))
+	{
+		return false;
+	}
+
 	PendingResolutionPresetIndex = PresetIndex;
 	RefreshGraphicsSettings();
 	return true;
@@ -265,11 +270,13 @@ bool USettingWidget::OffsetResolutionPresetIndex(int32 IndexOffset)
 		return false;
 	}
 
-	const int32 CurrentIndex = FMath::Max(
-		SettingsSubsystem->GetResolutionPresetIndex(),
-		0);
-	const int32 WrappedIndex =
-		(CurrentIndex + IndexOffset + ResolutionOptions.Num()) % ResolutionOptions.Num();
+	const int32 CurrentIndex = ResolutionOptions.IsValidIndex(PendingResolutionPresetIndex)
+		? PendingResolutionPresetIndex
+		: FMath::Max(SettingsSubsystem->GetResolutionPresetIndex(), 0);
+	const int32 OffsetIndex = (CurrentIndex + IndexOffset) % ResolutionOptions.Num();
+	const int32 WrappedIndex = OffsetIndex < 0
+		? OffsetIndex + ResolutionOptions.Num()
+		: OffsetIndex;
 	return SetResolutionPresetIndex(WrappedIndex);
 }
 

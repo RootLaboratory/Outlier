@@ -27,12 +27,41 @@
 namespace
 {
 	const FName CheckColumnId(TEXT("Check"));
+	const FName InUseColumnId(TEXT("InUse"));
 	const FName ContextColumnId(TEXT("Context"));
-	const FName ActionColumnId(TEXT("Action"));
+	const FName TypeColumnId(TEXT("Type"));
 	const FName KeyColumnId(TEXT("Key"));
-	const FName IndexColumnId(TEXT("Index"));
 	const FName MappingNameColumnId(TEXT("MappingName"));
 	const FName DisplayNameColumnId(TEXT("DisplayName"));
+
+	EOutlierInputMappableInputType ResolveInputType(const FKey& Key)
+	{
+		if (Key.IsGamepadKey())
+		{
+			return EOutlierInputMappableInputType::Gamepad;
+		}
+
+		if (Key.IsMouseButton())
+		{
+			return EOutlierInputMappableInputType::Mouse;
+		}
+
+		return EOutlierInputMappableInputType::Keyboard;
+	}
+
+	FText GetInputTypeDisplayText(EOutlierInputMappableInputType InputType)
+	{
+		switch (InputType)
+		{
+		case EOutlierInputMappableInputType::Mouse:
+			return LOCTEXT("InputTypeMouse", "Mouse");
+		case EOutlierInputMappableInputType::Gamepad:
+			return LOCTEXT("InputTypeGamepad", "Gamepad");
+		case EOutlierInputMappableInputType::Keyboard:
+		default:
+			return LOCTEXT("InputTypeKeyboard", "Keyboard");
+		}
+	}
 
 	FText MakeTempDisplayName(int32 EntryIndex)
 	{
@@ -116,6 +145,51 @@ namespace
 		return false;
 	}
 
+	bool ClearMappingSettingBehavior(FEnhancedActionKeyMapping& Mapping)
+	{
+		FProperty* SettingBehaviorProperty =
+			FEnhancedActionKeyMapping::StaticStruct()->FindPropertyByName(TEXT("SettingBehavior"));
+		if (!SettingBehaviorProperty)
+		{
+			return false;
+		}
+
+		if (FEnumProperty* EnumProperty = CastField<FEnumProperty>(SettingBehaviorProperty))
+		{
+			EnumProperty->GetUnderlyingProperty()->SetIntPropertyValue(
+				EnumProperty->ContainerPtrToValuePtr<void>(&Mapping),
+				static_cast<int64>(EPlayerMappableKeySettingBehaviors::InheritSettingsFromAction));
+			return true;
+		}
+
+		if (FByteProperty* ByteProperty = CastField<FByteProperty>(SettingBehaviorProperty))
+		{
+			ByteProperty->SetPropertyValue_InContainer(
+				&Mapping,
+				static_cast<uint8>(EPlayerMappableKeySettingBehaviors::InheritSettingsFromAction));
+			return true;
+		}
+
+		return false;
+	}
+
+	// Clears the mapping-owned PlayerMappableKeySettings (if any) so the
+	// mapping goes back to having no Name, i.e. undoes what Apply did.
+	bool ClearMappingOwnedSettings(FEnhancedActionKeyMapping& Mapping)
+	{
+		FObjectPropertyBase* SettingsProperty = CastField<FObjectPropertyBase>(
+			FEnhancedActionKeyMapping::StaticStruct()->FindPropertyByName(
+				TEXT("PlayerMappableKeySettings")));
+		if (!SettingsProperty)
+		{
+			return false;
+		}
+
+		void* SettingsAddress = SettingsProperty->ContainerPtrToValuePtr<void>(&Mapping);
+		SettingsProperty->SetObjectPropertyValue(SettingsAddress, nullptr);
+		return true;
+	}
+
 	UPlayerMappableKeySettings* ResolveOrCreateMappableSettings(
 		FEnhancedActionKeyMapping& Mapping,
 		UObject* Outer)
@@ -159,6 +233,13 @@ namespace
 			SettingsProperty->ContainerPtrToValuePtr<void>(&Mapping);
 		return Cast<UPlayerMappableKeySettings>(
 			SettingsProperty->GetObjectPropertyValue(SettingsAddress));
+	}
+
+	bool ResolveInitialInUse(const FEnhancedActionKeyMapping& Mapping)
+	{
+		const UPlayerMappableKeySettings* MappingOwnedSettings =
+			GetMappingOwnedMappableSettings(Mapping);
+		return MappingOwnedSettings && !MappingOwnedSettings->Name.IsNone();
 	}
 
 	FText ResolveInitialDisplayName(
@@ -221,6 +302,21 @@ namespace
 						});
 			}
 
+			if (ColumnName == InUseColumnId)
+			{
+				return SNew(SCheckBox)
+					.IsEnabled(false)
+					.ToolTipText(LOCTEXT("InUseTooltip",
+						"Already mappable on the IMC (i.e. already in the binding table) from an earlier Apply."))
+					.IsChecked_Lambda(
+						[Row = RowItem]()
+						{
+							return Row.IsValid() && Row->bInUse
+								? ECheckBoxState::Checked
+								: ECheckBoxState::Unchecked;
+						});
+			}
+
 			if (ColumnName == ContextColumnId)
 			{
 				return SNew(STextBlock)
@@ -236,18 +332,15 @@ namespace
 						});
 			}
 
-			if (ColumnName == ActionColumnId)
+			if (ColumnName == TypeColumnId)
 			{
 				return SNew(STextBlock)
 					.Text_Lambda(
 						[Row = RowItem]()
 						{
-							const UInputAction* Action = Row.IsValid()
-								? Row->InputAction.Get()
-								: nullptr;
-							return Action
-								? FText::FromString(Action->GetName())
-								: LOCTEXT("MissingAction", "Missing");
+							return Row.IsValid()
+								? GetInputTypeDisplayText(Row->InputType)
+								: FText::GetEmpty();
 						});
 			}
 
@@ -263,36 +356,15 @@ namespace
 						});
 			}
 
-			if (ColumnName == IndexColumnId)
+			if (ColumnName == MappingNameColumnId)
 			{
 				return SNew(STextBlock)
 					.Text_Lambda(
 						[Row = RowItem]()
 						{
 							return Row.IsValid()
-								? FText::AsNumber(Row->MappingIndex)
-								: FText::GetEmpty();
-						});
-			}
-
-			if (ColumnName == MappingNameColumnId)
-			{
-				return SNew(SEditableTextBox)
-					.MinDesiredWidth(160.0f)
-					.Text_Lambda(
-						[Row = RowItem]()
-						{
-							return Row.IsValid()
 								? FText::FromName(Row->MappingName)
 								: FText::GetEmpty();
-						})
-					.OnTextCommitted_Lambda(
-						[Row = RowItem](const FText& NewText, ETextCommit::Type)
-						{
-							if (Row.IsValid())
-							{
-								Row->MappingName = FName(*NewText.ToString());
-							}
 						});
 			}
 
@@ -371,6 +443,44 @@ void SOutlierInputMappableToolWidget::Construct(const FArguments& InArgs)
 					.OnClicked(this, &SOutlierInputMappableToolWidget::ApplyCheckedMappings)
 				]
 				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.Padding(6.0f, 0.0f, 0.0f, 0.0f)
+				[
+					SNew(SButton)
+					.Text(LOCTEXT("FlushButton", "Flush Checked"))
+					.ToolTipText(LOCTEXT("FlushButtonTooltip",
+						"For checked rows: clears the IMC mapping's rebindable/mappable override, undoing Apply. Use this to remove stale mappings a previous Apply left behind."))
+					.OnClicked(this, &SOutlierInputMappableToolWidget::FlushCheckedMappings)
+				]
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(18.0f, 0.0f, 0.0f, 0.0f)
+				[
+					SNew(SCheckBox)
+					.IsChecked(this, &SOutlierInputMappableToolWidget::GetShowKeyboardState)
+					.OnCheckStateChanged(this, &SOutlierInputMappableToolWidget::OnShowKeyboardStateChanged)
+					.Content()
+					[
+						SNew(STextBlock)
+						.Text(LOCTEXT("ShowKeyboardCheckbox", "Show Keyboard"))
+					]
+				]
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(10.0f, 0.0f, 0.0f, 0.0f)
+				[
+					SNew(SCheckBox)
+					.IsChecked(this, &SOutlierInputMappableToolWidget::GetShowMouseState)
+					.OnCheckStateChanged(this, &SOutlierInputMappableToolWidget::OnShowMouseStateChanged)
+					.Content()
+					[
+						SNew(STextBlock)
+						.Text(LOCTEXT("ShowMouseCheckbox", "Show Mouse"))
+					]
+				]
+				+ SHorizontalBox::Slot()
 				.FillWidth(1.0f)
 				[
 					SNew(SSpacer)
@@ -393,30 +503,30 @@ void SOutlierInputMappableToolWidget::Construct(const FArguments& InArgs)
 			.FillHeight(1.0f)
 			[
 				SAssignNew(RowListView, SListView<FRowPtr>)
-				.ListItemsSource(&Rows)
+				.ListItemsSource(&FilteredRows)
 				.OnGenerateRow(this, &SOutlierInputMappableToolWidget::GenerateRow)
 				.HeaderRow(
 					SNew(SHeaderRow)
 					+ SHeaderRow::Column(CheckColumnId)
 					.FixedWidth(48.0f)
 					.DefaultLabel(LOCTEXT("CheckColumn", "Use"))
-					+ SHeaderRow::Column(ContextColumnId)
-					.FillWidth(0.18f)
-					.DefaultLabel(LOCTEXT("ContextColumn", "Context"))
-					+ SHeaderRow::Column(ActionColumnId)
-					.FillWidth(0.18f)
-					.DefaultLabel(LOCTEXT("ActionColumn", "Action"))
-					+ SHeaderRow::Column(KeyColumnId)
-					.FillWidth(0.10f)
-					.DefaultLabel(LOCTEXT("KeyColumn", "Key"))
-					+ SHeaderRow::Column(IndexColumnId)
+					+ SHeaderRow::Column(InUseColumnId)
 					.FixedWidth(56.0f)
-					.DefaultLabel(LOCTEXT("IndexColumn", "Index"))
-					+ SHeaderRow::Column(MappingNameColumnId)
+					.DefaultLabel(LOCTEXT("InUseColumn", "In Use"))
+					+ SHeaderRow::Column(ContextColumnId)
 					.FillWidth(0.22f)
+					.DefaultLabel(LOCTEXT("ContextColumn", "Context"))
+					+ SHeaderRow::Column(TypeColumnId)
+					.FixedWidth(72.0f)
+					.DefaultLabel(LOCTEXT("TypeColumn", "Type"))
+					+ SHeaderRow::Column(KeyColumnId)
+					.FillWidth(0.14f)
+					.DefaultLabel(LOCTEXT("KeyColumn", "Key"))
+					+ SHeaderRow::Column(MappingNameColumnId)
+					.FillWidth(0.26f)
 					.DefaultLabel(LOCTEXT("MappingNameColumn", "Name"))
 					+ SHeaderRow::Column(DisplayNameColumnId)
-					.FillWidth(0.22f)
+					.FillWidth(0.30f)
 					.DefaultLabel(LOCTEXT("DisplayNameColumn", "Display Name")))
 			]
 		]
@@ -490,16 +600,15 @@ FReply SOutlierInputMappableToolWidget::ScanInputMappingContexts()
 				ActionMappingCountsByContext.FindRef(
 					MakeContextActionKey(*MappingContext, *InputAction)) > 1);
 			Row->DisplayName = ResolveInitialDisplayName(Mapping, TempIndex);
+			Row->InputType = ResolveInputType(Mapping.Key);
+			Row->bInUse = ResolveInitialInUse(Mapping);
 
 			Rows.Add(Row);
 			++TempIndex;
 		}
 	}
 
-	if (RowListView.IsValid())
-	{
-		RowListView->RequestListRefresh();
-	}
+	RefreshFilteredRows();
 
 	SetStatus(FText::Format(
 		LOCTEXT("ScanStatus", "Scanned {0} mappings from {1} contexts."),
@@ -567,7 +676,13 @@ FReply SOutlierInputMappableToolWidget::ApplyCheckedMappings()
 
 		MappingContext->MarkPackageDirty();
 		ModifiedContexts.Add(MappingContext);
+		Row->bInUse = !Settings->Name.IsNone();
 		++AppliedCount;
+	}
+
+	if (RowListView.IsValid())
+	{
+		RowListView->RequestListRefresh();
 	}
 
 	SetStatus(FText::Format(
@@ -578,9 +693,68 @@ FReply SOutlierInputMappableToolWidget::ApplyCheckedMappings()
 	return FReply::Handled();
 }
 
+FReply SOutlierInputMappableToolWidget::FlushCheckedMappings()
+{
+	int32 FlushedCount = 0;
+	TSet<UInputMappingContext*> ModifiedContexts;
+
+	for (const FRowPtr& Row : Rows)
+	{
+		if (!Row.IsValid() || !Row->bMakeMappable)
+		{
+			continue;
+		}
+
+		UInputMappingContext* MappingContext = Row->MappingContext.Get();
+		if (!MappingContext)
+		{
+			continue;
+		}
+
+		const TArray<FEnhancedActionKeyMapping>& Mappings = MappingContext->GetMappings();
+		if (!Mappings.IsValidIndex(Row->MappingIndex))
+		{
+			continue;
+		}
+
+		FEnhancedActionKeyMapping& Mapping = MappingContext->GetMapping(Row->MappingIndex);
+		if (Row->InputAction.IsValid() && Mapping.Action.Get() != Row->InputAction.Get())
+		{
+			continue;
+		}
+
+		if (Mapping.Key != Row->Key)
+		{
+			continue;
+		}
+
+		MappingContext->Modify();
+		ClearMappingSettingBehavior(Mapping);
+		ClearMappingOwnedSettings(Mapping);
+
+		MappingContext->MarkPackageDirty();
+		ModifiedContexts.Add(MappingContext);
+		Row->bInUse = false;
+		++FlushedCount;
+	}
+
+	if (RowListView.IsValid())
+	{
+		RowListView->RequestListRefresh();
+	}
+
+	SetStatus(FText::Format(
+		LOCTEXT("FlushStatus",
+			"Flushed {0} mappings back to not-mappable. Modified {1} contexts. Save changed IMCs, then Rebuild the table."),
+		FText::AsNumber(FlushedCount),
+		FText::AsNumber(ModifiedContexts.Num())));
+
+	return FReply::Handled();
+}
+
 FReply SOutlierInputMappableToolWidget::CheckAllRows()
 {
-	for (const FRowPtr& Row : Rows)
+	for (const FRowPtr& Row : FilteredRows)
 	{
 		if (Row.IsValid())
 		{
@@ -598,7 +772,7 @@ FReply SOutlierInputMappableToolWidget::CheckAllRows()
 
 FReply SOutlierInputMappableToolWidget::UncheckAllRows()
 {
-	for (const FRowPtr& Row : Rows)
+	for (const FRowPtr& Row : FilteredRows)
 	{
 		if (Row.IsValid())
 		{
@@ -617,6 +791,59 @@ FReply SOutlierInputMappableToolWidget::UncheckAllRows()
 void SOutlierInputMappableToolWidget::SetStatus(const FText& NewStatusText)
 {
 	StatusText = NewStatusText;
+}
+
+ECheckBoxState SOutlierInputMappableToolWidget::GetShowKeyboardState() const
+{
+	return bShowKeyboardInputs ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+}
+
+void SOutlierInputMappableToolWidget::OnShowKeyboardStateChanged(ECheckBoxState NewState)
+{
+	bShowKeyboardInputs = NewState == ECheckBoxState::Checked;
+	RefreshFilteredRows();
+}
+
+ECheckBoxState SOutlierInputMappableToolWidget::GetShowMouseState() const
+{
+	return bShowMouseInputs ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+}
+
+void SOutlierInputMappableToolWidget::OnShowMouseStateChanged(ECheckBoxState NewState)
+{
+	bShowMouseInputs = NewState == ECheckBoxState::Checked;
+	RefreshFilteredRows();
+}
+
+void SOutlierInputMappableToolWidget::RefreshFilteredRows()
+{
+	FilteredRows.Reset();
+	for (const FRowPtr& Row : Rows)
+	{
+		if (!Row.IsValid())
+		{
+			continue;
+		}
+
+		// Gamepad mappings are always shown; the Key/Mouse filters only split
+		// out the two input types the user asked to view separately.
+		if (Row->InputType == EOutlierInputMappableInputType::Keyboard && !bShowKeyboardInputs)
+		{
+			continue;
+		}
+
+		if (Row->InputType == EOutlierInputMappableInputType::Mouse && !bShowMouseInputs)
+		{
+			continue;
+		}
+
+		FilteredRows.Add(Row);
+	}
+
+	if (RowListView.IsValid())
+	{
+		RowListView->RequestListRefresh();
+	}
 }
 
 void SOutlierInputMappableToolWidget::CollectConfiguredInputMappingContexts(

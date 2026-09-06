@@ -50,6 +50,9 @@ public:
 	void SetChromaticAberrationEnabled(bool bEnabled);
 	void SetChromaticAberrationStartOffset(float InStartOffset);
 	void SetChromaticAberrationIntensity(float InIntensity);
+	void SetOverlayEnabled(bool bEnabled);
+	void SetOverlayTintColor(const FLinearColor& InTintColor);
+	void SetOverlayGoalValue(float InGoalValue);
 
 	void SetDualKawaseBlurEnabled(bool bEnabled);
 	void SetDualKawaseBlurRadius(float InBlurRadius);
@@ -135,6 +138,7 @@ public:
 private:
 	void MarkDirty();
 	void UpdateADSBlur(float DeltaTime);
+	void UpdateOverlay(float DeltaTime);
 	void UpdatePixelSorting(float DeltaTime);
 	void UpdateHackPossessionTransition(float DeltaTime);
 	void UpdateDepthOfField();
@@ -152,6 +156,7 @@ private:
 	TSharedPtr<FOutlierPostProcessSceneViewExtension, ESPMode::ThreadSafe> ViewExtension;
 
 	uint8 bDirty : 1 = false;
+	uint8 bOverlayRequested : 1 = false;
 	uint8 bADSBlurAiming : 1 = false;
 	uint8 bADSBlurDebugPassEnabled : 1 = true;
 

@@ -2,47 +2,15 @@
 
 #include "Engine/DataTable.h"
 #include "Engine/Texture2D.h"
-#if WITH_EDITOR
-#include "AssetRegistry/AssetRegistryModule.h"
-#include "AssetRegistry/IAssetRegistry.h"
-#endif
-
-TArray<FName> UOutlierUpgradeSetData::GetApplyEffectKeyOptions()
-{
-	TArray<FName> Keys;
-
-#if WITH_EDITOR
-	IAssetRegistry& AssetRegistry =
-		FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
-
-	TArray<FAssetData> Assets;
-	AssetRegistry.GetAssetsByClass(UOutlierUpgradeSetData::StaticClass()->GetClassPathName(), Assets);
-
-	for (const FAssetData& AssetData : Assets)
-	{
-		const UOutlierUpgradeSetData* SetData = Cast<UOutlierUpgradeSetData>(AssetData.GetAsset());
-		if (!SetData)
-		{
-			continue;
-		}
-
-		for (const TPair<FName, TSubclassOf<UGameplayEffect>>& Pair : SetData->ApplyEffectClasses)
-		{
-			if (!Pair.Key.IsNone())
-			{
-				Keys.AddUnique(Pair.Key);
-			}
-		}
-	}
-
-	Keys.Sort(FNameLexicalLess());
-#endif
-
-	return Keys;
-}
 
 void UOutlierUpgradeSetData::RefreshUnlockedNodeTextureBindings()
 {
+	if (!UpgradeDataTable
+		|| UpgradeDataTable->GetRowStruct() != FOutlierUpgradeNodeRow::StaticStruct())
+	{
+		return;
+	}
+
 	TMap<FName, TObjectPtr<UTexture2D>> ExistingTextures;
 	for (const FUpgradeNodeTextureBinding& Binding : UnlockedNodeTextures)
 	{
@@ -52,15 +20,10 @@ void UOutlierUpgradeSetData::RefreshUnlockedNodeTextureBindings()
 		}
 	}
 
-	UnlockedNodeTextures.Reset();
-
-	if (!UpgradeDataTable)
-	{
-		return;
-	}
-
 	TArray<FName> RowNames = UpgradeDataTable->GetRowNames();
 	RowNames.Sort(FNameLexicalLess());
+	TArray<FUpgradeNodeTextureBinding> NewBindings;
+	NewBindings.Reserve(RowNames.Num());
 
 	for (const FName& RowName : RowNames)
 	{
@@ -78,7 +41,7 @@ void UOutlierUpgradeSetData::RefreshUnlockedNodeTextureBindings()
 			continue;
 		}
 
-		FUpgradeNodeTextureBinding& Binding = UnlockedNodeTextures.AddDefaulted_GetRef();
+		FUpgradeNodeTextureBinding& Binding = NewBindings.AddDefaulted_GetRef();
 		Binding.NodeRowName = RowName;
 
 		if (const TObjectPtr<UTexture2D>* ExistingTexture = ExistingTextures.Find(RowName))
@@ -86,6 +49,8 @@ void UOutlierUpgradeSetData::RefreshUnlockedNodeTextureBindings()
 			Binding.Texture = *ExistingTexture;
 		}
 	}
+
+	UnlockedNodeTextures = MoveTemp(NewBindings);
 }
 
 #if WITH_EDITOR

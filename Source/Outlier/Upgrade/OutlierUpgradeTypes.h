@@ -30,10 +30,10 @@ struct OUTLIER_API FUpgradeNodeTextureBinding
 {
 	GENERATED_BODY()
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Upgrade|Texture")
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Upgrade|Node Texture")
 	FName NodeRowName = NAME_None;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Texture")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Node Texture")
 	TObjectPtr<UTexture2D> Texture;
 };
 
