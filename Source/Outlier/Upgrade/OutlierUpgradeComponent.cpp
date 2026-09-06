@@ -787,20 +787,15 @@ void UOutlierUpgradeComponent::ProjectAbilityConfig(UOutlierAbilitySystemCompone
 {
 	if (Role == EOutlierUpgradeRole::Shooter)
 	{
-		if (!bBaseSuitConfigCaptured)
+		// suit init( ConfigureShooterSuitAbilities ) 전에는 base 가 없다. 다음 리컨사일에 다시 시도.
+		if (!ASC->IsShooterSuitConfigured())
 		{
-			// suit init( ConfigureShooterSuitAbilities ) 전에는 base 가 준비 안 됨.
-			// 준비될 때까지 포착을 미룬다 ( 다음 리컨사일에 다시 시도 ).
-			if (!ASC->IsShooterSuitConfigured())
-			{
-				return;
-			}
-			// 업그레이드 이전 base config 를 최초 1회 포착 ( init 에서 DT_AbilityShooter 로 세팅된 값 ).
-			BaseSuitConfig = ASC->GetShooterSuitConfig();
-			bBaseSuitConfigCaptured = true;
+			return;
 		}
 
-		FOutlierShooterSuitConfig Config = BaseSuitConfig;
+		// base 는 ASC 가 grant 시점에 고정해 들고 있다. 여기서 따로 캐시하면 두 벌이 되어
+		// 재초기화/리스폰 때 어긋나므로 매번 ASC 에서 읽는다.
+		FOutlierShooterSuitConfig Config = ASC->GetBaseShooterSuitConfig();
 		for (const FOutlierUpgradeEffectRow* Effect : Effects)
 		{
 			if (Effect->EffectType != EOutlierUpgradeEffectType::AbilityConfig)
@@ -821,19 +816,13 @@ void UOutlierUpgradeComponent::ProjectAbilityConfig(UOutlierAbilitySystemCompone
 
 	if (Role == EOutlierUpgradeRole::Partner)
 	{
-		if (!bBasePartnerAbilityConfigCaptured)
+		// ConfigurePartnerAbilities( DT_Partner_Skill ) 전에는 base 가 없다. 다음 리컨사일에 다시 시도.
+		if (!ASC->IsPartnerAbilitiesConfigured())
 		{
-			// suit init( ConfigurePartnerAbilities, 보통 DT_Partner_Skill 을 읽어 BP 에서 호출 ) 전에는
-			// base 가 준비 안 됨. 준비될 때까지 포착을 미룬다 ( 다음 리컨사일에 다시 시도 ).
-			if (!ASC->IsPartnerAbilitiesConfigured())
-			{
-				return;
-			}
-			BasePartnerAbilityConfig = ASC->GetPartnerAbilityConfig();
-			bBasePartnerAbilityConfigCaptured = true;
+			return;
 		}
 
-		FOutlierPartnerAbilityConfig Config = BasePartnerAbilityConfig;
+		FOutlierPartnerAbilityConfig Config = ASC->GetBasePartnerAbilityConfig();
 		for (const FOutlierUpgradeEffectRow* Effect : Effects)
 		{
 			if (Effect->EffectType != EOutlierUpgradeEffectType::AbilityConfig)

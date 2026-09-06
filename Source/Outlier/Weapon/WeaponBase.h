@@ -6,6 +6,7 @@
 #include "GameFramework/Actor.h"
 #include "Engine/DataTable.h"
 #include "Interface/InteractableInterface.h"
+#include "PostProcess/OutlierStealthVisualTarget.h"
 #include "Weapon/WeaponDataTypes.h"
 #include "WeaponBase.generated.h"
 
@@ -19,21 +20,6 @@ class UInteractableComponent;
 class UProceduralAnimValues;
 class UMaterialInterface;
 
-USTRUCT()
-struct FWeaponStealthMeshRestoreState
-{
-	GENERATED_BODY()
-
-	UPROPERTY()
-	bool bRenderCustomDepth = false;
-
-	UPROPERTY()
-	int32 CustomDepthStencilValue = 0;
-
-	UPROPERTY()
-	TArray<TObjectPtr<UMaterialInterface>> Materials;
-};
-
 UENUM(BlueprintType)
 enum class EWeaponType : uint8
 {
@@ -44,7 +30,7 @@ enum class EWeaponType : uint8
 };
 
 UCLASS(Abstract)
-class OUTLIER_API AWeaponBase : public AActor, public IInteractableInterface
+class OUTLIER_API AWeaponBase : public AActor, public IInteractableInterface, public IOutlierStealthVisualTarget
 {
 	GENERATED_BODY()
 
@@ -145,9 +131,6 @@ protected:
 	UPROPERTY(Transient)
 	float DropPickupBlockedUntilTime = 0.0f;
 
-	UPROPERTY(Transient)
-	TMap<TObjectPtr<UMeshComponent>, FWeaponStealthMeshRestoreState> StealthMeshRestoreStates;
-
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Animation")
 	TObjectPtr<UProceduralAnimValues> FirstPersonProceduralValues = nullptr;
 
@@ -186,11 +169,11 @@ public:
 	void AttachWeaponMeshesToOwnerMeshes();
 	virtual void ShowEquippedPresentation();
 	virtual void RefreshShadowWeaponPresentation();
-	void SetStealthVisualState(
-		bool bUseFirstPersonGlass,
-		bool bWriteThirdPersonStencil,
-		UMaterialInterface* FirstPersonGlassMaterial,
-		int32 StencilValue = 5);
+
+	// IOutlierStealthVisualTarget : 은신 적용 대상 메시만 알려준다 ( 적용/복구는 서브시스템 담당 ).
+	virtual void CollectStealthMeshes(
+		TArray<UMeshComponent*>& OutFirstPersonMeshes,
+		TArray<UMeshComponent*>& OutThirdPersonMeshes) const override;
 
 	virtual void OnUnequipped();
 

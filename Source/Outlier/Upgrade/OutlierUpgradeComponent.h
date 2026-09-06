@@ -196,13 +196,7 @@ private:
 	// 추가된 태그까지 같이 빠져버리는 leak 이 생긴다 ( 실제로 발생 확인함 - 17개 노드를 찍었는데
 	// 태그가 1개만 남는 버그로 나타났었음 ).
 	FActiveGameplayEffectHandle UpgradeAttributeEffectHandle;
-	// AbilityConfig 재계산의 기준 ( 업그레이드 전 base, 최초 리컨사일에 1회 포착 )
-	FOutlierShooterSuitConfig BaseSuitConfig;
-	bool bBaseSuitConfigCaptured = false;
-
-	// Partner AbilityConfig 재계산의 기준 ( 업그레이드 전 base, 최초 리컨사일에 1회 포착 ).
-	// Shooter 와 달리 Partner 는 SuitConfig 가 능력별 서브 row 로 나뉘지 않은 flat struct 라
-	// ResolveSuitRow 상당의 태그->서브구조체 매핑이 필요 없다.
-	FOutlierPartnerAbilityConfig BasePartnerAbilityConfig;
-	bool bBasePartnerAbilityConfigCaptured = false;
+	// AbilityConfig 재계산의 기준(base)은 여기서 캐시하지 않는다.
+	// ASC 가 grant 시점에 고정해 들고 있는 GetBaseShooterSuitConfig / GetBasePartnerAbilityConfig 를
+	// 매 리컨사일마다 읽는다 ( 두 벌로 나뉘면 재초기화·리스폰 때 어긋난다 ).
 };

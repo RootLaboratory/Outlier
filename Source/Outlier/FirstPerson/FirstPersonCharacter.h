@@ -9,6 +9,7 @@
 #include "GenericTeamAgentInterface.h"
 #include "Interface/RoomTagInterface.h"
 #include "Interface/GameplayTagProviderInterface.h"
+#include "PostProcess/OutlierStealthVisualTarget.h"
 #include "Interaction/InteractableComponent.h"
 #include "FirstPersonCharacter.generated.h"
 
@@ -32,7 +33,7 @@ enum class EInteractionTraceMode : uint8
 };
 
 UCLASS()
-class OUTLIER_API AFirstPersonCharacter : public ACharacter, public IGameplayTagProviderInterface, public IGenericTeamAgentInterface, public IRoomTagInterface
+class OUTLIER_API AFirstPersonCharacter : public ACharacter, public IGameplayTagProviderInterface, public IGenericTeamAgentInterface, public IRoomTagInterface, public IOutlierStealthVisualTarget
 {
 	GENERATED_BODY()
 
@@ -187,6 +188,11 @@ public:
 	EWeaponType GetWeaponType() const;
 
 	AWeaponBase* GetCurrentWeapon() const { return CurrentWeapon; }
+
+	// IOutlierStealthVisualTarget : 은신 적용 대상 메시만 알려준다 ( 적용/복구는 UMaterialPostProcessSubsystem 담당 ).
+	virtual void CollectStealthMeshes(
+		TArray<UMeshComponent*>& OutFirstPersonMeshes,
+		TArray<UMeshComponent*>& OutThirdPersonMeshes) const override;
 
 	virtual void OnMoveInputUpdated(const FVector2D& MoveValue);
 

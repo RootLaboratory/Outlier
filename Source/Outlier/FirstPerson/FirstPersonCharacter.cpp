@@ -792,6 +792,28 @@ EWeaponType AFirstPersonCharacter::GetWeaponType() const
 	return CurrentWeaponType;
 }
 
+void AFirstPersonCharacter::CollectStealthMeshes(
+	TArray<UMeshComponent*>& OutFirstPersonMeshes,
+	TArray<UMeshComponent*>& OutThirdPersonMeshes) const
+{
+	// 은신 머티리얼/스텐실 적용과 원상복구는 UMaterialPostProcessSubsystem 이 전담한다.
+	// 여기서는 "내 메시가 어떻게 구성돼 있는지"와 지금 든 무기만 알려준다.
+	if (FirstPersonMesh)
+	{
+		OutFirstPersonMeshes.Add(FirstPersonMesh);
+	}
+
+	if (USkeletalMeshComponent* ThirdPersonMesh = GetMesh())
+	{
+		OutThirdPersonMeshes.Add(ThirdPersonMesh);
+	}
+
+	if (const AWeaponBase* EquippedWeapon = GetCurrentWeapon())
+	{
+		EquippedWeapon->CollectStealthMeshes(OutFirstPersonMeshes, OutThirdPersonMeshes);
+	}
+}
+
 void AFirstPersonCharacter::OnMoveInputUpdated(const FVector2D& MoveValue)
 {
 }

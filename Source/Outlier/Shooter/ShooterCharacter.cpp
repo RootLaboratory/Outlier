@@ -220,7 +220,6 @@ void AShooterCharacter::BeginPlay()
 	RefreshWeaponMode();
 	RefreshMovementState();
 	RefreshCombatState();
-	SetStealthVisualEnabled(IsStealthed());
 	RefreshShooterSuitCooldownUI();
 }
 
@@ -228,7 +227,6 @@ void AShooterCharacter::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 
-	UpdateStealthPostProcessFade(DeltaSeconds);
 	UpdateSlideCameraEffect(DeltaSeconds);
 	UpdateCameraFOV(DeltaSeconds);
 }
@@ -241,7 +239,6 @@ void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	EndActiveBulletReflection(false);
 	EndActiveWeaponOvercharge(false);
 	EndActiveStealth(false);
-	ResetStealthVisualsImmediately();
 
 	if (HasAuthority())
 	{
@@ -406,9 +403,6 @@ void AShooterCharacter::BindGasVitalityObservers()
 	DeadTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::Dead()).AddUObject(
 			this, &AShooterCharacter::HandleDeadTagChanged);
-	StealthTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
-		OutlierGameplayTags::State::Stealthed()).AddUObject(
-			this, &AShooterCharacter::HandleStealthTagChanged);
 	BulletReflectionTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::BulletReflecting()).AddUObject(
 			this, &AShooterCharacter::HandleBulletReflectionTagChanged);
@@ -443,8 +437,6 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::Dead()).Remove(DeadTagChangedHandle);
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
-		OutlierGameplayTags::State::Stealthed()).Remove(StealthTagChangedHandle);
-	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::BulletReflecting()).Remove(BulletReflectionTagChangedHandle);
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::WeaponOvercharged()).Remove(WeaponOverchargeTagChangedHandle);
@@ -460,7 +452,6 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 	HealthChangedHandle.Reset();
 	ShieldChangedHandle.Reset();
 	DeadTagChangedHandle.Reset();
-	StealthTagChangedHandle.Reset();
 	BulletReflectionTagChangedHandle.Reset();
 	WeaponOverchargeTagChangedHandle.Reset();
 	QuantumLeapCooldownTagChangedHandle.Reset();
@@ -504,12 +495,6 @@ void AShooterCharacter::HandleDeadTagChanged(const FGameplayTag Tag, int32 NewCo
 		EndActiveStealth(false);
 		HandleDeath();
 	}
-}
-
-void AShooterCharacter::HandleStealthTagChanged(const FGameplayTag Tag, int32 NewCount)
-{
-	(void)Tag;
-	SetStealthVisualEnabled(NewCount > 0);
 }
 
 void AShooterCharacter::HandleBulletReflectionTagChanged(const FGameplayTag Tag, int32 NewCount)
@@ -1133,224 +1118,6 @@ void AShooterCharacter::TryUseSuit()
 	else
 	{
 		ServerUseSuitAbility(SelectedAbilityTag);
-	}
-}
-
-void AShooterCharacter::SetStealthVisualEnabled(bool bEnabled)
-{
-	if (bEnabled)
-	{
-		SetStealthMeshState(true, true);
-	}
-	else
-	{
-		// Restore first-person materials immediately, but keep third-person stencil
-		// until the post-process fade reaches zero.
-		SetStealthMeshState(false, CurrentStealthPostProcessFade > 0.0f);
-	}
-
-	TargetStealthPostProcessFade = bEnabled ? 1.0f : 0.0f;
-	bStealthStencilCleanupPending = !bEnabled;
-
-	if (UMaterialPostProcessSubsystem* MaterialSub = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
-	{
-		if (bEnabled)
-		{
-			MaterialSub->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Stealth, true);
-		}
-		MaterialSub->UpdateStealthPostProcess(CurrentStealthPostProcessFade);
-	}
-
-	if (StealthPostProcessFadeDuration <= 0.0f)
-	{
-		CurrentStealthPostProcessFade = TargetStealthPostProcessFade;
-		bStealthPostProcessFadeActive = false;
-
-		if (UMaterialPostProcessSubsystem* MaterialSub = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
-		{
-			MaterialSub->UpdateStealthPostProcess(CurrentStealthPostProcessFade);
-		}
-
-		if (!bEnabled)
-		{
-			FinishStealthFadeOut();
-		}
-		return;
-	}
-
-	bStealthPostProcessFadeActive = !FMath::IsNearlyEqual(
-		CurrentStealthPostProcessFade,
-		TargetStealthPostProcessFade);
-
-	if (!bStealthPostProcessFadeActive && !bEnabled)
-	{
-		FinishStealthFadeOut();
-	}
-}
-
-void AShooterCharacter::SetStealthMeshState(
-	bool bUseFirstPersonGlass,
-	bool bWriteThirdPersonStencil)
-{
-	constexpr int32 StealthStencilValue = 5;
-	auto ApplyThirdPersonStencil = [bWriteThirdPersonStencil, StealthStencilValue](
-		USkeletalMeshComponent* MeshComponent)
-	{
-		if (!MeshComponent)
-		{
-			return;
-		}
-
-		MeshComponent->SetCustomDepthStencilValue(
-			bWriteThirdPersonStencil ? StealthStencilValue : 0);
-		MeshComponent->SetRenderCustomDepth(bWriteThirdPersonStencil);
-	};
-
-	UMaterialInterface* FirstPersonGlassMaterial = nullptr;
-	if (UWorld* World = GetWorld())
-	{
-		if (UMaterialPostProcessSubsystem* MaterialSub =
-			World->GetSubsystem<UMaterialPostProcessSubsystem>())
-		{
-			FirstPersonGlassMaterial = MaterialSub->GetFirstPersonStealthGlassMaterial();
-		}
-	}
-
-	SetFirstPersonStealthMaterial(bUseFirstPersonGlass, FirstPersonGlassMaterial);
-	ApplyThirdPersonStencil(GetMesh());
-	if (AWeaponBase* EquippedWeapon = GetCurrentWeapon())
-	{
-		EquippedWeapon->SetStealthVisualState(
-			bUseFirstPersonGlass,
-			bWriteThirdPersonStencil,
-			FirstPersonGlassMaterial,
-			StealthStencilValue);
-	}
-	if (APartnerCharacter* Partner = GetPartnerCharacter())
-	{
-		ApplyThirdPersonStencil(Partner->GetMesh());
-	}
-}
-
-void AShooterCharacter::SetFirstPersonStealthMaterial(
-	bool bEnabled,
-	UMaterialInterface* GlassMaterial)
-{
-	if (!FirstPersonMesh)
-	{
-		return;
-	}
-
-	if (bEnabled)
-	{
-		if (!GlassMaterial || bFirstPersonStealthMaterialApplied)
-		{
-			return;
-		}
-
-		FirstPersonStealthOriginalMaterials.Reset();
-		const int32 MaterialCount = FirstPersonMesh->GetNumMaterials();
-		FirstPersonStealthOriginalMaterials.Reserve(MaterialCount);
-		for (int32 MaterialIndex = 0; MaterialIndex < MaterialCount; ++MaterialIndex)
-		{
-			FirstPersonStealthOriginalMaterials.Add(
-				FirstPersonMesh->GetMaterial(MaterialIndex));
-			FirstPersonMesh->SetMaterial(MaterialIndex, GlassMaterial);
-		}
-
-		bFirstPersonStealthMaterialApplied = true;
-		return;
-	}
-
-	if (!bFirstPersonStealthMaterialApplied)
-	{
-		return;
-	}
-
-	for (int32 MaterialIndex = 0;
-		MaterialIndex < FirstPersonStealthOriginalMaterials.Num();
-		++MaterialIndex)
-	{
-		FirstPersonMesh->SetMaterial(
-			MaterialIndex,
-			FirstPersonStealthOriginalMaterials[MaterialIndex]);
-	}
-
-	FirstPersonStealthOriginalMaterials.Reset();
-	bFirstPersonStealthMaterialApplied = false;
-}
-
-void AShooterCharacter::UpdateStealthPostProcessFade(float DeltaSeconds)
-{
-	if (!bStealthPostProcessFadeActive)
-	{
-		return;
-	}
-
-	const float FadeSpeed = StealthPostProcessFadeDuration > 0.0f
-		? 1.0f / StealthPostProcessFadeDuration
-		: 0.0f;
-	CurrentStealthPostProcessFade = FMath::FInterpConstantTo(
-		CurrentStealthPostProcessFade,
-		TargetStealthPostProcessFade,
-		DeltaSeconds,
-		FadeSpeed);
-	const bool bReachedTarget = FMath::IsNearlyEqual(
-		CurrentStealthPostProcessFade,
-		TargetStealthPostProcessFade);
-	if (bReachedTarget)
-	{
-		CurrentStealthPostProcessFade = TargetStealthPostProcessFade;
-	}
-
-	if (UMaterialPostProcessSubsystem* MaterialSub = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
-	{
-		MaterialSub->UpdateStealthPostProcess(CurrentStealthPostProcessFade);
-	}
-
-	if (!bReachedTarget)
-	{
-		return;
-	}
-
-	bStealthPostProcessFadeActive = false;
-
-	if (bStealthStencilCleanupPending && CurrentStealthPostProcessFade <= 0.0f)
-	{
-		FinishStealthFadeOut();
-	}
-}
-
-void AShooterCharacter::FinishStealthFadeOut()
-{
-	bStealthStencilCleanupPending = false;
-	SetStealthMeshState(false, false);
-
-	if (UWorld* World = GetWorld())
-	{
-		if (UMaterialPostProcessSubsystem* MaterialSub = World->GetSubsystem<UMaterialPostProcessSubsystem>())
-		{
-			MaterialSub->UpdateStealthPostProcess(0.0f);
-			MaterialSub->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Stealth, false);
-		}
-	}
-}
-
-void AShooterCharacter::ResetStealthVisualsImmediately()
-{
-	CurrentStealthPostProcessFade = 0.0f;
-	TargetStealthPostProcessFade = 0.0f;
-	bStealthPostProcessFadeActive = false;
-	bStealthStencilCleanupPending = false;
-	SetStealthMeshState(false, false);
-
-	if (UWorld* World = GetWorld())
-	{
-		if (UMaterialPostProcessSubsystem* MaterialSub = World->GetSubsystem<UMaterialPostProcessSubsystem>())
-		{
-			MaterialSub->UpdateStealthPostProcess(0.0f);
-			MaterialSub->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Stealth, false);
-		}
 	}
 }
 

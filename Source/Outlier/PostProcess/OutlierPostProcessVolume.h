@@ -64,6 +64,11 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Stealth")
 	FName StealthFadeParameterName = TEXT("Fade");
 
+	// 은신 On/Off 시 포스트프로세스 Fade 가 0<->1 로 가는 데 걸리는 시간.
+	// 0 이면 즉시 전환. UMaterialPostProcessSubsystem 이 이 값으로 보간한다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Stealth", meta = (ClampMin = "0.0"))
+	float StealthFadeDuration = 0.25f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Stealth")
 	TObjectPtr<UCurveFloat> StealthFadeCurve = nullptr;
 

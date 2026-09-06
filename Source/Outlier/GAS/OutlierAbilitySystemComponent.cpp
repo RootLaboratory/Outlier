@@ -7,6 +7,8 @@
 #include "GAS/Abilities/Partner/OutlierPartnerGameplayAbilities.h"
 #include "GAS/Abilities/Shooter/OutlierShooterGameplayAbilities.h"
 #include "GameplayTags/OutlierGameplayTags.h"
+#include "PostProcess/MaterialPostProcessSubsystem.h"
+#include "Engine/World.h"
 #include "Outlier.h"
 
 namespace
@@ -58,6 +60,15 @@ void UOutlierAbilitySystemComponent::InitializeForActor(AActor* Actor)
 		RefreshAbilityActorInfo();
 	}
 
+	// 은신 비주얼은 State.Stealthed 태그를 보고 서브시스템이 전담한다. 여기서 구독만 걸어준다.
+	if (UWorld* World = GetWorld())
+	{
+		if (UMaterialPostProcessSubsystem* MaterialSubsystem =
+			World->GetSubsystem<UMaterialPostProcessSubsystem>())
+		{
+			MaterialSubsystem->RegisterStealthSource(this);
+		}
+	}
 }
 
 void UOutlierAbilitySystemComponent::InitializeForPawn(APawn* Pawn)
@@ -69,6 +80,15 @@ void UOutlierAbilitySystemComponent::ClearForActor(const AActor* Actor)
 {
 	if (GetOwnerActor() == Actor || GetAvatarActor() == Actor)
 	{
+		if (UWorld* World = GetWorld())
+		{
+			if (UMaterialPostProcessSubsystem* MaterialSubsystem =
+				World->GetSubsystem<UMaterialPostProcessSubsystem>())
+			{
+				MaterialSubsystem->UnregisterStealthSource(this);
+			}
+		}
+
 		ClearActorInfo();
 	}
 }
@@ -417,20 +437,24 @@ bool UOutlierAbilitySystemComponent::ConfigurePartnerAbilities(
 
 	if (bPartnerAbilitiesConfigured)
 	{
+		// 비교 대상은 "지금 적용중인 값"이 아니라 DT 기준 base 다.
+		// PartnerAbilityConfig 는 업그레이드 투영( UpdatePartnerAbilityConfig )이 런타임에 덮어쓰므로,
+		// 그걸로 비교하면 노드를 하나라도 찍은 뒤 재초기화가 들어올 때 항상 불일치로 터진다.
 #if UE_BUILD_SHIPPING
-		if (!PartnerAbilityConfig.Equals(Config))
+		if (!BasePartnerAbilityConfig.Equals(Config))
 		{
 			UE_LOG(LogOutlier, Error, TEXT("[GAS.PartnerAbility] Configuration changed after grants"));
 			return false;
 		}
 #else
 		checkf(
-			PartnerAbilityConfig.Equals(Config),
+			BasePartnerAbilityConfig.Equals(Config),
 			TEXT("[GAS.PartnerAbility] Configuration changed after grants"));
 #endif
 		return true;
 	}
 
+	BasePartnerAbilityConfig = Config;
 	PartnerAbilityConfig = Config;
 	const TSubclassOf<UGameplayAbility> AbilityClasses[] =
 	{
@@ -542,10 +566,11 @@ bool UOutlierAbilitySystemComponent::ConfigureShooterSuitAbilities(
 	}
 	if (bShooterSuitConfigured)
 	{
+		// Partner 쪽과 같은 이유로 base 와 비교한다 ( UpdateShooterSuitConfig 가 런타임에 덮어씀 ).
 #if UE_BUILD_SHIPPING
-		return ShooterSuitConfig.Equals(Config);
+		return BaseShooterSuitConfig.Equals(Config);
 #else
-		checkf(ShooterSuitConfig.Equals(Config), TEXT("[GAS.ShooterSuit] Configuration changed after grant"));
+		checkf(BaseShooterSuitConfig.Equals(Config), TEXT("[GAS.ShooterSuit] Configuration changed after grant"));
 		return true;
 #endif
 	}
@@ -567,6 +592,7 @@ bool UOutlierAbilitySystemComponent::ConfigureShooterSuitAbilities(
 #endif
 		}
 	}
+	BaseShooterSuitConfig = Config;
 	ShooterSuitConfig = Config;
 	GrantedShooterQuantumLeapAbilityHandle = GiveAbility(FGameplayAbilitySpec(
 		UOutlierShooterQuantumLeapAbility::StaticClass(), 1, INDEX_NONE, GetOwnerActor()));

@@ -313,7 +313,6 @@ protected:
 	FDelegateHandle HealthChangedHandle;
 	FDelegateHandle ShieldChangedHandle;
 	FDelegateHandle DeadTagChangedHandle;
-	FDelegateHandle StealthTagChangedHandle;
 	FDelegateHandle BulletReflectionTagChangedHandle;
 	FDelegateHandle WeaponOverchargeTagChangedHandle;
 	FDelegateHandle QuantumLeapCooldownTagChangedHandle;
@@ -336,17 +335,8 @@ protected:
 	bool bShooterSuitDataInitialized = false;
 	FOutlierShooterSuitConfig ShooterSuitConfig;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Suit|Stealth", meta = (ClampMin = "0.0"))
-	float StealthPostProcessFadeDuration = 0.25f;
-	//책임 분리.
-	float CurrentStealthPostProcessFade = 0.0f;
-	float TargetStealthPostProcessFade = 0.0f;
-	bool bStealthPostProcessFadeActive = false;
-	bool bStealthStencilCleanupPending = false;
-	bool bFirstPersonStealthMaterialApplied = false;
-
-	UPROPERTY(Transient)
-	TArray<TObjectPtr<UMaterialInterface>> FirstPersonStealthOriginalMaterials;
+	// 은신 비주얼( 글래스 머티리얼 / 스텐실 / 포스트프로세스 페이드 )은 State.Stealthed 태그를 보고
+	// UMaterialPostProcessSubsystem 이 전담한다. 페이드 시간과 스텐실 값은 AOutlierPostProcessVolume 에 있다.
 
 	// Slide
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera|Slide")
@@ -383,7 +373,6 @@ protected:
 	void HandleHealthChanged(const FOnAttributeChangeData& ChangeData);
 	void HandleShieldChanged(const FOnAttributeChangeData& ChangeData);
 	void HandleDeadTagChanged(const FGameplayTag Tag, int32 NewCount);
-	void HandleStealthTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleBulletReflectionTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void PushReflectionBarrierWidget();
 	void PopReflectionBarrierWidget();
@@ -427,6 +416,7 @@ public:
 	/** Constructor */
 	AShooterCharacter();
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
+
 	UOutlierAbilitySystemComponent* GetOutlierAbilitySystemComponent() const
 	{
 		return OutlierAbilitySystemComponent;
@@ -608,12 +598,6 @@ protected:
 	void TryCloseSuitMenu();
 	void UpdateSuitSelection(const FInputActionValue& Value);
 	void TryUseSuit();
-	void SetStealthVisualEnabled(bool bEnabled);
-	void SetStealthMeshState(bool bUseFirstPersonGlass, bool bWriteThirdPersonStencil);
-	void SetFirstPersonStealthMaterial(bool bEnabled, UMaterialInterface* GlassMaterial);
-	void UpdateStealthPostProcessFade(float DeltaSeconds);
-	void FinishStealthFadeOut();
-	void ResetStealthVisualsImmediately();
 	void TrySlide();
 	void TryLean(const FInputActionValue& Value);
 	void StopLean();

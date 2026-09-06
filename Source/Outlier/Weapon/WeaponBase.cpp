@@ -18,25 +18,7 @@
 #include "Weapon/WeaponRangeRow.h"
 #include "Weapon/Spawn/WeaponSpawnPoint.h"
 #include "Shooter/Anim/ProceduralAnimValues.h"
-#include "PostProcess/MaterialPostProcessSubsystem.h"
 #include "Materials/MaterialInterface.h"
-
-namespace
-{
-UMaterialInterface* ResolveFirstPersonStealthGlassMaterial(const UWorld* World)
-{
-	if (!World)
-	{
-		return nullptr;
-	}
-
-	const UMaterialPostProcessSubsystem* MaterialSubsystem =
-		World->GetSubsystem<UMaterialPostProcessSubsystem>();
-	return MaterialSubsystem
-		? MaterialSubsystem->GetFirstPersonStealthGlassMaterial()
-		: nullptr;
-}
-}
 
 AWeaponBase::AWeaponBase()
 {
@@ -290,12 +272,12 @@ void AWeaponBase::SetEquippedPresentation()
 	SetEquippedCollisionEnabled(false);
 }
 
-void AWeaponBase::SetStealthVisualState(
-	bool bUseFirstPersonGlass,
-	bool bWriteThirdPersonStencil,
-	UMaterialInterface* FirstPersonGlassMaterial,
-	int32 StencilValue)
+void AWeaponBase::CollectStealthMeshes(
+	TArray<UMeshComponent*>& OutFirstPersonMeshes,
+	TArray<UMeshComponent*>& OutThirdPersonMeshes) const
 {
+	// 은신 머티리얼/스텐실 적용과 원상복구는 UMaterialPostProcessSubsystem 이 전담한다.
+	// 무기는 자기 메시가 1인칭인지 3인칭인지만 답한다.
 	TArray<UMeshComponent*> MeshComponents;
 	GetComponents<UMeshComponent>(MeshComponents);
 
@@ -306,65 +288,15 @@ void AWeaponBase::SetStealthVisualState(
 			continue;
 		}
 
-		const bool bIsFirstPersonMesh = MeshComponent == FirstPersonWeaponMesh
-			|| (FirstPersonWeaponMesh && MeshComponent->IsAttachedTo(FirstPersonWeaponMesh));
-		const bool bIsThirdPersonMesh = MeshComponent == ThirdPersonWeaponMesh
-			|| (ThirdPersonWeaponMesh && MeshComponent->IsAttachedTo(ThirdPersonWeaponMesh));
-		if (!bIsFirstPersonMesh && !bIsThirdPersonMesh)
+		if (MeshComponent == FirstPersonWeaponMesh
+			|| (FirstPersonWeaponMesh && MeshComponent->IsAttachedTo(FirstPersonWeaponMesh)))
 		{
-			continue;
+			OutFirstPersonMeshes.Add(MeshComponent);
 		}
-
-		const bool bNeedsOverride = (bIsFirstPersonMesh
-			&& bUseFirstPersonGlass
-			&& FirstPersonGlassMaterial)
-			|| (bIsThirdPersonMesh && bWriteThirdPersonStencil);
-		if (bNeedsOverride)
+		else if (MeshComponent == ThirdPersonWeaponMesh
+			|| (ThirdPersonWeaponMesh && MeshComponent->IsAttachedTo(ThirdPersonWeaponMesh)))
 		{
-			if (!StealthMeshRestoreStates.Contains(MeshComponent))
-			{
-				FWeaponStealthMeshRestoreState RestoreState;
-				RestoreState.bRenderCustomDepth = MeshComponent->bRenderCustomDepth;
-				RestoreState.CustomDepthStencilValue = MeshComponent->CustomDepthStencilValue;
-				const int32 MaterialCount = MeshComponent->GetNumMaterials();
-				RestoreState.Materials.Reserve(MaterialCount);
-				for (int32 MaterialIndex = 0; MaterialIndex < MaterialCount; ++MaterialIndex)
-				{
-					RestoreState.Materials.Add(MeshComponent->GetMaterial(MaterialIndex));
-				}
-				StealthMeshRestoreStates.Add(MeshComponent, MoveTemp(RestoreState));
-			}
-
-			if (bIsFirstPersonMesh && bUseFirstPersonGlass && FirstPersonGlassMaterial)
-			{
-				for (int32 MaterialIndex = 0;
-					MaterialIndex < MeshComponent->GetNumMaterials();
-					++MaterialIndex)
-				{
-					MeshComponent->SetMaterial(MaterialIndex, FirstPersonGlassMaterial);
-				}
-			}
-
-			if (bIsThirdPersonMesh && bWriteThirdPersonStencil)
-			{
-				MeshComponent->SetCustomDepthStencilValue(StencilValue);
-				MeshComponent->SetRenderCustomDepth(true);
-			}
-			continue;
-		}
-
-		if (const FWeaponStealthMeshRestoreState* RestoreState =
-			StealthMeshRestoreStates.Find(MeshComponent))
-		{
-			MeshComponent->SetCustomDepthStencilValue(RestoreState->CustomDepthStencilValue);
-			MeshComponent->SetRenderCustomDepth(RestoreState->bRenderCustomDepth);
-			for (int32 MaterialIndex = 0;
-				MaterialIndex < RestoreState->Materials.Num();
-				++MaterialIndex)
-			{
-				MeshComponent->SetMaterial(MaterialIndex, RestoreState->Materials[MaterialIndex]);
-			}
-			StealthMeshRestoreStates.Remove(MeshComponent);
+			OutThirdPersonMeshes.Add(MeshComponent);
 		}
 	}
 }
@@ -412,18 +344,9 @@ void AWeaponBase::ApplyReplicatedPresentation()
 		// Notify 전까지 숨김 상태만 유지
 		AttachWeaponMeshesToOwner(this, WeaponOwner);
 		SetEquippedPresentation();
-		if (const AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
-			Shooter && Shooter->IsStealthed())
-		{
-			SetStealthVisualState(
-				true,
-				true,
-				ResolveFirstPersonStealthGlassMaterial(GetWorld()));
-		}
 		return;
 	}
 
-	SetStealthVisualState(false, false, nullptr);
 
 	FirstPersonWeaponMesh->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
 	ThirdPersonWeaponMesh->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
@@ -583,15 +506,6 @@ void AWeaponBase::OnEquipped(ACharacter* NewOwner)
 	if (Character)
 	{
 		Character->CaptureComponentWeaponNotIncluded(this);
-	}
-
-	if (const AShooterCharacter* Shooter = Cast<AShooterCharacter>(NewOwner);
-		Shooter && Shooter->IsStealthed())
-	{
-		SetStealthVisualState(
-			true,
-			true,
-			ResolveFirstPersonStealthGlassMaterial(GetWorld()));
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("%s [%s] OnEquipped Owner=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(NewOwner));
@@ -786,7 +700,6 @@ void AWeaponBase::ShowEquippedPresentation()
 void AWeaponBase::OnUnequipped()
 {
 	StopAttack();
-	SetStealthVisualState(false, false, nullptr);
 
 	bIsEquipped = false;
 	bIsAttacking = false;
@@ -820,7 +733,6 @@ void AWeaponBase::OnUnequipped()
 void AWeaponBase::OnDropped(const FTransform& DropTransform, AFirstPersonCharacter* DroppedBy)
 {
 	StopAttack();
-	SetStealthVisualState(false, false, nullptr);
 
 	bIsEquipped = false;
 	bIsAttacking = false;

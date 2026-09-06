@@ -56,7 +56,10 @@ public:
 	bool TryActivatePartnerAbility(const FGameplayTag& AbilityTag);
 	int32 GetGrantedPartnerAbilityCount() const;
 	bool IsPartnerAbilitiesConfigured() const { return bPartnerAbilitiesConfigured; }
+	// 지금 적용중인 값 ( 업그레이드 투영 결과 ).
 	const FOutlierPartnerAbilityConfig& GetPartnerAbilityConfig() const { return PartnerAbilityConfig; }
+	// DT 기준 base ( grant 시점에 고정. 업그레이드 재계산의 기준값이자 grant 락 비교 대상 ).
+	const FOutlierPartnerAbilityConfig& GetBasePartnerAbilityConfig() const { return BasePartnerAbilityConfig; }
 	bool CommitPartnerCooldown(const FGameplayTag& CooldownTag, float OverrideDuration = 0.0f);
 	bool IsPartnerCooldownActive(const FGameplayTag& CooldownTag) const;
 	float GetPartnerCooldownRemaining(const FGameplayTag& CooldownTag) const;
@@ -76,6 +79,7 @@ public:
 	bool IsUpgradeGrantTestModeEnabled() const { return bNoGrantMode; }
 	bool IsShooterSuitConfigured() const { return bShooterSuitConfigured; }
 	const FOutlierShooterSuitConfig& GetShooterSuitConfig() const { return ShooterSuitConfig; }
+	const FOutlierShooterSuitConfig& GetBaseShooterSuitConfig() const { return BaseShooterSuitConfig; }
 	int32 GetGrantedShooterSuitAbilityCount() const;
 	bool CommitShooterQuantumLeapCooldown(float DurationMultiplier = 1.0f);
 	bool IsShooterQuantumLeapCooldownActive() const;
@@ -99,12 +103,16 @@ private:
 	float ResolvePartnerCooldownDuration(const FGameplayTag& CooldownTag) const;
 	TSubclassOf<UGameplayEffect> ResolvePartnerCooldownEffectClass(const FGameplayTag& CooldownTag) const;
 
+	// 현재 적용중인 값 / grant 시점에 고정된 DT base.
+	// 업그레이드 투영은 앞의 것만 갱신하고, grant 락 검사는 뒤의 것과 비교한다.
 	FOutlierPartnerAbilityConfig PartnerAbilityConfig;
+	FOutlierPartnerAbilityConfig BasePartnerAbilityConfig;
 	TArray<FGameplayAbilitySpecHandle> GrantedPartnerAbilityHandles;
 	TMap<FGameplayTag, float> SuspendedPartnerCooldowns;
 	bool bPartnerAbilitiesConfigured = false;
 	bool bPartnerSkillCooldownsSuspended = false;
 	FOutlierShooterSuitConfig ShooterSuitConfig;
+	FOutlierShooterSuitConfig BaseShooterSuitConfig;
 	FGameplayAbilitySpecHandle GrantedShooterQuantumLeapAbilityHandle;
 	FGameplayAbilitySpecHandle GrantedShooterBulletReflectionAbilityHandle;
 	FGameplayAbilitySpecHandle GrantedShooterWeaponOverchargeAbilityHandle;
