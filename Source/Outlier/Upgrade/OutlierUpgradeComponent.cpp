@@ -2,6 +2,7 @@
 
 #include "AbilitySystemGlobals.h"
 #include "GameplayEffect.h"
+#include "GameplayEffectComponents/TargetTagsGameplayEffectComponent.h"
 #include "Engine/DataTable.h"
 #include "GameFramework/Controller.h"
 #include "GameFramework/Pawn.h"
@@ -12,6 +13,8 @@
 #include "GAS/Attributes/OutlierShieldAttributeSet.h"
 #include "GAS/Attributes/OutlierVitalAttributeSet.h"
 #include "Upgrade/OutlierUpgradeSetData.h"
+#include "Upgrade/OutlierUpgradeProjectionSettings.h"
+#include "UObject/UnrealType.h"
 
 UOutlierUpgradeComponent::UOutlierUpgradeComponent()
 {
@@ -325,6 +328,22 @@ int32 UOutlierUpgradeComponent::GetCurrentNodeCount() const
 	return PlayerState ? PlayerState->GetNodeCount() : 0;
 }
 
+void UOutlierUpgradeComponent::SyncFromPlayerState()
+{
+	// (1) PS 의 ActivatedNodeIds 를 다시 읽어온다 ( 세이브 로드 / 리스폰 등으로 PS 쪽이 먼저 갱신됐을 수 있음 ).
+	RefreshActivatedNodesFromPlayerState();
+
+	// (2) Activated/Unlocked 런타임 Set 및 ActiveUpgradeTags 캐시를 재계산한다.
+	RebuildRuntimeSets();
+	RebuildUnlockedNodes();
+
+	// (3) authority 라면 ASC 에 Attribute / AbilityConfig / GrantAbility·FunctionOverride 태그를 재투영한다.
+	//     ( non-authority 에서는 ReconcileUpgradeProjection 내부에서 조용히 no-op )
+	ReconcileUpgradeProjection();
+
+	OnUpgradeStateChanged.Broadcast();
+}
+
 void UOutlierUpgradeComponent::ServerTryActivateNode_Implementation(FName NodeIdOrRowName)
 {
 	ActivateNodeInternal(NodeIdOrRowName);
@@ -495,12 +514,18 @@ void UOutlierUpgradeComponent::RebuildRuntimeSets()
 
 		ActivatedNodeSet.Add(RowName);
 
-		// FunctionOverride 효과의 태그를 활성 태그 컨테이너로 집계한다 ( HasUpgradeTag 질의용 ).
+		// GrantAbility / FunctionOverride 효과의 태그를 활성 태그 컨테이너로 집계한다 ( HasUpgradeTag 질의용 ).
+		// 이 둘은 TargetTag 가 "이 기능이 켜져 있다"는 On/Off 신호라 여기 모을 수 있다.
+		// ( Attribute/AbilityConfig 는 TargetTag 가 수치를 가리키는 주소일 뿐이라 대상이 아님 -
+		//   그쪽은 IsNodeActivated() 로 노드 단위로 물어보거나 Attribute 값 자체를 읽어야 한다. )
 		if (const TArray<FOutlierUpgradeEffectRow>* Effects = EffectsByNodeRowName.Find(RowName))
 		{
 			for (const FOutlierUpgradeEffectRow& Effect : *Effects)
 			{
-				if (Effect.EffectType == EOutlierUpgradeEffectType::FunctionOverride && Effect.TargetTag.IsValid())
+				const bool bIsTagEffect =
+					Effect.EffectType == EOutlierUpgradeEffectType::GrantAbility ||
+					Effect.EffectType == EOutlierUpgradeEffectType::FunctionOverride;
+				if (bIsTagEffect && Effect.TargetTag.IsValid())
 				{
 					ActiveUpgradeTags.AddTag(Effect.TargetTag);
 				}
@@ -545,37 +570,89 @@ namespace
 		case EOutlierUpgradeModOp::Override:       Field = Magnitude;  break;
 		default:                                   Field += Magnitude; break;
 		}
+		// 밸런스 델타가 과해서 쿨다운/사거리/양 등이 음수로 떨어지는 걸 막는다.
+		// IsValid() 가 0 은 허용하므로, 여기서 0 하한을 걸어두면 과도한 감소 델타가
+		// 리컨사일 전체를 거부시키는 assert/silent-fail 대신 0 으로 클램프되어 흡수된다.
+		Field = FMath::Max(Field, 0.0f);
 	}
 
 	// TargetTag( Ability.Shooter.X ) 로 어떤 능력의 SuitConfig 하위 행인지 해석한다.
+	// 매핑 테이블은 하드코딩이 아니라 UOutlierUpgradeProjectionSettings( ini ) 에서 읽고,
+	// 실제 필드 포인터는 FStructProperty 리플렉션으로 찾는다 ( SuitConfigFieldName 은
+	// FOutlierShooterSuitConfig 의 UPROPERTY 멤버명과 일치해야 한다 ).
 	FOutlierShooterSuitAbilityDataRow* ResolveSuitRow(FOutlierShooterSuitConfig& Config, const FGameplayTag& AbilityTag)
 	{
-		static const FGameplayTag QuantumLeap = FGameplayTag::RequestGameplayTag(TEXT("Ability.Shooter.QuantumLeap"), false);
-		static const FGameplayTag BulletReflection = FGameplayTag::RequestGameplayTag(TEXT("Ability.Shooter.BulletReflection"), false);
-		static const FGameplayTag Stealth = FGameplayTag::RequestGameplayTag(TEXT("Ability.Shooter.Stealth"), false);
-		static const FGameplayTag WeaponOvercharge = FGameplayTag::RequestGameplayTag(TEXT("Ability.Shooter.WeaponOvercharge"), false);
+		if (!AbilityTag.IsValid())
+		{
+			return nullptr;
+		}
 
-		if (AbilityTag == QuantumLeap)      return &Config.QuantumLeap;
-		if (AbilityTag == BulletReflection) return &Config.BulletReflection;
-		if (AbilityTag == Stealth)          return &Config.Stealth;
-		if (AbilityTag == WeaponOvercharge) return &Config.WeaponOvercharge;
+		const UOutlierUpgradeProjectionSettings* Settings = GetDefault<UOutlierUpgradeProjectionSettings>();
+		for (const FOutlierUpgradeSuitRoleMapping& Mapping : Settings->SuitRoleMappings)
+		{
+			if (Mapping.AbilityTag != AbilityTag || Mapping.SuitConfigFieldName.IsNone())
+			{
+				continue;
+			}
+
+			FStructProperty* StructProp = FindFProperty<FStructProperty>(
+				FOutlierShooterSuitConfig::StaticStruct(), Mapping.SuitConfigFieldName);
+			if (!StructProp)
+			{
+				UE_LOG(LogTemp, Warning,
+					TEXT("[Upgrade] SuitRoleMappings: '%s' 는 FOutlierShooterSuitConfig 에 없는 필드입니다 ( ini 오타 의심 )."),
+					*Mapping.SuitConfigFieldName.ToString());
+				continue;
+			}
+			return StructProp->ContainerPtrToValuePtr<FOutlierShooterSuitAbilityDataRow>(&Config);
+		}
 		return nullptr;
 	}
 
 	// ConfigField 이름으로 SuitConfig 하위 행의 해당 필드에 델타를 적용한다.
+	// FOutlierShooterSuitAbilityDataRow 의 UPROPERTY 멤버명과 CSV ConfigField 가 1:1 컨벤션이므로
+	// ( 헤더 주석 참고 ) 별도 매핑 테이블 없이 FFloatProperty 리플렉션으로 직접 찾는다.
 	void ApplySuitConfigField(FOutlierShooterSuitAbilityDataRow& Row, FName Field, EOutlierUpgradeModOp Op, float Magnitude)
 	{
-		if (Field == TEXT("DurationSeconds"))            ApplyConfigDelta(Row.DurationSeconds, Op, Magnitude);
-		else if (Field == TEXT("CooldownSeconds"))       ApplyConfigDelta(Row.CooldownSeconds, Op, Magnitude);
-		else if (Field == TEXT("CastTimeSeconds"))       ApplyConfigDelta(Row.CastTimeSeconds, Op, Magnitude);
-		else if (Field == TEXT("MaxPartnerDistance"))    ApplyConfigDelta(Row.MaxPartnerDistance, Op, Magnitude);
-		else if (Field == TEXT("PartnerOffset"))         ApplyConfigDelta(Row.PartnerOffset, Op, Magnitude);
-		else if (Field == TEXT("ReflectionRadius"))      ApplyConfigDelta(Row.ReflectionRadius, Op, Magnitude);
-		else if (Field == TEXT("ShieldDrainPerSecond"))  ApplyConfigDelta(Row.ShieldDrainPerSecond, Op, Magnitude);
-		else if (Field == TEXT("FireRateMultiplier"))    ApplyConfigDelta(Row.FireRateMultiplier, Op, Magnitude);
-		else if (Field == TEXT("SpreadMultiplier"))      ApplyConfigDelta(Row.SpreadMultiplier, Op, Magnitude);
-		else if (Field == TEXT("ShieldRecoveryDelay"))   ApplyConfigDelta(Row.ShieldRecoveryDelay, Op, Magnitude);
-		// 미매칭 필드( 예: DecoyDuration )는 아직 SuitConfig 에 없어 무시된다.
+		if (Field.IsNone())
+		{
+			return;
+		}
+
+		FFloatProperty* FloatProp = FindFProperty<FFloatProperty>(
+			FOutlierShooterSuitAbilityDataRow::StaticStruct(), Field);
+		if (!FloatProp)
+		{
+			// 미매칭 필드( 예: DecoyDuration )는 아직 SuitConfig 에 없어 무시된다.
+			return;
+		}
+
+		float* ValuePtr = FloatProp->ContainerPtrToValuePtr<float>(&Row);
+		ApplyConfigDelta(*ValuePtr, Op, Magnitude);
+	}
+
+	// Partner 버전: FOutlierPartnerAbilityConfig 는 능력별 서브 row 로 나뉘지 않은 flat struct 라
+	// ResolveSuitRow 같은 TargetTag -> 서브구조체 해석 단계 없이, ConfigField 이름으로
+	// 최상위 필드를 바로 찾아 델타를 적용한다 ( TargetTag 는 CSV 가독성/문서화 용도로만 남는다 ).
+	void ApplyPartnerConfigField(FOutlierPartnerAbilityConfig& Config, FName Field, EOutlierUpgradeModOp Op, float Magnitude)
+	{
+		if (Field.IsNone())
+		{
+			return;
+		}
+
+		FFloatProperty* FloatProp = FindFProperty<FFloatProperty>(
+			FOutlierPartnerAbilityConfig::StaticStruct(), Field);
+		if (!FloatProp)
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("[Upgrade] ConfigField '%s' 는 FOutlierPartnerAbilityConfig 에 없는 필드입니다 ( CSV 오타 의심 )."),
+				*Field.ToString());
+			return;
+		}
+
+		float* ValuePtr = FloatProp->ContainerPtrToValuePtr<float>(&Config);
+		ApplyConfigDelta(*ValuePtr, Op, Magnitude);
 	}
 }
 
@@ -605,10 +682,7 @@ void UOutlierUpgradeComponent::ReconcileUpgradeProjection()
 		return;
 	}
 
-	// (1) 지난 투영분 flush ( 우리가 붙인 것만 )
-	FlushUpgradeProjection(ASC);
-
-	// (2) 활성 노드의 효과 전량 수집
+	// (1) 활성 노드의 효과 전량 수집
 	TArray<const FOutlierUpgradeEffectRow*> Effects;
 	for (const FName& RowName : ActivatedNodeSet)
 	{
@@ -621,13 +695,12 @@ void UOutlierUpgradeComponent::ReconcileUpgradeProjection()
 		}
 	}
 
-	// (3) 타입별 투영
+	// (2) 타입별 투영 ( ProjectAttributes 가 Attribute 모디파이어 + GrantAbility/FunctionOverride 태그를
+	//     하나의 합성 GE 로 같이 apply-new -> remove-old 스왑한다 - 별도 flush 단계가 필요 없다 )
 	ProjectAttributes(ASC, Effects);
 	ProjectAbilityConfig(ASC, Effects);
-	ProjectGrantAndOverrideTags(ASC, Effects);
-	ProjectPassiveEffects(ASC, Effects);
 
-	// (4) 검증용 요약 로그
+	// (3) 검증용 요약 로그
 	LogUpgradeProjectionState(ASC);
 }
 
@@ -642,42 +715,6 @@ void UOutlierUpgradeComponent::DumpUpgradeProjectionState() const
 	LogUpgradeProjectionState(ASC);
 }
 
-void UOutlierUpgradeComponent::DumpUpgradePassiveEffects() const
-{
-	UOutlierAbilitySystemComponent* ASC = GetOwningAbilitySystem();
-	if (!ASC)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[Upgrade.Passive] ASC 없음 Owner=%s"), *GetNameSafe(GetOwner()));
-		return;
-	}
-
-	const float Shield = ASC->GetNumericAttribute(UOutlierShieldAttributeSet::GetShieldAttribute());
-	const float MaxShield = ASC->GetNumericAttribute(UOutlierShieldAttributeSet::GetMaxShieldAttribute());
-	const bool bReflecting = ASC->HasMatchingGameplayTag(
-		FGameplayTag::RequestGameplayTag(TEXT("State.BulletReflecting"), false));
-	const bool bStealthed = ASC->HasMatchingGameplayTag(
-		FGameplayTag::RequestGameplayTag(TEXT("State.Stealthed"), false));
-
-	UE_LOG(LogTemp, Log, TEXT("[Upgrade.Passive] ===== Owner=%s PassiveGE=%d Shield=%.1f/%.1f gate[Reflecting=%d Stealthed=%d] ====="),
-		*GetNameSafe(GetOwner()), UpgradePassiveEffectHandles.Num(), Shield, MaxShield, bReflecting, bStealthed);
-
-	for (const FActiveGameplayEffectHandle& Handle : UpgradePassiveEffectHandles)
-	{
-		const FActiveGameplayEffect* Active = ASC->GetActiveGameplayEffect(Handle);
-		if (!Active)
-		{
-			UE_LOG(LogTemp, Warning, TEXT("[Upgrade.Passive]   (handle 무효/제거됨)"));
-			continue;
-		}
-
-		UE_LOG(LogTemp, Log, TEXT("[Upgrade.Passive]   GE=%s inhibited=%d period=%.2f duration=%.1f"),
-			*GetNameSafe(Active->Spec.Def),
-			Active->bIsInhibited ? 1 : 0,
-			Active->Spec.GetPeriod(),
-			Active->Spec.GetDuration());
-	}
-}
-
 void UOutlierUpgradeComponent::LogUpgradeProjectionState(UOutlierAbilitySystemComponent* ASC) const
 {
 	if (!ASC)
@@ -687,7 +724,6 @@ void UOutlierUpgradeComponent::LogUpgradeProjectionState(UOutlierAbilitySystemCo
 
 	const float MaxShield = ASC->GetNumericAttribute(UOutlierShieldAttributeSet::GetMaxShieldAttribute());
 	const float MaxHealth = ASC->GetNumericAttribute(UOutlierVitalAttributeSet::GetMaxHealthAttribute());
-	const FOutlierShooterSuitConfig& Cfg = ASC->GetShooterSuitConfig();
 
 	UE_LOG(LogTemp, Log, TEXT("[Upgrade.Projection] ===== Owner=%s Role=%d ActivatedNodes=%d ====="),
 		*GetNameSafe(GetOwner()), static_cast<int32>(Role), ActivatedNodeSet.Num());
@@ -709,14 +745,31 @@ void UOutlierUpgradeComponent::LogUpgradeProjectionState(UOutlierAbilitySystemCo
 
 	UE_LOG(LogTemp, Log, TEXT("[Upgrade.Projection]   Attr: MaxShield=%.1f MaxHealth=%.1f (AttrGE=%s)"),
 		MaxShield, MaxHealth, UpgradeAttributeEffectHandle.IsValid() ? TEXT("on") : TEXT("off"));
-	UE_LOG(LogTemp, Log, TEXT("[Upgrade.Projection]   Config: Reflect(cd=%.1f dur=%.1f) Leap(cd=%.1f range=%.0f) Stealth(cd=%.1f dur=%.1f) Overcharge(cd=%.1f dur=%.1f drain=%.1f fire=%.2f)"),
-		Cfg.BulletReflection.CooldownSeconds, Cfg.BulletReflection.DurationSeconds,
-		Cfg.QuantumLeap.CooldownSeconds, Cfg.QuantumLeap.MaxPartnerDistance,
-		Cfg.Stealth.CooldownSeconds, Cfg.Stealth.DurationSeconds,
-		Cfg.WeaponOvercharge.CooldownSeconds, Cfg.WeaponOvercharge.DurationSeconds,
-		Cfg.WeaponOvercharge.ShieldDrainPerSecond, Cfg.WeaponOvercharge.FireRateMultiplier);
-	UE_LOG(LogTemp, Log, TEXT("[Upgrade.Projection]   Tags=[%s] PassiveGE=%d"),
-		*AppliedProjectionTags.ToStringSimple(), UpgradePassiveEffectHandles.Num());
+
+	if (Role == EOutlierUpgradeRole::Shooter)
+	{
+		const FOutlierShooterSuitConfig& Cfg = ASC->GetShooterSuitConfig();
+		UE_LOG(LogTemp, Log, TEXT("[Upgrade.Projection]   Config: Reflect(cd=%.1f dur=%.1f) Leap(cd=%.1f range=%.0f) Stealth(cd=%.1f dur=%.1f) Overcharge(cd=%.1f dur=%.1f drain=%.1f fire=%.2f)"),
+			Cfg.BulletReflection.CooldownSeconds, Cfg.BulletReflection.DurationSeconds,
+			Cfg.QuantumLeap.CooldownSeconds, Cfg.QuantumLeap.MaxPartnerDistance,
+			Cfg.Stealth.CooldownSeconds, Cfg.Stealth.DurationSeconds,
+			Cfg.WeaponOvercharge.CooldownSeconds, Cfg.WeaponOvercharge.DurationSeconds,
+			Cfg.WeaponOvercharge.ShieldDrainPerSecond, Cfg.WeaponOvercharge.FireRateMultiplier);
+	}
+	else if (Role == EOutlierUpgradeRole::Partner)
+	{
+		const FOutlierPartnerAbilityConfig& Cfg = ASC->GetPartnerAbilityConfig();
+		UE_LOG(LogTemp, Log, TEXT("[Upgrade.Projection]   Config: EMP(cd=%.1f mark=%.1f stun=%.1f) Shield(cd=%.1f amount=%.0f) Hack(cd=%.1f range=%.0f) Scan(cd=%.1f dur=%.1f range=%.0f)"),
+			Cfg.EMPCooldown, Cfg.MarkDuration, Cfg.StunDuration,
+			Cfg.ShieldCooldown, Cfg.ShieldAmount,
+			Cfg.HackCooldown, Cfg.HackEffectiveRange,
+			Cfg.ScanCooldown, Cfg.ScanDuration, Cfg.ScanRange);
+	}
+
+	// ActiveUpgradeTags 는 RebuildRuntimeSets() 가 GrantAbility/FunctionOverride 로부터 집계해둔
+	// 캐시라, 지금 ASC 에 실제로 투영되어 있어야 할 태그 집합과 동일하다.
+	UE_LOG(LogTemp, Log, TEXT("[Upgrade.Projection]   Tags=[%s]"),
+		*ActiveUpgradeTags.ToStringSimple());
 }
 
 UOutlierAbilitySystemComponent* UOutlierUpgradeComponent::GetOwningAbilitySystem() const
@@ -739,55 +792,58 @@ UOutlierAbilitySystemComponent* UOutlierUpgradeComponent::GetOwningAbilitySystem
 		UAbilitySystemGlobals::Get().GetAbilitySystemComponentFromActor(AvatarOwner));
 }
 
-void UOutlierUpgradeComponent::FlushUpgradeProjection(UOutlierAbilitySystemComponent* ASC)
-{
-	// 참고: Attribute 집계 GE 는 여기서 제거하지 않는다.
-	// ProjectAttributes 가 "새 GE 적용 -> 옛 GE 제거" 순서로 자체 관리해 MaxShield dip 을 막는다.
-	for (FActiveGameplayEffectHandle& Handle : UpgradePassiveEffectHandles)
-	{
-		if (Handle.IsValid())
-		{
-			ASC->RemoveActiveGameplayEffect(Handle);
-		}
-	}
-	UpgradePassiveEffectHandles.Reset();
-
-	for (const FGameplayTag& Tag : AppliedProjectionTags)
-	{
-		ASC->RemoveLooseGameplayTag(Tag);
-	}
-	AppliedProjectionTags.Reset();
-}
 
 void UOutlierUpgradeComponent::ProjectAttributes(UOutlierAbilitySystemComponent* ASC, const TArray<const FOutlierUpgradeEffectRow*>& Effects)
 {
-	UGameplayEffect* GE = NewObject<UGameplayEffect>(GetTransientPackage());
+	// 리컨사일마다 새 GE 오브젝트를 만든다 ( 절대 재사용/캐싱하지 않는다 ).
+	// GrantedTags 의 Add/Remove 는 "그 효과의 Def(=이 GE 오브젝트)가 지금 뭘 grant 한다고
+	// 되어있나"를 그 순간 다시 읽어서 처리하기 때문에, 같은 오브젝트를 계속 고쳐 쓰면 옛 활성
+	// 효과를 제거할 때 그 사이에 새로 추가된 태그까지 같이 빠지는 leak 이 생긴다
+	// ( UpgradeAttributeEffectHandle 선언부 주석 참고 - 실제로 겪은 버그 ).
+	// 리컨사일이 매 틱이 아니라 노드 활성화/OnRep 시에만 도는 빈도라 GC 부담은 미미하다.
+	UGameplayEffect* GE = NewObject<UGameplayEffect>(this);
 	GE->DurationPolicy = EGameplayEffectDurationType::Infinite;
+
+	// GrantAbility / FunctionOverride 태그도 이 GE 하나에 같이 담는다 ( Loose Tag 대신 -
+	// UpgradeAttributeEffectHandle 선언부 주석 참고: 복제도 되고, 카운트도 GAS 가 알아서 관리한다 ).
+	FGameplayTagContainer DesiredTags;
 
 	for (const FOutlierUpgradeEffectRow* Effect : Effects)
 	{
-		if (Effect->EffectType != EOutlierUpgradeEffectType::Attribute)
+		if (Effect->EffectType == EOutlierUpgradeEffectType::Attribute)
 		{
-			continue;
-		}
+			const FGameplayAttribute Attribute = ResolveAttribute(Effect->TargetTag);
+			if (!Attribute.IsValid())
+			{
+				continue;
+			}
 
-		const FGameplayAttribute Attribute = ResolveAttribute(Effect->TargetTag);
-		if (!Attribute.IsValid())
+			const int32 Index = GE->Modifiers.AddDefaulted();
+			FGameplayModifierInfo& Modifier = GE->Modifiers[Index];
+			Modifier.Attribute = Attribute;
+			Modifier.ModifierOp = ToModifierOp(Effect->Op);
+			Modifier.ModifierMagnitude = FGameplayEffectModifierMagnitude(FScalableFloat(Effect->Magnitude));
+		}
+		else if (Effect->EffectType == EOutlierUpgradeEffectType::GrantAbility ||
+			Effect->EffectType == EOutlierUpgradeEffectType::FunctionOverride)
 		{
-			continue;
+			if (Effect->TargetTag.IsValid())
+			{
+				DesiredTags.AddTag(Effect->TargetTag);
+			}
 		}
-
-		const int32 Index = GE->Modifiers.AddDefaulted();
-		FGameplayModifierInfo& Modifier = GE->Modifiers[Index];
-		Modifier.Attribute = Attribute;
-		Modifier.ModifierOp = ToModifierOp(Effect->Op);
-		Modifier.ModifierMagnitude = FGameplayEffectModifierMagnitude(FScalableFloat(Effect->Magnitude));
 	}
 
+	UTargetTagsGameplayEffectComponent& TagComponent = GE->FindOrAddComponent<UTargetTagsGameplayEffectComponent>();
+	FInheritedTagContainer TagChanges;
+	TagChanges.Added = DesiredTags;
+	TagComponent.SetAndApplyTargetTagChanges(TagChanges);
+
 	// 새 집계 GE 를 먼저 적용한 뒤 이전 GE 를 제거한다.
-	// ( 먼저 제거하면 MaxShield 가 순간 base 로 떨어져 현재 Shield 가 clamp 되는 dip 발생 )
+	// ( 먼저 제거하면 MaxShield 가 순간 base 로 떨어져 현재 Shield 가 clamp 되는 dip 발생.
+	//   태그도 같은 GE 에 실려있어 이 순서 그대로 swap 되면 끊김 없이 넘어간다. )
 	FActiveGameplayEffectHandle NewHandle;
-	if (GE->Modifiers.Num() > 0)
+	if (GE->Modifiers.Num() > 0 || !DesiredTags.IsEmpty())
 	{
 		NewHandle = ASC->ApplyGameplayEffectToSelf(GE, 1.0f, ASC->MakeEffectContext());
 	}
@@ -800,99 +856,102 @@ void UOutlierUpgradeComponent::ProjectAttributes(UOutlierAbilitySystemComponent*
 
 void UOutlierUpgradeComponent::ProjectAbilityConfig(UOutlierAbilitySystemComponent* ASC, const TArray<const FOutlierUpgradeEffectRow*>& Effects)
 {
-	// 현재 config 투영은 Shooter suit 기준. Partner suit config 투영은 별도 설계 예정.
-	if (Role != EOutlierUpgradeRole::Shooter)
+	if (Role == EOutlierUpgradeRole::Shooter)
 	{
+		if (!bBaseSuitConfigCaptured)
+		{
+			// suit init( ConfigureShooterSuitAbilities ) 전에는 base 가 준비 안 됨.
+			// 준비될 때까지 포착을 미룬다 ( 다음 리컨사일에 다시 시도 ).
+			if (!ASC->IsShooterSuitConfigured())
+			{
+				return;
+			}
+			// 업그레이드 이전 base config 를 최초 1회 포착 ( init 에서 DT_AbilityShooter 로 세팅된 값 ).
+			BaseSuitConfig = ASC->GetShooterSuitConfig();
+			bBaseSuitConfigCaptured = true;
+		}
+
+		FOutlierShooterSuitConfig Config = BaseSuitConfig;
+		for (const FOutlierUpgradeEffectRow* Effect : Effects)
+		{
+			if (Effect->EffectType != EOutlierUpgradeEffectType::AbilityConfig)
+			{
+				continue;
+			}
+
+			if (FOutlierShooterSuitAbilityDataRow* Row = ResolveSuitRow(Config, Effect->TargetTag))
+			{
+				ApplySuitConfigField(*Row, Effect->ConfigField, Effect->Op, Effect->Magnitude);
+			}
+		}
+
+		// 활성 config 업그레이드가 없어도 base 로 되돌리기 위해 항상 푸시한다 ( 리컨사일 = 순수 함수 ).
+		ASC->UpdateShooterSuitConfig(Config);
 		return;
 	}
 
-	if (!bBaseSuitConfigCaptured)
+	if (Role == EOutlierUpgradeRole::Partner)
 	{
-		// suit init( ConfigureShooterSuitAbilities ) 전에는 base 가 준비 안 됨.
-		// 준비될 때까지 포착을 미룬다 ( 다음 리컨사일에 다시 시도 ).
-		if (!ASC->IsShooterSuitConfigured())
+		if (!bBasePartnerAbilityConfigCaptured)
 		{
-			return;
+			// suit init( ConfigurePartnerAbilities, 보통 DT_Partner_Skill 을 읽어 BP 에서 호출 ) 전에는
+			// base 가 준비 안 됨. 준비될 때까지 포착을 미룬다 ( 다음 리컨사일에 다시 시도 ).
+			if (!ASC->IsPartnerAbilitiesConfigured())
+			{
+				return;
+			}
+			BasePartnerAbilityConfig = ASC->GetPartnerAbilityConfig();
+			bBasePartnerAbilityConfigCaptured = true;
 		}
-		// 업그레이드 이전 base config 를 최초 1회 포착 ( init 에서 DT_AbilityShooter 로 세팅된 값 ).
-		BaseSuitConfig = ASC->GetShooterSuitConfig();
-		bBaseSuitConfigCaptured = true;
+
+		FOutlierPartnerAbilityConfig Config = BasePartnerAbilityConfig;
+		for (const FOutlierUpgradeEffectRow* Effect : Effects)
+		{
+			if (Effect->EffectType != EOutlierUpgradeEffectType::AbilityConfig)
+			{
+				continue;
+			}
+
+			// Partner 는 서브 row 가 없는 flat struct 라 TargetTag 로 서브구조체를 찾을 필요 없이
+			// ConfigField 이름으로 바로 필드를 찾는다.
+			ApplyPartnerConfigField(Config, Effect->ConfigField, Effect->Op, Effect->Magnitude);
+		}
+
+		ASC->UpdatePartnerAbilityConfig(Config);
+		return;
 	}
 
-	FOutlierShooterSuitConfig Config = BaseSuitConfig;
-	for (const FOutlierUpgradeEffectRow* Effect : Effects)
-	{
-		if (Effect->EffectType != EOutlierUpgradeEffectType::AbilityConfig)
-		{
-			continue;
-		}
-
-		if (FOutlierShooterSuitAbilityDataRow* Row = ResolveSuitRow(Config, Effect->TargetTag))
-		{
-			ApplySuitConfigField(*Row, Effect->ConfigField, Effect->Op, Effect->Magnitude);
-		}
-	}
-
-	// 활성 config 업그레이드가 없어도 base 로 되돌리기 위해 항상 푸시한다 ( 리컨사일 = 순수 함수 ).
-	ASC->UpdateShooterSuitConfig(Config);
-}
-
-void UOutlierUpgradeComponent::ProjectGrantAndOverrideTags(UOutlierAbilitySystemComponent* ASC, const TArray<const FOutlierUpgradeEffectRow*>& Effects)
-{
-	for (const FOutlierUpgradeEffectRow* Effect : Effects)
-	{
-		const bool bIsTagEffect =
-			Effect->EffectType == EOutlierUpgradeEffectType::GrantAbility ||
-			Effect->EffectType == EOutlierUpgradeEffectType::FunctionOverride;
-		if (!bIsTagEffect || !Effect->TargetTag.IsValid())
-		{
-			continue;
-		}
-
-		ASC->AddLooseGameplayTag(Effect->TargetTag);
-		AppliedProjectionTags.AddTag(Effect->TargetTag);
-	}
-}
-
-void UOutlierUpgradeComponent::ProjectPassiveEffects(UOutlierAbilitySystemComponent* ASC, const TArray<const FOutlierUpgradeEffectRow*>& Effects)
-{
-	for (const FOutlierUpgradeEffectRow* Effect : Effects)
-	{
-		if (Effect->EffectType != EOutlierUpgradeEffectType::ApplyEffect)
-		{
-			continue;
-		}
-
-		// GE 클래스는 CSV 경로가 아니라 DataAsset 의 ApplyEffectClasses 에서 키로 조회한다.
-		TSubclassOf<UGameplayEffect> GEClass = nullptr;
-		if (UpgradeSetData && !Effect->EffectClassKey.IsNone())
-		{
-			GEClass = UpgradeSetData->ApplyEffectClasses.FindRef(Effect->EffectClassKey);
-		}
-		if (!GEClass)
-		{
-			UE_LOG(LogTemp, Warning, TEXT("[Upgrade.Projection] ApplyEffect 키 미해결: key=%s ( DataAsset ApplyEffectClasses 확인 )"),
-				*Effect->EffectClassKey.ToString());
-			continue;
-		}
-
-		const FGameplayEffectContextHandle Context = ASC->MakeEffectContext();
-		const FGameplayEffectSpecHandle Spec = ASC->MakeOutgoingSpec(GEClass, 1.0f, Context);
-		if (Spec.IsValid())
-		{
-			UpgradePassiveEffectHandles.Add(ASC->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get()));
-		}
-	}
+	// 그 외 Role( None 등 )은 AbilityConfig 투영 대상이 아니다.
 }
 
 FGameplayAttribute UOutlierUpgradeComponent::ResolveAttribute(const FGameplayTag& Tag)
 {
-	// 테스트 단계: Shield / Health 만 지원. 이후 Weapon.Recoil 등 AttributeSet 신설 시 확장.
-	static const FGameplayTag ShieldMax = FGameplayTag::RequestGameplayTag(TEXT("Attribute.Shield.Max"), false);
-	static const FGameplayTag HealthMax = FGameplayTag::RequestGameplayTag(TEXT("Attribute.Health.Max"), false);
+	// AttributeMappings( ini, UOutlierUpgradeProjectionSettings ) 에서 Tag -> (AttributeSetClass, AttributeName)
+	// 을 찾아 리플렉션으로 FGameplayAttribute 를 만든다. 새 Attribute 추가 시 C++ 수정 없이
+	// Project Settings > Outlier Upgrade Projection 에 행만 추가하면 된다.
+	if (!Tag.IsValid())
+	{
+		return FGameplayAttribute();
+	}
 
-	if (Tag == ShieldMax) return UOutlierShieldAttributeSet::GetMaxShieldAttribute();
-	if (Tag == HealthMax) return UOutlierVitalAttributeSet::GetMaxHealthAttribute();
+	const UOutlierUpgradeProjectionSettings* Settings = GetDefault<UOutlierUpgradeProjectionSettings>();
+	for (const FOutlierUpgradeAttributeMapping& Mapping : Settings->AttributeMappings)
+	{
+		if (Mapping.Tag != Tag || !Mapping.AttributeSetClass || Mapping.AttributeName.IsNone())
+		{
+			continue;
+		}
+
+		FProperty* Prop = FindFProperty<FProperty>(Mapping.AttributeSetClass, Mapping.AttributeName);
+		if (!Prop)
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("[Upgrade] AttributeMappings: %s 에 '%s' 프로퍼티가 없습니다 ( ini 오타 의심 )."),
+				*Mapping.AttributeSetClass->GetName(), *Mapping.AttributeName.ToString());
+			continue;
+		}
+		return FGameplayAttribute(Prop);
+	}
 	return FGameplayAttribute();
 }
 

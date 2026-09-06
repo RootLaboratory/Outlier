@@ -24,9 +24,6 @@ struct OUTLIER_API FPartnerHackAbilityData
 	GENERATED_BODY()
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hack")
-	float CandidateRange = 1200.0f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hack")
 	float EffectiveRange = 300.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hack")
@@ -90,7 +87,7 @@ public:
 	void CacheAbilityData(const FPartnerHackAbilityData& InAbilityData);
 
 	UFUNCTION(Client, Reliable)
-	void ClientStartCandidateSearch();
+	void ClientStartCandidateSearch(float InEffectiveRange);
 	UFUNCTION(Client, Reliable)
 	void ClientStopCandidateSearch();
 

@@ -61,7 +61,7 @@ protected:
 	TObjectPtr<UFirstPersonInputConfig> InputConfig;
 
 	/** Relevant AtLocation event requested by this owning client on Interaction input. */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|Input", meta = (Categories = "Audio.Event"))
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|Input", meta = (Categories = "Audio.Type"))
 	FGameplayTag InteractionAudioEventTag;
 
 	/** Runtime context supplied with the Interaction audio request. */
@@ -69,7 +69,7 @@ protected:
 	FGameplayTagContainer InteractionAudioContextTags;
 
 	/** Local 2D event played on Widget Escape input. */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|Input", meta = (Categories = "Audio.Event"))
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|Input", meta = (Categories = "Audio.Type"))
 	FGameplayTag WidgetEscapeAudioEventTag;
 
 	/** Runtime context supplied with the Widget Escape audio request. */
@@ -205,6 +205,7 @@ private:
 	void UpdateInteractableFocus();
 
 	void SetPartnerCameraCaptureUpdating(bool bEnabled);
+	AFirstPersonCharacter* ResolvePartnerCameraSource() const;
 
 	void SyncInteractableKeyWidgets(const TArray<AActor*>& CurrentInteractables);
 
@@ -241,6 +242,7 @@ private:
 	TArray<TObjectPtr<AActor>> NearbyInteractables;
 
 	uint8 bPartnerCameraCaptureActive : 1 = false;
+	TWeakObjectPtr<AFirstPersonCharacter> ActivePartnerCameraSource;
 
 	FTimerHandle InteractionTraceTimerHandle;
 

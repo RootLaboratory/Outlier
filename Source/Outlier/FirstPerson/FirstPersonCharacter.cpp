@@ -25,6 +25,8 @@
 #include "Engine/OverlapResult.h"
 #include "OutlierNetUtils.h"
 #include "Outlier.h"
+#include "OutlierPlayerState.h"
+#include "Drone/Partner/PartnerCharacter.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Team/OutlierTeamIds.h"
 #include "Room/RoomTagComponent.h"
@@ -318,9 +320,28 @@ void AFirstPersonCharacter::TryCamToggle()
 
 			if (ULocalPlayerUISubSystem* PPSubsystem = LP->GetSubsystem<ULocalPlayerUISubSystem>())
 			{
+				const bool bShouldActivate = !bPartnerCameraCaptureActive;
+				AFirstPersonCharacter* CameraSource = bShouldActivate
+					? ResolvePartnerCameraSource()
+					: ActivePartnerCameraSource.Get();
+
+				if (!CameraSource)
+				{
+					UE_LOG(LogTemp, Warning,
+						TEXT("[PartnerCam] Toggle skipped: paired camera source is not ready Character=%s"),
+						*GetNameSafe(this));
+					return;
+				}
+
+				if (bShouldActivate)
+				{
+					PPSubsystem->PartnerCameraBind(CameraSource->CaptureComponent);
+				}
+
 				PPSubsystem->PartnerCameraToggle();
-				bPartnerCameraCaptureActive = !bPartnerCameraCaptureActive;
-				SetPartnerCameraCaptureUpdating(bPartnerCameraCaptureActive);
+				bPartnerCameraCaptureActive = bShouldActivate;
+				CameraSource->SetPartnerCameraCaptureUpdating(bPartnerCameraCaptureActive);
+				ActivePartnerCameraSource = bPartnerCameraCaptureActive ? CameraSource : nullptr;
 			}
 			else
 			{
@@ -329,6 +350,30 @@ void AFirstPersonCharacter::TryCamToggle()
 			}
 		}
 	}
+}
+
+AFirstPersonCharacter* AFirstPersonCharacter::ResolvePartnerCameraSource() const
+{
+	const APlayerController* PlayerController = Cast<APlayerController>(GetController());
+	const AOutlierPlayerState* OutlierPlayerState = PlayerController
+		? PlayerController->GetPlayerState<AOutlierPlayerState>()
+		: nullptr;
+	if (!OutlierPlayerState)
+	{
+		return nullptr;
+	}
+
+	if (IsA<AShooterCharacter>())
+	{
+		return OutlierPlayerState->GetPartnerCharacter();
+	}
+
+	if (IsA<APartnerCharacter>())
+	{
+		return OutlierPlayerState->GetShooterCharacter();
+	}
+
+	return nullptr;
 }
 
 void AFirstPersonCharacter::SetPartnerCameraCaptureUpdating(bool bEnabled)

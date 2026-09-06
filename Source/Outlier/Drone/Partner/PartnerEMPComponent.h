@@ -22,12 +22,6 @@ struct OUTLIER_API FPartnerEMPAbilityData
 	float EMPRange = 1500.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EMP")
-	float MarkingTime = 3.0f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EMP")
-	float StunDuration = 3.0f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EMP")
 	int32 MaxTargets = 99;
 };
 
@@ -78,7 +72,7 @@ public:
 	void CacheAbilityData(const FPartnerEMPAbilityData& InAbilityData);
 
 	UFUNCTION(Client, Reliable)
-	void ClientStartEMPSearch();
+	void ClientStartEMPSearch(float InMarkingTime);
 
 	UFUNCTION(Client, Reliable)
 	void ClientStopEMPSearch();
@@ -150,6 +144,7 @@ private:
 	uint8 bEMPCandidateSearchActive : 1 = false;
 
 	float EMPStartTimeSeconds = 0.0f;
+	float ActiveStunDuration = 0.0f;
 	FUILayerHandle EMPLayerHandle;
 
 	UEMPableComponent* ResolveEMPableComponent(AActor* Actor) const;

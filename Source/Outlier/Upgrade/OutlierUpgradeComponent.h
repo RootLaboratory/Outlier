@@ -6,6 +6,7 @@
 #include "GameplayEffectTypes.h"
 #include "Upgrade/OutlierUpgradeTypes.h"
 #include "Upgrade/OutlierUpgradeEffectTypes.h"
+#include "GAS/Data/OutlierPartnerAbilityConfig.h"
 #include "GAS/Data/OutlierShooterSuitAbilityDataRow.h"
 #include "OutlierUpgradeComponent.generated.h"
 
@@ -13,6 +14,7 @@ class AOutlierPlayerState;
 class UDataTable;
 class UOutlierUpgradeSetData;
 class UOutlierAbilitySystemComponent;
+class UGameplayEffect;
 struct FGameplayAttribute;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnOutlierUpgradeStateChanged);
@@ -52,6 +54,13 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Upgrade")
 	void RefreshActivatedNodesFromPlayerState();
 
+	// PS 의 활성 노드 목록을 기준으로 컴포넌트 런타임 상태(Activated/Unlocked/ActiveUpgradeTags)를
+	// 전부 재계산하고, authority 라면 ASC 에 태그/Attribute/Config 를 재투영한다.
+	// ASC 의 AbilityActorInfo 가 이제 막 준비된 시점( PossessedBy / OnRep_Controller 이후 )에 호출한다.
+	// ( BeginPlay 시점엔 ASC 가 아직 없어 ReconcileUpgradeProjection 이 SKIP 되므로, 그 이후 재호출이 필요 )
+	UFUNCTION(BlueprintCallable, Category = "Upgrade")
+	void SyncFromPlayerState();
+
 	UFUNCTION(BlueprintCallable, Category = "Upgrade")
 	bool TryActivateNode(FName NodeIdOrRowName);
 
@@ -70,6 +79,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Upgrade")
 	bool IsNodeUnlocked(FName NodeIdOrRowName) const;
 
+	// GrantAbility / FunctionOverride 로 활성화된 업그레이드 태그 질의. ActivatedNodeIds(리플리케이트됨) 로
+	// 만든 캐시라 서버/클라 어디서 물어봐도 안전하다.
+	// ( Attribute / AbilityConfig 타입 효과는 대상이 아니다 - 그 TargetTag 는 On/Off 신호가 아니라
+	//   건드릴 수치의 주소일 뿐이라서. 그쪽은 IsNodeActivated() 로 노드 단위로 확인할 것. )
 	UFUNCTION(BlueprintPure, Category = "Upgrade")
 	bool HasUpgradeTag(FGameplayTag UpgradeTag) const;
 
@@ -91,18 +104,13 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Upgrade")
 	UOutlierUpgradeSetData* GetUpgradeSetData() const { return UpgradeSetData; }
 
-	// 활성 노드의 효과 전량을 ASC 에 재투영한다 ( flush 후 재적용 ). authority 에서만 실제 투영.
+	// 활성 노드의 효과 전량을 ASC 에 재투영한다 ( 합성 GE 를 apply-new -> remove-old 로 스왑 ). authority 에서만 실제 투영.
 	UFUNCTION(BlueprintCallable, Category = "Upgrade")
 	void ReconcileUpgradeProjection();
 
 	// 현재 투영 상태( 활성 노드 / attribute / config / 태그 )를 로그로 덤프한다 ( 검증용 ).
 	UFUNCTION(BlueprintCallable, Category = "Upgrade|Debug")
 	void DumpUpgradeProjectionState() const;
-
-	// ApplyEffect 로 붙인 패시브 GE 들의 클래스 / 억제(inhibited) 상태 / 게이트 태그 / 실드값을 덤프한다.
-	// 반사 중에 호출하면 inhibited=0( 깨어남 ) + Shield 상승, 평상시엔 inhibited=1( 잠듦 )로 게이팅 확인.
-	UFUNCTION(BlueprintCallable, Category = "Upgrade|Debug")
-	void DumpUpgradePassiveEffects() const;
 
 	UPROPERTY(BlueprintAssignable, Category = "Upgrade")
 	FOnOutlierUpgradeStateChanged OnUpgradeStateChanged;
@@ -157,11 +165,10 @@ private:
 
 	// ── ASC 투영 ──────────────────────────────────────────────
 	UOutlierAbilitySystemComponent* GetOwningAbilitySystem() const;
-	void FlushUpgradeProjection(UOutlierAbilitySystemComponent* ASC);
+	// Attribute 모디파이어 + GrantAbility/FunctionOverride 태그를 하나의 합성 GE 로 묶어서 투영한다.
+	// ( 태그를 Loose Tag 로 따로 관리하지 않는 이유는 UpgradeAttributeEffectHandle 선언부 주석 참고 )
 	void ProjectAttributes(UOutlierAbilitySystemComponent* ASC, const TArray<const FOutlierUpgradeEffectRow*>& Effects);
 	void ProjectAbilityConfig(UOutlierAbilitySystemComponent* ASC, const TArray<const FOutlierUpgradeEffectRow*>& Effects);
-	void ProjectGrantAndOverrideTags(UOutlierAbilitySystemComponent* ASC, const TArray<const FOutlierUpgradeEffectRow*>& Effects);
-	void ProjectPassiveEffects(UOutlierAbilitySystemComponent* ASC, const TArray<const FOutlierUpgradeEffectRow*>& Effects);
 	static FGameplayAttribute ResolveAttribute(const FGameplayTag& Tag);
 	void LogUpgradeProjectionState(UOutlierAbilitySystemComponent* ASC) const;
 
@@ -179,13 +186,28 @@ private:
 	TSet<FName> UnlockedNodeSet;
 
 	// ── 투영 추적 ( flush 대상 ) ───────────────────────────────
-	// 합성 Attribute GE 핸들 ( 매 리컨사일 1개 )
+	// 합성 GE 핸들 ( 매 리컨사일 1개 ). Attribute 모디파이어와 GrantAbility/FunctionOverride 태그를
+	// 이 GE 하나에 같이 담아서 적용한다 ( apply-new -> remove-old 로 스왑 ).
+	// Loose Tag 대신 이 방식을 쓰는 이유:
+	// - 진짜 Active GameplayEffect 라서 리플리케이트된다 ( Loose Tag 는 서버 로컬에만 남고 클라로 안 감 ).
+	// - GAS 가 "이 GE 가 어떤 태그를 몇 개 부여했는지"를 스스로 추적하므로, 두 노드가 같은 태그를
+	//   공유해도 우리가 직접 카운트를 맞출 필요가 없다 ( 핸들 하나 제거하면 그 GE 가 준 만큼만
+	//   정확히 빠진다 - Loose Tag 방식에서 있었던 leak 위험이 구조적으로 없다 ).
+	//
+	// 주의: ProjectAttributes 는 이 GE 를 절대 재사용/캐싱하면 안 되고 매 리컨사일마다 새로 만들어야
+	// 한다. GrantedTags 의 Add/Remove 는 둘 다 "그 효과의 Def(=이 GE 오브젝트)가 지금 뭘 grant
+	// 한다고 되어있나"를 그 순간 다시 읽어서 처리한다 ( Modifiers 처럼 Spec 생성 시점에 스냅샷되지
+	// 않음 ). 그래서 같은 GE 오브젝트를 계속 고쳐 쓰면, 옛 활성 효과를 제거할 때 그 사이에 새로
+	// 추가된 태그까지 같이 빠져버리는 leak 이 생긴다 ( 실제로 발생 확인함 - 17개 노드를 찍었는데
+	// 태그가 1개만 남는 버그로 나타났었음 ).
 	FActiveGameplayEffectHandle UpgradeAttributeEffectHandle;
-	// ApplyEffect 로 붙인 패시브 GE 핸들들
-	TArray<FActiveGameplayEffectHandle> UpgradePassiveEffectHandles;
-	// GrantAbility / FunctionOverride 로 부여한 loose 태그들
-	FGameplayTagContainer AppliedProjectionTags;
 	// AbilityConfig 재계산의 기준 ( 업그레이드 전 base, 최초 리컨사일에 1회 포착 )
 	FOutlierShooterSuitConfig BaseSuitConfig;
 	bool bBaseSuitConfigCaptured = false;
+
+	// Partner AbilityConfig 재계산의 기준 ( 업그레이드 전 base, 최초 리컨사일에 1회 포착 ).
+	// Shooter 와 달리 Partner 는 SuitConfig 가 능력별 서브 row 로 나뉘지 않은 flat struct 라
+	// ResolveSuitRow 상당의 태그->서브구조체 매핑이 필요 없다.
+	FOutlierPartnerAbilityConfig BasePartnerAbilityConfig;
+	bool bBasePartnerAbilityConfigCaptured = false;
 };
