@@ -3,9 +3,11 @@
 
 #include "Weapon/WeaponBase.h"
 #include "Components/SceneComponent.h"
+#include "Components/MeshComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/SphereComponent.h"
 #include "FirstPerson/FirstPersonCharacter.h"
+#include "Drone/Partner/PartnerCharacter.h"
 #include "GameFramework/Character.h"
 #include "OutlierNetUtils.h"
 #include "Shooter/ShooterCharacter.h"
@@ -16,6 +18,7 @@
 #include "Weapon/WeaponRangeRow.h"
 #include "Weapon/Spawn/WeaponSpawnPoint.h"
 #include "Shooter/Anim/ProceduralAnimValues.h"
+#include "Materials/MaterialInterface.h"
 
 AWeaponBase::AWeaponBase()
 {
@@ -269,6 +272,35 @@ void AWeaponBase::SetEquippedPresentation()
 	SetEquippedCollisionEnabled(false);
 }
 
+void AWeaponBase::CollectStealthMeshes(
+	TArray<UMeshComponent*>& OutFirstPersonMeshes,
+	TArray<UMeshComponent*>& OutThirdPersonMeshes) const
+{
+	// 은신 머티리얼/스텐실 적용과 원상복구는 UMaterialPostProcessSubsystem 이 전담한다.
+	// 무기는 자기 메시가 1인칭인지 3인칭인지만 답한다.
+	TArray<UMeshComponent*> MeshComponents;
+	GetComponents<UMeshComponent>(MeshComponents);
+
+	for (UMeshComponent* MeshComponent : MeshComponents)
+	{
+		if (!MeshComponent)
+		{
+			continue;
+		}
+
+		if (MeshComponent == FirstPersonWeaponMesh
+			|| (FirstPersonWeaponMesh && MeshComponent->IsAttachedTo(FirstPersonWeaponMesh)))
+		{
+			OutFirstPersonMeshes.Add(MeshComponent);
+		}
+		else if (MeshComponent == ThirdPersonWeaponMesh
+			|| (ThirdPersonWeaponMesh && MeshComponent->IsAttachedTo(ThirdPersonWeaponMesh)))
+		{
+			OutThirdPersonMeshes.Add(MeshComponent);
+		}
+	}
+}
+
 void AWeaponBase::RefreshShadowWeaponPresentation()
 {
 	if (!ShadowWeaponMesh)
@@ -314,6 +346,7 @@ void AWeaponBase::ApplyReplicatedPresentation()
 		SetEquippedPresentation();
 		return;
 	}
+
 
 	FirstPersonWeaponMesh->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
 	ThirdPersonWeaponMesh->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
@@ -418,8 +451,6 @@ void AWeaponBase::StopAttack()
 	{
 		Shooter->HandleWeaponAttackStoppedInternal();
 	}
-
-	UE_LOG(LogTemp, Log, TEXT("%s [%s] StopAttack"), OutlierNet::GetNetPrefix(this), *GetName());
 }
 
 void AWeaponBase::PerformAttack()
@@ -485,6 +516,63 @@ void AWeaponBase::AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacter* New
 {
 	if (!Weapon || !NewOwner)
 	{
+		return;
+	}
+
+	if (APartnerCharacter* Partner = Cast<APartnerCharacter>(NewOwner))
+	{
+		const FAttachmentTransformRules PartnerAttachRules =
+			FAttachmentTransformRules::SnapToTargetNotIncludingScale;
+		const FName FirstPersonSocketName = Partner->GetFirstPersonWeaponAttachSocketName();
+		const FName ThirdPersonSocketName = Partner->GetThirdPersonWeaponAttachSocketName();
+
+		if (USkeletalMeshComponent* FirstPersonReferenceMesh = Partner->GetFirstPersonMesh())
+		{
+			USceneComponent* FirstPersonParent = Partner->GetFirstPersonWeaponRoot();
+			const bool bSocketExists = FirstPersonReferenceMesh->DoesSocketExist(FirstPersonSocketName);
+			if (FirstPersonParent && bSocketExists)
+			{
+				FirstPersonParent->SetWorldTransform(
+					FirstPersonReferenceMesh->GetSocketTransform(FirstPersonSocketName, RTS_World));
+			}
+
+			if (FirstPersonParent)
+			{
+				Weapon->GetFirstPersonWeaponMesh()->AttachToComponent(
+					FirstPersonParent,
+					PartnerAttachRules);
+			}
+
+			UE_LOG(
+				LogTemp,
+				Warning,
+				TEXT("[PartnerWeaponToggle][Attach][FP] Weapon=%s Mesh=%s StableRoot=%s ReferenceMesh=%s Socket=%s Exists=%d"),
+				*GetNameSafe(Weapon),
+				*GetNameSafe(Weapon->GetFirstPersonWeaponMesh()),
+				*GetNameSafe(FirstPersonParent),
+				*GetNameSafe(FirstPersonReferenceMesh),
+				*FirstPersonSocketName.ToString(),
+				bSocketExists ? 1 : 0);
+		}
+
+		if (USkeletalMeshComponent* ThirdPersonParent = Partner->GetMesh())
+		{
+			Weapon->GetThirdPersonWeaponMesh()->AttachToComponent(
+				ThirdPersonParent,
+				PartnerAttachRules,
+				ThirdPersonSocketName);
+
+			UE_LOG(
+				LogTemp,
+				Warning,
+				TEXT("[PartnerWeaponToggle][Attach][TP] Weapon=%s Mesh=%s Parent=%s Socket=%s Exists=%d"),
+				*GetNameSafe(Weapon),
+				*GetNameSafe(Weapon->GetThirdPersonWeaponMesh()),
+				*GetNameSafe(ThirdPersonParent),
+				*ThirdPersonSocketName.ToString(),
+				ThirdPersonParent->DoesSocketExist(ThirdPersonSocketName) ? 1 : 0);
+		}
+
 		return;
 	}
 
@@ -693,12 +781,12 @@ void AWeaponBase::OnDropped(const FTransform& DropTransform, AFirstPersonCharact
 	ForceNetUpdate();
 }
 
-void AWeaponBase::Interact(class AFirstPersonCharacter* Interactor)
+bool AWeaponBase::Interact(class AFirstPersonCharacter* Interactor)
 {
 	if (!Interactor)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("%s [%s] Interact blocked: interactor is null"), OutlierNet::GetNetPrefix(this), *GetName());
-		return;
+		return false;
 	}
 
 	if (!CanBePickedUpBy(Interactor))
@@ -712,12 +800,13 @@ void AWeaponBase::Interact(class AFirstPersonCharacter* Interactor)
 			*GetNameSafe(WeaponOwner),
 			bIsEquipped ? 1 : 0,
 			*GetNameSafe(Interactor));
-		return;
+		return false;
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("%s [%s] Interact Interactor=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(Interactor));
 
 	Interactor->EquipWeapon(this);
+	return Interactor->GetCurrentWeapon() == this;
 }
 
 UInteractableComponent* AWeaponBase::GetInteractableComponent() const

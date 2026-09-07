@@ -24,11 +24,8 @@ protected:
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
 	uint8 bIsAiming : 1 = false;
 
-	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
+	UPROPERTY(ReplicatedUsing = OnRep_IsReloading, VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
 	uint8 bIsReloading : 1 = false;
-
-	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
-	uint8 bSecondaryOnCooldown : 1 = false;
 
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
 	uint8 bIsMeleeAttacking : 1 = false;
@@ -39,8 +36,8 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Combat|Fire", meta = (ClampMin = "0.0"))
 	float SprintExitFireRetryInterval = 0.02f;
 
-	FTimerHandle SecondaryCooldownStateTimerHandle;
 	FTimerHandle PendingSprintExitFireTimerHandle;
+	FDelegateHandle WeaponReuseCooldownTagChangedHandle;
 
 	uint8 bPendingSprintExitFire : 1 = false;
 
@@ -51,12 +48,22 @@ protected:
 	void ClearPendingSprintExitFire();
 	void BindReloadMontageEndedDelegates();
 	void UnbindReloadMontageEndedDelegates();
+	void BindWeaponReuseCooldownObserver();
+	void UnbindWeaponReuseCooldownObserver();
+	void HandleWeaponReuseCooldownTagChanged(const FGameplayTag CooldownTag, int32 NewCount);
 
 	UFUNCTION()
 	void HandleReloadMontageEnded(UAnimMontage* Montage, bool bInterrupted);
 
+	UFUNCTION()
+	void OnRep_IsReloading();
+
+	void StartAimInternal();
+
 public:
 	UShooterCombatComponent();
+	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual void TickComponent(float DeltaTime,ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 	void TryReload();
@@ -72,12 +79,11 @@ public:
 	void ResolveStateConflicts();
 
 	void StopAimInternal();
+	void SuspendAimInternal();
+	void RestoreAimIfRequested();
 	void BeginReloadInternal();
 	void CancelReloadInternal();
 	void FinishReloadInternal();
-	void BeginSecondaryCooldownInternal(float CooldownDuration);
-	void FinishSecondaryCooldownInternal();
-	void ResetSecondaryCooldown();
 	void HandleReloadCommitNotify();
 
 	bool CanEnterCombatState(EWeaponMode InWeaponMode, ECombatState NextState) const;
@@ -91,6 +97,6 @@ public:
 	bool WantsToFire() const { return bWantsToFire; }
 	bool IsAiming() const { return bIsAiming; }
 	bool IsReloading() const { return bIsReloading; }
-	bool IsSecondaryOnCooldown() const { return bSecondaryOnCooldown; }
+	bool IsSecondaryOnCooldown() const;
 	bool IsMeleeAttacking() const { return bIsMeleeAttacking; }
 };

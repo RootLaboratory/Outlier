@@ -35,10 +35,10 @@ public:
 	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
 
 public:
-	bool TryGetHoveredAbility(FGameplayTag& OutAbilityTag);
+	bool TryGetHoveredAbility(FGameplayTag& OutAbilityTag, bool bBroadcastSelection = true);
 	bool ApplyCooldownIfMatches(const FGameplayTag& AbilityTag, float CoolTime);
+	void ResetCooldowns();
 	void TryHovering();
-	float CalculateCoordinate();
 	UAbilityIconUI* GetAbilityIcon(const FGameplayTag& AbilityTag) const;
 
 public:
@@ -49,16 +49,16 @@ public:
 	TObjectPtr<UBorder> BigCircle;
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr<UAbilityIconUI> IconTeleport; // Teleport
+	TObjectPtr<UAbilityIconUI> IconQuantumLeap; // QuantumLeap
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr<UAbilityIconUI> IconShield; // Shield
+	TObjectPtr<UAbilityIconUI> IconBulletReflection; // BulletReflection
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UAbilityIconUI> IconStealth; // Stealth
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr<UAbilityIconUI> IconStimpack; // Stimpack
+	TObjectPtr<UAbilityIconUI> IconWeaponOvercharge; // WeaponOvercharge
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Ability UI|Material")
 	TObjectPtr<UMaterialInterface> M_ShooterAbilityUI;
@@ -73,6 +73,7 @@ public:
 	FOnShooterAbilitySelected OnAbilitySelected;
 	
 private:
+	bool TryCalculateCoordinate(float& OutAngleDeg) const;
 	void RegisterAbilityIcon(UAbilityIconUI* Icon, const FGameplayTag& AbilityTag, bool bUnlock = false);
 	FGameplayTag GetAbilityTagByAngle(float AngleDeg) const;
 	bool IsAbilityUnlocked(const FGameplayTag& AbilityTag) const;

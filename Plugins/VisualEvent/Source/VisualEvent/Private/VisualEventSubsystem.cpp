@@ -2,6 +2,8 @@
 
 
 #include "VisualEventSubsystem.h"
+#include "Components/DecalComponent.h"
+#include "Particles/ParticleSystemComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "ProjectionMarkDefinition.h"
 #include "TrailEffectDefinition.h"
@@ -18,7 +20,7 @@ void UVisualEventSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 void UVisualEventSubsystem::Deinitialize()
 {
-
+	ActiveMarks.Reset();
 }
 
 void UVisualEventSubsystem::SpawnMarkAtLocation(UProjectionMarkDefinition* Def, FVector Location, FRotator Rotation)
@@ -29,7 +31,21 @@ void UVisualEventSubsystem::SpawnMarkAtLocation(UProjectionMarkDefinition* Def, 
         return;
     }
 
-    UGameplayStatics::SpawnDecalAtLocation(
+	ActiveMarks.RemoveAll([](const TWeakObjectPtr<UDecalComponent>& Mark)
+	{
+		return !Mark.IsValid();
+	});
+
+	while (ActiveMarks.Num() >= MaxActiveMarks)
+	{
+		if (UDecalComponent* OldestMark = ActiveMarks[0].Get())
+		{
+			OldestMark->DestroyComponent();
+		}
+		ActiveMarks.RemoveAt(0, 1, EAllowShrinking::No);
+	}
+
+    UDecalComponent* SpawnedMark = UGameplayStatics::SpawnDecalAtLocation(
         GetWorld(),
         Def->DecalMaterial,
         Def->DecalSize,
@@ -37,13 +53,18 @@ void UVisualEventSubsystem::SpawnMarkAtLocation(UProjectionMarkDefinition* Def, 
         Rotation + Def->RotationOffset,
         Def->LifeSpan
     );
+
+	if (SpawnedMark)
+	{
+		ActiveMarks.Add(SpawnedMark);
+	}
 }
 
 void UVisualEventSubsystem::SpawnBeamTrail(const UTrailEffectDefinition* Def, const FVector& Start, const FVector& End)
 {
 	if (!Def || !Def->FXAsset)
 	{
-	    UE_LOG(LogTemp, Error, TEXT("NO DEF EFFEECT "));
+	   // UE_LOG(LogTemp, Error, TEXT("NO DEF EFFEECT "));
 		return;
 	}
 
@@ -53,7 +74,6 @@ void UVisualEventSubsystem::SpawnBeamTrail(const UTrailEffectDefinition* Def, co
 	if (UNiagaraSystem* Niagara = Cast<UNiagaraSystem>(Def->FXAsset))
 	{
 		const FVector Direction = (FinalEnd - FinalStart).GetSafeNormal();
-		const float Speed = Def->Speed;
 
 		UNiagaraComponent* Comp = UNiagaraFunctionLibrary::SpawnSystemAtLocation(
 			GetWorld(),
@@ -62,26 +82,19 @@ void UVisualEventSubsystem::SpawnBeamTrail(const UTrailEffectDefinition* Def, co
 			Direction.Rotation() + Def->RotationOffset,
 			Def->Scale,
 			true,
-			true);
+			false,
+			ENCPoolMethod::AutoRelease,
+			false);
 
 		if (Comp)
 		{
-			Comp->SetVariableVec3(TEXT("User.Direction"), Direction);
-			Comp->SetVariableFloat(TEXT("User.Speed"), Speed);
-			Comp->SetAutoDestroy(true);
-
-			if (Def->LifeSpan > 0.f)
-			{
-				Comp->SetMaxSimTime(Def->LifeSpan);
-			}
-
+			Comp->SetVariablePosition(Def->StartParameterName, FinalStart);
+			Comp->SetVariablePosition(Def->EndParameterName, FinalEnd);
+			Comp->Activate(true);
 		}
-
 	}
 	else if (UParticleSystem* Particle = Cast<UParticleSystem>(Def->FXAsset))
 	{
-
-
 		UGameplayStatics::SpawnEmitterAtLocation(
 			GetWorld(),
 			Particle,
@@ -101,7 +114,7 @@ void UVisualEventSubsystem::SpawnProjectileTrail(const UTrailEffectDefinition* D
 
 	if (UNiagaraSystem* Niagara = Cast<UNiagaraSystem>(Def->FXAsset))
 	{
-		UNiagaraComponent* Comp = UNiagaraFunctionLibrary::SpawnSystemAttached(
+		UNiagaraFunctionLibrary::SpawnSystemAttached(
 			Niagara,
 			AttachTarget,
 			Def->AttachSocketName,
@@ -113,11 +126,6 @@ void UVisualEventSubsystem::SpawnProjectileTrail(const UTrailEffectDefinition* D
 			ENCPoolMethod::None,
 			true,
 			true);
-
-		if (Comp && Def->LifeSpan > 0.f)
-		{
-			Comp->SetAutoDestroy(true);
-		}
 	}
 	else if (UParticleSystem* Particle = Cast<UParticleSystem>(Def->FXAsset))
 	{
@@ -158,7 +166,7 @@ void UVisualEventSubsystem::PlaySoundAtLocation(USoundDefinition* SoundDefinitio
 	);
 }
 
-//Trail은 Weapon에서 처리할 거고, 맞은 애의 이펙트 정보 자체는 Endpos만 요구하는 위치 기반이니 배제.
+// Weapon trails are handled by the weapon; hit effects only require a world-space location.
 void UVisualEventSubsystem::FeaturesEffect(FVector Location, FRotator Rotation, FVisualEventSet& EffectSet)
 {
 	if (EffectSet.DecalDef)
@@ -197,19 +205,16 @@ void UVisualEventSubsystem::SpawnMuzzleEffect(const UTrailEffectDefinition* Def,
 
 	if (UNiagaraSystem* Niagara = Cast<UNiagaraSystem>(Def->FXAsset))
 	{
-		UNiagaraComponent* Comp = UNiagaraFunctionLibrary::SpawnSystemAtLocation(
+		UNiagaraFunctionLibrary::SpawnSystemAtLocation(
 			GetWorld(),
 			Niagara,
 			FinalLocation,
 			FinalRotation,
 			Def->Scale,
 			true,
+			true,
+			ENCPoolMethod::AutoRelease,
 			true);
-
-		if (Comp)
-		{
-			Comp->SetAutoDestroy(true);
-		}
 	}
 	else if (UParticleSystem* Particle = Cast<UParticleSystem>(Def->FXAsset))
 	{
@@ -236,19 +241,16 @@ void UVisualEventSubsystem::SpawnEffectAtLocation(const UTrailEffectDefinition* 
 
 	if (UNiagaraSystem* Niagara = Cast<UNiagaraSystem>(Def->FXAsset))
 	{
-		UNiagaraComponent* Comp = UNiagaraFunctionLibrary::SpawnSystemAtLocation(
+		UNiagaraFunctionLibrary::SpawnSystemAtLocation(
 			GetWorld(),
 			Niagara,
 			FinalLocation,
 			FinalRotation,
 			Def->Scale,
 			true,
+			true,
+			ENCPoolMethod::AutoRelease,
 			true);
-
-		if (Comp)
-		{
-			Comp->SetAutoDestroy(true);
-		}
 	}
 	else if (UParticleSystem* Particle = Cast<UParticleSystem>(Def->FXAsset))
 	{
@@ -261,4 +263,3 @@ void UVisualEventSubsystem::SpawnEffectAtLocation(const UTrailEffectDefinition* 
 			true);
 	}
 }
-

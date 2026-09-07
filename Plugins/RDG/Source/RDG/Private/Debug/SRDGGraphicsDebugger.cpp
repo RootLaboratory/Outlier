@@ -17,6 +17,12 @@
 namespace RDGGraphicsDebugger
 {
 	static const FMargin RowPadding(0.0f, 6.0f, 0.0f, 0.0f);
+
+	// ADS DoF intensity <-> aim f-stop mapping. Intensity 0 = f-stop high enough that DOF
+	// reads as effectively off; Intensity 1 = strong background blur. Hip f-stop is left at
+	// its default (DoF fully off while not aiming) and isn't exposed here.
+	static constexpr float kADSDoFIntensityMinFStop = 16.0f;
+	static constexpr float kADSDoFIntensityMaxFStop = 0.7f;
 }
 
 void SRDGGraphicsDebugger::Construct(const FArguments& InArgs)
@@ -35,6 +41,381 @@ void SRDGGraphicsDebugger::Construct(const FArguments& InArgs)
 				[
 					SNew(STextBlock)
 					.Text(FText::FromString(TEXT("RDG Graphics Debugger")))
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(RDGGraphicsDebugger::RowPadding)
+				[
+					SNew(SExpandableArea)
+					.InitiallyCollapsed(false)
+					.HeaderContent()
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.VAlign(VAlign_Center)
+						[
+							SNew(SCheckBox)
+							.IsChecked(this, &SRDGGraphicsDebugger::GetOverlayEnabledCheckState)
+							.OnCheckStateChanged(this, &SRDGGraphicsDebugger::OnOverlayEnabledChanged)
+						]
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+						.VAlign(VAlign_Center)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Overlay")))
+						]
+					]
+					.BodyContent()
+					[
+						SNew(SVerticalBox)
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Tint Color (RGB 0-1)")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							[
+								SNew(SBox)
+								.WidthOverride(90.0f)
+								[
+									SNew(SNumericEntryBox<float>)
+									.AllowSpin(true)
+									.MinValue(0.0f)
+									.MaxValue(1.0f)
+									.MinSliderValue(0.0f)
+									.MaxSliderValue(1.0f)
+									.Value(this, &SRDGGraphicsDebugger::GetOverlayTintRValue)
+									.OnValueChanged(this, &SRDGGraphicsDebugger::OnOverlayTintRChanged)
+								]
+							]
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.Padding(8.0f, 0.0f)
+							[
+								SNew(SBox)
+								.WidthOverride(90.0f)
+								[
+									SNew(SNumericEntryBox<float>)
+									.AllowSpin(true)
+									.MinValue(0.0f)
+									.MaxValue(1.0f)
+									.MinSliderValue(0.0f)
+									.MaxSliderValue(1.0f)
+									.Value(this, &SRDGGraphicsDebugger::GetOverlayTintGValue)
+									.OnValueChanged(this, &SRDGGraphicsDebugger::OnOverlayTintGChanged)
+								]
+							]
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							[
+								SNew(SBox)
+								.WidthOverride(90.0f)
+								[
+									SNew(SNumericEntryBox<float>)
+									.AllowSpin(true)
+									.MinValue(0.0f)
+									.MaxValue(1.0f)
+									.MinSliderValue(0.0f)
+									.MaxSliderValue(1.0f)
+									.Value(this, &SRDGGraphicsDebugger::GetOverlayTintBValue)
+									.OnValueChanged(this, &SRDGGraphicsDebugger::OnOverlayTintBChanged)
+								]
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Goal Value (0-1)")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SBox)
+							.WidthOverride(120.0f)
+							[
+								SNew(SNumericEntryBox<float>)
+								.AllowSpin(true)
+								.MinValue(0.0f)
+								.MaxValue(1.0f)
+								.MinSliderValue(0.0f)
+								.MaxSliderValue(1.0f)
+								.Value(this, &SRDGGraphicsDebugger::GetOverlayGoalValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnOverlayGoalValueChanged)
+							]
+						]
+					]
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(RDGGraphicsDebugger::RowPadding)
+				[
+					SNew(SExpandableArea)
+					.InitiallyCollapsed(false)
+					.HeaderContent()
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.VAlign(VAlign_Center)
+						[
+							SNew(SCheckBox)
+							.IsChecked(this, &SRDGGraphicsDebugger::GetPixelSortingEnabledCheckState)
+							.OnCheckStateChanged(this, &SRDGGraphicsDebugger::OnPixelSortingEnabledChanged)
+						]
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+						.VAlign(VAlign_Center)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Pixel Sorting")))
+						]
+					]
+					.BodyContent()
+					[
+						SNew(SVerticalBox)
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Mode (0 White, 1 Black, 2 Bright, 3 Dark)")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SBox)
+							.WidthOverride(120.0f)
+							[
+								SNew(SNumericEntryBox<int32>)
+								.AllowSpin(true)
+								.MinValue(0)
+								.MaxValue(3)
+								.MinSliderValue(0)
+								.MaxSliderValue(3)
+								.Value(this, &SRDGGraphicsDebugger::GetPixelSortingModeValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnPixelSortingModeChanged)
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Curve (0 Linear, 1 Cubic Ease-In)")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SBox)
+							.WidthOverride(120.0f)
+							[
+								SNew(SNumericEntryBox<int32>)
+								.AllowSpin(true)
+								.MinValue(0)
+								.MaxValue(1)
+								.MinSliderValue(0)
+								.MaxSliderValue(1)
+								.Value(this, &SRDGGraphicsDebugger::GetPixelSortingCurveValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnPixelSortingCurveChanged)
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Min Threshold (0-255)")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SBox)
+							.WidthOverride(140.0f)
+							[
+								SNew(SNumericEntryBox<int32>)
+								.AllowSpin(true)
+								.MinValue(0)
+								.MaxValue(255)
+								.MinSliderValue(0)
+								.MaxSliderValue(255)
+								.Value(this, &SRDGGraphicsDebugger::GetPixelSortingMinThresholdValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnPixelSortingMinThresholdChanged)
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Scale (Threshold levels / second)")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SBox)
+							.WidthOverride(120.0f)
+							[
+								SNew(SNumericEntryBox<float>)
+								.AllowSpin(true)
+								.MinValue(0.0f)
+								.MinSliderValue(0.0f)
+								.MaxSliderValue(1000.0f)
+								.Value(this, &SRDGGraphicsDebugger::GetPixelSortingScaleValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnPixelSortingScaleChanged)
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.VAlign(VAlign_Center)
+							[
+								SNew(SCheckBox)
+								.IsChecked(this, &SRDGGraphicsDebugger::GetPixelSortingColorInterpolationCheckState)
+								.OnCheckStateChanged(this, &SRDGGraphicsDebugger::OnPixelSortingColorInterpolationChanged)
+							]
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+							.VAlign(VAlign_Center)
+							[
+								SNew(STextBlock)
+								.Text(FText::FromString(TEXT("Color Interpolation")))
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Target Color RGB (0-1)")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot()
+							.FillWidth(1.0f)
+							[
+								SNew(SNumericEntryBox<float>)
+								.AllowSpin(true)
+								.MinValue(0.0f)
+								.MaxValue(1.0f)
+								.MinSliderValue(0.0f)
+								.MaxSliderValue(1.0f)
+								.Value(this, &SRDGGraphicsDebugger::GetPixelSortingTargetColorRValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnPixelSortingTargetColorRChanged)
+							]
+							+ SHorizontalBox::Slot()
+							.FillWidth(1.0f)
+							.Padding(4.0f, 0.0f)
+							[
+								SNew(SNumericEntryBox<float>)
+								.AllowSpin(true)
+								.MinValue(0.0f)
+								.MaxValue(1.0f)
+								.MinSliderValue(0.0f)
+								.MaxSliderValue(1.0f)
+								.Value(this, &SRDGGraphicsDebugger::GetPixelSortingTargetColorGValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnPixelSortingTargetColorGChanged)
+							]
+							+ SHorizontalBox::Slot()
+							.FillWidth(1.0f)
+							[
+								SNew(SNumericEntryBox<float>)
+								.AllowSpin(true)
+								.MinValue(0.0f)
+								.MaxValue(1.0f)
+								.MinSliderValue(0.0f)
+								.MaxSliderValue(1.0f)
+								.Value(this, &SRDGGraphicsDebugger::GetPixelSortingTargetColorBValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnPixelSortingTargetColorBChanged)
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Resolution Divisor (1 = full, 2 = half)")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SBox)
+							.WidthOverride(120.0f)
+							[
+								SNew(SNumericEntryBox<int32>)
+								.AllowSpin(true)
+								.MinValue(1)
+								.MaxValue(8)
+								.MinSliderValue(1)
+								.MaxSliderValue(8)
+								.Value(this, &SRDGGraphicsDebugger::GetPixelSortingResolutionDivisorValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnPixelSortingResolutionDivisorChanged)
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.VAlign(VAlign_Center)
+							[
+								SNew(SCheckBox)
+								.IsChecked(this, &SRDGGraphicsDebugger::GetPixelSortingColumnsCheckState)
+								.OnCheckStateChanged(this, &SRDGGraphicsDebugger::OnPixelSortingColumnsChanged)
+							]
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+							.VAlign(VAlign_Center)
+							[
+								SNew(STextBlock)
+								.Text(FText::FromString(TEXT("Sort Columns")))
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.VAlign(VAlign_Center)
+							[
+								SNew(SCheckBox)
+								.IsChecked(this, &SRDGGraphicsDebugger::GetPixelSortingRowsCheckState)
+								.OnCheckStateChanged(this, &SRDGGraphicsDebugger::OnPixelSortingRowsChanged)
+							]
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+							.VAlign(VAlign_Center)
+							[
+								SNew(STextBlock)
+								.Text(FText::FromString(TEXT("Sort Rows")))
+							]
+						]
+					]
 				]
 				+ SVerticalBox::Slot()
 				.AutoHeight()
@@ -203,6 +584,341 @@ void SRDGGraphicsDebugger::Construct(const FArguments& InArgs)
 								.MaxSliderValue(8.0f)
 								.Value(this, &SRDGGraphicsDebugger::GetMotionBlurVelocityScaleValue)
 								.OnValueChanged(this, &SRDGGraphicsDebugger::OnMotionBlurVelocityScaleChanged)
+							]
+						]
+					]
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(RDGGraphicsDebugger::RowPadding)
+				[
+					SNew(SExpandableArea)
+					.InitiallyCollapsed(false)
+					.HeaderContent()
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.VAlign(VAlign_Center)
+						[
+							SNew(SCheckBox)
+							.IsChecked(this, &SRDGGraphicsDebugger::GetZoomBlurEnabledCheckState)
+							.OnCheckStateChanged(this, &SRDGGraphicsDebugger::OnZoomBlurEnabledChanged)
+						]
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+						.VAlign(VAlign_Center)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Zoom Blur")))
+						]
+					]
+					.BodyContent()
+					[
+						SNew(SVerticalBox)
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Trigger Threshold (Pixel Sorting)")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SBox)
+							.WidthOverride(140.0f)
+							[
+								SNew(SNumericEntryBox<int32>)
+								.AllowSpin(true)
+								.MinValue(0)
+								.MaxValue(255)
+								.MinSliderValue(0)
+								.MaxSliderValue(255)
+								.Value(this, &SRDGGraphicsDebugger::GetZoomBlurTriggerThresholdValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnZoomBlurTriggerThresholdChanged)
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Blackout Start Progress")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SBox)
+							.WidthOverride(140.0f)
+							[
+								SNew(SNumericEntryBox<float>)
+								.AllowSpin(true)
+								.MinValue(0.0f)
+								.MaxValue(1.0f)
+								.MinSliderValue(0.0f)
+								.MaxSliderValue(1.0f)
+								.Value(this, &SRDGGraphicsDebugger::GetZoomBlurBlackoutStartProgressValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnZoomBlurBlackoutStartProgressChanged)
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Zoom Blur Curve (0 Linear, 1 Cubic Ease In)")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SBox)
+							.WidthOverride(140.0f)
+							[
+								SNew(SNumericEntryBox<int32>)
+								.AllowSpin(true)
+								.MinValue(0)
+								.MaxValue(1)
+								.MinSliderValue(0)
+								.MaxSliderValue(1)
+								.Value(this, &SRDGGraphicsDebugger::GetZoomBlurCurveValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnZoomBlurCurveChanged)
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Blackout Curve (0 Linear, 1 Cubic Ease In)")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SBox)
+							.WidthOverride(140.0f)
+							[
+								SNew(SNumericEntryBox<int32>)
+								.AllowSpin(true)
+								.MinValue(0)
+								.MaxValue(1)
+								.MinSliderValue(0)
+								.MaxSliderValue(1)
+								.Value(this, &SRDGGraphicsDebugger::GetZoomBlurBlackoutCurveValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnZoomBlurBlackoutCurveChanged)
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Zoom Blur Fade-In Time Scale")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SBox)
+							.WidthOverride(140.0f)
+							[
+								SNew(SNumericEntryBox<float>)
+								.AllowSpin(true)
+								.MinValue(0.05f)
+								.MaxValue(10.0f)
+								.MinSliderValue(0.05f)
+								.MaxSliderValue(10.0f)
+								.Value(this, &SRDGGraphicsDebugger::GetZoomBlurFadeInTimeScaleValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnZoomBlurFadeInTimeScaleChanged)
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Zoom Blur Fade-Out Time Scale")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SBox)
+							.WidthOverride(140.0f)
+							[
+								SNew(SNumericEntryBox<float>)
+								.AllowSpin(true)
+								.MinValue(0.05f)
+								.MaxValue(10.0f)
+								.MinSliderValue(0.05f)
+								.MaxSliderValue(10.0f)
+								.Value(this, &SRDGGraphicsDebugger::GetZoomBlurFadeOutTimeScaleValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnZoomBlurFadeOutTimeScaleChanged)
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Blackout Fade-In Time Scale")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SBox)
+							.WidthOverride(140.0f)
+							[
+								SNew(SNumericEntryBox<float>)
+								.AllowSpin(true)
+								.MinValue(0.05f)
+								.MaxValue(10.0f)
+								.MinSliderValue(0.05f)
+								.MaxSliderValue(10.0f)
+								.Value(this, &SRDGGraphicsDebugger::GetZoomBlurBlackoutFadeInTimeScaleValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnZoomBlurBlackoutFadeInTimeScaleChanged)
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Blackout Fade-Out Time Scale")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SBox)
+							.WidthOverride(140.0f)
+							[
+								SNew(SNumericEntryBox<float>)
+								.AllowSpin(true)
+								.MinValue(0.05f)
+								.MaxValue(10.0f)
+								.MinSliderValue(0.05f)
+								.MaxSliderValue(10.0f)
+								.Value(this, &SRDGGraphicsDebugger::GetZoomBlurBlackoutFadeOutTimeScaleValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnZoomBlurBlackoutFadeOutTimeScaleChanged)
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Maximum Strength (0-1)")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot()
+							.FillWidth(1.0f)
+							.VAlign(VAlign_Center)
+							[
+								SNew(SSlider)
+								.MinValue(0.0f)
+								.MaxValue(1.0f)
+								.Value(this, &SRDGGraphicsDebugger::GetZoomBlurMaximumStrengthSliderValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnZoomBlurMaximumStrengthChanged)
+							]
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+							[
+								SNew(SBox)
+								.WidthOverride(72.0f)
+								[
+									SNew(SNumericEntryBox<float>)
+									.AllowSpin(false)
+									.MinValue(0.0f)
+									.MaxValue(1.0f)
+									.Value(this, &SRDGGraphicsDebugger::GetZoomBlurMaximumStrengthValue)
+									.OnValueChanged(this, &SRDGGraphicsDebugger::OnZoomBlurMaximumStrengthChanged)
+								]
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Start Offset (sharp radius at center)")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot()
+							.FillWidth(1.0f)
+							.VAlign(VAlign_Center)
+							[
+								SNew(SSlider)
+								.MinValue(0.0f)
+								.MaxValue(0.99f)
+								.Value(this, &SRDGGraphicsDebugger::GetZoomBlurStartOffsetSliderValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnZoomBlurStartOffsetChanged)
+							]
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+							[
+								SNew(SBox)
+								.WidthOverride(72.0f)
+								[
+									SNew(SNumericEntryBox<float>)
+									.AllowSpin(false)
+									.MinValue(0.0f)
+									.MaxValue(0.99f)
+									.Value(this, &SRDGGraphicsDebugger::GetZoomBlurStartOffsetValue)
+									.OnValueChanged(this, &SRDGGraphicsDebugger::OnZoomBlurStartOffsetChanged)
+								]
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Sample Count (low = ghosting)")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SBox)
+							.WidthOverride(120.0f)
+							[
+								SNew(SNumericEntryBox<int32>)
+								.AllowSpin(true)
+								.MinValue(2)
+								.MaxValue(64)
+								.MinSliderValue(2)
+								.MaxSliderValue(64)
+								.Value(this, &SRDGGraphicsDebugger::GetZoomBlurSampleCountValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnZoomBlurSampleCountChanged)
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Resolution Divisor (1 = full, 2 = half)")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SBox)
+							.WidthOverride(120.0f)
+							[
+								SNew(SNumericEntryBox<int32>)
+								.AllowSpin(true)
+								.MinValue(1)
+								.MaxValue(8)
+								.MinSliderValue(1)
+								.MaxSliderValue(8)
+								.Value(this, &SRDGGraphicsDebugger::GetZoomBlurResolutionDivisorValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnZoomBlurResolutionDivisorChanged)
 							]
 						]
 					]
@@ -443,6 +1159,50 @@ void SRDGGraphicsDebugger::Construct(const FArguments& InArgs)
 						.AutoHeight()
 						.Padding(RDGGraphicsDebugger::RowPadding)
 						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.VAlign(VAlign_Center)
+							[
+								SNew(SCheckBox)
+								.IsChecked(this, &SRDGGraphicsDebugger::GetADSBlurDebugPassEnabledCheckState)
+								.OnCheckStateChanged(this, &SRDGGraphicsDebugger::OnADSBlurDebugPassEnabledChanged)
+							]
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+							.VAlign(VAlign_Center)
+							[
+								SNew(STextBlock)
+								.Text(FText::FromString(TEXT("Enable ADS Blur Pass")))
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.VAlign(VAlign_Center)
+							[
+								SNew(SCheckBox)
+								.IsChecked(this, &SRDGGraphicsDebugger::GetADSBlurGpuStatScopesCheckState)
+								.OnCheckStateChanged(this, &SRDGGraphicsDebugger::OnADSBlurGpuStatScopesChanged)
+							]
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+							.VAlign(VAlign_Center)
+							[
+								SNew(STextBlock)
+								.Text(FText::FromString(TEXT("Enable ADS GPU Stat Scopes")))
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
 							SNew(SExpandableArea)
 							.InitiallyCollapsed(false)
 							.HeaderContent()
@@ -517,92 +1277,159 @@ void SRDGGraphicsDebugger::Construct(const FArguments& InArgs)
 								]
 							]
 						]
-						+ SVerticalBox::Slot()
-						.AutoHeight()
-						.Padding(RDGGraphicsDebugger::RowPadding)
-						[
-							SNew(STextBlock)
-							.Text(FText::FromString(TEXT("Blur Radius Min / Max")))]
-						+ SVerticalBox::Slot()
-						.AutoHeight()
-						[
-							SNew(SHorizontalBox)
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							[
-								SNew(SBox)
-								.WidthOverride(96.0f)
-								[
-									SNew(SNumericEntryBox<float>)
-									.AllowSpin(true)
-									.MinValue(0.0f)
-									.MinSliderValue(0.0f)
-									.MaxSliderValue(32.0f)
-									.Value(this, &SRDGGraphicsDebugger::GetADSBlurMinRadiusValue)
-									.OnValueChanged(this, &SRDGGraphicsDebugger::OnADSBlurMinRadiusChanged)
-								]
-							]
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							.Padding(8.0f, 0.0f, 0.0f, 0.0f)
-							[
-								SNew(SBox)
-								.WidthOverride(96.0f)
-								[
-									SNew(SNumericEntryBox<float>)
-									.AllowSpin(true)
-									.MinValue(0.0f)
-									.MinSliderValue(0.0f)
-									.MaxSliderValue(32.0f)
-									.Value(this, &SRDGGraphicsDebugger::GetADSBlurMaxRadiusValue)
-									.OnValueChanged(this, &SRDGGraphicsDebugger::OnADSBlurMaxRadiusChanged)
-								]
 							]
 						]
+					]
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(RDGGraphicsDebugger::RowPadding)
+				[
+					SNew(SExpandableArea)
+					.InitiallyCollapsed(true)
+					.HeaderContent()
+					[
+						SNew(STextBlock)
+						.Text(FText::FromString(TEXT("Sight (Hook A/B, CoC)")))
+					]
+					.BodyContent()
+					[
+						SNew(SVerticalBox)
 						+ SVerticalBox::Slot()
 						.AutoHeight()
 						.Padding(RDGGraphicsDebugger::RowPadding)
 						[
 							SNew(STextBlock)
-							.Text(FText::FromString(TEXT("Legacy Pass Count (unused by CoC gather)")))]
+							.Text(FText::FromString(TEXT("Focus Distance World")))]
 						+ SVerticalBox::Slot()
 						.AutoHeight()
 						[
 							SNew(SBox)
 							.WidthOverride(96.0f)
 							[
-								SNew(SNumericEntryBox<int32>)
+								SNew(SNumericEntryBox<float>)
 								.AllowSpin(true)
-								.MinValue(1)
-								.MaxValue(4)
-								.MinSliderValue(1)
-								.MaxSliderValue(4)
-								.Value(this, &SRDGGraphicsDebugger::GetADSBlurPassCountValue)
-								.OnValueChanged(this, &SRDGGraphicsDebugger::OnADSBlurPassCountChanged)
-							]
-						]
+								.MinValue(0.0f)
+								.MinSliderValue(0.0f)
+								.MaxSliderValue(50.0f)
+								.Value(this, &SRDGGraphicsDebugger::GetADSBlurFocusDistanceWorldValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnADSBlurFocusDistanceWorldChanged)
 							]
 						]
 						+ SVerticalBox::Slot()
 						.AutoHeight()
 						.Padding(RDGGraphicsDebugger::RowPadding)
 						[
-							SNew(SExpandableArea)
-							.InitiallyCollapsed(true)
-							.HeaderContent()
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Sight Distance Threshold")))]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SBox)
+							.WidthOverride(96.0f)
+							[
+								SNew(SNumericEntryBox<float>)
+								.AllowSpin(true)
+								.MinValue(0.0f)
+								.MinSliderValue(0.0f)
+								.MaxSliderValue(10.0f)
+								.Value(this, &SRDGGraphicsDebugger::GetADSBlurSightDistanceThresholdValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnADSBlurSightDistanceThresholdChanged)
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Sight Mask Dilate Radius")))]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SBox)
+							.WidthOverride(96.0f)
+							[
+								SNew(SNumericEntryBox<float>)
+								.AllowSpin(true)
+								.MinValue(0.0f)
+								.MinSliderValue(0.0f)
+								.MaxSliderValue(120.0f)
+								.Value(this, &SRDGGraphicsDebugger::GetADSBlurSightMaskDilateRadiusValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnADSBlurSightMaskDilateRadiusChanged)
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Sight Mask Softness")))]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SBox)
+							.WidthOverride(96.0f)
+							[
+								SNew(SNumericEntryBox<float>)
+								.AllowSpin(true)
+								.MinValue(0.0f)
+								.MinSliderValue(0.0f)
+								.MaxSliderValue(32.0f)
+								.Value(this, &SRDGGraphicsDebugger::GetADSBlurSightMaskSoftnessValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnADSBlurSightMaskSoftnessChanged)
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.VAlign(VAlign_Center)
+							[
+								SNew(SCheckBox)
+								.IsChecked(this, &SRDGGraphicsDebugger::GetADSBlurUseSoftSightMaskCheckState)
+								.OnCheckStateChanged(this, &SRDGGraphicsDebugger::OnADSBlurUseSoftSightMaskChanged)
+							]
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+							.VAlign(VAlign_Center)
 							[
 								SNew(STextBlock)
-								.Text(FText::FromString(TEXT("Depth / CoC")))
+								.Text(FText::FromString(TEXT("Use Soft Sight Mask (Hard vs Soft)")))
 							]
-							.BodyContent()
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.VAlign(VAlign_Center)
 							[
-								SNew(SVerticalBox)
-								+ SVerticalBox::Slot()
-								.AutoHeight()
-								.Padding(RDGGraphicsDebugger::RowPadding)
-								[
-									SNew(STextBlock)
-									.Text(FText::FromString(TEXT("Inner Preserve (0-1)")))]
+								SNew(SCheckBox)
+								.IsChecked(this, &SRDGGraphicsDebugger::GetADSDoFEnabledCheckState)
+								.OnCheckStateChanged(this, &SRDGGraphicsDebugger::OnADSDoFEnabledChanged)
+							]
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+							.VAlign(VAlign_Center)
+							[
+								SNew(STextBlock)
+								.Text(FText::FromString(TEXT("ADS Depth of Field (UE DOF)")))
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Intensity (0-1)")))
+						]
 						+ SVerticalBox::Slot()
 						.AutoHeight()
 						[
@@ -614,8 +1441,8 @@ void SRDGGraphicsDebugger::Construct(const FArguments& InArgs)
 								SNew(SSlider)
 								.MinValue(0.0f)
 								.MaxValue(1.0f)
-								.Value(this, &SRDGGraphicsDebugger::GetADSBlurInnerPreserveSliderValue)
-								.OnValueChanged(this, &SRDGGraphicsDebugger::OnADSBlurInnerPreserveChanged)
+								.Value(this, &SRDGGraphicsDebugger::GetADSDoFIntensitySliderValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnADSDoFIntensityChanged)
 							]
 							+ SHorizontalBox::Slot()
 							.AutoWidth()
@@ -628,8 +1455,8 @@ void SRDGGraphicsDebugger::Construct(const FArguments& InArgs)
 									.AllowSpin(false)
 									.MinValue(0.0f)
 									.MaxValue(1.0f)
-									.Value(this, &SRDGGraphicsDebugger::GetADSBlurInnerPreserveValue)
-									.OnValueChanged(this, &SRDGGraphicsDebugger::OnADSBlurInnerPreserveChanged)
+									.Value(this, &SRDGGraphicsDebugger::GetADSDoFIntensityValue)
+									.OnValueChanged(this, &SRDGGraphicsDebugger::OnADSDoFIntensityChanged)
 								]
 							]
 						]
@@ -638,90 +1465,8 @@ void SRDGGraphicsDebugger::Construct(const FArguments& InArgs)
 						.Padding(RDGGraphicsDebugger::RowPadding)
 						[
 							SNew(STextBlock)
-							.Text(FText::FromString(TEXT("Depth Blur Start / End")))]
-						+ SVerticalBox::Slot()
-						.AutoHeight()
-						[
-							SNew(SHorizontalBox)
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							[
-								SNew(SBox)
-								.WidthOverride(96.0f)
-								[
-									SNew(SNumericEntryBox<float>)
-									.AllowSpin(true)
-									.MinValue(0.0f)
-									.MinSliderValue(0.0f)
-									.MaxSliderValue(1.0f)
-									.Value(this, &SRDGGraphicsDebugger::GetADSBlurDepthBlurStartValue)
-									.OnValueChanged(this, &SRDGGraphicsDebugger::OnADSBlurDepthBlurStartChanged)
-								]
-							]
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							.Padding(8.0f, 0.0f, 0.0f, 0.0f)
-							[
-								SNew(SBox)
-								.WidthOverride(96.0f)
-								[
-									SNew(SNumericEntryBox<float>)
-									.AllowSpin(true)
-									.MinValue(0.0f)
-									.MinSliderValue(0.0f)
-									.MaxSliderValue(1.0f)
-									.Value(this, &SRDGGraphicsDebugger::GetADSBlurDepthBlurEndValue)
-									.OnValueChanged(this, &SRDGGraphicsDebugger::OnADSBlurDepthBlurEndChanged)
-								]
-							]
+							.Text(FText::FromString(TEXT("Focal Distance (cm) — overwritten live while actually aiming")))
 						]
-						+ SVerticalBox::Slot()
-						.AutoHeight()
-						.Padding(RDGGraphicsDebugger::RowPadding)
-						[
-							SNew(STextBlock)
-							.Text(FText::FromString(TEXT("Depth Blur Power / Focus Bias")))]
-						+ SVerticalBox::Slot()
-						.AutoHeight()
-						[
-							SNew(SHorizontalBox)
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							[
-								SNew(SBox)
-								.WidthOverride(96.0f)
-								[
-									SNew(SNumericEntryBox<float>)
-									.AllowSpin(true)
-									.MinValue(0.01f)
-									.MinSliderValue(0.01f)
-									.MaxSliderValue(8.0f)
-									.Value(this, &SRDGGraphicsDebugger::GetADSBlurDepthBlurPowerValue)
-									.OnValueChanged(this, &SRDGGraphicsDebugger::OnADSBlurDepthBlurPowerChanged)
-								]
-							]
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							.Padding(8.0f, 0.0f, 0.0f, 0.0f)
-							[
-								SNew(SBox)
-								.WidthOverride(96.0f)
-								[
-									SNew(SNumericEntryBox<float>)
-									.AllowSpin(true)
-									.MinSliderValue(-0.2f)
-									.MaxSliderValue(0.2f)
-									.Value(this, &SRDGGraphicsDebugger::GetADSBlurDepthFocusBiasValue)
-									.OnValueChanged(this, &SRDGGraphicsDebugger::OnADSBlurDepthFocusBiasChanged)
-								]
-							]
-						]
-						+ SVerticalBox::Slot()
-						.AutoHeight()
-						.Padding(RDGGraphicsDebugger::RowPadding)
-						[
-							SNew(STextBlock)
-							.Text(FText::FromString(TEXT("CoC Focus Distance (cm)")))]
 						+ SVerticalBox::Slot()
 						.AutoHeight()
 						[
@@ -732,126 +1477,9 @@ void SRDGGraphicsDebugger::Construct(const FArguments& InArgs)
 								.AllowSpin(true)
 								.MinValue(0.0f)
 								.MinSliderValue(0.0f)
-								.MaxSliderValue(200.0f)
-								.Value(this, &SRDGGraphicsDebugger::GetADSBlurFocusDistanceValue)
-								.OnValueChanged(this, &SRDGGraphicsDebugger::OnADSBlurFocusDistanceChanged)
-							]
-						]
-							]
-						]
-						+ SVerticalBox::Slot()
-						.AutoHeight()
-						.Padding(RDGGraphicsDebugger::RowPadding)
-						[
-							SNew(SExpandableArea)
-							.InitiallyCollapsed(true)
-							.HeaderContent()
-							[
-								SNew(STextBlock)
-								.Text(FText::FromString(TEXT("Gather")))
-							]
-							.BodyContent()
-							[
-								SNew(SVerticalBox)
-								+ SVerticalBox::Slot()
-								.AutoHeight()
-								.Padding(RDGGraphicsDebugger::RowPadding)
-								[
-									SNew(STextBlock)
-									.Text(FText::FromString(TEXT("Gather Samples / Reach Softness")))]
-						+ SVerticalBox::Slot()
-						.AutoHeight()
-						[
-							SNew(SHorizontalBox)
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							[
-								SNew(SBox)
-								.WidthOverride(96.0f)
-								[
-									SNew(SNumericEntryBox<int32>)
-									.AllowSpin(true)
-									.MinValue(1)
-									.MaxValue(96)
-									.MinSliderValue(1)
-									.MaxSliderValue(96)
-									.Value(this, &SRDGGraphicsDebugger::GetADSBlurGatherSampleCountValue)
-									.OnValueChanged(this, &SRDGGraphicsDebugger::OnADSBlurGatherSampleCountChanged)
-								]
-							]
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							.Padding(8.0f, 0.0f, 0.0f, 0.0f)
-							[
-								SNew(SBox)
-								.WidthOverride(96.0f)
-								[
-									SNew(SNumericEntryBox<float>)
-									.AllowSpin(true)
-									.MinValue(0.0f)
-									.MinSliderValue(0.0f)
-									.MaxSliderValue(4.0f)
-									.Value(this, &SRDGGraphicsDebugger::GetADSBlurReachSoftnessValue)
-									.OnValueChanged(this, &SRDGGraphicsDebugger::OnADSBlurReachSoftnessChanged)
-								]
-							]
-						]
-							]
-						]
-						+ SVerticalBox::Slot()
-						.AutoHeight()
-						.Padding(RDGGraphicsDebugger::RowPadding)
-						[
-							SNew(SExpandableArea)
-							.InitiallyCollapsed(true)
-							.HeaderContent()
-							[
-								SNew(STextBlock)
-								.Text(FText::FromString(TEXT("Mask")))
-							]
-							.BodyContent()
-							[
-								SNew(SVerticalBox)
-								+ SVerticalBox::Slot()
-								.AutoHeight()
-								.Padding(RDGGraphicsDebugger::RowPadding)
-								[
-									SNew(STextBlock)
-									.Text(FText::FromString(TEXT("Mask Dilate Min / Max")))]
-						+ SVerticalBox::Slot()
-						.AutoHeight()
-						[
-							SNew(SHorizontalBox)
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							[
-								SNew(SBox)
-								.WidthOverride(96.0f)
-								[
-									SNew(SNumericEntryBox<float>)
-									.AllowSpin(true)
-									.MinValue(0.0f)
-									.MinSliderValue(0.0f)
-									.MaxSliderValue(16.0f)
-									.Value(this, &SRDGGraphicsDebugger::GetADSBlurMinMaskDilateValue)
-									.OnValueChanged(this, &SRDGGraphicsDebugger::OnADSBlurMinMaskDilateChanged)
-								]
-							]
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							.Padding(8.0f, 0.0f, 0.0f, 0.0f)
-							[
-								SNew(SBox)
-								.WidthOverride(96.0f)
-								[
-									SNew(SNumericEntryBox<float>)
-									.AllowSpin(true)
-									.MinValue(0.0f)
-									.MinSliderValue(0.0f)
-									.MaxSliderValue(16.0f)
-									.Value(this, &SRDGGraphicsDebugger::GetADSBlurMaxMaskDilateValue)
-									.OnValueChanged(this, &SRDGGraphicsDebugger::OnADSBlurMaxMaskDilateChanged)
-								]
+								.MaxSliderValue(2000.0f)
+								.Value(this, &SRDGGraphicsDebugger::GetADSDoFFocalDistanceValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnADSDoFFocalDistanceChanged)
 							]
 						]
 						+ SVerticalBox::Slot()
@@ -859,43 +1487,109 @@ void SRDGGraphicsDebugger::Construct(const FArguments& InArgs)
 						.Padding(RDGGraphicsDebugger::RowPadding)
 						[
 							SNew(STextBlock)
-							.Text(FText::FromString(TEXT("Mask Softness Min / Max")))]
+							.Text(FText::FromString(TEXT("Max Blur Clamp (min f-stop, 0 = uncapped)")))
+						]
 						+ SVerticalBox::Slot()
 						.AutoHeight()
 						[
-							SNew(SHorizontalBox)
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
+							SNew(SBox)
+							.WidthOverride(96.0f)
 							[
-								SNew(SBox)
-								.WidthOverride(96.0f)
-								[
-									SNew(SNumericEntryBox<float>)
-									.AllowSpin(true)
-									.MinValue(0.0f)
-									.MinSliderValue(0.0f)
-									.MaxSliderValue(16.0f)
-									.Value(this, &SRDGGraphicsDebugger::GetADSBlurMinMaskSoftnessValue)
-									.OnValueChanged(this, &SRDGGraphicsDebugger::OnADSBlurMinMaskSoftnessChanged)
-								]
-							]
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							.Padding(8.0f, 0.0f, 0.0f, 0.0f)
-							[
-								SNew(SBox)
-								.WidthOverride(96.0f)
-								[
-									SNew(SNumericEntryBox<float>)
-									.AllowSpin(true)
-									.MinValue(0.0f)
-									.MinSliderValue(0.0f)
-									.MaxSliderValue(16.0f)
-									.Value(this, &SRDGGraphicsDebugger::GetADSBlurMaxMaskSoftnessValue)
-									.OnValueChanged(this, &SRDGGraphicsDebugger::OnADSBlurMaxMaskSoftnessChanged)
-								]
+								SNew(SNumericEntryBox<float>)
+								.AllowSpin(true)
+								.MinValue(0.0f)
+								.MinSliderValue(0.0f)
+								.MaxSliderValue(8.0f)
+								.Value(this, &SRDGGraphicsDebugger::GetADSDoFMaxBlurClampValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnADSDoFMaxBlurClampChanged)
 							]
 						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Sensor Width (mm)")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SBox)
+							.WidthOverride(96.0f)
+							[
+								SNew(SNumericEntryBox<float>)
+								.AllowSpin(true)
+								.MinValue(1.0f)
+								.MinSliderValue(1.0f)
+								.MaxSliderValue(70.0f)
+								.Value(this, &SRDGGraphicsDebugger::GetADSDoFSensorWidthValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnADSDoFSensorWidthChanged)
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Hip F-Stop (DOF strength while not aiming)")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SBox)
+							.WidthOverride(96.0f)
+							[
+								SNew(SNumericEntryBox<float>)
+								.AllowSpin(true)
+								.MinValue(0.1f)
+								.MinSliderValue(0.1f)
+								.MaxSliderValue(32.0f)
+								.Value(this, &SRDGGraphicsDebugger::GetADSDoFHipFStopValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnADSDoFHipFStopChanged)
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Focal Region (cm, fully sharp around focus)")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SBox)
+							.WidthOverride(96.0f)
+							[
+								SNew(SNumericEntryBox<float>)
+								.AllowSpin(true)
+								.MinValue(0.0f)
+								.MinSliderValue(0.0f)
+								.MaxSliderValue(500.0f)
+								.Value(this, &SRDGGraphicsDebugger::GetADSDoFFocalRegionValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnADSDoFFocalRegionChanged)
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Far Transition Region (cm, distance to reach max blur)")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SBox)
+							.WidthOverride(96.0f)
+							[
+								SNew(SNumericEntryBox<float>)
+								.AllowSpin(true)
+								.MinValue(0.0f)
+								.MinSliderValue(0.0f)
+								.MaxSliderValue(2000.0f)
+								.Value(this, &SRDGGraphicsDebugger::GetADSDoFFarTransitionRegionValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnADSDoFFarTransitionRegionChanged)
 							]
 						]
 					]
@@ -1113,6 +1807,104 @@ void SRDGGraphicsDebugger::OnChromaticIntensityChanged(float NewValue)
 	}
 }
 
+ECheckBoxState SRDGGraphicsDebugger::GetOverlayEnabledCheckState() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetUIPostProcessStrcture().Overlay.bEnabled
+			? ECheckBoxState::Checked
+			: ECheckBoxState::Unchecked;
+	}
+
+	return ECheckBoxState::Unchecked;
+}
+
+void SRDGGraphicsDebugger::OnOverlayEnabledChanged(ECheckBoxState NewState)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetOverlayEnabled(NewState == ECheckBoxState::Checked);
+	}
+}
+
+TOptional<float> SRDGGraphicsDebugger::GetOverlayTintRValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetUIPostProcessStrcture().Overlay.TintColor.R;
+	}
+
+	return TOptional<float>();
+}
+
+void SRDGGraphicsDebugger::OnOverlayTintRChanged(float NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		FLinearColor TintColor = Subsystem->GetUIPostProcessStrcture().Overlay.TintColor;
+		TintColor.R = NewValue;
+		Subsystem->SetOverlayTintColor(TintColor);
+	}
+}
+
+TOptional<float> SRDGGraphicsDebugger::GetOverlayTintGValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetUIPostProcessStrcture().Overlay.TintColor.G;
+	}
+
+	return TOptional<float>();
+}
+
+void SRDGGraphicsDebugger::OnOverlayTintGChanged(float NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		FLinearColor TintColor = Subsystem->GetUIPostProcessStrcture().Overlay.TintColor;
+		TintColor.G = NewValue;
+		Subsystem->SetOverlayTintColor(TintColor);
+	}
+}
+
+TOptional<float> SRDGGraphicsDebugger::GetOverlayTintBValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetUIPostProcessStrcture().Overlay.TintColor.B;
+	}
+
+	return TOptional<float>();
+}
+
+void SRDGGraphicsDebugger::OnOverlayTintBChanged(float NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		FLinearColor TintColor = Subsystem->GetUIPostProcessStrcture().Overlay.TintColor;
+		TintColor.B = NewValue;
+		Subsystem->SetOverlayTintColor(TintColor);
+	}
+}
+
+TOptional<float> SRDGGraphicsDebugger::GetOverlayGoalValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetUIPostProcessStrcture().Overlay.GoalValue;
+	}
+
+	return TOptional<float>();
+}
+
+void SRDGGraphicsDebugger::OnOverlayGoalValueChanged(float NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetOverlayGoalValue(NewValue);
+	}
+}
+
 ECheckBoxState SRDGGraphicsDebugger::GetMotionBlurEnabledCheckState() const
 {
 	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
@@ -1296,6 +2088,42 @@ void SRDGGraphicsDebugger::OnADSBlurPreviewAimingChanged(ECheckBoxState NewState
 	}
 }
 
+ECheckBoxState SRDGGraphicsDebugger::GetADSBlurDebugPassEnabledCheckState() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->IsADSBlurDebugPassEnabled() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+	}
+
+	return ECheckBoxState::Unchecked;
+}
+
+void SRDGGraphicsDebugger::OnADSBlurDebugPassEnabledChanged(ECheckBoxState NewState)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetADSBlurDebugPassEnabled(NewState == ECheckBoxState::Checked);
+	}
+}
+
+ECheckBoxState SRDGGraphicsDebugger::GetADSBlurGpuStatScopesCheckState() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().ADSBlur.bEnableGpuStatScopes ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+	}
+
+	return ECheckBoxState::Unchecked;
+}
+
+void SRDGGraphicsDebugger::OnADSBlurGpuStatScopesChanged(ECheckBoxState NewState)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetADSBlurGpuStatScopesEnabled(NewState == ECheckBoxState::Checked);
+	}
+}
+
 TOptional<int32> SRDGGraphicsDebugger::GetADSBlurWeaponStencilValue() const
 {
 	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
@@ -1350,161 +2178,146 @@ void SRDGGraphicsDebugger::OnADSBlurRampOutChanged(float NewValue)
 	}
 }
 
-TOptional<float> SRDGGraphicsDebugger::GetADSBlurMinRadiusValue() const
+TOptional<float> SRDGGraphicsDebugger::GetADSBlurSightDistanceThresholdValue() const
 {
 	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
 	{
-		return Subsystem->GetADSBlurMinRadius();
+		return Subsystem->GetPostProcessStrcture().ADSBlur.SightDistanceThreshold;
 	}
 
 	return TOptional<float>();
 }
 
-void SRDGGraphicsDebugger::OnADSBlurMinRadiusChanged(float NewValue)
-{
-	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
-	{
-		Subsystem->SetADSBlurRadiusRange(NewValue, Subsystem->GetADSBlurMaxRadius());
-	}
-}
-
-TOptional<float> SRDGGraphicsDebugger::GetADSBlurMaxRadiusValue() const
+TOptional<float> SRDGGraphicsDebugger::GetADSBlurFocusDistanceWorldValue() const
 {
 	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
 	{
-		return Subsystem->GetADSBlurMaxRadius();
+		return Subsystem->GetPostProcessStrcture().ADSBlur.FocusDistanceWorld;
 	}
 
 	return TOptional<float>();
 }
 
-void SRDGGraphicsDebugger::OnADSBlurMaxRadiusChanged(float NewValue)
+void SRDGGraphicsDebugger::OnADSBlurFocusDistanceWorldChanged(float NewValue)
 {
 	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
 	{
-		Subsystem->SetADSBlurRadiusRange(Subsystem->GetADSBlurMinRadius(), NewValue);
+		Subsystem->SetADSBlurFocusDistanceWorld(NewValue);
 	}
 }
 
-TOptional<int32> SRDGGraphicsDebugger::GetADSBlurPassCountValue() const
-{
-	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
-	{
-		return Subsystem->GetADSBlurPassCount();
-	}
-
-	return TOptional<int32>();
-}
-
-void SRDGGraphicsDebugger::OnADSBlurPassCountChanged(int32 NewValue)
+void SRDGGraphicsDebugger::OnADSBlurSightDistanceThresholdChanged(float NewValue)
 {
 	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
 	{
-		Subsystem->SetADSBlurPassCount(NewValue);
+		Subsystem->SetADSBlurSightDistanceThreshold(NewValue);
 	}
 }
 
-float SRDGGraphicsDebugger::GetADSBlurInnerPreserveSliderValue() const
+TOptional<float> SRDGGraphicsDebugger::GetADSBlurSightMaskDilateRadiusValue() const
 {
 	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
 	{
-		return Subsystem->GetADSBlurInnerPreserve();
-	}
-
-	return 0.0f;
-}
-
-TOptional<float> SRDGGraphicsDebugger::GetADSBlurInnerPreserveValue() const
-{
-	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
-	{
-		return Subsystem->GetADSBlurInnerPreserve();
+		return Subsystem->GetPostProcessStrcture().ADSBlur.SightMaskDilateRadius;
 	}
 
 	return TOptional<float>();
 }
 
-void SRDGGraphicsDebugger::OnADSBlurInnerPreserveChanged(float NewValue)
+void SRDGGraphicsDebugger::OnADSBlurSightMaskDilateRadiusChanged(float NewValue)
 {
 	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
 	{
-		Subsystem->SetADSBlurInnerPreserve(NewValue);
+		Subsystem->SetADSBlurSightMaskDilateRadius(NewValue);
 	}
 }
 
-TOptional<float> SRDGGraphicsDebugger::GetADSBlurDepthBlurStartValue() const
+TOptional<float> SRDGGraphicsDebugger::GetADSBlurSightMaskSoftnessValue() const
 {
 	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
 	{
-		return Subsystem->GetADSBlurDepthBlurStart();
+		return Subsystem->GetPostProcessStrcture().ADSBlur.SightMaskSoftness;
 	}
 
 	return TOptional<float>();
 }
 
-void SRDGGraphicsDebugger::OnADSBlurDepthBlurStartChanged(float NewValue)
+void SRDGGraphicsDebugger::OnADSBlurSightMaskSoftnessChanged(float NewValue)
 {
 	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
 	{
-		Subsystem->SetADSBlurDepthBlurRange(NewValue, Subsystem->GetADSBlurDepthBlurEnd());
+		Subsystem->SetADSBlurSightMaskSoftness(NewValue);
 	}
 }
 
-TOptional<float> SRDGGraphicsDebugger::GetADSBlurDepthBlurEndValue() const
+ECheckBoxState SRDGGraphicsDebugger::GetADSBlurUseSoftSightMaskCheckState() const
 {
 	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
 	{
-		return Subsystem->GetADSBlurDepthBlurEnd();
+		return Subsystem->GetPostProcessStrcture().ADSBlur.bUseSoftSightMask ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+	}
+
+	return ECheckBoxState::Unchecked;
+}
+
+void SRDGGraphicsDebugger::OnADSBlurUseSoftSightMaskChanged(ECheckBoxState NewState)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetADSBlurUseSoftSightMask(NewState == ECheckBoxState::Checked);
+	}
+}
+
+// --- ADS Depth of Field (UE Diaphragm DOF) ---
+ECheckBoxState SRDGGraphicsDebugger::GetADSDoFEnabledCheckState() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->IsADSDoFEnabled() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+	}
+
+	return ECheckBoxState::Unchecked;
+}
+
+void SRDGGraphicsDebugger::OnADSDoFEnabledChanged(ECheckBoxState NewState)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetADSDoFEnabled(NewState == ECheckBoxState::Checked);
+	}
+}
+
+float SRDGGraphicsDebugger::GetADSDoFIntensitySliderValue() const
+{
+	return GetADSDoFIntensityValue().Get(0.0f);
+}
+
+TOptional<float> SRDGGraphicsDebugger::GetADSDoFIntensityValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		const float FStop = Subsystem->GetADSDoFApertureAim();
+		const float Alpha = (RDGGraphicsDebugger::kADSDoFIntensityMinFStop - FStop)
+			/ (RDGGraphicsDebugger::kADSDoFIntensityMinFStop - RDGGraphicsDebugger::kADSDoFIntensityMaxFStop);
+		return FMath::Clamp(Alpha, 0.0f, 1.0f);
 	}
 
 	return TOptional<float>();
 }
 
-void SRDGGraphicsDebugger::OnADSBlurDepthBlurEndChanged(float NewValue)
+void SRDGGraphicsDebugger::OnADSDoFIntensityChanged(float NewValue)
 {
 	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
 	{
-		Subsystem->SetADSBlurDepthBlurRange(Subsystem->GetADSBlurDepthBlurStart(), NewValue);
+		const float FStop = FMath::Lerp(
+			RDGGraphicsDebugger::kADSDoFIntensityMinFStop,
+			RDGGraphicsDebugger::kADSDoFIntensityMaxFStop,
+			FMath::Clamp(NewValue, 0.0f, 1.0f));
+		Subsystem->SetADSDoFApertureRange(FStop, Subsystem->GetADSDoFApertureHip());
 	}
 }
 
-TOptional<float> SRDGGraphicsDebugger::GetADSBlurDepthBlurPowerValue() const
-{
-	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
-	{
-		return Subsystem->GetADSBlurDepthBlurPower();
-	}
-
-	return TOptional<float>();
-}
-
-void SRDGGraphicsDebugger::OnADSBlurDepthBlurPowerChanged(float NewValue)
-{
-	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
-	{
-		Subsystem->SetADSBlurDepthBlurPower(NewValue);
-	}
-}
-
-TOptional<float> SRDGGraphicsDebugger::GetADSBlurDepthFocusBiasValue() const
-{
-	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
-	{
-		return Subsystem->GetADSBlurDepthFocusBias();
-	}
-
-	return TOptional<float>();
-}
-
-void SRDGGraphicsDebugger::OnADSBlurDepthFocusBiasChanged(float NewValue)
-{
-	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
-	{
-		Subsystem->SetADSBlurDepthFocusBias(NewValue);
-	}
-}
-
-TOptional<float> SRDGGraphicsDebugger::GetADSBlurFocusDistanceValue() const
+TOptional<float> SRDGGraphicsDebugger::GetADSDoFFocalDistanceValue() const
 {
 	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
 	{
@@ -1514,7 +2327,7 @@ TOptional<float> SRDGGraphicsDebugger::GetADSBlurFocusDistanceValue() const
 	return TOptional<float>();
 }
 
-void SRDGGraphicsDebugger::OnADSBlurFocusDistanceChanged(float NewValue)
+void SRDGGraphicsDebugger::OnADSDoFFocalDistanceChanged(float NewValue)
 {
 	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
 	{
@@ -1522,111 +2335,544 @@ void SRDGGraphicsDebugger::OnADSBlurFocusDistanceChanged(float NewValue)
 	}
 }
 
-TOptional<int32> SRDGGraphicsDebugger::GetADSBlurGatherSampleCountValue() const
+TOptional<float> SRDGGraphicsDebugger::GetADSDoFMaxBlurClampValue() const
 {
 	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
 	{
-		return Subsystem->GetADSBlurGatherSampleCount();
+		return Subsystem->GetADSDoFMaxBlurClamp();
 	}
 
+	return TOptional<float>();
+}
+
+void SRDGGraphicsDebugger::OnADSDoFMaxBlurClampChanged(float NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetADSDoFMaxBlurClamp(NewValue);
+	}
+}
+
+TOptional<float> SRDGGraphicsDebugger::GetADSDoFSensorWidthValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetADSDoFSensorWidth();
+	}
+
+	return TOptional<float>();
+}
+
+void SRDGGraphicsDebugger::OnADSDoFSensorWidthChanged(float NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetADSDoFSensorWidth(NewValue);
+	}
+}
+
+TOptional<float> SRDGGraphicsDebugger::GetADSDoFHipFStopValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetADSDoFApertureHip();
+	}
+
+	return TOptional<float>();
+}
+
+void SRDGGraphicsDebugger::OnADSDoFHipFStopChanged(float NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetADSDoFApertureRange(Subsystem->GetADSDoFApertureAim(), NewValue);
+	}
+}
+
+TOptional<float> SRDGGraphicsDebugger::GetADSDoFFocalRegionValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetADSDoFFocalRegion();
+	}
+
+	return TOptional<float>();
+}
+
+void SRDGGraphicsDebugger::OnADSDoFFocalRegionChanged(float NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetADSDoFFocalRegion(NewValue);
+	}
+}
+
+TOptional<float> SRDGGraphicsDebugger::GetADSDoFFarTransitionRegionValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetADSDoFFarTransitionRegion();
+	}
+
+	return TOptional<float>();
+}
+
+void SRDGGraphicsDebugger::OnADSDoFFarTransitionRegionChanged(float NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetADSDoFFarTransitionRegion(NewValue);
+	}
+}
+
+ECheckBoxState SRDGGraphicsDebugger::GetPixelSortingEnabledCheckState() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().PixelSorting.bEnabled ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+	}
+	return ECheckBoxState::Unchecked;
+}
+
+void SRDGGraphicsDebugger::OnPixelSortingEnabledChanged(ECheckBoxState NewState)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetPixelSortingEnabled(NewState == ECheckBoxState::Checked);
+	}
+}
+
+TOptional<int32> SRDGGraphicsDebugger::GetPixelSortingModeValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().PixelSorting.Mode;
+	}
 	return TOptional<int32>();
 }
 
-void SRDGGraphicsDebugger::OnADSBlurGatherSampleCountChanged(int32 NewValue)
+void SRDGGraphicsDebugger::OnPixelSortingModeChanged(int32 NewValue)
 {
 	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
 	{
-		Subsystem->SetADSBlurGatherSampleCount(NewValue);
+		Subsystem->SetPixelSortingMode(NewValue);
 	}
 }
 
-TOptional<float> SRDGGraphicsDebugger::GetADSBlurReachSoftnessValue() const
+TOptional<int32> SRDGGraphicsDebugger::GetPixelSortingCurveValue() const
 {
 	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
 	{
-		return Subsystem->GetADSBlurReachSoftness();
+		return Subsystem->GetPostProcessStrcture().PixelSorting.Curve;
 	}
-
-	return TOptional<float>();
+	return TOptional<int32>();
 }
 
-void SRDGGraphicsDebugger::OnADSBlurReachSoftnessChanged(float NewValue)
+void SRDGGraphicsDebugger::OnPixelSortingCurveChanged(int32 NewValue)
 {
 	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
 	{
-		Subsystem->SetADSBlurReachSoftness(NewValue);
+		Subsystem->SetPixelSortingCurve(NewValue);
 	}
 }
 
-TOptional<float> SRDGGraphicsDebugger::GetADSBlurMinMaskDilateValue() const
+TOptional<int32> SRDGGraphicsDebugger::GetPixelSortingMinThresholdValue() const
 {
 	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
 	{
-		return Subsystem->GetADSBlurMinMaskDilate();
+		return Subsystem->GetPostProcessStrcture().PixelSorting.MinThreshold;
 	}
-
-	return TOptional<float>();
+	return TOptional<int32>();
 }
 
-void SRDGGraphicsDebugger::OnADSBlurMinMaskDilateChanged(float NewValue)
+void SRDGGraphicsDebugger::OnPixelSortingMinThresholdChanged(int32 NewValue)
 {
 	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
 	{
-		Subsystem->SetADSBlurMaskDilateRange(NewValue, Subsystem->GetADSBlurMaxMaskDilate());
+		Subsystem->SetPixelSortingMinThreshold(NewValue);
 	}
 }
 
-TOptional<float> SRDGGraphicsDebugger::GetADSBlurMaxMaskDilateValue() const
+TOptional<float> SRDGGraphicsDebugger::GetPixelSortingScaleValue() const
 {
 	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
 	{
-		return Subsystem->GetADSBlurMaxMaskDilate();
+		return Subsystem->GetPostProcessStrcture().PixelSorting.Scale;
 	}
-
 	return TOptional<float>();
 }
 
-void SRDGGraphicsDebugger::OnADSBlurMaxMaskDilateChanged(float NewValue)
+void SRDGGraphicsDebugger::OnPixelSortingScaleChanged(float NewValue)
 {
 	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
 	{
-		Subsystem->SetADSBlurMaskDilateRange(Subsystem->GetADSBlurMinMaskDilate(), NewValue);
+		Subsystem->SetPixelSortingScale(NewValue);
 	}
 }
 
-TOptional<float> SRDGGraphicsDebugger::GetADSBlurMinMaskSoftnessValue() const
+ECheckBoxState SRDGGraphicsDebugger::GetPixelSortingColorInterpolationCheckState() const
 {
 	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
 	{
-		return Subsystem->GetADSBlurMinMaskSoftness();
+		return Subsystem->GetPostProcessStrcture().PixelSorting.bColorInterpolationEnabled
+			? ECheckBoxState::Checked
+			: ECheckBoxState::Unchecked;
 	}
-
-	return TOptional<float>();
+	return ECheckBoxState::Unchecked;
 }
 
-void SRDGGraphicsDebugger::OnADSBlurMinMaskSoftnessChanged(float NewValue)
+void SRDGGraphicsDebugger::OnPixelSortingColorInterpolationChanged(ECheckBoxState NewState)
 {
 	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
 	{
-		Subsystem->SetADSBlurMaskSoftnessRange(NewValue, Subsystem->GetADSBlurMaxMaskSoftness());
+		Subsystem->SetPixelSortingColorInterpolationEnabled(NewState == ECheckBoxState::Checked);
 	}
 }
 
-TOptional<float> SRDGGraphicsDebugger::GetADSBlurMaxMaskSoftnessValue() const
+TOptional<float> SRDGGraphicsDebugger::GetPixelSortingTargetColorRValue() const
 {
 	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
 	{
-		return Subsystem->GetADSBlurMaxMaskSoftness();
+		return Subsystem->GetPostProcessStrcture().PixelSorting.TargetColor.R;
 	}
-
 	return TOptional<float>();
 }
 
-void SRDGGraphicsDebugger::OnADSBlurMaxMaskSoftnessChanged(float NewValue)
+void SRDGGraphicsDebugger::OnPixelSortingTargetColorRChanged(float NewValue)
 {
 	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
 	{
-		Subsystem->SetADSBlurMaskSoftnessRange(Subsystem->GetADSBlurMinMaskSoftness(), NewValue);
+		FLinearColor TargetColor = Subsystem->GetPostProcessStrcture().PixelSorting.TargetColor;
+		TargetColor.R = NewValue;
+		Subsystem->SetPixelSortingTargetColor(TargetColor);
+	}
+}
+
+TOptional<float> SRDGGraphicsDebugger::GetPixelSortingTargetColorGValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().PixelSorting.TargetColor.G;
+	}
+	return TOptional<float>();
+}
+
+void SRDGGraphicsDebugger::OnPixelSortingTargetColorGChanged(float NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		FLinearColor TargetColor = Subsystem->GetPostProcessStrcture().PixelSorting.TargetColor;
+		TargetColor.G = NewValue;
+		Subsystem->SetPixelSortingTargetColor(TargetColor);
+	}
+}
+
+TOptional<float> SRDGGraphicsDebugger::GetPixelSortingTargetColorBValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().PixelSorting.TargetColor.B;
+	}
+	return TOptional<float>();
+}
+
+void SRDGGraphicsDebugger::OnPixelSortingTargetColorBChanged(float NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		FLinearColor TargetColor = Subsystem->GetPostProcessStrcture().PixelSorting.TargetColor;
+		TargetColor.B = NewValue;
+		Subsystem->SetPixelSortingTargetColor(TargetColor);
+	}
+}
+
+TOptional<int32> SRDGGraphicsDebugger::GetPixelSortingResolutionDivisorValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().PixelSorting.ResolutionDivisor;
+	}
+	return TOptional<int32>();
+}
+
+void SRDGGraphicsDebugger::OnPixelSortingResolutionDivisorChanged(int32 NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetPixelSortingResolutionDivisor(NewValue);
+	}
+}
+
+ECheckBoxState SRDGGraphicsDebugger::GetZoomBlurEnabledCheckState() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().ZoomBlur.bEnabled ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+	}
+	return ECheckBoxState::Unchecked;
+}
+
+void SRDGGraphicsDebugger::OnZoomBlurEnabledChanged(ECheckBoxState NewState)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetZoomBlurEnabled(NewState == ECheckBoxState::Checked);
+	}
+}
+
+TOptional<int32> SRDGGraphicsDebugger::GetZoomBlurTriggerThresholdValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().ZoomBlur.TriggerThreshold;
+	}
+	return TOptional<int32>();
+}
+
+void SRDGGraphicsDebugger::OnZoomBlurTriggerThresholdChanged(int32 NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetZoomBlurTriggerThreshold(NewValue);
+	}
+}
+
+TOptional<float> SRDGGraphicsDebugger::GetZoomBlurBlackoutStartProgressValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().ZoomBlur.BlackoutStartProgress;
+	}
+	return TOptional<float>();
+}
+
+void SRDGGraphicsDebugger::OnZoomBlurBlackoutStartProgressChanged(float NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetZoomBlurBlackoutStartProgress(NewValue);
+	}
+}
+
+TOptional<int32> SRDGGraphicsDebugger::GetZoomBlurCurveValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().ZoomBlur.ZoomBlurCurve;
+	}
+	return TOptional<int32>();
+}
+
+void SRDGGraphicsDebugger::OnZoomBlurCurveChanged(int32 NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetZoomBlurCurve(NewValue);
+	}
+}
+
+TOptional<int32> SRDGGraphicsDebugger::GetZoomBlurBlackoutCurveValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().ZoomBlur.BlackoutCurve;
+	}
+	return TOptional<int32>();
+}
+
+void SRDGGraphicsDebugger::OnZoomBlurBlackoutCurveChanged(int32 NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetZoomBlurBlackoutCurve(NewValue);
+	}
+}
+
+TOptional<float> SRDGGraphicsDebugger::GetZoomBlurFadeInTimeScaleValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().ZoomBlur.ZoomBlurFadeInTimeScale;
+	}
+	return TOptional<float>();
+}
+
+void SRDGGraphicsDebugger::OnZoomBlurFadeInTimeScaleChanged(float NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetZoomBlurFadeInTimeScale(NewValue);
+	}
+}
+
+TOptional<float> SRDGGraphicsDebugger::GetZoomBlurFadeOutTimeScaleValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().ZoomBlur.ZoomBlurFadeOutTimeScale;
+	}
+	return TOptional<float>();
+}
+
+void SRDGGraphicsDebugger::OnZoomBlurFadeOutTimeScaleChanged(float NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetZoomBlurFadeOutTimeScale(NewValue);
+	}
+}
+
+TOptional<float> SRDGGraphicsDebugger::GetZoomBlurBlackoutFadeInTimeScaleValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().ZoomBlur.BlackoutFadeInTimeScale;
+	}
+	return TOptional<float>();
+}
+
+void SRDGGraphicsDebugger::OnZoomBlurBlackoutFadeInTimeScaleChanged(float NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetZoomBlurBlackoutFadeInTimeScale(NewValue);
+	}
+}
+
+TOptional<float> SRDGGraphicsDebugger::GetZoomBlurBlackoutFadeOutTimeScaleValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().ZoomBlur.BlackoutFadeOutTimeScale;
+	}
+	return TOptional<float>();
+}
+
+void SRDGGraphicsDebugger::OnZoomBlurBlackoutFadeOutTimeScaleChanged(float NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetZoomBlurBlackoutFadeOutTimeScale(NewValue);
+	}
+}
+
+float SRDGGraphicsDebugger::GetZoomBlurMaximumStrengthSliderValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().ZoomBlur.MaximumStrength;
+	}
+	return 0.0f;
+}
+
+TOptional<float> SRDGGraphicsDebugger::GetZoomBlurMaximumStrengthValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().ZoomBlur.MaximumStrength;
+	}
+	return TOptional<float>();
+}
+
+void SRDGGraphicsDebugger::OnZoomBlurMaximumStrengthChanged(float NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetZoomBlurMaximumStrength(NewValue);
+	}
+}
+
+float SRDGGraphicsDebugger::GetZoomBlurStartOffsetSliderValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().ZoomBlur.StartOffset;
+	}
+	return 0.0f;
+}
+
+TOptional<float> SRDGGraphicsDebugger::GetZoomBlurStartOffsetValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().ZoomBlur.StartOffset;
+	}
+	return TOptional<float>();
+}
+
+void SRDGGraphicsDebugger::OnZoomBlurStartOffsetChanged(float NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetZoomBlurStartOffset(NewValue);
+	}
+}
+
+TOptional<int32> SRDGGraphicsDebugger::GetZoomBlurSampleCountValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().ZoomBlur.SampleCount;
+	}
+	return TOptional<int32>();
+}
+
+void SRDGGraphicsDebugger::OnZoomBlurSampleCountChanged(int32 NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetZoomBlurSampleCount(NewValue);
+	}
+}
+
+TOptional<int32> SRDGGraphicsDebugger::GetZoomBlurResolutionDivisorValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().ZoomBlur.ResolutionDivisor;
+	}
+	return TOptional<int32>();
+}
+
+void SRDGGraphicsDebugger::OnZoomBlurResolutionDivisorChanged(int32 NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetZoomBlurResolutionDivisor(NewValue);
+	}
+}
+
+ECheckBoxState SRDGGraphicsDebugger::GetPixelSortingRowsCheckState() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().PixelSorting.bSortRows ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+	}
+	return ECheckBoxState::Unchecked;
+}
+
+void SRDGGraphicsDebugger::OnPixelSortingRowsChanged(ECheckBoxState NewState)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetPixelSortingRowsEnabled(NewState == ECheckBoxState::Checked);
+	}
+}
+
+ECheckBoxState SRDGGraphicsDebugger::GetPixelSortingColumnsCheckState() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetPostProcessStrcture().PixelSorting.bSortColumns ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+	}
+	return ECheckBoxState::Unchecked;
+}
+
+void SRDGGraphicsDebugger::OnPixelSortingColumnsChanged(ECheckBoxState NewState)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetPixelSortingColumnsEnabled(NewState == ECheckBoxState::Checked);
 	}
 }
 

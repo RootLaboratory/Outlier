@@ -2,6 +2,8 @@
 #include "LocalPlayerUISubSystem.h"
 #include "GameFramework/PlayerController.h"
 #include "Components/SceneCaptureComponent2D.h"
+#include "Components/CanvasPanel.h"
+#include "Components/CanvasPanelSlot.h"
 #include "AbilityIconUI.h"
 #include "MainUIBase.h"
 #include "HPBarUI.h"
@@ -15,6 +17,7 @@
 #include "ShooterCurrentAbilityIcon.h"
 #include "ShooterMainWidget.h"
 #include "TagDrivenUIGameplayTags.h"
+#include "Blueprint/UserWidget.h"
 
 void ULocalPlayerUISubSystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -36,6 +39,7 @@ void ULocalPlayerUISubSystem::UnregisterMainUI(UMainUIBase* InMainUI)
 {
 	if (MainUIInstance == InMainUI)
 	{
+		InteractionWidgetInstance = nullptr;
 		MainUIInstance = nullptr;
 	}
 }
@@ -214,6 +218,21 @@ void ULocalPlayerUISubSystem::OnCurrentAbilityChanged(const FGameplayTag& Abilit
 	}
 }
 
+void ULocalPlayerUISubSystem::ResetShooterAbilityState(const FGameplayTag& SelectedAbilityTag)
+{
+	if (UMainUIBase* MainUI = GetMainUI())
+	{
+		MainUI->ResetAbilityCooldowns();
+	}
+
+	if (UShooterCurrentAbilityIcon* CurrentAbilityIcon = Cast<UShooterCurrentAbilityIcon>(
+		GetModule(TagDrivenUITags::Shooter::CurrentAbility())))
+	{
+		CurrentAbilityIcon->ResetCooldown();
+		CurrentAbilityIcon->SetCurrentAbility(SelectedAbilityTag);
+	}
+}
+
 bool ULocalPlayerUISubSystem::ApplyCurrentAbilityCooldownIfMatches(const FGameplayTag& AbilityTag, float CoolTime)
 {
 	if (UShooterCurrentAbilityIcon* CurrentAbilityIcon = Cast<UShooterCurrentAbilityIcon>(GetModule(TagDrivenUITags::Shooter::CurrentAbility())))
@@ -249,7 +268,7 @@ void ULocalPlayerUISubSystem::OnRep_AttackSign(EAttackSign InType)
 	{
 		//UE_LOG(LogTemp, Error, TEXT("CrossHair Instance Class: %s"), *GetNameSafe(CrossHairBase->GetClass()));
 		//UE_LOG(LogTemp, Error, TEXT("OnRep_AttackSign %d"), (uint8)InType);
-		CrossHairBase->SpawnAttckSign(InType);
+		CrossHairBase->SpawnAttackSign(InType);
 	}
 }
 
@@ -334,6 +353,52 @@ void ULocalPlayerUISubSystem::OnAbilityUsed(const FGameplayTag& AbilityTag, floa
 	{
 		CurrentAbilityIcon->ApplyCooldownIfMatches(AbilityTag, CoolTime);
 	}
+}
+
+void ULocalPlayerUISubSystem::BindInteractionWidget(UUserWidget* InteractionWidget)
+{
+	BindInteractionWidget(InteractionWidget, FVector2D(0.0f, 160.0f));
+}
+
+void ULocalPlayerUISubSystem::BindInteractionWidget(UUserWidget* InteractionWidget, const FVector2D& WidgetPosition)
+{
+	UMainUIBase* MainUI = GetMainUI();
+	if (!MainUI || !MainUI->InteractionLayer || !InteractionWidget)
+	{
+		return;
+	}
+
+	InteractionWidgetInstance = InteractionWidget;
+
+	if (!InteractionWidget->GetParent())
+	{
+		UCanvasPanelSlot* CanvasSlot = MainUI->InteractionLayer->AddChildToCanvas(InteractionWidget);
+		if (CanvasSlot)
+		{
+			CanvasSlot->SetAnchors(FAnchors(0.0f, 0.0f));
+			CanvasSlot->SetAlignment(FVector2D(0.5f, 0.5f));
+			CanvasSlot->SetPosition(WidgetPosition);
+			CanvasSlot->SetAutoSize(false);
+			CanvasSlot->SetSize(FVector2D(64.0f, 64.0f));
+			CanvasSlot->SetZOrder(0);
+		}
+	}
+	else if (UCanvasPanelSlot* CanvasSlot = Cast<UCanvasPanelSlot>(InteractionWidget->Slot))
+	{
+		CanvasSlot->SetPosition(WidgetPosition);
+	}
+
+	InteractionWidget->SetVisibility(ESlateVisibility::HitTestInvisible);
+}
+
+void ULocalPlayerUISubSystem::UnbindInteractionWidget(UUserWidget* InteractionWidget)
+{
+	if (!InteractionWidget || InteractionWidgetInstance != InteractionWidget)
+	{
+		return;
+	}
+
+	InteractionWidget->SetVisibility(ESlateVisibility::Collapsed);
 }
 
 void ULocalPlayerUISubSystem::PartnerCameraBind(USceneCaptureComponent2D* InCaptureComponent2D)

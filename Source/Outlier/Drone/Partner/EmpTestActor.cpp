@@ -26,7 +26,12 @@ UEMPableComponent* AEmpTestActor::GetEMPableComponent() const
 	return EMPComponent;
 }
 
-void AEmpTestActor::HandleEmp(FGameplayTag EffectTag)
+void AEmpTestActor::HandleEMPStarted(FGameplayTag EffectTag)
 {
-	UE_LOG(LogTemp, Warning, TEXT("EMPed: %s Effect=%s"), *GetNameSafe(this), *EffectTag.ToString());
+	UE_LOG(LogTemp, Warning, TEXT("EMP started: %s Effect=%s"), *GetNameSafe(this), *EffectTag.ToString());
+}
+
+void AEmpTestActor::HandleEMPEnded(FGameplayTag EffectTag)
+{
+	UE_LOG(LogTemp, Warning, TEXT("EMP ended: %s Effect=%s"), *GetNameSafe(this), *EffectTag.ToString());
 }

@@ -6,16 +6,19 @@
 #include "GameFramework/Actor.h"
 #include "Engine/DataTable.h"
 #include "Interface/InteractableInterface.h"
+#include "PostProcess/OutlierStealthVisualTarget.h"
 #include "Weapon/WeaponDataTypes.h"
 #include "WeaponBase.generated.h"
 
 class USkeletalMeshComponent;
+class UMeshComponent;
 class USceneComponent;
 class USphereComponent;
 class AWeaponSpawnPoint;
 class AFirstPersonCharacter;
 class UInteractableComponent;
 class UProceduralAnimValues;
+class UMaterialInterface;
 
 UENUM(BlueprintType)
 enum class EWeaponType : uint8
@@ -27,7 +30,7 @@ enum class EWeaponType : uint8
 };
 
 UCLASS(Abstract)
-class OUTLIER_API AWeaponBase : public AActor, public IInteractableInterface
+class OUTLIER_API AWeaponBase : public AActor, public IInteractableInterface, public IOutlierStealthVisualTarget
 {
 	GENERATED_BODY()
 
@@ -131,6 +134,9 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Animation")
 	TObjectPtr<UProceduralAnimValues> FirstPersonProceduralValues = nullptr;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Noise")
+	bool bReportArenaWideNoise = false;
+
 protected:
 	virtual void EnsureWeaponDataInitialized();
 	virtual void InitializeFromDataTables();
@@ -164,13 +170,18 @@ public:
 	virtual void ShowEquippedPresentation();
 	virtual void RefreshShadowWeaponPresentation();
 
+	// IOutlierStealthVisualTarget : 은신 적용 대상 메시만 알려준다 ( 적용/복구는 서브시스템 담당 ).
+	virtual void CollectStealthMeshes(
+		TArray<UMeshComponent*>& OutFirstPersonMeshes,
+		TArray<UMeshComponent*>& OutThirdPersonMeshes) const override;
+
 	virtual void OnUnequipped();
 
 	virtual void OnDropped(const FTransform& DropTransform, AFirstPersonCharacter* DroppedBy = nullptr);
 
 	virtual UInteractableComponent* GetInteractableComponent() const override;
 
-	virtual void Interact(class AFirstPersonCharacter* Interactor) override;
+	virtual bool Interact(class AFirstPersonCharacter* Interactor) override;
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 

@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "Damage/OutlierDamageReceiver.h"
 #include "PartnerShieldSphere.generated.h"
 
 class APartnerCharacter;
@@ -13,7 +14,7 @@ class USphereComponent;
 class UStaticMeshComponent;
 
 UCLASS()
-class OUTLIER_API APartnerShieldSphere : public AActor
+class OUTLIER_API APartnerShieldSphere : public AActor, public IOutlierDamageReceiver
 {
 	GENERATED_BODY()
 	
@@ -22,6 +23,7 @@ public:
 
 	virtual void Tick(float DeltaTime) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
 
 	UFUNCTION(BlueprintCallable, Category = "Shield")
 	void InitializeShield(AShooterCharacter* InShieldTarget, APartnerCharacter* InSourcePartner);
@@ -34,9 +36,6 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Shield")
 	void SetTargetRelativeLocation(FVector InTargetRelativeLocation);
-
-	UFUNCTION(BlueprintCallable, Category = "Shield")
-	void ApplyShieldDamage(float DamageAmount);
 
 	UFUNCTION(BlueprintCallable, Category = "Shield")
 	void EndShield();

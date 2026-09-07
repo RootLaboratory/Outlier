@@ -1,0 +1,77 @@
+#include "EnemyStateTreeSyncTask.h"
+
+#include "AIController.h"
+#include "Enemy/EnemyAIController.h"
+#include "Outlier.h"
+
+FEnemyStateTreeSyncTask::FEnemyStateTreeSyncTask()
+{
+	bShouldCallTick = false;
+	bShouldCallTickOnlyOnEvents = true;
+	bShouldStateChangeOnReselect = false;
+
+#if WITH_EDITORONLY_DATA
+	bConsideredForCompletion = false;
+#endif // WITH_EDITORONLY_DATA
+
+}
+
+EStateTreeRunStatus FEnemyStateTreeSyncTask::EnterState(
+	FStateTreeExecutionContext& Context,
+	const FStateTreeTransitionResult& Transition) const
+{
+	FInstanceDataType& InstanceData = Context.GetInstanceData(*this);
+	SyncFromEnemy(InstanceData);
+	return EStateTreeRunStatus::Running;
+}
+
+EStateTreeRunStatus FEnemyStateTreeSyncTask::Tick(
+	FStateTreeExecutionContext& Context,
+	float DeltaTime) const
+{
+	FInstanceDataType& InstanceData = Context.GetInstanceData(*this);
+	SyncFromEnemy(InstanceData);
+	return EStateTreeRunStatus::Running;
+}
+
+void FEnemyStateTreeSyncTask::SyncFromEnemy(FInstanceDataType& InstanceData) const
+{
+	if (!InstanceData.Enemy)
+	{
+		return;
+	}
+
+	InstanceData.CombatState = InstanceData.Enemy->GetCombatState();
+	InstanceData.bIsPossessed = InstanceData.Enemy->IsEnemyPossessed();
+	InstanceData.bPossessionInProgress = InstanceData.Enemy->IsPossessionInProgress();
+	InstanceData.bPossessedAttackHeld = InstanceData.Enemy->IsPossessedAttackHeld();
+	InstanceData.bPossessedAttackQueued = InstanceData.Enemy->HasPossessedAttackQueued();
+	InstanceData.bHasPossessedAttackRequest = InstanceData.Enemy->HasPossessedAttackRequest();
+	if (AEnemyBase::IsPossessedAttackDiagnosticsEnabled()
+		&& InstanceData.bIsPossessed
+		&& InstanceData.bHasPossessedAttackRequest)
+	{
+		UE_LOG(
+			LogOutlier,
+			Warning,
+			TEXT("[EnemyPossessedAttackDiag] StateTreeSync Enemy=%s Held=%s Queued=%s HasRequest=%s"),
+			*GetNameSafe(InstanceData.Enemy),
+			InstanceData.bPossessedAttackHeld ? TEXT("true") : TEXT("false"),
+			InstanceData.bPossessedAttackQueued ? TEXT("true") : TEXT("false"),
+			InstanceData.bHasPossessedAttackRequest ? TEXT("true") : TEXT("false"));
+	}
+	InstanceData.bPlayerCurrentlyVisible = InstanceData.Enemy->IsPlayerCurrentlyVisible();
+	InstanceData.bHasSharedTargetContact = InstanceData.Enemy->HasSharedTargetContact();
+	InstanceData.SharedTargetLocation = InstanceData.Enemy->GetSharedTargetLocation();
+	InstanceData.AIController = Cast<AAIController>(InstanceData.Enemy->GetController());
+	const AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(InstanceData.AIController);
+	InstanceData.TargetActor = EnemyAIController
+		? EnemyAIController->GetPreferredVisibleTarget()
+		: nullptr;
+	InstanceData.LastKnownPlayerLocation = InstanceData.Enemy->GetLastKnownPlayerLocation();
+	InstanceData.PatternStartPlayerLocation = InstanceData.Enemy->GetPatternStartPlayerLocation();
+	InstanceData.EnemyType = InstanceData.Enemy->GetRuntimeStat().Type;
+	InstanceData.NonCombatBehavior = InstanceData.Enemy->GetNonCombatBehavior();
+	InstanceData.PatrolPointA = InstanceData.Enemy->GetPatrolPointA();
+	InstanceData.PatrolPointB = InstanceData.Enemy->GetPatrolPointB();
+}

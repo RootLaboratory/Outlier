@@ -5,6 +5,7 @@
 #include "HackCircleBorderWidget.generated.h"
 
 class UBorder;
+class UMaterialInterface;
 
 UCLASS(Blueprintable)
 class OUTLIER_API UHackCircleBorderWidget : public UUserWidget
@@ -29,9 +30,18 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Hack|CircleBorder")
 	void SetOuterRadius(float NewOuterRadius);
 
+	UFUNCTION(BlueprintCallable, Category = "Hack|CircleBorder")
+	void SetBrushMaterial(UMaterialInterface* NewMaterial);
+
+	UFUNCTION(BlueprintCallable, Category = "Hack|CircleBorder")
+	void RefreshMaterialParameters();
+
 protected:
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UBorder> BorderWidget;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hack|CircleBorder")
+	TObjectPtr<UMaterialInterface> BrushMaterial;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hack|CircleBorder")
 	uint8 bRotate : 1 = true;
@@ -50,4 +60,9 @@ protected:
 
 private:
 	void UpdateMaterialParameters();
+	void UpdateRotationMaterialParameter();
+	void UpdateGapSizeMaterialParameter();
+	void UpdateInnerRadiusMaterialParameter();
+	void UpdateOuterRadiusMaterialParameter();
+	void InvalidateBorderPaint();
 };

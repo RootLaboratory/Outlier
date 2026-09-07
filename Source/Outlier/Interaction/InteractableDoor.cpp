@@ -1,16 +1,15 @@
 #include "Interaction/InteractableDoor.h"
-#include "Interaction/InteractableComponent.h"
+#include "Audio/OutlierAudioSubsystem.h"
 #include "Components/StaticMeshComponent.h"
-#include "FirstPerson/FirstPersonCharacter.h"
-#include "Net/UnrealNetwork.h"
 #include "Curves/CurveFloat.h"
+#include "Net/UnrealNetwork.h"
+#include "Outlier.h"
 
 AInteractableDoor::AInteractableDoor()
 {
 	PrimaryActorTick.bCanEverTick = true;
+	PrimaryActorTick.bStartWithTickEnabled = false;
 	bReplicates = true;
-
-	InteractableComponent = CreateDefaultSubobject<UInteractableComponent>(TEXT("InteractableComponent"));
 
 	RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("DoorRoot"));
 
@@ -24,12 +23,21 @@ void AInteractableDoor::BeginPlay()
 {
 	Super::BeginPlay();
 
+	ClosedLocationLeft = DoorMeshLeft ? DoorMeshLeft->GetRelativeLocation() : FVector::ZeroVector;
+	ClosedLocationRight = DoorMeshRight ? DoorMeshRight->GetRelativeLocation() : FVector::ZeroVector;
+
 	if (DoorCurve)
 	{
 		FOnTimelineFloat UpdateDelegate;
 		UpdateDelegate.BindUFunction(this, FName("OnDoorTimelineUpdate"));
 		DoorTimeline.AddInterpFloat(DoorCurve, UpdateDelegate);
+
+		FOnTimelineEvent FinishedDelegate;
+		FinishedDelegate.BindUFunction(this, FName("OnDoorTimelineFinished"));
+		DoorTimeline.SetTimelineFinishedFunc(FinishedDelegate);
 	}
+
+	ApplyDoorState(bIsOpen);
 }
 
 void AInteractableDoor::Tick(float DeltaTime)
@@ -40,41 +48,133 @@ void AInteractableDoor::Tick(float DeltaTime)
 
 void AInteractableDoor::OnDoorTimelineUpdate(float Alpha)
 {
-	DoorMeshLeft->SetRelativeLocation(FMath::Lerp(FVector::ZeroVector, OpenOffsetLeft, Alpha));
-	DoorMeshRight->SetRelativeLocation(FMath::Lerp(FVector::ZeroVector, OpenOffsetRight, Alpha));
+	if (DoorMeshLeft)
+	{
+		DoorMeshLeft->SetRelativeLocation(FMath::Lerp(ClosedLocationLeft, ClosedLocationLeft + OpenOffsetLeft, Alpha));
+	}
+
+	if (DoorMeshRight)
+	{
+		DoorMeshRight->SetRelativeLocation(FMath::Lerp(ClosedLocationRight, ClosedLocationRight + OpenOffsetRight, Alpha));
+	}
 }
 
-UInteractableComponent* AInteractableDoor::GetInteractableComponent() const
+void AInteractableDoor::OnDoorTimelineFinished()
 {
-	return InteractableComponent;
+	SetActorTickEnabled(false);
 }
 
-void AInteractableDoor::Interact(AFirstPersonCharacter* Interactor)
+void AInteractableDoor::SetDoorOpen(bool bOpen)
 {
-	if (!Interactor || !InteractableComponent)
+	if (bIsOpen == bOpen)
 	{
 		return;
 	}
 
-	const FGameplayTagContainer InteractorTags = Interactor->GetOwnedGameplayTagsForQuery();
-	if (!InteractableComponent->CanInteract(InteractorTags))
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[Door] Interact blocked by tags"));
-		return;
-	}
-
-	bIsOpen = !bIsOpen;
-	UE_LOG(LogTemp, Error, TEXT("DoorInteract"),bIsOpen);
-
+	bIsOpen = bOpen;
 	Multicast_SetDoorState(bIsOpen);
+
+	if (DoorCurve)
+	{
+		PlayDoorMovementAudio();
+	}
+}
+
+void AInteractableDoor::ToggleDoor()
+{
+	SetDoorOpen(!bIsOpen);
+}
+
+bool AInteractableDoor::PlayDoorMovementAudio()
+{
+	// A door normally has no owning connection, so replicated playback must
+	// originate on the authority instead of trying a client Server RPC.
+	if (!HasAuthority())
+	{
+		UE_LOG(LogOutlier, Warning,
+			TEXT("[AudioSpatialDebug][DoorRequestSkipped] Door='%s' Reason=NoAuthority"),
+			*GetName());
+		return false;
+	}
+
+	if (!DoorMovementAudioEventTag.IsValid())
+	{
+		UE_LOG(LogOutlier, Warning,
+			TEXT("[AudioSpatialDebug][DoorRequestSkipped] Door='%s' Reason=NoEventTag"),
+			*GetName());
+		return false;
+	}
+
+	UOutlierAudioSubsystem* AudioSubsystem = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>()
+		: nullptr;
+	if (!AudioSubsystem)
+	{
+		UE_LOG(LogOutlier, Warning,
+			TEXT("[AudioSpatialDebug][DoorRequestSkipped] Door='%s' Event='%s' Reason=NoSubsystem"),
+			*GetName(),
+			*DoorMovementAudioEventTag.ToString());
+		return false;
+	}
+
+	FOutlierAudioPlayRequest Request;
+	Request.EventTag = DoorMovementAudioEventTag;
+	Request.ContextTags = DoorMovementAudioContextTags;
+	Request.EmitterActor = this;
+	Request.Location = GetActorLocation();
+	Request.bHasLocation = true;
+
+	UE_LOG(LogOutlier, Warning,
+		TEXT("[AudioSpatialDebug][DoorRequest] Door='%s' Event='%s' Location=%s Context='%s'"),
+		*GetName(),
+		*Request.EventTag.ToString(),
+		*Request.Location.ToCompactString(),
+		*Request.ContextTags.ToStringSimple());
+
+	const bool bAccepted = AudioSubsystem->PlayRelevantAtLocationFromServer(Request);
+	UE_LOG(LogOutlier, Warning,
+		TEXT("[AudioSpatialDebug][DoorRequestResult] Door='%s' Event='%s' Accepted=%d"),
+		*GetName(),
+		*Request.EventTag.ToString(),
+		bAccepted);
+	return bAccepted;
 }
 
 void AInteractableDoor::Multicast_SetDoorState_Implementation(bool bOpen)
 {
+	ApplyDoorState(bOpen);
+}
+
+void AInteractableDoor::OnRep_IsOpen()
+{
+	ApplyDoorState(bIsOpen);
+}
+
+void AInteractableDoor::ApplyDoorState(bool bOpen)
+{
+	if (!DoorCurve)
+	{
+		SetActorTickEnabled(false);
+		return;
+	}
+
+	const float TargetPosition = bOpen ? DoorTimeline.GetTimelineLength() : 0.0f;
+	if (FMath::IsNearlyEqual(DoorTimeline.GetPlaybackPosition(), TargetPosition))
+	{
+		SetActorTickEnabled(false);
+		return;
+	}
+
+	SetActorTickEnabled(true);
+
 	if (bOpen)
+	{
 		DoorTimeline.Play();
+	}
 	else
+	{
 		DoorTimeline.Reverse();
+	}
 }
 
 void AInteractableDoor::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const

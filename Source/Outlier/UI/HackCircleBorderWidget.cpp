@@ -7,6 +7,11 @@ void UHackCircleBorderWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
 
+	if (BorderWidget && BrushMaterial)
+	{
+		BorderWidget->SetBrushFromMaterial(BrushMaterial);
+	}
+
 	if (BorderWidget)
 	{
 		if (UMaterialInstanceDynamic* MID = BorderWidget->GetDynamicMaterial())
@@ -26,13 +31,13 @@ void UHackCircleBorderWidget::SetAngle(float NewAngleDegrees)
 		AngleDegrees += 360.0f;
 	}
 
-	UpdateMaterialParameters();
+	UpdateRotationMaterialParameter();
 }
 
 void UHackCircleBorderWidget::SetAmount(float NewAmount)
 {
 	Amount = NewAmount;
-	UpdateMaterialParameters();
+	UpdateGapSizeMaterialParameter();
 }
 
 void UHackCircleBorderWidget::SetRotateEnabled(bool bNewRotate)
@@ -43,12 +48,29 @@ void UHackCircleBorderWidget::SetRotateEnabled(bool bNewRotate)
 void UHackCircleBorderWidget::SetInnerRadius(float NewInnerRadius)
 {
 	InnerRadius = NewInnerRadius;
-	UpdateMaterialParameters();
+	UpdateInnerRadiusMaterialParameter();
 }
 
 void UHackCircleBorderWidget::SetOuterRadius(float NewOuterRadius)
 {
 	OuterRadius = NewOuterRadius;
+	UpdateOuterRadiusMaterialParameter();
+}
+
+void UHackCircleBorderWidget::SetBrushMaterial(UMaterialInterface* NewMaterial)
+{
+	BrushMaterial = NewMaterial;
+
+	if (BorderWidget && BrushMaterial)
+	{
+		BorderWidget->SetBrushFromMaterial(BrushMaterial);
+	}
+
+	UpdateMaterialParameters();
+}
+
+void UHackCircleBorderWidget::RefreshMaterialParameters()
+{
 	UpdateMaterialParameters();
 }
 
@@ -70,6 +92,79 @@ void UHackCircleBorderWidget::UpdateMaterialParameters()
 	MID->SetScalarParameterValue(TEXT("InnerRadius"), InnerRadius);
 	MID->SetScalarParameterValue(TEXT("OuterRadius"), OuterRadius);
 
+	InvalidateBorderPaint();
+}
+
+void UHackCircleBorderWidget::UpdateRotationMaterialParameter()
+{
+	if (!BorderWidget)
+	{
+		return;
+	}
+
+	UMaterialInstanceDynamic* MID = BorderWidget->GetDynamicMaterial();
+	if (!MID)
+	{
+		return;
+	}
+
+	MID->SetScalarParameterValue(TEXT("Rotation"), FMath::Fmod(0.5f - AngleDegrees / 360.0f + 1.0f, 1.0f));
+	InvalidateBorderPaint();
+}
+
+void UHackCircleBorderWidget::UpdateGapSizeMaterialParameter()
+{
+	if (!BorderWidget)
+	{
+		return;
+	}
+
+	UMaterialInstanceDynamic* MID = BorderWidget->GetDynamicMaterial();
+	if (!MID)
+	{
+		return;
+	}
+
+	MID->SetScalarParameterValue(TEXT("GapSize"), Amount);
+	InvalidateBorderPaint();
+}
+
+void UHackCircleBorderWidget::UpdateInnerRadiusMaterialParameter()
+{
+	if (!BorderWidget)
+	{
+		return;
+	}
+
+	UMaterialInstanceDynamic* MID = BorderWidget->GetDynamicMaterial();
+	if (!MID)
+	{
+		return;
+	}
+
+	MID->SetScalarParameterValue(TEXT("InnerRadius"), InnerRadius);
+	InvalidateBorderPaint();
+}
+
+void UHackCircleBorderWidget::UpdateOuterRadiusMaterialParameter()
+{
+	if (!BorderWidget)
+	{
+		return;
+	}
+
+	UMaterialInstanceDynamic* MID = BorderWidget->GetDynamicMaterial();
+	if (!MID)
+	{
+		return;
+	}
+
+	MID->SetScalarParameterValue(TEXT("OuterRadius"), OuterRadius);
+	InvalidateBorderPaint();
+}
+
+void UHackCircleBorderWidget::InvalidateBorderPaint()
+{
 	if (const TSharedPtr<SWidget> SlateWidget = BorderWidget->GetCachedWidget())
 	{
 		SlateWidget->Invalidate(EInvalidateWidgetReason::Paint);

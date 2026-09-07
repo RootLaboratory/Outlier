@@ -24,11 +24,9 @@ float DepthBlurPower;
 float DepthFocusBias;
 uint bUpsample;
 uint bCompositeWithOriginal;
-
-// Scatter-as-Gather (CoC ê¸°ë°˜ ê°€ë³€ ë°˜ê²½) ???Œë¼ë¯¸í„°
-float FocusDistanceWorld;             // ?Œì¼“(ê´‘í•™ ì¡°ì??? - ì¹´ë©”??ê±°ë¦¬ P (?”ë“œ cm)
-float4 InvDeviceZToWorldZTransform;   // device Z -> ? í˜• ?”ë“œ Z ë³€??(View?ì„œ ?„ë‹¬)
-float MaxCoCRadius;                   // ìµœë? CoC ë°˜ê²½ (px). AdsBlend ramp???°ë¼ 0->max
+float FocusDistanceWorld;
+float4 InvDeviceZToWorldZTransform;
+float MaxCoCRadius;
 uint GatherSampleCount;
 float ReachSoftness;
 uint bGather;
@@ -41,7 +39,6 @@ float2 TransformUV(float2 UV, float4 ScaleBias)
 	return UV * ScaleBias.xy + ScaleBias.zw;
 }
 
-// CustomDepth??device Zë¥?? í˜• ?”ë“œ depth(cm)ë¡?ë³€?? UE ConvertFromDeviceZ?€ ?™ì¼.
 float LinearizeSceneDepth(float DeviceZ)
 {
 	return DeviceZ * InvDeviceZToWorldZTransform.x
@@ -49,11 +46,10 @@ float LinearizeSceneDepth(float DeviceZ)
 		+ 1.0f / (DeviceZ * InvDeviceZToWorldZTransform.z - InvDeviceZToWorldZTransform.w);
 }
 
-// ?Œì¼“ ì´ˆì  ê±°ë¦¬ë¡œë????½ì? ?¨ìœ„ CoC ë°˜ê²½??? ë„. CoC ~ (1 - P/z).
 float ComputeCoCPixels(float LinearZ)
 {
 	float Focus = FocusDistanceWorld + DepthFocusBias;
-	float Signed = 1.0f - Focus / max(LinearZ, 1.0f); // ê·¼ê²½ < 0, ?ê²½ > 0
+	float Signed = 1.0f - Focus / max(LinearZ, 1.0f);
 	float Magnitude = abs(Signed);
 	float Range = max(DepthBlurEnd - DepthBlurStart, 1.0e-5f);
 	float Shaped = saturate((Magnitude - DepthBlurStart) / Range);
@@ -95,19 +91,14 @@ void MainPS(
 {
 	float2 UV = Input.UV;
 
-	// Scatter-as-Gather: ë¬´ê¸°(Stencil) ?ì—­ ?½ì?ë§?CoC ê¸°ë°˜ ê°€ë³€ ë°˜ê²½?¼ë¡œ gather.
 	if (bGather != 0)
 	{
-		// Input == Original == SceneColor ?´ë?ë¡?Input.UV(=UV)???´ë? SceneColor ?ìŠ¤ì²?UV.
-		// ?´ê±¸ ViewportUVToOriginalTextureUVë¡??¤ì‹œ ë§¤í•‘?˜ë©´ scale/biasê°€ ?´ì¤‘ ?ìš©??ì¤Œì¸???ê?.
-		// SceneColor??UVë¡?ì§ì ‘ ?˜í”Œ?˜ê³ , mask/depth ë§¤í•‘??viewport UV[0,1]ë§???‚°?œë‹¤.
 		float2 SceneUV = UV;
 		float2 ViewportUV = (SceneUV - ViewportUVToOriginalTextureUV.zw) / ViewportUVToOriginalTextureUV.xy;
 		float2 MaskUV = TransformUV(ViewportUV, ViewportUVToMaskTextureUV);
 		float SoftMask = MaskTexture.Sample(MaskSampler, MaskUV);
 		float4 CenterColor = OriginalTexture.Sample(InputSampler, SceneUV);
 
-		// ë¬´ê¸° ë§ˆìŠ¤??ë°”ê¹¥?€ ?ë³¸ ê·¸ë?ë¡?(?”ë©´ ?€ë¶€ë¶„ì„ ì¡°ê¸° ì¢…ë£Œ).
 		if (SoftMask < 1.0e-4f)
 		{
 			OutColor = CenterColor;
@@ -130,11 +121,10 @@ void MainPS(
 			}
 
 			float T = (float(i) + 0.5f) * SampleCountInv;
-			float SampleRadius = sqrt(T) * MaxRadius;         // ê· ì¼ ?”ìŠ¤??ë¶„í¬
+			float SampleRadius = sqrt(T) * MaxRadius;
 			float Angle = float(i) * ADS_GOLDEN_ANGLE;
 			float2 Offset = float2(cos(Angle), sin(Angle)) * SampleRadius;
 
-			// ?¤í”„??px)?€ SceneColor ?ìŠ¤ì²?UV ê³µê°„?ì„œ InvResolution(=1/Extent) ?¨ìœ„.
 			float2 SampleSceneUV = SceneUV + Offset * InvResolution;
 			float2 SampleViewportUV = (SampleSceneUV - ViewportUVToOriginalTextureUV.zw) / ViewportUVToOriginalTextureUV.xy;
 			float2 SampleDepthUV = TransformUV(SampleViewportUV, ViewportUVToCustomDepthTextureUV);
@@ -145,19 +135,14 @@ void MainPS(
 			float SampleLinearZ = LinearizeSceneDepth(SampleDeviceZ);
 			float SampleCoC = ComputeCoCPixels(SampleLinearZ);
 
-			// ???˜í”Œ??CoCê°€ ì¤‘ì‹¬ ?½ì?(ê±°ë¦¬ SampleRadius)ê¹Œì? ë²ˆì§ˆ ë§Œí¼ ?°ê??
 			float Reach = saturate((SampleCoC - SampleRadius + ReachFeather) / ReachFeather);
-			float Weight = Reach * SampleHardMask; // ë¬´ê¸° ?½ì?ë§?ê¸°ì—¬ -> ë°°ê²½ ?„ì¶œ ë°©ì?
+			float Weight = Reach * SampleHardMask;
 
 			Sum += OriginalTexture.Sample(InputSampler, SampleSceneUV) * Weight;
 			WeightSum += Weight;
 		}
 
 		float4 Blurred = WeightSum > 1.0e-4f ? Sum / WeightSum : CenterColor;
-
-		// ?©ì„± ì»¤ë²„ë¦¬ì????½ì°½??SoftMaskê°€ ?„ë‹ˆ???¤ì œ ?¤ë£¨??HardMask) ê¸°ì?.
-		// SoftMaskë¡??©ì„±?˜ë©´ gather??ë¬´ê¸° ?‰ì´ dilate ë§?ë°°ê²½)??ì±„ì›Œ ?¤ë£¨?£ì´ ì»¤ì ¸ -> ì¤Œì¸ì²˜ëŸ¼ ë³´ì„.
-		// SoftMask????early-out(=gather ?ì—­ ?•ë³´)?ë§Œ ?¬ìš©?˜ê³ , ?¤ì œ ?©ì„±?€ HardMaskë¡??œí•œ.
 		float Coverage = HardMaskTexture.Sample(MaskSampler, MaskUV);
 		float Blend = saturate(Coverage * BlendWeight);
 

@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 #include "MainUIBase.h"
 #include "AbilityIconUI.h"
+#include "Components/CanvasPanel.h"
 #include "EventDrivenUI.h"
 
 void UMainUIBase::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
@@ -39,6 +40,17 @@ UAbilityIconUI* UMainUIBase::GetAbilityIcon(const FGameplayTag& AbilityTag) cons
 {
 	const TObjectPtr<UAbilityIconUI>* Found = AbilitySections.Find(AbilityTag);
 	return Found ? Found->Get() : nullptr;
+}
+
+void UMainUIBase::ResetAbilityCooldowns()
+{
+	for (const TPair<FGameplayTag, TObjectPtr<UAbilityIconUI>>& AbilitySection : AbilitySections)
+	{
+		if (UAbilityIconUI* Icon = AbilitySection.Value)
+		{
+			Icon->CooldownDone();
+		}
+	}
 }
 
 void UMainUIBase::On_RepAbilityDisabledByDistance()

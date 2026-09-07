@@ -6,6 +6,14 @@
 #include "UObject/Interface.h"
 #include "ScannableInterface.generated.h"
 
+UENUM(BlueprintType)
+enum class EScanType : uint8
+{
+	Default,
+	Enemy,
+	Interaction,
+};
+
 // This class does not need to be modified.
 UINTERFACE(MinimalAPI, Blueprintable)
 class UScannableInterface : public UInterface

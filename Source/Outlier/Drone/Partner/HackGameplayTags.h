@@ -63,10 +63,28 @@ namespace HackGameplayTags
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Effect.RevealInfo")));
 			return Tag;
 		}
+
+		inline FGameplayTag ChangeTeam()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Effect.ChangeTeam")));
+			return Tag;
+		}
+
+		inline FGameplayTag Unblock()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Effect.Unblock")));
+			return Tag;
+		}
 	}
 
 	namespace MiniGame
 	{
+		inline FGameplayTag None()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.MiniGame.None")));
+			return Tag;
+		}
+
 		inline FGameplayTag SpinningCircle()
 		{
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.MiniGame.SpinningCircle")));
@@ -76,6 +94,75 @@ namespace HackGameplayTags
 		inline FGameplayTag ClickCircle()
 		{
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.MiniGame.ClickCircle")));
+			return Tag;
+		}
+	}
+
+	namespace Time
+	{
+		inline FGameplayTag Root()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Time")));
+			return Tag;
+		}
+
+		inline FGameplayTag Limited()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Time.Limited")));
+			return Tag;
+		}
+
+		inline FGameplayTag Unlimited()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Time.Unlimited")));
+			return Tag;
+		}
+	}
+
+	namespace Use
+	{
+		inline FGameplayTag Root()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Use")));
+			return Tag;
+		}
+
+		inline FGameplayTag Multiple()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Use.Multiple")));
+			return Tag;
+		}
+
+		inline FGameplayTag Once()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Use.Once")));
+			return Tag;
+		}
+	}
+
+	namespace Info
+	{
+		inline FGameplayTag Root()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Info")));
+			return Tag;
+		}
+
+		inline FGameplayTag Drone()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Info.Drone")));
+			return Tag;
+		}
+
+		inline FGameplayTag Jump()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Info.Jump")));
+			return Tag;
+		}
+
+		inline FGameplayTag StatMachines()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Info.StatMachine")));
 			return Tag;
 		}
 	}

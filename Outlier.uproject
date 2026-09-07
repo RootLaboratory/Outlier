@@ -1,6 +1,6 @@
 {
 	"FileVersion": 3,
-	"EngineAssociation": "5.7",
+	"EngineAssociation": "{D296F0B0-4540-8B07-F25E-D3A6843AE59D}",
 	"Category": "",
 	"Description": "",
 	"Modules": [
@@ -17,9 +17,16 @@
 				"VisualEvent",
 				"CoreUObject",
 				"RDG",
-                "CoreUObject",
-                "GameplayTags"
+				"CoreUObject",
+				"GameplayTags",
+				"GameplayAbilities",
+				"GameplayTasks"
 			]
+		},
+		{
+			"Name": "OutlierEditor",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
 		}
 	],
 	"Plugins": [
@@ -39,6 +46,10 @@
 			"Enabled": true
 		},
 		{
+			"Name": "GameplayAbilities",
+			"Enabled": true
+		},
+		{
 			"Name": "RDG",
 			"Enabled": true
 		},
@@ -53,6 +64,13 @@
 		{
 			"Name": "StructCreatorPlugin",
 			"Enabled": true
+		},
+		{
+			"Name": "AudioTagHelper",
+			"Enabled": true,
+			"TargetAllowList": [
+				"Editor"
+			]
 		}
 	]
 }

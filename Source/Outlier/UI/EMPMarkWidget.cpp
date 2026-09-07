@@ -17,6 +17,14 @@ void UEMPMarkWidget::InitializeMark(AActor* InTargetActor, UEMPableComponent* In
 	AlignBillboardFrameToTarget();
 }
 
+void UEMPMarkWidget::NativeOnInitialized()
+{
+	Super::NativeOnInitialized();
+
+	//Native 시, Slate만 생성되기 때문에 기존 Mark에 대한 Focus 처리는 해당 시점에서 명시.
+	DisableSelectButtonFocus();
+}
+
 void UEMPMarkWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
@@ -26,15 +34,13 @@ void UEMPMarkWidget::NativeConstruct()
 	if (!SelectButton && WidgetTree)
 	{
 		SelectButton = WidgetTree->ConstructWidget<UButton>(UButton::StaticClass(), TEXT("SelectButton"));
+		DisableSelectButtonFocus();
 		WidgetTree->RootWidget = SelectButton;
 	}
 
 	if (SelectButton)
 	{
 		SelectButton->SetVisibility(ESlateVisibility::Visible);
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		SelectButton->IsFocusable = false;
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		SelectButton->OnClicked.RemoveDynamic(this, &UEMPMarkWidget::HandleClicked);
 		SelectButton->OnClicked.AddDynamic(this, &UEMPMarkWidget::HandleClicked);
 	}
@@ -45,6 +51,18 @@ void UEMPMarkWidget::NativeDestruct()
 	DestroyBillboardFrame();
 
 	Super::NativeDestruct();
+}
+
+void UEMPMarkWidget::DisableSelectButtonFocus()
+{
+	if (!SelectButton)
+	{
+		return;
+	}
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	SelectButton->IsFocusable = false;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void UEMPMarkWidget::HandleClicked()

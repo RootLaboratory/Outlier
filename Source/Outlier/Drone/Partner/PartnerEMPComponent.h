@@ -3,11 +3,15 @@
 #include "CoreMinimal.h"
 #include "Drone/Partner/PartnerCharacterComponentBase.h"
 #include "GameplayTagContainer.h"
+#include "UI/UILayerTypes.h"
 #include "PartnerEMPComponent.generated.h"
 
 class UEMPableComponent;
 class UEMPLayerWidget;
 class UEMPMarkWidget;
+class ULocalPlayerUILayerSubsystem;
+
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnPartnerEMPFinished, bool, bool);
 
 USTRUCT(BlueprintType)
 struct OUTLIER_API FPartnerEMPAbilityData
@@ -16,12 +20,6 @@ struct OUTLIER_API FPartnerEMPAbilityData
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EMP")
 	float EMPRange = 1500.0f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EMP")
-	float MarkingTime = 3.0f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EMP")
-	float StunDuration = 3.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EMP")
 	int32 MaxTargets = 99;
@@ -46,14 +44,20 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "EMP|Marking")
 	float EMPMarkingTime = 3.0f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EMP|Early Complete", meta = (ClampMin = "0.0", UIMin = "0.0", Units = "s"))
+	float EMPEarlyCompleteValue = 0.5f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EMP|CancleTime")
+	float EMPInitialCaptureEmptyTimeout = 0.2f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "EMP|Candidate")
 	FGameplayTagContainer RequiredEMPTags;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "EMP|Candidate")
 	FGameplayTagContainer BlockedEMPTags;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "EMP|Debug")
-	uint8 bDebugEMP : 1 = true;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "EMP|Candidate")
+	uint8 bRequireLineOfSight : 1 = true;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "EMP|UI")
 	TSubclassOf<UEMPLayerWidget> EMPLayerWidgetClass;
@@ -68,7 +72,7 @@ public:
 	void CacheAbilityData(const FPartnerEMPAbilityData& InAbilityData);
 
 	UFUNCTION(Client, Reliable)
-	void ClientStartEMPSearch();
+	void ClientStartEMPSearch(float InMarkingTime);
 
 	UFUNCTION(Client, Reliable)
 	void ClientStopEMPSearch();
@@ -81,9 +85,6 @@ public:
 
 	UFUNCTION(Server, Reliable)
 	void ServerCompleteEMP(const TArray<AActor*>& InMarkedActors);
-
-	UFUNCTION(NetMulticast, Reliable)
-	void MulticastTriggerEMPEffect(AActor* TargetActor);
 
 	UFUNCTION(Server, Reliable)
 	void ServerCancelEMP();
@@ -101,6 +102,8 @@ public:
 	void StopEMPCandidateSearch();
 
 	void RefocusEMPInput();
+	void CancelForReboot();
+	FOnPartnerEMPFinished OnEMPFinished;
 
 	UFUNCTION(BlueprintCallable, Category = "EMP")
 	bool IsEMPCandidateSearchActive() const { return bEMPCandidateSearchActive; }
@@ -140,20 +143,23 @@ private:
 
 	uint8 bEMPCandidateSearchActive : 1 = false;
 
-	int32 LastDebugCandidateCount = INDEX_NONE;
+	float EMPStartTimeSeconds = 0.0f;
+	float ActiveStunDuration = 0.0f;
+	FUILayerHandle EMPLayerHandle;
 
 	UEMPableComponent* ResolveEMPableComponent(AActor* Actor) const;
 	bool IsCandidateActorValid(AActor* Actor, UEMPableComponent* EMPableComponent, FVector2D& OutScreenLocation) const;
 	bool IsActorInViewport(AActor* Actor, FVector2D& OutScreenLocation) const;
 	bool HasLineOfSight(AActor* Actor) const;
+	void InitializeEMPEarlyCompleteTimer();
+	void ResetEMPEarlyCompleteTimer();
+	float GetEMPElapsedTime() const;
 	void CompleteEMPOnServer(const TArray<AActor*>& InMarkedActors);
 	void CancelEMPOnServer();
 
 	void EnsureEMPLayerWidget();
 	void DestroyEMPLayerWidget();
-	void DestroyRemainingEMPWidgets(APlayerController* PlayerController);
-	void ApplyEMPInputMode();
-	void RestoreGameInputMode();
+	ULocalPlayerUILayerSubsystem* GetUILayerSubsystem() const;
 
 	void AddEMPCandidate(AActor* Actor, UEMPableComponent* EMPableComponent, const FVector2D& ScreenLocation);
 	void RemoveEMPCandidateAt(int32 Index);

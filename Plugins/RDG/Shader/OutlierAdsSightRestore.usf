@@ -1,0 +1,32 @@
+#include "/Engine/Private/Common.ush"
+
+Texture2D<float3> PostDofColorTexture;
+Texture2D<float3> PreDofColorTexture;
+#if SIGHT_MASK_UINT
+Texture2D<uint> SightMaskUintTexture;
+#else
+Texture2D<float> SightMaskTexture;
+#endif
+
+uint2 ViewMin;
+uint2 ViewMax;
+
+RWTexture2D<float3> OutColor;
+
+[numthreads(8, 8, 1)]
+void MainCS(uint3 DTid : SV_DispatchThreadID)
+{
+    uint2 MaskPixelPos = DTid.xy;
+    uint2 ScenePixelPos = MaskPixelPos + ViewMin;
+    if (any(ScenePixelPos >= ViewMax)) return;
+
+    float3 PostDof = PostDofColorTexture.Load(int3(ScenePixelPos, 0));
+    float3 PreDof  = PreDofColorTexture.Load(int3(ScenePixelPos, 0));
+#if SIGHT_MASK_UINT
+    float Mask = float(SightMaskUintTexture.Load(int3(MaskPixelPos, 0)));
+#else
+    float Mask = SightMaskTexture.Load(int3(MaskPixelPos, 0));
+#endif
+
+    OutColor[ScenePixelPos] = lerp(PostDof, PreDof, Mask);
+}

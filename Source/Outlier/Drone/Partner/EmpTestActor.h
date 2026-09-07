@@ -21,7 +21,8 @@ protected:
 
 public:
 	virtual UEMPableComponent* GetEMPableComponent() const override;
-	virtual void HandleEmp(FGameplayTag EffectTag) override;
+	virtual void HandleEMPStarted(FGameplayTag EffectTag) override;
+	virtual void HandleEMPEnded(FGameplayTag EffectTag) override;
 	
 	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = "Components")
 	TObjectPtr<UEMPableComponent> EMPComponent;

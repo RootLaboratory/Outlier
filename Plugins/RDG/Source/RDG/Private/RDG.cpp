@@ -3,11 +3,16 @@
 #include "RDG.h"
 
 #include "Debug/RDGDebugWindowManager.h"
+#include "FRDGOverlayPass.h"
+#include "FRDGPixelSortingPass.h"
+#include "FRDGSceneColorCopyPass.h"
 #include "FRDGUIChromaticAberrationPass.h"
+#include "FRDGZoomBlurPass.h"
 #include "Framework/Application/SlateApplication.h"
 #include "LocalPlayerPostProcessSubsystem.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
+#include "Engine/GameViewportClient.h"
 #include "Engine/LocalPlayer.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/Paths.h"
@@ -51,22 +56,6 @@ void FRDGModule::StartupModule()
 #endif
 }
 
-bool FRDGModule::IsTargetGameWindow(const SWindow& Window) const
-{
-	if (!GEngine || !GEngine->GameViewport)
-	{
-		return false;
-	}
-
-	TSharedPtr<SWindow> GameWindow = GEngine->GameViewport->GetWindow();
-	if (!GameWindow.IsValid())
-	{
-		return false;
-	}
-
-	return GameWindow.Get() == &Window;
-}
-
 void FRDGModule::RegisterSlateHook()
 {
 	if (!FSlateApplication::IsInitialized())
@@ -86,13 +75,9 @@ void FRDGModule::RegisterSlateHook()
 	}
 }
 
-ULocalPlayerPostProcessSubsystem* FRDGModule::ResolvePostProcessSubsystem()
+ULocalPlayerPostProcessSubsystem* FRDGModule::ResolvePostProcessSubsystem(
+	const SWindow& Window) const
 {
-	if (CachedPostProcessSubsystem.IsValid())
-	{
-		return CachedPostProcessSubsystem.Get();
-	}
-
 	if (!GEngine)
 	{
 		return nullptr;
@@ -112,6 +97,18 @@ ULocalPlayerPostProcessSubsystem* FRDGModule::ResolvePostProcessSubsystem()
 			continue;
 		}
 
+		UGameViewportClient* ViewportClient = GameInstance->GetGameViewportClient();
+		if (!ViewportClient)
+		{
+			continue;
+		}
+
+		const TSharedPtr<SWindow> GameWindow = ViewportClient->GetWindow();
+		if (!GameWindow.IsValid() || GameWindow.Get() != &Window)
+		{
+			continue;
+		}
+
 		ULocalPlayer* LocalPlayer = GameInstance->GetFirstGamePlayer();
 		if (!LocalPlayer)
 		{
@@ -120,13 +117,6 @@ ULocalPlayerPostProcessSubsystem* FRDGModule::ResolvePostProcessSubsystem()
 
 		if (ULocalPlayerPostProcessSubsystem* Subsystem = LocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
 		{
-			UE_LOG(LogTemp, Warning, TEXT("RDG ResolvePostProcessSubsystem | World=%s Type=%d LocalPlayer=%p Subsystem=%p"),
-				*World->GetName(),
-				(int32)World->WorldType,
-				LocalPlayer,
-				Subsystem);
-
-			CachedPostProcessSubsystem = Subsystem;
 			return Subsystem;
 		}
 	}
@@ -187,11 +177,15 @@ void FRDGModule::ShutdownModule()
 	}
 
 	BackBufferReadyHandle.Reset();
-	CachedPostProcessSubsystem.Reset();
 	DebugWindowManager.Reset();
 }
 
-//Chromatic Aberration;
+// Slate가 그린 뒤, present 직전의 backbuffer에 도는 체인:
+// Pixel Sorting -> Zoom Blur -> Chromatic Aberration -> Overlay -> Present
+//
+// 줌 블러가 정렬보다 뒤인 이유: 먼저 흐리면 대비가 뭉개져 임계값을 넘는 픽셀이
+// 줄어들어 정렬 결과가 약해짐. 반대 순서면 줄무늬가 살아있는 채로 부드러워지고,
+// 정렬의 축소 합성 경계까지 자연스럽게 덮어줌.
 void FRDGModule::HandleBackBufferReadyRDG(FRDGBuilder& GraphBuilder, SWindow& Window, FRDGTexture* BackBuffer)
 {
 	if (!BackBuffer)
@@ -199,12 +193,8 @@ void FRDGModule::HandleBackBufferReadyRDG(FRDGBuilder& GraphBuilder, SWindow& Wi
 		return;
 	}
 
-	if (!IsTargetGameWindow(Window))
-	{
-		return;
-	}
-
-	ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem();
+	ULocalPlayerPostProcessSubsystem* Subsystem =
+		ResolvePostProcessSubsystem(Window);
 	if (!Subsystem)
 	{
 		return;
@@ -212,25 +202,42 @@ void FRDGModule::HandleBackBufferReadyRDG(FRDGBuilder& GraphBuilder, SWindow& Wi
 
 	Subsystem->TickFrame();
 
-	const FUIChromaticAberrationParameters& Params =
+	const FPixelSortingParameters& PixelSortingParams =
+		Subsystem->GetPostProcessStrcture().PixelSorting;
+	const FZoomBlurParameters& ZoomBlurParams =
+		Subsystem->GetPostProcessStrcture().ZoomBlur;
+	const FUIChromaticAberrationParameters& ChromaticParams =
 		Subsystem->GetUIPostProcessStrcture().ChromaticAberration;
+	const FOverlayParameters& OverlayParams =
+		Subsystem->GetUIPostProcessStrcture().Overlay;
 
-	if (!Params.bEnabled)
+	if (!PixelSortingParams.bEnabled && !ZoomBlurParams.bEnabled && !ChromaticParams.bEnabled && !OverlayParams.bEnabled)
 	{
 		return;
 	}
 
-	FScreenPassTexture Input(
+	FScreenPassTexture Current(
 		BackBuffer,
 		FIntRect(FIntPoint::ZeroValue, BackBuffer->Desc.Extent));
 
-	FScreenPassTexture Output =
-		FRDGUIChromaticAberrationPass::AddPass(GraphBuilder, Input, Params);
+	Current = FRDGPixelSortingPass::AddPass(GraphBuilder, Current, PixelSortingParams);
+	Current = FRDGZoomBlurPass::AddPass(GraphBuilder, Current, ZoomBlurParams);
+	Current = FRDGUIChromaticAberrationPass::AddPass(GraphBuilder, Current, ChromaticParams);
+	Current = FRDGOverlayPass::AddPass(GraphBuilder, Current, OverlayParams);
 
-	if (Output.IsValid() && Output.Texture != BackBuffer)
+	if (!Current.IsValid() || Current.Texture == BackBuffer)
 	{
-		AddCopyTexturePass(GraphBuilder, Output.Texture, BackBuffer);
+		return;
 	}
+
+	// 픽셀 소팅 출력은 UAV를 쓸 수 있는 PF_R8G8B8A8이라 backbuffer 포맷(PF_B8G8R8A8 등)과
+	// 다를 수 있음. 단순 복사 대신 셰이더 blit으로 넘겨서 포맷/스위즐 변환까지 처리함.
+	FScreenPassRenderTarget BackBufferTarget(
+		BackBuffer,
+		FIntRect(FIntPoint::ZeroValue, BackBuffer->Desc.Extent),
+		ERenderTargetLoadAction::ENoAction);
+
+	FRDGSceneColorCopyPass::AddPass(GraphBuilder, Current, BackBufferTarget);
 }
 
 #undef LOCTEXT_NAMESPACE

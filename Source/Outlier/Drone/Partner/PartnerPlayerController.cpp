@@ -7,9 +7,17 @@
 #include "FirstPerson/FirstPersonPlayerCameraManager.h"
 #include "Blueprint/UserWidget.h"
 #include "LocalPlayerUISubSystem.h"
+#include "LocalPlayerPostProcessSubsystem.h"
 #include "PostProcess/MaterialPostProcessSubsystem.h"
 #include "OutlierPlayerState.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Enemy/EnemyBase.h"
+#include "TimerManager.h"
+#include "UI/LocalPlayerUILayerSubsystem.h"
+#include "GAS/OutlierAbilitySystemComponent.h"
+#include "GAS/Attributes/OutlierShieldAttributeSet.h"
+#include "GAS/Attributes/OutlierVitalAttributeSet.h"
+#include "GameplayTags/OutlierGameplayTags.h"
 
 APartnerPlayerController::APartnerPlayerController()
 {
@@ -24,8 +32,56 @@ void APartnerPlayerController::BeginPlay()
 
 void APartnerPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	if (HasAuthority())
+	{
+		DiscardCommittedPartnerAbilityCooldownSession(CachedPartnerCharacter.Get());
+	}
+	if (HasAuthority() && PendingEnemyPossessionTarget.IsValid())
+	{
+		CancelPendingEnemyPossessionTransition();
+	}
+
+	AEnemyBase* ServerPendingTarget = PendingEnemyPossessionTarget.Get();
+	AEnemyBase* LocalPendingTarget = LocalPendingEnemyPossessionTarget.Get();
+	if (ServerPendingTarget)
+	{
+		ServerPendingTarget->OnEndPlay.RemoveDynamic(
+			this,
+			&APartnerPlayerController::HandlePossessionTargetEndPlay);
+	}
+	if (LocalPendingTarget && LocalPendingTarget != ServerPendingTarget)
+	{
+		LocalPendingTarget->OnEndPlay.RemoveDynamic(
+			this,
+			&APartnerPlayerController::HandlePossessionTargetEndPlay);
+	}
+
+	if (ULocalPlayer* LocalPlayer = GetLocalPlayer())
+	{
+		if (ULocalPlayerPostProcessSubsystem* PPSubsystem =
+			LocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
+		{
+			PPSubsystem->OnHackTransitionCovered.RemoveAll(this);
+			PPSubsystem->OnHackTransitionFinished.RemoveAll(this);
+			PPSubsystem->CancelHackPossessionTransition();
+		}
+	}
+
+	if (HasAuthority())
+	{
+		CancelPendingEnemyPossessionTransition();
+	}
+
+	if (IsLocalController())
+	{
+		LocalPendingEnemyPossessionTarget.Reset();
+		bHackTransitionCoveredNotified = false;
+		SetHackTransitionInputBlocked(false);
+	}
+
 	UnbindShooterCharacterDelegates();
 	UnbindPlayerStateDelegates();
+	OnPartnerPossessionStateChanged.Clear();
 	Super::EndPlay(EndPlayReason);
 }
 
@@ -34,11 +90,6 @@ void APartnerPlayerController::OnRep_PlayerState()
 	Super::OnRep_PlayerState();
 	BindPlayerStateDelegates();
 	RefreshShooterUIForRespawnFromPlayerState();
-}
-
-void APartnerPlayerController::SetupInputComponent()
-{
-	Super::SetupInputComponent();
 }
 
 void APartnerPlayerController::OnPossess(APawn* InPawn)
@@ -53,6 +104,13 @@ void APartnerPlayerController::OnPossess(APawn* InPawn)
 	if (APartnerCharacter* PartnerCharacter = Cast<APartnerCharacter>(InPawn))
 	{
 		PartnerCharacter->Tags.Add(PartnerPawnTag);
+
+		if (IsLocalController())
+		{
+			SetPartnerPossessionState(
+				EPartnerPossessionState::PartnerControlled,
+				PartnerCharacter);
+		}
 	}
 
 	/*if (APartnerCharacter* PartnerCharacter = Cast<APartnerCharacter>(InPawn))
@@ -71,8 +129,586 @@ void APartnerPlayerController::OnPossess(APawn* InPawn)
 		{
 			PPS->Refresh();
 		}
+
+		TryRestoreFirstPersonDefaultInputMode(FirstPersonInputModeTags::Hack());
+		BeginLocalEnemyPossessionReveal(InPawn);
+	}
+}
+
+void APartnerPlayerController::PawnPendingDestroy(APawn* InPawn)
+{
+	AEnemyBase* EnemyPawn = Cast<AEnemyBase>(InPawn);
+	if (HasAuthority() && EnemyPawn && InPawn == GetPawn() && CachedPartnerCharacter.IsValid())
+	{
+		EnemyPawn->ClearPossessedPlayerState();
+		RestoreCachedPartnerCharacterNextTick();
+		return;
 	}
 
+	Super::PawnPendingDestroy(InPawn);
+}
+
+void APartnerPlayerController::CachePartnerCharacterForEnemyPossession(APartnerCharacter* PartnerCharacter)
+{
+	if (!HasAuthority() || !PartnerCharacter)
+	{
+		return;
+	}
+
+	CachedPartnerCharacter = PartnerCharacter;
+}
+
+//Enemy의 HandleHack 이후부터 Controller가 책임.
+bool APartnerPlayerController::BeginEnemyPossessionTransition(
+	AEnemyBase* EnemyTarget,
+	APartnerCharacter* PartnerCharacter)
+{
+	if (!HasAuthority()
+		|| !IsValid(EnemyTarget)
+		|| !IsValid(PartnerCharacter)
+		|| GetPawn() != PartnerCharacter
+		|| EnemyTarget->IsEnemyPossessed())
+	{
+		return false;
+	}
+
+	if (PendingEnemyPossessionTarget.IsValid() || PendingEnemyPossessionSource.IsValid())
+	{
+		return false;
+	}
+
+	PendingEnemyPossessionTarget = EnemyTarget;
+	PendingEnemyPossessionSource = PartnerCharacter;
+	BindPossessionTargetEndPlay(EnemyTarget); //Transitioning 중에 Enemy EndPlay 호출 시, 연출 및 해킹 종료.
+
+	ClientBeginEnemyPossessionTransition(EnemyTarget);
+	return true;
+}
+
+void APartnerPlayerController::ClientBeginEnemyPossessionTransition_Implementation(AEnemyBase* EnemyTarget)
+{
+	if (!IsLocalController() || !IsValid(EnemyTarget))
+	{
+		return;
+	}
+
+	LocalPendingEnemyPossessionTarget = EnemyTarget;
+	BindPossessionTargetEndPlay(EnemyTarget);
+	bHackTransitionCoveredNotified = false;
+	SetFirstPersonInputMode(FirstPersonInputModeTags::Hack());
+	SetPartnerPossessionState(
+		EPartnerPossessionState::Transitioning,
+		EnemyTarget);
+}
+
+void APartnerPlayerController::HandlePartnerHackPossessionTransition()
+{
+	if (!IsLocalController() || !LocalPendingEnemyPossessionTarget.IsValid())
+	{
+		return;
+	}
+
+	BindPostProcessSubSystem();
+
+	if (ULocalPlayer* LocalPlayer = GetLocalPlayer())
+	{
+		if (ULocalPlayerPostProcessSubsystem* PPSubsystem =
+			LocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
+		{
+			PPSubsystem->StartHackPossessionTransition();
+			return;
+		}
+	}
+
+	NotifyHackTransitionCovered();
+}
+
+void APartnerPlayerController::NotifyHackTransitionCovered()
+{
+	if (!IsLocalController() || bHackTransitionCoveredNotified)
+	{
+		return;
+	}
+
+	AEnemyBase* EnemyTarget = LocalPendingEnemyPossessionTarget.Get();
+	if (!IsValid(EnemyTarget))
+	{
+		return;
+	}
+
+	bHackTransitionCoveredNotified = true;
+	ServerNotifyHackTransitionCovered(EnemyTarget);
+}
+
+void APartnerPlayerController::ServerNotifyHackTransitionCovered_Implementation(AEnemyBase* EnemyTarget)
+{
+	if (!HasAuthority() || PendingEnemyPossessionTarget.Get() != EnemyTarget)
+	{
+		ClientCancelEnemyPossessionTransition(EnemyTarget);
+		return;
+	}
+
+	CommitPendingEnemyPossession(EnemyTarget);
+}
+
+void APartnerPlayerController::CommitPendingEnemyPossession(AEnemyBase* ExpectedTarget)
+{
+	AEnemyBase* EnemyTarget = PendingEnemyPossessionTarget.Get();
+	APartnerCharacter* PartnerCharacter = PendingEnemyPossessionSource.Get();
+
+	if (!HasAuthority()
+		|| EnemyTarget != ExpectedTarget
+		|| !IsValid(EnemyTarget)
+		|| !IsValid(PartnerCharacter)
+		|| GetPawn() != PartnerCharacter
+		|| EnemyTarget->IsEnemyPossessed())
+	{
+		CancelPendingEnemyPossessionTransition();
+		return;
+	}
+
+	CachePartnerCharacterForEnemyPossession(PartnerCharacter);
+	Possess(EnemyTarget);
+
+	if (GetPawn() != EnemyTarget)
+	{
+		CachedPartnerCharacter.Reset();
+		CancelPendingEnemyPossessionTransition();
+		return;
+	}
+
+	if (!BeginCommittedPartnerAbilityCooldownSession(PartnerCharacter))
+	{
+#if UE_BUILD_SHIPPING
+		UE_LOG(
+			LogTemp,
+			Error,
+			TEXT("[PartnerPossession] Failed to suspend Partner cooldowns after possession commit Partner=%s Enemy=%s"),
+			*GetNameSafe(PartnerCharacter),
+			*GetNameSafe(EnemyTarget));
+		ReleaseEnemyPossession();
+		PendingEnemyPossessionTarget.Reset();
+		PendingEnemyPossessionSource.Reset();
+		UnbindPossessionTargetEndPlay(EnemyTarget);
+		return;
+#else
+		checkf(
+			false,
+			TEXT("[PartnerPossession] Failed to suspend Partner cooldowns after possession commit Partner=%s Enemy=%s"),
+			*GetNameSafe(PartnerCharacter),
+			*GetNameSafe(EnemyTarget));
+#endif
+	}
+
+	PendingEnemyPossessionTarget.Reset();
+	PendingEnemyPossessionSource.Reset();
+	UnbindPossessionTargetEndPlay(EnemyTarget);
+}
+
+void APartnerPlayerController::CancelPendingEnemyPossessionTransition()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	AEnemyBase* EnemyTarget = PendingEnemyPossessionTarget.Get();
+	if (EnemyTarget)
+	{
+		EnemyTarget->CancelPossessionProcess();
+	}
+	else if (APartnerCharacter* PartnerCharacter = PendingEnemyPossessionSource.Get())
+	{
+		PartnerCharacter->SetEnemyPossessionProtection(false);
+	}
+
+	PendingEnemyPossessionTarget.Reset();
+	PendingEnemyPossessionSource.Reset();
+	UnbindPossessionTargetEndPlay(EnemyTarget);
+	ClientCancelEnemyPossessionTransition(EnemyTarget);
+}
+
+void APartnerPlayerController::ClientCancelEnemyPossessionTransition_Implementation(AEnemyBase* EnemyTarget)
+{
+	CancelLocalEnemyPossessionTransition(EnemyTarget);
+}
+
+void APartnerPlayerController::CancelLocalEnemyPossessionTransition(AEnemyBase* ExpectedTarget)
+{
+	if (!IsLocalController())
+	{
+		return;
+	}
+
+	if (ExpectedTarget && LocalPendingEnemyPossessionTarget.Get() != ExpectedTarget)
+	{
+		return;
+	}
+
+	AEnemyBase* LocalTarget = LocalPendingEnemyPossessionTarget.Get();
+	LocalPendingEnemyPossessionTarget.Reset();
+	UnbindPossessionTargetEndPlay(LocalTarget);
+	bHackTransitionCoveredNotified = false;
+
+	TryRestoreFirstPersonDefaultInputMode(FirstPersonInputModeTags::Hack());
+	SetPartnerPossessionState(
+		EPartnerPossessionState::PartnerControlled,
+		ExpectedTarget ? ExpectedTarget : LocalTarget);
+}
+
+void APartnerPlayerController::BeginLocalEnemyPossessionReveal(APawn* InAcknowledgedPawn)
+{
+	if (!IsLocalController()
+		|| !InAcknowledgedPawn
+		|| LocalPendingEnemyPossessionTarget.Get() != InAcknowledgedPawn)
+	{
+		return;
+	}
+
+	if (ULocalPlayer* LocalPlayer = GetLocalPlayer())
+	{
+		if (ULocalPlayerPostProcessSubsystem* PPSubsystem =
+			LocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
+		{
+			if (PPSubsystem->StartHackPossessionReveal())
+			{
+				return;
+			}
+		}
+	}
+
+	HandleHackPossessionTransitionFinished();
+}
+
+void APartnerPlayerController::HandleHackPossessionTransitionFinished()
+{
+	if (!IsLocalController()
+		|| PartnerPossessionState != EPartnerPossessionState::Transitioning)
+	{
+		return;
+	}
+
+	AEnemyBase* CompletedTarget = LocalPendingEnemyPossessionTarget.Get();
+	if (!IsValid(CompletedTarget) || GetPawn() != CompletedTarget)
+	{
+		CancelLocalEnemyPossessionTransition(CompletedTarget);
+		return;
+	}
+
+	UE_LOG(LogTemp, Warning,
+		TEXT("[PartnerPossession] Transition finished Target=%s"),
+		*GetNameSafe(CompletedTarget));
+
+	LocalPendingEnemyPossessionTarget.Reset();
+	UnbindPossessionTargetEndPlay(CompletedTarget);
+	bHackTransitionCoveredNotified = false;
+	TryRestoreFirstPersonDefaultInputMode(FirstPersonInputModeTags::Hack());
+	SetPartnerPossessionState(
+		EPartnerPossessionState::EnemyPossessed,
+		CompletedTarget);
+}
+
+void APartnerPlayerController::SetPartnerPossessionState(
+	EPartnerPossessionState NewState,
+	AActor* ContextActor)
+{
+	if (!IsLocalController() || PartnerPossessionState == NewState)
+	{
+		return;
+	}
+
+	const EPartnerPossessionState PreviousState = PartnerPossessionState;
+	PartnerPossessionState = NewState;
+
+	switch (PartnerPossessionState)
+	{
+	case EPartnerPossessionState::Transitioning:
+		SetHackTransitionInputBlocked(true);
+		HandlePartnerHackPossessionTransition();
+		break;
+
+	case EPartnerPossessionState::PartnerControlled:
+		SetHackTransitionInputBlocked(false);
+		if (ULocalPlayer* LocalPlayer = GetLocalPlayer())
+		{
+			if (ULocalPlayerPostProcessSubsystem* PPSubsystem =
+				LocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
+			{
+				PPSubsystem->CancelHackPossessionTransition();
+			}
+		}
+		break;
+
+	case EPartnerPossessionState::EnemyPossessed:
+		SetHackTransitionInputBlocked(false);
+		break;
+	}
+
+	OnPartnerPossessionStateChanged.Broadcast(
+		PreviousState,
+		PartnerPossessionState,
+		ContextActor);
+}
+
+void APartnerPlayerController::SetHackTransitionInputBlocked(bool bBlocked)
+{
+	if (!IsLocalController() || bHackTransitionInputBlocked == bBlocked)
+	{
+		return;
+	}
+
+	bHackTransitionInputBlocked = bBlocked;
+	SetIgnoreMoveInput(bBlocked);
+	SetIgnoreLookInput(bBlocked);
+
+	if (bBlocked)
+	{
+		FlushPressedKeys();
+	}
+}
+
+void APartnerPlayerController::BindPossessionTargetEndPlay(AEnemyBase* EnemyTarget)
+{
+	if (!IsValid(EnemyTarget))
+	{
+		return;
+	}
+
+	EnemyTarget->OnEndPlay.RemoveDynamic(
+		this,
+		&APartnerPlayerController::HandlePossessionTargetEndPlay);
+
+	EnemyTarget->OnEndPlay.AddDynamic(
+		this,
+		&APartnerPlayerController::HandlePossessionTargetEndPlay);
+}
+
+void APartnerPlayerController::UnbindPossessionTargetEndPlay(AEnemyBase* EnemyTarget)
+{
+	if (!EnemyTarget
+		|| PendingEnemyPossessionTarget.Get() == EnemyTarget
+		|| LocalPendingEnemyPossessionTarget.Get() == EnemyTarget)
+	{
+		return;
+	}
+
+	EnemyTarget->OnEndPlay.RemoveDynamic(
+		this,
+		&APartnerPlayerController::HandlePossessionTargetEndPlay);
+}
+
+void APartnerPlayerController::HandlePossessionTargetEndPlay(
+	AActor* EndedActor,
+	EEndPlayReason::Type EndPlayReason)
+{
+	AEnemyBase* EndedEnemy = Cast<AEnemyBase>(EndedActor);
+	if (!EndedEnemy)
+	{
+		return;
+	}
+
+	const bool bServerTransitionTarget =
+		PendingEnemyPossessionTarget.Get() == EndedEnemy;
+
+	const bool bLocalTransitionTarget =
+		LocalPendingEnemyPossessionTarget.Get() == EndedEnemy;
+
+	if (!bServerTransitionTarget && !bLocalTransitionTarget)
+	{
+		return;
+	}
+
+	UE_LOG(LogTemp, Warning,
+		TEXT("[PartnerPossession] Transition target ended Target=%s EndPlayReason=%d"),
+		*GetNameSafe(EndedEnemy),
+		static_cast<int32>(EndPlayReason));
+
+	if (HasAuthority() && bServerTransitionTarget)
+	{
+		CancelPendingEnemyPossessionTransition();
+	}
+
+	if (IsLocalController()
+		&& LocalPendingEnemyPossessionTarget.Get() == EndedEnemy)
+	{
+		CancelLocalEnemyPossessionTransition(EndedEnemy);
+	}
+}
+
+void APartnerPlayerController::ReleaseEnemyPossession()
+{
+	if (!HasAuthority())
+	{
+		ServerReleaseEnemyPossession();
+		return;
+	}
+
+	AEnemyBase* EnemyPawn = Cast<AEnemyBase>(GetPawn());
+	if (!EnemyPawn)
+	{
+		return;
+	}
+
+	if (!CachedPartnerCharacter.IsValid())
+	{
+		DiscardCommittedPartnerAbilityCooldownSession(nullptr);
+		if (AController* CachedAIController = EnemyPawn->GetCachedAIController())
+		{
+			CachedAIController->Possess(EnemyPawn);
+		}
+		else
+		{
+			EnemyPawn->SetEnemyPossessed(false);
+		}
+
+		CachedPartnerCharacter.Reset();
+		return;
+	}
+
+	if (AController* CachedAIController = EnemyPawn->GetCachedAIController())
+	{
+		CachedAIController->Possess(EnemyPawn);
+	}
+	else
+	{
+		EnemyPawn->SetEnemyPossessed(false);
+	}
+
+	RestoreCachedPartnerCharacter();
+}
+
+void APartnerPlayerController::ServerReleaseEnemyPossession_Implementation()
+{
+	ReleaseEnemyPossession();
+}
+
+APartnerCharacter* APartnerPlayerController::ExtractCachedPartnerCharacterForLogout()
+{
+	APartnerCharacter* Result = CachedPartnerCharacter.Get();
+	DiscardCommittedPartnerAbilityCooldownSession(Result);
+	CachedPartnerCharacter.Reset();
+	return Result;
+}
+
+void APartnerPlayerController::RestoreCachedPartnerCharacter()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	APartnerCharacter* PartnerCharacter = CachedPartnerCharacter.Get();
+	if (!PartnerCharacter)
+	{
+		DiscardCommittedPartnerAbilityCooldownSession(nullptr);
+		CachedPartnerCharacter.Reset();
+		return;
+	}
+
+	PartnerCharacter->SetEnemyPossessionProtection(false);
+	Possess(PartnerCharacter);
+	if (GetPawn() == PartnerCharacter)
+	{
+		const bool bFinalized = FinalizeCommittedPartnerAbilityCooldownSession(PartnerCharacter);
+#if UE_BUILD_SHIPPING
+		if (!bFinalized)
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[PartnerPossession] Failed to restore Partner cooldown session Partner=%s"),
+				*GetNameSafe(PartnerCharacter));
+		}
+#else
+		checkf(
+			bFinalized,
+			TEXT("[PartnerPossession] Failed to restore Partner cooldown session Partner=%s"),
+			*GetNameSafe(PartnerCharacter));
+#endif
+	}
+	else
+	{
+		DiscardCommittedPartnerAbilityCooldownSession(PartnerCharacter);
+	}
+	CachedPartnerCharacter.Reset();
+}
+
+bool APartnerPlayerController::BeginCommittedPartnerAbilityCooldownSession(
+	APartnerCharacter* PartnerCharacter)
+{
+	if (!HasAuthority() || !IsValid(PartnerCharacter) || bPartnerAbilityCooldownSessionCommitted)
+	{
+		return false;
+	}
+
+	UOutlierAbilitySystemComponent* AbilitySystem =
+		PartnerCharacter->GetOutlierAbilitySystemComponent();
+	if (!AbilitySystem || !AbilitySystem->SuspendPartnerSkillCooldownsForPossession())
+	{
+		return false;
+	}
+
+	bPartnerAbilityCooldownSessionCommitted = true;
+	return true;
+}
+
+bool APartnerPlayerController::FinalizeCommittedPartnerAbilityCooldownSession(
+	APartnerCharacter* PartnerCharacter)
+{
+	if (!HasAuthority() || !bPartnerAbilityCooldownSessionCommitted)
+	{
+		return false;
+	}
+
+	bPartnerAbilityCooldownSessionCommitted = false;
+	if (!IsValid(PartnerCharacter))
+	{
+		return false;
+	}
+
+	UOutlierAbilitySystemComponent* AbilitySystem =
+		PartnerCharacter->GetOutlierAbilitySystemComponent();
+	if (!AbilitySystem)
+	{
+		return false;
+	}
+
+	const bool bResumed = AbilitySystem->ResumePartnerSkillCooldownsAfterPossession();
+	const bool bHackCooldownCommitted = AbilitySystem->CommitPartnerCooldown(
+		OutlierGameplayTags::Cooldown::Partner::Hacking());
+	return bResumed && bHackCooldownCommitted;
+}
+
+void APartnerPlayerController::DiscardCommittedPartnerAbilityCooldownSession(
+	APartnerCharacter* PartnerCharacter)
+{
+	if (!HasAuthority() || !bPartnerAbilityCooldownSessionCommitted)
+	{
+		return;
+	}
+
+	bPartnerAbilityCooldownSessionCommitted = false;
+	if (IsValid(PartnerCharacter))
+	{
+		if (UOutlierAbilitySystemComponent* AbilitySystem =
+			PartnerCharacter->GetOutlierAbilitySystemComponent())
+		{
+			AbilitySystem->DiscardSuspendedPartnerSkillCooldowns();
+		}
+	}
+}
+
+void APartnerPlayerController::RestoreCachedPartnerCharacterNextTick()
+{
+	if (!HasAuthority() || !GetWorld())
+	{
+		return;
+	}
+
+	GetWorldTimerManager().SetTimerForNextTick(
+		this,
+		&APartnerPlayerController::RestoreCachedPartnerCharacter
+	);
 }
 
 void APartnerPlayerController::BindMainUI()
@@ -126,11 +762,40 @@ void APartnerPlayerController::BindMainUI()
 		{
 			UE_LOG(LogTemp, Error, TEXT("[PartnerPC] No GetLocalPlayer"));
 		}
+
+		if (ULocalPlayerUILayerSubsystem* LayerSubsystem =
+			LP->GetSubsystem<ULocalPlayerUILayerSubsystem>())
+		{
+			LayerSubsystem->RegisterMainUI(ShooterUIInstance);
+		}
 	}
 }
 
 void APartnerPlayerController::BindPostProcessSubSystem()
 {
+	if (!IsLocalController())
+	{
+		return;
+	}
+
+	ULocalPlayer* LocalPlayer = GetLocalPlayer();
+	if (!LocalPlayer)
+	{
+		return;
+	}
+
+	if (ULocalPlayerPostProcessSubsystem* PPSubsystem =
+		LocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
+	{
+		PPSubsystem->OnHackTransitionCovered.RemoveAll(this);
+		PPSubsystem->OnHackTransitionFinished.RemoveAll(this);
+		PPSubsystem->OnHackTransitionCovered.AddUObject(
+			this,
+			&APartnerPlayerController::NotifyHackTransitionCovered);
+		PPSubsystem->OnHackTransitionFinished.AddUObject(
+			this,
+			&APartnerPlayerController::HandleHackPossessionTransitionFinished);
+	}
 }
 
 void APartnerPlayerController::ReceivedPlayer()
@@ -150,6 +815,21 @@ void APartnerPlayerController::AcknowledgePossession(APawn* P)
 {
 	Super::AcknowledgePossession(P);
 
+	if (IsLocalController() && Cast<APartnerCharacter>(P))
+	{
+		SetPartnerPossessionState(
+			EPartnerPossessionState::PartnerControlled,
+			P);
+	}
+
+	if (AEnemyBase* PossessedEnemy = Cast<AEnemyBase>(P);
+		IsLocalController()
+		&& IsValid(PossessedEnemy)
+		&& LocalPendingEnemyPossessionTarget.Get() == PossessedEnemy)
+	{
+		TryRestoreFirstPersonDefaultInputMode(FirstPersonInputModeTags::Hack());
+	}
+
 	BindMainUI();
 	BindPostProcessSubSystem();
 	BindPlayerStateDelegates();
@@ -163,6 +843,8 @@ void APartnerPlayerController::AcknowledgePossession(APawn* P)
 		}
 	}
 
+	//적 빙의 이후, Transition Property trigger;
+	BeginLocalEnemyPossessionReveal(P);
 }
 
 void APartnerPlayerController::RefreshShooterUIForRespawnFromPlayerState()
@@ -237,42 +919,110 @@ void APartnerPlayerController::BindShooterCharacterDelegatesFromPlayerState()
 
 	UnbindShooterCharacterDelegates();
 	BoundShooterCharacter = ShooterCharacter;
+	BoundShooterAbilitySystem = ShooterCharacter->GetOutlierAbilitySystemComponent();
 
-	ShooterCharacter->OnShooterHealthChanged.AddUObject(
-		this,
-		&APartnerPlayerController::HandleShooterHealthChanged
-	);
+	if (BoundShooterAbilitySystem)
+	{
+		HealthChangedHandle = BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierVitalAttributeSet::GetHealthAttribute()).AddUObject(
+				this, &APartnerPlayerController::HandleShooterHealthAttributeChanged);
+		MaxHealthChangedHandle = BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierVitalAttributeSet::GetMaxHealthAttribute()).AddUObject(
+				this, &APartnerPlayerController::HandleShooterHealthAttributeChanged);
+		ShieldChangedHandle = BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierShieldAttributeSet::GetShieldAttribute()).AddUObject(
+				this, &APartnerPlayerController::HandleShooterShieldAttributeChanged);
+		MaxShieldChangedHandle = BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierShieldAttributeSet::GetMaxShieldAttribute()).AddUObject(
+				this, &APartnerPlayerController::HandleShooterShieldAttributeChanged);
+		PartnerShieldChangedHandle = BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierShieldAttributeSet::GetPartnerShieldAttribute()).AddUObject(
+				this, &APartnerPlayerController::HandleShooterPartnerShieldAttributeChanged);
+		MaxPartnerShieldChangedHandle = BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierShieldAttributeSet::GetMaxPartnerShieldAttribute()).AddUObject(
+				this, &APartnerPlayerController::HandleShooterPartnerShieldAttributeChanged);
+	}
 
-	ShooterCharacter->OnShooterShieldChanged.AddUObject(
-		this,
-		&APartnerPlayerController::HandleShooterShieldChanged
-	);
-
-	ShooterCharacter->OnShooterPartnerShieldChanged.AddUObject(
-		this,
-		&APartnerPlayerController::HandleShooterPartnerShieldChanged
-	);
-
-	ShooterCharacter->OnShooterConditionChanged.AddUObject(
-		this,
-		&APartnerPlayerController::HandleShooterConditionChanged
-	);
-
-	ShooterCharacter->BroadcastCurrentUIState();
+	RefreshShooterVitalityUI();
 }
 
 void APartnerPlayerController::UnbindShooterCharacterDelegates()
+{
+	if (!BoundShooterCharacter && !BoundShooterAbilitySystem)
+	{
+		return;
+	}
+
+	if (BoundShooterAbilitySystem)
+	{
+		BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierVitalAttributeSet::GetHealthAttribute()).Remove(HealthChangedHandle);
+		BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierVitalAttributeSet::GetMaxHealthAttribute()).Remove(MaxHealthChangedHandle);
+		BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierShieldAttributeSet::GetShieldAttribute()).Remove(ShieldChangedHandle);
+		BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierShieldAttributeSet::GetMaxShieldAttribute()).Remove(MaxShieldChangedHandle);
+		BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierShieldAttributeSet::GetPartnerShieldAttribute()).Remove(PartnerShieldChangedHandle);
+		BoundShooterAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierShieldAttributeSet::GetMaxPartnerShieldAttribute()).Remove(MaxPartnerShieldChangedHandle);
+	}
+	BoundShooterAbilitySystem = nullptr;
+	HealthChangedHandle.Reset();
+	MaxHealthChangedHandle.Reset();
+	ShieldChangedHandle.Reset();
+	MaxShieldChangedHandle.Reset();
+	PartnerShieldChangedHandle.Reset();
+	MaxPartnerShieldChangedHandle.Reset();
+	BoundShooterCharacter = nullptr;
+}
+
+void APartnerPlayerController::RefreshShooterVitalityUI()
 {
 	if (!BoundShooterCharacter)
 	{
 		return;
 	}
 
-	BoundShooterCharacter->OnShooterHealthChanged.RemoveAll(this);
-	BoundShooterCharacter->OnShooterShieldChanged.RemoveAll(this);
-	BoundShooterCharacter->OnShooterPartnerShieldChanged.RemoveAll(this);
-	BoundShooterCharacter->OnShooterConditionChanged.RemoveAll(this);
-	BoundShooterCharacter = nullptr;
+	HandleShooterHealthChanged(BoundShooterCharacter->GetCurHealth(), BoundShooterCharacter->GetMaxHealth());
+	HandleShooterShieldChanged(BoundShooterCharacter->GetCurShield(), BoundShooterCharacter->GetMaxShield());
+	HandleShooterPartnerShieldChanged(
+		BoundShooterCharacter->GetCurPartnerShield(),
+		BoundShooterCharacter->GetMaxPartnerShield());
+	HandleShooterConditionChanged(BoundShooterCharacter->GetShooterConditionTagForUI());
+}
+
+void APartnerPlayerController::HandleShooterHealthAttributeChanged(const FOnAttributeChangeData& ChangeData)
+{
+	(void)ChangeData;
+	if (BoundShooterCharacter)
+	{
+		HandleShooterHealthChanged(BoundShooterCharacter->GetCurHealth(), BoundShooterCharacter->GetMaxHealth());
+		HandleShooterConditionChanged(BoundShooterCharacter->GetShooterConditionTagForUI());
+	}
+}
+
+void APartnerPlayerController::HandleShooterShieldAttributeChanged(const FOnAttributeChangeData& ChangeData)
+{
+	(void)ChangeData;
+	if (BoundShooterCharacter)
+	{
+		HandleShooterShieldChanged(BoundShooterCharacter->GetCurShield(), BoundShooterCharacter->GetMaxShield());
+		HandleShooterConditionChanged(BoundShooterCharacter->GetShooterConditionTagForUI());
+	}
+}
+
+void APartnerPlayerController::HandleShooterPartnerShieldAttributeChanged(const FOnAttributeChangeData& ChangeData)
+{
+	(void)ChangeData;
+	if (BoundShooterCharacter)
+	{
+		HandleShooterPartnerShieldChanged(
+			BoundShooterCharacter->GetCurPartnerShield(),
+			BoundShooterCharacter->GetMaxPartnerShield());
+		HandleShooterConditionChanged(BoundShooterCharacter->GetShooterConditionTagForUI());
+	}
 }
 
 ULocalPlayerUISubSystem* APartnerPlayerController::GetLocalUISubsystem() const

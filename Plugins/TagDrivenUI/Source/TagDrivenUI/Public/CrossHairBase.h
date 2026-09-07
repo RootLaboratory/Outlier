@@ -38,8 +38,7 @@ protected:
 	float Duration =0;
 
 public:
-	UFUNCTION(BlueprintImplementableEvent, Category = "UI")
-	 void SpawnAttckSign(EAttackSign InAttackSign) ;
+	virtual void SpawnAttackSign(EAttackSign InAttackSign) {};
 
 	virtual void OnAiming() {}
 

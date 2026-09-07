@@ -5,6 +5,11 @@
 #include "CoreMinimal.h"
 #include "FirstPerson/FirstPersonCharacter.h"
 #include "GameplayTagContainer.h"
+#include "AbilitySystemInterface.h"
+#include "Perception/AISightTargetInterface.h"
+#include "Damage/OutlierDamageReceiver.h"
+#include "GAS/Data/OutlierShooterSuitAbilityDataRow.h"
+#include "UI/UILayerTypes.h"
 #include "ShooterCharacter.generated.h"
 
 class UInputAction;
@@ -14,16 +19,21 @@ class UShooterHealthComponent;
 class UShooterInventoryComponent;
 class UShooterCombatComponent;
 class UShooterMovementComponent;
+class UOutlierUpgradeComponent;
 class ULocalPlayerUISubSystem;
 enum class EWeaponType : uint8;
 class UAnimMontage;
 class UCurveFloat;
+class UMaterialInterface;
 class APartnerCharacter;
+class UOutlierAbilitySystemComponent;
+class UOutlierVitalAttributeSet;
+class UOutlierShieldAttributeSet;
+class UDataTable;
+class USphereComponent;
+class UShooterReflectionBarrier;
+struct FOnAttributeChangeData;
 
-DECLARE_MULTICAST_DELEGATE_TwoParams(FOnShooterHealthChanged, float /*CurrentHealth*/, float /*MaxHealth*/);
-DECLARE_MULTICAST_DELEGATE_TwoParams(FOnShooterShieldChanged, float /*CurrentShield*/, float /*MaxShield*/);
-DECLARE_MULTICAST_DELEGATE_TwoParams(FOnShooterPartnerShieldChanged, float /*CurrentPartnerShield*/, float /*MaxPartnerShield*/);
-DECLARE_MULTICAST_DELEGATE_OneParam(FOnShooterConditionChanged, const FGameplayTag& /*ConditionTag*/);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnShooterDynamicCrosshairChanged, bool /*bAiming*/);
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnShooterAim, bool /*bAiming*/, int32 /*WeaponStencilValue*/);
 
@@ -93,7 +103,7 @@ enum class EShooterMontageAction : uint8
  * 
  */
 UCLASS(abstract)
-class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter
+class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbilitySystemInterface, public IOutlierDamageReceiver, public IAISightTargetInterface
 {
 	GENERATED_BODY()
 
@@ -103,6 +113,15 @@ class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter
 	friend class UShooterMovementComponent;
 
 protected:
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
+	TObjectPtr<UOutlierAbilitySystemComponent> OutlierAbilitySystemComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
+	TObjectPtr<UOutlierVitalAttributeSet> VitalAttributeSet;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
+	TObjectPtr<UOutlierShieldAttributeSet> ShieldAttributeSet;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UShooterHealthComponent> HealthComponent;
 
@@ -115,7 +134,10 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UShooterMovementComponent> MovementComponent;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Health")
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UOutlierUpgradeComponent> UpgradeComponent;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Health")
 	float MaxHP = 100.0f;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Movement")
@@ -128,7 +150,28 @@ protected:
 	float LeanInterpSpeed = 8.0f;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat")
-	float MaxLeanAngle = 15.0f;
+	float MaxLeanAngle = 11.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Lean", meta = (ClampMin = "0.0"))
+	float FirstPersonLeanWeaponYawDegrees = 5.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Lean", meta = (ClampMin = "0.0"))
+	float FirstPersonLeanWeaponInterpSpeed = 8.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Lean", meta = (ClampMin = "0.0"))
+	float LeanCameraSideOffset = 10.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Lean", meta = (ClampMin = "0.0"))
+	float LeanCameraDownOffset = 4.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Lean", meta = (ClampMin = "0.0"))
+	float LeanCameraBackwardOffset = 1.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Lean", meta = (ClampMin = "0.0"))
+	float LeanCollisionRadius = 12.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Lean", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float LeanExposureCollisionMinAlpha = 0.1f;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera")
 	float AimCameraFOV = 80.0f;
@@ -154,12 +197,6 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera|Sensitivity", meta = (ClampMin = "0.0"))
 	float SprintLookSensitivityScale = 1.0f;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera|Recoil", meta = (ClampMin = "0.0"))
-	float CameraRecoilKickInterpSpeed = 28.0f;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera|Recoil", meta = (ClampMin = "0.0"))
-	float CameraRecoilFOVRecoverySpeed = 16.0f;
-
 	UPROPERTY(EditDefaultsOnly, Category = "Slide")
 	float SlideDuration = 1.0f;
 
@@ -177,6 +214,9 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Components, meta = (AllowPrivateAccess = "true"))
 	USkeletalMeshComponent* ShadowMesh;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Components, meta = (AllowPrivateAccess = "true"))
+	TObjectPtr<USphereComponent> LeanExposureCollision;
 
 	/// Animation Assets
 	// Fire
@@ -217,9 +257,6 @@ protected:
 	FName DefaultMontageSectionName = TEXT("Default");
 
 	// Replicated Gameplay State
-	UPROPERTY(ReplicatedUsing = OnRep_CurHP, EditAnywhere, BlueprintReadWrite, Category = "Health")
-	float CurHP = 100.0f;
-
 	UPROPERTY(ReplicatedUsing = OnRep_MovementState, VisibleAnywhere, BlueprintReadOnly, Category = "State")
 	EMovementState MovementState = EMovementState::Idle;
 
@@ -232,8 +269,11 @@ protected:
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "State")
 	EShooterActionLock ActionLock = EShooterActionLock::None;
 
-	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Status")
-	uint8 bIsDead : 1 = false;
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "GAS|Suit")
+	TObjectPtr<UDataTable> ShooterSuitAbilityDataTable;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "GAS|Suit|Bullet Reflection")
+	TSubclassOf<UShooterReflectionBarrier> ReflectionBarrierWidgetClass;
 
 	// Local Runtime State
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
@@ -246,23 +286,19 @@ protected:
 	FGameplayTag SelectedAbilityTag;
 
 	// Lean Runtime Data
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
+	UPROPERTY(ReplicatedUsing = OnRep_CurrentLeanAlpha, VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
 	float CurrentLeanAlpha = 0.0f;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
 	float TargetLeanAlpha = 0.0f;
 
 	FVector  BaseFirstPersonMeshLocation = FVector::ZeroVector;
+	FVector  BaseFirstPersonCameraRootLocation = FVector::ZeroVector;
 	FVector  BaseFirstPersonViewModelRootLocation = FVector::ZeroVector;
 	FRotator BaseFirstPersonCameraRootRotation = FRotator::ZeroRotator;
 	FRotator BaseFirstPersonViewModelRootRotation = FRotator::ZeroRotator;
 	FRotator BaseFirstPersonMeshRotation = FRotator::ZeroRotator;
 	float BaseCameraFOV = 90.0f;
-	FRotator CameraRecoilCurrent = FRotator::ZeroRotator;
-	FRotator CameraRecoilTarget = FRotator::ZeroRotator;
-	float CameraRecoilRecoverySpeed = 10.0f;
-	float CameraRecoilFOVOffset = 0.0f;
-
 	// Timers
 	FTimerHandle LeanUpdateTimerHandle;
 
@@ -270,24 +306,37 @@ protected:
 
 	FTimerHandle PartnerShieldTimerHandle;
 
-	UPROPERTY(ReplicatedUsing = OnRep_CurShield, EditAnywhere, BlueprintReadWrite, Category = "Shield")
-	float CurShield = 100.0f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shield")
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Shield")
 	float MaxShield = 100.0f;
 
-	UPROPERTY(ReplicatedUsing = OnRep_CurPartnerShield, EditAnywhere, BlueprintReadWrite, Category = "Shield")
-	float CurPartnerShield = 0.0f;
-
-	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = "Shield")
-	float MaxPartnerShield = 0.0f;
-
 	float PartnerShieldDuration = 0.0f;
+	FDelegateHandle HealthChangedHandle;
+	FDelegateHandle ShieldChangedHandle;
+	FDelegateHandle DeadTagChangedHandle;
+	FDelegateHandle BulletReflectionTagChangedHandle;
+	FDelegateHandle WeaponOverchargeTagChangedHandle;
+	FDelegateHandle QuantumLeapCooldownTagChangedHandle;
+	FDelegateHandle BulletReflectionCooldownTagChangedHandle;
+	FDelegateHandle WeaponOverchargeCooldownTagChangedHandle;
+	FDelegateHandle StealthCooldownTagChangedHandle;
+	FDelegateHandle PartnerRebootTagChangedHandle;
+	FUILayerHandle ReflectionBarrierLayerHandle;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UShooterReflectionBarrier> ReflectionBarrierWidgetInstance;
+
+	FVector PendingReflectionVisualOrigin = FVector::ZeroVector;
+	bool bHasPendingReflectionVisual = false;
 
 	UPROPERTY()
 	TObjectPtr<APartnerCharacter> CachedPartnerCharacter;
 
 	bool bSuitDisabledByPartnerBoundary = false;
+	bool bShooterSuitDataInitialized = false;
+	FOutlierShooterSuitConfig ShooterSuitConfig;
+
+	// 은신 비주얼( 글래스 머티리얼 / 스텐실 / 포스트프로세스 페이드 )은 State.Stealthed 태그를 보고
+	// UMaterialPostProcessSubsystem 이 전담한다. 페이드 시간과 스텐실 값은 AOutlierPostProcessVolume 에 있다.
 
 	// Slide
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera|Slide")
@@ -316,6 +365,37 @@ protected:
 	virtual void Tick(float DeltaSeconds) override;
 	virtual void PossessedBy(AController* NewController) override;
 	virtual void OnRep_Controller() override;
+	void RefreshAbilitySystemActorInfo();
+	void InitializeGasVitality();
+	void InitializeGasSuitAbilities();
+	void BindGasVitalityObservers();
+	void UnbindGasVitalityObservers();
+	void HandleHealthChanged(const FOnAttributeChangeData& ChangeData);
+	void HandleShieldChanged(const FOnAttributeChangeData& ChangeData);
+	void HandleDeadTagChanged(const FGameplayTag Tag, int32 NewCount);
+	void HandleBulletReflectionTagChanged(const FGameplayTag Tag, int32 NewCount);
+	void PushReflectionBarrierWidget();
+	void PopReflectionBarrierWidget();
+	void NotifyLocalBulletReflected(const FVector& IncomingOrigin);
+	void HandleWeaponOverchargeTagChanged(const FGameplayTag Tag, int32 NewCount);
+	void HandleQuantumLeapCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
+	void HandleBulletReflectionCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
+	void HandleWeaponOverchargeCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
+	void HandleStealthCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
+	void RefreshShooterSuitCooldownUI();
+	void BindPartnerSuitStateObserver();
+	void UnbindPartnerSuitStateObserver();
+	void HandlePartnerRebootTagChanged(const FGameplayTag Tag, int32 NewCount);
+	void RefreshShooterSuitAvailabilityUI();
+
+	UFUNCTION(BlueprintImplementableEvent, Category = "Suit|Bullet Reflection")
+	void BP_OnBulletReflectionStateChanged(bool bActive);
+
+	UFUNCTION(BlueprintImplementableEvent, Category = "Suit|Weapon Overcharge")
+	void BP_OnWeaponOverchargeStateChanged(bool bActive);
+
+	UFUNCTION(Client, Unreliable)
+	void ClientPlayReflectionRipple(FVector_NetQuantize IncomingOrigin);
 
 	/** Initialize input action bindings */
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
@@ -335,6 +415,14 @@ public:
 	// Construction
 	/** Constructor */
 	AShooterCharacter();
+	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
+
+	UOutlierAbilitySystemComponent* GetOutlierAbilitySystemComponent() const
+	{
+		return OutlierAbilitySystemComponent;
+	}
+	const UOutlierVitalAttributeSet* GetVitalAttributeSet() const { return VitalAttributeSet; }
+	const UOutlierShieldAttributeSet* GetShieldAttributeSet() const { return ShieldAttributeSet; }
 
 	// Events
 	UPROPERTY(BlueprintAssignable, Category = "Event")
@@ -343,10 +431,6 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Event")
 	FOnMovementStateChanged OnMovementStateChanged;
 
-	FOnShooterHealthChanged OnShooterHealthChanged;
-	FOnShooterShieldChanged OnShooterShieldChanged;
-	FOnShooterPartnerShieldChanged OnShooterPartnerShieldChanged;
-	FOnShooterConditionChanged OnShooterConditionChanged;
 	FOnShooterDynamicCrosshairChanged OnShooterDynamicCrosshairChanged;
 	FOnShooterAim OnShooterAimingBlur;
 	// Weapon Socket Queries
@@ -356,19 +440,25 @@ public:
 
 	// Replication / Engine Hooks
 	UFUNCTION()
-	void OnRep_CurHP();
-
-	UFUNCTION()
 	void OnRep_MovementState();
 
 	UFUNCTION()
-	void OnRep_CurShield();
-
-	UFUNCTION()
-	void OnRep_CurPartnerShield();
+	void OnRep_CurrentLeanAlpha();
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	virtual FVector GetPawnViewLocation() const override;
+	virtual UAISense_Sight::EVisibilityResult CanBeSeenFrom(
+		const FCanBeSeenFromContext& Context,
+		FVector& OutSeenLocation,
+		int32& OutNumberOfLoSChecksPerformed,
+		int32& OutNumberOfAsyncLosCheckRequested,
+		float& OutSightStrength,
+		int32* UserData = nullptr,
+		const FOnPendingVisibilityQueryProcessedDelegate* Delegate = nullptr) override;
+	// Unreal 공통 피해 진입점을 기존 Shooter 실드 및 HP 처리로 연결한다.
+	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
 	virtual void EquipWeapon(AWeaponBase* Weapon) override;
+	virtual FGameplayTagContainer GetOwnedGameplayTagsForQuery() const override;
 
 	// Read-only Queries
 	float GetAimYawForAnimation() const;
@@ -389,10 +479,31 @@ public:
 
 	void SetPartnerCharacter(APartnerCharacter* NewPartner);
 	void SetSuitDisabledByPartnerBoundary(bool bDisabled);
+	APartnerCharacter* GetPartnerCharacter() const { return CachedPartnerCharacter; }
+	bool IsSuitDisabledByPartnerBoundary() const { return bSuitDisabledByPartnerBoundary; }
+	bool IsShooterSuitUseDisabled() const;
+	bool IsBulletReflecting() const;
+	bool IsWeaponOvercharged() const;
+	bool BeginWeaponOvercharge();
+	void FinishWeaponOvercharge(float ShieldRecoveryDelay);
+	void NotifyOffensiveActionExecuted();
+	UFUNCTION(BlueprintCallable, Category = "Suit|Stealth")
+	void NotifyStealthDetected();
+	bool CancelActiveQuantumLeap(bool bCommitFailureCooldown = false);
+	bool EndActiveBulletReflection(bool bCommitCooldown);
+	bool EndActiveWeaponOvercharge(bool bCommitCooldown);
+	bool EndActiveStealth(bool bCommitCooldown);
+	const FGameplayTag& GetSelectedAbilityTag() const { return SelectedAbilityTag; }
+	void RefreshShooterSuitUI();
 
 	void ApplyPartnerShield(float Amount, float Duration);
-	float GetCurPartnerShield() const { return CurPartnerShield; }
-	void BroadcastCurrentUIState();
+	float GetCurPartnerShield() const;
+	float GetMaxPartnerShield() const;
+	float GetCurShield() const;
+	float GetMaxShield() const;
+	float GetCurHealth() const;
+	float GetMaxHealth() const;
+	FGameplayTag GetShooterConditionTagForUI() const { return ResolveShooterConditionTag(); }
 
 	UFUNCTION(BlueprintPure)
 	float GetCurrentLeanAlpha() const { return CurrentLeanAlpha; }
@@ -401,10 +512,19 @@ public:
 	float GetCurrentLeanRollDegrees() const { return CurrentLeanAlpha * MaxLeanAngle; }
 
 	UFUNCTION(BlueprintPure)
+	FVector GetCurrentLeanViewOffsetWorld() const { return GetLeanViewOffsetWorld(CurrentLeanAlpha); }
+
+	UFUNCTION(BlueprintPure)
 	float GetCurrentSlideCameraRollDegrees() const { return ActiveSlideCameraRollDegrees; }
 
 	UFUNCTION(BlueprintPure)
 	float GetMaxLeanAngle() const { return MaxLeanAngle; }
+
+	UFUNCTION(BlueprintPure)
+	float GetFirstPersonLeanWeaponYawDegrees() const { return FirstPersonLeanWeaponYawDegrees; }
+
+	UFUNCTION(BlueprintPure)
+	float GetFirstPersonLeanWeaponInterpSpeed() const { return FirstPersonLeanWeaponInterpSpeed; }
 
 	UFUNCTION(BlueprintPure)
 	EMovementState GetMovementState() const { return MovementState; }
@@ -423,25 +543,21 @@ public:
 
 	UShooterInventoryComponent* GetInventoryComponent() { return InventoryComponent; }
 
+	UFUNCTION(BlueprintPure, Category = "Upgrade")
+	UOutlierUpgradeComponent* GetUpgradeComponent() const;
+
 	UFUNCTION(BlueprintPure)
 	bool IsReloading() const;
 
 	UFUNCTION(BlueprintPure)
-	bool IsDead() const { return bIsDead; }
+	bool IsDead() const;
 
-	void ApplyDamageInternal(float DamageAmount);
+	UFUNCTION(BlueprintPure, Category = "Suit|Stealth")
+	bool IsStealthed() const;
+
 	void HandleWeaponAttackStoppedInternal();
 	void HandleAutoReloadRequested();
 	void HandleFireShotAnimation();
-	void AddWeaponCameraRecoil(
-		float PitchAmplitude,
-		float YawAmplitude,
-		float DirectionPitchAmplitude,
-		float FOVAmplitude,
-		float RecoverySpeed,
-		const FVector2D& NormalizedShotDirection
-	);
-
 	// Blueprint / Notify Entry Points
 	UFUNCTION(BlueprintCallable, Category = "Animation|Notify")
 	void HandleReloadCommitNotify();
@@ -450,6 +566,13 @@ public:
 
 	void DoJumpEnd();
 protected:
+	bool TryReflectIncomingDamage(
+		const FOutlierDamageRequest& Request);
+	bool ApplyDamageInternal(
+		float DamageAmount,
+		AController* EventInstigator,
+		AActor* DamageCauser,
+		const FGameplayTag& DamageTag);
 	void UpdatePartnerShieldDecay();
 
 	// Input Handlers
@@ -513,6 +636,12 @@ protected:
 	UFUNCTION(Server, Reliable)
 	void ServerJumpEnd();
 
+	UFUNCTION(Server, Reliable)
+	void ServerSetLeanTarget(float NewLeanAlpha);
+
+	UFUNCTION(Server, Reliable)
+	void ServerUseSuitAbility(FGameplayTag AbilityTag);
+
 	UFUNCTION(Client, Reliable)
 	void ClientPlayFirstPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType);
 
@@ -533,10 +662,6 @@ public:
 	void BeginReloadInternal();
 	void CancelReloadInternal();
 	void FinishReloadInternal();
-	void BeginSecondaryCooldownInternal(float CooldownDuration);
-	void FinishSecondaryCooldownInternal();
-	void ResetSecondaryCooldownInternal();
-
 	bool CanStartAction(EShooterActionLock NextLock) const;
 	void BeginActionLock(EShooterActionLock NewLock);
 	void EndActionLock(EShooterActionLock LockToEnd);
@@ -544,8 +669,13 @@ public:
 	void StartLeanUpdate();
 	void StopLeanUpdateIfSettled();
 	void UpdateLeanStep();
+	void SetLeanTarget(float NewLeanAlpha, bool bSendToServer);
+	float ResolveLeanAlphaForCollision(float DesiredLeanAlpha) const;
+	FVector GetLeanViewOffsetWorld(float LeanAlpha) const;
+	FVector GetBaseLeanViewLocation() const;
+	void ApplyLeanPresentation();
+	void UpdateLeanExposureCollision();
 	void UpdateCameraFOV(float DeltaSeconds);
-	void UpdateCameraRecoil(float DeltaSeconds);
 	float GetEffectiveFirstPersonAimAlpha() const;
 	float GetLookSensitivityScale() const;
 
@@ -559,8 +689,6 @@ public:
 	void HandleDeath();
 
 	FGameplayTag ResolveShooterConditionTag() const;
-	void BroadcastPartnerShieldState();
-	void RefreshUIForRespawn();
 
 	FName ResolveMontageSectionNameForWeapon(EWeaponType WeaponType) const;
 	void PlayFirstPersonMontage(UAnimMontage* Montage);

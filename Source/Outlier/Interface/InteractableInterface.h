@@ -4,24 +4,29 @@
 
 #include "CoreMinimal.h"
 #include "UObject/Interface.h"
+#include "Interface/ScannableInterface.h"
 #include "InteractableInterface.generated.h"
 
 class UInteractableComponent;
+class AFirstPersonCharacter;
 
-/**
- * 
- */
+
 UINTERFACE(MinimalAPI, Blueprintable)
-class UInteractableInterface : public UInterface
+class UInteractableInterface : public UScannableInterface
 {
 	GENERATED_BODY()
 };
 
-class OUTLIER_API IInteractableInterface
+class OUTLIER_API IInteractableInterface : public IScannableInterface
 {
 	GENERATED_BODY()
 
 public:
-	virtual UInteractableComponent* GetInteractableComponent() const = 0; //Tag 사용으로 Component로 확장. 
-	virtual void Interact(class AFirstPersonCharacter* Interactor) = 0;
+	virtual int32 GetScanStencilValue() const override
+	{
+		return static_cast<int32>(EScanType::Interaction);
+	}
+
+	virtual UInteractableComponent* GetInteractableComponent() const = 0;
+	virtual bool Interact(AFirstPersonCharacter* Interactor) = 0;
 };

@@ -1,6 +1,7 @@
 #include "OutlierPostProcessSceneViewExtension.h"
-#include "FRDGADSWeaponBlurPass.h"
-#include "FRDGADSWeaponMaskPass.h"
+#include "FRDGAdsSightMaskPass.h"
+#include "FRDGAdsSightRestorePass.h"
+#include "FRDGSceneColorCopyPass.h"
 #include "FRDGDualKawaseBlurPass.h"
 #include "FRDGExplosionVolumePass.h"
 #include "FRDGExplosionVolumeVisualizePass.h"
@@ -11,8 +12,11 @@
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
 #include "DrawDebugHelpers.h"
+#include "FXRenderingUtils.h"
 #include "PostProcessInputs.h"
 #include "PostProcess/PostProcessMaterialInputs.h"
+#include "ProfilingDebugging/RealtimeGPUProfiler.h"
+#include "RenderGraphEvent.h"
 #include "ScreenPass.h"
 #include "SceneTexturesConfig.h"
 
@@ -46,10 +50,6 @@ void FOutlierPostProcessSceneViewExtension::BeginRenderViewFamily(FSceneViewFami
 			}
 		}
 	}
-
-	
-	// 오래 안 쓴 ViewState 엔트리만 정리. 다중 뷰포트(빙의 + 에디터 등)가 ping-pong으로
-	// 서로의 history를 지우지 않도록, 일정 프레임 이상 미사용일 때만 제거.
 
 	ENQUEUE_RENDER_COMMAND(DatamoshHistoryCleanup)(
 		[this](FRHICommandListImmediate&)
@@ -107,13 +107,8 @@ void FOutlierPostProcessSceneViewExtension::SubscribeToPostProcessingPass(EPostP
 			&FOutlierPostProcessSceneViewExtension::DatamoshingCallback_RenderThread));
 	}
 
-	if (PassId == EPostProcessingPass::Tonemap && CachedParameters.ADSBlur.bEnabled)
-	{
-		InOutPassCallbacks.Add(
-			FAfterPassCallbackDelegate::CreateRaw(
-				this,
-				&FOutlierPostProcessSceneViewExtension::ADSWeaponBlurCallback_RenderThread));
-	}
+	// Pixel Sorting은 여기서 돌지 않음. Slate 이후 backbuffer 단계(FRDGModule::HandleBackBufferReadyRDG)로
+	// 옮겨서 UI까지 포함한 최종 화면에 적용됨.
 
 	if (PassId == EPostProcessingPass::Tonemap && FRDGExplosionVolumeVisualizePass::IsEnabled())
 	{
@@ -145,13 +140,30 @@ void FOutlierPostProcessSceneViewExtension::SubscribeToPostProcessingPass(EPostP
 				this,
 				&FOutlierPostProcessSceneViewExtension::HeatHazeCallback_RenderThread));
 	}
+
+	if (PassId == EPostProcessingPass::BeforeDOF && CachedParameters.ADSBlur.bEnabled)
+	{
+		InOutPassCallbacks.Add(
+			FAfterPassCallbackDelegate::CreateRaw(
+				this,
+				&FOutlierPostProcessSceneViewExtension::ADSPreDoFCaptureCallback_RenderThread));
+	}
+
+	if (PassId == EPostProcessingPass::AfterDOF && CachedParameters.ADSBlur.bEnabled)
+	{
+		InOutPassCallbacks.Add(
+			FAfterPassCallbackDelegate::CreateRaw(
+				this,
+				&FOutlierPostProcessSceneViewExtension::ADSSightRestoreCallback_RenderThread));
+	}
 }
 
 void FOutlierPostProcessSceneViewExtension::PrePostProcessPass_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& InView, const FPostProcessingInputs& Inputs)
 {
-	CachedADSCustomDepth = nullptr;
-	CachedADSHardMask = nullptr;
-	CachedADSWeaponMask = nullptr;
+	CachedADSSightHardMask = nullptr;
+	CachedADSSightSoftMask = nullptr;
+	CachedADSPreDoFSceneColor = nullptr;
+
 	if (CachedParameters.ADSBlur.bEnabled && IsTargetLocalPlayerView(InView) && Inputs.SceneTextures)
 	{
 		const auto SceneTextureParameters = Inputs.SceneTextures->GetParameters();
@@ -159,30 +171,37 @@ void FOutlierPostProcessSceneViewExtension::PrePostProcessPass_RenderThread(FRDG
 		FRDGTextureSRVRef CustomStencilTexture = SceneTextureParameters->CustomStencilTexture;
 		if (CustomStencilTexture)
 		{
-			CachedADSCustomDepth = CustomDepthTexture;
-			const FIntPoint MaskExtent = InView.UnscaledViewRect.Size();
-			FRDGTextureRef HardMask = FRDGADSWeaponMaskPass::AddBuildMaskPass(
+			const FIntRect PrimaryViewRect = UE::FXRenderingUtils::GetRawViewRectUnsafe(InView);
+			const FIntPoint MaskExtent = PrimaryViewRect.Size();
+			const int32 UnscaledViewWidth = InView.UnscaledViewRect.Width();
+			const float PrimaryResolutionFraction = UnscaledViewWidth > 0
+				? static_cast<float>(MaskExtent.X) / static_cast<float>(UnscaledViewWidth)
+				: 1.0f;
+			const float ScaledDilateRadius = CachedParameters.ADSBlur.SightMaskDilateRadius * PrimaryResolutionFraction;
+			const float ScaledSoftness = CachedParameters.ADSBlur.SightMaskSoftness * PrimaryResolutionFraction;
+
+			FRDGTextureRef SightHardMask = FRDGAdsSightMaskPass::AddBuildMaskPass(
 				GraphBuilder,
 				InView,
 				CustomStencilTexture,
+				CustomDepthTexture,
 				MaskExtent,
-				static_cast<uint32>(CachedParameters.ADSBlur.WeaponStencilValue));
-			CachedADSHardMask = HardMask;
+				CachedParameters.ADSBlur);
 
-			FRDGTextureRef DilatedMask = FRDGADSWeaponMaskPass::AddDilatePass(
+			CachedADSSightHardMask = FRDGAdsSightMaskPass::AddDilatePass(
 				GraphBuilder,
 				InView,
-				HardMask,
+				SightHardMask,
 				MaskExtent,
-				CachedParameters.ADSBlur.MaskDilateRadius);
+				ScaledDilateRadius);
 
-			CachedADSWeaponMask = FRDGADSWeaponMaskPass::AddSoftenPass(
+			CachedADSSightSoftMask = FRDGAdsSightMaskPass::AddSoftenPass(
 				GraphBuilder,
 				InView,
-				DilatedMask,
-				HardMask,
+				CachedADSSightHardMask,
+				CachedADSSightHardMask,
 				MaskExtent,
-				CachedParameters.ADSBlur.MaskSoftness);
+				ScaledSoftness);
 		}
 	}
 
@@ -212,8 +231,6 @@ void FOutlierPostProcessSceneViewExtension::PrePostProcessPass_RenderThread(FRDG
 
 	FRDGExplosionVolumeProvider::QueueExtraction(GraphBuilder, VelocityVolume);
 	CachedVelocityVolume = VelocityVolume;
-	//같은 프레임의 경우,
-	//Excute 이후에 처리 되니깐최초 프레임은 못 읽더라도 그 다음부터는 읽게 할 수 있음.
 }
 
 void FOutlierPostProcessSceneViewExtension::UpdateCachedUIParameters(const FPostProcessStrctureUI& InParameters)
@@ -256,9 +273,6 @@ bool FOutlierPostProcessSceneViewExtension::IsTargetLocalPlayerView(const FScene
 		return false;
 	}
 
-	// LocalPlayer가 속한 World와 View가 그리는 World가 일치해야 대상 뷰로 판정.
-	// (PIE LocalPlayer는 PIE World, 에디터 LocalPlayer는 에디터 World를 갖기 때문에
-	//  빙의 중에도 둘이 자연스럽게 분리됨. SceneViewExtension은 LocalPlayer 단위로 생성됨.)
 
 	const UWorld* LPWorld = LP->GetWorld();
 	const FSceneInterface* Scene = InView.Family->Scene;
@@ -315,7 +329,7 @@ FScreenPassTexture FOutlierPostProcessSceneViewExtension::DualKawaseBlurCallback
 		Inputs.OverrideOutput);
 }
 
-FScreenPassTexture FOutlierPostProcessSceneViewExtension::ADSWeaponBlurCallback_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessMaterialInputs& Inputs)
+FScreenPassTexture FOutlierPostProcessSceneViewExtension::ADSPreDoFCaptureCallback_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessMaterialInputs& Inputs)
 {
 	const FScreenPassTexture SceneColor = FScreenPassTexture::CopyFromSlice(
 		GraphBuilder,
@@ -326,15 +340,49 @@ FScreenPassTexture FOutlierPostProcessSceneViewExtension::ADSWeaponBlurCallback_
 		return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
 	}
 
-	return FRDGADSWeaponBlurPass::AddPass(
+	CachedADSPreDoFSceneColor = SceneColor.Texture;
+
+	return SceneColor;
+}
+
+FScreenPassTexture FOutlierPostProcessSceneViewExtension::ADSSightRestoreCallback_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessMaterialInputs& Inputs)
+{
+	const FScreenPassTexture SceneColor = FScreenPassTexture::CopyFromSlice(
 		GraphBuilder,
-		View,
-		SceneColor,
-		CachedADSWeaponMask,
-		CachedADSHardMask,
-		CachedADSCustomDepth,
-		CachedParameters.ADSBlur,
-		Inputs.OverrideOutput);
+		Inputs.GetInput(EPostProcessMaterialInput::SceneColor));
+
+	if (!SceneColor.IsValid())
+	{
+		return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
+	}
+
+	FRDGTextureRef SightMask = CachedParameters.ADSBlur.bUseSoftSightMask ? CachedADSSightSoftMask : CachedADSSightHardMask;
+	if (!CachedADSPreDoFSceneColor || !SightMask)
+	{
+		return SceneColor;
+	}
+
+	const bool bEnableADSGpuStats = CachedParameters.ADSBlur.bEnableGpuStatScopes != 0;
+	FRDGTextureRef Restored = FRDGAdsSightRestorePass::AddPass(
+		GraphBuilder,
+		SceneColor.Texture,
+		CachedADSPreDoFSceneColor,
+		SightMask,
+		SceneColor.ViewRect,
+		bEnableADSGpuStats);
+
+	FScreenPassTexture RestoredTexture(Restored, SceneColor.ViewRect);
+
+	if (Inputs.OverrideOutput.IsValid())
+	{
+		return FRDGSceneColorCopyPass::AddPass(
+			GraphBuilder,
+			View,
+			RestoredTexture,
+			Inputs.OverrideOutput);
+	}
+
+	return RestoredTexture;
 }
 
 FScreenPassTexture FOutlierPostProcessSceneViewExtension::HeatHazeCallback_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessMaterialInputs& Inputs)
@@ -376,16 +424,13 @@ FScreenPassTexture FOutlierPostProcessSceneViewExtension::DatamoshingCallback_Re
 		return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
 	}
 
-	// 1. ViewState 유효성 검사 및 키(Key) 추출
 	FSceneViewState* ViewState = View.State ? View.State->GetConcreteViewState() : nullptr;	if (!ViewState)
 	{
 		UE_LOG(LogTemp, Error, TEXT("RENDERTHREAD CALL, !ViewState"))
 
-		// 에디터의 특정 뷰포트나 씬 캡처 등 ViewState가 없는 경우 원본 반환
 		return SceneColor;
 	}
 
-	// 2. 현재 뷰에 맵핑된 History 엔트리 획득 (없으면 새로 생성). 프레임 마킹으로 cleanup 방어.
 	FDatamoshHistoryEntry& Entry = DatamoshHistoryMap.FindOrAdd(ViewState);
 	Entry.LastTouchedFrame = GFrameCounterRenderThread;
 

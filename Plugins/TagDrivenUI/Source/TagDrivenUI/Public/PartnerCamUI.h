@@ -8,6 +8,7 @@
 
 class UImage;
 class UMaterialInterface;
+class UPopupRetainerBox;
 class UTextureRenderTarget2D;
 /**
  * 
@@ -20,7 +21,11 @@ class TAGDRIVENUI_API UPartnerCamUI : public UEventDrivenUI
 public:
 
 	virtual void NativeConstruct() override;
+	virtual void Activate() override;
+	virtual void Deactivate() override;
+
 	void TogglePartnerCamera();
+	void SetPartnerCameraActive(bool bActive);
 	void SetPartnerRenderTarget(UTextureRenderTarget2D* InRenderTarget);
 
 
@@ -36,6 +41,16 @@ public:
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UImage> CamImage;
 
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	TObjectPtr<UPopupRetainerBox> PopupRetainerBox;
+
 private:
-	uint8 bFlag : 1 = true;
+	void EnsureMaterialInitialized();
+
+	UFUNCTION()
+	void HandlePopupClosed();
+
+	bool bHudActive = false;
+	// 시작 시 PartnerCam 피드는 꺼짐. PartnerCameraToggle 첫 입력에 캡처와 함께 켜진다.
+	bool bCameraActive = false;
 };

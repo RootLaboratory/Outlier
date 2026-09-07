@@ -5,6 +5,10 @@
 #include "CoreMinimal.h"
 #include "FirstPerson/FirstPersonCharacter.h"
 #include "Engine/DataTable.h"
+#include "InputCoreTypes.h"
+#include "Interface/WeaponMuzzleProvider.h"
+#include "AbilitySystemInterface.h"
+#include "Damage/OutlierDamageReceiver.h"
 #include "PartnerCharacter.generated.h"
 
 UENUM(BlueprintType)
@@ -60,10 +64,22 @@ class UPartnerMovementComponent;
 class UPartnerSupportComponent;
 class UPartnerCombatComponent;
 class UPartnerHackComponent;
-class UPartnerAbilityComponent;
 class UPartnerEMPComponent;
+class UPartnerSpriteAnimationComponent;
+class UOutlierUpgradeComponent;
+class UNiagaraComponent;
+class UNiagaraSystem;
+class UOutlierAbilitySystemComponent;
+class UOutlierVitalAttributeSet;
+class UOutlierPartnerMovementAttributeSet;
+class UPartnerVitalityComponent;
+
+class USceneComponent;
+struct FGameplayEffectSpec;
+struct FActiveGameplayEffectHandle;
+struct FOnAttributeChangeData;
 UCLASS()
-class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter
+class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeaponMuzzleProvider, public IAbilitySystemInterface, public IOutlierDamageReceiver
 {
 	GENERATED_BODY()
 
@@ -71,20 +87,36 @@ class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter
 	friend class UPartnerSupportComponent;
 	friend class UPartnerCombatComponent;
 	friend class UPartnerDistanceComponent;
-	friend class UPartnerAbilityComponent;
+	friend class UPartnerHackComponent;
+	friend class UPartnerEMPComponent;
 protected:
 	// Components
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
+	TObjectPtr<UOutlierAbilitySystemComponent> OutlierAbilitySystemComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
+	TObjectPtr<UOutlierVitalAttributeSet> VitalAttributeSet;
+
+	// Move/BoostSpeed. DT_Partner_Move 기본값으로 초기화되고, Upgrade 트리(Attribute.Partner.MoveSpeed /
+	// Attribute.Partner.BoostSpeed)가 실시간으로 조정한다. BindGasMobilityObservers 가 값 변경을
+	// CharacterMovement / PartnerMovementComponent 에 즉시 반영한다.
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
+	TObjectPtr<UOutlierPartnerMovementAttributeSet> MobilityAttributeSet;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
+	TObjectPtr<UPartnerVitalityComponent> PartnerVitalityComponent;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UPartnerDistanceComponent> DistanceComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UPartnerSpriteAnimationComponent> FaceSpriteAnimationComponent;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UPartnerMovementComponent> MovementComponent;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UPartnerSupportComponent> SupportComponent;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TestAbilityComponents")
-	TObjectPtr<UPartnerAbilityComponent> TestAbilityComponent;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UPartnerCombatComponent> CombatComponent;
@@ -94,6 +126,37 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UPartnerEMPComponent> EMPComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UOutlierUpgradeComponent> UpgradeComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<USceneComponent> ThirdPersonTiltRoot;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<USceneComponent> FirstPersonWeaponRoot;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Attachment")
+	FName FirstPersonWeaponAttachSocketName = TEXT("FirstPerson");
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Attachment")
+	FName ThirdPersonWeaponAttachSocketName = TEXT("ThirdPerson");
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Test|Weapon")
+	FKey ToggleTestWeaponAttachmentKey = EKeys::T;
+
+	// Partner 무기는 본체 메시와 일체형이므로 Weapon Actor 대신 이 소켓에서 총구 연출을 시작한다.
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Presentation")
+	FName FirstPersonWeaponMuzzleSocketName = TEXT("Muzzle");
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Presentation")
+	FName ThirdPersonWeaponMuzzleSocketName = TEXT("Muzzle");
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "VFX")
+	TObjectPtr<UNiagaraSystem> BoostVFX;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "VFX")
+	FName BoostVFXSocketPrefix = TEXT("Boost");
 
 	// Move Data
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Move")
@@ -193,9 +256,6 @@ protected:
 	
 	// Skill Data - Hack
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Hack")
-	float HackRange = 500.0f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Hack")
 	float HackEffectiveRange = 300.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Hack")
@@ -288,19 +348,6 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "CameraAssist")
 	float AssistStrength = 100.0f;
 
-	// Survival Data
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Survival")
-	int32 MaxHitCount = 0;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Survival")
-	float RebootTime = 10.0f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Survival")
-	float InvincibleAfterRebootTime = 1.0f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Survival")
-	float HitInvincibleTime = 0.25f;
-
 	// Replicated 
 	UPROPERTY(ReplicatedUsing = OnRep_DroneMovementState, VisibleAnywhere, BlueprintReadOnly, Category = "State")
 	EDroneMovementState MovementState = EDroneMovementState::Follow;
@@ -320,25 +367,29 @@ protected:
 	UPROPERTY(Replicated)
 	uint8 bScanning : 1;
 
-	UPROPERTY(Replicated)
-	float LastHackServerTime = -999.0f;
+	FTimerHandle BoostNoiseTimerHandle;
 
-	FTimerHandle RebootTimerHandle;
-	FTimerHandle HitInvincibleTimerHandle;
-	FTimerHandle RebootInvincibleTimerHandle;
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Noise|Boost", meta = (ClampMin = "0.05"))
+	float BoostNoiseInterval = 0.5f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Noise|Boost", meta = (ClampMin = "0.0"))
+	float BoostNoiseLoudness = 1.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Noise|Boost", meta = (ClampMin = "0.0"))
+	float BoostNoiseMaxRange = 1000.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Noise|Boost", meta = (ClampMin = "0.0"))
+	float BoostNoiseMinimumSpeed = 10.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Noise|Boost")
+	FName BoostNoiseTag = TEXT("Boost");
 
 	UPROPERTY(ReplicatedUsing = OnRep_IsAccelerate, VisibleAnywhere, BlueprintReadOnly, Category = "Move")
 	uint8 bIsAccelerate : 1 = false;
 	uint8 bPartnerDataInitialized : 1 = false;
 
-	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Survival")
-	uint8 bIsRebooting : 1 = false;
-
-	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Survival")
-	uint8 bIsInvincible : 1 = false;
-
-	UPROPERTY(ReplicatedUsing = OnRep_CurrentHitCount, VisibleAnywhere, BlueprintReadOnly, Category = "Survival")
-	int32 CurrentHitCount = 0;
+	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Partner|EnemyPossession")
+	uint8 bHiddenForEnemyPossession : 1 = false;
 
 	// DataTable
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Data")
@@ -357,24 +408,33 @@ protected:
 	FDataTableRowHandle PartnerSurvivalDataRow;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Data")
+	FDataTableRowHandle VitalityDataRow;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Data")
 	FDataTableRowHandle PartnerCameraAssistDataRow;
 
 	UPROPERTY()
 	TObjectPtr<AShooterCharacter> CachedShooterCharacter;
 
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UNiagaraComponent>> BoostVFXComponents;
+
 protected:
 	virtual void BeginPlay() override;
-	virtual float TakeDamage(
-		float DamageAmount,
-		struct FDamageEvent const& DamageEvent,
-		class AController* EventInstigator,
-		AActor* DamageCauser
-	) override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	virtual void PossessedBy(AController* NewController) override;
+	virtual void OnRep_Controller() override;
+	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
 
+	virtual void UnPossessed() override;
+	void RefreshAbilitySystemActorInfo();
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
 	virtual void DoMove(float Right, float Forward) override;
 	virtual void OnMoveInputUpdated(const FVector2D& MoveValue);
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
+	// AFirstPersonCharacter의 AttackAction 입력 진입점.
+	// 실제 권한 처리와 무기 호출은 CombatComponent의 공개 공격 API에 위임한다.
 	virtual void TryStartAttack() override;
 	virtual void TryStopAttack() override;
 
@@ -383,10 +443,10 @@ protected:
 	void CameraAssist();
 	void StopCameraAssist();
 	void TryHacking();
+	void EndHacking();
 	void Hacking(AActor* TargetActor);
 	void TryEMP();
 	//
-	void TestAbilityScan();
 	void Scan();
 	void Shield();
 	void SyncMove();
@@ -396,15 +456,11 @@ protected:
 	void StopFreeMove();
 	void VerticalMove(const FInputActionValue& Value);
 	void StopVerticalMove();
+	void ToggleTestWeaponEquipment();
 
 	void SetBoundaryOutside(bool bOutside);
 	EPartnerBoundaryState GetBoundaryOutside();
 
-	void StartReboot();
-	void FinishReboot();
-	void ClearHitInvincible();
-	void ClearRebootInvincible();
-	bool CanAcceptInput() const;
 	UPartnerHackComponent* GetRuntimeHackComponent() const;
 	UPartnerEMPComponent* GetRuntimeEMPComponent() const;
 
@@ -412,6 +468,12 @@ protected:
 	void ApplyMoveMode(EPartnerMoveMode NewMode);
 	bool CanApplyMoveMode(EPartnerMoveMode NewMode) const;
 	void ApplyAccelerateState(bool bNewAccelerate);
+	void StartBoostNoiseTimer();
+	void StopBoostNoiseTimer();
+	void ReportBoostNoise();
+	void AttachBoostVFXToMeshes();
+	void AttachBoostVFXToMesh(USkeletalMeshComponent* MeshComponent);
+	void CleanupBoostVFXComponents();
 
 	UFUNCTION(Server, Reliable)
 	void ServerSetMoveMode(EPartnerMoveMode NewMode);
@@ -419,14 +481,38 @@ protected:
 	UFUNCTION(Server, Reliable)
 	void ServerSetAccelerate(bool bNewAccelerate);
 
-	UFUNCTION(Server, Reliable)
-	void ServerUseSkill(EPartnerSkillType SkillType);
-
 	void EnsurePartnerDataInitialized();
 	void InitializeFromDataTables();
+	void BindPartnerCooldownUIObserver();
+	void UnbindPartnerCooldownUIObserver();
+	void HandlePartnerCooldownEffectAdded(
+		UAbilitySystemComponent* AbilitySystem,
+		const FGameplayEffectSpec& EffectSpec,
+		FActiveGameplayEffectHandle EffectHandle);
+	void RefreshPartnerCooldownUI();
+	void NotifyPartnerCooldownUI(const FGameplayTag& CooldownTag);
+	FDelegateHandle PartnerCooldownEffectAddedHandle;
+
+	void BindGasMobilityObservers();
+	void UnbindGasMobilityObservers();
+	void HandleMoveSpeedChanged(const FOnAttributeChangeData& ChangeData);
+	void HandleBoostSpeedChanged(const FOnAttributeChangeData& ChangeData);
+	void RefreshMobilityFromAttributes();
+	FDelegateHandle MoveSpeedChangedHandle;
+	FDelegateHandle BoostSpeedChangedHandle;
 
 	virtual void LookInput(const FInputActionValue& Value) override;
 public:
+	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
+	virtual FGameplayTagContainer GetOwnedGameplayTagsForQuery() const override;
+	UOutlierAbilitySystemComponent* GetOutlierAbilitySystemComponent() const
+	{
+		return OutlierAbilitySystemComponent;
+	}
+	const UOutlierVitalAttributeSet* GetVitalAttributeSet() const { return VitalAttributeSet; }
+	const UOutlierPartnerMovementAttributeSet* GetMobilityAttributeSet() const { return MobilityAttributeSet; }
+	UPartnerVitalityComponent* GetPartnerVitalityComponent() const { return PartnerVitalityComponent; }
+	bool CanAcceptInput() const;
 	UPROPERTY(BlueprintAssignable, Category = "Event")
 	FOnDroneMovementStateChanged OnDroneMovementStateChanged;
 
@@ -435,6 +521,17 @@ public:
 
 public:
 	APartnerCharacter();
+
+	virtual USkeletalMeshComponent* GetWeaponMuzzleComponent(bool bFirstPerson) const override;
+
+	virtual FName GetWeaponMuzzleSocketName(bool bFirstPerson) const override
+	{
+		return bFirstPerson ? FirstPersonWeaponMuzzleSocketName : ThirdPersonWeaponMuzzleSocketName;
+	}
+
+	FName GetFirstPersonWeaponAttachSocketName() const { return FirstPersonWeaponAttachSocketName; }
+	FName GetThirdPersonWeaponAttachSocketName() const { return ThirdPersonWeaponAttachSocketName; }
+	USceneComponent* GetFirstPersonWeaponRoot() const { return FirstPersonWeaponRoot; }
 
 	UFUNCTION()
 	void OnRep_DroneMovementState();
@@ -445,16 +542,16 @@ public:
 	UFUNCTION()
 	void OnRep_IsAccelerate();
 
-	UFUNCTION()
-	void OnRep_CurrentHitCount();
-
 	void SetShooterCharacter(AShooterCharacter* NewShooter);
+	void ConfigureSuitDisableBoundaryRadius(float Radius);
+	void NotifyOffensiveActionExecuted();
 	
 	UFUNCTION(Client, Reliable)
 	void ClientNotifySkillUseResult(EPartnerSkillType SkillType, EPartnerSkillUseResult Result);
 
 	float GetCurrentInertialCameraPitchDegrees() const;
 	float GetCurrentInertialCameraRollDegrees() const;
+	USceneComponent* GetThirdPersonTiltRoot() const { return ThirdPersonTiltRoot; }
 	float GetMaxInertialCameraPitchDegrees() const { return FMath::Max(CameraPitchOnMove, 0.0f); }
 	float GetMaxInertialCameraRollDegrees() const { return FMath::Max(CameraRollOnTurn, 0.0f); }
 
@@ -463,6 +560,20 @@ public:
 	void ApplyDamagedEvent(float InRatio) const;
 	void NullifyDamagedEvenet() const;
 
-	void HandlePartnerHit();
+	void SetEnemyPossessionProtection(bool bEnabled);
+	void StopActionsForReboot();
+	void RefreshEnemyDetectionForVitality();
 
+	// 입력뿐 아니라 Ability/BP에서도 사용할 수 있는 Partner 공격 API.
+	// 소유 클라이언트에서 호출하면 CombatComponent가 서버 RPC로 전달한다.
+	UFUNCTION(BlueprintCallable, Category = "Partner|Combat")
+	void StartWeaponAttack();
+
+	UFUNCTION(BlueprintCallable, Category = "Partner|Combat")
+	void StopWeaponAttack();
+
+	UFUNCTION(BlueprintPure, Category = "Upgrade")
+	UOutlierUpgradeComponent* GetUpgradeComponent() const { return UpgradeComponent; }
+
+	void HandleAutoReloadRequested();
 };

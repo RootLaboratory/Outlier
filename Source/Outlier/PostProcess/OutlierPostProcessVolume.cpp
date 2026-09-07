@@ -4,9 +4,13 @@
 #include "PostProcess/OutlierPostProcessVolume.h"
 
 #include "PostProcess/MaterialPostProcessSubsystem.h"
+#include "Curves/CurveFloat.h"
 #include "Engine/Scene.h"
 #include "Engine/World.h"
+#include "Engine/GameInstance.h"
+#include "Engine/LocalPlayer.h"
 #include "Kismet/KismetMaterialLibrary.h"
+#include "LocalPlayerPostProcessSubsystem.h"
 #include "Materials/MaterialParameterCollection.h"
 #include "Materials/MaterialInterface.h"
 #include "Materials/MaterialInstanceDynamic.h"
@@ -15,6 +19,13 @@ void AOutlierPostProcessVolume::BeginPlay()
 {
 	Super::BeginPlay();
 
+	if (ThirdPersonStealthPostProcessMaterial)
+	{
+		PostProcessMaterials.FindOrAdd(EOutlierPostProcessMaterialType::Stealth) =
+			ThirdPersonStealthPostProcessMaterial;
+	}
+
+	InitializeRuntimePostProcessMaterial(EOutlierPostProcessMaterialType::Stealth);
 	InitializeRuntimePostProcessMaterial(EOutlierPostProcessMaterialType::Damaged);
 
 	if (!HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::Stealth))
@@ -47,6 +58,26 @@ void AOutlierPostProcessVolume::BeginPlay()
 		if (UMaterialPostProcessSubsystem* PostProcessSubsystem = World->GetSubsystem<UMaterialPostProcessSubsystem>())
 		{
 			PostProcessSubsystem->RegisterPostProcessVolume(this);
+		}
+
+		// Pushed directly to every local player's DoF driver, independent of
+		// UMaterialPostProcessSubsystem::RegisterPostProcessVolume's Scan/Stealth/Damaged
+		// material gate above — ADS depth of field has nothing to do with those materials
+		// and shouldn't silently no-op just because this volume doesn't have them assigned.
+		if (UGameInstance* GameInstance = World->GetGameInstance())
+		{
+			for (ULocalPlayer* LocalPlayer : GameInstance->GetLocalPlayers())
+			{
+				if (!LocalPlayer)
+				{
+					continue;
+				}
+
+				if (ULocalPlayerPostProcessSubsystem* DoFSubsystem = LocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
+				{
+					DoFSubsystem->SetDepthOfFieldVolume(this);
+				}
+			}
 		}
 	}
 }
@@ -84,7 +115,7 @@ bool AOutlierPostProcessVolume::HasValidScanPostProcessBindings() const
 		&& !ScanRadiusParameterName.IsNone()
 		&& !ScanProgressParameterName.IsNone()
 		&& !ScanLocationParameterName.IsNone()
-		&& !ScanRangeParameterName.IsNone();
+		&& !ScanFlagParameterName.IsNone();
 }
 
 bool AOutlierPostProcessVolume::HasValidPostProcessMaterial(EOutlierPostProcessMaterialType MaterialType) const
@@ -105,7 +136,6 @@ void AOutlierPostProcessVolume::SetPostProcessEnabled(EOutlierPostProcessMateria
 	{
 	case EOutlierPostProcessMaterialType::Scan:
 		bScanPostProcessEnabled = bInEnabled;
-		//UE_LOG(LogTemp, Error, TEXT("[ScanPPDebug] SetEnabled=%d Weight=%.2f"), bScanPostProcessEnabled ? 1 : 0, TargetWeight);
 		break;
 	case EOutlierPostProcessMaterialType::Stealth:
 		bStealthPostProcessEnabled = bInEnabled;
@@ -150,6 +180,7 @@ void AOutlierPostProcessVolume::SetDamagedMaterialParameters(float InRatio)
 void AOutlierPostProcessVolume::ResetPostProcessMaterialParameters()
 {
 	SetScanMaterialParameters(FVector::ZeroVector, 0.0f, 0.0f);
+	UpdateStealthMaterialParameters(0.0f);
 	UpdateDamagedMaterialParameters(1.0f);
 	ScanRangeRange = 0.0f;
 }
@@ -169,13 +200,6 @@ void AOutlierPostProcessVolume::SetScanMaterialParameters(FVector ScanLocation, 
 		ScanRadius
 	);
 
-	UKismetMaterialLibrary::SetScalarParameterValue(
-		World,
-		ScanParameterCollection,
-		ScanRangeParameterName,
-		Range
-	);
-
 	UKismetMaterialLibrary::SetVectorParameterValue(
 		World,
 		ScanParameterCollection,
@@ -185,11 +209,21 @@ void AOutlierPostProcessVolume::SetScanMaterialParameters(FVector ScanLocation, 
 
 	const float Progress = Range > 0.0f ? ScanRadius / Range : 0.0f;
 
+	const float Flag = Range > 0.0f ? 1 : 0.0f;
+
 	UKismetMaterialLibrary::SetScalarParameterValue(
 		World,
 		ScanParameterCollection,
 		ScanProgressParameterName,
 		Progress
+	);
+
+	//기존 Range->
+	UKismetMaterialLibrary::SetScalarParameterValue(
+		World,
+		ScanParameterCollection,
+		ScanFlagParameterName,
+		Flag
 	);
 
 	ScanRangeRange = Range;
@@ -226,6 +260,29 @@ void AOutlierPostProcessVolume::UpdateScanMaterialParameters(FVector ScanLocatio
 		ScanProgressParameterName,
 		Progress
 	);
+}
+
+void AOutlierPostProcessVolume::UpdateStealthMaterialParameters(float InFade) const
+{
+	const TObjectPtr<UMaterialInterface>* StealthMaterial =
+		PostProcessMaterials.Find(EOutlierPostProcessMaterialType::Stealth);
+	UMaterialInstanceDynamic* StealthMID = StealthMaterial
+		? Cast<UMaterialInstanceDynamic>(StealthMaterial->Get())
+		: nullptr;
+
+	if (StealthMID && !StealthFadeParameterName.IsNone())
+	{
+		const float LinearFade = FMath::Clamp(InFade, 0.0f, 1.0f);
+		const float FadeWeight = LinearFade <= 0.0f || LinearFade >= 1.0f
+			? LinearFade
+			: StealthFadeCurve
+				? FMath::Clamp(StealthFadeCurve->GetFloatValue(LinearFade), 0.0f, 1.0f)
+				: LinearFade;
+
+		StealthMID->SetScalarParameterValue(
+			StealthFadeParameterName,
+			FadeWeight);
+	}
 }
 
 void AOutlierPostProcessVolume::UpdateDamagedMaterialParameters(float InPlayerHPRatio)  const

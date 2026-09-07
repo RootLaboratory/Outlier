@@ -55,6 +55,8 @@ protected:
 
 	void UpdateFirstPersonProceduralValues(float DeltaSeconds);
 	void UpdateFirstPersonProceduralRuntime(float DeltaSeconds);
+	void UpdateFirstPersonDiagnostics(float DeltaSeconds, bool bWeaponChanged);
+	void LogFirstPersonDiagnostics(const TCHAR* Reason) const;
 	void UpdateWallOffset(float DeltaSeconds, const FWeaponValues* WeaponValues);
 	bool IsMontageInProceduralActionWindow(const UAnimMontage* Montage, float EarlyReleaseTime) const;
 
@@ -70,6 +72,41 @@ protected:
 	void ResetWallOffsetState(bool bResetPoseAssets);
 
 protected:
+	// AnimGraph 연결을 변경하지 않고 Procedural 레이어를 격리하기 위한 튜닝용 토글.
+	// 기본값은 모두 true여서 기존 런타임 동작을 유지한다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|FP Procedural|Debug Toggle")
+	bool bEnableProceduralAnimation = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|FP Procedural|Debug Toggle", meta = (EditCondition = "bEnableProceduralAnimation"))
+	bool bEnableProceduralHip = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|FP Procedural|Debug Toggle", meta = (EditCondition = "bEnableProceduralAnimation"))
+	bool bEnableProceduralAim = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|FP Procedural|Debug Toggle", meta = (EditCondition = "bEnableProceduralAnimation"))
+	bool bEnableProceduralIdle = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|FP Procedural|Debug Toggle", meta = (EditCondition = "bEnableProceduralAnimation"))
+	bool bEnableProceduralLeftHandIK = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|FP Procedural|Debug Toggle", meta = (EditCondition = "bEnableProceduralAnimation"))
+	bool bEnableProceduralMovement = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|FP Procedural|Debug Toggle", meta = (EditCondition = "bEnableProceduralAnimation"))
+	bool bEnableProceduralSway = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|FP Procedural|Debug Toggle", meta = (EditCondition = "bEnableProceduralAnimation"))
+	bool bEnableProceduralSprint = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|FP Procedural|Debug Toggle", meta = (EditCondition = "bEnableProceduralAnimation"))
+	bool bEnableProceduralRecoil = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|FP Procedural|Debug Toggle", meta = (EditCondition = "bEnableProceduralAnimation"))
+	bool bEnableProceduralAction = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim|FP Procedural|Debug Toggle", meta = (EditCondition = "bEnableProceduralAnimation"))
+	bool bEnableProceduralWallOffset = true;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Stat)
 	float Speed = 0;
 
@@ -456,6 +493,7 @@ protected:
 	float StartStopTime = 0.0f;
 	float StartStopDuration = 0.15f;
 	float SprintExitDetailBlockTimer = 0.0f;
+	float FirstPersonDiagnosticLogTimeRemaining = 0.0f;
 	int32 StartStopDirection = 0;
 	uint8 bWasShouldMove : 1 = false;
 	uint8 bWasSprinting : 1 = false;

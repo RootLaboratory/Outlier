@@ -5,6 +5,7 @@
 #include "HackCandidateLayerWidget.generated.h"
 
 class UCanvasPanel;
+class UHackableInfoWidget;
 class UHackCandidateMarkerWidget;
 class UHackableComponent;
 class UPartnerHackComponent;
@@ -17,6 +18,7 @@ class OUTLIER_API UHackCandidateLayerWidget : public UUserWidget
 public:
 	void BindHackComponent(UPartnerHackComponent* InHackComponent);
 	void SetMarkerWidgetClass(TSubclassOf<UHackCandidateMarkerWidget> InMarkerWidgetClass);
+	void SetHackableInfoWidgetClass(TSubclassOf<UHackableInfoWidget> InHackableInfoWidgetClass);
 	void AddCandidate(AActor* TargetActor, UHackableComponent* HackableComponent);
 	void RemoveCandidate(AActor* TargetActor, UHackableComponent* HackableComponent);
 	void ClearMarkers();
@@ -31,6 +33,9 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, Category = "Hack")
 	TSubclassOf<UHackCandidateMarkerWidget> MarkerWidgetClass;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Hack")
+	TSubclassOf<UHackableInfoWidget> HackableInfoWidgetClass;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Hack")
 	FVector2D MarkerSize = FVector2D(64.0f, 64.0f);

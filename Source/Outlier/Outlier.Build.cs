@@ -22,18 +22,30 @@ public class Outlier : ModuleRules
             "StateTreeModule",
             "GameplayStateTreeModule",
             "GameplayTags",
+            "GameplayAbilities",
+            "GameplayTasks",
             "UMG",
             "Slate",
             "AnimGraphRuntime",
             "TagDrivenUI",
             "DeveloperSettings",
             "VisualEvent",
-            "Niagara"
+            "Niagara",
+            "PhysicsCore",
+            "GeometryCollectionEngine",
+            "Sockets",
+            "Networking",
+            "Json"
         });
 
         PrivateDependencyModuleNames.AddRange(new string[]
         {
         });
+
+        if (Target.bBuildEditor)
+        {
+            PrivateDependencyModuleNames.Add("AssetRegistry");
+        }
 
         PublicIncludePaths.AddRange(new string[] {
             ModuleDirectory

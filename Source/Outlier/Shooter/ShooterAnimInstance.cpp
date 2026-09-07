@@ -34,6 +34,7 @@ namespace
 	{
 		return FRotator(Rotator.Pitch * Scale, Rotator.Yaw * Scale, Rotator.Roll * Scale);
 	}
+
 }
 
 void UShooterAnimInstance::NativeInitializeAnimation()
@@ -106,6 +107,7 @@ void UShooterAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 	{
 		Speed = 0.0f;
 		Direction = 0.0f;
+		VelocityZ = 0.0f;
 		CurrentWeaponType = EWeaponType::Unarmed;
 		AimYaw = 0.0f;
 		AimPitch = 0.0f;
@@ -129,6 +131,7 @@ void UShooterAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 	{
 		Speed = 0.0f;
 		Direction = 0.0f;
+		VelocityZ = 0.0f;
 		bIsGrounded = true;
 		bIsInAir = false;
 		ResetThirdPersonProceduralState();
@@ -136,6 +139,7 @@ void UShooterAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 	}
 
 	Speed		      = CharacterMovement->Velocity.Size2D();
+	VelocityZ         = CharacterMovement->Velocity.Z;
 	Direction		  = UKismetAnimationLibrary::CalculateDirection(
 		CharacterMovement->Velocity,
 		CachedShooterCharacter->GetActorRotation()
@@ -455,6 +459,15 @@ void UShooterAnimInstance::UpdateThirdPersonWallOffset(float DeltaSeconds, AWeap
 				Params
 			);
 
+			// 바닥 필터: 위를 향한 노멀은 벽이 아니다. 앉거나 아래를 보면
+			// 조준 방향 프로브가 가까운 바닥을 때려 벽 단계가 오작동한다
+			if (Result.bHit &&
+				Result.Hit.ImpactNormal.Z > FMath::Clamp(ThirdPersonWallFloorNormalZ, 0.0f, 1.0f))
+			{
+				Result.bHit = false;
+				Result.Hit = FHitResult();
+			}
+
 			if (Result.bHit)
 			{
 				Result.Alpha = FMath::Clamp((ProbeDistance - Result.Hit.Distance) / ProbeSafeDistance, 0.0f, 1.0f);
@@ -493,6 +506,12 @@ void UShooterAnimInstance::UpdateThirdPersonWallOffset(float DeltaSeconds, AWeap
 				FCollisionShape::MakeSphere(TraceRadius),
 				Params
 			);
+			if (FlatProbe.bHit &&
+				FlatProbe.Hit.ImpactNormal.Z > FMath::Clamp(ThirdPersonWallFloorNormalZ, 0.0f, 1.0f))
+			{
+				FlatProbe.bHit = false;
+				FlatProbe.Hit = FHitResult();
+			}
 			if (FlatProbe.bHit)
 			{
 				FlatProbe.Alpha = FMath::Clamp((TraceDistance - FlatProbe.Hit.Distance) / SafeDistance, 0.0f, 1.0f);
@@ -921,4 +940,3 @@ void UShooterAnimInstance::UpdateThirdPersonProceduralState(float DeltaSeconds, 
 	UpdateThirdPersonRecoil(DeltaSeconds, WeaponValues);
 	UpdateThirdPersonWallOffset(DeltaSeconds, CurrentWeapon, WeaponValues);
 }
-

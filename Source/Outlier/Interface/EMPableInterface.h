@@ -19,5 +19,6 @@ class OUTLIER_API IEMPableInterface
 
 public:
 	virtual UEMPableComponent* GetEMPableComponent() const = 0;
-	virtual void HandleEmp(FGameplayTag EffectTag) = 0;
+	virtual void HandleEMPStarted(FGameplayTag EffectTag) = 0;
+	virtual void HandleEMPEnded(FGameplayTag EffectTag) = 0;
 };

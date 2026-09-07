@@ -97,9 +97,9 @@ public:
 	float StartAngleDegrees = -90.0f;
 
 protected:
-	virtual int32 NativePaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry,
+	/*virtual int32 NativePaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry,
 		const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements,
-		int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;
+		int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;*/
 
 private:
 

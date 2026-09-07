@@ -12,5 +12,7 @@ public class OutlierTarget : TargetRules
         ExtraModuleNames.Add("Outlier");
 
         bUseLoggingInShipping = true;
+
+
     }
 }

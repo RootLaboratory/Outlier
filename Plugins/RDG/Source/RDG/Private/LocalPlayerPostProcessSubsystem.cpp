@@ -1,11 +1,32 @@
-// Fill out your copyright notice in the Description page of Project Settings.
-
 #include "LocalPlayerPostProcessSubsystem.h"
 
 #include "OutlierPostProcessSceneViewExtension.h"
 #include "RDGExplosionVolumeProvider.h"
 #include "RenderingThread.h"
 #include "SceneViewExtension.h"
+#include "Engine/PostProcessVolume.h"
+
+namespace PostProcessAnimation
+{
+	float ApplyCurve(float Progress, int32 Curve)
+	{
+		if (Curve == static_cast<int32>(EPixelSortingCurve::CubicEaseIn))
+		{
+			return Progress * Progress * Progress;
+		}
+
+		return Progress;
+	}
+}
+
+namespace PixelSortingAnimation
+{
+	void Reset(FPixelSortingParameters& Parameters)
+	{
+		Parameters.Threshold = 255.0f;
+		Parameters.Progress = 0.0f;
+	}
+}
 
 void ULocalPlayerPostProcessSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -16,11 +37,21 @@ void ULocalPlayerPostProcessSubsystem::Initialize(FSubsystemCollectionBase& Coll
 		ViewExtension = FSceneViewExtensions::NewExtension<FOutlierPostProcessSceneViewExtension>(LP);
 	}
 
+
+#if UE_BUILD_SHIPPING
+	SetChromaticAberrationEnabled(true);
+#endif
+
 	TickFrame();
 }
 
 void ULocalPlayerPostProcessSubsystem::Deinitialize()
 {
+	OnHackTransitionCovered.Clear();
+	OnHackTransitionFinished.Clear();
+	HackPossessionTransitionPhase = EHackPossessionTransitionPhase::Idle;
+	bHackTransitionCoveredBroadcastSent = false;
+
 	Super::Deinitialize();
 	ViewExtension.Reset();
 
@@ -34,7 +65,11 @@ void ULocalPlayerPostProcessSubsystem::Deinitialize()
 
 void ULocalPlayerPostProcessSubsystem::Tick(float DeltaTime)
 {
+	UpdateOverlay(DeltaTime);
 	UpdateADSBlur(DeltaTime);
+	UpdatePixelSorting(DeltaTime);
+	UpdateHackPossessionTransition(DeltaTime);
+	UpdateDepthOfField();
 }
 
 TStatId ULocalPlayerPostProcessSubsystem::GetStatId() const
@@ -127,6 +162,68 @@ void ULocalPlayerPostProcessSubsystem::SetChromaticAberrationIntensity(float InI
 	MarkDirty();
 }
 
+void ULocalPlayerPostProcessSubsystem::SetOverlayEnabled(bool bEnabled)
+{
+	bOverlayRequested = bEnabled;
+	if (bEnabled)
+	{
+		// 0에서 올라가는 첫 프레임부터 패스를 그래프에 유지한다.
+		UIPostProcessParameters.Overlay.bEnabled = true;
+	}
+	else if (UIPostProcessParameters.Overlay.AccumulatedValue <= KINDA_SMALL_NUMBER)
+	{
+		UIPostProcessParameters.Overlay.AccumulatedValue = 0.0f;
+		UIPostProcessParameters.Overlay.bEnabled = false;
+	}
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetOverlayTintColor(const FLinearColor& InTintColor)
+{
+	UIPostProcessParameters.Overlay.TintColor = InTintColor.GetClamped(0.0f, 1.0f);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetOverlayGoalValue(float InGoalValue)
+{
+	UIPostProcessParameters.Overlay.GoalValue = FMath::Clamp(InGoalValue, 0.0f, 1.0f);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::UpdateOverlay(float DeltaTime)
+{
+	FOverlayParameters& Overlay = UIPostProcessParameters.Overlay;
+	if (DeltaTime <= 0.0f || (!bOverlayRequested && Overlay.bEnabled == 0))
+	{
+		return;
+	}
+
+	const float TargetValue = bOverlayRequested
+		? FMath::Clamp(Overlay.GoalValue, 0.0f, 1.0f)
+		: 0.0f;
+	const float NextValue = FMath::FInterpConstantTo(
+		Overlay.AccumulatedValue,
+		TargetValue,
+		DeltaTime,
+		1.0f);
+	const bool bReachedZero = !bOverlayRequested && NextValue <= KINDA_SMALL_NUMBER;
+	const int32 NextEnabled = bReachedZero ? 0 : 1;
+
+	if (FMath::IsNearlyEqual(Overlay.AccumulatedValue, NextValue)
+		&& Overlay.bEnabled == NextEnabled)
+	{
+		return;
+	}
+
+	Overlay.AccumulatedValue = bReachedZero ? 0.0f : NextValue;
+	Overlay.bEnabled = NextEnabled;
+	MarkDirty();
+	TickFrame();
+}
+
 void ULocalPlayerPostProcessSubsystem::SetDualKawaseBlurEnabled(bool bEnabled)
 {
 	PostProcessParameters.DualKawaseBlur.bEnabled = bEnabled ? 1 : 0;
@@ -172,38 +269,534 @@ void ULocalPlayerPostProcessSubsystem::SetDatamoshingProgress(float InProgress)
 	TickFrame();
 }
 
-void ULocalPlayerPostProcessSubsystem::SetADSBlurEnabled(bool bEnabled)
+void ULocalPlayerPostProcessSubsystem::SetPixelSortingEnabled(bool bEnabled)
 {
-	PostProcessParameters.ADSBlur.bEnabled = bEnabled ? 1 : 0;
+	const bool bWasEnabled = PostProcessParameters.PixelSorting.bEnabled != 0;
+	PostProcessParameters.PixelSorting.bEnabled = bEnabled ? 1 : 0;
+	if (!bEnabled || !bWasEnabled)
+	{
+		PixelSortingAnimation::Reset(PostProcessParameters.PixelSorting);
+	}
 	MarkDirty();
 	TickFrame();
 }
 
-void ULocalPlayerPostProcessSubsystem::SetADSBlurBlend(float InAdsBlend)
+void ULocalPlayerPostProcessSubsystem::SetPixelSortingMode(int32 InMode)
 {
-	PostProcessParameters.ADSBlur.AdsBlend = FMath::Clamp(InAdsBlend, 0.0f, 1.0f);
+	PostProcessParameters.PixelSorting.Mode = FMath::Clamp(
+		InMode,
+		static_cast<int32>(EPixelSortingMode::White),
+		static_cast<int32>(EPixelSortingMode::Dark));
+	PixelSortingAnimation::Reset(PostProcessParameters.PixelSorting);
 	MarkDirty();
 	TickFrame();
 }
 
-void ULocalPlayerPostProcessSubsystem::SetADSBlurRadius(float InBlurRadius)
+void ULocalPlayerPostProcessSubsystem::SetPixelSortingCurve(int32 InCurve)
 {
-	PostProcessParameters.ADSBlur.BlurRadius = FMath::Max(0.0f, InBlurRadius);
+	FPixelSortingParameters& Parameters = PostProcessParameters.PixelSorting;
+	Parameters.Curve = FMath::Clamp(
+		InCurve,
+		static_cast<int32>(EPixelSortingCurve::Linear),
+		static_cast<int32>(EPixelSortingCurve::CubicEaseIn));
+	PixelSortingAnimation::Reset(Parameters);
 	MarkDirty();
 	TickFrame();
 }
 
-void ULocalPlayerPostProcessSubsystem::SetADSBlurMaskParameters(float InDilateRadius, float InSoftness)
+void ULocalPlayerPostProcessSubsystem::SetPixelSortingMinThreshold(int32 InMinThreshold)
 {
-	PostProcessParameters.ADSBlur.MaskDilateRadius = FMath::Max(0.0f, InDilateRadius);
-	PostProcessParameters.ADSBlur.MaskSoftness = FMath::Max(0.0f, InSoftness);
+	FPixelSortingParameters& Parameters = PostProcessParameters.PixelSorting;
+	Parameters.MinThreshold = FMath::Clamp(InMinThreshold, 0, 255);
+	PostProcessParameters.ZoomBlur.TriggerThreshold = FMath::Clamp(
+		PostProcessParameters.ZoomBlur.TriggerThreshold,
+		Parameters.MinThreshold,
+		255);
+	PixelSortingAnimation::Reset(Parameters);
 	MarkDirty();
 	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetPixelSortingScale(float InScale)
+{
+	PostProcessParameters.PixelSorting.Scale = FMath::Max(0.0f, InScale);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetPixelSortingColorInterpolationEnabled(bool bEnabled)
+{
+	PostProcessParameters.PixelSorting.bColorInterpolationEnabled = bEnabled ? 1 : 0;
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetPixelSortingTargetColor(const FLinearColor& InTargetColor)
+{
+	PostProcessParameters.PixelSorting.TargetColor = FLinearColor(
+		FMath::Clamp(InTargetColor.R, 0.0f, 1.0f),
+		FMath::Clamp(InTargetColor.G, 0.0f, 1.0f),
+		FMath::Clamp(InTargetColor.B, 0.0f, 1.0f),
+		1.0f);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetPixelSortingRowsEnabled(bool bEnabled)
+{
+	PostProcessParameters.PixelSorting.bSortRows = bEnabled ? 1 : 0;
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetPixelSortingColumnsEnabled(bool bEnabled)
+{
+	PostProcessParameters.PixelSorting.bSortColumns = bEnabled ? 1 : 0;
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetPixelSortingResolutionDivisor(int32 InDivisor)
+{
+	PostProcessParameters.PixelSorting.ResolutionDivisor = FMath::Clamp(InDivisor, 1, 8);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetZoomBlurEnabled(bool bEnabled)
+{
+	PostProcessParameters.ZoomBlur.bEnabled = bEnabled ? 1 : 0;
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetZoomBlurBlackFlushAlpha(float InBlackFlushAlpha)
+{
+	PostProcessParameters.ZoomBlur.BlackFlushAlpha = FMath::Clamp(InBlackFlushAlpha, 0.0f, 1.0f);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetZoomBlurTriggerThreshold(int32 InTriggerThreshold)
+{
+	PostProcessParameters.ZoomBlur.TriggerThreshold = FMath::Clamp(
+		InTriggerThreshold,
+		PostProcessParameters.PixelSorting.MinThreshold,
+		255);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetZoomBlurBlackoutStartProgress(float InStartProgress)
+{
+	PostProcessParameters.ZoomBlur.BlackoutStartProgress = FMath::Clamp(InStartProgress, 0.0f, 1.0f);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetZoomBlurCurve(int32 InCurve)
+{
+	PostProcessParameters.ZoomBlur.ZoomBlurCurve = FMath::Clamp(
+		InCurve,
+		static_cast<int32>(EPixelSortingCurve::Linear),
+		static_cast<int32>(EPixelSortingCurve::CubicEaseIn));
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetZoomBlurBlackoutCurve(int32 InCurve)
+{
+	PostProcessParameters.ZoomBlur.BlackoutCurve = FMath::Clamp(
+		InCurve,
+		static_cast<int32>(EPixelSortingCurve::Linear),
+		static_cast<int32>(EPixelSortingCurve::CubicEaseIn));
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetZoomBlurFadeInTimeScale(float InTimeScale)
+{
+	PostProcessParameters.ZoomBlur.ZoomBlurFadeInTimeScale = FMath::Clamp(InTimeScale, 0.05f, 10.0f);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetZoomBlurFadeOutTimeScale(float InTimeScale)
+{
+	PostProcessParameters.ZoomBlur.ZoomBlurFadeOutTimeScale = FMath::Clamp(InTimeScale, 0.05f, 10.0f);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetZoomBlurBlackoutFadeInTimeScale(float InTimeScale)
+{
+	PostProcessParameters.ZoomBlur.BlackoutFadeInTimeScale = FMath::Clamp(InTimeScale, 0.05f, 10.0f);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetZoomBlurBlackoutFadeOutTimeScale(float InTimeScale)
+{
+	PostProcessParameters.ZoomBlur.BlackoutFadeOutTimeScale = FMath::Clamp(InTimeScale, 0.05f, 10.0f);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetZoomBlurMaximumStrength(float InMaximumStrength)
+{
+	FZoomBlurParameters& ZoomBlur = PostProcessParameters.ZoomBlur;
+	ZoomBlur.MaximumStrength = FMath::Clamp(InMaximumStrength, 0.0f, 1.0f);
+	ZoomBlur.Strength = ZoomBlur.MaximumStrength * FMath::Clamp(ZoomBlur.Progress, 0.0f, 1.0f);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetZoomBlurStartOffset(float InStartOffset)
+{
+	PostProcessParameters.ZoomBlur.StartOffset = FMath::Clamp(InStartOffset, 0.0f, 0.99f);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetZoomBlurSampleCount(int32 InSampleCount)
+{
+	PostProcessParameters.ZoomBlur.SampleCount = FMath::Clamp(InSampleCount, 2, 64);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetZoomBlurResolutionDivisor(int32 InDivisor)
+{
+	PostProcessParameters.ZoomBlur.ResolutionDivisor = FMath::Clamp(InDivisor, 1, 8);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::StartHackPossessionTransition()
+{
+	if (HackPossessionTransitionPhase != EHackPossessionTransitionPhase::Idle)
+	{
+		return;
+	}
+
+	HackPossessionTransitionPhase = EHackPossessionTransitionPhase::PixelSorting;
+	HackTransitionZoomBlurElapsedTime = 0.0f;
+	HackTransitionBlackoutElapsedTime = 0.0f;
+	bHackTransitionCoveredBroadcastSent = false;
+
+	FPixelSortingParameters& PixelSorting = PostProcessParameters.PixelSorting;
+	PixelSorting.bEnabled = true;
+	PixelSortingAnimation::Reset(PixelSorting);
+
+	FZoomBlurParameters& ZoomBlur = PostProcessParameters.ZoomBlur;
+	ZoomBlur.bEnabled = false;
+	ZoomBlur.BlackFlushAlpha = 0.0f;
+	ZoomBlur.Progress = 0.0f;
+	ZoomBlur.Strength = 0.0f;
+	ZoomBlur.StartOffset = 0.0f;
+
+	MarkDirty();
+	TickFrame();
+}
+
+bool ULocalPlayerPostProcessSubsystem::StartHackPossessionReveal()
+{
+	if (HackPossessionTransitionPhase == EHackPossessionTransitionPhase::RevealFromBlack)
+	{
+		return true;
+	}
+
+	if (HackPossessionTransitionPhase != EHackPossessionTransitionPhase::Covered)
+	{
+		return false;
+	}
+
+	HackPossessionTransitionPhase = EHackPossessionTransitionPhase::RevealFromBlack;
+	HackTransitionZoomBlurElapsedTime = 0.0f;
+	HackTransitionBlackoutElapsedTime = 0.0f;
+
+	FPixelSortingParameters& PixelSorting = PostProcessParameters.PixelSorting;
+	PixelSorting.bEnabled = false;
+	PixelSortingAnimation::Reset(PixelSorting);
+
+	FZoomBlurParameters& ZoomBlur = PostProcessParameters.ZoomBlur;
+	ZoomBlur.bEnabled = true;
+	ZoomBlur.BlackFlushAlpha = 1.0f;
+	ZoomBlur.Progress = 1.0f;
+	ZoomBlur.Strength = FMath::Clamp(ZoomBlur.MaximumStrength, 0.0f, 1.0f);
+	ZoomBlur.StartOffset = 0.0f;
+
+	MarkDirty();
+	TickFrame();
+	return true;
+}
+
+void ULocalPlayerPostProcessSubsystem::CancelHackPossessionTransition()
+{
+	HackPossessionTransitionPhase = EHackPossessionTransitionPhase::Idle;
+	HackTransitionZoomBlurElapsedTime = 0.0f;
+	HackTransitionBlackoutElapsedTime = 0.0f;
+	bHackTransitionCoveredBroadcastSent = false;
+
+	FPixelSortingParameters& PixelSorting = PostProcessParameters.PixelSorting;
+	PixelSorting.bEnabled = false;
+	PixelSortingAnimation::Reset(PixelSorting);
+
+	FZoomBlurParameters& ZoomBlur = PostProcessParameters.ZoomBlur;
+	ZoomBlur.bEnabled = false;
+	ZoomBlur.BlackFlushAlpha = 0.0f;
+	ZoomBlur.Progress = 0.0f;
+	ZoomBlur.Strength = 0.0f;
+	ZoomBlur.StartOffset = 0.0f;
+
+	MarkDirty();
+	TickFrame();
+}
+
+bool ULocalPlayerPostProcessSubsystem::IsHackPossessionTransitionActive() const
+{
+	return HackPossessionTransitionPhase != EHackPossessionTransitionPhase::Idle;
+}
+
+void ULocalPlayerPostProcessSubsystem::UpdatePixelSorting(float DeltaTime)
+{
+	FPixelSortingParameters& Parameters = PostProcessParameters.PixelSorting;
+	if (Parameters.bEnabled == 0 || DeltaTime <= 0.0f)
+	{
+		return;
+	}
+
+	const float Minimum = static_cast<float>(FMath::Clamp(Parameters.MinThreshold, 0, 255));
+	const float ThresholdRange = 255.0f - Minimum;
+	const float Speed = FMath::Max(0.0f, Parameters.Scale);
+	const float ProgressStep = ThresholdRange > KINDA_SMALL_NUMBER
+		? DeltaTime * Speed / ThresholdRange
+		: 1.0f;
+	const float NextProgress = FMath::Clamp(Parameters.Progress + ProgressStep, 0.0f, 1.0f);
+	if (FMath::IsNearlyEqual(NextProgress, Parameters.Progress))
+	{
+		return;
+	}
+
+	Parameters.Progress = NextProgress;
+	Parameters.Threshold = FMath::Lerp(
+		255.0f,
+		Minimum,
+		PostProcessAnimation::ApplyCurve(NextProgress, Parameters.Curve));
+
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::UpdateHackPossessionTransition(float DeltaTime)
+{
+	if (DeltaTime <= 0.0f)
+	{
+		return;
+	}
+
+	if (HackPossessionTransitionPhase == EHackPossessionTransitionPhase::PixelSorting)
+	{
+		const FPixelSortingParameters& PixelSorting = PostProcessParameters.PixelSorting;
+		const int32 TriggerThreshold = FMath::Clamp(
+			PostProcessParameters.ZoomBlur.TriggerThreshold,
+			PixelSorting.MinThreshold,
+			255);
+		if (PixelSorting.Threshold > static_cast<float>(TriggerThreshold))
+		{
+			return;
+		}
+
+		HackPossessionTransitionPhase = EHackPossessionTransitionPhase::BlurToBlack;
+		HackTransitionZoomBlurElapsedTime = 0.0f;
+		HackTransitionBlackoutElapsedTime = 0.0f;
+		PostProcessParameters.ZoomBlur.bEnabled = true;
+		PostProcessParameters.ZoomBlur.BlackFlushAlpha = 0.0f;
+		PostProcessParameters.ZoomBlur.Progress = 0.0f;
+		PostProcessParameters.ZoomBlur.Strength = 0.0f;
+		PostProcessParameters.ZoomBlur.StartOffset = 0.0f;
+		MarkDirty();
+		TickFrame();
+		return;
+	}
+
+	if (HackPossessionTransitionPhase == EHackPossessionTransitionPhase::Covered)
+	{
+		if (!bHackTransitionCoveredBroadcastSent)
+		{
+			bHackTransitionCoveredBroadcastSent = true;
+			OnHackTransitionCovered.Broadcast();
+		}
+
+		return;
+	}
+
+	if (HackPossessionTransitionPhase == EHackPossessionTransitionPhase::BlurToBlack)
+	{
+		FZoomBlurParameters& ZoomBlur = PostProcessParameters.ZoomBlur;
+		const float ZoomBlurFadeInTimeScale = FMath::Clamp(ZoomBlur.ZoomBlurFadeInTimeScale, 0.05f, 10.0f);
+		HackTransitionZoomBlurElapsedTime += DeltaTime * ZoomBlurFadeInTimeScale;
+		const float ZoomBlurDuration = FMath::Max(HackTransitionZoomBlurDuration, KINDA_SMALL_NUMBER);
+		const float LinearProgress = FMath::Clamp(
+			HackTransitionZoomBlurElapsedTime / ZoomBlurDuration,
+			0.0f,
+			1.0f);
+		const float NextProgress = PostProcessAnimation::ApplyCurve(
+			LinearProgress,
+			ZoomBlur.ZoomBlurCurve);
+
+		float NextBlackoutAlpha = ZoomBlur.BlackFlushAlpha;
+		const float BlackoutStartProgress = FMath::Clamp(ZoomBlur.BlackoutStartProgress, 0.0f, 1.0f);
+		if (NextProgress >= BlackoutStartProgress)
+		{
+			const float BlackoutTimeScale = FMath::Clamp(ZoomBlur.BlackoutFadeInTimeScale, 0.05f, 10.0f);
+			HackTransitionBlackoutElapsedTime += DeltaTime * BlackoutTimeScale;
+			const float BlackoutDuration = FMath::Max(HackTransitionBlackoutDuration, KINDA_SMALL_NUMBER);
+			const float LinearBlackoutAlpha = FMath::Clamp(
+				HackTransitionBlackoutElapsedTime / BlackoutDuration,
+				0.0f,
+				1.0f);
+			NextBlackoutAlpha = PostProcessAnimation::ApplyCurve(
+				LinearBlackoutAlpha,
+				ZoomBlur.BlackoutCurve);
+		}
+
+		const float MaximumStrength = FMath::Clamp(ZoomBlur.MaximumStrength, 0.0f, 1.0f);
+		const float NextStrength = MaximumStrength * NextProgress;
+		if (!FMath::IsNearlyEqual(ZoomBlur.Progress, NextProgress)
+			|| !FMath::IsNearlyEqual(ZoomBlur.BlackFlushAlpha, NextBlackoutAlpha)
+			|| !FMath::IsNearlyEqual(ZoomBlur.Strength, NextStrength))
+		{
+			ZoomBlur.Progress = NextProgress;
+			ZoomBlur.BlackFlushAlpha = NextBlackoutAlpha;
+			ZoomBlur.Strength = NextStrength;
+			ZoomBlur.StartOffset = 0.0f;
+			MarkDirty();
+			TickFrame();
+		}
+
+		if (NextBlackoutAlpha < 1.0f)
+		{
+			return;
+		}
+
+		ZoomBlur.Progress = 1.0f;
+		ZoomBlur.BlackFlushAlpha = 1.0f;
+		ZoomBlur.Strength = FMath::Clamp(ZoomBlur.MaximumStrength, 0.0f, 1.0f);
+		ZoomBlur.StartOffset = 0.0f;
+		FPixelSortingParameters& PixelSorting = PostProcessParameters.PixelSorting;
+		PixelSorting.bEnabled = false;
+		PixelSortingAnimation::Reset(PixelSorting);
+		HackPossessionTransitionPhase = EHackPossessionTransitionPhase::Covered;
+		bHackTransitionCoveredBroadcastSent = false;
+		MarkDirty();
+		TickFrame();
+		return;
+	}
+
+	if (HackPossessionTransitionPhase != EHackPossessionTransitionPhase::RevealFromBlack)
+	{
+		return;
+	}
+
+	FZoomBlurParameters& ZoomBlur = PostProcessParameters.ZoomBlur;
+	const float ZoomBlurFadeOutTimeScale = FMath::Clamp(ZoomBlur.ZoomBlurFadeOutTimeScale, 0.05f, 10.0f);
+	const float BlackoutTimeScale = FMath::Clamp(ZoomBlur.BlackoutFadeOutTimeScale, 0.05f, 10.0f);
+	HackTransitionZoomBlurElapsedTime += DeltaTime * ZoomBlurFadeOutTimeScale;
+	HackTransitionBlackoutElapsedTime += DeltaTime * BlackoutTimeScale;
+
+	const float ZoomBlurDuration = FMath::Max(HackTransitionZoomBlurDuration, KINDA_SMALL_NUMBER);
+	const float BlackoutDuration = FMath::Max(HackTransitionBlackoutDuration, KINDA_SMALL_NUMBER);
+	const float LinearProgress = 1.0f - FMath::Clamp(
+		HackTransitionZoomBlurElapsedTime / ZoomBlurDuration,
+		0.0f,
+		1.0f);
+	const float LinearBlackoutAlpha = 1.0f - FMath::Clamp(
+		HackTransitionBlackoutElapsedTime / BlackoutDuration,
+		0.0f,
+		1.0f);
+	const float NextProgress = PostProcessAnimation::ApplyCurve(
+		LinearProgress,
+		ZoomBlur.ZoomBlurCurve);
+	const float NextBlackoutAlpha = PostProcessAnimation::ApplyCurve(
+		LinearBlackoutAlpha,
+		ZoomBlur.BlackoutCurve);
+	const float MaximumStrength = FMath::Clamp(ZoomBlur.MaximumStrength, 0.0f, 1.0f);
+	const float NextStrength = MaximumStrength * NextProgress;
+
+	if (!FMath::IsNearlyEqual(ZoomBlur.Progress, NextProgress)
+		|| !FMath::IsNearlyEqual(ZoomBlur.BlackFlushAlpha, NextBlackoutAlpha)
+		|| !FMath::IsNearlyEqual(ZoomBlur.Strength, NextStrength))
+	{
+		ZoomBlur.Progress = NextProgress;
+		ZoomBlur.BlackFlushAlpha = NextBlackoutAlpha;
+		ZoomBlur.Strength = NextStrength;
+		ZoomBlur.StartOffset = 0.0f;
+		MarkDirty();
+		TickFrame();
+	}
+
+	if (NextProgress > 0.0f || NextBlackoutAlpha > 0.0f)
+	{
+		return;
+	}
+
+	PostProcessParameters.ZoomBlur.bEnabled = false;
+	PostProcessParameters.ZoomBlur.BlackFlushAlpha = 0.0f;
+	PostProcessParameters.ZoomBlur.Progress = 0.0f;
+	PostProcessParameters.ZoomBlur.Strength = 0.0f;
+	PostProcessParameters.ZoomBlur.StartOffset = 0.0f;
+	HackPossessionTransitionPhase = EHackPossessionTransitionPhase::Idle;
+	HackTransitionZoomBlurElapsedTime = 0.0f;
+	HackTransitionBlackoutElapsedTime = 0.0f;
+	bHackTransitionCoveredBroadcastSent = false;
+	MarkDirty();
+	TickFrame();
+	OnHackTransitionFinished.Broadcast();
 }
 
 void ULocalPlayerPostProcessSubsystem::SetADSBlurWeaponStencilValue(int32 InStencilValue)
 {
 	PostProcessParameters.ADSBlur.WeaponStencilValue = FMath::Clamp(InStencilValue, 0, 255);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetADSBlurFocusDistanceWorld(float InFocusDistanceWorld)
+{
+}
+
+void ULocalPlayerPostProcessSubsystem::SetADSBlurSightDistanceThreshold(float InThreshold)
+{
+	PostProcessParameters.ADSBlur.SightDistanceThreshold = FMath::Max(0.0f, InThreshold);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetADSBlurSightMaskDilateRadius(float InDilateRadius)
+{
+	PostProcessParameters.ADSBlur.SightMaskDilateRadius = FMath::Max(0.0f, InDilateRadius);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetADSBlurSightMaskSoftness(float InSoftness)
+{
+	PostProcessParameters.ADSBlur.SightMaskSoftness = FMath::Max(0.0f, InSoftness);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetADSBlurUseSoftSightMask(bool bInUseSoft)
+{
+	PostProcessParameters.ADSBlur.bUseSoftSightMask = bInUseSoft ? 1 : 0;
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetADSBlurGpuStatScopesEnabled(bool bEnabled)
+{
+	PostProcessParameters.ADSBlur.bEnableGpuStatScopes = bEnabled ? 1 : 0;
 	MarkDirty();
 	TickFrame();
 }
@@ -215,96 +808,99 @@ void ULocalPlayerPostProcessSubsystem::SetADSBlurAiming(bool bInAiming, int32 In
 	ApplyADSBlurRuntimeParameters();
 }
 
+void ULocalPlayerPostProcessSubsystem::SetADSBlurDebugPassEnabled(bool bEnabled)
+{
+	bADSBlurDebugPassEnabled = bEnabled ? 1 : 0;
+	ApplyADSBlurRuntimeParameters();
+}
+
 void ULocalPlayerPostProcessSubsystem::SetADSSocketDistance(float Distance)
 {
-	// Controller가 매 프레임 소켓(광학 조준점) - 카메라 거리를 넘겨줌. CoC 초점 거리 P.
-	ADSBlurSocketDistance = FMath::Max(0.0f, Distance);
-	PostProcessParameters.ADSBlur.FocusDistanceWorld = ADSBlurSocketDistance;
-
-	PostProcessParameters.ADSBlur.FocusDistanceWorld = 11.0f;
+	//ADSBlurSocketDistance = FMath::Max(0.0f, Distance);
 
 	MarkDirty();
 	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetDepthOfFieldVolume(APostProcessVolume* InVolume)
+{
+	DoFVolume = InVolume;
+}
+
+void ULocalPlayerPostProcessSubsystem::SetADSDoFEnabled(bool bEnabled)
+{
+	bADSDoFEnabled = bEnabled ? 1 : 0;
+}
+
+void ULocalPlayerPostProcessSubsystem::SetADSDoFApertureRange(float InAimFStop, float InHipFStop)
+{
+	ADSDoFApertureAim = FMath::Max(0.1f, InAimFStop);
+	ADSDoFApertureHip = FMath::Max(0.1f, InHipFStop);
+}
+
+void ULocalPlayerPostProcessSubsystem::SetADSDoFSensorWidth(float InSensorWidth)
+{
+	ADSDoFSensorWidth = FMath::Max(1.0f, InSensorWidth);
+}
+
+void ULocalPlayerPostProcessSubsystem::SetADSDoFMaxBlurClamp(float InMinFStop)
+{
+	ADSDoFMinFStop = FMath::Max(0.0f, InMinFStop);
+}
+
+void ULocalPlayerPostProcessSubsystem::SetADSDoFFocalRegion(float InFocalRegion)
+{
+	ADSDoFFocalRegion = FMath::Max(0.0f, InFocalRegion);
+}
+
+void ULocalPlayerPostProcessSubsystem::SetADSDoFFarTransitionRegion(float InFarTransitionRegion)
+{
+	ADSDoFFarTransitionRegion = FMath::Max(0.0f, InFarTransitionRegion);
+}
+
+void ULocalPlayerPostProcessSubsystem::UpdateDepthOfField()
+{
+	APostProcessVolume* Volume = DoFVolume.Get();
+	if (!Volume)
+	{
+		return;
+	}
+
+	FPostProcessSettings& PP = Volume->Settings;
+	const float Alpha = GetADSBlurAlpha();
+
+	if (!bADSDoFEnabled || Alpha <= KINDA_SMALL_NUMBER || ADSBlurSocketDistance <= 0.0f)
+	{
+		PP.bOverride_DepthOfFieldFocalDistance = true;
+		PP.DepthOfFieldFocalDistance = 0.0f;
+		return;
+	}
+
+	const float FStop = FMath::Lerp(ADSDoFApertureHip, ADSDoFApertureAim, Alpha);
+
+	PP.bOverride_DepthOfFieldFocalDistance = true;
+	PP.DepthOfFieldFocalDistance = ADSBlurSocketDistance;
+
+	PP.bOverride_DepthOfFieldFstop = true;
+	PP.DepthOfFieldFstop = FStop;
+
+	PP.bOverride_DepthOfFieldSensorWidth = true;
+	PP.DepthOfFieldSensorWidth = ADSDoFSensorWidth;
+
+	PP.bOverride_DepthOfFieldMinFstop = true;
+	PP.DepthOfFieldMinFstop = ADSDoFMinFStop;
+
+	PP.bOverride_DepthOfFieldFocalRegion = true;
+	PP.DepthOfFieldFocalRegion = ADSDoFFocalRegion;
+
+	PP.bOverride_DepthOfFieldFarTransitionRegion = true;
+	PP.DepthOfFieldFarTransitionRegion = ADSDoFFarTransitionRegion;
 }
 
 void ULocalPlayerPostProcessSubsystem::SetADSBlurRampTimes(float InRampInTime, float InRampOutTime)
 {
 	ADSBlurRampInTime = FMath::Max(0.0f, InRampInTime);
 	ADSBlurRampOutTime = FMath::Max(0.0f, InRampOutTime);
-	ApplyADSBlurRuntimeParameters();
-}
-
-void ULocalPlayerPostProcessSubsystem::SetADSBlurRadiusRange(float InMinRadius, float InMaxRadius)
-{
-	ADSBlurMinRadius = FMath::Max(0.0f, InMinRadius);
-	ADSBlurMaxRadius = FMath::Max(ADSBlurMinRadius, InMaxRadius);
-	ApplyADSBlurRuntimeParameters();
-}
-
-void ULocalPlayerPostProcessSubsystem::SetADSBlurMaskDilateRange(float InMinDilate, float InMaxDilate)
-{
-	ADSBlurMinMaskDilate = FMath::Max(0.0f, InMinDilate);
-	ADSBlurMaxMaskDilate = FMath::Max(ADSBlurMinMaskDilate, InMaxDilate);
-	ApplyADSBlurRuntimeParameters();
-}
-
-void ULocalPlayerPostProcessSubsystem::SetADSBlurMaskSoftnessRange(float InMinSoftness, float InMaxSoftness)
-{
-	ADSBlurMinMaskSoftness = FMath::Max(0.0f, InMinSoftness);
-	ADSBlurMaxMaskSoftness = FMath::Max(ADSBlurMinMaskSoftness, InMaxSoftness);
-	ApplyADSBlurRuntimeParameters();
-}
-
-void ULocalPlayerPostProcessSubsystem::SetADSBlurMaskDilateRadius(float InDilateRadius)
-{
-	SetADSBlurMaskDilateRange(InDilateRadius, InDilateRadius);
-}
-
-void ULocalPlayerPostProcessSubsystem::SetADSBlurMaskSoftness(float InSoftness)
-{
-	SetADSBlurMaskSoftnessRange(InSoftness, InSoftness);
-}
-
-void ULocalPlayerPostProcessSubsystem::SetADSBlurPassCount(int32 InPassCount)
-{
-	ADSBlurPassCount = FMath::Clamp(InPassCount, 1, 4);
-	ApplyADSBlurRuntimeParameters();
-}
-
-void ULocalPlayerPostProcessSubsystem::SetADSBlurInnerPreserve(float InInnerPreserve)
-{
-	ADSBlurInnerPreserve = FMath::Clamp(InInnerPreserve, 0.0f, 1.0f);
-	ApplyADSBlurRuntimeParameters();
-}
-
-void ULocalPlayerPostProcessSubsystem::SetADSBlurDepthBlurRange(float InStart, float InEnd)
-{
-	ADSBlurDepthBlurStart = FMath::Max(0.0f, InStart);
-	ADSBlurDepthBlurEnd = FMath::Max(ADSBlurDepthBlurStart + KINDA_SMALL_NUMBER, InEnd);
-	ApplyADSBlurRuntimeParameters();
-}
-
-void ULocalPlayerPostProcessSubsystem::SetADSBlurDepthBlurPower(float InPower)
-{
-	ADSBlurDepthBlurPower = FMath::Max(KINDA_SMALL_NUMBER, InPower);
-	ApplyADSBlurRuntimeParameters();
-}
-
-void ULocalPlayerPostProcessSubsystem::SetADSBlurDepthFocusBias(float InBias)
-{
-	ADSBlurDepthFocusBias = InBias;
-	ApplyADSBlurRuntimeParameters();
-}
-
-void ULocalPlayerPostProcessSubsystem::SetADSBlurGatherSampleCount(int32 InSampleCount)
-{
-	ADSBlurGatherSampleCount = FMath::Clamp(InSampleCount, 1, 96);
-	ApplyADSBlurRuntimeParameters();
-}
-
-void ULocalPlayerPostProcessSubsystem::SetADSBlurReachSoftness(float InReachSoftness)
-{
-	ADSBlurReachSoftness = FMath::Max(0.0f, InReachSoftness);
 	ApplyADSBlurRuntimeParameters();
 }
 
@@ -329,8 +925,8 @@ void ULocalPlayerPostProcessSubsystem::UpdateADSBlur(float DeltaTime)
 	}
 	else
 	{
-		const float CurrentAlpha = GetADSBlurAlpha();
-		ADSBlurElapsedTime = FMath::Max((CurrentAlpha - DeltaTime / RampOutTime) * RampInTime, 0.0f);
+		const float DecrementInElapsed = DeltaTime * (RampInTime / RampOutTime);
+		ADSBlurElapsedTime = FMath::Max(ADSBlurElapsedTime - DecrementInElapsed, 0.0f);
 	}
 
 	ApplyADSBlurRuntimeParameters();
@@ -347,20 +943,8 @@ void ULocalPlayerPostProcessSubsystem::ApplyADSBlurRuntimeParameters()
 {
 	const float Alpha = GetADSBlurAlpha();
 
-	PostProcessParameters.ADSBlur.bEnabled = Alpha > KINDA_SMALL_NUMBER ? 1 : 0;
-	PostProcessParameters.ADSBlur.AdsBlend = Alpha;
-	PostProcessParameters.ADSBlur.BlurRadius = FMath::Lerp(ADSBlurMinRadius, ADSBlurMaxRadius, Alpha);
-	PostProcessParameters.ADSBlur.PassCount = ADSBlurPassCount;
-	PostProcessParameters.ADSBlur.MaskDilateRadius = FMath::Lerp(ADSBlurMinMaskDilate, ADSBlurMaxMaskDilate, Alpha);
-	PostProcessParameters.ADSBlur.MaskSoftness = FMath::Lerp(ADSBlurMinMaskSoftness, ADSBlurMaxMaskSoftness, Alpha);
-	PostProcessParameters.ADSBlur.InnerPreserve = ADSBlurInnerPreserve;
-	PostProcessParameters.ADSBlur.DepthBlurStart = ADSBlurDepthBlurStart;
-	PostProcessParameters.ADSBlur.DepthBlurEnd = ADSBlurDepthBlurEnd;
-	PostProcessParameters.ADSBlur.DepthBlurPower = ADSBlurDepthBlurPower;
-	PostProcessParameters.ADSBlur.DepthFocusBias = ADSBlurDepthFocusBias;
-	PostProcessParameters.ADSBlur.FocusDistanceWorld = ADSBlurSocketDistance;
-	PostProcessParameters.ADSBlur.GatherSampleCount = ADSBlurGatherSampleCount;
-	PostProcessParameters.ADSBlur.ReachSoftness = ADSBlurReachSoftness;
+	PostProcessParameters.ADSBlur.bEnabled = bADSBlurDebugPassEnabled && Alpha > KINDA_SMALL_NUMBER ? 1 : 0;
+	PostProcessParameters.ADSBlur.FocusDistanceWorld = 10.5f;
 
 	MarkDirty();
 	TickFrame();

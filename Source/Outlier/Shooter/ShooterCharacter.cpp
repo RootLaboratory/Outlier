@@ -6,9 +6,11 @@
 #include "Engine/LocalPlayer.h"
 #include "Camera/CameraComponent.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/SphereComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/SceneCaptureComponent2D.h"
 #include "Curves/CurveFloat.h"
+#include "Engine/SkeletalMesh.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Controller.h"
 #include "GameFramework/PlayerController.h"
@@ -21,19 +23,52 @@
 #include "LocalPlayerUISubSystem.h"
 #include "InputActionValue.h"
 #include "Drone/Partner/PartnerCharacter.h"
+#include "Enemy/EnemyRoomSubsystem.h"
 #include "TagDrivenUIGameplayTags.h"
 #include "ShooterInputConfig.h"
 #include "ShooterHealthComponent.h"
 #include "ShooterInventoryComponent.h"
 #include "ShooterCombatComponent.h"
+#include "Weapon/RangedWeaponBase.h"
 #include "ShooterFirstPersonAnimInstance.h"
 #include "ShooterMovementComponent.h"
 #include "LocalPlayerPostProcessSubsystem.h"
 #include "Weapon/WeaponBase.h"
 #include "Weapon/RangedWeaponBase.h"
+#include "GameplayTags/OutlierGameplayTags.h"
+#include "GAS/OutlierAbilitySystemComponent.h"
+#include "GAS/Attributes/OutlierVitalAttributeSet.h"
+#include "GAS/Attributes/OutlierShieldAttributeSet.h"
+#include "Upgrade/OutlierUpgradeComponent.h"
 #include "Net/UnrealNetwork.h"
+#include "OutlierPlayerState.h"
 #include "OutlierNetUtils.h"
 #include "Outlier.h"
+#include "UI/LocalPlayerUILayerSubsystem.h"
+#include "UI/ShooterReflectionBarrier.h"
+#include "UI/UILayerGameplayTags.h"
+
+namespace
+{
+AActor* ResolveDamageSource(AController* EventInstigator, AActor* DamageCauser)
+{
+	APawn* InstigatorPawn = EventInstigator ? EventInstigator->GetPawn() : nullptr;
+	AActor* CauserOwner = DamageCauser ? DamageCauser->GetOwner() : nullptr;
+	if (IsValid(InstigatorPawn))
+	{
+		return InstigatorPawn;
+	}
+	if (IsValid(EventInstigator))
+	{
+		return EventInstigator;
+	}
+	if (IsValid(CauserOwner))
+	{
+		return CauserOwner;
+	}
+	return IsValid(DamageCauser) ? DamageCauser : nullptr;
+}
+}
 
 FName AShooterCharacter::GetFirstPersonWeaponSocketByType(EWeaponType WeaponType) const
 {
@@ -45,9 +80,21 @@ FName AShooterCharacter::GetThirdPersonWeaponSocketByType(EWeaponType WeaponType
 	return InventoryComponent ? InventoryComponent->GetThirdPersonWeaponSocketByType(WeaponType) : NAME_None;
 }
 
+UOutlierUpgradeComponent* AShooterCharacter::GetUpgradeComponent() const
+{
+	return UpgradeComponent;
+}
+
 AShooterCharacter::AShooterCharacter() : AFirstPersonCharacter()
 {
 	PrimaryActorTick.bCanEverTick = true;
+	OwnedQueryTags.AddTag(OutlierGameplayTags::Actor::Role::Shooter());
+
+	OutlierAbilitySystemComponent = CreateDefaultSubobject<UOutlierAbilitySystemComponent>(
+		TEXT("AbilitySystemComponent"));
+	OutlierAbilitySystemComponent->SetReplicationMode(EGameplayEffectReplicationMode::Mixed);
+	VitalAttributeSet = CreateDefaultSubobject<UOutlierVitalAttributeSet>(TEXT("VitalAttributeSet"));
+	ShieldAttributeSet = CreateDefaultSubobject<UOutlierShieldAttributeSet>(TEXT("ShieldAttributeSet"));
 
 	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
 
@@ -61,11 +108,25 @@ AShooterCharacter::AShooterCharacter() : AFirstPersonCharacter()
 	ShadowMesh->SetRenderInMainPass(true);
 	ShadowMesh->SetRenderInDepthPass(false);
 
+	LeanExposureCollision = CreateDefaultSubobject<USphereComponent>(TEXT("LeanExposureCollision"));
+	LeanExposureCollision->SetupAttachment(GetCapsuleComponent());
+	LeanExposureCollision->InitSphereRadius(LeanCollisionRadius);
+	LeanExposureCollision->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	LeanExposureCollision->SetCollisionResponseToAllChannels(ECR_Ignore);
+	LeanExposureCollision->SetCollisionResponseToChannel(ECC_PhysicsBody, ECR_Block);
+	LeanExposureCollision->SetGenerateOverlapEvents(false);
+	LeanExposureCollision->SetCanEverAffectNavigation(false);
+
 	
 	HealthComponent = CreateDefaultSubobject<UShooterHealthComponent>(TEXT("HealthComponent"));
 	InventoryComponent = CreateDefaultSubobject<UShooterInventoryComponent>(TEXT("InventoryComponent"));
 	CombatComponent = CreateDefaultSubobject<UShooterCombatComponent>(TEXT("CombatComponent"));
 	MovementComponent = CreateDefaultSubobject<UShooterMovementComponent>(TEXT("MovementComponent"));
+	UpgradeComponent = CreateDefaultSubobject<UOutlierUpgradeComponent>(TEXT("UpgradeComponent"));
+	if (UpgradeComponent)
+	{
+		UpgradeComponent->SetUpgradeRole(EOutlierUpgradeRole::Shooter);
+	}
 
 	if (CaptureComponent)
 	{
@@ -79,12 +140,26 @@ AShooterCharacter::AShooterCharacter() : AFirstPersonCharacter()
 void AShooterCharacter::BeginPlay()
 {
 	Super::BeginPlay();
+	RefreshAbilitySystemActorInfo();
+	BindGasVitalityObservers();
+	InitializeGasVitality();
+	InitializeGasSuitAbilities();
+	if (!SelectedAbilityTag.IsValid())
+	{
+		SelectedAbilityTag = OutlierGameplayTags::Ability::Shooter::Stealth();
+	}
 
 	RefreshFirstPersonShadowPolicy();
 
 	if (USceneComponent* CameraRoot = GetFirstPersonCameraRoot())
 	{
+		BaseFirstPersonCameraRootLocation = CameraRoot->GetRelativeLocation();
 		BaseFirstPersonCameraRootRotation = CameraRoot->GetRelativeRotation();
+	}
+	if (LeanExposureCollision)
+	{
+		LeanExposureCollision->SetSphereRadius(LeanCollisionRadius, false);
+		UpdateLeanExposureCollision();
 	}
 	if (FirstPersonCamera)
 	{
@@ -103,6 +178,21 @@ void AShooterCharacter::BeginPlay()
 		BaseFirstPersonMeshRotation = FirstPersonMesh->GetRelativeRotation();
 	}
 
+	UE_LOG(
+		LogTemp,
+		Log,
+		TEXT("%s [FPAnimDiag][FramingBefore] Owner=%s ViewRootRelLoc=%s ViewRootRelRot=%s Mesh=%s Asset=%s Skeleton=%s MeshRelLoc=%s MeshRelRot=%s MeshRelScale=%s"),
+		OutlierNet::GetNetPrefix(this),
+		*GetName(),
+		GetFirstPersonViewModelRoot() ? *GetFirstPersonViewModelRoot()->GetRelativeLocation().ToCompactString() : TEXT("None"),
+		GetFirstPersonViewModelRoot() ? *GetFirstPersonViewModelRoot()->GetRelativeRotation().ToCompactString() : TEXT("None"),
+		*GetNameSafe(FirstPersonMesh),
+		FirstPersonMesh ? *GetNameSafe(FirstPersonMesh->GetSkeletalMeshAsset()) : TEXT("None"),
+		FirstPersonMesh && FirstPersonMesh->GetSkeletalMeshAsset() ? *GetNameSafe(FirstPersonMesh->GetSkeletalMeshAsset()->GetSkeleton()) : TEXT("None"),
+		FirstPersonMesh ? *FirstPersonMesh->GetRelativeLocation().ToCompactString() : TEXT("None"),
+		FirstPersonMesh ? *FirstPersonMesh->GetRelativeRotation().ToCompactString() : TEXT("None"),
+		FirstPersonMesh ? *FirstPersonMesh->GetRelativeScale3D().ToCompactString() : TEXT("None"));
+
 	if (USceneComponent* ViewModelRoot = GetFirstPersonViewModelRoot())
 	{
 		if (FirstPersonMesh && !BaseFirstPersonMeshLocation.IsNearlyZero())
@@ -115,15 +205,22 @@ void AShooterCharacter::BeginPlay()
 		}
 	}
 
-	if (HasAuthority())
-	{
-		CurHP = FMath::Clamp(CurHP, 0.0f, MaxHP);
-		CurShield = MaxShield;
-	}
-	
+	UE_LOG(
+		LogTemp,
+		Log,
+		TEXT("%s [FPAnimDiag][FramingAfter] Owner=%s ViewRootRelLoc=%s ViewRootRelRot=%s MeshRelLoc=%s MeshRelRot=%s MeshWorldLoc=%s"),
+		OutlierNet::GetNetPrefix(this),
+		*GetName(),
+		GetFirstPersonViewModelRoot() ? *GetFirstPersonViewModelRoot()->GetRelativeLocation().ToCompactString() : TEXT("None"),
+		GetFirstPersonViewModelRoot() ? *GetFirstPersonViewModelRoot()->GetRelativeRotation().ToCompactString() : TEXT("None"),
+		FirstPersonMesh ? *FirstPersonMesh->GetRelativeLocation().ToCompactString() : TEXT("None"),
+		FirstPersonMesh ? *FirstPersonMesh->GetRelativeRotation().ToCompactString() : TEXT("None"),
+		FirstPersonMesh ? *FirstPersonMesh->GetComponentLocation().ToCompactString() : TEXT("None"));
+
 	RefreshWeaponMode();
 	RefreshMovementState();
 	RefreshCombatState();
+	RefreshShooterSuitCooldownUI();
 }
 
 void AShooterCharacter::Tick(float DeltaSeconds)
@@ -132,14 +229,26 @@ void AShooterCharacter::Tick(float DeltaSeconds)
 
 	UpdateSlideCameraEffect(DeltaSeconds);
 	UpdateCameraFOV(DeltaSeconds);
-	UpdateCameraRecoil(DeltaSeconds);
 }
 
 void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	PopReflectionBarrierWidget();
+	UnbindPartnerSuitStateObserver();
+	CancelActiveQuantumLeap();
+	EndActiveBulletReflection(false);
+	EndActiveWeaponOvercharge(false);
+	EndActiveStealth(false);
+
 	if (HasAuthority())
 	{
 		CleanupOwnedWeapons();
+	}
+
+	if (OutlierAbilitySystemComponent)
+	{
+		UnbindGasVitalityObservers();
+		OutlierAbilitySystemComponent->ClearForPawn(this);
 	}
 
 	Super::EndPlay(EndPlayReason);
@@ -148,15 +257,480 @@ void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 void AShooterCharacter::PossessedBy(AController* NewController)
 {
 	Super::PossessedBy(NewController);
+	RefreshAbilitySystemActorInfo();
 
 	RefreshFirstPersonShadowPolicy();
+	RefreshShooterSuitCooldownUI();
 }
 
 void AShooterCharacter::OnRep_Controller()
 {
 	Super::OnRep_Controller();
+	RefreshAbilitySystemActorInfo();
+	RefreshShooterSuitCooldownUI();
 
 	RefreshFirstPersonShadowPolicy();
+}
+
+UAbilitySystemComponent* AShooterCharacter::GetAbilitySystemComponent() const
+{
+	return OutlierAbilitySystemComponent;
+}
+
+float AShooterCharacter::GetCurPartnerShield() const
+{
+	return ShieldAttributeSet ? ShieldAttributeSet->GetPartnerShield() : 0.0f;
+}
+
+float AShooterCharacter::GetMaxPartnerShield() const
+{
+	return ShieldAttributeSet ? ShieldAttributeSet->GetMaxPartnerShield() : 0.0f;
+}
+
+float AShooterCharacter::GetCurShield() const
+{
+	return ShieldAttributeSet ? ShieldAttributeSet->GetShield() : 0.0f;
+}
+
+float AShooterCharacter::GetMaxShield() const
+{
+	return ShieldAttributeSet ? ShieldAttributeSet->GetMaxShield() : 0.0f;
+}
+
+float AShooterCharacter::GetCurHealth() const
+{
+	return VitalAttributeSet ? VitalAttributeSet->GetHealth() : 0.0f;
+}
+
+float AShooterCharacter::GetMaxHealth() const
+{
+	return VitalAttributeSet ? VitalAttributeSet->GetMaxHealth() : 0.0f;
+}
+
+bool AShooterCharacter::IsDead() const
+{
+	return OutlierAbilitySystemComponent
+		&& OutlierAbilitySystemComponent->HasMatchingGameplayTag(OutlierGameplayTags::State::Dead());
+}
+
+void AShooterCharacter::RefreshAbilitySystemActorInfo()
+{
+	if (OutlierAbilitySystemComponent)
+	{
+		OutlierAbilitySystemComponent->InitializeForPawn(this);
+	}
+
+	if (UpgradeComponent)
+	{
+		UpgradeComponent->SyncFromPlayerState();
+	}
+}
+
+void AShooterCharacter::InitializeGasVitality()
+{
+	if (!HasAuthority() || !OutlierAbilitySystemComponent)
+	{
+		return;
+	}
+
+	OutlierAbilitySystemComponent->SetNumericAttributeBase(
+		UOutlierVitalAttributeSet::GetMaxHealthAttribute(),
+		FMath::Max(MaxHP, 0.0f));
+	OutlierAbilitySystemComponent->SetNumericAttributeBase(
+		UOutlierVitalAttributeSet::GetHealthAttribute(),
+		FMath::Max(MaxHP, 0.0f));
+	OutlierAbilitySystemComponent->SetNumericAttributeBase(
+		UOutlierShieldAttributeSet::GetMaxShieldAttribute(),
+		FMath::Max(MaxShield, 0.0f));
+	OutlierAbilitySystemComponent->SetNumericAttributeBase(
+		UOutlierShieldAttributeSet::GetShieldAttribute(),
+		FMath::Max(MaxShield, 0.0f));
+	OutlierAbilitySystemComponent->SetNumericAttributeBase(
+		UOutlierShieldAttributeSet::GetMaxPartnerShieldAttribute(),
+		0.0f);
+	OutlierAbilitySystemComponent->SetNumericAttributeBase(
+		UOutlierShieldAttributeSet::GetPartnerShieldAttribute(),
+		0.0f);
+}
+
+void AShooterCharacter::InitializeGasSuitAbilities()
+{
+	if (bShooterSuitDataInitialized || !OutlierAbilitySystemComponent)
+	{
+		return;
+	}
+
+	FString Error;
+	FOutlierShooterSuitConfig ResolvedConfig;
+	if (!OutlierShooterSuitData::TryResolveConfiguration(
+		ShooterSuitAbilityDataTable, ResolvedConfig, Error))
+	{
+#if UE_BUILD_SHIPPING
+		UE_LOG(LogOutlier, Error, TEXT("[GAS.ShooterSuit] %s"), *Error);
+		return;
+#else
+		checkf(false, TEXT("[GAS.ShooterSuit] %s"), *Error);
+		return;
+#endif
+	}
+
+	ShooterSuitConfig = ResolvedConfig;
+	bShooterSuitDataInitialized = true;
+	if (HasAuthority())
+	{
+		const bool bConfigured = OutlierAbilitySystemComponent->ConfigureShooterSuitAbilities(ShooterSuitConfig);
+		checkf(bConfigured, TEXT("Shooter suit abilities must configure on authority."));
+		if (CachedPartnerCharacter)
+		{
+			CachedPartnerCharacter->ConfigureSuitDisableBoundaryRadius(ShooterSuitConfig.MaxPartnerDistance);
+		}
+	}
+}
+
+void AShooterCharacter::BindGasVitalityObservers()
+{
+	if (!OutlierAbilitySystemComponent || HealthChangedHandle.IsValid())
+	{
+		return;
+	}
+
+	HealthChangedHandle = OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
+		UOutlierVitalAttributeSet::GetHealthAttribute()).AddUObject(
+			this, &AShooterCharacter::HandleHealthChanged);
+	ShieldChangedHandle = OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
+		UOutlierShieldAttributeSet::GetShieldAttribute()).AddUObject(
+			this, &AShooterCharacter::HandleShieldChanged);
+	DeadTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::State::Dead()).AddUObject(
+			this, &AShooterCharacter::HandleDeadTagChanged);
+	BulletReflectionTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::State::BulletReflecting()).AddUObject(
+			this, &AShooterCharacter::HandleBulletReflectionTagChanged);
+	WeaponOverchargeTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::State::WeaponOvercharged()).AddUObject(
+			this, &AShooterCharacter::HandleWeaponOverchargeTagChanged);
+	QuantumLeapCooldownTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::Cooldown::Shooter::QuantumLeap()).AddUObject(
+			this, &AShooterCharacter::HandleQuantumLeapCooldownTagChanged);
+	BulletReflectionCooldownTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::Cooldown::Shooter::BulletReflection()).AddUObject(
+			this, &AShooterCharacter::HandleBulletReflectionCooldownTagChanged);
+	WeaponOverchargeCooldownTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::Cooldown::Shooter::WeaponOvercharge()).AddUObject(
+			this, &AShooterCharacter::HandleWeaponOverchargeCooldownTagChanged);
+	StealthCooldownTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::Cooldown::Shooter::Stealth()).AddUObject(
+			this, &AShooterCharacter::HandleStealthCooldownTagChanged);
+}
+
+void AShooterCharacter::UnbindGasVitalityObservers()
+{
+	if (!OutlierAbilitySystemComponent)
+	{
+		return;
+	}
+
+	OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
+		UOutlierVitalAttributeSet::GetHealthAttribute()).Remove(HealthChangedHandle);
+	OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
+		UOutlierShieldAttributeSet::GetShieldAttribute()).Remove(ShieldChangedHandle);
+	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::State::Dead()).Remove(DeadTagChangedHandle);
+	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::State::BulletReflecting()).Remove(BulletReflectionTagChangedHandle);
+	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::State::WeaponOvercharged()).Remove(WeaponOverchargeTagChangedHandle);
+	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::Cooldown::Shooter::QuantumLeap()).Remove(QuantumLeapCooldownTagChangedHandle);
+	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::Cooldown::Shooter::BulletReflection()).Remove(BulletReflectionCooldownTagChangedHandle);
+	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::Cooldown::Shooter::WeaponOvercharge()).Remove(WeaponOverchargeCooldownTagChangedHandle);
+	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::Cooldown::Shooter::Stealth()).Remove(StealthCooldownTagChangedHandle);
+
+	HealthChangedHandle.Reset();
+	ShieldChangedHandle.Reset();
+	DeadTagChangedHandle.Reset();
+	BulletReflectionTagChangedHandle.Reset();
+	WeaponOverchargeTagChangedHandle.Reset();
+	QuantumLeapCooldownTagChangedHandle.Reset();
+	BulletReflectionCooldownTagChangedHandle.Reset();
+	WeaponOverchargeCooldownTagChangedHandle.Reset();
+	StealthCooldownTagChangedHandle.Reset();
+}
+
+void AShooterCharacter::HandleHealthChanged(const FOnAttributeChangeData& ChangeData)
+{
+	if (HasAuthority() && ChangeData.OldValue > 0.0f && ChangeData.NewValue <= 0.0f)
+	{
+		Die();
+	}
+}
+
+void AShooterCharacter::HandleShieldChanged(const FOnAttributeChangeData& ChangeData)
+{
+	if (IsLocallyControlled())
+	{
+		if (UMaterialPostProcessSubsystem* PPS = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
+		{
+			const float MaxValue = GetMaxShield();
+			PPS->UpdateDamagedPostProcess(
+				MaxValue > 0.0f ? ChangeData.NewValue / MaxValue : 0.0f,
+				FVector4(0, 0, 1, 0));
+			PPS->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Damaged, true);
+		}
+	}
+
+}
+
+void AShooterCharacter::HandleDeadTagChanged(const FGameplayTag Tag, int32 NewCount)
+{
+	(void)Tag;
+	if (NewCount > 0)
+	{
+		CancelActiveQuantumLeap(false);
+		EndActiveBulletReflection(false);
+		EndActiveWeaponOvercharge(false);
+		EndActiveStealth(false);
+		HandleDeath();
+	}
+}
+
+void AShooterCharacter::HandleBulletReflectionTagChanged(const FGameplayTag Tag, int32 NewCount)
+{
+	(void)Tag;
+	const bool bReflectionActive = NewCount > 0;
+	BP_OnBulletReflectionStateChanged(bReflectionActive);
+
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+
+	if (bReflectionActive)
+	{
+		PushReflectionBarrierWidget();
+	}
+	else
+	{
+		PopReflectionBarrierWidget();
+	}
+}
+
+void AShooterCharacter::PushReflectionBarrierWidget()
+{
+	if (ReflectionBarrierLayerHandle.IsValid() || !ReflectionBarrierWidgetClass)
+	{
+		return;
+	}
+
+	APlayerController* PlayerController = Cast<APlayerController>(GetController());
+	ULocalPlayer* LocalPlayer = PlayerController ? PlayerController->GetLocalPlayer() : nullptr;
+	ULocalPlayerUILayerSubsystem* LayerSubsystem = LocalPlayer
+		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()
+		: nullptr;
+	if (!LayerSubsystem)
+	{
+		return;
+	}
+
+	UShooterReflectionBarrier* BarrierWidget = CreateWidget<UShooterReflectionBarrier>(
+		PlayerController,
+		ReflectionBarrierWidgetClass);
+	if (!BarrierWidget)
+	{
+		return;
+	}
+	ReflectionBarrierWidgetInstance = BarrierWidget;
+
+	ReflectionBarrierLayerHandle = LayerSubsystem->PushWidget(
+		UILayerTags::Gameplay(),
+		BarrierWidget,
+		FirstPersonInputModeTags::UI(),
+		this,
+		EUILayerFocusTarget::None,
+		false,
+		false);
+	if (!ReflectionBarrierLayerHandle.IsValid())
+	{
+		ReflectionBarrierWidgetInstance = nullptr;
+		return;
+	}
+
+	if (bHasPendingReflectionVisual)
+	{
+		ReflectionBarrierWidgetInstance->PlayHitRipple(PendingReflectionVisualOrigin);
+		bHasPendingReflectionVisual = false;
+	}
+}
+
+void AShooterCharacter::PopReflectionBarrierWidget()
+{
+	if (!ReflectionBarrierLayerHandle.IsValid())
+	{
+		return;
+	}
+
+	APlayerController* PlayerController = Cast<APlayerController>(GetController());
+	ULocalPlayer* LocalPlayer = PlayerController ? PlayerController->GetLocalPlayer() : nullptr;
+	if (ULocalPlayerUILayerSubsystem* LayerSubsystem = LocalPlayer
+		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()
+		: nullptr)
+	{
+		LayerSubsystem->PopLayer(ReflectionBarrierLayerHandle);
+	}
+
+	ReflectionBarrierLayerHandle.Reset();
+	ReflectionBarrierWidgetInstance = nullptr;
+	bHasPendingReflectionVisual = false;
+}
+
+void AShooterCharacter::NotifyLocalBulletReflected(const FVector& IncomingOrigin)
+{
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+
+	if (IsValid(ReflectionBarrierWidgetInstance))
+	{
+		ReflectionBarrierWidgetInstance->PlayHitRipple(IncomingOrigin);
+		return;
+	}
+
+	// The cosmetic multicast can arrive before the replicated reflection tag
+	// creates the local barrier widget. Preserve the latest hit for that frame.
+	PendingReflectionVisualOrigin = IncomingOrigin;
+	bHasPendingReflectionVisual = true;
+}
+
+void AShooterCharacter::HandleWeaponOverchargeTagChanged(const FGameplayTag Tag, int32 NewCount)
+{
+	(void)Tag;
+	const bool bOverchargeActive = NewCount > 0;
+	if (IsLocallyControlled())
+	{
+		if (const APlayerController* PlayerController = Cast<APlayerController>(GetController()))
+		{
+			if (ULocalPlayer* LocalPlayer = PlayerController->GetLocalPlayer())
+			{
+				if (ULocalPlayerPostProcessSubsystem* PPSubsystem =
+					LocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
+				{
+					PPSubsystem->SetOverlayEnabled(bOverchargeActive);
+				}
+			}
+		}
+	}
+
+	BP_OnWeaponOverchargeStateChanged(bOverchargeActive);
+}
+
+void AShooterCharacter::HandleStealthCooldownTagChanged(const FGameplayTag Tag, int32 NewCount)
+{
+	(void)Tag;
+	if (NewCount <= 0 || !IsLocallyControlled())
+	{
+		return;
+	}
+	RefreshShooterSuitCooldownUI();
+}
+
+void AShooterCharacter::HandleQuantumLeapCooldownTagChanged(const FGameplayTag Tag, int32 NewCount)
+{
+	(void)Tag;
+	if (NewCount > 0 && IsLocallyControlled())
+	{
+		RefreshShooterSuitCooldownUI();
+	}
+}
+
+void AShooterCharacter::HandleBulletReflectionCooldownTagChanged(const FGameplayTag Tag, int32 NewCount)
+{
+	(void)Tag;
+	if (NewCount > 0 && IsLocallyControlled())
+	{
+		RefreshShooterSuitCooldownUI();
+	}
+}
+
+void AShooterCharacter::HandleWeaponOverchargeCooldownTagChanged(const FGameplayTag Tag, int32 NewCount)
+{
+	(void)Tag;
+	if (NewCount > 0 && IsLocallyControlled())
+	{
+		RefreshShooterSuitCooldownUI();
+	}
+}
+
+void AShooterCharacter::RefreshShooterSuitCooldownUI()
+{
+	if (!IsLocallyControlled() || !OutlierAbilitySystemComponent)
+	{
+		return;
+	}
+
+	AShooterPlayerController* ShooterController = Cast<AShooterPlayerController>(GetController());
+	if (!ShooterController)
+	{
+		return;
+	}
+	ULocalPlayerUISubSystem* UISubsystem = nullptr;
+	if (ULocalPlayer* LocalPlayer = ShooterController->GetLocalPlayer())
+	{
+		UISubsystem = LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>();
+	}
+	const auto ApplyCooldown = [ShooterController, UISubsystem](
+		const FGameplayTag& AbilityTag,
+		float Remaining)
+	{
+		if (Remaining <= 0.0f)
+		{
+			return;
+		}
+		if (ShooterController->AbilityUIInstance)
+		{
+			ShooterController->AbilityUIInstance->ApplyCooldownIfMatches(AbilityTag, Remaining);
+		}
+		if (UISubsystem)
+		{
+			UISubsystem->OnAbilityUsed(AbilityTag, Remaining);
+		}
+	};
+	ApplyCooldown(
+		OutlierGameplayTags::Ability::Shooter::QuantumLeap(),
+		OutlierAbilitySystemComponent->GetShooterQuantumLeapCooldownRemaining());
+	ApplyCooldown(
+		OutlierGameplayTags::Ability::Shooter::BulletReflection(),
+		OutlierAbilitySystemComponent->GetShooterBulletReflectionCooldownRemaining());
+	ApplyCooldown(
+		OutlierGameplayTags::Ability::Shooter::WeaponOvercharge(),
+		OutlierAbilitySystemComponent->GetShooterWeaponOverchargeCooldownRemaining());
+	ApplyCooldown(
+		OutlierGameplayTags::Ability::Shooter::Stealth(),
+		OutlierAbilitySystemComponent->GetShooterStealthCooldownRemaining());
+}
+
+void AShooterCharacter::RefreshShooterSuitUI()
+{
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+
+	if (AShooterPlayerController* ShooterController = Cast<AShooterPlayerController>(GetController()))
+	{
+		if (ULocalPlayerUISubSystem* UISubsystem = ShooterController->GetLocalPlayer()
+			? ShooterController->GetLocalPlayer()->GetSubsystem<ULocalPlayerUISubSystem>()
+			: nullptr)
+		{
+			UISubsystem->OnCurrentAbilityChanged(SelectedAbilityTag);
+		}
+	}
+
+	RefreshShooterSuitAvailabilityUI();
+	RefreshShooterSuitCooldownUI();
 }
 
 void AShooterCharacter::RefreshFirstPersonShadowPolicy()
@@ -263,6 +837,7 @@ void AShooterCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 	// Aim
 	EnhancedInputComponent->BindAction(ShooterInputConfig->AimAction,			ETriggerEvent::Started,   this, &AShooterCharacter::HandleAimPressed);
 	EnhancedInputComponent->BindAction(ShooterInputConfig->AimAction,			ETriggerEvent::Completed, this, &AShooterCharacter::HandleAimReleased);
+	EnhancedInputComponent->BindAction(ShooterInputConfig->AimAction,			ETriggerEvent::Canceled,  this, &AShooterCharacter::HandleAimReleased);
 }
 
 void AShooterCharacter::OnStartCrouch(float HalfHeightAdjust, float ScaledHalfHeightAdjust)
@@ -286,7 +861,6 @@ void AShooterCharacter::Landed(const FHitResult& Hit)
 	if (IsSliding())
 	{
 		StopSlide(ESlideEndReason::JumpCancel);
-		return;
 	}
 
 	RefreshMovementState();
@@ -299,10 +873,22 @@ void AShooterCharacter::OnMovementModeChanged(EMovementMode  PrevMovementMode, u
 	if (IsSliding() && GetCharacterMovement()->IsFalling())
 	{
 		StopSlide(ESlideEndReason::FallCancel);
-		return;
+	}
+
+	if (GetCharacterMovement()->IsFalling() && CombatComponent)
+	{
+		CombatComponent->SuspendAimInternal();
 	}
 
 	RefreshMovementState();
+	RefreshCombatState();
+
+	if (!GetCharacterMovement()->IsFalling()
+		&& PrevMovementMode == MOVE_Falling
+		&& CombatComponent)
+	{
+		CombatComponent->RestoreAimIfRequested();
+	}
 }
 
 void AShooterCharacter::OnMoveInputUpdated(const FVector2D& MoveValue)
@@ -415,7 +1001,7 @@ void AShooterCharacter::HandleCrouchToggled()
 
 void AShooterCharacter::TryOpenSuitMenu()
 {
-	if (bIsDead)
+	if (IsDead())
 	{
 		return;
 	}
@@ -449,7 +1035,17 @@ void AShooterCharacter::TryHandleSuitMenuHover()
 		return;
 	}
 
-	ShooterController->AbilityUIInstance->TryHovering();
+	UShooterAbilityUI* AbilityUI = ShooterController->AbilityUIInstance;
+	AbilityUI->TryHovering();
+
+	// 휠을 닫는 한 프레임에만 선택을 계산하면 위젯 Geometry가 사라져 기본 Stealth가 남을 수 있다.
+	// 유효한 영역을 가리키는 동안 선택 태그를 보존하되, 매 프레임 UI 선택 이벤트는 방송하지 않는다.
+	FGameplayTag HoveredAbilityTag;
+	if (AbilityUI->TryGetHoveredAbility(HoveredAbilityTag, false)
+		&& HoveredAbilityTag != SelectedAbilityTag)
+	{
+		SelectedAbilityTag = HoveredAbilityTag;
+	}
 
 }
 
@@ -468,8 +1064,14 @@ void AShooterCharacter::TryCloseSuitMenu()
 	AShooterPlayerController* ShooterController = Cast<AShooterPlayerController>(GetController());
 	if (ShooterController && ShooterController->AbilityUIInstance)
 	{
-		ShooterController->AbilityUIInstance->SetVisibility(ESlateVisibility::Collapsed);
-		ShooterController->AbilityUIInstance->TryGetHoveredAbility(SelectedAbilityTag);
+		UShooterAbilityUI* AbilityUI = ShooterController->AbilityUIInstance;
+		// Collapsed 이후에는 CachedGeometry를 신뢰할 수 없으므로 반드시 위젯을 숨기기 전에 최종 선택을 확정한다.
+		FGameplayTag FinalAbilityTag;
+		if (AbilityUI->TryGetHoveredAbility(FinalAbilityTag))
+		{
+			SelectedAbilityTag = FinalAbilityTag;
+		}
+		AbilityUI->SetVisibility(ESlateVisibility::Collapsed);
 	}
 	else if (!ShooterController || !ShooterController->AbilityUIInstance)
 	{
@@ -501,64 +1103,34 @@ void AShooterCharacter::UpdateSuitSelection(const FInputActionValue& Value)
 
 void AShooterCharacter::TryUseSuit()
 {
-	UE_LOG(LogTemp, Error, TEXT("TryUseSuit"));
-
-
-	constexpr float SuitAbilityCooldown = 5.0f;
-
-	if (bIsDead)
+	const bool bCancellingActiveStealth = IsStealthed()
+		&& SelectedAbilityTag.MatchesTagExact(OutlierGameplayTags::Ability::Shooter::Stealth());
+	if (IsDead()
+		|| !SelectedAbilityTag.IsValid()
+		|| (IsShooterSuitUseDisabled() && !bCancellingActiveStealth))
 	{
-		UE_LOG(LogTemp, Error, TEXT("ShooterController"));
-
 		return;
 	}
-
-	//if (bSuitDisabledByPartnerBoundary)
-	//{
-	//	UE_LOG(LogTemp, Error, TEXT("bSuitDisabledByPartnerBoundary"));
-
-	//	return;
-	//}
-
-	/*if (!SelectedAbilityTag.IsValid())
+	if (HasAuthority())
 	{
-		UE_LOG(LogTemp, Error, TEXT("SelectedAbilityTag"));
-
-		return;
-	}*/
-
-	AShooterPlayerController* ShooterController = Cast<AShooterPlayerController>(GetController());
-	if (!ShooterController)
-	{
-		UE_LOG(LogTemp, Error, TEXT("ShooterController"));
-		return;
+		OutlierAbilitySystemComponent->TryActivateShooterSuitAbility(SelectedAbilityTag);
 	}
-
-	ULocalPlayerUISubSystem* UISubsystem = nullptr;
-	if (ULocalPlayer* LocalPlayer = ShooterController->GetLocalPlayer())
+	else
 	{
-		UISubsystem = LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>();
+		ServerUseSuitAbility(SelectedAbilityTag);
 	}
+}
 
-	/*if (!UISubsystem || !UISubsystem->ApplyCurrentAbilityCooldownIfMatches(SelectedAbilityTag, SuitAbilityCooldown))
+void AShooterCharacter::ServerUseSuitAbility_Implementation(FGameplayTag AbilityTag)
+{
+	const bool bCancellingActiveStealth = IsStealthed()
+		&& AbilityTag.MatchesTagExact(OutlierGameplayTags::Ability::Shooter::Stealth());
+	if (!IsDead()
+		&& (!IsShooterSuitUseDisabled() || bCancellingActiveStealth)
+		&& OutlierAbilitySystemComponent)
 	{
-		UE_LOG(LogTemp, Error, TEXT("ApplyCurrentAbilityCooldownIfMatches"));
-
-		return;
-	}*/
-
-	if (ShooterController->AbilityUIInstance)
-	{
-		ShooterController->AbilityUIInstance->ApplyCooldownIfMatches(SelectedAbilityTag, SuitAbilityCooldown);
+		OutlierAbilitySystemComponent->TryActivateShooterSuitAbility(AbilityTag);
 	}
-
-	UMaterialPostProcessSubsystem* MaterialSub = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>();
-	if (MaterialSub)
-	{
-		MaterialSub->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Stealth,true);
-
-	}
-
 }
 
 void AShooterCharacter::TrySlide()
@@ -571,21 +1143,12 @@ void AShooterCharacter::TrySlide()
 
 void AShooterCharacter::TryLean(const FInputActionValue& Value)
 {
-	if (!CanLean())
-	{
-		StopLean();
-		return;
-	}
-
-	const float LeanAlpha = Value.Get<float>();
-	TargetLeanAlpha = FMath::Abs(LeanAlpha) > KINDA_SMALL_NUMBER ? LeanAlpha : 0.0f;
-	StartLeanUpdate();
+	SetLeanTarget(Value.Get<float>(), true);
 }
 
 void AShooterCharacter::StopLean()
 {
-	TargetLeanAlpha = 0.0f;
-	StartLeanUpdate();
+	SetLeanTarget(0.0f, true);
 }
 
 void AShooterCharacter::UpdateSlideCameraEffect(float DeltaSeconds)
@@ -630,55 +1193,133 @@ void AShooterCharacter::UpdateSlideCameraEffect(float DeltaSeconds)
 	}
 }
 
-void AShooterCharacter::OnRep_CurHP()
-{
-	//UE_LOG(LogTemp, Log, TEXT("%s %s OnRep_CurHP CurHP=%.1f / %.1f"), OutlierNet::GetNetPrefix(this), *GetName(), CurHP, MaxHP);
-	OnShooterHealthChanged.Broadcast(CurHP, MaxHP);
-
-	OnShooterConditionChanged.Broadcast(ResolveShooterConditionTag());
-}
-
 void AShooterCharacter::OnRep_MovementState()
 {
 	OnMovementStateChanged.Broadcast(MovementState);
 }
 
-void AShooterCharacter::OnRep_CurShield()
+void AShooterCharacter::OnRep_CurrentLeanAlpha()
 {
-	OnShooterShieldChanged.Broadcast(CurShield, MaxShield);
-
-	if (IsLocallyControlled())
-	{
-		UMaterialPostProcessSubsystem* PPS = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>();
-		if (PPS)
-		{
-			PPS->UpdateDamagedPostProcess(CurShield / MaxShield , FVector4(0,0,1,0));
-			PPS->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Damaged, true);
-		}
-	}
-
-	OnShooterConditionChanged.Broadcast(ResolveShooterConditionTag());
-
-}
-
-void AShooterCharacter::OnRep_CurPartnerShield()
-{
-	BroadcastPartnerShieldState();
+	ApplyLeanPresentation();
 }
 
 void AShooterCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
-	DOREPLIFETIME(AShooterCharacter, CurHP);
-	DOREPLIFETIME(AShooterCharacter, MaxPartnerShield);
-	DOREPLIFETIME(AShooterCharacter, CurPartnerShield);
-	DOREPLIFETIME(AShooterCharacter, CurShield);
-	DOREPLIFETIME(AShooterCharacter, bIsDead);
 	DOREPLIFETIME(AShooterCharacter, MovementState);
 	DOREPLIFETIME(AShooterCharacter, WeaponMode);
 	DOREPLIFETIME(AShooterCharacter, CombatState);
 	DOREPLIFETIME(AShooterCharacter, ActionLock);
+	DOREPLIFETIME(AShooterCharacter, CurrentLeanAlpha);
+}
+
+FVector AShooterCharacter::GetBaseLeanViewLocation() const
+{
+	if (!HasActorBegunPlay())
+	{
+		return Super::GetPawnViewLocation();
+	}
+
+	return GetActorTransform().TransformPosition(BaseFirstPersonCameraRootLocation);
+}
+
+FVector AShooterCharacter::GetLeanViewOffsetWorld(float LeanAlpha) const
+{
+	const float ClampedLeanAlpha = FMath::Clamp(LeanAlpha, -1.0f, 1.0f);
+	const float LeanAbs = FMath::Abs(ClampedLeanAlpha);
+	if (LeanAbs <= KINDA_SMALL_NUMBER)
+	{
+		return FVector::ZeroVector;
+	}
+
+	const FRotator ViewYawRotation(0.0f, GetControlRotation().Yaw, 0.0f);
+	const FVector ViewForward = ViewYawRotation.Vector();
+	const FVector ViewRight = FRotationMatrix(ViewYawRotation).GetScaledAxis(EAxis::Y);
+	const float EasedLeanAbs = FMath::InterpEaseInOut(0.0f, 1.0f, LeanAbs, 2.0f);
+
+	return
+		(ViewRight * ClampedLeanAlpha * LeanCameraSideOffset) -
+		(FVector::UpVector * EasedLeanAbs * LeanCameraDownOffset) -
+		(ViewForward * EasedLeanAbs * LeanCameraBackwardOffset);
+}
+
+FVector AShooterCharacter::GetPawnViewLocation() const
+{
+	return GetBaseLeanViewLocation() + GetLeanViewOffsetWorld(CurrentLeanAlpha);
+}
+
+UAISense_Sight::EVisibilityResult AShooterCharacter::CanBeSeenFrom(
+	const FCanBeSeenFromContext& Context,
+	FVector& OutSeenLocation,
+	int32& OutNumberOfLoSChecksPerformed,
+	int32& OutNumberOfAsyncLosCheckRequested,
+	float& OutSightStrength,
+	int32* UserData,
+	const FOnPendingVisibilityQueryProcessedDelegate* Delegate)
+{
+	OutNumberOfAsyncLosCheckRequested = 0;
+	OutSightStrength = 0.0f;
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return UAISense_Sight::EVisibilityResult::NotVisible;
+	}
+
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(ShooterLeanAISight), true, Context.IgnoreActor);
+	if (Context.IgnoreActor)
+	{
+		QueryParams.AddIgnoredActor(Context.IgnoreActor);
+	}
+
+	const auto IsVisibleAt = [&](const FVector& TargetLocation)
+	{
+		FHitResult Hit;
+		++OutNumberOfLoSChecksPerformed;
+		const bool bBlocked = World->LineTraceSingleByChannel(
+			Hit,
+			Context.ObserverLocation,
+			TargetLocation,
+			ECC_Visibility,
+			QueryParams);
+		if (!bBlocked || Hit.GetActor() == this)
+		{
+			OutSeenLocation = TargetLocation;
+			OutSightStrength = 1.0f;
+			return true;
+		}
+		return false;
+	};
+
+	if (FMath::Abs(CurrentLeanAlpha) >= LeanExposureCollisionMinAlpha && IsVisibleAt(GetPawnViewLocation()))
+	{
+		return UAISense_Sight::EVisibilityResult::Visible;
+	}
+	if (IsVisibleAt(GetActorLocation()))
+	{
+		return UAISense_Sight::EVisibilityResult::Visible;
+	}
+
+	return UAISense_Sight::EVisibilityResult::NotVisible;
+}
+
+FGameplayTagContainer AShooterCharacter::GetOwnedGameplayTagsForQuery() const
+{
+	FGameplayTagContainer GameplayTags = Super::GetOwnedGameplayTagsForQuery();
+	if (OutlierAbilitySystemComponent)
+	{
+		FGameplayTagContainer AbilitySystemTags;
+		OutlierAbilitySystemComponent->GetOwnedGameplayTags(AbilitySystemTags);
+		GameplayTags.AppendTags(AbilitySystemTags);
+	}
+	return GameplayTags;
+}
+
+bool AShooterCharacter::IsStealthed() const
+{
+	return OutlierAbilitySystemComponent
+		&& OutlierAbilitySystemComponent->HasMatchingGameplayTag(OutlierGameplayTags::State::Stealthed());
 }
 
 void AShooterCharacter::EquipWeapon(AWeaponBase* Weapon)
@@ -721,12 +1362,12 @@ bool AShooterCharacter::CanFireInCurrentState() const
 
 bool AShooterCharacter::CanInteract() const
 {
-	return !bIsDead;
+	return !IsDead();
 }
 
 bool AShooterCharacter::CanLean() const
 {
-	return !bIsDead
+	return !IsDead()
 		&& !IsSprinting()
 		&& !GetCharacterMovement()->IsFalling()
 		&& !IsSliding()
@@ -835,37 +1476,13 @@ void AShooterCharacter::HandleReloadCommitNotify()
 	}
 }
 
-void AShooterCharacter::BeginSecondaryCooldownInternal(float CooldownDuration)
-{
-	if (CombatComponent)
-	{
-		CombatComponent->BeginSecondaryCooldownInternal(CooldownDuration);
-	}
-}
-
-void AShooterCharacter::FinishSecondaryCooldownInternal()
-{
-	if (CombatComponent)
-	{
-		CombatComponent->FinishSecondaryCooldownInternal();
-	}
-}
-
-void AShooterCharacter::ResetSecondaryCooldownInternal()
-{
-	if (CombatComponent)
-	{
-		CombatComponent->ResetSecondaryCooldown();
-	}
-}
-
 bool AShooterCharacter::CanStartAction(EShooterActionLock NextLock) const
 {
 	const bool bCanOverrideSlideLock =
 		ActionLock == EShooterActionLock::Slide &&
 		(NextLock == EShooterActionLock::Reload || NextLock == EShooterActionLock::Equip);
 
-	return !bIsDead
+	return !IsDead()
 		&& NextLock != EShooterActionLock::None
 		&& (ActionLock == EShooterActionLock::None || bCanOverrideSlideLock);
 }
@@ -889,12 +1506,124 @@ void AShooterCharacter::EndActionLock(EShooterActionLock LockToEnd)
 	GetWorldTimerManager().ClearTimer(ActionLockTimerHandle);
 }
 
-void AShooterCharacter::ApplyDamageInternal(float DamageAmount)
+bool AShooterCharacter::ApplyDamageInternal(
+	float DamageAmount,
+	AController* EventInstigator,
+	AActor* DamageCauser,
+	const FGameplayTag& DamageTag)
 {
-	if (HealthComponent)
+	return HealthComponent
+		&& HealthComponent->ApplyDamage(DamageAmount, EventInstigator, DamageCauser, DamageTag);
+}
+
+float AShooterCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
+{
+	if (!HasAuthority() || !CanBeDamaged() || Request.DamageAmount <= 0.0f)
 	{
-		HealthComponent->ApplyDamage(DamageAmount);
+		return 0.0f;
 	}
+	if (TryReflectIncomingDamage(Request))
+	{
+		return 0.0f;
+	}
+
+	return ApplyDamageInternal(
+		Request.DamageAmount,
+		Request.EventInstigator,
+		Request.DamageCauser,
+		Request.DamageTag)
+		? Request.DamageAmount : 0.0f;
+}
+
+bool AShooterCharacter::TryReflectIncomingDamage(const FOutlierDamageRequest& Request)
+{
+	if (!OutlierAbilitySystemComponent
+		|| !GetWorld()
+		|| !OutlierAbilitySystemComponent->HasMatchingGameplayTag(
+			OutlierGameplayTags::State::BulletReflecting()))
+	{
+		return false;
+	}
+	if (Request.bReflectedDamage)
+	{
+		return false;
+	}
+	if (!Request.DamageTag.MatchesTagExact(OutlierGameplayTags::Damage::Weapon())
+		&& !Request.DamageTag.MatchesTagExact(OutlierGameplayTags::Damage::Explosion()))
+	{
+		return false;
+	}
+
+	AActor* DamageSource = ResolveDamageSource(Request.EventInstigator, Request.DamageCauser);
+	if (!DamageSource)
+	{
+		return false;
+	}
+
+	const float ReflectionRadius = ShooterSuitConfig.BulletReflection.ReflectionRadius;
+	const FVector ReflectionEnd = Request.DamageOrigin;
+	if (ReflectionRadius <= 0.0f
+		|| FVector::DistSquared(GetActorLocation(), ReflectionEnd) > FMath::Square(ReflectionRadius))
+	{
+		return false;
+	}
+
+	FVector ReflectionStart = Request.HitResult.ImpactPoint;
+	if (ReflectionStart.IsNearlyZero())
+	{
+		ReflectionStart = GetActorLocation();
+	}
+	if (ReflectionStart.Equals(ReflectionEnd, KINDA_SMALL_NUMBER))
+	{
+		return false;
+	}
+
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(ShooterBulletReflection), false, this);
+	if (CurrentWeapon)
+	{
+		Params.AddIgnoredActor(CurrentWeapon);
+	}
+	FHitResult ReflectedHit;
+	const bool bHit = GetWorld()->LineTraceSingleByChannel(
+		ReflectedHit,
+		ReflectionStart,
+		ReflectionEnd,
+		ECC_PhysicsBody,
+		Params);
+	AActor* ReflectedTarget = bHit ? ReflectedHit.GetActor() : nullptr;
+	if (!ReflectedTarget && DamageSource->GetActorLocation().Equals(ReflectionEnd, 100.0f))
+	{
+		ReflectedTarget = DamageSource;
+		ReflectedHit.HitObjectHandle = FActorInstanceHandle(DamageSource);
+		ReflectedHit.bBlockingHit = true;
+		ReflectedHit.Location = ReflectionEnd;
+		ReflectedHit.ImpactPoint = ReflectionEnd;
+	}
+
+	if (ReflectedTarget && ReflectedTarget != this)
+	{
+		FOutlierDamageRequest ReflectedRequest;
+		const float ReflectDamageMult = OutlierAbilitySystemComponent
+			->GetShooterSuitConfig().BulletReflection.ReflectDamageMult;
+		ReflectedRequest.DamageAmount = Request.DamageAmount * ReflectDamageMult;
+		ReflectedRequest.DamageTag = Request.DamageTag;
+		ReflectedRequest.HitResult = ReflectedHit;
+		ReflectedRequest.DamageOrigin = ReflectionStart;
+		ReflectedRequest.bReflectedDamage = true;
+		ReflectedRequest.EventInstigator = GetController();
+		ReflectedRequest.DamageCauser = CurrentWeapon ? static_cast<AActor*>(CurrentWeapon) : this;
+		OutlierDamage::Apply(ReflectedTarget, ReflectedRequest);
+	}
+	ClientPlayReflectionRipple(Request.DamageOrigin);
+
+	// 팀과 관계없이 유효한 공격은 중간 충돌체 유무와 관계없이 보호막에서 소거된다.
+	return true;
+}
+
+void AShooterCharacter::ClientPlayReflectionRipple_Implementation(
+	FVector_NetQuantize IncomingOrigin)
+{
+	NotifyLocalBulletReflected(IncomingOrigin);
 }
 
 void AShooterCharacter::HandleWeaponAttackStoppedInternal()
@@ -957,18 +1686,114 @@ void AShooterCharacter::StartLeanUpdate()
 	);
 }
 
+void AShooterCharacter::SetLeanTarget(float NewLeanAlpha, bool bSendToServer)
+{
+	if (!FMath::IsFinite(NewLeanAlpha))
+	{
+		NewLeanAlpha = 0.0f;
+	}
+
+	float ClampedLeanAlpha = FMath::Clamp(NewLeanAlpha, -1.0f, 1.0f);
+	if (FMath::Abs(ClampedLeanAlpha) <= KINDA_SMALL_NUMBER || !CanLean())
+	{
+		ClampedLeanAlpha = 0.0f;
+	}
+
+	if (FMath::IsNearlyEqual(TargetLeanAlpha, ClampedLeanAlpha, 0.01f))
+	{
+		return;
+	}
+
+	TargetLeanAlpha = ClampedLeanAlpha;
+	StartLeanUpdate();
+
+	if (bSendToServer && !HasAuthority())
+	{
+		ServerSetLeanTarget(ClampedLeanAlpha);
+	}
+}
+
+float AShooterCharacter::ResolveLeanAlphaForCollision(float DesiredLeanAlpha) const
+{
+	const FVector TraceStart = GetBaseLeanViewLocation();
+	const FVector DesiredOffset = GetLeanViewOffsetWorld(DesiredLeanAlpha);
+	if (DesiredOffset.IsNearlyZero() || LeanCollisionRadius <= KINDA_SMALL_NUMBER)
+	{
+		return DesiredLeanAlpha;
+	}
+
+	FHitResult Hit;
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(ShooterLeanCamera), false, this);
+	QueryParams.AddIgnoredActor(this);
+	const bool bHit = GetWorld() && GetWorld()->SweepSingleByChannel(
+		Hit,
+		TraceStart,
+		TraceStart + DesiredOffset,
+		FQuat::Identity,
+		ECC_Visibility,
+		FCollisionShape::MakeSphere(LeanCollisionRadius),
+		QueryParams);
+	if (!bHit)
+	{
+		return DesiredLeanAlpha;
+	}
+
+	return Hit.bStartPenetrating
+		? 0.0f
+		: DesiredLeanAlpha * FMath::Clamp(Hit.Time, 0.0f, 1.0f);
+}
+
+void AShooterCharacter::ApplyLeanPresentation()
+{
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+
+	if (USceneComponent* CameraRoot = GetFirstPersonCameraRoot())
+	{
+		const FVector LocalLeanOffset = GetActorTransform().InverseTransformVectorNoScale(
+			GetLeanViewOffsetWorld(CurrentLeanAlpha));
+		CameraRoot->SetRelativeLocation(BaseFirstPersonCameraRootLocation + LocalLeanOffset);
+	}
+}
+
+void AShooterCharacter::UpdateLeanExposureCollision()
+{
+	if (!LeanExposureCollision || !HasAuthority())
+	{
+		return;
+	}
+
+	LeanExposureCollision->SetWorldLocation(GetPawnViewLocation());
+	const bool bExposeLeanHead = !IsDead()
+		&& FMath::Abs(CurrentLeanAlpha) >= LeanExposureCollisionMinAlpha;
+	LeanExposureCollision->SetCollisionEnabled(
+		bExposeLeanHead ? ECollisionEnabled::QueryOnly : ECollisionEnabled::NoCollision);
+}
+
 void AShooterCharacter::StopLeanUpdateIfSettled()
 {
 	if (FMath::IsNearlyEqual(CurrentLeanAlpha, TargetLeanAlpha, KINDA_SMALL_NUMBER))
 	{
 		CurrentLeanAlpha = TargetLeanAlpha;
-		GetWorldTimerManager().ClearTimer(LeanUpdateTimerHandle);
+		if (FMath::IsNearlyZero(TargetLeanAlpha, KINDA_SMALL_NUMBER))
+		{
+			GetWorldTimerManager().ClearTimer(LeanUpdateTimerHandle);
+		}
 	}
 }
 
 void AShooterCharacter::UpdateLeanStep()
 {
-	CurrentLeanAlpha = FMath::FInterpTo(CurrentLeanAlpha, TargetLeanAlpha, 1.0f / 60.0f, LeanInterpSpeed);
+	const float DesiredLeanAlpha = FMath::FInterpTo(
+		CurrentLeanAlpha,
+		TargetLeanAlpha,
+		1.0f / 60.0f,
+		LeanInterpSpeed);
+	CurrentLeanAlpha = ResolveLeanAlphaForCollision(DesiredLeanAlpha);
+	ApplyLeanPresentation();
+	UpdateLeanExposureCollision();
 
 	if (FirstPersonMesh)
 	{
@@ -1005,8 +1830,6 @@ void AShooterCharacter::UpdateCameraFOV(float DeltaSeconds)
 		FOVInterpSpeed = AimCameraFOVInterpOutSpeed;
 	}
 
-	TargetFOV += CameraRecoilFOVOffset;
-
 	const float NewFOV = FMath::FInterpTo(
 		FirstPersonCamera->FieldOfView,
 		TargetFOV,
@@ -1030,59 +1853,6 @@ float AShooterCharacter::GetEffectiveFirstPersonAimAlpha() const
 	return FirstPersonAnimInstance
 		? FMath::Clamp(FirstPersonAnimInstance->GetViewModelAimAlpha(), 0.0f, 1.0f)
 		: 1.0f;
-}
-
-void AShooterCharacter::AddWeaponCameraRecoil(
-	float PitchAmplitude,
-	float YawAmplitude,
-	float DirectionPitchAmplitude,
-	float FOVAmplitude,
-	float RecoverySpeed,
-	const FVector2D& NormalizedShotDirection
-)
-{
-	if (!IsLocallyControlled())
-	{
-		return;
-	}
-
-	CameraRecoilTarget.Pitch += PitchAmplitude + (NormalizedShotDirection.Y * DirectionPitchAmplitude);
-	CameraRecoilTarget.Yaw += NormalizedShotDirection.X * YawAmplitude;
-	CameraRecoilRecoverySpeed = FMath::Max(RecoverySpeed, 0.0f);
-	CameraRecoilFOVOffset = FMath::Max(CameraRecoilFOVOffset, FMath::Max(FOVAmplitude, 0.0f));
-}
-
-void AShooterCharacter::UpdateCameraRecoil(float DeltaSeconds)
-{
-	if (!IsLocallyControlled())
-	{
-		return;
-	}
-
-	const FRotator NewRecoil = FMath::RInterpTo(
-		CameraRecoilCurrent,
-		CameraRecoilTarget,
-		DeltaSeconds,
-		CameraRecoilKickInterpSpeed
-	);
-	const FRotator DeltaRecoil = NewRecoil - CameraRecoilCurrent;
-
-	AddControllerPitchInput(-DeltaRecoil.Pitch);
-	AddControllerYawInput(DeltaRecoil.Yaw);
-
-	CameraRecoilCurrent = NewRecoil;
-	CameraRecoilTarget = FMath::RInterpTo(
-		CameraRecoilTarget,
-		FRotator::ZeroRotator,
-		DeltaSeconds,
-		CameraRecoilRecoverySpeed
-	);
-	CameraRecoilFOVOffset = FMath::FInterpTo(
-		CameraRecoilFOVOffset,
-		0.0f,
-		DeltaSeconds,
-		CameraRecoilFOVRecoverySpeed
-	);
 }
 
 float AShooterCharacter::GetLookSensitivityScale() const
@@ -1191,21 +1961,17 @@ void AShooterCharacter::UpdatePartnerShieldDecay()
 
 	if (PartnerShieldDuration <= KINDA_SMALL_NUMBER)
 	{
-		CurPartnerShield = 0.0f;
-		BroadcastPartnerShieldState();
+		OutlierAbilitySystemComponent->ApplyPartnerShieldDeltaToSelf(
+			-GetCurPartnerShield(),
+			-GetMaxPartnerShield());
 		GetWorldTimerManager().ClearTimer(PartnerShieldTimerHandle);
 		return;
 	}
 
-	const float DecayAmount = (MaxPartnerShield / PartnerShieldDuration) * DeltaTime;
-	CurPartnerShield = FMath::Max(0.0f, CurPartnerShield - DecayAmount);
+	const float DecayAmount = (GetMaxPartnerShield() / PartnerShieldDuration) * DeltaTime;
+	OutlierAbilitySystemComponent->ApplyPartnerShieldDeltaToSelf(-DecayAmount, 0.0f);
 
-	if (GetNetMode() != NM_DedicatedServer)
-	{
-		BroadcastPartnerShieldState();
-	}
-
-	if (CurPartnerShield <= 0.0f)
+	if (GetCurPartnerShield() <= 0.0f)
 	{
 		GetWorldTimerManager().ClearTimer(PartnerShieldTimerHandle);
 	}
@@ -1255,9 +2021,10 @@ void AShooterCharacter::HandleDeath()
 	bIsEquipping = false;
 	TargetLeanAlpha = 0.0f;
 	CurrentLeanAlpha = 0.0f;
-	CameraRecoilCurrent = FRotator::ZeroRotator;
-	CameraRecoilTarget = FRotator::ZeroRotator;
-	CameraRecoilFOVOffset = 0.0f;
+	if (ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(CurrentWeapon))
+	{
+		RangedWeapon->CancelLocalRecoilPresentation();
+	}
 
 	if (IsSliding())
 	{
@@ -1275,8 +2042,10 @@ void AShooterCharacter::HandleDeath()
 
 	if (USceneComponent* CameraRoot = GetFirstPersonCameraRoot())
 	{
+		CameraRoot->SetRelativeLocation(BaseFirstPersonCameraRootLocation);
 		CameraRoot->SetRelativeRotation(BaseFirstPersonCameraRootRotation);
 	}
+	UpdateLeanExposureCollision();
 
 	if (FirstPersonMesh)
 	{
@@ -1324,36 +2093,17 @@ FGameplayTag AShooterCharacter::ResolveShooterConditionTag() const
 {
 	FGameplayTag ConditionTag = TagDrivenUITags::Condition::Shooter::HP();
 
-	if (CurShield > 0.0f)
+	if (GetCurShield() > 0.0f)
 	{
 		ConditionTag = TagDrivenUITags::Condition::Shooter::Shield();
 	}
 
-	if (CurPartnerShield > 0.0f)
+	if (GetCurPartnerShield() > 0.0f)
 	{
 		ConditionTag = TagDrivenUITags::Condition::Shooter::PartnerShield();
 	}
 
 	return ConditionTag;
-}
-
-void AShooterCharacter::RefreshUIForRespawn()
-{
-	BroadcastCurrentUIState();
-}
-
-void AShooterCharacter::BroadcastCurrentUIState()
-{
-	OnShooterHealthChanged.Broadcast(CurHP, MaxHP);
-	OnShooterShieldChanged.Broadcast(CurShield, MaxShield);
-	OnWeaponChanged.Broadcast(GetWeaponType());
-	BroadcastPartnerShieldState();
-}
-
-void AShooterCharacter::BroadcastPartnerShieldState()
-{
-	OnShooterPartnerShieldChanged.Broadcast(CurPartnerShield, MaxPartnerShield);
-	OnShooterConditionChanged.Broadcast(ResolveShooterConditionTag());
 }
 
 FName AShooterCharacter::ResolveMontageSectionNameForWeapon(EWeaponType WeaponType) const
@@ -1792,6 +2542,11 @@ void AShooterCharacter::ServerJumpEnd_Implementation()
 	}
 }
 
+void AShooterCharacter::ServerSetLeanTarget_Implementation(float NewLeanAlpha)
+{
+	SetLeanTarget(NewLeanAlpha, false);
+}
+
 void AShooterCharacter::ClientPlayFirstPersonActionMontage_Implementation(EShooterMontageAction Action, EWeaponType WeaponType)
 {
 	if (Action == EShooterMontageAction::Reload && FirstPersonReloadMontage && FirstPersonMesh)
@@ -1826,13 +2581,86 @@ void AShooterCharacter::MulticastPlayThirdPersonActionMontage_Implementation(ESh
 
 void AShooterCharacter::SetPartnerCharacter(APartnerCharacter* NewPartner)
 {
+	if (CachedPartnerCharacter == NewPartner)
+	{
+		RefreshShooterSuitAvailabilityUI();
+		return;
+	}
+
+	if (HasAuthority() && CachedPartnerCharacter && !NewPartner)
+	{
+		EndActiveWeaponOvercharge(false);
+	}
+	UnbindPartnerSuitStateObserver();
 	CachedPartnerCharacter = NewPartner;
+	BindPartnerSuitStateObserver();
+	if (HasAuthority() && CachedPartnerCharacter && bShooterSuitDataInitialized)
+	{
+		CachedPartnerCharacter->ConfigureSuitDisableBoundaryRadius(ShooterSuitConfig.MaxPartnerDistance);
+	}
+	RefreshShooterSuitAvailabilityUI();
 }
 
 void AShooterCharacter::SetSuitDisabledByPartnerBoundary(bool bDisabled)
 {
 	bSuitDisabledByPartnerBoundary = bDisabled;
+	if (HasAuthority() && bDisabled)
+	{
+		CancelActiveQuantumLeap(true);
+		EndActiveBulletReflection(true);
+		EndActiveWeaponOvercharge(true);
+	}
 
+	RefreshShooterSuitAvailabilityUI();
+}
+
+bool AShooterCharacter::IsShooterSuitUseDisabled() const
+{
+	const UAbilitySystemComponent* PartnerAbilitySystem = IsValid(CachedPartnerCharacter)
+		? CachedPartnerCharacter->GetAbilitySystemComponent()
+		: nullptr;
+	return bSuitDisabledByPartnerBoundary
+		|| (PartnerAbilitySystem
+			&& PartnerAbilitySystem->HasMatchingGameplayTag(OutlierGameplayTags::State::Rebooting()));
+}
+
+void AShooterCharacter::BindPartnerSuitStateObserver()
+{
+	if (!IsValid(CachedPartnerCharacter) || PartnerRebootTagChangedHandle.IsValid())
+	{
+		return;
+	}
+
+	if (UAbilitySystemComponent* PartnerAbilitySystem = CachedPartnerCharacter->GetAbilitySystemComponent())
+	{
+		PartnerRebootTagChangedHandle = PartnerAbilitySystem->RegisterGameplayTagEvent(
+			OutlierGameplayTags::State::Rebooting()).AddUObject(
+				this, &AShooterCharacter::HandlePartnerRebootTagChanged);
+	}
+}
+
+void AShooterCharacter::UnbindPartnerSuitStateObserver()
+{
+	if (PartnerRebootTagChangedHandle.IsValid() && IsValid(CachedPartnerCharacter))
+	{
+		if (UAbilitySystemComponent* PartnerAbilitySystem = CachedPartnerCharacter->GetAbilitySystemComponent())
+		{
+			PartnerAbilitySystem->RegisterGameplayTagEvent(
+				OutlierGameplayTags::State::Rebooting()).Remove(PartnerRebootTagChangedHandle);
+		}
+	}
+	PartnerRebootTagChangedHandle.Reset();
+}
+
+void AShooterCharacter::HandlePartnerRebootTagChanged(const FGameplayTag Tag, int32 NewCount)
+{
+	(void)Tag;
+	(void)NewCount;
+	RefreshShooterSuitAvailabilityUI();
+}
+
+void AShooterCharacter::RefreshShooterSuitAvailabilityUI()
+{
 	if (!IsLocallyControlled())
 	{
 		return;
@@ -1852,7 +2680,7 @@ void AShooterCharacter::SetSuitDisabledByPartnerBoundary(bool bDisabled)
 
 	if (ULocalPlayerUISubSystem* SubSystem = LP->GetSubsystem<ULocalPlayerUISubSystem>())
 	{
-		if (bDisabled)
+		if (IsShooterSuitUseDisabled())
 		{
 			SubSystem->OnAbilityDisabledByDistance();
 		}
@@ -1862,15 +2690,107 @@ void AShooterCharacter::SetSuitDisabledByPartnerBoundary(bool bDisabled)
 		}
 	}
 }
+
+void AShooterCharacter::NotifyOffensiveActionExecuted()
+{
+	if (HasAuthority())
+	{
+		EndActiveStealth(true);
+	}
+}
+
+void AShooterCharacter::NotifyStealthDetected()
+{
+	// 감지는 더 이상 은신 해제 조건이 아니다. 기존 Blueprint 호출 호환성을 위해 진입점만 유지한다.
+}
+
+bool AShooterCharacter::EndActiveStealth(bool bCommitCooldown)
+{
+	return HasAuthority()
+		&& OutlierAbilitySystemComponent
+		&& OutlierAbilitySystemComponent->EndActiveShooterStealth(bCommitCooldown);
+}
+
+bool AShooterCharacter::EndActiveBulletReflection(bool bCommitCooldown)
+{
+	return HasAuthority()
+		&& OutlierAbilitySystemComponent
+		&& OutlierAbilitySystemComponent->EndActiveShooterBulletReflection(bCommitCooldown);
+}
+
+bool AShooterCharacter::EndActiveWeaponOvercharge(bool bCommitCooldown)
+{
+	return HasAuthority()
+		&& OutlierAbilitySystemComponent
+		&& OutlierAbilitySystemComponent->EndActiveShooterWeaponOvercharge(bCommitCooldown);
+}
+
+bool AShooterCharacter::CancelActiveQuantumLeap(bool bCommitFailureCooldown)
+{
+	return HasAuthority()
+		&& OutlierAbilitySystemComponent
+		&& OutlierAbilitySystemComponent->CancelActiveShooterQuantumLeap(bCommitFailureCooldown);
+}
+
+bool AShooterCharacter::IsBulletReflecting() const
+{
+	return OutlierAbilitySystemComponent
+		&& OutlierAbilitySystemComponent->HasMatchingGameplayTag(
+			OutlierGameplayTags::State::BulletReflecting());
+}
+
+bool AShooterCharacter::IsWeaponOvercharged() const
+{
+	return OutlierAbilitySystemComponent
+		&& OutlierAbilitySystemComponent->HasMatchingGameplayTag(
+			OutlierGameplayTags::State::WeaponOvercharged());
+}
+
+bool AShooterCharacter::BeginWeaponOvercharge()
+{
+	if (!HasAuthority() || GetWeaponMode() != EWeaponMode::Primary)
+	{
+		return false;
+	}
+
+	ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(GetCurrentWeapon());
+	if (!RangedWeapon || !OutlierAbilitySystemComponent)
+	{
+		return false;
+	}
+
+	// 과충전은 재장전을 즉시 취소한 뒤 현재 주무기 탄창을 가득 채운 상태로 시작한다.
+	CancelReloadInternal();
+	RangedWeapon->CancelReload();
+	RangedWeapon->CancelLocalRecoilPresentation();
+	RangedWeapon->RefillMagazineForWeaponOvercharge();
+	const float MissingShield = FMath::Max(GetMaxShield() - GetCurShield(), 0.0f);
+	if (MissingShield > 0.0f)
+	{
+		OutlierAbilitySystemComponent->ApplyShieldRecoveryToSelf(MissingShield);
+	}
+	return true;
+}
+
+void AShooterCharacter::FinishWeaponOvercharge(float ShieldRecoveryDelay)
+{
+	if (HasAuthority() && HealthComponent)
+	{
+		HealthComponent->DelayShieldRecovery(ShieldRecoveryDelay);
+	}
+}
 void AShooterCharacter::ApplyPartnerShield(float Amount, float Duration)
 {
-	CurPartnerShield = Amount;
-	MaxPartnerShield = Amount;
-	PartnerShieldDuration = Duration;
-	if (GetNetMode() != NM_DedicatedServer)
+	if (!HasAuthority() || !OutlierAbilitySystemComponent)
 	{
-		BroadcastPartnerShieldState();
+		return;
 	}
+
+	const float ClampedAmount = FMath::Max(Amount, 0.0f);
+	OutlierAbilitySystemComponent->ApplyPartnerShieldDeltaToSelf(
+		ClampedAmount - GetCurPartnerShield(),
+		ClampedAmount - GetMaxPartnerShield());
+	PartnerShieldDuration = Duration;
 
 	GetWorldTimerManager().SetTimer(
 		PartnerShieldTimerHandle,
