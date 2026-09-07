@@ -23,24 +23,7 @@ void ULocalPlayerUILayerSubsystem::Initialize(FSubsystemCollectionBase& Collecti
 void ULocalPlayerUILayerSubsystem::Deinitialize()
 {
 	bIsDeinitializing = true;
-
-	for (FUILayerEntry& Entry : LayerEntries)
-	{
-		if (UWidget* HitTestBlocker = Entry.HitTestBlocker.Get())
-		{
-			HitTestBlocker->RemoveFromParent();
-		}
-
-		if (UUserWidget* Widget = Entry.Widget.Get())
-		{
-			Widget->RemoveFromParent();
-		}
-	}
-
-	LayerEntries.Reset();
-	CachedTopLayerHandle.Reset();
-	CachedInputWidget.Reset();
-	CachedInputModeTag = FGameplayTag();
+	ClearAllLayers();
 	DestroyLayerRoot();
 	RegisteredMainUI.Reset();
 
@@ -452,7 +435,14 @@ int32 ULocalPlayerUILayerSubsystem::PopLayersByOwner(UObject* RequestOwner)
 
 void ULocalPlayerUILayerSubsystem::ClearAllLayers()
 {
-	for (FUILayerEntry& Entry : LayerEntries)
+	// Widget 제거 콜백이 LayerEntries를 갱신할 수 있으므로 먼저 목록을 분리한다.
+	TArray<FUILayerEntry> EntriesToRemove = MoveTemp(LayerEntries);
+	LayerEntries.Reset();
+	CachedTopLayerHandle.Reset();
+	CachedInputWidget.Reset();
+	CachedInputModeTag = FGameplayTag();
+
+	for (FUILayerEntry& Entry : EntriesToRemove)
 	{
 		if (UWidget* HitTestBlocker = Entry.HitTestBlocker.Get())
 		{
@@ -465,13 +455,9 @@ void ULocalPlayerUILayerSubsystem::ClearAllLayers()
 		}
 	}
 
-	LayerEntries.Reset();
-	CachedTopLayerHandle.Reset();
-	CachedInputWidget.Reset();
-	CachedInputModeTag = FGameplayTag();
 	if (!bIsDeinitializing)
 	{
-		ApplyDefaultInput();
+		RefreshTopLayerInput();
 	}
 }
 

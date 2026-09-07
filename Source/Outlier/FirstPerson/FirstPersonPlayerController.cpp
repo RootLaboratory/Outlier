@@ -253,6 +253,12 @@ void AFirstPersonPlayerController::BeginPlay()
 	InitializeOutlierPlayerState();
 }
 
+void AFirstPersonPlayerController::AcknowledgePossession(APawn* P)
+{
+	Super::AcknowledgePossession(P);
+	TryNotifyArenaStartReady();
+}
+
 void AFirstPersonPlayerController::OnPossess(APawn* InPawn)
 {
 	Super::OnPossess(InPawn);
@@ -493,6 +499,23 @@ void AFirstPersonPlayerController::ServerNotifyArenaReady_Implementation()
 	{
 		UE_LOG(LogTemp, Error, TEXT("[ArenaReady][4] GameMode is null"));
 	}
+}
+
+void AFirstPersonPlayerController::ClientPrepareForArenaStart_Implementation()
+{
+	bWaitingForArenaStart = true;
+	TryNotifyArenaStartReady();
+}
+
+void AFirstPersonPlayerController::TryNotifyArenaStartReady()
+{
+	if (!bWaitingForArenaStart || !IsLocalController() || !GetPawn())
+	{
+		return;
+	}
+
+	bWaitingForArenaStart = false;
+	ServerNotifyArenaReady();
 }
 
 void AFirstPersonPlayerController::RegisterCurrentPawnWithPlayerState()

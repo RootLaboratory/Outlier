@@ -6,6 +6,7 @@
 #include "GameFramework/PlayerController.h"
 #include "GameplayTagContainer.h"
 #include "OutlierPlayerState.h"
+#include "Network/OutlierMatchRequest.h"
 #include "UI/UILayerTypes.h"
 #include "FrontendPlayerController.generated.h"
 
@@ -29,6 +30,11 @@ namespace FrontendInputModeTags
 	}
 }
 
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
+	FOnPartyRequestResult,
+	EOutlierPartyRequestResult, Result,
+	const FString&, PartyCode);
+
 UCLASS()
 class OUTLIER_API AFrontendPlayerController : public APlayerController
 {
@@ -44,6 +50,32 @@ public:
 	UFUNCTION(Server, Reliable)
 	void ServerRequestMatchmaking();
 
+	UFUNCTION(BlueprintCallable, Category = "Party")
+	void RequestCreateParty();
+
+	UFUNCTION(BlueprintCallable, Category = "Party")
+	void RequestJoinParty(const FString& PartyCode);
+
+	UFUNCTION(BlueprintCallable, Category = "Party")
+	void RequestLeaveParty();
+
+	UFUNCTION(Server, Reliable)
+	void ServerRequestCreateParty();
+
+	UFUNCTION(Server, Reliable)
+	void ServerRequestJoinParty(const FString& PartyCode);
+
+	UFUNCTION(Server, Reliable)
+	void ServerRequestLeaveParty();
+
+	UFUNCTION(Client, Reliable)
+	void ClientNotifyPartyResult(
+		EOutlierPartyRequestResult Result,
+		const FString& PartyCode);
+
+	UFUNCTION(BlueprintPure, Category = "Party")
+	const FString& GetCurrentPartyCode() const { return CurrentPartyCode; }
+
 	UFUNCTION(BlueprintCallable)
 	void RequestSelectLobbyRole(EOutlierPlayerRole DesiredRole);
 
@@ -58,6 +90,9 @@ public:
 
 	UFUNCTION(Client, Reliable)
 	void ClientPrepareForMatch();
+
+	UFUNCTION(Client, Reliable)
+	void ClientHandoffToArena(const FString& ArenaUrl);
 
 	UFUNCTION(BlueprintCallable)
 	void RequestCancelMatchmaking();
@@ -116,6 +151,9 @@ protected:
 	void HandleWidgetRightInput();
 
 public:
+	UPROPERTY(BlueprintAssignable, Category = "Party")
+	FOnPartyRequestResult OnPartyRequestResult;
+
 	UPROPERTY(BlueprintReadOnly)
 	TObjectPtr<UTitleWidget> TitleWidget;
 
@@ -123,5 +161,16 @@ public:
 	TSubclassOf<UTitleWidget> TitleWidgetClass;
 
 private:
+	void PrepareForMatch();
+	void TryStartNetworkMvpSmoke();
+	void DriveNetworkMvpSmoke();
+
+	UPROPERTY(Transient)
+	FString CurrentPartyCode;
+
+	EOutlierPlayerRole NetworkMvpSmokeRole = EOutlierPlayerRole::None;
+	bool bNetworkMvpSmokeMatchmakingRequested = false;
+	bool bNetworkMvpSmokeRoleRequested = false;
+	FTimerHandle NetworkMvpSmokeTimerHandle;
 	FUILayerHandle TitleLayerHandle;
 };

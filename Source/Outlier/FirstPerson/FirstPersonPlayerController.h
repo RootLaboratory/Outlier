@@ -74,6 +74,9 @@ public:
 	UFUNCTION(Server, Reliable)
 	void ServerNotifyArenaReady();
 
+	UFUNCTION(Client, Reliable)
+	void ClientPrepareForArenaStart();
+
 	// 서버에서 계산한 폭발 충격을 소유 클라이언트의 CameraManager에 전달한다.
 	UFUNCTION(Client, Unreliable)
 	void ClientPlayExplosionCameraShake(
@@ -124,6 +127,7 @@ protected:
 	FGameplayTag CurrentFirstPersonInputMode;
 
 	virtual void BeginPlay() override;
+	virtual void AcknowledgePossession(APawn* P) override;
 
 	virtual void OnPossess(APawn* InPawn) override;
 	virtual void OnRep_PlayerState() override;
@@ -138,12 +142,14 @@ protected:
 
 	void InitializeOutlierPlayerState();
 	void RegisterCurrentPawnWithPlayerState();
+	void TryNotifyArenaStartReady();
 	virtual void RefreshPostProcessState();
 	
 
 protected:
 
 	int32 PendingArenaId = INDEX_NONE;
+	bool bWaitingForArenaStart = false;
 
 	UPROPERTY()
 	TObjectPtr<UMainUIBase> ShooterUIInstance;

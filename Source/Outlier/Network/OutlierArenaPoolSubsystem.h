@@ -28,6 +28,7 @@ public:
 	void ReleaseArena(int32 ArenaId);
 	void ReloadArena(int32 ArenaId); // 디버그: 페어링(bInUse/PairId) 보존한 채 제자리 재스트리밍
 	ULevel* GetArenaLoadedLevel(int32 ArenaId) const;
+	bool IsPersistentArenaWorld() const;
 	void EnsureArenaLoaded(int32 ArenaId, bool bForceReload = false); // Client는 id 에 해당하는 arena만 load
 	bool IsArenaReady(int32 ArenaId) const;
 	bool IsStreamingArenaReady(const ULevelStreamingDynamic* StreamingLevel);

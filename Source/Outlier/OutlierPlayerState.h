@@ -38,6 +38,13 @@ class OUTLIER_API AOutlierPlayerState : public APlayerState
 	GENERATED_BODY()
 
 public:
+	void SetTemporaryPlayerId(const FGuid& NewPlayerId);
+
+	UFUNCTION(BlueprintPure, Category = "Lobby")
+	const FGuid& GetTemporaryPlayerId() const { return TemporaryPlayerId; }
+
+	bool HasValidTemporaryPlayerId() const { return TemporaryPlayerId.IsValid(); }
+
 	void SetCheckpointData(const FOutlierCheckpointData& NewData);
 	const FOutlierCheckpointData& GetCheckpointData() const { return CheckpointData; }
 
@@ -166,6 +173,8 @@ protected:
 	UPROPERTY(ReplicatedUsing = OnRep_ActivatedUpgradeNodes, VisibleInstanceOnly, BlueprintReadOnly, Category = "Upgrade")
 	TArray<FName> PartnerActivatedUpgradeNodeIds;
 
+	UPROPERTY(Replicated, VisibleInstanceOnly, BlueprintReadOnly, Category = "Lobby")
+	FGuid TemporaryPlayerId;
 
 protected:
 	UFUNCTION()

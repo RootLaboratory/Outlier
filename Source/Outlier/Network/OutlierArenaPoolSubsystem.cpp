@@ -29,6 +29,22 @@ void UOutlierArenaPoolSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 		*ArenaLevel.ToSoftObjectPath().ToString(),
 		MaxArenaCount);
 
+	if (Settings->ShouldUseExternalArenaHandoff(InWorld.GetNetMode())
+		&& !IsPersistentArenaWorld())
+	{
+		UE_LOG(LogTemp, Display,
+			TEXT("[ArenaPool] Skipping Arena preload because Static Handoff uses an external Worker"));
+		return;
+	}
+
+	if (IsPersistentArenaWorld())
+	{
+		// 설정된 Arena가 이미 Persistent World이므로 다시 스트리밍하면 게임플레이 액터가 중복 생성됨.
+		UE_LOG(LogTemp, Display,
+			TEXT("[ArenaPool] Using persistent world as Arena Worker ArenaId=0"));
+		return;
+	}
+
 	if (InWorld.GetNetMode() != NM_Client)
 	{
 		PreloadArenas();
@@ -179,6 +195,11 @@ void UOutlierArenaPoolSubsystem::TickPendingReloads()
 ULevel* UOutlierArenaPoolSubsystem::GetArenaLoadedLevel(int32 ArenaId) const
 {
 	const UWorld* World = GetWorld();
+	if (ArenaId == 0 && IsPersistentArenaWorld())
+	{
+		// 기존 ArenaId 기반 호출을 유지하기 위해 Arena Worker의 Persistent Level을 ArenaId 0으로 취급.
+		return World ? World->PersistentLevel : nullptr;
+	}
 
 	for (const FOutlierArenaInstance& Arena : Arenas)
 	{
@@ -207,6 +228,12 @@ ULevel* UOutlierArenaPoolSubsystem::GetArenaLoadedLevel(int32 ArenaId) const
 		Arenas.Num());
 
 	return nullptr;
+}
+
+bool UOutlierArenaPoolSubsystem::IsPersistentArenaWorld() const
+{
+	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
+	return Settings && Settings->IsArenaWorld(GetWorld());
 }
 
 void UOutlierArenaPoolSubsystem::PreloadArenas()
@@ -310,6 +337,11 @@ void UOutlierArenaPoolSubsystem::EnsureArenaLoaded(int32 ArenaId, bool bForceRel
 	}
 
 	if (!World)
+	{
+		return;
+	}
+
+	if (ArenaId == 0 && IsPersistentArenaWorld())
 	{
 		return;
 	}
@@ -442,6 +474,11 @@ void UOutlierArenaPoolSubsystem::HandleArenaLevelShown()
 
 bool UOutlierArenaPoolSubsystem::IsArenaReady(int32 ArenaId) const
 {
+	if (ArenaId == 0 && IsPersistentArenaWorld())
+	{
+		return true;
+	}
+
 	for (const FOutlierArenaInstance& Arena : Arenas)
 	{
 		if (Arena.ArenaId == ArenaId)

@@ -6,7 +6,11 @@
 #include "EnhancedInputSubsystems.h"
 #include "Engine/LocalPlayer.h"
 #include "InputMappingContext.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "Network/OutlierMatchmakingSubsystem.h"
+#include "OutlierGameInstance.h"
+#include "TimerManager.h"
 #include "UI/LoadingWidget.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
 #include "UI/TitleWidget.h"
@@ -43,6 +47,8 @@ void AFrontendPlayerController::BeginPlay()
 			}
 		}
 	}
+
+	TryStartNetworkMvpSmoke();
 }
 
 void AFrontendPlayerController::AcknowledgePossession(APawn* P)
@@ -80,7 +86,90 @@ void AFrontendPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason
 	//	HasAuthority(),
 	//	*GetNameSafe(GetPawn()));
 
+	GetWorldTimerManager().ClearTimer(NetworkMvpSmokeTimerHandle);
 	Super::EndPlay(EndPlayReason);
+}
+
+void AFrontendPlayerController::TryStartNetworkMvpSmoke()
+{
+	if (!IsLocalController() || GetNetMode() != NM_Client)
+	{
+		return;
+	}
+
+	FString RoleText;
+	if (!FParse::Value(
+		FCommandLine::Get(),
+		TEXT("OutlierNetworkSmokeRole="),
+		RoleText))
+	{
+		return;
+	}
+
+	if (RoleText.Equals(TEXT("Shooter"), ESearchCase::IgnoreCase))
+	{
+		NetworkMvpSmokeRole = EOutlierPlayerRole::Shooter;
+	}
+	else if (RoleText.Equals(TEXT("Partner"), ESearchCase::IgnoreCase))
+	{
+		NetworkMvpSmokeRole = EOutlierPlayerRole::Partner;
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("[NetworkMVP] Unsupported Smoke role: %s"),
+			*RoleText);
+		return;
+	}
+
+	UE_LOG(LogTemp, Display,
+		TEXT("[NetworkMVP] Lobby Smoke driver started Role=%s"),
+		*RoleText);
+	GetWorldTimerManager().SetTimer(
+		NetworkMvpSmokeTimerHandle,
+		this,
+		&AFrontendPlayerController::DriveNetworkMvpSmoke,
+		0.25f,
+		true,
+		0.25f);
+}
+
+void AFrontendPlayerController::DriveNetworkMvpSmoke()
+{
+	AOutlierPlayerState* OutlierPlayerState = GetPlayerState<AOutlierPlayerState>();
+	if (!OutlierPlayerState || NetworkMvpSmokeRole == EOutlierPlayerRole::None)
+	{
+		return;
+	}
+
+	if (OutlierPlayerState->GetPendingLobbyMatchId() == INDEX_NONE)
+	{
+		if (!bNetworkMvpSmokeMatchmakingRequested)
+		{
+			bNetworkMvpSmokeMatchmakingRequested = true;
+			UE_LOG(LogTemp, Display,
+				TEXT("[NetworkMVP] Requesting Lobby matchmaking"));
+			ServerRequestMatchmaking();
+		}
+		return;
+	}
+
+	if (OutlierPlayerState->GetPendingLobbyRole() != NetworkMvpSmokeRole)
+	{
+		if (!bNetworkMvpSmokeRoleRequested)
+		{
+			bNetworkMvpSmokeRoleRequested = true;
+			UE_LOG(LogTemp, Display,
+				TEXT("[NetworkMVP] Requesting Lobby role %d"),
+				static_cast<int32>(NetworkMvpSmokeRole));
+			RequestSelectLobbyRole(NetworkMvpSmokeRole);
+		}
+		return;
+	}
+
+	UE_LOG(LogTemp, Display,
+		TEXT("[NetworkMVP] Lobby role selection confirmed"));
+	GetWorldTimerManager().ClearTimer(NetworkMvpSmokeTimerHandle);
 }
 
 void AFrontendPlayerController::SetupInputComponent()
@@ -318,6 +407,75 @@ void AFrontendPlayerController::ServerRequestMatchmaking_Implementation()
 	Matchmaking->EnqueueForPairThenRolePick(this);
 }
 
+void AFrontendPlayerController::RequestCreateParty()
+{
+	ServerRequestCreateParty();
+}
+
+void AFrontendPlayerController::RequestJoinParty(const FString& PartyCode)
+{
+	ServerRequestJoinParty(PartyCode);
+}
+
+void AFrontendPlayerController::RequestLeaveParty()
+{
+	ServerRequestLeaveParty();
+}
+
+void AFrontendPlayerController::ServerRequestCreateParty_Implementation()
+{
+	if (UOutlierMatchmakingSubsystem* Matchmaking = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierMatchmakingSubsystem>()
+		: nullptr)
+	{
+		Matchmaking->CreateParty(this);
+	}
+}
+
+void AFrontendPlayerController::ServerRequestJoinParty_Implementation(const FString& PartyCode)
+{
+	if (UOutlierMatchmakingSubsystem* Matchmaking = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierMatchmakingSubsystem>()
+		: nullptr)
+	{
+		Matchmaking->JoinParty(this, PartyCode);
+	}
+}
+
+void AFrontendPlayerController::ServerRequestLeaveParty_Implementation()
+{
+	if (UOutlierMatchmakingSubsystem* Matchmaking = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierMatchmakingSubsystem>()
+		: nullptr)
+	{
+		Matchmaking->LeaveParty(this);
+	}
+}
+
+void AFrontendPlayerController::ClientNotifyPartyResult_Implementation(
+	EOutlierPartyRequestResult Result,
+	const FString& PartyCode)
+{
+	switch (Result)
+	{
+	case EOutlierPartyRequestResult::Created:
+	case EOutlierPartyRequestResult::MemberJoined:
+	case EOutlierPartyRequestResult::Joined:
+		CurrentPartyCode = PartyCode;
+		break;
+
+	case EOutlierPartyRequestResult::Left:
+	case EOutlierPartyRequestResult::Disbanded:
+		CurrentPartyCode.Reset();
+		break;
+
+	default:
+		break;
+	}
+
+	OnPartyRequestResult.Broadcast(Result, PartyCode);
+}
+
 void AFrontendPlayerController::RequestSelectLobbyRole(EOutlierPlayerRole DesiredRole)
 {
 	ServerRequestSelectLobbyRole(DesiredRole);
@@ -344,6 +502,11 @@ void AFrontendPlayerController::ServerRequestCancelMatchmaking_Implementation()
 
 void AFrontendPlayerController::ClientPrepareForMatch_Implementation()
 {
+	PrepareForMatch();
+}
+
+void AFrontendPlayerController::PrepareForMatch()
+{
 	if (ULocalPlayerUILayerSubsystem* LayerSubsystem = GetLocalPlayer()
 		? GetLocalPlayer()->GetSubsystem<ULocalPlayerUILayerSubsystem>()
 		: nullptr)
@@ -356,6 +519,22 @@ void AFrontendPlayerController::ClientPrepareForMatch_Implementation()
 
 	SetInputMode(FInputModeGameOnly());
 	bShowMouseCursor = false;
+}
+
+void AFrontendPlayerController::ClientHandoffToArena_Implementation(const FString& ArenaUrl)
+{
+	if (ArenaUrl.IsEmpty())
+	{
+		return;
+	}
+
+	if (UOutlierGameInstance* OutlierGameInstance = Cast<UOutlierGameInstance>(GetGameInstance()))
+	{
+		OutlierGameInstance->NotifyArenaHandoffStarted();
+	}
+
+	PrepareForMatch();
+	ClientTravel(ArenaUrl, TRAVEL_Absolute);
 }
 
 
