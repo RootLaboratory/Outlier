@@ -22,17 +22,6 @@ EDataValidationResult UOutlierAudioEventDefinition::IsDataValid(FDataValidationC
 		Result = EDataValidationResult::Invalid;
 	};
 
-	if (!EventTag.IsValid())
-	{
-		AddValidationError(TEXT("Audio Event Definition requires a valid EventTag."));
-	}
-	else if (!EventTag.ToString().StartsWith(TEXT("Audio.Event.")))
-	{
-		AddValidationError(FString::Printf(
-			TEXT("EventTag '%s' must start with 'Audio.Event.'."),
-			*EventTag.ToString()));
-	}
-
 	if (VolumeMultiplier < 0.0f)
 	{
 		AddValidationError(TEXT("VolumeMultiplier cannot be negative."));
@@ -63,6 +52,56 @@ EDataValidationResult UOutlierAudioEventDefinition::IsDataValid(FDataValidationC
 			AddValidationError(FString::Printf(
 				TEXT("Variant %d has a non-positive Weight."),
 				VariantIndex));
+		}
+	}
+
+	return Result == EDataValidationResult::NotValidated
+		? EDataValidationResult::Valid
+		: Result;
+}
+#endif
+
+const FPrimaryAssetType UOutlierAudioBank::PrimaryAssetType(TEXT("AudioBank"));
+
+FPrimaryAssetId UOutlierAudioBank::GetPrimaryAssetId() const
+{
+	return FPrimaryAssetId(PrimaryAssetType, GetFName());
+}
+
+#if WITH_EDITOR
+EDataValidationResult UOutlierAudioBank::IsDataValid(FDataValidationContext& Context) const
+{
+	EDataValidationResult Result = Super::IsDataValid(Context);
+
+	auto AddValidationError = [&Context, &Result](const FString& Message)
+	{
+		Context.AddError(FText::FromString(Message));
+		Result = EDataValidationResult::Invalid;
+	};
+
+	if (!TypeTag.IsValid())
+	{
+		AddValidationError(TEXT("Audio Bank requires a valid TypeTag."));
+	}
+	else if (!TypeTag.ToString().StartsWith(TEXT("Audio.Type.")))
+	{
+		AddValidationError(FString::Printf(
+			TEXT("TypeTag '%s' must start with 'Audio.Type.'."),
+			*TypeTag.ToString()));
+	}
+
+	if (Definitions.IsEmpty())
+	{
+		AddValidationError(TEXT("Audio Bank requires at least one Definition."));
+	}
+
+	for (int32 Index = 0; Index < Definitions.Num(); ++Index)
+	{
+		if (Definitions[Index].IsNull())
+		{
+			AddValidationError(FString::Printf(
+				TEXT("Definitions[%d] is empty."),
+				Index));
 		}
 	}
 

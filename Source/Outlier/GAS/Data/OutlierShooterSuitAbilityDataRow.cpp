@@ -8,14 +8,17 @@ const FName BulletReflectionRowName(TEXT("BulletReflection"));
 const FName StealthRowName(TEXT("Stealth"));
 const FName WeaponOverchargeRowName(TEXT("WeaponOvercharge"));
 
-bool RequirePositive(float Value, const TCHAR* Field, FString& OutError)
+// 0 은 허용한다 ( 업그레이드 델타가 과해서 쿨다운/사거리 등이 바닥까지 깎이는 경우,
+// ApplyConfigDelta 가 0 으로 클램프해두므로 여기서도 0을 정상값으로 받아줘야 한다 ).
+// 음수만 실제로 잘못된 config 로 취급한다.
+bool RequireNonNegative(float Value, const TCHAR* Field, FString& OutError)
 {
-	if (Value > 0.0f)
+	if (Value >= 0.0f)
 	{
 		return true;
 	}
 
-	OutError = FString::Printf(TEXT("%s must be positive"), Field);
+	OutError = FString::Printf(TEXT("%s must be non-negative"), Field);
 	return false;
 }
 
@@ -29,6 +32,7 @@ bool NearlyEqualRow(
 		&& FMath::IsNearlyEqual(A.MaxPartnerDistance, B.MaxPartnerDistance)
 		&& FMath::IsNearlyEqual(A.PartnerOffset, B.PartnerOffset)
 		&& FMath::IsNearlyEqual(A.ReflectionRadius, B.ReflectionRadius)
+		&& FMath::IsNearlyEqual(A.ReflectDamageMult, B.ReflectDamageMult)
 		&& FMath::IsNearlyEqual(A.ShieldDrainPerSecond, B.ShieldDrainPerSecond)
 		&& FMath::IsNearlyEqual(A.FireRateMultiplier, B.FireRateMultiplier)
 		&& FMath::IsNearlyEqual(A.SpreadMultiplier, B.SpreadMultiplier)
@@ -38,21 +42,22 @@ bool NearlyEqualRow(
 
 bool FOutlierShooterSuitConfig::IsValid(FString& OutError) const
 {
-	return RequirePositive(MaxPartnerDistance, TEXT("Common.MaxPartnerDistance"), OutError)
-		&& RequirePositive(QuantumLeap.CastTimeSeconds, TEXT("QuantumLeap.CastTimeSeconds"), OutError)
-		&& RequirePositive(QuantumLeap.CooldownSeconds, TEXT("QuantumLeap.CooldownSeconds"), OutError)
-		&& RequirePositive(QuantumLeap.PartnerOffset, TEXT("QuantumLeap.PartnerOffset"), OutError)
-		&& RequirePositive(BulletReflection.DurationSeconds, TEXT("BulletReflection.DurationSeconds"), OutError)
-		&& RequirePositive(BulletReflection.CooldownSeconds, TEXT("BulletReflection.CooldownSeconds"), OutError)
-		&& RequirePositive(BulletReflection.ReflectionRadius, TEXT("BulletReflection.ReflectionRadius"), OutError)
-		&& RequirePositive(Stealth.DurationSeconds, TEXT("Stealth.DurationSeconds"), OutError)
-		&& RequirePositive(Stealth.CooldownSeconds, TEXT("Stealth.CooldownSeconds"), OutError)
-		&& RequirePositive(WeaponOvercharge.DurationSeconds, TEXT("WeaponOvercharge.DurationSeconds"), OutError)
-		&& RequirePositive(WeaponOvercharge.CooldownSeconds, TEXT("WeaponOvercharge.CooldownSeconds"), OutError)
-		&& RequirePositive(WeaponOvercharge.ShieldDrainPerSecond, TEXT("WeaponOvercharge.ShieldDrainPerSecond"), OutError)
-		&& RequirePositive(WeaponOvercharge.FireRateMultiplier, TEXT("WeaponOvercharge.FireRateMultiplier"), OutError)
-		&& RequirePositive(WeaponOvercharge.SpreadMultiplier, TEXT("WeaponOvercharge.SpreadMultiplier"), OutError)
-		&& RequirePositive(WeaponOvercharge.ShieldRecoveryDelay, TEXT("WeaponOvercharge.ShieldRecoveryDelay"), OutError);
+	return RequireNonNegative(MaxPartnerDistance, TEXT("Common.MaxPartnerDistance"), OutError)
+		&& RequireNonNegative(QuantumLeap.CastTimeSeconds, TEXT("QuantumLeap.CastTimeSeconds"), OutError)
+		&& RequireNonNegative(QuantumLeap.CooldownSeconds, TEXT("QuantumLeap.CooldownSeconds"), OutError)
+		&& RequireNonNegative(QuantumLeap.PartnerOffset, TEXT("QuantumLeap.PartnerOffset"), OutError)
+		&& RequireNonNegative(BulletReflection.DurationSeconds, TEXT("BulletReflection.DurationSeconds"), OutError)
+		&& RequireNonNegative(BulletReflection.CooldownSeconds, TEXT("BulletReflection.CooldownSeconds"), OutError)
+		&& RequireNonNegative(BulletReflection.ReflectionRadius, TEXT("BulletReflection.ReflectionRadius"), OutError)
+		&& RequireNonNegative(BulletReflection.ReflectDamageMult, TEXT("BulletReflection.ReflectDamageMult"), OutError)
+		&& RequireNonNegative(Stealth.DurationSeconds, TEXT("Stealth.DurationSeconds"), OutError)
+		&& RequireNonNegative(Stealth.CooldownSeconds, TEXT("Stealth.CooldownSeconds"), OutError)
+		&& RequireNonNegative(WeaponOvercharge.DurationSeconds, TEXT("WeaponOvercharge.DurationSeconds"), OutError)
+		&& RequireNonNegative(WeaponOvercharge.CooldownSeconds, TEXT("WeaponOvercharge.CooldownSeconds"), OutError)
+		&& RequireNonNegative(WeaponOvercharge.ShieldDrainPerSecond, TEXT("WeaponOvercharge.ShieldDrainPerSecond"), OutError)
+		&& RequireNonNegative(WeaponOvercharge.FireRateMultiplier, TEXT("WeaponOvercharge.FireRateMultiplier"), OutError)
+		&& RequireNonNegative(WeaponOvercharge.SpreadMultiplier, TEXT("WeaponOvercharge.SpreadMultiplier"), OutError)
+		&& RequireNonNegative(WeaponOvercharge.ShieldRecoveryDelay, TEXT("WeaponOvercharge.ShieldRecoveryDelay"), OutError);
 }
 
 bool FOutlierShooterSuitConfig::Equals(const FOutlierShooterSuitConfig& Other) const

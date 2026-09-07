@@ -21,9 +21,17 @@ FString MessageTypeToString(EOutlierArenaControlMessageType Type)
 		return TEXT("InMatch");
 	case EOutlierArenaControlMessageType::Releasing:
 		return TEXT("Releasing");
+	case EOutlierArenaControlMessageType::Heartbeat:
+		return TEXT("Heartbeat");
 	default:
 		return FString();
 	}
+}
+
+bool MessageRequiresMatchId(EOutlierArenaControlMessageType Type)
+{
+	return Type != EOutlierArenaControlMessageType::Ready
+		&& Type != EOutlierArenaControlMessageType::Heartbeat;
 }
 
 bool TryParseMessageType(const FString& Value, EOutlierArenaControlMessageType& OutType)
@@ -53,6 +61,11 @@ bool TryParseMessageType(const FString& Value, EOutlierArenaControlMessageType& 
 		OutType = EOutlierArenaControlMessageType::Releasing;
 		return true;
 	}
+	if (Value == TEXT("Heartbeat"))
+	{
+		OutType = EOutlierArenaControlMessageType::Heartbeat;
+		return true;
+	}
 
 	return false;
 }
@@ -77,8 +90,7 @@ bool OutlierArenaControl::EncodeFrame(
 		return false;
 	}
 
-	const bool bRequiresMatch = Message.Type != EOutlierArenaControlMessageType::Ready;
-	if (bRequiresMatch && !Message.MatchId.IsValid())
+	if (MessageRequiresMatchId(Message.Type) && !Message.MatchId.IsValid())
 	{
 		return false;
 	}
@@ -173,7 +185,7 @@ EOutlierArenaFrameDecodeResult OutlierArenaControl::TryDecodeFrame(
 
 	OutMessage.SlotId = static_cast<int32>(SlotIdNumber);
 	OutMessage.ProcessId = static_cast<uint32>(ProcessIdNumber);
-	if (OutMessage.Type != EOutlierArenaControlMessageType::Ready)
+	if (MessageRequiresMatchId(OutMessage.Type))
 	{
 		FString MatchIdString;
 		if (!JsonObject->TryGetStringField(TEXT("matchId"), MatchIdString)

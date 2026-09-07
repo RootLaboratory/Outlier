@@ -18,7 +18,10 @@ enum class EOutlierArenaControlMessageType : uint8
 	Allocate,
 	Release,
 	InMatch,
-	Releasing
+	Releasing,
+	// Worker가 주기적으로 보내고 Lobby가 그대로 되돌려준다. Lobby가 사라진 것을
+	// 감지하는 유일한 수단이므로 MatchId를 요구하지 않는다.
+	Heartbeat
 };
 
 struct FOutlierArenaControlMessage

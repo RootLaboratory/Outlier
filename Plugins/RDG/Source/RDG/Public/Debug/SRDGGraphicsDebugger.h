@@ -29,6 +29,16 @@ private:
 	void OnChromaticStartOffsetSliderChanged(float NewValue);
 	TOptional<float> GetChromaticIntensityValue() const;
 	void OnChromaticIntensityChanged(float NewValue);
+	ECheckBoxState GetOverlayEnabledCheckState() const;
+	void OnOverlayEnabledChanged(ECheckBoxState NewState);
+	TOptional<float> GetOverlayTintRValue() const;
+	void OnOverlayTintRChanged(float NewValue);
+	TOptional<float> GetOverlayTintGValue() const;
+	void OnOverlayTintGChanged(float NewValue);
+	TOptional<float> GetOverlayTintBValue() const;
+	void OnOverlayTintBChanged(float NewValue);
+	TOptional<float> GetOverlayGoalValue() const;
+	void OnOverlayGoalValueChanged(float NewValue);
 
 	ECheckBoxState GetMotionBlurEnabledCheckState() const;
 	void OnMotionBlurEnabledChanged(ECheckBoxState NewState);

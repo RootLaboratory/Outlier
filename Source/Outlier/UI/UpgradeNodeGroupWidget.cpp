@@ -13,7 +13,6 @@ void UUpgradeNodeGroupWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
 
-	RefreshUnlockedNodeTextureBindings();
 	BindUpgradeStateChanged();
 	BindPlayerStateNodeCountChanged();
 	RefreshNodeWidgets();
@@ -90,108 +89,11 @@ void UUpgradeNodeGroupWidget::RefreshNodeWidgets()
 			NodeWidget->SetUpgradeDescWidgetClass(UpgradeDescWidgetClass);
 		}
 
-		NodeWidget->SetUnlockedNodeTexture(ResolveUnlockedNodeTexture(NodeWidget));
+		NodeWidget->SetNodeTexture(ResolveNodeTexture(NodeWidget));
+		NodeWidget->SetUnlockedNodeTexture(UnlockedNodeTexture);
+		NodeWidget->SetDeactivatedNodeTexture(DeactivatedNodeTexture);
 	}
 }
-
-void UUpgradeNodeGroupWidget::SetUnlockedNodeTexture(FName NodeRowName, UTexture2D* Texture)
-{
-	if (UpgradeSetData)
-	{
-		return;
-	}
-
-	if (NodeRowName.IsNone())
-	{
-		return;
-	}
-
-	RefreshUnlockedNodeTextureBindings();
-
-	for (FUpgradeNodeTextureBinding& Binding : UnlockedNodeTextures)
-	{
-		if (Binding.NodeRowName == NodeRowName)
-		{
-			Binding.Texture = Texture;
-			RefreshNodeWidgets();
-			return;
-		}
-	}
-
-	FUpgradeNodeTextureBinding& Binding = UnlockedNodeTextures.AddDefaulted_GetRef();
-	Binding.NodeRowName = NodeRowName;
-	Binding.Texture = Texture;
-	RefreshNodeWidgets();
-}
-
-void UUpgradeNodeGroupWidget::RefreshUnlockedNodeTextureBindings()
-{
-	if (UpgradeSetData)
-	{
-		return;
-	}
-
-	TMap<FName, TObjectPtr<UTexture2D>> ExistingTextures;
-	for (const FUpgradeNodeTextureBinding& Binding : UnlockedNodeTextures)
-	{
-		if (!Binding.NodeRowName.IsNone() && Binding.Texture)
-		{
-			ExistingTextures.Add(Binding.NodeRowName, Binding.Texture);
-		}
-	}
-
-	UnlockedNodeTextures.Reset();
-
-	UDataTable* ResolvedDataTable = GetResolvedUpgradeDataTable();
-	if (!ResolvedDataTable)
-	{
-		return;
-	}
-
-	TArray<FName> RowNames = ResolvedDataTable->GetRowNames();
-	RowNames.Sort(FNameLexicalLess());
-
-	for (const FName& RowName : RowNames)
-	{
-		const FOutlierUpgradeNodeRow* Row = ResolvedDataTable->FindRow<FOutlierUpgradeNodeRow>(
-			RowName,
-			TEXT("UpgradeNodeGroupWidgetTextureBindings"),
-			false);
-		if (!Row)
-		{
-			continue;
-		}
-
-		const EOutlierUpgradeRole ResolvedRole = GetResolvedUpgradeRole();
-		if (ResolvedRole != EOutlierUpgradeRole::None && Row->Role != ResolvedRole)
-		{
-			continue;
-		}
-
-		FUpgradeNodeTextureBinding& Binding = UnlockedNodeTextures.AddDefaulted_GetRef();
-		Binding.NodeRowName = RowName;
-
-		if (const TObjectPtr<UTexture2D>* ExistingTexture = ExistingTextures.Find(RowName))
-		{
-			Binding.Texture = *ExistingTexture;
-		}
-	}
-}
-
-#if WITH_EDITOR
-void UUpgradeNodeGroupWidget::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
-{
-	Super::PostEditChangeProperty(PropertyChangedEvent);
-
-	const FName PropertyName = PropertyChangedEvent.GetPropertyName();
-	if (PropertyName == GET_MEMBER_NAME_CHECKED(UUpgradeNodeGroupWidget, UpgradeDataTable)
-		|| PropertyName == GET_MEMBER_NAME_CHECKED(UUpgradeNodeGroupWidget, UpgradeRole)
-		|| PropertyName == GET_MEMBER_NAME_CHECKED(UUpgradeNodeGroupWidget, UpgradeSetData))
-	{
-		RefreshUnlockedNodeTextureBindings();
-	}
-}
-#endif
 
 EOutlierUpgradeRole UUpgradeNodeGroupWidget::GetResolvedUpgradeRole() const
 {
@@ -267,32 +169,34 @@ void UUpgradeNodeGroupWidget::HandleNodeCountChanged(int32 NewNodeCount)
 	RefreshNodeWidgets();
 }
 
-UTexture2D* UUpgradeNodeGroupWidget::ResolveUnlockedNodeTexture(const UUpgradeNodeWidget* NodeWidget) const
+UTexture2D* UUpgradeNodeGroupWidget::ResolveNodeTexture(const UUpgradeNodeWidget* NodeWidget) const
 {
-	if (!NodeWidget || NodeWidget->GetNodeState() == EOutlierUpgradeNodeState::Locked)
+	if (!NodeWidget)
 	{
 		return nullptr;
 	}
 
-	const FName RowName = NodeWidget->GetNodeRowName();
-	return FindUnlockedNodeTexture(RowName);
+	const FName RowName = NodeWidget->GetNodeRowName().IsNone()
+		? NodeWidget->NodeRowName
+		: NodeWidget->GetNodeRowName();
+	return FindNodeTexture(RowName);
 }
 
-UTexture2D* UUpgradeNodeGroupWidget::FindUnlockedNodeTexture(FName NodeRowName) const
+UTexture2D* UUpgradeNodeGroupWidget::FindNodeTexture(FName NodeRowName) const
 {
 	if (NodeRowName.IsNone())
 	{
 		return nullptr;
 	}
 
-	const TArray<FUpgradeNodeTextureBinding>& TextureBindings = UpgradeSetData
-		? UpgradeSetData->UnlockedNodeTextures
-		: UnlockedNodeTextures;
-	for (const FUpgradeNodeTextureBinding& Binding : TextureBindings)
+	if (UpgradeSetData)
 	{
-		if (Binding.NodeRowName == NodeRowName)
+		for (const FUpgradeNodeTextureBinding& Binding : UpgradeSetData->UnlockedNodeTextures)
 		{
-			return Binding.Texture.Get();
+			if (Binding.NodeRowName == NodeRowName && Binding.Texture)
+			{
+				return Binding.Texture.Get();
+			}
 		}
 	}
 

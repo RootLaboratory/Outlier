@@ -10,6 +10,7 @@
 #include "PostProcess/MaterialPostProcessSubsystem.h"
 #include "Components/ActorComponent.h"
 #include "Engine/OverlapResult.h"
+#include "GAS/OutlierAbilitySystemComponent.h"
 
 // Sets default values for this component's properties
 UPartnerSupportComponent::UPartnerSupportComponent()
@@ -62,10 +63,18 @@ EPartnerSkillUseResult UPartnerSupportComponent::TryScan_Server()
 		return EPartnerSkillUseResult::InvalidState;
 	}
 
-	PartnerCharacter->bScanning = true;
 	const FVector InScanOrigin = PartnerCharacter->GetActorLocation();
-	const float InScanRange = PartnerCharacter->ScanRange;
-	const float InScanDuration = PartnerCharacter->ScanDuration;
+	const UOutlierAbilitySystemComponent* AbilitySystem =
+		PartnerCharacter->GetOutlierAbilitySystemComponent();
+	if (!AbilitySystem || !AbilitySystem->IsPartnerAbilitiesConfigured())
+	{
+		NotifySkillResult(EPartnerSkillType::Scan, EPartnerSkillUseResult::InvalidState);
+		return EPartnerSkillUseResult::InvalidState;
+	}
+	const FOutlierPartnerAbilityConfig& Config = AbilitySystem->GetPartnerAbilityConfig();
+	const float InScanRange = Config.ScanRange;
+	const float InScanDuration = Config.ScanDuration;
+	PartnerCharacter->bScanning = true;
 
 	//Multicast 수정
 	ClientStartScanVisual(
@@ -110,7 +119,14 @@ EPartnerSkillUseResult UPartnerSupportComponent::TryShield_Server()
 		return EPartnerSkillUseResult::NoTarget;
 	}
 
-	const float ShieldAmount = PartnerCharacter->ShieldAmount;
+	const UOutlierAbilitySystemComponent* AbilitySystem =
+		PartnerCharacter->GetOutlierAbilitySystemComponent();
+	if (!AbilitySystem || !AbilitySystem->IsPartnerAbilitiesConfigured())
+	{
+		NotifySkillResult(EPartnerSkillType::Shield, EPartnerSkillUseResult::InvalidState);
+		return EPartnerSkillUseResult::InvalidState;
+	}
+	const float ShieldAmount = AbilitySystem->GetPartnerAbilityConfig().ShieldAmount;
 	const float ShieldDuration = PartnerCharacter->ShieldDuration;
 
 	Shooter->ApplyPartnerShield(ShieldAmount, ShieldDuration);

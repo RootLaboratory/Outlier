@@ -1,0 +1,23 @@
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/ScreenPass.ush"
+
+Texture2D InputTexture;
+SamplerState InputSampler;
+float3 TintColor;
+float Intensity;
+
+float3 OverlayBlend(float3 Base, float3 Blend)
+{
+	float3 Low = 2.0f * Base * Blend;
+	float3 High = 1.0f - 2.0f * (1.0f - Base) * (1.0f - Blend);
+	return lerp(Low, High, step(float3(0.5f, 0.5f, 0.5f), Base));
+}
+
+void MainPS(
+	FScreenVertexOutput Input,
+	out float4 OutColor : SV_Target0)
+{
+	float4 BaseColor = InputTexture.Sample(InputSampler, Input.UV);
+	float3 OverlayColor = OverlayBlend(saturate(BaseColor.rgb), saturate(TintColor));
+	OutColor = float4(lerp(BaseColor.rgb, OverlayColor, saturate(Intensity)), BaseColor.a);
+}

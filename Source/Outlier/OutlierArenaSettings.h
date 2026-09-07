@@ -61,6 +61,14 @@ public:
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Network|Process", meta = (ClampMin = "0", ClampMax = "10"))
 	int32 MaxArenaWorkerRestartAttempts = 3;
 
+	// Worker가 Lobby로 Heartbeat를 보내는 주기.
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Network|Process", meta = (ClampMin = "0.5"))
+	float ArenaWorkerHeartbeatIntervalSeconds = 2.0f;
+
+	// 이 시간 동안 Lobby 응답이 없으면 Worker는 고아로 판단하고 스스로 종료한다.
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Network|Process", meta = (ClampMin = "1.0"))
+	float ArenaWorkerHeartbeatTimeoutSeconds = 15.0f;
+
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Network")
 	FString LobbyAddress = TEXT("127.0.0.1:7777");
 

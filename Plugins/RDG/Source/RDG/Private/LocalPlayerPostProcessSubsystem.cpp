@@ -65,6 +65,7 @@ void ULocalPlayerPostProcessSubsystem::Deinitialize()
 
 void ULocalPlayerPostProcessSubsystem::Tick(float DeltaTime)
 {
+	UpdateOverlay(DeltaTime);
 	UpdateADSBlur(DeltaTime);
 	UpdatePixelSorting(DeltaTime);
 	UpdateHackPossessionTransition(DeltaTime);
@@ -159,6 +160,68 @@ void ULocalPlayerPostProcessSubsystem::SetChromaticAberrationIntensity(float InI
 {
 	UIPostProcessParameters.ChromaticAberration.Intensity = FMath::Max(0.0f, InIntensity);
 	MarkDirty();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetOverlayEnabled(bool bEnabled)
+{
+	bOverlayRequested = bEnabled;
+	if (bEnabled)
+	{
+		// 0에서 올라가는 첫 프레임부터 패스를 그래프에 유지한다.
+		UIPostProcessParameters.Overlay.bEnabled = true;
+	}
+	else if (UIPostProcessParameters.Overlay.AccumulatedValue <= KINDA_SMALL_NUMBER)
+	{
+		UIPostProcessParameters.Overlay.AccumulatedValue = 0.0f;
+		UIPostProcessParameters.Overlay.bEnabled = false;
+	}
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetOverlayTintColor(const FLinearColor& InTintColor)
+{
+	UIPostProcessParameters.Overlay.TintColor = InTintColor.GetClamped(0.0f, 1.0f);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetOverlayGoalValue(float InGoalValue)
+{
+	UIPostProcessParameters.Overlay.GoalValue = FMath::Clamp(InGoalValue, 0.0f, 1.0f);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::UpdateOverlay(float DeltaTime)
+{
+	FOverlayParameters& Overlay = UIPostProcessParameters.Overlay;
+	if (DeltaTime <= 0.0f || (!bOverlayRequested && Overlay.bEnabled == 0))
+	{
+		return;
+	}
+
+	const float TargetValue = bOverlayRequested
+		? FMath::Clamp(Overlay.GoalValue, 0.0f, 1.0f)
+		: 0.0f;
+	const float NextValue = FMath::FInterpConstantTo(
+		Overlay.AccumulatedValue,
+		TargetValue,
+		DeltaTime,
+		1.0f);
+	const bool bReachedZero = !bOverlayRequested && NextValue <= KINDA_SMALL_NUMBER;
+	const int32 NextEnabled = bReachedZero ? 0 : 1;
+
+	if (FMath::IsNearlyEqual(Overlay.AccumulatedValue, NextValue)
+		&& Overlay.bEnabled == NextEnabled)
+	{
+		return;
+	}
+
+	Overlay.AccumulatedValue = bReachedZero ? 0.0f : NextValue;
+	Overlay.bEnabled = NextEnabled;
+	MarkDirty();
+	TickFrame();
 }
 
 void ULocalPlayerPostProcessSubsystem::SetDualKawaseBlurEnabled(bool bEnabled)

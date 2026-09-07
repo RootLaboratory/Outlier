@@ -16,6 +16,7 @@
 #include "LocalPlayerUISubSystem.h"
 #include "EnhancedInputComponent.h"
 #include "Engine/LocalPlayer.h"
+#include "InputAction.h"
 #include "InputActionValue.h"
 #include "Components/SceneCaptureComponent2D.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -24,6 +25,8 @@
 #include "Engine/OverlapResult.h"
 #include "OutlierNetUtils.h"
 #include "Outlier.h"
+#include "OutlierPlayerState.h"
+#include "Drone/Partner/PartnerCharacter.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Team/OutlierTeamIds.h"
 #include "Room/RoomTagComponent.h"
@@ -106,6 +109,18 @@ void AFirstPersonCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
 		return;
 	}
 
+	auto EnableTriggerWhenPaused = [](UInputAction* Action)
+	{
+		if (Action)
+		{
+			Action->bTriggerWhenPaused = true;
+		}
+	};
+
+	EnableTriggerWhenPaused(InputConfig->WidgetEscapeAction);
+	EnableTriggerWhenPaused(InputConfig->InGameSettingAction);
+	EnableTriggerWhenPaused(InputConfig->WidgetConfirmedAction);
+
 	// Move
 	EnhancedInputComponent->BindAction(InputConfig->MoveAction, ETriggerEvent::Triggered, this, &AFirstPersonCharacter::MoveInput);
 	EnhancedInputComponent->BindAction(InputConfig->MoveAction, ETriggerEvent::Completed, this, &AFirstPersonCharacter::MoveInput);
@@ -125,6 +140,8 @@ void AFirstPersonCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
 	EnhancedInputComponent->BindAction(InputConfig->CamToggleAction, ETriggerEvent::Started, this, &AFirstPersonCharacter::TryCamToggle);
 
 	EnhancedInputComponent->BindAction(InputConfig->WidgetEscapeAction,ETriggerEvent::Started,this, &AFirstPersonCharacter::HandleWidgetEscapeInput);
+
+	EnhancedInputComponent->BindAction(InputConfig->InGameSettingAction, ETriggerEvent::Started, this, &AFirstPersonCharacter::HandleWidgetEscapeInput);
 
 	EnhancedInputComponent->BindAction(InputConfig->WidgetConfirmedAction,ETriggerEvent::Started,this,&AFirstPersonCharacter::HandleWidgetConfirmedInput);
 	
@@ -187,7 +204,16 @@ void AFirstPersonCharacter::HandleWidgetEscapeInput()
 
 	if (ULocalPlayerUILayerSubsystem* LayerSubsystem = GetUILayerSubsystem())
 	{
-		LayerSubsystem->RouteWidgetEscapeInput();
+		if (LayerSubsystem->RouteWidgetEscapeInput(false))
+		{
+			return;
+		}
+	}
+
+	if (AFirstPersonPlayerController* FirstPersonController =
+		Cast<AFirstPersonPlayerController>(GetController()))
+	{
+		FirstPersonController->RequestOpenInGameSetting();
 	}
 }
 
@@ -294,9 +320,28 @@ void AFirstPersonCharacter::TryCamToggle()
 
 			if (ULocalPlayerUISubSystem* PPSubsystem = LP->GetSubsystem<ULocalPlayerUISubSystem>())
 			{
+				const bool bShouldActivate = !bPartnerCameraCaptureActive;
+				AFirstPersonCharacter* CameraSource = bShouldActivate
+					? ResolvePartnerCameraSource()
+					: ActivePartnerCameraSource.Get();
+
+				if (!CameraSource)
+				{
+					UE_LOG(LogTemp, Warning,
+						TEXT("[PartnerCam] Toggle skipped: paired camera source is not ready Character=%s"),
+						*GetNameSafe(this));
+					return;
+				}
+
+				if (bShouldActivate)
+				{
+					PPSubsystem->PartnerCameraBind(CameraSource->CaptureComponent);
+				}
+
 				PPSubsystem->PartnerCameraToggle();
-				bPartnerCameraCaptureActive = !bPartnerCameraCaptureActive;
-				SetPartnerCameraCaptureUpdating(bPartnerCameraCaptureActive);
+				bPartnerCameraCaptureActive = bShouldActivate;
+				CameraSource->SetPartnerCameraCaptureUpdating(bPartnerCameraCaptureActive);
+				ActivePartnerCameraSource = bPartnerCameraCaptureActive ? CameraSource : nullptr;
 			}
 			else
 			{
@@ -305,6 +350,30 @@ void AFirstPersonCharacter::TryCamToggle()
 			}
 		}
 	}
+}
+
+AFirstPersonCharacter* AFirstPersonCharacter::ResolvePartnerCameraSource() const
+{
+	const APlayerController* PlayerController = Cast<APlayerController>(GetController());
+	const AOutlierPlayerState* OutlierPlayerState = PlayerController
+		? PlayerController->GetPlayerState<AOutlierPlayerState>()
+		: nullptr;
+	if (!OutlierPlayerState)
+	{
+		return nullptr;
+	}
+
+	if (IsA<AShooterCharacter>())
+	{
+		return OutlierPlayerState->GetPartnerCharacter();
+	}
+
+	if (IsA<APartnerCharacter>())
+	{
+		return OutlierPlayerState->GetShooterCharacter();
+	}
+
+	return nullptr;
 }
 
 void AFirstPersonCharacter::SetPartnerCameraCaptureUpdating(bool bEnabled)
@@ -721,6 +790,28 @@ void AFirstPersonCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>
 EWeaponType AFirstPersonCharacter::GetWeaponType() const
 {
 	return CurrentWeaponType;
+}
+
+void AFirstPersonCharacter::CollectStealthMeshes(
+	TArray<UMeshComponent*>& OutFirstPersonMeshes,
+	TArray<UMeshComponent*>& OutThirdPersonMeshes) const
+{
+	// 은신 머티리얼/스텐실 적용과 원상복구는 UMaterialPostProcessSubsystem 이 전담한다.
+	// 여기서는 "내 메시가 어떻게 구성돼 있는지"와 지금 든 무기만 알려준다.
+	if (FirstPersonMesh)
+	{
+		OutFirstPersonMeshes.Add(FirstPersonMesh);
+	}
+
+	if (USkeletalMeshComponent* ThirdPersonMesh = GetMesh())
+	{
+		OutThirdPersonMeshes.Add(ThirdPersonMesh);
+	}
+
+	if (const AWeaponBase* EquippedWeapon = GetCurrentWeapon())
+	{
+		EquippedWeapon->CollectStealthMeshes(OutFirstPersonMeshes, OutThirdPersonMeshes);
+	}
 }
 
 void AFirstPersonCharacter::OnMoveInputUpdated(const FVector2D& MoveValue)

@@ -24,9 +24,6 @@ struct OUTLIER_API FPartnerSkillDataRow : public FTableRowBase
 
 	// Hack
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
-	float HackRange = 500.0f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly)
 	float HackEffectiveRange = 300.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)

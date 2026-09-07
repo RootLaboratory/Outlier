@@ -48,6 +48,7 @@ protected:
 	virtual void InitializeUILayerContext_Implementation(
 		const TArray<AActor*>& ContextActors) override;
 	virtual bool HandleUILayerEscape_Implementation() override;
+
 	virtual bool HandleUILayerConfirmed_Implementation() override;
 	virtual bool HandleUILayerUp_Implementation() override;
 	virtual bool HandleUILayerDown_Implementation() override;

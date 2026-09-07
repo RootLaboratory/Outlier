@@ -59,6 +59,12 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Upgrade|Texture")
 	void SetUnlockedNodeTexture(UTexture2D* InUnlockedNodeTexture);
 
+	UFUNCTION(BlueprintCallable, Category = "Upgrade|Texture")
+	void SetDeactivatedNodeTexture(UTexture2D* InDeactivatedNodeTexture);
+
+	UFUNCTION(BlueprintCallable, Category = "Upgrade|Texture")
+	void SetNodeTexture(UTexture2D* InNodeTexture);
+
 	UFUNCTION(BlueprintPure, Category = "Upgrade")
 	bool GetNodeData(FOutlierUpgradeNodeRow& OutNodeData) const;
 
@@ -196,4 +202,10 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UTexture2D> UnlockedNodeTexture;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UTexture2D> DeactivatedNodeTexture;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UTexture2D> NodeTexture;
 };

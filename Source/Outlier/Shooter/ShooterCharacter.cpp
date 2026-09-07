@@ -44,6 +44,9 @@
 #include "OutlierPlayerState.h"
 #include "OutlierNetUtils.h"
 #include "Outlier.h"
+#include "UI/LocalPlayerUILayerSubsystem.h"
+#include "UI/ShooterReflectionBarrier.h"
+#include "UI/UILayerGameplayTags.h"
 
 namespace
 {
@@ -217,7 +220,6 @@ void AShooterCharacter::BeginPlay()
 	RefreshWeaponMode();
 	RefreshMovementState();
 	RefreshCombatState();
-	SetStealthVisualEnabled(IsStealthed());
 	RefreshShooterSuitCooldownUI();
 }
 
@@ -231,12 +233,12 @@ void AShooterCharacter::Tick(float DeltaSeconds)
 
 void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	PopReflectionBarrierWidget();
 	UnbindPartnerSuitStateObserver();
 	CancelActiveQuantumLeap();
 	EndActiveBulletReflection(false);
 	EndActiveWeaponOvercharge(false);
 	EndActiveStealth(false);
-	SetStealthVisualEnabled(false);
 
 	if (HasAuthority())
 	{
@@ -317,6 +319,11 @@ void AShooterCharacter::RefreshAbilitySystemActorInfo()
 	{
 		OutlierAbilitySystemComponent->InitializeForPawn(this);
 	}
+
+	if (UpgradeComponent)
+	{
+		UpgradeComponent->SyncFromPlayerState();
+	}
 }
 
 void AShooterCharacter::InitializeGasVitality()
@@ -396,9 +403,6 @@ void AShooterCharacter::BindGasVitalityObservers()
 	DeadTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::Dead()).AddUObject(
 			this, &AShooterCharacter::HandleDeadTagChanged);
-	StealthTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
-		OutlierGameplayTags::State::Stealthed()).AddUObject(
-			this, &AShooterCharacter::HandleStealthTagChanged);
 	BulletReflectionTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::BulletReflecting()).AddUObject(
 			this, &AShooterCharacter::HandleBulletReflectionTagChanged);
@@ -433,8 +437,6 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::Dead()).Remove(DeadTagChangedHandle);
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
-		OutlierGameplayTags::State::Stealthed()).Remove(StealthTagChangedHandle);
-	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::BulletReflecting()).Remove(BulletReflectionTagChangedHandle);
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::WeaponOvercharged()).Remove(WeaponOverchargeTagChangedHandle);
@@ -450,7 +452,6 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 	HealthChangedHandle.Reset();
 	ShieldChangedHandle.Reset();
 	DeadTagChangedHandle.Reset();
-	StealthTagChangedHandle.Reset();
 	BulletReflectionTagChangedHandle.Reset();
 	WeaponOverchargeTagChangedHandle.Reset();
 	QuantumLeapCooldownTagChangedHandle.Reset();
@@ -496,22 +497,134 @@ void AShooterCharacter::HandleDeadTagChanged(const FGameplayTag Tag, int32 NewCo
 	}
 }
 
-void AShooterCharacter::HandleStealthTagChanged(const FGameplayTag Tag, int32 NewCount)
-{
-	(void)Tag;
-	SetStealthVisualEnabled(NewCount > 0);
-}
-
 void AShooterCharacter::HandleBulletReflectionTagChanged(const FGameplayTag Tag, int32 NewCount)
 {
 	(void)Tag;
-	BP_OnBulletReflectionStateChanged(NewCount > 0);
+	const bool bReflectionActive = NewCount > 0;
+	BP_OnBulletReflectionStateChanged(bReflectionActive);
+
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+
+	if (bReflectionActive)
+	{
+		PushReflectionBarrierWidget();
+	}
+	else
+	{
+		PopReflectionBarrierWidget();
+	}
+}
+
+void AShooterCharacter::PushReflectionBarrierWidget()
+{
+	if (ReflectionBarrierLayerHandle.IsValid() || !ReflectionBarrierWidgetClass)
+	{
+		return;
+	}
+
+	APlayerController* PlayerController = Cast<APlayerController>(GetController());
+	ULocalPlayer* LocalPlayer = PlayerController ? PlayerController->GetLocalPlayer() : nullptr;
+	ULocalPlayerUILayerSubsystem* LayerSubsystem = LocalPlayer
+		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()
+		: nullptr;
+	if (!LayerSubsystem)
+	{
+		return;
+	}
+
+	UShooterReflectionBarrier* BarrierWidget = CreateWidget<UShooterReflectionBarrier>(
+		PlayerController,
+		ReflectionBarrierWidgetClass);
+	if (!BarrierWidget)
+	{
+		return;
+	}
+	ReflectionBarrierWidgetInstance = BarrierWidget;
+
+	ReflectionBarrierLayerHandle = LayerSubsystem->PushWidget(
+		UILayerTags::Gameplay(),
+		BarrierWidget,
+		FirstPersonInputModeTags::UI(),
+		this,
+		EUILayerFocusTarget::None,
+		false,
+		false);
+	if (!ReflectionBarrierLayerHandle.IsValid())
+	{
+		ReflectionBarrierWidgetInstance = nullptr;
+		return;
+	}
+
+	if (bHasPendingReflectionVisual)
+	{
+		ReflectionBarrierWidgetInstance->PlayHitRipple(PendingReflectionVisualOrigin);
+		bHasPendingReflectionVisual = false;
+	}
+}
+
+void AShooterCharacter::PopReflectionBarrierWidget()
+{
+	if (!ReflectionBarrierLayerHandle.IsValid())
+	{
+		return;
+	}
+
+	APlayerController* PlayerController = Cast<APlayerController>(GetController());
+	ULocalPlayer* LocalPlayer = PlayerController ? PlayerController->GetLocalPlayer() : nullptr;
+	if (ULocalPlayerUILayerSubsystem* LayerSubsystem = LocalPlayer
+		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()
+		: nullptr)
+	{
+		LayerSubsystem->PopLayer(ReflectionBarrierLayerHandle);
+	}
+
+	ReflectionBarrierLayerHandle.Reset();
+	ReflectionBarrierWidgetInstance = nullptr;
+	bHasPendingReflectionVisual = false;
+}
+
+void AShooterCharacter::NotifyLocalBulletReflected(const FVector& IncomingOrigin)
+{
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+
+	if (IsValid(ReflectionBarrierWidgetInstance))
+	{
+		ReflectionBarrierWidgetInstance->PlayHitRipple(IncomingOrigin);
+		return;
+	}
+
+	// The cosmetic multicast can arrive before the replicated reflection tag
+	// creates the local barrier widget. Preserve the latest hit for that frame.
+	PendingReflectionVisualOrigin = IncomingOrigin;
+	bHasPendingReflectionVisual = true;
 }
 
 void AShooterCharacter::HandleWeaponOverchargeTagChanged(const FGameplayTag Tag, int32 NewCount)
 {
 	(void)Tag;
-	BP_OnWeaponOverchargeStateChanged(NewCount > 0);
+	const bool bOverchargeActive = NewCount > 0;
+	if (IsLocallyControlled())
+	{
+		if (const APlayerController* PlayerController = Cast<APlayerController>(GetController()))
+		{
+			if (ULocalPlayer* LocalPlayer = PlayerController->GetLocalPlayer())
+			{
+				if (ULocalPlayerPostProcessSubsystem* PPSubsystem =
+					LocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
+				{
+					PPSubsystem->SetOverlayEnabled(bOverchargeActive);
+				}
+			}
+		}
+	}
+
+	BP_OnWeaponOverchargeStateChanged(bOverchargeActive);
 }
 
 void AShooterCharacter::HandleStealthCooldownTagChanged(const FGameplayTag Tag, int32 NewCount)
@@ -1008,19 +1121,6 @@ void AShooterCharacter::TryUseSuit()
 	}
 }
 
-void AShooterCharacter::SetStealthVisualEnabled(bool bEnabled)
-{
-	if (!IsLocallyControlled())
-	{
-		return;
-	}
-
-	if (UMaterialPostProcessSubsystem* MaterialSub = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
-	{
-		MaterialSub->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Stealth, bEnabled);
-	}
-}
-
 void AShooterCharacter::ServerUseSuitAbility_Implementation(FGameplayTag AbilityTag)
 {
 	const bool bCancellingActiveStealth = IsStealthed()
@@ -1503,7 +1603,9 @@ bool AShooterCharacter::TryReflectIncomingDamage(const FOutlierDamageRequest& Re
 	if (ReflectedTarget && ReflectedTarget != this)
 	{
 		FOutlierDamageRequest ReflectedRequest;
-		ReflectedRequest.DamageAmount = Request.DamageAmount;
+		const float ReflectDamageMult = OutlierAbilitySystemComponent
+			->GetShooterSuitConfig().BulletReflection.ReflectDamageMult;
+		ReflectedRequest.DamageAmount = Request.DamageAmount * ReflectDamageMult;
 		ReflectedRequest.DamageTag = Request.DamageTag;
 		ReflectedRequest.HitResult = ReflectedHit;
 		ReflectedRequest.DamageOrigin = ReflectionStart;
@@ -1512,19 +1614,16 @@ bool AShooterCharacter::TryReflectIncomingDamage(const FOutlierDamageRequest& Re
 		ReflectedRequest.DamageCauser = CurrentWeapon ? static_cast<AActor*>(CurrentWeapon) : this;
 		OutlierDamage::Apply(ReflectedTarget, ReflectedRequest);
 	}
-	MulticastNotifyBulletReflected(
-		ReflectionStart,
-		bHit ? ReflectedHit.ImpactPoint : ReflectionEnd);
+	ClientPlayReflectionRipple(Request.DamageOrigin);
 
 	// 팀과 관계없이 유효한 공격은 중간 충돌체 유무와 관계없이 보호막에서 소거된다.
 	return true;
 }
 
-void AShooterCharacter::MulticastNotifyBulletReflected_Implementation(
-	FVector ReflectionStart,
-	FVector ReflectionEnd)
+void AShooterCharacter::ClientPlayReflectionRipple_Implementation(
+	FVector_NetQuantize IncomingOrigin)
 {
-	BP_OnBulletReflected(ReflectionStart, ReflectionEnd);
+	NotifyLocalBulletReflected(IncomingOrigin);
 }
 
 void AShooterCharacter::HandleWeaponAttackStoppedInternal()

@@ -40,6 +40,7 @@
 #include "Weapon/WeaponBase.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "GAS/Attributes/OutlierVitalAttributeSet.h"
+#include "GAS/Attributes/OutlierPartnerMovementAttributeSet.h"
 #include "GameplayEffect.h"
 
 namespace
@@ -85,6 +86,7 @@ void APartnerCharacter::BeginPlay()
 	Super::BeginPlay();
 	RefreshAbilitySystemActorInfo();
 	BindPartnerCooldownUIObserver();
+	BindGasMobilityObservers();
 
 	if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
 	{
@@ -107,6 +109,7 @@ void APartnerCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		CachedShooterCharacter->EndActiveWeaponOvercharge(false);
 	}
 	UnbindPartnerCooldownUIObserver();
+	UnbindGasMobilityObservers();
 	CleanupBoostVFXComponents();
 	if (PartnerVitalityComponent)
 	{
@@ -182,6 +185,12 @@ void APartnerCharacter::RefreshAbilitySystemActorInfo()
 	{
 		OutlierAbilitySystemComponent->InitializeForPawn(this);
 	}
+	if (UpgradeComponent
+		&& OutlierAbilitySystemComponent
+		&& OutlierAbilitySystemComponent->IsPartnerAbilitiesConfigured())
+	{
+		UpgradeComponent->SyncFromPlayerState();
+	}
 	if (PartnerVitalityComponent)
 	{
 		PartnerVitalityComponent->BindObservers();
@@ -209,6 +218,63 @@ void APartnerCharacter::UnbindPartnerCooldownUIObserver()
 			PartnerCooldownEffectAddedHandle);
 	}
 	PartnerCooldownEffectAddedHandle.Reset();
+}
+
+void APartnerCharacter::BindGasMobilityObservers()
+{
+	if (!OutlierAbilitySystemComponent || MoveSpeedChangedHandle.IsValid())
+	{
+		return;
+	}
+
+	MoveSpeedChangedHandle = OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
+		UOutlierPartnerMovementAttributeSet::GetMoveSpeedAttribute()).AddUObject(
+			this, &APartnerCharacter::HandleMoveSpeedChanged);
+	BoostSpeedChangedHandle = OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
+		UOutlierPartnerMovementAttributeSet::GetBoostSpeedAttribute()).AddUObject(
+			this, &APartnerCharacter::HandleBoostSpeedChanged);
+}
+
+void APartnerCharacter::UnbindGasMobilityObservers()
+{
+	if (!OutlierAbilitySystemComponent)
+	{
+		return;
+	}
+
+	OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
+		UOutlierPartnerMovementAttributeSet::GetMoveSpeedAttribute()).Remove(MoveSpeedChangedHandle);
+	OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
+		UOutlierPartnerMovementAttributeSet::GetBoostSpeedAttribute()).Remove(BoostSpeedChangedHandle);
+	MoveSpeedChangedHandle.Reset();
+	BoostSpeedChangedHandle.Reset();
+}
+
+void APartnerCharacter::HandleMoveSpeedChanged(const FOnAttributeChangeData& ChangeData)
+{
+	MoveSpeed = ChangeData.NewValue;
+	RefreshMobilityFromAttributes();
+}
+
+void APartnerCharacter::HandleBoostSpeedChanged(const FOnAttributeChangeData& ChangeData)
+{
+	BoostSpeed = ChangeData.NewValue;
+	RefreshMobilityFromAttributes();
+}
+
+void APartnerCharacter::RefreshMobilityFromAttributes()
+{
+	// GAS Attribute 변경(업그레이드 GE 적용 - 서버, 복제 반영 - 클라이언트)을
+	// CharacterMovement 와 PartnerMovementComponent 에 즉시 반영한다.
+	if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
+	{
+		MoveComp->MaxFlySpeed = bIsAccelerate ? BoostSpeed : MoveSpeed;
+	}
+
+	if (MovementComponent)
+	{
+		MovementComponent->ApplyPartnerFlightSettings();
+	}
 }
 
 void APartnerCharacter::HandlePartnerCooldownEffectAdded(
@@ -1156,6 +1222,18 @@ void  APartnerCharacter::InitializeFromDataTables()
 			CharacterMovementComp->GravityScale = 0.0f;
 			CharacterMovementComp->SetMovementMode(MOVE_Flying);
 		}
+
+		// GAS Attribute 초기값을 DT 기준으로 세팅한다. 이후 Upgrade GE(Attribute.Partner.MoveSpeed /
+		// Attribute.Partner.BoostSpeed)가 이 base 값 위에 델타를 적용한다.
+		if (HasAuthority() && OutlierAbilitySystemComponent)
+		{
+			OutlierAbilitySystemComponent->SetNumericAttributeBase(
+				UOutlierPartnerMovementAttributeSet::GetMoveSpeedAttribute(),
+				FMath::Max(MoveSpeed, 0.0f));
+			OutlierAbilitySystemComponent->SetNumericAttributeBase(
+				UOutlierPartnerMovementAttributeSet::GetBoostSpeedAttribute(),
+				FMath::Max(BoostSpeed, 0.0f));
+		}
 	}
 
 	if (const FDroneControlDataRow* ControlDataRow = DroneControlDataRow.GetRow<FDroneControlDataRow>(TEXT("InitializeControlData")))
@@ -1203,7 +1281,6 @@ void  APartnerCharacter::InitializeFromDataTables()
 		ScanCooldown		= SkillDataRow->ScanCooldown;
 		ScanExpandSpeed		= SkillDataRow->ScanExpandSpeed;
 
-		HackRange			= SkillDataRow->HackRange;
 		HackEffectiveRange	= SkillDataRow->HackEffectiveRange;
 		HackMiniGameTime	= SkillDataRow->HackMiniGameTime;
 		HackCooldown		= SkillDataRow->HackCooldown;
@@ -1246,7 +1323,6 @@ void  APartnerCharacter::InitializeFromDataTables()
 	}
 
 	FPartnerHackAbilityData HackAbilityData;
-	HackAbilityData.CandidateRange = HackRange;
 	HackAbilityData.EffectiveRange = HackEffectiveRange;
 	HackAbilityData.MiniGameTime = HackMiniGameTime;
 	HackAbilityData.FailPenaltyTime = HackFailPenaltyTime;
@@ -1258,8 +1334,6 @@ void  APartnerCharacter::InitializeFromDataTables()
 
 	FPartnerEMPAbilityData EMPAbilityData;
 	EMPAbilityData.EMPRange = AreaOfEffectRange;
-	EMPAbilityData.MarkingTime = EMPMarkingTime;
-	EMPAbilityData.StunDuration = EMPStunDuration;
 	EMPAbilityData.MaxTargets = EMPMaxTargets;
 	if (UPartnerEMPComponent* RuntimeEMPComponent = GetRuntimeEMPComponent())
 	{
@@ -1274,6 +1348,12 @@ void  APartnerCharacter::InitializeFromDataTables()
 		AbilityConfig.HackCooldown = HackCooldown;
 		AbilityConfig.ScanCooldown = ScanCooldown;
 		AbilityConfig.ScanDuration = ScanDuration;
+		// Upgrade AbilityConfig 투영이 참조하는 필드. DT_Partner_Skill 에서 읽어온 캐릭터 멤버값을 그대로 넣는다.
+		AbilityConfig.ScanRange = ScanRange;
+		AbilityConfig.HackEffectiveRange = HackEffectiveRange;
+		AbilityConfig.ShieldAmount = ShieldAmount;
+		AbilityConfig.MarkDuration = EMPMarkingTime;
+		AbilityConfig.StunDuration = EMPStunDuration;
 		const bool bConfigured = OutlierAbilitySystemComponent->ConfigurePartnerAbilities(AbilityConfig);
 #if UE_BUILD_SHIPPING
 		if (!bConfigured)
@@ -1284,6 +1364,11 @@ void  APartnerCharacter::InitializeFromDataTables()
 #else
 		checkf(bConfigured, TEXT("[PartnerAbility] Failed to configure Partner GameplayAbilities"));
 #endif
+		if (bConfigured && UpgradeComponent)
+		{
+			// DT 기준 base config 를 ASC 에 먼저 설정한 뒤, PS 에 저장된 활성 노드를 재투영한다.
+			UpgradeComponent->SyncFromPlayerState();
+		}
 	}
 
 	if (MovementComponent)
@@ -1342,6 +1427,7 @@ APartnerCharacter::APartnerCharacter()
 		TEXT("AbilitySystemComponent"));
 	OutlierAbilitySystemComponent->SetReplicationMode(EGameplayEffectReplicationMode::Mixed);
 	VitalAttributeSet = CreateDefaultSubobject<UOutlierVitalAttributeSet>(TEXT("VitalAttributeSet"));
+	MobilityAttributeSet = CreateDefaultSubobject<UOutlierPartnerMovementAttributeSet>(TEXT("MobilityAttributeSet"));
 	PartnerVitalityComponent = CreateDefaultSubobject<UPartnerVitalityComponent>(TEXT("PartnerVitalityComponent"));
 
 	ThirdPersonTiltRoot = CreateDefaultSubobject<USceneComponent>(TEXT("Third Person Tilt Root"));

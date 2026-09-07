@@ -159,6 +159,18 @@ void UUpgradeNodeWidget::SetUnlockedNodeTexture(UTexture2D* InUnlockedNodeTextur
 	RefreshNodeTexture();
 }
 
+void UUpgradeNodeWidget::SetDeactivatedNodeTexture(UTexture2D* InDeactivatedNodeTexture)
+{
+	DeactivatedNodeTexture = InDeactivatedNodeTexture;
+	RefreshNodeTexture();
+}
+
+void UUpgradeNodeWidget::SetNodeTexture(UTexture2D* InNodeTexture)
+{
+	NodeTexture = InNodeTexture;
+	RefreshNodeTexture();
+}
+
 bool UUpgradeNodeWidget::GetNodeData(FOutlierUpgradeNodeRow& OutNodeData) const
 {
 	if (CurrentNodeRowName.IsNone() && CurrentNodeData.NodeId.IsNone())
@@ -849,10 +861,21 @@ void UUpgradeNodeWidget::RefreshNodeTexture()
 
 	CacheDefaultNodeBrush();
 
-	if (UnlockedNodeTexture
-		&& CurrentState != EOutlierUpgradeNodeState::Locked)
+	if (CurrentState == EOutlierUpgradeNodeState::Locked && DeactivatedNodeTexture)
+	{
+		NodeImage->SetBrushFromTexture(DeactivatedNodeTexture);
+		return;
+	}
+
+	if (CurrentState == EOutlierUpgradeNodeState::Unlocked && UnlockedNodeTexture)
 	{
 		NodeImage->SetBrushFromTexture(UnlockedNodeTexture);
+		return;
+	}
+
+	if (CurrentState == EOutlierUpgradeNodeState::Activated && NodeTexture)
+	{
+		NodeImage->SetBrushFromTexture(NodeTexture);
 		return;
 	}
 

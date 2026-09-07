@@ -9,6 +9,7 @@
 #include "Perception/AISightTargetInterface.h"
 #include "Damage/OutlierDamageReceiver.h"
 #include "GAS/Data/OutlierShooterSuitAbilityDataRow.h"
+#include "UI/UILayerTypes.h"
 #include "ShooterCharacter.generated.h"
 
 class UInputAction;
@@ -23,12 +24,14 @@ class ULocalPlayerUISubSystem;
 enum class EWeaponType : uint8;
 class UAnimMontage;
 class UCurveFloat;
+class UMaterialInterface;
 class APartnerCharacter;
 class UOutlierAbilitySystemComponent;
 class UOutlierVitalAttributeSet;
 class UOutlierShieldAttributeSet;
 class UDataTable;
 class USphereComponent;
+class UShooterReflectionBarrier;
 struct FOnAttributeChangeData;
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnShooterDynamicCrosshairChanged, bool /*bAiming*/);
@@ -269,6 +272,9 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "GAS|Suit")
 	TObjectPtr<UDataTable> ShooterSuitAbilityDataTable;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "GAS|Suit|Bullet Reflection")
+	TSubclassOf<UShooterReflectionBarrier> ReflectionBarrierWidgetClass;
+
 	// Local Runtime State
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
 	uint8 bIsSuitMenuOpen : 1 = false;
@@ -307,7 +313,6 @@ protected:
 	FDelegateHandle HealthChangedHandle;
 	FDelegateHandle ShieldChangedHandle;
 	FDelegateHandle DeadTagChangedHandle;
-	FDelegateHandle StealthTagChangedHandle;
 	FDelegateHandle BulletReflectionTagChangedHandle;
 	FDelegateHandle WeaponOverchargeTagChangedHandle;
 	FDelegateHandle QuantumLeapCooldownTagChangedHandle;
@@ -315,6 +320,13 @@ protected:
 	FDelegateHandle WeaponOverchargeCooldownTagChangedHandle;
 	FDelegateHandle StealthCooldownTagChangedHandle;
 	FDelegateHandle PartnerRebootTagChangedHandle;
+	FUILayerHandle ReflectionBarrierLayerHandle;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UShooterReflectionBarrier> ReflectionBarrierWidgetInstance;
+
+	FVector PendingReflectionVisualOrigin = FVector::ZeroVector;
+	bool bHasPendingReflectionVisual = false;
 
 	UPROPERTY()
 	TObjectPtr<APartnerCharacter> CachedPartnerCharacter;
@@ -322,6 +334,9 @@ protected:
 	bool bSuitDisabledByPartnerBoundary = false;
 	bool bShooterSuitDataInitialized = false;
 	FOutlierShooterSuitConfig ShooterSuitConfig;
+
+	// 은신 비주얼( 글래스 머티리얼 / 스텐실 / 포스트프로세스 페이드 )은 State.Stealthed 태그를 보고
+	// UMaterialPostProcessSubsystem 이 전담한다. 페이드 시간과 스텐실 값은 AOutlierPostProcessVolume 에 있다.
 
 	// Slide
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera|Slide")
@@ -358,8 +373,10 @@ protected:
 	void HandleHealthChanged(const FOnAttributeChangeData& ChangeData);
 	void HandleShieldChanged(const FOnAttributeChangeData& ChangeData);
 	void HandleDeadTagChanged(const FGameplayTag Tag, int32 NewCount);
-	void HandleStealthTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleBulletReflectionTagChanged(const FGameplayTag Tag, int32 NewCount);
+	void PushReflectionBarrierWidget();
+	void PopReflectionBarrierWidget();
+	void NotifyLocalBulletReflected(const FVector& IncomingOrigin);
 	void HandleWeaponOverchargeTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleQuantumLeapCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleBulletReflectionCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
@@ -377,11 +394,8 @@ protected:
 	UFUNCTION(BlueprintImplementableEvent, Category = "Suit|Weapon Overcharge")
 	void BP_OnWeaponOverchargeStateChanged(bool bActive);
 
-	UFUNCTION(NetMulticast, Unreliable)
-	void MulticastNotifyBulletReflected(FVector ReflectionStart, FVector ReflectionEnd);
-
-	UFUNCTION(BlueprintImplementableEvent, Category = "Suit|Bullet Reflection")
-	void BP_OnBulletReflected(FVector ReflectionStart, FVector ReflectionEnd);
+	UFUNCTION(Client, Unreliable)
+	void ClientPlayReflectionRipple(FVector_NetQuantize IncomingOrigin);
 
 	/** Initialize input action bindings */
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
@@ -402,6 +416,7 @@ public:
 	/** Constructor */
 	AShooterCharacter();
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
+
 	UOutlierAbilitySystemComponent* GetOutlierAbilitySystemComponent() const
 	{
 		return OutlierAbilitySystemComponent;
@@ -583,7 +598,6 @@ protected:
 	void TryCloseSuitMenu();
 	void UpdateSuitSelection(const FInputActionValue& Value);
 	void TryUseSuit();
-	void SetStealthVisualEnabled(bool bEnabled);
 	void TrySlide();
 	void TryLean(const FInputActionValue& Value);
 	void StopLean();

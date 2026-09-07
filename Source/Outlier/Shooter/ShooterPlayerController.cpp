@@ -45,6 +45,16 @@ void AShooterPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	UnbindShooterCharacterDelegates();
 	CleanupPossessedShooterWeapons();
 
+	// MainUI는 Base가 정리한다. AbilityUI는 이 Controller 소유이므로 여기서 정리.
+	if (AbilityUIInstance)
+	{
+		AbilityUIInstance->OnAbilitySelected.RemoveDynamic(
+			this,
+			&AShooterPlayerController::HandleAbilitySelected);
+		AbilityUIInstance->RemoveFromParent();
+		AbilityUIInstance = nullptr;
+	}
+
 	Super::EndPlay(EndPlayReason);
 }
 
