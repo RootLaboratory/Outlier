@@ -139,7 +139,7 @@ void UOutlierGameInstance::TryBootstrapArenaWorker(UWorld* LoadedWorld)
 		if (UOutlierArenaProcessSubsystem* ProcessSubsystem =
 			GetSubsystem<UOutlierArenaProcessSubsystem>())
 		{
-			ProcessSubsystem->NotifyArenaWorldReady();
+			ProcessSubsystem->NotifyArenaWorldReady(LoadedWorld);
 		}
 		return;
 	}

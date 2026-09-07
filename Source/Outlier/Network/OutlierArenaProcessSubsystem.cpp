@@ -2,8 +2,11 @@
 
 #include "Common/TcpSocketBuilder.h"
 #include "Containers/Ticker.h"
+#include "Engine/NetDriver.h"
+#include "Engine/World.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformProcess.h"
+#include "IPAddress.h"
 #include "Interfaces/IPv4/IPv4Address.h"
 #include "Misc/App.h"
 #include "Misc/CommandLine.h"
@@ -50,6 +53,7 @@ void UOutlierArenaProcessSubsystem::Initialize(FSubsystemCollectionBase& Collect
 	{
 		FParse::Value(FCommandLine::Get(), TEXT("ArenaSlot="), WorkerSlotId);
 		FParse::Value(FCommandLine::Get(), TEXT("ArenaControlPort="), ControlPort);
+		FParse::Value(FCommandLine::Get(), TEXT("port="), WorkerListenPort);
 		if (WorkerSlotId < 0 || ControlPort <= 0)
 		{
 			UE_LOG(LogTemp, Error, TEXT("[ArenaProcess] Invalid Worker control arguments"));
@@ -372,6 +376,11 @@ void UOutlierArenaProcessSubsystem::HandleLobbyMessage(
 		}
 		break;
 
+	case EOutlierArenaControlMessageType::Heartbeat:
+		// 그대로 되돌려준다. Worker는 이 응답이 끊기면 스스로 종료한다.
+		SendMessage(Connection.Socket, Message);
+		break;
+
 	default:
 		break;
 	}
@@ -508,14 +517,25 @@ void UOutlierArenaProcessSubsystem::ReleaseAllocation(const FGuid& MatchId)
 	OnSlotReady.Broadcast();
 }
 
-void UOutlierArenaProcessSubsystem::NotifyArenaWorldReady()
+void UOutlierArenaProcessSubsystem::NotifyArenaWorldReady(UWorld* ArenaWorld)
 {
 	if (!bWorkerMode || bArenaWorldReady)
 	{
 		return;
 	}
 
+	// 요청한 포트를 실제로 잡지 못했다면 Lobby가 이 Slot의 주소로 안내한 클라이언트는
+	// 영영 도착하지 못한다. 조용히 살아 있으면서 포트만 점유하는 대신 즉시 종료한다.
+	if (!VerifyWorkerListenPort(ArenaWorld))
+	{
+		ShutdownWorker(TEXT("Arena Worker failed to bind its assigned port"));
+		return;
+	}
+
 	bArenaWorldReady = true;
+	const double CurrentTime = FPlatformTime::Seconds();
+	LastLobbyContactAt = CurrentTime;
+	LastWorkerHeartbeatSentAt = CurrentTime;
 	ConnectWorkerControl();
 }
 
@@ -543,6 +563,59 @@ bool UOutlierArenaProcessSubsystem::CanWorkerAcceptMatch(const FGuid& MatchId) c
 		|| (WorkerExpectedMatchId.IsValid() && WorkerExpectedMatchId == MatchId);
 }
 
+bool UOutlierArenaProcessSubsystem::VerifyWorkerListenPort(UWorld* ArenaWorld) const
+{
+	if (WorkerListenPort <= 0)
+	{
+		// -port 인자가 없으면 검증할 기준이 없다. 수동 QA 실행 경로를 막지 않는다.
+		return true;
+	}
+
+	// GetLocalAddr()가 non-const라 NetDriver도 non-const로 받는다.
+	UNetDriver* NetDriver = ArenaWorld ? ArenaWorld->GetNetDriver() : nullptr;
+	if (!NetDriver)
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("[ArenaProcess] Worker Slot=%d has no NetDriver on the arena world"),
+			WorkerSlotId);
+		return false;
+	}
+
+	const TSharedPtr<const FInternetAddr> LocalAddr = NetDriver->GetLocalAddr();
+	if (!LocalAddr.IsValid())
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("[ArenaProcess] Worker Slot=%d could not resolve its local address"),
+			WorkerSlotId);
+		return false;
+	}
+
+	const int32 ActualPort = LocalAddr->GetPort();
+	if (ActualPort != WorkerListenPort)
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("[ArenaProcess] Worker Slot=%d bound port %d but %d was requested. ")
+			TEXT("Another process is likely holding the port."),
+			WorkerSlotId,
+			ActualPort,
+			WorkerListenPort);
+		return false;
+	}
+
+	UE_LOG(LogTemp, Display,
+		TEXT("[ArenaProcess] Worker Slot=%d listening on requested port %d"),
+		WorkerSlotId,
+		ActualPort);
+	return true;
+}
+
+void UOutlierArenaProcessSubsystem::ShutdownWorker(const FString& Reason)
+{
+	UE_LOG(LogTemp, Error, TEXT("[ArenaProcess] %s"), *Reason);
+	DestroySocket(WorkerControlSocket);
+	RequestEngineExit(Reason);
+}
+
 void UOutlierArenaProcessSubsystem::PollWorker(double CurrentTime)
 {
 	if (!bArenaWorldReady)
@@ -550,8 +623,20 @@ void UOutlierArenaProcessSubsystem::PollWorker(double CurrentTime)
 		return;
 	}
 
+	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
+	const double HeartbeatTimeout = Settings
+		? FMath::Max(Settings->ArenaWorkerHeartbeatTimeoutSeconds, 1.0f)
+		: 15.0;
+
 	if (!WorkerControlSocket)
 	{
+		// 재연결도 못 하는 상태가 타임아웃만큼 이어지면 Lobby가 사라진 것으로 본다.
+		if (CurrentTime - LastLobbyContactAt >= HeartbeatTimeout)
+		{
+			ShutdownWorker(TEXT("Arena Worker could not reach the Lobby control channel"));
+			return;
+		}
+
 		if (CurrentTime - LastWorkerConnectAttempt >= WorkerConnectRetrySeconds)
 		{
 			ConnectWorkerControl();
@@ -568,9 +653,30 @@ void UOutlierArenaProcessSubsystem::PollWorker(double CurrentTime)
 				HandleWorkerMessage(Message);
 			}))
 	{
-		UE_LOG(LogTemp, Error, TEXT("[ArenaProcess] Worker lost Lobby control connection"));
 		DestroySocket(WorkerControlSocket);
-		RequestEngineExit(TEXT("Arena Worker control connection lost"));
+		ShutdownWorker(TEXT("Arena Worker control connection lost"));
+		return;
+	}
+
+	// TCP는 이쪽에서 송신하기 전까지 Peer 소멸을 알려주지 않는다. Heartbeat 송신 실패와
+	// 응답 타임아웃이 Lobby가 죽었는지 확인하는 유일한 수단이다.
+	const double HeartbeatInterval = Settings
+		? FMath::Max(Settings->ArenaWorkerHeartbeatIntervalSeconds, 0.5f)
+		: 2.0;
+	if (CurrentTime - LastWorkerHeartbeatSentAt >= HeartbeatInterval)
+	{
+		LastWorkerHeartbeatSentAt = CurrentTime;
+		if (!SendWorkerMessage(EOutlierArenaControlMessageType::Heartbeat))
+		{
+			DestroySocket(WorkerControlSocket);
+			ShutdownWorker(TEXT("Arena Worker failed to send heartbeat to the Lobby"));
+			return;
+		}
+	}
+
+	if (CurrentTime - LastLobbyContactAt >= HeartbeatTimeout)
+	{
+		ShutdownWorker(TEXT("Arena Worker heartbeat timed out. Lobby is gone"));
 	}
 }
 
@@ -612,6 +718,10 @@ bool UOutlierArenaProcessSubsystem::ConnectWorkerControl()
 		DestroySocket(WorkerControlSocket);
 		return false;
 	}
+
+	// 연결에 성공한 순간은 Lobby가 살아 있다는 증거이므로 타임아웃 기준을 갱신한다.
+	LastLobbyContactAt = FPlatformTime::Seconds();
+	LastWorkerHeartbeatSentAt = LastLobbyContactAt;
 	return true;
 }
 
@@ -622,6 +732,9 @@ void UOutlierArenaProcessSubsystem::HandleWorkerMessage(
 	{
 		return;
 	}
+
+	// 어떤 메시지든 Lobby가 살아 있다는 증거다.
+	LastLobbyContactAt = FPlatformTime::Seconds();
 
 	if (Message.Type == EOutlierArenaControlMessageType::Allocate)
 	{

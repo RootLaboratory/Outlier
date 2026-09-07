@@ -8,6 +8,7 @@
 #include "OutlierArenaProcessSubsystem.generated.h"
 
 class FSocket;
+class UWorld;
 
 DECLARE_MULTICAST_DELEGATE(FOutlierArenaSlotReadyDelegate);
 
@@ -28,7 +29,7 @@ public:
 		int32& OutSlotId);
 	void ReleaseAllocation(const FGuid& MatchId);
 
-	void NotifyArenaWorldReady();
+	void NotifyArenaWorldReady(UWorld* ArenaWorld);
 	void NotifyWorkerInMatch(const FGuid& MatchId);
 	void NotifyWorkerReleasing(const FGuid& MatchId);
 	bool CanWorkerAcceptMatch(const FGuid& MatchId) const;
@@ -68,6 +69,8 @@ private:
 
 	void PollWorker(double CurrentTime);
 	bool ConnectWorkerControl();
+	bool VerifyWorkerListenPort(UWorld* ArenaWorld) const;
+	void ShutdownWorker(const FString& Reason);
 	void HandleWorkerMessage(const FOutlierArenaControlMessage& Message);
 	bool SendWorkerMessage(
 		EOutlierArenaControlMessageType Type,
@@ -91,7 +94,10 @@ private:
 	FGuid WorkerExpectedMatchId;
 	FTSTicker::FDelegateHandle TickerHandle;
 	double LastWorkerConnectAttempt = 0.0;
+	double LastWorkerHeartbeatSentAt = 0.0;
+	double LastLobbyContactAt = 0.0;
 	int32 WorkerSlotId = INDEX_NONE;
+	int32 WorkerListenPort = 0;
 	int32 ControlPort = 0;
 	bool bLobbyManagerActive = false;
 	bool bWorkerMode = false;
