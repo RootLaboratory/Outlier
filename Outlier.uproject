@@ -1,6 +1,6 @@
 {
 	"FileVersion": 3,
-	"EngineAssociation": "{C6E26C12-4467-8FDD-77FB-24A45893E319}",
+	"EngineAssociation": "{D296F0B0-4540-8B07-F25E-D3A6843AE59D}",
 	"Category": "",
 	"Description": "",
 	"Modules": [
@@ -22,6 +22,11 @@
 				"GameplayAbilities",
 				"GameplayTasks"
 			]
+		},
+		{
+			"Name": "OutlierEditor",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
 		}
 	],
 	"Plugins": [
