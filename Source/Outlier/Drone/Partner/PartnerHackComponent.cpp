@@ -8,6 +8,7 @@
 #include "Engine/LocalPlayer.h"
 #include "Engine/OverlapResult.h"
 #include "GameplayTags/OutlierGameplayTags.h"
+#include "GAS/OutlierAbilitySystemComponent.h"
 #include "Drone/Partner/PartnerPlayerController.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
 #include "GameFramework/PlayerController.h"
@@ -87,6 +88,15 @@ void UPartnerHackComponent::TryHack_Implementation()
 		return ;
 	}
 
+	const UOutlierAbilitySystemComponent* AbilitySystem =
+		PartnerCharacter->GetOutlierAbilitySystemComponent();
+	if (!AbilitySystem || !AbilitySystem->IsPartnerAbilitiesConfigured())
+	{
+		return;
+	}
+	CachedAbilityData.EffectiveRange =
+		AbilitySystem->GetPartnerAbilityConfig().HackEffectiveRange;
+
 
 	if (APartnerPlayerController* PController =
 		Cast<APartnerPlayerController>(PartnerCharacter->GetController()))
@@ -125,7 +135,7 @@ void UPartnerHackComponent::TryHack_Implementation()
 	else
 	{
 		bHackCandidateSearchActive = true;
-		ClientStartCandidateSearch();
+		ClientStartCandidateSearch(CachedAbilityData.EffectiveRange);
 		DefaultWidgetControl(bHackCandidateSearchActive);
 	}
 
@@ -133,7 +143,7 @@ void UPartnerHackComponent::TryHack_Implementation()
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[PartnerHackDebug] TryHack started Partner=%s Range=%.1f HalfAngle=%.1f LOS=%d Candidates=%d"),
 			*GetNameSafe(PartnerCharacter),
-			CachedAbilityData.CandidateRange,
+			CachedAbilityData.EffectiveRange,
 			CandidateHalfAngleDegrees,
 			bRequireLineOfSight ? 1 : 0,
 			HackCandidateComponents.Num());
@@ -185,12 +195,14 @@ void UPartnerHackComponent::CacheAbilityData(const FPartnerHackAbilityData& InAb
 	bRequireLineOfSight = CachedAbilityData.bRequireLineOfSight;
 }
 
-void UPartnerHackComponent::ClientStartCandidateSearch_Implementation()
+void UPartnerHackComponent::ClientStartCandidateSearch_Implementation(float InEffectiveRange)
 {
 	if (!PartnerCharacter || !PartnerCharacter->IsLocallyControlled())
 	{
 		return;
 	}
+
+	CachedAbilityData.EffectiveRange = FMath::Max(InEffectiveRange, 0.0f);
 
 	//UE_LOG(LogTemp, Error, TEXT("ClientStartCandidateSearch_Implementation"));
 
@@ -388,7 +400,7 @@ void UPartnerHackComponent::RefreshHackCandidates()
 		PartnerCharacter->GetActorLocation(),
 		FQuat::Identity,
 		ObjectParams,
-		FCollisionShape::MakeSphere(CachedAbilityData.CandidateRange),
+		FCollisionShape::MakeSphere(CachedAbilityData.EffectiveRange),
 		QueryParams
 	);
 
@@ -527,9 +539,7 @@ void UPartnerHackComponent::ServerTryStartHack_Implementation(AActor* TargetActo
 		return;
 	}
 
-	const float EffectiveRange = CachedAbilityData.EffectiveRange > 0.0f
-		? CachedAbilityData.EffectiveRange
-		: CachedAbilityData.CandidateRange;
+	const float EffectiveRange = CachedAbilityData.EffectiveRange;
 	if (FVector::DistSquared(PartnerCharacter->GetActorLocation(), TargetActor->GetActorLocation()) > FMath::Square(EffectiveRange))
 	{
 		if (bDebugHack)
@@ -619,9 +629,7 @@ FHackQueryContext UPartnerHackComponent::BuildQueryContext() const
 {
 	FHackQueryContext Context;
 	Context.InstigatorActor = PartnerCharacter;
-	Context.MaxRange = CachedAbilityData.EffectiveRange > 0.0f
-		? CachedAbilityData.EffectiveRange
-		: CachedAbilityData.CandidateRange;
+	Context.MaxRange = CachedAbilityData.EffectiveRange;
 	Context.RequiredTags = RequiredCandidateTags;
 	Context.BlockedTags = BlockedCandidateTags;
 	Context.HackMultiUseTags.AddTag(HackGameplayTags::Use::Multiple());
@@ -706,7 +714,7 @@ bool UPartnerHackComponent::IsInsidePartnerFrustum(AActor* Actor, FVector2D& Out
 	const FVector ToTarget = Actor->GetActorLocation() - Context.ViewLocation;
 	const float DistanceSq = ToTarget.SizeSquared();
 
-	if (DistanceSq > FMath::Square(CachedAbilityData.CandidateRange))
+	if (DistanceSq > FMath::Square(CachedAbilityData.EffectiveRange))
 	{
 		return false;
 	}

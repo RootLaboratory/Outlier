@@ -18,7 +18,7 @@ void FAudioTagHelperModule::StartupModule()
 		AudioTagHelper::ToolTabName,
 		FOnSpawnTab::CreateRaw(this, &FAudioTagHelperModule::SpawnToolTab))
 		.SetDisplayName(LOCTEXT("ToolTabTitle", "Audio Tag Helper"))
-		.SetTooltipText(LOCTEXT("ToolTabTooltip", "Create audio Event and Context tags and bound data assets."))
+		.SetTooltipText(LOCTEXT("ToolTabTooltip", "Create audio Type and Context tags and bound Bank/Definition data assets."))
 		.SetMenuType(ETabSpawnerMenuType::Hidden);
 
 	UToolMenus::RegisterStartupCallback(
@@ -45,7 +45,7 @@ void FAudioTagHelperModule::RegisterMenus()
 	Section.AddMenuEntry(
 		TEXT("OpenAudioTagHelper"),
 		LOCTEXT("OpenToolLabel", "Audio Tag Helper"),
-		LOCTEXT("OpenToolTooltip", "Create audio Event and Context tags in AudioTags.ini and bind them to an audio event Data Asset."),
+		LOCTEXT("OpenToolTooltip", "Create audio Type and Context tags in AudioTags.ini and bind them to an Audio Bank / Definition Data Asset."),
 		FSlateIcon(),
 		FUIAction(FExecuteAction::CreateRaw(this, &FAudioTagHelperModule::OpenToolWindow)));
 }

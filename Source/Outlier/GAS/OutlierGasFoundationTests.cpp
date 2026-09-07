@@ -1725,6 +1725,7 @@ bool FOutlierGasShooterSuitDataContractTest::RunTest(const FString& Parameters)
 	BulletReflection.DurationSeconds = 4.0f;
 	BulletReflection.CooldownSeconds = 20.0f;
 	BulletReflection.ReflectionRadius = 2000.0f;
+	BulletReflection.ReflectDamageMult = 1.0f;
 	Table->AddRow(TEXT("BulletReflection"), BulletReflection);
 	FOutlierShooterSuitAbilityDataRow Stealth;
 	Stealth.DurationSeconds = 5.0f;
@@ -1765,6 +1766,7 @@ bool FOutlierGasShooterSuitDataContractTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Disk Quantum Leap cast time is 1 second"), Config.QuantumLeap.CastTimeSeconds, 1.0f);
 	TestEqual(TEXT("Disk Quantum Leap Partner offset is 50 centimeters"), Config.QuantumLeap.PartnerOffset, 50.0f);
 	TestEqual(TEXT("Disk Bullet Reflection radius is 20 meters"), Config.BulletReflection.ReflectionRadius, 2000.0f);
+	TestEqual(TEXT("Disk Bullet Reflection damage multiplier is one"), Config.BulletReflection.ReflectDamageMult, 1.0f);
 	TestEqual(TEXT("Disk Stealth duration is 5 seconds"), Config.Stealth.DurationSeconds, 5.0f);
 	TestEqual(TEXT("Disk Stealth cooldown is 20 seconds"), Config.Stealth.CooldownSeconds, 20.0f);
 	TestEqual(TEXT("Disk Weapon Overcharge shield drain is 12.5 per second"), Config.WeaponOvercharge.ShieldDrainPerSecond, 12.5f);
@@ -2027,6 +2029,12 @@ bool FOutlierGasShooterBulletReflectionTest::RunTest(const FString& Parameters)
 		0.0f);
 	TestEqual(TEXT("Reflected explosion applies the same amount to the source"), Enemy->GetCurrentHealth(), 65.0f);
 
+	FOutlierShooterSuitConfig UpgradedConfig = ShooterASC->GetShooterSuitConfig();
+	UpgradedConfig.BulletReflection.ReflectDamageMult = 2.0f;
+	TestTrue(
+		TEXT("Bullet Reflection damage multiplier updates in the ASC config cache"),
+		ShooterASC->UpdateShooterSuitConfig(UpgradedConfig));
+
 	FOutlierDamageRequest FriendlyDamageEvent = WeaponDamageEvent;
 	FriendlyDamageEvent.DamageOrigin = Partner->GetActorLocation();
 	TestEqual(
@@ -2035,9 +2043,9 @@ bool FOutlierGasShooterBulletReflectionTest::RunTest(const FString& Parameters)
 		0.0f);
 	TestEqual(TEXT("Reflected friendly damage preserves Shooter Health"), Shooter->GetCurHealth(), 100.0f);
 	TestEqual(
-		TEXT("The friendly source can receive its reflected damage"),
+		TEXT("Reflected damage uses the multiplier cached by the ASC"),
 		Partner->GetVitalAttributeSet()->GetHealth(),
-		95.0f);
+		90.0f);
 
 	FOutlierDamageRequest ReflectedDamageEvent = WeaponDamageEvent;
 	ReflectedDamageEvent.bReflectedDamage = true;

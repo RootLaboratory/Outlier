@@ -13,6 +13,7 @@
 #include "FirstPersonPlayerController.generated.h"
 
 class UInputMappingContext;
+class UInGameSettingWidget;
 class UCameraShakeBase;
 class UOutlierUpgradeSetData;
 
@@ -65,6 +66,15 @@ public:
 	UFUNCTION(Client, Reliable)
 	void ClientPushUILayer(const FUILayerPushRequest& Request);
 
+	UFUNCTION(BlueprintCallable, Category = "UI|InGame Setting")
+	void RequestOpenInGameSetting();
+
+	UFUNCTION(BlueprintCallable, Category = "UI|InGame Setting")
+	void RequestCloseInGameSetting();
+
+	UFUNCTION(Client, Reliable)
+	void ClientPopInGameSettingLayer(UObject* RequestOwner);
+
 	UFUNCTION(Server, Reliable)
 	void ServerTryActivateUpgradeNode(
 		AActor* UpgradeOwner,
@@ -73,6 +83,12 @@ public:
 
 	UFUNCTION(Server, Reliable)
 	void ServerNotifyArenaReady();
+
+	UFUNCTION(Server, Reliable)
+	void ServerOpenInGameSetting();
+
+	UFUNCTION(Server, Reliable)
+	void ServerCloseInGameSetting();
 
 	UFUNCTION(Client, Reliable)
 	void ClientPrepareForArenaStart();
@@ -127,6 +143,7 @@ protected:
 	FGameplayTag CurrentFirstPersonInputMode;
 
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void AcknowledgePossession(APawn* P) override;
 
 	virtual void OnPossess(APawn* InPawn) override;
@@ -156,4 +173,7 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "UI")
 	TSubclassOf<UMainUIBase> MainUIClass;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "UI|InGame Setting")
+	TSubclassOf<UInGameSettingWidget> InGameSettingWidgetClass;
 };

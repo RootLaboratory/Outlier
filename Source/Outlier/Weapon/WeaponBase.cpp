@@ -3,6 +3,7 @@
 
 #include "Weapon/WeaponBase.h"
 #include "Components/SceneComponent.h"
+#include "Components/MeshComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/SphereComponent.h"
 #include "FirstPerson/FirstPersonCharacter.h"
@@ -17,6 +18,7 @@
 #include "Weapon/WeaponRangeRow.h"
 #include "Weapon/Spawn/WeaponSpawnPoint.h"
 #include "Shooter/Anim/ProceduralAnimValues.h"
+#include "Materials/MaterialInterface.h"
 
 AWeaponBase::AWeaponBase()
 {
@@ -270,6 +272,35 @@ void AWeaponBase::SetEquippedPresentation()
 	SetEquippedCollisionEnabled(false);
 }
 
+void AWeaponBase::CollectStealthMeshes(
+	TArray<UMeshComponent*>& OutFirstPersonMeshes,
+	TArray<UMeshComponent*>& OutThirdPersonMeshes) const
+{
+	// 은신 머티리얼/스텐실 적용과 원상복구는 UMaterialPostProcessSubsystem 이 전담한다.
+	// 무기는 자기 메시가 1인칭인지 3인칭인지만 답한다.
+	TArray<UMeshComponent*> MeshComponents;
+	GetComponents<UMeshComponent>(MeshComponents);
+
+	for (UMeshComponent* MeshComponent : MeshComponents)
+	{
+		if (!MeshComponent)
+		{
+			continue;
+		}
+
+		if (MeshComponent == FirstPersonWeaponMesh
+			|| (FirstPersonWeaponMesh && MeshComponent->IsAttachedTo(FirstPersonWeaponMesh)))
+		{
+			OutFirstPersonMeshes.Add(MeshComponent);
+		}
+		else if (MeshComponent == ThirdPersonWeaponMesh
+			|| (ThirdPersonWeaponMesh && MeshComponent->IsAttachedTo(ThirdPersonWeaponMesh)))
+		{
+			OutThirdPersonMeshes.Add(MeshComponent);
+		}
+	}
+}
+
 void AWeaponBase::RefreshShadowWeaponPresentation()
 {
 	if (!ShadowWeaponMesh)
@@ -315,6 +346,7 @@ void AWeaponBase::ApplyReplicatedPresentation()
 		SetEquippedPresentation();
 		return;
 	}
+
 
 	FirstPersonWeaponMesh->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
 	ThirdPersonWeaponMesh->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);

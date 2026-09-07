@@ -36,12 +36,6 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Upgrade")
 	void RefreshNodeWidgets();
 
-	UFUNCTION(BlueprintCallable, Category = "Upgrade|Texture")
-	void SetUnlockedNodeTexture(FName NodeRowName, UTexture2D* Texture);
-
-	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Upgrade|Texture")
-	void RefreshUnlockedNodeTextureBindings();
-
 	UFUNCTION(BlueprintPure, Category = "Upgrade")
 	UOutlierUpgradeComponent* GetUpgradeComponent() const { return UpgradeComponent; }
 
@@ -74,14 +68,15 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade")
 	TObjectPtr<UDataTable> UpgradeDataTable;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Upgrade|Texture", meta = (TitleProperty = "NodeRowName"))
-	TArray<FUpgradeNodeTextureBinding> UnlockedNodeTextures;
+	// 모든 Unlocked 노드가 공통으로 사용하는 상태 이미지다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Upgrade|Unlocked State Texture", meta = (DisplayName = "Unlocked Texture"))
+	TObjectPtr<UTexture2D> UnlockedNodeTexture;
+
+	// Parent가 아직 활성화되지 않은 Locked 노드가 공통으로 사용하는 이미지다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Upgrade|Deactivated State Texture", meta = (DisplayName = "Deactivated Texture"))
+	TObjectPtr<UTexture2D> DeactivatedNodeTexture;
 
 protected:
-#if WITH_EDITOR
-	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
-#endif
-
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Upgrade")
 	TObjectPtr<UPanelWidget> NodeWidgetHost;
 
@@ -123,8 +118,8 @@ private:
 	void BindPlayerStateNodeCountChanged();
 	void UnbindPlayerStateNodeCountChanged();
 	void HandleNodeCountChanged(int32 NewNodeCount);
-	UTexture2D* ResolveUnlockedNodeTexture(const UUpgradeNodeWidget* NodeWidget) const;
-	UTexture2D* FindUnlockedNodeTexture(FName NodeRowName) const;
+	UTexture2D* ResolveNodeTexture(const UUpgradeNodeWidget* NodeWidget) const;
+	UTexture2D* FindNodeTexture(FName NodeRowName) const;
 
 	FDelegateHandle NodeCountChangedHandle;
 };

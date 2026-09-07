@@ -9,6 +9,7 @@
 #include "GenericTeamAgentInterface.h"
 #include "Interface/RoomTagInterface.h"
 #include "Interface/GameplayTagProviderInterface.h"
+#include "PostProcess/OutlierStealthVisualTarget.h"
 #include "Interaction/InteractableComponent.h"
 #include "FirstPersonCharacter.generated.h"
 
@@ -32,7 +33,7 @@ enum class EInteractionTraceMode : uint8
 };
 
 UCLASS()
-class OUTLIER_API AFirstPersonCharacter : public ACharacter, public IGameplayTagProviderInterface, public IGenericTeamAgentInterface, public IRoomTagInterface
+class OUTLIER_API AFirstPersonCharacter : public ACharacter, public IGameplayTagProviderInterface, public IGenericTeamAgentInterface, public IRoomTagInterface, public IOutlierStealthVisualTarget
 {
 	GENERATED_BODY()
 
@@ -61,7 +62,7 @@ protected:
 	TObjectPtr<UFirstPersonInputConfig> InputConfig;
 
 	/** Relevant AtLocation event requested by this owning client on Interaction input. */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|Input", meta = (Categories = "Audio.Event"))
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|Input", meta = (Categories = "Audio.Type"))
 	FGameplayTag InteractionAudioEventTag;
 
 	/** Runtime context supplied with the Interaction audio request. */
@@ -69,7 +70,7 @@ protected:
 	FGameplayTagContainer InteractionAudioContextTags;
 
 	/** Local 2D event played on Widget Escape input. */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|Input", meta = (Categories = "Audio.Event"))
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|Input", meta = (Categories = "Audio.Type"))
 	FGameplayTag WidgetEscapeAudioEventTag;
 
 	/** Runtime context supplied with the Widget Escape audio request. */
@@ -188,6 +189,11 @@ public:
 
 	AWeaponBase* GetCurrentWeapon() const { return CurrentWeapon; }
 
+	// IOutlierStealthVisualTarget : 은신 적용 대상 메시만 알려준다 ( 적용/복구는 UMaterialPostProcessSubsystem 담당 ).
+	virtual void CollectStealthMeshes(
+		TArray<UMeshComponent*>& OutFirstPersonMeshes,
+		TArray<UMeshComponent*>& OutThirdPersonMeshes) const override;
+
 	virtual void OnMoveInputUpdated(const FVector2D& MoveValue);
 
 	void CaptureComponentWeaponNotIncluded(AWeaponBase* Weapon);
@@ -205,6 +211,7 @@ private:
 	void UpdateInteractableFocus();
 
 	void SetPartnerCameraCaptureUpdating(bool bEnabled);
+	AFirstPersonCharacter* ResolvePartnerCameraSource() const;
 
 	void SyncInteractableKeyWidgets(const TArray<AActor*>& CurrentInteractables);
 
@@ -241,6 +248,7 @@ private:
 	TArray<TObjectPtr<AActor>> NearbyInteractables;
 
 	uint8 bPartnerCameraCaptureActive : 1 = false;
+	TWeakObjectPtr<AFirstPersonCharacter> ActivePartnerCameraSource;
 
 	FTimerHandle InteractionTraceTimerHandle;
 

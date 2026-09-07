@@ -71,11 +71,13 @@ class UNiagaraComponent;
 class UNiagaraSystem;
 class UOutlierAbilitySystemComponent;
 class UOutlierVitalAttributeSet;
+class UOutlierPartnerMovementAttributeSet;
 class UPartnerVitalityComponent;
 
 class USceneComponent;
 struct FGameplayEffectSpec;
 struct FActiveGameplayEffectHandle;
+struct FOnAttributeChangeData;
 UCLASS()
 class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeaponMuzzleProvider, public IAbilitySystemInterface, public IOutlierDamageReceiver
 {
@@ -94,6 +96,12 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
 	TObjectPtr<UOutlierVitalAttributeSet> VitalAttributeSet;
+
+	// Move/BoostSpeed. DT_Partner_Move 기본값으로 초기화되고, Upgrade 트리(Attribute.Partner.MoveSpeed /
+	// Attribute.Partner.BoostSpeed)가 실시간으로 조정한다. BindGasMobilityObservers 가 값 변경을
+	// CharacterMovement / PartnerMovementComponent 에 즉시 반영한다.
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
+	TObjectPtr<UOutlierPartnerMovementAttributeSet> MobilityAttributeSet;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
 	TObjectPtr<UPartnerVitalityComponent> PartnerVitalityComponent;
@@ -247,9 +255,6 @@ protected:
 
 	
 	// Skill Data - Hack
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Hack")
-	float HackRange = 500.0f;
-
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Hack")
 	float HackEffectiveRange = 300.0f;
 
@@ -488,6 +493,14 @@ protected:
 	void NotifyPartnerCooldownUI(const FGameplayTag& CooldownTag);
 	FDelegateHandle PartnerCooldownEffectAddedHandle;
 
+	void BindGasMobilityObservers();
+	void UnbindGasMobilityObservers();
+	void HandleMoveSpeedChanged(const FOnAttributeChangeData& ChangeData);
+	void HandleBoostSpeedChanged(const FOnAttributeChangeData& ChangeData);
+	void RefreshMobilityFromAttributes();
+	FDelegateHandle MoveSpeedChangedHandle;
+	FDelegateHandle BoostSpeedChangedHandle;
+
 	virtual void LookInput(const FInputActionValue& Value) override;
 public:
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
@@ -497,6 +510,7 @@ public:
 		return OutlierAbilitySystemComponent;
 	}
 	const UOutlierVitalAttributeSet* GetVitalAttributeSet() const { return VitalAttributeSet; }
+	const UOutlierPartnerMovementAttributeSet* GetMobilityAttributeSet() const { return MobilityAttributeSet; }
 	UPartnerVitalityComponent* GetPartnerVitalityComponent() const { return PartnerVitalityComponent; }
 	bool CanAcceptInput() const;
 	UPROPERTY(BlueprintAssignable, Category = "Event")

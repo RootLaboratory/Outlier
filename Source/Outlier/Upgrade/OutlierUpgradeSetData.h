@@ -13,7 +13,7 @@ class OUTLIER_API UOutlierUpgradeSetData : public UDataAsset
 	GENERATED_BODY()
 
 public:
-	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Upgrade|Texture")
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Upgrade|Node Texture", meta = (DisplayName = "Refresh Node Texture Bindings"))
 	void RefreshUnlockedNodeTextureBindings();
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Upgrade")
@@ -22,7 +22,11 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Upgrade")
 	TObjectPtr<UDataTable> UpgradeDataTable;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Upgrade|Texture", meta = (TitleProperty = "NodeRowName"))
+	// 효과 테이블 ( FOutlierUpgradeEffectRow ). 노드 테이블과 NodeRowName 으로 조인된다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Upgrade")
+	TObjectPtr<UDataTable> UpgradeEffectDataTable;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Upgrade|Node Texture", meta = (TitleProperty = "NodeRowName", DisplayName = "Node Textures"))
 	TArray<FUpgradeNodeTextureBinding> UnlockedNodeTextures;
 
 protected:

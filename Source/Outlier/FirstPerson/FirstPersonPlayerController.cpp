@@ -6,8 +6,12 @@
 #include "EnhancedInputDeveloperSettings.h"
 #include "EnhancedInputSubsystems.h"
 #include "Engine/LocalPlayer.h"
+#include "GameFramework/GameStateBase.h"
+#include "GameFramework/PlayerState.h"
 #include "InputMappingContext.h"
 #include "FirstPersonPlayerCameraManager.h"
+#include "Kismet/GameplayStatics.h"
+#include "LocalPlayerUISubSystem.h"
 #include "OutlierGameMode.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Outlier.h"
@@ -15,8 +19,119 @@
 #include "Shooter/ShooterCharacter.h"
 #include "Network/OutlierArenaPoolSubsystem.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
+#include "UI/InGamePauseWidget.h"
+#include "UI/InGameSettingWidget.h"
+#include "UI/UILayerGameplayTags.h"
 #include "Upgrade/OutlierUpgradeComponent.h"
 #include "Upgrade/OutlierUpgradeSetData.h"
+
+namespace
+{
+	void ResolvePairCharactersForController(
+		AFirstPersonPlayerController* Controller,
+		AShooterCharacter*& OutShooterCharacter,
+		APartnerCharacter*& OutPartnerCharacter)
+	{
+		OutShooterCharacter = nullptr;
+		OutPartnerCharacter = nullptr;
+
+		AOutlierPlayerState* RequestingPlayerState = Controller
+			? Controller->GetPlayerState<AOutlierPlayerState>()
+			: nullptr;
+		if (!Controller || !RequestingPlayerState)
+		{
+			return;
+		}
+
+		OutShooterCharacter = RequestingPlayerState->GetShooterCharacter();
+		OutPartnerCharacter = RequestingPlayerState->GetPartnerCharacter();
+
+		if (!OutShooterCharacter)
+		{
+			OutShooterCharacter = Cast<AShooterCharacter>(Controller->GetPawn());
+		}
+
+		if (!OutPartnerCharacter)
+		{
+			OutPartnerCharacter = Cast<APartnerCharacter>(Controller->GetPawn());
+		}
+
+		if (OutShooterCharacter && OutPartnerCharacter)
+		{
+			return;
+		}
+
+		const int32 PairId = RequestingPlayerState->GetPairId();
+		const AGameStateBase* GameState = Controller->GetWorld()
+			? Controller->GetWorld()->GetGameState()
+			: nullptr;
+		if (!GameState || PairId == INDEX_NONE)
+		{
+			return;
+		}
+
+		for (APlayerState* RawPlayerState : GameState->PlayerArray)
+		{
+			const AOutlierPlayerState* CandidatePlayerState =
+				Cast<AOutlierPlayerState>(RawPlayerState);
+			if (!CandidatePlayerState || CandidatePlayerState->GetPairId() != PairId)
+			{
+				continue;
+			}
+
+			if (!OutShooterCharacter)
+			{
+				OutShooterCharacter = CandidatePlayerState->GetShooterCharacter();
+			}
+
+			if (!OutPartnerCharacter)
+			{
+				OutPartnerCharacter = CandidatePlayerState->GetPartnerCharacter();
+			}
+
+			if (OutShooterCharacter && OutPartnerCharacter)
+			{
+				return;
+			}
+		}
+	}
+
+	void PushUILayerToController(
+		AFirstPersonPlayerController* Controller,
+		const FUILayerPushRequest& Request)
+	{
+		if (!Controller)
+		{
+			return;
+		}
+
+		if (Controller->IsLocalController())
+		{
+			Controller->ClientPushUILayer_Implementation(Request);
+			return;
+		}
+
+		Controller->ClientPushUILayer(Request);
+	}
+
+	void PopInGameSettingLayerFromController(
+		AFirstPersonPlayerController* Controller,
+		UObject* RequestOwner)
+	{
+		if (!Controller)
+		{
+			return;
+		}
+
+		if (Controller->IsLocalController())
+		{
+			Controller->ClientPopInGameSettingLayer_Implementation(RequestOwner);
+			return;
+		}
+
+		Controller->ClientPopInGameSettingLayer(RequestOwner);
+	}
+}
 
 AFirstPersonPlayerController::AFirstPersonPlayerController()
 {
@@ -71,6 +186,44 @@ void AFirstPersonPlayerController::ClientPushUILayer_Implementation(
 	}
 
 	LayerSubsystem->PushWidget(Request);
+}
+
+void AFirstPersonPlayerController::RequestOpenInGameSetting()
+{
+	if (!IsLocalController())
+	{
+		return;
+	}
+
+	ServerOpenInGameSetting();
+}
+
+void AFirstPersonPlayerController::RequestCloseInGameSetting()
+{
+	if (!IsLocalController())
+	{
+		return;
+	}
+
+	ServerCloseInGameSetting();
+}
+
+void AFirstPersonPlayerController::ClientPopInGameSettingLayer_Implementation(
+	UObject* RequestOwner)
+{
+	if (!IsLocalController())
+	{
+		return;
+	}
+
+	ULocalPlayer* LocalPlayer = GetLocalPlayer();
+	ULocalPlayerUILayerSubsystem* LayerSubsystem = LocalPlayer
+		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()
+		: nullptr;
+	if (LayerSubsystem)
+	{
+		LayerSubsystem->PopLayersByOwner(RequestOwner);
+	}
 }
 
 void AFirstPersonPlayerController::ServerTryActivateUpgradeNode_Implementation(
@@ -362,7 +515,35 @@ TSubclassOf<UMainUIBase> AFirstPersonPlayerController::GetMainUIClass_Implementa
 
 void AFirstPersonPlayerController::BindMainUI()
 {
-	
+
+}
+
+void AFirstPersonPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	// AddToViewport로 붙인 Widget은 GameViewportClient가 들고 있어서 PC가 파괴돼도
+	// 화면에 남는다. Role에 따라 Controller를 교체할 때 이전 Controller의 MainUI가
+	// 그대로 보이므로 직접 정리한다.
+	if (UMainUIBase* MainUI = ShooterUIInstance)
+	{
+		if (ULocalPlayer* LP = GetLocalPlayer())
+		{
+			if (ULocalPlayerUISubSystem* UISubsystem = LP->GetSubsystem<ULocalPlayerUISubSystem>())
+			{
+				UISubsystem->UnregisterMainUI(MainUI);
+			}
+
+			if (ULocalPlayerUILayerSubsystem* LayerSubsystem =
+				LP->GetSubsystem<ULocalPlayerUILayerSubsystem>())
+			{
+				LayerSubsystem->UnregisterMainUI(MainUI);
+			}
+		}
+
+		MainUI->RemoveFromParent();
+		ShooterUIInstance = nullptr;
+	}
+
+	Super::EndPlay(EndPlayReason);
 }
 
 void AFirstPersonPlayerController::BindPostProcessSubSystem()
@@ -516,6 +697,125 @@ void AFirstPersonPlayerController::TryNotifyArenaStartReady()
 
 	bWaitingForArenaStart = false;
 	ServerNotifyArenaReady();
+}
+
+void AFirstPersonPlayerController::ServerOpenInGameSetting_Implementation()
+{
+	if (!InGameSettingWidgetClass)
+	{
+		return;
+	}
+
+	AShooterCharacter* ShooterCharacter = nullptr;
+	APartnerCharacter* PartnerCharacter = nullptr;
+	ResolvePairCharactersForController(this, ShooterCharacter, PartnerCharacter);
+
+	AFirstPersonPlayerController* ShooterController = ShooterCharacter
+		? Cast<AFirstPersonPlayerController>(ShooterCharacter->GetController())
+		: nullptr;
+	AFirstPersonPlayerController* PartnerController = PartnerCharacter
+		? Cast<AFirstPersonPlayerController>(PartnerCharacter->GetController())
+		: nullptr;
+
+	const AOutlierPlayerState* RequestingPlayerState = GetPlayerState<AOutlierPlayerState>();
+	AActor* PausingCharacter = GetPawn();
+	if (RequestingPlayerState && RequestingPlayerState->IsShooterPlayer() && ShooterCharacter)
+	{
+		PausingCharacter = ShooterCharacter;
+	}
+	else if (RequestingPlayerState && RequestingPlayerState->IsPartnerPlayer() && PartnerCharacter)
+	{
+		PausingCharacter = PartnerCharacter;
+	}
+
+	const UInGameSettingWidget* InGameSettingDefault =
+		InGameSettingWidgetClass->GetDefaultObject<UInGameSettingWidget>();
+	const TSubclassOf<UInGamePauseWidget> InGamePauseWidgetClass = InGameSettingDefault
+		? InGameSettingDefault->GetInGamePauseWidgetClass()
+		: nullptr;
+
+	FUILayerPushRequest PushRequest;
+	PushRequest.WidgetClass = InGameSettingWidgetClass;
+	PushRequest.LayerTag = UILayerTags::GameMenu();
+	PushRequest.InputModeTag = FirstPersonInputModeTags::UI();
+	PushRequest.RequestOwner = PausingCharacter;
+	PushRequest.ContextActors = { ShooterCharacter, PartnerCharacter, PausingCharacter };
+	PushRequest.FocusTarget = EUILayerFocusTarget::Widget;
+	PushRequest.bShowCursor = true;
+
+	PushUILayerToController(this, PushRequest);
+
+	AFirstPersonPlayerController* WaitingController = nullptr;
+	if (RequestingPlayerState && RequestingPlayerState->IsShooterPlayer())
+	{
+		WaitingController = PartnerController;
+	}
+	else if (RequestingPlayerState && RequestingPlayerState->IsPartnerPlayer())
+	{
+		WaitingController = ShooterController;
+	}
+	else if (ShooterController && ShooterController != this)
+	{
+		WaitingController = ShooterController;
+	}
+	else if (PartnerController && PartnerController != this)
+	{
+		WaitingController = PartnerController;
+	}
+
+	if (WaitingController && WaitingController != this && InGamePauseWidgetClass)
+	{
+		FUILayerPushRequest PausePushRequest;
+		PausePushRequest.WidgetClass = InGamePauseWidgetClass;
+		PausePushRequest.LayerTag = UILayerTags::GameMenu();
+		PausePushRequest.InputModeTag = FirstPersonInputModeTags::UI();
+		PausePushRequest.RequestOwner = PausingCharacter;
+		PausePushRequest.ContextActors = { ShooterCharacter, PartnerCharacter, PausingCharacter };
+		PausePushRequest.FocusTarget = EUILayerFocusTarget::None;
+		PausePushRequest.bShowCursor = false;
+		PausePushRequest.bReceivesInput = true;
+
+		PushUILayerToController(WaitingController, PausePushRequest);
+	}
+
+	UGameplayStatics::SetGamePaused(this, true);
+}
+
+void AFirstPersonPlayerController::ServerCloseInGameSetting_Implementation()
+{
+	UGameplayStatics::SetGamePaused(this, false);
+
+	AShooterCharacter* ShooterCharacter = nullptr;
+	APartnerCharacter* PartnerCharacter = nullptr;
+	ResolvePairCharactersForController(this, ShooterCharacter, PartnerCharacter);
+
+	const AOutlierPlayerState* RequestingPlayerState = GetPlayerState<AOutlierPlayerState>();
+	AActor* PausingCharacter = GetPawn();
+	if (RequestingPlayerState && RequestingPlayerState->IsShooterPlayer() && ShooterCharacter)
+	{
+		PausingCharacter = ShooterCharacter;
+	}
+	else if (RequestingPlayerState && RequestingPlayerState->IsPartnerPlayer() && PartnerCharacter)
+	{
+		PausingCharacter = PartnerCharacter;
+	}
+
+	AFirstPersonPlayerController* ShooterController = ShooterCharacter
+		? Cast<AFirstPersonPlayerController>(ShooterCharacter->GetController())
+		: nullptr;
+	AFirstPersonPlayerController* PartnerController = PartnerCharacter
+		? Cast<AFirstPersonPlayerController>(PartnerCharacter->GetController())
+		: nullptr;
+
+	if (ShooterController)
+	{
+		PopInGameSettingLayerFromController(ShooterController, PausingCharacter);
+	}
+
+	if (PartnerController && PartnerController != ShooterController)
+	{
+		PopInGameSettingLayerFromController(PartnerController, PausingCharacter);
+	}
 }
 
 void AFirstPersonPlayerController::RegisterCurrentPawnWithPlayerState()

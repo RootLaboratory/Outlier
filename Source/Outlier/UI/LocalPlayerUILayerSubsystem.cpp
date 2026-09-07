@@ -23,7 +23,7 @@ void ULocalPlayerUILayerSubsystem::Initialize(FSubsystemCollectionBase& Collecti
 void ULocalPlayerUILayerSubsystem::Deinitialize()
 {
 	bIsDeinitializing = true;
-	ClearAllLayers();
+	ClearAllLayersInternal(false);
 	DestroyLayerRoot();
 	RegisteredMainUI.Reset();
 
@@ -55,16 +55,23 @@ void ULocalPlayerUILayerSubsystem::UnregisterMainUI(UMainUIBase* MainUI)
 
 bool ULocalPlayerUILayerSubsystem::EnsureLayerRoot()
 {
-	if (IsValid(LayerRootWidget))
-	{
-		return true;
-	}
-
 	APlayerController* PlayerController = GetLocalPlayerController();
 	if (!PlayerController)
 	{
 		return false;
 	}
+
+	if (IsValid(LayerRootWidget)
+		&& LayerRootWidget->GetOwningPlayer() == PlayerController
+		&& LayerRootWidget->IsInViewport())
+	{
+		return true;
+	}
+
+	// Local player subsystems survive travel, but viewport widgets and player
+	// controllers do not. Discard any layer state owned by the previous world.
+	ClearAllLayersInternal(false);
+	DestroyLayerRoot();
 
 	//Layer 관리를 위해서 만드는 Canvas.
 
@@ -435,9 +442,22 @@ int32 ULocalPlayerUILayerSubsystem::PopLayersByOwner(UObject* RequestOwner)
 
 void ULocalPlayerUILayerSubsystem::ClearAllLayers()
 {
+	ClearAllLayersInternal(true);
+}
+
+void ULocalPlayerUILayerSubsystem::ClearAllLayersInternal(
+	bool bRestoreDefaultInput)
+{
+	if (bIsClearingLayers)
+	{
+		return;
+	}
+
+	TGuardValue<bool> ClearingGuard(bIsClearingLayers, true);
+
 	// Widget 제거 콜백이 LayerEntries를 갱신할 수 있으므로 먼저 목록을 분리한다.
 	TArray<FUILayerEntry> EntriesToRemove = MoveTemp(LayerEntries);
-	LayerEntries.Reset();
+
 	CachedTopLayerHandle.Reset();
 	CachedInputWidget.Reset();
 	CachedInputModeTag = FGameplayTag();
@@ -455,7 +475,7 @@ void ULocalPlayerUILayerSubsystem::ClearAllLayers()
 		}
 	}
 
-	if (!bIsDeinitializing)
+	if (bRestoreDefaultInput && !bIsDeinitializing)
 	{
 		RefreshTopLayerInput();
 	}
@@ -499,11 +519,11 @@ FGameplayTag ULocalPlayerUILayerSubsystem::GetActiveInputModeTag() const
 	return CachedInputModeTag;
 }
 
-bool ULocalPlayerUILayerSubsystem::RouteWidgetEscapeInput()
+bool ULocalPlayerUILayerSubsystem::RouteWidgetEscapeInput(bool bPopUnhandledInput)
 {
 	return RouteWidgetInput(
 		&IUILayerInputReceiver::Execute_HandleUILayerEscape,
-		true);
+		bPopUnhandledInput);
 }
 
 bool ULocalPlayerUILayerSubsystem::RouteWidgetConfirmedInput()

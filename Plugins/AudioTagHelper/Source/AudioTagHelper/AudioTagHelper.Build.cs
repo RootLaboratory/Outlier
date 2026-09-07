@@ -12,6 +12,7 @@ public class AudioTagHelper : ModuleRules
 				"Core",
 				"CoreUObject",
 				"Engine",
+				"InputCore",
 				"Slate",
 				"SlateCore",
 				"UnrealEd",

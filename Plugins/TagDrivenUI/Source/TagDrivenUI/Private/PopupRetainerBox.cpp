@@ -21,7 +21,7 @@ void UPopupRetainerBox::SynchronizeProperties()
 	}
 	else if (!bPlaying && !IsDesignTime())
 	{
-		SetRetainRendering(bIsOpen);
+		SetRetainRendering(false);
 	}
 }
 
@@ -176,8 +176,11 @@ EActiveTimerReturnType UPopupRetainerBox::HandlePopupTick(double CurrentTime, fl
 	else
 	{
 		bIsOpen = true;
-		SetRetainRendering(true);
-		RequestRender();
+
+		// The PartnerCam popup is already rendered by the HUD's outer CurvedRetainerBox.
+		// Keep this inner retainer only for the transition; retaining it while open creates
+		// nested offscreen caches that can re-display a previous HUD frame or look duplicated.
+		SetRetainRendering(false);
 		OnOpened.Broadcast();
 	}
 

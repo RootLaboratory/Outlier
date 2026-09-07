@@ -56,6 +56,121 @@ void SRDGGraphicsDebugger::Construct(const FArguments& InArgs)
 						.VAlign(VAlign_Center)
 						[
 							SNew(SCheckBox)
+							.IsChecked(this, &SRDGGraphicsDebugger::GetOverlayEnabledCheckState)
+							.OnCheckStateChanged(this, &SRDGGraphicsDebugger::OnOverlayEnabledChanged)
+						]
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+						.VAlign(VAlign_Center)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Overlay")))
+						]
+					]
+					.BodyContent()
+					[
+						SNew(SVerticalBox)
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Tint Color (RGB 0-1)")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							[
+								SNew(SBox)
+								.WidthOverride(90.0f)
+								[
+									SNew(SNumericEntryBox<float>)
+									.AllowSpin(true)
+									.MinValue(0.0f)
+									.MaxValue(1.0f)
+									.MinSliderValue(0.0f)
+									.MaxSliderValue(1.0f)
+									.Value(this, &SRDGGraphicsDebugger::GetOverlayTintRValue)
+									.OnValueChanged(this, &SRDGGraphicsDebugger::OnOverlayTintRChanged)
+								]
+							]
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.Padding(8.0f, 0.0f)
+							[
+								SNew(SBox)
+								.WidthOverride(90.0f)
+								[
+									SNew(SNumericEntryBox<float>)
+									.AllowSpin(true)
+									.MinValue(0.0f)
+									.MaxValue(1.0f)
+									.MinSliderValue(0.0f)
+									.MaxSliderValue(1.0f)
+									.Value(this, &SRDGGraphicsDebugger::GetOverlayTintGValue)
+									.OnValueChanged(this, &SRDGGraphicsDebugger::OnOverlayTintGChanged)
+								]
+							]
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							[
+								SNew(SBox)
+								.WidthOverride(90.0f)
+								[
+									SNew(SNumericEntryBox<float>)
+									.AllowSpin(true)
+									.MinValue(0.0f)
+									.MaxValue(1.0f)
+									.MinSliderValue(0.0f)
+									.MaxSliderValue(1.0f)
+									.Value(this, &SRDGGraphicsDebugger::GetOverlayTintBValue)
+									.OnValueChanged(this, &SRDGGraphicsDebugger::OnOverlayTintBChanged)
+								]
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(RDGGraphicsDebugger::RowPadding)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Goal Value (0-1)")))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SBox)
+							.WidthOverride(120.0f)
+							[
+								SNew(SNumericEntryBox<float>)
+								.AllowSpin(true)
+								.MinValue(0.0f)
+								.MaxValue(1.0f)
+								.MinSliderValue(0.0f)
+								.MaxSliderValue(1.0f)
+								.Value(this, &SRDGGraphicsDebugger::GetOverlayGoalValue)
+								.OnValueChanged(this, &SRDGGraphicsDebugger::OnOverlayGoalValueChanged)
+							]
+						]
+					]
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(RDGGraphicsDebugger::RowPadding)
+				[
+					SNew(SExpandableArea)
+					.InitiallyCollapsed(false)
+					.HeaderContent()
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.VAlign(VAlign_Center)
+						[
+							SNew(SCheckBox)
 							.IsChecked(this, &SRDGGraphicsDebugger::GetPixelSortingEnabledCheckState)
 							.OnCheckStateChanged(this, &SRDGGraphicsDebugger::OnPixelSortingEnabledChanged)
 						]
@@ -1689,6 +1804,104 @@ void SRDGGraphicsDebugger::OnChromaticIntensityChanged(float NewValue)
 	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
 	{
 		Subsystem->SetChromaticAberrationIntensity(NewValue);
+	}
+}
+
+ECheckBoxState SRDGGraphicsDebugger::GetOverlayEnabledCheckState() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetUIPostProcessStrcture().Overlay.bEnabled
+			? ECheckBoxState::Checked
+			: ECheckBoxState::Unchecked;
+	}
+
+	return ECheckBoxState::Unchecked;
+}
+
+void SRDGGraphicsDebugger::OnOverlayEnabledChanged(ECheckBoxState NewState)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetOverlayEnabled(NewState == ECheckBoxState::Checked);
+	}
+}
+
+TOptional<float> SRDGGraphicsDebugger::GetOverlayTintRValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetUIPostProcessStrcture().Overlay.TintColor.R;
+	}
+
+	return TOptional<float>();
+}
+
+void SRDGGraphicsDebugger::OnOverlayTintRChanged(float NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		FLinearColor TintColor = Subsystem->GetUIPostProcessStrcture().Overlay.TintColor;
+		TintColor.R = NewValue;
+		Subsystem->SetOverlayTintColor(TintColor);
+	}
+}
+
+TOptional<float> SRDGGraphicsDebugger::GetOverlayTintGValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetUIPostProcessStrcture().Overlay.TintColor.G;
+	}
+
+	return TOptional<float>();
+}
+
+void SRDGGraphicsDebugger::OnOverlayTintGChanged(float NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		FLinearColor TintColor = Subsystem->GetUIPostProcessStrcture().Overlay.TintColor;
+		TintColor.G = NewValue;
+		Subsystem->SetOverlayTintColor(TintColor);
+	}
+}
+
+TOptional<float> SRDGGraphicsDebugger::GetOverlayTintBValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetUIPostProcessStrcture().Overlay.TintColor.B;
+	}
+
+	return TOptional<float>();
+}
+
+void SRDGGraphicsDebugger::OnOverlayTintBChanged(float NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		FLinearColor TintColor = Subsystem->GetUIPostProcessStrcture().Overlay.TintColor;
+		TintColor.B = NewValue;
+		Subsystem->SetOverlayTintColor(TintColor);
+	}
+}
+
+TOptional<float> SRDGGraphicsDebugger::GetOverlayGoalValue() const
+{
+	if (const ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		return Subsystem->GetUIPostProcessStrcture().Overlay.GoalValue;
+	}
+
+	return TOptional<float>();
+}
+
+void SRDGGraphicsDebugger::OnOverlayGoalValueChanged(float NewValue)
+{
+	if (ULocalPlayerPostProcessSubsystem* Subsystem = ResolvePostProcessSubsystem())
+	{
+		Subsystem->SetOverlayGoalValue(NewValue);
 	}
 }
 

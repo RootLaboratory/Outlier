@@ -27,7 +27,6 @@ void UPartnerEMPComponent::BeginPlay()
 	Super::BeginPlay();
 
 	CachedAbilityData.EMPRange = EMPRange;
-	CachedAbilityData.MarkingTime = EMPMarkingTime;
 	ResetEMPEarlyCompleteTimer();
 
 }
@@ -71,6 +70,16 @@ void UPartnerEMPComponent::TryEMP_Implementation()
 		return;
 	}
 
+	const UOutlierAbilitySystemComponent* AbilitySystem =
+		PartnerCharacter->GetOutlierAbilitySystemComponent();
+	if (!AbilitySystem || !AbilitySystem->IsPartnerAbilitiesConfigured())
+	{
+		return;
+	}
+	const FOutlierPartnerAbilityConfig& Config = AbilitySystem->GetPartnerAbilityConfig();
+	EMPMarkingTime = Config.MarkDuration;
+	ActiveStunDuration = Config.StunDuration;
+
 	if (bEMPActive)
 	{
 		const float ElapsedTime = GetEMPElapsedTime();
@@ -87,7 +96,7 @@ void UPartnerEMPComponent::TryEMP_Implementation()
 	bEMPActive = true;
 	MarkedActors.Empty();
 	InitializeEMPEarlyCompleteTimer();
-	ClientStartEMPSearch();
+	ClientStartEMPSearch(EMPMarkingTime);
 	DefaultWidgetControl(true);
 }
 
@@ -96,15 +105,16 @@ void UPartnerEMPComponent::CacheAbilityData(const FPartnerEMPAbilityData& InAbil
 	CachedAbilityData = InAbilityData;
 
 	EMPRange = CachedAbilityData.EMPRange;
-	EMPMarkingTime = CachedAbilityData.MarkingTime;
 }
 
-void UPartnerEMPComponent::ClientStartEMPSearch_Implementation()
+void UPartnerEMPComponent::ClientStartEMPSearch_Implementation(float InMarkingTime)
 {
 	if (!PartnerCharacter || !PartnerCharacter->IsLocallyControlled())
 	{
 		return;
 	}
+
+	EMPMarkingTime = FMath::Max(InMarkingTime, 0.0f);
 
 	bEMPCandidateSearchActive = true;
 
@@ -351,7 +361,7 @@ void UPartnerEMPComponent::CompleteEMPOnServer(const TArray<AActor*>& InMarkedAc
 			: nullptr;
 		if (!TargetAbilitySystem
 			|| !TargetAbilitySystem->ApplyStunStateToSelf(
-				CachedAbilityData.StunDuration,
+				ActiveStunDuration,
 				PartnerCharacter).IsValid())
 		{
 			UE_LOG(
@@ -359,7 +369,7 @@ void UPartnerEMPComponent::CompleteEMPOnServer(const TArray<AActor*>& InMarkedAc
 				Warning,
 				TEXT("[PartnerEMP] Target has no compatible ASC or rejected Stun GameplayEffect. Target=%s Duration=%.2f"),
 				*GetNameSafe(MarkedActor),
-				CachedAbilityData.StunDuration);
+				ActiveStunDuration);
 			continue;
 		}
 

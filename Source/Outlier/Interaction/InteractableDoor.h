@@ -49,7 +49,7 @@ public:
 	TObjectPtr<UCurveFloat> DoorCurve;
 
 	/** Played as server-authoritative Relevant AtLocation audio when movement starts. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Door|Audio", meta = (Categories = "Audio.Event"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Door|Audio", meta = (Categories = "Audio.Type"))
 	FGameplayTag DoorMovementAudioEventTag;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Door|Audio", meta = (Categories = "Audio.Context"))

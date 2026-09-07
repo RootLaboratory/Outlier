@@ -128,6 +128,80 @@ namespace OutlierGameplayTags
 		}
 	}
 
+	namespace Upgrade
+	{
+		namespace Shooter
+		{
+			namespace BulletReflection
+			{
+				inline FGameplayTag DurationShieldRegen()
+				{
+					static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(
+						FName(TEXT("Upgrade.Shooter.BulletReflection.DurationShieldRegen")));
+					return Tag;
+				}
+			}
+
+			namespace QuantumLeap
+			{
+				inline FGameplayTag InvincibleAfterLeap()
+				{
+					static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(
+						FName(TEXT("Upgrade.Shooter.QuantumLeap.InvincibleAfterLeap")));
+					return Tag;
+				}
+
+				inline FGameplayTag DoubleCharge()
+				{
+					static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(
+						FName(TEXT("Upgrade.Shooter.QuantumLeap.DoubleCharge")));
+					return Tag;
+				}
+			}
+
+			namespace WeaponOvercharge
+			{
+				inline FGameplayTag AutoAim()
+				{
+					static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(
+						FName(TEXT("Upgrade.Shooter.WeaponOvercharge.AutoAim")));
+					return Tag;
+				}
+			}
+
+			namespace Stealth
+			{
+				inline FGameplayTag AssassinsStrike()
+				{
+					static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(
+						FName(TEXT("Upgrade.Shooter.Stealth.AssassinsStrike")));
+					return Tag;
+				}
+
+				inline FGameplayTag DecoyOnCast()
+				{
+					static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(
+						FName(TEXT("Upgrade.Shooter.Stealth.DecoyOnCast")));
+					return Tag;
+				}
+
+				inline FGameplayTag ShadowStep()
+				{
+					static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(
+						FName(TEXT("Upgrade.Shooter.Stealth.ShadowStep")));
+					return Tag;
+				}
+
+				inline FGameplayTag DecoyExplosion()
+				{
+					static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(
+						FName(TEXT("Upgrade.Shooter.Stealth.DecoyExplosion")));
+					return Tag;
+				}
+			}
+		}
+	}
+
 	namespace Cooldown
 	{
 		namespace Shooter
