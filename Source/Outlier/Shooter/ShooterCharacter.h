@@ -65,7 +65,8 @@ enum class ECombatState : uint8
 	Aim,
 	Reload,
 	Cooldown,	// 보조무기용
-	Attack		// 근접무기용
+	Attack,		// 근접무기용
+	Recovery	// 근접 타격 이후 다음 공격 제한 구간
 };
 
 UENUM(BlueprintType)

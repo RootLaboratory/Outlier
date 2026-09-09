@@ -2,6 +2,7 @@
 
 #include "Shooter/ShooterInventoryComponent.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Shooter/ShooterCombatComponent.h"
 #include "Net/UnrealNetwork.h"
 #include "OutlierNetUtils.h"
 
@@ -193,6 +194,12 @@ void UShooterInventoryComponent::SelectWeaponSlot(EWeaponSlot Slot)
 	if (!IsValidWeaponSlot(Slot))
 	{
 		return;
+	}
+
+	// 교체할 무기가 없더라도 유효한 슬롯 입력은 현재 근접 공격을 취소한다.
+	if (ShooterCharacter->CombatComponent)
+	{
+		ShooterCharacter->CombatComponent->CancelMeleeAttack();
 	}
 
 	AWeaponBase* TargetWeapon = WeaponSlots[WeaponIndex];

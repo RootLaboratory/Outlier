@@ -5,6 +5,7 @@
 #include "Shooter/ShooterFirstPersonAnimInstance.h"
 #include "Weapon/WeaponBase.h"
 #include "Weapon/RangedWeaponBase.h"
+#include "Weapon/MeleeWeaponBase.h"
 #include "Shooter/ShooterMovementComponent.h"
 #include "OutlierNetUtils.h"
 #include "Animation/AnimInstance.h"
@@ -111,7 +112,7 @@ void UShooterCombatComponent::TickComponent(float DeltaTime, ELevelTick TickType
 void UShooterCombatComponent::TryReload()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (!ShooterCharacter)
+	if (!ShooterCharacter || !Cast<ARangedWeaponBase>(ShooterCharacter->CurrentWeapon))
 	{
 		return;
 	}
@@ -302,7 +303,7 @@ void UShooterCombatComponent::HandleAimReleased()
 
 bool UShooterCombatComponent::ShouldDelayFireForSprintExit(const AShooterCharacter& ShooterCharacter) const
 {
-	if (!ShooterCharacter.IsLocallyControlled())
+	if (!ShooterCharacter.IsLocallyControlled() || ShooterCharacter.GetWeaponType() == EWeaponType::Melee)
 	{
 		return false;
 	}
@@ -402,7 +403,7 @@ void UShooterCombatComponent::TryStartAttack()
 	RefreshWeaponMode();
 	ShooterCharacter->RefreshMovementState();
 
-	if (ShooterCharacter->IsSprinting())
+	if (ShooterCharacter->IsSprinting() && ShooterCharacter->WeaponMode != EWeaponMode::Melee)
 	{
 		ShooterCharacter->StopSprintInternal();
 		ShooterCharacter->RefreshMovementState();
@@ -415,11 +416,17 @@ void UShooterCombatComponent::TryStartAttack()
 
 	if (!ShooterCharacter->CurrentWeapon || !ShooterCharacter->CurrentWeapon->CanAttack())
 	{
+		if (AMeleeWeaponBase* MeleeWeapon = Cast<AMeleeWeaponBase>(ShooterCharacter->CurrentWeapon))
+		{
+			// 재입력으로 공격 시간을 초기화하지 않고 다음 반복에 사용할 유지 의도만 갱신한다.
+			MeleeWeapon->StartAttack();
+		}
 		RefreshCombatState();
 		return;
 	}
 
-	bWantsToFire = true;
+	// 근접 입력 유지는 무기가 관리하므로 총기의 달리기 해제용 발사 의도와 분리한다.
+	bWantsToFire = ShooterCharacter->WeaponMode != EWeaponMode::Melee;
 
 	switch (ShooterCharacter->WeaponMode)
 	{
@@ -452,6 +459,20 @@ void UShooterCombatComponent::TryStopAttack()
 	UE_LOG(LogTemp, Log, TEXT("%s %s TryStopAttack CurrentWeapon=%s"), OutlierNet::GetNetPrefix(ShooterCharacter), *ShooterCharacter->GetName(), *GetNameSafe(ShooterCharacter->CurrentWeapon));
 	ClearPendingSprintExitFire();
 	bWantsToFire = false;
+	// 입력 해제는 서버에 전달하되 현재 휘두르기는 완료하고 다음 반복만 막는다.
+	if (ShooterCharacter->GetWeaponType() == EWeaponType::Melee)
+	{
+		if (!ShooterCharacter->HasAuthority())
+		{
+			ShooterCharacter->ServerStopAttack();
+		}
+		else if (AMeleeWeaponBase* MeleeWeapon = Cast<AMeleeWeaponBase>(ShooterCharacter->CurrentWeapon))
+		{
+			MeleeWeapon->ReleaseAttack();
+		}
+		return;
+	}
+
 	bIsMeleeAttacking = false;
 
 	if (ShooterCharacter->HasAuthority())
@@ -467,6 +488,20 @@ void UShooterCombatComponent::TryStopAttack()
 	}
 
 	RefreshCombatState();
+}
+
+void UShooterCombatComponent::CancelMeleeAttack()
+{
+	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	if (!ShooterCharacter || !ShooterCharacter->HasAuthority())
+	{
+		return;
+	}
+
+	if (AMeleeWeaponBase* MeleeWeapon = Cast<AMeleeWeaponBase>(ShooterCharacter->CurrentWeapon))
+	{
+		MeleeWeapon->StopAttack();
+	}
 }
 
 void UShooterCombatComponent::HandleWeaponAttackStopped()
@@ -598,8 +633,15 @@ void UShooterCombatComponent::RefreshCombatState()
 		}
 		break;
 	case EWeaponMode::Melee:
-		ShooterCharacter->CombatState = bIsMeleeAttacking ? ECombatState::Attack : ECombatState::Idle;
+	{
+		const AMeleeWeaponBase* MeleeWeapon = Cast<AMeleeWeaponBase>(ShooterCharacter->CurrentWeapon);
+		const EMeleeAttackPhase Phase = MeleeWeapon ? MeleeWeapon->GetAttackPhase() : EMeleeAttackPhase::Idle;
+		bIsMeleeAttacking = Phase != EMeleeAttackPhase::Idle;
+		ShooterCharacter->CombatState = Phase == EMeleeAttackPhase::Recovery
+			? ECombatState::Recovery
+			: (bIsMeleeAttacking ? ECombatState::Attack : ECombatState::Idle);
 		break;
+	}
 	case EWeaponMode::None:
 	default:
 		ShooterCharacter->CombatState = ECombatState::Idle;
@@ -945,7 +987,7 @@ bool UShooterCombatComponent::CanEnterCombatState(EWeaponMode InWeaponMode, ECom
 	case EWeaponMode::Secondary:
 		return NextState == ECombatState::Idle || NextState == ECombatState::Fire || NextState == ECombatState::Aim || NextState == ECombatState::Reload || NextState == ECombatState::Cooldown;
 	case EWeaponMode::Melee:
-		return NextState == ECombatState::Idle || NextState == ECombatState::Attack;
+		return NextState == ECombatState::Idle || NextState == ECombatState::Attack || NextState == ECombatState::Recovery;
 	case EWeaponMode::None:
 	default:
 		return NextState == ECombatState::Idle;
@@ -1068,4 +1110,11 @@ void UShooterCombatComponent::ClearInputIntent()
 	ClearPendingSprintExitFire();
 	bWantsToAim = false;
 	bWantsToFire = false;
+	if (AShooterCharacter* ShooterCharacter = GetShooterCharacter())
+	{
+		if (AMeleeWeaponBase* MeleeWeapon = Cast<AMeleeWeaponBase>(ShooterCharacter->CurrentWeapon))
+		{
+			MeleeWeapon->ReleaseAttack();
+		}
+	}
 }

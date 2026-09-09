@@ -1103,26 +1103,26 @@ void AShooterCharacter::UpdateSuitSelection(const FInputActionValue& Value)
 
 void AShooterCharacter::TryUseSuit()
 {
-	const bool bCancellingActiveStealth = IsStealthed()
-		&& SelectedAbilityTag.MatchesTagExact(OutlierGameplayTags::Ability::Shooter::Stealth());
-	if (IsDead()
-		|| !SelectedAbilityTag.IsValid()
-		|| (IsShooterSuitUseDisabled() && !bCancellingActiveStealth))
+	if (IsDead() || !SelectedAbilityTag.IsValid())
 	{
 		return;
 	}
-	if (HasAuthority())
-	{
-		OutlierAbilitySystemComponent->TryActivateShooterSuitAbility(SelectedAbilityTag);
-	}
-	else
-	{
-		ServerUseSuitAbility(SelectedAbilityTag);
-	}
+	ServerUseSuitAbility(SelectedAbilityTag);
 }
 
 void AShooterCharacter::ServerUseSuitAbility_Implementation(FGameplayTag AbilityTag)
 {
+	if (IsDead() || !AbilityTag.IsValid())
+	{
+		return;
+	}
+
+	// 능력 발동 성공 여부와 관계없이 능력 입력 시 근접 공격부터 취소한다.
+	if (CombatComponent)
+	{
+		CombatComponent->CancelMeleeAttack();
+	}
+
 	const bool bCancellingActiveStealth = IsStealthed()
 		&& AbilityTag.MatchesTagExact(OutlierGameplayTags::Ability::Shooter::Stealth());
 	if (!IsDead()
@@ -2034,6 +2034,10 @@ void AShooterCharacter::HandleDeath()
 	StopAimInternal();
 	CancelReloadInternal();
 	StopSprintInternal();
+	if (CombatComponent)
+	{
+		CombatComponent->CancelMeleeAttack();
+	}
 	TryStopAttack();
 
 	StopJumping();

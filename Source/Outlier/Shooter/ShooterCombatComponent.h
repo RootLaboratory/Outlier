@@ -71,6 +71,7 @@ public:
 	void HandleAimReleased();
 	void TryStartAttack();
 	void TryStopAttack();
+	void CancelMeleeAttack();
 	void HandleWeaponAttackStopped();
 	void HandleAutoReloadRequested();
 
