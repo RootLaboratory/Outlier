@@ -6,6 +6,8 @@
 #include "Weapon/WeaponBase.h"
 #include "MeleeWeaponBase.generated.h"
 
+class UAnimMontage;
+
 UENUM(BlueprintType)
 enum class EMeleeAttackPhase : uint8
 {
@@ -26,7 +28,7 @@ protected:
 	UPROPERTY(ReplicatedUsing = OnRep_AttackPhase, VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Melee")
 	EMeleeAttackPhase AttackPhase = EMeleeAttackPhase::Idle;
 
-	// Animation timing is supplied by the montage in Slice 4. These values drive the interim cycle.
+	// Used as a fallback when no valid server-side third-person attack montage is available.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Melee|Timing", meta = (ClampMin = "0.01"))
 	float AttackDelay = 0.25f;
 
@@ -37,8 +39,11 @@ protected:
 	bool bWantsToAttack = false;
 	FTimerHandle AttackTimerHandle;
 	FTimerHandle RecoveryTimerHandle;
+	bool bUsesAnimationTiming = false;
 
 	void RefreshOwnerCombatState();
+	bool PlayAttackAnimation();
+	void HandleAttackMontageEnded(UAnimMontage* Montage, bool bInterrupted, int32 ExpectedAttackSequence);
 
 	UFUNCTION()
 	void OnRep_AttackPhase();
@@ -73,6 +78,8 @@ public:
 	// Delayed callers must retain the sequence from attack start, not read it at callback time.
 	void CommitAttack(int32 ExpectedAttackSequence);
 	void FinishAttack(int32 ExpectedAttackSequence);
+	void HandleHitNotify();
+	void HandleRecoveryEndNotify();
 
 	UFUNCTION(BlueprintPure, Category = "Weapon|Melee")
 	EMeleeAttackPhase GetAttackPhase() const { return AttackPhase; }

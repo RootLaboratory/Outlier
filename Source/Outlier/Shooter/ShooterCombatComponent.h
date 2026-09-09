@@ -86,6 +86,8 @@ public:
 	void CancelReloadInternal();
 	void FinishReloadInternal();
 	void HandleReloadCommitNotify();
+	void HandleMeleeHitNotify();
+	void HandleMeleeRecoveryEndNotify();
 
 	bool CanEnterCombatState(EWeaponMode InWeaponMode, ECombatState NextState) const;
 	bool CanAimInCurrentState() const;

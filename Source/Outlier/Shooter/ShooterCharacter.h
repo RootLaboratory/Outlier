@@ -97,7 +97,8 @@ enum class EShooterMontageAction : uint8
 	Fire,
 	Reload,
 	Slide,
-	Equip
+	Equip,
+	MeleeAttack
 };
 
 /**
@@ -247,6 +248,13 @@ protected:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
 	TObjectPtr<UAnimMontage> ThirdPersonEquipMontage;
+
+	// Melee Attack
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
+	TObjectPtr<UAnimMontage> FirstPersonMeleeAttackMontage;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
+	TObjectPtr<UAnimMontage> ThirdPersonMeleeAttackMontage;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Animation|Sections")
 	FName RifleMontageSectionName = TEXT("Rifle");
@@ -559,9 +567,16 @@ public:
 	void HandleWeaponAttackStoppedInternal();
 	void HandleAutoReloadRequested();
 	void HandleFireShotAnimation();
+	void HandleMeleeAttackAnimation();
 	// Blueprint / Notify Entry Points
 	UFUNCTION(BlueprintCallable, Category = "Animation|Notify")
 	void HandleReloadCommitNotify();
+
+	UFUNCTION(BlueprintCallable, Category = "Animation|Notify")
+	void HandleMeleeHitNotify();
+
+	UFUNCTION(BlueprintCallable, Category = "Animation|Notify")
+	void HandleMeleeRecoveryEndNotify();
 
 	void DoJumpStart();
 
@@ -704,6 +719,7 @@ public:
 	void PlayEquipMontages();
 	const UAnimMontage* GetFirstPersonReloadMontage() const { return FirstPersonReloadMontage; }
 	const UAnimMontage* GetFirstPersonEquipMontage() const { return FirstPersonEquipMontage; }
+	UAnimMontage* GetThirdPersonMeleeAttackMontage() const { return ThirdPersonMeleeAttackMontage; }
 	void ClearInputIntent();
 
 	void CleanupOwnedWeapons();

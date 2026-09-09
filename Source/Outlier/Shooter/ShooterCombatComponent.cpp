@@ -978,6 +978,34 @@ void UShooterCombatComponent::HandleReloadCommitNotify()
 	}
 }
 
+void UShooterCombatComponent::HandleMeleeHitNotify()
+{
+	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	if (!ShooterCharacter || !ShooterCharacter->HasAuthority())
+	{
+		return;
+	}
+
+	if (AMeleeWeaponBase* MeleeWeapon = Cast<AMeleeWeaponBase>(ShooterCharacter->CurrentWeapon))
+	{
+		MeleeWeapon->HandleHitNotify();
+	}
+}
+
+void UShooterCombatComponent::HandleMeleeRecoveryEndNotify()
+{
+	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	if (!ShooterCharacter || !ShooterCharacter->HasAuthority())
+	{
+		return;
+	}
+
+	if (AMeleeWeaponBase* MeleeWeapon = Cast<AMeleeWeaponBase>(ShooterCharacter->CurrentWeapon))
+	{
+		MeleeWeapon->HandleRecoveryEndNotify();
+	}
+}
+
 bool UShooterCombatComponent::CanEnterCombatState(EWeaponMode InWeaponMode, ECombatState NextState) const
 {
 	switch (InWeaponMode)

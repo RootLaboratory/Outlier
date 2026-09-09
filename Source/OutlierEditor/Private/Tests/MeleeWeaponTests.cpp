@@ -3,9 +3,14 @@
 #include "OutlierEditor/Tests/MeleeWeaponTestActor.h"
 #include "Misc/AutomationTest.h"
 #include "Engine/Engine.h"
+#include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "Drone/Partner/PartnerCharacter.h"
+#include "Drone/Partner/PartnerVitalityComponent.h"
 #include "Enemy/EnemyBase.h"
+#include "GAS/Attributes/OutlierVitalAttributeSet.h"
+#include "GAS/OutlierAbilitySystemComponent.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PlayerController.h"
@@ -38,6 +43,11 @@ struct FScopedMeleeTestWorld
 
 		World->AddToRoot();
 		WorldContext.SetCurrentWorld(World);
+		World->SetGameInstance(NewObject<UGameInstance>(GEngine));
+		if (!Test.TestTrue(TEXT("Transient melee world creates an authority game mode"), World->SetGameMode(FURL())))
+		{
+			return false;
+		}
 		World->InitializeActorsForPlay(FURL());
 		return true;
 	}
@@ -120,6 +130,17 @@ bool FOutlierMeleeAttackLifecycleTest::RunTest(const FString& Parameters)
 		Weapon->FinishAttack(FirstSequence);
 		TestTrue(TEXT("Completion permits the next attack"), Weapon->CanAttack());
 		TestFalse(TEXT("Completion clears the attack flag"), Weapon->IsAttacking());
+
+		Weapon->StartAttack();
+		const int32 NotifySequence = Weapon->GetAttackSequence();
+		Weapon->HandleHitNotify();
+		TestEqual(TEXT("Hit Notify enters Recovery"), Weapon->GetAttackPhase(), EMeleeAttackPhase::Recovery);
+		Weapon->HandleHitNotify();
+		TestEqual(TEXT("Duplicate Hit Notify is ignored"), Weapon->GetAttackPhase(), EMeleeAttackPhase::Recovery);
+		Weapon->ReleaseAttack();
+		Weapon->HandleRecoveryEndNotify();
+		TestEqual(TEXT("Recovery Notify completes its swing"), Weapon->GetAttackPhase(), EMeleeAttackPhase::Idle);
+		TestEqual(TEXT("Notify completion retains its sequence"), Weapon->GetAttackSequence(), NotifySequence);
 
 		Weapon->StartAttack();
 		const int32 CancelledSequence = Weapon->GetAttackSequence();
@@ -238,8 +259,146 @@ bool FOutlierMeleeAttackLifecycleTest::RunTest(const FString& Parameters)
 					TestNull(TEXT("Visibility blocker prevents melee target selection"), Weapon->GetLastAppliedTarget());
 					Weapon->ReleaseAttack();
 					Weapon->FinishAttack(BlockedSequence);
+
+					VisibilityBlocker->Destroy();
+					CenterEnemy->SetActorLocation(ViewLocation + Forward * 300.0f);
+					UClass* PartnerClass = LoadClass<APartnerCharacter>(
+						nullptr,
+						TEXT("/Game/Blueprints/Partner/BP_PartnerCharacter.BP_PartnerCharacter_C"));
+					APartnerCharacter* Partner = PartnerClass
+						? World->SpawnActor<APartnerCharacter>(
+							PartnerClass,
+							ViewLocation + Forward * 150.0f,
+							FRotator::ZeroRotator,
+							BlockerSpawnParameters)
+						: nullptr;
+					if (TestNotNull(TEXT("Partner spawns for melee team damage"), Partner))
+					{
+						if (!Partner->HasActorBegunPlay())
+						{
+							Partner->DispatchBeginPlay();
+						}
+						UOutlierAbilitySystemComponent* PartnerAbilitySystem = Partner->GetOutlierAbilitySystemComponent();
+						PartnerAbilitySystem->SetNumericAttributeBase(
+							UOutlierVitalAttributeSet::GetMaxHealthAttribute(), 100.0f);
+						PartnerAbilitySystem->SetNumericAttributeBase(
+							UOutlierVitalAttributeSet::GetHealthAttribute(), 100.0f);
+						UCapsuleComponent* PartnerCapsule = Partner->GetCapsuleComponent();
+						PartnerCapsule->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+						PartnerCapsule->SetCollisionObjectType(ECC_Pawn);
+						PartnerCapsule->SetCollisionResponseToAllChannels(ECR_Ignore);
+						PartnerCapsule->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
+
+						Weapon->ResetAppliedTarget();
+						Weapon->StartAttack();
+						const int32 PartnerSequence = Weapon->GetAttackSequence();
+						Weapon->CommitAttack(PartnerSequence);
+						TestEqual(
+							TEXT("Partner participates in melee target selection"),
+							Weapon->GetLastAppliedTarget(),
+							static_cast<AActor*>(Partner));
+						Weapon->ReleaseAttack();
+						Weapon->FinishAttack(PartnerSequence);
+
+						Weapon->SetTestDamage(50.0f);
+						Weapon->ApplyDamageToTargetForTest(Partner);
+						TestEqual(TEXT("Partner receives normal melee damage"), Partner->GetVitalAttributeSet()->GetHealth(), 50.0f);
+
+						Partner->SetCanBeDamaged(false);
+						Weapon->ApplyDamageToTargetForTest(Partner);
+						TestEqual(TEXT("Damage-disabled Partner ignores melee damage"), Partner->GetVitalAttributeSet()->GetHealth(), 50.0f);
+						Partner->SetCanBeDamaged(true);
+						Weapon->ApplyDamageToTargetForTest(Partner);
+						TestTrue(
+							TEXT("Lethal melee damage enters Partner reboot"),
+							Partner->GetPartnerVitalityComponent()->IsRebooting());
+
+						Weapon->ResetAppliedTarget();
+						Weapon->StartAttack();
+						const int32 RebootingPartnerSequence = Weapon->GetAttackSequence();
+						Weapon->CommitAttack(RebootingPartnerSequence);
+						TestNull(TEXT("Rebooting Partner is excluded from melee targeting"), Weapon->GetLastAppliedTarget());
+						Weapon->ReleaseAttack();
+						Weapon->FinishAttack(RebootingPartnerSequence);
+					}
 				}
 			}
+		}
+
+		UClass* DamageEnemyClass = LoadClass<AEnemyBase>(
+			nullptr,
+			TEXT("/Game/Blueprints/Enemy/VECDrone/BP_VECDrone_Gun.BP_VECDrone_Gun_C"));
+		TestNotNull(TEXT("Configured Enemy class loads for melee damage"), DamageEnemyClass);
+		auto SpawnDamageEnemy = [World, DamageEnemyClass](EEnemyCombatState CombatState)
+		{
+			if (!DamageEnemyClass)
+			{
+				return static_cast<AEnemyBase*>(nullptr);
+			}
+
+			FActorSpawnParameters EnemySpawnParameters;
+			EnemySpawnParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+			AEnemyBase* Enemy = World->SpawnActor<AEnemyBase>(
+				DamageEnemyClass,
+				FVector::ZeroVector,
+				FRotator::ZeroRotator,
+				EnemySpawnParameters);
+			if (!Enemy)
+			{
+				return static_cast<AEnemyBase*>(nullptr);
+			}
+			if (!Enemy->HasActorBegunPlay())
+			{
+				Enemy->DispatchBeginPlay();
+			}
+
+			UOutlierAbilitySystemComponent* AbilitySystem = Enemy->GetOutlierAbilitySystemComponent();
+			AbilitySystem->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetMaxHealthAttribute(), 100.0f);
+			AbilitySystem->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetHealthAttribute(), 100.0f);
+			if (CombatState == EEnemyCombatState::Alert)
+			{
+				Enemy->EnterAlert(FVector::ZeroVector);
+			}
+			else if (CombatState == EEnemyCombatState::Combat)
+			{
+				Enemy->EnterCombat(FVector::ZeroVector);
+			}
+			else if (CombatState == EEnemyCombatState::Stun)
+			{
+				Enemy->EnterStun();
+			}
+			return Enemy;
+		};
+
+		Weapon->SetTestDamage(50.0f);
+		AEnemyBase* CombatEnemy = SpawnDamageEnemy(EEnemyCombatState::Combat);
+		if (TestNotNull(TEXT("Combat damage enemy spawns"), CombatEnemy))
+		{
+			Weapon->ApplyDamageToTargetForTest(CombatEnemy);
+			TestEqual(TEXT("Combat enemy receives base melee damage"), CombatEnemy->GetCurrentHealth(), 50.0f);
+			TestFalse(TEXT("Non-lethal combat hit keeps the enemy alive"), CombatEnemy->IsDead());
+		}
+
+		for (const EEnemyCombatState InstantKillState : {
+			EEnemyCombatState::NonCombat,
+			EEnemyCombatState::Alert,
+			EEnemyCombatState::Stun })
+		{
+			AEnemyBase* InstantKillEnemy = SpawnDamageEnemy(InstantKillState);
+			if (TestNotNull(TEXT("Instant-kill enemy spawns"), InstantKillEnemy))
+			{
+				Weapon->ApplyDamageToTargetForTest(InstantKillEnemy);
+				TestEqual(TEXT("Eligible melee state drains current Health"), InstantKillEnemy->GetCurrentHealth(), 0.0f);
+				TestTrue(TEXT("Eligible melee state enters existing death flow"), InstantKillEnemy->IsDead());
+			}
+		}
+
+		AEnemyBase* DamageDisabledEnemy = SpawnDamageEnemy(EEnemyCombatState::Combat);
+		if (TestNotNull(TEXT("Damage-disabled enemy spawns"), DamageDisabledEnemy))
+		{
+			DamageDisabledEnemy->SetCanBeDamaged(false);
+			Weapon->ApplyDamageToTargetForTest(DamageDisabledEnemy);
+			TestEqual(TEXT("Damage-disabled enemy ignores melee damage"), DamageDisabledEnemy->GetCurrentHealth(), 100.0f);
 		}
 
 		Weapon->StartAttack();

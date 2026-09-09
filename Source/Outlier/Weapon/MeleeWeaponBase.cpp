@@ -2,16 +2,25 @@
 
 
 #include "Weapon/MeleeWeaponBase.h"
+#include "Damage/OutlierDamageReceiver.h"
+#include "Drone/Partner/PartnerCharacter.h"
+#include "Drone/Partner/PartnerVitalityComponent.h"
 #include "Enemy/EnemyBase.h"
+#include "GAS/Attributes/OutlierVitalAttributeSet.h"
+#include "GameplayTags/OutlierGameplayTags.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Team/OutlierTeamIds.h"
 #include "GameFramework/Controller.h"
+#include "Animation/AnimInstance.h"
+#include "Animation/AnimMontage.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Net/UnrealNetwork.h"
 #include "TimerManager.h"
 
 AMeleeWeaponBase::AMeleeWeaponBase()
 {
 	WeaponType = EWeaponType::Melee;
+	Damage = 50.0f;
 }
 
 void AMeleeWeaponBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -56,11 +65,15 @@ void AMeleeWeaponBase::StartAttack()
 	RefreshOwnerCombatState();
 	ForceNetUpdate();
 
-	GetWorldTimerManager().SetTimer(
-		AttackTimerHandle,
-		FTimerDelegate::CreateUObject(this, &AMeleeWeaponBase::CommitAttack, AttackSequence),
-		FMath::Max(AttackDelay, 0.01f),
-		false);
+	bUsesAnimationTiming = PlayAttackAnimation();
+	if (!bUsesAnimationTiming)
+	{
+		GetWorldTimerManager().SetTimer(
+			AttackTimerHandle,
+			FTimerDelegate::CreateUObject(this, &AMeleeWeaponBase::CommitAttack, AttackSequence),
+			FMath::Max(AttackDelay, 0.01f),
+			false);
+	}
 }
 
 void AMeleeWeaponBase::ReleaseAttack()
@@ -79,6 +92,7 @@ void AMeleeWeaponBase::StopAttack()
 	}
 
 	bWantsToAttack = false;
+	bUsesAnimationTiming = false;
 	GetWorldTimerManager().ClearTimer(AttackTimerHandle);
 	GetWorldTimerManager().ClearTimer(RecoveryTimerHandle);
 	AttackPhase = EMeleeAttackPhase::Idle;
@@ -107,12 +121,14 @@ void AMeleeWeaponBase::CommitAttack(int32 ExpectedAttackSequence)
 	ForceNetUpdate();
 	TraceMeleeHit();
 
-	// Slice 4 replaces this fallback timing with the animation-authored recovery end.
-	GetWorldTimerManager().SetTimer(
-		RecoveryTimerHandle,
-		FTimerDelegate::CreateUObject(this, &AMeleeWeaponBase::FinishAttack, AttackSequence),
-		FMath::Max(RecoveryDuration, 0.01f),
-		false);
+	if (!bUsesAnimationTiming)
+	{
+		GetWorldTimerManager().SetTimer(
+			RecoveryTimerHandle,
+			FTimerDelegate::CreateUObject(this, &AMeleeWeaponBase::FinishAttack, AttackSequence),
+			FMath::Max(RecoveryDuration, 0.01f),
+			false);
+	}
 }
 
 void AMeleeWeaponBase::FinishAttack(int32 ExpectedAttackSequence)
@@ -140,6 +156,60 @@ void AMeleeWeaponBase::FinishAttack(int32 ExpectedAttackSequence)
 		}
 	}
 	StartAttack();
+}
+
+void AMeleeWeaponBase::HandleHitNotify()
+{
+	CommitAttack(AttackSequence);
+}
+
+void AMeleeWeaponBase::HandleRecoveryEndNotify()
+{
+	FinishAttack(AttackSequence);
+}
+
+bool AMeleeWeaponBase::PlayAttackAnimation()
+{
+	AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
+	if (!Shooter)
+	{
+		return false;
+	}
+
+	Shooter->HandleMeleeAttackAnimation();
+
+	UAnimMontage* ThirdPersonMontage = Shooter->GetThirdPersonMeleeAttackMontage();
+	UAnimInstance* ThirdPersonAnimInstance = Shooter->GetMesh()
+		? Shooter->GetMesh()->GetAnimInstance()
+		: nullptr;
+	if (!ThirdPersonMontage || !ThirdPersonAnimInstance
+		|| !ThirdPersonAnimInstance->Montage_IsPlaying(ThirdPersonMontage))
+	{
+		return false;
+	}
+
+	FOnMontageEnded MontageEndedDelegate;
+	MontageEndedDelegate.BindUObject(
+		this,
+		&AMeleeWeaponBase::HandleAttackMontageEnded,
+		AttackSequence);
+	ThirdPersonAnimInstance->Montage_SetEndDelegate(MontageEndedDelegate, ThirdPersonMontage);
+	return true;
+}
+
+void AMeleeWeaponBase::HandleAttackMontageEnded(
+	UAnimMontage* /*Montage*/,
+	bool /*bInterrupted*/,
+	int32 ExpectedAttackSequence)
+{
+	if (!HasAuthority() || ExpectedAttackSequence != AttackSequence
+		|| AttackPhase == EMeleeAttackPhase::Idle)
+	{
+		return;
+	}
+
+	// Interruption cancels the swing; a normal end reaching here means RecoveryEnd Notify was omitted.
+	StopAttack();
 }
 
 void AMeleeWeaponBase::RefreshOwnerCombatState()
@@ -192,27 +262,41 @@ void AMeleeWeaponBase::TraceMeleeHit()
 		FCollisionShape::MakeSphere(FMath::Max(AttackRadius, 0.0f)),
 		TraceParams);
 
-	AEnemyBase* BestTarget = nullptr;
+	AActor* BestTarget = nullptr;
 	float BestAlignment = -1.0f;
 	float BestDistanceSquared = TNumericLimits<float>::Max();
-	TSet<AEnemyBase*> EvaluatedEnemies;
+	TSet<AActor*> EvaluatedTargets;
 
 	for (const FHitResult& HitResult : HitResults)
 	{
-		AEnemyBase* Enemy = Cast<AEnemyBase>(HitResult.GetActor());
-		if (!IsValid(Enemy) || EvaluatedEnemies.Contains(Enemy))
+		AActor* Candidate = HitResult.GetActor();
+		if (!IsValid(Candidate) || EvaluatedTargets.Contains(Candidate))
 		{
 			continue;
 		}
-		EvaluatedEnemies.Add(Enemy);
+		EvaluatedTargets.Add(Candidate);
 
-		if (Enemy->IsDead() || !Enemy->CanBeDamaged()
-			|| Enemy->GetGenericTeamId().GetId() != OutlierTeamIds::Enemy)
+		bool bCanTarget = false;
+		if (const AEnemyBase* Enemy = Cast<AEnemyBase>(Candidate))
+		{
+			bCanTarget = !Enemy->IsDead()
+				&& Enemy->CanBeDamaged()
+				&& Enemy->GetGenericTeamId().GetId() == OutlierTeamIds::Enemy;
+		}
+		else if (const APartnerCharacter* Partner = Cast<APartnerCharacter>(Candidate))
+		{
+			const UOutlierVitalAttributeSet* Vital = Partner->GetVitalAttributeSet();
+			const UPartnerVitalityComponent* Vitality = Partner->GetPartnerVitalityComponent();
+			bCanTarget = Partner->CanBeDamaged()
+				&& Vital && Vital->GetHealth() > 0.0f
+				&& Vitality && !Vitality->IsRebooting();
+		}
+		if (!bCanTarget)
 		{
 			continue;
 		}
 
-		const FVector ToTarget = Enemy->GetActorLocation() - TraceStart;
+		const FVector ToTarget = Candidate->GetActorLocation() - TraceStart;
 		const float ForwardDistance = FVector::DotProduct(ToTarget, TraceDirection);
 		if (ForwardDistance < 0.0f)
 		{
@@ -225,10 +309,10 @@ void AMeleeWeaponBase::TraceMeleeHit()
 		const bool bVisibilityBlocked = World->LineTraceSingleByChannel(
 			VisibilityHit,
 			TraceStart,
-			Enemy->GetActorLocation(),
+			Candidate->GetActorLocation(),
 			ECC_Visibility,
 			VisibilityParams);
-		if (bVisibilityBlocked && VisibilityHit.GetActor() != Enemy)
+		if (bVisibilityBlocked && VisibilityHit.GetActor() != Candidate)
 		{
 			continue;
 		}
@@ -241,7 +325,7 @@ void AMeleeWeaponBase::TraceMeleeHit()
 			|| (FMath::IsNearlyEqual(Alignment, BestAlignment, AlignmentTolerance)
 				&& DistanceSquared < BestDistanceSquared))
 		{
-			BestTarget = Enemy;
+			BestTarget = Candidate;
 			BestAlignment = Alignment;
 			BestDistanceSquared = DistanceSquared;
 		}
@@ -256,4 +340,45 @@ void AMeleeWeaponBase::TraceMeleeHit()
 
 void AMeleeWeaponBase::ApplyHitToTarget(AActor* Target)
 {
+	AEnemyBase* Enemy = Cast<AEnemyBase>(Target);
+	APartnerCharacter* Partner = Cast<APartnerCharacter>(Target);
+	if (!HasAuthority() || (!IsValid(Enemy) && !IsValid(Partner))
+		|| !Target->CanBeDamaged())
+	{
+		return;
+	}
+
+	float DamageToApply = Damage;
+	if (Enemy)
+	{
+		if (Enemy->IsDead() || Enemy->GetCurrentHealth() <= 0.0f)
+		{
+			return;
+		}
+
+		const EEnemyCombatState CombatState = Enemy->GetCombatState();
+		const bool bInstantKill = CombatState == EEnemyCombatState::NonCombat
+			|| CombatState == EEnemyCombatState::Alert
+			|| CombatState == EEnemyCombatState::Stun;
+		DamageToApply = bInstantKill ? Enemy->GetCurrentHealth() : Damage;
+	}
+	else
+	{
+		const UOutlierVitalAttributeSet* Vital = Partner->GetVitalAttributeSet();
+		const UPartnerVitalityComponent* Vitality = Partner->GetPartnerVitalityComponent();
+		if (!Vital || Vital->GetHealth() <= 0.0f || !Vitality || Vitality->IsRebooting())
+		{
+			return;
+		}
+	}
+
+	FOutlierDamageRequest DamageRequest;
+	DamageRequest.DamageAmount = DamageToApply;
+	DamageRequest.DamageTag = OutlierGameplayTags::Damage::Weapon();
+	DamageRequest.DamageOrigin = IsValid(WeaponOwner)
+		? WeaponOwner->GetActorLocation()
+		: GetActorLocation();
+	DamageRequest.EventInstigator = IsValid(WeaponOwner) ? WeaponOwner->GetController() : nullptr;
+	DamageRequest.DamageCauser = this;
+	OutlierDamage::Apply(Target, DamageRequest);
 }

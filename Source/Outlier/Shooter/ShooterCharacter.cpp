@@ -749,6 +749,11 @@ void AShooterCharacter::RefreshFirstPersonShadowPolicy()
 			// 하나도 렌더되지 않아도 계속 애니메이션을 갱신해야 한다
 			ThirdPersonMesh->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
 		}
+		else if (HasAuthority())
+		{
+			// Dedicated servers still need montage position updates for authoritative gameplay Notifies.
+			ThirdPersonMesh->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::OnlyTickMontagesWhenNotRendered;
+		}
 	}
 
 	if (FirstPersonMesh)
@@ -1476,6 +1481,22 @@ void AShooterCharacter::HandleReloadCommitNotify()
 	}
 }
 
+void AShooterCharacter::HandleMeleeHitNotify()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->HandleMeleeHitNotify();
+	}
+}
+
+void AShooterCharacter::HandleMeleeRecoveryEndNotify()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->HandleMeleeRecoveryEndNotify();
+	}
+}
+
 bool AShooterCharacter::CanStartAction(EShooterActionLock NextLock) const
 {
 	const bool bCanOverrideSlideLock =
@@ -1668,6 +1689,19 @@ void AShooterCharacter::HandleFireShotAnimation()
 	}
 
 	ClientPlayFirstPersonActionMontage(EShooterMontageAction::Fire, GetWeaponType());
+}
+
+void AShooterCharacter::HandleMeleeAttackAnimation()
+{
+	MulticastPlayThirdPersonActionMontage(EShooterMontageAction::MeleeAttack, GetWeaponType());
+
+	if (IsLocallyControlled())
+	{
+		PlayFirstPersonActionMontage(EShooterMontageAction::MeleeAttack, GetWeaponType());
+		return;
+	}
+
+	ClientPlayFirstPersonActionMontage(EShooterMontageAction::MeleeAttack, GetWeaponType());
 }
 
 void AShooterCharacter::StartLeanUpdate()
@@ -2166,6 +2200,10 @@ void AShooterCharacter::PlayFirstPersonActionMontage(EShooterMontageAction Actio
 	case EShooterMontageAction::Equip:
 		Montage = FirstPersonEquipMontage;
 		break;
+	case EShooterMontageAction::MeleeAttack:
+		Montage = FirstPersonMeleeAttackMontage;
+		bUseWeaponSection = false;
+		break;
 	default:
 		break;
 	}
@@ -2191,6 +2229,10 @@ void AShooterCharacter::PlayThirdPersonActionMontage(EShooterMontageAction Actio
 		break;
 	case EShooterMontageAction::Equip:
 		Montage = ThirdPersonEquipMontage;
+		break;
+	case EShooterMontageAction::MeleeAttack:
+		Montage = ThirdPersonMeleeAttackMontage;
+		bUseWeaponSection = false;
 		break;
 	default:
 		break;
