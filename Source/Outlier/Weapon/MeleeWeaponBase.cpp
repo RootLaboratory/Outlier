@@ -25,8 +25,33 @@ AMeleeWeaponBase::AMeleeWeaponBase()
 
 void AMeleeWeaponBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	StopTargetSearch();
 	StopAttack();
 	Super::EndPlay(EndPlayReason);
+}
+
+void AMeleeWeaponBase::OnEquipped(ACharacter* NewOwner)
+{
+	Super::OnEquipped(NewOwner);
+	RefreshTargetSearchState();
+}
+
+void AMeleeWeaponBase::OnUnequipped()
+{
+	StopTargetSearch();
+	Super::OnUnequipped();
+}
+
+void AMeleeWeaponBase::OnDropped(const FTransform& DropTransform, AFirstPersonCharacter* DroppedBy)
+{
+	StopTargetSearch();
+	Super::OnDropped(DropTransform, DroppedBy);
+}
+
+void AMeleeWeaponBase::OnRep_EquippedState()
+{
+	Super::OnRep_EquippedState();
+	RefreshTargetSearchState();
 }
 
 void AMeleeWeaponBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -229,14 +254,143 @@ void AMeleeWeaponBase::OnRep_AttackPhase()
 	RefreshOwnerCombatState();
 }
 
+void AMeleeWeaponBase::RefreshTargetSearchState()
+{
+	ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
+	const AShooterCharacter* Shooter = Cast<AShooterCharacter>(OwnerCharacter);
+	const bool bShouldSearch = bIsEquipped
+		&& OwnerCharacter
+		&& OwnerCharacter->IsLocallyControlled()
+		&& (!Shooter || Shooter->GetCurrentWeapon() == this);
+	if (!bShouldSearch)
+	{
+		StopTargetSearch();
+		return;
+	}
+
+	if (!GetWorldTimerManager().TimerExists(TargetSearchTimerHandle))
+	{
+		CurrentTargetSearchInterval = FMath::Max(InitialTargetSearchInterval, 0.01f);
+		ScheduleTargetSearch(CurrentTargetSearchInterval);
+	}
+}
+
+void AMeleeWeaponBase::ScheduleTargetSearch(float Delay)
+{
+	GetWorldTimerManager().SetTimer(
+		TargetSearchTimerHandle,
+		this,
+		&AMeleeWeaponBase::RefreshMeleeTarget,
+		FMath::Max(Delay, 0.01f),
+		false);
+}
+
+void AMeleeWeaponBase::RefreshMeleeTarget()
+{
+	ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
+	const AShooterCharacter* Shooter = Cast<AShooterCharacter>(OwnerCharacter);
+	if (!bIsEquipped || !OwnerCharacter || !OwnerCharacter->IsLocallyControlled()
+		|| (Shooter && Shooter->GetCurrentWeapon() != this))
+	{
+		StopTargetSearch();
+		return;
+	}
+
+	FHitResult TargetHit;
+	AActor* NewTarget = FindBestMeleeTarget(TargetHit, false, true)
+		? TargetHit.GetActor()
+		: nullptr;
+	const bool bTargetChanged = CurrentMeleeTarget.Get() != NewTarget;
+	SetCurrentMeleeTarget(NewTarget);
+
+	CurrentTargetSearchInterval = CalculateNextTargetSearchInterval(
+		CurrentTargetSearchInterval,
+		NewTarget != nullptr,
+		bTargetChanged,
+		InitialTargetSearchInterval,
+		TargetSearchIntervalStep,
+		MaxTargetSearchInterval);
+	ScheduleTargetSearch(CurrentTargetSearchInterval);
+}
+
+void AMeleeWeaponBase::StopTargetSearch()
+{
+	if (GetWorld())
+	{
+		GetWorldTimerManager().ClearTimer(TargetSearchTimerHandle);
+	}
+	SetCurrentMeleeTarget(nullptr);
+	CurrentTargetSearchInterval = FMath::Max(InitialTargetSearchInterval, 0.01f);
+}
+
+void AMeleeWeaponBase::SetCurrentMeleeTarget(AActor* NewTarget)
+{
+	AActor* PreviousTarget = CurrentMeleeTarget.Get();
+	if (PreviousTarget == NewTarget)
+	{
+		return;
+	}
+
+	if (IsValid(PreviousTarget)
+		&& PreviousTarget->GetClass()->ImplementsInterface(UMeleeTargetInterface::StaticClass()))
+	{
+		IMeleeTargetInterface::Execute_SetMeleeTargeted(PreviousTarget, WeaponOwner, false);
+	}
+
+	CurrentMeleeTarget = NewTarget;
+	if (IsValid(NewTarget)
+		&& NewTarget->GetClass()->ImplementsInterface(UMeleeTargetInterface::StaticClass()))
+	{
+		IMeleeTargetInterface::Execute_SetMeleeTargeted(NewTarget, WeaponOwner, true);
+	}
+}
+
+float AMeleeWeaponBase::CalculateNextTargetSearchInterval(
+	float CurrentInterval,
+	bool bHasTarget,
+	bool bTargetChanged,
+	float InitialInterval,
+	float IntervalStep,
+	float MaxInterval)
+{
+	const float SafeInitialInterval = FMath::Max(InitialInterval, 0.01f);
+	const float SafeMaxInterval = FMath::Max(MaxInterval, SafeInitialInterval);
+	if (bHasTarget || bTargetChanged)
+	{
+		return SafeInitialInterval;
+	}
+
+	return FMath::Min(
+		FMath::Max(CurrentInterval, SafeInitialInterval) + FMath::Max(IntervalStep, 0.0f),
+		SafeMaxInterval);
+}
+
 void AMeleeWeaponBase::TraceMeleeHit()
 {
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	FHitResult TargetHit;
+	if (FindBestMeleeTarget(TargetHit, true, false))
+	{
+		ApplyHitToTarget(TargetHit.GetActor(), TargetHit);
+	}
+}
+
+bool AMeleeWeaponBase::FindBestMeleeTarget(
+	FHitResult& OutHit,
+	bool bIncludePartner,
+	bool bRequireIndicatorEligibility) const
+{
+	OutHit = FHitResult();
 	ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
 	AController* OwnerController = OwnerCharacter ? OwnerCharacter->GetController() : nullptr;
 	UWorld* World = GetWorld();
-	if (!HasAuthority() || !OwnerCharacter || !OwnerController || !World)
+	if (!OwnerCharacter || !OwnerController || !World)
 	{
-		return;
+		return false;
 	}
 
 	FVector TraceStart;
@@ -262,10 +416,9 @@ void AMeleeWeaponBase::TraceMeleeHit()
 		FCollisionShape::MakeSphere(FMath::Max(AttackRadius, 0.0f)),
 		TraceParams);
 
-	AActor* BestTarget = nullptr;
 	float BestAlignment = -1.0f;
 	float BestDistanceSquared = TNumericLimits<float>::Max();
-	TSet<AActor*> EvaluatedTargets;
+	TArray<AActor*, TInlineAllocator<8>> EvaluatedTargets;
 
 	for (const FHitResult& HitResult : HitResults)
 	{
@@ -276,22 +429,7 @@ void AMeleeWeaponBase::TraceMeleeHit()
 		}
 		EvaluatedTargets.Add(Candidate);
 
-		bool bCanTarget = false;
-		if (const AEnemyBase* Enemy = Cast<AEnemyBase>(Candidate))
-		{
-			bCanTarget = !Enemy->IsDead()
-				&& Enemy->CanBeDamaged()
-				&& Enemy->GetGenericTeamId().GetId() == OutlierTeamIds::Enemy;
-		}
-		else if (const APartnerCharacter* Partner = Cast<APartnerCharacter>(Candidate))
-		{
-			const UOutlierVitalAttributeSet* Vital = Partner->GetVitalAttributeSet();
-			const UPartnerVitalityComponent* Vitality = Partner->GetPartnerVitalityComponent();
-			bCanTarget = Partner->CanBeDamaged()
-				&& Vital && Vital->GetHealth() > 0.0f
-				&& Vitality && !Vitality->IsRebooting();
-		}
-		if (!bCanTarget)
+		if (!IsValidMeleeTarget(Candidate, bIncludePartner, bRequireIndicatorEligibility))
 		{
 			continue;
 		}
@@ -320,25 +458,64 @@ void AMeleeWeaponBase::TraceMeleeHit()
 		const float DistanceSquared = ToTarget.SizeSquared();
 		const float Alignment = FVector::DotProduct(TraceDirection, ToTarget.GetSafeNormal());
 		constexpr float AlignmentTolerance = 0.001f;
-		if (!BestTarget
+		if (!OutHit.GetActor()
 			|| Alignment > BestAlignment + AlignmentTolerance
 			|| (FMath::IsNearlyEqual(Alignment, BestAlignment, AlignmentTolerance)
 				&& DistanceSquared < BestDistanceSquared))
 		{
-			BestTarget = Candidate;
+			OutHit = HitResult;
 			BestAlignment = Alignment;
 			BestDistanceSquared = DistanceSquared;
 		}
 	}
 
-	if (BestTarget)
+	return OutHit.GetActor() != nullptr;
+}
+
+bool AMeleeWeaponBase::IsValidMeleeTarget(
+	AActor* Candidate,
+	bool bIncludePartner,
+	bool bRequireIndicatorEligibility) const
+{
+	if (const AEnemyBase* Enemy = Cast<AEnemyBase>(Candidate))
 	{
-		// Slice 3 owns normal damage and instant-kill resolution behind this boundary.
-		ApplyHitToTarget(BestTarget);
+		const bool bValidEnemy = !Enemy->IsDead()
+			&& Enemy->CanBeDamaged()
+			&& Enemy->GetGenericTeamId().GetId() == OutlierTeamIds::Enemy;
+		if (!bValidEnemy || !bRequireIndicatorEligibility)
+		{
+			return bValidEnemy;
+		}
+
+		return Candidate->GetClass()->ImplementsInterface(UMeleeTargetInterface::StaticClass())
+			&& IMeleeTargetInterface::Execute_CanShowMeleeTargetIndicator(Candidate, WeaponOwner);
 	}
+
+	if (!bIncludePartner)
+	{
+		return false;
+	}
+
+	const APartnerCharacter* Partner = Cast<APartnerCharacter>(Candidate);
+	const UOutlierVitalAttributeSet* Vital = Partner ? Partner->GetVitalAttributeSet() : nullptr;
+	const UPartnerVitalityComponent* Vitality = Partner ? Partner->GetPartnerVitalityComponent() : nullptr;
+	return Partner
+		&& Partner->CanBeDamaged()
+		&& Vital && Vital->GetHealth() > 0.0f
+		&& Vitality && !Vitality->IsRebooting();
 }
 
 void AMeleeWeaponBase::ApplyHitToTarget(AActor* Target)
+{
+	FHitResult HitResult;
+	HitResult.ImpactPoint = IsValid(Target) ? Target->GetActorLocation() : FVector::ZeroVector;
+	HitResult.ImpactNormal = IsValid(Target) && IsValid(WeaponOwner)
+		? (WeaponOwner->GetActorLocation() - Target->GetActorLocation()).GetSafeNormal()
+		: FVector::ZeroVector;
+	ApplyHitToTarget(Target, HitResult);
+}
+
+void AMeleeWeaponBase::ApplyHitToTarget(AActor* Target, const FHitResult& HitResult)
 {
 	AEnemyBase* Enemy = Cast<AEnemyBase>(Target);
 	APartnerCharacter* Partner = Cast<APartnerCharacter>(Target);
@@ -349,6 +526,7 @@ void AMeleeWeaponBase::ApplyHitToTarget(AActor* Target)
 	}
 
 	float DamageToApply = Damage;
+	EMeleeHitResultType ResultType = EMeleeHitResultType::PartnerDamage;
 	if (Enemy)
 	{
 		if (Enemy->IsDead() || Enemy->GetCurrentHealth() <= 0.0f)
@@ -361,6 +539,9 @@ void AMeleeWeaponBase::ApplyHitToTarget(AActor* Target)
 			|| CombatState == EEnemyCombatState::Alert
 			|| CombatState == EEnemyCombatState::Stun;
 		DamageToApply = bInstantKill ? Enemy->GetCurrentHealth() : Damage;
+		ResultType = bInstantKill
+			? EMeleeHitResultType::EnemyInstantKill
+			: EMeleeHitResultType::EnemyDamage;
 	}
 	else
 	{
@@ -380,5 +561,40 @@ void AMeleeWeaponBase::ApplyHitToTarget(AActor* Target)
 		: GetActorLocation();
 	DamageRequest.EventInstigator = IsValid(WeaponOwner) ? WeaponOwner->GetController() : nullptr;
 	DamageRequest.DamageCauser = this;
-	OutlierDamage::Apply(Target, DamageRequest);
+	DamageRequest.HitResult = HitResult;
+	if (OutlierDamage::Apply(Target, DamageRequest) <= 0.0f)
+	{
+		return;
+	}
+
+	FMeleeHitContext Context;
+	Context.TargetActor = Target;
+	Context.HitLocation = HitResult.ImpactPoint;
+	Context.HitNormal = HitResult.ImpactNormal;
+	Context.AttackSequence = AttackSequence;
+	Context.ResultType = ResultType;
+	NotifyMeleeHitResult(Context);
+}
+
+void AMeleeWeaponBase::NotifyMeleeHitResult(const FMeleeHitContext& Context)
+{
+	AActor* Target = Context.TargetActor.Get();
+	if (!HasAuthority() || !IsValid(Target)
+		|| !Target->GetClass()->ImplementsInterface(UMeleeTargetInterface::StaticClass()))
+	{
+		return;
+	}
+
+	IMeleeTargetInterface::Execute_HandleMeleeHitConfirmed(Target, Context);
+	ClientNotifyMeleeHitFeedback(Context);
+}
+
+void AMeleeWeaponBase::ClientNotifyMeleeHitFeedback_Implementation(const FMeleeHitContext& Context)
+{
+	AActor* Target = Context.TargetActor.Get();
+	if (IsValid(Target)
+		&& Target->GetClass()->ImplementsInterface(UMeleeTargetInterface::StaticClass()))
+	{
+		IMeleeTargetInterface::Execute_HandleMeleeHitFeedback(Target, Context);
+	}
 }

@@ -1958,6 +1958,13 @@ int32 AEnemyBase::GetScanStencilValue() const
 	return static_cast<int32>(EScanType::Enemy);
 }
 
+bool AEnemyBase::CanShowMeleeTargetIndicator_Implementation(const AActor* /*InstigatorActor*/) const
+{
+	return !IsDead()
+		&& CanBeDamaged()
+		&& GetGenericTeamId().GetId() == OutlierTeamIds::Enemy;
+}
+
 void AEnemyBase::SetDefaultEnemyType(EEnemyType EnemyType)
 {
 	RuntimeStat.Type = EnemyType;

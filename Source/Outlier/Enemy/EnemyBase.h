@@ -10,6 +10,7 @@
 #include "Interface/EmpableInterface.h"
 #include "Interface/ScannableInterface.h"
 #include "Interface/HackableInterface.h"
+#include "Interface/MeleeTargetInterface.h"
 #include "Interface/RoomTagInterface.h"
 #include "StateTreeReference.h"
 #include "AbilitySystemInterface.h"
@@ -55,7 +56,7 @@ enum class EEnemyAttackPhase : uint8
 };
 
 UCLASS()
-class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, public IEMPableInterface, public IScannableInterface, public IGenericTeamAgentInterface, public IRoomTagInterface, public IAbilitySystemInterface, public IOutlierDamageReceiver
+class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, public IEMPableInterface, public IScannableInterface, public IGenericTeamAgentInterface, public IRoomTagInterface, public IAbilitySystemInterface, public IOutlierDamageReceiver, public IMeleeTargetInterface
 {
 	GENERATED_BODY()
 
@@ -437,6 +438,7 @@ public:
 	virtual void HandleEMPEnded(FGameplayTag EffectTag) override;
 
 	virtual int32 GetScanStencilValue() const override;
+	virtual bool CanShowMeleeTargetIndicator_Implementation(const AActor* InstigatorActor) const override;
 protected:
 	UFUNCTION()
 	void OnRep_RuntimeStat();

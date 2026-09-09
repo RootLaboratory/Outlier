@@ -288,6 +288,7 @@ bool FOutlierMeleeAttackLifecycleTest::RunTest(const FString& Parameters)
 						PartnerCapsule->SetCollisionObjectType(ECC_Pawn);
 						PartnerCapsule->SetCollisionResponseToAllChannels(ECR_Ignore);
 						PartnerCapsule->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
+						TestNull(TEXT("Partner is excluded from indicator targeting"), Weapon->FindIndicatorTargetForTest());
 
 						Weapon->ResetAppliedTarget();
 						Weapon->StartAttack();
@@ -301,8 +302,10 @@ bool FOutlierMeleeAttackLifecycleTest::RunTest(const FString& Parameters)
 						Weapon->FinishAttack(PartnerSequence);
 
 						Weapon->SetTestDamage(50.0f);
+						Weapon->ResetHitResults();
 						Weapon->ApplyDamageToTargetForTest(Partner);
 						TestEqual(TEXT("Partner receives normal melee damage"), Partner->GetVitalAttributeSet()->GetHealth(), 50.0f);
+						TestEqual(TEXT("Partner damage reports PartnerDamage"), Weapon->GetLastHitContext().ResultType, EMeleeHitResultType::PartnerDamage);
 
 						Partner->SetCanBeDamaged(false);
 						Weapon->ApplyDamageToTargetForTest(Partner);
@@ -374,9 +377,11 @@ bool FOutlierMeleeAttackLifecycleTest::RunTest(const FString& Parameters)
 		AEnemyBase* CombatEnemy = SpawnDamageEnemy(EEnemyCombatState::Combat);
 		if (TestNotNull(TEXT("Combat damage enemy spawns"), CombatEnemy))
 		{
+			Weapon->ResetHitResults();
 			Weapon->ApplyDamageToTargetForTest(CombatEnemy);
 			TestEqual(TEXT("Combat enemy receives base melee damage"), CombatEnemy->GetCurrentHealth(), 50.0f);
 			TestFalse(TEXT("Non-lethal combat hit keeps the enemy alive"), CombatEnemy->IsDead());
+			TestEqual(TEXT("Combat damage reports EnemyDamage"), Weapon->GetLastHitContext().ResultType, EMeleeHitResultType::EnemyDamage);
 		}
 
 		for (const EEnemyCombatState InstantKillState : {
@@ -387,9 +392,11 @@ bool FOutlierMeleeAttackLifecycleTest::RunTest(const FString& Parameters)
 			AEnemyBase* InstantKillEnemy = SpawnDamageEnemy(InstantKillState);
 			if (TestNotNull(TEXT("Instant-kill enemy spawns"), InstantKillEnemy))
 			{
+				Weapon->ResetHitResults();
 				Weapon->ApplyDamageToTargetForTest(InstantKillEnemy);
 				TestEqual(TEXT("Eligible melee state drains current Health"), InstantKillEnemy->GetCurrentHealth(), 0.0f);
 				TestTrue(TEXT("Eligible melee state enters existing death flow"), InstantKillEnemy->IsDead());
+				TestEqual(TEXT("Eligible state reports EnemyInstantKill"), Weapon->GetLastHitContext().ResultType, EMeleeHitResultType::EnemyInstantKill);
 			}
 		}
 
@@ -498,6 +505,146 @@ bool FOutlierMeleeAttackLifecycleTest::RunTest(const FString& Parameters)
 			TestFalse(TEXT("Death cancels melee"), InputWeapon->IsAttacking());
 		}
 	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierMeleeTargetInterfaceTest,
+	"Outlier.Weapon.Melee.TargetInterface",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierMeleeTargetInterfaceTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FScopedMeleeTestWorld TestWorld;
+	if (!TestWorld.Initialize(*this))
+	{
+		return false;
+	}
+
+	UWorld* World = TestWorld.World;
+	ACharacter* Owner = World->SpawnActor<ACharacter>();
+	APlayerController* Controller = World->SpawnActor<APlayerController>();
+	AMeleeWeaponTestActor* Weapon = World->SpawnActor<AMeleeWeaponTestActor>();
+	if (!TestNotNull(TEXT("Target interface owner spawns"), Owner)
+		|| !TestNotNull(TEXT("Target interface controller spawns"), Controller)
+		|| !TestNotNull(TEXT("Target interface weapon spawns"), Weapon))
+	{
+		return false;
+	}
+
+	Controller->Possess(Owner);
+	Controller->SetControlRotation(FRotator::ZeroRotator);
+	Weapon->SetTestOwner(Owner);
+	Weapon->SetTestTraceConfig(200.0f, 40.0f);
+
+	FVector ViewLocation;
+	FRotator ViewRotation;
+	Controller->GetPlayerViewPoint(ViewLocation, ViewRotation);
+	const FVector Forward = ViewRotation.Vector();
+
+	FActorSpawnParameters SpawnParameters;
+	SpawnParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AMeleeTargetTestEnemy* FirstTarget = World->SpawnActor<AMeleeTargetTestEnemy>(
+		ViewLocation + Forward * 120.0f,
+		FRotator::ZeroRotator,
+		SpawnParameters);
+	AMeleeTargetTestEnemy* SecondTarget = World->SpawnActor<AMeleeTargetTestEnemy>(
+		ViewLocation + Forward * 300.0f,
+		FRotator::ZeroRotator,
+		SpawnParameters);
+	if (TestNotNull(TEXT("First indicator target spawns"), FirstTarget)
+		&& TestNotNull(TEXT("Second indicator target spawns"), SecondTarget))
+	{
+		for (AMeleeTargetTestEnemy* Target : { FirstTarget, SecondTarget })
+		{
+			UCapsuleComponent* Capsule = Target->GetCapsuleComponent();
+			Capsule->SetCapsuleSize(10.0f, 20.0f);
+			Capsule->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+			Capsule->SetCollisionObjectType(ECC_Pawn);
+			Capsule->SetCollisionResponseToAllChannels(ECR_Ignore);
+			Capsule->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
+		}
+
+		TestEqual(TEXT("Indicator query selects the valid in-range enemy"), Weapon->FindIndicatorTargetForTest(), static_cast<AActor*>(FirstTarget));
+		Weapon->SetCurrentMeleeTargetForTest(FirstTarget);
+		Weapon->SetCurrentMeleeTargetForTest(FirstTarget);
+		TestEqual(TEXT("Unchanged target is activated once"), FirstTarget->GetTargetedCount(), 1);
+		TestEqual(TEXT("Indicator receives the owning character"), FirstTarget->GetLastIndicatorInstigator(), static_cast<AActor*>(Owner));
+
+		FirstTarget->SetActorLocation(ViewLocation + Forward * 300.0f);
+		SecondTarget->SetActorLocation(ViewLocation + Forward * 120.0f);
+		AActor* ChangedTarget = Weapon->FindIndicatorTargetForTest();
+		Weapon->SetCurrentMeleeTargetForTest(ChangedTarget);
+		TestEqual(TEXT("Previous target receives one deactivation"), FirstTarget->GetUntargetedCount(), 1);
+		TestEqual(TEXT("New target receives one activation"), SecondTarget->GetTargetedCount(), 1);
+
+		SecondTarget->SetIndicatorEligible(false);
+		TestNull(TEXT("Interface can reject an otherwise valid indicator target"), Weapon->FindIndicatorTargetForTest());
+		Weapon->SetCurrentMeleeTargetForTest(nullptr);
+		TestEqual(TEXT("Clearing target deactivates the current target"), SecondTarget->GetUntargetedCount(), 1);
+
+		FMeleeHitContext ResultContext;
+		ResultContext.TargetActor = FirstTarget;
+		ResultContext.HitLocation = FVector(10.0f, 20.0f, 30.0f);
+		ResultContext.HitNormal = FVector::UpVector;
+		ResultContext.AttackSequence = 7;
+		ResultContext.ResultType = EMeleeHitResultType::EnemyDamage;
+		Weapon->NotifyMeleeHitResultForTest(ResultContext);
+		TestEqual(TEXT("Server result reaches target interface"), FirstTarget->GetConfirmedCount(), 1);
+		TestEqual(TEXT("Result preserves attack sequence"), FirstTarget->GetLastConfirmedContext().AttackSequence, 7);
+		TestEqual(TEXT("Result preserves hit location"), FirstTarget->GetLastConfirmedContext().HitLocation, ResultContext.HitLocation);
+
+		Weapon->ResetHitResults();
+		Weapon->ApplyDamageToTargetForTest(nullptr);
+		TestEqual(TEXT("Miss does not produce a result feedback path"), Weapon->GetHitResultCount(), 0);
+	}
+
+	constexpr float InitialInterval = 0.1f;
+	constexpr float IntervalStep = 0.05f;
+	constexpr float MaxInterval = 0.25f;
+	float AdaptiveInterval = InitialInterval;
+	AdaptiveInterval = AMeleeWeaponBase::CalculateNextTargetSearchInterval(
+		AdaptiveInterval, false, false, InitialInterval, IntervalStep, MaxInterval);
+	TestTrue(TEXT("First idle step backs off to 0.15 seconds"), FMath::IsNearlyEqual(AdaptiveInterval, 0.15f));
+	AdaptiveInterval = AMeleeWeaponBase::CalculateNextTargetSearchInterval(
+		AdaptiveInterval, false, false, InitialInterval, IntervalStep, MaxInterval);
+	TestTrue(TEXT("Second idle step backs off to 0.20 seconds"), FMath::IsNearlyEqual(AdaptiveInterval, 0.20f));
+	AdaptiveInterval = AMeleeWeaponBase::CalculateNextTargetSearchInterval(
+		AdaptiveInterval, false, false, InitialInterval, IntervalStep, MaxInterval);
+	TestTrue(TEXT("Third idle step reaches the 0.25 second cap"), FMath::IsNearlyEqual(AdaptiveInterval, MaxInterval));
+
+	AdaptiveInterval = InitialInterval;
+	float AdaptiveElapsed = 0.0f;
+	int32 AdaptiveQueryCount = 0;
+	while (AdaptiveElapsed < 2.0f)
+	{
+		AdaptiveElapsed += AdaptiveInterval;
+		++AdaptiveQueryCount;
+		AdaptiveInterval = AMeleeWeaponBase::CalculateNextTargetSearchInterval(
+			AdaptiveInterval,
+			false,
+			false,
+			InitialInterval,
+			IntervalStep,
+			MaxInterval);
+	}
+
+	const int32 FixedQueryCount = FMath::CeilToInt(2.0f / InitialInterval);
+	TestTrue(TEXT("Idle backoff halves fixed 0.1 second timer queries over two seconds"), AdaptiveQueryCount <= FixedQueryCount / 2);
+	TestTrue(TEXT("Idle backoff is capped at 0.25 seconds"), FMath::IsNearlyEqual(AdaptiveInterval, MaxInterval));
+	TestTrue(TEXT("Worst-case idle target detection delay stays within 0.25 seconds"), AdaptiveInterval <= MaxInterval);
+	TestEqual(
+		TEXT("Acquiring a target restores the responsive interval"),
+		AMeleeWeaponBase::CalculateNextTargetSearchInterval(
+			AdaptiveInterval, true, true, InitialInterval, IntervalStep, MaxInterval),
+		InitialInterval);
+	TestEqual(
+		TEXT("Losing a target also restores the responsive interval"),
+		AMeleeWeaponBase::CalculateNextTargetSearchInterval(
+			AdaptiveInterval, false, true, InitialInterval, IntervalStep, MaxInterval),
+		InitialInterval);
 
 	return true;
 }

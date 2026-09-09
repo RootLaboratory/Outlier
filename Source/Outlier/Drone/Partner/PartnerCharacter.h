@@ -7,6 +7,7 @@
 #include "Engine/DataTable.h"
 #include "InputCoreTypes.h"
 #include "Interface/WeaponMuzzleProvider.h"
+#include "Interface/MeleeTargetInterface.h"
 #include "AbilitySystemInterface.h"
 #include "Damage/OutlierDamageReceiver.h"
 #include "PartnerCharacter.generated.h"
@@ -79,7 +80,7 @@ struct FGameplayEffectSpec;
 struct FActiveGameplayEffectHandle;
 struct FOnAttributeChangeData;
 UCLASS()
-class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeaponMuzzleProvider, public IAbilitySystemInterface, public IOutlierDamageReceiver
+class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeaponMuzzleProvider, public IAbilitySystemInterface, public IOutlierDamageReceiver, public IMeleeTargetInterface
 {
 	GENERATED_BODY()
 
@@ -504,6 +505,7 @@ protected:
 	virtual void LookInput(const FInputActionValue& Value) override;
 public:
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
+	virtual bool CanShowMeleeTargetIndicator_Implementation(const AActor* /*InstigatorActor*/) const override { return false; }
 	virtual FGameplayTagContainer GetOwnedGameplayTagsForQuery() const override;
 	UOutlierAbilitySystemComponent* GetOutlierAbilitySystemComponent() const
 	{

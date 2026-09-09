@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Interface/MeleeTargetInterface.h"
 #include "Weapon/WeaponBase.h"
 #include "MeleeWeaponBase.generated.h"
 
@@ -39,11 +40,22 @@ protected:
 	bool bWantsToAttack = false;
 	FTimerHandle AttackTimerHandle;
 	FTimerHandle RecoveryTimerHandle;
+	FTimerHandle TargetSearchTimerHandle;
 	bool bUsesAnimationTiming = false;
+	float CurrentTargetSearchInterval = 0.1f;
+	TWeakObjectPtr<AActor> CurrentMeleeTarget;
 
 	void RefreshOwnerCombatState();
 	bool PlayAttackAnimation();
 	void HandleAttackMontageEnded(UAnimMontage* Montage, bool bInterrupted, int32 ExpectedAttackSequence);
+	void RefreshTargetSearchState();
+	void ScheduleTargetSearch(float Delay);
+	void RefreshMeleeTarget();
+	void StopTargetSearch();
+	void SetCurrentMeleeTarget(AActor* NewTarget);
+	bool FindBestMeleeTarget(FHitResult& OutHit, bool bIncludePartner, bool bRequireIndicatorEligibility) const;
+	bool IsValidMeleeTarget(AActor* Candidate, bool bIncludePartner, bool bRequireIndicatorEligibility) const;
+	virtual void NotifyMeleeHitResult(const FMeleeHitContext& Context);
 
 	UFUNCTION()
 	void OnRep_AttackPhase();
@@ -66,8 +78,26 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Melee")
 	bool bCanHitMultipleTargets = false;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Melee|Target Search", meta = (ClampMin = "0.01"))
+	float InitialTargetSearchInterval = 0.1f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Melee|Target Search", meta = (ClampMin = "0.0"))
+	float TargetSearchIntervalStep = 0.05f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Melee|Target Search", meta = (ClampMin = "0.01"))
+	float MaxTargetSearchInterval = 0.25f;
+
+	UFUNCTION(Client, Reliable)
+	void ClientNotifyMeleeHitFeedback(const FMeleeHitContext& Context);
+
+protected:
+	virtual void OnRep_EquippedState() override;
+
 public:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	virtual void OnEquipped(ACharacter* NewOwner) override;
+	virtual void OnUnequipped() override;
+	virtual void OnDropped(const FTransform& DropTransform, AFirstPersonCharacter* DroppedBy = nullptr) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual bool CanAttack() const override;
 	virtual void StartAttack() override;
@@ -88,4 +118,13 @@ public:
 
 	virtual void TraceMeleeHit();
 	virtual void ApplyHitToTarget(AActor* Target);
+	virtual void ApplyHitToTarget(AActor* Target, const FHitResult& HitResult);
+
+	static float CalculateNextTargetSearchInterval(
+		float CurrentInterval,
+		bool bHasTarget,
+		bool bTargetChanged,
+		float InitialInterval,
+		float IntervalStep,
+		float MaxInterval);
 };
