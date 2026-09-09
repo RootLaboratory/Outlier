@@ -5,8 +5,11 @@
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "Enemy/EnemyBase.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "GameFramework/PlayerController.h"
+#include "Components/CapsuleComponent.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Shooter/ShooterCombatComponent.h"
 #include "Shooter/ShooterMovementComponent.h"
@@ -152,6 +155,93 @@ bool FOutlierMeleeAttackLifecycleTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("Release prevents another completed-cycle swing"), Weapon->GetAttackSequence(), ReleasedSequence);
 		TestEqual(TEXT("Fallback timers finish without animation assets"), Weapon->GetAttackPhase(), EMeleeAttackPhase::Idle);
 		TestTrue(TEXT("Completed timer cycle permits another click"), Weapon->CanAttack());
+
+		APlayerController* Controller = World->SpawnActor<APlayerController>();
+		if (TestNotNull(TEXT("Trace owner controller spawns"), Controller))
+		{
+			Controller->Possess(Owner);
+			Controller->SetControlRotation(FRotator::ZeroRotator);
+			Weapon->SetTestTraceConfig(200.0f, 40.0f);
+
+			FVector ViewLocation;
+			FRotator ViewRotation;
+			Controller->GetPlayerViewPoint(ViewLocation, ViewRotation);
+			const FVector Forward = ViewRotation.Vector();
+			const FVector Right = FRotationMatrix(ViewRotation).GetUnitAxis(EAxis::Y);
+
+			auto SpawnTraceEnemy = [World](const FVector& Location)
+			{
+				FActorSpawnParameters EnemySpawnParameters;
+				EnemySpawnParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+				AEnemyBase* Enemy = World->SpawnActor<AEnemyBase>(Location, FRotator::ZeroRotator, EnemySpawnParameters);
+				if (Enemy)
+				{
+					UCapsuleComponent* Capsule = Enemy->GetCapsuleComponent();
+					Capsule->SetCapsuleSize(10.0f, 20.0f);
+					Capsule->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+					Capsule->SetCollisionObjectType(ECC_Pawn);
+					Capsule->SetCollisionResponseToAllChannels(ECR_Ignore);
+					Capsule->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
+				}
+				return Enemy;
+			};
+
+			AEnemyBase* OffCenterEnemy = SpawnTraceEnemy(ViewLocation + Forward * 120.0f + Right * 35.0f);
+			AEnemyBase* CenterEnemy = SpawnTraceEnemy(ViewLocation + Forward * 180.0f);
+			if (TestNotNull(TEXT("Off-center trace enemy spawns"), OffCenterEnemy)
+				&& TestNotNull(TEXT("Center trace enemy spawns"), CenterEnemy))
+			{
+				Weapon->ResetAppliedTarget();
+				Weapon->StartAttack();
+				const int32 CenterPrioritySequence = Weapon->GetAttackSequence();
+				Weapon->CommitAttack(CenterPrioritySequence);
+				TestEqual(
+					TEXT("Camera-center alignment wins before distance"),
+					Weapon->GetLastAppliedTarget(),
+					static_cast<AActor*>(CenterEnemy));
+				TestEqual(TEXT("One swing forwards one target"), Weapon->GetAppliedTargetCount(), 1);
+				Weapon->CommitAttack(CenterPrioritySequence);
+				TestEqual(TEXT("Duplicate impact does not repeat the hit query"), Weapon->GetAppliedTargetCount(), 1);
+				Weapon->ReleaseAttack();
+				Weapon->FinishAttack(CenterPrioritySequence);
+
+				OffCenterEnemy->SetActorLocation(ViewLocation + Forward * 300.0f);
+				CenterEnemy->SetActorLocation(ViewLocation + Forward * 300.0f + Right * 50.0f);
+				Weapon->ResetAppliedTarget();
+				Weapon->StartAttack();
+				const int32 MissSequence = Weapon->GetAttackSequence();
+				Weapon->CommitAttack(MissSequence);
+				TestNull(TEXT("Targets outside trace range are ignored"), Weapon->GetLastAppliedTarget());
+				TestEqual(TEXT("Miss still enters Recovery"), Weapon->GetAttackPhase(), EMeleeAttackPhase::Recovery);
+				Weapon->ReleaseAttack();
+				Weapon->FinishAttack(MissSequence);
+
+				CenterEnemy->SetActorLocation(ViewLocation + Forward * 150.0f);
+				FActorSpawnParameters BlockerSpawnParameters;
+				BlockerSpawnParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+				ACharacter* VisibilityBlocker = World->SpawnActor<ACharacter>(
+					ViewLocation + Forward * 75.0f,
+					FRotator::ZeroRotator,
+					BlockerSpawnParameters);
+				if (TestNotNull(TEXT("Visibility blocker spawns"), VisibilityBlocker))
+				{
+					UCapsuleComponent* BlockerCapsule = VisibilityBlocker->GetCapsuleComponent();
+					BlockerCapsule->SetCapsuleSize(20.0f, 20.0f);
+					BlockerCapsule->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+					BlockerCapsule->SetCollisionResponseToAllChannels(ECR_Ignore);
+					BlockerCapsule->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
+
+					Weapon->ResetAppliedTarget();
+					Weapon->StartAttack();
+					const int32 BlockedSequence = Weapon->GetAttackSequence();
+					Weapon->CommitAttack(BlockedSequence);
+					TestNull(TEXT("Visibility blocker prevents melee target selection"), Weapon->GetLastAppliedTarget());
+					Weapon->ReleaseAttack();
+					Weapon->FinishAttack(BlockedSequence);
+				}
+			}
+		}
+
 		Weapon->StartAttack();
 		Weapon->Destroy();
 		TestFalse(TEXT("Destroy clears bound attack timers"), Weapon->HasPendingAttackTimers());

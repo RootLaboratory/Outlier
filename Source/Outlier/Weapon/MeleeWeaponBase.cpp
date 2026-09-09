@@ -2,7 +2,10 @@
 
 
 #include "Weapon/MeleeWeaponBase.h"
+#include "Enemy/EnemyBase.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Team/OutlierTeamIds.h"
+#include "GameFramework/Controller.h"
 #include "Net/UnrealNetwork.h"
 #include "TimerManager.h"
 
@@ -102,8 +105,9 @@ void AMeleeWeaponBase::CommitAttack(int32 ExpectedAttackSequence)
 	AttackPhase = EMeleeAttackPhase::Recovery;
 	RefreshOwnerCombatState();
 	ForceNetUpdate();
+	TraceMeleeHit();
 
-	// Slice 2 adds the single server hit query at this transition.
+	// Slice 4 replaces this fallback timing with the animation-authored recovery end.
 	GetWorldTimerManager().SetTimer(
 		RecoveryTimerHandle,
 		FTimerDelegate::CreateUObject(this, &AMeleeWeaponBase::FinishAttack, AttackSequence),
@@ -157,6 +161,97 @@ void AMeleeWeaponBase::OnRep_AttackPhase()
 
 void AMeleeWeaponBase::TraceMeleeHit()
 {
+	ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
+	AController* OwnerController = OwnerCharacter ? OwnerCharacter->GetController() : nullptr;
+	UWorld* World = GetWorld();
+	if (!HasAuthority() || !OwnerCharacter || !OwnerController || !World)
+	{
+		return;
+	}
+
+	FVector TraceStart;
+	FRotator ViewRotation;
+	OwnerController->GetPlayerViewPoint(TraceStart, ViewRotation);
+	const FVector TraceDirection = ViewRotation.Vector().GetSafeNormal();
+	const FVector TraceEnd = TraceStart + TraceDirection * FMath::Max(AttackRange, 0.0f);
+
+	FCollisionObjectQueryParams ObjectQueryParams;
+	ObjectQueryParams.AddObjectTypesToQuery(ECC_Pawn);
+	ObjectQueryParams.AddObjectTypesToQuery(ECC_PhysicsBody);
+
+	FCollisionQueryParams TraceParams(SCENE_QUERY_STAT(MeleeAttackTrace), false, OwnerCharacter);
+	TraceParams.AddIgnoredActor(this);
+
+	TArray<FHitResult> HitResults;
+	World->SweepMultiByObjectType(
+		HitResults,
+		TraceStart,
+		TraceEnd,
+		FQuat::Identity,
+		ObjectQueryParams,
+		FCollisionShape::MakeSphere(FMath::Max(AttackRadius, 0.0f)),
+		TraceParams);
+
+	AEnemyBase* BestTarget = nullptr;
+	float BestAlignment = -1.0f;
+	float BestDistanceSquared = TNumericLimits<float>::Max();
+	TSet<AEnemyBase*> EvaluatedEnemies;
+
+	for (const FHitResult& HitResult : HitResults)
+	{
+		AEnemyBase* Enemy = Cast<AEnemyBase>(HitResult.GetActor());
+		if (!IsValid(Enemy) || EvaluatedEnemies.Contains(Enemy))
+		{
+			continue;
+		}
+		EvaluatedEnemies.Add(Enemy);
+
+		if (Enemy->IsDead() || !Enemy->CanBeDamaged()
+			|| Enemy->GetGenericTeamId().GetId() != OutlierTeamIds::Enemy)
+		{
+			continue;
+		}
+
+		const FVector ToTarget = Enemy->GetActorLocation() - TraceStart;
+		const float ForwardDistance = FVector::DotProduct(ToTarget, TraceDirection);
+		if (ForwardDistance < 0.0f)
+		{
+			continue;
+		}
+
+		FHitResult VisibilityHit;
+		FCollisionQueryParams VisibilityParams(SCENE_QUERY_STAT(MeleeAttackVisibility), false, OwnerCharacter);
+		VisibilityParams.AddIgnoredActor(this);
+		const bool bVisibilityBlocked = World->LineTraceSingleByChannel(
+			VisibilityHit,
+			TraceStart,
+			Enemy->GetActorLocation(),
+			ECC_Visibility,
+			VisibilityParams);
+		if (bVisibilityBlocked && VisibilityHit.GetActor() != Enemy)
+		{
+			continue;
+		}
+
+		const float DistanceSquared = ToTarget.SizeSquared();
+		const float Alignment = FVector::DotProduct(TraceDirection, ToTarget.GetSafeNormal());
+		constexpr float AlignmentTolerance = 0.001f;
+		if (!BestTarget
+			|| Alignment > BestAlignment + AlignmentTolerance
+			|| (FMath::IsNearlyEqual(Alignment, BestAlignment, AlignmentTolerance)
+				&& DistanceSquared < BestDistanceSquared))
+		{
+			BestTarget = Enemy;
+			BestAlignment = Alignment;
+			BestDistanceSquared = DistanceSquared;
+		}
+	}
+
+	if (BestTarget)
+	{
+		// Slice 3 owns normal damage and instant-kill resolution behind this boundary.
+		ApplyHitToTarget(BestTarget);
+	}
 }
 
 void AMeleeWeaponBase::ApplyHitToTarget(AActor* Target)

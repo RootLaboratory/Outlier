@@ -44,7 +44,10 @@ protected:
 	void OnRep_AttackPhase();
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Melee")
-	float AttackRadius = 120.0f;
+	float AttackRange = 200.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Melee")
+	float AttackRadius = 40.0f;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Melee")
 	float AttackAngle = 45.0f;
