@@ -38,6 +38,8 @@ public:
 
 	AActor* GetLastAppliedTarget() const { return LastAppliedTarget.Get(); }
 	int32 GetAppliedTargetCount() const { return AppliedTargetCount; }
+	void SetTestDamage(float InDamage) { Damage = InDamage; }
+	void ApplyDamageToTargetForTest(AActor* Target) { AMeleeWeaponBase::ApplyHitToTarget(Target); }
 
 	virtual void ApplyHitToTarget(AActor* Target) override
 	{
