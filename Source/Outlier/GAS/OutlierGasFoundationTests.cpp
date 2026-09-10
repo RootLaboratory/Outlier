@@ -1769,6 +1769,7 @@ bool FOutlierGasShooterSuitDataContractTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Disk Bullet Reflection damage multiplier is one"), Config.BulletReflection.ReflectDamageMult, 1.0f);
 	TestEqual(TEXT("Disk Stealth duration is 5 seconds"), Config.Stealth.DurationSeconds, 5.0f);
 	TestEqual(TEXT("Disk Stealth cooldown is 20 seconds"), Config.Stealth.CooldownSeconds, 20.0f);
+	TestEqual(TEXT("Disk Weapon Overcharge duration is 8 seconds"), Config.WeaponOvercharge.DurationSeconds, 8.0f);
 	TestEqual(TEXT("Disk Weapon Overcharge shield drain is 12.5 per second"), Config.WeaponOvercharge.ShieldDrainPerSecond, 12.5f);
 	return true;
 }
@@ -2229,24 +2230,22 @@ bool FOutlierGasShooterWeaponOverchargeTest::RunTest(const FString& Parameters)
 	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetPartnerShieldAttribute(), 0.25f);
 	++GFrameCounter;
 	World->Tick(LEVELTICK_All, 0.05f);
-	TestFalse(TEXT("Shield depletion ends Weapon Overcharge immediately"), Shooter->IsWeaponOvercharged());
-	TestTrue(
-		TEXT("Full configured cooldown starts after Weapon Overcharge ends"),
+	TestEqual(TEXT("Weapon Overcharge still depletes Partner Shield"), Shooter->GetCurPartnerShield(), 0.0f);
+	TestEqual(TEXT("Weapon Overcharge still depletes base Shield"), Shooter->GetCurShield(), 0.0f);
+	TestTrue(TEXT("Shield depletion does not end Weapon Overcharge early"), Shooter->IsWeaponOvercharged());
+	TestFalse(
+		TEXT("Weapon Overcharge cooldown does not start on Shield depletion"),
 		ShooterASC->IsShooterWeaponOverchargeCooldownActive());
-	TestTrue(
-		TEXT("Weapon Overcharge cooldown is approximately 25 seconds"),
-		ShooterASC->GetShooterWeaponOverchargeCooldownRemaining() > 24.0f);
-	FGameplayTagContainer OverchargeCooldownTags;
-	OverchargeCooldownTags.AddTag(OutlierGameplayTags::Cooldown::Shooter::WeaponOvercharge());
-	TestEqual(
-		TEXT("Fixture removes the first exact Weapon Overcharge cooldown"),
-		ShooterASC->RemoveActiveEffectsWithGrantedTags(OverchargeCooldownTags),
-		1);
-	TestTrue(
-		TEXT("Weapon Overcharge reactivates after cooldown removal"),
-		ShooterASC->TryActivateShooterSuitAbility(
-			OutlierGameplayTags::Ability::Shooter::WeaponOvercharge()));
-	for (int32 TickIndex = 0; TickIndex < 165; ++TickIndex)
+
+	for (int32 TickIndex = 0; TickIndex < 100; ++TickIndex)
+	{
+		++GFrameCounter;
+		World->Tick(LEVELTICK_All, 0.05f);
+	}
+	TestTrue(TEXT("Weapon Overcharge remains active until its configured duration"), Shooter->IsWeaponOvercharged());
+	TestEqual(TEXT("Natural Shield recovery remains blocked while overcharged"), Shooter->GetCurShield(), 0.0f);
+
+	for (int32 TickIndex = 0; TickIndex < 40; ++TickIndex)
 	{
 		++GFrameCounter;
 		World->Tick(LEVELTICK_All, 0.05f);
@@ -2255,6 +2254,9 @@ bool FOutlierGasShooterWeaponOverchargeTest::RunTest(const FString& Parameters)
 	TestTrue(
 		TEXT("Natural expiry starts the full configured cooldown"),
 		ShooterASC->IsShooterWeaponOverchargeCooldownActive());
+	TestTrue(
+		TEXT("Weapon Overcharge cooldown is approximately 25 seconds"),
+		ShooterASC->GetShooterWeaponOverchargeCooldownRemaining() > 24.0f);
 
 	Rifle->Destroy(true);
 	Shooter->Destroy(true);

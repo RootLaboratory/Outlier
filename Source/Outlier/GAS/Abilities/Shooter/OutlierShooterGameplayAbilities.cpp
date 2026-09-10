@@ -628,13 +628,7 @@ void UOutlierShooterWeaponOverchargeAbility::DrainShield()
 	{
 		ShooterASC->ApplyShieldDeltaToSelf(-FMath::Min(Shooter->GetCurShield(), RemainingDrain));
 	}
-
-	if (Shooter->GetCurPartnerShield() <= KINDA_SMALL_NUMBER
-		&& Shooter->GetCurShield() <= KINDA_SMALL_NUMBER)
-	{
-		// 쉴드가 연료이므로 둘 다 소진된 프레임에 지속시간을 기다리지 않고 종료한다.
-		EndWeaponOvercharge(true);
-	}
+	// 실드 소진은 과부하의 비용만 확정하며, 활성 수명은 8초 DataTable GameplayEffect가 소유한다.
 }
 
 void UOutlierShooterWeaponOverchargeAbility::HandleOverchargeEffectRemoved(
