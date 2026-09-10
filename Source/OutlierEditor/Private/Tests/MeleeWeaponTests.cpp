@@ -212,28 +212,55 @@ bool FOutlierMeleeAttackLifecycleTest::RunTest(const FString& Parameters)
 			if (TestNotNull(TEXT("Off-center trace enemy spawns"), OffCenterEnemy)
 				&& TestNotNull(TEXT("Center trace enemy spawns"), CenterEnemy))
 			{
+				const FVector CenterLocation = CenterEnemy->GetActorLocation();
+				Weapon->SetTestMeleeTraceRadius(12.0f);
+				Weapon->SetTestMeleeTraceSockets(
+					true,
+					CenterLocation + Right * 80.0f - FVector::UpVector * 10.0f,
+					CenterLocation + Right * 80.0f + FVector::UpVector * 10.0f);
 				Weapon->ResetAppliedTarget();
 				Weapon->StartAttack();
-				const int32 CenterPrioritySequence = Weapon->GetAttackSequence();
-				Weapon->CommitAttack(CenterPrioritySequence);
+				const int32 SocketTraceSequence = Weapon->GetAttackSequence();
+				TestTrue(TEXT("Trace NotifyState begins with valid sockets"), Weapon->BeginMeleeTrace());
+				Weapon->SetTestMeleeTraceSockets(
+					true,
+					CenterLocation - Right * 80.0f - FVector::UpVector * 10.0f,
+					CenterLocation - Right * 80.0f + FVector::UpVector * 10.0f);
+				Weapon->TickMeleeTrace();
 				TestEqual(
-					TEXT("Camera-center alignment wins before distance"),
+					TEXT("Frame-to-frame socket trajectory hits the crossed enemy"),
 					Weapon->GetLastAppliedTarget(),
 					static_cast<AActor*>(CenterEnemy));
 				TestEqual(TEXT("One swing forwards one target"), Weapon->GetAppliedTargetCount(), 1);
-				Weapon->CommitAttack(CenterPrioritySequence);
-				TestEqual(TEXT("Duplicate impact does not repeat the hit query"), Weapon->GetAppliedTargetCount(), 1);
+				Weapon->TickMeleeTrace();
+				TestEqual(TEXT("The same target is damaged once per swing"), Weapon->GetAppliedTargetCount(), 1);
+				Weapon->EndMeleeTrace();
+				Weapon->TickMeleeTrace();
+				TestEqual(TEXT("Trace End stops further socket queries"), Weapon->GetAppliedTargetCount(), 1);
 				Weapon->ReleaseAttack();
-				Weapon->FinishAttack(CenterPrioritySequence);
+				Weapon->FinishAttack(SocketTraceSequence);
+
+				Weapon->SetTestMeleeTraceSockets(false, FVector::ZeroVector, FVector::ZeroVector);
+				Weapon->StartAttack();
+				const int32 MissingSocketSequence = Weapon->GetAttackSequence();
+				TestFalse(TEXT("Missing sockets reject the trace window"), Weapon->BeginMeleeTrace());
+				TestEqual(TEXT("Missing sockets still advance the attack to Recovery"), Weapon->GetAttackPhase(), EMeleeAttackPhase::Recovery);
+				Weapon->ReleaseAttack();
+				Weapon->FinishAttack(MissingSocketSequence);
 
 				OffCenterEnemy->SetActorLocation(ViewLocation + Forward * 300.0f);
 				CenterEnemy->SetActorLocation(ViewLocation + Forward * 300.0f + Right * 50.0f);
+				Weapon->SetTestMeleeTraceSockets(
+					true,
+					CenterLocation - FVector::UpVector * 10.0f,
+					CenterLocation + FVector::UpVector * 10.0f);
 				Weapon->ResetAppliedTarget();
 				Weapon->StartAttack();
 				const int32 MissSequence = Weapon->GetAttackSequence();
-				Weapon->CommitAttack(MissSequence);
-				TestNull(TEXT("Targets outside trace range are ignored"), Weapon->GetLastAppliedTarget());
+				Weapon->BeginMeleeTrace();
+				TestNull(TEXT("Actors outside the socket trajectory are ignored"), Weapon->GetLastAppliedTarget());
 				TestEqual(TEXT("Miss still enters Recovery"), Weapon->GetAttackPhase(), EMeleeAttackPhase::Recovery);
+				Weapon->EndMeleeTrace();
 				Weapon->ReleaseAttack();
 				Weapon->FinishAttack(MissSequence);
 
@@ -252,11 +279,17 @@ bool FOutlierMeleeAttackLifecycleTest::RunTest(const FString& Parameters)
 					BlockerCapsule->SetCollisionResponseToAllChannels(ECR_Ignore);
 					BlockerCapsule->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
 
+					const FVector BlockedTargetLocation = CenterEnemy->GetActorLocation();
+					Weapon->SetTestMeleeTraceSockets(
+						true,
+						BlockedTargetLocation - FVector::UpVector * 10.0f,
+						BlockedTargetLocation + FVector::UpVector * 10.0f);
 					Weapon->ResetAppliedTarget();
 					Weapon->StartAttack();
 					const int32 BlockedSequence = Weapon->GetAttackSequence();
-					Weapon->CommitAttack(BlockedSequence);
+					Weapon->BeginMeleeTrace();
 					TestNull(TEXT("Visibility blocker prevents melee target selection"), Weapon->GetLastAppliedTarget());
+					Weapon->EndMeleeTrace();
 					Weapon->ReleaseAttack();
 					Weapon->FinishAttack(BlockedSequence);
 
@@ -290,14 +323,20 @@ bool FOutlierMeleeAttackLifecycleTest::RunTest(const FString& Parameters)
 						PartnerCapsule->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
 						TestNull(TEXT("Partner is excluded from indicator targeting"), Weapon->FindIndicatorTargetForTest());
 
+						const FVector PartnerLocation = Partner->GetActorLocation();
+						Weapon->SetTestMeleeTraceSockets(
+							true,
+							PartnerLocation - FVector::UpVector * 10.0f,
+							PartnerLocation + FVector::UpVector * 10.0f);
 						Weapon->ResetAppliedTarget();
 						Weapon->StartAttack();
 						const int32 PartnerSequence = Weapon->GetAttackSequence();
-						Weapon->CommitAttack(PartnerSequence);
+						Weapon->BeginMeleeTrace();
 						TestEqual(
-							TEXT("Partner participates in melee target selection"),
+							TEXT("Partner participates in melee socket collision"),
 							Weapon->GetLastAppliedTarget(),
 							static_cast<AActor*>(Partner));
+						Weapon->EndMeleeTrace();
 						Weapon->ReleaseAttack();
 						Weapon->FinishAttack(PartnerSequence);
 
@@ -319,8 +358,9 @@ bool FOutlierMeleeAttackLifecycleTest::RunTest(const FString& Parameters)
 						Weapon->ResetAppliedTarget();
 						Weapon->StartAttack();
 						const int32 RebootingPartnerSequence = Weapon->GetAttackSequence();
-						Weapon->CommitAttack(RebootingPartnerSequence);
+						Weapon->BeginMeleeTrace();
 						TestNull(TEXT("Rebooting Partner is excluded from melee targeting"), Weapon->GetLastAppliedTarget());
+						Weapon->EndMeleeTrace();
 						Weapon->ReleaseAttack();
 						Weapon->FinishAttack(RebootingPartnerSequence);
 					}

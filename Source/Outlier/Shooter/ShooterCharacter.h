@@ -568,12 +568,16 @@ public:
 	void HandleAutoReloadRequested();
 	void HandleFireShotAnimation();
 	void HandleMeleeAttackAnimation();
+	void SetMeleeTracePoseRefreshEnabled(bool bEnabled);
 	// Blueprint / Notify Entry Points
 	UFUNCTION(BlueprintCallable, Category = "Animation|Notify")
 	void HandleReloadCommitNotify();
 
 	UFUNCTION(BlueprintCallable, Category = "Animation|Notify")
 	void HandleMeleeHitNotify();
+	void HandleMeleeTraceBeginNotify();
+	void HandleMeleeTraceTickNotify();
+	void HandleMeleeTraceEndNotify();
 
 	UFUNCTION(BlueprintCallable, Category = "Animation|Notify")
 	void HandleMeleeRecoveryEndNotify();

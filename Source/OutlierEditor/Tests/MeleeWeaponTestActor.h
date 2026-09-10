@@ -29,9 +29,18 @@ public:
 
 	void SetTestTraceConfig(float InAttackRange, float InAttackRadius)
 	{
-		AttackRange = InAttackRange;
-		AttackRadius = InAttackRadius;
+		TargetSearchRange = InAttackRange;
+		TargetSearchRadius = InAttackRadius;
 	}
+
+	void SetTestMeleeTraceSockets(bool bAvailable, const FVector& Start, const FVector& End)
+	{
+		bTestTraceSocketsAvailable = bAvailable;
+		TestTraceStart = Start;
+		TestTraceEnd = End;
+	}
+
+	void SetTestMeleeTraceRadius(float InRadius) { TraceRadius = InRadius; }
 
 	void ResetAppliedTarget()
 	{
@@ -78,11 +87,26 @@ public:
 		Super::NotifyMeleeHitResult(Context);
 	}
 
+	virtual bool GetMeleeTraceSocketLocations(FVector& OutStart, FVector& OutEnd) const override
+	{
+		if (!bTestTraceSocketsAvailable)
+		{
+			return false;
+		}
+
+		OutStart = TestTraceStart;
+		OutEnd = TestTraceEnd;
+		return true;
+	}
+
 private:
 	TWeakObjectPtr<AActor> LastAppliedTarget;
 	int32 AppliedTargetCount = 0;
 	FMeleeHitContext LastHitContext;
 	int32 HitResultCount = 0;
+	bool bTestTraceSocketsAvailable = true;
+	FVector TestTraceStart = FVector(0.0f, 10000.0f, 0.0f);
+	FVector TestTraceEnd = FVector(0.0f, 10000.0f, 10.0f);
 };
 
 UCLASS(Transient, NotBlueprintable)

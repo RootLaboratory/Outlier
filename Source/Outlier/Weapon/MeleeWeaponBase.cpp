@@ -2,6 +2,7 @@
 
 
 #include "Weapon/MeleeWeaponBase.h"
+#include "Outlier.h"
 #include "Damage/OutlierDamageReceiver.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Drone/Partner/PartnerVitalityComponent.h"
@@ -17,10 +18,15 @@
 #include "Net/UnrealNetwork.h"
 #include "TimerManager.h"
 
+#if ENABLE_DRAW_DEBUG
+#include "DrawDebugHelpers.h"
+#endif
+
 AMeleeWeaponBase::AMeleeWeaponBase()
 {
 	WeaponType = EWeaponType::Melee;
 	Damage = 50.0f;
+	MeleeTraceHitBuffer.Reserve(8);
 }
 
 void AMeleeWeaponBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -90,6 +96,10 @@ void AMeleeWeaponBase::StartAttack()
 	RefreshOwnerCombatState();
 	ForceNetUpdate();
 
+	if (AShooterCharacter* OwnerShooter = Cast<AShooterCharacter>(WeaponOwner))
+	{
+		OwnerShooter->SetMeleeTracePoseRefreshEnabled(true);
+	}
 	bUsesAnimationTiming = PlayAttackAnimation();
 	if (!bUsesAnimationTiming)
 	{
@@ -118,6 +128,11 @@ void AMeleeWeaponBase::StopAttack()
 
 	bWantsToAttack = false;
 	bUsesAnimationTiming = false;
+	ResetMeleeTraceState();
+	if (AShooterCharacter* OwnerShooter = Cast<AShooterCharacter>(WeaponOwner))
+	{
+		OwnerShooter->SetMeleeTracePoseRefreshEnabled(false);
+	}
 	GetWorldTimerManager().ClearTimer(AttackTimerHandle);
 	GetWorldTimerManager().ClearTimer(RecoveryTimerHandle);
 	AttackPhase = EMeleeAttackPhase::Idle;
@@ -144,7 +159,10 @@ void AMeleeWeaponBase::CommitAttack(int32 ExpectedAttackSequence)
 	AttackPhase = EMeleeAttackPhase::Recovery;
 	RefreshOwnerCombatState();
 	ForceNetUpdate();
-	TraceMeleeHit();
+	if (!bUsesAnimationTiming)
+	{
+		TraceMeleeHit();
+	}
 
 	if (!bUsesAnimationTiming)
 	{
@@ -185,7 +203,10 @@ void AMeleeWeaponBase::FinishAttack(int32 ExpectedAttackSequence)
 
 void AMeleeWeaponBase::HandleHitNotify()
 {
-	CommitAttack(AttackSequence);
+	if (BeginMeleeTrace())
+	{
+		EndMeleeTrace();
+	}
 }
 
 void AMeleeWeaponBase::HandleRecoveryEndNotify()
@@ -372,11 +393,210 @@ void AMeleeWeaponBase::TraceMeleeHit()
 		return;
 	}
 
-	FHitResult TargetHit;
-	if (FindBestMeleeTarget(TargetHit, true, false))
+	FVector TraceStart;
+	FVector TraceEnd;
+	if (!GetMeleeTraceSocketLocations(TraceStart, TraceEnd))
 	{
-		ApplyHitToTarget(TargetHit.GetActor(), TargetHit);
+		LogMissingMeleeTraceSockets();
+		return;
 	}
+
+	HitActorsThisSwing.Reset();
+	SweepMeleeTrace(TraceStart, TraceEnd, TraceStart, TraceEnd);
+}
+
+bool AMeleeWeaponBase::BeginMeleeTrace()
+{
+	if (!HasAuthority() || AttackPhase != EMeleeAttackPhase::Attack || !bIsAttacking)
+	{
+		return false;
+	}
+
+	FVector TraceStart;
+	FVector TraceEnd;
+	const bool bHasTraceSockets = GetMeleeTraceSocketLocations(TraceStart, TraceEnd);
+	if (!bHasTraceSockets)
+	{
+		LogMissingMeleeTraceSockets();
+	}
+
+	ResetMeleeTraceState();
+	ActiveMeleeTraceSequence = AttackSequence;
+	PreviousMeleeTraceStart = TraceStart;
+	PreviousMeleeTraceEnd = TraceEnd;
+	bMeleeTraceActive = bHasTraceSockets;
+
+	CommitAttack(AttackSequence);
+	if (bMeleeTraceActive && AttackPhase == EMeleeAttackPhase::Recovery)
+	{
+		SweepMeleeTrace(TraceStart, TraceEnd, TraceStart, TraceEnd);
+	}
+	return bMeleeTraceActive;
+}
+
+void AMeleeWeaponBase::TickMeleeTrace()
+{
+	if (!HasAuthority() || !bMeleeTraceActive
+		|| ActiveMeleeTraceSequence != AttackSequence
+		|| AttackPhase != EMeleeAttackPhase::Recovery)
+	{
+		return;
+	}
+
+	FVector TraceStart;
+	FVector TraceEnd;
+	if (!GetMeleeTraceSocketLocations(TraceStart, TraceEnd))
+	{
+		LogMissingMeleeTraceSockets();
+		ResetMeleeTraceState();
+		return;
+	}
+
+	SweepMeleeTrace(
+		PreviousMeleeTraceStart,
+		PreviousMeleeTraceEnd,
+		TraceStart,
+		TraceEnd);
+	PreviousMeleeTraceStart = TraceStart;
+	PreviousMeleeTraceEnd = TraceEnd;
+}
+
+void AMeleeWeaponBase::EndMeleeTrace()
+{
+	ResetMeleeTraceState();
+}
+
+bool AMeleeWeaponBase::GetMeleeTraceSocketLocations(FVector& OutStart, FVector& OutEnd) const
+{
+	const USkeletalMeshComponent* WeaponMesh = GetThirdPersonWeaponMesh();
+	if (!WeaponMesh
+		|| !WeaponMesh->DoesSocketExist(MeleeTraceStartSocketName)
+		|| !WeaponMesh->DoesSocketExist(MeleeTraceEndSocketName))
+	{
+		return false;
+	}
+
+	OutStart = WeaponMesh->GetSocketLocation(MeleeTraceStartSocketName);
+	OutEnd = WeaponMesh->GetSocketLocation(MeleeTraceEndSocketName);
+	return true;
+}
+
+void AMeleeWeaponBase::SweepMeleeTrace(
+	const FVector& PreviousStart,
+	const FVector& PreviousEnd,
+	const FVector& CurrentStart,
+	const FVector& CurrentEnd)
+{
+	if (!bCanHitMultipleTargets && !HitActorsThisSwing.IsEmpty())
+	{
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
+	if (!World || !OwnerCharacter)
+	{
+		return;
+	}
+
+	const float SafeTraceRadius = FMath::Max(TraceRadius, 0.0f);
+	const float BladeLength = FMath::Max(
+		FVector::Distance(PreviousStart, PreviousEnd),
+		FVector::Distance(CurrentStart, CurrentEnd));
+	const float SampleSpacing = FMath::Max(SafeTraceRadius * 1.5f, 1.0f);
+	const int32 SampleCount = FMath::Clamp(FMath::CeilToInt(BladeLength / SampleSpacing) + 1, 2, 16);
+
+	FCollisionObjectQueryParams ObjectQueryParams;
+	ObjectQueryParams.AddObjectTypesToQuery(ECC_Pawn);
+	ObjectQueryParams.AddObjectTypesToQuery(ECC_PhysicsBody);
+
+	FCollisionQueryParams TraceParams(SCENE_QUERY_STAT(MeleeSocketTrace), false, OwnerCharacter);
+	TraceParams.AddIgnoredActor(this);
+	FVector ViewLocation = OwnerCharacter->GetActorLocation();
+	FRotator ViewRotation;
+	if (AController* OwnerController = OwnerCharacter->GetController())
+	{
+		OwnerController->GetPlayerViewPoint(ViewLocation, ViewRotation);
+	}
+
+	for (int32 SampleIndex = 0; SampleIndex < SampleCount; ++SampleIndex)
+	{
+		const float Alpha = static_cast<float>(SampleIndex) / static_cast<float>(SampleCount - 1);
+		const FVector SweepStart = FMath::Lerp(PreviousStart, PreviousEnd, Alpha);
+		const FVector SweepEnd = FMath::Lerp(CurrentStart, CurrentEnd, Alpha);
+		MeleeTraceHitBuffer.Reset();
+		World->SweepMultiByObjectType(
+			MeleeTraceHitBuffer,
+			SweepStart,
+			SweepEnd,
+			FQuat::Identity,
+			ObjectQueryParams,
+			FCollisionShape::MakeSphere(SafeTraceRadius),
+			TraceParams);
+
+#if ENABLE_DRAW_DEBUG
+		if (bDrawDebugMeleeTrace)
+		{
+			DrawDebugLine(World, SweepStart, SweepEnd, FColor::Red, false, DebugMeleeTraceDuration, 0, 1.0f);
+			DrawDebugSphere(World, SweepEnd, SafeTraceRadius, 12, FColor::Red, false, DebugMeleeTraceDuration);
+		}
+#endif
+
+		for (const FHitResult& HitResult : MeleeTraceHitBuffer)
+		{
+			AActor* Candidate = HitResult.GetActor();
+			if (!IsValid(Candidate) || HitActorsThisSwing.Contains(Candidate)
+				|| !IsValidMeleeTarget(Candidate, true, false))
+			{
+				continue;
+			}
+
+			FHitResult VisibilityHit;
+			FCollisionQueryParams VisibilityParams(SCENE_QUERY_STAT(MeleeSocketVisibility), false, OwnerCharacter);
+			VisibilityParams.AddIgnoredActor(this);
+			const bool bVisibilityBlocked = World->LineTraceSingleByChannel(
+				VisibilityHit,
+				ViewLocation,
+				Candidate->GetActorLocation(),
+				ECC_Visibility,
+				VisibilityParams);
+			if (bVisibilityBlocked && VisibilityHit.GetActor() != Candidate)
+			{
+				continue;
+			}
+
+			HitActorsThisSwing.Add(Candidate);
+			ApplyHitToTarget(Candidate, HitResult);
+			if (!bCanHitMultipleTargets)
+			{
+				return;
+			}
+		}
+	}
+}
+
+void AMeleeWeaponBase::ResetMeleeTraceState()
+{
+	bMeleeTraceActive = false;
+	ActiveMeleeTraceSequence = 0;
+	PreviousMeleeTraceStart = FVector::ZeroVector;
+	PreviousMeleeTraceEnd = FVector::ZeroVector;
+	HitActorsThisSwing.Reset();
+}
+
+void AMeleeWeaponBase::LogMissingMeleeTraceSockets() const
+{
+	const USkeletalMeshComponent* WeaponMesh = GetThirdPersonWeaponMesh();
+	UE_LOG(
+		LogOutlier,
+		Warning,
+		TEXT("[MeleeTrace] Missing trace socket. Weapon=%s Mesh=%s StartSocket=%s StartExists=%d EndSocket=%s EndExists=%d"),
+		*GetNameSafe(this),
+		*GetNameSafe(WeaponMesh),
+		*MeleeTraceStartSocketName.ToString(),
+		WeaponMesh && WeaponMesh->DoesSocketExist(MeleeTraceStartSocketName) ? 1 : 0,
+		*MeleeTraceEndSocketName.ToString(),
+		WeaponMesh && WeaponMesh->DoesSocketExist(MeleeTraceEndSocketName) ? 1 : 0);
 }
 
 bool AMeleeWeaponBase::FindBestMeleeTarget(
@@ -397,7 +617,7 @@ bool AMeleeWeaponBase::FindBestMeleeTarget(
 	FRotator ViewRotation;
 	OwnerController->GetPlayerViewPoint(TraceStart, ViewRotation);
 	const FVector TraceDirection = ViewRotation.Vector().GetSafeNormal();
-	const FVector TraceEnd = TraceStart + TraceDirection * FMath::Max(AttackRange, 0.0f);
+	const FVector TraceEnd = TraceStart + TraceDirection * FMath::Max(TargetSearchRange, 0.0f);
 
 	FCollisionObjectQueryParams ObjectQueryParams;
 	ObjectQueryParams.AddObjectTypesToQuery(ECC_Pawn);
@@ -413,7 +633,7 @@ bool AMeleeWeaponBase::FindBestMeleeTarget(
 		TraceEnd,
 		FQuat::Identity,
 		ObjectQueryParams,
-		FCollisionShape::MakeSphere(FMath::Max(AttackRadius, 0.0f)),
+		FCollisionShape::MakeSphere(FMath::Max(TargetSearchRadius, 0.0f)),
 		TraceParams);
 
 	float BestAlignment = -1.0f;

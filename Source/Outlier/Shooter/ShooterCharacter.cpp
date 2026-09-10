@@ -1489,6 +1489,45 @@ void AShooterCharacter::HandleMeleeHitNotify()
 	}
 }
 
+void AShooterCharacter::HandleMeleeTraceBeginNotify()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->HandleMeleeTraceBeginNotify();
+	}
+}
+
+void AShooterCharacter::HandleMeleeTraceTickNotify()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->HandleMeleeTraceTickNotify();
+	}
+}
+
+void AShooterCharacter::HandleMeleeTraceEndNotify()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->HandleMeleeTraceEndNotify();
+	}
+}
+
+void AShooterCharacter::SetMeleeTracePoseRefreshEnabled(bool bEnabled)
+{
+	if (!HasAuthority() || IsLocallyControlled())
+	{
+		return;
+	}
+
+	if (USkeletalMeshComponent* ThirdPersonMesh = GetMesh())
+	{
+		ThirdPersonMesh->VisibilityBasedAnimTickOption = bEnabled
+			? EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones
+			: EVisibilityBasedAnimTickOption::OnlyTickMontagesWhenNotRendered;
+	}
+}
+
 void AShooterCharacter::HandleMeleeRecoveryEndNotify()
 {
 	if (CombatComponent)

@@ -42,6 +42,12 @@ protected:
 	FTimerHandle RecoveryTimerHandle;
 	FTimerHandle TargetSearchTimerHandle;
 	bool bUsesAnimationTiming = false;
+	bool bMeleeTraceActive = false;
+	int32 ActiveMeleeTraceSequence = 0;
+	FVector PreviousMeleeTraceStart = FVector::ZeroVector;
+	FVector PreviousMeleeTraceEnd = FVector::ZeroVector;
+	TSet<AActor*> HitActorsThisSwing;
+	TArray<FHitResult> MeleeTraceHitBuffer;
 	float CurrentTargetSearchInterval = 0.1f;
 	TWeakObjectPtr<AActor> CurrentMeleeTarget;
 
@@ -55,16 +61,39 @@ protected:
 	void SetCurrentMeleeTarget(AActor* NewTarget);
 	bool FindBestMeleeTarget(FHitResult& OutHit, bool bIncludePartner, bool bRequireIndicatorEligibility) const;
 	bool IsValidMeleeTarget(AActor* Candidate, bool bIncludePartner, bool bRequireIndicatorEligibility) const;
+	virtual bool GetMeleeTraceSocketLocations(FVector& OutStart, FVector& OutEnd) const;
+	void SweepMeleeTrace(
+		const FVector& PreviousStart,
+		const FVector& PreviousEnd,
+		const FVector& CurrentStart,
+		const FVector& CurrentEnd);
+	void ResetMeleeTraceState();
+	void LogMissingMeleeTraceSockets() const;
 	virtual void NotifyMeleeHitResult(const FMeleeHitContext& Context);
 
 	UFUNCTION()
 	void OnRep_AttackPhase();
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Melee")
-	float AttackRange = 200.0f;
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Melee|Target Search", meta = (ClampMin = "0.0"))
+	float TargetSearchRange = 200.0f;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Melee")
-	float AttackRadius = 40.0f;
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Melee|Target Search", meta = (ClampMin = "0.0"))
+	float TargetSearchRadius = 40.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Melee|Trace")
+	FName MeleeTraceStartSocketName = TEXT("MeleeTraceStart");
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Melee|Trace")
+	FName MeleeTraceEndSocketName = TEXT("MeleeTraceEnd");
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Melee|Trace", meta = (ClampMin = "0.0"))
+	float TraceRadius = 12.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Melee|Debug")
+	bool bDrawDebugMeleeTrace = false;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Melee|Debug", meta = (ClampMin = "0.0"))
+	float DebugMeleeTraceDuration = 0.1f;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Melee")
 	float AttackAngle = 45.0f;
@@ -110,6 +139,9 @@ public:
 	void FinishAttack(int32 ExpectedAttackSequence);
 	void HandleHitNotify();
 	void HandleRecoveryEndNotify();
+	bool BeginMeleeTrace();
+	void TickMeleeTrace();
+	void EndMeleeTrace();
 
 	UFUNCTION(BlueprintPure, Category = "Weapon|Melee")
 	EMeleeAttackPhase GetAttackPhase() const { return AttackPhase; }

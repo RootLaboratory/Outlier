@@ -992,6 +992,48 @@ void UShooterCombatComponent::HandleMeleeHitNotify()
 	}
 }
 
+void UShooterCombatComponent::HandleMeleeTraceBeginNotify()
+{
+	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	if (!ShooterCharacter || !ShooterCharacter->HasAuthority())
+	{
+		return;
+	}
+
+	if (AMeleeWeaponBase* MeleeWeapon = Cast<AMeleeWeaponBase>(ShooterCharacter->CurrentWeapon))
+	{
+		MeleeWeapon->BeginMeleeTrace();
+	}
+}
+
+void UShooterCombatComponent::HandleMeleeTraceTickNotify()
+{
+	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	if (!ShooterCharacter || !ShooterCharacter->HasAuthority())
+	{
+		return;
+	}
+
+	if (AMeleeWeaponBase* MeleeWeapon = Cast<AMeleeWeaponBase>(ShooterCharacter->CurrentWeapon))
+	{
+		MeleeWeapon->TickMeleeTrace();
+	}
+}
+
+void UShooterCombatComponent::HandleMeleeTraceEndNotify()
+{
+	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	if (!ShooterCharacter || !ShooterCharacter->HasAuthority())
+	{
+		return;
+	}
+
+	if (AMeleeWeaponBase* MeleeWeapon = Cast<AMeleeWeaponBase>(ShooterCharacter->CurrentWeapon))
+	{
+		MeleeWeapon->EndMeleeTrace();
+	}
+}
+
 void UShooterCombatComponent::HandleMeleeRecoveryEndNotify()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
