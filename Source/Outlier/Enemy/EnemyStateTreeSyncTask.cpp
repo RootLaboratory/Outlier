@@ -11,7 +11,9 @@ FEnemyStateTreeSyncTask::FEnemyStateTreeSyncTask()
 	bShouldStateChangeOnReselect = false;
 
 #if WITH_EDITORONLY_DATA
-	bConsideredForCompletion = false;
+	// Keep a linked asset's global frame running while synchronization is active.
+	bConsideredForCompletion = true;
+	bCanEditConsideredForCompletion = false;
 #endif // WITH_EDITORONLY_DATA
 
 }
