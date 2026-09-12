@@ -31,6 +31,7 @@ class UOutlierVitalAttributeSet;
 class UOutlierShieldAttributeSet;
 class UDataTable;
 class USphereComponent;
+class USkeletalMesh;
 class UShooterReflectionBarrier;
 struct FOnAttributeChangeData;
 
@@ -278,6 +279,12 @@ protected:
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "State")
 	EShooterActionLock ActionLock = EShooterActionLock::None;
 
+	UPROPERTY(ReplicatedUsing = OnRep_SuitMeshes, VisibleAnywhere, BlueprintReadOnly, Category = "Suit|Mesh")
+	TObjectPtr<USkeletalMesh> AppliedSuitFirstPersonMesh;
+
+	UPROPERTY(ReplicatedUsing = OnRep_SuitMeshes, VisibleAnywhere, BlueprintReadOnly, Category = "Suit|Mesh")
+	TObjectPtr<USkeletalMesh> AppliedSuitThirdPersonMesh;
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "GAS|Suit")
 	TObjectPtr<UDataTable> ShooterSuitAbilityDataTable;
 
@@ -454,6 +461,9 @@ public:
 	UFUNCTION()
 	void OnRep_CurrentLeanAlpha();
 
+	UFUNCTION()
+	void OnRep_SuitMeshes();
+
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual FVector GetPawnViewLocation() const override;
 	virtual UAISense_Sight::EVisibilityResult CanBeSeenFrom(
@@ -467,6 +477,7 @@ public:
 	// Unreal 공통 피해 진입점을 기존 Shooter 실드 및 HP 처리로 연결한다.
 	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
 	virtual void EquipWeapon(AWeaponBase* Weapon) override;
+	void ApplySuitMeshes(USkeletalMesh* FirstPersonMeshAsset, USkeletalMesh* ThirdPersonMeshAsset);
 	virtual FGameplayTagContainer GetOwnedGameplayTagsForQuery() const override;
 
 	// Read-only Queries
@@ -623,6 +634,7 @@ protected:
 	void StopLean();
 
 	void RefreshFirstPersonShadowPolicy();
+	void RefreshAppliedSuitMeshes();
 	void UpdateSlideCameraEffect(float DeltaSeconds);
 
 	// Server RPC

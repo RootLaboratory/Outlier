@@ -69,6 +69,12 @@ FName UShooterInventoryComponent::GetThirdPersonWeaponSocketByType(EWeaponType W
 	}
 }
 
+AWeaponBase* UShooterInventoryComponent::GetWeaponInSlot(EWeaponSlot Slot) const
+{
+	const int32 SlotIndex = static_cast<int32>(Slot);
+	return WeaponSlots.IsValidIndex(SlotIndex) ? WeaponSlots[SlotIndex] : nullptr;
+}
+
 void UShooterInventoryComponent::TrySwitchWeapon1()
 {
 	SelectWeaponSlot(EWeaponSlot::Primary);
@@ -168,6 +174,59 @@ void UShooterInventoryComponent::HandleEquipWeapon(AWeaponBase* Weapon)
 	ShooterCharacter->PlayEquipMontages();
 	ShooterCharacter->RefreshWeaponMode();
 	ShooterCharacter->RefreshCombatState();
+}
+
+bool UShooterInventoryComponent::EquipSuitRifle(AWeaponBase* RifleWeapon)
+{
+	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	const EWeaponSlot Slot = EWeaponSlot::Primary;
+	const int32 SlotIndex = static_cast<int32>(Slot);
+
+	if (!ShooterCharacter
+		|| !ShooterCharacter->HasAuthority()
+		|| !RifleWeapon
+		|| RifleWeapon->GetWeaponType() != EWeaponType::Rifle
+		|| !IsValidWeaponSlot(Slot)
+		|| !RifleWeapon->CanBePickedUpBy(ShooterCharacter))
+	{
+		return false;
+	}
+
+	if (ShooterCharacter->CombatComponent)
+	{
+		ShooterCharacter->CombatComponent->CancelMeleeAttack();
+	}
+	if (ShooterCharacter->IsReloading())
+	{
+		ShooterCharacter->CancelReloadInternal();
+	}
+	if (ShooterCharacter->IsWeaponOvercharged())
+	{
+		ShooterCharacter->EndActiveWeaponOvercharge(true);
+	}
+	ShooterCharacter->StopAimInternal();
+
+	AWeaponBase* PreviousPrimaryWeapon = WeaponSlots[SlotIndex];
+	if (PreviousPrimaryWeapon && PreviousPrimaryWeapon != RifleWeapon)
+	{
+		if (ShooterCharacter->CurrentWeapon == PreviousPrimaryWeapon)
+		{
+			ShooterCharacter->AFirstPersonCharacter::EquipWeapon(nullptr);
+		}
+
+		WeaponSlots[SlotIndex] = nullptr;
+		PreviousPrimaryWeapon->OnOwnerLost();
+	}
+
+	WeaponSlots[SlotIndex] = RifleWeapon;
+	CurrentSlot = Slot;
+
+	ShooterCharacter->AFirstPersonCharacter::EquipWeapon(RifleWeapon);
+	ShooterCharacter->PlayEquipMontages();
+	ShooterCharacter->RefreshWeaponMode();
+	ShooterCharacter->RefreshCombatState();
+
+	return ShooterCharacter->CurrentWeapon == RifleWeapon;
 }
 
 void UShooterInventoryComponent::SelectWeaponSlot(EWeaponSlot Slot)

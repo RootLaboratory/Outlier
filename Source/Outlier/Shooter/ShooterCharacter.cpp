@@ -10,10 +10,12 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/SceneCaptureComponent2D.h"
 #include "Curves/CurveFloat.h"
+#include "DrawDebugHelpers.h"
 #include "Engine/SkeletalMesh.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Controller.h"
 #include "GameFramework/PlayerController.h"
+#include "HAL/IConsoleManager.h"
 #include "TimerManager.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
@@ -50,6 +52,12 @@
 
 namespace
 {
+TAutoConsoleVariable<int32> CVarDrawShooterCrouchCapsule(
+	TEXT("outlier.Debug.DrawShooterCrouchCapsule"),
+	0,
+	TEXT("Draws each Shooter's current collision capsule while crouched. 0: off, 1: on"),
+	ECVF_Cheat);
+
 AActor* ResolveDamageSource(AController* EventInstigator, AActor* DamageCauser)
 {
 	APawn* InstigatorPawn = EventInstigator ? EventInstigator->GetPawn() : nullptr;
@@ -229,6 +237,23 @@ void AShooterCharacter::Tick(float DeltaSeconds)
 
 	UpdateSlideCameraEffect(DeltaSeconds);
 	UpdateCameraFOV(DeltaSeconds);
+
+	if (CVarDrawShooterCrouchCapsule.GetValueOnGameThread() != 0
+		&& bIsCrouched)
+	{
+		const UCapsuleComponent* Capsule = GetCapsuleComponent();
+		DrawDebugCapsule(
+			GetWorld(),
+			Capsule->GetComponentLocation(),
+			Capsule->GetScaledCapsuleHalfHeight(),
+			Capsule->GetScaledCapsuleRadius(),
+			Capsule->GetComponentQuat(),
+			FColor::Green,
+			false,
+			0.0f,
+			0,
+			2.0f);
+	}
 }
 
 void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -1208,6 +1233,11 @@ void AShooterCharacter::OnRep_CurrentLeanAlpha()
 	ApplyLeanPresentation();
 }
 
+void AShooterCharacter::OnRep_SuitMeshes()
+{
+	RefreshAppliedSuitMeshes();
+}
+
 void AShooterCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
@@ -1217,6 +1247,8 @@ void AShooterCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	DOREPLIFETIME(AShooterCharacter, CombatState);
 	DOREPLIFETIME(AShooterCharacter, ActionLock);
 	DOREPLIFETIME(AShooterCharacter, CurrentLeanAlpha);
+	DOREPLIFETIME(AShooterCharacter, AppliedSuitFirstPersonMesh);
+	DOREPLIFETIME(AShooterCharacter, AppliedSuitThirdPersonMesh);
 }
 
 FVector AShooterCharacter::GetBaseLeanViewLocation() const
@@ -1332,6 +1364,62 @@ void AShooterCharacter::EquipWeapon(AWeaponBase* Weapon)
 	if (InventoryComponent)
 	{
 		InventoryComponent->HandleEquipWeapon(Weapon);
+	}
+}
+
+void AShooterCharacter::ApplySuitMeshes(
+	USkeletalMesh* FirstPersonMeshAsset,
+	USkeletalMesh* ThirdPersonMeshAsset)
+{
+	if (!HasAuthority()
+		|| !ensureMsgf(FirstPersonMeshAsset, TEXT("%s requires a first-person Suit mesh."), *GetName())
+		|| !ensureMsgf(ThirdPersonMeshAsset, TEXT("%s requires a third-person Suit mesh."), *GetName()))
+	{
+		return;
+	}
+
+	AppliedSuitFirstPersonMesh = FirstPersonMeshAsset;
+	AppliedSuitThirdPersonMesh = ThirdPersonMeshAsset;
+	RefreshAppliedSuitMeshes();
+	ForceNetUpdate();
+}
+
+void AShooterCharacter::RefreshAppliedSuitMeshes()
+{
+	if (!AppliedSuitFirstPersonMesh || !AppliedSuitThirdPersonMesh)
+	{
+		return;
+	}
+
+	if (USkeletalMeshComponent* FirstPersonMeshComponent = GetFirstPersonMesh())
+	{
+		if (FirstPersonMeshComponent->GetSkeletalMeshAsset() != AppliedSuitFirstPersonMesh)
+		{
+			FirstPersonMeshComponent->SetSkeletalMeshAsset(AppliedSuitFirstPersonMesh);
+		}
+	}
+
+	USkeletalMeshComponent* ThirdPersonMeshComponent = GetMesh();
+	if (ThirdPersonMeshComponent
+		&& ThirdPersonMeshComponent->GetSkeletalMeshAsset() != AppliedSuitThirdPersonMesh)
+	{
+		ThirdPersonMeshComponent->SetSkeletalMeshAsset(AppliedSuitThirdPersonMesh);
+	}
+
+	if (ShadowMesh)
+	{
+		if (ShadowMesh->GetSkeletalMeshAsset() != AppliedSuitThirdPersonMesh)
+		{
+			ShadowMesh->SetSkeletalMeshAsset(AppliedSuitThirdPersonMesh);
+		}
+		ShadowMesh->SetLeaderPoseComponent(ThirdPersonMeshComponent);
+	}
+
+	RefreshFirstPersonShadowPolicy();
+	if (AWeaponBase* EquippedWeapon = GetCurrentWeapon())
+	{
+		EquippedWeapon->AttachWeaponMeshesToOwnerMeshes();
+		EquippedWeapon->RefreshShadowWeaponPresentation();
 	}
 }
 

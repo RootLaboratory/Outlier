@@ -5,7 +5,6 @@
 #include "CoreMinimal.h"
 #include "FirstPerson/FirstPersonCharacter.h"
 #include "Engine/DataTable.h"
-#include "InputCoreTypes.h"
 #include "Interface/WeaponMuzzleProvider.h"
 #include "Interface/MeleeTargetInterface.h"
 #include "AbilitySystemInterface.h"
@@ -142,9 +141,6 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Attachment")
 	FName ThirdPersonWeaponAttachSocketName = TEXT("ThirdPerson");
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Test|Weapon")
-	FKey ToggleTestWeaponAttachmentKey = EKeys::T;
 
 	// Partner 무기는 본체 메시와 일체형이므로 Weapon Actor 대신 이 소켓에서 총구 연출을 시작한다.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Presentation")
@@ -457,8 +453,6 @@ protected:
 	void StopFreeMove();
 	void VerticalMove(const FInputActionValue& Value);
 	void StopVerticalMove();
-	void ToggleTestWeaponEquipment();
-
 	void SetBoundaryOutside(bool bOutside);
 	EPartnerBoundaryState GetBoundaryOutside();
 

@@ -7,7 +7,6 @@
 #include "Damage/OutlierDamageReceiver.h"
 #include "Drone/Partner/HackableComponent.h"
 #include "Drone/Partner/PartnerCharacter.h"
-#include "Drone/Partner/PartnerCombatComponent.h"
 #include "Drone/Partner/PartnerEMPComponent.h"
 #include "Drone/Partner/PartnerHackComponent.h"
 #include "Drone/Partner/PartnerSurvivalDataRow.h"
@@ -80,14 +79,6 @@ namespace
 			? FindFProperty<FNameProperty>(Object->GetClass(), PropertyName)
 			: nullptr;
 		return Property ? Property->GetPropertyValue_InContainer(Object) : NAME_None;
-	}
-
-	UClass* ReadClassProperty(const UObject* Object, FName PropertyName)
-	{
-		const FClassProperty* Property = Object
-			? FindFProperty<FClassProperty>(Object->GetClass(), PropertyName)
-			: nullptr;
-		return Property ? Cast<UClass>(Property->GetObjectPropertyValue_InContainer(Object)) : nullptr;
 	}
 
 	FActiveGameplayEffectHandle ApplyTaggedInfiniteEffect(
@@ -1084,16 +1075,9 @@ bool FOutlierGasWeaponReuseCooldownTest::RunTest(const FString& Parameters)
 	UClass* WeaponClass = LoadClass<ARangedWeaponBase>(
 		nullptr,
 		TEXT("/Game/Blueprints/Weapon/BP_Pistol.BP_Pistol_C"));
-	UClass* PartnerClass = LoadClass<APartnerCharacter>(
+	UClass* PartnerWeaponClass = LoadClass<ARangedWeaponBase>(
 		nullptr,
-		TEXT("/Game/Blueprints/Partner/BP_PartnerCharacter.BP_PartnerCharacter_C"));
-	const APartnerCharacter* PartnerCDO = PartnerClass
-		? Cast<APartnerCharacter>(PartnerClass->GetDefaultObject())
-		: nullptr;
-	const UPartnerCombatComponent* PartnerCombat = PartnerCDO
-		? PartnerCDO->FindComponentByClass<UPartnerCombatComponent>()
-		: nullptr;
-	UClass* PartnerWeaponClass = ReadClassProperty(PartnerCombat, TEXT("DefaultWeaponClass"));
+		TEXT("/Game/Blueprints/Partner/Weapon/BP_PartnerGun.BP_PartnerGun_C"));
 	AShooterCharacter* Shooter = ShooterClass
 		? World->SpawnActor<AShooterCharacter>(ShooterClass)
 		: nullptr;
@@ -1109,7 +1093,7 @@ bool FOutlierGasWeaponReuseCooldownTest::RunTest(const FString& Parameters)
 	if (!TestNotNull(TEXT("Shooter is spawned"), Shooter)
 		|| !TestNotNull(TEXT("First weapon is spawned"), FirstWeapon)
 		|| !TestNotNull(TEXT("Second weapon is spawned"), SecondWeapon)
-		|| !TestNotNull(TEXT("Partner Blueprint has a default ranged weapon class"), PartnerWeapon))
+		|| !TestNotNull(TEXT("Partner ranged weapon Blueprint is loadable"), PartnerWeapon))
 	{
 		World->DestroyWorld(true);
 		World->SetPhysicsScene(nullptr);
