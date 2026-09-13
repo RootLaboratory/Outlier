@@ -41,7 +41,7 @@ private:
 	virtual void On_RepAbilityabledByDistance() override;
 public:
 
-	UPROPERTY(meta = (BindWidget))
+	UPROPERTY(meta = (BindWidgetOptional))
 	TObjectPtr<UPartnerCamUI> PartnerCamUI;
 
 	UPROPERTY(meta = (BindWidget))

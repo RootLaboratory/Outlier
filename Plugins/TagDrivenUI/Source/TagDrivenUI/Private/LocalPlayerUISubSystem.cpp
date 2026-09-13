@@ -1,13 +1,11 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 #include "LocalPlayerUISubSystem.h"
 #include "GameFramework/PlayerController.h"
-#include "Components/SceneCaptureComponent2D.h"
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
 #include "AbilityIconUI.h"
 #include "MainUIBase.h"
 #include "HPBarUI.h"
-#include "PartnerCamUI.h"
 #include "AmmoUI.h"
 #include "DynamicCrossHair.h"
 #include "EventDrivenUI.h"
@@ -173,26 +171,6 @@ void ULocalPlayerUISubSystem::OnRep_PlayerStateChanged(EUIPlayerState State)
 }
 
 
-
-void ULocalPlayerUISubSystem::PartnerCameraToggle()
-{
-	if (!GetMainUI())
-	{
-		UE_LOG(LogTemp, Error, TEXT("GetMainUI"));
-
-		return;
-	}
-
-	if (UPartnerCamUI* PartnerCamUI = Cast<UPartnerCamUI>(GetModuleAny(TagDrivenUITags::Shooter::PartnerCam(), TagDrivenUITags::Partner::PartnerCam())))
-	{
-		PartnerCamUI->TogglePartnerCamera();
-	}
-	else
-	{
-		UE_LOG(LogTemp, Error, TEXT("PartnerCamUI"));
-
-	}
-}
 
 void ULocalPlayerUISubSystem::PartnerDistanceUpdate(const float Distance)
 {
@@ -401,31 +379,3 @@ void ULocalPlayerUISubSystem::UnbindInteractionWidget(UUserWidget* InteractionWi
 	InteractionWidget->SetVisibility(ESlateVisibility::Collapsed);
 }
 
-void ULocalPlayerUISubSystem::PartnerCameraBind(USceneCaptureComponent2D* InCaptureComponent2D)
-{
-	//UE_LOG(LogTemp, Error, TEXT("Try PartnerCameraBind"));
-
-	if (!InCaptureComponent2D)
-	{
-		return;
-	}
-
-	if (UPartnerCamUI* PartnerCamUI = Cast<UPartnerCamUI>(GetModuleAny(TagDrivenUITags::Shooter::PartnerCam(), TagDrivenUITags::Partner::PartnerCam())))
-	{
-		UTextureRenderTarget2D* RenderTarget = InCaptureComponent2D->TextureTarget;
-		if (RenderTarget)
-		{
-			PartnerCamUI->SetPartnerRenderTarget(RenderTarget);
-		}
-		else
-		{
-		//	UE_LOG(LogTemp, Error, TEXT("Cant RT"));
-
-		}
-	}
-	else
-	{
-		//	UE_LOG(LogTemp, Error, TEXT("Cant PartnerCamUI"));
-
-	}
-}

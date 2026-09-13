@@ -21,7 +21,9 @@ public class OutlierEditor : ModuleRules
 			"AssetRegistry",
 			"DeveloperSettings",
 			"GameplayTags",
-			"GameplayAbilities"
+			"GameplayAbilities",
+			"GraphicSettingDebugger",
+			"GraphicSettingDebuggerEditor"
 		});
 	}
 }

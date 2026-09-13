@@ -18,10 +18,10 @@ class UCameraComponent;
 class USceneComponent;
 class UFirstPersonInputConfig;
 class UInputAction;
-class USceneCaptureComponent2D;
 class ULocalPlayerUILayerSubsystem;
 struct FInputActionValue;
 class URoomTagComponent;
+class ULocalPlayerSettingsSubsystem;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnWeaponChanged, EWeaponType, NewWeaponType);
 
@@ -92,10 +92,6 @@ protected:
 	UPROPERTY(Transient)
 	TObjectPtr<AWeaponBase> LastReplicatedWeapon;
 
-	// Components / Owned Objects
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
-	TObjectPtr<USceneCaptureComponent2D> CaptureComponent;
-
 	UFUNCTION()
 	void OnRep_CurrentWeapon();
 
@@ -130,11 +126,13 @@ protected:
 
 	virtual void LookInput(const FInputActionValue& Value);
 
+	UFUNCTION()
+	void HandleMouseSensitivityChanged(float NewValue);
+
 	virtual void DoMove(float Right, float Forward);
 
 	void DoAim(float Yaw, float Pitch);
 
-	void TryCamToggle();
 	void HandleInteractionInputStarted();
 	void HandleWidgetEscapeInput();
 	void HandleWidgetConfirmedInput();
@@ -164,6 +162,7 @@ protected:
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
 
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 
 public:
@@ -196,8 +195,6 @@ public:
 
 	virtual void OnMoveInputUpdated(const FVector2D& MoveValue);
 
-	void CaptureComponentWeaponNotIncluded(AWeaponBase* Weapon);
-
 public:
 	UPROPERTY(BlueprintAssignable)
 	FOnWeaponChanged OnWeaponChanged;
@@ -209,9 +206,6 @@ private:
 	void CancelLocalHoldInteract(bool bNotifyServer);
 
 	void UpdateInteractableFocus();
-
-	void SetPartnerCameraCaptureUpdating(bool bEnabled);
-	AFirstPersonCharacter* ResolvePartnerCameraSource() const;
 
 	void SyncInteractableKeyWidgets(const TArray<AActor*>& CurrentInteractables);
 
@@ -247,8 +241,11 @@ private:
 	UPROPERTY()
 	TArray<TObjectPtr<AActor>> NearbyInteractables;
 
-	uint8 bPartnerCameraCaptureActive : 1 = false;
-	TWeakObjectPtr<AFirstPersonCharacter> ActivePartnerCameraSource;
+	UPROPERTY(Transient)
+	TObjectPtr<ULocalPlayerSettingsSubsystem> BoundSettingsSubsystem;
+
+	UPROPERTY(Transient)
+	float MouseSensitivity = 1.0f;
 
 	FTimerHandle InteractionTraceTimerHandle;
 

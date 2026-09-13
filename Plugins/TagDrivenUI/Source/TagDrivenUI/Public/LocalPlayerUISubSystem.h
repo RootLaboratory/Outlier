@@ -11,7 +11,6 @@
 #include "LocalPlayerUISubSystem.generated.h"
 
 class UEventDrivenUI;
-class USceneCaptureComponent2D;
 class UUserWidget;
 enum class EWidgetWeaponType : uint8;
 
@@ -47,8 +46,6 @@ public:
 	void OnRep_ShooterDynamicCrosshairChanged(bool InFlag);
 public:
 
-	void PartnerCameraBind(USceneCaptureComponent2D* InCaptureComponent2D);
-	void PartnerCameraToggle();
 	void PartnerDistanceUpdate(const float Distance);
 	void OnCurrentWeaponChanged(EWidgetWeaponType WeaponType);
 	void OnCurrentAbilityChanged(const FGameplayTag& AbilityTag);

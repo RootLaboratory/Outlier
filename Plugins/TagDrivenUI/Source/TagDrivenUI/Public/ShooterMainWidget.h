@@ -48,7 +48,7 @@ public:
 
 public:
 
-	UPROPERTY(meta = (BindWidget))
+	UPROPERTY(meta = (BindWidgetOptional))
 	TObjectPtr<UPartnerCamUI> PartnerCamUI;
 	
 	UPROPERTY(meta = (BindWidget))
