@@ -372,6 +372,11 @@ void AOutlierPlayerState::OnRep_ActivatedUpgradeNodes()
 	HandleActivatedUpgradeNodesChanged();
 }
 
+void AOutlierPlayerState::OnRep_PendingPresetSelection()
+{
+	HandlePendingPresetSelectionChanged();
+}
+
 void AOutlierPlayerState::ServerSetStatAllocatorExitPending_Implementation(bool bPending)
 {
 	SetStatAllocatorExitPending(bPending);
@@ -395,6 +400,60 @@ void AOutlierPlayerState::HandleStatAllocatorExitPendingChanged()
 void AOutlierPlayerState::HandleActivatedUpgradeNodesChanged()
 {
 	OnActivatedUpgradeNodesChanged.Broadcast();
+}
+
+void AOutlierPlayerState::HandlePendingPresetSelectionChanged()
+{
+	OnPendingPresetSelectionChanged.Broadcast(this);
+}
+
+void AOutlierPlayerState::SetPendingPresetSelection(FName NewStageId)
+{
+	if (!HasAuthority() || PendingPresetSelection == NewStageId)
+	{
+		return;
+	}
+
+	PendingPresetSelection = NewStageId;
+	HandlePendingPresetSelectionChanged();
+	ForceNetUpdate();
+}
+
+void AOutlierPlayerState::FlushActivatedUpgradeNodes(int32 NewNodeCount)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	const int32 ClearedShooterNodes = ShooterActivatedUpgradeNodeIds.Num();
+	const int32 ClearedPartnerNodes = PartnerActivatedUpgradeNodeIds.Num();
+	const bool bHadNodes = ClearedShooterNodes > 0 || ClearedPartnerNodes > 0;
+	const int32 PreviousNodeCount = NodeCount;
+
+	ShooterActivatedUpgradeNodeIds.Reset();
+	PartnerActivatedUpgradeNodeIds.Reset();
+
+	if (bHadNodes)
+	{
+		HandleActivatedUpgradeNodesChanged();
+		ForceNetUpdate();
+	}
+
+	SetNodeCountInternal(NewNodeCount);
+
+	// NodeCount가 "안 바뀐 것처럼" 보이는 경우가 두 가지다: 요청값이 0으로 내려온 경우와
+	// 이미 같은 값이라 SetNodeCountInternal이 조용히 조기 반환한 경우. 둘을 구분해서 남긴다.
+	UE_LOG(LogTemp, Display,
+		TEXT("[PresetNode] Flush PS=%s Pair=%d NodeCount %d -> %d (requested=%d%s) ClearedNodes=%d/%d"),
+		*GetPlayerName(),
+		PairId,
+		PreviousNodeCount,
+		NodeCount,
+		NewNodeCount,
+		PreviousNodeCount == NodeCount ? TEXT(", unchanged") : TEXT(""),
+		ClearedShooterNodes,
+		ClearedPartnerNodes);
 }
 
 void AOutlierPlayerState::SetNodeCountInternal(int32 NewNodeCount)
@@ -502,6 +561,7 @@ void AOutlierPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& 
 	DOREPLIFETIME_CONDITION(AOutlierPlayerState, ShooterActivatedUpgradeNodeIds, COND_OwnerOnly);
 	DOREPLIFETIME_CONDITION(AOutlierPlayerState, PartnerActivatedUpgradeNodeIds, COND_OwnerOnly);
 	DOREPLIFETIME_CONDITION(AOutlierPlayerState, TemporaryPlayerId, COND_OwnerOnly);
+	DOREPLIFETIME(AOutlierPlayerState, PendingPresetSelection);
 }
 
 

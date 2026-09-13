@@ -26,6 +26,7 @@ DECLARE_MULTICAST_DELEGATE_OneParam(FOnPlayerCharactersChanged, AOutlierPlayerSt
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnNodeCountChanged, int32);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnStatAllocatorExitPendingChanged, AOutlierPlayerState*);
 DECLARE_MULTICAST_DELEGATE(FOnActivatedUpgradeNodesChanged);
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnPendingPresetSelectionChanged, AOutlierPlayerState*);
 
 
 /**
@@ -127,6 +128,16 @@ public:
 
 	const TArray<FName>& GetActivatedUpgradeNodeIds(EOutlierUpgradeRole UpgradeRole) const;
 
+	// 활성화된 업그레이드 노드 전부(Shooter/Partner 둘 다)를 비우고 NodeCount를 NewNodeCount로 덮어쓴다.
+	// 프리셋 스테이지 확정 시 GameMode가 페어 양쪽 PlayerState에 호출한다.
+	void FlushActivatedUpgradeNodes(int32 NewNodeCount);
+
+	UFUNCTION(BlueprintCallable, Category = "Preset")
+	void SetPendingPresetSelection(FName NewStageId);
+
+	UFUNCTION(BlueprintPure, Category = "Preset")
+	FName GetPendingPresetSelection() const { return PendingPresetSelection; }
+
 	UPROPERTY(Replicated)
 	int32 ArenaId = INDEX_NONE;
 
@@ -173,6 +184,10 @@ protected:
 	UPROPERTY(ReplicatedUsing = OnRep_ActivatedUpgradeNodes, VisibleInstanceOnly, BlueprintReadOnly, Category = "Upgrade")
 	TArray<FName> PartnerActivatedUpgradeNodeIds;
 
+	// 사망 후 프리셋 선택 대기 중인 값. 페어 양쪽에 리플리케이트돼 있어야 이후 "상대가 뭘 기다리는지" UI도 붙일 수 있다.
+	UPROPERTY(ReplicatedUsing = OnRep_PendingPresetSelection)
+	FName PendingPresetSelection = NAME_None;
+
 	UPROPERTY(Replicated, VisibleInstanceOnly, BlueprintReadOnly, Category = "Lobby")
 	FGuid TemporaryPlayerId;
 
@@ -212,6 +227,9 @@ protected:
 	UFUNCTION()
 	void OnRep_ActivatedUpgradeNodes();
 
+	UFUNCTION()
+	void OnRep_PendingPresetSelection();
+
 	UFUNCTION(Server, Reliable)
 	void ServerSetStatAllocatorExitPending(bool bPending);
 
@@ -219,6 +237,7 @@ protected:
 	void HandlePendingLobbyStateChanged();
 	void HandleStatAllocatorExitPendingChanged();
 	void HandleActivatedUpgradeNodesChanged();
+	void HandlePendingPresetSelectionChanged();
 	void SetNodeCountInternal(int32 NewNodeCount);
 
 public:
@@ -228,4 +247,5 @@ public:
 	FOnNodeCountChanged OnNodeCountChanged;
 	FOnStatAllocatorExitPendingChanged OnStatAllocatorExitPendingChanged;
 	FOnActivatedUpgradeNodesChanged OnActivatedUpgradeNodesChanged;
+	FOnPendingPresetSelectionChanged OnPendingPresetSelectionChanged;
 };

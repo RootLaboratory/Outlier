@@ -502,12 +502,6 @@ void AWeaponBase::OnEquipped(ACharacter* NewOwner)
 		ShadowWeaponMesh->SetCastHiddenShadow(false);
 	}
 
-	AFirstPersonCharacter* Character = Cast<AFirstPersonCharacter>(NewOwner);
-	if (Character)
-	{
-		Character->CaptureComponentWeaponNotIncluded(this);
-	}
-
 	UE_LOG(LogTemp, Log, TEXT("%s [%s] OnEquipped Owner=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(NewOwner));
 	ForceNetUpdate();
 }
@@ -834,8 +828,12 @@ void AWeaponBase::OnOwnerLost()
 	if (!IsActorBeingDestroyed() && IsValid(OwningSpawnPoint))
 	{
 		OwningSpawnPoint->NotifyWeaponRemoved(this);
+		OwningSpawnPoint = nullptr;
+		Destroy();
+		return;
 	}
 
-	OwningSpawnPoint= nullptr;
-	Destroy();
+	OwningSpawnPoint = nullptr;
+	SetActorHiddenInGame(true);
+	SetActorEnableCollision(false);
 }

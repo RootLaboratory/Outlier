@@ -59,6 +59,11 @@ void UOutlierArenaProcessSubsystem::Initialize(FSubsystemCollectionBase& Collect
 			UE_LOG(LogTemp, Error, TEXT("[ArenaProcess] Invalid Worker control arguments"));
 			return;
 		}
+
+		const double CurrentTime = FPlatformTime::Seconds();
+		LastLobbyContactAt = CurrentTime;
+		LastWorkerHeartbeatSentAt = CurrentTime;
+		ConnectWorkerControl();
 	}
 	else if (!StartLobbyManager())
 	{
@@ -160,6 +165,7 @@ bool UOutlierArenaProcessSubsystem::LaunchWorker(int32 SlotId)
 	}
 
 	FWorkerRuntime& Runtime = WorkerRuntimes[SlotId];
+	Runtime.bControlConnectedOnce = false;
 	const FString Executable = ResolveWorkerExecutable();
 	const int32 WorkerPort = Settings->ArenaBasePort + SlotId;
 	const FString Arguments = BuildWorkerArguments(SlotId, WorkerPort);
@@ -298,7 +304,9 @@ void UOutlierArenaProcessSubsystem::PollWorkerProcesses(double CurrentTime)
 
 		if (Runtime.ProcessHandle.IsValid()
 			&& !Runtime.ControlSocket
-			&& (Slot->State == EOutlierArenaSlotState::Ready
+			&& Runtime.bControlConnectedOnce
+			&& (Slot->State == EOutlierArenaSlotState::Starting
+				|| Slot->State == EOutlierArenaSlotState::Ready
 				|| Slot->State == EOutlierArenaSlotState::Allocated
 				|| Slot->State == EOutlierArenaSlotState::InMatch))
 		{
@@ -346,6 +354,20 @@ void UOutlierArenaProcessSubsystem::HandleLobbyMessage(
 	FWorkerRuntime& Runtime = WorkerRuntimes[Message.SlotId];
 	switch (Message.Type)
 	{
+	case EOutlierArenaControlMessageType::Starting:
+		if (Slot->State != EOutlierArenaSlotState::Starting)
+		{
+			return;
+		}
+		Connection.SlotId = Message.SlotId;
+		Runtime.ControlSocket = Connection.Socket;
+		Runtime.bControlConnectedOnce = true;
+		UE_LOG(LogTemp, Display,
+			TEXT("[ArenaProcess] Worker Starting connected Slot=%d PID=%u"),
+			Message.SlotId,
+			Message.ProcessId);
+		break;
+
 	case EOutlierArenaControlMessageType::Ready:
 		if (!SlotRegistry.MarkReady(Message.SlotId, Message.ProcessId))
 		{
@@ -353,6 +375,7 @@ void UOutlierArenaProcessSubsystem::HandleLobbyMessage(
 		}
 		Connection.SlotId = Message.SlotId;
 		Runtime.ControlSocket = Connection.Socket;
+		Runtime.bControlConnectedOnce = true;
 		Runtime.RestartAttempts = 0;
 		Runtime.StateChangedAt = FPlatformTime::Seconds();
 		UE_LOG(LogTemp, Display,
@@ -415,6 +438,7 @@ void UOutlierArenaProcessSubsystem::HandleWorkerStopped(
 		}
 	}
 	Runtime.ControlSocket = nullptr;
+	Runtime.bControlConnectedOnce = false;
 	Runtime.RestartAttempts = bExpectedExit ? 0 : Runtime.RestartAttempts + 1;
 	Runtime.RestartAt = CurrentTime + Settings->ArenaWorkerRestartDelaySeconds;
 	Runtime.StateChangedAt = CurrentTime;
@@ -533,10 +557,17 @@ void UOutlierArenaProcessSubsystem::NotifyArenaWorldReady(UWorld* ArenaWorld)
 	}
 
 	bArenaWorldReady = true;
-	const double CurrentTime = FPlatformTime::Seconds();
-	LastLobbyContactAt = CurrentTime;
-	LastWorkerHeartbeatSentAt = CurrentTime;
-	ConnectWorkerControl();
+	if (WorkerControlSocket)
+	{
+		if (!SendWorkerMessage(EOutlierArenaControlMessageType::Ready))
+		{
+			DestroySocket(WorkerControlSocket);
+		}
+	}
+	else
+	{
+		ConnectWorkerControl();
+	}
 }
 
 void UOutlierArenaProcessSubsystem::NotifyWorkerInMatch(const FGuid& MatchId)
@@ -618,11 +649,6 @@ void UOutlierArenaProcessSubsystem::ShutdownWorker(const FString& Reason)
 
 void UOutlierArenaProcessSubsystem::PollWorker(double CurrentTime)
 {
-	if (!bArenaWorldReady)
-	{
-		return;
-	}
-
 	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
 	const double HeartbeatTimeout = Settings
 		? FMath::Max(Settings->ArenaWorkerHeartbeatTimeoutSeconds, 1.0f)
@@ -713,7 +739,10 @@ bool UOutlierArenaProcessSubsystem::ConnectWorkerControl()
 	}
 	WorkerControlSocket->SetNonBlocking(true);
 
-	if (!SendWorkerMessage(EOutlierArenaControlMessageType::Ready))
+	const EOutlierArenaControlMessageType InitialMessageType = bArenaWorldReady
+		? EOutlierArenaControlMessageType::Ready
+		: EOutlierArenaControlMessageType::Starting;
+	if (!SendWorkerMessage(InitialMessageType))
 	{
 		DestroySocket(WorkerControlSocket);
 		return false;
@@ -722,6 +751,10 @@ bool UOutlierArenaProcessSubsystem::ConnectWorkerControl()
 	// 연결에 성공한 순간은 Lobby가 살아 있다는 증거이므로 타임아웃 기준을 갱신한다.
 	LastLobbyContactAt = FPlatformTime::Seconds();
 	LastWorkerHeartbeatSentAt = LastLobbyContactAt;
+	UE_LOG(LogTemp, Display,
+		TEXT("[ArenaProcess] Worker control connected Slot=%d State=%s"),
+		WorkerSlotId,
+		bArenaWorldReady ? TEXT("Ready") : TEXT("Starting"));
 	return true;
 }
 

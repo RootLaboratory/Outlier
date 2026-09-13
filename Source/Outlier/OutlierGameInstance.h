@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Engine/EngineBaseTypes.h"
 #include "Engine/GameInstance.h"
+#include "Containers/Ticker.h"
 #include "OutlierGameInstance.generated.h"
 
 /**
@@ -13,6 +14,7 @@
 
 class ULoadingWidget;
 class UNetDriver;
+class UWorld;
 
 UCLASS()
 class OUTLIER_API UOutlierGameInstance : public UGameInstance
@@ -36,6 +38,7 @@ private:
 		ENetworkFailure::Type FailureType,
 		const FString& ErrorString);
 	void TryBootstrapArenaWorker(UWorld* LoadedWorld);
+	bool HandleArenaWorkerBootstrapTick(float DeltaTime);
 	bool TryQueueLobbyRecovery();
 	bool TravelToLobby(UWorld* World);
 	void ResetArenaHandoffState();
@@ -54,5 +57,8 @@ private:
 	bool bLobbyRecoveryQueued = false;
 	bool bLobbyRecoveryAttempted = false;
 	FDelegateHandle NetworkFailureHandle;
+	FTSTicker::FDelegateHandle ArenaWorkerBootstrapTickerHandle;
+	TWeakObjectPtr<UWorld> ArenaWorkerBootstrapWorld;
+	int32 ArenaWorkerReadyStableFrames = 0;
 
 };

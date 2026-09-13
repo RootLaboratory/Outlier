@@ -725,14 +725,10 @@ FEnemyRoomSearchKey UEnemyRoomSubsystem::ResolveEnemyRegistrationKey(
 		return Key;
 	}
 
-	for (int32 ArenaId = 0; ArenaId < ArenaPool->MaxArenaCount; ++ArenaId)
-	{
-		if (ArenaPool->GetArenaLoadedLevel(ArenaId) == EnemyLevel)
-		{
-			Key.ArenaId = ArenaId;
-			break;
-		}
-	}
+	// WP 아레나에서는 적이 아레나 PersistentLevel이 아니라 WP 셀 레벨에 들어가므로
+	// GetArenaLoadedLevel(i) == EnemyLevel 비교가 영원히 실패한다 (09-09에 PlayerStart/Checkpoint와
+	// 동일한 함정으로 확인됨). 셀이 아는 소유 아레나로 역추적하는 헬퍼로 대체.
+	Key.ArenaId = ArenaPool->FindArenaIdForActor(Enemy);
 
 	return Key;
 }
