@@ -95,8 +95,15 @@ private:
 	void PushKeyHintLayer();
 	void RequestExit();
 
+	UFUNCTION()
+	void HandleLobbyBackRequested();
+
+	UPROPERTY(Transient)
+	TObjectPtr<ULobbyWidget> ActiveLobbyWidget;
+
 	UPROPERTY(Transient)
 	TObjectPtr<UUILayerKeyHintWidget> ActiveKeyHintWidget;
 
+	FUILayerHandle LobbyLayerHandle;
 	FUILayerHandle KeyHintLayerHandle;
 };

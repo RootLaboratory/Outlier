@@ -42,6 +42,7 @@ public:
 
 public:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 	FOnHackTargetInvalidated OnHackTargetInvalidated;
@@ -69,5 +70,6 @@ public:
 
 private:
 	const FGameplayTagContainer& ResolveHackEffectTags(EHackResult Result) const;
+	mutable bool bLoggedHackedOnceBlock = false;
 
 };

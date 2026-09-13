@@ -1,24 +1,23 @@
 #include "UI/InteractKeyWidget.h"
 
-#include "Components/Border.h"
-#include "Components/TextBlock.h"
+#include "UI/InputActionKeyDisplayWidget.h"
 
-void UInteractKeyWidget::UpdateInteractKey(const FText& InInteractKeyText)
+void UInteractKeyWidget::NativeConstruct()
 {
-	if (InteractKeyText)
-	{
-		InteractKeyText->SetText(InInteractKeyText);
-	}
+	Super::NativeConstruct();
 
+	if (KeyDisplay)
+	{
+		KeyDisplay->SetWatchedInputAction(InteractionAction);
+	}
+}
+
+void UInteractKeyWidget::UpdateInteractKey()
+{
 	SetVisibility(ESlateVisibility::HitTestInvisible);
 }
 
 void UInteractKeyWidget::ClearInteractKey()
 {
-	if (InteractKeyText)
-	{
-		InteractKeyText->SetText(FText::GetEmpty());
-	}
-
 	SetVisibility(ESlateVisibility::Collapsed);
 }

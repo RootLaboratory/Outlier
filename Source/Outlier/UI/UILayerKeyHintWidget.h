@@ -4,8 +4,7 @@
 #include "Blueprint/UserWidget.h"
 #include "UILayerKeyHintWidget.generated.h"
 
-class UInputAction;
-class UTextBlock;
+class UInputActionKeyDisplayWidget;
 
 UCLASS(Abstract, Blueprintable)
 class OUTLIER_API UUILayerKeyHintWidget : public UUserWidget
@@ -28,20 +27,13 @@ public:
 protected:
 	virtual void NativeConstruct() override;
 
+	// 각각 Confirm/Escape용 IA를 물고 있다가, 리바인드가 일어나면 스스로
+	// 표시를 갱신하는 공용 부품(UInputActionKeyDisplayWidget)이다.
+	// 실제 IA는 RefreshKeyTexts에서 FrontendPlayerController로부터 얻어와
+	// 매 프레임이 아니라 필요할 때만 꽂아준다.
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr<UTextBlock> ConfirmedKeyText;
+	TObjectPtr<UInputActionKeyDisplayWidget> ConfirmedKeyDisplay;
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr<UTextBlock> EscapeKeyText;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "UI|Input")
-	FText MissingKeyText;
-
-	FText ResolveActionKeyText(const UInputAction* InputAction) const;
-
-	UPROPERTY(Transient, BlueprintReadOnly, Category = "UI|Input")
-	FText ConfirmedHintTextOverride;
-
-	UPROPERTY(Transient, BlueprintReadOnly, Category = "UI|Input")
-	FText EscapeHintTextOverride;
+	TObjectPtr<UInputActionKeyDisplayWidget> EscapeKeyDisplay;
 };

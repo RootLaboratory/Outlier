@@ -165,6 +165,18 @@ namespace HackGameplayTags
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Info.StatMachine")));
 			return Tag;
 		}
+
+		inline FGameplayTag LevelSwitch()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Info.LevelSwitch")));
+			return Tag;
+		}
+
+		inline FGameplayTag Magnetic()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Info.Magnetic")));
+			return Tag;
+		}
 	}
 
 }

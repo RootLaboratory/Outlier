@@ -8,7 +8,6 @@
 #include "Components/CapsuleComponent.h"
 #include "Components/SphereComponent.h"
 #include "Components/SkeletalMeshComponent.h"
-#include "Components/SceneCaptureComponent2D.h"
 #include "Curves/CurveFloat.h"
 #include "Engine/SkeletalMesh.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -126,14 +125,6 @@ AShooterCharacter::AShooterCharacter() : AFirstPersonCharacter()
 	if (UpgradeComponent)
 	{
 		UpgradeComponent->SetUpgradeRole(EOutlierUpgradeRole::Shooter);
-	}
-
-	if (CaptureComponent)
-	{
-		if (USkeletalMeshComponent* ThirdPersonMesh = GetMesh())
-		{
-			CaptureComponent->HideComponent(ThirdPersonMesh);
-		}
 	}
 }
 

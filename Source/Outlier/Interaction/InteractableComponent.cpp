@@ -461,7 +461,7 @@ void UInteractableComponent::InteractKeyWidgetActivate(AFirstPersonCharacter* In
 
 	if (InteractKeyWidget)
 	{
-		InteractKeyWidget->UpdateInteractKey(InteractKeyText);
+		InteractKeyWidget->UpdateInteractKey();
 	}
 }
 

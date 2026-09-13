@@ -2,8 +2,11 @@
 
 #include "CoreMinimal.h"
 #include "Audio/OutlierAudioTypes.h"
+#include "InputCoreTypes.h"
 #include "Subsystems/LocalPlayerSubsystem.h"
 #include "LocalPlayerSettingsSubsystem.generated.h"
+
+class UInputAction;
 
 UENUM(BlueprintType)
 enum class EOutlierResolutionPreset : uint8
@@ -54,6 +57,21 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
 	float,
 	NewValue);
 
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(
+	FOnOutlierMouseSensitivityChanged,
+	float,
+	NewValue);
+
+// Setting 화면에서 특정 Input Action의 바인딩 키가 바뀌었을 때 브로드캐스트된다.
+// SettingWidget 인스턴스가 살아있지 않아도(예: HintKey류 위젯) 구독할 수 있도록
+// SettingWidget이 아니라 이 LocalPlayer 상시 Subsystem에서 쏜다.
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
+	FOnOutlierInputActionKeyChanged,
+	UInputAction*,
+	InputAction,
+	FKey,
+	NewKey);
+
 UCLASS()
 class OUTLIER_API ULocalPlayerSettingsSubsystem : public ULocalPlayerSubsystem
 {
@@ -89,11 +107,28 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Settings|Sound")
 	bool SetSoundVolumeByIndex(int32 VolumeIndex, float NewValue, bool bApplyImmediately = true);
 
+	UFUNCTION(BlueprintPure, Category = "Settings|Input")
+	float GetMouseSensitivity() const;
+
+	UFUNCTION(BlueprintCallable, Category = "Settings|Input")
+	bool SetMouseSensitivity(float NewValue);
+
+	// SettingWidget이 리바인드를 커밋한 뒤 호출해서, 같은 IA를 보고 있는 모든
+	// 키 표시 위젯(UInputActionKeyDisplayWidget 등)에게 갱신하라고 알린다.
+	UFUNCTION(BlueprintCallable, Category = "Settings|Input")
+	void NotifyInputActionKeyChanged(UInputAction* InputAction, FKey NewKey);
+
 	UPROPERTY(BlueprintAssignable, Category = "Settings|Graphics")
 	FOnOutlierResolutionPresetChanged OnResolutionPresetChanged;
 
 	UPROPERTY(BlueprintAssignable, Category = "Settings|Sound")
 	FOnOutlierSoundVolumeChanged OnSoundVolumeChanged;
+
+	UPROPERTY(BlueprintAssignable, Category = "Settings|Input")
+	FOnOutlierMouseSensitivityChanged OnMouseSensitivityChanged;
+
+	UPROPERTY(BlueprintAssignable, Category = "Settings|Input")
+	FOnOutlierInputActionKeyChanged OnInputActionKeyChanged;
 
 private:
 	void InitializeResolutionOptions();
@@ -114,4 +149,7 @@ private:
 
 	UPROPERTY(Transient)
 	EOutlierResolutionPreset CurrentResolutionPreset = EOutlierResolutionPreset::FHD;
+
+	UPROPERTY(Transient)
+	float MouseSensitivity = 1.0f;
 };

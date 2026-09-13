@@ -18,8 +18,43 @@ void UHackableComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& O
 	DOREPLIFETIME(UHackableComponent, HackTags);
 }
 
+void UHackableComponent::BeginPlay()
+{
+	Super::BeginPlay();
+
+	// [WP 리로드 검증용 계측 — 2026-09-14 비활성화]
+	// 리로드가 액터를 실제로 재생성하는지(Ptr 비교) / 런타임 태그가 리로드를 넘어 살아남는지
+	// (State.HackedOnce)를 보려고 넣었던 일회용 로그. 대상 액터 이름이 하드코딩돼 있다.
+	// 같은 종류를 다시 의심하게 되면 이 블록을 되살릴 것 — 판정법은 [[WorldPartition/2026-09-14]] 참고.
+	//const AActor* Owner = GetOwner();
+	//if (Owner && Owner->GetName().Contains(TEXT("InteractionStatMachine")))
+	//{
+	//	UE_LOG(LogTemp, Warning,
+	//		TEXT("[HackableLifecycle] BeginPlay Owner=%s Ptr=%p Level=%s NetMode=%d Tags=%s"),
+	//		*Owner->GetPathName(),
+	//		Owner,
+	//		*GetNameSafe(Owner->GetLevel()),
+	//		GetWorld() ? static_cast<int32>(GetWorld()->GetNetMode()) : -1,
+	//		*HackTags.ToStringSimple());
+	//}
+}
+
 void UHackableComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	// [WP 리로드 검증용 계측 — 2026-09-14 비활성화] BeginPlay 쪽과 짝. 둘 다 살려야 Ptr 비교가 된다.
+	//const AActor* Owner = GetOwner();
+	//if (Owner && Owner->GetName().Contains(TEXT("InteractionStatMachine")))
+	//{
+	//	UE_LOG(LogTemp, Warning,
+	//		TEXT("[HackableLifecycle] EndPlay Owner=%s Ptr=%p Level=%s NetMode=%d Reason=%d Tags=%s"),
+	//		*Owner->GetPathName(),
+	//		Owner,
+	//		*GetNameSafe(Owner->GetLevel()),
+	//		GetWorld() ? static_cast<int32>(GetWorld()->GetNetMode()) : -1,
+	//		static_cast<int32>(EndPlayReason),
+	//		*HackTags.ToStringSimple());
+	//}
+
 	OnHackTargetInvalidated.Broadcast(this, EndPlayReason);
 	OnHackTargetInvalidated.Clear();
 
@@ -48,9 +83,24 @@ bool UHackableComponent::CanBeHackTarget(const FHackQueryContext& Context) const
 
 	if (HackTags.HasTag(OutlierGameplayTags::State::HackedOnce()))
 	{
+		// [WP 리로드 검증용 계측 — 2026-09-14 비활성화]
+		// 리로드 후에도 HackedOnce가 남아 재해킹이 막히는지 보려고 넣었던 1회성 로그.
+		// bLoggedHackedOnceBlock 멤버는 이 로그 전용이라 같이 비활성화한다.
+		//if (!bLoggedHackedOnceBlock)
+		//{
+		//	bLoggedHackedOnceBlock = true;
+		//	UE_LOG(LogTemp, Warning,
+		//		TEXT("[HackableLifecycle] HackedOnce candidate check Owner=%s Ptr=%p NetMode=%d MultiUse=%d Tags=%s"),
+		//		*GetPathNameSafe(Owner),
+		//		Owner,
+		//		GetWorld() ? static_cast<int32>(GetWorld()->GetNetMode()) : -1,
+		//		Context.HackMultiUseTags.Num() > 0 && HackTags.HasAny(Context.HackMultiUseTags),
+		//		*HackTags.ToStringSimple());
+		//}
 		return Context.HackMultiUseTags.Num() > 0
 			&& HackTags.HasAny(Context.HackMultiUseTags);
 	}
+	//bLoggedHackedOnceBlock = false;
 
 	return true;
 }
