@@ -5,7 +5,6 @@
 #include "AbilityIconUI.h"
 #include "EventDrivenUI.h"
 #include "PartnerHPUI.h"
-#include "PartnerCamUI.h"
 #include "StaticCrossHair.h"
 #include "DistanceSlideUI.h"
 #include "TagDrivenUIGameplayTags.h"
@@ -23,7 +22,6 @@ void UGangTongMainUI::ModuleInit()
 	Modules.Reserve(8);
 
 	RegisterModule(TagDrivenUITags::Partner::HP(), PartnerHPUI);
-	RegisterModule(TagDrivenUITags::Partner::PartnerCam(), PartnerCamUI);
 	RegisterModule(TagDrivenUITags::Partner::CrossHair(), CrossHairUI);
 	RegisterModule(TagDrivenUITags::Partner::DistanceLimit(), DistanceSlide);
 

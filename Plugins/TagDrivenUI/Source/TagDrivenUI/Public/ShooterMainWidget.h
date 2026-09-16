@@ -50,11 +50,7 @@ public:
 	// 현재 등록된 쪽만 건드리면 안 쓰던 쪽에 이전 확산이 그대로 남는다.
 	void ResetCrossHairs();
 
-public:
-
-	UPROPERTY(meta = (BindWidgetOptional))
-	TObjectPtr<UPartnerCamUI> PartnerCamUI;
-	
+public:	
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UHPBarUI> HPBarUI;
 

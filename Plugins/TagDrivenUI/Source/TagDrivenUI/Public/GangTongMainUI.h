@@ -46,10 +46,6 @@ public:
 	// PlayerState 의 획득 플래그가 복제돼 올 때 UI 서브시스템이 이걸 호출한다.
 	void SetSuitGatedModulesEnabled(bool bEnabled);
 
-
-	UPROPERTY(meta = (BindWidgetOptional))
-	TObjectPtr<UPartnerCamUI> PartnerCamUI;
-
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UStaticCrossHair> CrossHairUI;
 
