@@ -31,6 +31,7 @@ class UOutlierVitalAttributeSet;
 class UOutlierShieldAttributeSet;
 class UDataTable;
 class USphereComponent;
+class USkeletalMesh;
 class UShooterReflectionBarrier;
 struct FOnAttributeChangeData;
 
@@ -65,7 +66,8 @@ enum class ECombatState : uint8
 	Aim,
 	Reload,
 	Cooldown,	// 보조무기용
-	Attack		// 근접무기용
+	Attack,		// 근접무기용
+	Recovery	// 근접 타격 이후 다음 공격 제한 구간
 };
 
 UENUM(BlueprintType)
@@ -96,7 +98,8 @@ enum class EShooterMontageAction : uint8
 	Fire,
 	Reload,
 	Slide,
-	Equip
+	Equip,
+	MeleeAttack
 };
 
 /**
@@ -247,6 +250,13 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
 	TObjectPtr<UAnimMontage> ThirdPersonEquipMontage;
 
+	// Melee Attack
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
+	TObjectPtr<UAnimMontage> FirstPersonMeleeAttackMontage;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
+	TObjectPtr<UAnimMontage> ThirdPersonMeleeAttackMontage;
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Animation|Sections")
 	FName RifleMontageSectionName = TEXT("Rifle");
 
@@ -268,6 +278,12 @@ protected:
 
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "State")
 	EShooterActionLock ActionLock = EShooterActionLock::None;
+
+	UPROPERTY(ReplicatedUsing = OnRep_SuitMeshes, VisibleAnywhere, BlueprintReadOnly, Category = "Suit|Mesh")
+	TObjectPtr<USkeletalMesh> AppliedSuitFirstPersonMesh;
+
+	UPROPERTY(ReplicatedUsing = OnRep_SuitMeshes, VisibleAnywhere, BlueprintReadOnly, Category = "Suit|Mesh")
+	TObjectPtr<USkeletalMesh> AppliedSuitThirdPersonMesh;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "GAS|Suit")
 	TObjectPtr<UDataTable> ShooterSuitAbilityDataTable;
@@ -445,6 +461,9 @@ public:
 	UFUNCTION()
 	void OnRep_CurrentLeanAlpha();
 
+	UFUNCTION()
+	void OnRep_SuitMeshes();
+
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual FVector GetPawnViewLocation() const override;
 	virtual UAISense_Sight::EVisibilityResult CanBeSeenFrom(
@@ -458,6 +477,7 @@ public:
 	// Unreal 공통 피해 진입점을 기존 Shooter 실드 및 HP 처리로 연결한다.
 	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
 	virtual void EquipWeapon(AWeaponBase* Weapon) override;
+	void ApplySuitMeshes(USkeletalMesh* FirstPersonMeshAsset, USkeletalMesh* ThirdPersonMeshAsset);
 	virtual FGameplayTagContainer GetOwnedGameplayTagsForQuery() const override;
 
 	// Read-only Queries
@@ -558,9 +578,20 @@ public:
 	void HandleWeaponAttackStoppedInternal();
 	void HandleAutoReloadRequested();
 	void HandleFireShotAnimation();
+	void HandleMeleeAttackAnimation();
+	void SetMeleeTracePoseRefreshEnabled(bool bEnabled);
 	// Blueprint / Notify Entry Points
 	UFUNCTION(BlueprintCallable, Category = "Animation|Notify")
 	void HandleReloadCommitNotify();
+
+	UFUNCTION(BlueprintCallable, Category = "Animation|Notify")
+	void HandleMeleeHitNotify();
+	void HandleMeleeTraceBeginNotify();
+	void HandleMeleeTraceTickNotify();
+	void HandleMeleeTraceEndNotify();
+
+	UFUNCTION(BlueprintCallable, Category = "Animation|Notify")
+	void HandleMeleeRecoveryEndNotify();
 
 	void DoJumpStart();
 
@@ -603,6 +634,7 @@ protected:
 	void StopLean();
 
 	void RefreshFirstPersonShadowPolicy();
+	void RefreshAppliedSuitMeshes();
 	void UpdateSlideCameraEffect(float DeltaSeconds);
 
 	// Server RPC
@@ -703,6 +735,7 @@ public:
 	void PlayEquipMontages();
 	const UAnimMontage* GetFirstPersonReloadMontage() const { return FirstPersonReloadMontage; }
 	const UAnimMontage* GetFirstPersonEquipMontage() const { return FirstPersonEquipMontage; }
+	UAnimMontage* GetThirdPersonMeleeAttackMontage() const { return ThirdPersonMeleeAttackMontage; }
 	void ClearInputIntent();
 
 	void CleanupOwnedWeapons();

@@ -410,6 +410,20 @@ void AOutlierPlayerState::SetNodeCountInternal(int32 NewNodeCount)
 	ForceNetUpdate();
 }
 
+void AOutlierPlayerState::SetAcquiredSuit(bool Acquire)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	bHasAcquiredSuit = Acquire;
+}
+
+bool AOutlierPlayerState::GetAcquiredSuit() const
+{
+	return bHasAcquiredSuit;
+}
+
 void AOutlierPlayerState::SetTemporaryPlayerId(const FGuid& NewPlayerId)
 {
 	if (!HasAuthority()

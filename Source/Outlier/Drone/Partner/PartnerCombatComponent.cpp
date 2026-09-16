@@ -12,16 +12,6 @@ UPartnerCombatComponent::UPartnerCombatComponent()
 	SetIsReplicatedByDefault(true);
 }
 
-void UPartnerCombatComponent::BeginPlay()
-{
-	Super::BeginPlay();
-
-	if (PartnerCharacter && PartnerCharacter->HasAuthority() && bEquipDefaultWeaponOnBeginPlay)
-	{
-		EquipDefaultWeapon_Server();
-	}
-}
-
 void UPartnerCombatComponent::TryStartAttack()
 {
 	// 서버 RPC가 다시 이 함수로 들어오므로 입력 가능 여부는 서버에서도 동일하게 검증된다.
@@ -157,67 +147,6 @@ void UPartnerCombatComponent::CancelForReboot()
 	ReloadingWeapon.Reset();
 }
 
-void UPartnerCombatComponent::ToggleTestWeaponEquipped()
-{
-	if (!PartnerCharacter)
-	{
-		UE_LOG(LogTemp, Error, TEXT("[PartnerWeaponToggle][Combat] Failed: PartnerCharacter is null."));
-		return;
-	}
-
-	if (!PartnerCharacter->CanAcceptInput())
-	{
-		return;
-	}
-
-	UE_LOG(
-		LogTemp,
-		Warning,
-		TEXT("[PartnerWeaponToggle][Combat] Character=%s Authority=%d CurrentWeapon=%s SavedWeapon=%s DefaultClass=%s"),
-		*GetNameSafe(PartnerCharacter),
-		PartnerCharacter->HasAuthority() ? 1 : 0,
-		*GetNameSafe(PartnerCharacter->GetCurrentWeapon()),
-		*GetNameSafe(TestUnequippedWeapon.Get()),
-		*GetNameSafe(DefaultWeaponClass));
-
-	if (!PartnerCharacter->HasAuthority())
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[PartnerWeaponToggle][Client] Sending ServerToggleTestWeaponEquipped RPC."));
-		ServerToggleTestWeaponEquipped();
-		return;
-	}
-
-	if (AWeaponBase* CurrentWeapon = PartnerCharacter->GetCurrentWeapon())
-	{
-		TestUnequippedWeapon = CurrentWeapon;
-		PartnerCharacter->EquipWeapon(nullptr);
-		CurrentWeapon->ForceNetUpdate();
-		UE_LOG(
-			LogTemp,
-			Warning,
-			TEXT("[PartnerWeaponToggle][Server] Unequipped Weapon=%s CurrentWeapon=%s"),
-			*GetNameSafe(CurrentWeapon),
-			*GetNameSafe(PartnerCharacter->GetCurrentWeapon()));
-		return;
-	}
-
-	if (AWeaponBase* PreviousWeapon = TestUnequippedWeapon.Get())
-	{
-		PartnerCharacter->EquipWeapon(PreviousWeapon);
-		PreviousWeapon->ShowEquippedPresentation();
-		UE_LOG(
-			LogTemp,
-			Warning,
-			TEXT("[PartnerWeaponToggle][Server] Re-equipped Weapon=%s CurrentWeapon=%s"),
-			*GetNameSafe(PreviousWeapon),
-			*GetNameSafe(PartnerCharacter->GetCurrentWeapon()));
-		return;
-	}
-
-	UE_LOG(LogTemp, Warning, TEXT("[PartnerWeaponToggle][Server] No saved weapon. Trying DefaultWeaponClass spawn."));
-	EquipDefaultWeapon_Server();
-}
-
 void UPartnerCombatComponent::ServerStartAttack_Implementation()
 {
 	UE_LOG(LogTemp, Warning, TEXT("[PartnerWeaponVFX][ServerRPC] ServerStartAttack received."));
@@ -227,12 +156,6 @@ void UPartnerCombatComponent::ServerStartAttack_Implementation()
 void UPartnerCombatComponent::ServerStopAttack_Implementation()
 {
 	TryStopAttack();
-}
-
-void UPartnerCombatComponent::ServerToggleTestWeaponEquipped_Implementation()
-{
-	UE_LOG(LogTemp, Warning, TEXT("[PartnerWeaponToggle][ServerRPC] RPC received."));
-	ToggleTestWeaponEquipped();
 }
 
 void UPartnerCombatComponent::FinishReload()
@@ -264,76 +187,4 @@ void UPartnerCombatComponent::FinishReload()
 	}
 
 	ReloadingWeapon.Reset();
-}
-
-void UPartnerCombatComponent::EquipDefaultWeapon_Server()
-{
-	if (!PartnerCharacter)
-	{
-		UE_LOG(LogTemp, Error, TEXT("[PartnerWeaponToggle][Spawn] Failed: PartnerCharacter is null."));
-		return;
-	}
-
-	if (!PartnerCharacter->CanAcceptInput())
-	{
-		return;
-	}
-
-	if (!PartnerCharacter->HasAuthority())
-	{
-		UE_LOG(LogTemp, Error, TEXT("[PartnerWeaponToggle][Spawn] Failed: called without authority."));
-		return;
-	}
-
-	if (!DefaultWeaponClass)
-	{
-		UE_LOG(
-			LogTemp,
-			Error,
-			TEXT("[PartnerWeaponToggle][Spawn] Failed: DefaultWeaponClass is not set on CombatComponent of %s."),
-			*GetNameSafe(PartnerCharacter));
-		return;
-	}
-
-	if (PartnerCharacter->GetCurrentWeapon())
-	{
-		UE_LOG(
-			LogTemp,
-			Warning,
-			TEXT("[PartnerWeaponToggle][Spawn] Skipped: CurrentWeapon already exists (%s)."),
-			*GetNameSafe(PartnerCharacter->GetCurrentWeapon()));
-		return;
-	}
-
-	FActorSpawnParameters SpawnParams;
-	SpawnParams.Owner = PartnerCharacter;
-	SpawnParams.Instigator = PartnerCharacter;
-	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-
-	ARangedWeaponBase* DefaultWeapon = GetWorld()->SpawnActor<ARangedWeaponBase>(
-		DefaultWeaponClass,
-		PartnerCharacter->GetActorTransform(),
-		SpawnParams
-	);
-
-	if (DefaultWeapon)
-	{
-		PartnerCharacter->EquipWeapon(DefaultWeapon);
-		DefaultWeapon->ShowEquippedPresentation();
-		UE_LOG(
-			LogTemp,
-			Warning,
-			TEXT("[PartnerWeaponToggle][Spawn] Spawned and equipped Weapon=%s Class=%s CurrentWeapon=%s"),
-			*GetNameSafe(DefaultWeapon),
-			*GetNameSafe(DefaultWeaponClass),
-			*GetNameSafe(PartnerCharacter->GetCurrentWeapon()));
-	}
-	else
-	{
-		UE_LOG(
-			LogTemp,
-			Error,
-			TEXT("[PartnerWeaponToggle][Spawn] Failed: SpawnActor returned null for Class=%s."),
-			*GetNameSafe(DefaultWeaponClass));
-	}
 }

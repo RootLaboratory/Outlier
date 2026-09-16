@@ -16,6 +16,55 @@ enum class EEnemyTacticalDistanceMode : uint8
 };
 
 USTRUCT()
+struct FEnemyCombatAssessmentTaskInstanceData
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = Context)
+	TObjectPtr<AEnemyBase> Enemy = nullptr;
+	UPROPERTY(EditAnywhere, Category = Input)
+	TObjectPtr<AActor> TargetActor = nullptr;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.01"))
+	float UpdateInterval = 0.2f;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0", Units = "cm"))
+	float WallCheckDistance = 300.0f;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (Units = "cm"))
+	float WallCheckHeightOffset = 0.0f;
+	UPROPERTY(EditAnywhere, Category = Parameter)
+	TEnumAsByte<ECollisionChannel> WallTraceChannel = ECC_Visibility;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bHasValidTarget = false;
+	UPROPERTY(EditAnywhere, Category = Output)
+	float HorizontalDistance = 0.0f;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bLeftBlocked = false;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bRightBlocked = false;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bBothSidesBlocked = false;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bPrefersLeft = false;
+
+	float Elapsed = 0.0f;
+	TWeakObjectPtr<AActor> LastTarget;
+};
+
+// 직접 교전 루트에서 사용한다. 이동 상태와 무관하게 판단 정보를 갱신한다.
+USTRUCT(meta = (DisplayName = "Enemy Combat Assessment", Category = "Enemy|Combat"))
+struct OUTLIER_API FEnemyCombatAssessmentTask : public FStateTreeTaskCommonBase
+{
+	GENERATED_BODY()
+	using FInstanceDataType = FEnemyCombatAssessmentTaskInstanceData;
+	FEnemyCombatAssessmentTask();
+	virtual const UStruct* GetInstanceDataType() const override { return FInstanceDataType::StaticStruct(); }
+	virtual EStateTreeRunStatus EnterState(FStateTreeExecutionContext& Context,
+		const FStateTreeTransitionResult& Transition) const override;
+	virtual EStateTreeRunStatus Tick(FStateTreeExecutionContext& Context, float DeltaTime) const override;
+	virtual void ExitState(FStateTreeExecutionContext& Context,
+		const FStateTreeTransitionResult& Transition) const override;
+};
+
+USTRUCT()
 struct FEnemyApproachTargetTaskInstanceData
 {
 	GENERATED_BODY()
