@@ -878,28 +878,17 @@ void AEnemyBase::ClearSharedTargetContact()
 
 void AEnemyBase::EnterCombat(const FVector& PlayerLocation)
 {
-	EnterCombatInArena(PlayerLocation, INDEX_NONE, true);
+	EnterCombatFromRoom(PlayerLocation, true);
 }
 
-void AEnemyBase::EnterCombatInArena(
+void AEnemyBase::EnterCombatFromRoom(
 	const FVector& PlayerLocation,
-	int32 ArenaId,
 	bool bPropagateToRoom,
 	bool bDeferStateTreeEvent)
 {
 	if (!HasAuthority())
 	{
 		return;
-	}
-
-	if (ArenaId != INDEX_NONE)
-	{
-		LastKnownArenaId = ArenaId;
-		if (UEnemyRoomSubsystem* RoomSubsystem =
-			GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
-		{
-			RoomSubsystem->RefreshEnemyRegistration(this);
-		}
 	}
 
 	if (CombatState == EEnemyCombatState::Stun)
@@ -922,12 +911,11 @@ void AEnemyBase::EnterCombatInArena(
 
 	const FGameplayTag RoomTag = GetDefaultRoomTag();
 
-	const int32 PropagationArenaId = ArenaId != INDEX_NONE ? ArenaId : LastKnownArenaId;
-	if (bPropagateToRoom && PropagationArenaId != INDEX_NONE && RoomTag.IsValid())
+	if (bPropagateToRoom && RoomTag.IsValid())
 	{
 		if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
 		{
-			RoomSubsystem->NotifyRoomCombat(PropagationArenaId, RoomTag, PlayerLocation, this);
+			RoomSubsystem->NotifyRoomCombat(RoomTag, PlayerLocation, this);
 		}
 	}
 
@@ -948,7 +936,7 @@ void AEnemyBase::EnterCombatInArena(
 
 void AEnemyBase::EnterAlert(const FVector& PlayerLocation)
 {
-	EnterAlertInArena(PlayerLocation, INDEX_NONE);
+	EnterAlertFromPerception(PlayerLocation);
 }
 
 // Alert Task가 감지 유지/상실 시간을 판정한 뒤 이 함수들로 실제 CombatState를 확정한다.
@@ -962,7 +950,7 @@ bool AEnemyBase::CommitAlertToCombat()
 
 	// 이 함수는 Alert StateTree Task의 Tick 안에서 호출된다. 같은 Tick에 이벤트를 보내면
 	// Global Sync가 이전 Alert 값을 가진 채 Enter Condition을 검사하므로 다음 Tick으로 넘긴다.
-	EnterCombatInArena(LastKnownPlayerLocation, INDEX_NONE, true, true);
+	EnterCombatFromRoom(LastKnownPlayerLocation, true, true);
 	return CombatState == EEnemyCombatState::Combat;
 }
 
@@ -984,21 +972,11 @@ bool AEnemyBase::CommitAlertToNonCombat()
 	return true;
 }
 
-void AEnemyBase::EnterAlertInArena(const FVector& PlayerLocation, int32 ArenaId)
+void AEnemyBase::EnterAlertFromPerception(const FVector& PlayerLocation)
 {
 	if (!HasAuthority())
 	{
 		return;
-	}
-
-	if (ArenaId != INDEX_NONE)
-	{
-		LastKnownArenaId = ArenaId;
-		if (UEnemyRoomSubsystem* RoomSubsystem =
-			GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
-		{
-			RoomSubsystem->RefreshEnemyRegistration(this);
-		}
 	}
 
 	if (CombatState == EEnemyCombatState::Stun)

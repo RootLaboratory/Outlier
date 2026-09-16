@@ -255,16 +255,6 @@ void AOutlierPlayerState::SetStatAllocatorExitPending(bool bPending)
 	ForceNetUpdate();
 }
 
-void AOutlierPlayerState::SetArenaId(int32 NewArenaId)
-{
-	if (!HasAuthority())
-	{
-		return;
-	}
-
-	ArenaId = NewArenaId;
-}
-
 void AOutlierPlayerState::SetPendingLobbyMatchId(int32 NewPendingLobbyMatchId)
 {
 	if (!HasAuthority() || PendingLobbyMatchId == NewPendingLobbyMatchId)
@@ -643,7 +633,6 @@ void AOutlierPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& 
 	DOREPLIFETIME(AOutlierPlayerState, PairId);
 	DOREPLIFETIME_CONDITION(AOutlierPlayerState, NodeCount, COND_OwnerOnly); //공유될 필요는 없어서 소유자만 복제
 	DOREPLIFETIME(AOutlierPlayerState, bStatAllocatorExitPending);
-	DOREPLIFETIME(AOutlierPlayerState, ArenaId);
 	DOREPLIFETIME(AOutlierPlayerState, PendingLobbyMatchId);
 	DOREPLIFETIME(AOutlierPlayerState, PendingLobbyRole);
 	DOREPLIFETIME(AOutlierPlayerState, PendingLobbySlotIndex);

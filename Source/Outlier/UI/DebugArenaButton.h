@@ -9,7 +9,7 @@
 class UButton;
 
 /**
- * 디버그용: 요청한 페어(자기 ArenaId) arena를 서버 권위로 리로드시키는 버튼.
+ * 디버그용: 현재 단일 Arena를 서버 권위로 리로드시키는 버튼.
  */
 UCLASS()
 class OUTLIER_API UDebugArenaButton : public UUserWidget

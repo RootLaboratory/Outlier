@@ -1089,13 +1089,12 @@ void APartnerCharacter::ReportBoostNoise()
 		return;
 	}
 
-	const AOutlierPlayerState* OutlierPS = GetPlayerState<AOutlierPlayerState>();
 	const FGameplayTag CurrentRoomTag = GetCurrentRoomTag();
-	if (OutlierPS && CurrentRoomTag.IsValid())
+	if (CurrentRoomTag.IsValid())
 	{
 		if (const UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
 		{
-			if (RoomSubsystem->IsRoomInCombat(OutlierPS->GetArenaId(), CurrentRoomTag))
+			if (RoomSubsystem->IsRoomInCombat(CurrentRoomTag))
 			{
 				return;
 			}

@@ -1834,7 +1834,6 @@ void ARangedWeaponBase::ReportArenaWideNoise(ACharacter* OwnerCharacter)
 	if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
 	{
 		RoomSubsystem->NotifyRoomCombat(
-			PlayerState->GetArenaId(),
 			CurrentRoomTag,
 			OwnerCharacter->GetActorLocation(),
 			Cast<AEnemyBase>(OwnerCharacter)

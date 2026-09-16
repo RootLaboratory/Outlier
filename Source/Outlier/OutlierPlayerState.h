@@ -98,12 +98,6 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Stat Allocator")
 	bool IsStatAllocatorExitPending() const { return bStatAllocatorExitPending; }
 
-	UFUNCTION(BlueprintCallable, Category = "Pair")
-	void SetArenaId(int32 NewArenaId);
-
-	UFUNCTION(BlueprintPure, Category = "Pair")
-	int32 GetArenaId() const { return ArenaId; }
-
 	UFUNCTION(BlueprintCallable, Category = "Lobby")
 	void SetPendingLobbyMatchId(int32 NewPendingLobbyMatchId);
 
@@ -139,9 +133,6 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Preset")
 	FName GetPendingPresetSelection() const { return PendingPresetSelection; }
-
-	UPROPERTY(Replicated)
-	int32 ArenaId = INDEX_NONE;
 
 protected:
 	UPROPERTY(ReplicatedUsing = OnRep_PlayerRole)

@@ -9,23 +9,6 @@ class AEnemyBase;
 class AActor;
 class ULevel;
 
-// 수색 슬롯은 Arena와 RoomTag가 모두 같은 적끼리만 공유한다.
-struct FEnemyRoomSearchKey
-{
-	int32 ArenaId = INDEX_NONE;
-	FGameplayTag RoomTag;
-
-	bool operator==(const FEnemyRoomSearchKey& Other) const
-	{
-		return ArenaId == Other.ArenaId && RoomTag == Other.RoomTag;
-	}
-
-	friend uint32 GetTypeHash(const FEnemyRoomSearchKey& Key)
-	{
-		return HashCombine(GetTypeHash(Key.ArenaId), GetTypeHash(Key.RoomTag));
-	}
-};
-
 // LKP 원형 수색의 현재 배치 결과.
 // Enemy는 약한 참조로 보관해 파괴된 Actor가 슬롯 상태를 붙잡지 않도록 한다.
 struct FEnemyRoomSearchState
@@ -59,14 +42,13 @@ public:
 	void RegisterEnemy(AEnemyBase* Enemy);
 	void UnregisterEnemy(AEnemyBase* Enemy);
 	void RefreshEnemyRegistration(AEnemyBase* Enemy);
-	void NotifyRoomCombat(int32 ArenaId, FGameplayTag RoomTag, const FVector& PlayerLocation, AEnemyBase* ExcludeEnemy);
-	bool IsRoomInCombat(int32 ArenaId, FGameplayTag RoomTag) const;
+	void NotifyRoomCombat(FGameplayTag RoomTag, const FVector& PlayerLocation, AEnemyBase* ExcludeEnemy);
+	bool IsRoomInCombat(FGameplayTag RoomTag) const;
 
 	// Sight로 직접 대상을 관측한 Enemy만 호출한다.
 	void ReportRoomTargetContact(
 		AEnemyBase* Observer,
 		AActor* TargetActor,
-		int32 ArenaId,
 		const FVector& TargetLocation);
 
 	// Observer가 시야를 잃거나 전투 행동에서 이탈하면 직접 관측자 집합에서 제거한다.
@@ -93,30 +75,30 @@ public:
 private:
 	// 같은 방의 유효 Enemy를 모아 수평 원 슬롯을 만들고 가까운 슬롯부터 배정한다.
 	bool RebuildSearchRingAssignments(
-		const FEnemyRoomSearchKey& Key,
+		FGameplayTag RoomTag,
 		const FVector& Center,
 		float Radius,
 		float FlightHeightOffset,
 		float FloorTraceHalfHeight);
 	void CompactSearchState(FEnemyRoomSearchState& SearchState);
-	void BroadcastSharedTargetContact(const FEnemyRoomSearchKey& Key, const FVector& TargetLocation);
-	void BroadcastSharedTargetLost(const FEnemyRoomSearchKey& Key);
+	void BroadcastSharedTargetContact(FGameplayTag RoomTag, const FVector& TargetLocation);
+	void BroadcastSharedTargetLost(FGameplayTag RoomTag);
 	void CompactTargetContactState(FEnemyRoomTargetContactState& ContactState);
-	void ScheduleForcedTargetShare(const FEnemyRoomSearchKey& Key);
-	void HandleForcedTargetShare(FEnemyRoomSearchKey Key);
-	FEnemyRoomSearchKey ResolveEnemyRegistrationKey(const AEnemyBase* Enemy) const;
+	void ScheduleForcedTargetShare(FGameplayTag RoomTag);
+	void HandleForcedTargetShare(FGameplayTag RoomTag);
+	FGameplayTag ResolveEnemyRegistrationKey(const AEnemyBase* Enemy) const;
 	FGameplayTag ResolveEnemyRoomTag(const AEnemyBase* Enemy) const;
-	void CompactRegisteredEnemies(const FEnemyRoomSearchKey& Key);
+	void CompactRegisteredEnemies(FGameplayTag RoomTag);
 	void CompactAllRegisteredEnemies();
-	void HandleArenaReleased(int32 ArenaId);
+	void HandleArenaReleased();
 
-	TMap<int32, TSet<FGameplayTag>> CombatRoomsByArena;
-	TMap<FEnemyRoomSearchKey, TSet<TWeakObjectPtr<AEnemyBase>>> RegisteredEnemiesByRoom;
-	TMap<TWeakObjectPtr<AEnemyBase>, FEnemyRoomSearchKey> RegisteredEnemyKeys;
+	TSet<FGameplayTag> CombatRooms;
+	TMap<FGameplayTag, TSet<TWeakObjectPtr<AEnemyBase>>> RegisteredEnemiesByRoom;
+	TMap<TWeakObjectPtr<AEnemyBase>, FGameplayTag> RegisteredEnemyKeys;
 
 	// Arena 해제 시 HandleArenaReleased에서 함께 제거한다.
-	TMap<FEnemyRoomSearchKey, FEnemyRoomSearchState> SearchStates;
-	TMap<FEnemyRoomSearchKey, FEnemyRoomTargetContactState> TargetContactStates;
+	TMap<FGameplayTag, FEnemyRoomSearchState> SearchStates;
+	TMap<FGameplayTag, FEnemyRoomTargetContactState> TargetContactStates;
 
 	// 방의 모든 직접 시야가 끊긴 뒤 이 시간이 지나면 마지막 타겟의 현재 위치를 한 번 공유한다.
 	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Room", meta = (ClampMin = "0.0"))

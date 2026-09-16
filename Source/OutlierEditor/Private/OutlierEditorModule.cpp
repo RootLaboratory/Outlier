@@ -4,9 +4,13 @@
 #include "EnhancedInputDeveloperSettings.h"
 #include "Framework/Docking/TabManager.h"
 #include "Kismet/GameplayStatics.h"
+#include "LevelEditor.h"
 #include "Misc/Paths.h"
 #include "OutlierInputMappableToolWidget.h"
 #include "OutlierUpgradeEffectToolWidget.h"
+#include "PlayInEditorDataTypes.h"
+#include "Settings/LevelEditorPlaySettings.h"
+#include "Styling/AppStyle.h"
 #include "ToolMenus.h"
 #include "Widgets/Docking/SDockTab.h"
 
@@ -16,6 +20,7 @@ namespace OutlierEditor
 {
 	const FName InputMappableToolTabName(TEXT("OutlierInputMappableTool"));
 	const FName UpgradeEffectToolTabName(TEXT("OutlierUpgradeEffectTool"));
+	const FString ListenServerStartMap(TEXT("/Game/Maps/Title"));
 }
 
 class FOutlierEditorModule : public IModuleInterface
@@ -81,6 +86,29 @@ private:
 			LOCTEXT("OpenUpgradeEffectToolTooltip", "Author upgrade effect rows with dropdowns; writes CSV and reimports."),
 			FSlateIcon(),
 			FUIAction(FExecuteAction::CreateRaw(this, &FOutlierEditorModule::OpenUpgradeEffectTool)));
+
+		UToolMenu* PlayToolBar = UToolMenus::Get()->ExtendMenu(
+			TEXT("LevelEditor.LevelEditorToolBar.PlayToolBar"));
+		FToolMenuSection& PlaySection = PlayToolBar->FindOrAddSection(TEXT("Play"));
+		PlaySection.AddSeparator(TEXT("OutlierPlayModesSeparator"));
+
+		PlaySection.AddEntry(FToolMenuEntry::InitToolBarButton(
+			TEXT("OutlierPlayStandalone1P"),
+			FUIAction(
+				FExecuteAction::CreateRaw(this, &FOutlierEditorModule::StartStandalonePlaySession),
+				FCanExecuteAction::CreateRaw(this, &FOutlierEditorModule::CanStartPlaySession)),
+			LOCTEXT("PlayStandalone1PLabel", "Standalone 1P"),
+			LOCTEXT("PlayStandalone1PTooltip", "Start the current map as a one-player Standalone PIE session."),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), TEXT("PlayWorld.PlayInNewProcess"))));
+
+		PlaySection.AddEntry(FToolMenuEntry::InitToolBarButton(
+			TEXT("OutlierPlayListen2P"),
+			FUIAction(
+				FExecuteAction::CreateRaw(this, &FOutlierEditorModule::StartListenServerPlaySession),
+				FCanExecuteAction::CreateRaw(this, &FOutlierEditorModule::CanStartPlaySession)),
+			LOCTEXT("PlayListen2PLabel", "Listen 2P"),
+			LOCTEXT("PlayListen2PTooltip", "Start the Title map as a two-player Listen Server PIE session."),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), TEXT("Icons.GroupActors"))));
 	}
 
 	void OpenInputMappableTool()
@@ -91,6 +119,51 @@ private:
 	void OpenUpgradeEffectTool()
 	{
 		FGlobalTabmanager::Get()->TryInvokeTab(OutlierEditor::UpgradeEffectToolTabName);
+	}
+
+	bool CanStartPlaySession() const
+	{
+		return GEditor && !GEditor->IsPlaySessionInProgress();
+	}
+
+	void StartStandalonePlaySession()
+	{
+		StartPlaySession(EPlayNetMode::PIE_Standalone, 1, FString());
+	}
+
+	void StartListenServerPlaySession()
+	{
+		StartPlaySession(EPlayNetMode::PIE_ListenServer, 2, OutlierEditor::ListenServerStartMap);
+	}
+
+	void StartPlaySession(EPlayNetMode NetMode, int32 PlayerCount, const FString& MapOverride)
+	{
+		if (!CanStartPlaySession())
+		{
+			return;
+		}
+
+		ULevelEditorPlaySettings* PlaySettings = DuplicateObject<ULevelEditorPlaySettings>(
+			GetDefault<ULevelEditorPlaySettings>(),
+			GetTransientPackage());
+		PlaySettings->SetPlayNetMode(NetMode);
+		PlaySettings->SetPlayNumberOfClients(PlayerCount);
+		PlaySettings->SetRunUnderOneProcess(true);
+		PlaySettings->bLaunchSeparateServer = false;
+		PlaySettings->LastExecutedPlayModeType = PlayMode_InEditorFloating;
+
+		FRequestPlaySessionParams Params;
+		Params.EditorPlaySettings = PlaySettings;
+		Params.GlobalMapOverride = MapOverride;
+
+		FLevelEditorModule& LevelEditorModule =
+			FModuleManager::LoadModuleChecked<FLevelEditorModule>(TEXT("LevelEditor"));
+		if (TSharedPtr<IAssetViewport> ActiveViewport = LevelEditorModule.GetFirstActiveViewport())
+		{
+			Params.DestinationSlateViewport = ActiveViewport;
+		}
+
+		GEditor->RequestPlaySession(Params);
 	}
 
 	void HandleBeginPIE(bool bIsSimulating)

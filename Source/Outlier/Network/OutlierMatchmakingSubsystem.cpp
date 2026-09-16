@@ -2,7 +2,7 @@
 
 
 #include "Network/OutlierMatchmakingSubsystem.h"
-#include "Network/OutlierArenaPoolSubsystem.h"
+#include "Network/OutlierArenaSubsystem.h"
 #include "Network/OutlierArenaProcessSubsystem.h"
 #include "OutlierGameMode.h"
 #include "OutlierPlayerState.h"
@@ -426,17 +426,17 @@ void UOutlierMatchmakingSubsystem::ReleaseMatch(int32 PairId)
 		return;
 	}
 
-	if (const int32* ArenaId = ActivePairArenaIds.Find(PairId))
+	if (ActiveArenaPairId == PairId)
 	{
 		if (UWorld* World = GetWorld())
 		{
-			if (UOutlierArenaPoolSubsystem* ArenaPool = World->GetSubsystem<UOutlierArenaPoolSubsystem>())
+			if (UOutlierArenaSubsystem* ArenaSubsystem = World->GetSubsystem<UOutlierArenaSubsystem>())
 			{
-				ArenaPool->ReleaseArena(*ArenaId);
+				ArenaSubsystem->ReleaseArena();
 			}
 		}
 
-		ActivePairArenaIds.Remove(PairId);
+		ActiveArenaPairId = INDEX_NONE;
 	}
 
 	if (const FGuid* MatchId = ActivePairMatchIds.Find(PairId))
@@ -787,15 +787,15 @@ bool UOutlierMatchmakingSubsystem::CreateMatch(
 		return true;
 	}
 
-	UOutlierArenaPoolSubsystem* ArenaPool =
-		World->GetSubsystem<UOutlierArenaPoolSubsystem>();
+	UOutlierArenaSubsystem* ArenaSubsystem =
+		World->GetSubsystem<UOutlierArenaSubsystem>();
 
-	if (!ArenaPool)
+	if (!ArenaSubsystem)
 	{
 		return false;
 	}
 
-	FOutlierArenaInstance* Arena = ArenaPool->AcquireArena();
+	FOutlierArenaInstance* Arena = ArenaSubsystem->AcquireArena();
 	if (!Arena)
 	{
 		return false;
@@ -806,12 +806,12 @@ bool UOutlierMatchmakingSubsystem::CreateMatch(
 	AOutlierGameMode* GameMode = World->GetAuthGameMode<AOutlierGameMode>();
 	if (!GameMode)
 	{
-		ArenaPool->ReleaseArena(Arena->ArenaId);
+		ArenaSubsystem->ReleaseArena();
 		return false;
 	}
 
 	Arena->PairId = PairId;
-	ActivePairArenaIds.Add(PairId, Arena->ArenaId);
+	ActiveArenaPairId = PairId;
 	ActiveMatchAssignments.Add(Assignment.MatchId, Assignment);
 	ActivePairMatchIds.Add(PairId, Assignment.MatchId);
 
@@ -819,7 +819,6 @@ bool UOutlierMatchmakingSubsystem::CreateMatch(
 		FirstController,
 		SecondController,
 		PairId,
-		Arena->ArenaId,
 		FirstRole,
 		SecondRole
 	);

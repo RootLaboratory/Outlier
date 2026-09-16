@@ -54,12 +54,11 @@ public:
 		AController* FirstController,
 		AController* SecondController,
 		int32 PairId,
-		int32 ArenaId,
 		EOutlierPlayerRole FirstRole,
 		EOutlierPlayerRole SecondRole);
 
 	void OnClientArenaReady(APlayerController* PC);
-	void OnClientArenaGameplayGCReady(APlayerController* PC, int32 ArenaId);
+	void OnClientArenaGameplayGCReady(APlayerController* PC, uint32 GameplayGeneration);
 
 	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "Network|Arena")
 	bool CompleteArenaMatch();
@@ -76,11 +75,13 @@ private:
 	UPROPERTY()
 	TMap<TObjectPtr<APlayerController>, TObjectPtr<APawn>> PendingLocalPossessions;
 
-	void HandleServerArenaReloaded(int32 ReloadedArenaId);
+	void HandleServerArenaShown();
+	void HandleServerArenaGameplayReady(uint32 GameplayGeneration);
+	void CompleteServerArenaReload();
 
-	int32 ReloadingArenaId = INDEX_NONE;
+	bool bArenaReloadInProgress = false;
 	FDelegateHandle ArenaShownHandle;
-	int32 PendingGameplayGCArenaId = INDEX_NONE;
+	uint32 PendingGameplayGeneration = 0;
 	TSet<TWeakObjectPtr<APlayerController>> PendingGameplayGCPlayers;
 	TSet<TWeakObjectPtr<APlayerController>> ReadyGameplayGCPlayers;
 
@@ -127,22 +128,18 @@ protected:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 	void RespawnPairAtCheckpoint(AController* Controller);
-	bool ResolveCheckpointTransform(AController* Controller, int32 ArenaId, FTransform& OutTransform) const;
+	bool ResolveCheckpointTransform(AController* Controller, FTransform& OutTransform) const;
 	FString GetPlayerSaveId(AController* Controller) const;
 
 	// 사망한 컨트롤러의 페어 양쪽에 PreSetLoadWidget을 띄운다. 실제 사람 컨트롤러가 하나도 없으면
 	// (봇/아레나워커) 기존 RespawnPairAtCheckpoint 즉시 리스폰으로 폴백한다.
 	void BeginPresetRespawnSelection(AController* Controller);
 
-	// StageId를 가진 APresetPlayerStart를 찾아 스폰 위치를 돌려준다. RequiredArenaId를 지정하면
-	// (StartMatchedPair처럼 이미 배정된 아레나 인스턴스가 있을 때) 그 아레나 소속인 것만 인정한다.
-	// INDEX_NONE이면(사망 후 스테이지 점프처럼 아레나를 안 가리는 경우) 처음 찾은 것을 그대로 쓴다.
+	// StageId를 가진 단일 Arena 소속 APresetPlayerStart를 찾아 스폰 위치를 돌려준다.
 	bool ResolvePresetStageSpawn(
 		FName StageId,
-		int32& OutArenaId,
 		FTransform& OutShooterSpawn,
-		FTransform& OutPartnerSpawn,
-		int32 RequiredArenaId = INDEX_NONE) const;
+		FTransform& OutPartnerSpawn) const;
 	int32 ResolvePresetNodeCount(FName StageId) const;
 	void FlushUpgradeNodesForPair(AOutlierPlayerState* TriggeringPlayerState, int32 NewNodeCount);
 
@@ -150,7 +147,6 @@ protected:
 	void ReloadArenaAndRespawnPair(
 		AOutlierPlayerState* ShooterPlayerState,
 		AOutlierPlayerState* PartnerPlayerState,
-		int32 ArenaId,
 		const FTransform& ShooterSpawn,
 		const FTransform& PartnerSpawn);
 
@@ -166,7 +162,6 @@ protected:
 	//APlayerController* SwapPlayerController(APlayerController* OldPC, TSubclassOf<APlayerController> NewClass);
 
 	bool ResolveArenaSpawnTransforms(
-		int32 ArenaId,
 		FTransform& OutShooterSpawn,
 		FTransform& OutPartnerSpawn) const;
 
@@ -177,7 +172,6 @@ protected:
 	// FindPlayerStart가 non-const라 이 함수도 non-const다.
 	void ResolveFallbackSpawnTransforms(
 		AController* Requester,
-		int32 ArenaId,
 		FTransform& OutShooterSpawn,
 		FTransform& OutPartnerSpawn);
 
@@ -192,7 +186,7 @@ private:
 	void ScheduleArenaWorkerGameplayStart();
 	bool HandleArenaWorkerGameplayStartTick(float DeltaTime);
 	void StartArenaWorkerGameplay();
-	void PossessMatchedPawn(APlayerController* PlayerController, APawn* Pawn, int32 ArenaId, const FVector& SpawnLocation);
+	void PossessMatchedPawn(APlayerController* PlayerController, APawn* Pawn, const FVector& SpawnLocation);
 	void TryScheduleArenaWorkerAutoComplete();
 	void HandleArenaWorkerAutoComplete();
 	void RequestArenaWorkerExit();

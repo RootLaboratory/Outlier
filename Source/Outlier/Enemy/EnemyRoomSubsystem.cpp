@@ -5,7 +5,7 @@
 #include "Enemy/EnemyTargetRules.h"
 #include "Engine/Level.h"
 #include "Engine/World.h"
-#include "Network/OutlierArenaPoolSubsystem.h"
+#include "Network/OutlierArenaSubsystem.h"
 #include "Subsystems/SubsystemCollection.h"
 #include "TimerManager.h"
 
@@ -13,10 +13,10 @@ void UEnemyRoomSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
 
-	UOutlierArenaPoolSubsystem* ArenaPool = Collection.InitializeDependency<UOutlierArenaPoolSubsystem>();
-	if (ArenaPool)
+	UOutlierArenaSubsystem* ArenaSubsystem = Collection.InitializeDependency<UOutlierArenaSubsystem>();
+	if (ArenaSubsystem)
 	{
-		ArenaPool->OnArenaReleased.AddUObject(this, &UEnemyRoomSubsystem::HandleArenaReleased);
+		ArenaSubsystem->OnArenaReleased.AddUObject(this, &UEnemyRoomSubsystem::HandleArenaReleased);
 	}
 }
 
@@ -24,17 +24,17 @@ void UEnemyRoomSubsystem::Deinitialize()
 {
 	if (UWorld* World = GetWorld())
 	{
-		for (TPair<FEnemyRoomSearchKey, FEnemyRoomTargetContactState>& ContactEntry : TargetContactStates)
+		for (TPair<FGameplayTag, FEnemyRoomTargetContactState>& ContactEntry : TargetContactStates)
 		{
 			World->GetTimerManager().ClearTimer(ContactEntry.Value.ForcedShareTimerHandle);
 		}
-		if (UOutlierArenaPoolSubsystem* ArenaPool = World->GetSubsystem<UOutlierArenaPoolSubsystem>())
+		if (UOutlierArenaSubsystem* ArenaSubsystem = World->GetSubsystem<UOutlierArenaSubsystem>())
 		{
-			ArenaPool->OnArenaReleased.RemoveAll(this);
+			ArenaSubsystem->OnArenaReleased.RemoveAll(this);
 		}
 	}
 
-	CombatRoomsByArena.Reset();
+	CombatRooms.Reset();
 	RegisteredEnemiesByRoom.Reset();
 	RegisteredEnemyKeys.Reset();
 	SearchStates.Reset();
@@ -58,7 +58,7 @@ void UEnemyRoomSubsystem::UnregisterEnemy(AEnemyBase* Enemy)
 	}
 
 	const TWeakObjectPtr<AEnemyBase> EnemyKey(Enemy);
-	if (const FEnemyRoomSearchKey* RegisteredKey = RegisteredEnemyKeys.Find(EnemyKey))
+	if (const FGameplayTag* RegisteredKey = RegisteredEnemyKeys.Find(EnemyKey))
 	{
 		if (TSet<TWeakObjectPtr<AEnemyBase>>* Enemies = RegisteredEnemiesByRoom.Find(*RegisteredKey))
 		{
@@ -80,14 +80,14 @@ void UEnemyRoomSubsystem::RefreshEnemyRegistration(AEnemyBase* Enemy)
 	}
 
 	const TWeakObjectPtr<AEnemyBase> EnemyPtr(Enemy);
-	const FEnemyRoomSearchKey NewKey = ResolveEnemyRegistrationKey(Enemy);
-	if (!NewKey.RoomTag.IsValid())
+	const FGameplayTag NewKey = ResolveEnemyRegistrationKey(Enemy);
+	if (!NewKey.IsValid())
 	{
 		UnregisterEnemy(Enemy);
 		return;
 	}
 
-	if (const FEnemyRoomSearchKey* PreviousKey = RegisteredEnemyKeys.Find(EnemyPtr))
+	if (const FGameplayTag* PreviousKey = RegisteredEnemyKeys.Find(EnemyPtr))
 	{
 		if (*PreviousKey == NewKey)
 		{
@@ -109,33 +109,31 @@ void UEnemyRoomSubsystem::RefreshEnemyRegistration(AEnemyBase* Enemy)
 	RegisteredEnemyKeys.Add(EnemyPtr, NewKey);
 }
 
-void UEnemyRoomSubsystem::NotifyRoomCombat(int32 ArenaId, FGameplayTag RoomTag, const FVector& PlayerLocation, AEnemyBase* ExcludeEnemy)
+void UEnemyRoomSubsystem::NotifyRoomCombat(FGameplayTag RoomTag, const FVector& PlayerLocation, AEnemyBase* ExcludeEnemy)
 {
 	UWorld* World = GetWorld();
-	if (!World || World->GetNetMode() == NM_Client || ArenaId == INDEX_NONE || !RoomTag.IsValid())
+	if (!World || World->GetNetMode() == NM_Client || !RoomTag.IsValid())
 	{
 		return;
 	}
 
-	UOutlierArenaPoolSubsystem* ArenaPool = World->GetSubsystem<UOutlierArenaPoolSubsystem>();
-	if (!ArenaPool)
+	UOutlierArenaSubsystem* ArenaSubsystem = World->GetSubsystem<UOutlierArenaSubsystem>();
+	if (!ArenaSubsystem)
 	{
 		return;
 	}
 
-	ULevel* ArenaLevel = ArenaPool->GetArenaLoadedLevel(ArenaId);
+	ULevel* ArenaLevel = ArenaSubsystem->GetArenaLoadedLevel();
 	if (!ArenaLevel)
 	{
 		return;
 	}
 
-	TSet<FGameplayTag>& CombatRooms = CombatRoomsByArena.FindOrAdd(ArenaId);
 	CombatRooms.Add(RoomTag);
 
-	const FEnemyRoomSearchKey Key{ArenaId, RoomTag};
-	CompactRegisteredEnemies(Key);
+	CompactRegisteredEnemies(RoomTag);
 	const TSet<TWeakObjectPtr<AEnemyBase>>* RegisteredEnemies =
-		RegisteredEnemiesByRoom.Find(Key);
+		RegisteredEnemiesByRoom.Find(RoomTag);
 	if (RegisteredEnemies)
 	{
 		for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : *RegisteredEnemies)
@@ -146,31 +144,28 @@ void UEnemyRoomSubsystem::NotifyRoomCombat(int32 ArenaId, FGameplayTag RoomTag, 
 				continue;
 			}
 
-			Enemy->EnterCombatInArena(PlayerLocation, ArenaId, false);
+			Enemy->EnterCombatFromRoom(PlayerLocation, false);
 		}
 	}
 
-	if (const FEnemyRoomTargetContactState* ContactState = TargetContactStates.Find(Key))
+	if (const FEnemyRoomTargetContactState* ContactState = TargetContactStates.Find(RoomTag))
 	{
-		BroadcastSharedTargetContact(Key, ContactState->LastReportedLocation);
+		BroadcastSharedTargetContact(RoomTag, ContactState->LastReportedLocation);
 	}
 }
 
-bool UEnemyRoomSubsystem::IsRoomInCombat(int32 ArenaId, FGameplayTag RoomTag) const
+bool UEnemyRoomSubsystem::IsRoomInCombat(FGameplayTag RoomTag) const
 {
-	if (ArenaId == INDEX_NONE || !RoomTag.IsValid())
+	if (!RoomTag.IsValid())
 	{
 		return false;
 	}
-
-	const TSet<FGameplayTag>* CombatRooms = CombatRoomsByArena.Find(ArenaId);
-	return CombatRooms && CombatRooms->Contains(RoomTag);
+	return CombatRooms.Contains(RoomTag);
 }
 
 void UEnemyRoomSubsystem::ReportRoomTargetContact(
 	AEnemyBase* Observer,
 	AActor* TargetActor,
-	int32 ArenaId,
 	const FVector& TargetLocation)
 {
 	UWorld* World = GetWorld();
@@ -184,17 +179,13 @@ void UEnemyRoomSubsystem::ReportRoomTargetContact(
 		return;
 	}
 
-	const int32 ResolvedArenaId = ArenaId != INDEX_NONE
-		? ArenaId
-		: Observer->GetLastKnownArenaId();
 	const FGameplayTag RoomTag = ResolveEnemyRoomTag(Observer);
-	if (ResolvedArenaId == INDEX_NONE || !RoomTag.IsValid())
+	if (!RoomTag.IsValid())
 	{
 		return;
 	}
 
-	const FEnemyRoomSearchKey Key{ResolvedArenaId, RoomTag};
-	FEnemyRoomTargetContactState& ContactState = TargetContactStates.FindOrAdd(Key);
+	FEnemyRoomTargetContactState& ContactState = TargetContactStates.FindOrAdd(RoomTag);
 	CompactTargetContactState(ContactState);
 	World->GetTimerManager().ClearTimer(ContactState.ForcedShareTimerHandle);
 	ContactState.DirectObservers.Add(TWeakObjectPtr<AEnemyBase>(Observer));
@@ -211,7 +202,7 @@ void UEnemyRoomSubsystem::ReportRoomTargetContact(
 	}
 
 	ContactState.LastReportedLocation = TargetLocation;
-	BroadcastSharedTargetContact(Key, TargetLocation);
+	BroadcastSharedTargetContact(RoomTag, TargetLocation);
 }
 
 void UEnemyRoomSubsystem::RemoveRoomTargetObserver(AEnemyBase* Observer)
@@ -237,10 +228,10 @@ void UEnemyRoomSubsystem::RemoveRoomTargetObserver(AEnemyBase* Observer)
 	}
 }
 
-void UEnemyRoomSubsystem::ScheduleForcedTargetShare(const FEnemyRoomSearchKey& Key)
+void UEnemyRoomSubsystem::ScheduleForcedTargetShare(FGameplayTag RoomTag)
 {
 	UWorld* World = GetWorld();
-	FEnemyRoomTargetContactState* ContactState = TargetContactStates.Find(Key);
+	FEnemyRoomTargetContactState* ContactState = TargetContactStates.Find(RoomTag);
 	if (!World || !ContactState || !ContactState->TargetActor.IsValid())
 	{
 		return;
@@ -249,14 +240,14 @@ void UEnemyRoomSubsystem::ScheduleForcedTargetShare(const FEnemyRoomSearchKey& K
 	World->GetTimerManager().ClearTimer(ContactState->ForcedShareTimerHandle);
 	World->GetTimerManager().SetTimer(
 		ContactState->ForcedShareTimerHandle,
-		FTimerDelegate::CreateUObject(this, &UEnemyRoomSubsystem::HandleForcedTargetShare, Key),
+		FTimerDelegate::CreateUObject(this, &UEnemyRoomSubsystem::HandleForcedTargetShare, RoomTag),
 		FMath::Max(ForcedTargetShareDelay, KINDA_SMALL_NUMBER),
 		false);
 }
 
-void UEnemyRoomSubsystem::HandleForcedTargetShare(FEnemyRoomSearchKey Key)
+void UEnemyRoomSubsystem::HandleForcedTargetShare(FGameplayTag RoomTag)
 {
-	FEnemyRoomTargetContactState* ContactState = TargetContactStates.Find(Key);
+	FEnemyRoomTargetContactState* ContactState = TargetContactStates.Find(RoomTag);
 	if (!ContactState)
 	{
 		return;
@@ -270,19 +261,19 @@ void UEnemyRoomSubsystem::HandleForcedTargetShare(FEnemyRoomSearchKey Key)
 	AActor* TargetActor = ContactState->TargetActor.Get();
 	if (!IsValid(TargetActor))
 	{
-		TargetContactStates.Remove(Key);
+		TargetContactStates.Remove(RoomTag);
 		return;
 	}
 
 	if (OutlierEnemyTargetRules::IsUnavailable(TargetActor))
 	{
 		// 타겟 불가 상태 중 경과 시간을 인정하지 않고 해제 뒤 다시 8초를 계산한다.
-		ScheduleForcedTargetShare(Key);
+		ScheduleForcedTargetShare(RoomTag);
 		return;
 	}
 
 	ContactState->LastReportedLocation = TargetActor->GetActorLocation();
-	BroadcastSharedTargetContact(Key, ContactState->LastReportedLocation);
+	BroadcastSharedTargetContact(RoomTag, ContactState->LastReportedLocation);
 }
 
 void UEnemyRoomSubsystem::NotifyTargetActorRemoved(AActor* TargetActor)
@@ -293,7 +284,7 @@ void UEnemyRoomSubsystem::NotifyTargetActorRemoved(AActor* TargetActor)
 		return;
 	}
 
-	TArray<FEnemyRoomSearchKey> RemovedContactKeys;
+	TArray<FGameplayTag> RemovedContactKeys;
 	for (auto ContactIt = TargetContactStates.CreateIterator(); ContactIt; ++ContactIt)
 	{
 		if (ContactIt.Value().TargetActor.Get() == TargetActor
@@ -305,7 +296,7 @@ void UEnemyRoomSubsystem::NotifyTargetActorRemoved(AActor* TargetActor)
 		}
 	}
 
-	for (const FEnemyRoomSearchKey& Key : RemovedContactKeys)
+	for (const FGameplayTag& Key : RemovedContactKeys)
 	{
 		BroadcastSharedTargetLost(Key);
 	}
@@ -322,7 +313,7 @@ void UEnemyRoomSubsystem::RefreshDetectionTarget(AActor* TargetActor)
 	}
 
 	CompactAllRegisteredEnemies();
-	for (const TPair<FEnemyRoomSearchKey, TSet<TWeakObjectPtr<AEnemyBase>>>& RoomEntry :
+	for (const TPair<FGameplayTag, TSet<TWeakObjectPtr<AEnemyBase>>>& RoomEntry :
 		RegisteredEnemiesByRoom)
 	{
 		for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : RoomEntry.Value)
@@ -355,7 +346,6 @@ bool UEnemyRoomSubsystem::RequestSearchRingSlot(
 
 	const FGameplayTag RoomTag = ResolveEnemyRoomTag(Enemy);
 	if (!Enemy->HasAuthority()
-		|| Enemy->GetLastKnownArenaId() == INDEX_NONE
 		// 고정형 터렛은 능력치가 바뀌어도 이동용 수색 Ring에 참여하지 않는다.
 		|| Enemy->GetRuntimeStat().Type == EEnemyType::Turret
 		|| Enemy->GetRuntimeStat().MoveSpeed <= KINDA_SMALL_NUMBER
@@ -368,7 +358,7 @@ bool UEnemyRoomSubsystem::RequestSearchRingSlot(
 		return false;
 	}
 
-	const FEnemyRoomSearchKey Key{Enemy->GetLastKnownArenaId(), RoomTag};
+	const FGameplayTag Key = RoomTag;
 	const TWeakObjectPtr<AEnemyBase> EnemyKey(Enemy);
 	FEnemyRoomSearchState* SearchState = SearchStates.Find(Key);
 	if (SearchState)
@@ -431,7 +421,7 @@ void UEnemyRoomSubsystem::ReleaseSearchRingSlot(AEnemyBase* Enemy)
 }
 
 bool UEnemyRoomSubsystem::RebuildSearchRingAssignments(
-	const FEnemyRoomSearchKey& Key,
+	FGameplayTag RoomTag,
 	const FVector& Center,
 	float Radius,
 	float FlightHeightOffset,
@@ -441,22 +431,22 @@ bool UEnemyRoomSubsystem::RebuildSearchRingAssignments(
 	constexpr int32 SearchRingPhaseCount = 8;
 
 	UWorld* World = GetWorld();
-	UOutlierArenaPoolSubsystem* ArenaPool = World
-		? World->GetSubsystem<UOutlierArenaPoolSubsystem>()
+	UOutlierArenaSubsystem* ArenaSubsystem = World
+		? World->GetSubsystem<UOutlierArenaSubsystem>()
 		: nullptr;
-	ULevel* ArenaLevel = ArenaPool ? ArenaPool->GetArenaLoadedLevel(Key.ArenaId) : nullptr;
+	ULevel* ArenaLevel = ArenaSubsystem ? ArenaSubsystem->GetArenaLoadedLevel() : nullptr;
 	if (!World || !ArenaLevel)
 	{
 		return false;
 	}
 
 	TArray<AEnemyBase*> EligibleEnemies;
-	CompactRegisteredEnemies(Key);
+	CompactRegisteredEnemies(RoomTag);
 	const TSet<TWeakObjectPtr<AEnemyBase>>* RegisteredEnemies =
-		RegisteredEnemiesByRoom.Find(Key);
+		RegisteredEnemiesByRoom.Find(RoomTag);
 	if (!RegisteredEnemies)
 	{
-		SearchStates.Remove(Key);
+		SearchStates.Remove(RoomTag);
 		return false;
 	}
 
@@ -479,7 +469,7 @@ bool UEnemyRoomSubsystem::RebuildSearchRingAssignments(
 
 	if (EligibleEnemies.IsEmpty())
 	{
-		SearchStates.Remove(Key);
+		SearchStates.Remove(RoomTag);
 		return false;
 	}
 
@@ -583,7 +573,7 @@ bool UEnemyRoomSubsystem::RebuildSearchRingAssignments(
 		AvailableSlots.RemoveAtSwap(BestSlotIndex, EAllowShrinking::No);
 	}
 
-	SearchStates.Add(Key, MoveTemp(NewState));
+	SearchStates.Add(RoomTag, MoveTemp(NewState));
 	return true;
 }
 
@@ -599,24 +589,24 @@ void UEnemyRoomSubsystem::CompactSearchState(FEnemyRoomSearchState& SearchState)
 }
 
 void UEnemyRoomSubsystem::BroadcastSharedTargetContact(
-	const FEnemyRoomSearchKey& Key,
+	FGameplayTag RoomTag,
 	const FVector& TargetLocation)
 {
 	UWorld* World = GetWorld();
-	UOutlierArenaPoolSubsystem* ArenaPool = World
-		? World->GetSubsystem<UOutlierArenaPoolSubsystem>()
+	UOutlierArenaSubsystem* ArenaSubsystem = World
+		? World->GetSubsystem<UOutlierArenaSubsystem>()
 		: nullptr;
-	ULevel* ArenaLevel = ArenaPool ? ArenaPool->GetArenaLoadedLevel(Key.ArenaId) : nullptr;
+	ULevel* ArenaLevel = ArenaSubsystem ? ArenaSubsystem->GetArenaLoadedLevel() : nullptr;
 	if (!ArenaLevel)
 	{
 		return;
 	}
 
-	SearchStates.Remove(Key);
+	SearchStates.Remove(RoomTag);
 
-	CompactRegisteredEnemies(Key);
+	CompactRegisteredEnemies(RoomTag);
 	const TSet<TWeakObjectPtr<AEnemyBase>>* RegisteredEnemies =
-		RegisteredEnemiesByRoom.Find(Key);
+		RegisteredEnemiesByRoom.Find(RoomTag);
 	if (!RegisteredEnemies)
 	{
 		return;
@@ -636,21 +626,21 @@ void UEnemyRoomSubsystem::BroadcastSharedTargetContact(
 	}
 }
 
-void UEnemyRoomSubsystem::BroadcastSharedTargetLost(const FEnemyRoomSearchKey& Key)
+void UEnemyRoomSubsystem::BroadcastSharedTargetLost(FGameplayTag RoomTag)
 {
 	UWorld* World = GetWorld();
-	UOutlierArenaPoolSubsystem* ArenaPool = World
-		? World->GetSubsystem<UOutlierArenaPoolSubsystem>()
+	UOutlierArenaSubsystem* ArenaSubsystem = World
+		? World->GetSubsystem<UOutlierArenaSubsystem>()
 		: nullptr;
-	ULevel* ArenaLevel = ArenaPool ? ArenaPool->GetArenaLoadedLevel(Key.ArenaId) : nullptr;
+	ULevel* ArenaLevel = ArenaSubsystem ? ArenaSubsystem->GetArenaLoadedLevel() : nullptr;
 	if (!ArenaLevel)
 	{
 		return;
 	}
 
-	CompactRegisteredEnemies(Key);
+	CompactRegisteredEnemies(RoomTag);
 	const TSet<TWeakObjectPtr<AEnemyBase>>* RegisteredEnemies =
-		RegisteredEnemiesByRoom.Find(Key);
+		RegisteredEnemiesByRoom.Find(RoomTag);
 	if (!RegisteredEnemies)
 	{
 		return;
@@ -689,54 +679,20 @@ FGameplayTag UEnemyRoomSubsystem::ResolveEnemyRoomTag(const AEnemyBase* Enemy) c
 	return Enemy->GetDefaultRoomTag();
 }
 
-FEnemyRoomSearchKey UEnemyRoomSubsystem::ResolveEnemyRegistrationKey(
+FGameplayTag UEnemyRoomSubsystem::ResolveEnemyRegistrationKey(
 	const AEnemyBase* Enemy) const
 {
-	FEnemyRoomSearchKey Key;
 	if (!Enemy)
 	{
-		return Key;
+		return FGameplayTag();
 	}
-
-	Key.ArenaId = Enemy->GetLastKnownArenaId();
-	Key.RoomTag = ResolveEnemyRoomTag(Enemy);
-	if (Key.ArenaId != INDEX_NONE)
-	{
-		return Key;
-	}
-
-	const ULevel* EnemyLevel = Enemy->GetLevel();
-	const UWorld* World = GetWorld();
-	if (!World)
-	{
-		return Key;
-	}
-
-	if (EnemyLevel == World->PersistentLevel)
-	{
-		Key.ArenaId = 0;
-		return Key;
-	}
-
-	const UOutlierArenaPoolSubsystem* ArenaPool =
-		World->GetSubsystem<UOutlierArenaPoolSubsystem>();
-	if (!ArenaPool)
-	{
-		return Key;
-	}
-
-	// WP 아레나에서는 적이 아레나 PersistentLevel이 아니라 WP 셀 레벨에 들어가므로
-	// GetArenaLoadedLevel(i) == EnemyLevel 비교가 영원히 실패한다 (09-09에 PlayerStart/Checkpoint와
-	// 동일한 함정으로 확인됨). 셀이 아는 소유 아레나로 역추적하는 헬퍼로 대체.
-	Key.ArenaId = ArenaPool->FindArenaIdForActor(Enemy);
-
-	return Key;
+	return ResolveEnemyRoomTag(Enemy);
 }
 
-void UEnemyRoomSubsystem::CompactRegisteredEnemies(const FEnemyRoomSearchKey& Key)
+void UEnemyRoomSubsystem::CompactRegisteredEnemies(FGameplayTag RoomTag)
 {
 	TSet<TWeakObjectPtr<AEnemyBase>>* RegisteredEnemies =
-		RegisteredEnemiesByRoom.Find(Key);
+		RegisteredEnemiesByRoom.Find(RoomTag);
 	if (!RegisteredEnemies)
 	{
 		return;
@@ -753,7 +709,7 @@ void UEnemyRoomSubsystem::CompactRegisteredEnemies(const FEnemyRoomSearchKey& Ke
 
 	if (RegisteredEnemies->IsEmpty())
 	{
-		RegisteredEnemiesByRoom.Remove(Key);
+		RegisteredEnemiesByRoom.Remove(RoomTag);
 	}
 }
 
@@ -777,42 +733,20 @@ void UEnemyRoomSubsystem::CompactAllRegisteredEnemies()
 	}
 }
 
-void UEnemyRoomSubsystem::HandleArenaReleased(int32 ArenaId)
+void UEnemyRoomSubsystem::HandleArenaReleased()
 {
 	UWorld* World = GetWorld();
-	CombatRoomsByArena.Remove(ArenaId);
-
-	for (auto RoomIt = RegisteredEnemiesByRoom.CreateIterator(); RoomIt; ++RoomIt)
-	{
-		if (RoomIt.Key().ArenaId != ArenaId)
-		{
-			continue;
-		}
-
-		for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : RoomIt.Value())
-		{
-			RegisteredEnemyKeys.Remove(EnemyPtr);
-		}
-		RoomIt.RemoveCurrent();
-	}
-
-	for (auto SearchStateIt = SearchStates.CreateIterator(); SearchStateIt; ++SearchStateIt)
-	{
-		if (SearchStateIt.Key().ArenaId == ArenaId)
-		{
-			SearchStateIt.RemoveCurrent();
-		}
-	}
+	CombatRooms.Reset();
+	RegisteredEnemiesByRoom.Reset();
+	RegisteredEnemyKeys.Reset();
+	SearchStates.Reset();
 
 	for (auto ContactIt = TargetContactStates.CreateIterator(); ContactIt; ++ContactIt)
 	{
-		if (ContactIt.Key().ArenaId == ArenaId)
+		if (World)
 		{
-			if (World)
-			{
-				World->GetTimerManager().ClearTimer(ContactIt.Value().ForcedShareTimerHandle);
-			}
-			ContactIt.RemoveCurrent();
+			World->GetTimerManager().ClearTimer(ContactIt.Value().ForcedShareTimerHandle);
 		}
 	}
+	TargetContactStates.Reset();
 }

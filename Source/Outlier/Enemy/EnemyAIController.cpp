@@ -428,9 +428,7 @@ void AEnemyAIController::HandleSightStimulus(AEnemyBase* Enemy, AActor* Actor, c
 
 		if (!Enemy->IsInCombat())
 		{
-			Enemy->EnterAlertInArena(
-				TargetLocation,
-				ResolveArenaIdFromTarget(LocationSource));
+			Enemy->EnterAlertFromPerception(TargetLocation);
 		}
 
 		if (Enemy->CanUseRoomTargetSharing())
@@ -474,9 +472,7 @@ void AEnemyAIController::HandleHearingStimulus(AEnemyBase* Enemy, AActor* Actor,
 	if (State == EEnemyCombatState::NonCombat ||
 		State == EEnemyCombatState::Stun)
 	{
-		Enemy->EnterAlertInArena(
-			HeardLocation,
-			ResolveArenaIdFromTarget(Actor));
+		Enemy->EnterAlertFromPerception(HeardLocation);
 	}
 }
 
@@ -569,7 +565,6 @@ void AEnemyAIController::ReportSharedTargetContact(
 	RoomSubsystem->ReportRoomTargetContact(
 		Enemy,
 		TargetActor,
-		ResolveArenaIdFromTarget(TargetActor),
 		TargetActor->GetActorLocation());
 }
 
@@ -661,18 +656,6 @@ void AEnemyAIController::ConfigureHearingFromEnemy(AEnemyBase* Enemy)
 	HearingConfig->HearingRange = FMath::Max(HearingRange, 0.0f);
 	EnemyPerceptionComponent->ConfigureSense(*HearingConfig);
 	EnemyPerceptionComponent->RequestStimuliListenerUpdate();
-}
-
-int32 AEnemyAIController::ResolveArenaIdFromTarget(const AActor* TargetActor) const
-{
-	const APawn* TargetPawn = Cast<APawn>(TargetActor);
-	if (!TargetPawn)
-	{
-		return INDEX_NONE;
-	}
-
-	const AOutlierPlayerState* OutlierPlayerState = TargetPawn->GetPlayerState<AOutlierPlayerState>();
-	return OutlierPlayerState ? OutlierPlayerState->GetArenaId() : INDEX_NONE;
 }
 
 bool AEnemyAIController::IsValidDetectionTarget(const AActor* TargetActor) const

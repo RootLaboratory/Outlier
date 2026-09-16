@@ -9,7 +9,7 @@
 #include "GameFramework/PlayerController.h"
 #include "Misc/CommandLine.h"
 #include "Network/OutlierArenaProcessSubsystem.h"
-#include "Network/OutlierArenaPoolSubsystem.h"
+#include "Network/OutlierArenaSubsystem.h"
 #include "UI/LoadingWidget.h"
 #include "Misc/Parse.h"
 #include "Containers/Ticker.h"
@@ -180,13 +180,13 @@ bool UOutlierGameInstance::HandleArenaWorkerBootstrapTick(float DeltaTime)
 		return false;
 	}
 
-	UOutlierArenaPoolSubsystem* ArenaPool =
-		World->GetSubsystem<UOutlierArenaPoolSubsystem>();
+	UOutlierArenaSubsystem* ArenaSubsystem =
+		World->GetSubsystem<UOutlierArenaSubsystem>();
 	const AOutlierGameMode* ArenaGameMode = World->GetAuthGameMode<AOutlierGameMode>();
 	const bool bContentReady = ArenaGameMode
 		&& ArenaGameMode->IsArenaWorkerPreloadReady()
-		&& ArenaPool
-		&& ArenaPool->IsArenaContentReady(0);
+		&& ArenaSubsystem
+		&& ArenaSubsystem->IsArenaContentReady();
 	if (!bContentReady)
 	{
 		ArenaWorkerReadyStableFrames = 0;

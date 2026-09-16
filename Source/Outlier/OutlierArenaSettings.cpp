@@ -30,6 +30,6 @@ bool UOutlierArenaSettings::IsArenaWorld(const UWorld* World) const
 
 bool UOutlierArenaSettings::ShouldUseExternalArenaHandoff(ENetMode NetMode) const
 {
-	// PIE Listen Server는 기존 ArenaPool 경로를 사용하고 Dedicated Lobby만 외부 Worker로 넘긴다.
+	// PIE Listen Server는 기존 ArenaSubsystem 경로를 사용하고 Dedicated Lobby만 외부 Worker로 넘긴다.
 	return bUseStaticArenaHandoff && NetMode == NM_DedicatedServer;
 }

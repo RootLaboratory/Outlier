@@ -1,6 +1,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "Misc/AutomationTest.h"
+#include "Network/OutlierArenaSubsystem.h"
 #include "Network/OutlierMatchRequest.h"
 #include "OutlierArenaSettings.h"
 #include "OutlierGameInstance.h"
@@ -17,6 +18,29 @@ FOutlierArenaHandoffRequest MakeHandoffRequest(
 	Request.PlayerId = PlayerId;
 	Request.Role = Role;
 	return Request;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierArenaGameplayGenerationContractTest,
+	"Outlier.Network.SingleArena.GameplayGeneration",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierArenaGameplayGenerationContractTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	TestTrue(TEXT("The next generation is accepted"),
+		UOutlierArenaSubsystem::IsGameplayGenerationNewer(2, 1));
+	TestFalse(TEXT("A duplicate generation is rejected"),
+		UOutlierArenaSubsystem::IsGameplayGenerationNewer(2, 2));
+	TestFalse(TEXT("A delayed previous generation is rejected"),
+		UOutlierArenaSubsystem::IsGameplayGenerationNewer(1, 2));
+	TestFalse(TEXT("Generation zero is reserved as invalid"),
+		UOutlierArenaSubsystem::IsGameplayGenerationNewer(0, 2));
+	TestTrue(TEXT("Generation rollover remains ordered"),
+		UOutlierArenaSubsystem::IsGameplayGenerationNewer(1, MAX_uint32));
+
+	return true;
 }
 }
 
@@ -140,10 +164,10 @@ bool FOutlierArenaHandoffModeContractTest::RunTest(const FString& Parameters)
 		TEXT("A Dedicated Lobby uses the external Arena Worker handoff"),
 		Settings->ShouldUseExternalArenaHandoff(NM_DedicatedServer));
 	TestFalse(
-		TEXT("A PIE Listen Server keeps the in-process ArenaPool path"),
+		TEXT("A PIE Listen Server keeps the in-process ArenaSubsystem path"),
 		Settings->ShouldUseExternalArenaHandoff(NM_ListenServer));
 	TestFalse(
-		TEXT("A standalone session keeps the in-process ArenaPool path"),
+		TEXT("A standalone session keeps the in-process ArenaSubsystem path"),
 		Settings->ShouldUseExternalArenaHandoff(NM_Standalone));
 	TestFalse(
 		TEXT("A client does not own the external Arena handoff"),

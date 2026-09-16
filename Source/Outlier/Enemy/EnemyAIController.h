@@ -59,7 +59,6 @@ protected:
 
 	void ConfigureSightFromEnemy(AEnemyBase* Enemy);
 	void ConfigureHearingFromEnemy(AEnemyBase* Enemy);
-	int32 ResolveArenaIdFromTarget(const AActor* TargetActor) const;
 	bool IsValidDetectionTarget(const AActor* TargetActor) const;
 	bool IsStealthedDetectionTarget(const AActor* TargetActor) const;
 

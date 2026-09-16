@@ -217,9 +217,6 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Weapon")
 	FName WeaponSocketName = NAME_None;
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|Room")
-	int32 LastKnownArenaId = INDEX_NONE;
-
 	UPROPERTY()
 	TWeakObjectPtr<AController> CachedAIController;
 
@@ -288,9 +285,6 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|State")
 	FVector GetPatternStartPlayerLocation() const { return PatternStartPlayerLocation; }
-
-	UFUNCTION(BlueprintPure, Category = "Enemy|State")
-	int32 GetLastKnownArenaId() const { return LastKnownArenaId; }
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|Weapon")
 	ARangedWeaponBase* GetCurrentWeapon() const { return CurrentWeapon; }
@@ -382,12 +376,11 @@ public:
 	bool CommitAlertToCombat();
 	bool CommitAlertToNonCombat();
 
-	void EnterCombatInArena(
+	void EnterCombatFromRoom(
 		const FVector& PlayerLocation,
-		int32 ArenaId,
 		bool bPropagateToRoom,
 		bool bDeferStateTreeEvent = false);
-	void EnterAlertInArena(const FVector& PlayerLocation, int32 ArenaId);
+	void EnterAlertFromPerception(const FVector& PlayerLocation);
 
 	UFUNCTION(BlueprintCallable, Category = "Enemy|State")
 	void EnterStun();

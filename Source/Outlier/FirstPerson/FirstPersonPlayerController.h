@@ -65,7 +65,7 @@ public:
 	void ClientPlayResolvedAudio(const FOutlierResolvedAudioPlay& ResolvedPlay);
 
 	UFUNCTION(Client, Reliable)
-	void ClientArenaLoad(int32 ArenaId, FVector InSpawnLocation);
+	void ClientArenaLoad(FVector InSpawnLocation);
 
 	UFUNCTION(Client, Reliable)
 	void ClientPushUILayer(const FUILayerPushRequest& Request);
@@ -89,7 +89,7 @@ public:
 	void ServerNotifyArenaReady();
 
 	UFUNCTION(Server, Reliable)
-	void ServerNotifyArenaGameplayGCReady(int32 ArenaId);
+	void ServerNotifyArenaGameplayGCReady(uint32 GameplayGeneration);
 
 	UFUNCTION(Server, Reliable)
 	void ServerOpenInGameSetting();
@@ -102,7 +102,7 @@ public:
 	// 스트리밍해야 Pawn이 관련(relevant)해지는 순환이 생긴다. ClientArenaLoad와 동일하게
 	// 서버가 이미 계산해둔 스폰 위치를 같이 넘겨서 그 순환을 끊는다.
 	UFUNCTION(Client, Reliable)
-	void ClientPrepareForArenaStart(int32 ArenaId, FVector InSpawnLocation);
+	void ClientPrepareForArenaStart(FVector InSpawnLocation);
 
 	// 서버에서 계산한 폭발 충격을 소유 클라이언트의 CameraManager에 전달한다.
 	UFUNCTION(Client, Unreliable)
@@ -124,10 +124,10 @@ public:
 
 	// 디버그: 클라 arena 스트리밍 인스턴스를 강제 언로드 후 재로드
 	UFUNCTION(Client, Reliable)
-	void ClientArenaReload(int32 ArenaId, FVector InSpawnLocation);
+	void ClientArenaReload(FVector InSpawnLocation);
 
 	UFUNCTION(Client, Reliable)
-	void ClientArenaGameplayReload(int32 ArenaId, FVector InSpawnLocation);
+	void ClientArenaGameplayReload(uint32 GameplayGeneration, FVector InSpawnLocation);
 
 	// 사망 시 프리셋 스테이지 선택 팝업을 띄운다 (페어 양쪽 컨트롤러에 각각 호출됨).
 	UFUNCTION(Client, Reliable)
@@ -139,8 +139,9 @@ public:
 	void Server_SelectPresetStage(FName StageId);
 
 	UFUNCTION()
-	void HandleArenaShown(int32 ShownArenaId);
-	void HandleArenaGameplayGCReady(int32 ArenaId);
+	void HandleArenaShown();
+	void HandleArenaGameplayReady(uint32 GameplayGeneration);
+	void HandleArenaGameplayGCReady(uint32 GameplayGeneration);
 	void ControlMainWidget(bool InFlag) const;
 
 	UFUNCTION(BlueprintCallable, Category = "Input|Input Mode")
@@ -195,11 +196,11 @@ protected:
 	void ReportLoadedLevelsVisibilityToServer();
 	void TryNotifyArenaStartReady();
 	// 리로드 RPC가 실어 보낸 새 스폰 위치를 적용한다(옛 임시 소스 폐기 포함).
-	void ApplyServerArenaSpawnLocation(int32 ArenaId, const FVector& InSpawnLocation);
+	void ApplyServerArenaSpawnLocation(const FVector& InSpawnLocation);
 	bool TickClientArenaContentReady(float DeltaTime);
 	void ClearClientArenaContentWait();
 	void ReleaseClientArenaStreamingSource();
-	bool ResolveClientArenaStreamingLocation(int32 ArenaId, FVector& OutLocation) const;
+	bool ResolveClientArenaStreamingLocation(FVector& OutLocation) const;
 	virtual void RefreshPostProcessState();
 
 	UFUNCTION()
@@ -208,7 +209,8 @@ protected:
 
 protected:
 
-	int32 PendingArenaId = INDEX_NONE;
+	bool bHasPendingArenaRequest = false;
+	uint32 PendingGameplayGeneration = 0;
 	// 서버가 이미 계산해둔 실제 스폰 위치. Possess 전이라 GetPawn()이 아직 없을 때
 	// ResolveClientArenaStreamingLocation이 레벨 액터를 추측해서 찾는 대신 이 값을 그대로 쓴다.
 	FVector PendingArenaSpawnLocation = FVector::ZeroVector;
