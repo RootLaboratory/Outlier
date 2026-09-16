@@ -1,0 +1,24 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1",
+	"FriendlyName": "Graphic Setting Debugger",
+	"Description": "Applies, captures, snapshots, and compares graphics console variables in editor and shipping builds.",
+	"Category": "Rendering",
+	"CreatedBy": "Outlier",
+	"CanContainContent": false,
+	"IsBetaVersion": true,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "GraphicSettingDebugger",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "GraphicSettingDebuggerEditor",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		}
+	]
+}

@@ -1,14 +1,13 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 #include "LocalPlayerUISubSystem.h"
 #include "GameFramework/PlayerController.h"
-#include "Components/SceneCaptureComponent2D.h"
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
 #include "AbilityIconUI.h"
 #include "MainUIBase.h"
 #include "HPBarUI.h"
-#include "PartnerCamUI.h"
 #include "AmmoUI.h"
+#include "GangTongMainUI.h"
 #include "DynamicCrossHair.h"
 #include "EventDrivenUI.h"
 #include "StaticCrossHair.h"
@@ -33,6 +32,10 @@ void ULocalPlayerUISubSystem::Deinitialize()
 void ULocalPlayerUISubSystem::RegisterMainUI(UMainUIBase* InMainUI)
 {
 	MainUIInstance = InMainUI;
+
+	// 마지막으로 받은 슈트 상태를 새 MainUI 에 물려준다.
+	// 위젯이 신호보다 늦게 생겨도 게이트가 맞도록 하는 유일한 경로다.
+	OnShooterSuitAcquiredChanged(bShooterSuitAcquired);
 }
 
 void ULocalPlayerUISubSystem::UnregisterMainUI(UMainUIBase* InMainUI)
@@ -136,8 +139,41 @@ void ULocalPlayerUISubSystem::OnRep_ShieldChanged( float InCurShield,  float InM
 	}
 }
 
+void ULocalPlayerUISubSystem::OnShooterSuitAcquiredChanged(bool bAcquired)
+{
+	// 이 함수는 UI 갱신 때마다 반복해서 불린다. 크로스헤어 초기화는 상태가 실제로
+	// 바뀐 순간에만 해야 한다 — 매번 하면 플레이 중 확산이 계속 0 으로 밟힌다.
+	const bool bChanged = (bShooterSuitAcquired != bAcquired);
+	bShooterSuitAcquired = bAcquired;
+
+	if (UGangTongMainUI* PartnerMainUI = Cast<UGangTongMainUI>(GetMainUI()))
+	{
+		PartnerMainUI->SetSuitGatedModulesEnabled(bAcquired);
+	}
+
+	// 슈트 이전에 쏜 흔적(확산/조준 상태)이 남아 있으면 획득 후 무기를 다시 꺼낼 때
+	// 그대로 되살아난다. 획득 시점에 양쪽 크로스헤어를 초기값으로 되돌린다.
+	if (bAcquired && bChanged)
+	{
+		if (UShooterMainWidget* ShooterMainUI = Cast<UShooterMainWidget>(GetMainUI()))
+		{
+			ShooterMainUI->ResetCrossHairs();
+		}
+	}
+}
+
+void ULocalPlayerUISubSystem::SyncRegisteredModule(UEventDrivenUI* InModule)
+{
+	if (UAmmoUI* AmmoUI = Cast<UAmmoUI>(InModule))
+	{
+		AmmoUI->AmmoCountChanged(CachedAmmoCount);
+	}
+}
+
 void ULocalPlayerUISubSystem::OnRep_AmmoCountChanged(int32 InAmmoCount)
 {
+	// 모듈이 아직 등록되기 전이어도 값은 남겨둔다 (SyncRegisteredModule 이 재생).
+	CachedAmmoCount = InAmmoCount;
 
 	if (!GetMainUI())
 	{
@@ -173,26 +209,6 @@ void ULocalPlayerUISubSystem::OnRep_PlayerStateChanged(EUIPlayerState State)
 }
 
 
-
-void ULocalPlayerUISubSystem::PartnerCameraToggle()
-{
-	if (!GetMainUI())
-	{
-		UE_LOG(LogTemp, Error, TEXT("GetMainUI"));
-
-		return;
-	}
-
-	if (UPartnerCamUI* PartnerCamUI = Cast<UPartnerCamUI>(GetModuleAny(TagDrivenUITags::Shooter::PartnerCam(), TagDrivenUITags::Partner::PartnerCam())))
-	{
-		PartnerCamUI->TogglePartnerCamera();
-	}
-	else
-	{
-		UE_LOG(LogTemp, Error, TEXT("PartnerCamUI"));
-
-	}
-}
 
 void ULocalPlayerUISubSystem::PartnerDistanceUpdate(const float Distance)
 {
@@ -274,6 +290,12 @@ void ULocalPlayerUISubSystem::OnRep_AttackSign(EAttackSign InType)
 
 void ULocalPlayerUISubSystem::OnRep_ShootCrosshairChanged(float InFireRate)
 {
+	// 슈트 전에는 크로스헤어 상태를 아예 건드리지 않는다 (HUD 가 꺼져 있는 구간).
+	if (!bShooterSuitAcquired)
+	{
+		return;
+	}
+
 	UEventDrivenUI* CrossHairModule = GetModuleAny(TagDrivenUITags::Shooter::CrossHair(), TagDrivenUITags::Partner::CrossHair());
 	if (!CrossHairModule)
 	{
@@ -307,6 +329,11 @@ void ULocalPlayerUISubSystem::OnRep_ShooterHPStateChanged(const FGameplayTag& In
 
 void ULocalPlayerUISubSystem::OnRep_ShooterDynamicCrosshairChanged(bool InFlag)
 {
+	if (!bShooterSuitAcquired)
+	{
+		return;
+	}
+
 	if (UCrossHairBase* Crosshair = Cast<UCrossHairBase>(GetModule(TagDrivenUITags::Shooter::CrossHair())))
 	{
 		if (InFlag)
@@ -401,31 +428,3 @@ void ULocalPlayerUISubSystem::UnbindInteractionWidget(UUserWidget* InteractionWi
 	InteractionWidget->SetVisibility(ESlateVisibility::Collapsed);
 }
 
-void ULocalPlayerUISubSystem::PartnerCameraBind(USceneCaptureComponent2D* InCaptureComponent2D)
-{
-	//UE_LOG(LogTemp, Error, TEXT("Try PartnerCameraBind"));
-
-	if (!InCaptureComponent2D)
-	{
-		return;
-	}
-
-	if (UPartnerCamUI* PartnerCamUI = Cast<UPartnerCamUI>(GetModuleAny(TagDrivenUITags::Shooter::PartnerCam(), TagDrivenUITags::Partner::PartnerCam())))
-	{
-		UTextureRenderTarget2D* RenderTarget = InCaptureComponent2D->TextureTarget;
-		if (RenderTarget)
-		{
-			PartnerCamUI->SetPartnerRenderTarget(RenderTarget);
-		}
-		else
-		{
-		//	UE_LOG(LogTemp, Error, TEXT("Cant RT"));
-
-		}
-	}
-	else
-	{
-		//	UE_LOG(LogTemp, Error, TEXT("Cant PartnerCamUI"));
-
-	}
-}

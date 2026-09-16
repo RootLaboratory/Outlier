@@ -11,6 +11,8 @@ FString MessageTypeToString(EOutlierArenaControlMessageType Type)
 {
 	switch (Type)
 	{
+	case EOutlierArenaControlMessageType::Starting:
+		return TEXT("Starting");
 	case EOutlierArenaControlMessageType::Ready:
 		return TEXT("Ready");
 	case EOutlierArenaControlMessageType::Allocate:
@@ -30,12 +32,18 @@ FString MessageTypeToString(EOutlierArenaControlMessageType Type)
 
 bool MessageRequiresMatchId(EOutlierArenaControlMessageType Type)
 {
-	return Type != EOutlierArenaControlMessageType::Ready
+	return Type != EOutlierArenaControlMessageType::Starting
+		&& Type != EOutlierArenaControlMessageType::Ready
 		&& Type != EOutlierArenaControlMessageType::Heartbeat;
 }
 
 bool TryParseMessageType(const FString& Value, EOutlierArenaControlMessageType& OutType)
 {
+	if (Value == TEXT("Starting"))
+	{
+		OutType = EOutlierArenaControlMessageType::Starting;
+		return true;
+	}
 	if (Value == TEXT("Ready"))
 	{
 		OutType = EOutlierArenaControlMessageType::Ready;

@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "Engine/DataTable.h"
+#include "Templates/SubclassOf.h"
 #include "Interface/InteractableInterface.h"
 #include "PostProcess/OutlierStealthVisualTarget.h"
 #include "Weapon/WeaponDataTypes.h"
@@ -14,7 +15,6 @@ class USkeletalMeshComponent;
 class UMeshComponent;
 class USceneComponent;
 class USphereComponent;
-class AWeaponSpawnPoint;
 class AFirstPersonCharacter;
 class UInteractableComponent;
 class UProceduralAnimValues;
@@ -119,9 +119,6 @@ protected:
 	UPROPERTY(Transient, VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Data")
 	uint8 bWeaponDataInitialized : 1 = false;
 
-	UPROPERTY()
-	TObjectPtr<AWeaponSpawnPoint> OwningSpawnPoint;
-
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Pickup")
 	float DropInstigatorPickupBlockDuration = 0.35f;
 
@@ -130,6 +127,12 @@ protected:
 
 	UPROPERTY(Transient)
 	float DropPickupBlockedUntilTime = 0.0f;
+
+	// 픽업이 성사된 뒤 실제 파괴(다음 틱)까지의 짧은 구간을 막는다.
+	// 이 사이에는 bIsEquipped/WeaponOwner 가 여전히 비어 있어서
+	// 같은 틱에 들어온 두 번째 상호작용이 그대로 통과해버린다.
+	UPROPERTY(Transient)
+	uint8 bPickupConsumed : 1 = false;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Animation")
 	TObjectPtr<UProceduralAnimValues> FirstPersonProceduralValues = nullptr;
@@ -144,8 +147,21 @@ protected:
 
 	void SetEquippedCollisionEnabled(bool bEnabled);
 	void SetPickupPresentation();
+	// 소유자는 있는데 손에는 들지 않은 상태 (비활성 슬롯) 의 표현.
+	// 메시만 숨기고 캐릭터 부착은 유지한다 — 여기서 떼면 액터 루트로 스냅백해서
+	// 월드에 떨어진 것처럼 보인다.
+	void SetStowedPresentation();
 	void SetEquippedPresentation();
 	void ApplyReplicatedPresentation();
+
+	// 배치 액터를 즉시 파괴하지 않고 숨긴 뒤 다음 틱에 지운다.
+	// AFirstPersonCharacter::ServerInteract 는 Interact() 가 true 를 돌려준 뒤에도
+	// 이 액터의 InteractableComponent 와 액터 참조를 계속 쓴다.
+	// (ASuitInteraction::ConsumeInteraction 이 같은 이유로 같은 형태를 쓴다.)
+	void ConsumePickup();
+
+	UFUNCTION()
+	void DestroyAfterPickup();
 
 	UFUNCTION()
 	virtual void OnRep_EquippedState();
@@ -187,7 +203,15 @@ public:
 
 	void OnOwnerLost();
 
-	void SetOwningSpawnPoint(AWeaponSpawnPoint* SpawnPoint);
+	// 플레이어가 소유하게 될 무기를 만드는 유일한 경로.
+	// OverrideLevel 을 의도적으로 주지 않는다 -> PersistentLevel 에 들어간다.
+	// 레벨에 배치된 무기 액터는 ULevel 이 WP 셀로 고정돼 있고 런타임에 바꿀 수 없어서,
+	// 그대로 쥐여주면 플레이어가 그 셀에서 멀어질 때 손에 든 채로 사라진다.
+	// 픽업/슈트/복원 세 경로가 모두 이걸 거쳐 같은 수명 규칙을 갖는다.
+	static AWeaponBase* SpawnLoadoutWeapon(
+		UWorld* World,
+		TSubclassOf<AWeaponBase> WeaponClass,
+		ACharacter* OwnerCharacter);
 
 	EWeaponType GetWeaponType() const { return WeaponType; }
 	EWeaponFireType GetFireType() const { return FireType; }

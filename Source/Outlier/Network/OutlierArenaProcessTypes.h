@@ -14,6 +14,8 @@ enum class EOutlierArenaSlotState : uint8
 
 enum class EOutlierArenaControlMessageType : uint8
 {
+	// Worker 프로세스가 Arena World 준비 전에도 Lobby와 생존 채널을 맺기 위한 메시지.
+	Starting,
 	Ready,
 	Allocate,
 	Release,

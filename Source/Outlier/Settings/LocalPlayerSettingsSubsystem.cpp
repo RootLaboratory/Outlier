@@ -125,6 +125,36 @@ bool ULocalPlayerSettingsSubsystem::SetSoundVolumeByIndex(
 		bApplyImmediately);
 }
 
+float ULocalPlayerSettingsSubsystem::GetMouseSensitivity() const
+{
+	return MouseSensitivity;
+}
+
+bool ULocalPlayerSettingsSubsystem::SetMouseSensitivity(float NewValue)
+{
+	const float ClampedValue = FMath::Clamp(NewValue, 0.05f, 2.0f);
+	if (FMath::IsNearlyEqual(MouseSensitivity, ClampedValue))
+	{
+		return true;
+	}
+
+	MouseSensitivity = ClampedValue;
+	OnMouseSensitivityChanged.Broadcast(MouseSensitivity);
+	return true;
+}
+
+void ULocalPlayerSettingsSubsystem::NotifyInputActionKeyChanged(
+	UInputAction* InputAction,
+	FKey NewKey)
+{
+	if (!InputAction)
+	{
+		return;
+	}
+
+	OnInputActionKeyChanged.Broadcast(InputAction, NewKey);
+}
+
 void ULocalPlayerSettingsSubsystem::InitializeResolutionOptions()
 {
 	if (!ResolutionOptions.IsEmpty())

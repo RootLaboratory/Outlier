@@ -35,6 +35,8 @@ public:
 
 	virtual void OnAimingOff() override; 
 
+	virtual void ResetCrossHairState() override;
+
 	void SpawnAttackSign(EAttackSign InAttackSign) override;
 
 	UFUNCTION(BlueprintImplementableEvent, Category ="Crosshair")

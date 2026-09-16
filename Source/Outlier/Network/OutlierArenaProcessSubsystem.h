@@ -44,6 +44,7 @@ private:
 		double StateChangedAt = 0.0;
 		double RestartAt = 0.0;
 		int32 RestartAttempts = 0;
+		bool bControlConnectedOnce = false;
 	};
 
 	struct FControlConnection

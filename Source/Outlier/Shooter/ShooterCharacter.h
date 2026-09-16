@@ -394,6 +394,7 @@ protected:
 	void PopReflectionBarrierWidget();
 	void NotifyLocalBulletReflected(const FVector& IncomingOrigin);
 	void HandleWeaponOverchargeTagChanged(const FGameplayTag Tag, int32 NewCount);
+	void RefreshWeaponOverchargeEmissive(bool bActive);
 	void HandleQuantumLeapCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleBulletReflectionCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleWeaponOverchargeCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
@@ -501,6 +502,14 @@ public:
 	void SetSuitDisabledByPartnerBoundary(bool bDisabled);
 	APartnerCharacter* GetPartnerCharacter() const { return CachedPartnerCharacter; }
 	bool IsSuitDisabledByPartnerBoundary() const { return bSuitDisabledByPartnerBoundary; }
+
+	// PlayerState 의 슈트 획득 플래그. 아직 안 먹었으면 슈트 기능 자체가 없는 것으로 본다.
+	bool HasAcquiredSuit() const;
+
+	// 슈트 능력을 실제로 쓸 수 있는 상태.
+	// 획득했고(HasAcquiredSuit) + 파트너 거리 이탈로 정지되지도(IsSuitDisabledByPartnerBoundary) 않아야 한다.
+	// 두 조건은 의미가 다르다 — 전자는 영구 획득, 후자는 일시 정지.
+	bool IsSuitUsable() const { return HasAcquiredSuit() && !IsSuitDisabledByPartnerBoundary(); }
 	bool IsShooterSuitUseDisabled() const;
 	bool IsBulletReflecting() const;
 	bool IsWeaponOvercharged() const;
@@ -515,6 +524,11 @@ public:
 	bool EndActiveStealth(bool bCommitCooldown);
 	const FGameplayTag& GetSelectedAbilityTag() const { return SelectedAbilityTag; }
 	void RefreshShooterSuitUI();
+
+	// 현재 무기의 탄약을 UI 에 다시 투영한다. 슈트 미착용이면 0.
+	// 슈트 플래그와 CurrentWeapon 은 서로 다른 액터에서 따로 복제되므로 도착 순서가 보장되지 않는다.
+	// 양쪽 경로에서 모두 불러 "나중에 도착한 쪽"이 항상 올바른 값을 남기게 한다.
+	void RefreshShooterAmmoUI();
 
 	void ApplyPartnerShield(float Amount, float Duration);
 	float GetCurPartnerShield() const;

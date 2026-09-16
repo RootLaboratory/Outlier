@@ -3,13 +3,21 @@
 #include "OutlierGameMode.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Shooter/ShooterInventoryComponent.h"
+#include "Weapon/WeaponBase.h"
 #include "OutlierPlayerState.h"
 #include "Save/OutlierCheckpoint.h"
+#include "Save/PresetPlayerStart.h"
+#include "Upgrade/PresetNodeProvideRow.h"
+#include "Engine/DataTable.h"
 #include "OutlierGameState.h"
 #include "FrontendPlayerController.h"
 #include "Network/OutlierArenaPoolSubsystem.h"
 #include "Network/OutlierArenaPausePlayerState.h"
 #include "Network/OutlierArenaProcessSubsystem.h"
+#include "Components/WorldPartitionStreamingSourceComponent.h"
+#include "WorldPartition/WorldPartitionSubsystem.h"
+#include "Engine/NetDriver.h"
 #include "Network/OutlierMatchmakingSubsystem.h"
 #include "Save/OutlierSaveSubSystem.h"
 #include "GameFramework/GameStateBase.h"
@@ -29,12 +37,31 @@
 #include "CoreGlobals.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
+#include "Streaming/ServerStreamingLevelsVisibility.h"
 #include "TimerManager.h"
 #include "Containers/Ticker.h"
 
 AOutlierGameMode::AOutlierGameMode()
 {
 
+}
+
+void AOutlierGameMode::InitGame(
+	const FString& MapName,
+	const FString& Options,
+	FString& ErrorMessage)
+{
+	// 역할을 못 읽는 경우의 폴백 클래스. 정상 경로에서는 SpawnPlayerController 오버라이드가
+	// 접속 URL(?Role=Shooter)을 보고 역할별 Controller를 직접 스폰하므로 여기까지 오지 않는다.
+	// 역할별 BP Controller를 바로 만들면 BeginPlay에서 역할 HUD가 먼저 뜨는 문제가 있어
+	// 원래는 공통 Controller로 받았다가 교체했었는데, 그 교체가 dedi에서 WP 셀 가시화 RPC를
+	// 폐기시키는 원인이라 제거했다.
+	if (IsArenaWorkerProcess())
+	{
+		PlayerControllerClass = AFirstPersonPlayerController::StaticClass();
+	}
+
+	Super::InitGame(MapName, Options, ErrorMessage);
 }
 
 void AOutlierGameMode::InitGameState()
@@ -73,8 +100,16 @@ bool AOutlierGameMode::UsesStaticArenaHandoff() const
 		&& Settings->bUseStaticArenaHandoff;
 }
 
+bool AOutlierGameMode::IsArenaWorkerPreloadReady() const
+{
+	return ArenaWorkerPreloadSource
+		&& ArenaWorkerPreloadSource->IsStreamingCompleted();
+}
+
 void AOutlierGameMode::PauseArenaWorkerWorld()
 {
+	constexpr float ArenaWorkerPreloadRadius = 12800.0f; // 128 m (UE unit = cm)
+
 	UWorld* World = GetWorld();
 	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
 	if (!HasAuthority()
@@ -88,10 +123,35 @@ void AOutlierGameMode::PauseArenaWorkerWorld()
 		return;
 	}
 
+	APresetPlayerStart* StreamingStart = nullptr;
+	TArray<AActor*> PresetStarts;
+	UGameplayStatics::GetAllActorsOfClass(
+		World, APresetPlayerStart::StaticClass(), PresetStarts);
+	for (AActor* Actor : PresetStarts)
+	{
+		APresetPlayerStart* PresetStart = Cast<APresetPlayerStart>(Actor);
+		if (PresetStart
+			&& PresetStart->GetPresetId() == OutlierPresetStageIds::Start
+			&& PresetStart->GetLevel() == World->PersistentLevel)
+		{
+			StreamingStart = PresetStart;
+			break;
+		}
+	}
+
+	if (!StreamingStart)
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("[ArenaWorker] Persistent PresetStart with PresetId=Start was not found; cannot create preload source"));
+		return;
+	}
+
+	const FTransform StreamingStartTransform = StreamingStart->GetActorTransform();
+
 	AOutlierArenaPausePlayerState* PauseOwner =
 		World->SpawnActorDeferred<AOutlierArenaPausePlayerState>(
-		AOutlierArenaPausePlayerState::StaticClass(),
-		FTransform::Identity,
+			AOutlierArenaPausePlayerState::StaticClass(),
+			StreamingStartTransform,
 		nullptr,
 		nullptr,
 		ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
@@ -102,10 +162,35 @@ void AOutlierGameMode::PauseArenaWorkerWorld()
 	}
 
 	PauseOwner->SetFlags(RF_Transient);
-	UGameplayStatics::FinishSpawningActor(PauseOwner, FTransform::Identity);
+	UGameplayStatics::FinishSpawningActor(PauseOwner, StreamingStartTransform);
+
+	// Worker는 PlayerController streaming source가 생기기 전에 WP 셀을 로드해야 한다.
+	// 항상 로드되는 Start Preset 위치에서 128m 범위의 셀과 중첩 LevelInstance를 먼저 올린다.
+	ArenaWorkerPreloadSource = NewObject<UWorldPartitionStreamingSourceComponent>(
+		PauseOwner, UWorldPartitionStreamingSourceComponent::StaticClass(), TEXT("ArenaWorkerPreloadSource"));
+	if (ArenaWorkerPreloadSource)
+	{
+		FStreamingSourceShape PreloadShape;
+		PreloadShape.bUseGridLoadingRange = false;
+		PreloadShape.Radius = ArenaWorkerPreloadRadius;
+		ArenaWorkerPreloadSource->Shapes.Add(PreloadShape);
+		ArenaWorkerPreloadSource->RegisterComponent();
+		if (UWorldPartitionSubsystem* WorldPartitionSubsystem =
+			World->GetSubsystem<UWorldPartitionSubsystem>())
+		{
+			WorldPartitionSubsystem->OnUpdateStreamingState();
+		}
+		UE_LOG(LogTemp, Display,
+			TEXT("[ArenaWorker] Preload streaming source registered Preset=%s Location=%s Radius=%.0f"),
+			*GetNameSafe(StreamingStart),
+			*StreamingStart->GetActorLocation().ToString(),
+			PreloadShape.Radius);
+	}
 
 	ArenaWorkerPauseOwner = PauseOwner;
+
 	World->GetWorldSettings()->SetPauserPlayerState(PauseOwner);
+
 	UE_LOG(LogTemp, Display, TEXT("[ArenaWorker] Arena world paused until both clients are ready"));
 }
 
@@ -122,6 +207,7 @@ void AOutlierGameMode::ClearArenaWorkerWorldPause()
 		ArenaWorkerPauseOwner->Destroy();
 		ArenaWorkerPauseOwner = nullptr;
 	}
+	ArenaWorkerPreloadSource = nullptr;
 }
 
 void AOutlierGameMode::ScheduleArenaWorkerPairSetup()
@@ -268,8 +354,299 @@ void AOutlierGameMode::HandlePlayerDeath(AShooterCharacter* Character)
 	}
 
 	Character->DetachFromControllerPendingDestroy();
-	
-	RespawnPairAtCheckpoint(Controller);
+
+	// 프로세스 종류로 미리 자르지 않는다. ArenaWorker는 이제 실제 두 플레이어가 플레이하는
+	// 프로세스라, IsArenaWorkerProcess()로 끊으면 dedi에서만 PreSetLoadWidget이 안 뜨고
+	// 즉시 리스폰으로 폴백한다. 사람이 없는 경우(봇 전용)는 BeginPresetRespawnSelection이
+	// "알릴 컨트롤러가 하나도 없으면 RespawnPairAtCheckpoint"로 이미 처리한다.
+	BeginPresetRespawnSelection(Controller);
+}
+
+void AOutlierGameMode::BeginPresetRespawnSelection(AController* Controller)
+{
+	if (!Controller)
+	{
+		return;
+	}
+
+	AOutlierPlayerState* TriggeringPS = Controller->GetPlayerState<AOutlierPlayerState>();
+	if (!TriggeringPS)
+	{
+		RespawnPairAtCheckpoint(Controller);
+		return;
+	}
+
+	const int32 PairId = TriggeringPS->GetPairId();
+	AOutlierPlayerState* ShooterPS = TriggeringPS->IsShooterPlayer()
+		? TriggeringPS
+		: FindPairPlayerState(PairId, EOutlierPlayerRole::Shooter);
+	AOutlierPlayerState* PartnerPS = TriggeringPS->IsPartnerPlayer()
+		? TriggeringPS
+		: FindPairPlayerState(PairId, EOutlierPlayerRole::Partner);
+
+	bool bNotifiedAny = false;
+	if (AFirstPersonPlayerController* ShooterFPC = Cast<AFirstPersonPlayerController>(GetControllerFromPlayerState(ShooterPS)))
+	{
+		ShooterFPC->Client_ShowPresetSelect();
+		bNotifiedAny = true;
+	}
+	if (AFirstPersonPlayerController* PartnerFPC = Cast<AFirstPersonPlayerController>(GetControllerFromPlayerState(PartnerPS)))
+	{
+		PartnerFPC->Client_ShowPresetSelect();
+		bNotifiedAny = true;
+	}
+
+	if (!bNotifiedAny)
+	{
+		RespawnPairAtCheckpoint(Controller);
+	}
+}
+
+void AOutlierGameMode::HandlePresetStageSelected(AController* Requester, FName StageId)
+{
+	if (!Requester)
+	{
+		return;
+	}
+
+	AOutlierPlayerState* TriggeringPS = Requester->GetPlayerState<AOutlierPlayerState>();
+	if (!TriggeringPS)
+	{
+		return;
+	}
+
+	TriggeringPS->SetPendingPresetSelection(StageId);
+
+	if (StageId == NAME_None)
+	{
+		// Start를 포함해 위젯의 모든 버튼은 이제 실제 스테이지 FName을 보낸다.
+		// 여기 걸리는 건 위젯이 아닌 다른 경로에서 빈 FName을 보낸 비정상 케이스뿐이니 대기만 한다.
+		return;
+	}
+
+	const int32 PairId = TriggeringPS->GetPairId();
+	AOutlierPlayerState* OtherPS = TriggeringPS->IsShooterPlayer()
+		? FindPairPlayerState(PairId, EOutlierPlayerRole::Partner)
+		: TriggeringPS->IsPartnerPlayer()
+			? FindPairPlayerState(PairId, EOutlierPlayerRole::Shooter)
+			: nullptr;
+
+	// 페어 상대가 아직 다른 스테이지를 고르는 중이면 대기. 상대가 아예 없으면(봇/아레나워커) 혼자 진행.
+	if (OtherPS && OtherPS->GetPendingPresetSelection() != StageId)
+	{
+		return;
+	}
+
+	TriggeringPS->SetPendingPresetSelection(NAME_None);
+	if (OtherPS)
+	{
+		OtherPS->SetPendingPresetSelection(NAME_None);
+	}
+
+	// 합의 성립 - 양쪽 위젯을 닫는다. ClientPopInGameSettingLayer는 이름과 달리 범용 pop-by-owner RPC라
+	// Push 때 RequestOwner로 넘겼던 PlayerState를 그대로 넘기면 어떤 위젯이든 닫힌다.
+	if (AFirstPersonPlayerController* TriggeringFPC = Cast<AFirstPersonPlayerController>(Requester))
+	{
+		TriggeringFPC->ClientPopInGameSettingLayer(TriggeringPS);
+	}
+	if (AFirstPersonPlayerController* OtherFPC = Cast<AFirstPersonPlayerController>(GetControllerFromPlayerState(OtherPS)))
+	{
+		OtherFPC->ClientPopInGameSettingLayer(OtherPS);
+	}
+
+	RequestPresetRespawn(Requester, StageId);
+}
+
+int32 AOutlierGameMode::ResolvePresetNodeCount(FName StageId) const
+{
+	// 테이블은 GameMode BP가 아니라 프로젝트 설정에서 읽는다. GameMode 파생 BP가 3개라
+	// (BP_OutlierGM / BP_LobbyGM / BP_BTestGM) 실행 형태마다 다른 BP가 떠서, 한 곳만 꽂아두면
+	// 다른 쪽에서는 조용히 0이 됐다. 특히 Listen은 Title 맵을 열고 아레나를 스트리밍으로 얹으므로
+	// GameMode가 BP_LobbyGM이고, 아레나 맵의 World Settings에 꽂은 값은 쓰이지 않는다.
+	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
+	if (!Settings || Settings->PresetNodeProvideTable.IsNull())
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[PresetNode] PresetNodeProvideTable is not set (Project Settings > Outlier Arena) — Stage=%s NodeCount=0"),
+			*StageId.ToString());
+		return 0;
+	}
+
+	const UDataTable* NodeProvideTable = Settings->PresetNodeProvideTable.LoadSynchronous();
+	if (!NodeProvideTable)
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("[PresetNode] Failed to load %s — Stage=%s NodeCount=0"),
+			*Settings->PresetNodeProvideTable.ToSoftObjectPath().ToString(), *StageId.ToString());
+		return 0;
+	}
+
+	static const FString ContextString(TEXT("ResolvePresetNodeCount"));
+	if (const FPresetNodeProvideRow* Row = NodeProvideTable->FindRow<FPresetNodeProvideRow>(StageId, ContextString))
+	{
+		UE_LOG(LogTemp, Display,
+			TEXT("[PresetNode] Stage=%s Count=%d"),
+			*StageId.ToString(), Row->Count);
+		return Row->Count;
+	}
+
+	// DT_PresetNode의 행은 Level1~Level4다(PresetNodeProvideRow.h 주석). Start처럼 행이 없는
+	// StageId로 들어오면 여기로 떨어져 NodeCount가 0이 된다 — 의도한 것인지 확인할 것.
+	UE_LOG(LogTemp, Warning,
+		TEXT("[PresetNode] Row not found in %s for Stage=%s — NodeCount=0"),
+		*GetNameSafe(NodeProvideTable), *StageId.ToString());
+	return 0;
+}
+
+void AOutlierGameMode::FlushUpgradeNodesForPair(AOutlierPlayerState* TriggeringPlayerState, int32 NewNodeCount)
+{
+	if (!TriggeringPlayerState)
+	{
+		return;
+	}
+
+	const int32 PairId = TriggeringPlayerState->GetPairId();
+
+	if (PairId == INDEX_NONE || !GameState)
+	{
+		TriggeringPlayerState->FlushActivatedUpgradeNodes(NewNodeCount);
+		return;
+	}
+
+	for (APlayerState* RawPlayerState : GameState->PlayerArray)
+	{
+		AOutlierPlayerState* PairPlayerState = Cast<AOutlierPlayerState>(RawPlayerState);
+		if (!PairPlayerState || PairPlayerState->GetPairId() != PairId)
+		{
+			continue;
+		}
+
+		PairPlayerState->FlushActivatedUpgradeNodes(NewNodeCount);
+	}
+}
+
+bool AOutlierGameMode::ResolvePresetStageSpawn(
+	FName StageId,
+	int32& OutArenaId,
+	FTransform& OutShooterSpawn,
+	FTransform& OutPartnerSpawn,
+	int32 RequiredArenaId) const
+{
+	if (StageId == NAME_None)
+	{
+		return false;
+	}
+
+	UWorld* World = GetWorld();
+	UOutlierArenaPoolSubsystem* ArenaPool = World ? World->GetSubsystem<UOutlierArenaPoolSubsystem>() : nullptr;
+	if (!ArenaPool)
+	{
+		return false;
+	}
+
+	TArray<AActor*> PresetStarts;
+	UGameplayStatics::GetAllActorsOfClass(World, APresetPlayerStart::StaticClass(), PresetStarts);
+
+	bool bFoundMatchingId = false;
+
+	for (AActor* Actor : PresetStarts)
+	{
+		const APresetPlayerStart* PresetStart = Cast<APresetPlayerStart>(Actor);
+		if (!PresetStart || PresetStart->GetPresetId() != StageId)
+		{
+			continue;
+		}
+
+		bFoundMatchingId = true;
+
+		const int32 CandidateArenaId = ArenaPool->FindArenaIdForActor(PresetStart);
+		if (CandidateArenaId == INDEX_NONE)
+		{
+			// 어느 아레나 풀 인스턴스(WP 셀) 소속인지 못 찾음 — 퍼시스턴트 레벨에 놓였거나
+			// 그 아레나가 아직 이 클라이언트/서버에 로드되지 않은 경우. INDEX_NONE을 그대로
+			// 넘기면 ArenaPool->ReloadArena(INDEX_NONE)가 조용히 아무 것도 안 해서
+			// OnArenaShown이 영영 안 뜨고 Possess 대기열이 방치되므로 반드시 걸러야 한다.
+			UE_LOG(LogTemp, Warning,
+				TEXT("[PresetRespawn] APresetPlayerStart '%s' (PresetId=%s) found but FindArenaIdForActor==INDEX_NONE — 아레나 풀 소속 레벨에 배치됐는지 확인 필요"),
+				*GetNameSafe(PresetStart), *StageId.ToString());
+			continue;
+		}
+
+		if (RequiredArenaId != INDEX_NONE && CandidateArenaId != RequiredArenaId)
+		{
+			continue;
+		}
+
+		OutArenaId = CandidateArenaId;
+		OutShooterSpawn = PresetStart->GetActorTransform();
+		OutPartnerSpawn = OutShooterSpawn;
+		OutPartnerSpawn.AddToTranslation(OutShooterSpawn.GetRotation().GetRightVector() * 150.0f);
+
+		return true;
+	}
+
+	if (!bFoundMatchingId)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[PresetRespawn] No APresetPlayerStart with PresetId=%s exists in the world"), *StageId.ToString());
+	}
+
+	return false;
+}
+
+void AOutlierGameMode::RequestPresetRespawn(AController* Requester, FName StageId)
+{
+	if (!Requester)
+	{
+		return;
+	}
+
+	AOutlierPlayerState* TriggeringPS = Requester->GetPlayerState<AOutlierPlayerState>();
+	if (!TriggeringPS)
+	{
+		return;
+	}
+
+	const int32 PairId = TriggeringPS->GetPairId();
+	AOutlierPlayerState* ShooterPS = TriggeringPS->IsShooterPlayer()
+		? TriggeringPS
+		: FindPairPlayerState(PairId, EOutlierPlayerRole::Shooter);
+	AOutlierPlayerState* PartnerPS = TriggeringPS->IsPartnerPlayer()
+		? TriggeringPS
+		: FindPairPlayerState(PairId, EOutlierPlayerRole::Partner);
+	if (!ShooterPS)
+	{
+		ShooterPS = TriggeringPS;
+	}
+
+	int32 ArenaId = INDEX_NONE;
+	FTransform ShooterSpawn;
+	FTransform PartnerSpawn;
+	if (!ResolvePresetStageSpawn(StageId, ArenaId, ShooterSpawn, PartnerSpawn))
+	{
+		// 프리셋을 못 찾았다고 리스폰을 포기하면 플레이어가 죽은 채로 방치된다.
+		// 아레나는 PlayerState가 이미 알고 있으므로 그걸로 리로드 대상을 정하고,
+		// 위치만 일반 PlayerStart 폴백으로 대체한다.
+		ArenaId = ShooterPS->GetArenaId();
+		UE_LOG(LogTemp, Warning,
+			TEXT("[PresetRespawn] No APresetPlayerStart for StageId=%s — falling back to a PlayerStart (ArenaId=%d)"),
+			*StageId.ToString(), ArenaId);
+
+		if (ArenaId == INDEX_NONE)
+		{
+			// 여기서는 리로드 대상 아레나 자체를 모르므로 진행할 수 없다.
+			UE_LOG(LogTemp, Error,
+				TEXT("[PresetRespawn] Bail: StageId=%s not found and PlayerState has no ArenaId"),
+				*StageId.ToString());
+			return;
+		}
+
+		ResolveFallbackSpawnTransforms(Requester, ArenaId, ShooterSpawn, PartnerSpawn);
+	}
+
+	const int32 NewNodeCount = ResolvePresetNodeCount(StageId);
+	FlushUpgradeNodesForPair(TriggeringPS, NewNodeCount);
+
+	ReloadArenaAndRespawnPair(ShooterPS, PartnerPS, ArenaId, ShooterSpawn, PartnerSpawn);
 }
 
 void AOutlierGameMode::StartMatchedPair(AController* FirstController, AController* SecondController, int32 PairId, int32 ArenaId, EOutlierPlayerRole FirstRole, EOutlierPlayerRole SecondRole)
@@ -326,20 +703,12 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 	FTransform ShooterSpawn;
 	FTransform PartnerSpawn;
 
-	if (!ResolveArenaSpawnTransforms(ArenaId, ShooterSpawn, PartnerSpawn))
+	// 로비 -> WP 최초 진입은 이제 이 아레나 인스턴스 소속의 PresetId=Start APresetPlayerStart를 우선 찾는다.
+	// 아직 레벨에 안 놔뒀으면(구 맵) 기존 ResolveArenaSpawnTransforms/FindPlayerStart 폴백으로 내려간다.
+	int32 ResolvedArenaId = INDEX_NONE;
+	if (!ResolvePresetStageSpawn(OutlierPresetStageIds::Start, ResolvedArenaId, ShooterSpawn, PartnerSpawn, ArenaId))
 	{
-		AActor* FallbackStart = FindPlayerStart(ShooterController);
-		ShooterSpawn = FallbackStart ? FallbackStart->GetActorTransform() : FTransform::Identity;
-		PartnerSpawn = ShooterSpawn;
-		PartnerSpawn.AddToTranslation(ShooterSpawn.GetRotation().GetRightVector() * 150.0f);
-	}
-	else
-	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("[GameMode] ResolveArenaSpawnTransforms success ArenaId=%d ShooterSpawn=%s PartnerSpawn=%s"),
-			ArenaId,
-			*ShooterSpawn.ToHumanReadableString(),
-			*PartnerSpawn.ToHumanReadableString());
+		ResolveFallbackSpawnTransforms(ShooterController, ArenaId, ShooterSpawn, PartnerSpawn);
 	}
 
 	UOutlierLobbyIdentitySubsystem* Identity =
@@ -366,55 +735,80 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 		PartnerSpawn
 	);
 
+	// 스폰 지점 바닥이 아직 스트리밍 안 된 아레나(주로 원점이 아닌 아레나)에서 낙사하는 것을 막는다.
+	// (PlayerStart 자체는 Is Spatially Loaded=false라 무죄, 문제는 그 아래 일반 셀 소속 바닥)
+	if (UOutlierArenaPoolSubsystem* ArenaPool = GetWorld()->GetSubsystem<UOutlierArenaPoolSubsystem>())
+	{
+		ArenaPool->HoldCharacterUntilArenaCellReady(Shooter, ArenaId);
+		ArenaPool->HoldCharacterUntilArenaCellReady(Partner, ArenaId);
+	}
+
 	APlayerController* NewShooterPC = nullptr;
 	APlayerController* NewPartnerPC = nullptr;
 
 	FActorSpawnParameters SpawnParams;
 	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 
-	if (ShooterControllerClass)
+	// ArenaWorker는 로그인 시점에 이미 역할별 PC로 들어온다(SpawnPlayerController 오버라이드).
+	// 그 경우 교체하지 않고 그대로 쓴다. 교체하면 교체 창 동안 클라 월드에 소유 커넥션 없는
+	// 옛 PC가 남고, 하필 그 PC로 WP 셀 가시화 RPC가 나가 폐기된다. 엔진에 재전송이 없어서
+	// (LevelStreaming.cpp의 ClientPendingRequestIndex 대기) 클라 스트리밍이 영구 정지한다.
+	// 로비(Frontend PC)에서 시작하는 경로는 여전히 교체가 필요하므로 클래스로 판정한다.
+	APlayerController* ExistingShooterPC = Cast<APlayerController>(ShooterController);
+	APlayerController* ExistingPartnerPC = Cast<APlayerController>(PartnerController);
+
+	const bool bShooterAlreadyCorrect =
+		ExistingShooterPC && ShooterControllerClass && ExistingShooterPC->IsA(ShooterControllerClass);
+	const bool bPartnerAlreadyCorrect =
+		ExistingPartnerPC && PartnerControllerClass && ExistingPartnerPC->IsA(PartnerControllerClass);
+
+	if (bShooterAlreadyCorrect)
+	{
+		NewShooterPC = ExistingShooterPC;
+	}
+	else if (ShooterControllerClass)
 	{
 		NewShooterPC = GetWorld()->SpawnActor<APlayerController>(ShooterControllerClass, ShooterSpawn, SpawnParams);
 	}
-	if (PartnerControllerClass)
+
+	if (bPartnerAlreadyCorrect)
+	{
+		NewPartnerPC = ExistingPartnerPC;
+	}
+	else if (PartnerControllerClass)
 	{
 		NewPartnerPC = GetWorld()->SpawnActor<APlayerController>(PartnerControllerClass, PartnerSpawn, SpawnParams);
 	}
 
-	if (ShooterController && NewShooterPC)
+	if (bShooterAlreadyCorrect && bPartnerAlreadyCorrect)
 	{
-		APlayerController* OldShooterPC =
-			Cast<APlayerController>(ShooterController);
+		UE_LOG(LogTemp, Display,
+			TEXT("[GameMode] Controllers already match their roles; skipping SwapPlayerControllers"));
+	}
 
-		if (OldShooterPC && NewShooterPC)
+	if (!bShooterAlreadyCorrect && ExistingShooterPC && NewShooterPC)
+	{
+		SwapPlayerControllers(ExistingShooterPC, NewShooterPC);
+
+		if (bHasShooterPlayerId &&
+			!Identity->RebindPlayer(ShooterPlayerId, NewShooterPC))
 		{
-			SwapPlayerControllers(OldShooterPC, NewShooterPC);
-
-			if (bHasShooterPlayerId &&
-				!Identity->RebindPlayer(ShooterPlayerId, NewShooterPC))
-			{
-				UE_LOG(LogTemp, Error,
-					TEXT("[LobbyIdentity] Shooter rebind failed: %s"),
-					*ShooterPlayerId.ToString());
-			}
+			UE_LOG(LogTemp, Error,
+				TEXT("[LobbyIdentity] Shooter rebind failed: %s"),
+				*ShooterPlayerId.ToString());
 		}
 	}
-	if (PartnerController && NewPartnerPC)
+
+	if (!bPartnerAlreadyCorrect && ExistingPartnerPC && NewPartnerPC)
 	{
-		APlayerController* OldPartnerPC =
-			Cast<APlayerController>(PartnerController);
+		SwapPlayerControllers(ExistingPartnerPC, NewPartnerPC);
 
-		if(OldPartnerPC && NewPartnerPC)
+		if (bHasPartnerPlayerId &&
+			!Identity->RebindPlayer(PartnerPlayerId, NewPartnerPC))
 		{
-			SwapPlayerControllers(OldPartnerPC, NewPartnerPC);
-
-			if (bHasPartnerPlayerId &&
-				!Identity->RebindPlayer(PartnerPlayerId, NewPartnerPC))
-			{
-				UE_LOG(LogTemp, Error,
-					TEXT("[LobbyIdentity] Failed to rebind Partner PlayerId=%s"),
-					*PartnerPlayerId.ToString());
-			}
+			UE_LOG(LogTemp, Error,
+				TEXT("[LobbyIdentity] Failed to rebind Partner PlayerId=%s"),
+				*PartnerPlayerId.ToString());
 		}
 	}
 
@@ -445,8 +839,8 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 
 	RegisterSpawnedPair(NewShooterPS, NewPartnerPS, Shooter, Partner);
 
-	PossessMatchedPawn(NewShooterPC, Shooter, ArenaId);
-	PossessMatchedPawn(NewPartnerPC, Partner, ArenaId);
+	PossessMatchedPawn(NewShooterPC, Shooter, ArenaId, ShooterSpawn.GetLocation());
+	PossessMatchedPawn(NewPartnerPC, Partner, ArenaId, PartnerSpawn.GetLocation());
 
 	if (NewShooterPC && NewPartnerPC && Shooter && Partner)
 	{
@@ -516,7 +910,8 @@ bool AOutlierGameMode::CompleteArenaMatch()
 void AOutlierGameMode::PossessMatchedPawn(
 	APlayerController* PlayerController,
 	APawn* Pawn,
-	int32 ArenaId)
+	int32 ArenaId,
+	const FVector& SpawnLocation)
 {
 	if (!PlayerController || !Pawn)
 	{
@@ -530,7 +925,10 @@ void AOutlierGameMode::PossessMatchedPawn(
 			if (AFirstPersonPlayerController* FirstPersonController =
 				Cast<AFirstPersonPlayerController>(PlayerController))
 			{
-				FirstPersonController->ClientPrepareForArenaStart();
+				// ArenaWorker는 여기서 바로 Possess해버리므로 클라는 한동안 Pawn이 없다.
+				// listen의 ClientArenaLoad와 동일하게 서버가 계산한 스폰 위치를 같이 넘겨야
+				// 클라가 스트리밍 소스를 놓을 곳을 알 수 있다.
+				FirstPersonController->ClientPrepareForArenaStart(ArenaId, SpawnLocation);
 			}
 		}
 		PlayerController->Possess(Pawn);
@@ -541,7 +939,9 @@ void AOutlierGameMode::PossessMatchedPawn(
 	if (AFirstPersonPlayerController* FirstPersonController =
 		Cast<AFirstPersonPlayerController>(PlayerController))
 	{
-		FirstPersonController->ClientArenaLoad(ArenaId);
+		// Possess 전이라 클라는 아직 자기 Pawn 위치를 모른다. 서버가 이미 계산해둔
+		// 실제 스폰 위치를 같이 넘겨서, 클라가 레벨 액터를 추측해서 찾지 않게 한다.
+		FirstPersonController->ClientArenaLoad(ArenaId, SpawnLocation);
 	}
 }
 
@@ -552,29 +952,31 @@ void AOutlierGameMode::OnClientArenaReady(APlayerController* PC)
 	if (IsArenaWorkerProcess())
 	{
 		if (!bArenaWorkerPairStarted
-			|| bArenaWorkerGameplayStarted
 			|| (PC != ArenaWorkerShooterController.Get()
 				&& PC != ArenaWorkerPartnerController.Get()))
 		{
 			return;
 		}
 
-		ArenaWorkerReadyPlayers.Add(PC);
-		if (ArenaWorkerReadyPlayers.Contains(ArenaWorkerShooterController)
-			&& ArenaWorkerReadyPlayers.Contains(ArenaWorkerPartnerController))
+		// 최초 입장 시에만 Worker 매치 시작 ready를 집계한다.
+		// 이미 게임이 시작된 뒤의 ready는 reload 후 새 Pawn의 possess를 위해
+		// 아래 PendingPossessions 처리 경로로 내려간다.
+		if (!bArenaWorkerGameplayStarted)
 		{
-			ScheduleArenaWorkerGameplayStart();
+			ArenaWorkerReadyPlayers.Add(PC);
+			if (ArenaWorkerReadyPlayers.Contains(ArenaWorkerShooterController)
+				&& ArenaWorkerReadyPlayers.Contains(ArenaWorkerPartnerController))
+			{
+				ScheduleArenaWorkerGameplayStart();
+			}
+			return;
 		}
-		return;
 	}
-
-	/*UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][5] OnClientArenaReady PC=%s PendingCount=%d"),
-		*GetNameSafe(PC), PendingPossessions.Num());*/
 
 	TObjectPtr<APawn>* PendingPawn = PendingPossessions.Find(PC);
 	if (!PendingPawn || !(*PendingPawn))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][5] No pending pawn for PC=%s"), *GetNameSafe(PC));
+		UE_LOG(LogTemp, Warning, TEXT("[Arena] OnClientArenaReady: no pending pawn for PC=%s"), *GetNameSafe(PC));
 		PendingPossessions.Remove(PC);
 		return;
 	}
@@ -582,8 +984,92 @@ void AOutlierGameMode::OnClientArenaReady(APlayerController* PC)
 	APawn* Pawn = PendingPawn->Get();
 	PendingPossessions.Remove(PC);
 
-	//UE_LOG(LogTemp, Warning, TEXT("[ArenaReady][5] Possessing Pawn=%s"), *GetNameSafe(Pawn));
 	PC->Possess(Pawn);
+}
+
+void AOutlierGameMode::OnClientArenaGameplayGCReady(APlayerController* PC, int32 ArenaId)
+{
+	if (!PC
+		|| ArenaId != PendingGameplayGCArenaId
+		|| !PendingGameplayGCPlayers.Contains(PC))
+	{
+		return;
+	}
+
+	ReadyGameplayGCPlayers.Add(PC);
+	if (ReadyGameplayGCPlayers.Num() < PendingGameplayGCPlayers.Num())
+	{
+		return;
+	}
+
+	UE_LOG(LogTemp, Display,
+		TEXT("[Arena][DataLayer] All remote clients completed GC ArenaId=%d; activating Gameplay layer"),
+		ArenaId);
+
+	if (UOutlierArenaPoolSubsystem* ArenaPool = GetWorld()
+		? GetWorld()->GetSubsystem<UOutlierArenaPoolSubsystem>()
+		: nullptr)
+	{
+		ArenaPool->ActivateArenaGameplayData(ArenaId);
+	}
+
+	PendingGameplayGCArenaId = INDEX_NONE;
+	PendingGameplayGCPlayers.Reset();
+	ReadyGameplayGCPlayers.Reset();
+}
+
+APlayerController* AOutlierGameMode::SpawnPlayerController(
+	ENetRole InRemoteRole,
+	const FString& Options)
+{
+	// 역할은 로비가 정해서 접속 URL에 실어 보낸다(OutlierArenaHandoff::BuildTravelURL).
+	// 여기서 바로 역할별 PC를 스폰하면 StartMatchedPair의 컨트롤러 교체가 불필요해진다.
+	if (IsArenaWorkerProcess())
+	{
+		FOutlierArenaHandoffRequest Request;
+		FString ParseError;
+		if (OutlierArenaHandoff::TryParseOptions(Options, Request, ParseError))
+		{
+			TSubclassOf<APlayerController> RoleControllerClass = nullptr;
+			if (Request.Role == EOutlierPlayerRole::Shooter)
+			{
+				RoleControllerClass = ShooterControllerClass;
+			}
+			else if (Request.Role == EOutlierPlayerRole::Partner)
+			{
+				RoleControllerClass = PartnerControllerClass;
+			}
+
+			if (RoleControllerClass)
+			{
+				UE_LOG(LogTemp, Display,
+					TEXT("[ArenaWorker] Spawning role controller at login Role=%d Class=%s"),
+					static_cast<int32>(Request.Role),
+					*RoleControllerClass->GetName());
+
+				return SpawnPlayerControllerCommon(
+					InRemoteRole,
+					FVector::ZeroVector,
+					FRotator::ZeroRotator,
+					RoleControllerClass);
+			}
+
+			UE_LOG(LogTemp, Warning,
+				TEXT("[ArenaWorker] Role controller class is not set (Role=%d); falling back to %s"),
+				static_cast<int32>(Request.Role),
+				*GetNameSafe(PlayerControllerClass));
+		}
+		else
+		{
+			// 역할을 못 읽으면 기존 공용 PC로 폴백한다. 이 경우 예전처럼 교체 경로가 필요하다.
+			UE_LOG(LogTemp, Warning,
+				TEXT("[ArenaWorker] Could not resolve role from login options (%s); falling back to %s"),
+				*ParseError,
+				*GetNameSafe(PlayerControllerClass));
+		}
+	}
+
+	return Super::SpawnPlayerController(InRemoteRole, Options);
 }
 
 void AOutlierGameMode::PreLogin(
@@ -741,10 +1227,10 @@ void AOutlierGameMode::Logout(AController* Exiting)
 		{
 			if (AEnemyBase* EnemyPawn = Cast<AEnemyBase>(Exiting->GetPawn()))
 			{
-				// 캐시를 먼저 비워야 함 — 아래 Destroy()가 트리거하는 PawnPendingDestroy() 안전장치가
-				// 이미 지워질 캐시된 Partner를 복원하려고 시도하는 걸 막기 위함.
+				// 캐시를 먼저 비워야 한다. 아래 Destroy()가 트리거하는 PawnPendingDestroy() 안전장치가
+				// 이미 지워질 캐시된 Partner로 복원하려고 시도하는 걸 막기 위함.
 				// AI에게 돌려주지 않고 바로 지우는 건, 일반 Shooter/Partner 로그아웃과 동일하게
-				// 빙의 중이던 Pawn과 원래 Pawn이 둘 다 사라지는 게 자연스럽다는 판단.
+				// 빙의 중이던 Pawn과 원래 Pawn이 둘 다 사라지는 쪽이 자연스럽다는 판단.
 				APartnerCharacter* CachedPartner = PartnerController->ExtractCachedPartnerCharacterForLogout();
 
 				EnemyPawn->ClearPossessedPlayerState();
@@ -911,6 +1397,13 @@ void AOutlierGameMode::RespawnPairAtCheckpoint(AController* Controller)
 		? GetWorld()->SpawnActor<APartnerCharacter>(PartnerClass, PartnerSpawnTransform)
 		: nullptr;
 
+	// 리스폰도 초기 스폰과 같은 바닥-미스트리밍 경합에 노출된다 (체크포인트/프리셋 폴백 어느 경로든 동일).
+	if (UOutlierArenaPoolSubsystem* ArenaPool = GetWorld()->GetSubsystem<UOutlierArenaPoolSubsystem>())
+	{
+		ArenaPool->HoldCharacterUntilArenaCellReady(NewShooter, ArenaId);
+		ArenaPool->HoldCharacterUntilArenaCellReady(NewPartner, ArenaId);
+	}
+
 	if (AController* ShooterController = GetControllerFromPlayerState(ShooterPlayerState))
 	{
 		if (NewShooter)
@@ -928,6 +1421,7 @@ void AOutlierGameMode::RespawnPairAtCheckpoint(AController* Controller)
 	}
 
 	RegisterSpawnedPair(ShooterPlayerState, PartnerPlayerState, NewShooter, NewPartner);
+	RestorePairLoadout(ShooterPlayerState, NewShooter, NewPartner);
 }
 
 void AOutlierGameMode::DebugReloadArena(AController* Requester)
@@ -965,26 +1459,44 @@ void AOutlierGameMode::DebugReloadArena(AController* Requester)
 		return;
 	}
 
-	//시작은 save 상관없이 start
+	//시작은 save 데이터 없이 start
 	FTransform ShooterSpawn;
 	FTransform PartnerSpawn;
-	if (!ResolveArenaSpawnTransforms(ArenaId, ShooterSpawn, PartnerSpawn))
+	ResolveFallbackSpawnTransforms(Requester, ArenaId, ShooterSpawn, PartnerSpawn);
+
+	ReloadArenaAndRespawnPair(ShooterPS, PartnerPS, ArenaId, ShooterSpawn, PartnerSpawn);
+}
+
+void AOutlierGameMode::ReloadArenaAndRespawnPair(
+	AOutlierPlayerState* ShooterPlayerState,
+	AOutlierPlayerState* PartnerPlayerState,
+	int32 ArenaId,
+	const FTransform& ShooterSpawn,
+	const FTransform& PartnerSpawn)
+{
+	if (!ShooterPlayerState)
 	{
-		AActor* FallbackStart = FindPlayerStart(Requester);
-		ShooterSpawn = FallbackStart ? FallbackStart->GetActorTransform() : FTransform::Identity;
-		PartnerSpawn = ShooterSpawn;
-		PartnerSpawn.AddToTranslation(ShooterSpawn.GetRotation().GetRightVector() * 150.0f);
+		return;
 	}
 
-	// 2) 기존 폰 정리 (RespawnPairAtCheckpoint와 동일). 파트너가 적 빙의 중이면 먼저 해제.
-	AShooterCharacter* OldShooter = ShooterPS->GetShooterCharacter();
-	APartnerCharacter* OldPartner = ShooterPS->GetPartnerCharacter();
-	if (!OldPartner && PartnerPS)
+	if (ArenaId == INDEX_NONE)
 	{
-		OldPartner = PartnerPS->GetPartnerCharacter();
+		// ArenaId가 없으면 아래 ArenaPool->ReloadArena(ArenaId)가 조용히 아무 것도 안 해서
+		// OnArenaShown이 영영 안 뜨고 Possess 대기열만 방치된다. 호출부에서 이미 걸러야 하지만
+		// 방어적으로 여기서도 막는다.
+		UE_LOG(LogTemp, Error, TEXT("[ReloadArenaAndRespawnPair] Bail: ArenaId==INDEX_NONE"));
+		return;
 	}
 
-	if (APartnerPlayerController* PartnerPC = Cast<APartnerPlayerController>(GetControllerFromPlayerState(PartnerPS)))
+	// 2) 기존 페어 정리 (RespawnPairAtCheckpoint와 동일). 파트너가 적 빙의 중이면 먼저 해제.
+	AShooterCharacter* OldShooter = ShooterPlayerState->GetShooterCharacter();
+	APartnerCharacter* OldPartner = ShooterPlayerState->GetPartnerCharacter();
+	if (!OldPartner && PartnerPlayerState)
+	{
+		OldPartner = PartnerPlayerState->GetPartnerCharacter();
+	}
+
+	if (APartnerPlayerController* PartnerPC = Cast<APartnerPlayerController>(GetControllerFromPlayerState(PartnerPlayerState)))
 	{
 		if (Cast<AEnemyBase>(PartnerPC->GetPawn()))
 		{
@@ -992,14 +1504,14 @@ void AOutlierGameMode::DebugReloadArena(AController* Requester)
 		}
 	}
 
-	ShooterPS->SetShooterCharacter(nullptr);
-	ShooterPS->SetPartnerCharacter(nullptr);
-	ShooterPS->SetSuitDisabledByPartnerBoundary(false);
-	if (PartnerPS)
+	ShooterPlayerState->SetShooterCharacter(nullptr);
+	ShooterPlayerState->SetPartnerCharacter(nullptr);
+	ShooterPlayerState->SetSuitDisabledByPartnerBoundary(false);
+	if (PartnerPlayerState)
 	{
-		PartnerPS->SetShooterCharacter(nullptr);
-		PartnerPS->SetPartnerCharacter(nullptr);
-		PartnerPS->SetSuitDisabledByPartnerBoundary(false);
+		PartnerPlayerState->SetShooterCharacter(nullptr);
+		PartnerPlayerState->SetPartnerCharacter(nullptr);
+		PartnerPlayerState->SetSuitDisabledByPartnerBoundary(false);
 	}
 
 	if (OldShooter)
@@ -1019,13 +1531,39 @@ void AOutlierGameMode::DebugReloadArena(AController* Requester)
 		? GetWorld()->SpawnActor<APartnerCharacter>(PartnerClass, PartnerSpawn)
 		: nullptr;
 
-	RegisterSpawnedPair(ShooterPS, PartnerPS, NewShooter, NewPartner);
+	// possess는 아래에서 지오메트리 준비 뒤로 미루지만, 스폰 즉시 중력은 적용되므로
+	// (possess 여부와 무관하게 CharacterMovement가 낙하시킴) 바닥 셀 준비까지 별도로 붙잡아야 한다.
+	if (UOutlierArenaPoolSubsystem* ArenaPool = GetWorld()->GetSubsystem<UOutlierArenaPoolSubsystem>())
+	{
+		ArenaPool->HoldCharacterUntilArenaCellReady(NewShooter, ArenaId);
+		ArenaPool->HoldCharacterUntilArenaCellReady(NewPartner, ArenaId);
+	}
 
-	// 4) possess 배선 — 지오메트리 준비 후로 지연.
-	//    remote → 클라 재스트리밍 후 OnClientArenaReady에서 possess
-	//    local  → 서버 자기 재스트리밍(OnArenaShown) 후 possess (아래 5)
-	AController* ShooterController = GetControllerFromPlayerState(ShooterPS);
-	AController* PartnerController = GetControllerFromPlayerState(PartnerPS);
+	RegisterSpawnedPair(ShooterPlayerState, PartnerPlayerState, NewShooter, NewPartner);
+	RestorePairLoadout(ShooterPlayerState, NewShooter, NewPartner);
+
+	// 4) possess 배선 — 지오메트리 준비 뒤로 지연
+	//    remote → 클라 스트리밍 완료 후 OnClientArenaReady에서 possess
+	//    local  → 서버 Gameplay Data Layer 준비(OnArenaGameplayReady) 후 possess (아래 5)
+	AController* ShooterController = GetControllerFromPlayerState(ShooterPlayerState);
+	AController* PartnerController = GetControllerFromPlayerState(PartnerPlayerState);
+
+	UOutlierArenaPoolSubsystem* ArenaPool = GetWorld()
+		? GetWorld()->GetSubsystem<UOutlierArenaPoolSubsystem>()
+		: nullptr;
+	const bool bUseGameplayDataReload = ArenaPool && ArenaPool->IsGameplayDataLayerAvailable(ArenaId);
+	PendingGameplayGCArenaId = bUseGameplayDataReload ? ArenaId : INDEX_NONE;
+	PendingGameplayGCPlayers.Reset();
+	ReadyGameplayGCPlayers.Reset();
+	UE_LOG(LogTemp, Display,
+		TEXT("[ReloadArenaAndRespawnPair] ArenaId=%d ReloadMode=%s"),
+		ArenaId,
+		bUseGameplayDataReload ? TEXT("GameplayDataLayer") : TEXT("FullLevelInstanceFallback"));
+
+	// 클라이언트는 ClientArenaReload를 "받고 나서야" 언로드를 시작하므로, 이 RPC를 보내기
+	// 직전에 서버 쪽 가시성을 먼저 내려두면 순서가 보장된다. 그렇게 안 하면 클라가 아직
+	// 레벨을 내린 구간에도 서버는 그 레벨 액터들을 계속 리플리케이트해서, 클라의
+	// SerializeNewActor가 실패하고 레벨배치 액터(Rifle/StatMachine 등)의 채널이 영구히 닫힌다.
 
 	if (APlayerController* PC = Cast<APlayerController>(ShooterController))
 	{
@@ -1038,7 +1576,20 @@ void AOutlierGameMode::DebugReloadArena(AController* Requester)
 			PendingPossessions.Add(PC, NewShooter);
 			if (AFirstPersonPlayerController* FPC = Cast<AFirstPersonPlayerController>(PC))
 			{
-				FPC->ClientArenaReload(ArenaId);
+				// 스폰 위치를 같이 넘긴다. StageId -> 좌표 변환은 여기(ResolvePresetStageSpawn)에서만
+				// 일어나고 클라에는 그 결과가 갈 창구가 없다. 안 보내면 클라의 임시 스트리밍 소스가
+				// 최초 진입 때 받은 좌표에 그대로 서고, 그 자리는 이미 로드돼 있어서 새 목적지를
+				// 한 번도 요청하지 않은 채 준비 완료를 보고해버린다.
+				if (bUseGameplayDataReload)
+				{
+					PendingGameplayGCPlayers.Add(PC);
+					FPC->ClientArenaGameplayReload(ArenaId, ShooterSpawn.GetLocation());
+				}
+				else
+				{
+					ArenaPool->SuspendArenaVisibilityForConnection(ArenaId, FPC);
+					FPC->ClientArenaReload(ArenaId, ShooterSpawn.GetLocation());
+				}
 			}
 		}
 	}
@@ -1054,15 +1605,22 @@ void AOutlierGameMode::DebugReloadArena(AController* Requester)
 			PendingPossessions.Add(PC, NewPartner);
 			if (AFirstPersonPlayerController* FPC = Cast<AFirstPersonPlayerController>(PC))
 			{
-				FPC->ClientArenaReload(ArenaId);
+				// PC마다 자기 폰의 스폰 위치를 보낸다 (PossessMatchedPawn의 최초 진입과 동일한 규칙).
+				if (bUseGameplayDataReload)
+				{
+					PendingGameplayGCPlayers.Add(PC);
+					FPC->ClientArenaGameplayReload(ArenaId, PartnerSpawn.GetLocation());
+				}
+				else
+				{
+					ArenaPool->SuspendArenaVisibilityForConnection(ArenaId, FPC);
+					FPC->ClientArenaReload(ArenaId, PartnerSpawn.GetLocation());
+				}
 			}
 		}
 	}
 
 	// 5) 로컬 possess 대기 바인딩 + 서버측 리로드 시작
-	UOutlierArenaPoolSubsystem* ArenaPool = GetWorld()
-		? GetWorld()->GetSubsystem<UOutlierArenaPoolSubsystem>()
-		: nullptr;
 	if (!ArenaPool)
 	{
 		return;
@@ -1073,13 +1631,21 @@ void AOutlierGameMode::DebugReloadArena(AController* Requester)
 		ReloadingArenaId = ArenaId;
 		if (!ArenaShownHandle.IsValid())
 		{
-			ArenaShownHandle = ArenaPool->OnArenaShown.AddUObject(this, &AOutlierGameMode::HandleServerArenaReloaded);
+		ArenaShownHandle = bUseGameplayDataReload
+			? ArenaPool->OnArenaGameplayReady.AddUObject(this, &AOutlierGameMode::HandleServerArenaReloaded)
+			: ArenaPool->OnArenaShown.AddUObject(this, &AOutlierGameMode::HandleServerArenaReloaded);
 		}
 	}
 
-	UE_LOG(LogTemp, Warning, TEXT("[DebugReload] Calling ReloadArena ArenaId=%d LocalPending=%d RemotePending=%d"),
-		ArenaId, PendingLocalPossessions.Num(), PendingPossessions.Num());
-	ArenaPool->ReloadArena(ArenaId);
+	if (bUseGameplayDataReload)
+	{
+		ArenaPool->ReloadArenaGameplayData(
+			ArenaId, PendingGameplayGCPlayers.Num() > 0);
+	}
+	else
+	{
+		ArenaPool->ReloadArena(ArenaId);
+	}
 }
 
 void AOutlierGameMode::PostLogin(APlayerController* NewPlayer)
@@ -1108,7 +1674,7 @@ void AOutlierGameMode::PostLogin(APlayerController* NewPlayer)
 			&& ArenaWorkerPartnerController.IsValid()
 			&& !bArenaWorkerPairStartScheduled)
 		{
-			// 두 번째 PostLogin이 끝난 뒤 Controller 교체를 시작한다.
+			// 두 번째 PostLogin이 끝난 뒤 페어 셋업을 시작한다.
 			ScheduleArenaWorkerPairSetup();
 		}
 		return;
@@ -1123,7 +1689,7 @@ void AOutlierGameMode::PostLogin(APlayerController* NewPlayer)
 	if (ArenaWorkerPlayers.Num() == 2
 		&& !bArenaWorkerPairStartScheduled)
 	{
-		// 두 번째 PostLogin이 완전히 끝난 뒤 PlayerController 교체를 시작하도록 다음 틱까지 지연.
+		// 두 번째 PostLogin이 완전히 끝난 뒤 페어 셋업이 시작되도록 다음 틱까지 지연.
 		ScheduleArenaWorkerPairSetup();
 	}
 }
@@ -1325,6 +1891,7 @@ void AOutlierGameMode::HandleServerArenaReloaded(int32 ReloadedArenaId)
 		? GetWorld()->GetSubsystem<UOutlierArenaPoolSubsystem>()
 		: nullptr)
 	{
+		ArenaPool->OnArenaGameplayReady.Remove(ArenaShownHandle);
 		ArenaPool->OnArenaShown.Remove(ArenaShownHandle);
 	}
 	ArenaShownHandle.Reset();
@@ -1344,16 +1911,9 @@ bool AOutlierGameMode::ResolveCheckpointTransform(AController* Controller, int32
 
 	const FOutlierCheckpointData& Data = PS->GetCheckpointData();
 
-	ULevel* ArenaLevel = nullptr;
-	if (const UWorld* World = GetWorld())
-	{
-		if (const UOutlierArenaPoolSubsystem* ArenaPool = World->GetSubsystem<UOutlierArenaPoolSubsystem>())
-		{
-			ArenaLevel = ArenaPool->GetArenaLoadedLevel(ArenaId);
-		}
-	}
-
-	if (!ArenaLevel)
+	const UWorld* World = GetWorld();
+	const UOutlierArenaPoolSubsystem* ArenaPool = World ? World->GetSubsystem<UOutlierArenaPoolSubsystem>() : nullptr;
+	if (!ArenaPool || !ArenaPool->GetArenaLoadedLevel(ArenaId))
 	{
 		return false;
 	}
@@ -1373,7 +1933,9 @@ bool AOutlierGameMode::ResolveCheckpointTransform(AController* Controller, int32
 			continue;
 		}
 
-		if (Checkpoint->GetLevel() != ArenaLevel)
+		// WP 아레나에서는 체크포인트가 아레나 PersistentLevel이 아니라 WP 셀 레벨로 들어가므로
+		// GetLevel() 기반 비교가 항상 실패한다 (PlayerStart/Enemy와 동일한 사정).
+		if (ArenaPool->FindArenaIdForActor(Checkpoint) != ArenaId)
 		{
 			continue;
 		}
@@ -1433,6 +1995,58 @@ AController* AOutlierGameMode::GetControllerFromPlayerState(AOutlierPlayerState*
 	return PlayerState ? Cast<AController>(PlayerState->GetOwner()) : nullptr;
 }
 
+void AOutlierGameMode::RestorePairLoadout(
+	AOutlierPlayerState* ShooterPlayerState,
+	AShooterCharacter* Shooter,
+	APartnerCharacter* Partner)
+{
+	if (!ShooterPlayerState)
+	{
+		return;
+	}
+
+	// 슈트를 무기보다 먼저 입힌다. 메시를 갈아끼우면 소켓이 바뀌므로,
+	// 순서가 반대면 이미 붙은 무기들이 옛 메시에 매달린 채로 남는다.
+	if (Shooter && ShooterPlayerState->GetAcquiredSuit())
+	{
+		Shooter->ApplySuitMeshes(
+			ShooterPlayerState->GetSuitFirstPersonMesh(),
+			ShooterPlayerState->GetSuitThirdPersonMesh());
+	}
+
+	// 값으로 복사한다. 아래 RestoreLoadout 이 슬롯을 채우면서 PlayerState 의 스냅샷을
+	// 다시 쓰기 때문에, 참조를 들고 있으면 Partner 분기에서 재할당된 메모리를 읽게 된다.
+	const FOutlierLoadoutSnapshot Snapshot = ShooterPlayerState->GetLoadoutSnapshot();
+	if (Snapshot.IsEmpty())
+	{
+		// 최초 스폰에는 기록이 없다. 무기 복원만 건너뛴다 (슈트는 위에서 이미 처리).
+		return;
+	}
+
+	if (UShooterInventoryComponent* Inventory = Shooter ? Shooter->GetInventoryComponent() : nullptr)
+	{
+		Inventory->RestoreLoadout(Snapshot);
+	}
+
+	// Partner 는 InventoryComponent 가 없고 무기도 하나뿐이라 여기서 직접 처리한다.
+	// 순서는 ASuitInteraction::ApplySuit 의 Partner 지급과 같다 (스폰 -> 장착 -> 표시).
+	if (Partner && Snapshot.PartnerWeaponClass)
+	{
+		if (AWeaponBase* PartnerWeapon = AWeaponBase::SpawnLoadoutWeapon(
+				GetWorld(), Snapshot.PartnerWeaponClass, Partner))
+		{
+			Partner->EquipWeapon(PartnerWeapon);
+			PartnerWeapon->ShowEquippedPresentation();
+		}
+		else
+		{
+			UE_LOG(LogTemp, Error,
+				TEXT("[RestorePairLoadout] Partner weapon spawn failed Class=%s"),
+				*GetNameSafe(Snapshot.PartnerWeaponClass.Get()));
+		}
+	}
+}
+
 void AOutlierGameMode::RegisterSpawnedPair(
 	AOutlierPlayerState* ShooterPlayerState,
 	AOutlierPlayerState* PartnerPlayerState,
@@ -1454,17 +2068,42 @@ void AOutlierGameMode::RegisterSpawnedPair(
 	}
 }
 
+void AOutlierGameMode::ResolveFallbackSpawnTransforms(
+	AController* Requester,
+	int32 ArenaId,
+	FTransform& OutShooterSpawn,
+	FTransform& OutPartnerSpawn)
+{
+	// 1순위: 이 아레나 소속의 일반 PlayerStart (APresetPlayerStart는 제외된다)
+	if (ResolveArenaSpawnTransforms(ArenaId, OutShooterSpawn, OutPartnerSpawn))
+	{
+		UE_LOG(LogTemp, Display,
+			TEXT("[SpawnFallback] Using arena PlayerStart ArenaId=%d Shooter=%s"),
+			ArenaId, *OutShooterSpawn.GetLocation().ToString());
+		return;
+	}
+
+	// 2순위: 엔진 기본 탐색. 아레나 소속을 안 가리므로 다른 아레나의 것을 집을 수 있다 —
+	// MaxArenaCount>1이면 여기까지 내려오지 않도록 레벨에 아레나별 PlayerStart를 두는 게 맞다.
+	AActor* FallbackStart = FindPlayerStart(Requester);
+	OutShooterSpawn = FallbackStart ? FallbackStart->GetActorTransform() : FTransform::Identity;
+	OutPartnerSpawn = OutShooterSpawn;
+	OutPartnerSpawn.AddToTranslation(OutShooterSpawn.GetRotation().GetRightVector() * 150.0f);
+
+	UE_LOG(LogTemp, Warning,
+		TEXT("[SpawnFallback] No arena PlayerStart for ArenaId=%d — using %s at %s"),
+		ArenaId,
+		FallbackStart ? *GetNameSafe(FallbackStart) : TEXT("world origin"),
+		*OutShooterSpawn.GetLocation().ToString());
+}
+
 bool AOutlierGameMode::ResolveArenaSpawnTransforms(int32 ArenaId, FTransform& OutShooterSpawn, FTransform& OutPartnerSpawn) const
 {
 	const UWorld* World = GetWorld();
-	ULevel* ArenaLevel = nullptr;
-	if (World)
-	{
-		if (const UOutlierArenaPoolSubsystem* ArenaPool = World->GetSubsystem<UOutlierArenaPoolSubsystem>())
-		{
-			ArenaLevel = ArenaPool->GetArenaLoadedLevel(ArenaId);
-		}
-	}
+	const UOutlierArenaPoolSubsystem* ArenaPool = World
+		? World->GetSubsystem<UOutlierArenaPoolSubsystem>()
+		: nullptr;
+	ULevel* ArenaLevel = ArenaPool ? ArenaPool->GetArenaLoadedLevel(ArenaId) : nullptr;
 
 	if (!ArenaLevel)
 	{
@@ -1493,9 +2132,16 @@ bool AOutlierGameMode::ResolveArenaSpawnTransforms(int32 ArenaId, FTransform& Ou
 			continue;
 		}
 
-		const bool bSameLevel = PlayerStart->GetLevel() == ArenaLevel;
-	
-		if (!bSameLevel)
+		// APresetPlayerStart는 APlayerStart 서브클래스라 GetAllActorsOfClass에 같이 잡힌다.
+		// 그리드/지정 스테이지 선택용으로만 쓰이는 위치라 일반 아레나 시작점 후보에서 제외해야 한다.
+		if (PlayerStart->IsA<APresetPlayerStart>())
+		{
+			continue;
+		}
+
+		// WP 아레나에서는 PlayerStart가 아레나 PersistentLevel이 아니라 WP 셀 레벨로 들어가므로
+		// 레벨 기반 비교로는 절대 잡히지 않는다. 소유 아레나로 매칭한다.
+		if (ArenaPool->FindArenaIdForActor(PlayerStart) != ArenaId)
 		{
 			continue;
 		}

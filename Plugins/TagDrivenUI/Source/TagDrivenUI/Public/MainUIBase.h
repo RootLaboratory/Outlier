@@ -41,6 +41,11 @@ public:
 	virtual void On_RepAbilityabledByDistance();
 
 	virtual void ModulesControl(bool Flag);
+
+	// 게이트를 존중하는 활성화. bModulesActive 가 false 면 무시한다.
+	// 모듈을 개별로 켜는 곳(무기 타입별 Ammo/CrossHair 등)이 ->Activate() 를 직접 부르면
+	// MainWidget 전체 게이트를 우회해버리므로, 그런 자리에서는 이걸 쓴다.
+	void ActivateModuleIfAllowed(UEventDrivenUI* InModule);
 	virtual void AbilitySectionControl(bool Flag);
 public:
 
@@ -57,6 +62,9 @@ protected:
 
 	UPROPERTY()
 	TMap<FGameplayTag, TObjectPtr<UEventDrivenUI>> Modules;
+
+	// ModulesControl 이 마지막으로 지시한 상태. 등록이 늦은 모듈에도 같은 상태를 물려준다.
+	bool bModulesActive = false;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Ability Sections")
 	TMap<FGameplayTag, TObjectPtr<UAbilityIconUI>> AbilitySections;

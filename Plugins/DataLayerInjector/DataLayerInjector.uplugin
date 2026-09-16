@@ -1,0 +1,18 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "Data Layer Injector",
+	"Description": "Injects or removes a Data Layer on actors in the current editor world.",
+	"Category": "Editor",
+	"EnabledByDefault": true,
+	"CanContainContent": false,
+	"Modules":
+	[
+		{
+			"Name": "DataLayerInjector",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		}
+	]
+}

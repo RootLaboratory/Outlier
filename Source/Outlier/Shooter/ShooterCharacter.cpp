@@ -8,7 +8,6 @@
 #include "Components/CapsuleComponent.h"
 #include "Components/SphereComponent.h"
 #include "Components/SkeletalMeshComponent.h"
-#include "Components/SceneCaptureComponent2D.h"
 #include "Curves/CurveFloat.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/SkeletalMesh.h"
@@ -134,14 +133,6 @@ AShooterCharacter::AShooterCharacter() : AFirstPersonCharacter()
 	if (UpgradeComponent)
 	{
 		UpgradeComponent->SetUpgradeRole(EOutlierUpgradeRole::Shooter);
-	}
-
-	if (CaptureComponent)
-	{
-		if (USkeletalMeshComponent* ThirdPersonMesh = GetMesh())
-		{
-			CaptureComponent->HideComponent(ThirdPersonMesh);
-		}
 	}
 }
 
@@ -649,7 +640,37 @@ void AShooterCharacter::HandleWeaponOverchargeTagChanged(const FGameplayTag Tag,
 		}
 	}
 
+	RefreshWeaponOverchargeEmissive(bOverchargeActive);
+
 	BP_OnWeaponOverchargeStateChanged(bOverchargeActive);
+}
+
+void AShooterCharacter::RefreshWeaponOverchargeEmissive(bool bActive)
+{
+	// 태그는 서버 / 오너 / 시뮬레이티드 프록시 모두에 복제되므로 별도 Multicast RPC 가 필요 없다.
+	// 연출은 각 머신이 자기 MID 로 직접 처리한다.
+	if (GetNetMode() == NM_DedicatedServer)
+	{
+		return;
+	}
+
+	// 과충전은 주무기( 라이플 ) 전용이라 원거리 무기만 연출 대상이다.
+	ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(GetCurrentWeapon());
+
+	UE_LOG(
+		LogTemp,
+		Log,
+		TEXT("%s [%s] OverchargeEmissive Active=%d Weapon=%s Role=%d"),
+		OutlierNet::GetNetPrefix(this),
+		*GetName(),
+		bActive ? 1 : 0,
+		*GetNameSafe(RangedWeapon),
+		static_cast<int32>(GetLocalRole()));
+
+	if (RangedWeapon)
+	{
+		RangedWeapon->SetOverchargeEmissiveActive(bActive);
+	}
 }
 
 void AShooterCharacter::HandleStealthCooldownTagChanged(const FGameplayTag Tag, int32 NewCount)
@@ -737,6 +758,34 @@ void AShooterCharacter::RefreshShooterSuitCooldownUI()
 		OutlierAbilitySystemComponent->GetShooterStealthCooldownRemaining());
 }
 
+bool AShooterCharacter::HasAcquiredSuit() const
+{
+	const AOutlierPlayerState* OutlierPS = GetPlayerState<AOutlierPlayerState>();
+	return OutlierPS && OutlierPS->GetAcquiredSuit();
+}
+
+void AShooterCharacter::RefreshShooterAmmoUI()
+{
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+
+	const AShooterPlayerController* ShooterController = Cast<AShooterPlayerController>(GetController());
+	ULocalPlayer* LocalPlayer = ShooterController ? ShooterController->GetLocalPlayer() : nullptr;
+	ULocalPlayerUISubSystem* UISubsystem = LocalPlayer
+		? LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>()
+		: nullptr;
+	if (!UISubsystem)
+	{
+		return;
+	}
+
+	const ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(CurrentWeapon);
+	const bool bShowAmmo = HasAcquiredSuit() && RangedWeapon != nullptr;
+	UISubsystem->OnRep_AmmoCountChanged(bShowAmmo ? RangedWeapon->GetCurrentAmmo() : 0);
+}
+
 void AShooterCharacter::RefreshShooterSuitUI()
 {
 	if (!IsLocallyControlled())
@@ -746,14 +795,24 @@ void AShooterCharacter::RefreshShooterSuitUI()
 
 	if (AShooterPlayerController* ShooterController = Cast<AShooterPlayerController>(GetController()))
 	{
+		const AOutlierPlayerState* OutlierPS = GetPlayerState<AOutlierPlayerState>();
+		const bool bSuitAcquired = OutlierPS && OutlierPS->GetAcquiredSuit();
+		ShooterController->ControlMainWidget(bSuitAcquired);
+
 		if (ULocalPlayerUISubSystem* UISubsystem = ShooterController->GetLocalPlayer()
 			? ShooterController->GetLocalPlayer()->GetSubsystem<ULocalPlayerUISubSystem>()
 			: nullptr)
 		{
 			UISubsystem->OnCurrentAbilityChanged(SelectedAbilityTag);
+
+			// 서브시스템에도 슈트 상태를 알린다. 여기가 빠져 있어서 Shooter 클라에서는
+			// bShooterSuitAcquired 가 계속 false 였고, 크로스헤어 갱신이 통째로 막혀 있었다.
+			// (MainWidget 게이트는 PlayerState 를 직접 읽어서 따로 동작했다.)
+			UISubsystem->OnShooterSuitAcquiredChanged(bSuitAcquired);
 		}
 	}
 
+	RefreshShooterAmmoUI();
 	RefreshShooterSuitAvailabilityUI();
 	RefreshShooterSuitCooldownUI();
 }
@@ -1032,6 +1091,13 @@ void AShooterCharacter::HandleCrouchToggled()
 void AShooterCharacter::TryOpenSuitMenu()
 {
 	if (IsDead())
+	{
+		return;
+	}
+
+	// 슈트를 얻기 전에는 능력 선택 휠 자체를 열지 않는다.
+	// MainWidget 게이트와 같은 PlayerState 플래그 하나를 본다.
+	if (!HasAcquiredSuit())
 	{
 		return;
 	}

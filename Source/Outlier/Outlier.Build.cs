@@ -35,7 +35,8 @@ public class Outlier : ModuleRules
             "GeometryCollectionEngine",
             "Sockets",
             "Networking",
-            "Json"
+            "Json",
+            "GraphicSettingDebugger"
         });
 
         PrivateDependencyModuleNames.AddRange(new string[]

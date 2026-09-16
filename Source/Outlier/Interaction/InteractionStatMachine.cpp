@@ -13,6 +13,7 @@
 #include "UI/StatAllocatorWidget.h"
 #include "UI/UILayerGameplayTags.h"
 #include "UI/UILayerTypes.h"
+#include "Engine/World.h"
 
 namespace InteractionStatMachineTags
 {

@@ -37,10 +37,9 @@ void AWeaponSpawnPoint::SpawnWeapon()
 		Params
 	);
 
-	if (SpawnedWeapon)
-	{
-		SpawnedWeapon->SetOwningSpawnPoint(this);
-	}
+	// 무기는 더 이상 자기를 스폰한 포인트를 알지 못한다 (AWeaponBase::OwningSpawnPoint 제거).
+	// 따라서 아래 NotifyWeaponRemoved / NotifyWeaponPickedUp 은 현재 호출되지 않고,
+	// 이 액터는 BeginPlay 에 무기를 한 번 배치하는 역할만 한다 (리스폰 없음).
 }
 
 void AWeaponSpawnPoint::NotifyWeaponRemoved(AWeaponBase* Weapon)

@@ -30,10 +30,6 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Input")
 	TObjectPtr<UInputAction> InteractionAction;
 
-	/** Camera Toggle Input Action */
-	UPROPERTY(EditAnywhere, Category = "Input")
-	TObjectPtr<UInputAction> CamToggleAction;
-
 	UPROPERTY(EditAnywhere, Category = "Widget")
 	TObjectPtr<UInputAction> WidgetEscapeAction;
 

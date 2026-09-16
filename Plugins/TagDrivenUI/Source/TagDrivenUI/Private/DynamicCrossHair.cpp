@@ -78,6 +78,21 @@ void UDynamicCrossHair::OnAiming()
 	CrossHairCollapsed();
 }
 
+void UDynamicCrossHair::ResetCrossHairState()
+{
+	Super::ResetCrossHairState();
+
+	// 사격/이동으로 누적된 확산을 전부 0 으로. 남겨두면 무기를 다시 꺼낼 때 그대로 되살아난다.
+	CurrentMoveSpread = 0.f;
+	CurrentStateSpread = 0.f;
+	CurrentShootSpread = 0.f;
+	FinalSpread = 0.f;
+	UpdateFinalSpread();
+
+	// Super 가 bAiming 을 내렸으므로 BP 표시 상태도 같이 맞춘다.
+	CrossHairVisible();
+}
+
 void UDynamicCrossHair::OnAimingOff()
 {
 	bAiming = false;

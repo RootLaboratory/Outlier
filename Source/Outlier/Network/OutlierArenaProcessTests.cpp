@@ -99,6 +99,21 @@ bool FOutlierArenaControlFrameTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Match ID round trips"), Decoded.MatchId, Original.MatchId);
 	TestEqual(TEXT("The decoded frame is consumed"), PartialFrame.Num(), 0);
 
+	FOutlierArenaControlMessage Starting;
+	Starting.Type = EOutlierArenaControlMessageType::Starting;
+	Starting.SlotId = 1;
+	Starting.ProcessId = 4321;
+	TArray<uint8> StartingFrame;
+	TestTrue(
+		TEXT("A pre-ready Worker can frame Starting without a Match ID"),
+		OutlierArenaControl::EncodeFrame(Starting, StartingFrame));
+	TestEqual(
+		TEXT("The Starting frame decodes"),
+		OutlierArenaControl::TryDecodeFrame(StartingFrame, Decoded, Error),
+		EOutlierArenaFrameDecodeResult::Message);
+	TestEqual(TEXT("Starting message type round trips"), Decoded.Type, Starting.Type);
+	TestEqual(TEXT("Starting frame is consumed"), StartingFrame.Num(), 0);
+
 	TArray<uint8> OversizedFrame = { 0x00, 0x01, 0x00, 0x01 };
 	TestEqual(
 		TEXT("An oversized frame is rejected before allocation"),

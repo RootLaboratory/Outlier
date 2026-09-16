@@ -125,29 +125,72 @@ void UTitleWidget::HandleSettingButtonEvent()
 void UTitleWidget::PushLobbyLayer()
 {
 	AFrontendPlayerController* FrontendPC = Cast<AFrontendPlayerController>(GetOwningPlayer());
-	if (!FrontendPC || !LobbyWidgetClass)
+	if (!FrontendPC || !LobbyWidgetClass || LobbyLayerHandle.IsValid())
 	{
 		return;
 	}
 
 	FrontendPC->ServerRequestMatchmaking();
 
-	FUILayerPushRequest PushRequest;
-	PushRequest.WidgetClass = LobbyWidgetClass;
-	PushRequest.LayerTag = UILayerTags::GameMenu();
-	PushRequest.InputModeTag = FrontendInputModeTags::UI();
-	PushRequest.RequestOwner = FrontendPC;
-	PushRequest.ContextActors = { FrontendPC };
-	PushRequest.FocusTarget = EUILayerFocusTarget::Widget;
-	PushRequest.bShowCursor = true;
+	if (!ActiveLobbyWidget)
+	{
+		ActiveLobbyWidget = CreateWidget<ULobbyWidget>(FrontendPC, LobbyWidgetClass);
+	}
+
+	if (!ActiveLobbyWidget)
+	{
+		return;
+	}
+
+	ActiveLobbyWidget->OnBackRequested.AddUniqueDynamic(
+		this,
+		&UTitleWidget::HandleLobbyBackRequested);
+
+	IUILayerContextReceiver::Execute_InitializeUILayerContext(
+		ActiveLobbyWidget,
+		TArray<AActor*>{ FrontendPC });
 
 	ULocalPlayer* LocalPlayer = GetOwningLocalPlayer();
 	ULocalPlayerUILayerSubsystem* LayerSubsystem = LocalPlayer
 		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()
 		: nullptr;
-	if (LayerSubsystem)
+	if (!LayerSubsystem)
 	{
-		LayerSubsystem->PushWidget(PushRequest);
+		return;
+	}
+
+	LobbyLayerHandle = LayerSubsystem->PushWidget(
+		UILayerTags::GameMenu(),
+		ActiveLobbyWidget,
+		FrontendInputModeTags::UI(),
+		this,
+		EUILayerFocusTarget::Widget,
+		true);
+
+	if (!LobbyLayerHandle.IsValid())
+	{
+		return;
+	}
+
+	// Lobby가 같은 GameMenu 레이어에 겹쳐 그려지므로, Title 본인과 상시 떠있는
+	// KeyHint(Confirm/Escape 안내)는 Lobby에 있는 동안 직접 숨겨준다.
+	// (Escape로 복귀하면 HandleLobbyBackRequested에서 다시 보여준다.)
+	SetVisibility(ESlateVisibility::Collapsed);
+	if (ActiveKeyHintWidget)
+	{
+		ActiveKeyHintWidget->SetVisibility(ESlateVisibility::Collapsed);
+	}
+}
+
+void UTitleWidget::HandleLobbyBackRequested()
+{
+	LobbyLayerHandle.Reset();
+	ActiveLobbyWidget = nullptr;
+
+	SetVisibility(ESlateVisibility::Visible);
+	if (ActiveKeyHintWidget)
+	{
+		ActiveKeyHintWidget->SetVisibility(ESlateVisibility::HitTestInvisible);
 	}
 }
 

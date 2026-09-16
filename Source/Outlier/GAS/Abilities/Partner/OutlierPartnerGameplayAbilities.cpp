@@ -1,6 +1,7 @@
 #include "GAS/Abilities/Partner/OutlierPartnerGameplayAbilities.h"
 
 #include "Drone/Partner/PartnerCharacter.h"
+#include "OutlierPlayerState.h"
 #include "Drone/Partner/PartnerEMPComponent.h"
 #include "Drone/Partner/PartnerHackComponent.h"
 #include "Drone/Partner/PartnerSupportComponent.h"
@@ -69,8 +70,16 @@ bool UOutlierPartnerGameplayAbility::CanActivateAbility(
 	const UOutlierAbilitySystemComponent* AbilitySystem = ActorInfo
 		? Cast<UOutlierAbilitySystemComponent>(ActorInfo->AbilitySystemComponent.Get())
 		: nullptr;
+	// Partner 능력도 슈트에 의존한다. 플래그는 Shooter PlayerState 에만 서므로
+	// 페어를 거슬러 올라가 확인한다(IsPairSuitAcquired).
+	const AOutlierPlayerState* PartnerPS = Partner
+		? Partner->GetPlayerState<AOutlierPlayerState>()
+		: nullptr;
+
 	return Partner
 		&& AbilitySystem
+		&& PartnerPS
+		&& PartnerPS->IsPairSuitAcquired()
 		&& Partner->CanAcceptInput()
 		&& Partner->GetController()
 		&& Partner->GetController()->GetPawn() == Partner
