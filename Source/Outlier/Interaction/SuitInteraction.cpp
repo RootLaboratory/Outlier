@@ -11,6 +11,7 @@
 #include "TimerManager.h"
 #include "Weapon/RangedWeaponBase.h"
 #include "Weapon/WeaponBase.h"
+#include "OutlierPlayerState.h"
 
 ASuitInteraction::ASuitInteraction()
 {
@@ -193,6 +194,11 @@ bool ASuitInteraction::ApplySuit(AShooterCharacter* ShooterCharacter)
 			*GetName()))
 	{
 		return false;
+	}
+
+	if (AOutlierPlayerState* PS = ShooterCharacter->GetPlayerState<AOutlierPlayerState>())
+	{
+		PS->SetAcquiredSuit(true);
 	}
 
 	StoredShooterRifle = nullptr;

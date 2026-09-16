@@ -1674,13 +1674,23 @@ float AShooterCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 	{
 		return 0.0f;
 	}
+	float DamageAmount = Request.DamageAmount;
+	const AOutlierPlayerState* PS = GetPlayerState<AOutlierPlayerState>();
+	if (PS && !PS->GetAcquiredSuit() && OutlierDamage::IsFromEnemy(Request))
+	{
+		// Keep the existing GAS immunity/death path while exhausting both shield pools.
+		DamageAmount = FMath::Max(DamageAmount,
+			FMath::Max(GetCurHealth(), 0.0f)
+			+ FMath::Max(GetCurShield(), 0.0f)
+			+ FMath::Max(GetCurPartnerShield(), 0.0f) + 1.0f);
+	}
 
 	return ApplyDamageInternal(
-		Request.DamageAmount,
+		DamageAmount,
 		Request.EventInstigator,
 		Request.DamageCauser,
 		Request.DamageTag)
-		? Request.DamageAmount : 0.0f;
+		? DamageAmount : 0.0f;
 }
 
 bool AShooterCharacter::TryReflectIncomingDamage(const FOutlierDamageRequest& Request)

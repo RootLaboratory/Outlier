@@ -181,6 +181,9 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "Enemy|State")
 	EEnemyCombatState CombatState = EEnemyCombatState::NonCombat;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "Enemy|Combat")
+	bool bPrefersCombatLeft = false;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "Enemy|State")
 	uint8 bIsPossessed : 1 = false;
 
@@ -266,6 +269,7 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|State")
 	bool IsInCombat() const { return bInCombat; }
+	bool PrefersCombatLeft() const { return bPrefersCombatLeft; }
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|State")
 	EEnemyCombatState GetCombatState() const { return CombatState; }

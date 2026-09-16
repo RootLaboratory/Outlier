@@ -916,6 +916,7 @@ void AEnemyBase::EnterCombatInArena(
 
 	if (bEnteredCombat)
 	{
+		bPrefersCombatLeft = FMath::RandBool();
 		RefreshPerceptionConfigForCurrentState();
 	}
 
@@ -2060,6 +2061,7 @@ void AEnemyBase::PromotePreStunState(EEnemyCombatState DetectedState)
 		PreStunCombatState = EEnemyCombatState::Combat;
 		if (!bInCombat)
 		{
+			bPrefersCombatLeft = FMath::RandBool();
 			bInCombat = true;
 			RefreshPerceptionConfigForCurrentState();
 		}

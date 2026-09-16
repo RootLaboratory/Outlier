@@ -176,6 +176,9 @@ protected:
 	UPROPERTY(Replicated, VisibleInstanceOnly, BlueprintReadOnly, Category = "Lobby")
 	FGuid TemporaryPlayerId;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Suit")
+	uint8 bHasAcquiredSuit : 1 = false;
+
 protected:
 	UFUNCTION()
 	void OnRep_CheckpointData();
@@ -222,10 +225,12 @@ protected:
 	void SetNodeCountInternal(int32 NewNodeCount);
 
 public:
-
 	FOnPlayerRoleChanged OnPlayerRoleChanged;
 	FOnPendingLobbyStateChanged OnPendingLobbyStateChanged;
 	FOnNodeCountChanged OnNodeCountChanged;
 	FOnStatAllocatorExitPendingChanged OnStatAllocatorExitPendingChanged;
 	FOnActivatedUpgradeNodesChanged OnActivatedUpgradeNodesChanged;
+
+	void SetAcquiredSuit(bool Acquire);
+	bool GetAcquiredSuit() const;
 };

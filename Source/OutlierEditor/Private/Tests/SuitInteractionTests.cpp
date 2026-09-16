@@ -215,6 +215,17 @@ bool FOutlierSuitInteractionEquipTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Consumed Suit collision is disabled immediately"), Suit->GetActorEnableCollision());
 	TestFalse(TEXT("Consumed Suit rejects another interaction"), Suit->Interact(Shooter));
 
+	if (StoredPartnerWeapon && StoredShooterRifle)
+	{
+		TestEqual(TEXT("Equipped Partner weapon belongs to Partner"), StoredPartnerWeapon->GetOwner(), static_cast<AActor*>(Partner));
+		TestTrue(TEXT("Partner can be destroyed"), Partner->Destroy());
+		TestNull(TEXT("Partner teardown clears CurrentWeapon"), Partner->GetCurrentWeapon());
+		TestNull(TEXT("Partner teardown clears weapon ownership"), StoredPartnerWeapon->GetOwner());
+		TestTrue(TEXT("Partner teardown destroys its equipped weapon"), StoredPartnerWeapon->IsActorBeingDestroyed());
+		TestFalse(TEXT("Partner teardown preserves Shooter Rifle"), StoredShooterRifle->IsActorBeingDestroyed());
+		TestEqual(TEXT("Shooter keeps its equipped Rifle"), Shooter->GetCurrentWeapon(), StoredShooterRifle);
+	}
+
 	return true;
 }
 
