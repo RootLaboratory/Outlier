@@ -102,6 +102,22 @@ void APartnerCharacter::BeginPlay()
 
 void APartnerCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	if (HasAuthority())
+	{
+		if (CombatComponent)
+		{
+			CombatComponent->CancelForReboot();
+		}
+
+		AWeaponBase* WeaponToRemove = GetCurrentWeapon();
+		const bool bOwnsWeapon = IsValid(WeaponToRemove) && WeaponToRemove->GetOwner() == this;
+		EquipWeapon(nullptr);
+		if (bOwnsWeapon)
+		{
+			WeaponToRemove->OnOwnerLost();
+		}
+	}
+
 	if (HasAuthority() && CachedShooterCharacter)
 	{
 		CachedShooterCharacter->CancelActiveQuantumLeap(false);
@@ -377,15 +393,6 @@ void APartnerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 		MovementComponent->ClearFlightInput();
 	}
 
-	if (ToggleTestWeaponAttachmentKey.IsValid())
-	{
-		PlayerInputComponent->BindKey(
-			ToggleTestWeaponAttachmentKey,
-			IE_Pressed,
-			this,
-			&APartnerCharacter::ToggleTestWeaponEquipment);
-	}
-
 	// Set up Action Bindings
 	UEnhancedInputComponent* EnhancedInputComponent = Cast<UEnhancedInputComponent>(PlayerInputComponent);
 	UPartnerInputConfig* PartnerInputConfig = Cast<UPartnerInputConfig>(InputConfig);
@@ -515,24 +522,6 @@ void APartnerCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	DOREPLIFETIME(APartnerCharacter, bScanning);
 	DOREPLIFETIME(APartnerCharacter, bIsAccelerate);
 	DOREPLIFETIME(APartnerCharacter, bHiddenForEnemyPossession);
-}
-
-void APartnerCharacter::ToggleTestWeaponEquipment()
-{
-	UE_LOG(
-		LogTemp,
-		Warning,
-		TEXT("[PartnerWeaponToggle][Input] Character=%s Authority=%d LocallyControlled=%d CurrentWeapon=%s CombatComponent=%s"),
-		*GetNameSafe(this),
-		HasAuthority() ? 1 : 0,
-		IsLocallyControlled() ? 1 : 0,
-		*GetNameSafe(GetCurrentWeapon()),
-		*GetNameSafe(CombatComponent));
-
-	if (CombatComponent)
-	{
-		CombatComponent->ToggleTestWeaponEquipped();
-	}
 }
 
 FGameplayTagContainer APartnerCharacter::GetOwnedGameplayTagsForQuery() const

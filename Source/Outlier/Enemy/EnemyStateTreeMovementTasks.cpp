@@ -4,9 +4,47 @@
 #include "Components/ActorComponent.h"
 #include "Enemy/EnemyAIController.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "HAL/IConsoleManager.h"
+#if WITH_DEV_AUTOMATION_TESTS
+#include "Misc/AutomationTest.h"
+#endif
 
 namespace
 {
+DEFINE_LOG_CATEGORY_STATIC(LogEnemyFlight, Log, All);
+
+TAutoConsoleVariable<int32> CVarEnemyFlightDebug(
+	TEXT("outlier.Enemy.FlightDebug"), 0,
+	TEXT("Log enemy flight task entry, exit and facing failures. 0: off, 1: on."));
+
+void LogFlight(
+	const TCHAR* Phase,
+	const FEnemyFlyToLocationTaskInstanceData& Data,
+	const FStateTreeTransitionResult* Transition = nullptr)
+{
+	if (CVarEnemyFlightDebug.GetValueOnGameThread() == 0) return;
+	const AEnemyBase* Enemy = IsValid(Data.Enemy) ? Data.Enemy.Get() : nullptr;
+	const FVector Location = Enemy ? Enemy->GetActorLocation() : FVector::ZeroVector;
+	const FString ChangeType = Transition
+		? UEnum::GetValueAsString(Transition->ChangeType) : TEXT("None");
+	const FString CurrentState = Transition
+		? Transition->CurrentState.Describe() : TEXT("None");
+	const FString TargetState = Transition
+		? Transition->TargetState.Describe() : TEXT("None");
+	const FString RunStatus = Transition
+		? UEnum::GetValueAsString(Transition->CurrentRunStatus) : TEXT("None");
+	const FString Priority = Transition
+		? UEnum::GetValueAsString(Transition->Priority) : TEXT("None");
+	UE_LOG(LogEnemyFlight, Log,
+		TEXT("[Flight] %s Enemy=%s Result=%s Location=%s Destination=%s Distance=%.1f Elapsed=%.2f NoProgress=%.2f Rotate=%d Controller=%s Cached=%s Authority=%d Change=%s Current=%s Target=%s RunStatus=%s Priority=%s"),
+		Phase, *GetNameSafe(Enemy), *UEnum::GetValueAsString(Data.MoveResult),
+		*Location.ToCompactString(), *Data.Destination.ToCompactString(),
+		FVector::Distance(Location, Data.Destination), Data.MoveElapsed, Data.NoProgressElapsed,
+		Data.bRotateTowardDestination, *GetNameSafe(Enemy ? Enemy->GetController() : nullptr),
+		*GetNameSafe(Data.CachedController), Enemy && Enemy->HasAuthority(),
+		*ChangeType, *CurrentState, *TargetState, *RunStatus, *Priority);
+}
+
 AAIController* ResolveAIController(AEnemyBase* Enemy)
 {
 	return Enemy ? Cast<AAIController>(Enemy->GetController()) : nullptr;
@@ -121,7 +159,82 @@ void RestoreFlyTaskBaseSpeed(AEnemyBase& Enemy)
 			0.0f);
 	}
 }
+
+EEnemyFlightMoveResult UpdateFlightProgress(FEnemyFlyToLocationTaskInstanceData& Data, float Distance, float DeltaTime)
+{
+	Data.MoveElapsed += DeltaTime;
+	Data.NoProgressElapsed += DeltaTime;
+	const float ProgressDistance = FMath::Max(Data.ProgressDistance, 1.0f);
+	if (!Data.LastDestination.Equals(Data.Destination, ProgressDistance))
+	{
+		Data.LastDestination = Data.Destination;
+		Data.BestDistance = Distance;
+		Data.NoProgressElapsed = 0.0f;
+	}
+	else if (Data.BestDistance - Distance >= ProgressDistance)
+	{
+		Data.BestDistance = Distance;
+		Data.NoProgressElapsed = 0.0f;
+	}
+	if (Data.MoveTimeout > 0.0f && Data.MoveElapsed >= Data.MoveTimeout)
+	{
+		return EEnemyFlightMoveResult::TimedOut;
+	}
+	if (Data.NoProgressTimeout > 0.0f && Data.NoProgressElapsed >= Data.NoProgressTimeout)
+	{
+		return EEnemyFlightMoveResult::Blocked;
+	}
+	return EEnemyFlightMoveResult::Moving;
 }
+
+void StopFlyTask(FEnemyFlyToLocationTaskInstanceData& Data)
+{
+	LogFlight(TEXT("Stop"), Data);
+	if (!Data.bOwnsMovement || !IsValid(Data.Enemy) || !Data.Enemy->HasAuthority()) return;
+	// 빙의/재점유 이후 새 Controller의 이동은 이전 AI Task가 정리하지 않는다.
+	if (IsValid(Data.CachedController) && Data.Enemy->GetController() == Data.CachedController)
+	{
+		Data.Enemy->ConsumeMovementInputVector();
+		if (UCharacterMovementComponent* Movement = Data.Enemy->GetCharacterMovement())
+		{
+			Movement->StopMovementImmediately();
+		}
+		RestoreFlyTaskBaseSpeed(*Data.Enemy);
+	}
+	Data.bOwnsMovement = false;
+}
+}
+
+#if WITH_DEV_AUTOMATION_TESTS
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyFlightProgressTest,
+	"Outlier.Enemy.Flight.Progress", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyFlightProgressTest::RunTest(const FString& Parameters)
+{
+	FEnemyFlyToLocationTaskInstanceData Data;
+	TestTrue(TEXT("Legacy destination facing remains enabled"), Data.bRotateTowardDestination);
+	Data.BestDistance = 1000.0f;
+	TestTrue(TEXT("Legacy timeouts remain disabled"),
+		UpdateFlightProgress(Data, 1000.0f, 60.0f) == EEnemyFlightMoveResult::Moving);
+	Data = FEnemyFlyToLocationTaskInstanceData();
+	Data.BestDistance = 1000.0f;
+	Data.NoProgressTimeout = 1.0f;
+	TestTrue(TEXT("Before no-progress deadline"),
+		UpdateFlightProgress(Data, 1000.0f, 0.5f) == EEnemyFlightMoveResult::Moving);
+	TestTrue(TEXT("At no-progress deadline"),
+		UpdateFlightProgress(Data, 1000.0f, 0.5f) == EEnemyFlightMoveResult::Blocked);
+	TestTrue(TEXT("Progress resets deadline"),
+		UpdateFlightProgress(Data, 975.0f, 0.1f) == EEnemyFlightMoveResult::Moving);
+	TestEqual(TEXT("Progress timer reset"), Data.NoProgressElapsed, 0.0f);
+	Data.Destination = FVector(100.0f, 0.0f, 0.0f);
+	TestTrue(TEXT("Retarget resets no-progress measurement"),
+		UpdateFlightProgress(Data, 2000.0f, 1.0f) == EEnemyFlightMoveResult::Moving);
+	Data.MoveTimeout = Data.MoveElapsed + 0.5f;
+	TestTrue(TEXT("Retarget cannot reset total timeout"),
+		UpdateFlightProgress(Data, 1900.0f, 0.5f) == EEnemyFlightMoveResult::TimedOut);
+	return true;
+}
+#endif
 
 FEnemyFlyToLocationTask::FEnemyFlyToLocationTask()
 {
@@ -136,13 +249,29 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::EnterState(
 	AEnemyBase* Enemy = ResolveEnemy(Context, InstanceData.Enemy);
 	InstanceData.Enemy = Enemy;
 	AAIController* AIController = ResolveAIController(Enemy);
+	InstanceData.CachedController = AIController;
+	InstanceData.MoveResult = EEnemyFlightMoveResult::Invalid;
+	InstanceData.MoveElapsed = 0.0f;
+	InstanceData.NoProgressElapsed = 0.0f;
+	InstanceData.bOwnsMovement = false;
+	LogFlight(TEXT("Enter"), InstanceData, &Transition);
 	if (!Enemy || !Enemy->HasAuthority() || !AIController)
 	{
+		LogFlight(TEXT("Rejected: missing enemy/authority/AIController"), InstanceData);
 		return EStateTreeRunStatus::Failed;
 	}
 
 	// 이전 NavMesh 이동 요청이 비행 입력과 경쟁하지 않도록 진입 시 정리한다.
 	AIController->StopMovement();
+	InstanceData.bOwnsMovement = true;
+	Enemy->ConsumeMovementInputVector();
+	InstanceData.LastDestination = InstanceData.Destination;
+	InstanceData.BestDistance = FVector::Distance(Enemy->GetActorLocation(), InstanceData.Destination);
+	if (InstanceData.Destination.ContainsNaN())
+	{
+		StopFlyTask(InstanceData);
+		return EStateTreeRunStatus::Failed;
+	}
 
 	const float AcceptanceRadius = FMath::Max(InstanceData.AcceptanceRadius, 0.0f);
 	const bool bAlreadyAtDestination =
@@ -152,6 +281,9 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::EnterState(
 	{
 		ApplyFlyTaskSpeedMultiplier(*Enemy, InstanceData.SpeedMultiplier);
 	}
+	InstanceData.MoveResult = bAlreadyAtDestination ? EEnemyFlightMoveResult::Arrived : EEnemyFlightMoveResult::Moving;
+	LogFlight(TEXT("Started"), InstanceData);
+	if (bAlreadyAtDestination) StopFlyTask(InstanceData);
 	return bAlreadyAtDestination
 		? EStateTreeRunStatus::Succeeded
 		: EStateTreeRunStatus::Running;
@@ -162,11 +294,13 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::Tick(
 	float DeltaTime) const
 {
 	FInstanceDataType& InstanceData = Context.GetInstanceData(*this);
-	AEnemyBase* Enemy = ResolveEnemy(Context, InstanceData.Enemy);
-	InstanceData.Enemy = Enemy;
-	AAIController* AIController = ResolveAIController(Enemy);
-	if (!Enemy || !Enemy->HasAuthority() || !AIController)
+	AEnemyBase* Enemy = InstanceData.Enemy;
+	AAIController* AIController = InstanceData.CachedController;
+	if (!IsValid(Enemy) || !Enemy->HasAuthority() || !IsValid(AIController)
+		|| Enemy->GetController() != AIController || InstanceData.Destination.ContainsNaN())
 	{
+		InstanceData.MoveResult = EEnemyFlightMoveResult::Invalid;
+		StopFlyTask(InstanceData);
 		return EStateTreeRunStatus::Failed;
 	}
 
@@ -176,20 +310,27 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::Tick(
 
 	if (ToDestination.SizeSquared() <= FMath::Square(AcceptanceRadius))
 	{
-		if (UCharacterMovementComponent* Movement = Enemy->GetCharacterMovement())
-		{
-			Movement->StopMovementImmediately();
-		}
+		InstanceData.MoveResult = EEnemyFlightMoveResult::Arrived;
+		StopFlyTask(InstanceData);
 		return EStateTreeRunStatus::Succeeded;
 	}
 
-	RotateTowardLocation(
-		*Enemy,
-		*AIController,
-		InstanceData.Destination,
-		InstanceData.RotationSpeed,
-		0.0f,
-		DeltaTime);
+	InstanceData.MoveResult = UpdateFlightProgress(InstanceData, ToDestination.Size(), DeltaTime);
+	if (InstanceData.MoveResult != EEnemyFlightMoveResult::Moving)
+	{
+		StopFlyTask(InstanceData);
+		return EStateTreeRunStatus::Failed;
+	}
+	if (InstanceData.bRotateTowardDestination)
+	{
+		RotateTowardLocation(
+			*Enemy,
+			*AIController,
+			InstanceData.Destination,
+			InstanceData.RotationSpeed,
+			0.0f,
+			DeltaTime);
+	}
 
 	// XY와 Z를 함께 입력해 PatrolPoint의 비행 고도를 그대로 유지한다.
 	Enemy->AddMovementInput(ToDestination.GetSafeNormal());
@@ -200,15 +341,14 @@ void FEnemyFlyToLocationTask::ExitState(
 	FStateTreeExecutionContext& Context,
 	const FStateTreeTransitionResult& Transition) const
 {
-	const FInstanceDataType& InstanceData = Context.GetInstanceData(*this);
-	if (IsValid(InstanceData.Enemy))
+	FInstanceDataType& InstanceData = Context.GetInstanceData(*this);
+	if (InstanceData.MoveResult == EEnemyFlightMoveResult::Moving)
 	{
-		if (UCharacterMovementComponent* Movement = InstanceData.Enemy->GetCharacterMovement())
-		{
-			Movement->StopMovementImmediately();
-		}
-		RestoreFlyTaskBaseSpeed(*InstanceData.Enemy);
+		InstanceData.MoveResult = EEnemyFlightMoveResult::Interrupted;
 	}
+	StopFlyTask(InstanceData);
+	LogFlight(TEXT("Exit"), InstanceData, &Transition);
+	InstanceData.CachedController = nullptr;
 }
 
 FEnemyFaceLocationTask::FEnemyFaceLocationTask()
@@ -267,11 +407,15 @@ EStateTreeRunStatus FEnemyMaintainFacingTask::EnterState(
 	const FStateTreeTransitionResult& Transition) const
 {
 	const FInstanceDataType& InstanceData = Context.GetInstanceData(*this);
-	return InstanceData.Enemy
+	const bool bValid = IsValid(InstanceData.Enemy)
 		&& InstanceData.Enemy->HasAuthority()
-		&& ResolveAIController(InstanceData.Enemy)
-		? EStateTreeRunStatus::Running
-		: EStateTreeRunStatus::Failed;
+		&& ResolveAIController(InstanceData.Enemy);
+	if (CVarEnemyFlightDebug.GetValueOnGameThread() != 0)
+	{
+		UE_LOG(LogEnemyFlight, Log, TEXT("[Facing] Enter Enemy=%s Target=%s Valid=%d"),
+			*GetNameSafe(InstanceData.Enemy), *GetNameSafe(InstanceData.TargetActor), bValid);
+	}
+	return bValid ? EStateTreeRunStatus::Running : EStateTreeRunStatus::Failed;
 }
 
 EStateTreeRunStatus FEnemyMaintainFacingTask::Tick(
@@ -282,6 +426,11 @@ EStateTreeRunStatus FEnemyMaintainFacingTask::Tick(
 	AAIController* AIController = ResolveAIController(InstanceData.Enemy);
 	if (!InstanceData.Enemy || !InstanceData.Enemy->HasAuthority() || !AIController)
 	{
+		if (CVarEnemyFlightDebug.GetValueOnGameThread() != 0)
+		{
+			UE_LOG(LogEnemyFlight, Warning, TEXT("[Facing] Failed Enemy=%s Controller=%s"),
+				*GetNameSafe(InstanceData.Enemy), *GetNameSafe(AIController));
+		}
 		return EStateTreeRunStatus::Failed;
 	}
 

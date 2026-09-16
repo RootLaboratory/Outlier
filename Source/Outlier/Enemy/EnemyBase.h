@@ -10,6 +10,7 @@
 #include "Interface/EmpableInterface.h"
 #include "Interface/ScannableInterface.h"
 #include "Interface/HackableInterface.h"
+#include "Interface/MeleeTargetInterface.h"
 #include "Interface/RoomTagInterface.h"
 #include "StateTreeReference.h"
 #include "AbilitySystemInterface.h"
@@ -55,7 +56,7 @@ enum class EEnemyAttackPhase : uint8
 };
 
 UCLASS()
-class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, public IEMPableInterface, public IScannableInterface, public IGenericTeamAgentInterface, public IRoomTagInterface, public IAbilitySystemInterface, public IOutlierDamageReceiver
+class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, public IEMPableInterface, public IScannableInterface, public IGenericTeamAgentInterface, public IRoomTagInterface, public IAbilitySystemInterface, public IOutlierDamageReceiver, public IMeleeTargetInterface
 {
 	GENERATED_BODY()
 
@@ -180,6 +181,9 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "Enemy|State")
 	EEnemyCombatState CombatState = EEnemyCombatState::NonCombat;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "Enemy|Combat")
+	bool bPrefersCombatLeft = false;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "Enemy|State")
 	uint8 bIsPossessed : 1 = false;
 
@@ -265,6 +269,7 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|State")
 	bool IsInCombat() const { return bInCombat; }
+	bool PrefersCombatLeft() const { return bPrefersCombatLeft; }
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|State")
 	EEnemyCombatState GetCombatState() const { return CombatState; }
@@ -437,6 +442,7 @@ public:
 	virtual void HandleEMPEnded(FGameplayTag EffectTag) override;
 
 	virtual int32 GetScanStencilValue() const override;
+	virtual bool CanShowMeleeTargetIndicator_Implementation(const AActor* InstigatorActor) const override;
 protected:
 	UFUNCTION()
 	void OnRep_RuntimeStat();

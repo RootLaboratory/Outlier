@@ -2,6 +2,7 @@
 
 #include "Shooter/ShooterInventoryComponent.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Shooter/ShooterCombatComponent.h"
 #include "Net/UnrealNetwork.h"
 #include "OutlierNetUtils.h"
 
@@ -66,6 +67,12 @@ FName UShooterInventoryComponent::GetThirdPersonWeaponSocketByType(EWeaponType W
 	default:
 		return ThirdPersonWeaponSocketDefault;
 	}
+}
+
+AWeaponBase* UShooterInventoryComponent::GetWeaponInSlot(EWeaponSlot Slot) const
+{
+	const int32 SlotIndex = static_cast<int32>(Slot);
+	return WeaponSlots.IsValidIndex(SlotIndex) ? WeaponSlots[SlotIndex] : nullptr;
 }
 
 void UShooterInventoryComponent::TrySwitchWeapon1()
@@ -169,6 +176,59 @@ void UShooterInventoryComponent::HandleEquipWeapon(AWeaponBase* Weapon)
 	ShooterCharacter->RefreshCombatState();
 }
 
+bool UShooterInventoryComponent::EquipSuitRifle(AWeaponBase* RifleWeapon)
+{
+	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	const EWeaponSlot Slot = EWeaponSlot::Primary;
+	const int32 SlotIndex = static_cast<int32>(Slot);
+
+	if (!ShooterCharacter
+		|| !ShooterCharacter->HasAuthority()
+		|| !RifleWeapon
+		|| RifleWeapon->GetWeaponType() != EWeaponType::Rifle
+		|| !IsValidWeaponSlot(Slot)
+		|| !RifleWeapon->CanBePickedUpBy(ShooterCharacter))
+	{
+		return false;
+	}
+
+	if (ShooterCharacter->CombatComponent)
+	{
+		ShooterCharacter->CombatComponent->CancelMeleeAttack();
+	}
+	if (ShooterCharacter->IsReloading())
+	{
+		ShooterCharacter->CancelReloadInternal();
+	}
+	if (ShooterCharacter->IsWeaponOvercharged())
+	{
+		ShooterCharacter->EndActiveWeaponOvercharge(true);
+	}
+	ShooterCharacter->StopAimInternal();
+
+	AWeaponBase* PreviousPrimaryWeapon = WeaponSlots[SlotIndex];
+	if (PreviousPrimaryWeapon && PreviousPrimaryWeapon != RifleWeapon)
+	{
+		if (ShooterCharacter->CurrentWeapon == PreviousPrimaryWeapon)
+		{
+			ShooterCharacter->AFirstPersonCharacter::EquipWeapon(nullptr);
+		}
+
+		WeaponSlots[SlotIndex] = nullptr;
+		PreviousPrimaryWeapon->OnOwnerLost();
+	}
+
+	WeaponSlots[SlotIndex] = RifleWeapon;
+	CurrentSlot = Slot;
+
+	ShooterCharacter->AFirstPersonCharacter::EquipWeapon(RifleWeapon);
+	ShooterCharacter->PlayEquipMontages();
+	ShooterCharacter->RefreshWeaponMode();
+	ShooterCharacter->RefreshCombatState();
+
+	return ShooterCharacter->CurrentWeapon == RifleWeapon;
+}
+
 void UShooterInventoryComponent::SelectWeaponSlot(EWeaponSlot Slot)
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
@@ -193,6 +253,12 @@ void UShooterInventoryComponent::SelectWeaponSlot(EWeaponSlot Slot)
 	if (!IsValidWeaponSlot(Slot))
 	{
 		return;
+	}
+
+	// 교체할 무기가 없더라도 유효한 슬롯 입력은 현재 근접 공격을 취소한다.
+	if (ShooterCharacter->CombatComponent)
+	{
+		ShooterCharacter->CombatComponent->CancelMeleeAttack();
 	}
 
 	AWeaponBase* TargetWeapon = WeaponSlots[WeaponIndex];

@@ -9,10 +9,12 @@
 #include "Components/SphereComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Curves/CurveFloat.h"
+#include "DrawDebugHelpers.h"
 #include "Engine/SkeletalMesh.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Controller.h"
 #include "GameFramework/PlayerController.h"
+#include "HAL/IConsoleManager.h"
 #include "TimerManager.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
@@ -49,6 +51,12 @@
 
 namespace
 {
+TAutoConsoleVariable<int32> CVarDrawShooterCrouchCapsule(
+	TEXT("outlier.Debug.DrawShooterCrouchCapsule"),
+	0,
+	TEXT("Draws each Shooter's current collision capsule while crouched. 0: off, 1: on"),
+	ECVF_Cheat);
+
 AActor* ResolveDamageSource(AController* EventInstigator, AActor* DamageCauser)
 {
 	APawn* InstigatorPawn = EventInstigator ? EventInstigator->GetPawn() : nullptr;
@@ -220,6 +228,23 @@ void AShooterCharacter::Tick(float DeltaSeconds)
 
 	UpdateSlideCameraEffect(DeltaSeconds);
 	UpdateCameraFOV(DeltaSeconds);
+
+	if (CVarDrawShooterCrouchCapsule.GetValueOnGameThread() != 0
+		&& bIsCrouched)
+	{
+		const UCapsuleComponent* Capsule = GetCapsuleComponent();
+		DrawDebugCapsule(
+			GetWorld(),
+			Capsule->GetComponentLocation(),
+			Capsule->GetScaledCapsuleHalfHeight(),
+			Capsule->GetScaledCapsuleRadius(),
+			Capsule->GetComponentQuat(),
+			FColor::Green,
+			false,
+			0.0f,
+			0,
+			2.0f);
+	}
 }
 
 void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -770,6 +795,11 @@ void AShooterCharacter::RefreshFirstPersonShadowPolicy()
 			// 하나도 렌더되지 않아도 계속 애니메이션을 갱신해야 한다
 			ThirdPersonMesh->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
 		}
+		else if (HasAuthority())
+		{
+			// Dedicated servers still need montage position updates for authoritative gameplay Notifies.
+			ThirdPersonMesh->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::OnlyTickMontagesWhenNotRendered;
+		}
 	}
 
 	if (FirstPersonMesh)
@@ -1124,26 +1154,26 @@ void AShooterCharacter::UpdateSuitSelection(const FInputActionValue& Value)
 
 void AShooterCharacter::TryUseSuit()
 {
-	const bool bCancellingActiveStealth = IsStealthed()
-		&& SelectedAbilityTag.MatchesTagExact(OutlierGameplayTags::Ability::Shooter::Stealth());
-	if (IsDead()
-		|| !SelectedAbilityTag.IsValid()
-		|| (IsShooterSuitUseDisabled() && !bCancellingActiveStealth))
+	if (IsDead() || !SelectedAbilityTag.IsValid())
 	{
 		return;
 	}
-	if (HasAuthority())
-	{
-		OutlierAbilitySystemComponent->TryActivateShooterSuitAbility(SelectedAbilityTag);
-	}
-	else
-	{
-		ServerUseSuitAbility(SelectedAbilityTag);
-	}
+	ServerUseSuitAbility(SelectedAbilityTag);
 }
 
 void AShooterCharacter::ServerUseSuitAbility_Implementation(FGameplayTag AbilityTag)
 {
+	if (IsDead() || !AbilityTag.IsValid())
+	{
+		return;
+	}
+
+	// 능력 발동 성공 여부와 관계없이 능력 입력 시 근접 공격부터 취소한다.
+	if (CombatComponent)
+	{
+		CombatComponent->CancelMeleeAttack();
+	}
+
 	const bool bCancellingActiveStealth = IsStealthed()
 		&& AbilityTag.MatchesTagExact(OutlierGameplayTags::Ability::Shooter::Stealth());
 	if (!IsDead()
@@ -1224,6 +1254,11 @@ void AShooterCharacter::OnRep_CurrentLeanAlpha()
 	ApplyLeanPresentation();
 }
 
+void AShooterCharacter::OnRep_SuitMeshes()
+{
+	RefreshAppliedSuitMeshes();
+}
+
 void AShooterCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
@@ -1233,6 +1268,8 @@ void AShooterCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	DOREPLIFETIME(AShooterCharacter, CombatState);
 	DOREPLIFETIME(AShooterCharacter, ActionLock);
 	DOREPLIFETIME(AShooterCharacter, CurrentLeanAlpha);
+	DOREPLIFETIME(AShooterCharacter, AppliedSuitFirstPersonMesh);
+	DOREPLIFETIME(AShooterCharacter, AppliedSuitThirdPersonMesh);
 }
 
 FVector AShooterCharacter::GetBaseLeanViewLocation() const
@@ -1348,6 +1385,62 @@ void AShooterCharacter::EquipWeapon(AWeaponBase* Weapon)
 	if (InventoryComponent)
 	{
 		InventoryComponent->HandleEquipWeapon(Weapon);
+	}
+}
+
+void AShooterCharacter::ApplySuitMeshes(
+	USkeletalMesh* FirstPersonMeshAsset,
+	USkeletalMesh* ThirdPersonMeshAsset)
+{
+	if (!HasAuthority()
+		|| !ensureMsgf(FirstPersonMeshAsset, TEXT("%s requires a first-person Suit mesh."), *GetName())
+		|| !ensureMsgf(ThirdPersonMeshAsset, TEXT("%s requires a third-person Suit mesh."), *GetName()))
+	{
+		return;
+	}
+
+	AppliedSuitFirstPersonMesh = FirstPersonMeshAsset;
+	AppliedSuitThirdPersonMesh = ThirdPersonMeshAsset;
+	RefreshAppliedSuitMeshes();
+	ForceNetUpdate();
+}
+
+void AShooterCharacter::RefreshAppliedSuitMeshes()
+{
+	if (!AppliedSuitFirstPersonMesh || !AppliedSuitThirdPersonMesh)
+	{
+		return;
+	}
+
+	if (USkeletalMeshComponent* FirstPersonMeshComponent = GetFirstPersonMesh())
+	{
+		if (FirstPersonMeshComponent->GetSkeletalMeshAsset() != AppliedSuitFirstPersonMesh)
+		{
+			FirstPersonMeshComponent->SetSkeletalMeshAsset(AppliedSuitFirstPersonMesh);
+		}
+	}
+
+	USkeletalMeshComponent* ThirdPersonMeshComponent = GetMesh();
+	if (ThirdPersonMeshComponent
+		&& ThirdPersonMeshComponent->GetSkeletalMeshAsset() != AppliedSuitThirdPersonMesh)
+	{
+		ThirdPersonMeshComponent->SetSkeletalMeshAsset(AppliedSuitThirdPersonMesh);
+	}
+
+	if (ShadowMesh)
+	{
+		if (ShadowMesh->GetSkeletalMeshAsset() != AppliedSuitThirdPersonMesh)
+		{
+			ShadowMesh->SetSkeletalMeshAsset(AppliedSuitThirdPersonMesh);
+		}
+		ShadowMesh->SetLeaderPoseComponent(ThirdPersonMeshComponent);
+	}
+
+	RefreshFirstPersonShadowPolicy();
+	if (AWeaponBase* EquippedWeapon = GetCurrentWeapon())
+	{
+		EquippedWeapon->AttachWeaponMeshesToOwnerMeshes();
+		EquippedWeapon->RefreshShadowWeaponPresentation();
 	}
 }
 
@@ -1497,6 +1590,61 @@ void AShooterCharacter::HandleReloadCommitNotify()
 	}
 }
 
+void AShooterCharacter::HandleMeleeHitNotify()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->HandleMeleeHitNotify();
+	}
+}
+
+void AShooterCharacter::HandleMeleeTraceBeginNotify()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->HandleMeleeTraceBeginNotify();
+	}
+}
+
+void AShooterCharacter::HandleMeleeTraceTickNotify()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->HandleMeleeTraceTickNotify();
+	}
+}
+
+void AShooterCharacter::HandleMeleeTraceEndNotify()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->HandleMeleeTraceEndNotify();
+	}
+}
+
+void AShooterCharacter::SetMeleeTracePoseRefreshEnabled(bool bEnabled)
+{
+	if (!HasAuthority() || IsLocallyControlled())
+	{
+		return;
+	}
+
+	if (USkeletalMeshComponent* ThirdPersonMesh = GetMesh())
+	{
+		ThirdPersonMesh->VisibilityBasedAnimTickOption = bEnabled
+			? EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones
+			: EVisibilityBasedAnimTickOption::OnlyTickMontagesWhenNotRendered;
+	}
+}
+
+void AShooterCharacter::HandleMeleeRecoveryEndNotify()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->HandleMeleeRecoveryEndNotify();
+	}
+}
+
 bool AShooterCharacter::CanStartAction(EShooterActionLock NextLock) const
 {
 	const bool bCanOverrideSlideLock =
@@ -1547,13 +1695,23 @@ float AShooterCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 	{
 		return 0.0f;
 	}
+	float DamageAmount = Request.DamageAmount;
+	const AOutlierPlayerState* PS = GetPlayerState<AOutlierPlayerState>();
+	if (PS && !PS->GetAcquiredSuit() && OutlierDamage::IsFromEnemy(Request))
+	{
+		// Keep the existing GAS immunity/death path while exhausting both shield pools.
+		DamageAmount = FMath::Max(DamageAmount,
+			FMath::Max(GetCurHealth(), 0.0f)
+			+ FMath::Max(GetCurShield(), 0.0f)
+			+ FMath::Max(GetCurPartnerShield(), 0.0f) + 1.0f);
+	}
 
 	return ApplyDamageInternal(
-		Request.DamageAmount,
+		DamageAmount,
 		Request.EventInstigator,
 		Request.DamageCauser,
 		Request.DamageTag)
-		? Request.DamageAmount : 0.0f;
+		? DamageAmount : 0.0f;
 }
 
 bool AShooterCharacter::TryReflectIncomingDamage(const FOutlierDamageRequest& Request)
@@ -1689,6 +1847,19 @@ void AShooterCharacter::HandleFireShotAnimation()
 	}
 
 	ClientPlayFirstPersonActionMontage(EShooterMontageAction::Fire, GetWeaponType());
+}
+
+void AShooterCharacter::HandleMeleeAttackAnimation()
+{
+	MulticastPlayThirdPersonActionMontage(EShooterMontageAction::MeleeAttack, GetWeaponType());
+
+	if (IsLocallyControlled())
+	{
+		PlayFirstPersonActionMontage(EShooterMontageAction::MeleeAttack, GetWeaponType());
+		return;
+	}
+
+	ClientPlayFirstPersonActionMontage(EShooterMontageAction::MeleeAttack, GetWeaponType());
 }
 
 void AShooterCharacter::StartLeanUpdate()
@@ -2055,6 +2226,10 @@ void AShooterCharacter::HandleDeath()
 	StopAimInternal();
 	CancelReloadInternal();
 	StopSprintInternal();
+	if (CombatComponent)
+	{
+		CombatComponent->CancelMeleeAttack();
+	}
 	TryStopAttack();
 
 	StopJumping();
@@ -2183,6 +2358,10 @@ void AShooterCharacter::PlayFirstPersonActionMontage(EShooterMontageAction Actio
 	case EShooterMontageAction::Equip:
 		Montage = FirstPersonEquipMontage;
 		break;
+	case EShooterMontageAction::MeleeAttack:
+		Montage = FirstPersonMeleeAttackMontage;
+		bUseWeaponSection = false;
+		break;
 	default:
 		break;
 	}
@@ -2208,6 +2387,10 @@ void AShooterCharacter::PlayThirdPersonActionMontage(EShooterMontageAction Actio
 		break;
 	case EShooterMontageAction::Equip:
 		Montage = ThirdPersonEquipMontage;
+		break;
+	case EShooterMontageAction::MeleeAttack:
+		Montage = ThirdPersonMeleeAttackMontage;
+		bUseWeaponSection = false;
 		break;
 	default:
 		break;

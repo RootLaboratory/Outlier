@@ -55,6 +55,7 @@ public:
 
 	FName GetFirstPersonWeaponSocketByType(EWeaponType WeaponType) const;
 	FName GetThirdPersonWeaponSocketByType(EWeaponType WeaponType) const;
+	AWeaponBase* GetWeaponInSlot(EWeaponSlot Slot) const;
 
 	void TrySwitchWeapon1();
 	void TrySwitchWeapon2();
@@ -62,6 +63,7 @@ public:
 	void SelectWeaponByIndex(int32 SlotIndex);
 
 	void HandleEquipWeapon(AWeaponBase* Weapon);
+	bool EquipSuitRifle(AWeaponBase* RifleWeapon);
 	void SelectWeaponSlot(EWeaponSlot Slot);
 
 	void CleanupOwnedWeapons();

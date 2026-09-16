@@ -128,8 +128,8 @@ public:
 
 	const TArray<FName>& GetActivatedUpgradeNodeIds(EOutlierUpgradeRole UpgradeRole) const;
 
-	// 활성화된 업그레이드 노드 전부(Shooter/Partner 둘 다)를 비우고 NodeCount를 NewNodeCount로 덮어쓴다.
-	// 프리셋 스테이지 확정 시 GameMode가 페어 양쪽 PlayerState에 호출한다.
+	// Ȱ��ȭ�� ���׷��̵� ��� ����(Shooter/Partner �� ��)�� ���� NodeCount�� NewNodeCount�� �����.
+	// ������ �������� Ȯ�� �� GameMode�� ��� ���� PlayerState�� ȣ���Ѵ�.
 	void FlushActivatedUpgradeNodes(int32 NewNodeCount);
 
 	UFUNCTION(BlueprintCallable, Category = "Preset")
@@ -184,12 +184,15 @@ protected:
 	UPROPERTY(ReplicatedUsing = OnRep_ActivatedUpgradeNodes, VisibleInstanceOnly, BlueprintReadOnly, Category = "Upgrade")
 	TArray<FName> PartnerActivatedUpgradeNodeIds;
 
-	// 사망 후 프리셋 선택 대기 중인 값. 페어 양쪽에 리플리케이트돼 있어야 이후 "상대가 뭘 기다리는지" UI도 붙일 수 있다.
+	// ��� �� ������ ���� ��� ���� ��. ��� ���ʿ� ���ø�����Ʈ�� �־�� ���� "��밡 �� ��ٸ�����" UI�� ���� �� �ִ�.
 	UPROPERTY(ReplicatedUsing = OnRep_PendingPresetSelection)
 	FName PendingPresetSelection = NAME_None;
 
 	UPROPERTY(Replicated, VisibleInstanceOnly, BlueprintReadOnly, Category = "Lobby")
 	FGuid TemporaryPlayerId;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Suit")
+	uint8 bHasAcquiredSuit : 1 = false;
 
 protected:
 	UFUNCTION()
@@ -241,11 +244,13 @@ protected:
 	void SetNodeCountInternal(int32 NewNodeCount);
 
 public:
-
 	FOnPlayerRoleChanged OnPlayerRoleChanged;
 	FOnPendingLobbyStateChanged OnPendingLobbyStateChanged;
 	FOnNodeCountChanged OnNodeCountChanged;
 	FOnStatAllocatorExitPendingChanged OnStatAllocatorExitPendingChanged;
 	FOnActivatedUpgradeNodesChanged OnActivatedUpgradeNodesChanged;
+
+	void SetAcquiredSuit(bool Acquire);
+	bool GetAcquiredSuit() const;
 	FOnPendingPresetSelectionChanged OnPendingPresetSelectionChanged;
 };

@@ -6,9 +6,52 @@
 #include "Engine/OverlapResult.h"
 #include "Engine/World.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#if WITH_DEV_AUTOMATION_TESTS
+#include "Misc/AutomationTest.h"
+#endif
 
 namespace
 {
+float CalculateTacticalDistance(const FVector& From, const FVector& To, EEnemyTacticalDistanceMode DistanceMode);
+
+void ResetAssessment(FEnemyCombatAssessmentTaskInstanceData& Data)
+{
+	Data.bHasValidTarget = false;
+	Data.HorizontalDistance = 0.0f;
+	Data.bLeftBlocked = false;
+	Data.bRightBlocked = false;
+	Data.bBothSidesBlocked = false;
+}
+
+void UpdateAssessment(FEnemyCombatAssessmentTaskInstanceData& Data)
+{
+	ResetAssessment(Data);
+	AEnemyBase* Enemy = Data.Enemy;
+	AActor* Target = Data.TargetActor;
+	if (!IsValid(Enemy) || !Enemy->HasAuthority() || !IsValid(Target)
+		|| Enemy->GetCombatState() != EEnemyCombatState::Combat
+		|| Enemy->IsEnemyPossessed() || Enemy->IsPossessionInProgress())
+	{
+		return;
+	}
+	UWorld* World = Enemy->GetWorld();
+	if (!World) return;
+	Data.bHasValidTarget = true;
+	Data.bPrefersLeft = Enemy->PrefersCombatLeft();
+	const FVector Origin = Enemy->GetActorLocation();
+	Data.HorizontalDistance = CalculateTacticalDistance(Origin, Target->GetActorLocation(), EEnemyTacticalDistanceMode::Horizontal2D);
+	FVector Forward = (Target->GetActorLocation() - Origin).GetSafeNormal2D();
+	if (Forward.IsNearlyZero()) Forward = Enemy->GetActorForwardVector().GetSafeNormal2D();
+	const FVector Right = FVector::CrossProduct(FVector::UpVector, Forward);
+	const FVector Start = Origin + FVector::UpVector * Data.WallCheckHeightOffset;
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(EnemyCombatWalls), false, Enemy);
+	Params.AddIgnoredActor(Target);
+	const FVector Offset = Right * FMath::Max(0.0f, Data.WallCheckDistance);
+	Data.bLeftBlocked = World->LineTraceTestByChannel(Start, Start - Offset, Data.WallTraceChannel, Params);
+	Data.bRightBlocked = World->LineTraceTestByChannel(Start, Start + Offset, Data.WallTraceChannel, Params);
+	Data.bBothSidesBlocked = Data.bLeftBlocked && Data.bRightBlocked;
+}
+
 constexpr float MinimumEnemyFlightZ = 150.0f;
 
 AEnemyAIController* ResolveEnemyAIController(AEnemyBase* Enemy)
@@ -241,6 +284,89 @@ bool IsCandidateOccupied(
 
 	return false;
 }
+}
+
+#if WITH_DEV_AUTOMATION_TESTS
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyCombatAssessmentMathTest,
+	"Outlier.Enemy.Combat.Assessment", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyCombatAssessmentMathTest::RunTest(const FString& Parameters)
+{
+	const FVector Origin = FVector::ZeroVector;
+	TestEqual(TEXT("10m horizontal boundary ignores height"),
+		CalculateTacticalDistance(Origin, FVector(1000, 0, 5000), EEnemyTacticalDistanceMode::Horizontal2D), 1000.0f);
+	TestEqual(TEXT("20m horizontal boundary ignores height"),
+		CalculateTacticalDistance(Origin, FVector(2000, 0, -5000), EEnemyTacticalDistanceMode::Horizontal2D), 2000.0f);
+	TestEqual(TEXT("Vertical separation has zero horizontal distance"),
+		CalculateTacticalDistance(Origin, FVector(0, 0, 5000), EEnemyTacticalDistanceMode::Horizontal2D), 0.0f);
+	FEnemyCombatAssessmentTaskInstanceData Data;
+	Data.bHasValidTarget = true;
+	Data.bLeftBlocked = Data.bRightBlocked = Data.bBothSidesBlocked = true;
+	Data.HorizontalDistance = 1000.0f;
+	UpdateAssessment(Data);
+	TestFalse(TEXT("Missing enemy clears target validity"), Data.bHasValidTarget);
+	TestFalse(TEXT("Missing enemy clears wall results"), Data.bLeftBlocked || Data.bRightBlocked || Data.bBothSidesBlocked);
+	TestEqual(TEXT("Missing enemy clears distance"), Data.HorizontalDistance, 0.0f);
+	return true;
+}
+#endif
+
+FEnemyCombatAssessmentTask::FEnemyCombatAssessmentTask()
+{
+	bShouldStateChangeOnReselect = false;
+#if WITH_EDITORONLY_DATA
+	bConsideredForCompletion = false;
+#endif
+}
+
+EStateTreeRunStatus FEnemyCombatAssessmentTask::EnterState(
+	FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const
+{
+	auto& Data = Context.GetInstanceData(*this);
+	Data.Elapsed = 0.0f;
+	Data.LastTarget = Data.TargetActor;
+	Data.bPrefersLeft = false;
+	UpdateAssessment(Data);
+	return IsValid(Data.Enemy) && Data.Enemy->HasAuthority()
+		? EStateTreeRunStatus::Running : EStateTreeRunStatus::Failed;
+}
+
+EStateTreeRunStatus FEnemyCombatAssessmentTask::Tick(FStateTreeExecutionContext& Context, float DeltaTime) const
+{
+	auto& Data = Context.GetInstanceData(*this);
+	if (!IsValid(Data.Enemy) || !Data.Enemy->HasAuthority())
+	{
+		ResetAssessment(Data);
+		return EStateTreeRunStatus::Failed;
+	}
+	if (!IsValid(Data.TargetActor) || Data.Enemy->GetCombatState() != EEnemyCombatState::Combat
+		|| Data.Enemy->IsEnemyPossessed() || Data.Enemy->IsPossessionInProgress())
+	{
+		ResetAssessment(Data);
+		Data.LastTarget.Reset();
+		Data.Elapsed = FMath::Max(Data.UpdateInterval, 0.01f);
+		return EStateTreeRunStatus::Running;
+	}
+	Data.Elapsed += DeltaTime;
+	// 타깃 교체는 즉시 반영하고, 벽 검사는 설정 주기로 제한한다.
+	if (Data.LastTarget.Get() != Data.TargetActor.Get()
+		|| Data.Elapsed >= FMath::Max(Data.UpdateInterval, 0.01f))
+	{
+		Data.Elapsed = 0.0f;
+		Data.LastTarget = Data.TargetActor;
+		UpdateAssessment(Data);
+	}
+	return EStateTreeRunStatus::Running;
+}
+
+void FEnemyCombatAssessmentTask::ExitState(FStateTreeExecutionContext& Context,
+	const FStateTreeTransitionResult& Transition) const
+{
+	auto& Data = Context.GetInstanceData(*this);
+	ResetAssessment(Data);
+	Data.bPrefersLeft = false;
+	Data.LastTarget.Reset();
+	Data.Elapsed = 0.0f;
 }
 
 FEnemyApproachTargetTask::FEnemyApproachTargetTask()

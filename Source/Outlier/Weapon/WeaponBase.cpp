@@ -540,7 +540,7 @@ void AWeaponBase::AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacter* New
 			UE_LOG(
 				LogTemp,
 				Warning,
-				TEXT("[PartnerWeaponToggle][Attach][FP] Weapon=%s Mesh=%s StableRoot=%s ReferenceMesh=%s Socket=%s Exists=%d"),
+				TEXT("[PartnerWeaponAttach][FP] Weapon=%s Mesh=%s StableRoot=%s ReferenceMesh=%s Socket=%s Exists=%d"),
 				*GetNameSafe(Weapon),
 				*GetNameSafe(Weapon->GetFirstPersonWeaponMesh()),
 				*GetNameSafe(FirstPersonParent),
@@ -559,7 +559,7 @@ void AWeaponBase::AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacter* New
 			UE_LOG(
 				LogTemp,
 				Warning,
-				TEXT("[PartnerWeaponToggle][Attach][TP] Weapon=%s Mesh=%s Parent=%s Socket=%s Exists=%d"),
+				TEXT("[PartnerWeaponAttach][TP] Weapon=%s Mesh=%s Parent=%s Socket=%s Exists=%d"),
 				*GetNameSafe(Weapon),
 				*GetNameSafe(Weapon->GetThirdPersonWeaponMesh()),
 				*GetNameSafe(ThirdPersonParent),
