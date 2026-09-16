@@ -378,6 +378,7 @@ protected:
 	void PopReflectionBarrierWidget();
 	void NotifyLocalBulletReflected(const FVector& IncomingOrigin);
 	void HandleWeaponOverchargeTagChanged(const FGameplayTag Tag, int32 NewCount);
+	void RefreshWeaponOverchargeEmissive(bool bActive);
 	void HandleQuantumLeapCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleBulletReflectionCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleWeaponOverchargeCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);

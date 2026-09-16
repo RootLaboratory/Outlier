@@ -615,7 +615,37 @@ void AShooterCharacter::HandleWeaponOverchargeTagChanged(const FGameplayTag Tag,
 		}
 	}
 
+	RefreshWeaponOverchargeEmissive(bOverchargeActive);
+
 	BP_OnWeaponOverchargeStateChanged(bOverchargeActive);
+}
+
+void AShooterCharacter::RefreshWeaponOverchargeEmissive(bool bActive)
+{
+	// 태그는 서버 / 오너 / 시뮬레이티드 프록시 모두에 복제되므로 별도 Multicast RPC 가 필요 없다.
+	// 연출은 각 머신이 자기 MID 로 직접 처리한다.
+	if (GetNetMode() == NM_DedicatedServer)
+	{
+		return;
+	}
+
+	// 과충전은 주무기( 라이플 ) 전용이라 원거리 무기만 연출 대상이다.
+	ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(GetCurrentWeapon());
+
+	UE_LOG(
+		LogTemp,
+		Log,
+		TEXT("%s [%s] OverchargeEmissive Active=%d Weapon=%s Role=%d"),
+		OutlierNet::GetNetPrefix(this),
+		*GetName(),
+		bActive ? 1 : 0,
+		*GetNameSafe(RangedWeapon),
+		static_cast<int32>(GetLocalRole()));
+
+	if (RangedWeapon)
+	{
+		RangedWeapon->SetOverchargeEmissiveActive(bActive);
+	}
 }
 
 void AShooterCharacter::HandleStealthCooldownTagChanged(const FGameplayTag Tag, int32 NewCount)

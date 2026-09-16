@@ -179,6 +179,21 @@ protected:
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UMaterialInstanceDynamic>> SightAimMIDs;
 
+	// 과충전( State.WeaponOvercharged ) 동안 무기 머티리얼에 0 -> 1 로 실어 보낼 스칼라 파라미터.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapon|Overcharge")
+	FName OverchargeEmissiveScalarParamName = TEXT("EmissiveStrength");
+
+	// 0 -> 1 ( 및 1 -> 0 ) 도달까지 걸리는 시간. 0 이하면 즉시 반영한다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapon|Overcharge")
+	float OverchargeEmissiveRampSeconds = 0.35f;
+
+	// 연출 전용이라 복제하지 않는다. 각 머신이 태그 이벤트를 받아 자기 MID 를 직접 굴린다.
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> OverchargeEmissiveMIDs;
+
+	float OverchargeEmissiveAlpha = 0.0f;
+	float OverchargeEmissiveTargetAlpha = 0.0f;
+
 	FTimerHandle AutoFireTimerHandle;
 	FTimerHandle AttackCooldownTimerHandle;
 	FTimerHandle PostBurstCooldownTimerHandle;
@@ -250,11 +265,18 @@ protected:
 	void EnsureBloomRecoveryTimer();
 	void HandleBloomRecoveryTimer();
 	void CacheSightAimMaterials();
+	void CacheOverchargeEmissiveMaterials();
+	void ApplyOverchargeEmissiveAlpha();
+
+	// 소유자의 현재 과충전 상태를 보간 없이 그대로 가져온다 ( 장착 / 관련성 복구 시점용 ).
+	void RefreshOverchargeEmissiveFromOwner();
 
 	void ReportArenaWideNoise(ACharacter* OwnerCharacter);
 
 public:
 	virtual void BeginPlay() override;
+
+	virtual void Tick(float DeltaSeconds) override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const;
 	virtual void OnEquipped(ACharacter* NewOwner) override;
@@ -287,6 +309,12 @@ public:
 	int32 GetCurrentAmmo() const { return CurrentAmmo; }
 	int32 GetMagazineSize() const { return MagazineSize; }
 	void RefillMagazineForWeaponOvercharge();
+
+	// 과충전 연출 : 태그가 서버 / 오너 / 시뮬레이티드 프록시 모두에 복제되므로
+	// 별도의 Multicast RPC 없이 각 머신이 자기 1인칭 + 3인칭 MID 를 직접 갱신한다.
+	void SetOverchargeEmissiveActive(bool bActive);
+	void SnapOverchargeEmissive(float Alpha);
+	float GetOverchargeEmissiveAlpha() const { return OverchargeEmissiveAlpha; }
 
 	virtual void SetAiming(bool bAiming);
 	void CancelLocalRecoilPresentation();

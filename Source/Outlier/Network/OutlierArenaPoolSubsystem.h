@@ -112,7 +112,25 @@ private:
 	void BindGameplayReloadEvents(int32 ArenaId);
 	void TryRequestGameplayReloadGC();
 	void TryCompleteGameplayReloadActivation();
+	// 리로드 사이클이 진행을 멈췄는지 감시한다. 이 상태머신은 EndPlay -> GC purge -> 스트리밍 완료를
+	// 전부 "이벤트가 오면 다음 단계"로 엮어놨다. 한 단계라도 이벤트가 안 오면 아무도 깨워주지 않고
+	// 영원히 매달린다 — 그 사이 Data Layer는 Unloaded로 남아서 그 세션의 게임플레이 액터가 통째로 사라진다.
+	// 로그도 마지막 "성공" 한 줄에서 끊기기 때문에 겉보기엔 정상 진행과 구분되지 않는다.
+	void TickPendingGameplayReloadTimeouts();
+	// 멈춘 사이클을 포기한다. 리셋은 보장 못 하지만 Data Layer를 Activated로 되돌리고
+	// 대기 중인 쪽(possess / 클라 로딩)을 풀어준다 — "액터 없는 아레나에 영구 정지"보다는 낫다.
+	void AbandonStalledGameplayReload(int32 ArenaId);
+	// 진단용. 액터가 WP 셀 레벨에 사는지 PersistentLevel에 사는지 구분해서 찍는다.
+	// 셀에 없는 액터는 Data Layer를 내려도 언로드 대상이 아니므로 EndPlay가 영원히 안 온다.
+	static FString DescribeActorLevelPackage(const AActor* Actor);
+
 	void ActivatePendingGameplayReload(int32 ArenaId);
+	// 최초 로드 시 Gameplay Data Layer를 Activated로 올린다.
+	// Data Layer Instance의 Initial State 기본값이 Unloaded(DataLayerInstance.cpp:34)라서,
+	// 이걸 아무도 안 불러주면 DL 소속 액터는 첫 리로드 사이클이 돌기 전까지 월드에 아예 없다
+	// (실측: 세션 첫 리로드에서 Tracking unload Actors=0, 그 다음 리로드부터 정상 집계).
+	void EnsureArenaGameplayDataActivated(int32 ArenaId);
+	void TickPendingInitialActivations();
 	void HandleGameplayGarbageCollectComplete();
 	void HandleGameplayStreamingStateUpdated();
 
@@ -146,8 +164,26 @@ private:
 		bool bLoadRequested = false;
 		bool bGCRequested = false;
 		bool bCanChangeState = false;
+		// 이 사이클이 시작된 World time. 얼마나 매달려 있는지 재는 유일한 기준.
+		double StartTime = 0.0;
+		// 정지 진단을 이미 찍었는지. 폴링마다 같은 덤프를 반복하지 않는다.
+		bool bStallReported = false;
 	};
 	TArray<FPendingGameplayReload> PendingGameplayReloads;
+	// PendingGameplayReloads가 비어 있지 않은 동안에만 도는 폴링 타이머.
+	FTimerHandle GameplayReloadTimeoutTimer;
+
+
+	// DataLayerManager가 잡힐 때까지 최초 활성화를 재시도할 아레나들.
+	// 스트리밍으로 얹은 아레나(Listen)는 레벨이 Shown 된 뒤에도 그 인스턴스 World의
+	// DataLayerManager가 한 틱 늦게 잡힐 수 있어서 한 번의 시도로는 부족하다.
+	struct FPendingInitialActivation
+	{
+		int32 ArenaId = INDEX_NONE;
+		double StartTime = 0.0;
+	};
+	TArray<FPendingInitialActivation> PendingInitialActivations;
+	FTimerHandle InitialActivationPollTimer;
 	TArray<TWeakObjectPtr<UDataLayerManager>> BoundGameplayDataLayerManagers;
 	TMap<TWeakObjectPtr<UWorldPartitionSubsystem>, FDelegateHandle> GameplayStreamingStateHandles;
 	FDelegateHandle GameplayGarbageCollectCompleteHandle;

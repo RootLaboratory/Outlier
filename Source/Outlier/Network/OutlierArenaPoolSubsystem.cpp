@@ -9,6 +9,8 @@
 #include "Engine/Level.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/Character.h"
+#include "GameFramework/WorldSettings.h"
+
 #include "GameFramework/CharacterMovementComponent.h"
 #include "WorldPartition/WorldPartitionRuntimeCellInterface.h"
 #include "WorldPartition/WorldPartitionSubsystem.h"
@@ -65,7 +67,13 @@ void UOutlierArenaPoolSubsystem::Deinitialize()
 	}
 	PendingGameplayReloads.Reset();
 
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(GameplayReloadTimeoutTimer);
+	}
+
 	Super::Deinitialize();
+
 }
 
 void UOutlierArenaPoolSubsystem::OnWorldBeginPlay(UWorld& InWorld)
@@ -116,6 +124,10 @@ void UOutlierArenaPoolSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 		UE_LOG(LogTemp, Display,
 			TEXT("[ArenaPool] Registered persistent world as Arena ArenaId=0 World=%s"),
 			*InWorld.GetName());
+
+		// Dedicated Worker(Persistent Arena World)의 최초 로드 경로.
+		// 아래 PreloadArenas 경로는 레벨이 Shown 될 때 HandleArenaLevelShown에서 같은 호출을 한다.
+		EnsureArenaGameplayDataActivated(Arena.ArenaId);
 		return;
 	}
 
@@ -437,7 +449,31 @@ void UOutlierArenaPoolSubsystem::ActivateArenaGameplayData(int32 ArenaId)
 	SetGameplayDataLayerState(ArenaId, EDataLayerRuntimeState::Activated);
 }
 
+FString UOutlierArenaPoolSubsystem::DescribeActorLevelPackage(const AActor* Actor)
+{
+	if (!Actor)
+	{
+		return TEXT("<null>");
+	}
+
+	const ULevel* Level = Actor->GetLevel();
+	if (!Level)
+	{
+		return TEXT("<no level>");
+	}
+
+	// WP 셀에 사는 액터만 Data Layer 상태 변화로 언로드된다. PersistentLevel로 승격된 액터는
+	// (bIsSpatiallyLoaded=false + DL 미해석 등) DL을 내려도 그대로 살아남아 EndPlay가 오지 않는다.
+	const bool bIsCell = Level->GetWorldPartitionRuntimeCell() != nullptr;
+	return FString::Printf(
+		TEXT("%s(Package=%s, IsWPCell=%d)"),
+		*GetNameSafe(Actor),
+		*GetNameSafe(Level->GetOutermost()),
+		bIsCell ? 1 : 0);
+}
+
 void UOutlierArenaPoolSubsystem::AddPendingGameplayReload(int32 ArenaId, bool bCanChangeState)
+
 {
 	const UDataLayerInstance* DataLayerInstance = ResolveGameplayDataLayer(ArenaId);
 	const UWorld* ArenaWorld = ResolveArenaWorld(ArenaId);
@@ -458,6 +494,8 @@ void UOutlierArenaPoolSubsystem::AddPendingGameplayReload(int32 ArenaId, bool bC
 	// 호스트 월드 기준. 인스턴스 월드(Listen)에는 UWorldSubsystem이 없다.
 	Pending.WorldPartitionSubsystem = HostWorld->GetSubsystem<UWorldPartitionSubsystem>();
 	Pending.bCanChangeState = bCanChangeState;
+	Pending.StartTime = HostWorld->GetTimeSeconds();
+
 
 	// 추적 대상 액터는 아레나 월드를 TActorIterator로 훑어서는 찾을 수 없다.
 	// WP 셀 레벨은 각자 자기 패키지(/Memory/..._<GUID>) 안에 UWorld를 갖고, 그 레벨은 아레나
@@ -467,10 +505,17 @@ void UOutlierArenaPoolSubsystem::AddPendingGameplayReload(int32 ArenaId, bool bC
 	// 리로드를 넘어 살아남았다.
 	// 호스트 월드의 모든 레벨을 훑되 소속 아레나로 필터하는 이 패턴은
 	// AreArenaLevelInstancesLoaded가 이미 같은 이유로 쓰고 있다.
+	// Data Layer는 갖고 있지만 추적 대상이 아니라 제외한 액터 수.
+	// WorldSettings: 셀 레벨마다 딸려오는 엔진 소유 액터 — 우리 콘텐츠가 아니다.
+	// NotBegunPlay: OnEndPlay가 구조적으로 올 수 없는 액터 — 기다리면 영구 정지한다.
+	int32 SkippedWorldSettings = 0;
+	int32 SkippedNotBegunPlay = 0;
+
 	UDataLayerAsset* DataLayerAsset = GameplayDataLayer.LoadSynchronous();
 	if (DataLayerAsset)
 	{
 		for (ULevel* Level : HostWorld->GetLevels())
+
 		{
 			if (!Level || GetOwningArenaWorld(Level) != ArenaWorld)
 			{
@@ -484,7 +529,37 @@ void UOutlierArenaPoolSubsystem::AddPendingGameplayReload(int32 ArenaId, bool bC
 					continue;
 				}
 
+				// 셀 레벨마다 엔진이 자동으로 넣는 AWorldSettings는 우리가 배치한 콘텐츠가 아니고
+				// 리셋을 검증할 대상도 아니다. 셀 안에 있다는 이유로 Data Layer를 물려받아 여기까지 온다.
+				//
+				// 엔진의 TActorIterator는 이걸 스스로 걸러낸다("ignore non-persistent world settings",
+				// EngineUtils.h:356). 09-14에 리슨의 Actors=0을 고치려고 TActorIterator를 직접 루프로
+				// 바꾸면서 그 필터를 같이 잃었고, 그래서 dedi 리로드가 멈췄다. 잃은 한 줄을 여기서 복구한다.
+				if (Level != HostWorld->PersistentLevel && Actor->IsA<AWorldSettings>())
+				{
+					++SkippedWorldSettings;
+					continue;
+				}
+
+				// WP 셀 레벨에 있는 액터는 그 셀의 Data Layer를 전부 물려받는다 — 셀 레벨마다 기본으로
+				// 들어 있는 AWorldSettings까지 포함이다. 그런데 서브레벨의 WorldSettings는 BeginPlay를
+				// 타지 않고, AActor::RouteEndPlay는 BegunPlay인 액터에만 EndPlay를 돌린다(Actor.cpp:3198).
+				// 즉 이 액터들의 OnEndPlay는 영원히 오지 않는다.
+				//
+				// 실측(2026-09-15 dedi): DL 셀 2개짜리 Level_Outlier에서 추적 10개 중 2개가 각 셀의
+				// WorldSettings였고, 게임플레이 액터 8개는 EndPlay를 마쳤는데 이 2개 때문에
+				// ActorsAwaitingEndPlay가 0이 되지 않아 리로드가 영구 정지했다.
+				// DL 셀이 1개였던 예전 맵에서는 추적 집계 방식이 달라 안 걸렸을 뿐, 구조적인 버그다.
+				//
+				// 레벨과 함께 파괴되는 건 맞으므로 "리셋을 검증할 대상"에서 빼는 것으로 충분하다.
+				if (!Actor->HasActorBegunPlay())
+				{
+					++SkippedNotBegunPlay;
+					continue;
+				}
+
 				Pending.TrackedActors.Add(Actor);
+
 				Pending.ActorsAwaitingEndPlay.Add(Actor);
 				Actor->OnEndPlay.AddUniqueDynamic(
 					this, &UOutlierArenaPoolSubsystem::HandleGameplayReloadActorEndPlay);
@@ -509,7 +584,57 @@ void UOutlierArenaPoolSubsystem::AddPendingGameplayReload(int32 ArenaId, bool bC
 			TEXT("reload verification will be vacuous. Check the Data Layer assignment and arena ownership."),
 			ArenaId);
 	}
+
+	// 추적 액터가 어느 레벨 패키지에 사는지 미리 남긴다. 리로드가 EndPlay 대기에서 멈췄을 때
+	// "Data Layer가 안 내려간 것"과 "애초에 언로드 대상이 아닌 액터를 추적한 것"을 가르는 유일한 근거다.
+	// WP 셀이 아닌 레벨(PersistentLevel 등)에 있는 액터는 DL을 Unloaded로 내려도 파괴되지 않는다.
+	{
+		int32 CellActors = 0;
+		for (const TWeakObjectPtr<AActor>& ActorPtr : Pending.TrackedActors)
+		{
+			const AActor* Actor = ActorPtr.Get();
+			const ULevel* Level = Actor ? Actor->GetLevel() : nullptr;
+			if (Level && Level->GetWorldPartitionRuntimeCell())
+			{
+				++CellActors;
+			}
+		}
+
+		UE_LOG(LogTemp, Display,
+			TEXT("[ArenaPool][DataLayer] Tracked actor placement ArenaId=%d InWPCell=%d/%d ")
+		TEXT("SkippedWorldSettings=%d SkippedNotBegunPlay=%d"),
+			ArenaId, CellActors, Pending.TrackedActors.Num(),
+			SkippedWorldSettings, SkippedNotBegunPlay);
+
+
+
+		for (const TWeakObjectPtr<AActor>& ActorPtr : Pending.TrackedActors)
+		{
+			UE_LOG(LogTemp, Verbose,
+				TEXT("[ArenaPool][DataLayer]   tracked %s"),
+				*DescribeActorLevelPackage(ActorPtr.Get()));
+		}
+
+		// 셀 밖 액터가 하나라도 있으면 그 액터의 EndPlay는 절대 오지 않는다 — 타임아웃을 기다릴 필요 없이
+		// 지금 경고한다(타임아웃 경로는 이미 15초를 날린 뒤다).
+		if (CellActors < Pending.TrackedActors.Num())
+		{
+			UE_LOG(LogTemp, Error,
+				TEXT("[ArenaPool][DataLayer] %d actor(s) tracked for reload are NOT in a WP cell ArenaId=%d — ")
+				TEXT("Data Layer를 내려도 파괴되지 않으므로 EndPlay 대기가 끝나지 않는다. ")
+				TEXT("해당 액터의 Is Spatially Loaded / Data Layer 할당을 확인할 것"),
+				Pending.TrackedActors.Num() - CellActors, ArenaId);
+		}
+	}
+
+	if (!HostWorld->GetTimerManager().IsTimerActive(GameplayReloadTimeoutTimer))
+	{
+		HostWorld->GetTimerManager().SetTimer(
+			GameplayReloadTimeoutTimer, this,
+			&UOutlierArenaPoolSubsystem::TickPendingGameplayReloadTimeouts, 0.5f, true);
+	}
 }
+
 
 void UOutlierArenaPoolSubsystem::BindGameplayReloadEvents(int32 ArenaId)
 {
@@ -686,6 +811,112 @@ void UOutlierArenaPoolSubsystem::ActivatePendingGameplayReload(int32 ArenaId)
 	}
 }
 
+void UOutlierArenaPoolSubsystem::EnsureArenaGameplayDataActivated(int32 ArenaId)
+{
+	UWorld* World = GetWorld();
+	if (!World || ArenaId == INDEX_NONE || GameplayDataLayer.IsNull())
+	{
+		return;
+	}
+
+	// LoadFilter=None인 레이어의 런타임 상태는 서버의 AWorldDataLayers가 복제한다.
+	// 클라가 직접 올리면 엔진이 AuthoritativeFromClient로 무시하고(WorldDataLayers.cpp:240),
+	// 복제본과 로컬 판단이 어긋나는 경로만 하나 더 생긴다. 클라는 WaitForArenaGameplayDataReady로 기다린다.
+	if (World->GetNetMode() == NM_Client)
+	{
+		return;
+	}
+
+	for (const FPendingInitialActivation& Existing : PendingInitialActivations)
+	{
+		if (Existing.ArenaId == ArenaId)
+		{
+			return;
+		}
+	}
+
+	FPendingInitialActivation& Pending = PendingInitialActivations.AddDefaulted_GetRef();
+	Pending.ArenaId = ArenaId;
+	Pending.StartTime = World->GetTimeSeconds();
+
+	// 첫 시도는 즉시 한다 — DataLayerManager가 이미 올라와 있으면(Dedicated의 Persistent World가
+	// 보통 그렇다) 타이머를 걸지 않고 여기서 끝난다.
+	TickPendingInitialActivations();
+
+	if (PendingInitialActivations.Num() > 0
+		&& !World->GetTimerManager().IsTimerActive(InitialActivationPollTimer))
+	{
+		World->GetTimerManager().SetTimer(
+			InitialActivationPollTimer, this,
+			&UOutlierArenaPoolSubsystem::TickPendingInitialActivations, 0.05f, true);
+	}
+}
+
+void UOutlierArenaPoolSubsystem::TickPendingInitialActivations()
+{
+	// 영원히 못 잡으면 조용히 넘어가지 말고 에러를 남긴다 — 이 실패의 증상은 "DL 액터가 통째로 없는
+	// 월드"인데, 그걸 막는 게이트가 없어서(IsArenaContentReady는 Data Layer를 보지 않는다)
+	// 겉보기에는 정상 플레이와 구분되지 않는다.
+	constexpr double TimeoutSeconds = 10.0;
+
+	UWorld* World = GetWorld();
+
+	for (int32 Index = PendingInitialActivations.Num() - 1; Index >= 0; --Index)
+	{
+		const FPendingInitialActivation Pending = PendingInitialActivations[Index];
+
+		// 리로드 상태머신이 같은 아레나의 Data Layer를 들고 있으면 손대지 않는다.
+		// Unloaded -> GC -> Activated 사이에 Activated를 끼워 넣으면 그 사이클이 깨진다.
+		bool bOwnedByReload = false;
+		for (const FPendingGameplayReload& Reload : PendingGameplayReloads)
+		{
+			if (Reload.ArenaId == Pending.ArenaId)
+			{
+				bOwnedByReload = true;
+				break;
+			}
+		}
+
+		if (bOwnedByReload)
+		{
+			PendingInitialActivations.RemoveAt(Index);
+			continue;
+		}
+
+		// Available이 되기 전에는 SetGameplayDataLayerState를 부르지 않는다 —
+		// 그쪽은 실패할 때마다 Error를 찍기 때문에 폴링으로 부르면 로그가 도배된다.
+		if (IsGameplayDataLayerAvailable(Pending.ArenaId))
+		{
+			// 이미 Activated여도 true를 돌려준다(같은 상태면 엔진이 no-op, WorldDataLayers.cpp:250).
+			if (SetGameplayDataLayerState(Pending.ArenaId, EDataLayerRuntimeState::Activated))
+			{
+				UE_LOG(LogTemp, Display,
+					TEXT("[ArenaPool][DataLayer] Initial activation ArenaId=%d DataLayerWorld=%s Asset=%s"),
+					Pending.ArenaId,
+					*GetNameSafe(ResolveDataLayerWorld(Pending.ArenaId)),
+					*GameplayDataLayer.ToSoftObjectPath().ToString());
+				PendingInitialActivations.RemoveAt(Index);
+				continue;
+			}
+		}
+
+		if (World && (World->GetTimeSeconds() - Pending.StartTime > TimeoutSeconds))
+		{
+			UE_LOG(LogTemp, Error,
+				TEXT("[ArenaPool][DataLayer] Initial activation timed out ArenaId=%d Asset=%s — ")
+				TEXT("Data Layer 소속 액터 없이 플레이가 시작된다. 이 World에 해당 Data Layer Instance가 있는지 확인할 것"),
+				Pending.ArenaId,
+				*GameplayDataLayer.ToSoftObjectPath().ToString());
+			PendingInitialActivations.RemoveAt(Index);
+		}
+	}
+
+	if (PendingInitialActivations.Num() == 0 && World)
+	{
+		World->GetTimerManager().ClearTimer(InitialActivationPollTimer);
+	}
+}
+
 void UOutlierArenaPoolSubsystem::HandleGameplayStreamingStateUpdated()
 {
 	TryCompleteGameplayReloadActivation();
@@ -714,7 +945,176 @@ void UOutlierArenaPoolSubsystem::TryCompleteGameplayReloadActivation()
 		PendingGameplayReloads.RemoveAt(Index);
 		OnArenaGameplayReady.Broadcast(ReadyArenaId);
 	}
+
+	if (PendingGameplayReloads.Num() == 0)
+	{
+		if (UWorld* World = GetWorld())
+		{
+			World->GetTimerManager().ClearTimer(GameplayReloadTimeoutTimer);
+		}
+	}
 }
+
+void UOutlierArenaPoolSubsystem::TickPendingGameplayReloadTimeouts()
+{
+	// 정상 리로드는 실측 65ms ~ 900ms에 끝난다(09-13 dedi / 09-15 listen 로그). 15초는 그보다
+	// 한 자릿수 이상 여유를 둔 값이라, 여기 걸렸다면 느린 게 아니라 이벤트가 안 오는 것이다.
+	constexpr double StallTimeoutSeconds = 15.0;
+	constexpr int32 MaxDumpedActors = 10;
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	TArray<int32> StalledArenaIds;
+	for (FPendingGameplayReload& Pending : PendingGameplayReloads)
+	{
+		const double Elapsed = World->GetTimeSeconds() - Pending.StartTime;
+		if (Pending.bStallReported || Elapsed < StallTimeoutSeconds)
+		{
+			continue;
+		}
+		Pending.bStallReported = true;
+
+		// 어느 단계에서 멈췄는지가 곧 원인 분류다. EndPlay 대기면 Data Layer/셀 언로드 문제,
+		// GC 대기면 참조가 남은 것, 클라 ACK 대기면 네트워크/Logout 정리 누락, 스트리밍 대기면 재활성 실패.
+		const TCHAR* Phase = TEXT("Unknown");
+		if (Pending.ActorsAwaitingEndPlay.Num() > 0)
+		{
+			Phase = TEXT("WaitingForActorEndPlay");
+		}
+		else if (Pending.bGCRequested)
+		{
+			Phase = TEXT("WaitingForGCPurge");
+		}
+		else if (Pending.bLoadRequested && !Pending.bCanChangeState)
+		{
+			Phase = TEXT("WaitingForRemoteClientAck");
+		}
+		else if (Pending.bLoadRequested)
+		{
+			Phase = TEXT("WaitingForActivationStreaming");
+		}
+
+		const UDataLayerInstance* DataLayerInstance = ResolveGameplayDataLayer(Pending.ArenaId);
+		const UWorld* DataLayerWorld = ResolveDataLayerWorld(Pending.ArenaId);
+		UDataLayerManager* Manager = DataLayerWorld
+			? UDataLayerManager::GetDataLayerManager(DataLayerWorld)
+			: nullptr;
+		const EDataLayerRuntimeState EffectiveState = (Manager && DataLayerInstance)
+			? Manager->GetDataLayerInstanceEffectiveRuntimeState(DataLayerInstance)
+			: EDataLayerRuntimeState::Unloaded;
+
+		int32 LiveTrackedActors = 0;
+		for (const TWeakObjectPtr<AActor>& ActorPtr : Pending.TrackedActors)
+		{
+			LiveTrackedActors += ActorPtr.IsValid(/*bEvenIfGarbage=*/true) ? 1 : 0;
+		}
+
+		UE_LOG(LogTemp, Error,
+			TEXT("[ArenaPool][DataLayer] Reload STALLED ArenaId=%d Phase=%s Elapsed=%.1fs NetMode=%d ")
+			TEXT("Actors=%d AwaitingEndPlay=%d LiveTracked=%d GCRequested=%d LoadRequested=%d CanChangeState=%d ")
+			TEXT("DataLayer=%s EffectiveState=%s StreamingUnloaded=%d StreamingActivated=%d ArenaWorld=%s HostWorld=%s"),
+			Pending.ArenaId,
+			Phase,
+			Elapsed,
+			static_cast<int32>(World->GetNetMode()),
+			Pending.TrackedActors.Num(),
+			Pending.ActorsAwaitingEndPlay.Num(),
+			LiveTrackedActors,
+			Pending.bGCRequested ? 1 : 0,
+			Pending.bLoadRequested ? 1 : 0,
+			Pending.bCanChangeState ? 1 : 0,
+			DataLayerInstance ? *DataLayerInstance->GetDataLayerFName().ToString() : TEXT("<none>"),
+			GetDataLayerRuntimeStateName(EffectiveState),
+			IsGameplayDataLayerState(Pending.ArenaId, EDataLayerRuntimeState::Unloaded) ? 1 : 0,
+			IsGameplayDataLayerState(Pending.ArenaId, EDataLayerRuntimeState::Activated) ? 1 : 0,
+			*GetNameSafe(ResolveArenaWorld(Pending.ArenaId)),
+			*GetNameSafe(World));
+
+		// EffectiveState=Unloaded 인데 액터가 살아 있으면 "DL은 내려갔는데 셀이 안 내려갔다"는 뜻이다.
+		// 그 액터가 어느 패키지에 사는지가 다음 조사 지점이 된다.
+		int32 Dumped = 0;
+		for (const TWeakObjectPtr<AActor>& ActorPtr : Pending.ActorsAwaitingEndPlay)
+		{
+			if (Dumped++ >= MaxDumpedActors)
+			{
+				UE_LOG(LogTemp, Error,
+					TEXT("[ArenaPool][DataLayer]   ... and %d more awaiting EndPlay"),
+					Pending.ActorsAwaitingEndPlay.Num() - MaxDumpedActors);
+				break;
+			}
+
+			UE_LOG(LogTemp, Error,
+				TEXT("[ArenaPool][DataLayer]   awaiting EndPlay %s"),
+				*DescribeActorLevelPackage(ActorPtr.Get(/*bEvenIfGarbage=*/true)));
+		}
+
+		StalledArenaIds.Add(Pending.ArenaId);
+	}
+
+	// 배열을 순회하는 중에 포기 처리를 하면 broadcast 수신자가 같은 배열을 건드릴 수 있다.
+	// ArenaId만 모아뒀다가 루프 밖에서 처리한다 — HandleGameplayGarbageCollectComplete와 같은 이유.
+	for (const int32 ArenaId : StalledArenaIds)
+	{
+		AbandonStalledGameplayReload(ArenaId);
+	}
+
+	if (PendingGameplayReloads.Num() == 0)
+	{
+		World->GetTimerManager().ClearTimer(GameplayReloadTimeoutTimer);
+	}
+}
+
+void UOutlierArenaPoolSubsystem::AbandonStalledGameplayReload(int32 ArenaId)
+{
+	const int32 Index = PendingGameplayReloads.IndexOfByPredicate(
+		[ArenaId](const FPendingGameplayReload& Item) { return Item.ArenaId == ArenaId; });
+	if (Index == INDEX_NONE)
+	{
+		return;
+	}
+
+	for (const TWeakObjectPtr<AActor>& ActorPtr : PendingGameplayReloads[Index].TrackedActors)
+	{
+		if (AActor* Actor = ActorPtr.Get())
+		{
+			Actor->OnEndPlay.RemoveAll(this);
+		}
+	}
+
+	// GC 단계를 이미 통과했다면 OnArenaGameplayGCReady는 그때 나갔다. 두 번 쏘면
+	// 클라가 서버에 GC 완료를 두 번 통보하게 된다.
+	const bool bAlreadyBroadcastGCReady = PendingGameplayReloads[Index].bLoadRequested;
+	PendingGameplayReloads.RemoveAt(Index);
+
+	UWorld* World = GetWorld();
+	const bool bIsClient = World && World->GetNetMode() == NM_Client;
+
+	// Data Layer 상태는 서버만 건드린다. 클라가 올리면 엔진이 AuthoritativeFromClient로 무시하고
+	// (WorldDataLayers.cpp:240) 복제본과 로컬 판단이 어긋나는 경로만 하나 더 생긴다.
+	if (!bIsClient)
+	{
+		SetGameplayDataLayerState(ArenaId, EDataLayerRuntimeState::Activated);
+	}
+
+	UE_LOG(LogTemp, Error,
+		TEXT("[ArenaPool][DataLayer] Reload abandoned ArenaId=%d IsClient=%d — Data Layer를 Activated로 되돌리고 ")
+		TEXT("대기를 푼다. 이번 사이클의 액터 리셋은 보장되지 않는다(런타임 상태가 리로드를 넘어 살아남았을 수 있음)"),
+		ArenaId,
+		bIsClient ? 1 : 0);
+
+	// 기다리던 쪽을 전부 풀어준다. 서버는 possess(HandleServerArenaReloaded)가, 클라는 GC 완료 통보와
+	// 로딩 해제가 이 이벤트에 걸려 있어서, 여기서 안 쏘면 타임아웃을 넣은 의미가 없다.
+	if (!bAlreadyBroadcastGCReady)
+	{
+		OnArenaGameplayGCReady.Broadcast(ArenaId);
+	}
+	OnArenaGameplayReady.Broadcast(ArenaId);
+}
+
 
 void UOutlierArenaPoolSubsystem::SuspendArenaVisibilityForConnection(int32 ArenaId, APlayerController* PlayerController)
 {
@@ -1235,6 +1635,9 @@ void UOutlierArenaPoolSubsystem::HandleArenaLevelShown()
 	{
 		if (IsStreamingArenaReady(Arena.StreamingLevel))
 		{
+			// 최초 로드 경로. Data Layer Instance의 Initial State는 Unloaded가 기본값이라,
+			// 여기서 올려주지 않으면 DL 소속 액터는 첫 리로드 사이클 전까지 월드에 없다.
+			EnsureArenaGameplayDataActivated(Arena.ArenaId);
 			OnArenaShown.Broadcast(Arena.ArenaId);
 		}
 	}
