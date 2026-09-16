@@ -3,6 +3,8 @@
 #include "OutlierGameMode.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Shooter/ShooterInventoryComponent.h"
+#include "Weapon/WeaponBase.h"
 #include "OutlierPlayerState.h"
 #include "Save/OutlierCheckpoint.h"
 #include "Save/PresetPlayerStart.h"
@@ -1419,6 +1421,7 @@ void AOutlierGameMode::RespawnPairAtCheckpoint(AController* Controller)
 	}
 
 	RegisterSpawnedPair(ShooterPlayerState, PartnerPlayerState, NewShooter, NewPartner);
+	RestorePairLoadout(ShooterPlayerState, NewShooter, NewPartner);
 }
 
 void AOutlierGameMode::DebugReloadArena(AController* Requester)
@@ -1537,6 +1540,7 @@ void AOutlierGameMode::ReloadArenaAndRespawnPair(
 	}
 
 	RegisterSpawnedPair(ShooterPlayerState, PartnerPlayerState, NewShooter, NewPartner);
+	RestorePairLoadout(ShooterPlayerState, NewShooter, NewPartner);
 
 	// 4) possess 배선 — 지오메트리 준비 뒤로 지연
 	//    remote → 클라 스트리밍 완료 후 OnClientArenaReady에서 possess
@@ -1989,6 +1993,58 @@ AOutlierPlayerState* AOutlierGameMode::FindPairPlayerState(int32 PairId, EOutlie
 AController* AOutlierGameMode::GetControllerFromPlayerState(AOutlierPlayerState* PlayerState) const
 {
 	return PlayerState ? Cast<AController>(PlayerState->GetOwner()) : nullptr;
+}
+
+void AOutlierGameMode::RestorePairLoadout(
+	AOutlierPlayerState* ShooterPlayerState,
+	AShooterCharacter* Shooter,
+	APartnerCharacter* Partner)
+{
+	if (!ShooterPlayerState)
+	{
+		return;
+	}
+
+	// 슈트를 무기보다 먼저 입힌다. 메시를 갈아끼우면 소켓이 바뀌므로,
+	// 순서가 반대면 이미 붙은 무기들이 옛 메시에 매달린 채로 남는다.
+	if (Shooter && ShooterPlayerState->GetAcquiredSuit())
+	{
+		Shooter->ApplySuitMeshes(
+			ShooterPlayerState->GetSuitFirstPersonMesh(),
+			ShooterPlayerState->GetSuitThirdPersonMesh());
+	}
+
+	// 값으로 복사한다. 아래 RestoreLoadout 이 슬롯을 채우면서 PlayerState 의 스냅샷을
+	// 다시 쓰기 때문에, 참조를 들고 있으면 Partner 분기에서 재할당된 메모리를 읽게 된다.
+	const FOutlierLoadoutSnapshot Snapshot = ShooterPlayerState->GetLoadoutSnapshot();
+	if (Snapshot.IsEmpty())
+	{
+		// 최초 스폰에는 기록이 없다. 무기 복원만 건너뛴다 (슈트는 위에서 이미 처리).
+		return;
+	}
+
+	if (UShooterInventoryComponent* Inventory = Shooter ? Shooter->GetInventoryComponent() : nullptr)
+	{
+		Inventory->RestoreLoadout(Snapshot);
+	}
+
+	// Partner 는 InventoryComponent 가 없고 무기도 하나뿐이라 여기서 직접 처리한다.
+	// 순서는 ASuitInteraction::ApplySuit 의 Partner 지급과 같다 (스폰 -> 장착 -> 표시).
+	if (Partner && Snapshot.PartnerWeaponClass)
+	{
+		if (AWeaponBase* PartnerWeapon = AWeaponBase::SpawnLoadoutWeapon(
+				GetWorld(), Snapshot.PartnerWeaponClass, Partner))
+		{
+			Partner->EquipWeapon(PartnerWeapon);
+			PartnerWeapon->ShowEquippedPresentation();
+		}
+		else
+		{
+			UE_LOG(LogTemp, Error,
+				TEXT("[RestorePairLoadout] Partner weapon spawn failed Class=%s"),
+				*GetNameSafe(Snapshot.PartnerWeaponClass.Get()));
+		}
+	}
 }
 
 void AOutlierGameMode::RegisterSpawnedPair(

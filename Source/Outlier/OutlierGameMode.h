@@ -158,6 +158,11 @@ protected:
 	AController* GetControllerFromPlayerState(AOutlierPlayerState* PlayerState) const;
 	void ApplyCheckpointToPair(AOutlierPlayerState* TriggeringPlayerState, const FOutlierCheckpointData& Data);
 	void RegisterSpawnedPair(AOutlierPlayerState* ShooterPlayerState, AOutlierPlayerState* PartnerPlayerState, AShooterCharacter* Shooter, APartnerCharacter* Partner);
+	// PlayerState 에 남아 있는 로드아웃 기록을 새로 스폰된 페어에 되살린다.
+	// possess 는 필요 없다 (폰만 있으면 된다) 므로 possess 지점이 아니라
+	// 스폰 직후 — RegisterSpawnedPair 호출 직후 — 에 부른다.
+	// 최초 스폰 경로에서는 스냅샷이 비어 있어 스스로 빠져나간다.
+	void RestorePairLoadout(AOutlierPlayerState* ShooterPlayerState, AShooterCharacter* Shooter, APartnerCharacter* Partner);
 	//APlayerController* SwapPlayerController(APlayerController* OldPC, TSubclassOf<APlayerController> NewClass);
 
 	bool ResolveArenaSpawnTransforms(

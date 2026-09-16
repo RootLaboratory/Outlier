@@ -503,6 +503,14 @@ void AShooterPlayerController::OnWeaponChanged(EWeaponType NewType)
 	{
 		UISubsystem->OnCurrentWeaponChanged(static_cast<EWidgetWeaponType>(NewType));
 	}
+
+	// 무기가 바뀌면 탄약도 같이 바뀐다. 슈트 플래그(PlayerState)와 CurrentWeapon(Pawn)은
+	// 서로 다른 액터에서 따로 복제돼 도착 순서가 보장되지 않으므로, 양쪽 신호에서 모두
+	// 다시 투영해야 "권총 들고 슈트 입기 -> 라이플인데 권총 탄약" 같은 어긋남이 안 생긴다.
+	if (BoundShooterCharacter)
+	{
+		BoundShooterCharacter->RefreshShooterAmmoUI();
+	}
 	else
 	{
 		UE_LOG(LogTemp, Error, TEXT("Shooter UI subsystem is not ready"));

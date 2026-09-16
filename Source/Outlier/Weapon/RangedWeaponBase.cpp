@@ -1565,8 +1565,24 @@ ULocalPlayerUISubSystem* ARangedWeaponBase::GetLocalUISubsystem() const
 	return nullptr;
 }
 
+bool ARangedWeaponBase::CanPushAmmoUI() const
+{
+	if (const AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner))
+	{
+		const AOutlierPlayerState* OutlierPS = Shooter->GetPlayerState<AOutlierPlayerState>();
+		return OutlierPS && OutlierPS->GetAcquiredSuit();
+	}
+
+	return true;
+}
+
 void ARangedWeaponBase::UpdateLocalAmmoUI() const
 {
+	if (!CanPushAmmoUI())
+	{
+		return;
+	}
+
 	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
 	{
 		UISubsystem->OnRep_AmmoCountChanged(CurrentAmmo);

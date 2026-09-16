@@ -338,6 +338,27 @@ void APartnerCharacter::RefreshPartnerCooldownUI()
 	}
 }
 
+void APartnerCharacter::RefreshPartnerSuitUI()
+{
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+
+	APlayerController* PlayerController = Cast<APlayerController>(GetController());
+	ULocalPlayer* LocalPlayer = PlayerController ? PlayerController->GetLocalPlayer() : nullptr;
+	ULocalPlayerUISubSystem* UISubsystem = LocalPlayer
+		? LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>()
+		: nullptr;
+	if (!UISubsystem)
+	{
+		return;
+	}
+
+	const AOutlierPlayerState* OutlierPS = GetPlayerState<AOutlierPlayerState>();
+	UISubsystem->OnShooterSuitAcquiredChanged(OutlierPS && OutlierPS->IsPairSuitAcquired());
+}
+
 void APartnerCharacter::NotifyPartnerCooldownUI(const FGameplayTag& CooldownTag)
 {
 	if (!IsLocallyControlled() || !OutlierAbilitySystemComponent)

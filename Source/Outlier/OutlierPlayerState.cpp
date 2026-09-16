@@ -2,6 +2,10 @@
 
 
 #include "OutlierPlayerState.h"
+#include "LocalPlayerUISubSystem.h"
+#include "Engine/LocalPlayer.h"
+#include "Engine/GameInstance.h"
+#include "GameFramework/PlayerController.h"
 #include "Engine/World.h"
 #include "GameFramework/GameStateBase.h"
 #include "Net/UnrealNetwork.h"
@@ -333,6 +337,10 @@ void AOutlierPlayerState::RefreshCharacterLinks()
 	}
 
 	OnPlayerCharactersChanged.Broadcast(this);
+
+	// 캐릭터 포인터가 슈트 플래그보다 늦게 도착하면 OnRep_AcquiredSuit 때는 넘길 곳이 없다.
+	// 링크가 붙는 이 시점에 현재 상태를 한 번 더 투영한다.
+	RefreshPairSuitUI();
 }
 
 void AOutlierPlayerState::OnRep_PlayerRole()
@@ -475,12 +483,83 @@ void AOutlierPlayerState::SetAcquiredSuit(bool Acquire)
 	{
 		return;
 	}
+
+	if (bHasAcquiredSuit == Acquire)
+	{
+		return;
+	}
+
 	bHasAcquiredSuit = Acquire;
+
+	// 리슨 호스트는 자기 값 변경에 OnRep 이 오지 않으므로 여기서 직접 투영한다.
+	OnRep_AcquiredSuit();
+	ForceNetUpdate();
+}
+
+void AOutlierPlayerState::OnRep_AcquiredSuit()
+{
+	RefreshPairSuitUI();
+}
+
+void AOutlierPlayerState::RefreshPairSuitUI()
+{
+	// 페어의 양쪽 캐릭터에 그대로 넘긴다. "로컬인가"는 각 캐릭터가 스스로 판단하므로
+	// 여기서 로컬 플레이어를 찾아낼 필요가 없다 (리슨에서 호스트를 잘못 집던 원인).
+	if (AShooterCharacter* Shooter = GetShooterCharacter())
+	{
+		Shooter->RefreshShooterSuitUI();
+	}
+
+	if (APartnerCharacter* Partner = GetPartnerCharacter())
+	{
+		Partner->RefreshPartnerSuitUI();
+	}
+}
+
+bool AOutlierPlayerState::IsPairSuitAcquired() const
+{
+	if (bHasAcquiredSuit)
+	{
+		return true;
+	}
+
+	// Partner PlayerState 에는 플래그가 서지 않는다. 짝의 Shooter 를 거쳐 그쪽 PS 를 본다.
+	// ShooterCharacter 는 양쪽 PlayerState 에 모두 복제되므로 Partner 클라에서도 닿는다.
+	if (const AShooterCharacter* Shooter = GetShooterCharacter())
+	{
+		if (const AOutlierPlayerState* ShooterPS = Shooter->GetPlayerState<AOutlierPlayerState>())
+		{
+			return ShooterPS->GetAcquiredSuit();
+		}
+	}
+
+	return false;
+}
+
+void AOutlierPlayerState::SetSuitMeshes(USkeletalMesh* FirstPersonMesh, USkeletalMesh* ThirdPersonMesh)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	SuitFirstPersonMesh = FirstPersonMesh;
+	SuitThirdPersonMesh = ThirdPersonMesh;
 }
 
 bool AOutlierPlayerState::GetAcquiredSuit() const
 {
 	return bHasAcquiredSuit;
+}
+
+void AOutlierPlayerState::SetLoadoutSnapshot(const FOutlierLoadoutSnapshot& NewSnapshot)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	LoadoutSnapshot = NewSnapshot;
 }
 
 void AOutlierPlayerState::SetTemporaryPlayerId(const FGuid& NewPlayerId)
@@ -576,6 +655,8 @@ void AOutlierPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& 
 	DOREPLIFETIME_CONDITION(AOutlierPlayerState, PartnerActivatedUpgradeNodeIds, COND_OwnerOnly);
 	DOREPLIFETIME_CONDITION(AOutlierPlayerState, TemporaryPlayerId, COND_OwnerOnly);
 	DOREPLIFETIME(AOutlierPlayerState, PendingPresetSelection);
+	// 클라가 읽어야 한다 — MainWidget 활성화 여부가 이 값에 걸린다.
+	DOREPLIFETIME(AOutlierPlayerState, bHasAcquiredSuit);
 }
 
 

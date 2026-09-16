@@ -345,6 +345,11 @@ public:
 
 protected:
 	void UpdateLocalAmmoUI() const;
+
+	// Shooter 는 슈트를 얻기 전까지 MainWidget 이 꺼져 있다. 그 구간에 총을 주워도
+	// 탄약 숫자만 따로 올라오면 안 되므로 푸시 자체를 막는다.
+	// Partner 무기는 슈트 지급이 유일 경로라 별도 게이트가 필요 없다.
+	bool CanPushAmmoUI() const;
 	virtual void OnRep_EquippedState() override;
 
 	UFUNCTION(Client, Unreliable)

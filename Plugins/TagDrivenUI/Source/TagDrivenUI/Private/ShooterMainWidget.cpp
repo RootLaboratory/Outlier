@@ -86,20 +86,14 @@ void UShooterMainWidget::SuitOnModuleInit()
 		AmmoUI->Deactivate();
 	}
 
-	if (CurrentAbilityUI)
-	{
-		CurrentAbilityUI->Activate();
-	}
+	ActivateModuleIfAllowed(CurrentAbilityUI);
 
-	if (CurrentWeaponUI)
-	{
-		CurrentWeaponUI->Activate();
-	}
+	ActivateModuleIfAllowed(CurrentWeaponUI);
 
 	if (UEventDrivenUI* HPModule = GetModule(TagDrivenUITags::Shooter::HP()))
 	{
 		//_LOG(LogTemp, Error, TEXT("SuitOnModuleInit HPModule"));
-		HPModule->Activate();
+		ActivateModuleIfAllowed(HPModule);
 	}
 	else
 	{
@@ -113,11 +107,23 @@ void UShooterMainWidget::SuitOnModuleInit()
 
 		// 모듈은 Activate로 마운트(토글 동작 위해 bHudActive=true 필요).
 		// 카메라 피드 자체는 PartnerCamUI::bCameraActive 기본 false라 시작 시 collapse됨.
-		PartnerCamModule->Activate();
+		ActivateModuleIfAllowed(PartnerCamModule);
 	}
 	else
 	{
 		//UE_LOG(LogTemp, Error, TEXT(" PartnerCam"));
+	}
+}
+
+void UShooterMainWidget::ResetCrossHairs()
+{
+	UCrossHairBase* CrossHairs[] = { RifleCrossHairUI, PistolCrossHairUI };
+	for (UCrossHairBase* CrossHair : CrossHairs)
+	{
+		if (CrossHair)
+		{
+			CrossHair->ResetCrossHairState();
+		}
 	}
 }
 
@@ -152,10 +158,7 @@ void UShooterMainWidget::OnChangeWeapon(EWidgetWeaponType Type)
 	{
 		//UE_LOG(LogTemp, Error, TEXT("Pistol"));
 
-		if (AmmoUI)
-		{
-			AmmoUI->Activate();
-		}
+		ActivateModuleIfAllowed(AmmoUI);
 
 		if (CurrentCrossHairUI)
 		{
@@ -164,10 +167,7 @@ void UShooterMainWidget::OnChangeWeapon(EWidgetWeaponType Type)
 
 		CurrentCrossHairUI = PistolCrossHairUI;
 
-		if (CurrentCrossHairUI)
-		{
-			CurrentCrossHairUI->Activate();
-		}
+		ActivateModuleIfAllowed(CurrentCrossHairUI);
 
 		RegisterModule(TagDrivenUITags::Shooter::CrossHair(), CurrentCrossHairUI);
 		break;
@@ -176,10 +176,7 @@ void UShooterMainWidget::OnChangeWeapon(EWidgetWeaponType Type)
 	{
 		//UE_LOG(LogTemp, Error, TEXT("Rifle"));
 
-		if (AmmoUI)
-		{
-			AmmoUI->Activate();
-		}
+		ActivateModuleIfAllowed(AmmoUI);
 
 		if (CurrentCrossHairUI)
 		{
@@ -188,10 +185,7 @@ void UShooterMainWidget::OnChangeWeapon(EWidgetWeaponType Type)
 
 		CurrentCrossHairUI = RifleCrossHairUI;
 
-		if (CurrentCrossHairUI)
-		{
-			CurrentCrossHairUI->Activate();
-		}
+		ActivateModuleIfAllowed(CurrentCrossHairUI);
 
 		RegisterModule(TagDrivenUITags::Shooter::CrossHair(), CurrentCrossHairUI);
 		break;

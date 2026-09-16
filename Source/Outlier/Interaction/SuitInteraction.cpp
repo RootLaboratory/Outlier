@@ -199,6 +199,25 @@ bool ASuitInteraction::ApplySuit(AShooterCharacter* ShooterCharacter)
 	if (AOutlierPlayerState* PS = ShooterCharacter->GetPlayerState<AOutlierPlayerState>())
 	{
 		PS->SetAcquiredSuit(true);
+
+		// 이 액터는 소비 직후 스스로 Destroy 하므로, 어떤 메시를 입혔는지
+		// 여기서 PlayerState 에 남겨야 리로드 후 다시 입힐 수 있다.
+		PS->SetSuitMeshes(ShooterFirstPersonMesh, ShooterThirdPersonMesh);
+
+		// Partner 무기는 슈트 지급이 유일한 경로이고 Partner 쪽에는 InventoryComponent 가
+		// 없으므로, 리로드 후 다시 만들 수 있도록 클래스를 Shooter PlayerState 에 남긴다.
+		// 이 액터는 소비 직후 스스로 Destroy 하므로 여기서 안 적으면 역산할 곳이 없다.
+		FOutlierLoadoutSnapshot Snapshot = PS->GetLoadoutSnapshot();
+		Snapshot.PartnerWeaponClass = StoredPartnerWeapon->GetClass();
+		PS->SetLoadoutSnapshot(Snapshot);
+	}
+
+	// 슈트는 페어 단위 해금이다. Partner PlayerState 에도 같은 플래그를 세워두면
+	// Partner 쪽(능력 게이트, UI)이 짝의 Shooter PS 를 매번 거슬러 올라가지 않아도 된다.
+	// 복제가 갱신을 대신하므로 별도 캐시 무효화가 필요 없다.
+	if (AOutlierPlayerState* PartnerPS = PartnerCharacter->GetPlayerState<AOutlierPlayerState>())
+	{
+		PartnerPS->SetAcquiredSuit(true);
 	}
 
 	StoredShooterRifle = nullptr;

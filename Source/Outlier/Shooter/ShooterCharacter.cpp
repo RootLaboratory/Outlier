@@ -758,6 +758,34 @@ void AShooterCharacter::RefreshShooterSuitCooldownUI()
 		OutlierAbilitySystemComponent->GetShooterStealthCooldownRemaining());
 }
 
+bool AShooterCharacter::HasAcquiredSuit() const
+{
+	const AOutlierPlayerState* OutlierPS = GetPlayerState<AOutlierPlayerState>();
+	return OutlierPS && OutlierPS->GetAcquiredSuit();
+}
+
+void AShooterCharacter::RefreshShooterAmmoUI()
+{
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+
+	const AShooterPlayerController* ShooterController = Cast<AShooterPlayerController>(GetController());
+	ULocalPlayer* LocalPlayer = ShooterController ? ShooterController->GetLocalPlayer() : nullptr;
+	ULocalPlayerUISubSystem* UISubsystem = LocalPlayer
+		? LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>()
+		: nullptr;
+	if (!UISubsystem)
+	{
+		return;
+	}
+
+	const ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(CurrentWeapon);
+	const bool bShowAmmo = HasAcquiredSuit() && RangedWeapon != nullptr;
+	UISubsystem->OnRep_AmmoCountChanged(bShowAmmo ? RangedWeapon->GetCurrentAmmo() : 0);
+}
+
 void AShooterCharacter::RefreshShooterSuitUI()
 {
 	if (!IsLocallyControlled())
@@ -767,14 +795,24 @@ void AShooterCharacter::RefreshShooterSuitUI()
 
 	if (AShooterPlayerController* ShooterController = Cast<AShooterPlayerController>(GetController()))
 	{
+		const AOutlierPlayerState* OutlierPS = GetPlayerState<AOutlierPlayerState>();
+		const bool bSuitAcquired = OutlierPS && OutlierPS->GetAcquiredSuit();
+		ShooterController->ControlMainWidget(bSuitAcquired);
+
 		if (ULocalPlayerUISubSystem* UISubsystem = ShooterController->GetLocalPlayer()
 			? ShooterController->GetLocalPlayer()->GetSubsystem<ULocalPlayerUISubSystem>()
 			: nullptr)
 		{
 			UISubsystem->OnCurrentAbilityChanged(SelectedAbilityTag);
+
+			// 서브시스템에도 슈트 상태를 알린다. 여기가 빠져 있어서 Shooter 클라에서는
+			// bShooterSuitAcquired 가 계속 false 였고, 크로스헤어 갱신이 통째로 막혀 있었다.
+			// (MainWidget 게이트는 PlayerState 를 직접 읽어서 따로 동작했다.)
+			UISubsystem->OnShooterSuitAcquiredChanged(bSuitAcquired);
 		}
 	}
 
+	RefreshShooterAmmoUI();
 	RefreshShooterSuitAvailabilityUI();
 	RefreshShooterSuitCooldownUI();
 }
@@ -1053,6 +1091,13 @@ void AShooterCharacter::HandleCrouchToggled()
 void AShooterCharacter::TryOpenSuitMenu()
 {
 	if (IsDead())
+	{
+		return;
+	}
+
+	// 슈트를 얻기 전에는 능력 선택 휠 자체를 열지 않는다.
+	// MainWidget 게이트와 같은 PlayerState 플래그 하나를 본다.
+	if (!HasAcquiredSuit())
 	{
 		return;
 	}
