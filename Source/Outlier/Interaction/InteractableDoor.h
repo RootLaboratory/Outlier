@@ -19,6 +19,7 @@ public:
 
 protected:
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void Tick(float DeltaTime) override;
 
 public:
@@ -27,6 +28,9 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Door")
 	void ToggleDoor();
+
+	UFUNCTION(BlueprintPure, Category = "Door")
+	bool IsDoorOpen() const { return bIsOpen; }
 
 	/** Submits the configured server-authoritative relevant world sound. */
 	UFUNCTION(BlueprintCallable, Category = "Door|Audio")
@@ -47,6 +51,9 @@ public:
 
 	UPROPERTY(EditAnywhere, Category = "Door")
 	TObjectPtr<UCurveFloat> DoorCurve;
+
+	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Door")
+	FName DoorId = NAME_None;
 
 	/** Played as server-authoritative Relevant AtLocation audio when movement starts. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Door|Audio", meta = (Categories = "Audio.Type"))
@@ -74,6 +81,8 @@ private:
 	void OnRep_IsOpen();
 
 	void ApplyDoorState(bool bOpen);
+	void SetDoorOpenInternal(bool bOpen, bool bRecordProgress, bool bPlayAudio);
+	bool bProgressIdRegistered = false;
 
 public:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;

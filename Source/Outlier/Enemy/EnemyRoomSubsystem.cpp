@@ -163,6 +163,24 @@ bool UEnemyRoomSubsystem::IsRoomInCombat(FGameplayTag RoomTag) const
 	return CombatRooms.Contains(RoomTag);
 }
 
+bool UEnemyRoomSubsystem::HasActiveCombat() const
+{
+	for (const TPair<FGameplayTag, TSet<TWeakObjectPtr<AEnemyBase>>>& RoomEntry :
+		RegisteredEnemiesByRoom)
+	{
+		for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : RoomEntry.Value)
+		{
+			const AEnemyBase* Enemy = EnemyPtr.Get();
+			if (IsValid(Enemy) && Enemy->IsInCombat())
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
 void UEnemyRoomSubsystem::ReportRoomTargetContact(
 	AEnemyBase* Observer,
 	AActor* TargetActor,

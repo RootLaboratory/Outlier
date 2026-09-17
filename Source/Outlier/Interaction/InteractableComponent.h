@@ -78,6 +78,7 @@ public:
 		bool bCompletedHoldInteract,
 		bool bSyncStateFromServer);
 	void MarkHoldReady();
+	void RestoreUsedState(bool bUsed);
 
 	void ActivateInteractionDesc(AFirstPersonCharacter* Interactor);
 	void DeactivateInteractionDesc();

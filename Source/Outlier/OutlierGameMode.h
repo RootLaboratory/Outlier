@@ -23,6 +23,7 @@ enum class EOutlierPlayerRole : uint8;
 enum class EOutlierGameplayReloadPhase : uint8;
 enum class EOutlierGameplayReloadFailure : uint8;
 struct FOutlierCheckpointData;
+struct FOutlierCheckpointSnapshot;
 
 /**
  *  Simple GameMode for a third person game
@@ -39,7 +40,7 @@ public:
 	virtual void InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage) override;
 	bool IsArenaWorkerPreloadReady() const;
 
-	void RegisterCheckpoint(AController* Controller, AOutlierCheckpoint* Checkpoint);
+	bool RegisterCheckpoint(AController* Controller, AOutlierCheckpoint* Checkpoint);
 	void RefreshPairLinks(AOutlierPlayerState* TriggeringPlayerState);
 
 	UFUNCTION()
@@ -177,6 +178,19 @@ protected:
 	AOutlierPlayerState* FindPairPlayerState(int32 PairId, EOutlierPlayerRole PlayerRole) const;
 	AController* GetControllerFromPlayerState(AOutlierPlayerState* PlayerState) const;
 	void ApplyCheckpointToPair(AOutlierPlayerState* TriggeringPlayerState, const FOutlierCheckpointData& Data);
+	bool BuildPairCheckpointSnapshot(
+		AOutlierPlayerState* ShooterPlayerState,
+		AOutlierPlayerState* PartnerPlayerState,
+		FName CheckpointId,
+		bool bInitialSnapshot,
+		const FTransform& ShooterSpawn,
+		const FTransform& PartnerSpawn,
+		FOutlierCheckpointSnapshot& OutSnapshot) const;
+	void CaptureInitialCheckpointSnapshot(
+		AOutlierPlayerState* ShooterPlayerState,
+		AOutlierPlayerState* PartnerPlayerState,
+		AShooterCharacter* Shooter,
+		APartnerCharacter* Partner);
 	void RegisterSpawnedPair(AOutlierPlayerState* ShooterPlayerState, AOutlierPlayerState* PartnerPlayerState, AShooterCharacter* Shooter, APartnerCharacter* Partner);
 	// PlayerState 에 남아 있는 로드아웃 기록을 새로 스폰된 페어에 되살린다.
 	// possess 는 필요 없다 (폰만 있으면 된다) 므로 possess 지점이 아니라

@@ -4,6 +4,7 @@
 #include "Curves/CurveFloat.h"
 #include "Net/UnrealNetwork.h"
 #include "Outlier.h"
+#include "Save/OutlierSaveSubSystem.h"
 
 AInteractableDoor::AInteractableDoor()
 {
@@ -38,6 +39,41 @@ void AInteractableDoor::BeginPlay()
 	}
 
 	ApplyDoorState(bIsOpen);
+
+	if (HasAuthority())
+	{
+		if (UOutlierSaveSubSystem* SaveSubsystem = GetGameInstance()
+			? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>()
+			: nullptr)
+		{
+			bProgressIdRegistered = SaveSubsystem->RegisterWorldProgressId(
+				EOutlierWorldProgressType::OpenedDoor,
+				DoorId,
+				this);
+			if (bProgressIdRegistered
+				&& SaveSubsystem->HasWorldProgress(EOutlierWorldProgressType::OpenedDoor, DoorId))
+			{
+				SetDoorOpenInternal(true, false, false);
+			}
+		}
+	}
+}
+
+void AInteractableDoor::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (bProgressIdRegistered)
+	{
+		if (UOutlierSaveSubSystem* SaveSubsystem = GetGameInstance()
+			? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>()
+			: nullptr)
+		{
+			SaveSubsystem->UnregisterWorldProgressId(
+				EOutlierWorldProgressType::OpenedDoor,
+				DoorId,
+				this);
+		}
+	}
+	Super::EndPlay(EndPlayReason);
 }
 
 void AInteractableDoor::Tick(float DeltaTime)
@@ -66,6 +102,11 @@ void AInteractableDoor::OnDoorTimelineFinished()
 
 void AInteractableDoor::SetDoorOpen(bool bOpen)
 {
+	SetDoorOpenInternal(bOpen, true, true);
+}
+
+void AInteractableDoor::SetDoorOpenInternal(bool bOpen, bool bRecordProgress, bool bPlayAudio)
+{
 	if (bIsOpen == bOpen)
 	{
 		return;
@@ -74,8 +115,22 @@ void AInteractableDoor::SetDoorOpen(bool bOpen)
 	//UE_LOG(LogTemp, Error, TEXT("Opened"));
 	bIsOpen = bOpen;
 	Multicast_SetDoorState(bIsOpen);
+	ForceNetUpdate();
 
-	if (DoorCurve)
+	if (HasAuthority() && bRecordProgress && bProgressIdRegistered)
+	{
+		if (UOutlierSaveSubSystem* SaveSubsystem = GetGameInstance()
+			? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>()
+			: nullptr)
+		{
+			SaveSubsystem->SetWorldProgressState(
+				EOutlierWorldProgressType::OpenedDoor,
+				DoorId,
+				bIsOpen);
+		}
+	}
+
+	if (DoorCurve && bPlayAudio)
 	{
 		PlayDoorMovementAudio();
 	}

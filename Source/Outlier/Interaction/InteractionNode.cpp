@@ -4,16 +4,63 @@
 #include "FirstPerson/FirstPersonCharacter.h"
 #include "Interaction/InteractableComponent.h"
 #include "OutlierPlayerState.h"
+#include "Save/OutlierSaveSubSystem.h"
 #include "Engine/World.h"
+#include "Net/UnrealNetwork.h"
 
 AInteractionNode::AInteractionNode()
 {
 	PrimaryActorTick.bCanEverTick = false;
+	bReplicates = true;
 
 	SceneRoot = CreateDefaultSubobject<USceneComponent>(TEXT("SceneRoot"));
 	RootComponent = SceneRoot;
 
 	InteractableComponent = CreateDefaultSubobject<UInteractableComponent>(TEXT("InteractableComponent"));
+}
+
+void AInteractionNode::BeginPlay()
+{
+	Super::BeginPlay();
+
+	if (!HasAuthority())
+	{
+		return;
+	}
+	if (UOutlierSaveSubSystem* SaveSubsystem = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>()
+		: nullptr)
+	{
+		bProgressIdRegistered = SaveSubsystem->RegisterWorldProgressId(
+			EOutlierWorldProgressType::CollectedNode,
+			PickupId,
+			this);
+		if (bProgressIdRegistered
+			&& SaveSubsystem->HasWorldProgress(EOutlierWorldProgressType::CollectedNode, PickupId))
+		{
+			bCollected = true;
+			InteractableComponent->RestoreUsedState(true);
+			OnCollectedStateChanged(true);
+			ForceNetUpdate();
+		}
+	}
+}
+
+void AInteractionNode::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (bProgressIdRegistered)
+	{
+		if (UOutlierSaveSubSystem* SaveSubsystem = GetGameInstance()
+			? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>()
+			: nullptr)
+		{
+			SaveSubsystem->UnregisterWorldProgressId(
+				EOutlierWorldProgressType::CollectedNode,
+				PickupId,
+				this);
+		}
+	}
+	Super::EndPlay(EndPlayReason);
 }
 
 UInteractableComponent* AInteractionNode::GetInteractableComponent() const
@@ -65,6 +112,22 @@ bool AInteractionNode::AddNodeServer(AFirstPersonCharacter* Interactor)
 		return false;
 	}
 
+	if (bProgressIdRegistered)
+	{
+		if (UOutlierSaveSubSystem* SaveSubsystem = GetGameInstance()
+			? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>()
+			: nullptr)
+		{
+			SaveSubsystem->SetWorldProgressState(
+				EOutlierWorldProgressType::CollectedNode,
+				PickupId,
+				true);
+		}
+	}
+	bCollected = true;
+	OnCollectedStateChanged(true);
+	ForceNetUpdate();
+
 	/*UE_LOG(LogTemp, Verbose,
 		TEXT("[InteractionNode] Shared node reward Player=%s Amount=%d PlayerTotal=%d"),
 		*PlayerState->GetPlayerName(),
@@ -72,4 +135,16 @@ bool AInteractionNode::AddNodeServer(AFirstPersonCharacter* Interactor)
 		PlayerState->GetNodeCount());*/
 
 	return true;
+}
+
+void AInteractionNode::OnRep_Collected()
+{
+	OnCollectedStateChanged(bCollected);
+}
+
+void AInteractionNode::GetLifetimeReplicatedProps(
+	TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(AInteractionNode, bCollected);
 }

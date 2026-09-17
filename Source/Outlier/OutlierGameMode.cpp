@@ -7,6 +7,7 @@
 #include "Weapon/WeaponBase.h"
 #include "OutlierPlayerState.h"
 #include "Save/OutlierCheckpoint.h"
+#include "Save/OutlierCheckpointSnapshot.h"
 #include "Save/PresetPlayerStart.h"
 #include "Upgrade/PresetNodeProvideRow.h"
 #include "Engine/DataTable.h"
@@ -233,25 +234,82 @@ bool AOutlierGameMode::HandleArenaWorkerPairSetupTick(float DeltaTime)
 	return false;
 }
 
-void AOutlierGameMode::RegisterCheckpoint(AController* Controller, AOutlierCheckpoint* Checkpoint)
+bool AOutlierGameMode::RegisterCheckpoint(AController* Controller, AOutlierCheckpoint* Checkpoint)
 {
-	if (!Controller || !Checkpoint)
+	if (!HasAuthority() || !Controller || !Checkpoint || Checkpoint->GetCheckpointId().IsNone())
 	{
-		return;
+		return false;
 	}
 
-	AOutlierPlayerState* PS = Controller->GetPlayerState<AOutlierPlayerState>();
-
-	if (!PS)
+	AOutlierPlayerState* TriggeringPS = Controller->GetPlayerState<AOutlierPlayerState>();
+	if (!TriggeringPS)
 	{
-		return;
+		return false;
+	}
+	const int32 PairId = TriggeringPS->GetPairId();
+	AOutlierPlayerState* ShooterPS = TriggeringPS->IsShooterPlayer()
+		? TriggeringPS
+		: FindPairPlayerState(PairId, EOutlierPlayerRole::Shooter);
+	AOutlierPlayerState* PartnerPS = TriggeringPS->IsPartnerPlayer()
+		? TriggeringPS
+		: FindPairPlayerState(PairId, EOutlierPlayerRole::Partner);
+	if (!ShooterPS)
+	{
+		return false;
+	}
+
+	if (AController* PartnerController = GetControllerFromPlayerState(PartnerPS);
+		PartnerController && Cast<AEnemyBase>(PartnerController->GetPawn()))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[Checkpoint] Commit rejected while Partner possesses an enemy Id=%s"),
+			*Checkpoint->GetCheckpointId().ToString());
+		return false;
+	}
+	const UEnemyRoomSubsystem* EnemyRoomSubsystem = GetWorld()
+		? GetWorld()->GetSubsystem<UEnemyRoomSubsystem>()
+		: nullptr;
+	if (EnemyRoomSubsystem && EnemyRoomSubsystem->HasActiveCombat())
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[Checkpoint] Commit rejected while combat is active Id=%s"),
+			*Checkpoint->GetCheckpointId().ToString());
+		return false;
+	}
+
+	UOutlierSaveSubSystem* SaveSubsystem = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>()
+		: nullptr;
+	if (!SaveSubsystem)
+	{
+		return false;
+	}
+	if (!SaveSubsystem->HasValidStableIds())
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("[Checkpoint] Commit rejected because stable Id validation failed"));
+		return false;
+	}
+
+	FOutlierCheckpointSnapshot Snapshot;
+	if (!BuildPairCheckpointSnapshot(
+		ShooterPS,
+		PartnerPS,
+		Checkpoint->GetCheckpointId(),
+		false,
+		Checkpoint->GetSpawnTransform(),
+		Checkpoint->GetPartnerSpawnTransform(),
+		Snapshot)
+		|| !SaveSubsystem->CommitCheckpointSnapshot(Snapshot))
+	{
+		return false;
 	}
 
 	FOutlierCheckpointData Data;
 	Data.LevelName = FName(*GetWorld()->GetMapName());
 	Data.CheckpointId = Checkpoint->GetCheckpointId();
-
-	ApplyCheckpointToPair(PS, Data);
+	ApplyCheckpointToPair(TriggeringPS, Data);
+	return true;
 }
 
 void AOutlierGameMode::RefreshPairLinks(AOutlierPlayerState* TriggeringPlayerState)
@@ -653,6 +711,13 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 		return;
 	}
 
+	if (UOutlierSaveSubSystem* SaveSubsystem = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>()
+		: nullptr)
+	{
+		SaveSubsystem->ResetRuntimeCheckpointState();
+	}
+
 	FirstPS->SetPairId(PairId);
 	FirstPS->SetPlayerRole(FirstRole);
 	FirstPS->ClearPendingLobbyState();
@@ -812,6 +877,7 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 	}
 
 	RegisterSpawnedPair(NewShooterPS, NewPartnerPS, Shooter, Partner);
+	CaptureInitialCheckpointSnapshot(NewShooterPS, NewPartnerPS, Shooter, Partner);
 
 	PossessMatchedPawn(NewShooterPC, Shooter, ShooterSpawn.GetLocation());
 	PossessMatchedPawn(NewPartnerPC, Partner, PartnerSpawn.GetLocation());
@@ -2556,6 +2622,76 @@ void AOutlierGameMode::RegisterSpawnedPair(
 		PartnerPlayerState->SetShooterCharacter(Shooter);
 		PartnerPlayerState->SetPartnerCharacter(Partner);
 		PartnerPlayerState->SetSuitDisabledByPartnerBoundary(false);
+	}
+}
+
+bool AOutlierGameMode::BuildPairCheckpointSnapshot(
+	AOutlierPlayerState* ShooterPlayerState,
+	AOutlierPlayerState* PartnerPlayerState,
+	FName CheckpointId,
+	bool bInitialSnapshot,
+	const FTransform& ShooterSpawn,
+	const FTransform& PartnerSpawn,
+	FOutlierCheckpointSnapshot& OutSnapshot) const
+{
+	if (!ShooterPlayerState || !PartnerPlayerState
+		|| (!bInitialSnapshot && CheckpointId.IsNone()))
+	{
+		return false;
+	}
+
+	OutSnapshot = FOutlierCheckpointSnapshot();
+	OutSnapshot.CheckpointId = CheckpointId;
+	OutSnapshot.bInitialSnapshot = bInitialSnapshot;
+	OutSnapshot.ShooterSpawnTransform = ShooterSpawn;
+	OutSnapshot.PartnerSpawnTransform = PartnerSpawn;
+	OutSnapshot.ShooterProgress.NodeCount = ShooterPlayerState->GetNodeCount();
+	OutSnapshot.ShooterProgress.ActivatedUpgradeNodeIds =
+		ShooterPlayerState->GetActivatedUpgradeNodeIds(EOutlierUpgradeRole::Shooter);
+	OutSnapshot.LoadoutSnapshot = ShooterPlayerState->GetLoadoutSnapshot();
+	OutSnapshot.SuitSnapshot.bAcquired = ShooterPlayerState->GetAcquiredSuit();
+	OutSnapshot.SuitSnapshot.FirstPersonMesh = ShooterPlayerState->GetSuitFirstPersonMesh();
+	OutSnapshot.SuitSnapshot.ThirdPersonMesh = ShooterPlayerState->GetSuitThirdPersonMesh();
+
+	OutSnapshot.PartnerProgress.NodeCount = PartnerPlayerState->GetNodeCount();
+	OutSnapshot.PartnerProgress.ActivatedUpgradeNodeIds =
+		PartnerPlayerState->GetActivatedUpgradeNodeIds(EOutlierUpgradeRole::Partner);
+
+	if (const UOutlierSaveSubSystem* SaveSubsystem = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>()
+		: nullptr)
+	{
+		OutSnapshot.WorldProgress = SaveSubsystem->GetCurrentWorldProgress();
+	}
+
+	return OutSnapshot.IsValid();
+}
+
+void AOutlierGameMode::CaptureInitialCheckpointSnapshot(
+	AOutlierPlayerState* ShooterPlayerState,
+	AOutlierPlayerState* PartnerPlayerState,
+	AShooterCharacter* Shooter,
+	APartnerCharacter* Partner)
+{
+	UOutlierSaveSubSystem* SaveSubsystem = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>()
+		: nullptr;
+	if (!SaveSubsystem || SaveSubsystem->HasInitialSnapshot() || !Shooter || !Partner)
+	{
+		return;
+	}
+
+	FOutlierCheckpointSnapshot Snapshot;
+	if (BuildPairCheckpointSnapshot(
+		ShooterPlayerState,
+		PartnerPlayerState,
+		NAME_None,
+		true,
+		Shooter->GetActorTransform(),
+		Partner->GetActorTransform(),
+		Snapshot))
+	{
+		SaveSubsystem->CaptureInitialSnapshot(Snapshot);
 	}
 }
 

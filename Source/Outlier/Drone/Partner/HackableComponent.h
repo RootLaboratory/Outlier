@@ -20,6 +20,11 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
 	const FHackResultContext&, Context
 );
 
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(
+	FOnCheckpointHackStateRestored,
+	bool, bHacked
+);
+
 UCLASS(ClassGroup = (Custom), meta = (BlueprintSpawnableComponent))
 class OUTLIER_API UHackableComponent : public UActorComponent
 {
@@ -28,7 +33,7 @@ class OUTLIER_API UHackableComponent : public UActorComponent
 public:
 	UHackableComponent();
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Replicated, Category = "Hack")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, ReplicatedUsing = OnRep_HackTags, Category = "Hack")
 	FGameplayTagContainer HackTags;  // Target/State/Query
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hack|Effect", meta = (Categories = "Hack.Effect"))
@@ -39,6 +44,13 @@ public:
 
 	UPROPERTY(BlueprintAssignable, Category = "Hack")
 	FOnHackEffectTriggered OnHackEffectTriggered;
+
+	UPROPERTY(BlueprintAssignable, Category = "Hack")
+	FOnCheckpointHackStateRestored OnCheckpointHackStateRestored;
+
+	// Enemy처럼 체크포인트 진행에 포함되지 않는 Hack 대상은 비워둔다.
+	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Hack|Checkpoint")
+	FName CheckpointProgressId = NAME_None;
 
 public:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
@@ -69,7 +81,11 @@ public:
 	void MarkAsHackedOnce();
 
 private:
+	UFUNCTION()
+	void OnRep_HackTags();
+
 	const FGameplayTagContainer& ResolveHackEffectTags(EHackResult Result) const;
 	mutable bool bLoggedHackedOnceBlock = false;
+	bool bProgressIdRegistered = false;
 
 };

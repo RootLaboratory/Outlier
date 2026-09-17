@@ -44,6 +44,7 @@ public:
 	void RefreshEnemyRegistration(AEnemyBase* Enemy);
 	void NotifyRoomCombat(FGameplayTag RoomTag, const FVector& PlayerLocation, AEnemyBase* ExcludeEnemy);
 	bool IsRoomInCombat(FGameplayTag RoomTag) const;
+	bool HasActiveCombat() const;
 
 	// Sight로 직접 대상을 관측한 Enemy만 호출한다.
 	void ReportRoomTargetContact(

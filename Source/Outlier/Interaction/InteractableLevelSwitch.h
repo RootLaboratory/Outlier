@@ -66,6 +66,9 @@ protected:
 	void OnHackedStateChanged(bool bHacked);
 
 private:
+	UFUNCTION()
+	void HandleCheckpointHackStateRestored(bool bHacked);
+
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> SwitchMID;
 
