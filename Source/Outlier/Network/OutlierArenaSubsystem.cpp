@@ -247,28 +247,60 @@ uint32 UOutlierArenaSubsystem::ReserveGameplayGeneration()
 	return GameplayGeneration;
 }
 
+EOutlierGameplayReloadPhase UOutlierArenaSubsystem::GetGameplayReloadPhase() const
+{
+	return PendingGameplayReload.IsSet()
+		? PendingGameplayReload->Phase
+		: EOutlierGameplayReloadPhase::Ready;
+}
+
+bool UOutlierArenaSubsystem::IsGameplayReloadStalled(uint32 InGameplayGeneration) const
+{
+	return PendingGameplayReload.IsSet()
+		&& PendingGameplayReload->Generation == InGameplayGeneration
+		&& PendingGameplayReload->bIsStalled;
+}
+
+bool UOutlierArenaSubsystem::IsGameplayReloadGCVerified(uint32 InGameplayGeneration) const
+{
+	return PendingGameplayReload.IsSet()
+		&& PendingGameplayReload->Generation == InGameplayGeneration
+		&& PendingGameplayReload->bGCVerified;
+}
+
 bool UOutlierArenaSubsystem::IsGameplayGenerationNewer(uint32 Candidate, uint32 Reference)
 {
 	return Candidate != 0 && static_cast<int32>(Candidate - Reference) > 0;
+}
+
+bool UOutlierArenaSubsystem::HasGameplayReloadTimedOut(double ElapsedSeconds, double TimeoutSeconds)
+{
+	return TimeoutSeconds > 0.0 && ElapsedSeconds >= TimeoutSeconds;
 }
 
 bool UOutlierArenaSubsystem::ReloadGameplayData(uint32 InGameplayGeneration, bool bDeferActivation)
 {
 	if (!GetWorld() || GetWorld()->GetNetMode() == NM_Client
 		|| InGameplayGeneration == 0 || InGameplayGeneration != GameplayGeneration
-		|| PendingGameplayReload.IsSet() || !IsGameplayDataLayerAvailable())
+		|| PendingGameplayReload.IsSet())
 	{
+		return false;
+	}
+	if (!IsGameplayDataLayerAvailable())
+	{
+		FailGameplayReload(InGameplayGeneration, EOutlierGameplayReloadFailure::DataLayerUnavailable);
 		return false;
 	}
 
 	if (!AddPendingGameplayReload(InGameplayGeneration, !bDeferActivation))
 	{
+		FailGameplayReload(InGameplayGeneration, EOutlierGameplayReloadFailure::InvalidRuntime);
 		return false;
 	}
 
 	if (!SetGameplayDataLayerState(EDataLayerRuntimeState::Unloaded))
 	{
-		PendingGameplayReload.Reset();
+		FailGameplayReload(InGameplayGeneration, EOutlierGameplayReloadFailure::DataLayerStateChangeRejected);
 		return false;
 	}
 
@@ -349,7 +381,8 @@ bool UOutlierArenaSubsystem::AddPendingGameplayReload(uint32 Generation, bool bC
 	Pending.DataLayerInstance = const_cast<UDataLayerInstance*>(Instance);
 	Pending.WorldPartitionSubsystem = HostWorld->GetSubsystem<UWorldPartitionSubsystem>();
 	Pending.bCanChangeState = bCanChangeState;
-	Pending.StartTime = HostWorld->GetTimeSeconds();
+	Pending.Phase = EOutlierGameplayReloadPhase::WaitingForActorEndPlay;
+	Pending.PhaseStartTime = HostWorld->GetTimeSeconds();
 
 	UDataLayerAsset* Asset = GameplayDataLayer.LoadSynchronous();
 	if (Asset)
@@ -468,6 +501,7 @@ void UOutlierArenaSubsystem::TryRequestGameplayReloadGC()
 	}
 
 	Pending.bGCRequested = true;
+	SetGameplayReloadPhase(EOutlierGameplayReloadPhase::WaitingForGCPurge);
 	if (GEngine)
 	{
 		GEngine->ForceGarbageCollection(true);
@@ -497,7 +531,11 @@ void UOutlierArenaSubsystem::HandleGameplayGarbageCollectComplete()
 		}
 	}
 
+	Pending.bGCVerified = true;
 	Pending.bLoadRequested = true;
+	SetGameplayReloadPhase(Pending.bCanChangeState
+		? EOutlierGameplayReloadPhase::ActivatingGameplayData
+		: EOutlierGameplayReloadPhase::WaitingForClientAcks);
 	const uint32 VerifiedGeneration = Pending.Generation;
 	OnArenaGameplayGCReady.Broadcast(VerifiedGeneration);
 	if (PendingGameplayReload.IsSet()
@@ -515,7 +553,13 @@ void UOutlierArenaSubsystem::ActivatePendingGameplayReload(uint32 Generation)
 	{
 		return;
 	}
-	SetGameplayDataLayerState(EDataLayerRuntimeState::Activated);
+	SetGameplayReloadPhase(EOutlierGameplayReloadPhase::ActivatingGameplayData);
+	if (!SetGameplayDataLayerState(EDataLayerRuntimeState::Activated))
+	{
+		FailGameplayReload(Generation, EOutlierGameplayReloadFailure::DataLayerStateChangeRejected);
+		return;
+	}
+	SetGameplayReloadPhase(EOutlierGameplayReloadPhase::WaitingForStreaming);
 	TryCompleteGameplayReloadActivation();
 }
 
@@ -537,13 +581,7 @@ void UOutlierArenaSubsystem::TryCompleteGameplayReloadActivation()
 	}
 
 	const uint32 CompletedGeneration = PendingGameplayReload->Generation;
-	for (const TWeakObjectPtr<AActor>& ActorPtr : PendingGameplayReload->TrackedActors)
-	{
-		if (AActor* Actor = ActorPtr.Get())
-		{
-			Actor->OnEndPlay.RemoveAll(this);
-		}
-	}
+	ClearGameplayReloadActorBindings();
 	PendingGameplayReload.Reset();
 
 	if (World)
@@ -555,7 +593,10 @@ void UOutlierArenaSubsystem::TryCompleteGameplayReloadActivation()
 
 void UOutlierArenaSubsystem::TickPendingGameplayReloadTimeouts()
 {
-	constexpr double TimeoutSeconds = 15.0;
+	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
+	const double TimeoutSeconds = Settings
+		? FMath::Max(static_cast<double>(Settings->ArenaGameplayReloadStallSeconds), 1.0)
+		: 15.0;
 	UWorld* World = GetWorld();
 	if (!World || !PendingGameplayReload.IsSet())
 	{
@@ -567,25 +608,81 @@ void UOutlierArenaSubsystem::TickPendingGameplayReloadTimeouts()
 	}
 
 	FPendingGameplayReload& Pending = PendingGameplayReload.GetValue();
-	if (!Pending.bStallReported && World->GetTimeSeconds() - Pending.StartTime >= TimeoutSeconds)
+	if (!Pending.bStallReported
+		&& HasGameplayReloadTimedOut(World->GetTimeSeconds() - Pending.PhaseStartTime, TimeoutSeconds))
 	{
-		Pending.bStallReported = true;
-		UE_LOG(LogTemp, Error,
-			TEXT("[ArenaSubsystem][DataLayer] Reload STALLED Generation=%u AwaitingEndPlay=%d GC=%d Load=%d CanActivate=%d"),
-			Pending.Generation, Pending.ActorsAwaitingEndPlay.Num(), Pending.bGCRequested ? 1 : 0,
-			Pending.bLoadRequested ? 1 : 0, Pending.bCanChangeState ? 1 : 0);
-		AbandonStalledGameplayReload(Pending.Generation);
+		ReportStalledGameplayReload();
 	}
 }
 
-void UOutlierArenaSubsystem::AbandonStalledGameplayReload(uint32 Generation)
+void UOutlierArenaSubsystem::SetGameplayReloadPhase(EOutlierGameplayReloadPhase NewPhase)
 {
-	if (!PendingGameplayReload.IsSet() || PendingGameplayReload->Generation != Generation)
+	if (!PendingGameplayReload.IsSet() || PendingGameplayReload->Phase == NewPhase)
 	{
 		return;
 	}
 
-	const bool bAlreadyBroadcastGCReady = PendingGameplayReload->bLoadRequested;
+	FPendingGameplayReload& Pending = PendingGameplayReload.GetValue();
+	const bool bWasStalled = Pending.bIsStalled;
+	// 전체 리로드 시간이 아니라 각 단계가 실제로 멈춘 시간을 감시한다. 정상적으로 다음 단계로
+	// 넘어간 작업이 앞 단계에서 사용한 시간을 이어받아 곧바로 Stalled 되는 것을 막는다.
+	Pending.Phase = NewPhase;
+	Pending.PhaseStartTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+	Pending.bStallReported = false;
+	Pending.bIsStalled = false;
+	if (bWasStalled)
+	{
+		OnArenaGameplayReloadResumed.Broadcast(Pending.Generation);
+	}
+}
+
+FString UOutlierArenaSubsystem::BuildGameplayReloadDiagnostic() const
+{
+	if (!PendingGameplayReload.IsSet())
+	{
+		return TEXT("No pending gameplay reload");
+	}
+
+	const FPendingGameplayReload& Pending = PendingGameplayReload.GetValue();
+	const double Elapsed = GetWorld()
+		? GetWorld()->GetTimeSeconds() - Pending.PhaseStartTime
+		: 0.0;
+	return FString::Printf(
+		TEXT("Generation=%u Phase=%s PhaseElapsed=%.2f AwaitingEndPlay=%d TrackedActors=%d GCRequested=%d GCVerified=%d LoadRequested=%d CanActivate=%d DataLayerActivated=%d"),
+		Pending.Generation,
+		*UEnum::GetValueAsString(Pending.Phase),
+		Elapsed,
+		Pending.ActorsAwaitingEndPlay.Num(),
+		Pending.TrackedActors.Num(),
+		Pending.bGCRequested ? 1 : 0,
+		Pending.bGCVerified ? 1 : 0,
+		Pending.bLoadRequested ? 1 : 0,
+		Pending.bCanChangeState ? 1 : 0,
+		IsGameplayDataLayerState(EDataLayerRuntimeState::Activated) ? 1 : 0);
+}
+
+void UOutlierArenaSubsystem::ReportStalledGameplayReload()
+{
+	if (!PendingGameplayReload.IsSet() || PendingGameplayReload->bStallReported)
+	{
+		return;
+	}
+
+	FPendingGameplayReload& Pending = PendingGameplayReload.GetValue();
+	Pending.bStallReported = true;
+	Pending.bIsStalled = true;
+	const FString Diagnostic = BuildGameplayReloadDiagnostic();
+	UE_LOG(LogTemp, Error, TEXT("[ArenaSubsystem][DataLayer] Reload STALLED %s"), *Diagnostic);
+	OnArenaGameplayReloadStalled.Broadcast(Pending.Generation, Pending.Phase, Diagnostic);
+}
+
+void UOutlierArenaSubsystem::ClearGameplayReloadActorBindings()
+{
+	if (!PendingGameplayReload.IsSet())
+	{
+		return;
+	}
+
 	for (const TWeakObjectPtr<AActor>& ActorPtr : PendingGameplayReload->TrackedActors)
 	{
 		if (AActor* Actor = ActorPtr.Get())
@@ -593,17 +690,93 @@ void UOutlierArenaSubsystem::AbandonStalledGameplayReload(uint32 Generation)
 			Actor->OnEndPlay.RemoveAll(this);
 		}
 	}
-	PendingGameplayReload.Reset();
+}
 
-	if (GetWorld() && GetWorld()->GetNetMode() != NM_Client)
+void UOutlierArenaSubsystem::FailGameplayReload(
+	uint32 InGameplayGeneration,
+	EOutlierGameplayReloadFailure Failure)
+{
+	if (!PendingGameplayReload.IsSet())
 	{
-		SetGameplayDataLayerState(EDataLayerRuntimeState::Activated);
+		if (InGameplayGeneration == 0 || InGameplayGeneration != GameplayGeneration)
+		{
+			return;
+		}
+		// Data Layer 조회처럼 Pending 생성 전 실패도 명시적인 Failed 상태로 남긴다.
+		// 상태가 비어 있으면 호출자가 Ready로 오인해 Pawn을 다시 Possess할 수 있다.
+		PendingGameplayReload.Emplace();
+		PendingGameplayReload->Generation = InGameplayGeneration;
 	}
-	if (!bAlreadyBroadcastGCReady)
+
+	if (PendingGameplayReload->Generation != InGameplayGeneration
+		|| PendingGameplayReload->Phase == EOutlierGameplayReloadPhase::Failed)
 	{
-		OnArenaGameplayGCReady.Broadcast(Generation);
+		return;
 	}
-	OnArenaGameplayReady.Broadcast(Generation);
+
+	FPendingGameplayReload& Pending = PendingGameplayReload.GetValue();
+	Pending.Phase = EOutlierGameplayReloadPhase::Failed;
+	Pending.Failure = Failure;
+	Pending.bIsStalled = false;
+	ClearGameplayReloadActorBindings();
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(GameplayReloadTimeoutTimer);
+	}
+	UE_LOG(LogTemp, Error,
+		TEXT("[ArenaSubsystem][DataLayer] Reload FAILED Generation=%u Failure=%s"),
+		InGameplayGeneration,
+		*UEnum::GetValueAsString(Failure));
+	OnArenaGameplayReloadFailed.Broadcast(InGameplayGeneration, Failure);
+}
+
+bool UOutlierArenaSubsystem::RetryStalledGameplayReload(uint32 InGameplayGeneration)
+{
+	if (!IsGameplayReloadStalled(InGameplayGeneration)
+		|| PendingGameplayReload->Phase == EOutlierGameplayReloadPhase::Failed)
+	{
+		return false;
+	}
+
+	FPendingGameplayReload& Pending = PendingGameplayReload.GetValue();
+	// 재시도는 현재 Phase의 검사를 다시 수행할 뿐 다음 Phase를 강제로 선택하지 않는다.
+	// 실제 EndPlay/GC/Streaming 완료 이벤트가 와야만 기존 상태 전이가 계속된다.
+	Pending.bIsStalled = false;
+	Pending.bStallReported = false;
+	Pending.PhaseStartTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+	OnArenaGameplayReloadResumed.Broadcast(InGameplayGeneration);
+
+	switch (Pending.Phase)
+	{
+	case EOutlierGameplayReloadPhase::WaitingForActorEndPlay:
+		Pending.ActorsAwaitingEndPlay.RemoveAll([](const TWeakObjectPtr<AActor>& Actor)
+		{
+			return !Actor.IsValid(true);
+		});
+		TryRequestGameplayReloadGC();
+		break;
+	case EOutlierGameplayReloadPhase::WaitingForGCPurge:
+		Pending.bGCRequested = false;
+		TryRequestGameplayReloadGC();
+		break;
+	case EOutlierGameplayReloadPhase::ActivatingGameplayData:
+		ActivatePendingGameplayReload(InGameplayGeneration);
+		break;
+	case EOutlierGameplayReloadPhase::WaitingForStreaming:
+		TryCompleteGameplayReloadActivation();
+		break;
+	case EOutlierGameplayReloadPhase::WaitingForClientAcks:
+	case EOutlierGameplayReloadPhase::Ready:
+	case EOutlierGameplayReloadPhase::Failed:
+	default:
+		break;
+	}
+	return true;
+}
+
+void UOutlierArenaSubsystem::DumpGameplayReloadState() const
+{
+	UE_LOG(LogTemp, Display, TEXT("[ArenaSubsystem][DataLayer] %s"), *BuildGameplayReloadDiagnostic());
 }
 
 void UOutlierArenaSubsystem::EnsureArenaGameplayDataActivated()

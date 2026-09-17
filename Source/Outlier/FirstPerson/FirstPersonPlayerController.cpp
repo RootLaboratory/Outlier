@@ -16,13 +16,13 @@
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Outlier.h"
 #include "MainUIBase.h"
+#include "UI/UILayerGameplayTags.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Network/OutlierArenaSubsystem.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
 #include "UI/InGamePauseWidget.h"
 #include "UI/InGameSettingWidget.h"
 #include "UI/PreSetLoadWidget.h"
-#include "UI/UILayerGameplayTags.h"
 #include "Upgrade/OutlierUpgradeComponent.h"
 #include "Upgrade/OutlierUpgradeSetData.h"
 #include "Components/SceneComponent.h"
@@ -628,6 +628,15 @@ void AFirstPersonPlayerController::BindMainUI()
 void AFirstPersonPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	ClearClientArenaContentWait();
+	// 재접속이나 역할 Controller 교체로 이전 PC가 먼저 파괴될 수 있다. Delegate가 남아 있으면
+	// 다음 Generation의 Ready를 폐기될 PC가 받아 서버에 잘못 보고하므로 여기서 직접 끊는다.
+	if (UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
+		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()
+		: nullptr)
+	{
+		ArenaSubsystem->OnArenaGameplayGCReady.RemoveAll(this);
+		ArenaSubsystem->OnArenaGameplayReady.RemoveAll(this);
+	}
 
 	// AddToViewport로 붙인 Widget은 GameViewportClient가 들고 있어서 PC가 파괴돼도
 	// 화면에 남는다. Role에 따라 Controller를 교체할 때 이전 Controller의 MainUI가
@@ -861,6 +870,33 @@ void AFirstPersonPlayerController::ServerNotifyArenaGameplayGCReady_Implementati
 		: nullptr)
 	{
 		GameMode->OnClientArenaGameplayGCReady(this, GameplayGeneration);
+	}
+}
+
+void AFirstPersonPlayerController::ClientRetryArenaGameplayReload_Implementation(uint32 GameplayGeneration)
+{
+	// 수동 재시도는 같은 Generation의 현재 안전 조건만 다시 확인한다. Timeout을 이유로
+	// GC 확인이나 Data Layer 활성 단계를 강제로 넘기면 이전 세대 Actor가 새 판에 남을 수 있다.
+	if (GameplayGeneration != PendingGameplayGeneration)
+	{
+		return;
+	}
+
+	UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
+		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()
+		: nullptr;
+	if (!ArenaSubsystem)
+	{
+		return;
+	}
+
+	if (ArenaSubsystem->IsGameplayReloadStalled(GameplayGeneration))
+	{
+		ArenaSubsystem->RetryStalledGameplayReload(GameplayGeneration);
+	}
+	if (ArenaSubsystem->IsGameplayReloadGCVerified(GameplayGeneration))
+	{
+		ServerNotifyArenaGameplayGCReady(GameplayGeneration);
 	}
 }
 

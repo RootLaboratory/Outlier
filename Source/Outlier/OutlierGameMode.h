@@ -20,6 +20,8 @@ class AOutlierArenaPausePlayerState;
 class UWorldPartitionStreamingSourceComponent;
 class UDataTable;
 enum class EOutlierPlayerRole : uint8;
+enum class EOutlierGameplayReloadPhase : uint8;
+enum class EOutlierGameplayReloadFailure : uint8;
 struct FOutlierCheckpointData;
 
 /**
@@ -60,6 +62,12 @@ public:
 	void OnClientArenaReady(APlayerController* PC);
 	void OnClientArenaGameplayGCReady(APlayerController* PC, uint32 GameplayGeneration);
 
+	UFUNCTION(Exec)
+	void ArenaRetryGameplayReload();
+
+	UFUNCTION(Exec)
+	void ArenaDumpGameplayReload();
+
 	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "Network|Arena")
 	bool CompleteArenaMatch();
 
@@ -77,13 +85,29 @@ private:
 
 	void HandleServerArenaShown();
 	void HandleServerArenaGameplayReady(uint32 GameplayGeneration);
+	void HandleArenaGameplayReloadStalled(
+		uint32 GameplayGeneration,
+		EOutlierGameplayReloadPhase Phase,
+		FString Diagnostic);
+	void HandleArenaGameplayReloadResumed(uint32 GameplayGeneration);
+	void HandleArenaGameplayReloadFailed(
+		uint32 GameplayGeneration,
+		EOutlierGameplayReloadFailure Failure);
+	void HandleArenaWorkerReloadStallTimeout();
+	void BeginArenaWorkerReleaseShutdown();
+	void ClearArenaGameplayReloadDelegates();
+	void ClearPendingArenaReloadPawns();
 	void CompleteServerArenaReload();
 
 	bool bArenaReloadInProgress = false;
 	FDelegateHandle ArenaShownHandle;
+	FDelegateHandle ArenaReloadStalledHandle;
+	FDelegateHandle ArenaReloadResumedHandle;
+	FDelegateHandle ArenaReloadFailedHandle;
 	uint32 PendingGameplayGeneration = 0;
 	TSet<TWeakObjectPtr<APlayerController>> PendingGameplayGCPlayers;
 	TSet<TWeakObjectPtr<APlayerController>> ReadyGameplayGCPlayers;
+	FTimerHandle ArenaWorkerReloadFailureTimerHandle;
 
 protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Respawn")
@@ -190,12 +214,20 @@ private:
 	void TryScheduleArenaWorkerAutoComplete();
 	void HandleArenaWorkerAutoComplete();
 	void RequestArenaWorkerExit();
+	bool IsArenaWorkerReconnectRequest(const FOutlierArenaHandoffRequest& Request) const;
+	void ScheduleArenaWorkerReconnectTimeout();
+	void HandleArenaWorkerReconnectTimeout();
+	void TryResumeArenaWorkerAfterReconnect(APlayerController* ReconnectedPlayer);
 
 	TArray<TWeakObjectPtr<APlayerController>> ArenaWorkerPlayers;
 	FOutlierArenaAdmissionState ArenaWorkerAdmission;
 	TWeakObjectPtr<APlayerController> ArenaWorkerShooterController;
 	TWeakObjectPtr<APlayerController> ArenaWorkerPartnerController;
 	TSet<TWeakObjectPtr<APlayerController>> ArenaWorkerReadyPlayers;
+	// Controller 수명과 무관하게 재접속 대상과 리로드 대기 Pawn을 원래 PlayerId로 보관한다.
+	TSet<FGuid> ArenaWorkerDisconnectedPlayerIds;
+	UPROPERTY(Transient)
+	TMap<FGuid, TObjectPtr<APawn>> ArenaWorkerReconnectPawns;
 	UPROPERTY(Transient)
 	TObjectPtr<AOutlierArenaPausePlayerState> ArenaWorkerPauseOwner;
 	UPROPERTY(Transient)
@@ -206,7 +238,9 @@ private:
 	bool bArenaWorkerGameplayStarted = false;
 	bool bArenaWorkerMatchCompleting = false;
 	bool bArenaWorkerExitRequested = false;
+	bool bListenHostReturnRequested = false;
 	FTimerHandle ArenaWorkerAutoCompleteTimerHandle;
+	FTimerHandle ArenaWorkerReconnectTimerHandle;
 	FTimerHandle ArenaWorkerExitTimerHandle;
 	FTSTicker::FDelegateHandle ArenaWorkerPairSetupTickerHandle;
 	FTSTicker::FDelegateHandle ArenaWorkerGameplayStartTickerHandle;

@@ -28,6 +28,14 @@ public:
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Arena|World Partition")
 	TSoftObjectPtr<UDataLayerAsset> GameplayDataLayer;
 
+	// 각 Reload Phase가 이 시간 동안 진행되지 않으면 강제 완료하지 않고 Stalled로 보고한다.
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Arena|World Partition", meta = (ClampMin = "1.0"))
+	float ArenaGameplayReloadStallSeconds = 15.0f;
+
+	// Dedicated Worker만 이 시간 이후 복구 불가능한 정지로 판정한다.
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Arena|World Partition", meta = (ClampMin = "1.0"))
+	float ArenaGameplayReloadFailureSeconds = 60.0f;
+
 	// 프리셋 스테이지별 업그레이드 노드 지급량(FPresetNodeProvideRow). RowName은
 	// OutlierPresetStageIds.h의 상수와 같아야 한다.
 	//
@@ -92,6 +100,14 @@ public:
 
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Network", meta = (ClampMin = "0.1"))
 	float ArenaWorkerExitTimeoutSeconds = 5.0f;
+
+	// 경기 중 Worker 접속이 끊긴 플레이어가 같은 Match/Player/Role로 돌아올 수 있는 유예 시간.
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Network", meta = (ClampMin = "1.0"))
+	float ArenaWorkerReconnectGraceSeconds = 30.0f;
+
+	// Arena Client가 저장된 Handoff URL로 다시 접속을 시도하는 간격.
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Network", meta = (ClampMin = "0.1"))
+	float ArenaWorkerReconnectRetrySeconds = 2.0f;
 
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Network", meta = (ClampMin = "0.0"))
 	float ArenaMatchStartDelaySeconds = 1.0f;

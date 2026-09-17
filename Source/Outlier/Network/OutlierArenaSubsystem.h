@@ -19,9 +19,43 @@ class UDataLayerManager;
 class UWorldPartitionSubsystem;
 enum class EDataLayerRuntimeState : uint8;
 
+// Reload는 각 단계의 실제 완료 이벤트로만 진행한다. Stalled는 현재 Phase를 유지한 채
+// 재검사를 기다리는 상태이고, Failed만 해당 Generation을 더 진행할 수 없는 종료 상태다.
+UENUM(BlueprintType)
+enum class EOutlierGameplayReloadPhase : uint8
+{
+	Ready,
+	WaitingForActorEndPlay,
+	WaitingForGCPurge,
+	WaitingForClientAcks,
+	ActivatingGameplayData,
+	WaitingForStreaming,
+	Failed
+};
+
+UENUM(BlueprintType)
+enum class EOutlierGameplayReloadFailure : uint8
+{
+	None,
+	InvalidRuntime,
+	DataLayerUnavailable,
+	DataLayerStateChangeRejected,
+	RequiredClientDisconnected,
+	WorkerStallTimeout
+};
+
 DECLARE_MULTICAST_DELEGATE(FOnArenaShown);
 DECLARE_MULTICAST_DELEGATE(FOnArenaReleased);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnArenaGameplayGenerationEvent, uint32 /*GameplayGeneration*/);
+DECLARE_MULTICAST_DELEGATE_ThreeParams(
+	FOnArenaGameplayReloadStalled,
+	uint32 /*GameplayGeneration*/,
+	EOutlierGameplayReloadPhase /*Phase*/,
+	FString /*Diagnostic*/);
+DECLARE_MULTICAST_DELEGATE_TwoParams(
+	FOnArenaGameplayReloadFailed,
+	uint32 /*GameplayGeneration*/,
+	EOutlierGameplayReloadFailure /*Failure*/);
 
 UCLASS()
 class OUTLIER_API UOutlierArenaSubsystem : public UWorldSubsystem
@@ -39,6 +73,9 @@ public:
 	bool ReloadGameplayData(uint32 InGameplayGeneration, bool bDeferActivation = false);
 	void WaitForGameplayDataReady(uint32 InGameplayGeneration);
 	void ActivateGameplayData(uint32 InGameplayGeneration);
+	bool RetryStalledGameplayReload(uint32 InGameplayGeneration);
+	void FailGameplayReload(uint32 InGameplayGeneration, EOutlierGameplayReloadFailure Failure);
+	void DumpGameplayReloadState() const;
 	bool IsGameplayDataLayerAvailable() const;
 	void SuspendArenaVisibilityForConnection(APlayerController* PlayerController);
 	ULevel* GetArenaLoadedLevel() const;
@@ -50,11 +87,18 @@ public:
 	bool IsArenaContentReady() const;
 	bool IsStreamingArenaReady(const ULevelStreamingDynamic* StreamingLevel);
 	uint32 GetGameplayGeneration() const { return GameplayGeneration; }
+	EOutlierGameplayReloadPhase GetGameplayReloadPhase() const;
+	bool IsGameplayReloadStalled(uint32 InGameplayGeneration) const;
+	bool IsGameplayReloadGCVerified(uint32 InGameplayGeneration) const;
 	static bool IsGameplayGenerationNewer(uint32 Candidate, uint32 Reference);
+	static bool HasGameplayReloadTimedOut(double ElapsedSeconds, double TimeoutSeconds);
 
 	FOnArenaShown OnArenaShown;
 	FOnArenaGameplayGenerationEvent OnArenaGameplayGCReady;
 	FOnArenaGameplayGenerationEvent OnArenaGameplayReady;
+	FOnArenaGameplayGenerationEvent OnArenaGameplayReloadResumed;
+	FOnArenaGameplayReloadStalled OnArenaGameplayReloadStalled;
+	FOnArenaGameplayReloadFailed OnArenaGameplayReloadFailed;
 	FOnArenaReleased OnArenaReleased;
 
 	void HoldCharacterUntilArenaCellReady(ACharacter* Character);
@@ -79,7 +123,10 @@ private:
 	void TryRequestGameplayReloadGC();
 	void TryCompleteGameplayReloadActivation();
 	void TickPendingGameplayReloadTimeouts();
-	void AbandonStalledGameplayReload(uint32 Generation);
+	void SetGameplayReloadPhase(EOutlierGameplayReloadPhase NewPhase);
+	void ReportStalledGameplayReload();
+	FString BuildGameplayReloadDiagnostic() const;
+	void ClearGameplayReloadActorBindings();
 	static FString DescribeActorLevelPackage(const AActor* Actor);
 	void ActivatePendingGameplayReload(uint32 Generation);
 	void EnsureArenaGameplayDataActivated();
@@ -111,9 +158,13 @@ private:
 		TArray<TWeakObjectPtr<AActor>> ActorsAwaitingEndPlay;
 		bool bLoadRequested = false;
 		bool bGCRequested = false;
+		bool bGCVerified = false;
 		bool bCanChangeState = false;
-		double StartTime = 0.0;
+		EOutlierGameplayReloadPhase Phase = EOutlierGameplayReloadPhase::Ready;
+		EOutlierGameplayReloadFailure Failure = EOutlierGameplayReloadFailure::None;
+		double PhaseStartTime = 0.0;
 		bool bStallReported = false;
+		bool bIsStalled = false;
 	};
 	TOptional<FPendingGameplayReload> PendingGameplayReload;
 	FTimerHandle GameplayReloadTimeoutTimer;

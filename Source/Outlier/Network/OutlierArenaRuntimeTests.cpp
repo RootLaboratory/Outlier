@@ -39,6 +39,12 @@ bool FOutlierArenaGameplayGenerationContractTest::RunTest(const FString& Paramet
 		UOutlierArenaSubsystem::IsGameplayGenerationNewer(0, 2));
 	TestTrue(TEXT("Generation rollover remains ordered"),
 		UOutlierArenaSubsystem::IsGameplayGenerationNewer(1, MAX_uint32));
+	TestFalse(TEXT("A reload has not stalled before the timeout boundary"),
+		UOutlierArenaSubsystem::HasGameplayReloadTimedOut(14.999, 15.0));
+	TestTrue(TEXT("A reload stalls at the timeout boundary"),
+		UOutlierArenaSubsystem::HasGameplayReloadTimedOut(15.0, 15.0));
+	TestFalse(TEXT("A disabled timeout cannot report a stall"),
+		UOutlierArenaSubsystem::HasGameplayReloadTimedOut(60.0, 0.0));
 
 	return true;
 }
@@ -223,6 +229,9 @@ bool FOutlierArenaAdmissionContractTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Shooter and Partner complete the worker pair"), Admission.IsReady());
 
 	Admission.bPairStarted = true;
+	TestTrue(TEXT("The original Shooter can reconnect to a started worker"), Admission.CanAccept(Shooter, Error));
+	TestTrue(TEXT("The original Partner can reconnect to a started worker"), Admission.CanAccept(Partner, Error));
+	TestTrue(TEXT("Recommitting the original Shooter preserves the reserved slot"), Admission.Commit(Shooter, Error));
 	FOutlierArenaHandoffRequest ThirdPlayer = MakeHandoffRequest(
 		MatchId,
 		FGuid(17, 18, 19, 20),
@@ -272,9 +281,25 @@ bool FOutlierArenaReturnLifecycleTest::RunTest(const FString& Parameters)
 		Settings->ArenaWorkerExitTimeoutSeconds,
 		5.0f);
 	TestEqual(
+		TEXT("Arena workers wait thirty seconds for a disconnected player to reconnect"),
+		Settings->ArenaWorkerReconnectGraceSeconds,
+		30.0f);
+	TestEqual(
+		TEXT("Disconnected arena clients retry every two seconds"),
+		Settings->ArenaWorkerReconnectRetrySeconds,
+		2.0f);
+	TestEqual(
 		TEXT("Arena gameplay starts one second after both clients are ready"),
 		Settings->ArenaMatchStartDelaySeconds,
 		1.0f);
+	TestEqual(
+		TEXT("Gameplay reload reports a stall after fifteen seconds"),
+		Settings->ArenaGameplayReloadStallSeconds,
+		15.0f);
+	TestEqual(
+		TEXT("Arena workers fail a persistent gameplay reload stall after sixty seconds"),
+		Settings->ArenaGameplayReloadFailureSeconds,
+		60.0f);
 
 	UOutlierGameInstance* GameInstance = NewObject<UOutlierGameInstance>();
 	if (!TestNotNull(TEXT("The game instance can be created for the return lifecycle test"), GameInstance))
@@ -282,8 +307,12 @@ bool FOutlierArenaReturnLifecycleTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
-	GameInstance->NotifyArenaHandoffStarted();
+	GameInstance->NotifyArenaHandoffStarted(TEXT("127.0.0.1:7780?MatchId=Test"));
 	TestTrue(TEXT("Arena handoff activates Lobby recovery"), GameInstance->bArenaHandoffActive);
+	TestEqual(
+		TEXT("Arena handoff keeps the last URL for reconnect"),
+		GameInstance->LastArenaHandoffUrl,
+		FString(TEXT("127.0.0.1:7780?MatchId=Test")));
 	TestFalse(TEXT("Lobby recovery is initially not queued"), GameInstance->bLobbyRecoveryQueued);
 	TestFalse(TEXT("Lobby recovery is initially not attempted"), GameInstance->bLobbyRecoveryAttempted);
 

@@ -552,6 +552,28 @@ void AOutlierPlayerState::SetLoadoutSnapshot(const FOutlierLoadoutSnapshot& NewS
 	LoadoutSnapshot = NewSnapshot;
 }
 
+void AOutlierPlayerState::CopyReconnectGameplayStateFrom(const AOutlierPlayerState& Source)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	// 끊긴 Controller와 함께 사라지는 PlayerState에서 판 진행 데이터만 옮긴다.
+	// PlayerId, Role, Pair 링크는 새 접속 요청과 RefreshPairLinks가 다시 확정하므로 복사하지 않는다.
+	CheckpointData = Source.CheckpointData;
+	NodeCount = Source.NodeCount;
+	bStatAllocatorExitPending = Source.bStatAllocatorExitPending;
+	ShooterActivatedUpgradeNodeIds = Source.ShooterActivatedUpgradeNodeIds;
+	PartnerActivatedUpgradeNodeIds = Source.PartnerActivatedUpgradeNodeIds;
+	PendingPresetSelection = Source.PendingPresetSelection;
+	bHasAcquiredSuit = Source.bHasAcquiredSuit;
+	SuitFirstPersonMesh = Source.SuitFirstPersonMesh;
+	SuitThirdPersonMesh = Source.SuitThirdPersonMesh;
+	LoadoutSnapshot = Source.LoadoutSnapshot;
+	ForceNetUpdate();
+}
+
 void AOutlierPlayerState::SetTemporaryPlayerId(const FGuid& NewPlayerId)
 {
 	if (!HasAuthority()

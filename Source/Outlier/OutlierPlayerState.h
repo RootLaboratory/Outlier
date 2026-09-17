@@ -280,5 +280,7 @@ public:
 
 	void SetLoadoutSnapshot(const FOutlierLoadoutSnapshot& NewSnapshot);
 	const FOutlierLoadoutSnapshot& GetLoadoutSnapshot() const { return LoadoutSnapshot; }
+	// 재접속 시 새 PlayerState에 판 진행 데이터만 복원한다. 신원과 Pair 링크는 포함하지 않는다.
+	void CopyReconnectGameplayStateFrom(const AOutlierPlayerState& Source);
 	FOnPendingPresetSelectionChanged OnPendingPresetSelectionChanged;
 };

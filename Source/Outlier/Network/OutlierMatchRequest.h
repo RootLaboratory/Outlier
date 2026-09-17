@@ -191,6 +191,8 @@ struct OUTLIER_API FOutlierArenaAdmissionState
 	bool Commit(
 		const FOutlierArenaHandoffRequest& Request,
 		FString& OutError);
+	// 시작된 매치에서 처음 확정한 MatchId/PlayerId/Role이 모두 같은 요청만 허용한다.
+	bool IsReconnect(const FOutlierArenaHandoffRequest& Request) const;
 	void Release(const FGuid& PlayerId);
 	bool IsReady() const;
 };

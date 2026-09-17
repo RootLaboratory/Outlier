@@ -91,6 +91,9 @@ public:
 	UFUNCTION(Server, Reliable)
 	void ServerNotifyArenaGameplayGCReady(uint32 GameplayGeneration);
 
+	UFUNCTION(Client, Reliable)
+	void ClientRetryArenaGameplayReload(uint32 GameplayGeneration);
+
 	UFUNCTION(Server, Reliable)
 	void ServerOpenInGameSetting();
 

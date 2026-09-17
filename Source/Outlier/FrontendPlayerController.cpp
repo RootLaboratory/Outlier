@@ -525,7 +525,7 @@ void AFrontendPlayerController::ClientHandoffToArena_Implementation(const FStrin
 
 	if (UOutlierGameInstance* OutlierGameInstance = Cast<UOutlierGameInstance>(GetGameInstance()))
 	{
-		OutlierGameInstance->NotifyArenaHandoffStarted();
+		OutlierGameInstance->NotifyArenaHandoffStarted(ArenaUrl);
 	}
 
 	PrepareForMatch();
