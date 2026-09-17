@@ -4,6 +4,7 @@
 #include "FirstPerson/FirstPersonCharacter.h"
 #include "Interaction/InteractableComponent.h"
 #include "OutlierPlayerState.h"
+#include "Engine/World.h"
 
 AInteractionNode::AInteractionNode()
 {

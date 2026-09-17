@@ -3,13 +3,16 @@
 
 #include "OutlierGameInstance.h"
 #include "OutlierArenaSettings.h"
+#include "OutlierGameMode.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "Misc/CommandLine.h"
 #include "Network/OutlierArenaProcessSubsystem.h"
+#include "Network/OutlierArenaPoolSubsystem.h"
 #include "UI/LoadingWidget.h"
 #include "Misc/Parse.h"
+#include "Containers/Ticker.h"
 
 void UOutlierGameInstance::Init()
 {
@@ -27,6 +30,12 @@ void UOutlierGameInstance::Init()
 
 void UOutlierGameInstance::Shutdown()
 {
+	if (ArenaWorkerBootstrapTickerHandle.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(ArenaWorkerBootstrapTickerHandle);
+		ArenaWorkerBootstrapTickerHandle.Reset();
+	}
+
 	if (GEngine && NetworkFailureHandle.IsValid())
 	{
 		GEngine->OnNetworkFailure().Remove(NetworkFailureHandle);
@@ -133,13 +142,14 @@ void UOutlierGameInstance::TryBootstrapArenaWorker(UWorld* LoadedWorld)
 
 	if (Settings->IsArenaWorld(LoadedWorld))
 	{
-		UE_LOG(LogTemp, Display,
-			TEXT("[ArenaWorker] Ready on persistent arena map %s"),
-			*Settings->GetArenaPackageName());
-		if (UOutlierArenaProcessSubsystem* ProcessSubsystem =
-			GetSubsystem<UOutlierArenaProcessSubsystem>())
+		ArenaWorkerBootstrapWorld = LoadedWorld;
+		if (!ArenaWorkerBootstrapTickerHandle.IsValid())
 		{
-			ProcessSubsystem->NotifyArenaWorldReady(LoadedWorld);
+			ArenaWorkerReadyStableFrames = 0;
+			ArenaWorkerBootstrapTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+				FTickerDelegate::CreateUObject(this, &UOutlierGameInstance::HandleArenaWorkerBootstrapTick));
+			UE_LOG(LogTemp, Display,
+				TEXT("[ArenaWorker] Waiting for Start streaming source, WP cells and LevelInstances before Ready"));
 		}
 		return;
 	}
@@ -156,6 +166,53 @@ void UOutlierGameInstance::TryBootstrapArenaWorker(UWorld* LoadedWorld)
 		TEXT("[ArenaWorker] Traveling to configured arena map %s"),
 		*ArenaPackageName);
 	LoadedWorld->ServerTravel(ArenaPackageName, true);
+}
+
+bool UOutlierGameInstance::HandleArenaWorkerBootstrapTick(float DeltaTime)
+{
+	constexpr int32 RequiredReadyStableFrames = 3;
+
+	(void)DeltaTime;
+	UWorld* World = ArenaWorkerBootstrapWorld.Get();
+	if (!World || !FParse::Param(FCommandLine::Get(), TEXT("OutlierArenaWorker")))
+	{
+		ArenaWorkerBootstrapTickerHandle.Reset();
+		return false;
+	}
+
+	UOutlierArenaPoolSubsystem* ArenaPool =
+		World->GetSubsystem<UOutlierArenaPoolSubsystem>();
+	const AOutlierGameMode* ArenaGameMode = World->GetAuthGameMode<AOutlierGameMode>();
+	const bool bContentReady = ArenaGameMode
+		&& ArenaGameMode->IsArenaWorkerPreloadReady()
+		&& ArenaPool
+		&& ArenaPool->IsArenaContentReady(0);
+	if (!bContentReady)
+	{
+		ArenaWorkerReadyStableFrames = 0;
+		return true;
+	}
+
+	++ArenaWorkerReadyStableFrames;
+	if (ArenaWorkerReadyStableFrames < RequiredReadyStableFrames)
+	{
+		return true;
+	}
+
+	ArenaWorkerBootstrapTickerHandle.Reset();
+	UE_LOG(LogTemp, Display,
+		TEXT("[ArenaWorker] WP cells and LevelInstances stable for %d frames; notifying Worker Ready"),
+		RequiredReadyStableFrames);
+	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
+	UE_LOG(LogTemp, Display,
+		TEXT("[ArenaWorker] Ready on persistent arena map %s"),
+		Settings ? *Settings->GetArenaPackageName() : TEXT("None"));
+	if (UOutlierArenaProcessSubsystem* ProcessSubsystem =
+		GetSubsystem<UOutlierArenaProcessSubsystem>())
+	{
+		ProcessSubsystem->NotifyArenaWorldReady(World);
+	}
+	return false;
 }
 
 void UOutlierGameInstance::HandlePreLoadMap(const FString& MapName)

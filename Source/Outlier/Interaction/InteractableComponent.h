@@ -132,9 +132,6 @@ private:
 	TSubclassOf<UInteractKeyWidget> InteractKeyWidgetClass;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction|UI", meta = (AllowPrivateAccess = "true"))
-	FText InteractKeyText = FText::FromString(TEXT("F"));
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction|UI", meta = (AllowPrivateAccess = "true"))
 	float InteractKeyWidgetZOffset = 20.0f;
 
 	UPROPERTY(Transient)

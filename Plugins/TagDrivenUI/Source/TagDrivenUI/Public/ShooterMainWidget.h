@@ -46,11 +46,11 @@ public:
 
 	void OnChangeWeapon(EWidgetWeaponType Type);
 
-public:
+	// 슈트 획득 시점에 라이플/권총 크로스헤어를 둘 다 초기화한다.
+	// 현재 등록된 쪽만 건드리면 안 쓰던 쪽에 이전 확산이 그대로 남는다.
+	void ResetCrossHairs();
 
-	UPROPERTY(meta = (BindWidget))
-	TObjectPtr<UPartnerCamUI> PartnerCamUI;
-	
+public:	
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UHPBarUI> HPBarUI;
 

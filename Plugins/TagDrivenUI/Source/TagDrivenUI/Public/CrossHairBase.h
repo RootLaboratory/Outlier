@@ -44,6 +44,15 @@ public:
 
 	virtual void OnAimingOff(){}
 
+	// 모듈 활성화가 ADS 숨김을 덮어쓰지 않게 한다.
+	// ModulesControl(true) / ActivateModuleIfAllowed / 무기 전환 등 활성화 경로가
+	// SetVisibility 를 그대로 밀어버려서, 조준 중에 켜지면 크로스헤어가 다시 보였다.
+	virtual void Activate() override;
+
+	// 조준/사격으로 쌓인 표시 상태를 초기값으로 되돌린다.
+	// 슈트 획득 전에 쏴서 남은 확산/회전이 획득 후 무기 전환 때 되살아나는 걸 막는다.
+	virtual void ResetCrossHairState() { bAiming = false; }
+
 public:
 	bool IsAiming() { return bAiming; }
 

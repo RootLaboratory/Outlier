@@ -7,6 +7,7 @@
 #include "Components/PanelWidget.h"
 #include "Components/TextBlock.h"
 #include "Components/WidgetSwitcher.h"
+#include "Components/Widget.h"
 #include "EnhancedInputSubsystems.h"
 #include "Engine/LocalPlayer.h"
 #include "Input/OutlierInputBindingTable.h"
@@ -15,6 +16,7 @@
 #include "InputMappingContext.h"
 #include "UI/InputBindingRowWidget.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
+#include "UI/MouseSensitivityWidget.h"
 #include "UI/SettingSliderRowWidget.h"
 #include "UserSettings/EnhancedInputUserSettings.h"
 
@@ -188,26 +190,35 @@ bool USettingWidget::HandleUILayerConfirmed_Implementation()
 
 bool USettingWidget::HandleUILayerUp_Implementation()
 {
-	return false;
+	MoveKeyboardFocus(-1);
+	return true;
 }
 
 bool USettingWidget::HandleUILayerDown_Implementation()
 {
-	return false;
+	MoveKeyboardFocus(1);
+	return true;
 }
 
 bool USettingWidget::HandleUILayerLeft_Implementation()
 {
-	return false;
+	AdjustFocusedSetting(-0.01f);
+	return true;
 }
 
 bool USettingWidget::HandleUILayerRight_Implementation()
 {
-	return false;
+	AdjustFocusedSetting(0.01f);
+	return true;
 }
 
 void USettingWidget::PopSelfFromLayer()
 {
+	if (MouseSensitivityWidget)
+	{
+		MouseSensitivityWidget->ConfirmPendingValue();
+	}
+
 	ULocalPlayer* LocalPlayer = GetOwningLocalPlayer();
 	ULocalPlayerUILayerSubsystem* LayerSubsystem = LocalPlayer
 		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()
@@ -229,12 +240,145 @@ bool USettingWidget::SetActiveSettingPage(int32 PageIndex)
 
 	SettingSwitcher->SetActiveWidgetIndex(PageIndex);
 	CurrentSettingPageIndex = PageIndex;
+	CurrentFocusedIndex = INDEX_NONE;
 	if (PageIndex == InputPageIndex)
 	{
 		RebuildInputBindingList();
 	}
 
+	RebuildKeyboardFocusTargets();
+	if (!KeyboardFocusTargets.IsEmpty())
+	{
+		CurrentFocusedIndex = 0;
+		FocusCurrentKeyboardTarget();
+	}
+
 	return true;
+}
+
+void USettingWidget::RebuildKeyboardFocusTargets()
+{
+	KeyboardFocusTargets.Reset();
+
+	if (CurrentSettingPageIndex == GraphicPageIndex)
+	{
+		if (GraphicLeftButton)
+		{
+			KeyboardFocusTargets.Add(GraphicLeftButton);
+		}
+		return;
+	}
+
+	if (CurrentSettingPageIndex == SoundPageIndex)
+	{
+		for (USettingSliderRowWidget* Row : SoundVolumeRows)
+		{
+			if (Row)
+			{
+				Row->SetIsFocusable(true);
+				KeyboardFocusTargets.Add(Row);
+			}
+		}
+		return;
+	}
+
+	if (CurrentSettingPageIndex == InputPageIndex)
+	{
+		if (MouseSensitivityWidget)
+		{
+			KeyboardFocusTargets.Add(MouseSensitivityWidget);
+		}
+
+		for (UInputBindingRowWidget* Row : ActiveInputBindingRows)
+		{
+			if (Row)
+			{
+				Row->SetIsFocusable(true);
+				KeyboardFocusTargets.Add(Row);
+			}
+		}
+	}
+}
+
+void USettingWidget::FocusCurrentKeyboardTarget()
+{
+	if (!KeyboardFocusTargets.IsValidIndex(CurrentFocusedIndex))
+	{
+		return;
+	}
+
+	UWidget* TargetWidget = KeyboardFocusTargets[CurrentFocusedIndex];
+	if (!IsValid(TargetWidget)
+		|| !TargetWidget->IsVisible()
+		|| !TargetWidget->GetIsEnabled())
+	{
+		return;
+	}
+
+	if (UInputBindingRowWidget* InputRow =
+		Cast<UInputBindingRowWidget>(TargetWidget))
+	{
+		HoveredInputBindingRow = InputRow;
+	}
+
+	if (APlayerController* OwningPlayer = GetOwningPlayer())
+	{
+		TargetWidget->SetUserFocus(OwningPlayer);
+	}
+}
+
+void USettingWidget::MoveKeyboardFocus(int32 Direction)
+{
+	RebuildKeyboardFocusTargets();
+
+	if (KeyboardFocusTargets.IsEmpty())
+	{
+		return;
+	}
+
+	const int32 StartIndex = KeyboardFocusTargets.IsValidIndex(
+		CurrentFocusedIndex)
+		? CurrentFocusedIndex
+		: 0;
+
+	CurrentFocusedIndex = FMath::Clamp(
+		StartIndex + Direction,
+		0,
+		KeyboardFocusTargets.Num() - 1);
+	FocusCurrentKeyboardTarget();
+}
+
+void USettingWidget::AdjustFocusedSetting(float Delta)
+{
+	if (!KeyboardFocusTargets.IsValidIndex(CurrentFocusedIndex))
+	{
+		return;
+	}
+
+	if (CurrentSettingPageIndex == GraphicPageIndex)
+	{
+		OffsetResolutionPresetIndex(Delta > 0.0f ? 1 : -1);
+		return;
+	}
+
+	if (CurrentSettingPageIndex == SoundPageIndex)
+	{
+		USettingSliderRowWidget* Row = Cast<USettingSliderRowWidget>(
+			KeyboardFocusTargets[CurrentFocusedIndex]);
+		if (Row)
+		{
+			const int32 VolumeIndex = SoundVolumeRows.IndexOfByKey(Row);
+			SetSoundVolumeIndex(VolumeIndex, Row->GetValue() + Delta);
+		}
+		return;
+	}
+
+	if (CurrentSettingPageIndex == InputPageIndex
+		&& CurrentFocusedIndex == 0
+		&& MouseSensitivityWidget)
+	{
+		MouseSensitivityWidget->OffsetPendingValue(Delta);
+	}
 }
 
 bool USettingWidget::SetResolutionPresetIndex(int32 PresetIndex)
@@ -722,6 +866,12 @@ bool USettingWidget::TryCommitInputRebind(FKey NewKey)
 		RuntimeInputKeyOverrides.Add(Row.MappingName, NewKey);
 	}
 	RowWidget->SetDisplayedKey(NewKey);
+
+	if (ULocalPlayerSettingsSubsystem* SettingsSubsystem = GetSettingsSubsystem())
+	{
+		SettingsSubsystem->NotifyInputActionKeyChanged(Row.InputAction, NewKey);
+	}
+
 	SetInputResult(InputChangedText, InputResultSuccessColor);
 	bWaitingForInputRebind = false;
 	PendingRebindInputBindingRow = nullptr;

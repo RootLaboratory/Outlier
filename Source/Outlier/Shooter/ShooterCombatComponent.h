@@ -71,6 +71,7 @@ public:
 	void HandleAimReleased();
 	void TryStartAttack();
 	void TryStopAttack();
+	void CancelMeleeAttack();
 	void HandleWeaponAttackStopped();
 	void HandleAutoReloadRequested();
 
@@ -85,6 +86,11 @@ public:
 	void CancelReloadInternal();
 	void FinishReloadInternal();
 	void HandleReloadCommitNotify();
+	void HandleMeleeHitNotify();
+	void HandleMeleeTraceBeginNotify();
+	void HandleMeleeTraceTickNotify();
+	void HandleMeleeTraceEndNotify();
+	void HandleMeleeRecoveryEndNotify();
 
 	bool CanEnterCombatState(EWeaponMode InWeaponMode, ECombatState NextState) const;
 	bool CanAimInCurrentState() const;

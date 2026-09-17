@@ -16,9 +16,9 @@
 #include "Interaction/InteractableComponent.h"
 #include "Weapon/WeaponCoreRow.h"
 #include "Weapon/WeaponRangeRow.h"
-#include "Weapon/Spawn/WeaponSpawnPoint.h"
 #include "Shooter/Anim/ProceduralAnimValues.h"
 #include "Materials/MaterialInterface.h"
+#include "TimerManager.h"
 
 AWeaponBase::AWeaponBase()
 {
@@ -257,6 +257,32 @@ void AWeaponBase::SetPickupPresentation()
 	SetEquippedCollisionEnabled(true);
 }
 
+void AWeaponBase::SetStowedPresentation()
+{
+	if (FirstPersonWeaponMesh)
+	{
+		FirstPersonWeaponMesh->SetHiddenInGame(true);
+		FirstPersonWeaponMesh->SetCastShadow(false);
+		FirstPersonWeaponMesh->SetCastHiddenShadow(false);
+	}
+
+	if (ThirdPersonWeaponMesh)
+	{
+		ThirdPersonWeaponMesh->SetHiddenInGame(true);
+		ThirdPersonWeaponMesh->SetCastShadow(false);
+		ThirdPersonWeaponMesh->SetCastHiddenShadow(false);
+	}
+
+	if (ShadowWeaponMesh)
+	{
+		ShadowWeaponMesh->SetHiddenInGame(true);
+		ShadowWeaponMesh->SetCastShadow(false);
+		ShadowWeaponMesh->SetCastHiddenShadow(false);
+	}
+
+	SetEquippedCollisionEnabled(false);
+}
+
 void AWeaponBase::SetEquippedPresentation()
 {
 	FirstPersonWeaponMesh->SetHiddenInGame(false);
@@ -341,9 +367,27 @@ void AWeaponBase::ApplyReplicatedPresentation()
 {
 	if (bIsEquipped)
 	{
-		// Notify 전까지 숨김 상태만 유지
 		AttachWeaponMeshesToOwner(this, WeaponOwner);
-		SetEquippedPresentation();
+
+		// SetEquippedPresentation() 이 아니라 virtual 인 ShowEquippedPresentation() 을 부른다.
+		// 전자는 AWeaponBase 의 무기 메시 3개만 건드리고, ARangedWeaponBase 의 sight / 탄창 /
+		// 과충전 동기화는 후자에만 있다. 원래 클라에서 그걸 켜주던 유일한 경로가
+		// equip 몽타주의 AnimNotify_AttachWeapon 이었는데, 리로드 복원은 몽타주를
+		// 건너뛰므로 아무도 안 켜줘서 sight 가 사라진 채로 남았다.
+		ShowEquippedPresentation();
+		return;
+	}
+
+	// 소유자는 있는데 손에 들지 않은 상태 (비활성 슬롯).
+	// OnUnequipped 가 bIsEquipped 만 내리고 WeaponOwner 는 남겨두므로 이 조합이 "권총집"을 뜻한다.
+	// (OnDropped / OnOwnerLost 는 WeaponOwner 까지 지우므로 아래 월드 픽업 경로로 간다.)
+	// 이 분기가 없으면 아래로 내려가 메시를 캐릭터에서 떼고 액터 루트에 붙인 뒤
+	// SetPickupPresentation() 으로 보이게 만들어서, 소유 중인 무기가 액터 위치
+	// (= 주웠거나 복원된 자리)에 떨어져 있는 것처럼 보인다.
+	if (WeaponOwner)
+	{
+		AttachWeaponMeshesToOwner(this, WeaponOwner);
+		SetStowedPresentation();
 		return;
 	}
 
@@ -380,11 +424,6 @@ void AWeaponBase::OnRep_EquippedState()
 	ApplyReplicatedPresentation();
 }
 
-void AWeaponBase::SetOwningSpawnPoint(AWeaponSpawnPoint* SpawnPoint)
-{
-	OwningSpawnPoint = SpawnPoint;
-}
-
 void AWeaponBase::BeginPlay()
 {
 	Super::BeginPlay();
@@ -400,7 +439,7 @@ bool AWeaponBase::CanAttack() const
 
 bool AWeaponBase::CanBePickedUpBy(const AFirstPersonCharacter* Interactor) const
 {
-	if (!Interactor || bIsEquipped || WeaponOwner != nullptr || IsPendingKillPending())
+	if (!Interactor || bIsEquipped || bPickupConsumed || WeaponOwner != nullptr || IsPendingKillPending())
 	{
 		return false;
 	}
@@ -476,11 +515,6 @@ void AWeaponBase::OnEquipped(ACharacter* NewOwner)
 	DropPickupBlockedInteractor = nullptr;
 	DropPickupBlockedUntilTime = 0.0f;
 
-	if (OwningSpawnPoint)
-	{
-		OwningSpawnPoint->NotifyWeaponPickedUp(this);
-	}
-
 	SetOwner(NewOwner);
 	AttachWeaponMeshesToOwner(this, NewOwner);
 
@@ -500,12 +534,6 @@ void AWeaponBase::OnEquipped(ACharacter* NewOwner)
 		ShadowWeaponMesh->SetHiddenInGame(true);
 		ShadowWeaponMesh->SetCastShadow(false);
 		ShadowWeaponMesh->SetCastHiddenShadow(false);
-	}
-
-	AFirstPersonCharacter* Character = Cast<AFirstPersonCharacter>(NewOwner);
-	if (Character)
-	{
-		Character->CaptureComponentWeaponNotIncluded(this);
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("%s [%s] OnEquipped Owner=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(NewOwner));
@@ -546,7 +574,7 @@ void AWeaponBase::AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacter* New
 			UE_LOG(
 				LogTemp,
 				Warning,
-				TEXT("[PartnerWeaponToggle][Attach][FP] Weapon=%s Mesh=%s StableRoot=%s ReferenceMesh=%s Socket=%s Exists=%d"),
+				TEXT("[PartnerWeaponAttach][FP] Weapon=%s Mesh=%s StableRoot=%s ReferenceMesh=%s Socket=%s Exists=%d"),
 				*GetNameSafe(Weapon),
 				*GetNameSafe(Weapon->GetFirstPersonWeaponMesh()),
 				*GetNameSafe(FirstPersonParent),
@@ -565,7 +593,7 @@ void AWeaponBase::AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacter* New
 			UE_LOG(
 				LogTemp,
 				Warning,
-				TEXT("[PartnerWeaponToggle][Attach][TP] Weapon=%s Mesh=%s Parent=%s Socket=%s Exists=%d"),
+				TEXT("[PartnerWeaponAttach][TP] Weapon=%s Mesh=%s Parent=%s Socket=%s Exists=%d"),
 				*GetNameSafe(Weapon),
 				*GetNameSafe(Weapon->GetThirdPersonWeaponMesh()),
 				*GetNameSafe(ThirdPersonParent),
@@ -704,28 +732,11 @@ void AWeaponBase::OnUnequipped()
 	bIsEquipped = false;
 	bIsAttacking = false;
 
-	if (FirstPersonWeaponMesh)
-	{
-		FirstPersonWeaponMesh->SetHiddenInGame(true);
-		FirstPersonWeaponMesh->SetCastShadow(false);
-		FirstPersonWeaponMesh->SetCastHiddenShadow(false);
-	}
+	SetStowedPresentation();
 
-	if (ThirdPersonWeaponMesh)
-	{
-		ThirdPersonWeaponMesh->SetHiddenInGame(true);
-		ThirdPersonWeaponMesh->SetCastShadow(false);
-		ThirdPersonWeaponMesh->SetCastHiddenShadow(false);
-	}
-
-	if (ShadowWeaponMesh)
-	{
-		ShadowWeaponMesh->SetHiddenInGame(true);
-		ShadowWeaponMesh->SetCastShadow(false);
-		ShadowWeaponMesh->SetCastHiddenShadow(false);
-	}
-
-	SetEquippedCollisionEnabled(false);
+	// OnEquipped / OnDropped 와 달리 여기만 빠져 있었다. 스토우 전이가 원격 클라에
+	// 늦게(혹은 안) 도착하면 그 클라에서는 무기가 손에 든 상태로 남는다.
+	ForceNetUpdate();
 
 	UE_LOG(LogTemp, Log, TEXT("%s [%s] OnUnequipped"), OutlierNet::GetNetPrefix(this), *GetName());
 }
@@ -805,8 +816,33 @@ bool AWeaponBase::Interact(class AFirstPersonCharacter* Interactor)
 
 	UE_LOG(LogTemp, Log, TEXT("%s [%s] Interact Interactor=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(Interactor));
 
-	Interactor->EquipWeapon(this);
-	return Interactor->GetCurrentWeapon() == this;
+	// 이 액터를 그대로 넘기지 않는다. 레벨 배치 액터의 ULevel 은 WP 셀로 고정이고
+	// 런타임에 옮길 수 없어서, 그대로 장착시키면 플레이어가 그 셀에서 멀어질 때
+	// 손에 든 채로 사라진다. 같은 클래스로 PersistentLevel 에 하나 만들어 넘기고,
+	// 원본은 소비 처리한다 (일회성 획득이므로 월드에 남아서도 안 된다).
+	AWeaponBase* GrantedWeapon = SpawnLoadoutWeapon(GetWorld(), GetClass(), Interactor);
+	if (!GrantedWeapon)
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("%s [%s] Interact failed: could not spawn owned copy"),
+			OutlierNet::GetNetPrefix(this), *GetName());
+		return false;
+	}
+
+	Interactor->EquipWeapon(GrantedWeapon);
+
+	if (Interactor->GetCurrentWeapon() != GrantedWeapon)
+	{
+		// 장착이 거절됐다. 방금 만든 사본만 정리하고 원본은 월드에 그대로 둔다.
+		UE_LOG(LogTemp, Warning,
+			TEXT("%s [%s] Interact rejected by %s; discarding spawned copy"),
+			OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(Interactor));
+		GrantedWeapon->Destroy();
+		return false;
+	}
+
+	ConsumePickup();
+	return true;
 }
 
 UInteractableComponent* AWeaponBase::GetInteractableComponent() const
@@ -822,6 +858,47 @@ void AWeaponBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifet
 	DOREPLIFETIME(AWeaponBase, bIsEquipped);
 }
 
+AWeaponBase* AWeaponBase::SpawnLoadoutWeapon(
+	UWorld* World, TSubclassOf<AWeaponBase> WeaponClass, ACharacter* OwnerCharacter)
+{
+	if (!World || !WeaponClass || !OwnerCharacter)
+	{
+		return nullptr;
+	}
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.Owner = OwnerCharacter;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	// OverrideLevel 을 주지 않는다 -> PersistentLevel.
+	// 플레이어 소유 무기는 Gameplay Data Layer 리로드에도, 거리 기반 셀 스트리밍에도
+	// 살아남아야 한다. (AWeaponSpawnPoint 는 반대로 GetLevel()=WP 셀에 넣는다 —
+	//  그쪽은 월드와 함께 죽어도 되는 배치물이다.)
+
+	return World->SpawnActor<AWeaponBase>(
+		WeaponClass, OwnerCharacter->GetActorTransform(), SpawnParams);
+}
+
+void AWeaponBase::ConsumePickup()
+{
+	bPickupConsumed = true;
+	SetActorEnableCollision(false);
+	SetActorHiddenInGame(true);
+	ForceNetUpdate();
+
+	// 즉시 Destroy 하지 않는다. ServerInteract 는 Interact() 가 true 를 돌려준 뒤에도
+	// 이 액터의 InteractableComponent 로 CommitHoldInteraction 을 부르고, 액터 참조를
+	// ClientOnInteractSucceeded 로 복제한다. 한 틱 미뤄야 그 뒷단이 살아 있는 객체를 본다.
+	GetWorldTimerManager().SetTimerForNextTick(this, &AWeaponBase::DestroyAfterPickup);
+}
+
+void AWeaponBase::DestroyAfterPickup()
+{
+	if (HasAuthority() && !IsActorBeingDestroyed())
+	{
+		Destroy();
+	}
+}
+
 void AWeaponBase::OnOwnerLost()
 {
 	StopAttack();
@@ -831,11 +908,12 @@ void AWeaponBase::OnOwnerLost()
 	WeaponOwner = nullptr;
 	SetOwner(nullptr);
 
-	if (!IsActorBeingDestroyed() && IsValid(OwningSpawnPoint))
+	// 무기는 일회성이다 — 소유자를 잃으면 월드에 남기지 않고 파괴한다.
+	// 다시 필요해지면 PlayerState의 로드아웃 스냅샷이 클래스로부터 재생성한다.
+	// 예전에는 스폰포인트 유무로 파괴/은닉이 갈렸는데, 은닉 쪽은 되돌리는 경로가 없어서
+	// 리로드 한 번이면 보이지도 주울 수도 없는 액터가 그 자리에 영구히 남았다.
+	if (!IsActorBeingDestroyed())
 	{
-		OwningSpawnPoint->NotifyWeaponRemoved(this);
+		Destroy();
 	}
-
-	OwningSpawnPoint= nullptr;
-	Destroy();
 }

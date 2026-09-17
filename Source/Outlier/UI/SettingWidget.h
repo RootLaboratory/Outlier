@@ -11,11 +11,13 @@ class UButton;
 class UInputBindingRowWidget;
 class UInputMappingContext;
 class ULocalPlayerSettingsSubsystem;
+class UMouseSensitivityWidget;
 class UOutlierInputBindingTable;
 class UPanelWidget;
 class USettingSliderRowWidget;
 class UTextBlock;
 class UWidgetSwitcher;
+class UWidget;
 struct FGeometry;
 struct FKeyEvent;
 struct FPointerEvent;
@@ -82,6 +84,9 @@ protected:
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Setting|Sound")
 	TObjectPtr<USettingSliderRowWidget> VoiceVolumeRow;
+
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Setting|Input")
+	TObjectPtr<UMouseSensitivityWidget> MouseSensitivityWidget;
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "Setting|Input")
 	TObjectPtr<UPanelWidget> InputBindingListHost;
@@ -206,6 +211,10 @@ private:
 	void BuildInputBindingQueryContexts(TArray<UInputMappingContext*>& OutContexts) const;
 	void RefreshInputBindingDisplayedKeys();
 	void SetInputResult(const FText& ResultText, const FLinearColor& ResultColor);
+	void RebuildKeyboardFocusTargets();
+	void FocusCurrentKeyboardTarget();
+	void MoveKeyboardFocus(int32 Direction);
+	void AdjustFocusedSetting(float Delta);
 	void CacheWidgetArrays();
 	void BindSettingsSubsystem();
 	void UnbindSettingsSubsystem();
@@ -241,6 +250,10 @@ private:
 
 	int32 PendingResolutionPresetIndex = INDEX_NONE;
 	int32 CurrentSettingPageIndex = INDEX_NONE;
+	int32 CurrentFocusedIndex = INDEX_NONE;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UWidget>> KeyboardFocusTargets;
 	double RebindStartTimeSeconds = 0.0;
 	bool bWaitingForInputRebind = false;
 	bool bRefreshingSoundSettings = false;

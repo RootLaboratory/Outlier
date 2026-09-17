@@ -7,6 +7,14 @@
 #include "StateTreeTaskBase.h"
 #include "EnemyStateTreeMovementTasks.generated.h"
 
+class AAIController;
+
+UENUM(BlueprintType)
+enum class EEnemyFlightMoveResult : uint8
+{
+	None, Moving, Arrived, Blocked, TimedOut, Invalid, Interrupted
+};
+
 USTRUCT()
 struct FEnemyFlyToLocationTaskInstanceData
 {
@@ -28,6 +36,26 @@ struct FEnemyFlyToLocationTaskInstanceData
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0"))
 	float RotationSpeed = 180.0f;
 
+	UPROPERTY(EditAnywhere, Category = Parameter)
+	bool bRotateTowardDestination = true;
+
+	// 0이면 기존 순찰의 무제한 이동 동작을 보존한다.
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0", Units = "s"))
+	float MoveTimeout = 0.0f;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0", Units = "s"))
+	float NoProgressTimeout = 0.0f;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "1.0", Units = "cm"))
+	float ProgressDistance = 25.0f;
+	UPROPERTY(EditAnywhere, Category = Output)
+	EEnemyFlightMoveResult MoveResult = EEnemyFlightMoveResult::None;
+
+	UPROPERTY(Transient)
+	TObjectPtr<AAIController> CachedController = nullptr;
+	float MoveElapsed = 0.0f;
+	float NoProgressElapsed = 0.0f;
+	float BestDistance = 0.0f;
+	FVector LastDestination = FVector::ZeroVector;
+	bool bOwnsMovement = false;
 };
 
 // 지상 NavMesh에 투영하지 않고 비행 Pawn을 3D 목적지로 직접 이동시킨다.

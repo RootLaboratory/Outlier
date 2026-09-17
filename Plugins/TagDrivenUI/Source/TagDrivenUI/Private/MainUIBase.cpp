@@ -3,6 +3,8 @@
 #include "AbilityIconUI.h"
 #include "Components/CanvasPanel.h"
 #include "EventDrivenUI.h"
+#include "LocalPlayerUISubSystem.h"
+#include "Engine/LocalPlayer.h"
 
 void UMainUIBase::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 {
@@ -83,6 +85,8 @@ void UMainUIBase::On_RepAbilityabledByDistance()
 
 void UMainUIBase::ModulesControl(bool Flag)
 {
+	bModulesActive = Flag;
+
 	if (Flag)
 	{
 		for (TPair<FGameplayTag, TObjectPtr<UEventDrivenUI>> Module : Modules)
@@ -158,6 +162,23 @@ void UMainUIBase::RegisterAbilityIcon(UAbilityIconUI* Icon, const FGameplayTag& 
 	}
 }
 
+void UMainUIBase::ActivateModuleIfAllowed(UEventDrivenUI* InModule)
+{
+	if (!InModule)
+	{
+		return;
+	}
+
+	if (bModulesActive)
+	{
+		InModule->Activate();
+	}
+	else
+	{
+		InModule->Deactivate();
+	}
+}
+
 void UMainUIBase::RegisterModule(UEventDrivenUI* InModule)
 {
 	if (!InModule)
@@ -181,4 +202,21 @@ void UMainUIBase::RegisterModule(const FGameplayTag& ModuleTag, UEventDrivenUI* 
 	}
 
 	Modules.Add(ModuleTag, InModule);
+
+	if (!InModule)
+	{
+		return;
+	}
+
+	// 값 푸시는 "그 순간 등록돼 있던" 모듈에만 닿는다. 나중에 붙는 멤버 위젯은 BP 기본값
+	// 그대로 남으므로(UAmmoUI::Temp_AmmoCount 가 40 으로 시작) 마지막 값을 물려준다.
+	// 가시성은 여기서 건드리지 않는다 — 전체 게이트를 쓰지 않는 화면(Partner)의
+	// BP 기본 가시성을 등록만으로 뒤집게 된다.
+	if (ULocalPlayer* LocalPlayer = GetOwningLocalPlayer())
+	{
+		if (ULocalPlayerUISubSystem* UISubsystem = LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>())
+		{
+			UISubsystem->SyncRegisteredModule(InModule);
+		}
+	}
 }

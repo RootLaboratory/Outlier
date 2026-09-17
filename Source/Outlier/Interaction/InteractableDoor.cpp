@@ -71,6 +71,7 @@ void AInteractableDoor::SetDoorOpen(bool bOpen)
 		return;
 	}
 
+	//UE_LOG(LogTemp, Error, TEXT("Opened"));
 	bIsOpen = bOpen;
 	Multicast_SetDoorState(bIsOpen);
 

@@ -12,6 +12,7 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/SphereComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/PlayerController.h"
 #include "TimerManager.h"
@@ -1134,12 +1135,16 @@ void ARangedWeaponBase::OnUnequipped()
 {
 	Super::OnUnequipped();
 	HideSightPresentation();
+	SnapOverchargeEmissive(0.0f);
 }
 
 void ARangedWeaponBase::OnDropped(const FTransform& DropTransform, AFirstPersonCharacter* DroppedBy)
 {
 	Super::OnDropped(DropTransform, DroppedBy);
 	HideSightPresentation();
+
+	// 바닥에 떨어진 무기가 과충전 연출을 끌고 다니지 않도록.
+	SnapOverchargeEmissive(0.0f);
 }
 
 void ARangedWeaponBase::ShowEquippedPresentation()
@@ -1158,6 +1163,9 @@ void ARangedWeaponBase::ShowEquippedPresentation()
 	}
 	RefreshShadowWeaponPresentation();
 	HideHandMagazine();
+
+	// Attach Notify 는 모든 머신에서 돌므로, 장착 시점의 과충전 동기화도 여기서 한 번에 처리한다.
+	RefreshOverchargeEmissiveFromOwner();
 }
 
 void ARangedWeaponBase::RefreshShadowWeaponPresentation()
@@ -1231,10 +1239,12 @@ void ARangedWeaponBase::OnRep_EquippedState()
 	if (IsEquipped())
 	{
 		UpdateLocalAmmoUI();
+		RefreshOverchargeEmissiveFromOwner();
 	}
 	else
 	{
 		HideSightPresentation();
+		SnapOverchargeEmissive(0.0f);
 	}
 }
 
@@ -1555,8 +1565,24 @@ ULocalPlayerUISubSystem* ARangedWeaponBase::GetLocalUISubsystem() const
 	return nullptr;
 }
 
+bool ARangedWeaponBase::CanPushAmmoUI() const
+{
+	if (const AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner))
+	{
+		const AOutlierPlayerState* OutlierPS = Shooter->GetPlayerState<AOutlierPlayerState>();
+		return OutlierPS && OutlierPS->GetAcquiredSuit();
+	}
+
+	return true;
+}
+
 void ARangedWeaponBase::UpdateLocalAmmoUI() const
 {
+	if (!CanPushAmmoUI())
+	{
+		return;
+	}
+
 	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
 	{
 		UISubsystem->OnRep_AmmoCountChanged(CurrentAmmo);
@@ -1565,6 +1591,10 @@ void ARangedWeaponBase::UpdateLocalAmmoUI() const
 
 ARangedWeaponBase::ARangedWeaponBase() : AWeaponBase()
 {
+	// 평소에는 틱하지 않는다. 과충전 이미시브가 보간 중일 때만 켰다가 목표값에 닿으면 다시 끈다.
+	PrimaryActorTick.bCanEverTick = true;
+	PrimaryActorTick.bStartWithTickEnabled = false;
+
 	FirstSight = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("FirstSight"));
 	FirstSight->SetupAttachment(FirstPersonWeaponMesh);
 	FirstSight->SetHiddenInGame(true);
@@ -1596,6 +1626,27 @@ void ARangedWeaponBase::BeginPlay()
 	{
 		HideSightPresentation();
 	}
+}
+
+void ARangedWeaponBase::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+
+	if (FMath::IsNearlyEqual(OverchargeEmissiveAlpha, OverchargeEmissiveTargetAlpha))
+	{
+		OverchargeEmissiveAlpha = OverchargeEmissiveTargetAlpha;
+		ApplyOverchargeEmissiveAlpha();
+		SetActorTickEnabled(false);
+		return;
+	}
+
+	const float RampSpeed = 1.0f / FMath::Max(OverchargeEmissiveRampSeconds, KINDA_SMALL_NUMBER);
+	OverchargeEmissiveAlpha = FMath::FInterpConstantTo(
+		OverchargeEmissiveAlpha,
+		OverchargeEmissiveTargetAlpha,
+		DeltaSeconds,
+		RampSpeed);
+	ApplyOverchargeEmissiveAlpha();
 }
 
 void ARangedWeaponBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -1648,6 +1699,110 @@ void ARangedWeaponBase::CacheSightAimMaterials()
 			SightAimMIDs.Add(MID);
 		}
 	}
+}
+
+void ARangedWeaponBase::CacheOverchargeEmissiveMaterials()
+{
+	// SetStaticMesh / SetSkeletalMeshAsset 는 머티리얼 오버라이드를 날리므로
+	// CacheSightAimMaterials 와 같이 장착 경계마다 통째로 다시 만든다.
+	OverchargeEmissiveMIDs.Reset();
+
+	// 한 머신에서는 OnlyOwnerSee / OwnerNoSee 때문에 1인칭과 3인칭 중 한쪽만 보이지만,
+	// 같은 무기 액터를 다른 클라는 반대쪽 뷰로 보므로 양쪽 다 만들어 둔다.
+	// ShadowWeaponMesh / ShadowSight 는 그림자 전용( HiddenInGame )이라 이미시브와 무관하다.
+	UMeshComponent* TargetMeshes[] =
+	{
+		FirstPersonWeaponMesh,
+		ThirdPersonWeaponMesh,
+		FirstSight,
+		ThirdSight
+	};
+
+	for (UMeshComponent* TargetMesh : TargetMeshes)
+	{
+		if (!TargetMesh)
+		{
+			continue;
+		}
+
+		const int32 MaterialCount = TargetMesh->GetNumMaterials();
+		for (int32 MaterialIndex = 0; MaterialIndex < MaterialCount; ++MaterialIndex)
+		{
+			// 이미 MID 인 슬롯은 같은 MID 를 돌려받는다.
+			// 조준경 슬롯은 SightAimMIDs 와 겹치지만 파라미터가 달라 서로 간섭하지 않는다.
+			if (UMaterialInstanceDynamic* EmissiveMID =
+				TargetMesh->CreateAndSetMaterialInstanceDynamic(MaterialIndex))
+			{
+				OverchargeEmissiveMIDs.Add(EmissiveMID);
+			}
+		}
+	}
+}
+
+void ARangedWeaponBase::ApplyOverchargeEmissiveAlpha()
+{
+	for (const TObjectPtr<UMaterialInstanceDynamic>& EmissiveMID : OverchargeEmissiveMIDs)
+	{
+		if (IsValid(EmissiveMID))
+		{
+			EmissiveMID->SetScalarParameterValue(OverchargeEmissiveScalarParamName, OverchargeEmissiveAlpha);
+		}
+	}
+}
+
+void ARangedWeaponBase::SetOverchargeEmissiveActive(bool bActive)
+{
+	// 데디케이티드 서버는 렌더링이 없으므로 MID 를 만들 이유가 없다.
+	if (GetNetMode() == NM_DedicatedServer)
+	{
+		return;
+	}
+
+	const float NewTargetAlpha = bActive ? 1.0f : 0.0f;
+	if (OverchargeEmissiveRampSeconds <= KINDA_SMALL_NUMBER)
+	{
+		SnapOverchargeEmissive(NewTargetAlpha);
+		return;
+	}
+
+	OverchargeEmissiveTargetAlpha = NewTargetAlpha;
+
+	// 한 번도 과충전된 적 없는 무기까지 MID 를 만들어두지는 않는다.
+	if (OverchargeEmissiveMIDs.Num() == 0
+		&& FMath::IsNearlyEqual(OverchargeEmissiveAlpha, OverchargeEmissiveTargetAlpha))
+	{
+		return;
+	}
+
+	CacheOverchargeEmissiveMaterials();
+	SetActorTickEnabled(true);
+}
+
+void ARangedWeaponBase::SnapOverchargeEmissive(float Alpha)
+{
+	if (GetNetMode() == NM_DedicatedServer)
+	{
+		return;
+	}
+
+	const float ClampedAlpha = FMath::Clamp(Alpha, 0.0f, 1.0f);
+	OverchargeEmissiveAlpha = ClampedAlpha;
+	OverchargeEmissiveTargetAlpha = ClampedAlpha;
+	SetActorTickEnabled(false);
+
+	if (OverchargeEmissiveMIDs.Num() == 0 && FMath::IsNearlyZero(ClampedAlpha))
+	{
+		return;
+	}
+
+	CacheOverchargeEmissiveMaterials();
+	ApplyOverchargeEmissiveAlpha();
+}
+
+void ARangedWeaponBase::RefreshOverchargeEmissiveFromOwner()
+{
+	// 태그 이벤트를 놓친 시점( 재장착 / 관련성 복구 )에서도 현재 상태로 맞춰준다.
+	SnapOverchargeEmissive(IsWeaponOvercharged() ? 1.0f : 0.0f);
 }
 
 void ARangedWeaponBase::ReportArenaWideNoise(ACharacter* OwnerCharacter)

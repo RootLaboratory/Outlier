@@ -699,6 +699,15 @@ void UOutlierUpgradeComponent::ReconcileUpgradeProjection()
 	//     하나의 합성 GE 로 같이 apply-new -> remove-old 스왑한다 - 별도 flush 단계가 필요 없다 )
 	ProjectAttributes(ASC, Effects);
 	ProjectAbilityConfig(ASC, Effects);
+
+	// SKIP 로그만 있고 성공 로그가 없어서, "ASC 준비 후 재적용된다"는 전제가 실제로 성립하는지
+	// 로그로 확인할 수 없었다(리로드 직후 새 폰에서 SKIP이 찍히는데 그 뒤가 안 보였다).
+	UE_LOG(LogTemp, Display,
+		TEXT("[Upgrade.Projection] applied Owner=%s Role=%d ActivatedNodes=%d Effects=%d"),
+		*GetNameSafe(GetOwner()),
+		static_cast<int32>(Role),
+		ActivatedNodeSet.Num(),
+		Effects.Num());
 }
 
 UOutlierAbilitySystemComponent* UOutlierUpgradeComponent::GetOwningAbilitySystem() const

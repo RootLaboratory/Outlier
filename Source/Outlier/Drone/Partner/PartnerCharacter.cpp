@@ -102,6 +102,22 @@ void APartnerCharacter::BeginPlay()
 
 void APartnerCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	if (HasAuthority())
+	{
+		if (CombatComponent)
+		{
+			CombatComponent->CancelForReboot();
+		}
+
+		AWeaponBase* WeaponToRemove = GetCurrentWeapon();
+		const bool bOwnsWeapon = IsValid(WeaponToRemove) && WeaponToRemove->GetOwner() == this;
+		EquipWeapon(nullptr);
+		if (bOwnsWeapon)
+		{
+			WeaponToRemove->OnOwnerLost();
+		}
+	}
+
 	if (HasAuthority() && CachedShooterCharacter)
 	{
 		CachedShooterCharacter->CancelActiveQuantumLeap(false);
@@ -322,6 +338,27 @@ void APartnerCharacter::RefreshPartnerCooldownUI()
 	}
 }
 
+void APartnerCharacter::RefreshPartnerSuitUI()
+{
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+
+	APlayerController* PlayerController = Cast<APlayerController>(GetController());
+	ULocalPlayer* LocalPlayer = PlayerController ? PlayerController->GetLocalPlayer() : nullptr;
+	ULocalPlayerUISubSystem* UISubsystem = LocalPlayer
+		? LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>()
+		: nullptr;
+	if (!UISubsystem)
+	{
+		return;
+	}
+
+	const AOutlierPlayerState* OutlierPS = GetPlayerState<AOutlierPlayerState>();
+	UISubsystem->OnShooterSuitAcquiredChanged(OutlierPS && OutlierPS->IsPairSuitAcquired());
+}
+
 void APartnerCharacter::NotifyPartnerCooldownUI(const FGameplayTag& CooldownTag)
 {
 	if (!IsLocallyControlled() || !OutlierAbilitySystemComponent)
@@ -375,15 +412,6 @@ void APartnerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 	if (MovementComponent)
 	{
 		MovementComponent->ClearFlightInput();
-	}
-
-	if (ToggleTestWeaponAttachmentKey.IsValid())
-	{
-		PlayerInputComponent->BindKey(
-			ToggleTestWeaponAttachmentKey,
-			IE_Pressed,
-			this,
-			&APartnerCharacter::ToggleTestWeaponEquipment);
 	}
 
 	// Set up Action Bindings
@@ -515,24 +543,6 @@ void APartnerCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	DOREPLIFETIME(APartnerCharacter, bScanning);
 	DOREPLIFETIME(APartnerCharacter, bIsAccelerate);
 	DOREPLIFETIME(APartnerCharacter, bHiddenForEnemyPossession);
-}
-
-void APartnerCharacter::ToggleTestWeaponEquipment()
-{
-	UE_LOG(
-		LogTemp,
-		Warning,
-		TEXT("[PartnerWeaponToggle][Input] Character=%s Authority=%d LocallyControlled=%d CurrentWeapon=%s CombatComponent=%s"),
-		*GetNameSafe(this),
-		HasAuthority() ? 1 : 0,
-		IsLocallyControlled() ? 1 : 0,
-		*GetNameSafe(GetCurrentWeapon()),
-		*GetNameSafe(CombatComponent));
-
-	if (CombatComponent)
-	{
-		CombatComponent->ToggleTestWeaponEquipped();
-	}
 }
 
 FGameplayTagContainer APartnerCharacter::GetOwnedGameplayTagsForQuery() const
@@ -795,8 +805,6 @@ void APartnerCharacter::FreeMove()
 
 void APartnerCharacter::StopFreeMove()
 {
-	UE_LOG(LogTemp, Warning, TEXT("[OutlierInputDebug] Partner FreeMove Completed: %s"), *GetNameSafe(this));
-
 	if (MovementComponent)
 	{
 		MovementComponent->SetFreeMove(false);

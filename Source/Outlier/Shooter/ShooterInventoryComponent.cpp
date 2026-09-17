@@ -2,8 +2,10 @@
 
 #include "Shooter/ShooterInventoryComponent.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Shooter/ShooterCombatComponent.h"
 #include "Net/UnrealNetwork.h"
 #include "OutlierNetUtils.h"
+#include "OutlierPlayerState.h"
 
 UShooterInventoryComponent::UShooterInventoryComponent()
 {
@@ -66,6 +68,12 @@ FName UShooterInventoryComponent::GetThirdPersonWeaponSocketByType(EWeaponType W
 	default:
 		return ThirdPersonWeaponSocketDefault;
 	}
+}
+
+AWeaponBase* UShooterInventoryComponent::GetWeaponInSlot(EWeaponSlot Slot) const
+{
+	const int32 SlotIndex = static_cast<int32>(Slot);
+	return WeaponSlots.IsValidIndex(SlotIndex) ? WeaponSlots[SlotIndex] : nullptr;
 }
 
 void UShooterInventoryComponent::TrySwitchWeapon1()
@@ -157,16 +165,54 @@ void UShooterInventoryComponent::HandleEquipWeapon(AWeaponBase* Weapon)
 		OldWeapon->OnDropped(DropTransform, ShooterCharacter);
 	}
 
-	WeaponSlots[SlotIndex] = Weapon;
-	CurrentSlot = Slot;
+	ApplyWeaponToSlot(Weapon, Slot, /*bPlayEquipMontage=*/true);
+}
 
-	// 실제 장착/해제 라이프사이클은 베이스 캐릭터 구현을 재사용하고,
-	// Shooter 쪽에서는 슬롯 목록과 파생 상태만 보정
-	// Inventory가 보유 무기와 소켓 규칙을 관리하고, 최종 장착은 Character가 맡음
-	ShooterCharacter->AFirstPersonCharacter::EquipWeapon(Weapon);
-	ShooterCharacter->PlayEquipMontages();
-	ShooterCharacter->RefreshWeaponMode();
-	ShooterCharacter->RefreshCombatState();
+bool UShooterInventoryComponent::EquipSuitRifle(AWeaponBase* RifleWeapon)
+{
+	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	const EWeaponSlot Slot = EWeaponSlot::Primary;
+	const int32 SlotIndex = static_cast<int32>(Slot);
+
+	if (!ShooterCharacter
+		|| !ShooterCharacter->HasAuthority()
+		|| !RifleWeapon
+		|| RifleWeapon->GetWeaponType() != EWeaponType::Rifle
+		|| !IsValidWeaponSlot(Slot)
+		|| !RifleWeapon->CanBePickedUpBy(ShooterCharacter))
+	{
+		return false;
+	}
+
+	if (ShooterCharacter->CombatComponent)
+	{
+		ShooterCharacter->CombatComponent->CancelMeleeAttack();
+	}
+	if (ShooterCharacter->IsReloading())
+	{
+		ShooterCharacter->CancelReloadInternal();
+	}
+	if (ShooterCharacter->IsWeaponOvercharged())
+	{
+		ShooterCharacter->EndActiveWeaponOvercharge(true);
+	}
+	ShooterCharacter->StopAimInternal();
+
+	AWeaponBase* PreviousPrimaryWeapon = WeaponSlots[SlotIndex];
+	if (PreviousPrimaryWeapon && PreviousPrimaryWeapon != RifleWeapon)
+	{
+		if (ShooterCharacter->CurrentWeapon == PreviousPrimaryWeapon)
+		{
+			ShooterCharacter->AFirstPersonCharacter::EquipWeapon(nullptr);
+		}
+
+		WeaponSlots[SlotIndex] = nullptr;
+		PreviousPrimaryWeapon->OnOwnerLost();
+	}
+
+	ApplyWeaponToSlot(RifleWeapon, Slot, /*bPlayEquipMontage=*/true);
+
+	return ShooterCharacter->CurrentWeapon == RifleWeapon;
 }
 
 void UShooterInventoryComponent::SelectWeaponSlot(EWeaponSlot Slot)
@@ -195,6 +241,12 @@ void UShooterInventoryComponent::SelectWeaponSlot(EWeaponSlot Slot)
 		return;
 	}
 
+	// 교체할 무기가 없더라도 유효한 슬롯 입력은 현재 근접 공격을 취소한다.
+	if (ShooterCharacter->CombatComponent)
+	{
+		ShooterCharacter->CombatComponent->CancelMeleeAttack();
+	}
+
 	AWeaponBase* TargetWeapon = WeaponSlots[WeaponIndex];
 	if (!TargetWeapon || TargetWeapon == ShooterCharacter->CurrentWeapon)
 	{
@@ -212,12 +264,127 @@ void UShooterInventoryComponent::SelectWeaponSlot(EWeaponSlot Slot)
 
 	ShooterCharacter->StopAimInternal();
 
+	ApplyWeaponToSlot(TargetWeapon, Slot, /*bPlayEquipMontage=*/true);
+}
+
+void UShooterInventoryComponent::ApplyWeaponToSlot(
+	AWeaponBase* Weapon, EWeaponSlot Slot, bool bPlayEquipMontage)
+{
+	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	if (!ShooterCharacter || !IsValidWeaponSlot(Slot))
+	{
+		return;
+	}
+
+	WeaponSlots[static_cast<int32>(Slot)] = Weapon;
 	CurrentSlot = Slot;
 
-	ShooterCharacter->AFirstPersonCharacter::EquipWeapon(TargetWeapon);
-	ShooterCharacter->PlayEquipMontages();
+	// 실제 장착/해제 라이프사이클은 베이스 캐릭터 구현을 재사용하고,
+	// Shooter 쪽에서는 슬롯 목록과 파생 상태만 보정
+	// Inventory가 보유 무기와 소켓 규칙을 관리하고, 최종 장착은 Character가 맡음
+	ShooterCharacter->AFirstPersonCharacter::EquipWeapon(Weapon);
+
+	if (bPlayEquipMontage)
+	{
+		ShooterCharacter->PlayEquipMontages();
+	}
+	else if (Weapon)
+	{
+		// OnEquipped 가 1P/3P/Shadow 메시를 전부 숨겨두고 공개는 equip 몽타주 Notify 가 한다.
+		// 몽타주를 생략하는 경로(복원)에서는 아무도 다시 보여주지 않으므로 직접 켠다.
+		// ASuitInteraction 이 Partner 무기에 대해 이미 같은 처리를 한다.
+		Weapon->ShowEquippedPresentation();
+	}
+
 	ShooterCharacter->RefreshWeaponMode();
 	ShooterCharacter->RefreshCombatState();
+
+	CaptureLoadoutToPlayerState();
+}
+
+void UShooterInventoryComponent::RestoreWeaponIntoSlot(
+	TSubclassOf<AWeaponBase> WeaponClass, EWeaponSlot Slot)
+{
+	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	if (!WeaponClass || !ShooterCharacter || !IsValidWeaponSlot(Slot))
+	{
+		return;
+	}
+
+	AWeaponBase* Weapon = AWeaponBase::SpawnLoadoutWeapon(GetWorld(), WeaponClass, ShooterCharacter);
+	if (!Weapon)
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("%s RestoreWeaponIntoSlot failed to spawn Class=%s Slot=%d"),
+			OutlierNet::GetNetPrefix(ShooterCharacter),
+			*GetNameSafe(WeaponClass.Get()),
+			static_cast<int32>(Slot));
+		return;
+	}
+
+	ApplyWeaponToSlot(Weapon, Slot, /*bPlayEquipMontage=*/false);
+}
+
+void UShooterInventoryComponent::RestoreLoadout(FOutlierLoadoutSnapshot Snapshot)
+{
+	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	if (!ShooterCharacter || !ShooterCharacter->HasAuthority())
+	{
+		return;
+	}
+
+	const int32 CurrentSlotIndex = static_cast<int32>(Snapshot.CurrentSlot);
+
+	// CurrentSlot 을 마지막에 넣는다.
+	// AFirstPersonCharacter::EquipWeapon 이 직전 CurrentWeapon 에 OnUnequipped() 를 부르므로,
+	// 순서대로 넣기만 하면 앞의 것들은 저절로 스토우되고 마지막 것만 장착 상태로 남는다.
+	// 별도의 "슬롯에만 넣기" 경로를 만들 필요가 없다.
+	for (int32 SlotIndex = 0; SlotIndex < Snapshot.SlotClasses.Num(); ++SlotIndex)
+	{
+		if (SlotIndex == CurrentSlotIndex)
+		{
+			continue;
+		}
+
+		RestoreWeaponIntoSlot(Snapshot.SlotClasses[SlotIndex], static_cast<EWeaponSlot>(SlotIndex));
+	}
+
+	if (Snapshot.SlotClasses.IsValidIndex(CurrentSlotIndex))
+	{
+		RestoreWeaponIntoSlot(Snapshot.SlotClasses[CurrentSlotIndex], Snapshot.CurrentSlot);
+	}
+}
+
+void UShooterInventoryComponent::CaptureLoadoutToPlayerState() const
+{
+	const AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	if (!ShooterCharacter || !ShooterCharacter->HasAuthority())
+	{
+		return;
+	}
+
+	AOutlierPlayerState* PlayerState = ShooterCharacter->GetPlayerState<AOutlierPlayerState>();
+	if (!PlayerState)
+	{
+		return;
+	}
+
+	// PartnerWeaponClass 는 인벤토리 소관이 아니다 (슈트가 직접 지급한다).
+	// 빈 구조체로 시작하면 Shooter 무기를 바꿀 때마다 Partner 기록이 지워지므로
+	// 기존 스냅샷을 읽어와 Shooter 쪽만 갱신한다.
+	FOutlierLoadoutSnapshot Snapshot = PlayerState->GetLoadoutSnapshot();
+
+	Snapshot.SlotClasses.Reset();
+	Snapshot.SlotClasses.SetNum(WeaponSlots.Num());
+	for (int32 SlotIndex = 0; SlotIndex < WeaponSlots.Num(); ++SlotIndex)
+	{
+		Snapshot.SlotClasses[SlotIndex] = WeaponSlots[SlotIndex]
+			? WeaponSlots[SlotIndex]->GetClass()
+			: nullptr;
+	}
+	Snapshot.CurrentSlot = CurrentSlot;
+
+	PlayerState->SetLoadoutSnapshot(Snapshot);
 }
 
 void UShooterInventoryComponent::CleanupOwnedWeapons()

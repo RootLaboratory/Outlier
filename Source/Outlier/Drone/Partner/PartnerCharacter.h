@@ -5,8 +5,8 @@
 #include "CoreMinimal.h"
 #include "FirstPerson/FirstPersonCharacter.h"
 #include "Engine/DataTable.h"
-#include "InputCoreTypes.h"
 #include "Interface/WeaponMuzzleProvider.h"
+#include "Interface/MeleeTargetInterface.h"
 #include "AbilitySystemInterface.h"
 #include "Damage/OutlierDamageReceiver.h"
 #include "PartnerCharacter.generated.h"
@@ -79,7 +79,7 @@ struct FGameplayEffectSpec;
 struct FActiveGameplayEffectHandle;
 struct FOnAttributeChangeData;
 UCLASS()
-class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeaponMuzzleProvider, public IAbilitySystemInterface, public IOutlierDamageReceiver
+class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeaponMuzzleProvider, public IAbilitySystemInterface, public IOutlierDamageReceiver, public IMeleeTargetInterface
 {
 	GENERATED_BODY()
 
@@ -141,9 +141,6 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Attachment")
 	FName ThirdPersonWeaponAttachSocketName = TEXT("ThirdPerson");
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Test|Weapon")
-	FKey ToggleTestWeaponAttachmentKey = EKeys::T;
 
 	// Partner 무기는 본체 메시와 일체형이므로 Weapon Actor 대신 이 소켓에서 총구 연출을 시작한다.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Presentation")
@@ -456,8 +453,6 @@ protected:
 	void StopFreeMove();
 	void VerticalMove(const FInputActionValue& Value);
 	void StopVerticalMove();
-	void ToggleTestWeaponEquipment();
-
 	void SetBoundaryOutside(bool bOutside);
 	EPartnerBoundaryState GetBoundaryOutside();
 
@@ -504,6 +499,7 @@ protected:
 	virtual void LookInput(const FInputActionValue& Value) override;
 public:
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
+	virtual bool CanShowMeleeTargetIndicator_Implementation(const AActor* /*InstigatorActor*/) const override { return false; }
 	virtual FGameplayTagContainer GetOwnedGameplayTagsForQuery() const override;
 	UOutlierAbilitySystemComponent* GetOutlierAbilitySystemComponent() const
 	{
@@ -576,4 +572,9 @@ public:
 	UOutlierUpgradeComponent* GetUpgradeComponent() const { return UpgradeComponent; }
 
 	void HandleAutoReloadRequested();
+
+	// 슈트 획득 여부를 Partner HUD 에 투영한다.
+	// PlayerState 가 페어의 양쪽 캐릭터 포인터를 들고 있으므로 거기서 이 함수를 부르고,
+	// 로컬 여부는 여기서 스스로 판단한다 (AShooterCharacter::RefreshShooterSuitUI 와 같은 방식).
+	void RefreshPartnerSuitUI();
 };

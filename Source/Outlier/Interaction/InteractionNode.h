@@ -21,6 +21,7 @@ public:
 	virtual bool Interact(AFirstPersonCharacter* Interactor) override;
 
 protected:
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")
 	TObjectPtr<USceneComponent> SceneRoot;
 

@@ -112,7 +112,7 @@ bool UOutlierShooterQuantumLeapAbility::CanActivateAbility(
 	{
 		return false;
 	}
-	if (Shooter->IsSuitDisabledByPartnerBoundary())
+	if (!Shooter->IsSuitUsable())
 	{
 		return false;
 	}
@@ -309,12 +309,12 @@ void UOutlierShooterQuantumLeapAbility::CompleteQuantumLeap()
 		EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
 		return;
 	}
-	const bool bBoundaryDisabled = Shooter->IsSuitDisabledByPartnerBoundary();
+	const bool bSuitUnusable = !Shooter->IsSuitUsable();
 	const bool bPartnerRebooting = PartnerASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Rebooting());
 	const float Distance = FVector::Dist(Shooter->GetActorLocation(), Partner->GetActorLocation());
 	const bool bOutOfRange = Distance > ShooterASC->GetShooterSuitConfig().MaxPartnerDistance;
 	const bool bDestinationBlocked = !IsDestinationClear(*Shooter, *Partner, Destination);
-	if (bBoundaryDisabled || bPartnerRebooting || bOutOfRange || bDestinationBlocked)
+	if (bSuitUnusable || bPartnerRebooting || bOutOfRange || bDestinationBlocked)
 	{
 		bCommitFailureCooldown = true;
 		EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
@@ -369,7 +369,7 @@ bool UOutlierShooterBulletReflectionAbility::CanActivateAbility(
 		&& AbilitySystem
 		&& AbilitySystem->IsShooterSuitConfigured()
 		&& !AbilitySystem->IsShooterBulletReflectionCooldownActive()
-		&& !Shooter->IsSuitDisabledByPartnerBoundary()
+		&& Shooter->IsSuitUsable()
 		&& IsValid(Partner)
 		&& PartnerASC
 		&& !PartnerASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Rebooting());
@@ -500,7 +500,7 @@ bool UOutlierShooterWeaponOverchargeAbility::CanActivateAbility(
 		&& !AbilitySystem->IsShooterWeaponOverchargeCooldownActive()
 		&& Shooter->GetWeaponMode() == EWeaponMode::Primary
 		&& Cast<ARangedWeaponBase>(Shooter->GetCurrentWeapon())
-		&& !Shooter->IsSuitDisabledByPartnerBoundary()
+		&& Shooter->IsSuitUsable()
 		&& IsValid(Partner)
 		&& PartnerASC
 		&& !PartnerASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Rebooting());
@@ -628,13 +628,7 @@ void UOutlierShooterWeaponOverchargeAbility::DrainShield()
 	{
 		ShooterASC->ApplyShieldDeltaToSelf(-FMath::Min(Shooter->GetCurShield(), RemainingDrain));
 	}
-
-	if (Shooter->GetCurPartnerShield() <= KINDA_SMALL_NUMBER
-		&& Shooter->GetCurShield() <= KINDA_SMALL_NUMBER)
-	{
-		// 쉴드가 연료이므로 둘 다 소진된 프레임에 지속시간을 기다리지 않고 종료한다.
-		EndWeaponOvercharge(true);
-	}
+	// 실드 소진은 과부하의 비용만 확정하며, 활성 수명은 8초 DataTable GameplayEffect가 소유한다.
 }
 
 void UOutlierShooterWeaponOverchargeAbility::HandleOverchargeEffectRemoved(
@@ -690,7 +684,7 @@ bool UOutlierShooterStealthAbility::CanActivateAbility(
 	{
 		return false;
 	}
-	if (Shooter->IsSuitDisabledByPartnerBoundary())
+	if (!Shooter->IsSuitUsable())
 	{
 		return false;
 	}

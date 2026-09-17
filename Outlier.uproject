@@ -71,6 +71,10 @@
 			"TargetAllowList": [
 				"Editor"
 			]
+		},
+		{
+			"Name": "GraphicSettingDebugger",
+			"Enabled": true
 		}
 	]
 }

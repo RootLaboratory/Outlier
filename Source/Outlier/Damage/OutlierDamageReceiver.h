@@ -36,5 +36,6 @@ public:
 
 namespace OutlierDamage
 {
+	OUTLIER_API bool IsFromEnemy(const FOutlierDamageRequest& Request);
 	OUTLIER_API float Apply(AActor* TargetActor, const FOutlierDamageRequest& Request);
 }

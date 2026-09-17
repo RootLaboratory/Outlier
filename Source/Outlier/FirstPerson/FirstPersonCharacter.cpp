@@ -13,23 +13,20 @@
 #include "Interface/InteractableInterface.h"
 #include "Interaction/InteractableComponent.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
-#include "LocalPlayerUISubSystem.h"
 #include "EnhancedInputComponent.h"
 #include "Engine/LocalPlayer.h"
 #include "InputAction.h"
 #include "InputActionValue.h"
-#include "Components/SceneCaptureComponent2D.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Weapon/WeaponBase.h"
 #include "Net/UnrealNetwork.h"
 #include "Engine/OverlapResult.h"
 #include "OutlierNetUtils.h"
 #include "Outlier.h"
-#include "OutlierPlayerState.h"
-#include "Drone/Partner/PartnerCharacter.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Team/OutlierTeamIds.h"
 #include "Room/RoomTagComponent.h"
+#include "Settings/LocalPlayerSettingsSubsystem.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
 
 
@@ -78,14 +75,6 @@ AFirstPersonCharacter::AFirstPersonCharacter()
 	// configure character movement
 	GetCharacterMovement()->BrakingDecelerationFalling = 1500.0f;
 	GetCharacterMovement()->AirControl = 0.5f;
-
-	//Capture Component
-	CaptureComponent = CreateDefaultSubobject< USceneCaptureComponent2D>(TEXT("PartnerCameraCapture"));
-	CaptureComponent->SetupAttachment(FirstPersonCamera);
-	// 시작 시 PartnerCam 캡처는 꺼진 상태. PartnerCameraToggle에서 SetPartnerCameraCaptureUpdating(true)로 켠다.
-	CaptureComponent->bCaptureEveryFrame = false;
-	CaptureComponent->bCaptureOnMovement = false;
-	CaptureComponent->PrimaryComponentTick.bStartWithTickEnabled = false;
 }
 
 FGenericTeamId AFirstPersonCharacter::GetGenericTeamId() const
@@ -137,8 +126,6 @@ void AFirstPersonCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
 	EnhancedInputComponent->BindAction(InputConfig->InteractionAction, ETriggerEvent::Completed, this, &AFirstPersonCharacter::EndInteract);
 	EnhancedInputComponent->BindAction(InputConfig->InteractionAction, ETriggerEvent::Canceled, this, &AFirstPersonCharacter::EndInteract);
 
-	EnhancedInputComponent->BindAction(InputConfig->CamToggleAction, ETriggerEvent::Started, this, &AFirstPersonCharacter::TryCamToggle);
-
 	EnhancedInputComponent->BindAction(InputConfig->WidgetEscapeAction,ETriggerEvent::Started,this, &AFirstPersonCharacter::HandleWidgetEscapeInput);
 
 	EnhancedInputComponent->BindAction(InputConfig->InGameSettingAction, ETriggerEvent::Started, this, &AFirstPersonCharacter::HandleWidgetEscapeInput);
@@ -152,6 +139,22 @@ void AFirstPersonCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
 void AFirstPersonCharacter::BeginPlay()
 {
 	Super::BeginPlay();
+
+	if (APlayerController* PlayerController = Cast<APlayerController>(GetController()))
+	{
+		if (ULocalPlayer* LocalPlayer = PlayerController->GetLocalPlayer())
+		{
+			BoundSettingsSubsystem =
+				LocalPlayer->GetSubsystem<ULocalPlayerSettingsSubsystem>();
+			if (BoundSettingsSubsystem)
+			{
+				MouseSensitivity = BoundSettingsSubsystem->GetMouseSensitivity();
+				BoundSettingsSubsystem->OnMouseSensitivityChanged.AddUniqueDynamic(
+					this,
+					&AFirstPersonCharacter::HandleMouseSensitivityChanged);
+			}
+		}
+	}
 
 	GetWorldTimerManager().SetTimer(
 		InteractionTraceTimerHandle,
@@ -173,6 +176,17 @@ void AFirstPersonCharacter::BeginPlay()
 
 }
 
+void AFirstPersonCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (BoundSettingsSubsystem)
+	{
+		BoundSettingsSubsystem->OnMouseSensitivityChanged.RemoveAll(this);
+		BoundSettingsSubsystem = nullptr;
+	}
+
+	Super::EndPlay(EndPlayReason);
+}
+
 void AFirstPersonCharacter::MoveInput(const FInputActionValue& Value)
 {
 	// get the Vector2D move axis
@@ -186,10 +200,17 @@ void AFirstPersonCharacter::MoveInput(const FInputActionValue& Value)
 void AFirstPersonCharacter::LookInput(const FInputActionValue& Value)
 {
 	// get the Vector2D move axis
-	FVector2D LookAxisVector = Value.Get<FVector2D>();
+	const FVector2D LookAxisVector = Value.Get<FVector2D>();
 
 	// 카메라 기준이라 Y를 뒤집음
-	DoAim(LookAxisVector.X, -LookAxisVector.Y);
+	DoAim(
+		LookAxisVector.X * MouseSensitivity,
+		-LookAxisVector.Y * MouseSensitivity);
+}
+
+void AFirstPersonCharacter::HandleMouseSensitivityChanged(float NewValue)
+{
+	MouseSensitivity = NewValue;
 }
 
 void AFirstPersonCharacter::HandleInteractionInputStarted()
@@ -299,97 +320,6 @@ void AFirstPersonCharacter::DoAim(float Yaw, float Pitch)
 		// rotation inputs
 		AddControllerYawInput(Yaw);
 		AddControllerPitchInput(Pitch);
-	}
-}
-
-void AFirstPersonCharacter::TryCamToggle()
-{
-	if (!IsLocallyControlled())
-	{
-		return;
-	}
-
-	APlayerController* PlayerController = Cast<APlayerController>(GetController());
-
-	if (PlayerController)
-	{	UE_LOG(LogTemp, Error, TEXT("PlayerController"));
-
-		if (ULocalPlayer* LP = PlayerController->GetLocalPlayer())
-		{
-			UE_LOG(LogTemp, Error, TEXT("ULocalPlayer"));
-
-			if (ULocalPlayerUISubSystem* PPSubsystem = LP->GetSubsystem<ULocalPlayerUISubSystem>())
-			{
-				const bool bShouldActivate = !bPartnerCameraCaptureActive;
-				AFirstPersonCharacter* CameraSource = bShouldActivate
-					? ResolvePartnerCameraSource()
-					: ActivePartnerCameraSource.Get();
-
-				if (!CameraSource)
-				{
-					UE_LOG(LogTemp, Warning,
-						TEXT("[PartnerCam] Toggle skipped: paired camera source is not ready Character=%s"),
-						*GetNameSafe(this));
-					return;
-				}
-
-				if (bShouldActivate)
-				{
-					PPSubsystem->PartnerCameraBind(CameraSource->CaptureComponent);
-				}
-
-				PPSubsystem->PartnerCameraToggle();
-				bPartnerCameraCaptureActive = bShouldActivate;
-				CameraSource->SetPartnerCameraCaptureUpdating(bPartnerCameraCaptureActive);
-				ActivePartnerCameraSource = bPartnerCameraCaptureActive ? CameraSource : nullptr;
-			}
-			else
-			{
-				UE_LOG(LogTemp, Error, TEXT("PPSubsystem"));
-
-			}
-		}
-	}
-}
-
-AFirstPersonCharacter* AFirstPersonCharacter::ResolvePartnerCameraSource() const
-{
-	const APlayerController* PlayerController = Cast<APlayerController>(GetController());
-	const AOutlierPlayerState* OutlierPlayerState = PlayerController
-		? PlayerController->GetPlayerState<AOutlierPlayerState>()
-		: nullptr;
-	if (!OutlierPlayerState)
-	{
-		return nullptr;
-	}
-
-	if (IsA<AShooterCharacter>())
-	{
-		return OutlierPlayerState->GetPartnerCharacter();
-	}
-
-	if (IsA<APartnerCharacter>())
-	{
-		return OutlierPlayerState->GetShooterCharacter();
-	}
-
-	return nullptr;
-}
-
-void AFirstPersonCharacter::SetPartnerCameraCaptureUpdating(bool bEnabled)
-{
-	if (!CaptureComponent)
-	{
-		return;
-	}
-
-	CaptureComponent->bCaptureEveryFrame = bEnabled;
-	CaptureComponent->bCaptureOnMovement = bEnabled;
-	CaptureComponent->SetComponentTickEnabled(bEnabled);
-
-	if (bEnabled)
-	{
-		CaptureComponent->CaptureScene();
 	}
 }
 
@@ -704,8 +634,6 @@ void AFirstPersonCharacter::OnRep_CurrentWeapon()
 	CurrentWeaponType = CurrentWeapon ? CurrentWeapon->GetWeaponType() : EWeaponType::Unarmed;
 	LastReplicatedWeapon = CurrentWeapon;
 	OnWeaponChanged.Broadcast(CurrentWeaponType);
-
-	CaptureComponentWeaponNotIncluded(LastReplicatedWeapon);
 }
 
 void AFirstPersonCharacter::TryStartAttack()
@@ -816,18 +744,6 @@ void AFirstPersonCharacter::CollectStealthMeshes(
 
 void AFirstPersonCharacter::OnMoveInputUpdated(const FVector2D& MoveValue)
 {
-}
-
-void AFirstPersonCharacter::CaptureComponentWeaponNotIncluded(AWeaponBase* Weapon)
-{
-	if (CaptureComponent && Weapon)
-	{
-		CaptureComponent->HideActorComponents(Weapon, true);
-	}
-	else
-	{
-		UE_LOG(LogTemp, Error, TEXT("CaptureComponentWEAPONnoTiNCLUDED"));
-	}
 }
 
 void AFirstPersonCharacter::UpdateInteractableFocus()

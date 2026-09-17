@@ -8,6 +8,7 @@ public class OutlierEditor : ModuleRules
 
 		PublicDependencyModuleNames.AddRange(new string[]
 		{
+			"AIModule",
 			"Core",
 			"CoreUObject",
 			"Engine",
@@ -21,7 +22,9 @@ public class OutlierEditor : ModuleRules
 			"AssetRegistry",
 			"DeveloperSettings",
 			"GameplayTags",
-			"GameplayAbilities"
+			"GameplayAbilities",
+			"GraphicSettingDebugger",
+			"GraphicSettingDebuggerEditor"
 		});
 	}
 }

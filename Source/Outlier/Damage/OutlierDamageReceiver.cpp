@@ -58,6 +58,11 @@ namespace
 	}
 }
 
+bool OutlierDamage::IsFromEnemy(const FOutlierDamageRequest& Request)
+{
+	return ResolveDamageSourceTeam(Request).GetId() == OutlierTeamIds::Enemy;
+}
+
 float OutlierDamage::Apply(AActor* TargetActor, const FOutlierDamageRequest& Request)
 {
 	if (!IsValid(TargetActor) || Request.DamageAmount <= 0.0f)
