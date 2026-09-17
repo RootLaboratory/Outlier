@@ -50,6 +50,17 @@ bool FOutlierCheckpointRestartVote::Cancel(APlayerController* Controller)
 	return true;
 }
 
+bool FOutlierCheckpointRestartVote::BeginRestart()
+{
+	if (State != EOutlierCheckpointRestartVoteState::Approved)
+	{
+		return false;
+	}
+
+	State = EOutlierCheckpointRestartVoteState::Restarting;
+	return true;
+}
+
 bool FOutlierCheckpointRestartVote::Contains(const APlayerController* Controller) const
 {
 	return Controller

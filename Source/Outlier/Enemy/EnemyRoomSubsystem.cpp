@@ -753,6 +753,11 @@ void UEnemyRoomSubsystem::CompactAllRegisteredEnemies()
 
 void UEnemyRoomSubsystem::HandleArenaReleased()
 {
+	ResetRuntimeCombatState();
+}
+
+void UEnemyRoomSubsystem::ResetRuntimeCombatState()
+{
 	UWorld* World = GetWorld();
 	CombatRooms.Reset();
 	RegisteredEnemiesByRoom.Reset();

@@ -78,6 +78,14 @@ bool FOutlierCheckpointRestartVoteStateTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("The responder can approve"), Vote.Respond(Responder, true));
 	TestEqual(TEXT("Approval is recorded"),
 		Vote.GetState(), EOutlierCheckpointRestartVoteState::Approved);
+	TestTrue(TEXT("An approved vote can enter Restarting"), Vote.BeginRestart());
+	TestEqual(TEXT("Restarting remains owned until reload completion"),
+		Vote.GetState(), EOutlierCheckpointRestartVoteState::Restarting);
+	TestFalse(TEXT("Restarting cannot be entered twice"), Vote.BeginRestart());
+	TestFalse(TEXT("Restarting cannot be rejected by a late response"),
+		Vote.Respond(Responder, false));
+	TestFalse(TEXT("Restarting cannot be cancelled by the requester"),
+		Vote.Cancel(Requester));
 
 	Vote.Reset();
 	TestEqual(TEXT("Reset returns the vote to Idle"),

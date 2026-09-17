@@ -111,10 +111,15 @@ private:
 	void ClearArenaGameplayReloadDelegates();
 	void ClearPendingArenaReloadPawns();
 	void CompleteServerArenaReload();
+	void TryFinishArenaReload();
+	bool StartCheckpointRestart(AFirstPersonPlayerController* Requester);
+	void FinishCheckpointRestart();
 	void FinishCheckpointRestartVote(EOutlierCheckpointRestartVoteState Result);
 	void CancelCheckpointRestartVoteForDisconnect(APlayerController* ExitingPlayer);
 
 	bool bArenaReloadInProgress = false;
+	bool bServerArenaReloadReady = false;
+	bool bCheckpointRestartInProgress = false;
 	FDelegateHandle ArenaShownHandle;
 	FDelegateHandle ArenaReloadStalledHandle;
 	FDelegateHandle ArenaReloadResumedHandle;
@@ -187,11 +192,12 @@ protected:
 	void FlushUpgradeNodesForPair(AOutlierPlayerState* TriggeringPlayerState, int32 NewNodeCount);
 
 	// DebugReloadArena/RequestPresetRespawn이 공유하는 "아레나 리로드 대기 후 페어 스폰/possess" 공통 로직.
-	void ReloadArenaAndRespawnPair(
+	bool ReloadArenaAndRespawnPair(
 		AOutlierPlayerState* ShooterPlayerState,
 		AOutlierPlayerState* PartnerPlayerState,
 		const FTransform& ShooterSpawn,
-		const FTransform& PartnerSpawn);
+		const FTransform& PartnerSpawn,
+		bool bRestoreCheckpointAmmo = false);
 
 	AOutlierPlayerState* FindPairPlayerState(int32 PairId, EOutlierPlayerRole PlayerRole) const;
 	AController* GetControllerFromPlayerState(AOutlierPlayerState* PlayerState) const;
@@ -214,7 +220,11 @@ protected:
 	// possess 는 필요 없다 (폰만 있으면 된다) 므로 possess 지점이 아니라
 	// 스폰 직후 — RegisterSpawnedPair 호출 직후 — 에 부른다.
 	// 최초 스폰 경로에서는 스냅샷이 비어 있어 스스로 빠져나간다.
-	void RestorePairLoadout(AOutlierPlayerState* ShooterPlayerState, AShooterCharacter* Shooter, APartnerCharacter* Partner);
+	void RestorePairLoadout(
+		AOutlierPlayerState* ShooterPlayerState,
+		AShooterCharacter* Shooter,
+		APartnerCharacter* Partner,
+		bool bRestoreCheckpointAmmo = false);
 	//APlayerController* SwapPlayerController(APlayerController* OldPC, TSubclassOf<APlayerController> NewClass);
 
 	bool ResolveArenaSpawnTransforms(

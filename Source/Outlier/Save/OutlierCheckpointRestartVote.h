@@ -11,6 +11,7 @@ enum class EOutlierCheckpointRestartVoteState : uint8
 	Idle,
 	VotePending,
 	Approved,
+	Restarting,
 	Rejected
 };
 
@@ -28,6 +29,7 @@ struct OUTLIER_API FOutlierCheckpointRestartVote
 	bool Begin(APlayerController* InRequester, APlayerController* InResponder);
 	bool Respond(APlayerController* Controller, bool bApprove);
 	bool Cancel(APlayerController* Controller);
+	bool BeginRestart();
 	bool Contains(const APlayerController* Controller) const;
 	void Reset();
 
