@@ -7,11 +7,13 @@
 #include "GameFramework/GameModeBase.h"
 #include "GameFramework/GameMode.h"
 #include "Network/OutlierMatchRequest.h"
+#include "Save/OutlierCheckpointRestartVote.h"
 #include "OutlierGameMode.generated.h"
 
 class APlayerController;
 class AShooterPlayerController;
 class APartnerPlayerController;
+class AFirstPersonPlayerController;
 class AShooterCharacter;
 class APartnerCharacter;
 class AOutlierCheckpoint;
@@ -75,6 +77,16 @@ public:
 	// 디버그: 요청한 페어의 arena를 통째로 리로드하고 시작점에 재스폰
 	void DebugReloadArena(AController* Requester);
 
+	bool CanControllerRequestCheckpointRestart(const APlayerController* Controller) const;
+	bool RequestCheckpointRestart(AFirstPersonPlayerController* Requester);
+	bool RespondCheckpointRestart(AFirstPersonPlayerController* Responder, bool bApprove);
+	bool CancelCheckpointRestart(AFirstPersonPlayerController* Requester);
+	bool HandleCheckpointRestartEscape(AFirstPersonPlayerController* Controller);
+	EOutlierCheckpointRestartVoteState GetLastCheckpointRestartVoteResult() const
+	{
+		return LastCheckpointRestartVoteResult;
+	}
+
 
 private:
 	UPROPERTY()
@@ -99,6 +111,8 @@ private:
 	void ClearArenaGameplayReloadDelegates();
 	void ClearPendingArenaReloadPawns();
 	void CompleteServerArenaReload();
+	void FinishCheckpointRestartVote(EOutlierCheckpointRestartVoteState Result);
+	void CancelCheckpointRestartVoteForDisconnect(APlayerController* ExitingPlayer);
 
 	bool bArenaReloadInProgress = false;
 	FDelegateHandle ArenaShownHandle;
@@ -109,6 +123,10 @@ private:
 	TSet<TWeakObjectPtr<APlayerController>> PendingGameplayGCPlayers;
 	TSet<TWeakObjectPtr<APlayerController>> ReadyGameplayGCPlayers;
 	FTimerHandle ArenaWorkerReloadFailureTimerHandle;
+	FOutlierCheckpointRestartVote CheckpointRestartVote;
+	TWeakObjectPtr<AActor> CheckpointRestartVoteLayerOwner;
+	EOutlierCheckpointRestartVoteState LastCheckpointRestartVoteResult =
+		EOutlierCheckpointRestartVoteState::Idle;
 
 protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Respawn")

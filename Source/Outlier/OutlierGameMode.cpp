@@ -47,6 +47,171 @@ AOutlierGameMode::AOutlierGameMode()
 
 }
 
+bool AOutlierGameMode::CanControllerRequestCheckpointRestart(
+	const APlayerController* Controller) const
+{
+	return Controller
+		&& !bArenaReloadInProgress
+		&& CheckpointRestartVote.GetState() == EOutlierCheckpointRestartVoteState::Idle
+		&& OutlierCheckpointRestartVote::CanRequest(
+			GetNetMode(),
+			Controller->IsLocalController());
+}
+
+bool AOutlierGameMode::RequestCheckpointRestart(
+	AFirstPersonPlayerController* Requester)
+{
+	if (!HasAuthority() || !CanControllerRequestCheckpointRestart(Requester))
+	{
+		return false;
+	}
+
+	UOutlierSaveSubSystem* SaveSubsystem = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>()
+		: nullptr;
+	FOutlierCheckpointSnapshot RestoreSnapshot;
+	if (!SaveSubsystem || !SaveSubsystem->GetRestoreSnapshot(RestoreSnapshot))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[Checkpoint.RestartVote] Request rejected: restore snapshot is unavailable Requester=%s"),
+			*GetNameSafe(Requester));
+		return false;
+	}
+
+	CheckpointRestartVoteLayerOwner = Requester->GetPawn();
+	if (GetNetMode() == NM_Standalone)
+	{
+		// Standalone은 응답할 상대가 없으므로 요청 자체를 승인으로 취급한다.
+		LastCheckpointRestartVoteResult = EOutlierCheckpointRestartVoteState::Approved;
+		Requester->SetCheckpointRestartVoteViewFromServer(
+			EOutlierCheckpointRestartVoteView::None);
+		Requester->CloseCheckpointRestartVoteUIFromServer(
+			CheckpointRestartVoteLayerOwner.Get());
+		UGameplayStatics::SetGamePaused(this, false);
+		CheckpointRestartVoteLayerOwner.Reset();
+		UE_LOG(LogTemp, Log,
+			TEXT("[Checkpoint.RestartVote] Standalone request approved; reload is deferred to Slice 5"));
+		return true;
+	}
+
+	AOutlierPlayerState* RequesterPlayerState =
+		Requester->GetPlayerState<AOutlierPlayerState>();
+	if (!RequesterPlayerState)
+	{
+		CheckpointRestartVoteLayerOwner.Reset();
+		return false;
+	}
+
+	const EOutlierPlayerRole ResponderRole = RequesterPlayerState->IsShooterPlayer()
+		? EOutlierPlayerRole::Partner
+		: RequesterPlayerState->IsPartnerPlayer()
+			? EOutlierPlayerRole::Shooter
+			: EOutlierPlayerRole::None;
+	AOutlierPlayerState* ResponderPlayerState = ResponderRole != EOutlierPlayerRole::None
+		? FindPairPlayerState(RequesterPlayerState->GetPairId(), ResponderRole)
+		: nullptr;
+	AFirstPersonPlayerController* Responder = Cast<AFirstPersonPlayerController>(
+		GetControllerFromPlayerState(ResponderPlayerState));
+	if (!CheckpointRestartVote.Begin(Requester, Responder))
+	{
+		CheckpointRestartVoteLayerOwner.Reset();
+		return false;
+	}
+
+	LastCheckpointRestartVoteResult = EOutlierCheckpointRestartVoteState::VotePending;
+	Requester->SetCheckpointRestartVoteViewFromServer(
+		EOutlierCheckpointRestartVoteView::RequesterWaiting);
+	Responder->SetCheckpointRestartVoteViewFromServer(
+		EOutlierCheckpointRestartVoteView::ResponderPrompt);
+	return true;
+}
+
+bool AOutlierGameMode::RespondCheckpointRestart(
+	AFirstPersonPlayerController* Responder,
+	bool bApprove)
+{
+	if (!HasAuthority() || !CheckpointRestartVote.Respond(Responder, bApprove))
+	{
+		return false;
+	}
+
+	FinishCheckpointRestartVote(CheckpointRestartVote.GetState());
+	return true;
+}
+
+bool AOutlierGameMode::CancelCheckpointRestart(
+	AFirstPersonPlayerController* Requester)
+{
+	if (!HasAuthority() || !CheckpointRestartVote.Cancel(Requester))
+	{
+		return false;
+	}
+
+	FinishCheckpointRestartVote(EOutlierCheckpointRestartVoteState::Rejected);
+	return true;
+}
+
+bool AOutlierGameMode::HandleCheckpointRestartEscape(
+	AFirstPersonPlayerController* Controller)
+{
+	if (!CheckpointRestartVote.Contains(Controller))
+	{
+		return false;
+	}
+
+	if (CheckpointRestartVote.GetRequester() == Controller)
+	{
+		CancelCheckpointRestart(Controller);
+	}
+	else
+	{
+		RespondCheckpointRestart(Controller, false);
+	}
+	return true;
+}
+
+void AOutlierGameMode::FinishCheckpointRestartVote(
+	EOutlierCheckpointRestartVoteState Result)
+{
+	AFirstPersonPlayerController* Requester = Cast<AFirstPersonPlayerController>(
+		CheckpointRestartVote.GetRequester());
+	AFirstPersonPlayerController* Responder = Cast<AFirstPersonPlayerController>(
+		CheckpointRestartVote.GetResponder());
+	UObject* LayerOwner = CheckpointRestartVoteLayerOwner.Get();
+
+	LastCheckpointRestartVoteResult = Result;
+	if (Requester)
+	{
+		Requester->SetCheckpointRestartVoteViewFromServer(
+			EOutlierCheckpointRestartVoteView::None);
+		Requester->CloseCheckpointRestartVoteUIFromServer(LayerOwner);
+	}
+	if (Responder)
+	{
+		Responder->SetCheckpointRestartVoteViewFromServer(
+			EOutlierCheckpointRestartVoteView::None);
+		Responder->CloseCheckpointRestartVoteUIFromServer(LayerOwner);
+	}
+
+	UGameplayStatics::SetGamePaused(this, false);
+	CheckpointRestartVote.Reset();
+	CheckpointRestartVoteLayerOwner.Reset();
+
+	UE_LOG(LogTemp, Log,
+		TEXT("[Checkpoint.RestartVote] Finished Result=%d ReloadDeferred=%d"),
+		static_cast<int32>(Result),
+		Result == EOutlierCheckpointRestartVoteState::Approved ? 1 : 0);
+}
+
+void AOutlierGameMode::CancelCheckpointRestartVoteForDisconnect(
+	APlayerController* ExitingPlayer)
+{
+	if (CheckpointRestartVote.Contains(ExitingPlayer))
+	{
+		FinishCheckpointRestartVote(EOutlierCheckpointRestartVoteState::Rejected);
+	}
+}
+
 void AOutlierGameMode::InitGame(
 	const FString& MapName,
 	const FString& Options,
@@ -73,6 +238,8 @@ void AOutlierGameMode::InitGameState()
 
 void AOutlierGameMode::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	CheckpointRestartVote.Reset();
+	CheckpointRestartVoteLayerOwner.Reset();
 	ClearArenaGameplayReloadDelegates();
 	GetWorldTimerManager().ClearTimer(ArenaWorkerReloadFailureTimerHandle);
 	GetWorldTimerManager().ClearTimer(ArenaWorkerReconnectTimerHandle);
@@ -1286,6 +1453,7 @@ void AOutlierGameMode::HandleStartingNewPlayer_Implementation(APlayerController*
 void AOutlierGameMode::Logout(AController* Exiting)
 {
 	APlayerController* ExitingPlayer = Cast<APlayerController>(Exiting);
+	CancelCheckpointRestartVoteForDisconnect(ExitingPlayer);
 	// Frontend PC가 역할별 Gameplay PC로 교체될 때도 Logout이 호출된다. 실제 플레이 중인
 	// 로컬 FirstPerson PC만 Host 이탈로 봐야 정상적인 Listen 시작을 세션 종료로 오인하지 않는다.
 	const bool bListenHostLeaving = GetNetMode() == NM_ListenServer

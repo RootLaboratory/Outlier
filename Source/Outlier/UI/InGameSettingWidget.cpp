@@ -8,6 +8,7 @@
 #include "UI/UILayerGameplayTags.h"
 #include "UI/UILayerKeyHintWidget.h"
 #include "UI/UILayerTypes.h"
+#include "Components/TextBlock.h"
 
 void UInGameSettingWidget::NativeOnInitialized()
 {
@@ -45,11 +46,30 @@ void UInGameSettingWidget::NativeOnInitialized()
 void UInGameSettingWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
+	if (MenuText)
+	{
+		DefaultMenuText = MenuText->GetText();
+	}
+
+	if (AFirstPersonPlayerController* FirstPersonController =
+		Cast<AFirstPersonPlayerController>(GetOwningPlayer()))
+	{
+		FirstPersonController->OnCheckpointRestartVoteViewChanged.AddUObject(
+			this,
+			&UInGameSettingWidget::RefreshCheckpointRestartState);
+		RefreshCheckpointRestartState(
+			FirstPersonController->GetCheckpointRestartVoteView());
+	}
 	PushKeyHintLayer();
 }
 
 void UInGameSettingWidget::NativeDestruct()
 {
+	if (AFirstPersonPlayerController* FirstPersonController =
+		Cast<AFirstPersonPlayerController>(GetOwningPlayer()))
+	{
+		FirstPersonController->OnCheckpointRestartVoteViewChanged.RemoveAll(this);
+	}
 	PopKeyHintLayer();
 	Super::NativeDestruct();
 }
@@ -62,12 +82,31 @@ void UInGameSettingWidget::InitializeUILayerContext_Implementation(
 
 bool UInGameSettingWidget::HandleUILayerEscape_Implementation()
 {
+	if (AFirstPersonPlayerController* FirstPersonController =
+		Cast<AFirstPersonPlayerController>(GetOwningPlayer());
+		FirstPersonController
+		&& FirstPersonController->GetCheckpointRestartVoteView()
+			== EOutlierCheckpointRestartVoteView::RequesterWaiting)
+	{
+		FirstPersonController->RequestCancelCheckpointRestart();
+		return true;
+	}
+
 	HandleContinueButtonClicked();
 	return true;
 }
 
 bool UInGameSettingWidget::HandleUILayerConfirmed_Implementation()
 {
+	if (const AFirstPersonPlayerController* FirstPersonController =
+		Cast<AFirstPersonPlayerController>(GetOwningPlayer());
+		FirstPersonController
+		&& FirstPersonController->GetCheckpointRestartVoteView()
+			== EOutlierCheckpointRestartVoteView::RequesterWaiting)
+	{
+		return true;
+	}
+
 	HandleContinueButtonClicked();
 	return true;
 }
@@ -110,7 +149,11 @@ void UInGameSettingWidget::HandleSettingButtonClicked()
 
 void UInGameSettingWidget::HandleRestartCheckpointButtonClicked()
 {
-	// Checkpoint restart behavior is intentionally left for the next pass.
+	if (AFirstPersonPlayerController* FirstPersonController =
+		Cast<AFirstPersonPlayerController>(GetOwningPlayer()))
+	{
+		FirstPersonController->RequestCheckpointRestart();
+	}
 }
 
 void UInGameSettingWidget::HandleTitleButtonClicked()
@@ -232,4 +275,37 @@ void UInGameSettingWidget::PushSettingLayer()
 		OwningPlayer,
 		EUILayerFocusTarget::Widget,
 		true);
+}
+
+void UInGameSettingWidget::RefreshCheckpointRestartState(
+	EOutlierCheckpointRestartVoteView VoteView)
+{
+	const bool bWaitingForResponse =
+		VoteView == EOutlierCheckpointRestartVoteView::RequesterWaiting;
+	const AFirstPersonPlayerController* FirstPersonController =
+		Cast<AFirstPersonPlayerController>(GetOwningPlayer());
+
+	if (MenuText)
+	{
+		MenuText->SetText(bWaitingForResponse ? CheckpointWaitingText : DefaultMenuText);
+	}
+	if (ContinueButton)
+	{
+		ContinueButton->SetIsEnabled(!bWaitingForResponse);
+	}
+	if (SettingButton)
+	{
+		SettingButton->SetIsEnabled(!bWaitingForResponse);
+	}
+	if (RestartCheckpointButton)
+	{
+		RestartCheckpointButton->SetIsEnabled(
+			!bWaitingForResponse
+			&& FirstPersonController
+			&& FirstPersonController->CanRequestCheckpointRestart());
+	}
+	if (TitleButton)
+	{
+		TitleButton->SetIsEnabled(!bWaitingForResponse);
+	}
 }

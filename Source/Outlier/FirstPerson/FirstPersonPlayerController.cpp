@@ -218,6 +218,81 @@ void AFirstPersonPlayerController::RequestCloseInGameSetting()
 	ServerCloseInGameSetting();
 }
 
+void AFirstPersonPlayerController::RequestCheckpointRestart()
+{
+	if (!IsLocalController() || !bCanRequestCheckpointRestart)
+	{
+		return;
+	}
+
+	ServerRequestCheckpointRestart();
+}
+
+void AFirstPersonPlayerController::RequestCheckpointRestartResponse(bool bApprove)
+{
+	if (!IsLocalController()
+		|| CheckpointRestartVoteView != EOutlierCheckpointRestartVoteView::ResponderPrompt)
+	{
+		return;
+	}
+
+	ServerRespondCheckpointRestart(bApprove);
+}
+
+void AFirstPersonPlayerController::RequestCancelCheckpointRestart()
+{
+	if (!IsLocalController()
+		|| CheckpointRestartVoteView != EOutlierCheckpointRestartVoteView::RequesterWaiting)
+	{
+		return;
+	}
+
+	ServerCancelCheckpointRestart();
+}
+
+void AFirstPersonPlayerController::ClientConfigureCheckpointRestart_Implementation(
+	bool bCanRequest)
+{
+	bCanRequestCheckpointRestart = bCanRequest;
+	OnCheckpointRestartVoteViewChanged.Broadcast(CheckpointRestartVoteView);
+}
+
+void AFirstPersonPlayerController::ClientSetCheckpointRestartVoteView_Implementation(
+	EOutlierCheckpointRestartVoteView VoteView)
+{
+	CheckpointRestartVoteView = VoteView;
+	OnCheckpointRestartVoteViewChanged.Broadcast(CheckpointRestartVoteView);
+}
+
+void AFirstPersonPlayerController::ConfigureCheckpointRestartFromServer(bool bCanRequest)
+{
+	if (IsLocalController())
+	{
+		ClientConfigureCheckpointRestart_Implementation(bCanRequest);
+		return;
+	}
+
+	ClientConfigureCheckpointRestart(bCanRequest);
+}
+
+void AFirstPersonPlayerController::SetCheckpointRestartVoteViewFromServer(
+	EOutlierCheckpointRestartVoteView VoteView)
+{
+	if (IsLocalController())
+	{
+		ClientSetCheckpointRestartVoteView_Implementation(VoteView);
+		return;
+	}
+
+	ClientSetCheckpointRestartVoteView(VoteView);
+}
+
+void AFirstPersonPlayerController::CloseCheckpointRestartVoteUIFromServer(
+	UObject* RequestOwner)
+{
+	PopInGameSettingLayerFromController(this, RequestOwner);
+}
+
 void AFirstPersonPlayerController::ClientPopInGameSettingLayer_Implementation(
 	UObject* RequestOwner)
 {
@@ -1227,6 +1302,12 @@ void AFirstPersonPlayerController::ServerOpenInGameSetting_Implementation()
 		? InGameSettingDefault->GetInGamePauseWidgetClass()
 		: nullptr;
 
+	const AOutlierGameMode* OutlierGameMode = GetWorld()
+		? GetWorld()->GetAuthGameMode<AOutlierGameMode>()
+		: nullptr;
+	ConfigureCheckpointRestartFromServer(
+		OutlierGameMode && OutlierGameMode->CanControllerRequestCheckpointRestart(this));
+
 	FUILayerPushRequest PushRequest;
 	PushRequest.WidgetClass = InGameSettingWidgetClass;
 	PushRequest.LayerTag = UILayerTags::GameMenu();
@@ -1276,6 +1357,14 @@ void AFirstPersonPlayerController::ServerOpenInGameSetting_Implementation()
 
 void AFirstPersonPlayerController::ServerCloseInGameSetting_Implementation()
 {
+	AOutlierGameMode* OutlierGameMode = GetWorld()
+		? GetWorld()->GetAuthGameMode<AOutlierGameMode>()
+		: nullptr;
+	if (OutlierGameMode && OutlierGameMode->HandleCheckpointRestartEscape(this))
+	{
+		return;
+	}
+
 	UGameplayStatics::SetGamePaused(this, false);
 
 	AShooterCharacter* ShooterCharacter = nullptr;
@@ -1308,6 +1397,37 @@ void AFirstPersonPlayerController::ServerCloseInGameSetting_Implementation()
 	if (PartnerController && PartnerController != ShooterController)
 	{
 		PopInGameSettingLayerFromController(PartnerController, PausingCharacter);
+	}
+}
+
+void AFirstPersonPlayerController::ServerRequestCheckpointRestart_Implementation()
+{
+	if (AOutlierGameMode* OutlierGameMode = GetWorld()
+		? GetWorld()->GetAuthGameMode<AOutlierGameMode>()
+		: nullptr)
+	{
+		OutlierGameMode->RequestCheckpointRestart(this);
+	}
+}
+
+void AFirstPersonPlayerController::ServerRespondCheckpointRestart_Implementation(
+	bool bApprove)
+{
+	if (AOutlierGameMode* OutlierGameMode = GetWorld()
+		? GetWorld()->GetAuthGameMode<AOutlierGameMode>()
+		: nullptr)
+	{
+		OutlierGameMode->RespondCheckpointRestart(this, bApprove);
+	}
+}
+
+void AFirstPersonPlayerController::ServerCancelCheckpointRestart_Implementation()
+{
+	if (AOutlierGameMode* OutlierGameMode = GetWorld()
+		? GetWorld()->GetAuthGameMode<AOutlierGameMode>()
+		: nullptr)
+	{
+		OutlierGameMode->CancelCheckpointRestart(this);
 	}
 }
 

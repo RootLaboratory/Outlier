@@ -1,12 +1,23 @@
 #include "UI/InGamePauseWidget.h"
 
 #include "Components/TextBlock.h"
+#include "FirstPerson/FirstPersonPlayerController.h"
 #include "GameFramework/Pawn.h"
 #include "OutlierPlayerState.h"
 
 void UInGamePauseWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
+	if (AFirstPersonPlayerController* FirstPersonController =
+		Cast<AFirstPersonPlayerController>(GetOwningPlayer()))
+	{
+		FirstPersonController->OnCheckpointRestartVoteViewChanged.AddUObject(
+			this,
+			&UInGamePauseWidget::RefreshCheckpointRestartState);
+		RefreshCheckpointRestartState(
+			FirstPersonController->GetCheckpointRestartVoteView());
+		return;
+	}
 
 	if (CurrentPauseText.IsEmpty())
 	{
@@ -16,6 +27,17 @@ void UInGamePauseWidget::NativeConstruct()
 	{
 		SetPauseText(CurrentPauseText);
 	}
+}
+
+void UInGamePauseWidget::NativeDestruct()
+{
+	if (AFirstPersonPlayerController* FirstPersonController =
+		Cast<AFirstPersonPlayerController>(GetOwningPlayer()))
+	{
+		FirstPersonController->OnCheckpointRestartVoteViewChanged.RemoveAll(this);
+	}
+
+	Super::NativeDestruct();
 }
 
 void UInGamePauseWidget::InitializeUILayerContext_Implementation(
@@ -29,11 +51,27 @@ void UInGamePauseWidget::InitializeUILayerContext_Implementation(
 
 bool UInGamePauseWidget::HandleUILayerEscape_Implementation()
 {
+	if (AFirstPersonPlayerController* FirstPersonController =
+		Cast<AFirstPersonPlayerController>(GetOwningPlayer());
+		FirstPersonController
+		&& FirstPersonController->GetCheckpointRestartVoteView()
+			== EOutlierCheckpointRestartVoteView::ResponderPrompt)
+	{
+		FirstPersonController->RequestCheckpointRestartResponse(false);
+	}
 	return true;
 }
 
 bool UInGamePauseWidget::HandleUILayerConfirmed_Implementation()
 {
+	if (AFirstPersonPlayerController* FirstPersonController =
+		Cast<AFirstPersonPlayerController>(GetOwningPlayer());
+		FirstPersonController
+		&& FirstPersonController->GetCheckpointRestartVoteView()
+			== EOutlierCheckpointRestartVoteView::ResponderPrompt)
+	{
+		FirstPersonController->RequestCheckpointRestartResponse(true);
+	}
 	return true;
 }
 
@@ -66,17 +104,22 @@ void UInGamePauseWidget::SetPauseTextFromPauser(AActor* PauserActor)
 
 	if (PauserPlayerState && PauserPlayerState->IsShooterPlayer())
 	{
-		SetPauseText(ShooterPausedText);
-		return;
+		PauserPauseText = ShooterPausedText;
 	}
-
-	if (PauserPlayerState && PauserPlayerState->IsPartnerPlayer())
+	else if (PauserPlayerState && PauserPlayerState->IsPartnerPlayer())
 	{
-		SetPauseText(PartnerPausedText);
-		return;
+		PauserPauseText = PartnerPausedText;
+	}
+	else
+	{
+		PauserPauseText = UnknownPausedText;
 	}
 
-	SetPauseText(UnknownPausedText);
+	const AFirstPersonPlayerController* FirstPersonController =
+		Cast<AFirstPersonPlayerController>(GetOwningPlayer());
+	RefreshCheckpointRestartState(FirstPersonController
+		? FirstPersonController->GetCheckpointRestartVoteView()
+		: EOutlierCheckpointRestartVoteView::None);
 }
 
 void UInGamePauseWidget::SetPauseText(const FText& NewPauseText)
@@ -87,4 +130,16 @@ void UInGamePauseWidget::SetPauseText(const FText& NewPauseText)
 	{
 		PauseText->SetText(NewPauseText);
 	}
+}
+
+void UInGamePauseWidget::RefreshCheckpointRestartState(
+	EOutlierCheckpointRestartVoteView VoteView)
+{
+	if (VoteView == EOutlierCheckpointRestartVoteView::ResponderPrompt)
+	{
+		SetPauseText(CheckpointRestartPromptText);
+		return;
+	}
+
+	SetPauseText(PauserPauseText.IsEmpty() ? UnknownPausedText : PauserPauseText);
 }

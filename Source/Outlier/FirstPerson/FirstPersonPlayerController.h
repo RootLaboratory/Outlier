@@ -8,6 +8,7 @@
 #include "Audio/OutlierAudioTypes.h"
 #include "OutlierPlayerState.h"
 #include "PlayerUIProvider.h"
+#include "Save/OutlierCheckpointRestartVote.h"
 #include "UI/UILayerTypes.h"
 #include "Upgrade/OutlierUpgradeTypes.h"
 #include "Containers/Ticker.h"
@@ -45,6 +46,10 @@ namespace FirstPersonInputModeTags
 	}
 }
 
+DECLARE_MULTICAST_DELEGATE_OneParam(
+	FOnCheckpointRestartVoteViewChanged,
+	EOutlierCheckpointRestartVoteView);
+
 /**
  * 
  */
@@ -76,6 +81,17 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UI|InGame Setting")
 	void RequestCloseInGameSetting();
 
+	void RequestCheckpointRestart();
+	void RequestCheckpointRestartResponse(bool bApprove);
+	void RequestCancelCheckpointRestart();
+	bool CanRequestCheckpointRestart() const { return bCanRequestCheckpointRestart; }
+	EOutlierCheckpointRestartVoteView GetCheckpointRestartVoteView() const
+	{
+		return CheckpointRestartVoteView;
+	}
+
+	FOnCheckpointRestartVoteViewChanged OnCheckpointRestartVoteViewChanged;
+
 	UFUNCTION(Client, Reliable)
 	void ClientPopInGameSettingLayer(UObject* RequestOwner);
 
@@ -99,6 +115,26 @@ public:
 
 	UFUNCTION(Server, Reliable)
 	void ServerCloseInGameSetting();
+
+	UFUNCTION(Server, Reliable)
+	void ServerRequestCheckpointRestart();
+
+	UFUNCTION(Server, Reliable)
+	void ServerRespondCheckpointRestart(bool bApprove);
+
+	UFUNCTION(Server, Reliable)
+	void ServerCancelCheckpointRestart();
+
+	UFUNCTION(Client, Reliable)
+	void ClientConfigureCheckpointRestart(bool bCanRequest);
+
+	UFUNCTION(Client, Reliable)
+	void ClientSetCheckpointRestartVoteView(EOutlierCheckpointRestartVoteView VoteView);
+
+	// Listen Host의 로컬 Controller에는 Client RPC가 전송되지 않으므로 서버가 같은 적용 함수를 직접 호출한다.
+	void ConfigureCheckpointRestartFromServer(bool bCanRequest);
+	void SetCheckpointRestartVoteViewFromServer(EOutlierCheckpointRestartVoteView VoteView);
+	void CloseCheckpointRestartVoteUIFromServer(UObject* RequestOwner);
 
 	// ArenaWorker(dedi)는 서버에서 즉시 Possess하고 이 RPC로 클라 준비를 시작시킨다.
 	// Possess 직후라 클라에는 아직 Pawn이 복제되지 않았고, Pawn이 들어있는 WP 셀을
@@ -261,4 +297,8 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "UI|Preset")
 	TSubclassOf<UPreSetLoadWidget> PresetLoadWidgetClass;
+
+	bool bCanRequestCheckpointRestart = false;
+	EOutlierCheckpointRestartVoteView CheckpointRestartVoteView =
+		EOutlierCheckpointRestartVoteView::None;
 };

@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
+#include "Save/OutlierCheckpointRestartVote.h"
 #include "UI/UILayerContextReceiver.h"
 #include "UI/UILayerInputReceiver.h"
 #include "UI/UILayerTypes.h"
@@ -66,6 +67,9 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "InGame Setting|Layer")
 	TSubclassOf<UUILayerKeyHintWidget> KeyHintWidgetClass;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "InGame Setting|Text")
+	FText CheckpointWaitingText = FText::FromString(TEXT("상대 플레이어의 응답을 기다리는 중입니다"));
+
 private:
 	UFUNCTION()
 	void HandleContinueButtonClicked();
@@ -83,6 +87,7 @@ private:
 	void PopKeyHintLayer();
 	void PopSelfFromLayer();
 	void PushSettingLayer();
+	void RefreshCheckpointRestartState(EOutlierCheckpointRestartVoteView VoteView);
 
 	UPROPERTY(Transient)
 	TObjectPtr<UUILayerKeyHintWidget> ActiveKeyHintWidget;
@@ -91,4 +96,5 @@ private:
 	TObjectPtr<USettingWidget> ActiveSettingWidget;
 
 	FUILayerHandle KeyHintLayerHandle;
+	FText DefaultMenuText;
 };
