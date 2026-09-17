@@ -62,6 +62,13 @@ void UOutlierGameInstance::NotifyArenaHandoffStarted(const FString& ArenaUrl)
 	ArenaReconnectDeadlineSeconds = 0.0;
 }
 
+void UOutlierGameInstance::PrepareForExplicitLeave()
+{
+	// 사용자가 직접 나가는 경우에는 뒤이어 발생하는 연결 종료를 장애로 오인해
+	// 이전 Worker URL로 재접속하면 안 된다. Travel 전에 Handoff 수명을 여기서 끝낸다.
+	ResetArenaHandoffState();
+}
+
 void UOutlierGameInstance::HandlePostLoadMap(UWorld* LoadedWorld)
 {
 	if (!LoadedWorld)

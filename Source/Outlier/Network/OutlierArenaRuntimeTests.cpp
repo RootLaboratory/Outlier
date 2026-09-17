@@ -1,5 +1,6 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
+#include "HAL/PlatformTime.h"
 #include "Misc/AutomationTest.h"
 #include "Network/OutlierArenaSubsystem.h"
 #include "Network/OutlierMatchRequest.h"
@@ -315,6 +316,21 @@ bool FOutlierArenaReturnLifecycleTest::RunTest(const FString& Parameters)
 		FString(TEXT("127.0.0.1:7780?MatchId=Test")));
 	TestFalse(TEXT("Lobby recovery is initially not queued"), GameInstance->bLobbyRecoveryQueued);
 	TestFalse(TEXT("Lobby recovery is initially not attempted"), GameInstance->bLobbyRecoveryAttempted);
+
+	GameInstance->ScheduleArenaReconnect();
+	TestTrue(TEXT("A network failure keeps the reconnect grace path active"), GameInstance->bArenaReconnectActive);
+	TestTrue(TEXT("A network failure schedules the reconnect ticker"), GameInstance->ArenaReconnectTickerHandle.IsValid());
+	TestTrue(
+		TEXT("A network failure creates a reconnect deadline"),
+		GameInstance->ArenaReconnectDeadlineSeconds > FPlatformTime::Seconds());
+
+	GameInstance->PrepareForExplicitLeave();
+	TestFalse(TEXT("Explicit leave clears the arena handoff"), GameInstance->bArenaHandoffActive);
+	TestFalse(TEXT("Explicit leave stops reconnect attempts"), GameInstance->bArenaReconnectActive);
+	TestFalse(TEXT("Explicit leave removes the reconnect ticker"), GameInstance->ArenaReconnectTickerHandle.IsValid());
+	TestTrue(TEXT("Explicit leave forgets the previous Worker URL"), GameInstance->LastArenaHandoffUrl.IsEmpty());
+
+	GameInstance->NotifyArenaHandoffStarted(TEXT("127.0.0.1:7780?MatchId=RecoveryTest"));
 
 	TestTrue(TEXT("The first network failure queues Lobby recovery"), GameInstance->TryQueueLobbyRecovery());
 	TestTrue(TEXT("Lobby recovery is queued after the first failure"), GameInstance->bLobbyRecoveryQueued);

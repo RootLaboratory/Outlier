@@ -70,6 +70,9 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "InGame Setting|Text")
 	FText CheckpointWaitingText = FText::FromString(TEXT("상대 플레이어의 응답을 기다리는 중입니다"));
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "InGame Setting|Text")
+	FText GameExitConfirmationText = FText::FromString(TEXT("정말 게임을 종료하시겠습니까?"));
+
 private:
 	UFUNCTION()
 	void HandleContinueButtonClicked();
@@ -87,6 +90,8 @@ private:
 	void PopKeyHintLayer();
 	void PopSelfFromLayer();
 	void PushSettingLayer();
+	void CancelGameExitConfirmation();
+	void ConfirmGameExit();
 	void RefreshCheckpointRestartState(EOutlierCheckpointRestartVoteView VoteView);
 
 	UPROPERTY(Transient)
@@ -97,4 +102,5 @@ private:
 
 	FUILayerHandle KeyHintLayerHandle;
 	FText DefaultMenuText;
+	bool bConfirmingGameExit = false;
 };

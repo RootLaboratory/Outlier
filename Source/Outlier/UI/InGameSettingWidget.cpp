@@ -46,10 +46,11 @@ void UInGameSettingWidget::NativeOnInitialized()
 void UInGameSettingWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
-	if (MenuText)
+	if (MenuText && DefaultMenuText.IsEmpty())
 	{
 		DefaultMenuText = MenuText->GetText();
 	}
+	bConfirmingGameExit = false;
 
 	if (AFirstPersonPlayerController* FirstPersonController =
 		Cast<AFirstPersonPlayerController>(GetOwningPlayer()))
@@ -82,6 +83,12 @@ void UInGameSettingWidget::InitializeUILayerContext_Implementation(
 
 bool UInGameSettingWidget::HandleUILayerEscape_Implementation()
 {
+	if (bConfirmingGameExit)
+	{
+		CancelGameExitConfirmation();
+		return true;
+	}
+
 	if (AFirstPersonPlayerController* FirstPersonController =
 		Cast<AFirstPersonPlayerController>(GetOwningPlayer());
 		FirstPersonController
@@ -98,6 +105,12 @@ bool UInGameSettingWidget::HandleUILayerEscape_Implementation()
 
 bool UInGameSettingWidget::HandleUILayerConfirmed_Implementation()
 {
+	if (bConfirmingGameExit)
+	{
+		ConfirmGameExit();
+		return true;
+	}
+
 	if (const AFirstPersonPlayerController* FirstPersonController =
 		Cast<AFirstPersonPlayerController>(GetOwningPlayer());
 		FirstPersonController
@@ -133,6 +146,12 @@ bool UInGameSettingWidget::HandleUILayerRight_Implementation()
 
 void UInGameSettingWidget::HandleContinueButtonClicked()
 {
+	if (bConfirmingGameExit)
+	{
+		CancelGameExitConfirmation();
+		return;
+	}
+
 	PopSelfFromLayer();
 
 	if (AFirstPersonPlayerController* FirstPersonController =
@@ -158,7 +177,39 @@ void UInGameSettingWidget::HandleRestartCheckpointButtonClicked()
 
 void UInGameSettingWidget::HandleTitleButtonClicked()
 {
-	// Title transition behavior is intentionally left for the next pass.
+	if (bConfirmingGameExit)
+	{
+		ConfirmGameExit();
+		return;
+	}
+
+	bConfirmingGameExit = true;
+	RefreshCheckpointRestartState(EOutlierCheckpointRestartVoteView::None);
+}
+
+void UInGameSettingWidget::CancelGameExitConfirmation()
+{
+	bConfirmingGameExit = false;
+	const AFirstPersonPlayerController* FirstPersonController =
+		Cast<AFirstPersonPlayerController>(GetOwningPlayer());
+	RefreshCheckpointRestartState(FirstPersonController
+		? FirstPersonController->GetCheckpointRestartVoteView()
+		: EOutlierCheckpointRestartVoteView::None);
+}
+
+void UInGameSettingWidget::ConfirmGameExit()
+{
+	if (!bConfirmingGameExit)
+	{
+		return;
+	}
+
+	bConfirmingGameExit = false;
+	if (AFirstPersonPlayerController* FirstPersonController =
+		Cast<AFirstPersonPlayerController>(GetOwningPlayer()))
+	{
+		FirstPersonController->RequestLeaveGame();
+	}
 }
 
 void UInGameSettingWidget::PushKeyHintLayer()
@@ -287,7 +338,9 @@ void UInGameSettingWidget::RefreshCheckpointRestartState(
 
 	if (MenuText)
 	{
-		MenuText->SetText(bWaitingForResponse ? CheckpointWaitingText : DefaultMenuText);
+		MenuText->SetText(bConfirmingGameExit
+			? GameExitConfirmationText
+			: (bWaitingForResponse ? CheckpointWaitingText : DefaultMenuText));
 	}
 	if (ContinueButton)
 	{
@@ -295,12 +348,13 @@ void UInGameSettingWidget::RefreshCheckpointRestartState(
 	}
 	if (SettingButton)
 	{
-		SettingButton->SetIsEnabled(!bWaitingForResponse);
+		SettingButton->SetIsEnabled(!bWaitingForResponse && !bConfirmingGameExit);
 	}
 	if (RestartCheckpointButton)
 	{
 		RestartCheckpointButton->SetIsEnabled(
 			!bWaitingForResponse
+			&& !bConfirmingGameExit
 			&& FirstPersonController
 			&& FirstPersonController->CanRequestCheckpointRestart());
 	}

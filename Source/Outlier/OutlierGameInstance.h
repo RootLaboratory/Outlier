@@ -26,6 +26,7 @@ public:
 	virtual void Shutdown() override;
 
 	void NotifyArenaHandoffStarted(const FString& ArenaUrl);
+	void PrepareForExplicitLeave();
 
 private:
 	friend class FOutlierArenaReturnLifecycleTest;

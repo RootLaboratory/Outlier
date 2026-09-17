@@ -1225,10 +1225,20 @@ bool AOutlierGameMode::CompleteArenaMatch()
 
 	if (APlayerController* ShooterController = ArenaWorkerShooterController.Get())
 	{
+		if (AFirstPersonPlayerController* FirstPersonController =
+			Cast<AFirstPersonPlayerController>(ShooterController))
+		{
+			FirstPersonController->ClientPrepareForArenaExit();
+		}
 		ShooterController->ClientTravel(LobbyAddress, TRAVEL_Absolute);
 	}
 	if (APlayerController* PartnerController = ArenaWorkerPartnerController.Get())
 	{
+		if (AFirstPersonPlayerController* FirstPersonController =
+			Cast<AFirstPersonPlayerController>(PartnerController))
+		{
+			FirstPersonController->ClientPrepareForArenaExit();
+		}
 		PartnerController->ClientTravel(LobbyAddress, TRAVEL_Absolute);
 	}
 
@@ -1241,6 +1251,53 @@ bool AOutlierGameMode::CompleteArenaMatch()
 		&AOutlierGameMode::RequestArenaWorkerExit,
 		ExitTimeout,
 		false);
+	return true;
+}
+
+bool AOutlierGameMode::HandleExplicitPlayerLeave(AFirstPersonPlayerController* Requester)
+{
+	if (!HasAuthority() || !Requester)
+	{
+		return false;
+	}
+
+	CancelCheckpointRestartVoteForDisconnect(Requester);
+	UGameplayStatics::SetGamePaused(this, false);
+
+	if (IsArenaWorkerProcess())
+	{
+		if (bArenaWorkerMatchCompleting)
+		{
+			return false;
+		}
+
+		UE_LOG(LogTemp, Display,
+			TEXT("[ArenaReturn] Explicit leave requested; releasing Worker Match=%s Player=%s"),
+			*ArenaWorkerAdmission.MatchId.ToString(),
+			*GetNameSafe(Requester));
+		// MatchCompleting을 실제 연결 종료보다 먼저 세워 Logout의 재접속 유예 경로를 막는다.
+		BeginArenaWorkerReleaseShutdown();
+		return true;
+	}
+
+	const ENetMode NetMode = GetNetMode();
+	if (NetMode != NM_Standalone && NetMode != NM_ListenServer)
+	{
+		return false;
+	}
+	if (bListenHostReturnRequested)
+	{
+		return false;
+	}
+
+	// 2인 Listen Match에서는 Host와 Guest 어느 쪽의 명시적 이탈이든 Match 전체를 끝낸다.
+	// Standalone도 같은 엔진 경로를 사용하며 GameDefaultMap인 Title로 돌아간다.
+	bListenHostReturnRequested = true;
+	UE_LOG(LogTemp, Display,
+		TEXT("[ArenaReturn] Explicit leave requested; returning session to Title Player=%s NetMode=%d"),
+		*GetNameSafe(Requester),
+		static_cast<int32>(NetMode));
+	ReturnToMainMenuHost();
 	return true;
 }
 
@@ -2703,6 +2760,7 @@ void AOutlierGameMode::BeginArenaWorkerReleaseShutdown()
 	// 정상 Match 완료와 복구 불가능한 Reload/재접속 실패는 같은 종료 계약을 사용한다.
 	// 제어 채널에 Releasing을 먼저 알리고 플레이어를 Lobby로 보낸 뒤 Worker를 종료한다.
 	bArenaWorkerMatchCompleting = true;
+	GetWorldTimerManager().ClearTimer(ArenaWorkerAutoCompleteTimerHandle);
 	GetWorldTimerManager().ClearTimer(ArenaWorkerReconnectTimerHandle);
 	ArenaWorkerDisconnectedPlayerIds.Reset();
 	ArenaWorkerReconnectPawns.Reset();
@@ -2717,11 +2775,18 @@ void AOutlierGameMode::BeginArenaWorkerReleaseShutdown()
 	const FString LobbyAddress = Settings
 		? Settings->LobbyAddress.TrimStartAndEnd()
 		: FString();
-	if (Settings && Settings->bReturnToLobbyOnMatchEnd && !LobbyAddress.IsEmpty())
+	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
 	{
-		for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+		if (APlayerController* PlayerController = It->Get())
 		{
-			if (APlayerController* PlayerController = It->Get())
+			if (AFirstPersonPlayerController* FirstPersonController =
+				Cast<AFirstPersonPlayerController>(PlayerController))
+			{
+				// 의도된 Worker 종료를 다음 NetworkFailure가 장애로 되돌리지 않도록
+				// 두 클라이언트 모두 Travel 전에 로컬 재접속 상태를 먼저 정리한다.
+				FirstPersonController->ClientPrepareForArenaExit();
+			}
+			if (Settings && Settings->bReturnToLobbyOnMatchEnd && !LobbyAddress.IsEmpty())
 			{
 				PlayerController->ClientTravel(LobbyAddress, TRAVEL_Absolute);
 			}

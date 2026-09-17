@@ -12,6 +12,7 @@
 #include "FirstPersonPlayerCameraManager.h"
 #include "Kismet/GameplayStatics.h"
 #include "LocalPlayerUISubSystem.h"
+#include "OutlierGameInstance.h"
 #include "OutlierGameMode.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Outlier.h"
@@ -218,6 +219,24 @@ void AFirstPersonPlayerController::RequestCloseInGameSetting()
 	ServerCloseInGameSetting();
 }
 
+void AFirstPersonPlayerController::RequestLeaveGame()
+{
+	if (!IsLocalController() || bExplicitLeaveRequested)
+	{
+		return;
+	}
+
+	// 서버가 자발적 이탈을 먼저 확정해야 Logout을 장애 재접속으로 분류하지 않는다.
+	// Reliable RPC를 전송한 뒤 로컬 Handoff를 지워 후속 NetworkFailure의 재접속도 막는다.
+	bExplicitLeaveRequested = true;
+	ServerRequestLeaveGame();
+	if (UOutlierGameInstance* OutlierGameInstance =
+		Cast<UOutlierGameInstance>(GetGameInstance()))
+	{
+		OutlierGameInstance->PrepareForExplicitLeave();
+	}
+}
+
 void AFirstPersonPlayerController::RequestCheckpointRestart()
 {
 	if (!IsLocalController() || !bCanRequestCheckpointRestart)
@@ -262,6 +281,15 @@ void AFirstPersonPlayerController::ClientSetCheckpointRestartVoteView_Implementa
 {
 	CheckpointRestartVoteView = VoteView;
 	OnCheckpointRestartVoteViewChanged.Broadcast(CheckpointRestartVoteView);
+}
+
+void AFirstPersonPlayerController::ClientPrepareForArenaExit_Implementation()
+{
+	if (UOutlierGameInstance* OutlierGameInstance =
+		Cast<UOutlierGameInstance>(GetGameInstance()))
+	{
+		OutlierGameInstance->PrepareForExplicitLeave();
+	}
 }
 
 void AFirstPersonPlayerController::ConfigureCheckpointRestartFromServer(bool bCanRequest)
@@ -1397,6 +1425,16 @@ void AFirstPersonPlayerController::ServerCloseInGameSetting_Implementation()
 	if (PartnerController && PartnerController != ShooterController)
 	{
 		PopInGameSettingLayerFromController(PartnerController, PausingCharacter);
+	}
+}
+
+void AFirstPersonPlayerController::ServerRequestLeaveGame_Implementation()
+{
+	if (AOutlierGameMode* OutlierGameMode = GetWorld()
+		? GetWorld()->GetAuthGameMode<AOutlierGameMode>()
+		: nullptr)
+	{
+		OutlierGameMode->HandleExplicitPlayerLeave(this);
 	}
 }
 

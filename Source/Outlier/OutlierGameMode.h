@@ -82,6 +82,7 @@ public:
 	bool RespondCheckpointRestart(AFirstPersonPlayerController* Responder, bool bApprove);
 	bool CancelCheckpointRestart(AFirstPersonPlayerController* Requester);
 	bool HandleCheckpointRestartEscape(AFirstPersonPlayerController* Controller);
+	bool HandleExplicitPlayerLeave(AFirstPersonPlayerController* Requester);
 	EOutlierCheckpointRestartVoteState GetLastCheckpointRestartVoteResult() const
 	{
 		return LastCheckpointRestartVoteResult;

@@ -81,6 +81,8 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UI|InGame Setting")
 	void RequestCloseInGameSetting();
 
+	void RequestLeaveGame();
+
 	void RequestCheckpointRestart();
 	void RequestCheckpointRestartResponse(bool bApprove);
 	void RequestCancelCheckpointRestart();
@@ -117,6 +119,9 @@ public:
 	void ServerCloseInGameSetting();
 
 	UFUNCTION(Server, Reliable)
+	void ServerRequestLeaveGame();
+
+	UFUNCTION(Server, Reliable)
 	void ServerRequestCheckpointRestart();
 
 	UFUNCTION(Server, Reliable)
@@ -130,6 +135,9 @@ public:
 
 	UFUNCTION(Client, Reliable)
 	void ClientSetCheckpointRestartVoteView(EOutlierCheckpointRestartVoteView VoteView);
+
+	UFUNCTION(Client, Reliable)
+	void ClientPrepareForArenaExit();
 
 	// Listen Host의 로컬 Controller에는 Client RPC가 전송되지 않으므로 서버가 같은 적용 함수를 직접 호출한다.
 	void ConfigureCheckpointRestartFromServer(bool bCanRequest);
@@ -299,6 +307,7 @@ protected:
 	TSubclassOf<UPreSetLoadWidget> PresetLoadWidgetClass;
 
 	bool bCanRequestCheckpointRestart = false;
+	bool bExplicitLeaveRequested = false;
 	EOutlierCheckpointRestartVoteView CheckpointRestartVoteView =
 		EOutlierCheckpointRestartVoteView::None;
 };
