@@ -17,9 +17,22 @@
  * 반드시 사라진다. 그 액터에 상태를 얹어두면 같이 사라지므로, 살아남는 PlayerState가
  * "무엇을 갖고 있었는가"를 클래스 단위로 기억하고 새 Pawn에서 다시 만들어 준다.
  *
- * 탄약 같은 세부 상태는 추적하지 않는다 — 무기는 일회성 획득물이고, 획득 사실만
- * 보존되면 리로드 후 동일한 전투 능력이 복원된다.
+ * 일반 프리셋 리로드에서는 WeaponClass 만 사용하고, 체크포인트에서는 CurrentAmmo 까지
+ * 채운다. CurrentAmmo == INDEX_NONE 은 기존 프리셋처럼 새 무기의 기본 탄약을 쓰라는 뜻이다.
  */
+USTRUCT(BlueprintType)
+struct OUTLIER_API FOutlierWeaponSnapshot
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TSubclassOf<AWeaponBase> WeaponClass;
+
+	// 탄약이 없는 무기와 기존 프리셋 기록은 INDEX_NONE 으로 구분한다.
+	UPROPERTY()
+	int32 CurrentAmmo = INDEX_NONE;
+};
+
 USTRUCT(BlueprintType)
 struct OUTLIER_API FOutlierLoadoutSnapshot
 {
@@ -30,7 +43,7 @@ struct OUTLIER_API FOutlierLoadoutSnapshot
 	// 타입 -> 슬롯 역산(GetSlotForWeaponType)이 필요 없고, 슬롯 enum이 늘어나면
 	// 양쪽이 같은 출처를 보고 자동으로 따라온다.
 	UPROPERTY()
-	TArray<TSubclassOf<AWeaponBase>> SlotClasses;
+	TArray<FOutlierWeaponSnapshot> SlotSnapshots;
 
 	// 복원 직후 손에 들려 있어야 할 슬롯.
 	UPROPERTY()
@@ -50,9 +63,9 @@ struct OUTLIER_API FOutlierLoadoutSnapshot
 			return false;
 		}
 
-		for (const TSubclassOf<AWeaponBase>& SlotClass : SlotClasses)
+		for (const FOutlierWeaponSnapshot& SlotSnapshot : SlotSnapshots)
 		{
-			if (SlotClass)
+			if (SlotSnapshot.WeaponClass)
 			{
 				return false;
 			}
@@ -63,7 +76,7 @@ struct OUTLIER_API FOutlierLoadoutSnapshot
 
 	void Reset()
 	{
-		SlotClasses.Reset();
+		SlotSnapshots.Reset();
 		CurrentSlot = EWeaponSlot::Primary;
 		PartnerWeaponClass = nullptr;
 	}

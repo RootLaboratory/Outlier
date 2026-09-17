@@ -2648,7 +2648,23 @@ bool AOutlierGameMode::BuildPairCheckpointSnapshot(
 	OutSnapshot.ShooterProgress.NodeCount = ShooterPlayerState->GetNodeCount();
 	OutSnapshot.ShooterProgress.ActivatedUpgradeNodeIds =
 		ShooterPlayerState->GetActivatedUpgradeNodeIds(EOutlierUpgradeRole::Shooter);
+	// PlayerState의 일반 로드아웃 기록은 프리셋 리로드용이라 탄약을 일부러 갖지 않는다.
+	// 체크포인트만 저장 순간의 살아 있는 Weapon Actor를 읽어 정확한 탄약을 남긴다.
 	OutSnapshot.LoadoutSnapshot = ShooterPlayerState->GetLoadoutSnapshot();
+	const AShooterCharacter* Shooter = ShooterPlayerState->GetShooterCharacter();
+	const UShooterInventoryComponent* Inventory = Shooter
+		? Shooter->GetInventoryComponent()
+		: nullptr;
+	if (!Inventory)
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("[Checkpoint] Cannot capture live loadout without Shooter inventory PS=%s"),
+			*GetNameSafe(ShooterPlayerState));
+		return false;
+	}
+	Inventory->BuildLoadoutSnapshot(
+		OutSnapshot.LoadoutSnapshot,
+		/*bCaptureAmmo=*/true);
 	OutSnapshot.SuitSnapshot.bAcquired = ShooterPlayerState->GetAcquiredSuit();
 	OutSnapshot.SuitSnapshot.FirstPersonMesh = ShooterPlayerState->GetSuitFirstPersonMesh();
 	OutSnapshot.SuitSnapshot.ThirdPersonMesh = ShooterPlayerState->GetSuitThirdPersonMesh();

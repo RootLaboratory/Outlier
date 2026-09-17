@@ -467,6 +467,45 @@ void AOutlierPlayerState::SetNodeCountInternal(int32 NewNodeCount)
 	ForceNetUpdate();
 }
 
+void AOutlierPlayerState::RestoreCheckpointProgress(
+	int32 SavedNodeCount,
+	EOutlierUpgradeRole UpgradeRole,
+	const TArray<FName>& SavedActivatedNodeIds)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	TArray<FName>* ActivatedNodeIds = nullptr;
+	switch (UpgradeRole)
+	{
+	case EOutlierUpgradeRole::Shooter:
+		ActivatedNodeIds = &ShooterActivatedUpgradeNodeIds;
+		break;
+	case EOutlierUpgradeRole::Partner:
+		ActivatedNodeIds = &PartnerActivatedUpgradeNodeIds;
+		break;
+	default:
+		return;
+	}
+
+	const bool bNodesChanged = *ActivatedNodeIds != SavedActivatedNodeIds;
+	if (bNodesChanged)
+	{
+		*ActivatedNodeIds = SavedActivatedNodeIds;
+		HandleActivatedUpgradeNodesChanged();
+	}
+
+	const int32 PreviousNodeCount = NodeCount;
+	SetNodeCountInternal(SavedNodeCount);
+	if (bNodesChanged && PreviousNodeCount == NodeCount)
+	{
+		// SetNodeCountInternal이 같은 값에서 조기 반환해도 노드 배열 변경은 즉시 복제해야 한다.
+		ForceNetUpdate();
+	}
+}
+
 void AOutlierPlayerState::SetAcquiredSuit(bool Acquire)
 {
 	if (!HasAuthority())

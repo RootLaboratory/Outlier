@@ -1,8 +1,14 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "Engine/GameInstance.h"
+#include "Engine/Engine.h"
+#include "Engine/World.h"
 #include "Misc/AutomationTest.h"
+#include "OutlierPlayerState.h"
 #include "Save/OutlierSaveSubSystem.h"
+#include "Shooter/ShooterCharacter.h"
+#include "Shooter/ShooterInventoryComponent.h"
+#include "Weapon/RangedWeaponBase.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FOutlierCheckpointRuntimeSnapshotTest,
@@ -124,6 +130,153 @@ bool FOutlierCheckpointWorldIdTest::RunTest(const FString& Parameters)
 			TEXT("Node.A"),
 			SecondOwner));
 
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierCheckpointPlayerProgressTest,
+	"Outlier.Save.Checkpoint.PlayerProgress",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierCheckpointPlayerProgressTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	const FName WorldName = MakeUniqueObjectName(
+		nullptr,
+		UWorld::StaticClass(),
+		NAME_None,
+		EUniqueObjectNameOptions::GloballyUnique);
+	FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, WorldName, GetTransientPackage());
+	if (!TestNotNull(TEXT("Checkpoint player progress world is created"), World))
+	{
+		GEngine->DestroyWorldContext(World);
+		return false;
+	}
+
+	World->AddToRoot();
+	WorldContext.SetCurrentWorld(World);
+	World->InitializeActorsForPlay(FURL());
+
+	auto CleanupWorld = [World]()
+	{
+		GEngine->ShutdownWorldNetDriver(World);
+		World->DestroyWorld(true);
+		World->SetPhysicsScene(nullptr);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+	};
+
+	AOutlierPlayerState* PlayerState = World->SpawnActor<AOutlierPlayerState>();
+	if (!TestNotNull(TEXT("Checkpoint PlayerState is spawned"), PlayerState))
+	{
+		CleanupWorld();
+		return false;
+	}
+
+	PlayerState->SetPairId(1);
+	PlayerState->AddNode(9);
+	PlayerState->AddActivatedUpgradeNode(EOutlierUpgradeRole::Shooter, TEXT("Shooter.Saved"));
+	PlayerState->AddActivatedUpgradeNode(EOutlierUpgradeRole::Shooter, TEXT("Shooter.AfterCheckpoint"));
+	PlayerState->AddActivatedUpgradeNode(EOutlierUpgradeRole::Partner, TEXT("Partner.Unchanged"));
+
+	const TArray<FName> SavedShooterNodes = { TEXT("Shooter.Saved") };
+	PlayerState->RestoreCheckpointProgress(
+		3,
+		EOutlierUpgradeRole::Shooter,
+		SavedShooterNodes);
+
+	TestEqual(TEXT("Node count rolls back to the checkpoint value"), PlayerState->GetNodeCount(), 3);
+	const TArray<FName>& RestoredShooterNodes =
+		PlayerState->GetActivatedUpgradeNodeIds(EOutlierUpgradeRole::Shooter);
+	TestEqual(TEXT("Only checkpoint Shooter upgrades remain"), RestoredShooterNodes.Num(), 1);
+	TestTrue(
+		TEXT("The checkpoint Shooter upgrade remains active"),
+		RestoredShooterNodes.Contains(TEXT("Shooter.Saved")));
+	TestFalse(
+		TEXT("A post-checkpoint Shooter upgrade is removed"),
+		RestoredShooterNodes.Contains(TEXT("Shooter.AfterCheckpoint")));
+	TestTrue(
+		TEXT("Restoring Shooter progress does not overwrite Partner upgrades"),
+		PlayerState->GetActivatedUpgradeNodeIds(EOutlierUpgradeRole::Partner).Contains(
+			TEXT("Partner.Unchanged")));
+
+	UClass* ShooterClass = LoadClass<AShooterCharacter>(
+		nullptr,
+		TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	UClass* RifleClass = LoadClass<ARangedWeaponBase>(
+		nullptr,
+		TEXT("/Game/Blueprints/Weapon/BP_Rifle.BP_Rifle_C"));
+	AShooterCharacter* CheckpointShooter = ShooterClass
+		? World->SpawnActor<AShooterCharacter>(ShooterClass)
+		: nullptr;
+	AShooterCharacter* PresetShooter = ShooterClass
+		? World->SpawnActor<AShooterCharacter>(ShooterClass)
+		: nullptr;
+	if (!TestNotNull(TEXT("Checkpoint Shooter is spawned"), CheckpointShooter)
+		|| !TestNotNull(TEXT("Preset Shooter is spawned"), PresetShooter)
+		|| !TestNotNull(TEXT("Rifle Blueprint is loadable"), RifleClass))
+	{
+		CleanupWorld();
+		return false;
+	}
+	if (!CheckpointShooter->HasActorBegunPlay())
+	{
+		CheckpointShooter->DispatchBeginPlay();
+	}
+	if (!PresetShooter->HasActorBegunPlay())
+	{
+		PresetShooter->DispatchBeginPlay();
+	}
+
+	FOutlierLoadoutSnapshot SavedLoadout;
+	SavedLoadout.SlotSnapshots.SetNum(static_cast<int32>(EWeaponSlot::Max));
+	SavedLoadout.CurrentSlot = EWeaponSlot::Primary;
+	SavedLoadout.SlotSnapshots[static_cast<int32>(EWeaponSlot::Primary)].WeaponClass = RifleClass;
+	SavedLoadout.SlotSnapshots[static_cast<int32>(EWeaponSlot::Primary)].CurrentAmmo = 7;
+
+	UShooterInventoryComponent* CheckpointInventory = CheckpointShooter->GetInventoryComponent();
+	UShooterInventoryComponent* PresetInventory = PresetShooter->GetInventoryComponent();
+	CheckpointInventory->RestoreLoadout(SavedLoadout, /*bRestoreAmmo=*/true);
+	PresetInventory->RestoreLoadout(SavedLoadout, /*bRestoreAmmo=*/false);
+
+	const ARangedWeaponBase* CheckpointRifle = Cast<ARangedWeaponBase>(
+		CheckpointInventory->GetWeaponInSlot(EWeaponSlot::Primary));
+	const ARangedWeaponBase* PresetRifle = Cast<ARangedWeaponBase>(
+		PresetInventory->GetWeaponInSlot(EWeaponSlot::Primary));
+	if (!TestNotNull(TEXT("Checkpoint rifle is restored"), CheckpointRifle)
+		|| !TestNotNull(TEXT("Preset rifle is restored"), PresetRifle))
+	{
+		CleanupWorld();
+		return false;
+	}
+
+	TestEqual(TEXT("Checkpoint restore applies saved magazine ammo"), CheckpointRifle->GetCurrentAmmo(), 7);
+	TestEqual(
+		TEXT("Preset restore keeps the new weapon default magazine"),
+		PresetRifle->GetCurrentAmmo(),
+		PresetRifle->GetMagazineSize());
+
+	FOutlierLoadoutSnapshot CapturedCheckpointLoadout;
+	CheckpointInventory->BuildLoadoutSnapshot(
+		CapturedCheckpointLoadout,
+		/*bCaptureAmmo=*/true);
+	TestEqual(
+		TEXT("Checkpoint capture reads live weapon ammo"),
+		CapturedCheckpointLoadout.SlotSnapshots[static_cast<int32>(EWeaponSlot::Primary)].CurrentAmmo,
+		7);
+
+	FOutlierLoadoutSnapshot CapturedPresetLoadout;
+	CheckpointInventory->BuildLoadoutSnapshot(
+		CapturedPresetLoadout,
+		/*bCaptureAmmo=*/false);
+	TestEqual(
+		TEXT("Ordinary loadout capture omits ammo"),
+		CapturedPresetLoadout.SlotSnapshots[static_cast<int32>(EWeaponSlot::Primary)].CurrentAmmo,
+		INDEX_NONE);
+
+	CleanupWorld();
 	return true;
 }
 

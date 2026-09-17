@@ -576,6 +576,7 @@ public:
 	bool IsActionLocked() const { return ActionLock != EShooterActionLock::None; }
 
 	UShooterInventoryComponent* GetInventoryComponent() { return InventoryComponent; }
+	const UShooterInventoryComponent* GetInventoryComponent() const { return InventoryComponent; }
 
 	UFUNCTION(BlueprintPure, Category = "Upgrade")
 	UOutlierUpgradeComponent* GetUpgradeComponent() const;

@@ -258,6 +258,22 @@ void ARangedWeaponBase::RefillMagazineForWeaponOvercharge()
 	ForceNetUpdate();
 }
 
+void ARangedWeaponBase::RestoreCheckpointAmmo(int32 SavedAmmo)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	// 체크포인트는 재장전 진행도를 저장하지 않는다. 새 Actor가 아닌 경로에서도
+	// 호출될 수 있으므로 일시 상태를 먼저 끊고 확정 탄약만 적용한다.
+	StopAttack();
+	CancelReload();
+	CurrentAmmo = FMath::Clamp(SavedAmmo, 0, MagazineSize);
+	UpdateLocalAmmoUI();
+	ForceNetUpdate();
+}
+
 
 void ARangedWeaponBase::FireShot()
 {
