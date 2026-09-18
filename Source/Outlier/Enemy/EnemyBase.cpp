@@ -1,6 +1,7 @@
 #include "Enemy/EnemyBase.h"
 #include "Camera/CameraComponent.h"
 #include "Enemy/EnemyStateTreeComponent.h"
+#include "Enemy/EnemyPoolSubsystem.h"
 #include "Drone/Partner/HackableComponent.h"
 #include "Drone/Partner/EMPableComponent.h"
 #include "Drone/Partner/EMPGameplayTags.h"
@@ -13,6 +14,8 @@
 #include "Enemy/EnemyAIController.h"
 #include "Enemy/EnemyRoomSubsystem.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "GameplayEffect.h"
+#include "Animation/AnimInstance.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/SphereComponent.h"
 #include "GameplayTags/OutlierGameplayTags.h"
@@ -222,6 +225,11 @@ void AEnemyBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifeti
 	DOREPLIFETIME(AEnemyBase, SharedTargetLocation);
 	DOREPLIFETIME(AEnemyBase, AttackPhase);
 	DOREPLIFETIME(AEnemyBase, CurrentWeapon);
+	DOREPLIFETIME(AEnemyBase, PoolState);
+	DOREPLIFETIME(AEnemyBase, PoolGameplayGeneration);
+	DOREPLIFETIME(AEnemyBase, PoolLeaseSerial);
+	DOREPLIFETIME(AEnemyBase, PoolCombatPhaseIndex);
+	DOREPLIFETIME(AEnemyBase, PoolWaveIndex);
 }
 
 void AEnemyBase::BeginPlay()
@@ -239,14 +247,17 @@ void AEnemyBase::BeginPlay()
 
 	if (HasAuthority())
 	{
-		if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
+		if (!IsPoolManaged())
 		{
-			RoomSubsystem->RegisterEnemy(this);
-		}
-		if (URoomCombatSubsystem* CombatSubsystem =
-			GetWorld()->GetSubsystem<URoomCombatSubsystem>())
-		{
-			CombatSubsystem->RegisterPreplacedEnemy(this);
+			if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
+			{
+				RoomSubsystem->RegisterEnemy(this);
+			}
+			if (URoomCombatSubsystem* CombatSubsystem =
+				GetWorld()->GetSubsystem<URoomCombatSubsystem>())
+			{
+				CombatSubsystem->RegisterPreplacedEnemy(this);
+			}
 		}
 		if (IsActorBeingDestroyed())
 		{
@@ -257,6 +268,11 @@ void AEnemyBase::BeginPlay()
 	InitializeFromEnemyStatRow();
 	EquipDefaultWeapon();
 	PrepareForStateTreeStart();
+	if (IsPoolManaged())
+	{
+		ApplyPoolState(EEnemyPoolState::Unmanaged);
+		return;
+	}
 
 	if (HasAuthority() && StateTreeComponent)
 	{
@@ -264,6 +280,377 @@ void AEnemyBase::BeginPlay()
 		// 올바른 초기 State를 선택할 수 있도록 모든 Enemy 초기화 뒤에 시작한다.
 		StateTreeComponent->StartLogic();
 	}
+}
+
+void AEnemyBase::PrepareForPoolSpawn(UEnemyPoolSubsystem* PoolSubsystem)
+{
+	if (!HasAuthority() || !PoolSubsystem || HasActorBegunPlay())
+	{
+		return;
+	}
+
+	OwningPoolSubsystem = PoolSubsystem;
+	PoolState = EEnemyPoolState::Idle;
+	PoolGameplayGeneration = 0;
+	PoolLeaseSerial = 0;
+	PoolCombatPhaseIndex = INDEX_NONE;
+	PoolWaveIndex = INDEX_NONE;
+}
+
+bool AEnemyBase::BeginPoolLease(
+	const FEnemyPoolLeaseContext& Context,
+	const FTransform& SpawnTransform,
+	int32 LeaseSerial)
+{
+	if (!HasAuthority() || PoolState != EEnemyPoolState::Idle
+		|| !OwningPoolSubsystem.IsValid() || LeaseSerial == 0)
+	{
+		return false;
+	}
+
+	SetNetDormancy(DORM_Awake);
+	FlushNetDormancy();
+	SetLifeSpan(0.0f);
+	GetWorldTimerManager().ClearAllTimersForObject(this);
+	DestroyPoolAIController();
+
+	CancelPossessionProcess();
+	EndPossessedImpactInputLock();
+	EndImpactReaction();
+	ResetPossessedAttackInput();
+	StopCurrentAttack();
+	RemoveRoomTargetObserver();
+	ReleaseSearchRingSlot();
+	ClearPossessedPlayerState();
+
+	if (StateTreeComponent)
+	{
+		StateTreeComponent->StopLogic(TEXT("Enemy pool lease reset"));
+	}
+	if (OutlierAbilitySystemComponent)
+	{
+		OutlierAbilitySystemComponent->CancelAllAbilities();
+		OutlierAbilitySystemComponent->RemoveActiveEffects(FGameplayEffectQuery());
+	}
+
+	bDeathCleanupPerformed = false;
+	bInCombat = false;
+	bIsPossessed = false;
+	bPlayerCurrentlyVisible = false;
+	bHasSharedTargetContact = false;
+	bPossessedImpactInputLocked = false;
+	bCombatDecisionRefreshPending = false;
+	bPossessedAttackHeld = false;
+	bPossessedAttackQueued = false;
+	CombatState = EEnemyCombatState::NonCombat;
+	PreStunCombatState = EEnemyCombatState::NonCombat;
+	AttackPhase = EEnemyAttackPhase::Idle;
+	LastKnownPlayerLocation = FVector::ZeroVector;
+	PatternStartPlayerLocation = FVector::ZeroVector;
+	SharedTargetLocation = FVector::ZeroVector;
+	PossessionInstigatorPartner.Reset();
+	PossessionPendingEffectHandle.Invalidate();
+
+	if (RoomTagComponent)
+	{
+		RoomTagComponent->ClearRuntimeRoomAssignment();
+		RoomTagComponent->AssignDefaultRoomTag(Context.RoomTag);
+	}
+	if (IsValid(CurrentWeapon))
+	{
+		CurrentWeapon->ResetForEnemyPoolLease();
+	}
+
+	PoolGameplayGeneration = Context.GameplayGeneration;
+	PoolLeaseSerial = LeaseSerial;
+	PoolCombatPhaseIndex = Context.CombatPhaseIndex;
+	PoolWaveIndex = Context.WaveIndex;
+	SetActorTransform(SpawnTransform, false, nullptr, ETeleportType::TeleportPhysics);
+	InitializeFromEnemyStatRow();
+	ResetPoolRuntimeState();
+
+	SetPoolState(EEnemyPoolState::SpawnPresentation);
+	ForceNetUpdate();
+
+	UE_LOG(LogTemp, Display,
+		TEXT("[EnemyPool] Lease Enemy=%s Generation=%d Lease=%d Room=%s Phase=%d Wave=%d"),
+		*GetNameSafe(this),
+		PoolGameplayGeneration,
+		PoolLeaseSerial,
+		*Context.RoomTag.ToString(),
+		PoolCombatPhaseIndex,
+		PoolWaveIndex);
+
+	OnPoolSpawnPresentationStarted(PoolGameplayGeneration, PoolLeaseSerial);
+	return true;
+}
+
+bool AEnemyBase::MatchesPoolLease(int32 GameplayGeneration, int32 LeaseSerial) const
+{
+	return IsPoolManaged()
+		&& GameplayGeneration == PoolGameplayGeneration
+		&& LeaseSerial != 0
+		&& LeaseSerial == PoolLeaseSerial;
+}
+
+void AEnemyBase::CompletePoolSpawnPresentation(
+	int32 GameplayGeneration,
+	int32 LeaseSerial)
+{
+	if (!HasAuthority() || PoolState != EEnemyPoolState::SpawnPresentation
+		|| !MatchesPoolLease(GameplayGeneration, LeaseSerial))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[EnemyPool] Ignored spawn presentation callback Enemy=%s CurrentGeneration=%d CurrentLease=%d CallbackGeneration=%d CallbackLease=%d State=%s"),
+			*GetNameSafe(this),
+			PoolGameplayGeneration,
+			PoolLeaseSerial,
+			GameplayGeneration,
+			LeaseSerial,
+			*UEnum::GetValueAsString(PoolState));
+		return;
+	}
+
+	if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
+	{
+		RoomSubsystem->RegisterEnemy(this);
+	}
+	SetPoolState(EEnemyPoolState::CombatActive);
+	ForceNetUpdate();
+}
+
+void AEnemyBase::CompletePoolDeathPresentation(
+	int32 GameplayGeneration,
+	int32 LeaseSerial)
+{
+	if (!HasAuthority() || PoolState != EEnemyPoolState::DeathPresentation
+		|| !MatchesPoolLease(GameplayGeneration, LeaseSerial))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[EnemyPool] Ignored death presentation callback Enemy=%s CurrentGeneration=%d CurrentLease=%d CallbackGeneration=%d CallbackLease=%d State=%s"),
+			*GetNameSafe(this),
+			PoolGameplayGeneration,
+			PoolLeaseSerial,
+			GameplayGeneration,
+			LeaseSerial,
+			*UEnum::GetValueAsString(PoolState));
+		return;
+	}
+
+	ReturnToOwningPool();
+}
+
+void AEnemyBase::FinishPoolReturn(int32 GameplayGeneration, int32 LeaseSerial)
+{
+	if (!HasAuthority() || !MatchesPoolLease(GameplayGeneration, LeaseSerial))
+	{
+		return;
+	}
+
+	if (URoomCombatSubsystem* CombatSubsystem = GetWorld()->GetSubsystem<URoomCombatSubsystem>())
+	{
+		CombatSubsystem->UnregisterEnemy(this);
+	}
+	if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
+	{
+		RoomSubsystem->UnregisterEnemy(this);
+	}
+	if (RoomTagComponent)
+	{
+		RoomTagComponent->ClearRuntimeRoomAssignment();
+	}
+
+	GetWorldTimerManager().ClearAllTimersForObject(this);
+	DestroyPoolAIController();
+	StopCurrentAttack();
+	PrepareForPoolIdle();
+	SetPoolState(EEnemyPoolState::Idle);
+	SetActorLocation(FVector(0.0, 0.0, -1000000.0), false, nullptr, ETeleportType::TeleportPhysics);
+	PoolGameplayGeneration = 0;
+	PoolLeaseSerial = 0;
+	PoolCombatPhaseIndex = INDEX_NONE;
+	PoolWaveIndex = INDEX_NONE;
+	ForceNetUpdate();
+	SetNetDormancy(DORM_DormantAll);
+}
+
+void AEnemyBase::InvalidatePoolLease()
+{
+	PoolGameplayGeneration = 0;
+	PoolLeaseSerial = 0;
+	OwningPoolSubsystem.Reset();
+}
+
+void AEnemyBase::OnPoolSpawnPresentationStarted_Implementation(
+	int32 GameplayGeneration,
+	int32 LeaseSerial)
+{
+#if WITH_DEV_AUTOMATION_TESTS
+	if (!bPoolPresentationAutoCompleteForTesting)
+	{
+		return;
+	}
+#endif
+	// 연출이 없는 Enemy는 즉시 완료한다. BP가 Override하면 반드시 같은 토큰으로 완료 API를 호출해야 한다.
+	CompletePoolSpawnPresentation(GameplayGeneration, LeaseSerial);
+}
+
+void AEnemyBase::OnPoolDeathPresentationStarted_Implementation(
+	int32 GameplayGeneration,
+	int32 LeaseSerial)
+{
+#if WITH_DEV_AUTOMATION_TESTS
+	if (!bPoolPresentationAutoCompleteForTesting)
+	{
+		return;
+	}
+#endif
+	const float PresentationDuration = FMath::Max(GetDeathDestroyDelay(), 0.0f);
+	if (PresentationDuration <= KINDA_SMALL_NUMBER)
+	{
+		CompletePoolDeathPresentation(GameplayGeneration, LeaseSerial);
+		return;
+	}
+
+	TWeakObjectPtr<AEnemyBase> WeakThis(this);
+	GetWorldTimerManager().SetTimerForNextTick(FTimerDelegate::CreateWeakLambda(
+		this,
+		[WeakThis, GameplayGeneration, LeaseSerial, PresentationDuration]()
+		{
+			AEnemyBase* Enemy = WeakThis.Get();
+			if (!Enemy || !Enemy->MatchesPoolLease(GameplayGeneration, LeaseSerial))
+			{
+				return;
+			}
+
+			FTimerHandle DeathPresentationTimer;
+			Enemy->GetWorldTimerManager().SetTimer(
+				DeathPresentationTimer,
+				FTimerDelegate::CreateWeakLambda(
+					Enemy,
+					[WeakThis, GameplayGeneration, LeaseSerial]()
+					{
+						if (AEnemyBase* ValidEnemy = WeakThis.Get())
+						{
+							ValidEnemy->CompletePoolDeathPresentation(
+								GameplayGeneration,
+								LeaseSerial);
+						}
+					}),
+				PresentationDuration,
+				false);
+		}));
+}
+
+void AEnemyBase::OnRep_PoolState(EEnemyPoolState PreviousState)
+{
+	ApplyPoolState(PreviousState);
+}
+
+void AEnemyBase::SetPoolState(EEnemyPoolState NewState)
+{
+	if (PoolState == NewState)
+	{
+		return;
+	}
+
+	const EEnemyPoolState PreviousState = PoolState;
+	PoolState = NewState;
+	ApplyPoolState(PreviousState);
+}
+
+void AEnemyBase::ApplyPoolState(EEnemyPoolState PreviousState)
+{
+	if (!IsPoolManaged())
+	{
+		return;
+	}
+	if (!HasAuthority() && PoolState == EEnemyPoolState::SpawnPresentation)
+	{
+		// 대여 초기화는 서버 권위지만 이전 사망 연출이 남은 컴포넌트는 각 클라이언트에서도 되돌려야 한다.
+		ResetPoolPresentationState();
+	}
+
+	const bool bIdle = PoolState == EEnemyPoolState::Idle;
+	const bool bCombatActive = PoolState == EEnemyPoolState::CombatActive;
+	SetActorHiddenInGame(bIdle);
+	SetActorEnableCollision(bCombatActive);
+	SetCanBeDamaged(bCombatActive);
+
+	if (IsValid(CurrentWeapon))
+	{
+		CurrentWeapon->SetActorHiddenInGame(bIdle);
+	}
+
+	if (HasAuthority())
+	{
+		if (bCombatActive)
+		{
+			SpawnDefaultController();
+			RefreshPerceptionConfigForCurrentState();
+			if (StateTreeComponent)
+			{
+				StateTreeComponent->StartLogic();
+			}
+		}
+		else
+		{
+			if (StateTreeComponent)
+			{
+				StateTreeComponent->StopLogic(TEXT("Enemy pool inactive"));
+			}
+			DestroyPoolAIController();
+		}
+	}
+
+	OnEnemyPoolStateChanged(PreviousState, PoolState);
+}
+
+void AEnemyBase::DestroyPoolAIController()
+{
+	AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(GetController());
+	if (!EnemyAIController)
+	{
+		EnemyAIController = Cast<AEnemyAIController>(CachedAIController.Get());
+	}
+	if (IsValid(EnemyAIController))
+	{
+		EnemyAIController->SetEnemyPerceptionEnabled(false);
+		if (EnemyAIController->GetPawn() == this)
+		{
+			EnemyAIController->UnPossess();
+		}
+		EnemyAIController->Destroy();
+	}
+	CachedAIController.Reset();
+}
+
+void AEnemyBase::ReturnToOwningPool()
+{
+	if (UEnemyPoolSubsystem* PoolSubsystem = OwningPoolSubsystem.Get())
+	{
+		PoolSubsystem->ReturnEnemy(this, PoolGameplayGeneration, PoolLeaseSerial);
+	}
+}
+
+void AEnemyBase::ResetPoolRuntimeState()
+{
+	ResetPoolPresentationState();
+}
+
+void AEnemyBase::ResetPoolPresentationState()
+{
+	if (USkeletalMeshComponent* CharacterMesh = GetMesh())
+	{
+		if (UAnimInstance* AnimInstance = CharacterMesh->GetAnimInstance())
+		{
+			AnimInstance->Montage_Stop(0.0f);
+		}
+	}
+}
+
+void AEnemyBase::PrepareForPoolIdle()
+{
 }
 
 void AEnemyBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -395,7 +782,8 @@ void AEnemyBase::SendEnemyStateTreeEvent(FGameplayTag Tag)
 		TEXT("Enemy.Event.Possession"));
 	const bool bAttackDiagnosticEvent = Tag.ToString().StartsWith(
 		TEXT("Enemy.Event.Attack"));
-	if (!HasAuthority() || !Tag.IsValid() || !StateTreeComponent)
+	if (!HasAuthority() || !Tag.IsValid() || !StateTreeComponent
+		|| (IsPoolManaged() && PoolState != EEnemyPoolState::CombatActive))
 	{
 		if (IsPossessedAttackDiagnosticsEnabled()
 			&& (bAttackDiagnosticEvent || bPossessionDiagnosticEvent))
@@ -2292,6 +2680,13 @@ void AEnemyBase::RemoveRoomTargetObserver()
 void AEnemyBase::HandleDeath()
 {
 	PerformDeathCleanup();
+	if (IsPoolManaged())
+	{
+		SetPoolState(EEnemyPoolState::DeathPresentation);
+		ForceNetUpdate();
+		OnPoolDeathPresentationStarted(PoolGameplayGeneration, PoolLeaseSerial);
+		return;
+	}
 
 	const float DestroyDelay = FMath::Max(GetDeathDestroyDelay(), 0.0f);
 	if (DestroyDelay > KINDA_SMALL_NUMBER)
@@ -2306,6 +2701,12 @@ void AEnemyBase::HandleDeath()
 
 void AEnemyBase::PerformDeathCleanup()
 {
+	if (bDeathCleanupPerformed)
+	{
+		return;
+	}
+	bDeathCleanupPerformed = true;
+
 	if (HasAuthority())
 	{
 		if (URoomCombatSubsystem* CombatSubsystem =
@@ -2347,25 +2748,7 @@ void AEnemyBase::PerformDeathCleanup()
 		StateTreeComponent->StopLogic(TEXT("Enemy died"));
 	}
 
-	AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(GetController());
-	if (!EnemyAIController)
-	{
-		EnemyAIController = Cast<AEnemyAIController>(CachedAIController.Get());
-	}
-
-	if (IsValid(EnemyAIController))
-	{
-		EnemyAIController->SetEnemyPerceptionEnabled(false);
-
-		if (EnemyAIController->GetPawn() == this)
-		{
-			EnemyAIController->UnPossess();
-		}
-
-		EnemyAIController->Destroy();
-	}
-
-	CachedAIController.Reset();
+	DestroyPoolAIController();
 }
 
 void AEnemyBase::HandleStartAttackInput()

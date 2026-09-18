@@ -94,6 +94,7 @@ public:
 	static bool HasGameplayReloadTimedOut(double ElapsedSeconds, double TimeoutSeconds);
 
 	FOnArenaShown OnArenaShown;
+	FOnArenaGameplayGenerationEvent OnArenaGameplayReloadStarted;
 	FOnArenaGameplayGenerationEvent OnArenaGameplayGCReady;
 	FOnArenaGameplayGenerationEvent OnArenaGameplayReady;
 	FOnArenaGameplayGenerationEvent OnArenaGameplayReloadResumed;

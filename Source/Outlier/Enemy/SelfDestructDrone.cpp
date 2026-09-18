@@ -80,7 +80,10 @@ void ASelfDestructDrone::BeginPlay()
 
 	if (HasAuthority())
 	{
-		SpawnAndAttachMountedExplosives();
+		if (!IsPoolManaged())
+		{
+			SpawnAndAttachMountedExplosives();
+		}
 	}
 }
 
@@ -441,4 +444,24 @@ void ASelfDestructDrone::HandleDeath()
 	DestroyMountedExplosives();
 
 	Super::HandleDeath();
+}
+
+void ASelfDestructDrone::ResetPoolRuntimeState()
+{
+	Super::ResetPoolRuntimeState();
+	bDeathHandling = false;
+	bHasCommittedSelfDestruct = false;
+	CommittedChargeDirection = FVector::ForwardVector;
+	CommittedChargeTargetDirection = FVector::ForwardVector;
+	CommittedChargeStartLocation = FVector::ZeroVector;
+	CommittedChargeSpeed = 0.0f;
+	CommittedChargeDistanceLimit = 0.0f;
+	CommittedImpactElapsedTime = 0.0f;
+	SpawnAndAttachMountedExplosives();
+}
+
+void ASelfDestructDrone::PrepareForPoolIdle()
+{
+	Super::PrepareForPoolIdle();
+	DestroyMountedExplosives();
 }

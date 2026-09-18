@@ -954,6 +954,28 @@ void AAutoTurret::HandleDeath()
 	Super::HandleDeath();
 }
 
+void AAutoTurret::ResetPoolRuntimeState()
+{
+	Super::ResetPoolRuntimeState();
+	GetWorldTimerManager().ClearTimer(DeployFallbackTimerHandle);
+	StopImpactRecovery();
+	bDeploymentStarted = false;
+	bDeployed = false;
+	bHackedToPlayerTeam = false;
+	CurrentAimOffset = FRotator::ZeroRotator;
+	ImpactRotationOffset = FRotator::ZeroRotator;
+	CurrentAimLocation = FVector::ZeroVector;
+	CurrentMuzzleGroupIndex = 0;
+	ApplyHackedTeamState();
+	ApplyDeploymentRuntimeState();
+}
+
+void AAutoTurret::ResetPoolPresentationState()
+{
+	Super::ResetPoolPresentationState();
+	StopMontageOnMesh(TurretHeadMesh);
+}
+
 float AAutoTurret::GetDeathDestroyDelay() const
 {
 	return DeathMontage ? DeathMontage->GetPlayLength() : 0.0f;

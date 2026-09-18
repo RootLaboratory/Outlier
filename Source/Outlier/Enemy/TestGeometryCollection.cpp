@@ -66,11 +66,56 @@ void ATestGeometryCollection::HandleDeath()
 
 	SetReplicateMovement(false);
 	MulticastActivateDeathGeometry(DeathVelocity);
+	if (IsPoolManaged())
+	{
+		Super::HandleDeath();
+		return;
+	}
+
 	PerformDeathCleanup();
 
 	if (DeathProfile.DebrisLifetime > 0.0f)
 	{
 		SetLifeSpan(DeathProfile.DebrisLifetime);
+	}
+}
+
+void ATestGeometryCollection::ResetPoolPresentationState()
+{
+	Super::ResetPoolPresentationState();
+	SetReplicateMovement(true);
+	if (UCharacterMovementComponent* MovementComponent = GetCharacterMovement())
+	{
+		MovementComponent->StopMovementImmediately();
+		MovementComponent->SetDefaultMovementMode();
+	}
+
+	// 사망 연출은 개별 컴포넌트의 CollisionEnabled를 끄므로 Actor 충돌만 켜서는 복원되지 않는다.
+	const ATestGeometryCollection* Defaults = GetClass()->GetDefaultObject<ATestGeometryCollection>();
+	if (UCapsuleComponent* CharacterCapsule = GetCapsuleComponent())
+	{
+		CharacterCapsule->SetCollisionEnabled(
+			Defaults->GetCapsuleComponent()->GetCollisionEnabled());
+	}
+	if (USkeletalMeshComponent* CharacterMesh = GetMesh())
+	{
+		CharacterMesh->SetCollisionEnabled(Defaults->GetMesh()->GetCollisionEnabled());
+		CharacterMesh->SetVisibility(true, false);
+		CharacterMesh->SetHiddenInGame(false, false);
+	}
+	ApplyCoreWeakPointRuntimeState();
+	if (DeathGeometryCollectionComponent)
+	{
+		DeathGeometryCollectionComponent->SetSimulatePhysics(false);
+		DeathGeometryCollectionComponent->SetEnableGravity(false);
+		DeathGeometryCollectionComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		DeathGeometryCollectionComponent->ResetState();
+		DeathGeometryCollectionComponent->Deactivate();
+		DeathGeometryCollectionComponent->SetVisibility(false);
+		DeathGeometryCollectionComponent->SetHiddenInGame(true);
+		DeathGeometryCollectionComponent->AttachToComponent(
+			GetMesh(),
+			FAttachmentTransformRules::KeepRelativeTransform);
 	}
 }
 

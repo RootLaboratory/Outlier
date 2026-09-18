@@ -138,6 +138,8 @@ protected:
 	virtual void ApplyMovementFromRuntimeStat() override;
 	virtual void PrepareForStateTreeStart() override;
 	virtual void HandleDeath() override;
+	virtual void ResetPoolRuntimeState() override;
+	virtual void ResetPoolPresentationState() override;
 	virtual float GetDeathDestroyDelay() const override;
 	virtual void HandleHackEffect(FGameplayTag EffectTag, const FHackResultContext& Context) override;
 	virtual void HandleHackStarted(const FHackQueryContext& Context) override;

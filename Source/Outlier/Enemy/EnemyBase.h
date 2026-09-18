@@ -15,6 +15,7 @@
 #include "StateTreeReference.h"
 #include "AbilitySystemInterface.h"
 #include "Damage/OutlierDamageReceiver.h"
+#include "Enemy/EnemyPoolTypes.h"
 #include "EnemyBase.generated.h"
 
 class UStateTreeComponent;
@@ -28,6 +29,7 @@ class ARangedWeaponBase;
 class APartnerCharacter;
 class UOutlierAbilitySystemComponent;
 class UOutlierVitalAttributeSet;
+class UEnemyPoolSubsystem;
 struct FOnAttributeChangeData;
 
 UENUM(BlueprintType)
@@ -71,6 +73,42 @@ public:
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
+
+	// Pool Subsystem은 deferred spawn 중 이 함수를 호출해 일반 배치 Enemy 초기화를 차단한다.
+	void PrepareForPoolSpawn(UEnemyPoolSubsystem* PoolSubsystem);
+	bool BeginPoolLease(
+		const FEnemyPoolLeaseContext& Context,
+		const FTransform& SpawnTransform,
+		int32 LeaseSerial);
+	bool MatchesPoolLease(int32 GameplayGeneration, int32 LeaseSerial) const;
+	void FinishPoolReturn(int32 GameplayGeneration, int32 LeaseSerial);
+	void InvalidatePoolLease();
+
+	UFUNCTION(BlueprintCallable, Category = "Enemy|Pool")
+	void CompletePoolSpawnPresentation(int32 GameplayGeneration, int32 LeaseSerial);
+
+	UFUNCTION(BlueprintCallable, Category = "Enemy|Pool")
+	void CompletePoolDeathPresentation(int32 GameplayGeneration, int32 LeaseSerial);
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Pool")
+	bool IsPoolManaged() const { return PoolState != EEnemyPoolState::Unmanaged; }
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Pool")
+	EEnemyPoolState GetEnemyPoolState() const { return PoolState; }
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Pool")
+	int32 GetPoolGameplayGeneration() const { return PoolGameplayGeneration; }
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Pool")
+	int32 GetPoolLeaseSerial() const { return PoolLeaseSerial; }
+
+#if WITH_DEV_AUTOMATION_TESTS
+	void SetPoolPresentationAutoCompleteForTesting(bool bEnabled)
+	{
+		bPoolPresentationAutoCompleteForTesting = bEnabled;
+	}
+	void BeginDeathForPoolTesting() { HandleDeath(); }
+#endif
 
 protected:
 	virtual void PostInitializeComponents() override;
@@ -235,7 +273,11 @@ public:
 	virtual FGenericTeamId GetGenericTeamId() const override;
 
 	// Enemy 유형별로 감지/공유 정책을 바꿀 때 AIController와 RoomSubsystem이 공통으로 조회한다.
-	virtual bool CanUseEnemyPerception() const { return !IsAIControlSuppressed(); }
+	virtual bool CanUseEnemyPerception() const
+	{
+		return (!IsPoolManaged() || PoolState == EEnemyPoolState::CombatActive)
+			&& !IsAIControlSuppressed();
+	}
 	virtual bool UsesHearingPerception() const { return true; }
 	virtual bool CanUseRoomTargetSharing() const { return !bIsPossessed; }
 	virtual FVector GetCombatAimPoint(const AActor* TargetActor) const;
@@ -479,6 +521,9 @@ protected:
 	virtual void HandleDeath();
 	void PerformDeathCleanup();
 	virtual float GetDeathDestroyDelay() const { return 0.0f; }
+	virtual void ResetPoolRuntimeState();
+	virtual void ResetPoolPresentationState();
+	virtual void PrepareForPoolIdle();
 	virtual bool TryApplyCommittedImpactVelocity(const FVector& ImpactVelocity);
 	virtual void CancelCommittedAction();
 	virtual void ApplyExplosionReactionPresentation(const FVector& Direction, float ReactionScale);
@@ -505,6 +550,50 @@ protected:
 	bool bImpactReactionActive = false;
 	FTimerHandle PossessedImpactInputLockTimerHandle;
 	FActiveGameplayEffectHandle PossessionPendingEffectHandle;
+
+	UPROPERTY(ReplicatedUsing = OnRep_PoolState, VisibleInstanceOnly, BlueprintReadOnly, Category = "Enemy|Pool")
+	EEnemyPoolState PoolState = EEnemyPoolState::Unmanaged;
+
+	UPROPERTY(Replicated, VisibleInstanceOnly, BlueprintReadOnly, Category = "Enemy|Pool")
+	int32 PoolGameplayGeneration = 0;
+
+	UPROPERTY(Replicated, VisibleInstanceOnly, BlueprintReadOnly, Category = "Enemy|Pool")
+	int32 PoolLeaseSerial = 0;
+
+	UPROPERTY(Replicated, VisibleInstanceOnly, BlueprintReadOnly, Category = "Enemy|Pool")
+	int32 PoolCombatPhaseIndex = INDEX_NONE;
+
+	UPROPERTY(Replicated, VisibleInstanceOnly, BlueprintReadOnly, Category = "Enemy|Pool")
+	int32 PoolWaveIndex = INDEX_NONE;
+
+	UFUNCTION()
+	void OnRep_PoolState(EEnemyPoolState PreviousState);
+
+	UFUNCTION(BlueprintNativeEvent, Category = "Enemy|Pool|Presentation")
+	void OnPoolSpawnPresentationStarted(int32 GameplayGeneration, int32 LeaseSerial);
+	virtual void OnPoolSpawnPresentationStarted_Implementation(
+		int32 GameplayGeneration,
+		int32 LeaseSerial);
+
+	UFUNCTION(BlueprintNativeEvent, Category = "Enemy|Pool|Presentation")
+	void OnPoolDeathPresentationStarted(int32 GameplayGeneration, int32 LeaseSerial);
+	virtual void OnPoolDeathPresentationStarted_Implementation(
+		int32 GameplayGeneration,
+		int32 LeaseSerial);
+
+	UFUNCTION(BlueprintImplementableEvent, Category = "Enemy|Pool|Presentation")
+	void OnEnemyPoolStateChanged(EEnemyPoolState PreviousState, EEnemyPoolState NewState);
+
+	void ApplyPoolState(EEnemyPoolState PreviousState);
+	void SetPoolState(EEnemyPoolState NewState);
+	void DestroyPoolAIController();
+	void ReturnToOwningPool();
+
+	TWeakObjectPtr<UEnemyPoolSubsystem> OwningPoolSubsystem;
+	bool bDeathCleanupPerformed = false;
+#if WITH_DEV_AUTOMATION_TESTS
+	bool bPoolPresentationAutoCompleteForTesting = true;
+#endif
 
 	// 빙의된 VEC의 AttackAction 입력 진입점.
 	// 소유 클라이언트는 시작/종료 상태만 RPC로 보내고 실제 발사는 서버 무기가 수행한다.

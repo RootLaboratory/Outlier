@@ -54,6 +54,8 @@ protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void HandleDeath() override;
+	virtual void ResetPoolRuntimeState() override;
+	virtual void PrepareForPoolIdle() override;
 	virtual bool TryApplyCommittedImpactVelocity(const FVector& ImpactVelocity) override;
 	virtual void CancelCommittedAction() override;
 

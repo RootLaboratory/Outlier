@@ -298,6 +298,9 @@ bool UOutlierArenaSubsystem::ReloadGameplayData(uint32 InGameplayGeneration, boo
 		return false;
 	}
 
+	// Gameplay Data Layer 밖의 런타임 소유자는 셀이 내려가기 전에 현재 세대 객체를 폐기한다.
+	OnArenaGameplayReloadStarted.Broadcast(InGameplayGeneration);
+
 	if (!SetGameplayDataLayerState(EDataLayerRuntimeState::Unloaded))
 	{
 		FailGameplayReload(InGameplayGeneration, EOutlierGameplayReloadFailure::DataLayerStateChangeRejected);

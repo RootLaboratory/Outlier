@@ -274,6 +274,35 @@ void ARangedWeaponBase::RestoreCheckpointAmmo(int32 SavedAmmo)
 	ForceNetUpdate();
 }
 
+void ARangedWeaponBase::ResetForEnemyPoolLease()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	StopAttack();
+	CancelReload();
+	CancelLocalRecoilPresentation();
+	if (UWorld* World = GetWorld())
+	{
+		FTimerManager& TimerManager = World->GetTimerManager();
+		TimerManager.ClearTimer(PostBurstCooldownTimerHandle);
+		TimerManager.ClearTimer(BloomRecoveryTimerHandle);
+		TimerManager.ClearTimer(RecoilResetTimerHandle);
+	}
+
+	bOnPostBurstCooldown = false;
+	bIsAiming = false;
+	BloomCurrent = BloomMin;
+	CurrentBurstShotCount = 0;
+	CurrentAmmo = MagazineSize;
+	ResetRecoilRuntimeState();
+	AttachMagazineToWeapon();
+	UpdateLocalAmmoUI();
+	ForceNetUpdate();
+}
+
 
 void ARangedWeaponBase::FireShot()
 {
