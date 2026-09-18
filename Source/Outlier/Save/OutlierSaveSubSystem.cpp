@@ -71,6 +71,7 @@ bool UOutlierSaveSubSystem::CommitCheckpointSnapshot(const FOutlierCheckpointSna
 
 bool UOutlierSaveSubSystem::GetRestoreSnapshot(FOutlierCheckpointSnapshot& OutSnapshot) const
 {
+	// 마지막 확정 체크포인트를 우선한다. 아직 없으면 최초 시작 스냅샷으로 돌아가 이후 진행을 버린다.
 	if (bHasLatestCheckpointSnapshot)
 	{
 		OutSnapshot = LatestCheckpointSnapshot;
@@ -99,6 +100,7 @@ bool UOutlierSaveSubSystem::SetWorldProgressState(
 		return false;
 	}
 
+	// 현재 플레이의 진행 기록만 바꾼다. 확정 스냅샷은 다음 체크포인트 저장 전까지 그대로 유지한다.
 	TSet<FName>& Ids = CurrentWorldProgress.GetIds(Type);
 	if (bCompleted)
 	{
@@ -129,6 +131,7 @@ bool UOutlierSaveSubSystem::RecordCompletedEncounter(FName EncounterId)
 void UOutlierSaveSubSystem::RestoreCurrentWorldProgress(
 	const FOutlierWorldProgressSnapshot& Snapshot)
 {
+	// 병합이 아니라 교체다. 체크포인트 이후 사용한 노드/문/해킹/전투 등의 진행은 롤백한다.
 	CurrentWorldProgress = Snapshot;
 }
 

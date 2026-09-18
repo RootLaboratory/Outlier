@@ -111,6 +111,10 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Previous Dead state is not retained"), SecondLease->IsDead());
 
 	const int32 SecondLeaseSerial = SecondLease->GetPoolLeaseSerial();
+	TestFalse(TEXT("An old lease cannot return a reused Actor"),
+		Pool->ReturnEnemy(SecondLease, FirstContext.GameplayGeneration, FirstLeaseSerial));
+	TestEqual(TEXT("Rejected return keeps the current lease registered"),
+		Pool->GetLeasedCount(AEnemyBase::StaticClass()), 1);
 	SecondLease->CompletePoolSpawnPresentation(FirstContext.GameplayGeneration, FirstLeaseSerial);
 	TestEqual(TEXT("A stale spawn callback cannot activate a new lease"),
 		SecondLease->GetEnemyPoolState(), EEnemyPoolState::SpawnPresentation);
@@ -145,6 +149,9 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 	TestNotNull(TEXT("Pool expands up to MaxCount"), MaxLeaseB);
 	TestNull(TEXT("Pool refuses to exceed MaxCount"), ExhaustedLease);
 	TestEqual(TEXT("Pool total stops at MaxCount"), Pool->GetTotalCount(AEnemyBase::StaticClass()), 2);
+	TestTrue(TEXT("Prewarming during combat does not require new Actors"), Pool->PrewarmPool(Definition));
+	TestEqual(TEXT("Prewarm includes leased Actors in its target count"),
+		Pool->GetTotalCount(AEnemyBase::StaticClass()), 2);
 	if (MaxLeaseA)
 	{
 		TestFalse(TEXT("A repeated lease clears the previous Dead state"), MaxLeaseA->IsDead());

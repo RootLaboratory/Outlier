@@ -49,6 +49,38 @@ namespace RoomCombat
 namespace
 {
 	constexpr float SpawnRetryIntervalSeconds = 0.5f;
+
+	bool MatchesCurrentWave(const FRoomCombatRuntime& Runtime, const FRoomCombatPendingSpawn& Request)
+	{
+		return Runtime.GameplayGeneration == Request.GameplayGeneration
+			&& Runtime.CurrentCombatPhaseIndex == Request.CombatPhaseIndex
+			&& Runtime.CurrentWaveIndex == Request.WaveIndex;
+	}
+
+	bool BuildWaveEnemyRoster(const FRoomCombatWaveDefinition& Wave,
+		FGameplayTag RoomTag, int32 PhaseIndex, int32 WaveIndex,
+		TArray<TSubclassOf<AEnemyBase>>& OutRoster)
+	{
+		OutRoster.Reset();
+		// 전체 명단을 먼저 검증한다. 중간 항목이 잘못되어도 일부 요청만 등록되는 일이 없게 한다.
+		for (const FRoomCombatEnemyEntry& Entry : Wave.Enemies)
+		{
+			UClass* LoadedClass = Entry.EnemyClass.LoadSynchronous();
+			if (!LoadedClass || !LoadedClass->IsChildOf(AEnemyBase::StaticClass()) || Entry.Count < 1)
+			{
+				UE_LOG(LogTemp, Error,
+					TEXT("[RoomCombat] Wave spawn rejected by invalid roster. Room=%s Phase=%d Wave=%d Class=%s Count=%d"),
+					*RoomTag.ToString(), PhaseIndex, WaveIndex, *GetNameSafe(LoadedClass), Entry.Count);
+				return false;
+			}
+			OutRoster.Reserve(OutRoster.Num() + Entry.Count);
+			for (int32 EnemyIndex = 0; EnemyIndex < Entry.Count; ++EnemyIndex)
+			{
+				OutRoster.Add(LoadedClass);
+			}
+		}
+		return !OutRoster.IsEmpty();
+	}
 }
 
 void URoomCombatSubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -83,13 +115,129 @@ void URoomCombatSubsystem::Deinitialize()
 	Super::Deinitialize();
 }
 
+bool URoomCombatSubsystem::CreateTriggerContext(
+	AActor* Requester, FGameplayTag RoomTag, FGameplayTag ActivationGroupTag,
+	FRoomCombatTriggerContext& OutContext) const
+{
+	OutContext = FRoomCombatTriggerContext();
+	// 해킹 시작 당시의 수명만 기록한다. Room을 예약하지 않으므로 성공 시점에 시작 조건을 다시 검사한다.
+	UWorld* World = GetWorld();
+	const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
+	const URoomCombatDefinition* Definition = Runtime ? Runtime->Definition.Get() : nullptr;
+	if (!World || World->GetNetMode() == NM_Client || bResettingRuntime
+		|| !IsValid(Requester) || Requester->IsActorBeingDestroyed()
+		|| !Requester->HasAuthority() || Requester->GetWorld() != World
+		|| !ActivationGroupTag.IsValid() || !Runtime || !Runtime->RoomVolume.IsValid()
+		|| !Definition || Runtime->State != ERoomCombatState::WaitingForTrigger
+		|| ActiveCombatRoomTag.IsValid()
+		|| !Definition->CombatPhases.IsValidIndex(Runtime->CurrentCombatPhaseIndex)
+		|| Definition->CombatPhases[Runtime->CurrentCombatPhaseIndex].StartPolicy
+			!= ERoomCombatPhaseStartPolicy::HackTrigger)
+	{
+		return false;
+	}
+	const UOutlierArenaSubsystem* Arena = World->GetSubsystem<UOutlierArenaSubsystem>();
+	OutContext.RoomTag = RoomTag;
+	OutContext.ActivationGroupTag = ActivationGroupTag;
+	OutContext.CombatPhaseIndex = Runtime->CurrentCombatPhaseIndex;
+	OutContext.GameplayGeneration = Arena ? static_cast<int32>(Arena->GetGameplayGeneration()) : 0;
+	OutContext.RoomRegistrationId = Runtime->RegistrationId;
+	OutContext.Requester = Requester;
+	return true;
+}
+
+bool URoomCombatSubsystem::StartTriggeredSequence(
+	AActor* Requester, const FRoomCombatTriggerContext& Context)
+{
+	FRoomCombatTriggerContext CurrentContext;
+	// 해킹 중 리로드되거나 같은 태그의 Room이 재등록되면 이전 성공 콜백으로 전투를 시작할 수 없다.
+	if (!CreateTriggerContext(Requester, Context.RoomTag, Context.ActivationGroupTag, CurrentContext)
+		|| Context.Requester.Get() != Requester
+		|| Context.RoomRegistrationId != CurrentContext.RoomRegistrationId
+		|| Context.GameplayGeneration != CurrentContext.GameplayGeneration
+		|| Context.CombatPhaseIndex != CurrentContext.CombatPhaseIndex)
+	{
+		UE_LOG(LogTemp, Verbose, TEXT("[RoomCombat] Trigger rejected. Room=%s Phase=%d Generation=%d"),
+			*Context.RoomTag.ToString(), Context.CombatPhaseIndex, Context.GameplayGeneration);
+		return false;
+	}
+
+	FRoomCombatRuntime* Runtime = RoomRuntimes.Find(Context.RoomTag);
+	URoomCombatDefinition* Definition = Runtime->Definition.Get();
+	if (!Definition->CanStartTriggeredSequence(Context.CombatPhaseIndex)
+		|| !PendingSpawnRequests.IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[RoomCombat] Invalid triggered sequence. Room=%s Phase=%d"),
+			*Context.RoomTag.ToString(), Context.CombatPhaseIndex);
+		return false;
+	}
+
+	Runtime->State = ERoomCombatState::Combat;
+	Runtime->CurrentWaveIndex = 0;
+	Runtime->bTriggeredSequenceActive = true;
+	Runtime->bDeferSpawnExecution = true;
+	Runtime->ActiveActivationGroupTag = Context.ActivationGroupTag;
+	ActiveCombatRoomTag = Context.RoomTag;
+	SetActivationGroupActive(Context.RoomTag, Context.ActivationGroupTag, true);
+	SetRoomStreamingSourceEnabled(Context.RoomTag, true);
+	if (!StartWaveSpawning(Context.RoomTag, Context.CombatPhaseIndex, 0))
+	{
+		Runtime->State = ERoomCombatState::WaitingForTrigger;
+		Runtime->bTriggeredSequenceActive = false;
+		Runtime->bDeferSpawnExecution = false;
+		Runtime->ActiveActivationGroupTag = FGameplayTag();
+		SetActivationGroupActive(Context.RoomTag, Context.ActivationGroupTag, false);
+		SetRoomStreamingSourceEnabled(Context.RoomTag, false);
+		ActiveCombatRoomTag = FGameplayTag();
+		return false;
+	}
+
+	// BP가 이 이벤트에서 벽을 막은 뒤 소환을 실행한다. BP에서 Reset했다면 재개하지 않는다.
+	// 호출자가 저장한 Context도 이벤트 중 바뀔 수 있으므로 검증된 복사본으로 재개한다.
+	BroadcastCombatEvent(CurrentContext.RoomTag, ERoomCombatEvent::SequenceStarted,
+		CurrentContext.CombatPhaseIndex, CurrentContext.GameplayGeneration);
+	ResumeDeferredSpawning(CurrentContext.RoomTag, CurrentContext.RoomRegistrationId);
+	return true;
+}
+
+bool URoomCombatSubsystem::IsExitBlocked(FGameplayTag RoomTag) const
+{
+	const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
+	return Runtime && Runtime->bTriggeredSequenceActive;
+}
+
+void URoomCombatSubsystem::BroadcastCombatEvent(
+	FGameplayTag RoomTag, ERoomCombatEvent Event, int32 PhaseIndex, int32 Generation)
+{
+	UE_LOG(LogTemp, Display, TEXT("[RoomCombat] Event=%d Room=%s Phase=%d Generation=%d"),
+		static_cast<int32>(Event), *RoomTag.ToString(), PhaseIndex, Generation);
+	OnCombatEvent.Broadcast(RoomTag, Event, PhaseIndex, Generation);
+#if WITH_DEV_AUTOMATION_TESTS
+	if (CombatEventObserverForTesting)
+	{
+		CombatEventObserverForTesting(RoomTag, Event, PhaseIndex);
+	}
+#endif
+}
+
+void URoomCombatSubsystem::ResumeDeferredSpawning(FGameplayTag RoomTag, const FGuid& RegistrationId)
+{
+	FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
+	if (Runtime && Runtime->RegistrationId == RegistrationId
+		&& Runtime->State == ERoomCombatState::Combat && Runtime->bDeferSpawnExecution)
+	{
+		Runtime->bDeferSpawnExecution = false;
+		TrySpawnPendingRequests(RoomTag);
+	}
+}
+
 bool URoomCombatSubsystem::RegisterRoom(
 	ARoomVolume* RoomVolume,
 	FGameplayTag RoomTag,
 	URoomCombatDefinition* Definition)
 {
 	UWorld* World = GetWorld();
-	if (!World || World->GetNetMode() == NM_Client
+	if (!World || World->GetNetMode() == NM_Client || bResettingRuntime
 		|| !IsValid(RoomVolume) || !RoomTag.IsValid() || !Definition)
 	{
 		return false;
@@ -112,6 +260,11 @@ bool URoomCombatSubsystem::RegisterRoom(
 	FRoomCombatRuntime& Runtime = RoomRuntimes.Add(RoomTag);
 	Runtime.RoomVolume = RoomVolume;
 	Runtime.Definition = Definition;
+	Runtime.RegistrationId = FGuid::NewGuid();
+	if (const UOutlierArenaSubsystem* Arena = World->GetSubsystem<UOutlierArenaSubsystem>())
+	{
+		Runtime.GameplayGeneration = static_cast<int32>(Arena->GetGameplayGeneration());
+	}
 
 	UGameInstance* GameInstance = World->GetGameInstance();
 	UOutlierSaveSubSystem* SaveSubsystem = GameInstance
@@ -180,6 +333,10 @@ void URoomCombatSubsystem::UnregisterRoom(ARoomVolume* RoomVolume)
 	{
 		return;
 	}
+	const bool bWasSequenceActive = Runtime->bTriggeredSequenceActive;
+	const int32 CancelledPhase = Runtime->CurrentCombatPhaseIndex;
+	const int32 CancelledGeneration = Runtime->GameplayGeneration;
+	SetActivationGroupActive(RoomTag, Runtime->ActiveActivationGroupTag, false);
 
 	if (Runtime->bEncounterIdRegistered)
 	{
@@ -255,6 +412,10 @@ void URoomCombatSubsystem::UnregisterRoom(ARoomVolume* RoomVolume)
 	{
 		CancelSpawnRetry();
 	}
+	if (bWasSequenceActive)
+	{
+		BroadcastCombatEvent(RoomTag, ERoomCombatEvent::Cancelled, CancelledPhase, CancelledGeneration);
+	}
 }
 
 bool URoomCombatSubsystem::RegisterSpawnPoint(
@@ -264,7 +425,7 @@ bool URoomCombatSubsystem::RegisterSpawnPoint(
 	FGameplayTag ActivationGroupTag)
 {
 	UWorld* World = GetWorld();
-	if (!World || World->GetNetMode() == NM_Client
+	if (!World || World->GetNetMode() == NM_Client || bResettingRuntime
 		|| !IsValid(SpawnPoint) || !SpawnPoint->HasAuthority()
 		|| !RoomTag.IsValid())
 	{
@@ -292,6 +453,14 @@ bool URoomCombatSubsystem::RegisterSpawnPoint(
 	Runtime.SpawnPointTags = SpawnPointTags;
 	Runtime.ActivationGroupTag = ActivationGroupTag;
 	RegisteredSpawnPointRooms.Add(SpawnPointPtr, RoomTag);
+	if (const FRoomCombatRuntime* Room = RoomRuntimes.Find(RoomTag))
+	{
+		// 그룹을 켠 뒤 WP에서 도착한 지점도 같은 연속 전투에 참여한다.
+		if (ActivationGroupTag.IsValid() && Room->ActiveActivationGroupTag == ActivationGroupTag)
+		{
+			SpawnPoint->SetRuntimeActive(Room->bTriggeredSequenceActive);
+		}
+	}
 	return true;
 }
 
@@ -515,7 +684,7 @@ void URoomCombatSubsystem::NotifyEnemyDefeated(AEnemyBase* Enemy)
 bool URoomCombatSubsystem::NotifyRoomCombatStarted(FGameplayTag RoomTag)
 {
 	UWorld* World = GetWorld();
-	if (!World || World->GetNetMode() == NM_Client || !RoomTag.IsValid())
+	if (!World || World->GetNetMode() == NM_Client || bResettingRuntime || !RoomTag.IsValid())
 	{
 		return false;
 	}
@@ -560,73 +729,86 @@ bool URoomCombatSubsystem::NotifyRoomCombatStarted(FGameplayTag RoomTag)
 	return true;
 }
 
-bool URoomCombatSubsystem::StartWaveSpawning(
+const FRoomCombatWaveDefinition* URoomCombatSubsystem::FindSpawnableWave(
 	FGameplayTag RoomTag,
 	int32 CombatPhaseIndex,
-	int32 WaveIndex)
+	int32 WaveIndex) const
 {
-	UWorld* World = GetWorld();
-	FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
-	URoomCombatDefinition* Definition = Runtime ? Runtime->Definition.Get() : nullptr;
-	if (!World || World->GetNetMode() == NM_Client || !Runtime || !Definition
-		|| Runtime->State != ERoomCombatState::Combat
+	const UWorld* World = GetWorld();
+	if (!World || World->GetNetMode() == NM_Client || bResettingRuntime)
+	{
+		return nullptr;
+	}
+
+	const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
+	const URoomCombatDefinition* Definition = Runtime ? Runtime->Definition.Get() : nullptr;
+	if (!Runtime || !Definition || Runtime->State != ERoomCombatState::Combat
 		|| ActiveCombatRoomTag != RoomTag
 		|| Runtime->CurrentCombatPhaseIndex != CombatPhaseIndex
 		|| !Definition->CombatPhases.IsValidIndex(CombatPhaseIndex))
 	{
-		return false;
+		return nullptr;
 	}
 
 	const FRoomCombatPhaseDefinition& Phase = Definition->CombatPhases[CombatPhaseIndex];
 	if (!Phase.Waves.IsValidIndex(WaveIndex)
-		|| Phase.Waves[WaveIndex].SpawnMode != ERoomCombatWaveSpawnMode::SpawnFromObjects
-		|| (WaveIndex < Runtime->CurrentWaveIndex)
-		|| (WaveIndex == Runtime->CurrentWaveIndex && Runtime->bCurrentWaveSpawnStarted)
-		|| WaveIndex > Runtime->CurrentWaveIndex + 1
+		|| Phase.Waves[WaveIndex].SpawnMode != ERoomCombatWaveSpawnMode::SpawnFromObjects)
+	{
+		return nullptr;
+	}
+
+	// 같은 Wave의 최초 시작 또는 바로 다음 Wave만 허용한다. 이전 Wave/건너뛰기/중복은 거부한다.
+	const bool bStartingCurrentWave = WaveIndex == Runtime->CurrentWaveIndex
+		&& !Runtime->bCurrentWaveSpawnStarted;
+	const bool bStartingNextWave = WaveIndex == Runtime->CurrentWaveIndex + 1;
+	if ((!bStartingCurrentWave && !bStartingNextWave)
 		|| !PendingSpawnRequests.IsEmpty())
 	{
+		return nullptr;
+	}
+	return &Phase.Waves[WaveIndex];
+}
+
+bool URoomCombatSubsystem::StartWaveSpawning(
+	FGameplayTag RoomTag, int32 CombatPhaseIndex, int32 WaveIndex)
+{
+	const FRoomCombatWaveDefinition* Wave = FindSpawnableWave(RoomTag, CombatPhaseIndex, WaveIndex);
+	if (!Wave)
+	{
 		return false;
 	}
-
-	const FRoomCombatWaveDefinition& Wave = Phase.Waves[WaveIndex];
 	TArray<TSubclassOf<AEnemyBase>> EnemyRoster;
-	for (const FRoomCombatEnemyEntry& Entry : Wave.Enemies)
-	{
-		UClass* LoadedClass = Entry.EnemyClass.LoadSynchronous();
-		if (!LoadedClass || !LoadedClass->IsChildOf(AEnemyBase::StaticClass()) || Entry.Count < 1)
-		{
-			UE_LOG(LogTemp, Error,
-				TEXT("[RoomCombat] Wave spawn rejected by invalid roster. Room=%s Phase=%d Wave=%d Class=%s Count=%d"),
-				*RoomTag.ToString(),
-				CombatPhaseIndex,
-				WaveIndex,
-				*GetNameSafe(LoadedClass),
-				Entry.Count);
-			return false;
-		}
-
-		EnemyRoster.Reserve(EnemyRoster.Num() + Entry.Count);
-		for (int32 EnemyIndex = 0; EnemyIndex < Entry.Count; ++EnemyIndex)
-		{
-			EnemyRoster.Add(LoadedClass);
-		}
-	}
-	if (EnemyRoster.IsEmpty())
+	if (!BuildWaveEnemyRoster(*Wave, RoomTag, CombatPhaseIndex, WaveIndex, EnemyRoster))
 	{
 		return false;
 	}
 
+	FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
 	const UOutlierArenaSubsystem* ArenaSubsystem =
-		World->GetSubsystem<UOutlierArenaSubsystem>();
+		GetWorld()->GetSubsystem<UOutlierArenaSubsystem>();
 	const int32 GameplayGeneration = ArenaSubsystem
 		? static_cast<int32>(ArenaSubsystem->GetGameplayGeneration())
 		: 0;
+	// 시작 요청 시점에는 기준값을 비운다. 모든 Pending이 성공한 뒤 기존 생존 적까지 포함해 다시 센다.
 	Runtime->CurrentWaveIndex = WaveIndex;
 	Runtime->WaveBaselineEnemyCount = INDEX_NONE;
 	Runtime->GameplayGeneration = GameplayGeneration;
 	Runtime->bCurrentWaveSpawnStarted = true;
 	Runtime->SpawnAssignments.Reset();
+	QueueWaveSpawnRequests(RoomTag, *Runtime, *Wave, EnemyRoster);
 
+	// 해킹 시작/자동 차수 전환은 외부 이벤트 처리 뒤 ResumeDeferredSpawning에서 실행한다.
+	if (!Runtime->bDeferSpawnExecution)
+	{
+		TrySpawnPendingRequests(RoomTag);
+	}
+	return true;
+}
+
+void URoomCombatSubsystem::QueueWaveSpawnRequests(
+	FGameplayTag RoomTag, FRoomCombatRuntime& Runtime,
+	const FRoomCombatWaveDefinition& Wave, const TArray<TSubclassOf<AEnemyBase>>& EnemyRoster)
+{
 	TArray<ARoomCombatSpawnPoint*> EligibleSpawnPoints;
 	GetEligibleSpawnPoints(RoomTag, Wave.SpawnPointQuery, EligibleSpawnPoints);
 	TArray<float> Weights;
@@ -637,15 +819,16 @@ bool URoomCombatSubsystem::StartWaveSpawning(
 		AssignedCounts.Add(0);
 	}
 
+	// 후보가 아직 로드되지 않았어도 명단은 Pending에 남긴다. 실제 지점/위치는 재시도에서 확보한다.
 	for (int32 RosterIndex = 0; RosterIndex < EnemyRoster.Num(); ++RosterIndex)
 	{
 		FRoomCombatPendingSpawn& Request = PendingSpawnRequests.AddDefaulted_GetRef();
 		Request.EnemyClass = EnemyRoster[RosterIndex];
 		Request.RoomTag = RoomTag;
 		Request.SpawnPointQuery = Wave.SpawnPointQuery;
-		Request.CombatPhaseIndex = CombatPhaseIndex;
-		Request.WaveIndex = WaveIndex;
-		Request.GameplayGeneration = GameplayGeneration;
+		Request.CombatPhaseIndex = Runtime.CurrentCombatPhaseIndex;
+		Request.WaveIndex = Runtime.CurrentWaveIndex;
+		Request.GameplayGeneration = Runtime.GameplayGeneration;
 
 		const int32 SpawnPointIndex = RoomCombat::SelectWeightedSpawnPoint(
 			Weights,
@@ -655,21 +838,18 @@ bool URoomCombatSubsystem::StartWaveSpawning(
 		{
 			Request.AssignedSpawnPoint = EligibleSpawnPoints[SpawnPointIndex];
 			++AssignedCounts[SpawnPointIndex];
-			Runtime->SpawnAssignments.FindOrAdd(EligibleSpawnPoints[SpawnPointIndex])++;
+			Runtime.SpawnAssignments.FindOrAdd(EligibleSpawnPoints[SpawnPointIndex])++;
 		}
 	}
 
 	UE_LOG(LogTemp, Display,
 		TEXT("[RoomCombat] Wave roster queued. Room=%s Phase=%d Wave=%d Generation=%d Pending=%d SpawnPoints=%d"),
 		*RoomTag.ToString(),
-		CombatPhaseIndex,
-		WaveIndex,
-		GameplayGeneration,
+		Runtime.CurrentCombatPhaseIndex,
+		Runtime.CurrentWaveIndex,
+		Runtime.GameplayGeneration,
 		EnemyRoster.Num(),
 		EligibleSpawnPoints.Num());
-
-	TrySpawnPendingRequests(RoomTag);
-	return true;
 }
 
 bool URoomCombatSubsystem::RegisterSpawnedEnemy(
@@ -677,10 +857,7 @@ bool URoomCombatSubsystem::RegisterSpawnedEnemy(
 	const FRoomCombatPendingSpawn& SpawnRequest)
 {
 	FRoomCombatRuntime* Runtime = RoomRuntimes.Find(SpawnRequest.RoomTag);
-	if (!IsValid(Enemy) || !Runtime
-		|| Runtime->GameplayGeneration != SpawnRequest.GameplayGeneration
-		|| Runtime->CurrentCombatPhaseIndex != SpawnRequest.CombatPhaseIndex
-		|| Runtime->CurrentWaveIndex != SpawnRequest.WaveIndex)
+	if (!IsValid(Enemy) || !Runtime || !MatchesCurrentWave(*Runtime, SpawnRequest))
 	{
 		return false;
 	}
@@ -714,6 +891,10 @@ void URoomCombatSubsystem::TrySpawnPendingRequests(FGameplayTag RoomTag)
 		ScheduleSpawnRetry();
 		return;
 	}
+	if (Runtime->bDeferSpawnExecution)
+	{
+		return;
+	}
 
 	for (int32 RequestIndex = PendingSpawnRequests.Num() - 1; RequestIndex >= 0; --RequestIndex)
 	{
@@ -723,9 +904,8 @@ void URoomCombatSubsystem::TrySpawnPendingRequests(FGameplayTag RoomTag)
 			continue;
 		}
 
-		if (Request.GameplayGeneration != Runtime->GameplayGeneration
-			|| Request.CombatPhaseIndex != Runtime->CurrentCombatPhaseIndex
-			|| Request.WaveIndex != Runtime->CurrentWaveIndex)
+		// 이전 수명의 요청만 버린다. 위치 탐색 실패와 Pool 부족은 아래에서 Pending을 유지한다.
+		if (!MatchesCurrentWave(*Runtime, Request))
 		{
 			PendingSpawnRequests.RemoveAtSwap(RequestIndex, 1, EAllowShrinking::No);
 			continue;
@@ -774,6 +954,7 @@ void URoomCombatSubsystem::TrySpawnPendingRequests(FGameplayTag RoomTag)
 			continue;
 		}
 
+		// Pool 대여와 Room 생존 집계 등록이 모두 성공해야 요청 하나가 완료된다.
 		PendingSpawnRequests.RemoveAtSwap(RequestIndex, 1, EAllowShrinking::No);
 	}
 
@@ -917,12 +1098,17 @@ void URoomCombatSubsystem::EvaluateWaveProgress(
 	FGameplayTag RoomTag,
 	FRoomCombatRuntime& Runtime)
 {
-	URoomCombatDefinition* Definition = Runtime.Definition.Get();
+	// 아직 나오지 못한 적이 있으면 생존 수가 적어도 다음 Wave/차수로 넘기지 않는다.
 	if (Runtime.State != ERoomCombatState::Combat
 		|| ActiveCombatRoomTag != RoomTag
 		|| !Runtime.bCurrentWaveSpawnStarted
-		|| GetPendingSpawnCount(RoomTag) != 0
-		|| !Definition
+		|| GetPendingSpawnCount(RoomTag) != 0)
+	{
+		return;
+	}
+
+	const URoomCombatDefinition* Definition = Runtime.Definition.Get();
+	if (!Definition
 		|| !Definition->CombatPhases.IsValidIndex(Runtime.CurrentCombatPhaseIndex))
 	{
 		return;
@@ -940,6 +1126,7 @@ void URoomCombatSubsystem::EvaluateWaveProgress(
 	const bool bLastWave = Runtime.CurrentWaveIndex == Phase.Waves.Num() - 1;
 	if (bLastWave)
 	{
+		// 마지막 Wave는 비율이 아니라 전멸로 완료한다. 앞선 Wave에서 남은 적도 포함된다.
 		if (AliveEnemyCount == 0)
 		{
 			CompleteCurrentPhase(RoomTag, false);
@@ -952,6 +1139,7 @@ void URoomCombatSubsystem::EvaluateWaveProgress(
 		return;
 	}
 
+	// 분모는 소환 완료 때 확정한 값이다. 사망할 때는 분자만 줄이고 다음 증원 완료 때 갱신한다.
 	const float RemainingRatio = static_cast<float>(AliveEnemyCount)
 		/ static_cast<float>(Runtime.WaveBaselineEnemyCount);
 	const float RequiredRatio = Phase.Waves[Runtime.CurrentWaveIndex].NextWaveRemainingRatio;
@@ -977,9 +1165,35 @@ void URoomCombatSubsystem::EvaluateWaveProgress(
 
 void URoomCombatSubsystem::ResetRuntimeCombatState()
 {
+	if (bResettingRuntime)
+	{
+		return;
+	}
+	// 취소 통보에서 Reset이 재진입하거나 새 전투를 시작하지 못하게 정리 전체를 하나의 경계로 묶는다.
+	TGuardValue<bool> ResetGuard(bResettingRuntime, true);
+	struct FCancelledSequence
+	{
+		FGameplayTag RoomTag;
+		int32 PhaseIndex;
+		int32 Generation;
+	};
+	TArray<FCancelledSequence> CancelledSequences;
+	TArray<TWeakObjectPtr<AEnemyBase>> EnemiesToReturn;
+	for (const auto& Entry : RegisteredEnemies)
+	{
+		if (!Entry.Value.bPreplaced)
+		{
+			EnemiesToReturn.Add(Entry.Key);
+		}
+	}
 	CancelSpawnRetry();
 	for (const TPair<FGameplayTag, FRoomCombatRuntime>& Entry : RoomRuntimes)
 	{
+		SetActivationGroupActive(Entry.Key, Entry.Value.ActiveActivationGroupTag, false);
+		if (Entry.Value.bTriggeredSequenceActive)
+		{
+			CancelledSequences.Add({Entry.Key, Entry.Value.CurrentCombatPhaseIndex, Entry.Value.GameplayGeneration});
+		}
 		if (ARoomVolume* RoomVolume = Entry.Value.RoomVolume.Get())
 		{
 			RoomVolume->SetCombatStreamingSourceEnabled(false);
@@ -1003,13 +1217,35 @@ void URoomCombatSubsystem::ResetRuntimeCombatState()
 		}
 	}
 
+	// Pool 반환도 Room 등록 해제를 호출한다. 역호출이 이전 전투를 진행시키지 않도록 집계부터 비운다.
 	RoomRuntimes.Reset();
 	PendingPreplacedEnemies.Reset();
 	RegisteredEnemies.Reset();
 	PendingSpawnRequests.Reset();
 	SpawnPointsByRoom.Reset();
 	RegisteredSpawnPointRooms.Reset();
+	if (UEnemyRoomSubsystem* EnemyRooms = GetWorld()
+		? GetWorld()->GetSubsystem<UEnemyRoomSubsystem>() : nullptr)
+	{
+		EnemyRooms->NotifyRoomCombatEnded(ActiveCombatRoomTag);
+	}
 	ActiveCombatRoomTag = FGameplayTag();
+	if (UEnemyPoolSubsystem* Pool = GetWorld() ? GetWorld()->GetSubsystem<UEnemyPoolSubsystem>() : nullptr)
+	{
+		for (const auto& EnemyPtr : EnemiesToReturn)
+		{
+			if (AEnemyBase* Enemy = EnemyPtr.Get())
+			{
+				Pool->ReturnEnemy(Enemy, Enemy->GetPoolGameplayGeneration(), Enemy->GetPoolLeaseSerial());
+			}
+		}
+	}
+	// 등록 집합을 모두 폐기한 뒤 통보한다. 수신자가 상태를 조회하거나 Reset을 재호출해도 안전하다.
+	for (const auto& Sequence : CancelledSequences)
+	{
+		BroadcastCombatEvent(Sequence.RoomTag, ERoomCombatEvent::Cancelled,
+			Sequence.PhaseIndex, Sequence.Generation);
+	}
 }
 
 bool URoomCombatSubsystem::IsRoomRegistered(FGameplayTag RoomTag) const
@@ -1102,7 +1338,22 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 	{
 		return;
 	}
+	const int32 CompletedPhaseIndex = Runtime->CurrentCombatPhaseIndex;
+	const int32 Generation = Runtime->GameplayGeneration;
+	const FGuid RegistrationId = Runtime->RegistrationId;
+	const int32 NextPhaseIndex = CompletedPhaseIndex + 1;
+	Runtime->WaveBaselineEnemyCount = INDEX_NONE;
+	Runtime->bCurrentWaveSpawnStarted = false;
+	Runtime->SpawnAssignments.Reset();
 
+	if (Runtime->bTriggeredSequenceActive && Definition->CombatPhases.IsValidIndex(NextPhaseIndex))
+	{
+		// 해킹으로 시작한 연속 전투는 중간 차수가 끝나도 출입 차단과 Streaming을 유지한다.
+		StartAutomaticPhase(RoomTag, *Runtime, *Definition);
+		return;
+	}
+
+	// 연속 전투가 아니거나 마지막 차수면 전투 점유를 해제한 뒤 대기/Cleared 상태로 이동한다.
 	if (ActiveCombatRoomTag == RoomTag)
 	{
 		ActiveCombatRoomTag = FGameplayTag();
@@ -1118,14 +1369,19 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 		}
 	}
 
-	const int32 CompletedPhaseIndex = Runtime->CurrentCombatPhaseIndex;
-	Runtime->WaveBaselineEnemyCount = INDEX_NONE;
-	Runtime->bCurrentWaveSpawnStarted = false;
-	Runtime->SpawnAssignments.Reset();
-	const int32 NextPhaseIndex = CompletedPhaseIndex + 1;
+	Runtime->bTriggeredSequenceActive = false;
+	SetActivationGroupActive(RoomTag, Runtime->ActiveActivationGroupTag, false);
 	if (!Definition->CombatPhases.IsValidIndex(NextPhaseIndex))
 	{
 		MarkRoomCleared(RoomTag, *Runtime);
+		// 전체 완료에서 차단 해제를 먼저 알린다. 이어지는 차수 알림이 Reset을 요청해도 해제가 누락되지 않는다.
+		BroadcastCombatEvent(RoomTag, ERoomCombatEvent::RoomCleared, CompletedPhaseIndex, Generation);
+		// 완료 이벤트 수신 중 WP 해제/Reset이 일어나면 이전 Room의 후속 통보를 보내지 않는다.
+		Runtime = RoomRuntimes.Find(RoomTag);
+		if (Runtime && Runtime->RegistrationId == RegistrationId && Runtime->State == ERoomCombatState::Cleared)
+		{
+			BroadcastCombatEvent(RoomTag, ERoomCombatEvent::PhaseCompleted, CompletedPhaseIndex, Generation);
+		}
 		return;
 	}
 
@@ -1143,6 +1399,33 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 		bCancelRemainingWaves ? 1 : 0,
 		NextPhaseIndex,
 		static_cast<int32>(Runtime->State));
+	BroadcastCombatEvent(RoomTag, ERoomCombatEvent::PhaseCompleted, CompletedPhaseIndex, Generation);
+}
+
+void URoomCombatSubsystem::StartAutomaticPhase(
+	FGameplayTag RoomTag,
+	FRoomCombatRuntime& Runtime,
+	const URoomCombatDefinition& Definition)
+{
+	const int32 CompletedPhaseIndex = Runtime.CurrentCombatPhaseIndex;
+	const int32 NextPhaseIndex = CompletedPhaseIndex + 1;
+	const int32 Generation = Runtime.GameplayGeneration;
+	const FGuid RegistrationId = Runtime.RegistrationId;
+	Runtime.CurrentCombatPhaseIndex = NextPhaseIndex;
+	Runtime.CurrentWaveIndex = 0;
+	Runtime.bDeferSpawnExecution = true;
+
+	// 먼저 다음 명단만 준비한다. 외부 완료 이벤트가 Reset을 요청할 수 있어 실제 소환은 뒤로 미룬다.
+	if (Definition.CombatPhases[NextPhaseIndex].StartPolicy != ERoomCombatPhaseStartPolicy::Automatic
+		|| !StartWaveSpawning(RoomTag, NextPhaseIndex, 0))
+	{
+		// 잘못된 런타임 데이터는 완료로 통과시키지 않는다. 출입 차단을 유지하고 원인을 남긴다.
+		UE_LOG(LogTemp, Error, TEXT("[RoomCombat] Automatic phase failed. Room=%s Phase=%d Generation=%d"),
+			*RoomTag.ToString(), NextPhaseIndex, Generation);
+	}
+	BroadcastCombatEvent(RoomTag, ERoomCombatEvent::PhaseCompleted, CompletedPhaseIndex, Generation);
+	// 콜백 이후 Runtime 참조를 재사용하지 않고, 같은 Room 등록인지 확인한 뒤 소환을 재개한다.
+	ResumeDeferredSpawning(RoomTag, RegistrationId);
 }
 
 void URoomCombatSubsystem::MarkRoomCleared(

@@ -42,6 +42,8 @@ private:
 
 	bool PrewarmConfiguredPool();
 	AEnemyBase* CreatePoolEnemy(FEnemyPoolBucket& Bucket);
+	// Idle을 먼저 재사용하고, 없을 때만 MaxCount 안에서 추가 생성한다.
+	AEnemyBase* AcquireIdleEnemy(FEnemyPoolBucket& Bucket);
 	void CompactBucket(FEnemyPoolBucket& Bucket) const;
 	void HandleArenaReady();
 	void HandleArenaGameplayReady(uint32 GameplayGeneration);

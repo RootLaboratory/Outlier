@@ -141,6 +141,7 @@ bool UHackableComponent::CanBeHackTarget(const FHackQueryContext& Context) const
 
 void UHackableComponent::OnRep_HackTags()
 {
+	// 완료 상태를 표현에 재적용하는 통보다. 새 해킹 성공 처리가 아니므로 보상/전투 시작을 재실행하지 않는다.
 	OnCheckpointHackStateRestored.Broadcast(
 		HackTags.HasTag(OutlierGameplayTags::State::HackedOnce()));
 }

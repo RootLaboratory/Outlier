@@ -11,7 +11,8 @@ UENUM(BlueprintType)
 enum class ERoomCombatPhaseStartPolicy : uint8
 {
 	InitialDetection UMETA(DisplayName = "Initial Detection"),
-	HackTrigger UMETA(DisplayName = "Hack Trigger")
+	HackTrigger UMETA(DisplayName = "Hack Trigger"),
+	Automatic UMETA(DisplayName = "Automatic")
 };
 
 UENUM(BlueprintType)
@@ -70,6 +71,10 @@ class OUTLIER_API URoomCombatDefinition : public UDataAsset
 	GENERATED_BODY()
 
 public:
+	// 에디터 검증과 서버 시작 검증에서 같은 차수 순서 규칙을 사용한다.
+	bool HasValidPhaseOrder() const;
+	bool CanStartTriggeredSequence(int32 PhaseIndex) const;
+
 #if WITH_EDITOR
 	virtual EDataValidationResult IsDataValid(FDataValidationContext& Context) const override;
 #endif

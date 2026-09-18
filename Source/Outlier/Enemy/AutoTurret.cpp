@@ -956,6 +956,7 @@ void AAutoTurret::HandleDeath()
 
 void AAutoTurret::ResetPoolRuntimeState()
 {
+	// EnemyBase의 대여 초기화에 더해, 이전 대여의 해킹 팀과 전개 상태도 새 터렛 기준으로 돌린다.
 	Super::ResetPoolRuntimeState();
 	GetWorldTimerManager().ClearTimer(DeployFallbackTimerHandle);
 	StopImpactRecovery();
@@ -972,6 +973,7 @@ void AAutoTurret::ResetPoolRuntimeState()
 
 void AAutoTurret::ResetPoolPresentationState()
 {
+	// 서버 대여 초기화뿐 아니라 클라이언트의 SpawnPresentation 복제에서도 호출되는 표현 정리다.
 	Super::ResetPoolPresentationState();
 	StopMontageOnMesh(TurretHeadMesh);
 }

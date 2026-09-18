@@ -15,10 +15,8 @@
 #include "Misc/DataValidation.h"
 #endif
 
-// Sets default values
 ARoomVolume::ARoomVolume()
 {
-	// Set this actor to call Tick() every frame.  You can turn this off to improve performance if you don't need it.
 	PrimaryActorTick.bCanEverTick = false;
 
 	TriggerBox = CreateDefaultSubobject<UBoxComponent>(TEXT("TriggerBox"));
@@ -181,5 +179,6 @@ void ARoomVolume::HandleEndOverlap(
 		return;
 	}
 
+	// 위치 태그만 갱신한다. Room 이탈은 전투 완료가 아니므로 전투용 Streaming Source는 유지한다.
 	RoomTagComp->LeaveRoom(this);
 }

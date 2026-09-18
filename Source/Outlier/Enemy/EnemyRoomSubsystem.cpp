@@ -167,6 +167,7 @@ void UEnemyRoomSubsystem::NotifyRoomCombat(FGameplayTag RoomTag, const FVector& 
 
 void UEnemyRoomSubsystem::NotifyRoomCombatEnded(FGameplayTag RoomTag)
 {
+	// 여기서는 AI 공유 정보만 해제한다. Wave 완료/다음 차수 판정은 RoomCombatSubsystem이 소유한다.
 	if (!RoomTag.IsValid())
 	{
 		return;

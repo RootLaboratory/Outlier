@@ -448,6 +448,7 @@ void ASelfDestructDrone::HandleDeath()
 
 void ASelfDestructDrone::ResetPoolRuntimeState()
 {
+	// 본체는 재사용하지만 부착 폭발물은 Idle 진입 때 제거한다. 새 대여마다 폭발 가능한 부품을 다시 만든다.
 	Super::ResetPoolRuntimeState();
 	bDeathHandling = false;
 	bHasCommittedSelfDestruct = false;

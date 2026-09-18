@@ -239,6 +239,7 @@ void AFirstPersonPlayerController::RequestLeaveGame()
 
 void AFirstPersonPlayerController::RequestCheckpointRestart()
 {
+	// 로컬 플래그는 UI 요청을 거르는 용도다. 실제 요청 권한과 투표 가능 상태는 서버 GameMode가 다시 판정한다.
 	if (!IsLocalController() || !bCanRequestCheckpointRestart)
 	{
 		return;
@@ -294,6 +295,7 @@ void AFirstPersonPlayerController::ClientPrepareForArenaExit_Implementation()
 
 void AFirstPersonPlayerController::ConfigureCheckpointRestartFromServer(bool bCanRequest)
 {
+	// Listen Host는 같은 프로세스의 로컬 UI를 즉시 갱신하고, 원격 플레이어만 Client RPC로 전달한다.
 	if (IsLocalController())
 	{
 		ClientConfigureCheckpointRestart_Implementation(bCanRequest);
@@ -897,7 +899,7 @@ void AFirstPersonPlayerController::ClientArenaGameplayReload_Implementation(uint
 	ApplyServerArenaSpawnLocation(InSpawnLocation);
 
 	// 아레나 LevelInstance는 건드리지 않는다. 서버에서 복제되는 Gameplay Data Layer가
-	// 이 클라이언트에서도 Activated가 되는 시점만 기다린다.
+	// 클라이언트도 이전 Actor의 GC를 확인해 ACK한 뒤 Activated/Streaming 준비 완료를 따로 기다린다.
 	bHasPendingArenaRequest = true;
 	PendingGameplayGeneration = GameplayGeneration;
 	ArenaSubsystem->OnArenaGameplayGCReady.AddUObject(
@@ -908,6 +910,7 @@ void AFirstPersonPlayerController::ClientArenaGameplayReload_Implementation(uint
 
 void AFirstPersonPlayerController::HandleArenaGameplayGCReady(uint32 GameplayGeneration)
 {
+	// 이 ACK는 이전 수명 정리 완료만 뜻한다. 새 Pawn의 Possess 준비는 이후 ServerNotifyArenaReady로 알린다.
 	if (GameplayGeneration != PendingGameplayGeneration)
 	{
 		return;

@@ -92,6 +92,7 @@ void AExplosiveProp::BeginPlay()
 		ExplosionComponent->OnExplosionProcessed.AddDynamic(this, &AExplosiveProp::HandleExplosionProcessed);
 	}
 
+	// 배치 폭발물만 안정 ID로 저장한다. 드론의 부착 폭발물은 드론 대여 수명에서 다시 구성한다.
 	if (HasAuthority() && !CachedOwningDrone.IsValid() && bSaveCheckpointState)
 	{
 		if (UOutlierSaveSubSystem* SaveSubsystem = GetGameInstance()

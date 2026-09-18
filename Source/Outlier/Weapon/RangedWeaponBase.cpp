@@ -276,6 +276,7 @@ void ARangedWeaponBase::RestoreCheckpointAmmo(int32 SavedAmmo)
 
 void ARangedWeaponBase::ResetForEnemyPoolLease()
 {
+	// Enemy의 장착 무기도 재사용된다. 체크포인트 탄약 복원과 달리 새 대여는 기본 탄창/반동 상태로 시작한다.
 	if (!HasAuthority())
 	{
 		return;

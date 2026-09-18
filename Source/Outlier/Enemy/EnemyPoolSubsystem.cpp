@@ -109,6 +109,7 @@ bool UEnemyPoolSubsystem::PrewarmPool(UEnemyPoolDefinition* Definition)
 		Bucket.MaxCount = Entry.MaxCount;
 		CompactBucket(Bucket);
 
+		// Prewarm은 전체 보유량의 하한이다. 전투 중인 적도 포함해야 Ready 재통보 때 중복 생성하지 않는다.
 		while (Bucket.IdleEnemies.Num() + Bucket.LeasedEnemies.Num() < Entry.PrewarmCount)
 		{
 			if (!CreatePoolEnemy(Bucket))
@@ -157,6 +158,26 @@ AEnemyBase* UEnemyPoolSubsystem::CreatePoolEnemy(FEnemyPoolBucket& Bucket)
 	return Enemy;
 }
 
+AEnemyBase* UEnemyPoolSubsystem::AcquireIdleEnemy(FEnemyPoolBucket& Bucket)
+{
+	CompactBucket(Bucket);
+	AEnemyBase* Enemy = nullptr;
+	while (!Bucket.IdleEnemies.IsEmpty() && !Enemy)
+	{
+		Enemy = Bucket.IdleEnemies.Pop(EAllowShrinking::No).Get();
+	}
+	if (!Enemy)
+	{
+		Enemy = CreatePoolEnemy(Bucket);
+		if (Enemy)
+		{
+			// 생성 경로는 먼저 Idle에 등록한다. 이번 대여에서 바로 쓸 적은 대기 목록에서 꺼낸다.
+			Bucket.IdleEnemies.RemoveSingleSwap(Enemy, EAllowShrinking::No);
+		}
+	}
+	return Enemy;
+}
+
 AEnemyBase* UEnemyPoolSubsystem::LeaseEnemy(
 	TSubclassOf<AEnemyBase> EnemyClass,
 	const FTransform& SpawnTransform,
@@ -177,22 +198,10 @@ AEnemyBase* UEnemyPoolSubsystem::LeaseEnemy(
 		return nullptr;
 	}
 
-	CompactBucket(*Bucket);
-	AEnemyBase* Enemy = nullptr;
-	while (!Bucket->IdleEnemies.IsEmpty() && !Enemy)
-	{
-		Enemy = Bucket->IdleEnemies.Pop(EAllowShrinking::No).Get();
-	}
+	AEnemyBase* Enemy = AcquireIdleEnemy(*Bucket);
 	if (!Enemy)
 	{
-		Enemy = CreatePoolEnemy(*Bucket);
-		if (Enemy)
-		{
-			Bucket->IdleEnemies.RemoveSingleSwap(Enemy, EAllowShrinking::No);
-		}
-	}
-	if (!Enemy)
-	{
+		// 부족해도 사용 중인 적을 회수하거나 상한을 넘기지 않는다. Wave 쪽 Pending 재시도가 기다린다.
 		const double CurrentTimeSeconds = World->GetTimeSeconds();
 		if (CurrentTimeSeconds - Bucket->LastExhaustedLogSeconds >= 5.0)
 		{
@@ -210,6 +219,7 @@ AEnemyBase* UEnemyPoolSubsystem::LeaseEnemy(
 		++NextLeaseSerial;
 	}
 
+	// BeginPoolLease에서 연출 콜백이 즉시 올 수 있으므로 대여 목록을 먼저 확정한다.
 	Bucket->LeasedEnemies.Add(Enemy);
 	if (!Enemy->BeginPoolLease(Context, SpawnTransform, NextLeaseSerial))
 	{
@@ -225,6 +235,7 @@ bool UEnemyPoolSubsystem::ReturnEnemy(
 	int32 GameplayGeneration,
 	int32 LeaseSerial)
 {
+	// 같은 Actor가 다시 대여됐을 수 있다. 이전 연출의 늦은 반환은 현재 대여를 건드리지 않는다.
 	if (!IsValid(Enemy) || !Enemy->MatchesPoolLease(GameplayGeneration, LeaseSerial))
 	{
 		return false;
@@ -315,6 +326,7 @@ void UEnemyPoolSubsystem::HandleArenaGameplayReady(uint32 GameplayGeneration)
 void UEnemyPoolSubsystem::HandleArenaGameplayReloadStarted(uint32 GameplayGeneration)
 {
 	(void)GameplayGeneration;
+	// 같은 Gameplay 내 반환은 재사용하지만, 리로드 경계에서는 이전 맵 수명의 적을 모두 폐기한다.
 	DestroyPool();
 }
 

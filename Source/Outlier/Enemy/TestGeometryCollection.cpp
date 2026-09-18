@@ -82,6 +82,7 @@ void ATestGeometryCollection::HandleDeath()
 
 void ATestGeometryCollection::ResetPoolPresentationState()
 {
+	// 같은 Actor의 파편 연출을 끝내고 원래 메시로 복귀한다. 서버와 복제 수신 클라이언트 모두 복원해야 한다.
 	Super::ResetPoolPresentationState();
 	SetReplicateMovement(true);
 	if (UCharacterMovementComponent* MovementComponent = GetCharacterMovement())

@@ -1401,6 +1401,7 @@ void AOutlierGameMode::OnClientArenaReady(APlayerController* PC)
 
 void AOutlierGameMode::OnClientArenaGameplayGCReady(APlayerController* PC, uint32 GameplayGeneration)
 {
+	// 이번 세대의 대기 참가자만 집계한다. 모두 ACK해도 서버 자체의 GC 검증은 Subsystem에서 별도로 기다린다.
 	if (!PC
 		|| GameplayGeneration == 0
 		|| GameplayGeneration != PendingGameplayGeneration
@@ -2440,6 +2441,7 @@ bool AOutlierGameMode::IsArenaWorkerReconnectRequest(
 
 void AOutlierGameMode::ScheduleArenaWorkerReconnectTimeout()
 {
+	// 두 번째 이탈이나 반복 통보로 유예를 연장하지 않는다. 기존 타이머가 있으면 최초 마감을 유지한다.
 	if (bArenaWorkerMatchCompleting
 		|| GetWorldTimerManager().IsTimerActive(ArenaWorkerReconnectTimerHandle))
 	{
@@ -2865,6 +2867,7 @@ void AOutlierGameMode::ClearPendingArenaReloadPawns()
 
 void AOutlierGameMode::CompleteServerArenaReload()
 {
+	// Listen Host의 로컬 Pawn은 서버 준비 완료에서 Possess한다. 원격 클라이언트의 준비 통보와 분리한다.
 	for (auto It = PendingLocalPossessions.CreateIterator(); It; ++It)
 	{
 		APlayerController* PC = It->Key.Get();
@@ -2881,6 +2884,7 @@ void AOutlierGameMode::CompleteServerArenaReload()
 
 void AOutlierGameMode::TryFinishArenaReload()
 {
+	// 서버 로딩만 끝났다고 재시작을 닫지 않는다. Possess 대기와 재접속 대기까지 해소되어야 완료한다.
 	if (!bArenaReloadInProgress
 		|| !bServerArenaReloadReady
 		|| !PendingLocalPossessions.IsEmpty()

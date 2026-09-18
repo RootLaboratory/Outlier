@@ -308,6 +308,7 @@ bool AEnemyBase::BeginPoolLease(
 		return false;
 	}
 
+	// 재사용은 BeginPlay를 다시 호출하지 않는다. 복제를 깨운 뒤 이전 대여의 예약 작업부터 끊는다.
 	SetNetDormancy(DORM_Awake);
 	FlushNetDormancy();
 	SetLifeSpan(0.0f);
@@ -361,6 +362,7 @@ bool AEnemyBase::BeginPoolLease(
 		CurrentWeapon->ResetForEnemyPoolLease();
 	}
 
+	// 이전 전투 상태를 지운 뒤 새 Room/차수/Wave 수명을 부여한다. 연출 중에는 아직 AI/피해가 비활성이다.
 	PoolGameplayGeneration = Context.GameplayGeneration;
 	PoolLeaseSerial = LeaseSerial;
 	PoolCombatPhaseIndex = Context.CombatPhaseIndex;
@@ -387,6 +389,7 @@ bool AEnemyBase::BeginPoolLease(
 
 bool AEnemyBase::MatchesPoolLease(int32 GameplayGeneration, int32 LeaseSerial) const
 {
+	// Generation은 맵 리로드를, Serial은 같은 맵 안에서 같은 Actor의 반복 대여를 구분한다.
 	return IsPoolManaged()
 		&& GameplayGeneration == PoolGameplayGeneration
 		&& LeaseSerial != 0
@@ -415,6 +418,7 @@ void AEnemyBase::CompletePoolSpawnPresentation(
 	{
 		RoomSubsystem->RegisterEnemy(this);
 	}
+	// 서버가 현재 대여의 연출 완료를 승인한 뒤에만 충돌/피해/StateTree를 활성화한다.
 	SetPoolState(EEnemyPoolState::CombatActive);
 	ForceNetUpdate();
 }
@@ -447,6 +451,7 @@ void AEnemyBase::FinishPoolReturn(int32 GameplayGeneration, int32 LeaseSerial)
 		return;
 	}
 
+	// 전투 집계와 AI 공유 등록을 먼저 끊고 Idle로 옮긴다. 반환 자체는 처치 이벤트가 아니다.
 	if (URoomCombatSubsystem* CombatSubsystem = GetWorld()->GetSubsystem<URoomCombatSubsystem>())
 	{
 		CombatSubsystem->UnregisterEnemy(this);

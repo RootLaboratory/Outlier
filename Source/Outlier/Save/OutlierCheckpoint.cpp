@@ -86,6 +86,7 @@ bool AOutlierCheckpoint::SetActivationConditionSatisfied(
 		return false;
 	}
 
+	// 외부 조건 충족은 저장 요청의 입구다. 실제 저장 가능 여부와 페어 스냅샷 확정은 GameMode가 판단한다.
 	bActivationConditionSatisfied = true;
 	ForceNetUpdate();
 	AOutlierGameMode* GameMode = GetWorld()
@@ -96,6 +97,7 @@ bool AOutlierCheckpoint::SetActivationConditionSatisfied(
 		return false;
 	}
 
+	// 저장 성공 뒤에만 재활성화를 막는다. 실패한 요청을 이미 저장된 체크포인트로 표시하지 않는다.
 	bCheckpointCommitted = true;
 	ForceNetUpdate();
 	return true;

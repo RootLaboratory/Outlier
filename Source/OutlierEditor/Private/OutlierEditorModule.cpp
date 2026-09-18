@@ -143,6 +143,7 @@ private:
 			return;
 		}
 
+		// 이번 PIE 요청에만 설정을 적용한다. 기본 Play 버튼의 사용자 설정과 에디터에서 연 맵은 바꾸지 않는다.
 		ULevelEditorPlaySettings* PlaySettings = DuplicateObject<ULevelEditorPlaySettings>(
 			GetDefault<ULevelEditorPlaySettings>(),
 			GetTransientPackage());

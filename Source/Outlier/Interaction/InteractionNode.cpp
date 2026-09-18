@@ -38,6 +38,7 @@ void AInteractionNode::BeginPlay()
 		if (bProgressIdRegistered
 			&& SaveSubsystem->HasWorldProgress(EOutlierWorldProgressType::CollectedNode, PickupId))
 		{
+			// 저장된 습득 상태만 복원한다. AddNodeServer를 호출하면 이미 저장한 재화를 중복 지급한다.
 			bCollected = true;
 			InteractableComponent->RestoreUsedState(true);
 			OnCollectedStateChanged(true);

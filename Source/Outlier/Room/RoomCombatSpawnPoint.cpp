@@ -22,6 +22,7 @@ void ARoomCombatSpawnPoint::BeginPlay()
 {
 	Super::BeginPlay();
 
+	// WP 재로드 시 배치 기본값에서 시작한다. 등록 과정에서 진행 중인 그룹의 상태를 다시 적용한다.
 	bRuntimeActive = bInitiallyActive;
 	if (!HasAuthority())
 	{
@@ -88,6 +89,7 @@ bool ARoomCombatSpawnPoint::FindSpawnTransform(
 		return false;
 	}
 
+	// 한 호출의 탐색량만 제한한다. 전부 막혀도 Wave 요청을 버리지 않고 Subsystem이 다시 시도한다.
 	constexpr int32 MaxLocationAttempts = 12;
 	FRandomStream RandomStream(SearchSeed);
 	const FVector Origin = GetActorLocation();
@@ -110,13 +112,14 @@ bool ARoomCombatSpawnPoint::FindSpawnTransform(
 			0.0f);
 		// BP가 Capsule 응답을 개별 수정하면 Profile 이름은 등록되지 않은 Custom이 된다.
 		// Object Channel과 실제 응답 컨테이너를 넘겨 그런 Enemy도 같은 충돌 규칙으로 검사한다.
-		if (!World->OverlapBlockingTestByChannel(
+		const bool bBlocked = World->OverlapBlockingTestByChannel(
 			Candidate,
 			Rotation,
 			Capsule->GetCollisionObjectType(),
 			CollisionShape,
 			QueryParams,
-			FCollisionResponseParams(Capsule->GetCollisionResponseToChannels())))
+			FCollisionResponseParams(Capsule->GetCollisionResponseToChannels()));
+		if (!bBlocked)
 		{
 			OutSpawnTransform = FTransform(Rotation, Candidate, FVector::OneVector);
 			return true;

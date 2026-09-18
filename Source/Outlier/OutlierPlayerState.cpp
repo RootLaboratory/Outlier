@@ -490,6 +490,7 @@ void AOutlierPlayerState::RestoreCheckpointProgress(
 		return;
 	}
 
+	// AttributeSet 수치를 저장해 덮는 대신 업그레이드 목록을 되돌리고 기존 변경 통보로 효과를 재적용한다.
 	const bool bNodesChanged = *ActivatedNodeIds != SavedActivatedNodeIds;
 	if (bNodesChanged)
 	{

@@ -53,6 +53,7 @@ void AInteractableDoor::BeginPlay()
 			if (bProgressIdRegistered
 				&& SaveSubsystem->HasWorldProgress(EOutlierWorldProgressType::OpenedDoor, DoorId))
 			{
+				// 복원은 새 문 조작이 아니므로 진행 기록과 서버의 이동 사운드를 다시 발생시키지 않는다.
 				SetDoorOpenInternal(true, false, false);
 			}
 		}

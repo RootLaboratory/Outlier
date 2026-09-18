@@ -177,7 +177,7 @@ void UOutlierGameInstance::ScheduleArenaReconnect()
 {
 	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
 	// 연속 NetworkFailure마다 마감 시간을 다시 늘리면 Worker보다 오래 재시도하게 된다.
-	// 최초 실패에서만 Deadline을 잡아 서버와 클라이언트의 유예 시간을 같은 기준으로 유지한다.
+	// 최초 실패에서만 Deadline을 잡는다. 서버도 같은 유예 설정을 쓰지만 Logout 감지 시점은 다를 수 있다.
 	if (!bArenaReconnectActive)
 	{
 		bArenaReconnectActive = true;

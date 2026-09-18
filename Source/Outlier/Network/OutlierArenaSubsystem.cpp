@@ -370,6 +370,7 @@ FString UOutlierArenaSubsystem::DescribeActorLevelPackage(const AActor* Actor)
 
 bool UOutlierArenaSubsystem::AddPendingGameplayReload(uint32 Generation, bool bCanChangeState)
 {
+	// Unload 요청 전에 대상 Actor와 이벤트를 확보한다. 이후 EndPlay -> GC 검증 -> 활성화 순으로 진행한다.
 	const UDataLayerInstance* Instance = ResolveGameplayDataLayer();
 	const UWorld* ArenaWorld = GetArenaWorld();
 	UWorld* HostWorld = GetWorld();
@@ -484,6 +485,7 @@ void UOutlierArenaSubsystem::HandleGameplayDataLayerStateChanged(
 
 void UOutlierArenaSubsystem::TryRequestGameplayReloadGC()
 {
+	// Data Layer가 내려갔다는 통보만으로는 부족하다. 추적한 Actor의 EndPlay도 모두 끝나야 GC를 요청한다.
 	if (!PendingGameplayReload.IsSet())
 	{
 		return;
@@ -513,6 +515,7 @@ void UOutlierArenaSubsystem::TryRequestGameplayReloadGC()
 
 void UOutlierArenaSubsystem::HandleGameplayGarbageCollectComplete()
 {
+	// 전역 GC 완료 이벤트는 재로드 완료가 아니다. 이번 세대가 추적한 이전 Actor의 소멸을 따로 확인한다.
 	if (!PendingGameplayReload.IsSet())
 	{
 		return;
@@ -539,6 +542,7 @@ void UOutlierArenaSubsystem::HandleGameplayGarbageCollectComplete()
 	SetGameplayReloadPhase(Pending.bCanChangeState
 		? EOutlierGameplayReloadPhase::ActivatingGameplayData
 		: EOutlierGameplayReloadPhase::WaitingForClientAcks);
+	// 로컬 GC 검증을 알린 뒤 외부 조정자가 활성화를 허용한다. 콜백 중 Reset될 수 있어 Pending을 다시 찾는다.
 	const uint32 VerifiedGeneration = Pending.Generation;
 	OnArenaGameplayGCReady.Broadcast(VerifiedGeneration);
 	if (PendingGameplayReload.IsSet()
@@ -574,6 +578,7 @@ void UOutlierArenaSubsystem::HandleGameplayStreamingStateUpdated()
 
 void UOutlierArenaSubsystem::TryCompleteGameplayReloadActivation()
 {
+	// Activated 요청과 실제 준비 완료를 구분한다. 아래 상태 조회에서 Data Layer와 Streaming 완료를 함께 검사한다.
 	UWorld* World = GetWorld();
 	const bool bRequiresActivationPermission = World && World->GetNetMode() != NM_Client;
 	if (!PendingGameplayReload.IsSet() || !PendingGameplayReload->bLoadRequested
@@ -596,6 +601,7 @@ void UOutlierArenaSubsystem::TryCompleteGameplayReloadActivation()
 
 void UOutlierArenaSubsystem::TickPendingGameplayReloadTimeouts()
 {
+	// 이 타이머는 정체 진단만 담당한다. 시간 초과를 성공으로 간주하거나 다음 단계로 강제 전환하지 않는다.
 	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
 	const double TimeoutSeconds = Settings
 		? FMath::Max(static_cast<double>(Settings->ArenaGameplayReloadStallSeconds), 1.0)

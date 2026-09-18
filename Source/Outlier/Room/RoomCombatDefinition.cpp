@@ -1,4 +1,87 @@
 #include "Room/RoomCombatDefinition.h"
+#include "Enemy/EnemyBase.h"
+
+namespace
+{
+	bool IsValidRemainingRatio(float Ratio)
+	{
+		return FMath::IsFinite(Ratio) && Ratio >= 0.0f && Ratio <= 1.0f;
+	}
+}
+
+bool URoomCombatDefinition::HasValidPhaseOrder() const
+{
+	if (CombatPhases.IsEmpty())
+	{
+		return false;
+	}
+	// 배치 전투는 맨 앞에만 둘 수 있다. 해킹 이후 차수는 추가 해킹 없이 자동으로 이어진다.
+	bool bSeenHackTrigger = false;
+	for (int32 Index = 0; Index < CombatPhases.Num(); ++Index)
+	{
+		switch (CombatPhases[Index].StartPolicy)
+		{
+		case ERoomCombatPhaseStartPolicy::InitialDetection:
+			if (Index != 0)
+			{
+				return false;
+			}
+			break;
+		case ERoomCombatPhaseStartPolicy::HackTrigger:
+			if (bSeenHackTrigger)
+			{
+				return false;
+			}
+			bSeenHackTrigger = true;
+			break;
+		case ERoomCombatPhaseStartPolicy::Automatic:
+			if (!bSeenHackTrigger)
+			{
+				return false;
+			}
+			break;
+		default:
+			return false;
+		}
+	}
+	return true;
+}
+
+bool URoomCombatDefinition::CanStartTriggeredSequence(int32 PhaseIndex) const
+{
+	if (!HasValidPhaseOrder() || !CombatPhases.IsValidIndex(PhaseIndex)
+		|| CombatPhases[PhaseIndex].StartPolicy != ERoomCombatPhaseStartPolicy::HackTrigger)
+	{
+		return false;
+	}
+	// 뒤 차수의 잘못된 명단 때문에 출입을 막은 뒤 진행할 수 없게 되는 것을 시작 전에 걸러낸다.
+	for (int32 Index = PhaseIndex; Index < CombatPhases.Num(); ++Index)
+	{
+		const FRoomCombatPhaseDefinition& Phase = CombatPhases[Index];
+		if (Phase.Waves.IsEmpty())
+		{
+			return false;
+		}
+		for (const FRoomCombatWaveDefinition& Wave : Phase.Waves)
+		{
+			if (Wave.SpawnMode != ERoomCombatWaveSpawnMode::SpawnFromObjects
+				|| Wave.Enemies.IsEmpty() || !IsValidRemainingRatio(Wave.NextWaveRemainingRatio))
+			{
+				return false;
+			}
+			for (const FRoomCombatEnemyEntry& Entry : Wave.Enemies)
+			{
+				UClass* EnemyClass = Entry.EnemyClass.LoadSynchronous();
+				if (Entry.Count < 1 || !EnemyClass || !EnemyClass->IsChildOf(AEnemyBase::StaticClass())
+					|| EnemyClass->HasAnyClassFlags(CLASS_Abstract))
+				{
+					return false;
+				}
+			}
+		}
+	}
+	return true;
+}
 
 #if WITH_EDITOR
 #include "Misc/DataValidation.h"
@@ -18,6 +101,10 @@ EDataValidationResult URoomCombatDefinition::IsDataValid(FDataValidationContext&
 	if (CombatPhases.IsEmpty())
 	{
 		AddValidationError(TEXT("Room Combat Definition requires at least one CombatPhase."));
+	}
+	else if (!HasValidPhaseOrder())
+	{
+		AddValidationError(TEXT("CombatPhases must use optional InitialDetection, then HackTrigger followed only by Automatic phases."));
 	}
 
 	for (int32 PhaseIndex = 0; PhaseIndex < CombatPhases.Num(); ++PhaseIndex)
@@ -61,9 +148,7 @@ EDataValidationResult URoomCombatDefinition::IsDataValid(FDataValidationContext&
 					WaveIndex));
 			}
 
-			if (!FMath::IsFinite(Wave.NextWaveRemainingRatio)
-				|| Wave.NextWaveRemainingRatio < 0.0f
-				|| Wave.NextWaveRemainingRatio > 1.0f)
+			if (!IsValidRemainingRatio(Wave.NextWaveRemainingRatio))
 			{
 				AddValidationError(FString::Printf(
 					TEXT("CombatPhases[%d].Waves[%d] has NextWaveRemainingRatio outside 0.0 to 1.0."),

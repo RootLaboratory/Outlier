@@ -45,6 +45,7 @@ bool AInteractableLevelSwitch::IsHacked() const
 void AInteractableLevelSwitch::BeginPlay()
 {
 	Super::BeginPlay();
+	// Component BeginPlay의 복원 통보가 먼저 끝났을 수 있다. 구독 후 현재 태그도 읽어 잠금/외형을 맞춘다.
 	if (HackableComponent)
 	{
 		HackableComponent->OnCheckpointHackStateRestored.AddUniqueDynamic(

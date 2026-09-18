@@ -52,6 +52,7 @@ bool FOutlierCheckpointRestartVote::Cancel(APlayerController* Controller)
 
 bool FOutlierCheckpointRestartVote::BeginRestart()
 {
+	// 투표 승인은 재시작 완료가 아니다. 이 전이 이후 실제 리로드/복원은 GameMode가 수행한다.
 	if (State != EOutlierCheckpointRestartVoteState::Approved)
 	{
 		return false;

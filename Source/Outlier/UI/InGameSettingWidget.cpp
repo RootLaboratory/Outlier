@@ -83,6 +83,7 @@ void UInGameSettingWidget::InitializeUILayerContext_Implementation(
 
 bool UInGameSettingWidget::HandleUILayerEscape_Implementation()
 {
+	// 같은 Escape라도 나가기 확인 취소 -> 투표 철회 -> 메뉴 닫기 순으로 현재 모드가 우선한다.
 	if (bConfirmingGameExit)
 	{
 		CancelGameExitConfirmation();
