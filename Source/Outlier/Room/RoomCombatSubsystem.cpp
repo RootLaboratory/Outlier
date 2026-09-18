@@ -6,6 +6,7 @@
 #include "Engine/World.h"
 #include "Network/OutlierArenaSubsystem.h"
 #include "Room/RoomCombatDefinition.h"
+#include "Room/RoomCombatSpawnPoint.h"
 #include "Room/RoomVolume.h"
 #include "Save/OutlierSaveSubSystem.h"
 #include "Subsystems/SubsystemCollection.h"
@@ -154,6 +155,7 @@ void URoomCombatSubsystem::UnregisterRoom(ARoomVolume* RoomVolume)
 	{
 		ActiveCombatRoomTag = FGameplayTag();
 	}
+	RoomVolume->SetCombatStreamingSourceEnabled(false);
 	if (UWorld* World = GetWorld())
 	{
 		if (UEnemyRoomSubsystem* EnemyRoomSubsystem =
@@ -170,6 +172,142 @@ void URoomCombatSubsystem::UnregisterRoom(ARoomVolume* RoomVolume)
 		}
 	}
 	RoomRuntimes.Remove(RoomTag);
+}
+
+bool URoomCombatSubsystem::RegisterSpawnPoint(
+	ARoomCombatSpawnPoint* SpawnPoint,
+	FGameplayTag RoomTag,
+	const FGameplayTagContainer& SpawnPointTags,
+	FGameplayTag ActivationGroupTag)
+{
+	UWorld* World = GetWorld();
+	if (!World || World->GetNetMode() == NM_Client
+		|| !IsValid(SpawnPoint) || !SpawnPoint->HasAuthority()
+		|| !RoomTag.IsValid())
+	{
+		return false;
+	}
+
+	const TWeakObjectPtr<ARoomCombatSpawnPoint> SpawnPointPtr(SpawnPoint);
+	if (const FGameplayTag* ExistingRoomTag = RegisteredSpawnPointRooms.Find(SpawnPointPtr))
+	{
+		if (*ExistingRoomTag != RoomTag)
+		{
+			UE_LOG(LogTemp, Error,
+				TEXT("[RoomCombat] SpawnPoint registered to multiple Rooms. SpawnPoint=%s Existing=%s New=%s"),
+				*GetNameSafe(SpawnPoint),
+				*ExistingRoomTag->ToString(),
+				*RoomTag.ToString());
+			return false;
+		}
+		// WP 재등록이나 중복 초기화가 같은 Actor를 후보 배열에 두 번 넣지 않게 한다.
+		return true;
+	}
+
+	FRoomCombatSpawnPointRuntime& Runtime = SpawnPointsByRoom.FindOrAdd(RoomTag).AddDefaulted_GetRef();
+	Runtime.SpawnPoint = SpawnPointPtr;
+	Runtime.SpawnPointTags = SpawnPointTags;
+	Runtime.ActivationGroupTag = ActivationGroupTag;
+	RegisteredSpawnPointRooms.Add(SpawnPointPtr, RoomTag);
+	return true;
+}
+
+void URoomCombatSubsystem::UnregisterSpawnPoint(ARoomCombatSpawnPoint* SpawnPoint)
+{
+	if (!SpawnPoint)
+	{
+		return;
+	}
+
+	const TWeakObjectPtr<ARoomCombatSpawnPoint> SpawnPointPtr(SpawnPoint);
+	const FGameplayTag* RoomTag = RegisteredSpawnPointRooms.Find(SpawnPointPtr);
+	if (!RoomTag)
+	{
+		return;
+	}
+
+	if (TArray<FRoomCombatSpawnPointRuntime>* RoomSpawnPoints =
+		SpawnPointsByRoom.Find(*RoomTag))
+	{
+		RoomSpawnPoints->RemoveAll(
+			[SpawnPoint](const FRoomCombatSpawnPointRuntime& Runtime)
+			{
+				return Runtime.SpawnPoint.Get() == SpawnPoint;
+			});
+		if (RoomSpawnPoints->IsEmpty())
+		{
+			SpawnPointsByRoom.Remove(*RoomTag);
+		}
+	}
+
+	RegisteredSpawnPointRooms.Remove(SpawnPointPtr);
+}
+
+void URoomCombatSubsystem::SetActivationGroupActive(
+	FGameplayTag RoomTag,
+	FGameplayTag ActivationGroupTag,
+	bool bActive)
+{
+	if (!RoomTag.IsValid() || !ActivationGroupTag.IsValid())
+	{
+		return;
+	}
+
+	CompactSpawnPoints(RoomTag);
+	TArray<FRoomCombatSpawnPointRuntime>* RoomSpawnPoints = SpawnPointsByRoom.Find(RoomTag);
+	if (!RoomSpawnPoints)
+	{
+		return;
+	}
+
+	for (const FRoomCombatSpawnPointRuntime& Runtime : *RoomSpawnPoints)
+	{
+		// 그룹 태그는 후보 선택 조건이 아니라 해킹 성공 시 같은 그룹의 런타임 활성도를 묶는 키다.
+		if (Runtime.ActivationGroupTag == ActivationGroupTag)
+		{
+			if (ARoomCombatSpawnPoint* SpawnPoint = Runtime.SpawnPoint.Get())
+			{
+				SpawnPoint->SetRuntimeActive(bActive);
+			}
+		}
+	}
+}
+
+void URoomCombatSubsystem::GetEligibleSpawnPoints(
+	FGameplayTag RoomTag,
+	const FGameplayTagQuery& SpawnPointQuery,
+	TArray<ARoomCombatSpawnPoint*>& OutSpawnPoints)
+{
+	OutSpawnPoints.Reset();
+	// 주변 Room의 셀이 함께 로드되어 있어도 동시에 진행 중인 하나의 Room만 소환 후보를 제공한다.
+	if (!RoomTag.IsValid() || ActiveCombatRoomTag != RoomTag)
+	{
+		return;
+	}
+
+	CompactSpawnPoints(RoomTag);
+	const TArray<FRoomCombatSpawnPointRuntime>* RoomSpawnPoints =
+		SpawnPointsByRoom.Find(RoomTag);
+	if (!RoomSpawnPoints)
+	{
+		return;
+	}
+
+	for (const FRoomCombatSpawnPointRuntime& Runtime : *RoomSpawnPoints)
+	{
+		ARoomCombatSpawnPoint* SpawnPoint = Runtime.SpawnPoint.Get();
+		if (!SpawnPoint || !SpawnPoint->IsRuntimeActive())
+		{
+			continue;
+		}
+		if (!SpawnPointQuery.IsEmpty()
+			&& !SpawnPointQuery.Matches(Runtime.SpawnPointTags))
+		{
+			continue;
+		}
+
+		OutSpawnPoints.Add(SpawnPoint);
+	}
 }
 
 void URoomCombatSubsystem::RegisterPreplacedEnemy(AEnemyBase* Enemy)
@@ -340,11 +478,20 @@ bool URoomCombatSubsystem::NotifyRoomCombatStarted(FGameplayTag RoomTag)
 	Runtime->State = ERoomCombatState::Combat;
 	Runtime->CurrentWaveIndex = 0;
 	ActiveCombatRoomTag = RoomTag;
+	SetRoomStreamingSourceEnabled(RoomTag, true);
 	return true;
 }
 
 void URoomCombatSubsystem::ResetRuntimeCombatState()
 {
+	for (const TPair<FGameplayTag, FRoomCombatRuntime>& Entry : RoomRuntimes)
+	{
+		if (ARoomVolume* RoomVolume = Entry.Value.RoomVolume.Get())
+		{
+			RoomVolume->SetCombatStreamingSourceEnabled(false);
+		}
+	}
+
 	UGameInstance* GameInstance = GetWorld() ? GetWorld()->GetGameInstance() : nullptr;
 	if (UOutlierSaveSubSystem* SaveSubsystem = GameInstance
 		? GameInstance->GetSubsystem<UOutlierSaveSubSystem>()
@@ -365,6 +512,8 @@ void URoomCombatSubsystem::ResetRuntimeCombatState()
 	RoomRuntimes.Reset();
 	PendingPreplacedEnemies.Reset();
 	RegisteredEnemyRooms.Reset();
+	SpawnPointsByRoom.Reset();
+	RegisteredSpawnPointRooms.Reset();
 	ActiveCombatRoomTag = FGameplayTag();
 }
 
@@ -410,6 +559,14 @@ int32 URoomCombatSubsystem::GetAliveEnemyCount(FGameplayTag RoomTag) const
 	return AliveCount;
 }
 
+int32 URoomCombatSubsystem::GetRegisteredSpawnPointCount(FGameplayTag RoomTag)
+{
+	CompactSpawnPoints(RoomTag);
+	const TArray<FRoomCombatSpawnPointRuntime>* RoomSpawnPoints =
+		SpawnPointsByRoom.Find(RoomTag);
+	return RoomSpawnPoints ? RoomSpawnPoints->Num() : 0;
+}
+
 void URoomCombatSubsystem::CompleteCurrentPhase(
 	FGameplayTag RoomTag,
 	bool bCancelRemainingWaves)
@@ -426,6 +583,7 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 	{
 		ActiveCombatRoomTag = FGameplayTag();
 	}
+	SetRoomStreamingSourceEnabled(RoomTag, false);
 	if (UWorld* World = GetWorld())
 	{
 		if (UEnemyRoomSubsystem* EnemyRoomSubsystem =
@@ -485,6 +643,47 @@ void URoomCombatSubsystem::CompactAliveEnemies(FRoomCombatRuntime& Runtime)
 		{
 			RegisteredEnemyRooms.Remove(*EnemyIt);
 			EnemyIt.RemoveCurrent();
+		}
+	}
+}
+
+void URoomCombatSubsystem::CompactSpawnPoints(FGameplayTag RoomTag)
+{
+	TArray<FRoomCombatSpawnPointRuntime>* RoomSpawnPoints =
+		SpawnPointsByRoom.Find(RoomTag);
+	if (!RoomSpawnPoints)
+	{
+		return;
+	}
+
+	RoomSpawnPoints->RemoveAll(
+		[this](const FRoomCombatSpawnPointRuntime& Runtime)
+		{
+			if (Runtime.SpawnPoint.IsValid())
+			{
+				return false;
+			}
+
+			// EndPlay 해제를 받지 못한 경우에도 만료된 WP Actor의 역방향 인덱스를 함께 정리한다.
+			RegisteredSpawnPointRooms.Remove(Runtime.SpawnPoint);
+			return true;
+		});
+
+	if (RoomSpawnPoints->IsEmpty())
+	{
+		SpawnPointsByRoom.Remove(RoomTag);
+	}
+}
+
+void URoomCombatSubsystem::SetRoomStreamingSourceEnabled(
+	FGameplayTag RoomTag,
+	bool bEnabled)
+{
+	if (FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag))
+	{
+		if (ARoomVolume* RoomVolume = Runtime->RoomVolume.Get())
+		{
+			RoomVolume->SetCombatStreamingSourceEnabled(bEnabled);
 		}
 	}
 }

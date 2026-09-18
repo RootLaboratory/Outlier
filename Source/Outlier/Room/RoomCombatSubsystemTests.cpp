@@ -5,6 +5,7 @@
 #include "Engine/World.h"
 #include "Misc/AutomationTest.h"
 #include "Room/RoomCombatDefinition.h"
+#include "Room/RoomCombatSpawnPoint.h"
 #include "Room/RoomCombatSubsystem.h"
 #include "Room/RoomTagComponent.h"
 #include "Room/RoomVolume.h"
@@ -138,10 +139,97 @@ bool FRoomCombatSubsystemRuntimeTest::RunTest(const FString& Parameters)
 		CombatSubsystem->NotifyRoomCombatStarted(FirstRoomTag));
 	TestFalse(TEXT("Another Room cannot start while combat is active"),
 		CombatSubsystem->NotifyRoomCombatStarted(SecondRoomTag));
+	TestTrue(TEXT("Active Room enables its combat streaming source"),
+		FirstRoom->IsCombatStreamingSourceEnabled());
+	TestFalse(TEXT("Inactive Room keeps its combat streaming source disabled"),
+		SecondRoom->IsCombatStreamingSourceEnabled());
+
+	ARoomCombatSpawnPoint* ActiveSpawnPoint =
+		World->SpawnActor<ARoomCombatSpawnPoint>();
+	ARoomCombatSpawnPoint* OtherRoomSpawnPoint =
+		World->SpawnActor<ARoomCombatSpawnPoint>();
+	ARoomCombatSpawnPoint* GroupSpawnPoint =
+		World->SpawnActor<ARoomCombatSpawnPoint>();
+	if (!TestNotNull(TEXT("Active SpawnPoint is spawned"), ActiveSpawnPoint)
+		|| !TestNotNull(TEXT("Other Room SpawnPoint is spawned"), OtherRoomSpawnPoint)
+		|| !TestNotNull(TEXT("Activation group SpawnPoint is spawned"), GroupSpawnPoint))
+	{
+		CleanupWorld();
+		return false;
+	}
+
+	FGameplayTagContainer FirstRoomSpawnTags;
+	FirstRoomSpawnTags.AddTag(FirstRoomTag);
+	FGameplayTagContainer SecondRoomSpawnTags;
+	SecondRoomSpawnTags.AddTag(SecondRoomTag);
+	GroupSpawnPoint->SetRuntimeActive(false);
+
+	TestTrue(TEXT("Active SpawnPoint registers"), CombatSubsystem->RegisterSpawnPoint(
+		ActiveSpawnPoint,
+		FirstRoomTag,
+		FirstRoomSpawnTags,
+		FGameplayTag()));
+	TestTrue(TEXT("Other Room SpawnPoint registers"), CombatSubsystem->RegisterSpawnPoint(
+		OtherRoomSpawnPoint,
+		SecondRoomTag,
+		SecondRoomSpawnTags,
+		FGameplayTag()));
+	TestTrue(TEXT("Activation group SpawnPoint registers"), CombatSubsystem->RegisterSpawnPoint(
+		GroupSpawnPoint,
+		FirstRoomTag,
+		FirstRoomSpawnTags,
+		SecondRoomTag));
+	TestTrue(TEXT("Duplicate registration is idempotent"), CombatSubsystem->RegisterSpawnPoint(
+		ActiveSpawnPoint,
+		FirstRoomTag,
+		FirstRoomSpawnTags,
+		FGameplayTag()));
+	TestEqual(TEXT("Duplicate registration does not add another entry"),
+		CombatSubsystem->GetRegisteredSpawnPointCount(FirstRoomTag), 2);
+
+	TArray<ARoomCombatSpawnPoint*> EligibleSpawnPoints;
+	CombatSubsystem->GetEligibleSpawnPoints(
+		FirstRoomTag,
+		FGameplayTagQuery::MakeQuery_MatchTag(FirstRoomTag),
+		EligibleSpawnPoints);
+	TestEqual(TEXT("Only the active matching SpawnPoint is eligible"),
+		EligibleSpawnPoints.Num(), 1);
+	TestTrue(TEXT("The eligible SpawnPoint belongs to the active Room"),
+		EligibleSpawnPoints.Contains(ActiveSpawnPoint));
+
+	CombatSubsystem->GetEligibleSpawnPoints(
+		FirstRoomTag,
+		FGameplayTagQuery::MakeQuery_MatchTag(SecondRoomTag),
+		EligibleSpawnPoints);
+	TestTrue(TEXT("A mismatched SpawnPoint query returns no candidates"),
+		EligibleSpawnPoints.IsEmpty());
+	CombatSubsystem->GetEligibleSpawnPoints(
+		SecondRoomTag,
+		FGameplayTagQuery(),
+		EligibleSpawnPoints);
+	TestTrue(TEXT("An inactive combat Room returns no SpawnPoint candidates"),
+		EligibleSpawnPoints.IsEmpty());
+
+	CombatSubsystem->SetActivationGroupActive(
+		FirstRoomTag,
+		SecondRoomTag,
+		true);
+	CombatSubsystem->GetEligibleSpawnPoints(
+		FirstRoomTag,
+		FGameplayTagQuery::MakeQuery_MatchTag(FirstRoomTag),
+		EligibleSpawnPoints);
+	TestEqual(TEXT("Activating a group adds its SpawnPoint to the candidates"),
+		EligibleSpawnPoints.Num(), 2);
+
+	GroupSpawnPoint->Destroy();
+	TestEqual(TEXT("SpawnPoint EndPlay unregisters its entry"),
+		CombatSubsystem->GetRegisteredSpawnPointCount(FirstRoomTag), 1);
 
 	CombatSubsystem->NotifyEnemyDefeated(FirstEnemy);
 	TestEqual(TEXT("The last defeated Enemy clears a single-Wave Room"),
 		CombatSubsystem->GetRoomState(FirstRoomTag), ERoomCombatState::Cleared);
+	TestFalse(TEXT("Completing the phase disables its combat streaming source"),
+		FirstRoom->IsCombatStreamingSourceEnabled());
 	TestFalse(TEXT("Ordinary unregistration is not treated as a defeat"),
 		CombatSubsystem->GetRoomState(SecondRoomTag) == ERoomCombatState::Cleared);
 	CombatSubsystem->UnregisterEnemy(SecondEnemy);
