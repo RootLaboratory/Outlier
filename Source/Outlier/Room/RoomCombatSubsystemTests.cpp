@@ -1,8 +1,11 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "Enemy/EnemyBase.h"
+#include "Enemy/EnemyPoolDefinition.h"
+#include "Enemy/EnemyPoolSubsystem.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
 #include "Misc/AutomationTest.h"
 #include "Room/RoomCombatDefinition.h"
 #include "Room/RoomCombatSpawnPoint.h"
@@ -47,6 +50,23 @@ namespace
 		return Definition;
 	}
 
+	URoomCombatDefinition* MakeSpawnWaveDefinition(int32 EnemyCount)
+	{
+		URoomCombatDefinition* Definition = NewObject<URoomCombatDefinition>();
+		FRoomCombatPhaseDefinition Phase;
+		Phase.StartPolicy = ERoomCombatPhaseStartPolicy::InitialDetection;
+		Phase.Waves.AddDefaulted();
+
+		FRoomCombatWaveDefinition SpawnWave;
+		SpawnWave.SpawnMode = ERoomCombatWaveSpawnMode::SpawnFromObjects;
+		FRoomCombatEnemyEntry& EnemyEntry = SpawnWave.Enemies.AddDefaulted_GetRef();
+		EnemyEntry.EnemyClass = AEnemyBase::StaticClass();
+		EnemyEntry.Count = EnemyCount;
+		Phase.Waves.Add(SpawnWave);
+		Definition->CombatPhases.Add(Phase);
+		return Definition;
+	}
+
 	AEnemyBase* SpawnTestEnemy(UWorld* World, FGameplayTag RoomTag)
 	{
 		AEnemyBase* Enemy = World->SpawnActor<AEnemyBase>(
@@ -59,6 +79,35 @@ namespace
 		}
 		return Enemy;
 	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FRoomCombatWeightedSpawnPointTest,
+	"Outlier.Room.WeightedSpawnPoint",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRoomCombatWeightedSpawnPointTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	const TArray<float> Weights = { 2.0f, 1.0f };
+	TArray<int32> AssignedCounts = { 0, 0 };
+	for (int32 RequestIndex = 0; RequestIndex < 6; ++RequestIndex)
+	{
+		const int32 SelectedIndex = RoomCombat::SelectWeightedSpawnPoint(
+			Weights,
+			AssignedCounts,
+			RequestIndex);
+		if (TestTrue(TEXT("A weighted candidate is selected"),
+			AssignedCounts.IsValidIndex(SelectedIndex)))
+		{
+			++AssignedCounts[SelectedIndex];
+		}
+	}
+
+	TestEqual(TEXT("Weight 2 receives four of six assignments"), AssignedCounts[0], 4);
+	TestEqual(TEXT("Weight 1 receives two of six assignments"), AssignedCounts[1], 2);
+	return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -258,6 +307,145 @@ bool FRoomCombatSubsystemRuntimeTest::RunTest(const FString& Parameters)
 		ERoomCombatState::WaitingForTrigger);
 	TestEqual(TEXT("Undetected elimination advances only to the next phase"),
 		CombatSubsystem->GetCurrentCombatPhaseIndex(StealthRoomTag), 1);
+
+	CleanupWorld();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FRoomCombatWaveSpawnRuntimeTest,
+	"Outlier.Room.WaveSpawnRuntime",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRoomCombatWaveSpawnRuntimeTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	const FName WorldName = MakeUniqueObjectName(
+		nullptr,
+		UWorld::StaticClass(),
+		NAME_None,
+		EUniqueObjectNameOptions::GloballyUnique);
+	FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, WorldName, GetTransientPackage());
+	if (!TestNotNull(TEXT("Wave spawn runtime world is created"), World))
+	{
+		GEngine->DestroyWorldContext(World);
+		return false;
+	}
+
+	World->AddToRoot();
+	WorldContext.SetCurrentWorld(World);
+	World->SetGameInstance(NewObject<UGameInstance>(GEngine));
+	TestTrue(TEXT("Wave spawn runtime world creates an authority game mode"),
+		World->SetGameMode(FURL()));
+	World->InitializeActorsForPlay(FURL());
+
+	auto CleanupWorld = [World]()
+	{
+		GEngine->ShutdownWorldNetDriver(World);
+		World->DestroyWorld(true);
+		World->SetPhysicsScene(nullptr);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+	};
+
+	URoomCombatSubsystem* CombatSubsystem = World->GetSubsystem<URoomCombatSubsystem>();
+	UEnemyPoolSubsystem* PoolSubsystem = World->GetSubsystem<UEnemyPoolSubsystem>();
+	if (!TestNotNull(TEXT("Room combat subsystem is created"), CombatSubsystem)
+		|| !TestNotNull(TEXT("Enemy pool subsystem is created"), PoolSubsystem))
+	{
+		CleanupWorld();
+		return false;
+	}
+
+	UEnemyPoolDefinition* PoolDefinition = NewObject<UEnemyPoolDefinition>(World);
+	FEnemyPoolEntry& PoolEntry = PoolDefinition->Entries.AddDefaulted_GetRef();
+	PoolEntry.EnemyClass = AEnemyBase::StaticClass();
+	PoolEntry.PrewarmCount = 3;
+	PoolEntry.MaxCount = 3;
+	TestTrue(TEXT("Wave spawn pool prewarms"), PoolSubsystem->PrewarmPool(PoolDefinition));
+
+	const FGameplayTag RoomTag = FGameplayTag::RequestGameplayTag(
+		FName(TEXT("Room.Level01.1")));
+	ARoomVolume* Room = World->SpawnActor<ARoomVolume>();
+	AEnemyBase* PreplacedEnemy = SpawnTestEnemy(World, RoomTag);
+	ARoomCombatSpawnPoint* FirstSpawnPoint = World->SpawnActor<ARoomCombatSpawnPoint>(
+		ARoomCombatSpawnPoint::StaticClass(),
+		FTransform(FVector(2000.0f, 0.0f, 0.0f)));
+	ARoomCombatSpawnPoint* SecondSpawnPoint = World->SpawnActor<ARoomCombatSpawnPoint>(
+		ARoomCombatSpawnPoint::StaticClass(),
+		FTransform(FVector(-2000.0f, 0.0f, 0.0f)));
+	if (!TestNotNull(TEXT("Wave spawn Room is spawned"), Room)
+		|| !TestNotNull(TEXT("Wave spawn preplaced Enemy is spawned"), PreplacedEnemy)
+		|| !TestNotNull(TEXT("First wave SpawnPoint is spawned"), FirstSpawnPoint)
+		|| !TestNotNull(TEXT("Second wave SpawnPoint is spawned"), SecondSpawnPoint))
+	{
+		CleanupWorld();
+		return false;
+	}
+
+	TestTrue(TEXT("Wave spawn Room registers"), CombatSubsystem->RegisterRoom(
+		Room,
+		RoomTag,
+		MakeSpawnWaveDefinition(4)));
+	CombatSubsystem->RegisterPreplacedEnemy(PreplacedEnemy);
+	TestTrue(TEXT("First wave SpawnPoint registers"), CombatSubsystem->RegisterSpawnPoint(
+		FirstSpawnPoint,
+		RoomTag,
+		FGameplayTagContainer(),
+		FGameplayTag()));
+	TestTrue(TEXT("Second wave SpawnPoint registers"), CombatSubsystem->RegisterSpawnPoint(
+		SecondSpawnPoint,
+		RoomTag,
+		FGameplayTagContainer(),
+		FGameplayTag()));
+	TestTrue(TEXT("Initial detection starts the spawn test Room"),
+		CombatSubsystem->NotifyRoomCombatStarted(RoomTag));
+
+	SecondSpawnPoint->SetForceSpawnLocationFailureForTesting(true);
+	TestTrue(TEXT("The fixed roster wave starts"),
+		CombatSubsystem->StartWaveSpawning(RoomTag, 0, 1));
+	TestEqual(TEXT("Equal weights assign two requests to the first SpawnPoint"),
+		CombatSubsystem->GetAssignedSpawnCount(RoomTag, FirstSpawnPoint), 2);
+	TestEqual(TEXT("Equal weights assign two requests to the second SpawnPoint"),
+		CombatSubsystem->GetAssignedSpawnCount(RoomTag, SecondSpawnPoint), 2);
+	TestEqual(TEXT("Location failures remain pending"),
+		CombatSubsystem->GetPendingSpawnCount(RoomTag), 2);
+	TestEqual(TEXT("Only successful leases enter the alive count"),
+		CombatSubsystem->GetAliveEnemyCount(RoomTag), 3);
+
+	SecondSpawnPoint->SetForceSpawnLocationFailureForTesting(false);
+	CombatSubsystem->RetryPendingSpawnsForTesting();
+	TestEqual(TEXT("Pool exhaustion leaves one request pending"),
+		CombatSubsystem->GetPendingSpawnCount(RoomTag), 1);
+	TestEqual(TEXT("Pool expands only to its configured maximum"),
+		PoolSubsystem->GetLeasedCount(AEnemyBase::StaticClass()), 3);
+
+	AEnemyBase* ReturnedEnemy = nullptr;
+	for (TActorIterator<AEnemyBase> EnemyIt(World); EnemyIt; ++EnemyIt)
+	{
+		if (EnemyIt->IsPoolManaged()
+			&& EnemyIt->GetEnemyPoolState() != EEnemyPoolState::Idle)
+		{
+			ReturnedEnemy = *EnemyIt;
+			break;
+		}
+	}
+	if (TestNotNull(TEXT("A leased Enemy is available for return"), ReturnedEnemy))
+	{
+		TestTrue(TEXT("A leased Enemy returns to the pool"), PoolSubsystem->ReturnEnemy(
+			ReturnedEnemy,
+			ReturnedEnemy->GetPoolGameplayGeneration(),
+			ReturnedEnemy->GetPoolLeaseSerial()));
+	}
+	CombatSubsystem->RetryPendingSpawnsForTesting();
+	TestEqual(TEXT("A returned Enemy satisfies the final pending request"),
+		CombatSubsystem->GetPendingSpawnCount(RoomTag), 0);
+	TestEqual(TEXT("Every successful pooled Enemy is counted once"),
+		CombatSubsystem->GetAliveEnemyCount(RoomTag), 4);
+	TestEqual(TEXT("The pool remains capped after reuse"),
+		PoolSubsystem->GetTotalCount(AEnemyBase::StaticClass()), 3);
 
 	CleanupWorld();
 	return true;

@@ -1,6 +1,9 @@
 #include "Room/RoomCombatSpawnPoint.h"
 
+#include "Components/CapsuleComponent.h"
 #include "Components/SceneComponent.h"
+#include "Enemy/EnemyBase.h"
+#include "Engine/World.h"
 #include "Room/RoomCombatSubsystem.h"
 
 #if WITH_EDITOR
@@ -59,6 +62,65 @@ void ARoomCombatSpawnPoint::SetRuntimeActive(bool bActive)
 	}
 
 	bRuntimeActive = bActive;
+}
+
+bool ARoomCombatSpawnPoint::FindSpawnTransform(
+	TSubclassOf<AEnemyBase> EnemyClass,
+	int32 SearchSeed,
+	FTransform& OutSpawnTransform) const
+{
+#if WITH_DEV_AUTOMATION_TESTS
+	if (bForceSpawnLocationFailureForTesting)
+	{
+		return false;
+	}
+#endif
+
+	const UWorld* World = GetWorld();
+	const AEnemyBase* EnemyDefaults = EnemyClass
+		? EnemyClass->GetDefaultObject<AEnemyBase>()
+		: nullptr;
+	const UCapsuleComponent* Capsule = EnemyDefaults
+		? EnemyDefaults->GetCapsuleComponent()
+		: nullptr;
+	if (!World || !Capsule)
+	{
+		return false;
+	}
+
+	constexpr int32 MaxLocationAttempts = 12;
+	FRandomStream RandomStream(SearchSeed);
+	const FVector Origin = GetActorLocation();
+	const FQuat Rotation = GetActorQuat();
+	const FCollisionShape CollisionShape = FCollisionShape::MakeCapsule(
+		Capsule->GetUnscaledCapsuleRadius(),
+		Capsule->GetUnscaledCapsuleHalfHeight());
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(RoomCombatSpawn), false);
+
+	for (int32 AttemptIndex = 0; AttemptIndex < MaxLocationAttempts; ++AttemptIndex)
+	{
+		// 첫 시도는 배치 위치를 그대로 사용하고, 이후 시도만 원 안에 균일하게 퍼뜨린다.
+		const float Radius = AttemptIndex == 0
+			? 0.0f
+			: SpawnRadius * FMath::Sqrt(RandomStream.FRand());
+		const float Angle = RandomStream.FRandRange(0.0f, UE_TWO_PI);
+		const FVector Candidate = Origin + FVector(
+			FMath::Cos(Angle) * Radius,
+			FMath::Sin(Angle) * Radius,
+			0.0f);
+		if (!World->OverlapBlockingTestByProfile(
+			Candidate,
+			Rotation,
+			Capsule->GetCollisionProfileName(),
+			CollisionShape,
+			QueryParams))
+		{
+			OutSpawnTransform = FTransform(Rotation, Candidate, FVector::OneVector);
+			return true;
+		}
+	}
+
+	return false;
 }
 
 #if WITH_EDITOR

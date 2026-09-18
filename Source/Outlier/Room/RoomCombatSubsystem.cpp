@@ -1,6 +1,7 @@
 #include "Room/RoomCombatSubsystem.h"
 
 #include "Enemy/EnemyBase.h"
+#include "Enemy/EnemyPoolSubsystem.h"
 #include "Enemy/EnemyRoomSubsystem.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
@@ -11,6 +12,45 @@
 #include "Save/OutlierSaveSubSystem.h"
 #include "Subsystems/SubsystemCollection.h"
 
+namespace RoomCombat
+{
+	int32 SelectWeightedSpawnPoint(
+		const TArray<float>& Weights,
+		const TArray<int32>& AssignedCounts,
+		int32 TieBreakOffset)
+	{
+		if (Weights.IsEmpty() || Weights.Num() != AssignedCounts.Num())
+		{
+			return INDEX_NONE;
+		}
+
+		int32 SelectedIndex = INDEX_NONE;
+		double SelectedScore = TNumericLimits<double>::Max();
+		for (int32 Offset = 0; Offset < Weights.Num(); ++Offset)
+		{
+			const int32 CandidateIndex = (TieBreakOffset + Offset) % Weights.Num();
+			if (Weights[CandidateIndex] <= 0.0f || AssignedCounts[CandidateIndex] < 0)
+			{
+				continue;
+			}
+
+			const double CandidateScore = static_cast<double>(AssignedCounts[CandidateIndex])
+				/ static_cast<double>(Weights[CandidateIndex]);
+			if (CandidateScore + static_cast<double>(KINDA_SMALL_NUMBER) < SelectedScore)
+			{
+				SelectedIndex = CandidateIndex;
+				SelectedScore = CandidateScore;
+			}
+		}
+		return SelectedIndex;
+	}
+}
+
+namespace
+{
+	constexpr float SpawnRetryIntervalSeconds = 0.5f;
+}
+
 void URoomCombatSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
@@ -18,6 +58,9 @@ void URoomCombatSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	if (UOutlierArenaSubsystem* ArenaSubsystem =
 		Collection.InitializeDependency<UOutlierArenaSubsystem>())
 	{
+		ArenaSubsystem->OnArenaGameplayReloadStarted.AddUObject(
+			this,
+			&URoomCombatSubsystem::HandleArenaGameplayReloadStarted);
 		ArenaSubsystem->OnArenaReleased.AddUObject(
 			this,
 			&URoomCombatSubsystem::HandleArenaReleased);
@@ -31,6 +74,7 @@ void URoomCombatSubsystem::Deinitialize()
 		if (UOutlierArenaSubsystem* ArenaSubsystem =
 			World->GetSubsystem<UOutlierArenaSubsystem>())
 		{
+			ArenaSubsystem->OnArenaGameplayReloadStarted.RemoveAll(this);
 			ArenaSubsystem->OnArenaReleased.RemoveAll(this);
 		}
 	}
@@ -110,11 +154,11 @@ bool URoomCombatSubsystem::RegisterRoom(
 			if (Runtime.State == ERoomCombatState::Cleared)
 			{
 				Enemy->Destroy();
-				RegisteredEnemyRooms.Remove(EnemyPtr);
+				RegisteredEnemies.Remove(EnemyPtr);
 				continue;
 			}
 
-			Runtime.AlivePreplacedEnemies.Add(EnemyPtr);
+			Runtime.TrackedAliveEnemies.Add(EnemyPtr);
 			Runtime.bHadPreplacedEnemy = true;
 		}
 		PendingPreplacedEnemies.Remove(RoomTag);
@@ -164,14 +208,53 @@ void URoomCombatSubsystem::UnregisterRoom(ARoomVolume* RoomVolume)
 			EnemyRoomSubsystem->NotifyRoomCombatEnded(RoomTag);
 		}
 	}
-	for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : Runtime->AlivePreplacedEnemies)
+	TArray<AEnemyBase*> PooledEnemiesToReturn;
+	for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : Runtime->TrackedAliveEnemies)
 	{
-		if (EnemyPtr.IsValid())
+		const FRoomCombatEnemyRegistration* Registration = RegisteredEnemies.Find(EnemyPtr);
+		if (!EnemyPtr.IsValid() || !Registration)
+		{
+			continue;
+		}
+
+		if (Registration->bPreplaced)
 		{
 			PendingPreplacedEnemies.FindOrAdd(RoomTag).Add(EnemyPtr);
 		}
+		else
+		{
+			PooledEnemiesToReturn.Add(EnemyPtr.Get());
+		}
 	}
+
+	PendingSpawnRequests.RemoveAll(
+		[RoomTag](const FRoomCombatPendingSpawn& Request)
+		{
+			return Request.RoomTag == RoomTag;
+		});
 	RoomRuntimes.Remove(RoomTag);
+
+	// Pool 반환은 UnregisterEnemy를 다시 호출하므로 Runtime 제거 뒤 별도 목록으로 처리한다.
+	if (UEnemyPoolSubsystem* PoolSubsystem = GetWorld()
+		? GetWorld()->GetSubsystem<UEnemyPoolSubsystem>()
+		: nullptr)
+	{
+		for (AEnemyBase* Enemy : PooledEnemiesToReturn)
+		{
+			if (IsValid(Enemy))
+			{
+				PoolSubsystem->ReturnEnemy(
+					Enemy,
+					Enemy->GetPoolGameplayGeneration(),
+					Enemy->GetPoolLeaseSerial());
+			}
+		}
+	}
+
+	if (PendingSpawnRequests.IsEmpty())
+	{
+		CancelSpawnRetry();
+	}
 }
 
 bool URoomCombatSubsystem::RegisterSpawnPoint(
@@ -326,7 +409,12 @@ void URoomCombatSubsystem::RegisterPreplacedEnemy(AEnemyBase* Enemy)
 	}
 
 	const TWeakObjectPtr<AEnemyBase> EnemyPtr(Enemy);
-	RegisteredEnemyRooms.Add(EnemyPtr, RoomTag);
+	FRoomCombatEnemyRegistration& Registration = RegisteredEnemies.FindOrAdd(EnemyPtr);
+	Registration.RoomTag = RoomTag;
+	Registration.CombatPhaseIndex = 0;
+	Registration.WaveIndex = 0;
+	Registration.GameplayGeneration = 0;
+	Registration.bPreplaced = true;
 
 	FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
 	if (!Runtime)
@@ -337,12 +425,12 @@ void URoomCombatSubsystem::RegisterPreplacedEnemy(AEnemyBase* Enemy)
 
 	if (Runtime->State == ERoomCombatState::Cleared)
 	{
-		RegisteredEnemyRooms.Remove(EnemyPtr);
+		RegisteredEnemies.Remove(EnemyPtr);
 		Enemy->Destroy();
 		return;
 	}
 
-	Runtime->AlivePreplacedEnemies.Add(EnemyPtr);
+	Runtime->TrackedAliveEnemies.Add(EnemyPtr);
 	Runtime->bHadPreplacedEnemy = true;
 }
 
@@ -354,26 +442,27 @@ void URoomCombatSubsystem::UnregisterEnemy(AEnemyBase* Enemy)
 	}
 
 	const TWeakObjectPtr<AEnemyBase> EnemyPtr(Enemy);
-	const FGameplayTag* RegisteredRoomTag = RegisteredEnemyRooms.Find(EnemyPtr);
-	if (!RegisteredRoomTag)
+	const FRoomCombatEnemyRegistration* Registration = RegisteredEnemies.Find(EnemyPtr);
+	if (!Registration)
 	{
 		return;
 	}
+	const FGameplayTag RegisteredRoomTag = Registration->RoomTag;
 
-	if (FRoomCombatRuntime* Runtime = RoomRuntimes.Find(*RegisteredRoomTag))
+	if (FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RegisteredRoomTag))
 	{
-		Runtime->AlivePreplacedEnemies.Remove(EnemyPtr);
+		Runtime->TrackedAliveEnemies.Remove(EnemyPtr);
 	}
 	if (TSet<TWeakObjectPtr<AEnemyBase>>* PendingEnemies =
-		PendingPreplacedEnemies.Find(*RegisteredRoomTag))
+		PendingPreplacedEnemies.Find(RegisteredRoomTag))
 	{
 		PendingEnemies->Remove(EnemyPtr);
 		if (PendingEnemies->IsEmpty())
 		{
-			PendingPreplacedEnemies.Remove(*RegisteredRoomTag);
+			PendingPreplacedEnemies.Remove(RegisteredRoomTag);
 		}
 	}
-	RegisteredEnemyRooms.Remove(EnemyPtr);
+	RegisteredEnemies.Remove(EnemyPtr);
 }
 
 void URoomCombatSubsystem::NotifyEnemyDefeated(AEnemyBase* Enemy)
@@ -384,14 +473,15 @@ void URoomCombatSubsystem::NotifyEnemyDefeated(AEnemyBase* Enemy)
 	}
 
 	const TWeakObjectPtr<AEnemyBase> EnemyPtr(Enemy);
-	const FGameplayTag* RegisteredRoomTag = RegisteredEnemyRooms.Find(EnemyPtr);
-	if (!RegisteredRoomTag)
+	const FRoomCombatEnemyRegistration* Registration = RegisteredEnemies.Find(EnemyPtr);
+	if (!Registration)
 	{
 		return;
 	}
 
-	const FGameplayTag RoomTag = *RegisteredRoomTag;
-	RegisteredEnemyRooms.Remove(EnemyPtr);
+	const FGameplayTag RoomTag = Registration->RoomTag;
+	const bool bWasPreplaced = Registration->bPreplaced;
+	RegisteredEnemies.Remove(EnemyPtr);
 	FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
 	if (!Runtime)
 	{
@@ -403,9 +493,10 @@ void URoomCombatSubsystem::NotifyEnemyDefeated(AEnemyBase* Enemy)
 		return;
 	}
 
-	Runtime->AlivePreplacedEnemies.Remove(EnemyPtr);
+	Runtime->TrackedAliveEnemies.Remove(EnemyPtr);
 	CompactAliveEnemies(*Runtime);
-	if (!Runtime->bHadPreplacedEnemy || !Runtime->AlivePreplacedEnemies.IsEmpty())
+	if (!bWasPreplaced || !Runtime->bHadPreplacedEnemy
+		|| !Runtime->TrackedAliveEnemies.IsEmpty())
 	{
 		return;
 	}
@@ -461,7 +552,7 @@ bool URoomCombatSubsystem::NotifyRoomCombatStarted(FGameplayTag RoomTag)
 	}
 
 	CompactAliveEnemies(*Runtime);
-	if (Runtime->AlivePreplacedEnemies.IsEmpty())
+	if (Runtime->TrackedAliveEnemies.IsEmpty())
 	{
 		return false;
 	}
@@ -477,13 +568,340 @@ bool URoomCombatSubsystem::NotifyRoomCombatStarted(FGameplayTag RoomTag)
 
 	Runtime->State = ERoomCombatState::Combat;
 	Runtime->CurrentWaveIndex = 0;
+	Runtime->bCurrentWaveSpawnStarted = true;
 	ActiveCombatRoomTag = RoomTag;
 	SetRoomStreamingSourceEnabled(RoomTag, true);
 	return true;
 }
 
+bool URoomCombatSubsystem::StartWaveSpawning(
+	FGameplayTag RoomTag,
+	int32 CombatPhaseIndex,
+	int32 WaveIndex)
+{
+	UWorld* World = GetWorld();
+	FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
+	URoomCombatDefinition* Definition = Runtime ? Runtime->Definition.Get() : nullptr;
+	if (!World || World->GetNetMode() == NM_Client || !Runtime || !Definition
+		|| Runtime->State != ERoomCombatState::Combat
+		|| ActiveCombatRoomTag != RoomTag
+		|| Runtime->CurrentCombatPhaseIndex != CombatPhaseIndex
+		|| !Definition->CombatPhases.IsValidIndex(CombatPhaseIndex))
+	{
+		return false;
+	}
+
+	const FRoomCombatPhaseDefinition& Phase = Definition->CombatPhases[CombatPhaseIndex];
+	if (!Phase.Waves.IsValidIndex(WaveIndex)
+		|| Phase.Waves[WaveIndex].SpawnMode != ERoomCombatWaveSpawnMode::SpawnFromObjects
+		|| (WaveIndex < Runtime->CurrentWaveIndex)
+		|| (WaveIndex == Runtime->CurrentWaveIndex && Runtime->bCurrentWaveSpawnStarted)
+		|| WaveIndex > Runtime->CurrentWaveIndex + 1
+		|| !PendingSpawnRequests.IsEmpty())
+	{
+		return false;
+	}
+
+	const FRoomCombatWaveDefinition& Wave = Phase.Waves[WaveIndex];
+	TArray<TSubclassOf<AEnemyBase>> EnemyRoster;
+	for (const FRoomCombatEnemyEntry& Entry : Wave.Enemies)
+	{
+		UClass* LoadedClass = Entry.EnemyClass.LoadSynchronous();
+		if (!LoadedClass || !LoadedClass->IsChildOf(AEnemyBase::StaticClass()) || Entry.Count < 1)
+		{
+			UE_LOG(LogTemp, Error,
+				TEXT("[RoomCombat] Wave spawn rejected by invalid roster. Room=%s Phase=%d Wave=%d Class=%s Count=%d"),
+				*RoomTag.ToString(),
+				CombatPhaseIndex,
+				WaveIndex,
+				*GetNameSafe(LoadedClass),
+				Entry.Count);
+			return false;
+		}
+
+		EnemyRoster.Reserve(EnemyRoster.Num() + Entry.Count);
+		for (int32 EnemyIndex = 0; EnemyIndex < Entry.Count; ++EnemyIndex)
+		{
+			EnemyRoster.Add(LoadedClass);
+		}
+	}
+
+	const UOutlierArenaSubsystem* ArenaSubsystem =
+		World->GetSubsystem<UOutlierArenaSubsystem>();
+	const int32 GameplayGeneration = ArenaSubsystem
+		? static_cast<int32>(ArenaSubsystem->GetGameplayGeneration())
+		: 0;
+	Runtime->CurrentWaveIndex = WaveIndex;
+	Runtime->GameplayGeneration = GameplayGeneration;
+	Runtime->bCurrentWaveSpawnStarted = true;
+	Runtime->SpawnAssignments.Reset();
+
+	TArray<ARoomCombatSpawnPoint*> EligibleSpawnPoints;
+	GetEligibleSpawnPoints(RoomTag, Wave.SpawnPointQuery, EligibleSpawnPoints);
+	TArray<float> Weights;
+	TArray<int32> AssignedCounts;
+	for (ARoomCombatSpawnPoint* SpawnPoint : EligibleSpawnPoints)
+	{
+		Weights.Add(SpawnPoint->GetSpawnWeight());
+		AssignedCounts.Add(0);
+	}
+
+	for (int32 RosterIndex = 0; RosterIndex < EnemyRoster.Num(); ++RosterIndex)
+	{
+		FRoomCombatPendingSpawn& Request = PendingSpawnRequests.AddDefaulted_GetRef();
+		Request.EnemyClass = EnemyRoster[RosterIndex];
+		Request.RoomTag = RoomTag;
+		Request.SpawnPointQuery = Wave.SpawnPointQuery;
+		Request.CombatPhaseIndex = CombatPhaseIndex;
+		Request.WaveIndex = WaveIndex;
+		Request.GameplayGeneration = GameplayGeneration;
+
+		const int32 SpawnPointIndex = RoomCombat::SelectWeightedSpawnPoint(
+			Weights,
+			AssignedCounts,
+			RosterIndex);
+		if (EligibleSpawnPoints.IsValidIndex(SpawnPointIndex))
+		{
+			Request.AssignedSpawnPoint = EligibleSpawnPoints[SpawnPointIndex];
+			++AssignedCounts[SpawnPointIndex];
+			Runtime->SpawnAssignments.FindOrAdd(EligibleSpawnPoints[SpawnPointIndex])++;
+		}
+	}
+
+	UE_LOG(LogTemp, Display,
+		TEXT("[RoomCombat] Wave roster queued. Room=%s Phase=%d Wave=%d Generation=%d Pending=%d SpawnPoints=%d"),
+		*RoomTag.ToString(),
+		CombatPhaseIndex,
+		WaveIndex,
+		GameplayGeneration,
+		EnemyRoster.Num(),
+		EligibleSpawnPoints.Num());
+
+	TrySpawnPendingRequests(RoomTag);
+	return true;
+}
+
+bool URoomCombatSubsystem::RegisterSpawnedEnemy(
+	AEnemyBase* Enemy,
+	const FRoomCombatPendingSpawn& SpawnRequest)
+{
+	FRoomCombatRuntime* Runtime = RoomRuntimes.Find(SpawnRequest.RoomTag);
+	if (!IsValid(Enemy) || !Runtime
+		|| Runtime->GameplayGeneration != SpawnRequest.GameplayGeneration
+		|| Runtime->CurrentCombatPhaseIndex != SpawnRequest.CombatPhaseIndex
+		|| Runtime->CurrentWaveIndex != SpawnRequest.WaveIndex)
+	{
+		return false;
+	}
+
+	const TWeakObjectPtr<AEnemyBase> EnemyPtr(Enemy);
+	if (RegisteredEnemies.Contains(EnemyPtr))
+	{
+		return false;
+	}
+
+	FRoomCombatEnemyRegistration& Registration = RegisteredEnemies.Add(EnemyPtr);
+	Registration.RoomTag = SpawnRequest.RoomTag;
+	Registration.CombatPhaseIndex = SpawnRequest.CombatPhaseIndex;
+	Registration.WaveIndex = SpawnRequest.WaveIndex;
+	Registration.GameplayGeneration = SpawnRequest.GameplayGeneration;
+	Registration.bPreplaced = false;
+	// 소환 연출 중에도 이 전투 차수의 생존 적이다. AI 활성 완료 여부와 생존 집계를 분리한다.
+	Runtime->TrackedAliveEnemies.Add(EnemyPtr);
+	return true;
+}
+
+void URoomCombatSubsystem::TrySpawnPendingRequests(FGameplayTag RoomTag)
+{
+	UWorld* World = GetWorld();
+	FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
+	UEnemyPoolSubsystem* PoolSubsystem = World
+		? World->GetSubsystem<UEnemyPoolSubsystem>()
+		: nullptr;
+	if (!World || !Runtime || !PoolSubsystem || Runtime->State != ERoomCombatState::Combat)
+	{
+		ScheduleSpawnRetry();
+		return;
+	}
+
+	for (int32 RequestIndex = PendingSpawnRequests.Num() - 1; RequestIndex >= 0; --RequestIndex)
+	{
+		FRoomCombatPendingSpawn& Request = PendingSpawnRequests[RequestIndex];
+		if (Request.RoomTag != RoomTag)
+		{
+			continue;
+		}
+
+		if (Request.GameplayGeneration != Runtime->GameplayGeneration
+			|| Request.CombatPhaseIndex != Runtime->CurrentCombatPhaseIndex
+			|| Request.WaveIndex != Runtime->CurrentWaveIndex)
+		{
+			PendingSpawnRequests.RemoveAtSwap(RequestIndex, 1, EAllowShrinking::No);
+			continue;
+		}
+
+		TArray<ARoomCombatSpawnPoint*> EligibleSpawnPoints;
+		GetEligibleSpawnPoints(RoomTag, Request.SpawnPointQuery, EligibleSpawnPoints);
+		ARoomCombatSpawnPoint* SpawnPoint = ResolveSpawnPoint(
+			*Runtime,
+			Request,
+			EligibleSpawnPoints);
+		if (!SpawnPoint)
+		{
+			continue;
+		}
+
+		FTransform SpawnTransform;
+		const int32 SearchSeed = HashCombineFast(
+			GetTypeHash(Request.GameplayGeneration),
+			HashCombineFast(GetTypeHash(Request.WaveIndex), ++Request.SearchSerial));
+		if (!SpawnPoint->FindSpawnTransform(Request.EnemyClass, SearchSeed, SpawnTransform))
+		{
+			continue;
+		}
+
+		FEnemyPoolLeaseContext LeaseContext;
+		LeaseContext.RoomTag = Request.RoomTag;
+		LeaseContext.CombatPhaseIndex = Request.CombatPhaseIndex;
+		LeaseContext.WaveIndex = Request.WaveIndex;
+		LeaseContext.GameplayGeneration = Request.GameplayGeneration;
+		AEnemyBase* Enemy = PoolSubsystem->LeaseEnemy(
+			Request.EnemyClass,
+			SpawnTransform,
+			LeaseContext);
+		if (!Enemy)
+		{
+			continue;
+		}
+
+		if (!RegisterSpawnedEnemy(Enemy, Request))
+		{
+			PoolSubsystem->ReturnEnemy(
+				Enemy,
+				Enemy->GetPoolGameplayGeneration(),
+				Enemy->GetPoolLeaseSerial());
+			continue;
+		}
+
+		PendingSpawnRequests.RemoveAtSwap(RequestIndex, 1, EAllowShrinking::No);
+	}
+
+	if (PendingSpawnRequests.IsEmpty())
+	{
+		Runtime->SpawnRetryAttempts = 0;
+		CancelSpawnRetry();
+		return;
+	}
+
+	++Runtime->SpawnRetryAttempts;
+	const double CurrentTimeSeconds = World->GetTimeSeconds();
+	if (CurrentTimeSeconds - Runtime->LastSpawnRetryLogSeconds >= 5.0)
+	{
+		Runtime->LastSpawnRetryLogSeconds = CurrentTimeSeconds;
+		UE_LOG(LogTemp, Warning,
+			TEXT("[RoomCombat] Wave spawn remains pending. Room=%s Phase=%d Wave=%d Pending=%d Attempts=%d"),
+			*RoomTag.ToString(),
+			Runtime->CurrentCombatPhaseIndex,
+			Runtime->CurrentWaveIndex,
+			GetPendingSpawnCount(RoomTag),
+			Runtime->SpawnRetryAttempts);
+	}
+	ScheduleSpawnRetry();
+}
+
+ARoomCombatSpawnPoint* URoomCombatSubsystem::ResolveSpawnPoint(
+	FRoomCombatRuntime& Runtime,
+	FRoomCombatPendingSpawn& SpawnRequest,
+	const TArray<ARoomCombatSpawnPoint*>& EligibleSpawnPoints)
+{
+	ARoomCombatSpawnPoint* AssignedSpawnPoint = SpawnRequest.AssignedSpawnPoint.Get();
+	if (AssignedSpawnPoint && EligibleSpawnPoints.Contains(AssignedSpawnPoint))
+	{
+		return AssignedSpawnPoint;
+	}
+
+	if (AssignedSpawnPoint)
+	{
+		if (int32* Count = Runtime.SpawnAssignments.Find(AssignedSpawnPoint))
+		{
+			*Count = FMath::Max(0, *Count - 1);
+		}
+	}
+
+	TArray<float> Weights;
+	TArray<int32> AssignedCounts;
+	for (ARoomCombatSpawnPoint* SpawnPoint : EligibleSpawnPoints)
+	{
+		Weights.Add(SpawnPoint->GetSpawnWeight());
+		AssignedCounts.Add(Runtime.SpawnAssignments.FindRef(SpawnPoint));
+	}
+	const int32 SelectedIndex = RoomCombat::SelectWeightedSpawnPoint(
+		Weights,
+		AssignedCounts,
+		SpawnRequest.SearchSerial);
+	if (!EligibleSpawnPoints.IsValidIndex(SelectedIndex))
+	{
+		SpawnRequest.AssignedSpawnPoint.Reset();
+		return nullptr;
+	}
+
+	AssignedSpawnPoint = EligibleSpawnPoints[SelectedIndex];
+	SpawnRequest.AssignedSpawnPoint = AssignedSpawnPoint;
+	Runtime.SpawnAssignments.FindOrAdd(AssignedSpawnPoint)++;
+	return AssignedSpawnPoint;
+}
+
+void URoomCombatSubsystem::RetryPendingSpawns()
+{
+	if (!ActiveCombatRoomTag.IsValid())
+	{
+		CancelSpawnRetry();
+		return;
+	}
+
+	const UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
+		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()
+		: nullptr;
+	const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(ActiveCombatRoomTag);
+	if (!Runtime || (ArenaSubsystem
+		&& Runtime->GameplayGeneration != static_cast<int32>(ArenaSubsystem->GetGameplayGeneration())))
+	{
+		PendingSpawnRequests.Reset();
+		CancelSpawnRetry();
+		return;
+	}
+
+	TrySpawnPendingRequests(ActiveCombatRoomTag);
+}
+
+void URoomCombatSubsystem::ScheduleSpawnRetry()
+{
+	UWorld* World = GetWorld();
+	if (!World || PendingSpawnRequests.IsEmpty()
+		|| World->GetTimerManager().IsTimerActive(SpawnRetryTimer))
+	{
+		return;
+	}
+
+	World->GetTimerManager().SetTimer(
+		SpawnRetryTimer,
+		this,
+		&URoomCombatSubsystem::RetryPendingSpawns,
+		SpawnRetryIntervalSeconds,
+		true);
+}
+
+void URoomCombatSubsystem::CancelSpawnRetry()
+{
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(SpawnRetryTimer);
+	}
+}
+
 void URoomCombatSubsystem::ResetRuntimeCombatState()
 {
+	CancelSpawnRetry();
 	for (const TPair<FGameplayTag, FRoomCombatRuntime>& Entry : RoomRuntimes)
 	{
 		if (ARoomVolume* RoomVolume = Entry.Value.RoomVolume.Get())
@@ -511,7 +929,8 @@ void URoomCombatSubsystem::ResetRuntimeCombatState()
 
 	RoomRuntimes.Reset();
 	PendingPreplacedEnemies.Reset();
-	RegisteredEnemyRooms.Reset();
+	RegisteredEnemies.Reset();
+	PendingSpawnRequests.Reset();
 	SpawnPointsByRoom.Reset();
 	RegisteredSpawnPointRooms.Reset();
 	ActiveCombatRoomTag = FGameplayTag();
@@ -549,7 +968,7 @@ int32 URoomCombatSubsystem::GetAliveEnemyCount(FGameplayTag RoomTag) const
 	}
 
 	int32 AliveCount = 0;
-	for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : Runtime->AlivePreplacedEnemies)
+	for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : Runtime->TrackedAliveEnemies)
 	{
 		if (EnemyPtr.IsValid())
 		{
@@ -557,6 +976,29 @@ int32 URoomCombatSubsystem::GetAliveEnemyCount(FGameplayTag RoomTag) const
 		}
 	}
 	return AliveCount;
+}
+
+int32 URoomCombatSubsystem::GetPendingSpawnCount(FGameplayTag RoomTag) const
+{
+	int32 PendingCount = 0;
+	for (const FRoomCombatPendingSpawn& Request : PendingSpawnRequests)
+	{
+		if (Request.RoomTag == RoomTag)
+		{
+			++PendingCount;
+		}
+	}
+	return PendingCount;
+}
+
+int32 URoomCombatSubsystem::GetAssignedSpawnCount(
+	FGameplayTag RoomTag,
+	const ARoomCombatSpawnPoint* SpawnPoint) const
+{
+	const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
+	return Runtime && SpawnPoint
+		? Runtime->SpawnAssignments.FindRef(SpawnPoint)
+		: 0;
 }
 
 int32 URoomCombatSubsystem::GetRegisteredSpawnPointCount(FGameplayTag RoomTag)
@@ -604,6 +1046,8 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 
 	Runtime->CurrentCombatPhaseIndex = NextPhaseIndex;
 	Runtime->CurrentWaveIndex = 0;
+	Runtime->bCurrentWaveSpawnStarted = false;
+	Runtime->SpawnAssignments.Reset();
 	Runtime->State = Definition->CombatPhases[NextPhaseIndex].StartPolicy
 		== ERoomCombatPhaseStartPolicy::HackTrigger
 		? ERoomCombatState::WaitingForTrigger
@@ -637,11 +1081,11 @@ void URoomCombatSubsystem::MarkRoomCleared(
 
 void URoomCombatSubsystem::CompactAliveEnemies(FRoomCombatRuntime& Runtime)
 {
-	for (auto EnemyIt = Runtime.AlivePreplacedEnemies.CreateIterator(); EnemyIt; ++EnemyIt)
+	for (auto EnemyIt = Runtime.TrackedAliveEnemies.CreateIterator(); EnemyIt; ++EnemyIt)
 	{
 		if (!(*EnemyIt).IsValid())
 		{
-			RegisteredEnemyRooms.Remove(*EnemyIt);
+			RegisteredEnemies.Remove(*EnemyIt);
 			EnemyIt.RemoveCurrent();
 		}
 	}
@@ -686,6 +1130,12 @@ void URoomCombatSubsystem::SetRoomStreamingSourceEnabled(
 			RoomVolume->SetCombatStreamingSourceEnabled(bEnabled);
 		}
 	}
+}
+
+void URoomCombatSubsystem::HandleArenaGameplayReloadStarted(uint32 GameplayGeneration)
+{
+	(void)GameplayGeneration;
+	ResetRuntimeCombatState();
 }
 
 void URoomCombatSubsystem::HandleArenaReleased()

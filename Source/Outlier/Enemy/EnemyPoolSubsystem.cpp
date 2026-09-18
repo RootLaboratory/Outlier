@@ -193,9 +193,14 @@ AEnemyBase* UEnemyPoolSubsystem::LeaseEnemy(
 	}
 	if (!Enemy)
 	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("[EnemyPool] Exhausted Class=%s Leased=%d Max=%d"),
-			*GetNameSafe(EnemyClass), Bucket->LeasedEnemies.Num(), Bucket->MaxCount);
+		const double CurrentTimeSeconds = World->GetTimeSeconds();
+		if (CurrentTimeSeconds - Bucket->LastExhaustedLogSeconds >= 5.0)
+		{
+			Bucket->LastExhaustedLogSeconds = CurrentTimeSeconds;
+			UE_LOG(LogTemp, Warning,
+				TEXT("[EnemyPool] Exhausted Class=%s Leased=%d Max=%d"),
+				*GetNameSafe(EnemyClass), Bucket->LeasedEnemies.Num(), Bucket->MaxCount);
+		}
 		return nullptr;
 	}
 

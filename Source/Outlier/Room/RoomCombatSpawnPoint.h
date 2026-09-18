@@ -6,6 +6,7 @@
 #include "RoomCombatSpawnPoint.generated.h"
 
 class USceneComponent;
+class AEnemyBase;
 
 UCLASS()
 class OUTLIER_API ARoomCombatSpawnPoint : public AActor
@@ -22,6 +23,17 @@ public:
 	FGameplayTag GetActivationGroupTag() const { return ActivationGroupTag; }
 	bool IsRuntimeActive() const { return bRuntimeActive; }
 	void SetRuntimeActive(bool bActive);
+	bool FindSpawnTransform(
+		TSubclassOf<AEnemyBase> EnemyClass,
+		int32 SearchSeed,
+		FTransform& OutSpawnTransform) const;
+
+#if WITH_DEV_AUTOMATION_TESTS
+	void SetForceSpawnLocationFailureForTesting(bool bEnabled)
+	{
+		bForceSpawnLocationFailureForTesting = bEnabled;
+	}
+#endif
 
 protected:
 	virtual void BeginPlay() override;
@@ -55,4 +67,8 @@ protected:
 private:
 	// 에디터 기본값과 해킹 등 런타임 활성화를 분리한다. 다음 WP 로드에서는 다시 기본값으로 시작한다.
 	bool bRuntimeActive = true;
+
+#if WITH_DEV_AUTOMATION_TESTS
+	bool bForceSpawnLocationFailureForTesting = false;
+#endif
 };

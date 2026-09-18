@@ -37,6 +37,7 @@ private:
 		int32 MaxCount = 0;
 		TArray<TWeakObjectPtr<AEnemyBase>> IdleEnemies;
 		TSet<TWeakObjectPtr<AEnemyBase>> LeasedEnemies;
+		double LastExhaustedLogSeconds = -1000000.0;
 	};
 
 	bool PrewarmConfiguredPool();
