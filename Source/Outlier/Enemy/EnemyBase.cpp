@@ -25,6 +25,7 @@
 #include "Team/OutlierTeamIds.h"
 #include "TimerManager.h"
 #include "Room/RoomTagComponent.h"
+#include "Room/RoomCombatSubsystem.h"
 #include "Weapon/RangedWeaponBase.h"
 #include "Outlier.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
@@ -242,6 +243,15 @@ void AEnemyBase::BeginPlay()
 		{
 			RoomSubsystem->RegisterEnemy(this);
 		}
+		if (URoomCombatSubsystem* CombatSubsystem =
+			GetWorld()->GetSubsystem<URoomCombatSubsystem>())
+		{
+			CombatSubsystem->RegisterPreplacedEnemy(this);
+		}
+		if (IsActorBeingDestroyed())
+		{
+			return;
+		}
 	}
 
 	InitializeFromEnemyStatRow();
@@ -267,6 +277,12 @@ void AEnemyBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
 
 	if (HasAuthority())
 	{
+		if (URoomCombatSubsystem* CombatSubsystem = GetWorld()
+			? GetWorld()->GetSubsystem<URoomCombatSubsystem>()
+			: nullptr)
+		{
+			CombatSubsystem->UnregisterEnemy(this);
+		}
 		if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
 		{
 			RoomSubsystem->UnregisterEnemy(this);
@@ -2290,6 +2306,16 @@ void AEnemyBase::HandleDeath()
 
 void AEnemyBase::PerformDeathCleanup()
 {
+	if (HasAuthority())
+	{
+		if (URoomCombatSubsystem* CombatSubsystem =
+			GetWorld()->GetSubsystem<URoomCombatSubsystem>())
+		{
+			// 일부 파생 적은 HandleDeath 대신 이 정리 함수를 직접 호출하므로 공통 경로에서 통보한다.
+			CombatSubsystem->NotifyEnemyDefeated(this);
+		}
+	}
+
 	EndPossessedImpactInputLock();
 	EndImpactReaction();
 	ResetPossessedAttackInput();

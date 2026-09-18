@@ -13,7 +13,8 @@ enum class EOutlierWorldProgressType : uint8
 	HackedObject,
 	OpenedDoor,
 	ActivatedSwitch,
-	CompletedEncounter
+	CompletedEncounter,
+	ExplodedProp
 };
 
 USTRUCT(BlueprintType)
@@ -36,6 +37,9 @@ struct OUTLIER_API FOutlierWorldProgressSnapshot
 	UPROPERTY()
 	TSet<FName> CompletedEncounterIds;
 
+	UPROPERTY()
+	TSet<FName> ExplodedPropIds;
+
 	TSet<FName>& GetIds(EOutlierWorldProgressType Type)
 	{
 		switch (Type)
@@ -49,8 +53,10 @@ struct OUTLIER_API FOutlierWorldProgressSnapshot
 		case EOutlierWorldProgressType::ActivatedSwitch:
 			return ActivatedSwitchIds;
 		case EOutlierWorldProgressType::CompletedEncounter:
-		default:
 			return CompletedEncounterIds;
+		case EOutlierWorldProgressType::ExplodedProp:
+		default:
+			return ExplodedPropIds;
 		}
 	}
 
@@ -67,8 +73,10 @@ struct OUTLIER_API FOutlierWorldProgressSnapshot
 		case EOutlierWorldProgressType::ActivatedSwitch:
 			return ActivatedSwitchIds;
 		case EOutlierWorldProgressType::CompletedEncounter:
-		default:
 			return CompletedEncounterIds;
+		case EOutlierWorldProgressType::ExplodedProp:
+		default:
+			return ExplodedPropIds;
 		}
 	}
 
@@ -79,6 +87,7 @@ struct OUTLIER_API FOutlierWorldProgressSnapshot
 		OpenedDoorIds.Reset();
 		ActivatedSwitchIds.Reset();
 		CompletedEncounterIds.Reset();
+		ExplodedPropIds.Reset();
 	}
 };
 

@@ -6,6 +6,7 @@
 #include "Engine/Level.h"
 #include "Engine/World.h"
 #include "Network/OutlierArenaSubsystem.h"
+#include "Room/RoomCombatSubsystem.h"
 #include "Subsystems/SubsystemCollection.h"
 #include "TimerManager.h"
 
@@ -129,6 +130,16 @@ void UEnemyRoomSubsystem::NotifyRoomCombat(FGameplayTag RoomTag, const FVector& 
 		return;
 	}
 
+	if (URoomCombatSubsystem* CombatSubsystem =
+		World->GetSubsystem<URoomCombatSubsystem>())
+	{
+		// 전투 정의가 있는 방은 새 관리자의 단일 활성 Room 판정을 통과한 경우에만 AI 전파한다.
+		if (CombatSubsystem->IsRoomRegistered(RoomTag)
+			&& !CombatSubsystem->NotifyRoomCombatStarted(RoomTag))
+		{
+			return;
+		}
+	}
 	CombatRooms.Add(RoomTag);
 
 	CompactRegisteredEnemies(RoomTag);
@@ -154,6 +165,25 @@ void UEnemyRoomSubsystem::NotifyRoomCombat(FGameplayTag RoomTag, const FVector& 
 	}
 }
 
+void UEnemyRoomSubsystem::NotifyRoomCombatEnded(FGameplayTag RoomTag)
+{
+	if (!RoomTag.IsValid())
+	{
+		return;
+	}
+
+	CombatRooms.Remove(RoomTag);
+	SearchStates.Remove(RoomTag);
+	if (FEnemyRoomTargetContactState* ContactState = TargetContactStates.Find(RoomTag))
+	{
+		if (UWorld* World = GetWorld())
+		{
+			World->GetTimerManager().ClearTimer(ContactState->ForcedShareTimerHandle);
+		}
+		TargetContactStates.Remove(RoomTag);
+	}
+}
+
 bool UEnemyRoomSubsystem::IsRoomInCombat(FGameplayTag RoomTag) const
 {
 	if (!RoomTag.IsValid())
@@ -171,7 +201,7 @@ bool UEnemyRoomSubsystem::HasActiveCombat() const
 		for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : RoomEntry.Value)
 		{
 			const AEnemyBase* Enemy = EnemyPtr.Get();
-			if (IsValid(Enemy) && Enemy->IsInCombat())
+			if (IsValid(Enemy) && !Enemy->IsDead() && Enemy->IsInCombat())
 			{
 				return true;
 			}

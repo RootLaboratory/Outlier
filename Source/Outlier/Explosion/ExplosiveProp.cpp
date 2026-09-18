@@ -13,6 +13,11 @@
 #include "Net/UnrealNetwork.h"
 #include "NiagaraFunctionLibrary.h"
 #include "Outlier.h"
+#include "Save/OutlierSaveSubSystem.h"
+
+#if WITH_EDITOR
+#include "Misc/DataValidation.h"
+#endif
 
 AExplosiveProp::AExplosiveProp()
 {
@@ -87,11 +92,46 @@ void AExplosiveProp::BeginPlay()
 		ExplosionComponent->OnExplosionProcessed.AddDynamic(this, &AExplosiveProp::HandleExplosionProcessed);
 	}
 
+	if (HasAuthority() && !CachedOwningDrone.IsValid() && bSaveCheckpointState)
+	{
+		if (UOutlierSaveSubSystem* SaveSubsystem = GetGameInstance()
+			? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>()
+			: nullptr)
+		{
+			bProgressIdRegistered = SaveSubsystem->RegisterWorldProgressId(
+				EOutlierWorldProgressType::ExplodedProp,
+				ExplosivePropId,
+				this);
+			if (bProgressIdRegistered
+				&& SaveSubsystem->HasWorldProgress(
+					EOutlierWorldProgressType::ExplodedProp,
+					ExplosivePropId))
+			{
+				// 복원 시 폭발 피해와 연출을 재생하지 않고 완료된 외형만 적용한다.
+				bExploded = true;
+			}
+		}
+	}
+
 	ApplyExplodedState();
 }
 
 void AExplosiveProp::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	if (bProgressIdRegistered)
+	{
+		if (UOutlierSaveSubSystem* SaveSubsystem = GetGameInstance()
+			? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>()
+			: nullptr)
+		{
+			SaveSubsystem->UnregisterWorldProgressId(
+				EOutlierWorldProgressType::ExplodedProp,
+				ExplosivePropId,
+				this);
+		}
+		bProgressIdRegistered = false;
+	}
+
 	if (OutlierAbilitySystemComponent)
 	{
 		UnbindGasVitalityObservers();
@@ -100,6 +140,23 @@ void AExplosiveProp::EndPlay(const EEndPlayReason::Type EndPlayReason)
 
 	Super::EndPlay(EndPlayReason);
 }
+
+#if WITH_EDITOR
+EDataValidationResult AExplosiveProp::IsDataValid(FDataValidationContext& Context) const
+{
+	EDataValidationResult Result = Super::IsDataValid(Context);
+	if (bSaveCheckpointState && ExplosivePropId.IsNone())
+	{
+		Context.AddError(FText::FromString(
+			TEXT("A checkpoint-persistent explosive prop requires an ExplosivePropId.")));
+		return EDataValidationResult::Invalid;
+	}
+
+	return Result == EDataValidationResult::NotValidated
+		? EDataValidationResult::Valid
+		: Result;
+}
+#endif
 
 void AExplosiveProp::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
@@ -387,6 +444,18 @@ void AExplosiveProp::HandleExplosionProcessed()
 	}
 
 	bExploded = true;
+	if (bProgressIdRegistered)
+	{
+		if (UOutlierSaveSubSystem* SaveSubsystem = GetGameInstance()
+			? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>()
+			: nullptr)
+		{
+			SaveSubsystem->SetWorldProgressState(
+				EOutlierWorldProgressType::ExplodedProp,
+				ExplosivePropId,
+				true);
+		}
+	}
 	ApplyExplodedState();
 	ForceNetUpdate();
 }

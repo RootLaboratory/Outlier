@@ -29,6 +29,7 @@
 #include "Engine/NetConnection.h"
 #include "Enemy/EnemyBase.h"
 #include "Enemy/EnemyRoomSubsystem.h"
+#include "Room/RoomCombatSubsystem.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "GameFramework/PlayerStart.h"
 #include "Kismet/GameplayStatics.h"
@@ -300,6 +301,11 @@ bool AOutlierGameMode::StartCheckpointRestart(
 	{
 		EnemyRoomSubsystem->ResetRuntimeCombatState();
 	}
+	if (URoomCombatSubsystem* RoomCombatSubsystem =
+		GetWorld()->GetSubsystem<URoomCombatSubsystem>())
+	{
+		RoomCombatSubsystem->ResetRuntimeCombatState();
+	}
 
 	// Listen Server의 전역 Pause는 World Partition의 Data Layer 전환도 멈춘다.
 	// 기존 Pawn은 아래 리로드에서 즉시 제거되고 새 Pawn은 준비 완료 전까지 Possess하지 않으므로,
@@ -567,6 +573,18 @@ bool AOutlierGameMode::RegisterCheckpoint(AController* Controller, AOutlierCheck
 	{
 		UE_LOG(LogTemp, Warning,
 			TEXT("[Checkpoint] Commit rejected while combat is active Id=%s"),
+			*Checkpoint->GetCheckpointId().ToString());
+		return false;
+	}
+	const URoomCombatSubsystem* RoomCombatSubsystem = GetWorld()
+		? GetWorld()->GetSubsystem<URoomCombatSubsystem>()
+		: nullptr;
+	if (RoomCombatSubsystem
+		&& RoomCombatSubsystem->GetActiveCombatRoomTag().IsValid())
+	{
+		// 생존 적이 잠시 0명이더라도 다음 Wave를 기다리는 중이면 체크포인트를 확정하지 않는다.
+		UE_LOG(LogTemp, Warning,
+			TEXT("[Checkpoint] Commit rejected while a Room Wave is active Id=%s"),
 			*Checkpoint->GetCheckpointId().ToString());
 		return false;
 	}
