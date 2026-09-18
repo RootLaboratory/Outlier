@@ -37,6 +37,7 @@ struct FRoomCombatRuntime
 	ERoomCombatState State = ERoomCombatState::Dormant;
 	int32 CurrentCombatPhaseIndex = 0;
 	int32 CurrentWaveIndex = 0;
+	int32 WaveBaselineEnemyCount = INDEX_NONE;
 	int32 GameplayGeneration = 0;
 	double LastSpawnRetryLogSeconds = -1000000.0;
 	int32 SpawnRetryAttempts = 0;
@@ -115,6 +116,7 @@ public:
 	FGameplayTag GetActiveCombatRoomTag() const { return ActiveCombatRoomTag; }
 	int32 GetCurrentCombatPhaseIndex(FGameplayTag RoomTag) const;
 	int32 GetCurrentWaveIndex(FGameplayTag RoomTag) const;
+	int32 GetWaveBaselineEnemyCount(FGameplayTag RoomTag) const;
 	int32 GetAliveEnemyCount(FGameplayTag RoomTag) const;
 	int32 GetPendingSpawnCount(FGameplayTag RoomTag) const;
 	int32 GetAssignedSpawnCount(
@@ -134,6 +136,8 @@ private:
 	void RetryPendingSpawns();
 	void ScheduleSpawnRetry();
 	void CancelSpawnRetry();
+	void FinalizeCurrentWaveSpawn(FGameplayTag RoomTag, FRoomCombatRuntime& Runtime);
+	void EvaluateWaveProgress(FGameplayTag RoomTag, FRoomCombatRuntime& Runtime);
 	ARoomCombatSpawnPoint* ResolveSpawnPoint(
 		FRoomCombatRuntime& Runtime,
 		FRoomCombatPendingSpawn& SpawnRequest,

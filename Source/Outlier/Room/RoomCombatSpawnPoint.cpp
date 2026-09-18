@@ -108,12 +108,15 @@ bool ARoomCombatSpawnPoint::FindSpawnTransform(
 			FMath::Cos(Angle) * Radius,
 			FMath::Sin(Angle) * Radius,
 			0.0f);
-		if (!World->OverlapBlockingTestByProfile(
+		// BP가 Capsule 응답을 개별 수정하면 Profile 이름은 등록되지 않은 Custom이 된다.
+		// Object Channel과 실제 응답 컨테이너를 넘겨 그런 Enemy도 같은 충돌 규칙으로 검사한다.
+		if (!World->OverlapBlockingTestByChannel(
 			Candidate,
 			Rotation,
-			Capsule->GetCollisionProfileName(),
+			Capsule->GetCollisionObjectType(),
 			CollisionShape,
-			QueryParams))
+			QueryParams,
+			FCollisionResponseParams(Capsule->GetCollisionResponseToChannels())))
 		{
 			OutSpawnTransform = FTransform(Rotation, Candidate, FVector::OneVector);
 			return true;

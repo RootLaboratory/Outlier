@@ -67,6 +67,33 @@ namespace
 		return Definition;
 	}
 
+	URoomCombatDefinition* MakeWaveProgressDefinition()
+	{
+		URoomCombatDefinition* Definition = NewObject<URoomCombatDefinition>();
+		FRoomCombatPhaseDefinition Phase;
+		Phase.StartPolicy = ERoomCombatPhaseStartPolicy::InitialDetection;
+
+		FRoomCombatWaveDefinition& PreplacedWave = Phase.Waves.AddDefaulted_GetRef();
+		PreplacedWave.NextWaveRemainingRatio = 0.5f;
+
+		FRoomCombatWaveDefinition& ReinforcementWave = Phase.Waves.AddDefaulted_GetRef();
+		ReinforcementWave.SpawnMode = ERoomCombatWaveSpawnMode::SpawnFromObjects;
+		ReinforcementWave.NextWaveRemainingRatio = 0.5f;
+		FRoomCombatEnemyEntry& ReinforcementEntry =
+			ReinforcementWave.Enemies.AddDefaulted_GetRef();
+		ReinforcementEntry.EnemyClass = AEnemyBase::StaticClass();
+		ReinforcementEntry.Count = 2;
+
+		FRoomCombatWaveDefinition& FinalWave = Phase.Waves.AddDefaulted_GetRef();
+		FinalWave.SpawnMode = ERoomCombatWaveSpawnMode::SpawnFromObjects;
+		FRoomCombatEnemyEntry& FinalEntry = FinalWave.Enemies.AddDefaulted_GetRef();
+		FinalEntry.EnemyClass = AEnemyBase::StaticClass();
+		FinalEntry.Count = 1;
+
+		Definition->CombatPhases.Add(Phase);
+		return Definition;
+	}
+
 	AEnemyBase* SpawnTestEnemy(UWorld* World, FGameplayTag RoomTag)
 	{
 		AEnemyBase* Enemy = World->SpawnActor<AEnemyBase>(
@@ -442,10 +469,175 @@ bool FRoomCombatWaveSpawnRuntimeTest::RunTest(const FString& Parameters)
 	CombatSubsystem->RetryPendingSpawnsForTesting();
 	TestEqual(TEXT("A returned Enemy satisfies the final pending request"),
 		CombatSubsystem->GetPendingSpawnCount(RoomTag), 0);
+	TestEqual(TEXT("Wave baseline is captured after every request succeeds"),
+		CombatSubsystem->GetWaveBaselineEnemyCount(RoomTag), 4);
 	TestEqual(TEXT("Every successful pooled Enemy is counted once"),
 		CombatSubsystem->GetAliveEnemyCount(RoomTag), 4);
 	TestEqual(TEXT("The pool remains capped after reuse"),
 		PoolSubsystem->GetTotalCount(AEnemyBase::StaticClass()), 3);
+
+	CleanupWorld();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FRoomCombatWaveProgressRuntimeTest,
+	"Outlier.Room.WaveProgressRuntime",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRoomCombatWaveProgressRuntimeTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	const FName WorldName = MakeUniqueObjectName(
+		nullptr,
+		UWorld::StaticClass(),
+		NAME_None,
+		EUniqueObjectNameOptions::GloballyUnique);
+	FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, WorldName, GetTransientPackage());
+	if (!TestNotNull(TEXT("Wave progress runtime world is created"), World))
+	{
+		GEngine->DestroyWorldContext(World);
+		return false;
+	}
+
+	World->AddToRoot();
+	WorldContext.SetCurrentWorld(World);
+	World->SetGameInstance(NewObject<UGameInstance>(GEngine));
+	TestTrue(TEXT("Wave progress runtime world creates an authority game mode"),
+		World->SetGameMode(FURL()));
+	World->InitializeActorsForPlay(FURL());
+
+	auto CleanupWorld = [World]()
+	{
+		GEngine->ShutdownWorldNetDriver(World);
+		World->DestroyWorld(true);
+		World->SetPhysicsScene(nullptr);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+	};
+
+	URoomCombatSubsystem* CombatSubsystem = World->GetSubsystem<URoomCombatSubsystem>();
+	UEnemyPoolSubsystem* PoolSubsystem = World->GetSubsystem<UEnemyPoolSubsystem>();
+	if (!TestNotNull(TEXT("Wave progress Room combat subsystem is created"), CombatSubsystem)
+		|| !TestNotNull(TEXT("Wave progress Enemy pool subsystem is created"), PoolSubsystem))
+	{
+		CleanupWorld();
+		return false;
+	}
+
+	UEnemyPoolDefinition* PoolDefinition = NewObject<UEnemyPoolDefinition>(World);
+	FEnemyPoolEntry& PoolEntry = PoolDefinition->Entries.AddDefaulted_GetRef();
+	PoolEntry.EnemyClass = AEnemyBase::StaticClass();
+	PoolEntry.PrewarmCount = 3;
+	PoolEntry.MaxCount = 3;
+	TestTrue(TEXT("Wave progress pool prewarms"), PoolSubsystem->PrewarmPool(PoolDefinition));
+
+	const FGameplayTag RoomTag = FGameplayTag::RequestGameplayTag(
+		FName(TEXT("Room.Level01.1")));
+	ARoomVolume* Room = World->SpawnActor<ARoomVolume>();
+	ARoomCombatSpawnPoint* SpawnPoint = World->SpawnActor<ARoomCombatSpawnPoint>(
+		ARoomCombatSpawnPoint::StaticClass(),
+		FTransform(FVector(5000.0f, 0.0f, 0.0f)));
+	AEnemyBase* FirstPreplaced = SpawnTestEnemy(World, RoomTag);
+	AEnemyBase* SecondPreplaced = SpawnTestEnemy(World, RoomTag);
+	AEnemyBase* ThirdPreplaced = SpawnTestEnemy(World, RoomTag);
+	if (!TestNotNull(TEXT("Wave progress Room is spawned"), Room)
+		|| !TestNotNull(TEXT("Wave progress SpawnPoint is spawned"), SpawnPoint)
+		|| !TestNotNull(TEXT("First Wave progress preplaced Enemy is spawned"), FirstPreplaced)
+		|| !TestNotNull(TEXT("Second Wave progress preplaced Enemy is spawned"), SecondPreplaced)
+		|| !TestNotNull(TEXT("Third Wave progress preplaced Enemy is spawned"), ThirdPreplaced))
+	{
+		CleanupWorld();
+		return false;
+	}
+
+	FirstPreplaced->SetActorLocation(FVector(-5000.0f, 0.0f, 0.0f));
+	SecondPreplaced->SetActorLocation(FVector(-5200.0f, 0.0f, 0.0f));
+	ThirdPreplaced->SetActorLocation(FVector(-5400.0f, 0.0f, 0.0f));
+	TestTrue(TEXT("Wave progress Room registers"), CombatSubsystem->RegisterRoom(
+		Room,
+		RoomTag,
+		MakeWaveProgressDefinition()));
+	CombatSubsystem->RegisterPreplacedEnemy(FirstPreplaced);
+	CombatSubsystem->RegisterPreplacedEnemy(SecondPreplaced);
+	CombatSubsystem->RegisterPreplacedEnemy(ThirdPreplaced);
+	TestTrue(TEXT("Wave progress SpawnPoint registers"), CombatSubsystem->RegisterSpawnPoint(
+		SpawnPoint,
+		RoomTag,
+		FGameplayTagContainer(),
+		FGameplayTag()));
+	TestTrue(TEXT("Initial detection starts Wave progress combat"),
+		CombatSubsystem->NotifyRoomCombatStarted(RoomTag));
+	TestEqual(TEXT("Preplaced Wave captures its starting baseline"),
+		CombatSubsystem->GetWaveBaselineEnemyCount(RoomTag), 3);
+
+	SpawnPoint->SetForceSpawnLocationFailureForTesting(true);
+	CombatSubsystem->NotifyEnemyDefeated(FirstPreplaced);
+	TestEqual(TEXT("A ratio above the threshold keeps the current Wave"),
+		CombatSubsystem->GetCurrentWaveIndex(RoomTag), 0);
+	CombatSubsystem->NotifyEnemyDefeated(SecondPreplaced);
+	TestEqual(TEXT("Falling below the threshold starts the next Wave"),
+		CombatSubsystem->GetCurrentWaveIndex(RoomTag), 1);
+	TestEqual(TEXT("A Wave with pending spawns has no finalized baseline"),
+		CombatSubsystem->GetWaveBaselineEnemyCount(RoomTag), INDEX_NONE);
+	TestEqual(TEXT("Failed reinforcement locations remain pending"),
+		CombatSubsystem->GetPendingSpawnCount(RoomTag), 2);
+
+	CombatSubsystem->NotifyEnemyDefeated(ThirdPreplaced);
+	TestEqual(TEXT("Zero alive Enemies does not finish combat while spawns are pending"),
+		CombatSubsystem->GetRoomState(RoomTag), ERoomCombatState::Combat);
+	TestEqual(TEXT("Pending requests survive the momentary zero alive count"),
+		CombatSubsystem->GetPendingSpawnCount(RoomTag), 2);
+
+	SpawnPoint->SetForceSpawnLocationFailureForTesting(false);
+	CombatSubsystem->RetryPendingSpawnsForTesting();
+	TestEqual(TEXT("Completing reinforcement spawns clears Pending"),
+		CombatSubsystem->GetPendingSpawnCount(RoomTag), 0);
+	TestEqual(TEXT("Reinforcement Wave stores a fresh baseline"),
+		CombatSubsystem->GetWaveBaselineEnemyCount(RoomTag), 2);
+
+	TArray<AEnemyBase*> ReinforcementEnemies;
+	for (TActorIterator<AEnemyBase> EnemyIt(World); EnemyIt; ++EnemyIt)
+	{
+		if (EnemyIt->IsPoolManaged()
+			&& EnemyIt->GetEnemyPoolState() != EEnemyPoolState::Idle)
+		{
+			ReinforcementEnemies.Add(*EnemyIt);
+		}
+	}
+	if (TestEqual(TEXT("The reinforcement Wave leased two Enemies"),
+		ReinforcementEnemies.Num(), 2))
+	{
+		CombatSubsystem->NotifyEnemyDefeated(ReinforcementEnemies[0]);
+	}
+	TestEqual(TEXT("The exact ratio boundary starts the final Wave"),
+		CombatSubsystem->GetCurrentWaveIndex(RoomTag), 2);
+	TestEqual(TEXT("The final Wave baseline includes a previous Wave survivor"),
+		CombatSubsystem->GetWaveBaselineEnemyCount(RoomTag), 2);
+
+	TArray<AEnemyBase*> FinalTrackedEnemies;
+	for (TActorIterator<AEnemyBase> EnemyIt(World); EnemyIt; ++EnemyIt)
+	{
+		if (EnemyIt->IsPoolManaged()
+			&& EnemyIt->GetEnemyPoolState() != EEnemyPoolState::Idle
+			&& !ReinforcementEnemies.IsEmpty()
+			&& *EnemyIt != ReinforcementEnemies[0])
+		{
+			FinalTrackedEnemies.Add(*EnemyIt);
+		}
+	}
+	TestEqual(TEXT("The final Wave tracks the survivor and newly spawned Enemy"),
+		FinalTrackedEnemies.Num(), 2);
+	for (AEnemyBase* Enemy : FinalTrackedEnemies)
+	{
+		CombatSubsystem->NotifyEnemyDefeated(Enemy);
+	}
+	TestEqual(TEXT("The last Wave completes only after every tracked Enemy dies"),
+		CombatSubsystem->GetRoomState(RoomTag), ERoomCombatState::Cleared);
+	TestEqual(TEXT("Completing the phase clears the Wave baseline"),
+		CombatSubsystem->GetWaveBaselineEnemyCount(RoomTag), INDEX_NONE);
 
 	CleanupWorld();
 	return true;

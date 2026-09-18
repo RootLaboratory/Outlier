@@ -495,36 +495,20 @@ void URoomCombatSubsystem::NotifyEnemyDefeated(AEnemyBase* Enemy)
 
 	Runtime->TrackedAliveEnemies.Remove(EnemyPtr);
 	CompactAliveEnemies(*Runtime);
-	if (!bWasPreplaced || !Runtime->bHadPreplacedEnemy
-		|| !Runtime->TrackedAliveEnemies.IsEmpty())
-	{
-		return;
-	}
-
 	if (Runtime->State == ERoomCombatState::Dormant)
 	{
-		// 발각 전에 배치 적을 모두 제거하면 아직 시작하지 않은 후속 Wave를 만들지 않는다.
-		CompleteCurrentPhase(RoomTag, true);
+		if (bWasPreplaced && Runtime->bHadPreplacedEnemy
+			&& Runtime->TrackedAliveEnemies.IsEmpty())
+		{
+			// 발각 전에 배치 적을 모두 제거하면 아직 시작하지 않은 후속 Wave를 만들지 않는다.
+			CompleteCurrentPhase(RoomTag, true);
+		}
 		return;
 	}
 
-	if (Runtime->State != ERoomCombatState::Combat)
+	if (Runtime->State == ERoomCombatState::Combat)
 	{
-		return;
-	}
-
-	URoomCombatDefinition* Definition = Runtime->Definition.Get();
-	if (!Definition
-		|| !Definition->CombatPhases.IsValidIndex(Runtime->CurrentCombatPhaseIndex))
-	{
-		return;
-	}
-
-	const FRoomCombatPhaseDefinition& Phase =
-		Definition->CombatPhases[Runtime->CurrentCombatPhaseIndex];
-	if (Phase.Waves.Num() == 1)
-	{
-		CompleteCurrentPhase(RoomTag, false);
+		EvaluateWaveProgress(RoomTag, *Runtime);
 	}
 }
 
@@ -571,6 +555,8 @@ bool URoomCombatSubsystem::NotifyRoomCombatStarted(FGameplayTag RoomTag)
 	Runtime->bCurrentWaveSpawnStarted = true;
 	ActiveCombatRoomTag = RoomTag;
 	SetRoomStreamingSourceEnabled(RoomTag, true);
+	// 배치 Wave는 별도 Spawn 요청이 없으므로 전투 진입 자체가 Wave 시작 완료 시점이다.
+	FinalizeCurrentWaveSpawn(RoomTag, *Runtime);
 	return true;
 }
 
@@ -625,6 +611,10 @@ bool URoomCombatSubsystem::StartWaveSpawning(
 			EnemyRoster.Add(LoadedClass);
 		}
 	}
+	if (EnemyRoster.IsEmpty())
+	{
+		return false;
+	}
 
 	const UOutlierArenaSubsystem* ArenaSubsystem =
 		World->GetSubsystem<UOutlierArenaSubsystem>();
@@ -632,6 +622,7 @@ bool URoomCombatSubsystem::StartWaveSpawning(
 		? static_cast<int32>(ArenaSubsystem->GetGameplayGeneration())
 		: 0;
 	Runtime->CurrentWaveIndex = WaveIndex;
+	Runtime->WaveBaselineEnemyCount = INDEX_NONE;
 	Runtime->GameplayGeneration = GameplayGeneration;
 	Runtime->bCurrentWaveSpawnStarted = true;
 	Runtime->SpawnAssignments.Reset();
@@ -790,6 +781,7 @@ void URoomCombatSubsystem::TrySpawnPendingRequests(FGameplayTag RoomTag)
 	{
 		Runtime->SpawnRetryAttempts = 0;
 		CancelSpawnRetry();
+		FinalizeCurrentWaveSpawn(RoomTag, *Runtime);
 		return;
 	}
 
@@ -899,6 +891,90 @@ void URoomCombatSubsystem::CancelSpawnRetry()
 	}
 }
 
+void URoomCombatSubsystem::FinalizeCurrentWaveSpawn(
+	FGameplayTag RoomTag,
+	FRoomCombatRuntime& Runtime)
+{
+	if (Runtime.State != ERoomCombatState::Combat
+		|| !Runtime.bCurrentWaveSpawnStarted
+		|| GetPendingSpawnCount(RoomTag) != 0)
+	{
+		return;
+	}
+
+	CompactAliveEnemies(Runtime);
+	Runtime.WaveBaselineEnemyCount = Runtime.TrackedAliveEnemies.Num();
+	UE_LOG(LogTemp, Display,
+		TEXT("[RoomCombat] Wave spawn completed. Room=%s Phase=%d Wave=%d Baseline=%d"),
+		*RoomTag.ToString(),
+		Runtime.CurrentCombatPhaseIndex,
+		Runtime.CurrentWaveIndex,
+		Runtime.WaveBaselineEnemyCount);
+	EvaluateWaveProgress(RoomTag, Runtime);
+}
+
+void URoomCombatSubsystem::EvaluateWaveProgress(
+	FGameplayTag RoomTag,
+	FRoomCombatRuntime& Runtime)
+{
+	URoomCombatDefinition* Definition = Runtime.Definition.Get();
+	if (Runtime.State != ERoomCombatState::Combat
+		|| ActiveCombatRoomTag != RoomTag
+		|| !Runtime.bCurrentWaveSpawnStarted
+		|| GetPendingSpawnCount(RoomTag) != 0
+		|| !Definition
+		|| !Definition->CombatPhases.IsValidIndex(Runtime.CurrentCombatPhaseIndex))
+	{
+		return;
+	}
+
+	const FRoomCombatPhaseDefinition& Phase =
+		Definition->CombatPhases[Runtime.CurrentCombatPhaseIndex];
+	if (!Phase.Waves.IsValidIndex(Runtime.CurrentWaveIndex))
+	{
+		return;
+	}
+
+	CompactAliveEnemies(Runtime);
+	const int32 AliveEnemyCount = Runtime.TrackedAliveEnemies.Num();
+	const bool bLastWave = Runtime.CurrentWaveIndex == Phase.Waves.Num() - 1;
+	if (bLastWave)
+	{
+		if (AliveEnemyCount == 0)
+		{
+			CompleteCurrentPhase(RoomTag, false);
+		}
+		return;
+	}
+
+	if (Runtime.WaveBaselineEnemyCount <= 0)
+	{
+		return;
+	}
+
+	const float RemainingRatio = static_cast<float>(AliveEnemyCount)
+		/ static_cast<float>(Runtime.WaveBaselineEnemyCount);
+	const float RequiredRatio = Phase.Waves[Runtime.CurrentWaveIndex].NextWaveRemainingRatio;
+	if (RemainingRatio > RequiredRatio)
+	{
+		return;
+	}
+
+	const int32 NextWaveIndex = Runtime.CurrentWaveIndex + 1;
+	if (!StartWaveSpawning(RoomTag, Runtime.CurrentCombatPhaseIndex, NextWaveIndex))
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("[RoomCombat] Failed to start eligible next Wave. Room=%s Phase=%d Wave=%d Alive=%d Baseline=%d Ratio=%.3f Required=%.3f"),
+			*RoomTag.ToString(),
+			Runtime.CurrentCombatPhaseIndex,
+			NextWaveIndex,
+			AliveEnemyCount,
+			Runtime.WaveBaselineEnemyCount,
+			RemainingRatio,
+			RequiredRatio);
+	}
+}
+
 void URoomCombatSubsystem::ResetRuntimeCombatState()
 {
 	CancelSpawnRetry();
@@ -957,6 +1033,12 @@ int32 URoomCombatSubsystem::GetCurrentWaveIndex(FGameplayTag RoomTag) const
 {
 	const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
 	return Runtime ? Runtime->CurrentWaveIndex : INDEX_NONE;
+}
+
+int32 URoomCombatSubsystem::GetWaveBaselineEnemyCount(FGameplayTag RoomTag) const
+{
+	const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
+	return Runtime ? Runtime->WaveBaselineEnemyCount : INDEX_NONE;
 }
 
 int32 URoomCombatSubsystem::GetAliveEnemyCount(FGameplayTag RoomTag) const
@@ -1037,6 +1119,9 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 	}
 
 	const int32 CompletedPhaseIndex = Runtime->CurrentCombatPhaseIndex;
+	Runtime->WaveBaselineEnemyCount = INDEX_NONE;
+	Runtime->bCurrentWaveSpawnStarted = false;
+	Runtime->SpawnAssignments.Reset();
 	const int32 NextPhaseIndex = CompletedPhaseIndex + 1;
 	if (!Definition->CombatPhases.IsValidIndex(NextPhaseIndex))
 	{
@@ -1046,8 +1131,6 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 
 	Runtime->CurrentCombatPhaseIndex = NextPhaseIndex;
 	Runtime->CurrentWaveIndex = 0;
-	Runtime->bCurrentWaveSpawnStarted = false;
-	Runtime->SpawnAssignments.Reset();
 	Runtime->State = Definition->CombatPhases[NextPhaseIndex].StartPolicy
 		== ERoomCombatPhaseStartPolicy::HackTrigger
 		? ERoomCombatState::WaitingForTrigger
