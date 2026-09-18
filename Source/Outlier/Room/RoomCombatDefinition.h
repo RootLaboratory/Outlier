@@ -64,19 +64,6 @@ struct OUTLIER_API FRoomCombatPhaseDefinition
 	TArray<FRoomCombatWaveDefinition> Waves;
 };
 
-USTRUCT(BlueprintType)
-struct OUTLIER_API FRoomCombatFloorDefinition
-{
-	GENERATED_BODY()
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Combat", meta = (Categories = "Room"))
-	FGameplayTag FloorTag;
-
-	// 전투 차수와 Wave 번호는 별도 ID 없이 각 배열의 순서를 그대로 사용한다.
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Combat", meta = (TitleProperty = "StartPolicy"))
-	TArray<FRoomCombatPhaseDefinition> CombatPhases;
-};
-
 UCLASS(BlueprintType)
 class OUTLIER_API URoomCombatDefinition : public UDataAsset
 {
@@ -87,6 +74,7 @@ public:
 	virtual EDataValidationResult IsDataValid(FDataValidationContext& Context) const override;
 #endif
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Combat", meta = (TitleProperty = "FloorTag"))
-	TArray<FRoomCombatFloorDefinition> Floors;
+	// 전투 차수와 Wave 번호는 별도 ID 없이 각 배열의 순서를 그대로 사용한다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Combat", meta = (TitleProperty = "StartPolicy"))
+	TArray<FRoomCombatPhaseDefinition> CombatPhases;
 };

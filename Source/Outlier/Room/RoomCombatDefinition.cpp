@@ -15,87 +15,81 @@ EDataValidationResult URoomCombatDefinition::IsDataValid(FDataValidationContext&
 		Result = EDataValidationResult::Invalid;
 	};
 
-	if (Floors.IsEmpty())
+	if (CombatPhases.IsEmpty())
 	{
-		AddValidationError(TEXT("Room Combat Definition requires at least one Floor."));
+		AddValidationError(TEXT("Room Combat Definition requires at least one CombatPhase."));
 	}
 
-	TSet<FGameplayTag> SeenFloorTags;
-	for (int32 FloorIndex = 0; FloorIndex < Floors.Num(); ++FloorIndex)
+	for (int32 PhaseIndex = 0; PhaseIndex < CombatPhases.Num(); ++PhaseIndex)
 	{
-		const FRoomCombatFloorDefinition& Floor = Floors[FloorIndex];
-		if (!Floor.FloorTag.IsValid())
+		const FRoomCombatPhaseDefinition& Phase = CombatPhases[PhaseIndex];
+		if (Phase.Waves.IsEmpty())
 		{
 			AddValidationError(FString::Printf(
-				TEXT("Floors[%d] requires a valid FloorTag."),
-				FloorIndex));
-		}
-		else if (SeenFloorTags.Contains(Floor.FloorTag))
-		{
-			AddValidationError(FString::Printf(
-				TEXT("Floors[%d] duplicates FloorTag '%s'."),
-				FloorIndex,
-				*Floor.FloorTag.ToString()));
-		}
-		else
-		{
-			SeenFloorTags.Add(Floor.FloorTag);
+				TEXT("CombatPhases[%d] requires at least one Wave."),
+				PhaseIndex));
+			continue;
 		}
 
-		if (Floor.CombatPhases.IsEmpty())
+		const ERoomCombatWaveSpawnMode RequiredFirstWaveMode =
+			Phase.StartPolicy == ERoomCombatPhaseStartPolicy::InitialDetection
+				? ERoomCombatWaveSpawnMode::Preplaced
+				: ERoomCombatWaveSpawnMode::SpawnFromObjects;
+		if (Phase.Waves[0].SpawnMode != RequiredFirstWaveMode)
 		{
 			AddValidationError(FString::Printf(
-				TEXT("Floors[%d] requires at least one CombatPhase."),
-				FloorIndex));
+				TEXT("CombatPhases[%d].Waves[0] has a SpawnMode that does not match its StartPolicy."),
+				PhaseIndex));
 		}
 
-		for (int32 PhaseIndex = 0; PhaseIndex < Floor.CombatPhases.Num(); ++PhaseIndex)
+		for (int32 WaveIndex = 0; WaveIndex < Phase.Waves.Num(); ++WaveIndex)
 		{
-			const FRoomCombatPhaseDefinition& Phase = Floor.CombatPhases[PhaseIndex];
-			if (Phase.Waves.IsEmpty())
+			const FRoomCombatWaveDefinition& Wave = Phase.Waves[WaveIndex];
+			if (WaveIndex > 0 && Wave.SpawnMode != ERoomCombatWaveSpawnMode::SpawnFromObjects)
 			{
 				AddValidationError(FString::Printf(
-					TEXT("Floors[%d].CombatPhases[%d] requires at least one Wave."),
-					FloorIndex,
-					PhaseIndex));
+					TEXT("CombatPhases[%d].Waves[%d] must use SpawnFromObjects after the first Wave."),
+					PhaseIndex,
+					WaveIndex));
 			}
 
-			for (int32 WaveIndex = 0; WaveIndex < Phase.Waves.Num(); ++WaveIndex)
+			if (Wave.SpawnMode == ERoomCombatWaveSpawnMode::SpawnFromObjects && Wave.Enemies.IsEmpty())
 			{
-				const FRoomCombatWaveDefinition& Wave = Phase.Waves[WaveIndex];
-				if (!FMath::IsFinite(Wave.NextWaveRemainingRatio)
-					|| Wave.NextWaveRemainingRatio < 0.0f
-					|| Wave.NextWaveRemainingRatio > 1.0f)
+				AddValidationError(FString::Printf(
+					TEXT("CombatPhases[%d].Waves[%d] requires at least one Enemy when using SpawnFromObjects."),
+					PhaseIndex,
+					WaveIndex));
+			}
+
+			if (!FMath::IsFinite(Wave.NextWaveRemainingRatio)
+				|| Wave.NextWaveRemainingRatio < 0.0f
+				|| Wave.NextWaveRemainingRatio > 1.0f)
+			{
+				AddValidationError(FString::Printf(
+					TEXT("CombatPhases[%d].Waves[%d] has NextWaveRemainingRatio outside 0.0 to 1.0."),
+					PhaseIndex,
+					WaveIndex));
+			}
+
+			for (int32 EnemyIndex = 0; EnemyIndex < Wave.Enemies.Num(); ++EnemyIndex)
+			{
+				const FRoomCombatEnemyEntry& Enemy = Wave.Enemies[EnemyIndex];
+				if (Enemy.EnemyClass.IsNull())
 				{
 					AddValidationError(FString::Printf(
-						TEXT("Floors[%d].CombatPhases[%d].Waves[%d] has NextWaveRemainingRatio outside 0.0 to 1.0."),
-						FloorIndex,
+						TEXT("CombatPhases[%d].Waves[%d].Enemies[%d] has no EnemyClass."),
 						PhaseIndex,
-						WaveIndex));
+						WaveIndex,
+						EnemyIndex));
 				}
 
-				for (int32 EnemyIndex = 0; EnemyIndex < Wave.Enemies.Num(); ++EnemyIndex)
+				if (Enemy.Count <= 0)
 				{
-					const FRoomCombatEnemyEntry& Enemy = Wave.Enemies[EnemyIndex];
-					if (Enemy.EnemyClass.IsNull())
-					{
-						AddValidationError(FString::Printf(
-							TEXT("Floors[%d].CombatPhases[%d].Waves[%d].Enemies[%d] has no EnemyClass."),
-							FloorIndex,
-							PhaseIndex,
-							WaveIndex,
-							EnemyIndex));
-					}
-
-					if (Enemy.Count <= 0)
-					{
-						AddValidationError(FString::Printf(
-							TEXT("Floors[%d].CombatPhases[%d].Waves[%d].Enemies[%d] has a non-positive Count."),
-							FloorIndex,
-							PhaseIndex,
-							WaveIndex,
-							EnemyIndex));
-					}
+					AddValidationError(FString::Printf(
+						TEXT("CombatPhases[%d].Waves[%d].Enemies[%d] has a non-positive Count."),
+						PhaseIndex,
+						WaveIndex,
+						EnemyIndex));
 				}
 			}
 		}

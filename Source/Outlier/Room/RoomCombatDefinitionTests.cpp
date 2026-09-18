@@ -7,28 +7,45 @@
 
 namespace
 {
-	URoomCombatDefinition* MakeValidRoomCombatDefinition()
+	FRoomCombatEnemyEntry MakeValidEnemyEntry()
 	{
-		URoomCombatDefinition* Definition = NewObject<URoomCombatDefinition>();
-
 		FRoomCombatEnemyEntry Enemy;
 		Enemy.EnemyClass = AEnemyBase::StaticClass();
 		Enemy.Count = 2;
+		return Enemy;
+	}
 
+	FRoomCombatWaveDefinition MakeSpawnWave()
+	{
 		FRoomCombatWaveDefinition Wave;
 		Wave.SpawnMode = ERoomCombatWaveSpawnMode::SpawnFromObjects;
 		Wave.NextWaveRemainingRatio = 0.5f;
-		Wave.Enemies.Add(Enemy);
+		Wave.Enemies.Add(MakeValidEnemyEntry());
+		return Wave;
+	}
+
+	URoomCombatDefinition* MakeValidInitialDetectionDefinition()
+	{
+		URoomCombatDefinition* Definition = NewObject<URoomCombatDefinition>();
 
 		FRoomCombatPhaseDefinition Phase;
 		Phase.StartPolicy = ERoomCombatPhaseStartPolicy::InitialDetection;
-		Phase.Waves.Add(Wave);
+		Phase.Waves.AddDefaulted();
+		Phase.Waves.Add(MakeSpawnWave());
 
-		FRoomCombatFloorDefinition Floor;
-		Floor.FloorTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.B.1")));
-		Floor.CombatPhases.Add(Phase);
+		Definition->CombatPhases.Add(Phase);
+		return Definition;
+	}
 
-		Definition->Floors.Add(Floor);
+	URoomCombatDefinition* MakeValidHackTriggerDefinition()
+	{
+		URoomCombatDefinition* Definition = NewObject<URoomCombatDefinition>();
+
+		FRoomCombatPhaseDefinition Phase;
+		Phase.StartPolicy = ERoomCombatPhaseStartPolicy::HackTrigger;
+		Phase.Waves.Add(MakeSpawnWave());
+
+		Definition->CombatPhases.Add(Phase);
 		return Definition;
 	}
 
@@ -50,81 +67,97 @@ bool FRoomCombatDefinitionValidationTest::RunTest(const FString& Parameters)
 	(void)Parameters;
 
 	{
-		const URoomCombatDefinition* Definition = MakeValidRoomCombatDefinition();
+		const URoomCombatDefinition* Definition = MakeValidInitialDetectionDefinition();
 		FDataValidationContext Context;
-		TestEqual(TEXT("A complete combat definition is valid"),
+		TestEqual(TEXT("An initial detection definition is valid"),
 			ValidateDefinition(Definition, Context), EDataValidationResult::Valid);
 		TestEqual(TEXT("A valid definition reports no errors"), Context.GetNumErrors(), uint32(0));
 	}
 
 	{
-		URoomCombatDefinition* Definition = MakeValidRoomCombatDefinition();
-		Definition->Floors.Reset();
+		const URoomCombatDefinition* Definition = MakeValidHackTriggerDefinition();
 		FDataValidationContext Context;
-		TestEqual(TEXT("A definition without a floor is invalid"),
+		TestEqual(TEXT("A hack trigger definition is valid"),
+			ValidateDefinition(Definition, Context), EDataValidationResult::Valid);
+		TestEqual(TEXT("A valid hack definition reports no errors"), Context.GetNumErrors(), uint32(0));
+	}
+
+	{
+		URoomCombatDefinition* Definition = MakeValidInitialDetectionDefinition();
+		Definition->CombatPhases.Reset();
+		FDataValidationContext Context;
+		TestEqual(TEXT("A definition without a combat phase is invalid"),
 			ValidateDefinition(Definition, Context), EDataValidationResult::Invalid);
 	}
 
 	{
-		URoomCombatDefinition* Definition = MakeValidRoomCombatDefinition();
-		Definition->Floors[0].FloorTag = FGameplayTag();
-		FDataValidationContext Context;
-		TestEqual(TEXT("An invalid FloorTag is rejected"),
-			ValidateDefinition(Definition, Context), EDataValidationResult::Invalid);
-	}
-
-	{
-		URoomCombatDefinition* Definition = MakeValidRoomCombatDefinition();
-		const FRoomCombatFloorDefinition DuplicateFloor = Definition->Floors[0];
-		Definition->Floors.Add(DuplicateFloor);
-		FDataValidationContext Context;
-		TestEqual(TEXT("Duplicate FloorTags are invalid"),
-			ValidateDefinition(Definition, Context), EDataValidationResult::Invalid);
-	}
-
-	{
-		URoomCombatDefinition* Definition = MakeValidRoomCombatDefinition();
-		Definition->Floors[0].CombatPhases.Reset();
-		FDataValidationContext Context;
-		TestEqual(TEXT("A floor without a combat phase is invalid"),
-			ValidateDefinition(Definition, Context), EDataValidationResult::Invalid);
-	}
-
-	{
-		URoomCombatDefinition* Definition = MakeValidRoomCombatDefinition();
-		Definition->Floors[0].CombatPhases[0].Waves.Reset();
+		URoomCombatDefinition* Definition = MakeValidInitialDetectionDefinition();
+		Definition->CombatPhases[0].Waves.Reset();
 		FDataValidationContext Context;
 		TestEqual(TEXT("A combat phase without a Wave is invalid"),
 			ValidateDefinition(Definition, Context), EDataValidationResult::Invalid);
 	}
 
 	{
-		URoomCombatDefinition* Definition = MakeValidRoomCombatDefinition();
-		Definition->Floors[0].CombatPhases[0].Waves[0].NextWaveRemainingRatio = -0.1f;
+		URoomCombatDefinition* Definition = MakeValidInitialDetectionDefinition();
+		Definition->CombatPhases[0].Waves[0].SpawnMode = ERoomCombatWaveSpawnMode::SpawnFromObjects;
+		Definition->CombatPhases[0].Waves[0].Enemies.Add(MakeValidEnemyEntry());
+		FDataValidationContext Context;
+		TestEqual(TEXT("An initial detection phase must start with a preplaced Wave"),
+			ValidateDefinition(Definition, Context), EDataValidationResult::Invalid);
+	}
+
+	{
+		URoomCombatDefinition* Definition = MakeValidHackTriggerDefinition();
+		Definition->CombatPhases[0].Waves[0].SpawnMode = ERoomCombatWaveSpawnMode::Preplaced;
+		FDataValidationContext Context;
+		TestEqual(TEXT("A hack trigger phase must start from spawn objects"),
+			ValidateDefinition(Definition, Context), EDataValidationResult::Invalid);
+	}
+
+	{
+		URoomCombatDefinition* Definition = MakeValidInitialDetectionDefinition();
+		Definition->CombatPhases[0].Waves[1].SpawnMode = ERoomCombatWaveSpawnMode::Preplaced;
+		FDataValidationContext Context;
+		TestEqual(TEXT("A Wave after the first must spawn from objects"),
+			ValidateDefinition(Definition, Context), EDataValidationResult::Invalid);
+	}
+
+	{
+		URoomCombatDefinition* Definition = MakeValidHackTriggerDefinition();
+		Definition->CombatPhases[0].Waves[0].Enemies.Reset();
+		FDataValidationContext Context;
+		TestEqual(TEXT("A spawned Wave requires an Enemy roster"),
+			ValidateDefinition(Definition, Context), EDataValidationResult::Invalid);
+	}
+
+	{
+		URoomCombatDefinition* Definition = MakeValidInitialDetectionDefinition();
+		Definition->CombatPhases[0].Waves[0].NextWaveRemainingRatio = -0.1f;
 		FDataValidationContext Context;
 		TestEqual(TEXT("A negative next Wave ratio is invalid"),
 			ValidateDefinition(Definition, Context), EDataValidationResult::Invalid);
 	}
 
 	{
-		URoomCombatDefinition* Definition = MakeValidRoomCombatDefinition();
-		Definition->Floors[0].CombatPhases[0].Waves[0].NextWaveRemainingRatio = 1.1f;
+		URoomCombatDefinition* Definition = MakeValidInitialDetectionDefinition();
+		Definition->CombatPhases[0].Waves[0].NextWaveRemainingRatio = 1.1f;
 		FDataValidationContext Context;
 		TestEqual(TEXT("A next Wave ratio above one is invalid"),
 			ValidateDefinition(Definition, Context), EDataValidationResult::Invalid);
 	}
 
 	{
-		URoomCombatDefinition* Definition = MakeValidRoomCombatDefinition();
-		Definition->Floors[0].CombatPhases[0].Waves[0].Enemies[0].EnemyClass.Reset();
+		URoomCombatDefinition* Definition = MakeValidHackTriggerDefinition();
+		Definition->CombatPhases[0].Waves[0].Enemies[0].EnemyClass.Reset();
 		FDataValidationContext Context;
 		TestEqual(TEXT("An Enemy entry without a class is invalid"),
 			ValidateDefinition(Definition, Context), EDataValidationResult::Invalid);
 	}
 
 	{
-		URoomCombatDefinition* Definition = MakeValidRoomCombatDefinition();
-		Definition->Floors[0].CombatPhases[0].Waves[0].Enemies[0].Count = 0;
+		URoomCombatDefinition* Definition = MakeValidHackTriggerDefinition();
+		Definition->CombatPhases[0].Waves[0].Enemies[0].Count = 0;
 		FDataValidationContext Context;
 		TestEqual(TEXT("A non-positive Enemy count is invalid"),
 			ValidateDefinition(Definition, Context), EDataValidationResult::Invalid);
