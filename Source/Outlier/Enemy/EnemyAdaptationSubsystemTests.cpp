@@ -8,6 +8,7 @@
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "GAS/OutlierAbilitySystemComponent.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/DataValidation.h"
@@ -239,6 +240,8 @@ bool FEnemyAdaptationDefinitionValidationTest::RunTest(const FString& Parameters
 		Definition->ResolveGunDamageMultiplier(9), 0.8f);
 	TestEqual(TEXT("Resistance max resolves gun multiplier"),
 		Definition->ResolveGunDamageMultiplier(10), 0.5f);
+	TestEqual(TEXT("Shield break damage is disabled by default"),
+		Definition->ShieldBreakDamage, 0.0f);
 	{
 		FDataValidationContext Context;
 		TestEqual(TEXT("Default adaptation settings are valid"),
@@ -265,6 +268,14 @@ bool FEnemyAdaptationDefinitionValidationTest::RunTest(const FString& Parameters
 	{
 		FDataValidationContext Context;
 		TestEqual(TEXT("Negative break stun durations are rejected"),
+			Definition->IsDataValid(Context), EDataValidationResult::Invalid);
+	}
+	Definition->ResistanceLevel1BreakStunSeconds = 0.5f;
+
+	Definition->ShieldBreakDamage = -1.0f;
+	{
+		FDataValidationContext Context;
+		TestEqual(TEXT("Negative shield break damage is rejected"),
 			Definition->IsDataValid(Context), EDataValidationResult::Invalid);
 	}
 
@@ -319,6 +330,7 @@ bool FEnemyAdaptationStackStateTest::RunTest(const FString& Parameters)
 
 	Adaptation->OnWorldBeginPlay(*World);
 	UEnemyAdaptationDefinition* Definition = NewObject<UEnemyAdaptationDefinition>(World);
+	Definition->ShieldBreakDamage = 12.0f;
 	Adaptation->SetDefinitionForTesting(Definition);
 	const FGameplayTag TargetTag = OutlierGameplayTags::Enemy::Adaptation::Target();
 	auto SpawnEnemy = [World, Adaptation, TargetTag](bool bAdaptationTarget)
@@ -349,6 +361,71 @@ bool FEnemyAdaptationStackStateTest::RunTest(const FString& Parameters)
 	};
 
 	FEnemyAdaptationUpdateResult Result;
+	AEnemyBase* DamageEnemy = SpawnEnemy(true);
+	if (!TestNotNull(TEXT("Adaptation damage target is spawned"), DamageEnemy))
+	{
+		CleanupWorld();
+		return false;
+	}
+	UOutlierAbilitySystemComponent* DamageAbilitySystem =
+		DamageEnemy->GetOutlierAbilitySystemComponent();
+	if (!TestNotNull(TEXT("Adaptation damage target has an ASC"), DamageAbilitySystem))
+	{
+		CleanupWorld();
+		return false;
+	}
+	TestTrue(TEXT("Adaptation damage target initializes vitality"),
+		DamageAbilitySystem->InitializeVitalityToSelf(100.0f));
+	TestTrue(TEXT("Resistance stack can be restored for damage multiplier test"),
+		Adaptation->SetGunAdaptationStack(8));
+	FOutlierDamageRequest GunDamageRequest;
+	GunDamageRequest.DamageAmount = 20.0f;
+	GunDamageRequest.DamageTag = OutlierGameplayTags::Damage::Weapon();
+	GunDamageRequest.AdaptationDamageCategory = EOutlierAdaptationDamageCategory::Gun;
+	TestTrue(TEXT("Gun damage uses the current resistance multiplier"),
+		FMath::IsNearlyEqual(DamageEnemy->ReceiveOutlierDamage(GunDamageRequest), 18.0f));
+
+	FOutlierDamageRequest NonGunDamageRequest = GunDamageRequest;
+	NonGunDamageRequest.DamageAmount = 10.0f;
+	NonGunDamageRequest.AdaptationDamageCategory = EOutlierAdaptationDamageCategory::NonGun;
+	TestTrue(TEXT("NonGun damage bypasses gun resistance"),
+		FMath::IsNearlyEqual(DamageEnemy->ReceiveOutlierDamage(NonGunDamageRequest), 10.0f));
+	TestEqual(TEXT("NonGun hit alone does not break resistance"),
+		Adaptation->GetCurrentGunAdaptationStack(), 8);
+
+	FOutlierDamageRequest PistolDamageRequest = NonGunDamageRequest;
+	PistolDamageRequest.AdaptationDamageCategory = EOutlierAdaptationDamageCategory::Pistol;
+	TestTrue(TEXT("Pistol damage bypasses gun resistance"),
+		FMath::IsNearlyEqual(DamageEnemy->ReceiveOutlierDamage(PistolDamageRequest), 10.0f));
+	TestEqual(TEXT("Pistol hit immediately breaks active resistance"),
+		Adaptation->GetCurrentGunAdaptationStack(), 0);
+
+	AEnemyBase* GunDamageKillEnemy = SpawnEnemy(true);
+	if (!TestNotNull(TEXT("Gun kill target is spawned"), GunDamageKillEnemy))
+	{
+		CleanupWorld();
+		return false;
+	}
+	TestTrue(TEXT("Stack can be restored for Enemy death-path Gun kill"),
+		Adaptation->SetGunAdaptationStack(6));
+	GunDamageKillEnemy->BeginDeathForAdaptationTesting(
+		EOutlierAdaptationDamageCategory::Gun);
+	TestEqual(TEXT("Enemy death-path Gun kill increments the shared stack"),
+		Adaptation->GetCurrentGunAdaptationStack(), 7);
+
+	AEnemyBase* PreviewPistolKillEnemy = SpawnEnemy(true);
+	if (!TestNotNull(TEXT("Preview pistol kill target is spawned"), PreviewPistolKillEnemy))
+	{
+		CleanupWorld();
+		return false;
+	}
+	TestTrue(TEXT("Stack can be restored for Enemy death-path preview pistol kill"),
+		Adaptation->SetGunAdaptationStack(7));
+	PreviewPistolKillEnemy->BeginDeathForAdaptationTesting(
+		EOutlierAdaptationDamageCategory::Pistol);
+	TestEqual(TEXT("Enemy death-path preview pistol kill decrements stack 7 to 5"),
+		Adaptation->GetCurrentGunAdaptationStack(), 5);
+
 	AEnemyBase* GunEnemy = SpawnEnemy(true);
 	TestNotNull(TEXT("Gun kill target is spawned"), GunEnemy);
 	TestTrue(TEXT("Stack can be restored before processing kills"),
@@ -393,7 +470,47 @@ bool FEnemyAdaptationStackStateTest::RunTest(const FString& Parameters)
 			Result.bAdaptationBroken);
 		TestEqual(TEXT("Resistance break resolves the configured stun duration"),
 			Result.BreakStunSeconds, BreakCase.Value);
+		TestEqual(TEXT("Resistance break exposes the configured break damage"),
+			Result.BreakDamage, Definition->ShieldBreakDamage);
 	}
+
+	AEnemyBase* PreviewPistolEnemy = SpawnEnemy(true);
+	TestTrue(TEXT("Preview stack can be restored for pistol test"),
+		Adaptation->SetGunAdaptationStack(7));
+	TestFalse(TEXT("Pistol hit does not break the preview shield"),
+		Adaptation->ReportPistolHit(PreviewPistolEnemy, 0, 0, false, Result));
+	TestEqual(TEXT("Preview pistol hit keeps stack 7"),
+		Adaptation->GetCurrentGunAdaptationStack(), 7);
+	TestTrue(TEXT("Preview pistol kill follows the normal NonGun rule"),
+		Report(PreviewPistolEnemy, EEnemyFinalKillCategory::NonGun, Result));
+	TestEqual(TEXT("Preview pistol kill decrements stack 7 to 5"),
+		Result.CurrentStack, 5);
+
+	for (const TPair<int32, float>& BreakCase : BreakCases)
+	{
+		AEnemyBase* PistolBreakEnemy = SpawnEnemy(true);
+		TestTrue(TEXT("Resistance stack can be restored for pistol hit"),
+			Adaptation->SetGunAdaptationStack(BreakCase.Key));
+		TestTrue(TEXT("Pistol hit immediately breaks active resistance"),
+			Adaptation->ReportPistolHit(PistolBreakEnemy, 0, 0, false, Result));
+		TestEqual(TEXT("Pistol break resets the stack"), Result.CurrentStack, 0);
+		TestTrue(TEXT("Pistol hit reports an adaptation break"),
+			Result.bAdaptationBroken);
+		TestEqual(TEXT("Pistol break resolves the configured stun duration"),
+			Result.BreakStunSeconds, BreakCase.Value);
+		TestEqual(TEXT("Pistol break exposes the configured break damage"),
+			Result.BreakDamage, Definition->ShieldBreakDamage);
+		TestTrue(TEXT("Nonlethal pistol break keeps the Enemy defeat report available"),
+			Report(PistolBreakEnemy, EEnemyFinalKillCategory::Gun, Result));
+	}
+
+	AEnemyBase* LethalPistolEnemy = SpawnEnemy(true);
+	TestTrue(TEXT("Resistance stack can be restored for lethal pistol hit"),
+		Adaptation->SetGunAdaptationStack(8));
+	TestTrue(TEXT("Lethal pistol hit breaks resistance and consumes the defeat"),
+		Adaptation->ReportPistolHit(LethalPistolEnemy, 0, 0, true, Result));
+	TestFalse(TEXT("Lethal pistol hit cannot report a second NonGun defeat"),
+		Report(LethalPistolEnemy, EEnemyFinalKillCategory::NonGun, Result));
 
 	AEnemyBase* IgnoreEnemy = SpawnEnemy(true);
 	TestTrue(TEXT("Stack can be restored for Ignore test"),

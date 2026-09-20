@@ -21,6 +21,7 @@ void UExplosionSubsystem::RequestExplosion(
 	UExplosionComponent* SourceComponent,
 	const FVector& ExplosionLocation,
 	AController* EventInstigator,
+	EOutlierAdaptationDamageCategory AdaptationDamageCategory,
 	const FExplosionProfileRow& Profile)
 {
 	if (!IsValid(SourceComponent) || !GetWorld() || GetWorld()->GetNetMode() == NM_Client)
@@ -39,6 +40,7 @@ void UExplosionSubsystem::RequestExplosion(
 	FPendingExplosion& Request = PendingExplosions.AddDefaulted_GetRef();
 	Request.SourceComponent = SourceComponent;
 	Request.EventInstigator = EventInstigator;
+	Request.AdaptationDamageCategory = AdaptationDamageCategory;
 	Request.Location = ExplosionLocation;
 	Request.Profile = Profile;
 
@@ -173,6 +175,7 @@ void UExplosionSubsystem::ProcessExplosion(const FPendingExplosion& Request)
 				FOutlierDamageRequest DamageRequest;
 				DamageRequest.DamageAmount = FinalDamage;
 				DamageRequest.DamageTag = OutlierGameplayTags::Damage::Explosion();
+				DamageRequest.AdaptationDamageCategory = Request.AdaptationDamageCategory;
 				DamageRequest.DamageOrigin = Request.Location;
 				DamageRequest.EventInstigator = Request.EventInstigator.Get();
 				DamageRequest.DamageCauser = SourceActor;

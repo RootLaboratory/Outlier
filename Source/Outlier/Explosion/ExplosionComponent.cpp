@@ -33,7 +33,10 @@ bool UExplosionComponent::Detonate()
 	return Owner && DetonateAt(Owner->GetActorLocation(), Owner->GetInstigatorController());
 }
 
-bool UExplosionComponent::DetonateAt(const FVector& ExplosionLocation, AController* EventInstigator)
+bool UExplosionComponent::DetonateAt(
+	const FVector& ExplosionLocation,
+	AController* EventInstigator,
+	EOutlierAdaptationDamageCategory AdaptationDamageCategory)
 {
 	AActor* Owner = GetOwner();
 	// 서버 Queue에 폭발 요청을 한 번만 추가한다.
@@ -74,7 +77,12 @@ bool UExplosionComponent::DetonateAt(const FVector& ExplosionLocation, AControll
 	{
 		if (UExplosionSubsystem* ExplosionSubsystem = World->GetSubsystem<UExplosionSubsystem>())
 		{
-			ExplosionSubsystem->RequestExplosion(this, ExplosionLocation, EventInstigator, *RuntimeProfile);
+			ExplosionSubsystem->RequestExplosion(
+				this,
+				ExplosionLocation,
+				EventInstigator,
+				AdaptationDamageCategory,
+				*RuntimeProfile);
 			UE_LOG(
 				LogOutlier,
 				Warning,

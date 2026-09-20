@@ -439,7 +439,12 @@ void ASelfDestructDrone::HandleDeath()
 	// EnemyBase가 Actor를 제거하기 전에 폭발 Queue와 클라이언트 연출을 먼저 확정한다.
 	if (ExplosionComponent)
 	{
-		ExplosionComponent->DetonateAt(GetActorLocation(), GetController());
+		ExplosionComponent->DetonateAt(
+			GetActorLocation(),
+			GetController(),
+			IsEnemyPossessed()
+				? EOutlierAdaptationDamageCategory::NonGun
+				: EOutlierAdaptationDamageCategory::Ignore);
 	}
 	DestroyMountedExplosives();
 

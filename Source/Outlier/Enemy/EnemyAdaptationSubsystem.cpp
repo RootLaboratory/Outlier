@@ -137,6 +137,13 @@ int32 UEnemyAdaptationSubsystem::GetRegisteredEnemyCount() const
 	return Count;
 }
 
+float UEnemyAdaptationSubsystem::GetCurrentGunDamageMultiplier() const
+{
+	return ActiveDefinition
+		? ActiveDefinition->ResolveGunDamageMultiplier(CurrentGunAdaptationStack)
+		: 1.0f;
+}
+
 bool UEnemyAdaptationSubsystem::SetGunAdaptationStack(int32 NewStack)
 {
 	const UWorld* World = GetWorld();
@@ -164,21 +171,12 @@ bool UEnemyAdaptationSubsystem::ReportEnemyDefeat(
 	FEnemyAdaptationUpdateResult& OutResult)
 {
 	OutResult = FEnemyAdaptationUpdateResult();
-	const UWorld* World = GetWorld();
-	if (!World || World->GetNetMode() == NM_Client || !ActiveDefinition || !IsValid(Enemy)
-		|| !Enemy->HasAuthority()
-		|| !Enemy->HasEnemyTrait(OutlierGameplayTags::Enemy::Adaptation::Target()))
-	{
-		return false;
-	}
-
-	FEnemyRegistration* Registration = ActiveEnemies.Find(TWeakObjectPtr<AEnemyBase>(Enemy));
-	if (!Registration || Registration->bDefeatReported
-		|| !IsCurrentRegistration(
-			Enemy,
-			*Registration,
-			GameplayGeneration,
-			PoolLeaseSerial))
+	FEnemyRegistration* Registration = nullptr;
+	if (!ResolveCurrentRegistration(
+		Enemy,
+		GameplayGeneration,
+		PoolLeaseSerial,
+		Registration))
 	{
 		return false;
 	}
@@ -199,10 +197,7 @@ bool UEnemyAdaptationSubsystem::ReportEnemyDefeat(
 	case EEnemyFinalKillCategory::NonGun:
 		if (CurrentGunAdaptationStack >= ActiveDefinition->ResistanceLevel1Threshold)
 		{
-			CurrentGunAdaptationStack = 0;
-			OutResult.bAdaptationBroken = true;
-			OutResult.BreakStunSeconds = ActiveDefinition->ResolveBreakStunSeconds(
-				OutResult.PreviousStack);
+			ApplyAdaptationBreak(OutResult);
 		}
 		else
 		{
@@ -220,6 +215,83 @@ bool UEnemyAdaptationSubsystem::ReportEnemyDefeat(
 	OutResult.CurrentState = CurrentAdaptationState;
 	OnAdaptationUpdated.Broadcast(OutResult);
 	return true;
+}
+
+bool UEnemyAdaptationSubsystem::ReportPistolHit(
+	AEnemyBase* Enemy,
+	int32 GameplayGeneration,
+	int32 PoolLeaseSerial,
+	bool bConsumeDefeat,
+	FEnemyAdaptationUpdateResult& OutResult)
+{
+	OutResult = FEnemyAdaptationUpdateResult();
+	FEnemyRegistration* Registration = nullptr;
+	if (!ResolveCurrentRegistration(
+		Enemy,
+		GameplayGeneration,
+		PoolLeaseSerial,
+		Registration)
+		|| CurrentGunAdaptationStack < ActiveDefinition->ResistanceLevel1Threshold)
+	{
+		return false;
+	}
+
+	// 치명 권총 명중은 내성 파괴와 처치 소비를 한 번에 완료한다. 비치명 명중은
+	// Enemy 수명을 유지해 이후 다른 공격의 최종 처치를 정상 보고할 수 있게 한다.
+	if (bConsumeDefeat)
+	{
+		Registration->bDefeatReported = true;
+	}
+
+	OutResult.KillCategory = EEnemyFinalKillCategory::Ignore;
+	OutResult.PreviousStack = CurrentGunAdaptationStack;
+	OutResult.PreviousState = CurrentAdaptationState;
+	ApplyAdaptationBreak(OutResult);
+	CurrentAdaptationState = ActiveDefinition->ResolveState(CurrentGunAdaptationStack);
+	OutResult.CurrentStack = CurrentGunAdaptationStack;
+	OutResult.CurrentState = CurrentAdaptationState;
+	OnAdaptationUpdated.Broadcast(OutResult);
+	return true;
+}
+
+bool UEnemyAdaptationSubsystem::ResolveCurrentRegistration(
+	AEnemyBase* Enemy,
+	int32 GameplayGeneration,
+	int32 PoolLeaseSerial,
+	FEnemyRegistration*& OutRegistration)
+{
+	OutRegistration = nullptr;
+	const UWorld* World = GetWorld();
+	if (!World || World->GetNetMode() == NM_Client || !ActiveDefinition || !IsValid(Enemy)
+		|| !Enemy->HasAuthority()
+		|| !Enemy->HasEnemyTrait(OutlierGameplayTags::Enemy::Adaptation::Target()))
+	{
+		return false;
+	}
+
+	FEnemyRegistration* Registration = ActiveEnemies.Find(TWeakObjectPtr<AEnemyBase>(Enemy));
+	if (!Registration || Registration->bDefeatReported
+		|| !IsCurrentRegistration(
+			Enemy,
+			*Registration,
+			GameplayGeneration,
+			PoolLeaseSerial))
+	{
+		return false;
+	}
+
+	OutRegistration = Registration;
+	return true;
+}
+
+void UEnemyAdaptationSubsystem::ApplyAdaptationBreak(
+	FEnemyAdaptationUpdateResult& OutResult)
+{
+	CurrentGunAdaptationStack = 0;
+	OutResult.bAdaptationBroken = true;
+	OutResult.BreakStunSeconds = ActiveDefinition->ResolveBreakStunSeconds(
+		OutResult.PreviousStack);
+	OutResult.BreakDamage = ActiveDefinition->ShieldBreakDamage;
 }
 
 bool UEnemyAdaptationSubsystem::CanRegisterEnemy(const AEnemyBase* Enemy) const

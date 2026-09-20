@@ -31,6 +31,7 @@ public:
 	const UEnemyAdaptationDefinition* GetDefinition() const { return ActiveDefinition.Get(); }
 	int32 GetCurrentGunAdaptationStack() const { return CurrentGunAdaptationStack; }
 	EEnemyAdaptationState GetCurrentAdaptationState() const { return CurrentAdaptationState; }
+	float GetCurrentGunDamageMultiplier() const;
 
 	// Save/Load와 Checkpoint 복원에서 공용 Stack만 되돌릴 때 사용한다.
 	// 활성 Enemy 목록은 별도 런타임 수명이므로 이 API에서 다시 만들지 않는다.
@@ -43,6 +44,15 @@ public:
 		int32 GameplayGeneration,
 		int32 PoolLeaseSerial,
 		EEnemyFinalKillCategory KillCategory,
+		FEnemyAdaptationUpdateResult& OutResult);
+
+	// 권총은 실제 내성 단계에서 처치 없이도 방어막을 파괴한다. 치명타 경로는
+	// bConsumeDefeat를 함께 넘겨 같은 수명의 처치 보고가 다시 Stack을 바꾸지 않게 한다.
+	bool ReportPistolHit(
+		AEnemyBase* Enemy,
+		int32 GameplayGeneration,
+		int32 PoolLeaseSerial,
+		bool bConsumeDefeat,
 		FEnemyAdaptationUpdateResult& OutResult);
 
 	FOnEnemyAdaptationUpdated OnAdaptationUpdated;
@@ -66,6 +76,12 @@ private:
 		const FEnemyRegistration& Registration,
 		int32 GameplayGeneration,
 		int32 PoolLeaseSerial) const;
+	bool ResolveCurrentRegistration(
+		AEnemyBase* Enemy,
+		int32 GameplayGeneration,
+		int32 PoolLeaseSerial,
+		FEnemyRegistration*& OutRegistration);
+	void ApplyAdaptationBreak(FEnemyAdaptationUpdateResult& OutResult);
 	void RefreshResolvedState();
 	void ResetAdaptationState();
 	void LoadConfiguredDefinition();

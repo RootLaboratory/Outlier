@@ -133,6 +133,8 @@ private:
 	TOptional<FExplosivePropRow> RuntimePropRow;
 	TWeakObjectPtr<ASelfDestructDrone> CachedOwningDrone;
 	TWeakObjectPtr<AController> PendingDamageInstigator;
+	EOutlierAdaptationDamageCategory PendingAdaptationDamageCategory =
+		EOutlierAdaptationDamageCategory::Ignore;
 	FDelegateHandle HealthChangedHandle;
 	bool bProgressIdRegistered = false;
 };

@@ -293,6 +293,13 @@ float AExplosiveProp::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 	}
 
 	PendingDamageInstigator = Request.EventInstigator;
+	// 폭발 자체는 총알이 아니므로 플레이어가 어떤 수단으로 기폭했든 NonGun으로 귀속한다.
+	// Ignore 입력은 AI와 환경 폭발이 플레이어 Stack에 관여하지 않도록 그대로 유지한다.
+	PendingAdaptationDamageCategory =
+		Request.AdaptationDamageCategory == EOutlierAdaptationDamageCategory::Ignore
+		? EOutlierAdaptationDamageCategory::Ignore
+		: EOutlierAdaptationDamageCategory::NonGun;
+	// ApplyDamageToSelf의 Health 콜백이 동기 실행되므로 폭발 Queue가 위 귀속 정보를 복사한 뒤 초기화한다.
 	const bool bDamageApplied = OutlierAbilitySystemComponent
 		&& OutlierAbilitySystemComponent->ApplyDamageToSelf(
 			Request.DamageAmount,
@@ -300,6 +307,7 @@ float AExplosiveProp::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 			Request.DamageCauser,
 			Request.DamageTag);
 	PendingDamageInstigator.Reset();
+	PendingAdaptationDamageCategory = EOutlierAdaptationDamageCategory::Ignore;
 	if (!bDamageApplied)
 	{
 		return 0.0f;
@@ -333,6 +341,8 @@ void AExplosiveProp::ResetToInitialState()
 	}
 
 	bExploded = false;
+	PendingDamageInstigator.Reset();
+	PendingAdaptationDamageCategory = EOutlierAdaptationDamageCategory::Ignore;
 	if (ExplosionComponent)
 	{
 		ExplosionComponent->ResetExplosion();
@@ -405,7 +415,8 @@ void AExplosiveProp::HandleHealthChanged(const FOnAttributeChangeData& ChangeDat
 	{
 		const bool bDetonationRequested = ExplosionComponent->DetonateAt(
 			GetActorLocation(),
-			PendingDamageInstigator.IsValid() ? PendingDamageInstigator.Get() : GetInstigatorController());
+			PendingDamageInstigator.IsValid() ? PendingDamageInstigator.Get() : GetInstigatorController(),
+			PendingAdaptationDamageCategory);
 		if (!bDetonationRequested)
 		{
 			UE_LOG(LogOutlier, Error, TEXT("[ExplosiveProp] HP reached zero. DetonateAt failed. Actor=%s"), *GetNameSafe(this));

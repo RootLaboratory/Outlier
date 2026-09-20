@@ -108,12 +108,13 @@ EDataValidationResult UEnemyAdaptationDefinition::IsDataValid(
 
 	if (ResistanceLevel1BreakStunSeconds < 0.0f
 		|| ResistanceLevel2BreakStunSeconds < 0.0f
-		|| ResistanceMaxBreakStunSeconds < 0.0f)
+		|| ResistanceMaxBreakStunSeconds < 0.0f
+		|| ShieldBreakDamage < 0.0f)
 	{
 		AddError(NSLOCTEXT(
 			"EnemyAdaptation",
 			"InvalidBreakStun",
-			"Break stun durations cannot be negative."));
+			"Break stun durations and break damage cannot be negative."));
 	}
 
 	return Result == EDataValidationResult::NotValidated

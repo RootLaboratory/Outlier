@@ -776,6 +776,13 @@ void AMeleeWeaponBase::ApplyHitToTarget(AActor* Target, const FHitResult& HitRes
 	FOutlierDamageRequest DamageRequest;
 	DamageRequest.DamageAmount = DamageToApply;
 	DamageRequest.DamageTag = OutlierGameplayTags::Damage::Weapon();
+	const AEnemyBase* OwnerEnemy = Cast<AEnemyBase>(WeaponOwner);
+	const bool bPlayerAttributedAttack = Cast<AShooterCharacter>(WeaponOwner)
+		|| Cast<APartnerCharacter>(WeaponOwner)
+		|| (OwnerEnemy && OwnerEnemy->IsEnemyPossessed());
+	DamageRequest.AdaptationDamageCategory = bPlayerAttributedAttack
+		? EOutlierAdaptationDamageCategory::NonGun
+		: EOutlierAdaptationDamageCategory::Ignore;
 	DamageRequest.DamageOrigin = IsValid(WeaponOwner)
 		? WeaponOwner->GetActorLocation()
 		: GetActorLocation();

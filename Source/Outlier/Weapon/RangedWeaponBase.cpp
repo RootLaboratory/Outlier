@@ -28,6 +28,7 @@
 #include "Shooter/ShooterCharacter.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Enemy/EnemyBase.h"
+#include "Enemy/AutoTurret.h"
 #include "OutlierNetUtils.h"
 #include "Net/UnrealNetwork.h"
 #include "Weapon/WeaponCoreRow.h"
@@ -53,6 +54,39 @@
 
 namespace
 {
+	EOutlierAdaptationDamageCategory ResolveAdaptationDamageCategory(
+		const ACharacter* WeaponOwner,
+		EWeaponType WeaponType)
+	{
+		if (Cast<APartnerCharacter>(WeaponOwner))
+		{
+			return EOutlierAdaptationDamageCategory::Gun;
+		}
+
+		if (const AAutoTurret* Turret = Cast<AAutoTurret>(WeaponOwner))
+		{
+			return Turret->IsHackedToPlayerTeam()
+				? EOutlierAdaptationDamageCategory::Gun
+				: EOutlierAdaptationDamageCategory::Ignore;
+		}
+
+		if (const AEnemyBase* Enemy = Cast<AEnemyBase>(WeaponOwner))
+		{
+			return Enemy->IsEnemyPossessed()
+				? EOutlierAdaptationDamageCategory::Gun
+				: EOutlierAdaptationDamageCategory::Ignore;
+		}
+
+		if (Cast<AShooterCharacter>(WeaponOwner))
+		{
+			return WeaponType == EWeaponType::Pistol
+				? EOutlierAdaptationDamageCategory::Pistol
+				: EOutlierAdaptationDamageCategory::Gun;
+		}
+
+		return EOutlierAdaptationDamageCategory::Ignore;
+	}
+
 	void SpawnAttachedMuzzleEffect(
 		const UTrailEffectDefinition* Def,
 		USceneComponent* AttachTarget,
@@ -460,6 +494,9 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 			FOutlierDamageRequest DamageRequest;
 			DamageRequest.DamageAmount = DamageToApply;
 			DamageRequest.DamageTag = OutlierGameplayTags::Damage::Weapon();
+			DamageRequest.AdaptationDamageCategory = ResolveAdaptationDamageCategory(
+				OwnerCharacter,
+				WeaponType);
 			DamageRequest.StunDurationSeconds = ProjectileStunTime;
 			DamageRequest.HitResult = ResolvedDamageHit;
 			DamageRequest.DamageOrigin = Start;

@@ -29,6 +29,7 @@ class ARangedWeaponBase;
 class APartnerCharacter;
 class UOutlierAbilitySystemComponent;
 class UOutlierVitalAttributeSet;
+class UEnemyAdaptationSubsystem;
 class UEnemyPoolSubsystem;
 struct FOnAttributeChangeData;
 
@@ -108,6 +109,11 @@ public:
 		bPoolPresentationAutoCompleteForTesting = bEnabled;
 	}
 	void BeginDeathForPoolTesting() { HandleDeath(); }
+	void BeginDeathForAdaptationTesting(EOutlierAdaptationDamageCategory DamageCategory)
+	{
+		LastAcceptedAdaptationDamageCategory = DamageCategory;
+		HandleDeath();
+	}
 #endif
 
 protected:
@@ -538,6 +544,8 @@ protected:
 	void RemoveRoomTargetObserver();
 	virtual void HandleDeath();
 	void PerformDeathCleanup();
+	UEnemyAdaptationSubsystem* GetEnemyAdaptationSubsystem();
+	void ReportFinalAdaptationResult();
 	virtual float GetDeathDestroyDelay() const { return 0.0f; }
 	virtual void ResetPoolRuntimeState();
 	virtual void ResetPoolPresentationState();
@@ -608,6 +616,9 @@ protected:
 	void ReturnToOwningPool();
 
 	TWeakObjectPtr<UEnemyPoolSubsystem> OwningPoolSubsystem;
+	TWeakObjectPtr<UEnemyAdaptationSubsystem> CachedEnemyAdaptationSubsystem;
+	EOutlierAdaptationDamageCategory LastAcceptedAdaptationDamageCategory =
+		EOutlierAdaptationDamageCategory::Ignore;
 	bool bDeathCleanupPerformed = false;
 #if WITH_DEV_AUTOMATION_TESTS
 	bool bPoolPresentationAutoCompleteForTesting = true;

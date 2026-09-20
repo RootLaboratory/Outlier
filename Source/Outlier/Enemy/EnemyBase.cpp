@@ -64,6 +64,22 @@ namespace
 		0,
 		TEXT("빙의 공격 입력부터 StateTree Task 실행까지의 진단 로그를 출력합니다. 0: 끔, 1: 켬"),
 		ECVF_Cheat);
+
+	EEnemyFinalKillCategory ResolveFinalKillCategory(
+		EOutlierAdaptationDamageCategory DamageCategory)
+	{
+		switch (DamageCategory)
+		{
+		case EOutlierAdaptationDamageCategory::Gun:
+			return EEnemyFinalKillCategory::Gun;
+		case EOutlierAdaptationDamageCategory::NonGun:
+		case EOutlierAdaptationDamageCategory::Pistol:
+			return EEnemyFinalKillCategory::NonGun;
+		case EOutlierAdaptationDamageCategory::Ignore:
+		default:
+			return EEnemyFinalKillCategory::Ignore;
+		}
+	}
 }
 
 AEnemyBase::AEnemyBase()
@@ -251,8 +267,7 @@ void AEnemyBase::BeginPlay()
 	{
 		if (!IsPoolManaged())
 		{
-			if (UEnemyAdaptationSubsystem* AdaptationSubsystem =
-				GetWorld()->GetSubsystem<UEnemyAdaptationSubsystem>())
+			if (UEnemyAdaptationSubsystem* AdaptationSubsystem = GetEnemyAdaptationSubsystem())
 			{
 				// RoomTag가 없는 배치 적도 아레나 전역의 현재 전투 필드 후보로 관리한다.
 				AdaptationSubsystem->RegisterEnemy(this);
@@ -424,8 +439,7 @@ void AEnemyBase::CompletePoolSpawnPresentation(
 
 	// 서버가 현재 대여의 연출 완료를 승인한 뒤에만 충돌/피해/StateTree를 활성화한다.
 	SetPoolState(EEnemyPoolState::CombatActive);
-	if (UEnemyAdaptationSubsystem* AdaptationSubsystem =
-		GetWorld()->GetSubsystem<UEnemyAdaptationSubsystem>())
+	if (UEnemyAdaptationSubsystem* AdaptationSubsystem = GetEnemyAdaptationSubsystem())
 	{
 		AdaptationSubsystem->RegisterEnemy(this);
 	}
@@ -466,8 +480,7 @@ void AEnemyBase::FinishPoolReturn(int32 GameplayGeneration, int32 LeaseSerial)
 	}
 
 	// 전투 집계와 AI 공유 등록을 먼저 끊고 Idle로 옮긴다. 반환 자체는 처치 이벤트가 아니다.
-	if (UEnemyAdaptationSubsystem* AdaptationSubsystem =
-		GetWorld()->GetSubsystem<UEnemyAdaptationSubsystem>())
+	if (UEnemyAdaptationSubsystem* AdaptationSubsystem = GetEnemyAdaptationSubsystem())
 	{
 		AdaptationSubsystem->UnregisterEnemy(this);
 	}
@@ -659,6 +672,7 @@ void AEnemyBase::ReturnToOwningPool()
 
 void AEnemyBase::ResetPoolRuntimeState()
 {
+	LastAcceptedAdaptationDamageCategory = EOutlierAdaptationDamageCategory::Ignore;
 	ResetPoolPresentationState();
 }
 
@@ -688,9 +702,7 @@ void AEnemyBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
 
 	if (HasAuthority())
 	{
-		if (UEnemyAdaptationSubsystem* AdaptationSubsystem = GetWorld()
-			? GetWorld()->GetSubsystem<UEnemyAdaptationSubsystem>()
-			: nullptr)
+		if (UEnemyAdaptationSubsystem* AdaptationSubsystem = GetEnemyAdaptationSubsystem())
 		{
 			AdaptationSubsystem->UnregisterEnemy(this);
 		}
@@ -722,6 +734,7 @@ void AEnemyBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		UnbindGasVitalityObservers();
 		OutlierAbilitySystemComponent->ClearForPawn(this);
 	}
+	CachedEnemyAdaptationSubsystem.Reset();
 
 	Super::EndPlay(EndPlayReason);
 }
@@ -1526,15 +1539,51 @@ float AEnemyBase::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 		bCoreWeakPointHit = bUseCoreWeakPoint && HitComponent == CoreHitboxComponent;
 		DamageMultiplier = GetWeakPointDamageMultiplier(HitComponent);
 	}
+	if (Request.AdaptationDamageCategory == EOutlierAdaptationDamageCategory::Gun
+		&& HasEnemyTrait(OutlierGameplayTags::Enemy::Adaptation::Target()))
+	{
+		if (const UEnemyAdaptationSubsystem* AdaptationSubsystem =
+			GetEnemyAdaptationSubsystem())
+		{
+			DamageMultiplier *= AdaptationSubsystem->GetCurrentGunDamageMultiplier();
+		}
+	}
 
 	const float PreviousHealth = GetCurrentHealth();
 	const float FinalDamage = Request.DamageAmount * FMath::Max(DamageMultiplier, 0.0f);
-	const float AppliedDamage = ApplyDamageInternal(
+	const EOutlierAdaptationDamageCategory PreviousDamageCategory =
+		LastAcceptedAdaptationDamageCategory;
+	// GAS의 Health 변경 콜백은 ApplyDamageInternal 안에서 즉시 사망 처리를 호출한다.
+	// 이번 공격 분류를 먼저 기록해야 사망 경로가 정확한 최종 원인을 소비할 수 있다.
+	LastAcceptedAdaptationDamageCategory = Request.AdaptationDamageCategory;
+	const bool bDamageApplied = ApplyDamageInternal(
 		FinalDamage,
 		Request.EventInstigator,
 		Request.DamageCauser,
-		Request.DamageTag)
-		? FinalDamage : 0.0f;
+		Request.DamageTag);
+	if (!bDamageApplied)
+	{
+		LastAcceptedAdaptationDamageCategory = PreviousDamageCategory;
+	}
+	const float AppliedDamage = bDamageApplied ? FinalDamage : 0.0f;
+
+	if (AppliedDamage > 0.0f
+		&& !IsDead()
+		&& Request.AdaptationDamageCategory == EOutlierAdaptationDamageCategory::Pistol)
+	{
+		FEnemyAdaptationUpdateResult AdaptationResult;
+		if (UEnemyAdaptationSubsystem* AdaptationSubsystem = GetEnemyAdaptationSubsystem();
+			AdaptationSubsystem && AdaptationSubsystem->ReportPistolHit(
+				this,
+				PoolGameplayGeneration,
+				PoolLeaseSerial,
+				false,
+				AdaptationResult))
+		{
+			// 이 권총 명중은 이미 내성 파괴로 소비됐다. 이후 별도 사망 원인으로 재사용하지 않는다.
+			LastAcceptedAdaptationDamageCategory = EOutlierAdaptationDamageCategory::Ignore;
+		}
+	}
 	if (AppliedDamage > 0.0f
 		&& !IsDead()
 		&& Request.StunDurationSeconds > 0.0f
@@ -2748,6 +2797,7 @@ void AEnemyBase::PerformDeathCleanup()
 
 	if (HasAuthority())
 	{
+		ReportFinalAdaptationResult();
 		if (URoomCombatSubsystem* CombatSubsystem =
 			GetWorld()->GetSubsystem<URoomCombatSubsystem>())
 		{
@@ -2788,6 +2838,47 @@ void AEnemyBase::PerformDeathCleanup()
 	}
 
 	DestroyPoolAIController();
+}
+
+UEnemyAdaptationSubsystem* AEnemyBase::GetEnemyAdaptationSubsystem()
+{
+	if (!CachedEnemyAdaptationSubsystem.IsValid())
+	{
+		if (UWorld* World = GetWorld())
+		{
+			CachedEnemyAdaptationSubsystem = World->GetSubsystem<UEnemyAdaptationSubsystem>();
+		}
+	}
+	return CachedEnemyAdaptationSubsystem.Get();
+}
+
+void AEnemyBase::ReportFinalAdaptationResult()
+{
+	UEnemyAdaptationSubsystem* AdaptationSubsystem = GetEnemyAdaptationSubsystem();
+	if (!AdaptationSubsystem)
+	{
+		return;
+	}
+
+	FEnemyAdaptationUpdateResult Result;
+	if (LastAcceptedAdaptationDamageCategory == EOutlierAdaptationDamageCategory::Pistol
+		&& AdaptationSubsystem->ReportPistolHit(
+			this,
+			PoolGameplayGeneration,
+			PoolLeaseSerial,
+			true,
+			Result))
+	{
+		// Stack 8 이상 권총 치명타는 명중 파괴가 최종 처리이며 NonGun 처치를 중복 적용하지 않는다.
+		return;
+	}
+
+	AdaptationSubsystem->ReportEnemyDefeat(
+		this,
+		PoolGameplayGeneration,
+		PoolLeaseSerial,
+		ResolveFinalKillCategory(LastAcceptedAdaptationDamageCategory),
+		Result);
 }
 
 void AEnemyBase::HandleStartAttackInput()

@@ -21,7 +21,7 @@ enum class EEnemyFinalKillCategory : uint8
 	Ignore
 };
 
-// 한 건의 최종 처치가 공용 Stack에 반영된 결과다. 후속 Slice의 방어막 갱신과
+// 최종 처치 또는 권총 명중이 공용 Stack에 반영된 결과다. 후속 Slice의 방어막 갱신과
 // 내성 파괴 VFX/전투 필드 경직은 이 결과만 받아 같은 판정을 공유한다.
 USTRUCT(BlueprintType)
 struct OUTLIER_API FEnemyAdaptationUpdateResult
@@ -48,4 +48,7 @@ struct OUTLIER_API FEnemyAdaptationUpdateResult
 
 	UPROPERTY(BlueprintReadOnly)
 	float BreakStunSeconds = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly)
+	float BreakDamage = 0.0f;
 };
