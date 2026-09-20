@@ -12,6 +12,7 @@
 #include "PostProcess/OutlierPostProcessVolume.h"
 #include "EnhancedInputComponent.h"
 #include "Enemy/EnemyAIController.h"
+#include "Enemy/EnemyAdaptationSubsystem.h"
 #include "Enemy/EnemyRoomSubsystem.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameplayEffect.h"
@@ -249,6 +250,12 @@ void AEnemyBase::BeginPlay()
 	{
 		if (!IsPoolManaged())
 		{
+			if (UEnemyAdaptationSubsystem* AdaptationSubsystem =
+				GetWorld()->GetSubsystem<UEnemyAdaptationSubsystem>())
+			{
+				// RoomTag가 없는 배치 적도 아레나 전역의 현재 전투 필드 후보로 관리한다.
+				AdaptationSubsystem->RegisterEnemy(this);
+			}
 			if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
 			{
 				RoomSubsystem->RegisterEnemy(this);
@@ -416,6 +423,11 @@ void AEnemyBase::CompletePoolSpawnPresentation(
 
 	// 서버가 현재 대여의 연출 완료를 승인한 뒤에만 충돌/피해/StateTree를 활성화한다.
 	SetPoolState(EEnemyPoolState::CombatActive);
+	if (UEnemyAdaptationSubsystem* AdaptationSubsystem =
+		GetWorld()->GetSubsystem<UEnemyAdaptationSubsystem>())
+	{
+		AdaptationSubsystem->RegisterEnemy(this);
+	}
 	if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
 	{
 		// StateTree가 시작된 뒤 등록해야 현재 방의 전투/공유 타겟 이벤트를 안전하게 이어받는다.
@@ -453,6 +465,11 @@ void AEnemyBase::FinishPoolReturn(int32 GameplayGeneration, int32 LeaseSerial)
 	}
 
 	// 전투 집계와 AI 공유 등록을 먼저 끊고 Idle로 옮긴다. 반환 자체는 처치 이벤트가 아니다.
+	if (UEnemyAdaptationSubsystem* AdaptationSubsystem =
+		GetWorld()->GetSubsystem<UEnemyAdaptationSubsystem>())
+	{
+		AdaptationSubsystem->UnregisterEnemy(this);
+	}
 	if (URoomCombatSubsystem* CombatSubsystem = GetWorld()->GetSubsystem<URoomCombatSubsystem>())
 	{
 		CombatSubsystem->UnregisterEnemy(this);
@@ -670,6 +687,12 @@ void AEnemyBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
 
 	if (HasAuthority())
 	{
+		if (UEnemyAdaptationSubsystem* AdaptationSubsystem = GetWorld()
+			? GetWorld()->GetSubsystem<UEnemyAdaptationSubsystem>()
+			: nullptr)
+		{
+			AdaptationSubsystem->UnregisterEnemy(this);
+		}
 		if (URoomCombatSubsystem* CombatSubsystem = GetWorld()
 			? GetWorld()->GetSubsystem<URoomCombatSubsystem>()
 			: nullptr)

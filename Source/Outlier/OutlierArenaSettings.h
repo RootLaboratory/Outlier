@@ -9,6 +9,7 @@
 class UWorld;
 class UDataLayerAsset;
 class UDataTable;
+class UEnemyAdaptationDefinition;
 class UEnemyPoolDefinition;
 class URoomCombatDefinition;
 
@@ -33,6 +34,10 @@ public:
 	// Pool Actor는 Gameplay Data Layer 밖에서 유지되므로 Arena 수명과 함께 별도로 생성/폐기한다.
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Arena|Enemy Pool")
 	TSoftObjectPtr<UEnemyPoolDefinition> EnemyPoolDefinition;
+
+	// 공유 내성 Stack의 단계, 피해 배율과 파괴 경직 기본값을 중앙에서 설정한다.
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Arena|Enemy Adaptation")
+	TSoftObjectPtr<UEnemyAdaptationDefinition> EnemyAdaptationDefinition;
 
 	// RoomVolume마다 Asset을 지정하지 않고 모든 RoomTag의 전투 구성을 한 곳에서 조회한다.
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Arena|Room Combat")
