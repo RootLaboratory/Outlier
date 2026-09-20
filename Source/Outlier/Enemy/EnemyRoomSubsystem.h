@@ -28,6 +28,7 @@ struct FEnemyRoomTargetContactState
 	FVector LastReportedLocation = FVector::ZeroVector;
 	TSet<TWeakObjectPtr<AEnemyBase>> DirectObservers;
 	FTimerHandle ForcedShareTimerHandle;
+	bool bSharedContactActive = false;
 };
 
 UCLASS()
@@ -50,6 +51,10 @@ public:
 	void NotifyRoomCombatEnded(FGameplayTag RoomTag);
 	bool IsRoomInCombat(FGameplayTag RoomTag) const;
 	bool HasActiveCombat() const;
+
+#if WITH_DEV_AUTOMATION_TESTS
+	void SetActiveRoomTargetForTesting(FGameplayTag RoomTag, const FVector& TargetLocation);
+#endif
 
 	// Sight로 직접 대상을 관측한 Enemy만 호출한다.
 	void ReportRoomTargetContact(
@@ -90,6 +95,7 @@ private:
 	void BroadcastSharedTargetContact(FGameplayTag RoomTag, const FVector& TargetLocation);
 	void BroadcastSharedTargetLost(FGameplayTag RoomTag);
 	void CompactTargetContactState(FEnemyRoomTargetContactState& ContactState);
+	void SynchronizeEnemyWithRoomState(AEnemyBase* Enemy);
 	void ScheduleForcedTargetShare(FGameplayTag RoomTag);
 	void HandleForcedTargetShare(FGameplayTag RoomTag);
 	FGameplayTag ResolveEnemyRegistrationKey(const AEnemyBase* Enemy) const;

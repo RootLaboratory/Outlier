@@ -48,6 +48,7 @@ void UEnemyRoomSubsystem::RegisterEnemy(AEnemyBase* Enemy)
 	if (IsValid(Enemy) && Enemy->HasAuthority())
 	{
 		RefreshEnemyRegistration(Enemy);
+		SynchronizeEnemyWithRoomState(Enemy);
 	}
 }
 
@@ -245,7 +246,7 @@ void UEnemyRoomSubsystem::ReportRoomTargetContact(
 		TargetLocation) > FMath::Square(50.0f);
 
 	ContactState.TargetActor = TargetActor;
-	if (!bTargetChanged && !bLocationChanged)
+	if (!bTargetChanged && !bLocationChanged && ContactState.bSharedContactActive)
 	{
 		return;
 	}
@@ -265,9 +266,10 @@ void UEnemyRoomSubsystem::RemoveRoomTargetObserver(AEnemyBase* Observer)
 	for (auto ContactIt = TargetContactStates.CreateIterator(); ContactIt; ++ContactIt)
 	{
 		FEnemyRoomTargetContactState& ContactState = ContactIt.Value();
-		ContactState.DirectObservers.Remove(ObserverKey);
+		const bool bRemovedDirectObserver =
+			ContactState.DirectObservers.Remove(ObserverKey) > 0;
 		CompactTargetContactState(ContactState);
-		if (!ContactState.DirectObservers.IsEmpty())
+		if (!bRemovedDirectObserver || !ContactState.DirectObservers.IsEmpty())
 		{
 			continue;
 		}
@@ -641,6 +643,11 @@ void UEnemyRoomSubsystem::BroadcastSharedTargetContact(
 	FGameplayTag RoomTag,
 	const FVector& TargetLocation)
 {
+	if (FEnemyRoomTargetContactState* ContactState = TargetContactStates.Find(RoomTag))
+	{
+		ContactState->bSharedContactActive = true;
+	}
+
 	UWorld* World = GetWorld();
 	UOutlierArenaSubsystem* ArenaSubsystem = World
 		? World->GetSubsystem<UOutlierArenaSubsystem>()
@@ -677,6 +684,11 @@ void UEnemyRoomSubsystem::BroadcastSharedTargetContact(
 
 void UEnemyRoomSubsystem::BroadcastSharedTargetLost(FGameplayTag RoomTag)
 {
+	if (FEnemyRoomTargetContactState* ContactState = TargetContactStates.Find(RoomTag))
+	{
+		ContactState->bSharedContactActive = false;
+	}
+
 	UWorld* World = GetWorld();
 	UOutlierArenaSubsystem* ArenaSubsystem = World
 		? World->GetSubsystem<UOutlierArenaSubsystem>()
@@ -717,6 +729,45 @@ void UEnemyRoomSubsystem::CompactTargetContactState(FEnemyRoomTargetContactState
 		}
 	}
 }
+
+void UEnemyRoomSubsystem::SynchronizeEnemyWithRoomState(AEnemyBase* Enemy)
+{
+	if (!IsValid(Enemy) || !Enemy->HasAuthority())
+	{
+		return;
+	}
+
+	const FGameplayTag RoomTag = ResolveEnemyRoomTag(Enemy);
+	const FEnemyRoomTargetContactState* ContactState = TargetContactStates.Find(RoomTag);
+	if (!CombatRooms.Contains(RoomTag)
+		|| !ContactState
+		|| !ContactState->bSharedContactActive)
+	{
+		return;
+	}
+
+	// 증원은 Pool 초기화로 NonCombat 상태에서 시작한다. 현재 방이 이미 공유 중인 좌표를
+	// 즉시 복원하되 StateTree 이벤트는 초기 Global Task가 준비되는 다음 틱에 전달한다.
+	Enemy->EnterCombatFromRoom(ContactState->LastReportedLocation, false, true);
+	Enemy->ApplySharedTargetContact(ContactState->LastReportedLocation, true);
+	UE_LOG(LogTemp, Display,
+		TEXT("[EnemyRoom] Active room target synchronized. Enemy=%s Room=%s Location=%s"),
+		*GetNameSafe(Enemy),
+		*RoomTag.ToString(),
+		*ContactState->LastReportedLocation.ToCompactString());
+}
+
+#if WITH_DEV_AUTOMATION_TESTS
+void UEnemyRoomSubsystem::SetActiveRoomTargetForTesting(
+	FGameplayTag RoomTag,
+	const FVector& TargetLocation)
+{
+	CombatRooms.Add(RoomTag);
+	FEnemyRoomTargetContactState& ContactState = TargetContactStates.FindOrAdd(RoomTag);
+	ContactState.LastReportedLocation = TargetLocation;
+	ContactState.bSharedContactActive = true;
+}
+#endif
 
 FGameplayTag UEnemyRoomSubsystem::ResolveEnemyRoomTag(const AEnemyBase* Enemy) const
 {

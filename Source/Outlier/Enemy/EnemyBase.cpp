@@ -414,12 +414,13 @@ void AEnemyBase::CompletePoolSpawnPresentation(
 		return;
 	}
 
-	if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
-	{
-		RoomSubsystem->RegisterEnemy(this);
-	}
 	// 서버가 현재 대여의 연출 완료를 승인한 뒤에만 충돌/피해/StateTree를 활성화한다.
 	SetPoolState(EEnemyPoolState::CombatActive);
+	if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
+	{
+		// StateTree가 시작된 뒤 등록해야 현재 방의 전투/공유 타겟 이벤트를 안전하게 이어받는다.
+		RoomSubsystem->RegisterEnemy(this);
+	}
 	ForceNetUpdate();
 }
 
@@ -1225,7 +1226,9 @@ void AEnemyBase::SetPlayerCurrentlyVisible(bool bNewVisible)
 	}
 }
 
-void AEnemyBase::ApplySharedTargetContact(const FVector& TargetLocation)
+void AEnemyBase::ApplySharedTargetContact(
+	const FVector& TargetLocation,
+	bool bDeferStateTreeEvent)
 {
 	if (!HasAuthority()
 		|| CombatState != EEnemyCombatState::Combat
@@ -1244,9 +1247,16 @@ void AEnemyBase::ApplySharedTargetContact(const FVector& TargetLocation)
 
 	if (bContactChanged)
 	{
-		SendEnemyStateTreeEvent(
-			FGameplayTag::RequestGameplayTag(
-				TEXT("Enemy.Event.Combat.TargetShared")));
+		const FGameplayTag TargetSharedTag = FGameplayTag::RequestGameplayTag(
+			TEXT("Enemy.Event.Combat.TargetShared"));
+		if (bDeferStateTreeEvent)
+		{
+			SendEnemyStateTreeEventNextTick(TargetSharedTag);
+		}
+		else
+		{
+			SendEnemyStateTreeEvent(TargetSharedTag);
+		}
 	}
 }
 

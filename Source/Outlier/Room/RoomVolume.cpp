@@ -2,7 +2,6 @@
 
 
 #include "Room/RoomVolume.h"
-#include "Room/RoomCombatDefinition.h"
 #include "Room/RoomCombatSubsystem.h"
 #include "Interface/RoomTagInterface.h"
 #include "Room/RoomTagComponent.h"
@@ -51,12 +50,12 @@ void ARoomVolume::BeginPlay()
 		CombatStreamingSource->DisableStreamingSource();
 	}
 
-	if (HasAuthority() && CombatDefinition)
+	if (HasAuthority() && RoomTag.IsValid())
 	{
 		if (URoomCombatSubsystem* CombatSubsystem =
 			GetWorld()->GetSubsystem<URoomCombatSubsystem>())
 		{
-			CombatSubsystem->RegisterRoom(this, RoomTag, CombatDefinition);
+			CombatSubsystem->RegisterRoom(this, RoomTag);
 		}
 	}
 }
@@ -112,14 +111,7 @@ bool ARoomVolume::IsCombatStreamingSourceEnabled() const
 #if WITH_EDITOR
 EDataValidationResult ARoomVolume::IsDataValid(FDataValidationContext& Context) const
 {
-	EDataValidationResult Result = Super::IsDataValid(Context);
-	if (CombatDefinition && !RoomTag.IsValid())
-	{
-		Context.AddError(FText::FromString(
-			TEXT("A RoomVolume with a CombatDefinition requires a valid RoomTag.")));
-		return EDataValidationResult::Invalid;
-	}
-
+	const EDataValidationResult Result = Super::IsDataValid(Context);
 	return Result == EDataValidationResult::NotValidated
 		? EDataValidationResult::Valid
 		: Result;

@@ -3,6 +3,7 @@
 #include "Enemy/EnemyBase.h"
 #include "Enemy/EnemyPoolDefinition.h"
 #include "Enemy/EnemyPoolSubsystem.h"
+#include "Enemy/EnemyRoomSubsystem.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
@@ -64,6 +65,14 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Prewarmed Enemy is idle"), Pool->GetIdleCount(AEnemyBase::StaticClass()), 1);
 
 	const FGameplayTag RoomTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.1")));
+	const FVector SharedTargetLocation(700.0, 800.0, 900.0);
+	UEnemyRoomSubsystem* RoomSubsystem = World->GetSubsystem<UEnemyRoomSubsystem>();
+	if (TestNotNull(TEXT("Enemy room subsystem is created"), RoomSubsystem))
+	{
+		RoomSubsystem->SetActiveRoomTargetForTesting(RoomTag, SharedTargetLocation);
+		TestTrue(TEXT("Room target fixture marks the room in combat"),
+			RoomSubsystem->IsRoomInCombat(RoomTag));
+	}
 	FEnemyPoolLeaseContext FirstContext;
 	FirstContext.RoomTag = RoomTag;
 	FirstContext.CombatPhaseIndex = 1;
@@ -84,6 +93,11 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Combat-active Enemy accepts damage"), FirstLease->CanBeDamaged());
 	TestTrue(TEXT("Combat-active Enemy enables collision"), FirstLease->GetActorEnableCollision());
 	TestEqual(TEXT("Lease applies runtime RoomTag"), FirstLease->GetDefaultRoomTag(), RoomTag);
+	TestTrue(TEXT("Reinforcement joins the active room combat immediately"), FirstLease->IsInCombat());
+	TestTrue(TEXT("Reinforcement receives the active room target immediately"),
+		FirstLease->HasSharedTargetContact());
+	TestEqual(TEXT("Reinforcement receives the shared target location"),
+		FirstLease->GetSharedTargetLocation(), SharedTargetLocation);
 
 	const int32 FirstLeaseSerial = FirstLease->GetPoolLeaseSerial();
 	TestTrue(TEXT("Active Enemy returns to the pool"),

@@ -10,6 +10,7 @@ class UWorld;
 class UDataLayerAsset;
 class UDataTable;
 class UEnemyPoolDefinition;
+class URoomCombatDefinition;
 
 /**
  * 
@@ -32,6 +33,10 @@ public:
 	// Pool Actor는 Gameplay Data Layer 밖에서 유지되므로 Arena 수명과 함께 별도로 생성/폐기한다.
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Arena|Enemy Pool")
 	TSoftObjectPtr<UEnemyPoolDefinition> EnemyPoolDefinition;
+
+	// RoomVolume마다 Asset을 지정하지 않고 모든 RoomTag의 전투 구성을 한 곳에서 조회한다.
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Arena|Room Combat")
+	TSoftObjectPtr<URoomCombatDefinition> RoomCombatDefinition;
 
 	// 각 Reload Phase가 이 시간 동안 진행되지 않으면 강제 완료하지 않고 Stalled로 보고한다.
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Arena|World Partition", meta = (ClampMin = "1.0"))

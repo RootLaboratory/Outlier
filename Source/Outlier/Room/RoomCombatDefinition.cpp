@@ -9,7 +9,7 @@ namespace
 	}
 }
 
-bool URoomCombatDefinition::HasValidPhaseOrder() const
+bool FRoomCombatRoomDefinition::HasValidPhaseOrder() const
 {
 	if (CombatPhases.IsEmpty())
 	{
@@ -47,7 +47,7 @@ bool URoomCombatDefinition::HasValidPhaseOrder() const
 	return true;
 }
 
-bool URoomCombatDefinition::CanStartTriggeredSequence(int32 PhaseIndex) const
+bool FRoomCombatRoomDefinition::CanStartTriggeredSequence(int32 PhaseIndex) const
 {
 	if (!HasValidPhaseOrder() || !CombatPhases.IsValidIndex(PhaseIndex)
 		|| CombatPhases[PhaseIndex].StartPolicy != ERoomCombatPhaseStartPolicy::HackTrigger)
@@ -83,6 +83,20 @@ bool URoomCombatDefinition::CanStartTriggeredSequence(int32 PhaseIndex) const
 	return true;
 }
 
+const FRoomCombatRoomDefinition* URoomCombatDefinition::FindRoomDefinition(FGameplayTag RoomTag) const
+{
+	if (!RoomTag.IsValid())
+	{
+		return nullptr;
+	}
+
+	return RoomDefinitions.FindByPredicate([RoomTag](const FRoomCombatRoomDefinition& Definition)
+	{
+		// Room 소유권은 부모 Tag까지 넓히지 않는다. 한 RoomTag는 정확히 한 설정만 가져야 한다.
+		return Definition.RoomTag == RoomTag;
+	});
+}
+
 #if WITH_EDITOR
 #include "Misc/DataValidation.h"
 #endif
@@ -98,83 +112,123 @@ EDataValidationResult URoomCombatDefinition::IsDataValid(FDataValidationContext&
 		Result = EDataValidationResult::Invalid;
 	};
 
-	if (CombatPhases.IsEmpty())
+	if (RoomDefinitions.IsEmpty())
 	{
-		AddValidationError(TEXT("Room Combat Definition requires at least one CombatPhase."));
-	}
-	else if (!HasValidPhaseOrder())
-	{
-		AddValidationError(TEXT("CombatPhases must use optional InitialDetection, then HackTrigger followed only by Automatic phases."));
+		AddValidationError(TEXT("Room Combat Definition requires at least one RoomDefinition."));
 	}
 
-	for (int32 PhaseIndex = 0; PhaseIndex < CombatPhases.Num(); ++PhaseIndex)
+	TSet<FGameplayTag> SeenRoomTags;
+	for (int32 RoomIndex = 0; RoomIndex < RoomDefinitions.Num(); ++RoomIndex)
 	{
-		const FRoomCombatPhaseDefinition& Phase = CombatPhases[PhaseIndex];
-		if (Phase.Waves.IsEmpty())
+		const FRoomCombatRoomDefinition& RoomDefinition = RoomDefinitions[RoomIndex];
+		if (!RoomDefinition.RoomTag.IsValid())
 		{
 			AddValidationError(FString::Printf(
-				TEXT("CombatPhases[%d] requires at least one Wave."),
-				PhaseIndex));
+				TEXT("RoomDefinitions[%d] requires a valid RoomTag."),
+				RoomIndex));
+		}
+		else if (SeenRoomTags.Contains(RoomDefinition.RoomTag))
+		{
+			AddValidationError(FString::Printf(
+				TEXT("RoomDefinitions[%d] has duplicate RoomTag %s."),
+				RoomIndex,
+				*RoomDefinition.RoomTag.ToString()));
+		}
+		else
+		{
+			SeenRoomTags.Add(RoomDefinition.RoomTag);
+		}
+
+		if (RoomDefinition.CombatPhases.IsEmpty())
+		{
+			AddValidationError(FString::Printf(
+				TEXT("RoomDefinitions[%d] requires at least one CombatPhase."),
+				RoomIndex));
 			continue;
 		}
-
-		const ERoomCombatWaveSpawnMode RequiredFirstWaveMode =
-			Phase.StartPolicy == ERoomCombatPhaseStartPolicy::InitialDetection
-				? ERoomCombatWaveSpawnMode::Preplaced
-				: ERoomCombatWaveSpawnMode::SpawnFromObjects;
-		if (Phase.Waves[0].SpawnMode != RequiredFirstWaveMode)
+		if (!RoomDefinition.HasValidPhaseOrder())
 		{
 			AddValidationError(FString::Printf(
-				TEXT("CombatPhases[%d].Waves[0] has a SpawnMode that does not match its StartPolicy."),
-				PhaseIndex));
+				TEXT("RoomDefinitions[%d].CombatPhases must use optional InitialDetection, then HackTrigger followed only by Automatic phases."),
+				RoomIndex));
 		}
 
-		for (int32 WaveIndex = 0; WaveIndex < Phase.Waves.Num(); ++WaveIndex)
+		for (int32 PhaseIndex = 0; PhaseIndex < RoomDefinition.CombatPhases.Num(); ++PhaseIndex)
 		{
-			const FRoomCombatWaveDefinition& Wave = Phase.Waves[WaveIndex];
-			if (WaveIndex > 0 && Wave.SpawnMode != ERoomCombatWaveSpawnMode::SpawnFromObjects)
+			const FRoomCombatPhaseDefinition& Phase = RoomDefinition.CombatPhases[PhaseIndex];
+			if (Phase.Waves.IsEmpty())
 			{
 				AddValidationError(FString::Printf(
-					TEXT("CombatPhases[%d].Waves[%d] must use SpawnFromObjects after the first Wave."),
-					PhaseIndex,
-					WaveIndex));
+					TEXT("RoomDefinitions[%d].CombatPhases[%d] requires at least one Wave."),
+					RoomIndex,
+					PhaseIndex));
+				continue;
 			}
 
-			if (Wave.SpawnMode == ERoomCombatWaveSpawnMode::SpawnFromObjects && Wave.Enemies.IsEmpty())
+			const ERoomCombatWaveSpawnMode RequiredFirstWaveMode =
+				Phase.StartPolicy == ERoomCombatPhaseStartPolicy::InitialDetection
+					? ERoomCombatWaveSpawnMode::Preplaced
+					: ERoomCombatWaveSpawnMode::SpawnFromObjects;
+			if (Phase.Waves[0].SpawnMode != RequiredFirstWaveMode)
 			{
 				AddValidationError(FString::Printf(
-					TEXT("CombatPhases[%d].Waves[%d] requires at least one Enemy when using SpawnFromObjects."),
-					PhaseIndex,
-					WaveIndex));
+					TEXT("RoomDefinitions[%d].CombatPhases[%d].Waves[0] has a SpawnMode that does not match its StartPolicy."),
+					RoomIndex,
+					PhaseIndex));
 			}
 
-			if (!IsValidRemainingRatio(Wave.NextWaveRemainingRatio))
+			for (int32 WaveIndex = 0; WaveIndex < Phase.Waves.Num(); ++WaveIndex)
 			{
-				AddValidationError(FString::Printf(
-					TEXT("CombatPhases[%d].Waves[%d] has NextWaveRemainingRatio outside 0.0 to 1.0."),
-					PhaseIndex,
-					WaveIndex));
-			}
-
-			for (int32 EnemyIndex = 0; EnemyIndex < Wave.Enemies.Num(); ++EnemyIndex)
-			{
-				const FRoomCombatEnemyEntry& Enemy = Wave.Enemies[EnemyIndex];
-				if (Enemy.EnemyClass.IsNull())
+				const FRoomCombatWaveDefinition& Wave = Phase.Waves[WaveIndex];
+				if (WaveIndex > 0 && Wave.SpawnMode != ERoomCombatWaveSpawnMode::SpawnFromObjects)
 				{
 					AddValidationError(FString::Printf(
-						TEXT("CombatPhases[%d].Waves[%d].Enemies[%d] has no EnemyClass."),
+						TEXT("RoomDefinitions[%d].CombatPhases[%d].Waves[%d] must use SpawnFromObjects after the first Wave."),
+						RoomIndex,
 						PhaseIndex,
-						WaveIndex,
-						EnemyIndex));
+						WaveIndex));
 				}
 
-				if (Enemy.Count <= 0)
+				if (Wave.SpawnMode == ERoomCombatWaveSpawnMode::SpawnFromObjects && Wave.Enemies.IsEmpty())
 				{
 					AddValidationError(FString::Printf(
-						TEXT("CombatPhases[%d].Waves[%d].Enemies[%d] has a non-positive Count."),
+						TEXT("RoomDefinitions[%d].CombatPhases[%d].Waves[%d] requires at least one Enemy when using SpawnFromObjects."),
+						RoomIndex,
 						PhaseIndex,
-						WaveIndex,
-						EnemyIndex));
+						WaveIndex));
+				}
+
+				if (!IsValidRemainingRatio(Wave.NextWaveRemainingRatio))
+				{
+					AddValidationError(FString::Printf(
+						TEXT("RoomDefinitions[%d].CombatPhases[%d].Waves[%d] has NextWaveRemainingRatio outside 0.0 to 1.0."),
+						RoomIndex,
+						PhaseIndex,
+						WaveIndex));
+				}
+
+				for (int32 EnemyIndex = 0; EnemyIndex < Wave.Enemies.Num(); ++EnemyIndex)
+				{
+					const FRoomCombatEnemyEntry& Enemy = Wave.Enemies[EnemyIndex];
+					if (Enemy.EnemyClass.IsNull())
+					{
+						AddValidationError(FString::Printf(
+							TEXT("RoomDefinitions[%d].CombatPhases[%d].Waves[%d].Enemies[%d] has no EnemyClass."),
+							RoomIndex,
+							PhaseIndex,
+							WaveIndex,
+							EnemyIndex));
+					}
+
+					if (Enemy.Count <= 0)
+					{
+						AddValidationError(FString::Printf(
+							TEXT("RoomDefinitions[%d].CombatPhases[%d].Waves[%d].Enemies[%d] has a non-positive Count."),
+							RoomIndex,
+							PhaseIndex,
+							WaveIndex,
+							EnemyIndex));
+					}
 				}
 			}
 		}

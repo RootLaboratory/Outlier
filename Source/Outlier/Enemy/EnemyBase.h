@@ -404,7 +404,9 @@ public:
 	FVector GetSharedTargetLocation() const { return SharedTargetLocation; }
 
 	// RoomSubsystem만 호출하는 서버 권한 공유 접촉 API.
-	void ApplySharedTargetContact(const FVector& TargetLocation);
+	void ApplySharedTargetContact(
+		const FVector& TargetLocation,
+		bool bDeferStateTreeEvent = false);
 	void ClearSharedTargetContact();
 
 	UFUNCTION(BlueprintCallable, Category = "Enemy|State")

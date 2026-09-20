@@ -8,7 +8,6 @@
 #include "RoomVolume.generated.h"
 
 class UBoxComponent;
-class URoomCombatDefinition;
 class UWorldPartitionStreamingSourceComponent;
 
 UCLASS()
@@ -20,7 +19,6 @@ public:
 	ARoomVolume();
 
 	FGameplayTag GetRoomTag() const { return RoomTag; }
-	URoomCombatDefinition* GetCombatDefinition() const { return CombatDefinition; }
 	void SetCombatStreamingSourceEnabled(bool bEnabled);
 	bool IsCombatStreamingSourceEnabled() const;
 
@@ -41,9 +39,6 @@ protected:
 
 	UPROPERTY(EditInstanceOnly, Category = "Room", meta = (Categories = "Room"))
 	FGameplayTag RoomTag;
-
-	UPROPERTY(EditInstanceOnly, Category = "Room|Combat")
-	TObjectPtr<URoomCombatDefinition> CombatDefinition;
 
 	UFUNCTION()
 	void HandleBeginOverlap(

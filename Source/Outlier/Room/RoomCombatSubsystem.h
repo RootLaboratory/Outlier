@@ -11,6 +11,7 @@ class AActor;
 class ARoomCombatSpawnPoint;
 class ARoomVolume;
 class URoomCombatDefinition;
+struct FRoomCombatRoomDefinition;
 struct FRoomCombatWaveDefinition;
 
 namespace RoomCombat
@@ -70,7 +71,6 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(FOnRoomCombatEvent,
 struct FRoomCombatRuntime
 {
 	TWeakObjectPtr<ARoomVolume> RoomVolume;
-	TWeakObjectPtr<URoomCombatDefinition> Definition;
 	TSet<TWeakObjectPtr<AEnemyBase>> TrackedAliveEnemies;
 	TMap<TWeakObjectPtr<ARoomCombatSpawnPoint>, int32> SpawnAssignments;
 	ERoomCombatState State = ERoomCombatState::Dormant;
@@ -104,7 +104,7 @@ struct FRoomCombatPendingSpawn
 	TSubclassOf<AEnemyBase> EnemyClass;
 	TWeakObjectPtr<ARoomCombatSpawnPoint> AssignedSpawnPoint;
 	FGameplayTag RoomTag;
-	FGameplayTagQuery SpawnPointQuery;
+	FGameplayTag RequiredSpawnPointTag;
 	int32 CombatPhaseIndex = INDEX_NONE;
 	int32 WaveIndex = INDEX_NONE;
 	int32 GameplayGeneration = 0;
@@ -127,6 +127,7 @@ class OUTLIER_API URoomCombatSubsystem : public UWorldSubsystem
 public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
+	virtual void OnWorldBeginPlay(UWorld& InWorld) override;
 
 	UFUNCTION(BlueprintCallable, BlueprintPure = false, BlueprintAuthorityOnly, Category = "Room Combat")
 	bool CreateTriggerContext(AActor* Requester, FGameplayTag RoomTag,
@@ -145,8 +146,7 @@ public:
 
 	bool RegisterRoom(
 		ARoomVolume* RoomVolume,
-		FGameplayTag RoomTag,
-		URoomCombatDefinition* Definition);
+		FGameplayTag RoomTag);
 	void UnregisterRoom(ARoomVolume* RoomVolume);
 	bool RegisterSpawnPoint(
 		ARoomCombatSpawnPoint* SpawnPoint,
@@ -160,7 +160,7 @@ public:
 		bool bActive);
 	void GetEligibleSpawnPoints(
 		FGameplayTag RoomTag,
-		const FGameplayTagQuery& SpawnPointQuery,
+		FGameplayTag RequiredSpawnPointTag,
 		TArray<ARoomCombatSpawnPoint*>& OutSpawnPoints);
 
 	void RegisterPreplacedEnemy(AEnemyBase* Enemy);
@@ -185,6 +185,7 @@ public:
 
 #if WITH_DEV_AUTOMATION_TESTS
 	void RetryPendingSpawnsForTesting() { RetryPendingSpawns(); }
+	void SetCombatDefinitionForTesting(URoomCombatDefinition* Definition) { CombatDefinition = Definition; }
 	TFunction<void(FGameplayTag, ERoomCombatEvent, int32)> CombatEventObserverForTesting;
 #endif
 
@@ -213,7 +214,8 @@ private:
 		const TArray<ARoomCombatSpawnPoint*>& EligibleSpawnPoints);
 	void CompleteCurrentPhase(FGameplayTag RoomTag, bool bCancelRemainingWaves);
 	void StartAutomaticPhase(FGameplayTag RoomTag, FRoomCombatRuntime& Runtime,
-		const URoomCombatDefinition& Definition);
+		const FRoomCombatRoomDefinition& Definition);
+	const FRoomCombatRoomDefinition* FindRoomDefinition(FGameplayTag RoomTag) const;
 	void MarkRoomCleared(FGameplayTag RoomTag, FRoomCombatRuntime& Runtime);
 	void CompactAliveEnemies(FRoomCombatRuntime& Runtime);
 	void CompactSpawnPoints(FGameplayTag RoomTag);
@@ -228,6 +230,9 @@ private:
 	// RoomVolume과 SpawnPoint의 WP 로드 순서는 보장되지 않으므로 Room 등록 여부와 독립적으로 보관한다.
 	TMap<FGameplayTag, TArray<FRoomCombatSpawnPointRuntime>> SpawnPointsByRoom;
 	TMap<TWeakObjectPtr<ARoomCombatSpawnPoint>, FGameplayTag> RegisteredSpawnPointRooms;
+	// 프로젝트 설정의 통합 DA를 한 번 로드해 WP RoomVolume 재등록 동안 같은 원본을 유지한다.
+	UPROPERTY()
+	TObjectPtr<URoomCombatDefinition> CombatDefinition;
 	FGameplayTag ActiveCombatRoomTag;
 	FTimerHandle SpawnRetryTimer;
 	bool bResettingRuntime = false;

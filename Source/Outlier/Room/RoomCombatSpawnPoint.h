@@ -6,6 +6,9 @@
 #include "RoomCombatSpawnPoint.generated.h"
 
 class USceneComponent;
+class UStaticMeshComponent;
+class USphereComponent;
+class UTextRenderComponent;
 class AEnemyBase;
 
 UCLASS()
@@ -15,6 +18,7 @@ class OUTLIER_API ARoomCombatSpawnPoint : public AActor
 
 public:
 	ARoomCombatSpawnPoint();
+	virtual void OnConstruction(const FTransform& Transform) override;
 
 	FGameplayTag GetRoomTag() const { return RoomTag; }
 	const FGameplayTagContainer& GetSpawnPointTags() const { return SpawnPointTags; }
@@ -46,22 +50,37 @@ protected:
 	UPROPERTY(VisibleAnywhere)
 	TObjectPtr<USceneComponent> SceneRoot;
 
-	UPROPERTY(EditInstanceOnly, Category = "Room Combat|Spawn", meta = (Categories = "Room"))
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Room Combat|Visual")
+	TObjectPtr<UStaticMeshComponent> SpawnPointMesh;
+
+#if WITH_EDITORONLY_DATA
+	UPROPERTY(VisibleAnywhere, Category = "Room Combat|Debug")
+	TObjectPtr<USphereComponent> SpawnRadiusPreview;
+
+	UPROPERTY(VisibleAnywhere, Category = "Room Combat|Debug")
+	TObjectPtr<UTextRenderComponent> SpawnInfoPreview;
+#endif
+
+	UPROPERTY(EditAnywhere, Category = "Room Combat|Spawn", meta = (Categories = "Room"))
 	FGameplayTag RoomTag;
 
-	UPROPERTY(EditInstanceOnly, Category = "Room Combat|Spawn")
+	UPROPERTY(EditAnywhere, Category = "Room Combat|Spawn")
 	FGameplayTagContainer SpawnPointTags;
 
-	UPROPERTY(EditInstanceOnly, Category = "Room Combat|Spawn", meta = (ClampMin = "0.01", UIMin = "0.01"))
+	UPROPERTY(EditAnywhere, Category = "Room Combat|Spawn", meta = (ClampMin = "0.01", UIMin = "0.01"))
 	float SpawnWeight = 1.0f;
 
-	UPROPERTY(EditInstanceOnly, Category = "Room Combat|Spawn", meta = (ClampMin = "1.0", UIMin = "1.0"))
+	UPROPERTY(EditAnywhere, Category = "Room Combat|Spawn", meta = (ClampMin = "1.0", UIMin = "1.0"))
 	float SpawnRadius = 300.0f;
 
-	UPROPERTY(EditInstanceOnly, Category = "Room Combat|Spawn")
+	// 배치 Actor는 바닥에 두고, 실제 Enemy Actor 원점은 이 높이만큼 올려 탐색한다.
+	UPROPERTY(EditAnywhere, Category = "Room Combat|Spawn", meta = (ClampMin = "0.0", UIMin = "0.0"))
+	float SpawnHeightOffset = 150.0f;
+
+	UPROPERTY(EditAnywhere, Category = "Room Combat|Spawn")
 	bool bInitiallyActive = true;
 
-	UPROPERTY(EditInstanceOnly, Category = "Room Combat|Spawn")
+	UPROPERTY(EditAnywhere, Category = "Room Combat|Spawn")
 	FGameplayTag ActivationGroupTag;
 
 private:

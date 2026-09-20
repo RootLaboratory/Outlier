@@ -16,19 +16,28 @@
 
 namespace
 {
-	URoomCombatDefinition* MakeSingleWaveDefinition()
+	FRoomCombatRoomDefinition& AddRoomDefinition(
+		URoomCombatDefinition* Definition,
+		FGameplayTag RoomTag)
 	{
-		URoomCombatDefinition* Definition = NewObject<URoomCombatDefinition>();
+		FRoomCombatRoomDefinition& RoomDefinition =
+			Definition->RoomDefinitions.AddDefaulted_GetRef();
+		RoomDefinition.RoomTag = RoomTag;
+		return RoomDefinition;
+	}
+
+	void AddSingleWaveDefinition(URoomCombatDefinition* Definition, FGameplayTag RoomTag)
+	{
+		FRoomCombatRoomDefinition& RoomDefinition = AddRoomDefinition(Definition, RoomTag);
 		FRoomCombatPhaseDefinition Phase;
 		Phase.StartPolicy = ERoomCombatPhaseStartPolicy::InitialDetection;
 		Phase.Waves.AddDefaulted();
-		Definition->CombatPhases.Add(Phase);
-		return Definition;
+		RoomDefinition.CombatPhases.Add(Phase);
 	}
 
-	URoomCombatDefinition* MakeStealthThenHackDefinition()
+	void AddStealthThenHackDefinition(URoomCombatDefinition* Definition, FGameplayTag RoomTag)
 	{
-		URoomCombatDefinition* Definition = NewObject<URoomCombatDefinition>();
+		FRoomCombatRoomDefinition& RoomDefinition = AddRoomDefinition(Definition, RoomTag);
 		FRoomCombatEnemyEntry EnemyEntry;
 		EnemyEntry.EnemyClass = AEnemyBase::StaticClass();
 
@@ -39,7 +48,7 @@ namespace
 		ReinforcementWave.SpawnMode = ERoomCombatWaveSpawnMode::SpawnFromObjects;
 		ReinforcementWave.Enemies.Add(EnemyEntry);
 		InitialPhase.Waves.Add(ReinforcementWave);
-		Definition->CombatPhases.Add(InitialPhase);
+		RoomDefinition.CombatPhases.Add(InitialPhase);
 
 		FRoomCombatPhaseDefinition HackPhase;
 		HackPhase.StartPolicy = ERoomCombatPhaseStartPolicy::HackTrigger;
@@ -47,13 +56,15 @@ namespace
 		HackWave.SpawnMode = ERoomCombatWaveSpawnMode::SpawnFromObjects;
 		HackWave.Enemies.Add(EnemyEntry);
 		HackPhase.Waves.Add(HackWave);
-		Definition->CombatPhases.Add(HackPhase);
-		return Definition;
+		RoomDefinition.CombatPhases.Add(HackPhase);
 	}
 
-	URoomCombatDefinition* MakeSpawnWaveDefinition(int32 EnemyCount)
+	void AddSpawnWaveDefinition(
+		URoomCombatDefinition* Definition,
+		FGameplayTag RoomTag,
+		int32 EnemyCount)
 	{
-		URoomCombatDefinition* Definition = NewObject<URoomCombatDefinition>();
+		FRoomCombatRoomDefinition& RoomDefinition = AddRoomDefinition(Definition, RoomTag);
 		FRoomCombatPhaseDefinition Phase;
 		Phase.StartPolicy = ERoomCombatPhaseStartPolicy::InitialDetection;
 		Phase.Waves.AddDefaulted();
@@ -64,13 +75,12 @@ namespace
 		EnemyEntry.EnemyClass = AEnemyBase::StaticClass();
 		EnemyEntry.Count = EnemyCount;
 		Phase.Waves.Add(SpawnWave);
-		Definition->CombatPhases.Add(Phase);
-		return Definition;
+		RoomDefinition.CombatPhases.Add(Phase);
 	}
 
-	URoomCombatDefinition* MakeWaveProgressDefinition()
+	void AddWaveProgressDefinition(URoomCombatDefinition* Definition, FGameplayTag RoomTag)
 	{
-		URoomCombatDefinition* Definition = NewObject<URoomCombatDefinition>();
+		FRoomCombatRoomDefinition& RoomDefinition = AddRoomDefinition(Definition, RoomTag);
 		FRoomCombatPhaseDefinition Phase;
 		Phase.StartPolicy = ERoomCombatPhaseStartPolicy::InitialDetection;
 
@@ -91,8 +101,7 @@ namespace
 		FinalEntry.EnemyClass = AEnemyBase::StaticClass();
 		FinalEntry.Count = 1;
 
-		Definition->CombatPhases.Add(Phase);
-		return Definition;
+		RoomDefinition.CombatPhases.Add(Phase);
 	}
 
 	AEnemyBase* SpawnTestEnemy(UWorld* World, FGameplayTag RoomTag)
@@ -184,6 +193,10 @@ bool FRoomCombatSubsystemRuntimeTest::RunTest(const FString& Parameters)
 		FName(TEXT("Room.Level01.1")));
 	const FGameplayTag SecondRoomTag = FGameplayTag::RequestGameplayTag(
 		FName(TEXT("Room.Level01.2")));
+	URoomCombatDefinition* Definition = NewObject<URoomCombatDefinition>(World);
+	AddSingleWaveDefinition(Definition, FirstRoomTag);
+	AddSingleWaveDefinition(Definition, SecondRoomTag);
+	CombatSubsystem->SetCombatDefinitionForTesting(Definition);
 	ARoomVolume* FirstRoom = World->SpawnActor<ARoomVolume>();
 	ARoomVolume* SecondRoom = World->SpawnActor<ARoomVolume>();
 	AEnemyBase* FirstEnemy = SpawnTestEnemy(World, FirstRoomTag);
@@ -198,9 +211,9 @@ bool FRoomCombatSubsystemRuntimeTest::RunTest(const FString& Parameters)
 	}
 
 	TestTrue(TEXT("First Room registers"),
-		CombatSubsystem->RegisterRoom(FirstRoom, FirstRoomTag, MakeSingleWaveDefinition()));
+		CombatSubsystem->RegisterRoom(FirstRoom, FirstRoomTag));
 	TestTrue(TEXT("Second Room registers"),
-		CombatSubsystem->RegisterRoom(SecondRoom, SecondRoomTag, MakeSingleWaveDefinition()));
+		CombatSubsystem->RegisterRoom(SecondRoom, SecondRoomTag));
 	TestTrue(TEXT("A registered Room can be queried"),
 		CombatSubsystem->IsRoomRegistered(FirstRoomTag));
 	CombatSubsystem->RegisterPreplacedEnemy(FirstEnemy);
@@ -267,7 +280,7 @@ bool FRoomCombatSubsystemRuntimeTest::RunTest(const FString& Parameters)
 	TArray<ARoomCombatSpawnPoint*> EligibleSpawnPoints;
 	CombatSubsystem->GetEligibleSpawnPoints(
 		FirstRoomTag,
-		FGameplayTagQuery::MakeQuery_MatchTag(FirstRoomTag),
+		FirstRoomTag,
 		EligibleSpawnPoints);
 	TestEqual(TEXT("Only the active matching SpawnPoint is eligible"),
 		EligibleSpawnPoints.Num(), 1);
@@ -276,13 +289,13 @@ bool FRoomCombatSubsystemRuntimeTest::RunTest(const FString& Parameters)
 
 	CombatSubsystem->GetEligibleSpawnPoints(
 		FirstRoomTag,
-		FGameplayTagQuery::MakeQuery_MatchTag(SecondRoomTag),
+		SecondRoomTag,
 		EligibleSpawnPoints);
-	TestTrue(TEXT("A mismatched SpawnPoint query returns no candidates"),
+	TestTrue(TEXT("A mismatched required SpawnPoint tag returns no candidates"),
 		EligibleSpawnPoints.IsEmpty());
 	CombatSubsystem->GetEligibleSpawnPoints(
 		SecondRoomTag,
-		FGameplayTagQuery(),
+		FGameplayTag(),
 		EligibleSpawnPoints);
 	TestTrue(TEXT("An inactive combat Room returns no SpawnPoint candidates"),
 		EligibleSpawnPoints.IsEmpty());
@@ -293,9 +306,23 @@ bool FRoomCombatSubsystemRuntimeTest::RunTest(const FString& Parameters)
 		true);
 	CombatSubsystem->GetEligibleSpawnPoints(
 		FirstRoomTag,
-		FGameplayTagQuery::MakeQuery_MatchTag(FirstRoomTag),
+		FirstRoomTag,
 		EligibleSpawnPoints);
 	TestEqual(TEXT("Activating a group adds its SpawnPoint to the candidates"),
+		EligibleSpawnPoints.Num(), 2);
+	CombatSubsystem->GetEligibleSpawnPoints(
+		FirstRoomTag,
+		FGameplayTag(),
+		EligibleSpawnPoints);
+	TestEqual(TEXT("An empty required tag accepts every active SpawnPoint"),
+		EligibleSpawnPoints.Num(), 2);
+	const FGameplayTag ParentSpawnTag = FGameplayTag::RequestGameplayTag(
+		FName(TEXT("Room.Level01")));
+	CombatSubsystem->GetEligibleSpawnPoints(
+		FirstRoomTag,
+		ParentSpawnTag,
+		EligibleSpawnPoints);
+	TestEqual(TEXT("A parent required tag accepts child SpawnPoint tags"),
 		EligibleSpawnPoints.Num(), 2);
 
 	GroupSpawnPoint->Destroy();
@@ -315,6 +342,7 @@ bool FRoomCombatSubsystemRuntimeTest::RunTest(const FString& Parameters)
 
 	const FGameplayTag StealthRoomTag = FGameplayTag::RequestGameplayTag(
 		FName(TEXT("Room.Level01.3")));
+	AddStealthThenHackDefinition(Definition, StealthRoomTag);
 	ARoomVolume* StealthRoom = World->SpawnActor<ARoomVolume>();
 	AEnemyBase* StealthEnemy = SpawnTestEnemy(World, StealthRoomTag);
 	if (!TestNotNull(TEXT("Stealth RoomVolume is spawned"), StealthRoom)
@@ -326,8 +354,7 @@ bool FRoomCombatSubsystemRuntimeTest::RunTest(const FString& Parameters)
 
 	TestTrue(TEXT("Stealth Room registers"), CombatSubsystem->RegisterRoom(
 		StealthRoom,
-		StealthRoomTag,
-		MakeStealthThenHackDefinition()));
+		StealthRoomTag));
 	CombatSubsystem->RegisterPreplacedEnemy(StealthEnemy);
 	CombatSubsystem->NotifyEnemyDefeated(StealthEnemy);
 	TestEqual(TEXT("Undetected elimination cancels the current phase reinforcements"),
@@ -396,6 +423,9 @@ bool FRoomCombatWaveSpawnRuntimeTest::RunTest(const FString& Parameters)
 
 	const FGameplayTag RoomTag = FGameplayTag::RequestGameplayTag(
 		FName(TEXT("Room.Level01.1")));
+	URoomCombatDefinition* Definition = NewObject<URoomCombatDefinition>(World);
+	AddSpawnWaveDefinition(Definition, RoomTag, 4);
+	CombatSubsystem->SetCombatDefinitionForTesting(Definition);
 	ARoomVolume* Room = World->SpawnActor<ARoomVolume>();
 	AEnemyBase* PreplacedEnemy = SpawnTestEnemy(World, RoomTag);
 	ARoomCombatSpawnPoint* FirstSpawnPoint = World->SpawnActor<ARoomCombatSpawnPoint>(
@@ -415,8 +445,7 @@ bool FRoomCombatWaveSpawnRuntimeTest::RunTest(const FString& Parameters)
 
 	TestTrue(TEXT("Wave spawn Room registers"), CombatSubsystem->RegisterRoom(
 		Room,
-		RoomTag,
-		MakeSpawnWaveDefinition(4)));
+		RoomTag));
 	CombatSubsystem->RegisterPreplacedEnemy(PreplacedEnemy);
 	TestTrue(TEXT("First wave SpawnPoint registers"), CombatSubsystem->RegisterSpawnPoint(
 		FirstSpawnPoint,
@@ -545,6 +574,9 @@ bool FRoomCombatWaveProgressRuntimeTest::RunTest(const FString& Parameters)
 
 	const FGameplayTag RoomTag = FGameplayTag::RequestGameplayTag(
 		FName(TEXT("Room.Level01.1")));
+	URoomCombatDefinition* Definition = NewObject<URoomCombatDefinition>(World);
+	AddWaveProgressDefinition(Definition, RoomTag);
+	CombatSubsystem->SetCombatDefinitionForTesting(Definition);
 	ARoomVolume* Room = World->SpawnActor<ARoomVolume>();
 	ARoomCombatSpawnPoint* SpawnPoint = World->SpawnActor<ARoomCombatSpawnPoint>(
 		ARoomCombatSpawnPoint::StaticClass(),
@@ -567,8 +599,7 @@ bool FRoomCombatWaveProgressRuntimeTest::RunTest(const FString& Parameters)
 	ThirdPreplaced->SetActorLocation(FVector(-5400.0f, 0.0f, 0.0f));
 	TestTrue(TEXT("Wave progress Room registers"), CombatSubsystem->RegisterRoom(
 		Room,
-		RoomTag,
-		MakeWaveProgressDefinition()));
+		RoomTag));
 	CombatSubsystem->RegisterPreplacedEnemy(FirstPreplaced);
 	CombatSubsystem->RegisterPreplacedEnemy(SecondPreplaced);
 	CombatSubsystem->RegisterPreplacedEnemy(ThirdPreplaced);
@@ -714,17 +745,22 @@ bool FRoomCombatTriggeredSequenceTest::RunTest(const FString& Parameters)
 	*RoomTagProperty->ContainerPtrToValuePtr<FGameplayTag>(Room) = RoomTag;
 	*RoomTagProperty->ContainerPtrToValuePtr<FGameplayTag>(OtherRoom) = OtherTag;
 	URoomCombatDefinition* Definition = NewObject<URoomCombatDefinition>(World);
+	FRoomCombatRoomDefinition& RoomDefinition = AddRoomDefinition(Definition, RoomTag);
 	for (int32 Index = 0; Index < 2; ++Index)
 	{
-		FRoomCombatPhaseDefinition& Phase = Definition->CombatPhases.AddDefaulted_GetRef();
+		FRoomCombatPhaseDefinition& Phase = RoomDefinition.CombatPhases.AddDefaulted_GetRef();
 		Phase.StartPolicy = Index == 0 ? ERoomCombatPhaseStartPolicy::HackTrigger
 			: ERoomCombatPhaseStartPolicy::Automatic;
 		FRoomCombatWaveDefinition& Wave = Phase.Waves.AddDefaulted_GetRef();
 		Wave.SpawnMode = ERoomCombatWaveSpawnMode::SpawnFromObjects;
 		Wave.Enemies.AddDefaulted_GetRef().EnemyClass = AEnemyBase::StaticClass();
 	}
-	TestTrue(TEXT("Sequence Room registers"), Combat->RegisterRoom(Room, RoomTag, Definition));
-	TestTrue(TEXT("Other Room registers"), Combat->RegisterRoom(OtherRoom, OtherTag, Definition));
+	FRoomCombatRoomDefinition OtherRoomDefinition = RoomDefinition;
+	OtherRoomDefinition.RoomTag = OtherTag;
+	Definition->RoomDefinitions.Add(MoveTemp(OtherRoomDefinition));
+	Combat->SetCombatDefinitionForTesting(Definition);
+	TestTrue(TEXT("Sequence Room registers"), Combat->RegisterRoom(Room, RoomTag));
+	TestTrue(TEXT("Other Room registers"), Combat->RegisterRoom(OtherRoom, OtherTag));
 	Point->SetRuntimeActive(false);
 	Point->SetForceSpawnLocationFailureForTesting(true);
 	TestTrue(TEXT("Inactive group point registers"), Combat->RegisterSpawnPoint(
@@ -789,13 +825,13 @@ bool FRoomCombatTriggeredSequenceTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("Destroyed requester cannot complete a hack"),
 			Combat->StartTriggeredSequence(ExpiringRequester, ExpiredContext));
 	}
-	Definition->CombatPhases[1].Waves[0].Enemies[0].Count = 0;
+	Definition->RoomDefinitions[0].CombatPhases[1].Waves[0].Enemies[0].Count = 0;
 	TestFalse(TEXT("Invalid later roster rejects the entire start"), Combat->StartTriggeredSequence(Requester, Context));
 	TestFalse(TEXT("Invalid start does not activate the group"), Point->IsRuntimeActive());
 	TestEqual(TEXT("Invalid start leaves the Room waiting"),
 		Combat->GetRoomState(RoomTag), ERoomCombatState::WaitingForTrigger);
 	TestEqual(TEXT("Invalid start emits no start event"), Starts, 0);
-	Definition->CombatPhases[1].Waves[0].Enemies[0].Count = 1;
+	Definition->RoomDefinitions[0].CombatPhases[1].Waves[0].Enemies[0].Count = 1;
 	TestTrue(TEXT("Hack starts sequence"), Combat->StartTriggeredSequence(Requester, Context));
 	TestTrue(TEXT("Group point activates"), Point->IsRuntimeActive());
 	TestEqual(TEXT("Location failure remains pending"), Combat->GetPendingSpawnCount(RoomTag), 1);
@@ -843,7 +879,7 @@ bool FRoomCombatTriggeredSequenceTest::RunTest(const FString& Parameters)
 	Pool->ReturnEnemy(Enemy, Enemy->GetPoolGameplayGeneration(), Enemy->GetPoolLeaseSerial());
 
 	Combat->UnregisterRoom(Room);
-	Combat->RegisterRoom(Room, RoomTag, Definition);
+	Combat->RegisterRoom(Room, RoomTag);
 	TestFalse(TEXT("Old context cannot target re-registered Room"), Combat->StartTriggeredSequence(Requester, Context));
 	Combat->CreateTriggerContext(Requester, RoomTag, GroupTag, Context);
 	Point->SetForceSpawnLocationFailureForTesting(true);
@@ -855,7 +891,7 @@ bool FRoomCombatTriggeredSequenceTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Unregister removes pending work"), Combat->GetPendingSpawnCount(RoomTag), 0);
 	TestFalse(TEXT("Unregister deactivates group"), Point->IsRuntimeActive());
 
-	Combat->RegisterRoom(Room, RoomTag, Definition);
+	Combat->RegisterRoom(Room, RoomTag);
 	Combat->CreateTriggerContext(Requester, RoomTag, GroupTag, Context);
 	Combat->StartTriggeredSequence(Requester, Context);
 	Combat->ResetRuntimeCombatState();
@@ -864,7 +900,7 @@ bool FRoomCombatTriggeredSequenceTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Reset does not count as a clear"), Clears, 1);
 	TestFalse(TEXT("Reset deactivates group"), Point->IsRuntimeActive());
 	TestEqual(TEXT("Reset removes pending work"), Combat->GetPendingSpawnCount(RoomTag), 0);
-	Combat->RegisterRoom(Room, RoomTag, Definition);
+	Combat->RegisterRoom(Room, RoomTag);
 	TestFalse(TEXT("Reset invalidates previous contexts"), Combat->StartTriggeredSequence(Requester, Context));
 
 	// 실제 BP 델리게이트 수신 중 Reset되는 경우와 같은 재진입을 재현한다.
@@ -886,7 +922,7 @@ bool FRoomCombatTriggeredSequenceTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Reentrant reset does not resume spawning"), Combat->GetPendingSpawnCount(RoomTag), 0);
 	TestEqual(TEXT("No pooled Enemy is leased after cancelled start"), Pool->GetLeasedCount(AEnemyBase::StaticClass()), 0);
 
-	Combat->RegisterRoom(Room, RoomTag, Definition);
+	Combat->RegisterRoom(Room, RoomTag);
 	Point->SetForceSpawnLocationFailureForTesting(false);
 	Combat->RegisterSpawnPoint(Point, RoomTag, FGameplayTagContainer(), GroupTag);
 	Combat->CombatEventObserverForTesting = [&](FGameplayTag, ERoomCombatEvent Event, int32 Phase)

@@ -2,6 +2,9 @@
 
 #include "Components/CapsuleComponent.h"
 #include "Components/SceneComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "Components/SphereComponent.h"
+#include "Components/TextRenderComponent.h"
 #include "Enemy/EnemyBase.h"
 #include "Engine/World.h"
 #include "Room/RoomCombatSubsystem.h"
@@ -16,6 +19,64 @@ ARoomCombatSpawnPoint::ARoomCombatSpawnPoint()
 
 	SceneRoot = CreateDefaultSubobject<USceneComponent>(TEXT("SceneRoot"));
 	SetRootComponent(SceneRoot);
+
+	// 소환 중심은 Root에 유지한다. 메시와 충돌 위치는 따로 조절하며, 막힌 영역은 소환 탐색에서 제외된다.
+	SpawnPointMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("SpawnPointMesh"));
+	SpawnPointMesh->SetupAttachment(SceneRoot);
+	SpawnPointMesh->SetCollisionProfileName(TEXT("BlockAll"));
+	SpawnPointMesh->SetGenerateOverlapEvents(false);
+
+#if WITH_EDITORONLY_DATA
+	SpawnRadiusPreview = CreateEditorOnlyDefaultSubobject<USphereComponent>(TEXT("SpawnRadiusPreview"));
+	if (SpawnRadiusPreview)
+	{
+		SpawnRadiusPreview->SetupAttachment(SceneRoot);
+		// 실제 탐색은 월드 XY 원 안에서 수행한다. Actor 회전/스케일과 무관하게 같은 반경을 표시한다.
+		SpawnRadiusPreview->SetAbsolute(false, true, true);
+		SpawnRadiusPreview->SetRelativeScale3D(FVector(1.0, 1.0, 0.01));
+		SpawnRadiusPreview->InitSphereRadius(SpawnRadius);
+		SpawnRadiusPreview->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		SpawnRadiusPreview->SetGenerateOverlapEvents(false);
+		SpawnRadiusPreview->SetCanEverAffectNavigation(false);
+		SpawnRadiusPreview->SetHiddenInGame(true);
+		SpawnRadiusPreview->ShapeColor = FColor::Cyan;
+	}
+	SpawnInfoPreview = CreateEditorOnlyDefaultSubobject<UTextRenderComponent>(TEXT("SpawnInfoPreview"));
+	if (SpawnInfoPreview)
+	{
+		SpawnInfoPreview->SetupAttachment(SceneRoot);
+		SpawnInfoPreview->SetAbsolute(false, true, true);
+		SpawnInfoPreview->SetRelativeLocation(FVector(0.0, 0.0, 100.0));
+		SpawnInfoPreview->SetHorizontalAlignment(EHTA_Center);
+		SpawnInfoPreview->SetWorldSize(24.0f);
+		SpawnInfoPreview->SetTextRenderColor(FColor::Cyan);
+		SpawnInfoPreview->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		SpawnInfoPreview->SetGenerateOverlapEvents(false);
+		SpawnInfoPreview->SetCanEverAffectNavigation(false);
+		SpawnInfoPreview->SetHiddenInGame(true);
+	}
+#endif
+}
+
+void ARoomCombatSpawnPoint::OnConstruction(const FTransform& Transform)
+{
+	Super::OnConstruction(Transform);
+#if WITH_EDITORONLY_DATA
+	if (SpawnRadiusPreview)
+	{
+		SpawnRadiusPreview->SetSphereRadius(FMath::Max(SpawnRadius, 1.0f), false);
+		SpawnRadiusPreview->SetRelativeLocation(FVector(0.0f, 0.0f, SpawnHeightOffset));
+	}
+	if (SpawnInfoPreview)
+	{
+		SpawnInfoPreview->SetRelativeLocation(FVector(0.0f, 0.0f, SpawnHeightOffset + 100.0f));
+		SpawnInfoPreview->SetText(FText::FromString(FString::Printf(
+			TEXT("Weight: %.2f\nRadius: %.0f cm\nHeight: %.0f cm"),
+			SpawnWeight,
+			SpawnRadius,
+			SpawnHeightOffset)));
+	}
+#endif
 }
 
 void ARoomCombatSpawnPoint::BeginPlay()
@@ -92,7 +153,7 @@ bool ARoomCombatSpawnPoint::FindSpawnTransform(
 	// 한 호출의 탐색량만 제한한다. 전부 막혀도 Wave 요청을 버리지 않고 Subsystem이 다시 시도한다.
 	constexpr int32 MaxLocationAttempts = 12;
 	FRandomStream RandomStream(SearchSeed);
-	const FVector Origin = GetActorLocation();
+	const FVector Origin = GetActorLocation() + FVector::UpVector * SpawnHeightOffset;
 	const FQuat Rotation = GetActorQuat();
 	const FCollisionShape CollisionShape = FCollisionShape::MakeCapsule(
 		Capsule->GetUnscaledCapsuleRadius(),
@@ -134,7 +195,9 @@ EDataValidationResult ARoomCombatSpawnPoint::IsDataValid(
 	FDataValidationContext& Context) const
 {
 	EDataValidationResult Result = Super::IsDataValid(Context);
-	if (!RoomTag.IsValid())
+	// 공용 BP는 Room/그룹 없이 컴파일할 수 있다. 배치 위치별 귀속은 실제 인스턴스에서 필수 검사한다.
+	const bool bValidatePlacement = !IsTemplate();
+	if (bValidatePlacement && !RoomTag.IsValid())
 	{
 		Context.AddError(FText::FromString(
 			TEXT("A RoomCombatSpawnPoint requires a valid RoomTag.")));
@@ -152,7 +215,13 @@ EDataValidationResult ARoomCombatSpawnPoint::IsDataValid(
 			TEXT("A RoomCombatSpawnPoint requires a SpawnRadius greater than zero.")));
 		Result = EDataValidationResult::Invalid;
 	}
-	if (!bInitiallyActive && !ActivationGroupTag.IsValid())
+	if (!FMath::IsFinite(SpawnHeightOffset) || SpawnHeightOffset < 0.0f)
+	{
+		Context.AddError(FText::FromString(
+			TEXT("A RoomCombatSpawnPoint requires a non-negative SpawnHeightOffset.")));
+		Result = EDataValidationResult::Invalid;
+	}
+	if (bValidatePlacement && !bInitiallyActive && !ActivationGroupTag.IsValid())
 	{
 		Context.AddError(FText::FromString(
 			TEXT("An initially inactive RoomCombatSpawnPoint requires an ActivationGroupTag.")));

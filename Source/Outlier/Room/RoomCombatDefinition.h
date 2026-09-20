@@ -45,8 +45,9 @@ struct OUTLIER_API FRoomCombatWaveDefinition
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Combat", meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
 	float NextWaveRemainingRatio = 0.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Combat")
-	FGameplayTagQuery SpawnPointQuery;
+	// 비어 있으면 활성 SpawnPoint 전체를 사용하고, 지정하면 해당 Tag 계층에 속한 지점만 사용한다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Combat", meta = (Categories = "RoomCombat.Spawn"))
+	FGameplayTag RequiredSpawnPointTag;
 
 	// Preplaced Wave는 비워둘 수 있고, SpawnFromObjects는 여기의 고정 구성을 나눠서 소환한다.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Combat", meta = (TitleProperty = "EnemyClass"))
@@ -65,21 +66,35 @@ struct OUTLIER_API FRoomCombatPhaseDefinition
 	TArray<FRoomCombatWaveDefinition> Waves;
 };
 
+USTRUCT(BlueprintType)
+struct OUTLIER_API FRoomCombatRoomDefinition
+{
+	GENERATED_BODY()
+
+	bool HasValidPhaseOrder() const;
+	bool CanStartTriggeredSequence(int32 PhaseIndex) const;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Combat", meta = (Categories = "Room"))
+	FGameplayTag RoomTag;
+
+	// 전투 차수와 Wave 번호는 별도 ID 없이 각 배열의 순서를 그대로 사용한다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Combat", meta = (TitleProperty = "StartPolicy"))
+	TArray<FRoomCombatPhaseDefinition> CombatPhases;
+};
+
 UCLASS(BlueprintType)
 class OUTLIER_API URoomCombatDefinition : public UDataAsset
 {
 	GENERATED_BODY()
 
 public:
-	// 에디터 검증과 서버 시작 검증에서 같은 차수 순서 규칙을 사용한다.
-	bool HasValidPhaseOrder() const;
-	bool CanStartTriggeredSequence(int32 PhaseIndex) const;
+	const FRoomCombatRoomDefinition* FindRoomDefinition(FGameplayTag RoomTag) const;
 
 #if WITH_EDITOR
 	virtual EDataValidationResult IsDataValid(FDataValidationContext& Context) const override;
 #endif
 
-	// 전투 차수와 Wave 번호는 별도 ID 없이 각 배열의 순서를 그대로 사용한다.
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Combat", meta = (TitleProperty = "StartPolicy"))
-	TArray<FRoomCombatPhaseDefinition> CombatPhases;
+	// 모든 Room의 전투 구성을 한 Asset에서 편집하고, 월드 Actor는 RoomTag로 항목을 선택한다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Combat", meta = (TitleProperty = "RoomTag"))
+	TArray<FRoomCombatRoomDefinition> RoomDefinitions;
 };

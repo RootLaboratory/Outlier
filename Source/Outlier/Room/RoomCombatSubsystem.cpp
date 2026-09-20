@@ -6,6 +6,7 @@
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "Network/OutlierArenaSubsystem.h"
+#include "OutlierArenaSettings.h"
 #include "Room/RoomCombatDefinition.h"
 #include "Room/RoomCombatSpawnPoint.h"
 #include "Room/RoomVolume.h"
@@ -112,7 +113,35 @@ void URoomCombatSubsystem::Deinitialize()
 	}
 
 	ResetRuntimeCombatState();
+	CombatDefinition = nullptr;
 	Super::Deinitialize();
+}
+
+void URoomCombatSubsystem::OnWorldBeginPlay(UWorld& InWorld)
+{
+	Super::OnWorldBeginPlay(InWorld);
+
+	if (InWorld.GetNetMode() == NM_Client)
+	{
+		return;
+	}
+
+	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
+	CombatDefinition = Settings
+		? Settings->RoomCombatDefinition.LoadSynchronous()
+		: nullptr;
+	if (!CombatDefinition)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[RoomCombat] Integrated RoomCombatDefinition is not configured."));
+	}
+}
+
+const FRoomCombatRoomDefinition* URoomCombatSubsystem::FindRoomDefinition(FGameplayTag RoomTag) const
+{
+	return CombatDefinition
+		? CombatDefinition->FindRoomDefinition(RoomTag)
+		: nullptr;
 }
 
 bool URoomCombatSubsystem::CreateTriggerContext(
@@ -123,7 +152,7 @@ bool URoomCombatSubsystem::CreateTriggerContext(
 	// 해킹 시작 당시의 수명만 기록한다. Room을 예약하지 않으므로 성공 시점에 시작 조건을 다시 검사한다.
 	UWorld* World = GetWorld();
 	const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
-	const URoomCombatDefinition* Definition = Runtime ? Runtime->Definition.Get() : nullptr;
+	const FRoomCombatRoomDefinition* Definition = Runtime ? FindRoomDefinition(RoomTag) : nullptr;
 	if (!World || World->GetNetMode() == NM_Client || bResettingRuntime
 		|| !IsValid(Requester) || Requester->IsActorBeingDestroyed()
 		|| !Requester->HasAuthority() || Requester->GetWorld() != World
@@ -163,7 +192,11 @@ bool URoomCombatSubsystem::StartTriggeredSequence(
 	}
 
 	FRoomCombatRuntime* Runtime = RoomRuntimes.Find(Context.RoomTag);
-	URoomCombatDefinition* Definition = Runtime->Definition.Get();
+	const FRoomCombatRoomDefinition* Definition = FindRoomDefinition(Context.RoomTag);
+	if (!Definition)
+	{
+		return false;
+	}
 	if (!Definition->CanStartTriggeredSequence(Context.CombatPhaseIndex)
 		|| !PendingSpawnRequests.IsEmpty())
 	{
@@ -233,13 +266,20 @@ void URoomCombatSubsystem::ResumeDeferredSpawning(FGameplayTag RoomTag, const FG
 
 bool URoomCombatSubsystem::RegisterRoom(
 	ARoomVolume* RoomVolume,
-	FGameplayTag RoomTag,
-	URoomCombatDefinition* Definition)
+	FGameplayTag RoomTag)
 {
 	UWorld* World = GetWorld();
+	const FRoomCombatRoomDefinition* Definition = FindRoomDefinition(RoomTag);
 	if (!World || World->GetNetMode() == NM_Client || bResettingRuntime
 		|| !IsValid(RoomVolume) || !RoomTag.IsValid() || !Definition)
 	{
+		if (World && World->GetNetMode() != NM_Client && IsValid(RoomVolume) && RoomTag.IsValid()
+			&& CombatDefinition && !Definition)
+		{
+			UE_LOG(LogTemp, Verbose,
+				TEXT("[RoomCombat] Room has no integrated combat entry. Room=%s Actor=%s"),
+				*RoomTag.ToString(), *GetNameSafe(RoomVolume));
+		}
 		return false;
 	}
 
@@ -259,7 +299,6 @@ bool URoomCombatSubsystem::RegisterRoom(
 
 	FRoomCombatRuntime& Runtime = RoomRuntimes.Add(RoomTag);
 	Runtime.RoomVolume = RoomVolume;
-	Runtime.Definition = Definition;
 	Runtime.RegistrationId = FGuid::NewGuid();
 	if (const UOutlierArenaSubsystem* Arena = World->GetSubsystem<UOutlierArenaSubsystem>())
 	{
@@ -527,7 +566,7 @@ void URoomCombatSubsystem::SetActivationGroupActive(
 
 void URoomCombatSubsystem::GetEligibleSpawnPoints(
 	FGameplayTag RoomTag,
-	const FGameplayTagQuery& SpawnPointQuery,
+	FGameplayTag RequiredSpawnPointTag,
 	TArray<ARoomCombatSpawnPoint*>& OutSpawnPoints)
 {
 	OutSpawnPoints.Reset();
@@ -552,8 +591,8 @@ void URoomCombatSubsystem::GetEligibleSpawnPoints(
 		{
 			continue;
 		}
-		if (!SpawnPointQuery.IsEmpty()
-			&& !SpawnPointQuery.Matches(Runtime.SpawnPointTags))
+		if (RequiredSpawnPointTag.IsValid()
+			&& !Runtime.SpawnPointTags.HasTag(RequiredSpawnPointTag))
 		{
 			continue;
 		}
@@ -710,7 +749,7 @@ bool URoomCombatSubsystem::NotifyRoomCombatStarted(FGameplayTag RoomTag)
 		return false;
 	}
 
-	URoomCombatDefinition* Definition = Runtime->Definition.Get();
+	const FRoomCombatRoomDefinition* Definition = FindRoomDefinition(RoomTag);
 	if (!Definition
 		|| !Definition->CombatPhases.IsValidIndex(Runtime->CurrentCombatPhaseIndex)
 		|| Definition->CombatPhases[Runtime->CurrentCombatPhaseIndex].StartPolicy
@@ -741,7 +780,7 @@ const FRoomCombatWaveDefinition* URoomCombatSubsystem::FindSpawnableWave(
 	}
 
 	const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
-	const URoomCombatDefinition* Definition = Runtime ? Runtime->Definition.Get() : nullptr;
+	const FRoomCombatRoomDefinition* Definition = Runtime ? FindRoomDefinition(RoomTag) : nullptr;
 	if (!Runtime || !Definition || Runtime->State != ERoomCombatState::Combat
 		|| ActiveCombatRoomTag != RoomTag
 		|| Runtime->CurrentCombatPhaseIndex != CombatPhaseIndex
@@ -810,7 +849,7 @@ void URoomCombatSubsystem::QueueWaveSpawnRequests(
 	const FRoomCombatWaveDefinition& Wave, const TArray<TSubclassOf<AEnemyBase>>& EnemyRoster)
 {
 	TArray<ARoomCombatSpawnPoint*> EligibleSpawnPoints;
-	GetEligibleSpawnPoints(RoomTag, Wave.SpawnPointQuery, EligibleSpawnPoints);
+	GetEligibleSpawnPoints(RoomTag, Wave.RequiredSpawnPointTag, EligibleSpawnPoints);
 	TArray<float> Weights;
 	TArray<int32> AssignedCounts;
 	for (ARoomCombatSpawnPoint* SpawnPoint : EligibleSpawnPoints)
@@ -825,7 +864,7 @@ void URoomCombatSubsystem::QueueWaveSpawnRequests(
 		FRoomCombatPendingSpawn& Request = PendingSpawnRequests.AddDefaulted_GetRef();
 		Request.EnemyClass = EnemyRoster[RosterIndex];
 		Request.RoomTag = RoomTag;
-		Request.SpawnPointQuery = Wave.SpawnPointQuery;
+		Request.RequiredSpawnPointTag = Wave.RequiredSpawnPointTag;
 		Request.CombatPhaseIndex = Runtime.CurrentCombatPhaseIndex;
 		Request.WaveIndex = Runtime.CurrentWaveIndex;
 		Request.GameplayGeneration = Runtime.GameplayGeneration;
@@ -843,13 +882,14 @@ void URoomCombatSubsystem::QueueWaveSpawnRequests(
 	}
 
 	UE_LOG(LogTemp, Display,
-		TEXT("[RoomCombat] Wave roster queued. Room=%s Phase=%d Wave=%d Generation=%d Pending=%d SpawnPoints=%d"),
+		TEXT("[RoomCombat] Reinforcement queued. Room=%s Phase=%d Wave=%d Generation=%d Requests=%d SpawnPoints=%d RequiredSpawnPointTag=%s"),
 		*RoomTag.ToString(),
 		Runtime.CurrentCombatPhaseIndex,
 		Runtime.CurrentWaveIndex,
 		Runtime.GameplayGeneration,
 		EnemyRoster.Num(),
-		EligibleSpawnPoints.Num());
+		EligibleSpawnPoints.Num(),
+		*Wave.RequiredSpawnPointTag.ToString());
 }
 
 bool URoomCombatSubsystem::RegisterSpawnedEnemy(
@@ -896,6 +936,10 @@ void URoomCombatSubsystem::TrySpawnPendingRequests(FGameplayTag RoomTag)
 		return;
 	}
 
+	int32 MissingSpawnPointCount = 0;
+	int32 BlockedLocationCount = 0;
+	int32 PoolLeaseFailureCount = 0;
+	int32 RegistrationFailureCount = 0;
 	for (int32 RequestIndex = PendingSpawnRequests.Num() - 1; RequestIndex >= 0; --RequestIndex)
 	{
 		FRoomCombatPendingSpawn& Request = PendingSpawnRequests[RequestIndex];
@@ -912,13 +956,14 @@ void URoomCombatSubsystem::TrySpawnPendingRequests(FGameplayTag RoomTag)
 		}
 
 		TArray<ARoomCombatSpawnPoint*> EligibleSpawnPoints;
-		GetEligibleSpawnPoints(RoomTag, Request.SpawnPointQuery, EligibleSpawnPoints);
+		GetEligibleSpawnPoints(RoomTag, Request.RequiredSpawnPointTag, EligibleSpawnPoints);
 		ARoomCombatSpawnPoint* SpawnPoint = ResolveSpawnPoint(
 			*Runtime,
 			Request,
 			EligibleSpawnPoints);
 		if (!SpawnPoint)
 		{
+			++MissingSpawnPointCount;
 			continue;
 		}
 
@@ -928,6 +973,7 @@ void URoomCombatSubsystem::TrySpawnPendingRequests(FGameplayTag RoomTag)
 			HashCombineFast(GetTypeHash(Request.WaveIndex), ++Request.SearchSerial));
 		if (!SpawnPoint->FindSpawnTransform(Request.EnemyClass, SearchSeed, SpawnTransform))
 		{
+			++BlockedLocationCount;
 			continue;
 		}
 
@@ -942,17 +988,29 @@ void URoomCombatSubsystem::TrySpawnPendingRequests(FGameplayTag RoomTag)
 			LeaseContext);
 		if (!Enemy)
 		{
+			++PoolLeaseFailureCount;
 			continue;
 		}
 
 		if (!RegisterSpawnedEnemy(Enemy, Request))
 		{
+			++RegistrationFailureCount;
 			PoolSubsystem->ReturnEnemy(
 				Enemy,
 				Enemy->GetPoolGameplayGeneration(),
 				Enemy->GetPoolLeaseSerial());
 			continue;
 		}
+
+		UE_LOG(LogTemp, Display,
+			TEXT("[RoomCombat] Reinforcement spawned. Room=%s Phase=%d Wave=%d Enemy=%s SpawnPoint=%s Location=%s Remaining=%d"),
+			*RoomTag.ToString(),
+			Request.CombatPhaseIndex,
+			Request.WaveIndex,
+			*GetNameSafe(Enemy),
+			*GetNameSafe(SpawnPoint),
+			*SpawnTransform.GetLocation().ToCompactString(),
+			GetPendingSpawnCount(RoomTag) - 1);
 
 		// Pool 대여와 Room 생존 집계 등록이 모두 성공해야 요청 하나가 완료된다.
 		PendingSpawnRequests.RemoveAtSwap(RequestIndex, 1, EAllowShrinking::No);
@@ -972,12 +1030,16 @@ void URoomCombatSubsystem::TrySpawnPendingRequests(FGameplayTag RoomTag)
 	{
 		Runtime->LastSpawnRetryLogSeconds = CurrentTimeSeconds;
 		UE_LOG(LogTemp, Warning,
-			TEXT("[RoomCombat] Wave spawn remains pending. Room=%s Phase=%d Wave=%d Pending=%d Attempts=%d"),
+			TEXT("[RoomCombat] Wave spawn remains pending. Room=%s Phase=%d Wave=%d Pending=%d Attempts=%d MissingSpawnPoint=%d BlockedLocation=%d PoolLeaseFailure=%d RegistrationFailure=%d"),
 			*RoomTag.ToString(),
 			Runtime->CurrentCombatPhaseIndex,
 			Runtime->CurrentWaveIndex,
 			GetPendingSpawnCount(RoomTag),
-			Runtime->SpawnRetryAttempts);
+			Runtime->SpawnRetryAttempts,
+			MissingSpawnPointCount,
+			BlockedLocationCount,
+			PoolLeaseFailureCount,
+			RegistrationFailureCount);
 	}
 	ScheduleSpawnRetry();
 }
@@ -1107,7 +1169,7 @@ void URoomCombatSubsystem::EvaluateWaveProgress(
 		return;
 	}
 
-	const URoomCombatDefinition* Definition = Runtime.Definition.Get();
+	const FRoomCombatRoomDefinition* Definition = FindRoomDefinition(RoomTag);
 	if (!Definition
 		|| !Definition->CombatPhases.IsValidIndex(Runtime.CurrentCombatPhaseIndex))
 	{
@@ -1149,6 +1211,16 @@ void URoomCombatSubsystem::EvaluateWaveProgress(
 	}
 
 	const int32 NextWaveIndex = Runtime.CurrentWaveIndex + 1;
+	UE_LOG(LogTemp, Display,
+		TEXT("[RoomCombat] Reinforcement triggered. Room=%s Phase=%d CurrentWave=%d NextWave=%d Alive=%d Baseline=%d Ratio=%.3f Required=%.3f"),
+		*RoomTag.ToString(),
+		Runtime.CurrentCombatPhaseIndex,
+		Runtime.CurrentWaveIndex,
+		NextWaveIndex,
+		AliveEnemyCount,
+		Runtime.WaveBaselineEnemyCount,
+		RemainingRatio,
+		RequiredRatio);
 	if (!StartWaveSpawning(RoomTag, Runtime.CurrentCombatPhaseIndex, NextWaveIndex))
 	{
 		UE_LOG(LogTemp, Error,
@@ -1332,7 +1404,7 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 	bool bCancelRemainingWaves)
 {
 	FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
-	URoomCombatDefinition* Definition = Runtime ? Runtime->Definition.Get() : nullptr;
+	const FRoomCombatRoomDefinition* Definition = Runtime ? FindRoomDefinition(RoomTag) : nullptr;
 	if (!Runtime || !Definition
 		|| !Definition->CombatPhases.IsValidIndex(Runtime->CurrentCombatPhaseIndex))
 	{
@@ -1405,7 +1477,7 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 void URoomCombatSubsystem::StartAutomaticPhase(
 	FGameplayTag RoomTag,
 	FRoomCombatRuntime& Runtime,
-	const URoomCombatDefinition& Definition)
+	const FRoomCombatRoomDefinition& Definition)
 {
 	const int32 CompletedPhaseIndex = Runtime.CurrentCombatPhaseIndex;
 	const int32 NextPhaseIndex = CompletedPhaseIndex + 1;
