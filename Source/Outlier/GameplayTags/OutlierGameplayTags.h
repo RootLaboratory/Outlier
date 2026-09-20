@@ -5,6 +5,19 @@
 
 namespace OutlierGameplayTags
 {
+	namespace Enemy
+	{
+		namespace Adaptation
+		{
+			inline FGameplayTag Target()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(
+					FName(TEXT("Enemy.Adaptation.Target")));
+				return Tag;
+			}
+		}
+	}
+
 	namespace Data
 	{
 		inline FGameplayTag Health()

@@ -72,6 +72,7 @@ AEnemyBase::AEnemyBase()
 	bReplicates = true;
 	AIControllerClass = AEnemyAIController::StaticClass();
 	AutoPossessAI = EAutoPossessAI::PlacedInWorldOrSpawned;
+	EnemyTraits.AddTag(OutlierGameplayTags::Enemy::Adaptation::Target());
 
 	OutlierAbilitySystemComponent = CreateDefaultSubobject<UOutlierAbilitySystemComponent>(
 		TEXT("AbilitySystemComponent"));

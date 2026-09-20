@@ -1,5 +1,66 @@
 #include "Enemy/EnemyAdaptationDefinition.h"
 
+int32 UEnemyAdaptationDefinition::ClampStack(int32 Stack) const
+{
+	return FMath::Clamp(Stack, 0, MaxGunAdaptationStack);
+}
+
+EEnemyAdaptationState UEnemyAdaptationDefinition::ResolveState(int32 Stack) const
+{
+	const int32 ClampedStack = ClampStack(Stack);
+	if (ClampedStack >= ResistanceMaxThreshold)
+	{
+		return EEnemyAdaptationState::ResistanceMax;
+	}
+	if (ClampedStack >= ResistanceLevel2Threshold)
+	{
+		return EEnemyAdaptationState::ResistanceLevel2;
+	}
+	if (ClampedStack >= ResistanceLevel1Threshold)
+	{
+		return EEnemyAdaptationState::ResistanceLevel1;
+	}
+	if (ClampedStack >= ShieldPreviewThreshold)
+	{
+		return EEnemyAdaptationState::ShieldPreview;
+	}
+	return EEnemyAdaptationState::Normal;
+}
+
+float UEnemyAdaptationDefinition::ResolveGunDamageMultiplier(int32 Stack) const
+{
+	switch (ResolveState(Stack))
+	{
+	case EEnemyAdaptationState::ResistanceLevel1:
+		return ResistanceLevel1GunDamageMultiplier;
+	case EEnemyAdaptationState::ResistanceLevel2:
+		return ResistanceLevel2GunDamageMultiplier;
+	case EEnemyAdaptationState::ResistanceMax:
+		return ResistanceMaxGunDamageMultiplier;
+	case EEnemyAdaptationState::Normal:
+	case EEnemyAdaptationState::ShieldPreview:
+	default:
+		return 1.0f;
+	}
+}
+
+float UEnemyAdaptationDefinition::ResolveBreakStunSeconds(int32 Stack) const
+{
+	switch (ResolveState(Stack))
+	{
+	case EEnemyAdaptationState::ResistanceLevel1:
+		return ResistanceLevel1BreakStunSeconds;
+	case EEnemyAdaptationState::ResistanceLevel2:
+		return ResistanceLevel2BreakStunSeconds;
+	case EEnemyAdaptationState::ResistanceMax:
+		return ResistanceMaxBreakStunSeconds;
+	case EEnemyAdaptationState::Normal:
+	case EEnemyAdaptationState::ShieldPreview:
+	default:
+		return 0.0f;
+	}
+}
+
 #if WITH_EDITOR
 #include "Misc/DataValidation.h"
 
@@ -60,4 +121,3 @@ EDataValidationResult UEnemyAdaptationDefinition::IsDataValid(
 		: Result;
 }
 #endif
-

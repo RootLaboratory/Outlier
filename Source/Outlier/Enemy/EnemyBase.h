@@ -188,6 +188,15 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Enemy|Data")
 	FDataTableRowHandle ImpactReactionProfileRow;
 
+	// 모든 Enemy는 기본으로 Enemy.Adaptation.Target을 가진다.
+	// 이후 예외 개체가 필요할 때만 해당 Enemy BP에서 태그를 제거한다.
+	UPROPERTY(
+		EditDefaultsOnly,
+		BlueprintReadOnly,
+		Category = "Enemy|Adaptation",
+		meta = (Categories = "Enemy.Adaptation"))
+	FGameplayTagContainer EnemyTraits;
+
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Enemy|Impact")
 	FEnemyImpactReactionProfileRow RuntimeImpactReactionProfile;
 
@@ -308,6 +317,13 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|State")
 	bool IsInCombat() const { return bInCombat; }
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Adaptation")
+	bool HasEnemyTrait(FGameplayTag TraitTag) const { return EnemyTraits.HasTag(TraitTag); }
+
+#if WITH_DEV_AUTOMATION_TESTS
+	void RemoveEnemyTraitForTesting(FGameplayTag TraitTag) { EnemyTraits.RemoveTag(TraitTag); }
+#endif
 	bool PrefersCombatLeft() const { return bPrefersCombatLeft; }
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|State")

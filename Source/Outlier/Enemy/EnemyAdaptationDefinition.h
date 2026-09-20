@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Enemy/EnemyAdaptationTypes.h"
 #include "Engine/DataAsset.h"
 #include "EnemyAdaptationDefinition.generated.h"
 
@@ -13,6 +14,18 @@ class OUTLIER_API UEnemyAdaptationDefinition : public UDataAsset
 	GENERATED_BODY()
 
 public:
+	UFUNCTION(BlueprintPure, Category = "Enemy Adaptation")
+	int32 ClampStack(int32 Stack) const;
+
+	UFUNCTION(BlueprintPure, Category = "Enemy Adaptation")
+	EEnemyAdaptationState ResolveState(int32 Stack) const;
+
+	UFUNCTION(BlueprintPure, Category = "Enemy Adaptation")
+	float ResolveGunDamageMultiplier(int32 Stack) const;
+
+	UFUNCTION(BlueprintPure, Category = "Enemy Adaptation")
+	float ResolveBreakStunSeconds(int32 Stack) const;
+
 #if WITH_EDITOR
 	virtual EDataValidationResult IsDataValid(FDataValidationContext& Context) const override;
 #endif

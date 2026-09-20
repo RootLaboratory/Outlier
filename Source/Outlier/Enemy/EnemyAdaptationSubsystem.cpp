@@ -3,6 +3,7 @@
 #include "Enemy/EnemyAdaptationDefinition.h"
 #include "Enemy/EnemyBase.h"
 #include "Engine/World.h"
+#include "GameplayTags/OutlierGameplayTags.h"
 #include "Network/OutlierArenaSubsystem.h"
 #include "OutlierArenaSettings.h"
 #include "Subsystems/SubsystemCollection.h"
@@ -48,7 +49,9 @@ void UEnemyAdaptationSubsystem::Deinitialize()
 
 	bAcceptingRegistrations = false;
 	ResetActiveEnemies();
+	ResetAdaptationState();
 	ActiveDefinition = nullptr;
+	OnAdaptationUpdated.Clear();
 	Super::Deinitialize();
 }
 
@@ -134,6 +137,91 @@ int32 UEnemyAdaptationSubsystem::GetRegisteredEnemyCount() const
 	return Count;
 }
 
+bool UEnemyAdaptationSubsystem::SetGunAdaptationStack(int32 NewStack)
+{
+	const UWorld* World = GetWorld();
+	if (!World || World->GetNetMode() == NM_Client || !ActiveDefinition)
+	{
+		return false;
+	}
+
+	FEnemyAdaptationUpdateResult Result;
+	Result.PreviousStack = CurrentGunAdaptationStack;
+	Result.PreviousState = CurrentAdaptationState;
+	CurrentGunAdaptationStack = ActiveDefinition->ClampStack(NewStack);
+	CurrentAdaptationState = ActiveDefinition->ResolveState(CurrentGunAdaptationStack);
+	Result.CurrentStack = CurrentGunAdaptationStack;
+	Result.CurrentState = CurrentAdaptationState;
+	OnAdaptationUpdated.Broadcast(Result);
+	return true;
+}
+
+bool UEnemyAdaptationSubsystem::ReportEnemyDefeat(
+	AEnemyBase* Enemy,
+	int32 GameplayGeneration,
+	int32 PoolLeaseSerial,
+	EEnemyFinalKillCategory KillCategory,
+	FEnemyAdaptationUpdateResult& OutResult)
+{
+	OutResult = FEnemyAdaptationUpdateResult();
+	const UWorld* World = GetWorld();
+	if (!World || World->GetNetMode() == NM_Client || !ActiveDefinition || !IsValid(Enemy)
+		|| !Enemy->HasAuthority()
+		|| !Enemy->HasEnemyTrait(OutlierGameplayTags::Enemy::Adaptation::Target()))
+	{
+		return false;
+	}
+
+	FEnemyRegistration* Registration = ActiveEnemies.Find(TWeakObjectPtr<AEnemyBase>(Enemy));
+	if (!Registration || Registration->bDefeatReported
+		|| !IsCurrentRegistration(
+			Enemy,
+			*Registration,
+			GameplayGeneration,
+			PoolLeaseSerial))
+	{
+		return false;
+	}
+
+	// Ignore도 이번 수명의 최종 판정이다. Stack은 바꾸지 않지만 같은 죽음이 다른
+	// 원인으로 다시 보고되어 이중 반영되지 않도록 먼저 소비 처리한다.
+	Registration->bDefeatReported = true;
+	OutResult.KillCategory = KillCategory;
+	OutResult.PreviousStack = CurrentGunAdaptationStack;
+	OutResult.PreviousState = CurrentAdaptationState;
+
+	switch (KillCategory)
+	{
+	case EEnemyFinalKillCategory::Gun:
+		CurrentGunAdaptationStack = ActiveDefinition->ClampStack(
+			CurrentGunAdaptationStack + ActiveDefinition->GunKillIncrement);
+		break;
+	case EEnemyFinalKillCategory::NonGun:
+		if (CurrentGunAdaptationStack >= ActiveDefinition->ResistanceLevel1Threshold)
+		{
+			CurrentGunAdaptationStack = 0;
+			OutResult.bAdaptationBroken = true;
+			OutResult.BreakStunSeconds = ActiveDefinition->ResolveBreakStunSeconds(
+				OutResult.PreviousStack);
+		}
+		else
+		{
+			CurrentGunAdaptationStack = ActiveDefinition->ClampStack(
+				CurrentGunAdaptationStack - ActiveDefinition->NonGunKillDecrement);
+		}
+		break;
+	case EEnemyFinalKillCategory::Ignore:
+	default:
+		break;
+	}
+
+	CurrentAdaptationState = ActiveDefinition->ResolveState(CurrentGunAdaptationStack);
+	OutResult.CurrentStack = CurrentGunAdaptationStack;
+	OutResult.CurrentState = CurrentAdaptationState;
+	OnAdaptationUpdated.Broadcast(OutResult);
+	return true;
+}
+
 bool UEnemyAdaptationSubsystem::CanRegisterEnemy(const AEnemyBase* Enemy) const
 {
 	const UWorld* World = GetWorld();
@@ -160,12 +248,53 @@ bool UEnemyAdaptationSubsystem::CanRegisterEnemy(const AEnemyBase* Enemy) const
 		|| Enemy->GetPoolGameplayGeneration() == static_cast<int32>(ActiveGameplayGeneration);
 }
 
+bool UEnemyAdaptationSubsystem::IsCurrentRegistration(
+	const AEnemyBase* Enemy,
+	const FEnemyRegistration& Registration,
+	int32 GameplayGeneration,
+	int32 PoolLeaseSerial) const
+{
+	if (Registration.GameplayGeneration != GameplayGeneration
+		|| Registration.PoolLeaseSerial != PoolLeaseSerial)
+	{
+		return false;
+	}
+
+	if (!Enemy->IsPoolManaged())
+	{
+		return PoolLeaseSerial == 0
+			&& GameplayGeneration == static_cast<int32>(ActiveGameplayGeneration);
+	}
+
+	return Enemy->GetEnemyPoolState() == EEnemyPoolState::CombatActive
+		&& Enemy->MatchesPoolLease(GameplayGeneration, PoolLeaseSerial);
+}
+
+void UEnemyAdaptationSubsystem::RefreshResolvedState()
+{
+	if (!ActiveDefinition)
+	{
+		CurrentAdaptationState = EEnemyAdaptationState::Normal;
+		return;
+	}
+
+	CurrentGunAdaptationStack = ActiveDefinition->ClampStack(CurrentGunAdaptationStack);
+	CurrentAdaptationState = ActiveDefinition->ResolveState(CurrentGunAdaptationStack);
+}
+
+void UEnemyAdaptationSubsystem::ResetAdaptationState()
+{
+	CurrentGunAdaptationStack = 0;
+	CurrentAdaptationState = EEnemyAdaptationState::Normal;
+}
+
 void UEnemyAdaptationSubsystem::LoadConfiguredDefinition()
 {
 	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
 	ActiveDefinition = Settings
 		? Settings->EnemyAdaptationDefinition.LoadSynchronous()
 		: nullptr;
+	RefreshResolvedState();
 }
 
 void UEnemyAdaptationSubsystem::HandleArenaShown()
@@ -209,5 +338,14 @@ void UEnemyAdaptationSubsystem::HandleArenaReleased()
 	bAcceptingRegistrations = false;
 	ActiveGameplayGeneration = 0;
 	ResetActiveEnemies();
+	ResetAdaptationState();
 	ActiveDefinition = nullptr;
 }
+
+#if WITH_DEV_AUTOMATION_TESTS
+void UEnemyAdaptationSubsystem::SetDefinitionForTesting(UEnemyAdaptationDefinition* Definition)
+{
+	ActiveDefinition = Definition;
+	RefreshResolvedState();
+}
+#endif
