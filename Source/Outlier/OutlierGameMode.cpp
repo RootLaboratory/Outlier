@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OutlierGameMode.h"
+#include "Outlier.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Shooter/ShooterInventoryComponent.h"
@@ -27,6 +28,7 @@
 #include "FirstPerson/FirstPersonPlayerController.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/NetConnection.h"
+#include "Enemy/EnemyAdaptationSubsystem.h"
 #include "Enemy/EnemyBase.h"
 #include "Enemy/EnemyRoomSubsystem.h"
 #include "Room/RoomCombatSubsystem.h"
@@ -280,8 +282,35 @@ bool AOutlierGameMode::StartCheckpointRestart(
 		return false;
 	}
 
-	// 새 Actor가 BeginPlay에서 읽는 기준값을 먼저 되돌린 뒤 Data Layer를 내린다.
-	// 이 순서를 뒤집으면 재활성화된 Actor가 체크포인트 이후의 Live 상태를 잠깐 적용한다.
+	if (UEnemyAdaptationSubsystem* EnemyAdaptationSubsystem =
+		GetWorld()->GetSubsystem<UEnemyAdaptationSubsystem>())
+	{
+		const int32 StackBeforeRestore =
+			EnemyAdaptationSubsystem->GetCurrentGunAdaptationStack();
+		if (EnemyAdaptationSubsystem->SetGunAdaptationStack(
+			Snapshot.GunAdaptationStack))
+		{
+			UE_LOG(
+				LogOutlier,
+				Display,
+				TEXT("[Checkpoint] Enemy adaptation restored Checkpoint=%s PreviousStack=%d RestoredStack=%d"),
+				*Snapshot.CheckpointId.ToString(),
+				StackBeforeRestore,
+				EnemyAdaptationSubsystem->GetCurrentGunAdaptationStack());
+		}
+		else
+		{
+			UE_LOG(
+				LogOutlier,
+				Warning,
+				TEXT("[Checkpoint] Enemy adaptation restore skipped Checkpoint=%s SavedStack=%d"),
+				*Snapshot.CheckpointId.ToString(),
+				Snapshot.GunAdaptationStack);
+		}
+	}
+
+	// 새 Actor가 BeginPlay에서 읽는 월드 진행과 공유 내성 Stack을 먼저 되돌린 뒤
+	// Data Layer를 내린다. 순서를 뒤집으면 새 Actor가 재시작 직전 상태를 잠깐 적용한다.
 	SaveSubsystem->RestoreCurrentWorldProgress(Snapshot.WorldProgress);
 	ShooterPlayerState->RestoreCheckpointProgress(
 		Snapshot.ShooterProgress.NodeCount,
@@ -3126,6 +3155,13 @@ bool AOutlierGameMode::BuildPairCheckpointSnapshot(
 		: nullptr)
 	{
 		OutSnapshot.WorldProgress = SaveSubsystem->GetCurrentWorldProgress();
+	}
+	if (const UEnemyAdaptationSubsystem* EnemyAdaptationSubsystem = GetWorld()
+		? GetWorld()->GetSubsystem<UEnemyAdaptationSubsystem>()
+		: nullptr)
+	{
+		OutSnapshot.GunAdaptationStack =
+			EnemyAdaptationSubsystem->GetCurrentGunAdaptationStack();
 	}
 
 	return OutSnapshot.IsValid();

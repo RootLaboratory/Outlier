@@ -31,6 +31,7 @@ bool FOutlierCheckpointRuntimeSnapshotTest::RunTest(const FString& Parameters)
 	Initial.ShooterSpawnTransform.SetLocation(FVector(100.0, 200.0, 300.0));
 	Initial.WorldProgress.CollectedNodeIds.Add(TEXT("InitialNode"));
 	Initial.WorldProgress.ExplodedPropIds.Add(TEXT("Explosive.Initial"));
+	Initial.GunAdaptationStack = 3;
 	TestTrue(TEXT("The first initial snapshot is accepted"), SaveSubsystem->CaptureInitialSnapshot(Initial));
 
 	FOutlierCheckpointSnapshot ReplacementInitial = Initial;
@@ -42,16 +43,20 @@ bool FOutlierCheckpointRuntimeSnapshotTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Initial snapshot values are copied"), RestoreTarget.ShooterSpawnTransform.GetLocation(), FVector(100.0, 200.0, 300.0));
 	TestTrue(TEXT("Initial exploded prop progress is copied"),
 		RestoreTarget.WorldProgress.ExplodedPropIds.Contains(TEXT("Explosive.Initial")));
+	TestEqual(TEXT("Initial enemy adaptation stack is copied"),
+		RestoreTarget.GunAdaptationStack, 3);
 
 	FOutlierCheckpointSnapshot Checkpoint;
 	Checkpoint.CheckpointId = TEXT("Checkpoint.A");
 	Checkpoint.WorldProgress.CollectedNodeIds.Add(TEXT("SavedNode"));
 	Checkpoint.WorldProgress.ExplodedPropIds.Add(TEXT("Explosive.Saved"));
+	Checkpoint.GunAdaptationStack = 8;
 	TestTrue(TEXT("A valid checkpoint snapshot is committed"), SaveSubsystem->CommitCheckpointSnapshot(Checkpoint));
 
 	FOutlierCheckpointSnapshot Duplicate = Checkpoint;
 	Duplicate.WorldProgress.CollectedNodeIds.Add(TEXT("LateNode"));
 	Duplicate.WorldProgress.ExplodedPropIds.Add(TEXT("Explosive.Late"));
+	Duplicate.GunAdaptationStack = 10;
 	TestFalse(TEXT("The same checkpoint cannot be committed twice"), SaveSubsystem->CommitCheckpointSnapshot(Duplicate));
 	TestTrue(TEXT("The latest checkpoint is selected after commit"), SaveSubsystem->GetRestoreSnapshot(RestoreTarget));
 	TestTrue(TEXT("Committed world progress is preserved"), RestoreTarget.WorldProgress.CollectedNodeIds.Contains(TEXT("SavedNode")));
@@ -60,16 +65,21 @@ bool FOutlierCheckpointRuntimeSnapshotTest::RunTest(const FString& Parameters)
 		RestoreTarget.WorldProgress.ExplodedPropIds.Contains(TEXT("Explosive.Saved")));
 	TestFalse(TEXT("A rejected duplicate cannot add exploded props"),
 		RestoreTarget.WorldProgress.ExplodedPropIds.Contains(TEXT("Explosive.Late")));
+	TestEqual(TEXT("A rejected duplicate cannot replace the enemy adaptation stack"),
+		RestoreTarget.GunAdaptationStack, 8);
 
 	FOutlierCheckpointSnapshot LaterCheckpoint;
 	LaterCheckpoint.CheckpointId = TEXT("Checkpoint.B");
 	LaterCheckpoint.WorldProgress.OpenedDoorIds.Add(TEXT("Door.B"));
+	LaterCheckpoint.GunAdaptationStack = 9;
 	TestTrue(TEXT("A later checkpoint replaces the restore target"), SaveSubsystem->CommitCheckpointSnapshot(LaterCheckpoint));
 	TestTrue(TEXT("The newer checkpoint is selected"), SaveSubsystem->GetRestoreSnapshot(RestoreTarget));
 	TestEqual(TEXT("The newer checkpoint Id is preserved"), RestoreTarget.CheckpointId, FName(TEXT("Checkpoint.B")));
 	TestTrue(TEXT("The newer checkpoint world state is copied"), RestoreTarget.WorldProgress.OpenedDoorIds.Contains(TEXT("Door.B")));
 	TestFalse(TEXT("A later checkpoint replaces older exploded prop progress"),
 		RestoreTarget.WorldProgress.ExplodedPropIds.Contains(TEXT("Explosive.Saved")));
+	TestEqual(TEXT("A later checkpoint replaces the enemy adaptation stack"),
+		RestoreTarget.GunAdaptationStack, 9);
 
 	SaveSubsystem->SetWorldProgressState(EOutlierWorldProgressType::CollectedNode, TEXT("AfterCheckpoint"), true);
 	TestTrue(TEXT("Live world progress receives later changes"),
