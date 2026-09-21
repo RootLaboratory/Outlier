@@ -209,7 +209,35 @@ bool FRoomCombatDefinitionValidationTest::RunTest(const FString& Parameters)
 		URoomCombatDefinition* Definition = MakeValidHackTriggerDefinition();
 		Definition->RoomDefinitions[0].CombatPhases[0].Waves[0].Enemies.Reset();
 		FDataValidationContext Context;
-		TestEqual(TEXT("A spawned Wave requires an Enemy roster"),
+		TestEqual(TEXT("A spawned Wave requires an Enemy roster or turret hatches"),
+			ValidateDefinition(Definition, Context), EDataValidationResult::Invalid);
+	}
+
+	{
+		URoomCombatDefinition* Definition = MakeValidHackTriggerDefinition();
+		FRoomCombatWaveDefinition& Wave = Definition->RoomDefinitions[0].CombatPhases[0].Waves[0];
+		Wave.Enemies.Reset();
+		Wave.ExpectedTurretHatchCount = 2;
+		FDataValidationContext Context;
+		TestEqual(TEXT("A spawned Wave may use only preplaced turret hatches"),
+			ValidateDefinition(Definition, Context), EDataValidationResult::Valid);
+		TestTrue(TEXT("A turret-only sequence passes runtime prevalidation"),
+			Definition->RoomDefinitions[0].CanStartTriggeredSequence(0));
+	}
+
+	{
+		URoomCombatDefinition* Definition = MakeValidHackTriggerDefinition();
+		Definition->RoomDefinitions[0].CombatPhases[0].Waves[0].ExpectedTurretHatchCount = -1;
+		FDataValidationContext Context;
+		TestEqual(TEXT("A negative turret hatch count is invalid"),
+			ValidateDefinition(Definition, Context), EDataValidationResult::Invalid);
+	}
+
+	{
+		URoomCombatDefinition* Definition = MakeValidInitialDetectionDefinition();
+		Definition->RoomDefinitions[0].CombatPhases[0].Waves[0].ExpectedTurretHatchCount = 1;
+		FDataValidationContext Context;
+		TestEqual(TEXT("A preplaced Wave cannot declare turret hatch activations"),
 			ValidateDefinition(Definition, Context), EDataValidationResult::Invalid);
 	}
 

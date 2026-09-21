@@ -1,5 +1,6 @@
 #include "Room/RoomCombatSubsystem.h"
 
+#include "Enemy/AutoTurret.h"
 #include "Enemy/EnemyBase.h"
 #include "Enemy/EnemyPoolSubsystem.h"
 #include "Enemy/EnemyRoomSubsystem.h"
@@ -10,6 +11,7 @@
 #include "Room/RoomCombatDefinition.h"
 #include "Room/RoomCombatSpawnPoint.h"
 #include "Room/RoomVolume.h"
+#include "Room/TurretReinforcementHatch.h"
 #include "Save/OutlierSaveSubSystem.h"
 #include "Subsystems/SubsystemCollection.h"
 
@@ -56,6 +58,11 @@ namespace
 		return Runtime.GameplayGeneration == Request.GameplayGeneration
 			&& Runtime.CurrentCombatPhaseIndex == Request.CombatPhaseIndex
 			&& Runtime.CurrentWaveIndex == Request.WaveIndex;
+	}
+
+	bool IsPendingSpawnForRoom(const FRoomCombatPendingSpawn& Request, FGameplayTag RoomTag)
+	{
+		return Request.RoomTag == RoomTag;
 	}
 
 	bool BuildWaveEnemyRoster(const FRoomCombatWaveDefinition& Wave,
@@ -144,6 +151,28 @@ const FRoomCombatRoomDefinition* URoomCombatSubsystem::FindRoomDefinition(FGamep
 		: nullptr;
 }
 
+bool URoomCombatSubsystem::CanRunServerGameplay() const
+{
+	const UWorld* World = GetWorld();
+	return World && World->GetNetMode() != NM_Client && !bResettingRuntime;
+}
+
+bool URoomCombatSubsystem::HasPendingSpawns(FGameplayTag RoomTag) const
+{
+	return PendingSpawnRequests.ContainsByPredicate(
+		[RoomTag](const FRoomCombatPendingSpawn& Request)
+		{
+			return IsPendingSpawnForRoom(Request, RoomTag);
+		});
+}
+
+bool URoomCombatSubsystem::IsActiveCombatRuntime(
+	FGameplayTag RoomTag,
+	const FRoomCombatRuntime& Runtime) const
+{
+	return Runtime.State == ERoomCombatState::Combat && ActiveCombatRoomTag == RoomTag;
+}
+
 bool URoomCombatSubsystem::CreateTriggerContext(
 	AActor* Requester, FGameplayTag RoomTag, FGameplayTag ActivationGroupTag,
 	FRoomCombatTriggerContext& OutContext) const
@@ -153,15 +182,16 @@ bool URoomCombatSubsystem::CreateTriggerContext(
 	UWorld* World = GetWorld();
 	const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
 	const FRoomCombatRoomDefinition* Definition = Runtime ? FindRoomDefinition(RoomTag) : nullptr;
-	if (!World || World->GetNetMode() == NM_Client || bResettingRuntime
+	const FRoomCombatPhaseDefinition* Phase = Definition && Runtime
+		? Definition->FindPhase(Runtime->CurrentCombatPhaseIndex)
+		: nullptr;
+	if (!CanRunServerGameplay()
 		|| !IsValid(Requester) || Requester->IsActorBeingDestroyed()
 		|| !Requester->HasAuthority() || Requester->GetWorld() != World
 		|| !ActivationGroupTag.IsValid() || !Runtime || !Runtime->RoomVolume.IsValid()
-		|| !Definition || Runtime->State != ERoomCombatState::WaitingForTrigger
+		|| Runtime->State != ERoomCombatState::WaitingForTrigger
 		|| ActiveCombatRoomTag.IsValid()
-		|| !Definition->CombatPhases.IsValidIndex(Runtime->CurrentCombatPhaseIndex)
-		|| Definition->CombatPhases[Runtime->CurrentCombatPhaseIndex].StartPolicy
-			!= ERoomCombatPhaseStartPolicy::HackTrigger)
+		|| !Phase || Phase->StartPolicy != ERoomCombatPhaseStartPolicy::HackTrigger)
 	{
 		return false;
 	}
@@ -270,7 +300,7 @@ bool URoomCombatSubsystem::RegisterRoom(
 {
 	UWorld* World = GetWorld();
 	const FRoomCombatRoomDefinition* Definition = FindRoomDefinition(RoomTag);
-	if (!World || World->GetNetMode() == NM_Client || bResettingRuntime
+	if (!CanRunServerGameplay()
 		|| !IsValid(RoomVolume) || !RoomTag.IsValid() || !Definition)
 	{
 		if (World && World->GetNetMode() != NM_Client && IsValid(RoomVolume) && RoomTag.IsValid()
@@ -325,9 +355,8 @@ bool URoomCombatSubsystem::RegisterRoom(
 	{
 		Runtime.State = ERoomCombatState::Cleared;
 	}
-	else if (!Definition->CombatPhases.IsEmpty()
-		&& Definition->CombatPhases[0].StartPolicy
-			== ERoomCombatPhaseStartPolicy::HackTrigger)
+	else if (const FRoomCombatPhaseDefinition* FirstPhase = Definition->FindPhase(0);
+		FirstPhase && FirstPhase->StartPolicy == ERoomCombatPhaseStartPolicy::HackTrigger)
 	{
 		Runtime.State = ERoomCombatState::WaitingForTrigger;
 	}
@@ -463,8 +492,7 @@ bool URoomCombatSubsystem::RegisterSpawnPoint(
 	const FGameplayTagContainer& SpawnPointTags,
 	FGameplayTag ActivationGroupTag)
 {
-	UWorld* World = GetWorld();
-	if (!World || World->GetNetMode() == NM_Client || bResettingRuntime
+	if (!CanRunServerGameplay()
 		|| !IsValid(SpawnPoint) || !SpawnPoint->HasAuthority()
 		|| !RoomTag.IsValid())
 	{
@@ -532,6 +560,194 @@ void URoomCombatSubsystem::UnregisterSpawnPoint(ARoomCombatSpawnPoint* SpawnPoin
 	}
 
 	RegisteredSpawnPointRooms.Remove(SpawnPointPtr);
+}
+
+bool URoomCombatSubsystem::RegisterTurretHatch(
+	ATurretReinforcementHatch* Hatch,
+	FGameplayTag RoomTag,
+	int32 CombatPhaseIndex,
+	int32 WaveIndex,
+	AAutoTurret* LinkedTurret)
+{
+	UWorld* World = GetWorld();
+	if (!CanRunServerGameplay())
+	{
+		return false;
+	}
+	if (!IsValid(Hatch) || !Hatch->HasAuthority()
+		|| !IsValid(LinkedTurret) || !LinkedTurret->HasAuthority()
+		|| Hatch->GetWorld() != World || LinkedTurret->GetWorld() != World)
+	{
+		return false;
+	}
+	if (!RoomTag.IsValid() || CombatPhaseIndex < 0 || WaveIndex < 0)
+	{
+		return false;
+	}
+
+	const FRoomCombatRoomDefinition* Definition = FindRoomDefinition(RoomTag);
+	const FRoomCombatWaveDefinition* Wave = Definition
+		? Definition->FindWave(CombatPhaseIndex, WaveIndex)
+		: nullptr;
+	if (!Wave)
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("[RoomCombat] Turret hatch has an invalid Room/Wave. Hatch=%s Room=%s Phase=%d Wave=%d"),
+			*GetNameSafe(Hatch), *RoomTag.ToString(), CombatPhaseIndex, WaveIndex);
+		return false;
+	}
+
+	const int32 ExpectedHatchCount = Wave->ExpectedTurretHatchCount;
+	if (!Wave->IsSpawnFromObjects() || !Wave->HasTurretHatches())
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("[RoomCombat] Turret hatch targets a Wave that expects no hatches. Hatch=%s Room=%s Phase=%d Wave=%d"),
+			*GetNameSafe(Hatch), *RoomTag.ToString(), CombatPhaseIndex, WaveIndex);
+		return false;
+	}
+
+	const TWeakObjectPtr<ATurretReinforcementHatch> HatchPtr(Hatch);
+	// WP 재등록은 같은 Actor의 BeginPlay가 다시 들어올 수 있으므로 완전히 같은 설정은 멱등 성공으로 본다.
+	if (const FGameplayTag* ExistingRoomTag = RegisteredTurretHatchRooms.Find(HatchPtr))
+	{
+		const TArray<FRoomCombatTurretHatchRuntime>* ExistingEntries =
+			TurretHatchesByRoom.Find(*ExistingRoomTag);
+		const FRoomCombatTurretHatchRuntime* Existing = ExistingEntries
+			? ExistingEntries->FindByPredicate(
+				[Hatch](const FRoomCombatTurretHatchRuntime& Entry)
+				{
+					return Entry.Hatch.Get() == Hatch;
+				})
+			: nullptr;
+		if (Existing && *ExistingRoomTag == RoomTag
+			&& Existing->CombatPhaseIndex == CombatPhaseIndex
+			&& Existing->WaveIndex == WaveIndex
+			&& Existing->LinkedTurret.Get() == LinkedTurret)
+		{
+			return true;
+		}
+
+		UE_LOG(LogTemp, Error,
+			TEXT("[RoomCombat] Turret hatch was registered with different settings. Hatch=%s ExistingRoom=%s NewRoom=%s"),
+			*GetNameSafe(Hatch), *ExistingRoomTag->ToString(), *RoomTag.ToString());
+		return false;
+	}
+
+	CompactTurretHatches(RoomTag);
+	const TWeakObjectPtr<AAutoTurret> TurretPtr(LinkedTurret);
+	if (const TWeakObjectPtr<ATurretReinforcementHatch>* ExistingHatch =
+		RegisteredHatchesByTurret.Find(TurretPtr))
+	{
+		if (ExistingHatch->IsValid())
+		{
+			UE_LOG(LogTemp, Error,
+				TEXT("[RoomCombat] AutoTurret is linked to multiple hatches. Turret=%s Existing=%s New=%s"),
+				*GetNameSafe(LinkedTurret), *GetNameSafe(ExistingHatch->Get()), *GetNameSafe(Hatch));
+			return false;
+		}
+
+		// EndPlay 순서가 뒤집혀 남은 만료 인덱스는 새로 로드된 해치의 등록을 막지 않는다.
+		RegisteredHatchesByTurret.Remove(TurretPtr);
+	}
+
+	if (GetRegisteredTurretHatchCount(RoomTag, CombatPhaseIndex, WaveIndex)
+		>= ExpectedHatchCount)
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("[RoomCombat] Turret hatch count exceeds Wave definition. Hatch=%s Room=%s Phase=%d Wave=%d Expected=%d"),
+			*GetNameSafe(Hatch), *RoomTag.ToString(), CombatPhaseIndex, WaveIndex, ExpectedHatchCount);
+		return false;
+	}
+
+	FRoomCombatTurretHatchRuntime& Runtime =
+		TurretHatchesByRoom.FindOrAdd(RoomTag).AddDefaulted_GetRef();
+	Runtime.Hatch = HatchPtr;
+	Runtime.LinkedTurret = TurretPtr;
+	Runtime.CombatPhaseIndex = CombatPhaseIndex;
+	Runtime.WaveIndex = WaveIndex;
+	RegisteredTurretHatchRooms.Add(HatchPtr, RoomTag);
+	RegisteredHatchesByTurret.Add(TurretPtr, HatchPtr);
+	UE_LOG(LogTemp, Display,
+		TEXT("[RoomCombat] Turret hatch registered. Hatch=%s Turret=%s Room=%s Phase=%d Wave=%d Registered=%d Expected=%d"),
+		*GetNameSafe(Hatch),
+		*GetNameSafe(LinkedTurret),
+		*RoomTag.ToString(),
+		CombatPhaseIndex,
+		WaveIndex,
+		GetRegisteredTurretHatchCount(RoomTag, CombatPhaseIndex, WaveIndex),
+		ExpectedHatchCount);
+	return true;
+}
+
+void URoomCombatSubsystem::UnregisterTurretHatch(ATurretReinforcementHatch* Hatch)
+{
+	if (!Hatch)
+	{
+		return;
+	}
+
+	const TWeakObjectPtr<ATurretReinforcementHatch> HatchPtr(Hatch);
+	const FGameplayTag* RoomTag = RegisteredTurretHatchRooms.Find(HatchPtr);
+	if (!RoomTag)
+	{
+		return;
+	}
+	const FGameplayTag RegisteredRoomTag = *RoomTag;
+
+	if (TArray<FRoomCombatTurretHatchRuntime>* Entries = TurretHatchesByRoom.Find(RegisteredRoomTag))
+	{
+		for (const FRoomCombatTurretHatchRuntime& Entry : *Entries)
+		{
+			if (Entry.Hatch == HatchPtr)
+			{
+				const TWeakObjectPtr<ATurretReinforcementHatch>* RegisteredHatch =
+					RegisteredHatchesByTurret.Find(Entry.LinkedTurret);
+				if (RegisteredHatch && *RegisteredHatch == HatchPtr)
+				{
+					RegisteredHatchesByTurret.Remove(Entry.LinkedTurret);
+				}
+				break;
+			}
+		}
+
+		Entries->RemoveAll(
+			[Hatch](const FRoomCombatTurretHatchRuntime& Entry)
+			{
+				return Entry.Hatch.Get() == Hatch;
+			});
+		if (Entries->IsEmpty())
+		{
+			TurretHatchesByRoom.Remove(RegisteredRoomTag);
+		}
+	}
+
+	RegisteredTurretHatchRooms.Remove(HatchPtr);
+	UE_LOG(LogTemp, Display,
+		TEXT("[RoomCombat] Turret hatch unregistered. Hatch=%s Room=%s"),
+		*GetNameSafe(Hatch), *RegisteredRoomTag.ToString());
+}
+
+void URoomCombatSubsystem::GetRegisteredTurretHatches(
+	FGameplayTag RoomTag,
+	int32 CombatPhaseIndex,
+	int32 WaveIndex,
+	TArray<ATurretReinforcementHatch*>& OutHatches)
+{
+	OutHatches.Reset();
+	CompactTurretHatches(RoomTag);
+	const TArray<FRoomCombatTurretHatchRuntime>* Entries = TurretHatchesByRoom.Find(RoomTag);
+	if (!Entries)
+	{
+		return;
+	}
+
+	for (const FRoomCombatTurretHatchRuntime& Entry : *Entries)
+	{
+		if (Entry.CombatPhaseIndex == CombatPhaseIndex && Entry.WaveIndex == WaveIndex)
+		{
+			OutHatches.Add(Entry.Hatch.Get());
+		}
+	}
 }
 
 void URoomCombatSubsystem::SetActivationGroupActive(
@@ -722,8 +938,7 @@ void URoomCombatSubsystem::NotifyEnemyDefeated(AEnemyBase* Enemy)
 
 bool URoomCombatSubsystem::NotifyRoomCombatStarted(FGameplayTag RoomTag)
 {
-	UWorld* World = GetWorld();
-	if (!World || World->GetNetMode() == NM_Client || bResettingRuntime || !RoomTag.IsValid())
+	if (!CanRunServerGameplay() || !RoomTag.IsValid())
 	{
 		return false;
 	}
@@ -750,10 +965,10 @@ bool URoomCombatSubsystem::NotifyRoomCombatStarted(FGameplayTag RoomTag)
 	}
 
 	const FRoomCombatRoomDefinition* Definition = FindRoomDefinition(RoomTag);
-	if (!Definition
-		|| !Definition->CombatPhases.IsValidIndex(Runtime->CurrentCombatPhaseIndex)
-		|| Definition->CombatPhases[Runtime->CurrentCombatPhaseIndex].StartPolicy
-			!= ERoomCombatPhaseStartPolicy::InitialDetection)
+	const FRoomCombatPhaseDefinition* Phase = Definition
+		? Definition->FindPhase(Runtime->CurrentCombatPhaseIndex)
+		: nullptr;
+	if (!Phase || Phase->StartPolicy != ERoomCombatPhaseStartPolicy::InitialDetection)
 	{
 		return false;
 	}
@@ -773,25 +988,21 @@ const FRoomCombatWaveDefinition* URoomCombatSubsystem::FindSpawnableWave(
 	int32 CombatPhaseIndex,
 	int32 WaveIndex) const
 {
-	const UWorld* World = GetWorld();
-	if (!World || World->GetNetMode() == NM_Client || bResettingRuntime)
+	if (!CanRunServerGameplay())
 	{
 		return nullptr;
 	}
 
 	const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
 	const FRoomCombatRoomDefinition* Definition = Runtime ? FindRoomDefinition(RoomTag) : nullptr;
-	if (!Runtime || !Definition || Runtime->State != ERoomCombatState::Combat
-		|| ActiveCombatRoomTag != RoomTag
-		|| Runtime->CurrentCombatPhaseIndex != CombatPhaseIndex
-		|| !Definition->CombatPhases.IsValidIndex(CombatPhaseIndex))
+	if (!Runtime || !Definition || !IsActiveCombatRuntime(RoomTag, *Runtime)
+		|| Runtime->CurrentCombatPhaseIndex != CombatPhaseIndex)
 	{
 		return nullptr;
 	}
 
-	const FRoomCombatPhaseDefinition& Phase = Definition->CombatPhases[CombatPhaseIndex];
-	if (!Phase.Waves.IsValidIndex(WaveIndex)
-		|| Phase.Waves[WaveIndex].SpawnMode != ERoomCombatWaveSpawnMode::SpawnFromObjects)
+	const FRoomCombatWaveDefinition* Wave = Definition->FindWave(CombatPhaseIndex, WaveIndex);
+	if (!Wave || !Wave->IsSpawnFromObjects())
 	{
 		return nullptr;
 	}
@@ -805,7 +1016,7 @@ const FRoomCombatWaveDefinition* URoomCombatSubsystem::FindSpawnableWave(
 	{
 		return nullptr;
 	}
-	return &Phase.Waves[WaveIndex];
+	return Wave;
 }
 
 bool URoomCombatSubsystem::StartWaveSpawning(
@@ -1140,7 +1351,7 @@ void URoomCombatSubsystem::FinalizeCurrentWaveSpawn(
 {
 	if (Runtime.State != ERoomCombatState::Combat
 		|| !Runtime.bCurrentWaveSpawnStarted
-		|| GetPendingSpawnCount(RoomTag) != 0)
+		|| HasPendingSpawns(RoomTag))
 	{
 		return;
 	}
@@ -1161,31 +1372,28 @@ void URoomCombatSubsystem::EvaluateWaveProgress(
 	FRoomCombatRuntime& Runtime)
 {
 	// 아직 나오지 못한 적이 있으면 생존 수가 적어도 다음 Wave/차수로 넘기지 않는다.
-	if (Runtime.State != ERoomCombatState::Combat
-		|| ActiveCombatRoomTag != RoomTag
+	if (!IsActiveCombatRuntime(RoomTag, Runtime)
 		|| !Runtime.bCurrentWaveSpawnStarted
-		|| GetPendingSpawnCount(RoomTag) != 0)
+		|| HasPendingSpawns(RoomTag))
 	{
 		return;
 	}
 
 	const FRoomCombatRoomDefinition* Definition = FindRoomDefinition(RoomTag);
-	if (!Definition
-		|| !Definition->CombatPhases.IsValidIndex(Runtime.CurrentCombatPhaseIndex))
-	{
-		return;
-	}
-
-	const FRoomCombatPhaseDefinition& Phase =
-		Definition->CombatPhases[Runtime.CurrentCombatPhaseIndex];
-	if (!Phase.Waves.IsValidIndex(Runtime.CurrentWaveIndex))
+	const FRoomCombatPhaseDefinition* Phase = Definition
+		? Definition->FindPhase(Runtime.CurrentCombatPhaseIndex)
+		: nullptr;
+	const FRoomCombatWaveDefinition* Wave = Definition
+		? Definition->FindWave(Runtime.CurrentCombatPhaseIndex, Runtime.CurrentWaveIndex)
+		: nullptr;
+	if (!Phase || !Wave)
 	{
 		return;
 	}
 
 	CompactAliveEnemies(Runtime);
 	const int32 AliveEnemyCount = Runtime.TrackedAliveEnemies.Num();
-	const bool bLastWave = Runtime.CurrentWaveIndex == Phase.Waves.Num() - 1;
+	const bool bLastWave = Runtime.CurrentWaveIndex == Phase->Waves.Num() - 1;
 	if (bLastWave)
 	{
 		// 마지막 Wave는 비율이 아니라 전멸로 완료한다. 앞선 Wave에서 남은 적도 포함된다.
@@ -1204,7 +1412,7 @@ void URoomCombatSubsystem::EvaluateWaveProgress(
 	// 분모는 소환 완료 때 확정한 값이다. 사망할 때는 분자만 줄이고 다음 증원 완료 때 갱신한다.
 	const float RemainingRatio = static_cast<float>(AliveEnemyCount)
 		/ static_cast<float>(Runtime.WaveBaselineEnemyCount);
-	const float RequiredRatio = Phase.Waves[Runtime.CurrentWaveIndex].NextWaveRemainingRatio;
+	const float RequiredRatio = Wave->NextWaveRemainingRatio;
 	if (RemainingRatio > RequiredRatio)
 	{
 		return;
@@ -1296,6 +1504,9 @@ void URoomCombatSubsystem::ResetRuntimeCombatState()
 	PendingSpawnRequests.Reset();
 	SpawnPointsByRoom.Reset();
 	RegisteredSpawnPointRooms.Reset();
+	TurretHatchesByRoom.Reset();
+	RegisteredTurretHatchRooms.Reset();
+	RegisteredHatchesByTurret.Reset();
 	if (UEnemyRoomSubsystem* EnemyRooms = GetWorld()
 		? GetWorld()->GetSubsystem<UEnemyRoomSubsystem>() : nullptr)
 	{
@@ -1373,11 +1584,12 @@ int32 URoomCombatSubsystem::GetPendingSpawnCount(FGameplayTag RoomTag) const
 	int32 PendingCount = 0;
 	for (const FRoomCombatPendingSpawn& Request : PendingSpawnRequests)
 	{
-		if (Request.RoomTag == RoomTag)
+		if (IsPendingSpawnForRoom(Request, RoomTag))
 		{
 			++PendingCount;
 		}
 	}
+
 	return PendingCount;
 }
 
@@ -1399,14 +1611,35 @@ int32 URoomCombatSubsystem::GetRegisteredSpawnPointCount(FGameplayTag RoomTag)
 	return RoomSpawnPoints ? RoomSpawnPoints->Num() : 0;
 }
 
+int32 URoomCombatSubsystem::GetRegisteredTurretHatchCount(
+	FGameplayTag RoomTag,
+	int32 CombatPhaseIndex,
+	int32 WaveIndex)
+{
+	CompactTurretHatches(RoomTag);
+	const TArray<FRoomCombatTurretHatchRuntime>* Entries = TurretHatchesByRoom.Find(RoomTag);
+	if (!Entries)
+	{
+		return 0;
+	}
+
+	return Entries->CountByPredicate(
+		[CombatPhaseIndex, WaveIndex](const FRoomCombatTurretHatchRuntime& Entry)
+		{
+			return Entry.CombatPhaseIndex == CombatPhaseIndex && Entry.WaveIndex == WaveIndex;
+		});
+}
+
 void URoomCombatSubsystem::CompleteCurrentPhase(
 	FGameplayTag RoomTag,
 	bool bCancelRemainingWaves)
 {
 	FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
 	const FRoomCombatRoomDefinition* Definition = Runtime ? FindRoomDefinition(RoomTag) : nullptr;
-	if (!Runtime || !Definition
-		|| !Definition->CombatPhases.IsValidIndex(Runtime->CurrentCombatPhaseIndex))
+	const FRoomCombatPhaseDefinition* CurrentPhase = Runtime && Definition
+		? Definition->FindPhase(Runtime->CurrentCombatPhaseIndex)
+		: nullptr;
+	if (!Runtime || !Definition || !CurrentPhase)
 	{
 		return;
 	}
@@ -1414,11 +1647,12 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 	const int32 Generation = Runtime->GameplayGeneration;
 	const FGuid RegistrationId = Runtime->RegistrationId;
 	const int32 NextPhaseIndex = CompletedPhaseIndex + 1;
+	const FRoomCombatPhaseDefinition* NextPhase = Definition->FindPhase(NextPhaseIndex);
 	Runtime->WaveBaselineEnemyCount = INDEX_NONE;
 	Runtime->bCurrentWaveSpawnStarted = false;
 	Runtime->SpawnAssignments.Reset();
 
-	if (Runtime->bTriggeredSequenceActive && Definition->CombatPhases.IsValidIndex(NextPhaseIndex))
+	if (Runtime->bTriggeredSequenceActive && NextPhase)
 	{
 		// 해킹으로 시작한 연속 전투는 중간 차수가 끝나도 출입 차단과 Streaming을 유지한다.
 		StartAutomaticPhase(RoomTag, *Runtime, *Definition);
@@ -1443,7 +1677,7 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 
 	Runtime->bTriggeredSequenceActive = false;
 	SetActivationGroupActive(RoomTag, Runtime->ActiveActivationGroupTag, false);
-	if (!Definition->CombatPhases.IsValidIndex(NextPhaseIndex))
+	if (!NextPhase)
 	{
 		MarkRoomCleared(RoomTag, *Runtime);
 		// 전체 완료에서 차단 해제를 먼저 알린다. 이어지는 차수 알림이 Reset을 요청해도 해제가 누락되지 않는다.
@@ -1459,8 +1693,7 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 
 	Runtime->CurrentCombatPhaseIndex = NextPhaseIndex;
 	Runtime->CurrentWaveIndex = 0;
-	Runtime->State = Definition->CombatPhases[NextPhaseIndex].StartPolicy
-		== ERoomCombatPhaseStartPolicy::HackTrigger
+	Runtime->State = NextPhase->StartPolicy == ERoomCombatPhaseStartPolicy::HackTrigger
 		? ERoomCombatState::WaitingForTrigger
 		: ERoomCombatState::Dormant;
 
@@ -1483,12 +1716,13 @@ void URoomCombatSubsystem::StartAutomaticPhase(
 	const int32 NextPhaseIndex = CompletedPhaseIndex + 1;
 	const int32 Generation = Runtime.GameplayGeneration;
 	const FGuid RegistrationId = Runtime.RegistrationId;
+	const FRoomCombatPhaseDefinition* NextPhase = Definition.FindPhase(NextPhaseIndex);
 	Runtime.CurrentCombatPhaseIndex = NextPhaseIndex;
 	Runtime.CurrentWaveIndex = 0;
 	Runtime.bDeferSpawnExecution = true;
 
 	// 먼저 다음 명단만 준비한다. 외부 완료 이벤트가 Reset을 요청할 수 있어 실제 소환은 뒤로 미룬다.
-	if (Definition.CombatPhases[NextPhaseIndex].StartPolicy != ERoomCombatPhaseStartPolicy::Automatic
+	if (!NextPhase || NextPhase->StartPolicy != ERoomCombatPhaseStartPolicy::Automatic
 		|| !StartWaveSpawning(RoomTag, NextPhaseIndex, 0))
 	{
 		// 잘못된 런타임 데이터는 완료로 통과시키지 않는다. 출입 차단을 유지하고 원인을 남긴다.
@@ -1554,6 +1788,39 @@ void URoomCombatSubsystem::CompactSpawnPoints(FGameplayTag RoomTag)
 	if (RoomSpawnPoints->IsEmpty())
 	{
 		SpawnPointsByRoom.Remove(RoomTag);
+	}
+}
+
+void URoomCombatSubsystem::CompactTurretHatches(FGameplayTag RoomTag)
+{
+	TArray<FRoomCombatTurretHatchRuntime>* Entries = TurretHatchesByRoom.Find(RoomTag);
+	if (!Entries)
+	{
+		return;
+	}
+
+	Entries->RemoveAll(
+		[this](const FRoomCombatTurretHatchRuntime& Entry)
+		{
+			if (Entry.Hatch.IsValid() && Entry.LinkedTurret.IsValid())
+			{
+				return false;
+			}
+
+			// WP 언로드 순서와 무관하게 한쪽 Actor가 먼저 사라지면 두 역방향 인덱스도 함께 폐기한다.
+			RegisteredTurretHatchRooms.Remove(Entry.Hatch);
+			if (const TWeakObjectPtr<ATurretReinforcementHatch>* RegisteredHatch =
+				RegisteredHatchesByTurret.Find(Entry.LinkedTurret);
+				RegisteredHatch && *RegisteredHatch == Entry.Hatch)
+			{
+				RegisteredHatchesByTurret.Remove(Entry.LinkedTurret);
+			}
+			return true;
+		});
+
+	if (Entries->IsEmpty())
+	{
+		TurretHatchesByRoom.Remove(RoomTag);
 	}
 }
 

@@ -14,6 +14,15 @@
 #include "Misc/DataValidation.h"
 #endif
 
+namespace
+{
+	URoomTagComponent* FindRoomTagComponent(AActor* Actor)
+	{
+		const IRoomTagInterface* RoomTagOwner = Cast<IRoomTagInterface>(Actor);
+		return RoomTagOwner ? RoomTagOwner->GetRoomTagComp() : nullptr;
+	}
+}
+
 ARoomVolume::ARoomVolume()
 {
 	PrimaryActorTick.bCanEverTick = false;
@@ -131,14 +140,7 @@ void ARoomVolume::HandleBeginOverlap(
 		return;
 	}
 
-	const IRoomTagInterface* RoomTagOwner = Cast<IRoomTagInterface>(OtherActor);
-	if (!RoomTagOwner)
-	{
-		return;
-	}
-
-	URoomTagComponent* RoomTagComp = RoomTagOwner->GetRoomTagComp();
-
+	URoomTagComponent* RoomTagComp = FindRoomTagComponent(OtherActor);
 	if (!RoomTagComp)
 	{
 		return;
@@ -158,14 +160,7 @@ void ARoomVolume::HandleEndOverlap(
 		return;
 	}
 
-	const IRoomTagInterface* RoomTagOwner = Cast<IRoomTagInterface>(OtherActor);
-	if (!RoomTagOwner)
-	{
-		return;
-	}
-
-	URoomTagComponent* RoomTagComp = RoomTagOwner->GetRoomTagComp();
-
+	URoomTagComponent* RoomTagComp = FindRoomTagComponent(OtherActor);
 	if (!RoomTagComp)
 	{
 		return;

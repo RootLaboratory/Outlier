@@ -39,6 +39,11 @@ struct OUTLIER_API FRoomCombatWaveDefinition
 {
 	GENERATED_BODY()
 
+	bool IsSpawnFromObjects() const;
+	bool HasTurretHatches() const;
+	// Pool Enemy 명단과 배치 터렛 해치 중 하나라도 있으면 소환 원천이 존재한다.
+	bool HasSpawnSource() const;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Combat")
 	ERoomCombatWaveSpawnMode SpawnMode = ERoomCombatWaveSpawnMode::Preplaced;
 
@@ -49,7 +54,11 @@ struct OUTLIER_API FRoomCombatWaveDefinition
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Combat", meta = (Categories = "RoomCombat.Spawn"))
 	FGameplayTag RequiredSpawnPointTag;
 
-	// Preplaced Wave는 비워둘 수 있고, SpawnFromObjects는 여기의 고정 구성을 나눠서 소환한다.
+	// SpawnFromObjects Wave는 개별 Actor 참조 대신 기다릴 배치 터렛 해치 수만 선언한다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Combat", meta = (ClampMin = "0", UIMin = "0"))
+	int32 ExpectedTurretHatchCount = 0;
+
+	// Preplaced Wave는 비워둘 수 있다. SpawnFromObjects도 배치 터렛만 사용하면 비워둘 수 있다.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Combat", meta = (TitleProperty = "EnemyClass"))
 	TArray<FRoomCombatEnemyEntry> Enemies;
 };
@@ -73,6 +82,8 @@ struct OUTLIER_API FRoomCombatRoomDefinition
 
 	bool HasValidPhaseOrder() const;
 	bool CanStartTriggeredSequence(int32 PhaseIndex) const;
+	const FRoomCombatPhaseDefinition* FindPhase(int32 PhaseIndex) const;
+	const FRoomCombatWaveDefinition* FindWave(int32 PhaseIndex, int32 WaveIndex) const;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Combat", meta = (Categories = "Room"))
 	FGameplayTag RoomTag;

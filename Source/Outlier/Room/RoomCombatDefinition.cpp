@@ -9,6 +9,21 @@ namespace
 	}
 }
 
+bool FRoomCombatWaveDefinition::IsSpawnFromObjects() const
+{
+	return SpawnMode == ERoomCombatWaveSpawnMode::SpawnFromObjects;
+}
+
+bool FRoomCombatWaveDefinition::HasTurretHatches() const
+{
+	return ExpectedTurretHatchCount > 0;
+}
+
+bool FRoomCombatWaveDefinition::HasSpawnSource() const
+{
+	return !Enemies.IsEmpty() || HasTurretHatches();
+}
+
 bool FRoomCombatRoomDefinition::HasValidPhaseOrder() const
 {
 	if (CombatPhases.IsEmpty())
@@ -49,8 +64,9 @@ bool FRoomCombatRoomDefinition::HasValidPhaseOrder() const
 
 bool FRoomCombatRoomDefinition::CanStartTriggeredSequence(int32 PhaseIndex) const
 {
-	if (!HasValidPhaseOrder() || !CombatPhases.IsValidIndex(PhaseIndex)
-		|| CombatPhases[PhaseIndex].StartPolicy != ERoomCombatPhaseStartPolicy::HackTrigger)
+	const FRoomCombatPhaseDefinition* StartingPhase = FindPhase(PhaseIndex);
+	if (!HasValidPhaseOrder() || !StartingPhase
+		|| StartingPhase->StartPolicy != ERoomCombatPhaseStartPolicy::HackTrigger)
 	{
 		return false;
 	}
@@ -64,8 +80,10 @@ bool FRoomCombatRoomDefinition::CanStartTriggeredSequence(int32 PhaseIndex) cons
 		}
 		for (const FRoomCombatWaveDefinition& Wave : Phase.Waves)
 		{
-			if (Wave.SpawnMode != ERoomCombatWaveSpawnMode::SpawnFromObjects
-				|| Wave.Enemies.IsEmpty() || !IsValidRemainingRatio(Wave.NextWaveRemainingRatio))
+			if (!Wave.IsSpawnFromObjects()
+				|| !Wave.HasSpawnSource()
+				|| Wave.ExpectedTurretHatchCount < 0
+				|| !IsValidRemainingRatio(Wave.NextWaveRemainingRatio))
 			{
 				return false;
 			}
@@ -81,6 +99,26 @@ bool FRoomCombatRoomDefinition::CanStartTriggeredSequence(int32 PhaseIndex) cons
 		}
 	}
 	return true;
+}
+
+const FRoomCombatWaveDefinition* FRoomCombatRoomDefinition::FindWave(
+	int32 PhaseIndex,
+	int32 WaveIndex) const
+{
+	const FRoomCombatPhaseDefinition* Phase = FindPhase(PhaseIndex);
+	if (!Phase || !Phase->Waves.IsValidIndex(WaveIndex))
+	{
+		return nullptr;
+	}
+
+	return &Phase->Waves[WaveIndex];
+}
+
+const FRoomCombatPhaseDefinition* FRoomCombatRoomDefinition::FindPhase(int32 PhaseIndex) const
+{
+	return CombatPhases.IsValidIndex(PhaseIndex)
+		? &CombatPhases[PhaseIndex]
+		: nullptr;
 }
 
 const FRoomCombatRoomDefinition* URoomCombatDefinition::FindRoomDefinition(FGameplayTag RoomTag) const
@@ -180,7 +218,7 @@ EDataValidationResult URoomCombatDefinition::IsDataValid(FDataValidationContext&
 			for (int32 WaveIndex = 0; WaveIndex < Phase.Waves.Num(); ++WaveIndex)
 			{
 				const FRoomCombatWaveDefinition& Wave = Phase.Waves[WaveIndex];
-				if (WaveIndex > 0 && Wave.SpawnMode != ERoomCombatWaveSpawnMode::SpawnFromObjects)
+				if (WaveIndex > 0 && !Wave.IsSpawnFromObjects())
 				{
 					AddValidationError(FString::Printf(
 						TEXT("RoomDefinitions[%d].CombatPhases[%d].Waves[%d] must use SpawnFromObjects after the first Wave."),
@@ -189,10 +227,27 @@ EDataValidationResult URoomCombatDefinition::IsDataValid(FDataValidationContext&
 						WaveIndex));
 				}
 
-				if (Wave.SpawnMode == ERoomCombatWaveSpawnMode::SpawnFromObjects && Wave.Enemies.IsEmpty())
+				if (Wave.ExpectedTurretHatchCount < 0)
 				{
 					AddValidationError(FString::Printf(
-						TEXT("RoomDefinitions[%d].CombatPhases[%d].Waves[%d] requires at least one Enemy when using SpawnFromObjects."),
+						TEXT("RoomDefinitions[%d].CombatPhases[%d].Waves[%d] has a negative ExpectedTurretHatchCount."),
+						RoomIndex,
+						PhaseIndex,
+						WaveIndex));
+				}
+				else if (!Wave.IsSpawnFromObjects() && Wave.HasTurretHatches())
+				{
+					AddValidationError(FString::Printf(
+						TEXT("RoomDefinitions[%d].CombatPhases[%d].Waves[%d] may use ExpectedTurretHatchCount only with SpawnFromObjects."),
+						RoomIndex,
+						PhaseIndex,
+						WaveIndex));
+				}
+
+				if (Wave.IsSpawnFromObjects() && !Wave.HasSpawnSource())
+				{
+					AddValidationError(FString::Printf(
+						TEXT("RoomDefinitions[%d].CombatPhases[%d].Waves[%d] requires an Enemy or ExpectedTurretHatchCount when using SpawnFromObjects."),
 						RoomIndex,
 						PhaseIndex,
 						WaveIndex));
