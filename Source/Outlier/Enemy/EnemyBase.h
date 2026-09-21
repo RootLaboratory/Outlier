@@ -15,6 +15,7 @@
 #include "StateTreeReference.h"
 #include "AbilitySystemInterface.h"
 #include "Damage/OutlierDamageReceiver.h"
+#include "Enemy/EnemyAdaptationTypes.h"
 #include "Enemy/EnemyPoolTypes.h"
 #include "EnemyBase.generated.h"
 
@@ -327,6 +328,13 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Enemy|Adaptation")
 	bool HasEnemyTrait(FGameplayTag TraitTag) const { return EnemyTraits.HasTag(TraitTag); }
 
+	UFUNCTION(BlueprintPure, Category = "Enemy|Adaptation")
+	EEnemyAdaptationState GetAdaptationState() const { return AdaptationState; }
+
+	// 중앙 내성 시스템이 계산한 현재 단계를 Enemy의 복제 표현 상태로 투영한다.
+	// Stack의 원본은 Subsystem만 소유하며 Enemy는 방어막 표현에 필요한 단계만 보관한다.
+	void ApplyAdaptationState(EEnemyAdaptationState NewState);
+
 #if WITH_DEV_AUTOMATION_TESTS
 	void RemoveEnemyTraitForTesting(FGameplayTag TraitTag) { EnemyTraits.RemoveTag(TraitTag); }
 #endif
@@ -536,6 +544,14 @@ protected:
 	UFUNCTION()
 	void OnRep_AttackPhase(EEnemyAttackPhase PreviousPhase);
 
+	UFUNCTION()
+	void OnRep_AdaptationState(EEnemyAdaptationState PreviousState);
+
+	UFUNCTION(BlueprintImplementableEvent, Category = "Enemy|Adaptation")
+	void OnAdaptationStateChanged(
+		EEnemyAdaptationState PreviousState,
+		EEnemyAdaptationState NewState);
+
 	// 서버에서 기본 무기를 스폰하고 Enemy 소켓에 장착한다.
 	void EquipDefaultWeapon();
 
@@ -579,6 +595,11 @@ protected:
 
 	UPROPERTY(ReplicatedUsing = OnRep_PoolState, VisibleInstanceOnly, BlueprintReadOnly, Category = "Enemy|Pool")
 	EEnemyPoolState PoolState = EEnemyPoolState::Unmanaged;
+
+	// 서버의 공용 Stack에서 계산된 표현 전용 상태다. Listen Server는 변경 시 직접 이벤트를 받고,
+	// 원격 클라이언트는 OnRep을 통해 동일한 방어막 표시와 색상을 적용한다.
+	UPROPERTY(ReplicatedUsing = OnRep_AdaptationState, VisibleInstanceOnly, BlueprintReadOnly, Category = "Enemy|Adaptation")
+	EEnemyAdaptationState AdaptationState = EEnemyAdaptationState::Normal;
 
 	UPROPERTY(Replicated, VisibleInstanceOnly, BlueprintReadOnly, Category = "Enemy|Pool")
 	int32 PoolGameplayGeneration = 0;

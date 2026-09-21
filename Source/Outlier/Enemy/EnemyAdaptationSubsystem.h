@@ -82,6 +82,14 @@ private:
 		int32 PoolLeaseSerial,
 		FEnemyRegistration*& OutRegistration);
 	void ApplyAdaptationBreak(FEnemyAdaptationUpdateResult& OutResult);
+	void FinalizeAdaptationUpdate(FEnemyAdaptationUpdateResult& OutResult);
+	void SynchronizeActiveEnemyStates();
+	void SynchronizeEnemyState(
+		AEnemyBase* Enemy,
+		const FEnemyRegistration& Registration) const;
+	EEnemyAdaptationState ResolveEnemyPresentationState(
+		const AEnemyBase* Enemy,
+		const FEnemyRegistration& Registration) const;
 	void RefreshResolvedState();
 	void ResetAdaptationState();
 	void LoadConfiguredDefinition();

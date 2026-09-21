@@ -113,6 +113,8 @@ bool FEnemyAdaptationRuntimeRegistrationTest::RunTest(const FString& Parameters)
 	// GameplayReady는 프로젝트 설정의 Definition을 다시 읽으므로 런타임 수명 검증 직전에
 	// 자동화 전용 Definition을 주입한다.
 	Adaptation->SetDefinitionForTesting(NewObject<UEnemyAdaptationDefinition>(World));
+	TestTrue(TEXT("Runtime stack can enter resistance before a pooled Enemy activates"),
+		Adaptation->SetGunAdaptationStack(8));
 
 	UEnemyPoolDefinition* PoolDefinition = NewObject<UEnemyPoolDefinition>(World);
 	FEnemyPoolEntry& PoolEntry = PoolDefinition->Entries.AddDefaulted_GetRef();
@@ -155,6 +157,8 @@ bool FEnemyAdaptationRuntimeRegistrationTest::RunTest(const FString& Parameters)
 	PooledEnemy->CompletePoolSpawnPresentation(LeaseContext.GameplayGeneration, LeaseSerial);
 	TestTrue(TEXT("Combat-active pooled Enemy is registered"),
 		Adaptation->IsEnemyRegistered(PooledEnemy));
+	TestEqual(TEXT("Newly activated pooled Enemy receives the current resistance state"),
+		PooledEnemy->GetAdaptationState(), EEnemyAdaptationState::ResistanceLevel1);
 	FEnemyAdaptationUpdateResult DefeatResult;
 	TestTrue(TEXT("Current pooled lease can report a defeat"),
 		Adaptation->ReportEnemyDefeat(
@@ -167,6 +171,8 @@ bool FEnemyAdaptationRuntimeRegistrationTest::RunTest(const FString& Parameters)
 		Pool->ReturnEnemy(PooledEnemy, LeaseContext.GameplayGeneration, LeaseSerial));
 	TestFalse(TEXT("Returned pooled Enemy is unregistered"),
 		Adaptation->IsEnemyRegistered(PooledEnemy));
+	TestEqual(TEXT("Returned pooled Enemy clears its shield presentation state"),
+		PooledEnemy->GetAdaptationState(), EEnemyAdaptationState::Normal);
 
 	PooledEnemy = Pool->LeaseEnemy(AEnemyBase::StaticClass(), FTransform::Identity, LeaseContext);
 	if (!TestNotNull(TEXT("Pooled Enemy can be leased again"), PooledEnemy))
@@ -178,6 +184,8 @@ bool FEnemyAdaptationRuntimeRegistrationTest::RunTest(const FString& Parameters)
 	PooledEnemy->CompletePoolSpawnPresentation(
 		LeaseContext.GameplayGeneration,
 		NewLeaseSerial);
+	TestEqual(TEXT("Reused pooled Enemy receives the state reached by the previous kill"),
+		PooledEnemy->GetAdaptationState(), EEnemyAdaptationState::ResistanceLevel2);
 	TestFalse(TEXT("Previous pooled lease defeat is rejected after reuse"),
 		Adaptation->ReportEnemyDefeat(
 			PooledEnemy,
@@ -199,10 +207,14 @@ bool FEnemyAdaptationRuntimeRegistrationTest::RunTest(const FString& Parameters)
 			NewLeaseSerial,
 			EEnemyFinalKillCategory::Gun,
 			DefeatResult));
+	TestEqual(TEXT("Registered pooled Enemy follows later stack changes"),
+		PooledEnemy->GetAdaptationState(), EEnemyAdaptationState::ResistanceMax);
 
 	Adaptation->ResetActiveEnemies();
 	TestEqual(TEXT("Explicit reset clears all active registrations"),
 		Adaptation->GetRegisteredEnemyCount(), 0);
+	TestEqual(TEXT("Explicit reset clears the Enemy presentation state"),
+		PooledEnemy->GetAdaptationState(), EEnemyAdaptationState::Normal);
 
 	CleanupWorld();
 	return true;
@@ -378,6 +390,8 @@ bool FEnemyAdaptationStackStateTest::RunTest(const FString& Parameters)
 		DamageAbilitySystem->InitializeVitalityToSelf(100.0f));
 	TestTrue(TEXT("Resistance stack can be restored for damage multiplier test"),
 		Adaptation->SetGunAdaptationStack(8));
+	TestEqual(TEXT("Registered Enemy receives resistance level 1 presentation"),
+		DamageEnemy->GetAdaptationState(), EEnemyAdaptationState::ResistanceLevel1);
 	FOutlierDamageRequest GunDamageRequest;
 	GunDamageRequest.DamageAmount = 20.0f;
 	GunDamageRequest.DamageTag = OutlierGameplayTags::Damage::Weapon();
@@ -399,6 +413,8 @@ bool FEnemyAdaptationStackStateTest::RunTest(const FString& Parameters)
 		FMath::IsNearlyEqual(DamageEnemy->ReceiveOutlierDamage(PistolDamageRequest), 10.0f));
 	TestEqual(TEXT("Pistol hit immediately breaks active resistance"),
 		Adaptation->GetCurrentGunAdaptationStack(), 0);
+	TestEqual(TEXT("Pistol break clears the registered Enemy presentation"),
+		DamageEnemy->GetAdaptationState(), EEnemyAdaptationState::Normal);
 
 	AEnemyBase* GunDamageKillEnemy = SpawnEnemy(true);
 	if (!TestNotNull(TEXT("Gun kill target is spawned"), GunDamageKillEnemy))
@@ -441,6 +457,11 @@ bool FEnemyAdaptationStackStateTest::RunTest(const FString& Parameters)
 		Adaptation->GetCurrentGunAdaptationStack(), 7);
 
 	AEnemyBase* ExcludedEnemy = SpawnEnemy(false);
+	if (TestNotNull(TEXT("Enemy without the adaptation target tag is spawned"), ExcludedEnemy))
+	{
+		TestEqual(TEXT("Enemy without the adaptation target tag keeps no shield presentation"),
+			ExcludedEnemy->GetAdaptationState(), EEnemyAdaptationState::Normal);
+	}
 	TestFalse(TEXT("Enemy without the adaptation target tag is excluded"),
 		Report(ExcludedEnemy, EEnemyFinalKillCategory::Gun, Result));
 	TestEqual(TEXT("Excluded Enemy does not change the stack"),
@@ -543,6 +564,12 @@ bool FEnemyAdaptationStackStateTest::RunTest(const FString& Parameters)
 		Adaptation->SetGunAdaptationStack(100));
 	TestEqual(TEXT("Restored stack is clamped"),
 		Adaptation->GetCurrentGunAdaptationStack(), 10);
+	AEnemyBase* LateRegisteredEnemy = SpawnEnemy(true);
+	if (TestNotNull(TEXT("Late adaptation target is spawned"), LateRegisteredEnemy))
+	{
+		TestEqual(TEXT("Late registered Enemy immediately receives the current max state"),
+			LateRegisteredEnemy->GetAdaptationState(), EEnemyAdaptationState::ResistanceMax);
+	}
 	TestTrue(TEXT("Gun kill at max stack is accepted"),
 		Report(MaxStackEnemy, EEnemyFinalKillCategory::Gun, Result));
 	TestEqual(TEXT("Gun increment clamps at the configured maximum"),

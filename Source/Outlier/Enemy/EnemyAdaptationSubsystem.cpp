@@ -5,6 +5,7 @@
 #include "Engine/World.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "Network/OutlierArenaSubsystem.h"
+#include "Outlier.h"
 #include "OutlierArenaSettings.h"
 #include "Subsystems/SubsystemCollection.h"
 
@@ -98,10 +99,24 @@ bool UEnemyAdaptationSubsystem::RegisterEnemy(AEnemyBase* Enemy)
 		Existing && Existing->GameplayGeneration == Registration.GameplayGeneration
 		&& Existing->PoolLeaseSerial == Registration.PoolLeaseSerial)
 	{
+		SynchronizeEnemyState(Enemy, *Existing);
 		return true;
 	}
 
 	ActiveEnemies.Add(EnemyPtr, Registration);
+	SynchronizeEnemyState(Enemy, Registration);
+	UE_LOG(
+		LogOutlier,
+		Display,
+		TEXT("[EnemyAdaptation] Registered Enemy=%s Target=%s Generation=%d Lease=%d State=%s ActiveCount=%d"),
+		*GetNameSafe(Enemy),
+		Enemy->HasEnemyTrait(OutlierGameplayTags::Enemy::Adaptation::Target())
+			? TEXT("true")
+			: TEXT("false"),
+		Registration.GameplayGeneration,
+		Registration.PoolLeaseSerial,
+		*UEnum::GetValueAsString(Enemy->GetAdaptationState()),
+		ActiveEnemies.Num());
 	return true;
 }
 
@@ -109,12 +124,29 @@ void UEnemyAdaptationSubsystem::UnregisterEnemy(AEnemyBase* Enemy)
 {
 	if (Enemy)
 	{
-		ActiveEnemies.Remove(TWeakObjectPtr<AEnemyBase>(Enemy));
+		const int32 RemovedCount = ActiveEnemies.Remove(TWeakObjectPtr<AEnemyBase>(Enemy));
+		Enemy->ApplyAdaptationState(EEnemyAdaptationState::Normal);
+		if (RemovedCount > 0)
+		{
+			UE_LOG(
+				LogOutlier,
+				Display,
+				TEXT("[EnemyAdaptation] Unregistered Enemy=%s ActiveCount=%d"),
+				*GetNameSafe(Enemy),
+				ActiveEnemies.Num());
+		}
 	}
 }
 
 void UEnemyAdaptationSubsystem::ResetActiveEnemies()
 {
+	for (const TPair<TWeakObjectPtr<AEnemyBase>, FEnemyRegistration>& Entry : ActiveEnemies)
+	{
+		if (AEnemyBase* Enemy = Entry.Key.Get())
+		{
+			Enemy->ApplyAdaptationState(EEnemyAdaptationState::Normal);
+		}
+	}
 	ActiveEnemies.Reset();
 }
 
@@ -156,10 +188,7 @@ bool UEnemyAdaptationSubsystem::SetGunAdaptationStack(int32 NewStack)
 	Result.PreviousStack = CurrentGunAdaptationStack;
 	Result.PreviousState = CurrentAdaptationState;
 	CurrentGunAdaptationStack = ActiveDefinition->ClampStack(NewStack);
-	CurrentAdaptationState = ActiveDefinition->ResolveState(CurrentGunAdaptationStack);
-	Result.CurrentStack = CurrentGunAdaptationStack;
-	Result.CurrentState = CurrentAdaptationState;
-	OnAdaptationUpdated.Broadcast(Result);
+	FinalizeAdaptationUpdate(Result);
 	return true;
 }
 
@@ -210,10 +239,7 @@ bool UEnemyAdaptationSubsystem::ReportEnemyDefeat(
 		break;
 	}
 
-	CurrentAdaptationState = ActiveDefinition->ResolveState(CurrentGunAdaptationStack);
-	OutResult.CurrentStack = CurrentGunAdaptationStack;
-	OutResult.CurrentState = CurrentAdaptationState;
-	OnAdaptationUpdated.Broadcast(OutResult);
+	FinalizeAdaptationUpdate(OutResult);
 	return true;
 }
 
@@ -247,10 +273,7 @@ bool UEnemyAdaptationSubsystem::ReportPistolHit(
 	OutResult.PreviousStack = CurrentGunAdaptationStack;
 	OutResult.PreviousState = CurrentAdaptationState;
 	ApplyAdaptationBreak(OutResult);
-	CurrentAdaptationState = ActiveDefinition->ResolveState(CurrentGunAdaptationStack);
-	OutResult.CurrentStack = CurrentGunAdaptationStack;
-	OutResult.CurrentState = CurrentAdaptationState;
-	OnAdaptationUpdated.Broadcast(OutResult);
+	FinalizeAdaptationUpdate(OutResult);
 	return true;
 }
 
@@ -292,6 +315,75 @@ void UEnemyAdaptationSubsystem::ApplyAdaptationBreak(
 	OutResult.BreakStunSeconds = ActiveDefinition->ResolveBreakStunSeconds(
 		OutResult.PreviousStack);
 	OutResult.BreakDamage = ActiveDefinition->ShieldBreakDamage;
+}
+
+void UEnemyAdaptationSubsystem::FinalizeAdaptationUpdate(
+	FEnemyAdaptationUpdateResult& OutResult)
+{
+	CurrentAdaptationState = ActiveDefinition->ResolveState(CurrentGunAdaptationStack);
+	OutResult.CurrentStack = CurrentGunAdaptationStack;
+	OutResult.CurrentState = CurrentAdaptationState;
+
+	// Enemy 표현 상태를 먼저 확정해야 이 갱신을 구독하는 후속 파열 처리도
+	// 이미 갱신된 공용 단계와 같은 결과를 관찰한다.
+	SynchronizeActiveEnemyStates();
+	UE_LOG(
+		LogOutlier,
+		Display,
+		TEXT("[EnemyAdaptation] Stack updated PreviousStack=%d CurrentStack=%d PreviousState=%s CurrentState=%s Category=%s Broken=%s Registered=%d"),
+		OutResult.PreviousStack,
+		OutResult.CurrentStack,
+		*UEnum::GetValueAsString(OutResult.PreviousState),
+		*UEnum::GetValueAsString(OutResult.CurrentState),
+		*UEnum::GetValueAsString(OutResult.KillCategory),
+		OutResult.bAdaptationBroken ? TEXT("true") : TEXT("false"),
+		GetRegisteredEnemyCount());
+	OnAdaptationUpdated.Broadcast(OutResult);
+}
+
+void UEnemyAdaptationSubsystem::SynchronizeActiveEnemyStates()
+{
+	for (auto It = ActiveEnemies.CreateIterator(); It; ++It)
+	{
+		AEnemyBase* Enemy = It.Key().Get();
+		if (!IsValid(Enemy))
+		{
+			It.RemoveCurrent();
+			continue;
+		}
+
+		SynchronizeEnemyState(Enemy, It.Value());
+	}
+}
+
+void UEnemyAdaptationSubsystem::SynchronizeEnemyState(
+	AEnemyBase* Enemy,
+	const FEnemyRegistration& Registration) const
+{
+	if (IsValid(Enemy))
+	{
+		Enemy->ApplyAdaptationState(
+			ResolveEnemyPresentationState(Enemy, Registration));
+	}
+}
+
+EEnemyAdaptationState UEnemyAdaptationSubsystem::ResolveEnemyPresentationState(
+	const AEnemyBase* Enemy,
+	const FEnemyRegistration& Registration) const
+{
+	if (!IsValid(Enemy)
+		|| Enemy->IsDead()
+		|| !Enemy->HasEnemyTrait(OutlierGameplayTags::Enemy::Adaptation::Target())
+		|| !IsCurrentRegistration(
+			Enemy,
+			Registration,
+			Registration.GameplayGeneration,
+			Registration.PoolLeaseSerial))
+	{
+		return EEnemyAdaptationState::Normal;
+	}
+
+	return CurrentAdaptationState;
 }
 
 bool UEnemyAdaptationSubsystem::CanRegisterEnemy(const AEnemyBase* Enemy) const
@@ -347,11 +439,13 @@ void UEnemyAdaptationSubsystem::RefreshResolvedState()
 	if (!ActiveDefinition)
 	{
 		CurrentAdaptationState = EEnemyAdaptationState::Normal;
+		SynchronizeActiveEnemyStates();
 		return;
 	}
 
 	CurrentGunAdaptationStack = ActiveDefinition->ClampStack(CurrentGunAdaptationStack);
 	CurrentAdaptationState = ActiveDefinition->ResolveState(CurrentGunAdaptationStack);
+	SynchronizeActiveEnemyStates();
 }
 
 void UEnemyAdaptationSubsystem::ResetAdaptationState()

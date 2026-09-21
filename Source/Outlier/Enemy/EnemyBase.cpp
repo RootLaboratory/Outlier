@@ -244,6 +244,7 @@ void AEnemyBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifeti
 	DOREPLIFETIME(AEnemyBase, AttackPhase);
 	DOREPLIFETIME(AEnemyBase, CurrentWeapon);
 	DOREPLIFETIME(AEnemyBase, PoolState);
+	DOREPLIFETIME(AEnemyBase, AdaptationState);
 	DOREPLIFETIME(AEnemyBase, PoolGameplayGeneration);
 	DOREPLIFETIME(AEnemyBase, PoolLeaseSerial);
 	DOREPLIFETIME(AEnemyBase, PoolCombatPhaseIndex);
@@ -582,6 +583,47 @@ void AEnemyBase::OnPoolDeathPresentationStarted_Implementation(
 void AEnemyBase::OnRep_PoolState(EEnemyPoolState PreviousState)
 {
 	ApplyPoolState(PreviousState);
+}
+
+void AEnemyBase::ApplyAdaptationState(EEnemyAdaptationState NewState)
+{
+	if (!HasAuthority() || AdaptationState == NewState)
+	{
+		return;
+	}
+
+	const EEnemyAdaptationState PreviousState = AdaptationState;
+	AdaptationState = NewState;
+	if (GetNetMode() != NM_DedicatedServer)
+	{
+		OnAdaptationStateChanged(PreviousState, AdaptationState);
+	}
+	UE_LOG(
+		LogOutlier,
+		Display,
+		TEXT("[EnemyAdaptation] Presentation applied Enemy=%s PreviousState=%s CurrentState=%s PoolState=%s Generation=%d Lease=%d"),
+		*GetNameSafe(this),
+		*UEnum::GetValueAsString(PreviousState),
+		*UEnum::GetValueAsString(AdaptationState),
+		*UEnum::GetValueAsString(PoolState),
+		PoolGameplayGeneration,
+		PoolLeaseSerial);
+	ForceNetUpdate();
+}
+
+void AEnemyBase::OnRep_AdaptationState(EEnemyAdaptationState PreviousState)
+{
+	OnAdaptationStateChanged(PreviousState, AdaptationState);
+	UE_LOG(
+		LogOutlier,
+		Display,
+		TEXT("[EnemyAdaptation] Presentation replicated Enemy=%s PreviousState=%s CurrentState=%s PoolState=%s Generation=%d Lease=%d"),
+		*GetNameSafe(this),
+		*UEnum::GetValueAsString(PreviousState),
+		*UEnum::GetValueAsString(AdaptationState),
+		*UEnum::GetValueAsString(PoolState),
+		PoolGameplayGeneration,
+		PoolLeaseSerial);
 }
 
 void AEnemyBase::SetPoolState(EEnemyPoolState NewState)
