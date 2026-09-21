@@ -1,5 +1,6 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
+#include "Enemy/AutoTurret.h"
 #include "Enemy/EnemyBase.h"
 #include "Enemy/EnemyPoolDefinition.h"
 #include "Enemy/EnemyPoolSubsystem.h"
@@ -181,6 +182,16 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("DestroyPool invalidates the old lease"),
 		!MaxLeaseA || MaxLeaseA->IsActorBeingDestroyed());
 
+	UEnemyPoolDefinition* TurretDefinition = NewObject<UEnemyPoolDefinition>(World);
+	FEnemyPoolEntry& TurretEntry = TurretDefinition->Entries.AddDefaulted_GetRef();
+	TurretEntry.EnemyClass = AAutoTurret::StaticClass();
+	TurretEntry.PrewarmCount = 1;
+	TurretEntry.MaxCount = 1;
+	TestFalse(TEXT("Runtime prewarm rejects placed-only AutoTurrets"),
+		Pool->PrewarmPool(TurretDefinition));
+	TestEqual(TEXT("Rejected AutoTurret prewarm creates no Actors"),
+		Pool->GetTotalCount(AAutoTurret::StaticClass()), 0);
+
 	CleanupWorld();
 	return true;
 }
@@ -218,6 +229,17 @@ bool FEnemyPoolDefinitionValidationTest::RunTest(const FString& Parameters)
 	{
 		FDataValidationContext ValidationContext;
 		TestEqual(TEXT("Duplicate classes and PrewarmCount above MaxCount are rejected"),
+			Definition->IsDataValid(ValidationContext), EDataValidationResult::Invalid);
+	}
+
+	Definition->Entries.Reset();
+	FEnemyPoolEntry& TurretEntry = Definition->Entries.AddDefaulted_GetRef();
+	TurretEntry.EnemyClass = AAutoTurret::StaticClass();
+	TurretEntry.PrewarmCount = 1;
+	TurretEntry.MaxCount = 1;
+	{
+		FDataValidationContext ValidationContext;
+		TestEqual(TEXT("A placed-only AutoTurret class is rejected"),
 			Definition->IsDataValid(ValidationContext), EDataValidationResult::Invalid);
 	}
 

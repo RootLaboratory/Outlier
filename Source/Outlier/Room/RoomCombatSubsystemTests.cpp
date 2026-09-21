@@ -8,6 +8,7 @@
 #include "Enemy/EnemyBase.h"
 #include "Enemy/EnemyPoolDefinition.h"
 #include "Enemy/EnemyPoolSubsystem.h"
+#include "Enemy/EnemyRoomSubsystem.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
@@ -122,6 +123,24 @@ namespace
 		FRoomCombatWaveDefinition& Wave = Phase.Waves.AddDefaulted_GetRef();
 		Wave.SpawnMode = ERoomCombatWaveSpawnMode::SpawnFromObjects;
 		Wave.ExpectedWaveTurretCount = ExpectedTurretCount;
+	}
+
+	void AddMixedWaveTurretDefinition(
+		URoomCombatDefinition* Definition,
+		FGameplayTag RoomTag,
+		int32 ExpectedTurretCount)
+	{
+		FRoomCombatRoomDefinition& RoomDefinition = AddRoomDefinition(Definition, RoomTag);
+		FRoomCombatPhaseDefinition& Phase = RoomDefinition.CombatPhases.AddDefaulted_GetRef();
+		Phase.StartPolicy = ERoomCombatPhaseStartPolicy::InitialDetection;
+		Phase.Waves.AddDefaulted();
+
+		FRoomCombatWaveDefinition& MixedWave = Phase.Waves.AddDefaulted_GetRef();
+		MixedWave.SpawnMode = ERoomCombatWaveSpawnMode::SpawnFromObjects;
+		MixedWave.ExpectedWaveTurretCount = ExpectedTurretCount;
+		FRoomCombatEnemyEntry& EnemyEntry = MixedWave.Enemies.AddDefaulted_GetRef();
+		EnemyEntry.EnemyClass = AEnemyBase::StaticClass();
+		EnemyEntry.Count = 1;
 	}
 
 	AEnemyBase* SpawnTestEnemy(UWorld* World, FGameplayTag RoomTag)
@@ -1063,22 +1082,6 @@ bool FRoomCombatWaveTurretWaitingStateTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Waiting turret hacking remains locked"),
 			Hackable->HackTags.HasTagExact(OutlierGameplayTags::State::Locked()));
 	}
-	TestTrue(TEXT("An explicit deployment request enters the Deploying state"),
-		WaitingTurret->BeginTurretDeployment());
-	TestEqual(TEXT("Deploying turret exposes one lifecycle state"),
-		WaitingTurret->GetTurretLifecycleState(),
-		EAutoTurretLifecycleState::Deploying);
-	TestTrue(TEXT("Legacy deploying query derives from the lifecycle state"),
-		WaitingTurret->IsDeploying());
-	TestFalse(TEXT("Deploying turret remains immune until deployment completes"),
-		WaitingTurret->CanBeDamaged());
-	WaitingTurret->NotifyDeploySequenceFinished();
-	TestEqual(TEXT("Deployment completion enters the Active state"),
-		WaitingTurret->GetTurretLifecycleState(),
-		EAutoTurretLifecycleState::Active);
-	TestTrue(TEXT("Legacy deployed query derives from the lifecycle state"),
-		WaitingTurret->IsDeployed());
-	TestTrue(TEXT("Active turret enables damage"), WaitingTurret->CanBeDamaged());
 	TestTrue(TEXT("Waiting preparation restores the initial lifecycle state"),
 		WaitingTurret->PrepareForRoomWaveActivation());
 	TestEqual(TEXT("Repeated preparation preserves the lifecycle state"),
@@ -1091,6 +1094,153 @@ bool FRoomCombatWaveTurretWaitingStateTest::RunTest(const FString& Parameters)
 	WaitingTurret->Destroy();
 	TestEqual(TEXT("EndPlay unregisters the configured Wave turret"),
 		Combat->GetRegisteredWaveTurretCount(RoomTag, 0, 0), 0);
+
+	CleanupWorld();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FRoomCombatWaveTurretActivationTest,
+	"Outlier.Room.WaveTurretActivation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRoomCombatWaveTurretActivationTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const FName WorldName = MakeUniqueObjectName(nullptr, UWorld::StaticClass(), NAME_None,
+		EUniqueObjectNameOptions::GloballyUnique);
+	FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, WorldName, GetTransientPackage());
+	if (!TestNotNull(TEXT("Wave turret activation test world exists"), World))
+	{
+		GEngine->DestroyWorldContext(World);
+		return false;
+	}
+
+	World->AddToRoot();
+	WorldContext.SetCurrentWorld(World);
+	UGameInstance* GameInstance = NewObject<UGameInstance>(GEngine);
+	World->SetGameInstance(GameInstance);
+	GameInstance->Init();
+	TestTrue(TEXT("Wave turret activation world creates an authority game mode"),
+		World->SetGameMode(FURL()));
+	World->InitializeActorsForPlay(FURL());
+	auto CleanupWorld = [World, GameInstance]()
+	{
+		GEngine->ShutdownWorldNetDriver(World);
+		World->DestroyWorld(true);
+		GameInstance->Shutdown();
+		World->SetPhysicsScene(nullptr);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+	};
+
+	URoomCombatSubsystem* Combat = World->GetSubsystem<URoomCombatSubsystem>();
+	UEnemyPoolSubsystem* Pool = World->GetSubsystem<UEnemyPoolSubsystem>();
+	UEnemyRoomSubsystem* EnemyRooms = World->GetSubsystem<UEnemyRoomSubsystem>();
+	UEnemyAdaptationSubsystem* Adaptation = World->GetSubsystem<UEnemyAdaptationSubsystem>();
+	if (!TestNotNull(TEXT("Room combat subsystem"), Combat)
+		|| !TestNotNull(TEXT("Enemy pool subsystem"), Pool)
+		|| !TestNotNull(TEXT("Enemy room subsystem"), EnemyRooms)
+		|| !TestNotNull(TEXT("Enemy adaptation subsystem"), Adaptation))
+	{
+		CleanupWorld();
+		return false;
+	}
+	Adaptation->OnWorldBeginPlay(*World);
+
+	UEnemyPoolDefinition* PoolDefinition = NewObject<UEnemyPoolDefinition>(World);
+	FEnemyPoolEntry& PoolEntry = PoolDefinition->Entries.AddDefaulted_GetRef();
+	PoolEntry.EnemyClass = AEnemyBase::StaticClass();
+	PoolEntry.PrewarmCount = 1;
+	PoolEntry.MaxCount = 1;
+	TestTrue(TEXT("Mixed Wave pool prewarms"), Pool->PrewarmPool(PoolDefinition));
+
+	const FGameplayTag RoomTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.1")));
+	URoomCombatDefinition* Definition = NewObject<URoomCombatDefinition>(World);
+	AddMixedWaveTurretDefinition(Definition, RoomTag, 2);
+	Combat->SetCombatDefinitionForTesting(Definition);
+
+	auto SpawnConfiguredTurret = [World, RoomTag](FName PersistentId)
+	{
+		AAutoTurret* Turret = World->SpawnActorDeferred<AAutoTurret>(
+			AAutoTurret::StaticClass(), FTransform::Identity);
+		if (Turret)
+		{
+			Turret->ConfigureWaveRegistrationForTesting(RoomTag, 0, 1, PersistentId);
+			Turret->FinishSpawning(FTransform::Identity);
+		}
+		return Turret;
+	};
+
+	AAutoTurret* FirstTurret = SpawnConfiguredTurret(TEXT("Turret.Activation.1"));
+	ARoomVolume* Room = World->SpawnActor<ARoomVolume>();
+	AEnemyBase* PreplacedEnemy = SpawnTestEnemy(World, RoomTag);
+	ARoomCombatSpawnPoint* SpawnPoint = World->SpawnActor<ARoomCombatSpawnPoint>(
+		ARoomCombatSpawnPoint::StaticClass(),
+		FTransform(FVector(2000.0f, 0.0f, 0.0f)));
+	if (!TestNotNull(TEXT("First Wave turret"), FirstTurret)
+		|| !TestNotNull(TEXT("Wave turret Room"), Room)
+		|| !TestNotNull(TEXT("Wave turret preplaced Enemy"), PreplacedEnemy)
+		|| !TestNotNull(TEXT("Wave turret SpawnPoint"), SpawnPoint))
+	{
+		CleanupWorld();
+		return false;
+	}
+
+	TestTrue(TEXT("Wave turret Room registers"), Combat->RegisterRoom(Room, RoomTag));
+	Combat->RegisterPreplacedEnemy(PreplacedEnemy);
+	TestTrue(TEXT("Mixed Wave SpawnPoint registers"), Combat->RegisterSpawnPoint(
+		SpawnPoint, RoomTag, FGameplayTagContainer(), FGameplayTag()));
+	const FVector SharedTargetLocation(900.0f, 800.0f, 700.0f);
+	EnemyRooms->SetActiveRoomTargetForTesting(RoomTag, SharedTargetLocation);
+	TestTrue(TEXT("Initial detection starts the mixed Wave Room"),
+		Combat->NotifyRoomCombatStarted(RoomTag));
+	TestTrue(TEXT("Pool and turret mixed Wave starts"),
+		Combat->StartWaveSpawning(RoomTag, 0, 1));
+
+	TestEqual(TEXT("The registered turret begins deploying"),
+		FirstTurret->GetTurretLifecycleState(), EAutoTurretLifecycleState::Deploying);
+	TestEqual(TEXT("Both expected turrets remain pending"),
+		Combat->GetPendingActivationCount(RoomTag), 2);
+	TestEqual(TEXT("The Pool request completes independently"),
+		Combat->GetPendingSpawnCount(RoomTag), 0);
+	TestEqual(TEXT("The baseline waits for turret deployment"),
+		Combat->GetWaveBaselineEnemyCount(RoomTag), INDEX_NONE);
+
+	FirstTurret->NotifyDeploySequenceFinished();
+	TestEqual(TEXT("One completed turret leaves one activation pending"),
+		Combat->GetPendingActivationCount(RoomTag), 1);
+	TestEqual(TEXT("One turret cannot finalize the Wave baseline"),
+		Combat->GetWaveBaselineEnemyCount(RoomTag), INDEX_NONE);
+	TestTrue(TEXT("Activated turret joins adaptation"),
+		Adaptation->IsEnemyRegistered(FirstTurret));
+	TestTrue(TEXT("Activated turret inherits the active Room target"),
+		FirstTurret->HasSharedTargetContact());
+	TestEqual(TEXT("Activated turret inherits the shared target location"),
+		FirstTurret->GetSharedTargetLocation(), SharedTargetLocation);
+
+	AAutoTurret* LateTurret = SpawnConfiguredTurret(TEXT("Turret.Activation.2"));
+	if (!TestNotNull(TEXT("Late Wave turret"), LateTurret))
+	{
+		CleanupWorld();
+		return false;
+	}
+	TestEqual(TEXT("Late registration starts the pending deployment"),
+		LateTurret->GetTurretLifecycleState(), EAutoTurretLifecycleState::Deploying);
+	LateTurret->NotifyDeploySequenceFinished();
+	TestEqual(TEXT("Every turret activation completes"),
+		Combat->GetPendingActivationCount(RoomTag), 0);
+	TestEqual(TEXT("Baseline includes preplaced, Pool, and both turret Enemies"),
+		Combat->GetWaveBaselineEnemyCount(RoomTag), 4);
+	TestEqual(TEXT("Every mixed Wave Enemy is tracked once"),
+		Combat->GetAliveEnemyCount(RoomTag), 4);
+	TestTrue(TEXT("Late turret also inherits the active Room target"),
+		LateTurret->HasSharedTargetContact());
+
+	LateTurret->NotifyDeploySequenceFinished();
+	TestEqual(TEXT("Duplicate completion does not change the alive count"),
+		Combat->GetAliveEnemyCount(RoomTag), 4);
 
 	CleanupWorld();
 	return true;

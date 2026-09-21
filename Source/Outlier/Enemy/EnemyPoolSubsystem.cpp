@@ -1,5 +1,6 @@
 #include "Enemy/EnemyPoolSubsystem.h"
 
+#include "Enemy/AutoTurret.h"
 #include "Enemy/EnemyBase.h"
 #include "Enemy/EnemyPoolDefinition.h"
 #include "Engine/World.h"
@@ -92,6 +93,15 @@ bool UEnemyPoolSubsystem::PrewarmPool(UEnemyPoolDefinition* Definition)
 	for (const FEnemyPoolEntry& Entry : Definition->Entries)
 	{
 		UClass* LoadedClass = Entry.EnemyClass.LoadSynchronous();
+		if (LoadedClass && LoadedClass->IsChildOf(AAutoTurret::StaticClass()))
+		{
+			// 터렛은 맵 배치 참조와 Persistent ID를 수명 기준으로 사용하므로 Pool Actor로 만들지 않는다.
+			UE_LOG(LogTemp, Error,
+				TEXT("[EnemyPool] Prewarm rejected because AutoTurret is placed-only Class=%s"),
+				*GetNameSafe(LoadedClass));
+			bAllCreated = false;
+			continue;
+		}
 		if (!LoadedClass || !LoadedClass->IsChildOf(AEnemyBase::StaticClass())
 			|| Entry.MaxCount < 1 || Entry.PrewarmCount < 0
 			|| Entry.PrewarmCount > Entry.MaxCount)
@@ -186,6 +196,13 @@ AEnemyBase* UEnemyPoolSubsystem::LeaseEnemy(
 	UWorld* World = GetWorld();
 	if (!World || World->GetNetMode() == NM_Client || !EnemyClass)
 	{
+		return nullptr;
+	}
+	if (EnemyClass->IsChildOf(AAutoTurret::StaticClass()))
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("[EnemyPool] Lease rejected because AutoTurret is placed-only Class=%s"),
+			*GetNameSafe(EnemyClass));
 		return nullptr;
 	}
 

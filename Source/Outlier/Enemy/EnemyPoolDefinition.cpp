@@ -1,6 +1,7 @@
 #include "Enemy/EnemyPoolDefinition.h"
 
 #if WITH_EDITOR
+#include "Enemy/AutoTurret.h"
 #include "Enemy/EnemyBase.h"
 #include "Misc/DataValidation.h"
 
@@ -31,6 +32,17 @@ EDataValidationResult UEnemyPoolDefinition::IsDataValid(FDataValidationContext& 
 		else
 		{
 			SeenClasses.Add(ClassPath);
+
+			UClass* LoadedClass = Entry.EnemyClass.LoadSynchronous();
+			if (LoadedClass && LoadedClass->IsChildOf(AAutoTurret::StaticClass()))
+			{
+				Context.AddError(FText::Format(
+					NSLOCTEXT("EnemyPool", "PlacedTurretIsNotPoolable",
+						"Entries[{0}] uses AutoTurret class {1}. AutoTurrets are placed Wave Actors and cannot use EnemyPool."),
+					Index,
+					FText::FromString(ClassPath.ToString())));
+				Result = EDataValidationResult::Invalid;
+			}
 		}
 
 		if (Entry.PrewarmCount < 0)

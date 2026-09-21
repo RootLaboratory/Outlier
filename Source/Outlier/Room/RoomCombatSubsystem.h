@@ -73,11 +73,13 @@ struct FRoomCombatRuntime
 {
 	TWeakObjectPtr<ARoomVolume> RoomVolume;
 	TSet<TWeakObjectPtr<AEnemyBase>> TrackedAliveEnemies;
+	TSet<TWeakObjectPtr<AAutoTurret>> PendingWaveTurretActivations;
 	TMap<TWeakObjectPtr<ARoomCombatSpawnPoint>, int32> SpawnAssignments;
 	ERoomCombatState State = ERoomCombatState::Dormant;
 	int32 CurrentCombatPhaseIndex = 0;
 	int32 CurrentWaveIndex = 0;
 	int32 WaveBaselineEnemyCount = INDEX_NONE;
+	int32 PendingActivationCount = 0;
 	int32 GameplayGeneration = 0;
 	FGuid RegistrationId;
 	FGameplayTag ActiveActivationGroupTag;
@@ -98,6 +100,7 @@ struct FRoomCombatEnemyRegistration
 	int32 WaveIndex = 0;
 	int32 GameplayGeneration = 0;
 	bool bPreplaced = false;
+	bool bPoolManaged = false;
 };
 
 struct FRoomCombatPendingSpawn
@@ -169,6 +172,7 @@ public:
 		int32 CombatPhaseIndex,
 		int32 WaveIndex);
 	void UnregisterWaveTurret(AAutoTurret* Turret);
+	bool NotifyWaveTurretDeploymentFinished(AAutoTurret* Turret);
 	void GetRegisteredWaveTurrets(
 		FGameplayTag RoomTag,
 		int32 CombatPhaseIndex,
@@ -198,6 +202,7 @@ public:
 	int32 GetWaveBaselineEnemyCount(FGameplayTag RoomTag) const;
 	int32 GetAliveEnemyCount(FGameplayTag RoomTag) const;
 	int32 GetPendingSpawnCount(FGameplayTag RoomTag) const;
+	int32 GetPendingActivationCount(FGameplayTag RoomTag) const;
 	int32 GetAssignedSpawnCount(
 		FGameplayTag RoomTag,
 		const ARoomCombatSpawnPoint* SpawnPoint) const;
@@ -216,6 +221,7 @@ public:
 private:
 	bool CanRunServerGameplay() const;
 	bool HasPendingSpawns(FGameplayTag RoomTag) const;
+	bool HasPendingWaveWork(FGameplayTag RoomTag, const FRoomCombatRuntime& Runtime) const;
 	bool IsActiveCombatRuntime(FGameplayTag RoomTag, const FRoomCombatRuntime& Runtime) const;
 	void BroadcastCombatEvent(FGameplayTag RoomTag, ERoomCombatEvent Event,
 		int32 PhaseIndex, int32 Generation);
@@ -225,6 +231,11 @@ private:
 		FGameplayTag RoomTag, int32 CombatPhaseIndex, int32 WaveIndex) const;
 	void QueueWaveSpawnRequests(FGameplayTag RoomTag, FRoomCombatRuntime& Runtime,
 		const FRoomCombatWaveDefinition& Wave, const TArray<TSubclassOf<AEnemyBase>>& EnemyRoster);
+	void QueueWaveTurretActivations(FGameplayTag RoomTag, FRoomCombatRuntime& Runtime,
+		const FRoomCombatWaveDefinition& Wave);
+	void TryStartPendingWaveTurretActivations(FGameplayTag RoomTag, FRoomCombatRuntime& Runtime);
+	bool RegisterActivatedWaveTurret(FGameplayTag RoomTag, FRoomCombatRuntime& Runtime,
+		AAutoTurret* Turret);
 	bool RegisterSpawnedEnemy(
 		AEnemyBase* Enemy,
 		const FRoomCombatPendingSpawn& SpawnRequest);

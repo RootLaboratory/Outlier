@@ -45,14 +45,15 @@ EStateTreeRunStatus FEnemyDeployTurretTask::EnterState(
 	{
 		return EStateTreeRunStatus::Succeeded;
 	}
-	const bool bStarted = Data.Turret->BeginTurretDeployment();
-	if (!bStarted && AAutoTurret::IsTurretDiagnosticsEnabled())
+	// 타입은 기존 StateTree 에셋 호환을 위해 유지한다. 전개 시작은 Room Wave만 소유하며,
+	// StateTree는 전개 완료 뒤 시작되므로 여기서 미전개 상태라면 잘못된 진입이다.
+	if (AAutoTurret::IsTurretDiagnosticsEnabled())
 	{
 		UE_LOG(LogOutlier, Error,
-			TEXT("[TurretDiag][DeployTask] EnterFailed Turret=%s Reason=DeploymentRejected"),
+			TEXT("[TurretDiag][DeployTask] EnterFailed Turret=%s Reason=RoomWaveDeploymentIncomplete"),
 			*GetNameSafe(Data.Turret));
 	}
-	return bStarted ? EStateTreeRunStatus::Running : EStateTreeRunStatus::Failed;
+	return EStateTreeRunStatus::Failed;
 }
 
 EStateTreeRunStatus FEnemyDeployTurretTask::Tick(FStateTreeExecutionContext& Context, float DeltaTime) const
@@ -62,11 +63,9 @@ EStateTreeRunStatus FEnemyDeployTurretTask::Tick(FStateTreeExecutionContext& Con
 	{
 		return EStateTreeRunStatus::Failed;
 	}
-	if (Data.Turret->IsDeployed())
-	{
-		return EStateTreeRunStatus::Succeeded;
-	}
-	return EStateTreeRunStatus::Running;
+	return Data.Turret->IsDeployed()
+		? EStateTreeRunStatus::Succeeded
+		: EStateTreeRunStatus::Failed;
 }
 
 FEnemyRotateTurretHeadTask::FEnemyRotateTurretHeadTask()

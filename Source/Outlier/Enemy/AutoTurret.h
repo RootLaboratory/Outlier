@@ -34,9 +34,6 @@ struct OUTLIER_API FAutoTurretBehaviorRow : public FTableRowBase
 {
 	GENERATED_BODY()
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Deploy", meta = (ClampMin = "0.0"))
-	float DeployFallbackDuration = 1.0f;
-
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aim", meta = (ClampMin = "0.0"))
 	float DefaultRotationSpeedDegrees = 150.0f;
 
@@ -90,6 +87,7 @@ struct OUTLIER_API FAutoTurretBehaviorRow : public FTableRowBase
 	float ImpactRecoverySpeedDegrees = 12.0f;
 };
 
+// Wave 시점에 활성화되는 맵 배치 전용 Enemy다. EnemyPool에는 등록하지 않는다.
 UCLASS()
 class OUTLIER_API AAutoTurret : public AEnemyBase, public IWeaponMuzzleProvider
 {
@@ -150,7 +148,6 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Enemy|Turret")
 	const FAutoTurretBehaviorRow& GetTurretBehavior() const { return RuntimeTurretBehavior; }
 
-	bool BeginTurretDeployment();
 	bool PrepareForRoomWaveActivation();
 	void PlayFireMontage();
 	void StopFireMontage();
@@ -185,8 +182,6 @@ protected:
 	virtual void PrepareForStateTreeStart() override;
 	virtual bool ShouldActivateAsPreplacedEnemy() const override;
 	virtual void HandleDeath() override;
-	virtual void ResetPoolRuntimeState() override;
-	virtual void ResetPoolPresentationState() override;
 	virtual float GetDeathDestroyDelay() const override;
 	virtual void HandleHackEffect(FGameplayTag EffectTag, const FHackResultContext& Context) override;
 	virtual void HandleHackStarted(const FHackQueryContext& Context) override;
@@ -295,6 +290,7 @@ protected:
 
 private:
 	friend struct FEnemyRecoverTurretImpactOffsetTask;
+	friend class URoomCombatSubsystem;
 
 	void StartImpactRecovery();
 	void TickImpactRecovery();
@@ -311,7 +307,10 @@ private:
 	void SetTurretLifecycleState(EAutoTurretLifecycleState NewState);
 	void ApplyTurretLifecycleState();
 	void ApplyWaitingForWaveState();
+	bool BeginRoomWaveDeployment();
+	bool BeginTurretDeploymentInternal();
 	void CompleteTurretDeployment();
+	bool CompleteRoomWaveDeployment();
 	void ApplyHackedTeamState();
 	static void PlayMontageOnMesh(USkeletalMeshComponent* TargetMesh, UAnimMontage* Montage);
 	static void StopMontageOnMesh(USkeletalMeshComponent* TargetMesh, UAnimMontage* Montage = nullptr);
@@ -321,11 +320,11 @@ private:
 	FQuat HeadMountBasisRotation = FQuat::Identity;
 	FVector CurrentAimLocation = FVector::ZeroVector;
 	TArray<FName> AimOriginMuzzleSockets;
-	FTimerHandle DeployFallbackTimerHandle;
 	FTimerHandle ImpactRecoveryTimerHandle;
 	double LastImpactRecoveryUpdateTimeSeconds = 0.0;
 	float ImpactRecoveryHoldRemaining = 0.0f;
 	int32 CurrentMuzzleGroupIndex = 0;
 	bool bWaveTurretRegistered = false;
 	bool bPersistentTurretIdRegistered = false;
+	bool bRoomWaveDeploymentRequested = false;
 };

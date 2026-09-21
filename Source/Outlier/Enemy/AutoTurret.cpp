@@ -106,17 +106,14 @@ void AAutoTurret::PostInitializeComponents()
 
 	// 단일 Actor가 해치 표현과 터렛을 모두 가지므로, EnemyBase BeginPlay보다 먼저
 	// 대기 상태를 고정해야 일반 배치 Enemy 등록과 StateTree 시작이 발생하지 않는다.
-	if (!IsPoolManaged())
-	{
-		PrepareForRoomWaveActivation();
-	}
+	PrepareForRoomWaveActivation();
 }
 
 void AAutoTurret::BeginPlay()
 {
 	Super::BeginPlay();
 
-	if (!HasAuthority() || IsPoolManaged())
+	if (!HasAuthority())
 	{
 		return;
 	}
@@ -458,7 +455,26 @@ void AAutoTurret::ConfigureTurretHackPolicy()
 	HackableComponent->SuccessEffectTags.AddTag(HackGameplayTags::Effect::ChangeTeam());
 }
 
-bool AAutoTurret::BeginTurretDeployment()
+bool AAutoTurret::BeginRoomWaveDeployment()
+{
+	// 배치 Wave 터렛은 AnimNotify가 실제 전개 완료를 증명해야 한다.
+	// 시간 기반 자동 완료는 Wave 기준값을 연출보다 먼저 확정할 수 있으므로 사용하지 않는다.
+	if (!IsWaitingForRoomWaveActivation()
+		|| bRoomWaveDeploymentRequested)
+	{
+		return false;
+	}
+
+	bRoomWaveDeploymentRequested = true;
+	if (!BeginTurretDeploymentInternal())
+	{
+		bRoomWaveDeploymentRequested = false;
+		return false;
+	}
+	return true;
+}
+
+bool AAutoTurret::BeginTurretDeploymentInternal()
 {
 	if (!HasAuthority()
 		|| TurretLifecycleState == EAutoTurretLifecycleState::DeadPresentation
@@ -475,17 +491,6 @@ bool AAutoTurret::BeginTurretDeployment()
 	// 현재 Room Wave에 해당하는지는 호출자가 판정하고, 여기서는 승인된 전개의 상태와 연출만 시작한다.
 	SetTurretLifecycleState(EAutoTurretLifecycleState::Deploying);
 	MulticastBeginTurretDeployment();
-
-	const float FallbackDuration = FMath::Max(RuntimeTurretBehavior.DeployFallbackDuration, 0.0f);
-	if (FallbackDuration <= KINDA_SMALL_NUMBER)
-	{
-		CompleteTurretDeployment();
-	}
-	else
-	{
-		GetWorldTimerManager().SetTimer(DeployFallbackTimerHandle, this,
-			&AAutoTurret::CompleteTurretDeployment, FallbackDuration, false);
-	}
 	ForceNetUpdate();
 	return true;
 }
@@ -494,12 +499,13 @@ bool AAutoTurret::PrepareForRoomWaveActivation()
 {
 	// 배치 참조는 Server와 Client의 Level Actor에 모두 존재한다. Client는 BeginPlay 이전
 	// 닫힘 표현만 먼저 맞추고, 런타임 상태 변경과 Subsystem 정리는 Server만 수행한다.
-	if (IsPoolManaged() || (!HasAuthority() && HasActorBegunPlay()))
+	if (!HasAuthority() && HasActorBegunPlay())
 	{
 		return false;
 	}
 
 	SetTurretLifecycleState(EAutoTurretLifecycleState::WaitingForWave);
+	bRoomWaveDeploymentRequested = false;
 	return true;
 }
 
@@ -523,7 +529,25 @@ void AAutoTurret::NotifyDeploySequenceFinished()
 {
 	if (HasAuthority() && IsDeploying())
 	{
-		CompleteTurretDeployment();
+		// Room Wave가 소유한 전개는 Subsystem이 현재 Pending 수명인지 확인한 뒤 완료한다.
+		if (bRoomWaveDeploymentRequested)
+		{
+			if (URoomCombatSubsystem* CombatSubsystem = GetWorld()
+			? GetWorld()->GetSubsystem<URoomCombatSubsystem>()
+				: nullptr)
+			{
+				CombatSubsystem->NotifyWaveTurretDeploymentFinished(this);
+			}
+			return;
+		}
+
+		// 배치 Wave가 소유하지 않은 전개 완료는 수명 계약 위반이므로 활성화하지 않는다.
+		if (IsTurretDiagnosticsEnabled())
+		{
+			UE_LOG(LogOutlier, Error,
+				TEXT("[TurretDiag][Deploy] CompletionRejected Turret=%s Reason=MissingRoomWaveOwnership"),
+				*GetNameSafe(this));
+		}
 	}
 }
 
@@ -533,9 +557,36 @@ void AAutoTurret::CompleteTurretDeployment()
 	{
 		return;
 	}
-	GetWorldTimerManager().ClearTimer(DeployFallbackTimerHandle);
 	SetTurretLifecycleState(EAutoTurretLifecycleState::Active);
 	OnTurretDeploymentCompleted();
+}
+
+bool AAutoTurret::CompleteRoomWaveDeployment()
+{
+	if (!HasAuthority() || !IsDeploying())
+	{
+		return false;
+	}
+
+	CompleteTurretDeployment();
+	bRoomWaveDeploymentRequested = false;
+	SpawnDefaultController();
+	RefreshPerceptionConfigForCurrentState();
+	if (StateTreeComponent)
+	{
+		StateTreeComponent->StartLogic();
+	}
+	if (UEnemyAdaptationSubsystem* AdaptationSubsystem = GetEnemyAdaptationSubsystem())
+	{
+		AdaptationSubsystem->RegisterEnemy(this);
+	}
+	if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
+	{
+		// StateTree가 준비된 뒤 등록해야 현재 Room의 전투 상태와 공유 타깃 이벤트를 즉시 받을 수 있다.
+		RoomSubsystem->RegisterEnemy(this);
+	}
+	ForceNetUpdate();
+	return true;
 }
 
 bool AAutoTurret::IsCombatActive() const
@@ -594,7 +645,6 @@ void AAutoTurret::ApplyWaitingForWaveState()
 		return;
 	}
 
-	GetWorldTimerManager().ClearTimer(DeployFallbackTimerHandle);
 	bInCombat = false;
 	CombatState = EEnemyCombatState::NonCombat;
 	bPlayerCurrentlyVisible = false;
@@ -1156,7 +1206,6 @@ void AAutoTurret::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		}
 	}
 
-	GetWorldTimerManager().ClearTimer(DeployFallbackTimerHandle);
 	StopImpactRecovery();
 	Super::EndPlay(EndPlayReason);
 }
@@ -1246,33 +1295,11 @@ EDataValidationResult AAutoTurret::IsDataValid(FDataValidationContext& Context) 
 
 void AAutoTurret::HandleDeath()
 {
-	GetWorldTimerManager().ClearTimer(DeployFallbackTimerHandle);
 	StopImpactRecovery();
 	SetTurretLifecycleState(EAutoTurretLifecycleState::DeadPresentation);
+	bRoomWaveDeploymentRequested = false;
 	MulticastPlayDeathMontage();
 	Super::HandleDeath();
-}
-
-void AAutoTurret::ResetPoolRuntimeState()
-{
-	// EnemyBase의 대여 초기화에 더해, 이전 대여의 해킹 팀과 전개 상태도 새 터렛 기준으로 돌린다.
-	Super::ResetPoolRuntimeState();
-	GetWorldTimerManager().ClearTimer(DeployFallbackTimerHandle);
-	StopImpactRecovery();
-	bHackedToPlayerTeam = false;
-	CurrentAimOffset = FRotator::ZeroRotator;
-	ImpactRotationOffset = FRotator::ZeroRotator;
-	CurrentAimLocation = FVector::ZeroVector;
-	CurrentMuzzleGroupIndex = 0;
-	ApplyHackedTeamState();
-	SetTurretLifecycleState(EAutoTurretLifecycleState::WaitingForWave);
-}
-
-void AAutoTurret::ResetPoolPresentationState()
-{
-	// 서버 대여 초기화뿐 아니라 클라이언트의 SpawnPresentation 복제에서도 호출되는 표현 정리다.
-	Super::ResetPoolPresentationState();
-	StopMontageOnMesh(TurretHeadMesh);
 }
 
 float AAutoTurret::GetDeathDestroyDelay() const
