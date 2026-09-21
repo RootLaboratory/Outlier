@@ -17,6 +17,7 @@
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "HAL/IConsoleManager.h"
 #include "Net/UnrealNetwork.h"
+#include "Network/OutlierArenaSubsystem.h"
 #include "Outlier.h"
 #include "OutlierArenaSettings.h"
 #include "PhysicsEngine/BodyInstance.h"
@@ -140,6 +141,13 @@ void AAutoTurret::BeginPlay()
 				TEXT("[Checkpoint] Failed to restore destroyed Wave turret Turret=%s Id=%s"),
 				*GetNameSafe(this), *PersistentTurretId.ToString());
 		}
+		else if (IsTurretDiagnosticsEnabled())
+		{
+			UE_LOG(LogOutlier, Display,
+				TEXT("[TurretDiag][Checkpoint] Restored Turret=%s Id=%s State=%d"),
+				*GetNameSafe(this), *PersistentTurretId.ToString(),
+				static_cast<int32>(TurretLifecycleState));
+		}
 		return;
 	}
 
@@ -167,6 +175,8 @@ void AAutoTurret::ConfigureWaveRegistrationForTesting(
 	int32 InWaveIndex,
 	FName InPersistentTurretId)
 {
+	// 순수 C++ 테스트 Actor에는 BP의 EnemyStatRow가 없으므로 BeginPlay에서 체력 0으로 사망하지 않게 한다.
+	RuntimeStat.Health = 100.0f;
 	if (URoomTagComponent* RoomTagComp = GetRoomTagComp())
 	{
 		RoomTagComp->AssignDefaultRoomTag(InRoomTag);
@@ -466,20 +476,26 @@ void AAutoTurret::ConfigureTurretHackPolicy()
 	HackableComponent->SuccessEffectTags.AddTag(HackGameplayTags::Effect::ChangeTeam());
 }
 
-bool AAutoTurret::BeginRoomWaveDeployment()
+bool AAutoTurret::BeginRoomWaveDeployment(int32 GameplayGeneration)
 {
 	// 배치 Wave 터렛은 AnimNotify가 실제 전개 완료를 증명해야 한다.
 	// 시간 기반 자동 완료는 Wave 기준값을 연출보다 먼저 확정할 수 있으므로 사용하지 않는다.
-	if (!IsWaitingForRoomWaveActivation()
+	if (GameplayGeneration < 0
+		|| !IsWaitingForRoomWaveActivation()
 		|| bRoomWaveDeploymentRequested)
 	{
 		return false;
 	}
 
+	RoomWaveGameplayGeneration = GameplayGeneration;
+	RoomWaveActivationSerial = RoomWaveActivationSerial == MAX_int32
+		? 1
+		: RoomWaveActivationSerial + 1;
 	bRoomWaveDeploymentRequested = true;
 	if (!BeginTurretDeploymentInternal())
 	{
 		bRoomWaveDeploymentRequested = false;
+		InvalidateRoomWaveLifecycle();
 		return false;
 	}
 	return true;
@@ -501,7 +517,7 @@ bool AAutoTurret::BeginTurretDeploymentInternal()
 
 	// 현재 Room Wave에 해당하는지는 호출자가 판정하고, 여기서는 승인된 전개의 상태와 연출만 시작한다.
 	SetTurretLifecycleState(EAutoTurretLifecycleState::Deploying);
-	MulticastBeginTurretDeployment();
+	MulticastBeginTurretDeployment(RoomWaveGameplayGeneration, RoomWaveActivationSerial);
 	ForceNetUpdate();
 	return true;
 }
@@ -517,6 +533,7 @@ bool AAutoTurret::PrepareForRoomWaveActivation()
 
 	SetTurretLifecycleState(EAutoTurretLifecycleState::WaitingForWave);
 	bRoomWaveDeploymentRequested = false;
+	RoomWaveGameplayGeneration = INDEX_NONE;
 	return true;
 }
 
@@ -536,42 +553,117 @@ void AAutoTurret::StopFireMontage()
 	}
 }
 
-void AAutoTurret::NotifyDeploySequenceFinished()
+void AAutoTurret::NotifyDeploySequenceFinished(int32 GameplayGeneration, int32 ActivationSerial)
 {
-	if (HasAuthority() && IsDeploying())
+	if (!HasAuthority())
 	{
-		// Room Wave가 소유한 전개는 Subsystem이 현재 Pending 수명인지 확인한 뒤 완료한다.
-		if (bRoomWaveDeploymentRequested)
-		{
-			if (URoomCombatSubsystem* CombatSubsystem = GetWorld()
-			? GetWorld()->GetSubsystem<URoomCombatSubsystem>()
-				: nullptr)
-			{
-				CombatSubsystem->NotifyWaveTurretDeploymentFinished(this);
-			}
-			return;
-		}
+		return;
+	}
 
-		// 배치 Wave가 소유하지 않은 전개 완료는 수명 계약 위반이므로 활성화하지 않는다.
+	if (!IsDeploying() || !bRoomWaveDeploymentRequested
+		|| !MatchesRoomWaveLifecycle(GameplayGeneration, ActivationSerial))
+	{
 		if (IsTurretDiagnosticsEnabled())
 		{
-			UE_LOG(LogOutlier, Error,
-				TEXT("[TurretDiag][Deploy] CompletionRejected Turret=%s Reason=MissingRoomWaveOwnership"),
-				*GetNameSafe(this));
+			UE_LOG(LogOutlier, Warning,
+				TEXT("[TurretDiag][Deploy] CompletionRejected Turret=%s State=%d SuppliedGeneration=%d CurrentGeneration=%d SuppliedSerial=%d CurrentSerial=%d Owned=%s"),
+				*GetNameSafe(this), static_cast<int32>(TurretLifecycleState),
+				GameplayGeneration, RoomWaveGameplayGeneration,
+				ActivationSerial, RoomWaveActivationSerial,
+				bRoomWaveDeploymentRequested ? TEXT("true") : TEXT("false"));
 		}
+		return;
+	}
+
+	// Room Wave가 Pending 소유권까지 다시 확인해야 완료 콜백이 생존 집계에 들어간다.
+	if (URoomCombatSubsystem* CombatSubsystem = GetWorld()
+		? GetWorld()->GetSubsystem<URoomCombatSubsystem>()
+		: nullptr)
+	{
+		CombatSubsystem->NotifyWaveTurretDeploymentFinished(
+			this, GameplayGeneration, ActivationSerial);
 	}
 }
 
-void AAutoTurret::NotifyDeathSequenceFinished()
+void AAutoTurret::NotifyDeathSequenceFinished(int32 GameplayGeneration, int32 ActivationSerial)
 {
 	if (!HasAuthority()
-		|| TurretLifecycleState != EAutoTurretLifecycleState::DeadPresentation)
+		|| TurretLifecycleState != EAutoTurretLifecycleState::DeadPresentation
+		|| !MatchesRoomWaveLifecycle(GameplayGeneration, ActivationSerial))
 	{
+		if (HasAuthority() && IsTurretDiagnosticsEnabled())
+		{
+			UE_LOG(LogOutlier, Warning,
+				TEXT("[TurretDiag][Death] CompletionRejected Turret=%s State=%d SuppliedGeneration=%d CurrentGeneration=%d SuppliedSerial=%d CurrentSerial=%d"),
+				*GetNameSafe(this), static_cast<int32>(TurretLifecycleState),
+				GameplayGeneration, RoomWaveGameplayGeneration,
+				ActivationSerial, RoomWaveActivationSerial);
+		}
 		return;
 	}
 
 	// 사망 연출 완료는 Actor 제거가 아니라 최종 자세 고정으로 끝난다.
 	SetTurretLifecycleState(EAutoTurretLifecycleState::DeadPersistent);
+	if (IsTurretDiagnosticsEnabled())
+	{
+		UE_LOG(LogOutlier, Display,
+			TEXT("[TurretDiag][Death] CompletionAccepted Turret=%s Generation=%d Serial=%d State=%d"),
+			*GetNameSafe(this), GameplayGeneration, ActivationSerial,
+			static_cast<int32>(TurretLifecycleState));
+	}
+}
+
+bool AAutoTurret::MatchesRoomWaveLifecycle(int32 GameplayGeneration, int32 ActivationSerial) const
+{
+	const UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
+		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()
+		: nullptr;
+	const bool bMatchesArenaGeneration = !ArenaSubsystem
+		|| static_cast<int32>(ArenaSubsystem->GetGameplayGeneration()) == GameplayGeneration;
+	return GameplayGeneration >= 0
+		&& GameplayGeneration == RoomWaveGameplayGeneration
+		&& ActivationSerial != 0
+		&& ActivationSerial == RoomWaveActivationSerial
+		&& bMatchesArenaGeneration;
+}
+
+void AAutoTurret::InvalidateRoomWaveLifecycle()
+{
+	RoomWaveGameplayGeneration = INDEX_NONE;
+	RoomWaveActivationSerial = RoomWaveActivationSerial == MAX_int32
+		? 1
+		: RoomWaveActivationSerial + 1;
+}
+
+void AAutoTurret::ResetRoomWaveLifecycle(const TCHAR* ResetReason)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	const EAutoTurretLifecycleState PreviousState = TurretLifecycleState;
+	const int32 PreviousGeneration = RoomWaveGameplayGeneration;
+	const int32 PreviousSerial = RoomWaveActivationSerial;
+	InvalidateRoomWaveLifecycle();
+	bRoomWaveDeploymentRequested = false;
+	bHackedToPlayerTeam = false;
+	StopImpactRecovery();
+	DestroyPoolAIController();
+	ResetReusableCombatRuntime(ResetReason);
+	InitializeFromEnemyStatRow();
+	ResetPoolRuntimeState();
+	SetTurretLifecycleState(EAutoTurretLifecycleState::WaitingForWave);
+	ApplyHackedTeamState();
+	ForceNetUpdate();
+
+	if (IsTurretDiagnosticsEnabled())
+	{
+		UE_LOG(LogOutlier, Display,
+			TEXT("[TurretDiag][Reset] Turret=%s Reason=%s PreviousState=%d PreviousGeneration=%d PreviousSerial=%d CurrentSerial=%d"),
+			*GetNameSafe(this), ResetReason, static_cast<int32>(PreviousState),
+			PreviousGeneration, PreviousSerial, RoomWaveActivationSerial);
+	}
 }
 
 void AAutoTurret::CompleteTurretDeployment()
@@ -870,10 +962,12 @@ void AAutoTurret::OnRep_TurretLifecycleState()
 	}
 }
 
-void AAutoTurret::MulticastBeginTurretDeployment_Implementation()
+void AAutoTurret::MulticastBeginTurretDeployment_Implementation(
+	int32 GameplayGeneration,
+	int32 ActivationSerial)
 {
 	PlayMontageOnMesh(GetMesh(), DeployMontage);
-	OnTurretDeploymentStarted();
+	OnTurretDeploymentStarted(GameplayGeneration, ActivationSerial);
 }
 
 void AAutoTurret::MulticastPlayFireMontage_Implementation()
@@ -886,10 +980,13 @@ void AAutoTurret::MulticastStopFireMontage_Implementation()
 	StopMontageOnMesh(TurretHeadMesh, FireMontage);
 }
 
-void AAutoTurret::MulticastPlayDeathMontage_Implementation()
+void AAutoTurret::MulticastPlayDeathMontage_Implementation(
+	int32 GameplayGeneration,
+	int32 ActivationSerial)
 {
 	StopMontageOnMesh(TurretHeadMesh);
 	PlayMontageOnMesh(TurretHeadMesh, DeathMontage);
+	OnTurretDeathPresentationStarted(GameplayGeneration, ActivationSerial);
 }
 
 void AAutoTurret::PlayMontageOnMesh(USkeletalMeshComponent* TargetMesh, UAnimMontage* Montage)
@@ -1372,7 +1469,14 @@ void AAutoTurret::HandleDeath()
 	StopImpactRecovery();
 	SetTurretLifecycleState(EAutoTurretLifecycleState::DeadPresentation);
 	bRoomWaveDeploymentRequested = false;
-	MulticastPlayDeathMontage();
+	MulticastPlayDeathMontage(RoomWaveGameplayGeneration, RoomWaveActivationSerial);
+	if (IsTurretDiagnosticsEnabled())
+	{
+		UE_LOG(LogOutlier, Display,
+			TEXT("[TurretDiag][Death] PresentationStarted Turret=%s Generation=%d Serial=%d State=%d"),
+			*GetNameSafe(this), RoomWaveGameplayGeneration, RoomWaveActivationSerial,
+			static_cast<int32>(TurretLifecycleState));
+	}
 
 	// Room 정리 중 차수 완료가 이어져도 사망 상태가 Snapshot 원본에 먼저 남도록 기록 순서를 고정한다.
 	if (bPersistentTurretIdRegistered)

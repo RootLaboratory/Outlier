@@ -172,7 +172,10 @@ public:
 		int32 CombatPhaseIndex,
 		int32 WaveIndex);
 	void UnregisterWaveTurret(AAutoTurret* Turret);
-	bool NotifyWaveTurretDeploymentFinished(AAutoTurret* Turret);
+	bool NotifyWaveTurretDeploymentFinished(
+		AAutoTurret* Turret,
+		int32 GameplayGeneration,
+		int32 ActivationSerial);
 	void GetRegisteredWaveTurrets(
 		FGameplayTag RoomTag,
 		int32 CombatPhaseIndex,
@@ -258,6 +261,7 @@ private:
 	void CompactAliveEnemies(FRoomCombatRuntime& Runtime);
 	void CompactSpawnPoints(FGameplayTag RoomTag);
 	void CompactWaveTurrets(FGameplayTag RoomTag);
+	void ResetWaveTurretsForRoom(FGameplayTag RoomTag, const TCHAR* ResetReason);
 	void SetRoomStreamingSourceEnabled(FGameplayTag RoomTag, bool bEnabled);
 	void HandleArenaGameplayReloadStarted(uint32 GameplayGeneration);
 	void HandleArenaReleased();

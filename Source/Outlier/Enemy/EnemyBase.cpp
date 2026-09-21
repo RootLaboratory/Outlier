@@ -338,56 +338,14 @@ bool AEnemyBase::BeginPoolLease(
 	SetNetDormancy(DORM_Awake);
 	FlushNetDormancy();
 	SetLifeSpan(0.0f);
-	GetWorldTimerManager().ClearAllTimersForObject(this);
 	DestroyPoolAIController();
-
-	CancelPossessionProcess();
-	EndPossessedImpactInputLock();
-	EndImpactReaction();
-	ResetPossessedAttackInput();
-	StopCurrentAttack();
-	RemoveRoomTargetObserver();
-	ReleaseSearchRingSlot();
-	ClearPossessedPlayerState();
-
-	if (StateTreeComponent)
-	{
-		StateTreeComponent->StopLogic(TEXT("Enemy pool lease reset"));
-	}
-	if (OutlierAbilitySystemComponent)
-	{
-		OutlierAbilitySystemComponent->CancelAllAbilities();
-		OutlierAbilitySystemComponent->RemoveActiveEffects(FGameplayEffectQuery());
-	}
-
-	bDeathCleanupPerformed = false;
-	bInCombat = false;
-	bIsPossessed = false;
-	bPlayerCurrentlyVisible = false;
-	bHasSharedTargetContact = false;
-	bPossessedImpactInputLocked = false;
-	bCombatDecisionRefreshPending = false;
-	bPossessedAttackHeld = false;
-	bPossessedAttackQueued = false;
-	CombatState = EEnemyCombatState::NonCombat;
-	PreStunCombatState = EEnemyCombatState::NonCombat;
-	AttackPhase = EEnemyAttackPhase::Idle;
-	LastKnownPlayerLocation = FVector::ZeroVector;
-	PatternStartPlayerLocation = FVector::ZeroVector;
-	SharedTargetLocation = FVector::ZeroVector;
-	PossessionInstigatorPartner.Reset();
-	PossessionPendingEffectHandle.Invalidate();
+	ResetReusableCombatRuntime(TEXT("Enemy pool lease reset"));
 
 	if (RoomTagComponent)
 	{
 		RoomTagComponent->ClearRuntimeRoomAssignment();
 		RoomTagComponent->AssignDefaultRoomTag(Context.RoomTag);
 	}
-	if (IsValid(CurrentWeapon))
-	{
-		CurrentWeapon->ResetForEnemyPoolLease();
-	}
-
 	// 이전 전투 상태를 지운 뒤 새 Room/차수/Wave 수명을 부여한다. 연출 중에는 아직 AI/피해가 비활성이다.
 	PoolGameplayGeneration = Context.GameplayGeneration;
 	PoolLeaseSerial = LeaseSerial;
@@ -411,6 +369,51 @@ bool AEnemyBase::BeginPoolLease(
 
 	OnPoolSpawnPresentationStarted(PoolGameplayGeneration, PoolLeaseSerial);
 	return true;
+}
+
+void AEnemyBase::ResetReusableCombatRuntime(const TCHAR* StateTreeStopReason)
+{
+	GetWorldTimerManager().ClearAllTimersForObject(this);
+	CancelPossessionProcess();
+	EndPossessedImpactInputLock();
+	EndImpactReaction();
+	ResetPossessedAttackInput();
+	StopCurrentAttack();
+	RemoveRoomTargetObserver();
+	ReleaseSearchRingSlot();
+	ClearPossessedPlayerState();
+
+	if (StateTreeComponent)
+	{
+		StateTreeComponent->StopLogic(StateTreeStopReason);
+	}
+	if (OutlierAbilitySystemComponent)
+	{
+		OutlierAbilitySystemComponent->CancelAllAbilities();
+		OutlierAbilitySystemComponent->RemoveActiveEffects(FGameplayEffectQuery());
+	}
+	if (IsValid(CurrentWeapon))
+	{
+		CurrentWeapon->ResetForEnemyPoolLease();
+	}
+
+	bDeathCleanupPerformed = false;
+	bInCombat = false;
+	bIsPossessed = false;
+	bPlayerCurrentlyVisible = false;
+	bHasSharedTargetContact = false;
+	bPossessedImpactInputLocked = false;
+	bCombatDecisionRefreshPending = false;
+	bPossessedAttackHeld = false;
+	bPossessedAttackQueued = false;
+	CombatState = EEnemyCombatState::NonCombat;
+	PreStunCombatState = EEnemyCombatState::NonCombat;
+	AttackPhase = EEnemyAttackPhase::Idle;
+	LastKnownPlayerLocation = FVector::ZeroVector;
+	PatternStartPlayerLocation = FVector::ZeroVector;
+	SharedTargetLocation = FVector::ZeroVector;
+	PossessionInstigatorPartner.Reset();
+	PossessionPendingEffectHandle.Invalidate();
 }
 
 bool AEnemyBase::MatchesPoolLease(int32 GameplayGeneration, int32 LeaseSerial) const
@@ -2905,6 +2908,12 @@ void AEnemyBase::PerformDeathCleanup()
 	if (HasAuthority())
 	{
 		ReportFinalAdaptationResult();
+		if (UEnemyAdaptationSubsystem* AdaptationSubsystem = GetEnemyAdaptationSubsystem())
+		{
+			// 처치 결과를 Stack에 반영한 뒤 즉시 활성 목록에서 제외한다.
+			// Pool 반환이나 EndPlay까지 남겨두면 이미 죽은 Enemy가 필드 파열 대상에 포함될 수 있다.
+			AdaptationSubsystem->UnregisterEnemy(this);
+		}
 		if (URoomCombatSubsystem* CombatSubsystem =
 			GetWorld()->GetSubsystem<URoomCombatSubsystem>())
 		{

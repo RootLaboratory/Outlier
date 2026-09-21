@@ -12,7 +12,10 @@ void UAnimNotify_TurretDeployFinished::Notify(
 	AAutoTurret* Turret = MeshComp ? Cast<AAutoTurret>(MeshComp->GetOwner()) : nullptr;
 	if (Turret && Turret->HasAuthority())
 	{
-		Turret->NotifyDeploySequenceFinished();
+		// Reset은 이전 Montage를 정지하므로, Notify 시점의 토큰은 현재 전개 수명만 가리킨다.
+		Turret->NotifyDeploySequenceFinished(
+			Turret->GetRoomWaveGameplayGeneration(),
+			Turret->GetRoomWaveActivationSerial());
 	}
 }
 

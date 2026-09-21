@@ -402,16 +402,33 @@ void URoomCombatSubsystem::UnregisterRoom(ARoomVolume* RoomVolume)
 		return;
 	}
 
-	const FGameplayTag RoomTag = RoomVolume->GetRoomTag();
+	FGameplayTag RoomTag = RoomVolume->GetRoomTag();
 	FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
 	if (!Runtime || Runtime->RoomVolume.Get() != RoomVolume)
 	{
-		return;
+		// RegisterRoom은 명시적인 RoomTag를 받으므로 테스트나 동적 구성에서는
+		// Actor의 편집 프로퍼티보다 등록 당시의 포인터 매핑이 실제 소유권이다.
+		RoomTag = FGameplayTag();
+		for (const TPair<FGameplayTag, FRoomCombatRuntime>& Entry : RoomRuntimes)
+		{
+			if (Entry.Value.RoomVolume.Get() == RoomVolume)
+			{
+				RoomTag = Entry.Key;
+				break;
+			}
+		}
+		if (!RoomTag.IsValid())
+		{
+			return;
+		}
+
+		Runtime = RoomRuntimes.Find(RoomTag);
 	}
 	const bool bWasSequenceActive = Runtime->bTriggeredSequenceActive;
 	const int32 CancelledPhase = Runtime->CurrentCombatPhaseIndex;
 	const int32 CancelledGeneration = Runtime->GameplayGeneration;
 	SetActivationGroupActive(RoomTag, Runtime->ActiveActivationGroupTag, false);
+	ResetWaveTurretsForRoom(RoomTag, TEXT("Room combat unregistered"));
 
 	if (Runtime->bEncounterIdRegistered)
 	{
@@ -714,7 +731,10 @@ void URoomCombatSubsystem::UnregisterWaveTurret(AAutoTurret* Turret)
 		*GetNameSafe(Turret), *RegisteredRoomTag.ToString());
 }
 
-bool URoomCombatSubsystem::NotifyWaveTurretDeploymentFinished(AAutoTurret* Turret)
+bool URoomCombatSubsystem::NotifyWaveTurretDeploymentFinished(
+	AAutoTurret* Turret,
+	int32 GameplayGeneration,
+	int32 ActivationSerial)
 {
 	if (!CanRunServerGameplay() || !IsValid(Turret) || !Turret->HasAuthority())
 	{
@@ -728,10 +748,20 @@ bool URoomCombatSubsystem::NotifyWaveTurretDeploymentFinished(AAutoTurret* Turre
 		: nullptr;
 	if (!RegisteredRoomTag || !Runtime
 		|| !IsActiveCombatRuntime(*RegisteredRoomTag, *Runtime)
+		|| Runtime->GameplayGeneration != GameplayGeneration
 		|| Runtime->CurrentCombatPhaseIndex != Turret->GetCombatPhaseIndex()
 		|| Runtime->CurrentWaveIndex != Turret->GetWaveIndex()
-		|| !Runtime->PendingWaveTurretActivations.Contains(TurretPtr))
+		|| !Runtime->PendingWaveTurretActivations.Contains(TurretPtr)
+		|| !Turret->MatchesRoomWaveLifecycle(GameplayGeneration, ActivationSerial))
 	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[RoomCombat] Wave turret completion rejected. Turret=%s Room=%s SuppliedGeneration=%d RuntimeGeneration=%d SuppliedSerial=%d CurrentSerial=%d State=%d Pending=%d Alive=%d"),
+			*GetNameSafe(Turret), RegisteredRoomTag ? *RegisteredRoomTag->ToString() : TEXT("None"),
+			GameplayGeneration, Runtime ? Runtime->GameplayGeneration : INDEX_NONE,
+			ActivationSerial, Turret->GetRoomWaveActivationSerial(),
+			static_cast<int32>(Turret->GetTurretLifecycleState()),
+			Runtime ? Runtime->PendingActivationCount : 0,
+			Runtime ? Runtime->TrackedAliveEnemies.Num() : 0);
 		return false;
 	}
 
@@ -743,12 +773,15 @@ bool URoomCombatSubsystem::NotifyWaveTurretDeploymentFinished(AAutoTurret* Turre
 	Runtime->PendingWaveTurretActivations.Remove(TurretPtr);
 	Runtime->PendingActivationCount = FMath::Max(Runtime->PendingActivationCount - 1, 0);
 	UE_LOG(LogTemp, Display,
-		TEXT("[RoomCombat] Wave turret activated. Turret=%s Room=%s Phase=%d Wave=%d PendingActivation=%d"),
+		TEXT("[RoomCombat] Wave turret activated. Turret=%s Room=%s Phase=%d Wave=%d Generation=%d Serial=%d PendingActivation=%d Alive=%d"),
 		*GetNameSafe(Turret),
 		*RegisteredRoomTag->ToString(),
 		Runtime->CurrentCombatPhaseIndex,
 		Runtime->CurrentWaveIndex,
-		Runtime->PendingActivationCount);
+		GameplayGeneration,
+		ActivationSerial,
+		Runtime->PendingActivationCount,
+		Runtime->TrackedAliveEnemies.Num());
 	FinalizeCurrentWaveSpawn(*RegisteredRoomTag, *Runtime);
 	return true;
 }
@@ -1136,15 +1169,18 @@ void URoomCombatSubsystem::TryStartPendingWaveTurretActivations(
 		// BP의 전개 시작 이벤트가 같은 호출 안에서 완료 Notify를 보낼 수도 있으므로
 		// 먼저 Pending 소유권을 기록하고 시작 실패 때만 되돌린다.
 		Runtime.PendingWaveTurretActivations.Add(TurretPtr);
-		if (Turret->BeginRoomWaveDeployment())
+		if (Turret->BeginRoomWaveDeployment(Runtime.GameplayGeneration))
 		{
 			UE_LOG(LogTemp, Display,
-				TEXT("[RoomCombat] Wave turret deployment started. Turret=%s Room=%s Phase=%d Wave=%d PendingActivation=%d"),
+				TEXT("[RoomCombat] Wave turret deployment started. Turret=%s Room=%s Phase=%d Wave=%d Generation=%d Serial=%d PendingActivation=%d Alive=%d"),
 				*GetNameSafe(Turret),
 				*RoomTag.ToString(),
 				Runtime.CurrentCombatPhaseIndex,
 				Runtime.CurrentWaveIndex,
-				Runtime.PendingActivationCount);
+				Runtime.GameplayGeneration,
+				Turret->GetRoomWaveActivationSerial(),
+				Runtime.PendingActivationCount,
+				Runtime.TrackedAliveEnemies.Num());
 		}
 		else
 		{
@@ -1601,6 +1637,10 @@ void URoomCombatSubsystem::ResetRuntimeCombatState()
 	}
 	// 취소 통보에서 Reset이 재진입하거나 새 전투를 시작하지 못하게 정리 전체를 하나의 경계로 묶는다.
 	TGuardValue<bool> ResetGuard(bResettingRuntime, true);
+	UE_LOG(LogTemp, Display,
+		TEXT("[RoomCombat] Runtime reset started. Rooms=%d Enemies=%d WaveTurrets=%d PendingSpawns=%d ActiveRoom=%s"),
+		RoomRuntimes.Num(), RegisteredEnemies.Num(), RegisteredWaveTurretRooms.Num(),
+		PendingSpawnRequests.Num(), *ActiveCombatRoomTag.ToString());
 	struct FCancelledSequence
 	{
 		FGameplayTag RoomTag;
@@ -1609,6 +1649,7 @@ void URoomCombatSubsystem::ResetRuntimeCombatState()
 	};
 	TArray<FCancelledSequence> CancelledSequences;
 	TArray<TWeakObjectPtr<AEnemyBase>> EnemiesToReturn;
+	TArray<TWeakObjectPtr<AAutoTurret>> WaveTurretsToReset;
 	for (const auto& Entry : RegisteredEnemies)
 	{
 		if (Entry.Value.bPoolManaged)
@@ -1616,6 +1657,7 @@ void URoomCombatSubsystem::ResetRuntimeCombatState()
 			EnemiesToReturn.Add(Entry.Key);
 		}
 	}
+	RegisteredWaveTurretRooms.GetKeys(WaveTurretsToReset);
 	CancelSpawnRetry();
 	for (const TPair<FGameplayTag, FRoomCombatRuntime>& Entry : RoomRuntimes)
 	{
@@ -1627,6 +1669,14 @@ void URoomCombatSubsystem::ResetRuntimeCombatState()
 		if (ARoomVolume* RoomVolume = Entry.Value.RoomVolume.Get())
 		{
 			RoomVolume->SetCombatStreamingSourceEnabled(false);
+		}
+	}
+	// 토큰을 먼저 무효화해야 Reset 도중 도착한 AnimNotify가 현재 Wave의 Pending을 소모하지 못한다.
+	for (const TWeakObjectPtr<AAutoTurret>& TurretPtr : WaveTurretsToReset)
+	{
+		if (AAutoTurret* Turret = TurretPtr.Get())
+		{
+			Turret->ResetRoomWaveLifecycle(TEXT("Arena gameplay reset"));
 		}
 	}
 
@@ -1677,6 +1727,27 @@ void URoomCombatSubsystem::ResetRuntimeCombatState()
 	{
 		BroadcastCombatEvent(Sequence.RoomTag, ERoomCombatEvent::Cancelled,
 			Sequence.PhaseIndex, Sequence.Generation);
+	}
+	UE_LOG(LogTemp, Display,
+		TEXT("[RoomCombat] Runtime reset completed. Rooms=%d Enemies=%d WaveTurrets=%d PendingSpawns=%d"),
+		RoomRuntimes.Num(), RegisteredEnemies.Num(), RegisteredWaveTurretRooms.Num(),
+		PendingSpawnRequests.Num());
+}
+
+void URoomCombatSubsystem::ResetWaveTurretsForRoom(FGameplayTag RoomTag, const TCHAR* ResetReason)
+{
+	const TArray<FRoomCombatWaveTurretRuntime>* Entries = WaveTurretsByRoom.Find(RoomTag);
+	if (!Entries)
+	{
+		return;
+	}
+
+	for (const FRoomCombatWaveTurretRuntime& Entry : *Entries)
+	{
+		if (AAutoTurret* Turret = Entry.Turret.Get())
+		{
+			Turret->ResetRoomWaveLifecycle(ResetReason);
+		}
 	}
 }
 
@@ -1778,11 +1849,15 @@ int32 URoomCombatSubsystem::GetRegisteredWaveTurretCount(
 		return 0;
 	}
 
-	return Entries->CountByPredicate(
-		[CombatPhaseIndex, WaveIndex](const FRoomCombatWaveTurretRuntime& Entry)
+	int32 MatchingTurretCount = 0;
+	for (const FRoomCombatWaveTurretRuntime& Entry : *Entries)
+	{
+		if (Entry.CombatPhaseIndex == CombatPhaseIndex && Entry.WaveIndex == WaveIndex)
 		{
-			return Entry.CombatPhaseIndex == CombatPhaseIndex && Entry.WaveIndex == WaveIndex;
-		});
+			++MatchingTurretCount;
+		}
+	}
+	return MatchingTurretCount;
 }
 
 void URoomCombatSubsystem::CompleteCurrentPhase(

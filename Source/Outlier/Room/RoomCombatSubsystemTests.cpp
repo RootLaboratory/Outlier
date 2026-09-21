@@ -158,6 +158,16 @@ namespace
 		}
 		return Enemy;
 	}
+
+	void DispatchBeginPlayForTest(AActor* Actor)
+	{
+		// InitializeActorsForPlay만 호출한 자동화 World는 지연 스폰 Actor에 BeginPlay를 보내지 않을 수 있다.
+		// 실제 맵 배치와 같은 등록 경로를 검증하도록, 아직 시작하지 않은 Actor만 명시적으로 시작한다.
+		if (Actor && !Actor->HasActorBegunPlay())
+		{
+			Actor->DispatchBeginPlay();
+		}
+	}
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -1050,6 +1060,7 @@ bool FRoomCombatWaveTurretWaitingStateTest::RunTest(const FString& Parameters)
 	WaitingTurret->ConfigureWaveRegistrationForTesting(
 		RoomTag, 0, 0, TEXT("Turret.Waiting.1"));
 	WaitingTurret->FinishSpawning(FTransform::Identity);
+	DispatchBeginPlayForTest(WaitingTurret);
 	ARoomVolume* Room = World->SpawnActor<ARoomVolume>();
 	if (!TestNotNull(TEXT("Turret waiting-state Room"), Room))
 	{
@@ -1174,6 +1185,7 @@ bool FRoomCombatWaveTurretActivationTest::RunTest(const FString& Parameters)
 		{
 			Turret->ConfigureWaveRegistrationForTesting(RoomTag, 0, 1, PersistentId);
 			Turret->FinishSpawning(FTransform::Identity);
+			DispatchBeginPlayForTest(Turret);
 		}
 		return Turret;
 	};
@@ -1213,7 +1225,15 @@ bool FRoomCombatWaveTurretActivationTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("The baseline waits for turret deployment"),
 		Combat->GetWaveBaselineEnemyCount(RoomTag), INDEX_NONE);
 
-	FirstTurret->NotifyDeploySequenceFinished();
+	const int32 FirstGeneration = FirstTurret->GetRoomWaveGameplayGeneration();
+	const int32 FirstActivationSerial = FirstTurret->GetRoomWaveActivationSerial();
+	FirstTurret->NotifyDeploySequenceFinished(FirstGeneration + 1, FirstActivationSerial);
+	TestEqual(TEXT("A stale generation cannot consume a pending turret activation"),
+		Combat->GetPendingActivationCount(RoomTag), 2);
+	FirstTurret->NotifyDeploySequenceFinished(FirstGeneration, FirstActivationSerial + 1);
+	TestEqual(TEXT("A stale activation serial cannot consume a pending turret activation"),
+		Combat->GetPendingActivationCount(RoomTag), 2);
+	FirstTurret->NotifyDeploySequenceFinished(FirstGeneration, FirstActivationSerial);
 	TestEqual(TEXT("One completed turret leaves one activation pending"),
 		Combat->GetPendingActivationCount(RoomTag), 1);
 	TestEqual(TEXT("One turret cannot finalize the Wave baseline"),
@@ -1233,7 +1253,9 @@ bool FRoomCombatWaveTurretActivationTest::RunTest(const FString& Parameters)
 	}
 	TestEqual(TEXT("Late registration starts the pending deployment"),
 		LateTurret->GetTurretLifecycleState(), EAutoTurretLifecycleState::Deploying);
-	LateTurret->NotifyDeploySequenceFinished();
+	const int32 LateGeneration = LateTurret->GetRoomWaveGameplayGeneration();
+	const int32 LateActivationSerial = LateTurret->GetRoomWaveActivationSerial();
+	LateTurret->NotifyDeploySequenceFinished(LateGeneration, LateActivationSerial);
 	TestEqual(TEXT("Every turret activation completes"),
 		Combat->GetPendingActivationCount(RoomTag), 0);
 	TestEqual(TEXT("Baseline includes preplaced, Pool, and both turret Enemies"),
@@ -1243,7 +1265,7 @@ bool FRoomCombatWaveTurretActivationTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Late turret also inherits the active Room target"),
 		LateTurret->HasSharedTargetContact());
 
-	LateTurret->NotifyDeploySequenceFinished();
+	LateTurret->NotifyDeploySequenceFinished(LateGeneration, LateActivationSerial);
 	TestEqual(TEXT("Duplicate completion does not change the alive count"),
 		Combat->GetAliveEnemyCount(RoomTag), 4);
 
@@ -1274,13 +1296,17 @@ bool FRoomCombatWaveTurretActivationTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("A dead turret is recorded by stable Id"),
 		SaveSubsystem->IsTurretDestroyed(TEXT("Turret.Activation.1")));
 
-	FirstTurret->NotifyDeathSequenceFinished();
+	FirstTurret->NotifyDeathSequenceFinished(FirstGeneration, FirstActivationSerial + 1);
+	TestEqual(TEXT("A stale death completion preserves the presentation state"),
+		FirstTurret->GetTurretLifecycleState(),
+		EAutoTurretLifecycleState::DeadPresentation);
+	FirstTurret->NotifyDeathSequenceFinished(FirstGeneration, FirstActivationSerial);
 	TestEqual(TEXT("Death sequence completion fixes the final persistent state"),
 		FirstTurret->GetTurretLifecycleState(),
 		EAutoTurretLifecycleState::DeadPersistent);
 	TestFalse(TEXT("The persistent dead turret actor remains in the World"),
 		FirstTurret->IsActorBeingDestroyed());
-	FirstTurret->NotifyDeathSequenceFinished();
+	FirstTurret->NotifyDeathSequenceFinished(FirstGeneration, FirstActivationSerial);
 	TestEqual(TEXT("Duplicate death completion preserves the final state"),
 		FirstTurret->GetTurretLifecycleState(),
 		EAutoTurretLifecycleState::DeadPersistent);
@@ -1304,6 +1330,156 @@ bool FRoomCombatWaveTurretActivationTest::RunTest(const FString& Parameters)
 		RestoredTurret->CanBeDamaged());
 	TestTrue(TEXT("A restored dead turret keeps its collision"),
 		RestoredTurret->GetActorEnableCollision());
+
+	// 같은 체크포인트에서 사망 ID가 없는 터렛은 최종 사망 자세가 아니라 다음 Wave 대기 상태로 돌아온다.
+	LateTurret->Destroy();
+	AAutoTurret* RestoredAliveTurret = SpawnConfiguredTurret(TEXT("Turret.Activation.2"));
+	if (!TestNotNull(TEXT("An unsaved Wave turret can be reloaded"), RestoredAliveTurret))
+	{
+		CleanupWorld();
+		return false;
+	}
+	TestEqual(TEXT("Only a saved destroyed turret restores DeadPersistent"),
+		RestoredAliveTurret->GetTurretLifecycleState(),
+		EAutoTurretLifecycleState::WaitingForWave);
+	TestFalse(TEXT("An unsaved reloaded turret is alive"), RestoredAliveTurret->IsDead());
+
+	CleanupWorld();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FRoomCombatWaveTurretReloadSafetyTest,
+	"Outlier.Room.WaveTurretReloadSafety",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRoomCombatWaveTurretReloadSafetyTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const FName WorldName = MakeUniqueObjectName(nullptr, UWorld::StaticClass(), NAME_None,
+		EUniqueObjectNameOptions::GloballyUnique);
+	FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, WorldName, GetTransientPackage());
+	if (!TestNotNull(TEXT("Turret reload-safety test world exists"), World))
+	{
+		GEngine->DestroyWorldContext(World);
+		return false;
+	}
+
+	World->AddToRoot();
+	WorldContext.SetCurrentWorld(World);
+	UGameInstance* GameInstance = NewObject<UGameInstance>(GEngine);
+	World->SetGameInstance(GameInstance);
+	GameInstance->Init();
+	TestTrue(TEXT("Turret reload-safety world creates an authority game mode"),
+		World->SetGameMode(FURL()));
+	World->InitializeActorsForPlay(FURL());
+	auto CleanupWorld = [World, GameInstance]()
+	{
+		GEngine->ShutdownWorldNetDriver(World);
+		World->DestroyWorld(true);
+		GameInstance->Shutdown();
+		World->SetPhysicsScene(nullptr);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+	};
+
+	URoomCombatSubsystem* Combat = World->GetSubsystem<URoomCombatSubsystem>();
+	if (!TestNotNull(TEXT("Room combat subsystem"), Combat))
+	{
+		CleanupWorld();
+		return false;
+	}
+
+	const FGameplayTag RoomTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.1")));
+	URoomCombatDefinition* Definition = NewObject<URoomCombatDefinition>(World);
+	FRoomCombatRoomDefinition& RoomDefinition = AddRoomDefinition(Definition, RoomTag);
+	FRoomCombatPhaseDefinition& Phase = RoomDefinition.CombatPhases.AddDefaulted_GetRef();
+	Phase.StartPolicy = ERoomCombatPhaseStartPolicy::InitialDetection;
+	Phase.Waves.AddDefaulted();
+	FRoomCombatWaveDefinition& TurretWave = Phase.Waves.AddDefaulted_GetRef();
+	TurretWave.SpawnMode = ERoomCombatWaveSpawnMode::SpawnFromObjects;
+	TurretWave.ExpectedWaveTurretCount = 1;
+	Combat->SetCombatDefinitionForTesting(Definition);
+
+	AAutoTurret* Turret = World->SpawnActorDeferred<AAutoTurret>(
+		AAutoTurret::StaticClass(), FTransform::Identity);
+	if (Turret)
+	{
+		Turret->ConfigureWaveRegistrationForTesting(RoomTag, 0, 1, TEXT("Turret.ReloadSafety.1"));
+		Turret->FinishSpawning(FTransform::Identity);
+		DispatchBeginPlayForTest(Turret);
+	}
+	ARoomVolume* Room = World->SpawnActor<ARoomVolume>();
+	AEnemyBase* PreplacedEnemy = SpawnTestEnemy(World, RoomTag);
+	if (!TestNotNull(TEXT("Reload-safety Wave turret"), Turret)
+		|| !TestNotNull(TEXT("Reload-safety Room"), Room)
+		|| !TestNotNull(TEXT("Reload-safety preplaced Enemy"), PreplacedEnemy))
+	{
+		CleanupWorld();
+		return false;
+	}
+
+	TestTrue(TEXT("Reload-safety Room registers"), Combat->RegisterRoom(Room, RoomTag));
+	Combat->RegisterPreplacedEnemy(PreplacedEnemy);
+	TestTrue(TEXT("Reload-safety combat starts"), Combat->NotifyRoomCombatStarted(RoomTag));
+	TestTrue(TEXT("Reload-safety turret Wave starts"), Combat->StartWaveSpawning(RoomTag, 0, 1));
+	const int32 DeployingGeneration = Turret->GetRoomWaveGameplayGeneration();
+	const int32 DeployingSerial = Turret->GetRoomWaveActivationSerial();
+	TestEqual(TEXT("Turret enters Deploying before Room unload"),
+		Turret->GetTurretLifecycleState(), EAutoTurretLifecycleState::Deploying);
+
+	Combat->UnregisterRoom(Room);
+	TestEqual(TEXT("Room unload resets a deploying turret immediately"),
+		Turret->GetTurretLifecycleState(), EAutoTurretLifecycleState::WaitingForWave);
+	TestFalse(TEXT("Room unload clears a deploying turret dead state"), Turret->IsDead());
+	Turret->NotifyDeploySequenceFinished(DeployingGeneration, DeployingSerial);
+	TestEqual(TEXT("A pre-unload deploy callback cannot reactivate the turret"),
+		Turret->GetTurretLifecycleState(), EAutoTurretLifecycleState::WaitingForWave);
+
+	TestTrue(TEXT("Room can register again after unload"), Combat->RegisterRoom(Room, RoomTag));
+	TestTrue(TEXT("Combat can restart after Room registration"), Combat->NotifyRoomCombatStarted(RoomTag));
+	TestTrue(TEXT("Turret Wave can restart after Room registration"),
+		Combat->StartWaveSpawning(RoomTag, 0, 1));
+	const int32 ActiveGeneration = Turret->GetRoomWaveGameplayGeneration();
+	const int32 ActiveSerial = Turret->GetRoomWaveActivationSerial();
+	Turret->NotifyDeploySequenceFinished(ActiveGeneration, ActiveSerial);
+	TestEqual(TEXT("Turret reaches Active before Arena reset"),
+		Turret->GetTurretLifecycleState(), EAutoTurretLifecycleState::Active);
+
+	Combat->ResetRuntimeCombatState();
+	TestEqual(TEXT("Arena reset returns an active turret to WaitingForWave"),
+		Turret->GetTurretLifecycleState(), EAutoTurretLifecycleState::WaitingForWave);
+	TestEqual(TEXT("Arena reset clears pending activation state"),
+		Combat->GetPendingActivationCount(RoomTag), 0);
+	Turret->NotifyDeploySequenceFinished(ActiveGeneration, ActiveSerial);
+	TestEqual(TEXT("A pre-reset deploy callback cannot change the reset turret"),
+		Turret->GetTurretLifecycleState(), EAutoTurretLifecycleState::WaitingForWave);
+
+	TestTrue(TEXT("Wave turret can register after Arena reset"),
+		Combat->RegisterWaveTurret(Turret, RoomTag, 0, 1));
+	TestTrue(TEXT("Room can register after Arena reset"), Combat->RegisterRoom(Room, RoomTag));
+	Combat->RegisterPreplacedEnemy(PreplacedEnemy);
+	TestTrue(TEXT("Combat restarts for death-presentation reset"),
+		Combat->NotifyRoomCombatStarted(RoomTag));
+	TestTrue(TEXT("Turret Wave restarts for death-presentation reset"),
+		Combat->StartWaveSpawning(RoomTag, 0, 1));
+	const int32 DeathGeneration = Turret->GetRoomWaveGameplayGeneration();
+	const int32 DeathSerial = Turret->GetRoomWaveActivationSerial();
+	Turret->NotifyDeploySequenceFinished(DeathGeneration, DeathSerial);
+	TestTrue(TEXT("Reload-safety turret accepts the dead state"),
+		Turret->GetOutlierAbilitySystemComponent()->ApplyDeadStateToSelf());
+	Turret->BeginDeathForPoolTesting();
+	TestEqual(TEXT("Turret enters DeadPresentation before Arena reset"),
+		Turret->GetTurretLifecycleState(), EAutoTurretLifecycleState::DeadPresentation);
+
+	Combat->ResetRuntimeCombatState();
+	TestEqual(TEXT("Arena reset returns a death-presenting turret to WaitingForWave"),
+		Turret->GetTurretLifecycleState(), EAutoTurretLifecycleState::WaitingForWave);
+	TestFalse(TEXT("Arena reset removes the turret dead GameplayEffect"), Turret->IsDead());
+	Turret->NotifyDeathSequenceFinished(DeathGeneration, DeathSerial);
+	TestEqual(TEXT("A pre-reset death callback cannot restore the dead presentation"),
+		Turret->GetTurretLifecycleState(), EAutoTurretLifecycleState::WaitingForWave);
 
 	CleanupWorld();
 	return true;
@@ -1368,6 +1544,7 @@ bool FRoomCombatWaveTurretRegistrationTest::RunTest(const FString& Parameters)
 			Turret->ConfigureWaveRegistrationForTesting(
 				RoomTag, PhaseIndex, WaveIndex, PersistentId);
 			Turret->FinishSpawning(FTransform::Identity);
+			DispatchBeginPlayForTest(Turret);
 		}
 		return Turret;
 	};

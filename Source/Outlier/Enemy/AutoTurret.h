@@ -141,6 +141,12 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Enemy|Turret|Room Wave")
 	EAutoTurretLifecycleState GetTurretLifecycleState() const { return TurretLifecycleState; }
 
+	UFUNCTION(BlueprintPure, Category = "Enemy|Turret|Room Wave")
+	int32 GetRoomWaveGameplayGeneration() const { return RoomWaveGameplayGeneration; }
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Turret|Room Wave")
+	int32 GetRoomWaveActivationSerial() const { return RoomWaveActivationSerial; }
+
 	int32 GetCombatPhaseIndex() const { return CombatPhaseIndex; }
 	int32 GetWaveIndex() const { return WaveIndex; }
 	FName GetPersistentTurretId() const { return PersistentTurretId; }
@@ -161,10 +167,10 @@ public:
 #endif
 
 	UFUNCTION(BlueprintCallable, Category = "Enemy|Turret|Deploy")
-	void NotifyDeploySequenceFinished();
+	void NotifyDeploySequenceFinished(int32 GameplayGeneration, int32 ActivationSerial);
 
 	UFUNCTION(BlueprintCallable, Category = "Enemy|Turret|Death")
-	void NotifyDeathSequenceFinished();
+	void NotifyDeathSequenceFinished(int32 GameplayGeneration, int32 ActivationSerial);
 
 	bool UpdateTurretAimAtActor(AActor* TargetActor, float DeltaTime, bool bAttackRotation);
 	bool UpdateTurretAimAtLocation(const FVector& TargetLocation, float DeltaTime,
@@ -273,13 +279,13 @@ protected:
 	void OnRep_HackedTeam();
 
 	UFUNCTION(BlueprintImplementableEvent, Category = "Enemy|Turret|Deploy")
-	void OnTurretDeploymentStarted();
+	void OnTurretDeploymentStarted(int32 GameplayGeneration, int32 ActivationSerial);
 
 	UFUNCTION(BlueprintImplementableEvent, Category = "Enemy|Turret|Deploy")
 	void OnTurretDeploymentCompleted();
 
 	UFUNCTION(NetMulticast, Reliable)
-	void MulticastBeginTurretDeployment();
+	void MulticastBeginTurretDeployment(int32 GameplayGeneration, int32 ActivationSerial);
 
 	UFUNCTION(NetMulticast, Unreliable)
 	void MulticastPlayFireMontage();
@@ -288,7 +294,10 @@ protected:
 	void MulticastStopFireMontage();
 
 	UFUNCTION(NetMulticast, Reliable)
-	void MulticastPlayDeathMontage();
+	void MulticastPlayDeathMontage(int32 GameplayGeneration, int32 ActivationSerial);
+
+	UFUNCTION(BlueprintImplementableEvent, Category = "Enemy|Turret|Death")
+	void OnTurretDeathPresentationStarted(int32 GameplayGeneration, int32 ActivationSerial);
 
 private:
 	friend struct FEnemyRecoverTurretImpactOffsetTask;
@@ -311,10 +320,13 @@ private:
 	void ApplyWaitingForWaveState();
 	void ApplyDeadPersistentPose();
 	bool RestoreDeadPersistentState();
-	bool BeginRoomWaveDeployment();
+	bool BeginRoomWaveDeployment(int32 GameplayGeneration);
 	bool BeginTurretDeploymentInternal();
 	void CompleteTurretDeployment();
 	bool CompleteRoomWaveDeployment();
+	bool MatchesRoomWaveLifecycle(int32 GameplayGeneration, int32 ActivationSerial) const;
+	void ResetRoomWaveLifecycle(const TCHAR* ResetReason);
+	void InvalidateRoomWaveLifecycle();
 	void ApplyHackedTeamState();
 	static void PlayMontageOnMesh(USkeletalMeshComponent* TargetMesh, UAnimMontage* Montage);
 	static void StopMontageOnMesh(USkeletalMeshComponent* TargetMesh, UAnimMontage* Montage = nullptr);
@@ -331,4 +343,6 @@ private:
 	bool bWaveTurretRegistered = false;
 	bool bPersistentTurretIdRegistered = false;
 	bool bRoomWaveDeploymentRequested = false;
+	int32 RoomWaveGameplayGeneration = INDEX_NONE;
+	int32 RoomWaveActivationSerial = 0;
 };

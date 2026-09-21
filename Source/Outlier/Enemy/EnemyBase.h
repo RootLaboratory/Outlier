@@ -575,6 +575,8 @@ protected:
 	void RemoveRoomTargetObserver();
 	virtual void HandleDeath();
 	void PerformDeathCleanup();
+	// BeginPlay를 다시 거치지 않는 Actor가 다음 전투 수명을 시작할 수 있도록 사망/전투 흔적을 한곳에서 지운다.
+	void ResetReusableCombatRuntime(const TCHAR* StateTreeStopReason);
 	UEnemyAdaptationSubsystem* GetEnemyAdaptationSubsystem();
 	void ReportFinalAdaptationResult();
 	virtual float GetDeathDestroyDelay() const { return 0.0f; }
