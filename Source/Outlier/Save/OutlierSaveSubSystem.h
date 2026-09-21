@@ -38,6 +38,9 @@ public:
 	void UnregisterWorldProgressId(EOutlierWorldProgressType Type, FName ProgressId, const UObject* Owner);
 	bool RegisterCheckpointId(FName CheckpointId, UObject* Owner);
 	void UnregisterCheckpointId(FName CheckpointId, const UObject* Owner);
+	// 사망 상태 저장과 분리해, 배치 시점부터 다른 진행 오브젝트와 Stable ID 중복을 검사한다.
+	bool RegisterPersistentTurretId(FName TurretId, UObject* Owner);
+	void UnregisterPersistentTurretId(FName TurretId, const UObject* Owner);
 	bool HasValidStableIds() const { return bStableIdsValid; }
 
 private:

@@ -13,16 +13,26 @@
 #include "Enemy/EnemyAIController.h"
 #include "Enemy/EnemyRoomSubsystem.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "Engine/GameInstance.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "HAL/IConsoleManager.h"
 #include "Net/UnrealNetwork.h"
 #include "Outlier.h"
+#include "OutlierArenaSettings.h"
 #include "PhysicsEngine/BodyInstance.h"
+#include "Room/RoomCombatDefinition.h"
 #include "Room/RoomCombatSubsystem.h"
+#include "Room/RoomTagComponent.h"
+#include "Save/OutlierSaveSubSystem.h"
 #include "Team/OutlierTeamIds.h"
 #include "TimerManager.h"
 #include "Weapon/RangedWeaponBase.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
+
+#if WITH_EDITOR
+#include "EngineUtils.h"
+#include "Misc/DataValidation.h"
+#endif
 
 namespace
 {
@@ -89,6 +99,75 @@ void AAutoTurret::OnConstruction(const FTransform& Transform)
 	Super::OnConstruction(Transform);
 	ConfigureHeadPivotAttachment();
 }
+
+void AAutoTurret::PostInitializeComponents()
+{
+	Super::PostInitializeComponents();
+
+	// 단일 Actor가 해치 표현과 터렛을 모두 가지므로, EnemyBase BeginPlay보다 먼저
+	// 대기 상태를 고정해야 일반 배치 Enemy 등록과 StateTree 시작이 발생하지 않는다.
+	if (!IsPoolManaged())
+	{
+		PrepareForRoomWaveActivation();
+	}
+}
+
+void AAutoTurret::BeginPlay()
+{
+	Super::BeginPlay();
+
+	if (!HasAuthority() || IsPoolManaged())
+	{
+		return;
+	}
+
+	UGameInstance* GameInstance = GetGameInstance();
+	UOutlierSaveSubSystem* SaveSubsystem = GameInstance
+		? GameInstance->GetSubsystem<UOutlierSaveSubSystem>()
+		: nullptr;
+	if (!SaveSubsystem
+		|| !SaveSubsystem->RegisterPersistentTurretId(PersistentTurretId, this))
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("[RoomCombat] Wave turret Stable ID registration failed. Turret=%s Id=%s"),
+			*GetNameSafe(this), *PersistentTurretId.ToString());
+		return;
+	}
+	bPersistentTurretIdRegistered = true;
+
+	URoomCombatSubsystem* CombatSubsystem = GetWorld()
+		? GetWorld()->GetSubsystem<URoomCombatSubsystem>()
+		: nullptr;
+	const FGameplayTag RoomTag = GetDefaultRoomTag();
+	if (CombatSubsystem
+		&& CombatSubsystem->RegisterWaveTurret(
+			this, RoomTag, CombatPhaseIndex, WaveIndex))
+	{
+		bWaveTurretRegistered = true;
+		return;
+	}
+
+	// 두 등록은 하나의 배치 설정 계약이다. Room 등록이 실패하면 Stable ID 슬롯도 되돌린다.
+	SaveSubsystem->UnregisterPersistentTurretId(PersistentTurretId, this);
+	bPersistentTurretIdRegistered = false;
+}
+
+#if WITH_DEV_AUTOMATION_TESTS
+void AAutoTurret::ConfigureWaveRegistrationForTesting(
+	FGameplayTag InRoomTag,
+	int32 InCombatPhaseIndex,
+	int32 InWaveIndex,
+	FName InPersistentTurretId)
+{
+	if (URoomTagComponent* RoomTagComp = GetRoomTagComp())
+	{
+		RoomTagComp->AssignDefaultRoomTag(InRoomTag);
+	}
+	CombatPhaseIndex = InCombatPhaseIndex;
+	WaveIndex = InWaveIndex;
+	PersistentTurretId = InPersistentTurretId;
+}
+#endif
 
 void AAutoTurret::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
@@ -472,8 +551,8 @@ void AAutoTurret::CompleteTurretDeployment()
 
 void AAutoTurret::ApplyDeploymentRuntimeState()
 {
-	// 일반 Hidden 터렛은 Hatch 충돌을 유지하지만, 별도 Hatch Actor 아래에서 대기하는 터렛은
-	// Wave가 시작될 때까지 월드의 전투 Collision에서 완전히 제외한다.
+	// 단일 Skeletal Mesh의 해치 부분은 표현에 남아 있어도, Wave 대기 중인 Actor 전체는
+	// 전투 Collision에서 제외한다. 전개 이후 세부 본 Collision은 아래에서 다시 구분한다.
 	SetActorEnableCollision(!bWaitingForRoomWaveActivation);
 	SetCanBeDamaged(!bWaitingForRoomWaveActivation);
 	ApplyTurretCollisionState();
@@ -514,7 +593,7 @@ void AAutoTurret::ApplyRoomWaveWaitingState()
 	StopMontageOnMesh(GetMesh(), DeployMontage);
 	StopMontageOnMesh(TurretHeadMesh, FireMontage);
 
-	// 해치가 BeginPlay 이후 연결되는 경우에도 이미 시작된 전투 참여 흔적을 한 경로에서 제거한다.
+	// 초기화 순서상 전투 참여 흔적이 먼저 생겼더라도 대기 진입 경로에서 모두 되돌린다.
 	if (HasActorBegunPlay())
 	{
 		StopCurrentAttack();
@@ -1039,10 +1118,119 @@ void AAutoTurret::HandleEMPStarted(FGameplayTag EffectTag)
 
 void AAutoTurret::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	if (HasAuthority())
+	{
+		if (bWaveTurretRegistered)
+		{
+			if (URoomCombatSubsystem* CombatSubsystem = GetWorld()
+				? GetWorld()->GetSubsystem<URoomCombatSubsystem>()
+				: nullptr)
+			{
+				CombatSubsystem->UnregisterWaveTurret(this);
+			}
+			bWaveTurretRegistered = false;
+		}
+
+		if (bPersistentTurretIdRegistered)
+		{
+			UGameInstance* GameInstance = GetGameInstance();
+			if (UOutlierSaveSubSystem* SaveSubsystem = GameInstance
+				? GameInstance->GetSubsystem<UOutlierSaveSubSystem>()
+				: nullptr)
+			{
+				SaveSubsystem->UnregisterPersistentTurretId(PersistentTurretId, this);
+			}
+			bPersistentTurretIdRegistered = false;
+		}
+	}
+
 	GetWorldTimerManager().ClearTimer(DeployFallbackTimerHandle);
 	StopImpactRecovery();
 	Super::EndPlay(EndPlayReason);
 }
+
+#if WITH_EDITOR
+EDataValidationResult AAutoTurret::IsDataValid(FDataValidationContext& Context) const
+{
+	EDataValidationResult Result = Super::IsDataValid(Context);
+	if (IsTemplate())
+	{
+		return Result == EDataValidationResult::NotValidated
+			? EDataValidationResult::Valid
+			: Result;
+	}
+
+	auto AddValidationError = [&Context, &Result](const FString& Message)
+	{
+		Context.AddError(FText::FromString(Message));
+		Result = EDataValidationResult::Invalid;
+	};
+
+	const FGameplayTag RoomTag = GetDefaultRoomTag();
+	if (!RoomTag.IsValid())
+	{
+		AddValidationError(TEXT("A wave AutoTurret requires a valid DefaultRoomTag."));
+	}
+	if (CombatPhaseIndex < 0 || WaveIndex < 0)
+	{
+		AddValidationError(TEXT("A wave AutoTurret requires non-negative phase and Wave indices."));
+	}
+	if (PersistentTurretId.IsNone())
+	{
+		AddValidationError(TEXT("A wave AutoTurret requires a PersistentTurretId."));
+	}
+	else if (UWorld* World = GetWorld())
+	{
+		// 에디터 검증에서 현재 로드된 WP Actor끼리의 중복을 먼저 보여준다.
+		// 언로드 순서가 겹치는 런타임 중복은 SaveSubsystem의 전역 등록부가 다시 막는다.
+		for (TActorIterator<AAutoTurret> It(World); It; ++It)
+		{
+			const AAutoTurret* OtherTurret = *It;
+			if (OtherTurret != this
+				&& OtherTurret->PersistentTurretId == PersistentTurretId)
+			{
+				AddValidationError(FString::Printf(
+					TEXT("A wave AutoTurret has a duplicate PersistentTurretId '%s' with %s."),
+					*PersistentTurretId.ToString(), *GetNameSafe(OtherTurret)));
+				break;
+			}
+		}
+	}
+
+	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
+	const URoomCombatDefinition* Definition = Settings
+		? Settings->RoomCombatDefinition.LoadSynchronous()
+		: nullptr;
+	const FRoomCombatRoomDefinition* RoomDefinition = Definition && RoomTag.IsValid()
+		? Definition->FindRoomDefinition(RoomTag)
+		: nullptr;
+	const FRoomCombatWaveDefinition* Wave = RoomDefinition
+		? RoomDefinition->FindWave(CombatPhaseIndex, WaveIndex)
+		: nullptr;
+	if (!Definition)
+	{
+		AddValidationError(TEXT("A wave AutoTurret requires the integrated RoomCombatDefinition setting."));
+	}
+	else if (!RoomDefinition)
+	{
+		AddValidationError(FString::Printf(
+			TEXT("A wave AutoTurret has no RoomCombatDefinition entry for %s."),
+			*RoomTag.ToString()));
+	}
+	else if (!Wave)
+	{
+		AddValidationError(TEXT("A wave AutoTurret points to an invalid combat phase or Wave."));
+	}
+	else if (!Wave->IsSpawnFromObjects() || !Wave->HasWaveTurrets())
+	{
+		AddValidationError(TEXT("A wave AutoTurret must target a SpawnFromObjects Wave with ExpectedWaveTurretCount."));
+	}
+
+	return Result == EDataValidationResult::NotValidated
+		? EDataValidationResult::Valid
+		: Result;
+}
+#endif
 
 void AAutoTurret::HandleDeath()
 {

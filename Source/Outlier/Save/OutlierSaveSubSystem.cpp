@@ -168,6 +168,16 @@ void UOutlierSaveSubSystem::UnregisterCheckpointId(FName CheckpointId, const UOb
 	UnregisterStableId(CheckpointId, Owner);
 }
 
+bool UOutlierSaveSubSystem::RegisterPersistentTurretId(FName TurretId, UObject* Owner)
+{
+	return RegisterStableId(TurretId, Owner, TEXT("WaveTurret"));
+}
+
+void UOutlierSaveSubSystem::UnregisterPersistentTurretId(FName TurretId, const UObject* Owner)
+{
+	UnregisterStableId(TurretId, Owner);
+}
+
 bool UOutlierSaveSubSystem::RegisterStableId(
 	FName StableId,
 	UObject* Owner,

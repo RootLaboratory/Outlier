@@ -14,14 +14,14 @@ bool FRoomCombatWaveDefinition::IsSpawnFromObjects() const
 	return SpawnMode == ERoomCombatWaveSpawnMode::SpawnFromObjects;
 }
 
-bool FRoomCombatWaveDefinition::HasTurretHatches() const
+bool FRoomCombatWaveDefinition::HasWaveTurrets() const
 {
-	return ExpectedTurretHatchCount > 0;
+	return ExpectedWaveTurretCount > 0;
 }
 
 bool FRoomCombatWaveDefinition::HasSpawnSource() const
 {
-	return !Enemies.IsEmpty() || HasTurretHatches();
+	return !Enemies.IsEmpty() || HasWaveTurrets();
 }
 
 bool FRoomCombatRoomDefinition::HasValidPhaseOrder() const
@@ -82,7 +82,7 @@ bool FRoomCombatRoomDefinition::CanStartTriggeredSequence(int32 PhaseIndex) cons
 		{
 			if (!Wave.IsSpawnFromObjects()
 				|| !Wave.HasSpawnSource()
-				|| Wave.ExpectedTurretHatchCount < 0
+				|| Wave.ExpectedWaveTurretCount < 0
 				|| !IsValidRemainingRatio(Wave.NextWaveRemainingRatio))
 			{
 				return false;
@@ -227,18 +227,18 @@ EDataValidationResult URoomCombatDefinition::IsDataValid(FDataValidationContext&
 						WaveIndex));
 				}
 
-				if (Wave.ExpectedTurretHatchCount < 0)
+				if (Wave.ExpectedWaveTurretCount < 0)
 				{
 					AddValidationError(FString::Printf(
-						TEXT("RoomDefinitions[%d].CombatPhases[%d].Waves[%d] has a negative ExpectedTurretHatchCount."),
+						TEXT("RoomDefinitions[%d].CombatPhases[%d].Waves[%d] has a negative ExpectedWaveTurretCount."),
 						RoomIndex,
 						PhaseIndex,
 						WaveIndex));
 				}
-				else if (!Wave.IsSpawnFromObjects() && Wave.HasTurretHatches())
+				else if (!Wave.IsSpawnFromObjects() && Wave.HasWaveTurrets())
 				{
 					AddValidationError(FString::Printf(
-						TEXT("RoomDefinitions[%d].CombatPhases[%d].Waves[%d] may use ExpectedTurretHatchCount only with SpawnFromObjects."),
+						TEXT("RoomDefinitions[%d].CombatPhases[%d].Waves[%d] may use ExpectedWaveTurretCount only with SpawnFromObjects."),
 						RoomIndex,
 						PhaseIndex,
 						WaveIndex));
@@ -247,7 +247,7 @@ EDataValidationResult URoomCombatDefinition::IsDataValid(FDataValidationContext&
 				if (Wave.IsSpawnFromObjects() && !Wave.HasSpawnSource())
 				{
 					AddValidationError(FString::Printf(
-						TEXT("RoomDefinitions[%d].CombatPhases[%d].Waves[%d] requires an Enemy or ExpectedTurretHatchCount when using SpawnFromObjects."),
+						TEXT("RoomDefinitions[%d].CombatPhases[%d].Waves[%d] requires an Enemy or ExpectedWaveTurretCount when using SpawnFromObjects."),
 						RoomIndex,
 						PhaseIndex,
 						WaveIndex));

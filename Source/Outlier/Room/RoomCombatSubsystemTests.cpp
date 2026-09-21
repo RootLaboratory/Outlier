@@ -9,6 +9,7 @@
 #include "Enemy/EnemyPoolDefinition.h"
 #include "Enemy/EnemyPoolSubsystem.h"
 #include "Engine/Engine.h"
+#include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "Misc/AutomationTest.h"
@@ -17,7 +18,6 @@
 #include "Room/RoomCombatSubsystem.h"
 #include "Room/RoomTagComponent.h"
 #include "Room/RoomVolume.h"
-#include "Room/TurretReinforcementHatch.h"
 #include "UObject/UnrealType.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 
@@ -111,17 +111,17 @@ namespace
 		RoomDefinition.CombatPhases.Add(Phase);
 	}
 
-	void AddTurretHatchWaveDefinition(
+	void AddWaveTurretDefinition(
 		URoomCombatDefinition* Definition,
 		FGameplayTag RoomTag,
-		int32 ExpectedHatchCount)
+		int32 ExpectedTurretCount)
 	{
 		FRoomCombatRoomDefinition& RoomDefinition = AddRoomDefinition(Definition, RoomTag);
 		FRoomCombatPhaseDefinition& Phase = RoomDefinition.CombatPhases.AddDefaulted_GetRef();
 		Phase.StartPolicy = ERoomCombatPhaseStartPolicy::HackTrigger;
 		FRoomCombatWaveDefinition& Wave = Phase.Waves.AddDefaulted_GetRef();
 		Wave.SpawnMode = ERoomCombatWaveSpawnMode::SpawnFromObjects;
-		Wave.ExpectedTurretHatchCount = ExpectedHatchCount;
+		Wave.ExpectedWaveTurretCount = ExpectedTurretCount;
 	}
 
 	AEnemyBase* SpawnTestEnemy(UWorld* World, FGameplayTag RoomTag)
@@ -965,11 +965,11 @@ bool FRoomCombatTriggeredSequenceTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FRoomCombatTurretHatchWaitingStateTest,
-	"Outlier.Room.TurretHatchWaitingState",
+	FRoomCombatWaveTurretWaitingStateTest,
+	"Outlier.Room.WaveTurretWaitingState",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FRoomCombatTurretHatchWaitingStateTest::RunTest(const FString& Parameters)
+bool FRoomCombatWaveTurretWaitingStateTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
 	const FName WorldName = MakeUniqueObjectName(nullptr, UWorld::StaticClass(), NAME_None,
@@ -984,11 +984,17 @@ bool FRoomCombatTurretHatchWaitingStateTest::RunTest(const FString& Parameters)
 
 	World->AddToRoot();
 	WorldContext.SetCurrentWorld(World);
+	UGameInstance* GameInstance = NewObject<UGameInstance>(GEngine);
+	World->SetGameInstance(GameInstance);
+	GameInstance->Init();
+	TestTrue(TEXT("Wave turret waiting world creates an authority game mode"),
+		World->SetGameMode(FURL()));
 	World->InitializeActorsForPlay(FURL());
-	auto CleanupWorld = [World]()
+	auto CleanupWorld = [World, GameInstance]()
 	{
 		GEngine->ShutdownWorldNetDriver(World);
 		World->DestroyWorld(true);
+		GameInstance->Shutdown();
 		World->SetPhysicsScene(nullptr);
 		GEngine->DestroyWorldContext(World);
 		World->RemoveFromRoot();
@@ -1007,28 +1013,20 @@ bool FRoomCombatTurretHatchWaitingStateTest::RunTest(const FString& Parameters)
 
 	const FGameplayTag RoomTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.1")));
 	URoomCombatDefinition* Definition = NewObject<URoomCombatDefinition>(World);
-	AddTurretHatchWaveDefinition(Definition, RoomTag, 1);
+	AddWaveTurretDefinition(Definition, RoomTag, 1);
 	Combat->SetCombatDefinitionForTesting(Definition);
 
-	// 두 Actor를 모두 Deferred로 만든 뒤 Hatch를 먼저 완료하면, Turret BeginPlay 전에
-	// 연결 정보가 적용되는 실제 맵 초기화 순서를 재현할 수 있다.
 	AAutoTurret* WaitingTurret = World->SpawnActorDeferred<AAutoTurret>(
 		AAutoTurret::StaticClass(),
 		FTransform::Identity);
-	ATurretReinforcementHatch* Hatch =
-		World->SpawnActorDeferred<ATurretReinforcementHatch>(
-			ATurretReinforcementHatch::StaticClass(),
-			FTransform::Identity);
-	if (!TestNotNull(TEXT("Deferred waiting turret"), WaitingTurret)
-		|| !TestNotNull(TEXT("Deferred turret hatch"), Hatch))
+	if (!TestNotNull(TEXT("Deferred waiting turret"), WaitingTurret))
 	{
 		CleanupWorld();
 		return false;
 	}
 
-	WaitingTurret->GetRoomTagComp()->AssignDefaultRoomTag(RoomTag);
-	Hatch->ConfigureForTesting(RoomTag, 0, 0, WaitingTurret);
-	Hatch->FinishSpawning(FTransform::Identity);
+	WaitingTurret->ConfigureWaveRegistrationForTesting(
+		RoomTag, 0, 0, TEXT("Turret.Waiting.1"));
 	WaitingTurret->FinishSpawning(FTransform::Identity);
 	ARoomVolume* Room = World->SpawnActor<ARoomVolume>();
 	if (!TestNotNull(TEXT("Turret waiting-state Room"), Room))
@@ -1038,9 +1036,9 @@ bool FRoomCombatTurretHatchWaitingStateTest::RunTest(const FString& Parameters)
 	}
 	TestTrue(TEXT("Turret waiting-state Room registers"), Combat->RegisterRoom(Room, RoomTag));
 
-	TestEqual(TEXT("Hatch starts closed and dormant"),
-		Hatch->GetHatchState(), ETurretReinforcementHatchState::DormantClosed);
-	TestTrue(TEXT("Linked turret waits for its Room Wave"),
+	TestEqual(TEXT("Configured turret registers itself for its Wave"),
+		Combat->GetRegisteredWaveTurretCount(RoomTag, 0, 0), 1);
+	TestTrue(TEXT("Configured turret waits for its Room Wave"),
 		WaitingTurret->IsWaitingForRoomWaveActivation());
 	TestFalse(TEXT("Waiting turret is not an adaptation target"),
 		Adaptation->IsEnemyRegistered(WaitingTurret));
@@ -1068,26 +1066,20 @@ bool FRoomCombatTurretHatchWaitingStateTest::RunTest(const FString& Parameters)
 		WaitingTurret->PrepareForRoomWaveActivation());
 	TestFalse(TEXT("Repeated preparation does not register the turret"),
 		Adaptation->IsEnemyRegistered(WaitingTurret));
-
-	AAutoTurret* ImmediateTurret = World->SpawnActor<AAutoTurret>();
-	if (TestNotNull(TEXT("Unlinked immediate turret"), ImmediateTurret))
-	{
-		TestFalse(TEXT("Unlinked turret keeps the existing immediate path"),
-			ImmediateTurret->IsWaitingForRoomWaveActivation());
-		TestTrue(TEXT("Unlinked turret keeps normal preplaced registration"),
-			Adaptation->IsEnemyRegistered(ImmediateTurret));
-	}
+	WaitingTurret->Destroy();
+	TestEqual(TEXT("EndPlay unregisters the configured Wave turret"),
+		Combat->GetRegisteredWaveTurretCount(RoomTag, 0, 0), 0);
 
 	CleanupWorld();
 	return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FRoomCombatTurretHatchRegistrationTest,
-	"Outlier.Room.TurretHatchRegistration",
+	FRoomCombatWaveTurretRegistrationTest,
+	"Outlier.Room.WaveTurretRegistration",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FRoomCombatTurretHatchRegistrationTest::RunTest(const FString& Parameters)
+bool FRoomCombatWaveTurretRegistrationTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
 	const FName WorldName = MakeUniqueObjectName(nullptr, UWorld::StaticClass(), NAME_None,
@@ -1102,118 +1094,147 @@ bool FRoomCombatTurretHatchRegistrationTest::RunTest(const FString& Parameters)
 
 	World->AddToRoot();
 	WorldContext.SetCurrentWorld(World);
+	UGameInstance* GameInstance = NewObject<UGameInstance>(GEngine);
+	World->SetGameInstance(GameInstance);
+	GameInstance->Init();
+	TestTrue(TEXT("Wave turret registration world creates an authority game mode"),
+		World->SetGameMode(FURL()));
 	World->InitializeActorsForPlay(FURL());
-	auto CleanupWorld = [World]()
+	auto CleanupWorld = [World, GameInstance]()
 	{
 		GEngine->ShutdownWorldNetDriver(World);
 		World->DestroyWorld(true);
+		GameInstance->Shutdown();
 		World->SetPhysicsScene(nullptr);
 		GEngine->DestroyWorldContext(World);
 		World->RemoveFromRoot();
 	};
 
 	URoomCombatSubsystem* Combat = World->GetSubsystem<URoomCombatSubsystem>();
-	UEnemyAdaptationSubsystem* Adaptation = World->GetSubsystem<UEnemyAdaptationSubsystem>();
-	if (!TestNotNull(TEXT("Room combat subsystem"), Combat)
-		|| !TestNotNull(TEXT("Enemy adaptation subsystem"), Adaptation))
+	if (!TestNotNull(TEXT("Room combat subsystem"), Combat))
 	{
 		CleanupWorld();
 		return false;
 	}
-	Adaptation->OnWorldBeginPlay(*World);
 
 	const FGameplayTag RoomTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.1")));
 	URoomCombatDefinition* Definition = NewObject<URoomCombatDefinition>(World);
-	AddTurretHatchWaveDefinition(Definition, RoomTag, 2);
+	AddWaveTurretDefinition(Definition, RoomTag, 2);
 	Combat->SetCombatDefinitionForTesting(Definition);
 
-	AAutoTurret* FirstTurret = World->SpawnActor<AAutoTurret>();
-	AAutoTurret* SecondTurret = World->SpawnActor<AAutoTurret>();
-	AAutoTurret* ThirdTurret = World->SpawnActor<AAutoTurret>();
-	if (!TestNotNull(TEXT("First turret"), FirstTurret)
-		|| !TestNotNull(TEXT("Second turret"), SecondTurret)
-		|| !TestNotNull(TEXT("Third turret"), ThirdTurret))
+	auto SpawnConfiguredTurret = [World, RoomTag](
+		int32 PhaseIndex, int32 WaveIndex, FName PersistentId)
 	{
-		CleanupWorld();
-		return false;
-	}
-
-	auto SpawnConfiguredHatch = [World, RoomTag](AAutoTurret* Turret)
-	{
-		ATurretReinforcementHatch* Hatch = World->SpawnActorDeferred<ATurretReinforcementHatch>(
-			ATurretReinforcementHatch::StaticClass(),
+		AAutoTurret* Turret = World->SpawnActorDeferred<AAutoTurret>(
+			AAutoTurret::StaticClass(),
 			FTransform::Identity);
-		if (Hatch)
+		if (Turret)
 		{
-			Hatch->ConfigureForTesting(RoomTag, 0, 0, Turret);
-			Hatch->FinishSpawning(FTransform::Identity);
+			Turret->ConfigureWaveRegistrationForTesting(
+				RoomTag, PhaseIndex, WaveIndex, PersistentId);
+			Turret->FinishSpawning(FTransform::Identity);
 		}
-		return Hatch;
+		return Turret;
 	};
 
-	ATurretReinforcementHatch* FirstHatch = SpawnConfiguredHatch(FirstTurret);
-	if (!TestNotNull(TEXT("First hatch"), FirstHatch))
+	AAutoTurret* FirstTurret = SpawnConfiguredTurret(0, 0, TEXT("Turret.Registration.1"));
+	if (!TestNotNull(TEXT("First Wave turret"), FirstTurret))
 	{
 		CleanupWorld();
 		return false;
 	}
-	TestEqual(TEXT("BeginPlay registers the first configured hatch"),
-		Combat->GetRegisteredTurretHatchCount(RoomTag, 0, 0), 1);
-	TestFalse(TEXT("A hatch linked after turret BeginPlay removes prior combat registration"),
-		Adaptation->IsEnemyRegistered(FirstTurret));
+	TestEqual(TEXT("BeginPlay registers the first configured Wave turret"),
+		Combat->GetRegisteredWaveTurretCount(RoomTag, 0, 0), 1);
+	TestFalse(TEXT("A Wave turret registration requires a valid RoomTag"),
+		Combat->RegisterWaveTurret(FirstTurret, FGameplayTag(), 0, 0));
 	AddExpectedErrorPlain(
-		TEXT("[RoomCombat] AutoTurret is linked to multiple hatches."),
+		TEXT("[RoomCombat] Wave turret has an invalid Room/Wave."),
 		EAutomationExpectedErrorFlags::Contains,
 		1);
-	ATurretReinforcementHatch* DuplicateTurretHatch = SpawnConfiguredHatch(FirstTurret);
-	TestEqual(TEXT("A duplicate turret link is not registered"),
-		Combat->GetRegisteredTurretHatchCount(RoomTag, 0, 0), 1);
-	ATurretReinforcementHatch* SecondHatch = SpawnConfiguredHatch(SecondTurret);
-	if (!TestNotNull(TEXT("Second hatch"), SecondHatch))
-	{
-		CleanupWorld();
-		return false;
-	}
-	TestEqual(TEXT("BeginPlay registers a second unique hatch"),
-		Combat->GetRegisteredTurretHatchCount(RoomTag, 0, 0), 2);
-	AddExpectedErrorPlain(
-		TEXT("[RoomCombat] Turret hatch count exceeds Wave definition."),
-		EAutomationExpectedErrorFlags::Contains,
-		1);
-	ATurretReinforcementHatch* OverflowHatch = SpawnConfiguredHatch(ThirdTurret);
-	TestEqual(TEXT("BeginPlay rejects registrations beyond the Wave expectation"),
-		Combat->GetRegisteredTurretHatchCount(RoomTag, 0, 0), 2);
-	if (!TestNotNull(TEXT("Duplicate turret hatch"), DuplicateTurretHatch)
-		|| !TestNotNull(TEXT("Overflow hatch"), OverflowHatch))
-	{
-		CleanupWorld();
-		return false;
-	}
-
-	TestTrue(TEXT("Registering the same hatch twice is idempotent"),
-		Combat->RegisterTurretHatch(FirstHatch, RoomTag, 0, 0, FirstTurret));
+	TestFalse(TEXT("A Wave turret registration rejects an undefined phase"),
+		Combat->RegisterWaveTurret(FirstTurret, RoomTag, 1, 0));
+	TestTrue(TEXT("Registering the same turret twice is idempotent"),
+		Combat->RegisterWaveTurret(FirstTurret, RoomTag, 0, 0));
 	TestEqual(TEXT("Duplicate calls do not inflate the registered count"),
-		Combat->GetRegisteredTurretHatchCount(RoomTag, 0, 0), 2);
+		Combat->GetRegisteredWaveTurretCount(RoomTag, 0, 0), 1);
 
-	TArray<ATurretReinforcementHatch*> RegisteredHatches;
-	Combat->GetRegisteredTurretHatches(RoomTag, 0, 0, RegisteredHatches);
-	TestEqual(TEXT("The exact Room/phase/Wave query returns both hatches"),
-		RegisteredHatches.Num(), 2);
-	Combat->GetRegisteredTurretHatches(RoomTag, 0, 1, RegisteredHatches);
-	TestEqual(TEXT("A different Wave does not receive the hatches"), RegisteredHatches.Num(), 0);
+	AddExpectedErrorPlain(
+		TEXT("[Checkpoint] Duplicate stable Id Kind=WaveTurret Id=Turret.Registration.1"),
+		EAutomationExpectedErrorFlags::Contains,
+		1);
+	AddExpectedErrorPlain(
+		TEXT("[RoomCombat] Wave turret Stable ID registration failed."),
+		EAutomationExpectedErrorFlags::Contains,
+		1);
+	AAutoTurret* DuplicateIdTurret =
+		SpawnConfiguredTurret(0, 0, TEXT("Turret.Registration.1"));
+	TestEqual(TEXT("A duplicate PersistentTurretId is not registered"),
+		Combat->GetRegisteredWaveTurretCount(RoomTag, 0, 0), 1);
+	AddExpectedErrorPlain(
+		TEXT("[Checkpoint] Invalid stable Id Kind=WaveTurret Id=None"),
+		EAutomationExpectedErrorFlags::Contains,
+		1);
+	AddExpectedErrorPlain(
+		TEXT("[RoomCombat] Wave turret Stable ID registration failed."),
+		EAutomationExpectedErrorFlags::Contains,
+		1);
+	AAutoTurret* MissingIdTurret = SpawnConfiguredTurret(0, 0, NAME_None);
+	TestEqual(TEXT("A missing PersistentTurretId is not registered"),
+		Combat->GetRegisteredWaveTurretCount(RoomTag, 0, 0), 1);
 
-	Combat->UnregisterTurretHatch(FirstHatch);
-	TestEqual(TEXT("Explicit unregister releases one Wave slot"),
-		Combat->GetRegisteredTurretHatchCount(RoomTag, 0, 0), 1);
-	TestTrue(TEXT("A released Wave slot can register another hatch"),
-		Combat->RegisterTurretHatch(OverflowHatch, RoomTag, 0, 0, ThirdTurret));
-	OverflowHatch->Destroy();
-	TestEqual(TEXT("Hatch EndPlay removes its registration"),
-		Combat->GetRegisteredTurretHatchCount(RoomTag, 0, 0), 1);
+	AAutoTurret* SecondTurret = SpawnConfiguredTurret(0, 0, TEXT("Turret.Registration.2"));
+	if (!TestNotNull(TEXT("Second Wave turret"), SecondTurret))
+	{
+		CleanupWorld();
+		return false;
+	}
+	TestEqual(TEXT("BeginPlay registers a second unique Wave turret"),
+		Combat->GetRegisteredWaveTurretCount(RoomTag, 0, 0), 2);
+
+	AddExpectedErrorPlain(
+		TEXT("[RoomCombat] Wave turret count exceeds Wave definition."),
+		EAutomationExpectedErrorFlags::Contains,
+		1);
+	AAutoTurret* OverflowTurret = SpawnConfiguredTurret(0, 0, TEXT("Turret.Registration.3"));
+	if (!TestNotNull(TEXT("Overflow turret"), OverflowTurret))
+	{
+		CleanupWorld();
+		return false;
+	}
+	TestEqual(TEXT("BeginPlay rejects registrations beyond the Wave expectation"),
+		Combat->GetRegisteredWaveTurretCount(RoomTag, 0, 0), 2);
+
+	TArray<AAutoTurret*> RegisteredTurrets;
+	Combat->GetRegisteredWaveTurrets(RoomTag, 0, 0, RegisteredTurrets);
+	TestEqual(TEXT("The exact Room/phase/Wave query returns both turrets"),
+		RegisteredTurrets.Num(), 2);
+	Combat->GetRegisteredWaveTurrets(RoomTag, 0, 1, RegisteredTurrets);
+	TestEqual(TEXT("A different Wave does not receive the turrets"), RegisteredTurrets.Num(), 0);
+
+	OverflowTurret->Destroy();
+	FirstTurret->Destroy();
+	TestEqual(TEXT("Turret EndPlay releases one Wave slot"),
+		Combat->GetRegisteredWaveTurretCount(RoomTag, 0, 0), 1);
+	AAutoTurret* ReplacementTurret =
+		SpawnConfiguredTurret(0, 0, TEXT("Turret.Registration.3"));
+	if (!TestNotNull(TEXT("Replacement turret"), ReplacementTurret))
+	{
+		CleanupWorld();
+		return false;
+	}
+	TestEqual(TEXT("Replacement turret fills the released slot"),
+		Combat->GetRegisteredWaveTurretCount(RoomTag, 0, 0), 2);
+
+	if (!TestNotNull(TEXT("Duplicate ID turret"), DuplicateIdTurret)
+		|| !TestNotNull(TEXT("Missing ID turret"), MissingIdTurret))
+	{
+		CleanupWorld();
+		return false;
+	}
 
 	Combat->ResetRuntimeCombatState();
-	TestEqual(TEXT("Arena runtime reset clears turret hatch registrations"),
-		Combat->GetRegisteredTurretHatchCount(RoomTag, 0, 0), 0);
+	TestEqual(TEXT("Arena runtime reset clears Wave turret registrations"),
+		Combat->GetRegisteredWaveTurretCount(RoomTag, 0, 0), 0);
 
 	CleanupWorld();
 	return true;

@@ -117,6 +117,9 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|Turret|Room Wave")
 	bool IsWaitingForRoomWaveActivation() const { return bWaitingForRoomWaveActivation; }
+	int32 GetCombatPhaseIndex() const { return CombatPhaseIndex; }
+	int32 GetWaveIndex() const { return WaveIndex; }
+	FName GetPersistentTurretId() const { return PersistentTurretId; }
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|Turret")
 	const FAutoTurretBehaviorRow& GetTurretBehavior() const { return RuntimeTurretBehavior; }
@@ -125,6 +128,14 @@ public:
 	bool PrepareForRoomWaveActivation();
 	void PlayFireMontage();
 	void StopFireMontage();
+
+#if WITH_DEV_AUTOMATION_TESTS
+	void ConfigureWaveRegistrationForTesting(
+		FGameplayTag InRoomTag,
+		int32 InCombatPhaseIndex,
+		int32 InWaveIndex,
+		FName InPersistentTurretId);
+#endif
 
 	UFUNCTION(BlueprintCallable, Category = "Enemy|Turret|Deploy")
 	void NotifyDeploySequenceFinished();
@@ -137,7 +148,12 @@ public:
 
 protected:
 	virtual void OnConstruction(const FTransform& Transform) override;
+	virtual void PostInitializeComponents() override;
+	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+#if WITH_EDITOR
+	virtual EDataValidationResult IsDataValid(FDataValidationContext& Context) const override;
+#endif
 	virtual void ApplyClassStatOverrides() override;
 	virtual void ApplyMovementFromRuntimeStat() override;
 	virtual void PrepareForStateTreeStart() override;
@@ -190,6 +206,18 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Enemy|Turret|Data")
 	FDataTableRowHandle TurretBehaviorRow;
 
+	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Enemy|Turret|Room Wave",
+		meta = (ClampMin = "0", UIMin = "0"))
+	int32 CombatPhaseIndex = 0;
+
+	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Enemy|Turret|Room Wave",
+		meta = (ClampMin = "0", UIMin = "0"))
+	int32 WaveIndex = 0;
+
+	// 체크포인트가 사망 메시를 다시 찾을 때 사용하는 World 전역 Stable ID다.
+	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Enemy|Turret|Room Wave")
+	FName PersistentTurretId;
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Turret|Animation")
 	TObjectPtr<UAnimMontage> DeployMontage;
 
@@ -216,7 +244,7 @@ protected:
 	UPROPERTY(ReplicatedUsing = OnRep_HackedTeam, VisibleInstanceOnly, BlueprintReadOnly, Category = "Enemy|Turret")
 	uint8 bHackedToPlayerTeam : 1 = false;
 
-	// 해치가 Wave를 시작하기 전까지는 맵에 존재하더라도 Enemy 런타임에는 참여하지 않는다.
+	// 지정 Wave가 시작되기 전까지는 맵에 존재하더라도 Enemy 런타임에는 참여하지 않는다.
 	UPROPERTY(ReplicatedUsing = OnRep_RoomWaveWaitingState, VisibleInstanceOnly, BlueprintReadOnly,
 		Category = "Enemy|Turret|Room Wave")
 	uint8 bWaitingForRoomWaveActivation : 1 = false;
@@ -279,4 +307,6 @@ private:
 	double LastImpactRecoveryUpdateTimeSeconds = 0.0;
 	float ImpactRecoveryHoldRemaining = 0.0f;
 	int32 CurrentMuzzleGroupIndex = 0;
+	bool bWaveTurretRegistered = false;
+	bool bPersistentTurretIdRegistered = false;
 };

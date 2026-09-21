@@ -40,8 +40,8 @@ struct OUTLIER_API FRoomCombatWaveDefinition
 	GENERATED_BODY()
 
 	bool IsSpawnFromObjects() const;
-	bool HasTurretHatches() const;
-	// Pool Enemy 명단과 배치 터렛 해치 중 하나라도 있으면 소환 원천이 존재한다.
+	bool HasWaveTurrets() const;
+	// Pool Enemy 명단과 배치 Wave 터렛 중 하나라도 있으면 소환 원천이 존재한다.
 	bool HasSpawnSource() const;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Combat")
@@ -54,9 +54,9 @@ struct OUTLIER_API FRoomCombatWaveDefinition
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Combat", meta = (Categories = "RoomCombat.Spawn"))
 	FGameplayTag RequiredSpawnPointTag;
 
-	// SpawnFromObjects Wave는 개별 Actor 참조 대신 기다릴 배치 터렛 해치 수만 선언한다.
+	// 개별 Actor 참조는 맵 인스턴스가 보유하고, DA에는 누락 검사용 예상 수량만 선언한다.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Combat", meta = (ClampMin = "0", UIMin = "0"))
-	int32 ExpectedTurretHatchCount = 0;
+	int32 ExpectedWaveTurretCount = 0;
 
 	// Preplaced Wave는 비워둘 수 있다. SpawnFromObjects도 배치 터렛만 사용하면 비워둘 수 있다.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Combat", meta = (TitleProperty = "EnemyClass"))

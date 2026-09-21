@@ -10,7 +10,6 @@ class AEnemyBase;
 class AActor;
 class AAutoTurret;
 class ARoomCombatSpawnPoint;
-class ATurretReinforcementHatch;
 class ARoomVolume;
 class URoomCombatDefinition;
 struct FRoomCombatRoomDefinition;
@@ -121,11 +120,10 @@ struct FRoomCombatSpawnPointRuntime
 	FGameplayTag ActivationGroupTag;
 };
 
-struct FRoomCombatTurretHatchRuntime
+struct FRoomCombatWaveTurretRuntime
 {
-	// 해치와 터렛은 WP Actor이므로 Subsystem이 수명을 연장하지 않는다.
-	TWeakObjectPtr<ATurretReinforcementHatch> Hatch;
-	TWeakObjectPtr<AAutoTurret> LinkedTurret;
+	// 배치 터렛은 WP Actor이므로 Subsystem이 수명을 연장하지 않는다.
+	TWeakObjectPtr<AAutoTurret> Turret;
 	int32 CombatPhaseIndex = INDEX_NONE;
 	int32 WaveIndex = INDEX_NONE;
 };
@@ -165,18 +163,17 @@ public:
 		const FGameplayTagContainer& SpawnPointTags,
 		FGameplayTag ActivationGroupTag);
 	void UnregisterSpawnPoint(ARoomCombatSpawnPoint* SpawnPoint);
-	bool RegisterTurretHatch(
-		ATurretReinforcementHatch* Hatch,
+	bool RegisterWaveTurret(
+		AAutoTurret* Turret,
+		FGameplayTag RoomTag,
+		int32 CombatPhaseIndex,
+		int32 WaveIndex);
+	void UnregisterWaveTurret(AAutoTurret* Turret);
+	void GetRegisteredWaveTurrets(
 		FGameplayTag RoomTag,
 		int32 CombatPhaseIndex,
 		int32 WaveIndex,
-		AAutoTurret* LinkedTurret);
-	void UnregisterTurretHatch(ATurretReinforcementHatch* Hatch);
-	void GetRegisteredTurretHatches(
-		FGameplayTag RoomTag,
-		int32 CombatPhaseIndex,
-		int32 WaveIndex,
-		TArray<ATurretReinforcementHatch*>& OutHatches);
+		TArray<AAutoTurret*>& OutTurrets);
 	void SetActivationGroupActive(
 		FGameplayTag RoomTag,
 		FGameplayTag ActivationGroupTag,
@@ -205,7 +202,7 @@ public:
 		FGameplayTag RoomTag,
 		const ARoomCombatSpawnPoint* SpawnPoint) const;
 	int32 GetRegisteredSpawnPointCount(FGameplayTag RoomTag);
-	int32 GetRegisteredTurretHatchCount(
+	int32 GetRegisteredWaveTurretCount(
 		FGameplayTag RoomTag,
 		int32 CombatPhaseIndex,
 		int32 WaveIndex);
@@ -249,7 +246,7 @@ private:
 	void MarkRoomCleared(FGameplayTag RoomTag, FRoomCombatRuntime& Runtime);
 	void CompactAliveEnemies(FRoomCombatRuntime& Runtime);
 	void CompactSpawnPoints(FGameplayTag RoomTag);
-	void CompactTurretHatches(FGameplayTag RoomTag);
+	void CompactWaveTurrets(FGameplayTag RoomTag);
 	void SetRoomStreamingSourceEnabled(FGameplayTag RoomTag, bool bEnabled);
 	void HandleArenaGameplayReloadStarted(uint32 GameplayGeneration);
 	void HandleArenaReleased();
@@ -262,9 +259,8 @@ private:
 	TMap<FGameplayTag, TArray<FRoomCombatSpawnPointRuntime>> SpawnPointsByRoom;
 	TMap<TWeakObjectPtr<ARoomCombatSpawnPoint>, FGameplayTag> RegisteredSpawnPointRooms;
 	// 배치 터렛은 Pool SpawnPoint와 선택 방식이 다르므로 별도 인덱스로 관리한다.
-	TMap<FGameplayTag, TArray<FRoomCombatTurretHatchRuntime>> TurretHatchesByRoom;
-	TMap<TWeakObjectPtr<ATurretReinforcementHatch>, FGameplayTag> RegisteredTurretHatchRooms;
-	TMap<TWeakObjectPtr<AAutoTurret>, TWeakObjectPtr<ATurretReinforcementHatch>> RegisteredHatchesByTurret;
+	TMap<FGameplayTag, TArray<FRoomCombatWaveTurretRuntime>> WaveTurretsByRoom;
+	TMap<TWeakObjectPtr<AAutoTurret>, FGameplayTag> RegisteredWaveTurretRooms;
 	// 프로젝트 설정의 통합 DA를 한 번 로드해 WP RoomVolume 재등록 동안 같은 원본을 유지한다.
 	UPROPERTY()
 	TObjectPtr<URoomCombatDefinition> CombatDefinition;

@@ -11,7 +11,6 @@
 #include "Room/RoomCombatDefinition.h"
 #include "Room/RoomCombatSpawnPoint.h"
 #include "Room/RoomVolume.h"
-#include "Room/TurretReinforcementHatch.h"
 #include "Save/OutlierSaveSubSystem.h"
 #include "Subsystems/SubsystemCollection.h"
 
@@ -562,21 +561,18 @@ void URoomCombatSubsystem::UnregisterSpawnPoint(ARoomCombatSpawnPoint* SpawnPoin
 	RegisteredSpawnPointRooms.Remove(SpawnPointPtr);
 }
 
-bool URoomCombatSubsystem::RegisterTurretHatch(
-	ATurretReinforcementHatch* Hatch,
+bool URoomCombatSubsystem::RegisterWaveTurret(
+	AAutoTurret* Turret,
 	FGameplayTag RoomTag,
 	int32 CombatPhaseIndex,
-	int32 WaveIndex,
-	AAutoTurret* LinkedTurret)
+	int32 WaveIndex)
 {
 	UWorld* World = GetWorld();
 	if (!CanRunServerGameplay())
 	{
 		return false;
 	}
-	if (!IsValid(Hatch) || !Hatch->HasAuthority()
-		|| !IsValid(LinkedTurret) || !LinkedTurret->HasAuthority()
-		|| Hatch->GetWorld() != World || LinkedTurret->GetWorld() != World)
+	if (!IsValid(Turret) || !Turret->HasAuthority() || Turret->GetWorld() != World)
 	{
 		return false;
 	}
@@ -592,160 +588,126 @@ bool URoomCombatSubsystem::RegisterTurretHatch(
 	if (!Wave)
 	{
 		UE_LOG(LogTemp, Error,
-			TEXT("[RoomCombat] Turret hatch has an invalid Room/Wave. Hatch=%s Room=%s Phase=%d Wave=%d"),
-			*GetNameSafe(Hatch), *RoomTag.ToString(), CombatPhaseIndex, WaveIndex);
+			TEXT("[RoomCombat] Wave turret has an invalid Room/Wave. Turret=%s Room=%s Phase=%d Wave=%d"),
+			*GetNameSafe(Turret), *RoomTag.ToString(), CombatPhaseIndex, WaveIndex);
 		return false;
 	}
 
-	const int32 ExpectedHatchCount = Wave->ExpectedTurretHatchCount;
-	if (!Wave->IsSpawnFromObjects() || !Wave->HasTurretHatches())
+	const int32 ExpectedTurretCount = Wave->ExpectedWaveTurretCount;
+	if (!Wave->IsSpawnFromObjects() || !Wave->HasWaveTurrets())
 	{
 		UE_LOG(LogTemp, Error,
-			TEXT("[RoomCombat] Turret hatch targets a Wave that expects no hatches. Hatch=%s Room=%s Phase=%d Wave=%d"),
-			*GetNameSafe(Hatch), *RoomTag.ToString(), CombatPhaseIndex, WaveIndex);
+			TEXT("[RoomCombat] Wave turret targets a Wave that expects no turrets. Turret=%s Room=%s Phase=%d Wave=%d"),
+			*GetNameSafe(Turret), *RoomTag.ToString(), CombatPhaseIndex, WaveIndex);
 		return false;
 	}
 
-	const TWeakObjectPtr<ATurretReinforcementHatch> HatchPtr(Hatch);
+	const TWeakObjectPtr<AAutoTurret> TurretPtr(Turret);
 	// WP 재등록은 같은 Actor의 BeginPlay가 다시 들어올 수 있으므로 완전히 같은 설정은 멱등 성공으로 본다.
-	if (const FGameplayTag* ExistingRoomTag = RegisteredTurretHatchRooms.Find(HatchPtr))
+	if (const FGameplayTag* ExistingRoomTag = RegisteredWaveTurretRooms.Find(TurretPtr))
 	{
-		const TArray<FRoomCombatTurretHatchRuntime>* ExistingEntries =
-			TurretHatchesByRoom.Find(*ExistingRoomTag);
-		const FRoomCombatTurretHatchRuntime* Existing = ExistingEntries
+		const TArray<FRoomCombatWaveTurretRuntime>* ExistingEntries =
+			WaveTurretsByRoom.Find(*ExistingRoomTag);
+		const FRoomCombatWaveTurretRuntime* Existing = ExistingEntries
 			? ExistingEntries->FindByPredicate(
-				[Hatch](const FRoomCombatTurretHatchRuntime& Entry)
+				[Turret](const FRoomCombatWaveTurretRuntime& Entry)
 				{
-					return Entry.Hatch.Get() == Hatch;
+					return Entry.Turret.Get() == Turret;
 				})
 			: nullptr;
 		if (Existing && *ExistingRoomTag == RoomTag
 			&& Existing->CombatPhaseIndex == CombatPhaseIndex
-			&& Existing->WaveIndex == WaveIndex
-			&& Existing->LinkedTurret.Get() == LinkedTurret)
+			&& Existing->WaveIndex == WaveIndex)
 		{
 			return true;
 		}
 
 		UE_LOG(LogTemp, Error,
-			TEXT("[RoomCombat] Turret hatch was registered with different settings. Hatch=%s ExistingRoom=%s NewRoom=%s"),
-			*GetNameSafe(Hatch), *ExistingRoomTag->ToString(), *RoomTag.ToString());
+			TEXT("[RoomCombat] Wave turret was registered with different settings. Turret=%s ExistingRoom=%s NewRoom=%s"),
+			*GetNameSafe(Turret), *ExistingRoomTag->ToString(), *RoomTag.ToString());
 		return false;
 	}
 
-	CompactTurretHatches(RoomTag);
-	const TWeakObjectPtr<AAutoTurret> TurretPtr(LinkedTurret);
-	if (const TWeakObjectPtr<ATurretReinforcementHatch>* ExistingHatch =
-		RegisteredHatchesByTurret.Find(TurretPtr))
-	{
-		if (ExistingHatch->IsValid())
-		{
-			UE_LOG(LogTemp, Error,
-				TEXT("[RoomCombat] AutoTurret is linked to multiple hatches. Turret=%s Existing=%s New=%s"),
-				*GetNameSafe(LinkedTurret), *GetNameSafe(ExistingHatch->Get()), *GetNameSafe(Hatch));
-			return false;
-		}
-
-		// EndPlay 순서가 뒤집혀 남은 만료 인덱스는 새로 로드된 해치의 등록을 막지 않는다.
-		RegisteredHatchesByTurret.Remove(TurretPtr);
-	}
-
-	if (GetRegisteredTurretHatchCount(RoomTag, CombatPhaseIndex, WaveIndex)
-		>= ExpectedHatchCount)
+	CompactWaveTurrets(RoomTag);
+	if (GetRegisteredWaveTurretCount(RoomTag, CombatPhaseIndex, WaveIndex)
+		>= ExpectedTurretCount)
 	{
 		UE_LOG(LogTemp, Error,
-			TEXT("[RoomCombat] Turret hatch count exceeds Wave definition. Hatch=%s Room=%s Phase=%d Wave=%d Expected=%d"),
-			*GetNameSafe(Hatch), *RoomTag.ToString(), CombatPhaseIndex, WaveIndex, ExpectedHatchCount);
+			TEXT("[RoomCombat] Wave turret count exceeds Wave definition. Turret=%s Room=%s Phase=%d Wave=%d Expected=%d"),
+			*GetNameSafe(Turret), *RoomTag.ToString(), CombatPhaseIndex, WaveIndex, ExpectedTurretCount);
 		return false;
 	}
 
-	FRoomCombatTurretHatchRuntime& Runtime =
-		TurretHatchesByRoom.FindOrAdd(RoomTag).AddDefaulted_GetRef();
-	Runtime.Hatch = HatchPtr;
-	Runtime.LinkedTurret = TurretPtr;
+	FRoomCombatWaveTurretRuntime& Runtime =
+		WaveTurretsByRoom.FindOrAdd(RoomTag).AddDefaulted_GetRef();
+	Runtime.Turret = TurretPtr;
 	Runtime.CombatPhaseIndex = CombatPhaseIndex;
 	Runtime.WaveIndex = WaveIndex;
-	RegisteredTurretHatchRooms.Add(HatchPtr, RoomTag);
-	RegisteredHatchesByTurret.Add(TurretPtr, HatchPtr);
+	RegisteredWaveTurretRooms.Add(TurretPtr, RoomTag);
 	UE_LOG(LogTemp, Display,
-		TEXT("[RoomCombat] Turret hatch registered. Hatch=%s Turret=%s Room=%s Phase=%d Wave=%d Registered=%d Expected=%d"),
-		*GetNameSafe(Hatch),
-		*GetNameSafe(LinkedTurret),
+		TEXT("[RoomCombat] Wave turret registered. Turret=%s Room=%s Phase=%d Wave=%d Registered=%d Expected=%d"),
+		*GetNameSafe(Turret),
 		*RoomTag.ToString(),
 		CombatPhaseIndex,
 		WaveIndex,
-		GetRegisteredTurretHatchCount(RoomTag, CombatPhaseIndex, WaveIndex),
-		ExpectedHatchCount);
+		GetRegisteredWaveTurretCount(RoomTag, CombatPhaseIndex, WaveIndex),
+		ExpectedTurretCount);
 	return true;
 }
 
-void URoomCombatSubsystem::UnregisterTurretHatch(ATurretReinforcementHatch* Hatch)
+void URoomCombatSubsystem::UnregisterWaveTurret(AAutoTurret* Turret)
 {
-	if (!Hatch)
+	if (!Turret)
 	{
 		return;
 	}
 
-	const TWeakObjectPtr<ATurretReinforcementHatch> HatchPtr(Hatch);
-	const FGameplayTag* RoomTag = RegisteredTurretHatchRooms.Find(HatchPtr);
+	const TWeakObjectPtr<AAutoTurret> TurretPtr(Turret);
+	const FGameplayTag* RoomTag = RegisteredWaveTurretRooms.Find(TurretPtr);
 	if (!RoomTag)
 	{
 		return;
 	}
 	const FGameplayTag RegisteredRoomTag = *RoomTag;
 
-	if (TArray<FRoomCombatTurretHatchRuntime>* Entries = TurretHatchesByRoom.Find(RegisteredRoomTag))
+	if (TArray<FRoomCombatWaveTurretRuntime>* Entries = WaveTurretsByRoom.Find(RegisteredRoomTag))
 	{
-		for (const FRoomCombatTurretHatchRuntime& Entry : *Entries)
-		{
-			if (Entry.Hatch == HatchPtr)
-			{
-				const TWeakObjectPtr<ATurretReinforcementHatch>* RegisteredHatch =
-					RegisteredHatchesByTurret.Find(Entry.LinkedTurret);
-				if (RegisteredHatch && *RegisteredHatch == HatchPtr)
-				{
-					RegisteredHatchesByTurret.Remove(Entry.LinkedTurret);
-				}
-				break;
-			}
-		}
-
 		Entries->RemoveAll(
-			[Hatch](const FRoomCombatTurretHatchRuntime& Entry)
+			[Turret](const FRoomCombatWaveTurretRuntime& Entry)
 			{
-				return Entry.Hatch.Get() == Hatch;
+				return Entry.Turret.Get() == Turret;
 			});
 		if (Entries->IsEmpty())
 		{
-			TurretHatchesByRoom.Remove(RegisteredRoomTag);
+			WaveTurretsByRoom.Remove(RegisteredRoomTag);
 		}
 	}
 
-	RegisteredTurretHatchRooms.Remove(HatchPtr);
+	RegisteredWaveTurretRooms.Remove(TurretPtr);
 	UE_LOG(LogTemp, Display,
-		TEXT("[RoomCombat] Turret hatch unregistered. Hatch=%s Room=%s"),
-		*GetNameSafe(Hatch), *RegisteredRoomTag.ToString());
+		TEXT("[RoomCombat] Wave turret unregistered. Turret=%s Room=%s"),
+		*GetNameSafe(Turret), *RegisteredRoomTag.ToString());
 }
 
-void URoomCombatSubsystem::GetRegisteredTurretHatches(
+void URoomCombatSubsystem::GetRegisteredWaveTurrets(
 	FGameplayTag RoomTag,
 	int32 CombatPhaseIndex,
 	int32 WaveIndex,
-	TArray<ATurretReinforcementHatch*>& OutHatches)
+	TArray<AAutoTurret*>& OutTurrets)
 {
-	OutHatches.Reset();
-	CompactTurretHatches(RoomTag);
-	const TArray<FRoomCombatTurretHatchRuntime>* Entries = TurretHatchesByRoom.Find(RoomTag);
+	OutTurrets.Reset();
+	CompactWaveTurrets(RoomTag);
+	const TArray<FRoomCombatWaveTurretRuntime>* Entries = WaveTurretsByRoom.Find(RoomTag);
 	if (!Entries)
 	{
 		return;
 	}
 
-	for (const FRoomCombatTurretHatchRuntime& Entry : *Entries)
+	for (const FRoomCombatWaveTurretRuntime& Entry : *Entries)
 	{
 		if (Entry.CombatPhaseIndex == CombatPhaseIndex && Entry.WaveIndex == WaveIndex)
 		{
-			OutHatches.Add(Entry.Hatch.Get());
+			OutTurrets.Add(Entry.Turret.Get());
 		}
 	}
 }
@@ -1504,9 +1466,8 @@ void URoomCombatSubsystem::ResetRuntimeCombatState()
 	PendingSpawnRequests.Reset();
 	SpawnPointsByRoom.Reset();
 	RegisteredSpawnPointRooms.Reset();
-	TurretHatchesByRoom.Reset();
-	RegisteredTurretHatchRooms.Reset();
-	RegisteredHatchesByTurret.Reset();
+	WaveTurretsByRoom.Reset();
+	RegisteredWaveTurretRooms.Reset();
 	if (UEnemyRoomSubsystem* EnemyRooms = GetWorld()
 		? GetWorld()->GetSubsystem<UEnemyRoomSubsystem>() : nullptr)
 	{
@@ -1611,20 +1572,20 @@ int32 URoomCombatSubsystem::GetRegisteredSpawnPointCount(FGameplayTag RoomTag)
 	return RoomSpawnPoints ? RoomSpawnPoints->Num() : 0;
 }
 
-int32 URoomCombatSubsystem::GetRegisteredTurretHatchCount(
+int32 URoomCombatSubsystem::GetRegisteredWaveTurretCount(
 	FGameplayTag RoomTag,
 	int32 CombatPhaseIndex,
 	int32 WaveIndex)
 {
-	CompactTurretHatches(RoomTag);
-	const TArray<FRoomCombatTurretHatchRuntime>* Entries = TurretHatchesByRoom.Find(RoomTag);
+	CompactWaveTurrets(RoomTag);
+	const TArray<FRoomCombatWaveTurretRuntime>* Entries = WaveTurretsByRoom.Find(RoomTag);
 	if (!Entries)
 	{
 		return 0;
 	}
 
 	return Entries->CountByPredicate(
-		[CombatPhaseIndex, WaveIndex](const FRoomCombatTurretHatchRuntime& Entry)
+		[CombatPhaseIndex, WaveIndex](const FRoomCombatWaveTurretRuntime& Entry)
 		{
 			return Entry.CombatPhaseIndex == CombatPhaseIndex && Entry.WaveIndex == WaveIndex;
 		});
@@ -1791,36 +1752,30 @@ void URoomCombatSubsystem::CompactSpawnPoints(FGameplayTag RoomTag)
 	}
 }
 
-void URoomCombatSubsystem::CompactTurretHatches(FGameplayTag RoomTag)
+void URoomCombatSubsystem::CompactWaveTurrets(FGameplayTag RoomTag)
 {
-	TArray<FRoomCombatTurretHatchRuntime>* Entries = TurretHatchesByRoom.Find(RoomTag);
+	TArray<FRoomCombatWaveTurretRuntime>* Entries = WaveTurretsByRoom.Find(RoomTag);
 	if (!Entries)
 	{
 		return;
 	}
 
 	Entries->RemoveAll(
-		[this](const FRoomCombatTurretHatchRuntime& Entry)
+		[this](const FRoomCombatWaveTurretRuntime& Entry)
 		{
-			if (Entry.Hatch.IsValid() && Entry.LinkedTurret.IsValid())
+			if (Entry.Turret.IsValid())
 			{
 				return false;
 			}
 
-			// WP 언로드 순서와 무관하게 한쪽 Actor가 먼저 사라지면 두 역방향 인덱스도 함께 폐기한다.
-			RegisteredTurretHatchRooms.Remove(Entry.Hatch);
-			if (const TWeakObjectPtr<ATurretReinforcementHatch>* RegisteredHatch =
-				RegisteredHatchesByTurret.Find(Entry.LinkedTurret);
-				RegisteredHatch && *RegisteredHatch == Entry.Hatch)
-			{
-				RegisteredHatchesByTurret.Remove(Entry.LinkedTurret);
-			}
+			// EndPlay 해제를 받지 못한 WP Actor도 역방향 인덱스에서 함께 제거한다.
+			RegisteredWaveTurretRooms.Remove(Entry.Turret);
 			return true;
 		});
 
 	if (Entries->IsEmpty())
 	{
-		TurretHatchesByRoom.Remove(RoomTag);
+		WaveTurretsByRoom.Remove(RoomTag);
 	}
 }
 
