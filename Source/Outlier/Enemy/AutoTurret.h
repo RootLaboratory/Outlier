@@ -18,6 +18,17 @@ enum class EAutoTurretImpactReactionMode : uint8
 	StateTreeInterrupt UMETA(DisplayName = "StateTree Impact Reaction")
 };
 
+UENUM(BlueprintType)
+enum class EAutoTurretLifecycleState : uint8
+{
+	// Room Wave가 수명을 시작하고, 사망 메시가 영구 상태로 남는 전체 흐름을 한 값으로 표현한다.
+	WaitingForWave UMETA(DisplayName = "Waiting For Wave"),
+	Deploying UMETA(DisplayName = "Deploying"),
+	Active UMETA(DisplayName = "Active"),
+	DeadPresentation UMETA(DisplayName = "Dead Presentation"),
+	DeadPersistent UMETA(DisplayName = "Dead Persistent")
+};
+
 USTRUCT(BlueprintType)
 struct OUTLIER_API FAutoTurretBehaviorRow : public FTableRowBase
 {
@@ -107,16 +118,31 @@ public:
 		float TurretReactionScale, float EffectRatio) override;
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|Turret")
-	bool IsDeployed() const { return bDeployed; }
+	bool IsDeployed() const
+	{
+		return TurretLifecycleState == EAutoTurretLifecycleState::Active
+			|| TurretLifecycleState == EAutoTurretLifecycleState::DeadPresentation
+			|| TurretLifecycleState == EAutoTurretLifecycleState::DeadPersistent;
+	}
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|Turret")
-	bool IsDeploying() const { return bDeploymentStarted && !bDeployed; }
+	bool IsDeploying() const
+	{
+		return TurretLifecycleState == EAutoTurretLifecycleState::Deploying;
+	}
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|Turret")
 	bool IsHackedToPlayerTeam() const { return bHackedToPlayerTeam; }
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|Turret|Room Wave")
-	bool IsWaitingForRoomWaveActivation() const { return bWaitingForRoomWaveActivation; }
+	bool IsWaitingForRoomWaveActivation() const
+	{
+		return TurretLifecycleState == EAutoTurretLifecycleState::WaitingForWave;
+	}
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Turret|Room Wave")
+	EAutoTurretLifecycleState GetTurretLifecycleState() const { return TurretLifecycleState; }
+
 	int32 GetCombatPhaseIndex() const { return CombatPhaseIndex; }
 	int32 GetWaveIndex() const { return WaveIndex; }
 	FName GetPersistentTurretId() const { return PersistentTurretId; }
@@ -235,28 +261,19 @@ protected:
 	EAutoTurretImpactReactionMode ImpactReactionMode =
 		EAutoTurretImpactReactionMode::ConcurrentOffsetRecovery;
 
-	UPROPERTY(ReplicatedUsing = OnRep_DeploymentState, VisibleInstanceOnly, BlueprintReadOnly, Category = "Enemy|Turret")
-	uint8 bDeploymentStarted : 1 = false;
-
-	UPROPERTY(ReplicatedUsing = OnRep_DeploymentState, VisibleInstanceOnly, BlueprintReadOnly, Category = "Enemy|Turret")
-	uint8 bDeployed : 1 = false;
+	// 수명 상태를 하나로 복제해 Waiting/Deploying/Active 조합이 서로 어긋나지 않게 한다.
+	UPROPERTY(ReplicatedUsing = OnRep_TurretLifecycleState, VisibleInstanceOnly, BlueprintReadOnly,
+		Category = "Enemy|Turret|Room Wave")
+	EAutoTurretLifecycleState TurretLifecycleState = EAutoTurretLifecycleState::WaitingForWave;
 
 	UPROPERTY(ReplicatedUsing = OnRep_HackedTeam, VisibleInstanceOnly, BlueprintReadOnly, Category = "Enemy|Turret")
 	uint8 bHackedToPlayerTeam : 1 = false;
 
-	// 지정 Wave가 시작되기 전까지는 맵에 존재하더라도 Enemy 런타임에는 참여하지 않는다.
-	UPROPERTY(ReplicatedUsing = OnRep_RoomWaveWaitingState, VisibleInstanceOnly, BlueprintReadOnly,
-		Category = "Enemy|Turret|Room Wave")
-	uint8 bWaitingForRoomWaveActivation : 1 = false;
-
 	UFUNCTION()
-	void OnRep_DeploymentState();
+	void OnRep_TurretLifecycleState();
 
 	UFUNCTION()
 	void OnRep_HackedTeam();
-
-	UFUNCTION()
-	void OnRep_RoomWaveWaitingState();
 
 	UFUNCTION(BlueprintImplementableEvent, Category = "Enemy|Turret|Deploy")
 	void OnTurretDeploymentStarted();
@@ -289,9 +306,11 @@ private:
 	void ConfigureHeadPivotAttachment();
 	void ApplyTurretCollisionState();
 	bool IsNoDamageBone(FName BoneName) const;
+	bool IsCombatActive() const;
 	void ConfigureTurretHackPolicy();
-	void ApplyDeploymentRuntimeState();
-	void ApplyRoomWaveWaitingState();
+	void SetTurretLifecycleState(EAutoTurretLifecycleState NewState);
+	void ApplyTurretLifecycleState();
+	void ApplyWaitingForWaveState();
 	void CompleteTurretDeployment();
 	void ApplyHackedTeamState();
 	static void PlayMontageOnMesh(USkeletalMeshComponent* TargetMesh, UAnimMontage* Montage);

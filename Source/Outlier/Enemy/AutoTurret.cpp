@@ -172,10 +172,8 @@ void AAutoTurret::ConfigureWaveRegistrationForTesting(
 void AAutoTurret::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
-	DOREPLIFETIME(AAutoTurret, bDeploymentStarted);
-	DOREPLIFETIME(AAutoTurret, bDeployed);
+	DOREPLIFETIME(AAutoTurret, TurretLifecycleState);
 	DOREPLIFETIME(AAutoTurret, bHackedToPlayerTeam);
-	DOREPLIFETIME(AAutoTurret, bWaitingForRoomWaveActivation);
 }
 
 float AAutoTurret::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
@@ -184,7 +182,7 @@ float AAutoTurret::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 	const FName HitBoneName = Request.HitResult.BoneName;
 	const FString DamageTagString = Request.DamageTag.ToString();
 
-	if (bWaitingForRoomWaveActivation || !bDeployed)
+	if (!IsCombatActive())
 	{
 		if (IsTurretDiagnosticsEnabled())
 		{
@@ -192,7 +190,7 @@ float AAutoTurret::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 				LogOutlier,
 				Warning,
 				TEXT("[TurretDiag][Damage] Rejected Reason=%s Turret=%s Authority=%s Damage=%.2f HP=%.2f Component=%s Bone=%s Tag=%s Causer=%s"),
-				bWaitingForRoomWaveActivation ? TEXT("WaitingForRoomWave") : TEXT("NotDeployed"),
+				IsWaitingForRoomWaveActivation() ? TEXT("WaitingForRoomWave") : TEXT("NotActive"),
 				*GetNameSafe(this),
 				HasAuthority() ? TEXT("true") : TEXT("false"),
 				Request.DamageAmount,
@@ -293,16 +291,14 @@ FRotator AAutoTurret::GetViewRotation() const
 
 bool AAutoTurret::CanUseEnemyPerception() const
 {
-	return !bWaitingForRoomWaveActivation
-		&& bDeployed
+	return IsCombatActive()
 		&& !IsAIControlSuppressed()
 		&& GetCurrentHealth() > 0.0f;
 }
 
 bool AAutoTurret::CanUseRoomTargetSharing() const
 {
-	return !bWaitingForRoomWaveActivation
-		&& bDeployed
+	return IsCombatActive()
 		&& !bHackedToPlayerTeam
 		&& !IsAIControlSuppressed();
 }
@@ -379,12 +375,12 @@ void AAutoTurret::PrepareForStateTreeStart()
 		RuntimeTurretBehavior = *Behavior;
 	}
 	ConfigureHeadPivotAttachment();
-	ApplyDeploymentRuntimeState();
+	ApplyTurretLifecycleState();
 }
 
 bool AAutoTurret::ShouldActivateAsPreplacedEnemy() const
 {
-	return !bWaitingForRoomWaveActivation;
+	return IsCombatActive();
 }
 
 void AAutoTurret::ConfigureHeadPivotAttachment()
@@ -464,17 +460,20 @@ void AAutoTurret::ConfigureTurretHackPolicy()
 
 bool AAutoTurret::BeginTurretDeployment()
 {
-	if (!HasAuthority() || bWaitingForRoomWaveActivation || bDeployed)
+	if (!HasAuthority()
+		|| TurretLifecycleState == EAutoTurretLifecycleState::DeadPresentation
+		|| TurretLifecycleState == EAutoTurretLifecycleState::DeadPersistent)
 	{
-		return !bWaitingForRoomWaveActivation && bDeployed;
+		return false;
 	}
-	if (bDeploymentStarted)
+	if (TurretLifecycleState == EAutoTurretLifecycleState::Deploying
+		|| TurretLifecycleState == EAutoTurretLifecycleState::Active)
 	{
 		return true;
 	}
 
-	bDeploymentStarted = true;
-	ApplyDeploymentRuntimeState();
+	// 현재 Room Wave에 해당하는지는 호출자가 판정하고, 여기서는 승인된 전개의 상태와 연출만 시작한다.
+	SetTurretLifecycleState(EAutoTurretLifecycleState::Deploying);
 	MulticastBeginTurretDeployment();
 
 	const float FallbackDuration = FMath::Max(RuntimeTurretBehavior.DeployFallbackDuration, 0.0f);
@@ -500,14 +499,7 @@ bool AAutoTurret::PrepareForRoomWaveActivation()
 		return false;
 	}
 
-	bWaitingForRoomWaveActivation = true;
-	bDeploymentStarted = false;
-	bDeployed = false;
-	ApplyRoomWaveWaitingState();
-	if (HasAuthority() && HasActorBegunPlay())
-	{
-		ForceNetUpdate();
-	}
+	SetTurretLifecycleState(EAutoTurretLifecycleState::WaitingForWave);
 	return true;
 }
 
@@ -529,7 +521,7 @@ void AAutoTurret::StopFireMontage()
 
 void AAutoTurret::NotifyDeploySequenceFinished()
 {
-	if (HasAuthority() && bDeploymentStarted && !bDeployed)
+	if (HasAuthority() && IsDeploying())
 	{
 		CompleteTurretDeployment();
 	}
@@ -537,29 +529,48 @@ void AAutoTurret::NotifyDeploySequenceFinished()
 
 void AAutoTurret::CompleteTurretDeployment()
 {
-	if (!HasAuthority() || bDeployed)
+	if (!HasAuthority() || !IsDeploying())
 	{
 		return;
 	}
 	GetWorldTimerManager().ClearTimer(DeployFallbackTimerHandle);
-	bDeploymentStarted = true;
-	bDeployed = true;
-	ApplyDeploymentRuntimeState();
+	SetTurretLifecycleState(EAutoTurretLifecycleState::Active);
 	OnTurretDeploymentCompleted();
-	ForceNetUpdate();
 }
 
-void AAutoTurret::ApplyDeploymentRuntimeState()
+bool AAutoTurret::IsCombatActive() const
 {
-	// 단일 Skeletal Mesh의 해치 부분은 표현에 남아 있어도, Wave 대기 중인 Actor 전체는
-	// 전투 Collision에서 제외한다. 전개 이후 세부 본 Collision은 아래에서 다시 구분한다.
-	SetActorEnableCollision(!bWaitingForRoomWaveActivation);
-	SetCanBeDamaged(!bWaitingForRoomWaveActivation);
+	return TurretLifecycleState == EAutoTurretLifecycleState::Active;
+}
+
+void AAutoTurret::SetTurretLifecycleState(EAutoTurretLifecycleState NewState)
+{
+	TurretLifecycleState = NewState;
+	if (NewState == EAutoTurretLifecycleState::WaitingForWave)
+	{
+		ApplyWaitingForWaveState();
+	}
+	else
+	{
+		ApplyTurretLifecycleState();
+	}
+
+	if (HasAuthority() && HasActorBegunPlay())
+	{
+		ForceNetUpdate();
+	}
+}
+
+void AAutoTurret::ApplyTurretLifecycleState()
+{
+	const bool bUsesBodyQueryCollision = IsDeploying() || IsCombatActive();
+	SetActorEnableCollision(bUsesBodyQueryCollision);
+	SetCanBeDamaged(IsCombatActive());
 	ApplyTurretCollisionState();
 
 	if (HackableComponent)
 	{
-		if (!bWaitingForRoomWaveActivation && bDeployed)
+		if (IsCombatActive())
 		{
 			HackableComponent->HackTags.RemoveTag(OutlierGameplayTags::State::Locked());
 		}
@@ -575,17 +586,15 @@ void AAutoTurret::ApplyDeploymentRuntimeState()
 	}
 }
 
-void AAutoTurret::ApplyRoomWaveWaitingState()
+void AAutoTurret::ApplyWaitingForWaveState()
 {
-	if (!bWaitingForRoomWaveActivation)
+	if (!IsWaitingForRoomWaveActivation())
 	{
-		ApplyDeploymentRuntimeState();
+		ApplyTurretLifecycleState();
 		return;
 	}
 
 	GetWorldTimerManager().ClearTimer(DeployFallbackTimerHandle);
-	bDeploymentStarted = false;
-	bDeployed = false;
 	bInCombat = false;
 	CombatState = EEnemyCombatState::NonCombat;
 	bPlayerCurrentlyVisible = false;
@@ -623,21 +632,21 @@ void AAutoTurret::ApplyRoomWaveWaitingState()
 		}
 	}
 
-	ApplyDeploymentRuntimeState();
+	ApplyTurretLifecycleState();
 }
 
 void AAutoTurret::ApplyTurretCollisionState()
 {
+	const bool bUsesBodyQueryCollision = IsDeploying() || IsCombatActive();
 	USkeletalMeshComponent* BodyMesh = GetMesh();
 	if (BodyMesh)
 	{
-		BodyMesh->SetCollisionEnabled(bWaitingForRoomWaveActivation
-			? ECollisionEnabled::NoCollision
-			: ECollisionEnabled::QueryOnly);
+		BodyMesh->SetCollisionEnabled(bUsesBodyQueryCollision
+			? ECollisionEnabled::QueryOnly
+			: ECollisionEnabled::NoCollision);
 		BodyMesh->SetCollisionResponseToChannel(ECC_PhysicsBody, ECR_Block);
 
-		const ECollisionEnabled::Type HiddenBodyCollision = !bWaitingForRoomWaveActivation
-			&& (bDeploymentStarted || bDeployed)
+		const ECollisionEnabled::Type HiddenBodyCollision = bUsesBodyQueryCollision
 			? ECollisionEnabled::QueryOnly
 			: ECollisionEnabled::NoCollision;
 		for (const FName BoneRoot : HiddenCollisionBoneRoots)
@@ -667,8 +676,7 @@ void AAutoTurret::ApplyTurretCollisionState()
 	{
 		TurretHeadPivot->GetChildrenComponents(true, HeadChildren);
 	}
-	const ECollisionEnabled::Type HeadCollision = !bWaitingForRoomWaveActivation
-		&& (bDeploymentStarted || bDeployed)
+	const ECollisionEnabled::Type HeadCollision = bUsesBodyQueryCollision
 		? ECollisionEnabled::QueryOnly
 		: ECollisionEnabled::NoCollision;
 	for (USceneComponent* Child : HeadChildren)
@@ -702,7 +710,7 @@ void AAutoTurret::ApplyTurretCollisionState()
 		// Box는 전개 후 Pawn 이동만 막고, Shooter Hitscan은 Body/Head의 Physics Asset이 받는다.
 		TurretBlockingBox->SetCollisionResponseToChannel(ECC_PhysicsBody, ECR_Ignore);
 		TurretBlockingBox->SetCollisionEnabled(
-			!bWaitingForRoomWaveActivation && bDeployed
+			IsCombatActive()
 				? ECollisionEnabled::QueryAndPhysics
 				: ECollisionEnabled::NoCollision);
 	}
@@ -727,18 +735,21 @@ bool AAutoTurret::IsNoDamageBone(FName BoneName) const
 	return false;
 }
 
-void AAutoTurret::OnRep_DeploymentState()
+void AAutoTurret::OnRep_TurretLifecycleState()
 {
-	ApplyDeploymentRuntimeState();
-	if (bDeployed)
+	if (IsWaitingForRoomWaveActivation())
+	{
+		ApplyWaitingForWaveState();
+	}
+	else
+	{
+		ApplyTurretLifecycleState();
+	}
+
+	if (TurretLifecycleState == EAutoTurretLifecycleState::Active)
 	{
 		OnTurretDeploymentCompleted();
 	}
-}
-
-void AAutoTurret::OnRep_RoomWaveWaitingState()
-{
-	ApplyRoomWaveWaitingState();
 }
 
 void AAutoTurret::MulticastBeginTurretDeployment_Implementation()
@@ -793,7 +804,7 @@ bool AAutoTurret::UpdateTurretAimAtActor(AActor* TargetActor, float DeltaTime, b
 bool AAutoTurret::UpdateTurretAimAtLocation(
 	const FVector& TargetLocation, float DeltaTime, bool bAttackRotation, bool bUseSearchPitch)
 {
-	if (!HasAuthority() || !bDeployed || !TurretHeadPivot)
+	if (!HasAuthority() || !IsCombatActive() || !TurretHeadPivot)
 	{
 		return false;
 	}
@@ -860,7 +871,7 @@ bool AAutoTurret::UpdateTurretAimAtLocation(
 
 bool AAutoTurret::UpdateAttackLocation(const FVector& TargetLocation)
 {
-	if (!HasAuthority() || !bDeployed || IsAIControlSuppressed()
+	if (!HasAuthority() || !IsCombatActive() || IsAIControlSuppressed()
 		|| !IsValid(CurrentWeapon) || !TurretHeadPivot)
 	{
 		return false;
@@ -880,7 +891,8 @@ void AAutoTurret::ApplyExplosionReaction(const FVector& ExplosionOrigin, float E
 	float TurretReactionScale, float EffectRatio)
 {
 	(void)EnemyImpulseScale;
-	if (!HasAuthority() || !bDeployed || EffectRatio <= 0.0f || GetCurrentHealth() <= 0.0f)
+	if (!HasAuthority() || !IsCombatActive()
+		|| EffectRatio <= 0.0f || GetCurrentHealth() <= 0.0f)
 	{
 		return;
 	}
@@ -1039,7 +1051,7 @@ void AAutoTurret::ApplyHeadRotation()
 void AAutoTurret::HandleHackStarted(const FHackQueryContext& Context)
 {
 	(void)Context;
-	if (!HasAuthority() || !bDeployed || bHackedToPlayerTeam)
+	if (!HasAuthority() || !IsCombatActive() || bHackedToPlayerTeam)
 	{
 		return;
 	}
@@ -1054,7 +1066,7 @@ void AAutoTurret::HandleHackStarted(const FHackQueryContext& Context)
 void AAutoTurret::HandleHackEffect(FGameplayTag EffectTag, const FHackResultContext& Context)
 {
 	if (!HasAuthority() || EffectTag != HackGameplayTags::Effect::ChangeTeam()
-		|| Context.Result != EHackResult::Success || !bDeployed)
+		|| Context.Result != EHackResult::Success || !IsCombatActive())
 	{
 		return;
 	}
@@ -1070,7 +1082,7 @@ void AAutoTurret::HandleHackEffect(FGameplayTag EffectTag, const FHackResultCont
 void AAutoTurret::HandleHackCompleted(const FHackResultContext& Context)
 {
 	(void)Context;
-	if (!HasAuthority() || !bDeployed)
+	if (!HasAuthority() || !IsCombatActive())
 	{
 		return;
 	}
@@ -1110,7 +1122,7 @@ void AAutoTurret::OnRep_HackedTeam()
 
 void AAutoTurret::HandleEMPStarted(FGameplayTag EffectTag)
 {
-	if (bDeployed)
+	if (IsCombatActive())
 	{
 		Super::HandleEMPStarted(EffectTag);
 	}
@@ -1236,7 +1248,7 @@ void AAutoTurret::HandleDeath()
 {
 	GetWorldTimerManager().ClearTimer(DeployFallbackTimerHandle);
 	StopImpactRecovery();
-	SetActorEnableCollision(false);
+	SetTurretLifecycleState(EAutoTurretLifecycleState::DeadPresentation);
 	MulticastPlayDeathMontage();
 	Super::HandleDeath();
 }
@@ -1247,15 +1259,13 @@ void AAutoTurret::ResetPoolRuntimeState()
 	Super::ResetPoolRuntimeState();
 	GetWorldTimerManager().ClearTimer(DeployFallbackTimerHandle);
 	StopImpactRecovery();
-	bDeploymentStarted = false;
-	bDeployed = false;
 	bHackedToPlayerTeam = false;
 	CurrentAimOffset = FRotator::ZeroRotator;
 	ImpactRotationOffset = FRotator::ZeroRotator;
 	CurrentAimLocation = FVector::ZeroVector;
 	CurrentMuzzleGroupIndex = 0;
 	ApplyHackedTeamState();
-	ApplyDeploymentRuntimeState();
+	SetTurretLifecycleState(EAutoTurretLifecycleState::WaitingForWave);
 }
 
 void AAutoTurret::ResetPoolPresentationState()

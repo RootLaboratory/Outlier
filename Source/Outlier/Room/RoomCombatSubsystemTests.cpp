@@ -1038,6 +1038,9 @@ bool FRoomCombatWaveTurretWaitingStateTest::RunTest(const FString& Parameters)
 
 	TestEqual(TEXT("Configured turret registers itself for its Wave"),
 		Combat->GetRegisteredWaveTurretCount(RoomTag, 0, 0), 1);
+	TestEqual(TEXT("Configured turret uses the explicit WaitingForWave state"),
+		WaitingTurret->GetTurretLifecycleState(),
+		EAutoTurretLifecycleState::WaitingForWave);
 	TestTrue(TEXT("Configured turret waits for its Room Wave"),
 		WaitingTurret->IsWaitingForRoomWaveActivation());
 	TestFalse(TEXT("Waiting turret is not an adaptation target"),
@@ -1052,8 +1055,6 @@ bool FRoomCombatWaveTurretWaitingStateTest::RunTest(const FString& Parameters)
 		WaitingTurret->GetStateTreeComponent()->GetStateTreeRunStatus(),
 		EStateTreeRunStatus::Running);
 	TestFalse(TEXT("Waiting turret cannot receive damage"), WaitingTurret->CanBeDamaged());
-	TestFalse(TEXT("Waiting turret cannot begin deployment"),
-		WaitingTurret->BeginTurretDeployment());
 	TestEqual(TEXT("Waiting turret body collision is disabled"),
 		WaitingTurret->GetMesh()->GetCollisionEnabled(), ECollisionEnabled::NoCollision);
 	if (UHackableComponent* Hackable = WaitingTurret->GetHackableComponent();
@@ -1062,6 +1063,27 @@ bool FRoomCombatWaveTurretWaitingStateTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Waiting turret hacking remains locked"),
 			Hackable->HackTags.HasTagExact(OutlierGameplayTags::State::Locked()));
 	}
+	TestTrue(TEXT("An explicit deployment request enters the Deploying state"),
+		WaitingTurret->BeginTurretDeployment());
+	TestEqual(TEXT("Deploying turret exposes one lifecycle state"),
+		WaitingTurret->GetTurretLifecycleState(),
+		EAutoTurretLifecycleState::Deploying);
+	TestTrue(TEXT("Legacy deploying query derives from the lifecycle state"),
+		WaitingTurret->IsDeploying());
+	TestFalse(TEXT("Deploying turret remains immune until deployment completes"),
+		WaitingTurret->CanBeDamaged());
+	WaitingTurret->NotifyDeploySequenceFinished();
+	TestEqual(TEXT("Deployment completion enters the Active state"),
+		WaitingTurret->GetTurretLifecycleState(),
+		EAutoTurretLifecycleState::Active);
+	TestTrue(TEXT("Legacy deployed query derives from the lifecycle state"),
+		WaitingTurret->IsDeployed());
+	TestTrue(TEXT("Active turret enables damage"), WaitingTurret->CanBeDamaged());
+	TestTrue(TEXT("Waiting preparation restores the initial lifecycle state"),
+		WaitingTurret->PrepareForRoomWaveActivation());
+	TestEqual(TEXT("Repeated preparation preserves the lifecycle state"),
+		WaitingTurret->GetTurretLifecycleState(),
+		EAutoTurretLifecycleState::WaitingForWave);
 	TestTrue(TEXT("Repeated waiting preparation is idempotent"),
 		WaitingTurret->PrepareForRoomWaveActivation());
 	TestFalse(TEXT("Repeated preparation does not register the turret"),
