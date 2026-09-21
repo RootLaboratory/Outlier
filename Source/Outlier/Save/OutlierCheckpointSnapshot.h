@@ -150,6 +150,10 @@ struct OUTLIER_API FOutlierCheckpointSnapshot
 	UPROPERTY()
 	FOutlierWorldProgressSnapshot WorldProgress;
 
+	// 배치 터렛 Actor는 파괴하지 않으므로 Stable ID별 영구 사망 자세만 별도로 저장한다.
+	UPROPERTY()
+	TSet<FName> DestroyedTurretIds;
+
 	// 내성 등록 Enemy는 Data Layer 리로드 뒤 다시 구성되므로 공유 Stack만 저장한다.
 	UPROPERTY()
 	int32 GunAdaptationStack = 0;

@@ -198,7 +198,7 @@ protected:
 		AOutlierPlayerState* PartnerPlayerState,
 		const FTransform& ShooterSpawn,
 		const FTransform& PartnerSpawn,
-		bool bRestoreCheckpointAmmo = false);
+		bool bRestoreCheckpointSnapshot = false);
 
 	AOutlierPlayerState* FindPairPlayerState(int32 PairId, EOutlierPlayerRole PlayerRole) const;
 	AController* GetControllerFromPlayerState(AOutlierPlayerState* PlayerState) const;

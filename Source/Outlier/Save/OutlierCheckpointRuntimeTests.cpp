@@ -31,6 +31,7 @@ bool FOutlierCheckpointRuntimeSnapshotTest::RunTest(const FString& Parameters)
 	Initial.ShooterSpawnTransform.SetLocation(FVector(100.0, 200.0, 300.0));
 	Initial.WorldProgress.CollectedNodeIds.Add(TEXT("InitialNode"));
 	Initial.WorldProgress.ExplodedPropIds.Add(TEXT("Explosive.Initial"));
+	Initial.DestroyedTurretIds.Add(TEXT("Turret.Initial"));
 	Initial.GunAdaptationStack = 3;
 	TestTrue(TEXT("The first initial snapshot is accepted"), SaveSubsystem->CaptureInitialSnapshot(Initial));
 
@@ -43,6 +44,8 @@ bool FOutlierCheckpointRuntimeSnapshotTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Initial snapshot values are copied"), RestoreTarget.ShooterSpawnTransform.GetLocation(), FVector(100.0, 200.0, 300.0));
 	TestTrue(TEXT("Initial exploded prop progress is copied"),
 		RestoreTarget.WorldProgress.ExplodedPropIds.Contains(TEXT("Explosive.Initial")));
+	TestTrue(TEXT("Initial destroyed turret progress is copied"),
+		RestoreTarget.DestroyedTurretIds.Contains(TEXT("Turret.Initial")));
 	TestEqual(TEXT("Initial enemy adaptation stack is copied"),
 		RestoreTarget.GunAdaptationStack, 3);
 
@@ -50,12 +53,14 @@ bool FOutlierCheckpointRuntimeSnapshotTest::RunTest(const FString& Parameters)
 	Checkpoint.CheckpointId = TEXT("Checkpoint.A");
 	Checkpoint.WorldProgress.CollectedNodeIds.Add(TEXT("SavedNode"));
 	Checkpoint.WorldProgress.ExplodedPropIds.Add(TEXT("Explosive.Saved"));
+	Checkpoint.DestroyedTurretIds.Add(TEXT("Turret.Saved"));
 	Checkpoint.GunAdaptationStack = 8;
 	TestTrue(TEXT("A valid checkpoint snapshot is committed"), SaveSubsystem->CommitCheckpointSnapshot(Checkpoint));
 
 	FOutlierCheckpointSnapshot Duplicate = Checkpoint;
 	Duplicate.WorldProgress.CollectedNodeIds.Add(TEXT("LateNode"));
 	Duplicate.WorldProgress.ExplodedPropIds.Add(TEXT("Explosive.Late"));
+	Duplicate.DestroyedTurretIds.Add(TEXT("Turret.Late"));
 	Duplicate.GunAdaptationStack = 10;
 	TestFalse(TEXT("The same checkpoint cannot be committed twice"), SaveSubsystem->CommitCheckpointSnapshot(Duplicate));
 	TestTrue(TEXT("The latest checkpoint is selected after commit"), SaveSubsystem->GetRestoreSnapshot(RestoreTarget));
@@ -65,12 +70,17 @@ bool FOutlierCheckpointRuntimeSnapshotTest::RunTest(const FString& Parameters)
 		RestoreTarget.WorldProgress.ExplodedPropIds.Contains(TEXT("Explosive.Saved")));
 	TestFalse(TEXT("A rejected duplicate cannot add exploded props"),
 		RestoreTarget.WorldProgress.ExplodedPropIds.Contains(TEXT("Explosive.Late")));
+	TestTrue(TEXT("A checkpoint preserves destroyed turrets"),
+		RestoreTarget.DestroyedTurretIds.Contains(TEXT("Turret.Saved")));
+	TestFalse(TEXT("A rejected duplicate cannot add destroyed turrets"),
+		RestoreTarget.DestroyedTurretIds.Contains(TEXT("Turret.Late")));
 	TestEqual(TEXT("A rejected duplicate cannot replace the enemy adaptation stack"),
 		RestoreTarget.GunAdaptationStack, 8);
 
 	FOutlierCheckpointSnapshot LaterCheckpoint;
 	LaterCheckpoint.CheckpointId = TEXT("Checkpoint.B");
 	LaterCheckpoint.WorldProgress.OpenedDoorIds.Add(TEXT("Door.B"));
+	LaterCheckpoint.DestroyedTurretIds.Add(TEXT("Turret.Newer"));
 	LaterCheckpoint.GunAdaptationStack = 9;
 	TestTrue(TEXT("A later checkpoint replaces the restore target"), SaveSubsystem->CommitCheckpointSnapshot(LaterCheckpoint));
 	TestTrue(TEXT("The newer checkpoint is selected"), SaveSubsystem->GetRestoreSnapshot(RestoreTarget));
@@ -78,6 +88,10 @@ bool FOutlierCheckpointRuntimeSnapshotTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("The newer checkpoint world state is copied"), RestoreTarget.WorldProgress.OpenedDoorIds.Contains(TEXT("Door.B")));
 	TestFalse(TEXT("A later checkpoint replaces older exploded prop progress"),
 		RestoreTarget.WorldProgress.ExplodedPropIds.Contains(TEXT("Explosive.Saved")));
+	TestTrue(TEXT("A later checkpoint replaces the destroyed turret restore target"),
+		RestoreTarget.DestroyedTurretIds.Contains(TEXT("Turret.Newer")));
+	TestFalse(TEXT("A later checkpoint discards older destroyed turret progress"),
+		RestoreTarget.DestroyedTurretIds.Contains(TEXT("Turret.Saved")));
 	TestEqual(TEXT("A later checkpoint replaces the enemy adaptation stack"),
 		RestoreTarget.GunAdaptationStack, 9);
 
@@ -87,6 +101,28 @@ bool FOutlierCheckpointRuntimeSnapshotTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("The committed snapshot can be read again"), SaveSubsystem->GetRestoreSnapshot(RestoreTarget));
 	TestFalse(TEXT("Live progress does not mutate the committed copy"),
 		RestoreTarget.WorldProgress.CollectedNodeIds.Contains(TEXT("AfterCheckpoint")));
+
+	SaveSubsystem->RestoreCurrentDestroyedTurretIds(RestoreTarget.DestroyedTurretIds);
+	TestTrue(TEXT("A live turret destruction is recorded"),
+		SaveSubsystem->SetDestroyedTurretState(TEXT("Turret.AfterCheckpoint"), true));
+	TestTrue(TEXT("The live destroyed turret can be queried"),
+		SaveSubsystem->IsTurretDestroyed(TEXT("Turret.AfterCheckpoint")));
+	TestFalse(TEXT("An empty turret stable Id is rejected"),
+		SaveSubsystem->SetDestroyedTurretState(NAME_None, true));
+	TestTrue(TEXT("The committed snapshot remains available after a live turret destruction"),
+		SaveSubsystem->GetRestoreSnapshot(RestoreTarget));
+	TestFalse(TEXT("Live turret progress does not mutate the committed copy"),
+		RestoreTarget.DestroyedTurretIds.Contains(TEXT("Turret.AfterCheckpoint")));
+
+	SaveSubsystem->RestoreCurrentDestroyedTurretIds(RestoreTarget.DestroyedTurretIds);
+	TestFalse(TEXT("Checkpoint rollback removes turret deaths after the checkpoint"),
+		SaveSubsystem->IsTurretDestroyed(TEXT("Turret.AfterCheckpoint")));
+	TestTrue(TEXT("Checkpoint rollback preserves saved turret deaths"),
+		SaveSubsystem->IsTurretDestroyed(TEXT("Turret.Newer")));
+
+	SaveSubsystem->ResetRuntimeCheckpointState();
+	TestFalse(TEXT("A new runtime session clears destroyed turret progress"),
+		SaveSubsystem->IsTurretDestroyed(TEXT("Turret.Newer")));
 
 	return true;
 }

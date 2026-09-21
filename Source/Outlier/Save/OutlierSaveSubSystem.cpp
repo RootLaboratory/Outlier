@@ -39,6 +39,7 @@ void UOutlierSaveSubSystem::ResetRuntimeCheckpointState()
 	bHasLatestCheckpointSnapshot = false;
 	LatestCheckpointSnapshot = FOutlierCheckpointSnapshot();
 	CurrentWorldProgress.Reset();
+	CurrentDestroyedTurretIds.Reset();
 	CommittedCheckpointIds.Reset();
 }
 
@@ -133,6 +134,36 @@ void UOutlierSaveSubSystem::RestoreCurrentWorldProgress(
 {
 	// 병합이 아니라 교체다. 체크포인트 이후 사용한 노드/문/해킹/전투 등의 진행은 롤백한다.
 	CurrentWorldProgress = Snapshot;
+}
+
+bool UOutlierSaveSubSystem::SetDestroyedTurretState(FName TurretId, bool bDestroyed)
+{
+	if (TurretId.IsNone())
+	{
+		return false;
+	}
+
+	if (bDestroyed)
+	{
+		CurrentDestroyedTurretIds.Add(TurretId);
+	}
+	else
+	{
+		CurrentDestroyedTurretIds.Remove(TurretId);
+	}
+	return true;
+}
+
+bool UOutlierSaveSubSystem::IsTurretDestroyed(FName TurretId) const
+{
+	return !TurretId.IsNone() && CurrentDestroyedTurretIds.Contains(TurretId);
+}
+
+void UOutlierSaveSubSystem::RestoreCurrentDestroyedTurretIds(
+	const TSet<FName>& DestroyedTurretIds)
+{
+	// 병합하면 체크포인트 이후 파괴된 터렛이 남는다. Snapshot 집합으로 교체해야 롤백된다.
+	CurrentDestroyedTurretIds = DestroyedTurretIds;
 }
 
 bool UOutlierSaveSubSystem::RegisterWorldProgressId(

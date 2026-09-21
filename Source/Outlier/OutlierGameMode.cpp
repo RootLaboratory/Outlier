@@ -312,6 +312,7 @@ bool AOutlierGameMode::StartCheckpointRestart(
 	// 새 Actor가 BeginPlay에서 읽는 월드 진행과 공유 내성 Stack을 먼저 되돌린 뒤
 	// Data Layer를 내린다. 순서를 뒤집으면 새 Actor가 재시작 직전 상태를 잠깐 적용한다.
 	SaveSubsystem->RestoreCurrentWorldProgress(Snapshot.WorldProgress);
+	SaveSubsystem->RestoreCurrentDestroyedTurretIds(Snapshot.DestroyedTurretIds);
 	ShooterPlayerState->RestoreCheckpointProgress(
 		Snapshot.ShooterProgress.NodeCount,
 		EOutlierUpgradeRole::Shooter,
@@ -346,7 +347,7 @@ bool AOutlierGameMode::StartCheckpointRestart(
 		PartnerPlayerState,
 		Snapshot.ShooterSpawnTransform,
 		Snapshot.PartnerSpawnTransform,
-		/*bRestoreCheckpointAmmo=*/true);
+		/*bRestoreCheckpointSnapshot=*/true);
 }
 
 void AOutlierGameMode::FinishCheckpointRestart()
@@ -2035,7 +2036,7 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 	AOutlierPlayerState* PartnerPlayerState,
 	const FTransform& ShooterSpawn,
 	const FTransform& PartnerSpawn,
-	bool bRestoreCheckpointAmmo)
+	bool bRestoreCheckpointSnapshot)
 {
 	if (!ShooterPlayerState)
 	{
@@ -2142,8 +2143,8 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 		ShooterPlayerState,
 		NewShooter,
 		NewPartner,
-		bRestoreCheckpointAmmo);
-	if (bRestoreCheckpointAmmo)
+		bRestoreCheckpointSnapshot);
+	if (bRestoreCheckpointSnapshot)
 	{
 		if (UOutlierAbilitySystemComponent* ShooterASC = NewShooter->GetOutlierAbilitySystemComponent())
 		{
@@ -2153,6 +2154,13 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 		{
 			PartnerASC->RestoreHealthToMax();
 		}
+	}
+	else if (UOutlierSaveSubSystem* SaveSubsystem = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>()
+		: nullptr)
+	{
+		// 프리셋/디버그 재로드는 새 진행이다. 현재 Arena에서 파괴된 터렛을 새 Actor에 이어주지 않는다.
+		SaveSubsystem->RestoreCurrentDestroyedTurretIds(TSet<FName>());
 	}
 
 	// 4) possess 배선 — 지오메트리 준비 뒤로 지연
@@ -3155,6 +3163,7 @@ bool AOutlierGameMode::BuildPairCheckpointSnapshot(
 		: nullptr)
 	{
 		OutSnapshot.WorldProgress = SaveSubsystem->GetCurrentWorldProgress();
+		OutSnapshot.DestroyedTurretIds = SaveSubsystem->GetCurrentDestroyedTurretIds();
 	}
 	if (const UEnemyAdaptationSubsystem* EnemyAdaptationSubsystem = GetWorld()
 		? GetWorld()->GetSubsystem<UEnemyAdaptationSubsystem>()

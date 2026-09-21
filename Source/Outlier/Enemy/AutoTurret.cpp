@@ -131,6 +131,17 @@ void AAutoTurret::BeginPlay()
 		return;
 	}
 	bPersistentTurretIdRegistered = true;
+	if (SaveSubsystem->IsTurretDestroyed(PersistentTurretId))
+	{
+		// 체크포인트 복원은 사망 이벤트와 연출을 다시 발생시키지 않고 저장된 최종 자세를 직접 적용한다.
+		if (!RestoreDeadPersistentState())
+		{
+			UE_LOG(LogTemp, Error,
+				TEXT("[Checkpoint] Failed to restore destroyed Wave turret Turret=%s Id=%s"),
+				*GetNameSafe(this), *PersistentTurretId.ToString());
+		}
+		return;
+	}
 
 	URoomCombatSubsystem* CombatSubsystem = GetWorld()
 		? GetWorld()->GetSubsystem<URoomCombatSubsystem>()
@@ -551,6 +562,18 @@ void AAutoTurret::NotifyDeploySequenceFinished()
 	}
 }
 
+void AAutoTurret::NotifyDeathSequenceFinished()
+{
+	if (!HasAuthority()
+		|| TurretLifecycleState != EAutoTurretLifecycleState::DeadPresentation)
+	{
+		return;
+	}
+
+	// 사망 연출 완료는 Actor 제거가 아니라 최종 자세 고정으로 끝난다.
+	SetTurretLifecycleState(EAutoTurretLifecycleState::DeadPersistent);
+}
+
 void AAutoTurret::CompleteTurretDeployment()
 {
 	if (!HasAuthority() || !IsDeploying())
@@ -614,10 +637,14 @@ void AAutoTurret::SetTurretLifecycleState(EAutoTurretLifecycleState NewState)
 
 void AAutoTurret::ApplyTurretLifecycleState()
 {
-	const bool bUsesBodyQueryCollision = IsDeploying() || IsCombatActive();
+	const bool bUsesBodyQueryCollision = IsDeploying() || IsDeployed();
 	SetActorEnableCollision(bUsesBodyQueryCollision);
 	SetCanBeDamaged(IsCombatActive());
 	ApplyTurretCollisionState();
+	if (TurretLifecycleState == EAutoTurretLifecycleState::DeadPersistent)
+	{
+		ApplyDeadPersistentPose();
+	}
 
 	if (HackableComponent)
 	{
@@ -651,6 +678,7 @@ void AAutoTurret::ApplyWaitingForWaveState()
 	bHasSharedTargetContact = false;
 	StopMontageOnMesh(GetMesh(), DeployMontage);
 	StopMontageOnMesh(TurretHeadMesh, FireMontage);
+	StopMontageOnMesh(TurretHeadMesh, DeathMontage);
 
 	// 초기화 순서상 전투 참여 흔적이 먼저 생겼더라도 대기 진입 경로에서 모두 되돌린다.
 	if (HasActorBegunPlay())
@@ -685,9 +713,49 @@ void AAutoTurret::ApplyWaitingForWaveState()
 	ApplyTurretLifecycleState();
 }
 
+void AAutoTurret::ApplyDeadPersistentPose()
+{
+	if (!TurretHeadMesh || !DeathMontage)
+	{
+		return;
+	}
+
+	UAnimInstance* AnimInstance = TurretHeadMesh->GetAnimInstance();
+	if (!AnimInstance)
+	{
+		return;
+	}
+
+	// 실시간 사망 연출에서는 현재 몽타주를 마지막 프레임에 고정하고,
+	// 체크포인트 직접 복원에서는 같은 최종 프레임만 즉시 구성한다.
+	if (!AnimInstance->Montage_IsActive(DeathMontage))
+	{
+		AnimInstance->Montage_Play(DeathMontage);
+	}
+	const float FinalPoseTime = FMath::Max(DeathMontage->GetPlayLength() - KINDA_SMALL_NUMBER, 0.0f);
+	AnimInstance->Montage_SetPosition(DeathMontage, FinalPoseTime);
+	AnimInstance->Montage_Pause(DeathMontage);
+}
+
+bool AAutoTurret::RestoreDeadPersistentState()
+{
+	if (!HasAuthority() || PersistentTurretId.IsNone()
+		|| (!IsDead()
+			&& (!OutlierAbilitySystemComponent
+				|| !OutlierAbilitySystemComponent->ApplyDeadStateToSelf())))
+	{
+		return false;
+	}
+
+	StopImpactRecovery();
+	bRoomWaveDeploymentRequested = false;
+	SetTurretLifecycleState(EAutoTurretLifecycleState::DeadPersistent);
+	return true;
+}
+
 void AAutoTurret::ApplyTurretCollisionState()
 {
-	const bool bUsesBodyQueryCollision = IsDeploying() || IsCombatActive();
+	const bool bUsesBodyQueryCollision = IsDeploying() || IsDeployed();
 	USkeletalMeshComponent* BodyMesh = GetMesh();
 	if (BodyMesh)
 	{
@@ -760,7 +828,7 @@ void AAutoTurret::ApplyTurretCollisionState()
 		// Box는 전개 후 Pawn 이동만 막고, Shooter Hitscan은 Body/Head의 Physics Asset이 받는다.
 		TurretBlockingBox->SetCollisionResponseToChannel(ECC_PhysicsBody, ECR_Ignore);
 		TurretBlockingBox->SetCollisionEnabled(
-			IsCombatActive()
+			IsDeployed()
 				? ECollisionEnabled::QueryAndPhysics
 				: ECollisionEnabled::NoCollision);
 	}
@@ -1295,16 +1363,31 @@ EDataValidationResult AAutoTurret::IsDataValid(FDataValidationContext& Context) 
 
 void AAutoTurret::HandleDeath()
 {
+	if (TurretLifecycleState == EAutoTurretLifecycleState::DeadPresentation
+		|| TurretLifecycleState == EAutoTurretLifecycleState::DeadPersistent)
+	{
+		return;
+	}
+
 	StopImpactRecovery();
 	SetTurretLifecycleState(EAutoTurretLifecycleState::DeadPresentation);
 	bRoomWaveDeploymentRequested = false;
 	MulticastPlayDeathMontage();
-	Super::HandleDeath();
-}
 
-float AAutoTurret::GetDeathDestroyDelay() const
-{
-	return DeathMontage ? DeathMontage->GetPlayLength() : 0.0f;
+	// Room 정리 중 차수 완료가 이어져도 사망 상태가 Snapshot 원본에 먼저 남도록 기록 순서를 고정한다.
+	if (bPersistentTurretIdRegistered)
+	{
+		UGameInstance* GameInstance = GetGameInstance();
+		if (UOutlierSaveSubSystem* SaveSubsystem = GameInstance
+			? GameInstance->GetSubsystem<UOutlierSaveSubSystem>()
+			: nullptr)
+		{
+			SaveSubsystem->SetDestroyedTurretState(PersistentTurretId, true);
+		}
+	}
+
+	// 공통 정리는 Room 생존 집계와 AI를 즉시 제거한다. 부모 HandleDeath의 Destroy 단계만 건너뛴다.
+	PerformDeathCleanup();
 }
 
 void AAutoTurret::ApplyClassStatOverrides()

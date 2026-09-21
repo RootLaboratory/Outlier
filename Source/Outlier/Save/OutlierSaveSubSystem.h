@@ -34,6 +34,12 @@ public:
 	void RestoreCurrentWorldProgress(const FOutlierWorldProgressSnapshot& Snapshot);
 	const FOutlierWorldProgressSnapshot& GetCurrentWorldProgress() const { return CurrentWorldProgress; }
 
+	// 배치 터렛 Actor는 사망 후에도 남으므로 월드 진행과 별도로 Stable ID별 사망 자세를 추적한다.
+	bool SetDestroyedTurretState(FName TurretId, bool bDestroyed);
+	bool IsTurretDestroyed(FName TurretId) const;
+	void RestoreCurrentDestroyedTurretIds(const TSet<FName>& DestroyedTurretIds);
+	const TSet<FName>& GetCurrentDestroyedTurretIds() const { return CurrentDestroyedTurretIds; }
+
 	bool RegisterWorldProgressId(EOutlierWorldProgressType Type, FName ProgressId, UObject* Owner);
 	void UnregisterWorldProgressId(EOutlierWorldProgressType Type, FName ProgressId, const UObject* Owner);
 	bool RegisterCheckpointId(FName CheckpointId, UObject* Owner);
@@ -63,6 +69,9 @@ private:
 
 	UPROPERTY(Transient)
 	FOutlierWorldProgressSnapshot CurrentWorldProgress;
+
+	UPROPERTY(Transient)
+	TSet<FName> CurrentDestroyedTurretIds;
 
 	UPROPERTY(Transient)
 	TSet<FName> CommittedCheckpointIds;

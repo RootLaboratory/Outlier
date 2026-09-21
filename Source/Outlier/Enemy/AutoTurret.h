@@ -163,6 +163,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Enemy|Turret|Deploy")
 	void NotifyDeploySequenceFinished();
 
+	UFUNCTION(BlueprintCallable, Category = "Enemy|Turret|Death")
+	void NotifyDeathSequenceFinished();
+
 	bool UpdateTurretAimAtActor(AActor* TargetActor, float DeltaTime, bool bAttackRotation);
 	bool UpdateTurretAimAtLocation(const FVector& TargetLocation, float DeltaTime,
 		bool bAttackRotation, bool bUseSearchPitch = false);
@@ -182,7 +185,6 @@ protected:
 	virtual void PrepareForStateTreeStart() override;
 	virtual bool ShouldActivateAsPreplacedEnemy() const override;
 	virtual void HandleDeath() override;
-	virtual float GetDeathDestroyDelay() const override;
 	virtual void HandleHackEffect(FGameplayTag EffectTag, const FHackResultContext& Context) override;
 	virtual void HandleHackStarted(const FHackQueryContext& Context) override;
 	virtual void HandleHackCompleted(const FHackResultContext& Context) override;
@@ -307,6 +309,8 @@ private:
 	void SetTurretLifecycleState(EAutoTurretLifecycleState NewState);
 	void ApplyTurretLifecycleState();
 	void ApplyWaitingForWaveState();
+	void ApplyDeadPersistentPose();
+	bool RestoreDeadPersistentState();
 	bool BeginRoomWaveDeployment();
 	bool BeginTurretDeploymentInternal();
 	void CompleteTurretDeployment();

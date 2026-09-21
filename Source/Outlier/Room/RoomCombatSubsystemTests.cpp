@@ -1,5 +1,6 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
+#include "Components/BoxComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/StateTreeComponent.h"
 #include "Drone/Partner/HackableComponent.h"
@@ -13,12 +14,14 @@
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "GAS/OutlierAbilitySystemComponent.h"
 #include "Misc/AutomationTest.h"
 #include "Room/RoomCombatDefinition.h"
 #include "Room/RoomCombatSpawnPoint.h"
 #include "Room/RoomCombatSubsystem.h"
 #include "Room/RoomTagComponent.h"
 #include "Room/RoomVolume.h"
+#include "Save/OutlierSaveSubSystem.h"
 #include "UObject/UnrealType.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 
@@ -1139,10 +1142,12 @@ bool FRoomCombatWaveTurretActivationTest::RunTest(const FString& Parameters)
 	UEnemyPoolSubsystem* Pool = World->GetSubsystem<UEnemyPoolSubsystem>();
 	UEnemyRoomSubsystem* EnemyRooms = World->GetSubsystem<UEnemyRoomSubsystem>();
 	UEnemyAdaptationSubsystem* Adaptation = World->GetSubsystem<UEnemyAdaptationSubsystem>();
+	UOutlierSaveSubSystem* SaveSubsystem = GameInstance->GetSubsystem<UOutlierSaveSubSystem>();
 	if (!TestNotNull(TEXT("Room combat subsystem"), Combat)
 		|| !TestNotNull(TEXT("Enemy pool subsystem"), Pool)
 		|| !TestNotNull(TEXT("Enemy room subsystem"), EnemyRooms)
-		|| !TestNotNull(TEXT("Enemy adaptation subsystem"), Adaptation))
+		|| !TestNotNull(TEXT("Enemy adaptation subsystem"), Adaptation)
+		|| !TestNotNull(TEXT("Runtime save subsystem"), SaveSubsystem))
 	{
 		CleanupWorld();
 		return false;
@@ -1241,6 +1246,64 @@ bool FRoomCombatWaveTurretActivationTest::RunTest(const FString& Parameters)
 	LateTurret->NotifyDeploySequenceFinished();
 	TestEqual(TEXT("Duplicate completion does not change the alive count"),
 		Combat->GetAliveEnemyCount(RoomTag), 4);
+
+	TestTrue(TEXT("The active turret accepts the dead state"),
+		FirstTurret->GetOutlierAbilitySystemComponent()->ApplyDeadStateToSelf());
+	FirstTurret->BeginDeathForPoolTesting();
+	TestEqual(TEXT("A dead turret immediately leaves the Room alive count"),
+		Combat->GetAliveEnemyCount(RoomTag), 3);
+	TestEqual(TEXT("A dead turret remains in presentation state until its sequence completes"),
+		FirstTurret->GetTurretLifecycleState(),
+		EAutoTurretLifecycleState::DeadPresentation);
+	TestFalse(TEXT("A dead turret actor is not destroyed"), FirstTurret->IsActorBeingDestroyed());
+	TestFalse(TEXT("A dead turret cannot receive damage"), FirstTurret->CanBeDamaged());
+	TestFalse(TEXT("A dead turret leaves enemy adaptation tracking"),
+		Adaptation->IsEnemyRegistered(FirstTurret));
+	TestFalse(TEXT("A dead turret no longer shares Room targets"),
+		FirstTurret->CanUseRoomTargetSharing());
+	TestTrue(TEXT("A dead turret keeps actor collision enabled"),
+		FirstTurret->GetActorEnableCollision());
+	TestEqual(TEXT("A dead turret keeps body Hitscan collision"),
+		FirstTurret->GetMesh()->GetCollisionEnabled(), ECollisionEnabled::QueryOnly);
+	if (UBoxComponent* BlockingBox = FirstTurret->FindComponentByClass<UBoxComponent>();
+		TestNotNull(TEXT("Wave turret blocking collision exists"), BlockingBox))
+	{
+		TestEqual(TEXT("A dead turret keeps Pawn blocking collision"),
+			BlockingBox->GetCollisionEnabled(), ECollisionEnabled::QueryAndPhysics);
+	}
+	TestTrue(TEXT("A dead turret is recorded by stable Id"),
+		SaveSubsystem->IsTurretDestroyed(TEXT("Turret.Activation.1")));
+
+	FirstTurret->NotifyDeathSequenceFinished();
+	TestEqual(TEXT("Death sequence completion fixes the final persistent state"),
+		FirstTurret->GetTurretLifecycleState(),
+		EAutoTurretLifecycleState::DeadPersistent);
+	TestFalse(TEXT("The persistent dead turret actor remains in the World"),
+		FirstTurret->IsActorBeingDestroyed());
+	FirstTurret->NotifyDeathSequenceFinished();
+	TestEqual(TEXT("Duplicate death completion preserves the final state"),
+		FirstTurret->GetTurretLifecycleState(),
+		EAutoTurretLifecycleState::DeadPersistent);
+
+	// Data Layer 재로드를 흉내 내어 같은 Stable ID Actor가 최종 사망 자세로 바로 복원되는지 확인한다.
+	FirstTurret->Destroy();
+	AAutoTurret* RestoredTurret = SpawnConfiguredTurret(TEXT("Turret.Activation.1"));
+	if (!TestNotNull(TEXT("Destroyed Wave turret can be reloaded"), RestoredTurret))
+	{
+		CleanupWorld();
+		return false;
+	}
+	TestEqual(TEXT("A saved turret skips deployment and restores the final dead state"),
+		RestoredTurret->GetTurretLifecycleState(),
+		EAutoTurretLifecycleState::DeadPersistent);
+	TestFalse(TEXT("A restored dead turret does not rejoin Room alive tracking"),
+		Adaptation->IsEnemyRegistered(RestoredTurret));
+	TestEqual(TEXT("A restored dead turret does not register as a future Wave activation"),
+		Combat->GetRegisteredWaveTurretCount(RoomTag, 0, 1), 1);
+	TestFalse(TEXT("A restored dead turret cannot receive damage"),
+		RestoredTurret->CanBeDamaged());
+	TestTrue(TEXT("A restored dead turret keeps its collision"),
+		RestoredTurret->GetActorEnableCollision());
 
 	CleanupWorld();
 	return true;
