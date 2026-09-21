@@ -546,6 +546,7 @@ protected:
 	virtual void ApplyClassStatOverrides();
 	virtual void ApplyMovementFromRuntimeStat();
 	virtual void PrepareForStateTreeStart();
+	virtual bool ShouldActivateAsPreplacedEnemy() const { return true; }
 	bool HasActiveStunTag() const;
 	bool BeginPossessionProcess(APartnerCharacter* PartnerCharacter);
 	void ConfirmPossessionProcess();

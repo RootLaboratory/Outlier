@@ -264,9 +264,11 @@ void AEnemyBase::BeginPlay()
 			&AEnemyBase::HandleCurrentRoomTagChanged);
 	}
 
+	const bool bActivateAsPreplacedEnemy = !IsPoolManaged()
+		&& ShouldActivateAsPreplacedEnemy();
 	if (HasAuthority())
 	{
-		if (!IsPoolManaged())
+		if (bActivateAsPreplacedEnemy)
 		{
 			if (UEnemyAdaptationSubsystem* AdaptationSubsystem = GetEnemyAdaptationSubsystem())
 			{
@@ -298,7 +300,7 @@ void AEnemyBase::BeginPlay()
 		return;
 	}
 
-	if (HasAuthority() && StateTreeComponent)
+	if (HasAuthority() && bActivateAsPreplacedEnemy && StateTreeComponent)
 	{
 		// Perception이 BeginPlay 전에 상태를 바꿨어도 Global Sync가 현재 값을 읽어
 		// 올바른 초기 State를 선택할 수 있도록 모든 Enemy 초기화 뒤에 시작한다.

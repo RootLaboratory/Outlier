@@ -3,6 +3,7 @@
 #include "Components/SceneComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Enemy/AutoTurret.h"
+#include "Net/UnrealNetwork.h"
 #include "OutlierArenaSettings.h"
 #include "Room/RoomCombatDefinition.h"
 #include "Room/RoomCombatSubsystem.h"
@@ -26,14 +27,32 @@ ATurretReinforcementHatch::ATurretReinforcementHatch()
 	HatchMesh->SetIsReplicated(true);
 }
 
+void ATurretReinforcementHatch::GetLifetimeReplicatedProps(
+	TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(ATurretReinforcementHatch, HatchState);
+}
+
+void ATurretReinforcementHatch::PostInitializeComponents()
+{
+	Super::PostInitializeComponents();
+
+	// 맵 Actor의 BeginPlay 순서는 보장되지 않는다. 터렛 BeginPlay가 먼저 실행되어
+	// AI와 전투 Subsystem에 등록되는 일을 막기 위해 더 이른 초기화 단계에서 대기 상태를 고정한다.
+	PrepareLinkedTurretForWave();
+}
+
 void ATurretReinforcementHatch::BeginPlay()
 {
 	Super::BeginPlay();
+	ApplyHatchStatePresentation(HatchState);
 
 	if (!HasAuthority())
 	{
 		return;
 	}
+	PrepareLinkedTurretForWave();
 
 	if (URoomCombatSubsystem* CombatSubsystem =
 		GetWorld()->GetSubsystem<URoomCombatSubsystem>())
@@ -45,6 +64,26 @@ void ATurretReinforcementHatch::BeginPlay()
 			WaveIndex,
 			LinkedTurret);
 	}
+}
+
+void ATurretReinforcementHatch::PrepareLinkedTurretForWave()
+{
+	if (IsValid(LinkedTurret))
+	{
+		LinkedTurret->PrepareForRoomWaveActivation();
+	}
+}
+
+void ATurretReinforcementHatch::ApplyHatchStatePresentation(
+	ETurretReinforcementHatchState PreviousState)
+{
+	OnTurretHatchStateChanged(PreviousState, HatchState);
+}
+
+void ATurretReinforcementHatch::OnRep_HatchState(
+	ETurretReinforcementHatchState PreviousState)
+{
+	ApplyHatchStatePresentation(PreviousState);
 }
 
 void ATurretReinforcementHatch::EndPlay(const EEndPlayReason::Type EndPlayReason)

@@ -1,6 +1,10 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
+#include "Components/SkeletalMeshComponent.h"
+#include "Components/StateTreeComponent.h"
+#include "Drone/Partner/HackableComponent.h"
 #include "Enemy/AutoTurret.h"
+#include "Enemy/EnemyAdaptationSubsystem.h"
 #include "Enemy/EnemyBase.h"
 #include "Enemy/EnemyPoolDefinition.h"
 #include "Enemy/EnemyPoolSubsystem.h"
@@ -15,6 +19,7 @@
 #include "Room/RoomVolume.h"
 #include "Room/TurretReinforcementHatch.h"
 #include "UObject/UnrealType.h"
+#include "GameplayTags/OutlierGameplayTags.h"
 
 namespace
 {
@@ -960,6 +965,124 @@ bool FRoomCombatTriggeredSequenceTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FRoomCombatTurretHatchWaitingStateTest,
+	"Outlier.Room.TurretHatchWaitingState",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRoomCombatTurretHatchWaitingStateTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const FName WorldName = MakeUniqueObjectName(nullptr, UWorld::StaticClass(), NAME_None,
+		EUniqueObjectNameOptions::GloballyUnique);
+	FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, WorldName, GetTransientPackage());
+	if (!TestNotNull(TEXT("Turret waiting-state test world exists"), World))
+	{
+		GEngine->DestroyWorldContext(World);
+		return false;
+	}
+
+	World->AddToRoot();
+	WorldContext.SetCurrentWorld(World);
+	World->InitializeActorsForPlay(FURL());
+	auto CleanupWorld = [World]()
+	{
+		GEngine->ShutdownWorldNetDriver(World);
+		World->DestroyWorld(true);
+		World->SetPhysicsScene(nullptr);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+	};
+
+	URoomCombatSubsystem* Combat = World->GetSubsystem<URoomCombatSubsystem>();
+	UEnemyAdaptationSubsystem* Adaptation = World->GetSubsystem<UEnemyAdaptationSubsystem>();
+	if (!TestNotNull(TEXT("Room combat subsystem"), Combat)
+		|| !TestNotNull(TEXT("Enemy adaptation subsystem"), Adaptation))
+	{
+		CleanupWorld();
+		return false;
+	}
+	// 자동화 World에는 실제 World BeginPlay 통지가 없으므로 배치 Enemy 등록 창을 직접 연다.
+	Adaptation->OnWorldBeginPlay(*World);
+
+	const FGameplayTag RoomTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.1")));
+	URoomCombatDefinition* Definition = NewObject<URoomCombatDefinition>(World);
+	AddTurretHatchWaveDefinition(Definition, RoomTag, 1);
+	Combat->SetCombatDefinitionForTesting(Definition);
+
+	// 두 Actor를 모두 Deferred로 만든 뒤 Hatch를 먼저 완료하면, Turret BeginPlay 전에
+	// 연결 정보가 적용되는 실제 맵 초기화 순서를 재현할 수 있다.
+	AAutoTurret* WaitingTurret = World->SpawnActorDeferred<AAutoTurret>(
+		AAutoTurret::StaticClass(),
+		FTransform::Identity);
+	ATurretReinforcementHatch* Hatch =
+		World->SpawnActorDeferred<ATurretReinforcementHatch>(
+			ATurretReinforcementHatch::StaticClass(),
+			FTransform::Identity);
+	if (!TestNotNull(TEXT("Deferred waiting turret"), WaitingTurret)
+		|| !TestNotNull(TEXT("Deferred turret hatch"), Hatch))
+	{
+		CleanupWorld();
+		return false;
+	}
+
+	WaitingTurret->GetRoomTagComp()->AssignDefaultRoomTag(RoomTag);
+	Hatch->ConfigureForTesting(RoomTag, 0, 0, WaitingTurret);
+	Hatch->FinishSpawning(FTransform::Identity);
+	WaitingTurret->FinishSpawning(FTransform::Identity);
+	ARoomVolume* Room = World->SpawnActor<ARoomVolume>();
+	if (!TestNotNull(TEXT("Turret waiting-state Room"), Room))
+	{
+		CleanupWorld();
+		return false;
+	}
+	TestTrue(TEXT("Turret waiting-state Room registers"), Combat->RegisterRoom(Room, RoomTag));
+
+	TestEqual(TEXT("Hatch starts closed and dormant"),
+		Hatch->GetHatchState(), ETurretReinforcementHatchState::DormantClosed);
+	TestTrue(TEXT("Linked turret waits for its Room Wave"),
+		WaitingTurret->IsWaitingForRoomWaveActivation());
+	TestFalse(TEXT("Waiting turret is not an adaptation target"),
+		Adaptation->IsEnemyRegistered(WaitingTurret));
+	TestEqual(TEXT("Waiting turret is excluded from Room alive tracking"),
+		Combat->GetAliveEnemyCount(RoomTag), 0);
+	TestFalse(TEXT("Waiting turret cannot use perception"),
+		WaitingTurret->CanUseEnemyPerception());
+	TestFalse(TEXT("Waiting turret cannot share Room targets"),
+		WaitingTurret->CanUseRoomTargetSharing());
+	TestNotEqual(TEXT("Waiting turret StateTree is not running"),
+		WaitingTurret->GetStateTreeComponent()->GetStateTreeRunStatus(),
+		EStateTreeRunStatus::Running);
+	TestFalse(TEXT("Waiting turret cannot receive damage"), WaitingTurret->CanBeDamaged());
+	TestFalse(TEXT("Waiting turret cannot begin deployment"),
+		WaitingTurret->BeginTurretDeployment());
+	TestEqual(TEXT("Waiting turret body collision is disabled"),
+		WaitingTurret->GetMesh()->GetCollisionEnabled(), ECollisionEnabled::NoCollision);
+	if (UHackableComponent* Hackable = WaitingTurret->GetHackableComponent();
+		TestNotNull(TEXT("Waiting turret hackable component"), Hackable))
+	{
+		TestTrue(TEXT("Waiting turret hacking remains locked"),
+			Hackable->HackTags.HasTagExact(OutlierGameplayTags::State::Locked()));
+	}
+	TestTrue(TEXT("Repeated waiting preparation is idempotent"),
+		WaitingTurret->PrepareForRoomWaveActivation());
+	TestFalse(TEXT("Repeated preparation does not register the turret"),
+		Adaptation->IsEnemyRegistered(WaitingTurret));
+
+	AAutoTurret* ImmediateTurret = World->SpawnActor<AAutoTurret>();
+	if (TestNotNull(TEXT("Unlinked immediate turret"), ImmediateTurret))
+	{
+		TestFalse(TEXT("Unlinked turret keeps the existing immediate path"),
+			ImmediateTurret->IsWaitingForRoomWaveActivation());
+		TestTrue(TEXT("Unlinked turret keeps normal preplaced registration"),
+			Adaptation->IsEnemyRegistered(ImmediateTurret));
+	}
+
+	CleanupWorld();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FRoomCombatTurretHatchRegistrationTest,
 	"Outlier.Room.TurretHatchRegistration",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -990,11 +1113,14 @@ bool FRoomCombatTurretHatchRegistrationTest::RunTest(const FString& Parameters)
 	};
 
 	URoomCombatSubsystem* Combat = World->GetSubsystem<URoomCombatSubsystem>();
-	if (!TestNotNull(TEXT("Room combat subsystem"), Combat))
+	UEnemyAdaptationSubsystem* Adaptation = World->GetSubsystem<UEnemyAdaptationSubsystem>();
+	if (!TestNotNull(TEXT("Room combat subsystem"), Combat)
+		|| !TestNotNull(TEXT("Enemy adaptation subsystem"), Adaptation))
 	{
 		CleanupWorld();
 		return false;
 	}
+	Adaptation->OnWorldBeginPlay(*World);
 
 	const FGameplayTag RoomTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.1")));
 	URoomCombatDefinition* Definition = NewObject<URoomCombatDefinition>(World);
@@ -1033,6 +1159,8 @@ bool FRoomCombatTurretHatchRegistrationTest::RunTest(const FString& Parameters)
 	}
 	TestEqual(TEXT("BeginPlay registers the first configured hatch"),
 		Combat->GetRegisteredTurretHatchCount(RoomTag, 0, 0), 1);
+	TestFalse(TEXT("A hatch linked after turret BeginPlay removes prior combat registration"),
+		Adaptation->IsEnemyRegistered(FirstTurret));
 	AddExpectedErrorPlain(
 		TEXT("[RoomCombat] AutoTurret is linked to multiple hatches."),
 		EAutomationExpectedErrorFlags::Contains,

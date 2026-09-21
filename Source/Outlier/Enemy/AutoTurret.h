@@ -115,10 +115,14 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Enemy|Turret")
 	bool IsHackedToPlayerTeam() const { return bHackedToPlayerTeam; }
 
+	UFUNCTION(BlueprintPure, Category = "Enemy|Turret|Room Wave")
+	bool IsWaitingForRoomWaveActivation() const { return bWaitingForRoomWaveActivation; }
+
 	UFUNCTION(BlueprintPure, Category = "Enemy|Turret")
 	const FAutoTurretBehaviorRow& GetTurretBehavior() const { return RuntimeTurretBehavior; }
 
 	bool BeginTurretDeployment();
+	bool PrepareForRoomWaveActivation();
 	void PlayFireMontage();
 	void StopFireMontage();
 
@@ -137,6 +141,7 @@ protected:
 	virtual void ApplyClassStatOverrides() override;
 	virtual void ApplyMovementFromRuntimeStat() override;
 	virtual void PrepareForStateTreeStart() override;
+	virtual bool ShouldActivateAsPreplacedEnemy() const override;
 	virtual void HandleDeath() override;
 	virtual void ResetPoolRuntimeState() override;
 	virtual void ResetPoolPresentationState() override;
@@ -211,11 +216,19 @@ protected:
 	UPROPERTY(ReplicatedUsing = OnRep_HackedTeam, VisibleInstanceOnly, BlueprintReadOnly, Category = "Enemy|Turret")
 	uint8 bHackedToPlayerTeam : 1 = false;
 
+	// 해치가 Wave를 시작하기 전까지는 맵에 존재하더라도 Enemy 런타임에는 참여하지 않는다.
+	UPROPERTY(ReplicatedUsing = OnRep_RoomWaveWaitingState, VisibleInstanceOnly, BlueprintReadOnly,
+		Category = "Enemy|Turret|Room Wave")
+	uint8 bWaitingForRoomWaveActivation : 1 = false;
+
 	UFUNCTION()
 	void OnRep_DeploymentState();
 
 	UFUNCTION()
 	void OnRep_HackedTeam();
+
+	UFUNCTION()
+	void OnRep_RoomWaveWaitingState();
 
 	UFUNCTION(BlueprintImplementableEvent, Category = "Enemy|Turret|Deploy")
 	void OnTurretDeploymentStarted();
@@ -250,6 +263,7 @@ private:
 	bool IsNoDamageBone(FName BoneName) const;
 	void ConfigureTurretHackPolicy();
 	void ApplyDeploymentRuntimeState();
+	void ApplyRoomWaveWaitingState();
 	void CompleteTurretDeployment();
 	void ApplyHackedTeamState();
 	static void PlayMontageOnMesh(USkeletalMeshComponent* TargetMesh, UAnimMontage* Montage);

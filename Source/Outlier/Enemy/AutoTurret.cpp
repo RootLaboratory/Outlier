@@ -6,8 +6,10 @@
 #include "Components/CapsuleComponent.h"
 #include "Components/SceneComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/StateTreeComponent.h"
 #include "Drone/Partner/HackableComponent.h"
 #include "Drone/Partner/HackGameplayTags.h"
+#include "Enemy/EnemyAdaptationSubsystem.h"
 #include "Enemy/EnemyAIController.h"
 #include "Enemy/EnemyRoomSubsystem.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -16,6 +18,7 @@
 #include "Net/UnrealNetwork.h"
 #include "Outlier.h"
 #include "PhysicsEngine/BodyInstance.h"
+#include "Room/RoomCombatSubsystem.h"
 #include "Team/OutlierTeamIds.h"
 #include "TimerManager.h"
 #include "Weapon/RangedWeaponBase.h"
@@ -93,6 +96,7 @@ void AAutoTurret::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifet
 	DOREPLIFETIME(AAutoTurret, bDeploymentStarted);
 	DOREPLIFETIME(AAutoTurret, bDeployed);
 	DOREPLIFETIME(AAutoTurret, bHackedToPlayerTeam);
+	DOREPLIFETIME(AAutoTurret, bWaitingForRoomWaveActivation);
 }
 
 float AAutoTurret::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
@@ -101,14 +105,15 @@ float AAutoTurret::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 	const FName HitBoneName = Request.HitResult.BoneName;
 	const FString DamageTagString = Request.DamageTag.ToString();
 
-	if (!bDeployed)
+	if (bWaitingForRoomWaveActivation || !bDeployed)
 	{
 		if (IsTurretDiagnosticsEnabled())
 		{
 			UE_LOG(
 				LogOutlier,
 				Warning,
-				TEXT("[TurretDiag][Damage] Rejected Reason=NotDeployed Turret=%s Authority=%s Damage=%.2f HP=%.2f Component=%s Bone=%s Tag=%s Causer=%s"),
+				TEXT("[TurretDiag][Damage] Rejected Reason=%s Turret=%s Authority=%s Damage=%.2f HP=%.2f Component=%s Bone=%s Tag=%s Causer=%s"),
+				bWaitingForRoomWaveActivation ? TEXT("WaitingForRoomWave") : TEXT("NotDeployed"),
 				*GetNameSafe(this),
 				HasAuthority() ? TEXT("true") : TEXT("false"),
 				Request.DamageAmount,
@@ -209,12 +214,18 @@ FRotator AAutoTurret::GetViewRotation() const
 
 bool AAutoTurret::CanUseEnemyPerception() const
 {
-	return bDeployed && !IsAIControlSuppressed() && GetCurrentHealth() > 0.0f;
+	return !bWaitingForRoomWaveActivation
+		&& bDeployed
+		&& !IsAIControlSuppressed()
+		&& GetCurrentHealth() > 0.0f;
 }
 
 bool AAutoTurret::CanUseRoomTargetSharing() const
 {
-	return bDeployed && !bHackedToPlayerTeam && !IsAIControlSuppressed();
+	return !bWaitingForRoomWaveActivation
+		&& bDeployed
+		&& !bHackedToPlayerTeam
+		&& !IsAIControlSuppressed();
 }
 
 USkeletalMeshComponent* AAutoTurret::GetWeaponMuzzleComponent(bool bFirstPerson) const
@@ -290,6 +301,11 @@ void AAutoTurret::PrepareForStateTreeStart()
 	}
 	ConfigureHeadPivotAttachment();
 	ApplyDeploymentRuntimeState();
+}
+
+bool AAutoTurret::ShouldActivateAsPreplacedEnemy() const
+{
+	return !bWaitingForRoomWaveActivation;
 }
 
 void AAutoTurret::ConfigureHeadPivotAttachment()
@@ -369,9 +385,9 @@ void AAutoTurret::ConfigureTurretHackPolicy()
 
 bool AAutoTurret::BeginTurretDeployment()
 {
-	if (!HasAuthority() || bDeployed)
+	if (!HasAuthority() || bWaitingForRoomWaveActivation || bDeployed)
 	{
-		return bDeployed;
+		return !bWaitingForRoomWaveActivation && bDeployed;
 	}
 	if (bDeploymentStarted)
 	{
@@ -393,6 +409,26 @@ bool AAutoTurret::BeginTurretDeployment()
 			&AAutoTurret::CompleteTurretDeployment, FallbackDuration, false);
 	}
 	ForceNetUpdate();
+	return true;
+}
+
+bool AAutoTurret::PrepareForRoomWaveActivation()
+{
+	// 배치 참조는 Server와 Client의 Level Actor에 모두 존재한다. Client는 BeginPlay 이전
+	// 닫힘 표현만 먼저 맞추고, 런타임 상태 변경과 Subsystem 정리는 Server만 수행한다.
+	if (IsPoolManaged() || (!HasAuthority() && HasActorBegunPlay()))
+	{
+		return false;
+	}
+
+	bWaitingForRoomWaveActivation = true;
+	bDeploymentStarted = false;
+	bDeployed = false;
+	ApplyRoomWaveWaitingState();
+	if (HasAuthority() && HasActorBegunPlay())
+	{
+		ForceNetUpdate();
+	}
 	return true;
 }
 
@@ -436,14 +472,15 @@ void AAutoTurret::CompleteTurretDeployment()
 
 void AAutoTurret::ApplyDeploymentRuntimeState()
 {
-	// Hidden에서도 Hatch는 총알을 막아야 하므로 Actor Collision은 유지하고,
-	// 실제 터렛 몸체와 이동 차단 Collision만 전개 단계에 맞춰 별도로 전환한다.
-	SetActorEnableCollision(true);
+	// 일반 Hidden 터렛은 Hatch 충돌을 유지하지만, 별도 Hatch Actor 아래에서 대기하는 터렛은
+	// Wave가 시작될 때까지 월드의 전투 Collision에서 완전히 제외한다.
+	SetActorEnableCollision(!bWaitingForRoomWaveActivation);
+	SetCanBeDamaged(!bWaitingForRoomWaveActivation);
 	ApplyTurretCollisionState();
 
 	if (HackableComponent)
 	{
-		if (bDeployed)
+		if (!bWaitingForRoomWaveActivation && bDeployed)
 		{
 			HackableComponent->HackTags.RemoveTag(OutlierGameplayTags::State::Locked());
 		}
@@ -459,15 +496,69 @@ void AAutoTurret::ApplyDeploymentRuntimeState()
 	}
 }
 
+void AAutoTurret::ApplyRoomWaveWaitingState()
+{
+	if (!bWaitingForRoomWaveActivation)
+	{
+		ApplyDeploymentRuntimeState();
+		return;
+	}
+
+	GetWorldTimerManager().ClearTimer(DeployFallbackTimerHandle);
+	bDeploymentStarted = false;
+	bDeployed = false;
+	bInCombat = false;
+	CombatState = EEnemyCombatState::NonCombat;
+	bPlayerCurrentlyVisible = false;
+	bHasSharedTargetContact = false;
+	StopMontageOnMesh(GetMesh(), DeployMontage);
+	StopMontageOnMesh(TurretHeadMesh, FireMontage);
+
+	// 해치가 BeginPlay 이후 연결되는 경우에도 이미 시작된 전투 참여 흔적을 한 경로에서 제거한다.
+	if (HasActorBegunPlay())
+	{
+		StopCurrentAttack();
+		RemoveRoomTargetObserver();
+		ClearSharedTargetContact();
+		ReleaseSearchRingSlot();
+		if (StateTreeComponent)
+		{
+			StateTreeComponent->StopLogic(TEXT("Turret waiting for Room Wave activation"));
+		}
+
+		if (HasAuthority())
+		{
+			if (UEnemyAdaptationSubsystem* AdaptationSubsystem = GetEnemyAdaptationSubsystem())
+			{
+				AdaptationSubsystem->UnregisterEnemy(this);
+			}
+			if (URoomCombatSubsystem* CombatSubsystem =
+				GetWorld()->GetSubsystem<URoomCombatSubsystem>())
+			{
+				CombatSubsystem->UnregisterEnemy(this);
+			}
+			if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
+			{
+				RoomSubsystem->UnregisterEnemy(this);
+			}
+		}
+	}
+
+	ApplyDeploymentRuntimeState();
+}
+
 void AAutoTurret::ApplyTurretCollisionState()
 {
 	USkeletalMeshComponent* BodyMesh = GetMesh();
 	if (BodyMesh)
 	{
-		BodyMesh->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+		BodyMesh->SetCollisionEnabled(bWaitingForRoomWaveActivation
+			? ECollisionEnabled::NoCollision
+			: ECollisionEnabled::QueryOnly);
 		BodyMesh->SetCollisionResponseToChannel(ECC_PhysicsBody, ECR_Block);
 
-		const ECollisionEnabled::Type HiddenBodyCollision = bDeploymentStarted || bDeployed
+		const ECollisionEnabled::Type HiddenBodyCollision = !bWaitingForRoomWaveActivation
+			&& (bDeploymentStarted || bDeployed)
 			? ECollisionEnabled::QueryOnly
 			: ECollisionEnabled::NoCollision;
 		for (const FName BoneRoot : HiddenCollisionBoneRoots)
@@ -497,7 +588,8 @@ void AAutoTurret::ApplyTurretCollisionState()
 	{
 		TurretHeadPivot->GetChildrenComponents(true, HeadChildren);
 	}
-	const ECollisionEnabled::Type HeadCollision = bDeploymentStarted || bDeployed
+	const ECollisionEnabled::Type HeadCollision = !bWaitingForRoomWaveActivation
+		&& (bDeploymentStarted || bDeployed)
 		? ECollisionEnabled::QueryOnly
 		: ECollisionEnabled::NoCollision;
 	for (USceneComponent* Child : HeadChildren)
@@ -531,7 +623,9 @@ void AAutoTurret::ApplyTurretCollisionState()
 		// Box는 전개 후 Pawn 이동만 막고, Shooter Hitscan은 Body/Head의 Physics Asset이 받는다.
 		TurretBlockingBox->SetCollisionResponseToChannel(ECC_PhysicsBody, ECR_Ignore);
 		TurretBlockingBox->SetCollisionEnabled(
-			bDeployed ? ECollisionEnabled::QueryAndPhysics : ECollisionEnabled::NoCollision);
+			!bWaitingForRoomWaveActivation && bDeployed
+				? ECollisionEnabled::QueryAndPhysics
+				: ECollisionEnabled::NoCollision);
 	}
 }
 
@@ -561,6 +655,11 @@ void AAutoTurret::OnRep_DeploymentState()
 	{
 		OnTurretDeploymentCompleted();
 	}
+}
+
+void AAutoTurret::OnRep_RoomWaveWaitingState()
+{
+	ApplyRoomWaveWaitingState();
 }
 
 void AAutoTurret::MulticastBeginTurretDeployment_Implementation()
