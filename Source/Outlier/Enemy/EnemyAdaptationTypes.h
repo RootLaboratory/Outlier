@@ -21,8 +21,8 @@ enum class EEnemyFinalKillCategory : uint8
 	Ignore
 };
 
-// 최종 처치 또는 권총 명중이 공용 Stack에 반영된 결과다. 후속 Slice의 방어막 갱신과
-// 내성 파괴 VFX/전투 필드 경직은 이 결과만 받아 같은 판정을 공유한다.
+// 최종 처치 또는 권총 명중이 공용 Stack에 반영된 결과다. 방어막 표현과 전투 필드 효과,
+// 후속 파열 연출은 이 결과를 공유해 같은 Stack 전이를 기준으로 처리한다.
 USTRUCT(BlueprintType)
 struct OUTLIER_API FEnemyAdaptationUpdateResult
 {

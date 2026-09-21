@@ -611,6 +611,46 @@ void AEnemyBase::ApplyAdaptationState(EEnemyAdaptationState NewState)
 	ForceNetUpdate();
 }
 
+FEnemyAdaptationBreakApplicationResult AEnemyBase::ApplyAdaptationBreakEffects(
+	float DamageAmount,
+	float StunDurationSeconds,
+	UObject* EffectSource)
+{
+	FEnemyAdaptationBreakApplicationResult Result;
+	if (!HasAuthority() || IsDead() || !OutlierAbilitySystemComponent)
+	{
+		return Result;
+	}
+
+	if (DamageAmount > 0.0f)
+	{
+		const float HealthBeforeDamage = GetCurrentHealth();
+		FOutlierDamageRequest DamageRequest;
+		DamageRequest.DamageAmount = DamageAmount;
+		DamageRequest.DamageTag = OutlierGameplayTags::Damage::AdaptationBreak();
+		DamageRequest.AdaptationDamageCategory = EOutlierAdaptationDamageCategory::Ignore;
+		Result.AppliedDamage = ReceiveOutlierDamage(DamageRequest);
+		// 필드 일괄 적용 중에는 GAS의 Health 변경 통지가 이 함수 반환 뒤 확정될 수 있다.
+		// 피해 전 체력과 실제 적용량으로 치명을 판정해 기존 사망 정리 경로를 보장한다.
+		const bool bLethalDamage = Result.AppliedDamage > 0.0f
+			&& Result.AppliedDamage >= HealthBeforeDamage;
+		if (bLethalDamage && !IsDead())
+		{
+			Die();
+		}
+		Result.bKilled = bLethalDamage || IsDead();
+	}
+
+	if (!Result.bKilled && StunDurationSeconds > 0.0f)
+	{
+		Result.bStunApplied = OutlierAbilitySystemComponent
+			->ApplyStunStateToSelf(StunDurationSeconds, EffectSource)
+			.IsValid();
+	}
+
+	return Result;
+}
+
 void AEnemyBase::OnRep_AdaptationState(EEnemyAdaptationState PreviousState)
 {
 	OnAdaptationStateChanged(PreviousState, AdaptationState);
@@ -1573,25 +1613,32 @@ float AEnemyBase::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 		return 0.0f;
 	}
 
-	float DamageMultiplier = 1.0f;
+	float HitMultiplier = 1.0f;
+	float AdaptationMultiplier = 1.0f;
+	int32 AdaptationStackBeforeDamage = 0;
 	bool bCoreWeakPointHit = false;
 	if (Request.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Weapon()))
 	{
 		const UPrimitiveComponent* HitComponent = Request.HitResult.GetComponent();
 		bCoreWeakPointHit = bUseCoreWeakPoint && HitComponent == CoreHitboxComponent;
-		DamageMultiplier = GetWeakPointDamageMultiplier(HitComponent);
+		HitMultiplier = GetWeakPointDamageMultiplier(HitComponent);
 	}
-	if (Request.AdaptationDamageCategory == EOutlierAdaptationDamageCategory::Gun
-		&& HasEnemyTrait(OutlierGameplayTags::Enemy::Adaptation::Target()))
+	const bool bAdaptationGunDamage =
+		Request.AdaptationDamageCategory == EOutlierAdaptationDamageCategory::Gun
+		&& HasEnemyTrait(OutlierGameplayTags::Enemy::Adaptation::Target());
+	if (bAdaptationGunDamage)
 	{
 		if (const UEnemyAdaptationSubsystem* AdaptationSubsystem =
 			GetEnemyAdaptationSubsystem())
 		{
-			DamageMultiplier *= AdaptationSubsystem->GetCurrentGunDamageMultiplier();
+			AdaptationStackBeforeDamage =
+				AdaptationSubsystem->GetCurrentGunAdaptationStack();
+			AdaptationMultiplier = AdaptationSubsystem->GetCurrentGunDamageMultiplier();
 		}
 	}
 
 	const float PreviousHealth = GetCurrentHealth();
+	const float DamageMultiplier = HitMultiplier * AdaptationMultiplier;
 	const float FinalDamage = Request.DamageAmount * FMath::Max(DamageMultiplier, 0.0f);
 	const EOutlierAdaptationDamageCategory PreviousDamageCategory =
 		LastAcceptedAdaptationDamageCategory;
@@ -1608,6 +1655,22 @@ float AEnemyBase::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 		LastAcceptedAdaptationDamageCategory = PreviousDamageCategory;
 	}
 	const float AppliedDamage = bDamageApplied ? FinalDamage : 0.0f;
+	if (bAdaptationGunDamage)
+	{
+		UE_LOG(
+			LogOutlier,
+			Display,
+			TEXT("[EnemyAdaptation] Gun damage applied Enemy=%s Stack=%d RawDamage=%.2f HitMultiplier=%.3f AdaptationMultiplier=%.3f FinalDamage=%.2f Applied=%s HP=%.2f->%.2f"),
+			*GetNameSafe(this),
+			AdaptationStackBeforeDamage,
+			Request.DamageAmount,
+			HitMultiplier,
+			AdaptationMultiplier,
+			FinalDamage,
+			bDamageApplied ? TEXT("true") : TEXT("false"),
+			PreviousHealth,
+			GetCurrentHealth());
+	}
 
 	if (AppliedDamage > 0.0f
 		&& !IsDead()

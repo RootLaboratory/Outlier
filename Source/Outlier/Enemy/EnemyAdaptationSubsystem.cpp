@@ -8,6 +8,7 @@
 #include "Outlier.h"
 #include "OutlierArenaSettings.h"
 #include "Subsystems/SubsystemCollection.h"
+#include "Team/OutlierTeamIds.h"
 
 void UEnemyAdaptationSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -108,13 +109,15 @@ bool UEnemyAdaptationSubsystem::RegisterEnemy(AEnemyBase* Enemy)
 	UE_LOG(
 		LogOutlier,
 		Display,
-		TEXT("[EnemyAdaptation] Registered Enemy=%s Target=%s Generation=%d Lease=%d State=%s ActiveCount=%d"),
+		TEXT("[EnemyAdaptation] Registered Enemy=%s Target=%s PoolManaged=%s Generation=%d Lease=%d Stack=%d State=%s ActiveCount=%d"),
 		*GetNameSafe(Enemy),
 		Enemy->HasEnemyTrait(OutlierGameplayTags::Enemy::Adaptation::Target())
 			? TEXT("true")
 			: TEXT("false"),
+		Enemy->IsPoolManaged() ? TEXT("true") : TEXT("false"),
 		Registration.GameplayGeneration,
 		Registration.PoolLeaseSerial,
+		CurrentGunAdaptationStack,
 		*UEnum::GetValueAsString(Enemy->GetAdaptationState()),
 		ActiveEnemies.Num());
 	return true;
@@ -327,6 +330,10 @@ void UEnemyAdaptationSubsystem::FinalizeAdaptationUpdate(
 	// Enemy 표현 상태를 먼저 확정해야 이 갱신을 구독하는 후속 파열 처리도
 	// 이미 갱신된 공용 단계와 같은 결과를 관찰한다.
 	SynchronizeActiveEnemyStates();
+	if (OutResult.bAdaptationBroken)
+	{
+		ApplyAdaptationBreakToCombatField(OutResult);
+	}
 	UE_LOG(
 		LogOutlier,
 		Display,
@@ -339,6 +346,122 @@ void UEnemyAdaptationSubsystem::FinalizeAdaptationUpdate(
 		OutResult.bAdaptationBroken ? TEXT("true") : TEXT("false"),
 		GetRegisteredEnemyCount());
 	OnAdaptationUpdated.Broadcast(OutResult);
+}
+
+void UEnemyAdaptationSubsystem::ApplyAdaptationBreakToCombatField(
+	const FEnemyAdaptationUpdateResult& Result)
+{
+	TArray<TWeakObjectPtr<AEnemyBase>> Targets;
+	CollectAdaptationBreakTargets(Targets);
+
+	int32 AppliedCount = 0;
+	int32 DamagedCount = 0;
+	int32 StunnedCount = 0;
+	int32 KilledCount = 0;
+	for (const TWeakObjectPtr<AEnemyBase>& TargetPtr : Targets)
+	{
+		AEnemyBase* Target = TargetPtr.Get();
+		if (!IsValid(Target) || Target->IsDead())
+		{
+			continue;
+		}
+
+		// 파괴 피해로 사망하면 Enemy가 즉시 등록 목록에서 빠질 수 있다. 위에서 복사한
+		// 약한 참조만 순회하므로 다음 대상은 등록부 변경과 무관하게 안전하게 처리된다.
+		const FEnemyAdaptationBreakApplicationResult Application =
+			Target->ApplyAdaptationBreakEffects(
+				Result.BreakDamage,
+				Result.BreakStunSeconds,
+				this);
+		++AppliedCount;
+		DamagedCount += Application.AppliedDamage > 0.0f ? 1 : 0;
+		StunnedCount += Application.bStunApplied ? 1 : 0;
+		KilledCount += Application.bKilled ? 1 : 0;
+
+		UE_LOG(
+			LogOutlier,
+			Display,
+			TEXT("[EnemyAdaptation] Break target applied Enemy=%s Damage=%.2f Stun=%.2f Killed=%s"),
+			*GetNameSafe(Target),
+			Application.AppliedDamage,
+			Application.bStunApplied ? Result.BreakStunSeconds : 0.0f,
+			Application.bKilled ? TEXT("true") : TEXT("false"));
+	}
+
+	UE_LOG(
+		LogOutlier,
+		Display,
+		TEXT("[EnemyAdaptation] Break field applied PreviousStack=%d Targets=%d Applied=%d Damaged=%d Stunned=%d Killed=%d Damage=%.2f Stun=%.2f"),
+		Result.PreviousStack,
+		Targets.Num(),
+		AppliedCount,
+		DamagedCount,
+		StunnedCount,
+		KilledCount,
+		Result.BreakDamage,
+		Result.BreakStunSeconds);
+}
+
+void UEnemyAdaptationSubsystem::CollectAdaptationBreakTargets(
+	TArray<TWeakObjectPtr<AEnemyBase>>& OutTargets) const
+{
+	OutTargets.Reset();
+	OutTargets.Reserve(ActiveEnemies.Num());
+	for (const TPair<TWeakObjectPtr<AEnemyBase>, FEnemyRegistration>& Entry : ActiveEnemies)
+	{
+		AEnemyBase* Enemy = Entry.Key.Get();
+		if (const TCHAR* ExclusionReason =
+			ResolveAdaptationBreakExclusionReason(Enemy, Entry.Value))
+		{
+			UE_LOG(
+				LogOutlier,
+				Display,
+				TEXT("[EnemyAdaptation] Break target excluded Enemy=%s Reason=%s InCombat=%s Possessed=%s Team=%d Generation=%d Lease=%d"),
+				*GetNameSafe(Enemy),
+				ExclusionReason,
+				Enemy && Enemy->IsInCombat() ? TEXT("true") : TEXT("false"),
+				Enemy && Enemy->IsEnemyPossessed() ? TEXT("true") : TEXT("false"),
+				Enemy ? Enemy->GetGenericTeamId().GetId() : INDEX_NONE,
+				Entry.Value.GameplayGeneration,
+				Entry.Value.PoolLeaseSerial);
+		}
+		else
+		{
+			OutTargets.Add(Entry.Key);
+		}
+	}
+}
+
+const TCHAR* UEnemyAdaptationSubsystem::ResolveAdaptationBreakExclusionReason(
+	const AEnemyBase* Enemy,
+	const FEnemyRegistration& Registration) const
+{
+	if (!IsValid(Enemy))
+	{
+		return TEXT("Invalid");
+	}
+	if (Enemy->IsDead())
+	{
+		return TEXT("Dead");
+	}
+	if (!Enemy->IsInCombat())
+	{
+		return TEXT("NonCombat");
+	}
+	if (Enemy->GetGenericTeamId().GetId() != OutlierTeamIds::Enemy)
+	{
+		return TEXT("PlayerTeam");
+	}
+	if (!IsCurrentRegistration(
+		Enemy,
+		Registration,
+		Registration.GameplayGeneration,
+		Registration.PoolLeaseSerial))
+	{
+		return TEXT("StaleRegistration");
+	}
+
+	return nullptr;
 }
 
 void UEnemyAdaptationSubsystem::SynchronizeActiveEnemyStates()
@@ -474,15 +597,32 @@ void UEnemyAdaptationSubsystem::HandleArenaShown()
 			ActiveGameplayGeneration = ArenaSubsystem->GetGameplayGeneration();
 		}
 		bAcceptingRegistrations = true;
+		UE_LOG(
+			LogOutlier,
+			Display,
+			TEXT("[EnemyAdaptation] Arena lifecycle Event=Shown Generation=%u Stack=%d State=%s Registrations=%d Accepting=true"),
+			ActiveGameplayGeneration,
+			CurrentGunAdaptationStack,
+			*UEnum::GetValueAsString(CurrentAdaptationState),
+			GetRegisteredEnemyCount());
 	}
 }
 
 void UEnemyAdaptationSubsystem::HandleArenaGameplayReloadStarted(uint32 GameplayGeneration)
 {
 	// 새 Data Layer의 BeginPlay가 오기 전까지 문을 닫아 이전 Generation의 지연 이벤트를 버린다.
+	const int32 ClearedRegistrationCount = GetRegisteredEnemyCount();
 	bAcceptingRegistrations = false;
 	ActiveGameplayGeneration = GameplayGeneration;
 	ResetActiveEnemies();
+	UE_LOG(
+		LogOutlier,
+		Display,
+		TEXT("[EnemyAdaptation] Arena lifecycle Event=ReloadStarted Generation=%u Stack=%d State=%s ClearedRegistrations=%d Accepting=false"),
+		ActiveGameplayGeneration,
+		CurrentGunAdaptationStack,
+		*UEnum::GetValueAsString(CurrentAdaptationState),
+		ClearedRegistrationCount);
 }
 
 void UEnemyAdaptationSubsystem::HandleArenaGameplayGCReady(uint32 GameplayGeneration)
@@ -490,6 +630,14 @@ void UEnemyAdaptationSubsystem::HandleArenaGameplayGCReady(uint32 GameplayGenera
 	// 이전 세대 Actor EndPlay와 GC가 검증된 뒤 새 Data Layer Actor의 BeginPlay 등록을 허용한다.
 	ActiveGameplayGeneration = GameplayGeneration;
 	bAcceptingRegistrations = true;
+	UE_LOG(
+		LogOutlier,
+		Display,
+		TEXT("[EnemyAdaptation] Arena lifecycle Event=GCReady Generation=%u Stack=%d State=%s Registrations=%d Accepting=true"),
+		ActiveGameplayGeneration,
+		CurrentGunAdaptationStack,
+		*UEnum::GetValueAsString(CurrentAdaptationState),
+		GetRegisteredEnemyCount());
 }
 
 void UEnemyAdaptationSubsystem::HandleArenaGameplayReady(uint32 GameplayGeneration)
@@ -497,15 +645,32 @@ void UEnemyAdaptationSubsystem::HandleArenaGameplayReady(uint32 GameplayGenerati
 	ActiveGameplayGeneration = GameplayGeneration;
 	LoadConfiguredDefinition();
 	bAcceptingRegistrations = true;
+	UE_LOG(
+		LogOutlier,
+		Display,
+		TEXT("[EnemyAdaptation] Arena lifecycle Event=GameplayReady Generation=%u Stack=%d State=%s Registrations=%d Accepting=true"),
+		ActiveGameplayGeneration,
+		CurrentGunAdaptationStack,
+		*UEnum::GetValueAsString(CurrentAdaptationState),
+		GetRegisteredEnemyCount());
 }
 
 void UEnemyAdaptationSubsystem::HandleArenaReleased()
 {
+	const int32 PreviousStack = CurrentGunAdaptationStack;
+	const int32 ClearedRegistrationCount = GetRegisteredEnemyCount();
 	bAcceptingRegistrations = false;
 	ActiveGameplayGeneration = 0;
 	ResetActiveEnemies();
 	ResetAdaptationState();
 	ActiveDefinition = nullptr;
+	UE_LOG(
+		LogOutlier,
+		Display,
+		TEXT("[EnemyAdaptation] Arena lifecycle Event=Released Generation=0 PreviousStack=%d Stack=0 State=%s ClearedRegistrations=%d Accepting=false"),
+		PreviousStack,
+		*UEnum::GetValueAsString(CurrentAdaptationState),
+		ClearedRegistrationCount);
 }
 
 #if WITH_DEV_AUTOMATION_TESTS

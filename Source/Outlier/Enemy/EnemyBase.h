@@ -43,6 +43,13 @@ enum class EEnemyCombatState : uint8
 	Stun
 };
 
+struct OUTLIER_API FEnemyAdaptationBreakApplicationResult
+{
+	float AppliedDamage = 0.0f;
+	bool bStunApplied = false;
+	bool bKilled = false;
+};
+
 UENUM(BlueprintType)
 enum class EEnemyNonCombatBehavior : uint8
 {
@@ -334,6 +341,13 @@ public:
 	// 중앙 내성 시스템이 계산한 현재 단계를 Enemy의 복제 표현 상태로 투영한다.
 	// Stack의 원본은 Subsystem만 소유하며 Enemy는 방어막 표현에 필요한 단계만 보관한다.
 	void ApplyAdaptationState(EEnemyAdaptationState NewState);
+
+	// 내성 파괴의 추가 피해는 다시 Stack을 변경하지 않는 Ignore 피해로 처리하고,
+	// 피해 이후에도 생존한 Enemy에게만 기존 GAS 경직 상태를 적용한다.
+	FEnemyAdaptationBreakApplicationResult ApplyAdaptationBreakEffects(
+		float DamageAmount,
+		float StunDurationSeconds,
+		UObject* EffectSource);
 
 #if WITH_DEV_AUTOMATION_TESTS
 	void RemoveEnemyTraitForTesting(FGameplayTag TraitTag) { EnemyTraits.RemoveTag(TraitTag); }

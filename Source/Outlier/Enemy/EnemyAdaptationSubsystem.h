@@ -83,6 +83,13 @@ private:
 		FEnemyRegistration*& OutRegistration);
 	void ApplyAdaptationBreak(FEnemyAdaptationUpdateResult& OutResult);
 	void FinalizeAdaptationUpdate(FEnemyAdaptationUpdateResult& OutResult);
+	void ApplyAdaptationBreakToCombatField(
+		const FEnemyAdaptationUpdateResult& Result);
+	void CollectAdaptationBreakTargets(
+		TArray<TWeakObjectPtr<AEnemyBase>>& OutTargets) const;
+	const TCHAR* ResolveAdaptationBreakExclusionReason(
+		const AEnemyBase* Enemy,
+		const FEnemyRegistration& Registration) const;
 	void SynchronizeActiveEnemyStates();
 	void SynchronizeEnemyState(
 		AEnemyBase* Enemy,

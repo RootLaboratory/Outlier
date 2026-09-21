@@ -70,6 +70,13 @@ namespace OutlierGameplayTags
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Damage.Explosion")));
 			return Tag;
 		}
+
+		inline FGameplayTag AdaptationBreak()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(
+				FName(TEXT("Damage.AdaptationBreak")));
+			return Tag;
+		}
 	}
 
 	namespace Actor

@@ -295,6 +295,190 @@ bool FEnemyAdaptationDefinitionValidationTest::RunTest(const FString& Parameters
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FEnemyAdaptationBreakFieldTest,
+	"Outlier.Enemy.Adaptation.BreakField",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyAdaptationBreakFieldTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	const FName WorldName = MakeUniqueObjectName(
+		nullptr,
+		UWorld::StaticClass(),
+		NAME_None,
+		EUniqueObjectNameOptions::GloballyUnique);
+	FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, WorldName, GetTransientPackage());
+	if (!TestNotNull(TEXT("Enemy adaptation break world is created"), World))
+	{
+		GEngine->DestroyWorldContext(World);
+		return false;
+	}
+
+	World->AddToRoot();
+	WorldContext.SetCurrentWorld(World);
+	World->SetGameInstance(NewObject<UGameInstance>(GEngine));
+	TestTrue(TEXT("Enemy adaptation break world creates an authority game mode"),
+		World->SetGameMode(FURL()));
+	World->InitializeActorsForPlay(FURL());
+	auto CleanupWorld = [World]()
+	{
+		GEngine->ShutdownWorldNetDriver(World);
+		World->DestroyWorld(true);
+		World->SetPhysicsScene(nullptr);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+	};
+
+	UEnemyAdaptationSubsystem* Adaptation = World->GetSubsystem<UEnemyAdaptationSubsystem>();
+	if (!TestNotNull(TEXT("Enemy adaptation subsystem is created"), Adaptation))
+	{
+		CleanupWorld();
+		return false;
+	}
+
+	Adaptation->OnWorldBeginPlay(*World);
+	UEnemyAdaptationDefinition* Definition = NewObject<UEnemyAdaptationDefinition>(World);
+	Definition->ShieldBreakDamage = 12.0f;
+	Adaptation->SetDefinitionForTesting(Definition);
+	const FGameplayTag TargetTag = OutlierGameplayTags::Enemy::Adaptation::Target();
+	auto SpawnEnemy = [World, Adaptation, TargetTag](
+		bool bAdaptationTarget,
+		bool bEnterCombat,
+		bool bPossessed)
+	{
+		FActorSpawnParameters SpawnParameters;
+		SpawnParameters.SpawnCollisionHandlingOverride =
+			ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		AEnemyBase* Enemy = World->SpawnActor<AEnemyBase>(
+			AEnemyBase::StaticClass(),
+			FTransform::Identity,
+			SpawnParameters);
+		if (!Enemy)
+		{
+			return Enemy;
+		}
+
+		if (!bAdaptationTarget)
+		{
+			Enemy->RemoveEnemyTraitForTesting(TargetTag);
+		}
+		Enemy->GetOutlierAbilitySystemComponent()->InitializeVitalityToSelf(100.0f);
+		if (bEnterCombat)
+		{
+			Enemy->EnterCombat(FVector::ZeroVector);
+		}
+		if (bPossessed)
+		{
+			Enemy->SetEnemyPossessed(true);
+		}
+		Adaptation->RegisterEnemy(Enemy);
+		return Enemy;
+	};
+	auto HasStun = [](const AEnemyBase* Enemy)
+	{
+		return Enemy
+			&& Enemy->GetOutlierAbilitySystemComponent()->HasMatchingGameplayTag(
+				OutlierGameplayTags::State::Stunned());
+	};
+	auto ReportNonGunBreak = [Adaptation](
+		AEnemyBase* SourceEnemy,
+		FEnemyAdaptationUpdateResult& OutResult)
+	{
+		return Adaptation->ReportEnemyDefeat(
+			SourceEnemy,
+			0,
+			0,
+			EEnemyFinalKillCategory::NonGun,
+			OutResult);
+	};
+
+	AEnemyBase* BreakSource = SpawnEnemy(true, false, false);
+	AEnemyBase* AdaptationCombatEnemy = SpawnEnemy(true, true, false);
+	AEnemyBase* GeneralCombatEnemy = SpawnEnemy(false, true, false);
+	AEnemyBase* NonCombatEnemy = SpawnEnemy(true, false, false);
+	AEnemyBase* PossessedCombatEnemy = SpawnEnemy(true, true, true);
+	if (!TestNotNull(TEXT("Break source is spawned"), BreakSource)
+		|| !TestNotNull(TEXT("Adaptation combat target is spawned"), AdaptationCombatEnemy)
+		|| !TestNotNull(TEXT("General combat target is spawned"), GeneralCombatEnemy)
+		|| !TestNotNull(TEXT("Non-combat target is spawned"), NonCombatEnemy)
+		|| !TestNotNull(TEXT("Possessed combat target is spawned"), PossessedCombatEnemy))
+	{
+		CleanupWorld();
+		return false;
+	}
+
+	FEnemyAdaptationUpdateResult Result;
+	TestTrue(TEXT("Stack enters resistance for field break"),
+		Adaptation->SetGunAdaptationStack(8));
+	TestTrue(TEXT("NonGun defeat triggers the field break"),
+		ReportNonGunBreak(BreakSource, Result));
+	TestTrue(TEXT("Field break is reported"), Result.bAdaptationBroken);
+	TestEqual(TEXT("Field break resets the shared stack"), Result.CurrentStack, 0);
+	TestEqual(TEXT("Combat adaptation target receives break damage"),
+		AdaptationCombatEnemy->GetCurrentHealth(), 88.0f);
+	TestTrue(TEXT("Combat adaptation target receives break stun"),
+		HasStun(AdaptationCombatEnemy));
+	TestEqual(TEXT("Combat target without adaptation trait receives break damage"),
+		GeneralCombatEnemy->GetCurrentHealth(), 88.0f);
+	TestTrue(TEXT("Combat target without adaptation trait receives break stun"),
+		HasStun(GeneralCombatEnemy));
+	TestEqual(TEXT("Non-combat target is excluded from break damage"),
+		NonCombatEnemy->GetCurrentHealth(), 100.0f);
+	TestFalse(TEXT("Non-combat target is excluded from break stun"),
+		HasStun(NonCombatEnemy));
+	TestEqual(TEXT("Player-team possessed target is excluded from break damage"),
+		PossessedCombatEnemy->GetCurrentHealth(), 100.0f);
+	TestFalse(TEXT("Player-team possessed target is excluded from break stun"),
+		HasStun(PossessedCombatEnemy));
+
+	Adaptation->ResetActiveEnemies();
+	Definition->ShieldBreakDamage = 0.0f;
+	AEnemyBase* ZeroDamageSource = SpawnEnemy(true, false, false);
+	AEnemyBase* ZeroDamageTarget = SpawnEnemy(true, true, false);
+	if (!TestNotNull(TEXT("Zero-damage break source is spawned"), ZeroDamageSource)
+		|| !TestNotNull(TEXT("Zero-damage break target is spawned"), ZeroDamageTarget))
+	{
+		CleanupWorld();
+		return false;
+	}
+	TestTrue(TEXT("Stack enters level 2 resistance for zero-damage break"),
+		Adaptation->SetGunAdaptationStack(9));
+	TestTrue(TEXT("Zero-damage field break is accepted"),
+		ReportNonGunBreak(ZeroDamageSource, Result));
+	TestEqual(TEXT("Zero-damage break preserves target health"),
+		ZeroDamageTarget->GetCurrentHealth(), 100.0f);
+	TestTrue(TEXT("Zero-damage break still applies stun"), HasStun(ZeroDamageTarget));
+
+	Adaptation->ResetActiveEnemies();
+	AEnemyBase* LethalBreakSource = SpawnEnemy(true, false, false);
+	AEnemyBase* LethalBreakTarget = SpawnEnemy(true, true, false);
+	if (!TestNotNull(TEXT("Lethal break source is spawned"), LethalBreakSource)
+		|| !TestNotNull(TEXT("Lethal break target is spawned"), LethalBreakTarget))
+	{
+		CleanupWorld();
+		return false;
+	}
+	// Enemy의 최종 체력은 스폰 시 Stat Row 초기화 결과를 따른다. 고정 피해량 대신
+	// 현재 체력을 사용해 이 구간이 항상 파열 피해의 사망 경로를 검증하도록 한다.
+	Definition->ShieldBreakDamage = LethalBreakTarget->GetCurrentHealth();
+	TestTrue(TEXT("Stack enters max resistance for lethal field break"),
+		Adaptation->SetGunAdaptationStack(10));
+	TestTrue(TEXT("Lethal field break is accepted"),
+		ReportNonGunBreak(LethalBreakSource, Result));
+	TestEqual(TEXT("Lethal break damage cannot change the reset stack"),
+		Adaptation->GetCurrentGunAdaptationStack(), 0);
+	TestEqual(TEXT("Lethal break damage clamps target health to zero"),
+		LethalBreakTarget->GetCurrentHealth(), 0.0f);
+	TestTrue(TEXT("Lethal break target enters death"),
+		!IsValid(LethalBreakTarget) || LethalBreakTarget->IsDead());
+
+	CleanupWorld();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FEnemyAdaptationStackStateTest,
 	"Outlier.Enemy.Adaptation.StackState",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

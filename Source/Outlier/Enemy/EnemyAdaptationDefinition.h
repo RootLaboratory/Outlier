@@ -70,20 +70,20 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Enemy Adaptation|Damage", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float ResistanceMaxGunDamageMultiplier = 0.5f;
 
-	// 내성 1단계를 Non-Gun 처치로 파괴했을 때 현재 전투 중 Enemy에게 적용하는 경직 시간.
+	// 내성 1단계를 Non-Gun 처치 또는 권총 명중으로 파괴했을 때 현재 전투 중 Enemy에게 적용하는 경직 시간.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Enemy Adaptation|Break", meta = (ClampMin = "0.0", UIMin = "0.0"))
 	float ResistanceLevel1BreakStunSeconds = 0.5f;
 
-	// 내성 2단계를 Non-Gun 처치로 파괴했을 때 현재 전투 중 Enemy에게 적용하는 경직 시간.
+	// 내성 2단계를 Non-Gun 처치 또는 권총 명중으로 파괴했을 때 현재 전투 중 Enemy에게 적용하는 경직 시간.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Enemy Adaptation|Break", meta = (ClampMin = "0.0", UIMin = "0.0"))
 	float ResistanceLevel2BreakStunSeconds = 0.75f;
 
-	// 내성 MAX 단계를 Non-Gun 처치로 파괴했을 때 현재 전투 중 Enemy에게 적용하는 경직 시간.
+	// 내성 MAX 단계를 Non-Gun 처치 또는 권총 명중으로 파괴했을 때 현재 전투 중 Enemy에게 적용하는 경직 시간.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Enemy Adaptation|Break", meta = (ClampMin = "0.0", UIMin = "0.0"))
 	float ResistanceMaxBreakStunSeconds = 1.0f;
 
 	// 내성 파괴 시 현재 전투 필드의 경직 대상 전체에 적용할 추가 피해다.
-	// 실제 광역 적용은 파괴 결과를 소비하는 후속 처리에서 담당하며 0이면 피해를 생략한다.
+	// 0이면 추가 피해 없이 경직만 적용하며 이 피해로 발생한 처치는 Stack 계산에서 제외한다.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Enemy Adaptation|Break", meta = (ClampMin = "0.0", UIMin = "0.0"))
 	float ShieldBreakDamage = 0.0f;
 
