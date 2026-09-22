@@ -9,6 +9,7 @@
 class UMaterialInstanceDynamic;
 class UMaterialInterface;
 class UProgressBar;
+class UTextBlock;
 
 /**
  * 
@@ -29,9 +30,13 @@ public:
 	UFUNCTION(BlueprintNativeEvent, Category = "UI")
 	void PartnerShieldChanged(float InPartnerShieldRatio);
 
+	void SetHealthState(float InHealth, float InMaxHealth);
+	void SetShieldState(float InShield, float InMaxShield);
+
 private:
 	void InitializeProgressBarMaterial(const TCHAR* DebugName, UProgressBar* ProgressBar, const FColor& BarColor, TObjectPtr<UMaterialInstanceDynamic>& OutMID);
 	void SetProgressBarRatio(UProgressBar* ProgressBar, float InRatio);
+	void SetValueText(UTextBlock* TextBlock, float InValue);
 
 public:
 	UPROPERTY(BlueprintReadWrite, Category = "Data")
@@ -42,6 +47,12 @@ public:
 
 	UPROPERTY(BlueprintReadWrite, Category = "Data")
 	float CurrentPartnerShieldRatio = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Data")
+	float CurrentHPValue = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Data")
+	float CurrentShieldValue = 0.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UIMaterial")
 	TObjectPtr<UMaterialInterface> ProgressBarFillMaterial;
@@ -72,5 +83,11 @@ public:
 
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UProgressBar> PartnerShieldBar;
+
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Data")
+	TObjectPtr<UTextBlock> HPText;
+
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Data")
+	TObjectPtr<UTextBlock> ShieldText;
 
 };

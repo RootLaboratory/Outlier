@@ -12,6 +12,7 @@
 
 class UEventDrivenUI;
 class UUserWidget;
+class AActor;
 enum class EWidgetWeaponType : uint8;
 
 
@@ -33,9 +34,11 @@ public:
 	//Replicated
 	void OnRep_HUDActivate(bool bShouldActivate); //Whole Widgets Activation Toggle
 	void OnRep_HealthChanged(float InHealth, float MaxHealth);
+	void OnRep_PartnerHealthChanged(float InHealth, float MaxHealth);
 	void OnRep_PartnerShieldChanged(float InHealth, float MaxHealth);
 	void OnRep_ShieldChanged( float InCurShield ,  float InMaxShield);
-	void OnRep_AmmoCountChanged(int32 InAmmoCount);
+	void OnRep_AmmoCountChanged(int32 InCurrentAmmo, int32 InMaxAmmo);
+	void OnDamageFeedback(AActor* DamagedCharacter, const FVector& DamageOrigin);
 
 	// Shooter 의 슈트 획득 상태가 바뀌었을 때 로컬 화면에 반영한다.
 	// 지금은 Partner 의 거리 위젯만 이 신호를 쓴다.
@@ -43,7 +46,7 @@ public:
 
 	// 뒤늦게 등록된 모듈에 현재 상태를 물려준다.
 	// 값 푸시는 "그 순간 등록돼 있던" 모듈에만 닿으므로, 나중에 붙는 멤버 위젯은
-	// BP 기본값 그대로 남는다 (AmmoUI::Temp_AmmoCount 가 40 으로 시작하는 게 그 경우).
+	// Ammo WBP 기본값 그대로 남는다.
 	void SyncRegisteredModule(UEventDrivenUI* InModule);
 	void OnRep_ShooterConditionRefresh();
 public:
@@ -77,6 +80,7 @@ private:
 
 	// 모듈이 아직 없을 때 들어온 값도 기억해둔다. SyncRegisteredModule 이 이걸 재생한다.
 	int32 CachedAmmoCount = 0;
+	int32 CachedMaxAmmo = 0;
 
 	// 슈트 획득 신호는 MainUI 가 생기기 전에 도착할 수 있다(OnRep 은 값이 바뀌는 순간 한 번뿐).
 	// 마지막 상태를 들고 있다가 RegisterMainUI 에서 새 위젯에 그대로 물려준다.

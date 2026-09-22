@@ -64,6 +64,10 @@ public:
 	UFUNCTION(Client, Unreliable)
 	void ClientPlayResolvedAudio(const FOutlierResolvedAudioPlay& ResolvedPlay);
 
+	/** Stops a server-started persistent audio instance on this client. */
+	UFUNCTION(Client, Unreliable)
+	void ClientStopResolvedAudio(int32 AudioInstanceId);
+
 	UFUNCTION(Client, Reliable)
 	void ClientArenaLoad(int32 ArenaId, FVector InSpawnLocation);
 

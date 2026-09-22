@@ -7,6 +7,8 @@
 #include "DistanceSlideUI.generated.h"
 
 class UImage;
+class UCanvasPanel;
+class UCanvasPanelSlot;
 class UMaterialInterface;
 class UMaterialInstanceDynamic;
 class UProgressBar;
@@ -29,6 +31,7 @@ private:
 	void UpdateSlideRatioImagePosition();
 	void UpdateLimitOverMaterial(bool bLimitOver);
 	void CacheSlideRatioImageBasePosition();
+	UCanvasPanelSlot* ResolveSlideRatioCanvasSlot() const;
 
 public:
 	UPROPERTY(BlueprintReadOnly, Category = "Data")
@@ -54,6 +57,10 @@ public:
 
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UProgressBar> SlideBarProgressBar;
+
+	/** Common coordinate space containing the progress bar and the image wrapper SizeBox. */
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UCanvasPanel> SlideCanvasPanel;
 
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UImage> SlideRatioImage;

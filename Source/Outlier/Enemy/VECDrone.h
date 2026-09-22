@@ -57,6 +57,9 @@ protected:
 	virtual void ApplyMovementFromRuntimeStat() override;
 	virtual void ApplyExplosionReactionPresentation(const FVector& Direction, float ReactionScale) override;
 
+	// 베이스는 GetMesh() 만 감춘다. 드론은 1인칭 메시도 같이 감춰야 한다.
+	virtual void HideSourceMeshes() override;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|Movement")
 	TObjectPtr<UVECDroneMovementComponent> VECMovementComponent;
 

@@ -14,6 +14,7 @@ class UAmmoUI;
 class UCrossHairBase;
 class UShooterCurrentAbilityIcon;
 class UShooterCurrentWeaponIcon;
+class UDamageFeedBackWidget;
 
 UENUM(BlueprintType)
 enum class EWidgetWeaponType : uint8
@@ -35,9 +36,6 @@ public:
 	//그 Construct 키워드 함수 사용 
 	virtual void ModuleInit() override;
 	virtual void ModuleDestruct() override;
-
-	virtual void ModuleActivate() override;
-	virtual void ModuleDeActivate() override;
 
 public:
 
@@ -68,6 +66,9 @@ public:
 
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UShooterCurrentWeaponIcon> CurrentWeaponUI;
+
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UDamageFeedBackWidget> DamageFeedbackUI;
 
 private:
 	TObjectPtr<UCrossHairBase> CurrentCrossHairUI;

@@ -38,6 +38,7 @@ public:
 	bool TryGetHoveredAbility(FGameplayTag& OutAbilityTag, bool bBroadcastSelection = true);
 	bool ApplyCooldownIfMatches(const FGameplayTag& AbilityTag, float CoolTime);
 	void ResetCooldowns();
+	void BeginRelativeSelection();
 	void TryHovering();
 	UAbilityIconUI* GetAbilityIcon(const FGameplayTag& AbilityTag) const;
 
@@ -73,7 +74,7 @@ public:
 	FOnShooterAbilitySelected OnAbilitySelected;
 	
 private:
-	bool TryCalculateCoordinate(float& OutAngleDeg) const;
+	bool TryCalculateCoordinate(float& OutAngleDeg);
 	void RegisterAbilityIcon(UAbilityIconUI* Icon, const FGameplayTag& AbilityTag, bool bUnlock = false);
 	FGameplayTag GetAbilityTagByAngle(float AngleDeg) const;
 	bool IsAbilityUnlocked(const FGameplayTag& AbilityTag) const;
@@ -89,4 +90,11 @@ private:
 
 	UPROPERTY(Transient)
 	FGameplayTag TopAbilityTag;
+
+	// 휠을 연 순간의 커서 위치를 이동 입력의 원점으로 사용한다.
+	FVector2D SelectionOriginScreen = FVector2D::ZeroVector;
+	bool bHasSelectionOrigin = false;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Ability UI|Selection", meta = (ClampMin = "0.0"))
+	float SelectionDeadZone = 12.0f;
 };

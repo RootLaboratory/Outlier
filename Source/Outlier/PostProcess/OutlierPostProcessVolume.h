@@ -14,7 +14,9 @@ UENUM(BlueprintType)
 enum class EOutlierPostProcessMaterialType : uint8
 {
 	Scan UMETA(DisplayName = "Scan"),
-	Stealth UMETA(DisplayName = "Stealth"),
+	// Legacy. 은신은 메시 머티리얼 교체로 처리하므로 더 이상 포스트프로세스를 타지 않는다.
+	// BP 의 PostProcessMaterials 맵 키 호환 때문에 값만 남겨 둔다 ( 엔트리는 지워도 된다 ).
+	Stealth UMETA(DisplayName = "Stealth (Deprecated)"),
 	Damaged UMETA(DisplayName = "Damaged")
 
 };
@@ -34,11 +36,23 @@ public:
 	void ResetPostProcessMaterialParameters();
 
 	void UpdateScanMaterialParameters(FVector ScanLocation, float ScanRadius) const;
-	void UpdateStealthMaterialParameters(float InFade) const;
+
+	// 은신은 포스트프로세스가 아니라 메시 머티리얼 교체로 처리한다.
+	// 이 볼륨은 어떤 머티리얼을 쓸지와 페이드 커브만 들고 있는 데이터 소스다.
+	bool HasStealthMeshMaterials() const
+	{
+		return FirstPersonStealthGlassMaterial != nullptr || ThirdPersonStealthMaterial != nullptr;
+	}
 	UMaterialInterface* GetFirstPersonStealthGlassMaterial() const
 	{
 		return FirstPersonStealthGlassMaterial;
 	}
+	UMaterialInterface* GetThirdPersonStealthMaterial() const
+	{
+		return ThirdPersonStealthMaterial;
+	}
+	// StealthFadeCurve 를 적용한 0~1 페이드 값.
+	float EvaluateStealthFade(float InLinearFade) const;
 	void UpdateDamagedMaterialParameters(float InPlayerHPRatio) const;
 	void UpdateDamagedMaterialParameters(float InPlayerHPRatio, FVector4 Color) const;
 	void DisableAllBlendablesHard();
@@ -58,13 +72,12 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Scan", meta = (AllowPrivateAccess = "true"))
 	TObjectPtr<UMaterialParameterCollection> ScanParameterCollection;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Stealth")
-	uint8 StealthStencilNumber = 5;
-
+	// 교체한 머티리얼의 MID 에 넣어 줄 스칼라 파라미터 이름.
+	// 해당 파라미터가 없는 머티리얼이면 그냥 무시된다 ( on/off 로만 동작 ).
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Stealth")
 	FName StealthFadeParameterName = TEXT("Fade");
 
-	// 은신 On/Off 시 포스트프로세스 Fade 가 0<->1 로 가는 데 걸리는 시간.
+	// 은신 On/Off 시 Fade 가 0<->1 로 가는 데 걸리는 시간.
 	// 0 이면 즉시 전환. UMaterialPostProcessSubsystem 이 이 값으로 보간한다.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Stealth", meta = (ClampMin = "0.0"))
 	float StealthFadeDuration = 0.25f;
@@ -72,13 +85,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Stealth")
 	TObjectPtr<UCurveFloat> StealthFadeCurve = nullptr;
 
-	// Explicit third-person binding. When assigned, it overrides the legacy
-	// Stealth entry in PostProcessMaterials at runtime.
+	// 3인칭 메시( 남에게만 보이는 몸 / 무기 )에 덮어씌우는 표면 머티리얼.
+	// 미지정이면 1인칭 글래스 머티리얼을 그대로 쓴다.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Stealth|Materials",
-		meta = (DisplayName = "Third Person Stealth Post Process Material"))
-	TObjectPtr<UMaterialInterface> ThirdPersonStealthPostProcessMaterial = nullptr;
+		meta = (DisplayName = "Third Person Stealth Material"))
+	TObjectPtr<UMaterialInterface> ThirdPersonStealthMaterial = nullptr;
 
-	// This surface material is swapped onto owner-only first-person meshes.
+	// 1인칭 메시( 나에게만 보이는 팔 / 무기 )에 덮어씌우는 표면 머티리얼.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Stealth|Materials",
 		meta = (DisplayName = "First Person Stealth Glass Material"))
 	TObjectPtr<UMaterialInterface> FirstPersonStealthGlassMaterial = nullptr;

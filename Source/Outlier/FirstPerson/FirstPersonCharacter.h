@@ -156,6 +156,10 @@ protected:
 	UFUNCTION(Client, Reliable)
 	void ClientOnHoldInteractFailed(AActor* TargetActor);
 
+	// 서버에서 적용된 피해를 로컬 HUD에 방향 정보와 함께 전달한다.
+	UFUNCTION(Client, Reliable)
+	void ClientShowDamageFeedback(FVector_NetQuantize DamageOrigin);
+
 protected:
 
 	/** Set up input action bindings */

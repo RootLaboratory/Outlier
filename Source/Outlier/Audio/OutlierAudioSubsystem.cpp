@@ -95,6 +95,9 @@ void UOutlierAudioSubsystem::Deinitialize()
 	ActiveLoadHandles.Empty();
 	VolumeMultipliers.Empty();
 	ActiveAudioPlaybacks.Empty();
+	LoopAudioComponentPool.Empty();
+	CancelledLoopAudioInstances.Empty();
+	LoopInstances.Empty();
 	PendingPlaysBySound.Empty();
 	PendingPlaysByType.Empty();
 	CatalogEntriesByType.Empty();
@@ -119,6 +122,7 @@ bool UOutlierAudioSubsystem::ReloadCatalog()
 		}
 	}
 	BankContentLoadHandles.Empty();
+	LoopInstances.Empty();
 
 	CatalogEntriesByType.Empty();
 	DiscoveredBanksByType.Empty();
@@ -349,7 +353,9 @@ void UOutlierAudioSubsystem::IngestBank(UOutlierAudioBank* Bank)
 		for (int32 VariantIndex = 0; VariantIndex < Definition->Variants.Num(); ++VariantIndex)
 		{
 			const FOutlierAudioVariant& Variant = Definition->Variants[VariantIndex];
-			if (Variant.Sound.IsNull() || Variant.Weight <= 0.0f)
+			if ((Variant.Sound.IsNull()
+					&& Variant.PlaybackPolicy != EOutlierAudioPlaybackPolicy::StopLoop)
+				|| Variant.Weight <= 0.0f)
 			{
 				UE_LOG(LogOutlier, Error,
 					TEXT("[Audio] Definition '%s' variant %d is invalid and was skipped."),
@@ -366,6 +372,8 @@ void UOutlierAudioSubsystem::IngestBank(UOutlierAudioBank* Bank)
 				VariantIndex);
 			Entry.RequiredContext = Variant.RequiredContext;
 			Entry.Sound = Variant.Sound;
+			Entry.PlaybackPolicy = Variant.PlaybackPolicy;
+			Entry.LoopContextTag = Variant.LoopContextTag;
 			Entry.VariantIndex = FlatVariantIndex++;
 			Entry.Weight = Variant.Weight;
 			Entry.VolumeMultiplier = Definition->VolumeMultiplier;
@@ -402,12 +410,133 @@ bool UOutlierAudioSubsystem::PlayLocal2D(const FOutlierAudioPlayRequest& Request
 		EOutlierAudioRequestAuthority::Local });
 }
 
+bool UOutlierAudioSubsystem::PlayLocalAtLocation(const FOutlierAudioPlayRequest& Request)
+{
+	return PlayAudio(Request, {
+		EOutlierAudioPlaybackMode::AtLocation,
+		EOutlierAudioAudience::Local,
+		EOutlierAudioRequestAuthority::Local });
+}
+
 bool UOutlierAudioSubsystem::PlayOwner2DFromServer(const FOutlierAudioPlayRequest& Request)
 {
 	return PlayAudio(Request, {
 		EOutlierAudioPlaybackMode::TwoD,
 		EOutlierAudioAudience::Owner,
 		EOutlierAudioRequestAuthority::Server });
+}
+
+bool UOutlierAudioSubsystem::PlayTaggedAtLocationFromServer(
+	AActor* EmitterActor,
+	FGameplayTag TypeTag,
+	FGameplayTag ContextTag)
+{
+	if (!IsValid(EmitterActor) || !TypeTag.IsValid() || !ContextTag.IsValid())
+	{
+		return false;
+	}
+
+	UGameInstance* GameInstance = EmitterActor->GetGameInstance();
+	UOutlierAudioSubsystem* AudioSubsystem = GameInstance
+		? GameInstance->GetSubsystem<UOutlierAudioSubsystem>()
+		: nullptr;
+	if (!AudioSubsystem)
+	{
+		return false;
+	}
+
+	FOutlierAudioPlayRequest Request;
+	Request.EventTag = TypeTag;
+	Request.ContextTags.AddTag(ContextTag);
+	Request.EmitterActor = EmitterActor;
+	Request.Location = EmitterActor->GetActorLocation();
+	Request.bHasLocation = true;
+	return AudioSubsystem->PlayRelevantAtLocationFromServer(Request);
+}
+
+bool UOutlierAudioSubsystem::StopTaggedAtLocationFromServer(
+	AActor* EmitterActor,
+	FGameplayTag TypeTag,
+	FGameplayTag ContextTag)
+{
+	if (!IsValid(EmitterActor) || !TypeTag.IsValid() || !ContextTag.IsValid())
+	{
+		return false;
+	}
+
+	UGameInstance* GameInstance = EmitterActor->GetGameInstance();
+	UOutlierAudioSubsystem* AudioSubsystem = GameInstance
+		? GameInstance->GetSubsystem<UOutlierAudioSubsystem>()
+		: nullptr;
+	if (!AudioSubsystem)
+	{
+		return false;
+	}
+
+	FGameplayTagContainer ContextTags;
+	ContextTags.AddTag(ContextTag);
+	const FRuntimeCatalogEntry* Entry = AudioSubsystem->ResolveBestEntry(TypeTag, ContextTags);
+	if (!Entry)
+	{
+		return false;
+	}
+
+	const FGameplayTag LoopContextTag = Entry->LoopContextTag.IsValid()
+		? Entry->LoopContextTag
+		: Entry->RequiredContext;
+	if (!LoopContextTag.IsValid())
+	{
+		return false;
+	}
+
+	const FLoopPlaybackKey LoopKey { EmitterActor, LoopContextTag };
+	int32* AudioInstanceId = AudioSubsystem->LoopInstances.Find(LoopKey);
+	if (!AudioInstanceId)
+	{
+		return false;
+	}
+
+	const int32 InstanceId = *AudioInstanceId;
+	const bool bStopped = AudioSubsystem->GetWorld()->GetNetMode() == NM_Standalone
+		? AudioSubsystem->StopLoopAudioLocally(InstanceId)
+		: AudioSubsystem->StopLoopAtLocationFromServer(InstanceId);
+	AudioSubsystem->LoopInstances.Remove(LoopKey);
+	return bStopped;
+}
+
+bool UOutlierAudioSubsystem::StopLoopAtLocationFromServer(
+	int32 AudioInstanceId)
+{
+	if (AudioInstanceId == 0 || !GetWorld())
+	{
+		return false;
+	}
+
+	if (GetWorld()->GetNetMode() == NM_Standalone)
+	{
+		return StopLoopAudioLocally(AudioInstanceId);
+	}
+
+	if (GetWorld()->GetNetMode() == NM_Client)
+	{
+		return false;
+	}
+
+	bool bDelivered = false;
+	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	{
+		AFirstPersonPlayerController* PlayerController = Cast<AFirstPersonPlayerController>(It->Get());
+		if (!PlayerController)
+		{
+			continue;
+		}
+
+		//멀티 기반의 사운드가 종료되는 경우 클라를 통해서 notify시켜 전체가 안듣게 만든다.
+		PlayerController->ClientStopResolvedAudio(AudioInstanceId);
+		bDelivered = true;
+	}
+
+	return bDelivered;
 }
 
 bool UOutlierAudioSubsystem::PlayRelevantAtLocationFromOwningClient(
@@ -502,14 +631,75 @@ bool UOutlierAudioSubsystem::PlayAudio(
 		return false;
 	}
 
+	const bool bLooping = Entry->PlaybackPolicy == EOutlierAudioPlaybackPolicy::Loop;
+	const FGameplayTag LoopContextTag = Entry->LoopContextTag.IsValid()
+		? Entry->LoopContextTag
+		: Entry->RequiredContext;
+	const FLoopPlaybackKey LoopKey { Request.EmitterActor, LoopContextTag };
+
+	const bool bStopsLoop = Entry->PlaybackPolicy == EOutlierAudioPlaybackPolicy::StopLoopThenOneShot
+		|| Entry->PlaybackPolicy == EOutlierAudioPlaybackPolicy::StopLoop;
+	if ((bLooping || bStopsLoop)
+		&& !LoopContextTag.IsValid())
+	{
+		UE_LOG(LogOutlier, Warning,
+			TEXT("[Audio] Persistent playback Type='%s' Context='%s' has no loop identity."),
+			*Request.EventTag.ToString(),
+			*Entry->RequiredContext.ToString());
+		return false;
+	}
+
+	int32* ExistingInstanceId = (bLooping || bStopsLoop)
+		? LoopInstances.Find(LoopKey)
+		: nullptr;
+	if (ExistingInstanceId)
+	{
+		if (World->GetNetMode() == NM_Client
+			|| Policy.RequestAuthority == EOutlierAudioRequestAuthority::Local)
+		{
+			StopLoopAudioLocally(*ExistingInstanceId);
+		}
+		else
+		{
+			StopLoopAtLocationFromServer(*ExistingInstanceId);
+		}
+		LoopInstances.Remove(LoopKey);
+	}
+	else if (bStopsLoop)
+	{
+		// Stop tags are idempotent. They do not emit an orphaned Off/Fail sound when
+		// the matching emitter loop was never started or has already been stopped.
+		return true;
+	}
+
+	if (Entry->PlaybackPolicy == EOutlierAudioPlaybackPolicy::StopLoop)
+	{
+		return true;
+	}
+
+	int32 AudioInstanceId = 0;
+	if (bLooping)
+	{
+		AudioInstanceId = NextAudioInstanceId;
+		NextAudioInstanceId = NextAudioInstanceId == MAX_int32
+			? 1
+			: NextAudioInstanceId + 1;
+		LoopInstances.Add(LoopKey, AudioInstanceId);
+	}
+
 	FOutlierResolvedAudioPlay ResolvedPlay;
 	if (!BuildResolvedPlay(
 		Request.EventTag,
 		*Entry,
 		Request,
 		Policy.PlaybackMode,
+		AudioInstanceId,
 		ResolvedPlay))
 	{
+		if (bLooping)
+		{
+			LoopInstances.Remove(LoopKey);
+		}
 		return false;
 	}
 
@@ -529,10 +719,20 @@ bool UOutlierAudioSubsystem::PlayAudio(
 
 	if (World->GetNetMode() == NM_Standalone)
 	{
-		return PlayResolvedAudioLocally(ResolvedPlay);
+		const bool bPlayed = PlayResolvedAudioLocally(ResolvedPlay);
+		if (!bPlayed && bLooping)
+		{
+			LoopInstances.Remove(LoopKey);
+		}
+		return bPlayed;
 	}
 
-	return RouteByAudience(Request, ResolvedPlay, Policy.Audience);
+	const bool bRouted = RouteByAudience(Request, ResolvedPlay, Policy.Audience);
+	if (!bRouted && bLooping)
+	{
+		LoopInstances.Remove(LoopKey);
+	}
+	return bRouted;
 }
 
 bool UOutlierAudioSubsystem::HandleServerRelevantAtLocationRequest(
@@ -581,8 +781,55 @@ bool UOutlierAudioSubsystem::PlayResolvedAudioLocally(
 	PendingPlay.PitchMultiplier = Entry->PitchMultiplier;
 	PendingPlay.StartTime = ResolvedPlay.StartTime;
 	PendingPlay.VolumeType = Entry->VolumeType;
+	PendingPlay.AudioInstanceId = ResolvedPlay.AudioInstanceId;
+	PendingPlay.bLooping = ResolvedPlay.bLooping;
 
 	return QueueOrPlay(*Entry, PendingPlay);
+}
+
+bool UOutlierAudioSubsystem::StopLoopAudioLocally(int32 AudioInstanceId)
+{
+	if (AudioInstanceId == 0)
+	{
+		return false;
+	}
+
+	RemoveInactiveAudioComponents();
+	for (int32 Index = ActiveAudioPlaybacks.Num() - 1; Index >= 0; --Index)
+	{
+		FActiveAudioPlayback& ActivePlayback = ActiveAudioPlaybacks[Index];
+		if (!ActivePlayback.bLooping || ActivePlayback.AudioInstanceId != AudioInstanceId)
+		{
+			continue;
+		}
+
+		if (UAudioComponent* AudioComponent = ActivePlayback.Component.Get())
+		{
+			AudioComponent->Stop();
+			AudioComponent->SetSound(nullptr);
+			LoopAudioComponentPool.Add(AudioComponent);
+		}
+		ActiveAudioPlaybacks.RemoveAtSwap(Index);
+		return true;
+	}
+
+	bool bPendingLoad = false;
+	for (const TPair<FSoftObjectPath, TArray<FPendingPlay>>& Pair : PendingPlaysBySound)
+	{
+		bPendingLoad = Pair.Value.ContainsByPredicate([AudioInstanceId](const FPendingPlay& PendingPlay)
+		{
+			return PendingPlay.bLooping && PendingPlay.AudioInstanceId == AudioInstanceId;
+		});
+		if (bPendingLoad)
+		{
+			break;
+		}
+	}
+	if (bPendingLoad)
+	{
+		CancelledLoopAudioInstances.Add(AudioInstanceId);
+	}
+	return false;
 }
 
 void UOutlierAudioSubsystem::SetVolumeMultiplier(
@@ -709,11 +956,14 @@ bool UOutlierAudioSubsystem::BuildResolvedPlay(
 	const FRuntimeCatalogEntry& Entry,
 	const FOutlierAudioPlayRequest& Request,
 	EOutlierAudioPlaybackMode PlaybackMode,
+	int32 AudioInstanceId,
 	FOutlierResolvedAudioPlay& OutResolvedPlay) const
 {
 	OutResolvedPlay.EventTag = TypeTag;
 	OutResolvedPlay.VariantIndex = Entry.VariantIndex;
 	OutResolvedPlay.StartTime = FMath::Max(0.0f, Request.StartTime);
+	OutResolvedPlay.bLooping = Entry.PlaybackPolicy == EOutlierAudioPlaybackPolicy::Loop;
+	OutResolvedPlay.AudioInstanceId = AudioInstanceId;
 
 	if (PlaybackMode == EOutlierAudioPlaybackMode::TwoD)
 	{
@@ -1029,6 +1279,12 @@ void UOutlierAudioSubsystem::ExecutePlay(
 		return;
 	}
 
+	if (PendingPlay.bLooping
+		&& CancelledLoopAudioInstances.Remove(PendingPlay.AudioInstanceId) > 0)
+	{
+		return;
+	}
+
 	FVector ListenerLocation = FVector::ZeroVector;
 	bool bHasLocalListener = false;
 	for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
@@ -1073,21 +1329,67 @@ void UOutlierAudioSubsystem::ExecutePlay(
 
 	if (PendingPlay.bAtLocation)
 	{
-		UAudioComponent* AudioComponent = UGameplayStatics::SpawnSoundAtLocation(
-			World,
-			Sound,
-			PendingPlay.Location,
-			FRotator::ZeroRotator,
-			PendingPlay.VolumeMultiplier * GetCombinedVolumeMultiplier(PendingPlay.VolumeType),
-			PendingPlay.PitchMultiplier,
-			PendingPlay.StartTime,
-			Sound->AttenuationSettings,
-			nullptr,
-			true);
+		UAudioComponent* AudioComponent = nullptr;
+		if (PendingPlay.bLooping)
+		{
+			for (int32 Index = LoopAudioComponentPool.Num() - 1; Index >= 0; --Index)
+			{
+				UAudioComponent* Candidate = LoopAudioComponentPool[Index];
+				if (!IsValid(Candidate))
+				{
+					LoopAudioComponentPool.RemoveAtSwap(Index);
+					continue;
+				}
+
+				AudioComponent = Candidate;
+				LoopAudioComponentPool.RemoveAtSwap(Index);
+				break;
+			}
+
+			if (!AudioComponent)
+			{
+				AudioComponent = UGameplayStatics::SpawnSoundAtLocation(
+					World,
+					Sound,
+					PendingPlay.Location,
+					FRotator::ZeroRotator,
+					PendingPlay.VolumeMultiplier * GetCombinedVolumeMultiplier(PendingPlay.VolumeType),
+					PendingPlay.PitchMultiplier,
+					PendingPlay.StartTime,
+					Sound->AttenuationSettings,
+					nullptr,
+					false);
+			}
+			else
+			{
+				AudioComponent->SetSound(Sound);
+				AudioComponent->SetWorldLocation(PendingPlay.Location);
+				AudioComponent->SetPitchMultiplier(PendingPlay.PitchMultiplier);
+				AudioComponent->SetVolumeMultiplier(
+					PendingPlay.VolumeMultiplier * GetCombinedVolumeMultiplier(PendingPlay.VolumeType));
+				AudioComponent->Play(PendingPlay.StartTime);
+			}
+		}
+		else
+		{
+			AudioComponent = UGameplayStatics::SpawnSoundAtLocation(
+				World,
+				Sound,
+				PendingPlay.Location,
+				FRotator::ZeroRotator,
+				PendingPlay.VolumeMultiplier * GetCombinedVolumeMultiplier(PendingPlay.VolumeType),
+				PendingPlay.PitchMultiplier,
+				PendingPlay.StartTime,
+				Sound->AttenuationSettings,
+				nullptr,
+				true);
+		}
 		TrackActiveAudioComponent(
 			AudioComponent,
 			PendingPlay.VolumeMultiplier,
-			PendingPlay.VolumeType);
+			PendingPlay.VolumeType,
+			PendingPlay.AudioInstanceId,
+			PendingPlay.bLooping);
 		return;
 	}
 
@@ -1109,7 +1411,9 @@ void UOutlierAudioSubsystem::ExecutePlay(
 void UOutlierAudioSubsystem::TrackActiveAudioComponent(
 	UAudioComponent* AudioComponent,
 	float BaseVolumeMultiplier,
-	EOutlierAudioVolumeType VolumeType)
+	EOutlierAudioVolumeType VolumeType,
+	int32 AudioInstanceId,
+	bool bLooping)
 {
 	if (!AudioComponent)
 	{
@@ -1122,6 +1426,8 @@ void UOutlierAudioSubsystem::TrackActiveAudioComponent(
 	ActivePlayback.Component = AudioComponent;
 	ActivePlayback.BaseVolumeMultiplier = BaseVolumeMultiplier;
 	ActivePlayback.VolumeType = VolumeType;
+	ActivePlayback.AudioInstanceId = AudioInstanceId;
+	ActivePlayback.bLooping = bLooping;
 }
 
 void UOutlierAudioSubsystem::RemoveInactiveAudioComponents()

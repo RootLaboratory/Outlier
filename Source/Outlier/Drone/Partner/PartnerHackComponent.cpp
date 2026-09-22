@@ -341,6 +341,11 @@ void UPartnerHackComponent::CompleteActiveHack(
 		Handler->HandleHackCompleted(MutableResultContext);
 	}
 
+	if (MutableResultContext.Result == EHackResult::Success)
+	{
+		CompletedHackableComponent->MarkAsHackedOnce();
+	}
+
 	CompletedHackableComponent->CompleteHack(MutableResultContext);
 	OnHackFinished.Broadcast(MutableResultContext.Result, bPossessionTarget);
 }
@@ -554,8 +559,6 @@ void UPartnerHackComponent::ServerTryStartHack_Implementation(AActor* TargetActo
 	DeactivateUnselectedCandidates(HackableComponent);
 	bHackCandidateSearchActive = false;
 	SetActiveHackableComponent(HackableComponent);
-	// 성공, 실패, 취소와 관계없이 미니게임을 시작한 대상은 다시 해킹할 수 없다.
-	ActiveHackableComponent->MarkAsHackedOnce();
 
 	//Actor Override
 	if (IHackableInterface* Handler = Cast<IHackableInterface>(TargetActor))

@@ -33,6 +33,7 @@ class UDataTable;
 class USphereComponent;
 class USkeletalMesh;
 class UShooterReflectionBarrier;
+class UShooterTeleportLayer;
 struct FOnAttributeChangeData;
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnShooterDynamicCrosshairChanged, bool /*bAiming*/);
@@ -291,6 +292,9 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "GAS|Suit|Bullet Reflection")
 	TSubclassOf<UShooterReflectionBarrier> ReflectionBarrierWidgetClass;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "GAS|Suit|Quantum Leap")
+	TSubclassOf<UShooterTeleportLayer> TeleportLayerWidgetClass;
+
 	// Local Runtime State
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
 	uint8 bIsSuitMenuOpen : 1 = false;
@@ -330,6 +334,7 @@ protected:
 	FDelegateHandle ShieldChangedHandle;
 	FDelegateHandle DeadTagChangedHandle;
 	FDelegateHandle BulletReflectionTagChangedHandle;
+	FDelegateHandle QuantumLeapTagChangedHandle;
 	FDelegateHandle WeaponOverchargeTagChangedHandle;
 	FDelegateHandle QuantumLeapCooldownTagChangedHandle;
 	FDelegateHandle BulletReflectionCooldownTagChangedHandle;
@@ -337,9 +342,13 @@ protected:
 	FDelegateHandle StealthCooldownTagChangedHandle;
 	FDelegateHandle PartnerRebootTagChangedHandle;
 	FUILayerHandle ReflectionBarrierLayerHandle;
+	FUILayerHandle TeleportLayerHandle;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UShooterReflectionBarrier> ReflectionBarrierWidgetInstance;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UShooterTeleportLayer> TeleportLayerWidgetInstance;
 
 	FVector PendingReflectionVisualOrigin = FVector::ZeroVector;
 	bool bHasPendingReflectionVisual = false;
@@ -351,8 +360,8 @@ protected:
 	bool bShooterSuitDataInitialized = false;
 	FOutlierShooterSuitConfig ShooterSuitConfig;
 
-	// 은신 비주얼( 글래스 머티리얼 / 스텐실 / 포스트프로세스 페이드 )은 State.Stealthed 태그를 보고
-	// UMaterialPostProcessSubsystem 이 전담한다. 페이드 시간과 스텐실 값은 AOutlierPostProcessVolume 에 있다.
+	// 은신 비주얼( 1인칭 / 3인칭 메시 머티리얼 교체와 페이드 )은 State.Stealthed 태그를 보고
+	// UMaterialPostProcessSubsystem 이 전담한다. 머티리얼과 페이드 설정은 AOutlierPostProcessVolume 에 있다.
 
 	// Slide
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera|Slide")
@@ -390,8 +399,11 @@ protected:
 	void HandleShieldChanged(const FOnAttributeChangeData& ChangeData);
 	void HandleDeadTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleBulletReflectionTagChanged(const FGameplayTag Tag, int32 NewCount);
+	void HandleQuantumLeapTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void PushReflectionBarrierWidget();
 	void PopReflectionBarrierWidget();
+	void PushTeleportLayer();
+	void PopTeleportLayer();
 	void NotifyLocalBulletReflected(const FVector& IncomingOrigin);
 	void HandleWeaponOverchargeTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void RefreshWeaponOverchargeEmissive(bool bActive);

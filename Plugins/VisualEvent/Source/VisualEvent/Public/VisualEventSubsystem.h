@@ -49,7 +49,9 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Visual Event")
 
-	void SpawnMuzzleEffect(const UTrailEffectDefinition* Def, const FVector& Location, const FRotator& Rotation);
+	// 호출자는 시점만 넘긴다. 실제 크기 보정값은 Definition 이 갖는다
+	// ( UTrailEffectDefinition::GetViewpointScale ).
+	void SpawnMuzzleEffect(const UTrailEffectDefinition* Def, const FVector& Location, const FRotator& Rotation, bool bFirstPerson = false);
 
 	//일단 Trail으로 받지만 따로 분리할 것임.
 	UFUNCTION(BlueprintCallable, Category = "Visual Event")

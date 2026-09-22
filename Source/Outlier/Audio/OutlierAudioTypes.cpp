@@ -40,7 +40,8 @@ EDataValidationResult UOutlierAudioEventDefinition::IsDataValid(FDataValidationC
 	for (int32 VariantIndex = 0; VariantIndex < Variants.Num(); ++VariantIndex)
 	{
 		const FOutlierAudioVariant& Variant = Variants[VariantIndex];
-		if (Variant.Sound.IsNull())
+		if (Variant.Sound.IsNull()
+			&& Variant.PlaybackPolicy != EOutlierAudioPlaybackPolicy::StopLoop)
 		{
 			AddValidationError(FString::Printf(
 				TEXT("Variant %d has no Sound asset."),
@@ -51,6 +52,15 @@ EDataValidationResult UOutlierAudioEventDefinition::IsDataValid(FDataValidationC
 		{
 			AddValidationError(FString::Printf(
 				TEXT("Variant %d has a non-positive Weight."),
+				VariantIndex));
+		}
+
+		if ((Variant.PlaybackPolicy == EOutlierAudioPlaybackPolicy::StopLoopThenOneShot
+				|| Variant.PlaybackPolicy == EOutlierAudioPlaybackPolicy::StopLoop)
+			&& !Variant.LoopContextTag.IsValid())
+		{
+			AddValidationError(FString::Printf(
+				TEXT("Variant %d stops a loop but has no LoopContextTag."),
 				VariantIndex));
 		}
 	}
