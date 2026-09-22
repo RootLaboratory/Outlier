@@ -351,7 +351,7 @@ bool UOutlierGameInstance::TravelToLobby(UWorld* World)
 {
 	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
 	const FString LobbyAddress = Settings
-		? Settings->LobbyAddress.TrimStartAndEnd()
+		? Settings->ResolveLobbyAddress(true)
 		: FString();
 	APlayerController* PlayerController = World
 		? World->GetFirstPlayerController()

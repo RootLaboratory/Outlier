@@ -14,7 +14,7 @@
 
 namespace
 {
-void PlayAbilityAudioAtLocationFromServer(AActor* EmitterActor, const FGameplayTag& ContextTag)
+void PlayShooterAbilityAudioAtLocationFromServer(AActor* EmitterActor, const FGameplayTag& ContextTag)
 {
 	const UOutlierAbilityAudioSettings* Settings = GetDefault<UOutlierAbilityAudioSettings>();
 	if (!EmitterActor || !Settings->PlayerTypeTag.IsValid() || !ContextTag.IsValid())
@@ -200,7 +200,7 @@ void UOutlierShooterQuantumLeapAbility::ActivateAbility(
 		return;
 	}
 
-	PlayAbilityAudioAtLocationFromServer(
+	PlayShooterAbilityAudioAtLocationFromServer(
 		Shooter,
 		GetDefault<UOutlierAbilityAudioSettings>()->ShooterQuantumLeap);
 
@@ -450,8 +450,8 @@ void UOutlierShooterBulletReflectionAbility::ActivateAbility(
 		return;
 	}
 	const UOutlierAbilityAudioSettings* AudioSettings = GetDefault<UOutlierAbilityAudioSettings>();
-	PlayAbilityAudioAtLocationFromServer(Shooter, AudioSettings->ShooterReflectionOn);
-	PlayAbilityAudioAtLocationFromServer(Shooter, AudioSettings->ShooterReflectionLoop);
+	PlayShooterAbilityAudioAtLocationFromServer(Shooter, AudioSettings->ShooterReflectionOn);
+	PlayShooterAbilityAudioAtLocationFromServer(Shooter, AudioSettings->ShooterReflectionLoop);
 }
 
 bool UOutlierShooterBulletReflectionAbility::EndBulletReflection(bool bCommitCooldown)
@@ -494,7 +494,7 @@ void UOutlierShooterBulletReflectionAbility::EndAbility(
 	}
 
 	ShooterAbilitySystem.Reset();
-	PlayAbilityAudioAtLocationFromServer(
+	PlayShooterAbilityAudioAtLocationFromServer(
 		GetShooterCharacter(),
 		GetDefault<UOutlierAbilityAudioSettings>()->ShooterReflectionOff);
 	bCommitCooldownOnEnd = false;
@@ -592,8 +592,8 @@ void UOutlierShooterWeaponOverchargeAbility::ActivateAbility(
 	}
 
 	const UOutlierAbilityAudioSettings* AudioSettings = GetDefault<UOutlierAbilityAudioSettings>();
-	PlayAbilityAudioAtLocationFromServer(Shooter, AudioSettings->ShooterOverchargeOn);
-	PlayAbilityAudioAtLocationFromServer(Shooter, AudioSettings->ShooterOverchargeLoop);
+	PlayShooterAbilityAudioAtLocationFromServer(Shooter, AudioSettings->ShooterOverchargeOn);
+	PlayShooterAbilityAudioAtLocationFromServer(Shooter, AudioSettings->ShooterOverchargeLoop);
 
 	constexpr float DrainInterval = 0.05f;
 	Shooter->GetWorldTimerManager().SetTimer(
@@ -654,7 +654,7 @@ void UOutlierShooterWeaponOverchargeAbility::EndAbility(
 	}
 
 	ShooterAbilitySystem.Reset();
-	PlayAbilityAudioAtLocationFromServer(
+	PlayShooterAbilityAudioAtLocationFromServer(
 		Shooter,
 		GetDefault<UOutlierAbilityAudioSettings>()->ShooterOverchargeOff);
 	bCommitCooldownOnEnd = false;
@@ -798,7 +798,7 @@ void UOutlierShooterStealthAbility::ActivateAbility(
 		return;
 	}
 
-	PlayAbilityAudioAtLocationFromServer(
+	PlayShooterAbilityAudioAtLocationFromServer(
 		Shooter,
 		GetDefault<UOutlierAbilityAudioSettings>()->ShooterStealthOn);
 	RefreshEnemyDetection();
@@ -860,7 +860,7 @@ void UOutlierShooterStealthAbility::EndAbility(
 	PartnerAbilitySystem.Reset();
 	if (bShouldPlayStealthOff)
 	{
-		PlayAbilityAudioAtLocationFromServer(
+		PlayShooterAbilityAudioAtLocationFromServer(
 			GetShooterCharacter(),
 			GetDefault<UOutlierAbilityAudioSettings>()->ShooterStealthOff);
 	}

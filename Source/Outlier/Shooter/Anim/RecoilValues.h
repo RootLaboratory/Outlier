@@ -17,52 +17,52 @@ struct OUTLIER_API FRecoilValues
 	TObjectPtr<UCurveVector> RecoilCurveRot;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recoil|Curve")
-	float CurvePlayRate;
+	float CurvePlayRate = 0.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recoil|Aim")
-	float AimAlpha;
+	float AimAlpha = 0.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Amplitude")
-	FVector RecoilAmplitudeLoc;
+	FVector RecoilAmplitudeLoc = FVector::ZeroVector;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Amplitude")
-	FVector RecoilAmplitudeRot;
+	FVector RecoilAmplitudeRot = FVector::ZeroVector;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recoil|Random Location")
-	float RandomLocXMin;
+	float RandomLocXMin = 0.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recoil|Random Location")
-	float RandomLocXMax;
+	float RandomLocXMax = 0.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recoil|Random Location")
-	float RandomLocYMin;
+	float RandomLocYMin = 0.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recoil|Random Location")
-	float RandomLocYMax;
+	float RandomLocYMax = 0.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recoil|Random Location")
-	float RandomLocZMin;
+	float RandomLocZMin = 0.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recoil|Random Location")
-	float RandomLocZMax;
+	float RandomLocZMax = 0.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recoil|Random Rotation")
-	float RandomRotXMin;
+	float RandomRotXMin = 0.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recoil|Random Rotation")
-	float RandomRotXMax;
+	float RandomRotXMax = 0.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recoil|Random Rotation")
-	float RandomRotYMin;
+	float RandomRotYMin = 0.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recoil|Random Rotation")
-	float RandomRotYMax;
+	float RandomRotYMax = 0.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recoil|Random Rotation")
-	float RandomRotZMin;
+	float RandomRotZMin = 0.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recoil|Random Rotation")
-	float RandomRotZMax;
+	float RandomRotZMax = 0.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recoil|Shot Direction")
 	float DirectionLocYInfluence = 0.03f;
@@ -80,26 +80,26 @@ struct OUTLIER_API FRecoilValues
 	float DirectionRollInfluence = 0.15f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recoil|Spring")
-	float CriticalDampingFactorLoc;					// 위치 반동이 흔들리다 멈추는 감쇠
+	float CriticalDampingFactorLoc = 0.0f;			// 위치 반동이 흔들리다 멈추는 감쇠
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recoil|Spring")
-	float CriticalDampingFactorRot;					// 회전 반동 감쇠
+	float CriticalDampingFactorRot = 0.0f;			// 회전 반동 감쇠
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recoil|Spring")
-	float MassLoc;									// 위치 반동의 관성
+	float MassLoc = 0.0f;							// 위치 반동의 관성
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recoil|Spring")
-	float MassRot;									// 회전 반동의 관성
+	float MassRot = 0.0f;							// 회전 반동의 관성
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recoil|Spring")
-	float StiffnessLoc;								// 위치 반동이 원래 위치로 돌아가려는 힘
+	float StiffnessLoc = 0.0f;						// 위치 반동이 원래 위치로 돌아가려는 힘
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recoil|Spring")
-	float StiffnessRot;								// 회전 반동이 원래 회전으로 돌아가려는 힘
+	float StiffnessRot = 0.0f;						// 회전 반동이 원래 회전으로 돌아가려는 힘
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recoil|Spring")
-	float TargetVelocityAmountLoc;					// 목표 위치 변화에 속도를 얼마나 반영할지
+	float TargetVelocityAmountLoc = 0.0f;			// 목표 위치 변화에 속도를 얼마나 반영할지
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recoil|Spring")
-	float TargetVelocityAmountRot;					// 목표 회전 변화에 속도를 얼마나 반영할지
+	float TargetVelocityAmountRot = 0.0f;			// 목표 회전 변화에 속도를 얼마나 반영할지
 };

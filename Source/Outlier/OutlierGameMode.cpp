@@ -1244,7 +1244,7 @@ bool AOutlierGameMode::CompleteArenaMatch()
 
 	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
 	const FString LobbyAddress = Settings
-		? Settings->LobbyAddress.TrimStartAndEnd()
+		? Settings->ResolveLobbyAddress()
 		: FString();
 	if (!Settings
 		|| !Settings->bReturnToLobbyOnMatchEnd
@@ -2830,7 +2830,7 @@ void AOutlierGameMode::BeginArenaWorkerReleaseShutdown()
 
 	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
 	const FString LobbyAddress = Settings
-		? Settings->LobbyAddress.TrimStartAndEnd()
+		? Settings->ResolveLobbyAddress()
 		: FString();
 	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
 	{

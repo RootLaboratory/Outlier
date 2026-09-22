@@ -3,6 +3,37 @@
 
 #include "OutlierArenaSettings.h"
 #include "Engine/World.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
+
+FString UOutlierArenaSettings::ResolveArenaWorkerHost() const
+{
+	FString Address;
+	if (FParse::Value(FCommandLine::Get(), TEXT("ArenaWorkerHost="), Address)
+		&& !Address.TrimStartAndEnd().IsEmpty())
+	{
+		return Address.TrimStartAndEnd();
+	}
+	return ArenaWorkerHost.TrimStartAndEnd();
+}
+
+FString UOutlierArenaSettings::ResolveLobbyAddress(bool bUseConnectAddress) const
+{
+	FString Address;
+	if (FParse::Value(FCommandLine::Get(), TEXT("LobbyAddress="), Address)
+		&& !Address.TrimStartAndEnd().IsEmpty())
+	{
+		return Address.TrimStartAndEnd();
+	}
+	// 클라이언트는 연결 실패 시 최초 접속한 Lobby로 돌아간다.
+	if (bUseConnectAddress
+		&& FParse::Value(FCommandLine::Get(), TEXT("Connect="), Address)
+		&& !Address.TrimStartAndEnd().IsEmpty())
+	{
+		return Address.TrimStartAndEnd();
+	}
+	return LobbyAddress.TrimStartAndEnd();
+}
 
 FString UOutlierArenaSettings::GetArenaPackageName() const
 {

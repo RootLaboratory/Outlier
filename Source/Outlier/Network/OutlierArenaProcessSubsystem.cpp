@@ -116,7 +116,7 @@ bool UOutlierArenaProcessSubsystem::StartLobbyManager()
 	}
 
 	SlotRegistry.Initialize(
-		Settings->ArenaWorkerHost,
+		Settings->ResolveArenaWorkerHost(),
 		Settings->ArenaBasePort,
 		Settings->StaticArenaSlots);
 	WorkerRuntimes.SetNum(SlotRegistry.Num());
@@ -918,6 +918,10 @@ FString UOutlierArenaProcessSubsystem::BuildWorkerArguments(
 		WorkerPort,
 		SlotId,
 		ControlPort);
+
+	// 자식 프로세스에도 실제 Lobby 복귀 주소를 전달한다.
+	Arguments += FString::Printf(TEXT(" -LobbyAddress=\"%s\""),
+		*GetDefault<UOutlierArenaSettings>()->ResolveLobbyAddress());
 
 	float AutoCompleteSeconds = 0.0f;
 	if (FParse::Value(

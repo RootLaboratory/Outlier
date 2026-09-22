@@ -128,6 +128,8 @@ public:
 	float ArenaMatchStartDelaySeconds = 1.0f;
 
 	FString GetArenaPackageName() const;
+	FString ResolveArenaWorkerHost() const;
+	FString ResolveLobbyAddress(bool bUseConnectAddress = false) const;
 	bool MatchesArenaPackageName(const FString& WorldPackageName) const;
 	bool IsArenaWorld(const UWorld* World) const;
 	bool ShouldUseExternalArenaHandoff(ENetMode NetMode) const;
