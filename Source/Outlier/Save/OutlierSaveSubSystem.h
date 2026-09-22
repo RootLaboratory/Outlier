@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "Save/OutlierCheckpointData.h"
+#include "Save/OutlierCheckpointSnapshot.h"
 #include "OutlierSaveSubSystem.generated.h"
 
 /**
@@ -19,6 +20,62 @@ public:
 	bool SavePlayerCheckpoint(const FString& PlayerId, const FOutlierCheckpointData& Data);
 	bool LoadPlayerCheckpoint(const FString& PlayerId, FOutlierCheckpointData& OutData) const;
 
+	void ResetRuntimeCheckpointState();
+	bool CaptureInitialSnapshot(const FOutlierCheckpointSnapshot& Snapshot);
+	bool CommitCheckpointSnapshot(const FOutlierCheckpointSnapshot& Snapshot);
+	bool GetRestoreSnapshot(FOutlierCheckpointSnapshot& OutSnapshot) const;
+	bool HasInitialSnapshot() const { return bHasInitialSnapshot; }
+	bool HasLatestCheckpointSnapshot() const { return bHasLatestCheckpointSnapshot; }
+	bool HasCommittedCheckpoint(FName CheckpointId) const;
+
+	bool SetWorldProgressState(EOutlierWorldProgressType Type, FName ProgressId, bool bCompleted);
+	bool HasWorldProgress(EOutlierWorldProgressType Type, FName ProgressId) const;
+	bool RecordCompletedEncounter(FName EncounterId);
+	void RestoreCurrentWorldProgress(const FOutlierWorldProgressSnapshot& Snapshot);
+	const FOutlierWorldProgressSnapshot& GetCurrentWorldProgress() const { return CurrentWorldProgress; }
+
+	// 배치 터렛 Actor는 사망 후에도 남으므로 월드 진행과 별도로 Stable ID별 사망 자세를 추적한다.
+	bool SetDestroyedTurretState(FName TurretId, bool bDestroyed);
+	bool IsTurretDestroyed(FName TurretId) const;
+	void RestoreCurrentDestroyedTurretIds(const TSet<FName>& DestroyedTurretIds);
+	const TSet<FName>& GetCurrentDestroyedTurretIds() const { return CurrentDestroyedTurretIds; }
+
+	bool RegisterWorldProgressId(EOutlierWorldProgressType Type, FName ProgressId, UObject* Owner);
+	void UnregisterWorldProgressId(EOutlierWorldProgressType Type, FName ProgressId, const UObject* Owner);
+	bool RegisterCheckpointId(FName CheckpointId, UObject* Owner);
+	void UnregisterCheckpointId(FName CheckpointId, const UObject* Owner);
+	// 사망 상태 저장과 분리해, 배치 시점부터 다른 진행 오브젝트와 Stable ID 중복을 검사한다.
+	bool RegisterPersistentTurretId(FName TurretId, UObject* Owner);
+	void UnregisterPersistentTurretId(FName TurretId, const UObject* Owner);
+	bool HasValidStableIds() const { return bStableIdsValid; }
+
 private:
+	bool RegisterStableId(FName StableId, UObject* Owner, const TCHAR* IdKind);
+	void UnregisterStableId(FName StableId, const UObject* Owner);
+
 	TMap<FString, FOutlierCheckpointData> RuntimeCheckpointData;
+
+	UPROPERTY(Transient)
+	bool bHasInitialSnapshot = false;
+
+	UPROPERTY(Transient)
+	FOutlierCheckpointSnapshot InitialSnapshot;
+
+	UPROPERTY(Transient)
+	bool bHasLatestCheckpointSnapshot = false;
+
+	UPROPERTY(Transient)
+	FOutlierCheckpointSnapshot LatestCheckpointSnapshot;
+
+	UPROPERTY(Transient)
+	FOutlierWorldProgressSnapshot CurrentWorldProgress;
+
+	UPROPERTY(Transient)
+	TSet<FName> CurrentDestroyedTurretIds;
+
+	UPROPERTY(Transient)
+	TSet<FName> CommittedCheckpointIds;
+
+	TMap<FName, TWeakObjectPtr<UObject>> RegisteredStableIds;
+	bool bStableIdsValid = true;
 };

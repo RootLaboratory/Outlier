@@ -16,6 +16,8 @@
 #include "StateTreeReference.h"
 #include "AbilitySystemInterface.h"
 #include "Damage/OutlierDamageReceiver.h"
+#include "Enemy/EnemyAdaptationTypes.h"
+#include "Enemy/EnemyPoolTypes.h"
 #include "EnemyBase.generated.h"
 
 class UStateTreeComponent;
@@ -30,6 +32,8 @@ class APartnerCharacter;
 class UGeometryCollection;
 class UOutlierAbilitySystemComponent;
 class UOutlierVitalAttributeSet;
+class UEnemyAdaptationSubsystem;
+class UEnemyPoolSubsystem;
 struct FOnAttributeChangeData;
 
 UENUM(BlueprintType)
@@ -39,6 +43,13 @@ enum class EEnemyCombatState : uint8
 	Alert,
 	Combat,
 	Stun
+};
+
+struct OUTLIER_API FEnemyAdaptationBreakApplicationResult
+{
+	float AppliedDamage = 0.0f;
+	bool bStunApplied = false;
+	bool bKilled = false;
 };
 
 UENUM(BlueprintType)
@@ -73,6 +84,47 @@ public:
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
+
+	// Pool Subsystem은 deferred spawn 중 이 함수를 호출해 일반 배치 Enemy 초기화를 차단한다.
+	void PrepareForPoolSpawn(UEnemyPoolSubsystem* PoolSubsystem);
+	bool BeginPoolLease(
+		const FEnemyPoolLeaseContext& Context,
+		const FTransform& SpawnTransform,
+		int32 LeaseSerial);
+	bool MatchesPoolLease(int32 GameplayGeneration, int32 LeaseSerial) const;
+	void FinishPoolReturn(int32 GameplayGeneration, int32 LeaseSerial);
+	void InvalidatePoolLease();
+
+	UFUNCTION(BlueprintCallable, Category = "Enemy|Pool")
+	void CompletePoolSpawnPresentation(int32 GameplayGeneration, int32 LeaseSerial);
+
+	UFUNCTION(BlueprintCallable, Category = "Enemy|Pool")
+	void CompletePoolDeathPresentation(int32 GameplayGeneration, int32 LeaseSerial);
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Pool")
+	bool IsPoolManaged() const { return PoolState != EEnemyPoolState::Unmanaged; }
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Pool")
+	EEnemyPoolState GetEnemyPoolState() const { return PoolState; }
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Pool")
+	int32 GetPoolGameplayGeneration() const { return PoolGameplayGeneration; }
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Pool")
+	int32 GetPoolLeaseSerial() const { return PoolLeaseSerial; }
+
+#if WITH_DEV_AUTOMATION_TESTS
+	void SetPoolPresentationAutoCompleteForTesting(bool bEnabled)
+	{
+		bPoolPresentationAutoCompleteForTesting = bEnabled;
+	}
+	void BeginDeathForPoolTesting() { HandleDeath(); }
+	void BeginDeathForAdaptationTesting(EOutlierAdaptationDamageCategory DamageCategory)
+	{
+		LastAcceptedAdaptationDamageCategory = DamageCategory;
+		HandleDeath();
+	}
+#endif
 
 protected:
 	virtual void PostInitializeComponents() override;
@@ -156,6 +208,15 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Enemy|Data")
 	FDataTableRowHandle ImpactReactionProfileRow;
 
+	// 모든 Enemy는 기본으로 Enemy.Adaptation.Target을 가진다.
+	// 이후 예외 개체가 필요할 때만 해당 Enemy BP에서 태그를 제거한다.
+	UPROPERTY(
+		EditDefaultsOnly,
+		BlueprintReadOnly,
+		Category = "Enemy|Adaptation",
+		meta = (Categories = "Enemy.Adaptation"))
+	FGameplayTagContainer EnemyTraits;
+
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Enemy|Impact")
 	FEnemyImpactReactionProfileRow RuntimeImpactReactionProfile;
 
@@ -223,9 +284,6 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Weapon")
 	FName WeaponSocketName = NAME_None;
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|Room")
-	int32 LastKnownArenaId = INDEX_NONE;
-
 	UPROPERTY()
 	TWeakObjectPtr<AController> CachedAIController;
 
@@ -244,7 +302,11 @@ public:
 	virtual FGenericTeamId GetGenericTeamId() const override;
 
 	// Enemy 유형별로 감지/공유 정책을 바꿀 때 AIController와 RoomSubsystem이 공통으로 조회한다.
-	virtual bool CanUseEnemyPerception() const { return !IsAIControlSuppressed(); }
+	virtual bool CanUseEnemyPerception() const
+	{
+		return (!IsPoolManaged() || PoolState == EEnemyPoolState::CombatActive)
+			&& !IsAIControlSuppressed();
+	}
 	virtual bool UsesHearingPerception() const { return true; }
 	virtual bool CanUseRoomTargetSharing() const { return !bIsPossessed; }
 	virtual FVector GetCombatAimPoint(const AActor* TargetActor) const;
@@ -275,6 +337,27 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|State")
 	bool IsInCombat() const { return bInCombat; }
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Adaptation")
+	bool HasEnemyTrait(FGameplayTag TraitTag) const { return EnemyTraits.HasTag(TraitTag); }
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Adaptation")
+	EEnemyAdaptationState GetAdaptationState() const { return AdaptationState; }
+
+	// 중앙 내성 시스템이 계산한 현재 단계를 Enemy의 복제 표현 상태로 투영한다.
+	// Stack의 원본은 Subsystem만 소유하며 Enemy는 방어막 표현에 필요한 단계만 보관한다.
+	void ApplyAdaptationState(EEnemyAdaptationState NewState);
+
+	// 내성 파괴의 추가 피해는 다시 Stack을 변경하지 않는 Ignore 피해로 처리하고,
+	// 피해 이후에도 생존한 Enemy에게만 기존 GAS 경직 상태를 적용한다.
+	FEnemyAdaptationBreakApplicationResult ApplyAdaptationBreakEffects(
+		float DamageAmount,
+		float StunDurationSeconds,
+		UObject* EffectSource);
+
+#if WITH_DEV_AUTOMATION_TESTS
+	void RemoveEnemyTraitForTesting(FGameplayTag TraitTag) { EnemyTraits.RemoveTag(TraitTag); }
+#endif
 	bool PrefersCombatLeft() const { return bPrefersCombatLeft; }
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|State")
@@ -294,9 +377,6 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|State")
 	FVector GetPatternStartPlayerLocation() const { return PatternStartPlayerLocation; }
-
-	UFUNCTION(BlueprintPure, Category = "Enemy|State")
-	int32 GetLastKnownArenaId() const { return LastKnownArenaId; }
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|Weapon")
 	ARangedWeaponBase* GetCurrentWeapon() const { return CurrentWeapon; }
@@ -374,7 +454,9 @@ public:
 	FVector GetSharedTargetLocation() const { return SharedTargetLocation; }
 
 	// RoomSubsystem만 호출하는 서버 권한 공유 접촉 API.
-	void ApplySharedTargetContact(const FVector& TargetLocation);
+	void ApplySharedTargetContact(
+		const FVector& TargetLocation,
+		bool bDeferStateTreeEvent = false);
 	void ClearSharedTargetContact();
 
 	UFUNCTION(BlueprintCallable, Category = "Enemy|State")
@@ -388,12 +470,11 @@ public:
 	bool CommitAlertToCombat();
 	bool CommitAlertToNonCombat();
 
-	void EnterCombatInArena(
+	void EnterCombatFromRoom(
 		const FVector& PlayerLocation,
-		int32 ArenaId,
 		bool bPropagateToRoom,
 		bool bDeferStateTreeEvent = false);
-	void EnterAlertInArena(const FVector& PlayerLocation, int32 ArenaId);
+	void EnterAlertFromPerception(const FVector& PlayerLocation);
 
 	UFUNCTION(BlueprintCallable, Category = "Enemy|State")
 	void EnterStun();
@@ -483,6 +564,7 @@ protected:
 	virtual void ApplyClassStatOverrides();
 	virtual void ApplyMovementFromRuntimeStat();
 	virtual void PrepareForStateTreeStart();
+	virtual bool ShouldActivateAsPreplacedEnemy() const { return true; }
 	bool HasActiveStunTag() const;
 	bool BeginPossessionProcess(APartnerCharacter* PartnerCharacter);
 	void ConfirmPossessionProcess();
@@ -495,6 +577,14 @@ protected:
 	UFUNCTION()
 	void OnRep_AttackPhase(EEnemyAttackPhase PreviousPhase);
 
+	UFUNCTION()
+	void OnRep_AdaptationState(EEnemyAdaptationState PreviousState);
+
+	UFUNCTION(BlueprintImplementableEvent, Category = "Enemy|Adaptation")
+	void OnAdaptationStateChanged(
+		EEnemyAdaptationState PreviousState,
+		EEnemyAdaptationState NewState);
+
 	// 서버에서 기본 무기를 스폰하고 Enemy 소켓에 장착한다.
 	void EquipDefaultWeapon();
 
@@ -503,6 +593,14 @@ protected:
 	void RemoveRoomTargetObserver();
 	virtual void HandleDeath();
 	void PerformDeathCleanup();
+
+	// BeginPlay를 다시 거치지 않는 Actor가 다음 전투 수명을 시작할 수 있도록 사망/전투 흔적을 한곳에서 지운다.
+	void ResetReusableCombatRuntime(const TCHAR* StateTreeStopReason);
+	UEnemyAdaptationSubsystem* GetEnemyAdaptationSubsystem();
+	void ReportFinalAdaptationResult();
+	virtual void ResetPoolRuntimeState();
+	virtual void ResetPoolPresentationState();
+	virtual void PrepareForPoolIdle();
 
 	// 사망 시 원본 메시를 대체할, 미리 프랙처된 Geometry Collection.
 	// 비워두면 파편 연출을 통째로 건너뛰고 기존 사망 동작 그대로 간다.
@@ -554,6 +652,58 @@ protected:
 	FTimerHandle PossessedImpactInputLockTimerHandle;
 	FTimerHandle DeathDebrisTimerHandle;
 	FActiveGameplayEffectHandle PossessionPendingEffectHandle;
+
+	UPROPERTY(ReplicatedUsing = OnRep_PoolState, VisibleInstanceOnly, BlueprintReadOnly, Category = "Enemy|Pool")
+	EEnemyPoolState PoolState = EEnemyPoolState::Unmanaged;
+
+	// 서버의 공용 Stack에서 계산된 표현 전용 상태다. Listen Server는 변경 시 직접 이벤트를 받고,
+	// 원격 클라이언트는 OnRep을 통해 동일한 방어막 표시와 색상을 적용한다.
+	UPROPERTY(ReplicatedUsing = OnRep_AdaptationState, VisibleInstanceOnly, BlueprintReadOnly, Category = "Enemy|Adaptation")
+	EEnemyAdaptationState AdaptationState = EEnemyAdaptationState::Normal;
+
+	UPROPERTY(Replicated, VisibleInstanceOnly, BlueprintReadOnly, Category = "Enemy|Pool")
+	int32 PoolGameplayGeneration = 0;
+
+	UPROPERTY(Replicated, VisibleInstanceOnly, BlueprintReadOnly, Category = "Enemy|Pool")
+	int32 PoolLeaseSerial = 0;
+
+	UPROPERTY(Replicated, VisibleInstanceOnly, BlueprintReadOnly, Category = "Enemy|Pool")
+	int32 PoolCombatPhaseIndex = INDEX_NONE;
+
+	UPROPERTY(Replicated, VisibleInstanceOnly, BlueprintReadOnly, Category = "Enemy|Pool")
+	int32 PoolWaveIndex = INDEX_NONE;
+
+	UFUNCTION()
+	void OnRep_PoolState(EEnemyPoolState PreviousState);
+
+	UFUNCTION(BlueprintNativeEvent, Category = "Enemy|Pool|Presentation")
+	void OnPoolSpawnPresentationStarted(int32 GameplayGeneration, int32 LeaseSerial);
+	virtual void OnPoolSpawnPresentationStarted_Implementation(
+		int32 GameplayGeneration,
+		int32 LeaseSerial);
+
+	UFUNCTION(BlueprintNativeEvent, Category = "Enemy|Pool|Presentation")
+	void OnPoolDeathPresentationStarted(int32 GameplayGeneration, int32 LeaseSerial);
+	virtual void OnPoolDeathPresentationStarted_Implementation(
+		int32 GameplayGeneration,
+		int32 LeaseSerial);
+
+	UFUNCTION(BlueprintImplementableEvent, Category = "Enemy|Pool|Presentation")
+	void OnEnemyPoolStateChanged(EEnemyPoolState PreviousState, EEnemyPoolState NewState);
+
+	void ApplyPoolState(EEnemyPoolState PreviousState);
+	void SetPoolState(EEnemyPoolState NewState);
+	void DestroyPoolAIController();
+	void ReturnToOwningPool();
+
+	TWeakObjectPtr<UEnemyPoolSubsystem> OwningPoolSubsystem;
+	TWeakObjectPtr<UEnemyAdaptationSubsystem> CachedEnemyAdaptationSubsystem;
+	EOutlierAdaptationDamageCategory LastAcceptedAdaptationDamageCategory =
+		EOutlierAdaptationDamageCategory::Ignore;
+	bool bDeathCleanupPerformed = false;
+#if WITH_DEV_AUTOMATION_TESTS
+	bool bPoolPresentationAutoCompleteForTesting = true;
+#endif
 
 	// 빙의된 VEC의 AttackAction 입력 진입점.
 	// 소유 클라이언트는 시작/종료 상태만 RPC로 보내고 실제 발사는 서버 무기가 수행한다.

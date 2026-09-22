@@ -18,13 +18,21 @@ enum class EAutoTurretImpactReactionMode : uint8
 	StateTreeInterrupt UMETA(DisplayName = "StateTree Impact Reaction")
 };
 
+UENUM(BlueprintType)
+enum class EAutoTurretLifecycleState : uint8
+{
+	// Room Wave가 수명을 시작하고, 사망 메시가 영구 상태로 남는 전체 흐름을 한 값으로 표현한다.
+	WaitingForWave UMETA(DisplayName = "Waiting For Wave"),
+	Deploying UMETA(DisplayName = "Deploying"),
+	Active UMETA(DisplayName = "Active"),
+	DeadPresentation UMETA(DisplayName = "Dead Presentation"),
+	DeadPersistent UMETA(DisplayName = "Dead Persistent")
+};
+
 USTRUCT(BlueprintType)
 struct OUTLIER_API FAutoTurretBehaviorRow : public FTableRowBase
 {
 	GENERATED_BODY()
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Deploy", meta = (ClampMin = "0.0"))
-	float DeployFallbackDuration = 1.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aim", meta = (ClampMin = "0.0"))
 	float DefaultRotationSpeedDegrees = 150.0f;
@@ -79,6 +87,7 @@ struct OUTLIER_API FAutoTurretBehaviorRow : public FTableRowBase
 	float ImpactRecoverySpeedDegrees = 12.0f;
 };
 
+// Wave 시점에 활성화되는 맵 배치 전용 Enemy다. EnemyPool에는 등록하지 않는다.
 UCLASS()
 class OUTLIER_API AAutoTurret : public AEnemyBase, public IWeaponMuzzleProvider
 {
@@ -105,25 +114,64 @@ public:
 	virtual void AdvanceWeaponMuzzleSequence() override;
 	virtual void ApplyExplosionReaction(const FVector& ExplosionOrigin, float EnemyImpulseScale,
 		float TurretReactionScale, float EffectRatio) override;
+	virtual float GetDeathDestroyDelay() const override;
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|Turret")
-	bool IsDeployed() const { return bDeployed; }
+	bool IsDeployed() const
+	{
+		return TurretLifecycleState == EAutoTurretLifecycleState::Active
+			|| TurretLifecycleState == EAutoTurretLifecycleState::DeadPresentation
+			|| TurretLifecycleState == EAutoTurretLifecycleState::DeadPersistent;
+	}
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|Turret")
-	bool IsDeploying() const { return bDeploymentStarted && !bDeployed; }
+	bool IsDeploying() const
+	{
+		return TurretLifecycleState == EAutoTurretLifecycleState::Deploying;
+	}
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|Turret")
 	bool IsHackedToPlayerTeam() const { return bHackedToPlayerTeam; }
 
+	UFUNCTION(BlueprintPure, Category = "Enemy|Turret|Room Wave")
+	bool IsWaitingForRoomWaveActivation() const
+	{
+		return TurretLifecycleState == EAutoTurretLifecycleState::WaitingForWave;
+	}
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Turret|Room Wave")
+	EAutoTurretLifecycleState GetTurretLifecycleState() const { return TurretLifecycleState; }
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Turret|Room Wave")
+	int32 GetRoomWaveGameplayGeneration() const { return RoomWaveGameplayGeneration; }
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Turret|Room Wave")
+	int32 GetRoomWaveActivationSerial() const { return RoomWaveActivationSerial; }
+
+	int32 GetCombatPhaseIndex() const { return CombatPhaseIndex; }
+	int32 GetWaveIndex() const { return WaveIndex; }
+	FName GetPersistentTurretId() const { return PersistentTurretId; }
+
 	UFUNCTION(BlueprintPure, Category = "Enemy|Turret")
 	const FAutoTurretBehaviorRow& GetTurretBehavior() const { return RuntimeTurretBehavior; }
 
-	bool BeginTurretDeployment();
+	bool PrepareForRoomWaveActivation();
 	void PlayFireMontage();
 	void StopFireMontage();
 
+#if WITH_DEV_AUTOMATION_TESTS
+	void ConfigureWaveRegistrationForTesting(
+		FGameplayTag InRoomTag,
+		int32 InCombatPhaseIndex,
+		int32 InWaveIndex,
+		FName InPersistentTurretId);
+#endif
+
 	UFUNCTION(BlueprintCallable, Category = "Enemy|Turret|Deploy")
-	void NotifyDeploySequenceFinished();
+	void NotifyDeploySequenceFinished(int32 GameplayGeneration, int32 ActivationSerial);
+
+	UFUNCTION(BlueprintCallable, Category = "Enemy|Turret|Death")
+	void NotifyDeathSequenceFinished(int32 GameplayGeneration, int32 ActivationSerial);
 
 	bool UpdateTurretAimAtActor(AActor* TargetActor, float DeltaTime, bool bAttackRotation);
 	bool UpdateTurretAimAtLocation(const FVector& TargetLocation, float DeltaTime,
@@ -133,12 +181,17 @@ public:
 
 protected:
 	virtual void OnConstruction(const FTransform& Transform) override;
+	virtual void PostInitializeComponents() override;
+	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+#if WITH_EDITOR
+	virtual EDataValidationResult IsDataValid(FDataValidationContext& Context) const override;
+#endif
 	virtual void ApplyClassStatOverrides() override;
 	virtual void ApplyMovementFromRuntimeStat() override;
 	virtual void PrepareForStateTreeStart() override;
+	virtual bool ShouldActivateAsPreplacedEnemy() const override;
 	virtual void HandleDeath() override;
-	virtual float GetDeathDestroyDelay() const override;
 	virtual void HandleHackEffect(FGameplayTag EffectTag, const FHackResultContext& Context) override;
 	virtual void HandleHackStarted(const FHackQueryContext& Context) override;
 	virtual void HandleHackCompleted(const FHackResultContext& Context) override;
@@ -183,6 +236,18 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Enemy|Turret|Data")
 	FDataTableRowHandle TurretBehaviorRow;
 
+	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Enemy|Turret|Room Wave",
+		meta = (ClampMin = "0", UIMin = "0"))
+	int32 CombatPhaseIndex = 0;
+
+	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Enemy|Turret|Room Wave",
+		meta = (ClampMin = "0", UIMin = "0"))
+	int32 WaveIndex = 0;
+
+	// 체크포인트가 사망 메시를 다시 찾을 때 사용하는 World 전역 Stable ID다.
+	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Enemy|Turret|Room Wave")
+	FName PersistentTurretId;
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Turret|Animation")
 	TObjectPtr<UAnimMontage> DeployMontage;
 
@@ -200,29 +265,28 @@ protected:
 	EAutoTurretImpactReactionMode ImpactReactionMode =
 		EAutoTurretImpactReactionMode::ConcurrentOffsetRecovery;
 
-	UPROPERTY(ReplicatedUsing = OnRep_DeploymentState, VisibleInstanceOnly, BlueprintReadOnly, Category = "Enemy|Turret")
-	uint8 bDeploymentStarted : 1 = false;
-
-	UPROPERTY(ReplicatedUsing = OnRep_DeploymentState, VisibleInstanceOnly, BlueprintReadOnly, Category = "Enemy|Turret")
-	uint8 bDeployed : 1 = false;
+	// 수명 상태를 하나로 복제해 Waiting/Deploying/Active 조합이 서로 어긋나지 않게 한다.
+	UPROPERTY(ReplicatedUsing = OnRep_TurretLifecycleState, VisibleInstanceOnly, BlueprintReadOnly,
+		Category = "Enemy|Turret|Room Wave")
+	EAutoTurretLifecycleState TurretLifecycleState = EAutoTurretLifecycleState::WaitingForWave;
 
 	UPROPERTY(ReplicatedUsing = OnRep_HackedTeam, VisibleInstanceOnly, BlueprintReadOnly, Category = "Enemy|Turret")
 	uint8 bHackedToPlayerTeam : 1 = false;
 
 	UFUNCTION()
-	void OnRep_DeploymentState();
+	void OnRep_TurretLifecycleState();
 
 	UFUNCTION()
 	void OnRep_HackedTeam();
 
 	UFUNCTION(BlueprintImplementableEvent, Category = "Enemy|Turret|Deploy")
-	void OnTurretDeploymentStarted();
+	void OnTurretDeploymentStarted(int32 GameplayGeneration, int32 ActivationSerial);
 
 	UFUNCTION(BlueprintImplementableEvent, Category = "Enemy|Turret|Deploy")
 	void OnTurretDeploymentCompleted();
 
 	UFUNCTION(NetMulticast, Reliable)
-	void MulticastBeginTurretDeployment();
+	void MulticastBeginTurretDeployment(int32 GameplayGeneration, int32 ActivationSerial);
 
 	UFUNCTION(NetMulticast, Unreliable)
 	void MulticastPlayFireMontage();
@@ -231,10 +295,14 @@ protected:
 	void MulticastStopFireMontage();
 
 	UFUNCTION(NetMulticast, Reliable)
-	void MulticastPlayDeathMontage();
+	void MulticastPlayDeathMontage(int32 GameplayGeneration, int32 ActivationSerial);
+
+	UFUNCTION(BlueprintImplementableEvent, Category = "Enemy|Turret|Death")
+	void OnTurretDeathPresentationStarted(int32 GameplayGeneration, int32 ActivationSerial);
 
 private:
 	friend struct FEnemyRecoverTurretImpactOffsetTask;
+	friend class URoomCombatSubsystem;
 
 	void StartImpactRecovery();
 	void TickImpactRecovery();
@@ -246,9 +314,20 @@ private:
 	void ConfigureHeadPivotAttachment();
 	void ApplyTurretCollisionState();
 	bool IsNoDamageBone(FName BoneName) const;
+	bool IsCombatActive() const;
 	void ConfigureTurretHackPolicy();
-	void ApplyDeploymentRuntimeState();
+	void SetTurretLifecycleState(EAutoTurretLifecycleState NewState);
+	void ApplyTurretLifecycleState();
+	void ApplyWaitingForWaveState();
+	void ApplyDeadPersistentPose();
+	bool RestoreDeadPersistentState();
+	bool BeginRoomWaveDeployment(int32 GameplayGeneration);
+	bool BeginTurretDeploymentInternal();
 	void CompleteTurretDeployment();
+	bool CompleteRoomWaveDeployment();
+	bool MatchesRoomWaveLifecycle(int32 GameplayGeneration, int32 ActivationSerial) const;
+	void ResetRoomWaveLifecycle(const TCHAR* ResetReason);
+	void InvalidateRoomWaveLifecycle();
 	void ApplyHackedTeamState();
 	static void PlayMontageOnMesh(USkeletalMeshComponent* TargetMesh, UAnimMontage* Montage);
 	static void StopMontageOnMesh(USkeletalMeshComponent* TargetMesh, UAnimMontage* Montage = nullptr);
@@ -258,9 +337,13 @@ private:
 	FQuat HeadMountBasisRotation = FQuat::Identity;
 	FVector CurrentAimLocation = FVector::ZeroVector;
 	TArray<FName> AimOriginMuzzleSockets;
-	FTimerHandle DeployFallbackTimerHandle;
 	FTimerHandle ImpactRecoveryTimerHandle;
 	double LastImpactRecoveryUpdateTimeSeconds = 0.0;
 	float ImpactRecoveryHoldRemaining = 0.0f;
 	int32 CurrentMuzzleGroupIndex = 0;
+	bool bWaveTurretRegistered = false;
+	bool bPersistentTurretIdRegistered = false;
+	bool bRoomWaveDeploymentRequested = false;
+	int32 RoomWaveGameplayGeneration = INDEX_NONE;
+	int32 RoomWaveActivationSerial = 0;
 };

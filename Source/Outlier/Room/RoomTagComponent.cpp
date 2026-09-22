@@ -29,6 +29,30 @@ void URoomTagComponent::LeaveRoom(ARoomVolume* Room)
 	RefreshCurrentRoom();
 }
 
+void URoomTagComponent::AssignDefaultRoomTag(FGameplayTag InRoomTag)
+{
+	if (!GetOwner() || !GetOwner()->HasAuthority())
+	{
+		return;
+	}
+
+	DefaultRoomTag = InRoomTag;
+	RefreshCurrentRoom();
+}
+
+void URoomTagComponent::ClearRuntimeRoomAssignment()
+{
+	if (!GetOwner() || !GetOwner()->HasAuthority())
+	{
+		return;
+	}
+
+	// Pool로 돌아간 Actor가 이전 위치의 Overlap과 전투 귀속을 다음 대여에 남기지 않는다.
+	ActiveRooms.Reset();
+	DefaultRoomTag = FGameplayTag();
+	RefreshCurrentRoom();
+}
+
 FGameplayTag URoomTagComponent::GetCurrentRoomTag() const
 {
 	return CurrentRoomTag;

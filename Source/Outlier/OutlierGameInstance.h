@@ -25,7 +25,8 @@ public:
 	virtual void Init() override;
 	virtual void Shutdown() override;
 
-	void NotifyArenaHandoffStarted();
+	void NotifyArenaHandoffStarted(const FString& ArenaUrl);
+	void PrepareForExplicitLeave();
 
 private:
 	friend class FOutlierArenaReturnLifecycleTest;
@@ -39,6 +40,8 @@ private:
 		const FString& ErrorString);
 	void TryBootstrapArenaWorker(UWorld* LoadedWorld);
 	bool HandleArenaWorkerBootstrapTick(float DeltaTime);
+	bool HandleArenaReconnectTick(float DeltaTime);
+	void ScheduleArenaReconnect();
 	bool TryQueueLobbyRecovery();
 	bool TravelToLobby(UWorld* World);
 	void ResetArenaHandoffState();
@@ -58,7 +61,12 @@ private:
 	bool bLobbyRecoveryAttempted = false;
 	FDelegateHandle NetworkFailureHandle;
 	FTSTicker::FDelegateHandle ArenaWorkerBootstrapTickerHandle;
+	FTSTicker::FDelegateHandle ArenaReconnectTickerHandle;
 	TWeakObjectPtr<UWorld> ArenaWorkerBootstrapWorld;
 	int32 ArenaWorkerReadyStableFrames = 0;
+	// Worker 재접속은 최초 Handoff의 신원 옵션이 포함된 URL을 그대로 재사용한다.
+	FString LastArenaHandoffUrl;
+	double ArenaReconnectDeadlineSeconds = 0.0;
+	bool bArenaReconnectActive = false;
 
 };

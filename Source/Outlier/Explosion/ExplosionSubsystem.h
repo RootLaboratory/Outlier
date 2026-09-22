@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Damage/OutlierDamageReceiver.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "Explosion/ExplosionTypes.h"
 #include "ExplosionSubsystem.generated.h"
@@ -22,6 +23,7 @@ public:
 		UExplosionComponent* SourceComponent,
 		const FVector& ExplosionLocation,
 		AController* EventInstigator,
+		EOutlierAdaptationDamageCategory AdaptationDamageCategory,
 		const FExplosionProfileRow& Profile);
 
 	// 중심과 대상 사이 거리를 기준으로 최대 피해에서 최소 피해까지 선형 감쇠한다.
@@ -38,6 +40,8 @@ private:
 	{
 		TWeakObjectPtr<UExplosionComponent> SourceComponent;
 		TWeakObjectPtr<AController> EventInstigator;
+		EOutlierAdaptationDamageCategory AdaptationDamageCategory =
+			EOutlierAdaptationDamageCategory::Ignore;
 		FVector Location = FVector::ZeroVector;
 		FExplosionProfileRow Profile;
 	};

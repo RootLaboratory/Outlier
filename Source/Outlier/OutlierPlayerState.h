@@ -98,12 +98,6 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Stat Allocator")
 	bool IsStatAllocatorExitPending() const { return bStatAllocatorExitPending; }
 
-	UFUNCTION(BlueprintCallable, Category = "Pair")
-	void SetArenaId(int32 NewArenaId);
-
-	UFUNCTION(BlueprintPure, Category = "Pair")
-	int32 GetArenaId() const { return ArenaId; }
-
 	UFUNCTION(BlueprintCallable, Category = "Lobby")
 	void SetPendingLobbyMatchId(int32 NewPendingLobbyMatchId);
 
@@ -134,14 +128,17 @@ public:
 	// 프리셋 스테이지 확정 시 GameMode가 페어 양쪽 PlayerState에 호출한다.
 	void FlushActivatedUpgradeNodes(int32 NewNodeCount);
 
+	// 체크포인트는 증감이 아니라 저장 시점의 값으로 돌아가야 하므로 역할 배열을 통째로 교체한다.
+	void RestoreCheckpointProgress(
+		int32 SavedNodeCount,
+		EOutlierUpgradeRole UpgradeRole,
+		const TArray<FName>& SavedActivatedNodeIds);
+
 	UFUNCTION(BlueprintCallable, Category = "Preset")
 	void SetPendingPresetSelection(FName NewStageId);
 
 	UFUNCTION(BlueprintPure, Category = "Preset")
 	FName GetPendingPresetSelection() const { return PendingPresetSelection; }
-
-	UPROPERTY(Replicated)
-	int32 ArenaId = INDEX_NONE;
 
 protected:
 	UPROPERTY(ReplicatedUsing = OnRep_PlayerRole)
@@ -289,5 +286,7 @@ public:
 
 	void SetLoadoutSnapshot(const FOutlierLoadoutSnapshot& NewSnapshot);
 	const FOutlierLoadoutSnapshot& GetLoadoutSnapshot() const { return LoadoutSnapshot; }
+	// 재접속 시 새 PlayerState에 판 진행 데이터만 복원한다. 신원과 Pair 링크는 포함하지 않는다.
+	void CopyReconnectGameplayStateFrom(const AOutlierPlayerState& Source);
 	FOnPendingPresetSelectionChanged OnPendingPresetSelectionChanged;
 };

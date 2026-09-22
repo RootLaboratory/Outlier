@@ -255,16 +255,6 @@ void AOutlierPlayerState::SetStatAllocatorExitPending(bool bPending)
 	ForceNetUpdate();
 }
 
-void AOutlierPlayerState::SetArenaId(int32 NewArenaId)
-{
-	if (!HasAuthority())
-	{
-		return;
-	}
-
-	ArenaId = NewArenaId;
-}
-
 void AOutlierPlayerState::SetPendingLobbyMatchId(int32 NewPendingLobbyMatchId)
 {
 	if (!HasAuthority() || PendingLobbyMatchId == NewPendingLobbyMatchId)
@@ -477,6 +467,46 @@ void AOutlierPlayerState::SetNodeCountInternal(int32 NewNodeCount)
 	ForceNetUpdate();
 }
 
+void AOutlierPlayerState::RestoreCheckpointProgress(
+	int32 SavedNodeCount,
+	EOutlierUpgradeRole UpgradeRole,
+	const TArray<FName>& SavedActivatedNodeIds)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	TArray<FName>* ActivatedNodeIds = nullptr;
+	switch (UpgradeRole)
+	{
+	case EOutlierUpgradeRole::Shooter:
+		ActivatedNodeIds = &ShooterActivatedUpgradeNodeIds;
+		break;
+	case EOutlierUpgradeRole::Partner:
+		ActivatedNodeIds = &PartnerActivatedUpgradeNodeIds;
+		break;
+	default:
+		return;
+	}
+
+	// AttributeSet 수치를 저장해 덮는 대신 업그레이드 목록을 되돌리고 기존 변경 통보로 효과를 재적용한다.
+	const bool bNodesChanged = *ActivatedNodeIds != SavedActivatedNodeIds;
+	if (bNodesChanged)
+	{
+		*ActivatedNodeIds = SavedActivatedNodeIds;
+		HandleActivatedUpgradeNodesChanged();
+	}
+
+	const int32 PreviousNodeCount = NodeCount;
+	SetNodeCountInternal(SavedNodeCount);
+	if (bNodesChanged && PreviousNodeCount == NodeCount)
+	{
+		// SetNodeCountInternal이 같은 값에서 조기 반환해도 노드 배열 변경은 즉시 복제해야 한다.
+		ForceNetUpdate();
+	}
+}
+
 void AOutlierPlayerState::SetAcquiredSuit(bool Acquire)
 {
 	if (!HasAuthority())
@@ -562,6 +592,28 @@ void AOutlierPlayerState::SetLoadoutSnapshot(const FOutlierLoadoutSnapshot& NewS
 	LoadoutSnapshot = NewSnapshot;
 }
 
+void AOutlierPlayerState::CopyReconnectGameplayStateFrom(const AOutlierPlayerState& Source)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	// 끊긴 Controller와 함께 사라지는 PlayerState에서 판 진행 데이터만 옮긴다.
+	// PlayerId, Role, Pair 링크는 새 접속 요청과 RefreshPairLinks가 다시 확정하므로 복사하지 않는다.
+	CheckpointData = Source.CheckpointData;
+	NodeCount = Source.NodeCount;
+	bStatAllocatorExitPending = Source.bStatAllocatorExitPending;
+	ShooterActivatedUpgradeNodeIds = Source.ShooterActivatedUpgradeNodeIds;
+	PartnerActivatedUpgradeNodeIds = Source.PartnerActivatedUpgradeNodeIds;
+	PendingPresetSelection = Source.PendingPresetSelection;
+	bHasAcquiredSuit = Source.bHasAcquiredSuit;
+	SuitFirstPersonMesh = Source.SuitFirstPersonMesh;
+	SuitThirdPersonMesh = Source.SuitThirdPersonMesh;
+	LoadoutSnapshot = Source.LoadoutSnapshot;
+	ForceNetUpdate();
+}
+
 void AOutlierPlayerState::SetTemporaryPlayerId(const FGuid& NewPlayerId)
 {
 	if (!HasAuthority()
@@ -643,7 +695,6 @@ void AOutlierPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& 
 	DOREPLIFETIME(AOutlierPlayerState, PairId);
 	DOREPLIFETIME_CONDITION(AOutlierPlayerState, NodeCount, COND_OwnerOnly); //공유될 필요는 없어서 소유자만 복제
 	DOREPLIFETIME(AOutlierPlayerState, bStatAllocatorExitPending);
-	DOREPLIFETIME(AOutlierPlayerState, ArenaId);
 	DOREPLIFETIME(AOutlierPlayerState, PendingLobbyMatchId);
 	DOREPLIFETIME(AOutlierPlayerState, PendingLobbyRole);
 	DOREPLIFETIME(AOutlierPlayerState, PendingLobbySlotIndex);

@@ -29,6 +29,8 @@ protected:
 public:
 	void EnterRoom(ARoomVolume* Room);
 	void LeaveRoom(ARoomVolume* Room);
+	void AssignDefaultRoomTag(FGameplayTag InRoomTag);
+	void ClearRuntimeRoomAssignment();
 
 	FGameplayTag GetCurrentRoomTag() const;
 	FGameplayTag GetDefaultRoomTag() const;

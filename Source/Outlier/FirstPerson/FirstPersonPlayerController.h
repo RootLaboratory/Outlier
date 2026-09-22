@@ -8,6 +8,7 @@
 #include "Audio/OutlierAudioTypes.h"
 #include "OutlierPlayerState.h"
 #include "PlayerUIProvider.h"
+#include "Save/OutlierCheckpointRestartVote.h"
 #include "UI/UILayerTypes.h"
 #include "Upgrade/OutlierUpgradeTypes.h"
 #include "Containers/Ticker.h"
@@ -45,6 +46,10 @@ namespace FirstPersonInputModeTags
 	}
 }
 
+DECLARE_MULTICAST_DELEGATE_OneParam(
+	FOnCheckpointRestartVoteViewChanged,
+	EOutlierCheckpointRestartVoteView);
+
 /**
  * 
  */
@@ -69,7 +74,7 @@ public:
 	void ClientStopResolvedAudio(int32 AudioInstanceId);
 
 	UFUNCTION(Client, Reliable)
-	void ClientArenaLoad(int32 ArenaId, FVector InSpawnLocation);
+	void ClientArenaLoad(FVector InSpawnLocation);
 
 	UFUNCTION(Client, Reliable)
 	void ClientPushUILayer(const FUILayerPushRequest& Request);
@@ -79,6 +84,19 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "UI|InGame Setting")
 	void RequestCloseInGameSetting();
+
+	void RequestLeaveGame();
+
+	void RequestCheckpointRestart();
+	void RequestCheckpointRestartResponse(bool bApprove);
+	void RequestCancelCheckpointRestart();
+	bool CanRequestCheckpointRestart() const { return bCanRequestCheckpointRestart; }
+	EOutlierCheckpointRestartVoteView GetCheckpointRestartVoteView() const
+	{
+		return CheckpointRestartVoteView;
+	}
+
+	FOnCheckpointRestartVoteViewChanged OnCheckpointRestartVoteViewChanged;
 
 	UFUNCTION(Client, Reliable)
 	void ClientPopInGameSettingLayer(UObject* RequestOwner);
@@ -93,7 +111,10 @@ public:
 	void ServerNotifyArenaReady();
 
 	UFUNCTION(Server, Reliable)
-	void ServerNotifyArenaGameplayGCReady(int32 ArenaId);
+	void ServerNotifyArenaGameplayGCReady(uint32 GameplayGeneration);
+
+	UFUNCTION(Client, Reliable)
+	void ClientRetryArenaGameplayReload(uint32 GameplayGeneration);
 
 	UFUNCTION(Server, Reliable)
 	void ServerOpenInGameSetting();
@@ -101,12 +122,38 @@ public:
 	UFUNCTION(Server, Reliable)
 	void ServerCloseInGameSetting();
 
+	UFUNCTION(Server, Reliable)
+	void ServerRequestLeaveGame();
+
+	UFUNCTION(Server, Reliable)
+	void ServerRequestCheckpointRestart();
+
+	UFUNCTION(Server, Reliable)
+	void ServerRespondCheckpointRestart(bool bApprove);
+
+	UFUNCTION(Server, Reliable)
+	void ServerCancelCheckpointRestart();
+
+	UFUNCTION(Client, Reliable)
+	void ClientConfigureCheckpointRestart(bool bCanRequest);
+
+	UFUNCTION(Client, Reliable)
+	void ClientSetCheckpointRestartVoteView(EOutlierCheckpointRestartVoteView VoteView);
+
+	UFUNCTION(Client, Reliable)
+	void ClientPrepareForArenaExit();
+
+	// Listen Host의 로컬 Controller에는 Client RPC가 전송되지 않으므로 서버가 같은 적용 함수를 직접 호출한다.
+	void ConfigureCheckpointRestartFromServer(bool bCanRequest);
+	void SetCheckpointRestartVoteViewFromServer(EOutlierCheckpointRestartVoteView VoteView);
+	void CloseCheckpointRestartVoteUIFromServer(UObject* RequestOwner);
+
 	// ArenaWorker(dedi)는 서버에서 즉시 Possess하고 이 RPC로 클라 준비를 시작시킨다.
 	// Possess 직후라 클라에는 아직 Pawn이 복제되지 않았고, Pawn이 들어있는 WP 셀을
 	// 스트리밍해야 Pawn이 관련(relevant)해지는 순환이 생긴다. ClientArenaLoad와 동일하게
 	// 서버가 이미 계산해둔 스폰 위치를 같이 넘겨서 그 순환을 끊는다.
 	UFUNCTION(Client, Reliable)
-	void ClientPrepareForArenaStart(int32 ArenaId, FVector InSpawnLocation);
+	void ClientPrepareForArenaStart(FVector InSpawnLocation);
 
 	// 서버에서 계산한 폭발 충격을 소유 클라이언트의 CameraManager에 전달한다.
 	UFUNCTION(Client, Unreliable)
@@ -128,10 +175,10 @@ public:
 
 	// 디버그: 클라 arena 스트리밍 인스턴스를 강제 언로드 후 재로드
 	UFUNCTION(Client, Reliable)
-	void ClientArenaReload(int32 ArenaId, FVector InSpawnLocation);
+	void ClientArenaReload(FVector InSpawnLocation);
 
 	UFUNCTION(Client, Reliable)
-	void ClientArenaGameplayReload(int32 ArenaId, FVector InSpawnLocation);
+	void ClientArenaGameplayReload(uint32 GameplayGeneration, FVector InSpawnLocation);
 
 	// 사망 시 프리셋 스테이지 선택 팝업을 띄운다 (페어 양쪽 컨트롤러에 각각 호출됨).
 	UFUNCTION(Client, Reliable)
@@ -143,8 +190,9 @@ public:
 	void Server_SelectPresetStage(FName StageId);
 
 	UFUNCTION()
-	void HandleArenaShown(int32 ShownArenaId);
-	void HandleArenaGameplayGCReady(int32 ArenaId);
+	void HandleArenaShown();
+	void HandleArenaGameplayReady(uint32 GameplayGeneration);
+	void HandleArenaGameplayGCReady(uint32 GameplayGeneration);
 	void ControlMainWidget(bool InFlag) const;
 
 	UFUNCTION(BlueprintCallable, Category = "Input|Input Mode")
@@ -199,11 +247,11 @@ protected:
 	void ReportLoadedLevelsVisibilityToServer();
 	void TryNotifyArenaStartReady();
 	// 리로드 RPC가 실어 보낸 새 스폰 위치를 적용한다(옛 임시 소스 폐기 포함).
-	void ApplyServerArenaSpawnLocation(int32 ArenaId, const FVector& InSpawnLocation);
+	void ApplyServerArenaSpawnLocation(const FVector& InSpawnLocation);
 	bool TickClientArenaContentReady(float DeltaTime);
 	void ClearClientArenaContentWait();
 	void ReleaseClientArenaStreamingSource();
-	bool ResolveClientArenaStreamingLocation(int32 ArenaId, FVector& OutLocation) const;
+	bool ResolveClientArenaStreamingLocation(FVector& OutLocation) const;
 	virtual void RefreshPostProcessState();
 
 	UFUNCTION()
@@ -212,7 +260,8 @@ protected:
 
 protected:
 
-	int32 PendingArenaId = INDEX_NONE;
+	bool bHasPendingArenaRequest = false;
+	uint32 PendingGameplayGeneration = 0;
 	// 서버가 이미 계산해둔 실제 스폰 위치. Possess 전이라 GetPawn()이 아직 없을 때
 	// ResolveClientArenaStreamingLocation이 레벨 액터를 추측해서 찾는 대신 이 값을 그대로 쓴다.
 	FVector PendingArenaSpawnLocation = FVector::ZeroVector;
@@ -260,4 +309,9 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "UI|Preset")
 	TSubclassOf<UPreSetLoadWidget> PresetLoadWidgetClass;
+
+	bool bCanRequestCheckpointRestart = false;
+	bool bExplicitLeaveRequested = false;
+	EOutlierCheckpointRestartVoteView CheckpointRestartVoteView =
+		EOutlierCheckpointRestartVoteView::None;
 };

@@ -19,6 +19,7 @@ public:
 protected:
 	virtual void BeginPlay() override;
 	virtual void HandleDeath() override;
+	virtual void ResetPoolPresentationState() override;
 
 	/** Assign the fractured Rest Collection on a Blueprint derived from this class. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|Death")

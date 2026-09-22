@@ -12,17 +12,18 @@
 #include "FirstPersonPlayerCameraManager.h"
 #include "Kismet/GameplayStatics.h"
 #include "LocalPlayerUISubSystem.h"
+#include "OutlierGameInstance.h"
 #include "OutlierGameMode.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Outlier.h"
 #include "MainUIBase.h"
+#include "UI/UILayerGameplayTags.h"
 #include "Shooter/ShooterCharacter.h"
-#include "Network/OutlierArenaPoolSubsystem.h"
+#include "Network/OutlierArenaSubsystem.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
 #include "UI/InGamePauseWidget.h"
 #include "UI/InGameSettingWidget.h"
 #include "UI/PreSetLoadWidget.h"
-#include "UI/UILayerGameplayTags.h"
 #include "Upgrade/OutlierUpgradeComponent.h"
 #include "Upgrade/OutlierUpgradeSetData.h"
 #include "Components/SceneComponent.h"
@@ -233,6 +234,110 @@ void AFirstPersonPlayerController::RequestCloseInGameSetting()
 	}
 
 	ServerCloseInGameSetting();
+}
+
+void AFirstPersonPlayerController::RequestLeaveGame()
+{
+	if (!IsLocalController() || bExplicitLeaveRequested)
+	{
+		return;
+	}
+
+	// 서버가 자발적 이탈을 먼저 확정해야 Logout을 장애 재접속으로 분류하지 않는다.
+	// Reliable RPC를 전송한 뒤 로컬 Handoff를 지워 후속 NetworkFailure의 재접속도 막는다.
+	bExplicitLeaveRequested = true;
+	ServerRequestLeaveGame();
+	if (UOutlierGameInstance* OutlierGameInstance =
+		Cast<UOutlierGameInstance>(GetGameInstance()))
+	{
+		OutlierGameInstance->PrepareForExplicitLeave();
+	}
+}
+
+void AFirstPersonPlayerController::RequestCheckpointRestart()
+{
+	// 로컬 플래그는 UI 요청을 거르는 용도다. 실제 요청 권한과 투표 가능 상태는 서버 GameMode가 다시 판정한다.
+	if (!IsLocalController() || !bCanRequestCheckpointRestart)
+	{
+		return;
+	}
+
+	ServerRequestCheckpointRestart();
+}
+
+void AFirstPersonPlayerController::RequestCheckpointRestartResponse(bool bApprove)
+{
+	if (!IsLocalController()
+		|| CheckpointRestartVoteView != EOutlierCheckpointRestartVoteView::ResponderPrompt)
+	{
+		return;
+	}
+
+	ServerRespondCheckpointRestart(bApprove);
+}
+
+void AFirstPersonPlayerController::RequestCancelCheckpointRestart()
+{
+	if (!IsLocalController()
+		|| CheckpointRestartVoteView != EOutlierCheckpointRestartVoteView::RequesterWaiting)
+	{
+		return;
+	}
+
+	ServerCancelCheckpointRestart();
+}
+
+void AFirstPersonPlayerController::ClientConfigureCheckpointRestart_Implementation(
+	bool bCanRequest)
+{
+	bCanRequestCheckpointRestart = bCanRequest;
+	OnCheckpointRestartVoteViewChanged.Broadcast(CheckpointRestartVoteView);
+}
+
+void AFirstPersonPlayerController::ClientSetCheckpointRestartVoteView_Implementation(
+	EOutlierCheckpointRestartVoteView VoteView)
+{
+	CheckpointRestartVoteView = VoteView;
+	OnCheckpointRestartVoteViewChanged.Broadcast(CheckpointRestartVoteView);
+}
+
+void AFirstPersonPlayerController::ClientPrepareForArenaExit_Implementation()
+{
+	if (UOutlierGameInstance* OutlierGameInstance =
+		Cast<UOutlierGameInstance>(GetGameInstance()))
+	{
+		OutlierGameInstance->PrepareForExplicitLeave();
+	}
+}
+
+void AFirstPersonPlayerController::ConfigureCheckpointRestartFromServer(bool bCanRequest)
+{
+	// Listen Host는 같은 프로세스의 로컬 UI를 즉시 갱신하고, 원격 플레이어만 Client RPC로 전달한다.
+	if (IsLocalController())
+	{
+		ClientConfigureCheckpointRestart_Implementation(bCanRequest);
+		return;
+	}
+
+	ClientConfigureCheckpointRestart(bCanRequest);
+}
+
+void AFirstPersonPlayerController::SetCheckpointRestartVoteViewFromServer(
+	EOutlierCheckpointRestartVoteView VoteView)
+{
+	if (IsLocalController())
+	{
+		ClientSetCheckpointRestartVoteView_Implementation(VoteView);
+		return;
+	}
+
+	ClientSetCheckpointRestartVoteView(VoteView);
+}
+
+void AFirstPersonPlayerController::CloseCheckpointRestartVoteUIFromServer(
+	UObject* RequestOwner)
+{
+	PopInGameSettingLayerFromController(this, RequestOwner);
 }
 
 void AFirstPersonPlayerController::ClientPopInGameSettingLayer_Implementation(
@@ -645,6 +750,15 @@ void AFirstPersonPlayerController::BindMainUI()
 void AFirstPersonPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	ClearClientArenaContentWait();
+	// 재접속이나 역할 Controller 교체로 이전 PC가 먼저 파괴될 수 있다. Delegate가 남아 있으면
+	// 다음 Generation의 Ready를 폐기될 PC가 받아 서버에 잘못 보고하므로 여기서 직접 끊는다.
+	if (UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
+		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()
+		: nullptr)
+	{
+		ArenaSubsystem->OnArenaGameplayGCReady.RemoveAll(this);
+		ArenaSubsystem->OnArenaGameplayReady.RemoveAll(this);
+	}
 
 	// AddToViewport로 붙인 Widget은 GameViewportClient가 들고 있어서 PC가 파괴돼도
 	// 화면에 남는다. Role에 따라 Controller를 교체할 때 이전 Controller의 MainUI가
@@ -704,48 +818,41 @@ void AFirstPersonPlayerController::InitializeOutlierPlayerState()
 	//);
 }
 
-void AFirstPersonPlayerController::ClientArenaLoad_Implementation(int32 ArenaId, FVector InSpawnLocation)
+void AFirstPersonPlayerController::ClientArenaLoad_Implementation(FVector InSpawnLocation)
 {
 	// 아직 Possess 전이라 GetPawn()이 없는 구간에서 스트리밍 소스를 어디에 둬야 할지,
 	// 서버가 이미 계산해둔 실제 스폰 위치를 그대로 받아 저장해둔다 (레벨 액터 추측 금지).
 	PendingArenaSpawnLocation = InSpawnLocation;
 	bHasPendingArenaSpawnLocation = true;
 
-	UOutlierArenaPoolSubsystem* ArenaPool = GetWorld()
-		? GetWorld()->GetSubsystem<UOutlierArenaPoolSubsystem>()
+	UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
+		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()
 		: nullptr;
 
-	if (!ArenaPool)
+	if (!ArenaSubsystem)
 	{
-		UE_LOG(LogTemp, Error, TEXT("[Arena] ClientArenaLoad: ArenaPool is null"));
+		UE_LOG(LogTemp, Error, TEXT("[Arena] ClientArenaLoad: ArenaSubsystem is null"));
 		return;
 	}
 
-	ArenaPool->EnsureArenaLoaded(ArenaId);
+	ArenaSubsystem->EnsureArenaLoaded();
 
-	if (ArenaPool->IsArenaReady(ArenaId))
+	if (ArenaSubsystem->IsArenaReady())
 	{
-		PendingArenaId = ArenaId;
+		bHasPendingArenaRequest = true;
 		bWaitingForArenaStart = true;
 		TryNotifyArenaStartReady();
 		return;
 	}
 
-	PendingArenaId = ArenaId;
-	ArenaPool->OnArenaShown.AddUObject(this, &AFirstPersonPlayerController::HandleArenaShown);
+	bHasPendingArenaRequest = true;
+	ArenaSubsystem->OnArenaShown.AddUObject(this, &AFirstPersonPlayerController::HandleArenaShown);
 }
 
 void AFirstPersonPlayerController::Server_RequestArenaReload_Implementation()
 {
-	AOutlierPlayerState* PS = GetPlayerState<AOutlierPlayerState>();
-	UE_LOG(LogTemp, Warning, TEXT("[DebugReload] Server_RequestArenaReload PC=%s Auth=%d PS=%s ArenaId=%d"),
-		*GetNameSafe(this), HasAuthority(), *GetNameSafe(PS), PS ? PS->GetArenaId() : -2);
-
-	if (!PS || PS->GetArenaId() == INDEX_NONE)
-	{
-		UE_LOG(LogTemp, Error, TEXT("[DebugReload] Bail: PS null or ArenaId==INDEX_NONE"));
-		return;
-	}
+	UE_LOG(LogTemp, Warning, TEXT("[DebugReload] Server_RequestArenaReload PC=%s Auth=%d"),
+		*GetNameSafe(this), HasAuthority());
 
 	AOutlierGameMode* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr;
 	if (!GM)
@@ -757,7 +864,7 @@ void AFirstPersonPlayerController::Server_RequestArenaReload_Implementation()
 	GM->DebugReloadArena(this);
 }
 
-void AFirstPersonPlayerController::ApplyServerArenaSpawnLocation(int32 ArenaId, const FVector& InSpawnLocation)
+void AFirstPersonPlayerController::ApplyServerArenaSpawnLocation(const FVector& InSpawnLocation)
 {
 	PendingArenaSpawnLocation = InSpawnLocation;
 	bHasPendingArenaSpawnLocation = true;
@@ -769,86 +876,101 @@ void AFirstPersonPlayerController::ApplyServerArenaSpawnLocation(int32 ArenaId, 
 	ClientArenaReadyStableFrames = 0;
 
 	UE_LOG(LogTemp, Display,
-		TEXT("[Arena] Reload target received ArenaId=%d SpawnLocation=%s"),
-		ArenaId,
+		TEXT("[Arena] Reload target received SpawnLocation=%s"),
 		*InSpawnLocation.ToString());
 }
 
-void AFirstPersonPlayerController::ClientArenaReload_Implementation(int32 ArenaId, FVector InSpawnLocation)
+void AFirstPersonPlayerController::ClientArenaReload_Implementation(FVector InSpawnLocation)
 {
-	UOutlierArenaPoolSubsystem* ArenaPool = GetWorld()
-		? GetWorld()->GetSubsystem<UOutlierArenaPoolSubsystem>()
+	UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
+		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()
 		: nullptr;
-	if (!ArenaPool)
+	if (!ArenaSubsystem)
 	{
 		return;
 	}
 
-	ApplyServerArenaSpawnLocation(ArenaId, InSpawnLocation);
+	ApplyServerArenaSpawnLocation(InSpawnLocation);
 
 	// 강제 리로드라 항상 새로 스트리밍된다. 바인딩을 먼저 걸고(레이스 방지) 리로드.
-	PendingArenaId = ArenaId;
-	ArenaPool->OnArenaShown.AddUObject(this, &AFirstPersonPlayerController::HandleArenaShown);
-	ArenaPool->EnsureArenaLoaded(ArenaId, /*bForceReload=*/true);
+	bHasPendingArenaRequest = true;
+	ArenaSubsystem->OnArenaShown.AddUObject(this, &AFirstPersonPlayerController::HandleArenaShown);
+	ArenaSubsystem->EnsureArenaLoaded(/*bForceReload=*/true);
 }
 
-void AFirstPersonPlayerController::ClientArenaGameplayReload_Implementation(int32 ArenaId, FVector InSpawnLocation)
+void AFirstPersonPlayerController::ClientArenaGameplayReload_Implementation(uint32 GameplayGeneration, FVector InSpawnLocation)
 {
-	UOutlierArenaPoolSubsystem* ArenaPool = GetWorld()
-		? GetWorld()->GetSubsystem<UOutlierArenaPoolSubsystem>()
+	UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
+		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()
 		: nullptr;
-	if (!ArenaPool)
+	if (!ArenaSubsystem)
 	{
 		return;
 	}
 
-	ApplyServerArenaSpawnLocation(ArenaId, InSpawnLocation);
+	if (!UOutlierArenaSubsystem::IsGameplayGenerationNewer(
+		GameplayGeneration, PendingGameplayGeneration))
+	{
+		return;
+	}
+	ApplyServerArenaSpawnLocation(InSpawnLocation);
 
 	// 아레나 LevelInstance는 건드리지 않는다. 서버에서 복제되는 Gameplay Data Layer가
-	// 이 클라이언트에서도 Activated가 되는 시점만 기다린다.
-	PendingArenaId = ArenaId;
-	ArenaPool->OnArenaGameplayGCReady.AddUObject(
+	// 클라이언트도 이전 Actor의 GC를 확인해 ACK한 뒤 Activated/Streaming 준비 완료를 따로 기다린다.
+	bHasPendingArenaRequest = true;
+	PendingGameplayGeneration = GameplayGeneration;
+	ArenaSubsystem->OnArenaGameplayGCReady.AddUObject(
 		this, &AFirstPersonPlayerController::HandleArenaGameplayGCReady);
-	ArenaPool->OnArenaGameplayReady.AddUObject(this, &AFirstPersonPlayerController::HandleArenaShown);
-	ArenaPool->WaitForArenaGameplayDataReady(ArenaId);
+	ArenaSubsystem->OnArenaGameplayReady.AddUObject(this, &AFirstPersonPlayerController::HandleArenaGameplayReady);
+	ArenaSubsystem->WaitForGameplayDataReady(GameplayGeneration);
 }
 
-void AFirstPersonPlayerController::HandleArenaGameplayGCReady(int32 ArenaId)
+void AFirstPersonPlayerController::HandleArenaGameplayGCReady(uint32 GameplayGeneration)
 {
-	if (ArenaId != PendingArenaId)
+	// 이 ACK는 이전 수명 정리 완료만 뜻한다. 새 Pawn의 Possess 준비는 이후 ServerNotifyArenaReady로 알린다.
+	if (GameplayGeneration != PendingGameplayGeneration)
 	{
 		return;
 	}
 
-	if (UOutlierArenaPoolSubsystem* ArenaPool = GetWorld()
-		? GetWorld()->GetSubsystem<UOutlierArenaPoolSubsystem>()
+	if (UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
+		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()
 		: nullptr)
 	{
-		ArenaPool->OnArenaGameplayGCReady.RemoveAll(this);
+		ArenaSubsystem->OnArenaGameplayGCReady.RemoveAll(this);
 	}
 
 	UE_LOG(LogTemp, Display,
-		TEXT("[Arena][DataLayer] Client GC complete ArenaId=%d; notifying server"), ArenaId);
-	ServerNotifyArenaGameplayGCReady(ArenaId);
+		TEXT("[Arena][DataLayer] Client GC complete Generation=%u; notifying server"), GameplayGeneration);
+	ServerNotifyArenaGameplayGCReady(GameplayGeneration);
 }
 
-void AFirstPersonPlayerController::HandleArenaShown(int32 ShownArenaId)
+void AFirstPersonPlayerController::HandleArenaShown()
 {
-	if (ShownArenaId != PendingArenaId)
+	if (!bHasPendingArenaRequest)
 	{
 		return;
 	}
 
-	if (UOutlierArenaPoolSubsystem* ArenaPool = GetWorld()
-		? GetWorld()->GetSubsystem<UOutlierArenaPoolSubsystem>()
+	if (UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
+		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()
 		: nullptr)
 	{
-		ArenaPool->OnArenaShown.RemoveAll(this);
-		ArenaPool->OnArenaGameplayReady.RemoveAll(this);
+		ArenaSubsystem->OnArenaShown.RemoveAll(this);
+		ArenaSubsystem->OnArenaGameplayReady.RemoveAll(this);
 	}
 
 	bWaitingForArenaStart = true;
 	TryNotifyArenaStartReady();
+}
+
+void AFirstPersonPlayerController::HandleArenaGameplayReady(uint32 GameplayGeneration)
+{
+	if (GameplayGeneration != PendingGameplayGeneration)
+	{
+		return;
+	}
+	HandleArenaShown();
 }
 
 void AFirstPersonPlayerController::ServerNotifyArenaReady_Implementation()
@@ -864,19 +986,44 @@ void AFirstPersonPlayerController::ServerNotifyArenaReady_Implementation()
 	}
 }
 
-void AFirstPersonPlayerController::ServerNotifyArenaGameplayGCReady_Implementation(int32 ArenaId)
+void AFirstPersonPlayerController::ServerNotifyArenaGameplayGCReady_Implementation(uint32 GameplayGeneration)
 {
 	if (AOutlierGameMode* GameMode = GetWorld()
 		? GetWorld()->GetAuthGameMode<AOutlierGameMode>()
 		: nullptr)
 	{
-		GameMode->OnClientArenaGameplayGCReady(this, ArenaId);
+		GameMode->OnClientArenaGameplayGCReady(this, GameplayGeneration);
 	}
 }
 
-void AFirstPersonPlayerController::ClientPrepareForArenaStart_Implementation(
-	int32 ArenaId,
-	FVector InSpawnLocation)
+void AFirstPersonPlayerController::ClientRetryArenaGameplayReload_Implementation(uint32 GameplayGeneration)
+{
+	// 수동 재시도는 같은 Generation의 현재 안전 조건만 다시 확인한다. Timeout을 이유로
+	// GC 확인이나 Data Layer 활성 단계를 강제로 넘기면 이전 세대 Actor가 새 판에 남을 수 있다.
+	if (GameplayGeneration != PendingGameplayGeneration)
+	{
+		return;
+	}
+
+	UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
+		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()
+		: nullptr;
+	if (!ArenaSubsystem)
+	{
+		return;
+	}
+
+	if (ArenaSubsystem->IsGameplayReloadStalled(GameplayGeneration))
+	{
+		ArenaSubsystem->RetryStalledGameplayReload(GameplayGeneration);
+	}
+	if (ArenaSubsystem->IsGameplayReloadGCVerified(GameplayGeneration))
+	{
+		ServerNotifyArenaGameplayGCReady(GameplayGeneration);
+	}
+}
+
+void AFirstPersonPlayerController::ClientPrepareForArenaStart_Implementation(FVector InSpawnLocation)
 {
 	// ClientArenaLoad와 같은 이유로 서버가 계산해둔 스폰 위치를 먼저 저장한다.
 	// 이게 없으면 ResolveClientArenaStreamingLocation이 Pawn도 위치도 못 찾고 실패하고,
@@ -884,7 +1031,7 @@ void AFirstPersonPlayerController::ClientPrepareForArenaStart_Implementation(
 	PendingArenaSpawnLocation = InSpawnLocation;
 	bHasPendingArenaSpawnLocation = true;
 
-	PendingArenaId = ArenaId;
+	bHasPendingArenaRequest = true;
 	bWaitingForArenaStart = true;
 	TryNotifyArenaStartReady();
 }
@@ -893,7 +1040,7 @@ void AFirstPersonPlayerController::TryNotifyArenaStartReady()
 {
 	constexpr float ClientArenaStreamingRadius = 12800.0f;
 
-	if (!bWaitingForArenaStart || !IsLocalController() || PendingArenaId == INDEX_NONE)
+	if (!bWaitingForArenaStart || !IsLocalController() || !bHasPendingArenaRequest)
 	{
 		return;
 	}
@@ -901,7 +1048,7 @@ void AFirstPersonPlayerController::TryNotifyArenaStartReady()
 	if (!ClientArenaStreamingSource)
 	{
 		FVector StreamingLocation = FVector::ZeroVector;
-		if (!ResolveClientArenaStreamingLocation(PendingArenaId, StreamingLocation))
+		if (!ResolveClientArenaStreamingLocation(StreamingLocation))
 		{
 			return;
 		}
@@ -959,8 +1106,7 @@ void AFirstPersonPlayerController::TryNotifyArenaStartReady()
 		bClientArenaSourceDisplaced = false;
 
 		UE_LOG(LogTemp, Display,
-			TEXT("[Arena] Client content wait started ArenaId=%d Location=%s Radius=%.0f"),
-			PendingArenaId,
+			TEXT("[Arena] Client content wait started Location=%s Radius=%.0f"),
 			*StreamingLocation.ToString(),
 			ClientArenaStreamingRadius);
 	}
@@ -1007,26 +1153,25 @@ bool AFirstPersonPlayerController::TickClientArenaContentReady(float DeltaTime)
 		}
 
 		UE_LOG(LogTemp, Warning,
-			TEXT("[Arena][Watchdog] Source restored ArenaId=%d Location=%s Attempt=%d/%d"),
-			PendingArenaId,
+			TEXT("[Arena][Watchdog] Source restored Location=%s Attempt=%d/%d"),
 			*ClientArenaSourceHomeLocation.ToString(),
 			ClientArenaRecoveryCount,
 			MaxRecoveryAttempts);
 		return true;
 	}
 
-	UOutlierArenaPoolSubsystem* ArenaPool = GetWorld()
-		? GetWorld()->GetSubsystem<UOutlierArenaPoolSubsystem>()
+	UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
+		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()
 		: nullptr;
 
 	const bool bStreamingCompleted = ClientArenaStreamingSource && ClientArenaStreamingSource->IsStreamingCompleted();
-	const bool bContentReady = ArenaPool && ArenaPool->IsArenaContentReady(PendingArenaId);
+	const bool bContentReady = ArenaSubsystem && ArenaSubsystem->IsArenaContentReady();
 	const bool bReady = bWaitingForArenaStart
 		&& IsLocalController()
-		&& PendingArenaId != INDEX_NONE
+		&& bHasPendingArenaRequest
 		&& ClientArenaStreamingSource
 		&& bStreamingCompleted
-		&& ArenaPool
+		&& ArenaSubsystem
 		&& bContentReady;
 
 	if (!bReady)
@@ -1042,8 +1187,7 @@ bool AFirstPersonPlayerController::TickClientArenaContentReady(float DeltaTime)
 			// 어느 조건이 안 차는지를 반드시 같이 남긴다. Streaming=0 이면 셀 가시화가 막힌 것이고,
 			// Content=0 이면 셀은 왔는데 LevelInstance/Data Layer 쪽이 안 끝난 것이다.
 			UE_LOG(LogTemp, Warning,
-				TEXT("[Arena][Watchdog] Stalled ArenaId=%d Streaming=%d Content=%d HasSource=%d Home=%s Attempt=%d/%d"),
-				PendingArenaId,
+				TEXT("[Arena][Watchdog] Stalled Streaming=%d Content=%d HasSource=%d Home=%s Attempt=%d/%d"),
 				bStreamingCompleted ? 1 : 0,
 				bContentReady ? 1 : 0,
 				ClientArenaStreamingSource ? 1 : 0,
@@ -1054,8 +1198,7 @@ bool AFirstPersonPlayerController::TickClientArenaContentReady(float DeltaTime)
 			if (ClientArenaRecoveryCount > MaxRecoveryAttempts)
 			{
 				UE_LOG(LogTemp, Error,
-					TEXT("[Arena][Watchdog] Recovery exhausted ArenaId=%d; the arena will not finish loading on this client"),
-					PendingArenaId);
+					TEXT("[Arena][Watchdog] Recovery exhausted; the arena will not finish loading on this client"));
 				return true;
 			}
 
@@ -1083,10 +1226,9 @@ bool AFirstPersonPlayerController::TickClientArenaContentReady(float DeltaTime)
 		return true;
 	}
 
-	const int32 ReadyArenaId = PendingArenaId;
 	const int32 UsedRecoveryCount = ClientArenaRecoveryCount;
 	bWaitingForArenaStart = false;
-	PendingArenaId = INDEX_NONE;
+	bHasPendingArenaRequest = false;
 	ClientArenaReadyStableFrames = 0;
 	ClientArenaWaitSeconds = 0.0;
 	ClientArenaRecoveryHoldSeconds = 0.0;
@@ -1104,8 +1246,7 @@ bool AFirstPersonPlayerController::TickClientArenaContentReady(float DeltaTime)
 	// RecoveryCount>0 으로 끝났다면 워치독이 실제로 살려낸 것이다 — 그 왕복이 동작한다는 증거라
 	// 반드시 남긴다(0이면 평소대로 통과한 것).
 	UE_LOG(LogTemp, Display,
-		TEXT("[Arena] Client content ready ArenaId=%d StableFrames=%d RecoveryCount=%d"),
-		ReadyArenaId,
+		TEXT("[Arena] Client content ready StableFrames=%d RecoveryCount=%d"),
 		RequiredStableFrames,
 		UsedRecoveryCount);
 	ServerNotifyArenaReady();
@@ -1123,6 +1264,7 @@ void AFirstPersonPlayerController::ClearClientArenaContentWait()
 	ReleaseClientArenaStreamingSource();
 	ClientArenaReadyStableFrames = 0;
 	bWaitingForArenaStart = false;
+	bHasPendingArenaRequest = false;
 	bHasPendingArenaSpawnLocation = false;
 	bPreferServerArenaSpawnLocation = false;
 	ClientArenaWaitSeconds = 0.0;
@@ -1141,9 +1283,7 @@ void AFirstPersonPlayerController::ReleaseClientArenaStreamingSource()
 	ClientArenaStreamingSourceActor = nullptr;
 }
 
-bool AFirstPersonPlayerController::ResolveClientArenaStreamingLocation(
-	int32 ArenaId,
-	FVector& OutLocation) const
+bool AFirstPersonPlayerController::ResolveClientArenaStreamingLocation(FVector& OutLocation) const
 {
 	// 리로드 구간에서는 Pawn을 믿으면 안 된다. 서버는 이미 옛 폰을 Destroy하고 새 스테이지에
 	// 새 폰을 스폰했는데, 그 사실이 클라에 도착하기 전이면 GetPawn()은 "죽은 자리의 옛 폰"을
@@ -1171,8 +1311,7 @@ bool AFirstPersonPlayerController::ResolveClientArenaStreamingLocation(
 	}
 
 	UE_LOG(LogTemp, Warning,
-		TEXT("[Arena] ResolveClientArenaStreamingLocation failed: no Pawn and no server-provided spawn location (ArenaId=%d)"),
-		ArenaId);
+		TEXT("[Arena] ResolveClientArenaStreamingLocation failed: no Pawn and no server-provided spawn location"));
 	return false;
 }
 
@@ -1210,6 +1349,12 @@ void AFirstPersonPlayerController::ServerOpenInGameSetting_Implementation()
 	const TSubclassOf<UInGamePauseWidget> InGamePauseWidgetClass = InGameSettingDefault
 		? InGameSettingDefault->GetInGamePauseWidgetClass()
 		: nullptr;
+
+	const AOutlierGameMode* OutlierGameMode = GetWorld()
+		? GetWorld()->GetAuthGameMode<AOutlierGameMode>()
+		: nullptr;
+	ConfigureCheckpointRestartFromServer(
+		OutlierGameMode && OutlierGameMode->CanControllerRequestCheckpointRestart(this));
 
 	FUILayerPushRequest PushRequest;
 	PushRequest.WidgetClass = InGameSettingWidgetClass;
@@ -1260,6 +1405,14 @@ void AFirstPersonPlayerController::ServerOpenInGameSetting_Implementation()
 
 void AFirstPersonPlayerController::ServerCloseInGameSetting_Implementation()
 {
+	AOutlierGameMode* OutlierGameMode = GetWorld()
+		? GetWorld()->GetAuthGameMode<AOutlierGameMode>()
+		: nullptr;
+	if (OutlierGameMode && OutlierGameMode->HandleCheckpointRestartEscape(this))
+	{
+		return;
+	}
+
 	UGameplayStatics::SetGamePaused(this, false);
 
 	AShooterCharacter* ShooterCharacter = nullptr;
@@ -1292,6 +1445,47 @@ void AFirstPersonPlayerController::ServerCloseInGameSetting_Implementation()
 	if (PartnerController && PartnerController != ShooterController)
 	{
 		PopInGameSettingLayerFromController(PartnerController, PausingCharacter);
+	}
+}
+
+void AFirstPersonPlayerController::ServerRequestLeaveGame_Implementation()
+{
+	if (AOutlierGameMode* OutlierGameMode = GetWorld()
+		? GetWorld()->GetAuthGameMode<AOutlierGameMode>()
+		: nullptr)
+	{
+		OutlierGameMode->HandleExplicitPlayerLeave(this);
+	}
+}
+
+void AFirstPersonPlayerController::ServerRequestCheckpointRestart_Implementation()
+{
+	if (AOutlierGameMode* OutlierGameMode = GetWorld()
+		? GetWorld()->GetAuthGameMode<AOutlierGameMode>()
+		: nullptr)
+	{
+		OutlierGameMode->RequestCheckpointRestart(this);
+	}
+}
+
+void AFirstPersonPlayerController::ServerRespondCheckpointRestart_Implementation(
+	bool bApprove)
+{
+	if (AOutlierGameMode* OutlierGameMode = GetWorld()
+		? GetWorld()->GetAuthGameMode<AOutlierGameMode>()
+		: nullptr)
+	{
+		OutlierGameMode->RespondCheckpointRestart(this, bApprove);
+	}
+}
+
+void AFirstPersonPlayerController::ServerCancelCheckpointRestart_Implementation()
+{
+	if (AOutlierGameMode* OutlierGameMode = GetWorld()
+		? GetWorld()->GetAuthGameMode<AOutlierGameMode>()
+		: nullptr)
+	{
+		OutlierGameMode->CancelCheckpointRestart(this);
 	}
 }
 

@@ -28,6 +28,7 @@
 #include "Shooter/ShooterCharacter.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Enemy/EnemyBase.h"
+#include "Enemy/AutoTurret.h"
 #include "OutlierNetUtils.h"
 #include "Net/UnrealNetwork.h"
 #include "Weapon/WeaponCoreRow.h"
@@ -54,6 +55,39 @@
 
 namespace
 {
+	EOutlierAdaptationDamageCategory ResolveAdaptationDamageCategory(
+		const ACharacter* WeaponOwner,
+		EWeaponType WeaponType)
+	{
+		if (Cast<APartnerCharacter>(WeaponOwner))
+		{
+			return EOutlierAdaptationDamageCategory::Gun;
+		}
+
+		if (const AAutoTurret* Turret = Cast<AAutoTurret>(WeaponOwner))
+		{
+			return Turret->IsHackedToPlayerTeam()
+				? EOutlierAdaptationDamageCategory::Gun
+				: EOutlierAdaptationDamageCategory::Ignore;
+		}
+
+		if (const AEnemyBase* Enemy = Cast<AEnemyBase>(WeaponOwner))
+		{
+			return Enemy->IsEnemyPossessed()
+				? EOutlierAdaptationDamageCategory::Gun
+				: EOutlierAdaptationDamageCategory::Ignore;
+		}
+
+		if (Cast<AShooterCharacter>(WeaponOwner))
+		{
+			return WeaponType == EWeaponType::Pistol
+				? EOutlierAdaptationDamageCategory::Pistol
+				: EOutlierAdaptationDamageCategory::Gun;
+		}
+
+		return EOutlierAdaptationDamageCategory::Ignore;
+	}
+
 	void SpawnAttachedMuzzleEffect(
 		const UTrailEffectDefinition* Def,
 		USceneComponent* AttachTarget,
@@ -272,6 +306,52 @@ void ARangedWeaponBase::RefillMagazineForWeaponOvercharge()
 	ForceNetUpdate();
 }
 
+void ARangedWeaponBase::RestoreCheckpointAmmo(int32 SavedAmmo)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	// 체크포인트는 재장전 진행도를 저장하지 않는다. 새 Actor가 아닌 경로에서도
+	// 호출될 수 있으므로 일시 상태를 먼저 끊고 확정 탄약만 적용한다.
+	StopAttack();
+	CancelReload();
+	CurrentAmmo = FMath::Clamp(SavedAmmo, 0, MagazineSize);
+	UpdateLocalAmmoUI();
+	ForceNetUpdate();
+}
+
+void ARangedWeaponBase::ResetForEnemyPoolLease()
+{
+	// Enemy의 장착 무기도 재사용된다. 체크포인트 탄약 복원과 달리 새 대여는 기본 탄창/반동 상태로 시작한다.
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	StopAttack();
+	CancelReload();
+	CancelLocalRecoilPresentation();
+	if (UWorld* World = GetWorld())
+	{
+		FTimerManager& TimerManager = World->GetTimerManager();
+		TimerManager.ClearTimer(PostBurstCooldownTimerHandle);
+		TimerManager.ClearTimer(BloomRecoveryTimerHandle);
+		TimerManager.ClearTimer(RecoilResetTimerHandle);
+	}
+
+	bOnPostBurstCooldown = false;
+	bIsAiming = false;
+	BloomCurrent = BloomMin;
+	CurrentBurstShotCount = 0;
+	CurrentAmmo = MagazineSize;
+	ResetRecoilRuntimeState();
+	AttachMagazineToWeapon();
+	UpdateLocalAmmoUI();
+	ForceNetUpdate();
+}
+
 
 void ARangedWeaponBase::FireShot()
 {
@@ -428,6 +508,9 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 			FOutlierDamageRequest DamageRequest;
 			DamageRequest.DamageAmount = DamageToApply;
 			DamageRequest.DamageTag = OutlierGameplayTags::Damage::Weapon();
+			DamageRequest.AdaptationDamageCategory = ResolveAdaptationDamageCategory(
+				OwnerCharacter,
+				WeaponType);
 			DamageRequest.StunDurationSeconds = ProjectileStunTime;
 			DamageRequest.HitResult = ResolvedDamageHit;
 			DamageRequest.DamageOrigin = Start;
@@ -1899,7 +1982,6 @@ void ARangedWeaponBase::ReportArenaWideNoise(ACharacter* OwnerCharacter)
 	if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
 	{
 		RoomSubsystem->NotifyRoomCombat(
-			PlayerState->GetArenaId(),
 			CurrentRoomTag,
 			OwnerCharacter->GetActorLocation(),
 			Cast<AEnemyBase>(OwnerCharacter)

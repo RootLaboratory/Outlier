@@ -59,11 +59,15 @@ public:
 
 	void CleanupOwnedWeapons();
 
+	// 현재 살아 있는 Weapon Actor에서 슬롯별 클래스와 탄약을 읽는다.
+	// bCaptureAmmo=false 는 기존 프리셋 계약(새 무기 기본 탄약)을 유지한다.
+	void BuildLoadoutSnapshot(FOutlierLoadoutSnapshot& OutSnapshot, bool bCaptureAmmo) const;
+
 	// 리로드로 새로 스폰된 Pawn 에 PlayerState 기록을 되살린다.
 	// 상호작용이 아니므로 CanBePickedUpBy 게이트를 타지 않고, 몽타주도 쓰지 않는다.
 	// Snapshot 을 값으로 받는다 — 내부에서 CaptureLoadoutToPlayerState() 가 PlayerState 의
 	// 스냅샷을 통째로 덮어쓰므로, 참조로 받으면 순회 도중 대상이 재할당되어 무효화된다.
-	void RestoreLoadout(FOutlierLoadoutSnapshot Snapshot);
+	void RestoreLoadout(FOutlierLoadoutSnapshot Snapshot, bool bRestoreAmmo = false);
 public:
 
 private:
@@ -77,7 +81,10 @@ private:
 	// OnEquipped 가 1P/3P/Shadow 메시를 전부 숨기고 공개는 equip 몽타주 Notify 담당이라,
 	// 둘 다 생략하면 장착은 됐는데 무기가 보이지 않는 상태가 된다.
 	void ApplyWeaponToSlot(AWeaponBase* Weapon, EWeaponSlot Slot, bool bPlayEquipMontage);
-	void RestoreWeaponIntoSlot(TSubclassOf<AWeaponBase> WeaponClass, EWeaponSlot Slot);
+	void RestoreWeaponIntoSlot(
+		const FOutlierWeaponSnapshot& WeaponSnapshot,
+		EWeaponSlot Slot,
+		bool bRestoreAmmo);
 
 	static EWeaponSlot GetSlotForWeaponType(EWeaponType WeaponType);
 	bool IsValidWeaponSlot(EWeaponSlot Slot) const;

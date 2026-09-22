@@ -1,6 +1,7 @@
 #include "Enemy/EnemyBase.h"
 #include "Camera/CameraComponent.h"
 #include "Enemy/EnemyStateTreeComponent.h"
+#include "Enemy/EnemyPoolSubsystem.h"
 #include "Drone/Partner/HackableComponent.h"
 #include "Drone/Partner/EMPableComponent.h"
 #include "Drone/Partner/EMPGameplayTags.h"
@@ -11,9 +12,12 @@
 #include "PostProcess/OutlierPostProcessVolume.h"
 #include "EnhancedInputComponent.h"
 #include "Enemy/EnemyAIController.h"
+#include "Enemy/EnemyAdaptationSubsystem.h"
 #include "Enemy/EnemyRoomSubsystem.h"
 #include "Enemy/Death/OutlierDeathDebrisActor.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "GameplayEffect.h"
+#include "Animation/AnimInstance.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/SphereComponent.h"
 #include "GameplayTags/OutlierGameplayTags.h"
@@ -26,6 +30,7 @@
 #include "Team/OutlierTeamIds.h"
 #include "TimerManager.h"
 #include "Room/RoomTagComponent.h"
+#include "Room/RoomCombatSubsystem.h"
 #include "Weapon/RangedWeaponBase.h"
 #include "Outlier.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
@@ -60,6 +65,22 @@ namespace
 		0,
 		TEXT("빙의 공격 입력부터 StateTree Task 실행까지의 진단 로그를 출력합니다. 0: 끔, 1: 켬"),
 		ECVF_Cheat);
+
+	EEnemyFinalKillCategory ResolveFinalKillCategory(
+		EOutlierAdaptationDamageCategory DamageCategory)
+	{
+		switch (DamageCategory)
+		{
+		case EOutlierAdaptationDamageCategory::Gun:
+			return EEnemyFinalKillCategory::Gun;
+		case EOutlierAdaptationDamageCategory::NonGun:
+		case EOutlierAdaptationDamageCategory::Pistol:
+			return EEnemyFinalKillCategory::NonGun;
+		case EOutlierAdaptationDamageCategory::Ignore:
+		default:
+			return EEnemyFinalKillCategory::Ignore;
+		}
+	}
 }
 
 AEnemyBase::AEnemyBase()
@@ -68,6 +89,7 @@ AEnemyBase::AEnemyBase()
 	bReplicates = true;
 	AIControllerClass = AEnemyAIController::StaticClass();
 	AutoPossessAI = EAutoPossessAI::PlacedInWorldOrSpawned;
+	EnemyTraits.AddTag(OutlierGameplayTags::Enemy::Adaptation::Target());
 
 	OutlierAbilitySystemComponent = CreateDefaultSubobject<UOutlierAbilitySystemComponent>(
 		TEXT("AbilitySystemComponent"));
@@ -222,6 +244,12 @@ void AEnemyBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifeti
 	DOREPLIFETIME(AEnemyBase, SharedTargetLocation);
 	DOREPLIFETIME(AEnemyBase, AttackPhase);
 	DOREPLIFETIME(AEnemyBase, CurrentWeapon);
+	DOREPLIFETIME(AEnemyBase, PoolState);
+	DOREPLIFETIME(AEnemyBase, AdaptationState);
+	DOREPLIFETIME(AEnemyBase, PoolGameplayGeneration);
+	DOREPLIFETIME(AEnemyBase, PoolLeaseSerial);
+	DOREPLIFETIME(AEnemyBase, PoolCombatPhaseIndex);
+	DOREPLIFETIME(AEnemyBase, PoolWaveIndex);
 }
 
 void AEnemyBase::BeginPlay()
@@ -237,24 +265,518 @@ void AEnemyBase::BeginPlay()
 			&AEnemyBase::HandleCurrentRoomTagChanged);
 	}
 
+	const bool bActivateAsPreplacedEnemy = !IsPoolManaged()
+		&& ShouldActivateAsPreplacedEnemy();
 	if (HasAuthority())
 	{
-		if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
+		if (bActivateAsPreplacedEnemy)
 		{
-			RoomSubsystem->RegisterEnemy(this);
+			if (UEnemyAdaptationSubsystem* AdaptationSubsystem = GetEnemyAdaptationSubsystem())
+			{
+				// RoomTag가 없는 배치 적도 아레나 전역의 현재 전투 필드 후보로 관리한다.
+				AdaptationSubsystem->RegisterEnemy(this);
+			}
+			if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
+			{
+				RoomSubsystem->RegisterEnemy(this);
+			}
+			if (URoomCombatSubsystem* CombatSubsystem =
+				GetWorld()->GetSubsystem<URoomCombatSubsystem>())
+			{
+				CombatSubsystem->RegisterPreplacedEnemy(this);
+			}
+		}
+		if (IsActorBeingDestroyed())
+		{
+			return;
 		}
 	}
 
 	InitializeFromEnemyStatRow();
 	EquipDefaultWeapon();
 	PrepareForStateTreeStart();
+	if (IsPoolManaged())
+	{
+		ApplyPoolState(EEnemyPoolState::Unmanaged);
+		return;
+	}
 
-	if (HasAuthority() && StateTreeComponent)
+	if (HasAuthority() && bActivateAsPreplacedEnemy && StateTreeComponent)
 	{
 		// Perception이 BeginPlay 전에 상태를 바꿨어도 Global Sync가 현재 값을 읽어
 		// 올바른 초기 State를 선택할 수 있도록 모든 Enemy 초기화 뒤에 시작한다.
 		StateTreeComponent->StartLogic();
 	}
+}
+
+void AEnemyBase::PrepareForPoolSpawn(UEnemyPoolSubsystem* PoolSubsystem)
+{
+	if (!HasAuthority() || !PoolSubsystem || HasActorBegunPlay())
+	{
+		return;
+	}
+
+	OwningPoolSubsystem = PoolSubsystem;
+	PoolState = EEnemyPoolState::Idle;
+	PoolGameplayGeneration = 0;
+	PoolLeaseSerial = 0;
+	PoolCombatPhaseIndex = INDEX_NONE;
+	PoolWaveIndex = INDEX_NONE;
+}
+
+bool AEnemyBase::BeginPoolLease(
+	const FEnemyPoolLeaseContext& Context,
+	const FTransform& SpawnTransform,
+	int32 LeaseSerial)
+{
+	if (!HasAuthority() || PoolState != EEnemyPoolState::Idle
+		|| !OwningPoolSubsystem.IsValid() || LeaseSerial == 0)
+	{
+		return false;
+	}
+
+	// 재사용은 BeginPlay를 다시 호출하지 않는다. 복제를 깨운 뒤 이전 대여의 예약 작업부터 끊는다.
+	SetNetDormancy(DORM_Awake);
+	FlushNetDormancy();
+	SetLifeSpan(0.0f);
+	DestroyPoolAIController();
+	ResetReusableCombatRuntime(TEXT("Enemy pool lease reset"));
+
+	if (RoomTagComponent)
+	{
+		RoomTagComponent->ClearRuntimeRoomAssignment();
+		RoomTagComponent->AssignDefaultRoomTag(Context.RoomTag);
+	}
+	// 이전 전투 상태를 지운 뒤 새 Room/차수/Wave 수명을 부여한다. 연출 중에는 아직 AI/피해가 비활성이다.
+	PoolGameplayGeneration = Context.GameplayGeneration;
+	PoolLeaseSerial = LeaseSerial;
+	PoolCombatPhaseIndex = Context.CombatPhaseIndex;
+	PoolWaveIndex = Context.WaveIndex;
+	SetActorTransform(SpawnTransform, false, nullptr, ETeleportType::TeleportPhysics);
+	InitializeFromEnemyStatRow();
+	ResetPoolRuntimeState();
+
+	SetPoolState(EEnemyPoolState::SpawnPresentation);
+	ForceNetUpdate();
+
+	UE_LOG(LogTemp, Display,
+		TEXT("[EnemyPool] Lease Enemy=%s Generation=%d Lease=%d Room=%s Phase=%d Wave=%d"),
+		*GetNameSafe(this),
+		PoolGameplayGeneration,
+		PoolLeaseSerial,
+		*Context.RoomTag.ToString(),
+		PoolCombatPhaseIndex,
+		PoolWaveIndex);
+
+	OnPoolSpawnPresentationStarted(PoolGameplayGeneration, PoolLeaseSerial);
+	return true;
+}
+
+void AEnemyBase::ResetReusableCombatRuntime(const TCHAR* StateTreeStopReason)
+{
+	GetWorldTimerManager().ClearAllTimersForObject(this);
+	CancelPossessionProcess();
+	EndPossessedImpactInputLock();
+	EndImpactReaction();
+	ResetPossessedAttackInput();
+	StopCurrentAttack();
+	RemoveRoomTargetObserver();
+	ReleaseSearchRingSlot();
+	ClearPossessedPlayerState();
+
+	if (StateTreeComponent)
+	{
+		StateTreeComponent->StopLogic(StateTreeStopReason);
+	}
+	if (OutlierAbilitySystemComponent)
+	{
+		OutlierAbilitySystemComponent->CancelAllAbilities();
+		OutlierAbilitySystemComponent->RemoveActiveEffects(FGameplayEffectQuery());
+	}
+	if (IsValid(CurrentWeapon))
+	{
+		CurrentWeapon->ResetForEnemyPoolLease();
+	}
+
+	bDeathCleanupPerformed = false;
+	bInCombat = false;
+	bIsPossessed = false;
+	bPlayerCurrentlyVisible = false;
+	bHasSharedTargetContact = false;
+	bPossessedImpactInputLocked = false;
+	bCombatDecisionRefreshPending = false;
+	bPossessedAttackHeld = false;
+	bPossessedAttackQueued = false;
+	CombatState = EEnemyCombatState::NonCombat;
+	PreStunCombatState = EEnemyCombatState::NonCombat;
+	AttackPhase = EEnemyAttackPhase::Idle;
+	LastKnownPlayerLocation = FVector::ZeroVector;
+	PatternStartPlayerLocation = FVector::ZeroVector;
+	SharedTargetLocation = FVector::ZeroVector;
+	PossessionInstigatorPartner.Reset();
+	PossessionPendingEffectHandle.Invalidate();
+}
+
+bool AEnemyBase::MatchesPoolLease(int32 GameplayGeneration, int32 LeaseSerial) const
+{
+	// Generation은 맵 리로드를, Serial은 같은 맵 안에서 같은 Actor의 반복 대여를 구분한다.
+	return IsPoolManaged()
+		&& GameplayGeneration == PoolGameplayGeneration
+		&& LeaseSerial != 0
+		&& LeaseSerial == PoolLeaseSerial;
+}
+
+void AEnemyBase::CompletePoolSpawnPresentation(
+	int32 GameplayGeneration,
+	int32 LeaseSerial)
+{
+	if (!HasAuthority() || PoolState != EEnemyPoolState::SpawnPresentation
+		|| !MatchesPoolLease(GameplayGeneration, LeaseSerial))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[EnemyPool] Ignored spawn presentation callback Enemy=%s CurrentGeneration=%d CurrentLease=%d CallbackGeneration=%d CallbackLease=%d State=%s"),
+			*GetNameSafe(this),
+			PoolGameplayGeneration,
+			PoolLeaseSerial,
+			GameplayGeneration,
+			LeaseSerial,
+			*UEnum::GetValueAsString(PoolState));
+		return;
+	}
+
+	// 서버가 현재 대여의 연출 완료를 승인한 뒤에만 충돌/피해/StateTree를 활성화한다.
+	SetPoolState(EEnemyPoolState::CombatActive);
+	if (UEnemyAdaptationSubsystem* AdaptationSubsystem = GetEnemyAdaptationSubsystem())
+	{
+		AdaptationSubsystem->RegisterEnemy(this);
+	}
+	if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
+	{
+		// StateTree가 시작된 뒤 등록해야 현재 방의 전투/공유 타겟 이벤트를 안전하게 이어받는다.
+		RoomSubsystem->RegisterEnemy(this);
+	}
+	ForceNetUpdate();
+}
+
+void AEnemyBase::CompletePoolDeathPresentation(
+	int32 GameplayGeneration,
+	int32 LeaseSerial)
+{
+	if (!HasAuthority() || PoolState != EEnemyPoolState::DeathPresentation
+		|| !MatchesPoolLease(GameplayGeneration, LeaseSerial))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[EnemyPool] Ignored death presentation callback Enemy=%s CurrentGeneration=%d CurrentLease=%d CallbackGeneration=%d CallbackLease=%d State=%s"),
+			*GetNameSafe(this),
+			PoolGameplayGeneration,
+			PoolLeaseSerial,
+			GameplayGeneration,
+			LeaseSerial,
+			*UEnum::GetValueAsString(PoolState));
+		return;
+	}
+
+	ReturnToOwningPool();
+}
+
+void AEnemyBase::FinishPoolReturn(int32 GameplayGeneration, int32 LeaseSerial)
+{
+	if (!HasAuthority() || !MatchesPoolLease(GameplayGeneration, LeaseSerial))
+	{
+		return;
+	}
+
+	// 전투 집계와 AI 공유 등록을 먼저 끊고 Idle로 옮긴다. 반환 자체는 처치 이벤트가 아니다.
+	if (UEnemyAdaptationSubsystem* AdaptationSubsystem = GetEnemyAdaptationSubsystem())
+	{
+		AdaptationSubsystem->UnregisterEnemy(this);
+	}
+	if (URoomCombatSubsystem* CombatSubsystem = GetWorld()->GetSubsystem<URoomCombatSubsystem>())
+	{
+		CombatSubsystem->UnregisterEnemy(this);
+	}
+	if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
+	{
+		RoomSubsystem->UnregisterEnemy(this);
+	}
+	if (RoomTagComponent)
+	{
+		RoomTagComponent->ClearRuntimeRoomAssignment();
+	}
+
+	GetWorldTimerManager().ClearAllTimersForObject(this);
+	DestroyPoolAIController();
+	StopCurrentAttack();
+	PrepareForPoolIdle();
+	SetPoolState(EEnemyPoolState::Idle);
+	SetActorLocation(FVector(0.0, 0.0, -1000000.0), false, nullptr, ETeleportType::TeleportPhysics);
+	PoolGameplayGeneration = 0;
+	PoolLeaseSerial = 0;
+	PoolCombatPhaseIndex = INDEX_NONE;
+	PoolWaveIndex = INDEX_NONE;
+	ForceNetUpdate();
+	SetNetDormancy(DORM_DormantAll);
+}
+
+void AEnemyBase::InvalidatePoolLease()
+{
+	PoolGameplayGeneration = 0;
+	PoolLeaseSerial = 0;
+	OwningPoolSubsystem.Reset();
+}
+
+void AEnemyBase::OnPoolSpawnPresentationStarted_Implementation(
+	int32 GameplayGeneration,
+	int32 LeaseSerial)
+{
+#if WITH_DEV_AUTOMATION_TESTS
+	if (!bPoolPresentationAutoCompleteForTesting)
+	{
+		return;
+	}
+#endif
+	// 연출이 없는 Enemy는 즉시 완료한다. BP가 Override하면 반드시 같은 토큰으로 완료 API를 호출해야 한다.
+	CompletePoolSpawnPresentation(GameplayGeneration, LeaseSerial);
+}
+
+void AEnemyBase::OnPoolDeathPresentationStarted_Implementation(
+	int32 GameplayGeneration,
+	int32 LeaseSerial)
+{
+#if WITH_DEV_AUTOMATION_TESTS
+	if (!bPoolPresentationAutoCompleteForTesting)
+	{
+		return;
+	}
+#endif
+	const float PresentationDuration = FMath::Max(GetDeathDestroyDelay(), 0.0f);
+	if (PresentationDuration <= KINDA_SMALL_NUMBER)
+	{
+		CompletePoolDeathPresentation(GameplayGeneration, LeaseSerial);
+		return;
+	}
+
+	TWeakObjectPtr<AEnemyBase> WeakThis(this);
+	GetWorldTimerManager().SetTimerForNextTick(FTimerDelegate::CreateWeakLambda(
+		this,
+		[WeakThis, GameplayGeneration, LeaseSerial, PresentationDuration]()
+		{
+			AEnemyBase* Enemy = WeakThis.Get();
+			if (!Enemy || !Enemy->MatchesPoolLease(GameplayGeneration, LeaseSerial))
+			{
+				return;
+			}
+
+			FTimerHandle DeathPresentationTimer;
+			Enemy->GetWorldTimerManager().SetTimer(
+				DeathPresentationTimer,
+				FTimerDelegate::CreateWeakLambda(
+					Enemy,
+					[WeakThis, GameplayGeneration, LeaseSerial]()
+					{
+						if (AEnemyBase* ValidEnemy = WeakThis.Get())
+						{
+							ValidEnemy->CompletePoolDeathPresentation(
+								GameplayGeneration,
+								LeaseSerial);
+						}
+					}),
+				PresentationDuration,
+				false);
+		}));
+}
+
+void AEnemyBase::OnRep_PoolState(EEnemyPoolState PreviousState)
+{
+	ApplyPoolState(PreviousState);
+}
+
+void AEnemyBase::ApplyAdaptationState(EEnemyAdaptationState NewState)
+{
+	if (!HasAuthority() || AdaptationState == NewState)
+	{
+		return;
+	}
+
+	const EEnemyAdaptationState PreviousState = AdaptationState;
+	AdaptationState = NewState;
+	if (GetNetMode() != NM_DedicatedServer)
+	{
+		OnAdaptationStateChanged(PreviousState, AdaptationState);
+	}
+	UE_LOG(
+		LogOutlier,
+		Display,
+		TEXT("[EnemyAdaptation] Presentation applied Enemy=%s PreviousState=%s CurrentState=%s PoolState=%s Generation=%d Lease=%d"),
+		*GetNameSafe(this),
+		*UEnum::GetValueAsString(PreviousState),
+		*UEnum::GetValueAsString(AdaptationState),
+		*UEnum::GetValueAsString(PoolState),
+		PoolGameplayGeneration,
+		PoolLeaseSerial);
+	ForceNetUpdate();
+}
+
+FEnemyAdaptationBreakApplicationResult AEnemyBase::ApplyAdaptationBreakEffects(
+	float DamageAmount,
+	float StunDurationSeconds,
+	UObject* EffectSource)
+{
+	FEnemyAdaptationBreakApplicationResult Result;
+	if (!HasAuthority() || IsDead() || !OutlierAbilitySystemComponent)
+	{
+		return Result;
+	}
+
+	if (DamageAmount > 0.0f)
+	{
+		const float HealthBeforeDamage = GetCurrentHealth();
+		FOutlierDamageRequest DamageRequest;
+		DamageRequest.DamageAmount = DamageAmount;
+		DamageRequest.DamageTag = OutlierGameplayTags::Damage::AdaptationBreak();
+		DamageRequest.AdaptationDamageCategory = EOutlierAdaptationDamageCategory::Ignore;
+		Result.AppliedDamage = ReceiveOutlierDamage(DamageRequest);
+		// 필드 일괄 적용 중에는 GAS의 Health 변경 통지가 이 함수 반환 뒤 확정될 수 있다.
+		// 피해 전 체력과 실제 적용량으로 치명을 판정해 기존 사망 정리 경로를 보장한다.
+		const bool bLethalDamage = Result.AppliedDamage > 0.0f
+			&& Result.AppliedDamage >= HealthBeforeDamage;
+		if (bLethalDamage && !IsDead())
+		{
+			Die();
+		}
+		Result.bKilled = bLethalDamage || IsDead();
+	}
+
+	if (!Result.bKilled && StunDurationSeconds > 0.0f)
+	{
+		Result.bStunApplied = OutlierAbilitySystemComponent
+			->ApplyStunStateToSelf(StunDurationSeconds, EffectSource)
+			.IsValid();
+	}
+
+	return Result;
+}
+
+void AEnemyBase::OnRep_AdaptationState(EEnemyAdaptationState PreviousState)
+{
+	OnAdaptationStateChanged(PreviousState, AdaptationState);
+	UE_LOG(
+		LogOutlier,
+		Display,
+		TEXT("[EnemyAdaptation] Presentation replicated Enemy=%s PreviousState=%s CurrentState=%s PoolState=%s Generation=%d Lease=%d"),
+		*GetNameSafe(this),
+		*UEnum::GetValueAsString(PreviousState),
+		*UEnum::GetValueAsString(AdaptationState),
+		*UEnum::GetValueAsString(PoolState),
+		PoolGameplayGeneration,
+		PoolLeaseSerial);
+}
+
+void AEnemyBase::SetPoolState(EEnemyPoolState NewState)
+{
+	if (PoolState == NewState)
+	{
+		return;
+	}
+
+	const EEnemyPoolState PreviousState = PoolState;
+	PoolState = NewState;
+	ApplyPoolState(PreviousState);
+}
+
+void AEnemyBase::ApplyPoolState(EEnemyPoolState PreviousState)
+{
+	if (!IsPoolManaged())
+	{
+		return;
+	}
+	if (!HasAuthority() && PoolState == EEnemyPoolState::SpawnPresentation)
+	{
+		// 대여 초기화는 서버 권위지만 이전 사망 연출이 남은 컴포넌트는 각 클라이언트에서도 되돌려야 한다.
+		ResetPoolPresentationState();
+	}
+
+	const bool bIdle = PoolState == EEnemyPoolState::Idle;
+	const bool bCombatActive = PoolState == EEnemyPoolState::CombatActive;
+	SetActorHiddenInGame(bIdle);
+	SetActorEnableCollision(bCombatActive);
+	SetCanBeDamaged(bCombatActive);
+
+	if (IsValid(CurrentWeapon))
+	{
+		CurrentWeapon->SetActorHiddenInGame(bIdle);
+	}
+
+	if (HasAuthority())
+	{
+		if (bCombatActive)
+		{
+			SpawnDefaultController();
+			RefreshPerceptionConfigForCurrentState();
+			if (StateTreeComponent)
+			{
+				StateTreeComponent->StartLogic();
+			}
+		}
+		else
+		{
+			if (StateTreeComponent)
+			{
+				StateTreeComponent->StopLogic(TEXT("Enemy pool inactive"));
+			}
+			DestroyPoolAIController();
+		}
+	}
+
+	OnEnemyPoolStateChanged(PreviousState, PoolState);
+}
+
+void AEnemyBase::DestroyPoolAIController()
+{
+	AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(GetController());
+	if (!EnemyAIController)
+	{
+		EnemyAIController = Cast<AEnemyAIController>(CachedAIController.Get());
+	}
+	if (IsValid(EnemyAIController))
+	{
+		EnemyAIController->SetEnemyPerceptionEnabled(false);
+		if (EnemyAIController->GetPawn() == this)
+		{
+			EnemyAIController->UnPossess();
+		}
+		EnemyAIController->Destroy();
+	}
+	CachedAIController.Reset();
+}
+
+void AEnemyBase::ReturnToOwningPool()
+{
+	if (UEnemyPoolSubsystem* PoolSubsystem = OwningPoolSubsystem.Get())
+	{
+		PoolSubsystem->ReturnEnemy(this, PoolGameplayGeneration, PoolLeaseSerial);
+	}
+}
+
+void AEnemyBase::ResetPoolRuntimeState()
+{
+	LastAcceptedAdaptationDamageCategory = EOutlierAdaptationDamageCategory::Ignore;
+	ResetPoolPresentationState();
+}
+
+void AEnemyBase::ResetPoolPresentationState()
+{
+	if (USkeletalMeshComponent* CharacterMesh = GetMesh())
+	{
+		if (UAnimInstance* AnimInstance = CharacterMesh->GetAnimInstance())
+		{
+			AnimInstance->Montage_Stop(0.0f);
+		}
+	}
+}
+
+void AEnemyBase::PrepareForPoolIdle()
+{
 }
 
 void AEnemyBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -269,6 +791,16 @@ void AEnemyBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
 
 	if (HasAuthority())
 	{
+		if (UEnemyAdaptationSubsystem* AdaptationSubsystem = GetEnemyAdaptationSubsystem())
+		{
+			AdaptationSubsystem->UnregisterEnemy(this);
+		}
+		if (URoomCombatSubsystem* CombatSubsystem = GetWorld()
+			? GetWorld()->GetSubsystem<URoomCombatSubsystem>()
+			: nullptr)
+		{
+			CombatSubsystem->UnregisterEnemy(this);
+		}
 		if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
 		{
 			RoomSubsystem->UnregisterEnemy(this);
@@ -291,6 +823,7 @@ void AEnemyBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		UnbindGasVitalityObservers();
 		OutlierAbilitySystemComponent->ClearForPawn(this);
 	}
+	CachedEnemyAdaptationSubsystem.Reset();
 
 	Super::EndPlay(EndPlayReason);
 }
@@ -381,7 +914,8 @@ void AEnemyBase::SendEnemyStateTreeEvent(FGameplayTag Tag)
 		TEXT("Enemy.Event.Possession"));
 	const bool bAttackDiagnosticEvent = Tag.ToString().StartsWith(
 		TEXT("Enemy.Event.Attack"));
-	if (!HasAuthority() || !Tag.IsValid() || !StateTreeComponent)
+	if (!HasAuthority() || !Tag.IsValid() || !StateTreeComponent
+		|| (IsPoolManaged() && PoolState != EEnemyPoolState::CombatActive))
 	{
 		if (IsPossessedAttackDiagnosticsEnabled()
 			&& (bAttackDiagnosticEvent || bPossessionDiagnosticEvent))
@@ -818,7 +1352,9 @@ void AEnemyBase::SetPlayerCurrentlyVisible(bool bNewVisible)
 	}
 }
 
-void AEnemyBase::ApplySharedTargetContact(const FVector& TargetLocation)
+void AEnemyBase::ApplySharedTargetContact(
+	const FVector& TargetLocation,
+	bool bDeferStateTreeEvent)
 {
 	if (!HasAuthority()
 		|| CombatState != EEnemyCombatState::Combat
@@ -837,9 +1373,16 @@ void AEnemyBase::ApplySharedTargetContact(const FVector& TargetLocation)
 
 	if (bContactChanged)
 	{
-		SendEnemyStateTreeEvent(
-			FGameplayTag::RequestGameplayTag(
-				TEXT("Enemy.Event.Combat.TargetShared")));
+		const FGameplayTag TargetSharedTag = FGameplayTag::RequestGameplayTag(
+			TEXT("Enemy.Event.Combat.TargetShared"));
+		if (bDeferStateTreeEvent)
+		{
+			SendEnemyStateTreeEventNextTick(TargetSharedTag);
+		}
+		else
+		{
+			SendEnemyStateTreeEvent(TargetSharedTag);
+		}
 	}
 }
 
@@ -880,28 +1423,17 @@ void AEnemyBase::ClearSharedTargetContact()
 
 void AEnemyBase::EnterCombat(const FVector& PlayerLocation)
 {
-	EnterCombatInArena(PlayerLocation, INDEX_NONE, true);
+	EnterCombatFromRoom(PlayerLocation, true);
 }
 
-void AEnemyBase::EnterCombatInArena(
+void AEnemyBase::EnterCombatFromRoom(
 	const FVector& PlayerLocation,
-	int32 ArenaId,
 	bool bPropagateToRoom,
 	bool bDeferStateTreeEvent)
 {
 	if (!HasAuthority())
 	{
 		return;
-	}
-
-	if (ArenaId != INDEX_NONE)
-	{
-		LastKnownArenaId = ArenaId;
-		if (UEnemyRoomSubsystem* RoomSubsystem =
-			GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
-		{
-			RoomSubsystem->RefreshEnemyRegistration(this);
-		}
 	}
 
 	if (CombatState == EEnemyCombatState::Stun)
@@ -924,12 +1456,11 @@ void AEnemyBase::EnterCombatInArena(
 
 	const FGameplayTag RoomTag = GetDefaultRoomTag();
 
-	const int32 PropagationArenaId = ArenaId != INDEX_NONE ? ArenaId : LastKnownArenaId;
-	if (bPropagateToRoom && PropagationArenaId != INDEX_NONE && RoomTag.IsValid())
+	if (bPropagateToRoom && RoomTag.IsValid())
 	{
 		if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
 		{
-			RoomSubsystem->NotifyRoomCombat(PropagationArenaId, RoomTag, PlayerLocation, this);
+			RoomSubsystem->NotifyRoomCombat(RoomTag, PlayerLocation, this);
 		}
 	}
 
@@ -950,7 +1481,7 @@ void AEnemyBase::EnterCombatInArena(
 
 void AEnemyBase::EnterAlert(const FVector& PlayerLocation)
 {
-	EnterAlertInArena(PlayerLocation, INDEX_NONE);
+	EnterAlertFromPerception(PlayerLocation);
 }
 
 // Alert Task가 감지 유지/상실 시간을 판정한 뒤 이 함수들로 실제 CombatState를 확정한다.
@@ -964,7 +1495,7 @@ bool AEnemyBase::CommitAlertToCombat()
 
 	// 이 함수는 Alert StateTree Task의 Tick 안에서 호출된다. 같은 Tick에 이벤트를 보내면
 	// Global Sync가 이전 Alert 값을 가진 채 Enter Condition을 검사하므로 다음 Tick으로 넘긴다.
-	EnterCombatInArena(LastKnownPlayerLocation, INDEX_NONE, true, true);
+	EnterCombatFromRoom(LastKnownPlayerLocation, true, true);
 	return CombatState == EEnemyCombatState::Combat;
 }
 
@@ -986,21 +1517,11 @@ bool AEnemyBase::CommitAlertToNonCombat()
 	return true;
 }
 
-void AEnemyBase::EnterAlertInArena(const FVector& PlayerLocation, int32 ArenaId)
+void AEnemyBase::EnterAlertFromPerception(const FVector& PlayerLocation)
 {
 	if (!HasAuthority())
 	{
 		return;
-	}
-
-	if (ArenaId != INDEX_NONE)
-	{
-		LastKnownArenaId = ArenaId;
-		if (UEnemyRoomSubsystem* RoomSubsystem =
-			GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
-		{
-			RoomSubsystem->RefreshEnemyRegistration(this);
-		}
 	}
 
 	if (CombatState == EEnemyCombatState::Stun)
@@ -1099,23 +1620,82 @@ float AEnemyBase::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 		return 0.0f;
 	}
 
-	float DamageMultiplier = 1.0f;
+	float HitMultiplier = 1.0f;
+	float AdaptationMultiplier = 1.0f;
+	int32 AdaptationStackBeforeDamage = 0;
 	bool bCoreWeakPointHit = false;
 	if (Request.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Weapon()))
 	{
 		const UPrimitiveComponent* HitComponent = Request.HitResult.GetComponent();
 		bCoreWeakPointHit = bUseCoreWeakPoint && HitComponent == CoreHitboxComponent;
-		DamageMultiplier = GetWeakPointDamageMultiplier(HitComponent);
+		HitMultiplier = GetWeakPointDamageMultiplier(HitComponent);
+	}
+	const bool bAdaptationGunDamage =
+		Request.AdaptationDamageCategory == EOutlierAdaptationDamageCategory::Gun
+		&& HasEnemyTrait(OutlierGameplayTags::Enemy::Adaptation::Target());
+	if (bAdaptationGunDamage)
+	{
+		if (const UEnemyAdaptationSubsystem* AdaptationSubsystem =
+			GetEnemyAdaptationSubsystem())
+		{
+			AdaptationStackBeforeDamage =
+				AdaptationSubsystem->GetCurrentGunAdaptationStack();
+			AdaptationMultiplier = AdaptationSubsystem->GetCurrentGunDamageMultiplier();
+		}
 	}
 
 	const float PreviousHealth = GetCurrentHealth();
+	const float DamageMultiplier = HitMultiplier * AdaptationMultiplier;
 	const float FinalDamage = Request.DamageAmount * FMath::Max(DamageMultiplier, 0.0f);
-	const float AppliedDamage = ApplyDamageInternal(
+	const EOutlierAdaptationDamageCategory PreviousDamageCategory =
+		LastAcceptedAdaptationDamageCategory;
+	// GAS의 Health 변경 콜백은 ApplyDamageInternal 안에서 즉시 사망 처리를 호출한다.
+	// 이번 공격 분류를 먼저 기록해야 사망 경로가 정확한 최종 원인을 소비할 수 있다.
+	LastAcceptedAdaptationDamageCategory = Request.AdaptationDamageCategory;
+	const bool bDamageApplied = ApplyDamageInternal(
 		FinalDamage,
 		Request.EventInstigator,
 		Request.DamageCauser,
-		Request.DamageTag)
-		? FinalDamage : 0.0f;
+		Request.DamageTag);
+	if (!bDamageApplied)
+	{
+		LastAcceptedAdaptationDamageCategory = PreviousDamageCategory;
+	}
+	const float AppliedDamage = bDamageApplied ? FinalDamage : 0.0f;
+	if (bAdaptationGunDamage)
+	{
+		UE_LOG(
+			LogOutlier,
+			Display,
+			TEXT("[EnemyAdaptation] Gun damage applied Enemy=%s Stack=%d RawDamage=%.2f HitMultiplier=%.3f AdaptationMultiplier=%.3f FinalDamage=%.2f Applied=%s HP=%.2f->%.2f"),
+			*GetNameSafe(this),
+			AdaptationStackBeforeDamage,
+			Request.DamageAmount,
+			HitMultiplier,
+			AdaptationMultiplier,
+			FinalDamage,
+			bDamageApplied ? TEXT("true") : TEXT("false"),
+			PreviousHealth,
+			GetCurrentHealth());
+	}
+
+	if (AppliedDamage > 0.0f
+		&& !IsDead()
+		&& Request.AdaptationDamageCategory == EOutlierAdaptationDamageCategory::Pistol)
+	{
+		FEnemyAdaptationUpdateResult AdaptationResult;
+		if (UEnemyAdaptationSubsystem* AdaptationSubsystem = GetEnemyAdaptationSubsystem();
+			AdaptationSubsystem && AdaptationSubsystem->ReportPistolHit(
+				this,
+				PoolGameplayGeneration,
+				PoolLeaseSerial,
+				false,
+				AdaptationResult))
+		{
+			// 이 권총 명중은 이미 내성 파괴로 소비됐다. 이후 별도 사망 원인으로 재사용하지 않는다.
+			LastAcceptedAdaptationDamageCategory = EOutlierAdaptationDamageCategory::Ignore;
+		}
+	}
 	if (AppliedDamage > 0.0f
 		&& !IsDead()
 		&& Request.StunDurationSeconds > 0.0f
@@ -2375,6 +2955,13 @@ void AEnemyBase::HandleDeath()
 	}
 
 	PerformDeathCleanup();
+	if (IsPoolManaged())
+	{
+		SetPoolState(EEnemyPoolState::DeathPresentation);
+		ForceNetUpdate();
+		OnPoolDeathPresentationStarted(PoolGameplayGeneration, PoolLeaseSerial);
+		return;
+	}
 
 	const float DestroyDelay = FMath::Max(
 		GetDeathDestroyDelay(),
@@ -2480,6 +3067,29 @@ void AEnemyBase::HideSourceMeshes()
 
 void AEnemyBase::PerformDeathCleanup()
 {
+	if (bDeathCleanupPerformed)
+	{
+		return;
+	}
+	bDeathCleanupPerformed = true;
+
+	if (HasAuthority())
+	{
+		ReportFinalAdaptationResult();
+		if (UEnemyAdaptationSubsystem* AdaptationSubsystem = GetEnemyAdaptationSubsystem())
+		{
+			// 처치 결과를 Stack에 반영한 뒤 즉시 활성 목록에서 제외한다.
+			// Pool 반환이나 EndPlay까지 남겨두면 이미 죽은 Enemy가 필드 파열 대상에 포함될 수 있다.
+			AdaptationSubsystem->UnregisterEnemy(this);
+		}
+		if (URoomCombatSubsystem* CombatSubsystem =
+			GetWorld()->GetSubsystem<URoomCombatSubsystem>())
+		{
+			// 일부 파생 적은 HandleDeath 대신 이 정리 함수를 직접 호출하므로 공통 경로에서 통보한다.
+			CombatSubsystem->NotifyEnemyDefeated(this);
+		}
+	}
+
 	EndPossessedImpactInputLock();
 	EndImpactReaction();
 	ResetPossessedAttackInput();
@@ -2511,25 +3121,48 @@ void AEnemyBase::PerformDeathCleanup()
 		StateTreeComponent->StopLogic(TEXT("Enemy died"));
 	}
 
-	AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(GetController());
-	if (!EnemyAIController)
-	{
-		EnemyAIController = Cast<AEnemyAIController>(CachedAIController.Get());
-	}
+	DestroyPoolAIController();
+}
 
-	if (IsValid(EnemyAIController))
+UEnemyAdaptationSubsystem* AEnemyBase::GetEnemyAdaptationSubsystem()
+{
+	if (!CachedEnemyAdaptationSubsystem.IsValid())
 	{
-		EnemyAIController->SetEnemyPerceptionEnabled(false);
-
-		if (EnemyAIController->GetPawn() == this)
+		if (UWorld* World = GetWorld())
 		{
-			EnemyAIController->UnPossess();
+			CachedEnemyAdaptationSubsystem = World->GetSubsystem<UEnemyAdaptationSubsystem>();
 		}
+	}
+	return CachedEnemyAdaptationSubsystem.Get();
+}
 
-		EnemyAIController->Destroy();
+void AEnemyBase::ReportFinalAdaptationResult()
+{
+	UEnemyAdaptationSubsystem* AdaptationSubsystem = GetEnemyAdaptationSubsystem();
+	if (!AdaptationSubsystem)
+	{
+		return;
 	}
 
-	CachedAIController.Reset();
+	FEnemyAdaptationUpdateResult Result;
+	if (LastAcceptedAdaptationDamageCategory == EOutlierAdaptationDamageCategory::Pistol
+		&& AdaptationSubsystem->ReportPistolHit(
+			this,
+			PoolGameplayGeneration,
+			PoolLeaseSerial,
+			true,
+			Result))
+	{
+		// Stack 8 이상 권총 치명타는 명중 파괴가 최종 처리이며 NonGun 처치를 중복 적용하지 않는다.
+		return;
+	}
+
+	AdaptationSubsystem->ReportEnemyDefeat(
+		this,
+		PoolGameplayGeneration,
+		PoolLeaseSerial,
+		ResolveFinalKillCategory(LastAcceptedAdaptationDamageCategory),
+		Result);
 }
 
 void AEnemyBase::HandleStartAttackInput()

@@ -7,11 +7,13 @@
 #include "GameFramework/GameModeBase.h"
 #include "GameFramework/GameMode.h"
 #include "Network/OutlierMatchRequest.h"
+#include "Save/OutlierCheckpointRestartVote.h"
 #include "OutlierGameMode.generated.h"
 
 class APlayerController;
 class AShooterPlayerController;
 class APartnerPlayerController;
+class AFirstPersonPlayerController;
 class AShooterCharacter;
 class APartnerCharacter;
 class AOutlierCheckpoint;
@@ -20,7 +22,10 @@ class AOutlierArenaPausePlayerState;
 class UWorldPartitionStreamingSourceComponent;
 class UDataTable;
 enum class EOutlierPlayerRole : uint8;
+enum class EOutlierGameplayReloadPhase : uint8;
+enum class EOutlierGameplayReloadFailure : uint8;
 struct FOutlierCheckpointData;
+struct FOutlierCheckpointSnapshot;
 
 /**
  *  Simple GameMode for a third person game
@@ -37,7 +42,7 @@ public:
 	virtual void InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage) override;
 	bool IsArenaWorkerPreloadReady() const;
 
-	void RegisterCheckpoint(AController* Controller, AOutlierCheckpoint* Checkpoint);
+	bool RegisterCheckpoint(AController* Controller, AOutlierCheckpoint* Checkpoint);
 	void RefreshPairLinks(AOutlierPlayerState* TriggeringPlayerState);
 
 	UFUNCTION()
@@ -54,18 +59,34 @@ public:
 		AController* FirstController,
 		AController* SecondController,
 		int32 PairId,
-		int32 ArenaId,
 		EOutlierPlayerRole FirstRole,
 		EOutlierPlayerRole SecondRole);
 
 	void OnClientArenaReady(APlayerController* PC);
-	void OnClientArenaGameplayGCReady(APlayerController* PC, int32 ArenaId);
+	void OnClientArenaGameplayGCReady(APlayerController* PC, uint32 GameplayGeneration);
+
+	UFUNCTION(Exec)
+	void ArenaRetryGameplayReload();
+
+	UFUNCTION(Exec)
+	void ArenaDumpGameplayReload();
 
 	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "Network|Arena")
 	bool CompleteArenaMatch();
 
 	// 디버그: 요청한 페어의 arena를 통째로 리로드하고 시작점에 재스폰
 	void DebugReloadArena(AController* Requester);
+
+	bool CanControllerRequestCheckpointRestart(const APlayerController* Controller) const;
+	bool RequestCheckpointRestart(AFirstPersonPlayerController* Requester);
+	bool RespondCheckpointRestart(AFirstPersonPlayerController* Responder, bool bApprove);
+	bool CancelCheckpointRestart(AFirstPersonPlayerController* Requester);
+	bool HandleCheckpointRestartEscape(AFirstPersonPlayerController* Controller);
+	bool HandleExplicitPlayerLeave(AFirstPersonPlayerController* Requester);
+	EOutlierCheckpointRestartVoteState GetLastCheckpointRestartVoteResult() const
+	{
+		return LastCheckpointRestartVoteResult;
+	}
 
 
 private:
@@ -76,13 +97,42 @@ private:
 	UPROPERTY()
 	TMap<TObjectPtr<APlayerController>, TObjectPtr<APawn>> PendingLocalPossessions;
 
-	void HandleServerArenaReloaded(int32 ReloadedArenaId);
+	void HandleServerArenaShown();
+	void HandleServerArenaGameplayReady(uint32 GameplayGeneration);
+	void HandleArenaGameplayReloadStalled(
+		uint32 GameplayGeneration,
+		EOutlierGameplayReloadPhase Phase,
+		FString Diagnostic);
+	void HandleArenaGameplayReloadResumed(uint32 GameplayGeneration);
+	void HandleArenaGameplayReloadFailed(
+		uint32 GameplayGeneration,
+		EOutlierGameplayReloadFailure Failure);
+	void HandleArenaWorkerReloadStallTimeout();
+	void BeginArenaWorkerReleaseShutdown();
+	void ClearArenaGameplayReloadDelegates();
+	void ClearPendingArenaReloadPawns();
+	void CompleteServerArenaReload();
+	void TryFinishArenaReload();
+	bool StartCheckpointRestart(AFirstPersonPlayerController* Requester);
+	void FinishCheckpointRestart();
+	void FinishCheckpointRestartVote(EOutlierCheckpointRestartVoteState Result);
+	void CancelCheckpointRestartVoteForDisconnect(APlayerController* ExitingPlayer);
 
-	int32 ReloadingArenaId = INDEX_NONE;
+	bool bArenaReloadInProgress = false;
+	bool bServerArenaReloadReady = false;
+	bool bCheckpointRestartInProgress = false;
 	FDelegateHandle ArenaShownHandle;
-	int32 PendingGameplayGCArenaId = INDEX_NONE;
+	FDelegateHandle ArenaReloadStalledHandle;
+	FDelegateHandle ArenaReloadResumedHandle;
+	FDelegateHandle ArenaReloadFailedHandle;
+	uint32 PendingGameplayGeneration = 0;
 	TSet<TWeakObjectPtr<APlayerController>> PendingGameplayGCPlayers;
 	TSet<TWeakObjectPtr<APlayerController>> ReadyGameplayGCPlayers;
+	FTimerHandle ArenaWorkerReloadFailureTimerHandle;
+	FOutlierCheckpointRestartVote CheckpointRestartVote;
+	TWeakObjectPtr<AActor> CheckpointRestartVoteLayerOwner;
+	EOutlierCheckpointRestartVoteState LastCheckpointRestartVoteResult =
+		EOutlierCheckpointRestartVoteState::Idle;
 
 protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Respawn")
@@ -127,46 +177,58 @@ protected:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 	void RespawnPairAtCheckpoint(AController* Controller);
-	bool ResolveCheckpointTransform(AController* Controller, int32 ArenaId, FTransform& OutTransform) const;
+	bool ResolveCheckpointTransform(AController* Controller, FTransform& OutTransform) const;
 	FString GetPlayerSaveId(AController* Controller) const;
 
 	// 사망한 컨트롤러의 페어 양쪽에 PreSetLoadWidget을 띄운다. 실제 사람 컨트롤러가 하나도 없으면
 	// (봇/아레나워커) 기존 RespawnPairAtCheckpoint 즉시 리스폰으로 폴백한다.
 	void BeginPresetRespawnSelection(AController* Controller);
 
-	// StageId를 가진 APresetPlayerStart를 찾아 스폰 위치를 돌려준다. RequiredArenaId를 지정하면
-	// (StartMatchedPair처럼 이미 배정된 아레나 인스턴스가 있을 때) 그 아레나 소속인 것만 인정한다.
-	// INDEX_NONE이면(사망 후 스테이지 점프처럼 아레나를 안 가리는 경우) 처음 찾은 것을 그대로 쓴다.
+	// StageId를 가진 단일 Arena 소속 APresetPlayerStart를 찾아 스폰 위치를 돌려준다.
 	bool ResolvePresetStageSpawn(
 		FName StageId,
-		int32& OutArenaId,
 		FTransform& OutShooterSpawn,
-		FTransform& OutPartnerSpawn,
-		int32 RequiredArenaId = INDEX_NONE) const;
+		FTransform& OutPartnerSpawn) const;
 	int32 ResolvePresetNodeCount(FName StageId) const;
 	void FlushUpgradeNodesForPair(AOutlierPlayerState* TriggeringPlayerState, int32 NewNodeCount);
 
 	// DebugReloadArena/RequestPresetRespawn이 공유하는 "아레나 리로드 대기 후 페어 스폰/possess" 공통 로직.
-	void ReloadArenaAndRespawnPair(
+	bool ReloadArenaAndRespawnPair(
 		AOutlierPlayerState* ShooterPlayerState,
 		AOutlierPlayerState* PartnerPlayerState,
-		int32 ArenaId,
 		const FTransform& ShooterSpawn,
-		const FTransform& PartnerSpawn);
+		const FTransform& PartnerSpawn,
+		bool bRestoreCheckpointSnapshot = false);
 
 	AOutlierPlayerState* FindPairPlayerState(int32 PairId, EOutlierPlayerRole PlayerRole) const;
 	AController* GetControllerFromPlayerState(AOutlierPlayerState* PlayerState) const;
 	void ApplyCheckpointToPair(AOutlierPlayerState* TriggeringPlayerState, const FOutlierCheckpointData& Data);
+	bool BuildPairCheckpointSnapshot(
+		AOutlierPlayerState* ShooterPlayerState,
+		AOutlierPlayerState* PartnerPlayerState,
+		FName CheckpointId,
+		bool bInitialSnapshot,
+		const FTransform& ShooterSpawn,
+		const FTransform& PartnerSpawn,
+		FOutlierCheckpointSnapshot& OutSnapshot) const;
+	void CaptureInitialCheckpointSnapshot(
+		AOutlierPlayerState* ShooterPlayerState,
+		AOutlierPlayerState* PartnerPlayerState,
+		AShooterCharacter* Shooter,
+		APartnerCharacter* Partner);
 	void RegisterSpawnedPair(AOutlierPlayerState* ShooterPlayerState, AOutlierPlayerState* PartnerPlayerState, AShooterCharacter* Shooter, APartnerCharacter* Partner);
 	// PlayerState 에 남아 있는 로드아웃 기록을 새로 스폰된 페어에 되살린다.
 	// possess 는 필요 없다 (폰만 있으면 된다) 므로 possess 지점이 아니라
 	// 스폰 직후 — RegisterSpawnedPair 호출 직후 — 에 부른다.
 	// 최초 스폰 경로에서는 스냅샷이 비어 있어 스스로 빠져나간다.
-	void RestorePairLoadout(AOutlierPlayerState* ShooterPlayerState, AShooterCharacter* Shooter, APartnerCharacter* Partner);
+	void RestorePairLoadout(
+		AOutlierPlayerState* ShooterPlayerState,
+		AShooterCharacter* Shooter,
+		APartnerCharacter* Partner,
+		bool bRestoreCheckpointAmmo = false);
 	//APlayerController* SwapPlayerController(APlayerController* OldPC, TSubclassOf<APlayerController> NewClass);
 
 	bool ResolveArenaSpawnTransforms(
-		int32 ArenaId,
 		FTransform& OutShooterSpawn,
 		FTransform& OutPartnerSpawn) const;
 
@@ -177,7 +239,6 @@ protected:
 	// FindPlayerStart가 non-const라 이 함수도 non-const다.
 	void ResolveFallbackSpawnTransforms(
 		AController* Requester,
-		int32 ArenaId,
 		FTransform& OutShooterSpawn,
 		FTransform& OutPartnerSpawn);
 
@@ -192,16 +253,24 @@ private:
 	void ScheduleArenaWorkerGameplayStart();
 	bool HandleArenaWorkerGameplayStartTick(float DeltaTime);
 	void StartArenaWorkerGameplay();
-	void PossessMatchedPawn(APlayerController* PlayerController, APawn* Pawn, int32 ArenaId, const FVector& SpawnLocation);
+	void PossessMatchedPawn(APlayerController* PlayerController, APawn* Pawn, const FVector& SpawnLocation);
 	void TryScheduleArenaWorkerAutoComplete();
 	void HandleArenaWorkerAutoComplete();
 	void RequestArenaWorkerExit();
+	bool IsArenaWorkerReconnectRequest(const FOutlierArenaHandoffRequest& Request) const;
+	void ScheduleArenaWorkerReconnectTimeout();
+	void HandleArenaWorkerReconnectTimeout();
+	void TryResumeArenaWorkerAfterReconnect(APlayerController* ReconnectedPlayer);
 
 	TArray<TWeakObjectPtr<APlayerController>> ArenaWorkerPlayers;
 	FOutlierArenaAdmissionState ArenaWorkerAdmission;
 	TWeakObjectPtr<APlayerController> ArenaWorkerShooterController;
 	TWeakObjectPtr<APlayerController> ArenaWorkerPartnerController;
 	TSet<TWeakObjectPtr<APlayerController>> ArenaWorkerReadyPlayers;
+	// Controller 수명과 무관하게 재접속 대상과 리로드 대기 Pawn을 원래 PlayerId로 보관한다.
+	TSet<FGuid> ArenaWorkerDisconnectedPlayerIds;
+	UPROPERTY(Transient)
+	TMap<FGuid, TObjectPtr<APawn>> ArenaWorkerReconnectPawns;
 	UPROPERTY(Transient)
 	TObjectPtr<AOutlierArenaPausePlayerState> ArenaWorkerPauseOwner;
 	UPROPERTY(Transient)
@@ -212,7 +281,9 @@ private:
 	bool bArenaWorkerGameplayStarted = false;
 	bool bArenaWorkerMatchCompleting = false;
 	bool bArenaWorkerExitRequested = false;
+	bool bListenHostReturnRequested = false;
 	FTimerHandle ArenaWorkerAutoCompleteTimerHandle;
+	FTimerHandle ArenaWorkerReconnectTimerHandle;
 	FTimerHandle ArenaWorkerExitTimerHandle;
 	FTSTicker::FDelegateHandle ArenaWorkerPairSetupTickerHandle;
 	FTSTicker::FDelegateHandle ArenaWorkerGameplayStartTickerHandle;

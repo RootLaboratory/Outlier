@@ -33,6 +33,10 @@ public:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
 
+#if WITH_EDITOR
+	virtual EDataValidationResult IsDataValid(FDataValidationContext& Context) const override;
+#endif
+
 	// 자폭 드론이 Deferred Spawn을 완료하기 전에 1P/3P가 공유할 소켓 이름을 전달한다.
 	void InitializeMountedSocket(FName InMountedSocketName);
 
@@ -74,6 +78,13 @@ protected:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Explosive Prop|Data")
 	FDataTableRowHandle ExplosivePropRow;
+
+	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Explosive Prop|Checkpoint")
+	bool bSaveCheckpointState = false;
+
+	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Explosive Prop|Checkpoint",
+		meta = (EditCondition = "bSaveCheckpointState"))
+	FName ExplosivePropId = NAME_None;
 
 	// 에셋 참조는 DataTable 대신 폭발물 BP별 기본값으로 관리한다.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Explosive Prop|Feedback")
@@ -122,5 +133,8 @@ private:
 	TOptional<FExplosivePropRow> RuntimePropRow;
 	TWeakObjectPtr<ASelfDestructDrone> CachedOwningDrone;
 	TWeakObjectPtr<AController> PendingDamageInstigator;
+	EOutlierAdaptationDamageCategory PendingAdaptationDamageCategory =
+		EOutlierAdaptationDamageCategory::Ignore;
 	FDelegateHandle HealthChangedHandle;
+	bool bProgressIdRegistered = false;
 };

@@ -9,6 +9,7 @@
 class UBoxComponent;
 class USceneComponent;
 class UStaticMeshComponent;
+class AController;
 
 UCLASS()
 class OUTLIER_API AOutlierCheckpoint : public AActor
@@ -20,10 +21,26 @@ public:
 
 	FName GetCheckpointId() const { return CheckpointId; }
 	FTransform GetSpawnTransform() const;
+	FTransform GetPartnerSpawnTransform() const;
+
+	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "Checkpoint")
+	bool SetActivationConditionSatisfied(AController* ActivatingController, bool bSatisfied = true);
+
+	UFUNCTION(BlueprintPure, Category = "Checkpoint")
+	bool IsCheckpointCommitted() const { return bCheckpointCommitted; }
 
 protected:
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Checkpoint")
+	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Checkpoint")
 	FName CheckpointId = NAME_None;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Checkpoint")
+	FVector PartnerSpawnOffset = FVector(0.0f, 150.0f, 0.0f);
+
+	UPROPERTY(Replicated, VisibleInstanceOnly, BlueprintReadOnly, Category = "Checkpoint")
+	bool bActivationConditionSatisfied = false;
+
+	UPROPERTY(Replicated, VisibleInstanceOnly, BlueprintReadOnly, Category = "Checkpoint")
+	bool bCheckpointCommitted = false;
 
 	UPROPERTY(VisibleAnywhere)
 	TObjectPtr<UBoxComponent> Trigger;
@@ -36,7 +53,9 @@ protected:
 
 protected:
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
-	UFUNCTION()
-	virtual void NotifyActorEndOverlap(AActor* OtherActor) override;
+private:
+	bool bCheckpointIdRegistered = false;
 };

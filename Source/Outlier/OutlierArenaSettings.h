@@ -9,6 +9,9 @@
 class UWorld;
 class UDataLayerAsset;
 class UDataTable;
+class UEnemyAdaptationDefinition;
+class UEnemyPoolDefinition;
+class URoomCombatDefinition;
 
 /**
  * 
@@ -23,21 +26,30 @@ public:
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly)
 	TSoftObjectPtr<UWorld> ArenaLevel;
 
-	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly)
-	int32 MaxArenaCount = 8;
-
-	// 아레나 인스턴스를 X축으로 벌리는 간격.
-	// WP 런타임 그리드는 2D(XY)로만 셀을 나누므로(FSquare2DGridHelper) Z 오프셋은 격리에 쓸 수 없다.
-	// 서버(PreloadArenas)와 클라(EnsureArenaLoaded)가 반드시 같은 값으로 계산해야 하며,
-	// 계산은 UOutlierArenaPoolSubsystem::GetArenaInstanceTransform() 한 곳에서만 한다.
-	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Arena|World Partition",
-		meta = (ClampMin = "1000.0"))
-	double ArenaInstanceSpacing = 100000.0;
-
 	// Arena LevelInstance는 유지하고, 이 Runtime Data Layer만 내려서 gameplay 액터를 재생성한다.
 	// 비어 있으면 기존 전체 Arena reload 경로를 사용한다.
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Arena|World Partition")
 	TSoftObjectPtr<UDataLayerAsset> GameplayDataLayer;
+
+	// Pool Actor는 Gameplay Data Layer 밖에서 유지되므로 Arena 수명과 함께 별도로 생성/폐기한다.
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Arena|Enemy Pool")
+	TSoftObjectPtr<UEnemyPoolDefinition> EnemyPoolDefinition;
+
+	// 공유 내성 Stack의 단계, 피해 배율과 파괴 경직 기본값을 중앙에서 설정한다.
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Arena|Enemy Adaptation")
+	TSoftObjectPtr<UEnemyAdaptationDefinition> EnemyAdaptationDefinition;
+
+	// RoomVolume마다 Asset을 지정하지 않고 모든 RoomTag의 전투 구성을 한 곳에서 조회한다.
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Arena|Room Combat")
+	TSoftObjectPtr<URoomCombatDefinition> RoomCombatDefinition;
+
+	// 각 Reload Phase가 이 시간 동안 진행되지 않으면 강제 완료하지 않고 Stalled로 보고한다.
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Arena|World Partition", meta = (ClampMin = "1.0"))
+	float ArenaGameplayReloadStallSeconds = 15.0f;
+
+	// Dedicated Worker만 이 시간 이후 복구 불가능한 정지로 판정한다.
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Arena|World Partition", meta = (ClampMin = "1.0"))
+	float ArenaGameplayReloadFailureSeconds = 60.0f;
 
 	// 프리셋 스테이지별 업그레이드 노드 지급량(FPresetNodeProvideRow). RowName은
 	// OutlierPresetStageIds.h의 상수와 같아야 한다.
@@ -104,10 +116,20 @@ public:
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Network", meta = (ClampMin = "0.1"))
 	float ArenaWorkerExitTimeoutSeconds = 5.0f;
 
+	// 경기 중 Worker 접속이 끊긴 플레이어가 같은 Match/Player/Role로 돌아올 수 있는 유예 시간.
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Network", meta = (ClampMin = "1.0"))
+	float ArenaWorkerReconnectGraceSeconds = 30.0f;
+
+	// Arena Client가 저장된 Handoff URL로 다시 접속을 시도하는 간격.
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Network", meta = (ClampMin = "0.1"))
+	float ArenaWorkerReconnectRetrySeconds = 2.0f;
+
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Network", meta = (ClampMin = "0.0"))
 	float ArenaMatchStartDelaySeconds = 1.0f;
 
 	FString GetArenaPackageName() const;
+	FString ResolveArenaWorkerHost() const;
+	FString ResolveLobbyAddress(bool bUseConnectAddress = false) const;
 	bool MatchesArenaPackageName(const FString& WorldPackageName) const;
 	bool IsArenaWorld(const UWorld* World) const;
 	bool ShouldUseExternalArenaHandoff(ENetMode NetMode) const;

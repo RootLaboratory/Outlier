@@ -2,14 +2,29 @@
 
 
 #include "Room/RoomVolume.h"
+#include "Room/RoomCombatSubsystem.h"
 #include "Interface/RoomTagInterface.h"
 #include "Room/RoomTagComponent.h"
 #include "Components/BoxComponent.h"
+#include "Components/WorldPartitionStreamingSourceComponent.h"
+#include "WorldPartition/WorldPartitionStreamingSource.h"
+#include "WorldPartition/WorldPartitionSubsystem.h"
 
-// Sets default values
+#if WITH_EDITOR
+#include "Misc/DataValidation.h"
+#endif
+
+namespace
+{
+	URoomTagComponent* FindRoomTagComponent(AActor* Actor)
+	{
+		const IRoomTagInterface* RoomTagOwner = Cast<IRoomTagInterface>(Actor);
+		return RoomTagOwner ? RoomTagOwner->GetRoomTagComp() : nullptr;
+	}
+}
+
 ARoomVolume::ARoomVolume()
 {
-	// Set this actor to call Tick() every frame.  You can turn this off to improve performance if you don't need it.
 	PrimaryActorTick.bCanEverTick = false;
 
 	TriggerBox = CreateDefaultSubobject<UBoxComponent>(TEXT("TriggerBox"));
@@ -22,7 +37,95 @@ ARoomVolume::ARoomVolume()
 	TriggerBox->SetCollisionResponseToAllChannels(ECR_Ignore);
 	TriggerBox->SetCollisionResponseToChannel(ECC_Pawn, ECR_Overlap);
 	TriggerBox->SetGenerateOverlapEvents(true);
+
+	CombatStreamingSource = CreateDefaultSubobject<UWorldPartitionStreamingSourceComponent>(
+		TEXT("CombatStreamingSource"));
+	CombatStreamingSource->DisableStreamingSource();
 }
+
+void ARoomVolume::BeginPlay()
+{
+	Super::BeginPlay();
+
+	if (CombatStreamingSource && TriggerBox)
+	{
+		FStreamingSourceShape RoomShape;
+		RoomShape.bUseGridLoadingRange = false;
+		// 소환 반경이 아니라 전투 중인 Room의 WP 유지 범위다. 플레이어가 다른 층이나
+		// Room 밖으로 이동해도 RoomVolume과 소환 오브젝트가 언로드되지 않게 Box 전체를 감싼다.
+		RoomShape.Radius = FMath::Max(TriggerBox->GetScaledBoxExtent().Size(), 1.0);
+		CombatStreamingSource->Shapes.Reset();
+		CombatStreamingSource->Shapes.Add(RoomShape);
+		CombatStreamingSource->DisableStreamingSource();
+	}
+
+	if (HasAuthority() && RoomTag.IsValid())
+	{
+		if (URoomCombatSubsystem* CombatSubsystem =
+			GetWorld()->GetSubsystem<URoomCombatSubsystem>())
+		{
+			CombatSubsystem->RegisterRoom(this, RoomTag);
+		}
+	}
+}
+
+void ARoomVolume::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	SetCombatStreamingSourceEnabled(false);
+
+	if (HasAuthority())
+	{
+		if (URoomCombatSubsystem* CombatSubsystem = GetWorld()
+			? GetWorld()->GetSubsystem<URoomCombatSubsystem>()
+			: nullptr)
+		{
+			CombatSubsystem->UnregisterRoom(this);
+		}
+	}
+
+	Super::EndPlay(EndPlayReason);
+}
+
+void ARoomVolume::SetCombatStreamingSourceEnabled(bool bEnabled)
+{
+	// 클라이언트 셀 로딩은 각 로컬 플레이어의 Streaming Source가 담당한다.
+	if (!HasAuthority() || !CombatStreamingSource)
+	{
+		return;
+	}
+
+	if (bEnabled)
+	{
+		CombatStreamingSource->EnableStreamingSource();
+	}
+	else
+	{
+		CombatStreamingSource->DisableStreamingSource();
+	}
+
+	if (UWorldPartitionSubsystem* WorldPartitionSubsystem = GetWorld()
+		? GetWorld()->GetSubsystem<UWorldPartitionSubsystem>()
+		: nullptr)
+	{
+		WorldPartitionSubsystem->OnUpdateStreamingState();
+	}
+}
+
+bool ARoomVolume::IsCombatStreamingSourceEnabled() const
+{
+	return CombatStreamingSource
+		&& CombatStreamingSource->IsStreamingSourceEnabled();
+}
+
+#if WITH_EDITOR
+EDataValidationResult ARoomVolume::IsDataValid(FDataValidationContext& Context) const
+{
+	const EDataValidationResult Result = Super::IsDataValid(Context);
+	return Result == EDataValidationResult::NotValidated
+		? EDataValidationResult::Valid
+		: Result;
+}
+#endif
 
 void ARoomVolume::HandleBeginOverlap(
 	UPrimitiveComponent* OverlappedComponent,
@@ -37,14 +140,7 @@ void ARoomVolume::HandleBeginOverlap(
 		return;
 	}
 
-	const IRoomTagInterface* RoomTagOwner = Cast<IRoomTagInterface>(OtherActor);
-	if (!RoomTagOwner)
-	{
-		return;
-	}
-
-	URoomTagComponent* RoomTagComp = RoomTagOwner->GetRoomTagComp();
-
+	URoomTagComponent* RoomTagComp = FindRoomTagComponent(OtherActor);
 	if (!RoomTagComp)
 	{
 		return;
@@ -64,18 +160,12 @@ void ARoomVolume::HandleEndOverlap(
 		return;
 	}
 
-	const IRoomTagInterface* RoomTagOwner = Cast<IRoomTagInterface>(OtherActor);
-	if (!RoomTagOwner)
-	{
-		return;
-	}
-
-	URoomTagComponent* RoomTagComp = RoomTagOwner->GetRoomTagComp();
-
+	URoomTagComponent* RoomTagComp = FindRoomTagComponent(OtherActor);
 	if (!RoomTagComp)
 	{
 		return;
 	}
 
+	// 위치 태그만 갱신한다. Room 이탈은 전투 완료가 아니므로 전투용 Streaming Source는 유지한다.
 	RoomTagComp->LeaveRoom(this);
 }

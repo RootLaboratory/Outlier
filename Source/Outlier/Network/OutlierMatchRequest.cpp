@@ -112,6 +112,12 @@ bool FOutlierArenaAdmissionState::CanAccept(
 
 	if (bPairStarted)
 	{
+		// 매치가 시작된 뒤에는 빈 Role을 새 참가자에게 넘기지 않는다. 처음 확정한
+		// MatchId/PlayerId/Role 조합이 모두 같은 요청만 기존 자리의 재접속으로 인정한다.
+		if (IsReconnect(Request))
+		{
+			return true;
+		}
 		OutError = TEXT("Arena match already started");
 		return false;
 	}
@@ -159,6 +165,19 @@ bool FOutlierArenaAdmissionState::Commit(
 		: PartnerPlayerId;
 	RolePlayerId = Request.PlayerId;
 	return true;
+}
+
+bool FOutlierArenaAdmissionState::IsReconnect(const FOutlierArenaHandoffRequest& Request) const
+{
+	if (!bPairStarted || MatchId != Request.MatchId)
+	{
+		return false;
+	}
+
+	const FGuid& ExpectedPlayerId = Request.Role == EOutlierPlayerRole::Shooter
+		? ShooterPlayerId
+		: PartnerPlayerId;
+	return ExpectedPlayerId.IsValid() && ExpectedPlayerId == Request.PlayerId;
 }
 
 void FOutlierArenaAdmissionState::Release(const FGuid& PlayerId)

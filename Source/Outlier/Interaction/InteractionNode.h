@@ -19,8 +19,13 @@ public:
 
 	virtual UInteractableComponent* GetInteractableComponent() const override;
 	virtual bool Interact(AFirstPersonCharacter* Interactor) override;
+	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 protected:
+	UFUNCTION(BlueprintImplementableEvent, Category = "Node")
+	void OnCollectedStateChanged(bool bCollectedState);
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")
 	TObjectPtr<USceneComponent> SceneRoot;
@@ -30,6 +35,16 @@ protected:
 
 private:
 	bool AddNodeServer(AFirstPersonCharacter* Interactor);
+	bool bProgressIdRegistered = false;
+
+	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Node", meta = (AllowPrivateAccess = "true"))
+	FName PickupId = NAME_None;
+
+	UPROPERTY(ReplicatedUsing = OnRep_Collected, VisibleInstanceOnly, BlueprintReadOnly, Category = "Node", meta = (AllowPrivateAccess = "true"))
+	bool bCollected = false;
+
+	UFUNCTION()
+	void OnRep_Collected();
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Node", meta = (AllowPrivateAccess = "true", ClampMin = "1"))
 	int32 NodeRewardAmount = 4;

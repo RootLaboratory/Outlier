@@ -96,8 +96,7 @@ private:
 	UPROPERTY()
 	TMap<FString, FOutlierPendingParty> PendingPartiesByCode;
 
-	UPROPERTY()
-	TMap<int32, int32> ActivePairArenaIds;
+	int32 ActiveArenaPairId = INDEX_NONE;
 
 	UPROPERTY()
 	TMap<FGuid, FOutlierMatchAssignment> ActiveMatchAssignments;

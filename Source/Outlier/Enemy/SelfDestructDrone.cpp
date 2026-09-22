@@ -80,7 +80,10 @@ void ASelfDestructDrone::BeginPlay()
 
 	if (HasAuthority())
 	{
-		SpawnAndAttachMountedExplosives();
+		if (!IsPoolManaged())
+		{
+			SpawnAndAttachMountedExplosives();
+		}
 	}
 }
 
@@ -436,9 +439,35 @@ void ASelfDestructDrone::HandleDeath()
 	// EnemyBase가 Actor를 제거하기 전에 폭발 Queue와 클라이언트 연출을 먼저 확정한다.
 	if (ExplosionComponent)
 	{
-		ExplosionComponent->DetonateAt(GetActorLocation(), GetController());
+		ExplosionComponent->DetonateAt(
+			GetActorLocation(),
+			GetController(),
+			IsEnemyPossessed()
+				? EOutlierAdaptationDamageCategory::NonGun
+				: EOutlierAdaptationDamageCategory::Ignore);
 	}
 	DestroyMountedExplosives();
 
 	Super::HandleDeath();
+}
+
+void ASelfDestructDrone::ResetPoolRuntimeState()
+{
+	// 본체는 재사용하지만 부착 폭발물은 Idle 진입 때 제거한다. 새 대여마다 폭발 가능한 부품을 다시 만든다.
+	Super::ResetPoolRuntimeState();
+	bDeathHandling = false;
+	bHasCommittedSelfDestruct = false;
+	CommittedChargeDirection = FVector::ForwardVector;
+	CommittedChargeTargetDirection = FVector::ForwardVector;
+	CommittedChargeStartLocation = FVector::ZeroVector;
+	CommittedChargeSpeed = 0.0f;
+	CommittedChargeDistanceLimit = 0.0f;
+	CommittedImpactElapsedTime = 0.0f;
+	SpawnAndAttachMountedExplosives();
+}
+
+void ASelfDestructDrone::PrepareForPoolIdle()
+{
+	Super::PrepareForPoolIdle();
+	DestroyMountedExplosives();
 }

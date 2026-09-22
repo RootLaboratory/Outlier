@@ -3,6 +3,7 @@
 #include "Shooter/ShooterInventoryComponent.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Shooter/ShooterCombatComponent.h"
+#include "Weapon/RangedWeaponBase.h"
 #include "Net/UnrealNetwork.h"
 #include "OutlierNetUtils.h"
 #include "OutlierPlayerState.h"
@@ -303,29 +304,43 @@ void UShooterInventoryComponent::ApplyWeaponToSlot(
 }
 
 void UShooterInventoryComponent::RestoreWeaponIntoSlot(
-	TSubclassOf<AWeaponBase> WeaponClass, EWeaponSlot Slot)
+	const FOutlierWeaponSnapshot& WeaponSnapshot,
+	EWeaponSlot Slot,
+	bool bRestoreAmmo)
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (!WeaponClass || !ShooterCharacter || !IsValidWeaponSlot(Slot))
+	if (!WeaponSnapshot.WeaponClass || !ShooterCharacter || !IsValidWeaponSlot(Slot))
 	{
 		return;
 	}
 
-	AWeaponBase* Weapon = AWeaponBase::SpawnLoadoutWeapon(GetWorld(), WeaponClass, ShooterCharacter);
+	AWeaponBase* Weapon = AWeaponBase::SpawnLoadoutWeapon(
+		GetWorld(), WeaponSnapshot.WeaponClass, ShooterCharacter);
 	if (!Weapon)
 	{
 		UE_LOG(LogTemp, Error,
 			TEXT("%s RestoreWeaponIntoSlot failed to spawn Class=%s Slot=%d"),
 			OutlierNet::GetNetPrefix(ShooterCharacter),
-			*GetNameSafe(WeaponClass.Get()),
+			*GetNameSafe(WeaponSnapshot.WeaponClass.Get()),
 			static_cast<int32>(Slot));
 		return;
 	}
-
 	ApplyWeaponToSlot(Weapon, Slot, /*bPlayEquipMontage=*/false);
+
+	// OnEquipped가 최초 DataTable 초기화를 수행하면서 탄창을 기본값으로 채울 수 있다.
+	// 저장 탄약은 장착 라이프사이클이 끝난 뒤 적용해야 초기화에 덮어써지지 않는다.
+	if (bRestoreAmmo && WeaponSnapshot.CurrentAmmo != INDEX_NONE)
+	{
+		if (ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(Weapon))
+		{
+			RangedWeapon->RestoreCheckpointAmmo(WeaponSnapshot.CurrentAmmo);
+		}
+	}
 }
 
-void UShooterInventoryComponent::RestoreLoadout(FOutlierLoadoutSnapshot Snapshot)
+void UShooterInventoryComponent::RestoreLoadout(
+	FOutlierLoadoutSnapshot Snapshot,
+	bool bRestoreAmmo)
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 	if (!ShooterCharacter || !ShooterCharacter->HasAuthority())
@@ -339,20 +354,50 @@ void UShooterInventoryComponent::RestoreLoadout(FOutlierLoadoutSnapshot Snapshot
 	// AFirstPersonCharacter::EquipWeapon 이 직전 CurrentWeapon 에 OnUnequipped() 를 부르므로,
 	// 순서대로 넣기만 하면 앞의 것들은 저절로 스토우되고 마지막 것만 장착 상태로 남는다.
 	// 별도의 "슬롯에만 넣기" 경로를 만들 필요가 없다.
-	for (int32 SlotIndex = 0; SlotIndex < Snapshot.SlotClasses.Num(); ++SlotIndex)
+	for (int32 SlotIndex = 0; SlotIndex < Snapshot.SlotSnapshots.Num(); ++SlotIndex)
 	{
 		if (SlotIndex == CurrentSlotIndex)
 		{
 			continue;
 		}
 
-		RestoreWeaponIntoSlot(Snapshot.SlotClasses[SlotIndex], static_cast<EWeaponSlot>(SlotIndex));
+		RestoreWeaponIntoSlot(
+			Snapshot.SlotSnapshots[SlotIndex],
+			static_cast<EWeaponSlot>(SlotIndex),
+			bRestoreAmmo);
 	}
 
-	if (Snapshot.SlotClasses.IsValidIndex(CurrentSlotIndex))
+	if (Snapshot.SlotSnapshots.IsValidIndex(CurrentSlotIndex))
 	{
-		RestoreWeaponIntoSlot(Snapshot.SlotClasses[CurrentSlotIndex], Snapshot.CurrentSlot);
+		RestoreWeaponIntoSlot(
+			Snapshot.SlotSnapshots[CurrentSlotIndex],
+			Snapshot.CurrentSlot,
+			bRestoreAmmo);
 	}
+}
+
+void UShooterInventoryComponent::BuildLoadoutSnapshot(
+	FOutlierLoadoutSnapshot& OutSnapshot,
+	bool bCaptureAmmo) const
+{
+	OutSnapshot.SlotSnapshots.Reset();
+	OutSnapshot.SlotSnapshots.SetNum(WeaponSlots.Num());
+	for (int32 SlotIndex = 0; SlotIndex < WeaponSlots.Num(); ++SlotIndex)
+	{
+		const AWeaponBase* Weapon = WeaponSlots[SlotIndex];
+		FOutlierWeaponSnapshot& WeaponSnapshot = OutSnapshot.SlotSnapshots[SlotIndex];
+		WeaponSnapshot.WeaponClass = Weapon ? Weapon->GetClass() : nullptr;
+		WeaponSnapshot.CurrentAmmo = INDEX_NONE;
+
+		if (bCaptureAmmo)
+		{
+			if (const ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(Weapon))
+			{
+				WeaponSnapshot.CurrentAmmo = RangedWeapon->GetCurrentAmmo();
+			}
+		}
+	}
+	OutSnapshot.CurrentSlot = CurrentSlot;
 }
 
 void UShooterInventoryComponent::CaptureLoadoutToPlayerState() const
@@ -374,15 +419,7 @@ void UShooterInventoryComponent::CaptureLoadoutToPlayerState() const
 	// 기존 스냅샷을 읽어와 Shooter 쪽만 갱신한다.
 	FOutlierLoadoutSnapshot Snapshot = PlayerState->GetLoadoutSnapshot();
 
-	Snapshot.SlotClasses.Reset();
-	Snapshot.SlotClasses.SetNum(WeaponSlots.Num());
-	for (int32 SlotIndex = 0; SlotIndex < WeaponSlots.Num(); ++SlotIndex)
-	{
-		Snapshot.SlotClasses[SlotIndex] = WeaponSlots[SlotIndex]
-			? WeaponSlots[SlotIndex]->GetClass()
-			: nullptr;
-	}
-	Snapshot.CurrentSlot = CurrentSlot;
+	BuildLoadoutSnapshot(Snapshot, /*bCaptureAmmo=*/false);
 
 	PlayerState->SetLoadoutSnapshot(Snapshot);
 }

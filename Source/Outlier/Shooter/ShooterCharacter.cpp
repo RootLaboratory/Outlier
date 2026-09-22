@@ -1957,6 +1957,7 @@ bool AShooterCharacter::TryReflectIncomingDamage(const FOutlierDamageRequest& Re
 			->GetShooterSuitConfig().BulletReflection.ReflectDamageMult;
 		ReflectedRequest.DamageAmount = Request.DamageAmount * ReflectDamageMult;
 		ReflectedRequest.DamageTag = Request.DamageTag;
+		ReflectedRequest.AdaptationDamageCategory = EOutlierAdaptationDamageCategory::Gun;
 		ReflectedRequest.HitResult = ReflectedHit;
 		ReflectedRequest.DamageOrigin = ReflectionStart;
 		ReflectedRequest.bReflectedDamage = true;

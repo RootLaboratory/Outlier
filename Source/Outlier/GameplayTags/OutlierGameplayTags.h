@@ -5,6 +5,19 @@
 
 namespace OutlierGameplayTags
 {
+	namespace Enemy
+	{
+		namespace Adaptation
+		{
+			inline FGameplayTag Target()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(
+					FName(TEXT("Enemy.Adaptation.Target")));
+				return Tag;
+			}
+		}
+	}
+
 	namespace Data
 	{
 		inline FGameplayTag Health()
@@ -55,6 +68,13 @@ namespace OutlierGameplayTags
 		inline FGameplayTag Explosion()
 		{
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Damage.Explosion")));
+			return Tag;
+		}
+
+		inline FGameplayTag AdaptationBreak()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(
+				FName(TEXT("Damage.AdaptationBreak")));
 			return Tag;
 		}
 	}

@@ -590,6 +590,32 @@ void UInteractableComponent::MarkUsed(AFirstPersonCharacter* CompletedInteractor
 	}
 }
 
+void UInteractableComponent::RestoreUsedState(bool bUsed)
+{
+	AActor* Owner = GetOwner();
+	if (!Owner || !Owner->HasAuthority())
+	{
+		return;
+	}
+
+	const FGameplayTag UsedTag = InteractableComponentTags::Used();
+	if (!UsedTag.IsValid())
+	{
+		return;
+	}
+
+	if (bUsed)
+	{
+		CancelAllHoldSessions();
+		InteractableTags.AddTag(UsedTag);
+	}
+	else
+	{
+		InteractableTags.RemoveTag(UsedTag);
+	}
+	Owner->ForceNetUpdate();
+}
+
 void UInteractableComponent::ClearHoldReady()
 {
 	const FGameplayTag HoldTag = InteractableComponentTags::Hold();

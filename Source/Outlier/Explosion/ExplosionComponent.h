@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include "Damage/OutlierDamageReceiver.h"
 #include "Engine/DataTable.h"
 #include "Explosion/ExplosionTypes.h"
 #include "GameplayTagContainer.h"
@@ -28,7 +29,11 @@ public:
 	bool Detonate();
 
 	// 지정 위치의 폭발 요청을 서버 Queue에 추가한다. 이미 요청한 컴포넌트라면 false를 반환한다.
-	bool DetonateAt(const FVector& ExplosionLocation, AController* EventInstigator = nullptr);
+	bool DetonateAt(
+		const FVector& ExplosionLocation,
+		AController* EventInstigator = nullptr,
+		EOutlierAdaptationDamageCategory AdaptationDamageCategory =
+			EOutlierAdaptationDamageCategory::Ignore);
 
 	// 폭발 완료 상태를 초기화해 같은 컴포넌트가 다시 폭발할 수 있게 한다.
 	UFUNCTION(BlueprintCallable, Category = "Explosion")

@@ -26,5 +26,7 @@ public class OutlierEditor : ModuleRules
 			"GraphicSettingDebugger",
 			"GraphicSettingDebuggerEditor"
 		});
+
+		PrivateDependencyModuleNames.Add("LevelEditor");
 	}
 }

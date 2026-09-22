@@ -28,7 +28,7 @@ void UDebugArenaButton::OnClicked_DebugReload()
 		return;
 	}
 
-	// 요청한 페어(자기 ArenaId)만 대상 → 서버 권위로 위임. ArenaId는 서버가 PlayerState에서 도출.
+	// 현재 단일 Arena를 서버 권위로 리로드한다.
 	// APartnerPlayerController도 AFirstPersonPlayerController 파생이라 base 캐스팅 하나로 둘 다 처리됨.
 	if (AFirstPersonPlayerController* FPC = Cast<AFirstPersonPlayerController>(PC))
 	{

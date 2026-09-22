@@ -19,6 +19,7 @@ public:
 
 protected:
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void Tick(float DeltaTime) override;
 
 public:
@@ -27,6 +28,9 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Door")
 	void ToggleDoor();
+
+	UFUNCTION(BlueprintPure, Category = "Door")
+	bool IsDoorOpen() const { return bIsOpen; }
 
 public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")
@@ -43,6 +47,16 @@ public:
 
 	UPROPERTY(EditAnywhere, Category = "Door")
 	TObjectPtr<UCurveFloat> DoorCurve;
+
+	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Door")
+	FName DoorId = NAME_None;
+
+	/** Played as server-authoritative Relevant AtLocation audio when movement starts. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Door|Audio", meta = (Categories = "Audio.Type"))
+	FGameplayTag DoorMovementAudioEventTag;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Door|Audio", meta = (Categories = "Audio.Context"))
+	FGameplayTagContainer DoorMovementAudioContextTags;
 
 protected:
 	UPROPERTY(ReplicatedUsing = OnRep_IsOpen, BlueprintReadOnly, Category = "Door")
@@ -63,6 +77,8 @@ private:
 	void OnRep_IsOpen();
 
 	void ApplyDoorState(bool bOpen);
+	void SetDoorOpenInternal(bool bOpen, bool bRecordProgress, bool bPlayAudio);
+	bool bProgressIdRegistered = false;
 	bool PlayDoorMovementAudio(bool bOpen);
 
 public:
