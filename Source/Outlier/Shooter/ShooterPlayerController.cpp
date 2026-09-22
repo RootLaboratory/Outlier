@@ -12,6 +12,7 @@
 #include "ShooterCharacter.h"
 #include "ShooterInventoryComponent.h"
 #include "ShooterMainWidget.h"
+#include "Weapon/RangedWeaponBase.h"
 #include "OutlierGameMode.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
@@ -502,6 +503,22 @@ void AShooterPlayerController::OnWeaponChanged(EWeaponType NewType)
 	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
 	{
 		UISubsystem->OnCurrentWeaponChanged(static_cast<EWidgetWeaponType>(NewType));
+
+		// 권총 쿨타임은 무기를 내려도 GAS에서 계속 흐른다. 다시 권총을 들었을 때
+		// 사격 당시 UI 알림에만 의존하지 않고 실제 남은 시간을 크로스헤어에 재투영한다.
+		if (NewType == EWeaponType::Pistol && BoundShooterCharacter)
+		{
+			if (const ARangedWeaponBase* Pistol = Cast<ARangedWeaponBase>(BoundShooterCharacter->GetCurrentWeapon()))
+			{
+				const float TotalCooldown = Pistol->GetReuseCooldown();
+				const float RemainingCooldown = Pistol->GetReuseCooldownRemaining();
+				if (TotalCooldown > UE_KINDA_SMALL_NUMBER && RemainingCooldown > UE_KINDA_SMALL_NUMBER)
+				{
+					const float ElapsedCooldown = FMath::Max(0.0f, TotalCooldown - RemainingCooldown);
+					UISubsystem->OnRep_ShootCrosshairChanged(TotalCooldown, ElapsedCooldown);
+				}
+			}
+		}
 	}
 
 	// 무기가 바뀌면 탄약도 같이 바뀐다. 슈트 플래그(PlayerState)와 CurrentWeapon(Pawn)은

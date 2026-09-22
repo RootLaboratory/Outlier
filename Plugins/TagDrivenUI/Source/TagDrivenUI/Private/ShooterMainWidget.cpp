@@ -9,13 +9,39 @@
 #include "HPBarUI.h"
 #include "ShooterCurrentAbilityIcon.h"
 #include "ShooterCurrentWeaponIcon.h"
+#include "ShooterStatusBarWidget.h"
 #include "TagDrivenUIGameplayTags.h"
 
 void UShooterMainWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
 
+	UE_LOG(LogTemp, Warning, TEXT("[ShooterHUD][Main] NativeConstruct Widget=%s Class=%s"),
+		*GetNameSafe(this), *GetNameSafe(GetClass()));
+
+	CacheStatusBarWidgets();
 	ModuleInit();
+}
+
+void UShooterMainWidget::CacheStatusBarWidgets()
+{
+	if (!ensureMsgf(ShooterStatusBarHUD,
+		TEXT("ShooterMainWidget requires a ShooterStatusBarHUD container widget.")))
+	{
+		return;
+	}
+
+	AmmoUI = ShooterStatusBarHUD->GetAmmoUI();
+	CurrentAbilityUI = ShooterStatusBarHUD->GetCurrentAbilityUI();
+	CurrentWeaponUI = ShooterStatusBarHUD->GetCurrentWeaponUI();
+
+	UE_LOG(LogTemp, Log,
+		TEXT("[ShooterHUD][Binding] Main=%s StatusBar=%s Ammo=%s Ability=%s Weapon=%s"),
+		*GetNameSafe(this),
+		*GetNameSafe(ShooterStatusBarHUD),
+		*GetNameSafe(AmmoUI),
+		*GetNameSafe(CurrentAbilityUI),
+		*GetNameSafe(CurrentWeaponUI));
 }
 
 void UShooterMainWidget::ModuleInit()
@@ -24,6 +50,9 @@ void UShooterMainWidget::ModuleInit()
 
 	Modules.Empty();
 	Modules.Reserve(7);
+	UE_LOG(LogTemp, Warning,
+		TEXT("[ShooterHUD][Module] Register Ammo=%s Ability=%s Weapon=%s"),
+		*GetNameSafe(AmmoUI), *GetNameSafe(CurrentAbilityUI), *GetNameSafe(CurrentWeaponUI));
 
 	RegisterModule(TagDrivenUITags::Shooter::HP(), HPBarUI);
 	RegisterModule(TagDrivenUITags::Shooter::Ammo(), AmmoUI);
@@ -95,9 +124,21 @@ void UShooterMainWidget::ResetCrossHairs()
 
 void UShooterMainWidget::OnChangeWeapon(EWidgetWeaponType Type)
 {
-	if (UShooterCurrentWeaponIcon* CurrentWeaponModule = Cast<UShooterCurrentWeaponIcon>(GetModule(TagDrivenUITags::Shooter::CurrentWeapon())))
+	UEventDrivenUI* RegisteredWeaponModule = GetModule(TagDrivenUITags::Shooter::CurrentWeapon());
+	UE_LOG(LogTemp, Warning,
+		TEXT("[ShooterHUD][WeaponEvent] Requested Type=%s RegisteredModule=%s DirectPointer=%s"),
+		*StaticEnum<EWidgetWeaponType>()->GetNameStringByValue(static_cast<int64>(Type)),
+		*GetNameSafe(RegisteredWeaponModule),
+		*GetNameSafe(CurrentWeaponUI));
+
+	if (UShooterCurrentWeaponIcon* CurrentWeaponModule = Cast<UShooterCurrentWeaponIcon>(RegisteredWeaponModule))
 	{
 		CurrentWeaponModule->SetCurrentWeapon(Type);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("[ShooterHUD][WeaponEvent] FAILED: registered CurrentWeapon module is missing or wrong type"));
 	}
 
 	switch (Type)

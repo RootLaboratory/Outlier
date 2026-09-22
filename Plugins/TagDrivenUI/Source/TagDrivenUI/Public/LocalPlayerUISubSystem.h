@@ -53,7 +53,7 @@ public:
 	void OnRep_Aiming();
 	void OnRep_AimingOff();
 	void OnRep_AttackSign(EAttackSign InType);
-	void OnRep_ShootCrosshairChanged(float InFireRate);
+	void OnRep_ShootCrosshairChanged(float InFireRate, float InElapsedTime = 0.0f);
 	void OnRep_ShooterHPStateChanged(const FGameplayTag& InShooterConditionTag);
 	void OnRep_ShooterDynamicCrosshairChanged(bool InFlag);
 public:
