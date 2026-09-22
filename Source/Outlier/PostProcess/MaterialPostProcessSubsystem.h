@@ -8,6 +8,7 @@
 #include "MaterialPostProcessSubsystem.generated.h"
 
 class AOutlierPostProcessVolume;
+class UMaterialInstanceDynamic;
 class UMaterialInterface;
 class UMeshComponent;
 class UOutlierAbilitySystemComponent;
@@ -21,20 +22,23 @@ struct FScanStencilRestoreState
 };
 
 // 은신 오버라이드를 걸기 전 메시 컴포넌트의 원본 상태.
-// Materials 는 1인칭 글래스로 교체한 메시에만 채워진다 ( 3인칭은 스텐실만 건드리므로 빈 배열 ).
+// 1인칭 / 3인칭 구분 없이 슬롯별 머티리얼을 교체하므로 두 경우 모두 채워진다.
 USTRUCT()
 struct FOutlierStealthMeshRestoreState
 {
 	GENERATED_BODY()
 
-	UPROPERTY()
-	bool bRenderCustomDepth = false;
-
-	UPROPERTY()
-	int32 CustomDepthStencilValue = 0;
-
+	// 교체 전 슬롯별 원본 머티리얼.
 	UPROPERTY()
 	TArray<TObjectPtr<UMaterialInterface>> Materials;
+
+	// 지금 꽂혀 있는 MID. 페이드 스칼라를 매 틱 여기에 밀어 넣는다.
+	UPROPERTY()
+	TObjectPtr<UMaterialInstanceDynamic> AppliedMaterial;
+
+	// AppliedMaterial 을 만든 원본. 볼륨 쪽 지정이 바뀌면 다시 만들어야 하므로 들고 있는다.
+	UPROPERTY()
+	TObjectPtr<UMaterialInterface> SourceMaterial;
 };
 
 // State.Stealthed 를 들 수 있는 ASC 1개분 상태.
@@ -76,10 +80,11 @@ public:
 	// 은신은 State.Stealthed 태그를 구독해서 이 서브시스템이 전담한다.
 	// 캐릭터/무기는 IOutlierStealthVisualTarget 으로 자기 메시 구성만 답하고,
 	// 적용 대상 집합( 무기 교체 / 파트너 교체 )은 매 틱 재수집해서 자동으로 따라간다.
+	// 1인칭 / 3인칭 모두 메시 머티리얼 교체로 처리한다 ( 포스트프로세스 / 스텐실 미사용 ).
+	// 3인칭 메시는 자기 화면엔 안 보이고 상대 화면에만 보이므로, 로컬 여부로 거르지 않는다.
 	void RegisterStealthSource(UOutlierAbilitySystemComponent* AbilitySystem);
 	void UnregisterStealthSource(UOutlierAbilitySystemComponent* AbilitySystem);
 	void FlushStealthRestoreStates();
-	UMaterialInterface* GetFirstPersonStealthGlassMaterial() const;
 
 	//Damaged
 	void UpdateDamagedPostProcess(float InHPRatio);
@@ -118,9 +123,13 @@ private:
 		AActor* Target,
 		TArray<UMeshComponent*>& OutFirstPersonMeshes,
 		TArray<UMeshComponent*>& OutThirdPersonMeshes) const;
-	void ApplyStealthMeshOverride(UMeshComponent* Mesh, UMaterialInterface* GlassMaterial, int32 StencilValue);
+	void ApplyStealthMeshOverride(UMeshComponent* Mesh, UMaterialInterface* StealthMaterial);
 	void ClearStealthMeshOverride(UMeshComponent* Mesh);
-	void UpdateStealthView();
+	// 이미 꽂혀 있는 MID 의 페이드 스칼라만 갱신한다.
+	void SetStealthMeshFade(UMeshComponent* Mesh, float Fade);
 	float GetStealthFadeDuration() const;
-	int32 GetStealthStencilValue() const;
+	float EvaluateStealthFade(float LinearFade) const;
+	FName GetStealthFadeParameterName() const;
+	UMaterialInterface* GetFirstPersonStealthMaterial() const;
+	UMaterialInterface* GetThirdPersonStealthMaterial() const;
 };

@@ -114,6 +114,7 @@ public:
 	virtual void AdvanceWeaponMuzzleSequence() override;
 	virtual void ApplyExplosionReaction(const FVector& ExplosionOrigin, float EnemyImpulseScale,
 		float TurretReactionScale, float EffectRatio) override;
+	virtual float GetDeathDestroyDelay() const override;
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|Turret")
 	bool IsDeployed() const

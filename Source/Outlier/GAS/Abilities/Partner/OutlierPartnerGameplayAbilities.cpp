@@ -1,5 +1,7 @@
 #include "GAS/Abilities/Partner/OutlierPartnerGameplayAbilities.h"
 
+#include "Audio/OutlierAbilityAudioSettings.h"
+#include "Audio/OutlierAudioSubsystem.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "OutlierPlayerState.h"
 #include "Drone/Partner/PartnerEMPComponent.h"
@@ -11,6 +13,41 @@
 namespace
 {
 constexpr float HackCancellationCooldownScale = 0.5f;
+
+void PlayAbilityAudioAtLocationFromServer(AActor* EmitterActor, const FGameplayTag& ContextTag)
+{
+	const UOutlierAbilityAudioSettings* Settings = GetDefault<UOutlierAbilityAudioSettings>();
+	if (!EmitterActor || !Settings->PlayerTypeTag.IsValid() || !ContextTag.IsValid())
+	{
+		UE_LOG(
+			LogTemp,
+			Error,
+			TEXT("[GAS.AbilityAudio] Invalid ini configuration. Emitter=%s Type=%s Context=%s"),
+			*GetNameSafe(EmitterActor),
+			*Settings->PlayerTypeTag.ToString(),
+			*ContextTag.ToString());
+		return;
+	}
+
+	UOutlierAudioSubsystem::PlayTaggedAtLocationFromServer(
+		EmitterActor,
+		Settings->PlayerTypeTag,
+		ContextTag);
+}
+
+void StopAbilityAudioLoopAtLocationFromServer(AActor* EmitterActor, const FGameplayTag& ContextTag)
+{
+	const UOutlierAbilityAudioSettings* Settings = GetDefault<UOutlierAbilityAudioSettings>();
+	if (!EmitterActor || !Settings->PlayerTypeTag.IsValid() || !ContextTag.IsValid())
+	{
+		return;
+	}
+
+	UOutlierAudioSubsystem::StopTaggedAtLocationFromServer(
+		EmitterActor,
+		Settings->PlayerTypeTag,
+		ContextTag);
+}
 
 FGameplayTagContainer MakeAllPartnerAbilityTags()
 {
@@ -154,7 +191,11 @@ void UOutlierPartnerEMPAbility::ActivateAbility(
 	if (!Component->IsEMPInteractionActive() || !CommitConfiguredCooldown())
 	{
 		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
+		return;
 	}
+	PlayAbilityAudioAtLocationFromServer(
+		Partner,
+		GetDefault<UOutlierAbilityAudioSettings>()->PartnerEMPCharge);
 }
 
 void UOutlierPartnerEMPAbility::EndAbility(
@@ -164,22 +205,54 @@ void UOutlierPartnerEMPAbility::EndAbility(
 	bool bReplicateEndAbility,
 	bool bWasCancelled)
 {
+	StopAbilityAudioLoopAtLocationFromServer(
+		GetPartnerCharacter(),
+		GetDefault<UOutlierAbilityAudioSettings>()->PartnerEMPCharge);
+
+	bool bCancelledActiveEMP = false;
 	if (UPartnerEMPComponent* Component = ActiveEMPComponent.Get())
 	{
 		Component->OnEMPFinished.Remove(EMPFinishedHandle);
-		if (bWasCancelled && Component->IsEMPInteractionActive())
+		bCancelledActiveEMP = bWasCancelled && Component->IsEMPInteractionActive();
+		if (bCancelledActiveEMP)
 		{
 			Component->CancelForReboot();
 		}
 	}
 	ActiveEMPComponent.Reset();
 	EMPFinishedHandle.Reset();
+	if (bCancelledActiveEMP)
+	{
+		PlayAbilityAudioAtLocationFromServer(
+			GetPartnerCharacter(),
+			GetDefault<UOutlierAbilityAudioSettings>()->PartnerEMPFail);
+	}
 	Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);
 }
 
 void UOutlierPartnerEMPAbility::HandleEMPFinished(bool bAppliedTargets, bool bCancelled)
 {
-	(void)bAppliedTargets;
+	StopAbilityAudioLoopAtLocationFromServer(
+		GetPartnerCharacter(),
+		GetDefault<UOutlierAbilityAudioSettings>()->PartnerEMPCharge);
+
+	if (bAppliedTargets && !bCancelled)
+	{
+		PlayAbilityAudioAtLocationFromServer(
+			GetPartnerCharacter(),
+			GetDefault<UOutlierAbilityAudioSettings>()->PartnerEMPBurst);
+
+		UE_LOG(LogTemp, Error, TEXT("PREFinishcall called"));
+	}
+	else
+	{
+		PlayAbilityAudioAtLocationFromServer(
+			GetPartnerCharacter(),
+			GetDefault<UOutlierAbilityAudioSettings>()->PartnerEMPFail);
+
+		UE_LOG(LogTemp, Error, TEXT("PREFinishFailed called"));
+
+	}
 	EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, bCancelled);
 }
 
@@ -203,6 +276,12 @@ void UOutlierPartnerShieldAbility::ActivateAbility(
 		: nullptr;
 	const bool bSucceeded = Component && Component->TryShield_Server() == EPartnerSkillUseResult::Success;
 	const bool bCommitted = bSucceeded && CommitConfiguredCooldown();
+	if (bSucceeded && bCommitted)
+	{
+		PlayAbilityAudioAtLocationFromServer(
+			Partner,
+			GetDefault<UOutlierAbilityAudioSettings>()->PartnerShield);
+	}
 	EndAbility(Handle, ActorInfo, ActivationInfo, true, !bCommitted);
 }
 
@@ -238,7 +317,11 @@ void UOutlierPartnerHackAbility::ActivateAbility(
 	if (!Component->IsHackInteractionActive())
 	{
 		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
+		return;
 	}
+	PlayAbilityAudioAtLocationFromServer(
+		Partner,
+		GetDefault<UOutlierAbilityAudioSettings>()->PartnerHackTryLoop);
 }
 
 void UOutlierPartnerHackAbility::EndAbility(
@@ -248,16 +331,28 @@ void UOutlierPartnerHackAbility::EndAbility(
 	bool bReplicateEndAbility,
 	bool bWasCancelled)
 {
+	StopAbilityAudioLoopAtLocationFromServer(
+		GetPartnerCharacter(),
+		GetDefault<UOutlierAbilityAudioSettings>()->PartnerHackTryLoop);
+
+	bool bCancelledActiveHack = false;
 	if (UPartnerHackComponent* Component = ActiveHackComponent.Get())
 	{
 		Component->OnHackFinished.Remove(HackFinishedHandle);
-		if (bWasCancelled && Component->IsHackInteractionActive())
+		bCancelledActiveHack = bWasCancelled && Component->IsHackInteractionActive();
+		if (bCancelledActiveHack)
 		{
 			Component->CancelForReboot();
 		}
 	}
 	ActiveHackComponent.Reset();
 	HackFinishedHandle.Reset();
+	if (bCancelledActiveHack)
+	{
+		PlayAbilityAudioAtLocationFromServer(
+			GetPartnerCharacter(),
+			GetDefault<UOutlierAbilityAudioSettings>()->PartnerHackFail);
+	}
 	Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);
 }
 
@@ -265,6 +360,10 @@ void UOutlierPartnerHackAbility::HandleHackFinished(
 	EHackResult Result,
 	bool bPossessionTarget)
 {
+	StopAbilityAudioLoopAtLocationFromServer(
+		GetPartnerCharacter(),
+		GetDefault<UOutlierAbilityAudioSettings>()->PartnerHackTryLoop);
+
 	const bool bFullCooldown = Result == EHackResult::Fail
 		|| (Result == EHackResult::Success && !bPossessionTarget);
 	const bool bCancelled = Result == EHackResult::Cancelled;
@@ -280,6 +379,18 @@ void UOutlierPartnerHackAbility::HandleHackFinished(
 			? AbilitySystem->GetPartnerAbilityConfig().HackCooldown * HackCancellationCooldownScale
 			: 0.0f;
 		bCommitted = CommitConfiguredCooldown(CancellationCooldown);
+	}
+	if (Result == EHackResult::Success)
+	{
+		PlayAbilityAudioAtLocationFromServer(
+			GetPartnerCharacter(),
+			GetDefault<UOutlierAbilityAudioSettings>()->PartnerHackSuccess);
+	}
+	else if (Result == EHackResult::Fail)
+	{
+		PlayAbilityAudioAtLocationFromServer(
+			GetPartnerCharacter(),
+			GetDefault<UOutlierAbilityAudioSettings>()->PartnerHackFail);
 	}
 	EndAbility(
 		CurrentSpecHandle,
@@ -321,7 +432,11 @@ void UOutlierPartnerScanAbility::ActivateAbility(
 	if (!bStarted || !CommitConfiguredCooldown())
 	{
 		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
+		return;
 	}
+	PlayAbilityAudioAtLocationFromServer(
+		Partner,
+		GetDefault<UOutlierAbilityAudioSettings>()->PartnerScan);
 }
 
 void UOutlierPartnerScanAbility::EndAbility(

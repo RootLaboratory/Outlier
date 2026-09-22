@@ -38,8 +38,33 @@ public:
 	/** Local-only 2D playback. Suitable for input and UI feedback. */
 	bool PlayLocal2D(const FOutlierAudioPlayRequest& Request);
 
+	/**
+	 * Local-only 3D playback, for callers that already execute on every client and must not
+	 * route across the network again — GameplayCue notifies in particular.
+	 *
+	 * A cue is already multicast by the ASC and runs locally on each client, so calling one of
+	 * the Relevant* entry points from inside a notify would propagate a second time.
+	 *
+	 * Note the trade-off against the Relevant* path: the server does not resolve the variant
+	 * here, so each client rolls its own. Use a Relevant* entry point when every player must
+	 * hear the same variant.
+	 */
+	bool PlayLocalAtLocation(const FOutlierAudioPlayRequest& Request);
+
 	/** Server-authoritative 2D playback delivered to one owning player. */
 	bool PlayOwner2DFromServer(const FOutlierAudioPlayRequest& Request);
+
+	/** Gameplay submits only Type + Context. Playback lifetime is owned by the audio subsystem. */
+	static bool PlayTaggedAtLocationFromServer(
+		AActor* EmitterActor,
+		FGameplayTag TypeTag,
+		FGameplayTag ContextTag);
+
+	/** Stops the persistent playback identified by the emitter and context. */
+	static bool StopTaggedAtLocationFromServer(
+		AActor* EmitterActor,
+		FGameplayTag TypeTag,
+		FGameplayTag ContextTag);
 
 	/** Relevant world playback that an owning client may request through its controller. */
 	bool PlayRelevantAtLocationFromOwningClient(const FOutlierAudioPlayRequest& Request);
@@ -54,6 +79,9 @@ public:
 
 	/** RPC/GAS delivery endpoint. Never routes across the network again. */
 	bool PlayResolvedAudioLocally(const FOutlierResolvedAudioPlay& ResolvedPlay);
+
+	/** Stops and releases one locally playing loop instance. */
+	bool StopLoopAudioLocally(int32 AudioInstanceId);
 
 	UFUNCTION(BlueprintCallable, Category = "Outlier|Audio|Settings")
 	void SetVolumeMultiplier(EOutlierAudioVolumeType VolumeType, float NewMultiplier);
@@ -75,6 +103,8 @@ private:
 		float VolumeMultiplier = 1.0f;
 		float PitchMultiplier = 1.0f;
 		EOutlierAudioVolumeType VolumeType = EOutlierAudioVolumeType::SFX;
+		EOutlierAudioPlaybackPolicy PlaybackPolicy = EOutlierAudioPlaybackPolicy::OneShot;
+		FGameplayTag LoopContextTag;
 	};
 
 	struct FActiveAudioPlayback
@@ -82,6 +112,8 @@ private:
 		TWeakObjectPtr<UAudioComponent> Component;
 		float BaseVolumeMultiplier = 1.0f;
 		EOutlierAudioVolumeType VolumeType = EOutlierAudioVolumeType::SFX;
+		int32 AudioInstanceId = 0;
+		bool bLooping = false;
 	};
 
 	struct FPendingPlay
@@ -94,6 +126,8 @@ private:
 		float PitchMultiplier = 1.0f;
 		float StartTime = 0.0f;
 		EOutlierAudioVolumeType VolumeType = EOutlierAudioVolumeType::SFX;
+		int32 AudioInstanceId = 0;
+		bool bLooping = false;
 	};
 
 	// Bank 발견 결과. bLoadImmediately/BankId 는 Bank 메타데이터가 로드되는 즉시 알 수 있다 (가벼움).
@@ -105,6 +139,23 @@ private:
 		bool bContentLoaded = false;
 	};
 
+	struct FLoopPlaybackKey
+	{
+		TWeakObjectPtr<AActor> EmitterActor;
+		FGameplayTag LoopContextTag;
+
+		bool operator==(const FLoopPlaybackKey& Other) const
+		{
+			return EmitterActor == Other.EmitterActor
+				&& LoopContextTag == Other.LoopContextTag;
+		}
+
+		friend uint32 GetTypeHash(const FLoopPlaybackKey& Key)
+		{
+			return HashCombine(GetTypeHash(Key.EmitterActor), GetTypeHash(Key.LoopContextTag));
+		}
+	};
+
 	const FRuntimeCatalogEntry* ResolveBestEntry(
 		FGameplayTag TypeTag,
 		const FGameplayTagContainer& ContextTags) const;
@@ -114,12 +165,14 @@ private:
 	bool PlayAudio(
 		const FOutlierAudioPlayRequest& Request,
 		const FOutlierAudioExecutionPolicy& Policy);
+	bool StopLoopAtLocationFromServer(int32 AudioInstanceId);
 
 	bool BuildResolvedPlay(
 		FGameplayTag TypeTag,
 		const FRuntimeCatalogEntry& Entry,
 		const FOutlierAudioPlayRequest& Request,
 		EOutlierAudioPlaybackMode PlaybackMode,
+		int32 AudioInstanceId,
 		FOutlierResolvedAudioPlay& OutResolvedPlay) const;
 	bool RouteByAudience(
 		const FOutlierAudioPlayRequest& Request,
@@ -143,7 +196,9 @@ private:
 	void TrackActiveAudioComponent(
 		UAudioComponent* AudioComponent,
 		float BaseVolumeMultiplier,
-		EOutlierAudioVolumeType VolumeType);
+		EOutlierAudioVolumeType VolumeType,
+		int32 AudioInstanceId = 0,
+		bool bLooping = false);
 	void RemoveInactiveAudioComponents();
 	void RefreshActiveAudioComponentVolumes(EOutlierAudioVolumeType ChangedVolumeType);
 	float GetCombinedVolumeMultiplier(EOutlierAudioVolumeType VolumeType) const;
@@ -175,4 +230,10 @@ private:
 	TMap<FSoftObjectPath, TSharedPtr<FStreamableHandle>> ActiveLoadHandles;
 	TMap<EOutlierAudioVolumeType, float> VolumeMultipliers;
 	TArray<FActiveAudioPlayback> ActiveAudioPlaybacks;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UAudioComponent>> LoopAudioComponentPool;
+	TSet<int32> CancelledLoopAudioInstances;
+	TMap<FLoopPlaybackKey, int32> LoopInstances;
+
+	int32 NextAudioInstanceId = 1;
 };

@@ -14,6 +14,15 @@ void USpinningCircleMiniGameWidget::OnMiniGameStarted()
 	SpawnCircleBorders();
 	bJudgementActive = false;
 	bPendingInitialMouseReset = CircleLayers.Num() >= 2;
+	if (bPendingInitialMouseReset)
+	{
+		ForceLayoutPrepass();
+		if (TryInitializeMousePosition())
+		{
+			bPendingInitialMouseReset = false;
+			bJudgementActive = true;
+		}
+	}
 }
 
 void USpinningCircleMiniGameWidget::OnMiniGameUpdated(float DeltaTime)

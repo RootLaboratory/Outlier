@@ -1494,6 +1494,15 @@ void AAutoTurret::HandleDeath()
 	PerformDeathCleanup();
 }
 
+float AAutoTurret::GetDeathDestroyDelay() const
+{
+	// 사망 몽타주를 끝까지 재생하되, 몽타주가 없거나 아주 짧아도 베이스의 최소 지연은 지킨다.
+	// 그래야 사망 GameplayCue 멀티캐스트가 액터 채널이 닫히기 전에 전송된다.
+	const float MontageLength = DeathMontage ? DeathMontage->GetPlayLength() : 0.0f;
+	return FMath::Max(MontageLength, Super::GetDeathDestroyDelay());
+	// 기획이 터렛 죽으면 메시 안사라지고 Death 애니메이션 이후 엄폐물로 변경돼서 Destroy안할듯
+}
+
 void AAutoTurret::ApplyClassStatOverrides()
 {
 	SetDefaultEnemyType(EEnemyType::Turret);

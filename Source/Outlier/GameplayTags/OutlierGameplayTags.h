@@ -308,6 +308,12 @@ namespace OutlierGameplayTags
 			return Tag;
 		}
 
+		inline FGameplayTag QuantumLeaping()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("State.QuantumLeaping")));
+			return Tag;
+		}
+
 		inline FGameplayTag WeaponOvercharged()
 		{
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("State.WeaponOvercharged")));
@@ -381,6 +387,31 @@ namespace OutlierGameplayTags
 		{
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Effect.Debuff")));
 			return Tag;
+		}
+	}
+
+	// GameplayCue 태그 — 연출 전용이다.
+	// 서버가 태그를 쏘면 각 클라이언트가 /Game/GameplayCues 에서 매칭되는 Notify 를 찾아
+	// 자기 로컬에서 실행한다 ( 데디케이티드 서버는 실행하지 않는다 ).
+	// 따라서 여기에 게임플레이 상태 변경을 절대 싣지 않는다 — 그림과 소리만.
+	//
+	// 매칭은 계층적이다. GameplayCue.Drone.Death.Gun 용 Notify 를 만들지 않으면
+	// 부모인 GameplayCue.Drone.Death 가 대신 처리한다 ( Config/Tags/CueTags.ini 참고 ).
+	namespace Cue
+	{
+		namespace Drone
+		{
+			inline FGameplayTag Hit()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("GameplayCue.Drone.Hit")));
+				return Tag;
+			}
+
+			inline FGameplayTag Death()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("GameplayCue.Drone.Death")));
+				return Tag;
+			}
 		}
 	}
 }

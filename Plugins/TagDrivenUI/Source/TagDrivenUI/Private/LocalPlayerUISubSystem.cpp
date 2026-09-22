@@ -12,7 +12,9 @@
 #include "EventDrivenUI.h"
 #include "StaticCrossHair.h"
 #include "DistanceSlideUI.h"
+#include "DamageFeedBackWidget.h"
 #include "PartnerHPUI.h"
+#include "PartnerHealthUI.h"
 #include "ShooterCurrentAbilityIcon.h"
 #include "ShooterMainWidget.h"
 #include "TagDrivenUIGameplayTags.h"
@@ -93,9 +95,6 @@ void ULocalPlayerUISubSystem::OnRep_HUDActivate(bool bShouldActivate)
 
 void ULocalPlayerUISubSystem::OnRep_HealthChanged(float InHealth, float MaxHealth)
 {
-
-	float Ratio = InHealth / MaxHealth;
-
 	if (!GetMainUI())
 	{
 		return;
@@ -103,8 +102,16 @@ void ULocalPlayerUISubSystem::OnRep_HealthChanged(float InHealth, float MaxHealt
 
 	if (UHPBarUI* HPBarUI = Cast<UHPBarUI>(GetModuleAny(TagDrivenUITags::Shooter::HP(), TagDrivenUITags::Partner::HP())))
 	{
-		//UE_LOG(LogTemp, Error, TEXT("HP Changed, %f"), Ratio);
-		HPBarUI->HealthChanged(Ratio);
+		HPBarUI->SetHealthState(InHealth, MaxHealth);
+	}
+}
+
+void ULocalPlayerUISubSystem::OnRep_PartnerHealthChanged(float InHealth, float MaxHealth)
+{
+	if (UPartnerHealthUI* PartnerHealthUI = Cast<UPartnerHealthUI>(
+		GetModule(TagDrivenUITags::Partner::Health())))
+	{
+		PartnerHealthUI->SetHealthState(InHealth, MaxHealth);
 	}
 }
 
@@ -126,8 +133,6 @@ void ULocalPlayerUISubSystem::OnRep_PartnerShieldChanged(float InPartnerShield, 
 
 void ULocalPlayerUISubSystem::OnRep_ShieldChanged( float InCurShield,  float InMaxShield)
 {
-	float Ratio = InCurShield / InMaxShield;
-
 	if (!GetMainUI())
 	{
 		return;
@@ -135,7 +140,7 @@ void ULocalPlayerUISubSystem::OnRep_ShieldChanged( float InCurShield,  float InM
 
 	if (UHPBarUI* HPBarUI = Cast<UHPBarUI>(GetModuleAny(TagDrivenUITags::Shooter::HP(), TagDrivenUITags::Partner::HP())))
 	{
-		HPBarUI->ShieldChanged(Ratio);
+		HPBarUI->SetShieldState(InCurShield, InMaxShield);
 	}
 }
 
@@ -166,14 +171,15 @@ void ULocalPlayerUISubSystem::SyncRegisteredModule(UEventDrivenUI* InModule)
 {
 	if (UAmmoUI* AmmoUI = Cast<UAmmoUI>(InModule))
 	{
-		AmmoUI->AmmoCountChanged(CachedAmmoCount);
+		AmmoUI->SetAmmoState(CachedAmmoCount, CachedMaxAmmo);
 	}
 }
 
-void ULocalPlayerUISubSystem::OnRep_AmmoCountChanged(int32 InAmmoCount)
+void ULocalPlayerUISubSystem::OnRep_AmmoCountChanged(int32 InCurrentAmmo, int32 InMaxAmmo)
 {
 	// 모듈이 아직 등록되기 전이어도 값은 남겨둔다 (SyncRegisteredModule 이 재생).
-	CachedAmmoCount = InAmmoCount;
+	CachedAmmoCount = InCurrentAmmo;
+	CachedMaxAmmo = InMaxAmmo;
 
 	if (!GetMainUI())
 	{
@@ -182,9 +188,20 @@ void ULocalPlayerUISubSystem::OnRep_AmmoCountChanged(int32 InAmmoCount)
 
 	if (UAmmoUI* AmmoUI = Cast<UAmmoUI>(GetModuleAny(TagDrivenUITags::Shooter::Ammo(), TagDrivenUITags::Partner::Ammo())))
 	{
-		AmmoUI->AmmoCountChanged(InAmmoCount);
+		AmmoUI->SetAmmoState(InCurrentAmmo, InMaxAmmo);
 	}
 
+}
+
+void ULocalPlayerUISubSystem::OnDamageFeedback(
+	AActor* DamagedCharacter,
+	const FVector& DamageOrigin)
+{
+	if (UDamageFeedBackWidget* DamageFeedback = Cast<UDamageFeedBackWidget>(
+		GetModuleAny(TagDrivenUITags::Shooter::DamageFeedback(), TagDrivenUITags::Partner::DamageFeedback())))
+	{
+		DamageFeedback->ShowDamageFeedback(DamagedCharacter, DamageOrigin);
+	}
 }
 
 void ULocalPlayerUISubSystem::OnRep_ShooterConditionRefresh()
@@ -427,4 +444,3 @@ void ULocalPlayerUISubSystem::UnbindInteractionWidget(UUserWidget* InteractionWi
 
 	InteractionWidget->SetVisibility(ESlateVisibility::Collapsed);
 }
-

@@ -80,6 +80,7 @@ void APartnerPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	}
 
 	UnbindShooterCharacterDelegates();
+	UnbindPartnerVitalityDelegates();
 	UnbindPlayerStateDelegates();
 	OnPartnerPossessionStateChanged.Clear();
 	Super::EndPlay(EndPlayReason);
@@ -808,6 +809,10 @@ void APartnerPlayerController::ReceivedPlayer()
 	}
 
 	BindMainUI();
+	if (APartnerCharacter* PartnerCharacter = Cast<APartnerCharacter>(GetPawn()))
+	{
+		BindPartnerVitalityDelegates(PartnerCharacter);
+	}
 	BindPostProcessSubSystem();
 }
 
@@ -831,6 +836,10 @@ void APartnerPlayerController::AcknowledgePossession(APawn* P)
 	}
 
 	BindMainUI();
+	if (APartnerCharacter* PartnerCharacter = Cast<APartnerCharacter>(P))
+	{
+		BindPartnerVitalityDelegates(PartnerCharacter);
+	}
 	BindPostProcessSubSystem();
 	BindPlayerStateDelegates();
 	RefreshShooterUIForRespawnFromPlayerState();
@@ -850,6 +859,62 @@ void APartnerPlayerController::AcknowledgePossession(APawn* P)
 void APartnerPlayerController::RefreshShooterUIForRespawnFromPlayerState()
 {
 	BindShooterCharacterDelegatesFromPlayerState();
+}
+
+void APartnerPlayerController::BindPartnerVitalityDelegates(APartnerCharacter* PartnerCharacter)
+{
+	UnbindPartnerVitalityDelegates();
+
+	if (!IsLocalController() || !PartnerCharacter)
+	{
+		return;
+	}
+
+	BoundPartnerAbilitySystem = PartnerCharacter->GetOutlierAbilitySystemComponent();
+
+	if (BoundPartnerAbilitySystem)
+	{
+		PartnerHealthChangedHandle = BoundPartnerAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierVitalAttributeSet::GetHealthAttribute()).AddUObject(
+				this, &APartnerPlayerController::HandlePartnerHealthAttributeChanged);
+		PartnerMaxHealthChangedHandle = BoundPartnerAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierVitalAttributeSet::GetMaxHealthAttribute()).AddUObject(
+				this, &APartnerPlayerController::HandlePartnerHealthAttributeChanged);
+	}
+
+	RefreshPartnerVitalityUI();
+}
+
+void APartnerPlayerController::UnbindPartnerVitalityDelegates()
+{
+	if (BoundPartnerAbilitySystem)
+	{
+		BoundPartnerAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierVitalAttributeSet::GetHealthAttribute()).Remove(PartnerHealthChangedHandle);
+		BoundPartnerAbilitySystem->GetGameplayAttributeValueChangeDelegate(
+			UOutlierVitalAttributeSet::GetMaxHealthAttribute()).Remove(PartnerMaxHealthChangedHandle);
+	}
+
+	PartnerHealthChangedHandle.Reset();
+	PartnerMaxHealthChangedHandle.Reset();
+	BoundPartnerAbilitySystem = nullptr;
+}
+
+void APartnerPlayerController::RefreshPartnerVitalityUI()
+{
+	if (BoundPartnerAbilitySystem)
+	{
+		HandlePartnerHealthChanged(
+			BoundPartnerAbilitySystem->GetNumericAttribute(UOutlierVitalAttributeSet::GetHealthAttribute()),
+			BoundPartnerAbilitySystem->GetNumericAttribute(UOutlierVitalAttributeSet::GetMaxHealthAttribute()));
+	}
+}
+
+void APartnerPlayerController::HandlePartnerHealthAttributeChanged(
+	const FOnAttributeChangeData& ChangeData)
+{
+	(void)ChangeData;
+	RefreshPartnerVitalityUI();
 }
 
 void APartnerPlayerController::BindPlayerStateDelegates()
@@ -1060,5 +1125,13 @@ void APartnerPlayerController::HandleShooterConditionChanged(const FGameplayTag&
 	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
 	{
 		UISubsystem->OnRep_ShooterHPStateChanged(ConditionTag);
+	}
+}
+
+void APartnerPlayerController::HandlePartnerHealthChanged(float CurrentHealth, float MaxHealth)
+{
+	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
+	{
+		UISubsystem->OnRep_PartnerHealthChanged(CurrentHealth, MaxHealth);
 	}
 }

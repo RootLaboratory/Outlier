@@ -32,10 +32,6 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Door")
 	bool IsDoorOpen() const { return bIsOpen; }
 
-	/** Submits the configured server-authoritative relevant world sound. */
-	UFUNCTION(BlueprintCallable, Category = "Door|Audio")
-	bool PlayDoorMovementAudio();
-
 public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")
 	TObjectPtr<UStaticMeshComponent> DoorMeshLeft;
@@ -83,6 +79,7 @@ private:
 	void ApplyDoorState(bool bOpen);
 	void SetDoorOpenInternal(bool bOpen, bool bRecordProgress, bool bPlayAudio);
 	bool bProgressIdRegistered = false;
+	bool PlayDoorMovementAudio(bool bOpen);
 
 public:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;

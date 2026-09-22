@@ -47,6 +47,7 @@
 #include "Outlier.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
 #include "UI/ShooterReflectionBarrier.h"
+#include "UI/ShooterTeleportLayer.h"
 #include "UI/UILayerGameplayTags.h"
 
 namespace
@@ -249,6 +250,7 @@ void AShooterCharacter::Tick(float DeltaSeconds)
 
 void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	PopTeleportLayer();
 	PopReflectionBarrierWidget();
 	UnbindPartnerSuitStateObserver();
 	CancelActiveQuantumLeap();
@@ -422,6 +424,9 @@ void AShooterCharacter::BindGasVitalityObservers()
 	BulletReflectionTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::BulletReflecting()).AddUObject(
 			this, &AShooterCharacter::HandleBulletReflectionTagChanged);
+	QuantumLeapTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::State::QuantumLeaping()).AddUObject(
+			this, &AShooterCharacter::HandleQuantumLeapTagChanged);
 	WeaponOverchargeTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::WeaponOvercharged()).AddUObject(
 			this, &AShooterCharacter::HandleWeaponOverchargeTagChanged);
@@ -455,6 +460,8 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::BulletReflecting()).Remove(BulletReflectionTagChangedHandle);
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::State::QuantumLeaping()).Remove(QuantumLeapTagChangedHandle);
+	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::WeaponOvercharged()).Remove(WeaponOverchargeTagChangedHandle);
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::Cooldown::Shooter::QuantumLeap()).Remove(QuantumLeapCooldownTagChangedHandle);
@@ -469,6 +476,7 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 	ShieldChangedHandle.Reset();
 	DeadTagChangedHandle.Reset();
 	BulletReflectionTagChangedHandle.Reset();
+	QuantumLeapTagChangedHandle.Reset();
 	WeaponOverchargeTagChangedHandle.Reset();
 	QuantumLeapCooldownTagChangedHandle.Reset();
 	BulletReflectionCooldownTagChangedHandle.Reset();
@@ -534,6 +542,116 @@ void AShooterCharacter::HandleBulletReflectionTagChanged(const FGameplayTag Tag,
 	}
 }
 
+void AShooterCharacter::HandleQuantumLeapTagChanged(const FGameplayTag Tag, int32 NewCount)
+{
+	(void)Tag;
+	UE_LOG(
+		LogTemp,
+		Warning,
+		TEXT("[TeleportDebug] StateChanged Shooter=%s Local=%d NewCount=%d LayerClass=%s"),
+		*GetNameSafe(this),
+		IsLocallyControlled() ? 1 : 0,
+		NewCount,
+		*GetNameSafe(TeleportLayerWidgetClass));
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+
+	if (NewCount > 0)
+	{
+		PushTeleportLayer();
+	}
+	else
+	{
+		PopTeleportLayer();
+	}
+}
+
+void AShooterCharacter::PushTeleportLayer()
+{
+	UE_LOG(
+		LogTemp,
+		Warning,
+		TEXT("[TeleportDebug] PushBegin Shooter=%s LayerClass=%s Controller=%s"),
+		*GetNameSafe(this),
+		*GetNameSafe(TeleportLayerWidgetClass),
+		*GetNameSafe(GetController()));
+	if (TeleportLayerHandle.IsValid() || !TeleportLayerWidgetClass)
+	{
+		UE_LOG(
+			LogTemp,
+			Error,
+			TEXT("[TeleportDebug] PushSkipped ExistingHandle=%d MissingLayerClass=%d"),
+			TeleportLayerHandle.IsValid() ? 1 : 0,
+			TeleportLayerWidgetClass ? 0 : 1);
+		return;
+	}
+
+	APlayerController* PlayerController = Cast<APlayerController>(GetController());
+	ULocalPlayer* LocalPlayer = PlayerController ? PlayerController->GetLocalPlayer() : nullptr;
+	ULocalPlayerUILayerSubsystem* LayerSubsystem = LocalPlayer
+		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()
+		: nullptr;
+	if (!LayerSubsystem)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[TeleportDebug] PushFailed LayerSubsystem is null"));
+		return;
+	}
+
+	UShooterTeleportLayer* TeleportLayer = CreateWidget<UShooterTeleportLayer>(
+		PlayerController,
+		TeleportLayerWidgetClass);
+	if (!TeleportLayer)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[TeleportDebug] PushFailed CreateWidget returned null"));
+		return;
+	}
+	TeleportLayerWidgetInstance = TeleportLayer;
+	TeleportLayerHandle = LayerSubsystem->PushWidget(
+		UILayerTags::Backdrop(),
+		TeleportLayer,
+		FirstPersonInputModeTags::UI(),
+		this,
+		EUILayerFocusTarget::None,
+		false,
+		false);
+	if (!TeleportLayerHandle.IsValid())
+	{
+		TeleportLayerWidgetInstance = nullptr;
+		UE_LOG(LogTemp, Error, TEXT("[TeleportDebug] PushFailed UILayer PushWidget returned invalid handle"));
+		return;
+	}
+	UE_LOG(
+		LogTemp,
+		Warning,
+		TEXT("[TeleportDebug] PushSuccess Layer=%s Handle=%d"),
+		*GetNameSafe(TeleportLayer),
+		TeleportLayerHandle.Id);
+
+	TeleportLayer->StartTeleportAnimation();
+}
+
+void AShooterCharacter::PopTeleportLayer()
+{
+	if (!TeleportLayerHandle.IsValid())
+	{
+		return;
+	}
+
+	APlayerController* PlayerController = Cast<APlayerController>(GetController());
+	ULocalPlayer* LocalPlayer = PlayerController ? PlayerController->GetLocalPlayer() : nullptr;
+	if (ULocalPlayerUILayerSubsystem* LayerSubsystem = LocalPlayer
+		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()
+		: nullptr)
+	{
+		LayerSubsystem->PopLayer(TeleportLayerHandle);
+	}
+
+	TeleportLayerHandle.Reset();
+	TeleportLayerWidgetInstance = nullptr;
+}
+
 void AShooterCharacter::PushReflectionBarrierWidget()
 {
 	if (ReflectionBarrierLayerHandle.IsValid() || !ReflectionBarrierWidgetClass)
@@ -561,7 +679,7 @@ void AShooterCharacter::PushReflectionBarrierWidget()
 	ReflectionBarrierWidgetInstance = BarrierWidget;
 
 	ReflectionBarrierLayerHandle = LayerSubsystem->PushWidget(
-		UILayerTags::Gameplay(),
+		UILayerTags::Backdrop(),
 		BarrierWidget,
 		FirstPersonInputModeTags::UI(),
 		this,
@@ -783,7 +901,9 @@ void AShooterCharacter::RefreshShooterAmmoUI()
 
 	const ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(CurrentWeapon);
 	const bool bShowAmmo = HasAcquiredSuit() && RangedWeapon != nullptr;
-	UISubsystem->OnRep_AmmoCountChanged(bShowAmmo ? RangedWeapon->GetCurrentAmmo() : 0);
+	UISubsystem->OnRep_AmmoCountChanged(
+		bShowAmmo ? RangedWeapon->GetCurrentAmmo() : 0,
+		bShowAmmo ? RangedWeapon->GetMagazineSize() : 0);
 }
 
 void AShooterCharacter::RefreshShooterSuitUI()
@@ -1119,6 +1239,7 @@ void AShooterCharacter::TryOpenSuitMenu()
 		}
 	}
 	ShooterController->AbilityUIInstance->SetVisibility(ESlateVisibility::Visible);
+	ShooterController->AbilityUIInstance->BeginRelativeSelection();
 }
 
 void AShooterCharacter::TryHandleSuitMenuHover()
@@ -1751,12 +1872,17 @@ float AShooterCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 			+ FMath::Max(GetCurPartnerShield(), 0.0f) + 1.0f);
 	}
 
-	return ApplyDamageInternal(
+	const bool bApplied = ApplyDamageInternal(
 		DamageAmount,
 		Request.EventInstigator,
 		Request.DamageCauser,
-		Request.DamageTag)
-		? DamageAmount : 0.0f;
+		Request.DamageTag);
+	if (bApplied)
+	{
+		ClientShowDamageFeedback(Request.DamageOrigin);
+	}
+
+	return bApplied ? DamageAmount : 0.0f;
 }
 
 bool AShooterCharacter::TryReflectIncomingDamage(const FOutlierDamageRequest& Request)

@@ -1,5 +1,6 @@
 #include "Interaction/InteractionStatMachine.h"
 
+#include "Audio/OutlierAudioSubsystem.h"
 #include "Drone/Partner/HackableComponent.h"
 #include "Drone/Partner/HackGameplayTags.h"
 #include "Drone/Partner/PartnerCharacter.h"
@@ -139,6 +140,10 @@ bool AInteractionStatMachine::Interact(AFirstPersonCharacter* Interactor)
 
 	ShooterController->ClientPushUILayer(PushRequest);
 	PartnerController->ClientPushUILayer(PushRequest);
+	UOutlierAudioSubsystem::PlayTaggedAtLocationFromServer(
+		this,
+		FGameplayTag::RequestGameplayTag(TEXT("Audio.Type.Interactable")),
+		FGameplayTag::RequestGameplayTag(TEXT("Audio.Context.Object.SavePoint.Execute")));
 	return true;
 }
 

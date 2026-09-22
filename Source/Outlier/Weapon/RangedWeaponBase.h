@@ -127,8 +127,9 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Decal")
 	TObjectPtr<UProjectionMarkDefinition> WeaponDecal;
 
+	// 시점별 크기 보정은 이 Definition 이 갖는다 ( First/ThirdPersonScaleMultiplier ).
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Effect")
-	TObjectPtr<UTrailEffectDefinition> WeaponMuzzle; 
+	TObjectPtr<UTrailEffectDefinition> WeaponMuzzle;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Effect")
 	TObjectPtr<UTrailEffectDefinition> WeaponTrail; 

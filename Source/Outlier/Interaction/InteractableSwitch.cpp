@@ -1,5 +1,6 @@
 #include "Interaction/InteractableSwitch.h"
 
+#include "Audio/OutlierAudioSubsystem.h"
 #include "Components/StaticMeshComponent.h"
 #include "FirstPerson/FirstPersonCharacter.h"
 #include "Interaction/InteractableComponent.h"
@@ -111,6 +112,12 @@ bool AInteractableSwitch::Interact(AFirstPersonCharacter* Interactor)
 				true);
 		}
 	}
+
+	UOutlierAudioSubsystem::PlayTaggedAtLocationFromServer(
+		this,
+		FGameplayTag::RequestGameplayTag(TEXT("Audio.Type.Interactable")),
+		FGameplayTag::RequestGameplayTag(TEXT("Audio.Context.Object.Door.HandRecognition")));
+
 	Multicast_OnSwitchActivated(Interactor);
 	ForceNetUpdate();
 	return true;
@@ -132,8 +139,8 @@ void AInteractableSwitch::Multicast_OnSwitchActivated_Implementation(
 
 void AInteractableSwitch::ApplySwitchActivated(AFirstPersonCharacter* Interactor)
 {
-	// 현재 활성화는 기존 Multicast로, 재생성/늦은 접속은 RepNotify로 들어온다.
-	// 둘이 같은 클라이언트에 도착해도 BP 표현 이벤트는 한 번만 실행한다.
+	// ���� Ȱ��ȭ�� ���� Multicast��, �����/���� ������ RepNotify�� ���´�.
+	// ���� ���� Ŭ���̾�Ʈ�� �����ص� BP ǥ�� �̺�Ʈ�� �� ���� �����Ѵ�.
 	if (bActivationEventApplied)
 	{
 		return;

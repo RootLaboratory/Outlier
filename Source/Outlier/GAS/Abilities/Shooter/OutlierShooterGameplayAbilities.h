@@ -65,6 +65,7 @@ private:
 	void CompleteQuantumLeap();
 
 	FVector Destination = FVector::ZeroVector;
+	FActiveGameplayEffectHandle QuantumLeapStateHandle;
 	FActiveGameplayEffectHandle DamageImmuneHandle;
 	FTimerHandle CastTimerHandle;
 	bool bCommitFailureCooldown = false;

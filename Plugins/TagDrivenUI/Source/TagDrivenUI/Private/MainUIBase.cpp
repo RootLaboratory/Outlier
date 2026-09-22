@@ -2,6 +2,7 @@
 #include "MainUIBase.h"
 #include "AbilityIconUI.h"
 #include "Components/CanvasPanel.h"
+#include "Components/Widget.h"
 #include "EventDrivenUI.h"
 #include "LocalPlayerUISubSystem.h"
 #include "Engine/LocalPlayer.h"
@@ -87,32 +88,41 @@ void UMainUIBase::ModulesControl(bool Flag)
 {
 	bModulesActive = Flag;
 
-	if (Flag)
+	UWidget* VisibilityRoot = ModuleLayer ? ModuleLayer.Get() : DefaultLayer.Get();
+	if (VisibilityRoot)
 	{
-		for (TPair<FGameplayTag, TObjectPtr<UEventDrivenUI>> Module : Modules)
+		VisibilityRoot->SetVisibility(
+			Flag
+				? ESlateVisibility::SelfHitTestInvisible
+				: ESlateVisibility::Collapsed);
+		return;
+	}
+
+	// Native class나 아직 ModuleLayer를 반영하지 않은 WBP를 위한 안전한 fallback.
+	for (const TPair<FGameplayTag, TObjectPtr<UEventDrivenUI>>& Module : Modules)
+	{
+		if (UEventDrivenUI* Widget = Module.Value)
 		{
-			UEventDrivenUI* Widget = Module.Value;
+			if (Flag)
 			{
-				if (Widget)
-				{
-					Widget->Activate();
-				}
+				Widget->Activate();
+			}
+			else
+			{
+				Widget->Deactivate();
 			}
 		}
 	}
-	else
-	{
-		for (TPair<FGameplayTag, TObjectPtr<UEventDrivenUI>> Module : Modules)
-		{
-			UEventDrivenUI* Widget = Module.Value;
-			{
-				if (Widget)
-				{
-					Widget->Deactivate();
-				}
-			}
-		}
-	}
+}
+
+void UMainUIBase::ModuleActivate()
+{
+	ModulesControl(true);
+}
+
+void UMainUIBase::ModuleDeActivate()
+{
+	ModulesControl(false);
 }
 //TMap<FGameplayTag, TObjectPtr<UAbilityIconUI>> AbilitySections;
 
@@ -162,14 +172,14 @@ void UMainUIBase::RegisterAbilityIcon(UAbilityIconUI* Icon, const FGameplayTag& 
 	}
 }
 
-void UMainUIBase::ActivateModuleIfAllowed(UEventDrivenUI* InModule)
+void UMainUIBase::SetModuleActive(UEventDrivenUI* InModule, bool bActive)
 {
 	if (!InModule)
 	{
 		return;
 	}
 
-	if (bModulesActive)
+	if (bActive)
 	{
 		InModule->Activate();
 	}

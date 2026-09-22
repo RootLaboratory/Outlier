@@ -19,21 +19,14 @@ void AOutlierPostProcessVolume::BeginPlay()
 {
 	Super::BeginPlay();
 
-	if (ThirdPersonStealthPostProcessMaterial)
-	{
-		PostProcessMaterials.FindOrAdd(EOutlierPostProcessMaterialType::Stealth) =
-			ThirdPersonStealthPostProcessMaterial;
-	}
-
-	InitializeRuntimePostProcessMaterial(EOutlierPostProcessMaterialType::Stealth);
 	InitializeRuntimePostProcessMaterial(EOutlierPostProcessMaterialType::Damaged);
 
-	if (!HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::Stealth))
+	if (!HasStealthMeshMaterials())
 	{
 		UE_LOG(
 			LogTemp,
 			Warning,
-			TEXT("%s stealth post-process material is invalid."),
+			TEXT("%s stealth mesh materials are not assigned."),
 			*GetName()
 		);
 	}
@@ -60,10 +53,6 @@ void AOutlierPostProcessVolume::BeginPlay()
 			PostProcessSubsystem->RegisterPostProcessVolume(this);
 		}
 
-		// Pushed directly to every local player's DoF driver, independent of
-		// UMaterialPostProcessSubsystem::RegisterPostProcessVolume's Scan/Stealth/Damaged
-		// material gate above — ADS depth of field has nothing to do with those materials
-		// and shouldn't silently no-op just because this volume doesn't have them assigned.
 		if (UGameInstance* GameInstance = World->GetGameInstance())
 		{
 			for (ULocalPlayer* LocalPlayer : GameInstance->GetLocalPlayers())
@@ -180,7 +169,6 @@ void AOutlierPostProcessVolume::SetDamagedMaterialParameters(float InRatio)
 void AOutlierPostProcessVolume::ResetPostProcessMaterialParameters()
 {
 	SetScanMaterialParameters(FVector::ZeroVector, 0.0f, 0.0f);
-	UpdateStealthMaterialParameters(0.0f);
 	UpdateDamagedMaterialParameters(1.0f);
 	ScanRangeRange = 0.0f;
 }
@@ -262,27 +250,17 @@ void AOutlierPostProcessVolume::UpdateScanMaterialParameters(FVector ScanLocatio
 	);
 }
 
-void AOutlierPostProcessVolume::UpdateStealthMaterialParameters(float InFade) const
+float AOutlierPostProcessVolume::EvaluateStealthFade(float InLinearFade) const
 {
-	const TObjectPtr<UMaterialInterface>* StealthMaterial =
-		PostProcessMaterials.Find(EOutlierPostProcessMaterialType::Stealth);
-	UMaterialInstanceDynamic* StealthMID = StealthMaterial
-		? Cast<UMaterialInstanceDynamic>(StealthMaterial->Get())
-		: nullptr;
+	const float LinearFade = FMath::Clamp(InLinearFade, 0.0f, 1.0f);
 
-	if (StealthMID && !StealthFadeParameterName.IsNone())
+	// 양 끝은 커브를 태우지 않는다. 커브가 0/1 에서 어긋나 있어도 완전 은신 / 완전 복구는 보장돼야 한다.
+	if (LinearFade <= 0.0f || LinearFade >= 1.0f || !StealthFadeCurve)
 	{
-		const float LinearFade = FMath::Clamp(InFade, 0.0f, 1.0f);
-		const float FadeWeight = LinearFade <= 0.0f || LinearFade >= 1.0f
-			? LinearFade
-			: StealthFadeCurve
-				? FMath::Clamp(StealthFadeCurve->GetFloatValue(LinearFade), 0.0f, 1.0f)
-				: LinearFade;
-
-		StealthMID->SetScalarParameterValue(
-			StealthFadeParameterName,
-			FadeWeight);
+		return LinearFade;
 	}
+
+	return FMath::Clamp(StealthFadeCurve->GetFloatValue(LinearFade), 0.0f, 1.0f);
 }
 
 void AOutlierPostProcessVolume::UpdateDamagedMaterialParameters(float InPlayerHPRatio)  const

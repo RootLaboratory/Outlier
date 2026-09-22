@@ -12,6 +12,8 @@ class UStaticCrossHair;
 class UAbilityIconUI;
 class UDistanceSlideUI;
 class UPartnerHPUI;
+class UPartnerHealthUI;
+class UDamageFeedBackWidget;
 //HP Delegate;
 
 UENUM(BlueprintType)
@@ -33,10 +35,6 @@ private:
 	virtual void ModuleInit() override;
 	virtual void ModuleDestruct() override;
 
-	virtual void ModuleActivate() override;
-	virtual void ModuleDeActivate() override;
-
-
 	virtual void On_RepAbilityDisabledByDistance() override;
 	virtual void On_RepAbilityabledByDistance() override;
 
@@ -53,6 +51,9 @@ public:
 	TObjectPtr<UPartnerHPUI> PartnerHPUI;
 
 	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UPartnerHealthUI> PartnerHealthUI;
+
+	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UAbilityIconUI> AbilityShieldIcon;
 
 	UPROPERTY(meta = (BindWidget))
@@ -66,6 +67,9 @@ public:
 
 	UPROPERTY(meta = (BindWidgetOptional))
 	TObjectPtr<UDistanceSlideUI> DistanceSlide;
+
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UDamageFeedBackWidget> DamageFeedbackUI;
 
 
 

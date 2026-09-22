@@ -70,7 +70,29 @@ void UCurvedRetainerBox::RefreshCurvedMaterial()
 	{
 		CurvedEffectMaterialInstance->SetScalarParameterValue(
 			WarpAmountParameterName,
-			bEnableCurvature ? 1.0f : 0.0f);
+			bEnableCurvature ? FMath::Clamp(WarpAmount, 0.0f, 1.0f) : 0.0f);
+	}
+
+	if (TextureScaleParameterName != NAME_None)
+	{
+		CurvedEffectMaterialInstance->SetScalarParameterValue(
+			TextureScaleParameterName,
+			FMath::Max(TextureScale, 0.01f));
+	}
+
+	if (ViewportRegionParameterName != NAME_None)
+	{
+		const FVector2D SafeRegionScale(
+			FMath::Max(ViewportRegionScale.X, 0.0001f),
+			FMath::Max(ViewportRegionScale.Y, 0.0001f));
+
+		CurvedEffectMaterialInstance->SetVectorParameterValue(
+			ViewportRegionParameterName,
+			FLinearColor(
+				ViewportRegionOffset.X,
+				ViewportRegionOffset.Y,
+				SafeRegionScale.X,
+				SafeRegionScale.Y));
 	}
 
 	SetEffectMaterial(CurvedEffectMaterialInstance);
@@ -98,5 +120,26 @@ void UCurvedRetainerBox::SetSphericalProjectionDegrees(
 	VerticalArcDegrees = FMath::Clamp(InVerticalArcDegrees, 1.0f, 175.0f);
 	SourceHFovDegrees = FMath::Clamp(InSourceHFovDegrees, 1.0f, 175.0f);
 	SourceVFovDegrees = FMath::Clamp(InSourceVFovDegrees, 1.0f, 175.0f);
+	RefreshCurvedMaterial();
+}
+
+void UCurvedRetainerBox::SetWarpAmount(const float InWarpAmount)
+{
+	WarpAmount = FMath::Clamp(InWarpAmount, 0.0f, 1.0f);
+	RefreshCurvedMaterial();
+}
+
+void UCurvedRetainerBox::SetTextureScale(const float InTextureScale)
+{
+	TextureScale = FMath::Max(InTextureScale, 0.01f);
+	RefreshCurvedMaterial();
+}
+
+void UCurvedRetainerBox::SetViewportRegion(const FVector2D InOffset, const FVector2D InScale)
+{
+	ViewportRegionOffset = InOffset;
+	ViewportRegionScale = FVector2D(
+		FMath::Max(InScale.X, 0.0001f),
+		FMath::Max(InScale.Y, 0.0001f));
 	RefreshCurvedMaterial();
 }

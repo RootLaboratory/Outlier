@@ -1,5 +1,7 @@
 #include "GAS/Abilities/Shooter/OutlierShooterGameplayAbilities.h"
 
+#include "Audio/OutlierAbilityAudioSettings.h"
+#include "Audio/OutlierAudioSubsystem.h"
 #include "Components/CapsuleComponent.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Enemy/EnemyRoomSubsystem.h"
@@ -12,6 +14,27 @@
 
 namespace
 {
+void PlayAbilityAudioAtLocationFromServer(AActor* EmitterActor, const FGameplayTag& ContextTag)
+{
+	const UOutlierAbilityAudioSettings* Settings = GetDefault<UOutlierAbilityAudioSettings>();
+	if (!EmitterActor || !Settings->PlayerTypeTag.IsValid() || !ContextTag.IsValid())
+	{
+		UE_LOG(
+			LogTemp,
+			Error,
+			TEXT("[GAS.AbilityAudio] Invalid ini configuration. Emitter=%s Type=%s Context=%s"),
+			*GetNameSafe(EmitterActor),
+			*Settings->PlayerTypeTag.ToString(),
+			*ContextTag.ToString());
+		return;
+	}
+
+	UOutlierAudioSubsystem::PlayTaggedAtLocationFromServer(
+		EmitterActor,
+		Settings->PlayerTypeTag,
+		ContextTag);
+}
+
 FGameplayTagContainer MakeAllShooterSuitAbilityTags()
 {
 	FGameplayTagContainer Tags;
@@ -167,6 +190,20 @@ void UOutlierShooterQuantumLeapAbility::ActivateAbility(
 		return;
 	}
 
+	QuantumLeapStateHandle = ShooterASC->ApplyTimedGameplayEffectToSelf(
+		UOutlierShooterQuantumLeapGameplayEffect::StaticClass(),
+		ShooterASC->GetShooterSuitConfig().QuantumLeap.CastTimeSeconds,
+		Shooter);
+	if (!QuantumLeapStateHandle.IsValid())
+	{
+		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
+		return;
+	}
+
+	PlayAbilityAudioAtLocationFromServer(
+		Shooter,
+		GetDefault<UOutlierAbilityAudioSettings>()->ShooterQuantumLeap);
+
 
 	Shooter->GetWorldTimerManager().SetTimer(
 		CastTimerHandle,
@@ -206,6 +243,11 @@ void UOutlierShooterQuantumLeapAbility::EndAbility(
 		ShooterASC->RemoveActiveEffectFromSelf(DamageImmuneHandle);
 	}
 	DamageImmuneHandle.Invalidate();
+	if (ShooterASC && QuantumLeapStateHandle.IsValid())
+	{
+		ShooterASC->RemoveActiveEffectFromSelf(QuantumLeapStateHandle);
+	}
+	QuantumLeapStateHandle.Invalidate();
 
 	bool bCooldownCommitted = false;
 	float CooldownMultiplier = 0.0f;
@@ -405,7 +447,11 @@ void UOutlierShooterBulletReflectionAbility::ActivateAbility(
 	if (!ReflectionEffectHandle.IsValid())
 	{
 		EndBulletReflection(false);
+		return;
 	}
+	const UOutlierAbilityAudioSettings* AudioSettings = GetDefault<UOutlierAbilityAudioSettings>();
+	PlayAbilityAudioAtLocationFromServer(Shooter, AudioSettings->ShooterReflectionOn);
+	PlayAbilityAudioAtLocationFromServer(Shooter, AudioSettings->ShooterReflectionLoop);
 }
 
 bool UOutlierShooterBulletReflectionAbility::EndBulletReflection(bool bCommitCooldown)
@@ -448,6 +494,9 @@ void UOutlierShooterBulletReflectionAbility::EndAbility(
 	}
 
 	ShooterAbilitySystem.Reset();
+	PlayAbilityAudioAtLocationFromServer(
+		GetShooterCharacter(),
+		GetDefault<UOutlierAbilityAudioSettings>()->ShooterReflectionOff);
 	bCommitCooldownOnEnd = false;
 	bEndingReflection = false;
 	Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);
@@ -542,6 +591,10 @@ void UOutlierShooterWeaponOverchargeAbility::ActivateAbility(
 		return;
 	}
 
+	const UOutlierAbilityAudioSettings* AudioSettings = GetDefault<UOutlierAbilityAudioSettings>();
+	PlayAbilityAudioAtLocationFromServer(Shooter, AudioSettings->ShooterOverchargeOn);
+	PlayAbilityAudioAtLocationFromServer(Shooter, AudioSettings->ShooterOverchargeLoop);
+
 	constexpr float DrainInterval = 0.05f;
 	Shooter->GetWorldTimerManager().SetTimer(
 		ShieldDrainTimerHandle,
@@ -601,6 +654,9 @@ void UOutlierShooterWeaponOverchargeAbility::EndAbility(
 	}
 
 	ShooterAbilitySystem.Reset();
+	PlayAbilityAudioAtLocationFromServer(
+		Shooter,
+		GetDefault<UOutlierAbilityAudioSettings>()->ShooterOverchargeOff);
 	bCommitCooldownOnEnd = false;
 	bEndingOvercharge = false;
 	Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);
@@ -741,6 +797,10 @@ void UOutlierShooterStealthAbility::ActivateAbility(
 		EndStealth(false);
 		return;
 	}
+
+	PlayAbilityAudioAtLocationFromServer(
+		Shooter,
+		GetDefault<UOutlierAbilityAudioSettings>()->ShooterStealthOn);
 	RefreshEnemyDetection();
 }
 
@@ -763,6 +823,8 @@ void UOutlierShooterStealthAbility::EndAbility(
 	bool bWasCancelled)
 {
 	bEndingStealth = true;
+	const bool bShouldPlayStealthOff = bCommitCooldownOnEnd
+		|| (ShooterStealthHandle.IsValid() && PartnerStealthHandle.IsValid());
 	UOutlierAbilitySystemComponent* ShooterASC = ShooterAbilitySystem.Get();
 	UOutlierAbilitySystemComponent* PartnerASC = PartnerAbilitySystem.Get();
 	if (ShooterASC)
@@ -796,6 +858,12 @@ void UOutlierShooterStealthAbility::EndAbility(
 	}
 	ShooterAbilitySystem.Reset();
 	PartnerAbilitySystem.Reset();
+	if (bShouldPlayStealthOff)
+	{
+		PlayAbilityAudioAtLocationFromServer(
+			GetShooterCharacter(),
+			GetDefault<UOutlierAbilityAudioSettings>()->ShooterStealthOff);
+	}
 	bCommitCooldownOnEnd = false;
 	bEndingStealth = false;
 	Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);

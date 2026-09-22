@@ -34,6 +34,15 @@ public:
 		float InSourceHFovDegrees,
 		float InSourceVFovDegrees);
 
+	UFUNCTION(BlueprintCallable, Category = "Curved Retainer")
+	void SetWarpAmount(float InWarpAmount);
+
+	UFUNCTION(BlueprintCallable, Category = "Curved Retainer")
+	void SetTextureScale(float InTextureScale);
+
+	UFUNCTION(BlueprintCallable, Category = "Curved Retainer")
+	void SetViewportRegion(FVector2D InOffset, FVector2D InScale);
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Curved Retainer|Material")
 	TObjectPtr<UMaterialInterface> CurvedEffectMaterial;
 
@@ -58,6 +67,12 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Curved Retainer|Material")
 	FName WarpAmountParameterName = TEXT("WarpAmount");
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Curved Retainer|Material")
+	FName TextureScaleParameterName = TEXT("TextureScale");
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Curved Retainer|Material")
+	FName ViewportRegionParameterName = TEXT("ViewportRegion");
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Curved Retainer|Material", meta = (ClampMin = "0.0", ClampMax = "60.0"))
 	float CurvatureDegrees = 15.0f;
 
@@ -76,6 +91,22 @@ public:
 	/** Vertical angular coverage of the source UI projection plane. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Curved Retainer|Spherical Projection", meta = (ClampMin = "1.0", ClampMax = "175.0", Units = "deg"))
 	float SourceVFovDegrees = 70.0f;
+
+	/** Blend between the original UI and the spherical projection. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Curved Retainer|Spherical Projection", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float WarpAmount = 1.0f;
+
+	/** Scale applied to the rendered UI texture after spherical projection. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Curved Retainer|Spherical Projection", meta = (ClampMin = "0.01"))
+	float TextureScale = 1.0f;
+
+	/** Normalized top-left position of this retainer within the full HUD design space. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Curved Retainer|Viewport Region")
+	FVector2D ViewportRegionOffset = FVector2D::ZeroVector;
+
+	/** Normalized size of this retainer within the full HUD design space. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Curved Retainer|Viewport Region")
+	FVector2D ViewportRegionScale = FVector2D(1.0f, 1.0f);
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Curved Retainer|Material")
 	uint8 bEnableCurvature : 1 = true;

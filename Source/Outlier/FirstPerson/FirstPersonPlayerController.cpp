@@ -179,6 +179,23 @@ void AFirstPersonPlayerController::ClientPlayResolvedAudio_Implementation(
 	}
 }
 
+void AFirstPersonPlayerController::ClientStopResolvedAudio_Implementation(
+	int32 AudioInstanceId)
+{
+	if (!IsLocalController())
+	{
+		return;
+	}
+
+	UOutlierAudioSubsystem* AudioSubsystem = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>()
+		: nullptr;
+	if (AudioSubsystem)
+	{
+		AudioSubsystem->StopLoopAudioLocally(AudioInstanceId);
+	}
+}
+
 void AFirstPersonPlayerController::ClientPushUILayer_Implementation(
 	const FUILayerPushRequest& Request)
 {
@@ -1523,7 +1540,6 @@ void AFirstPersonPlayerController::ControlMainWidget(bool InFlag) const
 	if (ShooterUIInstance)
 	{
 		ShooterUIInstance->ModulesControl(InFlag);
-		ShooterUIInstance->AbilitySectionControl(InFlag);
 	}
 }
 

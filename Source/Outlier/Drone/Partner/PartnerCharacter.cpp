@@ -162,6 +162,11 @@ float APartnerCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 		Request.EventInstigator,
 		Request.DamageCauser,
 		Request.DamageTag);
+	if (bApplied)
+	{
+		ClientShowDamageFeedback(Request.DamageOrigin);
+	}
+
 	return bApplied ? Request.DamageAmount : 0.0f;
 }
 

@@ -28,6 +28,7 @@
 #include "Room/RoomTagComponent.h"
 #include "Settings/LocalPlayerSettingsSubsystem.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
+#include "LocalPlayerUISubSystem.h"
 
 
 // Sets default values
@@ -611,6 +612,27 @@ void AFirstPersonCharacter::ClientOnHoldInteractFailed_Implementation(AActor* Ta
 	}
 
 	CancelLocalHoldInteract(false);
+}
+
+void AFirstPersonCharacter::ClientShowDamageFeedback_Implementation(
+	FVector_NetQuantize DamageOrigin)
+{
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+
+	APlayerController* PlayerController = Cast<APlayerController>(GetController());
+	ULocalPlayer* LocalPlayer = PlayerController ? PlayerController->GetLocalPlayer() : nullptr;
+	if (!LocalPlayer)
+	{
+		return;
+	}
+
+	if (ULocalPlayerUISubSystem* UISubSystem = LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>())
+	{
+		UISubSystem->OnDamageFeedback(this, FVector(DamageOrigin));
+	}
 }
 
 FGameplayTagContainer AFirstPersonCharacter::GetOwnedGameplayTagsForQuery() const

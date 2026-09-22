@@ -9,6 +9,15 @@ class USoundBase;
 class AActor;
 
 UENUM(BlueprintType)
+enum class EOutlierAudioPlaybackPolicy : uint8
+{
+	OneShot,
+	Loop,
+	StopLoopThenOneShot,
+	StopLoop
+};
+
+UENUM(BlueprintType)
 enum class EOutlierAudioVolumeType : uint8
 {
 	Master UMETA(DisplayName = "Master"),
@@ -33,6 +42,17 @@ struct OUTLIER_API FOutlierAudioVariant
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Audio", meta = (ClampMin = "0.0"))
 	float Weight = 1.0f;
+
+	/** Audio owns persistent playback behavior; gameplay only submits the context tag. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Audio")
+	EOutlierAudioPlaybackPolicy PlaybackPolicy = EOutlierAudioPlaybackPolicy::OneShot;
+
+	/**
+	 * Identity of the loop controlled by this variant. A Loop variant may leave this empty
+	 * to use RequiredContext. StopLoop and StopLoopThenOneShot variants must identify the loop to stop.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Audio", meta = (Categories = "Audio.Context"))
+	FGameplayTag LoopContextTag;
 };
 
 UCLASS(BlueprintType)
@@ -152,6 +172,7 @@ struct OUTLIER_API FOutlierAudioPlayRequest
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Audio", meta = (ClampMin = "0.0"))
 	float StartTime = 0.0f;
+
 };
 
 /** Server-resolved playback data. Clients do not run weighted selection again. */
@@ -175,4 +196,11 @@ struct OUTLIER_API FOutlierResolvedAudioPlay
 
 	UPROPERTY(BlueprintReadOnly, Category = "Audio")
 	float StartTime = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Audio")
+	bool bLooping = false;
+
+	/** Server-assigned identity used to stop this loop on each client. */
+	UPROPERTY(BlueprintReadOnly, Category = "Audio")
+	int32 AudioInstanceId = 0;
 };

@@ -14,6 +14,7 @@ class OUTLIER_API UUILayerRootWidget : public UUserWidget
 	GENERATED_BODY()
 
 public:
+	UPanelWidget* GetBackdropLayer() const;
 	UPanelWidget* GetGameplayLayer() const;
 	UPanelWidget* GetGameMenuLayer() const;
 	UPanelWidget* GetModalLayer() const;
@@ -24,6 +25,9 @@ protected:
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "UI Layer")
 	TObjectPtr<UOverlay> LayerRoot;
+
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "UI Layer")
+	TObjectPtr<UCanvasPanel> BackdropLayer;
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "UI Layer")
 	TObjectPtr<UCanvasPanel> GameplayLayer;

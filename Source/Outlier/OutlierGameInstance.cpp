@@ -4,6 +4,7 @@
 #include "OutlierGameInstance.h"
 #include "OutlierArenaSettings.h"
 #include "OutlierGameMode.h"
+#include "AbilitySystemGlobals.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
@@ -17,6 +18,12 @@
 void UOutlierGameInstance::Init()
 {
 	Super::Init();
+
+	// GAS 전역 초기화. GameplayCue 매니저를 만들고 GameplayCueNotifyPaths( DefaultGame.ini )를
+	// 스캔해 Notify 클래스를 로드하는 지점이다. 이 호출이 없으면 매니저가 아무 데서나 지연 생성되고,
+	// 그 타이밍에 따라 큐 노티파이 로드가 통째로 누락된다 ( 매핑표에는 있는데 클래스는 0개인 상태 ).
+	// Attribute / Effect / Ability 는 이것 없이도 돌기 때문에 GameplayCue 를 붙이기 전까지는 드러나지 않는다.
+	UAbilitySystemGlobals::Get().InitGlobalData();
 
 	FCoreUObjectDelegates::PreLoadMap.AddUObject(this, &UOutlierGameInstance::HandlePreLoadMap);
 	FCoreUObjectDelegates::PostLoadMapWithWorld.AddUObject(this, &UOutlierGameInstance::HandlePostLoadMap);

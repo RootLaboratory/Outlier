@@ -45,6 +45,7 @@
 #include "Room/RoomTagComponent.h"
 #include "Interface/RoomTagInterface.h"
 #include "Interface/WeaponMuzzleProvider.h"
+#include "NiagaraComponent.h"
 #include "NiagaraFunctionLibrary.h"
 #include "NiagaraSystem.h"
 #include "Particles/ParticleSystem.h"
@@ -92,25 +93,38 @@ namespace
 		USceneComponent* AttachTarget,
 		FName SocketName,
 		const FVector& Location,
-		const FRotator& Rotation)
+		const FRotator& Rotation,
+		bool bFirstPerson)
 	{
 		if (!Def || !Def->FXAsset || !AttachTarget)
 		{
 			return;
 		}
 
-		const FVector FinalLocation = Location + Def->RelativeLocation;
-		const FRotator FinalRotation = Rotation + Def->RelativeRotation + Def->RotationOffset;
+		// 시점별 크기 보정값은 Definition 이 갖는다. 여기선 어느 시점인지만 넘긴다.
+		const FVector FinalScale = Def->GetViewpointScale(bFirstPerson);
+
+		// RelativeLocation 은 총구 기준 오프셋이다. 월드 좌표에 그냥 더하면 월드 축을 따라 움직여
+		// 캐릭터가 보는 방향에 따라 제각각 어긋난다. 총구 회전으로 돌려서 적용한다.
+		// ( UVisualEventSubsystem::SpawnMuzzleEffect 와 동일한 처리 )
+		const FVector FinalLocation = Location + Rotation.RotateVector(Def->RelativeLocation);
+
+		// FRotator 덧셈은 올바른 회전 합성이 아니다. 쿼터니언으로 합성한다.
+		const FRotator FinalRotation = (Rotation.Quaternion()
+			* Def->RelativeRotation.Quaternion()
+			* Def->RotationOffset.Quaternion()).Rotator();
 
 		if (UNiagaraSystem* Niagara = Cast<UNiagaraSystem>(Def->FXAsset))
 		{
+			// 주의: FinalScale 은 컴포넌트 스케일이라 스프라이트 렌더러에는 크기로 반영되지 않는다.
+			// ( UVisualEventSubsystem::SpawnMuzzleEffect 의 같은 주석 참고 )
 			UNiagaraFunctionLibrary::SpawnSystemAttached(
 				Niagara,
 				AttachTarget,
 				SocketName,
 				FinalLocation,
 				FinalRotation,
-				Def->Scale,
+				FinalScale,
 				EAttachLocation::KeepWorldPosition,
 				true,
 				ENCPoolMethod::AutoRelease,
@@ -125,7 +139,7 @@ namespace
 				SocketName,
 				FinalLocation,
 				FinalRotation,
-				Def->Scale,
+				FinalScale,
 				EAttachLocation::KeepWorldPosition,
 				true,
 				EPSCPoolMethod::AutoRelease,
@@ -516,11 +530,49 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 			GetNormalizedLastShotDirection(),
 			FiredMuzzleSocketName);
 
-		if (UVisualEventSubsystem* VisualSubsystem = GetWorld()->GetSubsystem<UVisualEventSubsystem>())
+		// Weapon fire uses the shared tag-driven world-audio path. The server resolves
+		// the weighted variant once and delivers it to relevant clients, so enemy,
+		// partner, and possessed-enemy weapons all follow the same network behavior.
+		if (bPlayShotSound && WeaponAudioContextTag.IsValid())
 		{
-			if (bPlayShotSound && GunSound)
+			if (UGameInstance* GameInstance = GetGameInstance())
 			{
-				VisualSubsystem->PlaySoundAtLocation(GunSound, Start);
+				if (UOutlierAudioSubsystem* AudioSubsystem =
+					GameInstance->GetSubsystem<UOutlierAudioSubsystem>())
+				{
+					FOutlierAudioPlayRequest AudioRequest;
+					AudioRequest.EventTag = FGameplayTag::RequestGameplayTag(
+						FName(TEXT("Audio.Type.Weapon")));
+					AudioRequest.ContextTags.AddTag(WeaponAudioContextTag);
+					// Use the owning character for relevancy. Spawned enemy/partner weapon
+					// actors can be attached and independently culled even while their owner
+					// is relevant to the listener. The explicit location remains the muzzle.
+					AudioRequest.EmitterActor = WeaponOwner.Get();
+					if (!AudioRequest.EmitterActor)
+					{
+						AudioRequest.EmitterActor = this;
+					}
+
+					TArray<FTransform> AudioMuzzleTransforms;
+					ResolveMuzzleTransforms(false, FiredMuzzleSocketName, AudioMuzzleTransforms);
+					AudioRequest.Location = AudioMuzzleTransforms.IsEmpty()
+						? GetActorLocation()
+						: AudioMuzzleTransforms[0].GetLocation();
+					AudioRequest.bHasLocation = true;
+					const bool bAudioAccepted =
+						AudioSubsystem->PlayRelevantAtLocationFromServer(AudioRequest);
+					if (!bAudioAccepted)
+					{
+						UE_LOG(
+							LogOutlier,
+							Warning,
+							TEXT("[WeaponAudio] Request rejected. Weapon='%s' Owner='%s' Context='%s' Location=%s"),
+							*GetNameSafe(this),
+							*GetNameSafe(WeaponOwner),
+							*WeaponAudioContextTag.ToString(),
+							*AudioRequest.Location.ToCompactString());
+					}
+				}
 			}
 		}
 	}
@@ -1410,7 +1462,8 @@ void ARangedWeaponBase::PlayThirdPersonFireFX(
 						Partner->GetWeaponMuzzleComponent(false),
 						Partner->GetWeaponMuzzleSocketName(false),
 						Start,
-						MuzzleRotation);
+						MuzzleRotation,
+						/*bFirstPerson=*/false);
 					UE_LOG(
 						LogTemp,
 						Warning,
@@ -1421,7 +1474,7 @@ void ARangedWeaponBase::PlayThirdPersonFireFX(
 				}
 				else
 				{
-					VisualSubsystem->SpawnMuzzleEffect(WeaponMuzzle, Start, MuzzleRotation);
+					VisualSubsystem->SpawnMuzzleEffect(WeaponMuzzle, Start, MuzzleRotation, /*bFirstPerson=*/false);
 				}
 			}
 			else if (Cast<APartnerCharacter>(WeaponOwner))
@@ -1502,7 +1555,8 @@ void ARangedWeaponBase::PlayFirstPersonFireFX(
 						Partner->GetWeaponMuzzleComponent(true),
 						Partner->GetWeaponMuzzleSocketName(true),
 						Start,
-						MuzzleRotation);
+						MuzzleRotation,
+						/*bFirstPerson=*/true);
 					UE_LOG(
 						LogTemp,
 						Warning,
@@ -1513,7 +1567,7 @@ void ARangedWeaponBase::PlayFirstPersonFireFX(
 				}
 				else
 				{
-					VisualSubsystem->SpawnMuzzleEffect(WeaponMuzzle, Start, MuzzleRotation);
+					VisualSubsystem->SpawnMuzzleEffect(WeaponMuzzle, Start, MuzzleRotation, /*bFirstPerson=*/true);
 				}
 			}
 			else if (Cast<APartnerCharacter>(WeaponOwner))
@@ -1668,7 +1722,7 @@ void ARangedWeaponBase::UpdateLocalAmmoUI() const
 
 	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
 	{
-		UISubsystem->OnRep_AmmoCountChanged(CurrentAmmo);
+		UISubsystem->OnRep_AmmoCountChanged(CurrentAmmo, MagazineSize);
 	}
 }
 
@@ -1704,6 +1758,17 @@ ARangedWeaponBase::ARangedWeaponBase() : AWeaponBase()
 void ARangedWeaponBase::BeginPlay()
 {
 	Super::BeginPlay();
+
+	if (!WeaponAudioContextTag.IsValid())
+	{
+		UE_LOG(
+			LogOutlier,
+			Warning,
+			TEXT("[WeaponAudio] Missing WeaponAudioContextTag. Weapon='%s' Class='%s' Owner='%s'"),
+			*GetNameSafe(this),
+			*GetNameSafe(GetClass()),
+			*GetNameSafe(WeaponOwner));
+	}
 
 	if (!IsEquipped())
 	{

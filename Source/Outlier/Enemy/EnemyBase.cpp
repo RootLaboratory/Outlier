@@ -14,6 +14,7 @@
 #include "Enemy/EnemyAIController.h"
 #include "Enemy/EnemyAdaptationSubsystem.h"
 #include "Enemy/EnemyRoomSubsystem.h"
+#include "Enemy/Death/OutlierDeathDebrisActor.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameplayEffect.h"
 #include "Animation/AnimInstance.h"
@@ -780,6 +781,7 @@ void AEnemyBase::PrepareForPoolIdle()
 
 void AEnemyBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	GetWorldTimerManager().ClearTimer(DeathDebrisTimerHandle);
 	CancelPossessionProcess();
 	ResetPossessedAttackInput();
 	EndPossessedImpactInputLock();
@@ -1717,7 +1719,71 @@ float AEnemyBase::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 			PreviousHealth,
 			GetCurrentHealth());
 	}
+
+	if (AppliedDamage > 0.0f)
+	{
+		BroadcastDamageCue(Request, AppliedDamage);
+	}
+
 	return AppliedDamage;
+}
+
+void AEnemyBase::BroadcastDamageCue(const FOutlierDamageRequest& Request, float AppliedDamage) const
+{
+	if (!HasAuthority() || !OutlierAbilitySystemComponent)
+	{
+		return;
+	}
+
+	FGameplayCueParameters CueParameters;
+	CueParameters.RawMagnitude = AppliedDamage;
+	CueParameters.Instigator = Request.EventInstigator;
+	CueParameters.EffectCauser = Request.DamageCauser;
+
+	//GC에 쓸 Context를 나눔. 무기 피해나 폭발 피해; 나중에 tag로 이펙트 처리를 분기로 나눌 수 있기 때문임.따로 GC를 늘리는 것보다 태그 기반
+	//분기 처리가 더 낫다고 생각했음.ㄴ
+
+	FGameplayEffectContextHandle EffectContext = OutlierAbilitySystemComponent->MakeEffectContext();
+	EffectContext.AddInstigator(Request.EventInstigator, Request.DamageCauser);
+	if (Request.HitResult.bBlockingHit)
+	{
+		EffectContext.AddHitResult(Request.HitResult);
+		CueParameters.Location = Request.HitResult.ImpactPoint;
+		CueParameters.Normal = Request.HitResult.ImpactNormal;
+	}
+	else
+	{
+		CueParameters.Location = Request.DamageOrigin.IsZero()
+			? GetActorLocation()
+			: Request.DamageOrigin;
+	}
+	CueParameters.EffectContext = EffectContext;
+
+	if (Request.DamageTag.IsValid())
+	{
+		CueParameters.AggregatedSourceTags.AddTag(Request.DamageTag);
+	}
+
+	OutlierAbilitySystemComponent->ExecuteGameplayCue(
+		OutlierGameplayTags::Cue::Drone::Hit(),
+		CueParameters);
+}
+
+void AEnemyBase::BroadcastDeathCue() const
+{
+	if (!HasAuthority() || !OutlierAbilitySystemComponent)
+	{
+		return;
+	}
+
+	FGameplayCueParameters CueParameters;
+	CueParameters.Location = GetActorLocation();
+	CueParameters.Normal = FVector::UpVector;
+	CueParameters.EffectContext = OutlierAbilitySystemComponent->MakeEffectContext();
+
+	OutlierAbilitySystemComponent->ExecuteGameplayCue(
+		OutlierGameplayTags::Cue::Drone::Death(),
+		CueParameters);
 }
 
 float AEnemyBase::GetWeakPointDamageMultiplier(const UPrimitiveComponent* HitComponent) const
@@ -2382,6 +2448,9 @@ void AEnemyBase::Die()
 
 	if (OutlierAbilitySystemComponent->ApplyDeadStateToSelf())
 	{
+		// HandleDeath() 는 기본적으로 같은 프레임에 Destroy() 까지 간다( GetDeathDestroyDelay 기본 0 ).
+		// 브로드캐스트가 그보다 먼저 나가야 한다.
+		BroadcastDeathCue();
 		HandleDeath();
 	}
 }
@@ -2877,6 +2946,14 @@ void AEnemyBase::RemoveRoomTargetObserver()
 
 void AEnemyBase::HandleDeath()
 {
+	// 파편 컬렉션이 지정된 적만 연출을 탄다. 없으면 기존 사망 동작 그대로다.
+	// Super 가 아래에서 SetLifeSpan 으로 파괴를 예약하므로 그 전에 브로드캐스트해야
+	// 액터 채널이 닫히기 전에 RPC 가 나간다 ( DeathDestroyDelay 주석 참고 ).
+	if (DeathDebrisCollection)
+	{
+		MulticastPlayDeathDebris(GetVelocity());
+	}
+
 	PerformDeathCleanup();
 	if (IsPoolManaged())
 	{
@@ -2886,7 +2963,9 @@ void AEnemyBase::HandleDeath()
 		return;
 	}
 
-	const float DestroyDelay = FMath::Max(GetDeathDestroyDelay(), 0.0f);
+	const float DestroyDelay = FMath::Max(
+		GetDeathDestroyDelay(),
+		DeathDebrisCollection ? DeathDebrisDelay + 0.05f : 0.0f);
 	if (DestroyDelay > KINDA_SMALL_NUMBER)
 	{
 		SetLifeSpan(DestroyDelay);
@@ -2894,6 +2973,95 @@ void AEnemyBase::HandleDeath()
 	else
 	{
 		Destroy();
+	}
+}
+
+void AEnemyBase::MulticastPlayDeathDebris_Implementation(FVector_NetQuantize100 DeathVelocity)
+{
+	// 판정 제거는 데디케이티드 서버를 포함한 모든 인스턴스에서 한다.
+	// 파편으로 대체된 시체가 DeathDestroyDelay 동안 트레이스를 막으면 안 된다.
+	DisableDeathCollision();
+
+	if (GetNetMode() == NM_DedicatedServer)
+	{
+		return;
+	}
+
+	// Geometry Collection 은 스켈레톤이 없는, 미리 프랙처된 리지드 지오메트리다.
+	// 본 포즈는 무관하고 메시 컴포넌트의 월드 트랜스폼만 있으면 원본 자리에 정확히 얹힌다.
+	const USkeletalMeshComponent* SourceMesh = GetMesh();
+	if (!SourceMesh)
+	{
+		return;
+	}
+
+	const FTransform SourceTransform = SourceMesh->GetComponentTransform();
+	const float Delay = FMath::Max(DeathDebrisDelay, 0.0f);
+	if (Delay > KINDA_SMALL_NUMBER)
+	{
+		GetWorldTimerManager().SetTimer(
+			DeathDebrisTimerHandle,
+			FTimerDelegate::CreateUObject(
+				this,
+				&AEnemyBase::SpawnDeathDebris,
+				SourceTransform,
+				FVector(DeathVelocity)),
+			Delay,
+			false);
+		return;
+	}
+
+	SpawnDeathDebris(SourceTransform, FVector(DeathVelocity));
+}
+
+void AEnemyBase::SpawnDeathDebris(
+	FTransform SourceTransform,
+	FVector DeathVelocity)
+{
+	const AOutlierDeathDebrisActor* Debris = AOutlierDeathDebrisActor::SpawnLocalDebris(
+		GetWorld(),
+		DeathDebrisCollection,
+		SourceTransform,
+		DeathVelocity,
+		DeathDebrisProfile);
+
+	// 파편이 실제로 떴을 때만 원본을 감춘다. 실패했는데 감추면 적이 그냥 증발한다.
+	if (Debris)
+	{
+		HideSourceMeshes();
+	}
+}
+
+void AEnemyBase::DisableDeathCollision()
+{
+	if (UCapsuleComponent* EnemyCapsule = GetCapsuleComponent())
+	{
+		EnemyCapsule->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	}
+
+	if (CoreHitboxComponent)
+	{
+		CoreHitboxComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	}
+
+	if (USkeletalMeshComponent* EnemyMesh = GetMesh())
+	{
+		EnemyMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	}
+
+	if (UCharacterMovementComponent* MovementComponent = GetCharacterMovement())
+	{
+		MovementComponent->StopMovementImmediately();
+		MovementComponent->DisableMovement();
+	}
+}
+
+void AEnemyBase::HideSourceMeshes()
+{
+	if (USkeletalMeshComponent* EnemyMesh = GetMesh())
+	{
+		EnemyMesh->SetVisibility(false, true);
+		EnemyMesh->SetHiddenInGame(true, true);
 	}
 }
 

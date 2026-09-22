@@ -1,5 +1,6 @@
 #include "Interaction/InteractionNode.h"
 
+#include "Audio/OutlierAudioSubsystem.h"
 #include "Components/SceneComponent.h"
 #include "FirstPerson/FirstPersonCharacter.h"
 #include "Interaction/InteractableComponent.h"
@@ -112,6 +113,10 @@ bool AInteractionNode::AddNodeServer(AFirstPersonCharacter* Interactor)
 	{
 		return false;
 	}
+	UOutlierAudioSubsystem::PlayTaggedAtLocationFromServer(
+		this,
+		FGameplayTag::RequestGameplayTag(TEXT("Audio.Type.Interactable")),
+		FGameplayTag::RequestGameplayTag(TEXT("Audio.Context.Object.Node.Acquire")));
 
 	if (bProgressIdRegistered)
 	{
