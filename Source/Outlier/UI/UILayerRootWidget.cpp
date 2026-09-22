@@ -11,6 +11,11 @@ void UUILayerRootWidget::NativeOnInitialized()
 	BuildFallbackLayout();
 }
 
+UPanelWidget* UUILayerRootWidget::GetBackdropLayer() const
+{
+	return BackdropLayer;
+}
+
 UPanelWidget* UUILayerRootWidget::GetGameplayLayer() const
 {
 	return GameplayLayer;
@@ -67,6 +72,7 @@ void UUILayerRootWidget::BuildFallbackLayout()
 		}
 	};
 
+	EnsureCanvasLayer(BackdropLayer, TEXT("BackdropLayer"));
 	EnsureCanvasLayer(GameplayLayer, TEXT("GameplayLayer"));
 	EnsureCanvasLayer(GameMenuLayer, TEXT("GameMenuLayer"));
 	EnsureCanvasLayer(ModalLayer, TEXT("ModalLayer"));

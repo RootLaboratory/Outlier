@@ -4,6 +4,7 @@
 #include "HPBarUI.h"
 
 #include "Components/ProgressBar.h"
+#include "Components/TextBlock.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
 
@@ -77,6 +78,30 @@ void UHPBarUI::PartnerShieldChanged_Implementation(float InPartnerShieldRatio)
 		UE_LOG(LogTemp, Log, TEXT("[HPBarUI] PartnerShieldChanged Raw=%.3f Clamped=%.3f Bar=%s"), InPartnerShieldRatio, CurrentPartnerShieldRatio, *GetNameSafe(PartnerShieldBar));
 	}
 	SetProgressBarRatio(PartnerShieldBar, CurrentPartnerShieldRatio);
+}
+
+void UHPBarUI::SetHealthState(float InHealth, float InMaxHealth)
+{
+	CurrentHPValue = FMath::Max(InHealth, 0.0f);
+	CurrentHPRatio = InMaxHealth > 0.0f
+		? FMath::Clamp(InHealth / InMaxHealth, 0.0f, 1.0f)
+		: 0.0f;
+
+	HealthChanged(CurrentHPRatio);
+	SetProgressBarRatio(HPBar, CurrentHPRatio);
+	SetValueText(HPText, CurrentHPValue);
+}
+
+void UHPBarUI::SetShieldState(float InShield, float InMaxShield)
+{
+	CurrentShieldValue = FMath::Max(InShield, 0.0f);
+	CurrentShieldRatio = InMaxShield > 0.0f
+		? FMath::Clamp(InShield / InMaxShield, 0.0f, 1.0f)
+		: 0.0f;
+
+	ShieldChanged(CurrentShieldRatio);
+	SetProgressBarRatio(ShieldBar, CurrentShieldRatio);
+	SetValueText(ShieldText, CurrentShieldValue);
 }
 
 void UHPBarUI::InitializeProgressBarMaterial(
@@ -176,5 +201,13 @@ void UHPBarUI::SetProgressBarRatio(UProgressBar* ProgressBar, float InRatio)
 	if (bDebugHPBarUI)
 	{
 		UE_LOG(LogTemp, Log, TEXT("[HPBarUI] SetRatio Bar=%s Raw=%.3f Clamped=%.3f ActualPercent=%.3f"), *GetNameSafe(ProgressBar), InRatio, ClampedRatio, ProgressBar->GetPercent());
+	}
+}
+
+void UHPBarUI::SetValueText(UTextBlock* TextBlock, float InValue)
+{
+	if (TextBlock)
+	{
+		TextBlock->SetText(FText::AsNumber(FMath::RoundToInt(FMath::Max(InValue, 0.0f))));
 	}
 }

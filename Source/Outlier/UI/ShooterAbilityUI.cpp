@@ -117,6 +117,12 @@ void UShooterAbilityUI::ResetCooldowns()
 	}
 }
 
+void UShooterAbilityUI::BeginRelativeSelection()
+{
+	SelectionOriginScreen = FSlateApplication::Get().GetCursorPos();
+	bHasSelectionOrigin = true;
+}
+
 void UShooterAbilityUI::TryHovering()
 {
 	if (!ShooterAbilityMID)
@@ -211,36 +217,23 @@ bool UShooterAbilityUI::IsAbilityUnlocked(const FGameplayTag& AbilityTag) const
 	return false;
 }
 
-bool UShooterAbilityUI::TryCalculateCoordinate(float& OutAngleDeg) const
+bool UShooterAbilityUI::TryCalculateCoordinate(float& OutAngleDeg)
 {
 	OutAngleDeg = 0.0f;
-	if (!CenterCircle || !BigCircle)
+	if (!bHasSelectionOrigin)
 	{
 		return false;
 	}
 
-	const FGeometry& SmallGeometry = CenterCircle->GetCachedGeometry();
-	const FGeometry& BigGeometry = BigCircle->GetCachedGeometry();
-
-	const FVector2D SmallCenterScreen =
-		SmallGeometry.LocalToAbsolute(SmallGeometry.GetLocalSize() * 0.5f);
-	const FVector2D BigCenterScreen =
-		BigGeometry.LocalToAbsolute(BigGeometry.GetLocalSize() * 0.5f);
-	const FVector2D MouseScreen = FSlateApplication::Get().GetCursorPos();
-
-	const float BigRadius = FMath::Min(BigGeometry.GetLocalSize().X, BigGeometry.GetLocalSize().Y) * 0.5f;
-	const float SmallRadius = FMath::Min(SmallGeometry.GetLocalSize().X, SmallGeometry.GetLocalSize().Y) * 0.5f;
-	const FVector2D ToSmallCenter = MouseScreen - SmallCenterScreen;
-	const FVector2D ToBigCenter = MouseScreen - BigCenterScreen;
-
-	const bool bInsideBigCircle = ToBigCenter.SizeSquared() <= FMath::Square(BigRadius);
-	const bool bOutsideSmallCircle = ToSmallCenter.SizeSquared() >= FMath::Square(SmallRadius);
-	if (!bInsideBigCircle || !bOutsideSmallCircle || ToSmallCenter.IsNearlyZero())
+	const FVector2D MouseDelta =
+		FSlateApplication::Get().GetCursorPos() - SelectionOriginScreen;
+	if (MouseDelta.SizeSquared() < FMath::Square(SelectionDeadZone))
 	{
-		// 잘못된 영역을 각도 0으로 반환하면 오른쪽 Quantum Leap 선택으로 오인되므로 선택 자체를 무효화한다.
 		return false;
 	}
 
-	OutAngleDeg = FMath::RadiansToDegrees(FMath::Atan2(ToSmallCenter.Y, ToSmallCenter.X));
+	// Slate 화면 좌표는 +X가 오른쪽, +Y가 아래쪽이다.
+	// 따라서 오른쪽 0도, 아래 +90도, 왼쪽 +/-180도, 위 -90도로 기존 섹터와 일치한다.
+	OutAngleDeg = FMath::RadiansToDegrees(FMath::Atan2(MouseDelta.Y, MouseDelta.X));
 	return true;
 }

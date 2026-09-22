@@ -4,6 +4,13 @@
 
 namespace UILayerTags
 {
+	inline FGameplayTag Backdrop() //Teleport, Reflection Barrier 같은 HUD 아래 연출
+	{
+		static const FGameplayTag Tag =
+			FGameplayTag::RequestGameplayTag(FName(TEXT("UI.Layer.Backdrop")));
+		return Tag;
+	}
+
 	inline FGameplayTag Gameplay() //Hack, EMP, Mnigame etc
 	{
 		static const FGameplayTag Tag =

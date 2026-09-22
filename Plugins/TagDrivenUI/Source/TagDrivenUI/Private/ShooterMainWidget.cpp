@@ -4,6 +4,7 @@
 
 #include "AmmoUI.h"
 #include "CrossHairBase.h"
+#include "DamageFeedBackWidget.h"
 #include "EventDrivenUI.h"
 #include "HPBarUI.h"
 #include "ShooterCurrentAbilityIcon.h"
@@ -22,43 +23,22 @@ void UShooterMainWidget::ModuleInit()
 	//UE_LOG(LogTemp, Error, TEXT("ModuleInit"));
 
 	Modules.Empty();
-	Modules.Reserve(6);
+	Modules.Reserve(7);
 
 	RegisterModule(TagDrivenUITags::Shooter::HP(), HPBarUI);
 	RegisterModule(TagDrivenUITags::Shooter::Ammo(), AmmoUI);
 	RegisterModule(TagDrivenUITags::Shooter::CrossHair(), nullptr);
 	RegisterModule(TagDrivenUITags::Shooter::CurrentAbility(), CurrentAbilityUI);
 	RegisterModule(TagDrivenUITags::Shooter::CurrentWeapon(), CurrentWeaponUI);
-	
-	//ModuleActivate();
+	RegisterModule(TagDrivenUITags::Shooter::DamageFeedback(), DamageFeedbackUI);
 
+	// 전역 HUD 가시성은 ModuleLayer가 담당하고, 각 모듈의 상태는 별도로 초기화한다.
+	ModulesControl(false);
 	SuitOnModuleInit();
 }
 
 void UShooterMainWidget::ModuleDestruct()
 {
-}
-
-void UShooterMainWidget::ModuleActivate()
-{
-	for (auto& [Type, UIModule] : Modules)
-	{
-		if (UIModule)
-		{
-			UIModule->Activate();
-		}
-	}
-}
-
-void UShooterMainWidget::ModuleDeActivate()
-{
-	for (auto& [Type, UIModule] : Modules)
-	{
-		if (UIModule)
-		{
-			UIModule->Deactivate();
-		}
-	}
 }
 
 void UShooterMainWidget::DefaultModuleInit()
@@ -84,14 +64,14 @@ void UShooterMainWidget::SuitOnModuleInit()
 		AmmoUI->Deactivate();
 	}
 
-	ActivateModuleIfAllowed(CurrentAbilityUI);
+	SetModuleActive(CurrentAbilityUI, true);
 
-	ActivateModuleIfAllowed(CurrentWeaponUI);
+	SetModuleActive(CurrentWeaponUI, true);
 
 	if (UEventDrivenUI* HPModule = GetModule(TagDrivenUITags::Shooter::HP()))
 	{
 		//_LOG(LogTemp, Error, TEXT("SuitOnModuleInit HPModule"));
-		ActivateModuleIfAllowed(HPModule);
+		SetModuleActive(HPModule, true);
 	}
 	else
 	{
@@ -144,7 +124,7 @@ void UShooterMainWidget::OnChangeWeapon(EWidgetWeaponType Type)
 	{
 		//UE_LOG(LogTemp, Error, TEXT("Pistol"));
 
-		ActivateModuleIfAllowed(AmmoUI);
+		SetModuleActive(AmmoUI, true);
 
 		if (CurrentCrossHairUI)
 		{
@@ -153,7 +133,7 @@ void UShooterMainWidget::OnChangeWeapon(EWidgetWeaponType Type)
 
 		CurrentCrossHairUI = PistolCrossHairUI;
 
-		ActivateModuleIfAllowed(CurrentCrossHairUI);
+		SetModuleActive(CurrentCrossHairUI, true);
 
 		RegisterModule(TagDrivenUITags::Shooter::CrossHair(), CurrentCrossHairUI);
 		break;
@@ -162,7 +142,7 @@ void UShooterMainWidget::OnChangeWeapon(EWidgetWeaponType Type)
 	{
 		//UE_LOG(LogTemp, Error, TEXT("Rifle"));
 
-		ActivateModuleIfAllowed(AmmoUI);
+		SetModuleActive(AmmoUI, true);
 
 		if (CurrentCrossHairUI)
 		{
@@ -171,7 +151,7 @@ void UShooterMainWidget::OnChangeWeapon(EWidgetWeaponType Type)
 
 		CurrentCrossHairUI = RifleCrossHairUI;
 
-		ActivateModuleIfAllowed(CurrentCrossHairUI);
+		SetModuleActive(CurrentCrossHairUI, true);
 
 		RegisterModule(TagDrivenUITags::Shooter::CrossHair(), CurrentCrossHairUI);
 		break;

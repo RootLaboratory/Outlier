@@ -25,6 +25,7 @@ enum class EUIPlayerState : uint8
 class UEventDrivenUI;
 class UAbilityIconUI;
 class UCanvasPanel;
+class UWidget;
 
 UCLASS()
 class TAGDRIVENUI_API UMainUIBase : public UUserWidget
@@ -42,17 +43,16 @@ public:
 
 	virtual void ModulesControl(bool Flag);
 
-	// 게이트를 존중하는 활성화. bModulesActive 가 false 면 무시한다.
-	// 모듈을 개별로 켜는 곳(무기 타입별 Ammo/CrossHair 등)이 ->Activate() 를 직접 부르면
-	// MainWidget 전체 게이트를 우회해버리므로, 그런 자리에서는 이걸 쓴다.
-	void ActivateModuleIfAllowed(UEventDrivenUI* InModule);
+	// 개별 모듈 상태는 ModuleLayer의 전역 가시성과 독립적으로 유지한다.
+	// 전역 HUD가 닫힌 동안에도 무기 변경 등의 최신 상태를 기록해두기 위함이다.
+	void SetModuleActive(UEventDrivenUI* InModule, bool bActive);
 	virtual void AbilitySectionControl(bool Flag);
 public:
 
 	virtual void ModuleInit() {}
 	virtual void ModuleDestruct() {}
-	virtual void ModuleActivate() {}
-	virtual void ModuleDeActivate() {}
+	virtual void ModuleActivate();
+	virtual void ModuleDeActivate();
 	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
 
 protected:
@@ -63,13 +63,18 @@ protected:
 	UPROPERTY()
 	TMap<FGameplayTag, TObjectPtr<UEventDrivenUI>> Modules;
 
-	// ModulesControl 이 마지막으로 지시한 상태. 등록이 늦은 모듈에도 같은 상태를 물려준다.
+	// ModuleLayer의 전역 가시성 상태. 개별 모듈의 활성 상태와는 별개다.
 	bool bModulesActive = false;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Ability Sections")
 	TMap<FGameplayTag, TObjectPtr<UAbilityIconUI>> AbilitySections;
 
 public:
+	// 선택적 전역 가시성 루트. 지정하지 않으면 기존 DefaultLayer를 그대로 사용한다.
+	// 컨테이너 타입은 Overlay/CanvasPanel/SizeBox 중 무엇이든 가능하다.
+	UPROPERTY(meta = (BindWidgetOptional))
+	TObjectPtr<UWidget> ModuleLayer;
+
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UCanvasPanel> InteractionLayer;
 
