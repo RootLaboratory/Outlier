@@ -15,6 +15,26 @@
 #include "UI/UILayerInputReceiver.h"
 #include "UI/UILayerRootWidget.h"
 
+namespace
+{
+	// 레이어 입력 우선순위. 값이 클수록 입력을 먼저 가져간다.
+	// Gameplay 는 알 수 없는 태그가 들어왔을 때의 기본값도 겸한다.
+	constexpr int32 SystemLayerPriority = 400;
+	constexpr int32 ModalLayerPriority = 300;
+	constexpr int32 GameMenuLayerPriority = 200;
+	constexpr int32 GameplayLayerPriority = 100;
+
+	// Backdrop 은 HUD 아래에 깔리는 연출 전용이라 입력 경쟁에서 항상 진다.
+	constexpr int32 BackdropLayerPriority = 50;
+
+	// HUD(MainUI)는 뷰포트 ZOrder 0 에 붙는다.
+	// 스택 루트는 그 위, Backdrop 루트는 그 아래에 놓여 HUD 를 사이에 둔다.
+	// 음수를 쓰되 -1 은 피한다. 최종적으로 SOverlay::AddSlot(ZOrder) 까지 그대로 내려가는데
+	// 거기서 -1(INDEX_NONE)은 "ZOrder 미지정"으로 해석돼 맨 위에 붙어버린다.
+	constexpr int32 LayerRootZOrder = 1000;
+	constexpr int32 BackdropRootZOrder = -1000;
+}
+
 void ULocalPlayerUILayerSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
@@ -63,7 +83,10 @@ bool ULocalPlayerUILayerSubsystem::EnsureLayerRoot()
 
 	if (IsValid(LayerRootWidget)
 		&& LayerRootWidget->GetOwningPlayer() == PlayerController
-		&& LayerRootWidget->IsInViewport())
+		&& LayerRootWidget->IsInViewport()
+		&& IsValid(BackdropRootWidget)
+		&& BackdropRootWidget->GetOwningPlayer() == PlayerController
+		&& BackdropRootWidget->IsInViewport())
 	{
 		return true;
 	}
@@ -84,12 +107,25 @@ bool ULocalPlayerUILayerSubsystem::EnsureLayerRoot()
 		return false;
 	}
 
-	LayerRootWidget->AddToViewport(1000);
+	BackdropRootWidget = CreateWidget<UUILayerRootWidget>(
+		PlayerController,
+		UUILayerRootWidget::StaticClass());
+
+	if (!BackdropRootWidget)
+	{
+		// 한쪽만 살아남으면 순서가 반쪽짜리가 된다. 둘 다 없는 상태로 되돌린다.
+		DestroyLayerRoot();
+		return false;
+	}
+
+	LayerRootWidget->AddToViewport(LayerRootZOrder);
+	BackdropRootWidget->AddToViewport(BackdropRootZOrder);
 
 	RegisterLayerContainer(UILayerTags::Gameplay(), LayerRootWidget->GetGameplayLayer());
 	RegisterLayerContainer(UILayerTags::GameMenu(), LayerRootWidget->GetGameMenuLayer());
 	RegisterLayerContainer(UILayerTags::Modal(), LayerRootWidget->GetModalLayer());
 	RegisterLayerContainer(UILayerTags::System(), LayerRootWidget->GetSystemLayer());
+	RegisterLayerContainer(UILayerTags::Backdrop(), BackdropRootWidget->GetBackdropLayer());
 	return true;
 }
 
@@ -102,7 +138,13 @@ void ULocalPlayerUILayerSubsystem::DestroyLayerRoot()
 		LayerRootWidget->RemoveFromParent();
 	}
 
+	if (IsValid(BackdropRootWidget))
+	{
+		BackdropRootWidget->RemoveFromParent();
+	}
+
 	LayerRootWidget = nullptr;
+	BackdropRootWidget = nullptr;
 }
 
 void ULocalPlayerUILayerSubsystem::RegisterLayerContainer(
@@ -719,17 +761,21 @@ int32 ULocalPlayerUILayerSubsystem::GetLayerPriority(FGameplayTag LayerTag) cons
 {
 	if (LayerTag.MatchesTagExact(UILayerTags::System()))
 	{
-		return 400;
+		return SystemLayerPriority;
 	}
 	if (LayerTag.MatchesTagExact(UILayerTags::Modal()))
 	{
-		return 300;
+		return ModalLayerPriority;
 	}
 	if (LayerTag.MatchesTagExact(UILayerTags::GameMenu()))
 	{
-		return 200;
+		return GameMenuLayerPriority;
 	}
-	return 100;
+	if (LayerTag.MatchesTagExact(UILayerTags::Backdrop()))
+	{
+		return BackdropLayerPriority;
+	}
+	return GameplayLayerPriority;
 }
 
 void ULocalPlayerUILayerSubsystem::RefreshTopLayerInput()

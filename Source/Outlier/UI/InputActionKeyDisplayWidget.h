@@ -10,7 +10,9 @@
 class UEnhancedInputLocalPlayerSubsystem;
 class UInputAction;
 class ULocalPlayerSettingsSubsystem;
+class UBorder;
 class UTextBlock;
+class UTexture2D;
 
 /**
  * 특정 Input Action 하나의 현재 바인딩 키를 텍스트로 보여주는 공용 부품.
@@ -62,12 +64,25 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UI|Input")
 	bool RefreshDisplayedKey();
 
+	// WBP에서 지정한 이미지를 Border의 Brush 리소스로 사용한다.
+	UFUNCTION(BlueprintCallable, Category = "UI|Input")
+	void SetBorderImage(UTexture2D* NewImage);
+
 protected:
 	virtual void NativeConstruct() override;
 	virtual void NativeDestruct() override;
 
+	// WBP에서 Border의 Content를 원하는 Image/Overlay 등으로 구성할 수 있게
+	// Border 자체를 BindWidget으로 노출한다.
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	TObjectPtr<UBorder> Border;
+
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UTextBlock> KeyText;
+
+	// WBP 파생 클래스에서 이미지 텍스처를 주입하면 Border Brush에 반영된다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI|Input")
+	TObjectPtr<UTexture2D> BorderImage;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI|Input")
 	TObjectPtr<UInputAction> WatchedInputAction;
@@ -88,6 +103,7 @@ private:
 
 	void BindSettingsSubsystem();
 	void UnbindSettingsSubsystem();
+	void RefreshBorderBrush();
 	void BindControlMappingsRebuiltDelegate();
 	void UnbindControlMappingsRebuiltDelegate();
 

@@ -74,12 +74,17 @@ protected:
 	void HandleShooterHealthAttributeChanged(const FOnAttributeChangeData& ChangeData);
 	void HandleShooterShieldAttributeChanged(const FOnAttributeChangeData& ChangeData);
 	void HandleShooterPartnerShieldAttributeChanged(const FOnAttributeChangeData& ChangeData);
+	void BindPartnerVitalityDelegates(APartnerCharacter* PartnerCharacter);
+	void UnbindPartnerVitalityDelegates();
+	void RefreshPartnerVitalityUI();
+	void HandlePartnerHealthAttributeChanged(const FOnAttributeChangeData& ChangeData);
 	ULocalPlayerUISubSystem* GetLocalUISubsystem() const;
 
 	void HandleShooterHealthChanged(float CurrentHealth, float MaxHealth);
 	void HandleShooterShieldChanged(float CurrentShield, float MaxShield);
 	void HandleShooterPartnerShieldChanged(float CurrentPartnerShield, float MaxPartnerShield);
 	void HandleShooterConditionChanged(const FGameplayTag& ConditionTag);
+	void HandlePartnerHealthChanged(float CurrentHealth, float MaxHealth);
 
 	UPROPERTY()
 	TObjectPtr<AShooterCharacter> BoundShooterCharacter;
@@ -93,6 +98,12 @@ protected:
 	FDelegateHandle MaxShieldChangedHandle;
 	FDelegateHandle PartnerShieldChangedHandle;
 	FDelegateHandle MaxPartnerShieldChangedHandle;
+
+	UPROPERTY()
+	TObjectPtr<UOutlierAbilitySystemComponent> BoundPartnerAbilitySystem;
+
+	FDelegateHandle PartnerHealthChangedHandle;
+	FDelegateHandle PartnerMaxHealthChangedHandle;
 
 	UPROPERTY()
 	TObjectPtr<AOutlierPlayerState> BoundOutlierPlayerState;

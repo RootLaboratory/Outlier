@@ -11,12 +11,20 @@
 #include "GameFramework/Pawn.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "GameplayTags/OutlierGameplayTags.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialInterface.h"
 
 namespace
 {
 // BoundPostProcessVolume 이 없을 때 쓰는 값. 볼륨이 있으면 항상 볼륨 값이 우선한다.
-constexpr int32 DefaultStealthStencilValue = 5;
 constexpr float DefaultStealthFadeDuration = 0.25f;
+
+// 이번 틱에 이 메시가 어떤 머티리얼을 어느 페이드로 물고 있어야 하는지.
+struct FOutlierStealthMeshTarget
+{
+	UMaterialInterface* Material = nullptr;
+	float Fade = 0.0f;
+};
 }
 
 void UMaterialPostProcessSubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -68,7 +76,7 @@ void UMaterialPostProcessSubsystem::RegisterPostProcessVolume(AOutlierPostProces
 	}
 
 	if (!InPostProcessVolume->HasValidScanPostProcessBindings()
-		&& !InPostProcessVolume->HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::Stealth)
+		&& !InPostProcessVolume->HasStealthMeshMaterials()
 		&& !InPostProcessVolume->HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::Damaged))
 	{
 		return;
@@ -152,7 +160,6 @@ void UMaterialPostProcessSubsystem::RegisterStealthSource(UOutlierAbilitySystemC
 
 	StealthSources.Add(SourceKey, State);
 	RefreshStealthMeshOverrides();
-	UpdateStealthView();
 }
 
 void UMaterialPostProcessSubsystem::UnregisterStealthSource(UOutlierAbilitySystemComponent* AbilitySystem)
@@ -172,7 +179,6 @@ void UMaterialPostProcessSubsystem::UnregisterStealthSource(UOutlierAbilitySyste
 
 	// 이 소스가 물고 있던 메시는 다음 재수집에서 대상 집합에 안 잡히므로 여기서 복구된다.
 	RefreshStealthMeshOverrides();
-	UpdateStealthView();
 }
 
 void UMaterialPostProcessSubsystem::HandleStealthTagChanged(
@@ -197,9 +203,8 @@ void UMaterialPostProcessSubsystem::HandleStealthTagChanged(
 	}
 
 	// 태그 On 은 즉시 반영해야 첫 프레임에 안 새어 보인다. Off 는 페이드가 0 에 닿을 때
-	// TickStealth 가 3인칭 스텐실까지 마저 걷어낸다.
+	// TickStealth 가 머티리얼을 마저 원복한다.
 	RefreshStealthMeshOverrides();
-	UpdateStealthView();
 }
 
 void UMaterialPostProcessSubsystem::TickStealth(float DeltaTime)
@@ -212,7 +217,6 @@ void UMaterialPostProcessSubsystem::TickStealth(float DeltaTime)
 	const float FadeDuration = GetStealthFadeDuration();
 	const float FadeSpeed = FadeDuration > 0.0f ? 1.0f / FadeDuration : 0.0f;
 
-	bool bAnyFadeChanged = false;
 	bool bAnyStealthActive = false;
 	for (auto SourceIt = StealthSources.CreateIterator(); SourceIt; ++SourceIt)
 	{
@@ -233,7 +237,6 @@ void UMaterialPostProcessSubsystem::TickStealth(float DeltaTime)
 			State.CurrentFade = FadeSpeed > 0.0f
 				? FMath::FInterpConstantTo(State.CurrentFade, State.TargetFade, DeltaTime, FadeSpeed)
 				: State.TargetFade;
-			bAnyFadeChanged = true;
 		}
 
 		bAnyStealthActive |= State.bStealthTagActive || State.CurrentFade > 0.0f;
@@ -246,21 +249,17 @@ void UMaterialPostProcessSubsystem::TickStealth(float DeltaTime)
 	}
 
 	// 대상 집합은 매 틱 다시 모은다. 무기 교체 / 파트너 교체 / 폰 리스폰이 별도 신호 없이 따라온다.
+	// 페이드 갱신도 여기서 같이 이뤄진다 ( 소스별 CurrentFade 를 그 소스의 메시 MID 에 밀어 넣는다 ).
 	RefreshStealthMeshOverrides();
-
-	if (bAnyFadeChanged)
-	{
-		UpdateStealthView();
-	}
 }
 
 void UMaterialPostProcessSubsystem::RefreshStealthMeshOverrides()
 {
-	UMaterialInterface* GlassMaterial = GetFirstPersonStealthGlassMaterial();
-	const int32 StencilValue = GetStealthStencilValue();
+	UMaterialInterface* FirstPersonMaterial = GetFirstPersonStealthMaterial();
+	UMaterialInterface* ThirdPersonMaterial = GetThirdPersonStealthMaterial();
 
 	// 이번에 오버라이드가 유지돼야 하는 메시 집합을 다시 만든다.
-	TMap<UMeshComponent*, UMaterialInterface*> DesiredMeshes;
+	TMap<UMeshComponent*, FOutlierStealthMeshTarget> DesiredMeshes;
 	for (const TPair<TWeakObjectPtr<UOutlierAbilitySystemComponent>, FOutlierStealthSourceState>& Pair
 		: StealthSources)
 	{
@@ -271,10 +270,8 @@ void UMaterialPostProcessSubsystem::RefreshStealthMeshOverrides()
 			continue;
 		}
 
-		// 1인칭 글래스는 태그가 살아 있는 동안만, 3인칭 스텐실은 페이드가 0 에 닿을 때까지 유지한다.
-		const bool bKeepFirstPerson = State.bStealthTagActive;
-		const bool bKeepStencil = State.bStealthTagActive || State.CurrentFade > 0.0f;
-		if (!bKeepFirstPerson && !bKeepStencil)
+		// 태그가 꺼져도 페이드가 0 에 닿을 때까지는 물고 있어야 페이드 아웃이 보인다.
+		if (!State.bStealthTagActive && State.CurrentFade <= 0.0f)
 		{
 			continue;
 		}
@@ -289,35 +286,42 @@ void UMaterialPostProcessSubsystem::RefreshStealthMeshOverrides()
 		ScratchThirdPersonMeshes.Reset();
 		CollectStealthMeshesFor(Avatar, ScratchFirstPersonMeshes, ScratchThirdPersonMeshes);
 
-		if (bKeepFirstPerson && GlassMaterial)
+		const float Fade = EvaluateStealthFade(State.CurrentFade);
+
+		if (FirstPersonMaterial)
 		{
 			for (UMeshComponent* Mesh : ScratchFirstPersonMeshes)
 			{
 				if (Mesh)
 				{
-					DesiredMeshes.Add(Mesh, GlassMaterial);
+					DesiredMeshes.Add(Mesh, FOutlierStealthMeshTarget{ FirstPersonMaterial, Fade });
 				}
 			}
 		}
 
-		if (bKeepStencil)
+		if (ThirdPersonMaterial)
 		{
 			for (UMeshComponent* Mesh : ScratchThirdPersonMeshes)
 			{
 				if (Mesh)
 				{
-					DesiredMeshes.Add(Mesh, nullptr);
+					DesiredMeshes.Add(Mesh, FOutlierStealthMeshTarget{ ThirdPersonMaterial, Fade });
 				}
 			}
 		}
 	}
 
-	// 집합에서 빠진 메시( 교체된 무기, 은신 종료, 파괴된 액터 )를 원상복구한다.
+	// 집합에서 빠진 메시( 교체된 무기, 은신 종료, 파괴된 액터 )와
+	// 꽂아야 할 머티리얼이 바뀐 메시를 원상복구한다. 후자는 아래에서 새 머티리얼로 다시 붙는다.
 	ScratchStaleMeshes.Reset();
 	for (const TPair<TObjectPtr<UMeshComponent>, FOutlierStealthMeshRestoreState>& Pair
 		: StealthMeshRestoreStates)
 	{
-		if (!Pair.Key || !DesiredMeshes.Contains(Pair.Key.Get()))
+		const FOutlierStealthMeshTarget* Desired = Pair.Key
+			? DesiredMeshes.Find(Pair.Key.Get())
+			: nullptr;
+
+		if (!Desired || Desired->Material != Pair.Value.SourceMaterial)
 		{
 			ScratchStaleMeshes.Add(Pair.Key);
 		}
@@ -327,9 +331,10 @@ void UMaterialPostProcessSubsystem::RefreshStealthMeshOverrides()
 		ClearStealthMeshOverride(StaleMesh);
 	}
 
-	for (const TPair<UMeshComponent*, UMaterialInterface*>& Desired : DesiredMeshes)
+	for (const TPair<UMeshComponent*, FOutlierStealthMeshTarget>& Desired : DesiredMeshes)
 	{
-		ApplyStealthMeshOverride(Desired.Key, Desired.Value, StencilValue);
+		ApplyStealthMeshOverride(Desired.Key, Desired.Value.Material);
+		SetStealthMeshFade(Desired.Key, Desired.Value.Fade);
 	}
 }
 
@@ -358,34 +363,30 @@ void UMaterialPostProcessSubsystem::CollectStealthMeshesFor(
 
 void UMaterialPostProcessSubsystem::ApplyStealthMeshOverride(
 	UMeshComponent* Mesh,
-	UMaterialInterface* GlassMaterial,
-	int32 StencilValue)
+	UMaterialInterface* StealthMaterial)
 {
-	if (!Mesh || StealthMeshRestoreStates.Contains(Mesh))
+	if (!Mesh || !StealthMaterial || StealthMeshRestoreStates.Contains(Mesh))
+	{
+		return;
+	}
+
+	// 페이드 스칼라를 넣어야 하므로 에셋 원본이 아니라 MID 를 꽂는다.
+	UMaterialInstanceDynamic* RuntimeMaterial = UMaterialInstanceDynamic::Create(StealthMaterial, this);
+	if (!RuntimeMaterial)
 	{
 		return;
 	}
 
 	FOutlierStealthMeshRestoreState RestoreState;
-	RestoreState.bRenderCustomDepth = Mesh->bRenderCustomDepth;
-	RestoreState.CustomDepthStencilValue = Mesh->CustomDepthStencilValue;
+	RestoreState.SourceMaterial = StealthMaterial;
+	RestoreState.AppliedMaterial = RuntimeMaterial;
 
-	if (GlassMaterial)
+	const int32 MaterialCount = Mesh->GetNumMaterials();
+	RestoreState.Materials.Reserve(MaterialCount);
+	for (int32 MaterialIndex = 0; MaterialIndex < MaterialCount; ++MaterialIndex)
 	{
-		// 1인칭: 표면 머티리얼을 글래스로 교체.
-		const int32 MaterialCount = Mesh->GetNumMaterials();
-		RestoreState.Materials.Reserve(MaterialCount);
-		for (int32 MaterialIndex = 0; MaterialIndex < MaterialCount; ++MaterialIndex)
-		{
-			RestoreState.Materials.Add(Mesh->GetMaterial(MaterialIndex));
-			Mesh->SetMaterial(MaterialIndex, GlassMaterial);
-		}
-	}
-	else
-	{
-		// 3인칭: 포스트프로세스가 읽을 스텐실만 쓴다.
-		Mesh->SetCustomDepthStencilValue(StencilValue);
-		Mesh->SetRenderCustomDepth(true);
+		RestoreState.Materials.Add(Mesh->GetMaterial(MaterialIndex));
+		Mesh->SetMaterial(MaterialIndex, RuntimeMaterial);
 	}
 
 	StealthMeshRestoreStates.Add(Mesh, MoveTemp(RestoreState));
@@ -408,40 +409,24 @@ void UMaterialPostProcessSubsystem::ClearStealthMeshOverride(UMeshComponent* Mes
 	{
 		Mesh->SetMaterial(MaterialIndex, RestoreState.Materials[MaterialIndex]);
 	}
-
-	Mesh->SetCustomDepthStencilValue(RestoreState.CustomDepthStencilValue);
-	Mesh->SetRenderCustomDepth(RestoreState.bRenderCustomDepth);
 }
 
-void UMaterialPostProcessSubsystem::UpdateStealthView()
+void UMaterialPostProcessSubsystem::SetStealthMeshFade(UMeshComponent* Mesh, float Fade)
 {
-	if (!BoundPostProcessVolume)
+	const FOutlierStealthMeshRestoreState* RestoreState = StealthMeshRestoreStates.Find(Mesh);
+	if (!RestoreState || !RestoreState->AppliedMaterial)
 	{
 		return;
 	}
 
-	// 화면 효과는 로컬 플레이어 것만. 다른 머신의 프록시가 은신해도 내 화면은 건드리지 않는다.
-	float LocalFade = 0.0f;
-	for (const TPair<TWeakObjectPtr<UOutlierAbilitySystemComponent>, FOutlierStealthSourceState>& Pair
-		: StealthSources)
+	const FName FadeParameterName = GetStealthFadeParameterName();
+	if (FadeParameterName.IsNone())
 	{
-		const UOutlierAbilitySystemComponent* AbilitySystem = Pair.Key.Get();
-		if (!AbilitySystem)
-		{
-			continue;
-		}
-
-		const APawn* Avatar = Cast<APawn>(AbilitySystem->GetAvatarActor());
-		if (Avatar && Avatar->IsLocallyControlled())
-		{
-			LocalFade = FMath::Max(LocalFade, Pair.Value.CurrentFade);
-		}
+		return;
 	}
 
-	BoundPostProcessVolume->SetPostProcessEnabled(
-		EOutlierPostProcessMaterialType::Stealth,
-		LocalFade > 0.0f);
-	BoundPostProcessVolume->UpdateStealthMaterialParameters(LocalFade);
+	// 해당 파라미터가 없는 머티리얼이면 엔진이 무시한다 ( 이 경우 on/off 로만 보인다 ).
+	RestoreState->AppliedMaterial->SetScalarParameterValue(FadeParameterName, Fade);
 }
 
 void UMaterialPostProcessSubsystem::FlushStealthRestoreStates()
@@ -453,12 +438,6 @@ void UMaterialPostProcessSubsystem::FlushStealthRestoreStates()
 		ClearStealthMeshOverride(Mesh);
 	}
 	StealthMeshRestoreStates.Reset();
-
-	if (BoundPostProcessVolume)
-	{
-		BoundPostProcessVolume->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Stealth, false);
-		BoundPostProcessVolume->UpdateStealthMaterialParameters(0.0f);
-	}
 }
 
 float UMaterialPostProcessSubsystem::GetStealthFadeDuration() const
@@ -468,18 +447,39 @@ float UMaterialPostProcessSubsystem::GetStealthFadeDuration() const
 		: DefaultStealthFadeDuration;
 }
 
-int32 UMaterialPostProcessSubsystem::GetStealthStencilValue() const
+float UMaterialPostProcessSubsystem::EvaluateStealthFade(float LinearFade) const
 {
 	return BoundPostProcessVolume
-		? static_cast<int32>(BoundPostProcessVolume->StealthStencilNumber)
-		: DefaultStealthStencilValue;
+		? BoundPostProcessVolume->EvaluateStealthFade(LinearFade)
+		: FMath::Clamp(LinearFade, 0.0f, 1.0f);
 }
 
-UMaterialInterface* UMaterialPostProcessSubsystem::GetFirstPersonStealthGlassMaterial() const
+FName UMaterialPostProcessSubsystem::GetStealthFadeParameterName() const
+{
+	return BoundPostProcessVolume
+		? BoundPostProcessVolume->StealthFadeParameterName
+		: NAME_None;
+}
+
+UMaterialInterface* UMaterialPostProcessSubsystem::GetFirstPersonStealthMaterial() const
 {
 	return BoundPostProcessVolume
 		? BoundPostProcessVolume->GetFirstPersonStealthGlassMaterial()
 		: nullptr;
+}
+
+UMaterialInterface* UMaterialPostProcessSubsystem::GetThirdPersonStealthMaterial() const
+{
+	if (!BoundPostProcessVolume)
+	{
+		return nullptr;
+	}
+
+	// 3인칭 전용 머티리얼이 없으면 1인칭 것을 그대로 쓴다.
+	UMaterialInterface* ThirdPersonMaterial = BoundPostProcessVolume->GetThirdPersonStealthMaterial();
+	return ThirdPersonMaterial
+		? ThirdPersonMaterial
+		: BoundPostProcessVolume->GetFirstPersonStealthGlassMaterial();
 }
 
 void UMaterialPostProcessSubsystem::UpdateDamagedPostProcess(float InHPRatio)

@@ -1,8 +1,10 @@
 #include "UI/InputActionKeyDisplayWidget.h"
 
 #include "Components/TextBlock.h"
+#include "Components/Border.h"
 #include "EnhancedInputSubsystems.h"
 #include "Engine/LocalPlayer.h"
+#include "Engine/Texture2D.h"
 #include "Settings/LocalPlayerSettingsSubsystem.h"
 
 void UInputActionKeyDisplayWidget::NativeConstruct()
@@ -15,6 +17,7 @@ void UInputActionKeyDisplayWidget::NativeConstruct()
 		MissingKeyText = FText::FromString(TEXT("-"));
 	}
 
+	RefreshBorderBrush();
 	BindSettingsSubsystem();
 	EnsureWatchedKeyIsResolved();
 }
@@ -94,6 +97,22 @@ bool UInputActionKeyDisplayWidget::RefreshDisplayedKey()
 
 	KeyText->SetText(MissingKeyText);
 	return false;
+}
+
+void UInputActionKeyDisplayWidget::SetBorderImage(UTexture2D* NewImage)
+{
+	BorderImage = NewImage;
+	RefreshBorderBrush();
+}
+
+void UInputActionKeyDisplayWidget::RefreshBorderBrush()
+{
+	if (!Border || !BorderImage)
+	{
+		return;
+	}
+
+	Border->SetBrushFromTexture(BorderImage);
 }
 
 void UInputActionKeyDisplayWidget::EnsureWatchedKeyIsResolved()

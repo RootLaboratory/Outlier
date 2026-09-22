@@ -9,6 +9,7 @@
 class UHackableComponent;
 class UHackingMiniGameBase;
 class UCanvasPanel;
+class UImage;
 class UPartnerHackComponent;
 class UProgressBar;
 
@@ -44,6 +45,13 @@ protected:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
 	TObjectPtr<UCanvasPanel> MiniGameRoot;
 
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	TObjectPtr<UImage> FakeCursorImage;
+
+	/** Temporary compatibility switch. Use the platform cursor while false. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hack|MiniGame|Cursor")
+	bool bUseFakeCursor = false;
+
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
 	TObjectPtr<UProgressBar> TimeProgressBar;
 
@@ -64,6 +72,8 @@ private:
 	bool ResolveIsTimeLimited() const;
 	void RefreshTimeProgressBar();
 	void ClearActiveMiniGame();
+	void UpdateFakeCursorPosition(const FGeometry& MyGeometry);
+	void SetFakeCursorVisible(bool bVisible);
 
 	UFUNCTION()
 	void HandleActiveMiniGameFinished(EHackResult Result);
@@ -81,4 +91,6 @@ private:
 	TObjectPtr<UHackingMiniGameBase> ActiveMiniGameWidget;
 
 	float MiniGameTimeLimit = 0.0f;
+
+	FVector2D FakeCursorHotspot = FVector2D::ZeroVector;
 };

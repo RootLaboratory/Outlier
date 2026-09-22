@@ -3,10 +3,12 @@
 #include "Blueprint/WidgetTree.h"
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
+#include "Components/Image.h"
 #include "Components/ProgressBar.h"
 #include "Drone/Partner/HackGameplayTags.h"
 #include "Drone/Partner/HackableComponent.h"
 #include "Drone/Partner/PartnerHackComponent.h"
+#include "GameFramework/PlayerController.h"
 #include "Input/Reply.h"
 #include "UI/ClickCircleMiniGameWidget.h"
 #include "UI/HackingMiniGameBase.h"
@@ -61,6 +63,7 @@ bool UHackMiniGameWidget::StartHacking()
 	ActiveMiniGameWidget->InitializeMiniGame(TargetActor, HackableComponent);
 	ActiveMiniGameWidget->OnMiniGameFinished.AddDynamic(this, &UHackMiniGameWidget::HandleActiveMiniGameFinished);
 	ActiveMiniGameWidget->StartMiniGame();
+	SetFakeCursorVisible(bUseFakeCursor);
 	RefreshTimeProgressBar();
 
 	return true;
@@ -95,6 +98,7 @@ void UHackMiniGameWidget::NativeConstruct()
 	{
 		MiniGameRoot->SetVisibility(ESlateVisibility::Visible);
 	}
+	SetFakeCursorVisible(false);
 
 	if (TimeProgressBar)
 	{
@@ -112,6 +116,10 @@ void UHackMiniGameWidget::NativeDestruct()
 void UHackMiniGameWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 {
 	Super::NativeTick(MyGeometry, InDeltaTime);
+	if (bUseFakeCursor)
+	{
+		UpdateFakeCursorPosition(MyGeometry);
+	}
 
 	if (!bIsTimeLimited
 		|| !ActiveMiniGameWidget
@@ -229,6 +237,8 @@ void UHackMiniGameWidget::RefreshTimeProgressBar()
 
 void UHackMiniGameWidget::ClearActiveMiniGame()
 {
+	SetFakeCursorVisible(false);
+
 	if (ActiveMiniGameWidget)
 	{
 		ActiveMiniGameWidget->OnMiniGameFinished.RemoveDynamic(this, &UHackMiniGameWidget::HandleActiveMiniGameFinished);
@@ -242,6 +252,47 @@ void UHackMiniGameWidget::ClearActiveMiniGame()
 	{
 		TimeProgressBar->SetVisibility(ESlateVisibility::Collapsed);
 		TimeProgressBar->SetPercent(0.0f);
+	}
+}
+
+void UHackMiniGameWidget::UpdateFakeCursorPosition(const FGeometry& MyGeometry)
+{
+	if (!FakeCursorImage)
+	{
+		return;
+	}
+
+	APlayerController* PlayerController = GetOwningPlayer();
+	if (!PlayerController)
+	{
+		return;
+	}
+
+	float MouseX = 0.0f;
+	float MouseY = 0.0f;
+	if (!PlayerController->GetMousePosition(MouseX, MouseY))
+	{
+		return;
+	}
+
+	UCanvasPanelSlot* CursorSlot = Cast<UCanvasPanelSlot>(FakeCursorImage->Slot);
+	if (!CursorSlot)
+	{
+		return;
+	}
+
+	const FVector2D LocalMousePosition = MyGeometry.AbsoluteToLocal(FVector2D(MouseX, MouseY));
+	CursorSlot->SetPosition(LocalMousePosition - FakeCursorHotspot);
+}
+
+void UHackMiniGameWidget::SetFakeCursorVisible(bool bVisible)
+{
+	if (FakeCursorImage)
+	{
+		FakeCursorImage->SetVisibility(
+			bVisible
+				? ESlateVisibility::SelfHitTestInvisible
+				: ESlateVisibility::Collapsed);
 	}
 }
 

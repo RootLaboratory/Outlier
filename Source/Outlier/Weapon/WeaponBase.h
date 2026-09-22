@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "Engine/DataTable.h"
+#include "GameplayTagContainer.h"
 #include "Templates/SubclassOf.h"
 #include "Interface/InteractableInterface.h"
 #include "PostProcess/OutlierStealthVisualTarget.h"
@@ -61,6 +62,10 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = Weapon)
 	EWeaponType WeaponType = EWeaponType::Unarmed;
+
+	/** Context used by the shared Audio.Type.Weapon bank for this weapon's world fire sound. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Audio", meta = (Categories = "Audio.Context"))
+	FGameplayTag WeaponAudioContextTag;
 
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Data")
 	EWeaponFireType FireType = EWeaponFireType::HitScan;

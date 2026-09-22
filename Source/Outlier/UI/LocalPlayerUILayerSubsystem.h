@@ -113,6 +113,10 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UUILayerRootWidget> LayerRootWidget;
 
+	// HUD(MainUI) 아래에 깔리는 연출 전용 루트. LayerRootWidget 과 짝으로 관리한다.
+	UPROPERTY(Transient)
+	TObjectPtr<UUILayerRootWidget> BackdropRootWidget;
+
 	UPROPERTY(Transient)
 	TMap<FGameplayTag, TObjectPtr<UPanelWidget>> LayerContainers;
 
