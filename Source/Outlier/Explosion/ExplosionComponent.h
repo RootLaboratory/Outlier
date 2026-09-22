@@ -4,11 +4,11 @@
 #include "Components/ActorComponent.h"
 #include "Engine/DataTable.h"
 #include "Explosion/ExplosionTypes.h"
+#include "GameplayTagContainer.h"
 #include "ExplosionComponent.generated.h"
 
 class UCameraShakeBase;
 class UNiagaraSystem;
-class USoundBase;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnExplosionProcessed);
 
@@ -55,8 +55,14 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Explosion|Presentation")
 	TObjectPtr<UNiagaraSystem> ExplosionVFX;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Explosion|Presentation")
-	TObjectPtr<USoundBase> ExplosionSFX;
+	// 사운드만 에셋 직접 참조 대신 태그로 지정해 UOutlierAudioSubsystem 을 탄다.
+	// UGameplayStatics 로 직접 재생하면 Bank/Context 카탈로그와 SFX 볼륨 배율을 우회해
+	// 설정 메뉴의 볼륨 슬라이더가 먹지 않는다. VFX 는 기존대로 BP 에서 에셋을 직접 지정한다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Explosion|Presentation", meta = (Categories = "Audio.Type"))
+	FGameplayTag ExplosionAudioTypeTag;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Explosion|Presentation", meta = (Categories = "Audio.Context"))
+	FGameplayTag ExplosionAudioContextTag;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Explosion|Presentation")
 	TSubclassOf<UCameraShakeBase> CameraShakeClass;
@@ -81,11 +87,14 @@ private:
 	void NotifyExplosionProcessed(const FVector& ExplosionLocation, const FExplosionProfileRow& Profile);
 
 	// Multicast: 서버에서 호출해 현재 접속한 모든 클라이언트에 폭발 연출을 재생한다.
+	// 폭발은 놓치면 바로 티가 나므로 Reliable 을 유지한다 ( GameplayCue Execute 는 unreliable ).
 	UFUNCTION(NetMulticast, Reliable)
 	void MulticastPlayExplosionEffects(
 		FVector_NetQuantize InExplosionLocation,
-		UNiagaraSystem* InExplosionVFX,
-		USoundBase* InExplosionSFX);
+		UNiagaraSystem* InExplosionVFX);
+
+	// 이미 모든 클라이언트에서 실행 중인 지점에서 호출된다 — 반드시 Local 진입점을 쓴다.
+	void PlayExplosionAudio(const FVector& ExplosionLocation) const;
 
 	FExplosionProfileRow* RuntimeProfile = nullptr;
 	TOptional<FExplosionProfileRow> RuntimeProfileStorage;

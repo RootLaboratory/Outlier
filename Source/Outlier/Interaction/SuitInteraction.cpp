@@ -1,5 +1,6 @@
 #include "Interaction/SuitInteraction.h"
 
+#include "Audio/OutlierAudioSubsystem.h"
 #include "Components/PrimitiveComponent.h"
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -74,6 +75,10 @@ bool ASuitInteraction::Interact(AFirstPersonCharacter* Interactor)
 		return false;
 	}
 
+	UOutlierAudioSubsystem::PlayTaggedAtLocationFromServer(
+		this,
+		FGameplayTag::RequestGameplayTag(TEXT("Audio.Type.Interactable")),
+		FGameplayTag::RequestGameplayTag(TEXT("Audio.Context.Object.Get.Suit")));
 	ConsumeInteraction();
 	return true;
 }

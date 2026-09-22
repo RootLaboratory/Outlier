@@ -1,5 +1,6 @@
 #include "Interaction/InteractableSwitch.h"
 
+#include "Audio/OutlierAudioSubsystem.h"
 #include "Components/StaticMeshComponent.h"
 #include "FirstPerson/FirstPersonCharacter.h"
 #include "Interaction/InteractableComponent.h"
@@ -52,6 +53,10 @@ bool AInteractableSwitch::Interact(AFirstPersonCharacter* Interactor)
 		TargetDoor->SetDoorOpen(true);
 	}
 
+	UOutlierAudioSubsystem::PlayTaggedAtLocationFromServer(
+		this,
+		FGameplayTag::RequestGameplayTag(TEXT("Audio.Type.Interactable")),
+		FGameplayTag::RequestGameplayTag(TEXT("Audio.Context.Object.Door.HandRecognition")));
 	Multicast_OnSwitchActivated(Interactor);
 	return true;
 }

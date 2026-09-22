@@ -135,6 +135,17 @@ void AVECDrone::ApplyExplosionReactionPresentation(const FVector& Direction, flo
 	Super::ApplyExplosionReactionPresentation(Direction, ReactionScale);
 }
 
+void AVECDrone::HideSourceMeshes()
+{
+	Super::HideSourceMeshes();
+
+	if (FirstPersonMesh)
+	{
+		FirstPersonMesh->SetVisibility(false, true);
+		FirstPersonMesh->SetHiddenInGame(true, true);
+	}
+}
+
 float AVECDrone::GetCurrentCameraPitchDegrees() const
 {
 	return VECMovementComponent

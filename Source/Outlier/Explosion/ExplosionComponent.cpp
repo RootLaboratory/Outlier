@@ -1,5 +1,9 @@
 #include "Explosion/ExplosionComponent.h"
 
+#include "Audio/OutlierAudioSubsystem.h"
+#include "Audio/OutlierAudioTypes.h"
+#include "Engine/GameInstance.h"
+#include "Engine/World.h"
 #include "Explosion/ExplosionSubsystem.h"
 #include "Explosion/ExplosionTypes.h"
 #include "Explosion/OutlierExplosionCameraShake.h"
@@ -140,15 +144,13 @@ void UExplosionComponent::NotifyExplosionProcessed(
 
 	MulticastPlayExplosionEffects(
 		ExplosionLocation,
-		ExplosionVFX.Get(),
-		ExplosionSFX.Get());
+		ExplosionVFX.Get());
 	OnExplosionProcessed.Broadcast();
 }
 
 void UExplosionComponent::MulticastPlayExplosionEffects_Implementation(
 	FVector_NetQuantize InExplosionLocation,
-	UNiagaraSystem* InExplosionVFX,
-	USoundBase* InExplosionSFX)
+	UNiagaraSystem* InExplosionVFX)
 {
 	if (GetNetMode() == NM_DedicatedServer)
 	{
@@ -160,8 +162,33 @@ void UExplosionComponent::MulticastPlayExplosionEffects_Implementation(
 		UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, InExplosionVFX, InExplosionLocation);
 	}
 
-	if (InExplosionSFX)
+	PlayExplosionAudio(InExplosionLocation);
+}
+
+void UExplosionComponent::PlayExplosionAudio(const FVector& ExplosionLocation) const
+{
+	if (!ExplosionAudioTypeTag.IsValid() || !ExplosionAudioContextTag.IsValid())
 	{
-		UGameplayStatics::PlaySoundAtLocation(this, InExplosionSFX, InExplosionLocation);
+		return;
 	}
+
+	const UWorld* World = GetWorld();
+	UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr;
+	UOutlierAudioSubsystem* AudioSubsystem =
+		GameInstance ? GameInstance->GetSubsystem<UOutlierAudioSubsystem>() : nullptr;
+	if (!AudioSubsystem)
+	{
+		return;
+	}
+
+	FOutlierAudioPlayRequest Request;
+	Request.EventTag = ExplosionAudioTypeTag;
+	Request.ContextTags.AddTag(ExplosionAudioContextTag);
+	Request.EmitterActor = GetOwner();
+	Request.Location = ExplosionLocation;
+	Request.bHasLocation = true;
+
+	// 이 함수는 Multicast 구현부에서 불려 이미 모든 클라이언트에서 실행 중이다.
+	// Relevant* 진입점을 쓰면 네트워크를 한 번 더 타 중복 재생된다.
+	AudioSubsystem->PlayLocalAtLocation(Request);
 }

@@ -7,6 +7,7 @@
 #include "GameplayTagContainer.h"
 #include "GenericTeamAgentInterface.h"
 #include "Enemy/EnemyStat.h"
+#include "Enemy/Death/OutlierDeathDebrisTypes.h"
 #include "Interface/EmpableInterface.h"
 #include "Interface/ScannableInterface.h"
 #include "Interface/HackableInterface.h"
@@ -26,6 +27,7 @@ struct FInputActionValue;
 class URoomTagComponent;
 class ARangedWeaponBase;
 class APartnerCharacter;
+class UGeometryCollection;
 class UOutlierAbilitySystemComponent;
 class UOutlierVitalAttributeSet;
 struct FOnAttributeChangeData;
@@ -142,6 +144,10 @@ protected:
 	// 코어가 없는 Enemy는 전용 콜리전과 무기의 추가 코어 탐색을 모두 생략한다.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Damage")
 	uint8 bUseCoreWeakPoint : 1 = true;
+
+//사망 후 지연 없이 제거해 버리면, 액터 채널로 운용되는 GC가 액터와 함께 사라져서 PENDING 시간을 주었음.
+ 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Damage", meta = (ClampMin = "0.0", UIMin = "0.0"))
+	float DeathDestroyDelay = 0.25f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Enemy|Data")
 	FDataTableRowHandle EnemyStatRow;
@@ -458,6 +464,18 @@ protected:
 		AActor* DamageCauser,
 		const FGameplayTag& DamageTag);
 	void Die();
+
+	// 연출 태그를 모든 클라이언트로 브로드캐스트한다. 서버에서만 호출한다.
+	// GameplayCue 는 연출 전용 채널이다 — 여기서 게임플레이 상태를 바꾸지 않는다.
+	//
+	// Death 를 Dead GE( Infinite )에 붙이지 않고 명시 Execute 로 쏘는 이유:
+	// Die() 는 같은 프레임에 HandleDeath() -> Destroy() 로 이어진다( GetDeathDestroyDelay 기본 0 ).
+	// GE 에 큐를 달면 Add 경로를 타는데, ASC 가 액터와 함께 즉시 파괴되면서
+	// 클라이언트가 OnActive 와 Removed 를 같은 업데이트로 받거나 아예 못 받는다.
+	// Execute 는 일회성 브로드캐스트라 소스 액터의 수명과 무관하게 재생된다.
+	void BroadcastDamageCue(const FOutlierDamageRequest& Request, float AppliedDamage) const;
+	void BroadcastDeathCue() const;
+
 	void ApplyCoreWeakPointRuntimeState();
 
 	void SendEnemyStateTreeEventNextTick(FGameplayTag Tag);
@@ -485,7 +503,22 @@ protected:
 	void RemoveRoomTargetObserver();
 	virtual void HandleDeath();
 	void PerformDeathCleanup();
-	virtual float GetDeathDestroyDelay() const { return 0.0f; }
+
+	// 사망 시 원본 메시를 대체할, 미리 프랙처된 Geometry Collection.
+	// 비워두면 파편 연출을 통째로 건너뛰고 기존 사망 동작 그대로 간다.
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Death")
+	TObjectPtr<UGeometryCollection> DeathDebrisCollection;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Enemy|Death")
+	FGeometryCollectionDeathProfile DeathDebrisProfile;
+
+	// 이펙트 이후 메쉬가 쪼개지는 지연 시간
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Enemy|Death", meta = (ClampMin = "0.0", UIMin = "0.0", Units = "s"))
+	float DeathDebrisDelay = 0.0f;
+
+	virtual void HideSourceMeshes();
+	void SpawnDeathDebris(FTransform SourceTransform, FVector DeathVelocity);
+	virtual float GetDeathDestroyDelay() const { return DeathDestroyDelay; }
 	virtual bool TryApplyCommittedImpactVelocity(const FVector& ImpactVelocity);
 	virtual void CancelCommittedAction();
 	virtual void ApplyExplosionReactionPresentation(const FVector& Direction, float ReactionScale);
@@ -500,6 +533,14 @@ protected:
 	UFUNCTION(NetMulticast, Unreliable)
 	void MulticastExplosionReaction(FVector_NetQuantizeNormal Direction, float ReactionScale);
 
+	// 파편은 놓치면 적이 그냥 사라져 보이므로 Reliable 을 쓴다.
+	// ( 폭발 VFX/사운드는 GameplayCue 로 나가고 그쪽은 unreliable 이다 )
+	UFUNCTION(NetMulticast, Reliable)
+	void MulticastPlayDeathDebris(FVector_NetQuantize100 DeathVelocity);
+
+	// 시체가 남은 DeathDestroyDelay 동안 트레이스/판정에 걸리지 않게 한다.
+	void DisableDeathCollision();
+
 	UFUNCTION(BlueprintImplementableEvent, Category = "Enemy|Explosion")
 	void OnExplosionReaction(FVector Direction, float ReactionScale);
 
@@ -511,6 +552,7 @@ protected:
 	float ImpactRecoveryElapsedTime = 0.0f;
 	bool bImpactReactionActive = false;
 	FTimerHandle PossessedImpactInputLockTimerHandle;
+	FTimerHandle DeathDebrisTimerHandle;
 	FActiveGameplayEffectHandle PossessionPendingEffectHandle;
 
 	// 빙의된 VEC의 AttackAction 입력 진입점.

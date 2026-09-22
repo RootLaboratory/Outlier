@@ -28,10 +28,6 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Door")
 	void ToggleDoor();
 
-	/** Submits the configured server-authoritative relevant world sound. */
-	UFUNCTION(BlueprintCallable, Category = "Door|Audio")
-	bool PlayDoorMovementAudio();
-
 public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")
 	TObjectPtr<UStaticMeshComponent> DoorMeshLeft;
@@ -47,13 +43,6 @@ public:
 
 	UPROPERTY(EditAnywhere, Category = "Door")
 	TObjectPtr<UCurveFloat> DoorCurve;
-
-	/** Played as server-authoritative Relevant AtLocation audio when movement starts. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Door|Audio", meta = (Categories = "Audio.Type"))
-	FGameplayTag DoorMovementAudioEventTag;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Door|Audio", meta = (Categories = "Audio.Context"))
-	FGameplayTagContainer DoorMovementAudioContextTags;
 
 protected:
 	UPROPERTY(ReplicatedUsing = OnRep_IsOpen, BlueprintReadOnly, Category = "Door")
@@ -74,6 +63,7 @@ private:
 	void OnRep_IsOpen();
 
 	void ApplyDoorState(bool bOpen);
+	bool PlayDoorMovementAudio(bool bOpen);
 
 public:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
