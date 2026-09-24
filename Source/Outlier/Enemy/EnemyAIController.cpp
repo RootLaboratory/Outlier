@@ -177,6 +177,7 @@ void AEnemyAIController::OnPossess(APawn* InPawn)
 	Super::OnPossess(InPawn);
 
 	ProcessedStealthedTargets.Reset();
+	LastVisibleTarget.Reset();
 
 	if (AEnemyBase* Enemy = Cast<AEnemyBase>(InPawn))
 	{
@@ -188,6 +189,7 @@ void AEnemyAIController::OnUnPossess()
 {
 	StopSharedTargetReporting(true);
 	ProcessedStealthedTargets.Reset();
+	LastVisibleTarget.Reset();
 	TaskDrivenControlPitchCount = 0;
 	Super::OnUnPossess();
 }
@@ -238,7 +240,7 @@ void AEnemyAIController::ForgetDetectionTarget(AActor* TargetActor)
 
 	AActor* PreferredTarget = GetPreferredVisibleTarget();
 	const bool bHasVisibleTarget = IsValid(PreferredTarget);
-	Enemy->SetPlayerCurrentlyVisible(bHasVisibleTarget);
+	UpdateVisibleTarget(Enemy, PreferredTarget);
 
 	if (bHasVisibleTarget)
 	{
@@ -273,6 +275,7 @@ void AEnemyAIController::RefreshTeamAndPerceptionFromPawn()
 	{
 		EnemyPerceptionComponent->ForgetAll();
 		ProcessedStealthedTargets.Reset();
+		LastVisibleTarget.Reset();
 	}
 	RefreshPerceptionConfigFromPawn();
 	SetEnemyPerceptionEnabled(Enemy->CanUseEnemyPerception());
@@ -295,6 +298,7 @@ void AEnemyAIController::SetEnemyPerceptionEnabled(bool bEnabled)
 	{
 		EnemyPerceptionComponent->ForgetAll();
 		ProcessedStealthedTargets.Reset();
+		LastVisibleTarget.Reset();
 	}
 
 	if (bEnabled)
@@ -381,7 +385,7 @@ void AEnemyAIController::HandleTargetPerceptionUpdated(AActor* Actor, FAIStimulu
 		ProcessedStealthedTargets.Add(TargetKey);
 		AActor* PreferredTarget = GetPreferredVisibleTarget();
 		const bool bAnyPlayerVisible = IsValid(PreferredTarget);
-		Enemy->SetPlayerCurrentlyVisible(bAnyPlayerVisible);
+		UpdateVisibleTarget(Enemy, PreferredTarget);
 		if (bAnyPlayerVisible && Enemy->CanUseRoomTargetSharing())
 		{
 			StartSharedTargetReporting();
@@ -423,7 +427,7 @@ void AEnemyAIController::HandleSightStimulus(AEnemyBase* Enemy, AActor* Actor, c
 		AActor* LocationSource = IsValid(PreferredTarget) ? PreferredTarget : Actor;
 		const FVector TargetLocation = LocationSource->GetActorLocation();
 
-		Enemy->SetPlayerCurrentlyVisible(true);
+		UpdateVisibleTarget(Enemy, LocationSource);
 		Enemy->UpdateLastKnownPlayerLocation(TargetLocation);
 
 		if (!Enemy->IsInCombat())
@@ -450,7 +454,23 @@ void AEnemyAIController::HandleSightStimulus(AEnemyBase* Enemy, AActor* Actor, c
 	{
 		StopSharedTargetReporting(true);
 	}
-	Enemy->SetPlayerCurrentlyVisible(bAnyPlayerVisible);
+	UpdateVisibleTarget(Enemy, PreferredTarget);
+}
+
+void AEnemyAIController::UpdateVisibleTarget(AEnemyBase* Enemy, AActor* PreferredTarget)
+{
+	const bool bWasVisible = Enemy->IsPlayerCurrentlyVisible();
+	const bool bIsVisible = IsValid(PreferredTarget);
+	const bool bTargetChanged = LastVisibleTarget.Get() != PreferredTarget;
+	LastVisibleTarget = bIsVisible ? PreferredTarget : nullptr;
+	Enemy->SetPlayerCurrentlyVisible(bIsVisible);
+
+	// Visibility can stay true while the preferred actor changes; Sync only ticks on events.
+	if (bWasVisible && bIsVisible && bTargetChanged)
+	{
+		Enemy->SendEnemyStateTreeEvent(FGameplayTag::RequestGameplayTag(
+			TEXT("Enemy.Event.Perception.TargetAcquired")));
+	}
 }
 
 void AEnemyAIController::HandleHearingStimulus(AEnemyBase* Enemy, AActor* Actor, const FAIStimulus& Stimulus)

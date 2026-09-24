@@ -41,7 +41,7 @@ enum class ERoomCombatEvent : uint8
 	Cancelled
 };
 
-// 해킹 시작 때 확보해 성공 시 그대로 전달한다. 이 문맥을 만들었다고 전투가 예약되지는 않는다.
+	// 해킹/외부 이벤트 시작 때 확보한다. 이 문맥을 만들었다고 전투가 예약되지는 않는다.
 USTRUCT(BlueprintType)
 struct OUTLIER_API FRoomCombatTriggerContext
 {
@@ -141,6 +141,7 @@ public:
 	virtual void Deinitialize() override;
 	virtual void OnWorldBeginPlay(UWorld& InWorld) override;
 
+	// ExternalTrigger에서는 ActivationGroupTag를 비워도 된다. 지연 콜백은 이 문맥을 보관한다.
 	UFUNCTION(BlueprintCallable, BlueprintPure = false, BlueprintAuthorityOnly, Category = "Room Combat")
 	bool CreateTriggerContext(AActor* Requester, FGameplayTag RoomTag,
 		FGameplayTag ActivationGroupTag, FRoomCombatTriggerContext& OutContext) const;
@@ -260,6 +261,7 @@ private:
 	void MarkRoomCleared(FGameplayTag RoomTag, FRoomCombatRuntime& Runtime);
 	void CompactAliveEnemies(FRoomCombatRuntime& Runtime);
 	void CompactSpawnPoints(FGameplayTag RoomTag);
+	void ApplyRoomClearedToSpawnPoints(FGameplayTag RoomTag, bool bCleared);
 	void CompactWaveTurrets(FGameplayTag RoomTag);
 	void ResetWaveTurretsForRoom(FGameplayTag RoomTag, const TCHAR* ResetReason);
 	void SetRoomStreamingSourceEnabled(FGameplayTag RoomTag, bool bEnabled);

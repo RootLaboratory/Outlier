@@ -34,6 +34,8 @@ class UOutlierAbilitySystemComponent;
 class UOutlierVitalAttributeSet;
 class UEnemyAdaptationSubsystem;
 class UEnemyPoolSubsystem;
+class UPrimitiveComponent;
+class USceneComponent;
 struct FOnAttributeChangeData;
 
 UENUM(BlueprintType)
@@ -119,12 +121,19 @@ public:
 		bPoolPresentationAutoCompleteForTesting = bEnabled;
 	}
 	void BeginDeathForPoolTesting() { HandleDeath(); }
+	void SimulateDeathPresentationForPoolTesting()
+	{
+		DisableDeathCollision();
+		HideSourceMeshes();
+	}
 	void BeginDeathForAdaptationTesting(EOutlierAdaptationDamageCategory DamageCategory)
 	{
 		LastAcceptedAdaptationDamageCategory = DamageCategory;
 		HandleDeath();
 	}
 #endif
+
+	void SendEnemyStateTreeEvent(FGameplayTag Tag);
 
 protected:
 	virtual void PostInitializeComponents() override;
@@ -135,8 +144,6 @@ protected:
 	virtual void OnRep_Controller() override;
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 	void RefreshAbilitySystemActorInfo();
-
-	void SendEnemyStateTreeEvent(FGameplayTag Tag);
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
 	TObjectPtr<UOutlierAbilitySystemComponent> OutlierAbilitySystemComponent;
@@ -615,6 +622,7 @@ protected:
 	float DeathDebrisDelay = 0.0f;
 
 	virtual void HideSourceMeshes();
+	void SaveSourceMeshVisibility(USceneComponent* SourceMeshRoot);
 	void SpawnDeathDebris(FTransform SourceTransform, FVector DeathVelocity);
 	virtual float GetDeathDestroyDelay() const { return DeathDestroyDelay; }
 	virtual bool TryApplyCommittedImpactVelocity(const FVector& ImpactVelocity);
@@ -697,6 +705,14 @@ protected:
 	void ReturnToOwningPool();
 
 	TWeakObjectPtr<UEnemyPoolSubsystem> OwningPoolSubsystem;
+	struct FSourceMeshVisibility
+	{
+		TWeakObjectPtr<USceneComponent> Component;
+		bool bVisible = true;
+		bool bHiddenInGame = false;
+	};
+	TArray<FSourceMeshVisibility> SavedSourceMeshVisibility;
+	TArray<TPair<TWeakObjectPtr<UPrimitiveComponent>, ECollisionEnabled::Type>> SavedDeathCollision;
 	TWeakObjectPtr<UEnemyAdaptationSubsystem> CachedEnemyAdaptationSubsystem;
 	EOutlierAdaptationDamageCategory LastAcceptedAdaptationDamageCategory =
 		EOutlierAdaptationDamageCategory::Ignore;

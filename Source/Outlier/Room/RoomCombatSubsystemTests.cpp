@@ -2,6 +2,7 @@
 
 #include "Components/BoxComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "Components/StateTreeComponent.h"
 #include "Drone/Partner/HackableComponent.h"
 #include "Enemy/AutoTurret.h"
@@ -223,6 +224,7 @@ bool FRoomCombatSubsystemRuntimeTest::RunTest(const FString& Parameters)
 
 	World->AddToRoot();
 	WorldContext.SetCurrentWorld(World);
+	World->SetGameInstance(NewObject<UGameInstance>(GEngine));
 	World->InitializeActorsForPlay(FURL());
 
 	auto CleanupWorld = [World]()
@@ -328,6 +330,13 @@ bool FRoomCombatSubsystemRuntimeTest::RunTest(const FString& Parameters)
 		FGameplayTag()));
 	TestEqual(TEXT("Duplicate registration does not add another entry"),
 		CombatSubsystem->GetRegisteredSpawnPointCount(FirstRoomTag), 2);
+	UStaticMeshComponent* SpawnVisual = ActiveSpawnPoint->FindComponentByClass<UStaticMeshComponent>();
+	if (!TestNotNull(TEXT("SpawnPoint visual component"), SpawnVisual))
+	{
+		CleanupWorld();
+		return false;
+	}
+	const ECollisionEnabled::Type InitialSpawnCollision = SpawnVisual->GetCollisionEnabled();
 
 	TArray<ARoomCombatSpawnPoint*> EligibleSpawnPoints;
 	CombatSubsystem->GetEligibleSpawnPoints(
@@ -384,6 +393,47 @@ bool FRoomCombatSubsystemRuntimeTest::RunTest(const FString& Parameters)
 	CombatSubsystem->NotifyEnemyDefeated(FirstEnemy);
 	TestEqual(TEXT("The last defeated Enemy clears a single-Wave Room"),
 		CombatSubsystem->GetRoomState(FirstRoomTag), ERoomCombatState::Cleared);
+	TestTrue(TEXT("Clear marks the SpawnPoint without removing its Actor"),
+		IsValid(ActiveSpawnPoint) && ActiveSpawnPoint->IsRoomCleared());
+	TestTrue(TEXT("SpawnPoint replicates its cleared presentation to clients"),
+		ActiveSpawnPoint->GetIsReplicated());
+	TestFalse(TEXT("A cleared SpawnPoint is ineligible even when its group is enabled"),
+		ActiveSpawnPoint->IsRuntimeActive());
+	TestTrue(TEXT("Clear keeps the SpawnPoint mesh visible"), SpawnVisual->IsVisible());
+	TestEqual(TEXT("Clear preserves SpawnPoint collision"),
+		SpawnVisual->GetCollisionEnabled(), InitialSpawnCollision);
+	TestFalse(TEXT("Uncleared Room SpawnPoint remains available"),
+		OtherRoomSpawnPoint->IsRoomCleared());
+	ARoomCombatSpawnPoint* LateClearedPoint = World->SpawnActor<ARoomCombatSpawnPoint>();
+	TestTrue(TEXT("Late SpawnPoint registers after Room clear"),
+		CombatSubsystem->RegisterSpawnPoint(LateClearedPoint, FirstRoomTag,
+			FGameplayTagContainer(), FGameplayTag()));
+	TestTrue(TEXT("Late SpawnPoint inherits cleared state"), LateClearedPoint->IsRoomCleared());
+	CombatSubsystem->UnregisterRoom(FirstRoom);
+	ARoomCombatSpawnPoint* BeforeRoomPoint = World->SpawnActor<ARoomCombatSpawnPoint>();
+	TestTrue(TEXT("SpawnPoint can register before restored Room"),
+		CombatSubsystem->RegisterSpawnPoint(BeforeRoomPoint, FirstRoomTag,
+			FGameplayTagContainer(), FGameplayTag()));
+	TestTrue(TEXT("SpawnPoint loaded first reads saved Room completion"),
+		BeforeRoomPoint->IsRoomCleared());
+	TestTrue(TEXT("Room can register after its SpawnPoints"),
+		CombatSubsystem->RegisterRoom(FirstRoom, FirstRoomTag));
+	TestTrue(TEXT("Restored Room remains cleared"),
+		CombatSubsystem->GetRoomState(FirstRoomTag) == ERoomCombatState::Cleared);
+	UOutlierSaveSubSystem* SaveSubsystem = World->GetGameInstance()
+		? World->GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>() : nullptr;
+	if (TestNotNull(TEXT("Save subsystem"), SaveSubsystem))
+	{
+		CombatSubsystem->UnregisterRoom(FirstRoom);
+		SaveSubsystem->SetWorldProgressState(
+			EOutlierWorldProgressType::CompletedEncounter, FirstRoomTag.GetTagName(), false);
+		TestTrue(TEXT("Room can register after rollback"),
+			CombatSubsystem->RegisterRoom(FirstRoom, FirstRoomTag));
+		TestFalse(TEXT("Checkpoint rollback restores normal SpawnPoint appearance"),
+			ActiveSpawnPoint->IsRoomCleared() || BeforeRoomPoint->IsRoomCleared());
+		TestTrue(TEXT("Checkpoint rollback restores SpawnPoint eligibility"),
+			ActiveSpawnPoint->IsRuntimeActive());
+	}
 	TestFalse(TEXT("Completing the phase disables its combat streaming source"),
 		FirstRoom->IsCombatStreamingSourceEnabled());
 	TestFalse(TEXT("Ordinary unregistration is not treated as a defeat"),
@@ -992,6 +1042,113 @@ bool FRoomCombatTriggeredSequenceTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Phase listener reset disables group"), Point->IsRuntimeActive());
 	TestEqual(TEXT("Phase listener reset cancels the queued automatic phase"), Combat->GetPendingSpawnCount(RoomTag), 0);
 	Pool->ReturnEnemy(Enemy, Enemy->GetPoolGameplayGeneration(), Enemy->GetPoolLeaseSerial());
+	CleanupWorld();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FRoomCombatExternalTriggerTest,
+	"Outlier.Room.ExternalTrigger",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRoomCombatExternalTriggerTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const FName WorldName = MakeUniqueObjectName(nullptr, UWorld::StaticClass(), NAME_None,
+		EUniqueObjectNameOptions::GloballyUnique);
+	FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, WorldName, GetTransientPackage());
+	if (!TestNotNull(TEXT("External trigger world exists"), World))
+	{
+		GEngine->DestroyWorldContext(World);
+		return false;
+	}
+	World->AddToRoot();
+	WorldContext.SetCurrentWorld(World);
+	World->SetGameInstance(NewObject<UGameInstance>(GEngine));
+	TestTrue(TEXT("External trigger world has authority"), World->SetGameMode(FURL()));
+	World->InitializeActorsForPlay(FURL());
+	auto CleanupWorld = [World]()
+	{
+		GEngine->ShutdownWorldNetDriver(World);
+		World->DestroyWorld(true);
+		World->SetPhysicsScene(nullptr);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+	};
+	URoomCombatSubsystem* Combat = World->GetSubsystem<URoomCombatSubsystem>();
+	UEnemyPoolSubsystem* Pool = World->GetSubsystem<UEnemyPoolSubsystem>();
+	ARoomVolume* Room = World->SpawnActor<ARoomVolume>();
+	AActor* Requester = World->SpawnActor<AActor>();
+	ARoomCombatSpawnPoint* Point = World->SpawnActor<ARoomCombatSpawnPoint>(
+		ARoomCombatSpawnPoint::StaticClass(), FTransform(FVector(5000.0f, 0.0f, 0.0f)));
+	if (!TestNotNull(TEXT("Combat"), Combat) || !TestNotNull(TEXT("Pool"), Pool)
+		|| !TestNotNull(TEXT("Room"), Room) || !TestNotNull(TEXT("Requester"), Requester)
+		|| !TestNotNull(TEXT("Point"), Point))
+	{
+		CleanupWorld();
+		return false;
+	}
+	const FGameplayTag RoomTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.1")));
+	URoomCombatDefinition* Definition = NewObject<URoomCombatDefinition>(World);
+	FRoomCombatRoomDefinition& RoomDefinition = AddRoomDefinition(Definition, RoomTag);
+	for (int32 Index = 0; Index < 2; ++Index)
+	{
+		FRoomCombatPhaseDefinition& Phase = RoomDefinition.CombatPhases.AddDefaulted_GetRef();
+		Phase.StartPolicy = ERoomCombatPhaseStartPolicy::ExternalTrigger;
+		FRoomCombatWaveDefinition& Wave = Phase.Waves.AddDefaulted_GetRef();
+		Wave.SpawnMode = ERoomCombatWaveSpawnMode::SpawnFromObjects;
+		Wave.Enemies.AddDefaulted_GetRef().EnemyClass = AEnemyBase::StaticClass();
+	}
+	Combat->SetCombatDefinitionForTesting(Definition);
+	TestTrue(TEXT("Room registers"), Combat->RegisterRoom(Room, RoomTag));
+	TestEqual(TEXT("External first phase waits"), Combat->GetRoomState(RoomTag),
+		ERoomCombatState::WaitingForTrigger);
+	TestTrue(TEXT("Default point registers"), Combat->RegisterSpawnPoint(
+		Point, RoomTag, FGameplayTagContainer(), FGameplayTag()));
+	UEnemyPoolDefinition* PoolDefinition = NewObject<UEnemyPoolDefinition>(World);
+	FEnemyPoolEntry& Entry = PoolDefinition->Entries.AddDefaulted_GetRef();
+	Entry.EnemyClass = AEnemyBase::StaticClass();
+	Entry.PrewarmCount = 1;
+	Entry.MaxCount = 1;
+	TestTrue(TEXT("Pool prewarms"), Pool->PrewarmPool(PoolDefinition));
+	FRoomCombatTriggerContext FirstContext;
+	TestTrue(TEXT("External context needs no activation group"),
+		Combat->CreateTriggerContext(Requester, RoomTag, FGameplayTag(), FirstContext));
+	TestTrue(TEXT("External event starts phase 1"), Combat->StartTriggeredSequence(Requester, FirstContext));
+	TestEqual(TEXT("First phase leases one Enemy"), Combat->GetAliveEnemyCount(RoomTag), 1);
+	AEnemyBase* LeasedEnemy = nullptr;
+	for (TActorIterator<AEnemyBase> It(World); It; ++It)
+	{
+		if (It->IsPoolManaged() && It->GetEnemyPoolState() != EEnemyPoolState::Idle)
+		{
+			LeasedEnemy = *It;
+			break;
+		}
+	}
+	if (!TestNotNull(TEXT("First phase Enemy"), LeasedEnemy))
+	{
+		CleanupWorld();
+		return false;
+	}
+	Combat->NotifyEnemyDefeated(LeasedEnemy);
+	TestEqual(TEXT("Next external phase waits instead of starting automatically"),
+		Combat->GetRoomState(RoomTag), ERoomCombatState::WaitingForTrigger);
+	TestEqual(TEXT("Second phase is selected"), Combat->GetCurrentCombatPhaseIndex(RoomTag), 1);
+	TestFalse(TEXT("Exit is open during external wait"), Combat->IsExitBlocked(RoomTag));
+	TestFalse(TEXT("Streaming is released during external wait"), Room->IsCombatStreamingSourceEnabled());
+	TestFalse(TEXT("Old context cannot start the next phase"),
+		Combat->StartTriggeredSequence(Requester, FirstContext));
+	FRoomCombatTriggerContext SecondContext;
+	TestTrue(TEXT("Next event captures the waiting phase"),
+		Combat->CreateTriggerContext(Requester, RoomTag, FGameplayTag(), SecondContext));
+	Pool->ReturnEnemy(LeasedEnemy, LeasedEnemy->GetPoolGameplayGeneration(),
+		LeasedEnemy->GetPoolLeaseSerial());
+	TestTrue(TEXT("Second event starts phase 2"), Combat->StartTriggeredSequence(Requester, SecondContext));
+	TestEqual(TEXT("Second phase leases one Enemy"), Combat->GetAliveEnemyCount(RoomTag), 1);
+	Combat->NotifyEnemyDefeated(LeasedEnemy);
+	TestEqual(TEXT("Last external phase clears the Room"), Combat->GetRoomState(RoomTag),
+		ERoomCombatState::Cleared);
 	CleanupWorld();
 	return true;
 }

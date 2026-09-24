@@ -7,6 +7,7 @@
 #include "Components/TextRenderComponent.h"
 #include "Enemy/EnemyBase.h"
 #include "Engine/World.h"
+#include "Net/UnrealNetwork.h"
 #include "Room/RoomCombatSubsystem.h"
 
 #if WITH_EDITOR
@@ -16,6 +17,7 @@
 ARoomCombatSpawnPoint::ARoomCombatSpawnPoint()
 {
 	PrimaryActorTick.bCanEverTick = false;
+	bReplicates = true;
 
 	SceneRoot = CreateDefaultSubobject<USceneComponent>(TEXT("SceneRoot"));
 	SetRootComponent(SceneRoot);
@@ -58,6 +60,12 @@ ARoomCombatSpawnPoint::ARoomCombatSpawnPoint()
 #endif
 }
 
+void ARoomCombatSpawnPoint::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(ARoomCombatSpawnPoint, bRoomCleared);
+}
+
 void ARoomCombatSpawnPoint::OnConstruction(const FTransform& Transform)
 {
 	Super::OnConstruction(Transform);
@@ -85,6 +93,7 @@ void ARoomCombatSpawnPoint::BeginPlay()
 
 	// WP 재로드 시 배치 기본값에서 시작한다. 등록 과정에서 진행 중인 그룹의 상태를 다시 적용한다.
 	bRuntimeActive = bInitiallyActive;
+	RefreshClearedMaterial();
 	if (!HasAuthority())
 	{
 		return;
@@ -124,6 +133,39 @@ void ARoomCombatSpawnPoint::SetRuntimeActive(bool bActive)
 	}
 
 	bRuntimeActive = bActive;
+}
+
+void ARoomCombatSpawnPoint::SetRoomCleared(bool bCleared)
+{
+	if (!HasAuthority() || bRoomCleared == bCleared)
+	{
+		return;
+	}
+
+	bRoomCleared = bCleared;
+	RefreshClearedMaterial();
+	ForceNetUpdate();
+}
+
+void ARoomCombatSpawnPoint::OnRep_RoomCleared()
+{
+	RefreshClearedMaterial();
+}
+
+void ARoomCombatSpawnPoint::RefreshClearedMaterial()
+{
+	if (SpawnPointMesh && ClearedMaterialSlot >= 0
+		&& ClearedMaterialSlot < SpawnPointMesh->GetNumMaterials())
+	{
+		if (!bInitialMaterialCaptured)
+		{
+			InitialMaterial = SpawnPointMesh->GetMaterial(ClearedMaterialSlot);
+			bInitialMaterialCaptured = true;
+		}
+		// 메시와 충돌은 남긴다. 완료 상태에서는 지정된 슬롯의 외형만 교체한다.
+		SpawnPointMesh->SetMaterial(ClearedMaterialSlot,
+			bRoomCleared && ClearedMaterial ? ClearedMaterial : InitialMaterial);
+	}
 }
 
 bool ARoomCombatSpawnPoint::FindSpawnTransform(
@@ -225,6 +267,13 @@ EDataValidationResult ARoomCombatSpawnPoint::IsDataValid(
 	{
 		Context.AddError(FText::FromString(
 			TEXT("An initially inactive RoomCombatSpawnPoint requires an ActivationGroupTag.")));
+		Result = EDataValidationResult::Invalid;
+	}
+	if (ClearedMaterial && (!SpawnPointMesh || ClearedMaterialSlot < 0
+		|| ClearedMaterialSlot >= SpawnPointMesh->GetNumMaterials()))
+	{
+		Context.AddError(FText::FromString(
+			TEXT("ClearedMaterialSlot must reference a material slot on SpawnPointMesh.")));
 		Result = EDataValidationResult::Invalid;
 	}
 

@@ -23,11 +23,23 @@ void ResetAssessment(FEnemyCombatAssessmentTaskInstanceData& Data)
 	Data.bBothSidesBlocked = false;
 }
 
+AActor* GetAssessmentTarget(const FEnemyCombatAssessmentTaskInstanceData& Data)
+{
+	if (IsValid(Data.TargetActor))
+	{
+		return Data.TargetActor;
+	}
+	const AEnemyAIController* AIController = IsValid(Data.Enemy)
+		? Cast<AEnemyAIController>(Data.Enemy->GetController())
+		: nullptr;
+	return AIController ? AIController->GetPreferredVisibleTarget() : nullptr;
+}
+
 void UpdateAssessment(FEnemyCombatAssessmentTaskInstanceData& Data)
 {
 	ResetAssessment(Data);
 	AEnemyBase* Enemy = Data.Enemy;
-	AActor* Target = Data.TargetActor;
+	AActor* Target = GetAssessmentTarget(Data);
 	if (!IsValid(Enemy) || !Enemy->HasAuthority() || !IsValid(Target)
 		|| Enemy->GetCombatState() != EEnemyCombatState::Combat
 		|| Enemy->IsEnemyPossessed() || Enemy->IsPossessionInProgress())
@@ -324,7 +336,7 @@ EStateTreeRunStatus FEnemyCombatAssessmentTask::EnterState(
 {
 	auto& Data = Context.GetInstanceData(*this);
 	Data.Elapsed = 0.0f;
-	Data.LastTarget = Data.TargetActor;
+	Data.LastTarget = GetAssessmentTarget(Data);
 	Data.bPrefersLeft = false;
 	UpdateAssessment(Data);
 	return IsValid(Data.Enemy) && Data.Enemy->HasAuthority()
@@ -339,7 +351,8 @@ EStateTreeRunStatus FEnemyCombatAssessmentTask::Tick(FStateTreeExecutionContext&
 		ResetAssessment(Data);
 		return EStateTreeRunStatus::Failed;
 	}
-	if (!IsValid(Data.TargetActor) || Data.Enemy->GetCombatState() != EEnemyCombatState::Combat
+	AActor* Target = GetAssessmentTarget(Data);
+	if (!IsValid(Target) || Data.Enemy->GetCombatState() != EEnemyCombatState::Combat
 		|| Data.Enemy->IsEnemyPossessed() || Data.Enemy->IsPossessionInProgress())
 	{
 		ResetAssessment(Data);
@@ -349,11 +362,11 @@ EStateTreeRunStatus FEnemyCombatAssessmentTask::Tick(FStateTreeExecutionContext&
 	}
 	Data.Elapsed += DeltaTime;
 	// 타깃 교체는 즉시 반영하고, 벽 검사는 설정 주기로 제한한다.
-	if (Data.LastTarget.Get() != Data.TargetActor.Get()
+	if (Data.LastTarget.Get() != Target
 		|| Data.Elapsed >= FMath::Max(Data.UpdateInterval, 0.01f))
 	{
 		Data.Elapsed = 0.0f;
-		Data.LastTarget = Data.TargetActor;
+		Data.LastTarget = Target;
 		UpdateAssessment(Data);
 	}
 	return EStateTreeRunStatus::Running;

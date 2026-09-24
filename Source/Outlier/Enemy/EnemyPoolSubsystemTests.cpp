@@ -5,6 +5,9 @@
 #include "Enemy/EnemyPoolDefinition.h"
 #include "Enemy/EnemyPoolSubsystem.h"
 #include "Enemy/EnemyRoomSubsystem.h"
+#include "Components/CapsuleComponent.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Components/SphereComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
@@ -99,6 +102,16 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 		FirstLease->HasSharedTargetContact());
 	TestEqual(TEXT("Reinforcement receives the shared target location"),
 		FirstLease->GetSharedTargetLocation(), SharedTargetLocation);
+	const ECollisionEnabled::Type CapsuleCollision = FirstLease->GetCapsuleComponent()->GetCollisionEnabled();
+	const ECollisionEnabled::Type MeshCollision = FirstLease->GetMesh()->GetCollisionEnabled();
+	const ECollisionEnabled::Type CoreCollision = FirstLease->GetCoreHitboxComponent()->GetCollisionEnabled();
+	const bool bMeshVisible = FirstLease->GetMesh()->IsVisible();
+	const bool bMeshHiddenInGame = FirstLease->GetMesh()->bHiddenInGame;
+	const bool bCoreVisible = FirstLease->GetCoreHitboxComponent()->IsVisible();
+	FirstLease->SimulateDeathPresentationForPoolTesting();
+	TestFalse(TEXT("Death presentation hides the source mesh"), FirstLease->GetMesh()->IsVisible());
+	TestEqual(TEXT("Death presentation disables the capsule"),
+		FirstLease->GetCapsuleComponent()->GetCollisionEnabled(), ECollisionEnabled::NoCollision);
 
 	const int32 FirstLeaseSerial = FirstLease->GetPoolLeaseSerial();
 	TestTrue(TEXT("Active Enemy returns to the pool"),
@@ -124,6 +137,18 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Spawn presentation blocks damage"), SecondLease->CanBeDamaged());
 	TestFalse(TEXT("Spawn presentation blocks collision"), SecondLease->GetActorEnableCollision());
 	TestFalse(TEXT("Previous Dead state is not retained"), SecondLease->IsDead());
+	TestEqual(TEXT("Reused Enemy restores capsule collision"),
+		SecondLease->GetCapsuleComponent()->GetCollisionEnabled(), CapsuleCollision);
+	TestEqual(TEXT("Reused Enemy restores mesh collision"),
+		SecondLease->GetMesh()->GetCollisionEnabled(), MeshCollision);
+	TestEqual(TEXT("Reused Enemy restores core collision"),
+		SecondLease->GetCoreHitboxComponent()->GetCollisionEnabled(), CoreCollision);
+	TestEqual(TEXT("Reused Enemy restores source mesh visibility"),
+		SecondLease->GetMesh()->IsVisible(), bMeshVisible);
+	TestEqual(TEXT("Reused Enemy restores child visibility"),
+		SecondLease->GetCoreHitboxComponent()->IsVisible(), bCoreVisible);
+	TestEqual(TEXT("Reused Enemy restores source mesh hidden state"),
+		static_cast<bool>(SecondLease->GetMesh()->bHiddenInGame), bMeshHiddenInGame);
 
 	const int32 SecondLeaseSerial = SecondLease->GetPoolLeaseSerial();
 	TestFalse(TEXT("An old lease cannot return a reused Actor"),

@@ -184,7 +184,7 @@ bool URoomCombatSubsystem::CreateTriggerContext(
 	FRoomCombatTriggerContext& OutContext) const
 {
 	OutContext = FRoomCombatTriggerContext();
-	// 해킹 시작 당시의 수명만 기록한다. Room을 예약하지 않으므로 성공 시점에 시작 조건을 다시 검사한다.
+	// 외부 시작 요청 당시의 수명만 기록한다. Room을 예약하지 않으므로 실행 시 다시 검사한다.
 	UWorld* World = GetWorld();
 	const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
 	const FRoomCombatRoomDefinition* Definition = Runtime ? FindRoomDefinition(RoomTag) : nullptr;
@@ -194,10 +194,14 @@ bool URoomCombatSubsystem::CreateTriggerContext(
 	if (!CanRunServerGameplay()
 		|| !IsValid(Requester) || Requester->IsActorBeingDestroyed()
 		|| !Requester->HasAuthority() || Requester->GetWorld() != World
-		|| !ActivationGroupTag.IsValid() || !Runtime || !Runtime->RoomVolume.IsValid()
+		|| !Runtime || !Runtime->RoomVolume.IsValid()
 		|| Runtime->State != ERoomCombatState::WaitingForTrigger
 		|| ActiveCombatRoomTag.IsValid()
-		|| !Phase || Phase->StartPolicy != ERoomCombatPhaseStartPolicy::HackTrigger)
+		|| !Phase
+		|| (Phase->StartPolicy != ERoomCombatPhaseStartPolicy::HackTrigger
+			&& Phase->StartPolicy != ERoomCombatPhaseStartPolicy::ExternalTrigger)
+		|| (Phase->StartPolicy == ERoomCombatPhaseStartPolicy::HackTrigger
+			&& !ActivationGroupTag.IsValid()))
 	{
 		return false;
 	}
@@ -363,7 +367,8 @@ bool URoomCombatSubsystem::RegisterRoom(
 		Runtime.State = ERoomCombatState::Cleared;
 	}
 	else if (const FRoomCombatPhaseDefinition* FirstPhase = Definition->FindPhase(0);
-		FirstPhase && FirstPhase->StartPolicy == ERoomCombatPhaseStartPolicy::HackTrigger)
+		FirstPhase && (FirstPhase->StartPolicy == ERoomCombatPhaseStartPolicy::HackTrigger
+			|| FirstPhase->StartPolicy == ERoomCombatPhaseStartPolicy::ExternalTrigger))
 	{
 		Runtime.State = ERoomCombatState::WaitingForTrigger;
 	}
@@ -391,6 +396,8 @@ bool URoomCombatSubsystem::RegisterRoom(
 		}
 		PendingPreplacedEnemies.Remove(RoomTag);
 	}
+	// SpawnPoint가 RoomVolume보다 먼저 WP에 도착했어도 복원된 완료 상태를 적용한다.
+	ApplyRoomClearedToSpawnPoints(RoomTag, Runtime.State == ERoomCombatState::Cleared);
 
 	return true;
 }
@@ -549,11 +556,21 @@ bool URoomCombatSubsystem::RegisterSpawnPoint(
 	RegisteredSpawnPointRooms.Add(SpawnPointPtr, RoomTag);
 	if (const FRoomCombatRuntime* Room = RoomRuntimes.Find(RoomTag))
 	{
+		SpawnPoint->SetRoomCleared(Room->State == ERoomCombatState::Cleared);
 		// 그룹을 켠 뒤 WP에서 도착한 지점도 같은 연속 전투에 참여한다.
 		if (ActivationGroupTag.IsValid() && Room->ActiveActivationGroupTag == ActivationGroupTag)
 		{
 			SpawnPoint->SetRuntimeActive(Room->bTriggeredSequenceActive);
 		}
+	}
+	else if (UWorld* World = GetWorld())
+	{
+		// Room보다 먼저 로드된 SpawnPoint도 첫 복제부터 완료 외형을 보낸다.
+		UGameInstance* GameInstance = World->GetGameInstance();
+		const UOutlierSaveSubSystem* SaveSubsystem = GameInstance
+			? GameInstance->GetSubsystem<UOutlierSaveSubSystem>() : nullptr;
+		SpawnPoint->SetRoomCleared(SaveSubsystem && SaveSubsystem->HasWorldProgress(
+			EOutlierWorldProgressType::CompletedEncounter, RoomTag.GetTagName()));
 	}
 	return true;
 }
@@ -1884,9 +1901,10 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 	Runtime->bCurrentWaveSpawnStarted = false;
 	Runtime->SpawnAssignments.Reset();
 
-	if (Runtime->bTriggeredSequenceActive && NextPhase)
+	if (Runtime->bTriggeredSequenceActive && NextPhase
+		&& NextPhase->StartPolicy == ERoomCombatPhaseStartPolicy::Automatic)
 	{
-		// 해킹으로 시작한 연속 전투는 중간 차수가 끝나도 출입 차단과 Streaming을 유지한다.
+		// 연속 전투는 Automatic 차수에서만 차단과 Streaming을 유지한다.
 		StartAutomaticPhase(RoomTag, *Runtime, *Definition);
 		return;
 	}
@@ -1925,7 +1943,8 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 
 	Runtime->CurrentCombatPhaseIndex = NextPhaseIndex;
 	Runtime->CurrentWaveIndex = 0;
-	Runtime->State = NextPhase->StartPolicy == ERoomCombatPhaseStartPolicy::HackTrigger
+	Runtime->State = (NextPhase->StartPolicy == ERoomCombatPhaseStartPolicy::HackTrigger
+		|| NextPhase->StartPolicy == ERoomCombatPhaseStartPolicy::ExternalTrigger)
 		? ERoomCombatState::WaitingForTrigger
 		: ERoomCombatState::Dormant;
 
@@ -1971,6 +1990,7 @@ void URoomCombatSubsystem::MarkRoomCleared(
 	FRoomCombatRuntime& Runtime)
 {
 	Runtime.State = ERoomCombatState::Cleared;
+	ApplyRoomClearedToSpawnPoints(RoomTag, true);
 	if (Runtime.bEncounterIdRegistered)
 	{
 		UGameInstance* GameInstance = GetWorld() ? GetWorld()->GetGameInstance() : nullptr;
@@ -1979,6 +1999,21 @@ void URoomCombatSubsystem::MarkRoomCleared(
 			: nullptr)
 		{
 			SaveSubsystem->RecordCompletedEncounter(RoomTag.GetTagName());
+		}
+	}
+}
+
+void URoomCombatSubsystem::ApplyRoomClearedToSpawnPoints(FGameplayTag RoomTag, bool bCleared)
+{
+	CompactSpawnPoints(RoomTag);
+	if (const TArray<FRoomCombatSpawnPointRuntime>* Points = SpawnPointsByRoom.Find(RoomTag))
+	{
+		for (const FRoomCombatSpawnPointRuntime& Entry : *Points)
+		{
+			if (ARoomCombatSpawnPoint* Point = Entry.SpawnPoint.Get())
+			{
+				Point->SetRoomCleared(bCleared);
+			}
 		}
 	}
 }
