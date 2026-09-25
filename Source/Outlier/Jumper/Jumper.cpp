@@ -63,7 +63,7 @@ UHackableComponent* AJumper::GetHackableComponent() const
 
 void AJumper::HandleHackEffect(FGameplayTag EffectTag, const FHackResultContext& Context)
 {
-	if (bDebugJumper)
+	/*if (bDebugJumper)
 	{
 		UE_LOG(LogTemp, Warning,
 			TEXT("[JumperDebug] HackEffect Jumper=%s Effect=%s Result=%d Authority=%d"),
@@ -71,7 +71,7 @@ void AJumper::HandleHackEffect(FGameplayTag EffectTag, const FHackResultContext&
 			*EffectTag.ToString(),
 			static_cast<int32>(Context.Result),
 			HasAuthority() ? 1 : 0);
-	}
+	}*/
 
 	if (Context.Result == EHackResult::Success && EffectTag == HackGameplayTags::Effect::Jumper())
 	{
@@ -87,7 +87,7 @@ void AJumper::SetJumperActive(bool bActive)
 	}
 
 	bJumperActive = bActive;
-	if (bDebugJumper)
+	/*if (bDebugJumper)
 	{
 		UE_LOG(LogTemp, Warning,
 			TEXT("[JumperDebug] ActiveChanged Jumper=%s Active=%d EffectId=%s Direction=%s"),
@@ -95,7 +95,7 @@ void AJumper::SetJumperActive(bool bActive)
 			bJumperActive ? 1 : 0,
 			*EffectId.ToString(),
 			*GetActorTransform().TransformVectorNoScale(LocalDirection).GetSafeNormal().ToCompactString());
-	}
+	}*/
 
 	if (JumperVolume)
 	{
@@ -160,7 +160,7 @@ void AJumper::HandleVolumeBeginOverlap(
 	}
 
 	OverlappingAffectableActors.Add(OtherActor);
-	if (bDebugJumper)
+	/*if (bDebugJumper)
 	{
 		UE_LOG(LogTemp, Warning,
 			TEXT("[JumperDebug] BeginOverlap Jumper=%s Other=%s Interface=%d EffectId=%s"),
@@ -168,7 +168,7 @@ void AJumper::HandleVolumeBeginOverlap(
 			*GetNameSafe(OtherActor),
 			OtherActor->GetClass()->ImplementsInterface(UJumperAffectableInterface::StaticClass()) ? 1 : 0,
 			*EffectId.ToString());
-	}
+	}*/
 	Affectable->BeginJumperEffect(EffectId, BuildMovementEffect(), this);
 }
 
@@ -184,14 +184,14 @@ void AJumper::HandleVolumeEndOverlap(
 	}
 
 	OverlappingAffectableActors.Remove(OtherActor);
-	if (bDebugJumper)
+	/*if (bDebugJumper)
 	{
 		UE_LOG(LogTemp, Warning,
 			TEXT("[JumperDebug] EndOverlap Jumper=%s Other=%s EffectId=%s"),
 			*GetNameSafe(this),
 			*GetNameSafe(OtherActor),
 			*EffectId.ToString());
-	}
+	}*/
 
 	if (IJumperAffectableInterface* Affectable = Cast<IJumperAffectableInterface>(OtherActor))
 	{

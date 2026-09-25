@@ -142,23 +142,23 @@ void AShooterCharacter::BeginJumperEffect(
 	const FJumperMovementEffect& Effect,
 	AActor* SourceActor)
 {
-	UE_LOG(LogTemp, Warning,
+	/*UE_LOG(LogTemp, Warning,
 		TEXT("[JumperDebug] Shooter BeginJumperEffect Character=%s EffectId=%s Direction=%s Ascend=%.2f Descend=%.2f Source=%s"),
 		*GetNameSafe(this),
 		*EffectId.ToString(),
 		*Effect.Direction.ToCompactString(),
 		Effect.AscendMultiplier,
 		Effect.DescendMultiplier,
-		*GetNameSafe(SourceActor));
+		*GetNameSafe(SourceActor));*/
 }
 
 void AShooterCharacter::EndJumperEffect(FName EffectId, AActor* SourceActor)
 {
-	UE_LOG(LogTemp, Warning,
+	/*UE_LOG(LogTemp, Warning,
 		TEXT("[JumperDebug] Shooter EndJumperEffect Character=%s EffectId=%s Source=%s"),
 		*GetNameSafe(this),
 		*EffectId.ToString(),
-		*GetNameSafe(SourceActor));
+		*GetNameSafe(SourceActor));*/
 }
 
 void AShooterCharacter::BeginPlay()

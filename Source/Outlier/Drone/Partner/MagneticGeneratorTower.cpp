@@ -103,7 +103,7 @@ UHackableComponent* AMagneticGeneratorTower::GetHackableComponent() const
 
 void AMagneticGeneratorTower::HandleHackEffect(FGameplayTag EffectTag, const FHackResultContext& Context)
 {
-	UE_LOG(
+	/*UE_LOG(
 		LogOutlier,
 		Warning,
 		TEXT("[MagneticGeneratorHackDebug] HandleHackEffect Tower=%s Effect=%s Result=%d Authority=%s NetMode=%d Instigator=%s Target=%s"),
@@ -113,7 +113,7 @@ void AMagneticGeneratorTower::HandleHackEffect(FGameplayTag EffectTag, const FHa
 		HasAuthority() ? TEXT("true") : TEXT("false"),
 		GetWorld() ? static_cast<int32>(GetWorld()->GetNetMode()) : -1,
 		*GetNameSafe(Context.InstigatorActor),
-		*GetNameSafe(Context.TargetActor));
+		*GetNameSafe(Context.TargetActor));*/
 
 	if (Context.Result == EHackResult::Success && EffectTag == HackGameplayTags::Effect::Magnetic())
 	{
@@ -145,7 +145,7 @@ void AMagneticGeneratorTower::StartAttraction()
 	EnemyPullVelocities.Reset();
 	UpdateSphereCollisionTransform();
 
-	UE_LOG(
+	/*UE_LOG(
 		LogOutlier,
 		Warning,
 		TEXT("[MagneticGeneratorHackDebug] StartAttraction Tower=%s Authority=%s Duration=%.2f Radius=%.2f Power=%.2f SphereOrigin=%s"),
@@ -154,7 +154,7 @@ void AMagneticGeneratorTower::StartAttraction()
 		RemainingDuration,
 		SphereRadius,
 		Power,
-		*(SphereVisual ? SphereVisual->GetComponentLocation().ToCompactString() : GetActorLocation().ToCompactString()));
+		*(SphereVisual ? SphereVisual->GetComponentLocation().ToCompactString() : GetActorLocation().ToCompactString()));*/
 
 	// 겹친 적 판정은 서버만 한다. 클라이언트는 아래 연출만 처리한다.
 	if (HasAuthority() && SphereCollision)
