@@ -22,6 +22,11 @@ namespace HackGameplayTags
 
 	namespace Effect
 	{
+		inline FGameplayTag Jumper()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Effect.Jumper")));
+			return Tag;
+		}
 		inline FGameplayTag Root()
 		{
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Effect")));
@@ -67,6 +72,12 @@ namespace HackGameplayTags
 		inline FGameplayTag ChangeTeam()
 		{
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Effect.ChangeTeam")));
+			return Tag;
+		}
+
+		inline FGameplayTag Magnetic()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Effect.Magnetic")));
 			return Tag;
 		}
 

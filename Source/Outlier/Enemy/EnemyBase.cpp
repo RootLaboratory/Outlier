@@ -1944,6 +1944,55 @@ void AEnemyBase::ApplyExplosionReaction(
 	MulticastExplosionReaction(Direction, EffectRatio);
 }
 
+void AEnemyBase::ApplyMagneticPullVelocity(const FVector& PullVelocity, AActor* SourceActor)
+{
+	if (!HasAuthority() || IsDead() || PullVelocity.IsNearlyZero())
+	{
+		return;
+	}
+
+	bMagneticPullActive = true;
+	MagneticPullSource = SourceActor;
+	AccumulatedImpactVelocity = PullVelocity;
+	ImpactRecoveryElapsedTime = 0.0f;
+	RefreshImpactReactionDuration();
+
+	if (!bImpactReactionActive)
+	{
+		// 타워가 매 틱 호출하므로, 거부될 게 확실한 동안(빙의 대기 등)은 진입 이벤트를 보내지 않는다.
+		// 막던 상태가 풀리면 다음 틱 호출에서 다시 시도된다.
+		if (CanBeginImpactReaction())
+		{
+			SendEnemyStateTreeEvent(
+				FGameplayTag::RequestGameplayTag(
+					TEXT("Enemy.Event.Status.ImpactStarted")));
+		}
+		return;
+	}
+
+	if (UCharacterMovementComponent* Movement = GetCharacterMovement())
+	{
+		Movement->MaxFlySpeed = FMath::Max(
+			GetRuntimeStat().MoveSpeed,
+			AccumulatedImpactVelocity.Size());
+		Movement->Velocity = AccumulatedImpactVelocity;
+	}
+}
+
+void AEnemyBase::EndMagneticPull(AActor* SourceActor)
+{
+	if (!HasAuthority()
+		|| !bMagneticPullActive
+		|| (MagneticPullSource.IsValid() && MagneticPullSource.Get() != SourceActor))
+	{
+		return;
+	}
+
+	bMagneticPullActive = false;
+	MagneticPullSource.Reset();
+	EndImpactReaction();
+}
+
 void AEnemyBase::AccumulateImpactVelocity(const FVector& ImpactVelocity)
 {
 	const float PreviousStrength = AccumulatedImpactVelocity.Size();
@@ -2021,13 +2070,18 @@ void AEnemyBase::RefreshImpactReactionDuration()
 		StrengthAlpha);
 }
 
+bool AEnemyBase::CanBeginImpactReaction() const
+{
+	return HasAuthority()
+		&& !IsDead()
+		&& !bIsPossessed
+		&& !IsPossessionInProgress()
+		&& CurrentImpactStrength >= RuntimeImpactReactionProfile.MinReactionStrength;
+}
+
 bool AEnemyBase::BeginImpactReaction()
 {
-	if (!HasAuthority()
-		|| IsDead()
-		|| bIsPossessed
-		|| IsPossessionInProgress()
-		|| CurrentImpactStrength < RuntimeImpactReactionProfile.MinReactionStrength)
+	if (!CanBeginImpactReaction())
 	{
 		if (IsEnemyImpactReactionDiagnosticsEnabled())
 		{
@@ -2104,6 +2158,16 @@ bool AEnemyBase::UpdateImpactRecovery(float DeltaTime, float ElapsedTime)
 				*GetNameSafe(this));
 		}
 		return true;
+	}
+
+	if (bMagneticPullActive)
+	{
+		Movement->MaxFlySpeed = FMath::Max(
+			GetRuntimeStat().MoveSpeed,
+			AccumulatedImpactVelocity.Size());
+		Movement->Velocity = AccumulatedImpactVelocity;
+		CurrentImpactStrength = AccumulatedImpactVelocity.Size();
+		return false;
 	}
 	const float PreviousElapsedTime = ImpactRecoveryElapsedTime;
 	const float PreviousStrength = CurrentImpactStrength;
@@ -2219,8 +2283,20 @@ void AEnemyBase::UpdatePossessedImpactRecovery(float DeltaTime)
 
 void AEnemyBase::EndImpactReaction()
 {
-	if (!HasAuthority() || !bImpactReactionActive)
+	if (!HasAuthority())
 	{
+		return;
+	}
+
+	bMagneticPullActive = false;
+	MagneticPullSource.Reset();
+	if (!bImpactReactionActive)
+	{
+		AccumulatedImpactVelocity = FVector::ZeroVector;
+		CurrentImpactStrength = 0.0f;
+		CurrentPhysicalKnockbackDuration = 0.0f;
+		CurrentControlRecoveryDuration = 0.0f;
+		ImpactRecoveryElapsedTime = 0.0f;
 		return;
 	}
 	if (IsEnemyImpactReactionDiagnosticsEnabled())

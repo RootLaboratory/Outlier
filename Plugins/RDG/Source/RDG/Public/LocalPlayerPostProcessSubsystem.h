@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Subsystems/LocalPlayerSubsystem.h"
 #include "FPostProcessStructures.h"
+#include "DeathTransitionSequence.h"
 #include "Tickable.h"
 #include "LocalPlayerPostProcessSubsystem.generated.h"
 
@@ -11,6 +12,7 @@ class APostProcessVolume;
 
 DECLARE_MULTICAST_DELEGATE(FOnHackTransitionCovered);
 DECLARE_MULTICAST_DELEGATE(FOnHackTransitionFinished);
+DECLARE_MULTICAST_DELEGATE(FOnDeathBlackoutStarted);
 
 enum class EHackPossessionTransitionPhase : uint8
 {
@@ -88,6 +90,26 @@ public:
 	void SetZoomBlurSampleCount(int32 InSampleCount);
 	void SetZoomBlurResolutionDivisor(int32 InDivisor);
 
+	// 사망 연출 튜닝값 일괄 갱신. 켜짐 여부와 진행도 / 시간 같은 런타임 필드는 입력값을 무시하고 유지한다.
+	void SetDeathNoiseParameters(const FDeathNoiseParameters& InParameters);
+	void SetDeathFadeParameters(const FDeathFadeParameters& InParameters);
+	void SetDeathBlackParameters(const FDeathBlackParameters& InParameters);
+	void SetDeathChromaticAberrationParameters(const FDeathChromaticAberrationParameters& InParameters);
+
+	// 사망 연출(Noise → Fade → Black). 진행 중이면 처음부터 다시 시작한다.
+	// 연출을 돌릴 수 없으면 false — 호출자는 기다리지 말고 바로 다음 단계로 넘어가야 한다.
+	bool StartDeathTransition();
+	void ResetDeathTransition();
+	bool IsDeathTransitionActive() const { return DeathTransition.IsActive(); }
+	EDeathTransitionPhase GetDeathTransitionPhase() const { return DeathTransition.GetPhase(); }
+
+	// 디버그용 패스별 on/off. 꺼진 패스는 그리기만 빠지고 타임라인은 그대로 흐른다.
+	void SetDeathTransitionPassEnabled(EDeathTransitionPass Pass, bool bEnabled);
+	bool IsDeathTransitionPassEnabled(EDeathTransitionPass Pass) const { return DeathTransition.IsPassEnabled(Pass); }
+
+	// Black 패스가 시작되는 순간 한 번 발생한다. PreSetLoadWidget은 여기서 뜬다.
+	FOnDeathBlackoutStarted OnDeathBlackoutStarted;
+
 	void StartHackPossessionTransition();
 	bool StartHackPossessionReveal();
 	void CancelHackPossessionTransition();
@@ -141,6 +163,8 @@ private:
 	void UpdateOverlay(float DeltaTime);
 	void UpdatePixelSorting(float DeltaTime);
 	void UpdateHackPossessionTransition(float DeltaTime);
+	void UpdateDeathNoise(float DeltaTime);
+	void UpdateDeathTransition(float DeltaTime);
 	void UpdateDepthOfField();
 	void ApplyADSBlurRuntimeParameters();
 	float GetADSBlurAlpha() const;
@@ -172,6 +196,8 @@ private:
 	float HackTransitionZoomBlurDuration = 0.35f;
 	float HackTransitionBlackoutDuration = 0.35f;
 	uint8 bHackTransitionCoveredBroadcastSent : 1 = false;
+
+	FDeathTransitionSequence DeathTransition;
 
 	TWeakObjectPtr<APostProcessVolume> DoFVolume;
 	uint8 bADSDoFEnabled : 1 = true;

@@ -8,6 +8,7 @@
 #include "Components/MeshComponent.h"
 #include "Components/PrimitiveComponent.h"
 #include "Engine/World.h"
+#include "TimerManager.h"
 #include "GameFramework/Pawn.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "GameplayTags/OutlierGameplayTags.h"
@@ -47,6 +48,11 @@ void UMaterialPostProcessSubsystem::Deinitialize()
 	StealthSources.Reset();
 	FlushStealthRestoreStates();
 
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(MagneticDisableTimerHandle);
+	}
+
 	Super::Deinitialize();
 	Refresh();
 }
@@ -77,12 +83,15 @@ void UMaterialPostProcessSubsystem::RegisterPostProcessVolume(AOutlierPostProces
 
 	if (!InPostProcessVolume->HasValidScanPostProcessBindings()
 		&& !InPostProcessVolume->HasStealthMeshMaterials()
-		&& !InPostProcessVolume->HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::Damaged))
+		&& !InPostProcessVolume->HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::Damaged)
+		&& !InPostProcessVolume->HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::Magnetic)
+		&& !InPostProcessVolume->HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::PartnerOutline))
 	{
 		return;
 	}
 
 	BoundPostProcessVolume = InPostProcessVolume;
+	ApplyAlwaysOnPostProcess();
 }
 
 void UMaterialPostProcessSubsystem::SetPostProcessEnabled(EOutlierPostProcessMaterialType MaterialType, bool bEnabled)
@@ -105,6 +114,8 @@ void UMaterialPostProcessSubsystem::Refresh()
 	BoundPostProcessVolume->DisableAllBlendablesHard();
 	FlushPostProcessMaterialParameters();
 	FlushScanStencilRestoreStates();
+	// 하드 디스에이블로 상시 패스까지 꺼졌으므로 되살린다.
+	ApplyAlwaysOnPostProcess();
 }
 
 void UMaterialPostProcessSubsystem::StartScanPostProcess(
@@ -536,6 +547,87 @@ void UMaterialPostProcessSubsystem::EndDamagedPostProcess()
 	}
 }
 
+void UMaterialPostProcessSubsystem::StartMagneticPostProcess(FVector Origin, float Radius, float Duration)
+{
+	UWorld* World = GetWorld();
+	if (ShouldSkipRenderingWork() || !World || !BoundPostProcessVolume)
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[MagneticLens] 2/3 중단. DedicatedServer=%s World=%s BoundVolume=%s")
+			TEXT(" ( 볼륨이 null 이면 레벨에 AOutlierPostProcessVolume 이 없거나 BeginPlay 등록이 안 된 것 )"),
+			ShouldSkipRenderingWork() ? TEXT("true") : TEXT("false"),
+			World ? TEXT("valid") : TEXT("null"),
+			*GetNameSafe(BoundPostProcessVolume));
+		return;
+	}
+
+	// 이전 펄스의 페이드아웃 예약이 남아 있으면 취소한다. 안 그러면 새 펄스를 도중에 꺼 버린다.
+	World->GetTimerManager().ClearTimer(MagneticDisableTimerHandle);
+
+	const float StartTime = World->GetTimeSeconds();
+
+	UE_LOG(
+		LogTemp,
+		Warning,
+		TEXT("[MagneticLens] 2/3 서브시스템 통과. Volume=%s HasMagneticMaterial=%s Origin=%s Radius=%.1f StartTime=%.2f EndTime=%.2f"),
+		*GetNameSafe(BoundPostProcessVolume),
+		BoundPostProcessVolume->HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::Magnetic)
+			? TEXT("true") : TEXT("false"),
+		*Origin.ToCompactString(),
+		Radius,
+		StartTime,
+		StartTime + FMath::Max(Duration, 0.0f));
+	BoundPostProcessVolume->SetMagneticMaterialParameters(
+		Origin,
+		Radius,
+		StartTime,
+		StartTime + FMath::Max(Duration, 0.0f)
+	);
+	BoundPostProcessVolume->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Magnetic, true);
+}
+
+void UMaterialPostProcessSubsystem::EndMagneticPostProcess()
+{
+	UWorld* World = GetWorld();
+	if (ShouldSkipRenderingWork() || !World || !BoundPostProcessVolume)
+	{
+		return;
+	}
+
+	// 즉시 끊지 않는다. EndTime 을 지금으로 당겨서 머티리얼이 페이드아웃을 시작하게 하고,
+	// 그게 끝난 뒤에야 블렌더블 가중치를 내려서 풀스크린 패스를 끊는다.
+	BoundPostProcessVolume->BeginMagneticFadeOut(World->GetTimeSeconds());
+
+	const float FadeOutDuration = FMath::Max(BoundPostProcessVolume->MagneticFadeOutDuration, 0.0f);
+	if (FadeOutDuration <= 0.0f)
+	{
+		World->GetTimerManager().ClearTimer(MagneticDisableTimerHandle);
+		BoundPostProcessVolume->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Magnetic, false);
+		BoundPostProcessVolume->ResetMagneticMaterialParameters();
+		return;
+	}
+
+	TWeakObjectPtr<UMaterialPostProcessSubsystem> WeakThis(this);
+	World->GetTimerManager().SetTimer(
+		MagneticDisableTimerHandle,
+		FTimerDelegate::CreateLambda([WeakThis]()
+		{
+			UMaterialPostProcessSubsystem* Self = WeakThis.Get();
+			if (!Self || !Self->BoundPostProcessVolume)
+			{
+				return;
+			}
+
+			Self->BoundPostProcessVolume->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Magnetic, false);
+			Self->BoundPostProcessVolume->ResetMagneticMaterialParameters();
+		}),
+		FadeOutDuration,
+		false
+	);
+}
+
 void UMaterialPostProcessSubsystem::ApplyScanStencil(AActor* Actor, int32 StencilValue)
 {
 	if (ShouldSkipRenderingWork() || !Actor)
@@ -594,6 +686,29 @@ void UMaterialPostProcessSubsystem::ClearScanStencil(AActor* Actor)
 			ScanStencilRestoreStates.Remove(ComponentKey);
 		}
 	}
+}
+
+void UMaterialPostProcessSubsystem::ApplyAlwaysOnPostProcess()
+{
+	if (ShouldSkipRenderingWork() || !BoundPostProcessVolume)
+	{
+		return;
+	}
+
+	// 파트너 아웃라인은 스캔과 달리 게임플레이 이벤트가 켜고 끄지 않는다.
+	// 머티리얼이 안 꽂혀 있으면 SetBlendableWeight 가 어차피 실패하지만,
+	// 의도를 분명히 하려고 여기서 먼저 거른다.
+	if (!BoundPostProcessVolume->HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::PartnerOutline))
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[PartnerOutline] %s 에 PartnerOutline 머티리얼이 없다. 볼륨의 PostProcessMaterials 맵을 확인."),
+			*GetNameSafe(BoundPostProcessVolume));
+		return;
+	}
+
+	BoundPostProcessVolume->SetPostProcessEnabled(EOutlierPostProcessMaterialType::PartnerOutline, true);
 }
 
 bool UMaterialPostProcessSubsystem::ShouldSkipRenderingWork() const

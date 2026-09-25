@@ -4,6 +4,7 @@
 #include "RDGExplosionVolumeProvider.h"
 #include "RenderingThread.h"
 #include "SceneViewExtension.h"
+#include "Engine/LocalPlayer.h"
 #include "Engine/PostProcessVolume.h"
 
 namespace PostProcessAnimation
@@ -37,10 +38,8 @@ void ULocalPlayerPostProcessSubsystem::Initialize(FSubsystemCollectionBase& Coll
 		ViewExtension = FSceneViewExtensions::NewExtension<FOutlierPostProcessSceneViewExtension>(LP);
 	}
 
-
-#if UE_BUILD_SHIPPING
-	SetChromaticAberrationEnabled(true);
-#endif
+	// 기존 렌즈 CA는 여기서 켜지 않는다. Shipping에서만 Possess 시점에 켜고 사망 / 월드 이탈 시 끈다
+	// (AFirstPersonPlayerController). 이 서브시스템은 LocalPlayer 소속이라 로비에서도 살아 있기 때문.
 
 	TickFrame();
 }
@@ -49,6 +48,8 @@ void ULocalPlayerPostProcessSubsystem::Deinitialize()
 {
 	OnHackTransitionCovered.Clear();
 	OnHackTransitionFinished.Clear();
+	OnDeathBlackoutStarted.Clear();
+	DeathTransition.Reset(PostProcessParameters, UIPostProcessParameters);
 	HackPossessionTransitionPhase = EHackPossessionTransitionPhase::Idle;
 	bHackTransitionCoveredBroadcastSent = false;
 
@@ -69,6 +70,8 @@ void ULocalPlayerPostProcessSubsystem::Tick(float DeltaTime)
 	UpdateADSBlur(DeltaTime);
 	UpdatePixelSorting(DeltaTime);
 	UpdateHackPossessionTransition(DeltaTime);
+	UpdateDeathTransition(DeltaTime);
+	UpdateDeathNoise(DeltaTime);
 	UpdateDepthOfField();
 }
 
@@ -472,6 +475,110 @@ void ULocalPlayerPostProcessSubsystem::SetZoomBlurResolutionDivisor(int32 InDivi
 	TickFrame();
 }
 
+void ULocalPlayerPostProcessSubsystem::UpdateDeathNoise(float DeltaTime)
+{
+	FDeathNoiseParameters& DeathNoise = PostProcessParameters.DeathNoise;
+	if (DeathNoise.bEnabled == 0 || DeltaTime <= 0.0f)
+	{
+		return;
+	}
+
+	DeathNoise.Time += DeltaTime;
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetDeathNoiseParameters(const FDeathNoiseParameters& InParameters)
+{
+	FDeathNoiseParameters& DeathNoise = PostProcessParameters.DeathNoise;
+	DeathNoise.Intensity = FMath::Max(0.0f, InParameters.Intensity);
+	DeathNoise.Seed = InParameters.Seed;
+	DeathNoise.SliceRows = FMath::Clamp(InParameters.SliceRows, 1.0f, 1024.0f);
+	DeathNoise.SliceSplitChance = FMath::Clamp(InParameters.SliceSplitChance, 0.0f, 1.0f);
+	DeathNoise.GlitchRate = FMath::Clamp(InParameters.GlitchRate, 1.0f, 120.0f);
+	DeathNoise.GlitchStrength = FMath::Max(0.0f, InParameters.GlitchStrength);
+	DeathNoise.GlitchThreshold = FMath::Clamp(InParameters.GlitchThreshold, 0.0f, 1.0f);
+	DeathNoise.GlitchGlow = FMath::Max(0.0f, InParameters.GlitchGlow);
+	DeathNoise.BurstChance = FMath::Clamp(InParameters.BurstChance, 0.0f, 1.0f);
+	DeathNoise.BurstStrength = FMath::Max(1.0f, InParameters.BurstStrength);
+	DeathNoise.BurstThreshold = FMath::Clamp(InParameters.BurstThreshold, 0.0f, 1.0f);
+	DeathNoise.Tint = InParameters.Tint.GetClamped(0.0f, 1.0f);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetDeathFadeParameters(const FDeathFadeParameters& InParameters)
+{
+	FDeathFadeParameters& DeathFade = PostProcessParameters.DeathFade;
+	DeathFade.TargetColor = InParameters.TargetColor.GetClamped(0.0f, 1.0f);
+	DeathFade.MaxStrength = FMath::Clamp(InParameters.MaxStrength, 0.0f, 1.0f);
+	DeathFade.Duration = FMath::Max(0.0f, InParameters.Duration);
+	DeathFade.Delay = FMath::Max(0.0f, InParameters.Delay);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetDeathBlackParameters(const FDeathBlackParameters& InParameters)
+{
+	PostProcessParameters.DeathBlack.Duration = FMath::Max(0.0f, InParameters.Duration);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetDeathChromaticAberrationParameters(const FDeathChromaticAberrationParameters& InParameters)
+{
+	FDeathChromaticAberrationParameters& DeathChromatic = UIPostProcessParameters.DeathChromaticAberration;
+	DeathChromatic.OffsetX = FMath::Clamp(InParameters.OffsetX, -0.1f, 0.1f);
+	DeathChromatic.OffsetY = FMath::Clamp(InParameters.OffsetY, -0.1f, 0.1f);
+	MarkDirty();
+	TickFrame();
+}
+
+bool ULocalPlayerPostProcessSubsystem::StartDeathTransition()
+{
+	// SVE가 없으면 화면이 안 가려진 채로 Black 시점만 기다리게 되므로, 호출자가 바로 넘어가게 한다.
+	if (!ViewExtension.IsValid())
+	{
+		return false;
+	}
+
+	DeathTransition.Start(PostProcessParameters, UIPostProcessParameters);
+	MarkDirty();
+	TickFrame();
+	return true;
+}
+
+void ULocalPlayerPostProcessSubsystem::ResetDeathTransition()
+{
+	DeathTransition.Reset(PostProcessParameters, UIPostProcessParameters);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetDeathTransitionPassEnabled(EDeathTransitionPass Pass, bool bEnabled)
+{
+	DeathTransition.SetPassEnabled(Pass, bEnabled, PostProcessParameters, UIPostProcessParameters);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::UpdateDeathTransition(float DeltaTime)
+{
+	bool bBlackoutStarted = false;
+	if (!DeathTransition.Tick(DeltaTime, PostProcessParameters, UIPostProcessParameters, bBlackoutStarted))
+	{
+		return;
+	}
+
+	MarkDirty();
+	TickFrame();
+
+	if (bBlackoutStarted)
+	{
+		OnDeathBlackoutStarted.Broadcast();
+	}
+}
+
 void ULocalPlayerPostProcessSubsystem::StartHackPossessionTransition()
 {
 	if (HackPossessionTransitionPhase != EHackPossessionTransitionPhase::Idle)
@@ -764,6 +871,9 @@ void ULocalPlayerPostProcessSubsystem::SetADSBlurWeaponStencilValue(int32 InSten
 
 void ULocalPlayerPostProcessSubsystem::SetADSBlurFocusDistanceWorld(float InFocusDistanceWorld)
 {
+	PostProcessParameters.ADSBlur.FocusDistanceWorld = FMath::Max(0.0f, InFocusDistanceWorld);
+	MarkDirty();
+	TickFrame();
 }
 
 void ULocalPlayerPostProcessSubsystem::SetADSBlurSightDistanceThreshold(float InThreshold)
@@ -944,7 +1054,6 @@ void ULocalPlayerPostProcessSubsystem::ApplyADSBlurRuntimeParameters()
 	const float Alpha = GetADSBlurAlpha();
 
 	PostProcessParameters.ADSBlur.bEnabled = bADSBlurDebugPassEnabled && Alpha > KINDA_SMALL_NUMBER ? 1 : 0;
-	PostProcessParameters.ADSBlur.FocusDistanceWorld = 10.5f;
 
 	MarkDirty();
 	TickFrame();

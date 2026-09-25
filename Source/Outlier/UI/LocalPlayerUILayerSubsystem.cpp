@@ -5,15 +5,16 @@
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
 #include "Components/PanelWidget.h"
+#include "Engine/GameViewportClient.h"
 #include "Engine/LocalPlayer.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
 #include "FrontendPlayerController.h"
-#include "Framework/Application/SlateApplication.h"
 #include "MainUIBase.h"
 #include "UI/UILayerGameplayTags.h"
 #include "UI/UILayerContextReceiver.h"
 #include "UI/UILayerInputReceiver.h"
 #include "UI/UILayerRootWidget.h"
+#include "Widgets/SViewport.h"
 
 namespace
 {
@@ -831,17 +832,22 @@ void ULocalPlayerUILayerSubsystem::ApplyLayerInput(const FUILayerEntry& Layer)
 			InputMode.SetWidgetToFocus(Widget->TakeWidget());
 		}
 	}
+	else if (Layer.FocusTarget == EUILayerFocusTarget::GameViewport)
+	{
+		// FSlateApplication 의 GameViewport 는 프로세스 전역 하나라서, 단일 프로세스 PIE 에서는
+		// 마지막 클라이언트 창을 가리킨다. 이 로컬 플레이어의 뷰포트를 직접 지정해야
+		// 리슨 서버 호스트의 키보드 포커스가 다른 창으로 넘어가지 않는다.
+		const ULocalPlayer* LocalPlayer = PlayerController->GetLocalPlayer();
+		if (LocalPlayer && LocalPlayer->ViewportClient)
+		{
+			InputMode.SetWidgetToFocus(LocalPlayer->ViewportClient->GetGameViewportWidget());
+		}
+	}
 
 	InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
 	InputMode.SetHideCursorDuringCapture(false);
 	PlayerController->SetInputMode(InputMode);
 	PlayerController->bShowMouseCursor = Layer.bShowCursor;
-
-	if (Layer.FocusTarget == EUILayerFocusTarget::GameViewport
-		&& FSlateApplication::IsInitialized())
-	{
-		FSlateApplication::Get().SetAllUserFocusToGameViewport();
-	}
 }
 
 void ULocalPlayerUILayerSubsystem::ApplyDefaultInput()

@@ -3,6 +3,15 @@
 #include "Components/Image.h"
 #include "Materials/MaterialInstanceDynamic.h"
 
+void UTeleportSpriteAnimation::SetSpriteTexture(UTexture2D* InSpriteTexture)
+{
+	// A null override intentionally leaves the material's default Sprite value intact.
+	if (InSpriteTexture && AnimationMaterialInstance)
+	{
+		AnimationMaterialInstance->SetTextureParameterValue(SpriteParameterName, InSpriteTexture);
+	}
+}
+
 void UTeleportSpriteAnimation::NativeConstruct()
 {
 	Super::NativeConstruct();

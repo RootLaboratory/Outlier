@@ -2911,6 +2911,10 @@ void AOutlierGameMode::CompleteServerArenaReload()
 		APawn* Pawn = It->Value.Get();
 		if (PC && Pawn)
 		{
+			if (AFirstPersonPlayerController* FPC = Cast<AFirstPersonPlayerController>(PC))
+			{
+				FPC->ArmDeathTransitionReleaseOnPossess();
+			}
 			PC->Possess(Pawn);
 		}
 	}

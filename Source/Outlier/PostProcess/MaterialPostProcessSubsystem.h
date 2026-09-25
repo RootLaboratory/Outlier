@@ -91,11 +91,20 @@ public:
 	void UpdateDamagedPostProcess(float InHPRatio, FVector4 Color);
 	void EndDamagedPostProcess();
 
+	// Magnetic
+	// 자기장 발생기의 중력렌즈. 원점 / 반경이 펄스 동안 고정이므로 Update 가 없다.
+	// 페이드 엔벨로프와 노이즈는 머티리얼이 Time 노드로 직접 굴린다 ( 서브시스템 틱 부하 0 ).
+	void StartMagneticPostProcess(FVector Origin, float Radius, float Duration);
+	void EndMagneticPostProcess();
+
 	UPROPERTY()
 	TObjectPtr<AOutlierPostProcessVolume> BoundPostProcessVolume;
 
 private:
 	TMap<TWeakObjectPtr<UPrimitiveComponent>, FScanStencilRestoreState> ScanStencilRestoreStates;
+
+	// 페이드아웃이 끝난 뒤 자기장 블렌더블을 내리는 일회성 타이머 ( 매 틱 폴링이 아니다 ).
+	FTimerHandle MagneticDisableTimerHandle;
 
 	// 오버라이드가 걸려 있는 메시와 그 원본. 원본 머티리얼을 GC 로부터 지켜야 하므로 UPROPERTY.
 	UPROPERTY()
@@ -109,6 +118,9 @@ private:
 	TArray<TObjectPtr<UMeshComponent>> ScratchStaleMeshes;
 
 	bool ShouldSkipRenderingWork() const;
+	// 게임플레이 이벤트와 무관하게 항상 켜져 있어야 하는 패스( 파트너 아웃라인 )를 다시 올린다.
+	// DisableAllBlendablesHard 가 전부 0 으로 내리므로 그 뒤에 반드시 호출해야 한다.
+	void ApplyAlwaysOnPostProcess();
 	void ClearAllScanStencils();
 
 	void HandleStealthTagChanged(

@@ -15,11 +15,22 @@
 #include "Materials/MaterialInterface.h"
 #include "Materials/MaterialInstanceDynamic.h"
 
+namespace
+{
+// PP_MagneticLens 의 파라미터 이름. 머티리얼 쪽과 반드시 같아야 한다.
+const FName MagneticLocationParameterName = TEXT("Location");
+const FName MagneticRadiusParameterName = TEXT("Radius");
+const FName MagneticStartTimeParameterName = TEXT("StartTime");
+const FName MagneticEndTimeParameterName = TEXT("EndTime");
+}
+
 void AOutlierPostProcessVolume::BeginPlay()
 {
 	Super::BeginPlay();
 
 	InitializeRuntimePostProcessMaterial(EOutlierPostProcessMaterialType::Damaged);
+	InitializeRuntimePostProcessMaterial(EOutlierPostProcessMaterialType::Magnetic);
+	InitializeRuntimePostProcessMaterial(EOutlierPostProcessMaterialType::PartnerOutline);
 
 	if (!HasStealthMeshMaterials())
 	{
@@ -134,6 +145,12 @@ void AOutlierPostProcessVolume::SetPostProcessEnabled(EOutlierPostProcessMateria
 		bDamagedPostProcessEnabled = bInEnabled;
 		//UE_LOG(LogTemp, Error, TEXT("[DamagedPPDebug] SetEnabled=%d Weight=%.2f"), bDamagedPostProcessEnabled ? 1 : 0, TargetWeight);
 		break;
+	case EOutlierPostProcessMaterialType::Magnetic:
+		bMagneticPostProcessEnabled = bInEnabled;
+		break;
+	case EOutlierPostProcessMaterialType::PartnerOutline:
+		bPartnerOutlinePostProcessEnabled = bInEnabled;
+		break;
 	default:
 		break;
 	}
@@ -170,6 +187,7 @@ void AOutlierPostProcessVolume::ResetPostProcessMaterialParameters()
 {
 	SetScanMaterialParameters(FVector::ZeroVector, 0.0f, 0.0f);
 	UpdateDamagedMaterialParameters(1.0f);
+	ResetMagneticMaterialParameters();
 	ScanRangeRange = 0.0f;
 }
 
@@ -250,6 +268,63 @@ void AOutlierPostProcessVolume::UpdateScanMaterialParameters(FVector ScanLocatio
 	);
 }
 
+void AOutlierPostProcessVolume::SetMagneticMaterialParameters(
+	FVector Origin,
+	float Radius,
+	float InStartTime,
+	float InEndTime) const
+{
+	const TObjectPtr<UMaterialInterface>* MagneticMaterial = PostProcessMaterials.Find(EOutlierPostProcessMaterialType::Magnetic);
+	UMaterialInstanceDynamic* MagneticMID = MagneticMaterial ? Cast<UMaterialInstanceDynamic>(MagneticMaterial->Get()) : nullptr;
+	if (!MagneticMID)
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[MagneticLens] 3/3 실패. %s 에 Magnetic MID 가 없다. MapEntry=%s SourceMaterial=%s")
+			TEXT(" ( 볼륨의 PostProcessMaterials 맵에 Magnetic 키로 머티리얼을 넣었는지 확인 )"),
+			*GetName(),
+			MagneticMaterial ? TEXT("있음") : TEXT("없음"),
+			*GetNameSafe(MagneticMaterial ? MagneticMaterial->Get() : nullptr));
+		return;
+	}
+
+	UE_LOG(
+		LogTemp,
+		Warning,
+		TEXT("[MagneticLens] 3/3 파라미터 세팅. MID=%s Origin=%s Radius=%.1f StartTime=%.2f EndTime=%.2f"),
+		*GetNameSafe(MagneticMID),
+		*Origin.ToCompactString(),
+		Radius,
+		InStartTime,
+		InEndTime);
+
+	MagneticMID->SetVectorParameterValue(
+		MagneticLocationParameterName,
+		FLinearColor(Origin.X, Origin.Y, Origin.Z, 0.0f)
+	);
+	MagneticMID->SetScalarParameterValue(MagneticRadiusParameterName, FMath::Max(Radius, 0.0f));
+	MagneticMID->SetScalarParameterValue(MagneticStartTimeParameterName, InStartTime);
+	MagneticMID->SetScalarParameterValue(MagneticEndTimeParameterName, InEndTime);
+}
+
+void AOutlierPostProcessVolume::BeginMagneticFadeOut(float InEndTime) const
+{
+	const TObjectPtr<UMaterialInterface>* MagneticMaterial = PostProcessMaterials.Find(EOutlierPostProcessMaterialType::Magnetic);
+	UMaterialInstanceDynamic* MagneticMID = MagneticMaterial ? Cast<UMaterialInstanceDynamic>(MagneticMaterial->Get()) : nullptr;
+	if (!MagneticMID)
+	{
+		return;
+	}
+
+	MagneticMID->SetScalarParameterValue(MagneticEndTimeParameterName, InEndTime);
+}
+
+void AOutlierPostProcessVolume::ResetMagneticMaterialParameters() const
+{
+	SetMagneticMaterialParameters(FVector::ZeroVector, 0.0f, 0.0f, 0.0f);
+}
+
 float AOutlierPostProcessVolume::EvaluateStealthFade(float InLinearFade) const
 {
 	const float LinearFade = FMath::Clamp(InLinearFade, 0.0f, 1.0f);
@@ -297,4 +372,8 @@ void AOutlierPostProcessVolume::DisableAllBlendablesHard()
 	bScanPostProcessEnabled = false;
 	bStealthPostProcessEnabled = false;
 	bDamagedPostProcessEnabled = false;
+	bMagneticPostProcessEnabled = false;
+	// 상시 패스지만 여기서는 같이 내린다. 하드 리셋이므로 예외를 두지 않는다.
+	// 되살리는 책임은 UMaterialPostProcessSubsystem::ApplyAlwaysOnPostProcess 에 있다.
+	bPartnerOutlinePostProcessEnabled = false;
 }

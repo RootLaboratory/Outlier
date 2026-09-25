@@ -14,7 +14,7 @@ namespace
 {
 constexpr float HackCancellationCooldownScale = 0.5f;
 
-void PlayAbilityAudioAtLocationFromServer(AActor* EmitterActor, const FGameplayTag& ContextTag)
+bool PlayAbilityAudioAtLocationFromServer(AActor* EmitterActor, const FGameplayTag& ContextTag)
 {
 	const UOutlierAbilityAudioSettings* Settings = GetDefault<UOutlierAbilityAudioSettings>();
 	if (!EmitterActor || !Settings->PlayerTypeTag.IsValid() || !ContextTag.IsValid())
@@ -26,27 +26,43 @@ void PlayAbilityAudioAtLocationFromServer(AActor* EmitterActor, const FGameplayT
 			*GetNameSafe(EmitterActor),
 			*Settings->PlayerTypeTag.ToString(),
 			*ContextTag.ToString());
-		return;
+		return false;
 	}
 
-	UOutlierAudioSubsystem::PlayTaggedAtLocationFromServer(
+	const bool bAccepted = UOutlierAudioSubsystem::PlayTaggedAtLocationFromServer(
 		EmitterActor,
 		Settings->PlayerTypeTag,
 		ContextTag);
+	/*UE_LOG(
+		LogTemp,
+		Display,
+		TEXT("[PartnerAbilityAudioDebug] Play Emitter=%s Context=%s Accepted=%d"),
+		*GetNameSafe(EmitterActor),
+		*ContextTag.ToString(),
+		bAccepted ? 1 : 0);*/
+	return bAccepted;
 }
 
-void StopAbilityAudioLoopAtLocationFromServer(AActor* EmitterActor, const FGameplayTag& ContextTag)
+bool StopAbilityAudioLoopAtLocationFromServer(AActor* EmitterActor, const FGameplayTag& ContextTag)
 {
 	const UOutlierAbilityAudioSettings* Settings = GetDefault<UOutlierAbilityAudioSettings>();
 	if (!EmitterActor || !Settings->PlayerTypeTag.IsValid() || !ContextTag.IsValid())
 	{
-		return;
+		return false;
 	}
 
-	UOutlierAudioSubsystem::StopTaggedAtLocationFromServer(
+	const bool bStopped = UOutlierAudioSubsystem::StopTaggedAtLocationFromServer(
 		EmitterActor,
 		Settings->PlayerTypeTag,
 		ContextTag);
+	/*UE_LOG(
+		LogTemp,
+		Display,
+		TEXT("[PartnerAbilityAudioDebug] Stop Emitter=%s Context=%s Stopped=%d"),
+		*GetNameSafe(EmitterActor),
+		*ContextTag.ToString(),
+		bStopped ? 1 : 0);*/
+	return bStopped;
 }
 
 FGameplayTagContainer MakeAllPartnerAbilityTags()
@@ -205,9 +221,18 @@ void UOutlierPartnerEMPAbility::EndAbility(
 	bool bReplicateEndAbility,
 	bool bWasCancelled)
 {
-	StopAbilityAudioLoopAtLocationFromServer(
+	const bool bStoppedChargeAudio = StopAbilityAudioLoopAtLocationFromServer(
 		GetPartnerCharacter(),
 		GetDefault<UOutlierAbilityAudioSettings>()->PartnerEMPCharge);
+	// 아래 디버그 로그 전용 값이다. 로그를 되살리면 이 줄을 지운다.
+	(void)bStoppedChargeAudio;
+	/*UE_LOG(
+		LogTemp,
+		Warning,
+		TEXT("[PartnerAbilityAudioDebug] EMP End Cancelled=%d ChargeLoopStopped=%d ActiveComponent=%d"),
+		bWasCancelled ? 1 : 0,
+		bStoppedChargeAudio ? 1 : 0,
+		ActiveEMPComponent.IsValid() ? 1 : 0);*/
 
 	bool bCancelledActiveEMP = false;
 	if (UPartnerEMPComponent* Component = ActiveEMPComponent.Get())
@@ -331,9 +356,18 @@ void UOutlierPartnerHackAbility::EndAbility(
 	bool bReplicateEndAbility,
 	bool bWasCancelled)
 {
-	StopAbilityAudioLoopAtLocationFromServer(
+	const bool bStoppedHackAudio = StopAbilityAudioLoopAtLocationFromServer(
 		GetPartnerCharacter(),
 		GetDefault<UOutlierAbilityAudioSettings>()->PartnerHackTryLoop);
+	// 아래 디버그 로그 전용 값이다. 로그를 되살리면 이 줄을 지운다.
+	(void)bStoppedHackAudio;
+	/*UE_LOG(
+		LogTemp,
+		Warning,
+		TEXT("[PartnerAbilityAudioDebug] Hack End Cancelled=%d TryLoopStopped=%d ActiveComponent=%d"),
+		bWasCancelled ? 1 : 0,
+		bStoppedHackAudio ? 1 : 0,
+		ActiveHackComponent.IsValid() ? 1 : 0);*/
 
 	bool bCancelledActiveHack = false;
 	if (UPartnerHackComponent* Component = ActiveHackComponent.Get())

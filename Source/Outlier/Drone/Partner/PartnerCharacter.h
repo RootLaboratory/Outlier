@@ -9,6 +9,7 @@
 #include "Interface/MeleeTargetInterface.h"
 #include "AbilitySystemInterface.h"
 #include "Damage/OutlierDamageReceiver.h"
+#include "Interface/JumperAffectableInterface.h"
 #include "PartnerCharacter.generated.h"
 
 UENUM(BlueprintType)
@@ -79,7 +80,7 @@ struct FGameplayEffectSpec;
 struct FActiveGameplayEffectHandle;
 struct FOnAttributeChangeData;
 UCLASS()
-class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeaponMuzzleProvider, public IAbilitySystemInterface, public IOutlierDamageReceiver, public IMeleeTargetInterface
+class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeaponMuzzleProvider, public IAbilitySystemInterface, public IOutlierDamageReceiver, public IMeleeTargetInterface, public IJumperAffectableInterface
 {
 	GENERATED_BODY()
 
@@ -499,6 +500,8 @@ protected:
 	virtual void LookInput(const FInputActionValue& Value) override;
 public:
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
+	virtual void BeginJumperEffect(FName EffectId, const FJumperMovementEffect& Effect, AActor* SourceActor) override;
+	virtual void EndJumperEffect(FName EffectId, AActor* SourceActor) override;
 	virtual bool CanShowMeleeTargetIndicator_Implementation(const AActor* /*InstigatorActor*/) const override { return false; }
 	virtual FGameplayTagContainer GetOwnedGameplayTagsForQuery() const override;
 	UOutlierAbilitySystemComponent* GetOutlierAbilitySystemComponent() const

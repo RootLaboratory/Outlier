@@ -19,5 +19,6 @@ public class OutlierTarget : TargetRules
             GlobalDefinitions.Add("FORCE_USE_STATS=1");   // stat unit / stat gpu 활성화
             GlobalDefinitions.Add("HAS_GPU_STATS=1");
         }
+
     }
 }
