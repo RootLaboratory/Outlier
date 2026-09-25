@@ -1,0 +1,97 @@
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/ScreenPass.ush"
+
+// 사망 연출용 루프 노이즈.
+// PopupRetainerBox 머티리얼의 슬라이스별 가로 글리치를 진행도(Amount) 대신 경과 시간(Time)으로 굴린다.
+// 원본과 다른 점:
+//  - 슬라이스가 균등 분할(floor(UV.y * N))이 아니라 글리치 프레임마다 무작위 높이로 다시 나뉜다.
+//  - 가끔 버스트 프레임이 터져서 더 많은 슬라이스가 더 크게 튄다.
+//  - 이동 방향을 게이트와 별개 난수로 뽑는다. 원본은 게이트를 통과한 난수를 그대로 써서 한쪽으로만 밀렸다.
+//  - 스캔라인과 열림 전환 요소(pivot, EaseOutBack, 열림 마스크, 경계 글로우, SliceDelay)는 없다.
+
+// 슬라이스 시작 줄을 찾으며 거슬러 올라가는 최대 줄 수. 이보다 긴 슬라이스는 여기서 잘린다.
+#define MAX_SLICE_SEARCH_ROWS 64
+
+Texture2D InputTexture;
+SamplerState InputSampler;
+
+// 샘플링 클램프용. 바이리니어가 뷰 밖을 긁지 않게 반 픽셀 안쪽으로 잡혀 있다.
+float2 ViewRectMinUV;
+float2 ViewRectMaxUV;
+
+// 텍스처 UV -> 뷰 영역 기준 0~1 UV 변환용 (ViewRect.Min / Extent, ViewRect.Size / Extent).
+float2 ViewportUVOrigin;
+float2 ViewportUVSize;
+
+float Time;
+float Intensity;
+float Seed;
+float SliceRows;
+float SliceSplitChance;
+float GlitchRate;
+float GlitchStrength;
+float GlitchThreshold;
+float GlitchGlow;
+float BurstChance;
+float BurstStrength;
+float BurstThreshold;
+float3 Tint;
+
+float Hash11(float X)
+{
+	return frac(sin(X) * 43758.5453f);
+}
+
+void MainPS(
+	FScreenVertexOutput Input,
+	out float4 OutColor : SV_Target0)
+{
+	// 슬라이스는 뷰 영역 기준 좌표로 계산해야 해상도 스케일 / 뷰 오프셋과 무관해진다.
+	const float2 UV = (Input.UV - ViewportUVOrigin) / ViewportUVSize;
+
+	// 글리치 프레임마다 분할 / 이동 / 버스트를 전부 다시 뽑는다.
+	const float GlitchFrame = floor(Time * max(GlitchRate, 1.0f));
+	const float FrameSeed = GlitchFrame * 17.17f + Seed * 7.13f;
+
+	// ---------------------------------------------------------
+	// Burst
+	// ---------------------------------------------------------
+	const float Burst = step(1.0f - BurstChance, Hash11(FrameSeed * 3.71f + 0.5f));
+	const float StrengthScale = lerp(1.0f, BurstStrength, Burst);
+	const float Threshold = lerp(GlitchThreshold, BurstThreshold, Burst);
+
+	// ---------------------------------------------------------
+	// Random-height slice
+	// 격자 줄마다 "여기서 새 슬라이스 시작" 여부를 난수로 정하고, 현재 줄에서 위로 거슬러 올라가
+	// 가장 가까운 시작 줄을 슬라이스 ID로 쓴다. 높이는 1 / SliceSplitChance 줄 근처에서 제각각이 된다.
+	// ---------------------------------------------------------
+	const float Rows = max(floor(SliceRows), 1.0f);
+	float SliceStart = min(floor(saturate(UV.y) * Rows), Rows - 1.0f);
+
+	[loop]
+	for (int SearchIndex = 0; SearchIndex < MAX_SLICE_SEARCH_ROWS; ++SearchIndex)
+	{
+		if (SliceStart <= 0.0f || Hash11(SliceStart * 91.73f + FrameSeed) < SliceSplitChance)
+		{
+			break;
+		}
+		SliceStart -= 1.0f;
+	}
+
+	// ---------------------------------------------------------
+	// Per-slice horizontal glitch
+	// ---------------------------------------------------------
+	const float GlitchGate = step(Threshold, Hash11(SliceStart * 37.19f + FrameSeed * 1.37f));
+	const float Direction = Hash11(SliceStart * 53.11f + FrameSeed * 2.71f) * 2.0f - 1.0f;
+	const float JitterX = Direction * GlitchStrength * StrengthScale * Intensity * GlitchGate;
+
+	// JitterX는 뷰 영역 기준 이동량이라 텍스처 UV로 옮길 때 뷰 폭을 곱한다.
+	const float2 SampleUV = clamp(
+		Input.UV + float2(JitterX * ViewportUVSize.x, 0.0f),
+		ViewRectMinUV,
+		ViewRectMaxUV);
+	const float4 SceneColor = InputTexture.Sample(InputSampler, SampleUV);
+
+	const float Glow = saturate(GlitchGate * GlitchGlow * Intensity);
+	OutColor = float4(SceneColor.rgb + Tint * Glow, SceneColor.a);
+}

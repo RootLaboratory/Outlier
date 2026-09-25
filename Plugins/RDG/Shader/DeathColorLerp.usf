@@ -1,0 +1,19 @@
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/ScreenPass.ush"
+
+// 사망 연출 Fade / Black 공용. 게임 화면 전체를 LerpColor 쪽으로 Amount만큼 균등하게 보간한다.
+// Fade는 Amount가 MaxStrength에서 멈춰서 픽셀마다 원본 차이가 남고, Black은 1까지 가서 완전히 검어진다.
+
+Texture2D InputTexture;
+SamplerState InputSampler;
+
+float3 LerpColor;
+float Amount;
+
+void MainPS(
+	FScreenVertexOutput Input,
+	out float4 OutColor : SV_Target0)
+{
+	const float4 SceneColor = InputTexture.Sample(InputSampler, Input.UV);
+	OutColor = float4(lerp(SceneColor.rgb, LerpColor, saturate(Amount)), SceneColor.a);
+}

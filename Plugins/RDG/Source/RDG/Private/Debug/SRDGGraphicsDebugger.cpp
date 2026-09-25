@@ -5,11 +5,13 @@
 #include "Engine/LocalPlayer.h"
 #include "HAL/IConsoleManager.h"
 #include "LocalPlayerPostProcessSubsystem.h"
+#include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SNumericEntryBox.h"
 #include "Widgets/Input/SSlider.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
+#include "DeathTransitionSequence.h"
 #include "Widgets/Layout/SExpandableArea.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
@@ -1662,6 +1664,12 @@ void SRDGGraphicsDebugger::Construct(const FArguments& InArgs)
 						]
 					]
 				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(RDGGraphicsDebugger::RowPadding)
+				[
+					MakeDeathTransitionSection()
+				]
 			]
 		]
 	];
@@ -2920,4 +2928,327 @@ void SRDGGraphicsDebugger::OnDatamoshProgressChanged(float NewValue)
 	{
 		Subsystem->SetDatamoshingProgress(NewValue);
 	}
+}
+
+namespace RDGGraphicsDebugger
+{
+	// 사망 연출 파라미터 한 줄(라벨 + 슬라이더 + 숫자 입력).
+	// 값마다 getter / setter 멤버 함수를 두는 대신, 구조체 사본을 읽어 필드 하나만 바꾼 뒤
+	// 구조체 단위 setter로 넘긴다. 진행도 / 시간 같은 런타임 필드는 서브시스템이 지킨다.
+	// 슬라이더 범위는 튜닝용 권장 범위일 뿐이고, 숫자 칸에는 범위 밖 값도 직접 넣을 수 있다.
+	template <typename TParams>
+	TSharedRef<SWidget> MakeDeathParameterRow(
+		const TCHAR* Label,
+		float MinSliderValue,
+		float MaxSliderValue,
+		TFunction<ULocalPlayerPostProcessSubsystem*()> Resolve,
+		TFunction<const TParams&(const ULocalPlayerPostProcessSubsystem&)> Read,
+		TFunction<void(ULocalPlayerPostProcessSubsystem&, const TParams&)> Write,
+		TFunction<float&(TParams&)> Field)
+	{
+		const TFunction<TOptional<float>()> GetValue = [Resolve, Read, Field]() -> TOptional<float>
+		{
+			const ULocalPlayerPostProcessSubsystem* Subsystem = Resolve();
+			if (!Subsystem)
+			{
+				return TOptional<float>();
+			}
+
+			TParams Parameters = Read(*Subsystem);
+			return Field(Parameters);
+		};
+
+		const TFunction<void(float)> SetValue = [Resolve, Read, Write, Field](float NewValue)
+		{
+			if (ULocalPlayerPostProcessSubsystem* Subsystem = Resolve())
+			{
+				TParams Parameters = Read(*Subsystem);
+				Field(Parameters) = NewValue;
+				Write(*Subsystem, Parameters);
+			}
+		};
+
+		return SNew(SVerticalBox)
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(RowPadding)
+			[
+				SNew(STextBlock)
+				.Text(FText::FromString(Label))
+			]
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.FillWidth(1.0f)
+				.VAlign(VAlign_Center)
+				[
+					SNew(SSlider)
+					.MinValue(MinSliderValue)
+					.MaxValue(MaxSliderValue)
+					.Value_Lambda([GetValue, MinSliderValue]()
+					{
+						return GetValue().Get(MinSliderValue);
+					})
+					.OnValueChanged_Lambda([SetValue](float NewValue)
+					{
+						SetValue(NewValue);
+					})
+				]
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+				[
+					SNew(SBox)
+					.WidthOverride(72.0f)
+					[
+						SNew(SNumericEntryBox<float>)
+						.AllowSpin(false)
+						.Value_Lambda([GetValue]()
+						{
+							return GetValue();
+						})
+						.OnValueChanged_Lambda([SetValue](float NewValue)
+						{
+							SetValue(NewValue);
+						})
+					]
+				]
+			];
+	}
+}
+
+TSharedRef<SWidget> SRDGGraphicsDebugger::MakeDeathTransitionSection()
+{
+	using namespace RDGGraphicsDebugger;
+
+	const TFunction<ULocalPlayerPostProcessSubsystem*()> Resolve = [this]()
+	{
+		return ResolvePostProcessSubsystem();
+	};
+
+	auto NoiseRow = [Resolve](const TCHAR* Label, float MinSlider, float MaxSlider, TFunction<float&(FDeathNoiseParameters&)> Field)
+	{
+		return MakeDeathParameterRow<FDeathNoiseParameters>(
+			Label, MinSlider, MaxSlider, Resolve,
+			[](const ULocalPlayerPostProcessSubsystem& Subsystem) -> const FDeathNoiseParameters& { return Subsystem.GetPostProcessStrcture().DeathNoise; },
+			[](ULocalPlayerPostProcessSubsystem& Subsystem, const FDeathNoiseParameters& Parameters) { Subsystem.SetDeathNoiseParameters(Parameters); },
+			MoveTemp(Field));
+	};
+
+	auto FadeRow = [Resolve](const TCHAR* Label, float MinSlider, float MaxSlider, TFunction<float&(FDeathFadeParameters&)> Field)
+	{
+		return MakeDeathParameterRow<FDeathFadeParameters>(
+			Label, MinSlider, MaxSlider, Resolve,
+			[](const ULocalPlayerPostProcessSubsystem& Subsystem) -> const FDeathFadeParameters& { return Subsystem.GetPostProcessStrcture().DeathFade; },
+			[](ULocalPlayerPostProcessSubsystem& Subsystem, const FDeathFadeParameters& Parameters) { Subsystem.SetDeathFadeParameters(Parameters); },
+			MoveTemp(Field));
+	};
+
+	auto BlackRow = [Resolve](const TCHAR* Label, float MinSlider, float MaxSlider, TFunction<float&(FDeathBlackParameters&)> Field)
+	{
+		return MakeDeathParameterRow<FDeathBlackParameters>(
+			Label, MinSlider, MaxSlider, Resolve,
+			[](const ULocalPlayerPostProcessSubsystem& Subsystem) -> const FDeathBlackParameters& { return Subsystem.GetPostProcessStrcture().DeathBlack; },
+			[](ULocalPlayerPostProcessSubsystem& Subsystem, const FDeathBlackParameters& Parameters) { Subsystem.SetDeathBlackParameters(Parameters); },
+			MoveTemp(Field));
+	};
+
+	auto ChromaticRow = [Resolve](const TCHAR* Label, float MinSlider, float MaxSlider, TFunction<float&(FDeathChromaticAberrationParameters&)> Field)
+	{
+		return MakeDeathParameterRow<FDeathChromaticAberrationParameters>(
+			Label, MinSlider, MaxSlider, Resolve,
+			[](const ULocalPlayerPostProcessSubsystem& Subsystem) -> const FDeathChromaticAberrationParameters& { return Subsystem.GetUIPostProcessStrcture().DeathChromaticAberration; },
+			[](ULocalPlayerPostProcessSubsystem& Subsystem, const FDeathChromaticAberrationParameters& Parameters) { Subsystem.SetDeathChromaticAberrationParameters(Parameters); },
+			MoveTemp(Field));
+	};
+
+	// 패스 하나 = 접을 수 있는 하위 섹션. 헤더 체크박스가 그 패스의 on/off 플래그다.
+	auto MakePassSection = [Resolve](const TCHAR* Title, EDeathTransitionPass Pass, const TArray<TSharedRef<SWidget>>& Rows) -> TSharedRef<SWidget>
+	{
+		TSharedRef<SVerticalBox> PassBody = SNew(SVerticalBox);
+		for (const TSharedRef<SWidget>& Row : Rows)
+		{
+			PassBody->AddSlot()
+			.AutoHeight()
+			[
+				Row
+			];
+		}
+
+		return SNew(SExpandableArea)
+			.InitiallyCollapsed(true)
+			.HeaderContent()
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				[
+					SNew(SCheckBox)
+					.IsChecked_Lambda([Resolve, Pass]()
+					{
+						const ULocalPlayerPostProcessSubsystem* Subsystem = Resolve();
+						return Subsystem && Subsystem->IsDeathTransitionPassEnabled(Pass)
+							? ECheckBoxState::Checked
+							: ECheckBoxState::Unchecked;
+					})
+					.OnCheckStateChanged_Lambda([Resolve, Pass](ECheckBoxState NewState)
+					{
+						if (ULocalPlayerPostProcessSubsystem* Subsystem = Resolve())
+						{
+							Subsystem->SetDeathTransitionPassEnabled(Pass, NewState == ECheckBoxState::Checked);
+						}
+					})
+				]
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+				.VAlign(VAlign_Center)
+				[
+					SNew(STextBlock)
+					.Text(FText::FromString(Title))
+				]
+			]
+			.BodyContent()
+			[
+				PassBody
+			];
+	};
+
+	TSharedRef<SVerticalBox> Body = SNew(SVerticalBox);
+
+	auto AddPassSection = [&Body](TSharedRef<SWidget> Section)
+	{
+		Body->AddSlot()
+		.AutoHeight()
+		.Padding(12.0f, 6.0f, 0.0f, 0.0f)
+		[
+			Section
+		];
+	};
+
+	// 죽지 않고 미리 보기. Play는 진행 중이어도 처음부터 다시 시작한다.
+	Body->AddSlot()
+	.AutoHeight()
+	.Padding(RowPadding)
+	[
+		SNew(SHorizontalBox)
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		[
+			SNew(SButton)
+			.Text(FText::FromString(TEXT("Play")))
+			.OnClicked_Lambda([Resolve]()
+			{
+				if (ULocalPlayerPostProcessSubsystem* Subsystem = Resolve())
+				{
+					Subsystem->StartDeathTransition();
+				}
+				return FReply::Handled();
+			})
+		]
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+		[
+			SNew(SButton)
+			.Text(FText::FromString(TEXT("Reset")))
+			.OnClicked_Lambda([Resolve]()
+			{
+				if (ULocalPlayerPostProcessSubsystem* Subsystem = Resolve())
+				{
+					Subsystem->ResetDeathTransition();
+				}
+				return FReply::Handled();
+			})
+		]
+	];
+
+	Body->AddSlot()
+	.AutoHeight()
+	.Padding(RowPadding)
+	[
+		SNew(STextBlock)
+		.Text_Lambda([Resolve]()
+		{
+			const ULocalPlayerPostProcessSubsystem* Subsystem = Resolve();
+			if (!Subsystem)
+			{
+				return FText::FromString(TEXT("Phase: -"));
+			}
+
+			const TCHAR* PhaseName = TEXT("Idle");
+			switch (Subsystem->GetDeathTransitionPhase())
+			{
+			case EDeathTransitionPhase::Fading:   PhaseName = TEXT("Fading"); break;
+			case EDeathTransitionPhase::Holding:  PhaseName = TEXT("Holding (Delay)"); break;
+			case EDeathTransitionPhase::Blackout: PhaseName = TEXT("Blackout (widget opened)"); break;
+			case EDeathTransitionPhase::Black:    PhaseName = TEXT("Black"); break;
+			default: break;
+			}
+			return FText::FromString(FString::Printf(TEXT("Phase: %s"), PhaseName));
+		})
+	];
+
+	Body->AddSlot()
+	.AutoHeight()
+	.Padding(RowPadding)
+	[
+		SNew(STextBlock)
+		.AutoWrapText(true)
+		.Text(FText::FromString(TEXT("Unchecked pass: drawing is skipped, timeline (incl. widget timing) keeps running.")))
+	];
+
+	AddPassSection(MakePassSection(TEXT("Noise (game view)"), EDeathTransitionPass::Noise,
+	{
+		NoiseRow(TEXT("Intensity"), 0.0f, 4.0f, [](FDeathNoiseParameters& P) -> float& { return P.Intensity; }),
+		NoiseRow(TEXT("Seed"), 0.0f, 100.0f, [](FDeathNoiseParameters& P) -> float& { return P.Seed; }),
+		NoiseRow(TEXT("Slice Rows (grid)"), 1.0f, 256.0f, [](FDeathNoiseParameters& P) -> float& { return P.SliceRows; }),
+		NoiseRow(TEXT("Slice Split Chance (avg height = 1/x rows)"), 0.0f, 1.0f, [](FDeathNoiseParameters& P) -> float& { return P.SliceSplitChance; }),
+		NoiseRow(TEXT("Glitch Rate (/s)"), 1.0f, 60.0f, [](FDeathNoiseParameters& P) -> float& { return P.GlitchRate; }),
+		NoiseRow(TEXT("Glitch Strength (view width ratio)"), 0.0f, 0.3f, [](FDeathNoiseParameters& P) -> float& { return P.GlitchStrength; }),
+		NoiseRow(TEXT("Glitch Threshold"), 0.0f, 1.0f, [](FDeathNoiseParameters& P) -> float& { return P.GlitchThreshold; }),
+		NoiseRow(TEXT("Glitch Glow"), 0.0f, 1.0f, [](FDeathNoiseParameters& P) -> float& { return P.GlitchGlow; }),
+		NoiseRow(TEXT("Burst Chance"), 0.0f, 1.0f, [](FDeathNoiseParameters& P) -> float& { return P.BurstChance; }),
+		NoiseRow(TEXT("Burst Strength (x)"), 1.0f, 10.0f, [](FDeathNoiseParameters& P) -> float& { return P.BurstStrength; }),
+		NoiseRow(TEXT("Burst Threshold"), 0.0f, 1.0f, [](FDeathNoiseParameters& P) -> float& { return P.BurstThreshold; }),
+		NoiseRow(TEXT("Tint R"), 0.0f, 1.0f, [](FDeathNoiseParameters& P) -> float& { return P.Tint.R; }),
+		NoiseRow(TEXT("Tint G"), 0.0f, 1.0f, [](FDeathNoiseParameters& P) -> float& { return P.Tint.G; }),
+		NoiseRow(TEXT("Tint B"), 0.0f, 1.0f, [](FDeathNoiseParameters& P) -> float& { return P.Tint.B; })
+	}));
+
+	AddPassSection(MakePassSection(TEXT("Fade (game view)"), EDeathTransitionPass::Fade,
+	{
+		FadeRow(TEXT("Target Color R"), 0.0f, 1.0f, [](FDeathFadeParameters& P) -> float& { return P.TargetColor.R; }),
+		FadeRow(TEXT("Target Color G"), 0.0f, 1.0f, [](FDeathFadeParameters& P) -> float& { return P.TargetColor.G; }),
+		FadeRow(TEXT("Target Color B"), 0.0f, 1.0f, [](FDeathFadeParameters& P) -> float& { return P.TargetColor.B; }),
+		FadeRow(TEXT("Max Strength"), 0.0f, 1.0f, [](FDeathFadeParameters& P) -> float& { return P.MaxStrength; }),
+		FadeRow(TEXT("Duration (s)"), 0.0f, 5.0f, [](FDeathFadeParameters& P) -> float& { return P.Duration; }),
+		FadeRow(TEXT("Delay before Black (s)"), 0.0f, 5.0f, [](FDeathFadeParameters& P) -> float& { return P.Delay; })
+	}));
+
+	AddPassSection(MakePassSection(TEXT("Black (game view) - widget opens when this starts"), EDeathTransitionPass::Black,
+	{
+		BlackRow(TEXT("Duration (s)"), 0.0f, 5.0f, [](FDeathBlackParameters& P) -> float& { return P.Duration; })
+	}));
+
+	AddPassSection(MakePassSection(TEXT("Chromatic Aberration (UI included)"), EDeathTransitionPass::ChromaticAberration,
+	{
+		ChromaticRow(TEXT("Offset X (screen width ratio)"), -0.02f, 0.02f, [](FDeathChromaticAberrationParameters& P) -> float& { return P.OffsetX; }),
+		ChromaticRow(TEXT("Offset Y (screen height ratio)"), -0.02f, 0.02f, [](FDeathChromaticAberrationParameters& P) -> float& { return P.OffsetY; })
+	}));
+
+	return SNew(SExpandableArea)
+		.InitiallyCollapsed(false)
+		.HeaderContent()
+		[
+			SNew(STextBlock)
+			.Text(FText::FromString(TEXT("Death Transition")))
+		]
+		.BodyContent()
+		[
+			Body
+		];
 }

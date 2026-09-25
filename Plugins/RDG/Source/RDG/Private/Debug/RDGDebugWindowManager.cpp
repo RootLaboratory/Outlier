@@ -2,6 +2,7 @@
 
 #include "Debug/SRDGGraphicsDebugger.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/SWindow.h"
 
 void FRDGDebugWindowManager::OpenWindow()
@@ -24,7 +25,12 @@ void FRDGDebugWindowManager::OpenWindow()
 		.SupportsMaximize(false)
 		.FocusWhenFirstShown(true)
 		[
-			SNew(SRDGGraphicsDebugger)
+			// 섹션이 창 높이보다 길어져서 아래쪽(사망 연출 등)이 잘리지 않게 스크롤로 감싼다.
+			SNew(SScrollBox)
+			+ SScrollBox::Slot()
+			[
+				SNew(SRDGGraphicsDebugger)
+			]
 		];
 
 	DebugWindow = NewWindow;

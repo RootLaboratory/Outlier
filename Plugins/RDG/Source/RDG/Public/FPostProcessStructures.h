@@ -141,7 +141,7 @@ struct FADSBlurParameters
 {
 	int32 bEnabled = false;              // ADS(조준) 블러 관련 패스 전체 on/off. 조준 램프 알파가 0보다 크고 디버그 토글이 켜져 있을 때 1.
 	int32 WeaponStencilValue = 3;        
-	float FocusDistanceWorld = 11.6f;    // 사이트-마스크 depth-band 판별 기준 거리(cm). 디버거에서 조절함. DOF 자체의 초점 거리는 별개로 ADSBlurSocketDistance(실측값)를 씀.
+	float FocusDistanceWorld = 12.0f;    // 사이트-마스크 depth-band 판별 기준 거리(cm). 디버거에서 조절함. DOF 자체의 초점 거리는 별개로 ADSBlurSocketDistance(실측값)를 씀.
 
 	// 홀로그램 조준경 유리는 무기 나머지 부분과 같은 WeaponStencilValue를 공유함 —
 	// 그래서 스텐실만으로는 구분이 안 되고, FocusDistanceWorld(소켓 거리) 근방의
@@ -161,12 +161,99 @@ struct FADSBlurParameters
 	int32 bEnableGpuStatScopes = false;
 };
 
+// 사망 연출용 루프 노이즈. UI를 제외한 게임 화면에만 걸리며 SVE Tonemap 이후에 돈다.
+// PopupRetainerBox 머티리얼의 가로 슬라이스 글리치를 진행도 대신 경과 시간으로 굴린다.
+// 슬라이스 높이는 글리치 프레임마다 무작위로 다시 나뉘고, 가끔 버스트로 크게 튄다.
+struct FDeathNoiseParameters
+{
+	int32 bEnabled = false;
+
+	// 노이즈가 켜진 뒤 경과 시간(초). 서브시스템 Tick이 0부터 누적한다.
+	float Time = 0.0f;
+
+	// 전체 세기. 이동량과 밝기에 같이 곱해진다.
+	float Intensity = 1.0f;
+
+	float Seed = 0.0f;
+
+	// 슬라이스 경계가 생길 수 있는 세로 격자 줄 수. 슬라이스 높이의 최소 단위가 된다.
+	float SliceRows = 96.0f;
+	// 격자 줄마다 새 슬라이스가 시작될 확률. 평균 슬라이스 높이 ≈ 1 / 이 값(줄).
+	float SliceSplitChance = 0.2f;
+
+	// 초당 글리치 프레임 수. 프레임마다 슬라이스 분할 / 이동 / 버스트를 전부 다시 뽑는다.
+	float GlitchRate = 16.0f;
+	// 평소 글리치 슬라이스의 최대 가로 이동량(뷰 폭 대비 비율).
+	float GlitchStrength = 0.06f;
+	// 평소 이 값 이상 난수를 뽑은 슬라이스만 글리치에 걸린다.
+	float GlitchThreshold = 0.6f;
+	// 글리치에 걸린 슬라이스에 더해지는 밝기.
+	float GlitchGlow = 0.2f;
+
+	// 글리치 프레임마다 버스트가 터질 확률.
+	float BurstChance = 0.15f;
+	// 버스트 프레임의 이동량 배율.
+	float BurstStrength = 4.0f;
+	// 버스트 프레임의 글리치 문턱. 평소보다 낮아서 더 많은 슬라이스가 한꺼번에 튄다.
+	float BurstThreshold = 0.3f;
+
+	// 글리치 밝기에 곱해지는 색. RGB만 사용한다.
+	FLinearColor Tint = FLinearColor::White;
+};
+
+// 사망 연출 Fade. 게임 화면 전체를 TargetColor 쪽으로 균등하게 보간한다. UI 제외, Noise 다음.
+// 끝까지 보간하면 모든 픽셀이 TargetColor 하나로 같아지므로 MaxStrength에서 멈추는 게 핵심이다.
+struct FDeathFadeParameters
+{
+	int32 bEnabled = false;
+
+	// 보간 목표 색(연한 검정). RGB만 사용한다.
+	FLinearColor TargetColor = FLinearColor(0.08f, 0.08f, 0.08f, 1.0f);
+
+	// 최대 보간 비율. 실제 보간량은 Progress * MaxStrength.
+	float MaxStrength = 0.8f;
+
+	// Progress 0 → 1에 걸리는 시간(초).
+	float Duration = 1.0f;
+
+	// Fade가 끝난 뒤 Black 시작까지 대기 시간(초).
+	float Delay = 0.5f;
+
+	// 현재 진행도(0~1). 사망 연출 시퀀스가 매 틱 갱신한다.
+	float Progress = 0.0f;
+};
+
+// 사망 연출 Black. Fade 결과를 Duration 동안 완전한 검정으로 보간한다. UI 제외, Fade 다음.
+// 이 패스가 시작되는 순간 PreSetLoadWidget이 뜬다.
+struct FDeathBlackParameters
+{
+	int32 bEnabled = false;
+
+	// Progress 0 → 1에 걸리는 시간(초).
+	float Duration = 0.5f;
+
+	// 현재 진행도(0~1). 사망 연출 시퀀스가 매 틱 갱신한다.
+	float Progress = 0.0f;
+};
+
 struct FUIChromaticAberrationParameters
 {
 	int32 bEnabled = false;
 	float StartOffset = 0.2f;
 	float Intensity = 0.4f;
 	float Padding = 0.0f;
+};
+
+// 사망 연출 CA. Slate 이후 backbuffer에 돌아서 UI(PreSetLoadWidget 포함)까지 먹는다.
+// 렌즈 좌표계 없이 화면 전체에서 R은 +Offset, B는 -Offset만큼 밀고 G는 제자리에 둔다.
+// 시간에 따른 흔들림은 Noise가 맡으므로 여기는 고정 오프셋뿐이다.
+struct FDeathChromaticAberrationParameters
+{
+	int32 bEnabled = false;
+
+	// 화면 폭 / 높이 대비 비율.
+	float OffsetX = 0.004f;
+	float OffsetY = 0.0f;
 };
 
 // Slate가 렌더링을 마친 backbuffer 색상에 적용하는 Overlay 블렌드 효과.
@@ -181,6 +268,7 @@ struct FOverlayParameters
 struct FPostProcessStrctureUI
 {
 	FUIChromaticAberrationParameters ChromaticAberration;
+	FDeathChromaticAberrationParameters DeathChromaticAberration;
 	FOverlayParameters Overlay;
 };
 
@@ -194,4 +282,7 @@ struct FPostProcessStrcture
 	FPixelSortingParameters PixelSorting;
 	FZoomBlurParameters ZoomBlur;
 	FADSBlurParameters ADSBlur;
+	FDeathNoiseParameters DeathNoise;
+	FDeathFadeParameters DeathFade;
+	FDeathBlackParameters DeathBlack;
 };
