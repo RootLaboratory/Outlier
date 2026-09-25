@@ -117,20 +117,6 @@ bool UHackableComponent::CanBeHackTarget(const FHackQueryContext& Context) const
 
 	if (HackTags.HasTag(OutlierGameplayTags::State::HackedOnce()))
 	{
-		// [WP 리로드 검증용 계측 — 2026-09-14 비활성화]
-		// 리로드 후에도 HackedOnce가 남아 재해킹이 막히는지 보려고 넣었던 1회성 로그.
-		// bLoggedHackedOnceBlock 멤버는 이 로그 전용이라 같이 비활성화한다.
-		//if (!bLoggedHackedOnceBlock)
-		//{
-		//	bLoggedHackedOnceBlock = true;
-		//	UE_LOG(LogTemp, Warning,
-		//		TEXT("[HackableLifecycle] HackedOnce candidate check Owner=%s Ptr=%p NetMode=%d MultiUse=%d Tags=%s"),
-		//		*GetPathNameSafe(Owner),
-		//		Owner,
-		//		GetWorld() ? static_cast<int32>(GetWorld()->GetNetMode()) : -1,
-		//		Context.HackMultiUseTags.Num() > 0 && HackTags.HasAny(Context.HackMultiUseTags),
-		//		*HackTags.ToStringSimple());
-		//}
 		return Context.HackMultiUseTags.Num() > 0
 			&& HackTags.HasAny(Context.HackMultiUseTags);
 	}

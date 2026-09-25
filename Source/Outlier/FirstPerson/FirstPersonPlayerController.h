@@ -194,6 +194,7 @@ public:
 	void HandleArenaGameplayReady(uint32 GameplayGeneration);
 	void HandleArenaGameplayGCReady(uint32 GameplayGeneration);
 	void ControlMainWidget(bool InFlag) const;
+	void ArmDeathTransitionReleaseOnPossess(); //리슨 서버일 때 호스트 클라에게도 PP Flag 해제.
 
 	UFUNCTION(BlueprintCallable, Category = "Input|Input Mode")
 	bool SetFirstPersonInputMode(FGameplayTag NewInputMode);
@@ -257,6 +258,10 @@ protected:
 	UFUNCTION()
 	void HandleLocalPresetStageSelected(FName StageId);
 
+	// 사망 연출의 Black 패스가 시작될 때 PreSetLoadWidget을 띄운다.
+	void HandleDeathBlackoutStarted();
+	void PushPresetSelectWidget();
+
 
 protected:
 
@@ -312,6 +317,10 @@ protected:
 
 	bool bCanRequestCheckpointRestart = false;
 	bool bExplicitLeaveRequested = false;
+
+	// 리로드(리스폰) RPC를 받은 뒤 첫 Possess에서 사망 연출을 즉시 끊는다. Possess만으로 판단하면
+	// 연출 도중의 다른 Possess(Partner의 적 해킹 등)까지 연출을 끊어서 위젯이 안 뜨게 된다.
+	bool bReleaseDeathTransitionOnPossess = false;
 	EOutlierCheckpointRestartVoteView CheckpointRestartVoteView =
 		EOutlierCheckpointRestartVoteView::None;
 };

@@ -21,6 +21,7 @@
 #include "Shooter/ShooterCharacter.h"
 #include "Network/OutlierArenaSubsystem.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
+#include "LocalPlayerPostProcessSubsystem.h"
 #include "UI/InGamePauseWidget.h"
 #include "UI/InGameSettingWidget.h"
 #include "UI/PreSetLoadWidget.h"
@@ -365,6 +366,47 @@ void AFirstPersonPlayerController::Client_ShowPresetSelect_Implementation()
 		return;
 	}
 
+	// 사망 연출(Noise → Fade → Black)을 먼저 돌리고, Black 패스가 시작되는 순간 위젯을 띄운다.
+	// 연출을 못 돌리는 환경이면 기다리지 않고 바로 띄운다.
+	if (ULocalPlayerPostProcessSubsystem* PPSubsystem = GetLocalPlayer()
+		? GetLocalPlayer()->GetSubsystem<ULocalPlayerPostProcessSubsystem>()
+		: nullptr)
+	{
+		PPSubsystem->OnDeathBlackoutStarted.RemoveAll(this);
+		PPSubsystem->OnDeathBlackoutStarted.AddUObject(
+			this,
+			&AFirstPersonPlayerController::HandleDeathBlackoutStarted);
+
+		if (PPSubsystem->StartDeathTransition())
+		{
+			return;
+		}
+
+		PPSubsystem->OnDeathBlackoutStarted.RemoveAll(this);
+	}
+
+	PushPresetSelectWidget();
+}
+
+void AFirstPersonPlayerController::HandleDeathBlackoutStarted()
+{
+	if (ULocalPlayerPostProcessSubsystem* PPSubsystem = GetLocalPlayer()
+		? GetLocalPlayer()->GetSubsystem<ULocalPlayerPostProcessSubsystem>()
+		: nullptr)
+	{
+		PPSubsystem->OnDeathBlackoutStarted.RemoveAll(this);
+	}
+
+	PushPresetSelectWidget();
+}
+
+void AFirstPersonPlayerController::PushPresetSelectWidget()
+{
+	if (!IsLocalController() || !PresetLoadWidgetClass)
+	{
+		return;
+	}
+
 	ULocalPlayer* LocalPlayer = GetLocalPlayer();
 	ULocalPlayerUILayerSubsystem* LayerSubsystem = LocalPlayer
 		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()
@@ -587,12 +629,47 @@ void AFirstPersonPlayerController::BeginPlay()
 void AFirstPersonPlayerController::AcknowledgePossession(APawn* P)
 {
 	Super::AcknowledgePossession(P);
+
+	if (IsLocalController())
+	{
+		if (ULocalPlayerPostProcessSubsystem* PPSubsystem = GetLocalPlayer()
+			? GetLocalPlayer()->GetSubsystem<ULocalPlayerPostProcessSubsystem>()
+			: nullptr)
+		{
+			// 리스폰으로 새 폰을 잡은 순간 사망 연출을 즉시 끊는다.
+			if (bReleaseDeathTransitionOnPossess)
+			{
+				bReleaseDeathTransitionOnPossess = false;
+				PPSubsystem->OnDeathBlackoutStarted.RemoveAll(this);
+				PPSubsystem->ResetDeathTransition();
+				// 새 Pawn을 실제로 잡은 경우에만 사망 연출을 해제하고,
+				// Slate/backbuffer 단계의 기본 CA를 복구한다.
+				PPSubsystem->SetChromaticAberrationEnabled(true);
+			}
+
+#if UE_BUILD_SHIPPING
+			// 기존 렌즈 CA는 Shipping에서만, 게임 폰을 잡은 순간부터 켠다. 끄는 건 사망 연출 시작과 EndPlay.
+			// 사망 연출 중(예: 연출 도중 Partner가 적을 해킹해 Possess)에는 새 CA와 겹치지 않게 켜지 않는다.
+			// 리스폰 해제는 바로 위에서 끝났으므로 그 경우엔 여기서 다시 켜진다.
+			if (!PPSubsystem->IsDeathTransitionActive())
+			{
+				PPSubsystem->SetChromaticAberrationEnabled(true);
+			}
+#endif
+		}
+	}
+
 	if (!bWaitingForArenaStart)
 	{
 		ReleaseClientArenaStreamingSource();
 	}
 	ReportLoadedLevelsVisibilityToServer();
 	TryNotifyArenaStartReady();
+}
+
+void AFirstPersonPlayerController::ArmDeathTransitionReleaseOnPossess()
+{
+	bReleaseDeathTransitionOnPossess = true;
 }
 
 void AFirstPersonPlayerController::ReportLoadedLevelsVisibilityToServer()
@@ -783,6 +860,21 @@ void AFirstPersonPlayerController::EndPlay(const EEndPlayReason::Type EndPlayRea
 		ShooterUIInstance = nullptr;
 	}
 
+	// PostProcess 서브시스템은 LocalPlayer 소속이라 맵을 옮겨도 살아남는다. 월드를 떠날 때 기존 CA와
+	// 사망 연출을 끄지 않으면 로비 / 타이틀까지 그대로 따라간다.
+	// 교체돼서 이미 LocalPlayer를 넘겨준 옛 PC는 새 PC가 켠 상태를 건드리면 안 된다.
+	ULocalPlayer* LP = GetLocalPlayer();
+	if (LP && LP->PlayerController == this)
+	{
+		if (ULocalPlayerPostProcessSubsystem* PPSubsystem =
+			LP->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
+		{
+			PPSubsystem->OnDeathBlackoutStarted.RemoveAll(this);
+			PPSubsystem->ResetDeathTransition();
+			PPSubsystem->SetChromaticAberrationEnabled(false);
+		}
+	}
+
 	Super::EndPlay(EndPlayReason);
 }
 
@@ -891,6 +983,7 @@ void AFirstPersonPlayerController::ClientArenaReload_Implementation(FVector InSp
 	}
 
 	ApplyServerArenaSpawnLocation(InSpawnLocation);
+	bReleaseDeathTransitionOnPossess = true;
 
 	// 강제 리로드라 항상 새로 스트리밍된다. 바인딩을 먼저 걸고(레이스 방지) 리로드.
 	bHasPendingArenaRequest = true;
@@ -914,6 +1007,7 @@ void AFirstPersonPlayerController::ClientArenaGameplayReload_Implementation(uint
 		return;
 	}
 	ApplyServerArenaSpawnLocation(InSpawnLocation);
+	bReleaseDeathTransitionOnPossess = true;
 
 	// 아레나 LevelInstance는 건드리지 않는다. 서버에서 복제되는 Gameplay Data Layer가
 	// 클라이언트도 이전 Actor의 GC를 확인해 ACK한 뒤 Activated/Streaming 준비 완료를 따로 기다린다.
