@@ -86,12 +86,6 @@ namespace TagDrivenUITags
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("UI.Player.Shooter.DistanceLimit")));
 			return Tag;
 		}
-
-		inline FGameplayTag DamageFeedback()
-		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("UI.Player.Shooter.DamageFeedback")));
-			return Tag;
-		}
 	}
 
 	namespace Partner
@@ -159,12 +153,6 @@ namespace TagDrivenUITags
 		inline FGameplayTag DistanceLimit()
 		{
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("UI.Player.Partner.DistanceLimit")));
-			return Tag;
-		}
-
-		inline FGameplayTag DamageFeedback()
-		{
-			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("UI.Player.Partner.DamageFeedback")));
 			return Tag;
 		}
 	}

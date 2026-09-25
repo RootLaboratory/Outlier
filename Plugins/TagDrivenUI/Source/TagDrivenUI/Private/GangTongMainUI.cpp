@@ -8,7 +8,6 @@
 #include "PartnerHealthUI.h"
 #include "StaticCrossHair.h"
 #include "DistanceSlideUI.h"
-#include "DamageFeedBackWidget.h"
 #include "TagDrivenUIGameplayTags.h"
 
 void UGangTongMainUI::NativeConstruct()
@@ -27,7 +26,6 @@ void UGangTongMainUI::ModuleInit()
 	RegisterModule(TagDrivenUITags::Partner::Health(), PartnerHealthUI);
 	RegisterModule(TagDrivenUITags::Partner::CrossHair(), CrossHairUI);
 	RegisterModule(TagDrivenUITags::Partner::DistanceLimit(), DistanceSlide);
-	RegisterModule(TagDrivenUITags::Partner::DamageFeedback(), DamageFeedbackUI);
 
 	RegisterAbilityIcon(AbilityShieldIcon,  TagDrivenUITags::Ability::Partner::Shield(),  true);
 	RegisterAbilityIcon(AbilityHackingIcon, TagDrivenUITags::Ability::Partner::Hacking(), true);

@@ -25,6 +25,7 @@ enum class EUIPlayerState : uint8
 class UEventDrivenUI;
 class UAbilityIconUI;
 class UCanvasPanel;
+class UDamageFeedbackLayer;
 class UWidget;
 
 UCLASS()
@@ -77,6 +78,11 @@ public:
 
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UCanvasPanel> InteractionLayer;
+
+	// 루트 캔버스에 미리 배치해두고 재사용하는 피격 방향 피드백 레이어.
+	// 기존 WBP 호환 작업 전까지는 선택적으로 바인딩한다.
+	UPROPERTY(meta = (BindWidgetOptional))
+	TObjectPtr<UDamageFeedbackLayer> DamageFeedbackLayer;
 
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UCanvasPanel> DefaultLayer;

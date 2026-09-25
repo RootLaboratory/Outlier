@@ -7,6 +7,7 @@
 class UImage;
 class UMaterialInstanceDynamic;
 class UMaterialInterface;
+class UTexture2D;
 
 UCLASS()
 class OUTLIER_API UTeleportSpriteAnimation : public UUserWidget
@@ -18,6 +19,8 @@ public:
 	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
 
 	void StartTeleportAnimation(float InLayerTimeMultiplier = 1.0f);
+
+	void SetSpriteTexture(UTexture2D* InSpriteTexture);
 
 	void StopAnimation();
 
@@ -38,6 +41,9 @@ public:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Teleport Sprite Animation|Material")
 	FName SpeedParameterName = TEXT("Speed");
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Teleport Sprite Animation|Material")
+	FName SpriteParameterName = TEXT("Sprite");
 
 private:
 	UPROPERTY(Transient)

@@ -13,7 +13,6 @@ class UAbilityIconUI;
 class UDistanceSlideUI;
 class UPartnerHPUI;
 class UPartnerHealthUI;
-class UDamageFeedBackWidget;
 //HP Delegate;
 
 UENUM(BlueprintType)
@@ -67,10 +66,6 @@ public:
 
 	UPROPERTY(meta = (BindWidgetOptional))
 	TObjectPtr<UDistanceSlideUI> DistanceSlide;
-
-	UPROPERTY(meta = (BindWidget))
-	TObjectPtr<UDamageFeedBackWidget> DamageFeedbackUI;
-
 
 
 };
