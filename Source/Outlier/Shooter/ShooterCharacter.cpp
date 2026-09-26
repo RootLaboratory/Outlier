@@ -23,6 +23,7 @@
 #include "PostProcess/OutlierPostProcessVolume.h"
 #include "LocalPlayerUISubSystem.h"
 #include "InputActionValue.h"
+#include "NiagaraFunctionLibrary.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Enemy/EnemyRoomSubsystem.h"
 #include "TagDrivenUIGameplayTags.h"
@@ -139,6 +140,7 @@ AShooterCharacter::AShooterCharacter() : AFirstPersonCharacter()
 	ShieldAttributeSet = CreateDefaultSubobject<UOutlierShieldAttributeSet>(TEXT("ShieldAttributeSet"));
 
 	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
+	JumpMaxCount = 2;
 
 	ShadowMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("ShadowMesh"));
 	ShadowMesh->SetupAttachment(GetCapsuleComponent());
@@ -1145,6 +1147,21 @@ void AShooterCharacter::OnMovementModeChanged(EMovementMode  PrevMovementMode, u
 		&& CombatComponent)
 	{
 		CombatComponent->RestoreAimIfRequested();
+	}
+}
+
+void AShooterCharacter::CheckJumpInput(float DeltaTime)
+{
+	const int32 PreviousJumpCount = JumpCurrentCount;
+	Super::CheckJumpInput(DeltaTime);
+
+	// Jump()는 입력만 예약한다. 엔진이 실제 점프에 성공해 횟수를 1에서 2로 올린 뒤 서버에서만 알린다.
+	if (HasAuthority() && PreviousJumpCount == 1 && JumpCurrentCount == 2)
+	{
+		const UCapsuleComponent* Capsule = GetCapsuleComponent();
+		const FVector FootLocation = Capsule->GetComponentLocation()
+			- FVector::UpVector * Capsule->GetScaledCapsuleHalfHeight();
+		MulticastNotifyThirdPersonDoubleJump(FootLocation);
 	}
 }
 
@@ -3278,6 +3295,17 @@ void AShooterCharacter::ServerJumpEnd_Implementation()
 	{
 		MovementComponent->DoJumpEnd();
 	}
+}
+
+void AShooterCharacter::MulticastNotifyThirdPersonDoubleJump_Implementation(FVector_NetQuantize WorldLocation)
+{
+	// 멀티캐스트는 서버와 소유자에게도 실행되므로 3인칭 관찰자에게만 이펙트를 재생한다.
+	if (GetNetMode() == NM_DedicatedServer || IsLocallyControlled() || !DoubleJumpVFX)
+	{
+		return;
+	}
+
+	UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, DoubleJumpVFX, WorldLocation);
 }
 
 void AShooterCharacter::ServerSetLeanTarget_Implementation(float NewLeanAlpha)

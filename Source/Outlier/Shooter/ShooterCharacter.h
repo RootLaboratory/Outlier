@@ -32,6 +32,7 @@ class UOutlierShieldAttributeSet;
 class UDataTable;
 class USphereComponent;
 class USkeletalMesh;
+class UNiagaraSystem;
 class UShooterReflectionBarrier;
 class UShooterTeleportLayer;
 struct FOnAttributeChangeData;
@@ -223,6 +224,9 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, Category = "Slide")
 	TObjectPtr<UCurveFloat> SlideSpeedCurve;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "VFX|Jump")
+	TObjectPtr<UNiagaraSystem> DoubleJumpVFX;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Components, meta = (AllowPrivateAccess = "true"))
 	USkeletalMeshComponent* ShadowMesh;
@@ -470,6 +474,7 @@ protected:
 	virtual void Landed(const FHitResult& Hit) override;
 
 	virtual void OnMovementModeChanged(EMovementMode  PrevMovementMode, uint8 PreviousCustomMode) override;
+	virtual void CheckJumpInput(float DeltaTime) override;
 
 	virtual void OnMoveInputUpdated(const FVector2D& MoveValue);
 
@@ -750,6 +755,9 @@ protected:
 
 	UFUNCTION(Server, Reliable)
 	void ServerJumpEnd();
+
+	UFUNCTION(NetMulticast, Unreliable)
+	void MulticastNotifyThirdPersonDoubleJump(FVector_NetQuantize WorldLocation);
 
 	UFUNCTION(Server, Reliable)
 	void ServerSetLeanTarget(float NewLeanAlpha);
