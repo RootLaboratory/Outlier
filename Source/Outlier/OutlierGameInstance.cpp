@@ -7,6 +7,8 @@
 #include "AbilitySystemGlobals.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
+#include "Engine/NetDriver.h"
+#include "Engine/NetConnection.h"
 #include "GameFramework/PlayerController.h"
 #include "Misc/CommandLine.h"
 #include "Network/OutlierArenaProcessSubsystem.h"
@@ -69,11 +71,42 @@ void UOutlierGameInstance::NotifyArenaHandoffStarted(const FString& ArenaUrl)
 	ArenaReconnectDeadlineSeconds = 0.0;
 }
 
+void UOutlierGameInstance::NotifyListenReconnectToken(const FGuid& Token)
+{
+	const UWorld* World = GetWorld();
+	const UNetDriver* NetDriver = World ? World->GetNetDriver() : nullptr;
+	UNetConnection* ServerConnection = NetDriver ? NetDriver->ServerConnection : nullptr;
+	if (!Token.IsValid() || !World || World->GetNetMode() != NM_Client || !ServerConnection)
+	{
+		return;
+	}
+
+	const FString Address = ServerConnection->LowLevelGetRemoteAddress(true);
+	if (Address.IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[ListenReconnect] Could not capture host address"));
+		return;
+	}
+	LastListenReconnectUrl = FString::Printf(TEXT("%s?ListenReconnect=%s"),
+		*Address, *Token.ToString());
+	// Listen은 별도 Arena 월드가 아닌 스트리밍 인스턴스이므로 맵 이름 대신
+	// 새 서버 Controller의 이 RPC 수신을 재접속 성공 신호로 사용한다.
+	bArenaReconnectActive = false;
+	ArenaReconnectDeadlineSeconds = 0.0;
+	if (ArenaReconnectTickerHandle.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(ArenaReconnectTickerHandle);
+		ArenaReconnectTickerHandle.Reset();
+	}
+	UE_LOG(LogTemp, Display, TEXT("[ListenReconnect] Guest reconnect route is ready"));
+}
+
 void UOutlierGameInstance::PrepareForExplicitLeave()
 {
 	// 사용자가 직접 나가는 경우에는 뒤이어 발생하는 연결 종료를 장애로 오인해
 	// 이전 Worker URL로 재접속하면 안 된다. Travel 전에 Handoff 수명을 여기서 끝낸다.
 	ResetArenaHandoffState();
+	ResetListenReconnectState();
 }
 
 void UOutlierGameInstance::HandlePostLoadMap(UWorld* LoadedWorld)
@@ -116,6 +149,13 @@ void UOutlierGameInstance::HandlePostLoadMap(UWorld* LoadedWorld)
 			ResetArenaHandoffState();
 		}
 	}
+	// 재시도 중 잠시 Standalone 월드를 거칠 수 있으므로, 재시도가 끝난 뒤에만 경로를 지운다.
+	if (!LastListenReconnectUrl.IsEmpty()
+		&& LoadedWorld->GetNetMode() == NM_Standalone
+		&& !bArenaReconnectActive)
+	{
+		ResetListenReconnectState();
+	}
 
 	if (bTriedConnect)
 	{
@@ -148,14 +188,22 @@ void UOutlierGameInstance::HandleNetworkFailure(
 	const FString& ErrorString)
 {
 	(void)NetDriver;
-	// 외부 Arena Handoff가 활성화된 클라이언트만 Dedicated Worker 재접속 대상이다.
-	// 일반 Listen Client는 Host가 사라진 것이므로 기다리지 않고 Title로 돌아간다.
+	// 명시적 이탈은 미리 재접속 정보를 지운다. 네트워크 장애만 원래 자리로 재시도한다.
 	if (bArenaHandoffActive && !LastArenaHandoffUrl.IsEmpty())
 	{
 		UE_LOG(LogTemp, Warning,
 			TEXT("[ArenaReconnect] Arena connection lost. Retrying within grace period Type=%s Error=%s"),
 			ENetworkFailure::ToString(FailureType),
 			*ErrorString);
+		ScheduleArenaReconnect();
+		return;
+	}
+	if (!LastListenReconnectUrl.IsEmpty()
+		&& (bArenaReconnectActive || (World && World->GetNetMode() == NM_Client)))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[ListenReconnect] Connection lost. Retrying within grace period Type=%s Error=%s"),
+			ENetworkFailure::ToString(FailureType), *ErrorString);
 		ScheduleArenaReconnect();
 		return;
 	}
@@ -208,7 +256,9 @@ bool UOutlierGameInstance::HandleArenaReconnectTick(float DeltaTime)
 	// ClientTravel이 현재 World를 교체할 수 있으므로 Ticker는 매 시도마다 한 번만 실행한다.
 	// 실패하면 NetworkFailure가 다음 시도를 다시 예약하고, 성공하면 PostLoadMap이 상태를 정리한다.
 	ArenaReconnectTickerHandle.Reset();
-	if (!bArenaReconnectActive || LastArenaHandoffUrl.IsEmpty())
+	const bool bWorkerReconnect = bArenaHandoffActive && !LastArenaHandoffUrl.IsEmpty();
+	const FString& ReconnectUrl = bWorkerReconnect ? LastArenaHandoffUrl : LastListenReconnectUrl;
+	if (!bArenaReconnectActive || ReconnectUrl.IsEmpty())
 	{
 		return false;
 	}
@@ -217,6 +267,13 @@ bool UOutlierGameInstance::HandleArenaReconnectTick(float DeltaTime)
 	if (FPlatformTime::Seconds() >= ArenaReconnectDeadlineSeconds)
 	{
 		bArenaReconnectActive = false;
+		if (!bWorkerReconnect)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[ListenReconnect] Retry grace expired; returning to Title"));
+			ResetListenReconnectState();
+			ReturnToMainMenu();
+			return false;
+		}
 		UE_LOG(LogTemp, Warning, TEXT("[ArenaReconnect] Reconnect grace expired; returning to Lobby"));
 		if (TryQueueLobbyRecovery())
 		{
@@ -234,8 +291,9 @@ bool UOutlierGameInstance::HandleArenaReconnectTick(float DeltaTime)
 		return false;
 	}
 
-	UE_LOG(LogTemp, Display, TEXT("[ArenaReconnect] Retrying %s"), *LastArenaHandoffUrl);
-	PlayerController->ClientTravel(LastArenaHandoffUrl, TRAVEL_Absolute);
+	UE_LOG(LogTemp, Display, TEXT("[%s] Retrying connection"),
+		bWorkerReconnect ? TEXT("ArenaReconnect") : TEXT("ListenReconnect"));
+	PlayerController->ClientTravel(ReconnectUrl, TRAVEL_Absolute);
 	return false;
 }
 
@@ -386,4 +444,19 @@ void UOutlierGameInstance::ResetArenaHandoffState()
 	bArenaReconnectActive = false;
 	ArenaReconnectDeadlineSeconds = 0.0;
 	LastArenaHandoffUrl.Reset();
+}
+
+void UOutlierGameInstance::ResetListenReconnectState()
+{
+	LastListenReconnectUrl.Reset();
+	if (!bArenaHandoffActive)
+	{
+		if (ArenaReconnectTickerHandle.IsValid())
+		{
+			FTSTicker::GetCoreTicker().RemoveTicker(ArenaReconnectTickerHandle);
+			ArenaReconnectTickerHandle.Reset();
+		}
+		bArenaReconnectActive = false;
+		ArenaReconnectDeadlineSeconds = 0.0;
+	}
 }

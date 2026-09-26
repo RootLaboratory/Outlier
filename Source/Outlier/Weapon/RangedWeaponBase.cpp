@@ -984,6 +984,8 @@ void ARangedWeaponBase::HideSightPresentation()
 		if (SightComponent)
 		{
 			SightComponent->SetHiddenInGame(true);
+			SightComponent->SetCastShadow(false);
+			SightComponent->SetCastHiddenShadow(false);
 		}
 	}
 }

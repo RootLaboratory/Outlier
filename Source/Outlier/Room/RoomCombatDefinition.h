@@ -12,7 +12,8 @@ enum class ERoomCombatPhaseStartPolicy : uint8
 {
 	InitialDetection UMETA(DisplayName = "Initial Detection"),
 	HackTrigger UMETA(DisplayName = "Hack Trigger"),
-	Automatic UMETA(DisplayName = "Automatic")
+	Automatic UMETA(DisplayName = "Automatic"),
+	ExternalTrigger UMETA(DisplayName = "External Trigger")
 };
 
 UENUM(BlueprintType)

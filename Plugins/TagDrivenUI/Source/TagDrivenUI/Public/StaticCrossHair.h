@@ -19,6 +19,7 @@ public:
 
 	virtual void NativeConstruct() override;
 	virtual void NativeTick(const FGeometry& MyGeometry, float Indelta) override;
+	virtual void Activate() override;
 
 public:
 
@@ -38,7 +39,7 @@ public:
 
 
 public:
-	void SetCoolTime(float InCoolTime);
+	void SetCoolTime(float InCoolTime, float InElapsedTime = 0.0f);
 	void UpdateCoolTime(float delta); //delta 누적 및 Material Update
 	bool IsCooldowning();
 	void CooldownDone();
@@ -46,5 +47,7 @@ public:
 private:
 	float CoolTime = 0; // 후에 Material 연동
 	float AccumulatedTime = 0; // 후에 Material 연동
+	// 비활성화된 위젯은 Tick이 멈추므로 Delta 누적 대신 절대 시각으로 경과 시간을 복원한다.
+	float CooldownStartTime = 0.0f;
 	uint8 bCooldowning : 1 = false;
 };

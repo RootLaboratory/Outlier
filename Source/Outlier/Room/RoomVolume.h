@@ -19,6 +19,7 @@ public:
 	ARoomVolume();
 
 	FGameplayTag GetRoomTag() const { return RoomTag; }
+	bool ContainsWorldLocation(const FVector& Location) const;
 	void SetCombatStreamingSourceEnabled(bool bEnabled);
 	bool IsCombatStreamingSourceEnabled() const;
 

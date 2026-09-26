@@ -30,6 +30,33 @@ DECLARE_MULTICAST_DELEGATE_OneParam(FOnStatAllocatorExitPendingChanged, AOutlier
 DECLARE_MULTICAST_DELEGATE(FOnActivatedUpgradeNodesChanged);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnPendingPresetSelectionChanged, AOutlierPlayerState*);
 
+USTRUCT()
+struct FOutlierReconnectGameplayState
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	FOutlierCheckpointData CheckpointData;
+	UPROPERTY()
+	int32 NodeCount = 0;
+	UPROPERTY()
+	bool bStatAllocatorExitPending = false;
+	UPROPERTY()
+	TArray<FName> ShooterActivatedUpgradeNodeIds;
+	UPROPERTY()
+	TArray<FName> PartnerActivatedUpgradeNodeIds;
+	UPROPERTY()
+	FName PendingPresetSelection = NAME_None;
+	UPROPERTY()
+	bool bHasAcquiredSuit = false;
+	UPROPERTY()
+	TObjectPtr<USkeletalMesh> SuitFirstPersonMesh;
+	UPROPERTY()
+	TObjectPtr<USkeletalMesh> SuitThirdPersonMesh;
+	UPROPERTY()
+	FOutlierLoadoutSnapshot LoadoutSnapshot;
+};
+
 
 /**
  * 
@@ -288,5 +315,7 @@ public:
 	const FOutlierLoadoutSnapshot& GetLoadoutSnapshot() const { return LoadoutSnapshot; }
 	// 재접속 시 새 PlayerState에 판 진행 데이터만 복원한다. 신원과 Pair 링크는 포함하지 않는다.
 	void CopyReconnectGameplayStateFrom(const AOutlierPlayerState& Source);
+	FOutlierReconnectGameplayState CaptureReconnectGameplayState() const;
+	void RestoreReconnectGameplayState(const FOutlierReconnectGameplayState& State);
 	FOnPendingPresetSelectionChanged OnPendingPresetSelectionChanged;
 };

@@ -594,23 +594,44 @@ void AOutlierPlayerState::SetLoadoutSnapshot(const FOutlierLoadoutSnapshot& NewS
 
 void AOutlierPlayerState::CopyReconnectGameplayStateFrom(const AOutlierPlayerState& Source)
 {
+	// 끊긴 Controller와 함께 사라지는 PlayerState에서 판 진행 데이터만 옮긴다.
+	// PlayerId, Role, Pair 링크는 새 접속 요청과 RefreshPairLinks가 다시 확정하므로 복사하지 않는다.
+	RestoreReconnectGameplayState(Source.CaptureReconnectGameplayState());
+}
+
+FOutlierReconnectGameplayState AOutlierPlayerState::CaptureReconnectGameplayState() const
+{
+	FOutlierReconnectGameplayState State;
+	State.CheckpointData = CheckpointData;
+	State.NodeCount = NodeCount;
+	State.bStatAllocatorExitPending = bStatAllocatorExitPending;
+	State.ShooterActivatedUpgradeNodeIds = ShooterActivatedUpgradeNodeIds;
+	State.PartnerActivatedUpgradeNodeIds = PartnerActivatedUpgradeNodeIds;
+	State.PendingPresetSelection = PendingPresetSelection;
+	State.bHasAcquiredSuit = bHasAcquiredSuit;
+	State.SuitFirstPersonMesh = SuitFirstPersonMesh;
+	State.SuitThirdPersonMesh = SuitThirdPersonMesh;
+	State.LoadoutSnapshot = LoadoutSnapshot;
+	return State;
+}
+
+void AOutlierPlayerState::RestoreReconnectGameplayState(
+	const FOutlierReconnectGameplayState& State)
+{
 	if (!HasAuthority())
 	{
 		return;
 	}
-
-	// 끊긴 Controller와 함께 사라지는 PlayerState에서 판 진행 데이터만 옮긴다.
-	// PlayerId, Role, Pair 링크는 새 접속 요청과 RefreshPairLinks가 다시 확정하므로 복사하지 않는다.
-	CheckpointData = Source.CheckpointData;
-	NodeCount = Source.NodeCount;
-	bStatAllocatorExitPending = Source.bStatAllocatorExitPending;
-	ShooterActivatedUpgradeNodeIds = Source.ShooterActivatedUpgradeNodeIds;
-	PartnerActivatedUpgradeNodeIds = Source.PartnerActivatedUpgradeNodeIds;
-	PendingPresetSelection = Source.PendingPresetSelection;
-	bHasAcquiredSuit = Source.bHasAcquiredSuit;
-	SuitFirstPersonMesh = Source.SuitFirstPersonMesh;
-	SuitThirdPersonMesh = Source.SuitThirdPersonMesh;
-	LoadoutSnapshot = Source.LoadoutSnapshot;
+	CheckpointData = State.CheckpointData;
+	NodeCount = State.NodeCount;
+	bStatAllocatorExitPending = State.bStatAllocatorExitPending;
+	ShooterActivatedUpgradeNodeIds = State.ShooterActivatedUpgradeNodeIds;
+	PartnerActivatedUpgradeNodeIds = State.PartnerActivatedUpgradeNodeIds;
+	PendingPresetSelection = State.PendingPresetSelection;
+	bHasAcquiredSuit = State.bHasAcquiredSuit;
+	SuitFirstPersonMesh = State.SuitFirstPersonMesh;
+	SuitThirdPersonMesh = State.SuitThirdPersonMesh;
+	LoadoutSnapshot = State.LoadoutSnapshot;
 	ForceNetUpdate();
 }
 

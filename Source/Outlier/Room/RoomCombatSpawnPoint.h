@@ -7,6 +7,7 @@
 
 class USceneComponent;
 class UStaticMeshComponent;
+class UMaterialInterface;
 class USphereComponent;
 class UTextRenderComponent;
 class AEnemyBase;
@@ -19,14 +20,17 @@ class OUTLIER_API ARoomCombatSpawnPoint : public AActor
 public:
 	ARoomCombatSpawnPoint();
 	virtual void OnConstruction(const FTransform& Transform) override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	FGameplayTag GetRoomTag() const { return RoomTag; }
 	const FGameplayTagContainer& GetSpawnPointTags() const { return SpawnPointTags; }
 	float GetSpawnWeight() const { return SpawnWeight; }
 	float GetSpawnRadius() const { return SpawnRadius; }
 	FGameplayTag GetActivationGroupTag() const { return ActivationGroupTag; }
-	bool IsRuntimeActive() const { return bRuntimeActive; }
+	bool IsRuntimeActive() const { return bRuntimeActive && !bRoomCleared; }
+	bool IsRoomCleared() const { return bRoomCleared; }
 	void SetRuntimeActive(bool bActive);
+	void SetRoomCleared(bool bCleared);
 	bool FindSpawnTransform(
 		TSubclassOf<AEnemyBase> EnemyClass,
 		int32 SearchSeed,
@@ -52,6 +56,13 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Room Combat|Visual")
 	TObjectPtr<UStaticMeshComponent> SpawnPointMesh;
+
+	// 비워두면 외형을 변경하지 않는다. BP에서 꺼진 상태의 머티리얼을 지정한다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Combat|Visual")
+	TObjectPtr<UMaterialInterface> ClearedMaterial;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Combat|Visual", meta = (ClampMin = "0"))
+	int32 ClearedMaterialSlot = 0;
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY(VisibleAnywhere, Category = "Room Combat|Debug")
@@ -84,6 +95,17 @@ protected:
 	FGameplayTag ActivationGroupTag;
 
 private:
+	UFUNCTION()
+	void OnRep_RoomCleared();
+	void RefreshClearedMaterial();
+
+	UPROPERTY(ReplicatedUsing = OnRep_RoomCleared, BlueprintReadOnly, Category = "Room Combat|Visual", meta = (AllowPrivateAccess = "true"))
+	bool bRoomCleared = false;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInterface> InitialMaterial;
+	bool bInitialMaterialCaptured = false;
+
 	// 에디터 기본값과 해킹 등 런타임 활성화를 분리한다. 다음 WP 로드에서는 다시 기본값으로 시작한다.
 	bool bRuntimeActive = true;
 

@@ -30,8 +30,9 @@ bool FRoomCombatRoomDefinition::HasValidPhaseOrder() const
 	{
 		return false;
 	}
-	// 배치 전투는 맨 앞에만 둘 수 있다. 해킹 이후 차수는 추가 해킹 없이 자동으로 이어진다.
+	// 배치 전투는 맨 앞에만 둔다. Automatic은 직전 외부 시작 차수의 연속 전투에만 속한다.
 	bool bSeenHackTrigger = false;
+	bool bCanFollowAutomatically = false;
 	for (int32 Index = 0; Index < CombatPhases.Num(); ++Index)
 	{
 		switch (CombatPhases[Index].StartPolicy)
@@ -41,6 +42,7 @@ bool FRoomCombatRoomDefinition::HasValidPhaseOrder() const
 			{
 				return false;
 			}
+			bCanFollowAutomatically = false;
 			break;
 		case ERoomCombatPhaseStartPolicy::HackTrigger:
 			if (bSeenHackTrigger)
@@ -48,9 +50,13 @@ bool FRoomCombatRoomDefinition::HasValidPhaseOrder() const
 				return false;
 			}
 			bSeenHackTrigger = true;
+			bCanFollowAutomatically = true;
+			break;
+		case ERoomCombatPhaseStartPolicy::ExternalTrigger:
+			bCanFollowAutomatically = true;
 			break;
 		case ERoomCombatPhaseStartPolicy::Automatic:
-			if (!bSeenHackTrigger)
+			if (!bCanFollowAutomatically)
 			{
 				return false;
 			}
@@ -66,7 +72,8 @@ bool FRoomCombatRoomDefinition::CanStartTriggeredSequence(int32 PhaseIndex) cons
 {
 	const FRoomCombatPhaseDefinition* StartingPhase = FindPhase(PhaseIndex);
 	if (!HasValidPhaseOrder() || !StartingPhase
-		|| StartingPhase->StartPolicy != ERoomCombatPhaseStartPolicy::HackTrigger)
+		|| (StartingPhase->StartPolicy != ERoomCombatPhaseStartPolicy::HackTrigger
+			&& StartingPhase->StartPolicy != ERoomCombatPhaseStartPolicy::ExternalTrigger))
 	{
 		return false;
 	}
@@ -74,6 +81,10 @@ bool FRoomCombatRoomDefinition::CanStartTriggeredSequence(int32 PhaseIndex) cons
 	for (int32 Index = PhaseIndex; Index < CombatPhases.Num(); ++Index)
 	{
 		const FRoomCombatPhaseDefinition& Phase = CombatPhases[Index];
+		if (Index > PhaseIndex && Phase.StartPolicy != ERoomCombatPhaseStartPolicy::Automatic)
+		{
+			break;
+		}
 		if (Phase.Waves.IsEmpty())
 		{
 			return false;
@@ -187,7 +198,7 @@ EDataValidationResult URoomCombatDefinition::IsDataValid(FDataValidationContext&
 		if (!RoomDefinition.HasValidPhaseOrder())
 		{
 			AddValidationError(FString::Printf(
-				TEXT("RoomDefinitions[%d].CombatPhases must use optional InitialDetection, then HackTrigger followed only by Automatic phases."),
+				TEXT("RoomDefinitions[%d].CombatPhases must start with optional InitialDetection, use at most one HackTrigger, and place Automatic only after a triggered phase."),
 				RoomIndex));
 		}
 

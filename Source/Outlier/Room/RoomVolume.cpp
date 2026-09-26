@@ -117,6 +117,20 @@ bool ARoomVolume::IsCombatStreamingSourceEnabled() const
 		&& CombatStreamingSource->IsStreamingSourceEnabled();
 }
 
+bool ARoomVolume::ContainsWorldLocation(const FVector& Location) const
+{
+	if (!TriggerBox)
+	{
+		return false;
+	}
+	// 회전/스케일된 RoomVolume에서도 월드 좌표를 박스의 로컬 공간으로 옮겨 판정한다.
+	const FVector Local = TriggerBox->GetComponentTransform().InverseTransformPosition(Location);
+	const FVector Extent = TriggerBox->GetUnscaledBoxExtent();
+	return FMath::Abs(Local.X) <= Extent.X
+		&& FMath::Abs(Local.Y) <= Extent.Y
+		&& FMath::Abs(Local.Z) <= Extent.Z;
+}
+
 #if WITH_EDITOR
 EDataValidationResult ARoomVolume::IsDataValid(FDataValidationContext& Context) const
 {

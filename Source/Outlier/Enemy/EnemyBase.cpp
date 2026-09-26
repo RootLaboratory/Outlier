@@ -690,9 +690,10 @@ void AEnemyBase::ApplyPoolState(EEnemyPoolState PreviousState)
 	{
 		return;
 	}
-	if (!HasAuthority() && PoolState == EEnemyPoolState::SpawnPresentation)
+	if (!HasAuthority() && (PoolState == EEnemyPoolState::SpawnPresentation
+		|| PoolState == EEnemyPoolState::CombatActive))
 	{
-		// 대여 초기화는 서버 권위지만 이전 사망 연출이 남은 컴포넌트는 각 클라이언트에서도 되돌려야 한다.
+		// 빠른 연출 완료로 SpawnPresentation 복제가 생략되어도 사망 연출 상태를 복원한다.
 		ResetPoolPresentationState();
 	}
 
@@ -766,6 +767,24 @@ void AEnemyBase::ResetPoolRuntimeState()
 
 void AEnemyBase::ResetPoolPresentationState()
 {
+	for (const FSourceMeshVisibility& SavedState : SavedSourceMeshVisibility)
+	{
+		if (USceneComponent* Component = SavedState.Component.Get())
+		{
+			Component->SetVisibility(SavedState.bVisible, false);
+			Component->SetHiddenInGame(SavedState.bHiddenInGame, false);
+		}
+	}
+	SavedSourceMeshVisibility.Reset();
+	for (const auto& SavedState : SavedDeathCollision)
+	{
+		if (UPrimitiveComponent* Component = SavedState.Key.Get())
+		{
+			Component->SetCollisionEnabled(SavedState.Value);
+		}
+	}
+	SavedDeathCollision.Reset();
+
 	if (USkeletalMeshComponent* CharacterMesh = GetMesh())
 	{
 		if (UAnimInstance* AnimInstance = CharacterMesh->GetAnimInstance())
@@ -1443,6 +1462,19 @@ void AEnemyBase::EnterCombatFromRoom(
 		return;
 	}
 
+	const FGameplayTag RoomTag = GetDefaultRoomTag();
+	if (bPropagateToRoom && RoomTag.IsValid())
+	{
+		// 합류가 실패했다면 최초 발각 Enemy도 Alert에 남겨 Room 전투보다 먼저 공격하지 않는다.
+		if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
+		{
+			if (!RoomSubsystem->NotifyRoomCombat(RoomTag, PlayerLocation, this))
+			{
+				return;
+			}
+		}
+	}
+
 	const bool bEnteredCombat = CombatState != EEnemyCombatState::Combat;
 	bInCombat = true;
 	CombatState = EEnemyCombatState::Combat;
@@ -1452,16 +1484,6 @@ void AEnemyBase::EnterCombatFromRoom(
 	{
 		bPrefersCombatLeft = FMath::RandBool();
 		RefreshPerceptionConfigForCurrentState();
-	}
-
-	const FGameplayTag RoomTag = GetDefaultRoomTag();
-
-	if (bPropagateToRoom && RoomTag.IsValid())
-	{
-		if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
-		{
-			RoomSubsystem->NotifyRoomCombat(RoomTag, PlayerLocation, this);
-		}
 	}
 
 	if (bEnteredCombat)
@@ -2785,6 +2807,16 @@ bool AEnemyBase::StartAttackTarget(AActor* TargetActor)
 
 bool AEnemyBase::StartAttackLocation(const FVector& TargetLocation)
 {
+	// 방 합류 준비 중에는 StateTree가 Combat으로 전환돼도 실제 발사를 시작하지 않는다.
+	if (HasAuthority() && GetWorld())
+	{
+		if (const URoomCombatSubsystem* RoomCombat = GetWorld()->GetSubsystem<URoomCombatSubsystem>();
+			RoomCombat && RoomCombat->IsEnemyAttackBlocked(this))
+		{
+			return false;
+		}
+	}
+
 	const bool bHasWeapon = IsValid(CurrentWeapon);
 	const bool bCanAttack = bHasWeapon && CurrentWeapon->CanAttack();
 	// 쿨다운 중인 요청은 조준 방향을 바꾸지 않는다. 실제로 발사할 수 있을 때만
@@ -3034,19 +3066,33 @@ void AEnemyBase::SpawnDeathDebris(
 
 void AEnemyBase::DisableDeathCollision()
 {
+	// Actor 충돌 토글은 개별 컴포넌트의 NoCollision 설정을 되돌리지 못한다.
+	auto DisableAndRemember = [this](UPrimitiveComponent* Component)
+	{
+		if (!Component)
+		{
+			return;
+		}
+		if (!SavedDeathCollision.ContainsByPredicate(
+			[Component](const auto& Entry) { return Entry.Key.Get() == Component; }))
+		{
+			SavedDeathCollision.Emplace(Component, Component->GetCollisionEnabled());
+		}
+		Component->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	};
 	if (UCapsuleComponent* EnemyCapsule = GetCapsuleComponent())
 	{
-		EnemyCapsule->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		DisableAndRemember(EnemyCapsule);
 	}
 
 	if (CoreHitboxComponent)
 	{
-		CoreHitboxComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		DisableAndRemember(CoreHitboxComponent);
 	}
 
 	if (USkeletalMeshComponent* EnemyMesh = GetMesh())
 	{
-		EnemyMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		DisableAndRemember(EnemyMesh);
 	}
 
 	if (UCharacterMovementComponent* MovementComponent = GetCharacterMovement())
@@ -3060,8 +3106,29 @@ void AEnemyBase::HideSourceMeshes()
 {
 	if (USkeletalMeshComponent* EnemyMesh = GetMesh())
 	{
+		SaveSourceMeshVisibility(EnemyMesh);
 		EnemyMesh->SetVisibility(false, true);
 		EnemyMesh->SetHiddenInGame(true, true);
+	}
+}
+
+void AEnemyBase::SaveSourceMeshVisibility(USceneComponent* SourceMeshRoot)
+{
+	if (!SourceMeshRoot)
+	{
+		return;
+	}
+	TArray<USceneComponent*> Components;
+	SourceMeshRoot->GetChildrenComponents(true, Components);
+	Components.Add(SourceMeshRoot);
+	for (USceneComponent* Component : Components)
+	{
+		if (Component && !SavedSourceMeshVisibility.ContainsByPredicate(
+			[Component](const FSourceMeshVisibility& Entry) { return Entry.Component.Get() == Component; }))
+		{
+			SavedSourceMeshVisibility.Add({
+				Component, Component->IsVisible(), static_cast<bool>(Component->bHiddenInGame)});
+		}
 	}
 }
 

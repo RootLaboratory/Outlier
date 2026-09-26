@@ -10,10 +10,9 @@
 class UPartnerCamUI;
 class UStaticCrossHair;
 class UAbilityIconUI;
-class UDistanceSlideUI;
-class UPartnerHPUI;
-class UPartnerHealthUI;
 class UDamageFeedBackWidget;
+class UPartnerLeftHudWidget;
+class UPartnerRightHudWidget;
 //HP Delegate;
 
 UENUM(BlueprintType)
@@ -47,30 +46,29 @@ public:
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UStaticCrossHair> CrossHairUI;
 
-	UPROPERTY(meta = (BindWidget))
-	TObjectPtr<UPartnerHPUI> PartnerHPUI;
-
-	UPROPERTY(meta = (BindWidget))
-	TObjectPtr<UPartnerHealthUI> PartnerHealthUI;
-
-	UPROPERTY(meta = (BindWidget))
+	UPROPERTY(Transient)
 	TObjectPtr<UAbilityIconUI> AbilityShieldIcon;
 
-	UPROPERTY(meta = (BindWidget))
+	UPROPERTY(Transient)
 	TObjectPtr<UAbilityIconUI> AbilityHackingIcon;
 
-	UPROPERTY(meta = (BindWidget))
+	UPROPERTY(Transient)
 	TObjectPtr<UAbilityIconUI> AbilityScanIcon;
 
-	UPROPERTY(meta = (BindWidget))
+	UPROPERTY(Transient)
 	TObjectPtr<UAbilityIconUI> AbilityEMPIcon;
-
-	UPROPERTY(meta = (BindWidgetOptional))
-	TObjectPtr<UDistanceSlideUI> DistanceSlide;
 
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UDamageFeedBackWidget> DamageFeedbackUI;
 
+private:
+	void CacheNestedHudWidgets();
 
+	// Main은 컨테이너까지만 직접 바인딩하고, 컨테이너가 내부 모듈을 소유한다.
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UPartnerLeftHudWidget> PartnerLeftHUD;
+
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UPartnerRightHudWidget> PartnerRightHUD;
 
 };

@@ -11,10 +11,9 @@
 #include "DynamicCrossHair.h"
 #include "EventDrivenUI.h"
 #include "StaticCrossHair.h"
-#include "DistanceSlideUI.h"
 #include "DamageFeedBackWidget.h"
-#include "PartnerHPUI.h"
 #include "PartnerHealthUI.h"
+#include "PartnerLeftHudWidget.h"
 #include "ShooterCurrentAbilityIcon.h"
 #include "ShooterMainWidget.h"
 #include "TagDrivenUIGameplayTags.h"
@@ -206,9 +205,10 @@ void ULocalPlayerUISubSystem::OnDamageFeedback(
 
 void ULocalPlayerUISubSystem::OnRep_ShooterConditionRefresh()
 {
-	if (UPartnerHPUI* PartnerHPUI = Cast<UPartnerHPUI>(GetModule(TagDrivenUITags::Partner::HP())))
+	if (UPartnerLeftHudWidget* PartnerLeftHUD = Cast<UPartnerLeftHudWidget>(
+		GetModule(TagDrivenUITags::Partner::HP())))
 	{
-		PartnerHPUI->RefreshShooterConditionUI();
+		PartnerLeftHUD->RefreshShooterConditionUI();
 	}
 }
 
@@ -229,9 +229,9 @@ void ULocalPlayerUISubSystem::OnRep_PlayerStateChanged(EUIPlayerState State)
 
 void ULocalPlayerUISubSystem::PartnerDistanceUpdate(const float Distance)
 {
-	if (UDistanceSlideUI* DistanceSlideUI = Cast<UDistanceSlideUI>(GetModule(TagDrivenUITags::Partner::DistanceLimit())))
+	if (UPartnerLeftHudWidget* PartnerLeftHUD = Cast<UPartnerLeftHudWidget>(GetModule(TagDrivenUITags::Partner::DistanceLimit())))
 	{
-		DistanceSlideUI->UpdateDistanceRatio(Distance);
+		PartnerLeftHUD->UpdateDistanceRatio(Distance);
 	}
 }
 
@@ -305,7 +305,7 @@ void ULocalPlayerUISubSystem::OnRep_AttackSign(EAttackSign InType)
 	}
 }
 
-void ULocalPlayerUISubSystem::OnRep_ShootCrosshairChanged(float InFireRate)
+void ULocalPlayerUISubSystem::OnRep_ShootCrosshairChanged(float InFireRate, float InElapsedTime)
 {
 	// 슈트 전에는 크로스헤어 상태를 아예 건드리지 않는다 (HUD 가 꺼져 있는 구간).
 	if (!bShooterSuitAcquired)
@@ -327,7 +327,7 @@ void ULocalPlayerUISubSystem::OnRep_ShootCrosshairChanged(float InFireRate)
 	}
 	else if (UStaticCrossHair* Crosshair = Cast<UStaticCrossHair>(CrossHairModule))
 	{
-		Crosshair->SetCoolTime(InFireRate );
+		Crosshair->SetCoolTime(InFireRate, InElapsedTime);
 		//UE_LOG(LogTemp, Log, TEXT("InFireRate %f"), InFireRate);
 
 	}
@@ -338,9 +338,10 @@ void ULocalPlayerUISubSystem::OnRep_ShootCrosshairChanged(float InFireRate)
 
 void ULocalPlayerUISubSystem::OnRep_ShooterHPStateChanged(const FGameplayTag& InShooterConditionTag)
 {
-	if (UPartnerHPUI* PartnerHPUI = Cast<UPartnerHPUI>(GetModule(TagDrivenUITags::Partner::HP())))
+	if (UPartnerLeftHudWidget* PartnerLeftHUD = Cast<UPartnerLeftHudWidget>(
+		GetModule(TagDrivenUITags::Partner::HP())))
 	{
-		PartnerHPUI->SetShooterCondition(InShooterConditionTag);
+		PartnerLeftHUD->SetShooterCondition(InShooterConditionTag);
 	}
 }
 

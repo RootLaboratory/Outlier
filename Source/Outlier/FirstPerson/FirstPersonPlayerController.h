@@ -74,7 +74,7 @@ public:
 	void ClientStopResolvedAudio(int32 AudioInstanceId);
 
 	UFUNCTION(Client, Reliable)
-	void ClientArenaLoad(FVector InSpawnLocation);
+	void ClientArenaLoad(FVector InSpawnLocation, uint32 ReconnectRequestId);
 
 	UFUNCTION(Client, Reliable)
 	void ClientPushUILayer(const FUILayerPushRequest& Request);
@@ -108,7 +108,7 @@ public:
 		UOutlierUpgradeSetData* UpgradeSetData);
 
 	UFUNCTION(Server, Reliable)
-	void ServerNotifyArenaReady();
+	void ServerNotifyArenaReady(uint32 ReconnectRequestId);
 
 	UFUNCTION(Server, Reliable)
 	void ServerNotifyArenaGameplayGCReady(uint32 GameplayGeneration);
@@ -142,6 +142,9 @@ public:
 
 	UFUNCTION(Client, Reliable)
 	void ClientPrepareForArenaExit();
+
+	UFUNCTION(Client, Reliable)
+	void ClientConfigureListenReconnect(FGuid ReconnectToken);
 
 	// Listen Host의 로컬 Controller에는 Client RPC가 전송되지 않으므로 서버가 같은 적용 함수를 직접 호출한다.
 	void ConfigureCheckpointRestartFromServer(bool bCanRequest);
@@ -266,6 +269,7 @@ protected:
 	// ResolveClientArenaStreamingLocation이 레벨 액터를 추측해서 찾는 대신 이 값을 그대로 쓴다.
 	FVector PendingArenaSpawnLocation = FVector::ZeroVector;
 	bool bHasPendingArenaSpawnLocation = false;
+	uint32 PendingReconnectRequestId = 0;
 	// 리로드 중에는 GetPawn()보다 이 값이 우선이다. 리로드 시점의 Pawn은 서버가 이미 Destroy한
 	// "죽은 자리의 옛 폰"이라, 그걸로 스트리밍 소스를 세우면 새 스테이지가 아니라 직전 위치를
 	// 스트리밍하고는 즉시 준비 완료로 판정해버린다.

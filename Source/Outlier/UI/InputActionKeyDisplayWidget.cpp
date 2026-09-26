@@ -2,15 +2,105 @@
 
 #include "Components/TextBlock.h"
 #include "Components/Border.h"
+#include "Components/ScaleBox.h"
+#include "Components/SizeBox.h"
+#include "Blueprint/WidgetTree.h"
 #include "EnhancedInputSubsystems.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/Texture2D.h"
 #include "Settings/LocalPlayerSettingsSubsystem.h"
 
+namespace
+{
+FText GetCompactKeyDisplayName(const FKey& Key)
+{
+	static const TPair<FKey, const TCHAR*> Aliases[] = {
+		{EKeys::LeftShift, TEXT("LShift")},
+		{EKeys::RightShift, TEXT("RShift")},
+		{EKeys::LeftControl, TEXT("LCtrl")},
+		{EKeys::RightControl, TEXT("RCtrl")},
+		{EKeys::LeftAlt, TEXT("LAlt")},
+		{EKeys::RightAlt, TEXT("RAlt")},
+		{EKeys::LeftCommand, TEXT("LWin")},
+		{EKeys::RightCommand, TEXT("RWin")},
+		{EKeys::BackSpace, TEXT("Bksp")},
+		{EKeys::Up, TEXT("↑")},
+		{EKeys::Down, TEXT("↓")},
+		{EKeys::Left, TEXT("←")},
+		{EKeys::Right, TEXT("→")},
+		{EKeys::NumPadZero, TEXT("N0")},
+		{EKeys::NumPadOne, TEXT("N1")},
+		{EKeys::NumPadTwo, TEXT("N2")},
+		{EKeys::NumPadThree, TEXT("N3")},
+		{EKeys::NumPadFour, TEXT("N4")},
+		{EKeys::NumPadFive, TEXT("N5")},
+		{EKeys::NumPadSix, TEXT("N6")},
+		{EKeys::NumPadSeven, TEXT("N7")},
+		{EKeys::NumPadEight, TEXT("N8")},
+		{EKeys::NumPadNine, TEXT("N9")},
+		{EKeys::Add, TEXT("N+")},
+		{EKeys::Subtract, TEXT("N-")},
+		{EKeys::Multiply, TEXT("N*")},
+		{EKeys::Divide, TEXT("N/")},
+		{EKeys::Decimal, TEXT("N.")},
+		{EKeys::NumLock, TEXT("Num")},
+		{EKeys::ScrollLock, TEXT("ScrLk")},
+		{EKeys::MiddleMouseButton, TEXT("MMB")},
+		{EKeys::ThumbMouseButton, TEXT("M4")},
+		{EKeys::ThumbMouseButton2, TEXT("M5")},
+		{EKeys::MouseScrollUp, TEXT("Wheel ↑")},
+		{EKeys::MouseScrollDown, TEXT("Wheel ↓")},
+	};
+
+	for (const TPair<FKey, const TCHAR*>& Alias : Aliases)
+	{
+		if (Key == Alias.Key)
+		{
+			return FText::FromString(Alias.Value);
+		}
+	}
+
+	return Key.GetDisplayName(false);
+}
+}
+
 void UInputActionKeyDisplayWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
 	bIsConstructed = true;
+	if (KeyText)
+	{
+		KeyText->SetAutoWrapText(false);
+		KeyText->SetWrapTextAt(0.f);
+		KeyText->SetJustification(ETextJustify::Center);
+	}
+
+	if (WidgetTree)
+	{
+		USizeBox* KeySizeBox = WidgetTree->FindWidget<USizeBox>(TEXT("SizeBox"));
+		if (!KeySizeBox)
+		{
+			KeySizeBox = WidgetTree->FindWidget<USizeBox>(TEXT("SizeBox_0"));
+		}
+		if (KeySizeBox)
+		{
+			KeySizeBox->ClearWidthOverride();
+			KeySizeBox->SetMinDesiredWidth(48.f);
+			KeySizeBox->SetMaxDesiredWidth(88.f);
+			KeySizeBox->SetHeightOverride(40.f);
+		}
+
+		UScaleBox* KeyScaleBox = WidgetTree->FindWidget<UScaleBox>(TEXT("ScaleBox"));
+		if (!KeyScaleBox)
+		{
+			KeyScaleBox = WidgetTree->FindWidget<UScaleBox>(TEXT("ScaleBox_0"));
+		}
+		if (KeyScaleBox)
+		{
+			KeyScaleBox->SetStretch(EStretch::ScaleToFit);
+			KeyScaleBox->SetStretchDirection(EStretchDirection::DownOnly);
+		}
+	}
 
 	if (MissingKeyText.IsEmpty())
 	{
@@ -91,7 +181,7 @@ bool UInputActionKeyDisplayWidget::RefreshDisplayedKey()
 	const TArray<FKey> MappedKeys = InputSubsystem->QueryKeysMappedToAction(WatchedInputAction);
 	if (MappedKeys.IsValidIndex(0) && MappedKeys[0].IsValid())
 	{
-		KeyText->SetText(MappedKeys[0].GetDisplayName(false));
+		KeyText->SetText(GetCompactKeyDisplayName(MappedKeys[0]));
 		return true;
 	}
 

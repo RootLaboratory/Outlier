@@ -330,6 +330,18 @@ bool FOutlierArenaReturnLifecycleTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Explicit leave removes the reconnect ticker"), GameInstance->ArenaReconnectTickerHandle.IsValid());
 	TestTrue(TEXT("Explicit leave forgets the previous Worker URL"), GameInstance->LastArenaHandoffUrl.IsEmpty());
 
+	GameInstance->LastListenReconnectUrl = TEXT("127.0.0.1:7777?ListenReconnect=Test");
+	GameInstance->ScheduleArenaReconnect();
+	TestTrue(TEXT("Listen guest uses the bounded reconnect retry"), GameInstance->bArenaReconnectActive);
+	TestTrue(TEXT("Listen retry schedules the shared reconnect ticker"),
+		GameInstance->ArenaReconnectTickerHandle.IsValid());
+	GameInstance->PrepareForExplicitLeave();
+	TestTrue(TEXT("Explicit leave forgets the Listen reconnect route"),
+		GameInstance->LastListenReconnectUrl.IsEmpty());
+	TestFalse(TEXT("Explicit leave cancels Listen retry"), GameInstance->bArenaReconnectActive);
+	TestFalse(TEXT("Explicit leave removes Listen retry ticker"),
+		GameInstance->ArenaReconnectTickerHandle.IsValid());
+
 	GameInstance->NotifyArenaHandoffStarted(TEXT("127.0.0.1:7780?MatchId=RecoveryTest"));
 
 	TestTrue(TEXT("The first network failure queues Lobby recovery"), GameInstance->TryQueueLobbyRecovery());

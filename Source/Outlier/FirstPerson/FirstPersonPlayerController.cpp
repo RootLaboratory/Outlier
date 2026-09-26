@@ -310,6 +310,14 @@ void AFirstPersonPlayerController::ClientPrepareForArenaExit_Implementation()
 	}
 }
 
+void AFirstPersonPlayerController::ClientConfigureListenReconnect_Implementation(FGuid ReconnectToken)
+{
+	if (UOutlierGameInstance* GameInstance = Cast<UOutlierGameInstance>(GetGameInstance()))
+	{
+		GameInstance->NotifyListenReconnectToken(ReconnectToken);
+	}
+}
+
 void AFirstPersonPlayerController::ConfigureCheckpointRestartFromServer(bool bCanRequest)
 {
 	// Listen Host는 같은 프로세스의 로컬 UI를 즉시 갱신하고, 원격 플레이어만 Client RPC로 전달한다.
@@ -818,12 +826,20 @@ void AFirstPersonPlayerController::InitializeOutlierPlayerState()
 	//);
 }
 
-void AFirstPersonPlayerController::ClientArenaLoad_Implementation(FVector InSpawnLocation)
+void AFirstPersonPlayerController::ClientArenaLoad_Implementation(
+	FVector InSpawnLocation, uint32 ReconnectRequestId)
 {
+	if (ClientArenaContentTickerHandle.IsValid()
+		&& PendingReconnectRequestId != ReconnectRequestId)
+	{
+		// 이전 좌표의 스트리밍 안정 프레임을 새 재접속 요청의 ACK로 재사용하지 않는다.
+		ClearClientArenaContentWait();
+	}
 	// 아직 Possess 전이라 GetPawn()이 없는 구간에서 스트리밍 소스를 어디에 둬야 할지,
 	// 서버가 이미 계산해둔 실제 스폰 위치를 그대로 받아 저장해둔다 (레벨 액터 추측 금지).
 	PendingArenaSpawnLocation = InSpawnLocation;
 	bHasPendingArenaSpawnLocation = true;
+	PendingReconnectRequestId = ReconnectRequestId;
 
 	UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
 		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()
@@ -891,6 +907,7 @@ void AFirstPersonPlayerController::ClientArenaReload_Implementation(FVector InSp
 	}
 
 	ApplyServerArenaSpawnLocation(InSpawnLocation);
+	PendingReconnectRequestId = 0;
 
 	// 강제 리로드라 항상 새로 스트리밍된다. 바인딩을 먼저 걸고(레이스 방지) 리로드.
 	bHasPendingArenaRequest = true;
@@ -900,6 +917,7 @@ void AFirstPersonPlayerController::ClientArenaReload_Implementation(FVector InSp
 
 void AFirstPersonPlayerController::ClientArenaGameplayReload_Implementation(uint32 GameplayGeneration, FVector InSpawnLocation)
 {
+	PendingReconnectRequestId = 0;
 	UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
 		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()
 		: nullptr;
@@ -973,12 +991,12 @@ void AFirstPersonPlayerController::HandleArenaGameplayReady(uint32 GameplayGener
 	HandleArenaShown();
 }
 
-void AFirstPersonPlayerController::ServerNotifyArenaReady_Implementation()
+void AFirstPersonPlayerController::ServerNotifyArenaReady_Implementation(uint32 ReconnectRequestId)
 {
 	AOutlierGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr;
 	if (GameMode)
 	{
-		GameMode->OnClientArenaReady(this);
+		GameMode->OnClientArenaReady(this, ReconnectRequestId);
 	}
 	else
 	{
@@ -1032,6 +1050,7 @@ void AFirstPersonPlayerController::ClientPrepareForArenaStart_Implementation(FVe
 	bHasPendingArenaSpawnLocation = true;
 
 	bHasPendingArenaRequest = true;
+	PendingReconnectRequestId = 0;
 	bWaitingForArenaStart = true;
 	TryNotifyArenaStartReady();
 }
@@ -1249,7 +1268,7 @@ bool AFirstPersonPlayerController::TickClientArenaContentReady(float DeltaTime)
 		TEXT("[Arena] Client content ready StableFrames=%d RecoveryCount=%d"),
 		RequiredStableFrames,
 		UsedRecoveryCount);
-	ServerNotifyArenaReady();
+	ServerNotifyArenaReady(PendingReconnectRequestId);
 	return false;
 }
 

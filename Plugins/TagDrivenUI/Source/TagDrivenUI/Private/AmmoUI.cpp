@@ -12,7 +12,8 @@ void UAmmoUI::NativeConstruct()
 
 void UAmmoUI::AmmoCountChanged_Implementation(int32 InAmmoCount)
 {
-//	UE_LOG(LogTemp, Error, TEXT("Received, But c++ Function worked: %d "), InAmmoCount);
+	UE_LOG(LogTemp, Warning, TEXT("[ShooterHUD][AmmoEvent] CountChanged Widget=%s Ammo=%d"),
+		*GetNameSafe(this), InAmmoCount);
 	CurrentAmmo = InAmmoCount;
 	Temp_AmmoCount = InAmmoCount;
 	RefreshAmmoTexts();
@@ -20,6 +21,8 @@ void UAmmoUI::AmmoCountChanged_Implementation(int32 InAmmoCount)
 
 void UAmmoUI::AmmoStateChanged_Implementation(int32 InCurrentAmmo, int32 InMaxAmmo)
 {
+	UE_LOG(LogTemp, Warning, TEXT("[ShooterHUD][AmmoEvent] StateChanged Widget=%s Current=%d Max=%d"),
+		*GetNameSafe(this), InCurrentAmmo, InMaxAmmo);
 	CurrentAmmo = InCurrentAmmo;
 	MaxAmmo = InMaxAmmo;
 	Temp_AmmoCount = InCurrentAmmo;

@@ -5,6 +5,9 @@
 #include "Enemy/EnemyPoolDefinition.h"
 #include "Enemy/EnemyPoolSubsystem.h"
 #include "Enemy/EnemyRoomSubsystem.h"
+#include "Components/CapsuleComponent.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Components/SphereComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
@@ -99,6 +102,16 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 		FirstLease->HasSharedTargetContact());
 	TestEqual(TEXT("Reinforcement receives the shared target location"),
 		FirstLease->GetSharedTargetLocation(), SharedTargetLocation);
+	const ECollisionEnabled::Type CapsuleCollision = FirstLease->GetCapsuleComponent()->GetCollisionEnabled();
+	const ECollisionEnabled::Type MeshCollision = FirstLease->GetMesh()->GetCollisionEnabled();
+	const ECollisionEnabled::Type CoreCollision = FirstLease->GetCoreHitboxComponent()->GetCollisionEnabled();
+	const bool bMeshVisible = FirstLease->GetMesh()->IsVisible();
+	const bool bMeshHiddenInGame = FirstLease->GetMesh()->bHiddenInGame;
+	const bool bCoreVisible = FirstLease->GetCoreHitboxComponent()->IsVisible();
+	FirstLease->SimulateDeathPresentationForPoolTesting();
+	TestFalse(TEXT("Death presentation hides the source mesh"), FirstLease->GetMesh()->IsVisible());
+	TestEqual(TEXT("Death presentation disables the capsule"),
+		FirstLease->GetCapsuleComponent()->GetCollisionEnabled(), ECollisionEnabled::NoCollision);
 
 	const int32 FirstLeaseSerial = FirstLease->GetPoolLeaseSerial();
 	TestTrue(TEXT("Active Enemy returns to the pool"),
@@ -110,6 +123,11 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Returned Enemy clears RoomTag"), FirstLease->GetDefaultRoomTag().IsValid());
 
 	FirstLease->SetPoolPresentationAutoCompleteForTesting(false);
+	// 마지막 직접 관측자가 시야를 잃은 사이 증원돼도 전투에는 바로 합류한다.
+	if (RoomSubsystem)
+	{
+		RoomSubsystem->SetActiveRoomTargetForTesting(RoomTag, SharedTargetLocation, false);
+	}
 	FEnemyPoolLeaseContext SecondContext = FirstContext;
 	SecondContext.GameplayGeneration = 11;
 	SecondContext.CombatPhaseIndex = 3;
@@ -124,6 +142,14 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Spawn presentation blocks damage"), SecondLease->CanBeDamaged());
 	TestFalse(TEXT("Spawn presentation blocks collision"), SecondLease->GetActorEnableCollision());
 	TestFalse(TEXT("Previous Dead state is not retained"), SecondLease->IsDead());
+	// 연출 대기 중에는 Actor 충돌이 꺼져 GetCollisionEnabled가 NoCollision을 반환한다.
+	// 컴포넌트 충돌 복원은 현재 대여가 전투 상태로 활성화된 뒤 확인한다.
+	TestEqual(TEXT("Reused Enemy restores source mesh visibility"),
+		SecondLease->GetMesh()->IsVisible(), bMeshVisible);
+	TestEqual(TEXT("Reused Enemy restores child visibility"),
+		SecondLease->GetCoreHitboxComponent()->IsVisible(), bCoreVisible);
+	TestEqual(TEXT("Reused Enemy restores source mesh hidden state"),
+		static_cast<bool>(SecondLease->GetMesh()->bHiddenInGame), bMeshHiddenInGame);
 
 	const int32 SecondLeaseSerial = SecondLease->GetPoolLeaseSerial();
 	TestFalse(TEXT("An old lease cannot return a reused Actor"),
@@ -136,6 +162,18 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 	SecondLease->CompletePoolSpawnPresentation(SecondContext.GameplayGeneration, SecondLeaseSerial);
 	TestEqual(TEXT("The current callback activates combat"),
 		SecondLease->GetEnemyPoolState(), EEnemyPoolState::CombatActive);
+	TestEqual(TEXT("Reused Enemy restores capsule collision"),
+		SecondLease->GetCapsuleComponent()->GetCollisionEnabled(), CapsuleCollision);
+	TestEqual(TEXT("Reused Enemy restores mesh collision"),
+		SecondLease->GetMesh()->GetCollisionEnabled(), MeshCollision);
+	TestEqual(TEXT("Reused Enemy restores core collision"),
+		SecondLease->GetCoreHitboxComponent()->GetCollisionEnabled(), CoreCollision);
+	TestTrue(TEXT("Reinforcement joins combat without active sight sharing"),
+		SecondLease->IsInCombat());
+	TestFalse(TEXT("Lost sight is not restored as shared contact"),
+		SecondLease->HasSharedTargetContact());
+	TestEqual(TEXT("Reinforcement investigates the last known target location"),
+		SecondLease->GetLastKnownPlayerLocation(), SharedTargetLocation);
 
 	UOutlierAbilitySystemComponent* ASC = SecondLease->GetOutlierAbilitySystemComponent();
 	if (TestNotNull(TEXT("Pooled Enemy has an ASC"), ASC))
@@ -187,6 +225,8 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 	TurretEntry.EnemyClass = AAutoTurret::StaticClass();
 	TurretEntry.PrewarmCount = 1;
 	TurretEntry.MaxCount = 1;
+	AddExpectedError(TEXT("Prewarm rejected because AutoTurret is placed-only"),
+		EAutomationExpectedErrorFlags::Contains, 1);
 	TestFalse(TEXT("Runtime prewarm rejects placed-only AutoTurrets"),
 		Pool->PrewarmPool(TurretDefinition));
 	TestEqual(TEXT("Rejected AutoTurret prewarm creates no Actors"),

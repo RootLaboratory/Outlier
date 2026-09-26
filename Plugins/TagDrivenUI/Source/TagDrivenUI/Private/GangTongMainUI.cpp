@@ -4,18 +4,42 @@
 #include "GangTongMainUI.h"
 #include "AbilityIconUI.h"
 #include "EventDrivenUI.h"
-#include "PartnerHPUI.h"
-#include "PartnerHealthUI.h"
 #include "StaticCrossHair.h"
-#include "DistanceSlideUI.h"
 #include "DamageFeedBackWidget.h"
+#include "PartnerLeftHudWidget.h"
+#include "PartnerRightHudWidget.h"
 #include "TagDrivenUIGameplayTags.h"
 
 void UGangTongMainUI::NativeConstruct()
 {
 	Super::NativeConstruct();
 
+	CacheNestedHudWidgets();
 	ModuleInit();
+}
+
+void UGangTongMainUI::CacheNestedHudWidgets()
+{
+	if (!ensureMsgf(PartnerLeftHUD && PartnerRightHUD,
+		TEXT("GangTongMainUI requires PartnerLeftHUD and PartnerRightHUD container widgets.")))
+	{
+		return;
+	}
+
+	AbilityShieldIcon = PartnerRightHUD->GetAbilityShieldIcon();
+	AbilityHackingIcon = PartnerRightHUD->GetAbilityHackingIcon();
+	AbilityScanIcon = PartnerRightHUD->GetAbilityScanIcon();
+	AbilityEMPIcon = PartnerRightHUD->GetAbilityEMPIcon();
+
+	UE_LOG(LogTemp, Log,
+		TEXT("[PartnerHUD][Binding] Main=%s Left=%s Right=%s Shield=%s Hacking=%s Scan=%s EMP=%s"),
+		*GetNameSafe(this),
+		*GetNameSafe(PartnerLeftHUD),
+		*GetNameSafe(PartnerRightHUD),
+		*GetNameSafe(AbilityShieldIcon),
+		*GetNameSafe(AbilityHackingIcon),
+		*GetNameSafe(AbilityScanIcon),
+		*GetNameSafe(AbilityEMPIcon));
 }
 
 void UGangTongMainUI::ModuleInit()
@@ -23,10 +47,10 @@ void UGangTongMainUI::ModuleInit()
 	Modules.Empty();
 	Modules.Reserve(10);
 
-	RegisterModule(TagDrivenUITags::Partner::HP(), PartnerHPUI);
-	RegisterModule(TagDrivenUITags::Partner::Health(), PartnerHealthUI);
+	RegisterModule(TagDrivenUITags::Partner::HP(), PartnerLeftHUD);
+	RegisterModule(TagDrivenUITags::Partner::Health(), PartnerLeftHUD);
 	RegisterModule(TagDrivenUITags::Partner::CrossHair(), CrossHairUI);
-	RegisterModule(TagDrivenUITags::Partner::DistanceLimit(), DistanceSlide);
+	RegisterModule(TagDrivenUITags::Partner::DistanceLimit(), PartnerLeftHUD);
 	RegisterModule(TagDrivenUITags::Partner::DamageFeedback(), DamageFeedbackUI);
 
 	RegisterAbilityIcon(AbilityShieldIcon,  TagDrivenUITags::Ability::Partner::Shield(),  true);
