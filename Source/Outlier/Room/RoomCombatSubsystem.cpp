@@ -1096,7 +1096,7 @@ bool URoomCombatSubsystem::IsSafeJoinDestination(
 	const UCapsuleComponent* Capsule = MovingPlayer ? MovingPlayer->GetCapsuleComponent() : nullptr;
 	const UCapsuleComponent* AnchorCapsule = Anchor ? Anchor->GetCapsuleComponent() : nullptr;
 	UWorld* World = GetWorld();
-	if (!Capsule || !AnchorCapsule || !World || !Room
+	if (!Capsule || !World || !Room
 		|| !Room->ContainsWorldLocation(Location))
 	{
 		return false;
@@ -1117,10 +1117,11 @@ bool URoomCombatSubsystem::IsSafeJoinDestination(
 			return false;
 		}
 	}
-	if (FMath::Abs(Location.Z - Anchor->GetActorLocation().Z)
-		< HalfHeight + AnchorCapsule->GetScaledCapsuleHalfHeight()
+	if (AnchorCapsule
+		&& FMath::Abs(Location.Z - Anchor->GetActorLocation().Z)
+			< HalfHeight + AnchorCapsule->GetScaledCapsuleHalfHeight()
 		&& FVector::Dist2D(Location, Anchor->GetActorLocation())
-		< Radius + AnchorCapsule->GetScaledCapsuleRadius() + 10.0f)
+			< Radius + AnchorCapsule->GetScaledCapsuleRadius() + 10.0f)
 	{
 		return false;
 	}
@@ -1134,7 +1135,10 @@ bool URoomCombatSubsystem::IsSafeJoinDestination(
 		}
 	}
 	FCollisionQueryParams Query(SCENE_QUERY_STAT(RoomCombatJoin), false, MovingPlayer);
-	Query.AddIgnoredActor(Anchor);
+	if (Anchor)
+	{
+		Query.AddIgnoredActor(Anchor);
+	}
 	if (World->OverlapBlockingTestByProfile(Location, MovingPlayer->GetActorQuat(),
 		Capsule->GetCollisionProfileName(), FCollisionShape::MakeCapsule(Radius, HalfHeight), Query))
 	{
@@ -1157,21 +1161,21 @@ bool URoomCombatSubsystem::FindJoinDestination(
 {
 	const UCapsuleComponent* Capsule = MovingPlayer ? MovingPlayer->GetCapsuleComponent() : nullptr;
 	const UCapsuleComponent* AnchorCapsule = Anchor ? Anchor->GetCapsuleComponent() : nullptr;
-	if (!Capsule || !AnchorCapsule)
+	if (!Capsule || !Room || (!bFallbackOnly && !AnchorCapsule))
 	{
 		return false;
 	}
-	const float Offset = Capsule->GetScaledCapsuleRadius()
-		+ AnchorCapsule->GetScaledCapsuleRadius() + 50.0f;
-	const FRotator Yaw(0.0f, Anchor->GetActorRotation().Yaw, 0.0f);
-	const FVector Forward = Yaw.Vector();
-	const FVector Right = FRotationMatrix(Yaw).GetUnitAxis(EAxis::Y);
-	const FVector Directions[] = {-Forward, -Right, Right, Forward,
-		(-Forward - Right).GetSafeNormal(), (-Forward + Right).GetSafeNormal(),
-		(Forward - Right).GetSafeNormal(), (Forward + Right).GetSafeNormal()};
 	// 첫 단계에서는 방 안 플레이어 주변의 고정 후보만 한 바퀴 검사한다. 반경 확대나 타이머 재시도는 없다.
 	if (!bFallbackOnly)
 	{
+		const float Offset = Capsule->GetScaledCapsuleRadius()
+			+ AnchorCapsule->GetScaledCapsuleRadius() + 50.0f;
+		const FRotator Yaw(0.0f, Anchor->GetActorRotation().Yaw, 0.0f);
+		const FVector Forward = Yaw.Vector();
+		const FVector Right = FRotationMatrix(Yaw).GetUnitAxis(EAxis::Y);
+		const FVector Directions[] = {-Forward, -Right, Right, Forward,
+			(-Forward - Right).GetSafeNormal(), (-Forward + Right).GetSafeNormal(),
+			(Forward - Right).GetSafeNormal(), (Forward + Right).GetSafeNormal()};
 		for (const FVector& Direction : Directions)
 		{
 			FVector Candidate = Anchor->GetActorLocation() + Direction * Offset;
@@ -1196,14 +1200,17 @@ bool URoomCombatSubsystem::FindJoinDestination(
 		return false;
 	}
 
-	// 주변 후보는 여기서 끝이다. 출입구 인스턴스에 지정한 지점만 가까운 순서로 검사한다.
+	// 주변 후보는 여기서 끝이다. 두 명 모두 재접속 중이라 기준 플레이어가 없으면
+	// 보존한 Pawn의 위치에서 가까운 출입구부터 검사한다.
+	const FVector ReferenceLocation = Anchor ? Anchor->GetActorLocation()
+		: MovingPlayer->GetActorLocation();
 	TArray<TPair<float, ARoomCombatBarrier*>> Fallbacks;
 	for (const TWeakObjectPtr<ARoomCombatBarrier>& BarrierPtr : RegisteredBarriers)
 	{
 		ARoomCombatBarrier* Barrier = BarrierPtr.Get();
 		if (Barrier && Barrier->ServesRoom(Room->GetRoomTag()))
 		{
-			Fallbacks.Emplace(FVector::DistSquared(Anchor->GetActorLocation(),
+			Fallbacks.Emplace(FVector::DistSquared(ReferenceLocation,
 				Barrier->GetActorLocation()), Barrier);
 		}
 	}
@@ -1217,6 +1224,90 @@ bool URoomCombatSubsystem::FindJoinDestination(
 			return true;
 		}
 	}
+	return false;
+}
+
+bool URoomCombatSubsystem::GetReconnectContext(FRoomCombatReconnectContext& OutContext) const
+{
+	OutContext = FRoomCombatReconnectContext();
+	const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(ActiveCombatRoomTag);
+	if (!CanRunServerGameplay() || !Runtime || !Runtime->RoomVolume.IsValid()
+		|| !Runtime->bExitBlockActive
+		|| (Runtime->State != ERoomCombatState::Combat
+			&& Runtime->State != ERoomCombatState::WaitingForTrigger))
+	{
+		return false;
+	}
+	OutContext.RoomTag = ActiveCombatRoomTag;
+	OutContext.RoomRegistrationId = Runtime->RegistrationId;
+	OutContext.GameplayGeneration = Runtime->GameplayGeneration;
+	return true;
+}
+
+bool URoomCombatSubsystem::IsReconnectContextCurrent(
+	const FRoomCombatReconnectContext& Context) const
+{
+	FRoomCombatReconnectContext Current;
+	return GetReconnectContext(Current)
+		&& Current.RoomTag == Context.RoomTag
+		&& Current.RoomRegistrationId == Context.RoomRegistrationId
+		&& Current.GameplayGeneration == Context.GameplayGeneration;
+}
+
+bool URoomCombatSubsystem::TryPlaceReconnectingPlayer(
+	AFirstPersonCharacter* Player, AFirstPersonCharacter* Anchor,
+	const FRoomCombatReconnectContext& Context)
+{
+	if (!IsValid(Player) || !Player->HasAuthority() || !IsReconnectContextCurrent(Context))
+	{
+		return false;
+	}
+	ARoomVolume* Room = RoomRuntimes.FindChecked(Context.RoomTag).RoomVolume.Get();
+	// 보존 Pawn이 아직 차단막 안쪽의 안전한 자리에 있으면 이동시키지 않는다.
+	// Overlap을 먼저 갱신해야 현재 Room 태그와 실제 위치를 함께 판정할 수 있다.
+	if (UCapsuleComponent* Capsule = Player->GetCapsuleComponent())
+	{
+		Capsule->UpdateOverlaps();
+	}
+	if (IsPlayerInsideRoom(Player, Room)
+		&& IsSafeJoinDestination(Player, nullptr, Room, Player->GetActorLocation()))
+	{
+		return true;
+	}
+	if (!IsPlayerInsideRoom(Anchor, Room))
+	{
+		Anchor = nullptr;
+	}
+
+	// 첫 합류와 같은 안전 검사를 사용한다. 두 플레이어가 모두 끊겼다면
+	// Anchor 없이 출입구 fallback만 검사하며, 실패한 위치에 강제로 배치하지 않는다.
+	for (const bool bFallbackOnly : {false, true})
+	{
+		if (!Anchor && !bFallbackOnly)
+		{
+			continue;
+		}
+		FVector Destination;
+		if (!FindJoinDestination(Player, Anchor, Room, bFallbackOnly, Destination)
+			|| !IsReconnectContextCurrent(Context)
+			|| !IsSafeJoinDestination(Player, Anchor, Room, Destination)
+			|| !Player->TeleportTo(Destination, Player->GetActorRotation(), false, true))
+		{
+			continue;
+		}
+		Player->GetCapsuleComponent()->UpdateOverlaps();
+		if (IsReconnectContextCurrent(Context) && IsPlayerInsideRoom(Player, Room))
+		{
+			UE_LOG(LogTemp, Display,
+				TEXT("[RoomCombat] Reconnect joined. Room=%s Player=%s Method=%s Generation=%d"),
+				*Context.RoomTag.ToString(), *GetNameSafe(Player),
+				bFallbackOnly ? TEXT("Fallback") : TEXT("Nearby"), Context.GameplayGeneration);
+			return true;
+		}
+	}
+	UE_LOG(LogTemp, Warning,
+		TEXT("[RoomCombat] Reconnect deferred: no safe room destination. Room=%s Player=%s Generation=%d"),
+		*Context.RoomTag.ToString(), *GetNameSafe(Player), Context.GameplayGeneration);
 	return false;
 }
 

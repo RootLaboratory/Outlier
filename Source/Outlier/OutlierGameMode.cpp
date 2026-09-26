@@ -26,6 +26,7 @@
 #include "Shooter/ShooterPlayerController.h"
 #include "Drone/Partner/PartnerPlayerController.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
+#include "FirstPerson/FirstPersonCharacter.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/NetConnection.h"
 #include "Enemy/EnemyAdaptationSubsystem.h"
@@ -1259,7 +1260,7 @@ bool AOutlierGameMode::CompleteArenaMatch()
 	GetWorldTimerManager().ClearTimer(ArenaWorkerAutoCompleteTimerHandle);
 	GetWorldTimerManager().ClearTimer(ArenaWorkerReconnectTimerHandle);
 	ArenaWorkerDisconnectedPlayerIds.Reset();
-	ArenaWorkerReconnectPawns.Reset();
+	ClearArenaWorkerReconnectPawns();
 	if (UOutlierArenaProcessSubsystem* ProcessSubsystem = GetGameInstance()
 		? GetGameInstance()->GetSubsystem<UOutlierArenaProcessSubsystem>()
 		: nullptr)
@@ -1382,14 +1383,33 @@ void AOutlierGameMode::PossessMatchedPawn(
 	{
 		// Possess 전이라 클라는 아직 자기 Pawn 위치를 모른다. 서버가 이미 계산해둔
 		// 실제 스폰 위치를 같이 넘겨서, 클라가 레벨 액터를 추측해서 찾지 않게 한다.
-		FirstPersonController->ClientArenaLoad(SpawnLocation);
+		FirstPersonController->ClientArenaLoad(SpawnLocation, 0);
 	}
 }
 
 
 
-void AOutlierGameMode::OnClientArenaReady(APlayerController* PC)
+void AOutlierGameMode::OnClientArenaReady(APlayerController* PC, uint32 ReconnectRequestId)
 {
+	// ACK 확정 순서: 리로드 우선 -> 재접속 요청 번호 확인 -> 현재 Room 재검사 -> Possess.
+	// 위치가 바뀌면 Validate가 새 로딩을 요청하므로 여기서는 Pawn을 넘겨주지 않는다.
+	if (bArenaReloadInProgress)
+	{
+		if (ReconnectRequestId != 0)
+		{
+			return;
+		}
+		PendingReconnectContexts.Remove(PC);
+		PendingReconnectRequestIds.Remove(PC);
+	}
+	if (const uint32* ExpectedRequestId = PendingReconnectRequestIds.Find(PC);
+		ExpectedRequestId && *ExpectedRequestId != ReconnectRequestId)
+	{
+		UE_LOG(LogTemp, Display,
+			TEXT("[ArenaWorker] Stale reconnect ready ignored. PC=%s Request=%u Expected=%u"),
+			*GetNameSafe(PC), ReconnectRequestId, *ExpectedRequestId);
+		return;
+	}
 	if (IsArenaWorkerProcess())
 	{
 		if (!bArenaWorkerPairStarted
@@ -1423,9 +1443,28 @@ void AOutlierGameMode::OnClientArenaReady(APlayerController* PC)
 	}
 
 	APawn* Pawn = PendingPawn->Get();
+	if (!ValidateArenaWorkerReconnectPawn(PC, Pawn))
+	{
+		return;
+	}
 	PendingPossessions.Remove(PC);
+	PendingReconnectRequestIds.Remove(PC);
 
 	PC->Possess(Pawn);
+	if (const AOutlierPlayerState* State = PC->GetPlayerState<AOutlierPlayerState>())
+	{
+		const FGuid PlayerId = State->GetTemporaryPlayerId();
+		ArenaWorkerDisconnectContexts.Remove(PlayerId);
+		if (const bool* bWasDamageable = ArenaWorkerReconnectDamageStates.Find(PlayerId))
+		{
+			Pawn->SetCanBeDamaged(*bWasDamageable);
+			ArenaWorkerReconnectDamageStates.Remove(PlayerId);
+		}
+	}
+	if (ArenaWorkerDisconnectedPlayerIds.IsEmpty() && PendingReconnectContexts.IsEmpty())
+	{
+		GetWorldTimerManager().ClearTimer(ArenaWorkerReconnectTimerHandle);
+	}
 	TryFinishArenaReload();
 }
 
@@ -1725,6 +1764,8 @@ void AOutlierGameMode::Logout(AController* Exiting)
 	{
 		// 시작된 Worker 매치는 좌석과 MatchId를 해제하지 않는다. 유예 시간 동안 같은 신원이
 		// 돌아오면 새 Controller를 원래 Role에 다시 연결하고, 다른 참가자는 계속 거부한다.
+		// 진행 정보와 Room 수명을 기록한 다음 Pawn을 분리한다. 순서를 바꾸면
+		// Logout에서 사라지는 PlayerState 또는 Controller의 정보를 놓칠 수 있다.
 		AOutlierPlayerState* ExitingPlayerState = ExitingPlayer->GetPlayerState<AOutlierPlayerState>();
 		AOutlierPlayerState* RemainingPlayerState = ExitingPlayerState
 			? FindPairPlayerState(
@@ -1739,13 +1780,50 @@ void AOutlierGameMode::Logout(AController* Exiting)
 			// 반대 순서는 살아 있는 Shooter PS가 이미 같은 정보를 가지고 있으므로 복사가 필요 없다.
 			RemainingPlayerState->CopyReconnectGameplayStateFrom(*ExitingPlayerState);
 		}
+		if (AOutlierPlayerState* ProgressSource = RemainingPlayerState
+			? RemainingPlayerState : ExitingPlayerState)
+		{
+			ArenaWorkerReconnectGameplayState = ProgressSource->CaptureReconnectGameplayState();
+			bHasArenaWorkerReconnectGameplayState = true;
+		}
 		ArenaWorkerDisconnectedPlayerIds.Add(ExitingArenaPlayerId);
+		if (URoomCombatSubsystem* Combat = GetWorld()->GetSubsystem<URoomCombatSubsystem>())
+		{
+			FRoomCombatReconnectContext Context;
+			if (Combat->GetReconnectContext(Context))
+			{
+				ArenaWorkerDisconnectContexts.Add(ExitingArenaPlayerId, Context);
+			}
+		}
 		if (TObjectPtr<APawn>* PendingPawn = PendingPossessions.Find(ExitingPlayer))
 		{
 			// 리로드 중 Pawn은 아직 Possess되지 않아 Controller Map에만 매달려 있다.
 			// 이전 Controller가 파괴되기 전에 PlayerId 키로 옮겨둬야 재접속 PC에 다시 연결할 수 있다.
 			ArenaWorkerReconnectPawns.Add(ExitingArenaPlayerId, *PendingPawn);
 			PendingPossessions.Remove(ExitingPlayer);
+		}
+		else if (!bArenaReloadInProgress)
+		{
+			// 재접속은 사망/체크포인트 재시작이 아니다. Pawn을 Controller에서 분리해
+			// 현재 체력·탄약·장비를 보존하고, 새 Controller의 스트리밍 ACK 후 다시 Possess한다.
+			if (APartnerPlayerController* PartnerController = Cast<APartnerPlayerController>(ExitingPlayer))
+			{
+				if (Cast<AEnemyBase>(PartnerController->GetPawn()))
+				{
+					PartnerController->ReleaseEnemyPossession();
+				}
+			}
+			if (AFirstPersonCharacter* Pawn = Cast<AFirstPersonCharacter>(ExitingPlayer->GetPawn()))
+			{
+				if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(Pawn))
+				{
+					Shooter->ClearInputIntent();
+				}
+				ArenaWorkerReconnectDamageStates.Add(ExitingArenaPlayerId, Pawn->CanBeDamaged());
+				Pawn->SetCanBeDamaged(false);
+				ExitingPlayer->UnPossess();
+				ArenaWorkerReconnectPawns.Add(ExitingArenaPlayerId, Pawn);
+			}
 		}
 		PendingLocalPossessions.Remove(ExitingPlayer);
 	}
@@ -1771,7 +1849,7 @@ void AOutlierGameMode::Logout(AController* Exiting)
 		ArenaWorkerPartnerController.Reset();
 	}
 
-	if (Exiting)
+	if (Exiting && !ArenaWorkerReconnectPawns.Contains(ExitingArenaPlayerId))
 	{
 		if (AShooterCharacter* ShooterCharacter = Cast<AShooterCharacter>(Exiting->GetPawn()))
 		{
@@ -1826,6 +1904,8 @@ void AOutlierGameMode::Logout(AController* Exiting)
 	}
 
 	Super::Logout(Exiting);
+	PendingReconnectContexts.Remove(ExitingPlayer);
+	PendingReconnectRequestIds.Remove(ExitingPlayer);
 
 	if (bListenHostLeaving)
 	{
@@ -2504,7 +2584,9 @@ void AOutlierGameMode::ScheduleArenaWorkerReconnectTimeout()
 void AOutlierGameMode::HandleArenaWorkerReconnectTimeout()
 {
 	if (ArenaWorkerShooterController.IsValid()
-		&& ArenaWorkerPartnerController.IsValid())
+		&& ArenaWorkerPartnerController.IsValid()
+		&& ArenaWorkerDisconnectedPlayerIds.IsEmpty()
+		&& PendingReconnectContexts.IsEmpty())
 	{
 		return;
 	}
@@ -2529,6 +2611,165 @@ void AOutlierGameMode::HandleArenaWorkerReconnectTimeout()
 	}
 }
 
+bool AOutlierGameMode::PrepareArenaWorkerReconnectPawn(
+	APlayerController* PlayerController, APawn* Pawn, AFirstPersonCharacter* Anchor)
+{
+	// 서버의 현재 차단 Room이 있으면 그 안으로 합류시킨 뒤 클라이언트 로드를 요청한다.
+	// 끊긴 사이 이전 Room이 사라졌다면 옛 좌표를 쓰지 않고 Arena 시작점으로 돌린다.
+	AFirstPersonCharacter* Player = Cast<AFirstPersonCharacter>(Pawn);
+	URoomCombatSubsystem* Combat = GetWorld()
+		? GetWorld()->GetSubsystem<URoomCombatSubsystem>() : nullptr;
+	if (!PlayerController || !IsValid(Player) || !Combat)
+	{
+		return false;
+	}
+	FRoomCombatReconnectContext Context;
+	if (Combat->GetReconnectContext(Context))
+	{
+		if (!Combat->TryPlaceReconnectingPlayer(Player, Anchor, Context))
+		{
+			return false;
+		}
+	}
+	else if (const AOutlierPlayerState* State = PlayerController->GetPlayerState<AOutlierPlayerState>())
+	{
+		const FRoomCombatReconnectContext* OldContext =
+			ArenaWorkerDisconnectContexts.Find(State->GetTemporaryPlayerId());
+		if (OldContext && (!Combat->IsRoomRegistered(OldContext->RoomTag)
+			|| Combat->GetRoomState(OldContext->RoomTag) == ERoomCombatState::Dormant)
+			&& !MoveArenaWorkerReconnectPawnToFallback(PlayerController, Player))
+		{
+			return false;
+		}
+	}
+	PendingReconnectContexts.Add(PlayerController, Context);
+	return true;
+}
+
+bool AOutlierGameMode::ValidateArenaWorkerReconnectPawn(
+	APlayerController* PlayerController, APawn* Pawn)
+{
+	// 클라이언트가 로딩하는 동안 Room이 바뀔 수 있다. 준비 때의 토큰과 서버의
+	// 현재 상태를 다시 비교해, 이전 Room용 ACK로는 새 Room에 Possess하지 않는다.
+	FRoomCombatReconnectContext* Previous = PendingReconnectContexts.Find(PlayerController);
+	if (!Previous)
+	{
+		return true;
+	}
+	AFirstPersonCharacter* Player = Cast<AFirstPersonCharacter>(Pawn);
+	URoomCombatSubsystem* Combat = GetWorld()
+		? GetWorld()->GetSubsystem<URoomCombatSubsystem>() : nullptr;
+	if (!IsValid(Player) || !Combat)
+	{
+		return false;
+	}
+	const FRoomCombatReconnectContext OldContext = *Previous;
+	FRoomCombatReconnectContext Current;
+	const bool bBlockedRoom = Combat->GetReconnectContext(Current);
+	if (bBlockedRoom)
+	{
+		AOutlierPlayerState* State = PlayerController->GetPlayerState<AOutlierPlayerState>();
+		AFirstPersonCharacter* Anchor = State
+			? Cast<AFirstPersonCharacter>(State->IsShooterPlayer()
+				? static_cast<APawn*>(State->GetPartnerCharacter())
+				: static_cast<APawn*>(State->GetShooterCharacter()))
+			: nullptr;
+		const FVector Before = Player->GetActorLocation();
+		if (!Combat->TryPlaceReconnectingPlayer(Player, Anchor, Current))
+		{
+			ScheduleArenaWorkerReconnectTimeout();
+			return false;
+		}
+		*Previous = Current;
+		// 로딩 ACK가 이전 위치를 대상으로 왔다면, 새 위치의 WP 셀을 로드한 뒤 다시 ACK받는다.
+		if (OldContext.RoomTag != Current.RoomTag
+			|| OldContext.RoomRegistrationId != Current.RoomRegistrationId
+			|| OldContext.GameplayGeneration != Current.GameplayGeneration
+			|| !Before.Equals(Player->GetActorLocation()))
+		{
+			if (AFirstPersonPlayerController* FirstPersonController =
+				Cast<AFirstPersonPlayerController>(PlayerController))
+			{
+				const uint32 RequestId = ++NextReconnectRequestId;
+				PendingReconnectRequestIds.Add(PlayerController, RequestId);
+				FirstPersonController->ClientArenaLoad(Player->GetActorLocation(), RequestId);
+			}
+			return false;
+		}
+	}
+	else if (OldContext.RoomTag.IsValid())
+	{
+		// Clear는 그대로 입장해도 되지만 Reset/언로드로 Room 자체가 사라졌다면
+		// 이전 차단막 안쪽 좌표를 재사용하지 않고 Arena 시작점의 스트리밍을 다시 요청한다.
+		if (!Combat->IsRoomRegistered(OldContext.RoomTag)
+			|| Combat->GetRoomState(OldContext.RoomTag) == ERoomCombatState::Dormant)
+		{
+			if (!MoveArenaWorkerReconnectPawnToFallback(PlayerController, Player))
+			{
+				ScheduleArenaWorkerReconnectTimeout();
+				return false;
+			}
+			*Previous = FRoomCombatReconnectContext();
+			if (AFirstPersonPlayerController* FirstPersonController =
+				Cast<AFirstPersonPlayerController>(PlayerController))
+			{
+				const uint32 RequestId = ++NextReconnectRequestId;
+				PendingReconnectRequestIds.Add(PlayerController, RequestId);
+				FirstPersonController->ClientArenaLoad(Player->GetActorLocation(), RequestId);
+			}
+			return false;
+		}
+	}
+	PendingReconnectContexts.Remove(PlayerController);
+	return true;
+}
+
+bool AOutlierGameMode::MoveArenaWorkerReconnectPawnToFallback(
+	APlayerController* PlayerController, AFirstPersonCharacter* Player)
+{
+	if (!PlayerController || !IsValid(Player))
+	{
+		return false;
+	}
+	FTransform ShooterStart, PartnerStart;
+	ResolveFallbackSpawnTransforms(PlayerController, ShooterStart, PartnerStart);
+	const AOutlierPlayerState* State = PlayerController->GetPlayerState<AOutlierPlayerState>();
+	const FTransform& Start = State && State->IsShooterPlayer() ? ShooterStart : PartnerStart;
+	return Player->TeleportTo(Start.GetLocation(), Start.GetRotation().Rotator(), false, false);
+}
+
+void AOutlierGameMode::ClearArenaWorkerReconnectPawns()
+{
+	// 매치 종료 시 Controller 없는 보존 Pawn과 아직 Possess를 기다리는 Pawn을 정리한다.
+	// 이미 Possess된 Pawn은 여기서 파괴하지 않는다.
+	for (const TPair<TWeakObjectPtr<APlayerController>, FRoomCombatReconnectContext>& Entry
+		: PendingReconnectContexts)
+	{
+		if (TObjectPtr<APawn>* PendingPawn = PendingPossessions.Find(Entry.Key.Get()))
+		{
+			if (IsValid(PendingPawn->Get()) && !(*PendingPawn)->GetController())
+			{
+				(*PendingPawn)->Destroy();
+			}
+			PendingPossessions.Remove(Entry.Key.Get());
+		}
+	}
+	for (const TPair<FGuid, TObjectPtr<APawn>>& Entry : ArenaWorkerReconnectPawns)
+	{
+		if (IsValid(Entry.Value.Get()) && !Entry.Value->GetController())
+		{
+			Entry.Value->Destroy();
+		}
+	}
+	ArenaWorkerReconnectPawns.Reset();
+	ArenaWorkerReconnectDamageStates.Reset();
+	PendingReconnectContexts.Reset();
+	ArenaWorkerDisconnectContexts.Reset();
+	PendingReconnectRequestIds.Reset();
+	ArenaWorkerReconnectGameplayState = FOutlierReconnectGameplayState();
+	bHasArenaWorkerReconnectGameplayState = false;
+}
+
 void AOutlierGameMode::TryResumeArenaWorkerAfterReconnect(APlayerController* ReconnectedPlayer)
 {
 	// 둘 다 끊긴 경우 첫 번째 접속만으로 게임을 재개하지 않는다. 두 Role의 Controller가
@@ -2541,18 +2782,34 @@ void AOutlierGameMode::TryResumeArenaWorkerAfterReconnect(APlayerController* Rec
 		return;
 	}
 
-	GetWorldTimerManager().ClearTimer(ArenaWorkerReconnectTimerHandle);
 	AOutlierPlayerState* ReconnectedPlayerState = ReconnectedPlayer->GetPlayerState<AOutlierPlayerState>();
 	if (ReconnectedPlayerState)
 	{
-		AOutlierPlayerState* RemainingPlayerState = FindPairPlayerState(
+		// 한 명만 끊겼으면 남은 PS가 원본이고, 둘 다 끊겼으면 서버 스냅샷이 원본이다.
+		// 새로 생성된 PS에서 진행 정보를 복사하면 두 번째 재접속자의 정보가 초기화된다.
+		if (ArenaWorkerDisconnectedPlayerIds.Num() == 2
+			&& bHasArenaWorkerReconnectGameplayState)
+		{
+			ReconnectedPlayerState->RestoreReconnectGameplayState(ArenaWorkerReconnectGameplayState);
+			if (AOutlierPlayerState* OtherState = FindPairPlayerState(
+				ReconnectedPlayerState->GetPairId(),
+				ReconnectedPlayerState->IsShooterPlayer()
+					? EOutlierPlayerRole::Partner : EOutlierPlayerRole::Shooter))
+			{
+				OtherState->RestoreReconnectGameplayState(ArenaWorkerReconnectGameplayState);
+			}
+		}
+		else if (AOutlierPlayerState* RemainingPlayerState = FindPairPlayerState(
 			ReconnectedPlayerState->GetPairId(),
 			ReconnectedPlayerState->IsShooterPlayer()
-				? EOutlierPlayerRole::Partner
-				: EOutlierPlayerRole::Shooter);
-		if (RemainingPlayerState && RemainingPlayerState != ReconnectedPlayerState)
+				? EOutlierPlayerRole::Partner : EOutlierPlayerRole::Shooter);
+			RemainingPlayerState && RemainingPlayerState != ReconnectedPlayerState)
 		{
 			ReconnectedPlayerState->CopyReconnectGameplayStateFrom(*RemainingPlayerState);
+		}
+		else if (bHasArenaWorkerReconnectGameplayState)
+		{
+			ReconnectedPlayerState->RestoreReconnectGameplayState(ArenaWorkerReconnectGameplayState);
 		}
 	}
 	RefreshPairLinks(ReconnectedPlayerState);
@@ -2623,26 +2880,60 @@ void AOutlierGameMode::TryResumeArenaWorkerAfterReconnect(APlayerController* Rec
 	}
 	else
 	{
-		// Worker는 HandleStartingNewPlayer에서 기본 Spawn을 막으므로 재접속 PC에는 Pawn이 없다.
-		// 기존 체크포인트 복원 경로로 Pair를 다시 만든 뒤 클라이언트 스트리밍 준비를 재요청한다.
-		RespawnPairAtCheckpoint(ReconnectedPlayer);
+		// 정상 재접속에서는 남아 있는 플레이어와 Room/Wave를 그대로 둔다.
+		// 먼저 모든 보존 Pawn의 안전 위치를 확정하고, 그 뒤 Pair 링크와 클라이언트
+		// 스트리밍 요청을 등록한다. 위치를 못 찾으면 누구도 부분적으로 Possess하지 않는다.
 		for (const FGuid& PlayerId : ArenaWorkerDisconnectedPlayerIds)
 		{
 			APlayerController* PlayerController = ResolveReconnectedController(PlayerId);
-			APawn* ReconnectedPawn = PlayerController ? PlayerController->GetPawn() : nullptr;
-			if (!PlayerController || !ReconnectedPawn)
+			APawn* ReconnectedPawn = ArenaWorkerReconnectPawns.FindRef(PlayerId);
+			const FGuid OtherPlayerId = PlayerId == ArenaWorkerAdmission.ShooterPlayerId
+				? ArenaWorkerAdmission.PartnerPlayerId : ArenaWorkerAdmission.ShooterPlayerId;
+			APlayerController* OtherController = ResolveReconnectedController(OtherPlayerId);
+			AFirstPersonCharacter* Anchor = Cast<AFirstPersonCharacter>(
+				OtherController ? OtherController->GetPawn()
+					: ArenaWorkerReconnectPawns.FindRef(OtherPlayerId));
+			if (!PrepareArenaWorkerReconnectPawn(PlayerController, ReconnectedPawn, Anchor))
 			{
-				continue;
+				UE_LOG(LogTemp, Error,
+					TEXT("[ArenaWorker] Reconnect deferred: Pawn or safe Room destination unavailable Player=%s"),
+					*PlayerId.ToString());
+				return;
 			}
+		}
+		// 두 명 모두 끊긴 동안에는 기존 PlayerState의 Pair 포인터도 사라진다.
+		// 스트리밍 ACK보다 먼저 보존한 Pawn과 새 PlayerState를 다시 묶는다.
+		AOutlierPlayerState* ShooterState = ArenaWorkerShooterController->GetPlayerState<AOutlierPlayerState>();
+		AOutlierPlayerState* PartnerState = ArenaWorkerPartnerController->GetPlayerState<AOutlierPlayerState>();
+		AShooterCharacter* Shooter = Cast<AShooterCharacter>(ArenaWorkerShooterController->GetPawn());
+		APartnerCharacter* Partner = Cast<APartnerCharacter>(ArenaWorkerPartnerController->GetPawn());
+		if (!Shooter)
+		{
+			Shooter = Cast<AShooterCharacter>(ArenaWorkerReconnectPawns.FindRef(ArenaWorkerAdmission.ShooterPlayerId));
+		}
+		if (!Partner)
+		{
+			Partner = Cast<APartnerCharacter>(ArenaWorkerReconnectPawns.FindRef(ArenaWorkerAdmission.PartnerPlayerId));
+		}
+		RegisterSpawnedPair(ShooterState, PartnerState, Shooter, Partner);
+		for (const FGuid& PlayerId : ArenaWorkerDisconnectedPlayerIds)
+		{
+			APlayerController* PlayerController = ResolveReconnectedController(PlayerId);
+			APawn* ReconnectedPawn = ArenaWorkerReconnectPawns.FindRef(PlayerId);
 			const FVector SpawnLocation = ReconnectedPawn->GetActorLocation();
-			PlayerController->UnPossess();
 			PendingPossessions.Add(PlayerController, ReconnectedPawn);
 			if (AFirstPersonPlayerController* FirstPersonController =
 				Cast<AFirstPersonPlayerController>(PlayerController))
 			{
-				FirstPersonController->ClientArenaLoad(SpawnLocation);
+				const uint32 RequestId = ++NextReconnectRequestId;
+				PendingReconnectRequestIds.Add(PlayerController, RequestId);
+				FirstPersonController->ClientArenaLoad(SpawnLocation, RequestId);
 			}
 		}
+	}
+	if (bArenaReloadInProgress)
+	{
+		GetWorldTimerManager().ClearTimer(ArenaWorkerReconnectTimerHandle);
 	}
 
 	for (const FGuid& PlayerId : ArenaWorkerDisconnectedPlayerIds)
@@ -2820,7 +3111,7 @@ void AOutlierGameMode::BeginArenaWorkerReleaseShutdown()
 	GetWorldTimerManager().ClearTimer(ArenaWorkerAutoCompleteTimerHandle);
 	GetWorldTimerManager().ClearTimer(ArenaWorkerReconnectTimerHandle);
 	ArenaWorkerDisconnectedPlayerIds.Reset();
-	ArenaWorkerReconnectPawns.Reset();
+	ClearArenaWorkerReconnectPawns();
 	if (UOutlierArenaProcessSubsystem* ProcessSubsystem = GetGameInstance()
 		? GetGameInstance()->GetSubsystem<UOutlierArenaProcessSubsystem>()
 		: nullptr)

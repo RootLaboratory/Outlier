@@ -80,6 +80,13 @@ struct FRoomCombatPreparationContext // Room 재등록/Arena 리로드 뒤 이�
 	int32 GameplayGeneration = INDEX_NONE;
 };
 
+struct FRoomCombatReconnectContext // 재접속 로드 완료 전에 Room 수명이 바뀌었는지 확인한다.
+{
+	FGameplayTag RoomTag;
+	FGuid RoomRegistrationId;
+	int32 GameplayGeneration = INDEX_NONE;
+};
+
 struct FRoomCombatRuntime
 {
 	TWeakObjectPtr<ARoomVolume> RoomVolume;
@@ -210,11 +217,15 @@ public:
 	void RegisterPreplacedEnemy(AEnemyBase* Enemy);
 	void UnregisterEnemy(AEnemyBase* Enemy);
 	void NotifyEnemyDefeated(AEnemyBase* Enemy);
-	// 다음 합류 Slice에서 실제 감지 경로에 연결한다. 준비 중에는 명시적 완료만 Combat을 연다.
+	// 감지 진입과 재접속은 서버의 현재 Room 수명으로 검증한 뒤에만 Combat/합류를 확정한다.
 	bool BeginInitialDetectionPreparation(FGameplayTag RoomTag, AActor* AnchorPlayer,
 		FRoomCombatPreparationContext& OutContext);
 	bool CompleteInitialDetectionPreparation(const FRoomCombatPreparationContext& Context);
 	bool TryStartInitialDetectionForPlayers(FGameplayTag RoomTag);
+	bool GetReconnectContext(FRoomCombatReconnectContext& OutContext) const;
+	bool IsReconnectContextCurrent(const FRoomCombatReconnectContext& Context) const;
+	bool TryPlaceReconnectingPlayer(AFirstPersonCharacter* Player,
+		AFirstPersonCharacter* Anchor, const FRoomCombatReconnectContext& Context);
 	bool IsEnemyAttackBlocked(AEnemyBase* Enemy) const;
 	bool NotifyRoomCombatStarted(FGameplayTag RoomTag);
 	bool StartWaveSpawning(FGameplayTag RoomTag, int32 CombatPhaseIndex, int32 WaveIndex);

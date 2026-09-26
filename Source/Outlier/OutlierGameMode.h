@@ -7,6 +7,8 @@
 #include "GameFramework/GameModeBase.h"
 #include "GameFramework/GameMode.h"
 #include "Network/OutlierMatchRequest.h"
+#include "OutlierPlayerState.h"
+#include "Room/RoomCombatSubsystem.h"
 #include "Save/OutlierCheckpointRestartVote.h"
 #include "OutlierGameMode.generated.h"
 
@@ -14,6 +16,7 @@ class APlayerController;
 class AShooterPlayerController;
 class APartnerPlayerController;
 class AFirstPersonPlayerController;
+class AFirstPersonCharacter;
 class AShooterCharacter;
 class APartnerCharacter;
 class AOutlierCheckpoint;
@@ -62,7 +65,7 @@ public:
 		EOutlierPlayerRole FirstRole,
 		EOutlierPlayerRole SecondRole);
 
-	void OnClientArenaReady(APlayerController* PC);
+	void OnClientArenaReady(APlayerController* PC, uint32 ReconnectRequestId = 0);
 	void OnClientArenaGameplayGCReady(APlayerController* PC, uint32 GameplayGeneration);
 
 	UFUNCTION(Exec)
@@ -261,6 +264,12 @@ private:
 	void ScheduleArenaWorkerReconnectTimeout();
 	void HandleArenaWorkerReconnectTimeout();
 	void TryResumeArenaWorkerAfterReconnect(APlayerController* ReconnectedPlayer);
+	bool PrepareArenaWorkerReconnectPawn(APlayerController* PlayerController,
+		APawn* Pawn, AFirstPersonCharacter* Anchor);
+	bool ValidateArenaWorkerReconnectPawn(APlayerController* PlayerController, APawn* Pawn);
+	bool MoveArenaWorkerReconnectPawnToFallback(APlayerController* PlayerController,
+		AFirstPersonCharacter* Player);
+	void ClearArenaWorkerReconnectPawns();
 
 	TArray<TWeakObjectPtr<APlayerController>> ArenaWorkerPlayers;
 	FOutlierArenaAdmissionState ArenaWorkerAdmission;
@@ -271,6 +280,14 @@ private:
 	TSet<FGuid> ArenaWorkerDisconnectedPlayerIds;
 	UPROPERTY(Transient)
 	TMap<FGuid, TObjectPtr<APawn>> ArenaWorkerReconnectPawns;
+	TMap<FGuid, bool> ArenaWorkerReconnectDamageStates;
+	TMap<TWeakObjectPtr<APlayerController>, FRoomCombatReconnectContext> PendingReconnectContexts;
+	TMap<FGuid, FRoomCombatReconnectContext> ArenaWorkerDisconnectContexts;
+	TMap<TWeakObjectPtr<APlayerController>, uint32> PendingReconnectRequestIds;
+	uint32 NextReconnectRequestId = 0;
+	UPROPERTY(Transient)
+	FOutlierReconnectGameplayState ArenaWorkerReconnectGameplayState;
+	bool bHasArenaWorkerReconnectGameplayState = false;
 	UPROPERTY(Transient)
 	TObjectPtr<AOutlierArenaPausePlayerState> ArenaWorkerPauseOwner;
 	UPROPERTY(Transient)

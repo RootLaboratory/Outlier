@@ -5,6 +5,7 @@
 #include "Components/StaticMeshComponent.h"
 #include "Components/StateTreeComponent.h"
 #include "Drone/Partner/HackableComponent.h"
+#include "Drone/Partner/PartnerCharacter.h"
 #include "Enemy/AutoTurret.h"
 #include "Enemy/EnemyAdaptationSubsystem.h"
 #include "Enemy/EnemyBase.h"
@@ -2004,10 +2005,38 @@ bool FRoomCombatInitialDetectionPreparationTest::RunTest(const FString& Paramete
 	TestTrue(TEXT("The entrance closes before the first Wave advances"), Barrier->IsBlocked());
 	TestTrue(TEXT("Every entrance of the Room closes"), OtherBarrier->IsBlocked());
 	TestFalse(TEXT("Attack gate opens after preparation"), Combat->IsEnemyAttackBlocked(Enemy));
+	FRoomCombatReconnectContext ReconnectContext;
+	TestTrue(TEXT("A blocked Room provides a reconnect context"),
+		Combat->GetReconnectContext(ReconnectContext));
+	TestTrue(TEXT("The reconnect context belongs to the current Room lifetime"),
+		Combat->IsReconnectContextCurrent(ReconnectContext));
+	FRoomCombatReconnectContext WrongReconnectContext = ReconnectContext;
+	WrongReconnectContext.GameplayGeneration += 1;
+	TestFalse(TEXT("A different generation cannot rejoin the Room"),
+		Combat->IsReconnectContextCurrent(WrongReconnectContext));
+	if (FStructProperty* RoomTagProperty = FindFProperty<FStructProperty>(
+		ARoomVolume::StaticClass(), TEXT("RoomTag")))
+	{
+		*RoomTagProperty->ContainerPtrToValuePtr<FGameplayTag>(Room) = RoomTag;
+	}
+	APartnerCharacter* ReconnectingPartner = World->SpawnActor<APartnerCharacter>(
+		APartnerCharacter::StaticClass(), FTransform(FVector(800.0f, 0.0f, 0.0f)));
+	if (TestNotNull(TEXT("Reconnecting Partner exists"), ReconnectingPartner))
+	{
+		ReconnectingPartner->GetRoomTagComp()->AssignDefaultRoomTag(RoomTag);
+		TestFalse(TEXT("Reconnect does not accept a stale generation"),
+			Combat->TryPlaceReconnectingPlayer(ReconnectingPartner, nullptr, WrongReconnectContext));
+		TestTrue(TEXT("Without an anchor, reconnect uses a safe entrance fallback"),
+			Combat->TryPlaceReconnectingPlayer(ReconnectingPartner, nullptr, ReconnectContext));
+		TestTrue(TEXT("Reconnected Partner is inside the active Room"),
+			Room->ContainsWorldLocation(ReconnectingPartner->GetActorLocation()));
+	}
 	TestFalse(TEXT("Preparation cannot complete twice"),
 		Combat->CompleteInitialDetectionPreparation(FirstContext));
 
 	Combat->ResetRuntimeCombatState();
+	TestFalse(TEXT("Reset invalidates the reconnect context"),
+		Combat->IsReconnectContextCurrent(ReconnectContext));
 	TestFalse(TEXT("Reset opens the entrance"), Barrier->IsBlocked());
 	TestFalse(TEXT("Reset invalidates the previous context"),
 		Combat->CompleteInitialDetectionPreparation(FirstContext));
