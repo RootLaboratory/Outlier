@@ -264,10 +264,13 @@ private:
 	void ScheduleArenaWorkerReconnectTimeout();
 	void HandleArenaWorkerReconnectTimeout();
 	void TryResumeArenaWorkerAfterReconnect(APlayerController* ReconnectedPlayer);
-	bool PrepareArenaWorkerReconnectPawn(APlayerController* PlayerController,
+	void TryResumeListenGuestAfterReconnect(APlayerController* ReconnectedPlayer);
+	bool IsListenReconnectRequest(const FString& Options) const;
+	void ClearListenReconnectPawn();
+	bool PrepareReconnectPawn(APlayerController* PlayerController,
 		APawn* Pawn, AFirstPersonCharacter* Anchor);
-	bool ValidateArenaWorkerReconnectPawn(APlayerController* PlayerController, APawn* Pawn);
-	bool MoveArenaWorkerReconnectPawnToFallback(APlayerController* PlayerController,
+	bool ValidateReconnectPawn(APlayerController* PlayerController, APawn* Pawn);
+	bool MoveReconnectPawnToFallback(APlayerController* PlayerController,
 		AFirstPersonCharacter* Player);
 	void ClearArenaWorkerReconnectPawns();
 
@@ -299,6 +302,14 @@ private:
 	bool bArenaWorkerMatchCompleting = false;
 	bool bArenaWorkerExitRequested = false;
 	bool bListenHostReturnRequested = false;
+	FGuid ListenGuestReconnectToken;
+	FGuid ListenGuestPlayerId;
+	EOutlierPlayerRole ListenGuestRole = EOutlierPlayerRole::None;
+	int32 ListenGuestPairId = INDEX_NONE;
+	UPROPERTY(Transient)
+	TObjectPtr<APawn> ListenGuestReconnectPawn;
+	bool bListenGuestDisconnected = false;
+	bool bPendingGameplayDataReload = false;
 	FTimerHandle ArenaWorkerAutoCompleteTimerHandle;
 	FTimerHandle ArenaWorkerReconnectTimerHandle;
 	FTimerHandle ArenaWorkerExitTimerHandle;

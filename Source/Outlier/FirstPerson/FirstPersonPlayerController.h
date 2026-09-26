@@ -143,6 +143,9 @@ public:
 	UFUNCTION(Client, Reliable)
 	void ClientPrepareForArenaExit();
 
+	UFUNCTION(Client, Reliable)
+	void ClientConfigureListenReconnect(FGuid ReconnectToken);
+
 	// Listen Host의 로컬 Controller에는 Client RPC가 전송되지 않으므로 서버가 같은 적용 함수를 직접 호출한다.
 	void ConfigureCheckpointRestartFromServer(bool bCanRequest);
 	void SetCheckpointRestartVoteViewFromServer(EOutlierCheckpointRestartVoteView VoteView);

@@ -247,13 +247,16 @@ bool FRoomCombatSubsystemRuntimeTest::RunTest(const FString& Parameters)
 
 	World->AddToRoot();
 	WorldContext.SetCurrentWorld(World);
-	World->SetGameInstance(NewObject<UGameInstance>(GEngine));
+	UGameInstance* GameInstance = NewObject<UGameInstance>(GEngine);
+	World->SetGameInstance(GameInstance);
+	GameInstance->Init();
 	World->InitializeActorsForPlay(FURL());
 
-	auto CleanupWorld = [World]()
+	auto CleanupWorld = [World, GameInstance]()
 	{
 		GEngine->ShutdownWorldNetDriver(World);
 		World->DestroyWorld(true);
+		GameInstance->Shutdown();
 		World->SetPhysicsScene(nullptr);
 		GEngine->DestroyWorldContext(World);
 		World->RemoveFromRoot();
@@ -1195,6 +1198,11 @@ bool FRoomCombatExternalTriggerTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Second phase is selected"), Combat->GetCurrentCombatPhaseIndex(RoomTag), 1);
 	TestTrue(TEXT("Exit remains blocked during external wait"), Combat->IsExitBlocked(RoomTag));
 	TestTrue(TEXT("Barrier remains blocked during external wait"), Barrier->IsBlocked());
+	FRoomCombatReconnectContext WaitingContext;
+	TestTrue(TEXT("External phase wait remains a valid reconnect destination"),
+		Combat->GetReconnectContext(WaitingContext));
+	TestTrue(TEXT("Waiting reconnect still targets the blocked Room"),
+		WaitingContext.RoomTag == RoomTag);
 	TestTrue(TEXT("Streaming remains active during external wait"), Room->IsCombatStreamingSourceEnabled());
 	FRoomCombatTriggerContext OtherContext;
 	TestFalse(TEXT("Another Room cannot start while this Room holds the barrier"),
@@ -1212,10 +1220,14 @@ bool FRoomCombatExternalTriggerTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Last external phase clears the Room"), Combat->GetRoomState(RoomTag),
 		ERoomCombatState::Cleared);
 	TestFalse(TEXT("Clear opens the barrier"), Barrier->IsBlocked());
+	TestFalse(TEXT("Clear invalidates the waiting reconnect context"),
+		Combat->IsReconnectContextCurrent(WaitingContext));
 	TestEqual(TEXT("Clear disables barrier collision"), BarrierCollision->GetCollisionEnabled(),
 		ECollisionEnabled::NoCollision);
 	Combat->ResetRuntimeCombatState();
 	TestFalse(TEXT("Reset leaves the barrier open"), Barrier->IsBlocked());
+	TestFalse(TEXT("Reset cannot revive the previous phase wait"),
+		Combat->IsReconnectContextCurrent(WaitingContext));
 	CleanupWorld();
 	return true;
 }
@@ -2037,6 +2049,11 @@ bool FRoomCombatInitialDetectionPreparationTest::RunTest(const FString& Paramete
 	Combat->ResetRuntimeCombatState();
 	TestFalse(TEXT("Reset invalidates the reconnect context"),
 		Combat->IsReconnectContextCurrent(ReconnectContext));
+	if (IsValid(ReconnectingPartner))
+	{
+		TestFalse(TEXT("Old Room lifetime cannot place a reconnecting player after Reset"),
+			Combat->TryPlaceReconnectingPlayer(ReconnectingPartner, nullptr, ReconnectContext));
+	}
 	TestFalse(TEXT("Reset opens the entrance"), Barrier->IsBlocked());
 	TestFalse(TEXT("Reset invalidates the previous context"),
 		Combat->CompleteInitialDetectionPreparation(FirstContext));

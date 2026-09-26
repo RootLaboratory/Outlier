@@ -127,11 +127,15 @@ void ARoomCombatBarrier::SetBlocked(bool bNewBlocked)
 	bBlocked = bNewBlocked;
 	ApplyBlockedState();
 	ForceNetUpdate();
+	UE_LOG(LogTemp, Display, TEXT("[RoomCombatBarrier] Server state Room=%s Blocked=%d Actor=%s"),
+		*RoomTag.ToString(), bBlocked, *GetName());
 }
 
 void ARoomCombatBarrier::OnRep_Blocked()
 {
 	ApplyBlockedState();
+	UE_LOG(LogTemp, Display, TEXT("[RoomCombatBarrier] Client state Room=%s Blocked=%d Actor=%s"),
+		*RoomTag.ToString(), bBlocked, *GetName());
 }
 
 void ARoomCombatBarrier::ApplyBlockedState()

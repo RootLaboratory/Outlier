@@ -310,6 +310,14 @@ void AFirstPersonPlayerController::ClientPrepareForArenaExit_Implementation()
 	}
 }
 
+void AFirstPersonPlayerController::ClientConfigureListenReconnect_Implementation(FGuid ReconnectToken)
+{
+	if (UOutlierGameInstance* GameInstance = Cast<UOutlierGameInstance>(GetGameInstance()))
+	{
+		GameInstance->NotifyListenReconnectToken(ReconnectToken);
+	}
+}
+
 void AFirstPersonPlayerController::ConfigureCheckpointRestartFromServer(bool bCanRequest)
 {
 	// Listen Host는 같은 프로세스의 로컬 UI를 즉시 갱신하고, 원격 플레이어만 Client RPC로 전달한다.
