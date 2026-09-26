@@ -58,6 +58,40 @@ TAutoConsoleVariable<int32> CVarDrawShooterCrouchCapsule(
 	TEXT("Draws each Shooter's current collision capsule while crouched. 0: off, 1: on"),
 	ECVF_Cheat);
 
+// 1인칭 뷰모델 프레이밍 실험용(로컬 표시 전용). 원본 FP 애니메이션이 head 본 위치 눈 기준으로 제작됐는지 확인하려고
+// ViewModelRoot를 카메라 공간에서 옮긴다. 측정값: 카메라가 head보다 팔 공간 기준 25.3cm 앞/6.0cm 아래/1.8cm 옆에 있다.
+TAutoConsoleVariable<int32> CVarFPViewModelEyeAlign(
+	TEXT("outlier.FPViewModelEyeAlign"),
+	0,
+	TEXT("1: moves the first-person viewmodel by the measured head-eye offset (camera space X+25.3 Y+1.8 Z-6.0) so the camera sits at the head bone. 0: off"),
+	ECVF_Cheat);
+
+TAutoConsoleVariable<float> CVarFPViewModelOffsetX(
+	TEXT("outlier.FPViewModelOffsetX"), 0.0f,
+	TEXT("Additional first-person viewmodel offset along camera forward (cm), applied on top of outlier.FPViewModelEyeAlign"),
+	ECVF_Cheat);
+
+TAutoConsoleVariable<float> CVarFPViewModelOffsetY(
+	TEXT("outlier.FPViewModelOffsetY"), 0.0f,
+	TEXT("Additional first-person viewmodel offset along camera right (cm)"),
+	ECVF_Cheat);
+
+TAutoConsoleVariable<float> CVarFPViewModelOffsetZ(
+	TEXT("outlier.FPViewModelOffsetZ"), 0.0f,
+	TEXT("Additional first-person viewmodel offset along camera up (cm)"),
+	ECVF_Cheat);
+
+FVector GetFirstPersonViewModelDebugOffset()
+{
+	const FVector EyeAlignOffset = CVarFPViewModelEyeAlign.GetValueOnGameThread() != 0
+		? FVector(25.3f, 1.8f, -6.0f)
+		: FVector::ZeroVector;
+	return EyeAlignOffset + FVector(
+		CVarFPViewModelOffsetX.GetValueOnGameThread(),
+		CVarFPViewModelOffsetY.GetValueOnGameThread(),
+		CVarFPViewModelOffsetZ.GetValueOnGameThread());
+}
+
 AActor* ResolveDamageSource(AController* EventInstigator, AActor* DamageCauser)
 {
 	APawn* InstigatorPawn = EventInstigator ? EventInstigator->GetPawn() : nullptr;
@@ -226,9 +260,23 @@ void AShooterCharacter::BeginPlay()
 void AShooterCharacter::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	UpdateLocalProceduralWeaponSwitch(DeltaSeconds);
 
 	UpdateSlideCameraEffect(DeltaSeconds);
 	UpdateCameraFOV(DeltaSeconds);
+
+	if (IsLocallyControlled())
+	{
+		if (USceneComponent* ViewModelRoot = GetFirstPersonViewModelRoot())
+		{
+			const FVector DesiredViewModelRootLocation =
+				BaseFirstPersonViewModelRootLocation + GetFirstPersonViewModelDebugOffset();
+			if (!ViewModelRoot->GetRelativeLocation().Equals(DesiredViewModelRootLocation, 0.01f))
+			{
+				ViewModelRoot->SetRelativeLocation(DesiredViewModelRootLocation);
+			}
+		}
+	}
 
 	if (CVarDrawShooterCrouchCapsule.GetValueOnGameThread() != 0
 		&& bIsCrouched)
@@ -2381,6 +2429,17 @@ void AShooterCharacter::HandleSlideWallHit(const FHitResult& Hit)
 void AShooterCharacter::HandleDeath()
 {
 	ClearInputIntent();
+	if (InventoryComponent && HasAuthority())
+	{
+		InventoryComponent->CancelPendingWeaponSwitch();
+	}
+	StopThirdPersonMontage(ThirdPersonSwitchMontage);
+	FirstPersonSwitchVisualPhase = EFirstPersonWeaponSwitchVisualPhase::None;
+	FirstPersonSwitchLowerAlpha = 0.0f;
+	ActiveProceduralSwitchId = 0;
+	WeaponAtSwitchStart.Reset();
+	WeaponExpectedOnRaise.Reset();
+	bProceduralEquipRaiseOnly = false;
 	ActionLock = EShooterActionLock::None;
 	bIsEquipping = false;
 	TargetLeanAlpha = 0.0f;
@@ -2485,6 +2544,104 @@ FName AShooterCharacter::ResolveMontageSectionNameForWeapon(EWeaponType WeaponTy
 	default:
 		return DefaultMontageSectionName;
 	}
+}
+
+namespace
+{
+	const TCHAR* GetThirdPersonSwitchWeaponPrefix(EWeaponType WeaponType)
+	{
+		switch (WeaponType)
+		{
+		case EWeaponType::Rifle: return TEXT("Rifle");
+		case EWeaponType::Pistol: return TEXT("Pistol");
+		default: return TEXT("Melee");
+		}
+	}
+}
+
+FName AShooterCharacter::GetThirdPersonSwitchSectionName(EWeaponType WeaponType, FName Phase) const
+{
+	return FName(*FString::Printf(TEXT("%s_%s"), GetThirdPersonSwitchWeaponPrefix(WeaponType), *Phase.ToString()));
+}
+
+FName AShooterCharacter::GetThirdPersonSwitchPairRaiseSectionName(
+	EWeaponType PreviousWeaponType, EWeaponType NewWeaponType) const
+{
+	if (PreviousWeaponType == EWeaponType::Unarmed || NewWeaponType == EWeaponType::Unarmed ||
+		PreviousWeaponType == NewWeaponType)
+	{
+		return NAME_None;
+	}
+	return FName(*FString::Printf(TEXT("%sTo%s_Raise"),
+		GetThirdPersonSwitchWeaponPrefix(PreviousWeaponType),
+		GetThirdPersonSwitchWeaponPrefix(NewWeaponType)));
+}
+
+void AShooterCharacter::PlayThirdPersonSwitchPhase(EWeaponType WeaponType, FName Phase, FName SectionOverride)
+{
+	static const FName LowerPhase(TEXT("Lower"));
+	static const FName RaisePhase(TEXT("Raise"));
+	if (!ThirdPersonSwitchMontage || (Phase != LowerPhase && Phase != RaisePhase))
+	{
+		return;
+	}
+
+	UAnimInstance* AnimInstance = GetMesh() ? GetMesh()->GetAnimInstance() : nullptr;
+	const FName GenericSection = GetThirdPersonSwitchSectionName(WeaponType, Phase);
+	const FName Section = SectionOverride != NAME_None && ThirdPersonSwitchMontage->IsValidSectionName(SectionOverride)
+		? SectionOverride : GenericSection;
+	if (!AnimInstance || !ThirdPersonSwitchMontage->IsValidSlot(TEXT("UpperBody")) ||
+		!ThirdPersonSwitchMontage->IsValidSectionName(Section))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[TPWeaponSwitch] Invalid montage or section %s Montage=%s"),
+			*Section.ToString(), *GetNameSafe(ThirdPersonSwitchMontage));
+		if (AnimInstance && AnimInstance->Montage_IsActive(ThirdPersonSwitchMontage))
+		{
+			AnimInstance->Montage_Stop(0.1f, ThirdPersonSwitchMontage);
+		}
+		return;
+	}
+
+	if (!AnimInstance->Montage_IsPlaying(ThirdPersonSwitchMontage))
+	{
+		if (AnimInstance->Montage_Play(ThirdPersonSwitchMontage) <= 0.0f)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[TPWeaponSwitch] Could not play %s"),
+				*GetNameSafe(ThirdPersonSwitchMontage));
+			return;
+		}
+	}
+
+	if (Phase == LowerPhase)
+	{
+		const FName Lowered = GetThirdPersonSwitchSectionName(WeaponType, TEXT("Lowered"));
+		if (!ThirdPersonSwitchMontage->IsValidSectionName(Lowered))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[TPWeaponSwitch] Missing hold section %s"), *Lowered.ToString());
+			AnimInstance->Montage_Stop(0.1f, ThirdPersonSwitchMontage);
+			return;
+		}
+		AnimInstance->Montage_SetNextSection(Section, Lowered, ThirdPersonSwitchMontage);
+		AnimInstance->Montage_SetNextSection(Lowered, Lowered, ThirdPersonSwitchMontage);
+	}
+	else
+	{
+		AnimInstance->Montage_SetNextSection(Section, NAME_None, ThirdPersonSwitchMontage);
+	}
+	AnimInstance->Montage_JumpToSection(Section, ThirdPersonSwitchMontage);
+	UE_LOG(LogTemp, Log, TEXT("[TPWeaponSwitch] Section=%s WeaponType=%d Montage=%s Position=%.3f"),
+		*Section.ToString(), static_cast<int32>(WeaponType), *GetNameSafe(ThirdPersonSwitchMontage),
+		AnimInstance->Montage_GetPosition(ThirdPersonSwitchMontage));
+}
+
+void AShooterCharacter::MulticastPlayThirdPersonSwitchPhase_Implementation(EWeaponType WeaponType, FName Phase)
+{
+	PlayThirdPersonSwitchPhase(WeaponType, Phase);
+}
+
+void AShooterCharacter::MulticastPlayThirdPersonSwitchRaise_Implementation(EWeaponType WeaponType, FName SectionName)
+{
+	PlayThirdPersonSwitchPhase(WeaponType, TEXT("Raise"), SectionName);
 }
 
 namespace
@@ -2794,12 +2951,17 @@ void AShooterCharacter::PlayEquipMontages()
 
 	const EWeaponType EquippedWeaponType = GetWeaponType();
 	const FName EquipSectionName = ResolveMontageSectionNameForWeapon(EquippedWeaponType);
+	const FName SwitchRaiseSection = GetThirdPersonSwitchSectionName(EquippedWeaponType, TEXT("Raise"));
 	const float FirstPersonEquipLockDuration =
 		GetMontageSectionDurationOrFullLength(FirstPersonEquipMontage, EquipSectionName);
 	const float ThirdPersonEquipLockDuration =
-		GetMontageSectionDurationOrFullLength(ThirdPersonEquipMontage, EquipSectionName);
+		bUseProceduralWeaponSwitch && ThirdPersonSwitchMontage
+			? (ThirdPersonSwitchMontage->IsValidSectionName(SwitchRaiseSection)
+				? GetMontageSectionDurationOrFullLength(ThirdPersonSwitchMontage, SwitchRaiseSection)
+				: 0.0f)
+			: GetMontageSectionDurationOrFullLength(ThirdPersonEquipMontage, EquipSectionName);
 	const float EquipLockDuration = FMath::Max(
-		FirstPersonEquipLockDuration,
+		bUseProceduralWeaponSwitch ? FirstPersonSwitchRaiseDuration : FirstPersonEquipLockDuration,
 		ThirdPersonEquipLockDuration);
 
 	BeginActionLock(EShooterActionLock::Equip);
@@ -2822,14 +2984,21 @@ void AShooterCharacter::PlayEquipMontages()
 		IsLocallyControlled() ? 1 : 0,
 		HasAuthority() ? 1 : 0);
 
-	if (IsLocallyControlled())
+	if (!bUseProceduralWeaponSwitch && IsLocallyControlled())
 	{
 		PlayFirstPersonActionMontage(EShooterMontageAction::Equip, EquippedWeaponType);
 	}
 
 	if (HasAuthority())
 	{
-		MulticastPlayThirdPersonActionMontage(EShooterMontageAction::Equip, EquippedWeaponType);
+		if (bUseProceduralWeaponSwitch && ThirdPersonSwitchMontage)
+		{
+			MulticastPlayThirdPersonSwitchPhase(EquippedWeaponType, TEXT("Raise"));
+		}
+		else
+		{
+			MulticastPlayThirdPersonActionMontage(EShooterMontageAction::Equip, EquippedWeaponType);
+		}
 	}
 
 	if (EquipLockDuration > 0.0f)
@@ -2842,6 +3011,199 @@ void AShooterCharacter::PlayEquipMontages()
 	{
 		EndActionLock(EShooterActionLock::Equip);
 	}
+}
+
+int32 AShooterCharacter::BeginProceduralWeaponSwitch()
+{
+	const int32 SwitchId = ++NextProceduralSwitchId;
+	if (HasAuthority() && ThirdPersonSwitchMontage)
+	{
+		MulticastPlayThirdPersonSwitchPhase(GetWeaponType(), TEXT("Lower"));
+	}
+	if (IsLocallyControlled())
+	{
+		StartLocalProceduralWeaponSwitch(SwitchId);
+	}
+	else
+	{
+		ClientBeginProceduralWeaponSwitch(SwitchId);
+	}
+	return SwitchId;
+}
+
+void AShooterCharacter::BeginProceduralEquipRaise(AWeaponBase* ExpectedWeapon)
+{
+	if (!bUseProceduralWeaponSwitch || !ExpectedWeapon)
+	{
+		return;
+	}
+	if (IsLocallyControlled())
+	{
+		StartLocalProceduralEquipRaise(ExpectedWeapon);
+	}
+	else if (HasAuthority())
+	{
+		ClientBeginProceduralEquipRaise(ExpectedWeapon);
+	}
+}
+
+void AShooterCharacter::StartLocalProceduralWeaponSwitch(int32 SwitchId)
+{
+	ActiveProceduralSwitchId = SwitchId;
+	WeaponAtSwitchStart = CurrentWeapon;
+	WeaponExpectedOnRaise.Reset();
+	bProceduralEquipRaiseOnly = false;
+	FirstPersonSwitchVisualPhase = EFirstPersonWeaponSwitchVisualPhase::Lowering;
+	FirstPersonSwitchVisualElapsed = 0.0f;
+	FirstPersonSwitchLowerAlpha = 0.0f;
+	bFirstPersonSwitchConfirmSent = false;
+}
+
+void AShooterCharacter::StartLocalProceduralEquipRaise(AWeaponBase* ExpectedWeapon)
+{
+	ActiveProceduralSwitchId = 0;
+	WeaponAtSwitchStart.Reset();
+	WeaponExpectedOnRaise = ExpectedWeapon;
+	bProceduralEquipRaiseOnly = true;
+	FirstPersonSwitchVisualPhase = EFirstPersonWeaponSwitchVisualPhase::WaitingForWeapon;
+	FirstPersonSwitchVisualElapsed = 0.0f;
+	FirstPersonSwitchLowerAlpha = 1.0f;
+	bFirstPersonSwitchConfirmSent = true;
+}
+
+void AShooterCharacter::CancelLocalProceduralWeaponSwitch()
+{
+	FirstPersonSwitchRaiseStartAlpha = FirstPersonSwitchLowerAlpha;
+	FirstPersonSwitchVisualPhase = EFirstPersonWeaponSwitchVisualPhase::Raising;
+	FirstPersonSwitchVisualElapsed = 0.0f;
+	bFirstPersonSwitchConfirmSent = true;
+}
+
+void AShooterCharacter::UpdateLocalProceduralWeaponSwitch(float DeltaSeconds)
+{
+	if (!IsLocallyControlled() || FirstPersonSwitchVisualPhase == EFirstPersonWeaponSwitchVisualPhase::None)
+	{
+		return;
+	}
+
+	FirstPersonSwitchVisualElapsed += FMath::Max(DeltaSeconds, 0.0f);
+	if (FirstPersonSwitchVisualPhase == EFirstPersonWeaponSwitchVisualPhase::Lowering)
+	{
+		const float T = FMath::Clamp(FirstPersonSwitchVisualElapsed /
+			FMath::Max(FirstPersonSwitchLowerDuration, 0.05f), 0.0f, 1.0f);
+		FirstPersonSwitchLowerAlpha = FMath::SmoothStep(0.0f, 1.0f, T);
+		if (T >= 1.0f && !bFirstPersonSwitchConfirmSent)
+		{
+			bFirstPersonSwitchConfirmSent = true;
+			FirstPersonSwitchVisualPhase = EFirstPersonWeaponSwitchVisualPhase::WaitingForWeapon;
+			FirstPersonSwitchVisualElapsed = 0.0f;
+			UE_LOG(LogTemp, Log, TEXT("[FPWeaponSwitch] Lowered id=%d old=%s"),
+				ActiveProceduralSwitchId, *GetNameSafe(WeaponAtSwitchStart.Get()));
+			ServerConfirmProceduralWeaponLowered(ActiveProceduralSwitchId);
+		}
+	}
+	else if (FirstPersonSwitchVisualPhase == EFirstPersonWeaponSwitchVisualPhase::WaitingForWeapon)
+	{
+		if (CurrentWeapon &&
+			(bProceduralEquipRaiseOnly
+				? CurrentWeapon == WeaponExpectedOnRaise.Get()
+				: CurrentWeapon != WeaponAtSwitchStart.Get()))
+		{
+			FirstPersonSwitchRaiseStartAlpha = FirstPersonSwitchLowerAlpha;
+			FirstPersonSwitchVisualPhase = EFirstPersonWeaponSwitchVisualPhase::Raising;
+			FirstPersonSwitchVisualElapsed = 0.0f;
+			UE_LOG(LogTemp, Log, TEXT("[FPWeaponSwitch] Raise id=%d new=%s"),
+				ActiveProceduralSwitchId, *GetNameSafe(CurrentWeapon));
+		}
+		else if (FirstPersonSwitchVisualElapsed > 3.5f)
+		{
+			CancelLocalProceduralWeaponSwitch();
+		}
+	}
+	else if (FirstPersonSwitchVisualPhase == EFirstPersonWeaponSwitchVisualPhase::Raising)
+	{
+		const float T = FMath::Clamp(FirstPersonSwitchVisualElapsed /
+			FMath::Max(FirstPersonSwitchRaiseDuration, 0.05f), 0.0f, 1.0f);
+		FirstPersonSwitchLowerAlpha = FirstPersonSwitchRaiseStartAlpha *
+			(1.0f - FMath::SmoothStep(0.0f, 1.0f, T));
+		if (T >= 1.0f)
+		{
+			FirstPersonSwitchVisualPhase = EFirstPersonWeaponSwitchVisualPhase::None;
+			FirstPersonSwitchLowerAlpha = 0.0f;
+			WeaponAtSwitchStart.Reset();
+			WeaponExpectedOnRaise.Reset();
+			bProceduralEquipRaiseOnly = false;
+			ActiveProceduralSwitchId = 0;
+		}
+	}
+}
+
+void AShooterCharacter::ClientBeginProceduralWeaponSwitch_Implementation(int32 SwitchId)
+{
+	StartLocalProceduralWeaponSwitch(SwitchId);
+}
+
+void AShooterCharacter::ClientCancelProceduralWeaponSwitch_Implementation(int32 SwitchId)
+{
+	if (SwitchId == ActiveProceduralSwitchId)
+	{
+		CancelLocalProceduralWeaponSwitch();
+	}
+}
+
+void AShooterCharacter::ClientBeginProceduralEquipRaise_Implementation(AWeaponBase* ExpectedWeapon)
+{
+	StartLocalProceduralEquipRaise(ExpectedWeapon);
+}
+
+void AShooterCharacter::ServerConfirmProceduralWeaponLowered_Implementation(int32 SwitchId)
+{
+	if (InventoryComponent)
+	{
+		InventoryComponent->FinishPendingWeaponSwitch(SwitchId);
+	}
+}
+
+void AShooterCharacter::PlayProceduralSwitchThirdPersonEquip(EWeaponType PreviousWeaponType)
+{
+	const EWeaponType EquippedWeaponType = GetWeaponType();
+	const bool bUseSwitchMontage = ThirdPersonSwitchMontage != nullptr;
+	const UAnimMontage* Montage = bUseSwitchMontage ? ThirdPersonSwitchMontage.Get() : ThirdPersonEquipMontage.Get();
+	const FName PairSection = GetThirdPersonSwitchPairRaiseSectionName(PreviousWeaponType, EquippedWeaponType);
+	FName SectionName = ResolveMontageSectionNameForWeapon(EquippedWeaponType);
+	if (bUseSwitchMontage)
+	{
+		SectionName = GetThirdPersonSwitchSectionName(EquippedWeaponType, TEXT("Raise"));
+		if (PairSection != NAME_None)
+		{
+			if (Montage->IsValidSectionName(PairSection))
+			{
+				SectionName = PairSection;
+			}
+			else
+			{
+				UE_LOG(LogTemp, Warning, TEXT("[TPWeaponSwitch] Missing pair section %s; falling back to %s"),
+					*PairSection.ToString(), *SectionName.ToString());
+			}
+		}
+	}
+	const float EquipLockDuration = FMath::Max(
+		Montage && Montage->IsValidSectionName(SectionName)
+			? GetMontageSectionDurationOrFullLength(Montage, SectionName)
+			: 0.0f,
+		FirstPersonSwitchRaiseDuration);
+
+	if (bUseSwitchMontage)
+	{
+		MulticastPlayThirdPersonSwitchRaise(EquippedWeaponType, SectionName);
+	}
+	else
+	{
+		MulticastPlayThirdPersonActionMontage(EShooterMontageAction::Equip, EquippedWeaponType);
+	}
+	FTimerDelegate EquipEndDelegate;
+	EquipEndDelegate.BindUObject(this, &AShooterCharacter::EndActionLock, EShooterActionLock::Equip);
+	GetWorldTimerManager().SetTimer(ActionLockTimerHandle, EquipEndDelegate, EquipLockDuration, false);
 }
 
 void AShooterCharacter::ServerSelectWeaponByIndex_Implementation(int32 SlotIndex)

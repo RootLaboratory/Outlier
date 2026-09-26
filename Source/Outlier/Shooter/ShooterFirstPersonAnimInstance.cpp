@@ -6,16 +6,19 @@
 #include "Animation/Skeleton.h"
 #include "Camera/CameraComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "Curves/CurveVector.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/SkeletalMesh.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "GameFramework/Controller.h"
 #include "HAL/IConsoleManager.h"
 #include "KismetAnimationLibrary.h"
 #include "Outlier.h"
 #include "OutlierNetUtils.h"
 #include "Shooter/Anim/ProceduralAnimValues.h"
 #include "Shooter/ShooterAnimInstance.h"
+#include "Weapon/RangedWeaponBase.h"
 
 namespace
 {
@@ -23,6 +26,60 @@ namespace
 		TEXT("outlier.FPAnimDiag"),
 		0,
 		TEXT("Logs first-person mesh hierarchy and procedural animation state. 0=off, 1=once per second and on weapon changes."),
+		ECVF_Cheat);
+	TAutoConsoleVariable<int32> CVarOutlierFirstPersonBoneTrace(
+		TEXT("outlier.FPAnimBoneTrace"),
+		0,
+		TEXT("Logs up to 600 finalized first-person action frames. 0=off, 1=Equip, 2=Reload, 3=both."),
+		ECVF_Cheat);
+	TAutoConsoleVariable<int32> CVarOutlierFirstPersonForceProceduralOff(
+		TEXT("outlier.FPAnimForceProceduralOff"),
+		0,
+		TEXT("Forces procedural animation off in every first-person anim instance. 0=normal, 1=off."),
+		ECVF_Cheat);
+	bool IsFirstPersonProceduralEnabled(bool bMasterEnabled)
+	{
+		return bMasterEnabled && CVarOutlierFirstPersonForceProceduralOff.GetValueOnGameThread() == 0;
+	}
+	TAutoConsoleVariable<int32> CVarOutlierFirstPersonBoneAxes(
+		TEXT("outlier.FPAnimBoneAxes"),
+		0,
+		TEXT("Draws finalized hand, gun-pivot and weapon-grip axes during FPAnimBoneTrace capture. 0=off, 1=on."),
+		ECVF_Cheat);
+	TAutoConsoleVariable<int32> CVarOutlierFirstPersonDAAxis(
+		TEXT("outlier.FPAnimDAAxis"),
+		0,
+		TEXT("Draws DA axes independently of frame logging. 0=off, 1-4=Equip, 5-6=Reload, 7=Aim pose location, 8=Aim midpoint in, 9=Aim midpoint out, 10=Aim final bone axes/rotation."),
+		ECVF_Cheat);
+	TAutoConsoleVariable<float> CVarOutlierFirstPersonAxisSize(
+		TEXT("outlier.FPAnimAxisSize"),
+		24.0f,
+		TEXT("Length in cm of first-person DA and bone debug axes (4-200)."),
+		ECVF_Cheat);
+	TAutoConsoleVariable<int32> CVarOutlierFirstPersonSightMuzzleAxes(
+		TEXT("outlier.FPAnimSightMuzzleAxes"),
+		0,
+		TEXT("Draws first-person optic and muzzle axes plus their forward directions and camera aim. 0=off, 1=on."),
+		ECVF_Cheat);
+	TAutoConsoleVariable<float> CVarOutlierFirstPersonSightMuzzleRayLength(
+		TEXT("outlier.FPAnimSightMuzzleRayLength"),
+		60.0f,
+		TEXT("Length in cm of the sight, muzzle and camera direction arrows (4-200)."),
+		ECVF_Cheat);
+	TAutoConsoleVariable<float> CVarOutlierFirstPersonSightMuzzleThickness(
+		TEXT("outlier.FPAnimSightMuzzleThickness"),
+		1.0f,
+		TEXT("Thickness of the sight/muzzle debug axes and direction arrows (0-5)."),
+		ECVF_Cheat);
+	TAutoConsoleVariable<int32> CVarOutlierFirstPersonSightMuzzleCameraRay(
+		TEXT("outlier.FPAnimSightMuzzleCameraRay"),
+		1,
+		TEXT("Draws the camera direction arrow in the sight/muzzle overlay. 0=off, 1=on."),
+		ECVF_Cheat);
+	TAutoConsoleVariable<float> CVarOutlierFirstPersonWeaponSwitchBlendDuration(
+		TEXT("outlier.FPAnimWeaponSwitchBlendDuration"),
+		0.15f,
+		TEXT("Seconds to blend first-person Hip, WeaponRoot and right-hand Equip IK runtime offsets after switching firearm DAs. 0 disables the blend."),
 		ECVF_Cheat);
 
 	FVector GetPitchCurveVectorValue(const UCurveVector* Curve, const FVector& FallbackValue, float AimPitch, float MinPitch, float MaxPitch)
@@ -79,6 +136,8 @@ namespace
 void UShooterFirstPersonAnimInstance::NativeInitializeAnimation()
 {
 	Super::NativeInitializeAnimation();
+	bWeaponSwitchPoseActive = false;
+	WeaponSwitchPoseElapsed = 0.0f;
 
 	if (CachedShooterCharacter)
 	{
@@ -96,6 +155,14 @@ void UShooterFirstPersonAnimInstance::NativeInitializeAnimation()
 
 	if (USkeletalMeshComponent* OwningMesh = GetOwningComponent())
 	{
+		if (BoneTraceMesh.IsValid() && BoneTraceDelegateHandle.IsValid())
+		{
+			BoneTraceMesh->UnregisterOnBoneTransformsFinalizedDelegate(BoneTraceDelegateHandle);
+		}
+		BoneTraceMesh = OwningMesh;
+		BoneTraceDelegateHandle = OwningMesh->RegisterOnBoneTransformsFinalizedDelegate(
+			FOnBoneTransformsFinalizedMultiCast::FDelegate::CreateUObject(this, &UShooterFirstPersonAnimInstance::TraceFinalizedFirstPersonBones));
+		BoneTraceFrameCount = 0;
 		UE_LOG(
 			LogTemp,
 			Log,
@@ -123,6 +190,15 @@ void UShooterFirstPersonAnimInstance::NativeInitializeAnimation()
 
 void UShooterFirstPersonAnimInstance::NativeUninitializeAnimation()
 {
+	bWeaponSwitchPoseActive = false;
+	if (BoneTraceMesh.IsValid() && BoneTraceDelegateHandle.IsValid())
+	{
+		BoneTraceMesh->UnregisterOnBoneTransformsFinalizedDelegate(BoneTraceDelegateHandle);
+	}
+	BoneTraceDelegateHandle.Reset();
+	BoneTraceMesh.Reset();
+	BoneTraceFrameCount = 0;
+
 	if (CachedShooterCharacter)
 	{
 		CachedShooterCharacter->OnCharacterDeath.RemoveDynamic(this, &UShooterFirstPersonAnimInstance::HandleOwnerDeath);
@@ -138,6 +214,7 @@ void UShooterFirstPersonAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 
 	if (!CachedShooterCharacter)
 	{
+		bWeaponSwitchPoseActive = false;
 		APawn* OwnerPawn = TryGetPawnOwner();
 		CachedShooterCharacter = Cast<AShooterCharacter>(OwnerPawn);
 	}
@@ -172,6 +249,7 @@ void UShooterFirstPersonAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 	UCharacterMovementComponent* CharacterMovement = CachedShooterCharacter->GetCharacterMovement();
 	if (!CharacterMovement)
 	{
+		bWeaponSwitchPoseActive = false;
 		Speed = 0.0f;
 		Direction = 0.0f;
 		bIsGrounded = true;
@@ -218,6 +296,24 @@ void UShooterFirstPersonAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 
 	if (bWeaponChanged)
 	{
+		const bool bWasFirearm = CurrentWeaponType == EWeaponType::Rifle || CurrentWeaponType == EWeaponType::Pistol;
+		const bool bIsFirearm = NewWeapon &&
+			(NewWeapon->GetWeaponType() == EWeaponType::Rifle || NewWeapon->GetWeaponType() == EWeaponType::Pistol);
+		bWeaponSwitchPoseActive = bWasFirearm && bIsFirearm && CurrentProceduralValues &&
+			NewWeapon->GetFirstPersonProceduralValues() != CurrentProceduralValues &&
+			CachedShooterCharacter->IsLocallyControlled() && !bIsDead &&
+			IsFirstPersonProceduralEnabled(bEnableProceduralAnimation) &&
+			CVarOutlierFirstPersonWeaponSwitchBlendDuration.GetValueOnGameThread() > 0.0f;
+		if (bWeaponSwitchPoseActive)
+		{
+			WeaponSwitchPoseStart.HipLoc = ViewModelProceduralRuntime.HipPoseLoc;
+			WeaponSwitchPoseStart.HipRot = ViewModelProceduralRuntime.HipPoseRot;
+			WeaponSwitchPoseStart.WeaponRootLoc = ViewModelProceduralRuntime.WeaponRootLocOffset;
+			WeaponSwitchPoseStart.WeaponRootRot = ViewModelProceduralRuntime.WeaponRootRotOffset;
+			WeaponSwitchPoseStart.RightHandIKLoc = ViewModelProceduralRuntime.RightHandIKLocOffset;
+			WeaponSwitchPoseStart.RightHandIKRot = ViewModelProceduralRuntime.RightHandIKRotOffset;
+			WeaponSwitchPoseElapsed = 0.0f;
+		}
 		ViewModelWeaponPoseAlpha = NewWeapon
 			? FMath::Max(ViewModelWeaponPoseAlpha, FMath::Clamp(WeaponPoseEquipInitialAlpha, 0.0f, 1.0f))
 			: 0.0f;
@@ -575,7 +671,7 @@ void UShooterFirstPersonAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 		bWasShouldMove = bShouldMove;
 	}
 
-	if (bEnableProceduralAnimation && bEnableProceduralWallOffset)
+	if (IsFirstPersonProceduralEnabled(bEnableProceduralAnimation) && bEnableProceduralWallOffset)
 	{
 		UpdateWallOffset(DeltaSeconds, WeaponValues);
 	}
@@ -585,7 +681,7 @@ void UShooterFirstPersonAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 	}
 	UpdateFirstPersonProceduralValues(DeltaSeconds);
 
-	if (bEnableProceduralAnimation && bEnableProceduralRecoil)
+	if (IsFirstPersonProceduralEnabled(bEnableProceduralAnimation) && bEnableProceduralRecoil)
 	{
 		UpdateViewModelRecoil(DeltaSeconds);
 	}
@@ -598,11 +694,62 @@ void UShooterFirstPersonAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 		RecoilRotSpringState = FVectorSpringState();
 	}
 	UpdateFirstPersonProceduralRuntime(DeltaSeconds);
+	BlendWeaponSwitchProceduralPose(DeltaSeconds);
+	if (CachedShooterCharacter->IsLocallyControlled() &&
+		IsFirstPersonProceduralEnabled(bEnableProceduralAnimation))
+	{
+		ViewModelProceduralRuntime.WeaponSwitchLowerAlpha =
+			CachedShooterCharacter->GetFirstPersonSwitchLowerAlpha();
+		ViewModelProceduralRuntime.WeaponSwitchLowerLoc = FVector(
+			0.0f, 0.0f, -CachedShooterCharacter->GetFirstPersonSwitchLowerDistance());
+	}
 	UpdateFirstPersonDiagnostics(DeltaSeconds, bWeaponChanged);
 
 	bWasSprinting = bIsSprinting;
 	bHadWeaponPose = bCanUseWeaponPose;
 	bBlockStartStopThisFrame = false;
+}
+
+void UShooterFirstPersonAnimInstance::BlendWeaponSwitchProceduralPose(float DeltaSeconds)
+{
+	if (!bWeaponSwitchPoseActive)
+	{
+		return;
+	}
+
+	const float Duration = CVarOutlierFirstPersonWeaponSwitchBlendDuration.GetValueOnGameThread();
+	if (Duration <= KINDA_SMALL_NUMBER || !CurrentProceduralValues || bIsDead ||
+		!IsFirstPersonProceduralEnabled(bEnableProceduralAnimation))
+	{
+		bWeaponSwitchPoseActive = false;
+		return;
+	}
+
+	const float LinearAlpha = FMath::Clamp(WeaponSwitchPoseElapsed / Duration, 0.0f, 1.0f);
+	if (LinearAlpha >= 1.0f)
+	{
+		bWeaponSwitchPoseActive = false;
+		return;
+	}
+	const float Alpha = LinearAlpha * LinearAlpha * (3.0f - 2.0f * LinearAlpha);
+	auto BlendRotation = [Alpha](const FRotator& From, const FRotator& To)
+	{
+		return FQuat::Slerp(From.Quaternion(), To.Quaternion(), Alpha).Rotator();
+	};
+
+	ViewModelProceduralRuntime.HipPoseLoc = FMath::Lerp(
+		WeaponSwitchPoseStart.HipLoc, ViewModelProceduralRuntime.HipPoseLoc, Alpha);
+	ViewModelProceduralRuntime.HipPoseRot = BlendRotation(
+		WeaponSwitchPoseStart.HipRot, ViewModelProceduralRuntime.HipPoseRot);
+	ViewModelProceduralRuntime.WeaponRootLocOffset = FMath::Lerp(
+		WeaponSwitchPoseStart.WeaponRootLoc, ViewModelProceduralRuntime.WeaponRootLocOffset, Alpha);
+	ViewModelProceduralRuntime.WeaponRootRotOffset = BlendRotation(
+		WeaponSwitchPoseStart.WeaponRootRot, ViewModelProceduralRuntime.WeaponRootRotOffset);
+	ViewModelProceduralRuntime.RightHandIKLocOffset = FMath::Lerp(
+		WeaponSwitchPoseStart.RightHandIKLoc, ViewModelProceduralRuntime.RightHandIKLocOffset, Alpha);
+	ViewModelProceduralRuntime.RightHandIKRotOffset = BlendRotation(
+		WeaponSwitchPoseStart.RightHandIKRot, ViewModelProceduralRuntime.RightHandIKRotOffset);
+	WeaponSwitchPoseElapsed += FMath::Max(DeltaSeconds, 0.0f);
 }
 
 void UShooterFirstPersonAnimInstance::UpdateFirstPersonDiagnostics(float DeltaSeconds, bool bWeaponChanged)
@@ -714,6 +861,292 @@ void UShooterFirstPersonAnimInstance::LogFirstPersonDiagnostics(const TCHAR* Rea
 		ViewModelProceduralRuntime.WallOffsetAlpha);
 }
 
+void UShooterFirstPersonAnimInstance::TraceFinalizedFirstPersonBones()
+{
+	const int32 TraceMode = CVarOutlierFirstPersonBoneTrace.GetValueOnGameThread();
+	const int32 DAAxisMode = CVarOutlierFirstPersonDAAxis.GetValueOnGameThread();
+	const bool bDrawSightMuzzleAxes = CVarOutlierFirstPersonSightMuzzleAxes.GetValueOnGameThread() != 0;
+	const bool bDrawBoneAxes = CVarOutlierFirstPersonBoneAxes.GetValueOnGameThread() != 0;
+	const float AxisSize = FMath::Clamp(CVarOutlierFirstPersonAxisSize.GetValueOnGameThread(), 4.0f, 200.0f);
+	if (TraceMode == 0)
+	{
+		BoneTraceFrameCount = 0;
+	}
+	if ((TraceMode == 0 && DAAxisMode == 0 && !bDrawSightMuzzleAxes) ||
+		!CachedShooterCharacter || !CachedShooterCharacter->IsLocallyControlled() || !CurrentWeapon)
+	{
+		return;
+	}
+	const bool bTraceEquip = (TraceMode & 1) != 0 &&
+		(bIsEquipping || ViewModelProceduralRuntime.EquipPoseAlpha > 0.005f || ViewModelProceduralRuntime.LeftHandEquipIKAlpha > 0.005f);
+	const bool bTraceReload = (TraceMode & 2) != 0 &&
+		(bIsReloading || ViewModelProceduralRuntime.ReloadPoseAlpha > 0.005f || ViewModelProceduralRuntime.LeftHandReloadIKAlpha > 0.005f);
+	const bool bLogFrame = (bTraceEquip || bTraceReload) && BoneTraceFrameCount < 600;
+	if (!bLogFrame && DAAxisMode == 0 && !bDrawSightMuzzleAxes)
+	{
+		return;
+	}
+
+	USkeletalMeshComponent* ArmsMesh = GetOwningComponent();
+	USkeletalMeshComponent* WeaponMesh = CurrentWeapon->GetFirstPersonWeaponMesh();
+	if (!ArmsMesh || !WeaponMesh)
+	{
+		return;
+	}
+	if (bDrawSightMuzzleAxes)
+	{
+		if (const ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(CurrentWeapon))
+		{
+			if (const UWorld* World = GetWorld())
+			{
+				const FName MuzzleSocketName = RangedWeapon->GetMuzzleSocketName();
+				const FName OpticAimPointName(TEXT("OpticAimPoint"));
+				const UStaticMeshComponent* SightMesh = RangedWeapon->GetFirstSightMesh();
+				const bool bHasMuzzle = WeaponMesh->DoesSocketExist(MuzzleSocketName);
+				const bool bHasOpticPoint = SightMesh && SightMesh->DoesSocketExist(OpticAimPointName);
+				const FTransform SightWorld = bHasOpticPoint
+					? SightMesh->GetSocketTransform(OpticAimPointName, RTS_World)
+					: SightMesh ? SightMesh->GetComponentTransform() : FTransform::Identity;
+				const FTransform MuzzleWorld = bHasMuzzle
+					? WeaponMesh->GetSocketTransform(MuzzleSocketName, RTS_World) : FTransform::Identity;
+				const float DirectionLength = FMath::Clamp(
+					CVarOutlierFirstPersonSightMuzzleRayLength.GetValueOnGameThread(), 4.0f, 200.0f);
+				const float LineThickness = FMath::Clamp(
+					CVarOutlierFirstPersonSightMuzzleThickness.GetValueOnGameThread(), 0.0f, 5.0f);
+				const float ArrowSize = FMath::Min(6.0f, DirectionLength * 0.2f);
+				if (SightMesh && !SightMesh->bHiddenInGame)
+				{
+					const FVector Origin = SightWorld.GetLocation();
+					DrawDebugCoordinateSystem(World, Origin, SightWorld.Rotator(), AxisSize, false, 0.0f, SDPG_Foreground, LineThickness);
+					DrawDebugDirectionalArrow(World, Origin, Origin + SightWorld.GetRotation().GetForwardVector() * DirectionLength,
+						ArrowSize, FColor::Cyan, false, 0.0f, SDPG_World, LineThickness);
+					DrawDebugString(World, Origin + FVector(0.0f, 0.0f, AxisSize + 5.0f),
+						bHasOpticPoint ? TEXT("SIGHT OpticAimPoint") : TEXT("SIGHT component origin (OpticAimPoint missing)"),
+						nullptr, FColor::Cyan, 0.0f, false, 0.7f);
+				}
+				if (bHasMuzzle)
+				{
+					const FVector Origin = MuzzleWorld.GetLocation();
+					DrawDebugCoordinateSystem(World, Origin, MuzzleWorld.Rotator(), AxisSize, false, 0.0f, SDPG_Foreground, LineThickness);
+					DrawDebugDirectionalArrow(World, Origin, Origin + MuzzleWorld.GetRotation().GetForwardVector() * DirectionLength,
+						ArrowSize, FColor::Yellow, false, 0.0f, SDPG_World, LineThickness);
+					DrawDebugString(World, Origin + FVector(0.0f, 0.0f, AxisSize + 5.0f),
+						FString::Printf(TEXT("MUZZLE %s"), *MuzzleSocketName.ToString()),
+						nullptr, FColor::Yellow, 0.0f, false, 0.7f);
+				}
+				else
+				{
+					DrawDebugString(World, WeaponMesh->GetComponentLocation(),
+						FString::Printf(TEXT("MUZZLE socket missing: %s"), *MuzzleSocketName.ToString()),
+						nullptr, FColor::Yellow, 0.0f, false, 0.7f);
+				}
+				if (CVarOutlierFirstPersonSightMuzzleCameraRay.GetValueOnGameThread() != 0)
+				{
+					if (AController* Controller = CachedShooterCharacter->GetController())
+					{
+						FVector ViewLocation;
+						FRotator ViewRotation;
+						Controller->GetPlayerViewPoint(ViewLocation, ViewRotation);
+						DrawDebugDirectionalArrow(World, ViewLocation, ViewLocation + ViewRotation.Vector() * DirectionLength,
+							ArrowSize, FColor::Magenta, false, 0.0f, SDPG_World, LineThickness);
+					}
+				}
+			}
+		}
+	}
+	if (!bLogFrame && DAAxisMode == 0)
+	{
+		return;
+	}
+	const FTransform ArmsWorld = ArmsMesh->GetComponentTransform();
+	auto BoneLocation = [ArmsMesh](FName BoneName, FVector& OutLocation) -> bool
+	{
+		if (ArmsMesh->GetBoneIndex(BoneName) == INDEX_NONE)
+		{
+			return false;
+		}
+		OutLocation = ArmsMesh->GetSocketTransform(BoneName, RTS_Component).GetLocation();
+		return true;
+	};
+	FVector HandR, HandL, IkHandR, IkHandL, IkHandGun;
+	const bool bHasHandR = BoneLocation(TEXT("hand_r"), HandR);
+	const bool bHasHandL = BoneLocation(TEXT("hand_l"), HandL);
+	const bool bHasIkHandR = BoneLocation(TEXT("ik_hand_r"), IkHandR);
+	const bool bHasIkHandL = BoneLocation(TEXT("ik_hand_l"), IkHandL);
+	const bool bHasIkHandGun = BoneLocation(TEXT("ik_hand_gun"), IkHandGun);
+	const FName GripSocketName = CurrentWeapon->GetLeftHandIKSocketName();
+	const bool bHasGrip = WeaponMesh->DoesSocketExist(GripSocketName);
+	const FVector Grip = bHasGrip
+		? ArmsWorld.InverseTransformPosition(WeaponMesh->GetSocketTransform(GripSocketName, RTS_World).GetLocation())
+		: FVector::ZeroVector;
+	const FVector WeaponOrigin = ArmsWorld.InverseTransformPosition(WeaponMesh->GetComponentLocation());
+	if (DAAxisMode != 0 && CurrentProceduralValues)
+	{
+		const FWeaponValues& Values = CurrentProceduralValues->WeaponValues;
+		FName TargetBone;
+		FName FieldName;
+		FVector RawOffset = FVector::ZeroVector;
+		FVector RuntimeOffset = FVector::ZeroVector;
+		switch (DAAxisMode)
+		{
+		case 1:
+			TargetBone = TEXT("ik_hand_r"); FieldName = TEXT("RightHandEquipIKLocOffset");
+			RawOffset = Values.RightHandEquipIKLocOffset;
+			RuntimeOffset = ViewModelProceduralRuntime.RightHandIKLocOffset;
+			break;
+		case 2:
+			TargetBone = TEXT("ik_hand_l"); FieldName = TEXT("LeftHandEquipIKLoc");
+			RawOffset = Values.LeftHandEquipIKLoc;
+			RuntimeOffset = ViewModelProceduralRuntime.LeftHandEquipIKLoc;
+			break;
+		case 3:
+			TargetBone = TEXT("upperarm_l"); FieldName = TEXT("LeftUpperArmEquipLoc");
+			RawOffset = Values.LeftUpperArmEquipLoc;
+			break;
+		case 4:
+			TargetBone = TEXT("hand_l"); FieldName = TEXT("LeftHandEquipGripOffsetLoc");
+			RawOffset = Values.LeftHandEquipGripOffsetLoc;
+			RuntimeOffset = ViewModelProceduralRuntime.LeftHandEquipGripOffsetLoc;
+			break;
+		case 5:
+			TargetBone = TEXT("ik_hand_r"); FieldName = TEXT("RightHandReloadIKLocOffset");
+			RawOffset = Values.RightHandReloadIKLocOffset;
+			RuntimeOffset = ViewModelProceduralRuntime.RightHandIKLocOffset;
+			break;
+		case 6:
+			TargetBone = TEXT("ik_hand_l"); FieldName = TEXT("LeftHandReloadIKLoc");
+			RawOffset = Values.LeftHandReloadIKLoc;
+			RuntimeOffset = ViewModelProceduralRuntime.LeftHandReloadIKLoc;
+			break;
+		case 7:
+			TargetBone = TEXT("VB hand_gun"); FieldName = TEXT("AimPoseLoc");
+			RawOffset = Values.AimPoseLoc;
+			RuntimeOffset = ViewModelProceduralRuntime.AimPoseLoc;
+			break;
+		case 8:
+		case 9:
+		{
+			TargetBone = TEXT("VB hand_gun");
+			const bool bIn = DAAxisMode == 8;
+			FieldName = bIn ? TEXT("AimMidpointOffsetIn") : TEXT("AimMidpointOffsetOut");
+			RawOffset = bIn ? Values.AimMidpointOffsetIn : Values.AimMidpointOffsetOut;
+			const float MidpointAlpha = (bEnableProceduralAim &&
+				(!bEnableProceduralLeftHandIK || ViewModelLeftHandIKAlpha <= KINDA_SMALL_NUMBER) &&
+				bIsAiming == bIn)
+				? FMath::Sin(FMath::Clamp(ViewModelProceduralRuntime.AimAlpha, 0.0f, 1.0f) * PI)
+				: 0.0f;
+			RuntimeOffset = RawOffset * MidpointAlpha;
+			break;
+		}
+		case 10:
+			TargetBone = TEXT("VB hand_gun"); FieldName = TEXT("AimPoseRot");
+			break;
+		default:
+			break;
+		}
+		if (DAAxisMode >= 7 && DAAxisMode <= 10 && ArmsMesh->GetBoneIndex(TargetBone) == INDEX_NONE)
+		{
+			TargetBone = TEXT("ik_hand_gun");
+		}
+		if (!TargetBone.IsNone() && ArmsMesh->GetBoneIndex(TargetBone) != INDEX_NONE)
+		{
+			if (const UWorld* World = GetWorld())
+			{
+				const FTransform BoneWorld = ArmsMesh->GetSocketTransform(TargetBone, RTS_World);
+				const FVector Origin = BoneWorld.GetLocation();
+				DrawDebugCoordinateSystem(World, Origin, DAAxisMode == 10 ? BoneWorld.Rotator() : ArmsWorld.Rotator(),
+					AxisSize, false, 0.0f, SDPG_Foreground, 3.0f);
+				if (DAAxisMode != 10)
+				{
+					DrawDebugDirectionalArrow(World, Origin, Origin + ArmsWorld.TransformVectorNoScale(RawOffset),
+						5.0f, FColor::White, false, 0.0f, SDPG_Foreground, 3.0f);
+					if (DAAxisMode != 3)
+					{
+						DrawDebugDirectionalArrow(World, Origin, Origin + ArmsWorld.TransformVectorNoScale(RuntimeOffset),
+							5.0f, FColor::Yellow, false, 0.0f, SDPG_Foreground, 3.0f);
+					}
+				}
+				const FString ValueText = DAAxisMode == 10
+					? FString::Printf(TEXT("AimPoseRot Bone=%s DA=%s Runtime=%s AimAlpha=%.2f (final axes)"),
+						*TargetBone.ToString(),
+						*Values.AimPoseRot.ToCompactString(),
+						*ViewModelProceduralRuntime.AimPoseRot.ToCompactString(),
+						ViewModelProceduralRuntime.AimAlpha)
+					: FString::Printf(TEXT("%s Bone=%s DA=%s Runtime=%s AimAlpha=%.2f"), *FieldName.ToString(),
+						*TargetBone.ToString(),
+						*RawOffset.ToCompactString(), DAAxisMode == 3 ? TEXT("mixed with base pose") : *RuntimeOffset.ToCompactString(),
+						ViewModelProceduralRuntime.AimAlpha);
+				DrawDebugString(World, Origin + FVector(0.0f, 0.0f, 5.0f),
+					ValueText,
+					nullptr, FColor::White, 0.0f, false, 0.7f);
+			}
+		}
+	}
+	if (bDrawBoneAxes && bLogFrame)
+	{
+		const UWorld* World = GetWorld();
+		if (World)
+		{
+			if (bHasHandR)
+			{
+				const FTransform BoneWorld = ArmsMesh->GetSocketTransform(TEXT("hand_r"), RTS_World);
+				DrawDebugCoordinateSystem(World, BoneWorld.GetLocation(), BoneWorld.Rotator(), AxisSize * 0.75f, false, 0.0f, SDPG_Foreground, 2.5f);
+			}
+			if (bHasHandL)
+			{
+				const FTransform BoneWorld = ArmsMesh->GetSocketTransform(TEXT("hand_l"), RTS_World);
+				DrawDebugCoordinateSystem(World, BoneWorld.GetLocation(), BoneWorld.Rotator(), AxisSize * 0.75f, false, 0.0f, SDPG_Foreground, 2.5f);
+			}
+			if (bHasIkHandGun)
+			{
+				const FTransform BoneWorld = ArmsMesh->GetSocketTransform(TEXT("ik_hand_gun"), RTS_World);
+				DrawDebugCoordinateSystem(World, BoneWorld.GetLocation(), BoneWorld.Rotator(), AxisSize, false, 0.0f, SDPG_Foreground, 3.0f);
+			}
+			if (bHasGrip)
+			{
+				const FTransform GripWorld = WeaponMesh->GetSocketTransform(GripSocketName, RTS_World);
+				DrawDebugCoordinateSystem(World, GripWorld.GetLocation(), GripWorld.Rotator(), AxisSize, false, 0.0f, SDPG_Foreground, 3.0f);
+				if (bHasHandL)
+				{
+					DrawDebugLine(World, ArmsWorld.TransformPosition(HandL), GripWorld.GetLocation(), FColor::Magenta, false, 0.0f, 0, 2.0f);
+				}
+			}
+		}
+	}
+	if (!bLogFrame)
+	{
+		return;
+	}
+	const UAnimMontage* ActionMontage = bTraceEquip
+		? CachedShooterCharacter->GetFirstPersonEquipMontage()
+		: CachedShooterCharacter->GetFirstPersonReloadMontage();
+	const float MontageTime = ActionMontage ? Montage_GetPosition(ActionMontage) : -1.0f;
+	++BoneTraceFrameCount;
+
+	UE_LOG(LogOutlier, Log,
+		TEXT("[FPBoneTrace] Frame=%llu Sample=%d Anim=%s Class=%s Mesh=%s Master=%d ForceOff=%d Effective=%d Action=%s Weapon=%s MontageTime=%.3f EquipState=%d ReloadState=%d PoseEquip=%.3f IKEquip=%.3f PoseReload=%.3f IKReload=%.3f WeaponPose=%.3f RightOffset=%s LeftEquipOffset=%s HandR=%s IkHandR=%s HandL=%s IkHandL=%s IkHandGun=%s WeaponOrigin=%s Grip=%s RightBoneGap=%.2f LeftGripGap=%.2f"),
+		static_cast<uint64>(GFrameCounter), BoneTraceFrameCount,
+		*GetNameSafe(this), *GetNameSafe(GetClass()), *GetNameSafe(ArmsMesh),
+		bEnableProceduralAnimation ? 1 : 0,
+		CVarOutlierFirstPersonForceProceduralOff.GetValueOnGameThread() != 0 ? 1 : 0,
+		IsFirstPersonProceduralEnabled(bEnableProceduralAnimation) ? 1 : 0,
+		bTraceEquip ? TEXT("Equip") : TEXT("Reload"),
+		*GetNameSafe(CurrentWeapon), MontageTime, bIsEquipping ? 1 : 0, bIsReloading ? 1 : 0,
+		ViewModelProceduralRuntime.EquipPoseAlpha, ViewModelProceduralRuntime.LeftHandEquipIKAlpha,
+		ViewModelProceduralRuntime.ReloadPoseAlpha, ViewModelProceduralRuntime.LeftHandReloadIKAlpha,
+		ViewModelProceduralRuntime.WeaponPoseAlpha,
+		*ViewModelProceduralRuntime.RightHandIKLocOffset.ToCompactString(),
+		*ViewModelProceduralRuntime.LeftHandEquipIKLoc.ToCompactString(),
+		bHasHandR ? *HandR.ToCompactString() : TEXT("NA"),
+		bHasIkHandR ? *IkHandR.ToCompactString() : TEXT("NA"),
+		bHasHandL ? *HandL.ToCompactString() : TEXT("NA"),
+		bHasIkHandL ? *IkHandL.ToCompactString() : TEXT("NA"),
+		bHasIkHandGun ? *IkHandGun.ToCompactString() : TEXT("NA"),
+		*WeaponOrigin.ToCompactString(), bHasGrip ? *Grip.ToCompactString() : TEXT("NA"),
+		bHasHandR && bHasIkHandR ? FVector::Distance(HandR, IkHandR) : -1.0f,
+		bHasHandL && bHasGrip ? FVector::Distance(HandL, Grip) : -1.0f);
+}
+
 void UShooterFirstPersonAnimInstance::AddViewModelRecoil(float GameplayRecoilScale)
 {
 	AddViewModelRecoil(GameplayRecoilScale, FVector2D::ZeroVector);
@@ -721,7 +1154,7 @@ void UShooterFirstPersonAnimInstance::AddViewModelRecoil(float GameplayRecoilSca
 
 void UShooterFirstPersonAnimInstance::AddViewModelRecoil(float GameplayRecoilScale, const FVector2D& NormalizedShotDirection)
 {
-	if (!CurrentProceduralValues || !bEnableProceduralAnimation || !bEnableProceduralRecoil)
+	if (!CurrentProceduralValues || !IsFirstPersonProceduralEnabled(bEnableProceduralAnimation) || !bEnableProceduralRecoil)
 	{
 		return;
 	}
@@ -841,7 +1274,7 @@ bool UShooterFirstPersonAnimInstance::IsMontageInProceduralActionWindow(const UA
 
 float UShooterFirstPersonAnimInstance::ResolveWallAimBreakAlpha(const FWeaponValues* WeaponValues) const
 {
-	if (!bEnableProceduralAnimation || !bEnableProceduralWallOffset)
+	if (!IsFirstPersonProceduralEnabled(bEnableProceduralAnimation) || !bEnableProceduralWallOffset)
 	{
 		return 0.0f;
 	}
@@ -1323,7 +1756,7 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralValues(float De
 // (ViewModelProceduralRuntime) 하나로 합성한다
 void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralRuntime(float DeltaSeconds)
 {
-	if (!CurrentProceduralValues || !bEnableProceduralAnimation)
+	if (!CurrentProceduralValues || !IsFirstPersonProceduralEnabled(bEnableProceduralAnimation))
 	{
 		ViewModelProceduralRuntime = FFirstPersonProceduralAnimRuntime();
 		ViewModelLeftHandActionReturnGripOffsetLoc = FVector::ZeroVector;
@@ -1679,15 +2112,21 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralRuntime(float D
 	const float RuntimeLeftHandEquipArmAlpha = bUseFirearmProcedural && bEnableProceduralLeftHandIK && bEnableProceduralAction
 		? FMath::Clamp(WeaponValues.LeftHandEquipArmAlpha, 0.0f, 1.0f) * EquipCrossfadeAlpha
 		: 0.0f;
-	const float RuntimeLeftHandAnyIKAlpha = FMath::Clamp(
-		RuntimeLeftHandIKAlpha + RuntimeLeftHandReloadIKAlpha + RuntimeLeftHandEquipIKAlpha,
+	// Equip 중에는 hand_l -> ik_hand_l 복사(LeftHand Free)를 유지해 ik_hand_l(ik_hand_gun 자식)이
+	// 몽타주 왼손을 총 기준으로 들고, ik_hand_gun의 절차적 이동(HipPose 등)을 함께 따라가게 한다.
+	const float RuntimeLeftHandTargetIKAlpha = FMath::Clamp(
+		RuntimeLeftHandIKAlpha + RuntimeLeftHandReloadIKAlpha,
 		0.0f,
 		1.0f
 	);
 	ViewModelProceduralRuntime.LeftHandIKAlpha = RuntimeLeftHandIKAlpha;
 	ViewModelProceduralRuntime.LeftHandFreeAlpha = bUseFirearmProcedural && bEnableProceduralLeftHandIK
-		? (1.0f - RuntimeLeftHandAnyIKAlpha)
+		? (1.0f - RuntimeLeftHandTargetIKAlpha)
 		: 1.0f;
+	// 최종 왼손 IK(hand_l -> ik_hand_l) 전용. Equip 중 1로 유지하고, 끝나면 LeftHandIKAlpha(그립 스냅)로 넘어간다.
+	ViewModelProceduralRuntime.LeftHandFinalIKAlpha = bUseFirearmProcedural && bEnableProceduralLeftHandIK
+		? FMath::Clamp(RuntimeLeftHandIKAlpha + RuntimeLeftHandEquipIKAlpha, 0.0f, 1.0f)
+		: 0.0f;
 	const FVector RuntimeLeftHandJointTargetLoc =
 		ViewModelLeftHandJointTargetLoc +
 		(WeaponValues.LeftHandSprintJointTargetLoc * RuntimeSprintAlpha) +

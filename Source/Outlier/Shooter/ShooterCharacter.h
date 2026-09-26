@@ -80,6 +80,14 @@ enum class EShooterActionLock : uint8
 	Slide
 };
 
+enum class EFirstPersonWeaponSwitchVisualPhase : uint8
+{
+	None,
+	Lowering,
+	WaitingForWeapon,
+	Raising
+};
+
 UENUM(BlueprintType)
 enum class ESlideEndReason : uint8
 {
@@ -251,6 +259,9 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
 	TObjectPtr<UAnimMontage> ThirdPersonEquipMontage;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Animation|Weapon Switch")
+	TObjectPtr<UAnimMontage> ThirdPersonSwitchMontage;
+
 	// Melee Attack
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
 	TObjectPtr<UAnimMontage> FirstPersonMeleeAttackMontage;
@@ -301,6 +312,29 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "State")
 	uint8 bIsEquipping : 1 = false;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Animation|Weapon Switch")
+	bool bUseProceduralWeaponSwitch = false;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Animation|Weapon Switch", meta = (ClampMin = "0.05"))
+	float FirstPersonSwitchLowerDuration = 0.22f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Animation|Weapon Switch", meta = (ClampMin = "0.05"))
+	float FirstPersonSwitchRaiseDuration = 0.22f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Animation|Weapon Switch", meta = (ClampMin = "0.0"))
+	float FirstPersonSwitchLowerDistance = 75.0f;
+
+	EFirstPersonWeaponSwitchVisualPhase FirstPersonSwitchVisualPhase = EFirstPersonWeaponSwitchVisualPhase::None;
+	TWeakObjectPtr<AWeaponBase> WeaponAtSwitchStart;
+	TWeakObjectPtr<AWeaponBase> WeaponExpectedOnRaise;
+	float FirstPersonSwitchLowerAlpha = 0.0f;
+	float FirstPersonSwitchRaiseStartAlpha = 1.0f;
+	float FirstPersonSwitchVisualElapsed = 0.0f;
+	bool bFirstPersonSwitchConfirmSent = false;
+	bool bProceduralEquipRaiseOnly = false;
+	int32 NextProceduralSwitchId = 0;
+	int32 ActiveProceduralSwitchId = 0;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
 	FGameplayTag SelectedAbilityTag;
@@ -583,6 +617,10 @@ public:
 
 	UFUNCTION(BlueprintPure)
 	EShooterActionLock GetActionLock() const { return ActionLock; }
+	bool UsesProceduralWeaponSwitch() const { return bUseProceduralWeaponSwitch; }
+	float GetFirstPersonSwitchLowerAlpha() const { return FirstPersonSwitchLowerAlpha; }
+	float GetFirstPersonSwitchLowerDistance() const { return FirstPersonSwitchLowerDistance; }
+	float GetFirstPersonSwitchLowerDuration() const { return FirstPersonSwitchLowerDuration; }
 
 	UFUNCTION(BlueprintPure)
 	bool IsActionLocked() const { return ActionLock != EShooterActionLock::None; }
@@ -678,6 +716,24 @@ protected:
 	void ServerSelectWeaponByIndex(int32 SlotIndex);
 
 	UFUNCTION(Server, Reliable)
+	void ServerConfirmProceduralWeaponLowered(int32 SwitchId);
+
+	UFUNCTION(Client, Reliable)
+	void ClientBeginProceduralWeaponSwitch(int32 SwitchId);
+
+	UFUNCTION(Client, Reliable)
+	void ClientCancelProceduralWeaponSwitch(int32 SwitchId);
+
+	UFUNCTION(Client, Reliable)
+	void ClientBeginProceduralEquipRaise(AWeaponBase* ExpectedWeapon);
+
+	UFUNCTION(NetMulticast, Reliable)
+	void MulticastPlayThirdPersonSwitchPhase(EWeaponType WeaponType, FName Phase);
+
+	UFUNCTION(NetMulticast, Reliable)
+	void MulticastPlayThirdPersonSwitchRaise(EWeaponType WeaponType, FName SectionName);
+
+	UFUNCTION(Server, Reliable)
 	void ServerSetAimState(bool bNewAiming);
 
 	UFUNCTION(Server, Reliable)
@@ -724,6 +780,16 @@ public:
 	bool CanStartAction(EShooterActionLock NextLock) const;
 	void BeginActionLock(EShooterActionLock NewLock);
 	void EndActionLock(EShooterActionLock LockToEnd);
+	int32 BeginProceduralWeaponSwitch();
+	void BeginProceduralEquipRaise(AWeaponBase* ExpectedWeapon);
+	void StartLocalProceduralWeaponSwitch(int32 SwitchId);
+	void StartLocalProceduralEquipRaise(AWeaponBase* ExpectedWeapon);
+	void CancelLocalProceduralWeaponSwitch();
+	void UpdateLocalProceduralWeaponSwitch(float DeltaSeconds);
+	void PlayProceduralSwitchThirdPersonEquip(EWeaponType PreviousWeaponType);
+	FName GetThirdPersonSwitchSectionName(EWeaponType WeaponType, FName Phase) const;
+	FName GetThirdPersonSwitchPairRaiseSectionName(EWeaponType PreviousWeaponType, EWeaponType NewWeaponType) const;
+	void PlayThirdPersonSwitchPhase(EWeaponType WeaponType, FName Phase, FName SectionOverride = NAME_None);
 
 	void StartLeanUpdate();
 	void StopLeanUpdateIfSettled();

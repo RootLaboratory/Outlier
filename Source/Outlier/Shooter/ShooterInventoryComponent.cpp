@@ -7,6 +7,7 @@
 #include "Net/UnrealNetwork.h"
 #include "OutlierNetUtils.h"
 #include "OutlierPlayerState.h"
+#include "TimerManager.h"
 
 UShooterInventoryComponent::UShooterInventoryComponent()
 {
@@ -47,6 +48,8 @@ FName UShooterInventoryComponent::GetFirstPersonWeaponSocketByType(EWeaponType W
 		return FirstPersonWeaponSocketRifle;
 	case EWeaponType::Pistol:
 		return FirstPersonWeaponSocketPistol;
+	case EWeaponType::Melee:
+		return FirstPersonWeaponSocketMelee;
 	default:
 		return FirstPersonWeaponSocketDefault;
 	}
@@ -66,6 +69,8 @@ FName UShooterInventoryComponent::GetThirdPersonWeaponSocketByType(EWeaponType W
 		return ThirdPersonWeaponSocketRifle;
 	case EWeaponType::Pistol:
 		return ThirdPersonWeaponSocketPistol;
+	case EWeaponType::Melee:
+		return ThirdPersonWeaponSocketMelee;
 	default:
 		return ThirdPersonWeaponSocketDefault;
 	}
@@ -184,6 +189,7 @@ bool UShooterInventoryComponent::EquipSuitRifle(AWeaponBase* RifleWeapon)
 	{
 		return false;
 	}
+	CancelPendingWeaponSwitch();
 
 	if (ShooterCharacter->CombatComponent)
 	{
@@ -265,7 +271,85 @@ void UShooterInventoryComponent::SelectWeaponSlot(EWeaponSlot Slot)
 
 	ShooterCharacter->StopAimInternal();
 
+	if (ShooterCharacter->UsesProceduralWeaponSwitch() && ShooterCharacter->CurrentWeapon)
+	{
+		PendingSwitchWeapon = TargetWeapon;
+		PendingSwitchSlot = Slot;
+		bHasPendingWeaponSwitch = true;
+		ShooterCharacter->BeginActionLock(EShooterActionLock::Equip);
+		PendingSwitchId = ShooterCharacter->BeginProceduralWeaponSwitch();
+		UE_LOG(LogTemp, Log, TEXT("%s [FPWeaponSwitch] Lower old=%s target=%s slot=%d"),
+			OutlierNet::GetNetPrefix(ShooterCharacter), *GetNameSafe(ShooterCharacter->CurrentWeapon),
+			*GetNameSafe(TargetWeapon), static_cast<int32>(Slot));
+		GetWorld()->GetTimerManager().SetTimer(
+			PendingSwitchTimerHandle, this, &UShooterInventoryComponent::ExpirePendingWeaponSwitch,
+			FMath::Max(ShooterCharacter->GetFirstPersonSwitchLowerDuration() + 3.0f, 3.0f), false);
+		return;
+	}
+
 	ApplyWeaponToSlot(TargetWeapon, Slot, /*bPlayEquipMontage=*/true);
+}
+
+void UShooterInventoryComponent::FinishPendingWeaponSwitch(int32 SwitchId)
+{
+	if (!bHasPendingWeaponSwitch || SwitchId != PendingSwitchId)
+	{
+		return;
+	}
+	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	AWeaponBase* TargetWeapon = PendingSwitchWeapon.Get();
+	if (!ShooterCharacter || !ShooterCharacter->HasAuthority() || !TargetWeapon)
+	{
+		CancelPendingWeaponSwitch();
+		return;
+	}
+
+	if (ShooterCharacter->IsDead() || ShooterCharacter->GetActionLock() != EShooterActionLock::Equip ||
+		GetWeaponInSlot(PendingSwitchSlot) != TargetWeapon)
+	{
+		CancelPendingWeaponSwitch();
+		return;
+	}
+
+	const EWeaponSlot TargetSlot = PendingSwitchSlot;
+	GetWorld()->GetTimerManager().ClearTimer(PendingSwitchTimerHandle);
+	PendingSwitchWeapon.Reset();
+	bHasPendingWeaponSwitch = false;
+	UE_LOG(LogTemp, Log, TEXT("%s [FPWeaponSwitch] Swap target=%s slot=%d"),
+		OutlierNet::GetNetPrefix(ShooterCharacter), *GetNameSafe(TargetWeapon), static_cast<int32>(TargetSlot));
+	const EWeaponType PreviousWeaponType = ShooterCharacter->GetWeaponType();
+	ApplyWeaponToSlot(TargetWeapon, TargetSlot, /*bPlayEquipMontage=*/false);
+	ShooterCharacter->PlayProceduralSwitchThirdPersonEquip(PreviousWeaponType);
+}
+
+void UShooterInventoryComponent::ExpirePendingWeaponSwitch()
+{
+	CancelPendingWeaponSwitch();
+}
+
+void UShooterInventoryComponent::CancelPendingWeaponSwitch()
+{
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(PendingSwitchTimerHandle);
+	}
+	if (!bHasPendingWeaponSwitch)
+	{
+		return;
+	}
+	PendingSwitchWeapon.Reset();
+	bHasPendingWeaponSwitch = false;
+	if (AShooterCharacter* ShooterCharacter = GetShooterCharacter())
+	{
+		if (ShooterCharacter->HasAuthority() && !ShooterCharacter->IsDead() &&
+			ShooterCharacter->ThirdPersonSwitchMontage)
+		{
+			ShooterCharacter->MulticastPlayThirdPersonSwitchPhase(
+				ShooterCharacter->GetWeaponType(), TEXT("Raise"));
+		}
+		ShooterCharacter->EndActionLock(EShooterActionLock::Equip);
+		ShooterCharacter->ClientCancelProceduralWeaponSwitch(PendingSwitchId);
+	}
 }
 
 void UShooterInventoryComponent::ApplyWeaponToSlot(
@@ -279,22 +363,31 @@ void UShooterInventoryComponent::ApplyWeaponToSlot(
 
 	WeaponSlots[static_cast<int32>(Slot)] = Weapon;
 	CurrentSlot = Slot;
+	if (bPlayEquipMontage && ShooterCharacter->UsesProceduralWeaponSwitch())
+	{
+		ShooterCharacter->BeginProceduralEquipRaise(Weapon);
+	}
 
 	// 실제 장착/해제 라이프사이클은 베이스 캐릭터 구현을 재사용하고,
 	// Shooter 쪽에서는 슬롯 목록과 파생 상태만 보정
 	// Inventory가 보유 무기와 소켓 규칙을 관리하고, 최종 장착은 Character가 맡음
 	ShooterCharacter->AFirstPersonCharacter::EquipWeapon(Weapon);
 
-	if (bPlayEquipMontage)
+	if (bPlayEquipMontage && !ShooterCharacter->UsesProceduralWeaponSwitch())
 	{
 		ShooterCharacter->PlayEquipMontages();
 	}
-	else if (Weapon)
+	else
 	{
-		// OnEquipped 가 1P/3P/Shadow 메시를 전부 숨겨두고 공개는 equip 몽타주 Notify 가 한다.
-		// 몽타주를 생략하는 경로(복원)에서는 아무도 다시 보여주지 않으므로 직접 켠다.
-		// ASuitInteraction 이 Partner 무기에 대해 이미 같은 처리를 한다.
-		Weapon->ShowEquippedPresentation();
+		if (Weapon)
+		{
+			// Procedural Raise and restoration do not run the montage's attach notify.
+			Weapon->ShowEquippedPresentation();
+		}
+		if (bPlayEquipMontage)
+		{
+			ShooterCharacter->PlayEquipMontages();
+		}
 	}
 
 	ShooterCharacter->RefreshWeaponMode();
@@ -349,6 +442,7 @@ void UShooterInventoryComponent::RestoreLoadout(
 	}
 
 	const int32 CurrentSlotIndex = static_cast<int32>(Snapshot.CurrentSlot);
+	CancelPendingWeaponSwitch();
 
 	// CurrentSlot 을 마지막에 넣는다.
 	// AFirstPersonCharacter::EquipWeapon 이 직전 CurrentWeapon 에 OnUnequipped() 를 부르므로,
@@ -431,6 +525,7 @@ void UShooterInventoryComponent::CleanupOwnedWeapons()
 	{
 		return;
 	}
+	CancelPendingWeaponSwitch();
 
 	for (AWeaponBase* Weapon : WeaponSlots)
 	{
