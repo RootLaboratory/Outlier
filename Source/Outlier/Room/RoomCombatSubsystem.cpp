@@ -179,6 +179,32 @@ bool URoomCombatSubsystem::IsActiveCombatRuntime(
 	return Runtime.State == ERoomCombatState::Combat && ActiveCombatRoomTag == RoomTag;
 }
 
+bool URoomCombatSubsystem::IsInitialDetectionPhase(
+	FGameplayTag RoomTag,
+	const FRoomCombatRuntime& Runtime) const
+{
+	const FRoomCombatRoomDefinition* Definition = FindRoomDefinition(RoomTag);
+	const FRoomCombatPhaseDefinition* Phase = Definition
+		? Definition->FindPhase(Runtime.CurrentCombatPhaseIndex)
+		: nullptr;
+	return Phase && Phase->StartPolicy == ERoomCombatPhaseStartPolicy::InitialDetection;
+}
+
+void URoomCombatSubsystem::StartInitialDetectionCombat(
+	FGameplayTag RoomTag,
+	FRoomCombatRuntime& Runtime)
+{
+	// 기존 즉시 시작과 합류 준비 완료가 같은 Wave 시작 경로를 사용한다.
+	Runtime.PreparingDetectedPlayer.Reset();
+	Runtime.State = ERoomCombatState::Combat;
+	Runtime.CurrentWaveIndex = 0;
+	Runtime.bCurrentWaveSpawnStarted = true;
+	ActiveCombatRoomTag = RoomTag;
+	SetRoomStreamingSourceEnabled(RoomTag, true);
+	// 배치 Wave는 별도 Spawn 요청이 없으므로 전투 진입 자체가 Wave 시작 완료 시점이다.
+	FinalizeCurrentWaveSpawn(RoomTag, Runtime);
+}
+
 bool URoomCombatSubsystem::CreateTriggerContext(
 	AActor* Requester, FGameplayTag RoomTag, FGameplayTag ActivationGroupTag,
 	FRoomCombatTriggerContext& OutContext) const
@@ -431,7 +457,8 @@ void URoomCombatSubsystem::UnregisterRoom(ARoomVolume* RoomVolume)
 
 		Runtime = RoomRuntimes.Find(RoomTag);
 	}
-	const bool bWasSequenceActive = Runtime->bTriggeredSequenceActive;
+	const bool bWasSequenceActive = Runtime->bTriggeredSequenceActive
+		|| Runtime->State == ERoomCombatState::Preparing;
 	const int32 CancelledPhase = Runtime->CurrentCombatPhaseIndex;
 	const int32 CancelledGeneration = Runtime->GameplayGeneration;
 	SetActivationGroupActive(RoomTag, Runtime->ActiveActivationGroupTag, false);
@@ -996,12 +1023,17 @@ void URoomCombatSubsystem::NotifyEnemyDefeated(AEnemyBase* Enemy)
 
 	Runtime->TrackedAliveEnemies.Remove(EnemyPtr);
 	CompactAliveEnemies(*Runtime);
+	if (Runtime->State == ERoomCombatState::Preparing)
+	{
+		// 발각된 뒤에는 전멸해도 합류 완료까지 기다린 뒤 후속 Wave를 진행한다.
+		return;
+	}
 	if (Runtime->State == ERoomCombatState::Dormant)
 	{
 		if (bWasPreplaced && Runtime->bHadPreplacedEnemy
 			&& Runtime->TrackedAliveEnemies.IsEmpty())
 		{
-			// 발각 전에 배치 적을 모두 제거하면 아직 시작하지 않은 후속 Wave를 만들지 않는다.
+			// 발각 전 암살로 전멸한 경우에만 후속 Wave 없이 현재 차수를 끝낸다.
 			CompleteCurrentPhase(RoomTag, true);
 		}
 		return;
@@ -1013,8 +1045,124 @@ void URoomCombatSubsystem::NotifyEnemyDefeated(AEnemyBase* Enemy)
 	}
 }
 
+bool URoomCombatSubsystem::BeginInitialDetectionPreparation(
+	FGameplayTag RoomTag,
+	AActor* DetectedPlayer,
+	FRoomCombatPreparationContext& OutContext)
+{
+	OutContext = FRoomCombatPreparationContext();
+	if (!CanRunServerGameplay() || !IsValid(DetectedPlayer)
+		|| DetectedPlayer->IsActorBeingDestroyed()
+		|| !DetectedPlayer->HasAuthority() || DetectedPlayer->GetWorld() != GetWorld()
+		|| !RoomTag.IsValid())
+	{
+		return false;
+	}
+
+	FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
+	if (!Runtime || !Runtime->RoomVolume.IsValid())
+	{
+		return false;
+	}
+	if (Runtime->State == ERoomCombatState::Preparing)
+	{
+		// 다른 적이 다시 발각해도 최초 기준 플레이어와 준비 수명은 그대로 유지한다.
+		if (ActiveCombatRoomTag != RoomTag || !Runtime->PreparingDetectedPlayer.IsValid())
+		{
+			return false;
+		}
+	}
+	else
+	{
+		if (Runtime->State != ERoomCombatState::Dormant
+			|| ActiveCombatRoomTag.IsValid())
+		{
+			return false;
+		}
+		CompactAliveEnemies(*Runtime);
+		if (Runtime->TrackedAliveEnemies.IsEmpty()
+			|| !IsInitialDetectionPhase(RoomTag, *Runtime))
+		{
+			return false;
+		}
+
+		// 합류가 끝날 때까지 이 Room을 점유하고 배치 적의 진행 중 공격도 끊는다.
+		Runtime->PreparingDetectedPlayer = DetectedPlayer;
+		Runtime->State = ERoomCombatState::Preparing;
+		ActiveCombatRoomTag = RoomTag;
+		SetRoomStreamingSourceEnabled(RoomTag, true);
+		for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : Runtime->TrackedAliveEnemies)
+		{
+			if (AEnemyBase* Enemy = EnemyPtr.Get(); Enemy && !Enemy->IsEnemyPossessed())
+			{
+				Enemy->StopCurrentAttack();
+			}
+		}
+		UE_LOG(LogTemp, Display,
+			TEXT("[RoomCombat] Initial detection preparing. Room=%s Player=%s Generation=%d"),
+			*RoomTag.ToString(), *GetNameSafe(DetectedPlayer), Runtime->GameplayGeneration);
+	}
+
+	// 합류 처리 쪽은 이 토큰을 보관했다가 이동과 Room 소속 확인 후 완료를 요청한다.
+	OutContext.RoomTag = RoomTag;
+	OutContext.DetectedPlayer = Runtime->PreparingDetectedPlayer;
+	OutContext.RoomRegistrationId = Runtime->RegistrationId;
+	OutContext.GameplayGeneration = Runtime->GameplayGeneration;
+	return true;
+}
+
+bool URoomCombatSubsystem::CompleteInitialDetectionPreparation(
+	const FRoomCombatPreparationContext& Context)
+{
+	FRoomCombatRuntime* Runtime = RoomRuntimes.Find(Context.RoomTag);
+	// 위치 검증은 합류 호출자가 맡고, 여기서는 지연 완료가 현재 Room 수명에 속하는지만 확인한다.
+	if (!CanRunServerGameplay() || !Runtime
+		|| Runtime->State != ERoomCombatState::Preparing
+		|| ActiveCombatRoomTag != Context.RoomTag
+		|| !Runtime->RoomVolume.IsValid()
+		|| Runtime->RegistrationId != Context.RoomRegistrationId
+		|| Runtime->GameplayGeneration != Context.GameplayGeneration
+		|| !Runtime->PreparingDetectedPlayer.IsValid()
+		|| Runtime->PreparingDetectedPlayer->IsActorBeingDestroyed()
+		|| Runtime->PreparingDetectedPlayer != Context.DetectedPlayer)
+	{
+		return false;
+	}
+
+	CompactAliveEnemies(*Runtime);
+	if (!IsInitialDetectionPhase(Context.RoomTag, *Runtime)
+		|| (Runtime->TrackedAliveEnemies.IsEmpty() && !Runtime->bHadPreplacedEnemy))
+	{
+		return false;
+	}
+	UE_LOG(LogTemp, Display,
+		TEXT("[RoomCombat] Initial detection ready. Room=%s Player=%s Generation=%d"),
+		*Context.RoomTag.ToString(), *GetNameSafe(Context.DetectedPlayer.Get()),
+		Context.GameplayGeneration);
+	StartInitialDetectionCombat(Context.RoomTag, *Runtime);
+	return true;
+}
+
+bool URoomCombatSubsystem::IsEnemyAttackBlocked(AEnemyBase* Enemy) const
+{
+	// 빙의체의 플레이어 입력은 막지 않고, 이 Room의 배치 AI만 합류 준비 동안 보류한다.
+	if (!Enemy || Enemy->IsEnemyPossessed())
+	{
+		return false;
+	}
+	const FRoomCombatEnemyRegistration* Registration =
+		RegisteredEnemies.Find(TWeakObjectPtr<AEnemyBase>(Enemy));
+	const FRoomCombatRuntime* Runtime = Registration
+		? RoomRuntimes.Find(Registration->RoomTag)
+		: nullptr;
+	return Registration && Registration->bPreplaced && Runtime
+		&& Runtime->State == ERoomCombatState::Preparing
+		&& ActiveCombatRoomTag == Registration->RoomTag;
+}
+
 bool URoomCombatSubsystem::NotifyRoomCombatStarted(FGameplayTag RoomTag)
 {
+	// 합류 위치 탐색을 연결하기 전까지 기존 감지 경로는 즉시 시작을 유지한다.
 	if (!CanRunServerGameplay() || !RoomTag.IsValid())
 	{
 		return false;
@@ -1036,27 +1184,13 @@ bool URoomCombatSubsystem::NotifyRoomCombatStarted(FGameplayTag RoomTag)
 	}
 
 	CompactAliveEnemies(*Runtime);
-	if (Runtime->TrackedAliveEnemies.IsEmpty())
+	if (Runtime->TrackedAliveEnemies.IsEmpty()
+		|| !IsInitialDetectionPhase(RoomTag, *Runtime))
 	{
 		return false;
 	}
 
-	const FRoomCombatRoomDefinition* Definition = FindRoomDefinition(RoomTag);
-	const FRoomCombatPhaseDefinition* Phase = Definition
-		? Definition->FindPhase(Runtime->CurrentCombatPhaseIndex)
-		: nullptr;
-	if (!Phase || Phase->StartPolicy != ERoomCombatPhaseStartPolicy::InitialDetection)
-	{
-		return false;
-	}
-
-	Runtime->State = ERoomCombatState::Combat;
-	Runtime->CurrentWaveIndex = 0;
-	Runtime->bCurrentWaveSpawnStarted = true;
-	ActiveCombatRoomTag = RoomTag;
-	SetRoomStreamingSourceEnabled(RoomTag, true);
-	// 배치 Wave는 별도 Spawn 요청이 없으므로 전투 진입 자체가 Wave 시작 완료 시점이다.
-	FinalizeCurrentWaveSpawn(RoomTag, *Runtime);
+	StartInitialDetectionCombat(RoomTag, *Runtime);
 	return true;
 }
 
@@ -1607,14 +1741,19 @@ void URoomCombatSubsystem::EvaluateWaveProgress(
 		return;
 	}
 
-	if (Runtime.WaveBaselineEnemyCount <= 0)
+	// 합류 준비 중 배치 적이 전멸했다면 기준값은 0이지만 다음 Wave는 즉시 시작해야 한다.
+	const bool bClearedPreplacedWaveDuringPreparation = Runtime.WaveBaselineEnemyCount == 0
+		&& Runtime.CurrentWaveIndex == 0
+		&& Wave->SpawnMode == ERoomCombatWaveSpawnMode::Preplaced
+		&& Runtime.bHadPreplacedEnemy && AliveEnemyCount == 0;
+	if (Runtime.WaveBaselineEnemyCount <= 0 && !bClearedPreplacedWaveDuringPreparation)
 	{
 		return;
 	}
 
 	// 분모는 소환 완료 때 확정한 값이다. 사망할 때는 분자만 줄이고 다음 증원 완료 때 갱신한다.
-	const float RemainingRatio = static_cast<float>(AliveEnemyCount)
-		/ static_cast<float>(Runtime.WaveBaselineEnemyCount);
+	const float RemainingRatio = bClearedPreplacedWaveDuringPreparation ? 0.0f
+		: static_cast<float>(AliveEnemyCount) / static_cast<float>(Runtime.WaveBaselineEnemyCount);
 	const float RequiredRatio = Wave->NextWaveRemainingRatio;
 	if (RemainingRatio > RequiredRatio)
 	{
@@ -1679,7 +1818,9 @@ void URoomCombatSubsystem::ResetRuntimeCombatState()
 	for (const TPair<FGameplayTag, FRoomCombatRuntime>& Entry : RoomRuntimes)
 	{
 		SetActivationGroupActive(Entry.Key, Entry.Value.ActiveActivationGroupTag, false);
-		if (Entry.Value.bTriggeredSequenceActive)
+		// 준비 중에는 차단막이 없어도 대기 중인 합류 요청에 취소를 알려야 한다.
+		if (Entry.Value.bTriggeredSequenceActive
+			|| Entry.Value.State == ERoomCombatState::Preparing)
 		{
 			CancelledSequences.Add({Entry.Key, Entry.Value.CurrentCombatPhaseIndex, Entry.Value.GameplayGeneration});
 		}
@@ -1895,6 +2036,8 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 	const FGuid RegistrationId = Runtime->RegistrationId;
 	const int32 NextPhaseIndex = CompletedPhaseIndex + 1;
 	const FRoomCombatPhaseDefinition* NextPhase = Definition->FindPhase(NextPhaseIndex);
+	// 차수가 완료되면 이전 합류 기준 플레이어를 다음 차수로 넘기지 않는다.
+	Runtime->PreparingDetectedPlayer.Reset();
 	Runtime->WaveBaselineEnemyCount = INDEX_NONE;
 	Runtime->PendingActivationCount = 0;
 	Runtime->PendingWaveTurretActivations.Reset();

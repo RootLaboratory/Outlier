@@ -2804,6 +2804,16 @@ bool AEnemyBase::StartAttackTarget(AActor* TargetActor)
 
 bool AEnemyBase::StartAttackLocation(const FVector& TargetLocation)
 {
+	// 방 합류 준비 중에는 StateTree가 Combat으로 전환돼도 실제 발사를 시작하지 않는다.
+	if (HasAuthority() && GetWorld())
+	{
+		if (const URoomCombatSubsystem* RoomCombat = GetWorld()->GetSubsystem<URoomCombatSubsystem>();
+			RoomCombat && RoomCombat->IsEnemyAttackBlocked(this))
+		{
+			return false;
+		}
+	}
+
 	const bool bHasWeapon = IsValid(CurrentWeapon);
 	const bool bCanAttack = bHasWeapon && CurrentWeapon->CanAttack();
 	// 쿨다운 중인 요청은 조준 방향을 바꾸지 않는다. 실제로 발사할 수 있을 때만

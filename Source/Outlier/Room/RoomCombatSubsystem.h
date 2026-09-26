@@ -29,7 +29,8 @@ enum class ERoomCombatState : uint8
 	Dormant,
 	Combat,
 	WaitingForTrigger,
-	Cleared
+	Cleared,
+	Preparing
 };
 
 UENUM(BlueprintType)
@@ -69,6 +70,14 @@ struct OUTLIER_API FRoomCombatTriggerContext
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(FOnRoomCombatEvent,
 	FGameplayTag, RoomTag, ERoomCombatEvent, Event, int32, CombatPhaseIndex, int32, GameplayGeneration);
 
+struct FRoomCombatPreparationContext // Room 재등록/Arena 리로드 뒤 이전 합류 완료 요청을 버리는 토큰.
+{
+	FGameplayTag RoomTag;
+	TWeakObjectPtr<AActor> DetectedPlayer;
+	FGuid RoomRegistrationId;
+	int32 GameplayGeneration = INDEX_NONE;
+};
+
 struct FRoomCombatRuntime
 {
 	TWeakObjectPtr<ARoomVolume> RoomVolume;
@@ -82,6 +91,7 @@ struct FRoomCombatRuntime
 	int32 PendingActivationCount = 0;
 	int32 GameplayGeneration = 0;
 	FGuid RegistrationId;
+	TWeakObjectPtr<AActor> PreparingDetectedPlayer; // 중복 발각으로 바뀌지 않으며 준비/차수 종료 때 비운다.
 	FGameplayTag ActiveActivationGroupTag;
 	bool bTriggeredSequenceActive = false;
 	// 시작/차수 완료 이벤트에서 차단 상태를 적용한 뒤 실제 Pool 대여를 실행한다.
@@ -194,6 +204,11 @@ public:
 	void RegisterPreplacedEnemy(AEnemyBase* Enemy);
 	void UnregisterEnemy(AEnemyBase* Enemy);
 	void NotifyEnemyDefeated(AEnemyBase* Enemy);
+	// 다음 합류 Slice에서 실제 감지 경로에 연결한다. 준비 중에는 명시적 완료만 Combat을 연다.
+	bool BeginInitialDetectionPreparation(FGameplayTag RoomTag, AActor* DetectedPlayer,
+		FRoomCombatPreparationContext& OutContext);
+	bool CompleteInitialDetectionPreparation(const FRoomCombatPreparationContext& Context);
+	bool IsEnemyAttackBlocked(AEnemyBase* Enemy) const;
 	bool NotifyRoomCombatStarted(FGameplayTag RoomTag);
 	bool StartWaveSpawning(FGameplayTag RoomTag, int32 CombatPhaseIndex, int32 WaveIndex);
 	void ResetRuntimeCombatState();
@@ -227,6 +242,8 @@ private:
 	bool HasPendingSpawns(FGameplayTag RoomTag) const;
 	bool HasPendingWaveWork(FGameplayTag RoomTag, const FRoomCombatRuntime& Runtime) const;
 	bool IsActiveCombatRuntime(FGameplayTag RoomTag, const FRoomCombatRuntime& Runtime) const;
+	bool IsInitialDetectionPhase(FGameplayTag RoomTag, const FRoomCombatRuntime& Runtime) const;
+	void StartInitialDetectionCombat(FGameplayTag RoomTag, FRoomCombatRuntime& Runtime);
 	void BroadcastCombatEvent(FGameplayTag RoomTag, ERoomCombatEvent Event,
 		int32 PhaseIndex, int32 Generation);
 	void ResumeDeferredSpawning(FGameplayTag RoomTag, const FGuid& RegistrationId);

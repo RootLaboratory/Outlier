@@ -1809,4 +1809,127 @@ bool FRoomCombatWaveTurretRegistrationTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FRoomCombatInitialDetectionPreparationTest,
+	"Outlier.Room.InitialDetectionPreparation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRoomCombatInitialDetectionPreparationTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const FName WorldName = MakeUniqueObjectName(nullptr, UWorld::StaticClass(), NAME_None,
+		EUniqueObjectNameOptions::GloballyUnique);
+	FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, WorldName, GetTransientPackage());
+	if (!TestNotNull(TEXT("Preparation test world exists"), World))
+	{
+		GEngine->DestroyWorldContext(World);
+		return false;
+	}
+
+	World->AddToRoot();
+	WorldContext.SetCurrentWorld(World);
+	UGameInstance* GameInstance = NewObject<UGameInstance>(GEngine);
+	World->SetGameInstance(GameInstance);
+	GameInstance->Init();
+	TestTrue(TEXT("Preparation test has authority"), World->SetGameMode(FURL()));
+	World->InitializeActorsForPlay(FURL());
+	auto CleanupWorld = [World, GameInstance]()
+	{
+		GEngine->ShutdownWorldNetDriver(World);
+		World->DestroyWorld(true);
+		GameInstance->Shutdown();
+		World->SetPhysicsScene(nullptr);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+	};
+
+	URoomCombatSubsystem* Combat = World->GetSubsystem<URoomCombatSubsystem>();
+	const FGameplayTag RoomTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.1")));
+	const FGameplayTag OtherRoomTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.2")));
+	URoomCombatDefinition* Definition = NewObject<URoomCombatDefinition>(World);
+	AddSpawnWaveDefinition(Definition, RoomTag, 1);
+	AddSingleWaveDefinition(Definition, OtherRoomTag);
+	ARoomVolume* Room = World->SpawnActor<ARoomVolume>();
+	ARoomVolume* OtherRoom = World->SpawnActor<ARoomVolume>();
+	AEnemyBase* Enemy = SpawnTestEnemy(World, RoomTag);
+	AActor* FirstPlayer = World->SpawnActor<AActor>();
+	AActor* SecondPlayer = World->SpawnActor<AActor>();
+	if (!TestNotNull(TEXT("Combat subsystem exists"), Combat)
+		|| !TestNotNull(TEXT("Room exists"), Room)
+		|| !TestNotNull(TEXT("Other room exists"), OtherRoom)
+		|| !TestNotNull(TEXT("Preplaced enemy exists"), Enemy)
+		|| !TestNotNull(TEXT("First detected actor exists"), FirstPlayer)
+		|| !TestNotNull(TEXT("Second detected actor exists"), SecondPlayer))
+	{
+		CleanupWorld();
+		return false;
+	}
+
+	Combat->SetCombatDefinitionForTesting(Definition);
+	TestTrue(TEXT("Room registers"), Combat->RegisterRoom(Room, RoomTag));
+	TestTrue(TEXT("Other room registers"), Combat->RegisterRoom(OtherRoom, OtherRoomTag));
+	Combat->RegisterPreplacedEnemy(Enemy);
+	FRoomCombatPreparationContext FirstContext;
+	TestTrue(TEXT("First detection reserves the room"),
+		Combat->BeginInitialDetectionPreparation(RoomTag, FirstPlayer, FirstContext));
+	TestEqual(TEXT("Room is preparing"), Combat->GetRoomState(RoomTag), ERoomCombatState::Preparing);
+	TestEqual(TEXT("Wave baseline is not committed"), Combat->GetWaveBaselineEnemyCount(RoomTag), INDEX_NONE);
+	TestTrue(TEXT("The preplaced enemy cannot begin attacking"), Combat->IsEnemyAttackBlocked(Enemy));
+	TestFalse(TEXT("No exit barrier is active during preparation"), Combat->IsExitBlocked(RoomTag));
+	TestTrue(TEXT("Preparation keeps the room streamed"), Room->IsCombatStreamingSourceEnabled());
+	TestFalse(TEXT("The old direct start cannot bypass preparation"), Combat->NotifyRoomCombatStarted(RoomTag));
+
+	FRoomCombatPreparationContext RepeatedContext;
+	TestTrue(TEXT("A repeated detection is idempotent"),
+		Combat->BeginInitialDetectionPreparation(RoomTag, SecondPlayer, RepeatedContext));
+	TestTrue(TEXT("First detected player remains the anchor"),
+		RepeatedContext.DetectedPlayer.Get() == FirstPlayer);
+	FRoomCombatPreparationContext OtherContext;
+	TestFalse(TEXT("Another room cannot prepare concurrently"),
+		Combat->BeginInitialDetectionPreparation(OtherRoomTag, SecondPlayer, OtherContext));
+	FRoomCombatPreparationContext WrongContext = FirstContext;
+	WrongContext.GameplayGeneration += 1;
+	TestFalse(TEXT("A different generation cannot complete preparation"),
+		Combat->CompleteInitialDetectionPreparation(WrongContext));
+	WrongContext = FirstContext;
+	WrongContext.DetectedPlayer = SecondPlayer;
+	TestFalse(TEXT("A different player cannot complete preparation"),
+		Combat->CompleteInitialDetectionPreparation(WrongContext));
+	TestTrue(TEXT("The original context completes preparation"),
+		Combat->CompleteInitialDetectionPreparation(FirstContext));
+	TestEqual(TEXT("Room enters combat"), Combat->GetRoomState(RoomTag), ERoomCombatState::Combat);
+	TestEqual(TEXT("Preplaced Wave baseline is committed"), Combat->GetWaveBaselineEnemyCount(RoomTag), 1);
+	TestFalse(TEXT("Attack gate opens after preparation"), Combat->IsEnemyAttackBlocked(Enemy));
+	TestFalse(TEXT("Preparation cannot complete twice"),
+		Combat->CompleteInitialDetectionPreparation(FirstContext));
+
+	Combat->ResetRuntimeCombatState();
+	TestFalse(TEXT("Reset invalidates the previous context"),
+		Combat->CompleteInitialDetectionPreparation(FirstContext));
+	TestFalse(TEXT("Reset releases the attack gate"), Combat->IsEnemyAttackBlocked(Enemy));
+	TestFalse(TEXT("Reset releases the streaming source"), Room->IsCombatStreamingSourceEnabled());
+	TestTrue(TEXT("The room can register for a new lifetime"), Combat->RegisterRoom(Room, RoomTag));
+	Combat->RegisterPreplacedEnemy(Enemy);
+	FRoomCombatPreparationContext NewContext;
+	TestTrue(TEXT("A new room lifetime can prepare"),
+		Combat->BeginInitialDetectionPreparation(RoomTag, FirstPlayer, NewContext));
+	TestFalse(TEXT("An old room registration cannot complete the new preparation"),
+		Combat->CompleteInitialDetectionPreparation(FirstContext));
+	Combat->NotifyEnemyDefeated(Enemy);
+	TestEqual(TEXT("Defeating all placed enemies keeps the room preparing"),
+		Combat->GetRoomState(RoomTag), ERoomCombatState::Preparing);
+	TestEqual(TEXT("No reinforcement starts before regroup completes"),
+		Combat->GetPendingSpawnCount(RoomTag), 0);
+	TestTrue(TEXT("Preparation completes even without surviving placed enemies"),
+		Combat->CompleteInitialDetectionPreparation(NewContext));
+	TestEqual(TEXT("The room remains in combat for the next Wave"),
+		Combat->GetRoomState(RoomTag), ERoomCombatState::Combat);
+	TestEqual(TEXT("Wave 2 starts after regroup"), Combat->GetCurrentWaveIndex(RoomTag), 1);
+	TestEqual(TEXT("Wave 2 reinforcement remains pending until a spawn point is available"),
+		Combat->GetPendingSpawnCount(RoomTag), 1);
+	CleanupWorld();
+	return true;
+}
+
 #endif
