@@ -53,7 +53,8 @@ public:
 	bool HasActiveCombat() const;
 
 #if WITH_DEV_AUTOMATION_TESTS
-	void SetActiveRoomTargetForTesting(FGameplayTag RoomTag, const FVector& TargetLocation);
+	void SetActiveRoomTargetForTesting(FGameplayTag RoomTag, const FVector& TargetLocation,
+		bool bSharedContactActive = true);
 #endif
 
 	// Sight로 직접 대상을 관측한 Enemy만 호출한다.
@@ -105,6 +106,8 @@ private:
 	void HandleArenaReleased();
 
 	TSet<FGameplayTag> CombatRooms;
+	// 직접 시야가 끊겨도 새 증원이 Combat에 합류할 수 있도록 마지막 전투 위치를 보존한다.
+	TMap<FGameplayTag, FVector> CombatRoomLastKnownLocations;
 	TMap<FGameplayTag, TSet<TWeakObjectPtr<AEnemyBase>>> RegisteredEnemiesByRoom;
 	TMap<TWeakObjectPtr<AEnemyBase>, FGameplayTag> RegisteredEnemyKeys;
 

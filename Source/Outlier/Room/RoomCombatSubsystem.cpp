@@ -312,6 +312,46 @@ bool URoomCombatSubsystem::StartTriggeredSequence(
 	// 호출자가 저장한 Context도 이벤트 중 바뀔 수 있으므로 검증된 복사본으로 재개한다.
 	BroadcastCombatEvent(CurrentContext.RoomTag, ERoomCombatEvent::SequenceStarted,
 		CurrentContext.CombatPhaseIndex, CurrentContext.GameplayGeneration);
+	Runtime = RoomRuntimes.Find(CurrentContext.RoomTag);
+	if (Runtime && Runtime->RegistrationId == CurrentContext.RoomRegistrationId
+		&& Runtime->State == ERoomCombatState::Combat && Runtime->RoomVolume.IsValid())
+	{
+		// 해킹 시작에는 발각 Enemy가 없을 수 있다. 차단막 이벤트 이후, 실제 소환 전에
+		// 방의 AI 전투도 열어 새 Pool 대여가 즉시 Combat으로 동기화되게 한다.
+		const ARoomVolume* Room = Runtime->RoomVolume.Get();
+		FVector TargetLocation = Room->GetActorLocation();
+		bool bFoundPlayer = false;
+		if (const AGameStateBase* GameState = GetWorld()->GetGameState())
+		{
+			for (APlayerState* PlayerState : GameState->PlayerArray)
+			{
+				const AOutlierPlayerState* OutlierState = Cast<AOutlierPlayerState>(PlayerState);
+				if (!OutlierState)
+				{
+					continue;
+				}
+				for (const AFirstPersonCharacter* Player : {
+					static_cast<const AFirstPersonCharacter*>(OutlierState->GetShooterCharacter()),
+					static_cast<const AFirstPersonCharacter*>(OutlierState->GetPartnerCharacter())})
+				{
+					if (IsPlayerInsideRoom(Player, Room))
+					{
+						TargetLocation = Player->GetActorLocation();
+						bFoundPlayer = true;
+						break;
+					}
+				}
+				if (bFoundPlayer)
+				{
+					break;
+				}
+			}
+		}
+		if (UEnemyRoomSubsystem* EnemyRooms = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
+		{
+			EnemyRooms->NotifyRoomCombat(CurrentContext.RoomTag, TargetLocation, nullptr);
+		}
+	}
 	ResumeDeferredSpawning(CurrentContext.RoomTag, CurrentContext.RoomRegistrationId);
 	return true;
 }
