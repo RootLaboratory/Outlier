@@ -47,7 +47,7 @@ public:
 	void RegisterEnemy(AEnemyBase* Enemy);
 	void UnregisterEnemy(AEnemyBase* Enemy);
 	void RefreshEnemyRegistration(AEnemyBase* Enemy);
-	void NotifyRoomCombat(FGameplayTag RoomTag, const FVector& PlayerLocation, AEnemyBase* ExcludeEnemy);
+	bool NotifyRoomCombat(FGameplayTag RoomTag, const FVector& PlayerLocation, AEnemyBase* ExcludeEnemy);
 	void NotifyRoomCombatEnded(FGameplayTag RoomTag);
 	bool IsRoomInCombat(FGameplayTag RoomTag) const;
 	bool HasActiveCombat() const;

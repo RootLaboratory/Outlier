@@ -10,7 +10,9 @@ class AEnemyBase;
 class AActor;
 class AAutoTurret;
 class ARoomCombatSpawnPoint;
+class ARoomCombatBarrier;
 class ARoomVolume;
+class AFirstPersonCharacter;
 class URoomCombatDefinition;
 struct FRoomCombatRoomDefinition;
 struct FRoomCombatWaveDefinition;
@@ -73,7 +75,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(FOnRoomCombatEvent,
 struct FRoomCombatPreparationContext // Room 재등록/Arena 리로드 뒤 이전 합류 완료 요청을 버리는 토큰.
 {
 	FGameplayTag RoomTag;
-	TWeakObjectPtr<AActor> DetectedPlayer;
+	TWeakObjectPtr<AActor> AnchorPlayer;
 	FGuid RoomRegistrationId;
 	int32 GameplayGeneration = INDEX_NONE;
 };
@@ -91,7 +93,7 @@ struct FRoomCombatRuntime
 	int32 PendingActivationCount = 0;
 	int32 GameplayGeneration = 0;
 	FGuid RegistrationId;
-	TWeakObjectPtr<AActor> PreparingDetectedPlayer; // 중복 발각으로 바뀌지 않으며 준비/차수 종료 때 비운다.
+	TWeakObjectPtr<AActor> PreparingAnchorPlayer; // 중복 발각으로 바뀌지 않으며 준비/차수 종료 때 비운다.
 	FGameplayTag ActiveActivationGroupTag;
 	bool bTriggeredSequenceActive = false;
 	// 현재 차수 진행 여부와 별개다. 한 번 막힌 출입구는 중간 대기에도 유지하고 Clear/Reset에서 연다.
@@ -179,6 +181,8 @@ public:
 		const FGameplayTagContainer& SpawnPointTags,
 		FGameplayTag ActivationGroupTag);
 	void UnregisterSpawnPoint(ARoomCombatSpawnPoint* SpawnPoint);
+	void RegisterBarrier(ARoomCombatBarrier* Barrier);
+	void UnregisterBarrier(ARoomCombatBarrier* Barrier);
 	bool RegisterWaveTurret(
 		AAutoTurret* Turret,
 		FGameplayTag RoomTag,
@@ -207,9 +211,10 @@ public:
 	void UnregisterEnemy(AEnemyBase* Enemy);
 	void NotifyEnemyDefeated(AEnemyBase* Enemy);
 	// 다음 합류 Slice에서 실제 감지 경로에 연결한다. 준비 중에는 명시적 완료만 Combat을 연다.
-	bool BeginInitialDetectionPreparation(FGameplayTag RoomTag, AActor* DetectedPlayer,
+	bool BeginInitialDetectionPreparation(FGameplayTag RoomTag, AActor* AnchorPlayer,
 		FRoomCombatPreparationContext& OutContext);
 	bool CompleteInitialDetectionPreparation(const FRoomCombatPreparationContext& Context);
+	bool TryStartInitialDetectionForPlayers(FGameplayTag RoomTag);
 	bool IsEnemyAttackBlocked(AEnemyBase* Enemy) const;
 	bool NotifyRoomCombatStarted(FGameplayTag RoomTag);
 	bool StartWaveSpawning(FGameplayTag RoomTag, int32 CombatPhaseIndex, int32 WaveIndex);
@@ -240,6 +245,14 @@ public:
 #endif
 
 private:
+	bool IsPlayerInsideRoom(const AFirstPersonCharacter* Player, const ARoomVolume* Room) const;
+	bool IsSafeJoinDestination(const AFirstPersonCharacter* MovingPlayer,
+		const AFirstPersonCharacter* Anchor, const ARoomVolume* Room,
+		const FVector& Location) const;
+	bool FindJoinDestination(AFirstPersonCharacter* MovingPlayer,
+		AFirstPersonCharacter* Anchor, ARoomVolume* Room, bool bFallbackOnly,
+		FVector& OutLocation) const;
+	TArray<TWeakObjectPtr<ARoomCombatBarrier>> RegisteredBarriers;
 	bool CanRunServerGameplay() const;
 	bool HasPendingSpawns(FGameplayTag RoomTag) const;
 	bool HasPendingWaveWork(FGameplayTag RoomTag, const FRoomCombatRuntime& Runtime) const;

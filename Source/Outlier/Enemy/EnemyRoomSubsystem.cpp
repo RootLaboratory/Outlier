@@ -111,24 +111,24 @@ void UEnemyRoomSubsystem::RefreshEnemyRegistration(AEnemyBase* Enemy)
 	RegisteredEnemyKeys.Add(EnemyPtr, NewKey);
 }
 
-void UEnemyRoomSubsystem::NotifyRoomCombat(FGameplayTag RoomTag, const FVector& PlayerLocation, AEnemyBase* ExcludeEnemy)
+bool UEnemyRoomSubsystem::NotifyRoomCombat(FGameplayTag RoomTag, const FVector& PlayerLocation, AEnemyBase* ExcludeEnemy)
 {
 	UWorld* World = GetWorld();
 	if (!World || World->GetNetMode() == NM_Client || !RoomTag.IsValid())
 	{
-		return;
+		return false;
 	}
 
 	UOutlierArenaSubsystem* ArenaSubsystem = World->GetSubsystem<UOutlierArenaSubsystem>();
 	if (!ArenaSubsystem)
 	{
-		return;
+		return false;
 	}
 
 	ULevel* ArenaLevel = ArenaSubsystem->GetArenaLoadedLevel();
 	if (!ArenaLevel)
 	{
-		return;
+		return false;
 	}
 
 	if (URoomCombatSubsystem* CombatSubsystem =
@@ -136,9 +136,9 @@ void UEnemyRoomSubsystem::NotifyRoomCombat(FGameplayTag RoomTag, const FVector& 
 	{
 		// 전투 정의가 있는 방은 새 관리자의 단일 활성 Room 판정을 통과한 경우에만 AI 전파한다.
 		if (CombatSubsystem->IsRoomRegistered(RoomTag)
-			&& !CombatSubsystem->NotifyRoomCombatStarted(RoomTag))
+			&& !CombatSubsystem->TryStartInitialDetectionForPlayers(RoomTag))
 		{
-			return;
+			return false;
 		}
 	}
 	CombatRooms.Add(RoomTag);
@@ -164,6 +164,7 @@ void UEnemyRoomSubsystem::NotifyRoomCombat(FGameplayTag RoomTag, const FVector& 
 	{
 		BroadcastSharedTargetContact(RoomTag, ContactState->LastReportedLocation);
 	}
+	return true;
 }
 
 void UEnemyRoomSubsystem::NotifyRoomCombatEnded(FGameplayTag RoomTag)

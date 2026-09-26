@@ -1462,6 +1462,19 @@ void AEnemyBase::EnterCombatFromRoom(
 		return;
 	}
 
+	const FGameplayTag RoomTag = GetDefaultRoomTag();
+	if (bPropagateToRoom && RoomTag.IsValid())
+	{
+		// 합류가 실패했다면 최초 발각 Enemy도 Alert에 남겨 Room 전투보다 먼저 공격하지 않는다.
+		if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
+		{
+			if (!RoomSubsystem->NotifyRoomCombat(RoomTag, PlayerLocation, this))
+			{
+				return;
+			}
+		}
+	}
+
 	const bool bEnteredCombat = CombatState != EEnemyCombatState::Combat;
 	bInCombat = true;
 	CombatState = EEnemyCombatState::Combat;
@@ -1471,16 +1484,6 @@ void AEnemyBase::EnterCombatFromRoom(
 	{
 		bPrefersCombatLeft = FMath::RandBool();
 		RefreshPerceptionConfigForCurrentState();
-	}
-
-	const FGameplayTag RoomTag = GetDefaultRoomTag();
-
-	if (bPropagateToRoom && RoomTag.IsValid())
-	{
-		if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
-		{
-			RoomSubsystem->NotifyRoomCombat(RoomTag, PlayerLocation, this);
-		}
 	}
 
 	if (bEnteredCombat)

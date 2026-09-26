@@ -1935,6 +1935,14 @@ bool FRoomCombatInitialDetectionPreparationTest::RunTest(const FString& Paramete
 	Combat->SetCombatDefinitionForTesting(Definition);
 	TestTrue(TEXT("Room registers"), Combat->RegisterRoom(Room, RoomTag));
 	TestTrue(TEXT("Other room registers"), Combat->RegisterRoom(OtherRoom, OtherRoomTag));
+	if (UBoxComponent* RoomBox = Cast<UBoxComponent>(Room->GetRootComponent()))
+	{
+		RoomBox->SetBoxExtent(FVector(500.0f, 500.0f, 500.0f));
+		TestTrue(TEXT("Room contains an interior location"),
+			Room->ContainsWorldLocation(FVector(100.0f, 0.0f, 0.0f)));
+		TestFalse(TEXT("Room rejects a location outside its box"),
+			Room->ContainsWorldLocation(FVector(600.0f, 0.0f, 0.0f)));
+	}
 	Combat->RegisterPreplacedEnemy(Enemy);
 	ARoomCombatBarrier* Barrier = SpawnTestBarrier(World, RoomTag);
 	if (!TestNotNull(TEXT("Initial detection barrier"), Barrier))
@@ -1942,6 +1950,26 @@ bool FRoomCombatInitialDetectionPreparationTest::RunTest(const FString& Paramete
 		CleanupWorld();
 		return false;
 	}
+	ARoomCombatBarrier* OtherBarrier = SpawnTestBarrier(World, RoomTag);
+	FStructProperty* FallbackProperty = FindFProperty<FStructProperty>(
+		ARoomCombatBarrier::StaticClass(), TEXT("JoinFallbackLocalOffset"));
+	if (!TestNotNull(TEXT("Second entrance barrier"), OtherBarrier)
+		|| !TestNotNull(TEXT("Per-instance fallback editor property"), FallbackProperty))
+	{
+		CleanupWorld();
+		return false;
+	}
+	*FallbackProperty->ContainerPtrToValuePtr<FVector>(Barrier) = FVector(250, 0, 0);
+	*FallbackProperty->ContainerPtrToValuePtr<FVector>(OtherBarrier) = FVector(450, 0, 0);
+	TestTrue(TEXT("Each entrance keeps its own fallback location"),
+		(OtherBarrier->GetJoinFallbackLocation() - Barrier->GetJoinFallbackLocation())
+			.Equals(FVector(200, 0, 0)));
+	TestTrue(TEXT("Barrier collision is checked even while hidden"),
+		Barrier->OverlapsJoinCapsule(FVector::ZeroVector, 40.0f, 90.0f));
+	TestFalse(TEXT("The production detection path cannot start without a player pair"),
+		Combat->TryStartInitialDetectionForPlayers(RoomTag));
+	TestEqual(TEXT("Missing players leave the Room dormant"),
+		Combat->GetRoomState(RoomTag), ERoomCombatState::Dormant);
 	FRoomCombatPreparationContext FirstContext;
 	TestTrue(TEXT("First detection reserves the room"),
 		Combat->BeginInitialDetectionPreparation(RoomTag, FirstPlayer, FirstContext));
@@ -1957,7 +1985,7 @@ bool FRoomCombatInitialDetectionPreparationTest::RunTest(const FString& Paramete
 	TestTrue(TEXT("A repeated detection is idempotent"),
 		Combat->BeginInitialDetectionPreparation(RoomTag, SecondPlayer, RepeatedContext));
 	TestTrue(TEXT("First detected player remains the anchor"),
-		RepeatedContext.DetectedPlayer.Get() == FirstPlayer);
+		RepeatedContext.AnchorPlayer.Get() == FirstPlayer);
 	FRoomCombatPreparationContext OtherContext;
 	TestFalse(TEXT("Another room cannot prepare concurrently"),
 		Combat->BeginInitialDetectionPreparation(OtherRoomTag, SecondPlayer, OtherContext));
@@ -1966,19 +1994,21 @@ bool FRoomCombatInitialDetectionPreparationTest::RunTest(const FString& Paramete
 	TestFalse(TEXT("A different generation cannot complete preparation"),
 		Combat->CompleteInitialDetectionPreparation(WrongContext));
 	WrongContext = FirstContext;
-	WrongContext.DetectedPlayer = SecondPlayer;
+	WrongContext.AnchorPlayer = SecondPlayer;
 	TestFalse(TEXT("A different player cannot complete preparation"),
 		Combat->CompleteInitialDetectionPreparation(WrongContext));
 	TestTrue(TEXT("The original context completes preparation"),
 		Combat->CompleteInitialDetectionPreparation(FirstContext));
 	TestEqual(TEXT("Room enters combat"), Combat->GetRoomState(RoomTag), ERoomCombatState::Combat);
 	TestEqual(TEXT("Preplaced Wave baseline is committed"), Combat->GetWaveBaselineEnemyCount(RoomTag), 1);
-	TestFalse(TEXT("Detection path leaves barrier activation for the regroup Slice"), Barrier->IsBlocked());
+	TestTrue(TEXT("The entrance closes before the first Wave advances"), Barrier->IsBlocked());
+	TestTrue(TEXT("Every entrance of the Room closes"), OtherBarrier->IsBlocked());
 	TestFalse(TEXT("Attack gate opens after preparation"), Combat->IsEnemyAttackBlocked(Enemy));
 	TestFalse(TEXT("Preparation cannot complete twice"),
 		Combat->CompleteInitialDetectionPreparation(FirstContext));
 
 	Combat->ResetRuntimeCombatState();
+	TestFalse(TEXT("Reset opens the entrance"), Barrier->IsBlocked());
 	TestFalse(TEXT("Reset invalidates the previous context"),
 		Combat->CompleteInitialDetectionPreparation(FirstContext));
 	TestFalse(TEXT("Reset releases the attack gate"), Combat->IsEnemyAttackBlocked(Enemy));
