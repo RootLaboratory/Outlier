@@ -17,6 +17,7 @@
 #include "EngineUtils.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "Misc/AutomationTest.h"
+#include "Room/RoomCombatBarrier.h"
 #include "Room/RoomCombatDefinition.h"
 #include "Room/RoomCombatSpawnPoint.h"
 #include "Room/RoomCombatSubsystem.h"
@@ -168,6 +169,27 @@ namespace
 		{
 			Actor->DispatchBeginPlay();
 		}
+	}
+
+	ARoomCombatBarrier* SpawnTestBarrier(UWorld* World, FGameplayTag RoomTag)
+	{
+		ARoomCombatBarrier* Barrier = World->SpawnActorDeferred<ARoomCombatBarrier>(
+			ARoomCombatBarrier::StaticClass(), FTransform::Identity);
+		if (!Barrier)
+		{
+			return nullptr;
+		}
+		FStructProperty* RoomTagProperty = FindFProperty<FStructProperty>(
+			ARoomCombatBarrier::StaticClass(), TEXT("RoomTag"));
+		if (!RoomTagProperty)
+		{
+			Barrier->Destroy();
+			return nullptr;
+		}
+		*RoomTagProperty->ContainerPtrToValuePtr<FGameplayTag>(Barrier) = RoomTag;
+		Barrier->FinishSpawning(FTransform::Identity);
+		DispatchBeginPlayForTest(Barrier);
+		return Barrier;
 	}
 }
 
@@ -863,6 +885,13 @@ bool FRoomCombatTriggeredSequenceTest::RunTest(const FString& Parameters)
 	Combat->SetCombatDefinitionForTesting(Definition);
 	TestTrue(TEXT("Sequence Room registers"), Combat->RegisterRoom(Room, RoomTag));
 	TestTrue(TEXT("Other Room registers"), Combat->RegisterRoom(OtherRoom, OtherTag));
+	ARoomCombatBarrier* Barrier = SpawnTestBarrier(World, RoomTag);
+	if (!TestNotNull(TEXT("Sequence barrier"), Barrier))
+	{
+		CleanupWorld();
+		return false;
+	}
+	TestFalse(TEXT("Barrier starts open"), Barrier->IsBlocked());
 	Point->SetRuntimeActive(false);
 	Point->SetForceSpawnLocationFailureForTesting(true);
 	TestTrue(TEXT("Inactive group point registers"), Combat->RegisterSpawnPoint(
@@ -935,6 +964,7 @@ bool FRoomCombatTriggeredSequenceTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Invalid start emits no start event"), Starts, 0);
 	Definition->RoomDefinitions[0].CombatPhases[1].Waves[0].Enemies[0].Count = 1;
 	TestTrue(TEXT("Hack starts sequence"), Combat->StartTriggeredSequence(Requester, Context));
+	TestTrue(TEXT("Started sequence blocks its barrier"), Barrier->IsBlocked());
 	TestTrue(TEXT("Group point activates"), Point->IsRuntimeActive());
 	TestEqual(TEXT("Location failure remains pending"), Combat->GetPendingSpawnCount(RoomTag), 1);
 	TestFalse(TEXT("Duplicate success is rejected"), Combat->StartTriggeredSequence(Requester, Context));
@@ -996,8 +1026,10 @@ bool FRoomCombatTriggeredSequenceTest::RunTest(const FString& Parameters)
 	Combat->RegisterRoom(Room, RoomTag);
 	Combat->CreateTriggerContext(Requester, RoomTag, GroupTag, Context);
 	Combat->StartTriggeredSequence(Requester, Context);
+	TestTrue(TEXT("New sequence blocks before Reset"), Barrier->IsBlocked());
 	Combat->ResetRuntimeCombatState();
 	Combat->ResetRuntimeCombatState();
+	TestFalse(TEXT("Reset opens an active barrier"), Barrier->IsBlocked());
 	TestEqual(TEXT("Reset cancellation is idempotent"), Cancels, 2);
 	TestEqual(TEXT("Reset does not count as a clear"), Clears, 1);
 	TestFalse(TEXT("Reset deactivates group"), Point->IsRuntimeActive());
@@ -1079,17 +1111,20 @@ bool FRoomCombatExternalTriggerTest::RunTest(const FString& Parameters)
 	URoomCombatSubsystem* Combat = World->GetSubsystem<URoomCombatSubsystem>();
 	UEnemyPoolSubsystem* Pool = World->GetSubsystem<UEnemyPoolSubsystem>();
 	ARoomVolume* Room = World->SpawnActor<ARoomVolume>();
+	ARoomVolume* OtherRoom = World->SpawnActor<ARoomVolume>();
 	AActor* Requester = World->SpawnActor<AActor>();
 	ARoomCombatSpawnPoint* Point = World->SpawnActor<ARoomCombatSpawnPoint>(
 		ARoomCombatSpawnPoint::StaticClass(), FTransform(FVector(5000.0f, 0.0f, 0.0f)));
 	if (!TestNotNull(TEXT("Combat"), Combat) || !TestNotNull(TEXT("Pool"), Pool)
-		|| !TestNotNull(TEXT("Room"), Room) || !TestNotNull(TEXT("Requester"), Requester)
+		|| !TestNotNull(TEXT("Room"), Room) || !TestNotNull(TEXT("Other Room"), OtherRoom)
+		|| !TestNotNull(TEXT("Requester"), Requester)
 		|| !TestNotNull(TEXT("Point"), Point))
 	{
 		CleanupWorld();
 		return false;
 	}
 	const FGameplayTag RoomTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.1")));
+	const FGameplayTag OtherRoomTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.2")));
 	URoomCombatDefinition* Definition = NewObject<URoomCombatDefinition>(World);
 	FRoomCombatRoomDefinition& RoomDefinition = AddRoomDefinition(Definition, RoomTag);
 	for (int32 Index = 0; Index < 2; ++Index)
@@ -1100,8 +1135,15 @@ bool FRoomCombatExternalTriggerTest::RunTest(const FString& Parameters)
 		Wave.SpawnMode = ERoomCombatWaveSpawnMode::SpawnFromObjects;
 		Wave.Enemies.AddDefaulted_GetRef().EnemyClass = AEnemyBase::StaticClass();
 	}
+	FRoomCombatPhaseDefinition& OtherPhase = AddRoomDefinition(Definition, OtherRoomTag)
+		.CombatPhases.AddDefaulted_GetRef();
+	OtherPhase.StartPolicy = ERoomCombatPhaseStartPolicy::ExternalTrigger;
+	FRoomCombatWaveDefinition& OtherWave = OtherPhase.Waves.AddDefaulted_GetRef();
+	OtherWave.SpawnMode = ERoomCombatWaveSpawnMode::SpawnFromObjects;
+	OtherWave.Enemies.AddDefaulted_GetRef().EnemyClass = AEnemyBase::StaticClass();
 	Combat->SetCombatDefinitionForTesting(Definition);
 	TestTrue(TEXT("Room registers"), Combat->RegisterRoom(Room, RoomTag));
+	TestTrue(TEXT("Other room registers"), Combat->RegisterRoom(OtherRoom, OtherRoomTag));
 	TestEqual(TEXT("External first phase waits"), Combat->GetRoomState(RoomTag),
 		ERoomCombatState::WaitingForTrigger);
 	TestTrue(TEXT("Default point registers"), Combat->RegisterSpawnPoint(
@@ -1116,6 +1158,21 @@ bool FRoomCombatExternalTriggerTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("External context needs no activation group"),
 		Combat->CreateTriggerContext(Requester, RoomTag, FGameplayTag(), FirstContext));
 	TestTrue(TEXT("External event starts phase 1"), Combat->StartTriggeredSequence(Requester, FirstContext));
+	ARoomCombatBarrier* Barrier = SpawnTestBarrier(World, RoomTag);
+	if (!TestNotNull(TEXT("Late-loaded combat barrier"), Barrier))
+	{
+		CleanupWorld();
+		return false;
+	}
+	TestTrue(TEXT("Late-loaded barrier reads the active Room state"), Barrier->IsBlocked());
+	UBoxComponent* BarrierCollision = Barrier->FindComponentByClass<UBoxComponent>();
+	if (!TestNotNull(TEXT("Barrier blocking collision"), BarrierCollision))
+	{
+		CleanupWorld();
+		return false;
+	}
+	TestEqual(TEXT("Active barrier blocks movement"), BarrierCollision->GetCollisionEnabled(),
+		ECollisionEnabled::QueryAndPhysics);
 	TestEqual(TEXT("First phase leases one Enemy"), Combat->GetAliveEnemyCount(RoomTag), 1);
 	AEnemyBase* LeasedEnemy = nullptr;
 	for (TActorIterator<AEnemyBase> It(World); It; ++It)
@@ -1135,8 +1192,12 @@ bool FRoomCombatExternalTriggerTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Next external phase waits instead of starting automatically"),
 		Combat->GetRoomState(RoomTag), ERoomCombatState::WaitingForTrigger);
 	TestEqual(TEXT("Second phase is selected"), Combat->GetCurrentCombatPhaseIndex(RoomTag), 1);
-	TestFalse(TEXT("Exit is open during external wait"), Combat->IsExitBlocked(RoomTag));
-	TestFalse(TEXT("Streaming is released during external wait"), Room->IsCombatStreamingSourceEnabled());
+	TestTrue(TEXT("Exit remains blocked during external wait"), Combat->IsExitBlocked(RoomTag));
+	TestTrue(TEXT("Barrier remains blocked during external wait"), Barrier->IsBlocked());
+	TestTrue(TEXT("Streaming remains active during external wait"), Room->IsCombatStreamingSourceEnabled());
+	FRoomCombatTriggerContext OtherContext;
+	TestFalse(TEXT("Another Room cannot start while this Room holds the barrier"),
+		Combat->CreateTriggerContext(Requester, OtherRoomTag, FGameplayTag(), OtherContext));
 	TestFalse(TEXT("Old context cannot start the next phase"),
 		Combat->StartTriggeredSequence(Requester, FirstContext));
 	FRoomCombatTriggerContext SecondContext;
@@ -1149,6 +1210,11 @@ bool FRoomCombatExternalTriggerTest::RunTest(const FString& Parameters)
 	Combat->NotifyEnemyDefeated(LeasedEnemy);
 	TestEqual(TEXT("Last external phase clears the Room"), Combat->GetRoomState(RoomTag),
 		ERoomCombatState::Cleared);
+	TestFalse(TEXT("Clear opens the barrier"), Barrier->IsBlocked());
+	TestEqual(TEXT("Clear disables barrier collision"), BarrierCollision->GetCollisionEnabled(),
+		ECollisionEnabled::NoCollision);
+	Combat->ResetRuntimeCombatState();
+	TestFalse(TEXT("Reset leaves the barrier open"), Barrier->IsBlocked());
 	CleanupWorld();
 	return true;
 }
@@ -1870,6 +1936,12 @@ bool FRoomCombatInitialDetectionPreparationTest::RunTest(const FString& Paramete
 	TestTrue(TEXT("Room registers"), Combat->RegisterRoom(Room, RoomTag));
 	TestTrue(TEXT("Other room registers"), Combat->RegisterRoom(OtherRoom, OtherRoomTag));
 	Combat->RegisterPreplacedEnemy(Enemy);
+	ARoomCombatBarrier* Barrier = SpawnTestBarrier(World, RoomTag);
+	if (!TestNotNull(TEXT("Initial detection barrier"), Barrier))
+	{
+		CleanupWorld();
+		return false;
+	}
 	FRoomCombatPreparationContext FirstContext;
 	TestTrue(TEXT("First detection reserves the room"),
 		Combat->BeginInitialDetectionPreparation(RoomTag, FirstPlayer, FirstContext));
@@ -1877,6 +1949,7 @@ bool FRoomCombatInitialDetectionPreparationTest::RunTest(const FString& Paramete
 	TestEqual(TEXT("Wave baseline is not committed"), Combat->GetWaveBaselineEnemyCount(RoomTag), INDEX_NONE);
 	TestTrue(TEXT("The preplaced enemy cannot begin attacking"), Combat->IsEnemyAttackBlocked(Enemy));
 	TestFalse(TEXT("No exit barrier is active during preparation"), Combat->IsExitBlocked(RoomTag));
+	TestFalse(TEXT("Preparation leaves the placed barrier open"), Barrier->IsBlocked());
 	TestTrue(TEXT("Preparation keeps the room streamed"), Room->IsCombatStreamingSourceEnabled());
 	TestFalse(TEXT("The old direct start cannot bypass preparation"), Combat->NotifyRoomCombatStarted(RoomTag));
 
@@ -1900,6 +1973,7 @@ bool FRoomCombatInitialDetectionPreparationTest::RunTest(const FString& Paramete
 		Combat->CompleteInitialDetectionPreparation(FirstContext));
 	TestEqual(TEXT("Room enters combat"), Combat->GetRoomState(RoomTag), ERoomCombatState::Combat);
 	TestEqual(TEXT("Preplaced Wave baseline is committed"), Combat->GetWaveBaselineEnemyCount(RoomTag), 1);
+	TestFalse(TEXT("Detection path leaves barrier activation for the regroup Slice"), Barrier->IsBlocked());
 	TestFalse(TEXT("Attack gate opens after preparation"), Combat->IsEnemyAttackBlocked(Enemy));
 	TestFalse(TEXT("Preparation cannot complete twice"),
 		Combat->CompleteInitialDetectionPreparation(FirstContext));

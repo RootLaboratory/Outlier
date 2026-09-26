@@ -217,12 +217,13 @@ bool URoomCombatSubsystem::CreateTriggerContext(
 	const FRoomCombatPhaseDefinition* Phase = Definition && Runtime
 		? Definition->FindPhase(Runtime->CurrentCombatPhaseIndex)
 		: nullptr;
+	// 앞선 차수에서 차단한 같은 Room만 재진입할 수 있고, 다른 Room의 시작은 막는다.
 	if (!CanRunServerGameplay()
 		|| !IsValid(Requester) || Requester->IsActorBeingDestroyed()
 		|| !Requester->HasAuthority() || Requester->GetWorld() != World
 		|| !Runtime || !Runtime->RoomVolume.IsValid()
 		|| Runtime->State != ERoomCombatState::WaitingForTrigger
-		|| ActiveCombatRoomTag.IsValid()
+		|| (ActiveCombatRoomTag.IsValid() && ActiveCombatRoomTag != RoomTag)
 		|| !Phase
 		|| (Phase->StartPolicy != ERoomCombatPhaseStartPolicy::HackTrigger
 			&& Phase->StartPolicy != ERoomCombatPhaseStartPolicy::ExternalTrigger)
@@ -271,9 +272,12 @@ bool URoomCombatSubsystem::StartTriggeredSequence(
 		return false;
 	}
 
+	// 후속 외부 차수에서 시작이 실패해도 앞선 차수의 차단/Streaming 상태를 보존한다.
+	const bool bWasExitBlocked = Runtime->bExitBlockActive;
 	Runtime->State = ERoomCombatState::Combat;
 	Runtime->CurrentWaveIndex = 0;
 	Runtime->bTriggeredSequenceActive = true;
+	Runtime->bExitBlockActive = true;
 	Runtime->bDeferSpawnExecution = true;
 	Runtime->ActiveActivationGroupTag = Context.ActivationGroupTag;
 	ActiveCombatRoomTag = Context.RoomTag;
@@ -283,15 +287,19 @@ bool URoomCombatSubsystem::StartTriggeredSequence(
 	{
 		Runtime->State = ERoomCombatState::WaitingForTrigger;
 		Runtime->bTriggeredSequenceActive = false;
+		Runtime->bExitBlockActive = bWasExitBlocked;
 		Runtime->bDeferSpawnExecution = false;
 		Runtime->ActiveActivationGroupTag = FGameplayTag();
 		SetActivationGroupActive(Context.RoomTag, Context.ActivationGroupTag, false);
-		SetRoomStreamingSourceEnabled(Context.RoomTag, false);
-		ActiveCombatRoomTag = FGameplayTag();
+		if (!bWasExitBlocked)
+		{
+			SetRoomStreamingSourceEnabled(Context.RoomTag, false);
+			ActiveCombatRoomTag = FGameplayTag();
+		}
 		return false;
 	}
 
-	// BP가 이 이벤트에서 벽을 막은 뒤 소환을 실행한다. BP에서 Reset했다면 재개하지 않는다.
+	// 차단막이 시작 이벤트를 반영한 뒤 소환한다. 이벤트 중 Reset됐다면 재개하지 않는다.
 	// 호출자가 저장한 Context도 이벤트 중 바뀔 수 있으므로 검증된 복사본으로 재개한다.
 	BroadcastCombatEvent(CurrentContext.RoomTag, ERoomCombatEvent::SequenceStarted,
 		CurrentContext.CombatPhaseIndex, CurrentContext.GameplayGeneration);
@@ -302,7 +310,7 @@ bool URoomCombatSubsystem::StartTriggeredSequence(
 bool URoomCombatSubsystem::IsExitBlocked(FGameplayTag RoomTag) const
 {
 	const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
-	return Runtime && Runtime->bTriggeredSequenceActive;
+	return Runtime && Runtime->bExitBlockActive;
 }
 
 void URoomCombatSubsystem::BroadcastCombatEvent(
@@ -457,7 +465,8 @@ void URoomCombatSubsystem::UnregisterRoom(ARoomVolume* RoomVolume)
 
 		Runtime = RoomRuntimes.Find(RoomTag);
 	}
-	const bool bWasSequenceActive = Runtime->bTriggeredSequenceActive
+	const bool bWasSequenceActive = Runtime->bExitBlockActive
+		|| Runtime->bTriggeredSequenceActive
 		|| Runtime->State == ERoomCombatState::Preparing;
 	const int32 CancelledPhase = Runtime->CurrentCombatPhaseIndex;
 	const int32 CancelledGeneration = Runtime->GameplayGeneration;
@@ -1819,7 +1828,7 @@ void URoomCombatSubsystem::ResetRuntimeCombatState()
 	{
 		SetActivationGroupActive(Entry.Key, Entry.Value.ActiveActivationGroupTag, false);
 		// 준비 중에는 차단막이 없어도 대기 중인 합류 요청에 취소를 알려야 한다.
-		if (Entry.Value.bTriggeredSequenceActive
+		if (Entry.Value.bExitBlockActive || Entry.Value.bTriggeredSequenceActive
 			|| Entry.Value.State == ERoomCombatState::Preparing)
 		{
 			CancelledSequences.Add({Entry.Key, Entry.Value.CurrentCombatPhaseIndex, Entry.Value.GameplayGeneration});
@@ -2047,17 +2056,21 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 	if (Runtime->bTriggeredSequenceActive && NextPhase
 		&& NextPhase->StartPolicy == ERoomCombatPhaseStartPolicy::Automatic)
 	{
-		// 연속 전투는 Automatic 차수에서만 차단과 Streaming을 유지한다.
+		// Automatic 차수는 대기 상태를 거치지 않고 같은 차단 아래에서 바로 이어진다.
 		StartAutomaticPhase(RoomTag, *Runtime, *Definition);
 		return;
 	}
 
-	// 연속 전투가 아니거나 마지막 차수면 전투 점유를 해제한 뒤 대기/Cleared 상태로 이동한다.
-	if (ActiveCombatRoomTag == RoomTag)
+	// 외부 트리거 대기 중이라도 한 번 막힌 Room은 마지막 차수 완료 전까지 점유와 WP를 유지한다.
+	const bool bKeepRoomReserved = Runtime->bExitBlockActive && NextPhase != nullptr;
+	if (!bKeepRoomReserved && ActiveCombatRoomTag == RoomTag)
 	{
 		ActiveCombatRoomTag = FGameplayTag();
 	}
-	SetRoomStreamingSourceEnabled(RoomTag, false);
+	if (!bKeepRoomReserved)
+	{
+		SetRoomStreamingSourceEnabled(RoomTag, false);
+	}
 	if (UWorld* World = GetWorld())
 	{
 		if (UEnemyRoomSubsystem* EnemyRoomSubsystem =
@@ -2072,6 +2085,7 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 	SetActivationGroupActive(RoomTag, Runtime->ActiveActivationGroupTag, false);
 	if (!NextPhase)
 	{
+		Runtime->bExitBlockActive = false;
 		MarkRoomCleared(RoomTag, *Runtime);
 		// 전체 완료에서 차단 해제를 먼저 알린다. 이어지는 차수 알림이 Reset을 요청해도 해제가 누락되지 않는다.
 		BroadcastCombatEvent(RoomTag, ERoomCombatEvent::RoomCleared, CompletedPhaseIndex, Generation);

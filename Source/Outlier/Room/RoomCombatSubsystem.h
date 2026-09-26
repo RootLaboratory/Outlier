@@ -94,6 +94,8 @@ struct FRoomCombatRuntime
 	TWeakObjectPtr<AActor> PreparingDetectedPlayer; // 중복 발각으로 바뀌지 않으며 준비/차수 종료 때 비운다.
 	FGameplayTag ActiveActivationGroupTag;
 	bool bTriggeredSequenceActive = false;
+	// 현재 차수 진행 여부와 별개다. 한 번 막힌 출입구는 중간 대기에도 유지하고 Clear/Reset에서 연다.
+	bool bExitBlockActive = false;
 	// 시작/차수 완료 이벤트에서 차단 상태를 적용한 뒤 실제 Pool 대여를 실행한다.
 	bool bDeferSpawnExecution = false;
 	double LastSpawnRetryLogSeconds = -1000000.0;
