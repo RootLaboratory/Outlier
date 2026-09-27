@@ -126,6 +126,9 @@ private:
 	TArray<TWeakObjectPtr<AOutlierPlayerState>> BoundExitPendingPlayerStates;
 	FDelegateHandle NodeCountChangedHandle;
 	bool bLocalStatAllocatorExitRequested = false;
+	TWeakObjectPtr<AOutlierPlayerState> OpenedPlayerState;
+	uint32 OpenedGameplayGeneration = 0;
+	bool bUIOpenedReported = false;
 
 	static constexpr int32 IntroPageIndex = 0;
 	static constexpr int32 AllocatorPageIndex = 1;

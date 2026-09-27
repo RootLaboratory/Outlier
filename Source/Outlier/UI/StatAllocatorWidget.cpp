@@ -8,10 +8,12 @@
 #include "Components/WidgetSwitcher.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Engine/LocalPlayer.h"
+#include "Engine/World.h"
 #include "GameFramework/GameStateBase.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/PlayerState.h"
 #include "OutlierPlayerState.h"
+#include "Network/OutlierArenaSubsystem.h"
 #include "Shooter/ShooterCharacter.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
 #include "UI/UpgradeNodeGroupWidget.h"
@@ -36,10 +38,24 @@ void UStatAllocatorWidget::NativeOnInitialized()
 void UStatAllocatorWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
+	bUIOpenedReported = false;
+	OpenedPlayerState.Reset();
 	BindOwningPlayerState();
 	BindStatAllocatorExitPendingStates();
 	ResetLocalStatAllocatorExitPending();
 	RefreshStatAllocatorExitPendingState();
+
+	const UOutlierArenaSubsystem* Arena = GetWorld()
+		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()
+		: nullptr;
+	if (AOutlierPlayerState* PlayerState = GetLocalOutlierPlayerState(); PlayerState && Arena)
+	{
+		// NativeConstruct는 UI Layer에 위젯이 붙을 때 호출된다. 이때 세대를 고정해 늦은 Closed를 구분한다.
+		OpenedPlayerState = PlayerState;
+		OpenedGameplayGeneration = Arena->GetGameplayGeneration();
+		bUIOpenedReported = true;
+		PlayerState->ReportStatAllocatorUIOpened(OpenedGameplayGeneration);
+	}
 }
 
 void UStatAllocatorWidget::NativeDestruct()
@@ -529,6 +545,14 @@ void UStatAllocatorWidget::TryPopStatAllocatorLayer()
 		: nullptr;
 	if (LayerSubsystem)
 	{
-		LayerSubsystem->PopWidget(this);
+		if (LayerSubsystem->PopWidget(this) && bUIOpenedReported)
+		{
+			// PopWidget 성공 후만 완료로 보낸다. NativeDestruct는 강제 제거에도 불리므로 신호를 보내지 않는다.
+			bUIOpenedReported = false;
+			if (AOutlierPlayerState* PlayerState = OpenedPlayerState.Get())
+			{
+				PlayerState->ReportStatAllocatorUIClosed(OpenedGameplayGeneration);
+			}
+		}
 	}
 }

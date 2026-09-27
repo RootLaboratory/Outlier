@@ -9,6 +9,7 @@
 #include "Engine/World.h"
 #include "GameFramework/GameStateBase.h"
 #include "Net/UnrealNetwork.h"
+#include "Network/OutlierArenaSubsystem.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Drone/Partner/PartnerCharacter.h"
 
@@ -103,6 +104,7 @@ void AOutlierPlayerState::SetPlayerRole(EOutlierPlayerRole NewRole)
 	}
 
 	PlayerRole = NewRole;
+	ResetStatAllocatorUIState();
 	HandlePlayerRoleChanged();
 }
 
@@ -114,6 +116,7 @@ void AOutlierPlayerState::SetPairId(int32 NewPairId)
 	}
 
 	PairId = NewPairId;
+	ResetStatAllocatorUIState();
 	SetNodeCountInternal(NewPairId == INDEX_NONE ? 0 : FMath::Max(0, InitialNodeCount));
 	SetStatAllocatorExitPending(false);
 	ForceNetUpdate();
@@ -255,6 +258,89 @@ void AOutlierPlayerState::SetStatAllocatorExitPending(bool bPending)
 	ForceNetUpdate();
 }
 
+void AOutlierPlayerState::ReportStatAllocatorUIOpened(uint32 GameplayGeneration)
+{
+	if (!HasAuthority())
+	{
+		ServerReportStatAllocatorUIState(GameplayGeneration, true);
+		return;
+	}
+
+	RecordStatAllocatorUIState(GameplayGeneration, true);
+}
+
+void AOutlierPlayerState::ReportStatAllocatorUIClosed(uint32 GameplayGeneration)
+{
+	if (!HasAuthority())
+	{
+		ServerReportStatAllocatorUIState(GameplayGeneration, false);
+		return;
+	}
+
+	RecordStatAllocatorUIState(GameplayGeneration, false);
+}
+
+bool AOutlierPlayerState::IsStatAllocatorUICompletedForGeneration(uint32 GameplayGeneration) const
+{
+	const UOutlierArenaSubsystem* Arena = GetWorld()
+		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()
+		: nullptr;
+	return HasAuthority() && Arena
+		&& GameplayGeneration == Arena->GetGameplayGeneration()
+		&& StatAllocatorUIGeneration == GameplayGeneration
+		&& GetAcquiredSuit()
+		&& bStatAllocatorUICompleted;
+}
+
+void AOutlierPlayerState::RecordStatAllocatorUIState(uint32 GameplayGeneration, bool bOpened)
+{
+	const UOutlierArenaSubsystem* Arena = GetWorld()
+		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()
+		: nullptr;
+	if (!HasAuthority() || !Arena
+		|| GameplayGeneration != Arena->GetGameplayGeneration()
+		|| PairId == INDEX_NONE
+		|| (PlayerRole != EOutlierPlayerRole::Shooter && PlayerRole != EOutlierPlayerRole::Partner)
+		|| !GetAcquiredSuit())
+	{
+		return;
+	}
+
+	if (StatAllocatorUIGeneration != GameplayGeneration)
+	{
+		// 리로드 후 같은 PlayerState가 남아도 이전 UI 확인은 새 전투 진행에 쓰지 않는다.
+		ResetStatAllocatorUIState();
+		StatAllocatorUIGeneration = GameplayGeneration;
+	}
+
+	if (bStatAllocatorUICompleted)
+	{
+		return;
+	}
+
+	if (bOpened)
+	{
+		bStatAllocatorUIOpened = true;
+		return;
+	}
+
+	if (!bStatAllocatorUIOpened)
+	{
+		return;
+	}
+
+	// 닫기 요청은 두 사람의 UI 동기화용이다. 문 조건은 실제 Layer 제거 후의 Closed 신호로만 확정한다.
+	bStatAllocatorUICompleted = true;
+	OnStatAllocatorUICompleted.Broadcast(this, GameplayGeneration);
+}
+
+void AOutlierPlayerState::ResetStatAllocatorUIState()
+{
+	StatAllocatorUIGeneration = 0;
+	bStatAllocatorUIOpened = false;
+	bStatAllocatorUICompleted = false;
+}
+
 void AOutlierPlayerState::SetPendingLobbyMatchId(int32 NewPendingLobbyMatchId)
 {
 	if (!HasAuthority() || PendingLobbyMatchId == NewPendingLobbyMatchId)
@@ -378,6 +464,12 @@ void AOutlierPlayerState::OnRep_PendingPresetSelection()
 void AOutlierPlayerState::ServerSetStatAllocatorExitPending_Implementation(bool bPending)
 {
 	SetStatAllocatorExitPending(bPending);
+}
+
+void AOutlierPlayerState::ServerReportStatAllocatorUIState_Implementation(
+	uint32 GameplayGeneration, bool bOpened)
+{
+	RecordStatAllocatorUIState(GameplayGeneration, bOpened);
 }
 
 void AOutlierPlayerState::HandlePlayerRoleChanged()
@@ -520,6 +612,10 @@ void AOutlierPlayerState::SetAcquiredSuit(bool Acquire)
 	}
 
 	bHasAcquiredSuit = Acquire;
+	if (!Acquire)
+	{
+		ResetStatAllocatorUIState();
+	}
 
 	// 리슨 호스트는 자기 값 변경에 OnRep 이 오지 않으므로 여기서 직접 투영한다.
 	OnRep_AcquiredSuit();
