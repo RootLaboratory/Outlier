@@ -1300,6 +1300,23 @@ void AEnemyBase::InitializeFromEnemyStatRow()
 	}
 
 	ApplyClassStatOverrides();
+	// 배치 인스턴스의 감지 거리만 DataTable 결과 위에 덮어쓴다. -1은 원본 값을 유지한다.
+	if (SightRadiusOverride >= 0.0f)
+	{
+		RuntimeStat.SightRadius = SightRadiusOverride;
+	}
+	if (LoseSightRadiusOverride >= 0.0f)
+	{
+		RuntimeStat.LoseSightRadius = LoseSightRadiusOverride;
+	}
+	if (HearingRangeOverride >= 0.0f)
+	{
+		RuntimeStat.HearingRange = HearingRangeOverride;
+	}
+	if (BattleHearingRangeOverride >= 0.0f)
+	{
+		RuntimeStat.BattleHearingRange = BattleHearingRangeOverride;
+	}
 	ApplyMovementFromRuntimeStat();
 	InitializeGasVitality();
 

@@ -211,6 +211,19 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Enemy|Data")
 	FDataTableRowHandle EnemyStatRow;
 
+	// -1은 DataTable 값을 사용한다. 배치된 Enemy 인스턴스에서만 감지 거리를 조정한다.
+	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Enemy|Perception Override", meta = (ClampMin = "-1.0", UIMin = "-1.0", Units = "cm"))
+	float SightRadiusOverride = -1.0f;
+
+	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Enemy|Perception Override", meta = (ClampMin = "-1.0", UIMin = "-1.0", Units = "cm"))
+	float LoseSightRadiusOverride = -1.0f;
+
+	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Enemy|Perception Override", meta = (ClampMin = "-1.0", UIMin = "-1.0", Units = "cm"))
+	float HearingRangeOverride = -1.0f;
+
+	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Enemy|Perception Override", meta = (ClampMin = "-1.0", UIMin = "-1.0", Units = "cm"))
+	float BattleHearingRangeOverride = -1.0f;
+
 	// 충격이 발생할 때마다 DataTable을 조회하지 않도록 초기화 시 RuntimeImpactReactionProfile에 복사한다.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Enemy|Data")
 	FDataTableRowHandle ImpactReactionProfileRow;
