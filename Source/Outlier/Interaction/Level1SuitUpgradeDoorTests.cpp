@@ -19,6 +19,7 @@
 #include "Room/RoomCombatSpawnPoint.h"
 #include "Room/RoomCombatSubsystem.h"
 #include "Room/RoomVolume.h"
+#include "Save/OutlierSaveSubSystem.h"
 #include "Shooter/ShooterCharacter.h"
 #include "UObject/UnrealType.h"
 
@@ -62,7 +63,8 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 		}
 	};
 
-	const FGameplayTag RoomTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.1")));
+	const FGameplayTag RoomTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01")));
+	const FGameplayTag EntryRoomTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.1")));
 	URoomCombatSubsystem* Combat = World->GetSubsystem<URoomCombatSubsystem>();
 	URoomCombatDefinition* Definition = NewObject<URoomCombatDefinition>(World);
 	FRoomCombatRoomDefinition& RoomDefinition = Definition->RoomDefinitions.AddDefaulted_GetRef();
@@ -104,11 +106,27 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	if (FStructProperty* RoomTagProperty = FindFProperty<FStructProperty>(
 		ARoomVolume::StaticClass(), TEXT("RoomTag")))
 	{
-		*RoomTagProperty->ContainerPtrToValuePtr<FGameplayTag>(Room) = RoomTag;
+		*RoomTagProperty->ContainerPtrToValuePtr<FGameplayTag>(Room) = EntryRoomTag;
 	}
 	CastChecked<UBoxComponent>(Room->GetRootComponent())->SetBoxExtent(FVector(500.0f));
 	Room->FinishSpawning(FTransform::Identity);
 	BeginActor(Room);
+	// 입장 Volume은 전투 Definition에 등록하지 않는다. 전투 Volume은 별도 태그와 위치를 가진다.
+	ARoomVolume* CombatRoom = World->SpawnActorDeferred<ARoomVolume>(
+		ARoomVolume::StaticClass(), FTransform(FVector(3000.0f, 0.0f, 0.0f)));
+	if (!TestNotNull(TEXT("Combat Room is spawned"), CombatRoom))
+	{
+		CleanupWorld();
+		return false;
+	}
+	if (FStructProperty* RoomTagProperty = FindFProperty<FStructProperty>(
+		ARoomVolume::StaticClass(), TEXT("RoomTag")))
+	{
+		*RoomTagProperty->ContainerPtrToValuePtr<FGameplayTag>(CombatRoom) = RoomTag;
+	}
+	CastChecked<UBoxComponent>(CombatRoom->GetRootComponent())->SetBoxExtent(FVector(500.0f));
+	CombatRoom->FinishSpawning(FTransform(FVector(3000.0f, 0.0f, 0.0f)));
+	BeginActor(CombatRoom);
 	TestEqual(TEXT("ExternalTrigger room waits for the door"),
 		Combat->GetRoomState(RoomTag), ERoomCombatState::WaitingForTrigger);
 	ALevel1SuitUpgradeDoor* Door = World->SpawnActorDeferred<ALevel1SuitUpgradeDoor>(
@@ -121,6 +139,7 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	Door->DoorCurve = Curve;
 	Door->DoorId = TEXT("Test.Level1Door.Door");
 	Door->TargetRoomVolume = Room;
+	Door->CombatRoomVolume = CombatRoom;
 	Door->FinishSpawning(FTransform::Identity);
 	BeginActor(Door);
 	TestTrue(TEXT("Level 1 door starts open without a motion"), Door->IsDoorOpen());
@@ -152,8 +171,8 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	PartnerPS->SetPlayerRole(EOutlierPlayerRole::Partner);
 	ShooterPS->SetShooterCharacter(Shooter);
 	PartnerPS->SetPartnerCharacter(Partner);
-	Shooter->GetRoomTagComp()->AssignDefaultRoomTag(RoomTag);
-	Partner->GetRoomTagComp()->AssignDefaultRoomTag(RoomTag);
+	Shooter->GetRoomTagComp()->AssignDefaultRoomTag(EntryRoomTag);
+	Partner->GetRoomTagComp()->AssignDefaultRoomTag(EntryRoomTag);
 	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, true);
 	TestTrue(TEXT("Room tag alone does not close the door"), Door->IsDoorOpen());
 	Shooter->SetActorLocation(FVector(100.0f, 0.0f, 0.0f));
@@ -164,9 +183,13 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	Partner->SetActorLocation(FVector(200.0f, 0.0f, 0.0f));
 	Room->OnRoomActorOverlapChanged.Broadcast(Partner, true);
 	TestTrue(TEXT("First player leaving before the second enters keeps the door open"), Door->IsDoorOpen());
-	Shooter->SetActorLocation(FVector(100.0f, 0.0f, 0.0f));
+	// 캡슐 오버랩은 원점이 Box 경계(500) 안으로 들어오기 전에 발생할 수 있다.
+	Shooter->SetActorLocation(FVector(550.0f, 0.0f, 0.0f));
 	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, true);
-	TestFalse(TEXT("Both players inside close the door"), Door->IsDoorOpen());
+	TestTrue(TEXT("Capsule overlap alone does not seal the room"), Door->IsDoorOpen());
+	Shooter->SetActorLocation(FVector(100.0f, 0.0f, 0.0f));
+	World->Tick(LEVELTICK_All, 0.11f);
+	TestFalse(TEXT("Entry recheck seals after the actor origin enters"), Door->IsDoorOpen());
 	Room->OnRoomActorOverlapChanged.Broadcast(Partner, true);
 
 	const uint32 Generation = World->GetSubsystem<UOutlierArenaSubsystem>()->GetGameplayGeneration();
@@ -219,6 +242,9 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Ready roster starts combat after door opens"),
 		Combat->GetRoomState(RoomTag), ERoomCombatState::Combat);
 	TestEqual(TEXT("Door starts the sequence once"), CombatStartCount, 1);
+	UOutlierSaveSubSystem* Save = GameInstance->GetSubsystem<UOutlierSaveSubSystem>();
+	TestTrue(TEXT("Open door progress is recorded for restore"),
+		Save->HasWorldProgress(EOutlierWorldProgressType::OpenedDoor, Door->DoorId));
 	Door->OnDoorMotionFinished.Broadcast(Door, true);
 	TestEqual(TEXT("Duplicate completion is ignored"), OpenedCount, 1);
 	TestEqual(TEXT("Duplicate completion does not restart combat"), CombatStartCount, 1);
@@ -227,6 +253,47 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	Door->OnDoorMotionFinished.Broadcast(Door, true);
 	TestEqual(TEXT("Old door completion does not advance a new generation"), OpenedCount, 1);
 	TestEqual(TEXT("Old door completion does not restart combat"), CombatStartCount, 1);
+	TestTrue(TEXT("The persistent door still has its saved open state"), Door->IsDoorOpen());
+	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReady.Broadcast(Generation);
+	TestEqual(TEXT("Old ready signal cannot restore the new generation"), CombatStartCount, 1);
+	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReady.Broadcast(NextGeneration);
+	TestTrue(TEXT("Restored open door does not replay its animation"), Door->IsDoorOpen());
+	TestEqual(TEXT("Restore does not emit another opening completion"), OpenedCount, 1);
+	TestEqual(TEXT("Restored door waits for its Room"), CombatStartCount, 1);
+	TestTrue(TEXT("Reloaded Room registers"), Combat->RegisterRoom(CombatRoom, RoomTag));
+	TestEqual(TEXT("Restored door waits for its SpawnPoints"), CombatStartCount, 1);
+	TestTrue(TEXT("Reloaded first matching point registers"), Combat->RegisterSpawnPoint(
+		SecondPoint, RoomTag, MatchingTags, FGameplayTag()));
+	TestEqual(TEXT("One restored point is not enough"), CombatStartCount, 1);
+	TestTrue(TEXT("Reloaded second matching point registers"), Combat->RegisterSpawnPoint(
+		ThirdPoint, RoomTag, MatchingTags, FGameplayTag()));
+	TestEqual(TEXT("Restored open door resumes combat once"), CombatStartCount, 2);
+	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReady.Broadcast(NextGeneration);
+	TestEqual(TEXT("Duplicate ready signal does not restart combat"), CombatStartCount, 2);
+
+	TestTrue(TEXT("The encounter completion is recorded"),
+		Save->RecordCompletedEncounter(RoomTag.GetTagName()));
+	const uint32 ClearedGeneration = World->GetSubsystem<UOutlierArenaSubsystem>()->ReserveGameplayGeneration();
+	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReloadStarted.Broadcast(ClearedGeneration);
+	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReady.Broadcast(ClearedGeneration);
+	TestTrue(TEXT("Cleared encounter keeps the door open"), Door->IsDoorOpen());
+	TestTrue(TEXT("Cleared Room registers"), Combat->RegisterRoom(CombatRoom, RoomTag));
+	TestEqual(TEXT("Completed encounter does not respawn Wave 1"), CombatStartCount, 2);
+	TestEqual(TEXT("Completed Room restores as cleared"),
+		Combat->GetRoomState(RoomTag), ERoomCombatState::Cleared);
+
+	// 초기 스냅샷에는 이 문의 개방·전투 완료 기록이 없다. 페어를 밖으로 옮겨 초기 상태를 확인한다.
+	Shooter->SetActorLocation(FVector(1000.0f, 0.0f, 0.0f));
+	Partner->SetActorLocation(FVector(1100.0f, 0.0f, 0.0f));
+	Save->RestoreCurrentWorldProgress(FOutlierWorldProgressSnapshot());
+	const uint32 InitialGeneration = World->GetSubsystem<UOutlierArenaSubsystem>()->ReserveGameplayGeneration();
+	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReloadStarted.Broadcast(InitialGeneration);
+	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReady.Broadcast(InitialGeneration);
+	TestTrue(TEXT("Initial snapshot restores the open entrance"), Door->IsDoorOpen());
+	TestEqual(TEXT("Initial snapshot does not start combat"), CombatStartCount, 2);
+	TestTrue(TEXT("Initial Room registers"), Combat->RegisterRoom(CombatRoom, RoomTag));
+	TestEqual(TEXT("Initial Room waits for its external trigger"),
+		Combat->GetRoomState(RoomTag), ERoomCombatState::WaitingForTrigger);
 
 	CleanupWorld();
 	return true;

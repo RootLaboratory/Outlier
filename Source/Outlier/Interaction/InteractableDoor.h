@@ -69,6 +69,7 @@ public:
 protected:
 	UPROPERTY(ReplicatedUsing = OnRep_IsOpen, BlueprintReadOnly, Category = "Door")
 	bool bIsOpen = false;
+	void SnapDoorState(bool bOpen);
 
 private:
 	FTimeline DoorTimeline;
@@ -87,7 +88,6 @@ private:
 	void ApplyDoorState(bool bOpen);
 	bool bProgressIdRegistered = false;
 	bool bMotionCompletionPending = false;
-	void SnapDoorState(bool bOpen);
 	bool PlayDoorMovementAudio(bool bOpen);
 
 public:

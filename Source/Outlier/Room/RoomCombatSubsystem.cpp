@@ -519,22 +519,50 @@ bool URoomCombatSubsystem::HasReadyExternalTriggerRoster(
 		|| !FirstWave || !FirstWave->IsSpawnFromObjects()
 		|| Phase->ExpectedStartSpawnPointCount <= 0)
 	{
+		UE_LOG(LogTemp, Display,
+			TEXT("[RoomCombat] External start not ready. Room=%s RequestedVolume=%s RegisteredVolume=%s State=%d ActiveRoom=%s Phase=%d Policy=%d FirstWaveSpawnFromObjects=%d ExpectedPoints=%d"),
+			*RoomTag.ToString(), *GetNameSafe(RoomVolume),
+			Runtime ? *GetNameSafe(Runtime->RoomVolume.Get()) : TEXT("None"),
+			Runtime ? static_cast<int32>(Runtime->State) : -1,
+			*ActiveCombatRoomTag.ToString(), Runtime ? Runtime->CurrentCombatPhaseIndex : -1,
+			Phase ? static_cast<int32>(Phase->StartPolicy) : -1,
+			FirstWave && FirstWave->IsSpawnFromObjects(),
+			Phase ? Phase->ExpectedStartSpawnPointCount : 0);
 		return false;
 	}
 
 	int32 ReadyCount = 0;
+	int32 RegisteredCount = 0;
+	int32 InactiveCount = 0;
+	int32 TagMismatchCount = 0;
 	if (const TArray<FRoomCombatSpawnPointRuntime>* Points = SpawnPointsByRoom.Find(RoomTag))
 	{
 		for (const FRoomCombatSpawnPointRuntime& Entry : *Points)
 		{
+			++RegisteredCount;
 			const ARoomCombatSpawnPoint* Point = Entry.SpawnPoint.Get();
-			if (IsValid(Point) && Point->IsRuntimeActive()
-				&& (!FirstWave->RequiredSpawnPointTag.IsValid()
-					|| Entry.SpawnPointTags.HasTag(FirstWave->RequiredSpawnPointTag)))
+			if (!IsValid(Point) || !Point->IsRuntimeActive())
+			{
+				++InactiveCount;
+			}
+			else if (FirstWave->RequiredSpawnPointTag.IsValid()
+				&& !Entry.SpawnPointTags.HasTag(FirstWave->RequiredSpawnPointTag))
+			{
+				++TagMismatchCount;
+			}
+			else
 			{
 				++ReadyCount;
 			}
 		}
+	}
+	if (ReadyCount < Phase->ExpectedStartSpawnPointCount)
+	{
+		UE_LOG(LogTemp, Display,
+			TEXT("[RoomCombat] External start roster waiting. Room=%s Ready=%d Expected=%d Registered=%d InactiveOrUnloaded=%d TagMismatch=%d RequiredTag=%s"),
+			*RoomTag.ToString(), ReadyCount, Phase->ExpectedStartSpawnPointCount,
+			RegisteredCount, InactiveCount, TagMismatchCount,
+			*FirstWave->RequiredSpawnPointTag.ToString());
 	}
 	return ReadyCount >= Phase->ExpectedStartSpawnPointCount;
 }

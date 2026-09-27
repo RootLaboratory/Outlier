@@ -102,11 +102,15 @@ void ARoomCombatSpawnPoint::BeginPlay()
 	if (URoomCombatSubsystem* CombatSubsystem =
 		GetWorld()->GetSubsystem<URoomCombatSubsystem>())
 	{
-		CombatSubsystem->RegisterSpawnPoint(
+		const bool bRegistered = CombatSubsystem->RegisterSpawnPoint(
 			this,
 			RoomTag,
 			SpawnPointTags,
 			ActivationGroupTag);
+		UE_LOG(LogTemp, Display,
+			TEXT("[RoomCombat] SpawnPoint registration. Point=%s Room=%s Tags=%s Group=%s InitiallyActive=%d Registered=%d"),
+			*GetNameSafe(this), *RoomTag.ToString(), *SpawnPointTags.ToString(),
+			*ActivationGroupTag.ToString(), bInitiallyActive, bRegistered);
 	}
 }
 
