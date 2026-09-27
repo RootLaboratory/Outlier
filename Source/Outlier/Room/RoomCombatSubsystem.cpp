@@ -497,8 +497,46 @@ bool URoomCombatSubsystem::RegisterRoom(
 	}
 	// SpawnPoint가 RoomVolume보다 먼저 WP에 도착했어도 복원된 완료 상태를 적용한다.
 	ApplyRoomClearedToSpawnPoints(RoomTag, Runtime.State == ERoomCombatState::Cleared);
+	OnRoomStartReadinessChanged.Broadcast(RoomTag);
 
 	return true;
+}
+
+bool URoomCombatSubsystem::HasReadyExternalTriggerRoster(
+	const ARoomVolume* RoomVolume, FGameplayTag RoomTag) const
+{
+	const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
+	const FRoomCombatRoomDefinition* Definition = Runtime ? FindRoomDefinition(RoomTag) : nullptr;
+	const FRoomCombatPhaseDefinition* Phase = Definition
+		? Definition->FindPhase(Runtime->CurrentCombatPhaseIndex) : nullptr;
+	const FRoomCombatWaveDefinition* FirstWave = Definition && Runtime
+		? Definition->FindWave(Runtime->CurrentCombatPhaseIndex, 0) : nullptr;
+	if (!CanRunServerGameplay() || !IsValid(RoomVolume)
+		|| !Runtime || Runtime->RoomVolume.Get() != RoomVolume
+		|| Runtime->State != ERoomCombatState::WaitingForTrigger
+		|| (ActiveCombatRoomTag.IsValid() && ActiveCombatRoomTag != RoomTag)
+		|| !Phase || Phase->StartPolicy != ERoomCombatPhaseStartPolicy::ExternalTrigger
+		|| !FirstWave || !FirstWave->IsSpawnFromObjects()
+		|| Phase->ExpectedStartSpawnPointCount <= 0)
+	{
+		return false;
+	}
+
+	int32 ReadyCount = 0;
+	if (const TArray<FRoomCombatSpawnPointRuntime>* Points = SpawnPointsByRoom.Find(RoomTag))
+	{
+		for (const FRoomCombatSpawnPointRuntime& Entry : *Points)
+		{
+			const ARoomCombatSpawnPoint* Point = Entry.SpawnPoint.Get();
+			if (IsValid(Point) && Point->IsRuntimeActive()
+				&& (!FirstWave->RequiredSpawnPointTag.IsValid()
+					|| Entry.SpawnPointTags.HasTag(FirstWave->RequiredSpawnPointTag)))
+			{
+				++ReadyCount;
+			}
+		}
+	}
+	return ReadyCount >= Phase->ExpectedStartSpawnPointCount;
 }
 
 void URoomCombatSubsystem::UnregisterRoom(ARoomVolume* RoomVolume)
@@ -673,6 +711,7 @@ bool URoomCombatSubsystem::RegisterSpawnPoint(
 		SpawnPoint->SetRoomCleared(SaveSubsystem && SaveSubsystem->HasWorldProgress(
 			EOutlierWorldProgressType::CompletedEncounter, RoomTag.GetTagName()));
 	}
+	OnRoomStartReadinessChanged.Broadcast(RoomTag);
 	return true;
 }
 

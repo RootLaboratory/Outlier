@@ -7,14 +7,15 @@
 #include "Network/OutlierArenaSubsystem.h"
 #include "OutlierPlayerState.h"
 #include "Room/RoomTagComponent.h"
+#include "Room/RoomCombatSubsystem.h"
 #include "Room/RoomVolume.h"
 #include "Shooter/ShooterCharacter.h"
 #include "TimerManager.h"
 
 // Level 1 진행의 서버 측 순서:
 // 두 플레이어가 Room 안에 모임 -> 이 문 닫기 -> 닫힘 Timeline 완료
-// -> 양쪽 UI의 실제 종료 확인 -> 이 문 열기 -> 열림 Timeline 완료 통지.
-// 전투 시작은 이 통지를 받는 다음 Slice가 담당한다.
+// -> 양쪽 UI의 실제 종료 확인 -> 이 문 열기 -> 열림 Timeline 완료
+// -> Room과 첫 Wave의 SpawnPoint가 준비되면 ExternalTrigger 전투 시작.
 ALevel1SuitUpgradeDoor::ALevel1SuitUpgradeDoor()
 {
 	// 부모 Door의 Tick이 Timeline을 구동한다. 자식은 초기 문 상태만 바꾼다.
@@ -45,9 +46,19 @@ void ALevel1SuitUpgradeDoor::BeginPlay()
 	}
 
 	GameplayGeneration = Arena->GetGameplayGeneration();
+	ArenaSubsystem = Arena;
+	CombatSubsystem = GetWorld()->GetSubsystem<URoomCombatSubsystem>();
+	if (!CombatSubsystem.IsValid())
+	{
+		UE_LOG(LogTemp, Error, TEXT("[Level1Door] RoomCombat missing. Door=%s"), *GetNameSafe(this));
+		return;
+	}
 	// RoomVolume은 입장, PlayerState는 UI 완료, 부모 Door는 연출 완료를 각각 알린다.
 	// 이 자식은 순서만 조합하고 메시/Timeline은 부모 구현을 그대로 사용한다.
 	Arena->OnArenaGameplayReloadStarted.AddUObject(this, &ThisClass::OnArenaReloadStarted);
+	CombatSubsystem->OnRoomStartReadinessChanged.AddUObject(
+		this, &ThisClass::OnRoomStartReadinessChanged);
+	CombatSubsystem->OnCombatEvent.AddDynamic(this, &ThisClass::OnCombatEvent);
 	OnDoorMotionFinished.AddUObject(this, &ThisClass::HandleDoorMotionFinished);
 	TargetRoomVolume->OnRoomActorOverlapChanged.AddUObject(this, &ThisClass::OnRoomOverlapChanged);
 	ActorSpawnedHandle = GetWorld()->AddOnActorSpawnedHandler(
@@ -71,12 +82,17 @@ void ALevel1SuitUpgradeDoor::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		{
 			World->RemoveOnActorSpawnedHandler(ActorSpawnedHandle);
 		}
-		if (UOutlierArenaSubsystem* Arena = World->GetSubsystem<UOutlierArenaSubsystem>())
-		{
-			Arena->OnArenaGameplayReloadStarted.RemoveAll(this);
-		}
+	}
+	if (ArenaSubsystem.IsValid())
+	{
+		ArenaSubsystem->OnArenaGameplayReloadStarted.RemoveAll(this);
 	}
 	OnDoorMotionFinished.RemoveAll(this);
+	if (CombatSubsystem.IsValid())
+	{
+		CombatSubsystem->OnRoomStartReadinessChanged.RemoveAll(this);
+		CombatSubsystem->OnCombatEvent.RemoveDynamic(this, &ThisClass::OnCombatEvent);
+	}
 	if (IsValid(TargetRoomVolume))
 	{
 		TargetRoomVolume->OnRoomActorOverlapChanged.RemoveAll(this);
@@ -134,6 +150,28 @@ void ALevel1SuitUpgradeDoor::OnRoomOverlapChanged(AActor* Actor, bool bEntered)
 	EvaluateEntry();
 }
 
+void ALevel1SuitUpgradeDoor::OnRoomStartReadinessChanged(FGameplayTag ChangedRoomTag)
+{
+	if (IsValid(TargetRoomVolume) && ChangedRoomTag == TargetRoomVolume->GetRoomTag())
+	{
+		TryStartCombat();
+	}
+}
+
+void ALevel1SuitUpgradeDoor::OnCombatEvent(
+	FGameplayTag EventRoomTag, ERoomCombatEvent Event,
+	int32 CombatPhaseIndex, int32 EventGeneration)
+{
+	(void)EventRoomTag;
+	(void)CombatPhaseIndex;
+	if (EventGeneration == static_cast<int32>(GameplayGeneration)
+		&& Event != ERoomCombatEvent::SequenceStarted)
+	{
+		// 다른 Room이 끝난 뒤 서버의 단일 활성 전투 슬롯이 비면 대기 중인 문을 다시 확인한다.
+		TryStartCombat();
+	}
+}
+
 void ALevel1SuitUpgradeDoor::OnArenaReloadStarted(uint32 NewGeneration)
 {
 	// 이전 문/위젯 콜백이 다음 플레이 세대의 진행 플래그를 재사용하지 못하게 끊는다.
@@ -142,6 +180,8 @@ void ALevel1SuitUpgradeDoor::OnArenaReloadStarted(uint32 NewGeneration)
 	bCloseFinished = false;
 	bReopenRequested = false;
 	bOpenFinished = false;
+	bCombatStartSucceeded = false;
+	bCombatStartInProgress = false;
 }
 
 bool ALevel1SuitUpgradeDoor::FindPair(
@@ -234,13 +274,56 @@ void ALevel1SuitUpgradeDoor::EvaluateReopen()
 		*GetNameSafe(this), *TargetRoomVolume->GetRoomTag().ToString(), GameplayGeneration);
 }
 
+bool ALevel1SuitUpgradeDoor::TryStartCombat()
+{
+	if (!HasAuthority() || !bOpenFinished || bCombatStartSucceeded || bCombatStartInProgress
+		|| !IsValid(TargetRoomVolume) || !CombatSubsystem.IsValid())
+	{
+		return false;
+	}
+	if (!ArenaSubsystem.IsValid()
+		|| GameplayGeneration != ArenaSubsystem->GetGameplayGeneration())
+	{
+		return false;
+	}
+
+	const FGameplayTag RoomTag = TargetRoomVolume->GetRoomTag();
+	// 문은 이미 열렸어도 WP의 Room/SpawnPoint 등록이 늦으면 그대로 대기한다.
+	// 등록 알림이나 다른 Room 전투 종료 알림에서 이 함수를 다시 호출한다.
+	if (!CombatSubsystem->HasReadyExternalTriggerRoster(TargetRoomVolume, RoomTag))
+	{
+		return false;
+	}
+	FRoomCombatTriggerContext Context;
+	const uint32 StartGeneration = GameplayGeneration;
+	bCombatStartInProgress = true;
+	const bool bStarted = CombatSubsystem->CreateTriggerContext(
+		this, RoomTag, FGameplayTag(), Context)
+		&& CombatSubsystem->StartTriggeredSequence(this, Context);
+	bCombatStartInProgress = false;
+	if (GameplayGeneration != StartGeneration
+		|| ArenaSubsystem->GetGameplayGeneration() != StartGeneration)
+	{
+		return false;
+	}
+	if (!bStarted)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[Level1Door] Combat start failed. Door=%s Room=%s Generation=%u"),
+			*GetNameSafe(this), *RoomTag.ToString(), GameplayGeneration);
+		return false;
+	}
+	bCombatStartSucceeded = true;
+	UE_LOG(LogTemp, Display, TEXT("[Level1Door] Combat started. Door=%s Room=%s Generation=%u"),
+		*GetNameSafe(this), *RoomTag.ToString(), GameplayGeneration);
+	return true;
+}
+
 void ALevel1SuitUpgradeDoor::HandleDoorMotionFinished(AInteractableDoor* Door, bool bOpen)
 {
-	const UOutlierArenaSubsystem* Arena = GetWorld()
-		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()
-		: nullptr;
-	if (!HasAuthority() || Door != this || !Arena || !IsValid(TargetRoomVolume)
-		|| GameplayGeneration != Arena->GetGameplayGeneration())
+	if (!HasAuthority() || Door != this || !ArenaSubsystem.IsValid()
+		|| !IsValid(TargetRoomVolume)
+		|| GameplayGeneration != ArenaSubsystem->GetGameplayGeneration())
 	{
 		return;
 	}
@@ -257,5 +340,13 @@ void ALevel1SuitUpgradeDoor::HandleDoorMotionFinished(AInteractableDoor* Door, b
 		UE_LOG(LogTemp, Display, TEXT("[Level1Door] Door opened. Door=%s Room=%s Generation=%u"),
 			*GetNameSafe(this), *TargetRoomVolume->GetRoomTag().ToString(), GameplayGeneration);
 		OnLevel1DoorOpened.Broadcast(this, GameplayGeneration);
+		if (!TryStartCombat() && IsValid(TargetRoomVolume))
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("[Level1Door] Combat start waiting. Door=%s Room=%s Generation=%u RegisteredSpawnPoints=%d"),
+				*GetNameSafe(this), *TargetRoomVolume->GetRoomTag().ToString(), GameplayGeneration,
+				CombatSubsystem.IsValid()
+					? CombatSubsystem->GetRegisteredSpawnPointCount(TargetRoomVolume->GetRoomTag()) : 0);
+		}
 	}
 }

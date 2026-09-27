@@ -6,12 +6,18 @@
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
+#include "Enemy/EnemyBase.h"
+#include "Enemy/EnemyPoolDefinition.h"
+#include "Enemy/EnemyPoolSubsystem.h"
 #include "Interaction/InteractableDoor.h"
 #include "Misc/AutomationTest.h"
 #include "Network/OutlierArenaSubsystem.h"
 #include "OutlierPlayerState.h"
 #include "Interaction/Level1SuitUpgradeDoor.h"
 #include "Room/RoomTagComponent.h"
+#include "Room/RoomCombatDefinition.h"
+#include "Room/RoomCombatSpawnPoint.h"
+#include "Room/RoomCombatSubsystem.h"
 #include "Room/RoomVolume.h"
 #include "Shooter/ShooterCharacter.h"
 #include "UObject/UnrealType.h"
@@ -57,6 +63,34 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	};
 
 	const FGameplayTag RoomTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.1")));
+	URoomCombatSubsystem* Combat = World->GetSubsystem<URoomCombatSubsystem>();
+	URoomCombatDefinition* Definition = NewObject<URoomCombatDefinition>(World);
+	FRoomCombatRoomDefinition& RoomDefinition = Definition->RoomDefinitions.AddDefaulted_GetRef();
+	RoomDefinition.RoomTag = RoomTag;
+	FRoomCombatPhaseDefinition& Phase = RoomDefinition.CombatPhases.AddDefaulted_GetRef();
+	Phase.StartPolicy = ERoomCombatPhaseStartPolicy::ExternalTrigger;
+	Phase.ExpectedStartSpawnPointCount = 2;
+	FRoomCombatWaveDefinition& Wave = Phase.Waves.AddDefaulted_GetRef();
+	Wave.SpawnMode = ERoomCombatWaveSpawnMode::SpawnFromObjects;
+	Wave.RequiredSpawnPointTag = RoomTag;
+	Wave.Enemies.AddDefaulted_GetRef().EnemyClass = AEnemyBase::StaticClass();
+	Combat->SetCombatDefinitionForTesting(Definition);
+	int32 CombatStartCount = 0;
+	Combat->CombatEventObserverForTesting = [&CombatStartCount](
+		FGameplayTag, ERoomCombatEvent Event, int32)
+	{
+		if (Event == ERoomCombatEvent::SequenceStarted)
+		{
+			++CombatStartCount;
+		}
+	};
+	UEnemyPoolDefinition* PoolDefinition = NewObject<UEnemyPoolDefinition>(World);
+	FEnemyPoolEntry& PoolEntry = PoolDefinition->Entries.AddDefaulted_GetRef();
+	PoolEntry.EnemyClass = AEnemyBase::StaticClass();
+	PoolEntry.PrewarmCount = 1;
+	PoolEntry.MaxCount = 1;
+	TestTrue(TEXT("First Wave Enemy pool is ready"),
+		World->GetSubsystem<UEnemyPoolSubsystem>()->PrewarmPool(PoolDefinition));
 	ARoomVolume* Room = World->SpawnActorDeferred<ARoomVolume>(
 		ARoomVolume::StaticClass(), FTransform::Identity);
 	UCurveFloat* Curve = NewObject<UCurveFloat>(GetTransientPackage());
@@ -75,6 +109,8 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	CastChecked<UBoxComponent>(Room->GetRootComponent())->SetBoxExtent(FVector(500.0f));
 	Room->FinishSpawning(FTransform::Identity);
 	BeginActor(Room);
+	TestEqual(TEXT("ExternalTrigger room waits for the door"),
+		Combat->GetRoomState(RoomTag), ERoomCombatState::WaitingForTrigger);
 	ALevel1SuitUpgradeDoor* Door = World->SpawnActorDeferred<ALevel1SuitUpgradeDoor>(
 		ALevel1SuitUpgradeDoor::StaticClass(), FTransform::Identity);
 	if (!TestNotNull(TEXT("Level 1 door is spawned"), Door))
@@ -153,12 +189,44 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Opening request is not completion"), OpenedCount, 0);
 	static_cast<AActor*>(Door)->Tick(1.1f);
 	TestEqual(TEXT("Server opening completes once"), OpenedCount, 1);
+	TestEqual(TEXT("Door waits for the configured SpawnPoint roster"),
+		Combat->GetRoomState(RoomTag), ERoomCombatState::WaitingForTrigger);
+	ARoomCombatSpawnPoint* FirstPoint = World->SpawnActor<ARoomCombatSpawnPoint>(
+		ARoomCombatSpawnPoint::StaticClass(), FTransform(FVector(300.0f, 0.0f, 0.0f)));
+	ARoomCombatSpawnPoint* SecondPoint = World->SpawnActor<ARoomCombatSpawnPoint>(
+		ARoomCombatSpawnPoint::StaticClass(), FTransform(FVector(-300.0f, 0.0f, 0.0f)));
+	ARoomCombatSpawnPoint* ThirdPoint = World->SpawnActor<ARoomCombatSpawnPoint>(
+		ARoomCombatSpawnPoint::StaticClass(), FTransform(FVector(0.0f, 300.0f, 0.0f)));
+	if (!TestNotNull(TEXT("First SpawnPoint"), FirstPoint)
+		|| !TestNotNull(TEXT("Second SpawnPoint"), SecondPoint)
+		|| !TestNotNull(TEXT("Third SpawnPoint"), ThirdPoint))
+	{
+		CleanupWorld();
+		return false;
+	}
+	TestTrue(TEXT("Unmatched SpawnPoint registers"), Combat->RegisterSpawnPoint(
+		FirstPoint, RoomTag, FGameplayTagContainer(), FGameplayTag()));
+	TestEqual(TEXT("An untagged point does not count toward the roster"),
+		Combat->GetRoomState(RoomTag), ERoomCombatState::WaitingForTrigger);
+	FGameplayTagContainer MatchingTags;
+	MatchingTags.AddTag(RoomTag);
+	TestTrue(TEXT("First matching SpawnPoint registers"), Combat->RegisterSpawnPoint(
+		SecondPoint, RoomTag, MatchingTags, FGameplayTag()));
+	TestEqual(TEXT("One of two matching points cannot start combat"),
+		Combat->GetRoomState(RoomTag), ERoomCombatState::WaitingForTrigger);
+	TestTrue(TEXT("Second matching SpawnPoint registers"), Combat->RegisterSpawnPoint(
+		ThirdPoint, RoomTag, MatchingTags, FGameplayTag()));
+	TestEqual(TEXT("Ready roster starts combat after door opens"),
+		Combat->GetRoomState(RoomTag), ERoomCombatState::Combat);
+	TestEqual(TEXT("Door starts the sequence once"), CombatStartCount, 1);
 	Door->OnDoorMotionFinished.Broadcast(Door, true);
 	TestEqual(TEXT("Duplicate completion is ignored"), OpenedCount, 1);
+	TestEqual(TEXT("Duplicate completion does not restart combat"), CombatStartCount, 1);
 	const uint32 NextGeneration = World->GetSubsystem<UOutlierArenaSubsystem>()->ReserveGameplayGeneration();
 	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReloadStarted.Broadcast(NextGeneration);
 	Door->OnDoorMotionFinished.Broadcast(Door, true);
 	TestEqual(TEXT("Old door completion does not advance a new generation"), OpenedCount, 1);
+	TestEqual(TEXT("Old door completion does not restart combat"), CombatStartCount, 1);
 
 	CleanupWorld();
 	return true;

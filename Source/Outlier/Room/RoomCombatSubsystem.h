@@ -71,6 +71,7 @@ struct OUTLIER_API FRoomCombatTriggerContext
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(FOnRoomCombatEvent,
 	FGameplayTag, RoomTag, ERoomCombatEvent, Event, int32, CombatPhaseIndex, int32, GameplayGeneration);
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnRoomStartReadinessChanged, FGameplayTag /*RoomTag*/);
 
 struct FRoomCombatPreparationContext // Room 재등록/Arena 리로드 뒤 이전 합류 완료 요청을 버리는 토큰.
 {
@@ -177,6 +178,9 @@ public:
 	// 델리게이트는 서버 로컬 알림이다. 늦게 로드된 오브젝트는 구독 후 IsExitBlocked도 조회한다.
 	UPROPERTY(BlueprintAssignable, Category = "Room Combat")
 	FOnRoomCombatEvent OnCombatEvent;
+	FOnRoomStartReadinessChanged OnRoomStartReadinessChanged;
+	// ExternalTrigger의 첫 Wave가 등록된 Room과 설정한 수의 활성 SpawnPoint를 확보했는지 확인한다.
+	bool HasReadyExternalTriggerRoster(const ARoomVolume* RoomVolume, FGameplayTag RoomTag) const;
 
 	bool RegisterRoom(
 		ARoomVolume* RoomVolume,

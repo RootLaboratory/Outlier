@@ -72,6 +72,10 @@ struct OUTLIER_API FRoomCombatPhaseDefinition
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Combat")
 	ERoomCombatPhaseStartPolicy StartPolicy = ERoomCombatPhaseStartPolicy::InitialDetection;
 
+	// ExternalTrigger 시작 전에 확보할 첫 Wave의 SpawnPoint 수. 0은 기존 Pending 방식이며 Level 1 전용 문은 양수를 요구한다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Combat", meta = (ClampMin = "0", UIMin = "0"))
+	int32 ExpectedStartSpawnPointCount = 0;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Combat", meta = (TitleProperty = "SpawnMode"))
 	TArray<FRoomCombatWaveDefinition> Waves;
 };

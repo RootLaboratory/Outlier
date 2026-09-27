@@ -72,6 +72,7 @@ bool FRoomCombatRoomDefinition::CanStartTriggeredSequence(int32 PhaseIndex) cons
 {
 	const FRoomCombatPhaseDefinition* StartingPhase = FindPhase(PhaseIndex);
 	if (!HasValidPhaseOrder() || !StartingPhase
+		|| StartingPhase->ExpectedStartSpawnPointCount < 0
 		|| (StartingPhase->StartPolicy != ERoomCombatPhaseStartPolicy::HackTrigger
 			&& StartingPhase->StartPolicy != ERoomCombatPhaseStartPolicy::ExternalTrigger))
 	{
@@ -205,6 +206,14 @@ EDataValidationResult URoomCombatDefinition::IsDataValid(FDataValidationContext&
 		for (int32 PhaseIndex = 0; PhaseIndex < RoomDefinition.CombatPhases.Num(); ++PhaseIndex)
 		{
 			const FRoomCombatPhaseDefinition& Phase = RoomDefinition.CombatPhases[PhaseIndex];
+			if (Phase.ExpectedStartSpawnPointCount < 0
+				|| (Phase.ExpectedStartSpawnPointCount > 0
+					&& Phase.StartPolicy != ERoomCombatPhaseStartPolicy::ExternalTrigger))
+			{
+				AddValidationError(FString::Printf(
+					TEXT("RoomDefinitions[%d].CombatPhases[%d] may set ExpectedStartSpawnPointCount only for ExternalTrigger."),
+					RoomIndex, PhaseIndex));
+			}
 			if (Phase.Waves.IsEmpty())
 			{
 				AddValidationError(FString::Printf(

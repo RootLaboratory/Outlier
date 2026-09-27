@@ -98,6 +98,16 @@ bool FRoomCombatDefinitionValidationTest::RunTest(const FString& Parameters)
 	{
 		URoomCombatDefinition* Definition = MakeValidHackTriggerDefinition();
 		FRoomCombatRoomDefinition& Room = Definition->RoomDefinitions[0];
+		Room.CombatPhases[0].ExpectedStartSpawnPointCount = -1;
+		FDataValidationContext Context;
+		TestEqual(TEXT("A negative start SpawnPoint count is invalid"),
+			ValidateDefinition(Definition, Context), EDataValidationResult::Invalid);
+		TestFalse(TEXT("A negative start SpawnPoint count cannot start"),
+			Room.CanStartTriggeredSequence(0));
+	}
+	{
+		URoomCombatDefinition* Definition = MakeValidHackTriggerDefinition();
+		FRoomCombatRoomDefinition& Room = Definition->RoomDefinitions[0];
 		FRoomCombatPhaseDefinition Automatic = Room.CombatPhases[0];
 		Automatic.StartPolicy = ERoomCombatPhaseStartPolicy::Automatic;
 		Room.CombatPhases.Add(Automatic);
