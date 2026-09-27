@@ -10,6 +10,8 @@
 class UBoxComponent;
 class UWorldPartitionStreamingSourceComponent;
 
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnRoomActorOverlapChanged, AActor*, bool /*bEntered*/);
+
 UCLASS()
 class OUTLIER_API ARoomVolume : public AActor
 {
@@ -22,6 +24,7 @@ public:
 	bool ContainsWorldLocation(const FVector& Location) const;
 	void SetCombatStreamingSourceEnabled(bool bEnabled);
 	bool IsCombatStreamingSourceEnabled() const;
+	FOnRoomActorOverlapChanged OnRoomActorOverlapChanged;
 
 protected:
 	virtual void BeginPlay() override;

@@ -161,6 +161,8 @@ void ARoomVolume::HandleBeginOverlap(
 	}
 
 	RoomTagComp->EnterRoom(this);
+	// 태그를 먼저 갱신해야 구독자가 이 이벤트에서 실제 Room 입장을 판정할 수 있다.
+	OnRoomActorOverlapChanged.Broadcast(OtherActor, true);
 }
 
 void ARoomVolume::HandleEndOverlap(
@@ -182,4 +184,6 @@ void ARoomVolume::HandleEndOverlap(
 
 	// 위치 태그만 갱신한다. Room 이탈은 전투 완료가 아니므로 전투용 Streaming Source는 유지한다.
 	RoomTagComp->LeaveRoom(this);
+	// 퇴장도 통지해 한 명이 나간 직후 다른 한 명이 들어온 상황을 다시 판정한다.
+	OnRoomActorOverlapChanged.Broadcast(OtherActor, false);
 }

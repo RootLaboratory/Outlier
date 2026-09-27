@@ -38,7 +38,8 @@ void AInteractableDoor::BeginPlay()
 		DoorTimeline.SetTimelineFinishedFunc(FinishedDelegate);
 	}
 
-	ApplyDoorState(bIsOpen);
+	// 초기 열림은 배치 상태다. 여기서 Timeline을 돌리면 Gate가 이를 새 개방 완료로 오인할 수 있다.
+	SnapDoorState(bInitiallyOpen);
 
 	if (HasAuthority())
 	{
@@ -54,7 +55,7 @@ void AInteractableDoor::BeginPlay()
 				&& SaveSubsystem->HasWorldProgress(EOutlierWorldProgressType::OpenedDoor, DoorId))
 			{
 				// 복원은 새 문 조작이 아니므로 진행 기록과 서버의 이동 사운드를 다시 발생시키지 않는다.
-				SetDoorOpenInternal(true, false, false);
+				SnapDoorState(true);
 			}
 		}
 	}
@@ -99,26 +100,56 @@ void AInteractableDoor::OnDoorTimelineUpdate(float Alpha)
 void AInteractableDoor::OnDoorTimelineFinished()
 {
 	SetActorTickEnabled(false);
+	if (HasAuthority() && bMotionCompletionPending)
+	{
+		// 서버의 실제 문 이동만 알린다. 초기 배치/저장 복원에서는 Pending을 세우지 않는다.
+		bMotionCompletionPending = false;
+		OnDoorMotionFinished.Broadcast(this, bIsOpen);
+	}
+}
+
+bool AInteractableDoor::HasMovementCurve() const
+{
+	if (!DoorCurve)
+	{
+		return false;
+	}
+	float StartTime = 0.0f;
+	float EndTime = 0.0f;
+	DoorCurve->GetTimeRange(StartTime, EndTime);
+	return EndTime > StartTime;
+}
+
+void AInteractableDoor::SnapDoorState(bool bOpen)
+{
+	bIsOpen = bOpen;
+	bMotionCompletionPending = false;
+	DoorTimeline.Stop();
+	if (DoorCurve)
+	{
+		DoorTimeline.SetPlaybackPosition(bOpen ? DoorTimeline.GetTimelineLength() : 0.0f, false, false);
+	}
+	OnDoorTimelineUpdate(bOpen ? 1.0f : 0.0f);
+	SetActorTickEnabled(false);
+	if (HasAuthority())
+	{
+		ForceNetUpdate();
+	}
 }
 
 void AInteractableDoor::SetDoorOpen(bool bOpen)
 {
-	SetDoorOpenInternal(bOpen, true, true);
-}
-
-void AInteractableDoor::SetDoorOpenInternal(bool bOpen, bool bRecordProgress, bool bPlayAudio)
-{
-	if (bIsOpen == bOpen)
+	if (!HasAuthority() || bIsOpen == bOpen)
 	{
 		return;
 	}
 
-	//UE_LOG(LogTemp, Error, TEXT("Opened"));
 	bIsOpen = bOpen;
+	bMotionCompletionPending = HasMovementCurve();
 	Multicast_SetDoorState(bIsOpen);
 	ForceNetUpdate();
 
-	if (HasAuthority() && bRecordProgress && bProgressIdRegistered)
+	if (bProgressIdRegistered)
 	{
 		if (UOutlierSaveSubSystem* SaveSubsystem = GetGameInstance()
 			? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>()
@@ -131,7 +162,7 @@ void AInteractableDoor::SetDoorOpenInternal(bool bOpen, bool bRecordProgress, bo
 		}
 	}
 
-	if (DoorCurve && bPlayAudio)
+	if (DoorCurve)
 	{
 		PlayDoorMovementAudio(bIsOpen);
 	}
