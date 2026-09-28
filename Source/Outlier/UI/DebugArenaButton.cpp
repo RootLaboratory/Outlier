@@ -13,12 +13,13 @@ void UDebugArenaButton::NativeConstruct()
 {
 	Super::NativeConstruct();
 
-	if (DebugReloadButton)
+	/* if (DebugReloadButton)
 	{
 		DebugReloadButton->OnClicked.AddUniqueDynamic(this, &UDebugArenaButton::OnClicked_DebugReload);
-	}
+	} */
 }
 
+/*
 void UDebugArenaButton::OnClicked_DebugReload()
 {
 	APlayerController* PC = GetOwningPlayer();
@@ -40,3 +41,4 @@ void UDebugArenaButton::OnClicked_DebugReload()
 		UE_LOG(LogTemp, Error, TEXT("[DebugReload] OwningPC is not AFirstPersonPlayerController: %s"), *GetNameSafe(PC));
 	}
 }
+*/

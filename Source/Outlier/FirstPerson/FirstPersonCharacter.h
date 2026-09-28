@@ -219,7 +219,7 @@ private:
 
 	bool IsInteractTargetByTrace(AActor* TargetActor) const;
 
-	void ArenaReload();
+	// void ArenaReload();
 	ULocalPlayerUILayerSubsystem* GetUILayerSubsystem() const;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Interaction")

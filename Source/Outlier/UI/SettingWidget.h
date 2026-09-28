@@ -64,6 +64,9 @@ protected:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Setting|Navigation")
 	TObjectPtr<UWidgetSwitcher> SettingSwitcher;
 
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Setting|Navigation")
+	TObjectPtr<UButton> ExitButton;
+
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Setting|Graphics")
 	TObjectPtr<UTextBlock> ResolutionText;
 
@@ -172,6 +175,9 @@ private:
 
 	UFUNCTION()
 	void HandleInputButtonClicked();
+
+	UFUNCTION()
+	void HandleExitButtonClicked();
 
 	UFUNCTION()
 	void HandleGraphicLeftButtonClicked();

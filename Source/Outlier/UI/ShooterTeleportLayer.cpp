@@ -23,14 +23,14 @@ void UShooterTeleportLayer::NativeConstruct()
 	ApplySpriteTransforms();
 	ApplySpriteTextures();
 
-	UE_LOG(
+	/*UE_LOG(
 		LogTemp,
 		Warning,
 		TEXT("[TeleportLayer] Construct Layer=%s Canvas=%s Children=%d CachedAnimations=%d"),
 		*GetNameSafe(this),
 		*GetNameSafe(AnimationCanvas),
 		AnimationCanvas ? AnimationCanvas->GetChildrenCount() : 0,
-		IndexedSpriteAnimations.Num());
+		IndexedSpriteAnimations.Num());*/
 }
 
 void UShooterTeleportLayer::CacheBaseSpriteTransforms()
@@ -73,7 +73,7 @@ void UShooterTeleportLayer::IndexSpriteAnimations()
 	IndexedSpriteAnimations.Add(TeleportSpriteAnimation9);
 	IndexedSpriteAnimations.Add(TeleportSpriteAnimation10);
 
-	for (int32 Index = 0; Index < IndexedSpriteAnimations.Num(); ++Index)
+	/*for (int32 Index = 0; Index < IndexedSpriteAnimations.Num(); ++Index)
 	{
 		if (IndexedSpriteAnimations[Index])
 		{
@@ -84,7 +84,7 @@ void UShooterTeleportLayer::IndexSpriteAnimations()
 				Index + 1,
 				*GetNameSafe(IndexedSpriteAnimations[Index]));
 		}
-	}
+	}*/
 }
 
 void UShooterTeleportLayer::ApplySpriteTransforms()
@@ -140,13 +140,13 @@ void UShooterTeleportLayer::ConfigureSpriteAnimation(
 
 void UShooterTeleportLayer::StartTeleportAnimation()
 {
-	UE_LOG(
+	/*UE_LOG(
 		LogTemp,
 		Warning,
 		TEXT("[TeleportLayer] Start Layer=%s LayerMultiplier=%.3f CachedAnimations=%d"),
 		*GetNameSafe(this),
 		LayerTimeMultiplier,
-		CachedSpriteAnimations.Num());
+		CachedSpriteAnimations.Num());*/
 
 	StartSpriteAnimation(TeleportSpriteAnimation1, SpriteAnimation1.PlaybackSpeedMultiplier);
 	StartSpriteAnimation(TeleportSpriteAnimation2, SpriteAnimation2.PlaybackSpeedMultiplier);
@@ -181,12 +181,12 @@ void UShooterTeleportLayer::CacheSpriteAnimations(UWidget* Widget)
 	if (UTeleportSpriteAnimation* SpriteAnimation = Cast<UTeleportSpriteAnimation>(Widget))
 	{
 		CachedSpriteAnimations.Add(SpriteAnimation);
-		UE_LOG(
+		/*UE_LOG(
 			LogTemp,
 			Warning,
 			TEXT("[TeleportLayer] Cached SpriteAnimation Layer=%s Widget=%s"),
 			*GetNameSafe(this),
-			*GetNameSafe(SpriteAnimation));
+			*GetNameSafe(SpriteAnimation));*/
 		return;
 	}
 

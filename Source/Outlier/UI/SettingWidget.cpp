@@ -47,6 +47,13 @@ void USettingWidget::NativeOnInitialized()
 			&USettingWidget::HandleInputButtonClicked);
 	}
 
+	if (ExitButton)
+	{
+		ExitButton->OnClicked.AddUniqueDynamic(
+			this,
+			&USettingWidget::HandleExitButtonClicked);
+	}
+
 	if (GraphicLeftButton)
 	{
 		GraphicLeftButton->OnClicked.AddUniqueDynamic(
@@ -170,6 +177,13 @@ bool USettingWidget::HandleUILayerEscape_Implementation()
 
 bool USettingWidget::HandleUILayerConfirmed_Implementation()
 {
+	if (KeyboardFocusTargets.IsValidIndex(CurrentFocusedIndex)
+		&& KeyboardFocusTargets[CurrentFocusedIndex] == ExitButton)
+	{
+		PopSelfFromLayer();
+		return true;
+	}
+
 	if (CurrentSettingPageIndex == GraphicPageIndex)
 	{
 		return ApplyPendingResolutionPreset();
@@ -266,10 +280,8 @@ void USettingWidget::RebuildKeyboardFocusTargets()
 		{
 			KeyboardFocusTargets.Add(GraphicLeftButton);
 		}
-		return;
 	}
-
-	if (CurrentSettingPageIndex == SoundPageIndex)
+	else if (CurrentSettingPageIndex == SoundPageIndex)
 	{
 		for (USettingSliderRowWidget* Row : SoundVolumeRows)
 		{
@@ -279,10 +291,8 @@ void USettingWidget::RebuildKeyboardFocusTargets()
 				KeyboardFocusTargets.Add(Row);
 			}
 		}
-		return;
 	}
-
-	if (CurrentSettingPageIndex == InputPageIndex)
+	else if (CurrentSettingPageIndex == InputPageIndex)
 	{
 		if (MouseSensitivityWidget)
 		{
@@ -297,6 +307,11 @@ void USettingWidget::RebuildKeyboardFocusTargets()
 				KeyboardFocusTargets.Add(Row);
 			}
 		}
+	}
+
+	if (ExitButton)
+	{
+		KeyboardFocusTargets.Add(ExitButton);
 	}
 }
 
@@ -351,6 +366,10 @@ void USettingWidget::MoveKeyboardFocus(int32 Direction)
 void USettingWidget::AdjustFocusedSetting(float Delta)
 {
 	if (!KeyboardFocusTargets.IsValidIndex(CurrentFocusedIndex))
+	{
+		return;
+	}
+	if (KeyboardFocusTargets[CurrentFocusedIndex] == ExitButton)
 	{
 		return;
 	}
@@ -578,6 +597,11 @@ void USettingWidget::HandleSoundButtonClicked()
 void USettingWidget::HandleInputButtonClicked()
 {
 	SetActiveSettingPage(InputPageIndex);
+}
+
+void USettingWidget::HandleExitButtonClicked()
+{
+	PopSelfFromLayer();
 }
 
 void USettingWidget::HandleGraphicLeftButtonClicked()

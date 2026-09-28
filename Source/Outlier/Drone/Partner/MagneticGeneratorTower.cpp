@@ -1,5 +1,6 @@
 #include "Drone/Partner/MagneticGeneratorTower.h"
 
+#include "Audio/OutlierAudioSubsystem.h"
 #include "Components/SphereComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Drone/Partner/HackGameplayTags.h"
@@ -8,6 +9,7 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Outlier.h"
+#include "GameplayTags/OutlierGameplayTags.h"
 #include "PostProcess/MaterialPostProcessSubsystem.h"
 #include "Team/OutlierTeamIds.h"
 
@@ -117,7 +119,10 @@ void AMagneticGeneratorTower::HandleHackEffect(FGameplayTag EffectTag, const FHa
 
 	if (Context.Result == EHackResult::Success && EffectTag == HackGameplayTags::Effect::Magnetic())
 	{
-		StartAttraction();
+		if (RemainingDuration <= 0.0f)
+		{
+			StartAttraction();
+		}
 	}
 }
 
@@ -137,13 +142,18 @@ void AMagneticGeneratorTower::StartAttraction()
 		return;
 	}
 
-	// 활성 중 재해킹되면 끌던 적은 그대로 두고 Duration 만 새로 시작한다. 겹친 적은 아래에서 다시 모은다.
 	RemainingDuration = Duration;
 	IntensityElapsed = 0.0f;
 	OverlappingEnemies.Reset();
 	PreviousEnemyLocations.Reset();
 	EnemyPullVelocities.Reset();
 	UpdateSphereCollisionTransform();
+	if (HasAuthority() && HackableComponent)
+	{
+		// 후보 검색과 서버의 해킹 시작 검증이 같은 복제 태그를 사용한다.
+		HackableComponent->HackTags.AddTag(OutlierGameplayTags::State::MagneticActive());
+		ForceNetUpdate();
+	}
 
 	/*UE_LOG(
 		LogOutlier,
@@ -171,6 +181,14 @@ void AMagneticGeneratorTower::StartAttraction()
 			}
 		}
 	}
+	if (HasAuthority())
+	{
+		const FGameplayTag AudioType = FGameplayTag::RequestGameplayTag(TEXT("Audio.Type.Interactable"));
+		UOutlierAudioSubsystem::PlayTaggedAtLocationFromServer(this, AudioType,
+			FGameplayTag::RequestGameplayTag(TEXT("Audio.Context.Object.Magnet.Activate")));
+		UOutlierAudioSubsystem::PlayTaggedAtLocationFromServer(this, AudioType,
+			FGameplayTag::RequestGameplayTag(TEXT("Audio.Context.Object.MagnetTower.Active")));
+	}
 
 	SetActorTickEnabled(true);
 
@@ -178,7 +196,7 @@ void AMagneticGeneratorTower::StartAttraction()
 	StartLensPostProcess(Origin, SphereRadius, RemainingDuration);
 
 	UpdateVisualization();
-	// 활성화 중 재해킹되어도 이전 값이 한 프레임 비치지 않도록 0 에서 다시 시작시킨다.
+	// 새 활성화 첫 프레임부터 강도가 0에서 시작하도록 적용한다.
 	UpdateRootMeshIntensity(0.0f);
 }
 
@@ -192,6 +210,17 @@ void AMagneticGeneratorTower::StopAttraction()
 
 	if (HasAuthority())
 	{
+		if (bWasActive)
+		{
+			if (HackableComponent)
+			{
+				HackableComponent->HackTags.RemoveTag(OutlierGameplayTags::State::MagneticActive());
+				ForceNetUpdate();
+			}
+			UOutlierAudioSubsystem::StopTaggedAtLocationFromServer(this,
+				FGameplayTag::RequestGameplayTag(TEXT("Audio.Type.Interactable")),
+				FGameplayTag::RequestGameplayTag(TEXT("Audio.Context.Object.MagnetTower.Active")));
+		}
 		for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : OverlappingEnemies)
 		{
 			if (AEnemyBase* Enemy = EnemyPtr.Get())
