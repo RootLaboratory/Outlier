@@ -716,6 +716,12 @@ protected:
 	void SetPoolState(EEnemyPoolState NewState);
 	void DestroyPoolAIController();
 	void ReturnToOwningPool();
+#if !UE_BUILD_SHIPPING && WITH_GAMEPLAY_DEBUGGER
+	void LogReinforcementStateTreeSnapshot();
+	FTimerHandle ReinforcementStateTreeDiagnosticTimerHandle;
+	FString LastReinforcementStateTreeSnapshot;
+	float LastReinforcementStateTreeLogTime = 0.0f;
+#endif
 
 	TWeakObjectPtr<UEnemyPoolSubsystem> OwningPoolSubsystem;
 	struct FSourceMeshVisibility

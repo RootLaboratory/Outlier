@@ -85,7 +85,7 @@ namespace
 			if (!LoadedClass || !LoadedClass->IsChildOf(AEnemyBase::StaticClass()) || Entry.Count < 1)
 			{
 				UE_LOG(LogTemp, Error,
-					TEXT("[RoomCombat] Wave spawn rejected by invalid roster. Room=%s Phase=%d Wave=%d Class=%s Count=%d"),
+					TEXT("[Reinforcement] Enemy=None Stage=WaveRejected Reason=InvalidRoster Room=%s Phase=%d Wave=%d Class=%s Count=%d"),
 					*RoomTag.ToString(), PhaseIndex, WaveIndex, *GetNameSafe(LoadedClass), Entry.Count);
 				return false;
 			}
@@ -349,7 +349,18 @@ bool URoomCombatSubsystem::StartTriggeredSequence(
 		}
 		if (UEnemyRoomSubsystem* EnemyRooms = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
 		{
-			EnemyRooms->NotifyRoomCombat(CurrentContext.RoomTag, TargetLocation, nullptr);
+			const bool bRoomSynced = EnemyRooms->NotifyRoomCombat(
+				CurrentContext.RoomTag, TargetLocation, nullptr);
+			UE_LOG(LogTemp, Display,
+				TEXT("[Reinforcement] Enemy=None Stage=RoomCombatSync Room=%s Generation=%d Ready=%d PlayerInRoom=%d Target=%s"),
+				*CurrentContext.RoomTag.ToString(), CurrentContext.GameplayGeneration,
+				bRoomSynced, bFoundPlayer, *TargetLocation.ToCompactString());
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("[Reinforcement] Enemy=None Stage=RoomCombatSync Room=%s Generation=%d Ready=0 Reason=EnemyRoomSubsystemMissing"),
+				*CurrentContext.RoomTag.ToString(), CurrentContext.GameplayGeneration);
 		}
 	}
 	ResumeDeferredSpawning(CurrentContext.RoomTag, CurrentContext.RoomRegistrationId);
@@ -1917,7 +1928,7 @@ void URoomCombatSubsystem::QueueWaveSpawnRequests(
 	}
 
 	UE_LOG(LogTemp, Display,
-		TEXT("[RoomCombat] Reinforcement queued. Room=%s Phase=%d Wave=%d Generation=%d Requests=%d SpawnPoints=%d RequiredSpawnPointTag=%s"),
+		TEXT("[Reinforcement] Enemy=None Stage=WaveQueued Room=%s Phase=%d Wave=%d Generation=%d Requests=%d SpawnPoints=%d RequiredSpawnPointTag=%s"),
 		*RoomTag.ToString(),
 		Runtime.CurrentCombatPhaseIndex,
 		Runtime.CurrentWaveIndex,
@@ -2048,11 +2059,11 @@ void URoomCombatSubsystem::TrySpawnPendingRequests(FGameplayTag RoomTag)
 		}
 
 		UE_LOG(LogTemp, Display,
-			TEXT("[RoomCombat] Reinforcement spawned. Room=%s Phase=%d Wave=%d Enemy=%s SpawnPoint=%s Location=%s Remaining=%d"),
+			TEXT("[Reinforcement] Enemy=%s Stage=SpawnRegistered Generation=%d Lease=%d Room=%s Phase=%d Wave=%d SpawnPoint=%s Location=%s Remaining=%d"),
+			*GetNameSafe(Enemy), Request.GameplayGeneration, Enemy->GetPoolLeaseSerial(),
 			*RoomTag.ToString(),
 			Request.CombatPhaseIndex,
 			Request.WaveIndex,
-			*GetNameSafe(Enemy),
 			*GetNameSafe(SpawnPoint),
 			*SpawnTransform.GetLocation().ToCompactString(),
 			GetPendingSpawnCount(RoomTag) - 1);
@@ -2075,7 +2086,7 @@ void URoomCombatSubsystem::TrySpawnPendingRequests(FGameplayTag RoomTag)
 	{
 		Runtime->LastSpawnRetryLogSeconds = CurrentTimeSeconds;
 		UE_LOG(LogTemp, Warning,
-			TEXT("[RoomCombat] Wave spawn remains pending. Room=%s Phase=%d Wave=%d Pending=%d Attempts=%d MissingSpawnPoint=%d BlockedLocation=%d PoolLeaseFailure=%d RegistrationFailure=%d"),
+			TEXT("[Reinforcement] Enemy=None Stage=WavePending Room=%s Phase=%d Wave=%d Pending=%d Attempts=%d MissingSpawnPoint=%d BlockedLocation=%d PoolLeaseFailure=%d RegistrationFailure=%d"),
 			*RoomTag.ToString(),
 			Runtime->CurrentCombatPhaseIndex,
 			Runtime->CurrentWaveIndex,
@@ -2193,7 +2204,7 @@ void URoomCombatSubsystem::FinalizeCurrentWaveSpawn(
 	CompactAliveEnemies(Runtime);
 	Runtime.WaveBaselineEnemyCount = Runtime.TrackedAliveEnemies.Num();
 	UE_LOG(LogTemp, Display,
-		TEXT("[RoomCombat] Wave spawn completed. Room=%s Phase=%d Wave=%d Baseline=%d"),
+		TEXT("[Reinforcement] Enemy=None Stage=WaveCompleted Room=%s Phase=%d Wave=%d Baseline=%d"),
 		*RoomTag.ToString(),
 		Runtime.CurrentCombatPhaseIndex,
 		Runtime.CurrentWaveIndex,
@@ -2259,7 +2270,7 @@ void URoomCombatSubsystem::EvaluateWaveProgress(
 
 	const int32 NextWaveIndex = Runtime.CurrentWaveIndex + 1;
 	UE_LOG(LogTemp, Display,
-		TEXT("[RoomCombat] Reinforcement triggered. Room=%s Phase=%d CurrentWave=%d NextWave=%d Alive=%d Baseline=%d Ratio=%.3f Required=%.3f"),
+		TEXT("[Reinforcement] Enemy=None Stage=WaveTriggered Room=%s Phase=%d CurrentWave=%d NextWave=%d Alive=%d Baseline=%d Ratio=%.3f Required=%.3f"),
 		*RoomTag.ToString(),
 		Runtime.CurrentCombatPhaseIndex,
 		Runtime.CurrentWaveIndex,
@@ -2271,7 +2282,7 @@ void URoomCombatSubsystem::EvaluateWaveProgress(
 	if (!StartWaveSpawning(RoomTag, Runtime.CurrentCombatPhaseIndex, NextWaveIndex))
 	{
 		UE_LOG(LogTemp, Error,
-			TEXT("[RoomCombat] Failed to start eligible next Wave. Room=%s Phase=%d Wave=%d Alive=%d Baseline=%d Ratio=%.3f Required=%.3f"),
+			TEXT("[Reinforcement] Enemy=None Stage=WaveStartFailed Room=%s Phase=%d Wave=%d Alive=%d Baseline=%d Ratio=%.3f Required=%.3f"),
 			*RoomTag.ToString(),
 			Runtime.CurrentCombatPhaseIndex,
 			NextWaveIndex,

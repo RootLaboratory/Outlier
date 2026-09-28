@@ -502,6 +502,17 @@ EStateTreeRunStatus FEnemyAlertHoldTask::Tick(
 	{
 		return EStateTreeRunStatus::Running;
 	}
+	// 증원은 직접 감지하지 못해도 같은 방의 타깃 공유를 받으면 즉시 Battle로 합류한다.
+	if (Enemy->IsPoolManaged() && Enemy->HasSharedTargetContact())
+	{
+		const bool bCommitted = Enemy->CommitAlertToCombat();
+		UE_LOG(LogTemp, Display,
+			TEXT("[Reinforcement] Enemy=%s Stage=AlertSharedTargetCommit Generation=%d Lease=%d Committed=%d State=%s"),
+			*GetNameSafe(Enemy), Enemy->GetPoolGameplayGeneration(),
+			Enemy->GetPoolLeaseSerial(), bCommitted,
+			*UEnum::GetValueAsString(Enemy->GetCombatState()));
+		return EStateTreeRunStatus::Running;
+	}
 
 	const bool bPlayerVisible = Enemy->IsPlayerCurrentlyVisible();
 	AActor* VisibleTarget = nullptr;

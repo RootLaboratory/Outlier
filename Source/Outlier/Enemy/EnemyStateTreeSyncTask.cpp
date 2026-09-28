@@ -62,7 +62,6 @@ void FEnemyStateTreeSyncTask::SyncFromEnemy(FInstanceDataType& InstanceData) con
 			InstanceData.bPossessedAttackQueued ? TEXT("true") : TEXT("false"),
 			InstanceData.bHasPossessedAttackRequest ? TEXT("true") : TEXT("false"));
 	}
-	InstanceData.bPlayerCurrentlyVisible = InstanceData.Enemy->IsPlayerCurrentlyVisible();
 	InstanceData.bHasSharedTargetContact = InstanceData.Enemy->HasSharedTargetContact();
 	InstanceData.SharedTargetLocation = InstanceData.Enemy->GetSharedTargetLocation();
 	InstanceData.AIController = Cast<AAIController>(InstanceData.Enemy->GetController());
@@ -70,6 +69,10 @@ void FEnemyStateTreeSyncTask::SyncFromEnemy(FInstanceDataType& InstanceData) con
 	InstanceData.TargetActor = EnemyAIController
 		? EnemyAIController->GetPreferredVisibleTarget()
 		: nullptr;
+	// 감지 플래그가 표적 Actor보다 먼저 갱신될 수 있다. 이때 DirectCombat으로
+	// 진입하면 사격형의 자식 상태를 고르지 못하므로 공유 추적/수색을 유지한다.
+	InstanceData.bPlayerCurrentlyVisible = InstanceData.Enemy->IsPlayerCurrentlyVisible()
+		&& IsValid(InstanceData.TargetActor);
 	InstanceData.LastKnownPlayerLocation = InstanceData.Enemy->GetLastKnownPlayerLocation();
 	InstanceData.PatternStartPlayerLocation = InstanceData.Enemy->GetPatternStartPlayerLocation();
 	InstanceData.EnemyType = InstanceData.Enemy->GetRuntimeStat().Type;

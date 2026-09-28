@@ -158,7 +158,14 @@ bool UEnemyRoomSubsystem::NotifyRoomCombat(FGameplayTag RoomTag, const FVector& 
 				continue;
 			}
 
-			Enemy->EnterCombatFromRoom(PlayerLocation, false);
+			if (Enemy->IsPoolManaged())
+			{
+				Enemy->EnterAlertFromPerception(PlayerLocation);
+			}
+			else
+			{
+				Enemy->EnterCombatFromRoom(PlayerLocation, false);
+			}
 		}
 	}
 
@@ -681,7 +688,9 @@ void UEnemyRoomSubsystem::BroadcastSharedTargetContact(
 	{
 		AEnemyBase* Enemy = EnemyPtr.Get();
 		if (!IsValid(Enemy)
-			|| Enemy->GetCombatState() != EEnemyCombatState::Combat
+			|| (Enemy->GetCombatState() != EEnemyCombatState::Combat
+				&& !(Enemy->IsPoolManaged()
+					&& Enemy->GetCombatState() == EEnemyCombatState::Alert))
 			|| !Enemy->CanUseRoomTargetSharing())
 		{
 			continue;
@@ -750,16 +759,39 @@ void UEnemyRoomSubsystem::SynchronizeEnemyWithRoomState(AEnemyBase* Enemy)
 	const FEnemyRoomTargetContactState* ContactState = TargetContactStates.Find(RoomTag);
 	if (!CombatRooms.Contains(RoomTag))
 	{
+		if (Enemy->IsPoolManaged())
+		{
+			UE_LOG(LogTemp, Display,
+				TEXT("[Reinforcement] Enemy=%s Stage=RoomSyncSkipped Generation=%d Lease=%d Room=%s Reason=RoomNotInCombat"),
+				*GetNameSafe(Enemy), Enemy->GetPoolGameplayGeneration(),
+				Enemy->GetPoolLeaseSerial(), *RoomTag.ToString());
+		}
 		return;
 	}
 
 	const FVector* LastKnownLocation = CombatRoomLastKnownLocations.Find(RoomTag);
 	if (!ContactState && !LastKnownLocation)
 	{
+		if (Enemy->IsPoolManaged())
+		{
+			UE_LOG(LogTemp, Display,
+				TEXT("[Reinforcement] Enemy=%s Stage=RoomSyncSkipped Generation=%d Lease=%d Room=%s Reason=NoTargetLocation"),
+				*GetNameSafe(Enemy), Enemy->GetPoolGameplayGeneration(),
+				Enemy->GetPoolLeaseSerial(), *RoomTag.ToString());
+		}
 		return;
 	}
-	// Pool 초기화로 NonCombat에서 시작한 증원을 먼저 전투에 합류시킨다.
-	// 시야가 끊겼다면 마지막 위치만 넘기고 공유 접촉 상태는 되살리지 않는다.
+	// 풀 증원은 방의 전투/공유 위치만으로 적을 알아채지 않는다. 활성화 후
+	// 자신의 Perception이 감지해야 NonBattle에서 Alert로 넘어간다.
+	if (Enemy->IsPoolManaged())
+	{
+		UE_LOG(LogTemp, Display,
+			TEXT("[Reinforcement] Enemy=%s Stage=RoomSyncDeferred Generation=%d Lease=%d Room=%s Reason=AwaitOwnPerception"),
+			*GetNameSafe(Enemy), Enemy->GetPoolGameplayGeneration(),
+			Enemy->GetPoolLeaseSerial(), *RoomTag.ToString());
+		return;
+	}
+
 	const FVector TargetLocation = ContactState
 		? ContactState->LastReportedLocation : *LastKnownLocation;
 	Enemy->EnterCombatFromRoom(TargetLocation, false, true);
@@ -767,12 +799,6 @@ void UEnemyRoomSubsystem::SynchronizeEnemyWithRoomState(AEnemyBase* Enemy)
 	{
 		Enemy->ApplySharedTargetContact(TargetLocation, true);
 	}
-	UE_LOG(LogTemp, Display,
-		TEXT("[EnemyRoom] Reinforcement joined combat. Enemy=%s Room=%s Shared=%d Location=%s"),
-		*GetNameSafe(Enemy),
-		*RoomTag.ToString(),
-		ContactState && ContactState->bSharedContactActive ? 1 : 0,
-		*TargetLocation.ToCompactString());
 }
 
 #if WITH_DEV_AUTOMATION_TESTS

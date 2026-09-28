@@ -360,7 +360,7 @@ bool AEnemyBase::BeginPoolLease(
 	ForceNetUpdate();
 
 	UE_LOG(LogTemp, Display,
-		TEXT("[EnemyPool] Lease Enemy=%s Generation=%d Lease=%d Room=%s Phase=%d Wave=%d"),
+		TEXT("[Reinforcement] Enemy=%s Stage=Lease Generation=%d Lease=%d Room=%s Phase=%d Wave=%d"),
 		*GetNameSafe(this),
 		PoolGameplayGeneration,
 		PoolLeaseSerial,
@@ -434,26 +434,35 @@ void AEnemyBase::CompletePoolSpawnPresentation(
 		|| !MatchesPoolLease(GameplayGeneration, LeaseSerial))
 	{
 		UE_LOG(LogTemp, Warning,
-			TEXT("[EnemyPool] Ignored spawn presentation callback Enemy=%s CurrentGeneration=%d CurrentLease=%d CallbackGeneration=%d CallbackLease=%d State=%s"),
+			TEXT("[Reinforcement] Enemy=%s Stage=PresentationRejected CurrentGeneration=%d CurrentLease=%d CallbackGeneration=%d CallbackLease=%d State=%s Authority=%d"),
 			*GetNameSafe(this),
 			PoolGameplayGeneration,
 			PoolLeaseSerial,
 			GameplayGeneration,
 			LeaseSerial,
-			*UEnum::GetValueAsString(PoolState));
+			*UEnum::GetValueAsString(PoolState), HasAuthority());
 		return;
+	}
+
+	// 방 소속만 등록한다. 풀 증원은 방의 공유 표적으로 선행 경계하지 않고
+	// 활성화 후 자기 Perception에서 감지할 때 NonBattle을 벗어난다.
+	// 같은 호출에서 곧바로 CombatActive로 전환하므로 연출 중 AI나 피해 판정은 활성화하지 않는다.
+	if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
+	{
+		RoomSubsystem->RegisterEnemy(this);
 	}
 
 	// 서버가 현재 대여의 연출 완료를 승인한 뒤에만 충돌/피해/StateTree를 활성화한다.
 	SetPoolState(EEnemyPoolState::CombatActive);
+	UE_LOG(LogTemp, Display,
+		TEXT("[Reinforcement] Enemy=%s Stage=PresentationCompleted Generation=%d Lease=%d Room=%s Controller=%s StateTree=%s"),
+		*GetNameSafe(this), PoolGameplayGeneration, PoolLeaseSerial,
+		*GetDefaultRoomTag().ToString(), *GetNameSafe(GetController()),
+		StateTreeComponent
+			? *UEnum::GetValueAsString(StateTreeComponent->GetStateTreeRunStatus()) : TEXT("Missing"));
 	if (UEnemyAdaptationSubsystem* AdaptationSubsystem = GetEnemyAdaptationSubsystem())
 	{
 		AdaptationSubsystem->RegisterEnemy(this);
-	}
-	if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
-	{
-		// StateTree가 시작된 뒤 등록해야 현재 방의 전투/공유 타겟 이벤트를 안전하게 이어받는다.
-		RoomSubsystem->RegisterEnemy(this);
 	}
 	ForceNetUpdate();
 }
@@ -718,9 +727,25 @@ void AEnemyBase::ApplyPoolState(EEnemyPoolState PreviousState)
 			{
 				StateTreeComponent->StartLogic();
 			}
+			UE_LOG(LogTemp, Display,
+				TEXT("[Reinforcement] Enemy=%s Stage=AIStartRequested Generation=%d Lease=%d Controller=%s CombatState=%s Shared=%d StateTree=%s"),
+				*GetNameSafe(this), PoolGameplayGeneration, PoolLeaseSerial,
+				*GetNameSafe(GetController()), *UEnum::GetValueAsString(CombatState),
+				bHasSharedTargetContact, StateTreeComponent
+					? *UEnum::GetValueAsString(StateTreeComponent->GetStateTreeRunStatus()) : TEXT("Missing"));
+#if !UE_BUILD_SHIPPING && WITH_GAMEPLAY_DEBUGGER
+			// 시작 직후와 전투 중의 활성 State를 비교해 Running 상태에서 멈춘 지점을 찾는다.
+			LastReinforcementStateTreeSnapshot.Reset();
+			LastReinforcementStateTreeLogTime = 0.0f;
+			GetWorldTimerManager().SetTimer(ReinforcementStateTreeDiagnosticTimerHandle,
+				this, &AEnemyBase::LogReinforcementStateTreeSnapshot, 2.0f, true, 0.25f);
+#endif
 		}
 		else
 		{
+#if !UE_BUILD_SHIPPING && WITH_GAMEPLAY_DEBUGGER
+			GetWorldTimerManager().ClearTimer(ReinforcementStateTreeDiagnosticTimerHandle);
+#endif
 			if (StateTreeComponent)
 			{
 				StateTreeComponent->StopLogic(TEXT("Enemy pool inactive"));
@@ -731,6 +756,46 @@ void AEnemyBase::ApplyPoolState(EEnemyPoolState PreviousState)
 
 	OnEnemyPoolStateChanged(PreviousState, PoolState);
 }
+
+#if !UE_BUILD_SHIPPING && WITH_GAMEPLAY_DEBUGGER
+void AEnemyBase::LogReinforcementStateTreeSnapshot()
+{
+	if (!HasAuthority() || !IsPoolManaged() || PoolState != EEnemyPoolState::CombatActive)
+	{
+		GetWorldTimerManager().ClearTimer(ReinforcementStateTreeDiagnosticTimerHandle);
+		return;
+	}
+
+	const AEnemyAIController* EnemyController = Cast<AEnemyAIController>(GetController());
+	const FString ActiveStates = StateTreeComponent
+		? FString::JoinBy(StateTreeComponent->GetActiveStateNames(), TEXT(" > "),
+			[](const FName& Name) { return Name.ToString(); })
+		: TEXT("MissingComponent");
+	const FString StateKey = FString::Printf(
+		TEXT("Run=%s States=%s Controller=%s Combat=%s Target=%s Visible=%d Shared=%d"),
+		StateTreeComponent
+			? *UEnum::GetValueAsString(StateTreeComponent->GetStateTreeRunStatus()) : TEXT("Missing"),
+		ActiveStates.IsEmpty() ? TEXT("None") : *ActiveStates,
+		*GetNameSafe(GetController()), *UEnum::GetValueAsString(CombatState),
+		*GetNameSafe(EnemyController ? EnemyController->GetPreferredVisibleTarget() : nullptr),
+		bPlayerCurrentlyVisible, bHasSharedTargetContact);
+	const float Now = GetWorld()->GetTimeSeconds();
+	if (StateKey == LastReinforcementStateTreeSnapshot
+		&& Now - LastReinforcementStateTreeLogTime < 10.0f)
+	{
+		return;
+	}
+	const FString Snapshot = FString::Printf(
+		TEXT("%s LKP=%s"), *StateKey,
+		*LastKnownPlayerLocation.ToCompactString());
+	UE_LOG(LogTemp, Display,
+		TEXT("[Reinforcement] Enemy=%s Stage=StateTreeSnapshot Generation=%d Lease=%d Phase=%d Wave=%d %s"),
+		*GetNameSafe(this), PoolGameplayGeneration, PoolLeaseSerial,
+		PoolCombatPhaseIndex, PoolWaveIndex, *Snapshot);
+	LastReinforcementStateTreeSnapshot = StateKey;
+	LastReinforcementStateTreeLogTime = Now;
+}
+#endif
 
 void AEnemyBase::DestroyPoolAIController()
 {
@@ -929,13 +994,25 @@ void AEnemyBase::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent
 
 void AEnemyBase::SendEnemyStateTreeEvent(FGameplayTag Tag)
 {
+	static const FName CombatEnteredEventName(TEXT("Enemy.Event.Combat.Entered"));
+	const bool bReinforcementCombatEvent = IsPoolManaged()
+		&& Tag.GetTagName() == CombatEnteredEventName;
 	const bool bPossessionDiagnosticEvent = Tag.ToString().StartsWith(
 		TEXT("Enemy.Event.Possession"));
 	const bool bAttackDiagnosticEvent = Tag.ToString().StartsWith(
 		TEXT("Enemy.Event.Attack"));
 	if (!HasAuthority() || !Tag.IsValid() || !StateTreeComponent
+		|| StateTreeComponent->GetStateTreeRunStatus() != EStateTreeRunStatus::Running
 		|| (IsPoolManaged() && PoolState != EEnemyPoolState::CombatActive))
 	{
+		if (bReinforcementCombatEvent)
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("[Reinforcement] Enemy=%s Stage=CombatEventRejected Generation=%d Lease=%d Authority=%d StateTree=%d PoolState=%s"),
+				*GetNameSafe(this), PoolGameplayGeneration, PoolLeaseSerial,
+				HasAuthority(), StateTreeComponent != nullptr,
+				*UEnum::GetValueAsString(PoolState));
+		}
 		if (IsPossessedAttackDiagnosticsEnabled()
 			&& (bAttackDiagnosticEvent || bPossessionDiagnosticEvent))
 		{
@@ -954,6 +1031,14 @@ void AEnemyBase::SendEnemyStateTreeEvent(FGameplayTag Tag)
 	}
 
 	StateTreeComponent->SendStateTreeEvent(Tag);
+	if (bReinforcementCombatEvent)
+	{
+		UE_LOG(LogTemp, Display,
+			TEXT("[Reinforcement] Enemy=%s Stage=CombatEventSent Generation=%d Lease=%d StateTree=%s Controller=%s"),
+			*GetNameSafe(this), PoolGameplayGeneration, PoolLeaseSerial,
+			*UEnum::GetValueAsString(StateTreeComponent->GetStateTreeRunStatus()),
+			*GetNameSafe(GetController()));
+	}
 
 	if (IsPossessedAttackDiagnosticsEnabled()
 		&& (bAttackDiagnosticEvent || bPossessionDiagnosticEvent))
@@ -1393,7 +1478,8 @@ void AEnemyBase::ApplySharedTargetContact(
 	bool bDeferStateTreeEvent)
 {
 	if (!HasAuthority()
-		|| CombatState != EEnemyCombatState::Combat
+		|| (CombatState != EEnemyCombatState::Combat
+			&& !(IsPoolManaged() && CombatState == EEnemyCombatState::Alert))
 		|| IsAIControlSuppressed()
 		|| !CanUseRoomTargetSharing())
 	{
@@ -1534,7 +1620,17 @@ bool AEnemyBase::CommitAlertToCombat()
 
 	// 이 함수는 Alert StateTree Task의 Tick 안에서 호출된다. 같은 Tick에 이벤트를 보내면
 	// Global Sync가 이전 Alert 값을 가진 채 Enter Condition을 검사하므로 다음 Tick으로 넘긴다.
-	EnterCombatFromRoom(LastKnownPlayerLocation, true, true);
+	bool bPropagateToRoom = true;
+	if (IsPoolManaged())
+	{
+		if (const UEnemyRoomSubsystem* RoomSubsystem =
+			GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
+		{
+			// 이미 전투 중인 방의 증원은 새 전투를 요청하지 않고 자신만 Combat으로 확정한다.
+			bPropagateToRoom = !RoomSubsystem->IsRoomInCombat(GetDefaultRoomTag());
+		}
+	}
+	EnterCombatFromRoom(LastKnownPlayerLocation, bPropagateToRoom, true);
 	return CombatState == EEnemyCombatState::Combat;
 }
 
@@ -1543,6 +1639,18 @@ bool AEnemyBase::CommitAlertToNonCombat()
 	if (!HasAuthority() || CombatState != EEnemyCombatState::Alert)
 	{
 		return false;
+	}
+	if (IsPoolManaged())
+	{
+		if (const UEnemyRoomSubsystem* RoomSubsystem =
+			GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
+		{
+			// 방 전투가 끝날 때까지 미발견 증원은 경계를 유지한다.
+			if (RoomSubsystem->IsRoomInCombat(GetDefaultRoomTag()))
+			{
+				return false;
+			}
+		}
 	}
 
 	CombatState = EEnemyCombatState::NonCombat;
