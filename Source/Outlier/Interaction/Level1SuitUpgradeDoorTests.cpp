@@ -187,9 +187,18 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	Shooter->SetActorLocation(FVector(550.0f, 0.0f, 0.0f));
 	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, true);
 	TestTrue(TEXT("Capsule overlap alone does not seal the room"), Door->IsDoorOpen());
+	Shooter->SetActorLocation(FVector(480.0f, 0.0f, 0.0f));
+	World->Tick(LEVELTICK_All, 0.11f);
+	TestTrue(TEXT("Capsule still crossing the Room boundary does not seal"), Door->IsDoorOpen());
 	Shooter->SetActorLocation(FVector(100.0f, 0.0f, 0.0f));
 	World->Tick(LEVELTICK_All, 0.11f);
 	TestFalse(TEXT("Entry recheck seals after the actor origin enters"), Door->IsDoorOpen());
+	Shooter->SetActorLocation(FVector(1000.0f, 0.0f, 0.0f));
+	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, false);
+	TestTrue(TEXT("Leaving during close cancels the entry and reopens"), Door->IsDoorOpen());
+	Shooter->SetActorLocation(FVector(100.0f, 0.0f, 0.0f));
+	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, true);
+	TestFalse(TEXT("Both players reentering starts a fresh close"), Door->IsDoorOpen());
 	Room->OnRoomActorOverlapChanged.Broadcast(Partner, true);
 
 	const uint32 Generation = World->GetSubsystem<UOutlierArenaSubsystem>()->GetGameplayGeneration();
@@ -207,6 +216,13 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Both UIs wait for close animation"), Door->IsDoorOpen());
 	TestEqual(TEXT("Opening has not completed"), OpenedCount, 0);
 	TestTrue(TEXT("Door ticks while closing"), Door->IsActorTickEnabled());
+	Partner->SetActorLocation(FVector(1000.0f, 0.0f, 0.0f));
+	static_cast<AActor*>(Door)->Tick(1.1f);
+	TestTrue(TEXT("Close completion rechecks location even without an overlap event"), Door->IsDoorOpen());
+	TestEqual(TEXT("Cancelled close does not broadcast opening"), OpenedCount, 0);
+	Partner->SetActorLocation(FVector(200.0f, 0.0f, 0.0f));
+	Room->OnRoomActorOverlapChanged.Broadcast(Partner, true);
+	TestFalse(TEXT("Reentry closes the door after a missed overlap"), Door->IsDoorOpen());
 	static_cast<AActor*>(Door)->Tick(1.1f);
 	TestTrue(TEXT("Door reopens after close animation"), Door->IsDoorOpen());
 	TestEqual(TEXT("Opening request is not completion"), OpenedCount, 0);

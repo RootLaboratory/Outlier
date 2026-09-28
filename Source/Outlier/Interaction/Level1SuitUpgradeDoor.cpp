@@ -1,5 +1,7 @@
 #include "Interaction/Level1SuitUpgradeDoor.h"
 
+#include "Components/BoxComponent.h"
+#include "Components/CapsuleComponent.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
@@ -179,6 +181,10 @@ void ALevel1SuitUpgradeDoor::OnRoomOverlapChanged(AActor* Actor, bool bEntered)
 			!bAwaitingGameplayReady, bEntrySealed);
 	}
 	// 입장/퇴장 모두 현재 페어 위치를 다시 판정한다. 태그만 남은 이전 위치는 인정하지 않는다.
+	if (AbortEntryIfPairOutside())
+	{
+		return;
+	}
 	EvaluateEntry();
 }
 
@@ -308,6 +314,23 @@ bool ALevel1SuitUpgradeDoor::IsInsideRoom(const AActor* Character) const
 	{
 		return false;
 	}
+	const ACharacter* Pawn = Cast<ACharacter>(Character);
+	const UCapsuleComponent* Capsule = Pawn ? Pawn->GetCapsuleComponent() : nullptr;
+	const UBoxComponent* Box = Cast<UBoxComponent>(TargetRoomVolume->GetRootComponent());
+	if (!Capsule || !Box)
+	{
+		return false;
+	}
+	// 중심점만 들어온 문턱 상태는 입장이 아니다. Box의 회전축에서 캡슐 반경까지 확인한다.
+	const FVector Center = Character->GetActorLocation();
+	const float Radius = Capsule->GetScaledCapsuleRadius();
+	if (!TargetRoomVolume->ContainsWorldLocation(Center + Box->GetForwardVector() * Radius)
+		|| !TargetRoomVolume->ContainsWorldLocation(Center - Box->GetForwardVector() * Radius)
+		|| !TargetRoomVolume->ContainsWorldLocation(Center + Box->GetRightVector() * Radius)
+		|| !TargetRoomVolume->ContainsWorldLocation(Center - Box->GetRightVector() * Radius))
+	{
+		return false;
+	}
 	const URoomTagComponent* Room = Cast<URoomTagComponent>(
 		Character->GetComponentByClass(URoomTagComponent::StaticClass()));
 	return Room && Room->GetCurrentRoomTag() == TargetRoomVolume->GetRoomTag();
@@ -367,6 +390,38 @@ void ALevel1SuitUpgradeDoor::EvaluateEntry()
 		*GetNameSafe(this), *TargetRoomVolume->GetRoomTag().ToString(), GameplayGeneration);
 }
 
+bool ALevel1SuitUpgradeDoor::AbortEntryIfPairOutside()
+{
+	if (!HasAuthority() || bAwaitingGameplayReady || !bEntrySealed || bReopenRequested
+		|| !ArenaSubsystem.IsValid() || GameplayGeneration != ArenaSubsystem->GetGameplayGeneration())
+	{
+		return false;
+	}
+
+	AOutlierPlayerState* Shooter = nullptr;
+	AOutlierPlayerState* Partner = nullptr;
+	if (FindPair(Shooter, Partner)
+		&& IsInsideRoom(Shooter->GetShooterCharacter())
+		&& IsInsideRoom(Partner->GetPartnerCharacter()))
+	{
+		return false;
+	}
+
+	// 닫는 중에 한 명이 빠졌다면 입장 확정을 되돌린다. Snap은 문 개방 완료/저장 이벤트를 만들지 않는다.
+	UE_LOG(LogTemp, Warning,
+		TEXT("[Level1Door] Entry cancelled. Door=%s Room=%s Generation=%u CloseFinished=%d ShooterInside=%d PartnerInside=%d"),
+		*GetNameSafe(this), IsValid(TargetRoomVolume)
+			? *TargetRoomVolume->GetRoomTag().ToString() : TEXT("None"),
+		GameplayGeneration, bCloseFinished,
+		Shooter && IsInsideRoom(Shooter->GetShooterCharacter()),
+		Partner && IsInsideRoom(Partner->GetPartnerCharacter()));
+	bEntrySealed = false;
+	bCloseFinished = false;
+	SnapDoorState(true);
+	EvaluateEntry();
+	return true;
+}
+
 void ALevel1SuitUpgradeDoor::LogEntryStatus(
 	const TCHAR* Reason, const AOutlierPlayerState* Shooter, const AOutlierPlayerState* Partner)
 {
@@ -400,6 +455,10 @@ void ALevel1SuitUpgradeDoor::EvaluateReopen()
 	// UI 완료 이벤트가 먼저 오면 대기하고, 닫힘 Timeline 완료 콜백에서 같은 조건을 다시 본다.
 	if (!HasAuthority() || !bEntrySealed || !bCloseFinished || bReopenRequested
 		|| !IsValid(TargetRoomVolume))
+	{
+		return;
+	}
+	if (AbortEntryIfPairOutside())
 	{
 		return;
 	}
@@ -473,6 +532,10 @@ void ALevel1SuitUpgradeDoor::HandleDoorMotionFinished(AInteractableDoor* Door, b
 	}
 	if (!bOpen && bEntrySealed && !bCloseFinished)
 	{
+		if (AbortEntryIfPairOutside())
+		{
+			return;
+		}
 		// 1단계: 닫힌 위치 도착. 지금까지 누적된 양쪽 UI 완료 여부를 확인한다.
 		bCloseFinished = true;
 		UE_LOG(LogTemp, Display,
