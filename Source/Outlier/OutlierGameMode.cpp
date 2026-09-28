@@ -3011,7 +3011,7 @@ bool AOutlierGameMode::ValidateReconnectPawn(
 			return false;
 		}
 		*Previous = Current;
-		// 로딩 ACK가 이전 위치를 대상으로 왔다면, 새 위치의 WP 셀을 로드한 뒤 다시 ACK받는다.
+		// 로딩 ACK가 이전 합류 위치를 대상으로 왔다면, 새 위치를 전달하고 다시 ACK받는다.
 		if (OldContext.RoomTag != Current.RoomTag
 			|| OldContext.RoomRegistrationId != Current.RoomRegistrationId
 			|| OldContext.GameplayGeneration != Current.GameplayGeneration

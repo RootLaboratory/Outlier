@@ -40,7 +40,7 @@ public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 
-	// Gameplay Data Layer만 다시 읽을 때는 ArenaReleased가 오지 않으므로
+	// Gameplay 서브레벨만 다시 읽을 때는 ArenaReleased가 오지 않으므로
 	// 체크포인트 리로드가 이전 Generation의 전투/탐색 상태를 명시적으로 비운다.
 	void ResetRuntimeCombatState();
 

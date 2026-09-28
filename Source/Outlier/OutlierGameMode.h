@@ -168,7 +168,7 @@ protected:
 
 	// ArenaWorker는 접속 URL(?Role=Shooter)로 역할이 이미 확정된 상태로 들어온다.
 	// 공용 PC로 받았다가 나중에 SwapPlayerControllers로 교체하면, 교체 창 동안 클라 월드에
-	// 소유 커넥션 없는 PC가 남아 WP 셀 가시화 RPC가 폐기된다(재전송 없음 → 스트리밍 영구 정지).
+	// 소유 커넥션 없는 PC가 남아 레벨 가시화 RPC가 폐기된다(재전송 없음 → 스트리밍 영구 정지).
 	// 처음부터 역할별 PC로 스폰해서 그 창 자체를 없앤다.
 	virtual APlayerController* SpawnPlayerController(
 		ENetRole InRemoteRole,

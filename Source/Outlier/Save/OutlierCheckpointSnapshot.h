@@ -154,7 +154,7 @@ struct OUTLIER_API FOutlierCheckpointSnapshot
 	UPROPERTY()
 	TSet<FName> DestroyedTurretIds;
 
-	// 내성 등록 Enemy는 Data Layer 리로드 뒤 다시 구성되므로 공유 Stack만 저장한다.
+	// 내성 등록 Enemy는 Gameplay 서브레벨 리로드 뒤 다시 구성되므로 공유 Stack만 저장한다.
 	UPROPERTY()
 	int32 GunAdaptationStack = 0;
 

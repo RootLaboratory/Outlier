@@ -104,7 +104,7 @@ bool FEnemyAdaptationRuntimeRegistrationTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Reloading rejects a late registration"),
 		Adaptation->RegisterEnemy(RoomlessEnemy));
 	Arena->OnArenaGameplayGCReady.Broadcast(42);
-	TestTrue(TEXT("GC verification opens registration for the new Data Layer"),
+	TestTrue(TEXT("GC verification opens registration for the new Gameplay sublevel"),
 		Adaptation->RegisterEnemy(RoomlessEnemy));
 	Adaptation->UnregisterEnemy(RoomlessEnemy);
 	Arena->OnArenaGameplayReady.Broadcast(42);

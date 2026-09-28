@@ -210,8 +210,8 @@ public:
 
 	// 플레이어가 소유하게 될 무기를 만드는 유일한 경로.
 	// OverrideLevel 을 의도적으로 주지 않는다 -> PersistentLevel 에 들어간다.
-	// 레벨에 배치된 무기 액터는 ULevel 이 WP 셀로 고정돼 있고 런타임에 바꿀 수 없어서,
-	// 그대로 쥐여주면 플레이어가 그 셀에서 멀어질 때 손에 든 채로 사라진다.
+	// 레벨에 배치된 무기 액터의 ULevel 소속은 런타임에 바꿀 수 없다.
+	// 그대로 쥐여주면 Gameplay 서브레벨 리로드 때 장착한 채로 사라질 수 있다.
 	// 픽업/슈트/복원 세 경로가 모두 이걸 거쳐 같은 수명 규칙을 갖는다.
 	static AWeaponBase* SpawnLoadoutWeapon(
 		UWorld* World,

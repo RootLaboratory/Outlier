@@ -1411,8 +1411,8 @@ EDataValidationResult AAutoTurret::IsDataValid(FDataValidationContext& Context) 
 	}
 	else if (UWorld* World = GetWorld())
 	{
-		// 에디터 검증에서 현재 로드된 WP Actor끼리의 중복을 먼저 보여준다.
-		// 언로드 순서가 겹치는 런타임 중복은 SaveSubsystem의 전역 등록부가 다시 막는다.
+		// 에디터 검증에서 현재 로드된 터렛끼리의 중복을 먼저 보여준다.
+		// 서브레벨 전환 중의 런타임 중복은 SaveSubsystem의 전역 등록부가 다시 막는다.
 		for (TActorIterator<AAutoTurret> It(World); It; ++It)
 		{
 			const AAutoTurret* OtherTurret = *It;

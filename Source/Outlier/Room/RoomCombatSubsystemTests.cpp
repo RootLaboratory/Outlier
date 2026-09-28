@@ -1550,7 +1550,7 @@ bool FRoomCombatWaveTurretActivationTest::RunTest(const FString& Parameters)
 		FirstTurret->GetTurretLifecycleState(),
 		EAutoTurretLifecycleState::DeadPersistent);
 
-	// Data Layer 재로드를 흉내 내어 같은 Stable ID Actor가 최종 사망 자세로 바로 복원되는지 확인한다.
+	// Gameplay 서브레벨 재로드를 흉내 내어 같은 Stable ID Actor가 최종 사망 자세로 바로 복원되는지 확인한다.
 	FirstTurret->Destroy();
 	AAutoTurret* RestoredTurret = SpawnConfiguredTurret(TEXT("Turret.Activation.1"));
 	if (!TestNotNull(TEXT("Destroyed Wave turret can be reloaded"), RestoredTurret))
