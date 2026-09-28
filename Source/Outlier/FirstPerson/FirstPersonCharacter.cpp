@@ -134,7 +134,7 @@ void AFirstPersonCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
 	EnhancedInputComponent->BindAction(InputConfig->WidgetConfirmedAction,ETriggerEvent::Started,this,&AFirstPersonCharacter::HandleWidgetConfirmedInput);
 	
 
-	EnhancedInputComponent->BindAction(InputConfig->DebugArenaReload, ETriggerEvent::Started, this, &AFirstPersonCharacter::ArenaReload);
+	// EnhancedInputComponent->BindAction(InputConfig->DebugArenaReload, ETriggerEvent::Started, this, &AFirstPersonCharacter::ArenaReload);
 }
 
 void AFirstPersonCharacter::BeginPlay()
@@ -980,6 +980,7 @@ bool AFirstPersonCharacter::IsInteractTargetByTrace(AActor* TargetActor) const
 	return FindInteractTargetByTrace() == TargetActor;
 }
 
+/*
 void AFirstPersonCharacter::ArenaReload() 
 {
 	AFirstPersonPlayerController* FController = Cast<AFirstPersonPlayerController>(GetController());
@@ -988,6 +989,7 @@ void AFirstPersonCharacter::ArenaReload()
 		FController->Server_RequestArenaReload();
 	}
 }
+*/
 
 ULocalPlayerUILayerSubsystem* AFirstPersonCharacter::GetUILayerSubsystem() const
 {

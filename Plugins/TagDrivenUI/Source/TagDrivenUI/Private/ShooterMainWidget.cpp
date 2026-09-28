@@ -4,7 +4,6 @@
 
 #include "AmmoUI.h"
 #include "CrossHairBase.h"
-#include "DamageFeedBackWidget.h"
 #include "EventDrivenUI.h"
 #include "HPBarUI.h"
 #include "ShooterCurrentAbilityIcon.h"
@@ -30,7 +29,6 @@ void UShooterMainWidget::ModuleInit()
 	RegisterModule(TagDrivenUITags::Shooter::CrossHair(), nullptr);
 	RegisterModule(TagDrivenUITags::Shooter::CurrentAbility(), CurrentAbilityUI);
 	RegisterModule(TagDrivenUITags::Shooter::CurrentWeapon(), CurrentWeaponUI);
-	RegisterModule(TagDrivenUITags::Shooter::DamageFeedback(), DamageFeedbackUI);
 
 	// 전역 HUD 가시성은 ModuleLayer가 담당하고, 각 모듈의 상태는 별도로 초기화한다.
 	ModulesControl(false);

@@ -498,6 +498,14 @@ public:
 		float TurretReactionScale,
 		float EffectRatio);
 
+	// Magnetic 같은 지속 외력이 기존 Impact State의 이동 제어를 재사용할 때 호출한다.
+	// PullVelocity는 누적하지 않고 현재 ImpactVelocity를 덮어쓴다.
+	void ApplyMagneticPullVelocity(const FVector& PullVelocity, AActor* SourceActor);
+	void EndMagneticPull(AActor* SourceActor);
+
+	// BeginImpactReaction이 받아들일 수 있는 상태인지. 진입 이벤트를 보내기 전 사전 검사에도 쓴다.
+	bool CanBeginImpactReaction() const;
+
 	// ImpactReaction State의 진입, 활성 Tick, 종료 시점에만 호출한다.
 	bool BeginImpactReaction();
 	bool UpdateImpactRecovery(float DeltaTime, float ElapsedTime);
@@ -644,11 +652,13 @@ protected:
 
 	bool bCombatDecisionRefreshPending = false;
 	FVector AccumulatedImpactVelocity = FVector::ZeroVector;
+	TWeakObjectPtr<AActor> MagneticPullSource;
 	float CurrentImpactStrength = 0.0f;
 	float CurrentPhysicalKnockbackDuration = 0.0f;
 	float CurrentControlRecoveryDuration = 0.0f;
 	float ImpactRecoveryElapsedTime = 0.0f;
 	bool bImpactReactionActive = false;
+	bool bMagneticPullActive = false;
 	FTimerHandle PossessedImpactInputLockTimerHandle;
 	FTimerHandle DeathDebrisTimerHandle;
 	FActiveGameplayEffectHandle PossessionPendingEffectHandle;

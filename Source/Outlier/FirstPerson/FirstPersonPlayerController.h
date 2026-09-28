@@ -19,7 +19,6 @@ class UInGameSettingWidget;
 class UCameraShakeBase;
 class UOutlierUpgradeSetData;
 class UPreSetLoadWidget;
-class UWorldPartitionStreamingSourceComponent;
 class AActor;
 
 namespace FirstPersonInputModeTags
@@ -108,10 +107,13 @@ public:
 		UOutlierUpgradeSetData* UpgradeSetData);
 
 	UFUNCTION(Server, Reliable)
-	void ServerNotifyArenaReady();
+	void ServerNotifyArenaReady(uint32 GameplayGeneration);
 
 	UFUNCTION(Server, Reliable)
-	void ServerNotifyArenaGameplayGCReady(uint32 GameplayGeneration);
+	void ServerNotifyArenaGameplayUnloaded(uint32 GameplayGeneration);
+
+	UFUNCTION(Client, Reliable)
+	void ClientActivateArenaGameplayLevels(uint32 GameplayGeneration);
 
 	UFUNCTION(Client, Reliable)
 	void ClientRetryArenaGameplayReload(uint32 GameplayGeneration);
@@ -148,10 +150,8 @@ public:
 	void SetCheckpointRestartVoteViewFromServer(EOutlierCheckpointRestartVoteView VoteView);
 	void CloseCheckpointRestartVoteUIFromServer(UObject* RequestOwner);
 
-	// ArenaWorker(dedi)는 서버에서 즉시 Possess하고 이 RPC로 클라 준비를 시작시킨다.
-	// Possess 직후라 클라에는 아직 Pawn이 복제되지 않았고, Pawn이 들어있는 WP 셀을
-	// 스트리밍해야 Pawn이 관련(relevant)해지는 순환이 생긴다. ClientArenaLoad와 동일하게
-	// 서버가 이미 계산해둔 스폰 위치를 같이 넘겨서 그 순환을 끊는다.
+	// ArenaWorker(dedi)는 서버에서 Possess한 뒤 클라이언트가 설정된 서브레벨을
+	// 표시할 때까지 기다린다. 스폰 좌표는 준비 완료 뒤의 위치 확인에도 사용한다.
 	UFUNCTION(Client, Reliable)
 	void ClientPrepareForArenaStart(FVector InSpawnLocation);
 
@@ -163,22 +163,20 @@ public:
 		bool bAllowInactivePawn);
 
 	// 디버그: 요청한 페어의 arena를 서버 권위로 리로드
-	UFUNCTION(Server, Reliable)
-	void Server_RequestArenaReload();
+	// UFUNCTION(Server, Reliable)
+	// void Server_RequestArenaReload();
 
-	// 리로드 RPC도 최초 진입(ClientArenaLoad/ClientPrepareForArenaStart)과 동일하게 스폰 위치를
-	// 같이 받는다. 위젯이 서버로 보내는 건 FName StageId 하나뿐이고, 그걸 APresetPlayerStart의
-	// 좌표로 바꾸는 건 서버의 ResolvePresetStageSpawn이다 — 클라에는 그 결과가 오는 창구가 없어서,
-	// 안 보내면 PendingArenaSpawnLocation에 최초 진입 때 값이 그대로 남아 엉뚱한 곳을 스트리밍한다.
-	// 클라가 직접 StageId로 액터를 찾게 하는 방법도 있지만, 그러면 클라 준비 판정이 레벨 배치
-	// (해당 액터가 그 순간 로드돼 있는가)에 묶인다. 좌표는 값이라 그런 의존이 없다.
-
-	// 디버그: 클라 arena 스트리밍 인스턴스를 강제 언로드 후 재로드
-	UFUNCTION(Client, Reliable)
-	void ClientArenaReload(FVector InSpawnLocation);
+	// 리로드 RPC에는 서버가 선택한 실제 리스폰 위치를 함께 전달한다.
 
 	UFUNCTION(Client, Reliable)
 	void ClientArenaGameplayReload(uint32 GameplayGeneration, FVector InSpawnLocation);
+
+	// 클라이언트 콘솔에서 현재 스트리밍 상태와 레벨별 액터를 확인한다.
+	// UFUNCTION(Exec)
+	// void ArenaDumpClientGameplayReload();
+
+	// UFUNCTION(Exec)
+	// void ArenaDumpClientGameplayActors();
 
 	// 사망 시 프리셋 스테이지 선택 팝업을 띄운다 (페어 양쪽 컨트롤러에 각각 호출됨).
 	UFUNCTION(Client, Reliable)
@@ -192,8 +190,9 @@ public:
 	UFUNCTION()
 	void HandleArenaShown();
 	void HandleArenaGameplayReady(uint32 GameplayGeneration);
-	void HandleArenaGameplayGCReady(uint32 GameplayGeneration);
+	void HandleArenaGameplayUnloaded(uint32 GameplayGeneration);
 	void ControlMainWidget(bool InFlag) const;
+	void ArmDeathTransitionReleaseOnPossess(); //리슨 서버일 때 호스트 클라에게도 PP Flag 해제.
 
 	UFUNCTION(BlueprintCallable, Category = "Input|Input Mode")
 	bool SetFirstPersonInputMode(FGameplayTag NewInputMode);
@@ -246,57 +245,33 @@ protected:
 	// 대비해, Possess 확정 후 현재 로드된 서브레벨 visibility를 서버에 다시 보고한다.
 	void ReportLoadedLevelsVisibilityToServer();
 	void TryNotifyArenaStartReady();
-	// 리로드 RPC가 실어 보낸 새 스폰 위치를 적용한다(옛 임시 소스 폐기 포함).
+	// 리로드 RPC가 실어 보낸 새 스폰 위치를 기록한다.
 	void ApplyServerArenaSpawnLocation(const FVector& InSpawnLocation);
 	bool TickClientArenaContentReady(float DeltaTime);
 	void ClearClientArenaContentWait();
-	void ReleaseClientArenaStreamingSource();
-	bool ResolveClientArenaStreamingLocation(FVector& OutLocation) const;
 	virtual void RefreshPostProcessState();
 
 	UFUNCTION()
 	void HandleLocalPresetStageSelected(FName StageId);
+
+	// 사망 연출의 Black 패스가 시작될 때 PreSetLoadWidget을 띄운다.
+	void HandleDeathBlackoutStarted();
+	void PushPresetSelectWidget();
 
 
 protected:
 
 	bool bHasPendingArenaRequest = false;
 	uint32 PendingGameplayGeneration = 0;
-	// 서버가 이미 계산해둔 실제 스폰 위치. Possess 전이라 GetPawn()이 아직 없을 때
-	// ResolveClientArenaStreamingLocation이 레벨 액터를 추측해서 찾는 대신 이 값을 그대로 쓴다.
+	double ClientGameplayReloadStartedAt = 0.0;
+	// 서버가 계산한 실제 스폰 위치. 클라이언트 준비 진단에도 사용한다.
 	FVector PendingArenaSpawnLocation = FVector::ZeroVector;
-	bool bHasPendingArenaSpawnLocation = false;
-	// 리로드 중에는 GetPawn()보다 이 값이 우선이다. 리로드 시점의 Pawn은 서버가 이미 Destroy한
-	// "죽은 자리의 옛 폰"이라, 그걸로 스트리밍 소스를 세우면 새 스테이지가 아니라 직전 위치를
-	// 스트리밍하고는 즉시 준비 완료로 판정해버린다.
-	bool bPreferServerArenaSpawnLocation = false;
 	bool bWaitingForArenaStart = false;
 	int32 ClientArenaReadyStableFrames = 0;
 	FTSTicker::FDelegateHandle ClientArenaContentTickerHandle;
 
-	// 클라 콘텐츠 대기 워치독.
-	// 엔진의 레벨 가시화 요청에는 재전송이 없다(ULevelStreaming::ShouldWaitForServerAckBeforeChangingVisibilityState는
-	// 요청을 한 번 보내고 bHasClientPendingRequest를 소진한 뒤 오지 않을 ack을 영원히 기다린다).
-	// 한 번 유실되면 그 셀은 영구 미완료이고, TickClientArenaContentReady는 타임아웃이 없어
-	// 클라는 로딩에서, 서버는 PendingPossessions에서 각각 무한 대기한다(로그도 안 남는다).
-	//
-	// 복구 레버는 하나뿐이다 — 셀을 "필요 없음"으로 떨어뜨렸다가 다시 필요하게 만드는 것.
-	//   LevelStreaming.cpp:676  MakingVisible 에서 ShouldBeVisible()==false 면 LoadedNotVisible 로 하강
-	//   LevelStreaming.cpp:1163 LoadedNotVisible -> MakingVisible 재진입 시
-	//                           InvalidateClientPendingRequest() + BeginClientNetVisibilityRequest(true)
-	// 즉 죽은 요청이 폐기되고 새 요청이 발행된다. 임시 소스 액터를 멀리 옮겼다 되돌려 그 왕복을 만든다
-	// (스트리밍 소스 위치는 소유 액터 트랜스폼에서 나온다 — WorldPartitionStreamingSourceComponent.cpp:88).
+	// 서브레벨 로드 정체 진단. 완료로 강제 전환하지 않는다.
 	double ClientArenaWaitSeconds = 0.0;
-	double ClientArenaRecoveryHoldSeconds = 0.0;
-	int32 ClientArenaRecoveryCount = 0;
-	bool bClientArenaSourceDisplaced = false;
-	FVector ClientArenaSourceHomeLocation = FVector::ZeroVector;
-
-	UPROPERTY(Transient)
-	TObjectPtr<AActor> ClientArenaStreamingSourceActor;
-
-	UPROPERTY(Transient)
-	TObjectPtr<UWorldPartitionStreamingSourceComponent> ClientArenaStreamingSource;
 
 	UPROPERTY()
 	TObjectPtr<UMainUIBase> ShooterUIInstance;
@@ -312,6 +287,10 @@ protected:
 
 	bool bCanRequestCheckpointRestart = false;
 	bool bExplicitLeaveRequested = false;
+
+	// 리로드(리스폰) RPC를 받은 뒤 첫 Possess에서 사망 연출을 즉시 끊는다. Possess만으로 판단하면
+	// 연출 도중의 다른 Possess(Partner의 적 해킹 등)까지 연출을 끊어서 위젯이 안 뜨게 된다.
+	bool bReleaseDeathTransitionOnPossess = false;
 	EOutlierCheckpointRestartVoteView CheckpointRestartVoteView =
 		EOutlierCheckpointRestartVoteView::None;
 };

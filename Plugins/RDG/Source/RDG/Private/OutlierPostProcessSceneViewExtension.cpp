@@ -8,6 +8,8 @@
 #include "FRDGHeatHazePass.h"
 #include "FRDGMotionBlurPass.h"
 #include "FRDGDatamoshingPass.h"
+#include "FRDGDeathColorLerpPass.h"
+#include "FRDGDeathNoisePass.h"
 #include "RDGExplosionVolumeProvider.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
@@ -17,6 +19,7 @@
 #include "PostProcess/PostProcessMaterialInputs.h"
 #include "ProfilingDebugging/RealtimeGPUProfiler.h"
 #include "RenderGraphEvent.h"
+#include "SceneManagement.h"
 #include "ScreenPass.h"
 #include "SceneTexturesConfig.h"
 
@@ -105,6 +108,32 @@ void FOutlierPostProcessSceneViewExtension::SubscribeToPostProcessingPass(EPostP
 			FAfterPassCallbackDelegate::CreateRaw(
 				this,
 			&FOutlierPostProcessSceneViewExtension::DatamoshingCallback_RenderThread));
+	}
+
+	// 사망 연출: Noise → Fade → Black. Tonemap 이후라 UI는 안 먹는다.
+	// 순서가 곧 합성 순서라서 Black이 끝나면 아래 두 패스까지 완전히 덮인다.
+	if (PassId == EPostProcessingPass::Tonemap && CachedParameters.DeathNoise.bEnabled)
+	{
+		InOutPassCallbacks.Add(
+			FAfterPassCallbackDelegate::CreateRaw(
+				this,
+				&FOutlierPostProcessSceneViewExtension::DeathNoiseCallback_RenderThread));
+	}
+
+	if (PassId == EPostProcessingPass::Tonemap && CachedParameters.DeathFade.bEnabled)
+	{
+		InOutPassCallbacks.Add(
+			FAfterPassCallbackDelegate::CreateRaw(
+				this,
+				&FOutlierPostProcessSceneViewExtension::DeathFadeCallback_RenderThread));
+	}
+
+	if (PassId == EPostProcessingPass::Tonemap && CachedParameters.DeathBlack.bEnabled)
+	{
+		InOutPassCallbacks.Add(
+			FAfterPassCallbackDelegate::CreateRaw(
+				this,
+				&FOutlierPostProcessSceneViewExtension::DeathBlackCallback_RenderThread));
 	}
 
 	// Pixel Sorting은 여기서 돌지 않음. Slate 이후 backbuffer 단계(FRDGModule::HandleBackBufferReadyRDG)로
@@ -257,6 +286,9 @@ bool FOutlierPostProcessSceneViewExtension::ShouldRenderAnyEffect() const
 		|| CachedParameters.DualKawaseBlur.bEnabled
 		|| CachedParameters.Datamoshing.bEnabled
 		|| CachedParameters.ADSBlur.bEnabled
+		|| CachedParameters.DeathNoise.bEnabled
+		|| CachedParameters.DeathFade.bEnabled
+		|| CachedParameters.DeathBlack.bEnabled
 		|| HasHeatHazeSources();
 }
 
@@ -444,6 +476,75 @@ FScreenPassTexture FOutlierPostProcessSceneViewExtension::DatamoshingCallback_Re
 		Entry.RenderTarget,
 		Inputs.OverrideOutput
 	);
+}
+
+FScreenPassTexture FOutlierPostProcessSceneViewExtension::DeathNoiseCallback_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessMaterialInputs& Inputs)
+{
+	const FScreenPassTexture SceneColor = FScreenPassTexture::CopyFromSlice(
+		GraphBuilder,
+		Inputs.GetInput(EPostProcessMaterialInput::SceneColor));
+
+	if (!SceneColor.IsValid())
+	{
+		return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
+	}
+
+	return FRDGDeathNoisePass::AddPass(
+		GraphBuilder,
+		View,
+		SceneColor,
+		CachedParameters.DeathNoise,
+		Inputs.OverrideOutput);
+}
+
+FScreenPassTexture FOutlierPostProcessSceneViewExtension::DeathFadeCallback_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessMaterialInputs& Inputs)
+{
+	const FScreenPassTexture SceneColor = FScreenPassTexture::CopyFromSlice(
+		GraphBuilder,
+		Inputs.GetInput(EPostProcessMaterialInput::SceneColor));
+
+	if (!SceneColor.IsValid())
+	{
+		return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
+	}
+
+	const FDeathFadeParameters& Fade = CachedParameters.DeathFade;
+	const float Amount = Fade.bEnabled
+		? FMath::Clamp(Fade.Progress, 0.0f, 1.0f) * FMath::Clamp(Fade.MaxStrength, 0.0f, 1.0f)
+		: 0.0f;
+
+	return FRDGDeathColorLerpPass::AddPass(
+		GraphBuilder,
+		View,
+		SceneColor,
+		Fade.TargetColor,
+		Amount,
+		TEXT("RDG.DeathFade"),
+		Inputs.OverrideOutput);
+}
+
+FScreenPassTexture FOutlierPostProcessSceneViewExtension::DeathBlackCallback_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessMaterialInputs& Inputs)
+{
+	const FScreenPassTexture SceneColor = FScreenPassTexture::CopyFromSlice(
+		GraphBuilder,
+		Inputs.GetInput(EPostProcessMaterialInput::SceneColor));
+
+	if (!SceneColor.IsValid())
+	{
+		return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
+	}
+
+	const FDeathBlackParameters& Black = CachedParameters.DeathBlack;
+	const float Amount = Black.bEnabled ? FMath::Clamp(Black.Progress, 0.0f, 1.0f) : 0.0f;
+
+	return FRDGDeathColorLerpPass::AddPass(
+		GraphBuilder,
+		View,
+		SceneColor,
+		FLinearColor::Black,
+		Amount,
+		TEXT("RDG.DeathBlack"),
+		Inputs.OverrideOutput);
 }
 
 FScreenPassTexture FOutlierPostProcessSceneViewExtension::ExplosionVolumeVisualizeCallback_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessMaterialInputs& Inputs)

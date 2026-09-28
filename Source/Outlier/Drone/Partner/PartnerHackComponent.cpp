@@ -33,6 +33,7 @@ void UPartnerHackComponent::BeginPlay()
 
 	BlockedCandidateTags.AddTag(OutlierGameplayTags::State::Dead());
 	BlockedCandidateTags.AddTag(OutlierGameplayTags::State::Locked());
+	BlockedCandidateTags.AddTag(OutlierGameplayTags::State::MagneticActive());
 	BlockedCandidateTags.AddTag(OutlierGameplayTags::State::Immune());
 }
 

@@ -55,6 +55,23 @@ namespace
 			return TEXT("Unknown");
 		}
 	}
+
+	const TCHAR* PlaybackPolicyName(EOutlierAudioPlaybackPolicy PlaybackPolicy)
+	{
+		switch (PlaybackPolicy)
+		{
+		case EOutlierAudioPlaybackPolicy::OneShot:
+			return TEXT("OneShot");
+		case EOutlierAudioPlaybackPolicy::Loop:
+			return TEXT("Loop");
+		case EOutlierAudioPlaybackPolicy::StopLoopThenOneShot:
+			return TEXT("StopLoopThenOneShot");
+		case EOutlierAudioPlaybackPolicy::StopLoop:
+			return TEXT("StopLoop");
+		default:
+			return TEXT("Unknown");
+		}
+	}
 }
 
 void UOutlierAudioSubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -385,10 +402,10 @@ void UOutlierAudioSubsystem::IngestBank(UOutlierAudioBank* Bank)
 		}
 	}
 
-	UE_LOG(LogOutlier, Log,
+	/*UE_LOG(LogOutlier, Log,
 		TEXT("[Audio] Ingested %d variants for Bank Type '%s'."),
 		IngestedCount,
-		*Bank->TypeTag.ToString());
+		*Bank->TypeTag.ToString());*/
 }
 
 void UOutlierAudioSubsystem::FlushPendingPlaysForType(FGameplayTag TypeTag)
@@ -475,9 +492,29 @@ bool UOutlierAudioSubsystem::StopTaggedAtLocationFromServer(
 
 	FGameplayTagContainer ContextTags;
 	ContextTags.AddTag(ContextTag);
+	const int32 PendingTypeCount = AudioSubsystem->PendingPlaysByType.Contains(TypeTag)
+		? AudioSubsystem->PendingPlaysByType.Find(TypeTag)->Num()
+		: 0;
+	/*UE_LOG(
+		LogOutlier,
+		Warning,
+		TEXT("[AudioSpatialDebug][StopRequest] NetMode=%d Type='%s' Context='%s' Emitter='%s' LoopCount=%d PendingTypeCount=%d"),
+		static_cast<int32>(AudioSubsystem->GetWorld()->GetNetMode()),
+		*TypeTag.ToString(),
+		*ContextTag.ToString(),
+		*GetNameSafe(EmitterActor),
+		AudioSubsystem->LoopInstances.Num(),
+		PendingTypeCount);*/
 	const FRuntimeCatalogEntry* Entry = AudioSubsystem->ResolveBestEntry(TypeTag, ContextTags);
 	if (!Entry)
 	{
+		UE_LOG(
+			LogOutlier,
+			Warning,
+			TEXT("[AudioCancelDebug] Stop failed: entry not resolved Type=%s Context=%s Emitter=%s"),
+			*TypeTag.ToString(),
+			*ContextTag.ToString(),
+			*GetNameSafe(EmitterActor));
 		return false;
 	}
 
@@ -486,6 +523,13 @@ bool UOutlierAudioSubsystem::StopTaggedAtLocationFromServer(
 		: Entry->RequiredContext;
 	if (!LoopContextTag.IsValid())
 	{
+		UE_LOG(
+			LogOutlier,
+			Warning,
+			TEXT("[AudioCancelDebug] Stop failed: invalid loop context Type=%s Context=%s Emitter=%s"),
+			*TypeTag.ToString(),
+			*ContextTag.ToString(),
+			*GetNameSafe(EmitterActor));
 		return false;
 	}
 
@@ -493,14 +537,41 @@ bool UOutlierAudioSubsystem::StopTaggedAtLocationFromServer(
 	int32* AudioInstanceId = AudioSubsystem->LoopInstances.Find(LoopKey);
 	if (!AudioInstanceId)
 	{
+	/*	UE_LOG(
+			LogOutlier,
+			Warning,
+			TEXT("[AudioCancelDebug] Stop failed: loop instance not found Type=%s Context=%s LoopContext=%s Emitter=%s"),
+			*TypeTag.ToString(),
+			*ContextTag.ToString(),
+			*LoopContextTag.ToString(),
+			*GetNameSafe(EmitterActor));*/
 		return false;
 	}
 
 	const int32 InstanceId = *AudioInstanceId;
+	/*UE_LOG(
+		LogOutlier,
+		Warning,
+		TEXT("[AudioSpatialDebug][LoopFoundForStop] Type='%s' Context='%s' LoopContext='%s' Emitter='%s' AudioInstanceId=%d"),
+		*TypeTag.ToString(),
+		*ContextTag.ToString(),
+		*LoopContextTag.ToString(),
+		*GetNameSafe(EmitterActor),
+		InstanceId);*/
 	const bool bStopped = AudioSubsystem->GetWorld()->GetNetMode() == NM_Standalone
 		? AudioSubsystem->StopLoopAudioLocally(InstanceId)
 		: AudioSubsystem->StopLoopAtLocationFromServer(InstanceId);
 	AudioSubsystem->LoopInstances.Remove(LoopKey);
+	/*UE_LOG(
+		LogOutlier,
+		Warning,
+		TEXT("[AudioSpatialDebug][StopResult] Type='%s' Context='%s' Emitter='%s' AudioInstanceId=%d Stopped=%d RemainingLoopCount=%d"),
+		*TypeTag.ToString(),
+		*ContextTag.ToString(),
+		*GetNameSafe(EmitterActor),
+		InstanceId,
+		bStopped ? 1 : 0,
+		AudioSubsystem->LoopInstances.Num());*/
 	return bStopped;
 }
 
@@ -617,8 +688,17 @@ bool UOutlierAudioSubsystem::PlayAudio(
 
 		if (!Discovered->bContentLoaded)
 		{
-			PendingPlaysByType.FindOrAdd(Request.EventTag).Emplace(Request, Policy);
-			LoadBankContent(Request.EventTag);
+		/*	PendingPlaysByType.FindOrAdd(Request.EventTag).Emplace(Request, Policy);
+			UE_LOG(
+				LogOutlier,
+				Warning,
+				TEXT("[AudioSpatialDebug][QueuedRequest] NetMode=%d Type='%s' Context='%s' Emitter='%s' PendingCount=%d Reason=BankContentLoading"),
+				static_cast<int32>(World->GetNetMode()),
+				*Request.EventTag.ToString(),
+				*Request.ContextTags.ToString(),
+				*GetNameSafe(Request.EmitterActor),
+				PendingPlaysByType.Find(Request.EventTag)->Num());
+			LoadBankContent(Request.EventTag);*/
 			return true;
 		}
 		// bContentLoaded 인데 카탈로그에 없다 = 그 Bank 에 유효한 Variant 가 하나도 없었던 경우.
@@ -654,6 +734,15 @@ bool UOutlierAudioSubsystem::PlayAudio(
 		: nullptr;
 	if (ExistingInstanceId)
 	{
+		/*UE_LOG(
+			LogOutlier,
+			Warning,
+			TEXT("[AudioSpatialDebug][ReplaceLoop] Type='%s' Context='%s' LoopContext='%s' Emitter='%s' ExistingInstanceId=%d"),
+			*Request.EventTag.ToString(),
+			*Request.ContextTags.ToString(),
+			*LoopContextTag.ToString(),
+			*GetNameSafe(Request.EmitterActor),
+			*ExistingInstanceId);*/
 		if (World->GetNetMode() == NM_Client
 			|| Policy.RequestAuthority == EOutlierAudioRequestAuthority::Local)
 		{
@@ -685,6 +774,17 @@ bool UOutlierAudioSubsystem::PlayAudio(
 			? 1
 			: NextAudioInstanceId + 1;
 		LoopInstances.Add(LoopKey, AudioInstanceId);
+		//UE_LOG(
+		//	LogOutlier,
+		//	Warning,
+		//	TEXT("[AudioSpatialDebug][LoopRegistered] NetMode=%d Type='%s' Context='%s' LoopContext='%s' Emitter='%s' AudioInstanceId=%d LoopCount=%d"),
+		//	static_cast<int32>(World->GetNetMode()),
+		//	*Request.EventTag.ToString(),
+		//	*Request.ContextTags.ToString(),
+		//	*LoopContextTag.ToString(),
+		//	*GetNameSafe(Request.EmitterActor),
+		//	AudioInstanceId,
+		//	LoopInstances.Num());
 	}
 
 	FOutlierResolvedAudioPlay ResolvedPlay;
@@ -703,10 +803,15 @@ bool UOutlierAudioSubsystem::PlayAudio(
 		return false;
 	}
 
-	UE_LOG(LogOutlier, Warning,
-		TEXT("[AudioSpatialDebug][ResolvedRequest] NetMode=%d Type='%s' Emitter='%s' Playback=%s Audience=%s Authority=%s ExplicitLocation=%d RequestLocation=%s ResolvedAtLocation=%d ResolvedLocation=%s Variant=%d"),
+	/*UE_LOG(LogOutlier, Warning,
+		TEXT("[AudioSpatialDebug][ResolvedRequest] NetMode=%d Type='%s' Context='%s' LoopContext='%s' Policy=%s Looping=%d AudioInstanceId=%d Emitter='%s' Playback=%s Audience=%s Authority=%s ExplicitLocation=%d RequestLocation=%s ResolvedAtLocation=%d ResolvedLocation=%s Variant=%d LoopRegistered=%d LoopCount=%d"),
 		static_cast<int32>(World->GetNetMode()),
 		*Request.EventTag.ToString(),
+		*Request.ContextTags.ToString(),
+		*LoopContextTag.ToString(),
+		PlaybackPolicyName(Entry->PlaybackPolicy),
+		bLooping ? 1 : 0,
+		ResolvedPlay.AudioInstanceId,
 		*GetNameSafe(Request.EmitterActor),
 		PlaybackModeName(Policy.PlaybackMode),
 		AudienceName(Policy.Audience),
@@ -715,7 +820,9 @@ bool UOutlierAudioSubsystem::PlayAudio(
 		*Request.Location.ToCompactString(),
 		ResolvedPlay.bAtLocation,
 		*FVector(ResolvedPlay.Location).ToCompactString(),
-		ResolvedPlay.VariantIndex);
+		ResolvedPlay.VariantIndex,
+		bLooping && LoopInstances.Contains(LoopKey) ? 1 : 0,
+		LoopInstances.Num());*/
 
 	if (World->GetNetMode() == NM_Standalone)
 	{
@@ -728,6 +835,17 @@ bool UOutlierAudioSubsystem::PlayAudio(
 	}
 
 	const bool bRouted = RouteByAudience(Request, ResolvedPlay, Policy.Audience);
+	/*UE_LOG(
+		LogOutlier,
+		Warning,
+		TEXT("[AudioSpatialDebug][RouteResult] Type='%s' Context='%s' Emitter='%s' AudioInstanceId=%d Routed=%d LoopRegistered=%d LoopCount=%d"),
+		*Request.EventTag.ToString(),
+		*Request.ContextTags.ToString(),
+		*GetNameSafe(Request.EmitterActor),
+		ResolvedPlay.AudioInstanceId,
+		bRouted ? 1 : 0,
+		bLooping && LoopInstances.Contains(LoopKey) ? 1 : 0,
+		LoopInstances.Num());*/
 	if (!bRouted && bLooping)
 	{
 		LoopInstances.Remove(LoopKey);
@@ -747,11 +865,11 @@ bool UOutlierAudioSubsystem::HandleServerRelevantAtLocationRequest(
 
 	if (!IsEmitterOwnedByController(Request.EmitterActor, RequestingController))
 	{
-		UE_LOG(LogOutlier, Warning,
+		/*UE_LOG(LogOutlier, Warning,
 			TEXT("[Audio] Rejected client world-audio request. Controller='%s' Emitter='%s' Type='%s'."),
 			*GetNameSafe(RequestingController),
 			*GetNameSafe(Request.EmitterActor),
-			*Request.EventTag.ToString());
+			*Request.EventTag.ToString());*/
 		return false;
 	}
 
@@ -1099,14 +1217,14 @@ bool UOutlierAudioSubsystem::RouteRelevant(
 		const float ApproximateDistance = ResolvedPlay.bAtLocation
 			? FVector::Distance(PlayerController->GetFocalLocation(), ResolvedPlay.Location)
 			: 0.0f;
-		UE_LOG(LogOutlier, Warning,
+		/*UE_LOG(LogOutlier, Warning,
 			TEXT("[AudioSpatialDebug][RelevantDelivery] Type='%s' Controller='%s' AtLocation=%d Location=%s ApproxDistance=%.1f"),
 			*ResolvedPlay.EventTag.ToString(),
 			*GetNameSafe(PlayerController),
 			ResolvedPlay.bAtLocation,
 			*FVector(ResolvedPlay.Location).ToCompactString(),
 			ApproximateDistance);
-		++DeliveryCount;
+		++DeliveryCount;*/
 	}
 
 	if (DeliveryCount == 0)
@@ -1304,7 +1422,7 @@ void UOutlierAudioSubsystem::ExecutePlay(
 		? FVector::Distance(ListenerLocation, PendingPlay.Location)
 		: -1.0f;
 
-	UE_LOG(LogOutlier, Warning,
+	/*UE_LOG(LogOutlier, Warning,
 		TEXT("[AudioSpatialDebug][Execute] NetMode=%d Method=%s Sound='%s' Location=%s Listener=%s Distance=%.1f AttenuationAsset='%s' HasSettings=%d VolumeAttenuation=%d Spatialization=%d InnerExtents=%s Falloff=%.1f SoundMaxDistance=%.1f"),
 		static_cast<int32>(World->GetNetMode()),
 		PendingPlay.bAtLocation ? TEXT("AtLocation") : TEXT("2D"),
@@ -1318,13 +1436,13 @@ void UOutlierAudioSubsystem::ExecutePlay(
 		Attenuation ? Attenuation->bSpatialize : false,
 		Attenuation ? *Attenuation->AttenuationShapeExtents.ToCompactString() : TEXT("None"),
 		Attenuation ? Attenuation->FalloffDistance : 0.0f,
-		Sound->GetMaxDistance());
+		Sound->GetMaxDistance());*/
 
 	if (PendingPlay.bAtLocation && (!Attenuation || !Attenuation->bAttenuate))
 	{
-		UE_LOG(LogOutlier, Warning,
+		/*UE_LOG(LogOutlier, Warning,
 			TEXT("[AudioSpatialDebug][NoDistanceAttenuation] Sound='%s' is using PlaySoundAtLocation, but its Sound asset has no enabled volume attenuation. Distance will not reduce volume."),
-			*GetNameSafe(Sound));
+			*GetNameSafe(Sound));*/
 	}
 
 	if (PendingPlay.bAtLocation)

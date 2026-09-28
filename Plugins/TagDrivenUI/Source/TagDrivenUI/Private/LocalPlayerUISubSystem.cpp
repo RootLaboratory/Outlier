@@ -12,7 +12,7 @@
 #include "EventDrivenUI.h"
 #include "StaticCrossHair.h"
 #include "DistanceSlideUI.h"
-#include "DamageFeedBackWidget.h"
+#include "DamageFeedbackLayer.h"
 #include "PartnerHPUI.h"
 #include "PartnerHealthUI.h"
 #include "ShooterCurrentAbilityIcon.h"
@@ -197,10 +197,10 @@ void ULocalPlayerUISubSystem::OnDamageFeedback(
 	AActor* DamagedCharacter,
 	const FVector& DamageOrigin)
 {
-	if (UDamageFeedBackWidget* DamageFeedback = Cast<UDamageFeedBackWidget>(
-		GetModuleAny(TagDrivenUITags::Shooter::DamageFeedback(), TagDrivenUITags::Partner::DamageFeedback())))
+	UMainUIBase* MainUI = GetMainUI();
+	if (MainUI && MainUI->DamageFeedbackLayer)
 	{
-		DamageFeedback->ShowDamageFeedback(DamagedCharacter, DamageOrigin);
+		MainUI->DamageFeedbackLayer->ShowDamageFeedback(DamagedCharacter, DamageOrigin);
 	}
 }
 

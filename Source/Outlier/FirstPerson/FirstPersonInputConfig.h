@@ -40,6 +40,6 @@ public:
 	TObjectPtr<UInputAction> WidgetConfirmedAction;
 
 
-	UPROPERTY(EditAnywhere, Category = "Debug")
-	TObjectPtr<UInputAction> DebugArenaReload;
+	// UPROPERTY(EditAnywhere, Category = "Debug")
+	// TObjectPtr<UInputAction> DebugArenaReload;
 };

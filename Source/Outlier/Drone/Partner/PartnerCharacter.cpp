@@ -1473,6 +1473,29 @@ APartnerCharacter::APartnerCharacter()
 	FaceSpriteAnimationComponent = CreateDefaultSubobject<UPartnerSpriteAnimationComponent>(TEXT("SpriteAnimationComponent"));
 }
 
+void APartnerCharacter::BeginJumperEffect(
+	FName EffectId,
+	const FJumperMovementEffect& Effect,
+	AActor* SourceActor)
+{
+	/*UE_LOG(LogTemp, Warning,
+		TEXT("[JumperDebug] Partner BeginJumperEffect Character=%s EffectId=%s Direction=%s FlightMultiplier=%.2f Source=%s"),
+		*GetNameSafe(this),
+		*EffectId.ToString(),
+		*Effect.Direction.ToCompactString(),
+		Effect.PartnerFlightMultiplier,
+		*GetNameSafe(SourceActor));*/
+}
+
+void APartnerCharacter::EndJumperEffect(FName EffectId, AActor* SourceActor)
+{
+	/*UE_LOG(LogTemp, Warning,
+		TEXT("[JumperDebug] Partner EndJumperEffect Character=%s EffectId=%s Source=%s"),
+		*GetNameSafe(this),
+		*EffectId.ToString(),
+		*GetNameSafe(SourceActor));*/
+}
+
 USkeletalMeshComponent* APartnerCharacter::GetWeaponMuzzleComponent(bool bFirstPerson) const
 {
 	const FName MuzzleSocketName = GetWeaponMuzzleSocketName(bFirstPerson);

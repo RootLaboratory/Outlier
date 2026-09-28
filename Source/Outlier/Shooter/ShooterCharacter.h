@@ -10,6 +10,7 @@
 #include "Damage/OutlierDamageReceiver.h"
 #include "GAS/Data/OutlierShooterSuitAbilityDataRow.h"
 #include "UI/UILayerTypes.h"
+#include "Interface/JumperAffectableInterface.h"
 #include "ShooterCharacter.generated.h"
 
 class UInputAction;
@@ -107,7 +108,7 @@ enum class EShooterMontageAction : uint8
  * 
  */
 UCLASS(abstract)
-class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbilitySystemInterface, public IOutlierDamageReceiver, public IAISightTargetInterface
+class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbilitySystemInterface, public IOutlierDamageReceiver, public IAISightTargetInterface, public IJumperAffectableInterface
 {
 	GENERATED_BODY()
 
@@ -417,9 +418,6 @@ protected:
 	void HandlePartnerRebootTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void RefreshShooterSuitAvailabilityUI();
 
-	UFUNCTION(BlueprintImplementableEvent, Category = "Suit|Bullet Reflection")
-	void BP_OnBulletReflectionStateChanged(bool bActive);
-
 	UFUNCTION(BlueprintImplementableEvent, Category = "Suit|Weapon Overcharge")
 	void BP_OnWeaponOverchargeStateChanged(bool bActive);
 
@@ -445,6 +443,8 @@ public:
 	/** Constructor */
 	AShooterCharacter();
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
+	virtual void BeginJumperEffect(FName EffectId, const FJumperMovementEffect& Effect, AActor* SourceActor) override;
+	virtual void EndJumperEffect(FName EffectId, AActor* SourceActor) override;
 
 	UOutlierAbilitySystemComponent* GetOutlierAbilitySystemComponent() const
 	{

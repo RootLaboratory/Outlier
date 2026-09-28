@@ -23,10 +23,10 @@ protected:
 	virtual void NativeConstruct() override;
 
 	// BP에서 이 이름의 Button을 BindWidget으로 연결
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr<UButton> DebugReloadButton;
+	// UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	// TObjectPtr<UButton> DebugReloadButton;
 
 public:
-	UFUNCTION()
-	void OnClicked_DebugReload();
+	// UFUNCTION()
+	// void OnClicked_DebugReload();
 };
