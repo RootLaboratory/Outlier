@@ -22,7 +22,6 @@ class APartnerCharacter;
 class AOutlierCheckpoint;
 class AOutlierPlayerState;
 class AOutlierArenaPausePlayerState;
-class UWorldPartitionStreamingSourceComponent;
 class UDataTable;
 enum class EOutlierPlayerRole : uint8;
 enum class EOutlierGameplayReloadPhase : uint8;
@@ -44,6 +43,7 @@ public:
 	AOutlierGameMode();
 	virtual void InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage) override;
 	bool IsArenaWorkerPreloadReady() const;
+	void PauseArenaWorkerWorld();
 
 	bool RegisterCheckpoint(AController* Controller, AOutlierCheckpoint* Checkpoint);
 	void RefreshPairLinks(AOutlierPlayerState* TriggeringPlayerState);
@@ -65,20 +65,22 @@ public:
 		EOutlierPlayerRole FirstRole,
 		EOutlierPlayerRole SecondRole);
 
-	void OnClientArenaReady(APlayerController* PC, uint32 ReconnectRequestId = 0);
-	void OnClientArenaGameplayGCReady(APlayerController* PC, uint32 GameplayGeneration);
+	void OnClientArenaReady(APlayerController* PC, uint32 GameplayGeneration);
+	void OnClientArenaGameplayUnloaded(APlayerController* PC, uint32 GameplayGeneration);
 
-	UFUNCTION(Exec)
-	void ArenaRetryGameplayReload();
+	// UFUNCTION(Exec)
+	// void ArenaRetryGameplayReload();
 
-	UFUNCTION(Exec)
-	void ArenaDumpGameplayReload();
+	// UFUNCTION(Exec)
+	// void ArenaDumpGameplayReload();
+	// UFUNCTION(Exec)
+	// void ArenaDumpGameplayActors();
 
 	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "Network|Arena")
 	bool CompleteArenaMatch();
 
 	// 디버그: 요청한 페어의 arena를 통째로 리로드하고 시작점에 재스폰
-	void DebugReloadArena(AController* Requester);
+	// void DebugReloadArena(AController* Requester);
 
 	bool CanControllerRequestCheckpointRestart(const APlayerController* Controller) const;
 	bool RequestCheckpointRestart(AFirstPersonPlayerController* Requester);
@@ -96,11 +98,10 @@ private:
 	UPROPERTY()
 	TMap<TObjectPtr<APlayerController>, TObjectPtr<APawn>> PendingPossessions;
 
-	// Data Layer gameplay reload 완료 후 possess할 로컬 PC들
+	// 설정된 게임플레이 서브레벨이 다시 표시된 뒤 possess할 로컬 PC들
 	UPROPERTY()
 	TMap<TObjectPtr<APlayerController>, TObjectPtr<APawn>> PendingLocalPossessions;
 
-	void HandleServerArenaShown();
 	void HandleServerArenaGameplayReady(uint32 GameplayGeneration);
 	void HandleArenaGameplayReloadStalled(
 		uint32 GameplayGeneration,
@@ -124,13 +125,17 @@ private:
 	bool bArenaReloadInProgress = false;
 	bool bServerArenaReloadReady = false;
 	bool bCheckpointRestartInProgress = false;
-	FDelegateHandle ArenaShownHandle;
+	FDelegateHandle GameplayReadyHandle;
 	FDelegateHandle ArenaReloadStalledHandle;
 	FDelegateHandle ArenaReloadResumedHandle;
 	FDelegateHandle ArenaReloadFailedHandle;
 	uint32 PendingGameplayGeneration = 0;
-	TSet<TWeakObjectPtr<APlayerController>> PendingGameplayGCPlayers;
-	TSet<TWeakObjectPtr<APlayerController>> ReadyGameplayGCPlayers;
+	TSet<TWeakObjectPtr<APlayerController>> PendingGameplayUnloadPlayers;
+	TSet<TWeakObjectPtr<APlayerController>> ReadyGameplayUnloadPlayers;
+	TSet<TWeakObjectPtr<APlayerController>> ReadyGameplayPossessPlayers;
+	// TMap<TWeakObjectPtr<APlayerController>, double> ClientUnloadRequestedAt;
+	// TMap<TWeakObjectPtr<APlayerController>, double> ClientLoadAuthorizedAt;
+	double ArenaReloadStartedAt = 0.0;
 	FTimerHandle ArenaWorkerReloadFailureTimerHandle;
 	FOutlierCheckpointRestartVote CheckpointRestartVote;
 	TWeakObjectPtr<AActor> CheckpointRestartVoteLayerOwner;
@@ -195,7 +200,7 @@ protected:
 	int32 ResolvePresetNodeCount(FName StageId) const;
 	void FlushUpgradeNodesForPair(AOutlierPlayerState* TriggeringPlayerState, int32 NewNodeCount);
 
-	// DebugReloadArena/RequestPresetRespawn이 공유하는 "아레나 리로드 대기 후 페어 스폰/possess" 공통 로직.
+	// RequestPresetRespawn이 사용하는 "아레나 리로드 대기 후 페어 스폰/possess" 공통 로직.
 	bool ReloadArenaAndRespawnPair(
 		AOutlierPlayerState* ShooterPlayerState,
 		AOutlierPlayerState* PartnerPlayerState,
@@ -248,7 +253,6 @@ protected:
 private:
 	bool IsArenaWorkerProcess() const;
 	bool UsesStaticArenaHandoff() const;
-	void PauseArenaWorkerWorld();
 	void ClearArenaWorkerWorldPause();
 	void ScheduleArenaWorkerPairSetup();
 	bool HandleArenaWorkerPairSetupTick(float DeltaTime);
@@ -293,8 +297,6 @@ private:
 	bool bHasArenaWorkerReconnectGameplayState = false;
 	UPROPERTY(Transient)
 	TObjectPtr<AOutlierArenaPausePlayerState> ArenaWorkerPauseOwner;
-	UPROPERTY(Transient)
-	TObjectPtr<UWorldPartitionStreamingSourceComponent> ArenaWorkerPreloadSource;
 	bool bArenaWorkerPairStartScheduled = false;
 	bool bArenaWorkerPairStarted = false;
 	bool bArenaWorkerGameplayStartScheduled = false;
@@ -309,7 +311,6 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<APawn> ListenGuestReconnectPawn;
 	bool bListenGuestDisconnected = false;
-	bool bPendingGameplayDataReload = false;
 	FTimerHandle ArenaWorkerAutoCompleteTimerHandle;
 	FTimerHandle ArenaWorkerReconnectTimerHandle;
 	FTimerHandle ArenaWorkerExitTimerHandle;

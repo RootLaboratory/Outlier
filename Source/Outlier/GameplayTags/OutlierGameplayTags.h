@@ -344,6 +344,12 @@ namespace OutlierGameplayTags
 			return Tag;
 		}
 
+		inline FGameplayTag MagneticActive()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("State.MagneticActive")));
+			return Tag;
+		}
+
 		inline FGameplayTag Disabled()
 		{
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("State.Disabled")));

@@ -7,7 +7,6 @@
 #include "OutlierArenaSettings.generated.h"
 
 class UWorld;
-class UDataLayerAsset;
 class UDataTable;
 class UEnemyAdaptationDefinition;
 class UEnemyPoolDefinition;
@@ -26,12 +25,7 @@ public:
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly)
 	TSoftObjectPtr<UWorld> ArenaLevel;
 
-	// Arena LevelInstance는 유지하고, 이 Runtime Data Layer만 내려서 gameplay 액터를 재생성한다.
-	// 비어 있으면 기존 전체 Arena reload 경로를 사용한다.
-	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Arena|World Partition")
-	TSoftObjectPtr<UDataLayerAsset> GameplayDataLayer;
-
-	// Pool Actor는 Gameplay Data Layer 밖에서 유지되므로 Arena 수명과 함께 별도로 생성/폐기한다.
+	// 적 풀 구성. 실제 풀 Actor의 생성/정리 정책은 전투 시스템이 관리한다.
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Arena|Enemy Pool")
 	TSoftObjectPtr<UEnemyPoolDefinition> EnemyPoolDefinition;
 
@@ -44,11 +38,11 @@ public:
 	TSoftObjectPtr<URoomCombatDefinition> RoomCombatDefinition;
 
 	// 각 Reload Phase가 이 시간 동안 진행되지 않으면 강제 완료하지 않고 Stalled로 보고한다.
-	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Arena|World Partition", meta = (ClampMin = "1.0"))
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Arena|Levels", meta = (ClampMin = "1.0"))
 	float ArenaGameplayReloadStallSeconds = 15.0f;
 
 	// Dedicated Worker만 이 시간 이후 복구 불가능한 정지로 판정한다.
-	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Arena|World Partition", meta = (ClampMin = "1.0"))
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Arena|Levels", meta = (ClampMin = "1.0"))
 	float ArenaGameplayReloadFailureSeconds = 60.0f;
 
 	// 프리셋 스테이지별 업그레이드 노드 지급량(FPresetNodeProvideRow). RowName은
@@ -57,7 +51,7 @@ public:
 	// 원래 GameMode의 EditDefaultsOnly 프로퍼티였는데, AOutlierGameMode 파생 BP가 3개라
 	// (BP_OutlierGM / BP_LobbyGM / BP_BTestGM) 어느 BP가 뜨느냐에 따라 값이 있기도 없기도 했다.
 	// 특히 Listen은 Title 맵을 열고 아레나를 스트리밍으로 얹는 구조라 GameMode가 BP_LobbyGM이고,
-	// 아레나 맵(WP_Test)의 World Settings에 꽂아둔 값은 dedi 워커에서만 쓰인다.
+	// Arena Persistent의 World Settings에 꽂아둔 값은 dedi 워커에서만 쓰인다.
 	// 실행 형태에 따라 조용히 0이 되는 걸 막으려고 프로젝트 설정으로 올렸다.
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Arena|Respawn")
 	TSoftObjectPtr<UDataTable> PresetNodeProvideTable;

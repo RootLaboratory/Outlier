@@ -321,7 +321,7 @@ void UOutlierGameInstance::TryBootstrapArenaWorker(UWorld* LoadedWorld)
 			ArenaWorkerBootstrapTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
 				FTickerDelegate::CreateUObject(this, &UOutlierGameInstance::HandleArenaWorkerBootstrapTick));
 			UE_LOG(LogTemp, Display,
-				TEXT("[ArenaWorker] Waiting for Start streaming source, WP cells and LevelInstances before Ready"));
+				TEXT("[ArenaWorker] Waiting for configured gameplay sublevels before Ready"));
 		}
 		return;
 	}
@@ -354,7 +354,7 @@ bool UOutlierGameInstance::HandleArenaWorkerBootstrapTick(float DeltaTime)
 
 	UOutlierArenaSubsystem* ArenaSubsystem =
 		World->GetSubsystem<UOutlierArenaSubsystem>();
-	const AOutlierGameMode* ArenaGameMode = World->GetAuthGameMode<AOutlierGameMode>();
+	AOutlierGameMode* ArenaGameMode = World->GetAuthGameMode<AOutlierGameMode>();
 	const bool bContentReady = ArenaGameMode
 		&& ArenaGameMode->IsArenaWorkerPreloadReady()
 		&& ArenaSubsystem
@@ -372,8 +372,10 @@ bool UOutlierGameInstance::HandleArenaWorkerBootstrapTick(float DeltaTime)
 	}
 
 	ArenaWorkerBootstrapTickerHandle.Reset();
+	// 월드가 틱하는 동안 설정된 서브레벨의 표시를 끝낸 뒤 Pause한다.
+	ArenaGameMode->PauseArenaWorkerWorld();
 	UE_LOG(LogTemp, Display,
-		TEXT("[ArenaWorker] WP cells and LevelInstances stable for %d frames; notifying Worker Ready"),
+		TEXT("[ArenaWorker] Gameplay sublevels stable for %d frames; notifying Worker Ready"),
 		RequiredReadyStableFrames);
 	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
 	UE_LOG(LogTemp, Display,

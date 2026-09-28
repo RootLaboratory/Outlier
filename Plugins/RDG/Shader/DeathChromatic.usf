@@ -1,0 +1,23 @@
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/ScreenPass.ush"
+
+// 사망 연출 CA. 렌즈 좌표계(UIChromatic.usf) 없이 화면 전체에서 같은 오프셋으로
+// R은 +Offset, B는 -Offset 쪽 픽셀을 가져오고 G는 제자리에 둔다.
+
+Texture2D InputTexture;
+SamplerState InputSampler;
+
+// UV 단위 오프셋.
+float2 Offset;
+
+void MainPS(
+	FScreenVertexOutput Input,
+	out float4 OutColor : SV_Target0)
+{
+	const float2 UV = Input.UV;
+	const float4 BaseColor = InputTexture.Sample(InputSampler, UV);
+	const float R = InputTexture.Sample(InputSampler, UV + Offset).r;
+	const float B = InputTexture.Sample(InputSampler, UV - Offset).b;
+
+	OutColor = float4(R, BaseColor.g, B, BaseColor.a);
+}

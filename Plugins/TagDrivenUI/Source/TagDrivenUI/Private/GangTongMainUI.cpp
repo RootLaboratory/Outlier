@@ -5,7 +5,6 @@
 #include "AbilityIconUI.h"
 #include "EventDrivenUI.h"
 #include "StaticCrossHair.h"
-#include "DamageFeedBackWidget.h"
 #include "PartnerLeftHudWidget.h"
 #include "PartnerRightHudWidget.h"
 #include "TagDrivenUIGameplayTags.h"
@@ -51,7 +50,6 @@ void UGangTongMainUI::ModuleInit()
 	RegisterModule(TagDrivenUITags::Partner::Health(), PartnerLeftHUD);
 	RegisterModule(TagDrivenUITags::Partner::CrossHair(), CrossHairUI);
 	RegisterModule(TagDrivenUITags::Partner::DistanceLimit(), PartnerLeftHUD);
-	RegisterModule(TagDrivenUITags::Partner::DamageFeedback(), DamageFeedbackUI);
 
 	RegisterAbilityIcon(AbilityShieldIcon,  TagDrivenUITags::Ability::Partner::Shield(),  true);
 	RegisterAbilityIcon(AbilityHackingIcon, TagDrivenUITags::Ability::Partner::Hacking(), true);

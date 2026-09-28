@@ -9,6 +9,7 @@
 #include "Engine/World.h"
 #include "Net/UnrealNetwork.h"
 #include "Room/RoomCombatSubsystem.h"
+#include "Network/OutlierArenaSubsystem.h"
 
 #if WITH_EDITOR
 #include "Misc/DataValidation.h"
@@ -241,6 +242,10 @@ EDataValidationResult ARoomCombatSpawnPoint::IsDataValid(
 	FDataValidationContext& Context) const
 {
 	EDataValidationResult Result = Super::IsDataValid(Context);
+	if (!UOutlierArenaSubsystem::ValidateGameplayActorPlacement(this, Context))
+	{
+		Result = EDataValidationResult::Invalid;
+	}
 	// 공용 BP는 Room/그룹 없이 컴파일할 수 있다. 배치 위치별 귀속은 실제 인스턴스에서 필수 검사한다.
 	const bool bValidatePlacement = !IsTemplate();
 	if (bValidatePlacement && !RoomTag.IsValid())

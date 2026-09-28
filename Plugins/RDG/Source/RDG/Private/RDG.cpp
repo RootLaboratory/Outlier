@@ -3,6 +3,7 @@
 #include "RDG.h"
 
 #include "Debug/RDGDebugWindowManager.h"
+#include "FRDGDeathChromaticAberrationPass.h"
 #include "FRDGOverlayPass.h"
 #include "FRDGPixelSortingPass.h"
 #include "FRDGSceneColorCopyPass.h"
@@ -181,7 +182,9 @@ void FRDGModule::ShutdownModule()
 }
 
 // Slate가 그린 뒤, present 직전의 backbuffer에 도는 체인:
-// Pixel Sorting -> Zoom Blur -> Chromatic Aberration -> Overlay -> Present
+// Pixel Sorting -> Zoom Blur -> Chromatic Aberration -> Death Chromatic Aberration -> Overlay -> Present
+//
+// 두 CA는 동시에 켜지지 않는다. 사망 연출이 시작될 때 기존 렌즈 CA를 끄고 사망 CA를 켠다.
 //
 // 줌 블러가 정렬보다 뒤인 이유: 먼저 흐리면 대비가 뭉개져 임계값을 넘는 픽셀이
 // 줄어들어 정렬 결과가 약해짐. 반대 순서면 줄무늬가 살아있는 채로 부드러워지고,
@@ -208,10 +211,16 @@ void FRDGModule::HandleBackBufferReadyRDG(FRDGBuilder& GraphBuilder, SWindow& Wi
 		Subsystem->GetPostProcessStrcture().ZoomBlur;
 	const FUIChromaticAberrationParameters& ChromaticParams =
 		Subsystem->GetUIPostProcessStrcture().ChromaticAberration;
+	const FDeathChromaticAberrationParameters& DeathChromaticParams =
+		Subsystem->GetUIPostProcessStrcture().DeathChromaticAberration;
 	const FOverlayParameters& OverlayParams =
 		Subsystem->GetUIPostProcessStrcture().Overlay;
 
-	if (!PixelSortingParams.bEnabled && !ZoomBlurParams.bEnabled && !ChromaticParams.bEnabled && !OverlayParams.bEnabled)
+	if (!PixelSortingParams.bEnabled
+		&& !ZoomBlurParams.bEnabled
+		&& !ChromaticParams.bEnabled
+		&& !DeathChromaticParams.bEnabled
+		&& !OverlayParams.bEnabled)
 	{
 		return;
 	}
@@ -223,6 +232,7 @@ void FRDGModule::HandleBackBufferReadyRDG(FRDGBuilder& GraphBuilder, SWindow& Wi
 	Current = FRDGPixelSortingPass::AddPass(GraphBuilder, Current, PixelSortingParams);
 	Current = FRDGZoomBlurPass::AddPass(GraphBuilder, Current, ZoomBlurParams);
 	Current = FRDGUIChromaticAberrationPass::AddPass(GraphBuilder, Current, ChromaticParams);
+	Current = FRDGDeathChromaticAberrationPass::AddPass(GraphBuilder, Current, DeathChromaticParams);
 	Current = FRDGOverlayPass::AddPass(GraphBuilder, Current, OverlayParams);
 
 	if (!Current.IsValid() || Current.Texture == BackBuffer)

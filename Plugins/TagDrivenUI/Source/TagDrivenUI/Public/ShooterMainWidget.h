@@ -15,7 +15,6 @@ class UCrossHairBase;
 class UShooterCurrentAbilityIcon;
 class UShooterCurrentWeaponIcon;
 class UShooterStatusBarWidget;
-class UDamageFeedBackWidget;
 
 UENUM(BlueprintType)
 enum class EWidgetWeaponType : uint8
@@ -68,9 +67,6 @@ public:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UShooterCurrentWeaponIcon> CurrentWeaponUI;
-
-	UPROPERTY(meta = (BindWidget))
-	TObjectPtr<UDamageFeedBackWidget> DamageFeedbackUI;
 
 private:
 	void CacheStatusBarWidgets();

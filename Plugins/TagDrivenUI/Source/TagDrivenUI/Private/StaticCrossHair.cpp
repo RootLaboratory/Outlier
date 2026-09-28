@@ -3,17 +3,36 @@
 
 #include "StaticCrossHair.h"
 #include "Components/Image.h"
+#include "Materials/MaterialInstanceDynamic.h"
 
-void UStaticCrossHair::SpawnReloadingTimer_Implementation()
+void UStaticCrossHair::NativeOnInitialized()
 {
-	UE_LOG(LogTemp, Log, TEXT("SpawnReloadingTimer triggered."));
-}
+	Super::NativeOnInitialized();
 
-void UStaticCrossHair::NativeConstruct()
-{
-	Super::NativeConstruct();
+	if (!PistolCoolTime)
+	{
+		return;
+	}
 
-	DefaultIconBrush = CrossHairImage->GetBrush();
+	// 브러시 교체는 여기서 한 번만. 디자이너 텍스처를 쿨타임 머티리얼의 아이콘으로 넘긴다.
+	if (M_ReloadingTimeUI)
+	{
+		UTexture* IconTexture = Cast<UTexture>(PistolCoolTime->GetBrush().GetResourceObject());
+
+		PistolCoolTime->SetBrushFromMaterial(M_ReloadingTimeUI);
+		ReloadingTimeMID = PistolCoolTime->GetDynamicMaterial();
+
+		if (ReloadingTimeMID)
+		{
+			if (IconTexture)
+			{
+				ReloadingTimeMID->SetTextureParameterValue(TEXT("IconTexture"), IconTexture);
+			}
+			ReloadingTimeMID->SetScalarParameterValue(TEXT("IsCoolDown"), 1.f);
+		}
+	}
+
+	PistolCoolTime->SetVisibility(ESlateVisibility::Collapsed);
 }
 
 void UStaticCrossHair::NativeTick(const FGeometry& MyGeometry, float Indelta)
@@ -40,7 +59,7 @@ void UStaticCrossHair::Activate()
 
 void UStaticCrossHair::SetCoolTime(float InCoolTime, float InElapsedTime)
 {
-	if (InCoolTime <= 0.0f || !CrossHairImage || !M_ReloadingTimeUI || !DefaultIconBrush.GetResourceObject())
+	if (InCoolTime <= 0.0f || !PistolCoolTime || !ReloadingTimeMID)
 	{
 		return;
 	}
@@ -50,21 +69,8 @@ void UStaticCrossHair::SetCoolTime(float InCoolTime, float InElapsedTime)
 	CooldownStartTime = GetWorld() ? GetWorld()->GetTimeSeconds() - AccumulatedTime : 0.0f;
 	bCooldowning = true;
 
-	UE_LOG(LogTemp, Log, TEXT("[PistolCrosshairCooldown] Started Duration=%.3f Elapsed=%.3f StartTime=%.3f"),
-		CoolTime, AccumulatedTime, CooldownStartTime);
-
-	CrossHairImage->SetBrushFromMaterial(M_ReloadingTimeUI);
-	ReloadingTimeMID = CrossHairImage->GetDynamicMaterial();
-
-	UObject* Resource = DefaultIconBrush.GetResourceObject();
-
-	if (UTexture* IconTexture = Cast<UTexture>(Resource))
-	{
-		ReloadingTimeMID->SetTextureParameterValue(TEXT("IconTexture"), IconTexture);
-		ReloadingTimeMID->SetScalarParameterValue(TEXT("IsCoolDown"), static_cast<float>(bCooldowning));
-		ReloadingTimeMID->SetScalarParameterValue(TEXT("CooldownProgress"), AccumulatedTime / CoolTime);
-	}
-
+	ReloadingTimeMID->SetScalarParameterValue(TEXT("CooldownProgress"), AccumulatedTime / CoolTime);
+	PistolCoolTime->SetVisibility(ESlateVisibility::HitTestInvisible);
 }
 
 void UStaticCrossHair::UpdateCoolTime(float DeltaTime)
@@ -95,17 +101,14 @@ bool UStaticCrossHair::IsCooldowning()
 
 void UStaticCrossHair::CooldownDone()
 {
-	UE_LOG(LogTemp, Log, TEXT("[PistolCrosshairCooldown] Completed"));
-	if (ReloadingTimeMID)
-	{
-		ReloadingTimeMID->SetScalarParameterValue(TEXT("IsCoolDown"), 0.0f);
-	}
-
 	bCooldowning = false;
 	AccumulatedTime = 0.f;
 	CooldownStartTime = 0.0f;
 	CoolTime = 0.f;
-	ReloadingTimeMID = nullptr;
-	CrossHairImage->SetBrush(DefaultIconBrush);
 
+	// 브러시는 되돌리지 않는다. 숨겨두면 다음 SetCoolTime 전까지 갱신도 멈춘다.
+	if (PistolCoolTime)
+	{
+		PistolCoolTime->SetVisibility(ESlateVisibility::Collapsed);
+	}
 }

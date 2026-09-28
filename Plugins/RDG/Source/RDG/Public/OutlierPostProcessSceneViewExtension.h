@@ -8,6 +8,7 @@
 #include "RDGEffectSourceWorldSubsystem.h"
 
 class ULocalPlayer;
+class FSceneViewState;
 
 class FOutlierPostProcessSceneViewExtension final : public FSceneViewExtensionBase
 {
@@ -67,6 +68,21 @@ private:
 		const FPostProcessMaterialInputs& Inputs);
 
 	FScreenPassTexture DatamoshingCallback_RenderThread(
+		FRDGBuilder& GraphBuilder,
+		const FSceneView& View,
+		const FPostProcessMaterialInputs& Inputs);
+
+	FScreenPassTexture DeathNoiseCallback_RenderThread(
+		FRDGBuilder& GraphBuilder,
+		const FSceneView& View,
+		const FPostProcessMaterialInputs& Inputs);
+
+	FScreenPassTexture DeathFadeCallback_RenderThread(
+		FRDGBuilder& GraphBuilder,
+		const FSceneView& View,
+		const FPostProcessMaterialInputs& Inputs);
+
+	FScreenPassTexture DeathBlackCallback_RenderThread(
 		FRDGBuilder& GraphBuilder,
 		const FSceneView& View,
 		const FPostProcessMaterialInputs& Inputs);

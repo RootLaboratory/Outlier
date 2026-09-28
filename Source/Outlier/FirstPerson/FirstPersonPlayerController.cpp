@@ -21,20 +21,16 @@
 #include "Shooter/ShooterCharacter.h"
 #include "Network/OutlierArenaSubsystem.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
+#include "LocalPlayerPostProcessSubsystem.h"
 #include "UI/InGamePauseWidget.h"
 #include "UI/InGameSettingWidget.h"
 #include "UI/PreSetLoadWidget.h"
 #include "Upgrade/OutlierUpgradeComponent.h"
 #include "Upgrade/OutlierUpgradeSetData.h"
-#include "Components/SceneComponent.h"
-#include "Components/WorldPartitionStreamingSourceComponent.h"
-#include "WorldPartition/WorldPartitionSubsystem.h"
-#include "WorldPartition/WorldPartitionStreamingSource.h"
-#include "WorldPartition/WorldPartitionRuntimeCell.h"
-#include "WorldPartition/DataLayer/DataLayerManager.h"
 #include "Misc/StringOutputDevice.h"
 #include "GameFramework/UpdateLevelVisibilityLevelInfo.h"
 #include "Engine/LevelStreaming.h"
+#include "HAL/PlatformTime.h"
 
 namespace
 {
@@ -373,6 +369,47 @@ void AFirstPersonPlayerController::Client_ShowPresetSelect_Implementation()
 		return;
 	}
 
+	// 사망 연출(Noise → Fade → Black)을 먼저 돌리고, Black 패스가 시작되는 순간 위젯을 띄운다.
+	// 연출을 못 돌리는 환경이면 기다리지 않고 바로 띄운다.
+	if (ULocalPlayerPostProcessSubsystem* PPSubsystem = GetLocalPlayer()
+		? GetLocalPlayer()->GetSubsystem<ULocalPlayerPostProcessSubsystem>()
+		: nullptr)
+	{
+		PPSubsystem->OnDeathBlackoutStarted.RemoveAll(this);
+		PPSubsystem->OnDeathBlackoutStarted.AddUObject(
+			this,
+			&AFirstPersonPlayerController::HandleDeathBlackoutStarted);
+
+		if (PPSubsystem->StartDeathTransition())
+		{
+			return;
+		}
+
+		PPSubsystem->OnDeathBlackoutStarted.RemoveAll(this);
+	}
+
+	PushPresetSelectWidget();
+}
+
+void AFirstPersonPlayerController::HandleDeathBlackoutStarted()
+{
+	if (ULocalPlayerPostProcessSubsystem* PPSubsystem = GetLocalPlayer()
+		? GetLocalPlayer()->GetSubsystem<ULocalPlayerPostProcessSubsystem>()
+		: nullptr)
+	{
+		PPSubsystem->OnDeathBlackoutStarted.RemoveAll(this);
+	}
+
+	PushPresetSelectWidget();
+}
+
+void AFirstPersonPlayerController::PushPresetSelectWidget()
+{
+	if (!IsLocalController() || !PresetLoadWidgetClass)
+	{
+		return;
+	}
+
 	ULocalPlayer* LocalPlayer = GetLocalPlayer();
 	ULocalPlayerUILayerSubsystem* LayerSubsystem = LocalPlayer
 		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()
@@ -595,12 +632,43 @@ void AFirstPersonPlayerController::BeginPlay()
 void AFirstPersonPlayerController::AcknowledgePossession(APawn* P)
 {
 	Super::AcknowledgePossession(P);
-	if (!bWaitingForArenaStart)
+
+	if (IsLocalController())
 	{
-		ReleaseClientArenaStreamingSource();
+		if (ULocalPlayerPostProcessSubsystem* PPSubsystem = GetLocalPlayer()
+			? GetLocalPlayer()->GetSubsystem<ULocalPlayerPostProcessSubsystem>()
+			: nullptr)
+		{
+			// 리스폰으로 새 폰을 잡은 순간 사망 연출을 즉시 끊는다.
+			if (bReleaseDeathTransitionOnPossess)
+			{
+				bReleaseDeathTransitionOnPossess = false;
+				PPSubsystem->OnDeathBlackoutStarted.RemoveAll(this);
+				PPSubsystem->ResetDeathTransition();
+				// 새 Pawn을 실제로 잡은 경우에만 사망 연출을 해제하고,
+				// Slate/backbuffer 단계의 기본 CA를 복구한다.
+				PPSubsystem->SetChromaticAberrationEnabled(true);
+			}
+
+#if UE_BUILD_SHIPPING
+			// 기존 렌즈 CA는 Shipping에서만, 게임 폰을 잡은 순간부터 켠다. 끄는 건 사망 연출 시작과 EndPlay.
+			// 사망 연출 중(예: 연출 도중 Partner가 적을 해킹해 Possess)에는 새 CA와 겹치지 않게 켜지 않는다.
+			// 리스폰 해제는 바로 위에서 끝났으므로 그 경우엔 여기서 다시 켜진다.
+			if (!PPSubsystem->IsDeathTransitionActive())
+			{
+				PPSubsystem->SetChromaticAberrationEnabled(true);
+			}
+#endif
+		}
 	}
+
 	ReportLoadedLevelsVisibilityToServer();
 	TryNotifyArenaStartReady();
+}
+
+void AFirstPersonPlayerController::ArmDeathTransitionReleaseOnPossess()
+{
+	bReleaseDeathTransitionOnPossess = true;
 }
 
 void AFirstPersonPlayerController::ReportLoadedLevelsVisibilityToServer()
@@ -764,7 +832,7 @@ void AFirstPersonPlayerController::EndPlay(const EEndPlayReason::Type EndPlayRea
 		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()
 		: nullptr)
 	{
-		ArenaSubsystem->OnArenaGameplayGCReady.RemoveAll(this);
+		ArenaSubsystem->OnArenaGameplayUnloaded.RemoveAll(this);
 		ArenaSubsystem->OnArenaGameplayReady.RemoveAll(this);
 	}
 
@@ -789,6 +857,21 @@ void AFirstPersonPlayerController::EndPlay(const EEndPlayReason::Type EndPlayRea
 
 		MainUI->RemoveFromParent();
 		ShooterUIInstance = nullptr;
+	}
+
+	// PostProcess 서브시스템은 LocalPlayer 소속이라 맵을 옮겨도 살아남는다. 월드를 떠날 때 기존 CA와
+	// 사망 연출을 끄지 않으면 로비 / 타이틀까지 그대로 따라간다.
+	// 교체돼서 이미 LocalPlayer를 넘겨준 옛 PC는 새 PC가 켠 상태를 건드리면 안 된다.
+	ULocalPlayer* LP = GetLocalPlayer();
+	if (LP && LP->PlayerController == this)
+	{
+		if (ULocalPlayerPostProcessSubsystem* PPSubsystem =
+			LP->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
+		{
+			PPSubsystem->OnDeathBlackoutStarted.RemoveAll(this);
+			PPSubsystem->ResetDeathTransition();
+			PPSubsystem->SetChromaticAberrationEnabled(false);
+		}
 	}
 
 	Super::EndPlay(EndPlayReason);
@@ -829,138 +912,132 @@ void AFirstPersonPlayerController::InitializeOutlierPlayerState()
 void AFirstPersonPlayerController::ClientArenaLoad_Implementation(
 	FVector InSpawnLocation, uint32 ReconnectRequestId)
 {
-	if (ClientArenaContentTickerHandle.IsValid()
-		&& PendingReconnectRequestId != ReconnectRequestId)
-	{
-		// 이전 좌표의 스트리밍 안정 프레임을 새 재접속 요청의 ACK로 재사용하지 않는다.
-		ClearClientArenaContentWait();
-	}
-	// 아직 Possess 전이라 GetPawn()이 없는 구간에서 스트리밍 소스를 어디에 둬야 할지,
-	// 서버가 이미 계산해둔 실제 스폰 위치를 그대로 받아 저장해둔다 (레벨 액터 추측 금지).
-	PendingArenaSpawnLocation = InSpawnLocation;
-	bHasPendingArenaSpawnLocation = true;
-	PendingReconnectRequestId = ReconnectRequestId;
-
+	(void)ReconnectRequestId;
+	ApplyServerArenaSpawnLocation(InSpawnLocation);
+	PendingGameplayGeneration = 0;
 	UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
-		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()
-		: nullptr;
-
+		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>() : nullptr;
 	if (!ArenaSubsystem)
 	{
-		UE_LOG(LogTemp, Error, TEXT("[Arena] ClientArenaLoad: ArenaSubsystem is null"));
+		UE_LOG(LogTemp, Error, TEXT("[ArenaLevels] ClientArenaLoad has no subsystem"));
 		return;
 	}
-
-	ArenaSubsystem->EnsureArenaLoaded();
-
-	if (ArenaSubsystem->IsArenaReady())
-	{
-		bHasPendingArenaRequest = true;
-		bWaitingForArenaStart = true;
-		TryNotifyArenaStartReady();
-		return;
-	}
-
 	bHasPendingArenaRequest = true;
+	ArenaSubsystem->OnArenaShown.RemoveAll(this);
 	ArenaSubsystem->OnArenaShown.AddUObject(this, &AFirstPersonPlayerController::HandleArenaShown);
+	ArenaSubsystem->EnsureArenaLoaded();
+	if (ArenaSubsystem->IsArenaContentReady())
+	{
+		HandleArenaShown();
+	}
 }
 
+/*
 void AFirstPersonPlayerController::Server_RequestArenaReload_Implementation()
 {
-	UE_LOG(LogTemp, Warning, TEXT("[DebugReload] Server_RequestArenaReload PC=%s Auth=%d"),
-		*GetNameSafe(this), HasAuthority());
-
-	AOutlierGameMode* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr;
-	if (!GM)
+	if (AOutlierGameMode* GameMode = GetWorld()
+		? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr)
 	{
-		UE_LOG(LogTemp, Error, TEXT("[DebugReload] Bail: AuthGameMode null (not on server?)"));
-		return;
+		GameMode->DebugReloadArena(this);
 	}
-
-	GM->DebugReloadArena(this);
 }
+*/
 
 void AFirstPersonPlayerController::ApplyServerArenaSpawnLocation(const FVector& InSpawnLocation)
 {
 	PendingArenaSpawnLocation = InSpawnLocation;
-	bHasPendingArenaSpawnLocation = true;
-	bPreferServerArenaSpawnLocation = true;
-
-	// 직전 대기에서 만든 임시 소스가 아직 살아 있으면 TryNotifyArenaStartReady가 생성 단계를
-	// 건너뛰고 옛 위치를 그대로 재사용한다. 목적지가 바뀌었으므로 반드시 버리고 새로 세운다.
-	ReleaseClientArenaStreamingSource();
 	ClientArenaReadyStableFrames = 0;
-
-	UE_LOG(LogTemp, Display,
-		TEXT("[Arena] Reload target received SpawnLocation=%s"),
-		*InSpawnLocation.ToString());
+	UE_LOG(LogTemp, Display, TEXT("[ArenaLevels] Spawn target %s"), *InSpawnLocation.ToString());
 }
 
-void AFirstPersonPlayerController::ClientArenaReload_Implementation(FVector InSpawnLocation)
+void AFirstPersonPlayerController::ClientArenaGameplayReload_Implementation(
+	uint32 GameplayGeneration, FVector InSpawnLocation)
 {
 	UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
-		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()
-		: nullptr;
-	if (!ArenaSubsystem)
-	{
-		return;
-	}
-
-	ApplyServerArenaSpawnLocation(InSpawnLocation);
-	PendingReconnectRequestId = 0;
-
-	// 강제 리로드라 항상 새로 스트리밍된다. 바인딩을 먼저 걸고(레이스 방지) 리로드.
-	bHasPendingArenaRequest = true;
-	ArenaSubsystem->OnArenaShown.AddUObject(this, &AFirstPersonPlayerController::HandleArenaShown);
-	ArenaSubsystem->EnsureArenaLoaded(/*bForceReload=*/true);
-}
-
-void AFirstPersonPlayerController::ClientArenaGameplayReload_Implementation(uint32 GameplayGeneration, FVector InSpawnLocation)
-{
-	PendingReconnectRequestId = 0;
-	UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
-		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()
-		: nullptr;
-	if (!ArenaSubsystem)
-	{
-		return;
-	}
-
-	if (!UOutlierArenaSubsystem::IsGameplayGenerationNewer(
+		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>() : nullptr;
+	if (!ArenaSubsystem || !UOutlierArenaSubsystem::IsGameplayGenerationNewer(
 		GameplayGeneration, PendingGameplayGeneration))
 	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[ArenaReload][Client] RejectReloadRPC PC=%s Gen=%u PendingGen=%u Subsystem=%d"),
+			*GetNameSafe(this), GameplayGeneration, PendingGameplayGeneration,
+			ArenaSubsystem ? 1 : 0);
 		return;
 	}
-	ApplyServerArenaSpawnLocation(InSpawnLocation);
 
-	// 아레나 LevelInstance는 건드리지 않는다. 서버에서 복제되는 Gameplay Data Layer가
-	// 클라이언트도 이전 Actor의 GC를 확인해 ACK한 뒤 Activated/Streaming 준비 완료를 따로 기다린다.
+	ClientGameplayReloadStartedAt = FPlatformTime::Seconds();
+	UE_LOG(LogTemp, Display,
+		TEXT("[ArenaReload][Client] ReloadRPC PC=%s Gen=%u Spawn=%s LevelsReady=%d"),
+		*GetNameSafe(this), GameplayGeneration, *InSpawnLocation.ToString(),
+		ArenaSubsystem->IsGameplayLevelsReady() ? 1 : 0);
+	ApplyServerArenaSpawnLocation(InSpawnLocation);
+	bReleaseDeathTransitionOnPossess = true;
 	bHasPendingArenaRequest = true;
 	PendingGameplayGeneration = GameplayGeneration;
-	ArenaSubsystem->OnArenaGameplayGCReady.AddUObject(
-		this, &AFirstPersonPlayerController::HandleArenaGameplayGCReady);
-	ArenaSubsystem->OnArenaGameplayReady.AddUObject(this, &AFirstPersonPlayerController::HandleArenaGameplayReady);
-	ArenaSubsystem->WaitForGameplayDataReady(GameplayGeneration);
+	ArenaSubsystem->OnArenaGameplayUnloaded.RemoveAll(this);
+	ArenaSubsystem->OnArenaGameplayReady.RemoveAll(this);
+	ArenaSubsystem->OnArenaGameplayUnloaded.AddUObject(
+		this, &AFirstPersonPlayerController::HandleArenaGameplayUnloaded);
+	ArenaSubsystem->OnArenaGameplayReady.AddUObject(
+		this, &AFirstPersonPlayerController::HandleArenaGameplayReady);
+	if (!ArenaSubsystem->BeginClientGameplayReload(GameplayGeneration))
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("[ArenaReload][Client] BeginReloadFailed PC=%s Gen=%u Phase=%s"),
+			*GetNameSafe(this), GameplayGeneration,
+			*UEnum::GetValueAsString(ArenaSubsystem->GetGameplayReloadPhase()));
+	}
 }
 
-void AFirstPersonPlayerController::HandleArenaGameplayGCReady(uint32 GameplayGeneration)
+void AFirstPersonPlayerController::HandleArenaGameplayUnloaded(uint32 GameplayGeneration)
 {
-	// 이 ACK는 이전 수명 정리 완료만 뜻한다. 새 Pawn의 Possess 준비는 이후 ServerNotifyArenaReady로 알린다.
 	if (GameplayGeneration != PendingGameplayGeneration)
 	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[ArenaReload][Client] IgnoreUnloadedEvent Gen=%u PendingGen=%u"),
+			GameplayGeneration, PendingGameplayGeneration);
 		return;
 	}
-
 	if (UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
-		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()
-		: nullptr)
+		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>() : nullptr)
 	{
-		ArenaSubsystem->OnArenaGameplayGCReady.RemoveAll(this);
+		ArenaSubsystem->OnArenaGameplayUnloaded.RemoveAll(this);
 	}
-
 	UE_LOG(LogTemp, Display,
-		TEXT("[Arena][DataLayer] Client GC complete Generation=%u; notifying server"), GameplayGeneration);
-	ServerNotifyArenaGameplayGCReady(GameplayGeneration);
+		TEXT("[ArenaReload][Client] SendUnloadACK PC=%s Gen=%u LocalUnloadAndGCMs=%.1f"),
+		*GetNameSafe(this), GameplayGeneration,
+		ClientGameplayReloadStartedAt > 0.0
+			? (FPlatformTime::Seconds() - ClientGameplayReloadStartedAt) * 1000.0 : -1.0);
+	ServerNotifyArenaGameplayUnloaded(GameplayGeneration);
+}
+
+void AFirstPersonPlayerController::ClientActivateArenaGameplayLevels_Implementation(
+	uint32 GameplayGeneration)
+{
+	if (GameplayGeneration != PendingGameplayGeneration)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[ArenaReload][Client] RejectActivateRPC Gen=%u PendingGen=%u"),
+			GameplayGeneration, PendingGameplayGeneration);
+		return;
+	}
+	if (UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
+		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>() : nullptr)
+	{
+		UE_LOG(LogTemp, Display,
+			TEXT("[ArenaReload][Client] ActivateRPC PC=%s Gen=%u LocalUnloaded=%d ElapsedMs=%.1f"),
+			*GetNameSafe(this), GameplayGeneration,
+			ArenaSubsystem->IsGameplayReloadUnloaded(GameplayGeneration) ? 1 : 0,
+			ClientGameplayReloadStartedAt > 0.0
+				? (FPlatformTime::Seconds() - ClientGameplayReloadStartedAt) * 1000.0 : -1.0);
+		ArenaSubsystem->AllowGameplayLevelLoad(GameplayGeneration);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("[ArenaReload][Client] ActivateRPC failed: arena subsystem missing Gen=%u"),
+			GameplayGeneration);
+	}
 }
 
 void AFirstPersonPlayerController::HandleArenaShown()
@@ -969,306 +1046,172 @@ void AFirstPersonPlayerController::HandleArenaShown()
 	{
 		return;
 	}
-
 	if (UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
-		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()
-		: nullptr)
+		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>() : nullptr)
 	{
 		ArenaSubsystem->OnArenaShown.RemoveAll(this);
 		ArenaSubsystem->OnArenaGameplayReady.RemoveAll(this);
 	}
-
 	bWaitingForArenaStart = true;
 	TryNotifyArenaStartReady();
 }
 
 void AFirstPersonPlayerController::HandleArenaGameplayReady(uint32 GameplayGeneration)
 {
-	if (GameplayGeneration != PendingGameplayGeneration)
+	if (GameplayGeneration == PendingGameplayGeneration)
 	{
-		return;
+		UE_LOG(LogTemp, Display,
+			TEXT("[ArenaReload][Client] LevelsReady PC=%s Gen=%u ElapsedMs=%.1f"),
+			*GetNameSafe(this), GameplayGeneration,
+			ClientGameplayReloadStartedAt > 0.0
+				? (FPlatformTime::Seconds() - ClientGameplayReloadStartedAt) * 1000.0 : -1.0);
+		HandleArenaShown();
 	}
-	HandleArenaShown();
 }
 
-void AFirstPersonPlayerController::ServerNotifyArenaReady_Implementation(uint32 ReconnectRequestId)
+/*
+void AFirstPersonPlayerController::ArenaDumpClientGameplayReload()
 {
-	AOutlierGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr;
-	if (GameMode)
+	UE_LOG(LogTemp, Display,
+		TEXT("[ArenaReload][Client] Dump PC=%s Gen=%u WaitingStart=%d PendingRequest=%d ElapsedMs=%.1f"),
+		*GetNameSafe(this), PendingGameplayGeneration,
+		bWaitingForArenaStart ? 1 : 0, bHasPendingArenaRequest ? 1 : 0,
+		ClientGameplayReloadStartedAt > 0.0
+			? (FPlatformTime::Seconds() - ClientGameplayReloadStartedAt) * 1000.0 : 0.0);
+	if (const UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
+		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>() : nullptr)
 	{
-		GameMode->OnClientArenaReady(this, ReconnectRequestId);
-	}
-	else
-	{
-		UE_LOG(LogTemp, Error, TEXT("[Arena] ServerNotifyArenaReady: GameMode is null"));
+		ArenaSubsystem->DumpGameplayReloadState();
 	}
 }
 
-void AFirstPersonPlayerController::ServerNotifyArenaGameplayGCReady_Implementation(uint32 GameplayGeneration)
+void AFirstPersonPlayerController::ArenaDumpClientGameplayActors()
+{
+	if (const UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
+		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>() : nullptr)
+	{
+		ArenaSubsystem->DumpGameplayActorState();
+	}
+}
+*/
+
+void AFirstPersonPlayerController::ServerNotifyArenaReady_Implementation(uint32 GameplayGeneration)
 {
 	if (AOutlierGameMode* GameMode = GetWorld()
-		? GetWorld()->GetAuthGameMode<AOutlierGameMode>()
-		: nullptr)
+		? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr)
 	{
-		GameMode->OnClientArenaGameplayGCReady(this, GameplayGeneration);
+		GameMode->OnClientArenaReady(this, GameplayGeneration);
 	}
 }
 
-void AFirstPersonPlayerController::ClientRetryArenaGameplayReload_Implementation(uint32 GameplayGeneration)
+void AFirstPersonPlayerController::ServerNotifyArenaGameplayUnloaded_Implementation(
+	uint32 GameplayGeneration)
 {
-	// 수동 재시도는 같은 Generation의 현재 안전 조건만 다시 확인한다. Timeout을 이유로
-	// GC 확인이나 Data Layer 활성 단계를 강제로 넘기면 이전 세대 Actor가 새 판에 남을 수 있다.
+	if (AOutlierGameMode* GameMode = GetWorld()
+		? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr)
+	{
+		GameMode->OnClientArenaGameplayUnloaded(this, GameplayGeneration);
+	}
+}
+
+void AFirstPersonPlayerController::ClientRetryArenaGameplayReload_Implementation(
+	uint32 GameplayGeneration)
+{
 	if (GameplayGeneration != PendingGameplayGeneration)
 	{
 		return;
 	}
-
 	UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
-		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()
-		: nullptr;
+		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>() : nullptr;
 	if (!ArenaSubsystem)
 	{
 		return;
 	}
-
 	if (ArenaSubsystem->IsGameplayReloadStalled(GameplayGeneration))
 	{
 		ArenaSubsystem->RetryStalledGameplayReload(GameplayGeneration);
 	}
-	if (ArenaSubsystem->IsGameplayReloadGCVerified(GameplayGeneration))
+	if (ArenaSubsystem->IsGameplayReloadUnloaded(GameplayGeneration))
 	{
-		ServerNotifyArenaGameplayGCReady(GameplayGeneration);
+		ServerNotifyArenaGameplayUnloaded(GameplayGeneration);
 	}
 }
 
-void AFirstPersonPlayerController::ClientPrepareForArenaStart_Implementation(FVector InSpawnLocation)
+void AFirstPersonPlayerController::ClientPrepareForArenaStart_Implementation(
+	FVector InSpawnLocation)
 {
-	// ClientArenaLoad와 같은 이유로 서버가 계산해둔 스폰 위치를 먼저 저장한다.
-	// 이게 없으면 ResolveClientArenaStreamingLocation이 Pawn도 위치도 못 찾고 실패하고,
-	// Pawn은 셀이 스트리밍돼야 도착하므로 영원히 준비 보고를 못 한다.
-	PendingArenaSpawnLocation = InSpawnLocation;
-	bHasPendingArenaSpawnLocation = true;
-
+	ApplyServerArenaSpawnLocation(InSpawnLocation);
+	PendingGameplayGeneration = 0;
 	bHasPendingArenaRequest = true;
-	PendingReconnectRequestId = 0;
 	bWaitingForArenaStart = true;
+	if (UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
+		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>() : nullptr)
+	{
+		ArenaSubsystem->EnsureArenaLoaded();
+	}
 	TryNotifyArenaStartReady();
 }
 
 void AFirstPersonPlayerController::TryNotifyArenaStartReady()
 {
-	constexpr float ClientArenaStreamingRadius = 12800.0f;
-
-	if (!bWaitingForArenaStart || !IsLocalController() || !bHasPendingArenaRequest)
+	if (!bWaitingForArenaStart || !IsLocalController() || !bHasPendingArenaRequest
+		|| ClientArenaContentTickerHandle.IsValid())
 	{
 		return;
 	}
-
-	if (!ClientArenaStreamingSource)
-	{
-		FVector StreamingLocation = FVector::ZeroVector;
-		if (!ResolveClientArenaStreamingLocation(StreamingLocation))
-		{
-			return;
-		}
-
-		UWorld* World = GetWorld();
-		if (!World)
-		{
-			return;
-		}
-
-		ClientArenaStreamingSourceActor = World->SpawnActor<AActor>(
-			AActor::StaticClass(), StreamingLocation, FRotator::ZeroRotator);
-		if (!ClientArenaStreamingSourceActor)
-		{
-			return;
-		}
-		ClientArenaStreamingSourceActor->SetFlags(RF_Transient);
-
-		// AActor::StaticClass()로 스폰한 순수 AActor는 기본 RootComponent가 없다.
-		// RootComponent가 없으면 GetActorLocation()이 항상 FVector::ZeroVector를 반환해서
-		// (SpawnActor에 넘긴 위치는 저장될 곳이 없어 버려짐) 이 스트리밍 소스가 실제로는
-		// 항상 월드 원점을 스트리밍하게 된다. 명시적으로 RootComponent를 만들어 위치를 박아둔다.
-		if (USceneComponent* RootComp = NewObject<USceneComponent>(
-			ClientArenaStreamingSourceActor,
-			USceneComponent::StaticClass(),
-			TEXT("ClientArenaStreamingSourceRoot")))
-		{
-			ClientArenaStreamingSourceActor->SetRootComponent(RootComp);
-			RootComp->RegisterComponent();
-			RootComp->SetWorldLocation(StreamingLocation);
-		}
-
-		ClientArenaStreamingSource = NewObject<UWorldPartitionStreamingSourceComponent>(
-			ClientArenaStreamingSourceActor,
-			UWorldPartitionStreamingSourceComponent::StaticClass(),
-			TEXT("ClientArenaStreamingSource"));
-		if (!ClientArenaStreamingSource)
-		{
-			ClientArenaStreamingSourceActor->Destroy();
-			ClientArenaStreamingSourceActor = nullptr;
-			return;
-		}
-
-		FStreamingSourceShape StreamingShape;
-		StreamingShape.bUseGridLoadingRange = false;
-		StreamingShape.Radius = ClientArenaStreamingRadius;
-		ClientArenaStreamingSource->Shapes.Add(StreamingShape);
-		ClientArenaStreamingSource->RegisterComponent();
-
-		// 워치독이 복구할 때 되돌릴 자리. 소스를 새로 세울 때마다 대기 시간도 같이 리셋한다.
-		ClientArenaSourceHomeLocation = StreamingLocation;
-		ClientArenaWaitSeconds = 0.0;
-		ClientArenaRecoveryHoldSeconds = 0.0;
-		ClientArenaRecoveryCount = 0;
-		bClientArenaSourceDisplaced = false;
-
-		UE_LOG(LogTemp, Display,
-			TEXT("[Arena] Client content wait started Location=%s Radius=%.0f"),
-			*StreamingLocation.ToString(),
-			ClientArenaStreamingRadius);
-	}
-
-	if (!ClientArenaContentTickerHandle.IsValid())
-	{
-		ClientArenaReadyStableFrames = 0;
-		ClientArenaContentTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
-			FTickerDelegate::CreateUObject(this, &AFirstPersonPlayerController::TickClientArenaContentReady));
-	}
+	ClientArenaReadyStableFrames = 0;
+	ClientArenaContentTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+		FTickerDelegate::CreateUObject(
+			this, &AFirstPersonPlayerController::TickClientArenaContentReady));
 }
 
 bool AFirstPersonPlayerController::TickClientArenaContentReady(float DeltaTime)
 {
 	constexpr int32 RequiredStableFrames = 3;
-	// 진전이 없다고 판단하기까지의 시간. 콜드 로딩(패키징 클라, 저사양)이 이보다 오래 걸리면
-	// 멀쩡한 로딩을 끊게 되므로 넉넉하게 잡는다.
 	constexpr double WatchdogTimeoutSeconds = 10.0;
-	// 소스를 치워둔 채 유지할 시간. 셀이 MakingVisible -> LoadedNotVisible 로 실제로 내려가야
-	// 다음 재진입에서 새 가시화 요청이 발행된다. 한 틱으로는 부족할 수 있어 여유를 둔다.
-	constexpr double RecoveryHoldSeconds = 0.25;
-	constexpr int32 MaxRecoveryAttempts = 3;
-	// 아레나 간격(기본 1km)보다 훨씬 멀리 — 어떤 아레나의 로딩 범위에도 안 걸리는 빈 좌표.
-	constexpr double RecoveryDisplacement = 10000000.0; // 100 km
-
-	// 복구 중에는 셀을 일부러 내려놓은 상태다. 이때 IsStreamingCompleted()는 "스트리밍할 게
-	// 없어서" true가 될 수 있으므로 준비 판정을 절대 돌리지 않는다.
-	if (bClientArenaSourceDisplaced)
-	{
-		ClientArenaRecoveryHoldSeconds += DeltaTime;
-		if (ClientArenaRecoveryHoldSeconds < RecoveryHoldSeconds)
-		{
-			return true;
-		}
-
-		bClientArenaSourceDisplaced = false;
-		ClientArenaRecoveryHoldSeconds = 0.0;
-		ClientArenaWaitSeconds = 0.0;
-		ClientArenaReadyStableFrames = 0;
-
-		if (ClientArenaStreamingSourceActor)
-		{
-			ClientArenaStreamingSourceActor->SetActorLocation(ClientArenaSourceHomeLocation);
-		}
-
-		UE_LOG(LogTemp, Warning,
-			TEXT("[Arena][Watchdog] Source restored Location=%s Attempt=%d/%d"),
-			*ClientArenaSourceHomeLocation.ToString(),
-			ClientArenaRecoveryCount,
-			MaxRecoveryAttempts);
-		return true;
-	}
-
 	UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
-		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>()
-		: nullptr;
-
-	const bool bStreamingCompleted = ClientArenaStreamingSource && ClientArenaStreamingSource->IsStreamingCompleted();
-	const bool bContentReady = ArenaSubsystem && ArenaSubsystem->IsArenaContentReady();
-	const bool bReady = bWaitingForArenaStart
-		&& IsLocalController()
-		&& bHasPendingArenaRequest
-		&& ClientArenaStreamingSource
-		&& bStreamingCompleted
-		&& ArenaSubsystem
-		&& bContentReady;
-
+		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>() : nullptr;
+	const bool bReady = bWaitingForArenaStart && IsLocalController()
+		&& bHasPendingArenaRequest && ArenaSubsystem
+		&& ArenaSubsystem->IsArenaContentReady();
 	if (!bReady)
 	{
 		ClientArenaReadyStableFrames = 0;
 		ClientArenaWaitSeconds += DeltaTime;
-
 		if (ClientArenaWaitSeconds >= WatchdogTimeoutSeconds)
 		{
 			ClientArenaWaitSeconds = 0.0;
-			++ClientArenaRecoveryCount;
-
-			// 어느 조건이 안 차는지를 반드시 같이 남긴다. Streaming=0 이면 셀 가시화가 막힌 것이고,
-			// Content=0 이면 셀은 왔는데 LevelInstance/Data Layer 쪽이 안 끝난 것이다.
-			UE_LOG(LogTemp, Warning,
-				TEXT("[Arena][Watchdog] Stalled Streaming=%d Content=%d HasSource=%d Home=%s Attempt=%d/%d"),
-				bStreamingCompleted ? 1 : 0,
-				bContentReady ? 1 : 0,
-				ClientArenaStreamingSource ? 1 : 0,
-				*ClientArenaSourceHomeLocation.ToString(),
-				ClientArenaRecoveryCount,
-				MaxRecoveryAttempts);
-
-			if (ClientArenaRecoveryCount > MaxRecoveryAttempts)
+			UE_LOG(LogTemp, Error,
+				TEXT("[ArenaLevels] Client content wait stalled Generation=%u ContentReady=%d Phase=%d"),
+				PendingGameplayGeneration,
+				ArenaSubsystem && ArenaSubsystem->IsArenaContentReady() ? 1 : 0,
+				ArenaSubsystem ? static_cast<int32>(ArenaSubsystem->GetGameplayReloadPhase()) : -1);
+			if (PendingGameplayGeneration == 0 && ArenaSubsystem)
 			{
-				UE_LOG(LogTemp, Error,
-					TEXT("[Arena][Watchdog] Recovery exhausted; the arena will not finish loading on this client"));
-				return true;
-			}
-
-			// 엔진에는 가시화 요청 재전송이 없다. 셀을 "필요 없음"으로 떨어뜨렸다가 다시 필요하게
-			// 만드는 왕복만이 InvalidateClientPendingRequest + 새 요청을 유발한다(LevelStreaming.cpp:1163).
-			if (ClientArenaStreamingSourceActor)
-			{
-				const FVector DisplacedLocation =
-					ClientArenaSourceHomeLocation + FVector(RecoveryDisplacement, 0.0, 0.0);
-				ClientArenaStreamingSourceActor->SetActorLocation(DisplacedLocation);
-				bClientArenaSourceDisplaced = true;
-				ClientArenaRecoveryHoldSeconds = 0.0;
-
-				UE_LOG(LogTemp, Warning,
-					TEXT("[Arena][Watchdog] Source displaced to %s for %.2fs to force a new visibility request"),
-					*DisplacedLocation.ToString(),
-					RecoveryHoldSeconds);
+				ArenaSubsystem->EnsureArenaLoaded();
 			}
 		}
 		return true;
 	}
-
 	if (++ClientArenaReadyStableFrames < RequiredStableFrames)
 	{
 		return true;
 	}
-
-	const int32 UsedRecoveryCount = ClientArenaRecoveryCount;
 	bWaitingForArenaStart = false;
 	bHasPendingArenaRequest = false;
 	ClientArenaReadyStableFrames = 0;
 	ClientArenaWaitSeconds = 0.0;
-	ClientArenaRecoveryHoldSeconds = 0.0;
-	ClientArenaRecoveryCount = 0;
-	bPreferServerArenaSpawnLocation = false;
 	ClientArenaContentTickerHandle.Reset();
-
-	// Listen은 이 Ready를 받은 서버가 그제야 Possess한다. 그 경우 Pawn 기반 기본
-	// streaming source가 생길 때까지 임시 source를 유지해 로딩 공백을 만들지 않는다.
-	if (GetPawn())
+	if (PendingGameplayGeneration != 0)
 	{
-		ReleaseClientArenaStreamingSource();
+		UE_LOG(LogTemp, Display,
+			TEXT("[ArenaReload][Client] SendReadyACK PC=%s Gen=%u TotalMs=%.1f StableFrames=%d"),
+			*GetNameSafe(this), PendingGameplayGeneration,
+			ClientGameplayReloadStartedAt > 0.0
+				? (FPlatformTime::Seconds() - ClientGameplayReloadStartedAt) * 1000.0 : -1.0,
+			RequiredStableFrames);
 	}
-
-	// RecoveryCount>0 으로 끝났다면 워치독이 실제로 살려낸 것이다 — 그 왕복이 동작한다는 증거라
-	// 반드시 남긴다(0이면 평소대로 통과한 것).
-	UE_LOG(LogTemp, Display,
-		TEXT("[Arena] Client content ready StableFrames=%d RecoveryCount=%d"),
-		RequiredStableFrames,
-		UsedRecoveryCount);
-	ServerNotifyArenaReady(PendingReconnectRequestId);
+	ServerNotifyArenaReady(PendingGameplayGeneration);
 	return false;
 }
 
@@ -1279,61 +1222,11 @@ void AFirstPersonPlayerController::ClearClientArenaContentWait()
 		FTSTicker::GetCoreTicker().RemoveTicker(ClientArenaContentTickerHandle);
 		ClientArenaContentTickerHandle.Reset();
 	}
-
-	ReleaseClientArenaStreamingSource();
 	ClientArenaReadyStableFrames = 0;
+	ClientArenaWaitSeconds = 0.0;
 	bWaitingForArenaStart = false;
 	bHasPendingArenaRequest = false;
-	bHasPendingArenaSpawnLocation = false;
-	bPreferServerArenaSpawnLocation = false;
-	ClientArenaWaitSeconds = 0.0;
-	ClientArenaRecoveryHoldSeconds = 0.0;
-	ClientArenaRecoveryCount = 0;
-	bClientArenaSourceDisplaced = false;
 }
-
-void AFirstPersonPlayerController::ReleaseClientArenaStreamingSource()
-{
-	if (ClientArenaStreamingSourceActor)
-	{
-		ClientArenaStreamingSourceActor->Destroy();
-	}
-	ClientArenaStreamingSource = nullptr;
-	ClientArenaStreamingSourceActor = nullptr;
-}
-
-bool AFirstPersonPlayerController::ResolveClientArenaStreamingLocation(FVector& OutLocation) const
-{
-	// 리로드 구간에서는 Pawn을 믿으면 안 된다. 서버는 이미 옛 폰을 Destroy하고 새 스테이지에
-	// 새 폰을 스폰했는데, 그 사실이 클라에 도착하기 전이면 GetPawn()은 "죽은 자리의 옛 폰"을
-	// 돌려준다. 그 좌표는 이미 스트리밍이 끝난 곳이라 IsStreamingCompleted()가 즉시 참이 되고,
-	// 클라는 새 목적지를 한 번도 요청하지 않은 채 준비 완료를 보고해버린다.
-	if (bPreferServerArenaSpawnLocation && bHasPendingArenaSpawnLocation)
-	{
-		OutLocation = PendingArenaSpawnLocation;
-		return true;
-	}
-
-	if (const APawn* ControlledPawn = GetPawn())
-	{
-		OutLocation = ControlledPawn->GetActorLocation();
-		return true;
-	}
-
-	// 아직 Possess 전이라 실제 Pawn 위치를 모른다. 레벨 액터(PlayerStart 등)를 뒤져서
-	// 추측하지 않고, 서버가 스폰 시점에 계산해서 넘겨준 실제 스폰 위치를 그대로 쓴다
-	// (레벨에 해당 액터가 없거나 여러 개라 잘못 고르는 문제 자체를 없앤다).
-	if (bHasPendingArenaSpawnLocation)
-	{
-		OutLocation = PendingArenaSpawnLocation;
-		return true;
-	}
-
-	UE_LOG(LogTemp, Warning,
-		TEXT("[Arena] ResolveClientArenaStreamingLocation failed: no Pawn and no server-provided spawn location"));
-	return false;
-}
-
 void AFirstPersonPlayerController::ServerOpenInGameSetting_Implementation()
 {
 	if (!InGameSettingWidgetClass)

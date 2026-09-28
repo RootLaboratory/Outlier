@@ -7,6 +7,13 @@
 #include "OutlierArenaSettings.h"
 #include "OutlierGameInstance.h"
 
+#if WITH_EDITOR
+#include "Engine/LevelStreaming.h"
+#include "Engine/LevelStreamingDynamic.h"
+#include "Engine/World.h"
+#include "Misc/PackageName.h"
+#endif
+
 namespace
 {
 FOutlierArenaHandoffRequest MakeHandoffRequest(
@@ -84,6 +91,56 @@ bool FOutlierArenaMapContractTest::RunTest(const FString& Parameters)
 		Settings->MatchesArenaPackageName(TEXT("/Game/Maps/OtherArena")));
 	return true;
 }
+
+#if WITH_EDITOR
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierArenaGameplayPlacementTest,
+	"Outlier.Network.SingleArena.GameplayPlacement",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierArenaGameplayPlacementTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
+	UWorld* ArenaMap = Settings ? Settings->ArenaLevel.LoadSynchronous() : nullptr;
+	if (!TestNotNull(TEXT("Configured Arena map loads"), ArenaMap))
+	{
+		return false;
+	}
+
+	TestFalse(TEXT("Arena Persistent is not a reloadable Gameplay level"),
+		UOutlierArenaSubsystem::IsGameplaySublevelPackage(
+			ArenaMap, Settings->GetArenaPackageName()));
+	TestFalse(TEXT("An unrelated map is not a Gameplay level"),
+		UOutlierArenaSubsystem::IsGameplaySublevelPackage(
+			ArenaMap, TEXT("/Game/Maps/Unrelated")));
+
+	const ULevelStreaming* GameplayLevel = nullptr;
+	for (const ULevelStreaming* Level : ArenaMap->GetStreamingLevels())
+	{
+		if (Level && Level->IsA<ULevelStreamingDynamic>())
+		{
+			GameplayLevel = Level;
+			break;
+		}
+	}
+	if (!TestNotNull(TEXT("Arena declares a Gameplay streaming sublevel"), GameplayLevel))
+	{
+		return false;
+	}
+
+	const FString GameplayPackage = UWorld::RemovePIEPrefix(
+		GameplayLevel->GetWorldAssetPackageName());
+	TestTrue(TEXT("Declared Gameplay level is reloadable"),
+		UOutlierArenaSubsystem::IsGameplaySublevelPackage(ArenaMap, GameplayPackage));
+	const FString PIEPackage = FPackageName::GetLongPackagePath(GameplayPackage)
+		+ TEXT("/UEDPIE_1_") + FPackageName::GetShortName(GameplayPackage);
+	TestTrue(TEXT("PIE package resolves to the same Gameplay level"),
+		UOutlierArenaSubsystem::IsGameplaySublevelPackage(ArenaMap, PIEPackage));
+	return true;
+}
+#endif
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FOutlierArenaHandoffUrlContractTest,

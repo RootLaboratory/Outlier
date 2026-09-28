@@ -10,9 +10,10 @@
 class UPartnerCamUI;
 class UStaticCrossHair;
 class UAbilityIconUI;
-class UDamageFeedBackWidget;
 class UPartnerLeftHudWidget;
 class UPartnerRightHudWidget;
+class UPartnerHPUI;
+class UPartnerHealthUI;
 //HP Delegate;
 
 UENUM(BlueprintType)
@@ -57,9 +58,6 @@ public:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UAbilityIconUI> AbilityEMPIcon;
-
-	UPROPERTY(meta = (BindWidget))
-	TObjectPtr<UDamageFeedBackWidget> DamageFeedbackUI;
 
 private:
 	void CacheNestedHudWidgets();

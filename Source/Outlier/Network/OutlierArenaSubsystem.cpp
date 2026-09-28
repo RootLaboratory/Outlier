@@ -1,127 +1,334 @@
-// Fill out your copyright notice in the Description page of Project Settings.
-
 #include "Network/OutlierArenaSubsystem.h"
 
 #include "Engine/Engine.h"
 #include "Engine/Level.h"
+#include "Engine/LevelStreaming.h"
+#include "Engine/LevelStreamingAlwaysLoaded.h"
 #include "Engine/LevelStreamingDynamic.h"
-#include "Engine/NetConnection.h"
 #include "GameFramework/Actor.h"
-#include "GameFramework/Character.h"
-#include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/UpdateLevelVisibilityLevelInfo.h"
 #include "GameFramework/WorldSettings.h"
-#include "LevelInstance/LevelInstanceInterface.h"
-#include "Misc/PackageName.h"
+#include "HAL/PlatformTime.h"
 #include "OutlierArenaSettings.h"
-#include "TimerManager.h"
-#include "UObject/UObjectGlobals.h"
-#include "WorldPartition/DataLayer/DataLayerAsset.h"
-#include "WorldPartition/DataLayer/DataLayerInstance.h"
-#include "WorldPartition/DataLayer/DataLayerManager.h"
-#include "WorldPartition/WorldPartitionRuntimeCell.h"
-#include "WorldPartition/WorldPartitionRuntimeCellInterface.h"
-#include "WorldPartition/WorldPartitionStreamingSource.h"
-#include "WorldPartition/WorldPartitionSubsystem.h"
+#include "Engine/NetConnection.h"
+#include "Misc/PackageName.h"
+
+#if WITH_EDITOR
+#include "Misc/DataValidation.h"
+#endif
+
+namespace
+{
+	const TCHAR* GetArenaReloadRole(const UWorld* World)
+	{
+		if (!World)
+		{
+			return TEXT("NoWorld");
+		}
+		switch (World->GetNetMode())
+		{
+		case NM_ListenServer: return TEXT("ListenServer");
+		case NM_DedicatedServer: return TEXT("DedicatedServer");
+		case NM_Client: return TEXT("Client");
+		default: return TEXT("Standalone");
+		}
+	}
+
+	int32 CountGameplayActors(const ULevel* Level)
+	{
+		int32 Count = 0;
+		if (Level)
+		{
+			for (const AActor* Actor : Level->Actors)
+			{
+				Count += Actor && !Actor->IsA<AWorldSettings>() ? 1 : 0;
+			}
+		}
+		return Count;
+	}
+
+	bool IsGameplayLevelUnloaded(const ULevelStreaming* Level)
+	{
+		return Level && !Level->IsLevelLoaded() && !Level->IsLevelVisible()
+			&& !Level->GetLoadedLevel();
+	}
+
+	bool IsGameplayLevelShown(const ULevelStreaming* Level)
+	{
+		return Level && Level->IsLevelLoaded() && Level->IsLevelVisible()
+			&& Level->GetLoadedLevel();
+	}
+}
 
 void UOutlierArenaSubsystem::Deinitialize()
 {
-	for (const TWeakObjectPtr<UDataLayerManager>& ManagerPtr : BoundGameplayDataLayerManagers)
+	if (ArenaPollTickerHandle.IsValid())
 	{
-		if (UDataLayerManager* Manager = ManagerPtr.Get())
-		{
-			Manager->OnDataLayerInstanceRuntimeStateChanged.RemoveAll(this);
-		}
+		FTSTicker::GetCoreTicker().RemoveTicker(ArenaPollTickerHandle);
+		ArenaPollTickerHandle.Reset();
 	}
-	BoundGameplayDataLayerManagers.Reset();
-
-	for (const TPair<TWeakObjectPtr<UWorldPartitionSubsystem>, FDelegateHandle>& Pair : GameplayStreamingStateHandles)
-	{
-		if (UWorldPartitionSubsystem* Subsystem = Pair.Key.Get())
-		{
-			Subsystem->OnStreamingStateUpdated().Remove(Pair.Value);
-		}
-	}
-	GameplayStreamingStateHandles.Reset();
-
-	if (GameplayGarbageCollectCompleteHandle.IsValid())
-	{
-		FCoreUObjectDelegates::GarbageCollectComplete.Remove(GameplayGarbageCollectCompleteHandle);
-		GameplayGarbageCollectCompleteHandle.Reset();
-	}
-
-	if (PendingGameplayReload.IsSet())
-	{
-		for (const TWeakObjectPtr<AActor>& ActorPtr : PendingGameplayReload->TrackedActors)
-		{
-			if (AActor* Actor = ActorPtr.Get())
-			{
-				Actor->OnEndPlay.RemoveAll(this);
-			}
-		}
-		PendingGameplayReload.Reset();
-	}
-
-	if (UWorld* World = GetWorld())
-	{
-		World->GetTimerManager().ClearAllTimersForObject(this);
-	}
-
+	PendingGameplayReload.Reset();
+	GameplayStreamingLevels.Reset();
+	ReleasingLevels.Reset();
 	Super::Deinitialize();
 }
 
 void UOutlierArenaSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 {
 	Super::OnWorldBeginPlay(InWorld);
-
 	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
 	ArenaLevel = Settings->ArenaLevel;
-	GameplayDataLayer = Settings->GameplayDataLayer;
-
+	InitialLoadStartTime = FPlatformTime::Seconds();
 	if (ArenaLevel.IsNull())
 	{
-		UE_LOG(LogTemp, Error, TEXT("[ArenaSubsystem] ArenaLevel is not set"));
+		UE_LOG(LogTemp, Error, TEXT("[ArenaLevels] Configure ArenaLevel in Outlier Arena settings"));
 		return;
 	}
 
 	if (Settings->ShouldUseExternalArenaHandoff(InWorld.GetNetMode()) && !IsPersistentArenaWorld())
 	{
-		UE_LOG(LogTemp, Display, TEXT("[ArenaSubsystem] Skipping Arena preload because Static Handoff uses an external Worker"));
+		// Dedicated Lobby는 연결만 넘긴다. 실제 Arena 월드는 별도 워커 프로세스가 소유한다.
 		return;
 	}
 
 	if (IsPersistentArenaWorld())
 	{
-		Arena = FOutlierArenaInstance();
+		// 전용 워커는 Arena 월드에 등록된 Blueprint 스트리밍 레벨을 그대로 사용한다.
 		Arena.ArenaWorld = &InWorld;
 		Arena.InstanceTransform = FTransform::Identity;
-		Arena.bReady = true;
-		EnsureArenaGameplayDataActivated();
+		if (ResolvePersistentGameplayLevels())
+		{
+			RequestGameplayLevelsLoaded(true);
+			bInitialGameplayLevelsRequested = true;
+			EnsureArenaPollTicker();
+		}
 		return;
 	}
 
 	if (InWorld.GetNetMode() == NM_ListenServer)
 	{
+		// Listen의 실제 Persistent Level은 Title이다. Arena에 등록된 서브레벨은
+		// Title에 자동 등록되지 않으므로 Arena 맵의 Levels 목록을 읽어 형제로 로드한다.
 		PreloadArena();
+	}
+}
+
+bool UOutlierArenaSubsystem::IsGameplayLevelsConfigured() const
+{
+	if (!bGameplayLevelsResolved || GameplaySublevels.Num() > 4)
+	{
+		return false;
+	}
+	TSet<FString> Packages;
+	for (const TSoftObjectPtr<UWorld>& Map : GameplaySublevels)
+	{
+		const FString Package = Map.ToSoftObjectPath().GetLongPackageName();
+		if (Package.IsEmpty() || Package == ArenaLevel.ToSoftObjectPath().GetLongPackageName()
+			|| Packages.Contains(Package))
+		{
+			return false;
+		}
+		Packages.Add(Package);
+	}
+	return true;
+}
+
+bool UOutlierArenaSubsystem::ResolveGameplaySublevels(const UWorld* ArenaWorld)
+{
+	GameplaySublevels.Reset();
+	bGameplayLevelsResolved = false;
+	if (!ArenaWorld)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[ArenaLevels] Arena map is unavailable for sublevel discovery"));
+		return false;
+	}
+	for (const ULevelStreaming* StreamingLevel : ArenaWorld->GetStreamingLevels())
+	{
+		if (!StreamingLevel || StreamingLevel->IsA<ULevelStreamingAlwaysLoaded>())
+		{
+			continue;
+		}
+		if (!StreamingLevel->IsA<ULevelStreamingDynamic>())
+		{
+			UE_LOG(LogTemp, Error, TEXT("[ArenaLevels] Unsupported gameplay streaming type for %s"),
+				*StreamingLevel->GetWorldAssetPackageName());
+			GameplaySublevels.Reset();
+			return false;
+		}
+		const FString Package = UWorld::RemovePIEPrefix(StreamingLevel->GetWorldAssetPackageName());
+		if (Package.IsEmpty())
+		{
+			UE_LOG(LogTemp, Error, TEXT("[ArenaLevels] Arena contains a streaming level without a map"));
+			GameplaySublevels.Reset();
+			return false;
+		}
+		const FSoftObjectPath MapPath(Package + TEXT(".") + FPackageName::GetShortName(Package));
+		GameplaySublevels.Add(TSoftObjectPtr<UWorld>(MapPath));
+	}
+	bGameplayLevelsResolved = true;
+	if (!IsGameplayLevelsConfigured())
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("[ArenaLevels] Arena map must contain at most 4 unique Blueprint-streamed gameplay sublevels"));
+		GameplaySublevels.Reset();
+		bGameplayLevelsResolved = false;
+		return false;
+	}
+	if (GameplaySublevels.IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[ArenaLevels] Arena has no gameplay sublevels; keeping the current Arena map and using a no-op level reload"));
+	}
+	return true;
+}
+
+bool UOutlierArenaSubsystem::ResolvePersistentGameplayLevels()
+{
+	UWorld* World = GetWorld();
+	if (!World || !IsPersistentArenaWorld() || !ResolveGameplaySublevels(World))
+	{
+		return false;
+	}
+	GameplayStreamingLevels.Reset();
+	for (ULevelStreaming* StreamingLevel : World->GetStreamingLevels())
+	{
+		if (!StreamingLevel || StreamingLevel->IsA<ULevelStreamingAlwaysLoaded>())
+		{
+			continue;
+		}
+		GameplayStreamingLevels.Add(StreamingLevel);
+		UE_LOG(LogTemp, Display,
+			TEXT("[ArenaLoad][%s] Registered gameplay sublevel Map=%s Instance=%s"),
+			GetArenaReloadRole(World),
+			*UWorld::RemovePIEPrefix(StreamingLevel->GetWorldAssetPackageName()),
+			*StreamingLevel->GetWorldAssetPackageName());
+	}
+	return GameplayStreamingLevels.Num() == GameplaySublevels.Num();
+}
+
+ULevelStreamingDynamic* UOutlierArenaSubsystem::LoadLevelInstance(
+	const TSoftObjectPtr<UWorld>& Map, const FString& InstanceName)
+{
+	UWorld* World = GetWorld();
+	if (!World || Map.IsNull())
+	{
+		return nullptr;
+	}
+	bool bSuccess = false;
+	ULevelStreamingDynamic* Level = ULevelStreamingDynamic::LoadLevelInstanceBySoftObjectPtr(
+		World, Map, Arena.InstanceTransform.GetLocation(),
+		Arena.InstanceTransform.GetRotation().Rotator(), bSuccess, InstanceName);
+	if (!bSuccess || !Level)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[ArenaLevels] Failed to create %s from %s"),
+			*InstanceName, *Map.ToSoftObjectPath().ToString());
+		return nullptr;
+	}
+	Level->SetShouldBeLoaded(true);
+	Level->SetShouldBeVisible(true);
+	UE_LOG(LogTemp, Display,
+		TEXT("[ArenaLoad][%s] Requested instance=%s Map=%s"),
+		GetArenaReloadRole(World), *Level->GetWorldAssetPackageName(),
+		*Map.ToSoftObjectPath().GetLongPackageName());
+	return Level;
+}
+
+void UOutlierArenaSubsystem::PreloadArena()
+{
+	if (!GetWorld() || ArenaLevel.IsNull() || Arena.StreamingLevel || bPreloadAfterRelease)
+	{
+		return;
+	}
+	Arena = FOutlierArenaInstance();
+	GameplaySublevels.Reset();
+	bGameplayLevelsResolved = false;
+	Arena.InstanceTransform = FTransform::Identity;
+	Arena.StreamingLevel = LoadLevelInstance(ArenaLevel, TEXT("OutlierArena"));
+	bArenaShownBroadcast = false;
+	bInitialGameplayLevelsRequested = false;
+	bInitialLoadStallLogged = false;
+	InitialLoadStartTime = FPlatformTime::Seconds();
+	EnsureArenaPollTicker();
+}
+
+bool UOutlierArenaSubsystem::CreateListenGameplayLevels()
+{
+	if (!GetWorld() || !Arena.StreamingLevel || GameplayStreamingLevels.Num() != 0)
+	{
+		return false;
+	}
+	// 로드된 Arena와 같은 맵 에셋의 Levels 목록을 사용한다. 동적 인스턴스의
+	// 서브레벨은 Title 월드에 자동 등록되지 않아 별도 인스턴스로 생성한다.
+	const UWorld* ArenaMap = GetArenaWorld();
+	if (!ArenaMap || ArenaMap->GetStreamingLevels().IsEmpty())
+	{
+		ArenaMap = ArenaLevel.LoadSynchronous();
+	}
+	if (!ResolveGameplaySublevels(ArenaMap))
+	{
+		bInitialGameplayLevelsRequested = true;
+		return false;
+	}
+	for (int32 Index = 0; Index < GameplaySublevels.Num(); ++Index)
+	{
+		const FString Name = FString::Printf(TEXT("OutlierGameplay%02d"), Index + 1);
+		ULevelStreamingDynamic* Level = LoadLevelInstance(GameplaySublevels[Index], Name);
+		if (!Level)
+		{
+			for (ULevelStreaming* Created : GameplayStreamingLevels)
+			{
+				Created->SetShouldBeVisible(false);
+				Created->SetShouldBeLoaded(false);
+				Created->SetIsRequestingUnloadAndRemoval(true);
+			}
+			GameplayStreamingLevels.Reset();
+			bInitialGameplayLevelsRequested = true; // 틱마다 같은 이름의 인스턴스를 중복 생성하지 않는다.
+			return false;
+		}
+		GameplayStreamingLevels.Add(Level);
+	}
+	bInitialGameplayLevelsRequested = true;
+	return true;
+}
+
+void UOutlierArenaSubsystem::EnsureArenaLoaded()
+{
+	UWorld* World = GetWorld();
+	if (!World || World->GetNetMode() != NM_Client || ArenaLevel.IsNull())
+	{
+		return;
+	}
+	if (IsPersistentArenaWorld())
+	{
+		if (GameplayStreamingLevels.IsEmpty() && ResolvePersistentGameplayLevels())
+		{
+			RequestGameplayLevelsLoaded(true);
+			bInitialGameplayLevelsRequested = true;
+		}
+		EnsureArenaPollTicker();
+		return;
+	}
+	if (!Arena.StreamingLevel)
+	{
+		PreloadArena();
+	}
+	else
+	{
+		Arena.StreamingLevel->SetShouldBeLoaded(true);
+		Arena.StreamingLevel->SetShouldBeVisible(true);
+		EnsureArenaPollTicker();
 	}
 }
 
 FOutlierArenaInstance* UOutlierArenaSubsystem::AcquireArena()
 {
-	RefreshArenaReadyState(TEXT("AcquireArena"));
-	if (Arena.StreamingLevel)
-	{
-		Arena.bReady = IsStreamingArenaReady(Arena.StreamingLevel)
-			|| Arena.StreamingLevel->IsLevelLoaded();
-	}
-
+	RefreshArenaReadyState();
 	if (Arena.bInUse || !Arena.bReady)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[ArenaSubsystem] AcquireArena failed: single Arena is busy or not ready"));
+		UE_LOG(LogTemp, Warning, TEXT("[ArenaLevels] AcquireArena rejected: content not ready or busy"));
 		return nullptr;
 	}
-
 	Arena.bInUse = true;
 	return &Arena;
 }
@@ -131,105 +338,124 @@ void UOutlierArenaSubsystem::ReleaseArena()
 	Arena.bInUse = false;
 	Arena.PairId = INDEX_NONE;
 	OnArenaReleased.Broadcast();
-
 	if (!Arena.StreamingLevel)
 	{
-		return;
+		return; // Worker leaves its real Persistent map when the process exits.
 	}
-
 	Arena.bReady = false;
-	ULevelStreamingDynamic* OldStreamingLevel = Arena.StreamingLevel;
+	bArenaShownBroadcast = false;
+	PendingGameplayReload.Reset();
+	bPreloadAfterRelease = true;
+	for (ULevelStreaming* Level : GameplayStreamingLevels)
+	{
+		if (Level)
+		{
+			Level->SetShouldBeVisible(false);
+			Level->SetShouldBeLoaded(false);
+			Level->SetIsRequestingUnloadAndRemoval(true);
+			ReleasingLevels.Add(Level);
+		}
+	}
+	GameplayStreamingLevels.Reset();
+	Arena.StreamingLevel->SetShouldBeVisible(false);
+	Arena.StreamingLevel->SetShouldBeLoaded(false);
+	Arena.StreamingLevel->SetIsRequestingUnloadAndRemoval(true);
+	ReleasingLevels.Add(Arena.StreamingLevel);
 	Arena.StreamingLevel = nullptr;
-	OldStreamingLevel->SetShouldBeLoaded(false);
-	OldStreamingLevel->SetShouldBeVisible(false);
-	OldStreamingLevel->SetIsRequestingUnloadAndRemoval(true);
-	Arena.StreamingLevel = LoadArenaLevelInstance(Arena.InstanceTransform);
-	Arena.bReady = IsStreamingArenaReady(Arena.StreamingLevel);
+	EnsureArenaPollTicker();
 }
 
-void UOutlierArenaSubsystem::ReloadArena()
+void UOutlierArenaSubsystem::RequestGameplayLevelsLoaded(bool bLoaded)
 {
-	if (!Arena.StreamingLevel)
+	for (ULevelStreaming* Level : GameplayStreamingLevels)
+	{
+		if (!Level)
+		{
+			continue;
+		}
+		if (bLoaded)
+		{
+			Level->SetShouldBeLoaded(true);
+			Level->SetShouldBeVisible(true);
+		}
+		else
+		{
+			Level->SetShouldBeVisible(false);
+			Level->SetShouldBeLoaded(false);
+		}
+	}
+}
+
+bool UOutlierArenaSubsystem::AreGameplayLevelsUnloaded() const
+{
+	if (!IsGameplayLevelsConfigured()
+		|| GameplayStreamingLevels.Num() != GameplaySublevels.Num())
+	{
+		return false;
+	}
+	for (const ULevelStreaming* Level : GameplayStreamingLevels)
+	{
+		if (!IsGameplayLevelUnloaded(Level))
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+bool UOutlierArenaSubsystem::AreGameplayLevelsShown() const
+{
+	if (!IsGameplayLevelsConfigured()
+		|| GameplayStreamingLevels.Num() != GameplaySublevels.Num())
+	{
+		return false;
+	}
+	for (const ULevelStreaming* Level : GameplayStreamingLevels)
+	{
+		if (!IsGameplayLevelShown(Level))
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+bool UOutlierArenaSubsystem::IsGameplayLevelsReady() const
+{
+	return !PendingGameplayReload.IsSet() && AreGameplayLevelsShown();
+}
+
+bool UOutlierArenaSubsystem::IsArenaContentReady() const
+{
+	return Arena.bReady && IsGameplayLevelsReady();
+}
+
+bool UOutlierArenaSubsystem::IsArenaReady() const
+{
+	return Arena.bReady;
+}
+
+void UOutlierArenaSubsystem::RefreshArenaReadyState()
+{
+	if (bPreloadAfterRelease || PendingGameplayReload.IsSet())
 	{
 		return;
 	}
-
-	Arena.bReady = false;
-	BeginDeferredReload(Arena.StreamingLevel);
-}
-
-const UWorld* UOutlierArenaSubsystem::ResolveDataLayerWorld() const
-{
-	if (const UWorld* ArenaWorld = GetArenaWorld())
+	const bool bStaticReady = IsPersistentArenaWorld()
+		? GetWorld() && GetWorld()->PersistentLevel
+		: Arena.StreamingLevel && Arena.StreamingLevel->IsLevelLoaded()
+			&& Arena.StreamingLevel->IsLevelVisible() && Arena.StreamingLevel->GetLoadedLevel();
+	Arena.bReady = bStaticReady && AreGameplayLevelsShown();
+	if (Arena.bReady && !bArenaShownBroadcast)
 	{
-		return ArenaWorld;
+		bArenaShownBroadcast = true;
+		UE_LOG(LogTemp, Display,
+			TEXT("[ArenaLoad][%s] Initial content ready Persistent=%s PersistentActors=%d GameplayLevels=%d"),
+			GetArenaReloadRole(GetWorld()), *GetNameSafe(GetArenaLoadedLevel()),
+			CountGameplayActors(GetArenaLoadedLevel()), GameplayStreamingLevels.Num());
+		// LogGameplayLevelState(0, TEXT("InitialReady"));
+		OnArenaShown.Broadcast();
 	}
-	return GetWorld();
-}
-
-const UDataLayerInstance* UOutlierArenaSubsystem::ResolveGameplayDataLayer() const
-{
-	if (GameplayDataLayer.IsNull() || !GetWorld())
-	{
-		return nullptr;
-	}
-
-	const UWorld* DataLayerWorld = ResolveDataLayerWorld();
-	UDataLayerManager* Manager = UDataLayerManager::GetDataLayerManager(DataLayerWorld);
-	UDataLayerAsset* Asset = GameplayDataLayer.LoadSynchronous();
-	return Manager && Asset ? Manager->GetDataLayerInstance(Asset) : nullptr;
-}
-
-bool UOutlierArenaSubsystem::SetGameplayDataLayerState(EDataLayerRuntimeState State) const
-{
-	const UDataLayerInstance* Instance = ResolveGameplayDataLayer();
-	UDataLayerManager* Manager = UDataLayerManager::GetDataLayerManager(ResolveDataLayerWorld());
-	if (!Manager || !Instance)
-	{
-		return false;
-	}
-	return Manager->SetDataLayerInstanceRuntimeState(Instance, State, false);
-}
-
-bool UOutlierArenaSubsystem::IsGameplayDataLayerAvailable() const
-{
-	return ResolveGameplayDataLayer() != nullptr;
-}
-
-bool UOutlierArenaSubsystem::IsGameplayDataLayerState(EDataLayerRuntimeState State) const
-{
-	const UDataLayerInstance* Instance = ResolveGameplayDataLayer();
-	UDataLayerManager* Manager = UDataLayerManager::GetDataLayerManager(ResolveDataLayerWorld());
-	if (!Manager || !Instance
-		|| Manager->GetDataLayerInstanceEffectiveRuntimeState(Instance) != State)
-	{
-		return false;
-	}
-
-	UWorldPartitionSubsystem* WorldPartitionSubsystem = GetWorld()
-		? GetWorld()->GetSubsystem<UWorldPartitionSubsystem>()
-		: nullptr;
-	if (!WorldPartitionSubsystem)
-	{
-		return false;
-	}
-
-	FWorldPartitionStreamingQuerySource QuerySource;
-	QuerySource.bDataLayersOnly = true;
-	QuerySource.bSpatialQuery = false;
-	QuerySource.DataLayers.Add(Instance->GetDataLayerFName());
-
-	EWorldPartitionRuntimeCellState CellState = EWorldPartitionRuntimeCellState::Unloaded;
-	if (State == EDataLayerRuntimeState::Loaded)
-	{
-		CellState = EWorldPartitionRuntimeCellState::Loaded;
-	}
-	else if (State == EDataLayerRuntimeState::Activated)
-	{
-		CellState = EWorldPartitionRuntimeCellState::Activated;
-	}
-
-	return WorldPartitionSubsystem->IsStreamingCompleted(CellState, { QuerySource }, true);
 }
 
 uint32 UOutlierArenaSubsystem::ReserveGameplayGeneration()
@@ -238,34 +464,246 @@ uint32 UOutlierArenaSubsystem::ReserveGameplayGeneration()
 	{
 		return 0;
 	}
-
-	++GameplayGeneration;
-	if (GameplayGeneration == 0)
+	if (++GameplayGeneration == 0)
 	{
 		++GameplayGeneration;
 	}
 	return GameplayGeneration;
 }
 
+void UOutlierArenaSubsystem::CaptureGameplayReloadActors(FPendingGameplayReload& Pending)
+{
+	Pending.StableArenaLevel = GetArenaLoadedLevel();
+	// Pending.OldActorCounts.SetNumZeroed(GameplayStreamingLevels.Num());
+	// Pending.OldActorsByLevel.SetNum(GameplayStreamingLevels.Num());
+	// Pending.UnloadedLevelLogged.Init(0, GameplayStreamingLevels.Num());
+	// Pending.ShownLevelLogged.Init(0, GameplayStreamingLevels.Num());
+	for (int32 Index = 0; Index < GameplayStreamingLevels.Num(); ++Index)
+	{
+		const ULevel* Loaded = GameplayStreamingLevels[Index]
+			? GameplayStreamingLevels[Index]->GetLoadedLevel() : nullptr;
+		if (!Loaded)
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("[ArenaReload][%s] Gen=%u Capture missing loaded level Index=%d Map=%s"),
+				GetArenaReloadRole(GetWorld()), Pending.Generation, Index,
+				*GameplaySublevels[Index].ToSoftObjectPath().GetLongPackageName());
+			continue;
+		}
+		for (AActor* Actor : Loaded->Actors)
+		{
+			if (Actor && !Actor->IsA<AWorldSettings>())
+			{
+				Pending.OldActors.Add(Actor);
+				// Pending.OldActorsByLevel[Index].Add(Actor);
+				// ++Pending.OldActorCounts[Index];
+			}
+		}
+	}
+	UE_LOG(LogTemp, Display,
+		TEXT("[ArenaReload][%s] Gen=%u Begin Levels=%d OldActors=%d Persistent=%s PersistentActors=%d"),
+		GetArenaReloadRole(GetWorld()), Pending.Generation, GameplayStreamingLevels.Num(),
+		Pending.OldActors.Num(), *GetNameSafe(Pending.StableArenaLevel.Get()),
+		CountGameplayActors(Pending.StableArenaLevel.Get()));
+	// LogGameplayLevelState(Pending.Generation, TEXT("BeforeUnload"));
+}
+
+/*
+void UOutlierArenaSubsystem::LogGameplayLevelState(uint32 Generation, const TCHAR* Event) const
+{
+	const FPendingGameplayReload* Pending = PendingGameplayReload.IsSet()
+		? &PendingGameplayReload.GetValue() : nullptr;
+	const double ElapsedMs = Pending
+		? (FPlatformTime::Seconds() - Pending->ReloadStartTime) * 1000.0 : 0.0;
+	for (int32 Index = 0; Index < GameplaySublevels.Num(); ++Index)
+	{
+		const ULevelStreaming* Level = GameplayStreamingLevels.IsValidIndex(Index)
+			? GameplayStreamingLevels[Index].Get() : nullptr;
+		UE_LOG(LogTemp, Display,
+			TEXT("[ArenaReload][%s] Gen=%u Event=%s Index=%d Map=%s Instance=%s Loaded=%d Visible=%d Actors=%d OldActors=%d ElapsedMs=%.1f"),
+			GetArenaReloadRole(GetWorld()), Generation, Event, Index,
+			*GameplaySublevels[Index].ToSoftObjectPath().GetLongPackageName(),
+			Level ? *Level->GetWorldAssetPackageName() : TEXT("null"),
+			Level && Level->IsLevelLoaded() ? 1 : 0,
+			Level && Level->IsLevelVisible() ? 1 : 0,
+			CountGameplayActors(Level ? Level->GetLoadedLevel() : nullptr),
+			Pending && Pending->OldActorCounts.IsValidIndex(Index)
+				? Pending->OldActorCounts[Index] : 0, ElapsedMs);
+	}
+}
+*/
+
+bool UOutlierArenaSubsystem::ReloadGameplayLevels(uint32 Generation, bool bWaitForClientAcks)
+{
+	// 전용 워커는 실제 Arena Persistent 아래의 등록된 스트리밍 레벨을 전환한다.
+	// Listen은 Title에 동적으로 만든 Arena 지형과 게임플레이 레벨 중 뒤의 목록만 전환한다.
+	// 서브레벨이 없는 맵은 양쪽 모두 Arena를 유지하며 ACK/재시작 흐름만 진행한다.
+	if (!GetWorld() || GetWorld()->GetNetMode() == NM_Client || Generation == 0
+		|| Generation != GameplayGeneration || PendingGameplayReload.IsSet()
+		|| !AreGameplayLevelsShown() || !GetArenaLoadedLevel())
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("[ArenaReload][%s] Reject server reload Gen=%u CurrentGen=%u Phase=%s LevelsReady=%d Persistent=%s"),
+			GetArenaReloadRole(GetWorld()), Generation, GameplayGeneration,
+			*UEnum::GetValueAsString(GetGameplayReloadPhase()),
+			AreGameplayLevelsShown() ? 1 : 0, *GetNameSafe(GetArenaLoadedLevel()));
+		return false;
+	}
+	if (GameplaySublevels.IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[ArenaReload][%s] Gen=%u No gameplay sublevels; Arena map and placed actors remain loaded"),
+			GetArenaReloadRole(GetWorld()), Generation);
+	}
+	PendingGameplayReload.Emplace();
+	FPendingGameplayReload& Pending = PendingGameplayReload.GetValue();
+	Pending.Generation = Generation;
+	Pending.Phase = EOutlierGameplayReloadPhase::WaitingForUnload;
+	Pending.PhaseStartTime = FPlatformTime::Seconds();
+	Pending.ReloadStartTime = Pending.PhaseStartTime;
+	Pending.bCanLoad = !bWaitForClientAcks;
+	CaptureGameplayReloadActors(Pending);
+	UE_LOG(LogTemp, Display,
+		TEXT("[ArenaReload][%s] Gen=%u UnloadRequested WaitClientAcks=%d"),
+		GetArenaReloadRole(GetWorld()), Generation, bWaitForClientAcks ? 1 : 0);
+	Arena.bReady = false;
+	OnArenaGameplayReloadStarted.Broadcast(Generation);
+	RequestGameplayLevelsLoaded(false);
+	EnsureArenaPollTicker();
+	return true;
+}
+
+bool UOutlierArenaSubsystem::BeginClientGameplayReload(uint32 Generation)
+{
+	if (!GetWorld() || GetWorld()->GetNetMode() != NM_Client
+		|| !IsGameplayGenerationNewer(Generation, GameplayGeneration)
+		|| PendingGameplayReload.IsSet() || !IsGameplayLevelsConfigured()
+		|| GameplayStreamingLevels.Num() != GameplaySublevels.Num()
+		|| !GetArenaLoadedLevel())
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("[ArenaReload][Client] Reject client reload Gen=%u CurrentGen=%u Phase=%s Levels=%d/%d Persistent=%s"),
+			Generation, GameplayGeneration,
+			*UEnum::GetValueAsString(GetGameplayReloadPhase()),
+			GameplayStreamingLevels.Num(), GameplaySublevels.Num(),
+			*GetNameSafe(GetArenaLoadedLevel()));
+		return false;
+	}
+	if (GameplaySublevels.IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[ArenaReload][Client] Gen=%u No gameplay sublevels; Arena map and placed actors remain loaded"),
+			Generation);
+	}
+	GameplayGeneration = Generation;
+	PendingGameplayReload.Emplace();
+	FPendingGameplayReload& Pending = PendingGameplayReload.GetValue();
+	Pending.Generation = Generation;
+	Pending.Phase = EOutlierGameplayReloadPhase::WaitingForUnload;
+	Pending.PhaseStartTime = FPlatformTime::Seconds();
+	Pending.ReloadStartTime = Pending.PhaseStartTime;
+	CaptureGameplayReloadActors(Pending);
+	UE_LOG(LogTemp, Display, TEXT("[ArenaReload][Client] Gen=%u UnloadRequested"), Generation);
+	Arena.bReady = false;
+	OnArenaGameplayReloadStarted.Broadcast(Generation);
+	RequestGameplayLevelsLoaded(false);
+	EnsureArenaPollTicker();
+	return true;
+}
+
+void UOutlierArenaSubsystem::AllowGameplayLevelLoad(uint32 Generation)
+{
+	if (PendingGameplayReload.IsSet() && PendingGameplayReload->Generation == Generation)
+	{
+		UE_LOG(LogTemp, Display,
+			TEXT("[ArenaReload][%s] Gen=%u LoadAuthorized Phase=%s LocalUnloaded=%d ElapsedMs=%.1f"),
+			GetArenaReloadRole(GetWorld()), Generation,
+			*UEnum::GetValueAsString(PendingGameplayReload->Phase),
+			PendingGameplayReload->bUnloaded ? 1 : 0,
+			(FPlatformTime::Seconds() - PendingGameplayReload->ReloadStartTime) * 1000.0);
+		PendingGameplayReload->bCanLoad = true;
+		EnsureArenaPollTicker();
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[ArenaReload][%s] Reject load authorization Gen=%u PendingGen=%u Phase=%s"),
+			GetArenaReloadRole(GetWorld()), Generation,
+			PendingGameplayReload.IsSet() ? PendingGameplayReload->Generation : 0,
+			*UEnum::GetValueAsString(GetGameplayReloadPhase()));
+	}
+}
+
+bool UOutlierArenaSubsystem::IsGameplayReloadUnloaded(uint32 Generation) const
+{
+	return PendingGameplayReload.IsSet() && PendingGameplayReload->Generation == Generation
+		&& PendingGameplayReload->bUnloaded;
+}
+
+void UOutlierArenaSubsystem::SuspendGameplayVisibilityForConnection(
+	APlayerController* PlayerController) const
+{
+	UNetConnection* Connection = PlayerController ? PlayerController->GetNetConnection() : nullptr;
+	if (!Connection)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[ArenaReload][%s] No connection while suspending gameplay visibility PC=%s"),
+			GetArenaReloadRole(GetWorld()), *GetNameSafe(PlayerController));
+		return;
+	}
+	// Close the old actor channels before the client begins unloading. This matters
+	// for placed replicated actors: a late SerializeNewActor against the unloaded
+	// level can permanently close its channel for this connection.
+	for (const ULevelStreaming* GameplayLevel : GameplayStreamingLevels)
+	{
+		if (!GameplayLevel)
+		{
+			UE_LOG(LogTemp, Error,
+				TEXT("[ArenaReload][%s] Gen=%u Null gameplay streaming level while hiding client visibility"),
+				GetArenaReloadRole(GetWorld()), GameplayGeneration);
+			continue;
+		}
+		const FString Expected = UWorld::RemovePIEPrefix(
+			GameplayLevel->GetWorldAssetPackageName());
+		FName VisiblePackage = NAME_None;
+		for (const FName& VisibleName : Connection->ClientVisibleLevelNames)
+		{
+			if (UWorld::RemovePIEPrefix(VisibleName.ToString()) == Expected)
+			{
+				VisiblePackage = VisibleName;
+				break;
+			}
+		}
+		if (VisiblePackage.IsNone())
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("[ArenaReload][%s] Client level not visible before reload PC=%s Gen=%u Instance=%s"),
+				GetArenaReloadRole(GetWorld()), *GetNameSafe(PlayerController),
+				GameplayGeneration, *Expected);
+			continue;
+		}
+		FUpdateLevelVisibilityLevelInfo Visibility;
+		Visibility.PackageName = VisiblePackage;
+		Visibility.bIsVisible = false;
+		Visibility.bSkipCloseOnError = true;
+		Connection->UpdateLevelVisibility(Visibility);
+		UE_LOG(LogTemp, Display,
+			TEXT("[ArenaReload][%s] SuspendedClientLevel PC=%s Gen=%u Package=%s"),
+			GetArenaReloadRole(GetWorld()), *GetNameSafe(PlayerController),
+			GameplayGeneration, *VisiblePackage.ToString());
+	}
+}
+
 EOutlierGameplayReloadPhase UOutlierArenaSubsystem::GetGameplayReloadPhase() const
 {
 	return PendingGameplayReload.IsSet()
-		? PendingGameplayReload->Phase
-		: EOutlierGameplayReloadPhase::Ready;
+		? PendingGameplayReload->Phase : EOutlierGameplayReloadPhase::Ready;
 }
 
-bool UOutlierArenaSubsystem::IsGameplayReloadStalled(uint32 InGameplayGeneration) const
+bool UOutlierArenaSubsystem::IsGameplayReloadStalled(uint32 Generation) const
 {
-	return PendingGameplayReload.IsSet()
-		&& PendingGameplayReload->Generation == InGameplayGeneration
+	return PendingGameplayReload.IsSet() && PendingGameplayReload->Generation == Generation
 		&& PendingGameplayReload->bIsStalled;
-}
-
-bool UOutlierArenaSubsystem::IsGameplayReloadGCVerified(uint32 InGameplayGeneration) const
-{
-	return PendingGameplayReload.IsSet()
-		&& PendingGameplayReload->Generation == InGameplayGeneration
-		&& PendingGameplayReload->bGCVerified;
 }
 
 bool UOutlierArenaSubsystem::IsGameplayGenerationNewer(uint32 Candidate, uint32 Reference)
@@ -278,366 +716,24 @@ bool UOutlierArenaSubsystem::HasGameplayReloadTimedOut(double ElapsedSeconds, do
 	return TimeoutSeconds > 0.0 && ElapsedSeconds >= TimeoutSeconds;
 }
 
-bool UOutlierArenaSubsystem::ReloadGameplayData(uint32 InGameplayGeneration, bool bDeferActivation)
+void UOutlierArenaSubsystem::SetGameplayReloadPhase(EOutlierGameplayReloadPhase Phase)
 {
-	if (!GetWorld() || GetWorld()->GetNetMode() == NM_Client
-		|| InGameplayGeneration == 0 || InGameplayGeneration != GameplayGeneration
-		|| PendingGameplayReload.IsSet())
-	{
-		return false;
-	}
-	if (!IsGameplayDataLayerAvailable())
-	{
-		FailGameplayReload(InGameplayGeneration, EOutlierGameplayReloadFailure::DataLayerUnavailable);
-		return false;
-	}
-
-	if (!AddPendingGameplayReload(InGameplayGeneration, !bDeferActivation))
-	{
-		FailGameplayReload(InGameplayGeneration, EOutlierGameplayReloadFailure::InvalidRuntime);
-		return false;
-	}
-
-	// Gameplay Data Layer 밖의 런타임 소유자는 셀이 내려가기 전에 현재 세대 객체를 폐기한다.
-	OnArenaGameplayReloadStarted.Broadcast(InGameplayGeneration);
-
-	if (!SetGameplayDataLayerState(EDataLayerRuntimeState::Unloaded))
-	{
-		FailGameplayReload(InGameplayGeneration, EOutlierGameplayReloadFailure::DataLayerStateChangeRejected);
-		return false;
-	}
-
-	TryRequestGameplayReloadGC();
-	return true;
-}
-
-void UOutlierArenaSubsystem::WaitForGameplayDataReady(uint32 InGameplayGeneration)
-{
-	if (!GetWorld() || !IsGameplayGenerationNewer(InGameplayGeneration, GameplayGeneration))
+	if (!PendingGameplayReload.IsSet() || PendingGameplayReload->Phase == Phase)
 	{
 		return;
 	}
-
-	GameplayGeneration = InGameplayGeneration;
-	if (PendingGameplayReload.IsSet())
-	{
-		return;
-	}
-
-	if (AddPendingGameplayReload(InGameplayGeneration, false))
-	{
-		TryRequestGameplayReloadGC();
-	}
-}
-
-void UOutlierArenaSubsystem::ActivateGameplayData(uint32 InGameplayGeneration)
-{
-	if (!GetWorld() || GetWorld()->GetNetMode() == NM_Client
-		|| InGameplayGeneration == 0 || InGameplayGeneration != GameplayGeneration)
-	{
-		return;
-	}
-
-	if (!PendingGameplayReload.IsSet())
-	{
-		SetGameplayDataLayerState(EDataLayerRuntimeState::Activated);
-		return;
-	}
-
-	if (PendingGameplayReload->Generation != InGameplayGeneration)
-	{
-		return;
-	}
-
-	PendingGameplayReload->bCanChangeState = true;
-	if (PendingGameplayReload->bLoadRequested)
-	{
-		ActivatePendingGameplayReload(InGameplayGeneration);
-	}
-}
-
-FString UOutlierArenaSubsystem::DescribeActorLevelPackage(const AActor* Actor)
-{
-	const ULevel* Level = Actor ? Actor->GetLevel() : nullptr;
-	if (!Level)
-	{
-		return TEXT("<no level>");
-	}
-	return FString::Printf(TEXT("%s(Package=%s, IsWPCell=%d)"),
-		*GetNameSafe(Actor), *GetNameSafe(Level->GetOutermost()),
-		Level->GetWorldPartitionRuntimeCell() ? 1 : 0);
-}
-
-bool UOutlierArenaSubsystem::AddPendingGameplayReload(uint32 Generation, bool bCanChangeState)
-{
-	// Unload 요청 전에 대상 Actor와 이벤트를 확보한다. 이후 EndPlay -> GC 검증 -> 활성화 순으로 진행한다.
-	const UDataLayerInstance* Instance = ResolveGameplayDataLayer();
-	const UWorld* ArenaWorld = GetArenaWorld();
-	UWorld* HostWorld = GetWorld();
-	if (!Instance || !ArenaWorld || !HostWorld || PendingGameplayReload.IsSet())
-	{
-		return false;
-	}
-
-	PendingGameplayReload.Emplace();
-	FPendingGameplayReload& Pending = PendingGameplayReload.GetValue();
-	Pending.Generation = Generation;
-	Pending.DataLayerInstance = const_cast<UDataLayerInstance*>(Instance);
-	Pending.WorldPartitionSubsystem = HostWorld->GetSubsystem<UWorldPartitionSubsystem>();
-	Pending.bCanChangeState = bCanChangeState;
-	Pending.Phase = EOutlierGameplayReloadPhase::WaitingForActorEndPlay;
-	Pending.PhaseStartTime = HostWorld->GetTimeSeconds();
-
-	UDataLayerAsset* Asset = GameplayDataLayer.LoadSynchronous();
-	if (Asset)
-	{
-		for (ULevel* Level : HostWorld->GetLevels())
-		{
-			if (!Level || GetOwningArenaWorld(Level) != ArenaWorld)
-			{
-				continue;
-			}
-
-			for (AActor* Actor : Level->Actors)
-			{
-				if (!Actor || !Actor->ContainsDataLayer(Asset)
-					|| (Level != HostWorld->PersistentLevel && Actor->IsA<AWorldSettings>())
-					|| !Actor->HasActorBegunPlay())
-				{
-					continue;
-				}
-
-				Pending.TrackedActors.Add(Actor);
-				Pending.ActorsAwaitingEndPlay.Add(Actor);
-				Actor->OnEndPlay.AddUniqueDynamic(this, &UOutlierArenaSubsystem::HandleGameplayReloadActorEndPlay);
-			}
-		}
-	}
-
-	BindGameplayReloadEvents();
-	UE_LOG(LogTemp, Display, TEXT("[ArenaSubsystem][DataLayer] Tracking reload Generation=%u Actors=%d"),
-		Generation, Pending.TrackedActors.Num());
-
-	if (!HostWorld->GetTimerManager().IsTimerActive(GameplayReloadTimeoutTimer))
-	{
-		HostWorld->GetTimerManager().SetTimer(GameplayReloadTimeoutTimer, this,
-			&UOutlierArenaSubsystem::TickPendingGameplayReloadTimeouts, 0.5f, true);
-	}
-	return true;
-}
-
-void UOutlierArenaSubsystem::BindGameplayReloadEvents()
-{
-	UDataLayerManager* Manager = UDataLayerManager::GetDataLayerManager(ResolveDataLayerWorld());
-	if (Manager && !BoundGameplayDataLayerManagers.Contains(Manager))
-	{
-		Manager->OnDataLayerInstanceRuntimeStateChanged.AddUniqueDynamic(
-			this, &UOutlierArenaSubsystem::HandleGameplayDataLayerStateChanged);
-		BoundGameplayDataLayerManagers.Add(Manager);
-	}
-
-	UWorldPartitionSubsystem* StreamingSubsystem = GetWorld()
-		? GetWorld()->GetSubsystem<UWorldPartitionSubsystem>()
-		: nullptr;
-	if (StreamingSubsystem && !GameplayStreamingStateHandles.Contains(StreamingSubsystem))
-	{
-		GameplayStreamingStateHandles.Add(StreamingSubsystem,
-			StreamingSubsystem->OnStreamingStateUpdated().AddUObject(
-				this, &UOutlierArenaSubsystem::HandleGameplayStreamingStateUpdated));
-	}
-
-	if (!GameplayGarbageCollectCompleteHandle.IsValid())
-	{
-		GameplayGarbageCollectCompleteHandle = FCoreUObjectDelegates::GarbageCollectComplete.AddUObject(
-			this, &UOutlierArenaSubsystem::HandleGameplayGarbageCollectComplete);
-	}
-}
-
-void UOutlierArenaSubsystem::HandleGameplayReloadActorEndPlay(AActor* Actor, EEndPlayReason::Type EndPlayReason)
-{
-	(void)EndPlayReason;
-	if (Actor && PendingGameplayReload.IsSet())
-	{
-		PendingGameplayReload->ActorsAwaitingEndPlay.RemoveAll(
-			[Actor](const TWeakObjectPtr<AActor>& ActorPtr) { return ActorPtr.Get(true) == Actor; });
-		TryRequestGameplayReloadGC();
-	}
-}
-
-void UOutlierArenaSubsystem::HandleGameplayDataLayerStateChanged(
-	const UDataLayerInstance* DataLayer, EDataLayerRuntimeState State)
-{
-	if (!DataLayer || !PendingGameplayReload.IsSet()
-		|| DataLayer != PendingGameplayReload->DataLayerInstance.Get())
-	{
-		return;
-	}
-
-	if (State == EDataLayerRuntimeState::Unloaded)
-	{
-		TryRequestGameplayReloadGC();
-	}
-	else if (State == EDataLayerRuntimeState::Activated)
-	{
-		TryCompleteGameplayReloadActivation();
-	}
-}
-
-void UOutlierArenaSubsystem::TryRequestGameplayReloadGC()
-{
-	// Data Layer가 내려갔다는 통보만으로는 부족하다. 추적한 Actor의 EndPlay도 모두 끝나야 GC를 요청한다.
-	if (!PendingGameplayReload.IsSet())
-	{
-		return;
-	}
-
-	FPendingGameplayReload& Pending = PendingGameplayReload.GetValue();
-	if (Pending.bGCRequested || Pending.bLoadRequested || Pending.ActorsAwaitingEndPlay.Num() > 0)
-	{
-		return;
-	}
-
-	UDataLayerManager* Manager = UDataLayerManager::GetDataLayerManager(ResolveDataLayerWorld());
-	if (!Manager || !Pending.DataLayerInstance.IsValid()
-		|| Manager->GetDataLayerInstanceEffectiveRuntimeState(Pending.DataLayerInstance.Get())
-			!= EDataLayerRuntimeState::Unloaded)
-	{
-		return;
-	}
-
-	Pending.bGCRequested = true;
-	SetGameplayReloadPhase(EOutlierGameplayReloadPhase::WaitingForGCPurge);
-	if (GEngine)
-	{
-		GEngine->ForceGarbageCollection(true);
-	}
-}
-
-void UOutlierArenaSubsystem::HandleGameplayGarbageCollectComplete()
-{
-	// 전역 GC 완료 이벤트는 재로드 완료가 아니다. 이번 세대가 추적한 이전 Actor의 소멸을 따로 확인한다.
-	if (!PendingGameplayReload.IsSet())
-	{
-		return;
-	}
-
-	FPendingGameplayReload& Pending = PendingGameplayReload.GetValue();
-	if (!Pending.bGCRequested || Pending.bLoadRequested)
-	{
-		return;
-	}
-
-	for (const TWeakObjectPtr<AActor>& ActorPtr : Pending.TrackedActors)
-	{
-		if (ActorPtr.IsValid(true))
-		{
-			UE_LOG(LogTemp, Error, TEXT("[ArenaSubsystem][DataLayer] Generation=%u old actor still alive: %s"),
-				Pending.Generation, *DescribeActorLevelPackage(ActorPtr.Get(true)));
-			return;
-		}
-	}
-
-	Pending.bGCVerified = true;
-	Pending.bLoadRequested = true;
-	SetGameplayReloadPhase(Pending.bCanChangeState
-		? EOutlierGameplayReloadPhase::ActivatingGameplayData
-		: EOutlierGameplayReloadPhase::WaitingForClientAcks);
-	// 로컬 GC 검증을 알린 뒤 외부 조정자가 활성화를 허용한다. 콜백 중 Reset될 수 있어 Pending을 다시 찾는다.
-	const uint32 VerifiedGeneration = Pending.Generation;
-	OnArenaGameplayGCReady.Broadcast(VerifiedGeneration);
-	if (PendingGameplayReload.IsSet()
-		&& PendingGameplayReload->Generation == VerifiedGeneration
-		&& PendingGameplayReload->bCanChangeState)
-	{
-		ActivatePendingGameplayReload(VerifiedGeneration);
-	}
-}
-
-void UOutlierArenaSubsystem::ActivatePendingGameplayReload(uint32 Generation)
-{
-	if (!PendingGameplayReload.IsSet() || PendingGameplayReload->Generation != Generation
-		|| !PendingGameplayReload->bLoadRequested || !PendingGameplayReload->bCanChangeState)
-	{
-		return;
-	}
-	SetGameplayReloadPhase(EOutlierGameplayReloadPhase::ActivatingGameplayData);
-	if (!SetGameplayDataLayerState(EDataLayerRuntimeState::Activated))
-	{
-		FailGameplayReload(Generation, EOutlierGameplayReloadFailure::DataLayerStateChangeRejected);
-		return;
-	}
-	SetGameplayReloadPhase(EOutlierGameplayReloadPhase::WaitingForStreaming);
-	TryCompleteGameplayReloadActivation();
-}
-
-void UOutlierArenaSubsystem::HandleGameplayStreamingStateUpdated()
-{
-	TryRequestGameplayReloadGC();
-	TryCompleteGameplayReloadActivation();
-}
-
-void UOutlierArenaSubsystem::TryCompleteGameplayReloadActivation()
-{
-	// Activated 요청과 실제 준비 완료를 구분한다. 아래 상태 조회에서 Data Layer와 Streaming 완료를 함께 검사한다.
-	UWorld* World = GetWorld();
-	const bool bRequiresActivationPermission = World && World->GetNetMode() != NM_Client;
-	if (!PendingGameplayReload.IsSet() || !PendingGameplayReload->bLoadRequested
-		|| (bRequiresActivationPermission && !PendingGameplayReload->bCanChangeState)
-		|| !IsGameplayDataLayerState(EDataLayerRuntimeState::Activated))
-	{
-		return;
-	}
-
-	const uint32 CompletedGeneration = PendingGameplayReload->Generation;
-	ClearGameplayReloadActorBindings();
-	PendingGameplayReload.Reset();
-
-	if (World)
-	{
-		World->GetTimerManager().ClearTimer(GameplayReloadTimeoutTimer);
-	}
-	OnArenaGameplayReady.Broadcast(CompletedGeneration);
-}
-
-void UOutlierArenaSubsystem::TickPendingGameplayReloadTimeouts()
-{
-	// 이 타이머는 정체 진단만 담당한다. 시간 초과를 성공으로 간주하거나 다음 단계로 강제 전환하지 않는다.
-	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
-	const double TimeoutSeconds = Settings
-		? FMath::Max(static_cast<double>(Settings->ArenaGameplayReloadStallSeconds), 1.0)
-		: 15.0;
-	UWorld* World = GetWorld();
-	if (!World || !PendingGameplayReload.IsSet())
-	{
-		if (World)
-		{
-			World->GetTimerManager().ClearTimer(GameplayReloadTimeoutTimer);
-		}
-		return;
-	}
-
-	FPendingGameplayReload& Pending = PendingGameplayReload.GetValue();
-	if (!Pending.bStallReported
-		&& HasGameplayReloadTimedOut(World->GetTimeSeconds() - Pending.PhaseStartTime, TimeoutSeconds))
-	{
-		ReportStalledGameplayReload();
-	}
-}
-
-void UOutlierArenaSubsystem::SetGameplayReloadPhase(EOutlierGameplayReloadPhase NewPhase)
-{
-	if (!PendingGameplayReload.IsSet() || PendingGameplayReload->Phase == NewPhase)
-	{
-		return;
-	}
-
 	FPendingGameplayReload& Pending = PendingGameplayReload.GetValue();
 	const bool bWasStalled = Pending.bIsStalled;
-	// 전체 리로드 시간이 아니라 각 단계가 실제로 멈춘 시간을 감시한다. 정상적으로 다음 단계로
-	// 넘어간 작업이 앞 단계에서 사용한 시간을 이어받아 곧바로 Stalled 되는 것을 막는다.
-	Pending.Phase = NewPhase;
-	Pending.PhaseStartTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
-	Pending.bStallReported = false;
+	const EOutlierGameplayReloadPhase PreviousPhase = Pending.Phase;
+	const double Now = FPlatformTime::Seconds();
+	UE_LOG(LogTemp, Display,
+		TEXT("[ArenaReload][%s] Gen=%u Phase=%s->%s PhaseMs=%.1f TotalMs=%.1f"),
+		GetArenaReloadRole(GetWorld()), Pending.Generation,
+		*UEnum::GetValueAsString(PreviousPhase), *UEnum::GetValueAsString(Phase),
+		(Now - Pending.PhaseStartTime) * 1000.0,
+		(Now - Pending.ReloadStartTime) * 1000.0);
+	Pending.Phase = Phase;
+	Pending.PhaseStartTime = Now;
 	Pending.bIsStalled = false;
 	if (bWasStalled)
 	{
@@ -649,293 +745,339 @@ FString UOutlierArenaSubsystem::BuildGameplayReloadDiagnostic() const
 {
 	if (!PendingGameplayReload.IsSet())
 	{
-		return TEXT("No pending gameplay reload");
-	}
-
-	const FPendingGameplayReload& Pending = PendingGameplayReload.GetValue();
-	const double Elapsed = GetWorld()
-		? GetWorld()->GetTimeSeconds() - Pending.PhaseStartTime
-		: 0.0;
-	return FString::Printf(
-		TEXT("Generation=%u Phase=%s PhaseElapsed=%.2f AwaitingEndPlay=%d TrackedActors=%d GCRequested=%d GCVerified=%d LoadRequested=%d CanActivate=%d DataLayerActivated=%d"),
-		Pending.Generation,
-		*UEnum::GetValueAsString(Pending.Phase),
-		Elapsed,
-		Pending.ActorsAwaitingEndPlay.Num(),
-		Pending.TrackedActors.Num(),
-		Pending.bGCRequested ? 1 : 0,
-		Pending.bGCVerified ? 1 : 0,
-		Pending.bLoadRequested ? 1 : 0,
-		Pending.bCanChangeState ? 1 : 0,
-		IsGameplayDataLayerState(EDataLayerRuntimeState::Activated) ? 1 : 0);
-}
-
-void UOutlierArenaSubsystem::ReportStalledGameplayReload()
-{
-	if (!PendingGameplayReload.IsSet() || PendingGameplayReload->bStallReported)
-	{
-		return;
-	}
-
-	FPendingGameplayReload& Pending = PendingGameplayReload.GetValue();
-	Pending.bStallReported = true;
-	Pending.bIsStalled = true;
-	const FString Diagnostic = BuildGameplayReloadDiagnostic();
-	UE_LOG(LogTemp, Error, TEXT("[ArenaSubsystem][DataLayer] Reload STALLED %s"), *Diagnostic);
-	OnArenaGameplayReloadStalled.Broadcast(Pending.Generation, Pending.Phase, Diagnostic);
-}
-
-void UOutlierArenaSubsystem::ClearGameplayReloadActorBindings()
-{
-	if (!PendingGameplayReload.IsSet())
-	{
-		return;
-	}
-
-	for (const TWeakObjectPtr<AActor>& ActorPtr : PendingGameplayReload->TrackedActors)
-	{
-		if (AActor* Actor = ActorPtr.Get())
+		FString Levels;
+		for (const ULevelStreaming* Level : GameplayStreamingLevels)
 		{
-			Actor->OnEndPlay.RemoveAll(this);
+			Levels += FString::Printf(TEXT(" [%s L=%d V=%d]"),
+				Level ? *Level->GetWorldAssetPackageName() : TEXT("null"),
+				Level && Level->IsLevelLoaded() ? 1 : 0,
+				Level && Level->IsLevelVisible() ? 1 : 0);
 		}
+		return FString::Printf(TEXT("No pending reload; gameplay levels=%d ready=%d%s"),
+			GameplayStreamingLevels.Num(), AreGameplayLevelsShown() ? 1 : 0, *Levels);
+	}
+	const FPendingGameplayReload& Pending = PendingGameplayReload.GetValue();
+	FString Levels;
+	for (const ULevelStreaming* Level : GameplayStreamingLevels)
+	{
+		Levels += FString::Printf(TEXT(" [%s L=%d V=%d]"),
+			Level ? *Level->GetWorldAssetPackageName() : TEXT("null"),
+			Level && Level->IsLevelLoaded() ? 1 : 0,
+			Level && Level->IsLevelVisible() ? 1 : 0);
+	}
+	return FString::Printf(
+		TEXT("Generation=%u Phase=%s Elapsed=%.2f Unloaded=%d CanLoad=%d GCRequested=%d OldActors=%d%s"),
+		Pending.Generation, *UEnum::GetValueAsString(Pending.Phase),
+		FPlatformTime::Seconds() - Pending.PhaseStartTime,
+		Pending.bUnloaded ? 1 : 0, Pending.bCanLoad ? 1 : 0,
+		Pending.bGCRequested ? 1 : 0, Pending.OldActors.Num(), *Levels);
+}
+
+/*
+void UOutlierArenaSubsystem::DumpGameplayReloadState() const
+{
+	UE_LOG(LogTemp, Display, TEXT("[ArenaLevels] %s"), *BuildGameplayReloadDiagnostic());
+	LogGameplayLevelState(PendingGameplayReload.IsSet()
+		? PendingGameplayReload->Generation : GameplayGeneration, TEXT("ManualDump"));
+	if (PendingGameplayReload.IsSet())
+	{
+		int32 TotalSurvivors = 0;
+		for (int32 Index = 0; Index < PendingGameplayReload->OldActorsByLevel.Num(); ++Index)
+		{
+			int32 LevelSurvivors = 0;
+			for (const TWeakObjectPtr<AActor>& OldActor : PendingGameplayReload->OldActorsByLevel[Index])
+			{
+				if (!OldActor.IsValid(true))
+				{
+					continue;
+				}
+				if (LevelSurvivors++ < 50)
+				{
+					UE_LOG(LogTemp, Warning,
+						TEXT("[ArenaReload][%s] Gen=%u Map=%s OldActorStillValid=%s"),
+						GetArenaReloadRole(GetWorld()), PendingGameplayReload->Generation,
+						*GameplaySublevels[Index].ToSoftObjectPath().GetLongPackageName(),
+						*GetPathNameSafe(OldActor.Get(true)));
+				}
+			}
+			TotalSurvivors += LevelSurvivors;
+			UE_LOG(LogTemp, Display,
+				TEXT("[ArenaReload][%s] Gen=%u Map=%s OldActorSurvivors=%d%s"),
+				GetArenaReloadRole(GetWorld()), PendingGameplayReload->Generation,
+				*GameplaySublevels[Index].ToSoftObjectPath().GetLongPackageName(),
+				LevelSurvivors,
+				LevelSurvivors > 50 ? TEXT(" (first 50 shown)") : TEXT(""));
+		}
+		UE_LOG(LogTemp, Display,
+			TEXT("[ArenaReload][%s] Gen=%u OldActorSurvivorsTotal=%d"),
+			GetArenaReloadRole(GetWorld()), PendingGameplayReload->Generation,
+			TotalSurvivors);
 	}
 }
 
-void UOutlierArenaSubsystem::FailGameplayReload(
-	uint32 InGameplayGeneration,
-	EOutlierGameplayReloadFailure Failure)
+void UOutlierArenaSubsystem::DumpGameplayActorState() const
 {
-	if (!PendingGameplayReload.IsSet())
+	const auto DumpLevel = [this](const ULevel* Level, const FString& Label)
 	{
-		if (InGameplayGeneration == 0 || InGameplayGeneration != GameplayGeneration)
+		UE_LOG(LogTemp, Display,
+			TEXT("[ArenaActors][%s] Level=%s Loaded=%d Actors=%d"),
+			GetArenaReloadRole(GetWorld()), *Label, Level ? 1 : 0,
+			CountGameplayActors(Level));
+		if (!Level)
 		{
 			return;
 		}
-		// Data Layer 조회처럼 Pending 생성 전 실패도 명시적인 Failed 상태로 남긴다.
-		// 상태가 비어 있으면 호출자가 Ready로 오인해 Pawn을 다시 Possess할 수 있다.
-		PendingGameplayReload.Emplace();
-		PendingGameplayReload->Generation = InGameplayGeneration;
+		int32 Listed = 0;
+		for (const AActor* Actor : Level->Actors)
+		{
+			if (!Actor || Actor->IsA<AWorldSettings>())
+			{
+				continue;
+			}
+			if (Listed++ < 50)
+			{
+				UE_LOG(LogTemp, Display,
+					TEXT("[ArenaActors][%s] Level=%s Actor=%s Class=%s Valid=%d"),
+					GetArenaReloadRole(GetWorld()), *Label, *GetPathNameSafe(Actor),
+					*GetNameSafe(Actor->GetClass()), IsValid(Actor) ? 1 : 0);
+			}
+		}
+		if (Listed > 50)
+		{
+			UE_LOG(LogTemp, Display,
+				TEXT("[ArenaActors][%s] Level=%s OmittedActors=%d"),
+				GetArenaReloadRole(GetWorld()), *Label, Listed - 50);
+		}
+	};
+	DumpLevel(GetArenaLoadedLevel(), TEXT("PersistentArena"));
+	for (int32 Index = 0; Index < GameplaySublevels.Num(); ++Index)
+	{
+		const ULevelStreaming* Streaming = GameplayStreamingLevels.IsValidIndex(Index)
+			? GameplayStreamingLevels[Index].Get() : nullptr;
+		DumpLevel(Streaming ? Streaming->GetLoadedLevel() : nullptr,
+			GameplaySublevels[Index].ToSoftObjectPath().GetLongPackageName());
 	}
+}
+*/
 
-	if (PendingGameplayReload->Generation != InGameplayGeneration
+void UOutlierArenaSubsystem::FailGameplayReload(
+	uint32 Generation, EOutlierGameplayReloadFailure Failure)
+{
+	if (!PendingGameplayReload.IsSet())
+	{
+		if (Generation == 0 || Generation != GameplayGeneration)
+		{
+			return;
+		}
+		PendingGameplayReload.Emplace();
+		PendingGameplayReload->Generation = Generation;
+	}
+	if (PendingGameplayReload->Generation != Generation
 		|| PendingGameplayReload->Phase == EOutlierGameplayReloadPhase::Failed)
 	{
 		return;
 	}
-
-	FPendingGameplayReload& Pending = PendingGameplayReload.GetValue();
-	Pending.Phase = EOutlierGameplayReloadPhase::Failed;
-	Pending.Failure = Failure;
-	Pending.bIsStalled = false;
-	ClearGameplayReloadActorBindings();
-	if (UWorld* World = GetWorld())
-	{
-		World->GetTimerManager().ClearTimer(GameplayReloadTimeoutTimer);
-	}
-	UE_LOG(LogTemp, Error,
-		TEXT("[ArenaSubsystem][DataLayer] Reload FAILED Generation=%u Failure=%s"),
-		InGameplayGeneration,
-		*UEnum::GetValueAsString(Failure));
-	OnArenaGameplayReloadFailed.Broadcast(InGameplayGeneration, Failure);
+	PendingGameplayReload->Phase = EOutlierGameplayReloadPhase::Failed;
+	PendingGameplayReload->Failure = Failure;
+	PendingGameplayReload->bIsStalled = false;
+	UE_LOG(LogTemp, Error, TEXT("[ArenaLevels] Reload failed: %s"),
+		*BuildGameplayReloadDiagnostic());
+	OnArenaGameplayReloadFailed.Broadcast(Generation, Failure);
 }
 
-bool UOutlierArenaSubsystem::RetryStalledGameplayReload(uint32 InGameplayGeneration)
+bool UOutlierArenaSubsystem::RetryStalledGameplayReload(uint32 Generation)
 {
-	if (!IsGameplayReloadStalled(InGameplayGeneration)
-		|| PendingGameplayReload->Phase == EOutlierGameplayReloadPhase::Failed)
+	if (!IsGameplayReloadStalled(Generation))
 	{
 		return false;
 	}
+	PendingGameplayReload->bIsStalled = false;
+	PendingGameplayReload->PhaseStartTime = FPlatformTime::Seconds();
+	OnArenaGameplayReloadResumed.Broadcast(Generation);
+	return true;
+}
 
-	FPendingGameplayReload& Pending = PendingGameplayReload.GetValue();
-	// 재시도는 현재 Phase의 검사를 다시 수행할 뿐 다음 Phase를 강제로 선택하지 않는다.
-	// 실제 EndPlay/GC/Streaming 완료 이벤트가 와야만 기존 상태 전이가 계속된다.
-	Pending.bIsStalled = false;
-	Pending.bStallReported = false;
-	Pending.PhaseStartTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
-	OnArenaGameplayReloadResumed.Broadcast(InGameplayGeneration);
-
-	switch (Pending.Phase)
+void UOutlierArenaSubsystem::EnsureArenaPollTicker()
+{
+	if (!ArenaPollTickerHandle.IsValid())
 	{
-	case EOutlierGameplayReloadPhase::WaitingForActorEndPlay:
-		Pending.ActorsAwaitingEndPlay.RemoveAll([](const TWeakObjectPtr<AActor>& Actor)
+		ArenaPollTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+			FTickerDelegate::CreateUObject(this, &UOutlierArenaSubsystem::TickArenaLevels), 0.05f);
+	}
+}
+
+bool UOutlierArenaSubsystem::TickArenaLevels(float DeltaTime)
+{
+	(void)DeltaTime;
+	if (!GetWorld())
+	{
+		ArenaPollTickerHandle.Reset();
+		return false;
+	}
+
+	if (bPreloadAfterRelease)
+	{
+		for (const TWeakObjectPtr<ULevelStreaming>& LevelPtr : ReleasingLevels)
 		{
-			return !Actor.IsValid(true);
-		});
-		TryRequestGameplayReloadGC();
-		break;
-	case EOutlierGameplayReloadPhase::WaitingForGCPurge:
-		Pending.bGCRequested = false;
-		TryRequestGameplayReloadGC();
-		break;
-	case EOutlierGameplayReloadPhase::ActivatingGameplayData:
-		ActivatePendingGameplayReload(InGameplayGeneration);
-		break;
-	case EOutlierGameplayReloadPhase::WaitingForStreaming:
-		TryCompleteGameplayReloadActivation();
-		break;
-	case EOutlierGameplayReloadPhase::WaitingForClientAcks:
-	case EOutlierGameplayReloadPhase::Ready:
-	case EOutlierGameplayReloadPhase::Failed:
-	default:
-		break;
+			if (ULevelStreaming* Level = LevelPtr.Get();
+				Level && (Level->IsLevelLoaded() || Level->GetLoadedLevel()
+					|| GetWorld()->GetStreamingLevels().Contains(Level)))
+			{
+				return true;
+			}
+		}
+		ReleasingLevels.Reset();
+		bPreloadAfterRelease = false;
+		PreloadArena();
+	}
+
+	if (!IsPersistentArenaWorld() && Arena.StreamingLevel
+		&& Arena.StreamingLevel->IsLevelVisible() && !bInitialGameplayLevelsRequested)
+	{
+		CreateListenGameplayLevels();
+	}
+
+	if (PendingGameplayReload.IsSet()
+		&& PendingGameplayReload->Phase != EOutlierGameplayReloadPhase::Failed)
+	{
+		FPendingGameplayReload& Pending = PendingGameplayReload.GetValue();
+		/* if (Pending.Phase == EOutlierGameplayReloadPhase::WaitingForUnload)
+		{
+			for (int32 Index = 0; Index < GameplayStreamingLevels.Num(); ++Index)
+			{
+				if (!Pending.UnloadedLevelLogged[Index]
+					&& IsGameplayLevelUnloaded(GameplayStreamingLevels[Index]))
+				{
+					Pending.UnloadedLevelLogged[Index] = 1;
+					UE_LOG(LogTemp, Display,
+						TEXT("[ArenaReload][%s] Gen=%u LevelUnloaded Index=%d Map=%s OldActors=%d ElapsedMs=%.1f"),
+						GetArenaReloadRole(GetWorld()), Pending.Generation, Index,
+						*GameplaySublevels[Index].ToSoftObjectPath().GetLongPackageName(),
+						Pending.OldActorCounts[Index],
+						(FPlatformTime::Seconds() - Pending.ReloadStartTime) * 1000.0);
+				}
+			}
+		}
+		else if (Pending.Phase == EOutlierGameplayReloadPhase::WaitingForStreaming)
+		{
+			for (int32 Index = 0; Index < GameplayStreamingLevels.Num(); ++Index)
+			{
+				if (!Pending.ShownLevelLogged[Index]
+					&& IsGameplayLevelShown(GameplayStreamingLevels[Index]))
+				{
+					Pending.ShownLevelLogged[Index] = 1;
+					UE_LOG(LogTemp, Display,
+						TEXT("[ArenaReload][%s] Gen=%u LevelShown Index=%d Map=%s NewActors=%d LoadMs=%.1f TotalMs=%.1f"),
+						GetArenaReloadRole(GetWorld()), Pending.Generation, Index,
+						*GameplaySublevels[Index].ToSoftObjectPath().GetLongPackageName(),
+						CountGameplayActors(GameplayStreamingLevels[Index]->GetLoadedLevel()),
+						(FPlatformTime::Seconds() - Pending.LoadRequestTime) * 1000.0,
+						(FPlatformTime::Seconds() - Pending.ReloadStartTime) * 1000.0);
+				}
+			}
+		} */
+		if (Pending.Phase == EOutlierGameplayReloadPhase::WaitingForUnload
+			&& AreGameplayLevelsUnloaded())
+		{
+			// LogGameplayLevelState(Pending.Generation, TEXT("AllLevelsUnloaded"));
+			SetGameplayReloadPhase(EOutlierGameplayReloadPhase::WaitingForGCPurge);
+			Pending.bGCRequested = true;
+			if (GEngine)
+			{
+				GEngine->ForceGarbageCollection(true);
+			}
+		}
+		else if (Pending.Phase == EOutlierGameplayReloadPhase::WaitingForGCPurge)
+		{
+			Pending.OldActors.RemoveAll([](const TWeakObjectPtr<AActor>& Actor)
+			{
+				return !Actor.IsValid(true);
+			});
+			if (Pending.OldActors.IsEmpty())
+			{
+				UE_LOG(LogTemp, Display,
+					TEXT("[ArenaReload][%s] Gen=%u OldActorGCComplete ElapsedMs=%.1f"),
+					GetArenaReloadRole(GetWorld()), Pending.Generation,
+					(FPlatformTime::Seconds() - Pending.ReloadStartTime) * 1000.0);
+				Pending.bUnloaded = true;
+				SetGameplayReloadPhase(EOutlierGameplayReloadPhase::WaitingForClientAcks);
+				OnArenaGameplayUnloaded.Broadcast(Pending.Generation);
+				OnArenaGameplayGCReady.Broadcast(Pending.Generation);
+			}
+		}
+		else if (Pending.Phase == EOutlierGameplayReloadPhase::WaitingForClientAcks
+			&& Pending.bCanLoad)
+		{
+			Pending.LoadRequestTime = FPlatformTime::Seconds();
+			UE_LOG(LogTemp, Display,
+				TEXT("[ArenaReload][%s] Gen=%u LevelLoadRequested ElapsedMs=%.1f"),
+				GetArenaReloadRole(GetWorld()), Pending.Generation,
+				(Pending.LoadRequestTime - Pending.ReloadStartTime) * 1000.0);
+			RequestGameplayLevelsLoaded(true);
+			SetGameplayReloadPhase(EOutlierGameplayReloadPhase::WaitingForStreaming);
+		}
+		else if (Pending.Phase == EOutlierGameplayReloadPhase::WaitingForStreaming
+			&& AreGameplayLevelsShown())
+		{
+			const ULevel* CurrentArenaLevel = GetArenaLoadedLevel();
+			if (CurrentArenaLevel != Pending.StableArenaLevel.Get())
+			{
+				UE_LOG(LogTemp, Error,
+					TEXT("[ArenaReload][%s] Gen=%u PersistentArenaChanged Old=%s New=%s"),
+					GetArenaReloadRole(GetWorld()), Pending.Generation,
+					*GetNameSafe(Pending.StableArenaLevel.Get()), *GetNameSafe(CurrentArenaLevel));
+			}
+			// LogGameplayLevelState(Pending.Generation, TEXT("AllLevelsShown"));
+			UE_LOG(LogTemp, Display,
+				TEXT("[ArenaReload][%s] Gen=%u Complete TotalMs=%.1f PersistentActors=%d"),
+				GetArenaReloadRole(GetWorld()), Pending.Generation,
+				(FPlatformTime::Seconds() - Pending.ReloadStartTime) * 1000.0,
+				CountGameplayActors(CurrentArenaLevel));
+			const uint32 CompletedGeneration = Pending.Generation;
+			PendingGameplayReload.Reset();
+			Arena.bReady = true;
+			OnArenaGameplayReady.Broadcast(CompletedGeneration);
+		}
+
+		if (PendingGameplayReload.IsSet())
+		{
+			const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
+			const double StallSeconds = Settings
+				? FMath::Max(static_cast<double>(Settings->ArenaGameplayReloadStallSeconds), 1.0)
+				: 15.0;
+			FPendingGameplayReload& Current = PendingGameplayReload.GetValue();
+			if (!Current.bIsStalled && HasGameplayReloadTimedOut(
+				FPlatformTime::Seconds() - Current.PhaseStartTime, StallSeconds))
+			{
+				Current.bIsStalled = true;
+					const FString Diagnostic = BuildGameplayReloadDiagnostic();
+					UE_LOG(LogTemp, Error, TEXT("[ArenaLevels] Reload stalled: %s"), *Diagnostic);
+					// DumpGameplayReloadState();
+					OnArenaGameplayReloadStalled.Broadcast(
+					Current.Generation, Current.Phase, Diagnostic);
+			}
+		}
+	}
+
+	RefreshArenaReadyState();
+	if (!Arena.bReady && !PendingGameplayReload.IsSet() && !bPreloadAfterRelease
+		&& !bInitialLoadStallLogged && FPlatformTime::Seconds() - InitialLoadStartTime >= 30.0)
+	{
+		bInitialLoadStallLogged = true;
+		UE_LOG(LogTemp, Error, TEXT("[ArenaLevels] Initial load stalled: %s"),
+			*BuildGameplayReloadDiagnostic());
+		// LogGameplayLevelState(0, TEXT("InitialLoadStalled"));
 	}
 	return true;
 }
 
-void UOutlierArenaSubsystem::DumpGameplayReloadState() const
-{
-	UE_LOG(LogTemp, Display, TEXT("[ArenaSubsystem][DataLayer] %s"), *BuildGameplayReloadDiagnostic());
-}
-
-void UOutlierArenaSubsystem::EnsureArenaGameplayDataActivated()
-{
-	if (GameplayDataLayer.IsNull())
-	{
-		return;
-	}
-
-	if (ResolveGameplayDataLayer())
-	{
-		SetGameplayDataLayerState(EDataLayerRuntimeState::Activated);
-		bInitialActivationPending = false;
-		return;
-	}
-
-	UWorld* World = GetWorld();
-	if (!World || bInitialActivationPending)
-	{
-		return;
-	}
-	bInitialActivationPending = true;
-	InitialActivationStartTime = World->GetTimeSeconds();
-	World->GetTimerManager().SetTimer(InitialActivationPollTimer, this,
-		&UOutlierArenaSubsystem::TickPendingInitialActivation, 0.05f, true);
-}
-
-void UOutlierArenaSubsystem::TickPendingInitialActivation()
-{
-	UWorld* World = GetWorld();
-	if (!World || !bInitialActivationPending)
-	{
-		return;
-	}
-
-	if (ResolveGameplayDataLayer())
-	{
-		SetGameplayDataLayerState(EDataLayerRuntimeState::Activated);
-		bInitialActivationPending = false;
-		World->GetTimerManager().ClearTimer(InitialActivationPollTimer);
-	}
-	else if (World->GetTimeSeconds() - InitialActivationStartTime > 10.0)
-	{
-		bInitialActivationPending = false;
-		World->GetTimerManager().ClearTimer(InitialActivationPollTimer);
-		UE_LOG(LogTemp, Error, TEXT("[ArenaSubsystem][DataLayer] Initial activation timed out"));
-	}
-}
-
-void UOutlierArenaSubsystem::SuspendArenaVisibilityForConnection(APlayerController* PlayerController)
-{
-	UNetConnection* Connection = PlayerController ? PlayerController->GetNetConnection() : nullptr;
-	if (!Connection || !Arena.StreamingLevel)
-	{
-		return;
-	}
-
-	const FString BasePackageName = Arena.StreamingLevel->GetWorldAssetPackageName();
-	const FString BaseShortName = FPackageName::GetShortName(BasePackageName);
-	const FString CellPrefix = BaseShortName + TEXT("_");
-	TArray<FName> NamesToHide;
-	for (const FName& VisibleLevelName : Connection->ClientVisibleLevelNames)
-	{
-		const FString VisibleShortName = FPackageName::GetShortName(VisibleLevelName.ToString());
-		if (VisibleShortName == BaseShortName || VisibleShortName.StartsWith(CellPrefix, ESearchCase::CaseSensitive))
-		{
-			NamesToHide.Add(VisibleLevelName);
-		}
-	}
-
-	for (const FName& NameToHide : NamesToHide)
-	{
-		FUpdateLevelVisibilityLevelInfo Visibility;
-		Visibility.PackageName = NameToHide;
-		Visibility.bIsVisible = false;
-		Visibility.bSkipCloseOnError = true;
-		Connection->UpdateLevelVisibility(Visibility);
-	}
-}
-
-void UOutlierArenaSubsystem::BeginDeferredReload(ULevelStreamingDynamic* StreamingLevel)
-{
-	if (!StreamingLevel)
-	{
-		return;
-	}
-	StreamingLevel->SetShouldBeVisible(false);
-	StreamingLevel->SetShouldBeLoaded(false);
-	PendingReloadLevels.AddUnique(StreamingLevel);
-	if (UWorld* World = GetWorld(); World && !World->GetTimerManager().IsTimerActive(ReloadPollTimer))
-	{
-		World->GetTimerManager().SetTimer(ReloadPollTimer, this,
-			&UOutlierArenaSubsystem::TickPendingReloads, 0.05f, true);
-	}
-}
-
-void UOutlierArenaSubsystem::TickPendingReloads()
-{
-	for (int32 Index = PendingReloadLevels.Num() - 1; Index >= 0; --Index)
-	{
-		ULevelStreamingDynamic* StreamingLevel = PendingReloadLevels[Index].Get();
-		if (!StreamingLevel)
-		{
-			PendingReloadLevels.RemoveAt(Index);
-		}
-		else if (!StreamingLevel->IsLevelLoaded() && !StreamingLevel->GetLoadedLevel())
-		{
-			PendingReloadLevels.RemoveAt(Index);
-			PendingGCLevels.AddUnique(StreamingLevel);
-			bReloadGCRequested = true;
-		}
-	}
-
-	if (bReloadGCRequested)
-	{
-		bReloadGCRequested = false;
-		if (GEngine)
-		{
-			GEngine->ForceGarbageCollection(true);
-		}
-		return;
-	}
-
-	for (const TWeakObjectPtr<ULevelStreamingDynamic>& PendingGCLevel : PendingGCLevels)
-	{
-		if (ULevelStreamingDynamic* StreamingLevel = PendingGCLevel.Get())
-		{
-			StreamingLevel->SetShouldBeLoaded(true);
-			StreamingLevel->SetShouldBeVisible(true);
-		}
-	}
-	PendingGCLevels.Reset();
-
-	if (PendingReloadLevels.IsEmpty())
-	{
-		if (UWorld* World = GetWorld())
-		{
-			World->GetTimerManager().ClearTimer(ReloadPollTimer);
-		}
-	}
-}
-
 ULevel* UOutlierArenaSubsystem::GetArenaLoadedLevel() const
 {
-	if (!Arena.StreamingLevel)
+	if (IsPersistentArenaWorld())
 	{
-		UWorld* ArenaWorld = Arena.ArenaWorld.Get();
-		return ArenaWorld ? ArenaWorld->PersistentLevel : nullptr;
+		return GetWorld() ? GetWorld()->PersistentLevel : nullptr;
 	}
-	return Arena.StreamingLevel->GetLoadedLevel();
+	return Arena.StreamingLevel ? Arena.StreamingLevel->GetLoadedLevel() : nullptr;
 }
 
 bool UOutlierArenaSubsystem::IsPersistentArenaWorld() const
@@ -944,226 +1086,86 @@ bool UOutlierArenaSubsystem::IsPersistentArenaWorld() const
 	return Settings && Settings->IsArenaWorld(GetWorld());
 }
 
-const UWorld* UOutlierArenaSubsystem::GetOwningArenaWorld(const ULevel* Level)
-{
-	if (!Level)
-	{
-		return nullptr;
-	}
-	if (const IWorldPartitionCell* Cell = Level->GetWorldPartitionRuntimeCell())
-	{
-		return Cell->GetOuterWorld();
-	}
-	return Level->GetTypedOuter<UWorld>();
-}
-
-const UWorld* UOutlierArenaSubsystem::ResolveArenaWorld(const FOutlierArenaInstance& InArena)
-{
-	return InArena.StreamingLevel
-		? GetOwningArenaWorld(InArena.StreamingLevel->GetLoadedLevel())
-		: InArena.ArenaWorld.Get();
-}
-
 const UWorld* UOutlierArenaSubsystem::GetArenaWorld() const
 {
-	return ResolveArenaWorld(Arena);
+	if (IsPersistentArenaWorld())
+	{
+		return GetWorld();
+	}
+	const ULevel* Level = Arena.StreamingLevel ? Arena.StreamingLevel->GetLoadedLevel() : nullptr;
+	return Level ? Level->GetTypedOuter<UWorld>() : nullptr;
 }
 
 bool UOutlierArenaSubsystem::IsActorOwnedByArena(const AActor* Actor) const
 {
-	return Actor && GetOwningArenaWorld(Actor->GetLevel()) == GetArenaWorld();
-}
-
-void UOutlierArenaSubsystem::PreloadArena()
-{
-	if (!GetWorld() || ArenaLevel.IsNull())
+	if (!Actor || !Actor->GetLevel())
 	{
-		return;
+		return false;
 	}
-	Arena = FOutlierArenaInstance();
-	Arena.InstanceTransform = FTransform::Identity;
-	Arena.StreamingLevel = LoadArenaLevelInstance(Arena.InstanceTransform);
-	Arena.bReady = Arena.StreamingLevel && Arena.StreamingLevel->IsLevelLoaded();
-}
-
-ULevelStreamingDynamic* UOutlierArenaSubsystem::LoadArenaLevelInstance(const FTransform& InstanceTransform)
-{
-	UWorld* World = GetWorld();
-	if (!World || ArenaLevel.IsNull())
+	if (Actor->GetLevel() == GetArenaLoadedLevel())
 	{
-		return nullptr;
+		return true;
 	}
-
-	bool bSuccess = false;
-	ULevelStreamingDynamic* StreamingLevel = ULevelStreamingDynamic::LoadLevelInstanceBySoftObjectPtr(
-		World, ArenaLevel, InstanceTransform.GetLocation(), InstanceTransform.GetRotation().Rotator(),
-		bSuccess, TEXT("OutlierArena"));
-	if (!bSuccess || !StreamingLevel)
+	for (const ULevelStreaming* Level : GameplayStreamingLevels)
 	{
-		return nullptr;
-	}
-
-	StreamingLevel->OnLevelLoaded.AddUniqueDynamic(this, &UOutlierArenaSubsystem::HandleArenaLevelLoaded);
-	StreamingLevel->OnLevelShown.AddUniqueDynamic(this, &UOutlierArenaSubsystem::HandleArenaLevelShown);
-	StreamingLevel->SetShouldBeLoaded(true);
-	StreamingLevel->SetShouldBeVisible(true);
-	return StreamingLevel;
-}
-
-void UOutlierArenaSubsystem::EnsureArenaLoaded(bool bForceReload)
-{
-	UWorld* World = GetWorld();
-	if (!World || World->GetNetMode() != NM_Client)
-	{
-		return;
-	}
-
-	if (Arena.StreamingLevel)
-	{
-		if (bForceReload)
+		if (Level && Actor->GetLevel() == Level->GetLoadedLevel())
 		{
-			Arena.bReady = false;
-			BeginDeferredReload(Arena.StreamingLevel);
+			return true;
 		}
-		else
-		{
-			Arena.StreamingLevel->SetShouldBeLoaded(true);
-			Arena.StreamingLevel->SetShouldBeVisible(true);
-		}
-		return;
 	}
-
-	Arena.InstanceTransform = FTransform::Identity;
-	Arena.StreamingLevel = LoadArenaLevelInstance(Arena.InstanceTransform);
-	Arena.bInUse = true;
-	Arena.bReady = IsStreamingArenaReady(Arena.StreamingLevel);
+	return false;
 }
 
-void UOutlierArenaSubsystem::RefreshArenaReadyState(const TCHAR* Reason)
+#if WITH_EDITOR
+bool UOutlierArenaSubsystem::IsGameplaySublevelPackage(
+	const UWorld* ArenaMap, const FString& LevelPackageName)
 {
-	(void)Reason;
-	if (Arena.StreamingLevel)
-	{
-		Arena.bReady = Arena.StreamingLevel->IsLevelLoaded();
-	}
-}
-
-void UOutlierArenaSubsystem::HandleArenaLevelLoaded()
-{
-	RefreshArenaReadyState(TEXT("OnLevelLoaded"));
-}
-
-void UOutlierArenaSubsystem::HandleArenaLevelShown()
-{
-	RefreshArenaReadyState(TEXT("OnLevelShown"));
-	if (IsStreamingArenaReady(Arena.StreamingLevel))
-	{
-		EnsureArenaGameplayDataActivated();
-		OnArenaShown.Broadcast();
-	}
-}
-
-bool UOutlierArenaSubsystem::IsArenaReady() const
-{
-	return Arena.bReady;
-}
-
-bool UOutlierArenaSubsystem::IsArenaContentReady() const
-{
-	return GetWorld() && IsArenaReady() && AreArenaLevelInstancesLoaded();
-}
-
-bool UOutlierArenaSubsystem::IsStreamingArenaReady(const ULevelStreamingDynamic* StreamingLevel)
-{
-	return StreamingLevel && StreamingLevel->IsLevelLoaded()
-		&& StreamingLevel->IsLevelVisible() && StreamingLevel->GetLoadedLevel();
-}
-
-void UOutlierArenaSubsystem::HoldCharacterUntilArenaCellReady(ACharacter* Character)
-{
-	UCharacterMovementComponent* Movement = Character ? Character->GetCharacterMovement() : nullptr;
-	if (!Movement)
-	{
-		return;
-	}
-
-	FPendingSpawnHold& Hold = PendingSpawnHolds.AddDefaulted_GetRef();
-	Hold.Character = Character;
-	Hold.StartTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
-	Movement->SetMovementMode(MOVE_None);
-
-	if (UWorld* World = GetWorld(); World && !World->GetTimerManager().IsTimerActive(SpawnHoldPollTimer))
-	{
-		World->GetTimerManager().SetTimer(SpawnHoldPollTimer, this,
-			&UOutlierArenaSubsystem::TickPendingSpawnHolds, 0.05f, true);
-	}
-}
-
-void UOutlierArenaSubsystem::TickPendingSpawnHolds()
-{
-	constexpr double TimeoutSeconds = 5.0;
-	UWorld* World = GetWorld();
-	UWorldPartitionSubsystem* WorldPartitionSubsystem = World
-		? World->GetSubsystem<UWorldPartitionSubsystem>() : nullptr;
-
-	for (int32 Index = PendingSpawnHolds.Num() - 1; Index >= 0; --Index)
-	{
-		FPendingSpawnHold& Hold = PendingSpawnHolds[Index];
-		ACharacter* Character = Hold.Character.Get();
-		if (!Character)
-		{
-			PendingSpawnHolds.RemoveAt(Index);
-			continue;
-		}
-
-		bool bCellReady = true;
-		if (WorldPartitionSubsystem)
-		{
-			const FWorldPartitionStreamingQuerySource QuerySource(Character->GetActorLocation());
-			bCellReady = WorldPartitionSubsystem->IsStreamingCompleted(
-				EWorldPartitionRuntimeCellState::Activated, { QuerySource }, false);
-		}
-		bCellReady = bCellReady && AreArenaLevelInstancesLoaded();
-		const bool bTimedOut = World && World->GetTimeSeconds() - Hold.StartTime > TimeoutSeconds;
-		if (!bCellReady && !bTimedOut)
-		{
-			Character->GetCharacterMovement()->SetMovementMode(MOVE_None);
-			continue;
-		}
-
-		Character->GetCharacterMovement()->SetDefaultMovementMode();
-		PendingSpawnHolds.RemoveAt(Index);
-	}
-
-	if (PendingSpawnHolds.IsEmpty() && World)
-	{
-		World->GetTimerManager().ClearTimer(SpawnHoldPollTimer);
-	}
-}
-
-bool UOutlierArenaSubsystem::AreArenaLevelInstancesLoaded() const
-{
-	const UWorld* HostWorld = GetWorld();
-	const UWorld* ArenaWorld = GetArenaWorld();
-	if (!HostWorld || !ArenaWorld)
+	if (!ArenaMap || LevelPackageName.IsEmpty())
 	{
 		return false;
 	}
 
-	for (ULevel* Level : HostWorld->GetLevels())
+	const FString ActorPackage = UWorld::RemovePIEPrefix(LevelPackageName);
+	for (const ULevelStreaming* StreamingLevel : ArenaMap->GetStreamingLevels())
 	{
-		if (!Level || GetOwningArenaWorld(Level) != ArenaWorld)
+		if (StreamingLevel && StreamingLevel->IsA<ULevelStreamingDynamic>()
+			&& !StreamingLevel->IsA<ULevelStreamingAlwaysLoaded>()
+			&& ActorPackage == UWorld::RemovePIEPrefix(
+				StreamingLevel->GetWorldAssetPackageName()))
 		{
-			continue;
-		}
-		for (AActor* Actor : Level->Actors)
-		{
-			const ILevelInstanceInterface* LevelInstance = Cast<ILevelInstanceInterface>(Actor);
-			if (LevelInstance && !LevelInstance->IsLoaded())
-			{
-				return false;
-			}
+			return true;
 		}
 	}
-	return true;
+	return false;
 }
+
+bool UOutlierArenaSubsystem::ValidateGameplayActorPlacement(
+	const AActor* Actor, FDataValidationContext& Context)
+{
+	if (!Actor || Actor->IsTemplate())
+	{
+		return true;
+	}
+	const UWorld* World = Actor->GetWorld();
+	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
+	if (!World || !Settings
+		|| !Settings->MatchesArenaPackageName(World->GetOutermost()->GetName()))
+	{
+		// 일반 테스트 맵과 BP 기본 객체에는 Arena 배치 계약을 적용하지 않는다.
+		return true;
+	}
+
+	const ULevel* ActorLevel = Actor->GetLevel();
+	const FString ActorLevelPackage = ActorLevel && ActorLevel->GetOutermost()
+		? ActorLevel->GetOutermost()->GetName() : FString();
+	if (IsGameplaySublevelPackage(World, ActorLevelPackage))
+	{
+		return true;
+	}
+
+	Context.AddError(FText::FromString(FString::Printf(
+		TEXT("%s is in %s, which is not a reloadable Gameplay sublevel of %s. Move the placed actor to a Blueprint-streamed Gameplay level."),
+		*GetNameSafe(Actor), *ActorLevelPackage, *World->GetOutermost()->GetName())));
+	return false;
+}
+#endif

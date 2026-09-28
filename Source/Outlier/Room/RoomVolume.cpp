@@ -3,6 +3,7 @@
 
 #include "Room/RoomVolume.h"
 #include "Room/RoomCombatSubsystem.h"
+#include "Network/OutlierArenaSubsystem.h"
 #include "Interface/RoomTagInterface.h"
 #include "Room/RoomTagComponent.h"
 #include "Components/BoxComponent.h"
@@ -134,7 +135,11 @@ bool ARoomVolume::ContainsWorldLocation(const FVector& Location) const
 #if WITH_EDITOR
 EDataValidationResult ARoomVolume::IsDataValid(FDataValidationContext& Context) const
 {
-	const EDataValidationResult Result = Super::IsDataValid(Context);
+	EDataValidationResult Result = Super::IsDataValid(Context);
+	if (!UOutlierArenaSubsystem::ValidateGameplayActorPlacement(this, Context))
+	{
+		Result = EDataValidationResult::Invalid;
+	}
 	return Result == EDataValidationResult::NotValidated
 		? EDataValidationResult::Valid
 		: Result;

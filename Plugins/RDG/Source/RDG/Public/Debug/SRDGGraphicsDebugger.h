@@ -163,5 +163,8 @@ private:
 	TOptional<float> GetDatamoshProgressValue() const;
 	void OnDatamoshProgressChanged(float NewValue);
 
+	// 사망 연출(Noise / Fade / Black / CA) 전체 섹션. Play / Reset과 모든 튜닝값을 담는다.
+	TSharedRef<SWidget> MakeDeathTransitionSection();
+
 	mutable TWeakObjectPtr<ULocalPlayerPostProcessSubsystem> CachedSubsystem;
 };

@@ -1385,6 +1385,10 @@ EDataValidationResult AAutoTurret::IsDataValid(FDataValidationContext& Context) 
 			? EDataValidationResult::Valid
 			: Result;
 	}
+	if (!UOutlierArenaSubsystem::ValidateGameplayActorPlacement(this, Context))
+	{
+		Result = EDataValidationResult::Invalid;
+	}
 
 	auto AddValidationError = [&Context, &Result](const FString& Message)
 	{
