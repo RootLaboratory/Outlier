@@ -716,6 +716,26 @@ bool UOutlierArenaSubsystem::HasGameplayReloadTimedOut(double ElapsedSeconds, do
 	return TimeoutSeconds > 0.0 && ElapsedSeconds >= TimeoutSeconds;
 }
 
+bool UOutlierArenaSubsystem::CanCompleteGameplayReload(
+	const TArray<TWeakObjectPtr<AActor>>& OldActors,
+	bool bUnloaded,
+	bool bCanLoad,
+	bool bLevelsShown)
+{
+	if (!bUnloaded || !bCanLoad || !bLevelsShown)
+	{
+		return false;
+	}
+	for (const TWeakObjectPtr<AActor>& Actor : OldActors)
+	{
+		if (Actor.IsValid(true))
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
 void UOutlierArenaSubsystem::SetGameplayReloadPhase(EOutlierGameplayReloadPhase Phase)
 {
 	if (!PendingGameplayReload.IsSet() || PendingGameplayReload->Phase == Phase)
@@ -1019,6 +1039,18 @@ bool UOutlierArenaSubsystem::TickArenaLevels(float DeltaTime)
 		else if (Pending.Phase == EOutlierGameplayReloadPhase::WaitingForStreaming
 			&& AreGameplayLevelsShown())
 		{
+			// Phase 순서가 어긋나도 옛 배치 Actor와 Client ACK가 남은 채 Ready를 발행하지 않는다.
+			if (!CanCompleteGameplayReload(Pending.OldActors, Pending.bUnloaded,
+				Pending.bCanLoad, true))
+			{
+				UE_LOG(LogTemp, Error,
+					TEXT("[ArenaReload][%s] Gen=%u RejectReady Unloaded=%d CanLoad=%d OldActors=%d"),
+					GetArenaReloadRole(GetWorld()), Pending.Generation,
+					Pending.bUnloaded ? 1 : 0, Pending.bCanLoad ? 1 : 0,
+					Pending.OldActors.Num());
+				FailGameplayReload(Pending.Generation, EOutlierGameplayReloadFailure::InvalidRuntime);
+				return true;
+			}
 			const ULevel* CurrentArenaLevel = GetArenaLoadedLevel();
 			if (CurrentArenaLevel != Pending.StableArenaLevel.Get())
 			{

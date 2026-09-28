@@ -1519,15 +1519,14 @@ void AOutlierGameMode::OnClientArenaGameplayUnloaded(APlayerController* PC, uint
 			GameplayGeneration, *GetNameSafe(PC));
 		return;
 	}
-	// const double Now = FPlatformTime::Seconds();
-	// const double* RequestedAt = ClientUnloadRequestedAt.Find(PC);
 	ReadyGameplayUnloadPlayers.Add(PC);
-	/* UE_LOG(LogTemp, Display,
-		TEXT("[ArenaReload][Server] UnloadACK PC=%s Gen=%u ACK=%d/%d RoundTripMs=%.1f TotalMs=%.1f ServerUnloaded=%d"),
+	UE_LOG(LogTemp, Display,
+		TEXT("[ArenaReload][Server] UnloadACK PC=%s Gen=%u ACK=%d/%d ServerUnloaded=%d TotalMs=%.1f"),
 		*GetNameSafe(PC), GameplayGeneration, ReadyGameplayUnloadPlayers.Num(),
-		PendingGameplayUnloadPlayers.Num(), RequestedAt ? (Now - *RequestedAt) * 1000.0 : -1.0,
-		ArenaReloadStartedAt > 0.0 ? (Now - ArenaReloadStartedAt) * 1000.0 : -1.0,
-		ArenaSubsystem->IsGameplayReloadUnloaded(GameplayGeneration) ? 1 : 0); */
+		PendingGameplayUnloadPlayers.Num(),
+		ArenaSubsystem->IsGameplayReloadUnloaded(GameplayGeneration) ? 1 : 0,
+		ArenaReloadStartedAt > 0.0
+			? (FPlatformTime::Seconds() - ArenaReloadStartedAt) * 1000.0 : -1.0);
 	if (ReadyGameplayUnloadPlayers.Num() < PendingGameplayUnloadPlayers.Num())
 	{
 		return;

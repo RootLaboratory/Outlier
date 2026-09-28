@@ -91,6 +91,11 @@ public:
 	bool IsGameplayReloadStalled(uint32 Generation) const;
 	static bool IsGameplayGenerationNewer(uint32 Candidate, uint32 Reference);
 	static bool HasGameplayReloadTimedOut(double ElapsedSeconds, double TimeoutSeconds);
+	static bool CanCompleteGameplayReload(
+		const TArray<TWeakObjectPtr<AActor>>& OldActors,
+		bool bUnloaded,
+		bool bCanLoad,
+		bool bLevelsShown);
 
 	FOnArenaShown OnArenaShown;
 	FOnArenaReleased OnArenaReleased;

@@ -6,6 +6,7 @@
 #include "Network/OutlierMatchRequest.h"
 #include "OutlierArenaSettings.h"
 #include "OutlierGameInstance.h"
+#include "GameFramework/Actor.h"
 
 #if WITH_EDITOR
 #include "Engine/LevelStreaming.h"
@@ -53,6 +54,20 @@ bool FOutlierArenaGameplayGenerationContractTest::RunTest(const FString& Paramet
 		UOutlierArenaSubsystem::HasGameplayReloadTimedOut(15.0, 15.0));
 	TestFalse(TEXT("A disabled timeout cannot report a stall"),
 		UOutlierArenaSubsystem::HasGameplayReloadTimedOut(60.0, 0.0));
+
+	TArray<TWeakObjectPtr<AActor>> OldActors;
+	OldActors.Add(AActor::StaticClass()->GetDefaultObject<AActor>());
+	TestFalse(TEXT("A live old Actor blocks Ready even after level visibility returns"),
+		UOutlierArenaSubsystem::CanCompleteGameplayReload(OldActors, true, true, true));
+	OldActors.Reset();
+	TestFalse(TEXT("A missing unload completion blocks Ready"),
+		UOutlierArenaSubsystem::CanCompleteGameplayReload(OldActors, false, true, true));
+	TestFalse(TEXT("Missing client unload ACKs block Ready"),
+		UOutlierArenaSubsystem::CanCompleteGameplayReload(OldActors, true, false, true));
+	TestFalse(TEXT("Gameplay levels must be shown before Ready"),
+		UOutlierArenaSubsystem::CanCompleteGameplayReload(OldActors, true, true, false));
+	TestTrue(TEXT("Ready requires purge, unload, ACK authorization and level visibility"),
+		UOutlierArenaSubsystem::CanCompleteGameplayReload(OldActors, true, true, true));
 
 	return true;
 }

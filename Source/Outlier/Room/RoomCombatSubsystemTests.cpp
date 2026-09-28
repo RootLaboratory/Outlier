@@ -1588,6 +1588,235 @@ bool FRoomCombatWaveTurretActivationTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FRoomCombatGameplayActorReloadTest,
+	"Outlier.Room.GameplayActorReload",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRoomCombatGameplayActorReloadTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const FName WorldName = MakeUniqueObjectName(nullptr, UWorld::StaticClass(), NAME_None,
+		EUniqueObjectNameOptions::GloballyUnique);
+	FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, WorldName, GetTransientPackage());
+	if (!TestNotNull(TEXT("Gameplay actor reload test world"), World))
+	{
+		GEngine->DestroyWorldContext(World);
+		return false;
+	}
+
+	World->AddToRoot();
+	WorldContext.SetCurrentWorld(World);
+	UGameInstance* GameInstance = NewObject<UGameInstance>(GEngine);
+	World->SetGameInstance(GameInstance);
+	GameInstance->Init();
+	TestTrue(TEXT("Gameplay actor reload world creates an authority game mode"),
+		World->SetGameMode(FURL()));
+	World->InitializeActorsForPlay(FURL());
+	auto CleanupWorld = [World, GameInstance]()
+	{
+		GEngine->ShutdownWorldNetDriver(World);
+		World->DestroyWorld(true);
+		GameInstance->Shutdown();
+		World->SetPhysicsScene(nullptr);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+	};
+
+	URoomCombatSubsystem* Combat = World->GetSubsystem<URoomCombatSubsystem>();
+	UOutlierSaveSubSystem* Save = GameInstance->GetSubsystem<UOutlierSaveSubSystem>();
+	if (!TestNotNull(TEXT("Room combat subsystem"), Combat)
+		|| !TestNotNull(TEXT("Save subsystem"), Save))
+	{
+		CleanupWorld();
+		return false;
+	}
+
+	const FGameplayTag RoomTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.1")));
+	const FName TurretId(TEXT("Turret.GameplayReload.1"));
+	URoomCombatDefinition* Definition = NewObject<URoomCombatDefinition>(World);
+	AddMixedWaveTurretDefinition(Definition, RoomTag, 1);
+	Combat->SetCombatDefinitionForTesting(Definition);
+
+	auto SpawnRoom = [World, RoomTag]()
+	{
+		ARoomVolume* Room = World->SpawnActorDeferred<ARoomVolume>(
+			ARoomVolume::StaticClass(), FTransform::Identity);
+		if (Room)
+		{
+			FStructProperty* TagProperty = FindFProperty<FStructProperty>(
+				ARoomVolume::StaticClass(), TEXT("RoomTag"));
+			if (!TagProperty)
+			{
+				Room->Destroy();
+				return static_cast<ARoomVolume*>(nullptr);
+			}
+			*TagProperty->ContainerPtrToValuePtr<FGameplayTag>(Room) = RoomTag;
+			Room->FinishSpawning(FTransform::Identity);
+			DispatchBeginPlayForTest(Room);
+		}
+		return Room;
+	};
+	auto SpawnPoint = [World, RoomTag]()
+	{
+		ARoomCombatSpawnPoint* Point = World->SpawnActorDeferred<ARoomCombatSpawnPoint>(
+			ARoomCombatSpawnPoint::StaticClass(), FTransform::Identity);
+		if (Point)
+		{
+			FStructProperty* TagProperty = FindFProperty<FStructProperty>(
+				ARoomCombatSpawnPoint::StaticClass(), TEXT("RoomTag"));
+			if (!TagProperty)
+			{
+				Point->Destroy();
+				return static_cast<ARoomCombatSpawnPoint*>(nullptr);
+			}
+			*TagProperty->ContainerPtrToValuePtr<FGameplayTag>(Point) = RoomTag;
+			Point->FinishSpawning(FTransform::Identity);
+			DispatchBeginPlayForTest(Point);
+		}
+		return Point;
+	};
+	auto SpawnEnemy = [World, RoomTag]()
+	{
+		AEnemyBase* Enemy = World->SpawnActorDeferred<AEnemyBase>(
+			AEnemyBase::StaticClass(), FTransform::Identity);
+		if (Enemy)
+		{
+			// 순수 C++ Enemy에는 StatRow가 없으므로 BeginPlay에서 체력 0으로 사망하지 않게 한다.
+			if (FStructProperty* StatProperty = FindFProperty<FStructProperty>(
+				AEnemyBase::StaticClass(), TEXT("RuntimeStat")))
+			{
+				StatProperty->ContainerPtrToValuePtr<FEnemyStat>(Enemy)->Health = 100.0f;
+			}
+			if (URoomTagComponent* RoomComponent = Enemy->GetRoomTagComp())
+			{
+				RoomComponent->AssignDefaultRoomTag(RoomTag);
+			}
+			Enemy->FinishSpawning(FTransform::Identity);
+			if (IsValid(Enemy))
+			{
+				DispatchBeginPlayForTest(Enemy);
+			}
+		}
+		return Enemy;
+	};
+	auto SpawnTurret = [World, RoomTag, TurretId]()
+	{
+		AAutoTurret* Turret = World->SpawnActorDeferred<AAutoTurret>(
+			AAutoTurret::StaticClass(), FTransform::Identity);
+		if (Turret)
+		{
+			Turret->ConfigureWaveRegistrationForTesting(RoomTag, 0, 1, TurretId);
+			Turret->FinishSpawning(FTransform::Identity);
+			DispatchBeginPlayForTest(Turret);
+		}
+		return Turret;
+	};
+
+	// 첫 로드는 SpawnPoint/Enemy/Turret가 Room보다 먼저 등록되는 순서를 재현한다.
+	ARoomCombatSpawnPoint* OldPoint = SpawnPoint();
+	AEnemyBase* OldEnemy = SpawnEnemy();
+	AAutoTurret* OldTurret = SpawnTurret();
+	ARoomVolume* OldRoom = SpawnRoom();
+	if (!TestNotNull(TEXT("First-load SpawnPoint"), OldPoint)
+		|| !TestNotNull(TEXT("First-load Enemy"), OldEnemy)
+		|| !TestNotNull(TEXT("First-load turret"), OldTurret)
+		|| !TestNotNull(TEXT("First-load Room"), OldRoom))
+	{
+		CleanupWorld();
+		return false;
+	}
+	TestTrue(TEXT("First load registers Room"), Combat->IsRoomRegistered(RoomTag));
+	TestEqual(TEXT("First load registers SpawnPoint"),
+		Combat->GetRegisteredSpawnPointCount(RoomTag), 1);
+	TestEqual(TEXT("First load registers preplaced Enemy"),
+		Combat->GetAliveEnemyCount(RoomTag), 1);
+	TestEqual(TEXT("First load registers Wave turret"),
+		Combat->GetRegisteredWaveTurretCount(RoomTag, 0, 1), 1);
+
+	// Arena Reset은 이전 세대 등록부를 비운다. 이후 Actor EndPlay가 와도 완료/사망으로 세지 않는다.
+	Combat->ResetRuntimeCombatState();
+	TestFalse(TEXT("Reset removes Room registration"), Combat->IsRoomRegistered(RoomTag));
+	TestEqual(TEXT("Reset removes SpawnPoint registration"),
+		Combat->GetRegisteredSpawnPointCount(RoomTag), 0);
+	TestEqual(TEXT("Reset removes Wave turret registration"),
+		Combat->GetRegisteredWaveTurretCount(RoomTag, 0, 1), 0);
+	OldRoom->Destroy();
+	OldPoint->Destroy();
+	OldEnemy->Destroy();
+	OldTurret->Destroy();
+	TestFalse(TEXT("Actor EndPlay does not complete the old encounter"),
+		Save->HasWorldProgress(EOutlierWorldProgressType::CompletedEncounter,
+			RoomTag.GetTagName()));
+
+	Save->SetWorldProgressState(
+		EOutlierWorldProgressType::CompletedEncounter, RoomTag.GetTagName(), true);
+	TSet<FName> DestroyedTurretIds;
+	DestroyedTurretIds.Add(TurretId);
+	Save->RestoreCurrentDestroyedTurretIds(DestroyedTurretIds);
+	// 재로드는 Room이 먼저 등장해도 저장된 완료 상태가 뒤늦은 Actor에 재적용되어야 한다.
+	ARoomVolume* NewRoom = SpawnRoom();
+	ARoomCombatSpawnPoint* NewPoint = SpawnPoint();
+	AEnemyBase* NewEnemy = SpawnEnemy();
+	AAutoTurret* NewTurret = SpawnTurret();
+	if (TestNotNull(TEXT("Reloaded Room"), NewRoom)
+		&& TestNotNull(TEXT("Reloaded SpawnPoint"), NewPoint)
+		&& TestNotNull(TEXT("Reloaded Enemy"), NewEnemy)
+		&& TestNotNull(TEXT("Reloaded turret"), NewTurret))
+	{
+		TestEqual(TEXT("Saved Room completion restores"),
+			Combat->GetRoomState(RoomTag), ERoomCombatState::Cleared);
+		TestTrue(TEXT("Reloaded SpawnPoint keeps its mesh but is cleared"),
+			NewPoint->IsRoomCleared());
+		TestFalse(TEXT("Saved encounter does not reactivate a preplaced Enemy"),
+			IsValid(NewEnemy));
+		TestEqual(TEXT("Saved turret death restores without deploy animation"),
+			NewTurret->GetTurretLifecycleState(), EAutoTurretLifecycleState::DeadPersistent);
+		TestEqual(TEXT("Reloaded Room has one SpawnPoint registration"),
+			Combat->GetRegisteredSpawnPointCount(RoomTag), 1);
+	}
+	Combat->ResetRuntimeCombatState();
+	if (IsValid(NewRoom))
+	{
+		NewRoom->Destroy();
+	}
+	if (IsValid(NewPoint))
+	{
+		NewPoint->Destroy();
+	}
+	if (IsValid(NewTurret))
+	{
+		NewTurret->Destroy();
+	}
+	Save->SetWorldProgressState(
+		EOutlierWorldProgressType::CompletedEncounter, RoomTag.GetTagName(), false);
+	Save->RestoreCurrentDestroyedTurretIds(TSet<FName>());
+	// 체크포인트 이전으로 롤백하면 완료/사망 표시를 새 Actor에 이어붙이지 않는다.
+	ARoomCombatSpawnPoint* RolledBackPoint = SpawnPoint();
+	AAutoTurret* RolledBackTurret = SpawnTurret();
+	AEnemyBase* RolledBackEnemy = SpawnEnemy();
+	ARoomVolume* RolledBackRoom = SpawnRoom();
+	if (TestNotNull(TEXT("Rolled-back SpawnPoint"), RolledBackPoint)
+		&& TestNotNull(TEXT("Rolled-back turret"), RolledBackTurret)
+		&& TestNotNull(TEXT("Rolled-back Enemy"), RolledBackEnemy)
+		&& TestNotNull(TEXT("Rolled-back Room"), RolledBackRoom))
+	{
+		TestEqual(TEXT("Rollback restores dormant Room"),
+			Combat->GetRoomState(RoomTag), ERoomCombatState::Dormant);
+		TestFalse(TEXT("Rollback restores active SpawnPoint presentation"),
+			RolledBackPoint->IsRoomCleared());
+		TestEqual(TEXT("Rollback restores preplaced Enemy tracking"),
+			Combat->GetAliveEnemyCount(RoomTag), 1);
+		TestEqual(TEXT("Rollback restores Wave turret waiting state"),
+			RolledBackTurret->GetTurretLifecycleState(),
+			EAutoTurretLifecycleState::WaitingForWave);
+	}
+
+	CleanupWorld();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FRoomCombatWaveTurretReloadSafetyTest,
 	"Outlier.Room.WaveTurretReloadSafety",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
