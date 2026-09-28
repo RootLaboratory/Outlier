@@ -7,9 +7,6 @@
 #include "Interface/RoomTagInterface.h"
 #include "Room/RoomTagComponent.h"
 #include "Components/BoxComponent.h"
-#include "Components/WorldPartitionStreamingSourceComponent.h"
-#include "WorldPartition/WorldPartitionStreamingSource.h"
-#include "WorldPartition/WorldPartitionSubsystem.h"
 
 #if WITH_EDITOR
 #include "Misc/DataValidation.h"
@@ -38,27 +35,11 @@ ARoomVolume::ARoomVolume()
 	TriggerBox->SetCollisionResponseToAllChannels(ECR_Ignore);
 	TriggerBox->SetCollisionResponseToChannel(ECC_Pawn, ECR_Overlap);
 	TriggerBox->SetGenerateOverlapEvents(true);
-
-	CombatStreamingSource = CreateDefaultSubobject<UWorldPartitionStreamingSourceComponent>(
-		TEXT("CombatStreamingSource"));
-	CombatStreamingSource->DisableStreamingSource();
 }
 
 void ARoomVolume::BeginPlay()
 {
 	Super::BeginPlay();
-
-	if (CombatStreamingSource && TriggerBox)
-	{
-		FStreamingSourceShape RoomShape;
-		RoomShape.bUseGridLoadingRange = false;
-		// 소환 반경이 아니라 전투 중인 Room의 WP 유지 범위다. 플레이어가 다른 층이나
-		// Room 밖으로 이동해도 RoomVolume과 소환 오브젝트가 언로드되지 않게 Box 전체를 감싼다.
-		RoomShape.Radius = FMath::Max(TriggerBox->GetScaledBoxExtent().Size(), 1.0);
-		CombatStreamingSource->Shapes.Reset();
-		CombatStreamingSource->Shapes.Add(RoomShape);
-		CombatStreamingSource->DisableStreamingSource();
-	}
 
 	if (HasAuthority() && RoomTag.IsValid())
 	{
@@ -72,8 +53,6 @@ void ARoomVolume::BeginPlay()
 
 void ARoomVolume::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-	SetCombatStreamingSourceEnabled(false);
-
 	if (HasAuthority())
 	{
 		if (URoomCombatSubsystem* CombatSubsystem = GetWorld()
@@ -85,37 +64,6 @@ void ARoomVolume::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	}
 
 	Super::EndPlay(EndPlayReason);
-}
-
-void ARoomVolume::SetCombatStreamingSourceEnabled(bool bEnabled)
-{
-	// 클라이언트 셀 로딩은 각 로컬 플레이어의 Streaming Source가 담당한다.
-	if (!HasAuthority() || !CombatStreamingSource)
-	{
-		return;
-	}
-
-	if (bEnabled)
-	{
-		CombatStreamingSource->EnableStreamingSource();
-	}
-	else
-	{
-		CombatStreamingSource->DisableStreamingSource();
-	}
-
-	if (UWorldPartitionSubsystem* WorldPartitionSubsystem = GetWorld()
-		? GetWorld()->GetSubsystem<UWorldPartitionSubsystem>()
-		: nullptr)
-	{
-		WorldPartitionSubsystem->OnUpdateStreamingState();
-	}
-}
-
-bool ARoomVolume::IsCombatStreamingSourceEnabled() const
-{
-	return CombatStreamingSource
-		&& CombatStreamingSource->IsStreamingSourceEnabled();
 }
 
 bool ARoomVolume::ContainsWorldLocation(const FVector& Location) const
@@ -187,7 +135,7 @@ void ARoomVolume::HandleEndOverlap(
 		return;
 	}
 
-	// 위치 태그만 갱신한다. Room 이탈은 전투 완료가 아니므로 전투용 Streaming Source는 유지한다.
+	// 위치 태그만 갱신한다. Room 이탈은 전투 완료나 Gameplay 서브레벨 언로드가 아니다.
 	RoomTagComp->LeaveRoom(this);
 	// 퇴장도 통지해 한 명이 나간 직후 다른 한 명이 들어온 상황을 다시 판정한다.
 	OnRoomActorOverlapChanged.Broadcast(OtherActor, false);

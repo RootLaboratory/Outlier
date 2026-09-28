@@ -309,10 +309,10 @@ bool FRoomCombatSubsystemRuntimeTest::RunTest(const FString& Parameters)
 		CombatSubsystem->NotifyRoomCombatStarted(FirstRoomTag));
 	TestFalse(TEXT("Another Room cannot start while combat is active"),
 		CombatSubsystem->NotifyRoomCombatStarted(SecondRoomTag));
-	TestTrue(TEXT("Active Room enables its combat streaming source"),
-		FirstRoom->IsCombatStreamingSourceEnabled());
-	TestFalse(TEXT("Inactive Room keeps its combat streaming source disabled"),
-		SecondRoom->IsCombatStreamingSourceEnabled());
+	TestEqual(TEXT("Combat reserves only the first Room"),
+		CombatSubsystem->GetActiveCombatRoomTag(), FirstRoomTag);
+	TestEqual(TEXT("The other Room remains dormant"),
+		CombatSubsystem->GetRoomState(SecondRoomTag), ERoomCombatState::Dormant);
 
 	ARoomCombatSpawnPoint* ActiveSpawnPoint =
 		World->SpawnActor<ARoomCombatSpawnPoint>();
@@ -460,8 +460,8 @@ bool FRoomCombatSubsystemRuntimeTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Checkpoint rollback restores SpawnPoint eligibility"),
 			ActiveSpawnPoint->IsRuntimeActive());
 	}
-	TestFalse(TEXT("Completing the phase disables its combat streaming source"),
-		FirstRoom->IsCombatStreamingSourceEnabled());
+	TestFalse(TEXT("Completing the phase releases the active Room"),
+		CombatSubsystem->GetActiveCombatRoomTag().IsValid());
 	TestFalse(TEXT("Ordinary unregistration is not treated as a defeat"),
 		CombatSubsystem->GetRoomState(SecondRoomTag) == ERoomCombatState::Cleared);
 	CombatSubsystem->UnregisterEnemy(SecondEnemy);
@@ -925,7 +925,8 @@ bool FRoomCombatTriggeredSequenceTest::RunTest(const FString& Parameters)
 			if (Phase == 0)
 			{
 				TestTrue(TEXT("Intermediate phase keeps exits blocked"), Combat->IsExitBlocked(RoomTag));
-				TestTrue(TEXT("Intermediate phase keeps streaming"), Room->IsCombatStreamingSourceEnabled());
+				TestEqual(TEXT("Intermediate phase keeps the Room reserved"),
+					Combat->GetActiveCombatRoomTag(), RoomTag);
 			}
 			break;
 		case ERoomCombatEvent::RoomCleared:
@@ -1006,7 +1007,8 @@ bool FRoomCombatTriggeredSequenceTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Both phases complete once"), Phases, 2);
 	TestEqual(TEXT("Exactly one overall clear event"), Clears, 1);
 	TestFalse(TEXT("All group points deactivate"), Point->IsRuntimeActive() || LatePoint->IsRuntimeActive());
-	TestFalse(TEXT("Final completion releases streaming"), Room->IsCombatStreamingSourceEnabled());
+	TestFalse(TEXT("Final completion releases the active Room"),
+		Combat->GetActiveCombatRoomTag().IsValid());
 	Combat->UnregisterSpawnPoint(LatePoint);
 	LatePoint->SetRuntimeActive(true);
 	Combat->RegisterSpawnPoint(LatePoint, RoomTag, FGameplayTagContainer(), GroupTag);
@@ -1203,7 +1205,8 @@ bool FRoomCombatExternalTriggerTest::RunTest(const FString& Parameters)
 		Combat->GetReconnectContext(WaitingContext));
 	TestTrue(TEXT("Waiting reconnect still targets the blocked Room"),
 		WaitingContext.RoomTag == RoomTag);
-	TestTrue(TEXT("Streaming remains active during external wait"), Room->IsCombatStreamingSourceEnabled());
+	TestEqual(TEXT("External wait keeps the Room reserved"),
+		Combat->GetActiveCombatRoomTag(), RoomTag);
 	FRoomCombatTriggerContext OtherContext;
 	TestFalse(TEXT("Another Room cannot start while this Room holds the barrier"),
 		Combat->CreateTriggerContext(Requester, OtherRoomTag, FGameplayTag(), OtherContext));
@@ -1991,7 +1994,8 @@ bool FRoomCombatInitialDetectionPreparationTest::RunTest(const FString& Paramete
 	TestTrue(TEXT("The preplaced enemy cannot begin attacking"), Combat->IsEnemyAttackBlocked(Enemy));
 	TestFalse(TEXT("No exit barrier is active during preparation"), Combat->IsExitBlocked(RoomTag));
 	TestFalse(TEXT("Preparation leaves the placed barrier open"), Barrier->IsBlocked());
-	TestTrue(TEXT("Preparation keeps the room streamed"), Room->IsCombatStreamingSourceEnabled());
+	TestEqual(TEXT("Preparation reserves the Room"),
+		Combat->GetActiveCombatRoomTag(), RoomTag);
 	TestFalse(TEXT("The old direct start cannot bypass preparation"), Combat->NotifyRoomCombatStarted(RoomTag));
 
 	FRoomCombatPreparationContext RepeatedContext;
@@ -2058,7 +2062,8 @@ bool FRoomCombatInitialDetectionPreparationTest::RunTest(const FString& Paramete
 	TestFalse(TEXT("Reset invalidates the previous context"),
 		Combat->CompleteInitialDetectionPreparation(FirstContext));
 	TestFalse(TEXT("Reset releases the attack gate"), Combat->IsEnemyAttackBlocked(Enemy));
-	TestFalse(TEXT("Reset releases the streaming source"), Room->IsCombatStreamingSourceEnabled());
+	TestFalse(TEXT("Reset releases the active Room"),
+		Combat->GetActiveCombatRoomTag().IsValid());
 	TestTrue(TEXT("The room can register for a new lifetime"), Combat->RegisterRoom(Room, RoomTag));
 	Combat->RegisterPreplacedEnemy(Enemy);
 	FRoomCombatPreparationContext NewContext;

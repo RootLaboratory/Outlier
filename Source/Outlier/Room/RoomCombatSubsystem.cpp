@@ -209,7 +209,6 @@ void URoomCombatSubsystem::StartInitialDetectionCombat(
 	Runtime.CurrentWaveIndex = 0;
 	Runtime.bCurrentWaveSpawnStarted = true;
 	ActiveCombatRoomTag = RoomTag;
-	SetRoomStreamingSourceEnabled(RoomTag, true);
 	// 배치 Wave는 별도 Spawn 요청이 없으므로 전투 진입 자체가 Wave 시작 완료 시점이다.
 	FinalizeCurrentWaveSpawn(RoomTag, Runtime);
 }
@@ -281,7 +280,7 @@ bool URoomCombatSubsystem::StartTriggeredSequence(
 		return false;
 	}
 
-	// 후속 외부 차수에서 시작이 실패해도 앞선 차수의 차단/Streaming 상태를 보존한다.
+	// 후속 외부 차수에서 시작이 실패해도 앞선 차수의 출입 차단 상태를 보존한다.
 	const bool bWasExitBlocked = Runtime->bExitBlockActive;
 	Runtime->State = ERoomCombatState::Combat;
 	Runtime->CurrentWaveIndex = 0;
@@ -291,7 +290,6 @@ bool URoomCombatSubsystem::StartTriggeredSequence(
 	Runtime->ActiveActivationGroupTag = Context.ActivationGroupTag;
 	ActiveCombatRoomTag = Context.RoomTag;
 	SetActivationGroupActive(Context.RoomTag, Context.ActivationGroupTag, true);
-	SetRoomStreamingSourceEnabled(Context.RoomTag, true);
 	if (!StartWaveSpawning(Context.RoomTag, Context.CombatPhaseIndex, 0))
 	{
 		Runtime->State = ERoomCombatState::WaitingForTrigger;
@@ -302,7 +300,6 @@ bool URoomCombatSubsystem::StartTriggeredSequence(
 		SetActivationGroupActive(Context.RoomTag, Context.ActivationGroupTag, false);
 		if (!bWasExitBlocked)
 		{
-			SetRoomStreamingSourceEnabled(Context.RoomTag, false);
 			ActiveCombatRoomTag = FGameplayTag();
 		}
 		return false;
@@ -506,7 +503,7 @@ bool URoomCombatSubsystem::RegisterRoom(
 		}
 		PendingPreplacedEnemies.Remove(RoomTag);
 	}
-	// SpawnPoint가 RoomVolume보다 먼저 WP에 도착했어도 복원된 완료 상태를 적용한다.
+	// SpawnPoint가 RoomVolume보다 먼저 등록됐어도 복원된 완료 상태를 적용한다.
 	ApplyRoomClearedToSpawnPoints(RoomTag, Runtime.State == ERoomCombatState::Cleared);
 	OnRoomStartReadinessChanged.Broadcast(RoomTag);
 
@@ -633,7 +630,6 @@ void URoomCombatSubsystem::UnregisterRoom(ARoomVolume* RoomVolume)
 	{
 		ActiveCombatRoomTag = FGameplayTag();
 	}
-	RoomVolume->SetCombatStreamingSourceEnabled(false);
 	if (UWorld* World = GetWorld())
 	{
 		if (UEnemyRoomSubsystem* EnemyRoomSubsystem =
@@ -723,7 +719,7 @@ bool URoomCombatSubsystem::RegisterSpawnPoint(
 				*RoomTag.ToString());
 			return false;
 		}
-		// WP 재등록이나 중복 초기화가 같은 Actor를 후보 배열에 두 번 넣지 않게 한다.
+		// 중복 등록이 같은 Actor를 후보 배열에 두 번 넣지 않게 한다.
 		return true;
 	}
 
@@ -735,7 +731,7 @@ bool URoomCombatSubsystem::RegisterSpawnPoint(
 	if (const FRoomCombatRuntime* Room = RoomRuntimes.Find(RoomTag))
 	{
 		SpawnPoint->SetRoomCleared(Room->State == ERoomCombatState::Cleared);
-		// 그룹을 켠 뒤 WP에서 도착한 지점도 같은 연속 전투에 참여한다.
+		// 그룹을 켠 뒤 등록된 지점도 같은 연속 전투에 참여한다.
 		if (ActivationGroupTag.IsValid() && Room->ActiveActivationGroupTag == ActivationGroupTag)
 		{
 			SpawnPoint->SetRuntimeActive(Room->bTriggeredSequenceActive);
@@ -827,7 +823,7 @@ bool URoomCombatSubsystem::RegisterWaveTurret(
 	}
 
 	const TWeakObjectPtr<AAutoTurret> TurretPtr(Turret);
-	// WP 재등록은 같은 Actor의 BeginPlay가 다시 들어올 수 있으므로 완전히 같은 설정은 멱등 성공으로 본다.
+	// 같은 Actor가 재등록되어도 완전히 같은 설정은 멱등 성공으로 본다.
 	if (const FGameplayTag* ExistingRoomTag = RegisteredWaveTurretRooms.Find(TurretPtr))
 	{
 		const TArray<FRoomCombatWaveTurretRuntime>* ExistingEntries =
@@ -877,7 +873,7 @@ bool URoomCombatSubsystem::RegisterWaveTurret(
 		GetRegisteredWaveTurretCount(RoomTag, CombatPhaseIndex, WaveIndex),
 		ExpectedTurretCount);
 
-	// Streaming Source가 켜지는 순간보다 Actor 등록이 늦을 수 있다. 현재 Wave가 이 터렛을
+	// Gameplay 서브레벨 Actor의 등록이 Wave 시작보다 늦을 수 있다. 현재 Wave가 이 터렛을
 	// 기다리는 중이면 등록 이벤트 자체가 재시도 신호가 되어 별도 Tick 없이 전개를 시작한다.
 	if (FRoomCombatRuntime* RoomRuntime = RoomRuntimes.Find(RoomTag);
 		RoomRuntime && !RoomRuntime->bDeferSpawnExecution)
@@ -918,7 +914,7 @@ void URoomCombatSubsystem::UnregisterWaveTurret(AAutoTurret* Turret)
 	RegisteredWaveTurretRooms.Remove(TurretPtr);
 	if (FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RegisteredRoomTag))
 	{
-		// 전개 중 Actor가 WP에서 내려가도 완료로 세지 않는다. Pending 수량은 그대로 두고
+		// 전개 중 Actor가 해제되어도 완료로 세지 않는다. Pending 수량은 그대로 두고
 		// 같은 Wave의 교체 Actor가 등록될 때 다시 전개를 요청한다.
 		Runtime->PendingWaveTurretActivations.Remove(TurretPtr);
 	}
@@ -1041,7 +1037,7 @@ void URoomCombatSubsystem::GetEligibleSpawnPoints(
 	TArray<ARoomCombatSpawnPoint*>& OutSpawnPoints)
 {
 	OutSpawnPoints.Reset();
-	// 주변 Room의 셀이 함께 로드되어 있어도 동시에 진행 중인 하나의 Room만 소환 후보를 제공한다.
+	// 다른 Room도 로드되어 있어도 동시에 진행 중인 하나의 Room만 소환 후보를 제공한다.
 	if (!RoomTag.IsValid() || ActiveCombatRoomTag != RoomTag)
 	{
 		return;
@@ -1583,7 +1579,6 @@ bool URoomCombatSubsystem::BeginInitialDetectionPreparation(
 		Runtime->PreparingAnchorPlayer = AnchorPlayer;
 		Runtime->State = ERoomCombatState::Preparing;
 		ActiveCombatRoomTag = RoomTag;
-		SetRoomStreamingSourceEnabled(RoomTag, true);
 		for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : Runtime->TrackedAliveEnemies)
 		{
 			if (AEnemyBase* Enemy = EnemyPtr.Get(); Enemy && !Enemy->IsEnemyPossessed())
@@ -2332,10 +2327,6 @@ void URoomCombatSubsystem::ResetRuntimeCombatState()
 		{
 			CancelledSequences.Add({Entry.Key, Entry.Value.CurrentCombatPhaseIndex, Entry.Value.GameplayGeneration});
 		}
-		if (ARoomVolume* RoomVolume = Entry.Value.RoomVolume.Get())
-		{
-			RoomVolume->SetCombatStreamingSourceEnabled(false);
-		}
 	}
 	// 토큰을 먼저 무효화해야 Reset 도중 도착한 AnimNotify가 현재 Wave의 Pending을 소모하지 못한다.
 	for (const TWeakObjectPtr<AAutoTurret>& TurretPtr : WaveTurretsToReset)
@@ -2560,15 +2551,11 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 		return;
 	}
 
-	// 외부 트리거 대기 중이라도 한 번 막힌 Room은 마지막 차수 완료 전까지 점유와 WP를 유지한다.
+	// 외부 트리거 대기 중에도 한 번 막힌 Room은 마지막 차수 완료 전까지 점유를 유지한다.
 	const bool bKeepRoomReserved = Runtime->bExitBlockActive && NextPhase != nullptr;
 	if (!bKeepRoomReserved && ActiveCombatRoomTag == RoomTag)
 	{
 		ActiveCombatRoomTag = FGameplayTag();
-	}
-	if (!bKeepRoomReserved)
-	{
-		SetRoomStreamingSourceEnabled(RoomTag, false);
 	}
 	if (UWorld* World = GetWorld())
 	{
@@ -2588,7 +2575,7 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 		MarkRoomCleared(RoomTag, *Runtime);
 		// 전체 완료에서 차단 해제를 먼저 알린다. 이어지는 차수 알림이 Reset을 요청해도 해제가 누락되지 않는다.
 		BroadcastCombatEvent(RoomTag, ERoomCombatEvent::RoomCleared, CompletedPhaseIndex, Generation);
-		// 완료 이벤트 수신 중 WP 해제/Reset이 일어나면 이전 Room의 후속 통보를 보내지 않는다.
+		// 완료 이벤트 수신 중 Room 해제/Reset이 일어나면 이전 Room의 후속 통보를 보내지 않는다.
 		Runtime = RoomRuntimes.Find(RoomTag);
 		if (Runtime && Runtime->RegistrationId == RegistrationId && Runtime->State == ERoomCombatState::Cleared)
 		{
@@ -2703,7 +2690,7 @@ void URoomCombatSubsystem::CompactSpawnPoints(FGameplayTag RoomTag)
 				return false;
 			}
 
-			// EndPlay 해제를 받지 못한 경우에도 만료된 WP Actor의 역방향 인덱스를 함께 정리한다.
+			// EndPlay 해제를 받지 못한 경우에도 만료된 Actor의 역방향 인덱스를 함께 정리한다.
 			RegisteredSpawnPointRooms.Remove(Runtime.SpawnPoint);
 			return true;
 		});
@@ -2730,7 +2717,7 @@ void URoomCombatSubsystem::CompactWaveTurrets(FGameplayTag RoomTag)
 				return false;
 			}
 
-			// EndPlay 해제를 받지 못한 WP Actor도 역방향 인덱스에서 함께 제거한다.
+			// EndPlay 해제를 받지 못한 Actor도 역방향 인덱스에서 함께 제거한다.
 			RegisteredWaveTurretRooms.Remove(Entry.Turret);
 			return true;
 		});
@@ -2738,19 +2725,6 @@ void URoomCombatSubsystem::CompactWaveTurrets(FGameplayTag RoomTag)
 	if (Entries->IsEmpty())
 	{
 		WaveTurretsByRoom.Remove(RoomTag);
-	}
-}
-
-void URoomCombatSubsystem::SetRoomStreamingSourceEnabled(
-	FGameplayTag RoomTag,
-	bool bEnabled)
-{
-	if (FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag))
-	{
-		if (ARoomVolume* RoomVolume = Runtime->RoomVolume.Get())
-		{
-			RoomVolume->SetCombatStreamingSourceEnabled(bEnabled);
-		}
 	}
 }
 

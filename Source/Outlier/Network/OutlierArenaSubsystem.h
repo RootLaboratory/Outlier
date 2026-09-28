@@ -11,7 +11,7 @@ class ULevel;
 class ULevelStreaming;
 class ULevelStreamingDynamic;
 class AActor;
-struct FDataValidationContext;
+class FDataValidationContext;
 
 UENUM(BlueprintType)
 enum class EOutlierGameplayReloadPhase : uint8
