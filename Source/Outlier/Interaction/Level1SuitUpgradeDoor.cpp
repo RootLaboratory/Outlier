@@ -12,13 +12,14 @@
 #include "Room/RoomCombatSubsystem.h"
 #include "Room/RoomVolume.h"
 #include "Save/OutlierSaveSubSystem.h"
+#include "Save/OutlierCheckpoint.h"
 #include "Shooter/ShooterCharacter.h"
 #include "TimerManager.h"
 
 // Level 1 진행의 서버 측 순서:
 // 두 플레이어가 입장 Room 안에 모임 -> 이 문 닫기 -> 닫힘 Timeline 완료
 // -> 양쪽 UI의 실제 종료 확인 -> 이 문 열기 -> 열림 Timeline 완료
-// -> 별도 전투 Room과 첫 Wave의 SpawnPoint가 준비되면 ExternalTrigger 전투 시작.
+// -> 입구 체크포인트의 디스크 저장 성공 -> 전투 Room/SpawnPoint 준비 후 ExternalTrigger 시작.
 ALevel1SuitUpgradeDoor::ALevel1SuitUpgradeDoor()
 {
 	// 부모 Door의 Tick이 Timeline을 구동한다. 자식은 초기 문 상태만 바꾼다.
@@ -42,6 +43,15 @@ void ALevel1SuitUpgradeDoor::BeginPlay()
 			IsValid(CombatRoomVolume)
 				? *CombatRoomVolume->GetRoomTag().ToString() : TEXT("None"));
 		return;
+	}
+	if (!IsValid(EntranceCheckpoint))
+	{
+		UE_LOG(LogTemp, Error, TEXT("[Level1Door] Entrance checkpoint missing. Door=%s"), *GetNameSafe(this));
+		return;
+	}
+	if (!EntranceCheckpoint->IsCheckpointCommitted())
+	{
+		EntranceCheckpoint->SetActivationConditionSatisfied(nullptr, false);
 	}
 
 	UOutlierArenaSubsystem* Arena = GetWorld()->GetSubsystem<UOutlierArenaSubsystem>();
@@ -69,6 +79,8 @@ void ALevel1SuitUpgradeDoor::BeginPlay()
 		this, &ThisClass::OnRoomStartReadinessChanged);
 	CombatSubsystem->OnCombatEvent.AddDynamic(this, &ThisClass::OnCombatEvent);
 	OnDoorMotionFinished.AddUObject(this, &ThisClass::HandleDoorMotionFinished);
+	EntranceCheckpoint->OnCheckpointCommitted.AddUObject(
+		this, &ThisClass::OnEntranceCheckpointCommitted);
 	TargetRoomVolume->OnRoomActorOverlapChanged.AddUObject(this, &ThisClass::OnRoomOverlapChanged);
 	ActorSpawnedHandle = GetWorld()->AddOnActorSpawnedHandler(
 		FOnActorSpawned::FDelegate::CreateUObject(this, &ThisClass::ObservePlayerState));
@@ -103,6 +115,10 @@ void ALevel1SuitUpgradeDoor::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		ArenaSubsystem->OnArenaGameplayReady.RemoveAll(this);
 	}
 	OnDoorMotionFinished.RemoveAll(this);
+	if (IsValid(EntranceCheckpoint))
+	{
+		EntranceCheckpoint->OnCheckpointCommitted.RemoveAll(this);
+	}
 	if (CombatSubsystem.IsValid())
 	{
 		CombatSubsystem->OnRoomStartReadinessChanged.RemoveAll(this);
@@ -200,6 +216,14 @@ void ALevel1SuitUpgradeDoor::OnRoomStartReadinessChanged(FGameplayTag ChangedRoo
 	}
 }
 
+void ALevel1SuitUpgradeDoor::OnEntranceCheckpointCommitted(AOutlierCheckpoint* Checkpoint)
+{
+	if (HasAuthority() && Checkpoint == EntranceCheckpoint && !bAwaitingGameplayReady)
+	{
+		TryStartCombat();
+	}
+}
+
 void ALevel1SuitUpgradeDoor::OnCombatEvent(
 	FGameplayTag EventRoomTag, ERoomCombatEvent Event,
 	int32 CombatPhaseIndex, int32 EventGeneration)
@@ -228,6 +252,10 @@ void ALevel1SuitUpgradeDoor::OnArenaReloadStarted(uint32 NewGeneration)
 	bCombatStartInProgress = false;
 	bAwaitingGameplayReady = true;
 	LastEntryStatus.Reset();
+	if (IsValid(EntranceCheckpoint) && !EntranceCheckpoint->IsCheckpointCommitted())
+	{
+		EntranceCheckpoint->SetActivationConditionSatisfied(nullptr, false);
+	}
 }
 
 void ALevel1SuitUpgradeDoor::OnArenaGameplayReady(uint32 ReadyGeneration)
@@ -247,30 +275,47 @@ void ALevel1SuitUpgradeDoor::ReconcileRestoredProgress()
 	{
 		return;
 	}
-	const UOutlierSaveSubSystem* Save = GetGameInstance()
+	UOutlierSaveSubSystem* Save = GetGameInstance()
 		? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>() : nullptr;
 	const FGameplayTag RoomTag = CombatRoomVolume->GetRoomTag();
 	const bool bEncounterCleared = Save && Save->HasWorldProgress(
 		EOutlierWorldProgressType::CompletedEncounter, RoomTag.GetTagName());
 	const bool bRestoredOpen = Save && !DoorId.IsNone() && Save->HasWorldProgress(
 		EOutlierWorldProgressType::OpenedDoor, DoorId);
+	FOutlierCheckpointSnapshot RestoreSnapshot;
+	const bool bSavedPastEntrance = Save && Save->GetRestoreSnapshot(RestoreSnapshot)
+		&& !RestoreSnapshot.bInitialSnapshot && IsValid(EntranceCheckpoint)
+		&& RestoreSnapshot.CheckpointId != EntranceCheckpoint->GetCheckpointId();
+	AOutlierPlayerState* Shooter = nullptr;
+	AOutlierPlayerState* Partner = nullptr;
+	const bool bPairHasSuit = FindPair(Shooter, Partner)
+		&& Shooter->GetAcquiredSuit() && Partner->GetAcquiredSuit();
 
-	// 완료 기록과 문 열림 기록은 별도다. 복원은 Timeline 완료 이벤트를 만들지 않고
-	// 전투가 남은 열린 문만 준비된 Room 명단을 기다려 한 번 재개한다.
-	if (bRestoredOpen || bEncounterCleared)
+	// 완료 기록과 문 열림 기록은 별도다. Suit 보유 프리셋도 연출 없이 열린 문으로 맞춘다.
+	// 아직 입구 저장 전이면 트리거만 열고, 저장된 입구라면 전투 명단 준비를 기다린다.
+	if (bRestoredOpen || bEncounterCleared || bPairHasSuit)
 	{
 		SnapDoorState(true);
+		if (bPairHasSuit && !bRestoredOpen && Save && !DoorId.IsNone())
+		{
+			Save->SetWorldProgressState(EOutlierWorldProgressType::OpenedDoor, DoorId, true);
+		}
 		bEntrySealed = true;
 		bCloseFinished = true;
 		bReopenRequested = true;
 		bOpenFinished = true;
-		bCombatStartSucceeded = bEncounterCleared;
+		bCombatStartSucceeded = bEncounterCleared || bSavedPastEntrance;
 		UE_LOG(LogTemp, Display,
 			TEXT("[Level1Door] Progress restored. Door=%s Room=%s Generation=%u Open=%d EncounterCleared=%d"),
 			*GetNameSafe(this), *RoomTag.ToString(), GameplayGeneration,
 			bRestoredOpen, bEncounterCleared);
-		if (!bEncounterCleared)
+		if (!bCombatStartSucceeded && IsValid(EntranceCheckpoint))
 		{
+			EntranceCheckpoint->SetCombatRoomTag(RoomTag);
+			if (!EntranceCheckpoint->IsCheckpointCommitted())
+			{
+				EntranceCheckpoint->SetActivationConditionSatisfied(nullptr, true);
+			}
 			TryStartCombat();
 		}
 		return;
@@ -487,7 +532,8 @@ bool ALevel1SuitUpgradeDoor::TryStartCombat()
 {
 	if (!HasAuthority() || bAwaitingGameplayReady || !bOpenFinished
 		|| bCombatStartSucceeded || bCombatStartInProgress
-		|| !IsValid(CombatRoomVolume) || !CombatSubsystem.IsValid())
+		|| !IsValid(CombatRoomVolume) || !CombatSubsystem.IsValid()
+		|| !IsValid(EntranceCheckpoint) || !EntranceCheckpoint->IsCheckpointCommitted())
 	{
 		return false;
 	}
@@ -552,18 +598,15 @@ void ALevel1SuitUpgradeDoor::HandleDoorMotionFinished(AInteractableDoor* Door, b
 	}
 	else if (bOpen && bReopenRequested && !bOpenFinished)
 	{
-		// 2단계: 열린 위치 도착. 요청 시점이 아닌 이 시점만 전투 시작 신호가 된다.
+		// 2단계: 열림 완료 후 입구 저장을 허용한다. 전투는 체크포인트 확정 통지까지 대기한다.
 		bOpenFinished = true;
 		UE_LOG(LogTemp, Display, TEXT("[Level1Door] Door opened. Door=%s Room=%s Generation=%u"),
 			*GetNameSafe(this), *TargetRoomVolume->GetRoomTag().ToString(), GameplayGeneration);
 		OnLevel1DoorOpened.Broadcast(this, GameplayGeneration);
-		if (!TryStartCombat() && IsValid(CombatRoomVolume))
+		if (IsValid(EntranceCheckpoint) && IsValid(CombatRoomVolume))
 		{
-			UE_LOG(LogTemp, Warning,
-				TEXT("[Level1Door] Combat start waiting. Door=%s Room=%s Generation=%u RegisteredSpawnPoints=%d"),
-				*GetNameSafe(this), *CombatRoomVolume->GetRoomTag().ToString(), GameplayGeneration,
-				CombatSubsystem.IsValid()
-					? CombatSubsystem->GetRegisteredSpawnPointCount(CombatRoomVolume->GetRoomTag()) : 0);
+			EntranceCheckpoint->SetCombatRoomTag(CombatRoomVolume->GetRoomTag());
+			EntranceCheckpoint->SetActivationConditionSatisfied(nullptr, true);
 		}
 	}
 }

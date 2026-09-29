@@ -22,7 +22,7 @@ public:
 
 	void ResetRuntimeCheckpointState();
 	bool CaptureInitialSnapshot(const FOutlierCheckpointSnapshot& Snapshot);
-	bool CommitCheckpointSnapshot(const FOutlierCheckpointSnapshot& Snapshot);
+	bool CommitDurableCheckpointSnapshot(const FOutlierCheckpointSnapshot& Snapshot);
 	bool GetRestoreSnapshot(FOutlierCheckpointSnapshot& OutSnapshot) const;
 	bool HasInitialSnapshot() const { return bHasInitialSnapshot; }
 	bool HasLatestCheckpointSnapshot() const { return bHasLatestCheckpointSnapshot; }
@@ -49,7 +49,16 @@ public:
 	void UnregisterPersistentTurretId(FName TurretId, const UObject* Owner);
 	bool HasValidStableIds() const { return bStableIdsValid; }
 
+#if WITH_DEV_AUTOMATION_TESTS
+	void SetAutoSaveDirectoryForTesting(const FString& Directory) { AutoSaveDirectoryOverride = Directory; }
+	bool CommitCheckpointSnapshotForTesting(const FOutlierCheckpointSnapshot& Snapshot)
+	{
+		return CommitCheckpointSnapshot(Snapshot);
+	}
+#endif
+
 private:
+	bool CommitCheckpointSnapshot(const FOutlierCheckpointSnapshot& Snapshot);
 	bool RegisterStableId(FName StableId, UObject* Owner, const TCHAR* IdKind);
 	void UnregisterStableId(FName StableId, const UObject* Owner);
 
@@ -78,4 +87,5 @@ private:
 
 	TMap<FName, TWeakObjectPtr<UObject>> RegisteredStableIds;
 	bool bStableIdsValid = true;
+	FString AutoSaveDirectoryOverride;
 };

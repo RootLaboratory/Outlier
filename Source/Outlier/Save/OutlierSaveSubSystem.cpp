@@ -2,6 +2,19 @@
 
 
 #include "Save/OutlierSaveSubSystem.h"
+#include "Engine/GameInstance.h"
+#include "Engine/World.h"
+#include "HAL/FileManager.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "Serialization/MemoryWriter.h"
+#include "Serialization/ObjectAndNameAsStringProxyArchive.h"
+
+namespace
+{
+	constexpr uint32 AutoSaveMagic = 0x4F55544C;
+	constexpr int32 AutoSaveVersion = 1;
+}
 
 bool UOutlierSaveSubSystem::SavePlayerCheckpoint(const FString& PlayerId, const FOutlierCheckpointData& Data)
 {
@@ -68,6 +81,92 @@ bool UOutlierSaveSubSystem::CommitCheckpointSnapshot(const FOutlierCheckpointSna
 	bHasLatestCheckpointSnapshot = true;
 	CommittedCheckpointIds.Add(Snapshot.CheckpointId);
 	return true;
+}
+
+bool UOutlierSaveSubSystem::CommitDurableCheckpointSnapshot(const FOutlierCheckpointSnapshot& Snapshot)
+{
+	if (!Snapshot.IsValid() || Snapshot.bInitialSnapshot || Snapshot.CheckpointId.IsNone()
+		|| CommittedCheckpointIds.Contains(Snapshot.CheckpointId) || !bStableIdsValid)
+	{
+		return false;
+	}
+	const UWorld* World = GetGameInstance() ? GetGameInstance()->GetWorld() : nullptr;
+	if (!World || World->GetMapName().IsEmpty())
+	{
+		return false;
+	}
+
+	TArray<uint8> Bytes;
+	FMemoryWriter Writer(Bytes);
+	uint32 Magic = AutoSaveMagic;
+	int32 Version = AutoSaveVersion;
+	FString MapName = World->GetMapName();
+	Writer << Magic;
+	Writer << Version;
+	Writer << MapName;
+	FObjectAndNameAsStringProxyArchive ObjectWriter(Writer, false);
+	FOutlierCheckpointSnapshot Copy = Snapshot;
+	FOutlierCheckpointSnapshot::StaticStruct()->SerializeItem(ObjectWriter, &Copy, nullptr);
+	if (Writer.IsError())
+	{
+		return false;
+	}
+
+	const FString Directory = AutoSaveDirectoryOverride.IsEmpty()
+		? FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Checkpoint"))
+		: AutoSaveDirectoryOverride;
+	IFileManager& Files = IFileManager::Get();
+	if (!Files.DirectoryExists(*Directory) && !Files.MakeDirectory(*Directory, true))
+	{
+		return false;
+	}
+	const FString Latest = FPaths::Combine(Directory, TEXT("LatestAutoSave.sav"));
+	const FString Pending = Latest + TEXT(".tmp");
+	const FString Backup = Latest + TEXT(".bak");
+	TArray<uint8> VerifiedBytes;
+	if (!FFileHelper::SaveArrayToFile(Bytes, *Pending)
+		|| !FFileHelper::LoadFileToArray(VerifiedBytes, *Pending)
+		|| Bytes != VerifiedBytes)
+	{
+		Files.Delete(*Pending);
+		return false;
+	}
+
+	// 기존 최신본을 임시로 보존한다. 새 파일 교체가 실패하면 되돌리고 메모리 기준도 유지한다.
+	if (Files.FileExists(*Latest))
+	{
+		if (Files.FileExists(*Backup) && !Files.Delete(*Backup))
+		{
+			Files.Delete(*Pending);
+			return false;
+		}
+		if (!Files.Move(*Backup, *Latest))
+		{
+			Files.Delete(*Pending);
+			return false;
+		}
+	}
+	if (!Files.Move(*Latest, *Pending))
+	{
+		if (Files.FileExists(*Backup))
+		{
+			Files.Move(*Latest, *Backup);
+		}
+		Files.Delete(*Pending);
+		return false;
+	}
+	VerifiedBytes.Reset();
+	if (!FFileHelper::LoadFileToArray(VerifiedBytes, *Latest) || Bytes != VerifiedBytes)
+	{
+		Files.Delete(*Latest);
+		if (Files.FileExists(*Backup))
+		{
+			Files.Move(*Latest, *Backup);
+		}
+		return false;
+	}
+	Files.Delete(*Backup);
+	return CommitCheckpointSnapshot(Snapshot);
 }
 
 bool UOutlierSaveSubSystem::GetRestoreSnapshot(FOutlierCheckpointSnapshot& OutSnapshot) const

@@ -617,9 +617,18 @@ bool AOutlierGameMode::RegisterCheckpoint(AController* Controller, AOutlierCheck
 		false,
 		Checkpoint->GetSpawnTransform(),
 		Checkpoint->GetPartnerSpawnTransform(),
-		Snapshot)
-		|| !SaveSubsystem->CommitCheckpointSnapshot(Snapshot))
+		Snapshot))
 	{
+		return false;
+	}
+	Snapshot.SaveReason = EOutlierCheckpointSaveReason::Trigger;
+	Snapshot.RoomTag = Checkpoint->GetCombatRoomTag();
+	Snapshot.NextPhaseIndex = Snapshot.RoomTag.IsValid() ? 0 : INDEX_NONE;
+	if (!SaveSubsystem->CommitDurableCheckpointSnapshot(Snapshot))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[Checkpoint] Disk commit failed; trigger remains pending. Id=%s"),
+			*Snapshot.CheckpointId.ToString());
 		return false;
 	}
 

@@ -20,6 +20,7 @@
 #include "Room/RoomCombatSubsystem.h"
 #include "Room/RoomVolume.h"
 #include "Save/OutlierSaveSubSystem.h"
+#include "Save/OutlierCheckpoint.h"
 #include "Shooter/ShooterCharacter.h"
 #include "UObject/UnrealType.h"
 
@@ -129,6 +130,20 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	BeginActor(CombatRoom);
 	TestEqual(TEXT("ExternalTrigger room waits for the door"),
 		Combat->GetRoomState(RoomTag), ERoomCombatState::WaitingForTrigger);
+	AOutlierCheckpoint* Checkpoint = World->SpawnActorDeferred<AOutlierCheckpoint>(
+		AOutlierCheckpoint::StaticClass(), FTransform(FVector(1500.0f, 0.0f, 0.0f)));
+	if (!TestNotNull(TEXT("Entrance checkpoint is spawned"), Checkpoint))
+	{
+		CleanupWorld();
+		return false;
+	}
+	if (FNameProperty* IdProperty = FindFProperty<FNameProperty>(
+		AOutlierCheckpoint::StaticClass(), TEXT("CheckpointId")))
+	{
+		*IdProperty->ContainerPtrToValuePtr<FName>(Checkpoint) = TEXT("Test.Level1.Entrance");
+	}
+	Checkpoint->FinishSpawning(FTransform(FVector(1500.0f, 0.0f, 0.0f)));
+	BeginActor(Checkpoint);
 	ALevel1SuitUpgradeDoor* Door = World->SpawnActorDeferred<ALevel1SuitUpgradeDoor>(
 		ALevel1SuitUpgradeDoor::StaticClass(), FTransform::Identity);
 	if (!TestNotNull(TEXT("Level 1 door is spawned"), Door))
@@ -140,6 +155,7 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	Door->DoorId = TEXT("Test.Level1Door.Door");
 	Door->TargetRoomVolume = Room;
 	Door->CombatRoomVolume = CombatRoom;
+	Door->EntranceCheckpoint = Checkpoint;
 	Door->FinishSpawning(FTransform::Identity);
 	BeginActor(Door);
 	TestTrue(TEXT("Level 1 door starts open without a motion"), Door->IsDoorOpen());
@@ -194,8 +210,10 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	World->Tick(LEVELTICK_All, 0.11f);
 	TestTrue(TEXT("Capsule still crossing the Room boundary does not start closing"), Door->IsDoorOpen());
 	Shooter->SetActorLocation(FVector(100.0f, 0.0f, 0.0f));
-	World->Tick(LEVELTICK_All, 0.11f);
-	TestFalse(TEXT("Entry recheck starts closing after both capsules fully enter"), Door->IsDoorOpen());
+	// 단순 Automation 월드의 반복 Tick은 GFrameCounter를 올리지 않아 타이머를 재실행하지 않는다.
+	// 위치가 완전히 들어온 뒤 입장 이벤트를 보내 동일한 서버 입장 판정을 확인한다.
+	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, true);
+	TestFalse(TEXT("Entry event starts closing after both capsules fully enter"), Door->IsDoorOpen());
 	Shooter->SetActorLocation(FVector(1000.0f, 0.0f, 0.0f));
 	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, false);
 	TestTrue(TEXT("Leaving during close cancels the entry and reopens"), Door->IsDoorOpen());
@@ -231,6 +249,12 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Opening request is not completion"), OpenedCount, 0);
 	static_cast<AActor*>(Door)->Tick(1.1f);
 	TestEqual(TEXT("Server opening completes once"), OpenedCount, 1);
+	if (FBoolProperty* ActiveProperty = FindFProperty<FBoolProperty>(
+		AOutlierCheckpoint::StaticClass(), TEXT("bActivationConditionSatisfied")))
+	{
+		TestTrue(TEXT("Open door activates entrance checkpoint"),
+			ActiveProperty->GetPropertyValue_InContainer(Checkpoint));
+	}
 	TestEqual(TEXT("Door waits for the configured SpawnPoint roster"),
 		Combat->GetRoomState(RoomTag), ERoomCombatState::WaitingForTrigger);
 	ARoomCombatSpawnPoint* FirstPoint = World->SpawnActor<ARoomCombatSpawnPoint>(
@@ -258,7 +282,15 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 		Combat->GetRoomState(RoomTag), ERoomCombatState::WaitingForTrigger);
 	TestTrue(TEXT("Second matching SpawnPoint registers"), Combat->RegisterSpawnPoint(
 		ThirdPoint, RoomTag, MatchingTags, FGameplayTag()));
-	TestEqual(TEXT("Ready roster starts combat after door opens"),
+	TestEqual(TEXT("Ready roster still waits for entrance save"),
+		Combat->GetRoomState(RoomTag), ERoomCombatState::WaitingForTrigger);
+	if (FBoolProperty* CommittedProperty = FindFProperty<FBoolProperty>(
+		AOutlierCheckpoint::StaticClass(), TEXT("bCheckpointCommitted")))
+	{
+		CommittedProperty->SetPropertyValue_InContainer(Checkpoint, true);
+	}
+	Checkpoint->OnCheckpointCommitted.Broadcast(Checkpoint);
+	TestEqual(TEXT("Successful entrance save starts combat"),
 		Combat->GetRoomState(RoomTag), ERoomCombatState::Combat);
 	TestEqual(TEXT("Door starts the sequence once"), CombatStartCount, 1);
 	UOutlierSaveSubSystem* Save = GameInstance->GetSubsystem<UOutlierSaveSubSystem>();
@@ -305,6 +337,14 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	Shooter->SetActorLocation(FVector(1000.0f, 0.0f, 0.0f));
 	Partner->SetActorLocation(FVector(1100.0f, 0.0f, 0.0f));
 	Save->RestoreCurrentWorldProgress(FOutlierWorldProgressSnapshot());
+	Save->ResetRuntimeCheckpointState();
+	ShooterPS->SetAcquiredSuit(false);
+	PartnerPS->SetAcquiredSuit(false);
+	if (FBoolProperty* CommittedProperty = FindFProperty<FBoolProperty>(
+		AOutlierCheckpoint::StaticClass(), TEXT("bCheckpointCommitted")))
+	{
+		CommittedProperty->SetPropertyValue_InContainer(Checkpoint, false);
+	}
 	const uint32 InitialGeneration = World->GetSubsystem<UOutlierArenaSubsystem>()->ReserveGameplayGeneration();
 	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReloadStarted.Broadcast(InitialGeneration);
 	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReady.Broadcast(InitialGeneration);

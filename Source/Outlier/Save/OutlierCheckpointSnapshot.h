@@ -1,10 +1,19 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "GameplayTagContainer.h"
 #include "Save/OutlierLoadoutSnapshot.h"
 #include "OutlierCheckpointSnapshot.generated.h"
 
 class USkeletalMesh;
+
+UENUM()
+enum class EOutlierCheckpointSaveReason : uint8
+{
+	Trigger,
+	PhaseTransition,
+	EncounterCleared
+};
 
 UENUM(BlueprintType)
 enum class EOutlierWorldProgressType : uint8
@@ -125,6 +134,15 @@ struct OUTLIER_API FOutlierCheckpointSnapshot
 
 	UPROPERTY()
 	FName CheckpointId = NAME_None;
+
+	UPROPERTY()
+	EOutlierCheckpointSaveReason SaveReason = EOutlierCheckpointSaveReason::Trigger;
+
+	UPROPERTY()
+	FGameplayTag RoomTag;
+
+	UPROPERTY()
+	int32 NextPhaseIndex = INDEX_NONE;
 
 	UPROPERTY()
 	bool bInitialSnapshot = false;

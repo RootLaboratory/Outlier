@@ -3,7 +3,12 @@
 #include "Engine/GameInstance.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
+#include "HAL/FileManager.h"
 #include "Misc/AutomationTest.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "Serialization/MemoryReader.h"
+#include "Serialization/ObjectAndNameAsStringProxyArchive.h"
 #include "OutlierPlayerState.h"
 #include "Save/OutlierSaveSubSystem.h"
 #include "Shooter/ShooterCharacter.h"
@@ -55,14 +60,14 @@ bool FOutlierCheckpointRuntimeSnapshotTest::RunTest(const FString& Parameters)
 	Checkpoint.WorldProgress.ExplodedPropIds.Add(TEXT("Explosive.Saved"));
 	Checkpoint.DestroyedTurretIds.Add(TEXT("Turret.Saved"));
 	Checkpoint.GunAdaptationStack = 8;
-	TestTrue(TEXT("A valid checkpoint snapshot is committed"), SaveSubsystem->CommitCheckpointSnapshot(Checkpoint));
+	TestTrue(TEXT("A valid checkpoint snapshot is committed"), SaveSubsystem->CommitCheckpointSnapshotForTesting(Checkpoint));
 
 	FOutlierCheckpointSnapshot Duplicate = Checkpoint;
 	Duplicate.WorldProgress.CollectedNodeIds.Add(TEXT("LateNode"));
 	Duplicate.WorldProgress.ExplodedPropIds.Add(TEXT("Explosive.Late"));
 	Duplicate.DestroyedTurretIds.Add(TEXT("Turret.Late"));
 	Duplicate.GunAdaptationStack = 10;
-	TestFalse(TEXT("The same checkpoint cannot be committed twice"), SaveSubsystem->CommitCheckpointSnapshot(Duplicate));
+	TestFalse(TEXT("The same checkpoint cannot be committed twice"), SaveSubsystem->CommitCheckpointSnapshotForTesting(Duplicate));
 	TestTrue(TEXT("The latest checkpoint is selected after commit"), SaveSubsystem->GetRestoreSnapshot(RestoreTarget));
 	TestTrue(TEXT("Committed world progress is preserved"), RestoreTarget.WorldProgress.CollectedNodeIds.Contains(TEXT("SavedNode")));
 	TestFalse(TEXT("A rejected duplicate cannot replace the saved snapshot"), RestoreTarget.WorldProgress.CollectedNodeIds.Contains(TEXT("LateNode")));
@@ -82,7 +87,7 @@ bool FOutlierCheckpointRuntimeSnapshotTest::RunTest(const FString& Parameters)
 	LaterCheckpoint.WorldProgress.OpenedDoorIds.Add(TEXT("Door.B"));
 	LaterCheckpoint.DestroyedTurretIds.Add(TEXT("Turret.Newer"));
 	LaterCheckpoint.GunAdaptationStack = 9;
-	TestTrue(TEXT("A later checkpoint replaces the restore target"), SaveSubsystem->CommitCheckpointSnapshot(LaterCheckpoint));
+	TestTrue(TEXT("A later checkpoint replaces the restore target"), SaveSubsystem->CommitCheckpointSnapshotForTesting(LaterCheckpoint));
 	TestTrue(TEXT("The newer checkpoint is selected"), SaveSubsystem->GetRestoreSnapshot(RestoreTarget));
 	TestEqual(TEXT("The newer checkpoint Id is preserved"), RestoreTarget.CheckpointId, FName(TEXT("Checkpoint.B")));
 	TestTrue(TEXT("The newer checkpoint world state is copied"), RestoreTarget.WorldProgress.OpenedDoorIds.Contains(TEXT("Door.B")));
@@ -128,6 +133,87 @@ bool FOutlierCheckpointRuntimeSnapshotTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierCheckpointDurableCommitTest,
+	"Outlier.Save.Checkpoint.DurableCommit",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierCheckpointDurableCommitTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const FName WorldName = MakeUniqueObjectName(
+		nullptr, UWorld::StaticClass(), NAME_None, EUniqueObjectNameOptions::GloballyUnique);
+	FWorldContext& Context = GEngine->CreateNewWorldContext(EWorldType::Game);
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, WorldName, GetTransientPackage());
+	if (!TestNotNull(TEXT("Durable save world"), World))
+	{
+		GEngine->DestroyWorldContext(World);
+		return false;
+	}
+	World->AddToRoot();
+	Context.SetCurrentWorld(World);
+	UGameInstance* GameInstance = NewObject<UGameInstance>(GEngine);
+	World->SetGameInstance(GameInstance);
+	GameInstance->OnWorldChanged(nullptr, World);
+	GameInstance->Init();
+	World->InitializeActorsForPlay(FURL());
+	TestEqual(TEXT("Durable save game instance owns the test world"), GameInstance->GetWorld(), World);
+	const FString Directory = FPaths::Combine(
+		FPaths::ProjectSavedDir(), TEXT("Automation"), WorldName.ToString());
+	IFileManager& Files = IFileManager::Get();
+	UOutlierSaveSubSystem* Save = GameInstance->GetSubsystem<UOutlierSaveSubSystem>();
+	if (TestNotNull(TEXT("Durable save subsystem"), Save))
+	{
+		Save->SetAutoSaveDirectoryForTesting(Directory);
+		FOutlierCheckpointSnapshot First;
+		First.CheckpointId = TEXT("Checkpoint.Durable.First");
+		First.WorldProgress.OpenedDoorIds.Add(TEXT("Door.First"));
+		TestTrue(TEXT("First disk commit succeeds"), Save->CommitDurableCheckpointSnapshot(First));
+		const FString Latest = FPaths::Combine(Directory, TEXT("LatestAutoSave.sav"));
+		TArray<uint8> OriginalBytes;
+		TestTrue(TEXT("Latest file exists"), FFileHelper::LoadFileToArray(OriginalBytes, *Latest));
+		if (!OriginalBytes.IsEmpty())
+		{
+			FMemoryReader Reader(OriginalBytes);
+			uint32 Magic = 0;
+			int32 Version = 0;
+			FString MapName;
+			Reader << Magic;
+			Reader << Version;
+			Reader << MapName;
+			FObjectAndNameAsStringProxyArchive ObjectReader(Reader, true);
+			FOutlierCheckpointSnapshot OnDisk;
+			FOutlierCheckpointSnapshot::StaticStruct()->SerializeItem(ObjectReader, &OnDisk, nullptr);
+			TestEqual(TEXT("Disk header magic"), Magic, uint32(0x4F55544C));
+			TestEqual(TEXT("Disk format version"), Version, int32(1));
+			TestEqual(TEXT("Disk map identity"), MapName, World->GetMapName());
+			TestEqual(TEXT("Disk checkpoint Id round trips"), OnDisk.CheckpointId, First.CheckpointId);
+			TestTrue(TEXT("Disk world progress round trips"),
+				OnDisk.WorldProgress.OpenedDoorIds.Contains(TEXT("Door.First")));
+		}
+		FOutlierCheckpointSnapshot Later;
+		Later.CheckpointId = TEXT("Checkpoint.Durable.Later");
+		Save->SetAutoSaveDirectoryForTesting(Latest);
+		TestFalse(TEXT("Disk failure rejects the later commit"),
+			Save->CommitDurableCheckpointSnapshot(Later));
+		FOutlierCheckpointSnapshot Restore;
+		TestTrue(TEXT("Previous runtime snapshot survives failed write"), Save->GetRestoreSnapshot(Restore));
+		TestEqual(TEXT("Previous checkpoint remains selected"), Restore.CheckpointId, First.CheckpointId);
+		TArray<uint8> CurrentBytes;
+		TestTrue(TEXT("Previous disk file remains readable"), FFileHelper::LoadFileToArray(CurrentBytes, *Latest));
+		TestTrue(TEXT("Failed write leaves disk contents untouched"), OriginalBytes == CurrentBytes);
+	}
+	Files.Delete(*FPaths::Combine(Directory, TEXT("LatestAutoSave.sav")));
+	Files.DeleteDirectory(*Directory);
+	GEngine->ShutdownWorldNetDriver(World);
+	World->DestroyWorld(true);
+	GameInstance->Shutdown();
+	World->SetPhysicsScene(nullptr);
+	GEngine->DestroyWorldContext(World);
+	World->RemoveFromRoot();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FOutlierCheckpointWorldIdTest,
 	"Outlier.Save.Checkpoint.WorldProgressIds",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -157,7 +243,7 @@ bool FOutlierCheckpointWorldIdTest::RunTest(const FString& Parameters)
 	FOutlierCheckpointSnapshot InvalidCommit;
 	InvalidCommit.CheckpointId = TEXT("Checkpoint.InvalidIds");
 	TestFalse(TEXT("An invalid Id prevents direct checkpoint commit"),
-		EmptyIdSubsystem->CommitCheckpointSnapshot(InvalidCommit));
+		EmptyIdSubsystem->CommitCheckpointSnapshotForTesting(InvalidCommit));
 
 	UGameInstance* DuplicateIdGameInstance = NewObject<UGameInstance>();
 	UOutlierSaveSubSystem* DuplicateIdSubsystem =
