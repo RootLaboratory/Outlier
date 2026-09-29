@@ -57,6 +57,11 @@ void AOutlierCheckpoint::BeginPlay()
 			bCheckpointIdRegistered = SaveSubsystem->RegisterCheckpointId(CheckpointId, this);
 			bCheckpointCommitted = SaveSubsystem->HasCommittedCheckpoint(CheckpointId);
 		}
+		UE_LOG(LogTemp, Display,
+			TEXT("[Checkpoint] Ready Id=%s Active=%d Registered=%d Committed=%d Actor=%s"),
+			*CheckpointId.ToString(), bActivationConditionSatisfied ? 1 : 0,
+			bCheckpointIdRegistered ? 1 : 0, bCheckpointCommitted ? 1 : 0,
+			*GetNameSafe(this));
 	}
 }
 
@@ -109,6 +114,8 @@ bool AOutlierCheckpoint::SetActivationConditionSatisfied(
 	bPartnerPassed = false;
 	CommitController.Reset();
 	ForceNetUpdate();
+	UE_LOG(LogTemp, Display, TEXT("[Checkpoint] Activation Id=%s Active=%d Actor=%s"),
+		*CheckpointId.ToString(), bActivationConditionSatisfied ? 1 : 0, *GetNameSafe(this));
 	return true;
 }
 
@@ -146,15 +153,31 @@ void AOutlierCheckpoint::HandleTriggerBeginOverlap(
 	(void)bFromSweep;
 	(void)SweepResult;
 	const APawn* Pawn = Cast<APawn>(OtherActor);
-	if (!HasAuthority() || !bActivationConditionSatisfied || bCheckpointCommitted
-		|| !Pawn || OtherComp != Pawn->GetRootComponent())
+	if (!HasAuthority() || !Pawn || OtherComp != Pawn->GetRootComponent()
+		|| (!Pawn->IsA<AShooterCharacter>() && !Pawn->IsA<APartnerCharacter>()))
 	{
 		return;
 	}
 	AOutlierPlayerState* PlayerState = ResolvePairPlayerState(OtherActor);
+	UE_LOG(LogTemp, Display,
+		TEXT("[Checkpoint] Enter Id=%s Actor=%s Pawn=%s Pair=%d Active=%d Registered=%d Committed=%d ShooterPassed=%d PartnerPassed=%d"),
+		*CheckpointId.ToString(), *GetNameSafe(this), *GetNameSafe(OtherActor),
+		PlayerState ? PlayerState->GetPairId() : INDEX_NONE,
+		bActivationConditionSatisfied ? 1 : 0, bCheckpointIdRegistered ? 1 : 0,
+		bCheckpointCommitted ? 1 : 0, bShooterPassed ? 1 : 0, bPartnerPassed ? 1 : 0);
+	if (!bActivationConditionSatisfied || bCheckpointCommitted)
+	{
+		UE_LOG(LogTemp, Display, TEXT("[Checkpoint] Entry ignored Id=%s Reason=%s"),
+			*CheckpointId.ToString(), bCheckpointCommitted ? TEXT("AlreadyCommitted") : TEXT("Inactive"));
+		return;
+	}
 	if (!PlayerState || (OverlappingPairId != INDEX_NONE
 		&& OverlappingPairId != PlayerState->GetPairId()))
 	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[Checkpoint] Entry ignored Id=%s Reason=%s Pawn=%s"),
+			*CheckpointId.ToString(), PlayerState ? TEXT("DifferentPair") : TEXT("UnlinkedPlayer"),
+			*GetNameSafe(OtherActor));
 		return;
 	}
 	OverlappingPairId = PlayerState->GetPairId();
@@ -171,6 +194,10 @@ void AOutlierCheckpoint::HandleTriggerBeginOverlap(
 			CommitController = Cast<AController>(PlayerState->GetOwner());
 		}
 	}
+	UE_LOG(LogTemp, Display,
+		TEXT("[Checkpoint] Pass Id=%s Pair=%d ShooterPassed=%d PartnerPassed=%d"),
+		*CheckpointId.ToString(), OverlappingPairId,
+		bShooterPassed ? 1 : 0, bPartnerPassed ? 1 : 0);
 	TryCommit();
 }
 
@@ -181,9 +208,15 @@ bool AOutlierCheckpoint::RetryCommit()
 
 bool AOutlierCheckpoint::TryCommit()
 {
-	if (!HasAuthority() || !bCheckpointIdRegistered || !bActivationConditionSatisfied
-		|| bCheckpointCommitted || !bShooterPassed || !bPartnerPassed)
+	if (!HasAuthority() || !bActivationConditionSatisfied || bCheckpointCommitted
+		|| !bShooterPassed || !bPartnerPassed)
 	{
+		return false;
+	}
+	if (!bCheckpointIdRegistered)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Checkpoint] Commit blocked Id=%s Reason=UnregisteredId"),
+			*CheckpointId.ToString());
 		return false;
 	}
 	AOutlierGameMode* GameMode = GetWorld()
@@ -192,12 +225,18 @@ bool AOutlierCheckpoint::TryCommit()
 	if (!GameMode || !CommitController.IsValid()
 		|| !GameMode->RegisterCheckpoint(CommitController.Get(), this))
 	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[Checkpoint] Commit failed Id=%s Pair=%d GameMode=%d Controller=%d"),
+			*CheckpointId.ToString(), OverlappingPairId,
+			GameMode ? 1 : 0, CommitController.IsValid() ? 1 : 0);
 		return false;
 	}
 
 	// GameMode가 디스크 기록을 마친 뒤에만 확정하고, 문 같은 관찰자에게 성공을 통지한다.
 	bCheckpointCommitted = true;
 	ForceNetUpdate();
+	UE_LOG(LogTemp, Display, TEXT("[Checkpoint] Committed Id=%s Pair=%d"),
+		*CheckpointId.ToString(), OverlappingPairId);
 	OnCheckpointCommitted.Broadcast(this);
 	return true;
 }

@@ -16,6 +16,8 @@ namespace OutlierPresetStageIds
 	inline const FName Level2(TEXT("Level2"));
 	inline const FName Level3(TEXT("Level3"));
 	inline const FName Level4(TEXT("Level4"));
+	// Level04 버튼의 임시 테스트 선택지. 프리셋 ID나 스폰 지점으로 사용하지 않는다.
+	inline const FName CheckpointTest(TEXT("CheckpointTest"));
 
 	// 정의된 전체 목록 — 에디터 드롭다운(meta=(GetOptions=...))처럼 "고정된 후보군"이
 	// 필요한 곳에서 재사용한다. 새 스테이지를 추가하면 여기 한 곳만 늘리면 된다.

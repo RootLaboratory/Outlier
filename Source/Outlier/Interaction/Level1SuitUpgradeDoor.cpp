@@ -286,20 +286,12 @@ void ALevel1SuitUpgradeDoor::ReconcileRestoredProgress()
 	const bool bSavedPastEntrance = Save && Save->GetRestoreSnapshot(RestoreSnapshot)
 		&& !RestoreSnapshot.bInitialSnapshot && IsValid(EntranceCheckpoint)
 		&& RestoreSnapshot.CheckpointId != EntranceCheckpoint->GetCheckpointId();
-	AOutlierPlayerState* Shooter = nullptr;
-	AOutlierPlayerState* Partner = nullptr;
-	const bool bPairHasSuit = FindPair(Shooter, Partner)
-		&& Shooter->GetAcquiredSuit() && Partner->GetAcquiredSuit();
 
-	// 완료 기록과 문 열림 기록은 별도다. Suit 보유 프리셋도 연출 없이 열린 문으로 맞춘다.
-	// 아직 입구 저장 전이면 트리거만 열고, 저장된 입구라면 전투 명단 준비를 기다린다.
-	if (bRestoredOpen || bEncounterCleared || bPairHasSuit)
+	// Suit 보유만으로 입장 연출을 건너뛰지 않는다. 저장된 문 열림 또는 전투 완료만
+	// 연출이 이미 끝났다는 근거로 사용한다.
+	if (bRestoredOpen || bEncounterCleared)
 	{
 		SnapDoorState(true);
-		if (bPairHasSuit && !bRestoredOpen && Save && !DoorId.IsNone())
-		{
-			Save->SetWorldProgressState(EOutlierWorldProgressType::OpenedDoor, DoorId, true);
-		}
 		bEntrySealed = true;
 		bCloseFinished = true;
 		bReopenRequested = true;
@@ -321,7 +313,7 @@ void ALevel1SuitUpgradeDoor::ReconcileRestoredProgress()
 		return;
 	}
 
-	// 초기 스냅샷/프리셋 복귀는 이 문의 초기 열림 상태에서 다시 입장 판정한다.
+	// 문 열림 기록이 없는 복귀는 Suit 보유 여부와 무관하게 입장을 다시 판정한다.
 	SnapDoorState(true);
 	EvaluateEntry();
 }

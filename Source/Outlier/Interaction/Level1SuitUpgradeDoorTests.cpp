@@ -354,6 +354,24 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Initial Room waits for its external trigger"),
 		Combat->GetRoomState(RoomTag), ERoomCombatState::WaitingForTrigger);
 
+	FOutlierCheckpointSnapshot BeforeEntrance;
+	BeforeEntrance.CheckpointId = TEXT("Test.BeforeLevel1Entrance");
+	BeforeEntrance.SuitSnapshot.bAcquired = true;
+	TestTrue(TEXT("A pre-entrance checkpoint can be selected"),
+		Save->CommitCheckpointSnapshotForTesting(BeforeEntrance));
+	ShooterPS->SetAcquiredSuit(true);
+	PartnerPS->SetAcquiredSuit(true);
+	const uint32 SuitGeneration = World->GetSubsystem<UOutlierArenaSubsystem>()->ReserveGameplayGeneration();
+	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReloadStarted.Broadcast(SuitGeneration);
+	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReady.Broadcast(SuitGeneration);
+	TestTrue(TEXT("Suit ownership alone does not seal the restored entrance"), Door->IsDoorOpen());
+	Shooter->SetActorLocation(FVector(100.0f, 0.0f, 0.0f));
+	Partner->SetActorLocation(FVector(200.0f, 0.0f, 0.0f));
+	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, true);
+	Room->OnRoomActorOverlapChanged.Broadcast(Partner, true);
+	TestFalse(TEXT("Both suited players entering after a pre-entrance checkpoint close the door"),
+		Door->IsDoorOpen());
+
 	CleanupWorld();
 	return true;
 }

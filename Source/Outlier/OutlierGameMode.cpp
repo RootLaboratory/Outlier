@@ -876,8 +876,8 @@ void AOutlierGameMode::HandlePresetStageSelected(AController* Requester, FName S
 
 	if (StageId == NAME_None)
 	{
-		// Start를 포함해 위젯의 모든 버튼은 이제 실제 스테이지 FName을 보낸다.
-		// 여기 걸리는 건 위젯이 아닌 다른 경로에서 빈 FName을 보낸 비정상 케이스뿐이니 대기만 한다.
+		// 위젯은 Start 또는 테스트용 체크포인트를 포함한 선택 ID를 보낸다.
+		// 빈 값은 위젯 밖의 비정상 호출이므로 대기만 한다.
 		return;
 	}
 
@@ -900,6 +900,27 @@ void AOutlierGameMode::HandlePresetStageSelected(AController* Requester, FName S
 		OtherPS->SetPendingPresetSelection(NAME_None);
 	}
 
+	if (StageId == OutlierPresetStageIds::CheckpointTest)
+	{
+		AFirstPersonPlayerController* CheckpointRequester = Cast<AFirstPersonPlayerController>(Requester);
+		if (!CheckpointRequester || bArenaReloadInProgress || bCheckpointRestartInProgress
+			|| CheckpointRestartVote.GetState() != EOutlierCheckpointRestartVoteState::Idle)
+		{
+			return;
+		}
+
+		// 두 플레이어가 같은 버튼을 골랐으므로 별도 재시작 투표 없이 기존 복원 경로를 사용한다.
+		// 사전 검증에 실패하면 Pawn과 선택 UI를 유지해 다시 선택할 수 있게 한다.
+		bCheckpointRestartInProgress = true;
+		LastCheckpointRestartVoteResult = EOutlierCheckpointRestartVoteState::Restarting;
+		if (!StartCheckpointRestart(CheckpointRequester))
+		{
+			bCheckpointRestartInProgress = false;
+			LastCheckpointRestartVoteResult = EOutlierCheckpointRestartVoteState::Rejected;
+			return;
+		}
+	}
+
 	// 합의 성립 - 양쪽 위젯을 닫는다. ClientPopInGameSettingLayer는 이름과 달리 범용 pop-by-owner RPC라
 	// Push 때 RequestOwner로 넘겼던 PlayerState를 그대로 넘기면 어떤 위젯이든 닫힌다.
 	if (AFirstPersonPlayerController* TriggeringFPC = Cast<AFirstPersonPlayerController>(Requester))
@@ -911,7 +932,10 @@ void AOutlierGameMode::HandlePresetStageSelected(AController* Requester, FName S
 		OtherFPC->ClientPopInGameSettingLayer(OtherPS);
 	}
 
-	RequestPresetRespawn(Requester, StageId);
+	if (StageId != OutlierPresetStageIds::CheckpointTest)
+	{
+		RequestPresetRespawn(Requester, StageId);
+	}
 }
 
 int32 AOutlierGameMode::ResolvePresetNodeCount(FName StageId) const
