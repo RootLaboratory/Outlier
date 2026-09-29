@@ -58,6 +58,7 @@ bool AOutlierGameMode::CanControllerRequestCheckpointRestart(
 {
 	return Controller
 		&& !bArenaReloadInProgress
+		&& !bCheckpointRestartInProgress
 		&& CheckpointRestartVote.GetState() == EOutlierCheckpointRestartVoteState::Idle
 		&& OutlierCheckpointRestartVote::CanRequest(
 			GetNetMode(),
@@ -212,8 +213,11 @@ void AOutlierGameMode::FinishCheckpointRestartVote(
 			bCheckpointRestartInProgress = true;
 			if (StartCheckpointRestart(Requester))
 			{
-				UE_LOG(LogTemp, Log,
-					TEXT("[Checkpoint.RestartVote] Approved; checkpoint reload started"));
+				if (bArenaReloadInProgress)
+				{
+					UE_LOG(LogTemp, Log,
+						TEXT("[Checkpoint.RestartVote] Approved; checkpoint reload started"));
+				}
 				return;
 			}
 		}
@@ -273,7 +277,8 @@ bool AOutlierGameMode::StartCheckpointRestart(
 		: FindPairPlayerState(PairId, EOutlierPlayerRole::Partner);
 	if (!ShooterPlayerState || !PartnerPlayerState
 		|| !GetControllerFromPlayerState(ShooterPlayerState)
-		|| !GetControllerFromPlayerState(PartnerPlayerState))
+		|| !GetControllerFromPlayerState(PartnerPlayerState)
+		|| !ArenaSubsystem->GetArenaLoadedLevel())
 	{
 		UE_LOG(LogTemp, Error,
 			TEXT("[Checkpoint.Restart] Pair preflight failed PairId=%d ShooterPS=%s PartnerPS=%s"),
@@ -281,6 +286,18 @@ bool AOutlierGameMode::StartCheckpointRestart(
 			*GetNameSafe(ShooterPlayerState),
 			*GetNameSafe(PartnerPlayerState));
 		return false;
+	}
+	for (AOutlierPlayerState* PlayerState : { ShooterPlayerState, PartnerPlayerState })
+	{
+		const APlayerController* Controller = Cast<APlayerController>(GetControllerFromPlayerState(PlayerState));
+		if (!Controller || (!Controller->IsLocalController()
+			&& !Controller->IsA<AFirstPersonPlayerController>()))
+		{
+			UE_LOG(LogTemp, Error,
+				TEXT("[Checkpoint.Restart] Pair controller cannot receive reload RPC Player=%s"),
+				*GetNameSafe(PlayerState));
+			return false;
+		}
 	}
 
 	if (UEnemyAdaptationSubsystem* EnemyAdaptationSubsystem =
@@ -2509,7 +2526,7 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 	{
 		return false;
 	}
-	if (!ArenaSubsystem->IsGameplayLevelsReady())
+	if (!ArenaSubsystem->IsGameplayLevelsReady() || !ArenaSubsystem->GetArenaLoadedLevel())
 	{
 		UE_LOG(LogTemp, Error, TEXT("[ReloadArenaAndRespawnPair] Gameplay levels are not ready"));
 		return false;
@@ -2534,6 +2551,7 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 		UE_LOG(LogTemp, Error, TEXT("[ReloadArenaAndRespawnPair] Gameplay reload is already in progress"));
 		return false;
 	}
+	PendingGameplayGeneration = ReloadGeneration;
 	bResumeRoomPhasesAfterReload = bRestoreCheckpointSnapshot;
 	// 2) 기존 페어 정리 (RespawnPairAtCheckpoint와 동일). 파트너가 적 빙의 중이면 먼저 해제.
 	AShooterCharacter* OldShooter = ShooterPlayerState->GetShooterCharacter();
@@ -2602,7 +2620,11 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 		{
 			NewPartner->Destroy();
 		}
-		return false;
+		// 기존 Pawn을 정리한 뒤의 실패는 투표 거절로 되돌릴 수 없다.
+		// 이 Generation을 실패로 고정하고 환경별 fail-closed 종료 경로로 보낸다.
+		ArenaSubsystem->FailGameplayReload(ReloadGeneration, EOutlierGameplayReloadFailure::InvalidRuntime);
+		HandleArenaGameplayReloadFailed(ReloadGeneration, EOutlierGameplayReloadFailure::InvalidRuntime);
+		return true;
 	}
 
 	// 새 Shooter가 리로드 중 바닥 충돌을 잠시 잃어도 생성 직후 1초간 낙하하지 않게 한다.
@@ -2667,7 +2689,6 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 	AController* ShooterController = GetControllerFromPlayerState(ShooterPlayerState);
 	AController* PartnerController = GetControllerFromPlayerState(PartnerPlayerState);
 
-	PendingGameplayGeneration = ReloadGeneration;
 	ArenaReloadStartedAt = FPlatformTime::Seconds();
 	bServerArenaReloadReady = false;
 	PendingGameplayUnloadPlayers.Reset();

@@ -38,6 +38,7 @@ bool FOutlierCheckpointRuntimeSnapshotTest::RunTest(const FString& Parameters)
 	Initial.WorldProgress.ExplodedPropIds.Add(TEXT("Explosive.Initial"));
 	Initial.DestroyedTurretIds.Add(TEXT("Turret.Initial"));
 	Initial.GunAdaptationStack = 3;
+	const FGameplayTag PhaseRoom = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.1")));
 	TestTrue(TEXT("The first initial snapshot is accepted"), SaveSubsystem->CaptureInitialSnapshot(Initial));
 
 	FOutlierCheckpointSnapshot ReplacementInitial = Initial;
@@ -53,6 +54,7 @@ bool FOutlierCheckpointRuntimeSnapshotTest::RunTest(const FString& Parameters)
 		RestoreTarget.DestroyedTurretIds.Contains(TEXT("Turret.Initial")));
 	TestEqual(TEXT("Initial enemy adaptation stack is copied"),
 		RestoreTarget.GunAdaptationStack, 3);
+	TestTrue(TEXT("Initial restart has no saved combat phase"), RestoreTarget.RoomPhaseProgress.IsEmpty());
 
 	FOutlierCheckpointSnapshot Checkpoint;
 	Checkpoint.CheckpointId = TEXT("Checkpoint.A");
@@ -60,6 +62,10 @@ bool FOutlierCheckpointRuntimeSnapshotTest::RunTest(const FString& Parameters)
 	Checkpoint.WorldProgress.ExplodedPropIds.Add(TEXT("Explosive.Saved"));
 	Checkpoint.DestroyedTurretIds.Add(TEXT("Turret.Saved"));
 	Checkpoint.GunAdaptationStack = 8;
+	FOutlierRoomPhaseProgress SavedPhase;
+	SavedPhase.NextPhaseIndex = 1;
+	SavedPhase.bExitBlockActive = true;
+	Checkpoint.RoomPhaseProgress.Add(PhaseRoom, SavedPhase);
 	TestTrue(TEXT("A valid checkpoint snapshot is committed"), SaveSubsystem->CommitCheckpointSnapshotForTesting(Checkpoint));
 
 	FOutlierCheckpointSnapshot Duplicate = Checkpoint;
@@ -67,6 +73,7 @@ bool FOutlierCheckpointRuntimeSnapshotTest::RunTest(const FString& Parameters)
 	Duplicate.WorldProgress.ExplodedPropIds.Add(TEXT("Explosive.Late"));
 	Duplicate.DestroyedTurretIds.Add(TEXT("Turret.Late"));
 	Duplicate.GunAdaptationStack = 10;
+	Duplicate.RoomPhaseProgress.FindChecked(PhaseRoom).NextPhaseIndex = 2;
 	TestFalse(TEXT("The same checkpoint cannot be committed twice"), SaveSubsystem->CommitCheckpointSnapshotForTesting(Duplicate));
 	TestTrue(TEXT("The latest checkpoint is selected after commit"), SaveSubsystem->GetRestoreSnapshot(RestoreTarget));
 	TestTrue(TEXT("Committed world progress is preserved"), RestoreTarget.WorldProgress.CollectedNodeIds.Contains(TEXT("SavedNode")));
@@ -81,6 +88,13 @@ bool FOutlierCheckpointRuntimeSnapshotTest::RunTest(const FString& Parameters)
 		RestoreTarget.DestroyedTurretIds.Contains(TEXT("Turret.Late")));
 	TestEqual(TEXT("A rejected duplicate cannot replace the enemy adaptation stack"),
 		RestoreTarget.GunAdaptationStack, 8);
+	const FOutlierRoomPhaseProgress* RestoredPhase = RestoreTarget.RoomPhaseProgress.Find(PhaseRoom);
+	TestTrue(TEXT("The saved room phase remains available"), RestoredPhase != nullptr);
+	if (RestoredPhase)
+	{
+		TestEqual(TEXT("A rejected duplicate cannot advance the saved phase"),
+			RestoredPhase->NextPhaseIndex, 1);
+	}
 
 	FOutlierCheckpointSnapshot LaterCheckpoint;
 	LaterCheckpoint.CheckpointId = TEXT("Checkpoint.B");
@@ -99,6 +113,8 @@ bool FOutlierCheckpointRuntimeSnapshotTest::RunTest(const FString& Parameters)
 		RestoreTarget.DestroyedTurretIds.Contains(TEXT("Turret.Saved")));
 	TestEqual(TEXT("A later checkpoint replaces the enemy adaptation stack"),
 		RestoreTarget.GunAdaptationStack, 9);
+	TestTrue(TEXT("A later checkpoint replaces older room phase progress"),
+		RestoreTarget.RoomPhaseProgress.IsEmpty());
 
 	SaveSubsystem->SetWorldProgressState(EOutlierWorldProgressType::CollectedNode, TEXT("AfterCheckpoint"), true);
 	TestTrue(TEXT("Live world progress receives later changes"),
@@ -124,6 +140,12 @@ bool FOutlierCheckpointRuntimeSnapshotTest::RunTest(const FString& Parameters)
 		SaveSubsystem->IsTurretDestroyed(TEXT("Turret.AfterCheckpoint")));
 	TestTrue(TEXT("Checkpoint rollback preserves saved turret deaths"),
 		SaveSubsystem->IsTurretDestroyed(TEXT("Turret.Newer")));
+	SaveSubsystem->SetCurrentRoomPhaseProgress(PhaseRoom, SavedPhase);
+	TestTrue(TEXT("Live combat phase may advance after the latest save"),
+		SaveSubsystem->GetCurrentRoomPhaseProgress().Contains(PhaseRoom));
+	SaveSubsystem->RestoreCurrentRoomPhaseProgress(RestoreTarget.RoomPhaseProgress);
+	TestFalse(TEXT("Restart discards combat phase progress after the latest save"),
+		SaveSubsystem->GetCurrentRoomPhaseProgress().Contains(PhaseRoom));
 
 	SaveSubsystem->ResetRuntimeCheckpointState();
 	TestFalse(TEXT("A new runtime session clears destroyed turret progress"),
