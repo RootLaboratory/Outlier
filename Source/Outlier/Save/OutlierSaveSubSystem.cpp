@@ -6,14 +6,75 @@
 #include "Engine/World.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
+#include "Misc/Crc.h"
 #include "Misc/Paths.h"
+#include "Misc/SecureHash.h"
+#include "Serialization/MemoryReader.h"
 #include "Serialization/MemoryWriter.h"
 #include "Serialization/ObjectAndNameAsStringProxyArchive.h"
 
 namespace
 {
 	constexpr uint32 AutoSaveMagic = 0x4F55544C;
-	constexpr int32 AutoSaveVersion = 1;
+	constexpr int32 AutoSaveVersion = 2;
+	constexpr int64 MaxAutoSaveBytes = 16 * 1024 * 1024;
+
+	struct FAutoSaveFile
+	{
+		FGuid OwnerId;
+		FGuid SaveId;
+		FString KeyVerifier;
+		FString MapName;
+		FOutlierCheckpointSnapshot Snapshot;
+	};
+
+	bool ReadAutoSaveFile(const FString& Path, FAutoSaveFile& OutFile)
+	{
+		TArray<uint8> Bytes;
+		if (!FFileHelper::LoadFileToArray(Bytes, *Path) || Bytes.IsEmpty()
+			|| Bytes.Num() > MaxAutoSaveBytes)
+		{
+			return false;
+		}
+
+		FMemoryReader Reader(Bytes, true);
+		uint32 Magic = 0;
+		int32 Version = 0;
+		Reader << Magic;
+		Reader << Version;
+		if (Reader.IsError() || Magic != AutoSaveMagic || Version != AutoSaveVersion)
+		{
+			return false;
+		}
+		Reader << OutFile.OwnerId;
+		Reader << OutFile.SaveId;
+		Reader << OutFile.KeyVerifier;
+		Reader << OutFile.MapName;
+		int32 PayloadSize = 0;
+		uint32 PayloadCrc = 0;
+		Reader << PayloadSize;
+		Reader << PayloadCrc;
+		if (Reader.IsError() || !OutFile.OwnerId.IsValid() || !OutFile.SaveId.IsValid()
+			|| OutFile.KeyVerifier.Len() != 40 || OutFile.MapName.IsEmpty()
+			|| PayloadSize <= 0 || PayloadSize != Reader.TotalSize() - Reader.Tell())
+		{
+			return false;
+		}
+
+		TArray<uint8> Payload;
+		Payload.SetNumUninitialized(PayloadSize);
+		Reader.Serialize(Payload.GetData(), PayloadSize);
+		if (Reader.IsError() || FCrc::MemCrc32(Payload.GetData(), Payload.Num()) != PayloadCrc)
+		{
+			return false;
+		}
+		FMemoryReader PayloadReader(Payload, true);
+		FObjectAndNameAsStringProxyArchive ObjectReader(PayloadReader, true);
+		FOutlierCheckpointSnapshot::StaticStruct()->SerializeItem(
+			ObjectReader, &OutFile.Snapshot, nullptr);
+		return !PayloadReader.IsError() && PayloadReader.AtEnd()
+			&& OutFile.Snapshot.IsValid() && !OutFile.Snapshot.bInitialSnapshot;
+	}
 }
 
 bool UOutlierSaveSubSystem::SavePlayerCheckpoint(const FString& PlayerId, const FOutlierCheckpointData& Data)
@@ -54,6 +115,104 @@ void UOutlierSaveSubSystem::ResetRuntimeCheckpointState()
 	CurrentWorldProgress.Reset();
 	CurrentDestroyedTurretIds.Reset();
 	CommittedCheckpointIds.Reset();
+	ActiveOwnerId.Invalidate();
+	ActiveSaveId.Invalidate();
+	ActiveKeyVerifier.Reset();
+}
+
+FString UOutlierSaveSubSystem::MakeKeyVerifier(const FGuid& ResumeKey)
+{
+	if (!ResumeKey.IsValid())
+	{
+		return FString();
+	}
+	const FString KeyText = ResumeKey.ToString(EGuidFormats::Digits);
+	FTCHARToUTF8 KeyUtf8(*KeyText);
+	uint8 Hash[FSHA1::DigestSize];
+	FSHA1::HashBuffer(KeyUtf8.Get(), KeyUtf8.Length(), Hash);
+	return BytesToHex(Hash, UE_ARRAY_COUNT(Hash));
+}
+
+FString UOutlierSaveSubSystem::GetSaveDirectory(const FGuid& SaveId) const
+{
+	const FString Root = AutoSaveDirectoryOverride.IsEmpty()
+		? FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Checkpoint"))
+		: AutoSaveDirectoryOverride;
+	return FPaths::Combine(Root, SaveId.ToString(EGuidFormats::Digits));
+}
+
+bool UOutlierSaveSubSystem::ConfigureNewSave(
+	const FGuid& OwnerId, const FGuid& SaveId, const FString& KeyVerifier)
+{
+	if (!OwnerId.IsValid() || !SaveId.IsValid() || KeyVerifier.Len() != 40)
+	{
+		return false;
+	}
+	ActiveOwnerId = OwnerId;
+	ActiveSaveId = SaveId;
+	ActiveKeyVerifier = KeyVerifier;
+	return true;
+}
+
+bool UOutlierSaveSubSystem::ValidateResumeKey(
+	const FGuid& OwnerId, const FGuid& SaveId,
+	const FGuid& ResumeKey, FString& OutKeyVerifier) const
+{
+	OutKeyVerifier.Reset();
+	const FString Verifier = MakeKeyVerifier(ResumeKey);
+	if (!OwnerId.IsValid() || !SaveId.IsValid() || Verifier.IsEmpty())
+	{
+		return false;
+	}
+	FAutoSaveFile File;
+	const FString Directory = GetSaveDirectory(SaveId);
+	const FString Latest = FPaths::Combine(Directory, TEXT("LatestAutoSave.sav"));
+	const FString Backup = Latest + TEXT(".bak");
+	const bool bLoaded = ReadAutoSaveFile(Latest, File)
+		|| ReadAutoSaveFile(Backup, File);
+	if (!bLoaded || File.OwnerId != OwnerId || File.SaveId != SaveId
+		|| File.KeyVerifier != Verifier)
+	{
+		return false;
+	}
+	OutKeyVerifier = Verifier;
+	return true;
+}
+
+bool UOutlierSaveSubSystem::LoadLatestSave(
+	const FGuid& OwnerId, const FGuid& SaveId, const FString& KeyVerifier)
+{
+	const UWorld* World = GetGameInstance() ? GetGameInstance()->GetWorld() : nullptr;
+	if (!World || !OwnerId.IsValid() || !SaveId.IsValid() || KeyVerifier.Len() != 40)
+	{
+		return false;
+	}
+	const FString Directory = GetSaveDirectory(SaveId);
+	const FString Latest = FPaths::Combine(Directory, TEXT("LatestAutoSave.sav"));
+	const FString Backup = Latest + TEXT(".bak");
+	FAutoSaveFile File;
+	if (!ReadAutoSaveFile(Latest, File))
+	{
+		if (!ReadAutoSaveFile(Backup, File))
+		{
+			return false;
+		}
+	}
+	if (File.OwnerId != OwnerId || File.SaveId != SaveId
+		|| File.KeyVerifier != KeyVerifier || File.MapName != World->GetMapName()
+		|| !bStableIdsValid)
+	{
+		return false;
+	}
+
+	// 파일과 소유권 검증이 모두 끝난 뒤에만 실행 중 복원 기준을 바꾼다.
+	ResetRuntimeCheckpointState();
+	ConfigureNewSave(OwnerId, SaveId, KeyVerifier);
+	if (!CommitCheckpointSnapshot(File.Snapshot))
+	{
+		return false;
+	}
+	return true;
 }
 
 bool UOutlierSaveSubSystem::CaptureInitialSnapshot(const FOutlierCheckpointSnapshot& Snapshot)
@@ -86,7 +245,9 @@ bool UOutlierSaveSubSystem::CommitCheckpointSnapshot(const FOutlierCheckpointSna
 bool UOutlierSaveSubSystem::CommitDurableCheckpointSnapshot(const FOutlierCheckpointSnapshot& Snapshot)
 {
 	if (!Snapshot.IsValid() || Snapshot.bInitialSnapshot || Snapshot.CheckpointId.IsNone()
-		|| CommittedCheckpointIds.Contains(Snapshot.CheckpointId) || !bStableIdsValid)
+		|| CommittedCheckpointIds.Contains(Snapshot.CheckpointId) || !bStableIdsValid
+		|| !ActiveOwnerId.IsValid() || !ActiveSaveId.IsValid()
+		|| ActiveKeyVerifier.Len() != 40)
 	{
 		return false;
 	}
@@ -96,25 +257,37 @@ bool UOutlierSaveSubSystem::CommitDurableCheckpointSnapshot(const FOutlierCheckp
 		return false;
 	}
 
+	TArray<uint8> Payload;
+	FMemoryWriter PayloadWriter(Payload);
+	FObjectAndNameAsStringProxyArchive ObjectWriter(PayloadWriter, false);
+	FOutlierCheckpointSnapshot Copy = Snapshot;
+	FOutlierCheckpointSnapshot::StaticStruct()->SerializeItem(ObjectWriter, &Copy, nullptr);
+	if (PayloadWriter.IsError() || Payload.IsEmpty() || Payload.Num() > MaxAutoSaveBytes)
+	{
+		return false;
+	}
 	TArray<uint8> Bytes;
 	FMemoryWriter Writer(Bytes);
 	uint32 Magic = AutoSaveMagic;
 	int32 Version = AutoSaveVersion;
 	FString MapName = World->GetMapName();
+	int32 PayloadSize = Payload.Num();
+	uint32 PayloadCrc = FCrc::MemCrc32(Payload.GetData(), Payload.Num());
 	Writer << Magic;
 	Writer << Version;
+	Writer << ActiveOwnerId;
+	Writer << ActiveSaveId;
+	Writer << ActiveKeyVerifier;
 	Writer << MapName;
-	FObjectAndNameAsStringProxyArchive ObjectWriter(Writer, false);
-	FOutlierCheckpointSnapshot Copy = Snapshot;
-	FOutlierCheckpointSnapshot::StaticStruct()->SerializeItem(ObjectWriter, &Copy, nullptr);
-	if (Writer.IsError())
+	Writer << PayloadSize;
+	Writer << PayloadCrc;
+	Writer.Serialize(Payload.GetData(), Payload.Num());
+	if (Writer.IsError() || Bytes.Num() > MaxAutoSaveBytes)
 	{
 		return false;
 	}
 
-	const FString Directory = AutoSaveDirectoryOverride.IsEmpty()
-		? FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Checkpoint"))
-		: AutoSaveDirectoryOverride;
+	const FString Directory = GetSaveDirectory(ActiveSaveId);
 	IFileManager& Files = IFileManager::Get();
 	if (!Files.DirectoryExists(*Directory) && !Files.MakeDirectory(*Directory, true))
 	{
@@ -132,15 +305,24 @@ bool UOutlierSaveSubSystem::CommitDurableCheckpointSnapshot(const FOutlierCheckp
 		return false;
 	}
 
-	// 기존 최신본을 임시로 보존한다. 새 파일 교체가 실패하면 되돌리고 메모리 기준도 유지한다.
+	// 손상된 최신본보다 유효한 백업이 우선이다. 새 파일 교체가 실패해도 백업을 잃지 않는다.
 	if (Files.FileExists(*Latest))
 	{
-		if (Files.FileExists(*Backup) && !Files.Delete(*Backup))
+		FAutoSaveFile Previous;
+		if (ReadAutoSaveFile(Latest, Previous))
 		{
-			Files.Delete(*Pending);
-			return false;
+			if (Files.FileExists(*Backup) && !Files.Delete(*Backup))
+			{
+				Files.Delete(*Pending);
+				return false;
+			}
+			if (!Files.Move(*Backup, *Latest))
+			{
+				Files.Delete(*Pending);
+				return false;
+			}
 		}
-		if (!Files.Move(*Backup, *Latest))
+		else if (!Files.Delete(*Latest))
 		{
 			Files.Delete(*Pending);
 			return false;

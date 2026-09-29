@@ -113,6 +113,17 @@ bool OutlierArenaControl::EncodeFrame(
 			TEXT("matchId"),
 			Message.MatchId.ToString(EGuidFormats::DigitsWithHyphens));
 	}
+	if (Message.Type == EOutlierArenaControlMessageType::Allocate
+		&& Message.SaveContext.IsValid())
+	{
+		JsonObject->SetStringField(TEXT("saveOwnerId"),
+			Message.SaveContext.OwnerId.ToString(EGuidFormats::Digits));
+		JsonObject->SetStringField(TEXT("saveId"),
+			Message.SaveContext.SaveId.ToString(EGuidFormats::Digits));
+		JsonObject->SetStringField(TEXT("saveKeyVerifier"),
+			Message.SaveContext.KeyVerifier);
+		JsonObject->SetBoolField(TEXT("continueSave"), Message.SaveContext.bContinue);
+	}
 
 	FString JsonText;
 	const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&JsonText);
@@ -200,6 +211,25 @@ EOutlierArenaFrameDecodeResult OutlierArenaControl::TryDecodeFrame(
 			|| !FGuid::Parse(MatchIdString, OutMessage.MatchId))
 		{
 			OutError = TEXT("Missing or invalid arena control MatchId");
+			return EOutlierArenaFrameDecodeResult::Invalid;
+		}
+	}
+	if (OutMessage.Type == EOutlierArenaControlMessageType::Allocate
+		&& JsonObject->HasField(TEXT("saveId")))
+	{
+		FString OwnerText;
+		FString SaveText;
+		if (!JsonObject->TryGetStringField(TEXT("saveOwnerId"), OwnerText)
+			|| !JsonObject->TryGetStringField(TEXT("saveId"), SaveText)
+			|| !JsonObject->TryGetStringField(TEXT("saveKeyVerifier"),
+				OutMessage.SaveContext.KeyVerifier)
+			|| !JsonObject->TryGetBoolField(TEXT("continueSave"),
+				OutMessage.SaveContext.bContinue)
+			|| !FGuid::Parse(OwnerText, OutMessage.SaveContext.OwnerId)
+			|| !FGuid::Parse(SaveText, OutMessage.SaveContext.SaveId)
+			|| !OutMessage.SaveContext.IsValid())
+		{
+			OutError = TEXT("Invalid arena save context");
 			return EOutlierArenaFrameDecodeResult::Invalid;
 		}
 	}

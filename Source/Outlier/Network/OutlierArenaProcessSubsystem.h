@@ -26,7 +26,10 @@ public:
 	bool TryAllocateReadySlot(
 		const FGuid& MatchId,
 		FString& OutAddress,
-		int32& OutSlotId);
+		int32& OutSlotId,
+		const FOutlierMatchSaveContext& SaveContext = FOutlierMatchSaveContext());
+	bool TryGetAssignedSaveContext(const FGuid& MatchId,
+		FOutlierMatchSaveContext& OutContext) const;
 	void ReleaseAllocation(const FGuid& MatchId);
 
 	void NotifyArenaWorldReady(UWorld* ArenaWorld);
@@ -93,6 +96,7 @@ private:
 	FSocket* WorkerControlSocket = nullptr;
 	TArray<uint8> WorkerReceiveBuffer;
 	FGuid WorkerExpectedMatchId;
+	FOutlierMatchSaveContext WorkerSaveContext;
 	FTSTicker::FDelegateHandle TickerHandle;
 	double LastWorkerConnectAttempt = 0.0;
 	double LastWorkerHeartbeatSentAt = 0.0;

@@ -1036,14 +1036,43 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 		return;
 	}
 
-	if (UOutlierSaveSubSystem* SaveSubsystem = GetGameInstance()
+	UOutlierSaveSubSystem* SaveSubsystem = GetGameInstance()
 		? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>()
-		: nullptr)
+		: nullptr;
+	if (SaveSubsystem)
 	{
 		SaveSubsystem->ResetRuntimeCheckpointState();
 	}
+	FOutlierCheckpointSnapshot ResumeSnapshot;
+	const bool bResuming = ActiveMatchSaveContext.IsValid()
+		&& ActiveMatchSaveContext.bContinue;
+	if (ActiveMatchSaveContext.IsValid())
+	{
+		const bool bSaveReady = SaveSubsystem
+			&& (bResuming
+				? SaveSubsystem->LoadLatestSave(
+					ActiveMatchSaveContext.OwnerId,
+					ActiveMatchSaveContext.SaveId,
+					ActiveMatchSaveContext.KeyVerifier)
+				: SaveSubsystem->ConfigureNewSave(
+					ActiveMatchSaveContext.OwnerId,
+					ActiveMatchSaveContext.SaveId,
+					ActiveMatchSaveContext.KeyVerifier));
+		if (!bSaveReady || (bResuming && !SaveSubsystem->GetRestoreSnapshot(ResumeSnapshot)))
+		{
+			UE_LOG(LogTemp, Error,
+				TEXT("[Checkpoint] Match save setup failed SaveId=%s Continue=%d"),
+				*ActiveMatchSaveContext.SaveId.ToString(), bResuming ? 1 : 0);
+			if (IsArenaWorkerProcess())
+			{
+				BeginArenaWorkerReleaseShutdown();
+			}
+			return;
+		}
+	}
 
 	FirstPS->SetPairId(PairId);
+	ActiveMatchPairId = PairId;
 	FirstPS->SetPlayerRole(FirstRole);
 	FirstPS->ClearPendingLobbyState();
 
@@ -1072,7 +1101,12 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 
 	// 로비 -> Arena 최초 진입은 이제 이 아레나 인스턴스 소속의 PresetId=Start APresetPlayerStart를 우선 찾는다.
 	// 아직 레벨에 안 놔뒀으면(구 맵) 기존 ResolveArenaSpawnTransforms/FindPlayerStart 폴백으로 내려간다.
-	if (!ResolvePresetStageSpawn(OutlierPresetStageIds::Start, ShooterSpawn, PartnerSpawn))
+	if (bResuming)
+	{
+		ShooterSpawn = ResumeSnapshot.ShooterSpawnTransform;
+		PartnerSpawn = ResumeSnapshot.PartnerSpawnTransform;
+	}
+	else if (!ResolvePresetStageSpawn(OutlierPresetStageIds::Start, ShooterSpawn, PartnerSpawn))
 	{
 		ResolveFallbackSpawnTransforms(ShooterController, ShooterSpawn, PartnerSpawn);
 	}
@@ -1188,6 +1222,28 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 		NewPartnerPS->SetPlayerRole(EOutlierPlayerRole::Partner);
 		NewPartnerPS->ClearPendingLobbyState();
 	}
+	if (bResuming && SaveSubsystem && NewShooterPS && NewPartnerPS)
+	{
+		// 새 Pawn과 Gameplay Actor가 읽기 전에 저장 시점의 플레이어/월드 기준을 되돌린다.
+		SaveSubsystem->RestoreCurrentWorldProgress(ResumeSnapshot.WorldProgress);
+		SaveSubsystem->RestoreCurrentDestroyedTurretIds(ResumeSnapshot.DestroyedTurretIds);
+		NewShooterPS->RestoreCheckpointProgress(
+			ResumeSnapshot.ShooterProgress.NodeCount,
+			EOutlierUpgradeRole::Shooter,
+			ResumeSnapshot.ShooterProgress.ActivatedUpgradeNodeIds);
+		NewPartnerPS->RestoreCheckpointProgress(
+			ResumeSnapshot.PartnerProgress.NodeCount,
+			EOutlierUpgradeRole::Partner,
+			ResumeSnapshot.PartnerProgress.ActivatedUpgradeNodeIds);
+		NewShooterPS->SetAcquiredSuit(ResumeSnapshot.SuitSnapshot.bAcquired);
+		NewShooterPS->SetSuitMeshes(ResumeSnapshot.SuitSnapshot.FirstPersonMesh,
+			ResumeSnapshot.SuitSnapshot.ThirdPersonMesh);
+		NewShooterPS->SetLoadoutSnapshot(ResumeSnapshot.LoadoutSnapshot);
+		if (UEnemyAdaptationSubsystem* Adaptation = GetWorld()->GetSubsystem<UEnemyAdaptationSubsystem>())
+		{
+			Adaptation->SetGunAdaptationStack(ResumeSnapshot.GunAdaptationStack);
+		}
+	}
 
 	if (IsArenaWorkerProcess())
 	{
@@ -1196,7 +1252,10 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 	}
 
 	RegisterSpawnedPair(NewShooterPS, NewPartnerPS, Shooter, Partner);
-	CaptureInitialCheckpointSnapshot(NewShooterPS, NewPartnerPS, Shooter, Partner);
+	if (!bResuming)
+	{
+		CaptureInitialCheckpointSnapshot(NewShooterPS, NewPartnerPS, Shooter, Partner);
+	}
 	if (GetNetMode() == NM_ListenServer && Identity)
 	{
 		APlayerController* GuestController = NewShooterPC && !NewShooterPC->IsLocalController()
@@ -1216,10 +1275,12 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 		}
 	}
 
+	bPendingInitialSaveRestore = bResuming;
 	PossessMatchedPawn(NewShooterPC, Shooter, ShooterSpawn.GetLocation());
 	PossessMatchedPawn(NewPartnerPC, Partner, PartnerSpawn.GetLocation());
+	TryStartInitialSaveRestore();
 
-	if (NewShooterPC && NewPartnerPC && Shooter && Partner)
+	if (!bResuming && NewShooterPC && NewPartnerPC && Shooter && Partner)
 	{
 		TryScheduleArenaWorkerAutoComplete();
 	}
@@ -1295,6 +1356,50 @@ bool AOutlierGameMode::CompleteArenaMatch()
 		ExitTimeout,
 		false);
 	return true;
+}
+
+void AOutlierGameMode::TryStartInitialSaveRestore()
+{
+	if (!bPendingInitialSaveRestore || bArenaReloadInProgress || ActiveMatchPairId == INDEX_NONE)
+	{
+		return;
+	}
+	AOutlierPlayerState* ShooterPS = FindPairPlayerState(
+		ActiveMatchPairId, EOutlierPlayerRole::Shooter);
+	AOutlierPlayerState* PartnerPS = FindPairPlayerState(
+		ActiveMatchPairId, EOutlierPlayerRole::Partner);
+	AController* ShooterController = GetControllerFromPlayerState(ShooterPS);
+	AController* PartnerController = GetControllerFromPlayerState(PartnerPS);
+	const UOutlierArenaSubsystem* Arena = GetWorld()
+		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>() : nullptr;
+	if (!ShooterController || !PartnerController || !ShooterController->GetPawn()
+		|| !PartnerController->GetPawn() || !PendingPossessions.IsEmpty()
+		|| !Arena || !Arena->IsGameplayLevelsReady()
+		|| (IsArenaWorkerProcess()
+			&& (!ArenaWorkerReadyPlayers.Contains(ArenaWorkerShooterController)
+				|| !ArenaWorkerReadyPlayers.Contains(ArenaWorkerPartnerController))))
+	{
+		return;
+	}
+	FOutlierCheckpointSnapshot Snapshot;
+	UOutlierSaveSubSystem* Saves = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>() : nullptr;
+	if (!Saves || !Saves->GetRestoreSnapshot(Snapshot))
+	{
+		return;
+	}
+
+	// 최초 Arena 준비 뒤에만 Generation 리로드를 시작해 클라이언트의 ArenaLoaded 선행 조건을 지킨다.
+	bPendingInitialSaveRestore = false;
+	if (!ReloadArenaAndRespawnPair(ShooterPS, PartnerPS,
+		Snapshot.ShooterSpawnTransform, Snapshot.PartnerSpawnTransform, true))
+	{
+		UE_LOG(LogTemp, Error, TEXT("[Checkpoint] Initial save restore failed to start"));
+		if (IsArenaWorkerProcess())
+		{
+			BeginArenaWorkerReleaseShutdown();
+		}
+	}
 }
 
 bool AOutlierGameMode::HandleExplicitPlayerLeave(AFirstPersonPlayerController* Requester)
@@ -1428,13 +1533,20 @@ void AOutlierGameMode::OnClientArenaReady(APlayerController* PC, uint32 Gameplay
 		// 최초 입장 시에만 Worker 매치 시작 ready를 집계한다.
 		// 이미 게임이 시작된 뒤의 ready는 reload 후 새 Pawn의 possess를 위해
 		// 아래 PendingPossessions 처리 경로로 내려간다.
-		if (!bArenaWorkerGameplayStarted)
+		if (!bArenaWorkerGameplayStarted && !bArenaReloadInProgress)
 		{
 			ArenaWorkerReadyPlayers.Add(PC);
 			if (ArenaWorkerReadyPlayers.Contains(ArenaWorkerShooterController)
 				&& ArenaWorkerReadyPlayers.Contains(ArenaWorkerPartnerController))
 			{
-				ScheduleArenaWorkerGameplayStart();
+				if (bPendingInitialSaveRestore)
+				{
+					TryStartInitialSaveRestore();
+				}
+				else
+				{
+					ScheduleArenaWorkerGameplayStart();
+				}
 			}
 			return;
 		}
@@ -1487,6 +1599,7 @@ void AOutlierGameMode::OnClientArenaReady(APlayerController* PC, uint32 Gameplay
 	PendingReconnectRequestIds.Remove(PC);
 
 	PC->Possess(Pawn);
+	TryStartInitialSaveRestore();
 	if (bArenaReloadInProgress)
 	{
 		UE_LOG(LogTemp, Display,
@@ -2663,6 +2776,24 @@ void AOutlierGameMode::TryStartArenaWorkerPair()
 			return;
 		}
 
+		const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
+		bool bHasSaveContext = false;
+		if (const UOutlierArenaProcessSubsystem* Process = GetGameInstance()
+			? GetGameInstance()->GetSubsystem<UOutlierArenaProcessSubsystem>() : nullptr)
+		{
+			FOutlierMatchSaveContext Context;
+			if (Process->TryGetAssignedSaveContext(ArenaWorkerAdmission.MatchId, Context))
+			{
+				SetMatchSaveContext(Context);
+				bHasSaveContext = true;
+			}
+		}
+		if (Settings && Settings->bUseProcessManager && !bHasSaveContext)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[Checkpoint] Worker assignment has no save context"));
+			BeginArenaWorkerReleaseShutdown();
+			return;
+		}
 		bArenaWorkerPairStarted = true;
 		ArenaWorkerAdmission.bPairStarted = true;
 
@@ -2739,6 +2870,7 @@ void AOutlierGameMode::StartArenaWorkerGameplay()
 	APlayerController* ShooterController = ArenaWorkerShooterController.Get();
 	APlayerController* PartnerController = ArenaWorkerPartnerController.Get();
 	if (bArenaWorkerGameplayStarted
+		|| bArenaReloadInProgress
 		|| !bArenaWorkerPairStarted
 		|| !ShooterController
 		|| !PartnerController
@@ -3608,6 +3740,12 @@ void AOutlierGameMode::TryFinishArenaReload()
 	// ClientLoadAuthorizedAt.Reset();
 	ArenaReloadStartedAt = 0.0;
 	FinishCheckpointRestart();
+	if (IsArenaWorkerProcess() && !bArenaWorkerGameplayStarted
+		&& ArenaWorkerReadyPlayers.Contains(ArenaWorkerShooterController)
+		&& ArenaWorkerReadyPlayers.Contains(ArenaWorkerPartnerController))
+	{
+		ScheduleArenaWorkerGameplayStart();
+	}
 }
 
 bool AOutlierGameMode::ResolveCheckpointTransform(AController* Controller, FTransform& OutTransform) const

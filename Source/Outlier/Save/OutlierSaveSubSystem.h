@@ -21,6 +21,12 @@ public:
 	bool LoadPlayerCheckpoint(const FString& PlayerId, FOutlierCheckpointData& OutData) const;
 
 	void ResetRuntimeCheckpointState();
+	bool ConfigureNewSave(const FGuid& OwnerId, const FGuid& SaveId, const FString& KeyVerifier);
+	bool LoadLatestSave(const FGuid& OwnerId, const FGuid& SaveId, const FString& KeyVerifier);
+	bool ValidateResumeKey(const FGuid& OwnerId, const FGuid& SaveId,
+		const FGuid& ResumeKey, FString& OutKeyVerifier) const;
+	static FString MakeKeyVerifier(const FGuid& ResumeKey);
+	FGuid GetActiveSaveId() const { return ActiveSaveId; }
 	bool CaptureInitialSnapshot(const FOutlierCheckpointSnapshot& Snapshot);
 	bool CommitDurableCheckpointSnapshot(const FOutlierCheckpointSnapshot& Snapshot);
 	bool GetRestoreSnapshot(FOutlierCheckpointSnapshot& OutSnapshot) const;
@@ -88,4 +94,8 @@ private:
 	TMap<FName, TWeakObjectPtr<UObject>> RegisteredStableIds;
 	bool bStableIdsValid = true;
 	FString AutoSaveDirectoryOverride;
+	FGuid ActiveOwnerId;
+	FGuid ActiveSaveId;
+	FString ActiveKeyVerifier;
+	FString GetSaveDirectory(const FGuid& SaveId) const;
 };

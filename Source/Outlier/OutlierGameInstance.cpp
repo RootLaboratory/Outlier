@@ -15,11 +15,44 @@
 #include "Network/OutlierArenaSubsystem.h"
 #include "UI/LoadingWidget.h"
 #include "Misc/Parse.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "HAL/FileManager.h"
 #include "Containers/Ticker.h"
 
 void UOutlierGameInstance::Init()
 {
 	Super::Init();
+	if (!IsRunningDedicatedServer())
+	{
+		const FString IdentityPath = FPaths::Combine(
+			FPaths::ProjectSavedDir(), TEXT("Checkpoint"), TEXT("LocalIdentity.txt"));
+		FString IdentityText;
+		TArray<FString> Lines;
+		if (FFileHelper::LoadFileToString(IdentityText, *IdentityPath))
+		{
+			IdentityText.ParseIntoArrayLines(Lines);
+			if (Lines.Num() >= 1)
+			{
+				FGuid::Parse(Lines[0], LocalPlayerId);
+			}
+			if (Lines.Num() >= 3)
+			{
+				FGuid::Parse(Lines[1], LocalSaveId);
+				FGuid::Parse(Lines[2], LocalResumeKey);
+			}
+		}
+		if (!LocalPlayerId.IsValid())
+		{
+			LocalPlayerId = FGuid::NewGuid();
+			LocalSaveId.Invalidate();
+			LocalResumeKey.Invalidate();
+			if (!SaveLocalIdentity())
+			{
+				LocalPlayerId.Invalidate();
+			}
+		}
+	}
 
 	// GAS 전역 초기화. GameplayCue 매니저를 만들고 GameplayCueNotifyPaths( DefaultGame.ini )를
 	// 스캔해 Notify 클래스를 로드하는 지점이다. 이 호출이 없으면 매니저가 아무 데서나 지연 생성되고,
@@ -35,6 +68,70 @@ void UOutlierGameInstance::Init()
 			this,
 			&UOutlierGameInstance::HandleNetworkFailure);
 	}
+}
+
+bool UOutlierGameInstance::GetLocalPlayerId(FGuid& OutPlayerId) const
+{
+	OutPlayerId = LocalPlayerId;
+	return OutPlayerId.IsValid();
+}
+
+bool UOutlierGameInstance::GetLocalSaveCredentials(
+	FGuid& OutSaveId, FGuid& OutResumeKey) const
+{
+	OutSaveId = LocalSaveId;
+	OutResumeKey = LocalResumeKey;
+	return LocalSaveId.IsValid() && LocalResumeKey.IsValid();
+}
+
+bool UOutlierGameInstance::SaveLocalIdentity() const
+{
+	if (!LocalPlayerId.IsValid())
+	{
+		return false;
+	}
+	const FString Directory = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Checkpoint"));
+	IFileManager& Files = IFileManager::Get();
+	if (!Files.DirectoryExists(*Directory) && !Files.MakeDirectory(*Directory, true))
+	{
+		return false;
+	}
+	const FString Path = FPaths::Combine(Directory, TEXT("LocalIdentity.txt"));
+	const FString Pending = Path + TEXT(".tmp");
+	const FString Contents = FString::Printf(TEXT("%s\n%s\n%s\n"),
+		*LocalPlayerId.ToString(EGuidFormats::Digits),
+		*LocalSaveId.ToString(EGuidFormats::Digits),
+		*LocalResumeKey.ToString(EGuidFormats::Digits));
+	if (!FFileHelper::SaveStringToFile(Contents, *Pending))
+	{
+		return false;
+	}
+	if (!Files.Move(*Path, *Pending, true))
+	{
+		Files.Delete(*Pending);
+		return false;
+	}
+	return true;
+}
+
+bool UOutlierGameInstance::StoreLocalSaveCredentials(
+	const FGuid& SaveId, const FGuid& ResumeKey)
+{
+	if (!LocalPlayerId.IsValid() || !SaveId.IsValid() || !ResumeKey.IsValid())
+	{
+		return false;
+	}
+	const FGuid PreviousSaveId = LocalSaveId;
+	const FGuid PreviousResumeKey = LocalResumeKey;
+	LocalSaveId = SaveId;
+	LocalResumeKey = ResumeKey;
+	if (SaveLocalIdentity())
+	{
+		return true;
+	}
+	LocalSaveId = PreviousSaveId;
+	LocalResumeKey = PreviousResumeKey;
+	return false;
 }
 
 void UOutlierGameInstance::Shutdown()

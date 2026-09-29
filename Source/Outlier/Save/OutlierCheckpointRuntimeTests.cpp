@@ -164,11 +164,18 @@ bool FOutlierCheckpointDurableCommitTest::RunTest(const FString& Parameters)
 	if (TestNotNull(TEXT("Durable save subsystem"), Save))
 	{
 		Save->SetAutoSaveDirectoryForTesting(Directory);
+		const FGuid OwnerId = FGuid::NewGuid();
+		const FGuid SaveId = FGuid::NewGuid();
+		const FGuid ResumeKey = FGuid::NewGuid();
+		const FString Verifier = UOutlierSaveSubSystem::MakeKeyVerifier(ResumeKey);
+		TestTrue(TEXT("New save identity is configured"),
+			Save->ConfigureNewSave(OwnerId, SaveId, Verifier));
 		FOutlierCheckpointSnapshot First;
 		First.CheckpointId = TEXT("Checkpoint.Durable.First");
 		First.WorldProgress.OpenedDoorIds.Add(TEXT("Door.First"));
 		TestTrue(TEXT("First disk commit succeeds"), Save->CommitDurableCheckpointSnapshot(First));
-		const FString Latest = FPaths::Combine(Directory, TEXT("LatestAutoSave.sav"));
+		const FString Latest = FPaths::Combine(Directory,
+			SaveId.ToString(EGuidFormats::Digits), TEXT("LatestAutoSave.sav"));
 		TArray<uint8> OriginalBytes;
 		TestTrue(TEXT("Latest file exists"), FFileHelper::LoadFileToArray(OriginalBytes, *Latest));
 		if (!OriginalBytes.IsEmpty())
@@ -176,34 +183,70 @@ bool FOutlierCheckpointDurableCommitTest::RunTest(const FString& Parameters)
 			FMemoryReader Reader(OriginalBytes);
 			uint32 Magic = 0;
 			int32 Version = 0;
-			FString MapName;
 			Reader << Magic;
 			Reader << Version;
-			Reader << MapName;
-			FObjectAndNameAsStringProxyArchive ObjectReader(Reader, true);
-			FOutlierCheckpointSnapshot OnDisk;
-			FOutlierCheckpointSnapshot::StaticStruct()->SerializeItem(ObjectReader, &OnDisk, nullptr);
 			TestEqual(TEXT("Disk header magic"), Magic, uint32(0x4F55544C));
-			TestEqual(TEXT("Disk format version"), Version, int32(1));
-			TestEqual(TEXT("Disk map identity"), MapName, World->GetMapName());
-			TestEqual(TEXT("Disk checkpoint Id round trips"), OnDisk.CheckpointId, First.CheckpointId);
-			TestTrue(TEXT("Disk world progress round trips"),
-				OnDisk.WorldProgress.OpenedDoorIds.Contains(TEXT("Door.First")));
+			TestEqual(TEXT("Disk format version"), Version, int32(2));
 		}
+		FString ValidatedVerifier;
+		TestTrue(TEXT("Owner can validate the resume key"),
+			Save->ValidateResumeKey(OwnerId, SaveId, ResumeKey, ValidatedVerifier));
+		TestEqual(TEXT("Validated key verifier matches"), ValidatedVerifier, Verifier);
+		TestFalse(TEXT("Another owner cannot claim the save"),
+			Save->ValidateResumeKey(FGuid::NewGuid(), SaveId, ResumeKey, ValidatedVerifier));
+		TestFalse(TEXT("A wrong key cannot claim the save"),
+			Save->ValidateResumeKey(OwnerId, SaveId, FGuid::NewGuid(), ValidatedVerifier));
+		Save->ResetRuntimeCheckpointState();
+		TestTrue(TEXT("Disk checkpoint loads after runtime reset"),
+			Save->LoadLatestSave(OwnerId, SaveId, Verifier));
+		FOutlierCheckpointSnapshot Restore;
+		TestTrue(TEXT("Loaded disk snapshot is selected"), Save->GetRestoreSnapshot(Restore));
+		TestEqual(TEXT("Disk checkpoint Id round trips"), Restore.CheckpointId, First.CheckpointId);
+		TestTrue(TEXT("Disk world progress round trips"),
+			Restore.WorldProgress.OpenedDoorIds.Contains(TEXT("Door.First")));
+		TestFalse(TEXT("Another SaveId cannot load this file"),
+			Save->LoadLatestSave(OwnerId, FGuid::NewGuid(), Verifier));
 		FOutlierCheckpointSnapshot Later;
 		Later.CheckpointId = TEXT("Checkpoint.Durable.Later");
 		Save->SetAutoSaveDirectoryForTesting(Latest);
 		TestFalse(TEXT("Disk failure rejects the later commit"),
 			Save->CommitDurableCheckpointSnapshot(Later));
-		FOutlierCheckpointSnapshot Restore;
 		TestTrue(TEXT("Previous runtime snapshot survives failed write"), Save->GetRestoreSnapshot(Restore));
 		TestEqual(TEXT("Previous checkpoint remains selected"), Restore.CheckpointId, First.CheckpointId);
 		TArray<uint8> CurrentBytes;
 		TestTrue(TEXT("Previous disk file remains readable"), FFileHelper::LoadFileToArray(CurrentBytes, *Latest));
 		TestTrue(TEXT("Failed write leaves disk contents untouched"), OriginalBytes == CurrentBytes);
+		Save->SetAutoSaveDirectoryForTesting(Directory);
+		const FString Backup = Latest + TEXT(".bak");
+		TestTrue(TEXT("Valid backup is written for interruption test"),
+			FFileHelper::SaveArrayToFile(OriginalBytes, *Backup));
+		TArray<uint8> CorruptBytes = OriginalBytes;
+		CorruptBytes.Last() ^= 0x7f;
+		TestTrue(TEXT("Latest can be corrupted for test"),
+			FFileHelper::SaveArrayToFile(CorruptBytes, *Latest));
+		Save->ResetRuntimeCheckpointState();
+		TestTrue(TEXT("Valid backup loads when latest is damaged"),
+			Save->LoadLatestSave(OwnerId, SaveId, Verifier));
+		TestTrue(TEXT("Latest commit repairs damaged latest without losing backup"),
+			Save->CommitDurableCheckpointSnapshot(Later));
+		Save->ResetRuntimeCheckpointState();
+		TestTrue(TEXT("Repaired latest loads"), Save->LoadLatestSave(OwnerId, SaveId, Verifier));
+		TestTrue(TEXT("Repaired snapshot can be read"), Save->GetRestoreSnapshot(Restore));
+		TestEqual(TEXT("Repaired latest checkpoint"), Restore.CheckpointId, Later.CheckpointId);
+		TArray<uint8> VersionBytes;
+		TestTrue(TEXT("Latest exists before version test"),
+			FFileHelper::LoadFileToArray(VersionBytes, *Latest));
+		if (VersionBytes.Num() > 4)
+		{
+			VersionBytes[4] = 1;
+			TestTrue(TEXT("Old-version file is written"),
+				FFileHelper::SaveArrayToFile(VersionBytes, *Latest));
+			Save->ResetRuntimeCheckpointState();
+			TestFalse(TEXT("Old-version save is rejected"),
+				Save->LoadLatestSave(OwnerId, SaveId, Verifier));
+		}
 	}
-	Files.Delete(*FPaths::Combine(Directory, TEXT("LatestAutoSave.sav")));
-	Files.DeleteDirectory(*Directory);
+	Files.DeleteDirectory(*Directory, false, true);
 	GEngine->ShutdownWorldNetDriver(World);
 	World->DestroyWorld(true);
 	GameInstance->Shutdown();
