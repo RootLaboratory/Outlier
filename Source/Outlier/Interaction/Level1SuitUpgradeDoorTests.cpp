@@ -187,12 +187,15 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	Shooter->SetActorLocation(FVector(550.0f, 0.0f, 0.0f));
 	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, true);
 	TestTrue(TEXT("Capsule overlap alone does not seal the room"), Door->IsDoorOpen());
+	Shooter->SetActorLocation(FVector(0.0f, 0.0f, 450.0f));
+	World->Tick(LEVELTICK_All, 0.11f);
+	TestTrue(TEXT("Capsule crossing the Room ceiling does not start closing"), Door->IsDoorOpen());
 	Shooter->SetActorLocation(FVector(480.0f, 0.0f, 0.0f));
 	World->Tick(LEVELTICK_All, 0.11f);
-	TestTrue(TEXT("Capsule still crossing the Room boundary does not seal"), Door->IsDoorOpen());
+	TestTrue(TEXT("Capsule still crossing the Room boundary does not start closing"), Door->IsDoorOpen());
 	Shooter->SetActorLocation(FVector(100.0f, 0.0f, 0.0f));
 	World->Tick(LEVELTICK_All, 0.11f);
-	TestFalse(TEXT("Entry recheck seals after the actor origin enters"), Door->IsDoorOpen());
+	TestFalse(TEXT("Entry recheck starts closing after both capsules fully enter"), Door->IsDoorOpen());
 	Shooter->SetActorLocation(FVector(1000.0f, 0.0f, 0.0f));
 	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, false);
 	TestTrue(TEXT("Leaving during close cancels the entry and reopens"), Door->IsDoorOpen());

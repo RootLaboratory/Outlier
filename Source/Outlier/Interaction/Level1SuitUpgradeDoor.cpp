@@ -321,15 +321,22 @@ bool ALevel1SuitUpgradeDoor::IsInsideRoom(const AActor* Character) const
 	{
 		return false;
 	}
-	// 중심점만 들어온 문턱 상태는 입장이 아니다. Box의 회전축에서 캡슐 반경까지 확인한다.
-	const FVector Center = Character->GetActorLocation();
+	// 닫힘 애니메이션 전에 캡슐 전체가 Box 안에 있어야 한다. 회전된 Box의 각 축에
+	// 캡슐의 수직 선분과 구형 반경을 투영해 문턱이나 천장에 걸친 상태를 제외한다.
+	const FVector CenterOffset = Capsule->GetComponentLocation() - Box->GetComponentLocation();
+	const FVector Extent = Box->GetScaledBoxExtent();
 	const float Radius = Capsule->GetScaledCapsuleRadius();
-	if (!TargetRoomVolume->ContainsWorldLocation(Center + Box->GetForwardVector() * Radius)
-		|| !TargetRoomVolume->ContainsWorldLocation(Center - Box->GetForwardVector() * Radius)
-		|| !TargetRoomVolume->ContainsWorldLocation(Center + Box->GetRightVector() * Radius)
-		|| !TargetRoomVolume->ContainsWorldLocation(Center - Box->GetRightVector() * Radius))
+	const float SegmentHalfLength = FMath::Max(0.0f, Capsule->GetScaledCapsuleHalfHeight() - Radius);
+	const FVector BoxAxes[] = { Box->GetForwardVector(), Box->GetRightVector(), Box->GetUpVector() };
+	for (int32 AxisIndex = 0; AxisIndex < 3; ++AxisIndex)
 	{
-		return false;
+		const float CapsuleReach = Radius
+			+ FMath::Abs(FVector::DotProduct(BoxAxes[AxisIndex], Capsule->GetUpVector())) * SegmentHalfLength;
+		if (FMath::Abs(FVector::DotProduct(CenterOffset, BoxAxes[AxisIndex])) + CapsuleReach
+			> Extent[AxisIndex])
+		{
+			return false;
+		}
 	}
 	const URoomTagComponent* Room = Cast<URoomTagComponent>(
 		Character->GetComponentByClass(URoomTagComponent::StaticClass()));
@@ -344,7 +351,7 @@ void ALevel1SuitUpgradeDoor::EvaluateEntry()
 	}
 	AOutlierPlayerState* Shooter = nullptr;
 	AOutlierPlayerState* Partner = nullptr;
-	// RoomTag만 일치해서는 부족하다. 현재 캐릭터 둘 다 같은 Volume 안에 있어야 닫는다.
+	// RoomTag만 일치해서는 부족하다. 두 캡슐 모두 Volume 안에 들어온 뒤 닫힘 애니메이션을 시작한다.
 	if (!FindPair(Shooter, Partner))
 	{
 		GetWorldTimerManager().ClearTimer(EntryRecheckTimer);
@@ -354,7 +361,7 @@ void ALevel1SuitUpgradeDoor::EvaluateEntry()
 	if (!IsInsideRoom(Shooter->GetShooterCharacter())
 		|| !IsInsideRoom(Partner->GetPartnerCharacter()))
 	{
-		// 캡슐이 Box 경계에 닿으면 RoomTag가 먼저 바뀌지만 Actor 원점은 아직 밖일 수 있다.
+		// 캡슐이 Box 경계에 닿으면 RoomTag가 먼저 바뀌지만 몸 전체는 아직 밖일 수 있다.
 		// 실제 오버랩 중인 두 플레이어만 재검사해 방 밖에서 타이머가 계속 도는 일을 막는다.
 		if (OverlappingPlayers.Contains(TWeakObjectPtr<AActor>(Shooter->GetShooterCharacter()))
 			&& OverlappingPlayers.Contains(TWeakObjectPtr<AActor>(Partner->GetPartnerCharacter())))
