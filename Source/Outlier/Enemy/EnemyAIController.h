@@ -50,6 +50,7 @@ protected:
 
 	void HandleSightStimulus(AEnemyBase* Enemy, AActor* Actor, const FAIStimulus& Stimulus);
 	void HandleHearingStimulus(AEnemyBase* Enemy, AActor* Actor, const FAIStimulus& Stimulus);
+	void UpdateVisibleTarget(AEnemyBase* Enemy, AActor* PreferredTarget);
 	void StartSharedTargetReporting();
 	void StopSharedTargetReporting(bool bRemoveObserver);
 	void RefreshSharedTargetContact();
@@ -68,6 +69,7 @@ protected:
 
 	FTimerHandle SharedTargetReportTimerHandle;
 	TSet<TWeakObjectPtr<AActor>> ProcessedStealthedTargets;
+	TWeakObjectPtr<AActor> LastVisibleTarget;
 	mutable TArray<AActor*> PerceivedActorScratch;
 	int32 TaskDrivenControlPitchCount = 0;
 };

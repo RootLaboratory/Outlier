@@ -6,6 +6,14 @@
 #include "Network/OutlierMatchRequest.h"
 #include "OutlierArenaSettings.h"
 #include "OutlierGameInstance.h"
+#include "GameFramework/Actor.h"
+
+#if WITH_EDITOR
+#include "Engine/LevelStreaming.h"
+#include "Engine/LevelStreamingDynamic.h"
+#include "Engine/World.h"
+#include "Misc/PackageName.h"
+#endif
 
 namespace
 {
@@ -47,6 +55,20 @@ bool FOutlierArenaGameplayGenerationContractTest::RunTest(const FString& Paramet
 	TestFalse(TEXT("A disabled timeout cannot report a stall"),
 		UOutlierArenaSubsystem::HasGameplayReloadTimedOut(60.0, 0.0));
 
+	TArray<TWeakObjectPtr<AActor>> OldActors;
+	OldActors.Add(AActor::StaticClass()->GetDefaultObject<AActor>());
+	TestFalse(TEXT("A live old Actor blocks Ready even after level visibility returns"),
+		UOutlierArenaSubsystem::CanCompleteGameplayReload(OldActors, true, true, true));
+	OldActors.Reset();
+	TestFalse(TEXT("A missing unload completion blocks Ready"),
+		UOutlierArenaSubsystem::CanCompleteGameplayReload(OldActors, false, true, true));
+	TestFalse(TEXT("Missing client unload ACKs block Ready"),
+		UOutlierArenaSubsystem::CanCompleteGameplayReload(OldActors, true, false, true));
+	TestFalse(TEXT("Gameplay levels must be shown before Ready"),
+		UOutlierArenaSubsystem::CanCompleteGameplayReload(OldActors, true, true, false));
+	TestTrue(TEXT("Ready requires purge, unload, ACK authorization and level visibility"),
+		UOutlierArenaSubsystem::CanCompleteGameplayReload(OldActors, true, true, true));
+
 	return true;
 }
 }
@@ -84,6 +106,56 @@ bool FOutlierArenaMapContractTest::RunTest(const FString& Parameters)
 		Settings->MatchesArenaPackageName(TEXT("/Game/Maps/OtherArena")));
 	return true;
 }
+
+#if WITH_EDITOR
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierArenaGameplayPlacementTest,
+	"Outlier.Network.SingleArena.GameplayPlacement",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierArenaGameplayPlacementTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
+	UWorld* ArenaMap = Settings ? Settings->ArenaLevel.LoadSynchronous() : nullptr;
+	if (!TestNotNull(TEXT("Configured Arena map loads"), ArenaMap))
+	{
+		return false;
+	}
+
+	TestFalse(TEXT("Arena Persistent is not a reloadable Gameplay level"),
+		UOutlierArenaSubsystem::IsGameplaySublevelPackage(
+			ArenaMap, Settings->GetArenaPackageName()));
+	TestFalse(TEXT("An unrelated map is not a Gameplay level"),
+		UOutlierArenaSubsystem::IsGameplaySublevelPackage(
+			ArenaMap, TEXT("/Game/Maps/Unrelated")));
+
+	const ULevelStreaming* GameplayLevel = nullptr;
+	for (const ULevelStreaming* Level : ArenaMap->GetStreamingLevels())
+	{
+		if (Level && Level->IsA<ULevelStreamingDynamic>())
+		{
+			GameplayLevel = Level;
+			break;
+		}
+	}
+	if (!TestNotNull(TEXT("Arena declares a Gameplay streaming sublevel"), GameplayLevel))
+	{
+		return false;
+	}
+
+	const FString GameplayPackage = UWorld::RemovePIEPrefix(
+		GameplayLevel->GetWorldAssetPackageName());
+	TestTrue(TEXT("Declared Gameplay level is reloadable"),
+		UOutlierArenaSubsystem::IsGameplaySublevelPackage(ArenaMap, GameplayPackage));
+	const FString PIEPackage = FPackageName::GetLongPackagePath(GameplayPackage)
+		+ TEXT("/UEDPIE_1_") + FPackageName::GetShortName(GameplayPackage);
+	TestTrue(TEXT("PIE package resolves to the same Gameplay level"),
+		UOutlierArenaSubsystem::IsGameplaySublevelPackage(ArenaMap, PIEPackage));
+	return true;
+}
+#endif
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FOutlierArenaHandoffUrlContractTest,
@@ -329,6 +401,18 @@ bool FOutlierArenaReturnLifecycleTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Explicit leave stops reconnect attempts"), GameInstance->bArenaReconnectActive);
 	TestFalse(TEXT("Explicit leave removes the reconnect ticker"), GameInstance->ArenaReconnectTickerHandle.IsValid());
 	TestTrue(TEXT("Explicit leave forgets the previous Worker URL"), GameInstance->LastArenaHandoffUrl.IsEmpty());
+
+	GameInstance->LastListenReconnectUrl = TEXT("127.0.0.1:7777?ListenReconnect=Test");
+	GameInstance->ScheduleArenaReconnect();
+	TestTrue(TEXT("Listen guest uses the bounded reconnect retry"), GameInstance->bArenaReconnectActive);
+	TestTrue(TEXT("Listen retry schedules the shared reconnect ticker"),
+		GameInstance->ArenaReconnectTickerHandle.IsValid());
+	GameInstance->PrepareForExplicitLeave();
+	TestTrue(TEXT("Explicit leave forgets the Listen reconnect route"),
+		GameInstance->LastListenReconnectUrl.IsEmpty());
+	TestFalse(TEXT("Explicit leave cancels Listen retry"), GameInstance->bArenaReconnectActive);
+	TestFalse(TEXT("Explicit leave removes Listen retry ticker"),
+		GameInstance->ArenaReconnectTickerHandle.IsValid());
 
 	GameInstance->NotifyArenaHandoffStarted(TEXT("127.0.0.1:7780?MatchId=RecoveryTest"));
 

@@ -7,6 +7,8 @@
 #include "GameFramework/GameModeBase.h"
 #include "GameFramework/GameMode.h"
 #include "Network/OutlierMatchRequest.h"
+#include "OutlierPlayerState.h"
+#include "Room/RoomCombatSubsystem.h"
 #include "Save/OutlierCheckpointRestartVote.h"
 #include "OutlierGameMode.generated.h"
 
@@ -14,6 +16,7 @@ class APlayerController;
 class AShooterPlayerController;
 class APartnerPlayerController;
 class AFirstPersonPlayerController;
+class AFirstPersonCharacter;
 class AShooterCharacter;
 class APartnerCharacter;
 class AOutlierCheckpoint;
@@ -165,7 +168,7 @@ protected:
 
 	// ArenaWorker는 접속 URL(?Role=Shooter)로 역할이 이미 확정된 상태로 들어온다.
 	// 공용 PC로 받았다가 나중에 SwapPlayerControllers로 교체하면, 교체 창 동안 클라 월드에
-	// 소유 커넥션 없는 PC가 남아 WP 셀 가시화 RPC가 폐기된다(재전송 없음 → 스트리밍 영구 정지).
+	// 소유 커넥션 없는 PC가 남아 레벨 가시화 RPC가 폐기된다(재전송 없음 → 스트리밍 영구 정지).
 	// 처음부터 역할별 PC로 스폰해서 그 창 자체를 없앤다.
 	virtual APlayerController* SpawnPlayerController(
 		ENetRole InRemoteRole,
@@ -265,6 +268,15 @@ private:
 	void ScheduleArenaWorkerReconnectTimeout();
 	void HandleArenaWorkerReconnectTimeout();
 	void TryResumeArenaWorkerAfterReconnect(APlayerController* ReconnectedPlayer);
+	void TryResumeListenGuestAfterReconnect(APlayerController* ReconnectedPlayer);
+	bool IsListenReconnectRequest(const FString& Options) const;
+	void ClearListenReconnectPawn();
+	bool PrepareReconnectPawn(APlayerController* PlayerController,
+		APawn* Pawn, AFirstPersonCharacter* Anchor);
+	bool ValidateReconnectPawn(APlayerController* PlayerController, APawn* Pawn);
+	bool MoveReconnectPawnToFallback(APlayerController* PlayerController,
+		AFirstPersonCharacter* Player);
+	void ClearArenaWorkerReconnectPawns();
 
 	TArray<TWeakObjectPtr<APlayerController>> ArenaWorkerPlayers;
 	FOutlierArenaAdmissionState ArenaWorkerAdmission;
@@ -275,6 +287,14 @@ private:
 	TSet<FGuid> ArenaWorkerDisconnectedPlayerIds;
 	UPROPERTY(Transient)
 	TMap<FGuid, TObjectPtr<APawn>> ArenaWorkerReconnectPawns;
+	TMap<FGuid, bool> ArenaWorkerReconnectDamageStates;
+	TMap<TWeakObjectPtr<APlayerController>, FRoomCombatReconnectContext> PendingReconnectContexts;
+	TMap<FGuid, FRoomCombatReconnectContext> ArenaWorkerDisconnectContexts;
+	TMap<TWeakObjectPtr<APlayerController>, uint32> PendingReconnectRequestIds;
+	uint32 NextReconnectRequestId = 0;
+	UPROPERTY(Transient)
+	FOutlierReconnectGameplayState ArenaWorkerReconnectGameplayState;
+	bool bHasArenaWorkerReconnectGameplayState = false;
 	UPROPERTY(Transient)
 	TObjectPtr<AOutlierArenaPausePlayerState> ArenaWorkerPauseOwner;
 	bool bArenaWorkerPairStartScheduled = false;
@@ -284,6 +304,13 @@ private:
 	bool bArenaWorkerMatchCompleting = false;
 	bool bArenaWorkerExitRequested = false;
 	bool bListenHostReturnRequested = false;
+	FGuid ListenGuestReconnectToken;
+	FGuid ListenGuestPlayerId;
+	EOutlierPlayerRole ListenGuestRole = EOutlierPlayerRole::None;
+	int32 ListenGuestPairId = INDEX_NONE;
+	UPROPERTY(Transient)
+	TObjectPtr<APawn> ListenGuestReconnectPawn;
+	bool bListenGuestDisconnected = false;
 	FTimerHandle ArenaWorkerAutoCompleteTimerHandle;
 	FTimerHandle ArenaWorkerReconnectTimerHandle;
 	FTimerHandle ArenaWorkerExitTimerHandle;

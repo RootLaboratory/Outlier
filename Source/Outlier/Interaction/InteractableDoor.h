@@ -8,6 +8,9 @@
 
 class UStaticMeshComponent;
 class UCurveFloat;
+class AInteractableDoor;
+
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnDoorMotionFinished, AInteractableDoor*, bool /*bOpen*/);
 
 UCLASS()
 class OUTLIER_API AInteractableDoor : public AActor
@@ -31,6 +34,8 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Door")
 	bool IsDoorOpen() const { return bIsOpen; }
+	bool HasMovementCurve() const;
+	FOnDoorMotionFinished OnDoorMotionFinished;
 
 public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")
@@ -51,6 +56,9 @@ public:
 	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Door")
 	FName DoorId = NAME_None;
 
+	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Door")
+	bool bInitiallyOpen = false;
+
 	/** Played as server-authoritative Relevant AtLocation audio when movement starts. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Door|Audio", meta = (Categories = "Audio.Type"))
 	FGameplayTag DoorMovementAudioEventTag;
@@ -61,6 +69,7 @@ public:
 protected:
 	UPROPERTY(ReplicatedUsing = OnRep_IsOpen, BlueprintReadOnly, Category = "Door")
 	bool bIsOpen = false;
+	void SnapDoorState(bool bOpen);
 
 private:
 	FTimeline DoorTimeline;
@@ -77,8 +86,8 @@ private:
 	void OnRep_IsOpen();
 
 	void ApplyDoorState(bool bOpen);
-	void SetDoorOpenInternal(bool bOpen, bool bRecordProgress, bool bPlayAudio);
 	bool bProgressIdRegistered = false;
+	bool bMotionCompletionPending = false;
 	bool PlayDoorMovementAudio(bool bOpen);
 
 public:

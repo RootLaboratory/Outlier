@@ -71,6 +71,13 @@ struct OUTLIER_API FFirstPersonProceduralAnimRuntime
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Equip")
 	float EquipPoseAlpha = 0.0f;
 
+	// Apply to root after the other FP procedural controls so both hands and the attached weapon move together.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon Switch")
+	FVector WeaponSwitchLowerLoc = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon Switch")
+	float WeaponSwitchLowerAlpha = 0.0f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Equip|Left Hand")
 	FVector LeftHandEquipGripOffsetLoc = FVector::ZeroVector;
 
@@ -136,6 +143,10 @@ struct OUTLIER_API FFirstPersonProceduralAnimRuntime
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Left Hand")
 	float LeftHandFreeAlpha = 0.0f;
+
+	// Final LeftHand IK(TwoBoneIK hand_l -> ik_hand_l) 전용 alpha. LeftHandIKAlpha + Equip IK alpha.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Left Hand")
+	float LeftHandFinalIKAlpha = 0.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Left Hand")
 	FVector LeftHandJointTargetLoc = FVector::ZeroVector;

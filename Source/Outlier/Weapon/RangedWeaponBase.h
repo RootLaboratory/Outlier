@@ -327,6 +327,7 @@ public:
 	void AttachMagazineToLeftHand(AShooterCharacter* Shooter);
 	void AttachMagazineToWeapon();
 	UStaticMeshComponent* GetFirstSightMesh() const;
+	FName GetMuzzleSocketName() const { return MuzzleSocketName; }
 	void SetSightAimMaterialFlag(bool bAiming);
 
 	UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")

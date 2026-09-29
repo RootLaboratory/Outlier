@@ -26,6 +26,7 @@ public:
 	virtual void Shutdown() override;
 
 	void NotifyArenaHandoffStarted(const FString& ArenaUrl);
+	void NotifyListenReconnectToken(const FGuid& Token);
 	void PrepareForExplicitLeave();
 
 private:
@@ -45,6 +46,7 @@ private:
 	bool TryQueueLobbyRecovery();
 	bool TravelToLobby(UWorld* World);
 	void ResetArenaHandoffState();
+	void ResetListenReconnectState();
 
 public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "UI")
@@ -66,6 +68,7 @@ private:
 	int32 ArenaWorkerReadyStableFrames = 0;
 	// Worker 재접속은 최초 Handoff의 신원 옵션이 포함된 URL을 그대로 재사용한다.
 	FString LastArenaHandoffUrl;
+	FString LastListenReconnectUrl;
 	double ArenaReconnectDeadlineSeconds = 0.0;
 	bool bArenaReconnectActive = false;
 

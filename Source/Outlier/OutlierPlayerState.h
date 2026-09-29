@@ -27,8 +27,36 @@ DECLARE_MULTICAST_DELEGATE_OneParam(FOnPendingLobbyStateChanged, AOutlierPlayerS
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnPlayerCharactersChanged, AOutlierPlayerState*);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnNodeCountChanged, int32);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnStatAllocatorExitPendingChanged, AOutlierPlayerState*);
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnStatAllocatorUICompleted, AOutlierPlayerState*, uint32 /*GameplayGeneration*/);
 DECLARE_MULTICAST_DELEGATE(FOnActivatedUpgradeNodesChanged);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnPendingPresetSelectionChanged, AOutlierPlayerState*);
+
+USTRUCT()
+struct FOutlierReconnectGameplayState
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	FOutlierCheckpointData CheckpointData;
+	UPROPERTY()
+	int32 NodeCount = 0;
+	UPROPERTY()
+	bool bStatAllocatorExitPending = false;
+	UPROPERTY()
+	TArray<FName> ShooterActivatedUpgradeNodeIds;
+	UPROPERTY()
+	TArray<FName> PartnerActivatedUpgradeNodeIds;
+	UPROPERTY()
+	FName PendingPresetSelection = NAME_None;
+	UPROPERTY()
+	bool bHasAcquiredSuit = false;
+	UPROPERTY()
+	TObjectPtr<USkeletalMesh> SuitFirstPersonMesh;
+	UPROPERTY()
+	TObjectPtr<USkeletalMesh> SuitThirdPersonMesh;
+	UPROPERTY()
+	FOutlierLoadoutSnapshot LoadoutSnapshot;
+};
 
 
 /**
@@ -97,6 +125,12 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Stat Allocator")
 	bool IsStatAllocatorExitPending() const { return bStatAllocatorExitPending; }
+
+	void ReportStatAllocatorUIOpened(uint32 GameplayGeneration);
+	void ReportStatAllocatorUIClosed(uint32 GameplayGeneration);
+	// 서버의 이번 Gameplay Generation 완료 상태. Gate가 늦게 로드되어도 조회할 수 있다.
+	bool IsStatAllocatorUICompletedForGeneration(uint32 GameplayGeneration) const;
+	FOnStatAllocatorUICompleted OnStatAllocatorUICompleted;
 
 	UFUNCTION(BlueprintCallable, Category = "Lobby")
 	void SetPendingLobbyMatchId(int32 NewPendingLobbyMatchId);
@@ -258,12 +292,22 @@ protected:
 	UFUNCTION(Server, Reliable)
 	void ServerSetStatAllocatorExitPending(bool bPending);
 
+	UFUNCTION(Server, Reliable)
+	void ServerReportStatAllocatorUIState(uint32 GameplayGeneration, bool bOpened);
+
 	void HandlePlayerRoleChanged();
 	void HandlePendingLobbyStateChanged();
 	void HandleStatAllocatorExitPendingChanged();
 	void HandleActivatedUpgradeNodesChanged();
 	void HandlePendingPresetSelectionChanged();
 	void SetNodeCountInternal(int32 NewNodeCount);
+	void RecordStatAllocatorUIState(uint32 GameplayGeneration, bool bOpened);
+	void ResetStatAllocatorUIState();
+
+	// ExitPending과 별개인 서버 전용 Opened -> Closed 확인 상태. 세대가 바뀌면 다음 신호에서 초기화한다.
+	uint32 StatAllocatorUIGeneration = 0;
+	bool bStatAllocatorUIOpened = false;
+	bool bStatAllocatorUICompleted = false;
 
 public:
 	FOnPlayerRoleChanged OnPlayerRoleChanged;
@@ -288,5 +332,7 @@ public:
 	const FOutlierLoadoutSnapshot& GetLoadoutSnapshot() const { return LoadoutSnapshot; }
 	// 재접속 시 새 PlayerState에 판 진행 데이터만 복원한다. 신원과 Pair 링크는 포함하지 않는다.
 	void CopyReconnectGameplayStateFrom(const AOutlierPlayerState& Source);
+	FOutlierReconnectGameplayState CaptureReconnectGameplayState() const;
+	void RestoreReconnectGameplayState(const FOutlierReconnectGameplayState& State);
 	FOnPendingPresetSelectionChanged OnPendingPresetSelectionChanged;
 };

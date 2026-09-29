@@ -33,6 +33,9 @@ void UShooterCurrentAbilityIcon::NativeTick(const FGeometry& MyGeometry, float I
 
 void UShooterCurrentAbilityIcon::SetCurrentAbility(const FGameplayTag& AbilityTag)
 {
+	UE_LOG(LogTemp, Warning, TEXT("[ShooterHUD][AbilityEvent] SetCurrentAbility Widget=%s Tag=%s"),
+		*GetNameSafe(this), *AbilityTag.ToString());
+
 	if (!AbilityTag.IsValid())
 	{
 		return;

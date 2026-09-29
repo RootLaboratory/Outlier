@@ -71,6 +71,12 @@ namespace OutlierGameplayTags
 			return Tag;
 		}
 
+		inline FGameplayTag Environment()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Damage.Environment")));
+			return Tag;
+		}
+
 		inline FGameplayTag AdaptationBreak()
 		{
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(

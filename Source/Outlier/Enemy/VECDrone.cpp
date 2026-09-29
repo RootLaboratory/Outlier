@@ -141,6 +141,7 @@ void AVECDrone::HideSourceMeshes()
 
 	if (FirstPersonMesh)
 	{
+		SaveSourceMeshVisibility(FirstPersonMesh);
 		FirstPersonMesh->SetVisibility(false, true);
 		FirstPersonMesh->SetHiddenInGame(true, true);
 	}

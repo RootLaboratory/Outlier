@@ -303,6 +303,12 @@ void UShooterMovementComponent::DoJumpStart()
 		StopSprintInternal();
 	}
 
+	// 엔진은 낙하 중 첫 점프도 허용하므로, 지상 점프 없이 떨어진 경우에는 입력을 넘기지 않는다.
+	if (ShooterCharacter->GetCharacterMovement()->IsFalling() && ShooterCharacter->JumpCurrentCount == 0)
+	{
+		return;
+	}
+
 	ShooterCharacter->Jump();
 	RefreshMovementState();
 }

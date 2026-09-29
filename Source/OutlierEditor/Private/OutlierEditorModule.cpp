@@ -5,10 +5,12 @@
 #include "Framework/Docking/TabManager.h"
 #include "Kismet/GameplayStatics.h"
 #include "LevelEditor.h"
+#include "Misc/MessageDialog.h"
 #include "Misc/Paths.h"
 #include "OutlierInputMappableToolWidget.h"
 #include "OutlierUpgradeEffectToolWidget.h"
 #include "PlayInEditorDataTypes.h"
+#include "ProceduralAnimValuesExporter.h"
 #include "Settings/LevelEditorPlaySettings.h"
 #include "Styling/AppStyle.h"
 #include "ToolMenus.h"
@@ -87,6 +89,13 @@ private:
 			FSlateIcon(),
 			FUIAction(FExecuteAction::CreateRaw(this, &FOutlierEditorModule::OpenUpgradeEffectTool)));
 
+		Section.AddMenuEntry(
+			TEXT("ExportProceduralAnimValues"),
+			LOCTEXT("ExportProceduralAnimValuesLabel", "Export Procedural Anim Values CSV"),
+			LOCTEXT("ExportProceduralAnimValuesTooltip", "Export all Procedural Anim Data Asset values to a comparison CSV under Saved/ProceduralAnimExports."),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateRaw(this, &FOutlierEditorModule::ExportProceduralAnimValuesCsv)));
+
 		UToolMenu* PlayToolBar = UToolMenus::Get()->ExtendMenu(
 			TEXT("LevelEditor.LevelEditorToolBar.PlayToolBar"));
 		FToolMenuSection& PlaySection = PlayToolBar->FindOrAddSection(TEXT("Play"));
@@ -119,6 +128,23 @@ private:
 	void OpenUpgradeEffectTool()
 	{
 		FGlobalTabmanager::Get()->TryInvokeTab(OutlierEditor::UpgradeEffectToolTabName);
+	}
+
+	void ExportProceduralAnimValuesCsv()
+	{
+		FString OutputPath;
+		FString Error;
+		int32 AssetCount = 0;
+		if (OutlierEditor::ExportProceduralAnimValues(OutputPath, Error, AssetCount))
+		{
+			FMessageDialog::Open(EAppMsgType::Ok,
+				FText::Format(LOCTEXT("ProceduralAnimExportSuccess", "Exported {0} Data Assets to:\n{1}"),
+					FText::AsNumber(AssetCount), FText::FromString(OutputPath)));
+		}
+		else
+		{
+			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(Error));
+		}
 	}
 
 	bool CanStartPlaySession() const

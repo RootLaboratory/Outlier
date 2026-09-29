@@ -45,24 +45,44 @@ void UStaticCrossHair::NativeTick(const FGeometry& MyGeometry, float Indelta)
 	}
 }
 
-void UStaticCrossHair::SetCoolTime(float InCoolTime)
+void UStaticCrossHair::Activate()
 {
-	if (!PistolCoolTime || !ReloadingTimeMID || InCoolTime <= 0.f)
+	Super::Activate();
+
+	// 다른 무기를 들고 있는 동안 Tick이 멈췄더라도, 다시 표시되는 프레임에
+	// 실제 경과 시각을 기준으로 쿨타임 진행도를 즉시 복원한다.
+	if (IsCooldowning())
+	{
+		UpdateCoolTime(0.0f);
+	}
+}
+
+void UStaticCrossHair::SetCoolTime(float InCoolTime, float InElapsedTime)
+{
+	if (InCoolTime <= 0.0f || !PistolCoolTime || !ReloadingTimeMID)
 	{
 		return;
 	}
 
 	CoolTime = InCoolTime; // Chatacter 의 TotalCoolTime;
-	AccumulatedTime = 0.f;
+	AccumulatedTime = FMath::Clamp(InElapsedTime, 0.0f, CoolTime);
+	CooldownStartTime = GetWorld() ? GetWorld()->GetTimeSeconds() - AccumulatedTime : 0.0f;
 	bCooldowning = true;
 
-	ReloadingTimeMID->SetScalarParameterValue(TEXT("CooldownProgress"), 0.f);
+	ReloadingTimeMID->SetScalarParameterValue(TEXT("CooldownProgress"), AccumulatedTime / CoolTime);
 	PistolCoolTime->SetVisibility(ESlateVisibility::HitTestInvisible);
 }
 
-void UStaticCrossHair::UpdateCoolTime(float InCoolTime)
+void UStaticCrossHair::UpdateCoolTime(float DeltaTime)
 {
-	AccumulatedTime += InCoolTime;
+	if (const UWorld* World = GetWorld())
+	{
+		AccumulatedTime = FMath::Max(0.0f, World->GetTimeSeconds() - CooldownStartTime);
+	}
+	else
+	{
+		AccumulatedTime += DeltaTime;
+	}
 
 	if (AccumulatedTime >= CoolTime)
 	{
@@ -83,6 +103,7 @@ void UStaticCrossHair::CooldownDone()
 {
 	bCooldowning = false;
 	AccumulatedTime = 0.f;
+	CooldownStartTime = 0.0f;
 	CoolTime = 0.f;
 
 	// 브러시는 되돌리지 않는다. 숨겨두면 다음 SetCoolTime 전까지 갱신도 멈춘다.

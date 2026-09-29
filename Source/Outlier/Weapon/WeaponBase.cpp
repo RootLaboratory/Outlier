@@ -816,9 +816,9 @@ bool AWeaponBase::Interact(class AFirstPersonCharacter* Interactor)
 
 	UE_LOG(LogTemp, Log, TEXT("%s [%s] Interact Interactor=%s"), OutlierNet::GetNetPrefix(this), *GetName(), *GetNameSafe(Interactor));
 
-	// 이 액터를 그대로 넘기지 않는다. 레벨 배치 액터의 ULevel 은 WP 셀로 고정이고
-	// 런타임에 옮길 수 없어서, 그대로 장착시키면 플레이어가 그 셀에서 멀어질 때
-	// 손에 든 채로 사라진다. 같은 클래스로 PersistentLevel 에 하나 만들어 넘기고,
+	// 이 액터를 그대로 넘기지 않는다. 배치 액터의 ULevel 소속은 런타임에 옮길 수 없어
+	// Gameplay 서브레벨 리로드 때 장착한 무기까지 사라질 수 있다.
+	// 같은 클래스로 PersistentLevel 에 하나 만들어 넘기고,
 	// 원본은 소비 처리한다 (일회성 획득이므로 월드에 남아서도 안 된다).
 	AWeaponBase* GrantedWeapon = SpawnLoadoutWeapon(GetWorld(), GetClass(), Interactor);
 	if (!GrantedWeapon)
@@ -870,9 +870,8 @@ AWeaponBase* AWeaponBase::SpawnLoadoutWeapon(
 	SpawnParams.Owner = OwnerCharacter;
 	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 	// OverrideLevel 을 주지 않는다 -> PersistentLevel.
-	// 플레이어 소유 무기는 Gameplay Data Layer 리로드에도, 거리 기반 셀 스트리밍에도
-	// 살아남아야 한다. (AWeaponSpawnPoint 는 반대로 GetLevel()=WP 셀에 넣는다 —
-	//  그쪽은 월드와 함께 죽어도 되는 배치물이다.)
+	// 플레이어 소유 무기는 배치 Gameplay 서브레벨의 언로드에 묶이지 않아야 한다.
+	// SpawnPoint는 배치된 서브레벨과 함께 내려가지만, 소유 무기는 별도 수명으로 관리한다.
 
 	return World->SpawnActor<AWeaponBase>(
 		WeaponClass, OwnerCharacter->GetActorTransform(), SpawnParams);

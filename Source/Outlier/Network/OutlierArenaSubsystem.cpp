@@ -14,6 +14,10 @@
 #include "Engine/NetConnection.h"
 #include "Misc/PackageName.h"
 
+#if WITH_EDITOR
+#include "Misc/DataValidation.h"
+#endif
+
 namespace
 {
 	const TCHAR* GetArenaReloadRole(const UWorld* World)
@@ -712,6 +716,26 @@ bool UOutlierArenaSubsystem::HasGameplayReloadTimedOut(double ElapsedSeconds, do
 	return TimeoutSeconds > 0.0 && ElapsedSeconds >= TimeoutSeconds;
 }
 
+bool UOutlierArenaSubsystem::CanCompleteGameplayReload(
+	const TArray<TWeakObjectPtr<AActor>>& OldActors,
+	bool bUnloaded,
+	bool bCanLoad,
+	bool bLevelsShown)
+{
+	if (!bUnloaded || !bCanLoad || !bLevelsShown)
+	{
+		return false;
+	}
+	for (const TWeakObjectPtr<AActor>& Actor : OldActors)
+	{
+		if (Actor.IsValid(true))
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
 void UOutlierArenaSubsystem::SetGameplayReloadPhase(EOutlierGameplayReloadPhase Phase)
 {
 	if (!PendingGameplayReload.IsSet() || PendingGameplayReload->Phase == Phase)
@@ -1015,6 +1039,18 @@ bool UOutlierArenaSubsystem::TickArenaLevels(float DeltaTime)
 		else if (Pending.Phase == EOutlierGameplayReloadPhase::WaitingForStreaming
 			&& AreGameplayLevelsShown())
 		{
+			// Phase 순서가 어긋나도 옛 배치 Actor와 Client ACK가 남은 채 Ready를 발행하지 않는다.
+			if (!CanCompleteGameplayReload(Pending.OldActors, Pending.bUnloaded,
+				Pending.bCanLoad, true))
+			{
+				UE_LOG(LogTemp, Error,
+					TEXT("[ArenaReload][%s] Gen=%u RejectReady Unloaded=%d CanLoad=%d OldActors=%d"),
+					GetArenaReloadRole(GetWorld()), Pending.Generation,
+					Pending.bUnloaded ? 1 : 0, Pending.bCanLoad ? 1 : 0,
+					Pending.OldActors.Num());
+				FailGameplayReload(Pending.Generation, EOutlierGameplayReloadFailure::InvalidRuntime);
+				return true;
+			}
 			const ULevel* CurrentArenaLevel = GetArenaLoadedLevel();
 			if (CurrentArenaLevel != Pending.StableArenaLevel.Get())
 			{
@@ -1111,3 +1147,57 @@ bool UOutlierArenaSubsystem::IsActorOwnedByArena(const AActor* Actor) const
 	}
 	return false;
 }
+
+#if WITH_EDITOR
+bool UOutlierArenaSubsystem::IsGameplaySublevelPackage(
+	const UWorld* ArenaMap, const FString& LevelPackageName)
+{
+	if (!ArenaMap || LevelPackageName.IsEmpty())
+	{
+		return false;
+	}
+
+	const FString ActorPackage = UWorld::RemovePIEPrefix(LevelPackageName);
+	for (const ULevelStreaming* StreamingLevel : ArenaMap->GetStreamingLevels())
+	{
+		if (StreamingLevel && StreamingLevel->IsA<ULevelStreamingDynamic>()
+			&& !StreamingLevel->IsA<ULevelStreamingAlwaysLoaded>()
+			&& ActorPackage == UWorld::RemovePIEPrefix(
+				StreamingLevel->GetWorldAssetPackageName()))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool UOutlierArenaSubsystem::ValidateGameplayActorPlacement(
+	const AActor* Actor, FDataValidationContext& Context)
+{
+	if (!Actor || Actor->IsTemplate())
+	{
+		return true;
+	}
+	const UWorld* World = Actor->GetWorld();
+	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
+	if (!World || !Settings
+		|| !Settings->MatchesArenaPackageName(World->GetOutermost()->GetName()))
+	{
+		// 일반 테스트 맵과 BP 기본 객체에는 Arena 배치 계약을 적용하지 않는다.
+		return true;
+	}
+
+	const ULevel* ActorLevel = Actor->GetLevel();
+	const FString ActorLevelPackage = ActorLevel && ActorLevel->GetOutermost()
+		? ActorLevel->GetOutermost()->GetName() : FString();
+	if (IsGameplaySublevelPackage(World, ActorLevelPackage))
+	{
+		return true;
+	}
+
+	Context.AddError(FText::FromString(FString::Printf(
+		TEXT("%s is in %s, which is not a reloadable Gameplay sublevel of %s. Move the placed actor to a Blueprint-streamed Gameplay level."),
+		*GetNameSafe(Actor), *ActorLevelPackage, *World->GetOutermost()->GetName())));
+	return false;
+}
+#endif

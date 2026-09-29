@@ -98,6 +98,16 @@ bool FRoomCombatDefinitionValidationTest::RunTest(const FString& Parameters)
 	{
 		URoomCombatDefinition* Definition = MakeValidHackTriggerDefinition();
 		FRoomCombatRoomDefinition& Room = Definition->RoomDefinitions[0];
+		Room.CombatPhases[0].ExpectedStartSpawnPointCount = -1;
+		FDataValidationContext Context;
+		TestEqual(TEXT("A negative start SpawnPoint count is invalid"),
+			ValidateDefinition(Definition, Context), EDataValidationResult::Invalid);
+		TestFalse(TEXT("A negative start SpawnPoint count cannot start"),
+			Room.CanStartTriggeredSequence(0));
+	}
+	{
+		URoomCombatDefinition* Definition = MakeValidHackTriggerDefinition();
+		FRoomCombatRoomDefinition& Room = Definition->RoomDefinitions[0];
 		FRoomCombatPhaseDefinition Automatic = Room.CombatPhases[0];
 		Automatic.StartPolicy = ERoomCombatPhaseStartPolicy::Automatic;
 		Room.CombatPhases.Add(Automatic);
@@ -118,6 +128,34 @@ bool FRoomCombatDefinitionValidationTest::RunTest(const FString& Parameters)
 		FDataValidationContext Context;
 		TestEqual(TEXT("An automatic phase cannot be first"),
 			ValidateDefinition(Definition, Context), EDataValidationResult::Invalid);
+	}
+	{
+		URoomCombatDefinition* Definition = MakeValidInitialDetectionDefinition();
+		FRoomCombatRoomDefinition& Room = Definition->RoomDefinitions[0];
+		FRoomCombatPhaseDefinition External;
+		External.StartPolicy = ERoomCombatPhaseStartPolicy::ExternalTrigger;
+		External.Waves.Add(MakeSpawnWave());
+		Room.CombatPhases.Add(External);
+		Room.CombatPhases.Add(External);
+		FDataValidationContext Context;
+		TestEqual(TEXT("Detection followed by separately triggered phases is valid"),
+			ValidateDefinition(Definition, Context), EDataValidationResult::Valid);
+		TestTrue(TEXT("Second phase accepts an external start"), Room.CanStartTriggeredSequence(1));
+		TestTrue(TEXT("Third phase accepts an external start"), Room.CanStartTriggeredSequence(2));
+		TestFalse(TEXT("Initial detection cannot be externally started"), Room.CanStartTriggeredSequence(0));
+	}
+	{
+		URoomCombatDefinition* Definition = MakeValidHackTriggerDefinition();
+		FRoomCombatRoomDefinition& Room = Definition->RoomDefinitions[0];
+		FRoomCombatPhaseDefinition External = Room.CombatPhases[0];
+		External.StartPolicy = ERoomCombatPhaseStartPolicy::ExternalTrigger;
+		Room.CombatPhases.Add(External);
+		Room.CombatPhases.Add(External);
+		Room.CombatPhases[2].Waves[0].Enemies[0].Count = 0;
+		TestTrue(TEXT("A later external phase is validated when it starts, not with the hack"),
+			Room.CanStartTriggeredSequence(0));
+		TestFalse(TEXT("Invalid external phase roster rejects its own start"),
+			Room.CanStartTriggeredSequence(2));
 	}
 	{
 		URoomCombatDefinition* Definition = MakeValidInitialDetectionDefinition();

@@ -11,6 +11,7 @@ class ULevel;
 class ULevelStreaming;
 class ULevelStreamingDynamic;
 class AActor;
+class FDataValidationContext;
 
 UENUM(BlueprintType)
 enum class EOutlierGameplayReloadPhase : uint8
@@ -75,6 +76,13 @@ public:
 	ULevel* GetArenaLoadedLevel() const;
 	bool IsPersistentArenaWorld() const;
 	bool IsActorOwnedByArena(const AActor* Actor) const;
+#if WITH_EDITOR
+	// 에디터에 배치된 전투 Actor가 리로드 대상 Gameplay 서브레벨에 있는지 검사한다.
+	static bool ValidateGameplayActorPlacement(
+		const AActor* Actor, FDataValidationContext& Context);
+	static bool IsGameplaySublevelPackage(
+		const UWorld* ArenaMap, const FString& LevelPackageName);
+#endif
 	const UWorld* GetArenaWorld() const;
 	bool IsArenaReady() const;
 	bool IsArenaContentReady() const;
@@ -83,6 +91,11 @@ public:
 	bool IsGameplayReloadStalled(uint32 Generation) const;
 	static bool IsGameplayGenerationNewer(uint32 Candidate, uint32 Reference);
 	static bool HasGameplayReloadTimedOut(double ElapsedSeconds, double TimeoutSeconds);
+	static bool CanCompleteGameplayReload(
+		const TArray<TWeakObjectPtr<AActor>>& OldActors,
+		bool bUnloaded,
+		bool bCanLoad,
+		bool bLevelsShown);
 
 	FOnArenaShown OnArenaShown;
 	FOnArenaReleased OnArenaReleased;

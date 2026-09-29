@@ -8,7 +8,8 @@
 #include "RoomVolume.generated.h"
 
 class UBoxComponent;
-class UWorldPartitionStreamingSourceComponent;
+
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnRoomActorOverlapChanged, AActor*, bool /*bEntered*/);
 
 UCLASS()
 class OUTLIER_API ARoomVolume : public AActor
@@ -19,8 +20,8 @@ public:
 	ARoomVolume();
 
 	FGameplayTag GetRoomTag() const { return RoomTag; }
-	void SetCombatStreamingSourceEnabled(bool bEnabled);
-	bool IsCombatStreamingSourceEnabled() const;
+	bool ContainsWorldLocation(const FVector& Location) const;
+	FOnRoomActorOverlapChanged OnRoomActorOverlapChanged;
 
 protected:
 	virtual void BeginPlay() override;
@@ -32,10 +33,6 @@ protected:
 
 	UPROPERTY(VisibleAnywhere)
 	TObjectPtr<UBoxComponent> TriggerBox;
-
-	// 플레이어가 Room을 벗어나도 진행 중인 전투 셀이 언로드되지 않게 서버에서만 켠다.
-	UPROPERTY(VisibleAnywhere, Category = "Room|Combat")
-	TObjectPtr<UWorldPartitionStreamingSourceComponent> CombatStreamingSource;
 
 	UPROPERTY(EditInstanceOnly, Category = "Room", meta = (Categories = "Room"))
 	FGameplayTag RoomTag;

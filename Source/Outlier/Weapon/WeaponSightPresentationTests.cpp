@@ -58,7 +58,10 @@ bool FOutlierWeaponSightPresentationTest::RunTest(const FString& Parameters)
 	}
 
 	UStaticMeshComponent* FirstSight = Weapon->GetFirstSightMesh();
+	UStaticMeshComponent* ShadowSight = Cast<UStaticMeshComponent>(
+		Weapon->GetDefaultSubobjectByName(TEXT("ShadowSight")));
 	TestNotNull(TEXT("Pistol has a first-person sight component"), FirstSight);
+	TestNotNull(TEXT("Pistol has a shadow sight component"), ShadowSight);
 	if (FirstSight)
 	{
 		TestTrue(TEXT("Sight is hidden while the weapon is a pickup"), FirstSight->bHiddenInGame);
@@ -71,10 +74,20 @@ bool FOutlierWeaponSightPresentationTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("Current weapon sight is shown after equip presentation"), FirstSight->bHiddenInGame);
 	}
 
+	if (ShadowSight)
+	{
+		ShadowSight->SetCastShadow(true);
+		ShadowSight->SetCastHiddenShadow(true);
+	}
 	Weapon->OnUnequipped();
 	if (FirstSight)
 	{
 		TestTrue(TEXT("Previous weapon sight is hidden after unequip"), FirstSight->bHiddenInGame);
+	}
+	if (ShadowSight)
+	{
+		TestFalse(TEXT("Previous sight no longer casts a shadow"), ShadowSight->CastShadow);
+		TestFalse(TEXT("Previous sight no longer casts a hidden shadow"), ShadowSight->bCastHiddenShadow);
 	}
 
 	Weapon->OnEquipped(Shooter);

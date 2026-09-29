@@ -530,7 +530,7 @@ bool UEnemyAdaptationSubsystem::CanRegisterEnemy(const AEnemyBase* Enemy) const
 	}
 
 	// Generation 0은 초기 Arena와 독립 자동화 월드가 공유한다. 실제 리로드 세대부터는
-	// 이전 Data Layer에서 늦게 도착한 Pool 활성화가 새 전투 목록에 들어오지 못하게 막는다.
+	// 이전 Gameplay 세대에서 늦게 도착한 Pool 활성화가 새 전투 목록에 들어오지 못하게 막는다.
 	return ActiveGameplayGeneration == 0
 		|| Enemy->GetPoolGameplayGeneration() == static_cast<int32>(ActiveGameplayGeneration);
 }
@@ -610,7 +610,7 @@ void UEnemyAdaptationSubsystem::HandleArenaShown()
 
 void UEnemyAdaptationSubsystem::HandleArenaGameplayReloadStarted(uint32 GameplayGeneration)
 {
-	// 새 Data Layer의 BeginPlay가 오기 전까지 문을 닫아 이전 Generation의 지연 이벤트를 버린다.
+	// 새 Gameplay 서브레벨의 등록을 허용하기 전까지 이전 Generation의 지연 이벤트를 버린다.
 	const int32 ClearedRegistrationCount = GetRegisteredEnemyCount();
 	bAcceptingRegistrations = false;
 	ActiveGameplayGeneration = GameplayGeneration;
@@ -627,7 +627,7 @@ void UEnemyAdaptationSubsystem::HandleArenaGameplayReloadStarted(uint32 Gameplay
 
 void UEnemyAdaptationSubsystem::HandleArenaGameplayGCReady(uint32 GameplayGeneration)
 {
-	// 이전 세대 Actor EndPlay와 GC가 검증된 뒤 새 Data Layer Actor의 BeginPlay 등록을 허용한다.
+	// 이전 세대 Actor EndPlay와 GC가 검증된 뒤 새 Gameplay 서브레벨 Actor의 등록을 허용한다.
 	ActiveGameplayGeneration = GameplayGeneration;
 	bAcceptingRegistrations = true;
 	UE_LOG(

@@ -36,6 +36,7 @@ void UEnemyRoomSubsystem::Deinitialize()
 	}
 
 	CombatRooms.Reset();
+	CombatRoomLastKnownLocations.Reset();
 	RegisteredEnemiesByRoom.Reset();
 	RegisteredEnemyKeys.Reset();
 	SearchStates.Reset();
@@ -111,24 +112,24 @@ void UEnemyRoomSubsystem::RefreshEnemyRegistration(AEnemyBase* Enemy)
 	RegisteredEnemyKeys.Add(EnemyPtr, NewKey);
 }
 
-void UEnemyRoomSubsystem::NotifyRoomCombat(FGameplayTag RoomTag, const FVector& PlayerLocation, AEnemyBase* ExcludeEnemy)
+bool UEnemyRoomSubsystem::NotifyRoomCombat(FGameplayTag RoomTag, const FVector& PlayerLocation, AEnemyBase* ExcludeEnemy)
 {
 	UWorld* World = GetWorld();
 	if (!World || World->GetNetMode() == NM_Client || !RoomTag.IsValid())
 	{
-		return;
+		return false;
 	}
 
 	UOutlierArenaSubsystem* ArenaSubsystem = World->GetSubsystem<UOutlierArenaSubsystem>();
 	if (!ArenaSubsystem)
 	{
-		return;
+		return false;
 	}
 
 	ULevel* ArenaLevel = ArenaSubsystem->GetArenaLoadedLevel();
 	if (!ArenaLevel)
 	{
-		return;
+		return false;
 	}
 
 	if (URoomCombatSubsystem* CombatSubsystem =
@@ -136,12 +137,13 @@ void UEnemyRoomSubsystem::NotifyRoomCombat(FGameplayTag RoomTag, const FVector& 
 	{
 		// 전투 정의가 있는 방은 새 관리자의 단일 활성 Room 판정을 통과한 경우에만 AI 전파한다.
 		if (CombatSubsystem->IsRoomRegistered(RoomTag)
-			&& !CombatSubsystem->NotifyRoomCombatStarted(RoomTag))
+			&& !CombatSubsystem->TryStartInitialDetectionForPlayers(RoomTag))
 		{
-			return;
+			return false;
 		}
 	}
 	CombatRooms.Add(RoomTag);
+	CombatRoomLastKnownLocations.Add(RoomTag, PlayerLocation);
 
 	CompactRegisteredEnemies(RoomTag);
 	const TSet<TWeakObjectPtr<AEnemyBase>>* RegisteredEnemies =
@@ -156,14 +158,23 @@ void UEnemyRoomSubsystem::NotifyRoomCombat(FGameplayTag RoomTag, const FVector& 
 				continue;
 			}
 
-			Enemy->EnterCombatFromRoom(PlayerLocation, false);
+			if (Enemy->IsPoolManaged())
+			{
+				Enemy->EnterAlertFromPerception(PlayerLocation);
+			}
+			else
+			{
+				Enemy->EnterCombatFromRoom(PlayerLocation, false);
+			}
 		}
 	}
 
-	if (const FEnemyRoomTargetContactState* ContactState = TargetContactStates.Find(RoomTag))
+	if (const FEnemyRoomTargetContactState* ContactState = TargetContactStates.Find(RoomTag);
+		ContactState && ContactState->bSharedContactActive)
 	{
 		BroadcastSharedTargetContact(RoomTag, ContactState->LastReportedLocation);
 	}
+	return true;
 }
 
 void UEnemyRoomSubsystem::NotifyRoomCombatEnded(FGameplayTag RoomTag)
@@ -175,6 +186,7 @@ void UEnemyRoomSubsystem::NotifyRoomCombatEnded(FGameplayTag RoomTag)
 	}
 
 	CombatRooms.Remove(RoomTag);
+	CombatRoomLastKnownLocations.Remove(RoomTag);
 	SearchStates.Remove(RoomTag);
 	if (FEnemyRoomTargetContactState* ContactState = TargetContactStates.Find(RoomTag))
 	{
@@ -643,6 +655,10 @@ void UEnemyRoomSubsystem::BroadcastSharedTargetContact(
 	FGameplayTag RoomTag,
 	const FVector& TargetLocation)
 {
+	if (CombatRooms.Contains(RoomTag))
+	{
+		CombatRoomLastKnownLocations.Add(RoomTag, TargetLocation);
+	}
 	if (FEnemyRoomTargetContactState* ContactState = TargetContactStates.Find(RoomTag))
 	{
 		ContactState->bSharedContactActive = true;
@@ -672,7 +688,9 @@ void UEnemyRoomSubsystem::BroadcastSharedTargetContact(
 	{
 		AEnemyBase* Enemy = EnemyPtr.Get();
 		if (!IsValid(Enemy)
-			|| Enemy->GetCombatState() != EEnemyCombatState::Combat
+			|| (Enemy->GetCombatState() != EEnemyCombatState::Combat
+				&& !(Enemy->IsPoolManaged()
+					&& Enemy->GetCombatState() == EEnemyCombatState::Alert))
 			|| !Enemy->CanUseRoomTargetSharing())
 		{
 			continue;
@@ -739,33 +757,61 @@ void UEnemyRoomSubsystem::SynchronizeEnemyWithRoomState(AEnemyBase* Enemy)
 
 	const FGameplayTag RoomTag = ResolveEnemyRoomTag(Enemy);
 	const FEnemyRoomTargetContactState* ContactState = TargetContactStates.Find(RoomTag);
-	if (!CombatRooms.Contains(RoomTag)
-		|| !ContactState
-		|| !ContactState->bSharedContactActive)
+	if (!CombatRooms.Contains(RoomTag))
 	{
+		if (Enemy->IsPoolManaged())
+		{
+			UE_LOG(LogTemp, Display,
+				TEXT("[Reinforcement] Enemy=%s Stage=RoomSyncSkipped Generation=%d Lease=%d Room=%s Reason=RoomNotInCombat"),
+				*GetNameSafe(Enemy), Enemy->GetPoolGameplayGeneration(),
+				Enemy->GetPoolLeaseSerial(), *RoomTag.ToString());
+		}
 		return;
 	}
 
-	// 증원은 Pool 초기화로 NonCombat 상태에서 시작한다. 현재 방이 이미 공유 중인 좌표를
-	// 즉시 복원하되 StateTree 이벤트는 초기 Global Task가 준비되는 다음 틱에 전달한다.
-	Enemy->EnterCombatFromRoom(ContactState->LastReportedLocation, false, true);
-	Enemy->ApplySharedTargetContact(ContactState->LastReportedLocation, true);
-	UE_LOG(LogTemp, Display,
-		TEXT("[EnemyRoom] Active room target synchronized. Enemy=%s Room=%s Location=%s"),
-		*GetNameSafe(Enemy),
-		*RoomTag.ToString(),
-		*ContactState->LastReportedLocation.ToCompactString());
+	const FVector* LastKnownLocation = CombatRoomLastKnownLocations.Find(RoomTag);
+	if (!ContactState && !LastKnownLocation)
+	{
+		if (Enemy->IsPoolManaged())
+		{
+			UE_LOG(LogTemp, Display,
+				TEXT("[Reinforcement] Enemy=%s Stage=RoomSyncSkipped Generation=%d Lease=%d Room=%s Reason=NoTargetLocation"),
+				*GetNameSafe(Enemy), Enemy->GetPoolGameplayGeneration(),
+				Enemy->GetPoolLeaseSerial(), *RoomTag.ToString());
+		}
+		return;
+	}
+	// 풀 증원은 방의 전투/공유 위치만으로 적을 알아채지 않는다. 활성화 후
+	// 자신의 Perception이 감지해야 NonBattle에서 Alert로 넘어간다.
+	if (Enemy->IsPoolManaged())
+	{
+		UE_LOG(LogTemp, Display,
+			TEXT("[Reinforcement] Enemy=%s Stage=RoomSyncDeferred Generation=%d Lease=%d Room=%s Reason=AwaitOwnPerception"),
+			*GetNameSafe(Enemy), Enemy->GetPoolGameplayGeneration(),
+			Enemy->GetPoolLeaseSerial(), *RoomTag.ToString());
+		return;
+	}
+
+	const FVector TargetLocation = ContactState
+		? ContactState->LastReportedLocation : *LastKnownLocation;
+	Enemy->EnterCombatFromRoom(TargetLocation, false, true);
+	if (ContactState && ContactState->bSharedContactActive)
+	{
+		Enemy->ApplySharedTargetContact(TargetLocation, true);
+	}
 }
 
 #if WITH_DEV_AUTOMATION_TESTS
 void UEnemyRoomSubsystem::SetActiveRoomTargetForTesting(
 	FGameplayTag RoomTag,
-	const FVector& TargetLocation)
+	const FVector& TargetLocation,
+	bool bSharedContactActive)
 {
 	CombatRooms.Add(RoomTag);
+	CombatRoomLastKnownLocations.Add(RoomTag, TargetLocation);
 	FEnemyRoomTargetContactState& ContactState = TargetContactStates.FindOrAdd(RoomTag);
 	ContactState.LastReportedLocation = TargetLocation;
-	ContactState.bSharedContactActive = true;
+	ContactState.bSharedContactActive = bSharedContactActive;
 }
 #endif
 
@@ -842,6 +888,7 @@ void UEnemyRoomSubsystem::ResetRuntimeCombatState()
 {
 	UWorld* World = GetWorld();
 	CombatRooms.Reset();
+	CombatRoomLastKnownLocations.Reset();
 	RegisteredEnemiesByRoom.Reset();
 	RegisteredEnemyKeys.Reset();
 	SearchStates.Reset();

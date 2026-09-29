@@ -32,11 +32,23 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Weapon")
 	FName ThirdPersonWeaponSocketPistol = FName("HandGrip_R_Pistol_TP");
 
+	UPROPERTY(EditDefaultsOnly, Category = "Weapon")
+	FName FirstPersonWeaponSocketMelee = FName("HandGrip_R");
+
+	UPROPERTY(EditDefaultsOnly, Category = "Weapon")
+	FName ThirdPersonWeaponSocketMelee = FName("HandGrip_R");
+
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Weapon")
 	TArray<TObjectPtr<AWeaponBase>> WeaponSlots;
 
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Weapon")
 	EWeaponSlot CurrentSlot = EWeaponSlot::Primary;
+
+	TWeakObjectPtr<AWeaponBase> PendingSwitchWeapon;
+	EWeaponSlot PendingSwitchSlot = EWeaponSlot::Primary;
+	FTimerHandle PendingSwitchTimerHandle;
+	bool bHasPendingWeaponSwitch = false;
+	int32 PendingSwitchId = 0;
 
 public:
 	UShooterInventoryComponent();
@@ -56,6 +68,9 @@ public:
 	void HandleEquipWeapon(AWeaponBase* Weapon);
 	bool EquipSuitRifle(AWeaponBase* RifleWeapon);
 	void SelectWeaponSlot(EWeaponSlot Slot);
+	void FinishPendingWeaponSwitch(int32 SwitchId);
+	void ExpirePendingWeaponSwitch();
+	void CancelPendingWeaponSwitch();
 
 	void CleanupOwnedWeapons();
 

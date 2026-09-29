@@ -14,6 +14,7 @@ class UAmmoUI;
 class UCrossHairBase;
 class UShooterCurrentAbilityIcon;
 class UShooterCurrentWeaponIcon;
+class UShooterStatusBarWidget;
 
 UENUM(BlueprintType)
 enum class EWidgetWeaponType : uint8
@@ -51,7 +52,8 @@ public:
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UHPBarUI> HPBarUI;
 
-	UPROPERTY(meta = (BindWidget))
+	// ShooterStatusBarHUD에서 받아와 모듈 레지스트리에 등록하는 캐시다.
+	UPROPERTY(Transient)
 	TObjectPtr<UAmmoUI> AmmoUI;
 
 	UPROPERTY(meta = (BindWidget))
@@ -60,12 +62,18 @@ public:
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UCrossHairBase> PistolCrossHairUI;
 
-	UPROPERTY(meta = (BindWidget))
+	UPROPERTY(Transient)
 	TObjectPtr<UShooterCurrentAbilityIcon> CurrentAbilityUI;
 
-	UPROPERTY(meta = (BindWidget))
+	UPROPERTY(Transient)
 	TObjectPtr<UShooterCurrentWeaponIcon> CurrentWeaponUI;
 
 private:
+	void CacheStatusBarWidgets();
+
+	// Main은 오른쪽 컨테이너까지만 직접 바인딩하고, 컨테이너가 내부 모듈을 소유한다.
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UShooterStatusBarWidget> ShooterStatusBarHUD;
+
 	TObjectPtr<UCrossHairBase> CurrentCrossHairUI;
 };

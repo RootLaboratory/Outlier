@@ -55,8 +55,10 @@ protected:
 
 	void UpdateFirstPersonProceduralValues(float DeltaSeconds);
 	void UpdateFirstPersonProceduralRuntime(float DeltaSeconds);
+	void BlendWeaponSwitchProceduralPose(float DeltaSeconds);
 	void UpdateFirstPersonDiagnostics(float DeltaSeconds, bool bWeaponChanged);
 	void LogFirstPersonDiagnostics(const TCHAR* Reason) const;
+	void TraceFinalizedFirstPersonBones();
 	void UpdateWallOffset(float DeltaSeconds, const FWeaponValues* WeaponValues);
 	bool IsMontageInProceduralActionWindow(const UAnimMontage* Montage, float EarlyReleaseTime) const;
 
@@ -490,10 +492,27 @@ protected:
 	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|Runtime")
 	FFirstPersonProceduralAnimRuntime ViewModelProceduralRuntime;
 
+	struct FWeaponSwitchPose
+	{
+		FVector HipLoc = FVector::ZeroVector;
+		FRotator HipRot = FRotator::ZeroRotator;
+		FVector WeaponRootLoc = FVector::ZeroVector;
+		FRotator WeaponRootRot = FRotator::ZeroRotator;
+		FVector RightHandIKLoc = FVector::ZeroVector;
+		FRotator RightHandIKRot = FRotator::ZeroRotator;
+	};
+
+	FWeaponSwitchPose WeaponSwitchPoseStart;
+	float WeaponSwitchPoseElapsed = 0.0f;
+	bool bWeaponSwitchPoseActive = false;
+
 	float StartStopTime = 0.0f;
 	float StartStopDuration = 0.15f;
 	float SprintExitDetailBlockTimer = 0.0f;
 	float FirstPersonDiagnosticLogTimeRemaining = 0.0f;
+	TWeakObjectPtr<USkeletalMeshComponent> BoneTraceMesh;
+	FDelegateHandle BoneTraceDelegateHandle;
+	int32 BoneTraceFrameCount = 0;
 	int32 StartStopDirection = 0;
 	uint8 bWasShouldMove : 1 = false;
 	uint8 bWasSprinting : 1 = false;

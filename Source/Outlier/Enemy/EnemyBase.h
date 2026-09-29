@@ -34,6 +34,8 @@ class UOutlierAbilitySystemComponent;
 class UOutlierVitalAttributeSet;
 class UEnemyAdaptationSubsystem;
 class UEnemyPoolSubsystem;
+class UPrimitiveComponent;
+class USceneComponent;
 struct FOnAttributeChangeData;
 
 UENUM(BlueprintType)
@@ -119,6 +121,11 @@ public:
 		bPoolPresentationAutoCompleteForTesting = bEnabled;
 	}
 	void BeginDeathForPoolTesting() { HandleDeath(); }
+	void SimulateDeathPresentationForPoolTesting()
+	{
+		DisableDeathCollision();
+		HideSourceMeshes();
+	}
 	void BeginDeathForAdaptationTesting(EOutlierAdaptationDamageCategory DamageCategory)
 	{
 		LastAcceptedAdaptationDamageCategory = DamageCategory;
@@ -126,17 +133,20 @@ public:
 	}
 #endif
 
+	void SendEnemyStateTreeEvent(FGameplayTag Tag);
+
 protected:
 	virtual void PostInitializeComponents() override;
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+#if WITH_EDITOR
+	virtual EDataValidationResult IsDataValid(FDataValidationContext& Context) const override;
+#endif
 	virtual void PossessedBy(AController* NewController) override;
 	virtual void UnPossessed() override;
 	virtual void OnRep_Controller() override;
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 	void RefreshAbilitySystemActorInfo();
-
-	void SendEnemyStateTreeEvent(FGameplayTag Tag);
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
 	TObjectPtr<UOutlierAbilitySystemComponent> OutlierAbilitySystemComponent;
@@ -203,6 +213,19 @@ protected:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Enemy|Data")
 	FDataTableRowHandle EnemyStatRow;
+
+	// -1은 DataTable 값을 사용한다. 배치된 Enemy 인스턴스에서만 감지 거리를 조정한다.
+	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Enemy|Perception Override", meta = (ClampMin = "-1.0", UIMin = "-1.0", Units = "cm"))
+	float SightRadiusOverride = -1.0f;
+
+	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Enemy|Perception Override", meta = (ClampMin = "-1.0", UIMin = "-1.0", Units = "cm"))
+	float LoseSightRadiusOverride = -1.0f;
+
+	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Enemy|Perception Override", meta = (ClampMin = "-1.0", UIMin = "-1.0", Units = "cm"))
+	float HearingRangeOverride = -1.0f;
+
+	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Enemy|Perception Override", meta = (ClampMin = "-1.0", UIMin = "-1.0", Units = "cm"))
+	float BattleHearingRangeOverride = -1.0f;
 
 	// 충격이 발생할 때마다 DataTable을 조회하지 않도록 초기화 시 RuntimeImpactReactionProfile에 복사한다.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Enemy|Data")
@@ -623,6 +646,7 @@ protected:
 	float DeathDebrisDelay = 0.0f;
 
 	virtual void HideSourceMeshes();
+	void SaveSourceMeshVisibility(USceneComponent* SourceMeshRoot);
 	void SpawnDeathDebris(FTransform SourceTransform, FVector DeathVelocity);
 	virtual float GetDeathDestroyDelay() const { return DeathDestroyDelay; }
 	virtual bool TryApplyCommittedImpactVelocity(const FVector& ImpactVelocity);
@@ -705,8 +729,22 @@ protected:
 	void SetPoolState(EEnemyPoolState NewState);
 	void DestroyPoolAIController();
 	void ReturnToOwningPool();
+#if !UE_BUILD_SHIPPING && WITH_GAMEPLAY_DEBUGGER
+	void LogReinforcementStateTreeSnapshot();
+	FTimerHandle ReinforcementStateTreeDiagnosticTimerHandle;
+	FString LastReinforcementStateTreeSnapshot;
+	float LastReinforcementStateTreeLogTime = 0.0f;
+#endif
 
 	TWeakObjectPtr<UEnemyPoolSubsystem> OwningPoolSubsystem;
+	struct FSourceMeshVisibility
+	{
+		TWeakObjectPtr<USceneComponent> Component;
+		bool bVisible = true;
+		bool bHiddenInGame = false;
+	};
+	TArray<FSourceMeshVisibility> SavedSourceMeshVisibility;
+	TArray<TPair<TWeakObjectPtr<UPrimitiveComponent>, ECollisionEnabled::Type>> SavedDeathCollision;
 	TWeakObjectPtr<UEnemyAdaptationSubsystem> CachedEnemyAdaptationSubsystem;
 	EOutlierAdaptationDamageCategory LastAcceptedAdaptationDamageCategory =
 		EOutlierAdaptationDamageCategory::Ignore;
