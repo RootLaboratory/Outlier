@@ -490,6 +490,28 @@ bool FRoomCombatSubsystemRuntimeTest::RunTest(const FString& Parameters)
 		ERoomCombatState::WaitingForTrigger);
 	TestEqual(TEXT("Undetected elimination advances only to the next phase"),
 		CombatSubsystem->GetCurrentCombatPhaseIndex(StealthRoomTag), 1);
+	UOutlierSaveSubSystem* Saves = GameInstance->GetSubsystem<UOutlierSaveSubSystem>();
+	const FOutlierRoomPhaseProgress* SavedPhase = Saves
+		? Saves->GetCurrentRoomPhaseProgress().Find(StealthRoomTag) : nullptr;
+	TestTrue(TEXT("Completed phase is tracked for the next checkpoint"), SavedPhase != nullptr);
+	if (SavedPhase)
+	{
+		TestEqual(TEXT("The next phase is the restore target"), SavedPhase->NextPhaseIndex, 1);
+	}
+	CombatSubsystem->ResetRuntimeCombatState();
+	TestTrue(TEXT("Room re-registers after reset"),
+		CombatSubsystem->RegisterRoom(StealthRoom, StealthRoomTag));
+	TestEqual(TEXT("Room resumes at the saved phase"),
+		CombatSubsystem->GetCurrentCombatPhaseIndex(StealthRoomTag), 1);
+	TestEqual(TEXT("Trigger phase waits after restore"),
+		CombatSubsystem->GetRoomState(StealthRoomTag), ERoomCombatState::WaitingForTrigger);
+	AEnemyBase* SkippedEnemy = SpawnTestEnemy(World, StealthRoomTag);
+	if (TestNotNull(TEXT("Skipped preplaced enemy is spawned"), SkippedEnemy))
+	{
+		CombatSubsystem->RegisterPreplacedEnemy(SkippedEnemy);
+		TestEqual(TEXT("Completed phase enemy is not counted again"),
+			CombatSubsystem->GetAliveEnemyCount(StealthRoomTag), 0);
+	}
 
 	CleanupWorld();
 	return true;
@@ -994,6 +1016,15 @@ bool FRoomCombatTriggeredSequenceTest::RunTest(const FString& Parameters)
 	if (!TestNotNull(TEXT("First leased Enemy"), Enemy)) { CleanupWorld(); return false; }
 	Combat->NotifyEnemyDefeated(Enemy);
 	TestEqual(TEXT("The second phase starts automatically"), Combat->GetCurrentCombatPhaseIndex(RoomTag), 1);
+	UOutlierSaveSubSystem* Saves = World->GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>();
+	const FOutlierRoomPhaseProgress* SavedAutomaticPhase = Saves
+		? Saves->GetCurrentRoomPhaseProgress().Find(RoomTag) : nullptr;
+	TestTrue(TEXT("Automatic phase boundary records the next phase"), SavedAutomaticPhase != nullptr);
+	if (SavedAutomaticPhase)
+	{
+		TestEqual(TEXT("Automatic phase restores from Wave 1"), SavedAutomaticPhase->NextPhaseIndex, 1);
+		TestTrue(TEXT("Automatic phase retains exit blocking"), SavedAutomaticPhase->bExitBlockActive);
+	}
 	TestEqual(TEXT("Pool exhaustion in next phase remains pending"), Combat->GetPendingSpawnCount(RoomTag), 1);
 	TestTrue(TEXT("The next phase keeps its group active"), Point->IsRuntimeActive());
 	TestEqual(TEXT("No intermediate clear event"), Clears, 0);
@@ -1003,6 +1034,10 @@ bool FRoomCombatTriggeredSequenceTest::RunTest(const FString& Parameters)
 	Combat->NotifyEnemyDefeated(Enemy);
 	Combat->NotifyEnemyDefeated(Enemy);
 	TestEqual(TEXT("All phases clear the Room"), Combat->GetRoomState(RoomTag), ERoomCombatState::Cleared);
+	TestTrue(TEXT("Final clear records the completed encounter"), Saves && Saves->HasWorldProgress(
+		EOutlierWorldProgressType::CompletedEncounter, RoomTag.GetTagName()));
+	TestFalse(TEXT("Final clear removes unfinished phase progress"), Saves
+		&& Saves->GetCurrentRoomPhaseProgress().Contains(RoomTag));
 	TestEqual(TEXT("Exactly one start event"), Starts, 1);
 	TestEqual(TEXT("Both phases complete once"), Phases, 2);
 	TestEqual(TEXT("Exactly one overall clear event"), Clears, 1);
@@ -1080,6 +1115,23 @@ bool FRoomCombatTriggeredSequenceTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Phase listener reset disables group"), Point->IsRuntimeActive());
 	TestEqual(TEXT("Phase listener reset cancels the queued automatic phase"), Combat->GetPendingSpawnCount(RoomTag), 0);
 	Pool->ReturnEnemy(Enemy, Enemy->GetPoolGameplayGeneration(), Enemy->GetPoolLeaseSerial());
+	if (Saves)
+	{
+		// 완료 Encounter보다 차수 스냅샷이 우선되지 않으므로 독립된 재시작 상태를 만든다.
+		Saves->RestoreCurrentWorldProgress(FOutlierWorldProgressSnapshot());
+		FOutlierRoomPhaseProgress RestoredPhase;
+		RestoredPhase.NextPhaseIndex = 1;
+		RestoredPhase.bExitBlockActive = true;
+		RestoredPhase.bTriggeredSequenceActive = true;
+		RestoredPhase.ActivationGroupTag = GroupTag;
+		Saves->SetCurrentRoomPhaseProgress(RoomTag, RestoredPhase);
+		Combat->RegisterRoom(Room, RoomTag);
+		TestEqual(TEXT("Restored automatic phase waits for pair readiness"),
+			Combat->GetRoomState(RoomTag), ERoomCombatState::Dormant);
+		TestEqual(TEXT("Restored automatic phase skips completed phase"),
+			Combat->GetCurrentCombatPhaseIndex(RoomTag), 1);
+		TestTrue(TEXT("Restored automatic phase retains exit block"), Combat->IsExitBlocked(RoomTag));
+	}
 	CleanupWorld();
 	return true;
 }

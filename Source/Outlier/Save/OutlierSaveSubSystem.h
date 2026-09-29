@@ -39,6 +39,13 @@ public:
 	bool RecordCompletedEncounter(FName EncounterId);
 	void RestoreCurrentWorldProgress(const FOutlierWorldProgressSnapshot& Snapshot);
 	const FOutlierWorldProgressSnapshot& GetCurrentWorldProgress() const { return CurrentWorldProgress; }
+	void SetCurrentRoomPhaseProgress(FGameplayTag RoomTag, const FOutlierRoomPhaseProgress& Progress);
+	void ClearCurrentRoomPhaseProgress(FGameplayTag RoomTag);
+	void RestoreCurrentRoomPhaseProgress(const TMap<FGameplayTag, FOutlierRoomPhaseProgress>& Progress);
+	const TMap<FGameplayTag, FOutlierRoomPhaseProgress>& GetCurrentRoomPhaseProgress() const
+	{
+		return CurrentRoomPhaseProgress;
+	}
 
 	// 배치 터렛 Actor는 사망 후에도 남으므로 월드 진행과 별도로 Stable ID별 사망 자세를 추적한다.
 	bool SetDestroyedTurretState(FName TurretId, bool bDestroyed);
@@ -84,6 +91,9 @@ private:
 
 	UPROPERTY(Transient)
 	FOutlierWorldProgressSnapshot CurrentWorldProgress;
+
+	UPROPERTY(Transient)
+	TMap<FGameplayTag, FOutlierRoomPhaseProgress> CurrentRoomPhaseProgress;
 
 	UPROPERTY(Transient)
 	TSet<FName> CurrentDestroyedTurretIds;

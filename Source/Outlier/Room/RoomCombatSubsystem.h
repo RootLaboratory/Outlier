@@ -113,6 +113,7 @@ struct FRoomCombatRuntime
 	bool bHadPreplacedEnemy = false;
 	bool bCurrentWaveSpawnStarted = false;
 	bool bEncounterIdRegistered = false;
+	bool bSavedAutomaticPhasePending = false;
 };
 
 struct FRoomCombatEnemyRegistration
@@ -234,6 +235,7 @@ public:
 	bool NotifyRoomCombatStarted(FGameplayTag RoomTag);
 	bool StartWaveSpawning(FGameplayTag RoomTag, int32 CombatPhaseIndex, int32 WaveIndex);
 	void ResetRuntimeCombatState();
+	void ResumeRestoredAutomaticPhases();
 
 	bool IsRoomRegistered(FGameplayTag RoomTag) const;
 	ERoomCombatState GetRoomState(FGameplayTag RoomTag) const;
@@ -304,6 +306,8 @@ private:
 	void CompleteCurrentPhase(FGameplayTag RoomTag, bool bCancelRemainingWaves);
 	void StartAutomaticPhase(FGameplayTag RoomTag, FRoomCombatRuntime& Runtime,
 		const FRoomCombatRoomDefinition& Definition);
+	void RecordPhaseBoundary(FGameplayTag RoomTag, const FRoomCombatRuntime& Runtime);
+	void TryStartRestoredAutomaticPhase(FGameplayTag RoomTag);
 	const FRoomCombatRoomDefinition* FindRoomDefinition(FGameplayTag RoomTag) const;
 	void MarkRoomCleared(FGameplayTag RoomTag, FRoomCombatRuntime& Runtime);
 	void CompactAliveEnemies(FRoomCombatRuntime& Runtime);
@@ -330,4 +334,5 @@ private:
 	FGameplayTag ActiveCombatRoomTag;
 	FTimerHandle SpawnRetryTimer;
 	bool bResettingRuntime = false;
+	bool bRestoredAutomaticStartAllowed = false;
 };

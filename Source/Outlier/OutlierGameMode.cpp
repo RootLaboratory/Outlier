@@ -313,6 +313,7 @@ bool AOutlierGameMode::StartCheckpointRestart(
 	// 새 Actor가 BeginPlay에서 읽는 월드 진행과 공유 내성 Stack을 먼저 되돌린 뒤
 	// 설정된 게임플레이 서브레벨을 내린다. 순서를 뒤집으면 새 Actor가 재시작 직전 상태를 잠깐 적용한다.
 	SaveSubsystem->RestoreCurrentWorldProgress(Snapshot.WorldProgress);
+	SaveSubsystem->RestoreCurrentRoomPhaseProgress(Snapshot.RoomPhaseProgress);
 	SaveSubsystem->RestoreCurrentDestroyedTurretIds(Snapshot.DestroyedTurretIds);
 	ShooterPlayerState->RestoreCheckpointProgress(
 		Snapshot.ShooterProgress.NodeCount,
@@ -636,6 +637,57 @@ bool AOutlierGameMode::RegisterCheckpoint(AController* Controller, AOutlierCheck
 	Data.LevelName = FName(*GetWorld()->GetMapName());
 	Data.CheckpointId = Checkpoint->GetCheckpointId();
 	ApplyCheckpointToPair(TriggeringPS, Data);
+	return true;
+}
+
+bool AOutlierGameMode::CommitCombatPhaseCheckpoint(
+	FGameplayTag RoomTag, int32 NextPhaseIndex,
+	bool bEncounterCleared, int32 GameplayGeneration)
+{
+	UWorld* World = GetWorld();
+	UOutlierSaveSubSystem* Saves = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>() : nullptr;
+	AOutlierPlayerState* ShooterPS = FindPairPlayerState(ActiveMatchPairId, EOutlierPlayerRole::Shooter);
+	AOutlierPlayerState* PartnerPS = FindPairPlayerState(ActiveMatchPairId, EOutlierPlayerRole::Partner);
+	AController* ShooterController = GetControllerFromPlayerState(ShooterPS);
+	AController* PartnerController = GetControllerFromPlayerState(PartnerPS);
+	AShooterCharacter* Shooter = ShooterPS ? ShooterPS->GetShooterCharacter() : nullptr;
+	APartnerCharacter* Partner = PartnerPS ? PartnerPS->GetPartnerCharacter() : nullptr;
+	const UOutlierArenaSubsystem* Arena = World ? World->GetSubsystem<UOutlierArenaSubsystem>() : nullptr;
+	if (!HasAuthority() || !RoomTag.IsValid() || !Saves || !Saves->HasValidStableIds()
+		|| !Arena || bArenaReloadInProgress || ActiveMatchPairId == INDEX_NONE
+		|| GameplayGeneration != static_cast<int32>(Arena->GetGameplayGeneration())
+		|| !IsValid(Shooter) || !IsValid(Partner)
+		|| !ShooterController || ShooterController->GetPawn() != Shooter
+		|| !PartnerController || PartnerController->GetPawn() != Partner
+		|| (bEncounterCleared && !Saves->HasWorldProgress(
+			EOutlierWorldProgressType::CompletedEncounter, RoomTag.GetTagName())))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Checkpoint] Phase save preflight failed Room=%s NextPhase=%d"),
+			*RoomTag.ToString(), NextPhaseIndex);
+		return false;
+	}
+
+	const FName SaveEventId(*FString::Printf(TEXT("Room.%s.%s.%d"),
+		*RoomTag.ToString(), bEncounterCleared ? TEXT("Cleared") : TEXT("Phase"),
+		NextPhaseIndex));
+	FOutlierCheckpointSnapshot Snapshot;
+	if (!BuildPairCheckpointSnapshot(ShooterPS, PartnerPS, SaveEventId, false,
+		Shooter->GetActorTransform(), Partner->GetActorTransform(), Snapshot))
+	{
+		return false;
+	}
+	Snapshot.SaveReason = bEncounterCleared
+		? EOutlierCheckpointSaveReason::EncounterCleared
+		: EOutlierCheckpointSaveReason::PhaseTransition;
+	Snapshot.RoomTag = RoomTag;
+	Snapshot.NextPhaseIndex = bEncounterCleared ? INDEX_NONE : NextPhaseIndex;
+	if (!Saves->CommitDurableCheckpointSnapshot(Snapshot))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Checkpoint] Phase save failed; previous save retained Room=%s NextPhase=%d"),
+			*RoomTag.ToString(), NextPhaseIndex);
+		return false;
+	}
 	return true;
 }
 
@@ -1226,6 +1278,7 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 	{
 		// 새 Pawn과 Gameplay Actor가 읽기 전에 저장 시점의 플레이어/월드 기준을 되돌린다.
 		SaveSubsystem->RestoreCurrentWorldProgress(ResumeSnapshot.WorldProgress);
+		SaveSubsystem->RestoreCurrentRoomPhaseProgress(ResumeSnapshot.RoomPhaseProgress);
 		SaveSubsystem->RestoreCurrentDestroyedTurretIds(ResumeSnapshot.DestroyedTurretIds);
 		NewShooterPS->RestoreCheckpointProgress(
 			ResumeSnapshot.ShooterProgress.NodeCount,
@@ -2481,6 +2534,7 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 		UE_LOG(LogTemp, Error, TEXT("[ReloadArenaAndRespawnPair] Gameplay reload is already in progress"));
 		return false;
 	}
+	bResumeRoomPhasesAfterReload = bRestoreCheckpointSnapshot;
 	// 2) 기존 페어 정리 (RespawnPairAtCheckpoint와 동일). 파트너가 적 빙의 중이면 먼저 해제.
 	AShooterCharacter* OldShooter = ShooterPlayerState->GetShooterCharacter();
 	APartnerCharacter* OldPartner = ShooterPlayerState->GetPartnerCharacter();
@@ -2605,6 +2659,7 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 		// 프리셋/디버그 재로드는 새 진행이다. 설정된 서브레벨의 새 액터가 이전 판의
 		// 문/노드/전투 완료 및 파괴 터렛 상태를 읽지 않게 먼저 비운다.
 		SaveSubsystem->RestoreCurrentWorldProgress(FOutlierWorldProgressSnapshot());
+		SaveSubsystem->RestoreCurrentRoomPhaseProgress(TMap<FGameplayTag, FOutlierRoomPhaseProgress>());
 		SaveSubsystem->RestoreCurrentDestroyedTurretIds(TSet<FName>());
 	}
 
@@ -2882,6 +2937,14 @@ void AOutlierGameMode::StartArenaWorkerGameplay()
 
 	bArenaWorkerGameplayStarted = true;
 	ClearArenaWorkerWorldPause();
+	if (bResumeRoomPhasesAfterReload)
+	{
+		bResumeRoomPhasesAfterReload = false;
+		if (URoomCombatSubsystem* Combat = GetWorld()->GetSubsystem<URoomCombatSubsystem>())
+		{
+			Combat->ResumeRestoredAutomaticPhases();
+		}
+	}
 
 	if (UsesStaticArenaHandoff())
 	{
@@ -3543,6 +3606,7 @@ void AOutlierGameMode::HandleArenaGameplayReloadFailed(
 	ArenaReloadStartedAt = 0.0;
 	bArenaReloadInProgress = false;
 	bServerArenaReloadReady = false;
+	bResumeRoomPhasesAfterReload = false;
 
 	const FString Diagnostic = FString::Printf(
 		TEXT("Gameplay reload failed. Generation=%u Failure=%s"),
@@ -3740,6 +3804,15 @@ void AOutlierGameMode::TryFinishArenaReload()
 	// ClientLoadAuthorizedAt.Reset();
 	ArenaReloadStartedAt = 0.0;
 	FinishCheckpointRestart();
+	if (bResumeRoomPhasesAfterReload
+		&& (!IsArenaWorkerProcess() || bArenaWorkerGameplayStarted))
+	{
+		bResumeRoomPhasesAfterReload = false;
+		if (URoomCombatSubsystem* Combat = GetWorld()->GetSubsystem<URoomCombatSubsystem>())
+		{
+			Combat->ResumeRestoredAutomaticPhases();
+		}
+	}
 	if (IsArenaWorkerProcess() && !bArenaWorkerGameplayStarted
 		&& ArenaWorkerReadyPlayers.Contains(ArenaWorkerShooterController)
 		&& ArenaWorkerReadyPlayers.Contains(ArenaWorkerPartnerController))
@@ -3971,6 +4044,7 @@ bool AOutlierGameMode::BuildPairCheckpointSnapshot(
 		: nullptr)
 	{
 		OutSnapshot.WorldProgress = SaveSubsystem->GetCurrentWorldProgress();
+		OutSnapshot.RoomPhaseProgress = SaveSubsystem->GetCurrentRoomPhaseProgress();
 		OutSnapshot.DestroyedTurretIds = SaveSubsystem->GetCurrentDestroyedTurretIds();
 	}
 	if (const UEnemyAdaptationSubsystem* EnemyAdaptationSubsystem = GetWorld()

@@ -113,6 +113,7 @@ void UOutlierSaveSubSystem::ResetRuntimeCheckpointState()
 	bHasLatestCheckpointSnapshot = false;
 	LatestCheckpointSnapshot = FOutlierCheckpointSnapshot();
 	CurrentWorldProgress.Reset();
+	CurrentRoomPhaseProgress.Reset();
 	CurrentDestroyedTurretIds.Reset();
 	CommittedCheckpointIds.Reset();
 	ActiveOwnerId.Invalidate();
@@ -212,6 +213,7 @@ bool UOutlierSaveSubSystem::LoadLatestSave(
 	{
 		return false;
 	}
+	RestoreCurrentRoomPhaseProgress(File.Snapshot.RoomPhaseProgress);
 	return true;
 }
 
@@ -415,6 +417,26 @@ void UOutlierSaveSubSystem::RestoreCurrentWorldProgress(
 {
 	// 병합이 아니라 교체다. 체크포인트 이후 사용한 노드/문/해킹/전투 등의 진행은 롤백한다.
 	CurrentWorldProgress = Snapshot;
+}
+
+void UOutlierSaveSubSystem::SetCurrentRoomPhaseProgress(
+	FGameplayTag RoomTag, const FOutlierRoomPhaseProgress& Progress)
+{
+	if (RoomTag.IsValid() && Progress.NextPhaseIndex >= 0)
+	{
+		CurrentRoomPhaseProgress.Add(RoomTag, Progress);
+	}
+}
+
+void UOutlierSaveSubSystem::ClearCurrentRoomPhaseProgress(FGameplayTag RoomTag)
+{
+	CurrentRoomPhaseProgress.Remove(RoomTag);
+}
+
+void UOutlierSaveSubSystem::RestoreCurrentRoomPhaseProgress(
+	const TMap<FGameplayTag, FOutlierRoomPhaseProgress>& Progress)
+{
+	CurrentRoomPhaseProgress = Progress;
 }
 
 bool UOutlierSaveSubSystem::SetDestroyedTurretState(FName TurretId, bool bDestroyed)

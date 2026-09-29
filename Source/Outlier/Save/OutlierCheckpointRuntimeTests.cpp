@@ -173,6 +173,11 @@ bool FOutlierCheckpointDurableCommitTest::RunTest(const FString& Parameters)
 		FOutlierCheckpointSnapshot First;
 		First.CheckpointId = TEXT("Checkpoint.Durable.First");
 		First.WorldProgress.OpenedDoorIds.Add(TEXT("Door.First"));
+		const FGameplayTag PhaseRoom = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.1")));
+		FOutlierRoomPhaseProgress PhaseProgress;
+		PhaseProgress.NextPhaseIndex = 2;
+		PhaseProgress.bExitBlockActive = true;
+		First.RoomPhaseProgress.Add(PhaseRoom, PhaseProgress);
 		TestTrue(TEXT("First disk commit succeeds"), Save->CommitDurableCheckpointSnapshot(First));
 		const FString Latest = FPaths::Combine(Directory,
 			SaveId.ToString(EGuidFormats::Digits), TEXT("LatestAutoSave.sav"));
@@ -204,6 +209,13 @@ bool FOutlierCheckpointDurableCommitTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("Disk checkpoint Id round trips"), Restore.CheckpointId, First.CheckpointId);
 		TestTrue(TEXT("Disk world progress round trips"),
 			Restore.WorldProgress.OpenedDoorIds.Contains(TEXT("Door.First")));
+		const FOutlierRoomPhaseProgress* RestoredPhase = Restore.RoomPhaseProgress.Find(PhaseRoom);
+		TestTrue(TEXT("Disk room phase round trips"), RestoredPhase != nullptr);
+		if (RestoredPhase)
+		{
+			TestEqual(TEXT("Disk next phase round trips"), RestoredPhase->NextPhaseIndex, 2);
+			TestTrue(TEXT("Disk exit block state round trips"), RestoredPhase->bExitBlockActive);
+		}
 		TestFalse(TEXT("Another SaveId cannot load this file"),
 			Save->LoadLatestSave(OwnerId, FGuid::NewGuid(), Verifier));
 		FOutlierCheckpointSnapshot Later;

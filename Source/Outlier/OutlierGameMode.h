@@ -47,6 +47,8 @@ public:
 	void PauseArenaWorkerWorld();
 
 	bool RegisterCheckpoint(AController* Controller, AOutlierCheckpoint* Checkpoint);
+	bool CommitCombatPhaseCheckpoint(FGameplayTag RoomTag, int32 NextPhaseIndex,
+		bool bEncounterCleared, int32 GameplayGeneration);
 	void RefreshPairLinks(AOutlierPlayerState* TriggeringPlayerState);
 
 	UFUNCTION()
@@ -130,6 +132,7 @@ private:
 	bool bArenaReloadInProgress = false;
 	bool bServerArenaReloadReady = false;
 	bool bCheckpointRestartInProgress = false;
+	bool bResumeRoomPhasesAfterReload = false;
 	FDelegateHandle GameplayReadyHandle;
 	FDelegateHandle ArenaReloadStalledHandle;
 	FDelegateHandle ArenaReloadResumedHandle;
