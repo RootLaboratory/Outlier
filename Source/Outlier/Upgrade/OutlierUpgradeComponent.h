@@ -148,6 +148,7 @@ protected:
 
 private:
 	bool ActivateNodeInternal(FName NodeIdOrRowName, AOutlierPlayerState* InPlayerState = nullptr);
+	bool IsNodeActivatedInternal(FName RowName) const;
 	bool IsNodeUnlockedInternal(FName RowName) const;
 	bool ResolveNodeRowName(FName NodeIdOrRowName, FName& OutRowName) const;
 	const FOutlierUpgradeNodeRow* FindNodeRow(FName NodeIdOrRowName, FName* OutRowName = nullptr) const;

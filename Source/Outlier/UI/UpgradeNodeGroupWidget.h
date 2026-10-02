@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
 #include "OutlierPlayerState.h"
+#include "UI/UILayerInputReceiver.h"
 #include "Upgrade/OutlierUpgradeTypes.h"
 #include "UpgradeNodeGroupWidget.generated.h"
 
@@ -12,19 +13,21 @@ class UDataTable;
 class UPanelWidget;
 class UOutlierUpgradeComponent;
 class UOutlierUpgradeSetData;
+class UTextBlock;
 class UTexture2D;
 class UUpgradeDescWidget;
 class UUpgradeNodeWidget;
 class UWidget;
 
 UCLASS(Blueprintable, meta = (DisplayName = "Upgrade Node Group Widget"))
-class OUTLIER_API UUpgradeNodeGroupWidget : public UUserWidget
+class OUTLIER_API UUpgradeNodeGroupWidget : public UUserWidget, public IUILayerInputReceiver
 {
 	GENERATED_BODY()
 
 public:
 	virtual void NativeConstruct() override;
 	virtual void NativeDestruct() override;
+	virtual bool HandleUILayerEscape_Implementation() override;
 
 	UFUNCTION(BlueprintCallable, Category = "Upgrade")
 	void InjectUpgradeContext(
@@ -59,6 +62,8 @@ public:
 		FName InTreeId,
 		FName InNodeId) const;
 
+	void DismissOtherNodeDescriptions(const UUpgradeNodeWidget* HoveredNode) const;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade")
 	TObjectPtr<UOutlierUpgradeSetData> UpgradeSetData;
 
@@ -79,6 +84,9 @@ public:
 protected:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Upgrade")
 	TObjectPtr<UPanelWidget> NodeWidgetHost;
+
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "Upgrade")
+	TObjectPtr<UTextBlock> NodeCount;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Upgrade")
 	TSubclassOf<UUpgradeDescWidget> UpgradeDescWidgetClass;
@@ -118,6 +126,7 @@ private:
 	void BindPlayerStateNodeCountChanged();
 	void UnbindPlayerStateNodeCountChanged();
 	void HandleNodeCountChanged(int32 NewNodeCount);
+	void RefreshNodeCountText();
 	UTexture2D* ResolveNodeTexture(const UUpgradeNodeWidget* NodeWidget) const;
 	UTexture2D* FindNodeTexture(FName NodeRowName) const;
 

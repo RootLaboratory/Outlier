@@ -2,7 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
-#include "Styling/SlateBrush.h"
+#include "TimerManager.h"
 #include "Upgrade/OutlierUpgradeTypes.h"
 #include "UObject/PropertyText.h"
 #include "UpgradeNodeWidget.generated.h"
@@ -11,6 +11,8 @@ class UButton;
 class UCanvasPanel;
 class UDataTable;
 class UImage;
+class UMaterialInstanceDynamic;
+class UMaterialInterface;
 class UOutlierUpgradeComponent;
 class UTexture2D;
 class UUpgradeDescWidget;
@@ -53,6 +55,8 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Upgrade")
 	void SetUpgradeDescWidgetClass(TSubclassOf<UUpgradeDescWidget> InUpgradeDescWidgetClass);
 
+	void DismissDescription();
+
 	UFUNCTION(BlueprintCallable, Category = "Upgrade")
 	void SetNodeState(EOutlierUpgradeNodeState InState, bool bInCanAfford);
 
@@ -89,14 +93,11 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade")
 	bool bDisableWhenLocked = true;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade")
-	bool bActivateNodeOnClick = true;
-
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Desc")
 	TSubclassOf<UUpgradeDescWidget> UpgradeDescWidgetClass;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Desc")
-	FVector2D DescPopupOffset = FVector2D(24.0f, 12.0f);
+	FVector2D DescPopupOffset = FVector2D(24.0f, 0.0f);
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Desc")
 	FVector2D DescViewportPadding = FVector2D(16.0f, 16.0f);
@@ -116,6 +117,36 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Desc")
 	int32 DescPopupZOrder = 50;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Appearance")
+	TObjectPtr<UMaterialInterface> NodeColorMaterial;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Appearance")
+	bool bUseMaterialStateColors = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Appearance")
+	TObjectPtr<UTexture2D> NodeIconTextureOverride;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Appearance")
+	TObjectPtr<UTexture2D> LockedIconTextureOverride;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Appearance")
+	TObjectPtr<UTexture2D> UnlockedIconTextureOverride;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Appearance", meta = (DisplayName = "Show As Already Activated", ToolTip = "Shows the unlocked icon and purchased description. Visual only; does not activate the upgrade in gameplay."))
+	bool bAlwaysShowUnlockedIcon = false;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Upgrade|Appearance")
+	FLinearColor LockedColor = FLinearColor(0.35f, 0.42f, 0.48f);
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Upgrade|Appearance")
+	FLinearColor UnlockedColor = FLinearColor::White;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Upgrade|Appearance")
+	FLinearColor ActivatedColor = FLinearColor(0.3f, 0.85f, 1.0f);
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Upgrade|Appearance", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float OverlayIntensity = 1.0f;
+
 	UPROPERTY(BlueprintAssignable, Category = "Upgrade")
 	FOnUpgradeNodeWidgetEvent OnUpgradeNodeClicked;
 
@@ -129,8 +160,17 @@ protected:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Upgrade")
 	TObjectPtr<UButton> NodeButton;
 
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "Upgrade|Texture")
-	TObjectPtr<UImage> NodeImage;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "Upgrade|Appearance")
+	TObjectPtr<UImage> Background;
+
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "Upgrade|Appearance")
+	TObjectPtr<UImage> Frame;
+
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "Upgrade|Appearance")
+	TObjectPtr<UImage> Glow;
+
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Upgrade|Appearance")
+	TObjectPtr<UImage> Icon;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Upgrade")
 	FName CurrentNodeRowName = NAME_None;
@@ -139,7 +179,7 @@ protected:
 	FOutlierUpgradeNodeRow CurrentNodeData;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Upgrade")
-	EOutlierUpgradeNodeState CurrentState = EOutlierUpgradeNodeState::Locked;
+	EOutlierUpgradeNodeState CurrentState = EOutlierUpgradeNodeState::Unlocked;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Upgrade")
 	bool bCanAfford = false;
@@ -165,6 +205,8 @@ protected:
 	UFUNCTION()
 	void HandleUnhovered();
 
+	void HandlePurchaseRequested();
+
 	UFUNCTION()
 	TArray<FPropertyTextFName> GetNodeRowNameOptions() const;
 
@@ -184,8 +226,11 @@ private:
 	const UDataTable* FindOwningUpgradeDataTable() const;
 	const UUpgradeNodeGroupWidget* FindOwningNodeGroupWidget() const;
 	bool ShouldShowDescOnHover() const;
+	EOutlierUpgradeNodeState GetDisplayedDescState() const;
 	UUpgradeDescWidget* EnsureUpgradeDescWidget();
 	void HideUpgradeDescWidget();
+	void ScheduleDescHide();
+	void HandleDescHideTimer();
 	UCanvasPanel* FindDescCanvas() const;
 	bool CalculateDescWidgetLayout(UCanvasPanel* ParentCanvas, FVector2D& OutPosition, FVector2D& OutSize, float& OutRenderScale) const;
 	float CalculateDescViewportScale(const FVector2D& CanvasSize) const;
@@ -193,12 +238,21 @@ private:
 	void ApplyInjectedPlayerState(FOutlierUpgradeNodeViewData& InOutViewData) const;
 	void RefreshVisibleDescWidget();
 	void RefreshEnabledState();
-	void CacheDefaultNodeBrush();
+	UMaterialInstanceDynamic* EnsureOverlayMaterial(UImage* Image, UMaterialInstanceDynamic* CachedMaterial) const;
+	void RefreshNodeAppearance();
 	void RefreshNodeTexture();
 
 	bool bHoverDescVisible = false;
-	bool bDefaultNodeBrushCached = false;
-	FSlateBrush DefaultNodeBrush;
+	bool bSuppressDescUntilUnhover = false;
+	FTimerHandle DescHideTimerHandle;
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> FrameMaterial;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> GlowMaterial;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> IconMaterial;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UTexture2D> UnlockedNodeTexture;

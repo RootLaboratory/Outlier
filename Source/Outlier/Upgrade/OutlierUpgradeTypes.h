@@ -57,6 +57,9 @@ struct OUTLIER_API FOutlierUpgradeNodeRow : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Upgrade")
 	FName ParentId = NAME_None;
 
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Upgrade", meta = (ToolTip = "Already provided by the base loadout. Satisfies child prerequisites without purchasing or applying upgrade effects again."))
+	bool bInitiallyActivated = false;
+
 	// 이 노드가 어떤 Ability에 관한 것인지 (UI 분류/컨텍스트용).
 	// 실제 효과는 DT_UpgradeEffect 에서 NodeRowName 으로 조인해 가져온다.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Upgrade", meta = (Categories = "Ability"))
