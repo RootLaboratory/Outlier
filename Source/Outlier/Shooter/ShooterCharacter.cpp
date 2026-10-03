@@ -2536,7 +2536,8 @@ void AShooterCharacter::HandleFireShotAnimation()
 		IsLocallyControlled() ? 1 : 0,
 		HasAuthority() ? 1 : 0);
 
-	MulticastPlayThirdPersonActionMontage(EShooterMontageAction::Fire, GetWeaponType());
+	// 발사 시점의 서버 ADS 상태를 함께 보낸다. 클라이언트의 Aim 복제 도착 순서로 섹션이 달라지지 않게 한다.
+	MulticastPlayThirdPersonActionMontage(EShooterMontageAction::Fire, GetWeaponType(), IsAiming());
 
 	if (IsLocallyControlled())
 	{
@@ -3155,11 +3156,33 @@ void AShooterCharacter::PlayFirstPersonActionMontage(EShooterMontageAction Actio
 	const bool bUseWeaponSection = Action != EShooterMontageAction::Slide && Action != EShooterMontageAction::MeleeAttack;
 	PlayFirstPersonMontageForWeapon(GetActionMontage(Action, true), WeaponType, bUseWeaponSection);
 }
-void AShooterCharacter::PlayThirdPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType)
+FName AShooterCharacter::ResolveThirdPersonFireSectionName(
+	const UAnimMontage* Montage, EWeaponType WeaponType, bool bAimingAtShot) const
+{
+	FName ADSSection = NAME_None;
+	if (bAimingAtShot)
+	{
+		switch (WeaponType)
+		{
+		case EWeaponType::Rifle: ADSSection = ThirdPersonRifleADSFireSectionName; break;
+		case EWeaponType::Pistol: ADSSection = ThirdPersonPistolADSFireSectionName; break;
+		default: break;
+		}
+	}
+	// 현재 PreSuit/Suit 몽타주에 ADS 섹션이 있을 때만 사용한다. 미연결 에셋은 기존 일반 발사를 유지한다.
+	return Montage && !ADSSection.IsNone() && Montage->IsValidSectionName(ADSSection)
+		? ADSSection : ResolveMontageSectionNameForWeapon(WeaponType);
+}
+
+void AShooterCharacter::PlayThirdPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType, bool bAimingAtShot)
 {
 	if (IsSuitTransitionBlocked()) { return; }
 	const bool bUseWeaponSection = Action != EShooterMontageAction::Slide && Action != EShooterMontageAction::MeleeAttack;
-	PlayThirdPersonMontageForWeapon(GetActionMontage(Action, false), WeaponType, bUseWeaponSection);
+	UAnimMontage* Montage = GetActionMontage(Action, false);
+	// ADS 분기는 3P Fire에만 적용한다. Reload/Slide/Melee와 1P의 기존 섹션 선택은 변경하지 않는다.
+	const FName SectionOverride = Action == EShooterMontageAction::Fire
+		? ResolveThirdPersonFireSectionName(Montage, WeaponType, bAimingAtShot) : NAME_None;
+	PlayThirdPersonMontageForWeapon(Montage, WeaponType, bUseWeaponSection, SectionOverride);
 }
 void AShooterCharacter::PlayFirstPersonMontage(UAnimMontage* Montage)
 {
@@ -3239,7 +3262,7 @@ void AShooterCharacter::PlayThirdPersonMontage(UAnimMontage* Montage)
 	PlayThirdPersonMontageForWeapon(Montage, GetWeaponType());
 }
 
-void AShooterCharacter::PlayThirdPersonMontageForWeapon(UAnimMontage* Montage, EWeaponType WeaponType, bool bUseWeaponSection)
+void AShooterCharacter::PlayThirdPersonMontageForWeapon(UAnimMontage* Montage, EWeaponType WeaponType, bool bUseWeaponSection, FName SectionOverride)
 {
 	if (!Montage)
 	{
@@ -3255,7 +3278,8 @@ void AShooterCharacter::PlayThirdPersonMontageForWeapon(UAnimMontage* Montage, E
 	{
 		if (UAnimInstance* ThirdPersonAnimInstance = ThirdPersonMesh->GetAnimInstance())
 		{
-			const FName SectionName = bUseWeaponSection ? ResolveMontageSectionNameForWeapon(WeaponType) : NAME_None;
+			const FName SectionName = !SectionOverride.IsNone() ? SectionOverride
+				: (bUseWeaponSection ? ResolveMontageSectionNameForWeapon(WeaponType) : NAME_None);
 			const bool bHasSlot = Montage->IsValidSlot(FName(TEXT("UpperBody")));
 			const bool bSectionValid = SectionName != NAME_None && Montage->IsValidSectionName(SectionName);
 			UE_LOG(
@@ -3715,20 +3739,21 @@ void AShooterCharacter::ClientPlayFirstPersonActionMontage_Implementation(EShoot
 	PlayFirstPersonActionMontage(Action, WeaponType);
 }
 
-void AShooterCharacter::MulticastPlayThirdPersonActionMontage_Implementation(EShooterMontageAction Action, EWeaponType WeaponType)
+void AShooterCharacter::MulticastPlayThirdPersonActionMontage_Implementation(EShooterMontageAction Action, EWeaponType WeaponType, bool bAimingAtShot)
 {
 	UE_LOG(
 		LogTemp,
 		Warning,
-		TEXT("%s %s [TPMontage] Multicast received Action=%d WeaponType=%d Local=%d Authority=%d"),
+		TEXT("%s %s [TPMontage] Multicast received Action=%d WeaponType=%d ADSAtShot=%d Local=%d Authority=%d"),
 		OutlierNet::GetNetPrefix(this),
 		*GetName(),
 		static_cast<int32>(Action),
 		static_cast<int32>(WeaponType),
+		bAimingAtShot ? 1 : 0,
 		IsLocallyControlled() ? 1 : 0,
 		HasAuthority() ? 1 : 0);
 
-	PlayThirdPersonActionMontage(Action, WeaponType);
+	PlayThirdPersonActionMontage(Action, WeaponType, bAimingAtShot);
 }
 
 void AShooterCharacter::SetPartnerCharacter(APartnerCharacter* NewPartner)

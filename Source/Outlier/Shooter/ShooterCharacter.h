@@ -384,6 +384,12 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Animation|Sections")
 	FName PistolMontageSectionName = TEXT("Pistol");
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Animation|Sections|Fire")
+	FName ThirdPersonRifleADSFireSectionName = TEXT("Rifle_ADS");
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Animation|Sections|Fire")
+	FName ThirdPersonPistolADSFireSectionName = TEXT("Pistol_ADS");
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Animation|Sections")
 	FName DefaultMontageSectionName = TEXT("Default");
 
@@ -985,7 +991,7 @@ protected:
 	void ClientPlayFirstPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType);
 
 	UFUNCTION(NetMulticast, Reliable)
-	void MulticastPlayThirdPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType);
+	void MulticastPlayThirdPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType, bool bAimingAtShot = false);
 
 
 public:
@@ -1040,12 +1046,13 @@ public:
 	FGameplayTag ResolveShooterConditionTag() const;
 
 	FName ResolveMontageSectionNameForWeapon(EWeaponType WeaponType) const;
+	FName ResolveThirdPersonFireSectionName(const UAnimMontage* Montage, EWeaponType WeaponType, bool bAimingAtShot) const;
 	void PlayFirstPersonMontage(UAnimMontage* Montage);
 	void PlayFirstPersonMontageForWeapon(UAnimMontage* Montage, EWeaponType WeaponType, bool bUseWeaponSection = true);
 	void PlayThirdPersonMontage(UAnimMontage* Montage);
-	void PlayThirdPersonMontageForWeapon(UAnimMontage* Montage, EWeaponType WeaponType, bool bUseWeaponSection = true);
+	void PlayThirdPersonMontageForWeapon(UAnimMontage* Montage, EWeaponType WeaponType, bool bUseWeaponSection = true, FName SectionOverride = NAME_None);
 	void PlayFirstPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType);
-	void PlayThirdPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType);
+	void PlayThirdPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType, bool bAimingAtShot = false);
 	void StopFirstPersonMontage(UAnimMontage* Montage);
 	void StopThirdPersonMontage(UAnimMontage* Montage);
 	void StopSplitMontages(UAnimMontage* FirstPersonMontage, UAnimMontage* ThirdPersonMontage);

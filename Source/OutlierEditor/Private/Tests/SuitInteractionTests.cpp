@@ -986,6 +986,37 @@ bool FOutlierShooterPresentationAnimationTest::RunTest(const FString& Parameters
 		Shooter->DispatchBeginPlay();
 	}
 	TestTrue(TEXT("PreSuit applies"), Shooter->SetSuitPresentation(false));
+	// 재생 에셋 없이 섹션 선택을 검증한다. ADS 판정은 복제된 현재 Aim 값이 아니라 발사 RPC의 스냅샷을 사용한다.
+	UAnimMontage* FireWithADS = NewObject<UAnimMontage>(Shooter);
+	UAnimMontage* LegacyFire = NewObject<UAnimMontage>(Shooter);
+	for (EWeaponType Type : { EWeaponType::Rifle, EWeaponType::Pistol })
+	{
+		const FName HipSection = Shooter->ResolveMontageSectionNameForWeapon(Type);
+		const FName ADSSection = Type == EWeaponType::Rifle
+			? Shooter->ThirdPersonRifleADSFireSectionName : Shooter->ThirdPersonPistolADSFireSectionName;
+		FireWithADS->CompositeSections.AddDefaulted_GetRef().SectionName = HipSection;
+		FireWithADS->CompositeSections.AddDefaulted_GetRef().SectionName = ADSSection;
+		LegacyFire->CompositeSections.AddDefaulted_GetRef().SectionName = HipSection;
+		TestEqual(TEXT("Hip fire retains weapon section"),
+			Shooter->ResolveThirdPersonFireSectionName(FireWithADS, Type, false), HipSection);
+		TestEqual(TEXT("ADS fire selects dedicated section"),
+			Shooter->ResolveThirdPersonFireSectionName(FireWithADS, Type, true), ADSSection);
+		TestEqual(TEXT("Missing ADS section falls back to hip fire"),
+			Shooter->ResolveThirdPersonFireSectionName(LegacyFire, Type, true), HipSection);
+		TestEqual(TEXT("Missing montage preserves legacy section selection"),
+			Shooter->ResolveThirdPersonFireSectionName(nullptr, Type, true), HipSection);
+	}
+	const FName SavedADSSection = Shooter->ThirdPersonPistolADSFireSectionName;
+	Shooter->ThirdPersonPistolADSFireSectionName = NAME_None;
+	TestEqual(TEXT("Unset ADS section falls back to hip fire"),
+		Shooter->ResolveThirdPersonFireSectionName(FireWithADS, EWeaponType::Pistol, true), Shooter->PistolMontageSectionName);
+	Shooter->ThirdPersonPistolADSFireSectionName = TEXT("CustomPistolADS");
+	FireWithADS->CompositeSections.AddDefaulted_GetRef().SectionName = Shooter->ThirdPersonPistolADSFireSectionName;
+	TestEqual(TEXT("Configured ADS section is respected"),
+		Shooter->ResolveThirdPersonFireSectionName(FireWithADS, EWeaponType::Pistol, true), Shooter->ThirdPersonPistolADSFireSectionName);
+	Shooter->ThirdPersonPistolADSFireSectionName = SavedADSSection;
+	TestEqual(TEXT("Non-firearm keeps default section even when aiming"),
+		Shooter->ResolveThirdPersonFireSectionName(FireWithADS, EWeaponType::Melee, true), Shooter->DefaultMontageSectionName);
 	ASuitInteractionTestRifle* Weapon = TestWorld.World->SpawnActor<ASuitInteractionTestRifle>();
 	if (!TestNotNull(TEXT("Procedural test weapon spawns"), Weapon))
 	{
