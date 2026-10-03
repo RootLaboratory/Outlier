@@ -575,7 +575,7 @@ void UShooterFirstPersonAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 
 		const float AimLeanBlockAlpha = FMath::Clamp(ViewModelAimAlpha, 0.0f, 1.0f);
 		const float LeanYaw = CachedShooterCharacter
-			? CachedShooterCharacter->GetCurrentLeanAlpha() * CachedShooterCharacter->GetFirstPersonLeanWeaponYawDegrees() * (1.0f - AimLeanBlockAlpha)
+			? CachedShooterCharacter->GetPresentedLeanAlpha() * CachedShooterCharacter->GetFirstPersonLeanWeaponYawDegrees() * (1.0f - AimLeanBlockAlpha)
 			: 0.0f;
 		const float LeanInterpSpeed = CachedShooterCharacter
 			? CachedShooterCharacter->GetFirstPersonLeanWeaponInterpSpeed()

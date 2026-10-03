@@ -164,6 +164,9 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat")
 	float LeanInterpSpeed = 8.0f;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Lean", meta = (ClampMin = "0.1"))
+	float LeanPresentationInterpSpeed = 12.0f;
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat")
 	float MaxLeanAngle = 11.0f;
 
@@ -351,6 +354,8 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
 	float TargetLeanAlpha = 0.0f;
+
+	float PresentedLeanAlpha = 0.0f;
 
 	FVector  BaseFirstPersonMeshLocation = FVector::ZeroVector;
 	FVector  BaseFirstPersonCameraRootLocation = FVector::ZeroVector;
@@ -593,12 +598,13 @@ public:
 
 	UFUNCTION(BlueprintPure)
 	float GetCurrentLeanAlpha() const { return CurrentLeanAlpha; }
+	float GetPresentedLeanAlpha() const { return IsLocallyControlled() ? PresentedLeanAlpha : CurrentLeanAlpha; }
 
 	UFUNCTION(BlueprintPure)
-	float GetCurrentLeanRollDegrees() const { return CurrentLeanAlpha * MaxLeanAngle; }
+	float GetCurrentLeanRollDegrees() const { return GetPresentedLeanAlpha() * MaxLeanAngle; }
 
 	UFUNCTION(BlueprintPure)
-	FVector GetCurrentLeanViewOffsetWorld() const { return GetLeanViewOffsetWorld(CurrentLeanAlpha); }
+	FVector GetCurrentLeanViewOffsetWorld() const { return GetLeanViewOffsetWorld(GetPresentedLeanAlpha()); }
 
 	UFUNCTION(BlueprintPure)
 	float GetCurrentSlideCameraRollDegrees() const { return ActiveSlideCameraRollDegrees; }

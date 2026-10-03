@@ -297,6 +297,9 @@ void AShooterCharacter::Tick(float DeltaSeconds)
 
 	if (IsLocallyControlled())
 	{
+		PresentedLeanAlpha = ResolveLeanAlphaForCollision(FMath::FInterpTo(
+			PresentedLeanAlpha, CurrentLeanAlpha, DeltaSeconds, LeanPresentationInterpSpeed));
+		ApplyLeanPresentation();
 		if (USceneComponent* ViewModelRoot = GetFirstPersonViewModelRoot())
 		{
 			const FVector DesiredViewModelRootLocation =
@@ -2222,7 +2225,7 @@ void AShooterCharacter::ApplyLeanPresentation()
 	if (USceneComponent* CameraRoot = GetFirstPersonCameraRoot())
 	{
 		const FVector LocalLeanOffset = GetActorTransform().InverseTransformVectorNoScale(
-			GetLeanViewOffsetWorld(CurrentLeanAlpha));
+			GetCurrentLeanViewOffsetWorld());
 		CameraRoot->SetRelativeLocation(BaseFirstPersonCameraRootLocation + LocalLeanOffset);
 	}
 }
@@ -2501,6 +2504,7 @@ void AShooterCharacter::HandleDeath()
 	bIsEquipping = false;
 	TargetLeanAlpha = 0.0f;
 	CurrentLeanAlpha = 0.0f;
+	PresentedLeanAlpha = 0.0f;
 	if (ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(CurrentWeapon))
 	{
 		RangedWeapon->CancelLocalRecoilPresentation();
