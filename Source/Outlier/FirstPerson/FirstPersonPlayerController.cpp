@@ -141,6 +141,7 @@ namespace
 }
 
 AFirstPersonPlayerController::AFirstPersonPlayerController()
+	: LocalSuitTransitionPhase(ESuitTransitionPhase::Idle)
 {
 	// set the player camera manager
 	PlayerCameraManagerClass = AFirstPersonPlayerCameraManager::StaticClass();
@@ -299,6 +300,7 @@ void AFirstPersonPlayerController::ClientSetCheckpointRestartVoteView_Implementa
 
 void AFirstPersonPlayerController::ClientPrepareForArenaExit_Implementation()
 {
+	ClearLocalSuitTransition();
 	if (UOutlierGameInstance* OutlierGameInstance =
 		Cast<UOutlierGameInstance>(GetGameInstance()))
 	{
@@ -825,6 +827,7 @@ void AFirstPersonPlayerController::BindMainUI()
 
 void AFirstPersonPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	ClearLocalSuitTransition();
 	ClearClientArenaContentWait();
 	// 재접속이나 역할 Controller 교체로 이전 PC가 먼저 파괴될 수 있다. Delegate가 남아 있으면
 	// 다음 Generation의 Ready를 폐기될 PC가 받아 서버에 잘못 보고하므로 여기서 직접 끊는다.
@@ -875,6 +878,194 @@ void AFirstPersonPlayerController::EndPlay(const EEndPlayReason::Type EndPlayRea
 	}
 
 	Super::EndPlay(EndPlayReason);
+}
+
+void AFirstPersonPlayerController::SetPawn(APawn* InPawn)
+{
+	// SetPawn은 서버 Possess와 클라이언트 Pawn RepNotify 양쪽에서 호출된다.
+	// GetPawn은 RepNotify 진입 전에 이미 바뀔 수 있으므로 시작 당시 Pawn과 비교한다.
+	if (LocalSuitTransitionId.IsValid() && LocalSuitTransitionPawn.Get() != InPawn)
+	{
+		ClearLocalSuitTransition();
+	}
+	Super::SetPawn(InPawn);
+}
+
+// 연결 흐름: 서버 단계 요청 -> 소유 클라이언트의 빈 연출 지점 -> 실제 완료 콜백 -> 서버 준비 검증.
+// 로컬 ID/단계는 콜백을 구분하기 위한 값일 뿐, 슈트 획득과 단계 진행의 권위는 Shooter 서버에 있다.
+void AFirstPersonPlayerController::SendSuitTransitionPhaseFromServer(
+	AShooterCharacter* Shooter, const FGuid& TransitionId, ESuitTransitionPhase Phase, float Duration)
+{
+	if (!HasAuthority() || IsActorBeingDestroyed() || !TransitionId.IsValid())
+	{
+		return;
+	}
+	// Dedicated Server에서는 로컬 준비 응답을 만들지 않는다. Listen Host만 직접 같은 수신 경로에 진입한다.
+	if (IsLocalController())
+	{
+		ApplyLocalSuitTransitionPhase(Shooter, TransitionId, Phase, Duration);
+	}
+	else
+	{
+		ClientSetSuitTransitionPhase(Shooter, TransitionId, Phase, Duration);
+	}
+}
+
+void AFirstPersonPlayerController::ClientSetSuitTransitionPhase_Implementation(
+	AShooterCharacter* Shooter, FGuid TransitionId, ESuitTransitionPhase Phase, float Duration)
+{
+	ApplyLocalSuitTransitionPhase(Shooter, TransitionId, Phase, Duration);
+}
+
+void AFirstPersonPlayerController::ApplyLocalSuitTransitionPhase(
+	AShooterCharacter* Shooter, const FGuid& TransitionId, ESuitTransitionPhase Phase, float Duration)
+{
+	if (!IsLocalController() || !TransitionId.IsValid())
+	{
+		return;
+	}
+	// 종료는 Pawn/Shooter가 먼저 제거되어도 수신해야 한다. 이전 ID의 종료는 새 연출을 건드리지 않는다.
+	if (Phase == ESuitTransitionPhase::Idle)
+	{
+		if (LocalSuitTransitionId == TransitionId)
+		{
+			ClearLocalSuitTransition();
+		}
+		return;
+	}
+	if (!IsValid(Shooter) || !IsValid(GetPawn()) || !FMath::IsFinite(Duration) || Duration < 0.0f)
+	{
+		return;
+	}
+	if (Phase == ESuitTransitionPhase::FadingOut)
+	{
+		if (LocalSuitTransitionId.IsValid())
+		{
+			return;
+		}
+		LocalSuitTransitionShooter = Shooter;
+		LocalSuitTransitionPawn = GetPawn();
+		LocalSuitTransitionId = TransitionId;
+	}
+	else
+	{
+		// Reliable 요청 순서를 따른다. 중복/역행 요청으로 완료 플래그를 초기화하거나 연출을 재시작하지 않는다.
+		const bool bNextPhase = (Phase == ESuitTransitionPhase::Applying
+			&& LocalSuitTransitionPhase == ESuitTransitionPhase::FadingOut)
+			|| (Phase == ESuitTransitionPhase::FadingIn
+				&& LocalSuitTransitionPhase == ESuitTransitionPhase::Applying);
+		if (LocalSuitTransitionId != TransitionId || LocalSuitTransitionShooter.Get() != Shooter
+			|| LocalSuitTransitionPawn.Get() != GetPawn() || !bNextPhase)
+		{
+			return;
+		}
+	}
+	LocalSuitTransitionPhase = Phase;
+	bLocalSuitTransitionReadySent = false;
+	// 요청받았다는 사실은 완료가 아니다. 각 연결 지점의 실제 콜백만 서버에 준비 완료를 보고한다.
+	switch (Phase)
+	{
+	case ESuitTransitionPhase::FadingOut:
+		RequestSuitFadeOut(TransitionId, Duration);
+		break;
+	case ESuitTransitionPhase::Applying:
+		RequestSuitPresentationReady(TransitionId);
+		break;
+	case ESuitTransitionPhase::FadingIn:
+		RequestSuitFadeIn(TransitionId, Duration);
+		break;
+	default:
+		break;
+	}
+}
+
+void AFirstPersonPlayerController::NotifySuitFadeOutFinished(const FGuid& TransitionId)
+{
+	NotifySuitTransitionPhaseFinished(TransitionId, ESuitTransitionPhase::FadingOut);
+}
+
+void AFirstPersonPlayerController::NotifySuitPresentationReady(const FGuid& TransitionId)
+{
+	NotifySuitTransitionPhaseFinished(TransitionId, ESuitTransitionPhase::Applying);
+}
+
+void AFirstPersonPlayerController::NotifySuitFadeInFinished(const FGuid& TransitionId)
+{
+	NotifySuitTransitionPhaseFinished(TransitionId, ESuitTransitionPhase::FadingIn);
+}
+
+void AFirstPersonPlayerController::NotifySuitTransitionPhaseFinished(
+	const FGuid& TransitionId, ESuitTransitionPhase Phase)
+{
+	AShooterCharacter* Shooter = LocalSuitTransitionShooter.Get();
+	if (!IsLocalController() || !TransitionId.IsValid() || LocalSuitTransitionId != TransitionId
+		|| LocalSuitTransitionPhase != Phase || bLocalSuitTransitionReadySent || !IsValid(Shooter)
+		|| !LocalSuitTransitionPawn.IsValid() || LocalSuitTransitionPawn.Get() != GetPawn())
+	{
+		return;
+	}
+	// Listen Host의 즉시 응답은 서버 단계를 재진입할 수 있다. 전송 전에 중복 방지 플래그부터 기록한다.
+	bLocalSuitTransitionReadySent = true;
+	if (HasAuthority())
+	{
+		ServerNotifySuitTransitionPhaseFinished_Implementation(Shooter, TransitionId, Phase);
+	}
+	else
+	{
+		ServerNotifySuitTransitionPhaseFinished(Shooter, TransitionId, Phase);
+	}
+}
+
+void AFirstPersonPlayerController::ServerNotifySuitTransitionPhaseFinished_Implementation(
+	AShooterCharacter* Shooter, FGuid TransitionId, ESuitTransitionPhase Phase)
+{
+	if (HasAuthority() && IsValid(Shooter))
+	{
+		// Sender는 클라이언트 인자로 받지 않는다. 이 RPC를 소유한 Controller만 준비 신호의 발신자가 된다.
+		Shooter->AcknowledgeSuitTransition(this, TransitionId, Phase);
+	}
+}
+
+void AFirstPersonPlayerController::ClearLocalSuitTransition()
+{
+	if (!LocalSuitTransitionId.IsValid())
+	{
+		return;
+	}
+	const FGuid Id = LocalSuitTransitionId;
+	// 정리 콜백이 이전 완료 콜백을 호출해도 더 이상 서버에 전달되지 않도록 먼저 무효화한다.
+	LocalSuitTransitionId.Invalidate();
+	LocalSuitTransitionPhase = ESuitTransitionPhase::Idle;
+	LocalSuitTransitionShooter.Reset();
+	LocalSuitTransitionPawn.Reset();
+	bLocalSuitTransitionReadySent = false;
+	RequestSuitTransitionCleanup(Id);
+}
+
+// 암전 담당자 작업 위치: 아래 네 연결 지점의 내부 연출 구현은 이번 Slice에서 비워 둔다.
+// 기존 API 참고 경로: Plugins/RDG/Source/RDG/Public/LocalPlayerPostProcessSubsystem.h
+// 기존 구현 참고 경로: Plugins/RDG/Source/RDG/Private/LocalPlayerPostProcessSubsystem.cpp
+// 기존 사망/해킹 연출과의 우선순위는 담당자가 연결할 때 결정한다. 다른 연출을 여기서 강제 해제하지 않는다.
+// 비동기 콜백은 요청 ID를 값으로 캡처하고, 정리 요청에서는 해당 ID의 콜백만 해제한다.
+void AFirstPersonPlayerController::RequestSuitFadeOut(const FGuid& TransitionId, float Duration)
+{
+	// TODO(암전 담당자): 실제 화면이 가려진 콜백에서 NotifySuitFadeOutFinished(TransitionId)를 호출한다.
+}
+
+void AFirstPersonPlayerController::RequestSuitPresentationReady(const FGuid& TransitionId)
+{
+	// TODO(암전 담당자): 복제된 Mesh/ABP, 새 포즈와 무기 부착을 확인한 뒤 NotifySuitPresentationReady를 호출한다.
+	// Partner는 지급 무기 표시도 확인한다. RPC 도착/BlackHold 경과만으로 준비 완료를 보고하지 않는다.
+}
+
+void AFirstPersonPlayerController::RequestSuitFadeIn(const FGuid& TransitionId, float Duration)
+{
+	// TODO(암전 담당자): 실제 화면 복귀 콜백에서 NotifySuitFadeInFinished(TransitionId)를 호출한다.
+}
+
+void AFirstPersonPlayerController::RequestSuitTransitionCleanup(const FGuid& TransitionId)
+{
+	// TODO(암전 담당자): 이 ID의 콜백/연출만 정리한다. 정상 종료, 취소, Pawn 교체와 EndPlay가 공유한다.
 }
 
 void AFirstPersonPlayerController::BindPostProcessSubSystem()
@@ -965,6 +1156,8 @@ void AFirstPersonPlayerController::ClientArenaGameplayReload_Implementation(
 		return;
 	}
 
+	// 오래된 리로드 요청은 위에서 거부한다. 유효한 리로드가 시작될 때만 이전 슈트 연출 콜백을 끊는다.
+	ClearLocalSuitTransition();
 	ClientGameplayReloadStartedAt = FPlatformTime::Seconds();
 	UE_LOG(LogTemp, Display,
 		TEXT("[ArenaReload][Client] ReloadRPC PC=%s Gen=%u Spawn=%s LevelsReady=%d"),

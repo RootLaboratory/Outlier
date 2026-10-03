@@ -228,8 +228,8 @@ bool FOutlierSuitInteractionEquipTest::RunTest(const FString& Parameters)
 
 	Shooter->SetPartnerCharacter(Partner);
 	Partner->SetShooterCharacter(Shooter);
-	APlayerController* ShooterController = World->SpawnActor<APlayerController>();
-	APlayerController* PartnerController = World->SpawnActor<APlayerController>();
+	ASuitTransitionTestPlayerController* ShooterController = World->SpawnActor<ASuitTransitionTestPlayerController>();
+	ASuitTransitionTestPlayerController* PartnerController = World->SpawnActor<ASuitTransitionTestPlayerController>();
 	if (!TestNotNull(TEXT("Shooter Controller spawns"), ShooterController)
 		|| !TestNotNull(TEXT("Partner Controller spawns"), PartnerController))
 	{
@@ -300,7 +300,7 @@ bool FOutlierSuitInteractionEquipTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Rejected acquisition does not consume the Interaction"), Suit->IsHidden());
 	TestTrue(TEXT("Rejected acquisition keeps stored Shooter Rifle"), StoredShooterRifle && StoredShooterRifle->IsHidden());
 	Shooter->SuitPresentation = SuitConfiguration;
-	// 이 테스트의 완료 신호는 서버 경계에 명시적으로 넣는다. 런타임에서는 Controller 연결 없이는 생성되지 않는다.
+	// 완료 신호는 실제 Controller 응답 경계에 명시적으로 넣는다. 빈 연출 연결 지점은 응답하지 않는다.
 	Shooter->SuitFadeOutDuration = 0.0f;
 	Shooter->SuitBlackHoldDuration = 0.0f;
 	Shooter->SuitFadeInDuration = 0.0f;
@@ -309,14 +309,27 @@ bool FOutlierSuitInteractionEquipTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Reservation is not acquisition"), ShooterPS->GetAcquiredSuit());
 	TestNull(TEXT("Reservation grants no weapon"), Shooter->GetCurrentWeapon());
 	TestTrue(TEXT("Reservation blocks both participants"), Shooter->IsSuitTransitionBlocked() && Partner->IsSuitTransitionBlocked());
-	Shooter->AcknowledgeSuitTransition(ShooterController, TransitionId, ESuitTransitionPhase::FadingOut);
+	TestTrue(TEXT("Fade out request reaches both owning controllers with the same ID"),
+		ShooterController->FadeOutRequests == 1 && PartnerController->FadeOutRequests == 1
+		&& ShooterController->LastRequestedId == TransitionId && PartnerController->LastRequestedId == TransitionId);
+	ShooterController->NotifySuitFadeOutFinished(TransitionId);
 	TestFalse(TEXT("One ready participant cannot commit"), ShooterPS->GetAcquiredSuit());
-	Shooter->AcknowledgeSuitTransition(PartnerController, TransitionId, ESuitTransitionPhase::FadingOut);
+	PartnerController->NotifySuitFadeOutFinished(TransitionId);
 	TestTrue(TEXT("Committed transition waits for applied presentation"), Shooter->GetSuitTransitionPhase() == ESuitTransitionPhase::Applying);
-	Shooter->AcknowledgeSuitTransition(ShooterController, TransitionId, ESuitTransitionPhase::Applying);
-	Shooter->AcknowledgeSuitTransition(PartnerController, TransitionId, ESuitTransitionPhase::Applying);
-	Shooter->AcknowledgeSuitTransition(ShooterController, TransitionId, ESuitTransitionPhase::FadingIn);
-	Shooter->AcknowledgeSuitTransition(PartnerController, TransitionId, ESuitTransitionPhase::FadingIn);
+	TestTrue(TEXT("Applying requests do not automatically report readiness"),
+		ShooterController->PresentationRequests == 1 && PartnerController->PresentationRequests == 1
+		&& ShooterController->FadeInRequests == 0 && PartnerController->FadeInRequests == 0);
+	ShooterController->NotifySuitPresentationReady(TransitionId);
+	TestTrue(TEXT("One applied participant cannot start fade in"), Shooter->GetSuitTransitionPhase() == ESuitTransitionPhase::Applying);
+	PartnerController->NotifySuitPresentationReady(TransitionId);
+	TestTrue(TEXT("Fade in request reaches both controllers"),
+		ShooterController->FadeInRequests == 1 && PartnerController->FadeInRequests == 1);
+	ShooterController->NotifySuitFadeInFinished(TransitionId);
+	TestTrue(TEXT("One restored screen cannot release both blocks"), Shooter->IsSuitTransitionBlocked() && Partner->IsSuitTransitionBlocked());
+	PartnerController->NotifySuitFadeInFinished(TransitionId);
+	TestTrue(TEXT("Normal completion cleans up both local transitions exactly once"),
+		ShooterController->CleanupRequests == 1 && PartnerController->CleanupRequests == 1
+		&& ShooterController->LastCleanupId == TransitionId && PartnerController->LastCleanupId == TransitionId);
 	TestFalse(TEXT("Finished transition releases Shooter block"), Shooter->IsSuitTransitionBlocked());
 	TestFalse(TEXT("Finished transition releases Partner block"), Partner->IsSuitTransitionBlocked());
 	TestTrue(TEXT("Acquisition replaces the PreSuit ABP with the Suit ABP"),
@@ -888,9 +901,9 @@ bool FOutlierSuitTransitionTest::RunTest(const FString& Parameters)
 	Shooter->SuitPresentation = Configuration;
 	Shooter->FinishSpawning(FTransform::Identity);
 	APartnerCharacter* Partner = PartnerClass ? World->SpawnActor<APartnerCharacter>(PartnerClass) : nullptr;
-	APlayerController* ShooterController = World->SpawnActor<APlayerController>();
-	APlayerController* PartnerController = World->SpawnActor<APlayerController>();
-	APlayerController* OtherController = World->SpawnActor<APlayerController>();
+	ASuitTransitionTestPlayerController* ShooterController = World->SpawnActor<ASuitTransitionTestPlayerController>();
+	ASuitTransitionTestPlayerController* PartnerController = World->SpawnActor<ASuitTransitionTestPlayerController>();
+	ASuitTransitionTestPlayerController* OtherController = World->SpawnActor<ASuitTransitionTestPlayerController>();
 	AOutlierPlayerState* ShooterPS = World->SpawnActor<AOutlierPlayerState>();
 	AOutlierPlayerState* PartnerPS = World->SpawnActor<AOutlierPlayerState>();
 	if (!Partner || !ShooterController || !PartnerController || !OtherController || !ShooterPS || !PartnerPS)
@@ -937,8 +950,19 @@ bool FOutlierSuitTransitionTest::RunTest(const FString& Parameters)
 	Shooter->SuitTransitionResponseTimeout = Shooter->SuitFadeOutDuration;
 	TestFalse(TEXT("Timeout equal to minimum duration rejects reservation"), Suit->Interact(Shooter));
 	Shooter->SuitTransitionResponseTimeout = 0.5f;
+	ShooterController->bTestLocalController = false;
+	ShooterController->ClientSetSuitTransitionPhase_Implementation(Shooter, FGuid::NewGuid(), ESuitTransitionPhase::FadingOut, 0.2f);
+	TestTrue(TEXT("A non-local controller does not start local presentation"),
+		ShooterController->FadeOutRequests == 0 && !ShooterController->LocalSuitTransitionId.IsValid());
+	ShooterController->bTestLocalController = true;
 	TestTrue(TEXT("Valid request reserves"), Suit->Interact(Shooter));
 	FGuid Id = Shooter->GetSuitTransitionId();
+	TestTrue(TEXT("Only participating controllers receive fade out requests"),
+		ShooterController->FadeOutRequests == 1 && PartnerController->FadeOutRequests == 1 && OtherController->FadeOutRequests == 0);
+	TestTrue(TEXT("Controllers cache the current ID without manufacturing ready responses"),
+		ShooterController->LocalSuitTransitionId == Id && PartnerController->LocalSuitTransitionId == Id
+		&& !Shooter->bSuitTransitionShooterReady && !Shooter->bSuitTransitionPartnerReady);
+	TestEqual(TEXT("Fade out request uses the server duration"), ShooterController->LastFadeDuration, Shooter->SuitFadeOutDuration);
 	TestTrue(TEXT("Reserved participants remain valid while transition owns their blocks"),
 		Shooter->ValidateSuitTransitionParticipants(false));
 	TestFalse(TEXT("Reserved participants cannot be treated as a new reservation"),
@@ -962,14 +986,32 @@ bool FOutlierSuitTransitionTest::RunTest(const FString& Parameters)
 	Shooter->AcknowledgeSuitTransition(ShooterController, FGuid::NewGuid(), ESuitTransitionPhase::FadingOut);
 	Shooter->AcknowledgeSuitTransition(ShooterController, Id, ESuitTransitionPhase::Applying);
 	TestFalse(TEXT("Invalid ready responses ignored"), Shooter->bSuitTransitionShooterReady);
-	Shooter->AcknowledgeSuitTransition(ShooterController, Id, ESuitTransitionPhase::FadingOut);
-	Shooter->AcknowledgeSuitTransition(ShooterController, Id, ESuitTransitionPhase::FadingOut);
+	OtherController->ServerNotifySuitTransitionPhaseFinished_Implementation(Shooter, Id, ESuitTransitionPhase::FadingOut);
+	ShooterController->NotifySuitFadeOutFinished(FGuid::NewGuid());
+	ShooterController->NotifySuitPresentationReady(Id);
+	ShooterController->NotifySuitFadeInFinished(Id);
+	TestFalse(TEXT("Controller transport rejects foreign sender, old ID and wrong local phase"), Shooter->bSuitTransitionShooterReady);
+	ShooterController->SetRole(ROLE_SimulatedProxy);
+	ShooterController->ServerNotifySuitTransitionPhaseFinished_Implementation(Shooter, Id, ESuitTransitionPhase::FadingOut);
+	TestFalse(TEXT("Non-authority completion cannot change server readiness"), Shooter->bSuitTransitionShooterReady);
+	ShooterController->SetRole(ROLE_Authority);
+	ShooterController->NotifySuitFadeOutFinished(Id);
+	ShooterController->NotifySuitFadeOutFinished(Id);
+	ShooterController->ClientSetSuitTransitionPhase_Implementation(Shooter, Id, ESuitTransitionPhase::FadingOut, Shooter->SuitFadeOutDuration);
+	TestTrue(TEXT("Duplicate phase request neither restarts fade nor resets its sent response"),
+		ShooterController->FadeOutRequests == 1 && ShooterController->bLocalSuitTransitionReadySent);
 	TestFalse(TEXT("Duplicate Shooter ready is not Partner ready"), Shooter->bSuitTransitionPartnerReady);
-	Shooter->AcknowledgeSuitTransition(PartnerController, Id, ESuitTransitionPhase::FadingOut);
+	PartnerController->NotifySuitFadeOutFinished(Id);
 	TestFalse(TEXT("Readiness cannot bypass minimum server duration"), ShooterPS->GetAcquiredSuit());
 	TestTrue(TEXT("Still fading out"), Shooter->GetSuitTransitionPhase() == ESuitTransitionPhase::FadingOut);
 	Shooter->BeginActionLock(EShooterActionLock::Equip);
+	ShooterController->bNotifyDuringCleanup = true;
 	Shooter->CancelSuitTransition();
+	ShooterController->bNotifyDuringCleanup = false;
+	TestTrue(TEXT("Cancel invalidates both local IDs before cleanup callbacks"),
+		!ShooterController->LocalSuitTransitionId.IsValid() && !PartnerController->LocalSuitTransitionId.IsValid());
+	TestTrue(TEXT("Cancel cleans up only the participating controllers"),
+		ShooterController->CleanupRequests == 1 && PartnerController->CleanupRequests == 1 && OtherController->CleanupRequests == 0);
 	TestTrue(TEXT("Cleanup preserves a separately assigned action lock"), Shooter->GetActionLock() == EShooterActionLock::Equip);
 	Shooter->EndActionLock(EShooterActionLock::Equip);
 	TestFalse(TEXT("Cancel releases both blocks"), Shooter->IsSuitTransitionBlocked() || Partner->IsSuitTransitionBlocked());
@@ -977,7 +1019,23 @@ bool FOutlierSuitTransitionTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Cancel does not acquire"), ShooterPS->GetAcquiredSuit());
 	TestTrue(TEXT("Cancel releases reservation"), Suit->CanReserveFor(Shooter));
 
+	const int32 PartnerFadeOutRequestsBeforeCancel = PartnerController->FadeOutRequests;
+	ShooterController->bCancelDuringFadeOut = true;
+	TestTrue(TEXT("Immediate local cancellation starts from a valid reservation"), Suit->Interact(Shooter));
+	ShooterController->bCancelDuringFadeOut = false;
+	TestTrue(TEXT("A reentrant local cancellation cannot send a stale phase to the other controller"),
+		!Shooter->GetSuitTransitionId().IsValid()
+		&& PartnerController->FadeOutRequests == PartnerFadeOutRequestsBeforeCancel
+		&& !ShooterController->LocalSuitTransitionId.IsValid() && !PartnerController->LocalSuitTransitionId.IsValid());
+	TestTrue(TEXT("Immediate local cancellation preserves acquisition and retry policy"),
+		!ShooterPS->GetAcquiredSuit() && Suit->CanReserveFor(Shooter));
+
 	TestTrue(TEXT("Unconnected transition can start"), Suit->Interact(Shooter));
+	const FGuid UnconnectedId = Shooter->GetSuitTransitionId();
+	ShooterController->NotifySuitFadeOutFinished(Id);
+	ShooterController->ClientSetSuitTransitionPhase_Implementation(Shooter, Id, ESuitTransitionPhase::Idle, 0.0f);
+	TestTrue(TEXT("Old callback and old cleanup cannot affect a new transition"),
+		ShooterController->LocalSuitTransitionId == UnconnectedId && !Shooter->bSuitTransitionShooterReady);
 	// 대괄호가 포함된 로그 접두사는 정규식이 아닌 일반 문자열로 비교한다.
 	AddExpectedErrorPlain(TEXT("[SuitTransition] Timeout"), EAutomationExpectedErrorFlags::Contains, 2);
 	const uint64 FrameCounterBeforeAdvance = GFrameCounter;
@@ -987,6 +1045,9 @@ bool FOutlierSuitTransitionTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Timeout grants nothing"), ShooterPS->GetAcquiredSuit());
 	TestNull(TEXT("Timeout does not equip Rifle"), Shooter->GetCurrentWeapon());
 	TestTrue(TEXT("Timeout makes reservation retryable"), Suit->CanReserveFor(Shooter));
+	TestTrue(TEXT("Unconnected timeout cleans up both local transitions"),
+		!ShooterController->LocalSuitTransitionId.IsValid() && !PartnerController->LocalSuitTransitionId.IsValid()
+		&& ShooterController->LastCleanupId == UnconnectedId && PartnerController->LastCleanupId == UnconnectedId);
 
 	TestTrue(TEXT("Pair departure starts from reserved state"), Suit->Interact(Shooter));
 	PartnerPS->SetPairId(1);
@@ -995,6 +1056,7 @@ bool FOutlierSuitTransitionTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Controller departure starts from reserved state"), Suit->Interact(Shooter));
 	PartnerController->UnPossess();
 	TestFalse(TEXT("Controller departure cancels immediately"), Shooter->GetSuitTransitionId().IsValid());
+	TestFalse(TEXT("Pawn departure clears the local transition"), PartnerController->LocalSuitTransitionId.IsValid());
 	PartnerController->Possess(Partner);
 	Partner->SetPlayerState(PartnerPS);
 
@@ -1052,8 +1114,8 @@ bool FOutlierSuitTransitionTest::RunTest(const FString& Parameters)
 	Shooter->SuitFadeOutDuration = 0.0f;
 	TestTrue(TEXT("Commit case reserves"), Suit->Interact(Shooter));
 	Id = Shooter->GetSuitTransitionId();
-	Shooter->AcknowledgeSuitTransition(ShooterController, Id, ESuitTransitionPhase::FadingOut);
-	Shooter->AcknowledgeSuitTransition(PartnerController, Id, ESuitTransitionPhase::FadingOut);
+	ShooterController->NotifySuitFadeOutFinished(Id);
+	PartnerController->NotifySuitFadeOutFinished(Id);
 	TestTrue(TEXT("Commit acquires both PlayerStates"), ShooterPS->GetAcquiredSuit() && PartnerPS->GetAcquiredSuit());
 	TestTrue(TEXT("Commit grants exact stored Rifle"), Shooter->GetCurrentWeapon() == StoredRifle);
 	TestTrue(TEXT("Commit grants exact stored Partner weapon"), Partner->GetCurrentWeapon() == StoredPartnerWeapon);
@@ -1072,8 +1134,34 @@ bool FOutlierSuitTransitionTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Post-commit timeout keeps acquired state"), ShooterPS->GetAcquiredSuit() && PartnerPS->GetAcquiredSuit());
 	TestTrue(TEXT("Post-commit timeout preserves grants"), Shooter->GetCurrentWeapon() == StoredRifle && Partner->GetCurrentWeapon() == StoredPartnerWeapon);
 	TestTrue(TEXT("Post-commit timeout keeps Suit presentation"), Shooter->GetAppliedPresentation() == EShooterPresentation::Suit);
+	TestTrue(TEXT("Post-commit timeout releases both local transitions without undoing presentation"),
+		!ShooterController->LocalSuitTransitionId.IsValid() && !PartnerController->LocalSuitTransitionId.IsValid()
+		&& ShooterController->LastCleanupId == Id && PartnerController->LastCleanupId == Id);
+	ShooterController->NotifySuitPresentationReady(Id);
 	Shooter->AcknowledgeSuitTransition(ShooterController, Id, ESuitTransitionPhase::Applying);
 	TestFalse(TEXT("Late response cannot restart"), Shooter->GetSuitTransitionId().IsValid());
+
+	// 종료된 서버 전환과 분리해 로컬 수명주기 경계만 검사한다. 이 요청은 완료 응답을 만들지 않는다.
+	const FGuid LocalCleanupId = FGuid::NewGuid();
+	ShooterController->ClientSetSuitTransitionPhase_Implementation(Shooter, LocalCleanupId, ESuitTransitionPhase::FadingOut, 0.2f);
+	ShooterController->SetPawn(Shooter);
+	TestTrue(TEXT("Setting the same Pawn preserves the active local transition"), ShooterController->LocalSuitTransitionId == LocalCleanupId);
+	ShooterController->SetPawn(nullptr);
+	TestTrue(TEXT("Pawn replacement clears the cached transition even without a server phase notification"),
+		!ShooterController->LocalSuitTransitionId.IsValid() && ShooterController->LastCleanupId == LocalCleanupId);
+	ShooterController->SetPawn(Shooter);
+	ShooterController->ClientSetSuitTransitionPhase_Implementation(Shooter, LocalCleanupId, ESuitTransitionPhase::FadingOut, 0.2f);
+	ShooterController->ClientPrepareForArenaExit_Implementation();
+	TestTrue(TEXT("Arena exit clears the local transition before leaving play"),
+		!ShooterController->LocalSuitTransitionId.IsValid() && ShooterController->LastCleanupId == LocalCleanupId);
+	ShooterController->ClientSetSuitTransitionPhase_Implementation(Shooter, LocalCleanupId, ESuitTransitionPhase::FadingOut, 0.2f);
+	const int32 CleanupRequestsBeforeEndPlay = ShooterController->CleanupRequests;
+	ShooterController->EndPlay(EEndPlayReason::LevelTransition);
+	ShooterController->NotifySuitFadeOutFinished(LocalCleanupId);
+	TestTrue(TEXT("Controller EndPlay clears local callbacks exactly once"),
+		!ShooterController->LocalSuitTransitionId.IsValid()
+		&& ShooterController->CleanupRequests == CleanupRequestsBeforeEndPlay + 1);
+	TestFalse(TEXT("EndPlay callback cannot restart the completed server transition"), Shooter->GetSuitTransitionId().IsValid());
 	return true;
 }
 
