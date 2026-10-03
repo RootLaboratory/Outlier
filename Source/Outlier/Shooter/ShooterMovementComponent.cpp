@@ -3,6 +3,7 @@
 #include "Shooter/ShooterMovementComponent.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Curves/CurveFloat.h"
+#include "Engine/World.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "InputActionValue.h"
 #include "Net/UnrealNetwork.h"
@@ -26,7 +27,8 @@ void UShooterMovementComponent::GetLifetimeReplicatedProps(TArray<FLifetimePrope
 void UShooterMovementComponent::HandleSprintPressed()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (!ShooterCharacter)
+	if (!ShooterCharacter || ShooterCharacter->IsDead()
+		|| !ShooterCharacter->GetCharacterMovement()->IsMovingOnGround())
 	{
 		return;
 	}
@@ -37,34 +39,17 @@ void UShooterMovementComponent::HandleSprintPressed()
 		ShooterCharacter->RefreshCombatState();
 	}
 
-	if (!CanSprint())
-	{
-		UE_LOG(
-			LogTemp,
-			Warning,
-			TEXT("%s %s HandleSprintPressed blocked Dead=%d Crouching=%d WantsAim=%d Reloading=%d MoveState=%d CombatState=%d"),
-			OutlierNet::GetNetPrefix(ShooterCharacter),
-			*ShooterCharacter->GetName(),
-			ShooterCharacter->IsDead() ? 1 : 0,
-			ShooterCharacter->GetCharacterMovement()->IsCrouching() ? 1 : 0,
-			ShooterCharacter->WantsToAim() ? 1 : 0,
-			ShooterCharacter->IsReloading() ? 1 : 0,
-			static_cast<int32>(ShooterCharacter->MovementState),
-			static_cast<int32>(ShooterCharacter->CombatState)
-		);
-		return;
-	}
-
 	if (!ShooterCharacter->HasAuthority())
 	{
 		ShooterCharacter->ServerSetSprintState(true);
 	}
 
-	ShooterCharacter->StopLean();
 	bWantsToSprint = true;
-	// bIsSprinting은 여기서 정하지 않음 — 정지 상태에서 Shift부터 눌러도 의도(bWantsToSprint)만 켜두고,
-	// 실제 이동이 시작되는 시점(OnMoveInputUpdated -> RefreshMovementState)에서 켜지도록 함
-	ShooterCharacter->GetCharacterMovement()->MaxWalkSpeed = ShooterCharacter->SprintSpeed;
+	if (CanSprint())
+	{
+		ShooterCharacter->TryStopAttack();
+		ShooterCharacter->StopLean();
+	}
 	RefreshMovementState();
 }
 
@@ -86,28 +71,20 @@ void UShooterMovementComponent::HandleSprintReleased()
 	RefreshMovementState();
 }
 
-void UShooterMovementComponent::HandleCrouchToggled()
+void UShooterMovementComponent::HandleCrouchPressed()
 {
-	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (!ShooterCharacter)
-	{
-		return;
-	}
-
-	// 토글 입력은 crouch 의도만 바꾸고, 실제 crouch 상태는 ACharacter가 유지
-	if (ShooterCharacter->bIsCrouched || bWantsToCrouch)
-	{
-		RequestUncrouch();
-		return;
-	}
-
 	RequestCrouchOrSlide();
+}
+
+void UShooterMovementComponent::HandleCrouchReleased()
+{
+	RequestUncrouch();
 }
 
 void UShooterMovementComponent::RequestCrouchOrSlide()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (!ShooterCharacter)
+	if (!ShooterCharacter || !ShooterCharacter->GetCharacterMovement()->IsMovingOnGround())
 	{
 		return;
 	}
@@ -122,6 +99,13 @@ void UShooterMovementComponent::RequestCrouchOrSlide()
 		return;
 	}
 
+	// 슬라이드 중 다시 누르면 종료 후 유지할 앉기 의도만 변경
+	if (bIsSliding)
+	{
+		bWantsToCrouch = true;
+		return;
+	}
+
 	if (ShooterCharacter->IsActionLocked())
 	{
 		return;
@@ -132,9 +116,13 @@ void UShooterMovementComponent::RequestCrouchOrSlide()
 	if (bIsSprinting && ShooterCharacter->GetVelocity().SizeSquared() > 0.0f)
 	{
 		TrySlide();
-		return;
+		if (bIsSliding)
+		{
+			return;
+		}
 	}
 
+	SuspendSprintInternal();
 	ShooterCharacter->Crouch();
 	SetMovementStateImmediate(EMovementState::Crouch);
 }
@@ -161,18 +149,7 @@ void UShooterMovementComponent::RequestUncrouch()
 
 	ShooterCharacter->UnCrouch();
 
-	if (!ShooterCharacter->GetCharacterMovement()->IsMovingOnGround())
-	{
-		SetMovementStateImmediate(EMovementState::Jump);
-	}
-	else
-	{
-		const float Speed2D = ShooterCharacter->GetVelocity().Size2D();
-		SetMovementStateImmediate(
-			Speed2D <= KINDA_SMALL_NUMBER
-				? EMovementState::Idle
-				: (bIsSprinting ? EMovementState::Run : EMovementState::Walk));
-	}
+	RefreshMovementState();
 }
 
 void UShooterMovementComponent::TrySlide()
@@ -196,8 +173,10 @@ void UShooterMovementComponent::TrySlide()
 	ShooterCharacter->StopLean();
 	ShooterCharacter->BeginActionLock(EShooterActionLock::Slide);
 	SlideDirection = Velocity2D;
-	SlideStartSpeed = ShooterCharacter->SprintSpeed * ShooterCharacter->SlideSpeedMultiplier;
+	SlideStartSpeed = ShooterCharacter->GetVelocity().Size2D() * FMath::Max(0.0f, ShooterCharacter->SlideSpeedMultiplier);
+	CurrentSlideSpeed = SlideStartSpeed;
 	SlideElapsedTime = 0.0f;
+	SlideStartTime = ShooterCharacter->GetWorld()->GetTimeSeconds();
 
 	ShooterCharacter->Crouch();
 	RefreshMovementState();
@@ -232,6 +211,7 @@ void UShooterMovementComponent::StopSlide(ESlideEndReason EndReason)
 	ShooterCharacter->EndActionLock(EShooterActionLock::Slide);
 	ShooterCharacter->GetWorldTimerManager().ClearTimer(SlideTimerHandle);
 	FinishSlideMovement();
+	SuspendSprintInternal();
 	ShooterCharacter->StopSplitMontages(
 		ShooterCharacter->FirstPersonSlideMontage,
 		ShooterCharacter->ThirdPersonSlideMontage);
@@ -239,14 +219,17 @@ void UShooterMovementComponent::StopSlide(ESlideEndReason EndReason)
 	switch (EndReason)
 	{
 	case ESlideEndReason::Finished:
-		// 슬라이드가 정상 종료되면 crouch 의도를 유지해서 다음 토글에 자연스럽게 일어남
-		ShooterCharacter->Crouch();
-		bWantsToCrouch = true;
-
-		SetMovementStateImmediate(EMovementState::Crouch);
+	case ESlideEndReason::WallCancel:
+		if (bWantsToCrouch)
+		{
+			ShooterCharacter->Crouch();
+		}
+		else
+		{
+			ShooterCharacter->UnCrouch();
+		}
 		break;
 	case ESlideEndReason::JumpCancel:
-	case ESlideEndReason::WallCancel:
 	case ESlideEndReason::FallCancel:
 	case ESlideEndReason::ForcedCancel:
 		ShooterCharacter->UnCrouch();
@@ -298,11 +281,6 @@ void UShooterMovementComponent::DoJumpStart()
 		return;
 	}
 
-	if (bIsSprinting)
-	{
-		StopSprintInternal();
-	}
-
 	// 엔진은 낙하 중 첫 점프도 허용하므로, 지상 점프 없이 떨어진 경우에는 입력을 넘기지 않는다.
 	if (ShooterCharacter->GetCharacterMovement()->IsFalling() && ShooterCharacter->JumpCurrentCount == 0)
 	{
@@ -337,7 +315,19 @@ void UShooterMovementComponent::StartSlideMovement()
 		return;
 	}
 
-	bIsSprinting = false;
+	SuspendSprintInternal();
+	UCharacterMovementComponent* CharacterMovement = ShooterCharacter->GetCharacterMovement();
+	SavedGroundFriction = CharacterMovement->GroundFriction;
+	SavedBrakingDecelerationWalking = CharacterMovement->BrakingDecelerationWalking;
+	SavedBrakingFrictionFactor = CharacterMovement->BrakingFrictionFactor;
+	SavedMaxAcceleration = CharacterMovement->MaxAcceleration;
+	SavedMaxWalkSpeedCrouched = CharacterMovement->MaxWalkSpeedCrouched;
+	// 슬라이드 감속은 커브로 처리하므로 기본 이동의 마찰, 제동, 가속은 잠시 해제
+	CharacterMovement->GroundFriction = 0.0f;
+	CharacterMovement->BrakingDecelerationWalking = 0.0f;
+	CharacterMovement->BrakingFrictionFactor = 0.0f;
+	CharacterMovement->MaxAcceleration = 0.0f;
+	UpdateSlideMovement();
 
 	ShooterCharacter->GetWorldTimerManager().SetTimer(
 		SlideUpdateTimerHandle,
@@ -356,13 +346,15 @@ void UShooterMovementComponent::UpdateSlideMovement()
 		return;
 	}
 
-	SlideElapsedTime += 1.0f / 60.0f;
-	const float Alpha = FMath::Clamp(SlideElapsedTime / ShooterCharacter->SlideDuration, 0.0f, 1.0f);
+	SlideElapsedTime = static_cast<float>(ShooterCharacter->GetWorld()->GetTimeSeconds() - SlideStartTime);
+	const float Alpha = FMath::Clamp(SlideElapsedTime / FMath::Max(ShooterCharacter->SlideDuration, KINDA_SMALL_NUMBER), 0.0f, 1.0f);
 
 	float CurveValue = 1.0f;
 	if (ShooterCharacter->SlideSpeedCurve)
 	{
 		CurveValue = ShooterCharacter->SlideSpeedCurve->GetFloatValue(Alpha);
+		// Cubic 보간으로 마지막 속도 비율보다 낮아졌다가 다시 올라가는 현상 방지
+		CurveValue = FMath::Max(CurveValue, ShooterCharacter->SlideSpeedCurve->GetFloatValue(1.0f));
 	}
 	else if (Alpha < 0.7f)
 	{
@@ -373,8 +365,11 @@ void UShooterMovementComponent::UpdateSlideMovement()
 		CurveValue = FMath::Lerp(0.92f, 0.10f, (Alpha - 0.7f) / 0.3f);
 	}
 
-	const float CurrentSpeed = SlideStartSpeed * CurveValue;
-	const FVector SlideVelocity = SlideDirection * CurrentSpeed;
+	// 커브 Y는 매번 곱하는 감속값이 아니라 슬라이드 시작 속도 대비 남은 비율
+	const float TargetSpeed = SlideStartSpeed * FMath::Clamp(CurveValue, 0.0f, 1.0f);
+	CurrentSlideSpeed = FMath::Min(CurrentSlideSpeed, TargetSpeed);
+	const FVector SlideVelocity = SlideDirection * CurrentSlideSpeed;
+	ShooterCharacter->GetCharacterMovement()->MaxWalkSpeedCrouched = CurrentSlideSpeed;
 
 	// Slide시 방향 고정
 	ShooterCharacter->GetCharacterMovement()->Velocity.X = SlideVelocity.X;
@@ -390,6 +385,12 @@ void UShooterMovementComponent::FinishSlideMovement()
 	}
 
 	ShooterCharacter->GetWorldTimerManager().ClearTimer(SlideUpdateTimerHandle);
+	UCharacterMovementComponent* CharacterMovement = ShooterCharacter->GetCharacterMovement();
+	CharacterMovement->GroundFriction = SavedGroundFriction;
+	CharacterMovement->BrakingDecelerationWalking = SavedBrakingDecelerationWalking;
+	CharacterMovement->BrakingFrictionFactor = SavedBrakingFrictionFactor;
+	CharacterMovement->MaxAcceleration = SavedMaxAcceleration;
+	CharacterMovement->MaxWalkSpeedCrouched = SavedMaxWalkSpeedCrouched;
 }
 
 void UShooterMovementComponent::RefreshMovementState()
@@ -403,6 +404,17 @@ void UShooterMovementComponent::RefreshMovementState()
 	// 실제 이동 컴포넌트 상태와 입력 홀드 상태를 함께 보고 애님용 이동 상태를 계산
 	// MovementComponent가 sprint와 slide 내부 상태를 관리하고, 그 결과로 복제되는 이동 enum을 계산
 	EMovementState NewState = EMovementState::Idle;
+	const bool bCanUseSprintSpeed = bWantsToSprint && CanSprint();
+	const bool bWasSprinting = bIsSprinting;
+	bIsSprinting = bCanUseSprintSpeed && ShooterCharacter->GetVelocity().Size2D() > KINDA_SMALL_NUMBER;
+	ShooterCharacter->GetCharacterMovement()->MaxWalkSpeed = bCanUseSprintSpeed
+		? ShooterCharacter->SprintSpeed : ShooterCharacter->WalkSpeed;
+	if (bIsSprinting && !bWasSprinting
+		&& (ShooterCharacter->HasAuthority() || ShooterCharacter->IsLocallyControlled()))
+	{
+		ShooterCharacter->TryStopAttack();
+		ShooterCharacter->StopLean();
+	}
 
 	if (bIsSliding)
 	{
@@ -419,10 +431,6 @@ void UShooterMovementComponent::RefreshMovementState()
 	else
 	{
 		const float Speed2D = ShooterCharacter->GetVelocity().Size2D();
-
-		// Shift만 누르고 있는 상태(bWantsToSprint)로는 스프린트 취급하지 않고,
-		// 실제로 움직이고 있을 때만 bIsSprinting을 켠다 — 이 함수가 이동 입력마다 호출되므로 여기서 계속 갱신됨
-		bIsSprinting = bWantsToSprint && Speed2D > KINDA_SMALL_NUMBER;
 
 		if (Speed2D <= KINDA_SMALL_NUMBER)
 		{
@@ -461,6 +469,12 @@ void UShooterMovementComponent::SetMovementStateImmediate(EMovementState NewStat
 
 void UShooterMovementComponent::StopSprintInternal()
 {
+	bWantsToSprint = false;
+	SuspendSprintInternal();
+}
+
+void UShooterMovementComponent::SuspendSprintInternal()
+{
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 	if (!ShooterCharacter)
 	{
@@ -468,7 +482,6 @@ void UShooterMovementComponent::StopSprintInternal()
 	}
 
 	bIsSprinting = false;
-	bWantsToSprint = false;
 
 	if (!bIsSliding)
 	{
@@ -488,6 +501,7 @@ bool UShooterMovementComponent::CanStartSlide() const
 	return ShooterCharacter
 		&& !ShooterCharacter->IsDead()
 		&& !bIsSliding
+		&& ShooterCharacter->SlideDuration > KINDA_SMALL_NUMBER
 		&& !ShooterCharacter->GetCharacterMovement()->IsFalling()
 		&& ShooterCharacter->GetCharacterMovement()->IsMovingOnGround()
 		&& ShooterCharacter->GetVelocity().Size2D() >= ShooterCharacter->MinSlideSpeed
@@ -499,7 +513,9 @@ bool UShooterMovementComponent::CanSprint() const
 {
 	const AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 
-	return !ShooterCharacter->IsDead() && !ShooterCharacter->GetCharacterMovement()->IsCrouching()
+	return ShooterCharacter && ShooterCharacter->GetCharacterMovement()->IsMovingOnGround()
+		&& !ShooterCharacter->IsDead() && !ShooterCharacter->GetCharacterMovement()->IsCrouching()
+		&& !bWantsToCrouch && !bIsSliding
 		&& !ShooterCharacter->WantsToAim()
 		&& !ShooterCharacter->IsReloading()
 		&& !ShooterCharacter->IsActionLocked();

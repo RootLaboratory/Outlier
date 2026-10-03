@@ -125,6 +125,7 @@ class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbil
 	friend class UShooterInventoryComponent;
 	friend class UShooterCombatComponent;
 	friend class UShooterMovementComponent;
+	friend class FShooterGroundedMovementTest;
 
 protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
@@ -211,7 +212,7 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera|Sensitivity", meta = (ClampMin = "0.0"))
 	float SprintLookSensitivityScale = 1.0f;
 
-	UPROPERTY(EditDefaultsOnly, Category = "Slide")
+	UPROPERTY(EditDefaultsOnly, Category = "Slide", meta = (ClampMin = "0.01"))
 	float SlideDuration = 1.0f;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Slide")
@@ -220,10 +221,10 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Slide")
 	float SlideWallStopDotThreshold = 0.5f;
 
-	UPROPERTY(EditDefaultsOnly, Category = "Slide")
+	UPROPERTY(EditDefaultsOnly, Category = "Slide", meta = (ClampMin = "0.0"))
 	float SlideSpeedMultiplier = 1.2f;
 
-	UPROPERTY(EditDefaultsOnly, Category = "Slide")
+	UPROPERTY(EditDefaultsOnly, Category = "Slide", meta = (ToolTip = "X: normalized slide time (0 to 1). Y: remaining slide start speed ratio (0 to 1). Cubic interpolation is preserved; speed cannot increase during the slide."))
 	TObjectPtr<UCurveFloat> SlideSpeedCurve;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "VFX|Jump")
@@ -692,7 +693,8 @@ protected:
 	void HandleSprintPressed();
 	void HandleSprintReleased();
 
-	void HandleCrouchToggled();
+	void HandleCrouchPressed();
+	void HandleCrouchReleased();
 
 	void TryOpenSuitMenu();
 	void TryHandleSuitMenuHover();

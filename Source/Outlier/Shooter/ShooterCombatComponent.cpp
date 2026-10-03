@@ -128,15 +128,11 @@ void UShooterCombatComponent::TryReload()
 			if (RangedWeapon && RangedWeapon->CanReload())
 			{
 				ShooterCharacter->StopLean();
-				if (ShooterCharacter->IsSprinting())
-				{
-					ShooterCharacter->StopSprintInternal();
-					ShooterCharacter->RefreshMovementState();
-				}
 				SuspendAimInternal();
 
 				bIsReloading = true;
 				ShooterCharacter->BeginActionLock(EShooterActionLock::Reload);
+				ShooterCharacter->RefreshMovementState();
 				ShooterCharacter->CombatState = ECombatState::Reload;
 				ShooterCharacter->PlayFirstPersonMontage(ShooterCharacter->FirstPersonReloadMontage);
 			}
@@ -211,11 +207,6 @@ void UShooterCombatComponent::TryReload()
 		return;
 	}
 
-	if (ShooterCharacter->IsSprinting())
-	{
-		ShooterCharacter->StopSprintInternal();
-		ShooterCharacter->RefreshMovementState();
-	}
 	ShooterCharacter->StopLean();
 
 	SuspendAimInternal();
@@ -542,11 +533,6 @@ void UShooterCombatComponent::HandleAutoReloadRequested()
 		return;
 	}
 
-	if (ShooterCharacter->IsSprinting())
-	{
-		ShooterCharacter->StopSprintInternal();
-		ShooterCharacter->RefreshMovementState();
-	}
 	ShooterCharacter->StopLean();
 
 	SuspendAimInternal();
@@ -684,7 +670,7 @@ void UShooterCombatComponent::ResolveStateConflicts()
 	}
 
 	if (ShooterCharacter->MovementState == EMovementState::Run
-		&& (bWantsToAim || bWantsToFire || bIsReloading))
+		&& (bWantsToAim || bWantsToFire))
 	{
 		ShooterCharacter->StopSprintInternal();
 		ShooterCharacter->RefreshMovementState();
@@ -759,6 +745,7 @@ void UShooterCombatComponent::BeginReloadInternal()
 	bIsReloading = true;
 	ShooterCharacter->StopLean();
 	ShooterCharacter->BeginActionLock(EShooterActionLock::Reload);
+	ShooterCharacter->RefreshMovementState();
 	ShooterCharacter->CombatState = ECombatState::Reload;
 	ShooterCharacter->ForceNetUpdate();
 	BindReloadMontageEndedDelegates();
@@ -821,6 +808,7 @@ void UShooterCombatComponent::CancelReloadInternal()
 	}
 	RefreshCombatState();
 	RestoreAimIfRequested();
+	ShooterCharacter->RefreshMovementState();
 }
 
 void UShooterCombatComponent::FinishReloadInternal()
@@ -856,6 +844,7 @@ void UShooterCombatComponent::FinishReloadInternal()
 	UnbindReloadMontageEndedDelegates();
 	RefreshCombatState();
 	RestoreAimIfRequested();
+	ShooterCharacter->RefreshMovementState();
 	ShooterCharacter->ForceNetUpdate();
 }
 
@@ -870,6 +859,7 @@ void UShooterCombatComponent::OnRep_IsReloading()
 	if (bIsReloading)
 	{
 		SuspendAimInternal();
+		ShooterCharacter->RefreshMovementState();
 		return;
 	}
 
@@ -881,6 +871,7 @@ void UShooterCombatComponent::OnRep_IsReloading()
 	UnbindReloadMontageEndedDelegates();
 	RefreshCombatState();
 	RestoreAimIfRequested();
+	ShooterCharacter->RefreshMovementState();
 }
 
 void UShooterCombatComponent::BindReloadMontageEndedDelegates()

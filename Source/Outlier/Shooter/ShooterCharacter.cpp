@@ -140,6 +140,7 @@ AShooterCharacter::AShooterCharacter() : AFirstPersonCharacter()
 	ShieldAttributeSet = CreateDefaultSubobject<UOutlierShieldAttributeSet>(TEXT("ShieldAttributeSet"));
 
 	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
+	GetCharacterMovement()->bCanWalkOffLedgesWhenCrouching = true;
 	JumpMaxCount = 2;
 
 	ShadowMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("ShadowMesh"));
@@ -200,6 +201,9 @@ void AShooterCharacter::EndJumperEffect(FName EffectId, AActor* SourceActor)
 void AShooterCharacter::BeginPlay()
 {
 	Super::BeginPlay();
+	// Apply the crouched ledge policy after Blueprint defaults have been loaded.
+	GetCharacterMovement()->bCanWalkOffLedges = true;
+	GetCharacterMovement()->bCanWalkOffLedgesWhenCrouching = true;
 	RefreshAbilitySystemActorInfo();
 	BindGasVitalityObservers();
 	InitializeGasVitality();
@@ -1096,7 +1100,9 @@ void AShooterCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 	EnhancedInputComponent->BindAction(ShooterInputConfig->SprintAction,		ETriggerEvent::Completed, this, &AShooterCharacter::HandleSprintReleased);
 
 	// Crouch
-	EnhancedInputComponent->BindAction(ShooterInputConfig->CrouchAction,		ETriggerEvent::Started,   this, &AShooterCharacter::HandleCrouchToggled);
+	EnhancedInputComponent->BindAction(ShooterInputConfig->CrouchAction,		ETriggerEvent::Started,   this, &AShooterCharacter::HandleCrouchPressed);
+	EnhancedInputComponent->BindAction(ShooterInputConfig->CrouchAction,		ETriggerEvent::Completed, this, &AShooterCharacter::HandleCrouchReleased);
+	EnhancedInputComponent->BindAction(ShooterInputConfig->CrouchAction,		ETriggerEvent::Canceled,  this, &AShooterCharacter::HandleCrouchReleased);
 
 	// Lean
 	EnhancedInputComponent->BindAction(ShooterInputConfig->LeanAction,			ETriggerEvent::Triggered, this, &AShooterCharacter::TryLean);
@@ -1157,9 +1163,12 @@ void AShooterCharacter::OnMovementModeChanged(EMovementMode  PrevMovementMode, u
 		StopSlide(ESlideEndReason::FallCancel);
 	}
 
-	if (GetCharacterMovement()->IsFalling() && CombatComponent)
+	if (GetCharacterMovement()->IsFalling())
 	{
-		CombatComponent->SuspendAimInternal();
+		if (CombatComponent)
+		{
+			CombatComponent->SuspendAimInternal();
+		}
 	}
 
 	RefreshMovementState();
@@ -1288,11 +1297,19 @@ void AShooterCharacter::HandleSprintReleased()
 	}
 }
 
-void AShooterCharacter::HandleCrouchToggled()
+void AShooterCharacter::HandleCrouchPressed()
 {
 	if (MovementComponent)
 	{
-		MovementComponent->HandleCrouchToggled();
+		MovementComponent->HandleCrouchPressed();
+	}
+}
+
+void AShooterCharacter::HandleCrouchReleased()
+{
+	if (MovementComponent)
+	{
+		MovementComponent->HandleCrouchReleased();
 	}
 }
 
