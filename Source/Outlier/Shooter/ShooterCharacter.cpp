@@ -498,6 +498,8 @@ void AShooterCharacter::Tick(float DeltaSeconds)
 
 void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	CancelSuitTransition();
+	OnSuitTransitionPhaseChanged.Clear();
 	OnWeaponChanged.RemoveDynamic(this, &AShooterCharacter::HandlePresentationWeaponChanged);
 	PopTeleportLayer();
 	PopReflectionBarrierWidget();
@@ -2166,12 +2168,13 @@ bool AShooterCharacter::CanFireInCurrentState() const
 
 bool AShooterCharacter::CanInteract() const
 {
-	return !IsDead();
+	return !IsDead() && !IsSuitTransitionBlocked();
 }
 
 bool AShooterCharacter::CanLean() const
 {
 	return !IsDead()
+		&& !IsSuitTransitionBlocked()
 		&& !IsSprinting()
 		&& !GetCharacterMovement()->IsFalling()
 		&& !IsSliding()
@@ -2343,6 +2346,7 @@ bool AShooterCharacter::CanStartAction(EShooterActionLock NextLock) const
 
 	return !IsDead()
 		&& NextLock != EShooterActionLock::None
+		&& !IsSuitTransitionBlocked()
 		&& (ActionLock == EShooterActionLock::None || bCanOverrideSlideLock);
 }
 
@@ -2904,6 +2908,7 @@ void AShooterCharacter::HandleSlideWallHit(const FHitResult& Hit)
 
 void AShooterCharacter::HandleDeath()
 {
+	CancelSuitTransition();
 	ClearInputIntent();
 	if (InventoryComponent && HasAuthority())
 	{
@@ -3148,11 +3153,13 @@ float GetMontageSectionDurationOrFullLength(const UAnimMontage* Montage, FName S
 
 void AShooterCharacter::PlayFirstPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType)
 {
+	if (IsSuitTransitionBlocked()) { return; }
 	const bool bUseWeaponSection = Action != EShooterMontageAction::Slide && Action != EShooterMontageAction::MeleeAttack;
 	PlayFirstPersonMontageForWeapon(GetActionMontage(Action, true), WeaponType, bUseWeaponSection);
 }
 void AShooterCharacter::PlayThirdPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType)
 {
+	if (IsSuitTransitionBlocked()) { return; }
 	const bool bUseWeaponSection = Action != EShooterMontageAction::Slide && Action != EShooterMontageAction::MeleeAttack;
 	PlayThirdPersonMontageForWeapon(GetActionMontage(Action, false), WeaponType, bUseWeaponSection);
 }
@@ -3779,6 +3786,7 @@ void AShooterCharacter::SetPartnerCharacter(APartnerCharacter* NewPartner)
 	{
 		EndActiveWeaponOvercharge(false);
 	}
+	CancelSuitTransition();
 	UnbindPartnerSuitStateObserver();
 	CachedPartnerCharacter = NewPartner;
 	BindPartnerSuitStateObserver();
@@ -3807,7 +3815,7 @@ bool AShooterCharacter::IsShooterSuitUseDisabled() const
 	const UAbilitySystemComponent* PartnerAbilitySystem = IsValid(CachedPartnerCharacter)
 		? CachedPartnerCharacter->GetAbilitySystemComponent()
 		: nullptr;
-	return bSuitDisabledByPartnerBoundary
+	return IsSuitTransitionBlocked() || bSuitDisabledByPartnerBoundary
 		|| (PartnerAbilitySystem
 			&& PartnerAbilitySystem->HasMatchingGameplayTag(OutlierGameplayTags::State::Rebooting()));
 }
@@ -3842,6 +3850,10 @@ void AShooterCharacter::UnbindPartnerSuitStateObserver()
 
 void AShooterCharacter::HandlePartnerRebootTagChanged(const FGameplayTag Tag, int32 NewCount)
 {
+	if (NewCount > 0)
+	{
+		CancelSuitTransition();
+	}
 	(void)Tag;
 	(void)NewCount;
 	RefreshShooterSuitAvailabilityUI();

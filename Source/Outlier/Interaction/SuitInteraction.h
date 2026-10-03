@@ -24,6 +24,9 @@ public:
 
 	virtual UInteractableComponent* GetInteractableComponent() const override;
 	virtual bool Interact(AFirstPersonCharacter* Interactor) override;
+	virtual bool DefersInteractionCompletion() const override { return true; }
+	bool CanReserveFor(AShooterCharacter* ShooterCharacter) const;
+	bool IsReservedFor(const AShooterCharacter* ShooterCharacter) const;
 
 protected:
 	virtual void BeginPlay() override;
@@ -52,6 +55,10 @@ protected:
 	TSubclassOf<ARangedWeaponBase> PartnerWeaponClass;
 
 private:
+	friend class AShooterCharacter;
+	bool ReserveFor(AShooterCharacter* ShooterCharacter);
+	bool CommitReservedSuit(AShooterCharacter* ShooterCharacter);
+	void ReleaseReservation(AShooterCharacter* ShooterCharacter);
 	bool SpawnStoredWeapons();
 	AWeaponBase* SpawnStoredWeapon(UClass* WeaponClass);
 	bool ApplySuit(AShooterCharacter* ShooterCharacter);
@@ -66,4 +73,5 @@ private:
 	TObjectPtr<ARangedWeaponBase> StoredPartnerWeapon;
 
 	bool bConsumed = false;
+	TWeakObjectPtr<AShooterCharacter> ReservedShooter;
 };

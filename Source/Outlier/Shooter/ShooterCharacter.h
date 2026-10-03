@@ -39,6 +39,21 @@ class UShooterReflectionBarrier;
 class UShooterTeleportLayer;
 struct FOnAttributeChangeData;
 class UPackageMap;
+class ASuitInteraction;
+class APlayerController;
+class AOutlierPlayerState;
+
+UENUM()
+enum class ESuitTransitionPhase : uint8
+{
+	Idle,
+	FadingOut,
+	Applying,
+	FadingIn
+};
+
+// Slice 5의 Controller 연결은 이 서버 단계 변경을 전달하고, 실제 완료만 아래 응답 경계로 돌려준다.
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnSuitTransitionPhaseChanged, const FGuid&, ESuitTransitionPhase);
 
 UENUM(BlueprintType)
 enum class EShooterPresentation : uint8
@@ -220,6 +235,7 @@ class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbil
 	friend class FShooterPresentationReplicationTest;
 	friend class FOutlierSuitInteractionEquipTest;
 	friend class FOutlierShooterPresentationAnimationTest;
+	friend class FOutlierSuitTransitionTest;
 
 protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
@@ -660,6 +676,24 @@ public:
 	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
 	virtual void EquipWeapon(AWeaponBase* Weapon) override;
 	bool ApplySuitMeshes(USkeletalMesh* FirstPersonMeshAsset, USkeletalMesh* ThirdPersonMeshAsset);
+	bool BeginSuitTransition(ASuitInteraction* Interaction, USkeletalMesh* LegacyFirstPersonMesh,
+		USkeletalMesh* LegacyThirdPersonMesh);
+	void CancelSuitTransition();
+	// 서버에서만 호출한다. Slice 5 RPC는 자신의 소유 Controller를 Sender로 전달해야 한다.
+	void AcknowledgeSuitTransition(APlayerController* Sender, const FGuid& TransitionId, ESuitTransitionPhase Phase);
+	FGuid GetSuitTransitionId() const { return ActiveSuitTransitionId; }
+	ESuitTransitionPhase GetSuitTransitionPhase() const { return SuitTransitionPhase; }
+	FOnSuitTransitionPhaseChanged OnSuitTransitionPhaseChanged;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Suit|Transition", meta = (ClampMin = "0.0"))
+	float SuitFadeOutDuration = 0.5f;
+	UPROPERTY(EditDefaultsOnly, Category = "Suit|Transition", meta = (ClampMin = "0.0"))
+	float SuitBlackHoldDuration = 0.25f;
+	UPROPERTY(EditDefaultsOnly, Category = "Suit|Transition", meta = (ClampMin = "0.0"))
+	float SuitFadeInDuration = 0.5f;
+	// 미연결/응답 유실도 유한하게 정리한다. 단계별 최소 시간보다 커야 한다.
+	UPROPERTY(EditDefaultsOnly, Category = "Suit|Transition", meta = (ClampMin = "0.1"))
+	float SuitTransitionResponseTimeout = 10.0f;
 	// 서버만 선택 상태를 확정한다. 레거시 Mesh는 명시된 BP 구성을 덮어쓰지 않는다.
 	bool SetSuitPresentation(bool bUseSuitPresentation, USkeletalMesh* LegacyFirstPersonMesh = nullptr,
 		USkeletalMesh* LegacyThirdPersonMesh = nullptr);
@@ -708,7 +742,7 @@ public:
 	// 슈트 능력을 실제로 쓸 수 있는 상태.
 	// 획득했고(HasAcquiredSuit) + 파트너 거리 이탈로 정지되지도(IsSuitDisabledByPartnerBoundary) 않아야 한다.
 	// 두 조건은 의미가 다르다 — 전자는 영구 획득, 후자는 일시 정지.
-	bool IsSuitUsable() const { return HasAcquiredSuit() && !IsSuitDisabledByPartnerBoundary(); }
+	bool IsSuitUsable() const { return HasAcquiredSuit() && !IsSuitDisabledByPartnerBoundary() && !IsSuitTransitionBlocked(); }
 	bool IsShooterSuitUseDisabled() const;
 	bool IsBulletReflecting() const;
 	bool IsWeaponOvercharged() const;
@@ -857,6 +891,43 @@ protected:
 	void RefreshReplicatedPresentation();
 	void RefreshPresentationWeaponAttachment();
 	void CaptureInitialPresentation();
+	virtual void PrepareForSuitTransition() override;
+	virtual void OnSuitTransitionBlockChanged() override;
+	virtual bool CanResumeMovementAfterSuitTransition() const override { return !IsDead(); }
+	// 검증은 상태를 변경하지 않는다. 시작/진행/commit 경계에서 필요한 조건을 조합한다.
+	bool CanBeginSuitTransition(ASuitInteraction* Interaction);
+	bool ValidateSuitTransitionTiming() const;
+	bool ValidateSuitTransitionParticipants(bool bForReservation) const;
+	bool ValidateSuitTransitionControllers() const;
+	bool ValidateSuitTransitionPair() const;
+	bool ValidateSuitTransitionPartnerState(bool bForReservation) const;
+	bool CanCommitSuitTransition() const;
+	float GetSuitTransitionMinimumTime(ESuitTransitionPhase Phase) const;
+	bool IsSuitTransitionPhaseReady() const;
+	void EnterSuitTransitionPhase(ESuitTransitionPhase Phase);
+	void AdvanceSuitTransition();
+	void FinishSuitTransition();
+	void HandleSuitTransitionParticipantInvalidated(AFirstPersonCharacter* Participant);
+	void HandleSuitTransitionPairChanged(AOutlierPlayerState* ChangedPlayerState);
+	FGuid ActiveSuitTransitionId;
+	ESuitTransitionPhase SuitTransitionPhase = ESuitTransitionPhase::Idle;
+	TWeakObjectPtr<ASuitInteraction> SuitTransitionInteraction;
+	TWeakObjectPtr<APartnerCharacter> SuitTransitionPartner;
+	TWeakObjectPtr<APlayerController> SuitTransitionShooterController;
+	TWeakObjectPtr<APlayerController> SuitTransitionPartnerController;
+	TWeakObjectPtr<AOutlierPlayerState> SuitTransitionShooterPlayerState;
+	TWeakObjectPtr<AOutlierPlayerState> SuitTransitionPartnerPlayerState;
+	UPROPERTY(Transient)
+	FShooterPresentationConfiguration SuitTransitionConfiguration;
+	bool bSuitTransitionCommitted = false;
+	bool bSuitTransitionCommitInProgress = false;
+	bool bSuitTransitionCancelRequested = false;
+	bool bSuitTransitionShooterReady = false;
+	bool bSuitTransitionPartnerReady = false;
+	double SuitTransitionPhaseStartedAt = 0.0;
+	FTimerHandle SuitTransitionMinimumTimer;
+	FTimerHandle SuitTransitionTimeoutTimer;
+
 	bool ResolvePresentationConfiguration(bool bUseSuitPresentation,
 		FShooterPresentationConfiguration& OutConfiguration, FString& OutError,
 		USkeletalMesh* LegacyFirstPersonMesh = nullptr, USkeletalMesh* LegacyThirdPersonMesh = nullptr) const;

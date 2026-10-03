@@ -179,6 +179,8 @@ void AFirstPersonCharacter::BeginPlay()
 
 void AFirstPersonCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	OnSuitTransitionParticipantInvalidated.Broadcast(this);
+	OnSuitTransitionParticipantInvalidated.Clear();
 	if (BoundSettingsSubsystem)
 	{
 		BoundSettingsSubsystem->OnMouseSensitivityChanged.RemoveAll(this);
@@ -298,6 +300,10 @@ void AFirstPersonCharacter::HandleWidgetConfirmedInput()
 
 void AFirstPersonCharacter::DoMove(float Right, float Forward)
 {
+	if (IsSuitTransitionBlocked())
+	{
+		return;
+	}
 	if (const AShooterCharacter* ShooterCharacter = Cast<AShooterCharacter>(this))
 	{
 		if (ShooterCharacter->GetMovementState() == EMovementState::Slide)
@@ -326,6 +332,10 @@ void AFirstPersonCharacter::DoAim(float Yaw, float Pitch)
 
 bool AFirstPersonCharacter::CanInteract() const
 {
+	if (IsSuitTransitionBlocked())
+	{
+		return false;
+	}
 	return true;
 }
 
@@ -535,6 +545,11 @@ void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor)
 			return;
 		}
 
+		// true는 비동기 대상의 예약 수락일 수 있다. 성공 UI/이벤트는 실제 commit 경로에서 보낸다.
+		if (Interactable->DefersInteractionCompletion())
+		{
+			return;
+		}
 		const EInteractionFlowResult FlowResult =
 			!bHoldInteraction && InteractableComponent->RequiresHoldInteract()
 				? EInteractionFlowResult::HoldReady
@@ -735,6 +750,104 @@ void AFirstPersonCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
 	DOREPLIFETIME(AFirstPersonCharacter, CurrentWeapon);
+	DOREPLIFETIME(AFirstPersonCharacter, SuitTransitionBlockId);
+}
+
+void AFirstPersonCharacter::CompleteDeferredInteraction(AActor* TargetActor, bool bSucceeded)
+{
+	// 비동기 대상은 ServerInteract의 즉시 성공 통지를 건너뛴다. 실제 commit/실패가 확정된 경로에서만 호출한다.
+	if (!HasAuthority() || !IsValid(TargetActor))
+	{
+		return;
+	}
+	if (!bSucceeded)
+	{
+		ServerCancelHoldInteract_Implementation(TargetActor);
+		ClientOnHoldInteractFailed(TargetActor);
+		return;
+	}
+	if (IInteractableInterface* Interactable = Cast<IInteractableInterface>(TargetActor))
+	{
+		if (UInteractableComponent* Component = Interactable->GetInteractableComponent())
+		{
+			if (Component->RequiresHoldInteract())
+			{
+				Component->CommitHoldInteraction(this);
+			}
+			ClientOnInteractSucceeded(TargetActor, EInteractionFlowResult::Completed);
+		}
+	}
+}
+
+bool AFirstPersonCharacter::AcquireSuitTransitionBlock(const FGuid& TransitionId)
+{
+	if (!HasAuthority() || !TransitionId.IsValid() || IsSuitTransitionBlocked())
+	{
+		return false;
+	}
+	SuitTransitionBlockId = TransitionId;
+	// 서버도 클라이언트 RepNotify와 같은 취소/이동 정지 경로를 즉시 실행한다.
+	OnRep_SuitTransitionBlockId();
+	ForceNetUpdate();
+	return true;
+}
+
+void AFirstPersonCharacter::ReleaseSuitTransitionBlock(const FGuid& TransitionId)
+{
+	// 차단을 획득한 전환 ID만 해제할 수 있다. 이전 전환의 늦은 종료 요청이 새 전환을 풀지 못하게 한다.
+	if (!HasAuthority() || !TransitionId.IsValid() || SuitTransitionBlockId != TransitionId)
+	{
+		return;
+	}
+	SuitTransitionBlockId.Invalidate();
+	OnRep_SuitTransitionBlockId();
+	ForceNetUpdate();
+}
+
+void AFirstPersonCharacter::OnRep_SuitTransitionBlockId()
+{
+	UCharacterMovementComponent* Movement = GetCharacterMovement();
+	if (IsSuitTransitionBlocked())
+	{
+		// Slide/비행 등 기존 행동 취소가 이동 모드를 바꿀 수 있어, 취소 후의 복구 가능한 모드를 기록한다.
+		PrepareForSuitTransition();
+		StopJumping();
+		ConsumeMovementInputVector();
+		if (!bSuitTransitionOwnsMovementStop)
+		{
+			// 시작부터 MOVE_None이었다면 이 전환이 멈춘 것이 아니므로 종료 시 이동 모드를 복구하지 않는다.
+			MovementModeBeforeSuitTransition = Movement->MovementMode;
+			CustomMovementModeBeforeSuitTransition = Movement->CustomMovementMode;
+			bSuitTransitionOwnsMovementStop = Movement->MovementMode != MOVE_None;
+		}
+		Movement->StopMovementImmediately();
+		Movement->DisableMovement();
+	}
+	else
+	{
+		// 다른 원인의 이동 정지/사망/Reboot는 해제하지 않는다. 이 전환이 멈춘 살아 있는 Pawn만 복구한다.
+		if (bSuitTransitionOwnsMovementStop && !IsActorBeingDestroyed() && Movement->MovementMode == MOVE_None
+			&& CanResumeMovementAfterSuitTransition())
+		{
+			Movement->SetMovementMode(MovementModeBeforeSuitTransition, CustomMovementModeBeforeSuitTransition);
+		}
+		bSuitTransitionOwnsMovementStop = false;
+	}
+	OnSuitTransitionBlockChanged();
+}
+
+void AFirstPersonCharacter::PrepareForSuitTransition()
+{
+	if (HasAuthority() && CurrentWeapon)
+	{
+		CurrentWeapon->StopAttack();
+	}
+}
+
+void AFirstPersonCharacter::UnPossessed()
+{
+	OnSuitTransitionParticipantInvalidated.Broadcast(this);
+	Super::UnPossessed();
 }
 
 EWeaponType AFirstPersonCharacter::GetWeaponType() const

@@ -217,7 +217,8 @@ bool UShooterInventoryComponent::EquipSuitRifle(AWeaponBase* RifleWeapon)
 		PreviousPrimaryWeapon->OnOwnerLost();
 	}
 
-	ApplyWeaponToSlot(RifleWeapon, Slot, /*bPlayEquipMontage=*/true);
+	// 암전 commit에서는 장착 Notify 없이 부착/표시를 완료한다. 새 입력은 전환 차단이 계속 막는다.
+	ApplyWeaponToSlot(RifleWeapon, Slot, /*bPlayEquipMontage=*/!ShooterCharacter->IsSuitTransitionBlocked());
 
 	return ShooterCharacter->CurrentWeapon == RifleWeapon;
 }

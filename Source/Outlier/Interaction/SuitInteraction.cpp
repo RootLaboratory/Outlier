@@ -64,6 +64,10 @@ void ASuitInteraction::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	if (HasAuthority())
 	{
+		if (AShooterCharacter* Shooter = ReservedShooter.Get())
+		{
+			Shooter->CancelSuitTransition();
+		}
 		DestroyStoredWeapons();
 	}
 
@@ -87,15 +91,70 @@ bool ASuitInteraction::Interact(AFirstPersonCharacter* Interactor)
 		return false;
 	}
 
-	if (!ApplySuit(ShooterCharacter))
+	// Interaction은 예약 요청만 시작한다. 암전 완료 대기/취소의 수명은 Shooter가 관리하고 지급은 나중에 commit한다.
+	return ShooterCharacter->BeginSuitTransition(this, ShooterFirstPersonMesh, ShooterThirdPersonMesh);
+}
+
+bool ASuitInteraction::CanReserveFor(AShooterCharacter* ShooterCharacter) const
+{
+	const APartnerCharacter* Partner = ShooterCharacter ? ShooterCharacter->GetPartnerCharacter() : nullptr;
+	return HasAuthority() && !bConsumed && !ReservedShooter.IsValid()
+		&& IsValid(ShooterCharacter) && IsValid(Partner) && !Partner->GetCurrentWeapon()
+		&& ShooterCharacter->GetInventoryComponent() && InteractableComponent
+		&& InteractableComponent->CanInteract(ShooterCharacter->GetOwnedGameplayTagsForQuery())
+		&& IsValid(StoredShooterRifle) && IsValid(StoredPartnerWeapon)
+		&& StoredShooterRifle->GetWeaponType() == EWeaponType::Rifle
+		&& StoredShooterRifle->CanBePickedUpBy(ShooterCharacter)
+		&& StoredShooterRifle->GetOwner() == this && StoredPartnerWeapon->GetOwner() == this;
+}
+
+bool ASuitInteraction::ReserveFor(AShooterCharacter* ShooterCharacter)
+{
+	if (!CanReserveFor(ShooterCharacter))
 	{
 		return false;
 	}
+	// 예약 중에는 다른 요청을 거부하지만 보관 무기의 소유권/획득 상태는 그대로 유지한다.
+	ReservedShooter = ShooterCharacter;
+	return true;
+}
 
-	UOutlierAudioSubsystem::PlayTaggedAtLocationFromServer(
-		this,
+bool ASuitInteraction::IsReservedFor(const AShooterCharacter* ShooterCharacter) const
+{
+	return !bConsumed && ReservedShooter.Get() == ShooterCharacter;
+}
+
+void ASuitInteraction::ReleaseReservation(AShooterCharacter* ShooterCharacter)
+{
+	if (HasAuthority() && ReservedShooter.Get() == ShooterCharacter)
+	{
+		ReservedShooter.Reset();
+	}
+}
+
+bool ASuitInteraction::CommitReservedSuit(AShooterCharacter* ShooterCharacter)
+{
+	// 암전 대기 사이 무기 소유권이나 상호작용 조건이 바뀔 수 있으므로 실제 외형 변경/지급 직전에 다시 확인한다.
+	if (!HasAuthority() || !IsValid(ShooterCharacter) || !IsReservedFor(ShooterCharacter)
+		|| !IsValid(StoredShooterRifle) || !IsValid(StoredPartnerWeapon)
+		|| StoredShooterRifle->GetWeaponType() != EWeaponType::Rifle
+		|| !InteractableComponent
+		|| !InteractableComponent->CanInteract(ShooterCharacter->GetOwnedGameplayTagsForQuery())
+		|| (InteractableComponent->RequiresHoldInteract()
+			&& !InteractableComponent->CanCommitHoldInteraction(ShooterCharacter))
+		|| StoredShooterRifle->GetOwner() != this || StoredPartnerWeapon->GetOwner() != this
+		|| !StoredShooterRifle->CanBePickedUpBy(ShooterCharacter) || !ApplySuit(ShooterCharacter))
+	{
+		return false;
+	}
+	// 성공은 예약 시점이 아닌 지급 완료 시점에 한 번만 확정한다. 통지 전부터 재진입을 막는다.
+	bConsumed = true;
+	ReservedShooter.Reset();
+	ShooterCharacter->CompleteDeferredInteraction(this, true);
+	UOutlierAudioSubsystem::PlayTaggedAtLocationFromServer(this,
 		FGameplayTag::RequestGameplayTag(TEXT("Audio.Type.Interactable")),
 		FGameplayTag::RequestGameplayTag(TEXT("Audio.Context.Object.Get.Suit")));
+	// 여기서 Interaction은 소비된다. 이후 Applying/FadingIn 대기는 이 Actor가 아닌 Shooter에 남아 있다.
 	ConsumeInteraction();
 	return true;
 }

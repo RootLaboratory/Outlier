@@ -359,13 +359,14 @@ void UShooterCombatComponent::ClearPendingSprintExitFire()
 bool UShooterCombatComponent::IsActionLockBlockingAimFire(const AShooterCharacter& ShooterCharacter) const
 {
 	const EShooterActionLock ActionLock = ShooterCharacter.GetActionLock();
-	return ActionLock != EShooterActionLock::None && ActionLock != EShooterActionLock::Slide;
+	return ShooterCharacter.IsSuitTransitionBlocked()
+		|| (ActionLock != EShooterActionLock::None && ActionLock != EShooterActionLock::Slide);
 }
 
 void UShooterCombatComponent::TryStartAttack()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (!ShooterCharacter)
+	if (!ShooterCharacter || ShooterCharacter->IsSuitTransitionBlocked())
 	{
 		return;
 	}
@@ -960,7 +961,7 @@ void UShooterCombatComponent::HandleReloadMontageEnded(UAnimMontage* Montage, bo
 void UShooterCombatComponent::HandleReloadCommitNotify()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (!ShooterCharacter)
+	if (!ShooterCharacter || ShooterCharacter->IsSuitTransitionBlocked())
 	{
 		return;
 	}
@@ -1077,7 +1078,7 @@ bool UShooterCombatComponent::CanAimInCurrentState() const
 bool UShooterCombatComponent::CanReloadInCurrentState() const
 {
 	const AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (!ShooterCharacter || ShooterCharacter->IsDead())
+	if (!ShooterCharacter || ShooterCharacter->IsDead() || ShooterCharacter->IsSuitTransitionBlocked())
 	{
 		return false;
 	}
@@ -1093,7 +1094,8 @@ bool UShooterCombatComponent::CanReloadInCurrentState() const
 bool UShooterCombatComponent::CanFireInCurrentState() const
 {
 	const AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (!ShooterCharacter || ShooterCharacter->IsDead() || ShooterCharacter->CurrentWeapon == nullptr)
+	if (!ShooterCharacter || ShooterCharacter->IsDead() || ShooterCharacter->IsSuitTransitionBlocked()
+		|| ShooterCharacter->CurrentWeapon == nullptr)
 	{
 		return false;
 	}

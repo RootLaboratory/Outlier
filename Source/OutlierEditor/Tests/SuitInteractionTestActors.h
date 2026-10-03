@@ -17,6 +17,8 @@ public:
 		WeaponType = EWeaponType::Rifle;
 	}
 
+	void SetTestWeaponType(EWeaponType InWeaponType) { WeaponType = InWeaponType; }
+
 	void ConfigureProceduralValues(UProceduralAnimValues* Common, UProceduralAnimValues* PreSuit, UProceduralAnimValues* Suit)
 	{
 		FirstPersonProceduralValues = Common;

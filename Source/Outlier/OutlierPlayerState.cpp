@@ -116,6 +116,8 @@ void AOutlierPlayerState::SetPairId(int32 NewPairId)
 	}
 
 	PairId = NewPairId;
+	// 전환 등 Pair 수명에 묶인 작업이 이전 Pair의 완료 응답을 기다리지 않도록 알린다.
+	OnPlayerCharactersChanged.Broadcast(this);
 	ResetStatAllocatorUIState();
 	SetNodeCountInternal(NewPairId == INDEX_NONE ? 0 : FMath::Max(0, InitialNodeCount));
 	SetStatAllocatorExitPending(false);

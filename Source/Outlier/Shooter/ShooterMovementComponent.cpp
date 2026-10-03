@@ -27,7 +27,7 @@ void UShooterMovementComponent::GetLifetimeReplicatedProps(TArray<FLifetimePrope
 void UShooterMovementComponent::HandleSprintPressed()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (!ShooterCharacter || ShooterCharacter->IsDead()
+	if (!ShooterCharacter || ShooterCharacter->IsDead() || ShooterCharacter->IsSuitTransitionBlocked()
 		|| !ShooterCharacter->GetCharacterMovement()->IsMovingOnGround())
 	{
 		return;
@@ -84,7 +84,8 @@ void UShooterMovementComponent::HandleCrouchReleased()
 void UShooterMovementComponent::RequestCrouchOrSlide()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (!ShooterCharacter || !ShooterCharacter->GetCharacterMovement()->IsMovingOnGround())
+	if (!ShooterCharacter || ShooterCharacter->IsSuitTransitionBlocked()
+		|| !ShooterCharacter->GetCharacterMovement()->IsMovingOnGround())
 	{
 		return;
 	}
@@ -130,7 +131,7 @@ void UShooterMovementComponent::RequestCrouchOrSlide()
 void UShooterMovementComponent::RequestUncrouch()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (!ShooterCharacter)
+	if (!ShooterCharacter || ShooterCharacter->IsSuitTransitionBlocked())
 	{
 		return;
 	}
@@ -265,7 +266,7 @@ void UShooterMovementComponent::HandleSlideWallHit(const FHitResult& Hit)
 void UShooterMovementComponent::DoJumpStart()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (!ShooterCharacter)
+	if (!ShooterCharacter || ShooterCharacter->IsSuitTransitionBlocked())
 	{
 		return;
 	}
@@ -500,6 +501,7 @@ bool UShooterMovementComponent::CanStartSlide() const
 	const AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 	return ShooterCharacter
 		&& !ShooterCharacter->IsDead()
+		&& !ShooterCharacter->IsSuitTransitionBlocked()
 		&& !bIsSliding
 		&& ShooterCharacter->SlideDuration > KINDA_SMALL_NUMBER
 		&& !ShooterCharacter->GetCharacterMovement()->IsFalling()
@@ -514,6 +516,7 @@ bool UShooterMovementComponent::CanSprint() const
 	const AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 
 	return ShooterCharacter && ShooterCharacter->GetCharacterMovement()->IsMovingOnGround()
+		&& !ShooterCharacter->IsSuitTransitionBlocked()
 		&& !ShooterCharacter->IsDead() && !ShooterCharacter->GetCharacterMovement()->IsCrouching()
 		&& !bWantsToCrouch && !bIsSliding
 		&& !ShooterCharacter->WantsToAim()

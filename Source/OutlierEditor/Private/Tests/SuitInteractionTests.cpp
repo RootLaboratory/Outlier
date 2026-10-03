@@ -15,6 +15,11 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "Misc/AutomationTest.h"
+#include "GameFramework/PlayerController.h"
+#include "GameFramework/CharacterMovementComponent.h"
+#include "GameplayTags/OutlierGameplayTags.h"
+#include "AbilitySystemComponent.h"
+#include "TimerManager.h"
 #include "ReferenceSkeleton.h"
 #include "OutlierPlayerState.h"
 #include "Save/OutlierCheckpointSnapshot.h"
@@ -55,6 +60,20 @@ struct FScopedSuitInteractionTestWorld
 		}
 		World->InitializeActorsForPlay(FURL());
 		return true;
+	}
+
+	void AdvanceTime(float Duration)
+	{
+		// 동기 테스트는 엔진 프레임을 넘기지 않는다. TimerManager의 프레임당 1회 Tick 제한을
+		// 피하도록 테스트 프레임을 진행하고, 종료 시 전역 카운터를 원래 값으로 복구한다.
+		TGuardValue<uint64> RestoreFrameCounter(GFrameCounter, GFrameCounter);
+		// 첫 Tick은 Pending 타이머를 활성화한다. 큰 Delta 한 번 대신 작은 프레임들로 만료까지 진행한다.
+		constexpr float Step = 1.0f / 60.0f;
+		for (float Remaining = Duration; Remaining > KINDA_SMALL_NUMBER; Remaining -= Step)
+		{
+			++GFrameCounter;
+			World->Tick(LEVELTICK_All, FMath::Min(Step, Remaining));
+		}
 	}
 
 	void Shutdown()
@@ -209,6 +228,15 @@ bool FOutlierSuitInteractionEquipTest::RunTest(const FString& Parameters)
 
 	Shooter->SetPartnerCharacter(Partner);
 	Partner->SetShooterCharacter(Shooter);
+	APlayerController* ShooterController = World->SpawnActor<APlayerController>();
+	APlayerController* PartnerController = World->SpawnActor<APlayerController>();
+	if (!TestNotNull(TEXT("Shooter Controller spawns"), ShooterController)
+		|| !TestNotNull(TEXT("Partner Controller spawns"), PartnerController))
+	{
+		return false;
+	}
+	ShooterController->Possess(Shooter);
+	PartnerController->Possess(Partner);
 	AOutlierPlayerState* ShooterPS = World->SpawnActor<AOutlierPlayerState>();
 	AOutlierPlayerState* PartnerPS = World->SpawnActor<AOutlierPlayerState>();
 	if (!TestNotNull(TEXT("Shooter PlayerState spawns"), ShooterPS)
@@ -218,6 +246,10 @@ bool FOutlierSuitInteractionEquipTest::RunTest(const FString& Parameters)
 	}
 	Shooter->SetPlayerState(ShooterPS);
 	Partner->SetPlayerState(PartnerPS);
+	ShooterPS->SetPlayerRole(EOutlierPlayerRole::Shooter);
+	PartnerPS->SetPlayerRole(EOutlierPlayerRole::Partner);
+	ShooterPS->SetPairId(0);
+	PartnerPS->SetPairId(0);
 	ShooterPS->SetShooterCharacter(Shooter);
 	ShooterPS->SetPartnerCharacter(Partner);
 	PartnerPS->SetShooterCharacter(Shooter);
@@ -268,7 +300,25 @@ bool FOutlierSuitInteractionEquipTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Rejected acquisition does not consume the Interaction"), Suit->IsHidden());
 	TestTrue(TEXT("Rejected acquisition keeps stored Shooter Rifle"), StoredShooterRifle && StoredShooterRifle->IsHidden());
 	Shooter->SuitPresentation = SuitConfiguration;
-	TestTrue(TEXT("Shooter completes the Suit interaction immediately"), Suit->Interact(Shooter));
+	// 이 테스트의 완료 신호는 서버 경계에 명시적으로 넣는다. 런타임에서는 Controller 연결 없이는 생성되지 않는다.
+	Shooter->SuitFadeOutDuration = 0.0f;
+	Shooter->SuitBlackHoldDuration = 0.0f;
+	Shooter->SuitFadeInDuration = 0.0f;
+	TestTrue(TEXT("Shooter reserves the Suit interaction"), Suit->Interact(Shooter));
+	const FGuid TransitionId = Shooter->GetSuitTransitionId();
+	TestFalse(TEXT("Reservation is not acquisition"), ShooterPS->GetAcquiredSuit());
+	TestNull(TEXT("Reservation grants no weapon"), Shooter->GetCurrentWeapon());
+	TestTrue(TEXT("Reservation blocks both participants"), Shooter->IsSuitTransitionBlocked() && Partner->IsSuitTransitionBlocked());
+	Shooter->AcknowledgeSuitTransition(ShooterController, TransitionId, ESuitTransitionPhase::FadingOut);
+	TestFalse(TEXT("One ready participant cannot commit"), ShooterPS->GetAcquiredSuit());
+	Shooter->AcknowledgeSuitTransition(PartnerController, TransitionId, ESuitTransitionPhase::FadingOut);
+	TestTrue(TEXT("Committed transition waits for applied presentation"), Shooter->GetSuitTransitionPhase() == ESuitTransitionPhase::Applying);
+	Shooter->AcknowledgeSuitTransition(ShooterController, TransitionId, ESuitTransitionPhase::Applying);
+	Shooter->AcknowledgeSuitTransition(PartnerController, TransitionId, ESuitTransitionPhase::Applying);
+	Shooter->AcknowledgeSuitTransition(ShooterController, TransitionId, ESuitTransitionPhase::FadingIn);
+	Shooter->AcknowledgeSuitTransition(PartnerController, TransitionId, ESuitTransitionPhase::FadingIn);
+	TestFalse(TEXT("Finished transition releases Shooter block"), Shooter->IsSuitTransitionBlocked());
+	TestFalse(TEXT("Finished transition releases Partner block"), Partner->IsSuitTransitionBlocked());
 	TestTrue(TEXT("Acquisition replaces the PreSuit ABP with the Suit ABP"),
 		Shooter->GetFirstPersonMesh()->GetAnimClass() == SuitConfiguration.FirstPersonAnimClass.Get());
 	TestTrue(TEXT("Acquisition publishes the Suit presentation"), Shooter->GetPresentation() == EShooterPresentation::Suit);
@@ -811,6 +861,219 @@ bool FOutlierShooterPresentationAnimationTest::RunTest(const FString& Parameters
 	TestFalse(TEXT("Old reload instance binding is cleared"), Combat->BoundFirstPersonReloadInstance.IsValid());
 	Combat->HandleReloadMontageEnded(PreFP, false);
 	TestFalse(TEXT("Old montage completion cannot restore reload"), Combat->IsReloading());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierSuitTransitionTest,
+	"Outlier.Interaction.Suit.Transition",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierSuitTransitionTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FScopedSuitInteractionTestWorld TestWorld;
+	if (!TestWorld.Initialize(*this)) { return false; }
+	FShooterPresentationConfiguration Configuration;
+	if (!LoadSuitPresentationConfiguration(*this, Configuration)) { return false; }
+	UWorld* World = TestWorld.World;
+	UClass* ShooterClass = LoadClass<AShooterCharacter>(nullptr,
+		TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	UClass* PartnerClass = LoadClass<APartnerCharacter>(nullptr,
+		TEXT("/Game/Blueprints/Partner/BP_PartnerCharacter.BP_PartnerCharacter_C"));
+	AShooterCharacter* Shooter = ShooterClass ? World->SpawnActorDeferred<AShooterCharacter>(
+		ShooterClass, FTransform::Identity, nullptr, nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn) : nullptr;
+	if (!TestNotNull(TEXT("Shooter spawns"), Shooter)) { return false; }
+	Shooter->PreSuitPresentation = Configuration;
+	Shooter->SuitPresentation = Configuration;
+	Shooter->FinishSpawning(FTransform::Identity);
+	APartnerCharacter* Partner = PartnerClass ? World->SpawnActor<APartnerCharacter>(PartnerClass) : nullptr;
+	APlayerController* ShooterController = World->SpawnActor<APlayerController>();
+	APlayerController* PartnerController = World->SpawnActor<APlayerController>();
+	APlayerController* OtherController = World->SpawnActor<APlayerController>();
+	AOutlierPlayerState* ShooterPS = World->SpawnActor<AOutlierPlayerState>();
+	AOutlierPlayerState* PartnerPS = World->SpawnActor<AOutlierPlayerState>();
+	if (!Partner || !ShooterController || !PartnerController || !OtherController || !ShooterPS || !PartnerPS)
+	{
+		AddError(TEXT("Transition participants did not spawn"));
+		return false;
+	}
+	if (!Shooter->HasActorBegunPlay()) { Shooter->DispatchBeginPlay(); }
+	if (!Partner->HasActorBegunPlay()) { Partner->DispatchBeginPlay(); }
+	ShooterController->Possess(Shooter);
+	PartnerController->Possess(Partner);
+	Shooter->SetPlayerState(ShooterPS);
+	Partner->SetPlayerState(PartnerPS);
+	ShooterPS->SetPlayerRole(EOutlierPlayerRole::Shooter);
+	PartnerPS->SetPlayerRole(EOutlierPlayerRole::Partner);
+	ShooterPS->SetPairId(0);
+	PartnerPS->SetPairId(0);
+	ShooterPS->SetShooterCharacter(Shooter);
+	ShooterPS->SetPartnerCharacter(Partner);
+	PartnerPS->SetShooterCharacter(Shooter);
+	PartnerPS->SetPartnerCharacter(Partner);
+	ASuitInteractionTestActor* Suit = World->SpawnActorDeferred<ASuitInteractionTestActor>(
+		ASuitInteractionTestActor::StaticClass(), FTransform::Identity, nullptr, nullptr,
+		ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+	if (!TestNotNull(TEXT("Suit spawns"), Suit)) { return false; }
+	Suit->Configure(NewObject<UStaticMesh>(GetTransientPackage()), Configuration.FirstPersonMesh, Configuration.ThirdPersonMesh);
+	Suit->FinishSpawning(FTransform::Identity);
+	if (!Suit->HasActorBegunPlay()) { Suit->DispatchBeginPlay(); }
+	Shooter->SuitFadeOutDuration = 0.2f;
+	Shooter->SuitBlackHoldDuration = 0.0f;
+	Shooter->SuitFadeInDuration = 0.0f;
+	Shooter->SuitTransitionResponseTimeout = 0.5f;
+	AWeaponBase* StoredRifle = ReadObjectProperty<AWeaponBase>(Suit, TEXT("StoredShooterRifle"));
+	AWeaponBase* StoredPartnerWeapon = ReadObjectProperty<AWeaponBase>(Suit, TEXT("StoredPartnerWeapon"));
+	if (!StoredRifle || !StoredPartnerWeapon) { AddError(TEXT("Stored weapons did not spawn")); return false; }
+
+	Shooter->SetRole(ROLE_SimulatedProxy);
+	TestFalse(TEXT("Non-authority request cannot reserve"), Suit->Interact(Shooter));
+	TestFalse(TEXT("Non-authority request grants nothing"), ShooterPS->GetAcquiredSuit());
+	Shooter->SetRole(ROLE_Authority);
+	Shooter->SuitFadeOutDuration = -1.0f;
+	TestFalse(TEXT("Negative timing rejects reservation"), Suit->Interact(Shooter));
+	Shooter->SuitFadeOutDuration = 0.2f;
+	Shooter->SuitTransitionResponseTimeout = Shooter->SuitFadeOutDuration;
+	TestFalse(TEXT("Timeout equal to minimum duration rejects reservation"), Suit->Interact(Shooter));
+	Shooter->SuitTransitionResponseTimeout = 0.5f;
+	TestTrue(TEXT("Valid request reserves"), Suit->Interact(Shooter));
+	FGuid Id = Shooter->GetSuitTransitionId();
+	TestTrue(TEXT("Reserved participants remain valid while transition owns their blocks"),
+		Shooter->ValidateSuitTransitionParticipants(false));
+	TestFalse(TEXT("Reserved participants cannot be treated as a new reservation"),
+		Shooter->ValidateSuitTransitionParticipants(true));
+	Shooter->SuitTransitionPartnerController = OtherController;
+	TestFalse(TEXT("Different controller ownership invalidates participants"),
+		Shooter->ValidateSuitTransitionParticipants(false));
+	Shooter->SuitTransitionPartnerController = PartnerController;
+	TestTrue(TEXT("Restored controller ownership validates participants"),
+		Shooter->ValidateSuitTransitionParticipants(false));
+	TestFalse(TEXT("Duplicate interaction rejects"), Suit->Interact(Shooter));
+	TestTrue(TEXT("Both participants blocked"), Shooter->IsSuitTransitionBlocked() && Partner->IsSuitTransitionBlocked());
+	TestFalse(TEXT("Shooter cannot interact"), Shooter->CanInteract());
+	TestFalse(TEXT("Partner cannot accept input"), Partner->CanAcceptInput());
+	TestFalse(TEXT("Equip requests are blocked"), Shooter->CanStartAction(EShooterActionLock::Equip));
+	TestFalse(TEXT("Reload requests are blocked"), Shooter->CanReloadInCurrentState());
+	TestFalse(TEXT("Suit abilities are blocked"), Shooter->IsSuitUsable());
+	Shooter->ReleaseSuitTransitionBlock(FGuid::NewGuid());
+	TestTrue(TEXT("Foreign handle cannot unlock"), Shooter->IsSuitTransitionBlocked());
+	Shooter->AcknowledgeSuitTransition(OtherController, Id, ESuitTransitionPhase::FadingOut);
+	Shooter->AcknowledgeSuitTransition(ShooterController, FGuid::NewGuid(), ESuitTransitionPhase::FadingOut);
+	Shooter->AcknowledgeSuitTransition(ShooterController, Id, ESuitTransitionPhase::Applying);
+	TestFalse(TEXT("Invalid ready responses ignored"), Shooter->bSuitTransitionShooterReady);
+	Shooter->AcknowledgeSuitTransition(ShooterController, Id, ESuitTransitionPhase::FadingOut);
+	Shooter->AcknowledgeSuitTransition(ShooterController, Id, ESuitTransitionPhase::FadingOut);
+	TestFalse(TEXT("Duplicate Shooter ready is not Partner ready"), Shooter->bSuitTransitionPartnerReady);
+	Shooter->AcknowledgeSuitTransition(PartnerController, Id, ESuitTransitionPhase::FadingOut);
+	TestFalse(TEXT("Readiness cannot bypass minimum server duration"), ShooterPS->GetAcquiredSuit());
+	TestTrue(TEXT("Still fading out"), Shooter->GetSuitTransitionPhase() == ESuitTransitionPhase::FadingOut);
+	Shooter->BeginActionLock(EShooterActionLock::Equip);
+	Shooter->CancelSuitTransition();
+	TestTrue(TEXT("Cleanup preserves a separately assigned action lock"), Shooter->GetActionLock() == EShooterActionLock::Equip);
+	Shooter->EndActionLock(EShooterActionLock::Equip);
+	TestFalse(TEXT("Cancel releases both blocks"), Shooter->IsSuitTransitionBlocked() || Partner->IsSuitTransitionBlocked());
+	TestTrue(TEXT("Cancel preserves stored weapons"), StoredRifle->IsHidden() && StoredPartnerWeapon->IsHidden());
+	TestFalse(TEXT("Cancel does not acquire"), ShooterPS->GetAcquiredSuit());
+	TestTrue(TEXT("Cancel releases reservation"), Suit->CanReserveFor(Shooter));
+
+	TestTrue(TEXT("Unconnected transition can start"), Suit->Interact(Shooter));
+	// 대괄호가 포함된 로그 접두사는 정규식이 아닌 일반 문자열로 비교한다.
+	AddExpectedErrorPlain(TEXT("[SuitTransition] Timeout"), EAutomationExpectedErrorFlags::Contains, 2);
+	const uint64 FrameCounterBeforeAdvance = GFrameCounter;
+	TestWorld.AdvanceTime(0.6f);
+	TestTrue(TEXT("Test clock restores the engine frame counter"), GFrameCounter == FrameCounterBeforeAdvance);
+	TestTrue(TEXT("Unconnected timeout returns Idle"), Shooter->GetSuitTransitionPhase() == ESuitTransitionPhase::Idle);
+	TestFalse(TEXT("Timeout grants nothing"), ShooterPS->GetAcquiredSuit());
+	TestNull(TEXT("Timeout does not equip Rifle"), Shooter->GetCurrentWeapon());
+	TestTrue(TEXT("Timeout makes reservation retryable"), Suit->CanReserveFor(Shooter));
+
+	TestTrue(TEXT("Pair departure starts from reserved state"), Suit->Interact(Shooter));
+	PartnerPS->SetPairId(1);
+	TestFalse(TEXT("Pair departure cancels immediately"), Shooter->GetSuitTransitionId().IsValid());
+	PartnerPS->SetPairId(0);
+	TestTrue(TEXT("Controller departure starts from reserved state"), Suit->Interact(Shooter));
+	PartnerController->UnPossess();
+	TestFalse(TEXT("Controller departure cancels immediately"), Shooter->GetSuitTransitionId().IsValid());
+	PartnerController->Possess(Partner);
+	Partner->SetPlayerState(PartnerPS);
+
+	TestTrue(TEXT("Reboot case reserves"), Suit->Interact(Shooter));
+	UAbilitySystemComponent* PartnerASC = Partner->GetAbilitySystemComponent();
+	PartnerASC->AddLooseGameplayTag(OutlierGameplayTags::State::Rebooting());
+	TestFalse(TEXT("Reboot cancels transition"), Shooter->GetSuitTransitionId().IsValid());
+	TestFalse(TEXT("Transition cleanup does not release Reboot"), Partner->CanAcceptInput());
+	PartnerASC->RemoveLooseGameplayTag(OutlierGameplayTags::State::Rebooting());
+
+	Shooter->SuitFadeOutDuration = 0.0f;
+	TestTrue(TEXT("Configuration change case reserves"), Suit->Interact(Shooter));
+	Id = Shooter->GetSuitTransitionId();
+	Shooter->SuitPresentation.ThirdPersonAnimClass = nullptr;
+	Shooter->AcknowledgeSuitTransition(ShooterController, Id, ESuitTransitionPhase::FadingOut);
+	Shooter->AcknowledgeSuitTransition(PartnerController, Id, ESuitTransitionPhase::FadingOut);
+	TestFalse(TEXT("Changed configuration cancels before grants"), Shooter->GetSuitTransitionId().IsValid());
+	TestFalse(TEXT("Changed configuration does not acquire"), ShooterPS->GetAcquiredSuit());
+	TestNull(TEXT("Changed configuration does not equip"), Shooter->GetCurrentWeapon());
+	Shooter->SuitPresentation = Configuration;
+	TestTrue(TEXT("Rejected commit releases reservation"), Suit->CanReserveFor(Shooter));
+
+	ASuitInteractionTestActor* RemovedSuit = World->SpawnActorDeferred<ASuitInteractionTestActor>(
+		ASuitInteractionTestActor::StaticClass(), FTransform::Identity, nullptr, nullptr,
+		ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+	if (!TestNotNull(TEXT("Removable Interaction spawns"), RemovedSuit)) { return false; }
+	RemovedSuit->Configure(NewObject<UStaticMesh>(GetTransientPackage()), Configuration.FirstPersonMesh, Configuration.ThirdPersonMesh);
+	RemovedSuit->FinishSpawning(FTransform::Identity);
+	if (!RemovedSuit->HasActorBegunPlay()) { RemovedSuit->DispatchBeginPlay(); }
+	TestTrue(TEXT("Interaction EndPlay case reserves"), RemovedSuit->Interact(Shooter));
+	RemovedSuit->Destroy();
+	TestFalse(TEXT("Pre-commit Interaction EndPlay cancels"), Shooter->GetSuitTransitionId().IsValid());
+	TestFalse(TEXT("Pre-commit EndPlay releases both blocks"), Shooter->IsSuitTransitionBlocked() || Partner->IsSuitTransitionBlocked());
+	TestFalse(TEXT("Pre-commit EndPlay grants nothing"), ShooterPS->GetAcquiredSuit());
+
+	UShooterInventoryComponent* Inventory = Shooter->GetInventoryComponent();
+	ASuitInteractionTestRifle* OldRifle = World->SpawnActor<ASuitInteractionTestRifle>();
+	ASuitInteractionTestRifle* Pistol = World->SpawnActor<ASuitInteractionTestRifle>();
+	ASuitInteractionTestRifle* Melee = World->SpawnActor<ASuitInteractionTestRifle>();
+	if (!OldRifle || !Pistol || !Melee) { AddError(TEXT("Existing loadout did not spawn")); return false; }
+	Pistol->SetTestWeaponType(EWeaponType::Pistol);
+	Melee->SetTestWeaponType(EWeaponType::Melee);
+	for (AWeaponBase* Weapon : { OldRifle, Pistol, Melee })
+	{
+		Inventory->HandleEquipWeapon(Weapon);
+		Shooter->CancelLocalProceduralWeaponSwitch();
+		Shooter->EndActionLock(EShooterActionLock::Equip);
+	}
+	TestTrue(TEXT("Existing loadout occupies all slots"),
+		Inventory->GetWeaponInSlot(EWeaponSlot::Primary) == OldRifle
+		&& Inventory->GetWeaponInSlot(EWeaponSlot::Secondary) == Pistol
+		&& Inventory->GetWeaponInSlot(EWeaponSlot::Melee) == Melee);
+
+	// 최소 시간 경계는 위에서 검사했다. 이 구간은 명시적 완료 응답으로 commit 이후 수명을 검사한다.
+	Shooter->SuitFadeOutDuration = 0.0f;
+	TestTrue(TEXT("Commit case reserves"), Suit->Interact(Shooter));
+	Id = Shooter->GetSuitTransitionId();
+	Shooter->AcknowledgeSuitTransition(ShooterController, Id, ESuitTransitionPhase::FadingOut);
+	Shooter->AcknowledgeSuitTransition(PartnerController, Id, ESuitTransitionPhase::FadingOut);
+	TestTrue(TEXT("Commit acquires both PlayerStates"), ShooterPS->GetAcquiredSuit() && PartnerPS->GetAcquiredSuit());
+	TestTrue(TEXT("Commit grants exact stored Rifle"), Shooter->GetCurrentWeapon() == StoredRifle);
+	TestTrue(TEXT("Commit grants exact stored Partner weapon"), Partner->GetCurrentWeapon() == StoredPartnerWeapon);
+	TestTrue(TEXT("Commit removes old Rifle instead of dropping it"), OldRifle->IsActorBeingDestroyed());
+	TestTrue(TEXT("Commit preserves Pistol and Melee slots"),
+		Inventory->GetWeaponInSlot(EWeaponSlot::Secondary) == Pistol
+		&& Inventory->GetWeaponInSlot(EWeaponSlot::Melee) == Melee
+		&& !Pistol->IsActorBeingDestroyed() && !Melee->IsActorBeingDestroyed());
+	TestTrue(TEXT("Commit retains transition block while applying"), Shooter->IsSuitTransitionBlocked());
+	Shooter->AcknowledgeSuitTransition(PartnerController, Id, ESuitTransitionPhase::FadingOut);
+	TestTrue(TEXT("Old phase cannot regrant"), Shooter->GetCurrentWeapon() == StoredRifle);
+	Suit->Destroy();
+	TestTrue(TEXT("Consumed Interaction teardown does not own transition lifetime"), Shooter->GetSuitTransitionId() == Id);
+	TestWorld.AdvanceTime(0.6f);
+	TestFalse(TEXT("Post-commit timeout releases both blocks"), Shooter->IsSuitTransitionBlocked() || Partner->IsSuitTransitionBlocked());
+	TestTrue(TEXT("Post-commit timeout keeps acquired state"), ShooterPS->GetAcquiredSuit() && PartnerPS->GetAcquiredSuit());
+	TestTrue(TEXT("Post-commit timeout preserves grants"), Shooter->GetCurrentWeapon() == StoredRifle && Partner->GetCurrentWeapon() == StoredPartnerWeapon);
+	TestTrue(TEXT("Post-commit timeout keeps Suit presentation"), Shooter->GetAppliedPresentation() == EShooterPresentation::Suit);
+	Shooter->AcknowledgeSuitTransition(ShooterController, Id, ESuitTransitionPhase::Applying);
+	TestFalse(TEXT("Late response cannot restart"), Shooter->GetSuitTransitionId().IsValid());
 	return true;
 }
 
