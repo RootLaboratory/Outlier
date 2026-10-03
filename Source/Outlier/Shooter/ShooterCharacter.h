@@ -33,10 +33,32 @@ class UOutlierShieldAttributeSet;
 class UDataTable;
 class USphereComponent;
 class USkeletalMesh;
+class UAnimInstance;
 class UNiagaraSystem;
 class UShooterReflectionBarrier;
 class UShooterTeleportLayer;
 struct FOnAttributeChangeData;
+
+USTRUCT(BlueprintType)
+struct OUTLIER_API FShooterPresentationConfiguration
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Presentation")
+	TObjectPtr<USkeletalMesh> FirstPersonMesh = nullptr;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Presentation")
+	TSubclassOf<UAnimInstance> FirstPersonAnimClass;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Presentation")
+	TObjectPtr<USkeletalMesh> ThirdPersonMesh = nullptr;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Presentation")
+	TSubclassOf<UAnimInstance> ThirdPersonAnimClass;
+
+	bool IsEmpty() const;
+	bool Validate(FString& OutError) const;
+};
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnShooterDynamicCrosshairChanged, bool /*bAiming*/);
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnShooterAim, bool /*bAiming*/, int32 /*WeaponStencilValue*/);
@@ -126,6 +148,7 @@ class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbil
 	friend class UShooterCombatComponent;
 	friend class UShooterMovementComponent;
 	friend class FShooterGroundedMovementTest;
+	friend class FShooterPresentationConfigurationTest;
 
 protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
@@ -305,6 +328,15 @@ protected:
 
 	UPROPERTY(ReplicatedUsing = OnRep_SuitMeshes, VisibleAnywhere, BlueprintReadOnly, Category = "Suit|Mesh")
 	TObjectPtr<USkeletalMesh> AppliedSuitThirdPersonMesh;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Suit|Presentation")
+	FShooterPresentationConfiguration PreSuitPresentation;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Suit|Presentation")
+	FShooterPresentationConfiguration SuitPresentation;
+
+	UPROPERTY(Transient)
+	FShooterPresentationConfiguration InitialPresentation;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "GAS|Suit")
 	TObjectPtr<UDataTable> ShooterSuitAbilityDataTable;
@@ -536,6 +568,8 @@ public:
 	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
 	virtual void EquipWeapon(AWeaponBase* Weapon) override;
 	void ApplySuitMeshes(USkeletalMesh* FirstPersonMeshAsset, USkeletalMesh* ThirdPersonMeshAsset);
+	// 로컬 외형만 적용한다. 획득 판정과 상태 복제는 서버 호출 경로에서 처리한다.
+	bool ApplyPresentationConfiguration(bool bUseSuitPresentation);
 	virtual FGameplayTagContainer GetOwnedGameplayTagsForQuery() const override;
 
 	// Read-only Queries
@@ -713,6 +747,10 @@ protected:
 
 	void RefreshFirstPersonShadowPolicy();
 	void RefreshAppliedSuitMeshes();
+	void CaptureInitialPresentation();
+	bool ResolvePresentationConfiguration(bool bUseSuitPresentation,
+		FShooterPresentationConfiguration& OutConfiguration, FString& OutError) const;
+	bool ApplyValidatedPresentationConfiguration(const FShooterPresentationConfiguration& Configuration);
 	void UpdateSlideCameraEffect(float DeltaSeconds);
 
 	// Server RPC

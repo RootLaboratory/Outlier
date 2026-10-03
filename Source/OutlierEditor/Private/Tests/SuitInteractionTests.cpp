@@ -2,6 +2,8 @@
 
 #include "OutlierEditor/Tests/SuitInteractionTestActors.h"
 
+#include "Animation/AnimInstance.h"
+#include "Animation/Skeleton.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Drone/Partner/PartnerCharacter.h"
@@ -12,6 +14,7 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "Misc/AutomationTest.h"
+#include "ReferenceSkeleton.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Shooter/ShooterInventoryComponent.h"
 #include "UObject/UnrealType.h"
@@ -226,6 +229,142 @@ bool FOutlierSuitInteractionEquipTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("Shooter keeps its equipped Rifle"), Shooter->GetCurrentWeapon(), StoredShooterRifle);
 	}
 
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FShooterPresentationConfigurationTest,
+	"Outlier.Animation.Shooter.PresentationConfiguration",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FShooterPresentationConfigurationTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FScopedSuitInteractionTestWorld TestWorld;
+	if (!TestWorld.Initialize(*this))
+	{
+		return false;
+	}
+
+	// Shooter BP의 기본 3P 설정은 비어 있을 수 있다. 테스트 전제는 기존 Suit 에셋으로 명시한다.
+	FShooterPresentationConfiguration TestConfiguration;
+	TestConfiguration.FirstPersonMesh = LoadObject<USkeletalMesh>(nullptr,
+		TEXT("/Game/Characters/1P/Suit/1_Meshes/SKM_Player1_POV01.SKM_Player1_POV01"));
+	TestConfiguration.FirstPersonAnimClass = LoadClass<UAnimInstance>(nullptr,
+		TEXT("/Game/Characters/1P/Suit/1_Meshes/Animations/ABP_FPS_ShooterArm.ABP_FPS_ShooterArm_C"));
+	TestConfiguration.ThirdPersonMesh = LoadObject<USkeletalMesh>(nullptr,
+		TEXT("/Game/Characters/1P/Suit/3_Meshes/SKM_Player_01.SKM_Player_01"));
+	TestConfiguration.ThirdPersonAnimClass = LoadClass<UAnimInstance>(nullptr,
+		TEXT("/Game/Characters/1P/Suit/3_Meshes/Animations/ABP_Shooter.ABP_Shooter_C"));
+	FString Error;
+	if (!TestTrue(TEXT("Explicit Suit test assets form valid Mesh/ABP pairs"), TestConfiguration.Validate(Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+
+	UClass* ShooterClass = LoadClass<AShooterCharacter>(nullptr,
+		TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	AShooterCharacter* Shooter = ShooterClass
+		? TestWorld.World->SpawnActor<AShooterCharacter>(ShooterClass) : nullptr;
+	if (!TestNotNull(TEXT("Shooter Blueprint spawns"), Shooter))
+	{
+		return false;
+	}
+
+	Shooter->GetFirstPersonMesh()->SetSkeletalMesh(TestConfiguration.FirstPersonMesh, true);
+	Shooter->GetFirstPersonMesh()->SetAnimInstanceClass(TestConfiguration.FirstPersonAnimClass.Get());
+	Shooter->GetMesh()->SetSkeletalMesh(TestConfiguration.ThirdPersonMesh, true);
+	Shooter->GetMesh()->SetAnimInstanceClass(TestConfiguration.ThirdPersonAnimClass.Get());
+
+	// 저장 에셋은 변경하지 않고 이 Pawn에서만 미설정 상태와 완전한 구성을 비교한다.
+	Shooter->PreSuitPresentation = FShooterPresentationConfiguration();
+	Shooter->SuitPresentation = FShooterPresentationConfiguration();
+	if (!Shooter->HasActorBegunPlay())
+	{
+		Shooter->DispatchBeginPlay();
+	}
+	else
+	{
+		// 월드가 이미 시작된 경우에도 fixture 적용 후의 구성을 fallback 기준으로 캡처한다.
+		Shooter->CaptureInitialPresentation();
+	}
+	const FShooterPresentationConfiguration Baseline = Shooter->InitialPresentation;
+	if (!TestTrue(TEXT("Captured test Mesh/ABP pairs are valid"), Baseline.Validate(Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+
+	USkeletalMeshComponent* Mesh1P = Shooter->GetFirstPersonMesh();
+	USkeletalMeshComponent* Mesh3P = Shooter->GetMesh();
+	USkeletalMeshComponent* Shadow = Shooter->GetShadowMesh();
+	UAnimInstance* Initial1PInstance = Mesh1P->GetAnimInstance();
+	UAnimInstance* Initial3PInstance = Mesh3P->GetAnimInstance();
+	TestTrue(TEXT("Unset PreSuit falls back to the captured initial configuration"),
+		Shooter->ApplyPresentationConfiguration(false));
+	TestTrue(TEXT("Fallback preserves 1P AnimInstance"), Mesh1P->GetAnimInstance() == Initial1PInstance);
+	TestTrue(TEXT("Fallback preserves 3P AnimInstance"), Mesh3P->GetAnimInstance() == Initial3PInstance);
+
+	FShooterPresentationConfiguration Invalid = Baseline;
+	Invalid.ThirdPersonAnimClass = nullptr;
+	TestFalse(TEXT("Partial configuration is rejected"), Invalid.Validate(Error));
+	Shooter->SuitPresentation = Invalid;
+	TestFalse(TEXT("Rejected configuration cannot change either component"),
+		Shooter->ApplyPresentationConfiguration(true));
+	TestTrue(TEXT("Rejected configuration preserves 1P instance"), Mesh1P->GetAnimInstance() == Initial1PInstance);
+	TestTrue(TEXT("Rejected configuration preserves 3P instance"), Mesh3P->GetAnimInstance() == Initial3PInstance);
+	TestTrue(TEXT("Rejected configuration preserves 1P mesh"), Mesh1P->GetSkeletalMeshAsset() == Baseline.FirstPersonMesh);
+	TestTrue(TEXT("Rejected configuration preserves 3P mesh"), Mesh3P->GetSkeletalMeshAsset() == Baseline.ThirdPersonMesh);
+
+	Invalid = Baseline;
+	Invalid.FirstPersonAnimClass = UAnimInstance::StaticClass();
+	TestFalse(TEXT("Wrong 1P AnimInstance parent is rejected"), Invalid.Validate(Error));
+	Invalid = Baseline;
+	Invalid.ThirdPersonAnimClass = Baseline.FirstPersonAnimClass;
+	TestFalse(TEXT("Wrong 3P AnimInstance parent is rejected"), Invalid.Validate(Error));
+
+	USkeleton* ForeignSkeleton = NewObject<USkeleton>(GetTransientPackage());
+	USkeletalMesh* ForeignMesh = NewObject<USkeletalMesh>(GetTransientPackage());
+	ForeignMesh->SetSkeleton(ForeignSkeleton);
+	{
+		FReferenceSkeletonModifier Modifier(ForeignMesh->GetRefSkeleton(), ForeignSkeleton);
+		Modifier.Add(FMeshBoneInfo(TEXT("PresentationTestUnrelatedRoot"), TEXT("PresentationTestUnrelatedRoot"), INDEX_NONE),
+			FTransform::Identity);
+	}
+	Invalid = Baseline;
+	Invalid.FirstPersonMesh = ForeignMesh;
+	TestFalse(TEXT("Incompatible Skeleton is rejected"), Invalid.Validate(Error));
+
+	// 두 Mesh만 transient 복제하여 실제 교체/재초기화를 검사한다. 원본 BP/에셋은 보존한다.
+	Shooter->SuitPresentation = Baseline;
+	Shooter->SuitPresentation.FirstPersonMesh = DuplicateObject<USkeletalMesh>(Baseline.FirstPersonMesh, GetTransientPackage());
+	Shooter->SuitPresentation.ThirdPersonMesh = DuplicateObject<USkeletalMesh>(Baseline.ThirdPersonMesh, GetTransientPackage());
+	if (!TestTrue(TEXT("Complete Suit configuration is applied"), Shooter->ApplyPresentationConfiguration(true)))
+	{
+		return false;
+	}
+	TestTrue(TEXT("Suit 1P Mesh is selected"), Mesh1P->GetSkeletalMeshAsset() == Shooter->SuitPresentation.FirstPersonMesh);
+	TestTrue(TEXT("Suit 3P Mesh is selected"), Mesh3P->GetSkeletalMeshAsset() == Shooter->SuitPresentation.ThirdPersonMesh);
+	TestTrue(TEXT("Suit 1P ABP is selected"), Mesh1P->GetAnimClass() == Baseline.FirstPersonAnimClass.Get());
+	TestTrue(TEXT("Suit 3P ABP is selected"), Mesh3P->GetAnimClass() == Baseline.ThirdPersonAnimClass.Get());
+	TestTrue(TEXT("Shadow uses the new 3P Mesh"), Shadow->GetSkeletalMeshAsset() == Mesh3P->GetSkeletalMeshAsset());
+	TestTrue(TEXT("Shadow follows the 3P pose"), Shadow->LeaderPoseComponent.Get() == Mesh3P);
+	UAnimInstance* Suit1PInstance = Mesh1P->GetAnimInstance();
+	UAnimInstance* Suit3PInstance = Mesh3P->GetAnimInstance();
+	TestNotNull(TEXT("New 1P AnimInstance is initialized"), Suit1PInstance);
+	TestNotNull(TEXT("New 3P AnimInstance is initialized"), Suit3PInstance);
+	TestTrue(TEXT("Mesh change replaces the 1P instance"), Suit1PInstance != Initial1PInstance);
+	TestTrue(TEXT("Mesh change replaces the 3P instance"), Suit3PInstance != Initial3PInstance);
+	TestTrue(TEXT("Repeated Suit application succeeds"), Shooter->ApplyPresentationConfiguration(true));
+	TestTrue(TEXT("Repeated application preserves 1P instance"), Mesh1P->GetAnimInstance() == Suit1PInstance);
+	TestTrue(TEXT("Repeated application preserves 3P instance"), Mesh3P->GetAnimInstance() == Suit3PInstance);
+	TestTrue(TEXT("PreSuit fallback restores the original configuration"), Shooter->ApplyPresentationConfiguration(false));
+	TestTrue(TEXT("Original 1P Mesh is restored"), Mesh1P->GetSkeletalMeshAsset() == Baseline.FirstPersonMesh);
+	TestTrue(TEXT("Original 3P Mesh is restored"), Mesh3P->GetSkeletalMeshAsset() == Baseline.ThirdPersonMesh);
+	TestTrue(TEXT("Shadow follows the restored Mesh"), Shadow->GetSkeletalMeshAsset() == Baseline.ThirdPersonMesh);
+	TestFalse(TEXT("Presentation does not write legacy replicated Suit Mesh state"),
+		Shooter->AppliedSuitFirstPersonMesh || Shooter->AppliedSuitThirdPersonMesh);
 	return true;
 }
 

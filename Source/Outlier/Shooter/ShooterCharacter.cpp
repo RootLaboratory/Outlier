@@ -2,7 +2,9 @@
 
 #include "ShooterCharacter.h"
 #include "Animation/AnimInstance.h"
+#include "Animation/AnimClassInterface.h"
 #include "Animation/AnimMontage.h"
+#include "Animation/Skeleton.h"
 #include "Engine/LocalPlayer.h"
 #include "Camera/CameraComponent.h"
 #include "Components/CapsuleComponent.h"
@@ -33,6 +35,7 @@
 #include "ShooterCombatComponent.h"
 #include "Weapon/RangedWeaponBase.h"
 #include "ShooterFirstPersonAnimInstance.h"
+#include "ShooterAnimInstance.h"
 #include "ShooterMovementComponent.h"
 #include "LocalPlayerPostProcessSubsystem.h"
 #include "Weapon/WeaponBase.h"
@@ -50,6 +53,47 @@
 #include "UI/ShooterReflectionBarrier.h"
 #include "UI/ShooterTeleportLayer.h"
 #include "UI/UILayerGameplayTags.h"
+
+bool FShooterPresentationConfiguration::IsEmpty() const
+{
+	return !FirstPersonMesh && !FirstPersonAnimClass && !ThirdPersonMesh && !ThirdPersonAnimClass;
+}
+
+bool FShooterPresentationConfiguration::Validate(FString& OutError) const
+{
+	OutError.Reset();
+	const auto ValidateMeshAndAnimation = [&OutError](const TCHAR* ViewName,
+		USkeletalMesh* Mesh, UClass* AnimClass, UClass* RequiredParent)
+	{
+		if (!IsValid(Mesh) || !IsValid(AnimClass))
+		{
+			OutError = FString::Printf(TEXT("%s requires both Mesh and AnimClass."), ViewName);
+			return false;
+		}
+		if (!AnimClass->IsChildOf(RequiredParent) || AnimClass->HasAnyClassFlags(CLASS_Abstract))
+		{
+			OutError = FString::Printf(TEXT("%s AnimClass must be a concrete child of %s."),
+				ViewName, *RequiredParent->GetName());
+			return false;
+		}
+
+		const IAnimClassInterface* AnimInterface = IAnimClassInterface::GetFromClass(AnimClass);
+		USkeleton* AnimSkeleton = AnimInterface ? AnimInterface->GetTargetSkeleton() : nullptr;
+		// 이름 일치가 아닌 엔진의 런타임 호환 검사로 Mesh/ABP 조합을 먼저 검증한다.
+		if (!Mesh->GetSkeleton() || !AnimSkeleton || !AnimSkeleton->IsCompatibleMesh(Mesh, false))
+		{
+			OutError = FString::Printf(TEXT("%s Mesh %s and AnimClass %s require compatible Skeletons."),
+				ViewName, *GetNameSafe(Mesh), *GetNameSafe(AnimClass));
+			return false;
+		}
+		return true;
+	};
+
+	return ValidateMeshAndAnimation(TEXT("1P"), FirstPersonMesh, FirstPersonAnimClass.Get(),
+		UShooterFirstPersonAnimInstance::StaticClass())
+		&& ValidateMeshAndAnimation(TEXT("3P"), ThirdPersonMesh, ThirdPersonAnimClass.Get(),
+			UShooterAnimInstance::StaticClass());
+}
 
 namespace
 {
@@ -201,6 +245,7 @@ void AShooterCharacter::EndJumperEffect(FName EffectId, AActor* SourceActor)
 void AShooterCharacter::BeginPlay()
 {
 	Super::BeginPlay();
+	CaptureInitialPresentation();
 	// Apply the crouched ledge policy after Blueprint defaults have been loaded.
 	GetCharacterMovement()->bCanWalkOffLedges = true;
 	GetCharacterMovement()->bCanWalkOffLedgesWhenCrouching = true;
@@ -285,6 +330,19 @@ void AShooterCharacter::BeginPlay()
 	RefreshMovementState();
 	RefreshCombatState();
 	RefreshShooterSuitCooldownUI();
+
+	// 기존 Suit RepNotify가 먼저 도착했다면 초기 PreSuit로 덮어쓰지 않는다.
+	if (!AppliedSuitFirstPersonMesh && !AppliedSuitThirdPersonMesh)
+	{
+		if (PreSuitPresentation.IsEmpty())
+		{
+			UE_LOG(LogTemp, Warning, TEXT("%s PreSuitPresentation is unset; keeping the initial Mesh/ABP configuration."), *GetName());
+		}
+		else
+		{
+			ApplyPresentationConfiguration(false);
+		}
+	}
 }
 
 void AShooterCharacter::Tick(float DeltaSeconds)
@@ -1660,6 +1718,107 @@ void AShooterCharacter::EquipWeapon(AWeaponBase* Weapon)
 	{
 		InventoryComponent->HandleEquipWeapon(Weapon);
 	}
+}
+
+void AShooterCharacter::CaptureInitialPresentation()
+{
+	if (USkeletalMeshComponent* Mesh1P = GetFirstPersonMesh())
+	{
+		InitialPresentation.FirstPersonMesh = Mesh1P->GetSkeletalMeshAsset();
+		InitialPresentation.FirstPersonAnimClass = Mesh1P->GetAnimClass();
+	}
+	if (USkeletalMeshComponent* Mesh3P = GetMesh())
+	{
+		InitialPresentation.ThirdPersonMesh = Mesh3P->GetSkeletalMeshAsset();
+		InitialPresentation.ThirdPersonAnimClass = Mesh3P->GetAnimClass();
+	}
+}
+
+bool AShooterCharacter::ResolvePresentationConfiguration(bool bUseSuitPresentation,
+	FShooterPresentationConfiguration& OutConfiguration, FString& OutError) const
+{
+	OutConfiguration = bUseSuitPresentation ? SuitPresentation : PreSuitPresentation;
+	if (OutConfiguration.IsEmpty())
+	{
+		// 에셋 이전 기간에만 초기 ABP를 사용한다. 일부만 지정된 설정은 보완하지 않는다.
+		OutConfiguration = InitialPresentation;
+		if (bUseSuitPresentation && (AppliedSuitFirstPersonMesh || AppliedSuitThirdPersonMesh))
+		{
+			OutConfiguration.FirstPersonMesh = AppliedSuitFirstPersonMesh;
+			OutConfiguration.ThirdPersonMesh = AppliedSuitThirdPersonMesh;
+		}
+	}
+	return OutConfiguration.Validate(OutError);
+}
+
+bool AShooterCharacter::ApplyPresentationConfiguration(bool bUseSuitPresentation)
+{
+	FShooterPresentationConfiguration Configuration;
+	FString Error;
+	// 1P와 3P를 모두 검증한 뒤 교체한다. 실패하면 현재 Mesh/ABP와 무기 부착을 유지한다.
+	if (!ResolvePresentationConfiguration(bUseSuitPresentation, Configuration, Error))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("%s rejected %s presentation: %s"),
+			*GetName(), bUseSuitPresentation ? TEXT("Suit") : TEXT("PreSuit"), *Error);
+		return false;
+	}
+	if ((bUseSuitPresentation ? SuitPresentation : PreSuitPresentation).IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("%s %s presentation is unset; using the validated legacy configuration."),
+			*GetName(), bUseSuitPresentation ? TEXT("Suit") : TEXT("PreSuit"));
+	}
+	return ApplyValidatedPresentationConfiguration(Configuration);
+}
+
+bool AShooterCharacter::ApplyValidatedPresentationConfiguration(const FShooterPresentationConfiguration& Configuration)
+{
+	USkeletalMeshComponent* Mesh1P = GetFirstPersonMesh();
+	USkeletalMeshComponent* Mesh3P = GetMesh();
+	if (!Mesh1P || !Mesh3P || !ShadowMesh)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("%s cannot apply presentation without 1P, 3P and Shadow components."), *GetName());
+		return false;
+	}
+
+	const auto ApplyMeshAndAnimation = [](USkeletalMeshComponent* Component,
+		USkeletalMesh* MeshAsset, UClass* AnimClass)
+	{
+		if (Component->GetSkeletalMeshAsset() == MeshAsset && Component->GetAnimClass() == AnimClass
+			&& Component->GetAnimationMode() == EAnimationMode::AnimationBlueprint)
+		{
+			return false;
+		}
+
+		// 이전 인스턴스의 델리게이트/포즈를 정리한 뒤 새 Skeleton과 ABP를 초기화한다.
+		Component->SetAnimInstanceClass(nullptr);
+		Component->SetSkeletalMesh(MeshAsset, true);
+		Component->SetAnimInstanceClass(AnimClass);
+		return true;
+	};
+
+	const bool bFirstPersonChanged = ApplyMeshAndAnimation(Mesh1P,
+		Configuration.FirstPersonMesh, Configuration.FirstPersonAnimClass.Get());
+	const bool bThirdPersonChanged = ApplyMeshAndAnimation(Mesh3P,
+		Configuration.ThirdPersonMesh, Configuration.ThirdPersonAnimClass.Get());
+	const bool bShadowChanged = ShadowMesh->GetSkeletalMeshAsset() != Configuration.ThirdPersonMesh;
+	if (bShadowChanged)
+	{
+		ShadowMesh->SetLeaderPoseComponent(nullptr);
+		ShadowMesh->SetSkeletalMesh(Configuration.ThirdPersonMesh, true);
+	}
+	ShadowMesh->SetLeaderPoseComponent(Mesh3P);
+	RefreshFirstPersonShadowPolicy();
+
+	// 포즈 연결이 끝난 뒤 기존 소켓 부착과 그림자 무기 표현을 새 Mesh에 맞춘다.
+	if (bFirstPersonChanged || bThirdPersonChanged || bShadowChanged)
+	{
+		if (AWeaponBase* EquippedWeapon = GetCurrentWeapon())
+		{
+			EquippedWeapon->AttachWeaponMeshesToOwnerMeshes();
+			EquippedWeapon->RefreshShadowWeaponPresentation();
+		}
+	}
+	return true;
 }
 
 void AShooterCharacter::ApplySuitMeshes(
