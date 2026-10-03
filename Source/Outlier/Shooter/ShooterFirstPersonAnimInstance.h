@@ -22,11 +22,13 @@ UCLASS()
 class OUTLIER_API UShooterFirstPersonAnimInstance : public UAnimInstance
 {
 	GENERATED_BODY()
+	friend class FOutlierShooterPresentationAnimationTest;
 
 public:
 	virtual void NativeInitializeAnimation() override;
 	virtual void NativeUninitializeAnimation() override;
 	virtual void NativeUpdateAnimation(float DeltaSeconds) override;
+	void RefreshPresentationState();
 
 
 	UFUNCTION(BlueprintCallable, Category = "Anim|FP Procedural|Recoil")
@@ -505,6 +507,7 @@ protected:
 	FWeaponSwitchPose WeaponSwitchPoseStart;
 	float WeaponSwitchPoseElapsed = 0.0f;
 	bool bWeaponSwitchPoseActive = false;
+	EShooterPresentation CachedPresentation = EShooterPresentation::Uninitialized;
 
 	float StartStopTime = 0.0f;
 	float StartStopDuration = 0.15f;

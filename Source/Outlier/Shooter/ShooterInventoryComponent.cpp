@@ -342,7 +342,7 @@ void UShooterInventoryComponent::CancelPendingWeaponSwitch()
 	if (AShooterCharacter* ShooterCharacter = GetShooterCharacter())
 	{
 		if (ShooterCharacter->HasAuthority() && !ShooterCharacter->IsDead() &&
-			ShooterCharacter->ThirdPersonSwitchMontage)
+			ShooterCharacter->GetThirdPersonSwitchMontage())
 		{
 			ShooterCharacter->MulticastPlayThirdPersonSwitchPhase(
 				ShooterCharacter->GetWeaponType(), TEXT("Raise"));

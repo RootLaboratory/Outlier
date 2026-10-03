@@ -186,6 +186,67 @@ void UShooterFirstPersonAnimInstance::NativeInitializeAnimation()
 	bIsAiming = CachedShooterCharacter->IsAiming();
 	bIsReloading = CachedShooterCharacter->IsReloading();
 	bIsDead = CachedShooterCharacter->IsDead();
+	RefreshPresentationState();
+}
+
+void UShooterFirstPersonAnimInstance::RefreshPresentationState()
+{
+	if (!CachedShooterCharacter)
+	{
+		CachedShooterCharacter = Cast<AShooterCharacter>(TryGetPawnOwner());
+	}
+	// 이전 Skeleton의 IK/반동/보간 시작값은 폐기하고, 현재 무기로 새 상태의 목표를 다시 읽는다.
+	bWeaponSwitchPoseActive = false;
+	WeaponSwitchPoseStart = FWeaponSwitchPose();
+	WeaponSwitchPoseElapsed = 0.0f;
+	CurrentProceduralValues = nullptr;
+	UpdateFirstPersonProceduralValues(0.0f);
+	ResetWallOffsetState(true);
+	ViewModelProceduralRuntime = FFirstPersonProceduralAnimRuntime();
+	RecoilLocSpringState.Reset();
+	RecoilRotSpringState.Reset();
+	ViewModelRecoilLoc = FVector::ZeroVector;
+	ViewModelRecoilRot = FRotator::ZeroRotator;
+	ViewModelMovementLoc = FVector::ZeroVector;
+	ViewModelMovementRot = FRotator::ZeroRotator;
+	ViewModelCurrentStrafeWalkRot = FRotator::ZeroRotator;
+	ViewModelStartStopLoc = FVector::ZeroVector;
+	ViewModelStartStopRot = FRotator::ZeroRotator;
+	TargetSwayRot = FRotator::ZeroRotator;
+	ViewModelAimAlpha = 0.0f;
+	ReloadAimAlpha = 0.0f;
+	ViewModelJumpLandAlpha = 0.0f;
+	ViewModelWalkAnimAlpha = 0.0f;
+	ViewModelSprintAlpha = 0.0f;
+	CrouchAlpha = 0.0f;
+	StrafeWalkAlpha = 0.0f;
+	WalkCycleTime = 0.0f;
+	StartStopTime = 0.0f;
+	StartStopDirection = 0;
+	bWasShouldMove = false;
+	bBlockStartStopThisFrame = false;
+	bWasSprintingLastFrame = false;
+	CurrentWeapon = CachedShooterCharacter ? CachedShooterCharacter->GetCurrentWeapon() : nullptr;
+	PreviousWeapon = CurrentWeapon;
+	CurrentWeaponType = CurrentWeapon ? CurrentWeapon->GetWeaponType() : EWeaponType::Unarmed;
+	CurrentProceduralValues = CurrentWeapon ? CurrentWeapon->GetFirstPersonProceduralValues() : nullptr;
+	CachedPresentation = CachedShooterCharacter
+		? CachedShooterCharacter->GetAppliedPresentation() : EShooterPresentation::Uninitialized;
+	if (CachedShooterCharacter)
+	{
+		bIsAiming = CachedShooterCharacter->IsAiming();
+		bIsSprinting = CachedShooterCharacter->IsSprinting();
+		bIsSliding = CachedShooterCharacter->IsSliding();
+		bIsReloading = CachedShooterCharacter->IsReloading();
+		bIsEquipping = CachedShooterCharacter->GetActionLock() == EShooterActionLock::Equip;
+		bIsDead = CachedShooterCharacter->IsDead();
+		AimPitch = FRotator::NormalizeAxis(CachedShooterCharacter->GetBaseAimRotation().Pitch);
+	}
+	PrevAimRot = CachedShooterCharacter ? CachedShooterCharacter->GetBaseAimRotation() : FRotator::ZeroRotator;
+	ViewModelWeaponPoseAlpha = CurrentWeapon ? 1.0f : 0.0f;
+	bHadWeaponPose = CurrentWeapon != nullptr;
+	UpdateFirstPersonProceduralValues(0.0f);
+	UpdateFirstPersonProceduralRuntime(0.0f);
 }
 
 void UShooterFirstPersonAnimInstance::NativeUninitializeAnimation()
@@ -292,6 +353,12 @@ void UShooterFirstPersonAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 
 	// ── 무기 교체 감지와 포즈 알파 초기화 ────────────────────────────────
 	AWeaponBase* NewWeapon = CachedShooterCharacter->GetCurrentWeapon();
+	const UProceduralAnimValues* NewValues = NewWeapon ? NewWeapon->GetFirstPersonProceduralValues() : nullptr;
+	if (CachedPresentation != CachedShooterCharacter->GetAppliedPresentation()
+		|| (NewWeapon == CurrentWeapon && NewValues != CurrentProceduralValues))
+	{
+		RefreshPresentationState();
+	}
 	const bool bWeaponChanged = NewWeapon != CurrentWeapon;
 
 	if (bWeaponChanged)

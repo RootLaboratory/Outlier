@@ -97,6 +97,7 @@ struct OUTLIER_API FShooterPresentationConfiguration
 };
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnShooterDynamicCrosshairChanged, bool /*bAiming*/);
+DECLARE_MULTICAST_DELEGATE(FOnShooterPresentationChanged);
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnShooterAim, bool /*bAiming*/, int32 /*WeaponStencilValue*/);
 
 UENUM(BlueprintType)
@@ -171,6 +172,37 @@ enum class EShooterMontageAction : uint8
 	MeleeAttack
 };
 
+USTRUCT(BlueprintType)
+struct OUTLIER_API FShooterMontageConfiguration
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
+	TObjectPtr<UAnimMontage> FirstPersonFire;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
+	TObjectPtr<UAnimMontage> ThirdPersonFire;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
+	TObjectPtr<UAnimMontage> FirstPersonReload;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
+	TObjectPtr<UAnimMontage> ThirdPersonReload;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
+	TObjectPtr<UAnimMontage> FirstPersonEquip;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
+	TObjectPtr<UAnimMontage> ThirdPersonEquip;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
+	TObjectPtr<UAnimMontage> FirstPersonSlide;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
+	TObjectPtr<UAnimMontage> ThirdPersonSlide;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
+	TObjectPtr<UAnimMontage> FirstPersonMeleeAttack;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
+	TObjectPtr<UAnimMontage> ThirdPersonMeleeAttack;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
+	TObjectPtr<UAnimMontage> ThirdPersonSwitch;
+
+	UAnimMontage* GetActionMontage(EShooterMontageAction Action, bool bFirstPerson) const;
+};
+
 /**
  * 
  */
@@ -187,6 +219,7 @@ class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbil
 	friend class FShooterPresentationConfigurationTest;
 	friend class FShooterPresentationReplicationTest;
 	friend class FOutlierSuitInteractionEquipTest;
+	friend class FOutlierShooterPresentationAnimationTest;
 
 protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
@@ -380,6 +413,18 @@ protected:
 	UPROPERTY(Transient)
 	FShooterPresentationConfiguration InitialPresentation;
 	bool bInitialPresentationCaptured = false;
+	// 복제 요청과 실제 적용 결과를 분리한다. 검증 실패/Asset 미도착 시 이전 수치를 유지한다.
+	EShooterPresentation AppliedPresentation = EShooterPresentation::Uninitialized;
+	struct FMontageSelectionCache
+	{
+		TWeakObjectPtr<UAnimMontage> StateMontage;
+		TWeakObjectPtr<UAnimMontage> LegacyMontage;
+		TWeakObjectPtr<UAnimMontage> SelectedMontage;
+		TWeakObjectPtr<USkeletalMesh> SkeletalMesh;
+		bool bInitialized = false;
+	};
+	// 액션 5개 x 1P/3P, 마지막 항목은 3P Switch. 설정/Mesh 변경 때만 호환성을 다시 검사한다.
+	mutable FMontageSelectionCache MontageSelectionCaches[11];
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "GAS|Suit")
 	TObjectPtr<UDataTable> ShooterSuitAbilityDataTable;
@@ -620,6 +665,17 @@ public:
 		USkeletalMesh* LegacyThirdPersonMesh = nullptr);
 	void RefreshPresentationFromPlayerState();
 	EShooterPresentation GetPresentation() const { return PresentationState.Presentation; }
+	EShooterPresentation GetAppliedPresentation() const { return AppliedPresentation; }
+	FOnShooterPresentationChanged OnPresentationChanged;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Animation|Presentation")
+	FShooterMontageConfiguration PreSuitMontages;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Animation|Presentation")
+	FShooterMontageConfiguration SuitMontages;
+
+	UAnimMontage* GetActionMontage(EShooterMontageAction Action, bool bFirstPerson) const;
+	UAnimMontage* GetThirdPersonSwitchMontage() const;
 	// 로컬 외형만 적용한다. 획득 판정과 상태 복제는 서버 호출 경로에서 처리한다.
 	bool ApplyPresentationConfiguration(bool bUseSuitPresentation);
 	virtual FGameplayTagContainer GetOwnedGameplayTagsForQuery() const override;
@@ -804,7 +860,10 @@ protected:
 	bool ResolvePresentationConfiguration(bool bUseSuitPresentation,
 		FShooterPresentationConfiguration& OutConfiguration, FString& OutError,
 		USkeletalMesh* LegacyFirstPersonMesh = nullptr, USkeletalMesh* LegacyThirdPersonMesh = nullptr) const;
-	bool ApplyValidatedPresentationConfiguration(const FShooterPresentationConfiguration& Configuration);
+	bool ApplyValidatedPresentationConfiguration(const FShooterPresentationConfiguration& Configuration,
+		EShooterPresentation NewPresentation);
+	UAnimMontage* ResolvePresentationMontage(UAnimMontage* StateMontage, UAnimMontage* LegacyMontage,
+		bool bFirstPerson, int32 CacheIndex) const;
 	void UpdateSlideCameraEffect(float DeltaSeconds);
 
 	// Server RPC
@@ -934,9 +993,9 @@ public:
 	void StopThirdPersonMontage(UAnimMontage* Montage);
 	void StopSplitMontages(UAnimMontage* FirstPersonMontage, UAnimMontage* ThirdPersonMontage);
 	void PlayEquipMontages();
-	const UAnimMontage* GetFirstPersonReloadMontage() const { return FirstPersonReloadMontage; }
-	const UAnimMontage* GetFirstPersonEquipMontage() const { return FirstPersonEquipMontage; }
-	UAnimMontage* GetThirdPersonMeleeAttackMontage() const { return ThirdPersonMeleeAttackMontage; }
+	UAnimMontage* GetFirstPersonReloadMontage() const { return GetActionMontage(EShooterMontageAction::Reload, true); }
+	UAnimMontage* GetFirstPersonEquipMontage() const { return GetActionMontage(EShooterMontageAction::Equip, true); }
+	UAnimMontage* GetThirdPersonMeleeAttackMontage() const { return GetActionMontage(EShooterMontageAction::MeleeAttack, false); }
 	void ClearInputIntent();
 
 	void CleanupOwnedWeapons();

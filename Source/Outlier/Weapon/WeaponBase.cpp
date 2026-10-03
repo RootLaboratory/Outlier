@@ -193,31 +193,104 @@ float AWeaponBase::GetDamageAtDistance(float DistanceCm) const
 	return Damage * FMath::Lerp(1.0f, MinDamageMultiplier, FalloffAlpha);
 }
 
+const UProceduralAnimValues* AWeaponBase::ResolveProceduralValues() const
+{
+	if (const AShooterCharacter* Shooter = CachedProceduralShooter.Get())
+	{
+		const UProceduralAnimValues* StateValues = Shooter->GetAppliedPresentation() == EShooterPresentation::Suit
+			? SuitProceduralValues.Get() : PreSuitProceduralValues.Get();
+		if (StateValues)
+		{
+			return StateValues;
+		}
+	}
+	return FirstPersonProceduralValues;
+}
+
+void AWeaponBase::RefreshProceduralPresentation()
+{
+	if (!bProceduralOwnerInitialized || CachedProceduralOwner.Get() != WeaponOwner.Get())
+	{
+		if (AShooterCharacter* PreviousShooter = CachedProceduralShooter.Get())
+		{
+			PreviousShooter->OnPresentationChanged.RemoveAll(this);
+		}
+		CachedProceduralOwner = WeaponOwner;
+		CachedProceduralShooter = Cast<AShooterCharacter>(WeaponOwner.Get());
+		bProceduralOwnerInitialized = true;
+		if (AShooterCharacter* Shooter = CachedProceduralShooter.Get())
+		{
+			Shooter->OnPresentationChanged.AddUObject(this, &AWeaponBase::RefreshProceduralPresentation);
+		}
+	}
+	SelectedProceduralValues = ResolveProceduralValues();
+	if (AShooterCharacter* Shooter = CachedProceduralShooter.Get())
+	{
+		const bool bSuit = Shooter->GetAppliedPresentation() == EShooterPresentation::Suit;
+		if (!(bSuit ? SuitProceduralValues : PreSuitProceduralValues))
+		{
+			UE_LOG(LogTemp, Log, TEXT("[Procedural] Weapon=%s State=%s uses common fallback=%s"),
+				*GetName(), bSuit ? TEXT("Suit") : TEXT("PreSuit"), *GetNameSafe(FirstPersonProceduralValues));
+		}
+	}
+}
+
+const UProceduralAnimValues* AWeaponBase::GetFirstPersonProceduralValues() const
+{
+	// Owner 복제 순서와 초기 장착 전 조회를 보완한다. Cast/연결은 Owner 변경 시에만 수행한다.
+	if (!bProceduralOwnerInitialized || CachedProceduralOwner.Get() != WeaponOwner.Get())
+	{
+		const_cast<AWeaponBase*>(this)->RefreshProceduralPresentation();
+	}
+	// 에디터 진단에서 DA 참조를 바꿔도 선택이 고착되지 않는다. 비교는 포인터만 사용한다.
+	if (SelectedProceduralValues != ResolveProceduralValues())
+	{
+		const_cast<AWeaponBase*>(this)->RefreshProceduralPresentation();
+	}
+	return SelectedProceduralValues;
+}
+
+void AWeaponBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (AShooterCharacter* Shooter = CachedProceduralShooter.Get())
+	{
+		Shooter->OnPresentationChanged.RemoveAll(this);
+	}
+	CachedProceduralShooter.Reset();
+	CachedProceduralOwner.Reset();
+	SelectedProceduralValues = nullptr;
+	Super::EndPlay(EndPlayReason);
+}
+
 float AWeaponBase::GetFirstPersonProceduralRecoilMultiplier() const
 {
-	return FirstPersonProceduralValues
-		? FMath::Max(FirstPersonProceduralValues->WeaponValues.FirstPersonRecoilMultiplier, 0.0f)
+	const UProceduralAnimValues* Values = GetFirstPersonProceduralValues();
+	return Values
+		? FMath::Max(Values->WeaponValues.FirstPersonRecoilMultiplier, 0.0f)
 		: 1.0f;
 }
 
 float AWeaponBase::GetThirdPersonProceduralRecoilMultiplier() const
 {
-	return FirstPersonProceduralValues
-		? FMath::Max(FirstPersonProceduralValues->WeaponValues.ThirdPersonRecoilMultiplier, 0.0f)
+	const UProceduralAnimValues* Values = GetFirstPersonProceduralValues();
+	return Values
+		? FMath::Max(Values->WeaponValues.ThirdPersonRecoilMultiplier, 0.0f)
 		: 1.0f;
 }
 
 float AWeaponBase::GetThirdPersonProceduralSprintMultiplier() const
 {
-	return FirstPersonProceduralValues
-		? FMath::Max(FirstPersonProceduralValues->WeaponValues.ThirdPersonSprintMultiplier, 0.0f)
+	const UProceduralAnimValues* Values = GetFirstPersonProceduralValues();
+	return Values
+		? FMath::Max(Values->WeaponValues.ThirdPersonSprintMultiplier, 0.0f)
 		: 1.0f;
 }
 
 float AWeaponBase::GetThirdPersonProceduralWallOffsetMultiplier() const
 {
-	return FirstPersonProceduralValues
-		? FMath::Max(FirstPersonProceduralValues->WeaponValues.ThirdPersonWallOffsetMultiplier, 0.0f)
+	const UProceduralAnimValues* Values = GetFirstPersonProceduralValues();
+	return Values
+		? FMath::Max(Values->WeaponValues.ThirdPersonWallOffsetMultiplier, 0.0f)
 		: 1.0f;
 }
 
@@ -421,6 +494,7 @@ void AWeaponBase::ApplyReplicatedPresentation()
 
 void AWeaponBase::OnRep_EquippedState()
 {
+	RefreshProceduralPresentation();
 	ApplyReplicatedPresentation();
 }
 
@@ -510,6 +584,7 @@ void AWeaponBase::OnEquipped(ACharacter* NewOwner)
 	}
 
 	WeaponOwner = NewOwner;
+	RefreshProceduralPresentation();
 	bIsEquipped = true;
 	bIsAttacking = false;
 	DropPickupBlockedInteractor = nullptr;
@@ -727,6 +802,7 @@ void AWeaponBase::ShowEquippedPresentation()
 
 void AWeaponBase::OnUnequipped()
 {
+	RefreshProceduralPresentation();
 	StopAttack();
 
 	bIsEquipped = false;
@@ -748,6 +824,7 @@ void AWeaponBase::OnDropped(const FTransform& DropTransform, AFirstPersonCharact
 	bIsEquipped = false;
 	bIsAttacking = false;
 	WeaponOwner = nullptr;
+	RefreshProceduralPresentation();
 	DropPickupBlockedInteractor = DroppedBy;
 	DropPickupBlockedUntilTime = GetWorld()
 		? GetWorld()->GetTimeSeconds() + DropInstigatorPickupBlockDuration
@@ -905,6 +982,7 @@ void AWeaponBase::OnOwnerLost()
 	bIsEquipped = false;
 	bIsAttacking = false;
 	WeaponOwner = nullptr;
+	RefreshProceduralPresentation();
 	SetOwner(nullptr);
 
 	// 무기는 일회성이다 — 소유자를 잃으면 월드에 남기지 않고 파괴한다.

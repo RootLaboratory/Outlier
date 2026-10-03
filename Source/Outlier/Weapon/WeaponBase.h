@@ -142,6 +142,12 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Animation")
 	TObjectPtr<UProceduralAnimValues> FirstPersonProceduralValues = nullptr;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Animation")
+	TObjectPtr<UProceduralAnimValues> PreSuitProceduralValues = nullptr;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Animation")
+	TObjectPtr<UProceduralAnimValues> SuitProceduralValues = nullptr;
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Noise")
 	bool bReportArenaWideNoise = false;
 
@@ -173,6 +179,8 @@ protected:
 
 public:
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	void RefreshProceduralPresentation();
 
 	virtual bool CanAttack() const;
 
@@ -254,8 +262,13 @@ public:
 	}
 
 	UFUNCTION(BlueprintPure, Category = "Weapon|Animation")
-	const UProceduralAnimValues* GetFirstPersonProceduralValues() const
-	{
-		return FirstPersonProceduralValues;
-	}
+	const UProceduralAnimValues* GetFirstPersonProceduralValues() const;
+
+private:
+	TWeakObjectPtr<ACharacter> CachedProceduralOwner;
+	TWeakObjectPtr<class AShooterCharacter> CachedProceduralShooter;
+	UPROPERTY(Transient)
+	TObjectPtr<const UProceduralAnimValues> SelectedProceduralValues;
+	const UProceduralAnimValues* ResolveProceduralValues() const;
+	bool bProceduralOwnerInitialized = false;
 };

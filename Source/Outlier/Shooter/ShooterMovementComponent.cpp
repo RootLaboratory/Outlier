@@ -213,8 +213,8 @@ void UShooterMovementComponent::StopSlide(ESlideEndReason EndReason)
 	FinishSlideMovement();
 	SuspendSprintInternal();
 	ShooterCharacter->StopSplitMontages(
-		ShooterCharacter->FirstPersonSlideMontage,
-		ShooterCharacter->ThirdPersonSlideMontage);
+		ShooterCharacter->GetActionMontage(EShooterMontageAction::Slide, true),
+		ShooterCharacter->GetActionMontage(EShooterMontageAction::Slide, false));
 
 	switch (EndReason)
 	{

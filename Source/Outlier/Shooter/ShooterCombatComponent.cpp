@@ -54,6 +54,7 @@ void UShooterCombatComponent::BeginPlay()
 
 void UShooterCombatComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	UnbindReloadMontageEndedDelegates();
 	UnbindWeaponReuseCooldownObserver();
 	Super::EndPlay(EndPlayReason);
 }
@@ -134,7 +135,7 @@ void UShooterCombatComponent::TryReload()
 				ShooterCharacter->BeginActionLock(EShooterActionLock::Reload);
 				ShooterCharacter->RefreshMovementState();
 				ShooterCharacter->CombatState = ECombatState::Reload;
-				ShooterCharacter->PlayFirstPersonMontage(ShooterCharacter->FirstPersonReloadMontage);
+				ShooterCharacter->PlayFirstPersonMontage(ShooterCharacter->GetActionMontage(EShooterMontageAction::Reload, true));
 			}
 		}
 		else
@@ -757,29 +758,29 @@ void UShooterCombatComponent::BeginReloadInternal()
 		OutlierNet::GetNetPrefix(ShooterCharacter),
 		*ShooterCharacter->GetName(),
 		static_cast<int32>(ShooterCharacter->GetWeaponType()),
-		*GetNameSafe(ShooterCharacter->FirstPersonReloadMontage),
-		*GetNameSafe(ShooterCharacter->ThirdPersonReloadMontage),
+		*GetNameSafe(ShooterCharacter->GetActionMontage(EShooterMontageAction::Reload, true)),
+		*GetNameSafe(ShooterCharacter->GetActionMontage(EShooterMontageAction::Reload, false)),
 		ShooterCharacter->IsLocallyControlled() ? 1 : 0,
 		ShooterCharacter->HasAuthority() ? 1 : 0);
 
 	ShooterCharacter->MulticastPlayThirdPersonActionMontage(EShooterMontageAction::Reload, ShooterCharacter->GetWeaponType());
-
-	if (UAnimInstance* ThirdPersonAnimInstance = ShooterCharacter->GetMesh() ? ShooterCharacter->GetMesh()->GetAnimInstance() : nullptr)
+	if (ShooterCharacter->HasAuthority())
 	{
-		FOnMontageEnded ReloadEndedDelegate;
-		ReloadEndedDelegate.BindUObject(this, &UShooterCombatComponent::HandleReloadMontageEnded);
-		ThirdPersonAnimInstance->Montage_SetEndDelegate(ReloadEndedDelegate, ShooterCharacter->ThirdPersonReloadMontage);
+		UAnimInstance* ReloadInstance = BoundThirdPersonReloadInstance.Get();
+		UAnimMontage* ReloadMontage = ActiveThirdPersonReloadMontage.Get();
+		if (!ReloadInstance || !ReloadMontage || !ReloadInstance->Montage_IsPlaying(ReloadMontage))
+		{
+			// 호환 몽타주가 없거나 재생에 실패하면 Notify를 기다리며 잠긴 상태로 남기지 않는다.
+			UE_LOG(LogTemp, Warning, TEXT("[PresentationMontage] Reload cancelled: no playable authoritative montage Owner=%s"),
+				*ShooterCharacter->GetName());
+			CancelReloadInternal();
+			return;
+		}
 	}
 
 	if (ShooterCharacter->IsLocallyControlled())
 	{
 		ShooterCharacter->PlayFirstPersonActionMontage(EShooterMontageAction::Reload, ShooterCharacter->GetWeaponType());
-		if (UAnimInstance* FirstPersonAnimInstance = ShooterCharacter->GetFirstPersonMesh() ? ShooterCharacter->GetFirstPersonMesh()->GetAnimInstance() : nullptr)
-		{
-			FOnMontageEnded ReloadEndedDelegate;
-			ReloadEndedDelegate.BindUObject(this, &UShooterCombatComponent::HandleReloadMontageEnded);
-			FirstPersonAnimInstance->Montage_SetEndDelegate(ReloadEndedDelegate, ShooterCharacter->FirstPersonReloadMontage);
-		}
 	}
 	else if (ShooterCharacter->HasAuthority())
 	{
@@ -797,11 +798,13 @@ void UShooterCombatComponent::CancelReloadInternal()
 
 	bIsReloading = false;
 	ShooterCharacter->EndActionLock(EShooterActionLock::Reload);
+	UAnimMontage* FirstPersonMontage = ActiveFirstPersonReloadMontage.IsValid()
+		? ActiveFirstPersonReloadMontage.Get() : ShooterCharacter->GetFirstPersonReloadMontage();
+	UAnimMontage* ThirdPersonMontage = ActiveThirdPersonReloadMontage.IsValid()
+		? ActiveThirdPersonReloadMontage.Get() : ShooterCharacter->GetActionMontage(EShooterMontageAction::Reload, false);
 	UnbindReloadMontageEndedDelegates();
 
-	ShooterCharacter->StopSplitMontages(
-		ShooterCharacter->FirstPersonReloadMontage,
-		ShooterCharacter->ThirdPersonReloadMontage);
+	ShooterCharacter->StopSplitMontages(FirstPersonMontage, ThirdPersonMontage);
 	if (ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(ShooterCharacter->CurrentWeapon))
 	{
 		RangedWeapon->CancelReload();
@@ -876,18 +879,25 @@ void UShooterCombatComponent::OnRep_IsReloading()
 
 void UShooterCombatComponent::BindReloadMontageEndedDelegates()
 {
+	UnbindReloadMontageEndedDelegates();
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 	if (!ShooterCharacter)
 	{
 		return;
 	}
 
-	if (UAnimInstance* ThirdPersonAnimInstance = ShooterCharacter->GetMesh() ? ShooterCharacter->GetMesh()->GetAnimInstance() : nullptr)
+	ActiveFirstPersonReloadMontage = ShooterCharacter->GetActionMontage(EShooterMontageAction::Reload, true);
+	ActiveThirdPersonReloadMontage = ShooterCharacter->GetActionMontage(EShooterMontageAction::Reload, false);
+	BoundFirstPersonReloadInstance = ShooterCharacter->GetFirstPersonMesh()
+		? ShooterCharacter->GetFirstPersonMesh()->GetAnimInstance() : nullptr;
+	BoundThirdPersonReloadInstance = ShooterCharacter->GetMesh()
+		? ShooterCharacter->GetMesh()->GetAnimInstance() : nullptr;
+	if (UAnimInstance* ThirdPersonAnimInstance = BoundThirdPersonReloadInstance.Get())
 	{
 		ThirdPersonAnimInstance->OnMontageEnded.AddUniqueDynamic(this, &UShooterCombatComponent::HandleReloadMontageEnded);
 	}
 
-	if (UAnimInstance* FirstPersonAnimInstance = ShooterCharacter->GetFirstPersonMesh() ? ShooterCharacter->GetFirstPersonMesh()->GetAnimInstance() : nullptr)
+	if (UAnimInstance* FirstPersonAnimInstance = BoundFirstPersonReloadInstance.Get())
 	{
 		FirstPersonAnimInstance->OnMontageEnded.AddUniqueDynamic(this, &UShooterCombatComponent::HandleReloadMontageEnded);
 	}
@@ -895,21 +905,20 @@ void UShooterCombatComponent::BindReloadMontageEndedDelegates()
 
 void UShooterCombatComponent::UnbindReloadMontageEndedDelegates()
 {
-	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (!ShooterCharacter)
-	{
-		return;
-	}
-
-	if (UAnimInstance* ThirdPersonAnimInstance = ShooterCharacter->GetMesh() ? ShooterCharacter->GetMesh()->GetAnimInstance() : nullptr)
+	// 교체 후 Mesh에서 조회하면 새 인스턴스가 나온다. 실제 연결했던 이전 인스턴스에서 제거한다.
+	if (UAnimInstance* ThirdPersonAnimInstance = BoundThirdPersonReloadInstance.Get())
 	{
 		ThirdPersonAnimInstance->OnMontageEnded.RemoveDynamic(this, &UShooterCombatComponent::HandleReloadMontageEnded);
 	}
 
-	if (UAnimInstance* FirstPersonAnimInstance = ShooterCharacter->GetFirstPersonMesh() ? ShooterCharacter->GetFirstPersonMesh()->GetAnimInstance() : nullptr)
+	if (UAnimInstance* FirstPersonAnimInstance = BoundFirstPersonReloadInstance.Get())
 	{
 		FirstPersonAnimInstance->OnMontageEnded.RemoveDynamic(this, &UShooterCombatComponent::HandleReloadMontageEnded);
 	}
+	BoundFirstPersonReloadInstance.Reset();
+	BoundThirdPersonReloadInstance.Reset();
+	ActiveFirstPersonReloadMontage.Reset();
+	ActiveThirdPersonReloadMontage.Reset();
 }
 
 void UShooterCombatComponent::HandleReloadMontageEnded(UAnimMontage* Montage, bool bInterrupted)
@@ -921,8 +930,8 @@ void UShooterCombatComponent::HandleReloadMontageEnded(UAnimMontage* Montage, bo
 	}
 
 	const bool bIsReloadMontage =
-		Montage == ShooterCharacter->FirstPersonReloadMontage ||
-		Montage == ShooterCharacter->ThirdPersonReloadMontage;
+		Montage && (Montage == ActiveFirstPersonReloadMontage.Get() ||
+		Montage == ActiveThirdPersonReloadMontage.Get());
 	UE_LOG(
 		LogTemp,
 		Log,

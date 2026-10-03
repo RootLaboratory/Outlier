@@ -83,6 +83,75 @@ bool FShooterPresentationState::NetSerialize(FArchive& Ar, UPackageMap* Map, boo
 	return bFirstPersonMapped && bThirdPersonMapped;
 }
 
+UAnimMontage* FShooterMontageConfiguration::GetActionMontage(EShooterMontageAction Action, bool bFirstPerson) const
+{
+	switch (Action)
+	{
+	case EShooterMontageAction::Fire: return bFirstPerson ? FirstPersonFire.Get() : ThirdPersonFire.Get();
+	case EShooterMontageAction::Reload: return bFirstPerson ? FirstPersonReload.Get() : ThirdPersonReload.Get();
+	case EShooterMontageAction::Equip: return bFirstPerson ? FirstPersonEquip.Get() : ThirdPersonEquip.Get();
+	case EShooterMontageAction::Slide: return bFirstPerson ? FirstPersonSlide.Get() : ThirdPersonSlide.Get();
+	case EShooterMontageAction::MeleeAttack: return bFirstPerson ? FirstPersonMeleeAttack.Get() : ThirdPersonMeleeAttack.Get();
+	default: return nullptr;
+	}
+}
+
+UAnimMontage* AShooterCharacter::ResolvePresentationMontage(UAnimMontage* StateMontage, UAnimMontage* LegacyMontage,
+	bool bFirstPerson, int32 CacheIndex) const
+{
+	const USkeletalMeshComponent* Component = bFirstPerson ? GetFirstPersonMesh() : GetMesh();
+	USkeletalMesh* MeshAsset = Component ? Component->GetSkeletalMeshAsset() : nullptr;
+	FMontageSelectionCache& Cache = MontageSelectionCaches[CacheIndex];
+	if (Cache.bInitialized && Cache.StateMontage.Get() == StateMontage
+		&& Cache.LegacyMontage.Get() == LegacyMontage && Cache.SkeletalMesh.Get() == MeshAsset)
+	{
+		return Cache.SelectedMontage.Get();
+	}
+	Cache.bInitialized = true;
+	Cache.StateMontage = StateMontage;
+	Cache.LegacyMontage = LegacyMontage;
+	Cache.SkeletalMesh = MeshAsset;
+	Cache.SelectedMontage.Reset();
+	// 명시된 상태 몽타주가 잘못된 경우 다른 설정으로 숨기지 않는다. 미지정일 때만 공통 설정을 사용한다.
+	UAnimMontage* Candidate = StateMontage ? StateMontage : LegacyMontage;
+	if (Candidate && MeshAsset && Candidate->GetSkeleton()
+		&& Candidate->GetSkeleton()->IsCompatibleMesh(MeshAsset, false))
+	{
+		Cache.SelectedMontage = Candidate;
+	}
+	else if (Candidate)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[PresentationMontage] %s rejected incompatible %s montage=%s Mesh=%s"),
+			*GetName(), bFirstPerson ? TEXT("1P") : TEXT("3P"), *GetNameSafe(Candidate), *GetNameSafe(MeshAsset));
+	}
+	return Cache.SelectedMontage.Get();
+}
+
+UAnimMontage* AShooterCharacter::GetActionMontage(EShooterMontageAction Action, bool bFirstPerson) const
+{
+	UAnimMontage* LegacyMontage = nullptr;
+	switch (Action)
+	{
+	case EShooterMontageAction::Fire: LegacyMontage = bFirstPerson ? FirstPersonFireMontage.Get() : ThirdPersonFireMontage.Get(); break;
+	case EShooterMontageAction::Reload: LegacyMontage = bFirstPerson ? FirstPersonReloadMontage.Get() : ThirdPersonReloadMontage.Get(); break;
+	case EShooterMontageAction::Equip: LegacyMontage = bFirstPerson ? FirstPersonEquipMontage.Get() : ThirdPersonEquipMontage.Get(); break;
+	case EShooterMontageAction::Slide: LegacyMontage = bFirstPerson ? FirstPersonSlideMontage.Get() : ThirdPersonSlideMontage.Get(); break;
+	case EShooterMontageAction::MeleeAttack: LegacyMontage = bFirstPerson ? FirstPersonMeleeAttackMontage.Get() : ThirdPersonMeleeAttackMontage.Get(); break;
+	default: return nullptr;
+	}
+	const FShooterMontageConfiguration& Configuration = AppliedPresentation == EShooterPresentation::Suit
+		? SuitMontages : PreSuitMontages;
+	return ResolvePresentationMontage(Configuration.GetActionMontage(Action, bFirstPerson), LegacyMontage,
+		bFirstPerson, static_cast<int32>(Action) * 2 + (bFirstPerson ? 0 : 1));
+}
+
+UAnimMontage* AShooterCharacter::GetThirdPersonSwitchMontage() const
+{
+	const FShooterMontageConfiguration& Configuration = AppliedPresentation == EShooterPresentation::Suit
+		? SuitMontages : PreSuitMontages;
+	return ResolvePresentationMontage(Configuration.ThirdPersonSwitch, ThirdPersonSwitchMontage, false, 10);
+}
+
 bool FShooterPresentationConfiguration::IsEmpty() const
 {
 	return !FirstPersonMesh && !FirstPersonAnimClass && !ThirdPersonMesh && !ThirdPersonAnimClass;
@@ -1831,10 +1900,12 @@ bool AShooterCharacter::ApplyPresentationConfiguration(bool bUseSuitPresentation
 		UE_LOG(LogTemp, Warning, TEXT("%s %s presentation is unset; using the validated legacy configuration."),
 			*GetName(), bUseSuitPresentation ? TEXT("Suit") : TEXT("PreSuit"));
 	}
-	return ApplyValidatedPresentationConfiguration(Configuration);
+	return ApplyValidatedPresentationConfiguration(Configuration,
+		bUseSuitPresentation ? EShooterPresentation::Suit : EShooterPresentation::PreSuit);
 }
 
-bool AShooterCharacter::ApplyValidatedPresentationConfiguration(const FShooterPresentationConfiguration& Configuration)
+bool AShooterCharacter::ApplyValidatedPresentationConfiguration(const FShooterPresentationConfiguration& Configuration,
+	EShooterPresentation NewPresentation)
 {
 	USkeletalMeshComponent* Mesh1P = GetFirstPersonMesh();
 	USkeletalMeshComponent* Mesh3P = GetMesh();
@@ -1843,6 +1914,50 @@ bool AShooterCharacter::ApplyValidatedPresentationConfiguration(const FShooterPr
 		UE_LOG(LogTemp, Warning, TEXT("%s cannot apply presentation without 1P, 3P and Shadow components."), *GetName());
 		return false;
 	}
+
+	const bool bPresentationChanged = AppliedPresentation != NewPresentation;
+	const bool bAnimationChanged = Mesh1P->GetSkeletalMeshAsset() != Configuration.FirstPersonMesh
+		|| Mesh1P->GetAnimClass() != Configuration.FirstPersonAnimClass.Get()
+		|| Mesh1P->GetAnimationMode() != EAnimationMode::AnimationBlueprint
+		|| Mesh3P->GetSkeletalMeshAsset() != Configuration.ThirdPersonMesh
+		|| Mesh3P->GetAnimClass() != Configuration.ThirdPersonAnimClass.Get()
+		|| Mesh3P->GetAnimationMode() != EAnimationMode::AnimationBlueprint;
+	if (bPresentationChanged || bAnimationChanged)
+	{
+		// 이전 Skeleton의 종료 콜백이 새 상태를 완료하지 않도록 교체 전에 액션과 연결을 정리한다.
+		if (CombatComponent)
+		{
+			CombatComponent->CancelReloadInternal();
+			CombatComponent->CancelMeleeAttack();
+		}
+		if (InventoryComponent)
+		{
+			InventoryComponent->CancelPendingWeaponSwitch();
+		}
+		CancelLocalProceduralWeaponSwitch();
+		EndActionLock(EShooterActionLock::Equip);
+		if (AWeaponBase* Weapon = GetCurrentWeapon())
+		{
+			Weapon->StopAttack();
+		}
+		// Linked 목록은 공개 const 조회 API로 읽고, 각 인스턴스의 몽타주만 중단한다.
+		for (const USkeletalMeshComponent* Component : { Mesh1P, Mesh3P })
+		{
+			if (UAnimInstance* Instance = Component->GetAnimInstance())
+			{
+				Instance->Montage_Stop(0.0f);
+			}
+			for (UAnimInstance* LinkedInstance : Component->GetLinkedAnimInstances())
+			{
+				if (LinkedInstance)
+				{
+					LinkedInstance->Montage_Stop(0.0f);
+				}
+			}
+		}
+	}
+	// 새 AnimInstance가 생성되는 순간부터 새 상태의 DA를 읽게 한다. 위 검증 실패 시에는 변경하지 않는다.
+	AppliedPresentation = NewPresentation;
 
 	const auto ApplyMeshAndAnimation = [](USkeletalMeshComponent* Component,
 		USkeletalMesh* MeshAsset, UClass* AnimClass)
@@ -1872,6 +1987,30 @@ bool AShooterCharacter::ApplyValidatedPresentationConfiguration(const FShooterPr
 	}
 	ShadowMesh->SetLeaderPoseComponent(Mesh3P);
 	RefreshFirstPersonShadowPolicy();
+	if (bPresentationChanged || bFirstPersonChanged || bThirdPersonChanged)
+	{
+		OnPresentationChanged.Broadcast();
+		// 같은 Mesh/ABP로 상태만 바뀌어도 캐시는 리셋한다. Linked graph의 독립 인스턴스도 포함한다.
+		const auto RefreshAnimation = [](UAnimInstance* Instance)
+		{
+			if (UShooterFirstPersonAnimInstance* FirstPerson = Cast<UShooterFirstPersonAnimInstance>(Instance))
+			{
+				FirstPerson->RefreshPresentationState();
+			}
+			if (UShooterAnimInstance* ThirdPerson = Cast<UShooterAnimInstance>(Instance))
+			{
+				ThirdPerson->RefreshPresentationState();
+			}
+		};
+		for (const USkeletalMeshComponent* Component : { Mesh1P, Mesh3P })
+		{
+			RefreshAnimation(Component->GetAnimInstance());
+			for (UAnimInstance* LinkedInstance : Component->GetLinkedAnimInstances())
+			{
+				RefreshAnimation(LinkedInstance);
+			}
+		}
+	}
 
 	// 포즈 연결이 끝난 뒤 기존 소켓 부착과 그림자 무기 표현을 새 Mesh에 맞춘다.
 	if (bFirstPersonChanged || bThirdPersonChanged || bShadowChanged)
@@ -1910,7 +2049,8 @@ bool AShooterCharacter::SetSuitPresentation(bool bUseSuitPresentation,
 			*GetName(), bUseSuitPresentation ? TEXT("Suit") : TEXT("PreSuit"), *Error);
 		return false;
 	}
-	if (!ApplyValidatedPresentationConfiguration(Configuration))
+	if (!ApplyValidatedPresentationConfiguration(Configuration,
+		bUseSuitPresentation ? EShooterPresentation::Suit : EShooterPresentation::PreSuit))
 	{
 		return false;
 	}
@@ -2379,8 +2519,8 @@ void AShooterCharacter::HandleAutoReloadRequested()
 
 void AShooterCharacter::HandleFireShotAnimation()
 {
-	UAnimMontage* FirstPersonMontage = FirstPersonFireMontage;
-	UAnimMontage* ThirdPersonMontage = ThirdPersonFireMontage;
+	UAnimMontage* FirstPersonMontage = GetActionMontage(EShooterMontageAction::Fire, true);
+	UAnimMontage* ThirdPersonMontage = GetActionMontage(EShooterMontageAction::Fire, false);
 
 	UE_LOG(
 		LogTemp,
@@ -2769,7 +2909,7 @@ void AShooterCharacter::HandleDeath()
 	{
 		InventoryComponent->CancelPendingWeaponSwitch();
 	}
-	StopThirdPersonMontage(ThirdPersonSwitchMontage);
+	StopThirdPersonMontage(GetThirdPersonSwitchMontage());
 	FirstPersonSwitchVisualPhase = EFirstPersonWeaponSwitchVisualPhase::None;
 	FirstPersonSwitchLowerAlpha = 0.0f;
 	ActiveProceduralSwitchId = 0;
@@ -2918,33 +3058,34 @@ void AShooterCharacter::PlayThirdPersonSwitchPhase(EWeaponType WeaponType, FName
 {
 	static const FName LowerPhase(TEXT("Lower"));
 	static const FName RaisePhase(TEXT("Raise"));
-	if (!ThirdPersonSwitchMontage || (Phase != LowerPhase && Phase != RaisePhase))
+	UAnimMontage* SwitchMontage = GetThirdPersonSwitchMontage();
+	if (!SwitchMontage || (Phase != LowerPhase && Phase != RaisePhase))
 	{
 		return;
 	}
 
 	UAnimInstance* AnimInstance = GetMesh() ? GetMesh()->GetAnimInstance() : nullptr;
 	const FName GenericSection = GetThirdPersonSwitchSectionName(WeaponType, Phase);
-	const FName Section = SectionOverride != NAME_None && ThirdPersonSwitchMontage->IsValidSectionName(SectionOverride)
+	const FName Section = SectionOverride != NAME_None && SwitchMontage->IsValidSectionName(SectionOverride)
 		? SectionOverride : GenericSection;
-	if (!AnimInstance || !ThirdPersonSwitchMontage->IsValidSlot(TEXT("UpperBody")) ||
-		!ThirdPersonSwitchMontage->IsValidSectionName(Section))
+	if (!AnimInstance || !SwitchMontage->IsValidSlot(TEXT("UpperBody")) ||
+		!SwitchMontage->IsValidSectionName(Section))
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[TPWeaponSwitch] Invalid montage or section %s Montage=%s"),
-			*Section.ToString(), *GetNameSafe(ThirdPersonSwitchMontage));
-		if (AnimInstance && AnimInstance->Montage_IsActive(ThirdPersonSwitchMontage))
+			*Section.ToString(), *GetNameSafe(SwitchMontage));
+		if (AnimInstance && AnimInstance->Montage_IsActive(SwitchMontage))
 		{
-			AnimInstance->Montage_Stop(0.1f, ThirdPersonSwitchMontage);
+			AnimInstance->Montage_Stop(0.1f, SwitchMontage);
 		}
 		return;
 	}
 
-	if (!AnimInstance->Montage_IsPlaying(ThirdPersonSwitchMontage))
+	if (!AnimInstance->Montage_IsPlaying(SwitchMontage))
 	{
-		if (AnimInstance->Montage_Play(ThirdPersonSwitchMontage) <= 0.0f)
+		if (AnimInstance->Montage_Play(SwitchMontage) <= 0.0f)
 		{
 			UE_LOG(LogTemp, Warning, TEXT("[TPWeaponSwitch] Could not play %s"),
-				*GetNameSafe(ThirdPersonSwitchMontage));
+				*GetNameSafe(SwitchMontage));
 			return;
 		}
 	}
@@ -2952,23 +3093,23 @@ void AShooterCharacter::PlayThirdPersonSwitchPhase(EWeaponType WeaponType, FName
 	if (Phase == LowerPhase)
 	{
 		const FName Lowered = GetThirdPersonSwitchSectionName(WeaponType, TEXT("Lowered"));
-		if (!ThirdPersonSwitchMontage->IsValidSectionName(Lowered))
+		if (!SwitchMontage->IsValidSectionName(Lowered))
 		{
 			UE_LOG(LogTemp, Warning, TEXT("[TPWeaponSwitch] Missing hold section %s"), *Lowered.ToString());
-			AnimInstance->Montage_Stop(0.1f, ThirdPersonSwitchMontage);
+			AnimInstance->Montage_Stop(0.1f, SwitchMontage);
 			return;
 		}
-		AnimInstance->Montage_SetNextSection(Section, Lowered, ThirdPersonSwitchMontage);
-		AnimInstance->Montage_SetNextSection(Lowered, Lowered, ThirdPersonSwitchMontage);
+		AnimInstance->Montage_SetNextSection(Section, Lowered, SwitchMontage);
+		AnimInstance->Montage_SetNextSection(Lowered, Lowered, SwitchMontage);
 	}
 	else
 	{
-		AnimInstance->Montage_SetNextSection(Section, NAME_None, ThirdPersonSwitchMontage);
+		AnimInstance->Montage_SetNextSection(Section, NAME_None, SwitchMontage);
 	}
-	AnimInstance->Montage_JumpToSection(Section, ThirdPersonSwitchMontage);
+	AnimInstance->Montage_JumpToSection(Section, SwitchMontage);
 	UE_LOG(LogTemp, Log, TEXT("[TPWeaponSwitch] Section=%s WeaponType=%d Montage=%s Position=%.3f"),
-		*Section.ToString(), static_cast<int32>(WeaponType), *GetNameSafe(ThirdPersonSwitchMontage),
-		AnimInstance->Montage_GetPosition(ThirdPersonSwitchMontage));
+		*Section.ToString(), static_cast<int32>(WeaponType), *GetNameSafe(SwitchMontage),
+		AnimInstance->Montage_GetPosition(SwitchMontage));
 }
 
 void AShooterCharacter::MulticastPlayThirdPersonSwitchPhase_Implementation(EWeaponType WeaponType, FName Phase)
@@ -3007,64 +3148,14 @@ float GetMontageSectionDurationOrFullLength(const UAnimMontage* Montage, FName S
 
 void AShooterCharacter::PlayFirstPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType)
 {
-	UAnimMontage* Montage = nullptr;
-	bool bUseWeaponSection = true;
-	switch (Action)
-	{
-	case EShooterMontageAction::Fire:
-		Montage = FirstPersonFireMontage;
-		break;
-	case EShooterMontageAction::Reload:
-		Montage = FirstPersonReloadMontage;
-		break;
-	case EShooterMontageAction::Slide:
-		Montage = FirstPersonSlideMontage;
-		bUseWeaponSection = false;
-		break;
-	case EShooterMontageAction::Equip:
-		Montage = FirstPersonEquipMontage;
-		break;
-	case EShooterMontageAction::MeleeAttack:
-		Montage = FirstPersonMeleeAttackMontage;
-		bUseWeaponSection = false;
-		break;
-	default:
-		break;
-	}
-
-	PlayFirstPersonMontageForWeapon(Montage, WeaponType, bUseWeaponSection);
+	const bool bUseWeaponSection = Action != EShooterMontageAction::Slide && Action != EShooterMontageAction::MeleeAttack;
+	PlayFirstPersonMontageForWeapon(GetActionMontage(Action, true), WeaponType, bUseWeaponSection);
 }
-
 void AShooterCharacter::PlayThirdPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType)
 {
-	UAnimMontage* Montage = nullptr;
-	bool bUseWeaponSection = true;
-	switch (Action)
-	{
-	case EShooterMontageAction::Fire:
-		Montage = ThirdPersonFireMontage;
-		break;
-	case EShooterMontageAction::Reload:
-		Montage = ThirdPersonReloadMontage;
-		break;
-	case EShooterMontageAction::Slide:
-		Montage = ThirdPersonSlideMontage;
-		bUseWeaponSection = false;
-		break;
-	case EShooterMontageAction::Equip:
-		Montage = ThirdPersonEquipMontage;
-		break;
-	case EShooterMontageAction::MeleeAttack:
-		Montage = ThirdPersonMeleeAttackMontage;
-		bUseWeaponSection = false;
-		break;
-	default:
-		break;
-	}
-
-	PlayThirdPersonMontageForWeapon(Montage, WeaponType, bUseWeaponSection);
+	const bool bUseWeaponSection = Action != EShooterMontageAction::Slide && Action != EShooterMontageAction::MeleeAttack;
+	PlayThirdPersonMontageForWeapon(GetActionMontage(Action, false), WeaponType, bUseWeaponSection);
 }
-
 void AShooterCharacter::PlayFirstPersonMontage(UAnimMontage* Montage)
 {
 	PlayFirstPersonMontageForWeapon(Montage, GetWeaponType());
@@ -3287,21 +3378,32 @@ void AShooterCharacter::PlayEquipMontages()
 	}
 
 	const EWeaponType EquippedWeaponType = GetWeaponType();
+	UAnimMontage* FirstPersonMontage = GetActionMontage(EShooterMontageAction::Equip, true);
+	UAnimMontage* ThirdPersonMontage = GetActionMontage(EShooterMontageAction::Equip, false);
+	UAnimMontage* SwitchMontage = GetThirdPersonSwitchMontage();
 	const FName EquipSectionName = ResolveMontageSectionNameForWeapon(EquippedWeaponType);
 	const FName SwitchRaiseSection = GetThirdPersonSwitchSectionName(EquippedWeaponType, TEXT("Raise"));
 	const float FirstPersonEquipLockDuration =
-		GetMontageSectionDurationOrFullLength(FirstPersonEquipMontage, EquipSectionName);
+		GetMontageSectionDurationOrFullLength(FirstPersonMontage, EquipSectionName);
 	const float ThirdPersonEquipLockDuration =
-		bUseProceduralWeaponSwitch && ThirdPersonSwitchMontage
-			? (ThirdPersonSwitchMontage->IsValidSectionName(SwitchRaiseSection)
-				? GetMontageSectionDurationOrFullLength(ThirdPersonSwitchMontage, SwitchRaiseSection)
+		bUseProceduralWeaponSwitch && SwitchMontage
+			? (SwitchMontage->IsValidSectionName(SwitchRaiseSection)
+				? GetMontageSectionDurationOrFullLength(SwitchMontage, SwitchRaiseSection)
 				: 0.0f)
-			: GetMontageSectionDurationOrFullLength(ThirdPersonEquipMontage, EquipSectionName);
+			: GetMontageSectionDurationOrFullLength(ThirdPersonMontage, EquipSectionName);
 	const float EquipLockDuration = FMath::Max(
 		bUseProceduralWeaponSwitch ? FirstPersonSwitchRaiseDuration : FirstPersonEquipLockDuration,
 		ThirdPersonEquipLockDuration);
 
 	BeginActionLock(EShooterActionLock::Equip);
+	if (!bUseProceduralWeaponSwitch && !FirstPersonMontage)
+	{
+		// 미완성 에셋에서는 장착 Notify가 실행되지 않는다. 부착된 무기를 숨긴 채 남겨 두지 않는다.
+		if (AWeaponBase* Weapon = GetCurrentWeapon())
+		{
+			Weapon->ShowEquippedPresentation();
+		}
+	}
 
 	UE_LOG(
 		LogTemp,
@@ -3311,13 +3413,13 @@ void AShooterCharacter::PlayEquipMontages()
 		*GetName(),
 		static_cast<int32>(EquippedWeaponType),
 		*EquipSectionName.ToString(),
-		(FirstPersonEquipMontage && FirstPersonEquipMontage->IsValidSectionName(EquipSectionName)) ? 1 : 0,
-		(ThirdPersonEquipMontage && ThirdPersonEquipMontage->IsValidSectionName(EquipSectionName)) ? 1 : 0,
+		(FirstPersonMontage && FirstPersonMontage->IsValidSectionName(EquipSectionName)) ? 1 : 0,
+		(ThirdPersonMontage && ThirdPersonMontage->IsValidSectionName(EquipSectionName)) ? 1 : 0,
 		FirstPersonEquipLockDuration,
 		ThirdPersonEquipLockDuration,
 		EquipLockDuration,
-		*GetNameSafe(FirstPersonEquipMontage),
-		*GetNameSafe(ThirdPersonEquipMontage),
+		*GetNameSafe(FirstPersonMontage),
+		*GetNameSafe(ThirdPersonMontage),
 		IsLocallyControlled() ? 1 : 0,
 		HasAuthority() ? 1 : 0);
 
@@ -3328,7 +3430,7 @@ void AShooterCharacter::PlayEquipMontages()
 
 	if (HasAuthority())
 	{
-		if (bUseProceduralWeaponSwitch && ThirdPersonSwitchMontage)
+		if (bUseProceduralWeaponSwitch && SwitchMontage)
 		{
 			MulticastPlayThirdPersonSwitchPhase(EquippedWeaponType, TEXT("Raise"));
 		}
@@ -3353,7 +3455,7 @@ void AShooterCharacter::PlayEquipMontages()
 int32 AShooterCharacter::BeginProceduralWeaponSwitch()
 {
 	const int32 SwitchId = ++NextProceduralSwitchId;
-	if (HasAuthority() && ThirdPersonSwitchMontage)
+	if (HasAuthority() && GetThirdPersonSwitchMontage())
 	{
 		MulticastPlayThirdPersonSwitchPhase(GetWeaponType(), TEXT("Lower"));
 	}
@@ -3504,8 +3606,8 @@ void AShooterCharacter::ServerConfirmProceduralWeaponLowered_Implementation(int3
 void AShooterCharacter::PlayProceduralSwitchThirdPersonEquip(EWeaponType PreviousWeaponType)
 {
 	const EWeaponType EquippedWeaponType = GetWeaponType();
-	const bool bUseSwitchMontage = ThirdPersonSwitchMontage != nullptr;
-	const UAnimMontage* Montage = bUseSwitchMontage ? ThirdPersonSwitchMontage.Get() : ThirdPersonEquipMontage.Get();
+	const bool bUseSwitchMontage = GetThirdPersonSwitchMontage() != nullptr;
+	const UAnimMontage* Montage = bUseSwitchMontage ? GetThirdPersonSwitchMontage() : GetActionMontage(EShooterMontageAction::Equip, false);
 	const FName PairSection = GetThirdPersonSwitchPairRaiseSectionName(PreviousWeaponType, EquippedWeaponType);
 	FName SectionName = ResolveMontageSectionNameForWeapon(EquippedWeaponType);
 	if (bUseSwitchMontage)
@@ -3635,11 +3737,11 @@ void AShooterCharacter::ServerSetLeanTarget_Implementation(float NewLeanAlpha)
 
 void AShooterCharacter::ClientPlayFirstPersonActionMontage_Implementation(EShooterMontageAction Action, EWeaponType WeaponType)
 {
-	if (Action == EShooterMontageAction::Reload && FirstPersonReloadMontage && FirstPersonMesh)
+	if (Action == EShooterMontageAction::Reload && GetActionMontage(EShooterMontageAction::Reload, true) && FirstPersonMesh)
 	{
 		if (UAnimInstance* FirstPersonAnimInstance = FirstPersonMesh->GetAnimInstance())
 		{
-			if (FirstPersonAnimInstance->Montage_IsPlaying(FirstPersonReloadMontage))
+			if (FirstPersonAnimInstance->Montage_IsPlaying(GetActionMontage(EShooterMontageAction::Reload, true)))
 			{
 				return;
 			}

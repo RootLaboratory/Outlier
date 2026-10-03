@@ -3,6 +3,7 @@
 #include "OutlierEditor/Tests/SuitInteractionTestActors.h"
 
 #include "Animation/AnimInstance.h"
+#include "Animation/AnimMontage.h"
 #include "Animation/Skeleton.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -18,6 +19,10 @@
 #include "OutlierPlayerState.h"
 #include "Save/OutlierCheckpointSnapshot.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Shooter/ShooterAnimInstance.h"
+#include "Shooter/ShooterFirstPersonAnimInstance.h"
+#include "Shooter/ShooterCombatComponent.h"
+#include "Shooter/Anim/ProceduralAnimValues.h"
 #include "Shooter/ShooterInventoryComponent.h"
 #include "UObject/UnrealType.h"
 
@@ -630,6 +635,182 @@ bool FShooterPresentationReplicationTest::RunTest(const FString& Parameters)
 		&& ServerShooter->GetFirstPersonMesh()->GetAnimClass() == PreSuitConfiguration.FirstPersonAnimClass.Get());
 	TestNull(TEXT("Restore does not grant a new weapon"), ServerShooter->GetCurrentWeapon());
 	TestFalse(TEXT("Restore does not change the saved acquisition flag"), SavedPlayerState->GetAcquiredSuit());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierShooterPresentationAnimationTest,
+	"Outlier.Animation.Shooter.PresentationAnimation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierShooterPresentationAnimationTest::RunTest(const FString& Parameters)
+{
+	FScopedSuitInteractionTestWorld TestWorld;
+	FShooterPresentationConfiguration Configuration;
+	if (!TestWorld.Initialize(*this) || !LoadSuitPresentationConfiguration(*this, Configuration))
+	{
+		return false;
+	}
+	UClass* ShooterClass = LoadClass<AShooterCharacter>(nullptr,
+		TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	if (!TestNotNull(TEXT("Shooter BP exists"), ShooterClass))
+	{
+		return false;
+	}
+	AShooterCharacter* Shooter = TestWorld.World->SpawnActorDeferred<AShooterCharacter>(ShooterClass,
+		FTransform::Identity, nullptr, nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+	if (!TestNotNull(TEXT("Animation test Shooter spawns"), Shooter))
+	{
+		return false;
+	}
+	// 같은 Mesh/ABP를 사용해 인스턴스 재생성 없이 상태만 바뀌는 경계도 검증한다.
+	Shooter->PreSuitPresentation = Configuration;
+	Shooter->SuitPresentation = Configuration;
+	Shooter->FinishSpawning(FTransform::Identity);
+	if (!Shooter->HasActorBegunPlay())
+	{
+		Shooter->DispatchBeginPlay();
+	}
+	TestTrue(TEXT("PreSuit applies"), Shooter->SetSuitPresentation(false));
+	ASuitInteractionTestRifle* Weapon = TestWorld.World->SpawnActor<ASuitInteractionTestRifle>();
+	if (!TestNotNull(TEXT("Procedural test weapon spawns"), Weapon))
+	{
+		return false;
+	}
+	UProceduralAnimValues* Common = NewObject<UProceduralAnimValues>(Weapon);
+	UProceduralAnimValues* PreSuit = NewObject<UProceduralAnimValues>(Weapon);
+	UProceduralAnimValues* Suit = NewObject<UProceduralAnimValues>(Weapon);
+	PreSuit->WeaponValues.FirstPersonRecoilMultiplier = 2.0f;
+	PreSuit->WeaponValues.ThirdPersonRecoilMultiplier = 3.0f;
+	PreSuit->WeaponValues.ThirdPersonSprintMultiplier = 4.0f;
+	PreSuit->WeaponValues.ThirdPersonWallOffsetMultiplier = 5.0f;
+	Suit->WeaponValues.FirstPersonRecoilMultiplier = 6.0f;
+	Suit->WeaponValues.ThirdPersonRecoilMultiplier = 7.0f;
+	Suit->WeaponValues.ThirdPersonSprintMultiplier = 8.0f;
+	Suit->WeaponValues.ThirdPersonWallOffsetMultiplier = 9.0f;
+	Weapon->ConfigureProceduralValues(Common, PreSuit, Suit);
+	TestTrue(TEXT("Ownerless weapon uses common DA"), Weapon->GetFirstPersonProceduralValues() == Common);
+	Shooter->CurrentWeapon = Weapon;
+	Weapon->OnEquipped(Shooter);
+	TestTrue(TEXT("PreSuit selects own DA"), Weapon->GetFirstPersonProceduralValues() == PreSuit);
+	TestEqual(TEXT("PreSuit FP recoil"), Weapon->GetFirstPersonProceduralRecoilMultiplier(), 2.0f);
+	TestEqual(TEXT("PreSuit TP recoil"), Weapon->GetThirdPersonProceduralRecoilMultiplier(), 3.0f);
+	TestEqual(TEXT("PreSuit TP sprint"), Weapon->GetThirdPersonProceduralSprintMultiplier(), 4.0f);
+	TestEqual(TEXT("PreSuit TP wall"), Weapon->GetThirdPersonProceduralWallOffsetMultiplier(), 5.0f);
+
+	UShooterFirstPersonAnimInstance* FP = Cast<UShooterFirstPersonAnimInstance>(Shooter->GetFirstPersonMesh()->GetAnimInstance());
+	UShooterAnimInstance* TP = Cast<UShooterAnimInstance>(Shooter->GetMesh()->GetAnimInstance());
+	if (!TestNotNull(TEXT("FP instance exists"), FP) || !TestNotNull(TEXT("TP instance exists"), TP))
+	{
+		return false;
+	}
+	FP->RefreshPresentationState();
+	FP->ViewModelRecoilLoc = FVector(10.0f);
+	FP->ReloadAimAlpha = 1.0f;
+	FP->LastLeftHandActionGripOffsetLoc = FVector(20.0f);
+	FP->bWeaponSwitchPoseActive = true;
+	TP->ThirdPersonRecoilLocTarget = FVector(30.0f);
+	TestTrue(TEXT("Suit applies with same weapon and ABP"), Shooter->SetSuitPresentation(true));
+	TestTrue(TEXT("FP instance is retained"), Shooter->GetFirstPersonMesh()->GetAnimInstance() == FP);
+	TestTrue(TEXT("Same weapon now selects Suit DA"), Weapon->GetFirstPersonProceduralValues() == Suit);
+	TestTrue(TEXT("FP immediately reads Suit DA"), FP->CurrentProceduralValues == Suit);
+	TestTrue(TEXT("FP recoil resets"), FP->ViewModelRecoilLoc.IsNearlyZero());
+	TestEqual(TEXT("Old reload aim blend resets"), FP->ReloadAimAlpha, 0.0f);
+	TestTrue(TEXT("Old IK return cache resets"), FP->LastLeftHandActionGripOffsetLoc.IsNearlyZero());
+	TestFalse(TEXT("Old weapon pose blend resets"), FP->bWeaponSwitchPoseActive);
+	TestTrue(TEXT("TP recoil resets"), TP->ThirdPersonRecoilLocTarget.IsNearlyZero());
+	TestEqual(TEXT("Suit FP recoil"), Weapon->GetFirstPersonProceduralRecoilMultiplier(), 6.0f);
+	TestEqual(TEXT("Suit TP recoil"), Weapon->GetThirdPersonProceduralRecoilMultiplier(), 7.0f);
+	TestEqual(TEXT("Suit TP sprint"), Weapon->GetThirdPersonProceduralSprintMultiplier(), 8.0f);
+	TestEqual(TEXT("Suit TP wall"), Weapon->GetThirdPersonProceduralWallOffsetMultiplier(), 9.0f);
+	FP->ViewModelRecoilLoc = FVector(11.0f);
+	TestTrue(TEXT("Same state reapplies"), Shooter->SetSuitPresentation(true));
+	TestEqual(TEXT("Idempotent apply retains live recoil"), FP->ViewModelRecoilLoc, FVector(11.0f));
+	TestEqual(TEXT("Shared PreSuit asset is not modified"), PreSuit->WeaponValues.FirstPersonRecoilMultiplier, 2.0f);
+	Shooter->PreSuitPresentation.ThirdPersonAnimClass = nullptr;
+	AddExpectedError(TEXT("rejected authoritative PreSuit presentation"), EAutomationExpectedErrorFlags::Contains, 1);
+	TestFalse(TEXT("Invalid presentation update is rejected"), Shooter->SetSuitPresentation(false));
+	TestTrue(TEXT("Rejected update retains applied Suit DA"), Weapon->GetFirstPersonProceduralValues() == Suit);
+	TestEqual(TEXT("Rejected update retains animation cache"), FP->ViewModelRecoilLoc, FVector(11.0f));
+	Shooter->PreSuitPresentation = Configuration;
+
+	Weapon->ConfigureProceduralValues(Common, PreSuit, nullptr);
+	TestTrue(TEXT("Missing Suit uses common, not PreSuit"), Weapon->GetFirstPersonProceduralValues() == Common);
+	Weapon->ConfigureProceduralValues(nullptr, PreSuit, nullptr);
+	TestNull(TEXT("Missing Suit/common does not use PreSuit"), Weapon->GetFirstPersonProceduralValues());
+	TestEqual(TEXT("Missing DA preserves default multiplier"), Weapon->GetThirdPersonProceduralSprintMultiplier(), 1.0f);
+	Weapon->ConfigureProceduralValues(Common, nullptr, Suit);
+	TestTrue(TEXT("PreSuit restore applies"), Shooter->SetSuitPresentation(false));
+	TestTrue(TEXT("Missing PreSuit uses common, not Suit"), Weapon->GetFirstPersonProceduralValues() == Common);
+	Weapon->ConfigureProceduralValues(Common, Suit, Suit);
+	FP->ViewModelRecoilLoc = FVector(12.0f);
+	TestTrue(TEXT("Shared DA state change applies"), Shooter->SetSuitPresentation(true));
+	TestTrue(TEXT("State change resets even with shared DA"), FP->ViewModelRecoilLoc.IsNearlyZero());
+	Weapon->SetProceduralTestOwner(nullptr);
+	TestTrue(TEXT("Owner loss restores common selection"), Weapon->GetFirstPersonProceduralValues() == Common);
+	ACharacter* OtherOwner = TestWorld.World->SpawnActor<ACharacter>();
+	if (!TestNotNull(TEXT("Non-Shooter owner spawns"), OtherOwner))
+	{
+		return false;
+	}
+	Weapon->SetProceduralTestOwner(OtherOwner);
+	TestTrue(TEXT("Other roles keep common DA"), Weapon->GetFirstPersonProceduralValues() == Common);
+	Weapon->SetProceduralTestOwner(Shooter);
+	TestTrue(TEXT("Late Owner RepNotify selects applied Suit"), Weapon->GetFirstPersonProceduralValues() == Suit);
+
+	const auto MakeMontage = [](USkeleton* Skeleton)
+	{
+		UAnimMontage* Montage = NewObject<UAnimMontage>(GetTransientPackage());
+		Montage->SetSkeleton(Skeleton);
+		return Montage;
+	};
+	UAnimMontage* PreFP = MakeMontage(Configuration.FirstPersonMesh->GetSkeleton());
+	UAnimMontage* SuitFP = MakeMontage(Configuration.FirstPersonMesh->GetSkeleton());
+	UAnimMontage* PreTP = MakeMontage(Configuration.ThirdPersonMesh->GetSkeleton());
+	UAnimMontage* SuitTP = MakeMontage(Configuration.ThirdPersonMesh->GetSkeleton());
+	const auto ConfigureMontages = [](FShooterMontageConfiguration& Target, UAnimMontage* First, UAnimMontage* Third)
+	{
+		Target.FirstPersonFire = Target.FirstPersonReload = Target.FirstPersonEquip = First;
+		Target.FirstPersonSlide = Target.FirstPersonMeleeAttack = First;
+		Target.ThirdPersonFire = Target.ThirdPersonReload = Target.ThirdPersonEquip = Third;
+		Target.ThirdPersonSlide = Target.ThirdPersonMeleeAttack = Target.ThirdPersonSwitch = Third;
+	};
+	ConfigureMontages(Shooter->PreSuitMontages, PreFP, PreTP);
+	ConfigureMontages(Shooter->SuitMontages, SuitFP, SuitTP);
+	for (EShooterMontageAction Action : { EShooterMontageAction::Fire, EShooterMontageAction::Reload,
+		EShooterMontageAction::Equip, EShooterMontageAction::Slide, EShooterMontageAction::MeleeAttack })
+	{
+		TestTrue(TEXT("Suit FP action montage selected"), Shooter->GetActionMontage(Action, true) == SuitFP);
+		TestTrue(TEXT("Suit TP action montage selected"), Shooter->GetActionMontage(Action, false) == SuitTP);
+	}
+	TestTrue(TEXT("Suit switch montage selected"), Shooter->GetThirdPersonSwitchMontage() == SuitTP);
+	Shooter->SetSuitPresentation(false);
+	TestTrue(TEXT("PreSuit FP selected"), Shooter->GetFirstPersonReloadMontage() == PreFP);
+	TestTrue(TEXT("PreSuit TP selected"), Shooter->GetThirdPersonMeleeAttackMontage() == PreTP);
+	TestTrue(TEXT("PreSuit switch selected"), Shooter->GetThirdPersonSwitchMontage() == PreTP);
+	Shooter->PreSuitMontages.FirstPersonFire = nullptr;
+	Shooter->FirstPersonFireMontage = PreFP;
+	TestTrue(TEXT("Compatible legacy montage fallback works"), Shooter->GetActionMontage(EShooterMontageAction::Fire, true) == PreFP);
+	UAnimMontage* Invalid = MakeMontage(NewObject<USkeleton>(GetTransientPackage()));
+	Shooter->PreSuitMontages.FirstPersonFire = Invalid;
+	AddExpectedError(TEXT("rejected incompatible 1P montage"), EAutomationExpectedErrorFlags::Contains, 2);
+	TestNull(TEXT("Invalid explicit montage does not silently fallback"), Shooter->GetActionMontage(EShooterMontageAction::Fire, true));
+	Shooter->PreSuitMontages.FirstPersonFire = nullptr;
+	Shooter->FirstPersonFireMontage = Invalid;
+	TestNull(TEXT("Invalid legacy montage is not played"), Shooter->GetActionMontage(EShooterMontageAction::Fire, true));
+
+	// 실제 연결했던 인스턴스/몽타주를 보존하고, 상태 교체 시 종료 콜백을 먼저 제거한다.
+	UShooterCombatComponent* Combat = Shooter->CombatComponent;
+	Combat->BindReloadMontageEndedDelegates();
+	TestTrue(TEXT("Reload captures selected PreSuit montage"), Combat->ActiveFirstPersonReloadMontage.Get() == PreFP);
+	TestTrue(TEXT("Reload captures actual FP instance"), Combat->BoundFirstPersonReloadInstance.Get() == FP);
+	Combat->bIsReloading = true;
+	Shooter->BeginActionLock(EShooterActionLock::Reload);
+	Shooter->SetSuitPresentation(true);
+	TestFalse(TEXT("Old reload is cancelled"), Combat->IsReloading());
+	TestFalse(TEXT("Old reload instance binding is cleared"), Combat->BoundFirstPersonReloadInstance.IsValid());
+	Combat->HandleReloadMontageEnded(PreFP, false);
+	TestFalse(TEXT("Old montage completion cannot restore reload"), Combat->IsReloading());
 	return true;
 }
 
