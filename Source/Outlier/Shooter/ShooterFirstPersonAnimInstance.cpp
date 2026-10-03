@@ -2663,13 +2663,15 @@ void UShooterFirstPersonAnimInstance::UpdateWallOffset(float DeltaSeconds, const
 	const float RawRightAlpha = RightProbe.Alpha;
 	const float RawLeftAlpha = LeftProbe.Alpha;
 	const float CenterSideSuppressAlpha = CenterProbe.Alpha * 0.65f;
+	const float RightResponseScale = FMath::Clamp(WeaponValues->WallRightSideResponseScale, 0.0f, 1.0f);
+	const float LeftResponseScale = FMath::Clamp(WeaponValues->WallLeftSideResponseScale, 0.0f, 1.0f);
 	const float RightSideAlpha = FMath::Clamp(
-		RawRightAlpha - FMath::Max(RawLeftAlpha, CenterSideSuppressAlpha),
+		(RawRightAlpha - FMath::Max(RawLeftAlpha, CenterSideSuppressAlpha)) * RightResponseScale,
 		0.0f,
 		1.0f
 	);
 	const float LeftSideAlpha = FMath::Clamp(
-		RawLeftAlpha - FMath::Max(RawRightAlpha, CenterSideSuppressAlpha),
+		(RawLeftAlpha - FMath::Max(RawRightAlpha, CenterSideSuppressAlpha)) * LeftResponseScale,
 		0.0f,
 		1.0f
 	);
@@ -3020,7 +3022,7 @@ void UShooterFirstPersonAnimInstance::UpdateWallOffset(float DeltaSeconds, const
 	const float MuzzleRotScale = FMath::Clamp(1.0f - MuzzleRotSuppressAlpha, 0.0f, 1.0f);
 	const FRotator WallNonHardStopOffsetRot =
 		(WeaponValues->WallMaxOffsetRot * EasedAlpha) +
-		(WeaponValues->WallSideOffsetRot * WallAvoidSideSign * EasedSideAlpha) +
+		(WeaponValues->WallSideOffsetRot * WallAvoidSideSign * EasedSideAlpha * FMath::Clamp(WeaponValues->WallSideRotationScale, 0.0f, 1.0f)) +
 		(WeaponValues->WallMuzzleBlockRot * EasedMuzzleBlockAlpha * (1.0f - WallMuzzleBlockDownPreferenceAlpha) * MuzzleRotScale) +
 		(WeaponValues->WallMuzzleBlockDownRot * EasedMuzzleBlockAlpha * WallMuzzleBlockDownPreferenceAlpha * MuzzleRotScale) +
 		(WeaponValues->WallVeryCloseRot * EasedVeryCloseAlpha);
