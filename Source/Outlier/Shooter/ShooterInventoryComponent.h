@@ -92,10 +92,9 @@ private:
 	void CaptureLoadoutToPlayerState() const;
 
 	// HandleEquipWeapon / EquipSuitRifle / RestoreLoadout 의 공통 꼬리.
-	// bPlayEquipMontage=false 면 몽타주 대신 ShowEquippedPresentation() 을 직접 부른다.
-	// OnEquipped 가 1P/3P/Shadow 메시를 전부 숨기고 공개는 equip 몽타주 Notify 담당이라,
-	// 둘 다 생략하면 장착은 됐는데 무기가 보이지 않는 상태가 된다.
-	void ApplyWeaponToSlot(AWeaponBase* Weapon, EWeaponSlot Slot, bool bPlayEquipMontage);
+	// 복원/교체 완료는 이미 정한 연출을 유지한다. 신규 장착일 때만 Raise와 잠금 타이머를 시작한다.
+	// OnEquipped가 숨긴 1P/3P/Shadow는 항상 직접 표시한다. 구형 Equip Notify에는 의존하지 않는다.
+	void ApplyWeaponToSlot(AWeaponBase* Weapon, EWeaponSlot Slot, bool bPlayEquipPresentation);
 	void RestoreWeaponIntoSlot(
 		const FOutlierWeaponSnapshot& WeaponSnapshot,
 		EWeaponSlot Slot,

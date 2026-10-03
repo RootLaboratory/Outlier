@@ -279,7 +279,8 @@ protected:
 	void HandleDeathBlackoutStarted();
 	void PushPresetSelectWidget();
 
-	// 암전 담당자 연결 지점. 기본 구현은 비어 있으며 완료 응답을 생성하지 않는다.
+	// 암전 담당자 연결 지점. PIE에서는 테스트용 완료 응답을 보내며, 일반 실행에서는 실제 연출 연결을 기다린다.
+	// 실제 콜백 검증 시 Outlier.SuitTransition.BypassPresentation 0으로 테스트 우회를 끈다.
 	virtual void RequestSuitFadeOut(const FGuid& TransitionId, float Duration);
 	virtual void RequestSuitPresentationReady(const FGuid& TransitionId);
 	virtual void RequestSuitFadeIn(const FGuid& TransitionId, float Duration);

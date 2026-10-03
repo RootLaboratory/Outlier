@@ -6,6 +6,8 @@
 #include "EnhancedInputDeveloperSettings.h"
 #include "EnhancedInputSubsystems.h"
 #include "Engine/LocalPlayer.h"
+#include "Engine/World.h"
+#include "HAL/IConsoleManager.h"
 #include "GameFramework/GameStateBase.h"
 #include "GameFramework/PlayerState.h"
 #include "InputMappingContext.h"
@@ -34,6 +36,19 @@
 
 namespace
 {
+	bool ShouldBypassSuitPresentationForTesting(const UWorld* World)
+	{
+#if WITH_EDITOR
+		static TAutoConsoleVariable<int32> CVarSuitPresentationBypass(
+			TEXT("Outlier.SuitTransition.BypassPresentation"), 1,
+			TEXT("PIE only: acknowledge unimplemented suit presentation hooks for gameplay testing. Set 0 to test real presentation callbacks."));
+		return World && World->WorldType == EWorldType::PIE
+			&& CVarSuitPresentationBypass.GetValueOnGameThread() != 0;
+#else
+		return false;
+#endif
+	}
+
 	void ResolvePairCharactersForController(
 		AFirstPersonPlayerController* Controller,
 		AShooterCharacter*& OutShooterCharacter,
@@ -962,7 +977,7 @@ void AFirstPersonPlayerController::ApplyLocalSuitTransitionPhase(
 	}
 	LocalSuitTransitionPhase = Phase;
 	bLocalSuitTransitionReadySent = false;
-	// 요청받았다는 사실은 완료가 아니다. 각 연결 지점의 실제 콜백만 서버에 준비 완료를 보고한다.
+	// 일반 실행은 실제 완료 콜백을 기다린다. 미연결 연출의 PIE 테스트 응답은 아래 기본 훅에서만 생성한다.
 	switch (Phase)
 	{
 	case ESuitTransitionPhase::FadingOut:
@@ -1042,24 +1057,45 @@ void AFirstPersonPlayerController::ClearLocalSuitTransition()
 	RequestSuitTransitionCleanup(Id);
 }
 
-// 암전 담당자 작업 위치: 아래 네 연결 지점의 내부 연출 구현은 이번 Slice에서 비워 둔다.
+// 암전 담당자 작업 위치: 아래 네 연결 지점의 실제 연출은 비워 둔다.
+// PIE의 기본 구현만 테스트 응답을 보낸다. 실제 연출 검증 시 Outlier.SuitTransition.BypassPresentation 0으로 끈다.
 // 기존 API 참고 경로: Plugins/RDG/Source/RDG/Public/LocalPlayerPostProcessSubsystem.h
 // 기존 구현 참고 경로: Plugins/RDG/Source/RDG/Private/LocalPlayerPostProcessSubsystem.cpp
 // 기존 사망/해킹 연출과의 우선순위는 담당자가 연결할 때 결정한다. 다른 연출을 여기서 강제 해제하지 않는다.
 // 비동기 콜백은 요청 ID를 값으로 캡처하고, 정리 요청에서는 해당 ID의 콜백만 해제한다.
 void AFirstPersonPlayerController::RequestSuitFadeOut(const FGuid& TransitionId, float Duration)
 {
+	// 테스트도 기존 ID/소유자 검증과 서버 최소 시간을 거친다. 화면이 실제로 가려졌다는 보장은 없다.
+	if (ShouldBypassSuitPresentationForTesting(GetWorld()))
+	{
+		UE_LOG(LogTemp, Log, TEXT("[SuitTransition] PIE presentation bypass Controller=%s Phase=FadingOut"), *GetName());
+		NotifySuitFadeOutFinished(TransitionId);
+		return;
+	}
 	// TODO(암전 담당자): 실제 화면이 가려진 콜백에서 NotifySuitFadeOutFinished(TransitionId)를 호출한다.
 }
 
 void AFirstPersonPlayerController::RequestSuitPresentationReady(const FGuid& TransitionId)
 {
+	// 테스트에서는 복제/첫 포즈 완료를 기다리지 않는다. 에셋의 실제 표시 준비 검증은 담당자 연결 후 수행한다.
+	if (ShouldBypassSuitPresentationForTesting(GetWorld()))
+	{
+		UE_LOG(LogTemp, Log, TEXT("[SuitTransition] PIE presentation bypass Controller=%s Phase=Applying"), *GetName());
+		NotifySuitPresentationReady(TransitionId);
+		return;
+	}
 	// TODO(암전 담당자): 복제된 Mesh/ABP, 새 포즈와 무기 부착을 확인한 뒤 NotifySuitPresentationReady를 호출한다.
 	// Partner는 지급 무기 표시도 확인한다. RPC 도착/BlackHold 경과만으로 준비 완료를 보고하지 않는다.
 }
 
 void AFirstPersonPlayerController::RequestSuitFadeIn(const FGuid& TransitionId, float Duration)
 {
+	if (ShouldBypassSuitPresentationForTesting(GetWorld()))
+	{
+		UE_LOG(LogTemp, Log, TEXT("[SuitTransition] PIE presentation bypass Controller=%s Phase=FadingIn"), *GetName());
+		NotifySuitFadeInFinished(TransitionId);
+		return;
+	}
 	// TODO(암전 담당자): 실제 화면 복귀 콜백에서 NotifySuitFadeInFinished(TransitionId)를 호출한다.
 }
 

@@ -183,8 +183,8 @@ enum class EShooterMontageAction : uint8
 	Fire,
 	Reload,
 	Slide,
-	Equip,
-	MeleeAttack
+	// 기존 RPC/선택 캐시의 액션 번호는 유지한다. 3번 Equip 몽타주 경로는 제거되었다.
+	MeleeAttack = 4
 };
 
 USTRUCT(BlueprintType)
@@ -200,10 +200,6 @@ struct OUTLIER_API FShooterMontageConfiguration
 	TObjectPtr<UAnimMontage> FirstPersonReload;
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
 	TObjectPtr<UAnimMontage> ThirdPersonReload;
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
-	TObjectPtr<UAnimMontage> FirstPersonEquip;
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
-	TObjectPtr<UAnimMontage> ThirdPersonEquip;
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
 	TObjectPtr<UAnimMontage> FirstPersonSlide;
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
@@ -232,6 +228,7 @@ class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbil
 	friend class UShooterMovementComponent;
 	friend class FShooterGroundedMovementTest;
 	friend class FShooterPresentationConfigurationTest;
+	friend class FOutlierShooterPresentationAssetsTest;
 	friend class FShooterPresentationReplicationTest;
 	friend class FOutlierSuitInteractionEquipTest;
 	friend class FOutlierShooterPresentationAnimationTest;
@@ -371,13 +368,6 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
 	TObjectPtr<UAnimMontage> ThirdPersonReloadMontage;
 
-	// Equip
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
-	TObjectPtr<UAnimMontage> FirstPersonEquipMontage;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
-	TObjectPtr<UAnimMontage> ThirdPersonEquipMontage;
-
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Animation|Weapon Switch")
 	TObjectPtr<UAnimMontage> ThirdPersonSwitchMontage;
 
@@ -457,9 +447,6 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "State")
 	uint8 bIsEquipping : 1 = false;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Animation|Weapon Switch")
-	bool bUseProceduralWeaponSwitch = false;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Animation|Weapon Switch", meta = (ClampMin = "0.05"))
 	float FirstPersonSwitchLowerDuration = 0.22f;
@@ -805,7 +792,6 @@ public:
 
 	UFUNCTION(BlueprintPure)
 	EShooterActionLock GetActionLock() const { return ActionLock; }
-	bool UsesProceduralWeaponSwitch() const { return bUseProceduralWeaponSwitch; }
 	float GetFirstPersonSwitchLowerAlpha() const { return FirstPersonSwitchLowerAlpha; }
 	float GetFirstPersonSwitchLowerDistance() const { return FirstPersonSwitchLowerDistance; }
 	float GetFirstPersonSwitchLowerDuration() const { return FirstPersonSwitchLowerDuration; }
@@ -1063,9 +1049,9 @@ public:
 	void StopFirstPersonMontage(UAnimMontage* Montage);
 	void StopThirdPersonMontage(UAnimMontage* Montage);
 	void StopSplitMontages(UAnimMontage* FirstPersonMontage, UAnimMontage* ThirdPersonMontage);
-	void PlayEquipMontages();
+	// 장착은 1P Procedural Raise와 3P Switch로만 표현한다.
+	void PlayEquipPresentation();
 	UAnimMontage* GetFirstPersonReloadMontage() const { return GetActionMontage(EShooterMontageAction::Reload, true); }
-	UAnimMontage* GetFirstPersonEquipMontage() const { return GetActionMontage(EShooterMontageAction::Equip, true); }
 	UAnimMontage* GetThirdPersonMeleeAttackMontage() const { return GetActionMontage(EShooterMontageAction::MeleeAttack, false); }
 	void ClearInputIntent();
 

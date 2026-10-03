@@ -89,7 +89,6 @@ UAnimMontage* FShooterMontageConfiguration::GetActionMontage(EShooterMontageActi
 	{
 	case EShooterMontageAction::Fire: return bFirstPerson ? FirstPersonFire.Get() : ThirdPersonFire.Get();
 	case EShooterMontageAction::Reload: return bFirstPerson ? FirstPersonReload.Get() : ThirdPersonReload.Get();
-	case EShooterMontageAction::Equip: return bFirstPerson ? FirstPersonEquip.Get() : ThirdPersonEquip.Get();
 	case EShooterMontageAction::Slide: return bFirstPerson ? FirstPersonSlide.Get() : ThirdPersonSlide.Get();
 	case EShooterMontageAction::MeleeAttack: return bFirstPerson ? FirstPersonMeleeAttack.Get() : ThirdPersonMeleeAttack.Get();
 	default: return nullptr;
@@ -134,7 +133,6 @@ UAnimMontage* AShooterCharacter::GetActionMontage(EShooterMontageAction Action, 
 	{
 	case EShooterMontageAction::Fire: LegacyMontage = bFirstPerson ? FirstPersonFireMontage.Get() : ThirdPersonFireMontage.Get(); break;
 	case EShooterMontageAction::Reload: LegacyMontage = bFirstPerson ? FirstPersonReloadMontage.Get() : ThirdPersonReloadMontage.Get(); break;
-	case EShooterMontageAction::Equip: LegacyMontage = bFirstPerson ? FirstPersonEquipMontage.Get() : ThirdPersonEquipMontage.Get(); break;
 	case EShooterMontageAction::Slide: LegacyMontage = bFirstPerson ? FirstPersonSlideMontage.Get() : ThirdPersonSlideMontage.Get(); break;
 	case EShooterMontageAction::MeleeAttack: LegacyMontage = bFirstPerson ? FirstPersonMeleeAttackMontage.Get() : ThirdPersonMeleeAttackMontage.Get(); break;
 	default: return nullptr;
@@ -3377,7 +3375,7 @@ void AShooterCharacter::StopSplitMontages(UAnimMontage* FirstPersonMontage, UAni
 	StopThirdPersonMontage(ThirdPersonMontage);
 }
 
-void AShooterCharacter::PlayEquipMontages()
+void AShooterCharacter::PlayEquipPresentation()
 {
 	if (!CanStartAction(EShooterActionLock::Equip))
 	{
@@ -3385,66 +3383,35 @@ void AShooterCharacter::PlayEquipMontages()
 	}
 
 	const EWeaponType EquippedWeaponType = GetWeaponType();
-	UAnimMontage* FirstPersonMontage = GetActionMontage(EShooterMontageAction::Equip, true);
-	UAnimMontage* ThirdPersonMontage = GetActionMontage(EShooterMontageAction::Equip, false);
-	UAnimMontage* SwitchMontage = GetThirdPersonSwitchMontage();
-	const FName EquipSectionName = ResolveMontageSectionNameForWeapon(EquippedWeaponType);
-	const FName SwitchRaiseSection = GetThirdPersonSwitchSectionName(EquippedWeaponType, TEXT("Raise"));
-	const float FirstPersonEquipLockDuration =
-		GetMontageSectionDurationOrFullLength(FirstPersonMontage, EquipSectionName);
+	// 신규 장착은 Raise만 실행한다. 1P는 Procedural, 3P는 현재 presentation의 Switch를 사용한다.
+	UAnimMontage* ThirdPersonMontage = GetThirdPersonSwitchMontage();
+	const FName ThirdPersonSectionName = GetThirdPersonSwitchSectionName(EquippedWeaponType, TEXT("Raise"));
 	const float ThirdPersonEquipLockDuration =
-		bUseProceduralWeaponSwitch && SwitchMontage
-			? (SwitchMontage->IsValidSectionName(SwitchRaiseSection)
-				? GetMontageSectionDurationOrFullLength(SwitchMontage, SwitchRaiseSection)
-				: 0.0f)
-			: GetMontageSectionDurationOrFullLength(ThirdPersonMontage, EquipSectionName);
-	const float EquipLockDuration = FMath::Max(
-		bUseProceduralWeaponSwitch ? FirstPersonSwitchRaiseDuration : FirstPersonEquipLockDuration,
-		ThirdPersonEquipLockDuration);
+		ThirdPersonMontage && ThirdPersonMontage->IsValidSectionName(ThirdPersonSectionName)
+			? GetMontageSectionDurationOrFullLength(ThirdPersonMontage, ThirdPersonSectionName) : 0.0f;
+	// 3P 에셋이 없어도 1P Procedural Raise 시간 이후 잠금은 정상 종료한다.
+	const float EquipLockDuration = FMath::Max(FirstPersonSwitchRaiseDuration, ThirdPersonEquipLockDuration);
 
 	BeginActionLock(EShooterActionLock::Equip);
-	if (!bUseProceduralWeaponSwitch && !FirstPersonMontage)
-	{
-		// 미완성 에셋에서는 장착 Notify가 실행되지 않는다. 부착된 무기를 숨긴 채 남겨 두지 않는다.
-		if (AWeaponBase* Weapon = GetCurrentWeapon())
-		{
-			Weapon->ShowEquippedPresentation();
-		}
-	}
 
 	UE_LOG(
 		LogTemp,
 		Log,
-		TEXT("%s %s PlayEquipMontages WeaponType=%d Section=%s SectionValidFP=%d SectionValidTP=%d FPLock=%.3f TPLock=%.3f Lock=%.3f FP=%s TP=%s Local=%d Authority=%d"),
+		TEXT("%s %s PlayEquipPresentation WeaponType=%d TPSection=%s SectionValidTP=%d FPLock=%.3f TPLock=%.3f Lock=%.3f TP=%s Authority=%d"),
 		OutlierNet::GetNetPrefix(this),
 		*GetName(),
 		static_cast<int32>(EquippedWeaponType),
-		*EquipSectionName.ToString(),
-		(FirstPersonMontage && FirstPersonMontage->IsValidSectionName(EquipSectionName)) ? 1 : 0,
-		(ThirdPersonMontage && ThirdPersonMontage->IsValidSectionName(EquipSectionName)) ? 1 : 0,
-		FirstPersonEquipLockDuration,
+		*ThirdPersonSectionName.ToString(),
+		(ThirdPersonMontage && ThirdPersonMontage->IsValidSectionName(ThirdPersonSectionName)) ? 1 : 0,
+		FirstPersonSwitchRaiseDuration,
 		ThirdPersonEquipLockDuration,
 		EquipLockDuration,
-		*GetNameSafe(FirstPersonMontage),
 		*GetNameSafe(ThirdPersonMontage),
-		IsLocallyControlled() ? 1 : 0,
 		HasAuthority() ? 1 : 0);
-
-	if (!bUseProceduralWeaponSwitch && IsLocallyControlled())
-	{
-		PlayFirstPersonActionMontage(EShooterMontageAction::Equip, EquippedWeaponType);
-	}
 
 	if (HasAuthority())
 	{
-		if (bUseProceduralWeaponSwitch && SwitchMontage)
-		{
-			MulticastPlayThirdPersonSwitchPhase(EquippedWeaponType, TEXT("Raise"));
-		}
-		else
-		{
-			MulticastPlayThirdPersonActionMontage(EShooterMontageAction::Equip, EquippedWeaponType);
-		}
+		MulticastPlayThirdPersonSwitchPhase(EquippedWeaponType, TEXT("Raise"));
 	}
 
 	if (EquipLockDuration > 0.0f)
@@ -3479,7 +3446,7 @@ int32 AShooterCharacter::BeginProceduralWeaponSwitch()
 
 void AShooterCharacter::BeginProceduralEquipRaise(AWeaponBase* ExpectedWeapon)
 {
-	if (!bUseProceduralWeaponSwitch || !ExpectedWeapon)
+	if (!ExpectedWeapon)
 	{
 		return;
 	}
@@ -3613,24 +3580,20 @@ void AShooterCharacter::ServerConfirmProceduralWeaponLowered_Implementation(int3
 void AShooterCharacter::PlayProceduralSwitchThirdPersonEquip(EWeaponType PreviousWeaponType)
 {
 	const EWeaponType EquippedWeaponType = GetWeaponType();
-	const bool bUseSwitchMontage = GetThirdPersonSwitchMontage() != nullptr;
-	const UAnimMontage* Montage = bUseSwitchMontage ? GetThirdPersonSwitchMontage() : GetActionMontage(EShooterMontageAction::Equip, false);
+	const UAnimMontage* Montage = GetThirdPersonSwitchMontage();
 	const FName PairSection = GetThirdPersonSwitchPairRaiseSectionName(PreviousWeaponType, EquippedWeaponType);
-	FName SectionName = ResolveMontageSectionNameForWeapon(EquippedWeaponType);
-	if (bUseSwitchMontage)
+	FName SectionName = GetThirdPersonSwitchSectionName(EquippedWeaponType, TEXT("Raise"));
+	// 전용 Pair Section이 없으면 같은 Switch의 일반 Raise를 사용한다. 구형 Equip 경로와는 섞지 않는다.
+	if (Montage && PairSection != NAME_None)
 	{
-		SectionName = GetThirdPersonSwitchSectionName(EquippedWeaponType, TEXT("Raise"));
-		if (PairSection != NAME_None)
+		if (Montage->IsValidSectionName(PairSection))
 		{
-			if (Montage->IsValidSectionName(PairSection))
-			{
-				SectionName = PairSection;
-			}
-			else
-			{
-				UE_LOG(LogTemp, Warning, TEXT("[TPWeaponSwitch] Missing pair section %s; falling back to %s"),
-					*PairSection.ToString(), *SectionName.ToString());
-			}
+			SectionName = PairSection;
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[TPWeaponSwitch] Missing pair section %s; falling back to %s"),
+				*PairSection.ToString(), *SectionName.ToString());
 		}
 	}
 	const float EquipLockDuration = FMath::Max(
@@ -3639,14 +3602,8 @@ void AShooterCharacter::PlayProceduralSwitchThirdPersonEquip(EWeaponType Previou
 			: 0.0f,
 		FirstPersonSwitchRaiseDuration);
 
-	if (bUseSwitchMontage)
-	{
-		MulticastPlayThirdPersonSwitchRaise(EquippedWeaponType, SectionName);
-	}
-	else
-	{
-		MulticastPlayThirdPersonActionMontage(EShooterMontageAction::Equip, EquippedWeaponType);
-	}
+	// Switch가 없으면 3P 재생은 건너뛰되 1P Raise와 장착 잠금 종료는 유지한다.
+	MulticastPlayThirdPersonSwitchRaise(EquippedWeaponType, SectionName);
 	FTimerDelegate EquipEndDelegate;
 	EquipEndDelegate.BindUObject(this, &AShooterCharacter::EndActionLock, EShooterActionLock::Equip);
 	GetWorldTimerManager().SetTimer(ActionLockTimerHandle, EquipEndDelegate, EquipLockDuration, false);

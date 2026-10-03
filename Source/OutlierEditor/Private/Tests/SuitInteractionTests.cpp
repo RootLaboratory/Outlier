@@ -140,6 +140,40 @@ bool LoadSuitPresentationConfiguration(FAutomationTestBase& Test, FShooterPresen
 	}
 	return true;
 }
+
+bool ValidatePresentationAssetMontage(FAutomationTestBase& Test, const FString& Label,
+	UAnimMontage* Montage, USkeletalMesh* MeshAsset, bool bRequired, const TArray<FName>& RequiredSections)
+{
+	if (!Montage)
+	{
+		return !bRequired || Test.TestNotNull(*Label, Montage);
+	}
+
+	bool bValid = Test.TestTrue(*(Label + TEXT(" has animation tracks")), !Montage->SlotAnimTracks.IsEmpty());
+	USkeleton* MontageSkeleton = Montage->GetSkeleton();
+	bValid &= Test.TestTrue(*(Label + TEXT(" matches the presentation Skeleton")),
+		MeshAsset && MontageSkeleton && MontageSkeleton->IsCompatibleMesh(MeshAsset, false));
+	for (const FSlotAnimationTrack& Track : Montage->SlotAnimTracks)
+	{
+		bValid &= Test.TestTrue(*(Label + TEXT(" registers Slot ") + Track.SlotName.ToString()),
+			MontageSkeleton && MontageSkeleton->ContainsSlotName(Track.SlotName));
+		bValid &= Test.TestTrue(*(Label + TEXT(" has animation segments in Slot ") + Track.SlotName.ToString()),
+			!Track.AnimTrack.AnimSegments.IsEmpty());
+	}
+	for (const FName Section : RequiredSections)
+	{
+		bValid &= Test.TestTrue(*(Label + TEXT(" has Section ") + Section.ToString()),
+			Montage->IsValidSectionName(Section));
+	}
+	return bValid;
+}
+
+bool HasPresentationAssetSocket(USkeletalMesh* MeshAsset, FName SocketName)
+{
+	// 부착 API처럼 명시적 Socket과 본 이름을 모두 허용한다. 존재 여부만 검사하며 위치는 시각 검증 대상이다.
+	return MeshAsset && !SocketName.IsNone()
+		&& (MeshAsset->FindSocket(SocketName) || MeshAsset->GetRefSkeleton().FindBoneIndex(SocketName) != INDEX_NONE);
+}
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -509,6 +543,223 @@ bool FShooterPresentationConfigurationTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierShooterPresentationAssetsTest,
+	"Outlier.Animation.Shooter.PresentationAssets",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierShooterPresentationAssetsTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UClass* ShooterClass = LoadClass<AShooterCharacter>(nullptr,
+		TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	if (!TestNotNull(TEXT("Shooter BP exists for asset integration"), ShooterClass))
+	{
+		return false;
+	}
+	const AShooterCharacter* Defaults = ShooterClass->GetDefaultObject<AShooterCharacter>();
+	const FShooterPresentationConfiguration Configurations[] = { Defaults->PreSuitPresentation, Defaults->SuitPresentation };
+	const FShooterMontageConfiguration MontageConfigurations[] = { Defaults->PreSuitMontages, Defaults->SuitMontages };
+	const TCHAR* StateNames[] = { TEXT("PreSuit"), TEXT("Suit") };
+	bool bConfigurationsValid = true;
+	bool bAssetsValid = true;
+
+	// 1. 저장된 BP 설정을 그대로 검사한다. 미설정 fallback이나 테스트용 Suit 에셋으로 누락을 덮지 않는다.
+	for (int32 StateIndex = 0; StateIndex < 2; ++StateIndex)
+	{
+		FString Error;
+		const bool bValid = Configurations[StateIndex].Validate(Error);
+		bConfigurationsValid &= bValid;
+		if (!bValid)
+		{
+			AddError(FString::Printf(TEXT("BP_ShooterCharacter.%sPresentation: %s"), StateNames[StateIndex], *Error));
+		}
+	}
+	if (bConfigurationsValid)
+	{
+		bAssetsValid &= TestTrue(TEXT("PreSuit and Suit use different 1P Skeletons"),
+			Configurations[0].FirstPersonMesh->GetSkeleton() != Configurations[1].FirstPersonMesh->GetSkeleton());
+		bAssetsValid &= TestTrue(TEXT("PreSuit and Suit use different 3P Skeletons"),
+			Configurations[0].ThirdPersonMesh->GetSkeleton() != Configurations[1].ThirdPersonMesh->GetSkeleton());
+	}
+
+	// 2. 현재 프로젝트의 Shooter 무기와 Interaction이 실제 지급하는 Rifle을 검사한다. Partner 무기는 제외한다.
+	const TCHAR* WeaponPaths[] = {
+		TEXT("/Game/Blueprints/Weapon/BP_Rifle.BP_Rifle_C"),
+		TEXT("/Game/Blueprints/Weapon/BP_Pistol.BP_Pistol_C"),
+		TEXT("/Game/Blueprints/Weapon/BP_Hammer.BP_Hammer_C")
+	};
+	TArray<UClass*> WeaponClasses;
+	for (const TCHAR* Path : WeaponPaths)
+	{
+		UClass* WeaponClass = LoadClass<AWeaponBase>(nullptr, Path);
+		bAssetsValid &= TestNotNull(*FString::Printf(TEXT("Shooter weapon BP exists: %s"), Path), WeaponClass);
+		if (WeaponClass)
+		{
+			WeaponClasses.AddUnique(WeaponClass);
+		}
+	}
+	UClass* InteractionClass = LoadClass<ASuitInteraction>(nullptr,
+		TEXT("/Game/Blueprints/Interaction/BP_SuitInteraction.BP_SuitInteraction_C"));
+	if (TestNotNull(TEXT("Suit Interaction BP exists"), InteractionClass))
+	{
+		UClass* AwardedRifleClass = ReadObjectProperty<UClass>(InteractionClass->GetDefaultObject(), TEXT("ShooterRifleClass"));
+		if (TestTrue(TEXT("Suit Interaction specifies a concrete Shooter Rifle class"),
+			AwardedRifleClass && AwardedRifleClass->IsChildOf(AWeaponBase::StaticClass())
+			&& !AwardedRifleClass->HasAnyClassFlags(CLASS_Abstract)))
+		{
+			WeaponClasses.AddUnique(AwardedRifleClass);
+			bAssetsValid &= TestTrue(TEXT("Suit Interaction awards a Rifle"),
+				AwardedRifleClass->GetDefaultObject<AWeaponBase>()->GetWeaponType() == EWeaponType::Rifle);
+		}
+		else
+		{
+			bAssetsValid = false;
+		}
+	}
+	else
+	{
+		bAssetsValid = false;
+	}
+	for (UClass* WeaponClass : WeaponClasses)
+	{
+		const AWeaponBase* WeaponDefaults = WeaponClass->GetDefaultObject<AWeaponBase>();
+		for (const FName Property : { FName(TEXT("PreSuitProceduralValues")), FName(TEXT("SuitProceduralValues")) })
+		{
+			// 같은 DA 공유는 허용하지만 공통 fallback에만 의존하는 설정은 최종 통합 완료로 보지 않는다.
+			bAssetsValid &= TestNotNull(*FString::Printf(TEXT("%s.%s is explicitly assigned"),
+				*WeaponClass->GetName(), *Property.ToString()), ReadObjectProperty<UProceduralAnimValues>(WeaponDefaults, Property));
+		}
+	}
+
+	// 3. 각 상태의 몽타주/Section과 캐릭터 소켓을 검사한다. 다른 상태의 에셋을 대신 선택하지 않는다.
+	for (int32 StateIndex = 0; StateIndex < 2; ++StateIndex)
+	{
+		const FShooterPresentationConfiguration& Configuration = Configurations[StateIndex];
+		const FShooterMontageConfiguration& Montages = MontageConfigurations[StateIndex];
+		const EShooterMontageAction Actions[] = { EShooterMontageAction::Fire, EShooterMontageAction::Reload,
+			EShooterMontageAction::Slide, EShooterMontageAction::MeleeAttack };
+		const TCHAR* ActionNames[] = { TEXT("Fire"), TEXT("Reload"), TEXT("Slide"), TEXT("MeleeAttack") };
+		for (int32 ActionIndex = 0; ActionIndex < UE_ARRAY_COUNT(Actions); ++ActionIndex)
+		{
+			const EShooterMontageAction Action = Actions[ActionIndex];
+			TArray<FName> Sections;
+			if (Action == EShooterMontageAction::Fire || Action == EShooterMontageAction::Reload)
+			{
+				Sections = { Defaults->RifleMontageSectionName, Defaults->PistolMontageSectionName };
+			}
+			for (const bool bFirstPerson : { true, false })
+			{
+				const FString Label = FString::Printf(TEXT("%s.%s%s"), StateNames[StateIndex],
+					bFirstPerson ? TEXT("FirstPerson") : TEXT("ThirdPerson"), ActionNames[ActionIndex]);
+				bAssetsValid &= ValidatePresentationAssetMontage(*this, Label, Montages.GetActionMontage(Action, bFirstPerson),
+					bFirstPerson ? Configuration.FirstPersonMesh.Get() : Configuration.ThirdPersonMesh.Get(), true, Sections);
+			}
+		}
+		TArray<FName> SwitchSections;
+		for (const EWeaponType Type : { EWeaponType::Rifle, EWeaponType::Pistol, EWeaponType::Melee })
+		{
+			for (const FName Phase : { FName(TEXT("Lower")), FName(TEXT("Lowered")), FName(TEXT("Raise")) })
+			{
+				SwitchSections.Add(Defaults->GetThirdPersonSwitchSectionName(Type, Phase));
+			}
+			const FName FPSocket = Defaults->GetFirstPersonWeaponSocketByType(Type);
+			const FName TPSocket = Defaults->GetThirdPersonWeaponSocketByType(Type);
+			bAssetsValid &= TestTrue(*FString::Printf(TEXT("%s 1P attachment socket exists: %s"), StateNames[StateIndex], *FPSocket.ToString()),
+				HasPresentationAssetSocket(Configuration.FirstPersonMesh, FPSocket));
+			bAssetsValid &= TestTrue(*FString::Printf(TEXT("%s 3P attachment socket exists: %s"), StateNames[StateIndex], *TPSocket.ToString()),
+				HasPresentationAssetSocket(Configuration.ThirdPersonMesh, TPSocket));
+		}
+		bAssetsValid &= ValidatePresentationAssetMontage(*this, FString(StateNames[StateIndex]) + TEXT(".ThirdPersonSwitch"),
+			Montages.ThirdPersonSwitch, Configuration.ThirdPersonMesh, true, SwitchSections);
+		if (Montages.ThirdPersonSwitch)
+		{
+			bAssetsValid &= TestTrue(*FString::Printf(TEXT("%s.ThirdPersonSwitch uses UpperBody Slot"), StateNames[StateIndex]),
+				Montages.ThirdPersonSwitch->IsValidSlot(TEXT("UpperBody")));
+		}
+	}
+	if (!bConfigurationsValid || !bAssetsValid)
+	{
+		// 부족한 항목은 모두 보고하되, 유효하지 않은 에셋으로 실제 AnimInstance/무기를 만들지는 않는다.
+		return false;
+	}
+
+	// 4. 저장된 설정으로만 실제 교체한다. 같은 Weapon Actor를 유지하며 양쪽 상태와 PreSuit 복원을 비교한다.
+	FScopedSuitInteractionTestWorld TestWorld;
+	if (!TestWorld.Initialize(*this)) { return false; }
+	AShooterCharacter* Shooter = TestWorld.World->SpawnActor<AShooterCharacter>(ShooterClass);
+	if (!TestNotNull(TEXT("Asset integration Shooter spawns"), Shooter)) { return false; }
+	if (!Shooter->HasActorBegunPlay())
+	{
+		Shooter->DispatchBeginPlay();
+	}
+	for (UClass* WeaponClass : WeaponClasses)
+	{
+		AWeaponBase* Weapon = TestWorld.World->SpawnActor<AWeaponBase>(WeaponClass);
+		if (!TestNotNull(TEXT("Asset integration weapon spawns"), Weapon)) { return false; }
+		Shooter->CurrentWeapon = Weapon;
+		Weapon->OnEquipped(Shooter);
+		for (const int32 StateIndex : { 0, 1, 0 })
+		{
+			const FString Label = FString::Printf(TEXT("%s %s"), StateNames[StateIndex], *WeaponClass->GetName());
+			if (!TestTrue(*(Label + TEXT(" presentation applies")), Shooter->SetSuitPresentation(StateIndex == 1))) { return false; }
+			USkeletalMeshComponent* FP = Shooter->GetFirstPersonMesh();
+			USkeletalMeshComponent* TP = Shooter->GetMesh();
+			USkeletalMeshComponent* Shadow = Shooter->GetShadowMesh();
+			const FShooterPresentationConfiguration& Expected = Configurations[StateIndex];
+			TestTrue(*(Label + TEXT(" applies 1P Mesh/ABP")), FP->GetSkeletalMeshAsset() == Expected.FirstPersonMesh
+				&& FP->GetAnimClass() == Expected.FirstPersonAnimClass.Get());
+			TestTrue(*(Label + TEXT(" applies 3P Mesh/ABP")), TP->GetSkeletalMeshAsset() == Expected.ThirdPersonMesh
+				&& TP->GetAnimClass() == Expected.ThirdPersonAnimClass.Get());
+			TestTrue(*(Label + TEXT(" initializes 1P AnimInstance")), FP->GetAnimInstance() && FP->GetAnimInstance()->IsA(Expected.FirstPersonAnimClass.Get()));
+			TestTrue(*(Label + TEXT(" initializes 3P AnimInstance")), TP->GetAnimInstance() && TP->GetAnimInstance()->IsA(Expected.ThirdPersonAnimClass.Get()));
+			TestTrue(*(Label + TEXT(" Shadow follows 3P")), Shadow && Shadow->GetSkeletalMeshAsset() == Expected.ThirdPersonMesh
+				&& Shadow->LeaderPoseComponent.Get() == TP);
+			USkeletalMeshComponent* WeaponFP = Weapon->GetFirstPersonWeaponMesh();
+			USkeletalMeshComponent* WeaponTP = Weapon->GetThirdPersonWeaponMesh();
+			TestTrue(*(Label + TEXT(" attaches 1P weapon")), WeaponFP && WeaponFP->GetAttachParent() == FP
+				&& WeaponFP->GetAttachSocketName() == Shooter->GetFirstPersonWeaponSocketByType(Weapon->GetWeaponType()));
+			TestTrue(*(Label + TEXT(" attaches 3P weapon")), WeaponTP && WeaponTP->GetAttachParent() == TP
+				&& WeaponTP->GetAttachSocketName() == Shooter->GetThirdPersonWeaponSocketByType(Weapon->GetWeaponType()));
+			USkeletalMeshComponent* WeaponShadow = Weapon->GetShadowWeaponMesh();
+			TestTrue(*(Label + TEXT(" attaches Shadow weapon")), WeaponShadow && WeaponShadow->GetAttachParent() == Shadow
+				&& WeaponShadow->GetAttachSocketName() == Shooter->GetThirdPersonWeaponSocketByType(Weapon->GetWeaponType()));
+			const UProceduralAnimValues* ExpectedDA = ReadObjectProperty<UProceduralAnimValues>(Weapon,
+				StateIndex == 1 ? TEXT("SuitProceduralValues") : TEXT("PreSuitProceduralValues"));
+			TestTrue(*(Label + TEXT(" selects its explicit Procedural DA")), Weapon->GetFirstPersonProceduralValues() == ExpectedDA);
+			for (const EShooterMontageAction Action : { EShooterMontageAction::Fire, EShooterMontageAction::Reload,
+				EShooterMontageAction::Slide, EShooterMontageAction::MeleeAttack })
+			{
+				for (const bool bFirstPerson : { true, false })
+				{
+					UAnimMontage* ExpectedMontage = MontageConfigurations[StateIndex].GetActionMontage(Action, bFirstPerson);
+					if (ExpectedMontage)
+					{
+						TestTrue(*FString::Printf(TEXT("%s selects %s action montage %d"), *Label,
+							bFirstPerson ? TEXT("1P") : TEXT("3P"), static_cast<int32>(Action)),
+							Shooter->GetActionMontage(Action, bFirstPerson) == ExpectedMontage);
+					}
+				}
+			}
+			if (MontageConfigurations[StateIndex].ThirdPersonSwitch)
+			{
+				TestTrue(*(Label + TEXT(" selects its 3P Switch montage")),
+					Shooter->GetThirdPersonSwitchMontage() == MontageConfigurations[StateIndex].ThirdPersonSwitch);
+			}
+			UAnimInstance* FPInstance = FP->GetAnimInstance();
+			UAnimInstance* TPInstance = TP->GetAnimInstance();
+			TestTrue(*(Label + TEXT(" reapplies idempotently")), Shooter->SetSuitPresentation(StateIndex == 1));
+			TestTrue(*(Label + TEXT(" retains both AnimInstances on reapply")),
+				FP->GetAnimInstance() == FPInstance && TP->GetAnimInstance() == TPInstance);
+		}
+		Weapon->OnUnequipped();
+		Shooter->CurrentWeapon = nullptr;
+		Weapon->Destroy();
+	}
+	// ABP의 실제 Slot/Procedural 연결, Notify 실행과 첫 프레임 포즈는 에디터/멀티플레이 시각 검증으로 확인한다.
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FShooterPresentationReplicationTest,
 	"Outlier.Animation.Shooter.PresentationReplication",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -833,15 +1084,15 @@ bool FOutlierShooterPresentationAnimationTest::RunTest(const FString& Parameters
 	UAnimMontage* SuitTP = MakeMontage(Configuration.ThirdPersonMesh->GetSkeleton());
 	const auto ConfigureMontages = [](FShooterMontageConfiguration& Target, UAnimMontage* First, UAnimMontage* Third)
 	{
-		Target.FirstPersonFire = Target.FirstPersonReload = Target.FirstPersonEquip = First;
+		Target.FirstPersonFire = Target.FirstPersonReload = First;
 		Target.FirstPersonSlide = Target.FirstPersonMeleeAttack = First;
-		Target.ThirdPersonFire = Target.ThirdPersonReload = Target.ThirdPersonEquip = Third;
+		Target.ThirdPersonFire = Target.ThirdPersonReload = Third;
 		Target.ThirdPersonSlide = Target.ThirdPersonMeleeAttack = Target.ThirdPersonSwitch = Third;
 	};
 	ConfigureMontages(Shooter->PreSuitMontages, PreFP, PreTP);
 	ConfigureMontages(Shooter->SuitMontages, SuitFP, SuitTP);
 	for (EShooterMontageAction Action : { EShooterMontageAction::Fire, EShooterMontageAction::Reload,
-		EShooterMontageAction::Equip, EShooterMontageAction::Slide, EShooterMontageAction::MeleeAttack })
+		EShooterMontageAction::Slide, EShooterMontageAction::MeleeAttack })
 	{
 		TestTrue(TEXT("Suit FP action montage selected"), Shooter->GetActionMontage(Action, true) == SuitFP);
 		TestTrue(TEXT("Suit TP action montage selected"), Shooter->GetActionMontage(Action, false) == SuitTP);
@@ -874,6 +1125,67 @@ bool FOutlierShooterPresentationAnimationTest::RunTest(const FString& Parameters
 	TestFalse(TEXT("Old reload instance binding is cleared"), Combat->BoundFirstPersonReloadInstance.IsValid());
 	Combat->HandleReloadMontageEnded(PreFP, false);
 	TestFalse(TEXT("Old montage completion cannot restore reload"), Combat->IsReloading());
+
+	// Switch 미설정/비호환이어도 1P Raise와 장착 잠금 종료는 유지한다. 두 presentation을 모두 검사한다.
+	Shooter->FirstPersonSwitchRaiseDuration = 0.25f;
+	Shooter->ThirdPersonSwitchMontage = nullptr;
+	for (const bool bSuit : { false, true })
+	{
+		TestTrue(TEXT("Switch regression presentation applies"), Shooter->SetSuitPresentation(bSuit));
+		FShooterMontageConfiguration& Montages = bSuit ? Shooter->SuitMontages : Shooter->PreSuitMontages;
+		for (const bool bIncompatibleSwitch : { false, true })
+		{
+			Montages.ThirdPersonSwitch = bIncompatibleSwitch ? Invalid : nullptr;
+			if (bIncompatibleSwitch)
+			{
+				AddExpectedError(TEXT("rejected incompatible 3P montage"), EAutomationExpectedErrorFlags::Contains, 1);
+			}
+			Shooter->EndActionLock(EShooterActionLock::Equip);
+			Shooter->PlayEquipPresentation();
+			TestEqual(TEXT("Initial equip uses Procedural Raise duration without Switch"),
+				Shooter->GetWorldTimerManager().GetTimerRemaining(Shooter->ActionLockTimerHandle), 0.25f);
+			TestFalse(TEXT("Initial equip never plays a 1P Equip montage"),
+				Shooter->GetFirstPersonMesh()->GetAnimInstance()->Montage_IsPlaying(nullptr));
+			Shooter->EndActionLock(EShooterActionLock::Equip);
+			Shooter->BeginActionLock(EShooterActionLock::Equip);
+			Shooter->PlayProceduralSwitchThirdPersonEquip(EWeaponType::Pistol);
+			TestEqual(TEXT("Weapon replacement uses Procedural Raise duration without Switch"),
+				Shooter->GetWorldTimerManager().GetTimerRemaining(Shooter->ActionLockTimerHandle), 0.25f);
+			TestFalse(TEXT("Missing Switch never plays another 3P action montage"),
+				Shooter->GetMesh()->GetAnimInstance()->Montage_IsPlaying(nullptr));
+			TestWorld.AdvanceTime(0.3f);
+			TestEqual(TEXT("Missing Switch cannot leave equip locked"), Shooter->GetActionLock(), EShooterActionLock::None);
+		}
+	}
+
+	// 선택 플래그 없이도 슬롯 교체는 항상 Lower 완료를 기다린다. 이전/중복 응답은 교체를 반복하지 않는다.
+	Shooter->SuitMontages.ThirdPersonSwitch = nullptr;
+	ASuitInteractionTestRifle* SlotRifle = TestWorld.World->SpawnActor<ASuitInteractionTestRifle>();
+	ASuitInteractionTestRifle* SlotPistol = TestWorld.World->SpawnActor<ASuitInteractionTestRifle>();
+	if (!TestNotNull(TEXT("Slot regression Rifle spawns"), SlotRifle)
+		|| !TestNotNull(TEXT("Slot regression Pistol spawns"), SlotPistol)) { return false; }
+	SlotPistol->SetTestWeaponType(EWeaponType::Pistol);
+	UShooterInventoryComponent* Inventory = Shooter->GetInventoryComponent();
+	if (!TestNotNull(TEXT("Slot regression inventory exists"), Inventory)) { return false; }
+	Inventory->HandleEquipWeapon(SlotRifle);
+	TestEqual(TEXT("New Rifle equips immediately and raises"), Shooter->GetCurrentWeapon(), static_cast<AWeaponBase*>(SlotRifle));
+	TestFalse(TEXT("Procedural equip displays the weapon without Attach Notify"), SlotRifle->GetFirstPersonWeaponMesh()->bHiddenInGame);
+	TestWorld.AdvanceTime(0.3f);
+	Inventory->HandleEquipWeapon(SlotPistol);
+	TestEqual(TEXT("New Pistol equips immediately and raises"), Shooter->GetCurrentWeapon(), static_cast<AWeaponBase*>(SlotPistol));
+	TestWorld.AdvanceTime(0.3f);
+	Inventory->SelectWeaponSlot(EWeaponSlot::Primary);
+	const int32 SwitchId = Shooter->ActiveProceduralSwitchId;
+	TestEqual(TEXT("Slot selection keeps Pistol until Lower finishes"), Shooter->GetCurrentWeapon(), static_cast<AWeaponBase*>(SlotPistol));
+	TestEqual(TEXT("Slot selection acquires Equip lock"), Shooter->GetActionLock(), EShooterActionLock::Equip);
+	Shooter->ServerConfirmProceduralWeaponLowered_Implementation(SwitchId - 1);
+	TestEqual(TEXT("Stale Lower reply cannot replace the weapon"), Shooter->GetCurrentWeapon(), static_cast<AWeaponBase*>(SlotPistol));
+	Shooter->ServerConfirmProceduralWeaponLowered_Implementation(SwitchId);
+	TestEqual(TEXT("Current Lower reply equips Rifle"), Shooter->GetCurrentWeapon(), static_cast<AWeaponBase*>(SlotRifle));
+	Shooter->ServerConfirmProceduralWeaponLowered_Implementation(SwitchId);
+	TestEqual(TEXT("Duplicate Lower reply leaves Rifle unchanged"), Shooter->GetCurrentWeapon(), static_cast<AWeaponBase*>(SlotRifle));
+	TestWorld.AdvanceTime(0.3f);
+	TestEqual(TEXT("Mandatory Switch releases Equip lock after Raise"), Shooter->GetActionLock(), EShooterActionLock::None);
 	return true;
 }
 

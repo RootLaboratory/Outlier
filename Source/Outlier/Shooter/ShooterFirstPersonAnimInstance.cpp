@@ -470,10 +470,8 @@ void UShooterFirstPersonAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 		bIsReloading &&
 		bCanUseFirearmProcedural &&
 		IsMontageInProceduralActionWindow(CachedShooterCharacter ? CachedShooterCharacter->GetFirstPersonReloadMontage() : nullptr, ActionProceduralReleaseTime);
-	const bool bEquipProceduralActive =
-		bIsEquipping &&
-		bCanUseWeaponPose &&
-		IsMontageInProceduralActionWindow(CachedShooterCharacter ? CachedShooterCharacter->GetFirstPersonEquipMontage() : nullptr, ActionProceduralReleaseTime);
+	// 장착 표현은 몽타주 재생 시간이 아니라 서버 장착 잠금과 Procedural Switch 상태를 따른다.
+	const bool bEquipProceduralActive = bIsEquipping && bCanUseWeaponPose;
 	
 	// ── 액션 알파 (스프린트/재장전/슬라이드/장착 + 각 IK 블렌드) ─────────
 	ViewModelSprintAlpha = FMath::FInterpTo(
@@ -1184,9 +1182,7 @@ void UShooterFirstPersonAnimInstance::TraceFinalizedFirstPersonBones()
 	{
 		return;
 	}
-	const UAnimMontage* ActionMontage = bTraceEquip
-		? CachedShooterCharacter->GetFirstPersonEquipMontage()
-		: CachedShooterCharacter->GetFirstPersonReloadMontage();
+	const UAnimMontage* ActionMontage = bTraceEquip ? nullptr : CachedShooterCharacter->GetFirstPersonReloadMontage();
 	const float MontageTime = ActionMontage ? Montage_GetPosition(ActionMontage) : -1.0f;
 	++BoneTraceFrameCount;
 

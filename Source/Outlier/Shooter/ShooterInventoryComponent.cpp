@@ -171,7 +171,7 @@ void UShooterInventoryComponent::HandleEquipWeapon(AWeaponBase* Weapon)
 		OldWeapon->OnDropped(DropTransform, ShooterCharacter);
 	}
 
-	ApplyWeaponToSlot(Weapon, Slot, /*bPlayEquipMontage=*/true);
+	ApplyWeaponToSlot(Weapon, Slot, /*bPlayEquipPresentation=*/true);
 }
 
 bool UShooterInventoryComponent::EquipSuitRifle(AWeaponBase* RifleWeapon)
@@ -218,7 +218,7 @@ bool UShooterInventoryComponent::EquipSuitRifle(AWeaponBase* RifleWeapon)
 	}
 
 	// 암전 commit에서는 장착 Notify 없이 부착/표시를 완료한다. 새 입력은 전환 차단이 계속 막는다.
-	ApplyWeaponToSlot(RifleWeapon, Slot, /*bPlayEquipMontage=*/!ShooterCharacter->IsSuitTransitionBlocked());
+	ApplyWeaponToSlot(RifleWeapon, Slot, /*bPlayEquipPresentation=*/!ShooterCharacter->IsSuitTransitionBlocked());
 
 	return ShooterCharacter->CurrentWeapon == RifleWeapon;
 }
@@ -272,7 +272,7 @@ void UShooterInventoryComponent::SelectWeaponSlot(EWeaponSlot Slot)
 
 	ShooterCharacter->StopAimInternal();
 
-	if (ShooterCharacter->UsesProceduralWeaponSwitch() && ShooterCharacter->CurrentWeapon)
+	if (ShooterCharacter->CurrentWeapon)
 	{
 		PendingSwitchWeapon = TargetWeapon;
 		PendingSwitchSlot = Slot;
@@ -288,7 +288,7 @@ void UShooterInventoryComponent::SelectWeaponSlot(EWeaponSlot Slot)
 		return;
 	}
 
-	ApplyWeaponToSlot(TargetWeapon, Slot, /*bPlayEquipMontage=*/true);
+	ApplyWeaponToSlot(TargetWeapon, Slot, /*bPlayEquipPresentation=*/true);
 }
 
 void UShooterInventoryComponent::FinishPendingWeaponSwitch(int32 SwitchId)
@@ -319,7 +319,7 @@ void UShooterInventoryComponent::FinishPendingWeaponSwitch(int32 SwitchId)
 	UE_LOG(LogTemp, Log, TEXT("%s [FPWeaponSwitch] Swap target=%s slot=%d"),
 		OutlierNet::GetNetPrefix(ShooterCharacter), *GetNameSafe(TargetWeapon), static_cast<int32>(TargetSlot));
 	const EWeaponType PreviousWeaponType = ShooterCharacter->GetWeaponType();
-	ApplyWeaponToSlot(TargetWeapon, TargetSlot, /*bPlayEquipMontage=*/false);
+	ApplyWeaponToSlot(TargetWeapon, TargetSlot, /*bPlayEquipPresentation=*/false);
 	ShooterCharacter->PlayProceduralSwitchThirdPersonEquip(PreviousWeaponType);
 }
 
@@ -354,7 +354,7 @@ void UShooterInventoryComponent::CancelPendingWeaponSwitch()
 }
 
 void UShooterInventoryComponent::ApplyWeaponToSlot(
-	AWeaponBase* Weapon, EWeaponSlot Slot, bool bPlayEquipMontage)
+	AWeaponBase* Weapon, EWeaponSlot Slot, bool bPlayEquipPresentation)
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 	if (!ShooterCharacter || !IsValidWeaponSlot(Slot))
@@ -364,7 +364,7 @@ void UShooterInventoryComponent::ApplyWeaponToSlot(
 
 	WeaponSlots[static_cast<int32>(Slot)] = Weapon;
 	CurrentSlot = Slot;
-	if (bPlayEquipMontage && ShooterCharacter->UsesProceduralWeaponSwitch())
+	if (bPlayEquipPresentation)
 	{
 		ShooterCharacter->BeginProceduralEquipRaise(Weapon);
 	}
@@ -374,21 +374,14 @@ void UShooterInventoryComponent::ApplyWeaponToSlot(
 	// Inventory가 보유 무기와 소켓 규칙을 관리하고, 최종 장착은 Character가 맡음
 	ShooterCharacter->AFirstPersonCharacter::EquipWeapon(Weapon);
 
-	if (bPlayEquipMontage && !ShooterCharacter->UsesProceduralWeaponSwitch())
+	// 1P Equip 몽타주/Attach Notify는 사용하지 않는다. 복원도 같은 부착 경로로 즉시 표시한다.
+	if (Weapon)
 	{
-		ShooterCharacter->PlayEquipMontages();
+		Weapon->ShowEquippedPresentation();
 	}
-	else
+	if (bPlayEquipPresentation)
 	{
-		if (Weapon)
-		{
-			// Procedural Raise and restoration do not run the montage's attach notify.
-			Weapon->ShowEquippedPresentation();
-		}
-		if (bPlayEquipMontage)
-		{
-			ShooterCharacter->PlayEquipMontages();
-		}
+		ShooterCharacter->PlayEquipPresentation();
 	}
 
 	ShooterCharacter->RefreshWeaponMode();
@@ -419,7 +412,7 @@ void UShooterInventoryComponent::RestoreWeaponIntoSlot(
 			static_cast<int32>(Slot));
 		return;
 	}
-	ApplyWeaponToSlot(Weapon, Slot, /*bPlayEquipMontage=*/false);
+	ApplyWeaponToSlot(Weapon, Slot, /*bPlayEquipPresentation=*/false);
 
 	// OnEquipped가 최초 DataTable 초기화를 수행하면서 탄창을 기본값으로 채울 수 있다.
 	// 저장 탄약은 장착 라이프사이클이 끝난 뒤 적용해야 초기화에 덮어써지지 않는다.
