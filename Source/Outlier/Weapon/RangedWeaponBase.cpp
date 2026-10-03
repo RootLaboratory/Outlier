@@ -39,6 +39,7 @@
 #include "FirstPerson/FirstPersonPlayerCameraManager.h"
 #include "Shooter/ShooterAnimInstance.h"
 #include "Shooter/ShooterFirstPersonAnimInstance.h"
+#include "Shooter/Anim/ProceduralAnimValues.h"
 #include "Enemy/EnemyRoomSubsystem.h"
 #include "Outlier.h"
 #include "OutlierPlayerState.h"
@@ -358,6 +359,127 @@ void ARangedWeaponBase::FireShot()
 	FireShotFromMuzzle(NAME_None, true);
 }
 
+bool ARangedWeaponBase::TryResolveWallOffsetMuzzleShot(
+	ACharacter* OwnerCharacter,
+	FName FiredMuzzleSocketName,
+	const FVector& ViewLocation,
+	const FRotator& ViewRotation,
+	FVector& OutStart,
+	FVector& OutDirection) const
+{
+	const AShooterCharacter* Shooter = Cast<AShooterCharacter>(OwnerCharacter);
+	const UProceduralAnimValues* ProceduralValues = GetFirstPersonProceduralValues();
+	UWorld* World = GetWorld();
+	if (!Shooter || !ProceduralValues || !World || !FirstPersonWeaponMesh)
+	{
+		return false;
+	}
+
+	const FName ShotMuzzleSocketName = !FiredMuzzleSocketName.IsNone()
+		? FiredMuzzleSocketName
+		: MuzzleSocketName;
+	if (ShotMuzzleSocketName.IsNone() || !FirstPersonWeaponMesh->DoesSocketExist(ShotMuzzleSocketName))
+	{
+		return false;
+	}
+
+	const FWeaponValues& WeaponValues = ProceduralValues->WeaponValues;
+	const FVector Forward = ViewRotation.Vector().GetSafeNormal();
+	if (Forward.IsNearlyZero())
+	{
+		return false;
+	}
+
+	const FRotationMatrix ViewMatrix(ViewRotation);
+	const FVector Right = ViewMatrix.GetUnitAxis(EAxis::Y);
+	const FVector Up = ViewMatrix.GetUnitAxis(EAxis::Z);
+	const float TraceDistance = FMath::Max(WeaponValues.WallTraceDistance, 0.0f);
+	const float TraceRadius = FMath::Max(WeaponValues.WallTraceRadius, KINDA_SMALL_NUMBER);
+	const float SafeDistance = FMath::Max(WeaponValues.WallSafeDistance, KINDA_SMALL_NUMBER);
+	const float VerticalProbeOffset = FMath::Max(WeaponValues.WallVerticalProbeOffset, 0.0f);
+	const float SideProbeOffset = FMath::Max(WeaponValues.WallSideProbeOffset, TraceRadius * 1.5f);
+	const float MuzzleBlockTraceDistance = FMath::Max(WeaponValues.WallMuzzleBlockTraceDistance, 0.0f);
+	const float MuzzleBlockSafeDistance = FMath::Max(WeaponValues.WallMuzzleBlockSafeDistance, KINDA_SMALL_NUMBER);
+	const float BarrelBlockLength = FMath::Max(WeaponValues.WallBarrelBlockLength, 0.0f);
+	const float BarrelBlockSafeDistance = FMath::Max(WeaponValues.WallBarrelBlockSafeDistance, KINDA_SMALL_NUMBER);
+	const float FloorNormalZ = FMath::Clamp(WeaponValues.WallFloorNormalZ, 0.0f, 1.0f);
+
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(WeaponWallOffsetShotTrace), false, OwnerCharacter);
+	Params.AddIgnoredActor(OwnerCharacter);
+	Params.AddIgnoredActor(this);
+
+	const auto ResolveProbeAlpha = [&](const FVector& ProbeStart, float Distance, float Radius, float ProbeSafeDistance)
+	{
+		if (Distance <= KINDA_SMALL_NUMBER)
+		{
+			return 0.0f;
+		}
+
+		FHitResult Hit;
+		const bool bHit = World->SweepSingleByChannel(
+			Hit,
+			ProbeStart,
+			ProbeStart + Forward * Distance,
+			FQuat::Identity,
+			ECC_Visibility,
+			FCollisionShape::MakeSphere(FMath::Max(Radius, KINDA_SMALL_NUMBER)),
+			Params);
+		if (!bHit || Hit.ImpactNormal.Z > FloorNormalZ)
+		{
+			return 0.0f;
+		}
+
+		return FMath::Clamp((Distance - Hit.Distance) / FMath::Max(ProbeSafeDistance, KINDA_SMALL_NUMBER), 0.0f, 1.0f);
+	};
+
+	const FVector BaseTraceStart =
+		ViewLocation +
+		Forward * FMath::Max(WeaponValues.WallProbeForwardOffset, 0.0f) +
+		Right * WeaponValues.WallProbeRightOffset +
+		Up * WeaponValues.WallProbeUpOffset;
+	const float CenterAlpha = ResolveProbeAlpha(BaseTraceStart, TraceDistance, TraceRadius, SafeDistance);
+	const float UpperAlpha = ResolveProbeAlpha(BaseTraceStart + Up * VerticalProbeOffset, TraceDistance, TraceRadius, SafeDistance);
+	const float LowerAlpha = ResolveProbeAlpha(BaseTraceStart - Up * VerticalProbeOffset, TraceDistance, TraceRadius, SafeDistance);
+	const float RightAlpha = ResolveProbeAlpha(BaseTraceStart + Right * SideProbeOffset, TraceDistance, TraceRadius, SafeDistance);
+	const float LeftAlpha = ResolveProbeAlpha(BaseTraceStart - Right * SideProbeOffset, TraceDistance, TraceRadius, SafeDistance);
+
+	const FVector MuzzleBlockTraceStart =
+		ViewLocation +
+		Forward * FMath::Max(WeaponValues.WallMuzzleBlockForwardOffset, 0.0f) +
+		Right * WeaponValues.WallMuzzleBlockRightOffset +
+		Up * WeaponValues.WallMuzzleBlockUpOffset;
+	const float MuzzleBlockAlpha = ResolveProbeAlpha(
+		MuzzleBlockTraceStart,
+		MuzzleBlockTraceDistance,
+		WeaponValues.WallMuzzleBlockTraceRadius,
+		MuzzleBlockSafeDistance);
+	const float BarrelBlockAlpha = ResolveProbeAlpha(
+		MuzzleBlockTraceStart - Forward * BarrelBlockLength,
+		BarrelBlockLength,
+		WeaponValues.WallBarrelBlockTraceRadius,
+		BarrelBlockSafeDistance);
+
+	const float WallSourceAlpha = FMath::Max3(
+		FMath::Max3(CenterAlpha, UpperAlpha, LowerAlpha),
+		FMath::Max(RightAlpha, LeftAlpha),
+		FMath::Max(MuzzleBlockAlpha, BarrelBlockAlpha));
+	if (WallSourceAlpha <= 0.05f)
+	{
+		return false;
+	}
+
+	const FTransform MuzzleTransform = FirstPersonWeaponMesh->GetSocketTransform(ShotMuzzleSocketName, RTS_World);
+	const FVector MuzzleForward = MuzzleTransform.GetRotation().GetForwardVector().GetSafeNormal();
+	if (MuzzleForward.IsNearlyZero())
+	{
+		return false;
+	}
+
+	OutStart = MuzzleTransform.GetLocation();
+	OutDirection = MuzzleForward;
+	return true;
+}
+
 void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPlayShotSound)
 {
 	if (Cast<APartnerCharacter>(WeaponOwner))
@@ -399,7 +521,14 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 	OwnerCharacter->GetController()->GetPlayerViewPoint(CameraLocation, CameraRotation);
 
 	FVector Start = CameraLocation;
-	const FVector BaseDirection = CameraRotation.Vector().GetSafeNormal();
+	FVector BaseDirection = CameraRotation.Vector().GetSafeNormal();
+	TryResolveWallOffsetMuzzleShot(
+		OwnerCharacter,
+		FiredMuzzleSocketName,
+		CameraLocation,
+		CameraRotation,
+		Start,
+		BaseDirection);
 	const float ShotSpreadDegrees = FMath::Max(GetCurrentSpread(), 0.0f);
 	const FVector ShotDirection = ShotSpreadDegrees > KINDA_SMALL_NUMBER
 		? FMath::VRandCone(BaseDirection, FMath::DegreesToRadians(ShotSpreadDegrees)).GetSafeNormal()
@@ -408,10 +537,7 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 	LastShotDirection = ShotDirection;
 	LastShotSpreadDegrees = ShotSpreadDegrees;
 	bHasLastShotDirection = true;
-	FVector End = Start + (CameraRotation.Vector() * EffectiveRange); // 사거리
-
-
-	End = Start + (ShotDirection * EffectiveRange);
+	FVector End = Start + (ShotDirection * EffectiveRange);
 
 	FHitResult Hit;
 	FCollisionQueryParams Params;
