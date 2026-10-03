@@ -3397,6 +3397,13 @@ void AEnemyBase::PerformDeathCleanup()
 
 	if (bIsPossessed)
 	{
+		if (HasAuthority())
+		{
+			if (APartnerPlayerController* PartnerController = Cast<APartnerPlayerController>(GetController()))
+			{
+				PartnerController->ReleaseEnemyPossession();
+			}
+		}
 		ClearPossessedPlayerState();
 	}
 
