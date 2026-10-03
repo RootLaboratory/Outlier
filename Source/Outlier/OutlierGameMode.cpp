@@ -340,11 +340,11 @@ bool AOutlierGameMode::StartCheckpointRestart(
 		Snapshot.PartnerProgress.NodeCount,
 		EOutlierUpgradeRole::Partner,
 		Snapshot.PartnerProgress.ActivatedUpgradeNodeIds);
-	ShooterPlayerState->SetAcquiredSuit(Snapshot.SuitSnapshot.bAcquired);
 	ShooterPlayerState->SetSuitMeshes(
 		Snapshot.SuitSnapshot.FirstPersonMesh,
 		Snapshot.SuitSnapshot.ThirdPersonMesh);
 	ShooterPlayerState->SetLoadoutSnapshot(Snapshot.LoadoutSnapshot);
+	ShooterPlayerState->SetAcquiredSuit(Snapshot.SuitSnapshot.bAcquired);
 
 	if (UEnemyRoomSubsystem* EnemyRoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
 	{
@@ -1329,10 +1329,10 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 			ResumeSnapshot.PartnerProgress.NodeCount,
 			EOutlierUpgradeRole::Partner,
 			ResumeSnapshot.PartnerProgress.ActivatedUpgradeNodeIds);
-		NewShooterPS->SetAcquiredSuit(ResumeSnapshot.SuitSnapshot.bAcquired);
 		NewShooterPS->SetSuitMeshes(ResumeSnapshot.SuitSnapshot.FirstPersonMesh,
 			ResumeSnapshot.SuitSnapshot.ThirdPersonMesh);
 		NewShooterPS->SetLoadoutSnapshot(ResumeSnapshot.LoadoutSnapshot);
+		NewShooterPS->SetAcquiredSuit(ResumeSnapshot.SuitSnapshot.bAcquired);
 		if (UEnemyAdaptationSubsystem* Adaptation = GetWorld()->GetSubsystem<UEnemyAdaptationSubsystem>())
 		{
 			Adaptation->SetGunAdaptationStack(ResumeSnapshot.GunAdaptationStack);
@@ -3973,13 +3973,15 @@ void AOutlierGameMode::RestorePairLoadout(
 		return;
 	}
 
-	// 슈트를 무기보다 먼저 입힌다. 메시를 갈아끼우면 소켓이 바뀌므로,
-	// 순서가 반대면 이미 붙은 무기들이 옛 메시에 매달린 채로 남는다.
-	if (Shooter && ShooterPlayerState->GetAcquiredSuit())
+	// 획득/미획득 모두 Mesh와 ABP를 무기보다 먼저 복원한다. 지급 연출이나 성공 이벤트는 재실행하지 않는다.
+	if (Shooter && !Shooter->SetSuitPresentation(
+		ShooterPlayerState->GetAcquiredSuit(),
+		ShooterPlayerState->GetSuitFirstPersonMesh(),
+		ShooterPlayerState->GetSuitThirdPersonMesh()))
 	{
-		Shooter->ApplySuitMeshes(
-			ShooterPlayerState->GetSuitFirstPersonMesh(),
-			ShooterPlayerState->GetSuitThirdPersonMesh());
+		UE_LOG(LogTemp, Error, TEXT("[RestorePairLoadout] Presentation restore failed Shooter=%s Acquired=%d"),
+			*GetNameSafe(Shooter), ShooterPlayerState->GetAcquiredSuit() ? 1 : 0);
+		return;
 	}
 
 	// 값으로 복사한다. 아래 RestoreLoadout 이 슬롯을 채우면서 PlayerState 의 스냅샷을

@@ -3,6 +3,7 @@
 #include "Audio/OutlierAudioSubsystem.h"
 #include "Components/PrimitiveComponent.h"
 #include "Components/SceneComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Engine/SkeletalMesh.h"
@@ -103,8 +104,6 @@ bool ASuitInteraction::SpawnStoredWeapons()
 {
 	if (!ensureMsgf(SuitDisplayMesh && SuitDisplayMesh->GetStaticMesh(),
 			TEXT("SuitInteraction %s is missing its world display Suit mesh."), *GetName())
-		|| !ensureMsgf(ShooterFirstPersonMesh, TEXT("SuitInteraction %s is missing ShooterFirstPersonMesh."), *GetName())
-		|| !ensureMsgf(ShooterThirdPersonMesh, TEXT("SuitInteraction %s is missing ShooterThirdPersonMesh."), *GetName())
 		|| !ensureMsgf(ShooterRifleClass, TEXT("SuitInteraction %s is missing ShooterRifleClass."), *GetName())
 		|| !ensureMsgf(PartnerWeaponClass, TEXT("SuitInteraction %s is missing PartnerWeaponClass."), *GetName()))
 	{
@@ -190,7 +189,12 @@ bool ASuitInteraction::ApplySuit(AShooterCharacter* ShooterCharacter)
 		return false;
 	}
 
-	ShooterCharacter->ApplySuitMeshes(ShooterFirstPersonMesh, ShooterThirdPersonMesh);
+	// Shooter BP의 Mesh/ABP 전체 구성을 먼저 검증한다. 실패하면 무기와 Interaction을 보존한다.
+	// 기존 Interaction Mesh는 BP 이전 기간의 호환 입력일 뿐, 명시된 Suit 구성을 덮어쓰지 않는다.
+	if (!ShooterCharacter->ApplySuitMeshes(ShooterFirstPersonMesh, ShooterThirdPersonMesh))
+	{
+		return false;
+	}
 
 	StoredShooterRifle->SetActorHiddenInGame(false);
 	StoredShooterRifle->SetActorEnableCollision(true);
@@ -219,11 +223,9 @@ bool ASuitInteraction::ApplySuit(AShooterCharacter* ShooterCharacter)
 
 	if (AOutlierPlayerState* PS = ShooterCharacter->GetPlayerState<AOutlierPlayerState>())
 	{
-		PS->SetAcquiredSuit(true);
-
-		// 이 액터는 소비 직후 스스로 Destroy 하므로, 어떤 메시를 입혔는지
-		// 여기서 PlayerState 에 남겨야 리로드 후 다시 입힐 수 있다.
-		PS->SetSuitMeshes(ShooterFirstPersonMesh, ShooterThirdPersonMesh);
+		// 이전 저장 형식에는 실제 적용된 Mesh를 남긴다. 획득 상태 투영 전에 호환 참조를 준비한다.
+		PS->SetSuitMeshes(ShooterCharacter->GetFirstPersonMesh()->GetSkeletalMeshAsset(),
+			ShooterCharacter->GetMesh()->GetSkeletalMeshAsset());
 
 		// Partner 무기는 슈트 지급이 유일한 경로이고 Partner 쪽에는 InventoryComponent 가
 		// 없으므로, 리로드 후 다시 만들 수 있도록 클래스를 Shooter PlayerState 에 남긴다.
@@ -231,6 +233,7 @@ bool ASuitInteraction::ApplySuit(AShooterCharacter* ShooterCharacter)
 		FOutlierLoadoutSnapshot Snapshot = PS->GetLoadoutSnapshot();
 		Snapshot.PartnerWeaponClass = StoredPartnerWeapon->GetClass();
 		PS->SetLoadoutSnapshot(Snapshot);
+		PS->SetAcquiredSuit(true);
 	}
 
 	// 슈트는 페어 단위 해금이다. Partner PlayerState 에도 같은 플래그를 세워두면

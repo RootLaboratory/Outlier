@@ -38,6 +38,7 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")
 	TObjectPtr<UStaticMeshComponent> SuitDisplayMesh;
 
+	// Shooter BP의 SuitPresentation 미설정 기간에만 사용하는 이전 콘텐츠 호환 필드다.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Suit|Mesh")
 	TObjectPtr<USkeletalMesh> ShooterFirstPersonMesh;
 

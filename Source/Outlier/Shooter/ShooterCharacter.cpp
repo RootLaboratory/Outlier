@@ -53,6 +53,35 @@
 #include "UI/ShooterReflectionBarrier.h"
 #include "UI/ShooterTeleportLayer.h"
 #include "UI/UILayerGameplayTags.h"
+#include "UObject/CoreNet.h"
+
+bool FShooterPresentationState::NetSerialize(FArchive& Ar, UPackageMap* Map, bool& bOutSuccess)
+{
+	uint8 Selection = static_cast<uint8>(Presentation);
+	uint8 UseLegacyMeshes = bUseLegacyMeshes ? 1 : 0;
+	Ar.SerializeBits(&Selection, 2);
+	Ar.SerializeBits(&UseLegacyMeshes, 1);
+	if (!Map)
+	{
+		bOutSuccess = false;
+		return false;
+	}
+
+	// 상태와 호환 Mesh 쌍을 한 복제 단위로 전달해 서로 다른 갱신을 섞지 않는다.
+	UObject* FirstPersonAsset = LegacyFirstPersonMesh.Get();
+	UObject* ThirdPersonAsset = LegacyThirdPersonMesh.Get();
+	const bool bFirstPersonMapped = Map->SerializeObject(Ar, USkeletalMesh::StaticClass(), FirstPersonAsset);
+	const bool bThirdPersonMapped = Map->SerializeObject(Ar, USkeletalMesh::StaticClass(), ThirdPersonAsset);
+	if (Ar.IsLoading())
+	{
+		Presentation = static_cast<EShooterPresentation>(Selection);
+		bUseLegacyMeshes = UseLegacyMeshes != 0;
+		LegacyFirstPersonMesh = Cast<USkeletalMesh>(FirstPersonAsset);
+		LegacyThirdPersonMesh = Cast<USkeletalMesh>(ThirdPersonAsset);
+	}
+	bOutSuccess = !Ar.IsError() && Selection <= static_cast<uint8>(EShooterPresentation::Suit);
+	return bFirstPersonMapped && bThirdPersonMapped;
+}
 
 bool FShooterPresentationConfiguration::IsEmpty() const
 {
@@ -246,6 +275,7 @@ void AShooterCharacter::BeginPlay()
 {
 	Super::BeginPlay();
 	CaptureInitialPresentation();
+	OnWeaponChanged.AddUniqueDynamic(this, &AShooterCharacter::HandlePresentationWeaponChanged);
 	// Apply the crouched ledge policy after Blueprint defaults have been loaded.
 	GetCharacterMovement()->bCanWalkOffLedges = true;
 	GetCharacterMovement()->bCanWalkOffLedgesWhenCrouching = true;
@@ -331,18 +361,28 @@ void AShooterCharacter::BeginPlay()
 	RefreshCombatState();
 	RefreshShooterSuitCooldownUI();
 
-	// 기존 Suit RepNotify가 먼저 도착했다면 초기 PreSuit로 덮어쓰지 않는다.
-	if (!AppliedSuitFirstPersonMesh && !AppliedSuitThirdPersonMesh)
+	// BeginPlay보다 먼저 받은 선택은 그대로 적용한다. 서버만 PlayerState에서 선택을 복원한다.
+	if (PresentationState.Presentation != EShooterPresentation::Uninitialized)
 	{
-		if (PreSuitPresentation.IsEmpty())
-		{
-			UE_LOG(LogTemp, Warning, TEXT("%s PreSuitPresentation is unset; keeping the initial Mesh/ABP configuration."), *GetName());
-		}
-		else
-		{
-			ApplyPresentationConfiguration(false);
-		}
+		RefreshReplicatedPresentation();
 	}
+	else if (HasAuthority() && GetPlayerState<AOutlierPlayerState>())
+	{
+		RefreshPresentationFromPlayerState();
+	}
+	else if (PreSuitPresentation.IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("%s PreSuitPresentation is unset; keeping the initial Mesh/ABP configuration."), *GetName());
+	}
+	else if (HasAuthority())
+	{
+		SetSuitPresentation(false);
+	}
+	else
+	{
+		ApplyPresentationConfiguration(false);
+	}
+	RefreshPresentationWeaponAttachment();
 }
 
 void AShooterCharacter::Tick(float DeltaSeconds)
@@ -389,6 +429,7 @@ void AShooterCharacter::Tick(float DeltaSeconds)
 
 void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	OnWeaponChanged.RemoveDynamic(this, &AShooterCharacter::HandlePresentationWeaponChanged);
 	PopTeleportLayer();
 	PopReflectionBarrierWidget();
 	UnbindPartnerSuitStateObserver();
@@ -415,6 +456,7 @@ void AShooterCharacter::PossessedBy(AController* NewController)
 {
 	Super::PossessedBy(NewController);
 	RefreshAbilitySystemActorInfo();
+	RefreshPresentationFromPlayerState();
 
 	RefreshFirstPersonShadowPolicy();
 	RefreshShooterSuitCooldownUI();
@@ -427,6 +469,17 @@ void AShooterCharacter::OnRep_Controller()
 	RefreshShooterSuitCooldownUI();
 
 	RefreshFirstPersonShadowPolicy();
+}
+
+void AShooterCharacter::OnRep_PlayerState()
+{
+	Super::OnRep_PlayerState();
+	RefreshAbilitySystemActorInfo();
+	// 클라이언트의 PlayerState 도착 순서로 선택을 바꾸지 않고 Pawn의 복제 구성만 재적용한다.
+	if (HasActorBegunPlay())
+	{
+		RefreshReplicatedPresentation();
+	}
 }
 
 UAbilitySystemComponent* AShooterCharacter::GetAbilitySystemComponent() const
@@ -1586,9 +1639,13 @@ void AShooterCharacter::OnRep_CurrentLeanAlpha()
 	ApplyLeanPresentation();
 }
 
-void AShooterCharacter::OnRep_SuitMeshes()
+void AShooterCharacter::OnRep_PresentationState()
 {
-	RefreshAppliedSuitMeshes();
+	// 초기 구성 캡처 전에 외형을 바꾸면 fallback 기준까지 덮어쓰므로 BeginPlay에서 적용한다.
+	if (HasActorBegunPlay())
+	{
+		RefreshReplicatedPresentation();
+	}
 }
 
 void AShooterCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -1600,8 +1657,7 @@ void AShooterCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	DOREPLIFETIME(AShooterCharacter, CombatState);
 	DOREPLIFETIME(AShooterCharacter, ActionLock);
 	DOREPLIFETIME(AShooterCharacter, CurrentLeanAlpha);
-	DOREPLIFETIME(AShooterCharacter, AppliedSuitFirstPersonMesh);
-	DOREPLIFETIME(AShooterCharacter, AppliedSuitThirdPersonMesh);
+	DOREPLIFETIME(AShooterCharacter, PresentationState);
 }
 
 FVector AShooterCharacter::GetBaseLeanViewLocation() const
@@ -1722,6 +1778,11 @@ void AShooterCharacter::EquipWeapon(AWeaponBase* Weapon)
 
 void AShooterCharacter::CaptureInitialPresentation()
 {
+	if (bInitialPresentationCaptured)
+	{
+		return;
+	}
+	bInitialPresentationCaptured = true;
 	if (USkeletalMeshComponent* Mesh1P = GetFirstPersonMesh())
 	{
 		InitialPresentation.FirstPersonMesh = Mesh1P->GetSkeletalMeshAsset();
@@ -1735,17 +1796,18 @@ void AShooterCharacter::CaptureInitialPresentation()
 }
 
 bool AShooterCharacter::ResolvePresentationConfiguration(bool bUseSuitPresentation,
-	FShooterPresentationConfiguration& OutConfiguration, FString& OutError) const
+	FShooterPresentationConfiguration& OutConfiguration, FString& OutError,
+	USkeletalMesh* LegacyFirstPersonMesh, USkeletalMesh* LegacyThirdPersonMesh) const
 {
 	OutConfiguration = bUseSuitPresentation ? SuitPresentation : PreSuitPresentation;
 	if (OutConfiguration.IsEmpty())
 	{
 		// 에셋 이전 기간에만 초기 ABP를 사용한다. 일부만 지정된 설정은 보완하지 않는다.
 		OutConfiguration = InitialPresentation;
-		if (bUseSuitPresentation && (AppliedSuitFirstPersonMesh || AppliedSuitThirdPersonMesh))
+		if (bUseSuitPresentation && (LegacyFirstPersonMesh || LegacyThirdPersonMesh))
 		{
-			OutConfiguration.FirstPersonMesh = AppliedSuitFirstPersonMesh;
-			OutConfiguration.ThirdPersonMesh = AppliedSuitThirdPersonMesh;
+			OutConfiguration.FirstPersonMesh = LegacyFirstPersonMesh;
+			OutConfiguration.ThirdPersonMesh = LegacyThirdPersonMesh;
 		}
 	}
 	return OutConfiguration.Validate(OutError);
@@ -1753,10 +1815,12 @@ bool AShooterCharacter::ResolvePresentationConfiguration(bool bUseSuitPresentati
 
 bool AShooterCharacter::ApplyPresentationConfiguration(bool bUseSuitPresentation)
 {
+	CaptureInitialPresentation();
 	FShooterPresentationConfiguration Configuration;
 	FString Error;
 	// 1P와 3P를 모두 검증한 뒤 교체한다. 실패하면 현재 Mesh/ABP와 무기 부착을 유지한다.
-	if (!ResolvePresentationConfiguration(bUseSuitPresentation, Configuration, Error))
+	if (!ResolvePresentationConfiguration(bUseSuitPresentation, Configuration, Error,
+		PresentationState.LegacyFirstPersonMesh, PresentationState.LegacyThirdPersonMesh))
 	{
 		UE_LOG(LogTemp, Warning, TEXT("%s rejected %s presentation: %s"),
 			*GetName(), bUseSuitPresentation ? TEXT("Suit") : TEXT("PreSuit"), *Error);
@@ -1821,55 +1885,108 @@ bool AShooterCharacter::ApplyValidatedPresentationConfiguration(const FShooterPr
 	return true;
 }
 
-void AShooterCharacter::ApplySuitMeshes(
+bool AShooterCharacter::ApplySuitMeshes(
 	USkeletalMesh* FirstPersonMeshAsset,
 	USkeletalMesh* ThirdPersonMeshAsset)
 {
-	if (!HasAuthority()
-		|| !ensureMsgf(FirstPersonMeshAsset, TEXT("%s requires a first-person Suit mesh."), *GetName())
-		|| !ensureMsgf(ThirdPersonMeshAsset, TEXT("%s requires a third-person Suit mesh."), *GetName()))
-	{
-		return;
-	}
-
-	AppliedSuitFirstPersonMesh = FirstPersonMeshAsset;
-	AppliedSuitThirdPersonMesh = ThirdPersonMeshAsset;
-	RefreshAppliedSuitMeshes();
-	ForceNetUpdate();
+	return SetSuitPresentation(true, FirstPersonMeshAsset, ThirdPersonMeshAsset);
 }
 
-void AShooterCharacter::RefreshAppliedSuitMeshes()
+bool AShooterCharacter::SetSuitPresentation(bool bUseSuitPresentation,
+	USkeletalMesh* LegacyFirstPersonMesh, USkeletalMesh* LegacyThirdPersonMesh)
 {
-	if (!AppliedSuitFirstPersonMesh || !AppliedSuitThirdPersonMesh)
+	if (!HasAuthority())
+	{
+		return false;
+	}
+
+	CaptureInitialPresentation();
+	FShooterPresentationConfiguration Configuration;
+	FString Error;
+	if (!ResolvePresentationConfiguration(bUseSuitPresentation, Configuration, Error,
+		LegacyFirstPersonMesh, LegacyThirdPersonMesh))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("%s rejected authoritative %s presentation: %s"),
+			*GetName(), bUseSuitPresentation ? TEXT("Suit") : TEXT("PreSuit"), *Error);
+		return false;
+	}
+	if (!ApplyValidatedPresentationConfiguration(Configuration))
+	{
+		return false;
+	}
+
+	FShooterPresentationState NewState;
+	NewState.Presentation = bUseSuitPresentation ? EShooterPresentation::Suit : EShooterPresentation::PreSuit;
+	// 명시된 BP 설정은 Asset 참조를 복제하지 않는다. 레거시 콘텐츠만 호환 Mesh 쌍을 전달한다.
+	if (bUseSuitPresentation && SuitPresentation.IsEmpty()
+		&& (LegacyFirstPersonMesh || LegacyThirdPersonMesh))
+	{
+		NewState.bUseLegacyMeshes = true;
+		NewState.LegacyFirstPersonMesh = LegacyFirstPersonMesh;
+		NewState.LegacyThirdPersonMesh = LegacyThirdPersonMesh;
+	}
+
+	const bool bStateChanged = PresentationState.Presentation != NewState.Presentation
+		|| PresentationState.bUseLegacyMeshes != NewState.bUseLegacyMeshes
+		|| PresentationState.LegacyFirstPersonMesh != NewState.LegacyFirstPersonMesh
+		|| PresentationState.LegacyThirdPersonMesh != NewState.LegacyThirdPersonMesh;
+	PresentationState = NewState;
+	AppliedSuitFirstPersonMesh = bUseSuitPresentation ? Configuration.FirstPersonMesh : nullptr;
+	AppliedSuitThirdPersonMesh = bUseSuitPresentation ? Configuration.ThirdPersonMesh : nullptr;
+	if ((bUseSuitPresentation ? SuitPresentation : PreSuitPresentation).IsEmpty() && bStateChanged)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("%s %s presentation is unset; using the validated legacy configuration."),
+			*GetName(), bUseSuitPresentation ? TEXT("Suit") : TEXT("PreSuit"));
+	}
+	if (bStateChanged)
+	{
+		ForceNetUpdate();
+	}
+	return true;
+}
+
+void AShooterCharacter::RefreshPresentationFromPlayerState()
+{
+	if (!HasAuthority())
 	{
 		return;
 	}
-
-	if (USkeletalMeshComponent* FirstPersonMeshComponent = GetFirstPersonMesh())
+	if (const AOutlierPlayerState* PS = GetPlayerState<AOutlierPlayerState>())
 	{
-		if (FirstPersonMeshComponent->GetSkeletalMeshAsset() != AppliedSuitFirstPersonMesh)
-		{
-			FirstPersonMeshComponent->SetSkeletalMeshAsset(AppliedSuitFirstPersonMesh);
-		}
+		SetSuitPresentation(PS->GetAcquiredSuit(), PS->GetSuitFirstPersonMesh(), PS->GetSuitThirdPersonMesh());
 	}
+}
 
-	USkeletalMeshComponent* ThirdPersonMeshComponent = GetMesh();
-	if (ThirdPersonMeshComponent
-		&& ThirdPersonMeshComponent->GetSkeletalMeshAsset() != AppliedSuitThirdPersonMesh)
+void AShooterCharacter::RefreshReplicatedPresentation()
+{
+	if (PresentationState.Presentation == EShooterPresentation::Uninitialized)
 	{
-		ThirdPersonMeshComponent->SetSkeletalMeshAsset(AppliedSuitThirdPersonMesh);
+		return;
 	}
-
-	if (ShadowMesh)
+	// 미해결 Asset 참조를 초기 구성으로 대체하지 않는다. 참조가 해결된 RepNotify에서 쌍을 적용한다.
+	if (PresentationState.bUseLegacyMeshes
+		&& (!PresentationState.LegacyFirstPersonMesh || !PresentationState.LegacyThirdPersonMesh))
 	{
-		if (ShadowMesh->GetSkeletalMeshAsset() != AppliedSuitThirdPersonMesh)
-		{
-			ShadowMesh->SetSkeletalMeshAsset(AppliedSuitThirdPersonMesh);
-		}
-		ShadowMesh->SetLeaderPoseComponent(ThirdPersonMeshComponent);
+		return;
 	}
+	const bool bUseSuitPresentation = PresentationState.Presentation == EShooterPresentation::Suit;
+	if (ApplyPresentationConfiguration(bUseSuitPresentation))
+	{
+		AppliedSuitFirstPersonMesh = bUseSuitPresentation ? GetFirstPersonMesh()->GetSkeletalMeshAsset() : nullptr;
+		AppliedSuitThirdPersonMesh = bUseSuitPresentation ? GetMesh()->GetSkeletalMeshAsset() : nullptr;
+		RefreshPresentationWeaponAttachment();
+	}
+}
 
-	RefreshFirstPersonShadowPolicy();
+void AShooterCharacter::HandlePresentationWeaponChanged(EWeaponType NewWeaponType)
+{
+	(void)NewWeaponType;
+	RefreshPresentationWeaponAttachment();
+}
+
+void AShooterCharacter::RefreshPresentationWeaponAttachment()
+{
+	// CurrentWeapon이 외형보다 늦게 도착해도 재부착한다. Owner가 미도착하면 무기의 RepNotify가 보완한다.
 	if (AWeaponBase* EquippedWeapon = GetCurrentWeapon())
 	{
 		EquippedWeapon->AttachWeaponMeshesToOwnerMeshes();

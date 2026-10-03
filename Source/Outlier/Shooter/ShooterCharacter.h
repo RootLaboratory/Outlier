@@ -38,6 +38,42 @@ class UNiagaraSystem;
 class UShooterReflectionBarrier;
 class UShooterTeleportLayer;
 struct FOnAttributeChangeData;
+class UPackageMap;
+
+UENUM(BlueprintType)
+enum class EShooterPresentation : uint8
+{
+	Uninitialized,
+	PreSuit,
+	Suit
+};
+
+USTRUCT()
+struct OUTLIER_API FShooterPresentationState
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	EShooterPresentation Presentation = EShooterPresentation::Uninitialized;
+
+	UPROPERTY()
+	bool bUseLegacyMeshes = false;
+
+	// BP 설정이 비어 있는 이전 콘텐츠에만 사용한다. 선택 상태와 함께 복제한다.
+	UPROPERTY()
+	TObjectPtr<USkeletalMesh> LegacyFirstPersonMesh;
+
+	UPROPERTY()
+	TObjectPtr<USkeletalMesh> LegacyThirdPersonMesh;
+
+	bool NetSerialize(FArchive& Ar, UPackageMap* Map, bool& bOutSuccess);
+};
+
+template<>
+struct TStructOpsTypeTraits<FShooterPresentationState> : TStructOpsTypeTraitsBase2<FShooterPresentationState>
+{
+	enum { WithNetSerializer = true };
+};
 
 USTRUCT(BlueprintType)
 struct OUTLIER_API FShooterPresentationConfiguration
@@ -149,6 +185,8 @@ class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbil
 	friend class UShooterMovementComponent;
 	friend class FShooterGroundedMovementTest;
 	friend class FShooterPresentationConfigurationTest;
+	friend class FShooterPresentationReplicationTest;
+	friend class FOutlierSuitInteractionEquipTest;
 
 protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
@@ -323,11 +361,15 @@ protected:
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "State")
 	EShooterActionLock ActionLock = EShooterActionLock::None;
 
-	UPROPERTY(ReplicatedUsing = OnRep_SuitMeshes, VisibleAnywhere, BlueprintReadOnly, Category = "Suit|Mesh")
+	// 기존 BP 조회용 이름은 유지하되, 외형 복제/적용의 입력으로 사용하지 않는다.
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Suit|Mesh")
 	TObjectPtr<USkeletalMesh> AppliedSuitFirstPersonMesh;
 
-	UPROPERTY(ReplicatedUsing = OnRep_SuitMeshes, VisibleAnywhere, BlueprintReadOnly, Category = "Suit|Mesh")
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Suit|Mesh")
 	TObjectPtr<USkeletalMesh> AppliedSuitThirdPersonMesh;
+
+	UPROPERTY(ReplicatedUsing = OnRep_PresentationState)
+	FShooterPresentationState PresentationState;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Suit|Presentation")
 	FShooterPresentationConfiguration PreSuitPresentation;
@@ -337,6 +379,7 @@ protected:
 
 	UPROPERTY(Transient)
 	FShooterPresentationConfiguration InitialPresentation;
+	bool bInitialPresentationCaptured = false;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "GAS|Suit")
 	TObjectPtr<UDataTable> ShooterSuitAbilityDataTable;
@@ -467,6 +510,7 @@ protected:
 	virtual void Tick(float DeltaSeconds) override;
 	virtual void PossessedBy(AController* NewController) override;
 	virtual void OnRep_Controller() override;
+	virtual void OnRep_PlayerState() override;
 	void RefreshAbilitySystemActorInfo();
 	void InitializeGasVitality();
 	void InitializeGasSuitAbilities();
@@ -552,7 +596,10 @@ public:
 	void OnRep_CurrentLeanAlpha();
 
 	UFUNCTION()
-	void OnRep_SuitMeshes();
+	void OnRep_PresentationState();
+
+	UFUNCTION()
+	void HandlePresentationWeaponChanged(EWeaponType NewWeaponType);
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual FVector GetPawnViewLocation() const override;
@@ -567,7 +614,12 @@ public:
 	// Unreal 공통 피해 진입점을 기존 Shooter 실드 및 HP 처리로 연결한다.
 	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
 	virtual void EquipWeapon(AWeaponBase* Weapon) override;
-	void ApplySuitMeshes(USkeletalMesh* FirstPersonMeshAsset, USkeletalMesh* ThirdPersonMeshAsset);
+	bool ApplySuitMeshes(USkeletalMesh* FirstPersonMeshAsset, USkeletalMesh* ThirdPersonMeshAsset);
+	// 서버만 선택 상태를 확정한다. 레거시 Mesh는 명시된 BP 구성을 덮어쓰지 않는다.
+	bool SetSuitPresentation(bool bUseSuitPresentation, USkeletalMesh* LegacyFirstPersonMesh = nullptr,
+		USkeletalMesh* LegacyThirdPersonMesh = nullptr);
+	void RefreshPresentationFromPlayerState();
+	EShooterPresentation GetPresentation() const { return PresentationState.Presentation; }
 	// 로컬 외형만 적용한다. 획득 판정과 상태 복제는 서버 호출 경로에서 처리한다.
 	bool ApplyPresentationConfiguration(bool bUseSuitPresentation);
 	virtual FGameplayTagContainer GetOwnedGameplayTagsForQuery() const override;
@@ -746,10 +798,12 @@ protected:
 	void StopLean();
 
 	void RefreshFirstPersonShadowPolicy();
-	void RefreshAppliedSuitMeshes();
+	void RefreshReplicatedPresentation();
+	void RefreshPresentationWeaponAttachment();
 	void CaptureInitialPresentation();
 	bool ResolvePresentationConfiguration(bool bUseSuitPresentation,
-		FShooterPresentationConfiguration& OutConfiguration, FString& OutError) const;
+		FShooterPresentationConfiguration& OutConfiguration, FString& OutError,
+		USkeletalMesh* LegacyFirstPersonMesh = nullptr, USkeletalMesh* LegacyThirdPersonMesh = nullptr) const;
 	bool ApplyValidatedPresentationConfiguration(const FShooterPresentationConfiguration& Configuration);
 	void UpdateSlideCameraEffect(float DeltaSeconds);
 

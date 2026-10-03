@@ -15,6 +15,8 @@
 #include "EngineUtils.h"
 #include "Misc/AutomationTest.h"
 #include "ReferenceSkeleton.h"
+#include "OutlierPlayerState.h"
+#include "Save/OutlierCheckpointSnapshot.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Shooter/ShooterInventoryComponent.h"
 #include "UObject/UnrealType.h"
@@ -95,6 +97,25 @@ TObjectType* ReadObjectProperty(const UObject* Object, FName PropertyName)
 		? Cast<TObjectType>(Property->GetObjectPropertyValue_InContainer(Object))
 		: nullptr;
 }
+
+bool LoadSuitPresentationConfiguration(FAutomationTestBase& Test, FShooterPresentationConfiguration& Configuration)
+{
+	Configuration.FirstPersonMesh = LoadObject<USkeletalMesh>(nullptr,
+		TEXT("/Game/Characters/1P/Suit/1_Meshes/SKM_Player1_POV01.SKM_Player1_POV01"));
+	Configuration.FirstPersonAnimClass = LoadClass<UAnimInstance>(nullptr,
+		TEXT("/Game/Characters/1P/Suit/1_Meshes/Animations/ABP_FPS_ShooterArm.ABP_FPS_ShooterArm_C"));
+	Configuration.ThirdPersonMesh = LoadObject<USkeletalMesh>(nullptr,
+		TEXT("/Game/Characters/1P/Suit/3_Meshes/SKM_Player_01.SKM_Player_01"));
+	Configuration.ThirdPersonAnimClass = LoadClass<UAnimInstance>(nullptr,
+		TEXT("/Game/Characters/1P/Suit/3_Meshes/Animations/ABP_Shooter.ABP_Shooter_C"));
+	FString Error;
+	if (!Test.TestTrue(TEXT("Explicit Suit test assets form valid Mesh/ABP pairs"), Configuration.Validate(Error)))
+	{
+		Test.AddError(Error);
+		return false;
+	}
+	return true;
+}
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -113,21 +134,42 @@ bool FOutlierSuitInteractionEquipTest::RunTest(const FString& Parameters)
 	}
 
 	UWorld* World = TestWorld.World;
+	FShooterPresentationConfiguration PreSuitConfiguration;
+	if (!LoadSuitPresentationConfiguration(*this, PreSuitConfiguration))
+	{
+		return false;
+	}
+	FShooterPresentationConfiguration SuitConfiguration = PreSuitConfiguration;
+	SuitConfiguration.FirstPersonMesh = DuplicateObject<USkeletalMesh>(PreSuitConfiguration.FirstPersonMesh, GetTransientPackage());
+	SuitConfiguration.ThirdPersonMesh = DuplicateObject<USkeletalMesh>(PreSuitConfiguration.ThirdPersonMesh, GetTransientPackage());
+	SuitConfiguration.FirstPersonAnimClass = LoadClass<UAnimInstance>(nullptr,
+		TEXT("/Game/Characters/1P/Suit/1_Meshes/Animations/ABP_FP_ArmsProcedural.ABP_FP_ArmsProcedural_C"));
+	FString ConfigurationError;
+	if (!TestTrue(TEXT("Alternate Suit ABP is compatible"), SuitConfiguration.Validate(ConfigurationError)))
+	{
+		AddError(ConfigurationError);
+		return false;
+	}
 	UClass* ShooterClass = LoadClass<AShooterCharacter>(
 		nullptr,
 		TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
 	UClass* PartnerClass = LoadClass<APartnerCharacter>(
 		nullptr,
 		TEXT("/Game/Blueprints/Partner/BP_PartnerCharacter.BP_PartnerCharacter_C"));
-	AShooterCharacter* Shooter = ShooterClass
-		? World->SpawnActor<AShooterCharacter>(ShooterClass)
-		: nullptr;
+	AShooterCharacter* Shooter = ShooterClass ? World->SpawnActorDeferred<AShooterCharacter>(
+		ShooterClass, FTransform::Identity, nullptr, nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn) : nullptr;
+	if (Shooter)
+	{
+		Shooter->PreSuitPresentation = PreSuitConfiguration;
+		Shooter->SuitPresentation = SuitConfiguration;
+		Shooter->FinishSpawning(FTransform::Identity);
+	}
 	APartnerCharacter* Partner = PartnerClass
 		? World->SpawnActor<APartnerCharacter>(PartnerClass)
 		: nullptr;
 	UStaticMesh* SuitDisplayAsset = NewObject<UStaticMesh>(GetTransientPackage());
-	USkeletalMesh* FirstPersonSuitMesh = NewObject<USkeletalMesh>(GetTransientPackage());
-	USkeletalMesh* ThirdPersonSuitMesh = NewObject<USkeletalMesh>(GetTransientPackage());
+	USkeletalMesh* FirstPersonSuitMesh = SuitConfiguration.FirstPersonMesh;
+	USkeletalMesh* ThirdPersonSuitMesh = SuitConfiguration.ThirdPersonMesh;
 
 	ASuitInteractionTestActor* Suit = World->SpawnActorDeferred<ASuitInteractionTestActor>(
 		ASuitInteractionTestActor::StaticClass(),
@@ -162,6 +204,22 @@ bool FOutlierSuitInteractionEquipTest::RunTest(const FString& Parameters)
 
 	Shooter->SetPartnerCharacter(Partner);
 	Partner->SetShooterCharacter(Shooter);
+	AOutlierPlayerState* ShooterPS = World->SpawnActor<AOutlierPlayerState>();
+	AOutlierPlayerState* PartnerPS = World->SpawnActor<AOutlierPlayerState>();
+	if (!TestNotNull(TEXT("Shooter PlayerState spawns"), ShooterPS)
+		|| !TestNotNull(TEXT("Partner PlayerState spawns"), PartnerPS))
+	{
+		return false;
+	}
+	Shooter->SetPlayerState(ShooterPS);
+	Partner->SetPlayerState(PartnerPS);
+	ShooterPS->SetShooterCharacter(Shooter);
+	ShooterPS->SetPartnerCharacter(Partner);
+	PartnerPS->SetShooterCharacter(Shooter);
+	PartnerPS->SetPartnerCharacter(Partner);
+	TestTrue(TEXT("Before acquisition the complete PreSuit configuration is used"),
+		Shooter->GetFirstPersonMesh()->GetSkeletalMeshAsset() == PreSuitConfiguration.FirstPersonMesh
+		&& Shooter->GetFirstPersonMesh()->GetAnimClass() == PreSuitConfiguration.FirstPersonAnimClass.Get());
 
 	UStaticMeshComponent* SuitDisplayMesh = ReadObjectProperty<UStaticMeshComponent>(Suit, TEXT("SuitDisplayMesh"));
 	AWeaponBase* StoredShooterRifle = ReadObjectProperty<AWeaponBase>(Suit, TEXT("StoredShooterRifle"));
@@ -191,7 +249,29 @@ bool FOutlierSuitInteractionEquipTest::RunTest(const FString& Parameters)
 	}
 
 	TestFalse(TEXT("Partner cannot activate the Suit interaction"), Suit->Interact(Partner));
+
+	// 일부만 지정된 외형은 무기 지급/소비 이전에 거부되어 재시도 가능한 상태를 유지한다.
+	Shooter->SuitPresentation.ThirdPersonAnimClass = nullptr;
+	TestFalse(TEXT("Invalid Suit presentation rejects acquisition"), Suit->Interact(Shooter));
+	TestNull(TEXT("Rejected acquisition grants no Shooter weapon"), Shooter->GetCurrentWeapon());
+	TestNull(TEXT("Rejected acquisition grants no Partner weapon"), Partner->GetCurrentWeapon());
+	TestFalse(TEXT("Rejected acquisition does not unlock Suit"), ShooterPS->GetAcquiredSuit());
+	TestTrue(TEXT("Rejected acquisition preserves the PreSuit Mesh/ABP and selection"),
+		Shooter->GetPresentation() == EShooterPresentation::PreSuit
+		&& Shooter->GetFirstPersonMesh()->GetSkeletalMeshAsset() == PreSuitConfiguration.FirstPersonMesh
+		&& Shooter->GetFirstPersonMesh()->GetAnimClass() == PreSuitConfiguration.FirstPersonAnimClass.Get());
+	TestFalse(TEXT("Rejected acquisition does not consume the Interaction"), Suit->IsHidden());
+	TestTrue(TEXT("Rejected acquisition keeps stored Shooter Rifle"), StoredShooterRifle && StoredShooterRifle->IsHidden());
+	Shooter->SuitPresentation = SuitConfiguration;
 	TestTrue(TEXT("Shooter completes the Suit interaction immediately"), Suit->Interact(Shooter));
+	TestTrue(TEXT("Acquisition replaces the PreSuit ABP with the Suit ABP"),
+		Shooter->GetFirstPersonMesh()->GetAnimClass() == SuitConfiguration.FirstPersonAnimClass.Get());
+	TestTrue(TEXT("Acquisition publishes the Suit presentation"), Shooter->GetPresentation() == EShooterPresentation::Suit);
+	TestTrue(TEXT("Successful acquisition unlocks both PlayerStates"),
+		ShooterPS->GetAcquiredSuit() && PartnerPS->GetAcquiredSuit());
+	TestTrue(TEXT("Compatibility save fields record the applied BP meshes"),
+		ShooterPS->GetSuitFirstPersonMesh() == SuitConfiguration.FirstPersonMesh
+		&& ShooterPS->GetSuitThirdPersonMesh() == SuitConfiguration.ThirdPersonMesh);
 
 	TestEqual(
 		TEXT("Shooter first-person mesh changes"),
@@ -248,18 +328,9 @@ bool FShooterPresentationConfigurationTest::RunTest(const FString& Parameters)
 
 	// Shooter BP의 기본 3P 설정은 비어 있을 수 있다. 테스트 전제는 기존 Suit 에셋으로 명시한다.
 	FShooterPresentationConfiguration TestConfiguration;
-	TestConfiguration.FirstPersonMesh = LoadObject<USkeletalMesh>(nullptr,
-		TEXT("/Game/Characters/1P/Suit/1_Meshes/SKM_Player1_POV01.SKM_Player1_POV01"));
-	TestConfiguration.FirstPersonAnimClass = LoadClass<UAnimInstance>(nullptr,
-		TEXT("/Game/Characters/1P/Suit/1_Meshes/Animations/ABP_FPS_ShooterArm.ABP_FPS_ShooterArm_C"));
-	TestConfiguration.ThirdPersonMesh = LoadObject<USkeletalMesh>(nullptr,
-		TEXT("/Game/Characters/1P/Suit/3_Meshes/SKM_Player_01.SKM_Player_01"));
-	TestConfiguration.ThirdPersonAnimClass = LoadClass<UAnimInstance>(nullptr,
-		TEXT("/Game/Characters/1P/Suit/3_Meshes/Animations/ABP_Shooter.ABP_Shooter_C"));
 	FString Error;
-	if (!TestTrue(TEXT("Explicit Suit test assets form valid Mesh/ABP pairs"), TestConfiguration.Validate(Error)))
+	if (!LoadSuitPresentationConfiguration(*this, TestConfiguration))
 	{
-		AddError(Error);
 		return false;
 	}
 
@@ -280,6 +351,7 @@ bool FShooterPresentationConfigurationTest::RunTest(const FString& Parameters)
 	// 저장 에셋은 변경하지 않고 이 Pawn에서만 미설정 상태와 완전한 구성을 비교한다.
 	Shooter->PreSuitPresentation = FShooterPresentationConfiguration();
 	Shooter->SuitPresentation = FShooterPresentationConfiguration();
+	Shooter->bInitialPresentationCaptured = false;
 	if (!Shooter->HasActorBegunPlay())
 	{
 		Shooter->DispatchBeginPlay();
@@ -365,6 +437,199 @@ bool FShooterPresentationConfigurationTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Shadow follows the restored Mesh"), Shadow->GetSkeletalMeshAsset() == Baseline.ThirdPersonMesh);
 	TestFalse(TEXT("Presentation does not write legacy replicated Suit Mesh state"),
 		Shooter->AppliedSuitFirstPersonMesh || Shooter->AppliedSuitThirdPersonMesh);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FShooterPresentationReplicationTest,
+	"Outlier.Animation.Shooter.PresentationReplication",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FShooterPresentationReplicationTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FScopedSuitInteractionTestWorld TestWorld;
+	if (!TestWorld.Initialize(*this))
+	{
+		return false;
+	}
+	FShooterPresentationConfiguration PreSuitConfiguration;
+	if (!LoadSuitPresentationConfiguration(*this, PreSuitConfiguration))
+	{
+		return false;
+	}
+	FShooterPresentationConfiguration SuitConfiguration = PreSuitConfiguration;
+	SuitConfiguration.FirstPersonMesh = DuplicateObject<USkeletalMesh>(PreSuitConfiguration.FirstPersonMesh, GetTransientPackage());
+	SuitConfiguration.ThirdPersonMesh = DuplicateObject<USkeletalMesh>(PreSuitConfiguration.ThirdPersonMesh, GetTransientPackage());
+	SuitConfiguration.FirstPersonAnimClass = LoadClass<UAnimInstance>(nullptr,
+		TEXT("/Game/Characters/1P/Suit/1_Meshes/Animations/ABP_FP_ArmsProcedural.ABP_FP_ArmsProcedural_C"));
+	FString Error;
+	if (!TestTrue(TEXT("Different Suit ABP forms a complete configuration"), SuitConfiguration.Validate(Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+	UClass* ShooterClass = LoadClass<AShooterCharacter>(nullptr,
+		TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	if (!TestNotNull(TEXT("Shooter Blueprint is available"), ShooterClass))
+	{
+		return false;
+	}
+
+	// 실제 네트워크 전송 대신 RepNotify와 초기화 순서를 명시적으로 재현한다.
+	const auto SpawnShooter = [&](bool bReplica, const FShooterPresentationState* ReceivedState)
+	{
+		AShooterCharacter* Character = TestWorld.World->SpawnActorDeferred<AShooterCharacter>(ShooterClass,
+			FTransform::Identity, nullptr, nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+		if (!Character)
+		{
+			return Character;
+		}
+		Character->PreSuitPresentation = PreSuitConfiguration;
+		Character->SuitPresentation = SuitConfiguration;
+		Character->GetFirstPersonMesh()->SetSkeletalMesh(PreSuitConfiguration.FirstPersonMesh, true);
+		Character->GetFirstPersonMesh()->SetAnimInstanceClass(PreSuitConfiguration.FirstPersonAnimClass.Get());
+		Character->GetMesh()->SetSkeletalMesh(PreSuitConfiguration.ThirdPersonMesh, true);
+		Character->GetMesh()->SetAnimInstanceClass(PreSuitConfiguration.ThirdPersonAnimClass.Get());
+		if (bReplica)
+		{
+			Character->SetRole(ROLE_SimulatedProxy);
+		}
+		if (ReceivedState)
+		{
+			Character->PresentationState = *ReceivedState;
+			Character->OnRep_PresentationState();
+			TestTrue(TEXT("Pre-BeginPlay RepNotify does not overwrite the initial Mesh"),
+				Character->GetFirstPersonMesh()->GetSkeletalMeshAsset() == PreSuitConfiguration.FirstPersonMesh);
+		}
+		Character->FinishSpawning(FTransform::Identity);
+		if (!Character->HasActorBegunPlay())
+		{
+			Character->DispatchBeginPlay();
+		}
+		return Character;
+	};
+
+	AShooterCharacter* ServerShooter = SpawnShooter(false, nullptr);
+	if (!TestNotNull(TEXT("Authority Shooter spawns"), ServerShooter))
+	{
+		return false;
+	}
+	// 설정된 BP 구성은 오래된 저장 Mesh가 비호환이어도 그 참조를 사용하지 않는다.
+	USkeletalMesh* OldSavedMesh = NewObject<USkeletalMesh>(GetTransientPackage());
+	TestTrue(TEXT("Explicit Suit configuration takes priority over old saved meshes"),
+		ServerShooter->SetSuitPresentation(true, OldSavedMesh, OldSavedMesh));
+	TestTrue(TEXT("Authority uses the complete Suit Mesh/ABP"),
+		ServerShooter->GetFirstPersonMesh()->GetSkeletalMeshAsset() == SuitConfiguration.FirstPersonMesh
+		&& ServerShooter->GetFirstPersonMesh()->GetAnimClass() == SuitConfiguration.FirstPersonAnimClass.Get());
+	TestFalse(TEXT("Explicit configuration needs no replicated legacy assets"), ServerShooter->PresentationState.bUseLegacyMeshes);
+	TestNull(TEXT("Explicit configuration clears legacy 1P payload"), ServerShooter->PresentationState.LegacyFirstPersonMesh.Get());
+	UAnimInstance* SuitInstance = ServerShooter->GetFirstPersonMesh()->GetAnimInstance();
+	TestTrue(TEXT("Repeated authoritative state succeeds"), ServerShooter->SetSuitPresentation(true));
+	TestTrue(TEXT("Repeated state preserves the AnimInstance"), ServerShooter->GetFirstPersonMesh()->GetAnimInstance() == SuitInstance);
+	ServerShooter->SuitPresentation.ThirdPersonAnimClass = nullptr;
+	TestFalse(TEXT("Invalid authoritative configuration is rejected"), ServerShooter->SetSuitPresentation(true));
+	TestTrue(TEXT("Rejected authority update preserves the state and instance"),
+		ServerShooter->GetPresentation() == EShooterPresentation::Suit
+		&& ServerShooter->GetFirstPersonMesh()->GetAnimInstance() == SuitInstance);
+	ServerShooter->SuitPresentation = SuitConfiguration;
+
+	AShooterCharacter* LateStateReplica = SpawnShooter(true, nullptr);
+	if (!TestNotNull(TEXT("Replica without an initial selection spawns"), LateStateReplica))
+	{
+		return false;
+	}
+	LateStateReplica->PresentationState = ServerShooter->PresentationState;
+	LateStateReplica->OnRep_PresentationState();
+	TestTrue(TEXT("A state arriving after BeginPlay applies the complete Suit"),
+		LateStateReplica->GetFirstPersonMesh()->GetSkeletalMeshAsset() == SuitConfiguration.FirstPersonMesh
+		&& LateStateReplica->GetFirstPersonMesh()->GetAnimClass() == SuitConfiguration.FirstPersonAnimClass.Get());
+
+	AShooterCharacter* Replica = SpawnShooter(true, &ServerShooter->PresentationState);
+	if (!TestNotNull(TEXT("Replica Shooter spawns"), Replica))
+	{
+		return false;
+	}
+	TestTrue(TEXT("BeginPlay preserves an already received Suit selection"),
+		Replica->GetFirstPersonMesh()->GetSkeletalMeshAsset() == SuitConfiguration.FirstPersonMesh
+		&& Replica->GetFirstPersonMesh()->GetAnimClass() == SuitConfiguration.FirstPersonAnimClass.Get());
+	TestTrue(TEXT("Initial fallback was captured before applying the received state"),
+		Replica->InitialPresentation.FirstPersonMesh == PreSuitConfiguration.FirstPersonMesh);
+	UAnimInstance* ReplicaInstance = Replica->GetFirstPersonMesh()->GetAnimInstance();
+	TestFalse(TEXT("Non-authority cannot change the presentation selection"), Replica->SetSuitPresentation(false));
+	TestTrue(TEXT("Rejected client write preserves its instance"), Replica->GetFirstPersonMesh()->GetAnimInstance() == ReplicaInstance);
+	Replica->OnRep_PresentationState();
+	TestTrue(TEXT("Repeated RepNotify is idempotent"), Replica->GetFirstPersonMesh()->GetAnimInstance() == ReplicaInstance);
+
+	AOutlierPlayerState* LatePlayerState = TestWorld.World->SpawnActor<AOutlierPlayerState>();
+	if (!TestNotNull(TEXT("Late PlayerState spawns"), LatePlayerState))
+	{
+		return false;
+	}
+	Replica->SetPlayerState(LatePlayerState);
+	Replica->OnRep_PlayerState();
+	TestTrue(TEXT("An older PlayerState flag cannot overwrite the replicated Suit"),
+		Replica->GetFirstPersonMesh()->GetAnimClass() == SuitConfiguration.FirstPersonAnimClass.Get());
+
+	ASuitInteractionTestRifle* LateWeapon = TestWorld.World->SpawnActor<ASuitInteractionTestRifle>();
+	if (!TestNotNull(TEXT("Late weapon spawns"), LateWeapon))
+	{
+		return false;
+	}
+	LateWeapon->OnEquipped(Replica);
+	LateWeapon->GetFirstPersonWeaponMesh()->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
+	Replica->CurrentWeapon = LateWeapon;
+	Replica->OnRep_CurrentWeapon();
+	TestTrue(TEXT("Late CurrentWeapon is attached to the new first-person mesh"),
+		LateWeapon->GetFirstPersonWeaponMesh()->GetAttachParent() == Replica->GetFirstPersonMesh());
+	TestTrue(TEXT("Late weapon keeps third-person and Shadow attachments"),
+		LateWeapon->GetThirdPersonWeaponMesh()->GetAttachParent() == Replica->GetMesh()
+		&& LateWeapon->GetShadowWeaponMesh()->GetAttachParent() == Replica->GetShadowMesh());
+
+	// 호환 경로의 한쪽 참조가 미해결이면 전체 적용을 보류한다.
+	Replica->SuitPresentation = FShooterPresentationConfiguration();
+	Replica->PresentationState.bUseLegacyMeshes = true;
+	Replica->PresentationState.LegacyFirstPersonMesh = SuitConfiguration.FirstPersonMesh;
+	Replica->PresentationState.LegacyThirdPersonMesh = nullptr;
+	Replica->OnRep_PresentationState();
+	TestTrue(TEXT("Incomplete legacy payload preserves the current instance"),
+		Replica->GetFirstPersonMesh()->GetAnimInstance() == ReplicaInstance);
+	Replica->PresentationState.LegacyThirdPersonMesh = SuitConfiguration.ThirdPersonMesh;
+	Replica->OnRep_PresentationState();
+	TestTrue(TEXT("Complete legacy payload uses the compatible initial ABP"),
+		Replica->GetFirstPersonMesh()->GetAnimClass() == PreSuitConfiguration.FirstPersonAnimClass.Get());
+	TestTrue(TEXT("Shadow follows the final third-person mesh"),
+		Replica->GetShadowMesh()->GetSkeletalMeshAsset() == Replica->GetMesh()->GetSkeletalMeshAsset()
+		&& Replica->GetShadowMesh()->LeaderPoseComponent.Get() == Replica->GetMesh());
+
+	// 저장 상태와 Pawn 링크의 순서를 바꿔도 서버는 획득 여부로 같은 외형을 복원한다.
+	AOutlierPlayerState* SavedPlayerState = TestWorld.World->SpawnActor<AOutlierPlayerState>();
+	if (!TestNotNull(TEXT("Restore PlayerState spawns"), SavedPlayerState))
+	{
+		return false;
+	}
+	FOutlierReconnectGameplayState SavedState;
+	FOutlierSuitSnapshot LegacySnapshot;
+	LegacySnapshot.bAcquired = true;
+	LegacySnapshot.FirstPersonMesh = OldSavedMesh;
+	LegacySnapshot.ThirdPersonMesh = OldSavedMesh;
+	SavedState.bHasAcquiredSuit = LegacySnapshot.bAcquired;
+	SavedState.SuitFirstPersonMesh = LegacySnapshot.FirstPersonMesh;
+	SavedState.SuitThirdPersonMesh = LegacySnapshot.ThirdPersonMesh;
+	SavedPlayerState->RestoreReconnectGameplayState(SavedState);
+	ServerShooter->SetSuitPresentation(false);
+	ServerShooter->SetPlayerState(SavedPlayerState);
+	SavedPlayerState->SetShooterCharacter(ServerShooter);
+	TestTrue(TEXT("Acquired reconnect state restores the complete Suit after Pawn linking"),
+		ServerShooter->GetFirstPersonMesh()->GetSkeletalMeshAsset() == SuitConfiguration.FirstPersonMesh
+		&& ServerShooter->GetFirstPersonMesh()->GetAnimClass() == SuitConfiguration.FirstPersonAnimClass.Get());
+	SavedState.bHasAcquiredSuit = false;
+	SavedPlayerState->RestoreReconnectGameplayState(SavedState);
+	TestTrue(TEXT("Unacquired reconnect state restores the complete PreSuit"),
+		ServerShooter->GetFirstPersonMesh()->GetSkeletalMeshAsset() == PreSuitConfiguration.FirstPersonMesh
+		&& ServerShooter->GetFirstPersonMesh()->GetAnimClass() == PreSuitConfiguration.FirstPersonAnimClass.Get());
+	TestNull(TEXT("Restore does not grant a new weapon"), ServerShooter->GetCurrentWeapon());
+	TestFalse(TEXT("Restore does not change the saved acquisition flag"), SavedPlayerState->GetAcquiredSuit());
 	return true;
 }
 

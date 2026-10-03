@@ -405,6 +405,11 @@ void AOutlierPlayerState::RefreshCharacterLinks()
 	{
 		ShooterCharacter->SetPartnerCharacter(PartnerCharacter);
 		ShooterCharacter->SetSuitDisabledByPartnerBoundary(bSuitDisabledByPartnerBoundary);
+		// Pawn 연결이 획득/복원보다 늦어도 자신의 PlayerState에서 최종 외형을 다시 읽는다.
+		if (HasAuthority())
+		{
+			ShooterCharacter->RefreshPresentationFromPlayerState();
+		}
 	}
 
 	if (PartnerCharacter)
@@ -624,6 +629,15 @@ void AOutlierPlayerState::SetAcquiredSuit(bool Acquire)
 
 void AOutlierPlayerState::OnRep_AcquiredSuit()
 {
+	// 획득 권위는 PlayerState에 두고, 서버만 Pawn의 외형 선택으로 투영한다.
+	// 클라이언트는 Pawn의 PresentationState를 사용해 두 Actor의 복제 도착 순서에 의존하지 않는다.
+	if (HasAuthority())
+	{
+		if (AShooterCharacter* Shooter = GetShooterCharacter())
+		{
+			Shooter->RefreshPresentationFromPlayerState();
+		}
+	}
 	RefreshPairSuitUI();
 }
 
@@ -728,6 +742,7 @@ void AOutlierPlayerState::RestoreReconnectGameplayState(
 	SuitFirstPersonMesh = State.SuitFirstPersonMesh;
 	SuitThirdPersonMesh = State.SuitThirdPersonMesh;
 	LoadoutSnapshot = State.LoadoutSnapshot;
+	OnRep_AcquiredSuit();
 	ForceNetUpdate();
 }
 
