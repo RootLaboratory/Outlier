@@ -425,6 +425,50 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Rejected entry does not emit an opening completion"), OpenedCount, OpenedBeforeSafety);
 	TestEqual(TEXT("Rejected entry does not begin combat"), CombatStartCount, CombatBeforeSafety);
 
+	// 몸체가 아직 방 안이면 End/Begin 중복 신호만으로 새 요청을 만들 수 없다.
+	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, false);
+	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, true);
+	TestTrue(TEXT("False exit inside the room cannot rearm a rejected close"), Door->IsDoorOpen());
+	Shooter->SetActorLocation(FVector(520.0f, 0.0f, 0.0f));
+	SafetyPhysicsScene->Flush();
+	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, false);
+	Shooter->SetActorLocation(FVector(350.0f, 0.0f, 0.0f));
+	SafetyPhysicsScene->Flush();
+	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, true);
+	TestTrue(TEXT("Capsule still crossing the boundary is not a full exit"), Door->IsDoorOpen());
+
+	// 실제 퇴장 후에도 그 Pawn의 재입장이 필요하다. 다른 페어 멤버의 중복 입장이나
+	// 상태 신호는 퇴장 기록을 새 닫기 요청으로 소비하지 않는다.
+	Shooter->SetActorLocation(FVector(1000.0f, 0.0f, 0.0f));
+	SafetyPhysicsScene->Flush();
+	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, false);
+	Room->OnRoomActorOverlapChanged.Broadcast(Partner, true);
+	ShooterPS->OnPlayerCharactersChanged.Broadcast(ShooterPS);
+	TestTrue(TEXT("Departure alone or another Pawn's duplicate entry never retries"), Door->IsDoorOpen());
+	Shooter->SetActorLocation(FVector(100.0f, 0.0f, 0.0f));
+	SafetyPhysicsScene->Flush();
+	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, true);
+	TestTrue(TEXT("A new occupied reentry request is rejected again"), Door->IsDoorOpen());
+	Shooter->SetActorLocation(FVector(350.0f, 0.0f, 0.0f));
+	SafetyPhysicsScene->Flush();
+	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, true);
+	ShooterPS->OnPlayerCharactersChanged.Broadcast(ShooterPS);
+	TestTrue(TEXT("Clearance after rejected reentry does not reuse the consumed request"), Door->IsDoorOpen());
+	Shooter->SetActorLocation(FVector(1000.0f, 0.0f, 0.0f));
+	SafetyPhysicsScene->Flush();
+	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, false);
+	Shooter->SetActorLocation(FVector(350.0f, 0.0f, 0.0f));
+	SafetyPhysicsScene->Flush();
+	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, true);
+	TestFalse(TEXT("A fresh clear exit/reentry starts closing in the same generation"), Door->IsDoorOpen());
+	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, true);
+	Room->OnRoomActorOverlapChanged.Broadcast(Partner, true);
+	static_cast<AActor*>(Door)->Tick(1.1f);
+	TestFalse(TEXT("Accepted reentry closes and still waits for both UIs"), Door->IsDoorOpen());
+	TestFalse(TEXT("Completed reentry close stops motion while waiting for UI"), Door->IsActorTickEnabled());
+	TestEqual(TEXT("Reentry closing alone does not complete Level1 opening"), OpenedCount, OpenedBeforeSafety);
+	TestEqual(TEXT("Reentry closing alone does not start combat"), CombatStartCount, CombatBeforeSafety);
+
 	// 이번에는 비어 있는 범위에서 봉쇄를 시작한 뒤 몸체만 진입시킨다.
 	// 닫힘 끝까지 갈 수 있는 Tick도 안전 검사에서 먼저 중단되어야 한다.
 	const uint32 InterruptedGeneration = World->GetSubsystem<UOutlierArenaSubsystem>()->ReserveGameplayGeneration();
@@ -446,6 +490,15 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 		Door->DoorMeshLeft->GetRelativeLocation().Equals(BeforeSafetyReversal));
 	TestFalse(TEXT("Safety opening does not record successful Level1 progression"),
 		Save->HasWorldProgress(EOutlierWorldProgressType::OpenedDoor, Door->DoorId));
+	// 안전 개방 중 퇴장/재입장은 예약하지 않는다. 문이 다 열린 뒤 다른 이벤트가
+	// 와도 닫히지 않으며, 새로운 실제 퇴장부터 다시 시작해야 한다.
+	Shooter->SetActorLocation(FVector(1000.0f, 0.0f, 0.0f));
+	SafetyPhysicsScene->Flush();
+	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, false);
+	Shooter->SetActorLocation(FVector(350.0f, 0.0f, 0.0f));
+	SafetyPhysicsScene->Flush();
+	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, true);
+	TestTrue(TEXT("Early reentry does not interrupt safety opening"), Door->IsDoorOpen());
 	ShooterPS->ReportStatAllocatorUIOpened(InterruptedGeneration);
 	ShooterPS->ReportStatAllocatorUIClosed(InterruptedGeneration);
 	PartnerPS->ReportStatAllocatorUIOpened(InterruptedGeneration);
@@ -469,6 +522,52 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Interrupted entry waits instead of automatically retrying"), Door->IsDoorOpen());
 	TestFalse(TEXT("Repeated events leave interrupted entry motion stopped"), Door->IsActorTickEnabled());
 	TestEqual(TEXT("Stale normal completion cannot complete interrupted entry"), OpenedCount, OpenedBeforeSafety);
+
+	// 이전 Generation에서 밖으로 나간 기록은 다음 Generation의 요청으로 넘어가지 않는다.
+	Shooter->SetActorLocation(FVector(1000.0f, 0.0f, 0.0f));
+	SafetyPhysicsScene->Flush();
+	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, false);
+	Shooter->SetActorLocation(FVector(100.0f, 0.0f, 0.0f));
+	SafetyPhysicsScene->Flush();
+	const uint32 ResetReentryGeneration = World->GetSubsystem<UOutlierArenaSubsystem>()->ReserveGameplayGeneration();
+	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReloadStarted.Broadcast(ResetReentryGeneration);
+	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReady.Broadcast(ResetReentryGeneration);
+	TestTrue(TEXT("New generation creates its own occupied rejection"), Door->IsDoorOpen());
+	Shooter->SetActorLocation(FVector(350.0f, 0.0f, 0.0f));
+	SafetyPhysicsScene->Flush();
+	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, true);
+	TestTrue(TEXT("Previous generation's departure cannot authorize a new close"), Door->IsDoorOpen());
+
+	// 두 명의 퇴장은 독립적이다. 한 명이 안전 개방 중 돌아와도 다른 명의
+	// 퇴장 기록은 남아, 완전히 열린 뒤 돌아오는 플레이어가 새 요청을 만들 수 있다.
+	const uint32 PairReentryGeneration = World->GetSubsystem<UOutlierArenaSubsystem>()->ReserveGameplayGeneration();
+	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReloadStarted.Broadcast(PairReentryGeneration);
+	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReady.Broadcast(PairReentryGeneration);
+	TestFalse(TEXT("Pair reentry fixture begins a clear close"), Door->IsDoorOpen());
+	static_cast<AActor*>(Door)->Tick(0.4f);
+	Shooter->SetActorLocation(FVector(100.0f, 0.0f, 0.0f));
+	SafetyPhysicsScene->Flush();
+	static_cast<AActor*>(Door)->Tick(0.7f);
+	TestTrue(TEXT("Pair reentry fixture starts safety opening"), Door->IsDoorOpen());
+	Shooter->SetActorLocation(FVector(1000.0f, 0.0f, 0.0f));
+	SafetyPhysicsScene->Flush();
+	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, false);
+	Partner->SetActorLocation(FVector(1100.0f, 0.0f, 0.0f));
+	SafetyPhysicsScene->Flush();
+	Room->OnRoomActorOverlapChanged.Broadcast(Partner, false);
+	Partner->SetActorLocation(FVector(200.0f, 0.0f, 0.0f));
+	SafetyPhysicsScene->Flush();
+	Room->OnRoomActorOverlapChanged.Broadcast(Partner, true);
+	TestTrue(TEXT("Partner's early return leaves safety opening active"), Door->IsDoorOpen());
+	static_cast<AActor*>(Door)->Tick(0.5f);
+	TestFalse(TEXT("Pair reentry waits until safety opening finishes"), Door->IsActorTickEnabled());
+	Shooter->SetActorLocation(FVector(350.0f, 0.0f, 0.0f));
+	SafetyPhysicsScene->Flush();
+	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, true);
+	TestFalse(TEXT("Shooter's later return retains its independent close eligibility"), Door->IsDoorOpen());
+	TestTrue(TEXT("Independent pair reentry starts a new guarded close"), Door->IsActorTickEnabled());
+	TestEqual(TEXT("Pair reentry alone does not complete normal opening"), OpenedCount, OpenedBeforeSafety);
+	TestEqual(TEXT("Pair reentry alone does not start combat"), CombatStartCount, CombatBeforeSafety);
 
 	// Room 이벤트가 먼저 실행되는 경우에도 즉시 Snap이 안전 반전을 덮어쓰지 않는다.
 	const uint32 OverlapGeneration = World->GetSubsystem<UOutlierArenaSubsystem>()->ReserveGameplayGeneration();
@@ -509,6 +608,77 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	static_cast<AActor*>(SavedDoor)->Tick(0.7f);
 	TestTrue(TEXT("Cancellation restores the door's earlier open progress"),
 		Save->HasWorldProgress(EOutlierWorldProgressType::OpenedDoor, SavedDoor->DoorId));
+	static_cast<AActor*>(SavedDoor)->Tick(0.5f);
+
+	// 현재 페어가 아닌 Pawn의 실제 출입은 재입장 권한을 만들지 않는다.
+	Shooter->SetActorLocation(FVector(350.0f, 0.0f, 0.0f));
+	SafetyPhysicsScene->Flush();
+	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, true);
+	APartnerCharacter* UnpairedPartner = World->SpawnActor<APartnerCharacter>(
+		APartnerCharacter::StaticClass(), FTransform(FVector(1800.0f, 0.0f, 0.0f)));
+	if (!TestNotNull(TEXT("Unpaired reentry fixture exists"), UnpairedPartner))
+	{
+		CleanupWorld();
+		return false;
+	}
+	Room->OnRoomActorOverlapChanged.Broadcast(UnpairedPartner, false);
+	UnpairedPartner->SetActorLocation(FVector(300.0f, 0.0f, 0.0f));
+	SafetyPhysicsScene->ProcessDeferredCreatePhysicsState();
+	SafetyPhysicsScene->Flush();
+	Room->OnRoomActorOverlapChanged.Broadcast(UnpairedPartner, true);
+	TestTrue(TEXT("An unpaired Pawn cannot rearm safety-blocked entry"), Door->IsDoorOpen());
+
+	// Partner만 나갔다가 재입장해도 새 사이클이다. BeginOverlap 시 캡슐이 문턱에
+	// 걸쳐 있으면 닫지 않고 기존 입장 평가로 완전히 들어온 시점을 확인한다.
+	Partner->SetActorLocation(FVector(1000.0f, 0.0f, 0.0f));
+	SafetyPhysicsScene->Flush();
+	Room->OnRoomActorOverlapChanged.Broadcast(Partner, false);
+	Partner->SetActorLocation(FVector(480.0f, 0.0f, 0.0f));
+	SafetyPhysicsScene->Flush();
+	Room->OnRoomActorOverlapChanged.Broadcast(Partner, true);
+	TestTrue(TEXT("Reentry waits until both capsules fully fit inside the room"), Door->IsDoorOpen());
+	Partner->SetActorLocation(FVector(200.0f, 0.0f, 0.0f));
+	SafetyPhysicsScene->Flush();
+	PartnerPS->OnPlayerCharactersChanged.Broadcast(PartnerPS);
+	TestFalse(TEXT("Partner's fresh reentry restores the normal close sequence"), Door->IsDoorOpen());
+	static_cast<AActor*>(Door)->Tick(1.1f);
+	TestFalse(TEXT("Fresh reentry close waits for UI completion"), Door->IsDoorOpen());
+	ShooterPS->ReportStatAllocatorUIOpened(OverlapGeneration);
+	ShooterPS->ReportStatAllocatorUIClosed(OverlapGeneration);
+	TestFalse(TEXT("One UI completion still cannot reopen after safety retry"), Door->IsDoorOpen());
+	PartnerPS->ReportStatAllocatorUIOpened(OverlapGeneration);
+	PartnerPS->ReportStatAllocatorUIClosed(OverlapGeneration);
+	TestTrue(TEXT("Both UIs request normal opening after a successful reentry close"), Door->IsDoorOpen());
+	TestEqual(TEXT("Normal opening request is not Level1 completion"), OpenedCount, OpenedBeforeSafety);
+	static_cast<AActor*>(Door)->Tick(1.1f);
+	TestEqual(TEXT("Successful retry completes Level1 opening once"), OpenedCount, OpenedBeforeSafety + 1);
+	TestTrue(TEXT("Successful retry records normal open progress"),
+		Save->HasWorldProgress(EOutlierWorldProgressType::OpenedDoor, Door->DoorId));
+	if (FBoolProperty* ActiveProperty = FindFProperty<FBoolProperty>(
+		AOutlierCheckpoint::StaticClass(), TEXT("bActivationConditionSatisfied")))
+	{
+		TestTrue(TEXT("Only normal opening completion activates the entrance checkpoint"),
+			ActiveProperty->GetPropertyValue_InContainer(Checkpoint));
+	}
+	TestEqual(TEXT("Successful opening still waits for checkpoint confirmation"), CombatStartCount, CombatBeforeSafety);
+	TestTrue(TEXT("Retry combat room registers"), Combat->RegisterRoom(CombatRoom, RoomTag));
+	TestTrue(TEXT("Retry first matching spawn point registers"), Combat->RegisterSpawnPoint(
+		SecondPoint, RoomTag, MatchingTags, FGameplayTag()));
+	TestTrue(TEXT("Retry second matching spawn point registers"), Combat->RegisterSpawnPoint(
+		ThirdPoint, RoomTag, MatchingTags, FGameplayTag()));
+	TestEqual(TEXT("Ready retry roster cannot bypass checkpoint confirmation"), CombatStartCount, CombatBeforeSafety);
+	if (FBoolProperty* CommittedProperty = FindFProperty<FBoolProperty>(
+		AOutlierCheckpoint::StaticClass(), TEXT("bCheckpointCommitted")))
+	{
+		CommittedProperty->SetPropertyValue_InContainer(Checkpoint, true);
+	}
+	Checkpoint->OnCheckpointCommitted.Broadcast(Checkpoint);
+	TestEqual(TEXT("Checkpoint confirmation starts combat once after retry"), CombatStartCount, CombatBeforeSafety + 1);
+	Checkpoint->OnCheckpointCommitted.Broadcast(Checkpoint);
+	Room->OnRoomActorOverlapChanged.Broadcast(Partner, true);
+	Door->OnDoorMotionFinished.Broadcast(Door, true);
+	TestEqual(TEXT("Duplicate retry completions do not replay Level1 opening"), OpenedCount, OpenedBeforeSafety + 1);
+	TestEqual(TEXT("Duplicate retry signals do not restart combat"), CombatStartCount, CombatBeforeSafety + 1);
 
 	CleanupWorld();
 	return true;

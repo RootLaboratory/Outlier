@@ -44,6 +44,7 @@ private:
 	void OnPlayerStateChanged(AOutlierPlayerState* PlayerState);
 	void OnUICompleted(AOutlierPlayerState* PlayerState, uint32 CompletedGeneration);
 	void OnRoomOverlapChanged(AActor* Actor, bool bEntered);
+	void HandleSafetyReentry(AActor* Actor, bool bEntered);
 	void HandleDoorMotionFinished(AInteractableDoor* Door, bool bOpen);
 	void HandleDoorSafetyReopenStarted(AInteractableDoor* Door);
 	void OnRoomStartReadinessChanged(FGameplayTag ChangedRoomTag);
@@ -69,6 +70,7 @@ private:
 	FDelegateHandle ActorSpawnedHandle;
 	FTimerHandle EntryRecheckTimer;
 	TSet<TWeakObjectPtr<AActor>> OverlappingPlayers;
+	TSet<TWeakObjectPtr<AActor>> SafetyReentryPlayers;
 	uint32 GameplayGeneration = 0;
 	bool bEntrySealed = false;
 	bool bEntryCloseRejected = false;

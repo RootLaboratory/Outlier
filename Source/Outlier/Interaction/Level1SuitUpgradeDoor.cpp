@@ -199,11 +199,71 @@ void ALevel1SuitUpgradeDoor::OnRoomOverlapChanged(AActor* Actor, bool bEntered)
 			!bAwaitingGameplayReady, bEntrySealed);
 	}
 	// 입장/퇴장 모두 현재 페어 위치를 다시 판정한다. 태그만 남은 이전 위치는 인정하지 않는다.
-	if (AbortEntryIfPairOutside())
+	const bool bEntryAborted = AbortEntryIfPairOutside();
+	// 퇴장 이벤트 자체가 안전 개방을 시작했어도, 그 실제 퇴장을 새 입장 사이클의 시작으로 기록한다.
+	HandleSafetyReentry(Actor, bEntered);
+	if (bEntryAborted)
 	{
 		return;
 	}
 	EvaluateEntry();
+}
+
+void ALevel1SuitUpgradeDoor::HandleSafetyReentry(AActor* Actor, bool bEntered)
+{
+	if (!HasAuthority() || bAwaitingGameplayReady || !bEntryCloseRejected
+		|| !IsValid(Actor) || !IsValid(TargetRoomVolume) || !ArenaSubsystem.IsValid()
+		|| GameplayGeneration != ArenaSubsystem->GetGameplayGeneration())
+	{
+		return;
+	}
+	AOutlierPlayerState* Shooter = nullptr;
+	AOutlierPlayerState* Partner = nullptr;
+	if (!FindPair(Shooter, Partner)
+		|| (Actor != Shooter->GetShooterCharacter() && Actor != Partner->GetPartnerCharacter()))
+	{
+		return;
+	}
+	const ACharacter* Character = Cast<ACharacter>(Actor);
+	const UCapsuleComponent* Capsule = Character ? Character->GetCapsuleComponent() : nullptr;
+	const UBoxComponent* Box = Cast<UBoxComponent>(TargetRoomVolume->GetRootComponent());
+	if (!Capsule || !Box)
+	{
+		return;
+	}
+	const bool bBodyOverlapsRoom = Box->OverlapComponent(
+		Capsule->GetComponentLocation(), Capsule->GetComponentQuat(), Capsule->GetCollisionShape());
+	const TWeakObjectPtr<AActor> Player(Actor);
+	if (!bEntered)
+	{
+		// 장식 메시의 EndOverlap이나 문턱에 걸친 캡슐은 실제 퇴장이 아니다.
+		// 현재 페어 중 한 명의 몸체가 완전히 나간 경우만 그 Pawn의 재입장을 기다린다.
+		if (!bBodyOverlapsRoom)
+		{
+			SafetyReentryPlayers.Add(Player);
+			LogEntryStatus(TEXT("SafetyPlayerLeft"), Shooter, Partner);
+		}
+		return;
+	}
+	if (!SafetyReentryPlayers.Contains(Player) || !bBodyOverlapsRoom)
+	{
+		return;
+	}
+
+	// 실제 재입장 한 번으로 요청을 소비한다. 아직 안전 개방 중이면 보류하지 않으므로
+	// 열린 뒤 다시 퇴장/재입장해야 한다. 완료 콜백이나 UI 이벤트는 이 대기를 해제하지 않는다.
+	// 다른 플레이어의 퇴장 기록은 유지하여 각자의 재입장 시점을 독립적으로 판정한다.
+	SafetyReentryPlayers.Remove(Player);
+	if (!IsDoorOpen() || IsActorTickEnabled())
+	{
+		LogEntryStatus(TEXT("SafetyReentryDuringMotion"), Shooter, Partner);
+		return;
+	}
+	SafetyReentryPlayers.Reset();
+	bEntryCloseRejected = false;
+	LogEntryStatus(TEXT("SafetyNewEntryRequest"), Shooter, Partner);
+	// 이후 기존 입장 경로가 두 캡슐의 완전한 입장과 보호 검사를 확인한다.
+	// BeginOverlap 시 문턱에 걸쳐 있으면 기존 EntryRecheckTimer만 사용한다.
 }
 
 void ALevel1SuitUpgradeDoor::OnRoomStartReadinessChanged(FGameplayTag ChangedRoomTag)
@@ -244,6 +304,7 @@ void ALevel1SuitUpgradeDoor::OnArenaReloadStarted(uint32 NewGeneration)
 {
 	GetWorldTimerManager().ClearTimer(EntryRecheckTimer);
 	OverlappingPlayers.Reset();
+	SafetyReentryPlayers.Reset();
 	// 이전 문/위젯 콜백이 다음 플레이 세대의 진행 플래그를 재사용하지 못하게 끊는다.
 	GameplayGeneration = NewGeneration;
 	bEntrySealed = false;
@@ -435,8 +496,9 @@ void ALevel1SuitUpgradeDoor::EvaluateEntry()
 	if (!TrySetDoorOpen(false))
 	{
 		// 닫기 거절은 봉쇄 성공이 아니다. 반복 입장/상태 이벤트도 같은 요청을
-		// 재시도하지 않게 대기한다. 새 요청을 만드는 진행 정책은 별도 Slice에서 연결한다.
+		// 재시도하지 않게 대기한다. 실제 퇴장 후 재입장만 새로운 요청을 만든다.
 		bEntryCloseRejected = true;
+		SafetyReentryPlayers.Reset();
 		LogEntryStatus(TEXT("DoorCloseRejected"), Shooter, Partner);
 		return;
 	}
@@ -591,8 +653,9 @@ void ALevel1SuitUpgradeDoor::HandleDoorSafetyReopenStarted(AInteractableDoor* Do
 		return;
 	}
 	// 닫힘 중단 -> 봉쇄/정상 개방 완료 취소 -> 재평가 차단 순서로 정리한다.
-	// 안전 개방 후의 새 입장 요청 조건은 후속 Slice에서 연결한다.
+	// 기존 퇴장 기록도 버린다. 이 중단 이후 실제 퇴장/재입장만 새 요청을 만든다.
 	GetWorldTimerManager().ClearTimer(EntryRecheckTimer);
+	SafetyReentryPlayers.Reset();
 	bEntrySealed = false;
 	bCloseFinished = false;
 	bReopenRequested = false;
