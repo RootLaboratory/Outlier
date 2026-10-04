@@ -178,6 +178,7 @@ USceneComponent* UPartnerMovementComponent::GetFlightViewModelRoot() const
 bool UPartnerMovementComponent::CanRunInputMovement() const
 {
 	return PartnerCharacter &&
+		!PartnerCharacter->IsSuitTransitionBlocked() &&
 		!IsAutoFollowMoveMode() &&
 		(PartnerCharacter->HasAuthority() || PartnerCharacter->IsLocallyControlled());
 }
@@ -201,7 +202,7 @@ EFlightInputMode UPartnerMovementComponent::GetFlightInputMode() const
 
 void UPartnerMovementComponent::OnAfterInputMovement(float DeltaTime)
 {
-	if (!PartnerCharacter)
+	if (!PartnerCharacter || PartnerCharacter->IsSuitTransitionBlocked())
 	{
 		return;
 	}

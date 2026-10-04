@@ -950,8 +950,28 @@ void APartnerCharacter::RefreshEnemyDetectionForVitality()
 
 bool APartnerCharacter::CanAcceptInput() const
 {
+	return !IsSuitTransitionBlocked() && CanResumeMovementAfterSuitTransition();
+}
+
+bool APartnerCharacter::CanResumeMovementAfterSuitTransition() const
+{
 	return !OutlierAbilitySystemComponent
-		|| !OutlierAbilitySystemComponent->HasMatchingGameplayTag(OutlierGameplayTags::State::Rebooting());
+		|| (!OutlierAbilitySystemComponent->HasMatchingGameplayTag(OutlierGameplayTags::State::Rebooting())
+			&& !OutlierAbilitySystemComponent->HasMatchingGameplayTag(OutlierGameplayTags::State::Dead()));
+}
+
+void APartnerCharacter::PrepareForSuitTransition()
+{
+	Super::PrepareForSuitTransition();
+	// 기존 취소 함수는 능력/공격/Reload 타이머와 비행 입력만 정리하며 Reboot 상태를 부여하지 않는다.
+	if (HasAuthority())
+	{
+		StopActionsForReboot();
+	}
+	if (MovementComponent)
+	{
+		MovementComponent->ClearFlightInput();
+	}
 }
 
 UPartnerEMPComponent* APartnerCharacter::GetRuntimeEMPComponent() const

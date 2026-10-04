@@ -24,6 +24,9 @@ public:
 
 	virtual UInteractableComponent* GetInteractableComponent() const override;
 	virtual bool Interact(AFirstPersonCharacter* Interactor) override;
+	virtual bool DefersInteractionCompletion() const override { return true; }
+	bool CanReserveFor(AShooterCharacter* ShooterCharacter) const;
+	bool IsReservedFor(const AShooterCharacter* ShooterCharacter) const;
 
 protected:
 	virtual void BeginPlay() override;
@@ -38,6 +41,7 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")
 	TObjectPtr<UStaticMeshComponent> SuitDisplayMesh;
 
+	// Shooter BP의 SuitPresentation 미설정 기간에만 사용하는 이전 콘텐츠 호환 필드다.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Suit|Mesh")
 	TObjectPtr<USkeletalMesh> ShooterFirstPersonMesh;
 
@@ -51,6 +55,10 @@ protected:
 	TSubclassOf<ARangedWeaponBase> PartnerWeaponClass;
 
 private:
+	friend class AShooterCharacter;
+	bool ReserveFor(AShooterCharacter* ShooterCharacter);
+	bool CommitReservedSuit(AShooterCharacter* ShooterCharacter);
+	void ReleaseReservation(AShooterCharacter* ShooterCharacter);
 	bool SpawnStoredWeapons();
 	AWeaponBase* SpawnStoredWeapon(UClass* WeaponClass);
 	bool ApplySuit(AShooterCharacter* ShooterCharacter);
@@ -65,4 +73,5 @@ private:
 	TObjectPtr<ARangedWeaponBase> StoredPartnerWeapon;
 
 	bool bConsumed = false;
+	TWeakObjectPtr<AShooterCharacter> ReservedShooter;
 };

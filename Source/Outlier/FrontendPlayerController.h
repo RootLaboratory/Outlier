@@ -35,6 +35,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
 	FOnPartyRequestResult,
 	EOutlierPartyRequestResult, Result,
 	const FString&, PartyCode);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(
+	FOnContinueSaveResult, bool, bAccepted);
 
 UCLASS()
 class OUTLIER_API AFrontendPlayerController : public APlayerController
@@ -82,12 +84,25 @@ public:
 
 	UFUNCTION(BlueprintCallable)
 	void RequestStartPendingMatch();
+	UFUNCTION(BlueprintCallable, Category = "Save")
+	void RequestContinuePendingMatch();
+	UFUNCTION(BlueprintPure, Category = "Save")
+	bool HasLocalSave() const;
+	FGuid GetRegisteredLocalPlayerId() const { return RegisteredLocalPlayerId; }
 
 	UFUNCTION(Server, Reliable)
 	void ServerRequestSelectLobbyRole(EOutlierPlayerRole DesiredRole);
 
 	UFUNCTION(Server, Reliable)
 	void ServerRequestStartPendingMatch();
+	UFUNCTION(Server, Reliable)
+	void ServerRegisterLocalPlayerId(FGuid PlayerId);
+	UFUNCTION(Server, Reliable)
+	void ServerRequestContinuePendingMatch(FGuid SaveId, FGuid ResumeKey);
+	UFUNCTION(Client, Reliable)
+	void ClientReceiveSaveCredentials(FGuid SaveId, FGuid ResumeKey);
+	UFUNCTION(Client, Reliable)
+	void ClientNotifyContinueSaveResult(bool bAccepted);
 
 	UFUNCTION(Client, Reliable)
 	void ClientPrepareForMatch();
@@ -132,6 +147,8 @@ protected:
 public:
 	UPROPERTY(BlueprintAssignable, Category = "Party")
 	FOnPartyRequestResult OnPartyRequestResult;
+	UPROPERTY(BlueprintAssignable, Category = "Save")
+	FOnContinueSaveResult OnContinueSaveResult;
 
 	UPROPERTY(BlueprintReadOnly)
 	TObjectPtr<UTitleWidget> TitleWidget;
@@ -146,6 +163,7 @@ private:
 
 	UPROPERTY(Transient)
 	FString CurrentPartyCode;
+	FGuid RegisteredLocalPlayerId;
 
 	EOutlierPlayerRole NetworkMvpSmokeRole = EOutlierPlayerRole::None;
 	bool bNetworkMvpSmokeMatchmakingRequested = false;

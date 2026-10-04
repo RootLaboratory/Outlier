@@ -273,6 +273,13 @@ protected:
 	void RefreshOverchargeEmissiveFromOwner();
 
 	void ReportArenaWideNoise(ACharacter* OwnerCharacter);
+	bool TryResolveWallOffsetMuzzleShot(
+		ACharacter* OwnerCharacter,
+		FName FiredMuzzleSocketName,
+		const FVector& ViewLocation,
+		const FRotator& ViewRotation,
+		FVector& OutStart,
+		FVector& OutDirection) const;
 
 public:
 	virtual void BeginPlay() override;

@@ -1,10 +1,13 @@
 #include "UI/UpgradeNodeGroupWidget.h"
 
 #include "Components/PanelWidget.h"
+#include "Components/TextBlock.h"
 #include "Engine/DataTable.h"
 #include "Engine/Texture2D.h"
+#include "Engine/LocalPlayer.h"
 #include "Shooter/ShooterCharacter.h"
 #include "UI/UpgradeDescWidget.h"
+#include "UI/LocalPlayerUILayerSubsystem.h"
 #include "UI/UpgradeNodeWidget.h"
 #include "Upgrade/OutlierUpgradeComponent.h"
 #include "Upgrade/OutlierUpgradeSetData.h"
@@ -23,6 +26,15 @@ void UUpgradeNodeGroupWidget::NativeDestruct()
 	UnbindUpgradeStateChanged();
 	UnbindPlayerStateNodeCountChanged();
 	Super::NativeDestruct();
+}
+
+bool UUpgradeNodeGroupWidget::HandleUILayerEscape_Implementation()
+{
+	ULocalPlayer* LocalPlayer = GetOwningLocalPlayer();
+	ULocalPlayerUILayerSubsystem* LayerSubsystem = LocalPlayer
+		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()
+		: nullptr;
+	return LayerSubsystem && LayerSubsystem->PopWidget(this);
 }
 
 void UUpgradeNodeGroupWidget::InjectUpgradeContext(
@@ -70,6 +82,7 @@ void UUpgradeNodeGroupWidget::InjectUpgradeContext(
 void UUpgradeNodeGroupWidget::RefreshNodeWidgets()
 {
 	CacheNodeWidgets();
+	RefreshNodeCountText();
 
 	for (UUpgradeNodeWidget* NodeWidget : NodeWidgets)
 	{
@@ -84,7 +97,7 @@ void UUpgradeNodeGroupWidget::RefreshNodeWidgets()
 			NodeWidget->SetUpgradeComponent(UpgradeComponent);
 		}
 
-		if (UpgradeDescWidgetClass)
+		if (UpgradeDescWidgetClass && !NodeWidget->UpgradeDescWidgetClass)
 		{
 			NodeWidget->SetUpgradeDescWidgetClass(UpgradeDescWidgetClass);
 		}
@@ -92,6 +105,17 @@ void UUpgradeNodeGroupWidget::RefreshNodeWidgets()
 		NodeWidget->SetNodeTexture(ResolveNodeTexture(NodeWidget));
 		NodeWidget->SetUnlockedNodeTexture(UnlockedNodeTexture);
 		NodeWidget->SetDeactivatedNodeTexture(DeactivatedNodeTexture);
+	}
+}
+
+void UUpgradeNodeGroupWidget::DismissOtherNodeDescriptions(const UUpgradeNodeWidget* HoveredNode) const
+{
+	for (UUpgradeNodeWidget* NodeWidget : NodeWidgets)
+	{
+		if (NodeWidget && NodeWidget != HoveredNode)
+		{
+			NodeWidget->DismissDescription();
+		}
 	}
 }
 
@@ -165,8 +189,19 @@ void UUpgradeNodeGroupWidget::UnbindPlayerStateNodeCountChanged()
 
 void UUpgradeNodeGroupWidget::HandleNodeCountChanged(int32 NewNodeCount)
 {
-	(void)NewNodeCount;
 	RefreshNodeWidgets();
+	if (NodeCount)
+	{
+		NodeCount->SetText(FText::AsNumber(NewNodeCount));
+	}
+}
+
+void UUpgradeNodeGroupWidget::RefreshNodeCountText()
+{
+	if (NodeCount)
+	{
+		NodeCount->SetText(FText::AsNumber(PlayerState ? PlayerState->GetNodeCount() : 0));
+	}
 }
 
 UTexture2D* UUpgradeNodeGroupWidget::ResolveNodeTexture(const UUpgradeNodeWidget* NodeWidget) const

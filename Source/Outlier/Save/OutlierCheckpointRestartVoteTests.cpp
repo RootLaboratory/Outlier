@@ -102,6 +102,15 @@ bool FOutlierCheckpointRestartVoteStateTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Requester cancellation is a rejection"),
 		Vote.GetState(), EOutlierCheckpointRestartVoteState::Rejected);
 
+	Vote.Reset();
+	TestTrue(TEXT("A vote can begin before a participant disconnects"), Vote.Begin(Requester, Responder));
+	TestTrue(TEXT("The disconnect handler can identify the departing participant"),
+		Vote.Contains(Responder));
+	Vote.Reset();
+	TestEqual(TEXT("Disconnect cancellation leaves no pending vote"),
+		Vote.GetState(), EOutlierCheckpointRestartVoteState::Idle);
+	TestFalse(TEXT("Disconnect cancellation removes the old requester"), Vote.Contains(Requester));
+
 	World->DestroyWorld(true);
 	World->SetPhysicsScene(nullptr);
 	World->RemoveFromRoot();

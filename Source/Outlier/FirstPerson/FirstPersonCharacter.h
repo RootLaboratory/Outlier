@@ -22,8 +22,10 @@ class UInputAction;
 struct FInputActionValue;
 class URoomTagComponent;
 class ULocalPlayerSettingsSubsystem;
+class AFirstPersonCharacter;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnWeaponChanged, EWeaponType, NewWeaponType);
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnSuitTransitionParticipantInvalidated, AFirstPersonCharacter*);
 
 UENUM(BlueprintType)
 enum class EInteractionTraceMode : uint8
@@ -99,6 +101,11 @@ public:
 	void EndInteract();
 	void NotifyHoldInteractCompleted(AActor* CompletedActor);
 	void NotifyHoldInteractInvalidated(AActor* TargetActor);
+	void CompleteDeferredInteraction(AActor* TargetActor, bool bSucceeded);
+	bool IsSuitTransitionBlocked() const { return SuitTransitionBlockId.IsValid(); }
+	bool AcquireSuitTransitionBlock(const FGuid& TransitionId);
+	void ReleaseSuitTransitionBlock(const FGuid& TransitionId);
+	FOnSuitTransitionParticipantInvalidated OnSuitTransitionParticipantInvalidated;
 
 	/** Builds and submits the owning-client world request bound to InteractionAudioEventTag. */
 	UFUNCTION(BlueprintCallable, Category = "Outlier|Audio")
@@ -124,6 +131,10 @@ protected:
 	void HandleInteractionInputStarted();
 
 	virtual bool CanInteract() const;
+	virtual void PrepareForSuitTransition();
+	virtual void OnSuitTransitionBlockChanged() {}
+	virtual bool CanResumeMovementAfterSuitTransition() const { return true; }
+	virtual void UnPossessed() override;
 
 	UFUNCTION(Server, Reliable)
 	void ServerInteract(AActor* TargetActor);
@@ -194,6 +205,13 @@ private:
 
 private:
 	void CancelLocalHoldInteract(bool bNotifyServer);
+	UFUNCTION()
+	void OnRep_SuitTransitionBlockId();
+	UPROPERTY(ReplicatedUsing = OnRep_SuitTransitionBlockId)
+	FGuid SuitTransitionBlockId;
+	bool bSuitTransitionOwnsMovementStop = false;
+	TEnumAsByte<EMovementMode> MovementModeBeforeSuitTransition = MOVE_None;
+	uint8 CustomMovementModeBeforeSuitTransition = 0;
 
 	void UpdateInteractableFocus();
 

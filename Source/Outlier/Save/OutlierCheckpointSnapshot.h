@@ -1,10 +1,19 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "GameplayTagContainer.h"
 #include "Save/OutlierLoadoutSnapshot.h"
 #include "OutlierCheckpointSnapshot.generated.h"
 
 class USkeletalMesh;
+
+UENUM()
+enum class EOutlierCheckpointSaveReason : uint8
+{
+	Trigger,
+	PhaseTransition,
+	EncounterCleared
+};
 
 UENUM(BlueprintType)
 enum class EOutlierWorldProgressType : uint8
@@ -127,6 +136,24 @@ struct OUTLIER_API FOutlierSuitSnapshot
 	TObjectPtr<USkeletalMesh> ThirdPersonMesh;
 };
 
+USTRUCT()
+struct OUTLIER_API FOutlierRoomPhaseProgress
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	int32 NextPhaseIndex = INDEX_NONE;
+
+	UPROPERTY()
+	bool bExitBlockActive = false;
+
+	UPROPERTY()
+	bool bTriggeredSequenceActive = false;
+
+	UPROPERTY()
+	FGameplayTag ActivationGroupTag;
+};
+
 USTRUCT(BlueprintType)
 struct OUTLIER_API FOutlierCheckpointSnapshot
 {
@@ -134,6 +161,19 @@ struct OUTLIER_API FOutlierCheckpointSnapshot
 
 	UPROPERTY()
 	FName CheckpointId = NAME_None;
+
+	UPROPERTY()
+	EOutlierCheckpointSaveReason SaveReason = EOutlierCheckpointSaveReason::Trigger;
+
+	UPROPERTY()
+	FGameplayTag RoomTag;
+
+	UPROPERTY()
+	int32 NextPhaseIndex = INDEX_NONE;
+
+	// 완료된 방은 WorldProgress가, 미완료 방은 이 맵이 복원 기준이다.
+	UPROPERTY()
+	TMap<FGameplayTag, FOutlierRoomPhaseProgress> RoomPhaseProgress;
 
 	UPROPERTY()
 	bool bInitialSnapshot = false;

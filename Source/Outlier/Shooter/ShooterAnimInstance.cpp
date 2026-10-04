@@ -79,6 +79,32 @@ void UShooterAnimInstance::NativeInitializeAnimation()
 	bIsAiming     = CachedShooterCharacter->IsAiming();
 	bIsReloading  = CachedShooterCharacter->IsReloading();
 	bIsDead		  = CachedShooterCharacter->IsDead();
+	RefreshPresentationState();
+}
+
+void UShooterAnimInstance::RefreshPresentationState()
+{
+	ResetThirdPersonProceduralState();
+	LeanAlpha = 0.0f;
+	if (!CachedShooterCharacter)
+	{
+		CachedShooterCharacter = Cast<AShooterCharacter>(TryGetPawnOwner());
+	}
+	if (CachedShooterCharacter)
+	{
+		MovementState = CachedShooterCharacter->GetMovementState();
+		CombatState = CachedShooterCharacter->GetCombatState();
+		WeaponMode = CachedShooterCharacter->GetWeaponMode();
+		CurrentWeaponType = CachedShooterCharacter->GetWeaponType();
+		bIsSliding = CachedShooterCharacter->IsSliding();
+		bIsAiming = CachedShooterCharacter->IsAiming();
+		bIsReloading = CachedShooterCharacter->IsReloading();
+		bIsDead = CachedShooterCharacter->IsDead();
+		CachedProceduralWeapon = CachedShooterCharacter->GetCurrentWeapon();
+		CachedProceduralValues = CachedProceduralWeapon.IsValid()
+			? CachedProceduralWeapon->GetFirstPersonProceduralValues() : nullptr;
+		CachedPresentation = CachedShooterCharacter->GetAppliedPresentation();
+	}
 }
 
 void UShooterAnimInstance::NativeUninitializeAnimation()
@@ -137,6 +163,16 @@ void UShooterAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 		ResetThirdPersonProceduralState();
 		return;
 	}
+
+	AWeaponBase* SelectedWeapon = CachedShooterCharacter->GetCurrentWeapon();
+	const UProceduralAnimValues* SelectedValues = SelectedWeapon ? SelectedWeapon->GetFirstPersonProceduralValues() : nullptr;
+	if (CachedPresentation != CachedShooterCharacter->GetAppliedPresentation()
+		|| (CachedProceduralWeapon.Get() == SelectedWeapon && CachedProceduralValues.Get() != SelectedValues))
+	{
+		RefreshPresentationState();
+	}
+	CachedProceduralWeapon = SelectedWeapon;
+	CachedProceduralValues = SelectedValues;
 
 	Speed		      = CharacterMovement->Velocity.Size2D();
 	VelocityZ         = CharacterMovement->Velocity.Z;

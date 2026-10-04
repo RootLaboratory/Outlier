@@ -321,6 +321,7 @@ private:
 	void ApplyTurretLifecycleState();
 	void ApplyWaitingForWaveState();
 	void ApplyDeadPersistentPose();
+	void PlayDeathMontageIfNeeded();
 	bool RestoreDeadPersistentState();
 	bool BeginRoomWaveDeployment(int32 GameplayGeneration);
 	bool BeginTurretDeploymentInternal();

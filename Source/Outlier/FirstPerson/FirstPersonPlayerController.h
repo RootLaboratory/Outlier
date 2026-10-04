@@ -26,6 +26,8 @@ class UGameOverWidget;
 class UGameOverPendingWidget;
 class UWidget;
 class AActor;
+class AShooterCharacter;
+enum class ESuitTransitionPhase : uint8;
 
 // HUD 위젯을 숨길 사유가 생기는 순간의 Visibility를 저장했다가, 사유가 모두 풀리면 그 값으로 되돌린다.
 struct FHudWidgetCollapseState
@@ -72,9 +74,25 @@ UCLASS()
 class OUTLIER_API AFirstPersonPlayerController : public APlayerController ,  public IPlayerUIProvider
 {
 	GENERATED_BODY()
+	friend class FOutlierSuitTransitionTest;
 	
 public:
 	AFirstPersonPlayerController();
+	virtual void SetPawn(APawn* InPawn) override;
+
+	// 서버가 시작 당시 확보한 두 Controller에만 전달한다. Listen Host도 같은 로컬 처리 함수를 사용한다.
+	void SendSuitTransitionPhaseFromServer(AShooterCharacter* Shooter, const FGuid& TransitionId,
+		ESuitTransitionPhase Phase, float Duration);
+
+	// 담당자의 실제 완료 콜백에서 요청받은 ID를 전달한다. 요청 수신/타이머만으로 호출하지 않는다.
+	UFUNCTION(BlueprintCallable, Category = "Suit|Transition")
+	void NotifySuitFadeOutFinished(const FGuid& TransitionId);
+
+	UFUNCTION(BlueprintCallable, Category = "Suit|Transition")
+	void NotifySuitPresentationReady(const FGuid& TransitionId);
+
+	UFUNCTION(BlueprintCallable, Category = "Suit|Transition")
+	void NotifySuitFadeInFinished(const FGuid& TransitionId);
 
 	/** Client-owned transport for relevant AtLocation audio requests. */
 	UFUNCTION(Server, Unreliable)
@@ -311,6 +329,33 @@ protected:
 	void HandleDeathBlackNoiseStarted();
 	void PushGameOverWidget();
 	UGameOverWidget* FindGameOverWidget() const;
+
+	// 암전 담당자 연결 지점. PIE에서는 테스트용 완료 응답을 보내며, 일반 실행에서는 실제 연출 연결을 기다린다.
+	// 실제 콜백 검증 시 Outlier.SuitTransition.BypassPresentation 0으로 테스트 우회를 끈다.
+	virtual void RequestSuitFadeOut(const FGuid& TransitionId, float Duration);
+	virtual void RequestSuitPresentationReady(const FGuid& TransitionId);
+	virtual void RequestSuitFadeIn(const FGuid& TransitionId, float Duration);
+	virtual void RequestSuitTransitionCleanup(const FGuid& TransitionId);
+
+private:
+	UFUNCTION(Client, Reliable)
+	void ClientSetSuitTransitionPhase(AShooterCharacter* Shooter, FGuid TransitionId,
+		ESuitTransitionPhase Phase, float Duration);
+
+	UFUNCTION(Server, Reliable)
+	void ServerNotifySuitTransitionPhaseFinished(AShooterCharacter* Shooter, FGuid TransitionId,
+		ESuitTransitionPhase Phase);
+
+	void ApplyLocalSuitTransitionPhase(AShooterCharacter* Shooter, const FGuid& TransitionId,
+		ESuitTransitionPhase Phase, float Duration);
+	void NotifySuitTransitionPhaseFinished(const FGuid& TransitionId, ESuitTransitionPhase Phase);
+	void ClearLocalSuitTransition();
+
+	TWeakObjectPtr<AShooterCharacter> LocalSuitTransitionShooter;
+	TWeakObjectPtr<APawn> LocalSuitTransitionPawn;
+	FGuid LocalSuitTransitionId;
+	ESuitTransitionPhase LocalSuitTransitionPhase;
+	bool bLocalSuitTransitionReadySent = false;
 
 
 protected:

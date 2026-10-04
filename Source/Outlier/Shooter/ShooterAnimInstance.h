@@ -9,6 +9,7 @@
 #include "ShooterAnimInstance.generated.h"
 
 struct FWeaponValues;
+class UProceduralAnimValues;
 
 /**
  * 
@@ -17,11 +18,13 @@ UCLASS()
 class OUTLIER_API UShooterAnimInstance : public UAnimInstance
 {
 	GENERATED_BODY()
+	friend class FOutlierShooterPresentationAnimationTest;
 	
 public:
 	virtual void NativeInitializeAnimation() override;
 	virtual void NativeUninitializeAnimation() override;
 	virtual void NativeUpdateAnimation(float DeltaSeconds) override;
+	void RefreshPresentationState();
 
 	UFUNCTION(BlueprintCallable, Category = "Anim|TP Procedural|Recoil")
 	void AddThirdPersonRecoil(float GameplayRecoilScale, FVector2D NormalizedShotDirection);
@@ -38,6 +41,9 @@ protected:
 	void HandleOwnerMovementStateChanged(EMovementState NewState);
 
 	void ResetThirdPersonProceduralState();
+	TWeakObjectPtr<AWeaponBase> CachedProceduralWeapon;
+	TWeakObjectPtr<const UProceduralAnimValues> CachedProceduralValues;
+	EShooterPresentation CachedPresentation = EShooterPresentation::Uninitialized;
 	void UpdateThirdPersonProceduralState(float DeltaSeconds, AWeaponBase* CurrentWeapon);
 	void UpdateThirdPersonLean(float DeltaSeconds);
 	float GetThirdPersonSprintPoseTargetAlpha(const FWeaponValues* WeaponValues) const;

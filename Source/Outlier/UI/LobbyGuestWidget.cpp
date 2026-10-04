@@ -2,6 +2,7 @@
 
 #include "Components/Image.h"
 #include "Components/TextBlock.h"
+#include "Blueprint/WidgetTree.h"
 #include "Engine/Texture2D.h"
 
 void ULobbyGuestWidget::NativePreConstruct()
@@ -10,6 +11,7 @@ void ULobbyGuestWidget::NativePreConstruct()
 
 	RefreshText();
 	RefreshResultImage();
+	RefreshPresentation();
 }
 
 void ULobbyGuestWidget::NativeConstruct()
@@ -18,6 +20,7 @@ void ULobbyGuestWidget::NativeConstruct()
 
 	RefreshText();
 	RefreshResultImage();
+	RefreshPresentation();
 }
 
 void ULobbyGuestWidget::SetGuestIndex(int32 InGuestIndex)
@@ -31,6 +34,7 @@ void ULobbyGuestWidget::SetGuestState(ELobbyGuestWidgetState InState, bool bInIs
 	GuestState = InState;
 	bIsOwningLocalGuest = bInIsLocalGuest;
 	OnGuestStateChanged(GuestState, bIsOwningLocalGuest, bConfirmed);
+	RefreshPresentation();
 }
 
 void ULobbyGuestWidget::SetConfirmed(bool bInConfirmed)
@@ -43,6 +47,7 @@ void ULobbyGuestWidget::SetConfirmed(bool bInConfirmed)
 	bConfirmed = bInConfirmed;
 	RefreshResultImage();
 	OnGuestStateChanged(GuestState, bIsOwningLocalGuest, bConfirmed);
+	RefreshPresentation();
 }
 
 void ULobbyGuestWidget::RefreshText()
@@ -52,8 +57,8 @@ void ULobbyGuestWidget::RefreshText()
 		return;
 	}
 
-	const int32 DisplayIndex = GuestIndex == INDEX_NONE ? 0 : GuestIndex + 1;
-	GuestText->SetText(FText::FromString(FString::Printf(TEXT("Guest %d"), DisplayIndex)));
+	const int32 DisplayIndex = GuestIndex == INDEX_NONE ? 1 : GuestIndex + 1;
+	GuestText->SetText(FText::FromString(FString::Printf(TEXT("Player %d"), DisplayIndex)));
 }
 
 void ULobbyGuestWidget::RefreshResultImage()
@@ -67,5 +72,35 @@ void ULobbyGuestWidget::RefreshResultImage()
 	if (Texture)
 	{
 		ResultImage->SetBrushFromTexture(Texture);
+	}
+}
+
+void ULobbyGuestWidget::RefreshPresentation()
+{
+	const bool bHasSelectedRole = GuestState != ELobbyGuestWidgetState::Default;
+	if (GuestText)
+	{
+		GuestText->SetVisibility(bHasSelectedRole ? ESlateVisibility::Collapsed : ESlateVisibility::Visible);
+	}
+	if (ResultImage)
+	{
+		ResultImage->SetVisibility(bHasSelectedRole ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
+	}
+
+	if (!WidgetTree)
+	{
+		return;
+	}
+
+	if (UImage* LeftArrow = Cast<UImage>(WidgetTree->FindWidget(FName(TEXT("<")))))
+	{
+		LeftArrow->SetVisibility(GuestState == ELobbyGuestWidgetState::Shooter
+			? ESlateVisibility::Collapsed : ESlateVisibility::Visible);
+	}
+
+	if (UImage* RightArrow = Cast<UImage>(WidgetTree->FindWidget(FName(TEXT(">")))))
+	{
+		RightArrow->SetVisibility(GuestState == ELobbyGuestWidgetState::Partner
+			? ESlateVisibility::Collapsed : ESlateVisibility::Visible);
 	}
 }

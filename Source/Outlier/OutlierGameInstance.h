@@ -28,6 +28,9 @@ public:
 	void NotifyArenaHandoffStarted(const FString& ArenaUrl);
 	void NotifyListenReconnectToken(const FGuid& Token);
 	void PrepareForExplicitLeave();
+	bool GetLocalPlayerId(FGuid& OutPlayerId) const;
+	bool GetLocalSaveCredentials(FGuid& OutSaveId, FGuid& OutResumeKey) const;
+	bool StoreLocalSaveCredentials(const FGuid& SaveId, const FGuid& ResumeKey);
 	// 서버가 매치 종료를 확정한 뒤 호출한다. Travel로 Controller가 바뀌어도 종료 의도를 유지한다.
 	void RequestQuitAfterExplicitLeave();
 
@@ -74,5 +77,9 @@ private:
 	FString LastListenReconnectUrl;
 	double ArenaReconnectDeadlineSeconds = 0.0;
 	bool bArenaReconnectActive = false;
+	FGuid LocalPlayerId;
+	FGuid LocalSaveId;
+	FGuid LocalResumeKey;
+	bool SaveLocalIdentity() const;
 
 };

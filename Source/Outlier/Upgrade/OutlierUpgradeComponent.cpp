@@ -231,7 +231,7 @@ bool UOutlierUpgradeComponent::CanActivateNode(FName NodeIdOrRowName) const
 {
 	FName RowName = NAME_None;
 	const FOutlierUpgradeNodeRow* Row = FindNodeRow(NodeIdOrRowName, &RowName);
-	if (!Row || ActivatedNodeSet.Contains(RowName) || !IsNodeUnlockedInternal(RowName))
+	if (!Row || IsNodeActivatedInternal(RowName) || !IsNodeUnlockedInternal(RowName))
 	{
 		return false;
 	}
@@ -247,7 +247,7 @@ EOutlierUpgradeNodeState UOutlierUpgradeComponent::GetNodeState(FName NodeIdOrRo
 		return EOutlierUpgradeNodeState::Locked;
 	}
 
-	if (ActivatedNodeSet.Contains(RowName))
+	if (IsNodeActivatedInternal(RowName))
 	{
 		return EOutlierUpgradeNodeState::Activated;
 	}
@@ -260,7 +260,7 @@ EOutlierUpgradeNodeState UOutlierUpgradeComponent::GetNodeState(FName NodeIdOrRo
 bool UOutlierUpgradeComponent::IsNodeActivated(FName NodeIdOrRowName) const
 {
 	FName RowName = NAME_None;
-	return ResolveNodeRowName(NodeIdOrRowName, RowName) && ActivatedNodeSet.Contains(RowName);
+	return ResolveNodeRowName(NodeIdOrRowName, RowName) && IsNodeActivatedInternal(RowName);
 }
 
 bool UOutlierUpgradeComponent::IsNodeUnlocked(FName NodeIdOrRowName) const
@@ -373,7 +373,7 @@ bool UOutlierUpgradeComponent::ActivateNodeInternal(FName NodeIdOrRowName, AOutl
 		return false;
 	}
 
-	if (ActivatedNodeSet.Contains(RowName))
+	if (IsNodeActivatedInternal(RowName))
 	{
 		UE_LOG(LogTemp, Warning,
 			TEXT("[Upgrade] Activate failed: already activated Owner=%s Row=%s"),
@@ -431,6 +431,13 @@ bool UOutlierUpgradeComponent::ActivateNodeInternal(FName NodeIdOrRowName, AOutl
 	return true;
 }
 
+bool UOutlierUpgradeComponent::IsNodeActivatedInternal(FName RowName) const
+{
+	const FOutlierUpgradeNodeRow* Row = NodeRowsByRowName.Find(RowName);
+	// Default loadout nodes are not added to the purchased set used for effect projection.
+	return Row && (Row->bInitiallyActivated || ActivatedNodeSet.Contains(RowName));
+}
+
 bool UOutlierUpgradeComponent::IsNodeUnlockedInternal(FName RowName) const
 {
 	const FOutlierUpgradeNodeRow* Row = NodeRowsByRowName.Find(RowName);
@@ -439,7 +446,7 @@ bool UOutlierUpgradeComponent::IsNodeUnlockedInternal(FName RowName) const
 		return false;
 	}
 
-	if (ActivatedNodeSet.Contains(RowName))
+	if (IsNodeActivatedInternal(RowName))
 	{
 		return true;
 	}
@@ -450,7 +457,7 @@ bool UOutlierUpgradeComponent::IsNodeUnlockedInternal(FName RowName) const
 	}
 
 	FName ParentRowName = NAME_None;
-	return ResolveNodeRowName(Row->ParentId, ParentRowName) && ActivatedNodeSet.Contains(ParentRowName);
+	return ResolveNodeRowName(Row->ParentId, ParentRowName) && IsNodeActivatedInternal(ParentRowName);
 }
 
 bool UOutlierUpgradeComponent::ResolveNodeRowName(FName NodeIdOrRowName, FName& OutRowName) const
@@ -541,7 +548,7 @@ void UOutlierUpgradeComponent::RebuildUnlockedNodes()
 
 	for (const TPair<FName, FOutlierUpgradeNodeRow>& Pair : NodeRowsByRowName)
 	{
-		if (!ActivatedNodeSet.Contains(Pair.Key) && IsNodeUnlockedInternal(Pair.Key))
+		if (!IsNodeActivatedInternal(Pair.Key) && IsNodeUnlockedInternal(Pair.Key))
 		{
 			UnlockedNodeIds.Add(Pair.Key);
 			UnlockedNodeSet.Add(Pair.Key);

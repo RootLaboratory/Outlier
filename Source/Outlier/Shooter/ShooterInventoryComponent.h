@@ -8,6 +8,8 @@
 #include "Save/OutlierLoadoutSnapshot.h"
 #include "ShooterInventoryComponent.generated.h"
 
+class AOutlierPlayerState;
+
 UCLASS(ClassGroup=(Shooter), meta=(BlueprintSpawnableComponent))
 class OUTLIER_API UShooterInventoryComponent : public UShooterCharacterComponentBase
 {
@@ -66,6 +68,8 @@ public:
 	void SelectWeaponByIndex(int32 SlotIndex);
 
 	void HandleEquipWeapon(AWeaponBase* Weapon);
+	// 최초 지급은 Possess 전에도 실행된다. GameMode가 확정한 PlayerState에 초기 장비를 남긴다.
+	bool InitializeDefaultMeleeWeapon(AOutlierPlayerState* PlayerState);
 	bool EquipSuitRifle(AWeaponBase* RifleWeapon);
 	void SelectWeaponSlot(EWeaponSlot Slot);
 	void FinishPendingWeaponSwitch(int32 SwitchId);
@@ -89,13 +93,12 @@ private:
 	// 슬롯 구성이 바뀐 직후에 호출한다. WeaponSlots 를 그대로 베껴 PlayerState 에 남긴다.
 	// 파괴 경로(CleanupOwnedWeapons/EndPlay)에서는 절대 부르지 않는다 — 비워진 인벤토리로
 	// 기록을 덮어쓰게 되고, 그 시점에는 이미 이 기록이 유일한 복원 근거다.
-	void CaptureLoadoutToPlayerState() const;
+	void CaptureLoadoutToPlayerState(AOutlierPlayerState* PlayerState = nullptr) const;
 
 	// HandleEquipWeapon / EquipSuitRifle / RestoreLoadout 의 공통 꼬리.
-	// bPlayEquipMontage=false 면 몽타주 대신 ShowEquippedPresentation() 을 직접 부른다.
-	// OnEquipped 가 1P/3P/Shadow 메시를 전부 숨기고 공개는 equip 몽타주 Notify 담당이라,
-	// 둘 다 생략하면 장착은 됐는데 무기가 보이지 않는 상태가 된다.
-	void ApplyWeaponToSlot(AWeaponBase* Weapon, EWeaponSlot Slot, bool bPlayEquipMontage);
+	// 복원/교체 완료는 이미 정한 연출을 유지한다. 신규 장착일 때만 Raise와 잠금 타이머를 시작한다.
+	// OnEquipped가 숨긴 1P/3P/Shadow는 항상 직접 표시한다. 구형 Equip Notify에는 의존하지 않는다.
+	void ApplyWeaponToSlot(AWeaponBase* Weapon, EWeaponSlot Slot, bool bPlayEquipPresentation);
 	void RestoreWeaponIntoSlot(
 		const FOutlierWeaponSnapshot& WeaponSnapshot,
 		EWeaponSlot Slot,

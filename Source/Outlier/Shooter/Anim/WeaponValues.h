@@ -483,6 +483,15 @@ struct OUTLIER_API FWeaponValues
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset")
 	float WallSideProbeOffset = 22.0f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float WallRightSideResponseScale = 0.55f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float WallLeftSideResponseScale = 0.75f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float WallSideRotationScale = 0.65f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|WallOffset|Pose")
 	TObjectPtr<UAnimSequenceBase> WallAvoidUpPose = nullptr;
 

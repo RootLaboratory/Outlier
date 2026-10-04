@@ -480,7 +480,8 @@ void UOutlierArenaProcessSubsystem::CloseLobbyConnection(int32 ConnectionIndex)
 bool UOutlierArenaProcessSubsystem::TryAllocateReadySlot(
 	const FGuid& MatchId,
 	FString& OutAddress,
-	int32& OutSlotId)
+	int32& OutSlotId,
+	const FOutlierMatchSaveContext& SaveContext)
 {
 	OutAddress.Reset();
 	OutSlotId = INDEX_NONE;
@@ -505,6 +506,7 @@ bool UOutlierArenaProcessSubsystem::TryAllocateReadySlot(
 	Message.Type = EOutlierArenaControlMessageType::Allocate;
 	Message.SlotId = Slot.SlotId;
 	Message.MatchId = MatchId;
+	Message.SaveContext = SaveContext;
 	if (!SendMessage(WorkerRuntimes[Slot.SlotId].ControlSocket, Message))
 	{
 		SlotRegistry.ReleaseAllocation(MatchId);
@@ -518,6 +520,19 @@ bool UOutlierArenaProcessSubsystem::TryAllocateReadySlot(
 		OutSlotId,
 		*MatchId.ToString(),
 		*OutAddress);
+	return true;
+}
+
+bool UOutlierArenaProcessSubsystem::TryGetAssignedSaveContext(
+	const FGuid& MatchId, FOutlierMatchSaveContext& OutContext) const
+{
+	OutContext = FOutlierMatchSaveContext();
+	if (!MatchId.IsValid() || WorkerExpectedMatchId != MatchId
+		|| !WorkerSaveContext.IsValid())
+	{
+		return false;
+	}
+	OutContext = WorkerSaveContext;
 	return true;
 }
 
@@ -774,12 +789,14 @@ void UOutlierArenaProcessSubsystem::HandleWorkerMessage(
 		if (!WorkerExpectedMatchId.IsValid())
 		{
 			WorkerExpectedMatchId = Message.MatchId;
+			WorkerSaveContext = Message.SaveContext;
 		}
 	}
 	else if (Message.Type == EOutlierArenaControlMessageType::Release
 		&& WorkerExpectedMatchId == Message.MatchId)
 	{
 		WorkerExpectedMatchId.Invalidate();
+		WorkerSaveContext = FOutlierMatchSaveContext();
 	}
 }
 

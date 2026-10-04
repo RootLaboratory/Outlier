@@ -62,6 +62,7 @@ protected:
 private:
 	void RefreshText();
 	void RefreshResultImage();
+	void RefreshPresentation();
 
 	int32 GuestIndex = INDEX_NONE;
 	ELobbyGuestWidgetState GuestState = ELobbyGuestWidgetState::Default;

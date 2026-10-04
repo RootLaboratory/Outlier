@@ -741,7 +741,12 @@ void AAutoTurret::ApplyTurretLifecycleState()
 	SetActorEnableCollision(bUsesBodyQueryCollision);
 	SetCanBeDamaged(IsCombatActive());
 	ApplyTurretCollisionState();
-	if (TurretLifecycleState == EAutoTurretLifecycleState::DeadPersistent)
+	if (TurretLifecycleState == EAutoTurretLifecycleState::DeadPresentation)
+	{
+		// 멀티캐스트가 누락되거나 먼저 도착해도 복제 상태에서 연출을 복구한다.
+		PlayDeathMontageIfNeeded();
+	}
+	else if (TurretLifecycleState == EAutoTurretLifecycleState::DeadPersistent)
 	{
 		ApplyDeadPersistentPose();
 	}
@@ -813,6 +818,17 @@ void AAutoTurret::ApplyWaitingForWaveState()
 	}
 
 	ApplyTurretLifecycleState();
+}
+
+void AAutoTurret::PlayDeathMontageIfNeeded()
+{
+	UAnimInstance* AnimInstance = TurretHeadMesh ? TurretHeadMesh->GetAnimInstance() : nullptr;
+	if (!AnimInstance || !DeathMontage || AnimInstance->Montage_IsActive(DeathMontage))
+	{
+		return;
+	}
+	StopMontageOnMesh(TurretHeadMesh);
+	AnimInstance->Montage_Play(DeathMontage);
 }
 
 void AAutoTurret::ApplyDeadPersistentPose()
@@ -994,8 +1010,12 @@ void AAutoTurret::MulticastPlayDeathMontage_Implementation(
 	int32 GameplayGeneration,
 	int32 ActivationSerial)
 {
-	StopMontageOnMesh(TurretHeadMesh);
-	PlayMontageOnMesh(TurretHeadMesh, DeathMontage);
+	// 늦은 RPC가 복제된 최종 자세를 다시 사망 연출 처음으로 되돌리지 않게 한다.
+	if (TurretLifecycleState == EAutoTurretLifecycleState::DeadPersistent)
+	{
+		return;
+	}
+	PlayDeathMontageIfNeeded();
 	OnTurretDeathPresentationStarted(GameplayGeneration, ActivationSerial);
 }
 

@@ -11,6 +11,7 @@ UCLASS(ClassGroup=(Shooter), meta=(BlueprintSpawnableComponent))
 class OUTLIER_API UShooterMovementComponent : public UShooterCharacterComponentBase
 {
 	GENERATED_BODY()
+	friend class FShooterGroundedMovementTest;
 
 protected:
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Movement")
@@ -33,9 +34,17 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Slide")
 	float SlideStartSpeed = 0.0f;
+	float CurrentSlideSpeed = 0.0f;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Slide")
 	float SlideElapsedTime = 0.0f;
+
+	double SlideStartTime = 0.0;
+	float SavedGroundFriction = 0.0f;
+	float SavedBrakingDecelerationWalking = 0.0f;
+	float SavedBrakingFrictionFactor = 0.0f;
+	float SavedMaxAcceleration = 0.0f;
+	float SavedMaxWalkSpeedCrouched = 0.0f;
 
 	FTimerHandle SlideUpdateTimerHandle;
 	FTimerHandle SlideTimerHandle;
@@ -46,7 +55,8 @@ public:
 
 	void HandleSprintPressed();
 	void HandleSprintReleased();
-	void HandleCrouchToggled();
+	void HandleCrouchPressed();
+	void HandleCrouchReleased();
 	void RequestCrouchOrSlide();
 	void RequestUncrouch();
 	void TrySlide();
@@ -63,6 +73,7 @@ public:
 	void RefreshMovementState();
 	void SetMovementStateImmediate(EMovementState NewState);
 	void StopSprintInternal();
+	void SuspendSprintInternal();
 	void ClearInputIntent();
 	bool CanStartSlide() const;
 	bool CanSprint() const;

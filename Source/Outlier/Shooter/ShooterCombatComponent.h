@@ -13,6 +13,7 @@ UCLASS(ClassGroup=(Shooter), meta=(BlueprintSpawnableComponent))
 class OUTLIER_API UShooterCombatComponent : public UShooterCharacterComponentBase
 {
 	GENERATED_BODY()
+	friend class FOutlierShooterPresentationAnimationTest;
 
 protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
@@ -38,6 +39,10 @@ protected:
 
 	FTimerHandle PendingSprintExitFireTimerHandle;
 	FDelegateHandle WeaponReuseCooldownTagChangedHandle;
+	TWeakObjectPtr<UAnimInstance> BoundFirstPersonReloadInstance;
+	TWeakObjectPtr<UAnimInstance> BoundThirdPersonReloadInstance;
+	TWeakObjectPtr<UAnimMontage> ActiveFirstPersonReloadMontage;
+	TWeakObjectPtr<UAnimMontage> ActiveThirdPersonReloadMontage;
 
 	uint8 bPendingSprintExitFire : 1 = false;
 

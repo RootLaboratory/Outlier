@@ -16,7 +16,7 @@ class UHackableComponent;
 class UInteractableComponent;
 class URoomTagComponent;
 class USceneComponent;
-class UStatAllocatorWidget;
+class UUpgradeMachineWidget;
 
 UCLASS(Blueprintable)
 class OUTLIER_API AInteractionStatMachine : public AActor,
@@ -57,7 +57,7 @@ protected:
 	TObjectPtr<URoomTagComponent> RoomTagComponent;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Stat Machine|UI")
-	TSubclassOf<UStatAllocatorWidget> StatAllocatorWidgetClass;
+	TSubclassOf<UUpgradeMachineWidget> UpgradeMachineWidgetClass;
 
 private:
 	UPROPERTY(Transient)

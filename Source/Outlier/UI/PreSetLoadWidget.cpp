@@ -142,7 +142,7 @@ FName UPreSetLoadWidget::GetSelectedStageId() const
 	case EOutlierStage::Level01: return OutlierPresetStageIds::Level1;
 	case EOutlierStage::Level02: return OutlierPresetStageIds::Level2;
 	case EOutlierStage::Level03: return OutlierPresetStageIds::Level3;
-	case EOutlierStage::Level04: return OutlierPresetStageIds::Level4;
+	case EOutlierStage::Level04: return OutlierPresetStageIds::CheckpointTest;
 	default: return OutlierPresetStageIds::Start;
 	}
 }

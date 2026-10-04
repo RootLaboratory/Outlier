@@ -682,6 +682,14 @@ void APartnerPlayerController::ReleaseEnemyPossession()
 		return;
 	}
 
+	// Pooled enemies do not trigger PawnPendingDestroy on death.
+	if (EnemyPawn->IsDead() || EnemyPawn->GetCurrentHealth() <= 0.0f)
+	{
+		UnPossess();
+		RestoreCachedPartnerCharacter();
+		return;
+	}
+
 	if (!CachedPartnerCharacter.IsValid())
 	{
 		DiscardCommittedPartnerAbilityCooldownSession(nullptr);
