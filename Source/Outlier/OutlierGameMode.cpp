@@ -1348,6 +1348,11 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 	RegisterSpawnedPair(NewShooterPS, NewPartnerPS, Shooter, Partner);
 	if (!bResuming)
 	{
+		// 역할 연결 후 기본 장비를 먼저 확정한다. 이어하기는 저장된 장비/현재 슬롯을 그대로 복원한다.
+		if (UShooterInventoryComponent* Inventory = Shooter ? Shooter->GetInventoryComponent() : nullptr)
+		{
+			Inventory->InitializeDefaultMeleeWeapon(NewShooterPS);
+		}
 		CaptureInitialCheckpointSnapshot(NewShooterPS, NewPartnerPS, Shooter, Partner);
 	}
 	if (GetNetMode() == NM_ListenServer && Identity)
