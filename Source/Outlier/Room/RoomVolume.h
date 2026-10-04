@@ -21,6 +21,8 @@ public:
 
 	FGameplayTag GetRoomTag() const { return RoomTag; }
 	bool ContainsWorldLocation(const FVector& Location) const;
+	// 스트리밍이 BeginOverlap 알림 없이 만든 기존 overlap에서도 RoomTag를 복구한다.
+	void RefreshOverlappingRoomAssignments();
 	FOnRoomActorOverlapChanged OnRoomActorOverlapChanged;
 
 protected:

@@ -533,12 +533,23 @@ struct FOverlayParameters
 	float GoalValue = 0.3f;
 };
 
+// Screen Blackout. Slate 이후 backbuffer 체인 맨 끝에서 HUD까지 Alpha만큼 검정으로 보간한다.
+// 다른 연출과 파라미터를 공유하지 않는다. Alpha는 서브시스템 Tick이 구동한다.
+struct FScreenBlackoutParameters
+{
+	int32 bEnabled = false;
+
+	// 0은 원본, 1은 완전한 검정.
+	float Alpha = 0.0f;
+};
+
 struct FPostProcessStrctureUI
 {
 	FUIChromaticAberrationParameters ChromaticAberration;
 	FDeathChromaticAberrationParameters DeathChromaticAberration;
 	FOverlayParameters Overlay;
 	FSplitPrismParameters SplitPrism;
+	FScreenBlackoutParameters ScreenBlackout;
 };
 
 struct FPostProcessStrcture

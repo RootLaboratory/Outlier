@@ -56,9 +56,12 @@ void ULocalPlayerPostProcessSubsystem::Deinitialize()
 	OnHackTransitionCovered.Clear();
 	OnHackTransitionFinished.Clear();
 	OnDeathBlackNoiseStarted.Clear();
+	OnScreenBlackoutCovered.Clear();
+	OnScreenBlackoutRevealed.Clear();
 	DeathTransition.Reset(PostProcessParameters, UIPostProcessParameters);
 	HackPossessionTransitionPhase = EHackPossessionTransitionPhase::Idle;
 	bHackTransitionCoveredBroadcastSent = false;
+	bScreenBlackoutFading = false;
 
 	Super::Deinitialize();
 	ViewExtension.Reset();
@@ -85,6 +88,7 @@ void ULocalPlayerPostProcessSubsystem::Tick(float DeltaTime)
 	UpdateDeathNoise(DeltaTime);
 	UpdateDroneDamageFeedback(DeltaTime);
 	UpdateSplitPrism(DeltaTime);
+	UpdateScreenBlackout(DeltaTime);
 	UpdateDepthOfField();
 }
 
@@ -102,7 +106,30 @@ void ULocalPlayerPostProcessSubsystem::MarkDirty()
 {
 	CachedPostProcessParameters = PostProcessParameters;
 	CachedUIPostProcessParameters = UIPostProcessParameters;
+	if (bUIEffectsSuspended && !DeathTransition.IsActive()
+		&& !bGameOverBlackoutActive && !IsHackPossessionTransitionActive())
+	{
+		// Slate 이후 backbuffer 체인에 전달하는 복사본만 바꾼다. 모든 갱신 경로가
+		// 이 함수를 거치므로 메뉴 중 효과가 다시 켜져도 UI에는 적용되지 않는다.
+		CachedPostProcessParameters.PixelSorting.bEnabled = false;
+		CachedPostProcessParameters.ZoomBlur.bEnabled = false;
+		CachedUIPostProcessParameters.ChromaticAberration.bEnabled = false;
+		CachedUIPostProcessParameters.DeathChromaticAberration.bEnabled = false;
+		CachedUIPostProcessParameters.Overlay.bEnabled = false;
+		CachedUIPostProcessParameters.SplitPrism.bEnabled = false;
+	}
 	bDirty = true;
+}
+
+void ULocalPlayerPostProcessSubsystem::SetUIEffectsSuspended(bool bSuspended)
+{
+	if (bUIEffectsSuspended == bSuspended)
+	{
+		return;
+	}
+	bUIEffectsSuspended = bSuspended;
+	MarkDirty();
+	TickFrame();
 }
 
 void ULocalPlayerPostProcessSubsystem::ResetAllPostProcess(bool bPreserveDeathTransition)
@@ -120,6 +147,9 @@ void ULocalPlayerPostProcessSubsystem::ResetAllPostProcess(bool bPreserveDeathTr
 	SplitPrismElapsedTime = 0.0f;
 	SplitPrismSettleElapsedTime = 0.0f;
 	SplitPrismSubjectDistance = -1.0f;
+	bScreenBlackoutFading = false;
+	ScreenBlackoutTargetAlpha = 0.0f;
+	ScreenBlackoutFadeSpeed = 0.0f;
 
 	PostProcessParameters.MotionBlur.bEnabled = false;
 	PostProcessParameters.LensFlare.bEnabled = false;
@@ -142,6 +172,8 @@ void ULocalPlayerPostProcessSubsystem::ResetAllPostProcess(bool bPreserveDeathTr
 	UIPostProcessParameters.Overlay.AccumulatedValue = 0.0f;
 	UIPostProcessParameters.SplitPrism.bEnabled = false;
 	UIPostProcessParameters.SplitPrism.Offset = 0.0f;
+	UIPostProcessParameters.ScreenBlackout.bEnabled = false;
+	UIPostProcessParameters.ScreenBlackout.Alpha = 0.0f;
 	bDroneDamageSuppressed = false;
 	PostProcessParameters.DroneDamageFeedback.bEnabled = false;
 	PostProcessParameters.DroneDamageFeedback.Time = 0.0f;
@@ -1144,6 +1176,81 @@ void ULocalPlayerPostProcessSubsystem::ApplySplitPrismOff()
 	Blur.ResidualWeight = 0.0f;
 	Blur.bEnabled = false;
 
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::StartScreenBlackout(float Duration)
+{
+	StartScreenBlackoutFade(1.0f, Duration);
+}
+
+void ULocalPlayerPostProcessSubsystem::StartScreenBlackoutReveal(float Duration)
+{
+	StartScreenBlackoutFade(0.0f, Duration);
+}
+
+void ULocalPlayerPostProcessSubsystem::ResetScreenBlackout()
+{
+	bScreenBlackoutFading = false;
+	ScreenBlackoutTargetAlpha = 0.0f;
+	ScreenBlackoutFadeSpeed = 0.0f;
+	ApplyScreenBlackoutAlpha(0.0f);
+}
+
+void ULocalPlayerPostProcessSubsystem::StartScreenBlackoutFade(float TargetAlpha, float Duration)
+{
+	ScreenBlackoutTargetAlpha = TargetAlpha;
+	ScreenBlackoutFadeSpeed = FMath::IsFinite(Duration) && Duration > 0.0f ? 1.0f / Duration : 0.0f;
+	bScreenBlackoutFading = true;
+
+	// 즉시 도달이면 이번 프레임부터 그린다. 완료 통보는 호출자 재진입을 피하려고 다음 Tick에서 한다.
+	if (ScreenBlackoutFadeSpeed <= 0.0f)
+	{
+		ApplyScreenBlackoutAlpha(TargetAlpha);
+	}
+}
+
+void ULocalPlayerPostProcessSubsystem::UpdateScreenBlackout(float DeltaTime)
+{
+	if (!bScreenBlackoutFading)
+	{
+		return;
+	}
+
+	const float CurrentAlpha = UIPostProcessParameters.ScreenBlackout.Alpha;
+	const float NextAlpha = ScreenBlackoutFadeSpeed > 0.0f
+		? FMath::FInterpConstantTo(CurrentAlpha, ScreenBlackoutTargetAlpha, FMath::Max(DeltaTime, 0.0f), ScreenBlackoutFadeSpeed)
+		: ScreenBlackoutTargetAlpha;
+	ApplyScreenBlackoutAlpha(NextAlpha);
+	if (NextAlpha != ScreenBlackoutTargetAlpha)
+	{
+		return;
+	}
+
+	bScreenBlackoutFading = false;
+	if (ScreenBlackoutTargetAlpha > 0.0f)
+	{
+		OnScreenBlackoutCovered.Broadcast();
+	}
+	else
+	{
+		OnScreenBlackoutRevealed.Broadcast();
+	}
+}
+
+void ULocalPlayerPostProcessSubsystem::ApplyScreenBlackoutAlpha(float Alpha)
+{
+	FScreenBlackoutParameters& ScreenBlackout = UIPostProcessParameters.ScreenBlackout;
+	const float ClampedAlpha = FMath::Clamp(Alpha, 0.0f, 1.0f);
+	const int32 bEnabled = ClampedAlpha > 0.0f;
+	if (ScreenBlackout.Alpha == ClampedAlpha && ScreenBlackout.bEnabled == bEnabled)
+	{
+		return;
+	}
+
+	ScreenBlackout.Alpha = ClampedAlpha;
+	ScreenBlackout.bEnabled = bEnabled;
 	MarkDirty();
 	TickFrame();
 }

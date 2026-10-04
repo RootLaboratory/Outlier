@@ -35,6 +35,8 @@
 #include "Room/RoomCombatSubsystem.h"
 #include "Network/OutlierArenaSubsystem.h"
 #include "Weapon/RangedWeaponBase.h"
+#include "Shooter/ShooterCharacter.h"
+#include "Shooter/ShooterPlayerController.h"
 #include "Outlier.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "GAS/Attributes/OutlierVitalAttributeSet.h"
@@ -2919,6 +2921,18 @@ bool AEnemyBase::CanShowMeleeTargetIndicator_Implementation(const AActor* /*Inst
 	return !IsDead()
 		&& CanBeDamaged()
 		&& GetGenericTeamId().GetId() == OutlierTeamIds::Enemy;
+}
+
+void AEnemyBase::SetMeleeTargeted_Implementation(AActor* InstigatorActor, bool bTargeted)
+{
+	AShooterCharacter* Shooter = Cast<AShooterCharacter>(InstigatorActor);
+	AShooterPlayerController* ShooterController = Shooter
+		? Cast<AShooterPlayerController>(Shooter->GetController()) : nullptr;
+	if (Controller)
+	{
+		// 적 액터는 클라이언트 소유가 아니므로 RPC는 Shooter의 Controller를 통해 보낸다.
+		ShooterController->ClientNotifyMeleeTargeted(this, Shooter, bTargeted);
+	}
 }
 
 void AEnemyBase::SetDefaultEnemyType(EEnemyType EnemyType)

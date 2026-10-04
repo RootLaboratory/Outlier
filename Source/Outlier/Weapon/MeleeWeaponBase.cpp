@@ -282,7 +282,7 @@ void AMeleeWeaponBase::RefreshTargetSearchState()
 	const bool bShouldSearch = bIsEquipped
 		&& OwnerCharacter
 		&& OwnerCharacter->IsLocallyControlled()
-		&& (!Shooter || Shooter->GetCurrentWeapon() == this);
+		&& (!Shooter || (!Shooter->IsDead() && Shooter->GetCurrentWeapon() == this));
 	if (!bShouldSearch)
 	{
 		StopTargetSearch();
@@ -311,7 +311,7 @@ void AMeleeWeaponBase::RefreshMeleeTarget()
 	ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
 	const AShooterCharacter* Shooter = Cast<AShooterCharacter>(OwnerCharacter);
 	if (!bIsEquipped || !OwnerCharacter || !OwnerCharacter->IsLocallyControlled()
-		|| (Shooter && Shooter->GetCurrentWeapon() != this))
+		|| (Shooter && (Shooter->IsDead() || Shooter->GetCurrentWeapon() != this)))
 	{
 		StopTargetSearch();
 		return;

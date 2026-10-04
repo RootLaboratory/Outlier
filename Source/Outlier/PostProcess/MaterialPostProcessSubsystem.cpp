@@ -15,11 +15,17 @@
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
+#include "Interface/MeleeTargetInterface.h"
+#include "Shooter/ShooterCharacter.h"
+#include "Weapon/MeleeWeaponBase.h"
 
 namespace
 {
 // BoundPostProcessVolume 이 없을 때 쓰는 값. 볼륨이 있으면 항상 볼륨 값이 우선한다.
 constexpr float DefaultStealthFadeDuration = 0.25f;
+
+// 상시 PartnerOutline 패스에서 근접 타깃을 표시할 때 사용하는 값.
+constexpr int32 MeleeTargetOutlineStencilValue = 1;
 
 // 이번 틱에 이 메시가 어떤 머티리얼을 어느 페이드로 물고 있어야 하는지.
 struct FOutlierStealthMeshTarget
@@ -70,6 +76,7 @@ void UMaterialPostProcessSubsystem::Tick(float DeltaTime)
 	}
 
 	TickStealth(DeltaTime);
+	TickMeleeOutlineTarget();
 }
 
 void UMaterialPostProcessSubsystem::RegisterPostProcessVolume(AOutlierPostProcessVolume* InPostProcessVolume)
@@ -119,6 +126,7 @@ void UMaterialPostProcessSubsystem::Refresh()
 
 void UMaterialPostProcessSubsystem::ResetAllPostProcess(bool bRestoreAlwaysOnPostProcess)
 {
+	ClearMeleeOutlineTarget();
 	if (UWorld* World = GetWorld())
 	{
 		World->GetTimerManager().ClearTimer(MagneticDisableTimerHandle);
@@ -173,6 +181,90 @@ void UMaterialPostProcessSubsystem::UpdateScanPostProcess(
 	}
 
 	BoundPostProcessVolume->UpdateScanMaterialParameters(ScanOrigin, CurrentScanRadius);
+}
+
+void UMaterialPostProcessSubsystem::SetMeleeOutlineTarget(AActor* Target, AShooterCharacter* SourceShooter)
+{
+	if (ShouldSkipRenderingWork() || !IsValid(Target) || !IsValid(SourceShooter)
+		|| !SourceShooter->IsLocallyControlled()
+		|| Target->GetWorld() != GetWorld() || SourceShooter->GetWorld() != GetWorld())
+	{
+		return;
+	}
+
+	if (MeleeOutlineTarget.Get() != Target || MeleeOutlineSource.Get() != SourceShooter)
+	{
+		ClearMeleeOutlineTarget();
+		MeleeOutlineTarget = Target;
+		MeleeOutlineSource = SourceShooter;
+		bMeleeOutlineActive = true;
+	}
+	TickMeleeOutlineTarget();
+	if (!bMeleeOutlineActive)
+	{
+		return;
+	}
+
+	TArray<UPrimitiveComponent*> PrimitiveComponents;
+	Target->GetComponents<UPrimitiveComponent>(PrimitiveComponents);
+	for (UPrimitiveComponent* Component : PrimitiveComponents)
+	{
+		if (!IsValid(Component))
+		{
+			continue;
+		}
+		const TWeakObjectPtr<UPrimitiveComponent> Key(Component);
+		if (!MeleeOutlineRestoreStates.Contains(Key))
+		{
+			FScanStencilRestoreState Original;
+			Original.bRenderCustomDepth = Component->bRenderCustomDepth;
+			Original.CustomDepthStencilValue = Component->CustomDepthStencilValue;
+			MeleeOutlineRestoreStates.Add(Key, Original);
+		}
+		Component->SetRenderCustomDepth(true);
+		Component->SetCustomDepthStencilValue(MeleeTargetOutlineStencilValue);
+	}
+}
+
+void UMaterialPostProcessSubsystem::ClearMeleeOutlineTarget(AActor* Target)
+{
+	if (!bMeleeOutlineActive || (Target && MeleeOutlineTarget.Get() != Target))
+	{
+		return;
+	}
+
+	for (const auto& Pair : MeleeOutlineRestoreStates)
+	{
+		if (UPrimitiveComponent* Component = Pair.Key.Get())
+		{
+			Component->SetRenderCustomDepth(Pair.Value.bRenderCustomDepth);
+			Component->SetCustomDepthStencilValue(Pair.Value.CustomDepthStencilValue);
+		}
+	}
+	MeleeOutlineRestoreStates.Reset();
+	MeleeOutlineTarget.Reset();
+	MeleeOutlineSource.Reset();
+	bMeleeOutlineActive = false;
+	// PartnerOutline은 상시 패스이므로 타깃을 해제해도 PP 상태는 건드리지 않는다.
+}
+
+void UMaterialPostProcessSubsystem::TickMeleeOutlineTarget()
+{
+	if (!bMeleeOutlineActive || ShouldSkipRenderingWork())
+	{
+		return;
+	}
+
+	AActor* Target = MeleeOutlineTarget.Get();
+	AShooterCharacter* Shooter = MeleeOutlineSource.Get();
+	const AMeleeWeaponBase* Weapon = Shooter ? Cast<AMeleeWeaponBase>(Shooter->GetCurrentWeapon()) : nullptr;
+	if (!Target || !Shooter || !Shooter->IsLocallyControlled() || Shooter->IsDead()
+		|| !Weapon || Weapon->GetCurrentMeleeTarget() != Target
+		|| !Target->GetClass()->ImplementsInterface(UMeleeTargetInterface::StaticClass())
+		|| !IMeleeTargetInterface::Execute_CanShowMeleeTargetIndicator(Target, Shooter))
+	{
+		ClearMeleeOutlineTarget();
+	}
 }
 
 void UMaterialPostProcessSubsystem::RegisterStealthSource(UOutlierAbilitySystemComponent* AbilitySystem)

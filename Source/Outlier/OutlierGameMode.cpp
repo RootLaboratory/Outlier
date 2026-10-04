@@ -33,6 +33,7 @@
 #include "Enemy/EnemyBase.h"
 #include "Enemy/EnemyRoomSubsystem.h"
 #include "Room/RoomCombatSubsystem.h"
+#include "Room/RoomVolume.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "GameFramework/PlayerStart.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -233,7 +234,8 @@ void AOutlierGameMode::FinishCheckpointRestartVote(
 }
 
 bool AOutlierGameMode::StartCheckpointRestart(
-	AFirstPersonPlayerController* Requester)
+	AFirstPersonPlayerController* Requester,
+	TFunction<void()> BeforeReload)
 {
 	UOutlierSaveSubSystem* SaveSubsystem = GetGameInstance()
 		? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>()
@@ -293,6 +295,13 @@ bool AOutlierGameMode::StartCheckpointRestart(
 				*GetNameSafe(PlayerState));
 			return false;
 		}
+	}
+
+	// 검증 실패 시 GameOver 선택 화면을 유지한다. 성공하면 새 Pawn을 Possess하기 전에
+	// 화면 전환을 시작해야 Possess의 암전 해제가 뒤따라오는 암전에 덮이지 않는다.
+	if (BeforeReload)
+	{
+		BeforeReload();
 	}
 
 	if (UEnemyAdaptationSubsystem* EnemyAdaptationSubsystem =
@@ -996,6 +1005,7 @@ bool AOutlierGameMode::ExecuteGameOverSelection(
 	{
 		return false;
 	}
+	FName PresetStageId = NAME_None;
 	if (Request.Choice == EGameOverPendingChoice::PresetLevel)
 	{
 		const UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()->GetSubsystem<UOutlierArenaSubsystem>();
@@ -1004,6 +1014,13 @@ bool AOutlierGameMode::ExecuteGameOverSelection(
 		{
 			return false;
 		}
+		const FName StageIds[] = {
+			OutlierPresetStageIds::Level1,
+			OutlierPresetStageIds::Level2,
+			OutlierPresetStageIds::Level3,
+			OutlierPresetStageIds::CheckpointTest
+		};
+		PresetStageId = StageIds[Request.LevelIndex - 1];
 	}
 	else if (Request.Choice == EGameOverPendingChoice::Continue)
 	{
@@ -1017,33 +1034,54 @@ bool AOutlierGameMode::ExecuteGameOverSelection(
 	{
 		return false;
 	}
-	// 두 플레이어의 연속 선택도 한 번만 실행되도록 화면 정리 전에 상태를 소비한다.
-	GameOverActivePairs.Remove(RequesterPS->GetPairId());
-
-	for (AFirstPersonPlayerController* Controller : { Requester, OtherController })
+	const bool bCheckpointTest = PresetStageId == OutlierPresetStageIds::CheckpointTest;
+	if (bCheckpointTest && CheckpointRestartVote.GetState() != EOutlierCheckpointRestartVoteState::Idle)
 	{
-		if (Controller)
-		{
-			Controller->BeginGameOverRespawnTransition();
-		}
+		return false;
 	}
-	const auto CloseGameOverLayer = [](AFirstPersonPlayerController* Controller)
+	const auto BeginGameOverTransition = [this, RequesterPS, Requester, OtherController]()
 	{
-		if (!Controller || !Controller->PlayerState)
+		// 두 플레이어의 연속 선택도 한 번만 실행되도록 화면 정리 전에 상태를 소비한다.
+		GameOverActivePairs.Remove(RequesterPS->GetPairId());
+		for (AFirstPersonPlayerController* Controller : { Requester, OtherController })
 		{
-			return;
+			if (Controller)
+			{
+				Controller->BeginGameOverRespawnTransition();
+			}
 		}
-		if (Controller->IsLocalController())
+		const auto CloseGameOverLayer = [](AFirstPersonPlayerController* Controller)
 		{
-			Controller->ClientPopInGameSettingLayer_Implementation(Controller->PlayerState);
-		}
-		else
-		{
-			Controller->ClientPopInGameSettingLayer(Controller->PlayerState);
-		}
+			if (!Controller || !Controller->PlayerState)
+			{
+				return;
+			}
+			if (Controller->IsLocalController())
+			{
+				Controller->ClientPopInGameSettingLayer_Implementation(Controller->PlayerState);
+			}
+			else
+			{
+				Controller->ClientPopInGameSettingLayer(Controller->PlayerState);
+			}
+		};
+		CloseGameOverLayer(Requester);
+		CloseGameOverLayer(OtherController);
 	};
-	CloseGameOverLayer(Requester);
-	CloseGameOverLayer(OtherController);
+	if (bCheckpointTest)
+	{
+		// Level04는 Dev의 체크포인트 복원 테스트다. 프리셋 초기화 없이 저장 당시 상태를 되돌린다.
+		bCheckpointRestartInProgress = true;
+		LastCheckpointRestartVoteResult = EOutlierCheckpointRestartVoteState::Restarting;
+		if (!StartCheckpointRestart(Requester, BeginGameOverTransition))
+		{
+			bCheckpointRestartInProgress = false;
+			LastCheckpointRestartVoteResult = EOutlierCheckpointRestartVoteState::Rejected;
+			return false;
+		}
+		return true;
+	}
+	BeginGameOverTransition();
 
 	switch (Request.Choice)
 	{
@@ -1051,16 +1089,8 @@ bool AOutlierGameMode::ExecuteGameOverSelection(
 		RespawnPairAtCheckpoint(Requester);
 		break;
 	case EGameOverPendingChoice::PresetLevel:
-	{
-		const FName StageIds[] = {
-			OutlierPresetStageIds::Level1,
-			OutlierPresetStageIds::Level2,
-			OutlierPresetStageIds::Level3,
-			OutlierPresetStageIds::Level4
-		};
-		RequestPresetRespawn(Requester, StageIds[Request.LevelIndex - 1]);
+		RequestPresetRespawn(Requester, PresetStageId);
 		break;
-	}
 	case EGameOverPendingChoice::MainMenu:
 	case EGameOverPendingChoice::QuitGame:
 		// 기존 자발적 이탈 경로가 로컬 재접속 상태를 정리하던 단계를 양쪽에 적용한다.
@@ -2683,6 +2713,9 @@ void AOutlierGameMode::RespawnPairAtCheckpoint(AController* Controller)
 
 	RegisterSpawnedPair(ShooterPlayerState, PartnerPlayerState, NewShooter, NewPartner);
 	RestorePairLoadout(ShooterPlayerState, NewShooter, NewPartner);
+	// GameOver Continue는 서브레벨 재로드 없이 리스폰하므로 Ready 콜백을 거치지 않는다.
+	// 새 페어 연결과 장비 복원 뒤 기존 Volume의 누락된 RoomTag/입장 알림도 복구한다.
+	RefreshRoomOverlapAssignments();
 }
 
 /*
@@ -3973,6 +4006,21 @@ void AOutlierGameMode::ClearPendingArenaReloadPawns()
 	PendingLocalPossessions.Reset();
 }
 
+void AOutlierGameMode::RefreshRoomOverlapAssignments()
+{
+	if (!HasAuthority() || !GetWorld())
+	{
+		return;
+	}
+
+	TArray<AActor*> RoomVolumes;
+	UGameplayStatics::GetAllActorsOfClass(GetWorld(), ARoomVolume::StaticClass(), RoomVolumes);
+	for (AActor* Actor : RoomVolumes)
+	{
+		CastChecked<ARoomVolume>(Actor)->RefreshOverlappingRoomAssignments();
+	}
+}
+
 void AOutlierGameMode::CompleteServerArenaReload()
 {
 	const UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
@@ -3990,6 +4038,11 @@ void AOutlierGameMode::CompleteServerArenaReload()
 		ArenaReloadStartedAt > 0.0
 			? (FPlatformTime::Seconds() - ArenaReloadStartedAt) * 1000.0 : -1.0,
 		PendingPossessions.Num(), PendingLocalPossessions.Num());
+	// 새 Pawn은 서브레벨 재로드 전에 생성된다. 모든 RoomVolume이 표시된 뒤 기존 overlap의
+	// 누락된 태그/입장 알림을 복구한다. Preset 로드, 체크포인트 재시작, 저장 이어하기가
+	// 모두 이 경로를 공유하며, 방은 저장된 전투 태그가 아니라 현재 overlap으로 결정한다.
+	RefreshRoomOverlapAssignments();
+
 	// Listen Host의 로컬 Pawn은 서버 준비 완료에서 Possess한다. 원격 클라이언트의 준비 통보와 분리한다.
 	for (auto It = PendingLocalPossessions.CreateIterator(); It; ++It)
 	{

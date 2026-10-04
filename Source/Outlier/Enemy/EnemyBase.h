@@ -574,6 +574,7 @@ public:
 
 	virtual int32 GetScanStencilValue() const override;
 	virtual bool CanShowMeleeTargetIndicator_Implementation(const AActor* InstigatorActor) const override;
+	virtual void SetMeleeTargeted_Implementation(AActor* InstigatorActor, bool bTargeted) override;
 protected:
 	UFUNCTION()
 	void OnRep_RuntimeStat();

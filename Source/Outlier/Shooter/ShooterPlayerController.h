@@ -85,6 +85,9 @@ protected:
 public:
 	AShooterPlayerController();
 
+	UFUNCTION(Client, Reliable)
+	void ClientNotifyMeleeTargeted(AActor* Target, AShooterCharacter* SourceShooter, bool bTargeted);
+
 	void SocketDistanceUpdate(float Distance); //테스팅.
 
 	UPROPERTY()

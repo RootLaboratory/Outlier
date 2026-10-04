@@ -114,6 +114,7 @@ private:
 	void ClearAllLayersInternal(bool bRestoreDefaultInput);
 
 	void RefreshTopLayerInput();
+	void RefreshPostProcessSuspension();
 	void ApplyLayerInput(const FUILayerEntry& Layer);
 	void ApplyDefaultInput();
 

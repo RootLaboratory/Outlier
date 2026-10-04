@@ -15,6 +15,8 @@ class UTexture2D;
 DECLARE_MULTICAST_DELEGATE(FOnHackTransitionCovered);
 DECLARE_MULTICAST_DELEGATE(FOnHackTransitionFinished);
 DECLARE_MULTICAST_DELEGATE(FOnDeathBlackNoiseStarted);
+DECLARE_MULTICAST_DELEGATE(FOnScreenBlackoutCovered);
+DECLARE_MULTICAST_DELEGATE(FOnScreenBlackoutRevealed);
 
 // Split Prism 진행 단계.
 // Focusing: d(t)가 1 → 0. Settling: (A) 깊이 잔차를 0으로 줄이는 중. Holding: (B) 깊이 잔차를 Stop까지 유지.
@@ -56,6 +58,11 @@ public:
 	// 리로드 중 사망 연출 / GameOver 암막은 새 Pawn 빙의까지 유지할 수 있다.
 	UFUNCTION(BlueprintCallable, Category = "RDG")
 	void ResetAllPostProcess(bool bPreserveDeathTransition = false);
+
+	// 메뉴가 열린 동안 Slate 이후 효과의 출력만 숨긴다. 원본 설정/타임라인은 유지한다.
+	// 사망/빙의/리스폰 화면 전환은 계속 그려 콜백과 암막 상태를 보존한다.
+	void SetUIEffectsSuspended(bool bSuspended);
+	bool AreUIEffectsSuspended() const { return bUIEffectsSuspended; }
 
 	void ActivateSlideState();
 	void DeActivateSlideState();
@@ -168,6 +175,18 @@ public:
 	FOnHackTransitionCovered OnHackTransitionCovered;
 	FOnHackTransitionFinished OnHackTransitionFinished;
 
+	// Screen Blackout(Slate 이후, HUD 포함). 현재 Alpha에서 출발하므로 진행 중에 방향을 바꿔도 튀지 않는다.
+	// Duration은 0 ↔ 1 전체에 걸리는 시간이다. 중간에서 시작하면 남은 거리만큼만 걸리고, 0이면 즉시 도달한다.
+	// 목표에 도달하면 다음 Tick에 완료를 알린다. 이미 목표 값이어도 알린다.
+	void StartScreenBlackout(float Duration);
+	void StartScreenBlackoutReveal(float Duration);
+	// 즉시 0으로 끈다. 완료는 알리지 않는다. ResetAllPostProcess도 같은 정리를 한다.
+	void ResetScreenBlackout();
+	float GetScreenBlackoutAlpha() const { return UIPostProcessParameters.ScreenBlackout.Alpha; }
+
+	FOnScreenBlackoutCovered OnScreenBlackoutCovered;
+	FOnScreenBlackoutRevealed OnScreenBlackoutRevealed;
+
 	UFUNCTION(BlueprintCallable, Category = "RDG|ADS Blur")
 	void SetADSBlurAiming(bool bInAiming, int32 InWeaponStencilValue = 3);
 	void SetADSSocketDistance(float Distance);
@@ -209,6 +228,7 @@ public:
 
 private:
 	friend class FOutlierRDGPostProcessResetTest;
+	bool bUIEffectsSuspended = false;
 
 	void MarkDirty();
 	void UpdateADSBlur(float DeltaTime);
@@ -225,6 +245,10 @@ private:
 	void ApplySplitPrismOff();
 	void TraceSplitPrismSubjectDistance();
 	void EnterSplitPrismPhaseAfterFocus();
+	void ApplySplitPrismDefocus(float Defocus);
+	void StartScreenBlackoutFade(float TargetAlpha, float Duration);
+	void UpdateScreenBlackout(float DeltaTime);
+	void ApplyScreenBlackoutAlpha(float Alpha);
 	void RefreshDeathTransitionTextures();
 	void UpdateDepthOfField();
 	void ApplyADSBlurRuntimeParameters();
@@ -272,6 +296,12 @@ private:
 	float SplitPrismSettleElapsedTime = 0.0f;
 	// D_subj(cm). 음수면 아직 트레이스 전.
 	float SplitPrismSubjectDistance = -1.0f;
+
+	float ScreenBlackoutTargetAlpha = 0.0f;
+	// 초당 Alpha 변화량. 0이면 즉시 목표 값.
+	float ScreenBlackoutFadeSpeed = 0.0f;
+	// 목표 도달 후 완료 통보를 기다리는 동안 켜져 있다.
+	uint8 bScreenBlackoutFading : 1 = false;
 
 	FDeathTransitionSequence DeathTransition;
 	bool bGameOverBlackoutActive = false;

@@ -59,6 +59,28 @@ void AShooterPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	Super::EndPlay(EndPlayReason);
 }
 
+void AShooterPlayerController::ClientNotifyMeleeTargeted_Implementation(
+	AActor* Target, AShooterCharacter* SourceShooter, bool bTargeted)
+{
+	// 이전 Pawn의 알림이 리스폰 후 새 Pawn의 표시를 바꾸지 않도록 한다.
+	if (!IsLocalController() || !IsValid(SourceShooter) || GetPawn() != SourceShooter || !GetWorld())
+	{
+		return;
+	}
+
+	if (UMaterialPostProcessSubsystem* PPS = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
+	{
+		if (bTargeted)
+		{
+			PPS->SetMeleeOutlineTarget(Target, SourceShooter);
+		}
+		else if (Target)
+		{
+			PPS->ClearMeleeOutlineTarget(Target);
+		}
+	}
+}
+
 void AShooterPlayerController::SetupInputComponent()
 {
 	Super::SetupInputComponent();

@@ -26,6 +26,9 @@
 #include "MainUIBase.h"
 #include "UI/UILayerGameplayTags.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Weapon/WeaponBase.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "TimerManager.h"
 #include "Network/OutlierArenaSubsystem.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
 #include "LocalPlayerPostProcessSubsystem.h"
@@ -48,14 +51,39 @@ namespace
 	{
 #if WITH_EDITOR
 		static TAutoConsoleVariable<int32> CVarSuitPresentationBypass(
-			TEXT("Outlier.SuitTransition.BypassPresentation"), 1,
-			TEXT("PIE only: acknowledge unimplemented suit presentation hooks for gameplay testing. Set 0 to test real presentation callbacks."));
+			TEXT("Outlier.SuitTransition.BypassPresentation"), 0,
+			TEXT("PIE only: skip the suit screen blackout and readiness check, acknowledging each phase immediately. Set 1 to skip the presentation during gameplay testing."));
 		return World && World->WorldType == EWorldType::PIE
 			&& CVarSuitPresentationBypass.GetValueOnGameThread() != 0;
 #else
 		return false;
 #endif
 	}
+
+	// 실제 화면(LocalPlayer)이 있는 Controller에만 있다. 없으면 Suit 연출도 완료 응답도 만들지 않는다.
+	ULocalPlayerPostProcessSubsystem* FindSuitPostProcessSubsystem(const APlayerController* Controller)
+	{
+		const ULocalPlayer* LocalPlayer = Controller ? Controller->GetLocalPlayer() : nullptr;
+		return LocalPlayer ? LocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>() : nullptr;
+	}
+
+	// 소유자에게 장착되어 보이고, 두 시점 메시가 모두 소유자 쪽에 붙어 있는지 확인한다.
+	bool IsWeaponPresentedOn(const AWeaponBase* Weapon, const AActor* Owner)
+	{
+		const USkeletalMeshComponent* FirstPersonMesh = IsValid(Weapon) ? Weapon->GetFirstPersonWeaponMesh() : nullptr;
+		const USkeletalMeshComponent* ThirdPersonMesh = IsValid(Weapon) ? Weapon->GetThirdPersonWeaponMesh() : nullptr;
+		return FirstPersonMesh && ThirdPersonMesh && IsValid(Owner)
+			&& Weapon->IsEquipped() && !Weapon->IsHidden()
+			&& !FirstPersonMesh->bHiddenInGame && !ThirdPersonMesh->bHiddenInGame
+			&& FirstPersonMesh->GetAttachmentRootActor() == Owner
+			&& ThirdPersonMesh->GetAttachmentRootActor() == Owner;
+	}
+
+	constexpr float SuitPresentationPollInterval = 0.05f;
+	// 이만큼(약 2초) 준비가 안 되면 어떤 조건이 막혔는지 한 번 남긴다. 그대로 두면 서버 timeout까지 화면이 덮여 있다.
+	constexpr int32 SuitPresentationStallLogPolls = 40;
+	// 취소/Pawn 교체로 남은 암전을 걷어내는 시간. 0 ↔ 1 전체 기준이라 남은 만큼만 걸린다.
+	constexpr float SuitCleanupRevealDuration = 0.25f;
 
 	void ResolvePairCharactersForController(
 		AFirstPersonPlayerController* Controller,
@@ -1296,12 +1324,10 @@ void AFirstPersonPlayerController::ClearLocalSuitTransition()
 	RequestSuitTransitionCleanup(Id);
 }
 
-// 암전 담당자 작업 위치: 아래 네 연결 지점의 실제 연출은 비워 둔다.
-// PIE의 기본 구현만 테스트 응답을 보낸다. 실제 연출 검증 시 Outlier.SuitTransition.BypassPresentation 0으로 끈다.
-// 기존 API 참고 경로: Plugins/RDG/Source/RDG/Public/LocalPlayerPostProcessSubsystem.h
-// 기존 구현 참고 경로: Plugins/RDG/Source/RDG/Private/LocalPlayerPostProcessSubsystem.cpp
-// 기존 사망/해킹 연출과의 우선순위는 담당자가 연결할 때 결정한다. 다른 연출을 여기서 강제 해제하지 않는다.
-// 비동기 콜백은 요청 ID를 값으로 캡처하고, 정리 요청에서는 해당 ID의 콜백만 해제한다.
+// Suit 전환 연출: 암전은 LocalPlayer PP의 Screen Blackout(Slate 이후, HUD 포함)으로 그린다.
+// 다른 연출(사망/해킹)과 파라미터를 공유하지 않으므로 여기서 다른 연출을 해제하지 않는다.
+// LocalPlayer가 없는 Controller는 연출도 완료 응답도 만들지 않고 서버 timeout에 맡긴다.
+// 비동기 콜백은 요청 ID를 값으로 캡처한다. 늦게 온 콜백은 Notify의 현재 ID/단계 검증에서 버려진다.
 void AFirstPersonPlayerController::RequestSuitFadeOut(const FGuid& TransitionId, float Duration)
 {
 	// 테스트도 기존 ID/소유자 검증과 서버 최소 시간을 거친다. 화면이 실제로 가려졌다는 보장은 없다.
@@ -1311,20 +1337,39 @@ void AFirstPersonPlayerController::RequestSuitFadeOut(const FGuid& TransitionId,
 		NotifySuitFadeOutFinished(TransitionId);
 		return;
 	}
-	// TODO(암전 담당자): 실제 화면이 가려진 콜백에서 NotifySuitFadeOutFinished(TransitionId)를 호출한다.
+	ULocalPlayerPostProcessSubsystem* PPSubsystem = FindSuitPostProcessSubsystem(this);
+	if (!PPSubsystem)
+	{
+		UE_LOG(LogTemp, Log, TEXT("[SuitTransition] No LocalPlayer presentation Controller=%s Phase=FadingOut"), *GetName());
+		return;
+	}
+	PPSubsystem->OnScreenBlackoutCovered.RemoveAll(this);
+	PPSubsystem->OnScreenBlackoutRevealed.RemoveAll(this);
+	PPSubsystem->OnScreenBlackoutCovered.AddUObject(
+		this, &AFirstPersonPlayerController::HandleSuitScreenBlackoutCovered, TransitionId);
+	PPSubsystem->StartScreenBlackout(Duration);
 }
 
 void AFirstPersonPlayerController::RequestSuitPresentationReady(const FGuid& TransitionId)
 {
-	// 테스트에서는 복제/첫 포즈 완료를 기다리지 않는다. 에셋의 실제 표시 준비 검증은 담당자 연결 후 수행한다.
+	// 테스트에서는 복제/첫 포즈 완료를 기다리지 않는다.
 	if (ShouldBypassSuitPresentationForTesting(GetWorld()))
 	{
 		UE_LOG(LogTemp, Log, TEXT("[SuitTransition] PIE presentation bypass Controller=%s Phase=Applying"), *GetName());
 		NotifySuitPresentationReady(TransitionId);
 		return;
 	}
-	// TODO(암전 담당자): 복제된 Mesh/ABP, 새 포즈와 무기 부착을 확인한 뒤 NotifySuitPresentationReady를 호출한다.
-	// Partner는 지급 무기 표시도 확인한다. RPC 도착/BlackHold 경과만으로 준비 완료를 보고하지 않는다.
+	if (!FindSuitPostProcessSubsystem(this))
+	{
+		UE_LOG(LogTemp, Log, TEXT("[SuitTransition] No LocalPlayer presentation Controller=%s Phase=Applying"), *GetName());
+		return;
+	}
+	// 암전은 FadeOut에서 1로 올린 채 둔다. RPC 도착/BlackHold 경과가 아닌 복제된 외형과 무기 표시를 확인한다.
+	bSuitPresentationReadyObserved = false;
+	SuitPresentationPollCount = 0;
+	GetWorldTimerManager().SetTimer(SuitPresentationPollTimer,
+		FTimerDelegate::CreateUObject(this, &AFirstPersonPlayerController::PollSuitPresentationReady, TransitionId),
+		SuitPresentationPollInterval, true);
 }
 
 void AFirstPersonPlayerController::RequestSuitFadeIn(const FGuid& TransitionId, float Duration)
@@ -1335,12 +1380,101 @@ void AFirstPersonPlayerController::RequestSuitFadeIn(const FGuid& TransitionId, 
 		NotifySuitFadeInFinished(TransitionId);
 		return;
 	}
-	// TODO(암전 담당자): 실제 화면 복귀 콜백에서 NotifySuitFadeInFinished(TransitionId)를 호출한다.
+	ULocalPlayerPostProcessSubsystem* PPSubsystem = FindSuitPostProcessSubsystem(this);
+	if (!PPSubsystem)
+	{
+		UE_LOG(LogTemp, Log, TEXT("[SuitTransition] No LocalPlayer presentation Controller=%s Phase=FadingIn"), *GetName());
+		return;
+	}
+	PPSubsystem->OnScreenBlackoutCovered.RemoveAll(this);
+	PPSubsystem->OnScreenBlackoutRevealed.RemoveAll(this);
+	PPSubsystem->OnScreenBlackoutRevealed.AddUObject(
+		this, &AFirstPersonPlayerController::HandleSuitScreenBlackoutRevealed, TransitionId);
+	PPSubsystem->StartScreenBlackoutReveal(Duration);
 }
 
 void AFirstPersonPlayerController::RequestSuitTransitionCleanup(const FGuid& TransitionId)
 {
-	// TODO(암전 담당자): 이 ID의 콜백/연출만 정리한다. 정상 종료, 취소, Pawn 교체와 EndPlay가 공유한다.
+	// 정상 종료, 취소, Pawn 교체와 EndPlay가 공유한다. 정상 종료면 암전은 이미 0이라 남은 일이 없다.
+	GetWorldTimerManager().ClearTimer(SuitPresentationPollTimer);
+	bSuitPresentationReadyObserved = false;
+	if (ULocalPlayerPostProcessSubsystem* PPSubsystem = FindSuitPostProcessSubsystem(this))
+	{
+		PPSubsystem->OnScreenBlackoutCovered.RemoveAll(this);
+		PPSubsystem->OnScreenBlackoutRevealed.RemoveAll(this);
+		// 취소로 화면이 덮인 채 끝나면 튀지 않게 남은 만큼 걷어낸다. 서브시스템은 Controller보다 오래 살아 끝까지 진행된다.
+		PPSubsystem->StartScreenBlackoutReveal(SuitCleanupRevealDuration);
+	}
+}
+
+void AFirstPersonPlayerController::HandleSuitScreenBlackoutCovered(FGuid TransitionId)
+{
+	if (ULocalPlayerPostProcessSubsystem* PPSubsystem = FindSuitPostProcessSubsystem(this))
+	{
+		PPSubsystem->OnScreenBlackoutCovered.RemoveAll(this);
+	}
+	NotifySuitFadeOutFinished(TransitionId);
+}
+
+void AFirstPersonPlayerController::HandleSuitScreenBlackoutRevealed(FGuid TransitionId)
+{
+	if (ULocalPlayerPostProcessSubsystem* PPSubsystem = FindSuitPostProcessSubsystem(this))
+	{
+		PPSubsystem->OnScreenBlackoutRevealed.RemoveAll(this);
+	}
+	NotifySuitFadeInFinished(TransitionId);
+}
+
+void AFirstPersonPlayerController::PollSuitPresentationReady(FGuid TransitionId)
+{
+	if (LocalSuitTransitionId != TransitionId || LocalSuitTransitionPhase != ESuitTransitionPhase::Applying)
+	{
+		GetWorldTimerManager().ClearTimer(SuitPresentationPollTimer);
+		bSuitPresentationReadyObserved = false;
+		return;
+	}
+	if (!IsSuitPresentationReady())
+	{
+		bSuitPresentationReadyObserved = false;
+		if (++SuitPresentationPollCount == SuitPresentationStallLogPolls)
+		{
+			const AShooterCharacter* Shooter = LocalSuitTransitionShooter.Get();
+			const APartnerCharacter* Partner = Cast<APartnerCharacter>(GetPawn());
+			UE_LOG(LogTemp, Warning,
+				TEXT("[SuitTransition] Presentation not ready Controller=%s ShooterSuitApplied=%d ShooterWeapon=%d PartnerWeapon=%d"),
+				*GetName(),
+				IsValid(Shooter) && Shooter->GetAppliedPresentation() == EShooterPresentation::Suit ? 1 : 0,
+				IsValid(Shooter) && IsWeaponPresentedOn(Shooter->GetCurrentWeapon(), Shooter) ? 1 : 0,
+				!Partner ? -1 : IsWeaponPresentedOn(Partner->GetCurrentWeapon(), Partner) ? 1 : 0);
+		}
+		return;
+	}
+	if (!bSuitPresentationReadyObserved)
+	{
+		bSuitPresentationReadyObserved = true;
+		return;
+	}
+	GetWorldTimerManager().ClearTimer(SuitPresentationPollTimer);
+	bSuitPresentationReadyObserved = false;
+	NotifySuitPresentationReady(TransitionId);
+}
+
+bool AFirstPersonPlayerController::IsSuitPresentationReady() const
+{
+	// 두 화면 모두 Shooter의 새 외형(Mesh/ABP)과 Rifle 부착을 확인한다.
+	// Shooter 포인터는 서버 RPC 인자로 받았으므로 이 클라이언트에 복제되어 있다.
+	const AShooterCharacter* Shooter = LocalSuitTransitionShooter.Get();
+	if (!IsValid(Shooter) || Shooter->GetAppliedPresentation() != EShooterPresentation::Suit
+		|| !IsWeaponPresentedOn(Shooter->GetCurrentWeapon(), Shooter))
+	{
+		return false;
+	}
+	// Partner는 자기 Pawn에 지급된 무기도 확인한다. Shooter 화면은 Partner 무기 복제를 기다리지 않는다.
+	if (const APartnerCharacter* Partner = Cast<APartnerCharacter>(GetPawn()))
+	{
+		return IsWeaponPresentedOn(Partner->GetCurrentWeapon(), Partner);
+	}
+	return true;
 }
 
 void AFirstPersonPlayerController::BindPostProcessSubSystem()

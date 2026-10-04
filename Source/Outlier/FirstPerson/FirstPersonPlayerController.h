@@ -84,14 +84,9 @@ public:
 	void SendSuitTransitionPhaseFromServer(AShooterCharacter* Shooter, const FGuid& TransitionId,
 		ESuitTransitionPhase Phase, float Duration);
 
-	// 담당자의 실제 완료 콜백에서 요청받은 ID를 전달한다. 요청 수신/타이머만으로 호출하지 않는다.
-	UFUNCTION(BlueprintCallable, Category = "Suit|Transition")
+	// 실제 연출 완료 콜백에서 요청받은 ID를 전달한다. 요청 수신/타이머만으로 호출하지 않는다.
 	void NotifySuitFadeOutFinished(const FGuid& TransitionId);
-
-	UFUNCTION(BlueprintCallable, Category = "Suit|Transition")
 	void NotifySuitPresentationReady(const FGuid& TransitionId);
-
-	UFUNCTION(BlueprintCallable, Category = "Suit|Transition")
 	void NotifySuitFadeInFinished(const FGuid& TransitionId);
 
 	/** Client-owned transport for relevant AtLocation audio requests. */
@@ -330,8 +325,8 @@ protected:
 	void PushGameOverWidget();
 	UGameOverWidget* FindGameOverWidget() const;
 
-	// 암전 담당자 연결 지점. PIE에서는 테스트용 완료 응답을 보내며, 일반 실행에서는 실제 연출 연결을 기다린다.
-	// 실제 콜백 검증 시 Outlier.SuitTransition.BypassPresentation 0으로 테스트 우회를 끈다.
+	// Suit 전환 연출 지점. 암전은 LocalPlayer PP의 Screen Blackout(HUD 포함)으로 그리고, 완료 콜백에서 서버에 알린다.
+	// Outlier.SuitTransition.BypassPresentation 1이면 PIE에서 연출 없이 바로 응답한다.
 	virtual void RequestSuitFadeOut(const FGuid& TransitionId, float Duration);
 	virtual void RequestSuitPresentationReady(const FGuid& TransitionId);
 	virtual void RequestSuitFadeIn(const FGuid& TransitionId, float Duration);
@@ -351,11 +346,21 @@ private:
 	void NotifySuitTransitionPhaseFinished(const FGuid& TransitionId, ESuitTransitionPhase Phase);
 	void ClearLocalSuitTransition();
 
+	// Screen Blackout 완료 콜백. 요청 ID를 값으로 받고, 현재 ID/단계 검증은 Notify가 맡는다.
+	void HandleSuitScreenBlackoutCovered(FGuid TransitionId);
+	void HandleSuitScreenBlackoutRevealed(FGuid TransitionId);
+	void PollSuitPresentationReady(FGuid TransitionId);
+	bool IsSuitPresentationReady() const;
+
 	TWeakObjectPtr<AShooterCharacter> LocalSuitTransitionShooter;
 	TWeakObjectPtr<APawn> LocalSuitTransitionPawn;
 	FGuid LocalSuitTransitionId;
 	ESuitTransitionPhase LocalSuitTransitionPhase;
 	bool bLocalSuitTransitionReadySent = false;
+	FTimerHandle SuitPresentationPollTimer;
+	// 조건이 처음 맞은 폴링에서는 새 ABP가 포즈를 한 번 평가하도록 다음 폴링까지 기다린다.
+	bool bSuitPresentationReadyObserved = false;
+	int32 SuitPresentationPollCount = 0;
 
 
 protected:

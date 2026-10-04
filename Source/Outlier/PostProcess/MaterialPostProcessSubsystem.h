@@ -8,6 +8,7 @@
 #include "MaterialPostProcessSubsystem.generated.h"
 
 class AActor;
+class AShooterCharacter;
 class AOutlierPostProcessVolume;
 class UMaterialInstanceDynamic;
 class UMaterialInterface;
@@ -116,6 +117,9 @@ public:
 	void ApplyScanStencil(AActor* Actor, int32 StencilValue);
 	void ClearScanStencil(AActor* Actor);
 	void EndScanPostProcess();
+	// 상시 PartnerOutline 패스에 Shooter 로컬 타깃의 스텐실만 공급한다.
+	void SetMeleeOutlineTarget(AActor* Target, AShooterCharacter* SourceShooter);
+	void ClearMeleeOutlineTarget(AActor* Target = nullptr);
 
 	// Stealth
 	// 은신은 State.Stealthed 태그를 구독해서 이 서브시스템이 전담한다.
@@ -155,6 +159,11 @@ private:
 	friend class FOutlierMaterialPostProcessResetTest;
 
 	TMap<TWeakObjectPtr<UPrimitiveComponent>, FScanStencilRestoreState> ScanStencilRestoreStates;
+	TMap<TWeakObjectPtr<UPrimitiveComponent>, FScanStencilRestoreState> MeleeOutlineRestoreStates;
+	TWeakObjectPtr<AActor> MeleeOutlineTarget;
+	TWeakObjectPtr<AShooterCharacter> MeleeOutlineSource;
+	bool bMeleeOutlineActive = false;
+	void TickMeleeOutlineTarget();
 
 	// 페이드아웃이 끝난 뒤 자기장 블렌더블을 내리는 일회성 타이머 ( 매 틱 폴링이 아니다 ).
 	FTimerHandle MagneticDisableTimerHandle;
