@@ -33,6 +33,8 @@ public:
 	bool HasInitialSnapshot() const { return bHasInitialSnapshot; }
 	bool HasLatestCheckpointSnapshot() const { return bHasLatestCheckpointSnapshot; }
 	bool HasCommittedCheckpoint(FName CheckpointId) const;
+	// 프리셋/디버그 재로드처럼 새 진행을 시작할 때 비운다. 체크포인트 Actor는 BeginPlay에서 이 목록을 읽는다.
+	void ResetCommittedCheckpointIds();
 
 	bool SetWorldProgressState(EOutlierWorldProgressType Type, FName ProgressId, bool bCompleted);
 	bool HasWorldProgress(EOutlierWorldProgressType Type, FName ProgressId) const;

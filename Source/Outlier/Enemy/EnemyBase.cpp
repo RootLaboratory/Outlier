@@ -2928,7 +2928,7 @@ void AEnemyBase::SetMeleeTargeted_Implementation(AActor* InstigatorActor, bool b
 	AShooterCharacter* Shooter = Cast<AShooterCharacter>(InstigatorActor);
 	AShooterPlayerController* ShooterController = Shooter
 		? Cast<AShooterPlayerController>(Shooter->GetController()) : nullptr;
-	if (Controller)
+	if (IsValid(ShooterController))
 	{
 		// 적 액터는 클라이언트 소유가 아니므로 RPC는 Shooter의 Controller를 통해 보낸다.
 		ShooterController->ClientNotifyMeleeTargeted(this, Shooter, bTargeted);

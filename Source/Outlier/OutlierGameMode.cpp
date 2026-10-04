@@ -2929,10 +2929,12 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 		: nullptr)
 	{
 		// 프리셋/디버그 재로드는 새 진행이다. 설정된 서브레벨의 새 액터가 이전 판의
-		// 문/노드/전투 완료 및 파괴 터렛 상태를 읽지 않게 먼저 비운다.
+		// 문/노드/전투 완료, 파괴 터렛, 체크포인트 저장 상태를 읽지 않게 먼저 비운다.
+		// 체크포인트 저장 상태가 남으면 Level1 문처럼 저장 완료 통지를 기다리는 진행이 멈춘다.
 		SaveSubsystem->RestoreCurrentWorldProgress(FOutlierWorldProgressSnapshot());
 		SaveSubsystem->RestoreCurrentRoomPhaseProgress(TMap<FGameplayTag, FOutlierRoomPhaseProgress>());
 		SaveSubsystem->RestoreCurrentDestroyedTurretIds(TSet<FName>());
+		SaveSubsystem->ResetCommittedCheckpointIds();
 	}
 
 	// 4) Possess는 설정된 게임플레이 서브레벨이 다시 표시된 뒤에 진행한다.

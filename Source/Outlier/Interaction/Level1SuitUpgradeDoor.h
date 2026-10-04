@@ -44,7 +44,6 @@ private:
 	void OnPlayerStateChanged(AOutlierPlayerState* PlayerState);
 	void OnUICompleted(AOutlierPlayerState* PlayerState, uint32 CompletedGeneration);
 	void OnRoomOverlapChanged(AActor* Actor, bool bEntered);
-	void HandleSafetyReentry(AActor* Actor, bool bEntered);
 	void HandleDoorMotionFinished(AInteractableDoor* Door, bool bOpen);
 	void HandleDoorSafetyReopenStarted(AInteractableDoor* Door);
 	void OnRoomStartReadinessChanged(FGameplayTag ChangedRoomTag);
@@ -56,6 +55,7 @@ private:
 	void OnArenaGameplayReady(uint32 ReadyGeneration);
 	void ReconcileRestoredProgress();
 	void EvaluateEntry();
+	void ScheduleEntryRecheck();
 	bool AbortEntryIfPairOutside();
 	void LogEntryStatus(const TCHAR* Reason, const AOutlierPlayerState* Shooter,
 		const AOutlierPlayerState* Partner);
@@ -70,10 +70,8 @@ private:
 	FDelegateHandle ActorSpawnedHandle;
 	FTimerHandle EntryRecheckTimer;
 	TSet<TWeakObjectPtr<AActor>> OverlappingPlayers;
-	TSet<TWeakObjectPtr<AActor>> SafetyReentryPlayers;
 	uint32 GameplayGeneration = 0;
 	bool bEntrySealed = false;
-	bool bEntryCloseRejected = false;
 	bool bCloseFinished = false;
 	bool bReopenRequested = false;
 	bool bOpenFinished = false;
