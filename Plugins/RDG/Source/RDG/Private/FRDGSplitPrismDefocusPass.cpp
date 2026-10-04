@@ -1,12 +1,14 @@
 #include "FRDGSplitPrismDefocusPass.h"
 
 #include "FPostProcessStructures.h"
+#include "FXRenderingUtils.h"
 #include "GenerateMips.h"
 #include "RDGSplitPrismDefocusPS.h"
 #include "RenderGraphBuilder.h"
 #include "RenderGraphUtils.h"
 #include "RHIStaticStates.h"
 #include "SceneView.h"
+#include "SystemTextures.h"
 #include "ScreenPass.h"
 
 namespace
@@ -22,6 +24,7 @@ FScreenPassTexture FRDGSplitPrismDefocusPass::AddPass(
 	FRDGBuilder& GraphBuilder,
 	const FSceneView& View,
 	const FScreenPassTexture& SceneColor,
+	FRDGTextureRef SceneDepthTexture,
 	const FSplitPrismDefocusParameters& Parameters,
 	const FScreenPassRenderTarget& OverrideOutput)
 {
@@ -33,10 +36,20 @@ FScreenPassTexture FRDGSplitPrismDefocusPass::AddPass(
 
 	FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(View.GetFeatureLevel());
 
+	const float MaxRadiusPx =
+		Parameters.MaxRadius * static_cast<float>(ViewSize.Y) / SplitPrismDefocusReferenceHeight;
+	// 셰이더의 SampleRadius = max(G, R/B) 반경과 같은 값. 0.5px 미만이면 셰이더가 원판을 안 돌린다.
+	const float BlurRadiusPx =
+		MaxRadiusPx * FMath::Abs(Parameters.Defocus) * (1.0f + FMath::Max(Parameters.FringeAmount, 0.0f));
+	const bool bNeedsBlur = BlurRadiusPx >= 0.5f;
+
 	// 뷰 영역만 밉 체인이 있는 텍스처로 옮기고 밉을 만든다. 원판 샘플은 샘플 간격에 맞는 밉을 읽는다.
-	const int32 MipCount = FMath::Min(
-		static_cast<int32>(FMath::FloorLog2(static_cast<uint32>(FMath::Max(ViewSize.X, ViewSize.Y)))) + 1,
-		SplitPrismDefocusMaxMipCount);
+	// 블러가 없으면(초점이 맞은 뒤 깊이 잔차만 남은 상태) 밉 생성은 건너뛴다.
+	const int32 MipCount = bNeedsBlur
+		? FMath::Min(
+			static_cast<int32>(FMath::FloorLog2(static_cast<uint32>(FMath::Max(ViewSize.X, ViewSize.Y)))) + 1,
+			SplitPrismDefocusMaxMipCount)
+		: 1;
 	const FRDGTextureDesc PrefilterDesc = FRDGTextureDesc::Create2D(
 		ViewSize,
 		PF_FloatRGBA,
@@ -52,12 +65,15 @@ FScreenPassTexture FRDGSplitPrismDefocusPass::AddPass(
 	DrawInfo.SourcePosition = SceneColor.ViewRect.Min;
 	AddDrawTexturePass(GraphBuilder, ShaderMap, SceneColor.Texture, PrefilterTexture, DrawInfo);
 
-	FGenerateMips::Execute(
-		GraphBuilder,
-		View.GetFeatureLevel(),
-		PrefilterTexture,
-		TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI(),
-		EGenerateMipsPass::Raster);
+	if (MipCount > 1)
+	{
+		FGenerateMips::Execute(
+			GraphBuilder,
+			View.GetFeatureLevel(),
+			PrefilterTexture,
+			TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI(),
+			EGenerateMipsPass::Raster);
+	}
 
 	FScreenPassRenderTarget Output = OverrideOutput;
 	if (Output.IsValid())
@@ -88,12 +104,42 @@ FScreenPassTexture FRDGSplitPrismDefocusPass::AddPass(
 		1.0f / static_cast<float>(ViewSize.X),
 		1.0f / static_cast<float>(ViewSize.Y));
 	PassParameters->Defocus = Parameters.Defocus;
-	PassParameters->MaxRadius =
-		Parameters.MaxRadius * static_cast<float>(ViewSize.Y) / SplitPrismDefocusReferenceHeight;
+	PassParameters->MaxRadius = MaxRadiusPx;
 	PassParameters->FringeAmount = Parameters.FringeAmount;
 	PassParameters->RimBias = Parameters.RimBias;
 	PassParameters->SampleCount = static_cast<uint32>(FMath::Max(Parameters.SampleCount, 1));
 	PassParameters->MaxMipLevel = static_cast<float>(MipCount - 1);
+
+	// 깊이 잔차. 이 자리(MotionBlur 뒤)의 SceneColor는 업스케일 뒤 해상도일 수 있고 SceneDepth는 렌더 해상도라,
+	// 셰이더의 뷰 UV(0~1)를 깊이 텍스처의 렌더 ViewRect로 다시 매핑한다.
+	const bool bDepthResidual = SceneDepthTexture != nullptr
+		&& Parameters.ResidualWeight > 0.0f
+		&& Parameters.DepthOffset > 0.0f
+		&& Parameters.InvSubjectDistance > 0.0f;
+	if (bDepthResidual)
+	{
+		const FIntRect DepthViewRect = UE::FXRenderingUtils::GetRawViewRectUnsafe(View);
+		const FIntPoint DepthExtent = SceneDepthTexture->Desc.Extent;
+		const FVector2f InvDepthExtent(
+			1.0f / static_cast<float>(FMath::Max(DepthExtent.X, 1)),
+			1.0f / static_cast<float>(FMath::Max(DepthExtent.Y, 1)));
+		PassParameters->SceneDepthTexture = SceneDepthTexture;
+		PassParameters->DepthUVScale = FVector2f(DepthViewRect.Size()) * InvDepthExtent;
+		PassParameters->DepthUVBias = FVector2f(DepthViewRect.Min) * InvDepthExtent;
+	}
+	else
+	{
+		PassParameters->SceneDepthTexture = GSystemTextures.GetBlackDummy(GraphBuilder);
+		PassParameters->DepthUVScale = FVector2f::One();
+		PassParameters->DepthUVBias = FVector2f::Zero();
+	}
+	PassParameters->DepthSampler = TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+	PassParameters->InvDeviceZToWorldZTransform = FVector4f(View.InvDeviceZToWorldZTransform);
+	PassParameters->DepthOffset = Parameters.DepthOffset;
+	PassParameters->InvSubjectDistance = Parameters.InvSubjectDistance;
+	PassParameters->InvFocusSwing = Parameters.InvFocusSwing;
+	PassParameters->MaxResidual = Parameters.MaxResidual;
+	PassParameters->ResidualWeight = bDepthResidual ? Parameters.ResidualWeight : 0.0f;
 	PassParameters->RenderTargets[0] = Output.GetRenderTargetBinding();
 
 	TShaderMapRef<FScreenPassVS> VertexShader(ShaderMap);

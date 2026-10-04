@@ -1970,8 +1970,8 @@ void AEnemyBase::BroadcastDamageCue(const FOutlierDamageRequest& Request, float 
 	CueParameters.Instigator = Request.EventInstigator;
 	CueParameters.EffectCauser = Request.DamageCauser;
 
-	//GC에 쓸 Context를 나눔. 무기 피해나 폭발 피해; 나중에 tag로 이펙트 처리를 분기로 나눌 수 있기 때문임.따로 GC를 늘리는 것보다 태그 기반
-	//분기 처리가 더 낫다고 생각했음.ㄴ
+	// The shared hit cue selects melee/ranged/explosion feedback from
+	// AggregatedSourceTags; EffectContext supplies the impact location and normal.
 
 	FGameplayEffectContextHandle EffectContext = OutlierAbilitySystemComponent->MakeEffectContext();
 	EffectContext.AddInstigator(Request.EventInstigator, Request.DamageCauser);

@@ -16,6 +16,16 @@ DECLARE_MULTICAST_DELEGATE(FOnHackTransitionCovered);
 DECLARE_MULTICAST_DELEGATE(FOnHackTransitionFinished);
 DECLARE_MULTICAST_DELEGATE(FOnDeathBlackNoiseStarted);
 
+// Split Prism 진행 단계.
+// Focusing: d(t)가 1 → 0. Settling: (A) 깊이 잔차를 0으로 줄이는 중. Holding: (B) 깊이 잔차를 Stop까지 유지.
+enum class ESplitPrismPhase : uint8
+{
+	Idle,
+	Focusing,
+	Settling,
+	Holding
+};
+
 enum class EHackPossessionTransitionPhase : uint8
 {
 	Idle,
@@ -135,12 +145,18 @@ public:
 	// 튜닝값만 갱신한다. 켜짐 / 드러남 / 시간 같은 런타임 필드는 입력값을 무시하고 유지한다.
 	void SetDroneDamageFeedbackParameters(const FDroneDamageFeedbackParameters& InParameters);
 
-	// Split Prism(Slate 갈라짐 + 씬 PP 블러). 진행 중이면 처음부터 다시 시작하고, FocusDuration 뒤 스스로 꺼진다.
+	// Split Prism(Slate 갈라짐 + 씬 PP 블러 + 깊이 잔차). 진행 중이면 처음부터 다시 시작한다.
+	// FocusDuration 뒤: 깊이 잔차가 꺼져 있으면 바로 끝, A(Settle)는 잔차를 줄이고 끝, B(Persist)는 Stop까지 유지.
 	void StartSplitPrism();
 	void StopSplitPrism();
-	bool IsSplitPrismActive() const { return bSplitPrismActive; }
-	// 초점이 빗나간 양 d(t). 부호 있음. 꺼져 있으면 0.
+	bool IsSplitPrismActive() const { return SplitPrismPhase != ESplitPrismPhase::Idle; }
+	ESplitPrismPhase GetSplitPrismPhase() const { return SplitPrismPhase; }
+	// 초점이 빗나간 양 d(t). 부호 있음. Focusing이 아니면 0.
 	float GetSplitPrismDefocus() const;
+	// 깊이 잔차 세기 0~1.
+	float GetSplitPrismResidualWeight() const;
+	// 고정된 피사체 거리(cm). 아직 못 정했으면 음수.
+	float GetSplitPrismSubjectDistance() const { return SplitPrismSubjectDistance; }
 	const FSplitPrismSettings& GetSplitPrismSettings() const { return SplitPrismSettings; }
 	void SetSplitPrismSettings(const FSplitPrismSettings& InSettings);
 
@@ -205,7 +221,10 @@ private:
 	void RefreshDroneDamageEnabled();
 	void RefreshDroneDamageMaskTextures();
 	void UpdateSplitPrism(float DeltaTime);
-	void ApplySplitPrismDefocus(float Defocus);
+	void ApplySplitPrism();
+	void ApplySplitPrismOff();
+	void TraceSplitPrismSubjectDistance();
+	void EnterSplitPrismPhaseAfterFocus();
 	void RefreshDeathTransitionTextures();
 	void UpdateDepthOfField();
 	void ApplyADSBlurRuntimeParameters();
@@ -246,8 +265,13 @@ private:
 	uint8 bDroneDamageSuppressed : 1 = false;
 
 	FSplitPrismSettings SplitPrismSettings;
+	ESplitPrismPhase SplitPrismPhase = ESplitPrismPhase::Idle;
+	// Focusing 경과 시간.
 	float SplitPrismElapsedTime = 0.0f;
-	uint8 bSplitPrismActive : 1 = false;
+	// Settling 경과 시간.
+	float SplitPrismSettleElapsedTime = 0.0f;
+	// D_subj(cm). 음수면 아직 트레이스 전.
+	float SplitPrismSubjectDistance = -1.0f;
 
 	FDeathTransitionSequence DeathTransition;
 	bool bGameOverBlackoutActive = false;

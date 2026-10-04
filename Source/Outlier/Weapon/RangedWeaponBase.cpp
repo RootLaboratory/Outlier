@@ -625,7 +625,7 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 		{
 			FOutlierDamageRequest DamageRequest;
 			DamageRequest.DamageAmount = DamageToApply;
-			DamageRequest.DamageTag = OutlierGameplayTags::Damage::Weapon();
+			DamageRequest.DamageTag = OutlierGameplayTags::Damage::Ranged();
 			DamageRequest.AdaptationDamageCategory = ResolveAdaptationDamageCategory(
 				OwnerCharacter,
 				WeaponType);

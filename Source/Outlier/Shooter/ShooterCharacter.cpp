@@ -2447,7 +2447,7 @@ bool AShooterCharacter::TryReflectIncomingDamage(const FOutlierDamageRequest& Re
 	{
 		return false;
 	}
-	if (!Request.DamageTag.MatchesTagExact(OutlierGameplayTags::Damage::Weapon())
+	if (!Request.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Weapon())
 		&& !Request.DamageTag.MatchesTagExact(OutlierGameplayTags::Damage::Explosion()))
 	{
 		return false;

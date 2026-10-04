@@ -8,6 +8,11 @@
 #include "Engine/LocalPlayer.h"
 #include "Engine/PostProcessVolume.h"
 #include "Engine/Texture2D.h"
+#include "Engine/World.h"
+#include "Engine/HitResult.h"
+#include "GameFramework/Pawn.h"
+#include "GameFramework/PlayerController.h"
+#include "CollisionQueryParams.h"
 
 namespace PostProcessAnimation
 {
@@ -111,8 +116,10 @@ void ULocalPlayerPostProcessSubsystem::ResetAllPostProcess(bool bPreserveDeathTr
 	HackTransitionZoomBlurElapsedTime = 0.0f;
 	HackTransitionBlackoutElapsedTime = 0.0f;
 	bHackTransitionCoveredBroadcastSent = false;
-	bSplitPrismActive = false;
+	SplitPrismPhase = ESplitPrismPhase::Idle;
 	SplitPrismElapsedTime = 0.0f;
+	SplitPrismSettleElapsedTime = 0.0f;
+	SplitPrismSubjectDistance = -1.0f;
 
 	PostProcessParameters.MotionBlur.bEnabled = false;
 	PostProcessParameters.LensFlare.bEnabled = false;
@@ -129,6 +136,7 @@ void ULocalPlayerPostProcessSubsystem::ResetAllPostProcess(bool bPreserveDeathTr
 	PostProcessParameters.ADSBlur.bEnabled = false;
 	PostProcessParameters.SplitPrismDefocus.bEnabled = false;
 	PostProcessParameters.SplitPrismDefocus.Defocus = 0.0f;
+	PostProcessParameters.SplitPrismDefocus.ResidualWeight = 0.0f;
 	UIPostProcessParameters.ChromaticAberration.bEnabled = false;
 	UIPostProcessParameters.Overlay.bEnabled = false;
 	UIPostProcessParameters.Overlay.AccumulatedValue = 0.0f;
@@ -914,25 +922,28 @@ namespace SplitPrismAnimation
 
 void ULocalPlayerPostProcessSubsystem::StartSplitPrism()
 {
-	bSplitPrismActive = true;
+	SplitPrismPhase = ESplitPrismPhase::Focusing;
 	SplitPrismElapsedTime = 0.0f;
-	ApplySplitPrismDefocus(GetSplitPrismDefocus());
+	SplitPrismSettleElapsedTime = 0.0f;
+	// 빙의 직후엔 카메라가 아직 새 뷰로 안 넘어왔을 수 있어서, 피사체 거리는 첫 틱에 잰다.
+	SplitPrismSubjectDistance = -1.0f;
+	ApplySplitPrism();
 }
 
 void ULocalPlayerPostProcessSubsystem::StopSplitPrism()
 {
-	if (!bSplitPrismActive)
+	if (SplitPrismPhase == ESplitPrismPhase::Idle)
 	{
 		return;
 	}
 
-	bSplitPrismActive = false;
-	ApplySplitPrismDefocus(0.0f);
+	SplitPrismPhase = ESplitPrismPhase::Idle;
+	ApplySplitPrismOff();
 }
 
 float ULocalPlayerPostProcessSubsystem::GetSplitPrismDefocus() const
 {
-	if (!bSplitPrismActive || SplitPrismSettings.FocusDuration <= 0.0f)
+	if (SplitPrismPhase != ESplitPrismPhase::Focusing || SplitPrismSettings.FocusDuration <= 0.0f)
 	{
 		return 0.0f;
 	}
@@ -940,6 +951,27 @@ float ULocalPlayerPostProcessSubsystem::GetSplitPrismDefocus() const
 	return SplitPrismAnimation::EvaluateDefocus(
 		SplitPrismSettings,
 		SplitPrismElapsedTime / SplitPrismSettings.FocusDuration);
+}
+
+float ULocalPlayerPostProcessSubsystem::GetSplitPrismResidualWeight() const
+{
+	if (!SplitPrismSettings.bDepthSplit)
+	{
+		return 0.0f;
+	}
+
+	switch (SplitPrismPhase)
+	{
+	case ESplitPrismPhase::Focusing:
+	case ESplitPrismPhase::Holding:
+		return 1.0f;
+	case ESplitPrismPhase::Settling:
+		return SplitPrismSettings.DepthSettleDuration > 0.0f
+			? 1.0f - FMath::SmoothStep(0.0f, 1.0f, SplitPrismSettleElapsedTime / SplitPrismSettings.DepthSettleDuration)
+			: 0.0f;
+	default:
+		return 0.0f;
+	}
 }
 
 void ULocalPlayerPostProcessSubsystem::SetSplitPrismSettings(const FSplitPrismSettings& InSettings)
@@ -955,32 +987,127 @@ void ULocalPlayerPostProcessSubsystem::SetSplitPrismSettings(const FSplitPrismSe
 	// 0.5 이하라 R/B 반경 배율(1 ± Fringe)이 항상 양수다.
 	SplitPrismSettings.FringeAmount = FMath::Clamp(InSettings.FringeAmount, 0.0f, 0.5f);
 	SplitPrismSettings.BokehRimBias = FMath::Clamp(InSettings.BokehRimBias, 0.0f, 1.0f);
+	SplitPrismSettings.bDepthSplit = InSettings.bDepthSplit;
+	SplitPrismSettings.bPersistDepthSplit = InSettings.bPersistDepthSplit;
+	SplitPrismSettings.FocusSwingDiopter = FMath::Clamp(InSettings.FocusSwingDiopter, 0.05f, 10.0f);
+	SplitPrismSettings.MaxDepthResidual = FMath::Clamp(InSettings.MaxDepthResidual, 0.0f, 4.0f);
+	SplitPrismSettings.DepthSettleDuration = FMath::Clamp(InSettings.DepthSettleDuration, 0.0f, 3.0f);
+	SplitPrismSettings.FallbackSubjectDistance = FMath::Clamp(InSettings.FallbackSubjectDistance, 10.0f, 100000.0f);
+	SplitPrismSettings.SubjectTraceDistance = FMath::Clamp(InSettings.SubjectTraceDistance, 100.0f, 100000.0f);
+
+	// 초점이 다 맞은 뒤 단계에서 플래그가 바뀌면 그에 맞는 단계로 옮긴다.
+	if (SplitPrismPhase == ESplitPrismPhase::Holding || SplitPrismPhase == ESplitPrismPhase::Settling)
+	{
+		EnterSplitPrismPhaseAfterFocus();
+	}
 
 	// 진행 중이면 바뀐 값을 바로 보이게 한다.
-	if (bSplitPrismActive)
+	if (SplitPrismPhase != ESplitPrismPhase::Idle)
 	{
-		ApplySplitPrismDefocus(GetSplitPrismDefocus());
+		ApplySplitPrism();
+	}
+	else
+	{
+		ApplySplitPrismOff();
+	}
+}
+
+void ULocalPlayerPostProcessSubsystem::EnterSplitPrismPhaseAfterFocus()
+{
+	if (!SplitPrismSettings.bDepthSplit)
+	{
+		SplitPrismPhase = ESplitPrismPhase::Idle;
+	}
+	else if (SplitPrismSettings.bPersistDepthSplit)
+	{
+		SplitPrismPhase = ESplitPrismPhase::Holding;
+	}
+	else if (SplitPrismPhase != ESplitPrismPhase::Settling)
+	{
+		// Holding → Settling 전환도 여기로 온다. 페이드는 처음부터.
+		SplitPrismPhase = SplitPrismSettings.DepthSettleDuration > 0.0f
+			? ESplitPrismPhase::Settling
+			: ESplitPrismPhase::Idle;
+		SplitPrismSettleElapsedTime = 0.0f;
+	}
+}
+
+void ULocalPlayerPostProcessSubsystem::TraceSplitPrismSubjectDistance()
+{
+	SplitPrismSubjectDistance = SplitPrismSettings.FallbackSubjectDistance;
+
+	const ULocalPlayer* LP = GetLocalPlayer();
+	UWorld* World = LP ? LP->GetWorld() : nullptr;
+	APlayerController* PC = World ? LP->GetPlayerController(World) : nullptr;
+	if (!PC)
+	{
+		return;
+	}
+
+	// 화면 가운데 = 카메라 정면. 가운데 픽셀의 뷰 깊이와 광선 길이가 같다.
+	FVector ViewLocation;
+	FRotator ViewRotation;
+	PC->GetPlayerViewPoint(ViewLocation, ViewRotation);
+
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(SplitPrismSubjectTrace), true);
+	if (APawn* Pawn = PC->GetPawn())
+	{
+		QueryParams.AddIgnoredActor(Pawn);
+	}
+
+	FHitResult Hit;
+	const FVector TraceEnd = ViewLocation + ViewRotation.Vector() * SplitPrismSettings.SubjectTraceDistance;
+	if (World->LineTraceSingleByChannel(Hit, ViewLocation, TraceEnd, ECC_Visibility, QueryParams))
+	{
+		SplitPrismSubjectDistance = FMath::Max(Hit.Distance, 10.0f);
 	}
 }
 
 void ULocalPlayerPostProcessSubsystem::UpdateSplitPrism(float DeltaTime)
 {
-	if (!bSplitPrismActive)
+	switch (SplitPrismPhase)
 	{
+	case ESplitPrismPhase::Focusing:
+		if (SplitPrismSubjectDistance < 0.0f)
+		{
+			TraceSplitPrismSubjectDistance();
+		}
+
+		SplitPrismElapsedTime += DeltaTime;
+		if (SplitPrismElapsedTime >= SplitPrismSettings.FocusDuration)
+		{
+			EnterSplitPrismPhaseAfterFocus();
+		}
+		break;
+
+	case ESplitPrismPhase::Settling:
+		SplitPrismSettleElapsedTime += DeltaTime;
+		if (SplitPrismSettleElapsedTime >= SplitPrismSettings.DepthSettleDuration)
+		{
+			SplitPrismPhase = ESplitPrismPhase::Idle;
+		}
+		break;
+
+	default:
+		// Idle / Holding은 값이 안 바뀐다. 깊이는 셰이더가 매 프레임 읽는다.
 		return;
 	}
 
-	SplitPrismElapsedTime += DeltaTime;
-	if (SplitPrismElapsedTime >= SplitPrismSettings.FocusDuration)
+	if (SplitPrismPhase == ESplitPrismPhase::Idle)
 	{
-		bSplitPrismActive = false;
+		ApplySplitPrismOff();
 	}
-
-	ApplySplitPrismDefocus(GetSplitPrismDefocus());
+	else
+	{
+		ApplySplitPrism();
+	}
 }
 
-void ULocalPlayerPostProcessSubsystem::ApplySplitPrismDefocus(float Defocus)
+void ULocalPlayerPostProcessSubsystem::ApplySplitPrism()
 {
+	const float Defocus = GetSplitPrismDefocus();
+	const float ResidualWeight = SplitPrismSubjectDistance > 0.0f ? GetSplitPrismResidualWeight() : 0.0f;
+
 	FSplitPrismParameters& SplitPrism = UIPostProcessParameters.SplitPrism;
 	SplitPrism.Offset = SplitPrismSettings.StartOffset * Defocus;
 	SplitPrism.bEnabled = SplitPrism.Offset != 0.0f;
@@ -991,7 +1118,31 @@ void ULocalPlayerPostProcessSubsystem::ApplySplitPrismDefocus(float Defocus)
 	Blur.SampleCount = SplitPrismSettings.BlurSampleCount;
 	Blur.FringeAmount = SplitPrismSettings.FringeAmount;
 	Blur.RimBias = SplitPrismSettings.BokehRimBias;
-	Blur.bEnabled = Defocus != 0.0f && Blur.MaxRadius > 0.0f;
+
+	// 깊이 잔차 r = (1/D_subj - 1/D) / Δ. 거리는 m 단위 디옵터로 맞춘다(UE 길이는 cm).
+	Blur.DepthOffset = SplitPrismSettings.StartOffset;
+	Blur.InvSubjectDistance = SplitPrismSubjectDistance > 0.0f ? 100.0f / SplitPrismSubjectDistance : 0.0f;
+	Blur.InvFocusSwing = 1.0f / SplitPrismSettings.FocusSwingDiopter;
+	Blur.MaxResidual = SplitPrismSettings.MaxDepthResidual;
+	Blur.ResidualWeight = ResidualWeight;
+
+	const bool bBlur = Defocus != 0.0f && Blur.MaxRadius > 0.0f;
+	const bool bResidual = ResidualWeight > 0.0f && Blur.DepthOffset > 0.0f && Blur.MaxResidual > 0.0f;
+	Blur.bEnabled = bBlur || bResidual;
+
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::ApplySplitPrismOff()
+{
+	UIPostProcessParameters.SplitPrism.Offset = 0.0f;
+	UIPostProcessParameters.SplitPrism.bEnabled = false;
+
+	FSplitPrismDefocusParameters& Blur = PostProcessParameters.SplitPrismDefocus;
+	Blur.Defocus = 0.0f;
+	Blur.ResidualWeight = 0.0f;
+	Blur.bEnabled = false;
 
 	MarkDirty();
 	TickFrame();

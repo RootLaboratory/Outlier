@@ -775,7 +775,7 @@ void AMeleeWeaponBase::ApplyHitToTarget(AActor* Target, const FHitResult& HitRes
 
 	FOutlierDamageRequest DamageRequest;
 	DamageRequest.DamageAmount = DamageToApply;
-	DamageRequest.DamageTag = OutlierGameplayTags::Damage::Weapon();
+	DamageRequest.DamageTag = OutlierGameplayTags::Damage::Melee();
 	const AEnemyBase* OwnerEnemy = Cast<AEnemyBase>(WeaponOwner);
 	const bool bPlayerAttributedAttack = Cast<AShooterCharacter>(WeaponOwner)
 		|| Cast<APartnerCharacter>(WeaponOwner)

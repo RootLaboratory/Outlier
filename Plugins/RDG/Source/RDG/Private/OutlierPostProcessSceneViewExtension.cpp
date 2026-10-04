@@ -434,10 +434,16 @@ FScreenPassTexture FOutlierPostProcessSceneViewExtension::SplitPrismDefocusCallb
 		return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
 	}
 
+	// 깊이 잔차용. 없으면 패스가 잔차를 끄고 블러만 한다.
+	FRDGTextureRef SceneDepthTexture = Inputs.SceneTextures.SceneTextures
+		? Inputs.SceneTextures.SceneTextures->GetParameters()->SceneDepthTexture
+		: nullptr;
+
 	return FRDGSplitPrismDefocusPass::AddPass(
 		GraphBuilder,
 		View,
 		SceneColor,
+		SceneDepthTexture,
 		CachedParameters.SplitPrismDefocus,
 		Inputs.OverrideOutput);
 }

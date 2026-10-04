@@ -467,6 +467,28 @@ struct FSplitPrismSettings
 
 	// 원판 밝기 분포. 앞초점은 테두리가, 뒤초점은 가운데가 밝아진다.
 	float BokehRimBias = 1.0f;
+
+	// 깊이 잔차. 실제 갈라짐은 픽셀마다 1/D - 1/F에 비례한다. 링 위치를 1/F(t) = 1/D_subj + d(t)·Δ로 두면
+	// 장면 갈라짐 = StartOffset × (d + r),  r = (1/D_subj - 1/D) / Δ 로 쪼개진다.
+	// d는 화면 전체(HUD 포함, Slate 이후), r은 장면에만(HDR 디포커스 패스) 얹는다.
+	bool bDepthSplit = true;
+
+	// 초점이 다 맞은 뒤 r 처리. false = A(Settle): DepthSettleDuration 동안 r을 0으로 줄이고 끝.
+	// true = B(Persist): StopSplitPrism까지 r을 유지(피사체 거리 밖은 계속 갈라짐, 물리 그대로).
+	bool bPersistDepthSplit = false;
+
+	// Δ. 시작(d = 1) 때 초점이 피사체보다 얼마나 가까이 있었나(디옵터, 1/m). 작을수록 깊이 차가 과장된다.
+	float FocusSwingDiopter = 1.0f;
+
+	// |r| 상한. 렌즈 바로 앞 물체가 끝없이 갈라지지 않게.
+	float MaxDepthResidual = 1.5f;
+
+	// A(Settle)에서 r을 0으로 줄이는 시간(초).
+	float DepthSettleDuration = 0.4f;
+
+	// 피사체 거리 D_subj는 시작 후 첫 틱에 화면 가운데로 라인 트레이스해서 고정한다. 안 맞으면 이 값(cm).
+	float FallbackSubjectDistance = 1000.0f;
+	float SubjectTraceDistance = 10000.0f;
 };
 
 // Split Prism. Slate 이후 backbuffer를 화면 가운데 세로선 기준으로 반 갈라
@@ -479,8 +501,8 @@ struct FSplitPrismParameters
 	float Offset = 0.0f;
 };
 
-// Split Prism 디포커스. Tonemap 앞(선형 HDR)에서 화면 전체를 같은 반경의 원판으로 흐린다.
-// 평면 피사체에 초점을 맞추는 장면이라 깊이는 쓰지 않는다.
+// Split Prism 디포커스. Tonemap 앞(선형 HDR)에서 화면 전체를 같은 반경의 원판으로 흐린다(블러는 깊이 안 씀).
+// 장면 갈라짐의 깊이 잔차 r도 여기서 UV를 밀어서 얹는다.
 struct FSplitPrismDefocusParameters
 {
 	int32 bEnabled = false;
@@ -493,6 +515,13 @@ struct FSplitPrismDefocusParameters
 	int32 SampleCount = 64;
 	float FringeAmount = 0.0f;
 	float RimBias = 1.0f;
+
+	// 깊이 잔차. ResidualWeight가 0이면 끈다.
+	float DepthOffset = 0.0f;          // StartOffset. 화면 높이 대비
+	float InvSubjectDistance = 0.0f;   // 1/D_subj (1/m). 0이면 피사체 거리 미정 → 끔
+	float InvFocusSwing = 1.0f;        // 1/Δ (m)
+	float MaxResidual = 1.5f;
+	float ResidualWeight = 0.0f;       // 0~1
 };
 
 // Slate가 렌더링을 마친 backbuffer 색상에 적용하는 Overlay 블렌드 효과.

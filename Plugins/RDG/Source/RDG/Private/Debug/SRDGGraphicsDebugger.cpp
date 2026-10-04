@@ -3404,11 +3404,27 @@ TSharedRef<SWidget> SRDGGraphicsDebugger::MakeSplitPrismSection()
 				return FText::FromString(TEXT("Defocus: -"));
 			}
 
+			const TCHAR* PhaseName = TEXT("Idle");
+			switch (Subsystem->GetSplitPrismPhase())
+			{
+			case ESplitPrismPhase::Focusing: PhaseName = TEXT("Focusing"); break;
+			case ESplitPrismPhase::Settling: PhaseName = TEXT("Settling (A)"); break;
+			case ESplitPrismPhase::Holding:  PhaseName = TEXT("Holding (B)"); break;
+			default: break;
+			}
+
+			const float SubjectDistance = Subsystem->GetSplitPrismSubjectDistance();
+			const FString SubjectText = SubjectDistance > 0.0f
+				? FString::Printf(TEXT("%.2f m"), SubjectDistance * 0.01f)
+				: FString(TEXT("-"));
+
 			return FText::FromString(FString::Printf(
-				TEXT("%s  Defocus d: %+.3f  Offset: %+.4f"),
-				Subsystem->IsSplitPrismActive() ? TEXT("Playing") : TEXT("Idle"),
+				TEXT("%s  Defocus d: %+.3f  Offset: %+.4f  Subject: %s  Residual: %.2f"),
+				PhaseName,
 				Subsystem->GetSplitPrismDefocus(),
-				Subsystem->GetUIPostProcessStrcture().SplitPrism.Offset));
+				Subsystem->GetUIPostProcessStrcture().SplitPrism.Offset,
+				*SubjectText,
+				Subsystem->GetSplitPrismResidualWeight()));
 		})
 	];
 
@@ -3468,6 +3484,46 @@ TSharedRef<SWidget> SRDGGraphicsDebugger::MakeSplitPrismSection()
 		];
 	};
 
+	auto BoolRow = [Resolve](const TCHAR* Label, TFunction<bool&(FSplitPrismSettings&)> Field) -> TSharedRef<SWidget>
+	{
+		return SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(RowPadding)
+			[
+				SNew(SCheckBox)
+				.IsChecked_Lambda([Resolve, Field]()
+				{
+					const ULocalPlayerPostProcessSubsystem* Subsystem = Resolve();
+					if (!Subsystem)
+					{
+						return ECheckBoxState::Undetermined;
+					}
+
+					FSplitPrismSettings Settings = Subsystem->GetSplitPrismSettings();
+					return Field(Settings) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+				})
+				.OnCheckStateChanged_Lambda([Resolve, Field](ECheckBoxState NewState)
+				{
+					if (ULocalPlayerPostProcessSubsystem* Subsystem = Resolve())
+					{
+						FSplitPrismSettings Settings = Subsystem->GetSplitPrismSettings();
+						Field(Settings) = NewState == ECheckBoxState::Checked;
+						Subsystem->SetSplitPrismSettings(Settings);
+					}
+				})
+			]
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(4.0f, 0.0f, 0.0f, 0.0f)
+			[
+				SNew(STextBlock)
+				.Text(FText::FromString(Label))
+			];
+	};
+
 	// 시간 곡선: d(t)가 1 → (지나침) → 0.
 	AddRow(SettingsRow(TEXT("Focus Duration (s, incl. overshoot)"), 0.05f, 5.0f, [](FSplitPrismSettings& S) -> float& { return S.FocusDuration; }));
 	AddRow(SettingsRow(TEXT("Focus Ease Power (first approach, 1 = Linear)"), 0.1f, 8.0f, [](FSplitPrismSettings& S) -> float& { return S.FocusEasePower; }));
@@ -3480,6 +3536,14 @@ TSharedRef<SWidget> SRDGGraphicsDebugger::MakeSplitPrismSection()
 	AddRow(IntRow(TEXT("Blur Sample Count (8-128)"), 8, 128, [](FSplitPrismSettings& S) -> int32& { return S.BlurSampleCount; }));
 	AddRow(SettingsRow(TEXT("Fringe Amount (R/B radius = G x (1 +/- x), front purple / back green)"), 0.0f, 0.5f, [](FSplitPrismSettings& S) -> float& { return S.FringeAmount; }));
 	AddRow(SettingsRow(TEXT("Bokeh Rim Bias (front: bright rim / back: bright center)"), 0.0f, 1.0f, [](FSplitPrismSettings& S) -> float& { return S.BokehRimBias; }));
+
+	// 깊이 잔차: 장면 갈라짐 = StartOffset x (d + r), r = (1/D_subj - 1/D) / Swing.
+	AddRow(BoolRow(TEXT("Depth Split (scene only: near/far split differently)"), [](FSplitPrismSettings& S) -> bool& { return S.bDepthSplit; }));
+	AddRow(BoolRow(TEXT("Persist After Focus (B: keep until Stop / off = A: settle to 0)"), [](FSplitPrismSettings& S) -> bool& { return S.bPersistDepthSplit; }));
+	AddRow(SettingsRow(TEXT("Focus Swing (diopter at d = 1, smaller = stronger depth split)"), 0.05f, 5.0f, [](FSplitPrismSettings& S) -> float& { return S.FocusSwingDiopter; }));
+	AddRow(SettingsRow(TEXT("Max Depth Residual (|r| clamp)"), 0.0f, 4.0f, [](FSplitPrismSettings& S) -> float& { return S.MaxDepthResidual; }));
+	AddRow(SettingsRow(TEXT("Depth Settle Duration (s, A only)"), 0.0f, 3.0f, [](FSplitPrismSettings& S) -> float& { return S.DepthSettleDuration; }));
+	AddRow(SettingsRow(TEXT("Fallback Subject Distance (cm, trace miss)"), 10.0f, 10000.0f, [](FSplitPrismSettings& S) -> float& { return S.FallbackSubjectDistance; }));
 
 	return SNew(SExpandableArea)
 		.InitiallyCollapsed(false)
