@@ -609,6 +609,7 @@ protected:
 
 	virtual void OnMovementModeChanged(EMovementMode  PrevMovementMode, uint8 PreviousCustomMode) override;
 	virtual void CheckJumpInput(float DeltaTime) override;
+	virtual bool CanJumpInternal_Implementation() const override;
 
 	virtual void OnMoveInputUpdated(const FVector2D& MoveValue);
 

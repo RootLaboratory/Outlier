@@ -1862,6 +1862,7 @@ ARangedWeaponBase::ARangedWeaponBase() : AWeaponBase()
 
 	FirstSight = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("FirstSight"));
 	FirstSight->SetupAttachment(FirstPersonWeaponMesh);
+	FirstSight->SetFirstPersonPrimitiveType(EFirstPersonPrimitiveType::FirstPerson);
 	FirstSight->SetHiddenInGame(true);
 	ThirdSight = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ThirdSight"));
 	ThirdSight->SetupAttachment(ThirdPersonWeaponMesh);
@@ -1872,6 +1873,7 @@ ARangedWeaponBase::ARangedWeaponBase() : AWeaponBase()
 
 	FirstHandMagazineMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("FirstHandMagazine"));
 	FirstHandMagazineMesh->SetupAttachment(FirstPersonWeaponMesh);
+	FirstHandMagazineMesh->SetFirstPersonPrimitiveType(EFirstPersonPrimitiveType::FirstPerson);
 	FirstHandMagazineMesh->SetHiddenInGame(true);
 
 	ThirdHandMagazineMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ThirdHandMagazine"));

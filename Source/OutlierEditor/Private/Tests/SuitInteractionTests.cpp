@@ -1050,6 +1050,65 @@ bool FOutlierShooterPresentationAnimationTest::RunTest(const FString& Parameters
 		return false;
 	}
 	FP->RefreshPresentationState();
+	// Reuse the DA/runtime contract without routing melee through firearm IK.
+	UShooterFirstPersonAnimInstance* DetailFP = NewObject<UShooterFirstPersonAnimInstance>(Shooter->GetFirstPersonMesh());
+	UProceduralAnimValues* DetailValues = NewObject<UProceduralAnimValues>(Weapon);
+	DetailValues->WeaponValues.HipPoseLoc = FVector(1.0f, 2.0f, 3.0f);
+	DetailValues->WeaponValues.SwayLocAmplitude = FVector(1.0f);
+	DetailValues->WeaponValues.SwayRotAmplitude = FRotator(2.0f, 2.0f, 2.0f);
+	DetailValues->WeaponValues.JumpLandLoc = FVector(0.0f, 0.0f, -2.0f);
+	Weapon->ConfigureProceduralValues(DetailValues, DetailValues, DetailValues);
+	Weapon->SetTestWeaponType(EWeaponType::Melee);
+	DetailFP->CachedShooterCharacter = Shooter;
+	DetailFP->RefreshPresentationState();
+	DetailFP->bEnableProceduralWallOffset = false;
+	const FVector SavedVelocity = Shooter->GetCharacterMovement()->Velocity;
+	Shooter->GetCharacterMovement()->Velocity = FVector(150.0f, 0.0f, 0.0f);
+	const auto SettleDetail = [&]()
+	{
+		for (int32 Frame = 0; Frame < 180; ++Frame)
+		{
+			DetailFP->NativeUpdateAnimation(1.0f / 60.0f);
+		}
+	};
+	SettleDetail();
+	TestTrue(TEXT("Melee walk alpha is enabled"), DetailFP->ViewModelProceduralRuntime.ForwardWalkAlpha > 0.9f);
+	TestFalse(TEXT("Melee DA produces walk bob"), DetailFP->ViewModelProceduralRuntime.ForwardWalkAnimLoc.IsNearlyZero());
+	DetailFP->PrevAimRot.Yaw -= 6.0f;
+	DetailFP->UpdateFirstPersonProceduralValues(1.0f / 60.0f);
+	DetailFP->ViewModelJumpLandAlpha = 1.0f;
+	DetailFP->UpdateFirstPersonProceduralRuntime(1.0f / 60.0f);
+	TestFalse(TEXT("Melee DA produces look sway"), DetailFP->ViewModelProceduralRuntime.SwayLoc.IsNearlyZero());
+	TestTrue(TEXT("Melee jump offset is enabled"), DetailFP->ViewModelProceduralRuntime.JumpLandAlpha > 0.9f);
+	TestEqual(TEXT("Melee keeps DA hip location"), DetailFP->ViewModelProceduralRuntime.HipPoseLoc, DetailValues->WeaponValues.HipPoseLoc);
+	TestEqual(TEXT("Melee procedural sprint stays disabled"), DetailFP->ViewModelProceduralRuntime.SprintAlpha, 0.0f);
+	TestEqual(TEXT("Melee final hand IK stays disabled"), DetailFP->ViewModelProceduralRuntime.LeftHandFinalIKAlpha, 0.0f);
+	DetailFP->bIsSprinting = true;
+	DetailFP->UpdateFirstPersonProceduralRuntime(1.0f / 60.0f);
+	TestTrue(TEXT("Sprint animation receives no melee walk bob"), DetailFP->ViewModelProceduralRuntime.ForwardWalkAnimLoc.IsNearlyZero());
+	for (ECombatState State : { ECombatState::Attack, ECombatState::Recovery })
+	{
+		Shooter->CombatState = State;
+		SettleDetail();
+		TestTrue(TEXT("Melee action suppresses detail"), DetailFP->ViewModelNonSprintProceduralAlpha < 0.01f);
+		TestTrue(TEXT("Melee action suppresses walk bob"), DetailFP->ViewModelProceduralRuntime.ForwardWalkAnimLoc.IsNearlyZero());
+		TestEqual(TEXT("Melee action retains hip location"), DetailFP->ViewModelProceduralRuntime.HipPoseLoc, DetailValues->WeaponValues.HipPoseLoc);
+	}
+	Shooter->CombatState = ECombatState::Idle;
+	SettleDetail();
+	TestTrue(TEXT("Melee detail returns after recovery"), DetailFP->ViewModelProceduralRuntime.ForwardWalkAlpha > 0.9f);
+	Shooter->GetCharacterMovement()->Velocity = FVector::ZeroVector;
+	SettleDetail();
+	TestTrue(TEXT("Stationary melee has no walk tilt"), DetailFP->ViewModelProceduralRuntime.ForwardWalkLoc.IsNearlyZero());
+	Weapon->SetTestWeaponType(EWeaponType::Rifle);
+	DetailFP->RefreshPresentationState();
+	Shooter->GetCharacterMovement()->Velocity = FVector(150.0f, 0.0f, 0.0f);
+	SettleDetail();
+	TestTrue(TEXT("Firearm walk detail remains enabled"), DetailFP->ViewModelProceduralRuntime.ForwardWalkAlpha > 0.9f);
+	TestTrue(TEXT("Melee sway resets before firearm use"), DetailFP->ViewModelProceduralRuntime.SwayLoc.IsNearlyZero());
+	Shooter->GetCharacterMovement()->Velocity = SavedVelocity;
+	Weapon->ConfigureProceduralValues(Common, PreSuit, Suit);
+	FP->RefreshPresentationState();
 	FP->ViewModelRecoilLoc = FVector(10.0f);
 	FP->ReloadAimAlpha = 1.0f;
 	FP->LastLeftHandActionGripOffsetLoc = FVector(20.0f);

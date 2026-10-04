@@ -1365,6 +1365,19 @@ void AShooterCharacter::OnMovementModeChanged(EMovementMode  PrevMovementMode, u
 	}
 }
 
+bool AShooterCharacter::CanJumpInternal_Implementation() const
+{
+	if (IsSuitTransitionBlocked() || !Super::CanJumpInternal_Implementation())
+	{
+		return false;
+	}
+	// 입력 경로뿐 아니라 실제 점프 판정에서 제한해 클라이언트 예측과 서버 이동 처리에 같은 규칙을 적용한다.
+	// 슈트 전에도 첫 점프의 누르고 있기 동작은 유지하되, 버튼을 다시 눌러 시작하는 추가 점프는 막는다.
+	const bool bContinuingJumpHold = bWasJumping && bPressedJump
+		&& JumpKeyHoldTime < GetJumpMaxHoldTime();
+	return HasAcquiredSuit() || JumpCurrentCount == 0 || bContinuingJumpHold;
+}
+
 void AShooterCharacter::CheckJumpInput(float DeltaTime)
 {
 	const int32 PreviousJumpCount = JumpCurrentCount;

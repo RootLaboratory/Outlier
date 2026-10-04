@@ -31,6 +31,7 @@ AWeaponBase::AWeaponBase()
 	FirstPersonWeaponMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("FirstPersonWeaponMesh"));
 	FirstPersonWeaponMesh->SetupAttachment(SceneRoot);
 	FirstPersonWeaponMesh->SetOnlyOwnerSee(true);
+	FirstPersonWeaponMesh->SetFirstPersonPrimitiveType(EFirstPersonPrimitiveType::FirstPerson);
 	FirstPersonWeaponMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	FirstPersonWeaponMesh->SetCollisionResponseToAllChannels(ECR_Ignore);
 	FirstPersonWeaponMesh->SetGenerateOverlapEvents(false);

@@ -3,6 +3,7 @@
 #include "Shooter/ShooterCharacter.h"
 #include "Shooter/ShooterMovementComponent.h"
 #include "Shooter/ShooterCombatComponent.h"
+#include "OutlierPlayerState.h"
 #include "Curves/CurveFloat.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
@@ -41,6 +42,45 @@ bool FShooterGroundedMovementTest::RunTest(const FString& Parameters)
 		UShooterMovementComponent* Movement = Shooter->FindComponentByClass<UShooterMovementComponent>();
 		if (TestNotNull(TEXT("Shooter movement component"), Movement))
 		{
+			AOutlierPlayerState* SuitPlayerState = World->SpawnActor<AOutlierPlayerState>();
+			if (TestNotNull(TEXT("Jump suit acquisition fixture"), SuitPlayerState))
+			{
+				Shooter->SetPlayerState(SuitPlayerState);
+				SuitPlayerState->SetAcquiredSuit(false);
+				Shooter->JumpMaxCount = 2;
+				Shooter->JumpMaxHoldTime = 0.0f;
+				Shooter->JumpCurrentCount = 0;
+				Shooter->bWasJumping = false;
+				Shooter->bPressedJump = false;
+				CharacterMovement->SetMovementMode(MOVE_Walking);
+				TestTrue(TEXT("PreSuit permits the ground jump"), Shooter->CanJumpInternal_Implementation());
+				CharacterMovement->SetMovementMode(MOVE_Falling);
+				Shooter->JumpCurrentCount = 1;
+				TestFalse(TEXT("PreSuit rejects the second jump"), Shooter->CanJumpInternal_Implementation());
+				// 획득/저장 복원은 같은 PlayerState 플래그를 사용한다. Partner 거리 비활성화와는 분리한다.
+				SuitPlayerState->SetAcquiredSuit(true);
+				TestTrue(TEXT("Acquired Suit permits the second jump"), Shooter->CanJumpInternal_Implementation());
+				Shooter->bSuitDisabledByPartnerBoundary = true;
+				TestTrue(TEXT("Partner boundary does not revoke acquired double jump"), Shooter->CanJumpInternal_Implementation());
+				Shooter->bSuitDisabledByPartnerBoundary = false;
+				Shooter->JumpCurrentCount = 2;
+				TestFalse(TEXT("Suit still rejects a third jump"), Shooter->CanJumpInternal_Implementation());
+				SuitPlayerState->SetAcquiredSuit(false);
+				Shooter->JumpCurrentCount = 1;
+				Shooter->JumpMaxHoldTime = 0.2f;
+				Shooter->JumpKeyHoldTime = 0.1f;
+				Shooter->bWasJumping = true;
+				Shooter->bPressedJump = true;
+				TestTrue(TEXT("PreSuit preserves the first jump hold"), Shooter->CanJumpInternal_Implementation());
+				Shooter->bWasJumping = false;
+				TestFalse(TEXT("PreSuit rejects a new jump during the hold window"), Shooter->CanJumpInternal_Implementation());
+				Shooter->SetPlayerState(nullptr);
+				TestFalse(TEXT("Missing PlayerState cannot enable double jump"), Shooter->CanJumpInternal_Implementation());
+				Shooter->StopJumping();
+				Shooter->JumpMaxHoldTime = ShooterClass->GetDefaultObject<AShooterCharacter>()->JumpMaxHoldTime;
+				CharacterMovement->SetMovementMode(MOVE_Walking);
+				Shooter->JumpCurrentCount = 0;
+			}
 			TestTrue(TEXT("Native crouched ledge departure default is enabled"),
 				GetDefault<AShooterCharacter>()->GetCharacterMovement()->bCanWalkOffLedgesWhenCrouching);
 			CharacterMovement->SetMovementMode(MOVE_Walking);
