@@ -425,6 +425,91 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Rejected entry does not emit an opening completion"), OpenedCount, OpenedBeforeSafety);
 	TestEqual(TEXT("Rejected entry does not begin combat"), CombatStartCount, CombatBeforeSafety);
 
+	// 이번에는 비어 있는 범위에서 봉쇄를 시작한 뒤 몸체만 진입시킨다.
+	// 닫힘 끝까지 갈 수 있는 Tick도 안전 검사에서 먼저 중단되어야 한다.
+	const uint32 InterruptedGeneration = World->GetSubsystem<UOutlierArenaSubsystem>()->ReserveGameplayGeneration();
+	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReloadStarted.Broadcast(InterruptedGeneration);
+	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReady.Broadcast(InterruptedGeneration);
+	TestFalse(TEXT("Clear entry starts closing before interruption"), Door->IsDoorOpen());
+	static_cast<AActor*>(Door)->Tick(0.4f);
+	const FVector BeforeSafetyReversal = Door->DoorMeshLeft->GetRelativeLocation();
+	Shooter->SetActorLocation(FVector(100.0f, 0.0f, 0.0f));
+	SafetyPhysicsScene->Flush();
+	if (!TestTrue(TEXT("Mid-close entry is physically detected"), Door->HasBlockingPlayer()))
+	{
+		CleanupWorld();
+		return false;
+	}
+	static_cast<AActor*>(Door)->Tick(0.7f);
+	TestTrue(TEXT("Interrupted entry reverses toward open"), Door->IsDoorOpen());
+	TestTrue(TEXT("Interrupted entry does not move farther closed"),
+		Door->DoorMeshLeft->GetRelativeLocation().Equals(BeforeSafetyReversal));
+	TestFalse(TEXT("Safety opening does not record successful Level1 progression"),
+		Save->HasWorldProgress(EOutlierWorldProgressType::OpenedDoor, Door->DoorId));
+	ShooterPS->ReportStatAllocatorUIOpened(InterruptedGeneration);
+	ShooterPS->ReportStatAllocatorUIClosed(InterruptedGeneration);
+	PartnerPS->ReportStatAllocatorUIOpened(InterruptedGeneration);
+	PartnerPS->ReportStatAllocatorUIClosed(InterruptedGeneration);
+	static_cast<AActor*>(Door)->Tick(0.5f);
+	TestFalse(TEXT("Safety opening finishes without continued Tick"), Door->IsActorTickEnabled());
+	TestEqual(TEXT("Safety opening and completed UI do not complete Level1 entry"), OpenedCount, OpenedBeforeSafety);
+	TestEqual(TEXT("Safety opening does not begin combat"), CombatStartCount, CombatBeforeSafety);
+	if (FBoolProperty* ActiveProperty = FindFProperty<FBoolProperty>(
+		AOutlierCheckpoint::StaticClass(), TEXT("bActivationConditionSatisfied")))
+	{
+		TestFalse(TEXT("Safety opening keeps the entrance checkpoint inactive"),
+			ActiveProperty->GetPropertyValue_InContainer(Checkpoint));
+	}
+	Shooter->SetActorLocation(FVector(350.0f, 0.0f, 0.0f));
+	SafetyPhysicsScene->Flush();
+	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, true);
+	Room->OnRoomActorOverlapChanged.Broadcast(Partner, true);
+	ShooterPS->OnPlayerCharactersChanged.Broadcast(ShooterPS);
+	Door->OnDoorMotionFinished.Broadcast(Door, true);
+	TestTrue(TEXT("Interrupted entry waits instead of automatically retrying"), Door->IsDoorOpen());
+	TestFalse(TEXT("Repeated events leave interrupted entry motion stopped"), Door->IsActorTickEnabled());
+	TestEqual(TEXT("Stale normal completion cannot complete interrupted entry"), OpenedCount, OpenedBeforeSafety);
+
+	// Room 이벤트가 먼저 실행되는 경우에도 즉시 Snap이 안전 반전을 덮어쓰지 않는다.
+	const uint32 OverlapGeneration = World->GetSubsystem<UOutlierArenaSubsystem>()->ReserveGameplayGeneration();
+	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReloadStarted.Broadcast(OverlapGeneration);
+	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReady.Broadcast(OverlapGeneration);
+	TestFalse(TEXT("Next test generation begins a clear close"), Door->IsDoorOpen());
+	static_cast<AActor*>(Door)->Tick(0.4f);
+	const FVector BeforeOverlapReversal = Door->DoorMeshLeft->GetRelativeLocation();
+	Shooter->SetActorLocation(FVector(100.0f, 0.0f, 0.0f));
+	SafetyPhysicsScene->Flush();
+	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, false);
+	TestTrue(TEXT("Room event prioritizes safety opening before Door Tick"), Door->IsDoorOpen());
+	TestTrue(TEXT("Room event reverses at the current leaf position"),
+		Door->DoorMeshLeft->GetRelativeLocation().Equals(BeforeOverlapReversal));
+	static_cast<AActor*>(Door)->Tick(0.5f);
+	TestEqual(TEXT("Room-event safety opening does not emit Level1 completion"), OpenedCount, OpenedBeforeSafety);
+
+	// 일반 문에 기존 개방 기록이 있었다면 취소가 그 기록을 지워서도 안 된다.
+	AInteractableDoor* SavedDoor = World->SpawnActor<AInteractableDoor>();
+	if (!TestNotNull(TEXT("Previously saved door exists"), SavedDoor))
+	{
+		CleanupWorld();
+		return false;
+	}
+	SavedDoor->DoorId = TEXT("Test.Safety.PreviouslyOpen");
+	SavedDoor->DoorCurve = Curve;
+	SavedDoor->bInitiallyOpen = true;
+	BeginActor(SavedDoor);
+	SavedDoor->SafetyRegionLeft->SetRelativeLocation(FVector(100.0f, 0.0f, 0.0f));
+	SavedDoor->SafetyRegionLeft->SetBoxExtent(FVector(40.0f));
+	Save->SetWorldProgressState(EOutlierWorldProgressType::OpenedDoor, SavedDoor->DoorId, true);
+	Shooter->SetActorLocation(FVector(350.0f, 0.0f, 0.0f));
+	SafetyPhysicsScene->Flush();
+	TestTrue(TEXT("Previously saved door accepts a clear close"), SavedDoor->TrySetDoorOpen(false));
+	static_cast<AActor*>(SavedDoor)->Tick(0.4f);
+	Shooter->SetActorLocation(FVector(100.0f, 0.0f, 0.0f));
+	SafetyPhysicsScene->Flush();
+	static_cast<AActor*>(SavedDoor)->Tick(0.7f);
+	TestTrue(TEXT("Cancellation restores the door's earlier open progress"),
+		Save->HasWorldProgress(EOutlierWorldProgressType::OpenedDoor, SavedDoor->DoorId));
+
 	CleanupWorld();
 	return true;
 }

@@ -79,6 +79,7 @@ void ALevel1SuitUpgradeDoor::BeginPlay()
 		this, &ThisClass::OnRoomStartReadinessChanged);
 	CombatSubsystem->OnCombatEvent.AddDynamic(this, &ThisClass::OnCombatEvent);
 	OnDoorMotionFinished.AddUObject(this, &ThisClass::HandleDoorMotionFinished);
+	OnDoorSafetyReopenStarted.AddUObject(this, &ThisClass::HandleDoorSafetyReopenStarted);
 	EntranceCheckpoint->OnCheckpointCommitted.AddUObject(
 		this, &ThisClass::OnEntranceCheckpointCommitted);
 	TargetRoomVolume->OnRoomActorOverlapChanged.AddUObject(this, &ThisClass::OnRoomOverlapChanged);
@@ -115,6 +116,7 @@ void ALevel1SuitUpgradeDoor::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		ArenaSubsystem->OnArenaGameplayReady.RemoveAll(this);
 	}
 	OnDoorMotionFinished.RemoveAll(this);
+	OnDoorSafetyReopenStarted.RemoveAll(this);
 	if (IsValid(EntranceCheckpoint))
 	{
 		EntranceCheckpoint->OnCheckpointCommitted.RemoveAll(this);
@@ -450,6 +452,12 @@ bool ALevel1SuitUpgradeDoor::AbortEntryIfPairOutside()
 	{
 		return false;
 	}
+	// 퇴장 오버랩이 문 Tick보다 먼저 올 수 있다. 보호 대상이 경로에 있다면
+	// 기존 즉시 Snap보다 안전 반전을 우선해 현재 위치에서 열고 새 요청을 기다린다.
+	if (TrySafetyReopen())
+	{
+		return true;
+	}
 
 	AOutlierPlayerState* Shooter = nullptr;
 	AOutlierPlayerState* Partner = nullptr;
@@ -574,6 +582,27 @@ bool ALevel1SuitUpgradeDoor::TryStartCombat()
 	UE_LOG(LogTemp, Display, TEXT("[Level1Door] Combat started. Door=%s Room=%s Generation=%u"),
 		*GetNameSafe(this), *RoomTag.ToString(), GameplayGeneration);
 	return true;
+}
+
+void ALevel1SuitUpgradeDoor::HandleDoorSafetyReopenStarted(AInteractableDoor* Door)
+{
+	if (!HasAuthority() || Door != this)
+	{
+		return;
+	}
+	// 닫힘 중단 -> 봉쇄/정상 개방 완료 취소 -> 재평가 차단 순서로 정리한다.
+	// 안전 개방 후의 새 입장 요청 조건은 후속 Slice에서 연결한다.
+	GetWorldTimerManager().ClearTimer(EntryRecheckTimer);
+	bEntrySealed = false;
+	bCloseFinished = false;
+	bReopenRequested = false;
+	bOpenFinished = false;
+	bEntryCloseRejected = true;
+	if (IsValid(EntranceCheckpoint) && !EntranceCheckpoint->IsCheckpointCommitted())
+	{
+		EntranceCheckpoint->SetActivationConditionSatisfied(nullptr, false);
+	}
+	LogEntryStatus(TEXT("DoorSafetyReopen"), nullptr, nullptr);
 }
 
 void ALevel1SuitUpgradeDoor::HandleDoorMotionFinished(AInteractableDoor* Door, bool bOpen)

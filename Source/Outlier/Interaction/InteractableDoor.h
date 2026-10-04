@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Components/TimelineComponent.h"
+#include "Engine/OverlapResult.h"
 #include "GameFramework/Actor.h"
 #include "GameplayTagContainer.h"
 #include "InteractableDoor.generated.h"
@@ -12,6 +13,29 @@ class UBoxComponent;
 class AInteractableDoor;
 
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnDoorMotionFinished, AInteractableDoor*, bool /*bOpen*/);
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnDoorSafetyReopenStarted, AInteractableDoor*);
+
+// 방향 전환 한 건의 서버 기준점. 위치를 매 프레임 복제하지 않고 수신 시 경과 시간을 보정한다.
+USTRUCT()
+struct FDoorMotionState
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	bool bOpen = false;
+
+	UPROPERTY()
+	bool bMoving = false;
+
+	UPROPERTY()
+	float PlaybackPosition = 0.0f;
+
+	UPROPERTY()
+	double ServerTimeSeconds = 0.0;
+
+	UPROPERTY()
+	uint32 Revision = 0;
+};
 
 UCLASS()
 class OUTLIER_API AInteractableDoor : public AActor
@@ -43,6 +67,7 @@ public:
 	bool IsDoorOpen() const { return bIsOpen; }
 	bool HasMovementCurve() const;
 	FOnDoorMotionFinished OnDoorMotionFinished;
+	FOnDoorSafetyReopenStarted OnDoorSafetyReopenStarted;
 
 public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")
@@ -87,9 +112,10 @@ public:
 	FGameplayTagContainer DoorMovementAudioContextTags;
 
 protected:
-	UPROPERTY(ReplicatedUsing = OnRep_IsOpen, BlueprintReadOnly, Category = "Door")
+	UPROPERTY(BlueprintReadOnly, Category = "Door")
 	bool bIsOpen = false;
 	void SnapDoorState(bool bOpen);
+	bool TrySafetyReopen();
 
 private:
 	FTimeline DoorTimeline;
@@ -103,18 +129,33 @@ private:
 	void OnDoorTimelineFinished();
 
 	UFUNCTION()
-	void OnRep_IsOpen();
+	void OnRep_DoorMotion();
 
 	void ApplyDoorState(bool bOpen);
+	void StartDoorMotion(bool bOpen, bool bSafetyReopen);
+	void PublishDoorMotion();
+	void ApplyReplicatedDoorMotion(const FDoorMotionState& State);
 	void InitializeSafetyRegion(UBoxComponent* Region, UStaticMeshComponent* Mesh, const FVector& OpenOffset);
+	UPROPERTY(ReplicatedUsing = OnRep_DoorMotion)
+	FDoorMotionState ReplicatedDoorMotion;
+	FDoorMotionState PendingInitialDoorMotion;
+	mutable TArray<FOverlapResult> SafetyOverlaps;
+	uint32 LastAppliedMotionRevision = 0;
+	bool bDoorInitialized = false;
 	bool bProgressIdRegistered = false;
 	bool bMotionCompletionPending = false;
+	bool bOpenProgressBeforeClosing = false;
 	bool PlayDoorMovementAudio(bool bOpen);
+
+#if WITH_DEV_AUTOMATION_TESTS
+	friend class FDoorPlayerSafetyMotionTest;
+	friend class FDoorPlayerSafetyReplicationTest;
+#endif
 
 public:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 private:
 	UFUNCTION(NetMulticast, Reliable)
-	void Multicast_SetDoorState(bool bOpen);
+	void Multicast_SetDoorMotion(const FDoorMotionState& State);
 };

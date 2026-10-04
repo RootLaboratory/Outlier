@@ -3,6 +3,7 @@
 #include "Components/BoxComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Curves/CurveFloat.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Enemy/EnemyBase.h"
 #include "Engine/Engine.h"
@@ -10,6 +11,7 @@
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/PlayerState.h"
+#include "GameFramework/GameStateBase.h"
 #include "Interaction/InteractableDoor.h"
 #include "Interaction/InteractableSwitch.h"
 #include "Misc/AutomationTest.h"
@@ -211,6 +213,290 @@ bool FDoorPlayerSafetyTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Accepted close changes the target state"), Door->IsDoorOpen());
 
 	Cleanup();
+	return true;
+}
+
+namespace
+{
+	// 이동 검증도 전체 World Tick 없이 실제 물리 조회와 Door Tick만 진행한다.
+	struct FScopedDoorSafetyWorld
+	{
+		UWorld* World = nullptr;
+
+		FScopedDoorSafetyWorld()
+		{
+			World = UWorld::CreateWorld(EWorldType::Game, false,
+				MakeUniqueObjectName(nullptr, UWorld::StaticClass(), TEXT("DoorSafetyMotionTest")));
+			if (World)
+			{
+				GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(World);
+				World->InitializeActorsForPlay(FURL());
+			}
+		}
+
+		~FScopedDoorSafetyWorld()
+		{
+			if (World)
+			{
+				World->DestroyWorld(false);
+				GEngine->DestroyWorldContext(World);
+				World->RemoveFromRoot();
+			}
+		}
+
+		AInteractableDoor* SpawnMovingDoor()
+		{
+			UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+			AInteractableDoor* Door = World->SpawnActor<AInteractableDoor>();
+			if (!Cube || !Door)
+			{
+				return nullptr;
+			}
+			Door->DoorMeshLeft->SetStaticMesh(Cube);
+			Door->DoorMeshRight->SetStaticMesh(Cube);
+			Door->DoorMeshLeft->SetRelativeLocation(FVector(-60.0f, 0.0f, 0.0f));
+			Door->DoorMeshRight->SetRelativeLocation(FVector(60.0f, 0.0f, 0.0f));
+			Door->DoorMeshLeft->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			Door->DoorMeshRight->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			Door->DoorCurve = NewObject<UCurveFloat>(Door);
+			Door->DoorCurve->FloatCurve.AddKey(0.0f, 0.0f);
+			Door->DoorCurve->FloatCurve.AddKey(1.0f, 1.0f);
+			Door->bInitiallyOpen = true;
+			Door->DispatchBeginPlay();
+			return Door;
+		}
+
+		void SyncPhysics() const
+		{
+			World->GetPhysicsScene()->ProcessDeferredCreatePhysicsState();
+			World->GetPhysicsScene()->Flush();
+		}
+	};
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FDoorPlayerSafetyMotionTest,
+	"Outlier.Interaction.DoorPlayerSafety.ClosingMotion",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDoorPlayerSafetyMotionTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FScopedDoorSafetyWorld Fixture;
+	UWorld* World = Fixture.World;
+	if (!TestNotNull(TEXT("Motion test world exists"), World)
+		|| !TestNotNull(TEXT("Motion test physics scene exists"), World->GetPhysicsScene()))
+	{
+		return false;
+	}
+	AInteractableDoor* Door = Fixture.SpawnMovingDoor();
+	APlayerController* Controller = World->SpawnActor<APlayerController>();
+	UClass* ShooterClass = LoadClass<AShooterCharacter>(nullptr,
+		TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	AShooterCharacter* Shooter = ShooterClass ? World->SpawnActor<AShooterCharacter>(
+		ShooterClass, FVector(2000.0f, 0.0f, 0.0f), FRotator::ZeroRotator) : nullptr;
+	APartnerCharacter* Partner = World->SpawnActor<APartnerCharacter>(
+		APartnerCharacter::StaticClass(), FVector(2500.0f, 0.0f, 0.0f), FRotator::ZeroRotator);
+	AEnemyBase* Enemy = World->SpawnActor<AEnemyBase>(
+		AEnemyBase::StaticClass(), FVector(3000.0f, 0.0f, 0.0f), FRotator::ZeroRotator);
+	if (!TestNotNull(TEXT("Moving door exists"), Door)
+		|| !TestNotNull(TEXT("Motion controller exists"), Controller)
+		|| !TestNotNull(TEXT("Motion Shooter exists"), Shooter)
+		|| !TestNotNull(TEXT("Motion Partner exists"), Partner)
+		|| !TestNotNull(TEXT("Motion enemy exists"), Enemy))
+	{
+		return false;
+	}
+	ACharacter* Characters[] = { Shooter, Partner, Enemy };
+	for (ACharacter* Character : Characters)
+	{
+		Character->GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+		Character->GetCapsuleComponent()->SetGenerateOverlapEvents(false);
+	}
+	Fixture.SyncPhysics();
+	int32 CloseFinishedCount = 0;
+	int32 OpenFinishedCount = 0;
+	int32 SafetyReopenCount = 0;
+	Door->OnDoorMotionFinished.AddLambda([&](AInteractableDoor*, bool bOpen)
+	{
+		if (bOpen)
+		{
+			++OpenFinishedCount;
+		}
+		else
+		{
+			++CloseFinishedCount;
+		}
+	});
+	Door->OnDoorSafetyReopenStarted.AddLambda([&](AInteractableDoor*) { ++SafetyReopenCount; });
+	const FVector EntryLocations[] = {
+		FVector(-60.0f, 0.0f, 150.0f), FVector(60.0f, 0.0f, 230.0f), FVector::ZeroVector
+	};
+	for (int32 Index = 0; Index < UE_ARRAY_COUNT(Characters); ++Index)
+	{
+		Controller->UnPossess();
+		for (ACharacter* Character : Characters)
+		{
+			Character->SetActorLocation(FVector(2000.0f, 0.0f, 0.0f));
+		}
+		ACharacter* Character = Characters[Index];
+		if (Character == Enemy)
+		{
+			// AI가 이미 범위 안에 있는 상태에서 닫기를 시작하고, 이동 중 빙의만 전환한다.
+			Character->SetActorLocation(EntryLocations[Index]);
+		}
+		else
+		{
+			Controller->Possess(Character);
+		}
+		Fixture.SyncPhysics();
+		TestTrue(TEXT("Clear or AI-only close starts"), Door->TrySetDoorOpen(false));
+		static_cast<AActor*>(Door)->Tick(0.4f);
+		TestTrue(TEXT("Door is midway through closing"),
+			FMath::IsNearlyEqual(Door->DoorTimeline.GetPlaybackPosition(), 0.6f));
+		const FVector LeftBeforeEntry = Door->DoorMeshLeft->GetRelativeLocation();
+		const FVector RightBeforeEntry = Door->DoorMeshRight->GetRelativeLocation();
+		Character->SetActorLocation(EntryLocations[Index]);
+		Controller->Possess(Character);
+		Fixture.SyncPhysics();
+		if (!TestTrue(TEXT("Current player body is detected during closing"), Door->HasBlockingPlayer()))
+		{
+			return false;
+		}
+		// 이 Delta라면 닫힌 끝까지 갈 수 있다. 감지는 이동/완료보다 먼저 실행되어야 한다.
+		static_cast<AActor*>(Door)->Tick(0.7f);
+		TestTrue(TEXT("Safety changes the target to open"), Door->IsDoorOpen());
+		TestTrue(TEXT("Left leaf does not close further on the detection frame"),
+			Door->DoorMeshLeft->GetRelativeLocation().Equals(LeftBeforeEntry));
+		TestTrue(TEXT("Right leaf does not close further on the detection frame"),
+			Door->DoorMeshRight->GetRelativeLocation().Equals(RightBeforeEntry));
+		TestTrue(TEXT("Safety reverses the timeline"), !Door->DoorTimeline.IsReversing());
+		TestEqual(TEXT("Each interruption emits one safety signal"), SafetyReopenCount, Index + 1);
+		TestFalse(TEXT("Occupied close during safety opening is rejected"), Door->TrySetDoorOpen(false));
+		TestTrue(TEXT("An identical open request does not replace safety motion"), Door->TrySetDoorOpen(true));
+		Character->SetActorLocation(FVector(2000.0f, 0.0f, 0.0f));
+		Fixture.SyncPhysics();
+		static_cast<AActor*>(Door)->Tick(0.5f);
+		TestTrue(TEXT("Safety opens the left leaf fully"), Door->DoorMeshLeft->GetRelativeLocation().Equals(
+			FVector(-60.0f, 0.0f, 0.0f) + Door->OpenOffsetLeft));
+		TestTrue(TEXT("Safety opens the right leaf fully"), Door->DoorMeshRight->GetRelativeLocation().Equals(
+			FVector(60.0f, 0.0f, 0.0f) + Door->OpenOffsetRight));
+		TestFalse(TEXT("Completed safety opening disables Tick"), Door->IsActorTickEnabled());
+		static_cast<AActor*>(Door)->Tick(1.1f);
+		TestTrue(TEXT("Clearance never creates an automatic close"), Door->IsDoorOpen());
+		TestEqual(TEXT("Interrupted closing never completes"), CloseFinishedCount, 0);
+		TestEqual(TEXT("Safety opening never emits normal opening completion"), OpenFinishedCount, 0);
+	}
+
+	TestTrue(TEXT("New explicit clear close succeeds after safety opening"), Door->TrySetDoorOpen(false));
+	static_cast<AActor*>(Door)->Tick(1.1f);
+	TestEqual(TEXT("New normal close completes once"), CloseFinishedCount, 1);
+	TestFalse(TEXT("Normal close finishes with Tick disabled"), Door->IsActorTickEnabled());
+	TestTrue(TEXT("Normal open still succeeds"), Door->TrySetDoorOpen(true));
+	static_cast<AActor*>(Door)->Tick(1.1f);
+	TestEqual(TEXT("New normal opening completes once"), OpenFinishedCount, 1);
+
+	// 첫 닫힘 프레임 전에 진입하면 이미 열린 끝점에서 안전 취소된다.
+	// 같은 목표의 반복 요청도 검사를 생략하거나 이전 Reverse 재생을 남기면 안 된다.
+	Controller->Possess(Shooter);
+	TestTrue(TEXT("Immediate-interruption close starts while clear"), Door->TrySetDoorOpen(false));
+	Shooter->SetActorLocation(EntryLocations[0]);
+	Fixture.SyncPhysics();
+	TestFalse(TEXT("Repeated close rejects a new body before the first motion frame"), Door->TrySetDoorOpen(false));
+	TestTrue(TEXT("Immediate safety cancellation retains the open target"), Door->IsDoorOpen());
+	TestFalse(TEXT("Endpoint reversal stops the earlier closing timeline"), Door->DoorTimeline.IsPlaying());
+	TestFalse(TEXT("Endpoint reversal disables idle Tick"), Door->IsActorTickEnabled());
+	static_cast<AActor*>(Door)->Tick(1.1f);
+	TestTrue(TEXT("A cancelled endpoint never resumes closing"),
+		Door->DoorMeshLeft->GetRelativeLocation().Equals(FVector(-180.0f, 0.0f, 0.0f)));
+	TestEqual(TEXT("Endpoint cancellation never completes closing"), CloseFinishedCount, 1);
+	TestEqual(TEXT("Endpoint cancellation never completes normal opening"), OpenFinishedCount, 1);
+	TestEqual(TEXT("Endpoint cancellation emits one safety signal"), SafetyReopenCount, 4);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FDoorPlayerSafetyReplicationTest,
+	"Outlier.Interaction.DoorPlayerSafety.MotionSnapshot",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDoorPlayerSafetyReplicationTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FScopedDoorSafetyWorld Fixture;
+	if (!TestNotNull(TEXT("Snapshot test world exists"), Fixture.World))
+	{
+		return false;
+	}
+	AInteractableDoor* Door = Fixture.SpawnMovingDoor();
+	AGameStateBase* GameState = Fixture.World->SpawnActor<AGameStateBase>();
+	if (!TestNotNull(TEXT("Snapshot door exists"), Door)
+		|| !TestNotNull(TEXT("Snapshot clock exists"), GameState))
+	{
+		return false;
+	}
+	Fixture.World->SetGameState(GameState);
+	FDoorMotionState Closing;
+	Closing.Revision = 10;
+	Closing.bMoving = true;
+	Closing.PlaybackPosition = 0.9f;
+	Closing.ServerTimeSeconds = GameState->GetServerWorldTimeSeconds() - 0.2;
+	Door->ApplyReplicatedDoorMotion(Closing);
+	TestTrue(TEXT("Closing snapshot compensates elapsed server time"),
+		FMath::IsNearlyEqual(Door->DoorTimeline.GetPlaybackPosition(), 0.7f));
+	TestTrue(TEXT("Closing snapshot reverses the timeline"), Door->DoorTimeline.IsReversing());
+	FDoorMotionState SafetyOpening = Closing;
+	SafetyOpening.Revision = 11;
+	SafetyOpening.bOpen = true;
+	SafetyOpening.PlaybackPosition = 0.4f;
+	Door->ApplyReplicatedDoorMotion(SafetyOpening);
+	TestTrue(TEXT("Safety snapshot uses server position rather than local closing position"),
+		FMath::IsNearlyEqual(Door->DoorTimeline.GetPlaybackPosition(), 0.6f));
+	TestTrue(TEXT("Safety snapshot plays toward open"), !Door->DoorTimeline.IsReversing());
+	Door->DoorTimeline.SetPlaybackPosition(0.8f, false);
+	Door->ApplyReplicatedDoorMotion(SafetyOpening);
+	Door->ApplyReplicatedDoorMotion(Closing);
+	TestTrue(TEXT("Duplicate and stale updates never restart the timeline"),
+		FMath::IsNearlyEqual(Door->DoorTimeline.GetPlaybackPosition(), 0.8f));
+	TestTrue(TEXT("Stale close cannot override safety opening"), Door->IsDoorOpen());
+	FDoorMotionState Finished = SafetyOpening;
+	Finished.Revision = 12;
+	Finished.bMoving = false;
+	Door->ApplyReplicatedDoorMotion(Finished);
+	TestFalse(TEXT("Final open snapshot disables Tick"), Door->IsActorTickEnabled());
+	TestTrue(TEXT("Final open snapshot places both leaves at their open positions"),
+		Door->DoorMeshLeft->GetRelativeLocation().Equals(FVector(-180.0f, 0.0f, 0.0f))
+		&& Door->DoorMeshRight->GetRelativeLocation().Equals(FVector(180.0f, 0.0f, 0.0f)));
+
+	// 이동 중 입장/관련성 복귀는 이전 닫힘 패킷 없이 최신 열림 기준점만 받아도 복원된다.
+	AInteractableDoor* LateDoor = Fixture.SpawnMovingDoor();
+	if (!TestNotNull(TEXT("Late snapshot receiver exists"), LateDoor))
+	{
+		return false;
+	}
+	LateDoor->bDoorInitialized = false;
+	LateDoor->ReplicatedDoorMotion = SafetyOpening;
+	LateDoor->OnRep_DoorMotion();
+	TestEqual(TEXT("Early replication waits for timeline initialization"), LateDoor->LastAppliedMotionRevision, 0u);
+	LateDoor->ReplicatedDoorMotion = Closing;
+	LateDoor->OnRep_DoorMotion();
+	LateDoor->bDoorInitialized = true;
+	LateDoor->ApplyReplicatedDoorMotion(LateDoor->ReplicatedDoorMotion);
+	TestTrue(TEXT("Latest pre-initialization snapshot survives an older property update"),
+		FMath::IsNearlyEqual(LateDoor->DoorTimeline.GetPlaybackPosition(), 0.6f));
+	TestTrue(TEXT("Latest snapshot alone restores an in-progress opening"), LateDoor->IsDoorOpen());
+	SafetyOpening.Revision = 13;
+	SafetyOpening.ServerTimeSeconds = GameState->GetServerWorldTimeSeconds() - 2.0;
+	LateDoor->ApplyReplicatedDoorMotion(SafetyOpening);
+	TestTrue(TEXT("Long-delayed opening clamps to the open endpoint"),
+		FMath::IsNearlyEqual(LateDoor->DoorTimeline.GetPlaybackPosition(), 1.0f));
+	TestFalse(TEXT("An elapsed motion does not leave idle Tick enabled"), LateDoor->IsActorTickEnabled());
+	TestFalse(TEXT("An elapsed motion stops timeline playback"), LateDoor->DoorTimeline.IsPlaying());
+	FDoorMotionState LongDelayedClose = Closing;
+	LongDelayedClose.Revision = 14;
+	LongDelayedClose.ServerTimeSeconds = GameState->GetServerWorldTimeSeconds() - 2.0;
+	LateDoor->ApplyReplicatedDoorMotion(LongDelayedClose);
+	TestTrue(TEXT("Long-delayed closing clamps to the closed endpoint"),
+		FMath::IsNearlyEqual(LateDoor->DoorTimeline.GetPlaybackPosition(), 0.0f));
+	TestFalse(TEXT("Elapsed closing disables Tick"), LateDoor->IsActorTickEnabled());
 	return true;
 }
 

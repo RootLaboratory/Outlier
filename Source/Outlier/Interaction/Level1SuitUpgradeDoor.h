@@ -45,6 +45,7 @@ private:
 	void OnUICompleted(AOutlierPlayerState* PlayerState, uint32 CompletedGeneration);
 	void OnRoomOverlapChanged(AActor* Actor, bool bEntered);
 	void HandleDoorMotionFinished(AInteractableDoor* Door, bool bOpen);
+	void HandleDoorSafetyReopenStarted(AInteractableDoor* Door);
 	void OnRoomStartReadinessChanged(FGameplayTag ChangedRoomTag);
 	void OnEntranceCheckpointCommitted(AOutlierCheckpoint* Checkpoint);
 	UFUNCTION()
