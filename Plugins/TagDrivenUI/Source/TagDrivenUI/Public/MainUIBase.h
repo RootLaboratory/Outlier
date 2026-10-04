@@ -39,6 +39,9 @@ public:
 	UAbilityIconUI* GetAbilityIcon(const FGameplayTag& AbilityTag) const;
 	void AddAbilityIconEntry(UAbilityIconUI* Icon, const FGameplayTag& AbilityTag);
 	void ResetAbilityCooldowns();
+	// 재사용할 HUD에 이전 interaction / 피격 표시가 남지 않도록 비운다.
+	UFUNCTION(BlueprintCallable, Category = "UI")
+	void FlushTransientWidgets();
 	virtual void On_RepAbilityDisabledByDistance();
 	virtual void On_RepAbilityabledByDistance();
 

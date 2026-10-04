@@ -29,7 +29,7 @@ protected:
 
 	// 각각 Confirm/Escape용 IA를 물고 있다가, 리바인드가 일어나면 스스로
 	// 표시를 갱신하는 공용 부품(UInputActionKeyDisplayWidget)이다.
-	// 실제 IA는 RefreshKeyTexts에서 FrontendPlayerController로부터 얻어와
+	// 실제 IA는 RefreshKeyTexts에서 현재 Frontend/FirstPersonController로부터 얻어와
 	// 매 프레임이 아니라 필요할 때만 꽂아준다.
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UInputActionKeyDisplayWidget> ConfirmedKeyDisplay;

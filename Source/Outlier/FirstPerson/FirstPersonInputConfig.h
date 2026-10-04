@@ -30,16 +30,6 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Input")
 	TObjectPtr<UInputAction> InteractionAction;
 
-	UPROPERTY(EditAnywhere, Category = "Widget")
-	TObjectPtr<UInputAction> WidgetEscapeAction;
-
-	UPROPERTY(EditAnywhere, Category = "Widget")
-	TObjectPtr<UInputAction> InGameSettingAction;
-
-	UPROPERTY(EditAnywhere, Category = "Widget")
-	TObjectPtr<UInputAction> WidgetConfirmedAction;
-
-
 	// UPROPERTY(EditAnywhere, Category = "Debug")
 	// TObjectPtr<UInputAction> DebugArenaReload;
 };

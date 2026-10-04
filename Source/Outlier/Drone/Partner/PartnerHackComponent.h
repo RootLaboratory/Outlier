@@ -151,11 +151,6 @@ protected:
 
 
 private:
-#if WITH_DEV_AUTOMATION_TESTS
-	friend class FPartnerHackTurretCandidateTest;
-	friend class FPartnerHackTurretDeathTest;
-#endif
-
 	UPROPERTY(VisibleInstanceOnly, Category = "Hack")
 	FPartnerHackAbilityData CachedAbilityData;
 

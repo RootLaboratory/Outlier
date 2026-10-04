@@ -87,6 +87,7 @@ AAutoTurret::AAutoTurret()
 		MovementComponent->MaxFlySpeed = 0.0f;
 	}
 
+	HackableComponent->HackTags.AddTag(HackGameplayTags::Info::Turret());
 	ConfigureTurretHackPolicy();
 }
 

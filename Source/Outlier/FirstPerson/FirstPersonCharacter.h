@@ -16,9 +16,9 @@
 class USkeletalMeshComponent;
 class UCameraComponent;
 class USceneComponent;
+class UPrimitiveComponent;
 class UFirstPersonInputConfig;
 class UInputAction;
-class ULocalPlayerUILayerSubsystem;
 struct FInputActionValue;
 class URoomTagComponent;
 class ULocalPlayerSettingsSubsystem;
@@ -69,14 +69,6 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|Input", meta = (Categories = "Audio.Context"))
 	FGameplayTagContainer InteractionAudioContextTags;
 
-	/** Local 2D event played on Widget Escape input. */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|Input", meta = (Categories = "Audio.Type"))
-	FGameplayTag WidgetEscapeAudioEventTag;
-
-	/** Runtime context supplied with the Widget Escape audio request. */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|Input", meta = (Categories = "Audio.Context"))
-	FGameplayTagContainer WidgetEscapeAudioContextTags;
-
 	UPROPERTY(EditDefaultsOnly, Category = "Interaction")
 	float InteractRange = 100.0f;
 
@@ -112,10 +104,6 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Outlier|Audio")
 	bool PlayInteractionRelevantAtLocationAudio();
 
-	/** Builds and submits the local 2D request bound to WidgetEscapeAudioEventTag. */
-	UFUNCTION(BlueprintCallable, Category = "Outlier|Audio")
-	bool PlayWidgetEscapeLocal2DAudio();
-
 protected:
 
 	virtual void TryStartAttack();
@@ -134,8 +122,6 @@ protected:
 	void DoAim(float Yaw, float Pitch);
 
 	void HandleInteractionInputStarted();
-	void HandleWidgetEscapeInput();
-	void HandleWidgetConfirmedInput();
 
 	virtual bool CanInteract() const;
 
@@ -218,9 +204,9 @@ private:
 	AActor* FindInteractTargetByTrace() const;
 
 	bool IsInteractTargetByTrace(AActor* TargetActor) const;
+	bool HasInteractionLineOfSight(AActor* TargetActor, const UPrimitiveComponent* TargetComponent) const;
 
 	// void ArenaReload();
-	ULocalPlayerUILayerSubsystem* GetUILayerSubsystem() const;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Interaction")
 	TEnumAsByte<ECollisionChannel> InteractionTraceChannel = ECC_Visibility;

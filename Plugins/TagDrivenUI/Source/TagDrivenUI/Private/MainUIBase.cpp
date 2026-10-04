@@ -3,6 +3,7 @@
 #include "AbilityIconUI.h"
 #include "Components/CanvasPanel.h"
 #include "Components/Widget.h"
+#include "DamageFeedbackLayer.h"
 #include "EventDrivenUI.h"
 #include "LocalPlayerUISubSystem.h"
 #include "Engine/LocalPlayer.h"
@@ -53,6 +54,18 @@ void UMainUIBase::ResetAbilityCooldowns()
 		{
 			Icon->CooldownDone();
 		}
+	}
+}
+
+void UMainUIBase::FlushTransientWidgets()
+{
+	if (InteractionLayer)
+	{
+		InteractionLayer->ClearChildren();
+	}
+	if (DamageFeedbackLayer)
+	{
+		DamageFeedbackLayer->ClearDamageFeedback();
 	}
 }
 

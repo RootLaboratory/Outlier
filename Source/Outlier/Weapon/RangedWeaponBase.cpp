@@ -526,7 +526,7 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 			HitActor,
 			GetNormalizedLastShotDirection(),
 			FiredMuzzleSocketName);
-
+		
 		// Weapon fire uses the shared tag-driven world-audio path. The server resolves
 		// the weighted variant once and delivers it to relevant clients, so enemy,
 		// partner, and possessed-enemy weapons all follow the same network behavior.

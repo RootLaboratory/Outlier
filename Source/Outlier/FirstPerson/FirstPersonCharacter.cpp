@@ -27,7 +27,6 @@
 #include "Team/OutlierTeamIds.h"
 #include "Room/RoomTagComponent.h"
 #include "Settings/LocalPlayerSettingsSubsystem.h"
-#include "UI/LocalPlayerUILayerSubsystem.h"
 #include "LocalPlayerUISubSystem.h"
 
 
@@ -99,18 +98,6 @@ void AFirstPersonCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
 		return;
 	}
 
-	auto EnableTriggerWhenPaused = [](UInputAction* Action)
-	{
-		if (Action)
-		{
-			Action->bTriggerWhenPaused = true;
-		}
-	};
-
-	EnableTriggerWhenPaused(InputConfig->WidgetEscapeAction);
-	EnableTriggerWhenPaused(InputConfig->InGameSettingAction);
-	EnableTriggerWhenPaused(InputConfig->WidgetConfirmedAction);
-
 	// Move
 	EnhancedInputComponent->BindAction(InputConfig->MoveAction, ETriggerEvent::Triggered, this, &AFirstPersonCharacter::MoveInput);
 	EnhancedInputComponent->BindAction(InputConfig->MoveAction, ETriggerEvent::Completed, this, &AFirstPersonCharacter::MoveInput);
@@ -126,13 +113,6 @@ void AFirstPersonCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
 	EnhancedInputComponent->BindAction(InputConfig->InteractionAction, ETriggerEvent::Started, this, &AFirstPersonCharacter::HandleInteractionInputStarted);
 	EnhancedInputComponent->BindAction(InputConfig->InteractionAction, ETriggerEvent::Completed, this, &AFirstPersonCharacter::EndInteract);
 	EnhancedInputComponent->BindAction(InputConfig->InteractionAction, ETriggerEvent::Canceled, this, &AFirstPersonCharacter::EndInteract);
-
-	EnhancedInputComponent->BindAction(InputConfig->WidgetEscapeAction,ETriggerEvent::Started,this, &AFirstPersonCharacter::HandleWidgetEscapeInput);
-
-	EnhancedInputComponent->BindAction(InputConfig->InGameSettingAction, ETriggerEvent::Started, this, &AFirstPersonCharacter::HandleWidgetEscapeInput);
-
-	EnhancedInputComponent->BindAction(InputConfig->WidgetConfirmedAction,ETriggerEvent::Started,this,&AFirstPersonCharacter::HandleWidgetConfirmedInput);
-	
 
 	// EnhancedInputComponent->BindAction(InputConfig->DebugArenaReload, ETriggerEvent::Started, this, &AFirstPersonCharacter::ArenaReload);
 }
@@ -220,25 +200,6 @@ void AFirstPersonCharacter::HandleInteractionInputStarted()
 	TryInteract();
 }
 
-void AFirstPersonCharacter::HandleWidgetEscapeInput()
-{
-	PlayWidgetEscapeLocal2DAudio();
-
-	if (ULocalPlayerUILayerSubsystem* LayerSubsystem = GetUILayerSubsystem())
-	{
-		if (LayerSubsystem->RouteWidgetEscapeInput(false))
-		{
-			return;
-		}
-	}
-
-	if (AFirstPersonPlayerController* FirstPersonController =
-		Cast<AFirstPersonPlayerController>(GetController()))
-	{
-		FirstPersonController->RequestOpenInGameSetting();
-	}
-}
-
 bool AFirstPersonCharacter::PlayInteractionRelevantAtLocationAudio()
 {
 	if (!InteractionAudioEventTag.IsValid())
@@ -262,38 +223,6 @@ bool AFirstPersonCharacter::PlayInteractionRelevantAtLocationAudio()
 	Request.bHasLocation = true;
 
 	return AudioSubsystem->PlayRelevantAtLocationFromOwningClient(Request);
-}
-
-bool AFirstPersonCharacter::PlayWidgetEscapeLocal2DAudio()
-{
-	if (!WidgetEscapeAudioEventTag.IsValid())
-	{
-		return false;
-	}
-
-	UOutlierAudioSubsystem* AudioSubsystem = GetGameInstance()
-		? GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>()
-		: nullptr;
-	if (!AudioSubsystem)
-	{
-		return false;
-	}
-
-	FOutlierAudioPlayRequest Request;
-	Request.EventTag = WidgetEscapeAudioEventTag;
-	Request.ContextTags = WidgetEscapeAudioContextTags;
-	Request.EmitterActor = this;
-
-	return AudioSubsystem->PlayLocal2D(Request);
-}
-
-void AFirstPersonCharacter::HandleWidgetConfirmedInput()
-{
-	if (ULocalPlayerUILayerSubsystem* LayerSubsystem = GetUILayerSubsystem())
-	{
-		UE_LOG(LogTemp, Error, TEXT("Called"));
-		LayerSubsystem->RouteWidgetConfirmedInput();
-	}
 }
 
 void AFirstPersonCharacter::DoMove(float Right, float Forward)
@@ -824,8 +753,6 @@ void AFirstPersonCharacter::GetInteractablesInRange(TArray<AActor*>& OutInteract
 			continue;
 		}
 
-		VisitedActors.Add(HitActor);
-
 		IInteractableInterface* Interactable = Cast<IInteractableInterface>(HitActor);
 		if (!Interactable)
 		{
@@ -838,8 +765,40 @@ void AFirstPersonCharacter::GetInteractablesInRange(TArray<AActor*>& OutInteract
 			continue;
 		}
 
+		if (!HasInteractionLineOfSight(HitActor, Overlap.GetComponent()))
+		{
+			continue;
+		}
+
+		// 한 액터의 가려진 컴포넌트만 먼저 겹쳐도 다른 노출된 컴포넌트를 검사할 수 있게 한다.
+		VisitedActors.Add(HitActor);
 		OutInteractables.Add(HitActor);
 	}
+}
+
+bool AFirstPersonCharacter::HasInteractionLineOfSight(
+	AActor* TargetActor, const UPrimitiveComponent* TargetComponent) const
+{
+	if (!IsValid(TargetActor) || !GetWorld() || !GetController())
+	{
+		return false;
+	}
+
+	FVector ViewLocation;
+	FRotator ViewRotation;
+	GetController()->GetPlayerViewPoint(ViewLocation, ViewRotation);
+	// 액터 원점이 바닥 등에 놓인 대상도 실제 검색된 충돌 컴포넌트 위치로 검사한다.
+	const FVector TargetLocation = TargetComponent
+		? TargetComponent->Bounds.Origin
+		: TargetActor->GetActorLocation();
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(InteractionLineOfSight), false, this);
+	Params.AddIgnoredActor(this);
+	Params.AddIgnoredActor(CurrentWeapon);
+	// 대상의 큰 탐지 콜리전이 벽 앞으로 튀어나와 있어도 중간의 벽을 검사한다.
+	Params.AddIgnoredActor(TargetActor);
+	FHitResult Hit;
+	return !GetWorld()->LineTraceSingleByChannel(
+		Hit, ViewLocation, TargetLocation, InteractionTraceChannel, Params);
 }
 
 AActor* AFirstPersonCharacter::FindInteractTargetByTrace() const
@@ -967,6 +926,12 @@ AActor* AFirstPersonCharacter::FindInteractTargetByTrace() const
 		return nullptr;
 	}
 
+	// 클라이언트 선택과 서버 실행 재검증 모두 동일한 시야 차단 규칙을 사용한다.
+	if (!HasInteractionLineOfSight(HitActor, Hit.GetComponent()))
+	{
+		return nullptr;
+	}
+
 	return HitActor;
 }
 
@@ -990,21 +955,6 @@ void AFirstPersonCharacter::ArenaReload()
 	}
 }
 */
-
-ULocalPlayerUILayerSubsystem* AFirstPersonCharacter::GetUILayerSubsystem() const
-{
-	if (!IsLocallyControlled())
-	{
-		return nullptr;
-	}
-
-	const AFirstPersonPlayerController* PlayerController =
-		Cast<AFirstPersonPlayerController>(GetController());
-	ULocalPlayer* LocalPlayer = PlayerController ? PlayerController->GetLocalPlayer() : nullptr;
-	return LocalPlayer
-		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()
-		: nullptr;
-}
 
 void AFirstPersonCharacter::SyncInteractableKeyWidgets(
 	const TArray<AActor*>& CurrentInteractables)

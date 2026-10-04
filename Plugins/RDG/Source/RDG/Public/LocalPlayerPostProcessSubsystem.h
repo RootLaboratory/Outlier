@@ -43,7 +43,7 @@ public:
 	virtual bool IsTickable() const override;
 
 	// 튜닝값은 유지하고 모든 효과의 런타임 상태를 즉시 초기화한다.
-	// 리로드 중 화면을 가리는 사망 연출은 새 Pawn 빙의까지 유지할 수 있다.
+	// 리로드 중 사망 연출 / GameOver 암막은 새 Pawn 빙의까지 유지할 수 있다.
 	UFUNCTION(BlueprintCallable, Category = "RDG")
 	void ResetAllPostProcess(bool bPreserveDeathTransition = false);
 
@@ -110,6 +110,8 @@ public:
 	// 연출을 돌릴 수 없으면 false — 호출자는 기다리지 말고 바로 다음 단계로 넘어가야 한다.
 	bool StartDeathTransition();
 	void ResetDeathTransition();
+	// 사망 연출을 종료하고 기존 ZoomBlur 암막만 켠다. 리로드 중 유지하고 전체 Reset에서 해제한다.
+	void StartGameOverBlackout();
 	bool IsDeathTransitionActive() const { return DeathTransition.IsActive(); }
 	EDeathTransitionPhase GetDeathTransitionPhase() const { return DeathTransition.GetPhase(); }
 
@@ -248,6 +250,7 @@ private:
 	uint8 bSplitPrismActive : 1 = false;
 
 	FDeathTransitionSequence DeathTransition;
+	bool bGameOverBlackoutActive = false;
 	// EDeathTransitionTexture 순서. UPROPERTY 배열 크기는 숫자로 적고, 슬롯 수와 같은지는 cpp에서 검사한다.
 	UPROPERTY(Transient)
 	TObjectPtr<UTexture2D> DeathTransitionTextures[3];

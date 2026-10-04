@@ -1,7 +1,10 @@
 #include "UI/UILayerKeyHintWidget.h"
 
-#include "FrontendPlayerController.h"
+#include "Engine/LocalPlayer.h"
+#include "Input/ControllerInputConfig.h"
+#include "InputAction.h"
 #include "UI/InputActionKeyDisplayWidget.h"
+#include "UI/LocalPlayerUILayerSubsystem.h"
 
 void UUILayerKeyHintWidget::NativeConstruct()
 {
@@ -12,23 +15,24 @@ void UUILayerKeyHintWidget::NativeConstruct()
 
 void UUILayerKeyHintWidget::RefreshKeyTexts()
 {
-	const AFrontendPlayerController* FrontendPlayerController =
-		Cast<AFrontendPlayerController>(GetOwningPlayer());
+	const ULocalPlayer* LocalPlayer = GetOwningLocalPlayer();
+	const ULocalPlayerUILayerSubsystem* LayerSubsystem = LocalPlayer
+		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()
+		: nullptr;
+	const UControllerInputConfig* InputConfig = LayerSubsystem
+		? LayerSubsystem->GetWidgetInputConfig()
+		: nullptr;
 
 	if (ConfirmedKeyDisplay)
 	{
 		ConfirmedKeyDisplay->SetWatchedInputAction(
-			FrontendPlayerController
-				? FrontendPlayerController->GetWidgetConfirmedAction()
-				: nullptr);
+			InputConfig ? InputConfig->WidgetConfirmedAction.Get() : nullptr);
 	}
 
 	if (EscapeKeyDisplay)
 	{
 		EscapeKeyDisplay->SetWatchedInputAction(
-			FrontendPlayerController
-				? FrontendPlayerController->GetWidgetEscapeAction()
-				: nullptr);
+			InputConfig ? InputConfig->WidgetEscapeAction.Get() : nullptr);
 	}
 }
 

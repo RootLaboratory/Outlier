@@ -102,6 +102,7 @@ void ULocalPlayerPostProcessSubsystem::MarkDirty()
 
 void ULocalPlayerPostProcessSubsystem::ResetAllPostProcess(bool bPreserveDeathTransition)
 {
+	bGameOverBlackoutActive = bPreserveDeathTransition && bGameOverBlackoutActive;
 	PlayerState = FPPGameplayState();
 	bOverlayRequested = false;
 	bADSBlurAiming = false;
@@ -121,9 +122,9 @@ void ULocalPlayerPostProcessSubsystem::ResetAllPostProcess(bool bPreserveDeathTr
 	PostProcessParameters.Datamoshing.Progress = 0.0f;
 	PostProcessParameters.PixelSorting.bEnabled = false;
 	PixelSortingAnimation::Reset(PostProcessParameters.PixelSorting);
-	PostProcessParameters.ZoomBlur.bEnabled = false;
+	PostProcessParameters.ZoomBlur.bEnabled = bGameOverBlackoutActive;
 	PostProcessParameters.ZoomBlur.Progress = 0.0f;
-	PostProcessParameters.ZoomBlur.BlackFlushAlpha = 0.0f;
+	PostProcessParameters.ZoomBlur.BlackFlushAlpha = bGameOverBlackoutActive ? 1.0f : 0.0f;
 	PostProcessParameters.ZoomBlur.Strength = 0.0f;
 	PostProcessParameters.ADSBlur.bEnabled = false;
 	PostProcessParameters.SplitPrismDefocus.bEnabled = false;
@@ -678,6 +679,17 @@ void ULocalPlayerPostProcessSubsystem::ResetDeathTransition()
 	TickFrame();
 }
 
+void ULocalPlayerPostProcessSubsystem::StartGameOverBlackout()
+{
+	// 해킹 전환 등 다른 런타임 연출도 정리해 암막 파라미터를 다시 덮어쓰지 않게 한다.
+	ResetAllPostProcess();
+	bGameOverBlackoutActive = true;
+	PostProcessParameters.ZoomBlur.bEnabled = true;
+	PostProcessParameters.ZoomBlur.BlackFlushAlpha = 1.0f;
+	MarkDirty();
+	TickFrame();
+}
+
 void ULocalPlayerPostProcessSubsystem::SetDeathTransitionPassEnabled(EDeathTransitionPass Pass, bool bEnabled)
 {
 	DeathTransition.SetPassEnabled(Pass, bEnabled, PostProcessParameters, UIPostProcessParameters);
@@ -1056,8 +1068,9 @@ void ULocalPlayerPostProcessSubsystem::CancelHackPossessionTransition()
 	PixelSortingAnimation::Reset(PixelSorting);
 
 	FZoomBlurParameters& ZoomBlur = PostProcessParameters.ZoomBlur;
-	ZoomBlur.bEnabled = false;
-	ZoomBlur.BlackFlushAlpha = 0.0f;
+	// 빙의 해제 중에도 GameOver 암막은 새 Pawn 확인까지 유지한다.
+	ZoomBlur.bEnabled = bGameOverBlackoutActive;
+	ZoomBlur.BlackFlushAlpha = bGameOverBlackoutActive ? 1.0f : 0.0f;
 	ZoomBlur.Progress = 0.0f;
 	ZoomBlur.Strength = 0.0f;
 	ZoomBlur.StartOffset = 0.0f;

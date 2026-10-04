@@ -14,6 +14,8 @@
 #include "Enemy/EnemyBase.h"
 #include "TimerManager.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
+#include "UI/UILayerGameplayTags.h"
+#include "UI/EnemyHudWidget.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "GAS/Attributes/OutlierShieldAttributeSet.h"
 #include "GAS/Attributes/OutlierVitalAttributeSet.h"
@@ -77,6 +79,7 @@ void APartnerPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		LocalPendingEnemyPossessionTarget.Reset();
 		bHackTransitionCoveredNotified = false;
 		SetHackTransitionInputBlocked(false);
+		PopEnemyHud();
 	}
 
 	UnbindShooterCharacterDelegates();
@@ -430,20 +433,35 @@ void APartnerPlayerController::SetPartnerPossessionState(
 
 	case EPartnerPossessionState::PartnerControlled:
 		SetHackTransitionInputBlocked(false);
+		PopEnemyHud();
 		if (ULocalPlayer* LocalPlayer = GetLocalPlayer())
 		{
 			if (ULocalPlayerPostProcessSubsystem* PPSubsystem =
 				LocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
 			{
 				PPSubsystem->CancelHackPossessionTransition();
+				PPSubsystem->StopSplitPrism();
 			}
 		}
 		break;
 
 	case EPartnerPossessionState::EnemyPossessed:
 		SetHackTransitionInputBlocked(false);
+		PushEnemyHud(Cast<AEnemyBase>(ContextActor));
+		// 드론 시야로 넘어온 직후 초점이 맞춰지는 연출. 사망 중이면 아래 RefreshHudVisibility가 바로 끈다.
+		if (ULocalPlayer* LocalPlayer = GetLocalPlayer())
+		{
+			if (ULocalPlayerPostProcessSubsystem* PPSubsystem =
+				LocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
+			{
+				PPSubsystem->StartSplitPrism();
+			}
+		}
 		break;
 	}
+
+	// Transitioning 진입에서 MainWidget을 접고, PartnerControlled 복귀에서 편다.
+	RefreshHudVisibility();
 
 	OnPartnerPossessionStateChanged.Broadcast(
 		PreviousState,
@@ -466,6 +484,120 @@ void APartnerPlayerController::SetHackTransitionInputBlocked(bool bBlocked)
 	{
 		FlushPressedKeys();
 	}
+}
+
+void APartnerPlayerController::RefreshHudVisibility()
+{
+	Super::RefreshHudVisibility();
+	EnemyHudCollapseState.Apply(EnemyHudInstance, !IsHudHiddenForDeath());
+	if (EnemyHudInstance)
+	{
+		EnemyHudInstance->SetDamageFeedbackSuppressed(IsHudHiddenForDeath());
+	}
+
+	// 사망 연출과 겹치지 않게 Split Prism도 같이 끈다.
+	if (IsHudHiddenForDeath())
+	{
+		if (ULocalPlayerPostProcessSubsystem* PPSubsystem = GetLocalPlayer()
+			? GetLocalPlayer()->GetSubsystem<ULocalPlayerPostProcessSubsystem>()
+			: nullptr)
+		{
+			PPSubsystem->StopSplitPrism();
+		}
+	}
+}
+
+bool APartnerPlayerController::ShouldShowMainWidget() const
+{
+	if (!Super::ShouldShowMainWidget())
+	{
+		return false;
+	}
+
+	switch (PartnerPossessionState)
+	{
+	case EPartnerPossessionState::PartnerControlled:
+		return true;
+
+	case EPartnerPossessionState::EnemyPossessed:
+		// Enemy HUD를 못 띄웠으면(WBP 미지정 등) Partner HUD를 남긴다.
+		return !EnemyHudInstance;
+
+	default:
+		return false;
+	}
+}
+
+void APartnerPlayerController::PushEnemyHud(AEnemyBase* PossessedEnemy)
+{
+	if (!IsLocalController() || EnemyHudLayerHandle.IsValid() || !IsValid(PossessedEnemy))
+	{
+		return;
+	}
+
+	const TSubclassOf<UEnemyHudWidget> HudClass = PossessedEnemy->GetPossessedHudClass();
+	if (!HudClass)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[PartnerPossession] PossessedHudClass is not set on %s"),
+			*GetNameSafe(PossessedEnemy->GetClass()));
+		return;
+	}
+
+	ULocalPlayer* LocalPlayer = GetLocalPlayer();
+	ULocalPlayerUILayerSubsystem* LayerSubsystem = LocalPlayer
+		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()
+		: nullptr;
+	if (!LayerSubsystem)
+	{
+		return;
+	}
+
+	UEnemyHudWidget* EnemyHud = CreateWidget<UEnemyHudWidget>(this, HudClass);
+	if (!EnemyHud)
+	{
+		return;
+	}
+	EnemyHud->InitializeForEnemy(PossessedEnemy);
+
+	// 입력을 받지 않는 HUD라 InputModeTag는 적용되지 않는다.
+	EnemyHudLayerHandle = LayerSubsystem->PushWidget(
+		UILayerTags::Gameplay(),
+		EnemyHud,
+		FirstPersonInputModeTags::UI(),
+		this,
+		EUILayerFocusTarget::None,
+		false,
+		false);
+	if (!EnemyHudLayerHandle.IsValid())
+	{
+		EnemyHud->ReleaseDamageFeedback();
+		return;
+	}
+
+	EnemyHudInstance = EnemyHud;
+}
+
+void APartnerPlayerController::PopEnemyHud()
+{
+	if (EnemyHudInstance)
+	{
+		EnemyHudInstance->ReleaseDamageFeedback();
+	}
+
+	if (EnemyHudLayerHandle.IsValid())
+	{
+		if (ULocalPlayerUILayerSubsystem* LayerSubsystem = GetLocalPlayer()
+			? GetLocalPlayer()->GetSubsystem<ULocalPlayerUILayerSubsystem>()
+			: nullptr)
+		{
+			LayerSubsystem->PopLayer(EnemyHudLayerHandle);
+		}
+	}
+
+	EnemyHudLayerHandle.Reset();
+	EnemyHudInstance = nullptr;
+	EnemyHudCollapseState.Reset();
 }
 
 void APartnerPlayerController::BindPossessionTargetEndPlay(AEnemyBase* EnemyTarget)

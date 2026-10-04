@@ -28,6 +28,9 @@ public:
 public:
 	void RegisterMainUI(UMainUIBase* InMainUI);
 	void UnregisterMainUI(UMainUIBase* InMainUI);
+	void FlushMainUITransientWidgets();
+	// 사망 중 늦게 도착한 피격 / interaction 표시가 다시 쌓이지 않게 한다.
+	void SetTransientWidgetsSuppressed(bool bSuppressed);
 	void OnRep_PlayerStateChanged(EUIPlayerState State);
 
 public:
@@ -90,4 +93,5 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UUserWidget> InteractionWidgetInstance;
+	bool bTransientWidgetsSuppressed = false;
 };

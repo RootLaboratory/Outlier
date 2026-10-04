@@ -94,6 +94,24 @@ namespace OutlierGameplayTags
 				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Actor.Role.Shooter")));
 				return Tag;
 			}
+
+			inline FGameplayTag Partner()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Actor.Role.Partner")));
+				return Tag;
+			}
+		}
+	}
+
+	namespace Interact
+	{
+		namespace Target
+		{
+			inline FGameplayTag PannelSwitch()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Interact.Target.PannelSwitch")));
+				return Tag;
+			}
 		}
 	}
 

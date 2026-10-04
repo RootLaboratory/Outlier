@@ -5,10 +5,14 @@
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
 #include "Components/PanelWidget.h"
+#include "EnhancedInputComponent.h"
+#include "EnhancedInputSubsystems.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/LocalPlayer.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
 #include "FrontendPlayerController.h"
+#include "Input/ControllerInputConfig.h"
+#include "InputAction.h"
 #include "MainUIBase.h"
 #include "UI/UILayerGameplayTags.h"
 #include "UI/UILayerContextReceiver.h"
@@ -557,6 +561,28 @@ UUserWidget* ULocalPlayerUILayerSubsystem::GetTopLayerWidget() const
 	return CachedInputWidget.Get();
 }
 
+UUserWidget* ULocalPlayerUILayerSubsystem::FindWidgetByOwnerAndClass(
+	UObject* RequestOwner,
+	TSubclassOf<UUserWidget> WidgetClass) const
+{
+	if (!WidgetClass)
+	{
+		return nullptr;
+	}
+
+	for (const FUILayerEntry& Entry : LayerEntries)
+	{
+		UUserWidget* Widget = Entry.Widget.Get();
+		if (Entry.RequestOwner.Get() == RequestOwner
+			&& IsValid(Widget)
+			&& Widget->IsA(WidgetClass))
+		{
+			return Widget;
+		}
+	}
+	return nullptr;
+}
+
 FGameplayTag ULocalPlayerUILayerSubsystem::GetActiveInputModeTag() const
 {
 	return CachedInputModeTag;
@@ -602,6 +628,59 @@ bool ULocalPlayerUILayerSubsystem::RouteWidgetRightInput()
 	return RouteWidgetInput(
 		&IUILayerInputReceiver::Execute_HandleUILayerRight,
 		false);
+}
+
+bool ULocalPlayerUILayerSubsystem::BindWidgetInput(
+	UEnhancedInputComponent* InputComponent,
+	const UControllerInputConfig* Config)
+{
+	if (!InputComponent || !Config)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[UIInput] Cannot bind widget input. LocalPlayer=%s Config=%s Component=%s"),
+			*GetNameSafe(GetLocalPlayer()), *GetNameSafe(Config), *GetNameSafe(InputComponent));
+		return false;
+	}
+
+	WidgetInputConfig = Config;
+
+	if (Config->WidgetMappingContext)
+	{
+		if (UEnhancedInputLocalPlayerSubsystem* InputSubsystem = GetLocalPlayer()
+			? GetLocalPlayer()->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>()
+			: nullptr)
+		{
+			InputSubsystem->AddMappingContext(Config->WidgetMappingContext, 0);
+		}
+	}
+
+	TWeakObjectPtr<ULocalPlayerUILayerSubsystem> WeakThis(this);
+	auto BindRoute = [InputComponent, WeakThis](
+		UInputAction* Action, bool (ULocalPlayerUILayerSubsystem::*Route)())
+	{
+		if (!Action)
+		{
+			return;
+		}
+
+		// 일시정지 중에도 설정/게임오버 UI는 조작할 수 있어야 한다.
+		Action->bTriggerWhenPaused = true;
+		InputComponent->BindActionValueLambda(Action, ETriggerEvent::Started,
+			[WeakThis, Route](const FInputActionValue&)
+			{
+				if (ULocalPlayerUILayerSubsystem* Subsystem = WeakThis.Get())
+				{
+					(Subsystem->*Route)();
+				}
+			});
+	};
+
+	BindRoute(Config->WidgetConfirmedAction, &ULocalPlayerUILayerSubsystem::RouteWidgetConfirmedInput);
+	BindRoute(Config->WidgetUpAction, &ULocalPlayerUILayerSubsystem::RouteWidgetUpInput);
+	BindRoute(Config->WidgetDownAction, &ULocalPlayerUILayerSubsystem::RouteWidgetDownInput);
+	BindRoute(Config->WidgetLeftAction, &ULocalPlayerUILayerSubsystem::RouteWidgetLeftInput);
+	BindRoute(Config->WidgetRightAction, &ULocalPlayerUILayerSubsystem::RouteWidgetRightInput);
+	return true;
 }
 
 bool ULocalPlayerUILayerSubsystem::RouteWidgetInput(
