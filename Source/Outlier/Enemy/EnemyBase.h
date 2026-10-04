@@ -207,7 +207,7 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Damage")
 	uint8 bUseCoreWeakPoint : 1 = true;
 
-//사망 후 지연 없이 제거해 버리면, 액터 채널로 운용되는 GC가 액터와 함께 사라져서 PENDING 시간을 주었음.
+	//사망 후 지연 없이 제거해 버리면, 액터 채널로 운용되는 GC가 액터와 함께 사라져서 PENDING 시간을 주었음.
  	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Damage", meta = (ClampMin = "0.0", UIMin = "0.0"))
 	float DeathDestroyDelay = 0.25f;
 

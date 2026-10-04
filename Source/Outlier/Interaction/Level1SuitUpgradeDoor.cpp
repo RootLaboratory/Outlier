@@ -12,13 +12,14 @@
 #include "Room/RoomCombatSubsystem.h"
 #include "Room/RoomVolume.h"
 #include "Save/OutlierSaveSubSystem.h"
+#include "Save/OutlierCheckpoint.h"
 #include "Shooter/ShooterCharacter.h"
 #include "TimerManager.h"
 
 // Level 1 진행의 서버 측 순서:
 // 두 플레이어가 입장 Room 안에 모임 -> 이 문 닫기 -> 닫힘 Timeline 완료
 // -> 양쪽 UI의 실제 종료 확인 -> 이 문 열기 -> 열림 Timeline 완료
-// -> 별도 전투 Room과 첫 Wave의 SpawnPoint가 준비되면 ExternalTrigger 전투 시작.
+// -> 입구 체크포인트의 디스크 저장 성공 -> 전투 Room/SpawnPoint 준비 후 ExternalTrigger 시작.
 ALevel1SuitUpgradeDoor::ALevel1SuitUpgradeDoor()
 {
 	// 부모 Door의 Tick이 Timeline을 구동한다. 자식은 초기 문 상태만 바꾼다.
@@ -42,6 +43,15 @@ void ALevel1SuitUpgradeDoor::BeginPlay()
 			IsValid(CombatRoomVolume)
 				? *CombatRoomVolume->GetRoomTag().ToString() : TEXT("None"));
 		return;
+	}
+	if (!IsValid(EntranceCheckpoint))
+	{
+		UE_LOG(LogTemp, Error, TEXT("[Level1Door] Entrance checkpoint missing. Door=%s"), *GetNameSafe(this));
+		return;
+	}
+	if (!EntranceCheckpoint->IsCheckpointCommitted())
+	{
+		EntranceCheckpoint->SetActivationConditionSatisfied(nullptr, false);
 	}
 
 	UOutlierArenaSubsystem* Arena = GetWorld()->GetSubsystem<UOutlierArenaSubsystem>();
@@ -69,6 +79,9 @@ void ALevel1SuitUpgradeDoor::BeginPlay()
 		this, &ThisClass::OnRoomStartReadinessChanged);
 	CombatSubsystem->OnCombatEvent.AddDynamic(this, &ThisClass::OnCombatEvent);
 	OnDoorMotionFinished.AddUObject(this, &ThisClass::HandleDoorMotionFinished);
+	OnDoorSafetyReopenStarted.AddUObject(this, &ThisClass::HandleDoorSafetyReopenStarted);
+	EntranceCheckpoint->OnCheckpointCommitted.AddUObject(
+		this, &ThisClass::OnEntranceCheckpointCommitted);
 	TargetRoomVolume->OnRoomActorOverlapChanged.AddUObject(this, &ThisClass::OnRoomOverlapChanged);
 	ActorSpawnedHandle = GetWorld()->AddOnActorSpawnedHandler(
 		FOnActorSpawned::FDelegate::CreateUObject(this, &ThisClass::ObservePlayerState));
@@ -103,6 +116,11 @@ void ALevel1SuitUpgradeDoor::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		ArenaSubsystem->OnArenaGameplayReady.RemoveAll(this);
 	}
 	OnDoorMotionFinished.RemoveAll(this);
+	OnDoorSafetyReopenStarted.RemoveAll(this);
+	if (IsValid(EntranceCheckpoint))
+	{
+		EntranceCheckpoint->OnCheckpointCommitted.RemoveAll(this);
+	}
 	if (CombatSubsystem.IsValid())
 	{
 		CombatSubsystem->OnRoomStartReadinessChanged.RemoveAll(this);
@@ -181,11 +199,71 @@ void ALevel1SuitUpgradeDoor::OnRoomOverlapChanged(AActor* Actor, bool bEntered)
 			!bAwaitingGameplayReady, bEntrySealed);
 	}
 	// 입장/퇴장 모두 현재 페어 위치를 다시 판정한다. 태그만 남은 이전 위치는 인정하지 않는다.
-	if (AbortEntryIfPairOutside())
+	const bool bEntryAborted = AbortEntryIfPairOutside();
+	// 퇴장 이벤트 자체가 안전 개방을 시작했어도, 그 실제 퇴장을 새 입장 사이클의 시작으로 기록한다.
+	HandleSafetyReentry(Actor, bEntered);
+	if (bEntryAborted)
 	{
 		return;
 	}
 	EvaluateEntry();
+}
+
+void ALevel1SuitUpgradeDoor::HandleSafetyReentry(AActor* Actor, bool bEntered)
+{
+	if (!HasAuthority() || bAwaitingGameplayReady || !bEntryCloseRejected
+		|| !IsValid(Actor) || !IsValid(TargetRoomVolume) || !ArenaSubsystem.IsValid()
+		|| GameplayGeneration != ArenaSubsystem->GetGameplayGeneration())
+	{
+		return;
+	}
+	AOutlierPlayerState* Shooter = nullptr;
+	AOutlierPlayerState* Partner = nullptr;
+	if (!FindPair(Shooter, Partner)
+		|| (Actor != Shooter->GetShooterCharacter() && Actor != Partner->GetPartnerCharacter()))
+	{
+		return;
+	}
+	const ACharacter* Character = Cast<ACharacter>(Actor);
+	const UCapsuleComponent* Capsule = Character ? Character->GetCapsuleComponent() : nullptr;
+	const UBoxComponent* Box = Cast<UBoxComponent>(TargetRoomVolume->GetRootComponent());
+	if (!Capsule || !Box)
+	{
+		return;
+	}
+	const bool bBodyOverlapsRoom = Box->OverlapComponent(
+		Capsule->GetComponentLocation(), Capsule->GetComponentQuat(), Capsule->GetCollisionShape());
+	const TWeakObjectPtr<AActor> Player(Actor);
+	if (!bEntered)
+	{
+		// 장식 메시의 EndOverlap이나 문턱에 걸친 캡슐은 실제 퇴장이 아니다.
+		// 현재 페어 중 한 명의 몸체가 완전히 나간 경우만 그 Pawn의 재입장을 기다린다.
+		if (!bBodyOverlapsRoom)
+		{
+			SafetyReentryPlayers.Add(Player);
+			LogEntryStatus(TEXT("SafetyPlayerLeft"), Shooter, Partner);
+		}
+		return;
+	}
+	if (!SafetyReentryPlayers.Contains(Player) || !bBodyOverlapsRoom)
+	{
+		return;
+	}
+
+	// 실제 재입장 한 번으로 요청을 소비한다. 아직 안전 개방 중이면 보류하지 않으므로
+	// 열린 뒤 다시 퇴장/재입장해야 한다. 완료 콜백이나 UI 이벤트는 이 대기를 해제하지 않는다.
+	// 다른 플레이어의 퇴장 기록은 유지하여 각자의 재입장 시점을 독립적으로 판정한다.
+	SafetyReentryPlayers.Remove(Player);
+	if (!IsDoorOpen() || IsActorTickEnabled())
+	{
+		LogEntryStatus(TEXT("SafetyReentryDuringMotion"), Shooter, Partner);
+		return;
+	}
+	SafetyReentryPlayers.Reset();
+	bEntryCloseRejected = false;
+	LogEntryStatus(TEXT("SafetyNewEntryRequest"), Shooter, Partner);
+	// 이후 기존 입장 경로가 두 캡슐의 완전한 입장과 보호 검사를 확인한다.
+	// BeginOverlap 시 문턱에 걸쳐 있으면 기존 EntryRecheckTimer만 사용한다.
 }
 
 void ALevel1SuitUpgradeDoor::OnRoomStartReadinessChanged(FGameplayTag ChangedRoomTag)
@@ -196,6 +274,14 @@ void ALevel1SuitUpgradeDoor::OnRoomStartReadinessChanged(FGameplayTag ChangedRoo
 			TEXT("[Level1Door] Room readiness changed. Door=%s Room=%s OpenFinished=%d CombatStarted=%d Generation=%u"),
 			*GetNameSafe(this), *ChangedRoomTag.ToString(), bOpenFinished,
 			bCombatStartSucceeded, GameplayGeneration);
+		TryStartCombat();
+	}
+}
+
+void ALevel1SuitUpgradeDoor::OnEntranceCheckpointCommitted(AOutlierCheckpoint* Checkpoint)
+{
+	if (HasAuthority() && Checkpoint == EntranceCheckpoint && !bAwaitingGameplayReady)
+	{
 		TryStartCombat();
 	}
 }
@@ -218,16 +304,22 @@ void ALevel1SuitUpgradeDoor::OnArenaReloadStarted(uint32 NewGeneration)
 {
 	GetWorldTimerManager().ClearTimer(EntryRecheckTimer);
 	OverlappingPlayers.Reset();
+	SafetyReentryPlayers.Reset();
 	// 이전 문/위젯 콜백이 다음 플레이 세대의 진행 플래그를 재사용하지 못하게 끊는다.
 	GameplayGeneration = NewGeneration;
 	bEntrySealed = false;
 	bCloseFinished = false;
 	bReopenRequested = false;
+	bEntryCloseRejected = false;
 	bOpenFinished = false;
 	bCombatStartSucceeded = false;
 	bCombatStartInProgress = false;
 	bAwaitingGameplayReady = true;
 	LastEntryStatus.Reset();
+	if (IsValid(EntranceCheckpoint) && !EntranceCheckpoint->IsCheckpointCommitted())
+	{
+		EntranceCheckpoint->SetActivationConditionSatisfied(nullptr, false);
+	}
 }
 
 void ALevel1SuitUpgradeDoor::OnArenaGameplayReady(uint32 ReadyGeneration)
@@ -247,16 +339,20 @@ void ALevel1SuitUpgradeDoor::ReconcileRestoredProgress()
 	{
 		return;
 	}
-	const UOutlierSaveSubSystem* Save = GetGameInstance()
+	UOutlierSaveSubSystem* Save = GetGameInstance()
 		? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>() : nullptr;
 	const FGameplayTag RoomTag = CombatRoomVolume->GetRoomTag();
 	const bool bEncounterCleared = Save && Save->HasWorldProgress(
 		EOutlierWorldProgressType::CompletedEncounter, RoomTag.GetTagName());
 	const bool bRestoredOpen = Save && !DoorId.IsNone() && Save->HasWorldProgress(
 		EOutlierWorldProgressType::OpenedDoor, DoorId);
+	FOutlierCheckpointSnapshot RestoreSnapshot;
+	const bool bSavedPastEntrance = Save && Save->GetRestoreSnapshot(RestoreSnapshot)
+		&& !RestoreSnapshot.bInitialSnapshot && IsValid(EntranceCheckpoint)
+		&& RestoreSnapshot.CheckpointId != EntranceCheckpoint->GetCheckpointId();
 
-	// 완료 기록과 문 열림 기록은 별도다. 복원은 Timeline 완료 이벤트를 만들지 않고
-	// 전투가 남은 열린 문만 준비된 Room 명단을 기다려 한 번 재개한다.
+	// Suit 보유만으로 입장 연출을 건너뛰지 않는다. 저장된 문 열림 또는 전투 완료만
+	// 연출이 이미 끝났다는 근거로 사용한다.
 	if (bRestoredOpen || bEncounterCleared)
 	{
 		SnapDoorState(true);
@@ -264,19 +360,24 @@ void ALevel1SuitUpgradeDoor::ReconcileRestoredProgress()
 		bCloseFinished = true;
 		bReopenRequested = true;
 		bOpenFinished = true;
-		bCombatStartSucceeded = bEncounterCleared;
+		bCombatStartSucceeded = bEncounterCleared || bSavedPastEntrance;
 		UE_LOG(LogTemp, Display,
 			TEXT("[Level1Door] Progress restored. Door=%s Room=%s Generation=%u Open=%d EncounterCleared=%d"),
 			*GetNameSafe(this), *RoomTag.ToString(), GameplayGeneration,
 			bRestoredOpen, bEncounterCleared);
-		if (!bEncounterCleared)
+		if (!bCombatStartSucceeded && IsValid(EntranceCheckpoint))
 		{
+			EntranceCheckpoint->SetCombatRoomTag(RoomTag);
+			if (!EntranceCheckpoint->IsCheckpointCommitted())
+			{
+				EntranceCheckpoint->SetActivationConditionSatisfied(nullptr, true);
+			}
 			TryStartCombat();
 		}
 		return;
 	}
 
-	// 초기 스냅샷/프리셋 복귀는 이 문의 초기 열림 상태에서 다시 입장 판정한다.
+	// 문 열림 기록이 없는 복귀는 Suit 보유 여부와 무관하게 입장을 다시 판정한다.
 	SnapDoorState(true);
 	EvaluateEntry();
 }
@@ -345,7 +446,8 @@ bool ALevel1SuitUpgradeDoor::IsInsideRoom(const AActor* Character) const
 
 void ALevel1SuitUpgradeDoor::EvaluateEntry()
 {
-	if (!HasAuthority() || bAwaitingGameplayReady || bEntrySealed || !IsValid(TargetRoomVolume))
+	if (!HasAuthority() || bAwaitingGameplayReady || bEntrySealed || bEntryCloseRejected
+		|| !IsValid(TargetRoomVolume))
 	{
 		return;
 	}
@@ -391,8 +493,16 @@ void ALevel1SuitUpgradeDoor::EvaluateEntry()
 
 	// 여기서는 닫기만 요청한다. 닫힘 완료 전에는 UI가 모두 끝나도 재개방하지 않는다.
 	LogEntryStatus(TEXT("BothPlayersInside"), Shooter, Partner);
+	if (!TrySetDoorOpen(false))
+	{
+		// 닫기 거절은 봉쇄 성공이 아니다. 반복 입장/상태 이벤트도 같은 요청을
+		// 재시도하지 않게 대기한다. 실제 퇴장 후 재입장만 새로운 요청을 만든다.
+		bEntryCloseRejected = true;
+		SafetyReentryPlayers.Reset();
+		LogEntryStatus(TEXT("DoorCloseRejected"), Shooter, Partner);
+		return;
+	}
 	bEntrySealed = true;
-	SetDoorOpen(false);
 	UE_LOG(LogTemp, Display, TEXT("[Level1Door] Entry sealed. Door=%s Room=%s Generation=%u"),
 		*GetNameSafe(this), *TargetRoomVolume->GetRoomTag().ToString(), GameplayGeneration);
 }
@@ -403,6 +513,12 @@ bool ALevel1SuitUpgradeDoor::AbortEntryIfPairOutside()
 		|| !ArenaSubsystem.IsValid() || GameplayGeneration != ArenaSubsystem->GetGameplayGeneration())
 	{
 		return false;
+	}
+	// 퇴장 오버랩이 문 Tick보다 먼저 올 수 있다. 보호 대상이 경로에 있다면
+	// 기존 즉시 Snap보다 안전 반전을 우선해 현재 위치에서 열고 새 요청을 기다린다.
+	if (TrySafetyReopen())
+	{
+		return true;
 	}
 
 	AOutlierPlayerState* Shooter = nullptr;
@@ -487,7 +603,8 @@ bool ALevel1SuitUpgradeDoor::TryStartCombat()
 {
 	if (!HasAuthority() || bAwaitingGameplayReady || !bOpenFinished
 		|| bCombatStartSucceeded || bCombatStartInProgress
-		|| !IsValid(CombatRoomVolume) || !CombatSubsystem.IsValid())
+		|| !IsValid(CombatRoomVolume) || !CombatSubsystem.IsValid()
+		|| !IsValid(EntranceCheckpoint) || !EntranceCheckpoint->IsCheckpointCommitted())
 	{
 		return false;
 	}
@@ -529,6 +646,28 @@ bool ALevel1SuitUpgradeDoor::TryStartCombat()
 	return true;
 }
 
+void ALevel1SuitUpgradeDoor::HandleDoorSafetyReopenStarted(AInteractableDoor* Door)
+{
+	if (!HasAuthority() || Door != this)
+	{
+		return;
+	}
+	// 닫힘 중단 -> 봉쇄/정상 개방 완료 취소 -> 재평가 차단 순서로 정리한다.
+	// 기존 퇴장 기록도 버린다. 이 중단 이후 실제 퇴장/재입장만 새 요청을 만든다.
+	GetWorldTimerManager().ClearTimer(EntryRecheckTimer);
+	SafetyReentryPlayers.Reset();
+	bEntrySealed = false;
+	bCloseFinished = false;
+	bReopenRequested = false;
+	bOpenFinished = false;
+	bEntryCloseRejected = true;
+	if (IsValid(EntranceCheckpoint) && !EntranceCheckpoint->IsCheckpointCommitted())
+	{
+		EntranceCheckpoint->SetActivationConditionSatisfied(nullptr, false);
+	}
+	LogEntryStatus(TEXT("DoorSafetyReopen"), nullptr, nullptr);
+}
+
 void ALevel1SuitUpgradeDoor::HandleDoorMotionFinished(AInteractableDoor* Door, bool bOpen)
 {
 	if (!HasAuthority() || Door != this || !ArenaSubsystem.IsValid()
@@ -552,18 +691,15 @@ void ALevel1SuitUpgradeDoor::HandleDoorMotionFinished(AInteractableDoor* Door, b
 	}
 	else if (bOpen && bReopenRequested && !bOpenFinished)
 	{
-		// 2단계: 열린 위치 도착. 요청 시점이 아닌 이 시점만 전투 시작 신호가 된다.
+		// 2단계: 열림 완료 후 입구 저장을 허용한다. 전투는 체크포인트 확정 통지까지 대기한다.
 		bOpenFinished = true;
 		UE_LOG(LogTemp, Display, TEXT("[Level1Door] Door opened. Door=%s Room=%s Generation=%u"),
 			*GetNameSafe(this), *TargetRoomVolume->GetRoomTag().ToString(), GameplayGeneration);
 		OnLevel1DoorOpened.Broadcast(this, GameplayGeneration);
-		if (!TryStartCombat() && IsValid(CombatRoomVolume))
+		if (IsValid(EntranceCheckpoint) && IsValid(CombatRoomVolume))
 		{
-			UE_LOG(LogTemp, Warning,
-				TEXT("[Level1Door] Combat start waiting. Door=%s Room=%s Generation=%u RegisteredSpawnPoints=%d"),
-				*GetNameSafe(this), *CombatRoomVolume->GetRoomTag().ToString(), GameplayGeneration,
-				CombatSubsystem.IsValid()
-					? CombatSubsystem->GetRegisteredSpawnPointCount(CombatRoomVolume->GetRoomTag()) : 0);
+			EntranceCheckpoint->SetCombatRoomTag(CombatRoomVolume->GetRoomTag());
+			EntranceCheckpoint->SetActivationConditionSatisfied(nullptr, true);
 		}
 	}
 }

@@ -6,29 +6,41 @@
 #include "Components/Image.h"
 #include "Components/PanelWidget.h"
 #include "Engine/DataTable.h"
+#include "Engine/Texture.h"
 #include "Engine/Texture2D.h"
+#include "Engine/World.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 #include "OutlierPlayerState.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialInterface.h"
+#include "Framework/Application/SlateApplication.h"
 #include "UI/UpgradeDescWidget.h"
 #include "UI/UpgradeNodeGroupWidget.h"
 #include "Upgrade/OutlierUpgradeComponent.h"
 #include "Upgrade/OutlierUpgradeSetData.h"
+#include "TimerManager.h"
+
+namespace
+{
+	const FName ColorParameterName(TEXT("Color"));
+	const FName IntensityParameterName(TEXT("Intensity"));
+	const FName TextureParameterName(TEXT("Texture"));
+}
 
 void UUpgradeNodeWidget::NativeOnInitialized()
 {
 	Super::NativeOnInitialized();
 
 	BindButtonEvents();
-	CacheDefaultNodeBrush();
 }
 
 void UUpgradeNodeWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
 
-	CacheDefaultNodeBrush();
+	RefreshNodeAppearance();
 	RefreshNodeTexture();
 }
 
@@ -42,15 +54,23 @@ void UUpgradeNodeWidget::SynchronizeProperties()
 	{
 		RefreshFromUpgradeComponent(CachedUpgradeComponent);
 	}
-	CacheDefaultNodeBrush();
 	RefreshEnabledState();
+	RefreshNodeAppearance();
 	RefreshNodeTexture();
 }
 
 void UUpgradeNodeWidget::NativeDestruct()
 {
+	if (GetWorld())
+	{
+		GetWorld()->GetTimerManager().ClearTimer(DescHideTimerHandle);
+	}
 	HideUpgradeDescWidget();
 
+	if (CachedUpgradeDescWidget)
+	{
+		CachedUpgradeDescWidget->OnPurchaseRequested.RemoveAll(this);
+	}
 	if (CachedUpgradeDescWidget && CachedUpgradeDescWidget->GetParent())
 	{
 		CachedUpgradeDescWidget->RemoveFromParent();
@@ -128,6 +148,10 @@ bool UUpgradeNodeWidget::RefreshNodeRowNameFromIds()
 
 void UUpgradeNodeWidget::SetUpgradeDescWidget(UUpgradeDescWidget* InUpgradeDescWidget)
 {
+	if (CachedUpgradeDescWidget)
+	{
+		CachedUpgradeDescWidget->OnPurchaseRequested.RemoveAll(this);
+	}
 	CachedUpgradeDescWidget = InUpgradeDescWidget;
 }
 
@@ -139,11 +163,37 @@ void UUpgradeNodeWidget::SetUpgradeDescWidgetClass(TSubclassOf<UUpgradeDescWidge
 	}
 }
 
+void UUpgradeNodeWidget::DismissDescription()
+{
+	if (bHoverDescVisible)
+	{
+		if (GetWorld())
+		{
+			GetWorld()->GetTimerManager().ClearTimer(DescHideTimerHandle);
+		}
+		if (CachedUpgradeDescWidget)
+		{
+			CachedUpgradeDescWidget->ClearNodeData();
+		}
+		bHoverDescVisible = false;
+	}
+}
+
 void UUpgradeNodeWidget::SetNodeState(EOutlierUpgradeNodeState InState, bool bInCanAfford)
 {
+	const bool bJustPurchased = CurrentState != EOutlierUpgradeNodeState::Activated
+		&& InState == EOutlierUpgradeNodeState::Activated;
+	if (bJustPurchased && bHoverDescVisible)
+	{
+		HideUpgradeDescWidget();
+		bHoverDescVisible = false;
+		bSuppressDescUntilUnhover = NodeButton && NodeButton->IsHovered();
+	}
+
 	CurrentState = InState;
 	bCanAfford = bInCanAfford;
 	RefreshEnabledState();
+	RefreshNodeAppearance();
 	RefreshNodeTexture();
 
 	if (bHoverDescVisible && !ShouldShowDescOnHover())
@@ -185,7 +235,12 @@ bool UUpgradeNodeWidget::GetNodeData(FOutlierUpgradeNodeRow& OutNodeData) const
 
 void UUpgradeNodeWidget::HandleClicked()
 {
-	if (bActivateNodeOnClick && CurrentState == EOutlierUpgradeNodeState::Unlocked)
+	OnUpgradeNodeClicked.Broadcast(this, CurrentNodeRowName);
+}
+
+void UUpgradeNodeWidget::HandlePurchaseRequested()
+{
+	if (!bAlwaysShowUnlockedIcon && CurrentState == EOutlierUpgradeNodeState::Unlocked && bCanAfford)
 	{
 		if (UOutlierUpgradeComponent* UpgradeComponent = ResolveUpgradeComponent())
 		{
@@ -246,22 +301,40 @@ void UUpgradeNodeWidget::HandleClicked()
 
 			if (bActivationRequested)
 			{
+				HideUpgradeDescWidget();
+				bHoverDescVisible = false;
+				bSuppressDescUntilUnhover = NodeButton && NodeButton->IsHovered();
 				RefreshFromUpgradeComponent(UpgradeComponent);
 			}
 		}
 	}
-
-	OnUpgradeNodeClicked.Broadcast(this, CurrentNodeRowName);
 }
 
 void UUpgradeNodeWidget::HandleHovered()
 {
+	if (const UUpgradeNodeGroupWidget* NodeGroupWidget = FindOwningNodeGroupWidget())
+	{
+		NodeGroupWidget->DismissOtherNodeDescriptions(this);
+	}
+	if (GetWorld())
+	{
+		GetWorld()->GetTimerManager().ClearTimer(DescHideTimerHandle);
+	}
+	if (bSuppressDescUntilUnhover)
+	{
+		return;
+	}
+
 	if (UOutlierUpgradeComponent* UpgradeComponent = ResolveUpgradeComponent())
 	{
 		RefreshFromUpgradeComponent(UpgradeComponent);
 	}
 
 	OnUpgradeNodeHovered.Broadcast(this, CurrentNodeRowName);
+	if (bHoverDescVisible)
+	{
+		return;
+	}
 
 	if (!ShouldShowDescOnHover())
 	{
@@ -281,7 +354,7 @@ void UUpgradeNodeWidget::HandleHovered()
 	DescWidget->ShowNodeData(
 			CurrentNodeRowName,
 			CurrentNodeData,
-			CurrentState,
+			GetDisplayedDescState(),
 			CurrentNodeCount,
 			bCanAfford);
 
@@ -309,10 +382,34 @@ void UUpgradeNodeWidget::HandleHovered()
 
 void UUpgradeNodeWidget::HandleUnhovered()
 {
-	HideUpgradeDescWidget();
-	bHoverDescVisible = false;
+	bSuppressDescUntilUnhover = false;
+	ScheduleDescHide();
 
 	OnUpgradeNodeUnhovered.Broadcast(this, CurrentNodeRowName);
+}
+
+void UUpgradeNodeWidget::ScheduleDescHide()
+{
+	if (!bHoverDescVisible || !GetWorld())
+	{
+		return;
+	}
+
+	GetWorld()->GetTimerManager().SetTimer(
+		DescHideTimerHandle, this, &UUpgradeNodeWidget::HandleDescHideTimer, 0.2f, true);
+}
+
+void UUpgradeNodeWidget::HandleDescHideTimer()
+{
+	if ((NodeButton && NodeButton->IsHovered())
+		|| (CachedUpgradeDescWidget && CachedUpgradeDescWidget->GetVisibility() != ESlateVisibility::Collapsed
+			&& CachedUpgradeDescWidget->GetCachedGeometry().IsUnderLocation(FSlateApplication::Get().GetCursorPos())))
+	{
+		return;
+	}
+
+	HideUpgradeDescWidget();
+	bHoverDescVisible = false;
 }
 
 void UUpgradeNodeWidget::BindButtonEvents()
@@ -450,6 +547,11 @@ bool UUpgradeNodeWidget::ShouldShowDescOnHover() const
 	return !CurrentNodeRowName.IsNone() || !CurrentNodeData.NodeId.IsNone();
 }
 
+EOutlierUpgradeNodeState UUpgradeNodeWidget::GetDisplayedDescState() const
+{
+	return bAlwaysShowUnlockedIcon ? EOutlierUpgradeNodeState::Activated : CurrentState;
+}
+
 UUpgradeDescWidget* UUpgradeNodeWidget::EnsureUpgradeDescWidget()
 {
 	UCanvasPanel* ParentCanvas = FindDescCanvas();
@@ -482,12 +584,18 @@ UUpgradeDescWidget* UUpgradeNodeWidget::EnsureUpgradeDescWidget()
 		CachedUpgradeDescWidget->RemoveFromParent();
 		ParentCanvas->AddChildToCanvas(CachedUpgradeDescWidget);
 	}
+	CachedUpgradeDescWidget->OnPurchaseRequested.RemoveAll(this);
+	CachedUpgradeDescWidget->OnPurchaseRequested.AddUObject(this, &UUpgradeNodeWidget::HandlePurchaseRequested);
 
 	return CachedUpgradeDescWidget;
 }
 
 void UUpgradeNodeWidget::HideUpgradeDescWidget()
 {
+	if (GetWorld())
+	{
+		GetWorld()->GetTimerManager().ClearTimer(DescHideTimerHandle);
+	}
 	if (CachedUpgradeDescWidget)
 	{
 		CachedUpgradeDescWidget->HideNodeData(CurrentNodeRowName);
@@ -550,7 +658,11 @@ bool UUpgradeNodeWidget::CalculateDescWidgetLayout(
 	const FVector2D ButtonSize = ButtonBottomRight - ButtonTopLeft;
 	const FVector2D ButtonCenter = ButtonTopLeft + ButtonSize * 0.5f;
 
-	FVector2D DesiredSize = CachedUpgradeDescWidget->GetDesiredSize();
+	FVector2D DesiredSize = CachedUpgradeDescWidget->GetPopupDesignSize();
+	if (DesiredSize.X <= KINDA_SMALL_NUMBER || DesiredSize.Y <= KINDA_SMALL_NUMBER)
+	{
+		DesiredSize = CachedUpgradeDescWidget->GetDesiredSize();
+	}
 	const FVector2D SafeFallbackSize(
 		FMath::Max(DescFallbackSize.X, 1.0f),
 		FMath::Max(DescFallbackSize.Y, 1.0f));
@@ -571,65 +683,19 @@ bool UUpgradeNodeWidget::CalculateDescWidgetLayout(
 	OutSize.Y = FMath::Min(DesiredSize.Y, InnerCanvasSize.Y / OutRenderScale);
 	const FVector2D RenderedSize = OutSize * OutRenderScale;
 	const FVector2D ScaledOffset = DescPopupOffset * OutRenderScale;
-
-	const int32 PreferredXSign = ButtonCenter.X >= CanvasSize.X * 0.5f ? -1 : 1;
-	const int32 PreferredYSign = ButtonCenter.Y >= CanvasSize.Y * 0.5f ? -1 : 1;
-
-	const auto BuildPosition = [&ButtonTopLeft, &ButtonSize, &RenderedSize, &ScaledOffset](int32 XSign, int32 YSign)
-	{
-		FVector2D CandidatePosition = FVector2D::ZeroVector;
-		CandidatePosition.X = XSign > 0
-			? ButtonTopLeft.X + ButtonSize.X + ScaledOffset.X
-			: ButtonTopLeft.X - ScaledOffset.X - RenderedSize.X;
-		CandidatePosition.Y = YSign > 0
-			? ButtonTopLeft.Y + ButtonSize.Y + ScaledOffset.Y
-			: ButtonTopLeft.Y - ScaledOffset.Y - RenderedSize.Y;
-		return CandidatePosition;
-	};
-
-	const auto GetOverflow = [&CanvasSize, &SafePadding, &RenderedSize](const FVector2D& Position)
-	{
-		float Overflow = 0.0f;
-		Overflow += FMath::Max(SafePadding.X - Position.X, 0.0f);
-		Overflow += FMath::Max(SafePadding.Y - Position.Y, 0.0f);
-		Overflow += FMath::Max(Position.X + RenderedSize.X - (CanvasSize.X - SafePadding.X), 0.0f);
-		Overflow += FMath::Max(Position.Y + RenderedSize.Y - (CanvasSize.Y - SafePadding.Y), 0.0f);
-		return Overflow;
-	};
-
-	const int32 CandidateSigns[4][2] =
-	{
-		{ PreferredXSign, PreferredYSign },
-		{ PreferredXSign, -PreferredYSign },
-		{ -PreferredXSign, PreferredYSign },
-		{ -PreferredXSign, -PreferredYSign }
-	};
-
-	FVector2D BestPosition = BuildPosition(PreferredXSign, PreferredYSign);
-	float BestOverflow = GetOverflow(BestPosition);
-	for (const int32(&CandidateSign)[2] : CandidateSigns)
-	{
-		const FVector2D CandidatePosition = BuildPosition(CandidateSign[0], CandidateSign[1]);
-		const float CandidateOverflow = GetOverflow(CandidatePosition);
-		if (CandidateOverflow <= KINDA_SMALL_NUMBER)
-		{
-			OutPosition = CandidatePosition;
-			return true;
-		}
-
-		if (CandidateOverflow < BestOverflow)
-		{
-			BestOverflow = CandidateOverflow;
-			BestPosition = CandidatePosition;
-		}
-	}
+	const float Gap = FMath::Max(ScaledOffset.X, 0.0f);
+	const float CenteredY = ButtonCenter.Y - RenderedSize.Y * 0.5f + ScaledOffset.Y;
+	// Keep radial tree popups facing inward instead of switching between four directions.
+	const float PopupX = ButtonCenter.X < CanvasSize.X * 0.5f
+		? ButtonBottomRight.X + Gap
+		: ButtonTopLeft.X - Gap - RenderedSize.X;
 
 	const FVector2D MaxPosition(
 		FMath::Max(SafePadding.X, CanvasSize.X - SafePadding.X - RenderedSize.X),
 		FMath::Max(SafePadding.Y, CanvasSize.Y - SafePadding.Y - RenderedSize.Y));
 
-	OutPosition.X = FMath::Clamp(BestPosition.X, SafePadding.X, MaxPosition.X);
-	OutPosition.Y = FMath::Clamp(BestPosition.Y, SafePadding.Y, MaxPosition.Y);
+	OutPosition.X = FMath::Clamp(PopupX, SafePadding.X, MaxPosition.X);
+	OutPosition.Y = FMath::Clamp(CenteredY, SafePadding.Y, MaxPosition.Y);
 	return true;
 }
 
@@ -672,7 +738,7 @@ void UUpgradeNodeWidget::RefreshVisibleDescWidget()
 	CachedUpgradeDescWidget->UpdateNodeData(
 		CurrentNodeRowName,
 		CurrentNodeData,
-		CurrentState,
+		GetDisplayedDescState(),
 		CurrentNodeCount,
 		bCanAfford);
 }
@@ -841,46 +907,124 @@ void UUpgradeNodeWidget::RefreshEnabledState()
 	}
 }
 
-void UUpgradeNodeWidget::CacheDefaultNodeBrush()
+UMaterialInstanceDynamic* UUpgradeNodeWidget::EnsureOverlayMaterial(UImage* Image, UMaterialInstanceDynamic* CachedMaterial) const
 {
-	if (!NodeImage || bDefaultNodeBrushCached)
+	if (!Image)
 	{
-		return;
+		return nullptr;
 	}
 
-	DefaultNodeBrush = NodeImage->GetBrush();
-	bDefaultNodeBrushCached = true;
+	UObject* BrushResource = Image->GetBrush().GetResourceObject();
+	if (CachedMaterial && BrushResource == CachedMaterial)
+	{
+		return CachedMaterial;
+	}
+
+	UTexture* SourceTexture = Cast<UTexture>(BrushResource);
+	UMaterialInterface* BrushMaterial = Cast<UMaterialInterface>(BrushResource);
+	if (BrushMaterial && !SourceTexture)
+	{
+		BrushMaterial->GetTextureParameterValue(FHashedMaterialParameterInfo(TextureParameterName), SourceTexture);
+	}
+	if (NodeColorMaterial && BrushMaterial != NodeColorMaterial.Get()
+		&& (!BrushMaterial || SourceTexture || Image == Icon.Get()))
+	{
+		Image->SetBrushFromMaterial(NodeColorMaterial);
+	}
+
+	UMaterialInstanceDynamic* DynamicMaterial = Image->GetDynamicMaterial();
+	if (DynamicMaterial && SourceTexture)
+	{
+		DynamicMaterial->SetTextureParameterValue(TextureParameterName, SourceTexture);
+	}
+	return DynamicMaterial;
+}
+
+void UUpgradeNodeWidget::RefreshNodeAppearance()
+{
+	if (bUseMaterialStateColors)
+	{
+		FrameMaterial = EnsureOverlayMaterial(Frame, FrameMaterial);
+		GlowMaterial = EnsureOverlayMaterial(Glow, GlowMaterial);
+		IconMaterial = EnsureOverlayMaterial(Icon, IconMaterial);
+
+		FLinearColor StateColor = LockedColor;
+		if (CurrentState == EOutlierUpgradeNodeState::Unlocked)
+		{
+			StateColor = UnlockedColor;
+		}
+		else if (CurrentState == EOutlierUpgradeNodeState::Activated)
+		{
+			StateColor = ActivatedColor;
+		}
+
+		for (UMaterialInstanceDynamic* Material : { FrameMaterial.Get(), GlowMaterial.Get(), IconMaterial.Get() })
+		{
+			if (Material)
+			{
+				Material->SetVectorParameterValue(ColorParameterName, StateColor);
+				Material->SetScalarParameterValue(IntensityParameterName, OverlayIntensity);
+			}
+		}
+	}
+
+	if (Glow)
+	{
+		Glow->SetRenderOpacity(CurrentState == EOutlierUpgradeNodeState::Activated ? 1.0f : 0.0f);
+	}
 }
 
 void UUpgradeNodeWidget::RefreshNodeTexture()
 {
-	if (!NodeImage)
+	if (!Icon)
 	{
 		return;
 	}
 
-	CacheDefaultNodeBrush();
-
-	if (CurrentState == EOutlierUpgradeNodeState::Locked && DeactivatedNodeTexture)
+	UTexture2D* BaseTexture = NodeIconTextureOverride ? NodeIconTextureOverride.Get() : NodeTexture.Get();
+	UTexture2D* DisplayTexture = nullptr;
+	const bool bShowUnlockedIcon = IsDesignTime() || bAlwaysShowUnlockedIcon
+		|| CurrentState == EOutlierUpgradeNodeState::Activated;
+	if (!bShowUnlockedIcon && LockedIconTextureOverride)
 	{
-		NodeImage->SetBrushFromTexture(DeactivatedNodeTexture);
-		return;
+		DisplayTexture = LockedIconTextureOverride.Get();
+	}
+	else if (bShowUnlockedIcon && UnlockedIconTextureOverride)
+	{
+		DisplayTexture = UnlockedIconTextureOverride.Get();
+	}
+	else if (bUseMaterialStateColors)
+	{
+		DisplayTexture = BaseTexture;
+		if (!DisplayTexture)
+		{
+			DisplayTexture = !bShowUnlockedIcon
+				? DeactivatedNodeTexture.Get()
+				: UnlockedNodeTexture.Get();
+		}
+	}
+	else if (!bShowUnlockedIcon)
+	{
+		DisplayTexture = DeactivatedNodeTexture ? DeactivatedNodeTexture.Get() : BaseTexture;
+	}
+	else
+	{
+		DisplayTexture = BaseTexture ? BaseTexture : UnlockedNodeTexture.Get();
 	}
 
-	if (CurrentState == EOutlierUpgradeNodeState::Unlocked && UnlockedNodeTexture)
+	Icon->SetVisibility(DisplayTexture ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
+	if (DisplayTexture)
 	{
-		NodeImage->SetBrushFromTexture(UnlockedNodeTexture);
-		return;
-	}
-
-	if (CurrentState == EOutlierUpgradeNodeState::Activated && NodeTexture)
-	{
-		NodeImage->SetBrushFromTexture(NodeTexture);
-		return;
-	}
-
-	if (bDefaultNodeBrushCached)
-	{
-		NodeImage->SetBrush(DefaultNodeBrush);
+		if (bUseMaterialStateColors)
+		{
+			IconMaterial = EnsureOverlayMaterial(Icon, IconMaterial);
+			if (IconMaterial)
+			{
+				IconMaterial->SetTextureParameterValue(TextureParameterName, DisplayTexture);
+				return;
+			}
+		}
+		Icon->SetBrushFromTexture(DisplayTexture);
+		IconMaterial = nullptr;
 	}
 }

@@ -1,7 +1,7 @@
 #include "UI/UILayerKeyHintWidget.h"
 
 #include "FrontendPlayerController.h"
-#include "UI/InputActionKeyDisplayWidget.h"
+#include "UI/HintKeyDisplayWidget.h"
 
 void UUILayerKeyHintWidget::NativeConstruct()
 {

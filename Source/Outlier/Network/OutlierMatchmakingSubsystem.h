@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "OutlierMatchRequest.h"
+#include "OutlierArenaProcessTypes.h"
 #include "OutlierMatchmakingSubsystem.generated.h"
 
 class AController;
@@ -37,6 +38,8 @@ public:
 	void LeaveParty(AController* Controller);
 	bool SelectRoleInPendingMatch(AController* Controller, EOutlierPlayerRole DesiredRole);
 	bool TryStartPendingMatch(AController* Controller);
+	bool TryContinuePendingMatch(AController* Controller,
+		const FGuid& SaveId, const FGuid& ResumeKey);
 
 	void Cancel(AController* Controller);
 	void ReleaseMatch(int32 PairId);
@@ -78,7 +81,8 @@ private:
 		AController* FirstController,
 		AController* SecondController,
 		EOutlierPlayerRole FirstRole,
-		EOutlierPlayerRole SecondRole
+		EOutlierPlayerRole SecondRole,
+		AController* PartyLeader = nullptr
 	);
 
 	UPROPERTY()
@@ -106,6 +110,7 @@ private:
 
 	EOutlierMatchmakingMode MatchmakingMode = EOutlierMatchmakingMode::PairThenRolePick;
 	TMap<TWeakObjectPtr<AController>, double> LastPartyJoinAttemptTimes;
+	TMap<TWeakObjectPtr<AController>, FOutlierMatchSaveContext> PendingSaveSelections;
 
 	int32 NextPendingMatchId = 1;
 	int32 NextPairId = 1;

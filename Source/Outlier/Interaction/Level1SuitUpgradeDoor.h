@@ -7,6 +7,7 @@
 
 class AInteractableDoor;
 class AOutlierPlayerState;
+class AOutlierCheckpoint;
 class ARoomVolume;
 class UOutlierArenaSubsystem;
 
@@ -27,9 +28,12 @@ public:
 	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Level 1 Door", meta = (DisplayName = "Entry Room Volume"))
 	TObjectPtr<ARoomVolume> TargetRoomVolume;
 
-	// 문 열림 완료 후 ExternalTrigger 전투를 시작할 별도 Room.
+	// 체크포인트 저장 성공 뒤 ExternalTrigger 전투를 시작할 별도 Room.
 	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Level 1 Door")
 	TObjectPtr<ARoomVolume> CombatRoomVolume;
+
+	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Level 1 Door")
+	TObjectPtr<AOutlierCheckpoint> EntranceCheckpoint;
 
 protected:
 	virtual void BeginPlay() override;
@@ -40,8 +44,11 @@ private:
 	void OnPlayerStateChanged(AOutlierPlayerState* PlayerState);
 	void OnUICompleted(AOutlierPlayerState* PlayerState, uint32 CompletedGeneration);
 	void OnRoomOverlapChanged(AActor* Actor, bool bEntered);
+	void HandleSafetyReentry(AActor* Actor, bool bEntered);
 	void HandleDoorMotionFinished(AInteractableDoor* Door, bool bOpen);
+	void HandleDoorSafetyReopenStarted(AInteractableDoor* Door);
 	void OnRoomStartReadinessChanged(FGameplayTag ChangedRoomTag);
+	void OnEntranceCheckpointCommitted(AOutlierCheckpoint* Checkpoint);
 	UFUNCTION()
 	void OnCombatEvent(FGameplayTag EventRoomTag, ERoomCombatEvent Event,
 		int32 CombatPhaseIndex, int32 EventGeneration);
@@ -63,8 +70,10 @@ private:
 	FDelegateHandle ActorSpawnedHandle;
 	FTimerHandle EntryRecheckTimer;
 	TSet<TWeakObjectPtr<AActor>> OverlappingPlayers;
+	TSet<TWeakObjectPtr<AActor>> SafetyReentryPlayers;
 	uint32 GameplayGeneration = 0;
 	bool bEntrySealed = false;
+	bool bEntryCloseRejected = false;
 	bool bCloseFinished = false;
 	bool bReopenRequested = false;
 	bool bOpenFinished = false;

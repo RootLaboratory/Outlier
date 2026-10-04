@@ -26,12 +26,26 @@ enum class EOutlierArenaControlMessageType : uint8
 	Heartbeat
 };
 
+struct FOutlierMatchSaveContext
+{
+	FGuid OwnerId;
+	FGuid SaveId;
+	FString KeyVerifier;
+	bool bContinue = false;
+
+	bool IsValid() const
+	{
+		return OwnerId.IsValid() && SaveId.IsValid() && KeyVerifier.Len() == 40;
+	}
+};
+
 struct FOutlierArenaControlMessage
 {
 	EOutlierArenaControlMessageType Type = EOutlierArenaControlMessageType::Ready;
 	int32 SlotId = INDEX_NONE;
 	uint32 ProcessId = 0;
 	FGuid MatchId;
+	FOutlierMatchSaveContext SaveContext;
 };
 
 enum class EOutlierArenaFrameDecodeResult : uint8

@@ -21,8 +21,14 @@ public:
 	bool LoadPlayerCheckpoint(const FString& PlayerId, FOutlierCheckpointData& OutData) const;
 
 	void ResetRuntimeCheckpointState();
+	bool ConfigureNewSave(const FGuid& OwnerId, const FGuid& SaveId, const FString& KeyVerifier);
+	bool LoadLatestSave(const FGuid& OwnerId, const FGuid& SaveId, const FString& KeyVerifier);
+	bool ValidateResumeKey(const FGuid& OwnerId, const FGuid& SaveId,
+		const FGuid& ResumeKey, FString& OutKeyVerifier) const;
+	static FString MakeKeyVerifier(const FGuid& ResumeKey);
+	FGuid GetActiveSaveId() const { return ActiveSaveId; }
 	bool CaptureInitialSnapshot(const FOutlierCheckpointSnapshot& Snapshot);
-	bool CommitCheckpointSnapshot(const FOutlierCheckpointSnapshot& Snapshot);
+	bool CommitDurableCheckpointSnapshot(const FOutlierCheckpointSnapshot& Snapshot);
 	bool GetRestoreSnapshot(FOutlierCheckpointSnapshot& OutSnapshot) const;
 	bool HasInitialSnapshot() const { return bHasInitialSnapshot; }
 	bool HasLatestCheckpointSnapshot() const { return bHasLatestCheckpointSnapshot; }
@@ -33,6 +39,13 @@ public:
 	bool RecordCompletedEncounter(FName EncounterId);
 	void RestoreCurrentWorldProgress(const FOutlierWorldProgressSnapshot& Snapshot);
 	const FOutlierWorldProgressSnapshot& GetCurrentWorldProgress() const { return CurrentWorldProgress; }
+	void SetCurrentRoomPhaseProgress(FGameplayTag RoomTag, const FOutlierRoomPhaseProgress& Progress);
+	void ClearCurrentRoomPhaseProgress(FGameplayTag RoomTag);
+	void RestoreCurrentRoomPhaseProgress(const TMap<FGameplayTag, FOutlierRoomPhaseProgress>& Progress);
+	const TMap<FGameplayTag, FOutlierRoomPhaseProgress>& GetCurrentRoomPhaseProgress() const
+	{
+		return CurrentRoomPhaseProgress;
+	}
 
 	// 배치 터렛 Actor는 사망 후에도 남으므로 월드 진행과 별도로 Stable ID별 사망 자세를 추적한다.
 	bool SetDestroyedTurretState(FName TurretId, bool bDestroyed);
@@ -49,7 +62,16 @@ public:
 	void UnregisterPersistentTurretId(FName TurretId, const UObject* Owner);
 	bool HasValidStableIds() const { return bStableIdsValid; }
 
+#if WITH_DEV_AUTOMATION_TESTS
+	void SetAutoSaveDirectoryForTesting(const FString& Directory) { AutoSaveDirectoryOverride = Directory; }
+	bool CommitCheckpointSnapshotForTesting(const FOutlierCheckpointSnapshot& Snapshot)
+	{
+		return CommitCheckpointSnapshot(Snapshot);
+	}
+#endif
+
 private:
+	bool CommitCheckpointSnapshot(const FOutlierCheckpointSnapshot& Snapshot);
 	bool RegisterStableId(FName StableId, UObject* Owner, const TCHAR* IdKind);
 	void UnregisterStableId(FName StableId, const UObject* Owner);
 
@@ -71,6 +93,9 @@ private:
 	FOutlierWorldProgressSnapshot CurrentWorldProgress;
 
 	UPROPERTY(Transient)
+	TMap<FGameplayTag, FOutlierRoomPhaseProgress> CurrentRoomPhaseProgress;
+
+	UPROPERTY(Transient)
 	TSet<FName> CurrentDestroyedTurretIds;
 
 	UPROPERTY(Transient)
@@ -78,4 +103,9 @@ private:
 
 	TMap<FName, TWeakObjectPtr<UObject>> RegisteredStableIds;
 	bool bStableIdsValid = true;
+	FString AutoSaveDirectoryOverride;
+	FGuid ActiveOwnerId;
+	FGuid ActiveSaveId;
+	FString ActiveKeyVerifier;
+	FString GetSaveDirectory(const FGuid& SaveId) const;
 };

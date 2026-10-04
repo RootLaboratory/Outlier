@@ -32,6 +32,14 @@ void AFrontendPlayerController::BeginPlay()
 
 	if (IsLocalController())
 	{
+		if (UOutlierGameInstance* Instance = Cast<UOutlierGameInstance>(GetGameInstance()))
+		{
+			FGuid LocalId;
+			if (Instance->GetLocalPlayerId(LocalId))
+			{
+				ServerRegisterLocalPlayerId(LocalId);
+			}
+		}
 		if (TitleWidgetClass)
 		{
 			TitleWidget = CreateWidget<UTitleWidget>(this, TitleWidgetClass);
@@ -479,6 +487,62 @@ void AFrontendPlayerController::RequestSelectLobbyRole(EOutlierPlayerRole Desire
 void AFrontendPlayerController::RequestStartPendingMatch()
 {
 	ServerRequestStartPendingMatch();
+}
+
+bool AFrontendPlayerController::HasLocalSave() const
+{
+	const UOutlierGameInstance* Instance = Cast<UOutlierGameInstance>(GetGameInstance());
+	FGuid SaveId;
+	FGuid ResumeKey;
+	return Instance && Instance->GetLocalSaveCredentials(SaveId, ResumeKey);
+}
+
+void AFrontendPlayerController::RequestContinuePendingMatch()
+{
+	const UOutlierGameInstance* Instance = Cast<UOutlierGameInstance>(GetGameInstance());
+	FGuid SaveId;
+	FGuid ResumeKey;
+	if (Instance && Instance->GetLocalSaveCredentials(SaveId, ResumeKey))
+	{
+		ServerRequestContinuePendingMatch(SaveId, ResumeKey);
+	}
+}
+
+void AFrontendPlayerController::ServerRegisterLocalPlayerId_Implementation(FGuid PlayerId)
+{
+	if (PlayerId.IsValid() && !RegisteredLocalPlayerId.IsValid())
+	{
+		RegisteredLocalPlayerId = PlayerId;
+	}
+}
+
+void AFrontendPlayerController::ServerRequestContinuePendingMatch_Implementation(
+	FGuid SaveId, FGuid ResumeKey)
+{
+	bool bAccepted = false;
+	if (UOutlierMatchmakingSubsystem* Matchmaking = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierMatchmakingSubsystem>() : nullptr)
+	{
+		bAccepted = Matchmaking->TryContinuePendingMatch(this, SaveId, ResumeKey);
+	}
+	ClientNotifyContinueSaveResult(bAccepted);
+}
+
+void AFrontendPlayerController::ClientNotifyContinueSaveResult_Implementation(bool bAccepted)
+{
+	OnContinueSaveResult.Broadcast(bAccepted);
+}
+
+void AFrontendPlayerController::ClientReceiveSaveCredentials_Implementation(
+	FGuid SaveId, FGuid ResumeKey)
+{
+	if (UOutlierGameInstance* Instance = Cast<UOutlierGameInstance>(GetGameInstance()))
+	{
+		if (!Instance->StoreLocalSaveCredentials(SaveId, ResumeKey))
+		{
+			UE_LOG(LogTemp, Error, TEXT("[Checkpoint] Failed to store local resume credentials"));
+		}
+	}
 }
 
 void AFrontendPlayerController::RequestCancelMatchmaking()

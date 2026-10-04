@@ -3,10 +3,13 @@
 #include "Audio/OutlierAudioSubsystem.h"
 #include "Components/PrimitiveComponent.h"
 #include "Components/SceneComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Engine/SkeletalMesh.h"
 #include "Interaction/InteractableComponent.h"
+#include "Save/OutlierCheckpointSnapshot.h"
+#include "Save/OutlierSaveSubSystem.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Shooter/ShooterInventoryComponent.h"
 #include "TimerManager.h"
@@ -39,6 +42,20 @@ void ASuitInteraction::BeginPlay()
 
 	if (HasAuthority())
 	{
+		// 체크포인트 복원 시 Gameplay 서브레벨의 이 액터가 다시 생성된다.
+		// 저장 시점에 슈트를 이미 획득했다면 재지급할 무기를 만들지 않고 제거한다.
+		// 서버의 제거가 클라이언트에도 복제되어 표시와 상호작용이 함께 사라진다.
+		FOutlierCheckpointSnapshot Snapshot;
+		const UOutlierSaveSubSystem* SaveSubsystem = GetGameInstance()
+			? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>()
+			: nullptr;
+		if (SaveSubsystem && SaveSubsystem->GetRestoreSnapshot(Snapshot)
+			&& Snapshot.SuitSnapshot.bAcquired)
+		{
+			Destroy();
+			return;
+		}
+
 		SpawnStoredWeapons();
 	}
 }
@@ -47,6 +64,10 @@ void ASuitInteraction::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	if (HasAuthority())
 	{
+		if (AShooterCharacter* Shooter = ReservedShooter.Get())
+		{
+			Shooter->CancelSuitTransition();
+		}
 		DestroyStoredWeapons();
 	}
 
@@ -70,15 +91,70 @@ bool ASuitInteraction::Interact(AFirstPersonCharacter* Interactor)
 		return false;
 	}
 
-	if (!ApplySuit(ShooterCharacter))
+	// Interaction은 예약 요청만 시작한다. 암전 완료 대기/취소의 수명은 Shooter가 관리하고 지급은 나중에 commit한다.
+	return ShooterCharacter->BeginSuitTransition(this, ShooterFirstPersonMesh, ShooterThirdPersonMesh);
+}
+
+bool ASuitInteraction::CanReserveFor(AShooterCharacter* ShooterCharacter) const
+{
+	const APartnerCharacter* Partner = ShooterCharacter ? ShooterCharacter->GetPartnerCharacter() : nullptr;
+	return HasAuthority() && !bConsumed && !ReservedShooter.IsValid()
+		&& IsValid(ShooterCharacter) && IsValid(Partner) && !Partner->GetCurrentWeapon()
+		&& ShooterCharacter->GetInventoryComponent() && InteractableComponent
+		&& InteractableComponent->CanInteract(ShooterCharacter->GetOwnedGameplayTagsForQuery())
+		&& IsValid(StoredShooterRifle) && IsValid(StoredPartnerWeapon)
+		&& StoredShooterRifle->GetWeaponType() == EWeaponType::Rifle
+		&& StoredShooterRifle->CanBePickedUpBy(ShooterCharacter)
+		&& StoredShooterRifle->GetOwner() == this && StoredPartnerWeapon->GetOwner() == this;
+}
+
+bool ASuitInteraction::ReserveFor(AShooterCharacter* ShooterCharacter)
+{
+	if (!CanReserveFor(ShooterCharacter))
 	{
 		return false;
 	}
+	// 예약 중에는 다른 요청을 거부하지만 보관 무기의 소유권/획득 상태는 그대로 유지한다.
+	ReservedShooter = ShooterCharacter;
+	return true;
+}
 
-	UOutlierAudioSubsystem::PlayTaggedAtLocationFromServer(
-		this,
+bool ASuitInteraction::IsReservedFor(const AShooterCharacter* ShooterCharacter) const
+{
+	return !bConsumed && ReservedShooter.Get() == ShooterCharacter;
+}
+
+void ASuitInteraction::ReleaseReservation(AShooterCharacter* ShooterCharacter)
+{
+	if (HasAuthority() && ReservedShooter.Get() == ShooterCharacter)
+	{
+		ReservedShooter.Reset();
+	}
+}
+
+bool ASuitInteraction::CommitReservedSuit(AShooterCharacter* ShooterCharacter)
+{
+	// 암전 대기 사이 무기 소유권이나 상호작용 조건이 바뀔 수 있으므로 실제 외형 변경/지급 직전에 다시 확인한다.
+	if (!HasAuthority() || !IsValid(ShooterCharacter) || !IsReservedFor(ShooterCharacter)
+		|| !IsValid(StoredShooterRifle) || !IsValid(StoredPartnerWeapon)
+		|| StoredShooterRifle->GetWeaponType() != EWeaponType::Rifle
+		|| !InteractableComponent
+		|| !InteractableComponent->CanInteract(ShooterCharacter->GetOwnedGameplayTagsForQuery())
+		|| (InteractableComponent->RequiresHoldInteract()
+			&& !InteractableComponent->CanCommitHoldInteraction(ShooterCharacter))
+		|| StoredShooterRifle->GetOwner() != this || StoredPartnerWeapon->GetOwner() != this
+		|| !StoredShooterRifle->CanBePickedUpBy(ShooterCharacter) || !ApplySuit(ShooterCharacter))
+	{
+		return false;
+	}
+	// 성공은 예약 시점이 아닌 지급 완료 시점에 한 번만 확정한다. 통지 전부터 재진입을 막는다.
+	bConsumed = true;
+	ReservedShooter.Reset();
+	ShooterCharacter->CompleteDeferredInteraction(this, true);
+	UOutlierAudioSubsystem::PlayTaggedAtLocationFromServer(this,
 		FGameplayTag::RequestGameplayTag(TEXT("Audio.Type.Interactable")),
 		FGameplayTag::RequestGameplayTag(TEXT("Audio.Context.Object.Get.Suit")));
+	// 여기서 Interaction은 소비된다. 이후 Applying/FadingIn 대기는 이 Actor가 아닌 Shooter에 남아 있다.
 	ConsumeInteraction();
 	return true;
 }
@@ -87,8 +163,6 @@ bool ASuitInteraction::SpawnStoredWeapons()
 {
 	if (!ensureMsgf(SuitDisplayMesh && SuitDisplayMesh->GetStaticMesh(),
 			TEXT("SuitInteraction %s is missing its world display Suit mesh."), *GetName())
-		|| !ensureMsgf(ShooterFirstPersonMesh, TEXT("SuitInteraction %s is missing ShooterFirstPersonMesh."), *GetName())
-		|| !ensureMsgf(ShooterThirdPersonMesh, TEXT("SuitInteraction %s is missing ShooterThirdPersonMesh."), *GetName())
 		|| !ensureMsgf(ShooterRifleClass, TEXT("SuitInteraction %s is missing ShooterRifleClass."), *GetName())
 		|| !ensureMsgf(PartnerWeaponClass, TEXT("SuitInteraction %s is missing PartnerWeaponClass."), *GetName()))
 	{
@@ -174,7 +248,12 @@ bool ASuitInteraction::ApplySuit(AShooterCharacter* ShooterCharacter)
 		return false;
 	}
 
-	ShooterCharacter->ApplySuitMeshes(ShooterFirstPersonMesh, ShooterThirdPersonMesh);
+	// Shooter BP의 Mesh/ABP 전체 구성을 먼저 검증한다. 실패하면 무기와 Interaction을 보존한다.
+	// 기존 Interaction Mesh는 BP 이전 기간의 호환 입력일 뿐, 명시된 Suit 구성을 덮어쓰지 않는다.
+	if (!ShooterCharacter->ApplySuitMeshes(ShooterFirstPersonMesh, ShooterThirdPersonMesh))
+	{
+		return false;
+	}
 
 	StoredShooterRifle->SetActorHiddenInGame(false);
 	StoredShooterRifle->SetActorEnableCollision(true);
@@ -203,11 +282,9 @@ bool ASuitInteraction::ApplySuit(AShooterCharacter* ShooterCharacter)
 
 	if (AOutlierPlayerState* PS = ShooterCharacter->GetPlayerState<AOutlierPlayerState>())
 	{
-		PS->SetAcquiredSuit(true);
-
-		// 이 액터는 소비 직후 스스로 Destroy 하므로, 어떤 메시를 입혔는지
-		// 여기서 PlayerState 에 남겨야 리로드 후 다시 입힐 수 있다.
-		PS->SetSuitMeshes(ShooterFirstPersonMesh, ShooterThirdPersonMesh);
+		// 이전 저장 형식에는 실제 적용된 Mesh를 남긴다. 획득 상태 투영 전에 호환 참조를 준비한다.
+		PS->SetSuitMeshes(ShooterCharacter->GetFirstPersonMesh()->GetSkeletalMeshAsset(),
+			ShooterCharacter->GetMesh()->GetSkeletalMeshAsset());
 
 		// Partner 무기는 슈트 지급이 유일한 경로이고 Partner 쪽에는 InventoryComponent 가
 		// 없으므로, 리로드 후 다시 만들 수 있도록 클래스를 Shooter PlayerState 에 남긴다.
@@ -215,6 +292,7 @@ bool ASuitInteraction::ApplySuit(AShooterCharacter* ShooterCharacter)
 		FOutlierLoadoutSnapshot Snapshot = PS->GetLoadoutSnapshot();
 		Snapshot.PartnerWeaponClass = StoredPartnerWeapon->GetClass();
 		PS->SetLoadoutSnapshot(Snapshot);
+		PS->SetAcquiredSuit(true);
 	}
 
 	// 슈트는 페어 단위 해금이다. Partner PlayerState 에도 같은 플래그를 세워두면

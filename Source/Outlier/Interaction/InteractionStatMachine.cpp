@@ -11,7 +11,7 @@
 #include "OutlierPlayerState.h"
 #include "Room/RoomTagComponent.h"
 #include "Shooter/ShooterCharacter.h"
-#include "UI/StatAllocatorWidget.h"
+#include "UI/UpgradeMachineWidget.h"
 #include "UI/UILayerGameplayTags.h"
 #include "UI/UILayerTypes.h"
 #include "Engine/World.h"
@@ -53,7 +53,7 @@ bool AInteractionStatMachine::Interact(AFirstPersonCharacter* Interactor)
 	if (!HasAuthority()
 		|| !Interactor
 		|| !InteractableComponent
-		|| !StatAllocatorWidgetClass
+		|| !UpgradeMachineWidgetClass
 		|| IsInteractionBlocked())
 	{
 		return false;
@@ -130,7 +130,7 @@ bool AInteractionStatMachine::Interact(AFirstPersonCharacter* Interactor)
 	}
 
 	FUILayerPushRequest PushRequest;
-	PushRequest.WidgetClass = StatAllocatorWidgetClass;
+	PushRequest.WidgetClass = UpgradeMachineWidgetClass;
 	PushRequest.LayerTag = UILayerTags::GameMenu();
 	PushRequest.InputModeTag = FirstPersonInputModeTags::UI();
 	PushRequest.RequestOwner = this;

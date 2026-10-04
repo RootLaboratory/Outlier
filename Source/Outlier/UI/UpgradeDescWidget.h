@@ -2,13 +2,20 @@
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
+#include "Styling/SlateBrush.h"
 #include "Upgrade/OutlierUpgradeTypes.h"
 #include "UpgradeDescWidget.generated.h"
 
 class UTextBlock;
+class UButton;
+class UImage;
+class UMaterialInstanceDynamic;
+class UMaterialInterface;
+class UMediaTexture;
 class UPopupRetainerBox;
-class UWidget;
-class UWidgetSwitcher;
+class UTexture2D;
+
+DECLARE_MULTICAST_DELEGATE(FOnUpgradeDescWidgetEvent);
 
 UCLASS(Abstract, Blueprintable)
 class OUTLIER_API UUpgradeDescWidget : public UUserWidget
@@ -16,6 +23,8 @@ class OUTLIER_API UUpgradeDescWidget : public UUserWidget
 	GENERATED_BODY()
 
 public:
+	FOnUpgradeDescWidgetEvent OnPurchaseRequested;
+
 	UFUNCTION(BlueprintCallable, Category = "Upgrade")
 	void InjectNodeData(
 		const FOutlierUpgradeNodeRow& InNodeData,
@@ -54,22 +63,11 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Upgrade")
 	FName GetCurrentNodeRowName() const { return CurrentNodeRowName; }
 
-	UFUNCTION(BlueprintPure, Category = "Upgrade|State")
-	bool ShouldShowCurrentStateDescText() const { return bShouldShowStateDescText; }
-
-	UFUNCTION(BlueprintPure, Category = "Upgrade|State")
-	FText GetCurrentStateDescText() const { return CurrentStateDescText; }
+	FVector2D GetPopupDesignSize() const;
 
 protected:
-	UFUNCTION(BlueprintNativeEvent, BlueprintPure, Category = "Upgrade|State")
-	FText BuildStateDescText() const;
-	virtual FText BuildStateDescText_Implementation() const;
-
-	UFUNCTION(BlueprintImplementableEvent, Category = "Upgrade|State")
-	void OnStateDescDisplayChanged(bool bInShouldShowStateDescText, int32 ActiveSwitcherIndex, const FText& StateText);
-
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Upgrade")
-	TObjectPtr<UPopupRetainerBox> PopUpRetainer;
+	TObjectPtr<UPopupRetainerBox> PopupRetainer;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Upgrade")
 	FName CurrentNodeRowName = NAME_None;
@@ -86,32 +84,47 @@ protected:
 	UPROPERTY(BlueprintReadOnly, Category = "Upgrade")
 	bool bCanAfford = false;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Upgrade|State")
-	bool bShouldShowStateDescText = false;
-
-	UPROPERTY(BlueprintReadOnly, Category = "Upgrade|State")
-	FText CurrentStateDescText;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	TObjectPtr<UTextBlock> Name;
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr<UTextBlock> DescText;
+	TObjectPtr<UTextBlock> Desc;
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr<UTextBlock> CostNeedText;
+	TObjectPtr<UTextBlock> Cost;
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr<UTextBlock> CostText;
+	TObjectPtr<UButton> Button;
 
-	UPROPERTY(BlueprintReadWrite, meta = (BindWidgetOptional))
-	TObjectPtr<UTextBlock> StateDescText;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	TObjectPtr<UImage> Background;
 
-	UPROPERTY(BlueprintReadWrite, meta = (BindWidgetOptional))
-	TObjectPtr<UWidgetSwitcher> StateDescSwitcher;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	TObjectPtr<UImage> MediaImage;
 
-	UPROPERTY(BlueprintReadWrite, meta = (BindWidgetOptional))
-	TObjectPtr<UWidget> CostDescContent;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Media")
+	TObjectPtr<UMediaTexture> MediaTexture;
 
-	UPROPERTY(BlueprintReadWrite, meta = (BindWidgetOptional))
-	TObjectPtr<UWidget> StateDescContent;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Media")
+	TObjectPtr<UMaterialInterface> MediaMaterial;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Media")
+	FName MediaTextureParameterName = TEXT("Texture");
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Background")
+	TObjectPtr<UTexture2D> DefaultBackgroundTexture;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Background")
+	TObjectPtr<UTexture2D> PurchasedBackgroundTexture;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Button")
+	TObjectPtr<UTexture2D> InsufficientDisabledTexture;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Button")
+	TObjectPtr<UTexture2D> PrerequisiteDisabledTexture;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Button")
+	TObjectPtr<UTexture2D> PurchasedDisabledTexture;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Cost")
 	FSlateColor DefaultCostTextColor = FSlateColor(FLinearColor::White);
@@ -122,36 +135,33 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Cost")
 	FText CostNeedTextFormat = NSLOCTEXT("UpgradeDescWidget", "CostNeedTextFormat", "{0}");
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Cost")
-	FText CostTextFormat = NSLOCTEXT("UpgradeDescWidget", "CostTextFormat", "{1}");
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|State")
-	FText ActivatedStateDescText = NSLOCTEXT("UpgradeDescWidget", "ActivatedStateDescText", "업그레이드 완료");
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|State")
-	FText LockedByParentStateDescText = NSLOCTEXT("UpgradeDescWidget", "LockedByParentStateDescText", "이전 노드 업그레이드 필요");
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|State")
-	FText DefaultStateDescText = FText::GetEmpty();
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|State")
-	int32 CostSwitcherIndex = 0;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|State")
-	int32 StateDescSwitcherIndex = 1;
-
 	virtual void NativeConstruct() override;
 
 private:
 	UFUNCTION()
 	void HandlePopupClosed();
 
-	void RefreshTextBlocks();
-	void RefreshCostTextStyle();
-	FText BuildCostNeedText() const;
-	FText BuildCostText() const;
-	bool ShouldShowStateDescText(const FText& StateText) const;
-	void RefreshStateDescSwitcher(const FText& StateText);
+	UFUNCTION()
+	void HandlePurchaseClicked();
 
+	void RefreshTextBlocks();
+	void InitializeMediaImage();
+	void RefreshBackground();
+	void RefreshCostTextStyle();
+	void RefreshButtonStyle();
+	FText BuildCostNeedText() const;
+
+	UPROPERTY(Transient)
+	FSlateBrush DefaultDisabledButtonBrush;
+
+	UPROPERTY(Transient)
+	FSlateBrush DefaultBackgroundBrush;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> MediaImageMaterial;
+
+	bool bDefaultDisabledButtonBrushCached = false;
+	bool bDefaultBackgroundBrushCached = false;
 	bool bClearWhenClosed = false;
+	FVector2D DefaultPopupDesignSize = FVector2D::ZeroVector;
 };

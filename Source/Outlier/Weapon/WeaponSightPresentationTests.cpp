@@ -3,10 +3,40 @@
 #include "Misc/AutomationTest.h"
 
 #include "Components/StaticMeshComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Weapon/RangedWeaponBase.h"
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierWeaponFirstPersonRenderingDefaultsTest,
+	"Outlier.Weapon.FirstPerson.RenderingDefaults",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierWeaponFirstPersonRenderingDefaultsTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	ARangedWeaponBase* Weapon = GetMutableDefault<ARangedWeaponBase>();
+	TestTrue(TEXT("Native FP weapon uses first-person rendering"),
+		Weapon->GetFirstPersonWeaponMesh()->FirstPersonPrimitiveType == EFirstPersonPrimitiveType::FirstPerson);
+	TestTrue(TEXT("Native FP sight uses first-person rendering"),
+		Weapon->GetFirstSightMesh()->FirstPersonPrimitiveType == EFirstPersonPrimitiveType::FirstPerson);
+	const FName ComponentNames[] = { TEXT("FirstHandMagazine"), TEXT("ThirdHandMagazine"), TEXT("ShadowHandMagazine"), TEXT("ThirdSight"), TEXT("ShadowSight") };
+	for (const FName ComponentName : ComponentNames)
+	{
+		const UStaticMeshComponent* Component = Cast<UStaticMeshComponent>(Weapon->GetDefaultSubobjectByName(ComponentName));
+		if (TestNotNull(*ComponentName.ToString(), Component))
+		{
+			TestTrue(*FString::Printf(TEXT("%s retains its intended rendering type"), *ComponentName.ToString()),
+				Component->FirstPersonPrimitiveType == (ComponentName == TEXT("FirstHandMagazine")
+					? EFirstPersonPrimitiveType::FirstPerson : EFirstPersonPrimitiveType::None));
+		}
+	}
+	TestTrue(TEXT("Native TP weapon is not a first-person primitive"),
+		Weapon->GetThirdPersonWeaponMesh()->FirstPersonPrimitiveType == EFirstPersonPrimitiveType::None);
+	return true;
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FOutlierWeaponSightPresentationTest,

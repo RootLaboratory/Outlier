@@ -33,12 +33,86 @@ class UOutlierShieldAttributeSet;
 class UDataTable;
 class USphereComponent;
 class USkeletalMesh;
+class UAnimInstance;
 class UNiagaraSystem;
 class UShooterReflectionBarrier;
 class UShooterTeleportLayer;
 struct FOnAttributeChangeData;
+class UPackageMap;
+class ASuitInteraction;
+class APlayerController;
+class AOutlierPlayerState;
+
+UENUM()
+enum class ESuitTransitionPhase : uint8
+{
+	Idle,
+	FadingOut,
+	Applying,
+	FadingIn
+};
+
+// Slice 5의 Controller 연결은 이 서버 단계 변경을 전달하고, 실제 완료만 아래 응답 경계로 돌려준다.
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnSuitTransitionPhaseChanged, const FGuid&, ESuitTransitionPhase);
+
+UENUM(BlueprintType)
+enum class EShooterPresentation : uint8
+{
+	Uninitialized,
+	PreSuit,
+	Suit
+};
+
+USTRUCT()
+struct OUTLIER_API FShooterPresentationState
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	EShooterPresentation Presentation = EShooterPresentation::Uninitialized;
+
+	UPROPERTY()
+	bool bUseLegacyMeshes = false;
+
+	// BP 설정이 비어 있는 이전 콘텐츠에만 사용한다. 선택 상태와 함께 복제한다.
+	UPROPERTY()
+	TObjectPtr<USkeletalMesh> LegacyFirstPersonMesh;
+
+	UPROPERTY()
+	TObjectPtr<USkeletalMesh> LegacyThirdPersonMesh;
+
+	bool NetSerialize(FArchive& Ar, UPackageMap* Map, bool& bOutSuccess);
+};
+
+template<>
+struct TStructOpsTypeTraits<FShooterPresentationState> : TStructOpsTypeTraitsBase2<FShooterPresentationState>
+{
+	enum { WithNetSerializer = true };
+};
+
+USTRUCT(BlueprintType)
+struct OUTLIER_API FShooterPresentationConfiguration
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Presentation")
+	TObjectPtr<USkeletalMesh> FirstPersonMesh = nullptr;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Presentation")
+	TSubclassOf<UAnimInstance> FirstPersonAnimClass;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Presentation")
+	TObjectPtr<USkeletalMesh> ThirdPersonMesh = nullptr;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Presentation")
+	TSubclassOf<UAnimInstance> ThirdPersonAnimClass;
+
+	bool IsEmpty() const;
+	bool Validate(FString& OutError) const;
+};
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnShooterDynamicCrosshairChanged, bool /*bAiming*/);
+DECLARE_MULTICAST_DELEGATE(FOnShooterPresentationChanged);
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnShooterAim, bool /*bAiming*/, int32 /*WeaponStencilValue*/);
 
 UENUM(BlueprintType)
@@ -109,8 +183,35 @@ enum class EShooterMontageAction : uint8
 	Fire,
 	Reload,
 	Slide,
-	Equip,
-	MeleeAttack
+	// 기존 RPC/선택 캐시의 액션 번호는 유지한다. 3번 Equip 몽타주 경로는 제거되었다.
+	MeleeAttack = 4
+};
+
+USTRUCT(BlueprintType)
+struct OUTLIER_API FShooterMontageConfiguration
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
+	TObjectPtr<UAnimMontage> FirstPersonFire;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
+	TObjectPtr<UAnimMontage> ThirdPersonFire;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
+	TObjectPtr<UAnimMontage> FirstPersonReload;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
+	TObjectPtr<UAnimMontage> ThirdPersonReload;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
+	TObjectPtr<UAnimMontage> FirstPersonSlide;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
+	TObjectPtr<UAnimMontage> ThirdPersonSlide;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
+	TObjectPtr<UAnimMontage> FirstPersonMeleeAttack;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
+	TObjectPtr<UAnimMontage> ThirdPersonMeleeAttack;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
+	TObjectPtr<UAnimMontage> ThirdPersonSwitch;
+
+	UAnimMontage* GetActionMontage(EShooterMontageAction Action, bool bFirstPerson) const;
 };
 
 /**
@@ -125,6 +226,13 @@ class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbil
 	friend class UShooterInventoryComponent;
 	friend class UShooterCombatComponent;
 	friend class UShooterMovementComponent;
+	friend class FShooterGroundedMovementTest;
+	friend class FShooterPresentationConfigurationTest;
+	friend class FOutlierShooterPresentationAssetsTest;
+	friend class FShooterPresentationReplicationTest;
+	friend class FOutlierSuitInteractionEquipTest;
+	friend class FOutlierShooterPresentationAnimationTest;
+	friend class FOutlierSuitTransitionTest;
 
 protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
@@ -141,6 +249,9 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UShooterInventoryComponent> InventoryComponent;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon")
+	TSubclassOf<AWeaponBase> DefaultMeleeWeaponClass;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UShooterCombatComponent> CombatComponent;
@@ -162,6 +273,9 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat")
 	float LeanInterpSpeed = 8.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Lean", meta = (ClampMin = "0.1"))
+	float LeanPresentationInterpSpeed = 12.0f;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat")
 	float MaxLeanAngle = 11.0f;
@@ -211,7 +325,7 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera|Sensitivity", meta = (ClampMin = "0.0"))
 	float SprintLookSensitivityScale = 1.0f;
 
-	UPROPERTY(EditDefaultsOnly, Category = "Slide")
+	UPROPERTY(EditDefaultsOnly, Category = "Slide", meta = (ClampMin = "0.01"))
 	float SlideDuration = 1.0f;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Slide")
@@ -220,10 +334,10 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Slide")
 	float SlideWallStopDotThreshold = 0.5f;
 
-	UPROPERTY(EditDefaultsOnly, Category = "Slide")
+	UPROPERTY(EditDefaultsOnly, Category = "Slide", meta = (ClampMin = "0.0"))
 	float SlideSpeedMultiplier = 1.2f;
 
-	UPROPERTY(EditDefaultsOnly, Category = "Slide")
+	UPROPERTY(EditDefaultsOnly, Category = "Slide", meta = (ToolTip = "X: normalized slide time (0 to 1). Y: remaining slide start speed ratio (0 to 1). Cubic interpolation is preserved; speed cannot increase during the slide."))
 	TObjectPtr<UCurveFloat> SlideSpeedCurve;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "VFX|Jump")
@@ -257,13 +371,6 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
 	TObjectPtr<UAnimMontage> ThirdPersonReloadMontage;
 
-	// Equip
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
-	TObjectPtr<UAnimMontage> FirstPersonEquipMontage;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
-	TObjectPtr<UAnimMontage> ThirdPersonEquipMontage;
-
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Animation|Weapon Switch")
 	TObjectPtr<UAnimMontage> ThirdPersonSwitchMontage;
 
@@ -279,6 +386,12 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Animation|Sections")
 	FName PistolMontageSectionName = TEXT("Pistol");
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Animation|Sections|Fire")
+	FName ThirdPersonRifleADSFireSectionName = TEXT("Rifle_ADS");
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Animation|Sections|Fire")
+	FName ThirdPersonPistolADSFireSectionName = TEXT("Pistol_ADS");
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Animation|Sections")
 	FName DefaultMontageSectionName = TEXT("Default");
@@ -296,11 +409,37 @@ protected:
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "State")
 	EShooterActionLock ActionLock = EShooterActionLock::None;
 
-	UPROPERTY(ReplicatedUsing = OnRep_SuitMeshes, VisibleAnywhere, BlueprintReadOnly, Category = "Suit|Mesh")
+	// 기존 BP 조회용 이름은 유지하되, 외형 복제/적용의 입력으로 사용하지 않는다.
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Suit|Mesh")
 	TObjectPtr<USkeletalMesh> AppliedSuitFirstPersonMesh;
 
-	UPROPERTY(ReplicatedUsing = OnRep_SuitMeshes, VisibleAnywhere, BlueprintReadOnly, Category = "Suit|Mesh")
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Suit|Mesh")
 	TObjectPtr<USkeletalMesh> AppliedSuitThirdPersonMesh;
+
+	UPROPERTY(ReplicatedUsing = OnRep_PresentationState)
+	FShooterPresentationState PresentationState;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Suit|Presentation")
+	FShooterPresentationConfiguration PreSuitPresentation;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Suit|Presentation")
+	FShooterPresentationConfiguration SuitPresentation;
+
+	UPROPERTY(Transient)
+	FShooterPresentationConfiguration InitialPresentation;
+	bool bInitialPresentationCaptured = false;
+	// 복제 요청과 실제 적용 결과를 분리한다. 검증 실패/Asset 미도착 시 이전 수치를 유지한다.
+	EShooterPresentation AppliedPresentation = EShooterPresentation::Uninitialized;
+	struct FMontageSelectionCache
+	{
+		TWeakObjectPtr<UAnimMontage> StateMontage;
+		TWeakObjectPtr<UAnimMontage> LegacyMontage;
+		TWeakObjectPtr<UAnimMontage> SelectedMontage;
+		TWeakObjectPtr<USkeletalMesh> SkeletalMesh;
+		bool bInitialized = false;
+	};
+	// 액션 5개 x 1P/3P, 마지막 항목은 3P Switch. 설정/Mesh 변경 때만 호환성을 다시 검사한다.
+	mutable FMontageSelectionCache MontageSelectionCaches[11];
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "GAS|Suit")
 	TObjectPtr<UDataTable> ShooterSuitAbilityDataTable;
@@ -317,9 +456,6 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "State")
 	uint8 bIsEquipping : 1 = false;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Animation|Weapon Switch")
-	bool bUseProceduralWeaponSwitch = false;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Animation|Weapon Switch", meta = (ClampMin = "0.05"))
 	float FirstPersonSwitchLowerDuration = 0.22f;
@@ -350,6 +486,8 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
 	float TargetLeanAlpha = 0.0f;
+
+	float PresentedLeanAlpha = 0.0f;
 
 	FVector  BaseFirstPersonMeshLocation = FVector::ZeroVector;
 	FVector  BaseFirstPersonCameraRootLocation = FVector::ZeroVector;
@@ -429,6 +567,7 @@ protected:
 	virtual void Tick(float DeltaSeconds) override;
 	virtual void PossessedBy(AController* NewController) override;
 	virtual void OnRep_Controller() override;
+	virtual void OnRep_PlayerState() override;
 	void RefreshAbilitySystemActorInfo();
 	void InitializeGasVitality();
 	void InitializeGasSuitAbilities();
@@ -473,6 +612,7 @@ protected:
 
 	virtual void OnMovementModeChanged(EMovementMode  PrevMovementMode, uint8 PreviousCustomMode) override;
 	virtual void CheckJumpInput(float DeltaTime) override;
+	virtual bool CanJumpInternal_Implementation() const override;
 
 	virtual void OnMoveInputUpdated(const FVector2D& MoveValue);
 
@@ -514,7 +654,10 @@ public:
 	void OnRep_CurrentLeanAlpha();
 
 	UFUNCTION()
-	void OnRep_SuitMeshes();
+	void OnRep_PresentationState();
+
+	UFUNCTION()
+	void HandlePresentationWeaponChanged(EWeaponType NewWeaponType);
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual FVector GetPawnViewLocation() const override;
@@ -529,7 +672,43 @@ public:
 	// Unreal 공통 피해 진입점을 기존 Shooter 실드 및 HP 처리로 연결한다.
 	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
 	virtual void EquipWeapon(AWeaponBase* Weapon) override;
-	void ApplySuitMeshes(USkeletalMesh* FirstPersonMeshAsset, USkeletalMesh* ThirdPersonMeshAsset);
+	bool ApplySuitMeshes(USkeletalMesh* FirstPersonMeshAsset, USkeletalMesh* ThirdPersonMeshAsset);
+	bool BeginSuitTransition(ASuitInteraction* Interaction, USkeletalMesh* LegacyFirstPersonMesh,
+		USkeletalMesh* LegacyThirdPersonMesh);
+	void CancelSuitTransition();
+	// 서버에서만 호출한다. Slice 5 RPC는 자신의 소유 Controller를 Sender로 전달해야 한다.
+	void AcknowledgeSuitTransition(APlayerController* Sender, const FGuid& TransitionId, ESuitTransitionPhase Phase);
+	FGuid GetSuitTransitionId() const { return ActiveSuitTransitionId; }
+	ESuitTransitionPhase GetSuitTransitionPhase() const { return SuitTransitionPhase; }
+	FOnSuitTransitionPhaseChanged OnSuitTransitionPhaseChanged;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Suit|Transition", meta = (ClampMin = "0.0"))
+	float SuitFadeOutDuration = 0.5f;
+	UPROPERTY(EditDefaultsOnly, Category = "Suit|Transition", meta = (ClampMin = "0.0"))
+	float SuitBlackHoldDuration = 0.25f;
+	UPROPERTY(EditDefaultsOnly, Category = "Suit|Transition", meta = (ClampMin = "0.0"))
+	float SuitFadeInDuration = 0.5f;
+	// 미연결/응답 유실도 유한하게 정리한다. 단계별 최소 시간보다 커야 한다.
+	UPROPERTY(EditDefaultsOnly, Category = "Suit|Transition", meta = (ClampMin = "0.1"))
+	float SuitTransitionResponseTimeout = 10.0f;
+	// 서버만 선택 상태를 확정한다. 레거시 Mesh는 명시된 BP 구성을 덮어쓰지 않는다.
+	bool SetSuitPresentation(bool bUseSuitPresentation, USkeletalMesh* LegacyFirstPersonMesh = nullptr,
+		USkeletalMesh* LegacyThirdPersonMesh = nullptr);
+	void RefreshPresentationFromPlayerState();
+	EShooterPresentation GetPresentation() const { return PresentationState.Presentation; }
+	EShooterPresentation GetAppliedPresentation() const { return AppliedPresentation; }
+	FOnShooterPresentationChanged OnPresentationChanged;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Animation|Presentation")
+	FShooterMontageConfiguration PreSuitMontages;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Animation|Presentation")
+	FShooterMontageConfiguration SuitMontages;
+
+	UAnimMontage* GetActionMontage(EShooterMontageAction Action, bool bFirstPerson) const;
+	UAnimMontage* GetThirdPersonSwitchMontage() const;
+	// 로컬 외형만 적용한다. 획득 판정과 상태 복제는 서버 호출 경로에서 처리한다.
+	bool ApplyPresentationConfiguration(bool bUseSuitPresentation);
 	virtual FGameplayTagContainer GetOwnedGameplayTagsForQuery() const override;
 
 	// Read-only Queries
@@ -560,7 +739,7 @@ public:
 	// 슈트 능력을 실제로 쓸 수 있는 상태.
 	// 획득했고(HasAcquiredSuit) + 파트너 거리 이탈로 정지되지도(IsSuitDisabledByPartnerBoundary) 않아야 한다.
 	// 두 조건은 의미가 다르다 — 전자는 영구 획득, 후자는 일시 정지.
-	bool IsSuitUsable() const { return HasAcquiredSuit() && !IsSuitDisabledByPartnerBoundary(); }
+	bool IsSuitUsable() const { return HasAcquiredSuit() && !IsSuitDisabledByPartnerBoundary() && !IsSuitTransitionBlocked(); }
 	bool IsShooterSuitUseDisabled() const;
 	bool IsBulletReflecting() const;
 	bool IsWeaponOvercharged() const;
@@ -592,12 +771,13 @@ public:
 
 	UFUNCTION(BlueprintPure)
 	float GetCurrentLeanAlpha() const { return CurrentLeanAlpha; }
+	float GetPresentedLeanAlpha() const { return IsLocallyControlled() ? PresentedLeanAlpha : CurrentLeanAlpha; }
 
 	UFUNCTION(BlueprintPure)
-	float GetCurrentLeanRollDegrees() const { return CurrentLeanAlpha * MaxLeanAngle; }
+	float GetCurrentLeanRollDegrees() const { return GetPresentedLeanAlpha() * MaxLeanAngle; }
 
 	UFUNCTION(BlueprintPure)
-	FVector GetCurrentLeanViewOffsetWorld() const { return GetLeanViewOffsetWorld(CurrentLeanAlpha); }
+	FVector GetCurrentLeanViewOffsetWorld() const { return GetLeanViewOffsetWorld(GetPresentedLeanAlpha()); }
 
 	UFUNCTION(BlueprintPure)
 	float GetCurrentSlideCameraRollDegrees() const { return ActiveSlideCameraRollDegrees; }
@@ -622,7 +802,6 @@ public:
 
 	UFUNCTION(BlueprintPure)
 	EShooterActionLock GetActionLock() const { return ActionLock; }
-	bool UsesProceduralWeaponSwitch() const { return bUseProceduralWeaponSwitch; }
 	float GetFirstPersonSwitchLowerAlpha() const { return FirstPersonSwitchLowerAlpha; }
 	float GetFirstPersonSwitchLowerDistance() const { return FirstPersonSwitchLowerDistance; }
 	float GetFirstPersonSwitchLowerDuration() const { return FirstPersonSwitchLowerDuration; }
@@ -692,7 +871,8 @@ protected:
 	void HandleSprintPressed();
 	void HandleSprintReleased();
 
-	void HandleCrouchToggled();
+	void HandleCrouchPressed();
+	void HandleCrouchReleased();
 
 	void TryOpenSuitMenu();
 	void TryHandleSuitMenuHover();
@@ -704,7 +884,53 @@ protected:
 	void StopLean();
 
 	void RefreshFirstPersonShadowPolicy();
-	void RefreshAppliedSuitMeshes();
+	void RefreshReplicatedPresentation();
+	void RefreshPresentationWeaponAttachment();
+	void CaptureInitialPresentation();
+	virtual void PrepareForSuitTransition() override;
+	virtual void OnSuitTransitionBlockChanged() override;
+	virtual bool CanResumeMovementAfterSuitTransition() const override { return !IsDead(); }
+	// 검증은 상태를 변경하지 않는다. 시작/진행/commit 경계에서 필요한 조건을 조합한다.
+	bool CanBeginSuitTransition(ASuitInteraction* Interaction);
+	bool ValidateSuitTransitionTiming() const;
+	bool ValidateSuitTransitionParticipants(bool bForReservation) const;
+	bool ValidateSuitTransitionControllers() const;
+	bool ValidateSuitTransitionPair() const;
+	bool ValidateSuitTransitionPartnerState(bool bForReservation) const;
+	bool CanCommitSuitTransition() const;
+	float GetSuitTransitionMinimumTime(ESuitTransitionPhase Phase) const;
+	bool IsSuitTransitionPhaseReady() const;
+	void EnterSuitTransitionPhase(ESuitTransitionPhase Phase);
+	void AdvanceSuitTransition();
+	void FinishSuitTransition();
+	void HandleSuitTransitionParticipantInvalidated(AFirstPersonCharacter* Participant);
+	void HandleSuitTransitionPairChanged(AOutlierPlayerState* ChangedPlayerState);
+	FGuid ActiveSuitTransitionId;
+	ESuitTransitionPhase SuitTransitionPhase = ESuitTransitionPhase::Idle;
+	TWeakObjectPtr<ASuitInteraction> SuitTransitionInteraction;
+	TWeakObjectPtr<APartnerCharacter> SuitTransitionPartner;
+	TWeakObjectPtr<APlayerController> SuitTransitionShooterController;
+	TWeakObjectPtr<APlayerController> SuitTransitionPartnerController;
+	TWeakObjectPtr<AOutlierPlayerState> SuitTransitionShooterPlayerState;
+	TWeakObjectPtr<AOutlierPlayerState> SuitTransitionPartnerPlayerState;
+	UPROPERTY(Transient)
+	FShooterPresentationConfiguration SuitTransitionConfiguration;
+	bool bSuitTransitionCommitted = false;
+	bool bSuitTransitionCommitInProgress = false;
+	bool bSuitTransitionCancelRequested = false;
+	bool bSuitTransitionShooterReady = false;
+	bool bSuitTransitionPartnerReady = false;
+	double SuitTransitionPhaseStartedAt = 0.0;
+	FTimerHandle SuitTransitionMinimumTimer;
+	FTimerHandle SuitTransitionTimeoutTimer;
+
+	bool ResolvePresentationConfiguration(bool bUseSuitPresentation,
+		FShooterPresentationConfiguration& OutConfiguration, FString& OutError,
+		USkeletalMesh* LegacyFirstPersonMesh = nullptr, USkeletalMesh* LegacyThirdPersonMesh = nullptr) const;
+	bool ApplyValidatedPresentationConfiguration(const FShooterPresentationConfiguration& Configuration,
+		EShooterPresentation NewPresentation);
+	UAnimMontage* ResolvePresentationMontage(UAnimMontage* StateMontage, UAnimMontage* LegacyMontage,
+		bool bFirstPerson, int32 CacheIndex) const;
 	void UpdateSlideCameraEffect(float DeltaSeconds);
 
 	// Server RPC
@@ -769,7 +995,7 @@ protected:
 	void ClientPlayFirstPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType);
 
 	UFUNCTION(NetMulticast, Reliable)
-	void MulticastPlayThirdPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType);
+	void MulticastPlayThirdPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType, bool bAimingAtShot = false);
 
 
 public:
@@ -824,19 +1050,20 @@ public:
 	FGameplayTag ResolveShooterConditionTag() const;
 
 	FName ResolveMontageSectionNameForWeapon(EWeaponType WeaponType) const;
+	FName ResolveThirdPersonFireSectionName(const UAnimMontage* Montage, EWeaponType WeaponType, bool bAimingAtShot) const;
 	void PlayFirstPersonMontage(UAnimMontage* Montage);
 	void PlayFirstPersonMontageForWeapon(UAnimMontage* Montage, EWeaponType WeaponType, bool bUseWeaponSection = true);
 	void PlayThirdPersonMontage(UAnimMontage* Montage);
-	void PlayThirdPersonMontageForWeapon(UAnimMontage* Montage, EWeaponType WeaponType, bool bUseWeaponSection = true);
+	void PlayThirdPersonMontageForWeapon(UAnimMontage* Montage, EWeaponType WeaponType, bool bUseWeaponSection = true, FName SectionOverride = NAME_None);
 	void PlayFirstPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType);
-	void PlayThirdPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType);
+	void PlayThirdPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType, bool bAimingAtShot = false);
 	void StopFirstPersonMontage(UAnimMontage* Montage);
 	void StopThirdPersonMontage(UAnimMontage* Montage);
 	void StopSplitMontages(UAnimMontage* FirstPersonMontage, UAnimMontage* ThirdPersonMontage);
-	void PlayEquipMontages();
-	const UAnimMontage* GetFirstPersonReloadMontage() const { return FirstPersonReloadMontage; }
-	const UAnimMontage* GetFirstPersonEquipMontage() const { return FirstPersonEquipMontage; }
-	UAnimMontage* GetThirdPersonMeleeAttackMontage() const { return ThirdPersonMeleeAttackMontage; }
+	// 장착은 1P Procedural Raise와 3P Switch로만 표현한다.
+	void PlayEquipPresentation();
+	UAnimMontage* GetFirstPersonReloadMontage() const { return GetActionMontage(EShooterMontageAction::Reload, true); }
+	UAnimMontage* GetThirdPersonMeleeAttackMontage() const { return GetActionMontage(EShooterMontageAction::MeleeAttack, false); }
 	void ClearInputIntent();
 
 	void CleanupOwnedWeapons();

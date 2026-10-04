@@ -13,6 +13,7 @@
 #include "Math/RotationMatrix.h"
 #include "Network/OutlierArenaSubsystem.h"
 #include "OutlierArenaSettings.h"
+#include "OutlierGameMode.h"
 #include "OutlierPlayerState.h"
 #include "Room/RoomCombatBarrier.h"
 #include "Room/RoomCombatDefinition.h"
@@ -473,6 +474,43 @@ bool URoomCombatSubsystem::RegisterRoom(
 	{
 		Runtime.State = ERoomCombatState::Cleared;
 	}
+	else if (SaveSubsystem)
+	{
+		if (const FOutlierRoomPhaseProgress* Saved =
+			SaveSubsystem->GetCurrentRoomPhaseProgress().Find(RoomTag))
+		{
+			const FRoomCombatPhaseDefinition* Phase = Definition->FindPhase(Saved->NextPhaseIndex);
+			if (Phase && Saved->NextPhaseIndex > 0)
+			{
+				Runtime.CurrentCombatPhaseIndex = Saved->NextPhaseIndex;
+				Runtime.bExitBlockActive = Saved->bExitBlockActive;
+				Runtime.bTriggeredSequenceActive = Saved->bTriggeredSequenceActive;
+				Runtime.ActiveActivationGroupTag = Saved->ActivationGroupTag;
+				Runtime.bSavedAutomaticPhasePending =
+					Phase->StartPolicy == ERoomCombatPhaseStartPolicy::Automatic;
+				Runtime.State = Runtime.bSavedAutomaticPhasePending
+					? ERoomCombatState::Dormant : ERoomCombatState::WaitingForTrigger;
+				if (Runtime.bExitBlockActive)
+				{
+					ActiveCombatRoomTag = RoomTag;
+				}
+			}
+			else
+			{
+				UE_LOG(LogTemp, Error, TEXT("[RoomCombat] Invalid restored phase Room=%s Phase=%d"),
+					*RoomTag.ToString(), Saved->NextPhaseIndex);
+			}
+		}
+		if (Runtime.CurrentCombatPhaseIndex == 0)
+		{
+			if (const FRoomCombatPhaseDefinition* FirstPhase = Definition->FindPhase(0);
+				FirstPhase && (FirstPhase->StartPolicy == ERoomCombatPhaseStartPolicy::HackTrigger
+					|| FirstPhase->StartPolicy == ERoomCombatPhaseStartPolicy::ExternalTrigger))
+			{
+				Runtime.State = ERoomCombatState::WaitingForTrigger;
+			}
+		}
+	}
 	else if (const FRoomCombatPhaseDefinition* FirstPhase = Definition->FindPhase(0);
 		FirstPhase && (FirstPhase->StartPolicy == ERoomCombatPhaseStartPolicy::HackTrigger
 			|| FirstPhase->StartPolicy == ERoomCombatPhaseStartPolicy::ExternalTrigger))
@@ -491,7 +529,8 @@ bool URoomCombatSubsystem::RegisterRoom(
 				continue;
 			}
 
-			if (Runtime.State == ERoomCombatState::Cleared)
+			if (Runtime.State == ERoomCombatState::Cleared
+				|| Runtime.CurrentCombatPhaseIndex > 0)
 			{
 				Enemy->Destroy();
 				RegisteredEnemies.Remove(EnemyPtr);
@@ -506,6 +545,10 @@ bool URoomCombatSubsystem::RegisterRoom(
 	// SpawnPoint가 RoomVolume보다 먼저 등록됐어도 복원된 완료 상태를 적용한다.
 	ApplyRoomClearedToSpawnPoints(RoomTag, Runtime.State == ERoomCombatState::Cleared);
 	OnRoomStartReadinessChanged.Broadcast(RoomTag);
+	if (bRestoredAutomaticStartAllowed)
+	{
+		TryStartRestoredAutomaticPhase(RoomTag);
+	}
 
 	return true;
 }
@@ -747,6 +790,10 @@ bool URoomCombatSubsystem::RegisterSpawnPoint(
 			EOutlierWorldProgressType::CompletedEncounter, RoomTag.GetTagName()));
 	}
 	OnRoomStartReadinessChanged.Broadcast(RoomTag);
+	if (bRestoredAutomaticStartAllowed)
+	{
+		TryStartRestoredAutomaticPhase(RoomTag);
+	}
 	return true;
 }
 
@@ -1099,7 +1146,8 @@ void URoomCombatSubsystem::RegisterPreplacedEnemy(AEnemyBase* Enemy)
 		return;
 	}
 
-	if (Runtime->State == ERoomCombatState::Cleared)
+	if (Runtime->State == ERoomCombatState::Cleared
+		|| Runtime->CurrentCombatPhaseIndex > 0)
 	{
 		RegisteredEnemies.Remove(EnemyPtr);
 		Enemy->Destroy();
@@ -2296,6 +2344,7 @@ void URoomCombatSubsystem::ResetRuntimeCombatState()
 	}
 	// 취소 통보에서 Reset이 재진입하거나 새 전투를 시작하지 못하게 정리 전체를 하나의 경계로 묶는다.
 	TGuardValue<bool> ResetGuard(bResettingRuntime, true);
+	bRestoredAutomaticStartAllowed = false;
 	UE_LOG(LogTemp, Display,
 		TEXT("[RoomCombat] Runtime reset started. Rooms=%d Enemies=%d WaveTurrets=%d PendingSpawns=%d ActiveRoom=%s"),
 		RoomRuntimes.Num(), RegisteredEnemies.Num(), RegisteredWaveTurretRooms.Num(),
@@ -2573,6 +2622,18 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 	{
 		Runtime->bExitBlockActive = false;
 		MarkRoomCleared(RoomTag, *Runtime);
+		if (UWorld* World = GetWorld())
+		{
+			if (UOutlierSaveSubSystem* Saves = World->GetGameInstance()
+				? World->GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>() : nullptr)
+			{
+				Saves->ClearCurrentRoomPhaseProgress(RoomTag);
+			}
+			if (AOutlierGameMode* GameMode = World->GetAuthGameMode<AOutlierGameMode>())
+			{
+				GameMode->CommitCombatPhaseCheckpoint(RoomTag, INDEX_NONE, true, Generation);
+			}
+		}
 		// 전체 완료에서 차단 해제를 먼저 알린다. 이어지는 차수 알림이 Reset을 요청해도 해제가 누락되지 않는다.
 		BroadcastCombatEvent(RoomTag, ERoomCombatEvent::RoomCleared, CompletedPhaseIndex, Generation);
 		// 완료 이벤트 수신 중 Room 해제/Reset이 일어나면 이전 Room의 후속 통보를 보내지 않는다.
@@ -2590,6 +2651,7 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 		|| NextPhase->StartPolicy == ERoomCombatPhaseStartPolicy::ExternalTrigger)
 		? ERoomCombatState::WaitingForTrigger
 		: ERoomCombatState::Dormant;
+	RecordPhaseBoundary(RoomTag, *Runtime);
 
 	UE_LOG(LogTemp, Display,
 		TEXT("[RoomCombat] Phase completed. RoomTag=%s Phase=%d CancelledRemainingWaves=%d NextPhase=%d State=%d"),
@@ -2614,6 +2676,8 @@ void URoomCombatSubsystem::StartAutomaticPhase(
 	Runtime.CurrentCombatPhaseIndex = NextPhaseIndex;
 	Runtime.CurrentWaveIndex = 0;
 	Runtime.bDeferSpawnExecution = true;
+	// 다음 Wave의 실제 소환보다 먼저 차수 경계의 최신본을 확정한다.
+	RecordPhaseBoundary(RoomTag, Runtime);
 
 	// 먼저 다음 명단만 준비한다. 외부 완료 이벤트가 Reset을 요청할 수 있어 실제 소환은 뒤로 미룬다.
 	if (!NextPhase || NextPhase->StartPolicy != ERoomCombatPhaseStartPolicy::Automatic
@@ -2625,6 +2689,85 @@ void URoomCombatSubsystem::StartAutomaticPhase(
 	}
 	BroadcastCombatEvent(RoomTag, ERoomCombatEvent::PhaseCompleted, CompletedPhaseIndex, Generation);
 	// 콜백 이후 Runtime 참조를 재사용하지 않고, 같은 Room 등록인지 확인한 뒤 소환을 재개한다.
+	ResumeDeferredSpawning(RoomTag, RegistrationId);
+}
+
+void URoomCombatSubsystem::RecordPhaseBoundary(
+	FGameplayTag RoomTag, const FRoomCombatRuntime& Runtime)
+{
+	UWorld* World = GetWorld();
+	UOutlierSaveSubSystem* Saves = World && World->GetGameInstance()
+		? World->GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>() : nullptr;
+	if (!Saves)
+	{
+		return;
+	}
+	FOutlierRoomPhaseProgress Progress;
+	Progress.NextPhaseIndex = Runtime.CurrentCombatPhaseIndex;
+	Progress.bExitBlockActive = Runtime.bExitBlockActive;
+	Progress.bTriggeredSequenceActive = Runtime.bTriggeredSequenceActive;
+	Progress.ActivationGroupTag = Runtime.ActiveActivationGroupTag;
+	Saves->SetCurrentRoomPhaseProgress(RoomTag, Progress);
+	if (AOutlierGameMode* GameMode = World->GetAuthGameMode<AOutlierGameMode>())
+	{
+		GameMode->CommitCombatPhaseCheckpoint(
+			RoomTag, Progress.NextPhaseIndex, false, Runtime.GameplayGeneration);
+	}
+}
+
+void URoomCombatSubsystem::ResumeRestoredAutomaticPhases()
+{
+	if (!CanRunServerGameplay())
+	{
+		return;
+	}
+	bRestoredAutomaticStartAllowed = true;
+	TArray<FGameplayTag> RoomTags;
+	RoomRuntimes.GetKeys(RoomTags);
+	for (FGameplayTag RoomTag : RoomTags)
+	{
+		TryStartRestoredAutomaticPhase(RoomTag);
+	}
+}
+
+void URoomCombatSubsystem::TryStartRestoredAutomaticPhase(FGameplayTag RoomTag)
+{
+	FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
+	const FRoomCombatRoomDefinition* Definition = Runtime ? FindRoomDefinition(RoomTag) : nullptr;
+	const FRoomCombatPhaseDefinition* Phase = Runtime && Definition
+		? Definition->FindPhase(Runtime->CurrentCombatPhaseIndex) : nullptr;
+	const UOutlierArenaSubsystem* Arena = GetWorld()
+		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>() : nullptr;
+	if (!bRestoredAutomaticStartAllowed || !CanRunServerGameplay()
+		|| !Arena || !Arena->IsGameplayLevelsReady()
+		|| !Runtime || !Runtime->bSavedAutomaticPhasePending
+		|| Runtime->State != ERoomCombatState::Dormant
+		|| !Phase || Phase->StartPolicy != ERoomCombatPhaseStartPolicy::Automatic
+		|| (ActiveCombatRoomTag.IsValid() && ActiveCombatRoomTag != RoomTag))
+	{
+		return;
+	}
+
+	const FGuid RegistrationId = Runtime->RegistrationId;
+	Runtime->State = ERoomCombatState::Combat;
+	Runtime->bDeferSpawnExecution = true;
+	ActiveCombatRoomTag = RoomTag;
+	SetActivationGroupActive(RoomTag, Runtime->ActiveActivationGroupTag, true);
+	if (!StartWaveSpawning(RoomTag, Runtime->CurrentCombatPhaseIndex, 0))
+	{
+		Runtime->State = ERoomCombatState::Dormant;
+		Runtime->bDeferSpawnExecution = false;
+		SetActivationGroupActive(RoomTag, Runtime->ActiveActivationGroupTag, false);
+		if (!Runtime->bExitBlockActive)
+		{
+			ActiveCombatRoomTag = FGameplayTag();
+		}
+		UE_LOG(LogTemp, Error, TEXT("[RoomCombat] Restored automatic phase could not start Room=%s Phase=%d"),
+			*RoomTag.ToString(), Runtime->CurrentCombatPhaseIndex);
+		return;
+	}
+	// Room 등록과 양쪽 클라이언트 준비가 모두 끝난 뒤에만 저장된 Wave 1을 실행한다.
+	Runtime->bSavedAutomaticPhasePending = false;
 	ResumeDeferredSpawning(RoomTag, RegistrationId);
 }
 

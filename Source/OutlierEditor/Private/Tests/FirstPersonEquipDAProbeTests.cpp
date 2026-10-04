@@ -131,7 +131,8 @@ void TickProbeWorld(UWorld* World)
 struct FProbeSample
 {
 	int32 Frame = 0;
-	float MontageTime = 0.0f;
+	float SwitchLowerAlpha = 0.0f;
+	bool bIsEquipping = false;
 	float EquipPoseAlpha = 0.0f;
 	float EquipIKAlpha = 0.0f;
 	float HandGripGap = 0.0f;
@@ -238,10 +239,9 @@ bool CaptureSample(AShooterCharacter* Shooter, AWeaponBase* Weapon, int32 Frame,
 	OutSample.RightHandIKStep = Previous ? FVector::Distance(Previous->RightHandIK, OutSample.RightHandIK) : 0.0f;
 	OutSample.EquipPoseAlpha = Runtime->EquipPoseAlpha;
 	OutSample.EquipIKAlpha = Runtime->LeftHandEquipIKAlpha;
-	if (const UAnimMontage* Montage = Shooter->GetFirstPersonEquipMontage())
-	{
-		OutSample.MontageTime = Anim->Montage_GetPosition(Montage);
-	}
+	// 1P Equip은 몽타주가 없으므로 실제 Procedural Lower/Raise 진행값을 기록한다.
+	OutSample.SwitchLowerAlpha = Shooter->GetFirstPersonSwitchLowerAlpha();
+	OutSample.bIsEquipping = Shooter->GetActionLock() == EShooterActionLock::Equip;
 	return FMath::IsFinite(OutSample.HandGripGap) && FMath::IsFinite(OutSample.IKGripGap);
 }
 
@@ -396,8 +396,18 @@ bool RunProbeCase(FAutomationTestBase& Test, EWeaponType SourceType, EProbeVaria
 	}
 	ARangedWeaponBase* Source = SourceType == EWeaponType::Pistol ? Pistol : Rifle;
 	ARangedWeaponBase* Target = SourceType == EWeaponType::Pistol ? Rifle : Pistol;
-	const UProceduralAnimValues* SourceDA = Source->GetFirstPersonProceduralValues();
-	const UProceduralAnimValues* TargetDA = Target->GetFirstPersonProceduralValues();
+	// 아직 장착 전인 무기는 Owner가 없어 공통 DA를 반환한다. 곧 적용할 presentation의 DA를 먼저 읽는다.
+	const FName StateDAPropertyName = Shooter->GetAppliedPresentation() == EShooterPresentation::Suit
+		? FName(TEXT("SuitProceduralValues")) : FName(TEXT("PreSuitProceduralValues"));
+	const auto ReadPresentationDA = [StateDAPropertyName](const AWeaponBase* Weapon)
+	{
+		const FObjectProperty* Property = FindFProperty<FObjectProperty>(Weapon->GetClass(), StateDAPropertyName);
+		const UProceduralAnimValues* StateDA = Property
+			? Cast<UProceduralAnimValues>(Property->GetObjectPropertyValue_InContainer(Weapon)) : nullptr;
+		return StateDA ? StateDA : Weapon->GetFirstPersonProceduralValues();
+	};
+	const UProceduralAnimValues* SourceDA = ReadPresentationDA(Source);
+	const UProceduralAnimValues* TargetDA = ReadPresentationDA(Target);
 	if (!SourceDA || !TargetDA)
 	{
 		Test.AddError(TEXT("Weapon fixture has no first-person procedural DA"));
@@ -409,7 +419,7 @@ bool RunProbeCase(FAutomationTestBase& Test, EWeaponType SourceType, EProbeVaria
 		Override->SetFlags(RF_Transient);
 		ApplyVariant(Override, SourceDA, Variant);
 		FObjectProperty* Property = FindFProperty<FObjectProperty>(Target->GetClass(),
-			TEXT("FirstPersonProceduralValues"));
+			StateDAPropertyName);
 		if (!Property)
 		{
 			Test.AddError(TEXT("Weapon DA property was not found"));
@@ -618,7 +628,7 @@ bool FOutlierFirstPersonEquipDAProbeTest::RunTest(const FString& Parameters)
 	IConsoleVariable* ForceProceduralOff = IConsoleManager::Get().FindConsoleVariable(
 		TEXT("outlier.FPAnimForceProceduralOff"));
 	TArray<FString> CsvLines;
-	CsvLines.Add(TEXT("Direction,Variant,Frame,MontageTime,EquipPoseAlpha,EquipIKAlpha,HandGripGapCm,IKGripGapCm,HandStepCm,HipStepCm,WeaponRootStepCm,RightHandIKStepCm,HandX,HandY,HandZ,GripX,GripY,GripZ,")
+	CsvLines.Add(TEXT("Direction,Variant,Frame,SwitchLowerAlpha,EquipPoseAlpha,EquipIKAlpha,HandGripGapCm,IKGripGapCm,HandStepCm,HipStepCm,WeaponRootStepCm,RightHandIKStepCm,HandX,HandY,HandZ,GripX,GripY,GripZ,")
 		TEXT("SlotWeight,LeftHandIKAlpha,WeaponPoseAlpha,WeaponHidden,AttachBone,WeaponToAttachSocketCm,")
 		TEXT("HandPitch,HandYaw,HandRoll,HandIKX,HandIKY,HandIKZ,HandIKPitch,HandIKYaw,HandIKRoll,GripPitch,GripYaw,GripRoll,")
 		TEXT("RightHandX,RightHandY,RightHandZ,GunBoneX,GunBoneY,GunBoneZ,AttachSocketX,AttachSocketY,AttachSocketZ,")
@@ -677,26 +687,27 @@ bool FOutlierFirstPersonEquipDAProbeTest::RunTest(const FString& Parameters)
 			float MaxHandStep = 0.0f;
 			float MaxBaselineHandDelta = 0.0f;
 			float SettledGapSum = 0.0f;
-			float MaxMontageRightHandGunGap = 0.0f;
-			float MaxMontageHandInGunDelta = 0.0f;
-			float MaxMontageHandIKInGunDelta = 0.0f;
-			float MaxMontageIKHandGap = 0.0f;
+			float MaxEquipRightHandGunGap = 0.0f;
+			float MaxEquipHandInGunDelta = 0.0f;
+			float MaxEquipHandIKInGunDelta = 0.0f;
+			float MaxEquipIKHandGap = 0.0f;
+			int32 ActiveEquipFrames = 0;
 			const float SettledRightHandGunGap = FVector::Distance(Samples.Last().RightHand, Samples.Last().GunBone);
 			for (int32 Index = 0; Index < Samples.Num(); ++Index)
 			{
 				const FProbeSample& Sample = Samples[Index];
-				if (Sample.SlotWeight > 0.99f)
+				if (Sample.bIsEquipping)
 				{
-					MaxMontageRightHandGunGap = FMath::Max(MaxMontageRightHandGunGap,
+					++ActiveEquipFrames;
+					MaxEquipRightHandGunGap = FMath::Max(MaxEquipRightHandGunGap,
 						FVector::Distance(Sample.RightHand, Sample.GunBone));
-					MaxMontageIKHandGap = FMath::Max(MaxMontageIKHandGap, FVector::Distance(Sample.HandIK, Sample.Hand));
-					// 몽타주 풀 가중치 구간에서 "총 기준 왼손"이 몽타주 원본(ProceduralOff)과 얼마나 다른지
-					if (ProceduralOff.IsValidIndex(Index) && ProceduralOff[Index].SlotWeight > 0.99f)
+					MaxEquipIKHandGap = FMath::Max(MaxEquipIKHandGap, FVector::Distance(Sample.HandIK, Sample.Hand));
+					// 1P 몽타주가 없는 장착 진행 구간에서 Procedural OFF 기준과 총 기준 손 위치를 비교한다.
+					if (ProceduralOff.IsValidIndex(Index) && ProceduralOff[Index].bIsEquipping)
 					{
-						MaxMontageHandInGunDelta = FMath::Max(MaxMontageHandInGunDelta,
+						MaxEquipHandInGunDelta = FMath::Max(MaxEquipHandInGunDelta,
 							FVector::Distance(Sample.HandInGun, ProceduralOff[Index].HandInGun));
-						// Final IK 타깃(ik_hand_l)이 몽타주 왼손을 총 기준으로 들고 있는지 (ABP 바인딩 전에도 확인 가능)
-						MaxMontageHandIKInGunDelta = FMath::Max(MaxMontageHandIKInGunDelta,
+						MaxEquipHandIKInGunDelta = FMath::Max(MaxEquipHandIKInGunDelta,
 							FVector::Distance(Sample.HandIKInGun, ProceduralOff[Index].HandInGun));
 					}
 				}
@@ -716,7 +727,7 @@ bool FOutlierFirstPersonEquipDAProbeTest::RunTest(const FString& Parameters)
 					TEXT("%.3f,%.3f,%.3f,%.4f,%.4f,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,")
 					TEXT("%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,")
 					TEXT("%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f"),
-					Direction, VariantName(Variant), Sample.Frame, Sample.MontageTime,
+					Direction, VariantName(Variant), Sample.Frame, Sample.SwitchLowerAlpha,
 					Sample.EquipPoseAlpha, Sample.EquipIKAlpha, Sample.HandGripGap, Sample.IKGripGap,
 					Sample.HandStep, Sample.HipStep, Sample.WeaponRootStep, Sample.RightHandIKStep,
 					Sample.Hand.X, Sample.Hand.Y, Sample.Hand.Z,
@@ -734,21 +745,22 @@ bool FOutlierFirstPersonEquipDAProbeTest::RunTest(const FString& Parameters)
 					Sample.HandIKInGun.X, Sample.HandIKInGun.Y, Sample.HandIKInGun.Z,
 					Sample.LeftHandFinalIKAlpha, Sample.LeftHandFreeAlpha));
 			}
-			AddInfo(FString::Printf(TEXT("%s %s: frames=%d max grip gap=%.2f cm, settled gap=%.2f cm, max hand step=%.2f cm, max hand deviation from baseline=%.2f cm, montage right-hand/gun gap=%.2f cm (settled %.2f cm), montage left-hand-in-gun delta vs ProceduralOff=%.2f cm, ik_hand_l-in-gun delta=%.2f cm, montage ik_hand_l/hand_l gap=%.2f cm"),
+			TestTrue(FString::Printf(TEXT("%s %s samples the Procedural Equip window"), Direction, VariantName(Variant)), ActiveEquipFrames > 0);
+			AddInfo(FString::Printf(TEXT("%s %s: frames=%d max grip gap=%.2f cm, settled gap=%.2f cm, max hand step=%.2f cm, max hand deviation from baseline=%.2f cm, equip right-hand/gun gap=%.2f cm (settled %.2f cm), equip left-hand-in-gun delta vs ProceduralOff=%.2f cm, ik_hand_l-in-gun delta=%.2f cm, equip ik_hand_l/hand_l gap=%.2f cm"),
 				Direction, VariantName(Variant), Samples.Num(), MaxGap,
 				SettledGapSum / 20.0f, MaxHandStep, MaxBaselineHandDelta,
-				MaxMontageRightHandGunGap, SettledRightHandGunGap, MaxMontageHandInGunDelta, MaxMontageHandIKInGunDelta,
-				MaxMontageIKHandGap));
+				MaxEquipRightHandGunGap, SettledRightHandGunGap, MaxEquipHandInGunDelta, MaxEquipHandIKInGunDelta,
+				MaxEquipIKHandGap));
 			if (Variant == EProbeVariant::ZeroRightEquip || Variant == EProbeVariant::ZeroRightEquipNoBlend)
 			{
-				// 기준: 몽타주 원본(ProceduralOff)의 몽타주 구간 오른손-총 간격. 없으면 정착값.
+				// 기준: Procedural OFF의 장착 구간 오른손-총 간격. 없으면 정착값.
 				float ReferenceRightHandGunGap = SettledRightHandGunGap;
 				if (!ProceduralOff.IsEmpty())
 				{
 					ReferenceRightHandGunGap = 0.0f;
 					for (const FProbeSample& OffSample : ProceduralOff)
 					{
-						if (OffSample.SlotWeight > 0.99f)
+						if (OffSample.bIsEquipping)
 						{
 							ReferenceRightHandGunGap = FMath::Max(ReferenceRightHandGunGap,
 								FVector::Distance(OffSample.RightHand, OffSample.GunBone));
@@ -756,7 +768,7 @@ bool FOutlierFirstPersonEquipDAProbeTest::RunTest(const FString& Parameters)
 					}
 				}
 				TestTrue(FString::Printf(TEXT("%s %s keeps the right hand on the gun during Equip"), Direction, VariantName(Variant)),
-					MaxMontageRightHandGunGap <= ReferenceRightHandGunGap + 1.0f);
+					MaxEquipRightHandGunGap <= ReferenceRightHandGunGap + 1.0f);
 			}
 			if (Variant == EProbeVariant::ProceduralOff)
 			{

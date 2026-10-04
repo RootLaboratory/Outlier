@@ -7,6 +7,7 @@
 #include "GameFramework/GameModeBase.h"
 #include "GameFramework/GameMode.h"
 #include "Network/OutlierMatchRequest.h"
+#include "Network/OutlierArenaProcessTypes.h"
 #include "OutlierPlayerState.h"
 #include "Room/RoomCombatSubsystem.h"
 #include "Save/OutlierCheckpointRestartVote.h"
@@ -46,6 +47,8 @@ public:
 	void PauseArenaWorkerWorld();
 
 	bool RegisterCheckpoint(AController* Controller, AOutlierCheckpoint* Checkpoint);
+	bool CommitCombatPhaseCheckpoint(FGameplayTag RoomTag, int32 NextPhaseIndex,
+		bool bEncounterCleared, int32 GameplayGeneration);
 	void RefreshPairLinks(AOutlierPlayerState* TriggeringPlayerState);
 
 	UFUNCTION()
@@ -64,6 +67,10 @@ public:
 		int32 PairId,
 		EOutlierPlayerRole FirstRole,
 		EOutlierPlayerRole SecondRole);
+	void SetMatchSaveContext(const FOutlierMatchSaveContext& Context)
+	{
+		ActiveMatchSaveContext = Context;
+	}
 
 	void OnClientArenaReady(APlayerController* PC, uint32 GameplayGeneration);
 	void OnClientArenaGameplayUnloaded(APlayerController* PC, uint32 GameplayGeneration);
@@ -125,6 +132,7 @@ private:
 	bool bArenaReloadInProgress = false;
 	bool bServerArenaReloadReady = false;
 	bool bCheckpointRestartInProgress = false;
+	bool bResumeRoomPhasesAfterReload = false;
 	FDelegateHandle GameplayReadyHandle;
 	FDelegateHandle ArenaReloadStalledHandle;
 	FDelegateHandle ArenaReloadResumedHandle;
@@ -224,6 +232,7 @@ protected:
 		AOutlierPlayerState* PartnerPlayerState,
 		AShooterCharacter* Shooter,
 		APartnerCharacter* Partner);
+	void TryStartInitialSaveRestore();
 	void RegisterSpawnedPair(AOutlierPlayerState* ShooterPlayerState, AOutlierPlayerState* PartnerPlayerState, AShooterCharacter* Shooter, APartnerCharacter* Partner);
 	// PlayerState 에 남아 있는 로드아웃 기록을 새로 스폰된 페어에 되살린다.
 	// possess 는 필요 없다 (폰만 있으면 된다) 므로 possess 지점이 아니라
@@ -304,6 +313,9 @@ private:
 	bool bArenaWorkerMatchCompleting = false;
 	bool bArenaWorkerExitRequested = false;
 	bool bListenHostReturnRequested = false;
+	FOutlierMatchSaveContext ActiveMatchSaveContext;
+	bool bPendingInitialSaveRestore = false;
+	int32 ActiveMatchPairId = INDEX_NONE;
 	FGuid ListenGuestReconnectToken;
 	FGuid ListenGuestPlayerId;
 	EOutlierPlayerRole ListenGuestRole = EOutlierPlayerRole::None;

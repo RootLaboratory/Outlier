@@ -227,10 +227,8 @@ protected:
 	UPROPERTY(ReplicatedUsing = OnRep_AcquiredSuit, VisibleInstanceOnly, BlueprintReadOnly, Category = "Suit")
 	uint8 bHasAcquiredSuit : 1 = false;
 
-	// 슈트 메시는 ASuitInteraction 이 들고 있는데 그 액터는 지급 직후 스스로 Destroy 한다.
-	// 리로드로 Pawn 이 새로 스폰되면 AShooterCharacter::AppliedSuit*Mesh 도 함께 사라지므로,
-	// "무엇을 입었는지"는 살아남는 PlayerState 가 기억해야 한다.
-	// 적용은 서버에서만 하고, 클라는 캐릭터의 AppliedSuit*Mesh 복제로 반영되므로 복제하지 않는다.
+	// 이전 저장/재접속 형식의 호환 Mesh 참조다. 새 외형은 획득 여부로 Shooter BP에서 선택한다.
+	// BP 구성이 명시되면 이 참조를 섞지 않는다. 클라이언트는 Pawn의 PresentationState로 반영한다.
 	UPROPERTY()
 	TObjectPtr<USkeletalMesh> SuitFirstPersonMesh;
 

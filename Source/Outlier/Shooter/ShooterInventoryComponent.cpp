@@ -102,6 +102,69 @@ void UShooterInventoryComponent::SelectWeaponByIndex(int32 SlotIndex)
 	SelectWeaponSlot(static_cast<EWeaponSlot>(SlotIndex));
 }
 
+bool UShooterInventoryComponent::InitializeDefaultMeleeWeapon(AOutlierPlayerState* PlayerState)
+{
+	AShooterCharacter* Shooter = GetShooterCharacter();
+	if (!Shooter || !Shooter->HasAuthority() || !PlayerState
+		|| !PlayerState->IsShooterPlayer() || PlayerState->GetShooterCharacter() != Shooter
+		|| !IsValidWeaponSlot(EWeaponSlot::Melee))
+	{
+		return false;
+	}
+
+	const TSubclassOf<AWeaponBase> WeaponClass = Shooter->DefaultMeleeWeaponClass;
+	if (AWeaponBase* ExistingMelee = GetWeaponInSlot(EWeaponSlot::Melee))
+	{
+		// 반복 초기화에서는 장착이나 스냅샷을 다시 건드리지 않는다.
+		if (WeaponClass && ExistingMelee->GetClass() == WeaponClass.Get())
+		{
+			return true;
+		}
+		UE_LOG(LogTemp, Warning, TEXT("[DefaultMelee] Occupied slot Shooter=%s Weapon=%s"),
+			*GetNameSafe(Shooter), *GetNameSafe(ExistingMelee));
+		return false;
+	}
+
+	// 저장된 장비는 기본 시작 장비보다 우선한다. 빈 Melee의 이전 저장도 여기서 보충하지 않는다.
+	if (!PlayerState->GetLoadoutSnapshot().IsEmpty())
+	{
+		return false;
+	}
+	if (!WeaponClass)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[DefaultMelee] Class is not configured Shooter=%s"),
+			*GetNameSafe(Shooter));
+		return false;
+	}
+	if (WeaponClass->HasAnyClassFlags(CLASS_Abstract))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[DefaultMelee] Abstract class rejected Shooter=%s Class=%s"),
+			*GetNameSafe(Shooter), *GetNameSafe(WeaponClass.Get()));
+		return false;
+	}
+
+	AWeaponBase* Weapon = AWeaponBase::SpawnLoadoutWeapon(GetWorld(), WeaponClass, Shooter);
+	if (!IsValid(Weapon) || Weapon->IsActorBeingDestroyed())
+	{
+		UE_LOG(LogTemp, Error, TEXT("[DefaultMelee] Spawn failed Shooter=%s Class=%s"),
+			*GetNameSafe(Shooter), *GetNameSafe(WeaponClass.Get()));
+		return false;
+	}
+	// BP/DataTable 초기화가 끝난 실제 타입을 검사한 뒤에만 기존 슬롯에 반영한다.
+	if (Weapon->GetWeaponType() != EWeaponType::Melee)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[DefaultMelee] Non-melee class rejected Shooter=%s Class=%s"),
+			*GetNameSafe(Shooter), *GetNameSafe(WeaponClass.Get()));
+		Weapon->Destroy();
+		return false;
+	}
+
+	ApplyWeaponToSlot(Weapon, EWeaponSlot::Melee, /*bPlayEquipPresentation=*/false);
+	// 원격 Listen 플레이어는 아직 Possess 전일 수 있어 Pawn의 PlayerState에 의존하지 않는다.
+	CaptureLoadoutToPlayerState(PlayerState);
+	return true;
+}
+
 void UShooterInventoryComponent::HandleEquipWeapon(AWeaponBase* Weapon)
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
@@ -156,6 +219,16 @@ void UShooterInventoryComponent::HandleEquipWeapon(AWeaponBase* Weapon)
 	{
 		return;
 	}
+	AWeaponBase* ExistingWeapon = GetWeaponInSlot(Slot);
+	if (Slot == EWeaponSlot::Melee && ExistingWeapon && ExistingWeapon != Weapon
+		&& ShooterCharacter->DefaultMeleeWeaponClass
+		&& ExistingWeapon->GetClass() == ShooterCharacter->DefaultMeleeWeaponClass.Get())
+	{
+		// 드롭과 장착 부수 효과 전에 거부한다. Interact가 방금 만든 사본만 정리하고 원본은 남긴다.
+		UE_LOG(LogTemp, Log, TEXT("[DefaultMelee] Replacement blocked Shooter=%s Weapon=%s"),
+			*GetNameSafe(ShooterCharacter), *GetNameSafe(Weapon));
+		return;
+	}
 	if (Slot != EWeaponSlot::Primary)
 	{
 		ShooterCharacter->EndActiveWeaponOvercharge(true);
@@ -171,7 +244,7 @@ void UShooterInventoryComponent::HandleEquipWeapon(AWeaponBase* Weapon)
 		OldWeapon->OnDropped(DropTransform, ShooterCharacter);
 	}
 
-	ApplyWeaponToSlot(Weapon, Slot, /*bPlayEquipMontage=*/true);
+	ApplyWeaponToSlot(Weapon, Slot, /*bPlayEquipPresentation=*/true);
 }
 
 bool UShooterInventoryComponent::EquipSuitRifle(AWeaponBase* RifleWeapon)
@@ -217,7 +290,8 @@ bool UShooterInventoryComponent::EquipSuitRifle(AWeaponBase* RifleWeapon)
 		PreviousPrimaryWeapon->OnOwnerLost();
 	}
 
-	ApplyWeaponToSlot(RifleWeapon, Slot, /*bPlayEquipMontage=*/true);
+	// 암전 commit에서는 장착 Notify 없이 부착/표시를 완료한다. 새 입력은 전환 차단이 계속 막는다.
+	ApplyWeaponToSlot(RifleWeapon, Slot, /*bPlayEquipPresentation=*/!ShooterCharacter->IsSuitTransitionBlocked());
 
 	return ShooterCharacter->CurrentWeapon == RifleWeapon;
 }
@@ -271,7 +345,7 @@ void UShooterInventoryComponent::SelectWeaponSlot(EWeaponSlot Slot)
 
 	ShooterCharacter->StopAimInternal();
 
-	if (ShooterCharacter->UsesProceduralWeaponSwitch() && ShooterCharacter->CurrentWeapon)
+	if (ShooterCharacter->CurrentWeapon)
 	{
 		PendingSwitchWeapon = TargetWeapon;
 		PendingSwitchSlot = Slot;
@@ -287,7 +361,7 @@ void UShooterInventoryComponent::SelectWeaponSlot(EWeaponSlot Slot)
 		return;
 	}
 
-	ApplyWeaponToSlot(TargetWeapon, Slot, /*bPlayEquipMontage=*/true);
+	ApplyWeaponToSlot(TargetWeapon, Slot, /*bPlayEquipPresentation=*/true);
 }
 
 void UShooterInventoryComponent::FinishPendingWeaponSwitch(int32 SwitchId)
@@ -318,7 +392,7 @@ void UShooterInventoryComponent::FinishPendingWeaponSwitch(int32 SwitchId)
 	UE_LOG(LogTemp, Log, TEXT("%s [FPWeaponSwitch] Swap target=%s slot=%d"),
 		OutlierNet::GetNetPrefix(ShooterCharacter), *GetNameSafe(TargetWeapon), static_cast<int32>(TargetSlot));
 	const EWeaponType PreviousWeaponType = ShooterCharacter->GetWeaponType();
-	ApplyWeaponToSlot(TargetWeapon, TargetSlot, /*bPlayEquipMontage=*/false);
+	ApplyWeaponToSlot(TargetWeapon, TargetSlot, /*bPlayEquipPresentation=*/false);
 	ShooterCharacter->PlayProceduralSwitchThirdPersonEquip(PreviousWeaponType);
 }
 
@@ -342,7 +416,7 @@ void UShooterInventoryComponent::CancelPendingWeaponSwitch()
 	if (AShooterCharacter* ShooterCharacter = GetShooterCharacter())
 	{
 		if (ShooterCharacter->HasAuthority() && !ShooterCharacter->IsDead() &&
-			ShooterCharacter->ThirdPersonSwitchMontage)
+			ShooterCharacter->GetThirdPersonSwitchMontage())
 		{
 			ShooterCharacter->MulticastPlayThirdPersonSwitchPhase(
 				ShooterCharacter->GetWeaponType(), TEXT("Raise"));
@@ -353,7 +427,7 @@ void UShooterInventoryComponent::CancelPendingWeaponSwitch()
 }
 
 void UShooterInventoryComponent::ApplyWeaponToSlot(
-	AWeaponBase* Weapon, EWeaponSlot Slot, bool bPlayEquipMontage)
+	AWeaponBase* Weapon, EWeaponSlot Slot, bool bPlayEquipPresentation)
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 	if (!ShooterCharacter || !IsValidWeaponSlot(Slot))
@@ -363,7 +437,7 @@ void UShooterInventoryComponent::ApplyWeaponToSlot(
 
 	WeaponSlots[static_cast<int32>(Slot)] = Weapon;
 	CurrentSlot = Slot;
-	if (bPlayEquipMontage && ShooterCharacter->UsesProceduralWeaponSwitch())
+	if (bPlayEquipPresentation)
 	{
 		ShooterCharacter->BeginProceduralEquipRaise(Weapon);
 	}
@@ -373,21 +447,14 @@ void UShooterInventoryComponent::ApplyWeaponToSlot(
 	// Inventory가 보유 무기와 소켓 규칙을 관리하고, 최종 장착은 Character가 맡음
 	ShooterCharacter->AFirstPersonCharacter::EquipWeapon(Weapon);
 
-	if (bPlayEquipMontage && !ShooterCharacter->UsesProceduralWeaponSwitch())
+	// 1P Equip 몽타주/Attach Notify는 사용하지 않는다. 복원도 같은 부착 경로로 즉시 표시한다.
+	if (Weapon)
 	{
-		ShooterCharacter->PlayEquipMontages();
+		Weapon->ShowEquippedPresentation();
 	}
-	else
+	if (bPlayEquipPresentation)
 	{
-		if (Weapon)
-		{
-			// Procedural Raise and restoration do not run the montage's attach notify.
-			Weapon->ShowEquippedPresentation();
-		}
-		if (bPlayEquipMontage)
-		{
-			ShooterCharacter->PlayEquipMontages();
-		}
+		ShooterCharacter->PlayEquipPresentation();
 	}
 
 	ShooterCharacter->RefreshWeaponMode();
@@ -418,7 +485,7 @@ void UShooterInventoryComponent::RestoreWeaponIntoSlot(
 			static_cast<int32>(Slot));
 		return;
 	}
-	ApplyWeaponToSlot(Weapon, Slot, /*bPlayEquipMontage=*/false);
+	ApplyWeaponToSlot(Weapon, Slot, /*bPlayEquipPresentation=*/false);
 
 	// OnEquipped가 최초 DataTable 초기화를 수행하면서 탄창을 기본값으로 채울 수 있다.
 	// 저장 탄약은 장착 라이프사이클이 끝난 뒤 적용해야 초기화에 덮어써지지 않는다.
@@ -442,7 +509,9 @@ void UShooterInventoryComponent::RestoreLoadout(
 	}
 
 	const int32 CurrentSlotIndex = static_cast<int32>(Snapshot.CurrentSlot);
-	CancelPendingWeaponSwitch();
+	// Snapshot은 값으로 받으므로 기존 Actor를 정리해도 복원 기준은 유지된다.
+	// 같은 Pawn에 복원이 반복되어도 이전 망치가 슬롯 밖에 남지 않게 한다.
+	CleanupOwnedWeapons();
 
 	// CurrentSlot 을 마지막에 넣는다.
 	// AFirstPersonCharacter::EquipWeapon 이 직전 CurrentWeapon 에 OnUnequipped() 를 부르므로,
@@ -494,7 +563,7 @@ void UShooterInventoryComponent::BuildLoadoutSnapshot(
 	OutSnapshot.CurrentSlot = CurrentSlot;
 }
 
-void UShooterInventoryComponent::CaptureLoadoutToPlayerState() const
+void UShooterInventoryComponent::CaptureLoadoutToPlayerState(AOutlierPlayerState* PlayerState) const
 {
 	const AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 	if (!ShooterCharacter || !ShooterCharacter->HasAuthority())
@@ -502,7 +571,10 @@ void UShooterInventoryComponent::CaptureLoadoutToPlayerState() const
 		return;
 	}
 
-	AOutlierPlayerState* PlayerState = ShooterCharacter->GetPlayerState<AOutlierPlayerState>();
+	if (!PlayerState)
+	{
+		PlayerState = ShooterCharacter->GetPlayerState<AOutlierPlayerState>();
+	}
 	if (!PlayerState)
 	{
 		return;

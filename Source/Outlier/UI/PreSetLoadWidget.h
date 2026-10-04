@@ -36,7 +36,7 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Preset|Stage")
 	EOutlierStage GetSelectedStage() const { return SelectedStage; }
 
-	/** GetSelectedStage()를 OutlierPresetStageIds.h 의 공용 FName으로 변환한다. */
+	/** GetSelectedStage()를 공용 선택 ID로 변환한다. Level04는 임시 체크포인트 테스트 선택지다. */
 	UFUNCTION(BlueprintPure, Category = "Preset|Stage")
 	FName GetSelectedStageId() const;
 

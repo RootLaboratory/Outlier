@@ -10,6 +10,7 @@
 #include "FrontendPlayerController.h"
 #include "GameFramework/Controller.h"
 #include "OutlierLobbyIdentitySubsystem.h"
+#include "Save/OutlierSaveSubSystem.h"
 
 namespace
 {
@@ -334,12 +335,46 @@ bool UOutlierMatchmakingSubsystem::TryStartPendingMatch(AController* Controller)
 	return false;
 }
 
+bool UOutlierMatchmakingSubsystem::TryContinuePendingMatch(
+	AController* Controller, const FGuid& SaveId, const FGuid& ResumeKey)
+{
+	AFrontendPlayerController* Owner = Cast<AFrontendPlayerController>(Controller);
+	const FGuid OwnerId = Owner ? Owner->GetRegisteredLocalPlayerId() : FGuid();
+	UOutlierSaveSubSystem* Saves = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>() : nullptr;
+	FString Verifier;
+	if (!OwnerId.IsValid() || !Saves
+		|| !Saves->ValidateResumeKey(OwnerId, SaveId, ResumeKey, Verifier))
+	{
+		return false;
+	}
+	for (const FOutlierPendingRolePickMatch& Match : PendingRolePickMatches)
+	{
+		const AController* RequiredOwner = GetWorld()
+			&& GetWorld()->GetNetMode() == NM_ListenServer
+			? (Match.FirstController && Match.FirstController->IsLocalController()
+				? Match.FirstController.Get() : Match.SecondController.Get())
+			: Match.FirstController.Get();
+		if (RequiredOwner == Controller)
+		{
+			FOutlierMatchSaveContext& Selection = PendingSaveSelections.FindOrAdd(Controller);
+			Selection.OwnerId = OwnerId;
+			Selection.SaveId = SaveId;
+			Selection.KeyVerifier = Verifier;
+			Selection.bContinue = true;
+			return true;
+		}
+	}
+	return false;
+}
+
 void UOutlierMatchmakingSubsystem::Cancel(AController* Controller)
 {
 	if (!Controller)
 	{
 		return;
 	}
+	PendingSaveSelections.Remove(Controller);
 
 	if (AOutlierPlayerState* PS = Controller->GetPlayerState<AOutlierPlayerState>())
 	{
@@ -675,9 +710,38 @@ bool UOutlierMatchmakingSubsystem::CreateMatch(
 	AController* FirstController,
 	AController* SecondController,
 	EOutlierPlayerRole FirstRole,
-	EOutlierPlayerRole SecondRole)
+	EOutlierPlayerRole SecondRole,
+	AController* PartyLeader)
 {
 	if (!FirstController || !SecondController)
+	{
+		return false;
+	}
+	AController* OwnerController = GetWorld() && GetWorld()->GetNetMode() == NM_ListenServer
+		? (FirstController->IsLocalController() ? FirstController : SecondController)
+		: (PartyLeader ? PartyLeader : FirstController);
+	AFrontendPlayerController* Owner = Cast<AFrontendPlayerController>(OwnerController);
+	const FGuid OwnerId = Owner ? Owner->GetRegisteredLocalPlayerId() : FGuid();
+	if (!OwnerId.IsValid())
+	{
+		UE_LOG(LogTemp, Error, TEXT("[Checkpoint] Match owner has no persistent local ID"));
+		return false;
+	}
+	const FOutlierMatchSaveContext* Pending = PendingSaveSelections.Find(OwnerController);
+	FOutlierMatchSaveContext SaveContext;
+	FGuid NewResumeKey;
+	if (Pending && Pending->bContinue && Pending->OwnerId == OwnerId)
+	{
+		SaveContext = *Pending;
+	}
+	else
+	{
+		NewResumeKey = FGuid::NewGuid();
+		SaveContext.OwnerId = OwnerId;
+		SaveContext.SaveId = FGuid::NewGuid();
+		SaveContext.KeyVerifier = UOutlierSaveSubSystem::MakeKeyVerifier(NewResumeKey);
+	}
+	if (!SaveContext.IsValid())
 	{
 		return false;
 	}
@@ -711,6 +775,12 @@ bool UOutlierMatchmakingSubsystem::CreateMatch(
 	const UOutlierArenaSettings* ArenaSettings = GetDefault<UOutlierArenaSettings>();
 	if (ArenaSettings && ArenaSettings->ShouldUseExternalArenaHandoff(World->GetNetMode()))
 	{
+		// Worker에는 검증 결과만 제어 채널로 전달한다. 비공개 키는 URL에 싣지 않는다.
+		if (!ArenaSettings->bUseProcessManager)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[Checkpoint] Persistent saves require managed arena handoff"));
+			return false;
+		}
 		UOutlierArenaProcessSubsystem* ProcessSubsystem = GetGameInstance()
 			? GetGameInstance()->GetSubsystem<UOutlierArenaProcessSubsystem>()
 			: nullptr;
@@ -723,7 +793,8 @@ bool UOutlierMatchmakingSubsystem::CreateMatch(
 				|| !ProcessSubsystem->TryAllocateReadySlot(
 					Assignment.MatchId,
 					ArenaAddress,
-					ArenaSlotId)))
+					ArenaSlotId,
+					SaveContext)))
 		{
 			UE_LOG(LogTemp, Verbose,
 				TEXT("[Matchmaking] Waiting for a Ready Arena Slot"));
@@ -774,6 +845,11 @@ bool UOutlierMatchmakingSubsystem::CreateMatch(
 		const int32 PairId = NextPairId++;
 		ActiveMatchAssignments.Add(Assignment.MatchId, Assignment);
 		ActivePairMatchIds.Add(PairId, Assignment.MatchId);
+		PendingSaveSelections.Remove(OwnerController);
+		if (!SaveContext.bContinue)
+		{
+			Owner->ClientReceiveSaveCredentials(SaveContext.SaveId, NewResumeKey);
+		}
 
 		UE_LOG(LogTemp, Display,
 			TEXT("[Matchmaking] Handoff Match=%s Slot=%d Address=%s"),
@@ -814,6 +890,12 @@ bool UOutlierMatchmakingSubsystem::CreateMatch(
 	ActiveArenaPairId = PairId;
 	ActiveMatchAssignments.Add(Assignment.MatchId, Assignment);
 	ActivePairMatchIds.Add(PairId, Assignment.MatchId);
+	PendingSaveSelections.Remove(OwnerController);
+	GameMode->SetMatchSaveContext(SaveContext);
+	if (!SaveContext.bContinue)
+	{
+		Owner->ClientReceiveSaveCredentials(SaveContext.SaveId, NewResumeKey);
+	}
 
 	GameMode->StartMatchedPair(
 		FirstController,
@@ -866,7 +948,8 @@ bool UOutlierMatchmakingSubsystem::TryCreatePendingRolePickMatch(int32 MatchInde
 		PendingMatch.ShooterController.Get(),
 		PendingMatch.PartnerController.Get(),
 		EOutlierPlayerRole::Shooter,
-		EOutlierPlayerRole::Partner))
+		EOutlierPlayerRole::Partner,
+		PendingMatch.FirstController.Get()))
 	{
 		PendingRolePickMatches.Insert(
 			MoveTemp(PendingMatch),

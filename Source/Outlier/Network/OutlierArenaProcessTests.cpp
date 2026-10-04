@@ -75,6 +75,10 @@ bool FOutlierArenaControlFrameTest::RunTest(const FString& Parameters)
 	Original.SlotId = 2;
 	Original.ProcessId = 1234;
 	Original.MatchId = FGuid::NewGuid();
+	Original.SaveContext.OwnerId = FGuid::NewGuid();
+	Original.SaveContext.SaveId = FGuid::NewGuid();
+	Original.SaveContext.KeyVerifier = FString::ChrN(40, TEXT('A'));
+	Original.SaveContext.bContinue = true;
 
 	TArray<uint8> Frame;
 	TestTrue(TEXT("A valid control message is framed"), OutlierArenaControl::EncodeFrame(Original, Frame));
@@ -97,6 +101,13 @@ bool FOutlierArenaControlFrameTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Slot ID round trips"), Decoded.SlotId, Original.SlotId);
 	TestEqual(TEXT("Process ID round trips"), Decoded.ProcessId, Original.ProcessId);
 	TestEqual(TEXT("Match ID round trips"), Decoded.MatchId, Original.MatchId);
+	TestEqual(TEXT("Save owner round trips"), Decoded.SaveContext.OwnerId,
+		Original.SaveContext.OwnerId);
+	TestEqual(TEXT("Save ID round trips"), Decoded.SaveContext.SaveId,
+		Original.SaveContext.SaveId);
+	TestEqual(TEXT("Verifier round trips"), Decoded.SaveContext.KeyVerifier,
+		Original.SaveContext.KeyVerifier);
+	TestTrue(TEXT("Continue flag round trips"), Decoded.SaveContext.bContinue);
 	TestEqual(TEXT("The decoded frame is consumed"), PartialFrame.Num(), 0);
 
 	FOutlierArenaControlMessage Starting;

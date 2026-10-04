@@ -1,21 +1,69 @@
 #include "UI/UpgradeDescWidget.h"
 
+#include "Components/Button.h"
+#include "Components/CanvasPanelSlot.h"
+#include "Components/Image.h"
+#include "Components/SizeBox.h"
 #include "Components/TextBlock.h"
-#include "Components/WidgetSwitcher.h"
+#include "Engine/Texture2D.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialInterface.h"
+#include "MediaTexture.h"
 #include "PopupRetainerBox.h"
 
 void UUpgradeDescWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
 
-	if (PopUpRetainer)
+	if (PopupRetainer)
 	{
-		PopUpRetainer->OnClosed.AddUniqueDynamic(this, &UUpgradeDescWidget::HandlePopupClosed);
-		PopUpRetainer->ResetPopup();
+		PopupRetainer->OnClosed.AddUniqueDynamic(this, &UUpgradeDescWidget::HandlePopupClosed);
+		PopupRetainer->ResetPopup();
 	}
+
+	if (Button && !bDefaultDisabledButtonBrushCached)
+	{
+		DefaultDisabledButtonBrush = Button->GetStyle().Disabled;
+		bDefaultDisabledButtonBrushCached = true;
+	}
+	if (Button)
+	{
+		Button->OnClicked.AddUniqueDynamic(this, &UUpgradeDescWidget::HandlePurchaseClicked);
+	}
+	if (Background && !bDefaultBackgroundBrushCached)
+	{
+		DefaultBackgroundBrush = Background->GetBrush();
+		bDefaultBackgroundBrushCached = true;
+	}
+	if (DefaultPopupDesignSize.X <= 0.0f || DefaultPopupDesignSize.Y <= 0.0f)
+	{
+		DefaultPopupDesignSize = GetPopupDesignSize();
+	}
+	if (PopupRetainer && Background)
+	{
+		if (USizeBox* RootSizeBox = Cast<USizeBox>(PopupRetainer->GetContent()))
+		{
+			if (DefaultPopupDesignSize.X > 0.0f && DefaultPopupDesignSize.Y > 0.0f)
+			{
+				RootSizeBox->SetMinDesiredWidth(0.0f);
+				RootSizeBox->SetMinDesiredHeight(0.0f);
+				RootSizeBox->SetWidthOverride(DefaultPopupDesignSize.X);
+				RootSizeBox->SetHeightOverride(DefaultPopupDesignSize.Y);
+			}
+		}
+	}
+	InitializeMediaImage();
 
 	RefreshTextBlocks();
 	SetVisibility(ESlateVisibility::Collapsed);
+}
+
+void UUpgradeDescWidget::HandlePurchaseClicked()
+{
+	if (CurrentNodeState == EOutlierUpgradeNodeState::Unlocked && bCanAfford)
+	{
+		OnPurchaseRequested.Broadcast();
+	}
 }
 
 void UUpgradeDescWidget::InjectNodeData(
@@ -45,9 +93,9 @@ void UUpgradeDescWidget::UpdateNodeData(
 	InvalidateLayoutAndVolatility();
 	ForceLayoutPrepass();
 
-	if (PopUpRetainer)
+	if (PopupRetainer)
 	{
-		PopUpRetainer->RequestRender();
+		PopupRetainer->RequestRender();
 	}
 }
 
@@ -59,7 +107,7 @@ void UUpgradeDescWidget::ShowNodeData(
 	bool bInCanAfford)
 {
 	UpdateNodeData(InNodeRowName, InNodeData, InNodeState, InCurrentNodeCount, bInCanAfford);
-	SetVisibility(ESlateVisibility::HitTestInvisible);
+	SetVisibility(ESlateVisibility::Visible);
 	InvalidateLayoutAndVolatility();
 	ForceLayoutPrepass();
 	PlayPopUp(true);
@@ -76,8 +124,26 @@ void UUpgradeDescWidget::HideNodeData(FName InNodeRowName)
 	PlayPopUp(false);
 }
 
+FVector2D UUpgradeDescWidget::GetPopupDesignSize() const
+{
+	if (Background)
+	{
+		if (const UCanvasPanelSlot* BackgroundSlot = Cast<UCanvasPanelSlot>(Background->Slot))
+		{
+			const FVector2D Size = BackgroundSlot->GetSize();
+			if (Size.X > 0.0f && Size.Y > 0.0f)
+			{
+				return Size;
+			}
+		}
+		return Background->GetBrush().ImageSize;
+	}
+	return FVector2D::ZeroVector;
+}
+
 void UUpgradeDescWidget::ClearNodeData()
 {
+	SetVisibility(ESlateVisibility::Collapsed);
 	CurrentNodeRowName = NAME_None;
 	CurrentNodeData = FOutlierUpgradeNodeRow();
 	CurrentNodeState = EOutlierUpgradeNodeState::Locked;
@@ -85,26 +151,22 @@ void UUpgradeDescWidget::ClearNodeData()
 	bCanAfford = false;
 	bClearWhenClosed = false;
 
-	RefreshTextBlocks();
-
-	if (PopUpRetainer)
+	if (PopupRetainer)
 	{
-		PopUpRetainer->ResetPopup();
+		PopupRetainer->ResetPopup();
 	}
-
-	SetVisibility(ESlateVisibility::Collapsed);
 }
 
 void UUpgradeDescWidget::PlayPopUp(bool bOpen)
 {
 	if (bOpen)
 	{
-		SetVisibility(ESlateVisibility::HitTestInvisible);
+		SetVisibility(ESlateVisibility::Visible);
 	}
 
-	if (PopUpRetainer)
+	if (PopupRetainer)
 	{
-		bOpen ? PopUpRetainer->PlayOpen() : PopUpRetainer->PlayClose();
+		bOpen ? PopupRetainer->PlayOpen() : PopupRetainer->PlayClose();
 		return;
 	}
 
@@ -116,6 +178,7 @@ void UUpgradeDescWidget::PlayPopUp(bool bOpen)
 
 void UUpgradeDescWidget::HandlePopupClosed()
 {
+	SetVisibility(ESlateVisibility::Collapsed);
 	if (bClearWhenClosed)
 	{
 		CurrentNodeRowName = NAME_None;
@@ -124,56 +187,147 @@ void UUpgradeDescWidget::HandlePopupClosed()
 		CurrentNodeCount = 0;
 		bCanAfford = false;
 		bClearWhenClosed = false;
-		RefreshTextBlocks();
 	}
-
-	SetVisibility(ESlateVisibility::Collapsed);
 }
 
 void UUpgradeDescWidget::RefreshTextBlocks()
 {
-	if (DescText)
+	if (Name)
 	{
-		DescText->SetText(CurrentNodeData.Desc);
+		Name->SetText(CurrentNodeData.DisplayName);
 	}
 
-	if (CostText)
+	if (Desc)
 	{
-		CostText->SetText(BuildCostText());
+		Desc->SetText(CurrentNodeData.Desc);
 	}
 
-	if (CostNeedText)
+	if (Cost)
 	{
-		CostNeedText->SetText(BuildCostNeedText());
+		Cost->SetText(BuildCostNeedText());
+		Cost->SetVisibility(CurrentNodeState == EOutlierUpgradeNodeState::Activated
+			? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
 	}
-
-	const FText StateText = BuildStateDescText();
-	CurrentStateDescText = StateText;
-	bShouldShowStateDescText = ShouldShowStateDescText(StateText);
-
-	if (StateDescText)
-	{
-		StateDescText->SetText(StateText);
-		StateDescText->SetVisibility(bShouldShowStateDescText ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
-	}
-	RefreshStateDescSwitcher(StateText);
 
 	RefreshCostTextStyle();
+	RefreshButtonStyle();
+	RefreshBackground();
+}
+
+void UUpgradeDescWidget::InitializeMediaImage()
+{
+	if (!MediaImage || !MediaMaterial)
+	{
+		return;
+	}
+
+	MediaImage->SetBrushFromMaterial(MediaMaterial);
+	MediaImageMaterial = MediaImage->GetDynamicMaterial();
+	if (MediaImageMaterial && MediaTexture && !MediaTextureParameterName.IsNone())
+	{
+		MediaImageMaterial->SetTextureParameterValue(MediaTextureParameterName, MediaTexture);
+	}
+}
+
+void UUpgradeDescWidget::RefreshBackground()
+{
+	const bool bPurchased = CurrentNodeState == EOutlierUpgradeNodeState::Activated;
+	if (Background)
+	{
+		if (DefaultPopupDesignSize.X > 0.0f && DefaultPopupDesignSize.Y > 0.0f)
+		{
+			FVector2D PopupSize = DefaultPopupDesignSize;
+			if (DefaultBackgroundTexture && DefaultBackgroundTexture->GetSizeX() > 0)
+			{
+				PopupSize.Y = PopupSize.X * DefaultBackgroundTexture->GetSizeY() / DefaultBackgroundTexture->GetSizeX();
+			}
+			if (bPurchased)
+			{
+				if (PurchasedBackgroundTexture && PurchasedBackgroundTexture->GetSizeX() > 0)
+				{
+					const float PurchasedHeight = PopupSize.X * PurchasedBackgroundTexture->GetSizeY() / PurchasedBackgroundTexture->GetSizeX();
+					PopupSize.Y = FMath::Clamp(PurchasedHeight, 1.0f, PopupSize.Y);
+				}
+			}
+
+			if (UCanvasPanelSlot* BackgroundSlot = Cast<UCanvasPanelSlot>(Background->Slot))
+			{
+				BackgroundSlot->SetSize(PopupSize);
+			}
+			if (PopupRetainer)
+			{
+				if (USizeBox* RootSizeBox = Cast<USizeBox>(PopupRetainer->GetContent()))
+				{
+					RootSizeBox->SetWidthOverride(PopupSize.X);
+					RootSizeBox->SetHeightOverride(PopupSize.Y);
+				}
+			}
+		}
+
+		UTexture2D* Texture = bPurchased ? PurchasedBackgroundTexture.Get() : DefaultBackgroundTexture.Get();
+		FSlateBrush Brush = bDefaultBackgroundBrushCached ? DefaultBackgroundBrush : Background->GetBrush();
+		if (Texture)
+		{
+			Brush.SetResourceObject(Texture);
+		}
+		Background->SetBrush(Brush);
+	}
+
+	if (MediaImage)
+	{
+		MediaImage->SetVisibility(bPurchased ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+	}
 }
 
 void UUpgradeDescWidget::RefreshCostTextStyle()
 {
-	const FSlateColor& CostColor = bCanAfford ? DefaultCostTextColor : InsufficientCostTextColor;
+	const FSlateColor& CostColor = CurrentNodeState == EOutlierUpgradeNodeState::Activated || bCanAfford
+		? DefaultCostTextColor
+		: InsufficientCostTextColor;
 
-	if (CostNeedText)
+	if (Cost)
 	{
-		CostNeedText->SetColorAndOpacity(CostColor);
+		Cost->SetColorAndOpacity(CostColor);
+	}
+}
+
+void UUpgradeDescWidget::RefreshButtonStyle()
+{
+	if (!Button)
+	{
+		return;
 	}
 
-	if (CostText)
+	const bool bPurchased = CurrentNodeState == EOutlierUpgradeNodeState::Activated;
+	const bool bPurchasable = CurrentNodeState == EOutlierUpgradeNodeState::Unlocked && bCanAfford;
+	UTexture2D* DisabledTexture = nullptr;
+	if (bPurchased)
 	{
-		CostText->SetColorAndOpacity(CostColor);
+		DisabledTexture = PurchasedDisabledTexture.Get();
 	}
+	else if (CurrentNodeState == EOutlierUpgradeNodeState::Locked)
+	{
+		DisabledTexture = PrerequisiteDisabledTexture.Get();
+	}
+	else if (!bCanAfford)
+	{
+		DisabledTexture = InsufficientDisabledTexture.Get();
+	}
+
+	FButtonStyle Style = Button->GetStyle();
+	Style.Disabled = DefaultDisabledButtonBrush;
+	if (DisabledTexture)
+	{
+		Style.Disabled.SetResourceObject(DisabledTexture);
+		Style.Disabled.DrawAs = ESlateBrushDrawType::Image;
+		Style.Disabled.ImageType = ESlateBrushImageType::FullColor;
+		Style.Disabled.ImageSize = Style.Normal.ImageSize.X > 0.0f && Style.Normal.ImageSize.Y > 0.0f
+			? Style.Normal.ImageSize
+			: FVector2D(DisabledTexture->GetSizeX(), DisabledTexture->GetSizeY());
+		Style.Disabled.TintColor = FSlateColor(FLinearColor::White);
+	}
+	Button->SetStyle(Style);
+	Button->SetIsEnabled(bPurchasable);
 }
 
 FText UUpgradeDescWidget::BuildCostNeedText() const
@@ -182,76 +336,4 @@ FText UUpgradeDescWidget::BuildCostNeedText() const
 	Arguments.Add(FText::AsNumber(CurrentNodeData.Cost));
 	Arguments.Add(FText::AsNumber(CurrentNodeCount));
 	return FText::Format(CostNeedTextFormat, Arguments);
-}
-
-FText UUpgradeDescWidget::BuildCostText() const
-{
-	FFormatOrderedArguments Arguments;
-	Arguments.Add(FText::AsNumber(CurrentNodeData.Cost));
-	Arguments.Add(FText::AsNumber(CurrentNodeCount));
-	return FText::Format(CostTextFormat, Arguments);
-}
-
-FText UUpgradeDescWidget::BuildStateDescText_Implementation() const
-{
-	if (CurrentNodeState == EOutlierUpgradeNodeState::Activated)
-	{
-		return ActivatedStateDescText;
-	}
-
-	if (CurrentNodeState == EOutlierUpgradeNodeState::Locked && !CurrentNodeData.ParentId.IsNone())
-	{
-		return LockedByParentStateDescText;
-	}
-
-	return DefaultStateDescText;
-}
-
-bool UUpgradeDescWidget::ShouldShowStateDescText(const FText& StateText) const
-{
-	return !StateText.IsEmpty();
-}
-
-void UUpgradeDescWidget::RefreshStateDescSwitcher(const FText& StateText)
-{
-	if (!StateDescSwitcher)
-	{
-		if (CostDescContent)
-		{
-			CostDescContent->SetVisibility(bShouldShowStateDescText ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
-		}
-		if (StateDescContent)
-		{
-			StateDescContent->SetVisibility(bShouldShowStateDescText ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
-		}
-
-		OnStateDescDisplayChanged(bShouldShowStateDescText, INDEX_NONE, StateText);
-		return;
-	}
-
-	const int32 TargetIndex = bShouldShowStateDescText
-		? StateDescSwitcherIndex
-		: CostSwitcherIndex;
-
-	UWidget* TargetWidget = bShouldShowStateDescText ? StateDescContent.Get() : CostDescContent.Get();
-	if (!TargetWidget && bShouldShowStateDescText && StateDescText && StateDescText->GetParent() == StateDescSwitcher)
-	{
-		TargetWidget = StateDescText;
-	}
-
-	if (TargetWidget && TargetWidget->GetParent() == StateDescSwitcher)
-	{
-		StateDescSwitcher->SetActiveWidget(TargetWidget);
-		OnStateDescDisplayChanged(bShouldShowStateDescText, StateDescSwitcher->GetActiveWidgetIndex(), StateText);
-		return;
-	}
-
-	if (StateDescSwitcher->GetActiveWidgetIndex() != TargetIndex
-		&& TargetIndex >= 0
-		&& TargetIndex < StateDescSwitcher->GetNumWidgets())
-	{
-		StateDescSwitcher->SetActiveWidgetIndex(TargetIndex);
-	}
-
-	OnStateDescDisplayChanged(bShouldShowStateDescText, StateDescSwitcher->GetActiveWidgetIndex(), StateText);
 }

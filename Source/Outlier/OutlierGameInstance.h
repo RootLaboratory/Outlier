@@ -28,6 +28,9 @@ public:
 	void NotifyArenaHandoffStarted(const FString& ArenaUrl);
 	void NotifyListenReconnectToken(const FGuid& Token);
 	void PrepareForExplicitLeave();
+	bool GetLocalPlayerId(FGuid& OutPlayerId) const;
+	bool GetLocalSaveCredentials(FGuid& OutSaveId, FGuid& OutResumeKey) const;
+	bool StoreLocalSaveCredentials(const FGuid& SaveId, const FGuid& ResumeKey);
 
 private:
 	friend class FOutlierArenaReturnLifecycleTest;
@@ -71,5 +74,9 @@ private:
 	FString LastListenReconnectUrl;
 	double ArenaReconnectDeadlineSeconds = 0.0;
 	bool bArenaReconnectActive = false;
+	FGuid LocalPlayerId;
+	FGuid LocalSaveId;
+	FGuid LocalResumeKey;
+	bool SaveLocalIdentity() const;
 
 };
