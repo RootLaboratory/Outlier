@@ -1,11 +1,14 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "Engine/Engine.h"
+#include "Engine/GameInstance.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "Misc/AutomationTest.h"
 #include "OutlierPlayerState.h"
+#include "Save/OutlierSaveSubSystem.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Shooter/ShooterInventoryComponent.h"
 #include "UObject/UnrealType.h"
@@ -101,6 +104,13 @@ bool FShooterDefaultMeleeTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Repeated initialization succeeds without granting again"), Inventory->InitializeDefaultMeleeWeapon(PlayerState));
 	TestTrue(TEXT("Repeated initialization preserves the actor"), Inventory->GetWeaponInSlot(EWeaponSlot::Melee) == Hammer);
 	TestFalse(TEXT("Initial grant does not start an action lock"), Shooter->IsActionLocked());
+	// 실제 지급 결과를 초기 체크포인트에 넣는다. 이후 장비 변경이 이 복원 기준을 바꾸면 안 된다.
+	UGameInstance* SnapshotGameInstance = NewObject<UGameInstance>();
+	UOutlierSaveSubSystem* SaveSubsystem = NewObject<UOutlierSaveSubSystem>(SnapshotGameInstance);
+	FOutlierCheckpointSnapshot InitialSnapshot;
+	InitialSnapshot.bInitialSnapshot = true;
+	Inventory->BuildLoadoutSnapshot(InitialSnapshot.LoadoutSnapshot, /*bCaptureAmmo=*/true);
+	TestTrue(TEXT("Granted hammer can be captured as the initial checkpoint"), SaveSubsystem->CaptureInitialSnapshot(InitialSnapshot));
 
 	AWeaponBase* Pickup = World->SpawnActor<AWeaponBase>(HammerClass);
 	if (!TestNotNull(TEXT("Replacement pickup"), Pickup))
@@ -270,6 +280,101 @@ bool FShooterDefaultMeleeTest::RunTest(const FString& Parameters)
 	{
 		TestTrue(TEXT("Repeated restore cleans the previous hammer"), RestoredHammer->IsActorBeingDestroyed());
 	}
+	AWeaponBase* PreviousHammer = Inventory->GetWeaponInSlot(EWeaponSlot::Melee);
+	AWeaponBase* PreviousRifle = Inventory->GetWeaponInSlot(EWeaponSlot::Primary);
+	if (!TestNotNull(TEXT("Hammer before Pawn replacement"), PreviousHammer)
+		|| !TestNotNull(TEXT("Rifle before Pawn replacement"), PreviousRifle))
+	{
+		CleanupWorld();
+		return false;
+	}
+
+	// Pawn 교체는 슬롯 비우기가 아니라 EndPlay 정리를 통과시킨다. 보존한 PlayerState 기록으로 새 Pawn을 복원한다.
+	PlayerState->SetLoadoutSnapshot(Saved);
+	AShooterCharacter* PreviousShooter = Shooter;
+	TestTrue(TEXT("Previous Pawn can be destroyed"), PreviousShooter->Destroy());
+	TestTrue(TEXT("Pawn EndPlay destroys its owned hammer"), PreviousHammer->IsActorBeingDestroyed());
+	TestTrue(TEXT("Pawn EndPlay destroys its owned rifle"), PreviousRifle->IsActorBeingDestroyed());
+	Shooter = World->SpawnActor<AShooterCharacter>(ShooterClass);
+	if (!TestNotNull(TEXT("Replacement Shooter Pawn"), Shooter))
+	{
+		CleanupWorld();
+		return false;
+	}
+	if (!Shooter->HasActorBegunPlay())
+	{
+		Shooter->DispatchBeginPlay();
+	}
+	PlayerState->SetShooterCharacter(Shooter);
+	DefaultClassProperty->SetPropertyValue_InContainer(Shooter, HammerClass);
+	Inventory = Shooter->GetInventoryComponent();
+	if (!TestNotNull(TEXT("Replacement inventory"), Inventory))
+	{
+		CleanupWorld();
+		return false;
+	}
+	TestFalse(TEXT("Resume snapshot prevents an early default grant"), Inventory->InitializeDefaultMeleeWeapon(PlayerState));
+	TestNull(TEXT("Resume does not spawn a weapon before restoration"), Shooter->GetCurrentWeapon());
+	TestTrue(TEXT("Early initialization does not overwrite the saved current slot"),
+		PlayerState->GetLoadoutSnapshot().CurrentSlot == EWeaponSlot::Primary);
+	TestTrue(TEXT("Early initialization does not overwrite the saved hammer class"),
+		PlayerState->GetLoadoutSnapshot().SlotSnapshots.IsValidIndex(static_cast<int32>(EWeaponSlot::Melee))
+		&& PlayerState->GetLoadoutSnapshot().SlotSnapshots[static_cast<int32>(EWeaponSlot::Melee)].WeaponClass.Get() == HammerClass);
+	Inventory->RestoreLoadout(PlayerState->GetLoadoutSnapshot());
+	AWeaponBase* ReplacementHammer = Inventory->GetWeaponInSlot(EWeaponSlot::Melee);
+	TestNotNull(TEXT("New Pawn restores the saved hammer"), ReplacementHammer);
+	TestTrue(TEXT("New Pawn keeps the saved Primary current"),
+		Shooter->GetCurrentWeapon() && Shooter->GetCurrentWeapon() == Inventory->GetWeaponInSlot(EWeaponSlot::Primary));
+	TestFalse(TEXT("New Pawn restoration does not start an equip lock"), Shooter->IsActionLocked());
+	TestTrue(TEXT("Initialization after resume is idempotent"), Inventory->InitializeDefaultMeleeWeapon(PlayerState));
+	TestTrue(TEXT("Initialization after resume retains the restored hammer"),
+		Inventory->GetWeaponInSlot(EWeaponSlot::Melee) == ReplacementHammer);
+
+	// 슬롯 참조만으로는 고아 Actor를 발견할 수 없다. 테스트 월드의 살아 있는 소유 망치도 센다.
+	auto CountOwnedHammers = [World, HammerClass](const AShooterCharacter* Owner)
+	{
+		int32 Count = 0;
+		for (TActorIterator<AWeaponBase> It(World); It; ++It)
+		{
+			if (!It->IsActorBeingDestroyed() && It->GetOwner() == Owner && It->GetClass() == HammerClass)
+			{
+				++Count;
+			}
+		}
+		return Count;
+	};
+	TestEqual(TEXT("Old Pawn leaves no live owned hammer"), CountOwnedHammers(PreviousShooter), 0);
+	TestEqual(TEXT("New Pawn owns exactly one hammer"), CountOwnedHammers(Shooter), 1);
+	AWeaponBase* ReplacementRifleBeforeRestore = Inventory->GetWeaponInSlot(EWeaponSlot::Primary);
+	Inventory->RestoreLoadout(PlayerState->GetLoadoutSnapshot());
+	if (ReplacementHammer)
+	{
+		TestTrue(TEXT("Repeated resume cleans its previous hammer"), ReplacementHammer->IsActorBeingDestroyed());
+	}
+	if (TestNotNull(TEXT("Rifle before repeated resume"), ReplacementRifleBeforeRestore))
+	{
+		TestTrue(TEXT("Repeated resume cleans its previous rifle"), ReplacementRifleBeforeRestore->IsActorBeingDestroyed());
+	}
+	TestEqual(TEXT("Repeated resume leaves exactly one owned hammer"), CountOwnedHammers(Shooter), 1);
+	TestTrue(TEXT("Repeated resume retains Primary"),
+		Shooter->GetCurrentWeapon() && Shooter->GetCurrentWeapon() == Inventory->GetWeaponInSlot(EWeaponSlot::Primary));
+
+	// BP 설정이 달라져도 저장된 망치를 대체하지 않는다. 여기서는 다른 기존 무기 클래스로 충돌을 만든다.
+	AWeaponBase* SavedClassHammer = Inventory->GetWeaponInSlot(EWeaponSlot::Melee);
+	DefaultClassProperty->SetPropertyValue_InContainer(Shooter, RifleClass);
+	Inventory->RestoreLoadout(Saved);
+	TestFalse(TEXT("Changed default class cannot replace a saved Melee slot"), Inventory->InitializeDefaultMeleeWeapon(PlayerState));
+	AWeaponBase* PreservedHammer = Inventory->GetWeaponInSlot(EWeaponSlot::Melee);
+	TestTrue(TEXT("Saved hammer class wins over a changed BP setting"),
+		PreservedHammer && PreservedHammer->GetClass() == HammerClass);
+	if (SavedClassHammer)
+	{
+		TestTrue(TEXT("Class conflict restoration cleans the previous actor"), SavedClassHammer->IsActorBeingDestroyed());
+	}
+	TestEqual(TEXT("Class conflict does not duplicate the hammer"), CountOwnedHammers(Shooter), 1);
+	TestTrue(TEXT("Class conflict keeps Primary current"),
+		Shooter->GetCurrentWeapon() && Shooter->GetCurrentWeapon() == Inventory->GetWeaponInSlot(EWeaponSlot::Primary));
+	DefaultClassProperty->SetPropertyValue_InContainer(Shooter, HammerClass);
 
 	// 이전 저장의 빈 Melee 슬롯은 별도 호환 정책 승인 전까지 그대로 둔다.
 	Saved.SlotSnapshots[static_cast<int32>(EWeaponSlot::Melee)].WeaponClass = nullptr;
@@ -277,6 +382,21 @@ bool FShooterDefaultMeleeTest::RunTest(const FString& Parameters)
 	PlayerState->SetLoadoutSnapshot(Saved);
 	TestFalse(TEXT("Existing saved loadout is not overwritten by an initial grant"), Inventory->InitializeDefaultMeleeWeapon(PlayerState));
 	TestNull(TEXT("Old save is not silently supplemented"), Inventory->GetWeaponInSlot(EWeaponSlot::Melee));
+	TestEqual(TEXT("Old save restoration leaves no owned hammer"), CountOwnedHammers(Shooter), 0);
+	TestTrue(TEXT("Old save retains the saved Primary slot"),
+		Shooter->GetCurrentWeapon() && Shooter->GetCurrentWeapon() == Inventory->GetWeaponInSlot(EWeaponSlot::Primary));
+
+	FOutlierCheckpointSnapshot InitialRestore;
+	if (TestTrue(TEXT("Initial checkpoint remains available after later inventory changes"), SaveSubsystem->GetRestoreSnapshot(InitialRestore)))
+	{
+		Inventory->RestoreLoadout(InitialRestore.LoadoutSnapshot);
+		AWeaponBase* InitialHammer = Inventory->GetWeaponInSlot(EWeaponSlot::Melee);
+		TestTrue(TEXT("Initial checkpoint restores the original hammer class"), InitialHammer && InitialHammer->GetClass() == HammerClass);
+		TestTrue(TEXT("Initial checkpoint restores Melee as current"), InitialHammer && Shooter->GetCurrentWeapon() == InitialHammer);
+		TestNull(TEXT("Initial checkpoint does not retain a later Rifle"), Inventory->GetWeaponInSlot(EWeaponSlot::Primary));
+		TestEqual(TEXT("Initial checkpoint restores exactly one owned hammer"), CountOwnedHammers(Shooter), 1);
+		TestFalse(TEXT("Initial checkpoint restore has no equip action lock"), Shooter->IsActionLocked());
+	}
 
 	CleanupWorld();
 	return true;

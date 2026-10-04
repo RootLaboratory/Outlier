@@ -14,6 +14,7 @@
 #include "Shooter/ShooterCharacter.h"
 #include "Shooter/ShooterInventoryComponent.h"
 #include "Weapon/RangedWeaponBase.h"
+#include "Weapon/WeaponBase.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FOutlierCheckpointRuntimeSnapshotTest,
@@ -23,6 +24,17 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FOutlierCheckpointRuntimeSnapshotTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	UClass* HammerClass = LoadClass<AWeaponBase>(nullptr,
+		TEXT("/Game/Blueprints/Weapon/BP_Hammer.BP_Hammer_C"));
+	UClass* RifleClass = LoadClass<AWeaponBase>(nullptr,
+		TEXT("/Game/Blueprints/Weapon/BP_Rifle.BP_Rifle_C"));
+	if (!TestNotNull(TEXT("Snapshot hammer Blueprint"), HammerClass)
+		|| !TestNotNull(TEXT("Snapshot rifle Blueprint"), RifleClass))
+	{
+		return false;
+	}
+	const int32 MeleeIndex = static_cast<int32>(EWeaponSlot::Melee);
+	const int32 PrimaryIndex = static_cast<int32>(EWeaponSlot::Primary);
 
 	UGameInstance* GameInstance = NewObject<UGameInstance>();
 	UOutlierSaveSubSystem* SaveSubsystem = NewObject<UOutlierSaveSubSystem>(GameInstance);
@@ -33,6 +45,10 @@ bool FOutlierCheckpointRuntimeSnapshotTest::RunTest(const FString& Parameters)
 
 	FOutlierCheckpointSnapshot Initial;
 	Initial.bInitialSnapshot = true;
+	// 최초 지급 직후의 기록과 Rifle 획득 후 체크포인트 기록을 서로 다른 장착 상태로 검증한다.
+	Initial.LoadoutSnapshot.SlotSnapshots.SetNum(static_cast<int32>(EWeaponSlot::Max));
+	Initial.LoadoutSnapshot.SlotSnapshots[MeleeIndex].WeaponClass = HammerClass;
+	Initial.LoadoutSnapshot.CurrentSlot = EWeaponSlot::Melee;
 	Initial.ShooterSpawnTransform.SetLocation(FVector(100.0, 200.0, 300.0));
 	Initial.WorldProgress.CollectedNodeIds.Add(TEXT("InitialNode"));
 	Initial.WorldProgress.ExplodedPropIds.Add(TEXT("Explosive.Initial"));
@@ -48,6 +64,10 @@ bool FOutlierCheckpointRuntimeSnapshotTest::RunTest(const FString& Parameters)
 	FOutlierCheckpointSnapshot RestoreTarget;
 	TestTrue(TEXT("The initial snapshot is selected before a checkpoint commit"), SaveSubsystem->GetRestoreSnapshot(RestoreTarget));
 	TestEqual(TEXT("Initial snapshot values are copied"), RestoreTarget.ShooterSpawnTransform.GetLocation(), FVector(100.0, 200.0, 300.0));
+	TestTrue(TEXT("Initial restart preserves the hammer class"),
+		RestoreTarget.LoadoutSnapshot.SlotSnapshots.IsValidIndex(MeleeIndex)
+		&& RestoreTarget.LoadoutSnapshot.SlotSnapshots[MeleeIndex].WeaponClass.Get() == HammerClass);
+	TestTrue(TEXT("Initial restart selects Melee"), RestoreTarget.LoadoutSnapshot.CurrentSlot == EWeaponSlot::Melee);
 	TestTrue(TEXT("Initial exploded prop progress is copied"),
 		RestoreTarget.WorldProgress.ExplodedPropIds.Contains(TEXT("Explosive.Initial")));
 	TestTrue(TEXT("Initial destroyed turret progress is copied"),
@@ -58,6 +78,10 @@ bool FOutlierCheckpointRuntimeSnapshotTest::RunTest(const FString& Parameters)
 
 	FOutlierCheckpointSnapshot Checkpoint;
 	Checkpoint.CheckpointId = TEXT("Checkpoint.A");
+	Checkpoint.LoadoutSnapshot = Initial.LoadoutSnapshot;
+	Checkpoint.LoadoutSnapshot.SlotSnapshots[PrimaryIndex].WeaponClass = RifleClass;
+	Checkpoint.LoadoutSnapshot.SlotSnapshots[PrimaryIndex].CurrentAmmo = 7;
+	Checkpoint.LoadoutSnapshot.CurrentSlot = EWeaponSlot::Primary;
 	Checkpoint.WorldProgress.CollectedNodeIds.Add(TEXT("SavedNode"));
 	Checkpoint.WorldProgress.ExplodedPropIds.Add(TEXT("Explosive.Saved"));
 	Checkpoint.DestroyedTurretIds.Add(TEXT("Turret.Saved"));
@@ -74,8 +98,15 @@ bool FOutlierCheckpointRuntimeSnapshotTest::RunTest(const FString& Parameters)
 	Duplicate.DestroyedTurretIds.Add(TEXT("Turret.Late"));
 	Duplicate.GunAdaptationStack = 10;
 	Duplicate.RoomPhaseProgress.FindChecked(PhaseRoom).NextPhaseIndex = 2;
+	Duplicate.LoadoutSnapshot.SlotSnapshots[MeleeIndex].WeaponClass = nullptr;
+	Duplicate.LoadoutSnapshot.CurrentSlot = EWeaponSlot::Melee;
 	TestFalse(TEXT("The same checkpoint cannot be committed twice"), SaveSubsystem->CommitCheckpointSnapshotForTesting(Duplicate));
 	TestTrue(TEXT("The latest checkpoint is selected after commit"), SaveSubsystem->GetRestoreSnapshot(RestoreTarget));
+	TestTrue(TEXT("A rejected duplicate preserves the checkpoint hammer"),
+		RestoreTarget.LoadoutSnapshot.SlotSnapshots.IsValidIndex(MeleeIndex)
+		&& RestoreTarget.LoadoutSnapshot.SlotSnapshots[MeleeIndex].WeaponClass.Get() == HammerClass);
+	TestTrue(TEXT("A rejected duplicate preserves the current Primary slot"),
+		RestoreTarget.LoadoutSnapshot.CurrentSlot == EWeaponSlot::Primary);
 	TestTrue(TEXT("Committed world progress is preserved"), RestoreTarget.WorldProgress.CollectedNodeIds.Contains(TEXT("SavedNode")));
 	TestFalse(TEXT("A rejected duplicate cannot replace the saved snapshot"), RestoreTarget.WorldProgress.CollectedNodeIds.Contains(TEXT("LateNode")));
 	TestTrue(TEXT("A checkpoint preserves exploded props"),
@@ -162,6 +193,17 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FOutlierCheckpointDurableCommitTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	UClass* HammerClass = LoadClass<AWeaponBase>(nullptr,
+		TEXT("/Game/Blueprints/Weapon/BP_Hammer.BP_Hammer_C"));
+	UClass* RifleClass = LoadClass<AWeaponBase>(nullptr,
+		TEXT("/Game/Blueprints/Weapon/BP_Rifle.BP_Rifle_C"));
+	if (!TestNotNull(TEXT("Durable hammer Blueprint"), HammerClass)
+		|| !TestNotNull(TEXT("Durable rifle Blueprint"), RifleClass))
+	{
+		return false;
+	}
+	const int32 MeleeIndex = static_cast<int32>(EWeaponSlot::Melee);
+	const int32 PrimaryIndex = static_cast<int32>(EWeaponSlot::Primary);
 	const FName WorldName = MakeUniqueObjectName(
 		nullptr, UWorld::StaticClass(), NAME_None, EUniqueObjectNameOptions::GloballyUnique);
 	FWorldContext& Context = GEngine->CreateNewWorldContext(EWorldType::Game);
@@ -194,6 +236,12 @@ bool FOutlierCheckpointDurableCommitTest::RunTest(const FString& Parameters)
 			Save->ConfigureNewSave(OwnerId, SaveId, Verifier));
 		FOutlierCheckpointSnapshot First;
 		First.CheckpointId = TEXT("Checkpoint.Durable.First");
+		// 이어하기는 메모리 복사만으로 충분하지 않다. 실제 파일 로드 후에도 클래스/슬롯/탄약을 확인한다.
+		First.LoadoutSnapshot.SlotSnapshots.SetNum(static_cast<int32>(EWeaponSlot::Max));
+		First.LoadoutSnapshot.SlotSnapshots[MeleeIndex].WeaponClass = HammerClass;
+		First.LoadoutSnapshot.SlotSnapshots[PrimaryIndex].WeaponClass = RifleClass;
+		First.LoadoutSnapshot.SlotSnapshots[PrimaryIndex].CurrentAmmo = 7;
+		First.LoadoutSnapshot.CurrentSlot = EWeaponSlot::Primary;
 		First.WorldProgress.OpenedDoorIds.Add(TEXT("Door.First"));
 		const FGameplayTag PhaseRoom = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.1")));
 		FOutlierRoomPhaseProgress PhaseProgress;
@@ -229,6 +277,20 @@ bool FOutlierCheckpointDurableCommitTest::RunTest(const FString& Parameters)
 		FOutlierCheckpointSnapshot Restore;
 		TestTrue(TEXT("Loaded disk snapshot is selected"), Save->GetRestoreSnapshot(Restore));
 		TestEqual(TEXT("Disk checkpoint Id round trips"), Restore.CheckpointId, First.CheckpointId);
+		TestTrue(TEXT("Disk load preserves the current Primary slot"),
+			Restore.LoadoutSnapshot.CurrentSlot == EWeaponSlot::Primary);
+		if (TestTrue(TEXT("Disk load preserves all weapon slots"),
+			Restore.LoadoutSnapshot.SlotSnapshots.Num() == static_cast<int32>(EWeaponSlot::Max)))
+		{
+			TestTrue(TEXT("Disk hammer class round trips"),
+				Restore.LoadoutSnapshot.SlotSnapshots[MeleeIndex].WeaponClass.Get() == HammerClass);
+			TestEqual(TEXT("Disk hammer has no ammunition state"),
+				Restore.LoadoutSnapshot.SlotSnapshots[MeleeIndex].CurrentAmmo, INDEX_NONE);
+			TestTrue(TEXT("Disk rifle class round trips"),
+				Restore.LoadoutSnapshot.SlotSnapshots[PrimaryIndex].WeaponClass.Get() == RifleClass);
+			TestEqual(TEXT("Disk rifle ammunition round trips"),
+				Restore.LoadoutSnapshot.SlotSnapshots[PrimaryIndex].CurrentAmmo, 7);
+		}
 		TestTrue(TEXT("Disk world progress round trips"),
 			Restore.WorldProgress.OpenedDoorIds.Contains(TEXT("Door.First")));
 		const FOutlierRoomPhaseProgress* RestoredPhase = Restore.RoomPhaseProgress.Find(PhaseRoom);
@@ -428,6 +490,8 @@ bool FOutlierCheckpointPlayerProgressTest::RunTest(const FString& Parameters)
 	UClass* RifleClass = LoadClass<ARangedWeaponBase>(
 		nullptr,
 		TEXT("/Game/Blueprints/Weapon/BP_Rifle.BP_Rifle_C"));
+	UClass* HammerClass = LoadClass<AWeaponBase>(nullptr,
+		TEXT("/Game/Blueprints/Weapon/BP_Hammer.BP_Hammer_C"));
 	AShooterCharacter* CheckpointShooter = ShooterClass
 		? World->SpawnActor<AShooterCharacter>(ShooterClass)
 		: nullptr;
@@ -436,7 +500,8 @@ bool FOutlierCheckpointPlayerProgressTest::RunTest(const FString& Parameters)
 		: nullptr;
 	if (!TestNotNull(TEXT("Checkpoint Shooter is spawned"), CheckpointShooter)
 		|| !TestNotNull(TEXT("Preset Shooter is spawned"), PresetShooter)
-		|| !TestNotNull(TEXT("Rifle Blueprint is loadable"), RifleClass))
+		|| !TestNotNull(TEXT("Rifle Blueprint is loadable"), RifleClass)
+		|| !TestNotNull(TEXT("Hammer Blueprint is loadable"), HammerClass))
 	{
 		CleanupWorld();
 		return false;
@@ -455,9 +520,17 @@ bool FOutlierCheckpointPlayerProgressTest::RunTest(const FString& Parameters)
 	SavedLoadout.CurrentSlot = EWeaponSlot::Primary;
 	SavedLoadout.SlotSnapshots[static_cast<int32>(EWeaponSlot::Primary)].WeaponClass = RifleClass;
 	SavedLoadout.SlotSnapshots[static_cast<int32>(EWeaponSlot::Primary)].CurrentAmmo = 7;
+	SavedLoadout.SlotSnapshots[static_cast<int32>(EWeaponSlot::Melee)].WeaponClass = HammerClass;
 
 	UShooterInventoryComponent* CheckpointInventory = CheckpointShooter->GetInventoryComponent();
 	UShooterInventoryComponent* PresetInventory = PresetShooter->GetInventoryComponent();
+	if (!TestNotNull(TEXT("Checkpoint inventory"), CheckpointInventory)
+		|| !TestNotNull(TEXT("Preset inventory"), PresetInventory))
+	{
+		CleanupWorld();
+		return false;
+	}
+	// 같은 저장 내용을 두 경로에 전달한다. 복원 모드가 달라도 망치와 현재 슬롯은 같아야 한다.
 	CheckpointInventory->RestoreLoadout(SavedLoadout, /*bRestoreAmmo=*/true);
 	PresetInventory->RestoreLoadout(SavedLoadout, /*bRestoreAmmo=*/false);
 
@@ -477,6 +550,20 @@ bool FOutlierCheckpointPlayerProgressTest::RunTest(const FString& Parameters)
 		TEXT("Preset restore keeps the new weapon default magazine"),
 		PresetRifle->GetCurrentAmmo(),
 		PresetRifle->GetMagazineSize());
+	for (AShooterCharacter* RestoredShooter : { CheckpointShooter, PresetShooter })
+	{
+		UShooterInventoryComponent* RestoredInventory = RestoredShooter->GetInventoryComponent();
+		AWeaponBase* RestoredHammer = RestoredInventory->GetWeaponInSlot(EWeaponSlot::Melee);
+		if (TestNotNull(TEXT("Both restore modes retain the hammer"), RestoredHammer))
+		{
+			TestTrue(TEXT("Both restore modes retain the saved hammer class"), RestoredHammer->GetClass() == HammerClass);
+			TestFalse(TEXT("The restored hammer is not a pickup"), RestoredHammer->CanBePickedUpBy(RestoredShooter));
+		}
+	}
+	TestTrue(TEXT("Checkpoint restore leaves Rifle current"), CheckpointShooter->GetCurrentWeapon() == CheckpointRifle);
+	TestTrue(TEXT("Preset restore leaves Rifle current"), PresetShooter->GetCurrentWeapon() == PresetRifle);
+	TestFalse(TEXT("Checkpoint restore has no equip action lock"), CheckpointShooter->IsActionLocked());
+	TestFalse(TEXT("Preset restore has no equip action lock"), PresetShooter->IsActionLocked());
 
 	FOutlierLoadoutSnapshot CapturedCheckpointLoadout;
 	CheckpointInventory->BuildLoadoutSnapshot(
@@ -486,15 +573,23 @@ bool FOutlierCheckpointPlayerProgressTest::RunTest(const FString& Parameters)
 		TEXT("Checkpoint capture reads live weapon ammo"),
 		CapturedCheckpointLoadout.SlotSnapshots[static_cast<int32>(EWeaponSlot::Primary)].CurrentAmmo,
 		7);
+	TestTrue(TEXT("Checkpoint capture preserves Melee class"),
+		CapturedCheckpointLoadout.SlotSnapshots[static_cast<int32>(EWeaponSlot::Melee)].WeaponClass.Get() == HammerClass);
+	TestTrue(TEXT("Checkpoint capture preserves current Primary"), CapturedCheckpointLoadout.CurrentSlot == EWeaponSlot::Primary);
+	TestEqual(TEXT("Checkpoint hammer has no ammunition state"),
+		CapturedCheckpointLoadout.SlotSnapshots[static_cast<int32>(EWeaponSlot::Melee)].CurrentAmmo, INDEX_NONE);
 
 	FOutlierLoadoutSnapshot CapturedPresetLoadout;
-	CheckpointInventory->BuildLoadoutSnapshot(
+	PresetInventory->BuildLoadoutSnapshot(
 		CapturedPresetLoadout,
 		/*bCaptureAmmo=*/false);
 	TestEqual(
 		TEXT("Ordinary loadout capture omits ammo"),
 		CapturedPresetLoadout.SlotSnapshots[static_cast<int32>(EWeaponSlot::Primary)].CurrentAmmo,
 		INDEX_NONE);
+	TestTrue(TEXT("Preset capture preserves Melee class"),
+		CapturedPresetLoadout.SlotSnapshots[static_cast<int32>(EWeaponSlot::Melee)].WeaponClass.Get() == HammerClass);
+	TestTrue(TEXT("Preset capture preserves current Primary"), CapturedPresetLoadout.CurrentSlot == EWeaponSlot::Primary);
 
 	CleanupWorld();
 	return true;
