@@ -18,6 +18,7 @@
 #include "Damage/OutlierDamageReceiver.h"
 #include "Enemy/EnemyAdaptationTypes.h"
 #include "Enemy/EnemyPoolTypes.h"
+#include "PostProcess/OutlierSpawnVisualTarget.h"
 #include "EnemyBase.generated.h"
 
 class UStateTreeComponent;
@@ -33,7 +34,9 @@ class UGeometryCollection;
 class UOutlierAbilitySystemComponent;
 class UOutlierVitalAttributeSet;
 class UEnemyAdaptationSubsystem;
+class UEnemyHudWidget;
 class UEnemyPoolSubsystem;
+class UMeshComponent;
 class UPrimitiveComponent;
 class USceneComponent;
 struct FOnAttributeChangeData;
@@ -71,7 +74,7 @@ enum class EEnemyAttackPhase : uint8
 };
 
 UCLASS()
-class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, public IEMPableInterface, public IScannableInterface, public IGenericTeamAgentInterface, public IRoomTagInterface, public IAbilitySystemInterface, public IOutlierDamageReceiver, public IMeleeTargetInterface
+class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, public IEMPableInterface, public IScannableInterface, public IGenericTeamAgentInterface, public IRoomTagInterface, public IAbilitySystemInterface, public IOutlierDamageReceiver, public IMeleeTargetInterface, public IOutlierSpawnVisualTarget
 {
 	GENERATED_BODY()
 
@@ -86,6 +89,10 @@ public:
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
+
+	// IOutlierSpawnVisualTarget : 등장 디졸브를 받을 메시만 알려준다 ( 교체 / 진행 / 원복은 UMaterialPostProcessSubsystem 담당 ).
+	// 본체와 장착 무기의 메시를 넘긴다. 메시 구성이 다른 파생 적은 Override 한다.
+	virtual void CollectSpawnPresentationMeshes(TArray<UMeshComponent*>& OutMeshes) const override;
 
 	// Pool Subsystem은 deferred spawn 중 이 함수를 호출해 일반 배치 Enemy 초기화를 차단한다.
 	void PrepareForPoolSpawn(UEnemyPoolSubsystem* PoolSubsystem);
@@ -245,6 +252,10 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Input")
 	TObjectPtr<UInputAction> ReleasePossessionAction;
+
+	// Partner가 빙의했을 때 Partner MainWidget 대신 띄울 HUD. 빙의되지 않는 Enemy는 비워 둔다.
+	UPROPERTY(EditDefaultsOnly, Category = "Enemy|UI")
+	TSubclassOf<UEnemyHudWidget> PossessedHudClass;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Components, meta = (AllowPrivateAccess = "true"))
 	URoomTagComponent* RoomTagComponent;
@@ -507,6 +518,8 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|Possession")
 	AController* GetCachedAIController() const { return CachedAIController.IsValid() ? CachedAIController.Get() : nullptr; }
+
+	TSubclassOf<UEnemyHudWidget> GetPossessedHudClass() const { return PossessedHudClass; }
 
 	// WeakPoint: Core처럼 일반 부위보다 높은 피해 배율을 사용하는 피격 부위다.
 	virtual float GetWeakPointDamageMultiplier(const UPrimitiveComponent* HitComponent) const;

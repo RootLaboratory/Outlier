@@ -4,6 +4,7 @@
 #include "PostProcess/OutlierPostProcessVolume.h"
 
 #include "PostProcess/MaterialPostProcessSubsystem.h"
+#include "Containers/StaticArray.h"
 #include "Curves/CurveFloat.h"
 #include "Engine/Scene.h"
 #include "Engine/World.h"
@@ -22,6 +23,25 @@ const FName MagneticLocationParameterName = TEXT("Location");
 const FName MagneticRadiusParameterName = TEXT("Radius");
 const FName MagneticStartTimeParameterName = TEXT("StartTime");
 const FName MagneticEndTimeParameterName = TEXT("EndTime");
+
+// MF_GlitchDissolve 의 파라미터 이름. 머티리얼 쪽과 반드시 같아야 한다.
+const FName SpawnDissolveAmountParameterName = TEXT("Dissolve Amount");
+const FName SpawnDissolveDivideParameterName = TEXT("Amount Divide");
+const FName SpawnDissolveMultiplyParameterName = TEXT("Amount Multiply");
+const FName SpawnDissolveSubtractParameterName = TEXT("Amount Subtract");
+const FName SpawnDissolvePowerParameterName = TEXT("Power");
+const FName SpawnDissolveTexturePowerParameterName = TEXT("Texture Power");
+const FName SpawnDissolveContrastParameterName = TEXT("Contrast");
+
+// 사망 연출 텍스처를 EDeathTransitionTexture 순서로 모은다.
+TStaticArray<UTexture2D*, DeathTransitionTextureCount> GetDeathTransitionTextures(const AOutlierPostProcessVolume& Volume)
+{
+	TStaticArray<UTexture2D*, DeathTransitionTextureCount> Textures;
+	Textures[static_cast<int32>(EDeathTransitionTexture::BlackBackground)] = Volume.DeathBlackTargetTexture;
+	Textures[static_cast<int32>(EDeathTransitionTexture::BlackNoise)] = Volume.DeathBlackNoiseTexture;
+	Textures[static_cast<int32>(EDeathTransitionTexture::FadeVignette)] = Volume.DeathBlackVignetteTexture;
+	return Textures;
+}
 }
 
 void AOutlierPostProcessVolume::BeginPlay()
@@ -66,6 +86,7 @@ void AOutlierPostProcessVolume::BeginPlay()
 
 		if (UGameInstance* GameInstance = World->GetGameInstance())
 		{
+			const TStaticArray<UTexture2D*, DeathTransitionTextureCount> DeathTransitionTextures = GetDeathTransitionTextures(*this);
 			for (ULocalPlayer* LocalPlayer : GameInstance->GetLocalPlayers())
 			{
 				if (!LocalPlayer)
@@ -73,13 +94,53 @@ void AOutlierPostProcessVolume::BeginPlay()
 					continue;
 				}
 
-				if (ULocalPlayerPostProcessSubsystem* DoFSubsystem = LocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
+				if (ULocalPlayerPostProcessSubsystem* RDGSubsystem = LocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
 				{
-					DoFSubsystem->SetDepthOfFieldVolume(this);
+					RDGSubsystem->SetDepthOfFieldVolume(this);
+
+					for (int32 SlotIndex = 0; SlotIndex < DeathTransitionTextureCount; ++SlotIndex)
+					{
+						if (UTexture2D* Texture = DeathTransitionTextures[SlotIndex])
+						{
+							RDGSubsystem->SetDeathTransitionTexture(static_cast<EDeathTransitionTexture>(SlotIndex), Texture);
+						}
+					}
+
 				}
 			}
 		}
 	}
+}
+
+void AOutlierPostProcessVolume::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	const TStaticArray<UTexture2D*, DeathTransitionTextureCount> DeathTransitionTextures = GetDeathTransitionTextures(*this);
+	UWorld* World = GetWorld();
+	if (UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr)
+	{
+		for (ULocalPlayer* LocalPlayer : GameInstance->GetLocalPlayers())
+		{
+			ULocalPlayerPostProcessSubsystem* RDGSubsystem = LocalPlayer
+				? LocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>() : nullptr;
+			if (!RDGSubsystem)
+			{
+				continue;
+			}
+
+			// 다른 볼륨이 이미 바꿔 끼운 슬롯은 건드리지 않는다.
+			for (int32 SlotIndex = 0; SlotIndex < DeathTransitionTextureCount; ++SlotIndex)
+			{
+				const EDeathTransitionTexture Slot = static_cast<EDeathTransitionTexture>(SlotIndex);
+				UTexture2D* Texture = DeathTransitionTextures[SlotIndex];
+				if (Texture && RDGSubsystem->GetDeathTransitionTexture(Slot) == Texture)
+				{
+					RDGSubsystem->SetDeathTransitionTexture(Slot, nullptr);
+				}
+			}
+		}
+	}
+
+	Super::EndPlay(EndPlayReason);
 }
 
 void AOutlierPostProcessVolume::InitializeRuntimePostProcessMaterial(EOutlierPostProcessMaterialType MaterialType)
@@ -336,6 +397,73 @@ float AOutlierPostProcessVolume::EvaluateStealthFade(float InLinearFade) const
 	}
 
 	return FMath::Clamp(StealthFadeCurve->GetFloatValue(LinearFade), 0.0f, 1.0f);
+}
+
+bool AOutlierPostProcessVolume::ComputeEnemySpawnDissolveRange(float& OutStartAmount, float& OutEndAmount) const
+{
+	if (!EnemySpawnDissolveMaterial)
+	{
+		return false;
+	}
+
+	// 못 찾은 파라미터는 MF_GlitchDissolve 의 기본값으로 계산한다.
+	bool bAllParametersFound = true;
+	auto ReadScalar = [this, &bAllParametersFound](FName ParameterName, float DefaultValue)
+	{
+		float Value = DefaultValue;
+		if (!EnemySpawnDissolveMaterial->GetScalarParameterValue(FHashedMaterialParameterInfo(ParameterName), Value))
+		{
+			bAllParametersFound = false;
+			return DefaultValue;
+		}
+		return Value;
+	};
+	const float Divide = ReadScalar(SpawnDissolveDivideParameterName, 2.0f);
+	const float Multiply = ReadScalar(SpawnDissolveMultiplyParameterName, 2.0f);
+	const float Subtract = ReadScalar(SpawnDissolveSubtractParameterName, 1.0f);
+	const float Power = ReadScalar(SpawnDissolvePowerParameterName, 1.4f);
+	const float TexturePower = ReadScalar(SpawnDissolveTexturePowerParameterName, 1.5f);
+	const float Contrast = ReadScalar(SpawnDissolveContrastParameterName, 1.359162f);
+	if (!bAllParametersFound)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[EnemySpawnDissolve] %s 의 일부 파라미터를 찾지 못해 MF_GlitchDissolve 기본값으로 범위를 계산한다."),
+			*GetNameSafe(EnemySpawnDissolveMaterial));
+	}
+	if (FMath::IsNearlyZero(Divide) || FMath::IsNearlyZero(Multiply) || Power <= KINDA_SMALL_NUMBER || Contrast < 0.0f)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[EnemySpawnDissolve] %s 파라미터로 범위를 구할 수 없다. Divide=%.3f Multiply=%.3f Power=%.3f Contrast=%.3f"),
+			*GetNameSafe(EnemySpawnDissolveMaterial), Divide, Multiply, Power, Contrast);
+		return false;
+	}
+
+	// 바운드 기준 높이 h( 0~1 ), 노이즈 N 에 대해 머티리얼은 픽셀마다
+	//   s    = pow(1 - h + DA * Multiply / Divide - Subtract, Power) - TexturePower * N
+	//   Mask = CheapContrast(saturate(2s - 1), Contrast)
+	// 를 계산한다. Mask 가 0 → 1 로 바뀌는 s 구간은 Contrast 로만 정해진다.
+	const float ContrastRange = 1.0f + 2.0f * Contrast;
+	const float HiddenScore = 0.5f * (1.0f + Contrast / ContrastRange);
+	const float RevealedScore = 0.5f * (1.0f + (1.0f + Contrast) / ContrastRange);
+
+	// 시작: 가장 먼저 나타나는 픽셀( 바닥 h=0, 노이즈 0 )도 아직 HiddenScore 이하인 값.
+	const float StartOffset = FMath::Pow(HiddenScore, 1.0f / Power) - 1.0f;
+	// 끝: 가장 늦게 나타나는 픽셀( 꼭대기 h=1, 노이즈 최대 )까지 RevealedScore 에 닿는 값.
+	const float NoiseMax = FMath::Clamp(EnemySpawnDissolveNoiseMax, 0.0f, 1.0f);
+	const float EndOffset = FMath::Pow(RevealedScore + TexturePower * NoiseMax, 1.0f / Power);
+
+	// Offset = DA * Multiply / Divide - Subtract 를 DA 로 되돌린다.
+	OutStartAmount = (StartOffset + Subtract) * Divide / Multiply;
+	OutEndAmount = (EndOffset + Subtract) * Divide / Multiply;
+	return true;
+}
+
+void AOutlierPostProcessVolume::SetEnemySpawnDissolveAmount(UMaterialInstanceDynamic* DissolveMaterial, float Amount) const
+{
+	if (DissolveMaterial)
+	{
+		DissolveMaterial->SetScalarParameterValue(SpawnDissolveAmountParameterName, Amount);
+	}
 }
 
 void AOutlierPostProcessVolume::UpdateDamagedMaterialParameters(float InPlayerHPRatio)  const

@@ -7,6 +7,7 @@
 #include "Subsystems/WorldSubsystem.h"
 #include "MaterialPostProcessSubsystem.generated.h"
 
+class AActor;
 class AOutlierPostProcessVolume;
 class UMaterialInstanceDynamic;
 class UMaterialInterface;
@@ -41,6 +42,43 @@ struct FOutlierStealthMeshRestoreState
 	TObjectPtr<UMaterialInterface> SourceMaterial;
 };
 
+// 등장 연출 중인 메시 1개의 원본 슬롯 머티리얼.
+USTRUCT()
+struct FOutlierSpawnPresentationMeshRestoreState
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TWeakObjectPtr<UMeshComponent> Mesh;
+
+	// 교체 전 슬롯별 원본. 동적 머티리얼이면 여기서만 참조될 수 있으므로 GC 로부터 지킨다.
+	UPROPERTY()
+	TArray<TObjectPtr<UMaterialInterface>> Materials;
+};
+
+// 등장 연출 대상 1개분 상태. 한 대상의 모든 메시가 같은 MID 를 공유한다 ( 진행도가 같다 ).
+USTRUCT()
+struct FOutlierSpawnPresentationState
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TWeakObjectPtr<AActor> Target;
+
+	// 데디 서버 / 머티리얼 미지정이면 비어 있고 시간만 잰다.
+	UPROPERTY()
+	TObjectPtr<UMaterialInstanceDynamic> AppliedMaterial;
+
+	UPROPERTY()
+	TArray<FOutlierSpawnPresentationMeshRestoreState> Meshes;
+
+	float ElapsedTime = 0.0f;
+	float Duration = 0.0f;
+	float StartAmount = 0.0f;
+	float EndAmount = 0.0f;
+	FSimpleDelegate OnFinished;
+};
+
 // State.Stealthed 를 들 수 있는 ASC 1개분 상태.
 // 아바타 액터는 도중에 바뀔 수 있으므로 캐시하지 않고 ASC 에서 매번 다시 얻는다.
 struct FOutlierStealthSourceState
@@ -65,6 +103,9 @@ public:
 	void RegisterPostProcessVolume(AOutlierPostProcessVolume* InPostProcessVolume);
 	void SetPostProcessEnabled(EOutlierPostProcessMaterialType MaterialType, bool bEnabled);
 	void Refresh();
+	// 볼륨 미등록 상태에서도 타이머와 메시/스텐실의 원본 복구 상태를 정리한다.
+	UFUNCTION(BlueprintCallable, Category = "PostProcess")
+	void ResetAllPostProcess(bool bRestoreAlwaysOnPostProcess = true);
 	void DisableAllBoundPostProcessMaterials();
 	void FlushScanStencilRestoreStates();
 	void FlushPostProcessMaterialParameters();
@@ -97,10 +138,22 @@ public:
 	void StartMagneticPostProcess(FVector Origin, float Radius, float Duration);
 	void EndMagneticPostProcess();
 
+	// Enemy Spawn
+	// 등장 디졸브. 대상은 IOutlierSpawnVisualTarget 으로 메시만 답하고,
+	// 머티리얼 / 연출 시간 / Dissolve Amount 범위는 볼륨이, 교체 / 진행 / 원복은 이 서브시스템이 전담한다.
+	// 연출 시간이 끝나면( 디졸브가 끝 값에 닿으면 ) 원본 머티리얼을 되돌린 뒤 OnFinished 를 부른다.
+	// 볼륨이 없거나 연출 시간이 0 이면 OnFinished 를 즉시 부른다.
+	// 데디 서버는 머티리얼 없이 시간만 잰다 ( 완료 통보는 서버가 받아야 한다 ).
+	void StartEnemySpawnPresentation(AActor* Target, FSimpleDelegate OnFinished);
+	// 완료 통보 없이 바로 원복한다. 연출 도중 상태가 바뀌거나 액터가 사라질 때 쓴다.
+	void StopEnemySpawnPresentation(AActor* Target);
+
 	UPROPERTY()
 	TObjectPtr<AOutlierPostProcessVolume> BoundPostProcessVolume;
 
 private:
+	friend class FOutlierMaterialPostProcessResetTest;
+
 	TMap<TWeakObjectPtr<UPrimitiveComponent>, FScanStencilRestoreState> ScanStencilRestoreStates;
 
 	// 페이드아웃이 끝난 뒤 자기장 블렌더블을 내리는 일회성 타이머 ( 매 틱 폴링이 아니다 ).
@@ -111,6 +164,11 @@ private:
 	TMap<TObjectPtr<UMeshComponent>, FOutlierStealthMeshRestoreState> StealthMeshRestoreStates;
 
 	TMap<TWeakObjectPtr<UOutlierAbilitySystemComponent>, FOutlierStealthSourceState> StealthSources;
+
+	// 동시에 등장하는 적은 한 웨이브 수준이라 배열 선형 탐색으로 충분하다.
+	UPROPERTY()
+	TArray<FOutlierSpawnPresentationState> SpawnPresentations;
+	TArray<UMeshComponent*> ScratchSpawnPresentationMeshes;
 
 	// 매 틱 재사용하는 스크래치 ( 할당 방지 ).
 	TArray<UMeshComponent*> ScratchFirstPersonMeshes;
@@ -139,6 +197,11 @@ private:
 	void ClearStealthMeshOverride(UMeshComponent* Mesh);
 	// 이미 꽂혀 있는 MID 의 페이드 스칼라만 갱신한다.
 	void SetStealthMeshFade(UMeshComponent* Mesh, float Fade);
+	void TickEnemySpawnPresentations(float DeltaTime);
+	void ApplyEnemySpawnPresentationMaterials(FOutlierSpawnPresentationState& State, AActor* Target);
+	void RestoreEnemySpawnPresentationMaterials(FOutlierSpawnPresentationState& State);
+	void FlushEnemySpawnPresentations();
+
 	float GetStealthFadeDuration() const;
 	float EvaluateStealthFade(float LinearFade) const;
 	FName GetStealthFadeParameterName() const;

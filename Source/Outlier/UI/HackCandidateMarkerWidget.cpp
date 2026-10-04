@@ -7,6 +7,7 @@
 #include "Drone/Partner/PartnerHackComponent.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
+#include "Interface/HackableInterface.h"
 #include "UI/HackableInfoWidget.h"
 
 void UHackCandidateMarkerWidget::InitializeMarker(AActor* InTargetActor, UHackableComponent* InHackableComponent, UPartnerHackComponent* InHackComponent)
@@ -280,7 +281,8 @@ bool UHackCandidateMarkerWidget::CalculateInfoWidgetLayout(FVector2D& OutPositio
 	ViewportSize /= ViewportScale;
 
 	FVector2D TargetScreenLocation = FVector2D::ZeroVector;
-	if (!PC->ProjectWorldLocationToScreen(TargetActor->GetActorLocation(), TargetScreenLocation, true))
+	const FVector TargetLocation = IHackableInterface::ResolveHackTargetLocation(TargetActor);
+	if (!PC->ProjectWorldLocationToScreen(TargetLocation, TargetScreenLocation, true))
 	{
 		return false;
 	}
@@ -298,7 +300,7 @@ bool UHackCandidateMarkerWidget::CalculateInfoWidgetLayout(FVector2D& OutPositio
 		FMath::Max(ViewportSize.X - ViewportPadding.X * 2.0f, 1.0f),
 		FMath::Max(ViewportSize.Y - ViewportPadding.Y * 2.0f, 1.0f));
 
-	const float ActorDistance = FVector::Distance(PartnerActor->GetActorLocation(), TargetActor->GetActorLocation());
+	const float ActorDistance = FVector::Distance(PartnerActor->GetActorLocation(), TargetLocation);
 	const FVector2D DesiredSize = HackableInfoWidget->GetDesiredSize();
 	const float FallbackWidth = FMath::Max(HackableInfoWidget->GetWidgetWidth(), 1.0f);
 	const float FallbackHeight = FMath::Max(HackableInfoWidget->GetMinWidgetHeight(), 1.0f);

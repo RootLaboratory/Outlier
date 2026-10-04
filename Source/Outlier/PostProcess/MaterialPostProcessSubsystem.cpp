@@ -5,6 +5,7 @@
 
 #include "PostProcess/OutlierPostProcessVolume.h"
 #include "PostProcess/OutlierStealthVisualTarget.h"
+#include "PostProcess/OutlierSpawnVisualTarget.h"
 #include "Components/MeshComponent.h"
 #include "Components/PrimitiveComponent.h"
 #include "Engine/World.h"
@@ -46,15 +47,9 @@ void UMaterialPostProcessSubsystem::Deinitialize()
 		}
 	}
 	StealthSources.Reset();
-	FlushStealthRestoreStates();
-
-	if (UWorld* World = GetWorld())
-	{
-		World->GetTimerManager().ClearTimer(MagneticDisableTimerHandle);
-	}
+	ResetAllPostProcess(false);
 
 	Super::Deinitialize();
-	Refresh();
 }
 
 TStatId UMaterialPostProcessSubsystem::GetStatId() const
@@ -65,6 +60,9 @@ TStatId UMaterialPostProcessSubsystem::GetStatId() const
 void UMaterialPostProcessSubsystem::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+
+	// 등장 연출은 완료 통보를 서버가 받아야 하므로 데디 서버에서도 시간을 잰다.
+	TickEnemySpawnPresentations(DeltaTime);
 
 	if (ShouldSkipRenderingWork())
 	{
@@ -83,6 +81,7 @@ void UMaterialPostProcessSubsystem::RegisterPostProcessVolume(AOutlierPostProces
 
 	if (!InPostProcessVolume->HasValidScanPostProcessBindings()
 		&& !InPostProcessVolume->HasStealthMeshMaterials()
+		&& !InPostProcessVolume->HasEnemySpawnDissolveMaterial()
 		&& !InPostProcessVolume->HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::Damaged)
 		&& !InPostProcessVolume->HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::Magnetic)
 		&& !InPostProcessVolume->HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::PartnerOutline))
@@ -116,6 +115,36 @@ void UMaterialPostProcessSubsystem::Refresh()
 	FlushScanStencilRestoreStates();
 	// 하드 디스에이블로 상시 패스까지 꺼졌으므로 되살린다.
 	ApplyAlwaysOnPostProcess();
+}
+
+void UMaterialPostProcessSubsystem::ResetAllPostProcess(bool bRestoreAlwaysOnPostProcess)
+{
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(MagneticDisableTimerHandle);
+	}
+	FlushScanStencilRestoreStates();
+	FlushStealthRestoreStates();
+	// 등장 디졸브 위에 은신이 적용될 수 있으므로, 은신을 먼저 떼어낸다.
+	FlushEnemySpawnPresentations();
+	// 구독은 유지하되 이전 은신의 페이드 상태가 다음 틱에 다시 적용되지 않게 한다.
+	for (auto& Pair : StealthSources)
+	{
+		Pair.Value.CurrentFade = 0.0f;
+		Pair.Value.TargetFade = 0.0f;
+		Pair.Value.bStealthTagActive = false;
+	}
+	if (IsValid(BoundPostProcessVolume))
+	{
+		BoundPostProcessVolume->DisableAllBlendablesHard();
+		BoundPostProcessVolume->ResetPostProcessMaterialParameters();
+		if (bRestoreAlwaysOnPostProcess)
+		{
+			ApplyAlwaysOnPostProcess();
+		}
+	}
+	UE_LOG(LogTemp, Log, TEXT("[PostProcessReset][Material] Volume=%s RestoreAlwaysOn=%d"),
+		*GetNameSafe(BoundPostProcessVolume), bRestoreAlwaysOnPostProcess);
 }
 
 void UMaterialPostProcessSubsystem::StartScanPostProcess(
@@ -626,6 +655,188 @@ void UMaterialPostProcessSubsystem::EndMagneticPostProcess()
 		FadeOutDuration,
 		false
 	);
+}
+
+void UMaterialPostProcessSubsystem::StartEnemySpawnPresentation(AActor* Target, FSimpleDelegate OnFinished)
+{
+	if (!Target)
+	{
+		OnFinished.ExecuteIfBound();
+		return;
+	}
+
+	// 같은 대상의 이전 연출이 남아 있으면 원복부터 하고 처음부터 다시 잰다.
+	StopEnemySpawnPresentation(Target);
+
+	const float Duration = BoundPostProcessVolume
+		? BoundPostProcessVolume->GetEnemySpawnPresentationDuration()
+		: 0.0f;
+	if (Duration <= KINDA_SMALL_NUMBER)
+	{
+		OnFinished.ExecuteIfBound();
+		return;
+	}
+
+	FOutlierSpawnPresentationState& State = SpawnPresentations.AddDefaulted_GetRef();
+	State.Target = Target;
+	State.Duration = Duration;
+	State.OnFinished = MoveTemp(OnFinished);
+	ApplyEnemySpawnPresentationMaterials(State, Target);
+}
+
+void UMaterialPostProcessSubsystem::StopEnemySpawnPresentation(AActor* Target)
+{
+	// EndPlay 중인 액터도 찾아야 하므로 Garbage 표시 여부와 무관하게 비교한다.
+	const int32 StateIndex = SpawnPresentations.IndexOfByPredicate(
+		[Target](const FOutlierSpawnPresentationState& State)
+		{
+			return State.Target.Get(true) == Target;
+		});
+	if (StateIndex == INDEX_NONE)
+	{
+		return;
+	}
+
+	RestoreEnemySpawnPresentationMaterials(SpawnPresentations[StateIndex]);
+	SpawnPresentations.RemoveAtSwap(StateIndex);
+}
+
+void UMaterialPostProcessSubsystem::TickEnemySpawnPresentations(float DeltaTime)
+{
+	if (SpawnPresentations.IsEmpty())
+	{
+		return;
+	}
+
+	// 완료 통보가 다른 연출을 시작 / 중단할 수 있으므로 순회가 끝난 뒤에 부른다.
+	TArray<FSimpleDelegate, TInlineAllocator<4>> FinishedCallbacks;
+	for (int32 StateIndex = SpawnPresentations.Num() - 1; StateIndex >= 0; --StateIndex)
+	{
+		FOutlierSpawnPresentationState& State = SpawnPresentations[StateIndex];
+		if (!State.Target.IsValid())
+		{
+			RestoreEnemySpawnPresentationMaterials(State);
+			SpawnPresentations.RemoveAtSwap(StateIndex);
+			continue;
+		}
+
+		State.ElapsedTime += DeltaTime;
+		if (State.ElapsedTime < State.Duration)
+		{
+			if (State.AppliedMaterial && BoundPostProcessVolume)
+			{
+				const float Progress = State.ElapsedTime / State.Duration;
+				BoundPostProcessVolume->SetEnemySpawnDissolveAmount(
+					State.AppliedMaterial,
+					FMath::Lerp(State.StartAmount, State.EndAmount, Progress));
+			}
+			continue;
+		}
+
+		// 끝 값에서는 모든 픽셀이 불투명이고 경계 글로우 / 글리치가 0 이므로 바로 원본으로 되돌린다.
+		RestoreEnemySpawnPresentationMaterials(State);
+		FinishedCallbacks.Add(MoveTemp(State.OnFinished));
+		SpawnPresentations.RemoveAtSwap(StateIndex);
+	}
+
+	for (FSimpleDelegate& FinishedCallback : FinishedCallbacks)
+	{
+		FinishedCallback.ExecuteIfBound();
+	}
+}
+
+void UMaterialPostProcessSubsystem::ApplyEnemySpawnPresentationMaterials(
+	FOutlierSpawnPresentationState& State,
+	AActor* Target)
+{
+	if (ShouldSkipRenderingWork() || !BoundPostProcessVolume)
+	{
+		return;
+	}
+
+	UMaterialInterface* DissolveMaterial = BoundPostProcessVolume->GetEnemySpawnDissolveMaterial();
+	const IOutlierSpawnVisualTarget* SpawnTarget = Cast<IOutlierSpawnVisualTarget>(Target);
+	if (!DissolveMaterial || !SpawnTarget
+		|| !BoundPostProcessVolume->ComputeEnemySpawnDissolveRange(State.StartAmount, State.EndAmount))
+	{
+		return;
+	}
+
+	ScratchSpawnPresentationMeshes.Reset();
+	SpawnTarget->CollectSpawnPresentationMeshes(ScratchSpawnPresentationMeshes);
+	if (ScratchSpawnPresentationMeshes.IsEmpty())
+	{
+		return;
+	}
+
+	// 디졸브 값을 넣어야 하므로 에셋 원본이 아니라 MID 를 꽂는다.
+	UMaterialInstanceDynamic* RuntimeMaterial = UMaterialInstanceDynamic::Create(DissolveMaterial, this);
+	if (!RuntimeMaterial)
+	{
+		return;
+	}
+
+	// 교체한 프레임부터 전부 투명이어야 원본 메시가 한 번 비치지 않는다.
+	BoundPostProcessVolume->SetEnemySpawnDissolveAmount(RuntimeMaterial, State.StartAmount);
+	State.AppliedMaterial = RuntimeMaterial;
+
+	for (UMeshComponent* Mesh : ScratchSpawnPresentationMeshes)
+	{
+		// 같은 메시를 두 번 받으면 MID 를 원본으로 저장하게 되므로 걸러낸다.
+		if (!Mesh || State.Meshes.ContainsByPredicate(
+			[Mesh](const FOutlierSpawnPresentationMeshRestoreState& MeshState)
+			{
+				return MeshState.Mesh.Get() == Mesh;
+			}))
+		{
+			continue;
+		}
+
+		FOutlierSpawnPresentationMeshRestoreState& MeshState = State.Meshes.AddDefaulted_GetRef();
+		MeshState.Mesh = Mesh;
+		const int32 MaterialCount = Mesh->GetNumMaterials();
+		MeshState.Materials.Reserve(MaterialCount);
+		for (int32 MaterialIndex = 0; MaterialIndex < MaterialCount; ++MaterialIndex)
+		{
+			MeshState.Materials.Add(Mesh->GetMaterial(MaterialIndex));
+			Mesh->SetMaterial(MaterialIndex, RuntimeMaterial);
+		}
+	}
+}
+
+void UMaterialPostProcessSubsystem::RestoreEnemySpawnPresentationMaterials(FOutlierSpawnPresentationState& State)
+{
+	UMaterialInterface* AppliedMaterial = State.AppliedMaterial;
+	for (const FOutlierSpawnPresentationMeshRestoreState& MeshState : State.Meshes)
+	{
+		UMeshComponent* Mesh = MeshState.Mesh.Get();
+		if (!Mesh)
+		{
+			continue;
+		}
+
+		for (int32 MaterialIndex = 0; MaterialIndex < MeshState.Materials.Num(); ++MaterialIndex)
+		{
+			// 연출 도중 다른 쪽이 바꿔 끼운 슬롯은 건드리지 않는다.
+			if (Mesh->GetMaterial(MaterialIndex) == AppliedMaterial)
+			{
+				Mesh->SetMaterial(MaterialIndex, MeshState.Materials[MaterialIndex]);
+			}
+		}
+	}
+
+	State.Meshes.Reset();
+	State.AppliedMaterial = nullptr;
+}
+
+void UMaterialPostProcessSubsystem::FlushEnemySpawnPresentations()
+{
+	// 월드 종료 정리용이라 완료 통보는 보내지 않는다.
+	for (FOutlierSpawnPresentationState& State : SpawnPresentations)
+	{
+		RestoreEnemySpawnPresentationMaterials(State);
+	}
+	SpawnPresentations.Reset();
 }
 
 void UMaterialPostProcessSubsystem::ApplyScanStencil(AActor* Actor, int32 StencilValue)
