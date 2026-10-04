@@ -8,6 +8,7 @@
 #include "ShooterCurrentAbilityIcon.generated.h"
 
 class UAbilityIconUI;
+class UImage;
 class UTexture2D;
 
 UCLASS()
@@ -27,6 +28,9 @@ public:
 
 	void ResetCooldown();
 
+	// 드론 거리 이탈/재부팅으로 슈트 사용이 막히면 LockIcon을 띄운다.
+	void SetAbilityEnabled(bool bEnabled);
+
 	UFUNCTION(BlueprintPure, Category = "Ability")
 	FGameplayTag GetCurrentAbilityTag() const { return CurrentAbilityTag; }
 
@@ -37,6 +41,9 @@ private:
 public:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UAbilityIconUI> CurrentAbilityIcon;
+
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UImage> LockIcon;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ability")
 	TObjectPtr<UTexture2D> QuantumLeapTexture;

@@ -68,12 +68,11 @@ void UAbilityIconUI::SyncMaterialState()
 
 	AbilityMID->SetScalarParameterValue(TEXT("CooldownProgress"), CooldownProgress);
 	AbilityMID->SetScalarParameterValue(TEXT("IsCoolDown"), bCooldowning ? 1.0f : 0.0f);
-	AbilityMID->SetScalarParameterValue(TEXT("LockFactor"), bAbilityEnabled ? 0.0f : 1.0f);
 }
 
 void UAbilityIconUI::TryRestoreDefaultBrush()
 {
-	if (bCooldowning || !bAbilityEnabled)
+	if (bCooldowning)
 	{
 		return;
 	}
@@ -115,31 +114,6 @@ void UAbilityIconUI::VisibilityControl(bool InFlag)
 bool UAbilityIconUI::IsUnLock() const
 {
 	return bAbilityUnlocked;
-}
-
-bool UAbilityIconUI::IsAbilityEnabled() const
-{
-	return bAbilityEnabled;
-}
-
-void UAbilityIconUI::SetAbilityEnabled(bool bInAbilityEnabled)
-{
-	if (bAbilityEnabled == bInAbilityEnabled)
-	{
-		return;
-	}
-
-	bAbilityEnabled = bInAbilityEnabled;
-
-	if (!bAbilityEnabled)
-	{
-		EnsureMasterMaterial();
-		SyncMaterialState();
-		return;
-	}
-
-	SyncMaterialState();
-	TryRestoreDefaultBrush();
 }
 
 void UAbilityIconUI::SetCoolTime(float InCoolTime)

@@ -27,6 +27,9 @@ public:
 	// 동기화 경로에서 상태와 BP 이벤트를 함께 갱신한다.
 	void SetAmmoState(int32 InCurrentAmmo, int32 InMaxAmmo);
 
+	// 과충전 중에는 AmmoCanvas 아래 표시 위젯을 접고 OverLoad_Infinity만 켠다. 해제 시 반대.
+	void SetWeaponOverchargeActive(bool bActive);
+
 public:
 	UPROPERTY(BlueprintReadOnly, Category = "Data")
 	int32 CurrentAmmo = 0;
@@ -40,6 +43,13 @@ public:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Ammo")
 	TObjectPtr<class UTextBlock> MaxAmmoText;
 
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<class UCanvasPanel> AmmoCanvas;
+
+	// AmmoCanvas 아래 어디에 있어도 된다(감싼 SizeBox 같은 패널은 건드리지 않는다).
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<class UImage> OverLoad_Infinity;
+
 	// Legacy alias. 기존 BP 로직 호환을 위해 유지한다.
 	UPROPERTY(BlueprintReadOnly, Category = "Data")
 	int Temp_AmmoCount = 40;
@@ -49,5 +59,7 @@ protected:
 
 private:
 	void RefreshAmmoTexts();
+	void ApplyWeaponOverchargeVisibility();
 
+	bool bWeaponOverchargeActive = false;
 };

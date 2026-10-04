@@ -172,6 +172,7 @@ void ULocalPlayerUISubSystem::SyncRegisteredModule(UEventDrivenUI* InModule)
 	if (UAmmoUI* AmmoUI = Cast<UAmmoUI>(InModule))
 	{
 		AmmoUI->SetAmmoState(CachedAmmoCount, CachedMaxAmmo);
+		AmmoUI->SetWeaponOverchargeActive(bCachedWeaponOvercharge);
 	}
 }
 
@@ -191,6 +192,17 @@ void ULocalPlayerUISubSystem::OnRep_AmmoCountChanged(int32 InCurrentAmmo, int32 
 		AmmoUI->SetAmmoState(InCurrentAmmo, InMaxAmmo);
 	}
 
+}
+
+void ULocalPlayerUISubSystem::OnRep_WeaponOverchargeChanged(bool bActive)
+{
+	// 탄약과 같이 모듈 등록 전 신호도 남겨두고 SyncRegisteredModule 에서 재생한다.
+	bCachedWeaponOvercharge = bActive;
+
+	if (UAmmoUI* AmmoUI = Cast<UAmmoUI>(GetModule(TagDrivenUITags::Shooter::Ammo())))
+	{
+		AmmoUI->SetWeaponOverchargeActive(bActive);
+	}
 }
 
 void ULocalPlayerUISubSystem::OnDamageFeedback(
