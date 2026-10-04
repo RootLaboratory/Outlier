@@ -247,6 +247,7 @@ void ALevel1SuitUpgradeDoor::OnArenaReloadStarted(uint32 NewGeneration)
 	bEntrySealed = false;
 	bCloseFinished = false;
 	bReopenRequested = false;
+	bEntryCloseRejected = false;
 	bOpenFinished = false;
 	bCombatStartSucceeded = false;
 	bCombatStartInProgress = false;
@@ -382,7 +383,8 @@ bool ALevel1SuitUpgradeDoor::IsInsideRoom(const AActor* Character) const
 
 void ALevel1SuitUpgradeDoor::EvaluateEntry()
 {
-	if (!HasAuthority() || bAwaitingGameplayReady || bEntrySealed || !IsValid(TargetRoomVolume))
+	if (!HasAuthority() || bAwaitingGameplayReady || bEntrySealed || bEntryCloseRejected
+		|| !IsValid(TargetRoomVolume))
 	{
 		return;
 	}
@@ -428,8 +430,15 @@ void ALevel1SuitUpgradeDoor::EvaluateEntry()
 
 	// 여기서는 닫기만 요청한다. 닫힘 완료 전에는 UI가 모두 끝나도 재개방하지 않는다.
 	LogEntryStatus(TEXT("BothPlayersInside"), Shooter, Partner);
+	if (!TrySetDoorOpen(false))
+	{
+		// 닫기 거절은 봉쇄 성공이 아니다. 반복 입장/상태 이벤트도 같은 요청을
+		// 재시도하지 않게 대기한다. 새 요청을 만드는 진행 정책은 별도 Slice에서 연결한다.
+		bEntryCloseRejected = true;
+		LogEntryStatus(TEXT("DoorCloseRejected"), Shooter, Partner);
+		return;
+	}
 	bEntrySealed = true;
-	SetDoorOpen(false);
 	UE_LOG(LogTemp, Display, TEXT("[Level1Door] Entry sealed. Door=%s Room=%s Generation=%u"),
 		*GetNameSafe(this), *TargetRoomVolume->GetRoomTag().ToString(), GameplayGeneration);
 }

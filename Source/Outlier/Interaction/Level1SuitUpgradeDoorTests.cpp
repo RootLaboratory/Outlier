@@ -1,6 +1,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "Components/BoxComponent.h"
+#include "Components/CapsuleComponent.h"
 #include "Curves/CurveFloat.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Engine/Engine.h"
@@ -9,8 +10,10 @@
 #include "Enemy/EnemyBase.h"
 #include "Enemy/EnemyPoolDefinition.h"
 #include "Enemy/EnemyPoolSubsystem.h"
+#include "GameFramework/PlayerController.h"
 #include "Interaction/InteractableDoor.h"
 #include "Misc/AutomationTest.h"
+#include "Physics/Experimental/PhysScene_Chaos.h"
 #include "Network/OutlierArenaSubsystem.h"
 #include "OutlierPlayerState.h"
 #include "Interaction/Level1SuitUpgradeDoor.h"
@@ -371,6 +374,56 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	Room->OnRoomActorOverlapChanged.Broadcast(Partner, true);
 	TestFalse(TEXT("Both suited players entering after a pre-entrance checkpoint close the door"),
 		Door->IsDoorOpen());
+
+	// 안전 거절은 봉쇄 성공이나 예약 요청이 아니다. 이전 진행을 초기화한 뒤
+	// 플레이어가 감지 범위에 있는 상태로 입장 요청을 만들고, 이탈 후에도 재시도가 없는지 본다.
+	APlayerController* SafetyController = World->SpawnActor<APlayerController>();
+	if (!TestNotNull(TEXT("Safety fixture controller exists"), SafetyController))
+	{
+		CleanupWorld();
+		return false;
+	}
+	Shooter->GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+	SafetyController->Possess(Shooter);
+	Door->SafetyRegionLeft->SetRelativeLocation(Shooter->GetActorLocation());
+	Door->SafetyRegionLeft->SetBoxExtent(FVector(40.0f));
+	FPhysScene* SafetyPhysicsScene = World->GetPhysicsScene();
+	if (!TestNotNull(TEXT("Entry safety fixture has a physics scene"), SafetyPhysicsScene))
+	{
+		CleanupWorld();
+		return false;
+	}
+	// 프레임 없는 테스트 World에서는 물리 등록을 직접 반영한다. 실제 보호 대상이
+	// 감지되는 전제부터 확인한 뒤, 닫기 거절과 진행 대기를 검증한다.
+	SafetyPhysicsScene->ProcessDeferredCreatePhysicsState();
+	SafetyPhysicsScene->Flush();
+	if (!TestTrue(TEXT("Entry safety fixture is player controlled"),
+		Shooter->GetController() == SafetyController && SafetyController->GetPawn() == Shooter)
+		|| !TestTrue(TEXT("Entry safety fixture is physically detected"), Door->HasBlockingPlayer()))
+	{
+		CleanupWorld();
+		return false;
+	}
+	Save->RestoreCurrentWorldProgress(FOutlierWorldProgressSnapshot());
+	Save->ResetRuntimeCheckpointState();
+	const uint32 SafetyGeneration = World->GetSubsystem<UOutlierArenaSubsystem>()->ReserveGameplayGeneration();
+	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReloadStarted.Broadcast(SafetyGeneration);
+	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReady.Broadcast(SafetyGeneration);
+	TestTrue(TEXT("Safety rejection retains the open entrance"), Door->IsDoorOpen());
+	TestFalse(TEXT("Safety rejection does not record door progression"),
+		Save->HasWorldProgress(EOutlierWorldProgressType::OpenedDoor, Door->DoorId));
+	const int32 OpenedBeforeSafety = OpenedCount;
+	const int32 CombatBeforeSafety = CombatStartCount;
+	Shooter->SetActorLocation(FVector(350.0f, 0.0f, 0.0f));
+	SafetyPhysicsScene->Flush();
+	TestFalse(TEXT("Player has cleared the safety region"), Door->HasBlockingPlayer());
+	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, true);
+	Room->OnRoomActorOverlapChanged.Broadcast(Partner, true);
+	ShooterPS->OnPlayerCharactersChanged.Broadcast(ShooterPS);
+	TestTrue(TEXT("Repeated entry/state events do not retry a rejected close"), Door->IsDoorOpen());
+	TestFalse(TEXT("Rejected entry does not begin door motion"), Door->IsActorTickEnabled());
+	TestEqual(TEXT("Rejected entry does not emit an opening completion"), OpenedCount, OpenedBeforeSafety);
+	TestEqual(TEXT("Rejected entry does not begin combat"), CombatStartCount, CombatBeforeSafety);
 
 	CleanupWorld();
 	return true;

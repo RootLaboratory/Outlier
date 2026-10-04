@@ -70,6 +70,7 @@ private:
 	TSet<TWeakObjectPtr<AActor>> OverlappingPlayers;
 	uint32 GameplayGeneration = 0;
 	bool bEntrySealed = false;
+	bool bEntryCloseRejected = false;
 	bool bCloseFinished = false;
 	bool bReopenRequested = false;
 	bool bOpenFinished = false;

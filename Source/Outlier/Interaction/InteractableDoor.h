@@ -8,6 +8,7 @@
 
 class UStaticMeshComponent;
 class UCurveFloat;
+class UBoxComponent;
 class AInteractableDoor;
 
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnDoorMotionFinished, AInteractableDoor*, bool /*bOpen*/);
@@ -32,6 +33,12 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Door")
 	void ToggleDoor();
 
+	UFUNCTION(BlueprintCallable, Category = "Door")
+	bool TrySetDoorOpen(bool bOpen);
+
+	UFUNCTION(BlueprintPure, Category = "Door|Safety")
+	bool HasBlockingPlayer() const;
+
 	UFUNCTION(BlueprintPure, Category = "Door")
 	bool IsDoorOpen() const { return bIsOpen; }
 	bool HasMovementCurve() const;
@@ -43,6 +50,19 @@ public:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")
 	TObjectPtr<UStaticMeshComponent> DoorMeshRight;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Door|Safety")
+	TObjectPtr<UBoxComponent> SafetyRegionLeft;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Door|Safety")
+	TObjectPtr<UBoxComponent> SafetyRegionRight;
+
+	// 문짝의 전체 이동 경로에 더할 여유 거리. 상단 높이는 점프/비행 영역을 포함한다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Door|Safety", meta = (ClampMin = "0", Units = "cm"))
+	float SafetyMargin = 10.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Door|Safety", meta = (ClampMin = "0", Units = "cm"))
+	float SafetyTopHeight = 200.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Door")
 	FVector OpenOffsetLeft = FVector(-120.0f, 0.f, 0.f);
@@ -86,6 +106,7 @@ private:
 	void OnRep_IsOpen();
 
 	void ApplyDoorState(bool bOpen);
+	void InitializeSafetyRegion(UBoxComponent* Region, UStaticMeshComponent* Mesh, const FVector& OpenOffset);
 	bool bProgressIdRegistered = false;
 	bool bMotionCompletionPending = false;
 	bool PlayDoorMovementAudio(bool bOpen);
