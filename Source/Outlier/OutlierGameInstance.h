@@ -28,6 +28,8 @@ public:
 	void NotifyArenaHandoffStarted(const FString& ArenaUrl);
 	void NotifyListenReconnectToken(const FGuid& Token);
 	void PrepareForExplicitLeave();
+	// 서버가 매치 종료를 확정한 뒤 호출한다. Travel로 Controller가 바뀌어도 종료 의도를 유지한다.
+	void RequestQuitAfterExplicitLeave();
 
 private:
 	friend class FOutlierArenaReturnLifecycleTest;
@@ -57,6 +59,7 @@ public:
 private:
 
 	bool bTriedConnect = false;
+	bool bQuitAfterExplicitLeave = false;
 	bool bArenaWorkerTravelRequested = false;
 	bool bArenaHandoffActive = false;
 	bool bLobbyRecoveryQueued = false;

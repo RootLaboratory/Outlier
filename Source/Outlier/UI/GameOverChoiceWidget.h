@@ -13,14 +13,15 @@ enum class EGameOverMenuChoice : uint8
 {
 	Continue,
 	SelectLevel,
-	MainMenu
+	MainMenu,
+	QuitGame
 };
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(
 	FOnGameOverChoiceConfirmed, EGameOverMenuChoice, Choice);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnGameOverChoiceEscape);
 
-/** Three GameOver buttons with one selection shared by mouse and keyboard. */
+/** GameOver buttons with one selection shared by mouse and keyboard. */
 UCLASS(Abstract, Blueprintable)
 class OUTLIER_API UGameOverChoiceWidget : public UUserWidget,
 	public IUILayerInputReceiver
@@ -41,6 +42,7 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Game Over|Choice")
 	void SelectButton(EGameOverMenuChoice Choice);
+	void SetQuitGameAvailable(bool bAvailable);
 
 protected:
 	virtual void NativeOnInitialized() override;
@@ -61,6 +63,9 @@ protected:
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UButton> MainMenuButton;
 
+	UPROPERTY(meta = (BindWidgetOptional))
+	TObjectPtr<UButton> QuitGameButton;
+
 private:
 	UFUNCTION()
 	void HandleContinueClicked();
@@ -69,11 +74,19 @@ private:
 	UFUNCTION()
 	void HandleMainMenuClicked();
 	UFUNCTION()
+	void HandleQuitGameClicked();
+	UFUNCTION()
 	void HandleContinueHovered();
 	UFUNCTION()
 	void HandleLevelSelectHovered();
 	UFUNCTION()
 	void HandleMainMenuHovered();
+	UFUNCTION()
+	void HandleQuitGameHovered();
+
+	void CreateQuitGameButton();
+	void BindQuitGameButton();
+	int32 GetButtonCount() const;
 
 	void MoveSelection(int32 Step);
 	void SetChosenIndex(int32 Index, bool bFocusButton);
@@ -83,4 +96,5 @@ private:
 
 	TArray<FButtonStyle> OriginalButtonStyles;
 	int32 ChosenIndex = 0;
+	bool bQuitGameAvailable = false;
 };

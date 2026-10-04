@@ -11,6 +11,7 @@
 #include "Save/OutlierCheckpointSnapshot.h"
 #include "Save/PresetPlayerStart.h"
 #include "Upgrade/PresetNodeProvideRow.h"
+#include "Upgrade/OutlierPresetStageIds.h"
 #include "Engine/DataTable.h"
 #include "Engine/GameInstance.h"
 #include "OutlierGameState.h"
@@ -58,6 +59,9 @@ bool AOutlierGameMode::CanControllerRequestCheckpointRestart(
 {
 	return Controller
 		&& !bArenaReloadInProgress
+		&& !bCheckpointRestartInProgress
+		&& !bListenHostReturnRequested
+		&& !bArenaWorkerMatchCompleting
 		&& CheckpointRestartVote.GetState() == EOutlierCheckpointRestartVoteState::Idle
 		&& OutlierCheckpointRestartVote::CanRequest(
 			GetNetMode(),
@@ -79,30 +83,8 @@ bool AOutlierGameMode::RequestCheckpointRestart(
 	if (!SaveSubsystem || !SaveSubsystem->GetRestoreSnapshot(RestoreSnapshot))
 	{
 		UE_LOG(LogTemp, Warning,
-			TEXT("[Checkpoint.RestartVote] Request rejected: restore snapshot is unavailable Requester=%s"),
+			TEXT("[Checkpoint.Restart] Request rejected: restore snapshot is unavailable Requester=%s"),
 			*GetNameSafe(Requester));
-		return false;
-	}
-
-	CheckpointRestartVoteLayerOwner = Requester->GetPawn();
-	if (GetNetMode() == NM_Standalone)
-	{
-		// Standalone은 응답할 상대가 없으므로 요청 자체를 승인으로 취급한다.
-		Requester->SetCheckpointRestartVoteViewFromServer(
-			EOutlierCheckpointRestartVoteView::None);
-		Requester->CloseCheckpointRestartVoteUIFromServer(
-			CheckpointRestartVoteLayerOwner.Get());
-		LastCheckpointRestartVoteResult = EOutlierCheckpointRestartVoteState::Restarting;
-		bCheckpointRestartInProgress = true;
-		if (StartCheckpointRestart(Requester))
-		{
-			return true;
-		}
-
-		bCheckpointRestartInProgress = false;
-		LastCheckpointRestartVoteResult = EOutlierCheckpointRestartVoteState::Rejected;
-		CheckpointRestartVoteLayerOwner.Reset();
-		UGameplayStatics::SetGamePaused(this, false);
 		return false;
 	}
 
@@ -124,18 +106,32 @@ bool AOutlierGameMode::RequestCheckpointRestart(
 		: nullptr;
 	AFirstPersonPlayerController* Responder = Cast<AFirstPersonPlayerController>(
 		GetControllerFromPlayerState(ResponderPlayerState));
-	if (!CheckpointRestartVote.Begin(Requester, Responder))
+
+	// 재시작은 상대 동의 없이 실행한다. 기존 메뉴와 상대의 Pause 화면을 함께 닫는다.
+	AActor* LayerOwner = RequesterPlayerState->IsShooterPlayer()
+		? static_cast<AActor*>(RequesterPlayerState->GetShooterCharacter())
+		: static_cast<AActor*>(RequesterPlayerState->GetPartnerCharacter());
+	CheckpointRestartVoteLayerOwner = LayerOwner ? LayerOwner : Requester->GetPawn();
+	Requester->SetCheckpointRestartVoteViewFromServer(EOutlierCheckpointRestartVoteView::None);
+	Requester->CloseCheckpointRestartVoteUIFromServer(CheckpointRestartVoteLayerOwner.Get());
+	if (Responder && Responder != Requester)
 	{
-		CheckpointRestartVoteLayerOwner.Reset();
-		return false;
+		Responder->SetCheckpointRestartVoteViewFromServer(EOutlierCheckpointRestartVoteView::None);
+		Responder->CloseCheckpointRestartVoteUIFromServer(CheckpointRestartVoteLayerOwner.Get());
 	}
 
-	LastCheckpointRestartVoteResult = EOutlierCheckpointRestartVoteState::VotePending;
-	Requester->SetCheckpointRestartVoteViewFromServer(
-		EOutlierCheckpointRestartVoteView::RequesterWaiting);
-	Responder->SetCheckpointRestartVoteViewFromServer(
-		EOutlierCheckpointRestartVoteView::ResponderPrompt);
-	return true;
+	LastCheckpointRestartVoteResult = EOutlierCheckpointRestartVoteState::Restarting;
+	bCheckpointRestartInProgress = true;
+	if (StartCheckpointRestart(Requester))
+	{
+		return true;
+	}
+
+	bCheckpointRestartInProgress = false;
+	LastCheckpointRestartVoteResult = EOutlierCheckpointRestartVoteState::Rejected;
+	CheckpointRestartVoteLayerOwner.Reset();
+	UGameplayStatics::SetGamePaused(this, false);
+	return false;
 }
 
 bool AOutlierGameMode::RespondCheckpointRestart(
@@ -756,6 +752,7 @@ void AOutlierGameMode::BeginPresetRespawnSelection(AController* Controller)
 	}
 
 	const int32 PairId = TriggeringPS->GetPairId();
+	GameOverActivePairs.Add(PairId);
 	AOutlierPlayerState* ShooterPS = TriggeringPS->IsShooterPlayer()
 		? TriggeringPS
 		: FindPairPlayerState(PairId, EOutlierPlayerRole::Shooter);
@@ -766,74 +763,274 @@ void AOutlierGameMode::BeginPresetRespawnSelection(AController* Controller)
 	bool bNotifiedAny = false;
 	if (AFirstPersonPlayerController* ShooterFPC = Cast<AFirstPersonPlayerController>(GetControllerFromPlayerState(ShooterPS)))
 	{
-		ShooterFPC->Client_ShowPresetSelect();
+		ShooterFPC->Client_ShowPresetSelect(GetNetMode() == NM_ListenServer);
 		bNotifiedAny = true;
 	}
 	if (AFirstPersonPlayerController* PartnerFPC = Cast<AFirstPersonPlayerController>(GetControllerFromPlayerState(PartnerPS)))
 	{
-		PartnerFPC->Client_ShowPresetSelect();
+		PartnerFPC->Client_ShowPresetSelect(GetNetMode() == NM_ListenServer);
 		bNotifiedAny = true;
 	}
 
 	if (!bNotifiedAny)
 	{
+		GameOverActivePairs.Remove(PairId);
 		RespawnPairAtCheckpoint(Controller);
 	}
 }
 
-void AOutlierGameMode::HandlePresetStageSelected(AController* Requester, FName StageId)
+bool AOutlierGameMode::RequestGameOverPendingChoice(
+	AFirstPersonPlayerController* Requester,
+	const FGameOverPendingRequest& Request)
 {
-	if (!Requester)
+	if (!HasAuthority() || !Requester || bArenaReloadInProgress
+		|| bCheckpointRestartInProgress || bListenHostReturnRequested || bArenaWorkerMatchCompleting)
+	{
+		return false;
+	}
+
+	if (Request.Choice == EGameOverPendingChoice::PresetLevel)
+	{
+		if (Request.LevelIndex < 1 || Request.LevelIndex > 4)
+		{
+			return false;
+		}
+	}
+	else if (Request.Choice != EGameOverPendingChoice::Continue
+		&& Request.Choice != EGameOverPendingChoice::MainMenu
+		&& !(Request.Choice == EGameOverPendingChoice::QuitGame && GetNetMode() == NM_ListenServer))
+	{
+		return false;
+	}
+
+	AOutlierPlayerState* RequesterPS = Requester->GetPlayerState<AOutlierPlayerState>();
+	if (!RequesterPS || RequesterPS->GetPairId() == INDEX_NONE
+		|| !GameOverActivePairs.Contains(RequesterPS->GetPairId())
+		|| GameOverPendingByPair.Contains(RequesterPS->GetPairId()))
+	{
+		return false;
+	}
+
+	const EOutlierPlayerRole ResponderRole = RequesterPS->IsShooterPlayer()
+		? EOutlierPlayerRole::Partner
+		: RequesterPS->IsPartnerPlayer()
+			? EOutlierPlayerRole::Shooter
+			: EOutlierPlayerRole::None;
+	AOutlierPlayerState* ResponderPS = ResponderRole != EOutlierPlayerRole::None
+		? FindPairPlayerState(RequesterPS->GetPairId(), ResponderRole)
+		: nullptr;
+	AFirstPersonPlayerController* Responder = Cast<AFirstPersonPlayerController>(
+		GetControllerFromPlayerState(ResponderPS));
+	if (GetNetMode() == NM_ListenServer)
+	{
+		// 호스트와 게스트 모두 서버에서 즉시 실행한다. Pending 상태/위젯은 만들지 않는다.
+		return ExecuteGameOverSelection(Requester, Responder, Request);
+	}
+	if (Responder
+		&& (!Requester->HasGameOverPendingWidgetClass()
+			|| !Responder->HasGameOverPendingWidgetClass()))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[GameOver] Pending request rejected: GameOverPendingWidgetClass is missing"));
+		return false;
+	}
+
+	FGameOverPendingServerState State;
+	State.Requester = Requester;
+	State.Responder = Responder;
+	State.Request = Request;
+
+	if (!Responder)
+	{
+		// 단독 플레이나 봇 페어에는 응답할 클라이언트가 없다.
+		FinishGameOverPending(State, true);
+		return true;
+	}
+
+	GameOverPendingByPair.Add(RequesterPS->GetPairId(), State);
+	Requester->ShowGameOverPendingFromServer(Request, true);
+	Responder->ShowGameOverPendingFromServer(Request, false);
+	return true;
+}
+
+bool AOutlierGameMode::RespondGameOverPending(
+	AFirstPersonPlayerController* Responder,
+	bool bApprove)
+{
+	if (!HasAuthority() || !Responder)
+	{
+		return false;
+	}
+
+	AOutlierPlayerState* ResponderPS = Responder->GetPlayerState<AOutlierPlayerState>();
+	FGameOverPendingServerState* State = ResponderPS
+		? GameOverPendingByPair.Find(ResponderPS->GetPairId())
+		: nullptr;
+	if (!State || State->Responder.Get() != Responder || !State->Requester.IsValid())
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[GameOverPending][Input] ServerRejectResponse Responder=%s Pair=%d Pending=%d"),
+			*GetNameSafe(Responder), ResponderPS ? ResponderPS->GetPairId() : INDEX_NONE,
+			State ? 1 : 0);
+		return false;
+	}
+	UE_LOG(LogTemp, Warning,
+		TEXT("[GameOverPending][Input] ServerResolve Responder=%s Pair=%d Approve=%d Choice=%d Level=%d"),
+		*GetNameSafe(Responder), ResponderPS->GetPairId(), bApprove ? 1 : 0,
+		static_cast<int32>(State->Request.Choice), State->Request.LevelIndex);
+
+	const FGameOverPendingServerState FinishedState = *State;
+	GameOverPendingByPair.Remove(ResponderPS->GetPairId());
+	FinishGameOverPending(FinishedState, bApprove);
+	return true;
+}
+
+void AOutlierGameMode::FinishGameOverPending(
+	const FGameOverPendingServerState& State,
+	bool bApprove)
+{
+	AFirstPersonPlayerController* Requester = State.Requester.Get();
+	AFirstPersonPlayerController* Responder = State.Responder.Get();
+	if (Requester)
+	{
+		Requester->CloseGameOverPendingFromServer();
+	}
+	if (Responder)
+	{
+		Responder->CloseGameOverPendingFromServer();
+	}
+	if (!bApprove || !Requester)
 	{
 		return;
 	}
+	ExecuteGameOverSelection(Requester, Responder, State.Request);
+}
 
-	AOutlierPlayerState* TriggeringPS = Requester->GetPlayerState<AOutlierPlayerState>();
-	if (!TriggeringPS)
+bool AOutlierGameMode::ExecuteGameOverSelection(
+	AFirstPersonPlayerController* Requester,
+	AFirstPersonPlayerController* OtherController,
+	const FGameOverPendingRequest& Request)
+{
+	AOutlierPlayerState* RequesterPS = Requester
+		? Requester->GetPlayerState<AOutlierPlayerState>() : nullptr;
+	if (!HasAuthority() || !RequesterPS || bArenaReloadInProgress
+		|| bCheckpointRestartInProgress || bListenHostReturnRequested || bArenaWorkerMatchCompleting
+		|| !GameOverActivePairs.Contains(RequesterPS->GetPairId()))
 	{
-		return;
+		return false;
 	}
-
-	TriggeringPS->SetPendingPresetSelection(StageId);
-
-	if (StageId == NAME_None)
+	if (Request.Choice == EGameOverPendingChoice::PresetLevel)
 	{
-		// Start를 포함해 위젯의 모든 버튼은 이제 실제 스테이지 FName을 보낸다.
-		// 여기 걸리는 건 위젯이 아닌 다른 경로에서 빈 FName을 보낸 비정상 케이스뿐이니 대기만 한다.
-		return;
+		const UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()->GetSubsystem<UOutlierArenaSubsystem>();
+		if (Request.LevelIndex < 1 || Request.LevelIndex > 4 || !ShooterClass || !PartnerClass
+			|| !ArenaSubsystem || !ArenaSubsystem->IsGameplayLevelsReady())
+		{
+			return false;
+		}
 	}
-
-	const int32 PairId = TriggeringPS->GetPairId();
-	AOutlierPlayerState* OtherPS = TriggeringPS->IsShooterPlayer()
-		? FindPairPlayerState(PairId, EOutlierPlayerRole::Partner)
-		: TriggeringPS->IsPartnerPlayer()
-			? FindPairPlayerState(PairId, EOutlierPlayerRole::Shooter)
-			: nullptr;
-
-	// 페어 상대가 아직 다른 스테이지를 고르는 중이면 대기. 상대가 아예 없으면(봇/아레나워커) 혼자 진행.
-	if (OtherPS && OtherPS->GetPendingPresetSelection() != StageId)
+	else if (Request.Choice == EGameOverPendingChoice::Continue)
 	{
-		return;
+		if ((!ShooterClass && !DefaultPawnClass) || !PartnerClass)
+		{
+			return false;
+		}
 	}
-
-	TriggeringPS->SetPendingPresetSelection(NAME_None);
-	if (OtherPS)
+	else if (Request.Choice != EGameOverPendingChoice::MainMenu
+		&& !(Request.Choice == EGameOverPendingChoice::QuitGame && GetNetMode() == NM_ListenServer))
 	{
-		OtherPS->SetPendingPresetSelection(NAME_None);
+		return false;
 	}
+	// 두 플레이어의 연속 선택도 한 번만 실행되도록 화면 정리 전에 상태를 소비한다.
+	GameOverActivePairs.Remove(RequesterPS->GetPairId());
 
-	// 합의 성립 - 양쪽 위젯을 닫는다. ClientPopInGameSettingLayer는 이름과 달리 범용 pop-by-owner RPC라
-	// Push 때 RequestOwner로 넘겼던 PlayerState를 그대로 넘기면 어떤 위젯이든 닫힌다.
-	if (AFirstPersonPlayerController* TriggeringFPC = Cast<AFirstPersonPlayerController>(Requester))
+	for (AFirstPersonPlayerController* Controller : { Requester, OtherController })
 	{
-		TriggeringFPC->ClientPopInGameSettingLayer(TriggeringPS);
+		if (Controller)
+		{
+			Controller->BeginGameOverRespawnTransition();
+		}
 	}
-	if (AFirstPersonPlayerController* OtherFPC = Cast<AFirstPersonPlayerController>(GetControllerFromPlayerState(OtherPS)))
+	const auto CloseGameOverLayer = [](AFirstPersonPlayerController* Controller)
 	{
-		OtherFPC->ClientPopInGameSettingLayer(OtherPS);
-	}
+		if (!Controller || !Controller->PlayerState)
+		{
+			return;
+		}
+		if (Controller->IsLocalController())
+		{
+			Controller->ClientPopInGameSettingLayer_Implementation(Controller->PlayerState);
+		}
+		else
+		{
+			Controller->ClientPopInGameSettingLayer(Controller->PlayerState);
+		}
+	};
+	CloseGameOverLayer(Requester);
+	CloseGameOverLayer(OtherController);
 
-	RequestPresetRespawn(Requester, StageId);
+	switch (Request.Choice)
+	{
+	case EGameOverPendingChoice::Continue:
+		RespawnPairAtCheckpoint(Requester);
+		break;
+	case EGameOverPendingChoice::PresetLevel:
+	{
+		const FName StageIds[] = {
+			OutlierPresetStageIds::Level1,
+			OutlierPresetStageIds::Level2,
+			OutlierPresetStageIds::Level3,
+			OutlierPresetStageIds::Level4
+		};
+		RequestPresetRespawn(Requester, StageIds[Request.LevelIndex - 1]);
+		break;
+	}
+	case EGameOverPendingChoice::MainMenu:
+	case EGameOverPendingChoice::QuitGame:
+		// 기존 자발적 이탈 경로가 로컬 재접속 상태를 정리하던 단계를 양쪽에 적용한다.
+		for (AFirstPersonPlayerController* Controller : { Requester, OtherController })
+		{
+			if (!Controller)
+			{
+				continue;
+			}
+			if (Controller->IsLocalController())
+			{
+				Controller->ClientPrepareForArenaExit_Implementation();
+			}
+			else
+			{
+				Controller->ClientPrepareForArenaExit();
+			}
+		}
+		HandleExplicitPlayerLeave(Requester, Request.Choice == EGameOverPendingChoice::QuitGame);
+		break;
+	default:
+		break;
+	}
+	return true;
+}
+
+void AOutlierGameMode::CancelGameOverPendingForDisconnect(AController* Exiting)
+{
+	TArray<int32> PairIdsToRemove;
+	for (const TPair<int32, FGameOverPendingServerState>& Entry : GameOverPendingByPair)
+	{
+		if (Entry.Value.Requester.Get() == Exiting || Entry.Value.Responder.Get() == Exiting)
+		{
+			PairIdsToRemove.Add(Entry.Key);
+			if (AFirstPersonPlayerController* Other =
+				Entry.Value.Requester.Get() == Exiting
+					? Entry.Value.Responder.Get()
+					: Entry.Value.Requester.Get())
+			{
+				Other->CloseGameOverPendingFromServer();
+			}
+		}
+	}
+	for (int32 PairId : PairIdsToRemove)
+	{
+		GameOverPendingByPair.Remove(PairId);
+	}
 }
 
 int32 AOutlierGameMode::ResolvePresetNodeCount(FName StageId) const
@@ -1008,6 +1205,7 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 	{
 		return;
 	}
+	GameOverActivePairs.Remove(PairId);
 
 	if (AFrontendPlayerController* FrontendShooterPC = Cast<AFrontendPlayerController>(FirstController))
 	{
@@ -1288,7 +1486,8 @@ bool AOutlierGameMode::CompleteArenaMatch()
 	return true;
 }
 
-bool AOutlierGameMode::HandleExplicitPlayerLeave(AFirstPersonPlayerController* Requester)
+bool AOutlierGameMode::HandleExplicitPlayerLeave(
+	AFirstPersonPlayerController* Requester, bool bQuitAfterLeave)
 {
 	if (!HasAuthority() || !Requester)
 	{
@@ -1302,7 +1501,8 @@ bool AOutlierGameMode::HandleExplicitPlayerLeave(AFirstPersonPlayerController* R
 	{
 		if (bArenaWorkerMatchCompleting)
 		{
-			return false;
+			Requester->ConfirmExplicitLeaveFromServer(true, bQuitAfterLeave);
+			return true;
 		}
 
 		UE_LOG(LogTemp, Display,
@@ -1310,7 +1510,7 @@ bool AOutlierGameMode::HandleExplicitPlayerLeave(AFirstPersonPlayerController* R
 			*ArenaWorkerAdmission.MatchId.ToString(),
 			*GetNameSafe(Requester));
 		// MatchCompleting을 실제 연결 종료보다 먼저 세워 Logout의 재접속 유예 경로를 막는다.
-		BeginArenaWorkerReleaseShutdown();
+		BeginArenaWorkerReleaseShutdown(Requester, bQuitAfterLeave);
 		return true;
 	}
 
@@ -1321,12 +1521,15 @@ bool AOutlierGameMode::HandleExplicitPlayerLeave(AFirstPersonPlayerController* R
 	}
 	if (bListenHostReturnRequested)
 	{
-		return false;
+		Requester->ConfirmExplicitLeaveFromServer(true, bQuitAfterLeave);
+		return true;
 	}
 
 	// 2인 Listen Match에서는 Host와 Guest 어느 쪽의 명시적 이탈이든 Match 전체를 끝낸다.
 	// Standalone도 같은 엔진 경로를 사용하며 GameDefaultMap인 Title로 돌아간다.
 	bListenHostReturnRequested = true;
+	// 종료 확인을 Travel보다 먼저 보내야 기존 Controller가 사라지기 전에 수신한다.
+	Requester->ConfirmExplicitLeaveFromServer(true, bQuitAfterLeave);
 	UE_LOG(LogTemp, Display,
 		TEXT("[ArenaReturn] Explicit leave requested; returning session to Title Player=%s NetMode=%d"),
 		*GetNameSafe(Requester),
@@ -1860,6 +2063,7 @@ void AOutlierGameMode::Logout(AController* Exiting)
 {
 	APlayerController* ExitingPlayer = Cast<APlayerController>(Exiting);
 	CancelCheckpointRestartVoteForDisconnect(ExitingPlayer);
+	CancelGameOverPendingForDisconnect(Exiting);
 	// Frontend PC가 역할별 Gameplay PC로 교체될 때도 Logout이 호출된다. 실제 플레이 중인
 	// 로컬 FirstPerson PC만 Host 이탈로 봐야 정상적인 Listen 시작을 세션 종료로 오인하지 않는다.
 	const bool bListenHostLeaving = GetNetMode() == NM_ListenServer
@@ -2183,6 +2387,7 @@ void AOutlierGameMode::RespawnPairAtCheckpoint(AController* Controller)
 			? PlayerStart->GetActorTransform()
 			: FTransform::Identity;
 
+		PartnerSpawnTransform = SpawnTransform;
 		PartnerSpawnTransform.AddToTranslation(
 			SpawnTransform.GetRotation().GetRightVector() * 150.0f
 		);
@@ -2260,6 +2465,10 @@ void AOutlierGameMode::RespawnPairAtCheckpoint(AController* Controller)
 	{
 		if (NewShooter)
 		{
+			if (AFirstPersonPlayerController* FPC = Cast<AFirstPersonPlayerController>(ShooterController))
+			{
+				FPC->ArmDeathTransitionReleaseOnPossess();
+			}
 			ShooterController->Possess(NewShooter);
 		}
 	}
@@ -2268,6 +2477,10 @@ void AOutlierGameMode::RespawnPairAtCheckpoint(AController* Controller)
 	{
 		if (NewPartner)
 		{
+			if (AFirstPersonPlayerController* FPC = Cast<AFirstPersonPlayerController>(PartnerController))
+			{
+				FPC->ArmDeathTransitionReleaseOnPossess();
+			}
 			PartnerController->Possess(NewPartner);
 		}
 	}
@@ -3431,7 +3644,8 @@ void AOutlierGameMode::HandleArenaWorkerReloadStallTimeout()
 	}
 }
 
-void AOutlierGameMode::BeginArenaWorkerReleaseShutdown()
+void AOutlierGameMode::BeginArenaWorkerReleaseShutdown(
+	AFirstPersonPlayerController* ExitRequester, bool bQuitAfterLeave)
 {
 	if (bArenaWorkerMatchCompleting)
 	{
@@ -3456,6 +3670,10 @@ void AOutlierGameMode::BeginArenaWorkerReleaseShutdown()
 	const FString LobbyAddress = Settings
 		? Settings->ResolveLobbyAddress()
 		: FString();
+	if (ExitRequester)
+	{
+		ExitRequester->ConfirmExplicitLeaveFromServer(true, bQuitAfterLeave);
+	}
 	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
 	{
 		if (APlayerController* PlayerController = It->Get())

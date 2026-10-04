@@ -31,10 +31,27 @@ TSubclassOf<UUILayerKeyHintWidget> UGameOverWidget::GetKeyHintWidgetClass() cons
 	return KeyHintWidgetClass;
 }
 
+void UGameOverWidget::SetImmediateSelectionMode(bool bImmediate)
+{
+	bImmediateSelections = bImmediate;
+	if (ChoiceMenu)
+	{
+		ChoiceMenu->SetQuitGameAvailable(bImmediate);
+	}
+	if (QuitGameButton)
+	{
+		QuitGameButton->SetVisibility(bImmediate ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
+	}
+}
+
 bool UGameOverWidget::ShowPendingRequest(
 	const FGameOverPendingRequest& Request,
 	bool bIsRequester)
 {
+	if (bImmediateSelections)
+	{
+		return false;
+	}
 	UCanvasPanel* Canvas = GameOverCanvas
 		? GameOverCanvas.Get()
 		: Cast<UCanvasPanel>(GetRootWidget());
@@ -118,7 +135,8 @@ bool UGameOverWidget::HandleUILayerConfirmed_Implementation()
 		return IUILayerInputReceiver::Execute_HandleUILayerConfirmed(ChoiceMenu);
 	}
 	// Legacy WBP remains usable until its three buttons are moved into ChoiceMenu.
-	if (MainMenuButton && MainMenuButton->IsHovered()) HandleMainMenuButtonClicked();
+	if (QuitGameButton && QuitGameButton->IsVisible() && QuitGameButton->IsHovered()) HandleQuitGameButtonClicked();
+	else if (MainMenuButton && MainMenuButton->IsHovered()) HandleMainMenuButtonClicked();
 	else if (LevelSelectButton && LevelSelectButton->IsHovered()) HandleLevelSelectButtonClicked();
 	else HandleContinueButtonClicked();
 	return true;
@@ -219,6 +237,11 @@ void UGameOverWidget::NativeOnInitialized()
 			&UGameOverWidget::HandleMainMenuButtonClicked);
 	}
 
+	if (QuitGameButton)
+	{
+		QuitGameButton->OnClicked.AddUniqueDynamic(this, &UGameOverWidget::HandleQuitGameButtonClicked);
+	}
+
 	if (PresetLoad)
 	{
 		PresetLoad->OnPresetStageConfirmed.AddUniqueDynamic(
@@ -238,6 +261,7 @@ void UGameOverWidget::HandleChoiceConfirmed(EGameOverMenuChoice Choice)
 	case EGameOverMenuChoice::Continue: HandleContinueButtonClicked(); break;
 	case EGameOverMenuChoice::SelectLevel: HandleLevelSelectButtonClicked(); break;
 	case EGameOverMenuChoice::MainMenu: HandleMainMenuButtonClicked(); break;
+	case EGameOverMenuChoice::QuitGame: HandleQuitGameButtonClicked(); break;
 	}
 }
 
@@ -249,6 +273,7 @@ void UGameOverWidget::HandleChoiceEscape()
 void UGameOverWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
+	SetImmediateSelectionMode(bImmediateSelections);
 
 	// 레벨 선택 버튼들은 레벨 선택하기를 눌렀을 때만 보인다.
 	if (PresetLoad)
@@ -260,7 +285,7 @@ void UGameOverWidget::NativeConstruct()
 
 void UGameOverWidget::HandleContinueButtonClicked()
 {
-	SubmitPendingChoice(EGameOverPendingChoice::Continue);
+	SubmitSelection(EGameOverPendingChoice::Continue);
 }
 
 void UGameOverWidget::HandleLevelSelectButtonClicked()
@@ -294,7 +319,15 @@ void UGameOverWidget::ClosePresetLoad()
 
 void UGameOverWidget::HandleMainMenuButtonClicked()
 {
-	SubmitPendingChoice(EGameOverPendingChoice::MainMenu);
+	SubmitSelection(EGameOverPendingChoice::MainMenu);
+}
+
+void UGameOverWidget::HandleQuitGameButtonClicked()
+{
+	if (bImmediateSelections)
+	{
+		SubmitSelection(EGameOverPendingChoice::QuitGame);
+	}
 }
 
 void UGameOverWidget::HandlePresetStageConfirmed(FName StageId)
@@ -305,11 +338,11 @@ void UGameOverWidget::HandlePresetStageConfirmed(FName StageId)
 		: 0;
 	if (LevelIndex >= 1 && LevelIndex <= 4)
 	{
-		SubmitPendingChoice(EGameOverPendingChoice::PresetLevel, LevelIndex);
+		SubmitSelection(EGameOverPendingChoice::PresetLevel, LevelIndex);
 	}
 }
 
-void UGameOverWidget::SubmitPendingChoice(EGameOverPendingChoice Choice, int32 LevelIndex)
+void UGameOverWidget::SubmitSelection(EGameOverPendingChoice Choice, int32 LevelIndex)
 {
 	if (AFirstPersonPlayerController* Controller =
 		Cast<AFirstPersonPlayerController>(GetOwningPlayer()))

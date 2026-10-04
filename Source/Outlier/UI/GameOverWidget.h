@@ -28,6 +28,8 @@ public:
 	TSubclassOf<UUILayerKeyHintWidget> GetKeyHintWidgetClass() const;
 	bool ShowPendingRequest(const FGameOverPendingRequest& Request, bool bIsRequester);
 	void ClosePendingRequest();
+	// 서버가 전달한 리슨 정책. 클라이언트 NetMode로 서버 종류를 추측하지 않는다.
+	void SetImmediateSelectionMode(bool bImmediate);
 
 protected:
 	virtual void NativeOnInitialized() override;
@@ -56,6 +58,9 @@ protected:
 
 	UPROPERTY(meta = (BindWidgetOptional))
 	TObjectPtr<UButton> MainMenuButton;
+
+	UPROPERTY(meta = (BindWidgetOptional))
+	TObjectPtr<UButton> QuitGameButton;
 
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UPreSetLoadWidget> PresetLoad;
@@ -94,13 +99,17 @@ private:
 	void HandleMainMenuButtonClicked();
 
 	UFUNCTION()
+	void HandleQuitGameButtonClicked();
+
+	UFUNCTION()
 	void HandlePresetStageConfirmed(FName StageId);
 
 	void HandlePresetStageHoverChanged(EOutlierStage Stage, bool bHovered);
 	void ShowStagePreview(EOutlierStage Stage);
 	void HideStagePreview();
 	void ClosePresetLoad();
-	void SubmitPendingChoice(EGameOverPendingChoice Choice, int32 LevelIndex = 0);
+	void SubmitSelection(EGameOverPendingChoice Choice, int32 LevelIndex = 0);
 
 	EOutlierStage PreviewStage = EOutlierStage::None;
+	bool bImmediateSelections = false;
 };
