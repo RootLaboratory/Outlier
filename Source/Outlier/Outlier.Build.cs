@@ -25,6 +25,7 @@ public class Outlier : ModuleRules
             "GameplayAbilities",
             "GameplayTasks",
             "UMG",
+            "MediaAssets",
             "Slate",
             "AnimGraphRuntime",
             "TagDrivenUI",
