@@ -2,7 +2,6 @@
 
 
 #include "UI/TitleWidget.h"
-#include "Components/Button.h"
 #include "Engine/LocalPlayer.h"
 #include "FrontendPlayerController.h"
 #include "Kismet/KismetSystemLibrary.h"
@@ -10,33 +9,25 @@
 #include "UI/LocalPlayerUILayerSubsystem.h"
 #include "UI/LobbyWidget.h"
 #include "UI/SettingWidget.h"
+#include "UI/TitleButtonsWidget.h"
 #include "UI/UILayerGameplayTags.h"
 #include "UI/UILayerKeyHintWidget.h"
 
 
+void UTitleWidget::NativeOnInitialized()
+{
+	Super::NativeOnInitialized();
+
+	// Construct는 레이어 재표시마다 다시 불릴 수 있어 native delegate는 초기화 때 한 번만 묶는다.
+	if (TitleButtons)
+	{
+		TitleButtons->OnActionConfirmed.AddUObject(this, &UTitleWidget::HandleTitleButtonAction);
+	}
+}
+
 void UTitleWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
-
-	if (StartButton)
-	{
-		StartButton->OnClicked.AddUniqueDynamic(this, &UTitleWidget::HandleStartButtonEvent);
-	}
-
-	if (ExitButton)
-	{
-		ExitButton->OnClicked.AddUniqueDynamic(this, &UTitleWidget::HandleExitButtonEvent);
-	}
-
-	if (CreditButton)
-	{
-		CreditButton->OnClicked.AddUniqueDynamic(this, &UTitleWidget::HandleCreditButtonEvent);
-	}
-
-	if (SettingButton)
-	{
-		SettingButton->OnClicked.AddUniqueDynamic(this, &UTitleWidget::HandleSettingButtonEvent);
-	}
 
 	PushKeyHintLayer();
 }
@@ -64,62 +55,60 @@ void UTitleWidget::InitializeUILayerContext_Implementation(
 {
 }
 
+// 레이어 입력은 버튼 선택 상태를 가진 TitleButtons가 그대로 판단한다.
 bool UTitleWidget::HandleUILayerEscape_Implementation()
 {
-	RequestExit();
-	return true;
+	return TitleButtons
+		&& IUILayerInputReceiver::Execute_HandleUILayerEscape(TitleButtons);
 }
 
 bool UTitleWidget::HandleUILayerConfirmed_Implementation()
 {
-	HandleStartButtonEvent();
-	return true;
+	return TitleButtons
+		&& IUILayerInputReceiver::Execute_HandleUILayerConfirmed(TitleButtons);
 }
 
 bool UTitleWidget::HandleUILayerUp_Implementation()
 {
-	return false;
+	return TitleButtons
+		&& IUILayerInputReceiver::Execute_HandleUILayerUp(TitleButtons);
 }
 
 bool UTitleWidget::HandleUILayerDown_Implementation()
 {
-	return false;
+	return TitleButtons
+		&& IUILayerInputReceiver::Execute_HandleUILayerDown(TitleButtons);
 }
 
 bool UTitleWidget::HandleUILayerLeft_Implementation()
 {
-	return false;
+	return TitleButtons
+		&& IUILayerInputReceiver::Execute_HandleUILayerLeft(TitleButtons);
 }
 
 bool UTitleWidget::HandleUILayerRight_Implementation()
 {
-	return false;
+	return TitleButtons
+		&& IUILayerInputReceiver::Execute_HandleUILayerRight(TitleButtons);
 }
 
-void UTitleWidget::HandleStartButtonEvent()
+void UTitleWidget::HandleTitleButtonAction(ETitleButtonAction Action)
 {
-	// TitleWidget, base에 해당 Widget을 끄고 LobbyWidget을 활성화 시키게 해댤라고 요청 해야함.
-	OnStartRequested.Broadcast();
-	PushLobbyLayer();
-}
-
-void UTitleWidget::HandleExitButtonEvent()
-{
-	// Process 종료;
-	OnExitRequested.Broadcast();
-	RequestExit();
-}
-
-void UTitleWidget::HandleCreditButtonEvent()
-{
-	OnCreditRequested.Broadcast();
-	PushCreditLayer();
-}
-
-void UTitleWidget::HandleSettingButtonEvent()
-{
-	OnSettingRequested.Broadcast();
-	PushSettingLayer();
+	switch (Action)
+	{
+	case ETitleButtonAction::Start:
+		PushLobbyLayer();
+		break;
+	case ETitleButtonAction::Credit:
+		PushCreditLayer();
+		break;
+	case ETitleButtonAction::Setting:
+		PushSettingLayer();
+		break;
+	case ETitleButtonAction::Exit:
+		RequestExit();
+		break;
+	}
 }
 
 void UTitleWidget::PushLobbyLayer()

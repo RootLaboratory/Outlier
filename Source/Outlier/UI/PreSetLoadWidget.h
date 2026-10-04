@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
+#include "Styling/SlateTypes.h"
 #include "Upgrade/OutlierPresetStageIds.h"
 #include "PreSetLoadWidget.generated.h"
 
@@ -19,9 +20,11 @@ enum class EOutlierStage : uint8
 	Level04,
 };
 
-/** 버튼을 누를 때마다(=선택을 서버에 보고할 때마다) 발화. 즉시 확정/닫힘을 의미하지 않는다 —
- *  페어 상대가 같은 스테이지를 고를 때까지는 위젯이 계속 떠 있다. */
+/** 스테이지 버튼을 누르면 발화한다. GameOverWidget이 이를 Pending 승인 요청으로 변환한다. */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnPresetStageConfirmed, FName, StageId);
+
+/** 스테이지 버튼의 hover 상태가 바뀔 때 발화. 미리보기 이미지는 이 위젯을 품은 쪽(GameOverWidget)이 그린다. */
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnPresetStageHoverChanged, EOutlierStage /*Stage*/, bool /*bHovered*/);
 
 /** Preset stage selection widget. */
 UCLASS()
@@ -31,6 +34,15 @@ class OUTLIER_API UPreSetLoadWidget : public UUserWidget
 
 public:
 	virtual void NativeConstruct() override;
+
+	/** Keyboard selection shares the same stage index as mouse hover. */
+	void SelectFirstStage();
+	void MoveStageSelection(int32 Step);
+	bool ConfirmStageSelection();
+
+	/** 0..3 map to Level01..Level04. */
+	UFUNCTION(BlueprintPure, Category = "Preset|Stage")
+	int32 GetChosenStageIndex() const { return ChosenStageIndex; }
 
 	/** Returns the stage selected by the most recent button click. */
 	UFUNCTION(BlueprintPure, Category = "Preset|Stage")
@@ -43,8 +55,10 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Preset|Stage")
 	FOnPresetStageConfirmed OnPresetStageConfirmed;
 
+	FOnPresetStageHoverChanged OnPresetStageHoverChanged;
+
 protected:
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Preset|Stage")
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "Preset|Stage")
 	TObjectPtr<UButton> UnPresetButton;
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Preset|Stage")
@@ -63,6 +77,12 @@ protected:
 	TArray<TObjectPtr<UButton>> StageButtons;
 
 private:
+	void SetChosenStage(EOutlierStage Stage, bool bFocusButton);
+	void ApplyStageSelection();
+	UButton* GetStageButton(EOutlierStage Stage) const;
+	TArray<FButtonStyle> OriginalStageButtonStyles;
+	int32 ChosenStageIndex = 0;
+
 	UFUNCTION()
 	void HandleStageButtonClicked(EOutlierStage Stage);
 
@@ -80,6 +100,30 @@ private:
 
 	UFUNCTION()
 	void HandleLevel04ButtonClicked();
+
+	UFUNCTION()
+	void HandleLevel01ButtonHovered();
+
+	UFUNCTION()
+	void HandleLevel01ButtonUnhovered();
+
+	UFUNCTION()
+	void HandleLevel02ButtonHovered();
+
+	UFUNCTION()
+	void HandleLevel02ButtonUnhovered();
+
+	UFUNCTION()
+	void HandleLevel03ButtonHovered();
+
+	UFUNCTION()
+	void HandleLevel03ButtonUnhovered();
+
+	UFUNCTION()
+	void HandleLevel04ButtonHovered();
+
+	UFUNCTION()
+	void HandleLevel04ButtonUnhovered();
 
 	UPROPERTY(BlueprintReadOnly, Category = "Preset|Stage", meta = (AllowPrivateAccess = "true"))
 	EOutlierStage SelectedStage = EOutlierStage::None;
