@@ -12,9 +12,9 @@ enum class EDeathTransitionPhase : uint8
 	Fading,
 	// Fade 완료 후 Delay 대기.
 	Holding,
-	// Black이 0 → 1로 보간 중. 이 단계에 들어가는 순간 PreSetLoadWidget이 뜬다.
+	// Black 레이어가 시작 시점마다 차례로 나오는 중.
 	Blackout,
-	// 완전 검정 유지.
+	// Black 레이어가 전부 나온 최종 상태 유지.
 	Black
 };
 
@@ -37,12 +37,12 @@ public:
 	// 사망 연출을 전부 끄고 Idle로 되돌린다. 기존 렌즈 CA를 다시 켜는 건 여기서 하지 않는다.
 	void Reset(FPostProcessStrcture& Parameters, FPostProcessStrctureUI& UIParameters);
 
-	// 파라미터가 바뀌었으면 true. bOutBlackoutStarted는 이번 틱에 Black 단계가 시작됐을 때 true.
+	// 파라미터가 바뀌었으면 true. bOutBlackNoiseStarted는 Noise 레이어가 처음 보이는 틱에 true.
 	bool Tick(
 		float DeltaTime,
 		FPostProcessStrcture& Parameters,
 		FPostProcessStrctureUI& UIParameters,
-		bool& bOutBlackoutStarted);
+		bool& bOutBlackNoiseStarted);
 
 	// 패스별 on/off. 꺼진 패스는 그리기만 빠지고 타임라인(위젯이 뜨는 시점 포함)은 그대로 흐른다.
 	void SetPassEnabled(
@@ -63,7 +63,8 @@ private:
 
 	EDeathTransitionPhase Phase = EDeathTransitionPhase::Idle;
 	float PhaseElapsedTime = 0.0f;
+	bool bNoiseStartEventSent = false;
 
-	// EDeathTransitionPass 순서의 비트. 기본은 전부 켜짐.
-	uint8 EnabledPassMask = 0b1111;
+	// EDeathTransitionPass 순서의 비트. 기본은 Noise / Fade / Black만 켜고 사망 CA는 끔.
+	uint8 EnabledPassMask = 0b0111;
 };

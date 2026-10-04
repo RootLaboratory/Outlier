@@ -1,7 +1,7 @@
-#include "FRDGDeathColorLerpPass.h"
+#include "FRDGDeathBlackPass.h"
 
-#include "RDGDeathColorLerpPS.h"
-#include "GlobalRenderResources.h"
+#include "FPostProcessStructures.h"
+#include "RDGDeathBlackPS.h"
 #include "HAL/IConsoleManager.h"
 #include "RenderGraphBuilder.h"
 #include "RHIStaticStates.h"
@@ -9,26 +9,30 @@
 #include "ScreenPass.h"
 #include "UnrealClient.h"
 
-FScreenPassTexture FRDGDeathColorLerpPass::AddPass(
+FScreenPassTexture FRDGDeathBlackPass::AddPass(
 	FRDGBuilder& GraphBuilder,
 	const FSceneView& View,
 	const FScreenPassTexture& SceneColor,
-	const FLinearColor& LerpColor,
-	float Amount,
-	FRHITexture* VignetteTexture,
-	float VignetteAmount,
-	const TCHAR* PassName,
+	const FDeathBlackParameters& Parameters,
+	FRHITexture* BackgroundTexture,
+	FRHITexture* NoiseTexture,
 	const FScreenPassRenderTarget& OverrideOutput)
 {
-	if (!SceneColor.IsValid())
+	if (!SceneColor.IsValid() || !BackgroundTexture || !NoiseTexture)
 	{
 		return SceneColor;
 	}
 
-	// 마지막 콜백이면 엔진이 OverrideOutput에 써주길 기대하므로, 보간량이 0이어도 그 경우엔 그린다.
-	const float ClampedAmount = FMath::Clamp(Amount, 0.0f, 1.0f);
-	const float ClampedVignetteAmount = VignetteTexture ? FMath::Clamp(VignetteAmount, 0.0f, 1.0f) : 0.0f;
-	if (ClampedAmount <= 0.0f && ClampedVignetteAmount <= 0.0f && !OverrideOutput.IsValid())
+	// 레이어마다 등장 시점부터 페이드 시간 동안 0 → 1.
+	const bool bEnabled = Parameters.bEnabled != 0;
+	const float BackgroundAmount = bEnabled
+		? GetDeathBlackLayerAmount(Parameters, EDeathBlackLayer::Background) : 0.0f;
+	const float NoiseAmount = bEnabled
+		? GetDeathBlackLayerAmount(Parameters, EDeathBlackLayer::Noise) : 0.0f;
+
+	// 마지막 콜백이면 엔진이 OverrideOutput에 써주길 기대하므로, 아무 레이어도 안 나왔어도 그 경우엔 그린다.
+	const bool bAnyLayerVisible = BackgroundAmount > 0.0f || NoiseAmount > 0.0f;
+	if (!bAnyLayerVisible && !OverrideOutput.IsValid())
 	{
 		return SceneColor;
 	}
@@ -50,7 +54,7 @@ FScreenPassTexture FRDGDeathColorLerpPass::AddPass(
 			GraphBuilder,
 			SceneColor,
 			ERenderTargetLoadAction::ENoAction,
-			TEXT("RDG.DeathColorLerp.Output"));
+			TEXT("RDG.DeathBlack.Output"));
 	}
 
 	// Tonemap 이후 장면색은 이미 sRGB 인코딩된 값이라, sRGB 텍스처는 샘플링 결과(선형)를 다시 인코딩해서 맞춘다.
@@ -59,18 +63,22 @@ FScreenPassTexture FRDGDeathColorLerpPass::AddPass(
 	const bool bSDRSRGBOutput = View.Family && View.Family->RenderTarget
 		&& View.Family->RenderTarget->GetDisplayOutputFormat() == EDisplayOutputFormat::SDR_sRGB;
 	const bool bSRGBRenderTarget = Output.Texture && EnumHasAnyFlags(Output.Texture->Desc.Flags, TexCreate_SRGB);
-	const bool bSRGBVignetteTexture = VignetteTexture && EnumHasAnyFlags(VignetteTexture->GetDesc().Flags, TexCreate_SRGB);
+	const bool bEncodeSRGBTextures = bSDRSRGBOutput && bDefaultTonemapperGamma && !bSRGBRenderTarget;
+	auto ShouldEncodeToSRGB = [bEncodeSRGBTextures](const FRHITexture* Texture) -> int32
+	{
+		return bEncodeSRGBTextures && Texture && EnumHasAnyFlags(Texture->GetDesc().Flags, TexCreate_SRGB) ? 1 : 0;
+	};
 
-	FRDGDeathColorLerpPS::FParameters* PassParameters = GraphBuilder.AllocParameters<FRDGDeathColorLerpPS::FParameters>();
+	FRDGDeathBlackPS::FParameters* PassParameters = GraphBuilder.AllocParameters<FRDGDeathBlackPS::FParameters>();
 	PassParameters->InputTexture = SceneColor.Texture;
 	PassParameters->InputSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-	PassParameters->VignetteTexture = VignetteTexture ? VignetteTexture : GBlackTexture->TextureRHI.GetReference();
-	PassParameters->VignetteSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-	PassParameters->LerpColor = FVector3f(LerpColor.R, LerpColor.G, LerpColor.B);
-	PassParameters->Amount = ClampedAmount;
-	PassParameters->VignetteAmount = ClampedVignetteAmount;
-	PassParameters->bEncodeVignetteToSRGB = bSDRSRGBOutput && bDefaultTonemapperGamma
-		&& bSRGBVignetteTexture && !bSRGBRenderTarget ? 1 : 0;
+	PassParameters->BackgroundTexture = BackgroundTexture;
+	PassParameters->NoiseTexture = NoiseTexture;
+	PassParameters->LayerSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+	PassParameters->BackgroundAmount = BackgroundAmount;
+	PassParameters->NoiseAmount = NoiseAmount;
+	PassParameters->bEncodeBackgroundToSRGB = ShouldEncodeToSRGB(BackgroundTexture);
+	PassParameters->bEncodeNoiseToSRGB = ShouldEncodeToSRGB(NoiseTexture);
 	const FScreenPassTextureViewport InputViewport(SceneColor);
 	const FVector2f InputExtent(InputViewport.Extent.X, InputViewport.Extent.Y);
 	const FVector2f InputMin(InputViewport.Rect.Min.X, InputViewport.Rect.Min.Y);
@@ -81,11 +89,11 @@ FScreenPassTexture FRDGDeathColorLerpPass::AddPass(
 
 	FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(View.GetFeatureLevel());
 	TShaderMapRef<FScreenPassVS> VertexShader(ShaderMap);
-	TShaderMapRef<FRDGDeathColorLerpPS> PixelShader(ShaderMap);
+	TShaderMapRef<FRDGDeathBlackPS> PixelShader(ShaderMap);
 
 	AddDrawScreenPass(
 		GraphBuilder,
-		RDG_EVENT_NAME("%s", PassName),
+		RDG_EVENT_NAME("RDG.DeathBlack"),
 		View,
 		FScreenPassTextureViewport(Output),
 		InputViewport,

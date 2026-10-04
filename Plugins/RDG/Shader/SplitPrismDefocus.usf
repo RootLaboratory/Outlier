@@ -1,0 +1,80 @@
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/ScreenPass.ush"
+
+// Split Prism 디포커스. Tonemap 앞(선형 HDR)이라 밝은 점이 빛망울로 퍼진다.
+// 평면 피사체 가정: 화면 전체가 같은 디포커스 d를 가진다. G 반경 = MaxRadius × |d|.
+// - 색 번짐: R/B 반경이 G의 (1 + FringeAmount × sign(d))배.
+//   앞초점은 R/B가 G보다 바깥까지 번져 보라 테두리, 뒤초점은 G만 바깥에 남아 초록 테두리.
+// - 테두리 밝기: 앞초점은 원판 바깥쪽, 뒤초점은 가운데 샘플 가중치를 올린다.
+// - 샘플 하나가 맡는 면적만큼 미리 흐린 밉을 읽는다. 원판이 여러 장 겹쳐 찍힌 것처럼 보이지 않게 하려는 것이고,
+//   커널 모양은 그대로 원판이다.
+
+Texture2D InputTexture;     // 뷰 크기, 밉 체인 있음
+SamplerState InputSampler;  // 트라이리니어
+
+float2 InputTexelSize;      // 1 / 뷰 크기
+float Defocus;
+float MaxRadius;            // 현재 해상도 기준 px
+float FringeAmount;
+float RimBias;
+uint SampleCount;
+float MaxMipLevel;
+
+static const float GoldenAngle = 2.39996323f;
+
+void MainPS(
+	FScreenVertexOutput Input,
+	out float4 OutColor : SV_Target0)
+{
+	const float2 MinUV = 0.5f * InputTexelSize;
+	const float2 MaxUV = 1.0f - 0.5f * InputTexelSize;
+	const float2 UV = clamp(Input.UV, MinUV, MaxUV);
+	const float4 Center = InputTexture.SampleLevel(InputSampler, UV, 0);
+
+	const float FocusSign = Defocus >= 0.0f ? 1.0f : -1.0f;
+	const float RadiusG = MaxRadius * abs(Defocus);
+	const float RadiusRB = RadiusG * (1.0f + FringeAmount * FocusSign);
+	const float3 Radius = float3(RadiusRB, RadiusG, RadiusRB);
+	const float SampleRadius = max(RadiusG, RadiusRB);
+
+	if (SampleRadius < 0.5f)
+	{
+		OutColor = Center;
+		return;
+	}
+
+	const uint Count = max(SampleCount, 1u);
+	// 샘플 하나가 맡는 원판 면적의 한 변(px). 이 크기로 미리 흐린 밉을 읽는다.
+	const float TapSpacing = SampleRadius * sqrt(PI / Count);
+	const float MipLevel = clamp(log2(max(TapSpacing, 1.0f)), 0.0f, MaxMipLevel);
+
+	float3 ColorSum = 0.0f;
+	float3 WeightSum = 0.0f;
+
+	LOOP
+	for (uint Index = 0; Index < Count; ++Index)
+	{
+		// Vogel 원판: 반지름을 sqrt로 늘려 면적이 고르게 나뉜다.
+		const float Rho = sqrt((Index + 0.5f) / Count) * SampleRadius;
+		const float Theta = Index * GoldenAngle;
+		const float2 SampleUV = clamp(
+			UV + float2(cos(Theta), sin(Theta)) * Rho * InputTexelSize,
+			MinUV,
+			MaxUV);
+		const float3 SampleColor = InputTexture.SampleLevel(InputSampler, SampleUV, MipLevel).rgb;
+
+		// 채널마다 자기 반경 안의 샘플만 쓴다. 경계는 샘플 간격만큼 부드럽게.
+		const float3 Inside = saturate((Radius - Rho) / TapSpacing + 0.5f);
+		const float3 RimT = saturate(Rho / max(Radius, 1e-3f));
+		const float3 Rim = max(1.0f + RimBias * FocusSign * (2.0f * RimT - 1.0f), 0.0f);
+		const float3 Weight = Inside * Rim;
+
+		ColorSum += SampleColor * Weight;
+		WeightSum += Weight;
+	}
+
+	// 반경이 너무 작아 샘플이 하나도 안 들어간 채널은 원본을 쓴다.
+	const float3 HasWeight = step(1e-4f, WeightSum);
+	const float3 Blurred = ColorSum / max(WeightSum, 1e-4f);
+	OutColor = float4(lerp(Center.rgb, Blurred, HasWeight), Center.a);
+}

@@ -1,0 +1,188 @@
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/GammaCorrectionCommon.ush"
+#include "/Engine/Private/ScreenPass.ush"
+
+// Drone Damage Feedback. 빙의한 드론의 체력이 20% 깎일 때마다 드러나는 화면 전체 마스크(.r × .a) 안에만 그린다.
+// 세 효과를 플래그로 켜고 끄며, 켜진 것끼리 겹친다.
+//  1. 슬라이스 글리치: 사망 Noise(DeathNoise.usf)와 같은 무작위 높이 가로 띠 밀기.
+//  2. 픽셀 소팅: 패스 바깥에서 기존 Pixel Sorting으로 정렬한 화면(SortedTexture)을 읽는다.
+//  3. 밀고 검게: 마스크 안 내용을 ShiftOffset만큼 밀고, 밀려서 빈 자리(마스크 밖이나 화면 밖에서 와야 하는 자리)는 검게.
+//     글리치 프레임마다 문턱을 넘으면 UV를 살짝 흔든다.
+// 마지막에 색 × 마스크 × (기본 밝기 + 글리치 밝기)를 더한다. Tonemap 이후라 UI는 안 먹는다.
+
+// 슬라이스 시작 줄을 찾으며 거슬러 올라가는 최대 줄 수. 이보다 긴 슬라이스는 여기서 잘린다.
+#define MAX_SLICE_SEARCH_ROWS 64
+
+Texture2D InputTexture;
+SamplerState InputSampler;
+
+// 픽셀 소팅 결과. 꺼져 있으면 InputTexture와 같은 텍스처가 묶인다.
+Texture2D SortedTexture;
+float2 SortedUVOrigin;
+float2 SortedUVSize;
+float2 SortedUVMin;
+float2 SortedUVMax;
+
+// EDroneDamageMask 순서: LeftTop, LeftBottom, RightTop, RightBottom.
+Texture2D MaskTexture0;
+Texture2D MaskTexture1;
+Texture2D MaskTexture2;
+Texture2D MaskTexture3;
+SamplerState MaskSampler;
+
+// 드러난 마스크면 1. 텍스처가 sRGB로 체크돼 있으면 MaskSRGB가 1이다.
+float4 MaskWeights;
+float4 MaskSRGB;
+
+float2 ViewRectMinUV;
+float2 ViewRectMaxUV;
+float2 ViewportUVOrigin;
+float2 ViewportUVSize;
+
+uint bSliceGlitch;
+uint bPixelSort;
+uint bShiftToBlack;
+
+float Time;
+float Intensity;
+float Seed;
+float SliceRows;
+float SliceSplitChance;
+float GlitchRate;
+float GlitchStrength;
+float GlitchThreshold;
+float GlitchGlow;
+float BurstChance;
+float BurstStrength;
+float BurstThreshold;
+
+float2 ShiftOffset;
+float ShiftJitter;
+
+float MaskGlow;
+float3 Tint;
+
+float Hash11(float X)
+{
+	return frac(sin(X) * 43758.5453f);
+}
+
+float2 Hash21(float X)
+{
+	return float2(Hash11(X), Hash11(X + 19.19f));
+}
+
+float ReadMask(Texture2D MaskTexture, float2 ViewUV, float bSRGB)
+{
+	const float4 MaskSample = MaskTexture.SampleLevel(MaskSampler, ViewUV, 0);
+	float Red = MaskSample.r;
+	// sRGB로 체크된 텍스처는 샘플링하면서 RGB가 선형으로 풀리므로 작성한 값으로 되돌린다. 알파는 원래 선형이다.
+	if (bSRGB > 0.5f)
+	{
+		Red = LinearToSrgbBranchless(float3(Red, Red, Red)).r;
+	}
+	// 흰색 RGB + 알파 모양으로 뽑은 텍스처도 모양대로 나오도록 알파를 곱한다. 알파 없는 텍스처는 a = 1이라 .r 그대로다.
+	return Red * MaskSample.a;
+}
+
+// 드러난 마스크들의 합집합.
+float ReadCombinedMask(float2 ViewUV)
+{
+	float Mask = 0.0f;
+	Mask = max(Mask, ReadMask(MaskTexture0, ViewUV, MaskSRGB.x) * MaskWeights.x);
+	Mask = max(Mask, ReadMask(MaskTexture1, ViewUV, MaskSRGB.y) * MaskWeights.y);
+	Mask = max(Mask, ReadMask(MaskTexture2, ViewUV, MaskSRGB.z) * MaskWeights.z);
+	Mask = max(Mask, ReadMask(MaskTexture3, ViewUV, MaskSRGB.w) * MaskWeights.w);
+	return saturate(Mask);
+}
+
+void MainPS(
+	FScreenVertexOutput Input,
+	out float4 OutColor : SV_Target0)
+{
+	// 마스크와 슬라이스는 뷰 영역 기준 좌표로 계산해야 해상도 스케일 / 뷰 오프셋과 무관해진다.
+	const float2 ViewUV = (Input.UV - ViewportUVOrigin) / ViewportUVSize;
+	const float Mask = ReadCombinedMask(ViewUV);
+
+	const float4 Original = InputTexture.Sample(InputSampler, clamp(Input.UV, ViewRectMinUV, ViewRectMaxUV));
+	if (Mask <= 0.0f)
+	{
+		OutColor = Original;
+		return;
+	}
+
+	// 글리치 프레임마다 분할 / 이동 / 버스트 / 흔들림을 전부 다시 뽑는다.
+	const float GlitchFrame = floor(Time * max(GlitchRate, 1.0f));
+	const float FrameSeed = GlitchFrame * 17.17f + Seed * 7.13f;
+
+	const float Burst = step(1.0f - BurstChance, Hash11(FrameSeed * 3.71f + 0.5f));
+	const float StrengthScale = lerp(1.0f, BurstStrength, Burst);
+	const float Threshold = lerp(GlitchThreshold, BurstThreshold, Burst);
+
+	// 이 픽셀이 보여줄 내용의 위치(뷰 기준 0~1)와, 그 내용이 실제로 있는지(0이면 검게).
+	float2 SampleViewUV = ViewUV;
+	float Visible = 1.0f;
+	float GlitchGate = 0.0f;
+
+	// ---------------------------------------------------------
+	// 3. Shift to black
+	// ---------------------------------------------------------
+	if (bShiftToBlack != 0)
+	{
+		const float JitterGate = step(Threshold, Hash11(FrameSeed * 4.13f + 0.37f));
+		const float2 Jitter = (Hash21(FrameSeed * 5.31f) * 2.0f - 1.0f) * ShiftJitter * JitterGate;
+
+		// 내용이 Shift만큼 밀렸으니, 이 픽셀은 Shift만큼 뒤에 있던 내용을 보여준다.
+		SampleViewUV -= ShiftOffset + Jitter;
+
+		// 뒤에 있던 자리가 마스크 밖이거나 화면 밖이면 밀려 들어올 내용이 없으므로 검게 둔다.
+		const float InsideView = all(SampleViewUV >= 0.0f) && all(SampleViewUV <= 1.0f) ? 1.0f : 0.0f;
+		Visible = ReadCombinedMask(SampleViewUV) * InsideView;
+	}
+
+	// ---------------------------------------------------------
+	// 1. Slice glitch (DeathNoise.usf와 같은 방식)
+	// ---------------------------------------------------------
+	if (bSliceGlitch != 0)
+	{
+		// 격자 줄마다 "여기서 새 슬라이스 시작" 여부를 난수로 정하고, 현재 줄에서 위로 거슬러 올라가
+		// 가장 가까운 시작 줄을 슬라이스 ID로 쓴다.
+		const float Rows = max(floor(SliceRows), 1.0f);
+		float SliceStart = min(floor(saturate(ViewUV.y) * Rows), Rows - 1.0f);
+
+		[loop]
+		for (int SearchIndex = 0; SearchIndex < MAX_SLICE_SEARCH_ROWS; ++SearchIndex)
+		{
+			if (SliceStart <= 0.0f || Hash11(SliceStart * 91.73f + FrameSeed) < SliceSplitChance)
+			{
+				break;
+			}
+			SliceStart -= 1.0f;
+		}
+
+		GlitchGate = step(Threshold, Hash11(SliceStart * 37.19f + FrameSeed * 1.37f));
+		const float Direction = Hash11(SliceStart * 53.11f + FrameSeed * 2.71f) * 2.0f - 1.0f;
+		SampleViewUV.x += Direction * GlitchStrength * StrengthScale * Intensity * GlitchGate;
+	}
+
+	// ---------------------------------------------------------
+	// 2. Pixel sorting 결과 또는 원본에서 읽기
+	// ---------------------------------------------------------
+	float3 Color;
+	if (bPixelSort != 0)
+	{
+		const float2 SortedUV = clamp(SortedUVOrigin + SampleViewUV * SortedUVSize, SortedUVMin, SortedUVMax);
+		Color = SortedTexture.Sample(InputSampler, SortedUV).rgb;
+	}
+	else
+	{
+		const float2 SampleUV = clamp(ViewportUVOrigin + SampleViewUV * ViewportUVSize, ViewRectMinUV, ViewRectMaxUV);
+		Color = InputTexture.Sample(InputSampler, SampleUV).rgb;
+	}
+
+	Color = lerp(Original.rgb, Color * Visible, Mask);
+
+	// 빈 자리(검게)에는 더하지 않는다.
+	const float Glow = Mask * Visible * (MaskGlow + saturate(GlitchGate * GlitchGlow * Intensity));
+	OutColor = float4(Color + Tint * Glow, Original.a);
+}

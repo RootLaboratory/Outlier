@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "SceneViewExtension.h"
 #include "FPostProcessStructures.h"
+#include "RHIResources.h"
 #include "HAL/CriticalSection.h"
 #include "HeatHazeSourceComponent.h"
 #include "RDGEffectSourceWorldSubsystem.h"
@@ -34,7 +35,10 @@ public:
 public:
 	void UpdateCachedParameters(const FPostProcessStrcture& InParameters);
 	void UpdateCachedUIParameters(const FPostProcessStrctureUI& InParameters);
+	void UpdateDeathTransitionTexture(EDeathTransitionTexture Slot, const FTextureRHIRef& InTexture);
+	void UpdateDroneDamageMaskTexture(EDroneDamageMask Slot, const FTextureRHIRef& InTexture);
 	void UpdateHeatHazeSources(const TArray<FHeatHazeSourceData>& InSources);
+	void ResetRuntimeHistory_RenderThread();
 
 private:
 	bool ShouldRenderAnyEffect() const;
@@ -48,6 +52,11 @@ private:
 		const FPostProcessMaterialInputs& Inputs);
 
 	FScreenPassTexture DualKawaseBlurCallback_RenderThread(
+		FRDGBuilder& GraphBuilder,
+		const FSceneView& View,
+		const FPostProcessMaterialInputs& Inputs);
+
+	FScreenPassTexture SplitPrismDefocusCallback_RenderThread(
 		FRDGBuilder& GraphBuilder,
 		const FSceneView& View,
 		const FPostProcessMaterialInputs& Inputs);
@@ -72,6 +81,11 @@ private:
 		const FSceneView& View,
 		const FPostProcessMaterialInputs& Inputs);
 
+	FScreenPassTexture DroneDamageFeedbackCallback_RenderThread(
+		FRDGBuilder& GraphBuilder,
+		const FSceneView& View,
+		const FPostProcessMaterialInputs& Inputs);
+
 	FScreenPassTexture DeathNoiseCallback_RenderThread(
 		FRDGBuilder& GraphBuilder,
 		const FSceneView& View,
@@ -87,6 +101,11 @@ private:
 		const FSceneView& View,
 		const FPostProcessMaterialInputs& Inputs);
 
+	FScreenPassTexture DeathVignetteCallback_RenderThread(
+		FRDGBuilder& GraphBuilder,
+		const FSceneView& View,
+		const FPostProcessMaterialInputs& Inputs);
+
 	FScreenPassTexture ExplosionVolumeVisualizeCallback_RenderThread(
 		FRDGBuilder& GraphBuilder,
 		const FSceneView& View,
@@ -96,6 +115,10 @@ private:
 	TWeakObjectPtr<ULocalPlayer> LocalPlayer;
 	FPostProcessStrcture CachedParameters;
 	FPostProcessStrctureUI CachedUIParameters;
+	// EDeathTransitionTexture 순서.
+	FTextureRHIRef DeathTransitionTextureRHIs[DeathTransitionTextureCount];
+	// EDroneDamageMask 순서.
+	FTextureRHIRef DroneDamageMaskTextureRHIs[DroneDamageMaskCount];
 
 	mutable FCriticalSection HeatHazeSourcesCriticalSection;
 	TArray<FHeatHazeSourceData> CachedHeatHazeSources;

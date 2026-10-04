@@ -1,0 +1,52 @@
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/GammaCorrectionCommon.ush"
+#include "/Engine/Private/ScreenPass.ush"
+
+// 사망 연출 Black. 장면을 Background 텍스처 색으로 lerp한 뒤,
+// Noise 텍스처 색(rgb × a)을 더한다. 레이어 텍스처는 뷰 영역 전체에 한 장씩 깔린다.
+
+Texture2D InputTexture;
+SamplerState InputSampler;
+Texture2D BackgroundTexture;
+Texture2D NoiseTexture;
+SamplerState LayerSampler;
+
+float BackgroundAmount;
+float NoiseAmount;
+int bEncodeBackgroundToSRGB;
+int bEncodeNoiseToSRGB;
+float2 InputUVMin;
+float2 InputUVSizeInverse;
+
+// sRGB 인코딩은 rgb에만 한다. 알파는 원래 선형 값이다.
+float4 SampleLayer(Texture2D LayerTexture, float2 UV, int bEncodeToSRGB)
+{
+	float4 Color = LayerTexture.Sample(LayerSampler, UV);
+	if (bEncodeToSRGB != 0)
+	{
+		Color.rgb = LinearToSrgbBranchless(Color.rgb);
+	}
+	return Color;
+}
+
+void MainPS(
+	FScreenVertexOutput Input,
+	out float4 OutColor : SV_Target0)
+{
+	const float4 SceneColor = InputTexture.Sample(InputSampler, Input.UV);
+	const float2 LayerUV = saturate((Input.UV - InputUVMin) * InputUVSizeInverse);
+
+	const float3 BackgroundColor = SampleLayer(BackgroundTexture, LayerUV, bEncodeBackgroundToSRGB).rgb;
+
+	// Background는 알파를 쓰지 않는다.
+	float3 Color = lerp(SceneColor.rgb, BackgroundColor, saturate(BackgroundAmount));
+
+	// Noise는 straight alpha 텍스처라서 rgb에 알파를 곱해 더한다.
+	if (NoiseAmount > 0.0f)
+	{
+		const float4 Noise = SampleLayer(NoiseTexture, LayerUV, bEncodeNoiseToSRGB);
+		Color += Noise.rgb * Noise.a * NoiseAmount;
+	}
+
+	OutColor = float4(Color, SceneColor.a);
+}

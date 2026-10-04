@@ -7,9 +7,12 @@
 #include "FRDGExplosionVolumeVisualizePass.h"
 #include "FRDGHeatHazePass.h"
 #include "FRDGMotionBlurPass.h"
+#include "FRDGSplitPrismDefocusPass.h"
 #include "FRDGDatamoshingPass.h"
+#include "FRDGDeathBlackPass.h"
 #include "FRDGDeathColorLerpPass.h"
 #include "FRDGDeathNoisePass.h"
+#include "FRDGDroneDamageFeedbackPass.h"
 #include "RDGExplosionVolumeProvider.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
@@ -19,6 +22,7 @@
 #include "PostProcess/PostProcessMaterialInputs.h"
 #include "ProfilingDebugging/RealtimeGPUProfiler.h"
 #include "RenderGraphEvent.h"
+#include "RenderingThread.h"
 #include "SceneManagement.h"
 #include "ScreenPass.h"
 #include "SceneTexturesConfig.h"
@@ -31,6 +35,16 @@ FOutlierPostProcessSceneViewExtension::FOutlierPostProcessSceneViewExtension(con
 
 void FOutlierPostProcessSceneViewExtension::SetupViewFamily(FSceneViewFamily& InViewFamily)
 {
+}
+
+void FOutlierPostProcessSceneViewExtension::ResetRuntimeHistory_RenderThread()
+{
+	check(IsInRenderingThread());
+	DatamoshHistoryMap.Reset();
+	CachedVelocityVolume = nullptr;
+	CachedADSSightHardMask = nullptr;
+	CachedADSSightSoftMask = nullptr;
+	CachedADSPreDoFSceneColor = nullptr;
 }
 
 void FOutlierPostProcessSceneViewExtension::SetupView(FSceneViewFamily& InViewFamily, FSceneView& InView)
@@ -97,8 +111,9 @@ void FOutlierPostProcessSceneViewExtension::SubscribeToPostProcessingPass(EPostP
 				this,
 				&FOutlierPostProcessSceneViewExtension::DualKawaseBlurCallback_RenderThread));
 
-		
+
 	}
+
 	if (PassId == EPostProcessingPass::Tonemap && CachedParameters.Datamoshing.bEnabled)
 	{
 
@@ -110,16 +125,17 @@ void FOutlierPostProcessSceneViewExtension::SubscribeToPostProcessingPass(EPostP
 			&FOutlierPostProcessSceneViewExtension::DatamoshingCallback_RenderThread));
 	}
 
-	// 사망 연출: Noise → Fade → Black. Tonemap 이후라 UI는 안 먹는다.
-	// 순서가 곧 합성 순서라서 Black이 끝나면 아래 두 패스까지 완전히 덮인다.
-	if (PassId == EPostProcessingPass::Tonemap && CachedParameters.DeathNoise.bEnabled)
+	// 드론 피격 마스크 글리치. Tonemap 이후라 UI는 안 먹는다. 사망 연출 중엔 HUD와 함께 꺼진다.
+	if (PassId == EPostProcessingPass::Tonemap && CachedParameters.DroneDamageFeedback.bEnabled)
 	{
 		InOutPassCallbacks.Add(
 			FAfterPassCallbackDelegate::CreateRaw(
 				this,
-				&FOutlierPostProcessSceneViewExtension::DeathNoiseCallback_RenderThread));
+				&FOutlierPostProcessSceneViewExtension::DroneDamageFeedbackCallback_RenderThread));
 	}
 
+	// 사망 연출: Fade → Black → Vignette → Noise. Tonemap 이후라 UI는 안 먹는다.
+	// 순서가 곧 합성 순서라서 Vignette / Noise가 Fade/Black 결과 위에 얹혀 Black 단계까지 계속 보인다.
 	if (PassId == EPostProcessingPass::Tonemap && CachedParameters.DeathFade.bEnabled)
 	{
 		InOutPassCallbacks.Add(
@@ -136,6 +152,22 @@ void FOutlierPostProcessSceneViewExtension::SubscribeToPostProcessingPass(EPostP
 				&FOutlierPostProcessSceneViewExtension::DeathBlackCallback_RenderThread));
 	}
 
+	if (PassId == EPostProcessingPass::Tonemap && CachedParameters.DeathFade.bVignetteEnabled)
+	{
+		InOutPassCallbacks.Add(
+			FAfterPassCallbackDelegate::CreateRaw(
+				this,
+				&FOutlierPostProcessSceneViewExtension::DeathVignetteCallback_RenderThread));
+	}
+
+	if (PassId == EPostProcessingPass::Tonemap && CachedParameters.DeathNoise.bEnabled)
+	{
+		InOutPassCallbacks.Add(
+			FAfterPassCallbackDelegate::CreateRaw(
+				this,
+				&FOutlierPostProcessSceneViewExtension::DeathNoiseCallback_RenderThread));
+	}
+
 	// Pixel Sorting은 여기서 돌지 않음. Slate 이후 backbuffer 단계(FRDGModule::HandleBackBufferReadyRDG)로
 	// 옮겨서 UI까지 포함한 최종 화면에 적용됨.
 
@@ -148,7 +180,18 @@ void FOutlierPostProcessSceneViewExtension::SubscribeToPostProcessingPass(EPostP
 				this,
 				&FOutlierPostProcessSceneViewExtension::ExplosionVolumeVisualizeCallback_RenderThread));
 	}
-	
+
+	// Split Prism 디포커스. Tonemap 앞 선형 HDR이라 밝은 점이 빛망울로 퍼지고, 블룸도 흐려진 결과에서 다시 만들어진다.
+	// 엔진은 모션 블러가 꺼져 있어도 이 자리 콜백을 실행하므로 아래 bIsPassEnabled 검사보다 앞에 둔다.
+	// 갈라짐은 Slate 이후 backbuffer 단계(FRDGModule::HandleBackBufferReadyRDG)에서 한다.
+	if (PassId == EPostProcessingPass::MotionBlur && CachedParameters.SplitPrismDefocus.bEnabled)
+	{
+		InOutPassCallbacks.Add(
+			FAfterPassCallbackDelegate::CreateRaw(
+				this,
+				&FOutlierPostProcessSceneViewExtension::SplitPrismDefocusCallback_RenderThread));
+	}
+
 	if (!bIsPassEnabled)
 	{
 		return;
@@ -272,6 +315,22 @@ void FOutlierPostProcessSceneViewExtension::UpdateCachedParameters(const FPostPr
 	CachedParameters = InParameters;
 }
 
+void FOutlierPostProcessSceneViewExtension::UpdateDeathTransitionTexture(EDeathTransitionTexture Slot, const FTextureRHIRef& InTexture)
+{
+	if (Slot < EDeathTransitionTexture::Count)
+	{
+		DeathTransitionTextureRHIs[static_cast<int32>(Slot)] = InTexture;
+	}
+}
+
+void FOutlierPostProcessSceneViewExtension::UpdateDroneDamageMaskTexture(EDroneDamageMask Slot, const FTextureRHIRef& InTexture)
+{
+	if (Slot < EDroneDamageMask::Count)
+	{
+		DroneDamageMaskTextureRHIs[static_cast<int32>(Slot)] = InTexture;
+	}
+}
+
 void FOutlierPostProcessSceneViewExtension::UpdateHeatHazeSources(const TArray<FHeatHazeSourceData>& InSources)
 {
 	FScopeLock Lock(&HeatHazeSourcesCriticalSection);
@@ -284,10 +343,13 @@ bool FOutlierPostProcessSceneViewExtension::ShouldRenderAnyEffect() const
 		|| CachedParameters.LensFlare.bEnabled
 		|| CachedParameters.BloomBlur.bEnabled
 		|| CachedParameters.DualKawaseBlur.bEnabled
+		|| CachedParameters.SplitPrismDefocus.bEnabled
+		|| CachedParameters.DroneDamageFeedback.bEnabled
 		|| CachedParameters.Datamoshing.bEnabled
 		|| CachedParameters.ADSBlur.bEnabled
 		|| CachedParameters.DeathNoise.bEnabled
 		|| CachedParameters.DeathFade.bEnabled
+		|| CachedParameters.DeathFade.bVignetteEnabled
 		|| CachedParameters.DeathBlack.bEnabled
 		|| HasHeatHazeSources();
 }
@@ -358,6 +420,25 @@ FScreenPassTexture FOutlierPostProcessSceneViewExtension::DualKawaseBlurCallback
 		View,
 		SceneColor,
 		CachedParameters.DualKawaseBlur,
+		Inputs.OverrideOutput);
+}
+
+FScreenPassTexture FOutlierPostProcessSceneViewExtension::SplitPrismDefocusCallback_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessMaterialInputs& Inputs)
+{
+	const FScreenPassTexture SceneColor = FScreenPassTexture::CopyFromSlice(
+		GraphBuilder,
+		Inputs.GetInput(EPostProcessMaterialInput::SceneColor));
+
+	if (!SceneColor.IsValid())
+	{
+		return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
+	}
+
+	return FRDGSplitPrismDefocusPass::AddPass(
+		GraphBuilder,
+		View,
+		SceneColor,
+		CachedParameters.SplitPrismDefocus,
 		Inputs.OverrideOutput);
 }
 
@@ -478,6 +559,32 @@ FScreenPassTexture FOutlierPostProcessSceneViewExtension::DatamoshingCallback_Re
 	);
 }
 
+FScreenPassTexture FOutlierPostProcessSceneViewExtension::DroneDamageFeedbackCallback_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessMaterialInputs& Inputs)
+{
+	const FScreenPassTexture SceneColor = FScreenPassTexture::CopyFromSlice(
+		GraphBuilder,
+		Inputs.GetInput(EPostProcessMaterialInput::SceneColor));
+
+	if (!SceneColor.IsValid())
+	{
+		return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
+	}
+
+	TStaticArray<FRHITexture*, DroneDamageMaskCount> MaskTextures;
+	for (int32 Index = 0; Index < DroneDamageMaskCount; ++Index)
+	{
+		MaskTextures[Index] = DroneDamageMaskTextureRHIs[Index].GetReference();
+	}
+
+	return FRDGDroneDamageFeedbackPass::AddPass(
+		GraphBuilder,
+		View,
+		SceneColor,
+		CachedParameters.DroneDamageFeedback,
+		MaskTextures,
+		Inputs.OverrideOutput);
+}
+
 FScreenPassTexture FOutlierPostProcessSceneViewExtension::DeathNoiseCallback_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessMaterialInputs& Inputs)
 {
 	const FScreenPassTexture SceneColor = FScreenPassTexture::CopyFromSlice(
@@ -508,10 +615,9 @@ FScreenPassTexture FOutlierPostProcessSceneViewExtension::DeathFadeCallback_Rend
 		return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
 	}
 
+	// 비네트는 Black 다음에 따로 그린다. 여기서 더하면 Black에 덮인다.
 	const FDeathFadeParameters& Fade = CachedParameters.DeathFade;
-	const float Amount = Fade.bEnabled
-		? FMath::Clamp(Fade.Progress, 0.0f, 1.0f) * FMath::Clamp(Fade.MaxStrength, 0.0f, 1.0f)
-		: 0.0f;
+	const float Amount = Fade.bEnabled ? GetDeathFadeAmount(Fade) : 0.0f;
 
 	return FRDGDeathColorLerpPass::AddPass(
 		GraphBuilder,
@@ -519,6 +625,8 @@ FScreenPassTexture FOutlierPostProcessSceneViewExtension::DeathFadeCallback_Rend
 		SceneColor,
 		Fade.TargetColor,
 		Amount,
+		nullptr,
+		0.0f,
 		TEXT("RDG.DeathFade"),
 		Inputs.OverrideOutput);
 }
@@ -534,16 +642,40 @@ FScreenPassTexture FOutlierPostProcessSceneViewExtension::DeathBlackCallback_Ren
 		return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
 	}
 
-	const FDeathBlackParameters& Black = CachedParameters.DeathBlack;
-	const float Amount = Black.bEnabled ? FMath::Clamp(Black.Progress, 0.0f, 1.0f) : 0.0f;
+	return FRDGDeathBlackPass::AddPass(
+		GraphBuilder,
+		View,
+		SceneColor,
+		CachedParameters.DeathBlack,
+		DeathTransitionTextureRHIs[static_cast<int32>(EDeathTransitionTexture::BlackBackground)].GetReference(),
+		DeathTransitionTextureRHIs[static_cast<int32>(EDeathTransitionTexture::BlackNoise)].GetReference(),
+		Inputs.OverrideOutput);
+}
+
+FScreenPassTexture FOutlierPostProcessSceneViewExtension::DeathVignetteCallback_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessMaterialInputs& Inputs)
+{
+	const FScreenPassTexture SceneColor = FScreenPassTexture::CopyFromSlice(
+		GraphBuilder,
+		Inputs.GetInput(EPostProcessMaterialInput::SceneColor));
+
+	if (!SceneColor.IsValid())
+	{
+		return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
+	}
+
+	// Fade 셰이더를 보간량 0으로 돌려서 비네트만 더한다.
+	const FDeathFadeParameters& Fade = CachedParameters.DeathFade;
+	const float VignetteAmount = Fade.bVignetteEnabled ? GetDeathFadeVignetteAmount(Fade) : 0.0f;
 
 	return FRDGDeathColorLerpPass::AddPass(
 		GraphBuilder,
 		View,
 		SceneColor,
 		FLinearColor::Black,
-		Amount,
-		TEXT("RDG.DeathBlack"),
+		0.0f,
+		DeathTransitionTextureRHIs[static_cast<int32>(EDeathTransitionTexture::FadeVignette)].GetReference(),
+		VignetteAmount,
+		TEXT("RDG.DeathVignette"),
 		Inputs.OverrideOutput);
 }
 
