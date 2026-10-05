@@ -29,6 +29,7 @@ protected:
 public:
 	void EnterRoom(ARoomVolume* Room);
 	void LeaveRoom(ARoomVolume* Room);
+	bool HasActiveRoom(const ARoomVolume* Room) const;
 	void AssignDefaultRoomTag(FGameplayTag InRoomTag);
 	void ClearRuntimeRoomAssignment();
 

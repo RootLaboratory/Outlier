@@ -86,6 +86,12 @@ namespace HackGameplayTags
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Effect.Unblock")));
 			return Tag;
 		}
+
+		inline FGameplayTag Move()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Effect.Move")));
+			return Tag;
+		}
 	}
 
 	namespace MiniGame
@@ -183,9 +189,21 @@ namespace HackGameplayTags
 			return Tag;
 		}
 
+		inline FGameplayTag PannelSwitch()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Info.PannelSwitch")));
+			return Tag;
+		}
+
 		inline FGameplayTag Magnetic()
 		{
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Info.Magnetic")));
+			return Tag;
+		}
+
+		inline FGameplayTag Turret()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Info.Turret")));
 			return Tag;
 		}
 	}

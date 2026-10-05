@@ -1,6 +1,9 @@
 #include "Network/OutlierArenaSubsystem.h"
 
 #include "Engine/Engine.h"
+#include "Engine/GameInstance.h"
+#include "Engine/LocalPlayer.h"
+#include "Engine/World.h"
 #include "Engine/Level.h"
 #include "Engine/LevelStreaming.h"
 #include "Engine/LevelStreamingAlwaysLoaded.h"
@@ -13,6 +16,8 @@
 #include "OutlierArenaSettings.h"
 #include "Engine/NetConnection.h"
 #include "Misc/PackageName.h"
+#include "LocalPlayerPostProcessSubsystem.h"
+#include "PostProcess/MaterialPostProcessSubsystem.h"
 
 #if WITH_EDITOR
 #include "Misc/DataValidation.h"
@@ -20,6 +25,29 @@
 
 namespace
 {
+	void ResetPostProcessForGameplayReload(UWorld* World)
+	{
+		if (!World)
+		{
+			return;
+		}
+		if (UMaterialPostProcessSubsystem* MaterialPP = World->GetSubsystem<UMaterialPostProcessSubsystem>())
+		{
+			MaterialPP->ResetAllPostProcess();
+		}
+		if (UGameInstance* GameInstance = World->GetGameInstance())
+		{
+			for (ULocalPlayer* LocalPlayer : GameInstance->GetLocalPlayers())
+			{
+				if (ULocalPlayerPostProcessSubsystem* PP = LocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
+				{
+					// 사망 암전은 새 Pawn을 확인할 때 해제한다.
+					PP->ResetAllPostProcess(true);
+				}
+			}
+		}
+	}
+
 	const TCHAR* GetArenaReloadRole(const UWorld* World)
 	{
 		if (!World)
@@ -567,6 +595,7 @@ bool UOutlierArenaSubsystem::ReloadGameplayLevels(uint32 Generation, bool bWaitF
 		TEXT("[ArenaReload][%s] Gen=%u UnloadRequested WaitClientAcks=%d"),
 		GetArenaReloadRole(GetWorld()), Generation, bWaitForClientAcks ? 1 : 0);
 	Arena.bReady = false;
+	ResetPostProcessForGameplayReload(GetWorld());
 	OnArenaGameplayReloadStarted.Broadcast(Generation);
 	RequestGameplayLevelsLoaded(false);
 	EnsureArenaPollTicker();
@@ -605,6 +634,7 @@ bool UOutlierArenaSubsystem::BeginClientGameplayReload(uint32 Generation)
 	CaptureGameplayReloadActors(Pending);
 	UE_LOG(LogTemp, Display, TEXT("[ArenaReload][Client] Gen=%u UnloadRequested"), Generation);
 	Arena.bReady = false;
+	ResetPostProcessForGameplayReload(GetWorld());
 	OnArenaGameplayReloadStarted.Broadcast(Generation);
 	RequestGameplayLevelsLoaded(false);
 	EnsureArenaPollTicker();

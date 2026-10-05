@@ -99,7 +99,11 @@ public:
 	float MinCircleRadius = 80.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ClickCircle", meta = (ClampMin = "1.0"))
-	float MaxCircleRadius = 280.0f;
+	float MaxCircleRadius = 400.0f;
+
+	// WBP background image diameter. Keep the full outer ring inside this area.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ClickCircle", meta = (ClampMin = "1.0"))
+	float BackgroundCircleDiameter = 796.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ClickCircle", meta = (ClampMin = "0.0"))
 	float CircleThickness = 12.0f;

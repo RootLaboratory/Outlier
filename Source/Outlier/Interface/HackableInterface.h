@@ -25,6 +25,8 @@ class OUTLIER_API IHackableInterface
 
 public:
 	virtual UHackableComponent* GetHackableComponent() const = 0;
+	virtual FVector GetHackTargetLocation() const;
+	static FVector ResolveHackTargetLocation(const AActor* Actor);
 	virtual void HandleHackStarted(const FHackQueryContext& Context) {}
 	virtual void HandleHackCompleted(const FHackResultContext& Context) {}
 	virtual void HandleHackEffect(FGameplayTag EffectTag, const FHackResultContext& Context) = 0;

@@ -19,7 +19,9 @@
 #include "GameplayEffect.h"
 #include "Animation/AnimInstance.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/SkinnedMeshComponent.h"
 #include "Components/SphereComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "InputActionValue.h"
 #include "HAL/IConsoleManager.h"
@@ -33,6 +35,8 @@
 #include "Room/RoomCombatSubsystem.h"
 #include "Network/OutlierArenaSubsystem.h"
 #include "Weapon/RangedWeaponBase.h"
+#include "Shooter/ShooterCharacter.h"
+#include "Shooter/ShooterPlayerController.h"
 #include "Outlier.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "GAS/Attributes/OutlierVitalAttributeSet.h"
@@ -84,6 +88,20 @@ namespace
 		case EOutlierAdaptationDamageCategory::Ignore:
 		default:
 			return EEnemyFinalKillCategory::Ignore;
+		}
+	}
+
+	// 위젯 컴포넌트도 UMeshComponent 라서 실제 메시 종류만 등장 디졸브 대상으로 넘긴다.
+	void AppendSpawnPresentationMeshes(const AActor* Actor, TArray<UMeshComponent*>& OutMeshes)
+	{
+		TArray<UMeshComponent*> MeshComponents;
+		Actor->GetComponents<UMeshComponent>(MeshComponents);
+		for (UMeshComponent* MeshComponent : MeshComponents)
+		{
+			if (Cast<USkinnedMeshComponent>(MeshComponent) || Cast<UStaticMeshComponent>(MeshComponent))
+			{
+				OutMeshes.Add(MeshComponent);
+			}
 		}
 	}
 }
@@ -564,8 +582,33 @@ void AEnemyBase::OnPoolSpawnPresentationStarted_Implementation(
 		return;
 	}
 #endif
-	// 연출이 없는 Enemy는 즉시 완료한다. BP가 Override하면 반드시 같은 토큰으로 완료 API를 호출해야 한다.
-	CompletePoolSpawnPresentation(GameplayGeneration, LeaseSerial);
+	// 등장 연출 시간과 디졸브는 MaterialPostProcess 쪽이 책임진다. Enemy는 요청하고 끝났다는 통보만 받는다.
+	// 볼륨이 없거나 연출 시간이 0이면 통보가 즉시 와서 기존처럼 바로 활성화된다.
+	// BP가 Override하면 반드시 같은 토큰으로 완료 API를 호출해야 한다.
+	UMaterialPostProcessSubsystem* PostProcessSubsystem = GetWorld()
+		? GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>()
+		: nullptr;
+	if (!PostProcessSubsystem)
+	{
+		CompletePoolSpawnPresentation(GameplayGeneration, LeaseSerial);
+		return;
+	}
+
+	PostProcessSubsystem->StartEnemySpawnPresentation(this, FSimpleDelegate::CreateWeakLambda(
+		this,
+		[this, GameplayGeneration, LeaseSerial]()
+		{
+			CompletePoolSpawnPresentation(GameplayGeneration, LeaseSerial);
+		}));
+}
+
+void AEnemyBase::CollectSpawnPresentationMeshes(TArray<UMeshComponent*>& OutMeshes) const
+{
+	AppendSpawnPresentationMeshes(this, OutMeshes);
+	if (IsValid(CurrentWeapon))
+	{
+		AppendSpawnPresentationMeshes(CurrentWeapon, OutMeshes);
+	}
 }
 
 void AEnemyBase::OnPoolDeathPresentationStarted_Implementation(
@@ -737,6 +780,22 @@ void AEnemyBase::ApplyPoolState(EEnemyPoolState PreviousState)
 		CurrentWeapon->SetActorHiddenInGame(bIdle);
 	}
 
+	// 서버는 OnPoolSpawnPresentationStarted에서 완료 통보와 함께 등장 연출을 시작한다.
+	// 클라이언트는 표시만 따라 하고, 연출 상태를 벗어나면 어느 쪽이든 원본 머티리얼로 되돌린다.
+	if (UMaterialPostProcessSubsystem* PostProcessSubsystem = GetWorld()
+		? GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>()
+		: nullptr)
+	{
+		if (PoolState != EEnemyPoolState::SpawnPresentation)
+		{
+			PostProcessSubsystem->StopEnemySpawnPresentation(this);
+		}
+		else if (!HasAuthority())
+		{
+			PostProcessSubsystem->StartEnemySpawnPresentation(this, FSimpleDelegate());
+		}
+	}
+
 	if (HasAuthority())
 	{
 		if (bCombatActive)
@@ -885,6 +944,12 @@ void AEnemyBase::PrepareForPoolIdle()
 
 void AEnemyBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	if (UMaterialPostProcessSubsystem* PostProcessSubsystem = GetWorld()
+		? GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>()
+		: nullptr)
+	{
+		PostProcessSubsystem->StopEnemySpawnPresentation(this);
+	}
 	GetWorldTimerManager().ClearTimer(DeathDebrisTimerHandle);
 	CancelPossessionProcess();
 	ResetPossessedAttackInput();
@@ -1907,8 +1972,8 @@ void AEnemyBase::BroadcastDamageCue(const FOutlierDamageRequest& Request, float 
 	CueParameters.Instigator = Request.EventInstigator;
 	CueParameters.EffectCauser = Request.DamageCauser;
 
-	//GC에 쓸 Context를 나눔. 무기 피해나 폭발 피해; 나중에 tag로 이펙트 처리를 분기로 나눌 수 있기 때문임.따로 GC를 늘리는 것보다 태그 기반
-	//분기 처리가 더 낫다고 생각했음.ㄴ
+	// The shared hit cue selects melee/ranged/explosion feedback from
+	// AggregatedSourceTags; EffectContext supplies the impact location and normal.
 
 	FGameplayEffectContextHandle EffectContext = OutlierAbilitySystemComponent->MakeEffectContext();
 	EffectContext.AddInstigator(Request.EventInstigator, Request.DamageCauser);
@@ -2856,6 +2921,18 @@ bool AEnemyBase::CanShowMeleeTargetIndicator_Implementation(const AActor* /*Inst
 	return !IsDead()
 		&& CanBeDamaged()
 		&& GetGenericTeamId().GetId() == OutlierTeamIds::Enemy;
+}
+
+void AEnemyBase::SetMeleeTargeted_Implementation(AActor* InstigatorActor, bool bTargeted)
+{
+	AShooterCharacter* Shooter = Cast<AShooterCharacter>(InstigatorActor);
+	AShooterPlayerController* ShooterController = Shooter
+		? Cast<AShooterPlayerController>(Shooter->GetController()) : nullptr;
+	if (IsValid(ShooterController))
+	{
+		// 적 액터는 클라이언트 소유가 아니므로 RPC는 Shooter의 Controller를 통해 보낸다.
+		ShooterController->ClientNotifyMeleeTargeted(this, Shooter, bTargeted);
+	}
 }
 
 void AEnemyBase::SetDefaultEnemyType(EEnemyType EnemyType)

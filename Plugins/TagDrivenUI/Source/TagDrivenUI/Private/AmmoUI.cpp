@@ -2,18 +2,22 @@
 
 
 #include "AmmoUI.h"
+#include "Blueprint/WidgetTree.h"
+#include "Components/CanvasPanel.h"
+#include "Components/Image.h"
+#include "Components/PanelWidget.h"
 #include "Components/TextBlock.h"
 
 void UAmmoUI::NativeConstruct()
 {
 	Super::NativeConstruct();
 	RefreshAmmoTexts();
+
+	ApplyWeaponOverchargeVisibility();
 }
 
 void UAmmoUI::AmmoCountChanged_Implementation(int32 InAmmoCount)
 {
-	UE_LOG(LogTemp, Warning, TEXT("[ShooterHUD][AmmoEvent] CountChanged Widget=%s Ammo=%d"),
-		*GetNameSafe(this), InAmmoCount);
 	CurrentAmmo = InAmmoCount;
 	Temp_AmmoCount = InAmmoCount;
 	RefreshAmmoTexts();
@@ -21,8 +25,6 @@ void UAmmoUI::AmmoCountChanged_Implementation(int32 InAmmoCount)
 
 void UAmmoUI::AmmoStateChanged_Implementation(int32 InCurrentAmmo, int32 InMaxAmmo)
 {
-	UE_LOG(LogTemp, Warning, TEXT("[ShooterHUD][AmmoEvent] StateChanged Widget=%s Current=%d Max=%d"),
-		*GetNameSafe(this), InCurrentAmmo, InMaxAmmo);
 	CurrentAmmo = InCurrentAmmo;
 	MaxAmmo = InMaxAmmo;
 	Temp_AmmoCount = InCurrentAmmo;
@@ -41,6 +43,37 @@ void UAmmoUI::SetAmmoState(int32 InCurrentAmmo, int32 InMaxAmmo)
 
 	// Blueprint 이벤트가 텍스트를 건드려도 BindWidget 값이 최종 상태가 되도록 보장한다.
 	RefreshAmmoTexts();
+}
+
+void UAmmoUI::SetWeaponOverchargeActive(bool bActive)
+{
+	if (bWeaponOverchargeActive == bActive)
+	{
+		return;
+	}
+
+	bWeaponOverchargeActive = bActive;
+	ApplyWeaponOverchargeVisibility();
+}
+
+void UAmmoUI::ApplyWeaponOverchargeVisibility()
+{
+	if (!AmmoCanvas)
+	{
+		return;
+	}
+
+	// 패널(SizeBox 등)은 그대로 두고 표시 위젯만 뒤집는다. 무한 이미지와 나머지는 항상 반대 상태다.
+	UWidgetTree::ForWidgetAndChildren(AmmoCanvas, [this](UWidget* Widget)
+	{
+		if (!Widget || Widget->IsA<UPanelWidget>())
+		{
+			return;
+		}
+
+		const bool bShow = (Widget == OverLoad_Infinity) == bWeaponOverchargeActive;
+		Widget->SetVisibility(bShow ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
+	});
 }
 
 void UAmmoUI::RefreshAmmoTexts()

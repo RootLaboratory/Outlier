@@ -8,6 +8,8 @@
 
 class UHackableComponent;
 
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnHackTargetUnavailable, UHackableComponent*);
+
 DECLARE_MULTICAST_DELEGATE_TwoParams(
 	FOnHackTargetInvalidated,
 	UHackableComponent*,
@@ -58,6 +60,8 @@ public:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 	FOnHackTargetInvalidated OnHackTargetInvalidated;
+	FOnHackTargetUnavailable OnHackTargetUnavailable;
+	void NotifyHackTargetUnavailable();
 
 	UFUNCTION(BlueprintCallable, Category = "Hack")
 	bool CanBeHackTarget(const FHackQueryContext& Context) const;

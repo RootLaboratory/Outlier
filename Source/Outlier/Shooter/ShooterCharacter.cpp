@@ -1014,6 +1014,10 @@ void AShooterCharacter::HandleWeaponOverchargeTagChanged(const FGameplayTag Tag,
 				{
 					PPSubsystem->SetOverlayEnabled(bOverchargeActive);
 				}
+				if (ULocalPlayerUISubSystem* UISubsystem = LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>())
+				{
+					UISubsystem->OnRep_WeaponOverchargeChanged(bOverchargeActive);
+				}
 			}
 		}
 	}
@@ -1189,6 +1193,12 @@ void AShooterCharacter::RefreshShooterSuitUI()
 			// bShooterSuitAcquired 가 계속 false 였고, 크로스헤어 갱신이 통째로 막혀 있었다.
 			// (MainWidget 게이트는 PlayerState 를 직접 읽어서 따로 동작했다.)
 			UISubsystem->OnShooterSuitAcquiredChanged(bSuitAcquired);
+
+			// 캐릭터가 교체되면 이전 캐릭터의 과충전 해제 신호가 오지 않을 수 있어 현재 태그로 다시 맞춘다.
+			UISubsystem->OnRep_WeaponOverchargeChanged(
+				OutlierAbilitySystemComponent
+				&& OutlierAbilitySystemComponent->HasMatchingGameplayTag(
+					OutlierGameplayTags::State::WeaponOvercharged()));
 		}
 	}
 
@@ -2437,7 +2447,7 @@ bool AShooterCharacter::TryReflectIncomingDamage(const FOutlierDamageRequest& Re
 	{
 		return false;
 	}
-	if (!Request.DamageTag.MatchesTagExact(OutlierGameplayTags::Damage::Weapon())
+	if (!Request.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Weapon())
 		&& !Request.DamageTag.MatchesTagExact(OutlierGameplayTags::Damage::Explosion()))
 	{
 		return false;

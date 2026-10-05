@@ -6,6 +6,8 @@
 #include "UI/UILayerTypes.h"
 #include "LocalPlayerUILayerSubsystem.generated.h"
 
+class UControllerInputConfig;
+class UEnhancedInputComponent;
 class UMainUIBase;
 class UPanelWidget;
 class UUILayerRootWidget;
@@ -80,6 +82,9 @@ public:
 	bool RefocusLayer(FUILayerHandle Handle, EUILayerFocusTarget FocusTarget);
 	bool IsLayerActive(FGameplayTag LayerTag) const;
 	UUserWidget* GetTopLayerWidget() const;
+	UUserWidget* FindWidgetByOwnerAndClass(
+		UObject* RequestOwner,
+		TSubclassOf<UUserWidget> WidgetClass) const;
 	FGameplayTag GetActiveInputModeTag() const;
 	bool RouteWidgetEscapeInput(bool bPopUnhandledInput = true);
 	bool RouteWidgetConfirmedInput();
@@ -87,6 +92,10 @@ public:
 	bool RouteWidgetDownInput();
 	bool RouteWidgetLeftInput();
 	bool RouteWidgetRightInput();
+	// 위젯 IMC를 추가하고 Confirm/상하좌우를 레이어 라우팅에 직접 묶는다.
+	// Escape는 컨트롤러마다 동작이 달라 성공 시 각 컨트롤러가 직접 바인딩한다.
+	bool BindWidgetInput(UEnhancedInputComponent* InputComponent, const UControllerInputConfig* Config);
+	const UControllerInputConfig* GetWidgetInputConfig() const { return WidgetInputConfig; }
 
 private:
 	bool AttachWidgetToLayer(
@@ -105,6 +114,7 @@ private:
 	void ClearAllLayersInternal(bool bRestoreDefaultInput);
 
 	void RefreshTopLayerInput();
+	void RefreshPostProcessSuspension();
 	void ApplyLayerInput(const FUILayerEntry& Layer);
 	void ApplyDefaultInput();
 
@@ -119,6 +129,10 @@ private:
 
 	UPROPERTY(Transient)
 	TMap<FGameplayTag, TObjectPtr<UPanelWidget>> LayerContainers;
+
+	// 현재 컨트롤러가 바인딩한 위젯 입력. 키 힌트 위젯이 표시할 액션을 여기서 읽는다.
+	UPROPERTY(Transient)
+	TObjectPtr<const UControllerInputConfig> WidgetInputConfig;
 
 	TWeakObjectPtr<UMainUIBase> RegisteredMainUI;
 	TArray<FUILayerEntry> LayerEntries;

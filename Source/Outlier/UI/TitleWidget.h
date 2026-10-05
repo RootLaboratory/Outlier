@@ -7,18 +7,12 @@
 #include "UI/UILayerTypes.h"
 #include "TitleWidget.generated.h"
 
-class UButton;
 class UCreditWidget;
 class ULobbyWidget;
 class USettingWidget;
+class UTitleButtonsWidget;
 class UUILayerKeyHintWidget;
-
-DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnTitleStartRequested);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnTitleExitRequested);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnTitleCreditRequested);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnTitleSettingRequested);
-
-
+enum class ETitleButtonAction : uint8;
 
 UCLASS()
 class OUTLIER_API UTitleWidget : public UUserWidget,
@@ -28,6 +22,7 @@ class OUTLIER_API UTitleWidget : public UUserWidget,
 	GENERATED_BODY()
 
 public:
+	virtual void NativeOnInitialized() override;
 	virtual void NativeConstruct() override;
 	virtual void NativeDestruct() override;
 
@@ -41,54 +36,24 @@ protected:
 	virtual bool HandleUILayerLeft_Implementation() override;
 	virtual bool HandleUILayerRight_Implementation() override;
 
-public:
-	UFUNCTION()
-	void HandleStartButtonEvent();
-	UFUNCTION()
-	void HandleExitButtonEvent();
-	UFUNCTION()
-	void HandleCreditButtonEvent();
-	UFUNCTION()
-	void HandleSettingButtonEvent();
+	// 버튼과 그 입력은 모두 이 모듈이 판단하고, 이 레이어는 확정된 액션으로 다음 레이어를 연다.
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UTitleButtonsWidget> TitleButtons;
 
-	UPROPERTY(BlueprintAssignable)
-	FOnTitleStartRequested OnStartRequested;
-
-	UPROPERTY(BlueprintAssignable)
-	FOnTitleExitRequested OnExitRequested;
-
-	UPROPERTY(BlueprintAssignable)
-	FOnTitleCreditRequested OnCreditRequested;
-
-	UPROPERTY(BlueprintAssignable)
-	FOnTitleSettingRequested OnSettingRequested;
-
-protected:
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr<UButton> StartButton;
-
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr<UButton> ExitButton;
-
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr<UButton> CreditButton;
-
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr<UButton> SettingButton;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "UI|Layer")
+	UPROPERTY(EditDefaultsOnly, Category = "UI|Layer")
 	TSubclassOf<ULobbyWidget> LobbyWidgetClass;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "UI|Layer")
+	UPROPERTY(EditDefaultsOnly, Category = "UI|Layer")
 	TSubclassOf<UCreditWidget> CreditWidgetClass;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "UI|Layer")
+	UPROPERTY(EditDefaultsOnly, Category = "UI|Layer")
 	TSubclassOf<USettingWidget> SettingWidgetClass;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "UI|Layer")
+	UPROPERTY(EditDefaultsOnly, Category = "UI|Layer")
 	TSubclassOf<UUILayerKeyHintWidget> KeyHintWidgetClass;
 
 private:
+	void HandleTitleButtonAction(ETitleButtonAction Action);
 	void PushLobbyLayer();
 	void PushCreditLayer();
 	void PushSettingLayer();

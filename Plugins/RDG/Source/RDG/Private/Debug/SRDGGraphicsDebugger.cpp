@@ -3,6 +3,7 @@
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/LocalPlayer.h"
+#include "Engine/Texture2D.h"
 #include "HAL/IConsoleManager.h"
 #include "LocalPlayerPostProcessSubsystem.h"
 #include "Widgets/Input/SButton.h"
@@ -1670,6 +1671,18 @@ void SRDGGraphicsDebugger::Construct(const FArguments& InArgs)
 				[
 					MakeDeathTransitionSection()
 				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(RDGGraphicsDebugger::RowPadding)
+				[
+					MakeSplitPrismSection()
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(RDGGraphicsDebugger::RowPadding)
+				[
+					MakeDroneDamageFeedbackSection()
+				]
 			]
 		]
 	];
@@ -3064,6 +3077,22 @@ TSharedRef<SWidget> SRDGGraphicsDebugger::MakeDeathTransitionSection()
 			MoveTemp(Field));
 	};
 
+	// 사망 연출 텍스처 슬롯 하나의 바인딩 상태. 텍스처는 볼륨이 넣어준다.
+	auto MakeDeathTextureStatus = [](TFunction<ULocalPlayerPostProcessSubsystem*()> Resolve, EDeathTransitionTexture Slot, const TCHAR* SlotName) -> TSharedRef<SWidget>
+	{
+		return SNew(STextBlock)
+			.Text_Lambda([Resolve, Slot, SlotName]()
+			{
+				const ULocalPlayerPostProcessSubsystem* Subsystem = Resolve();
+				return FText::FromString(Subsystem
+					? FString::Printf(TEXT("%s texture: %s (%s)"),
+						SlotName,
+						*GetNameSafe(Subsystem->GetDeathTransitionTexture(Slot)),
+						Subsystem->IsDeathTransitionTextureReady(Slot) ? TEXT("ready") : TEXT("not ready"))
+					: FString::Printf(TEXT("%s texture: no subsystem"), SlotName));
+			});
+	};
+
 	// 패스 하나 = 접을 수 있는 하위 섹션. 헤더 체크박스가 그 패스의 on/off 플래그다.
 	auto MakePassSection = [Resolve](const TCHAR* Title, EDeathTransitionPass Pass, const TArray<TSharedRef<SWidget>>& Rows) -> TSharedRef<SWidget>
 	{
@@ -3184,7 +3213,7 @@ TSharedRef<SWidget> SRDGGraphicsDebugger::MakeDeathTransitionSection()
 			{
 			case EDeathTransitionPhase::Fading:   PhaseName = TEXT("Fading"); break;
 			case EDeathTransitionPhase::Holding:  PhaseName = TEXT("Holding (Delay)"); break;
-			case EDeathTransitionPhase::Blackout: PhaseName = TEXT("Blackout (widget opened)"); break;
+			case EDeathTransitionPhase::Blackout: PhaseName = TEXT("Blackout (waiting for Noise / Noise visible)"); break;
 			case EDeathTransitionPhase::Black:    PhaseName = TEXT("Black"); break;
 			default: break;
 			}
@@ -3203,7 +3232,27 @@ TSharedRef<SWidget> SRDGGraphicsDebugger::MakeDeathTransitionSection()
 
 	AddPassSection(MakePassSection(TEXT("Noise (game view)"), EDeathTransitionPass::Noise,
 	{
-		NoiseRow(TEXT("Intensity"), 0.0f, 4.0f, [](FDeathNoiseParameters& P) -> float& { return P.Intensity; }),
+		NoiseRow(TEXT("Max Intensity"), 0.0f, 4.0f, [](FDeathNoiseParameters& P) -> float& { return P.MaxIntensity; }),
+		SNew(SCheckBox)
+			.IsChecked_Lambda([Resolve]()
+			{
+				const ULocalPlayerPostProcessSubsystem* Subsystem = Resolve();
+				return Subsystem && Subsystem->GetPostProcessStrcture().DeathNoise.bRampIntensity
+					? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+			})
+			.OnCheckStateChanged_Lambda([Resolve](ECheckBoxState NewState)
+			{
+				if (ULocalPlayerPostProcessSubsystem* Subsystem = Resolve())
+				{
+					FDeathNoiseParameters Parameters = Subsystem->GetPostProcessStrcture().DeathNoise;
+					Parameters.bRampIntensity = NewState == ECheckBoxState::Checked ? 1 : 0;
+					Subsystem->SetDeathNoiseParameters(Parameters);
+				}
+			})
+			[
+				SNew(STextBlock).Text(FText::FromString(TEXT("Ramp Intensity (0 -> Max over Ramp Duration)")))
+			],
+		NoiseRow(TEXT("Ramp Duration (s)"), 0.0f, 5.0f, [](FDeathNoiseParameters& P) -> float& { return P.RampDuration; }),
 		NoiseRow(TEXT("Seed"), 0.0f, 100.0f, [](FDeathNoiseParameters& P) -> float& { return P.Seed; }),
 		NoiseRow(TEXT("Slice Rows (grid)"), 1.0f, 256.0f, [](FDeathNoiseParameters& P) -> float& { return P.SliceRows; }),
 		NoiseRow(TEXT("Slice Split Chance (avg height = 1/x rows)"), 0.0f, 1.0f, [](FDeathNoiseParameters& P) -> float& { return P.SliceSplitChance; }),
@@ -3219,19 +3268,51 @@ TSharedRef<SWidget> SRDGGraphicsDebugger::MakeDeathTransitionSection()
 		NoiseRow(TEXT("Tint B"), 0.0f, 1.0f, [](FDeathNoiseParameters& P) -> float& { return P.Tint.B; })
 	}));
 
-	AddPassSection(MakePassSection(TEXT("Fade (game view)"), EDeathTransitionPass::Fade,
+	AddPassSection(MakePassSection(TEXT("Fade + Vignette (game view) - vignette stays until respawn"), EDeathTransitionPass::Fade,
 	{
 		FadeRow(TEXT("Target Color R"), 0.0f, 1.0f, [](FDeathFadeParameters& P) -> float& { return P.TargetColor.R; }),
 		FadeRow(TEXT("Target Color G"), 0.0f, 1.0f, [](FDeathFadeParameters& P) -> float& { return P.TargetColor.G; }),
 		FadeRow(TEXT("Target Color B"), 0.0f, 1.0f, [](FDeathFadeParameters& P) -> float& { return P.TargetColor.B; }),
 		FadeRow(TEXT("Max Strength"), 0.0f, 1.0f, [](FDeathFadeParameters& P) -> float& { return P.MaxStrength; }),
 		FadeRow(TEXT("Duration (s)"), 0.0f, 5.0f, [](FDeathFadeParameters& P) -> float& { return P.Duration; }),
-		FadeRow(TEXT("Delay before Black (s)"), 0.0f, 5.0f, [](FDeathFadeParameters& P) -> float& { return P.Delay; })
+		SNew(SCheckBox)
+			.IsChecked_Lambda([Resolve]()
+			{
+				const ULocalPlayerPostProcessSubsystem* Subsystem = Resolve();
+				return Subsystem && Subsystem->GetPostProcessStrcture().DeathFade.bEaseIn
+					? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+			})
+			.OnCheckStateChanged_Lambda([Resolve](ECheckBoxState NewState)
+			{
+				if (ULocalPlayerPostProcessSubsystem* Subsystem = Resolve())
+				{
+					FDeathFadeParameters Parameters = Subsystem->GetPostProcessStrcture().DeathFade;
+					Parameters.bEaseIn = NewState == ECheckBoxState::Checked ? 1 : 0;
+					Subsystem->SetDeathFadeParameters(Parameters);
+				}
+			})
+			[
+				SNew(STextBlock).Text(FText::FromString(TEXT("Ease In Curve (unchecked = Linear)")))
+			],
+		FadeRow(TEXT("Ease In Power (1 = Linear, higher = slower start)"), 1.0f, 8.0f, [](FDeathFadeParameters& P) -> float& { return P.EaseInPower; }),
+		FadeRow(TEXT("Delay before Black (s)"), 0.0f, 5.0f, [](FDeathFadeParameters& P) -> float& { return P.Delay; }),
+		FadeRow(TEXT("Vignette Delay (s, after Fade start)"), 0.0f, 5.0f, [](FDeathFadeParameters& P) -> float& { return P.VignetteDelay; }),
+		FadeRow(TEXT("Vignette Fade (s)"), 0.0f, 5.0f, [](FDeathFadeParameters& P) -> float& { return P.VignetteFadeDuration; }),
+		MakeDeathTextureStatus(Resolve, EDeathTransitionTexture::FadeVignette, TEXT("Vignette"))
 	}));
 
-	AddPassSection(MakePassSection(TEXT("Black (game view) - widget opens when this starts"), EDeathTransitionPass::Black,
+	AddPassSection(MakePassSection(TEXT("Black (game view) - widget opens when Noise appears"), EDeathTransitionPass::Black,
 	{
-		BlackRow(TEXT("Duration (s)"), 0.0f, 5.0f, [](FDeathBlackParameters& P) -> float& { return P.Duration; })
+		BlackRow(TEXT("1. Background Delay (s, after Blackout start)"), 0.0f, 5.0f,
+			[](FDeathBlackParameters& P) -> float& { return P.LayerDelays[static_cast<int32>(EDeathBlackLayer::Background)]; }),
+		BlackRow(TEXT("1. Background Fade (s)"), 0.0f, 5.0f,
+			[](FDeathBlackParameters& P) -> float& { return P.LayerFadeDurations[static_cast<int32>(EDeathBlackLayer::Background)]; }),
+		BlackRow(TEXT("2. Noise Delay (s, after Background)"), 0.0f, 5.0f,
+			[](FDeathBlackParameters& P) -> float& { return P.LayerDelays[static_cast<int32>(EDeathBlackLayer::Noise)]; }),
+		BlackRow(TEXT("2. Noise Fade (s)"), 0.0f, 5.0f,
+			[](FDeathBlackParameters& P) -> float& { return P.LayerFadeDurations[static_cast<int32>(EDeathBlackLayer::Noise)]; }),
+		MakeDeathTextureStatus(Resolve, EDeathTransitionTexture::BlackBackground, TEXT("1. Background")),
+		MakeDeathTextureStatus(Resolve, EDeathTransitionTexture::BlackNoise, TEXT("2. Noise"))
 	}));
 
 	AddPassSection(MakePassSection(TEXT("Chromatic Aberration (UI included)"), EDeathTransitionPass::ChromaticAberration,
@@ -3246,6 +3327,423 @@ TSharedRef<SWidget> SRDGGraphicsDebugger::MakeDeathTransitionSection()
 		[
 			SNew(STextBlock)
 			.Text(FText::FromString(TEXT("Death Transition")))
+		]
+		.BodyContent()
+		[
+			Body
+		];
+}
+
+TSharedRef<SWidget> SRDGGraphicsDebugger::MakeSplitPrismSection()
+{
+	using namespace RDGGraphicsDebugger;
+
+	const TFunction<ULocalPlayerPostProcessSubsystem*()> Resolve = [this]()
+	{
+		return ResolvePostProcessSubsystem();
+	};
+
+	auto SettingsRow = [Resolve](const TCHAR* Label, float MinSlider, float MaxSlider, TFunction<float&(FSplitPrismSettings&)> Field)
+	{
+		return MakeDeathParameterRow<FSplitPrismSettings>(
+			Label, MinSlider, MaxSlider, Resolve,
+			[](const ULocalPlayerPostProcessSubsystem& Subsystem) -> const FSplitPrismSettings& { return Subsystem.GetSplitPrismSettings(); },
+			[](ULocalPlayerPostProcessSubsystem& Subsystem, const FSplitPrismSettings& Settings) { Subsystem.SetSplitPrismSettings(Settings); },
+			MoveTemp(Field));
+	};
+
+	TSharedRef<SVerticalBox> Body = SNew(SVerticalBox);
+
+	// Partner 빙의 없이 미리 보기. Play는 진행 중이어도 처음부터 다시 시작한다.
+	Body->AddSlot()
+	.AutoHeight()
+	.Padding(RowPadding)
+	[
+		SNew(SHorizontalBox)
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		[
+			SNew(SButton)
+			.Text(FText::FromString(TEXT("Play")))
+			.OnClicked_Lambda([Resolve]()
+			{
+				if (ULocalPlayerPostProcessSubsystem* Subsystem = Resolve())
+				{
+					Subsystem->StartSplitPrism();
+				}
+				return FReply::Handled();
+			})
+		]
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+		[
+			SNew(SButton)
+			.Text(FText::FromString(TEXT("Stop")))
+			.OnClicked_Lambda([Resolve]()
+			{
+				if (ULocalPlayerPostProcessSubsystem* Subsystem = Resolve())
+				{
+					Subsystem->StopSplitPrism();
+				}
+				return FReply::Handled();
+			})
+		]
+	];
+
+	Body->AddSlot()
+	.AutoHeight()
+	.Padding(RowPadding)
+	[
+		SNew(STextBlock)
+		.Text_Lambda([Resolve]()
+		{
+			const ULocalPlayerPostProcessSubsystem* Subsystem = Resolve();
+			if (!Subsystem)
+			{
+				return FText::FromString(TEXT("Defocus: -"));
+			}
+
+			const TCHAR* PhaseName = TEXT("Idle");
+			switch (Subsystem->GetSplitPrismPhase())
+			{
+			case ESplitPrismPhase::Focusing: PhaseName = TEXT("Focusing"); break;
+			case ESplitPrismPhase::Settling: PhaseName = TEXT("Settling (A)"); break;
+			case ESplitPrismPhase::Holding:  PhaseName = TEXT("Holding (B)"); break;
+			default: break;
+			}
+
+			const float SubjectDistance = Subsystem->GetSplitPrismSubjectDistance();
+			const FString SubjectText = SubjectDistance > 0.0f
+				? FString::Printf(TEXT("%.2f m"), SubjectDistance * 0.01f)
+				: FString(TEXT("-"));
+
+			return FText::FromString(FString::Printf(
+				TEXT("%s  Defocus d: %+.3f  Offset: %+.4f  Subject: %s  Residual: %.2f"),
+				PhaseName,
+				Subsystem->GetSplitPrismDefocus(),
+				Subsystem->GetUIPostProcessStrcture().SplitPrism.Offset,
+				*SubjectText,
+				Subsystem->GetSplitPrismResidualWeight()));
+		})
+	];
+
+	auto IntRow = [Resolve](const TCHAR* Label, int32 MinValue, int32 MaxValue, TFunction<int32&(FSplitPrismSettings&)> Field) -> TSharedRef<SWidget>
+	{
+		return SNew(SVerticalBox)
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(RowPadding)
+			[
+				SNew(STextBlock)
+				.Text(FText::FromString(Label))
+			]
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(SBox)
+				.WidthOverride(72.0f)
+				.HAlign(HAlign_Left)
+				[
+					SNew(SNumericEntryBox<int32>)
+					.AllowSpin(true)
+					.MinValue(MinValue)
+					.MaxValue(MaxValue)
+					.MinSliderValue(MinValue)
+					.MaxSliderValue(MaxValue)
+					.Value_Lambda([Resolve, Field]() -> TOptional<int32>
+					{
+						const ULocalPlayerPostProcessSubsystem* Subsystem = Resolve();
+						if (!Subsystem)
+						{
+							return TOptional<int32>();
+						}
+
+						FSplitPrismSettings Settings = Subsystem->GetSplitPrismSettings();
+						return Field(Settings);
+					})
+					.OnValueChanged_Lambda([Resolve, Field](int32 NewValue)
+					{
+						if (ULocalPlayerPostProcessSubsystem* Subsystem = Resolve())
+						{
+							FSplitPrismSettings Settings = Subsystem->GetSplitPrismSettings();
+							Field(Settings) = NewValue;
+							Subsystem->SetSplitPrismSettings(Settings);
+						}
+					})
+				]
+			];
+	};
+
+	auto AddRow = [&Body](TSharedRef<SWidget> Row)
+	{
+		Body->AddSlot()
+		.AutoHeight()
+		[
+			Row
+		];
+	};
+
+	auto BoolRow = [Resolve](const TCHAR* Label, TFunction<bool&(FSplitPrismSettings&)> Field) -> TSharedRef<SWidget>
+	{
+		return SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(RowPadding)
+			[
+				SNew(SCheckBox)
+				.IsChecked_Lambda([Resolve, Field]()
+				{
+					const ULocalPlayerPostProcessSubsystem* Subsystem = Resolve();
+					if (!Subsystem)
+					{
+						return ECheckBoxState::Undetermined;
+					}
+
+					FSplitPrismSettings Settings = Subsystem->GetSplitPrismSettings();
+					return Field(Settings) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+				})
+				.OnCheckStateChanged_Lambda([Resolve, Field](ECheckBoxState NewState)
+				{
+					if (ULocalPlayerPostProcessSubsystem* Subsystem = Resolve())
+					{
+						FSplitPrismSettings Settings = Subsystem->GetSplitPrismSettings();
+						Field(Settings) = NewState == ECheckBoxState::Checked;
+						Subsystem->SetSplitPrismSettings(Settings);
+					}
+				})
+			]
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(4.0f, 0.0f, 0.0f, 0.0f)
+			[
+				SNew(STextBlock)
+				.Text(FText::FromString(Label))
+			];
+	};
+
+	// 시간 곡선: d(t)가 1 → (지나침) → 0.
+	AddRow(SettingsRow(TEXT("Focus Duration (s, incl. overshoot)"), 0.05f, 5.0f, [](FSplitPrismSettings& S) -> float& { return S.FocusDuration; }));
+	AddRow(SettingsRow(TEXT("Focus Ease Power (first approach, 1 = Linear)"), 0.1f, 8.0f, [](FSplitPrismSettings& S) -> float& { return S.FocusEasePower; }));
+	AddRow(SettingsRow(TEXT("Overshoot Amount (first pass-through depth, 0 = none)"), 0.0f, 0.5f, [](FSplitPrismSettings& S) -> float& { return S.OvershootAmount; }));
+	AddRow(IntRow(TEXT("Overshoot Count (0-3)"), 0, 3, [](FSplitPrismSettings& S) -> int32& { return S.OvershootCount; }));
+
+	// d = 1일 때 값들.
+	AddRow(SettingsRow(TEXT("Start Offset (screen height ratio, d > 0: left +Y / right -Y)"), 0.0f, 0.25f, [](FSplitPrismSettings& S) -> float& { return S.StartOffset; }));
+	AddRow(SettingsRow(TEXT("Max Blur Radius (px @1080p, disc)"), 0.0f, 64.0f, [](FSplitPrismSettings& S) -> float& { return S.MaxBlurRadius; }));
+	AddRow(IntRow(TEXT("Blur Sample Count (8-128)"), 8, 128, [](FSplitPrismSettings& S) -> int32& { return S.BlurSampleCount; }));
+	AddRow(SettingsRow(TEXT("Fringe Amount (R/B radius = G x (1 +/- x), front purple / back green)"), 0.0f, 0.5f, [](FSplitPrismSettings& S) -> float& { return S.FringeAmount; }));
+	AddRow(SettingsRow(TEXT("Bokeh Rim Bias (front: bright rim / back: bright center)"), 0.0f, 1.0f, [](FSplitPrismSettings& S) -> float& { return S.BokehRimBias; }));
+
+	// 깊이 잔차: 장면 갈라짐 = StartOffset x (d + r), r = (1/D_subj - 1/D) / Swing.
+	AddRow(BoolRow(TEXT("Depth Split (scene only: near/far split differently)"), [](FSplitPrismSettings& S) -> bool& { return S.bDepthSplit; }));
+	AddRow(BoolRow(TEXT("Persist After Focus (B: keep until Stop / off = A: settle to 0)"), [](FSplitPrismSettings& S) -> bool& { return S.bPersistDepthSplit; }));
+	AddRow(SettingsRow(TEXT("Focus Swing (diopter at d = 1, smaller = stronger depth split)"), 0.05f, 5.0f, [](FSplitPrismSettings& S) -> float& { return S.FocusSwingDiopter; }));
+	AddRow(SettingsRow(TEXT("Max Depth Residual (|r| clamp)"), 0.0f, 4.0f, [](FSplitPrismSettings& S) -> float& { return S.MaxDepthResidual; }));
+	AddRow(SettingsRow(TEXT("Depth Settle Duration (s, A only)"), 0.0f, 3.0f, [](FSplitPrismSettings& S) -> float& { return S.DepthSettleDuration; }));
+	AddRow(SettingsRow(TEXT("Fallback Subject Distance (cm, trace miss)"), 10.0f, 10000.0f, [](FSplitPrismSettings& S) -> float& { return S.FallbackSubjectDistance; }));
+
+	return SNew(SExpandableArea)
+		.InitiallyCollapsed(false)
+		.HeaderContent()
+		[
+			SNew(STextBlock)
+			.Text(FText::FromString(TEXT("Split Prism (Slate split + HDR disc defocus)")))
+		]
+		.BodyContent()
+		[
+			Body
+		];
+}
+
+TSharedRef<SWidget> SRDGGraphicsDebugger::MakeDroneDamageFeedbackSection()
+{
+	using namespace RDGGraphicsDebugger;
+
+	const TFunction<ULocalPlayerPostProcessSubsystem*()> Resolve = [this]()
+	{
+		return ResolvePostProcessSubsystem();
+	};
+
+	auto ParameterRow = [Resolve](const TCHAR* Label, float MinSlider, float MaxSlider, TFunction<float&(FDroneDamageFeedbackParameters&)> Field)
+	{
+		return MakeDeathParameterRow<FDroneDamageFeedbackParameters>(
+			Label, MinSlider, MaxSlider, Resolve,
+			[](const ULocalPlayerPostProcessSubsystem& Subsystem) -> const FDroneDamageFeedbackParameters& { return Subsystem.GetPostProcessStrcture().DroneDamageFeedback; },
+			[](ULocalPlayerPostProcessSubsystem& Subsystem, const FDroneDamageFeedbackParameters& Parameters) { Subsystem.SetDroneDamageFeedbackParameters(Parameters); },
+			MoveTemp(Field));
+	};
+
+	// 모서리 하나 = 드러냄 체크박스 + 바인딩된 마스크 텍스처 상태. 텍스처는 Enemy HUD가 빙의 때 넣어준다.
+	auto MaskRow = [Resolve](EDroneDamageMask Slot, const TCHAR* SlotName) -> TSharedRef<SWidget>
+	{
+		return SNew(SCheckBox)
+			.IsChecked_Lambda([Resolve, Slot]()
+			{
+				const ULocalPlayerPostProcessSubsystem* Subsystem = Resolve();
+				return Subsystem && Subsystem->IsDroneDamageMaskRevealed(Slot)
+					? ECheckBoxState::Checked
+					: ECheckBoxState::Unchecked;
+			})
+			.OnCheckStateChanged_Lambda([Resolve, Slot](ECheckBoxState NewState)
+			{
+				if (ULocalPlayerPostProcessSubsystem* Subsystem = Resolve())
+				{
+					Subsystem->SetDroneDamageMaskRevealed(Slot, NewState == ECheckBoxState::Checked);
+				}
+			})
+			[
+				SNew(STextBlock)
+				.Text_Lambda([Resolve, Slot, SlotName]()
+				{
+					const ULocalPlayerPostProcessSubsystem* Subsystem = Resolve();
+					return FText::FromString(Subsystem
+						? FString::Printf(TEXT("%s: %s (%s)"),
+							SlotName,
+							*GetNameSafe(Subsystem->GetDroneDamageMaskTexture(Slot)),
+							Subsystem->IsDroneDamageMaskTextureReady(Slot) ? TEXT("ready") : TEXT("not ready"))
+						: FString::Printf(TEXT("%s: no subsystem"), SlotName));
+				})
+			];
+	};
+
+	TSharedRef<SVerticalBox> Body = SNew(SVerticalBox);
+
+	auto AddRow = [&Body](TSharedRef<SWidget> Row)
+	{
+		Body->AddSlot()
+		.AutoHeight()
+		.Padding(RowPadding)
+		[
+			Row
+		];
+	};
+
+	AddRow(SNew(STextBlock)
+		.AutoWrapText(true)
+		.Text(FText::FromString(TEXT("Masks are bound by Enemy HUD while a drone is possessed. Check a corner to reveal it."))));
+	AddRow(MaskRow(EDroneDamageMask::LeftTop, TEXT("Left Top")));
+	AddRow(MaskRow(EDroneDamageMask::LeftBottom, TEXT("Left Bottom")));
+	AddRow(MaskRow(EDroneDamageMask::RightTop, TEXT("Right Top")));
+	AddRow(MaskRow(EDroneDamageMask::RightBottom, TEXT("Right Bottom")));
+
+	// int32 플래그 / 정수 필드용. 다른 튜닝값과 같이 SetDroneDamageFeedbackParameters로 쓴다.
+	auto FlagRow = [Resolve](const TCHAR* Label, TFunction<int32&(FDroneDamageFeedbackParameters&)> Field) -> TSharedRef<SWidget>
+	{
+		return SNew(SCheckBox)
+			.IsChecked_Lambda([Resolve, Field]()
+			{
+				const ULocalPlayerPostProcessSubsystem* Subsystem = Resolve();
+				if (!Subsystem)
+				{
+					return ECheckBoxState::Unchecked;
+				}
+
+				FDroneDamageFeedbackParameters Parameters = Subsystem->GetPostProcessStrcture().DroneDamageFeedback;
+				return Field(Parameters) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+			})
+			.OnCheckStateChanged_Lambda([Resolve, Field](ECheckBoxState NewState)
+			{
+				if (ULocalPlayerPostProcessSubsystem* Subsystem = Resolve())
+				{
+					FDroneDamageFeedbackParameters Parameters = Subsystem->GetPostProcessStrcture().DroneDamageFeedback;
+					Field(Parameters) = NewState == ECheckBoxState::Checked ? 1 : 0;
+					Subsystem->SetDroneDamageFeedbackParameters(Parameters);
+				}
+			})
+			[
+				SNew(STextBlock).Text(FText::FromString(Label))
+			];
+	};
+
+	auto IntRow = [Resolve](const TCHAR* Label, int32 MinValue, int32 MaxValue, TFunction<int32&(FDroneDamageFeedbackParameters&)> Field) -> TSharedRef<SWidget>
+	{
+		return SNew(SVerticalBox)
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(STextBlock).Text(FText::FromString(Label))
+			]
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(SBox)
+				.WidthOverride(72.0f)
+				.HAlign(HAlign_Left)
+				[
+					SNew(SNumericEntryBox<int32>)
+					.AllowSpin(true)
+					.MinValue(MinValue)
+					.MaxValue(MaxValue)
+					.MinSliderValue(MinValue)
+					.MaxSliderValue(MaxValue)
+					.Value_Lambda([Resolve, Field]() -> TOptional<int32>
+					{
+						const ULocalPlayerPostProcessSubsystem* Subsystem = Resolve();
+						if (!Subsystem)
+						{
+							return TOptional<int32>();
+						}
+
+						FDroneDamageFeedbackParameters Parameters = Subsystem->GetPostProcessStrcture().DroneDamageFeedback;
+						return Field(Parameters);
+					})
+					.OnValueChanged_Lambda([Resolve, Field](int32 NewValue)
+					{
+						if (ULocalPlayerPostProcessSubsystem* Subsystem = Resolve())
+						{
+							FDroneDamageFeedbackParameters Parameters = Subsystem->GetPostProcessStrcture().DroneDamageFeedback;
+							Field(Parameters) = NewValue;
+							Subsystem->SetDroneDamageFeedbackParameters(Parameters);
+						}
+					})
+				]
+			];
+	};
+
+	// 효과 플래그. 켜진 것끼리 겹친다.
+	AddRow(FlagRow(TEXT("1. Slice Glitch (Death Noise style)"), [](FDroneDamageFeedbackParameters& P) -> int32& { return P.bSliceGlitch; }));
+	AddRow(FlagRow(TEXT("2. Pixel Sort (existing Pixel Sorting pass, masked)"), [](FDroneDamageFeedbackParameters& P) -> int32& { return P.bPixelSort; }));
+	AddRow(FlagRow(TEXT("3. Shift To Black (push by offset, gap = black, UV jitter)"), [](FDroneDamageFeedbackParameters& P) -> int32& { return P.bShiftToBlack; }));
+
+	AddRow(ParameterRow(TEXT("Mask Glow (always added inside mask)"), 0.0f, 2.0f, [](FDroneDamageFeedbackParameters& P) -> float& { return P.MaskGlow; }));
+	AddRow(ParameterRow(TEXT("Tint R"), 0.0f, 1.0f, [](FDroneDamageFeedbackParameters& P) -> float& { return P.Tint.R; }));
+	AddRow(ParameterRow(TEXT("Tint G"), 0.0f, 1.0f, [](FDroneDamageFeedbackParameters& P) -> float& { return P.Tint.G; }));
+	AddRow(ParameterRow(TEXT("Tint B"), 0.0f, 1.0f, [](FDroneDamageFeedbackParameters& P) -> float& { return P.Tint.B; }));
+
+	AddRow(SNew(STextBlock).Text(FText::FromString(TEXT("[1] Slice Glitch (defaults = Death Noise)"))));
+	AddRow(ParameterRow(TEXT("Intensity (Death Noise Max Intensity)"), 0.0f, 4.0f, [](FDroneDamageFeedbackParameters& P) -> float& { return P.Intensity; }));
+	AddRow(ParameterRow(TEXT("Glitch Glow (added on glitched slices, x Intensity)"), 0.0f, 2.0f, [](FDroneDamageFeedbackParameters& P) -> float& { return P.GlitchGlow; }));
+	AddRow(ParameterRow(TEXT("Seed"), 0.0f, 100.0f, [](FDroneDamageFeedbackParameters& P) -> float& { return P.Seed; }));
+	AddRow(ParameterRow(TEXT("Slice Rows (grid)"), 1.0f, 256.0f, [](FDroneDamageFeedbackParameters& P) -> float& { return P.SliceRows; }));
+	AddRow(ParameterRow(TEXT("Slice Split Chance (avg height = 1/x rows)"), 0.0f, 1.0f, [](FDroneDamageFeedbackParameters& P) -> float& { return P.SliceSplitChance; }));
+	AddRow(ParameterRow(TEXT("Glitch Rate (/s, also Shift jitter rate)"), 1.0f, 60.0f, [](FDroneDamageFeedbackParameters& P) -> float& { return P.GlitchRate; }));
+	AddRow(ParameterRow(TEXT("Glitch Strength (view width ratio, x Intensity)"), 0.0f, 0.3f, [](FDroneDamageFeedbackParameters& P) -> float& { return P.GlitchStrength; }));
+	AddRow(ParameterRow(TEXT("Glitch Threshold (also Shift jitter gate)"), 0.0f, 1.0f, [](FDroneDamageFeedbackParameters& P) -> float& { return P.GlitchThreshold; }));
+	AddRow(ParameterRow(TEXT("Burst Chance"), 0.0f, 1.0f, [](FDroneDamageFeedbackParameters& P) -> float& { return P.BurstChance; }));
+	AddRow(ParameterRow(TEXT("Burst Strength (x)"), 1.0f, 10.0f, [](FDroneDamageFeedbackParameters& P) -> float& { return P.BurstStrength; }));
+	AddRow(ParameterRow(TEXT("Burst Threshold"), 0.0f, 1.0f, [](FDroneDamageFeedbackParameters& P) -> float& { return P.BurstThreshold; }));
+
+	AddRow(SNew(STextBlock).Text(FText::FromString(TEXT("[2] Pixel Sort (defaults = Pixel Sorting, threshold = its Min Threshold)"))));
+	AddRow(IntRow(TEXT("Mode (0 White / 1 Black / 2 Bright / 3 Dark)"), 0, 3, [](FDroneDamageFeedbackParameters& P) -> int32& { return P.PixelSortMode; }));
+	AddRow(ParameterRow(TEXT("Threshold (0-255)"), 0.0f, 255.0f, [](FDroneDamageFeedbackParameters& P) -> float& { return P.PixelSortThreshold; }));
+	AddRow(FlagRow(TEXT("Sort Rows (x axis)"), [](FDroneDamageFeedbackParameters& P) -> int32& { return P.bPixelSortRows; }));
+	AddRow(FlagRow(TEXT("Sort Columns (y axis)"), [](FDroneDamageFeedbackParameters& P) -> int32& { return P.bPixelSortColumns; }));
+	AddRow(IntRow(TEXT("Resolution Divisor (1-8)"), 1, 8, [](FDroneDamageFeedbackParameters& P) -> int32& { return P.PixelSortResolutionDivisor; }));
+
+	AddRow(SNew(STextBlock).Text(FText::FromString(TEXT("[3] Shift To Black"))));
+	AddRow(ParameterRow(TEXT("Shift Offset X (view width ratio)"), -0.2f, 0.2f, [](FDroneDamageFeedbackParameters& P) -> float& { return P.ShiftOffsetX; }));
+	AddRow(ParameterRow(TEXT("Shift Offset Y (view height ratio)"), -0.2f, 0.2f, [](FDroneDamageFeedbackParameters& P) -> float& { return P.ShiftOffsetY; }));
+	AddRow(ParameterRow(TEXT("Shift Jitter (random UV move per glitch frame)"), 0.0f, 0.1f, [](FDroneDamageFeedbackParameters& P) -> float& { return P.ShiftJitter; }));
+
+	return SNew(SExpandableArea)
+		.InitiallyCollapsed(false)
+		.HeaderContent()
+		[
+			SNew(STextBlock)
+			.Text(FText::FromString(TEXT("Drone Damage Feedback (mask .r x .a, Slice Glitch / Pixel Sort / Shift To Black)")))
 		]
 		.BodyContent()
 		[

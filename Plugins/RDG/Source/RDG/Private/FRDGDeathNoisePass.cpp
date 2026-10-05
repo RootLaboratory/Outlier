@@ -73,8 +73,15 @@ FScreenPassTexture FRDGDeathNoisePass::AddPass(
 		static_cast<float>(FMath::Max(1, ViewSize.X)) * InvExtent.X,
 		static_cast<float>(FMath::Max(1, ViewSize.Y)) * InvExtent.Y);
 
+	// 램프가 켜져 있으면 노이즈가 켜진 순간(Time 0)부터 RampDuration 동안 0 → MaxIntensity로 올린다.
+	float Intensity = FMath::Max(0.0f, Parameters.MaxIntensity);
+	if (Parameters.bRampIntensity && Parameters.RampDuration > 0.0f)
+	{
+		Intensity *= FMath::Clamp(Parameters.Time / Parameters.RampDuration, 0.0f, 1.0f);
+	}
+
 	PassParameters->Time = FMath::Max(0.0f, Parameters.Time);
-	PassParameters->Intensity = bEnabled ? FMath::Max(0.0f, Parameters.Intensity) : 0.0f;
+	PassParameters->Intensity = bEnabled ? Intensity : 0.0f;
 	PassParameters->Seed = Parameters.Seed;
 	PassParameters->SliceRows = FMath::Max(1.0f, Parameters.SliceRows);
 	PassParameters->SliceSplitChance = FMath::Clamp(Parameters.SliceSplitChance, 0.0f, 1.0f);

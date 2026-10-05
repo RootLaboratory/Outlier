@@ -3,6 +3,8 @@
 
 #include "FirstPersonPlayerController.h"
 #include "Audio/OutlierAudioSubsystem.h"
+#include "Audio/OutlierUIAudioSettings.h"
+#include "EnhancedInputComponent.h"
 #include "EnhancedInputDeveloperSettings.h"
 #include "EnhancedInputSubsystems.h"
 #include "Engine/LocalPlayer.h"
@@ -11,7 +13,10 @@
 #include "GameFramework/GameStateBase.h"
 #include "GameFramework/PlayerState.h"
 #include "InputMappingContext.h"
+#include "InputAction.h"
+#include "FirstPersonCharacter.h"
 #include "FirstPersonPlayerCameraManager.h"
+#include "Input/ControllerInputConfig.h"
 #include "Kismet/GameplayStatics.h"
 #include "LocalPlayerUISubSystem.h"
 #include "OutlierGameInstance.h"
@@ -21,16 +26,22 @@
 #include "MainUIBase.h"
 #include "UI/UILayerGameplayTags.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Weapon/WeaponBase.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "TimerManager.h"
 #include "Network/OutlierArenaSubsystem.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
 #include "LocalPlayerPostProcessSubsystem.h"
 #include "UI/InGamePauseWidget.h"
 #include "UI/InGameSettingWidget.h"
-#include "UI/PreSetLoadWidget.h"
+#include "UI/GameOverWidget.h"
+#include "UI/GameOverPendingWidget.h"
+#include "UI/UILayerKeyHintWidget.h"
 #include "Upgrade/OutlierUpgradeComponent.h"
 #include "Upgrade/OutlierUpgradeSetData.h"
 #include "Misc/StringOutputDevice.h"
 #include "GameFramework/UpdateLevelVisibilityLevelInfo.h"
+#include "Engine/Level.h"
 #include "Engine/LevelStreaming.h"
 #include "HAL/PlatformTime.h"
 
@@ -40,14 +51,39 @@ namespace
 	{
 #if WITH_EDITOR
 		static TAutoConsoleVariable<int32> CVarSuitPresentationBypass(
-			TEXT("Outlier.SuitTransition.BypassPresentation"), 1,
-			TEXT("PIE only: acknowledge unimplemented suit presentation hooks for gameplay testing. Set 0 to test real presentation callbacks."));
+			TEXT("Outlier.SuitTransition.BypassPresentation"), 0,
+			TEXT("PIE only: skip the suit screen blackout and readiness check, acknowledging each phase immediately. Set 1 to skip the presentation during gameplay testing."));
 		return World && World->WorldType == EWorldType::PIE
 			&& CVarSuitPresentationBypass.GetValueOnGameThread() != 0;
 #else
 		return false;
 #endif
 	}
+
+	// 실제 화면(LocalPlayer)이 있는 Controller에만 있다. 없으면 Suit 연출도 완료 응답도 만들지 않는다.
+	ULocalPlayerPostProcessSubsystem* FindSuitPostProcessSubsystem(const APlayerController* Controller)
+	{
+		const ULocalPlayer* LocalPlayer = Controller ? Controller->GetLocalPlayer() : nullptr;
+		return LocalPlayer ? LocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>() : nullptr;
+	}
+
+	// 소유자에게 장착되어 보이고, 두 시점 메시가 모두 소유자 쪽에 붙어 있는지 확인한다.
+	bool IsWeaponPresentedOn(const AWeaponBase* Weapon, const AActor* Owner)
+	{
+		const USkeletalMeshComponent* FirstPersonMesh = IsValid(Weapon) ? Weapon->GetFirstPersonWeaponMesh() : nullptr;
+		const USkeletalMeshComponent* ThirdPersonMesh = IsValid(Weapon) ? Weapon->GetThirdPersonWeaponMesh() : nullptr;
+		return FirstPersonMesh && ThirdPersonMesh && IsValid(Owner)
+			&& Weapon->IsEquipped() && !Weapon->IsHidden()
+			&& !FirstPersonMesh->bHiddenInGame && !ThirdPersonMesh->bHiddenInGame
+			&& FirstPersonMesh->GetAttachmentRootActor() == Owner
+			&& ThirdPersonMesh->GetAttachmentRootActor() == Owner;
+	}
+
+	constexpr float SuitPresentationPollInterval = 0.05f;
+	// 이만큼(약 2초) 준비가 안 되면 어떤 조건이 막혔는지 한 번 남긴다. 그대로 두면 서버 timeout까지 화면이 덮여 있다.
+	constexpr int32 SuitPresentationStallLogPolls = 40;
+	// 취소/Pawn 교체로 남은 암전을 걷어내는 시간. 0 ↔ 1 전체 기준이라 남은 만큼만 걸린다.
+	constexpr float SuitCleanupRevealDuration = 0.25f;
 
 	void ResolvePairCharactersForController(
 		AFirstPersonPlayerController* Controller,
@@ -225,7 +261,108 @@ void AFirstPersonPlayerController::ClientPushUILayer_Implementation(
 		return;
 	}
 
-	LayerSubsystem->PushWidget(Request);
+	if (!LayerSubsystem->PushWidget(Request).IsValid())
+	{
+		return;
+	}
+
+	UInGameSettingWidget* InGameSetting = Cast<UInGameSettingWidget>(
+		LayerSubsystem->FindWidgetByOwnerAndClass(Request.RequestOwner, Request.WidgetClass));
+	if (!InGameSetting || !InGameSetting->GetKeyHintWidgetClass())
+	{
+		return;
+	}
+
+	// 메뉴와 힌트는 같은 소유자로 묶어 ClientPopInGameSettingLayer에서 함께 닫는다.
+	FUILayerPushRequest HintRequest;
+	HintRequest.WidgetClass = InGameSetting->GetKeyHintWidgetClass();
+	HintRequest.LayerTag = UILayerTags::Modal();
+	HintRequest.InputModeTag = Request.InputModeTag;
+	HintRequest.RequestOwner = Request.RequestOwner;
+	HintRequest.FocusTarget = EUILayerFocusTarget::None;
+	HintRequest.bShowCursor = Request.bShowCursor;
+	HintRequest.bReceivesInput = false;
+	if (LayerSubsystem->PushWidget(HintRequest).IsValid())
+	{
+		if (UUserWidget* Hint = LayerSubsystem->FindWidgetByOwnerAndClass(
+			Request.RequestOwner, HintRequest.WidgetClass))
+		{
+			Hint->SetVisibility(ESlateVisibility::HitTestInvisible);
+		}
+	}
+}
+
+void AFirstPersonPlayerController::ShowGameOverPendingFromServer(
+	const FGameOverPendingRequest& Request,
+	bool bIsRequester)
+{
+	if (IsLocalController())
+	{
+		ClientShowGameOverPending_Implementation(Request, bIsRequester);
+	}
+	else
+	{
+		ClientShowGameOverPending(Request, bIsRequester);
+	}
+}
+
+void AFirstPersonPlayerController::CloseGameOverPendingFromServer()
+{
+	if (IsLocalController())
+	{
+		ClientCloseGameOverPending_Implementation();
+	}
+	else
+	{
+		ClientCloseGameOverPending();
+	}
+}
+
+bool AFirstPersonPlayerController::HasGameOverPendingWidgetClass() const
+{
+	const UGameOverWidget* GameOverDefault = GameOverWidgetClass
+		? GameOverWidgetClass->GetDefaultObject<UGameOverWidget>()
+		: nullptr;
+	return GameOverDefault && GameOverDefault->GetGameOverPendingWidgetClass() != nullptr;
+}
+
+void AFirstPersonPlayerController::ClientShowGameOverPending_Implementation(
+	const FGameOverPendingRequest& Request,
+	bool bIsRequester)
+{
+	if (!IsLocalController())
+	{
+		return;
+	}
+	if (UGameOverWidget* GameOver = FindGameOverWidget())
+	{
+		GameOver->ShowPendingRequest(Request, bIsRequester);
+		return;
+	}
+	// 사망 연출이 끝나기 전에 상대 요청이 도착할 수 있으므로 화면 생성까지 보관한다.
+	QueuedGameOverPendingRequest = Request;
+	bQueuedGameOverPendingRequester = bIsRequester;
+	bHasQueuedGameOverPendingRequest = true;
+}
+
+void AFirstPersonPlayerController::ClientCloseGameOverPending_Implementation()
+{
+	bHasQueuedGameOverPendingRequest = false;
+	if (UGameOverWidget* GameOver = FindGameOverWidget())
+	{
+		GameOver->ClosePendingRequest();
+	}
+}
+
+void AFirstPersonPlayerController::BeginGameOverRespawnTransition_Implementation()
+{
+	if (ULocalPlayerPostProcessSubsystem* PPSubsystem = GetLocalPlayer()
+		? GetLocalPlayer()->GetSubsystem<ULocalPlayerPostProcessSubsystem>()
+		: nullptr)
+	{
+		PPSubsystem->OnDeathBlackNoiseStarted.RemoveAll(this);
+		PPSubsystem->StartGameOverBlackout();
+	}
 }
 
 void AFirstPersonPlayerController::RequestOpenInGameSetting()
@@ -248,27 +385,74 @@ void AFirstPersonPlayerController::RequestCloseInGameSetting()
 	ServerCloseInGameSetting();
 }
 
-void AFirstPersonPlayerController::RequestLeaveGame()
+void AFirstPersonPlayerController::RequestLeaveGame(bool bQuitAfterLeave)
 {
 	if (!IsLocalController() || bExplicitLeaveRequested)
 	{
 		return;
 	}
 
-	// 서버가 자발적 이탈을 먼저 확정해야 Logout을 장애 재접속으로 분류하지 않는다.
-	// Reliable RPC를 전송한 뒤 로컬 Handoff를 지워 후속 NetworkFailure의 재접속도 막는다.
+	// 앱 종료는 서버 확인과 복귀 Travel이 끝난 뒤 GameInstance에서 실행한다.
 	bExplicitLeaveRequested = true;
-	ServerRequestLeaveGame();
-	if (UOutlierGameInstance* OutlierGameInstance =
-		Cast<UOutlierGameInstance>(GetGameInstance()))
+	OnExplicitLeaveStateChanged.Broadcast();
+	ServerRequestLeaveGame(bQuitAfterLeave);
+}
+
+void AFirstPersonPlayerController::ConfirmExplicitLeaveFromServer(
+	bool bAccepted, bool bQuitAfterLeave)
+{
+	if (IsLocalController())
 	{
-		OutlierGameInstance->PrepareForExplicitLeave();
+		ClientConfirmExplicitLeave_Implementation(bAccepted, bQuitAfterLeave);
+	}
+	else
+	{
+		ClientConfirmExplicitLeave(bAccepted, bQuitAfterLeave);
+	}
+}
+
+void AFirstPersonPlayerController::ClientConfirmExplicitLeave_Implementation(
+	bool bAccepted, bool bQuitAfterLeave)
+{
+	bExplicitLeaveRequested = bAccepted;
+	if (bAccepted)
+	{
+		if (UOutlierGameInstance* OutlierGameInstance =
+			Cast<UOutlierGameInstance>(GetGameInstance()))
+		{
+			if (bQuitAfterLeave)
+			{
+				OutlierGameInstance->RequestQuitAfterExplicitLeave();
+			}
+			else
+			{
+				OutlierGameInstance->PrepareForExplicitLeave();
+			}
+		}
+	}
+	OnExplicitLeaveStateChanged.Broadcast();
+}
+
+void AFirstPersonPlayerController::RequestGameOverPendingChoice(
+	const FGameOverPendingRequest& Request)
+{
+	if (IsLocalController())
+	{
+		ServerRequestGameOverPendingChoice(Request);
+	}
+}
+
+void AFirstPersonPlayerController::RequestGameOverPendingResponse(bool bApprove)
+{
+	if (IsLocalController())
+	{
+		ServerRespondGameOverPending(bApprove);
 	}
 }
 
 void AFirstPersonPlayerController::RequestCheckpointRestart()
 {
-	// 로컬 플래그는 UI 요청을 거르는 용도다. 실제 요청 권한과 투표 가능 상태는 서버 GameMode가 다시 판정한다.
+	// 로컬 플래그는 UI 요청을 거르는 용도다. 실제 요청 권한과 리로드 상태는 서버 GameMode가 다시 판정한다.
 	if (!IsLocalController() || !bCanRequestCheckpointRestart)
 	{
 		return;
@@ -379,51 +563,62 @@ void AFirstPersonPlayerController::ClientPopInGameSettingLayer_Implementation(
 	}
 }
 
-void AFirstPersonPlayerController::Client_ShowPresetSelect_Implementation()
+void AFirstPersonPlayerController::Client_ShowPresetSelect_Implementation(bool bImmediateSelections)
 {
-	if (!IsLocalController() || !PresetLoadWidgetClass)
+	if (!IsLocalController())
 	{
 		return;
 	}
 
-	// 사망 연출(Noise → Fade → Black)을 먼저 돌리고, Black 패스가 시작되는 순간 위젯을 띄운다.
+	bGameOverImmediateSelections = bImmediateSelections;
+	CollapseMainWidgetForDeath();
+
+	// 사망 연출을 먼저 돌리고, Black 패스의 Noise 텍스처가 나타나는 순간 위젯을 띄운다.
 	// 연출을 못 돌리는 환경이면 기다리지 않고 바로 띄운다.
 	if (ULocalPlayerPostProcessSubsystem* PPSubsystem = GetLocalPlayer()
 		? GetLocalPlayer()->GetSubsystem<ULocalPlayerPostProcessSubsystem>()
 		: nullptr)
 	{
-		PPSubsystem->OnDeathBlackoutStarted.RemoveAll(this);
-		PPSubsystem->OnDeathBlackoutStarted.AddUObject(
+		PPSubsystem->OnDeathBlackNoiseStarted.RemoveAll(this);
+		PPSubsystem->OnDeathBlackNoiseStarted.AddUObject(
 			this,
-			&AFirstPersonPlayerController::HandleDeathBlackoutStarted);
+			&AFirstPersonPlayerController::HandleDeathBlackNoiseStarted);
 
 		if (PPSubsystem->StartDeathTransition())
 		{
 			return;
 		}
 
-		PPSubsystem->OnDeathBlackoutStarted.RemoveAll(this);
+		PPSubsystem->OnDeathBlackNoiseStarted.RemoveAll(this);
 	}
 
-	PushPresetSelectWidget();
+	PushGameOverWidget();
 }
 
-void AFirstPersonPlayerController::HandleDeathBlackoutStarted()
+void AFirstPersonPlayerController::HandleDeathBlackNoiseStarted()
 {
 	if (ULocalPlayerPostProcessSubsystem* PPSubsystem = GetLocalPlayer()
 		? GetLocalPlayer()->GetSubsystem<ULocalPlayerPostProcessSubsystem>()
 		: nullptr)
 	{
-		PPSubsystem->OnDeathBlackoutStarted.RemoveAll(this);
+		PPSubsystem->OnDeathBlackNoiseStarted.RemoveAll(this);
 	}
 
-	PushPresetSelectWidget();
+	PushGameOverWidget();
 }
 
-void AFirstPersonPlayerController::PushPresetSelectWidget()
+void AFirstPersonPlayerController::PushGameOverWidget()
 {
-	if (!IsLocalController() || !PresetLoadWidgetClass)
+	if (!IsLocalController())
 	{
+		return;
+	}
+
+	if (!GameOverWidgetClass)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[GameOver] GameOverWidgetClass is not set on %s"),
+			*GetNameSafe(GetClass()));
 		return;
 	}
 
@@ -437,31 +632,80 @@ void AFirstPersonPlayerController::PushPresetSelectWidget()
 	}
 
 	FUILayerPushRequest Request;
-	Request.WidgetClass = PresetLoadWidgetClass;
+	Request.WidgetClass = GameOverWidgetClass;
 	Request.LayerTag = UILayerTags::Gameplay();
 	Request.InputModeTag = FirstPersonInputModeTags::UI();
+	// 페어 합의가 성립하면 서버가 이 PlayerState를 소유자로 레이어를 닫는다.
 	Request.RequestOwner = PlayerState;
 	Request.FocusTarget = EUILayerFocusTarget::Widget;
 	Request.bShowCursor = true;
+	Request.bReceivesInput = true;
 
-	LayerSubsystem->PushWidget(Request);
-
-	if (UPreSetLoadWidget* PresetWidget = Cast<UPreSetLoadWidget>(LayerSubsystem->GetTopLayerWidget()))
+	if (!LayerSubsystem->PushWidget(Request).IsValid())
 	{
-		PresetWidget->OnPresetStageConfirmed.AddUniqueDynamic(this, &AFirstPersonPlayerController::HandleLocalPresetStageSelected);
+		return;
+	}
+	if (UGameOverWidget* GameOver = FindGameOverWidget())
+	{
+		GameOver->SetImmediateSelectionMode(bGameOverImmediateSelections);
+		if (const TSubclassOf<UUILayerKeyHintWidget> HintClass = GameOver->GetKeyHintWidgetClass())
+		{
+			FUILayerPushRequest HintRequest;
+			HintRequest.WidgetClass = HintClass;
+			HintRequest.LayerTag = UILayerTags::Modal();
+			HintRequest.InputModeTag = FirstPersonInputModeTags::UI();
+			HintRequest.RequestOwner = PlayerState;
+			HintRequest.FocusTarget = EUILayerFocusTarget::None;
+			HintRequest.bShowCursor = true;
+			HintRequest.bReceivesInput = false;
+			if (LayerSubsystem->PushWidget(HintRequest).IsValid())
+			{
+				if (UUserWidget* Hint = LayerSubsystem->FindWidgetByOwnerAndClass(PlayerState, HintClass))
+				{
+					Hint->SetVisibility(ESlateVisibility::HitTestInvisible);
+				}
+			}
+		}
+	}
+	if (bHasQueuedGameOverPendingRequest)
+	{
+		if (UGameOverWidget* GameOver = FindGameOverWidget())
+		{
+			if (GameOver->ShowPendingRequest(
+				QueuedGameOverPendingRequest,
+				bQueuedGameOverPendingRequester))
+			{
+				bHasQueuedGameOverPendingRequest = false;
+			}
+		}
 	}
 }
 
-void AFirstPersonPlayerController::HandleLocalPresetStageSelected(FName StageId)
+UGameOverWidget* AFirstPersonPlayerController::FindGameOverWidget() const
 {
-	Server_SelectPresetStage(StageId);
+	ULocalPlayerUILayerSubsystem* LayerSubsystem = GetLocalPlayer()
+		? GetLocalPlayer()->GetSubsystem<ULocalPlayerUILayerSubsystem>()
+		: nullptr;
+	return LayerSubsystem
+		? Cast<UGameOverWidget>(LayerSubsystem->FindWidgetByOwnerAndClass(
+			PlayerState, GameOverWidgetClass))
+		: nullptr;
 }
 
-void AFirstPersonPlayerController::Server_SelectPresetStage_Implementation(FName StageId)
+void AFirstPersonPlayerController::ServerRequestGameOverPendingChoice_Implementation(
+	const FGameOverPendingRequest& Request)
 {
 	if (AOutlierGameMode* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr)
 	{
-		GM->HandlePresetStageSelected(this, StageId);
+		GM->RequestGameOverPendingChoice(this, Request);
+	}
+}
+
+void AFirstPersonPlayerController::ServerRespondGameOverPending_Implementation(bool bApprove)
+{
+	if (AOutlierGameMode* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr)
+	{
+		const bool bAccepted = GM->RespondGameOverPending(this, bApprove);
 	}
 }
 
@@ -628,20 +872,13 @@ bool AFirstPersonPlayerController::IsFirstPersonInputMode(FGameplayTag InputMode
 void AFirstPersonPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
-
-	// [입력 바인딩 디버그 — 2026-09-14 비활성화] 정상 경로 추적용. 실패 경로 경고만 남긴다.
-	//UE_LOG(
-	//	LogTemp,
-	//	Warning,
-	//	TEXT("[OutlierInputDebug] PC BeginPlay: %s Local=%d Authority=%d Pawn=%s MappingContexts=%d Role=%d PairId=%d"),
-	//	*GetNameSafe(this),
-	//	IsLocalPlayerController(),
-	//	HasAuthority(),
-	//	*GetNameSafe(GetPawn()),
-	//	DefaultMappingContexts.Num(),
-	//	static_cast<int32>(DefaultPlayerRole),
-	//	DefaultPairId
-	//);
+	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalPlayer()
+		? GetLocalPlayer()->GetSubsystem<ULocalPlayerUISubSystem>()
+		: nullptr)
+	{
+		// LocalPlayer 서브시스템은 Controller / 월드 교체 후에도 살아남는다.
+		UISubsystem->SetTransientWidgetsSuppressed(bHudHiddenForDeath);
+	}
 
 	InitializeOutlierPlayerState();
 }
@@ -652,16 +889,22 @@ void AFirstPersonPlayerController::AcknowledgePossession(APawn* P)
 
 	if (IsLocalController())
 	{
+		// 원격 클라이언트는 새 Pawn 확인 시 기존 MainUI의 가시성을 되돌린다.
+		if (bReleaseDeathTransitionOnPossess)
+		{
+			RestoreMainWidgetAfterDeath();
+		}
+
 		if (ULocalPlayerPostProcessSubsystem* PPSubsystem = GetLocalPlayer()
 			? GetLocalPlayer()->GetSubsystem<ULocalPlayerPostProcessSubsystem>()
 			: nullptr)
 		{
-			// 리스폰으로 새 폰을 잡은 순간 사망 연출을 즉시 끊는다.
+			// 리스폰으로 새 폰을 잡은 순간 남은 PP와 사망 연출을 즉시 초기화한다.
 			if (bReleaseDeathTransitionOnPossess)
 			{
 				bReleaseDeathTransitionOnPossess = false;
-				PPSubsystem->OnDeathBlackoutStarted.RemoveAll(this);
-				PPSubsystem->ResetDeathTransition();
+				PPSubsystem->OnDeathBlackNoiseStarted.RemoveAll(this);
+				PPSubsystem->ResetAllPostProcess();
 				// 새 Pawn을 실제로 잡은 경우에만 사망 연출을 해제하고,
 				// Slate/backbuffer 단계의 기본 CA를 복구한다.
 				PPSubsystem->SetChromaticAberrationEnabled(true);
@@ -683,7 +926,7 @@ void AFirstPersonPlayerController::AcknowledgePossession(APawn* P)
 	TryNotifyArenaStartReady();
 }
 
-void AFirstPersonPlayerController::ArmDeathTransitionReleaseOnPossess()
+void AFirstPersonPlayerController::ArmDeathTransitionReleaseOnPossess_Implementation()
 {
 	bReleaseDeathTransitionOnPossess = true;
 }
@@ -732,17 +975,20 @@ void AFirstPersonPlayerController::ReportLoadedLevelsVisibilityToServer()
 void AFirstPersonPlayerController::OnPossess(APawn* InPawn)
 {
 	Super::OnPossess(InPawn);
-
-	// [입력 바인딩 디버그 — 2026-09-14 비활성화]
-	//UE_LOG(
-	//	LogTemp,
-	//	Warning,
-	//	TEXT("[OutlierInputDebug] PC OnPossess: %s Pawn=%s PawnClass=%s Authority=%d"),
-	//	*GetNameSafe(this),
-	//	*GetNameSafe(InPawn),
-	//	InPawn ? *GetNameSafe(InPawn->GetClass()) : TEXT("None"),
-	//	HasAuthority()
-	//);
+	// 리슨 서버 호스트는 서버 Possess에서 로컬 UI를 복구한다.
+	if (IsLocalController() && InPawn && bReleaseDeathTransitionOnPossess)
+	{
+		RestoreMainWidgetAfterDeath();
+		if (ULocalPlayerPostProcessSubsystem* PPSubsystem = GetLocalPlayer()
+			? GetLocalPlayer()->GetSubsystem<ULocalPlayerPostProcessSubsystem>()
+			: nullptr)
+		{
+			bReleaseDeathTransitionOnPossess = false;
+			PPSubsystem->OnDeathBlackNoiseStarted.RemoveAll(this);
+			PPSubsystem->ResetAllPostProcess();
+			PPSubsystem->SetChromaticAberrationEnabled(true);
+		}
+	}
 
 	InitializeOutlierPlayerState();
 	RegisterCurrentPawnWithPlayerState();
@@ -759,72 +1005,90 @@ void AFirstPersonPlayerController::SetupInputComponent()
 {
 	Super::SetupInputComponent();
 
-	// [입력 바인딩 디버그 — 2026-09-14 비활성화]
-	//UE_LOG(
-	//	LogTemp,
-	//	Warning,
-	//	TEXT("[OutlierInputDebug] PC SetupInputComponent: %s Local=%d MappingContexts=%d"),
-	//	*GetNameSafe(this),
-	//	IsLocalPlayerController(),
-	//	DefaultMappingContexts.Num()
-	//);
-
 	// only add IMCs for local player controllers
-	if (IsLocalPlayerController())
+	if (!IsLocalPlayerController())
 	{
-		// Add Input Mapping Contexts
-		if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(GetLocalPlayer()))
-		{
-			for (UInputMappingContext* CurrentContext : DefaultMappingContexts)
-			{
-				// [입력 바인딩 디버그 — 2026-09-14 비활성화]
-				// 매핑 컨텍스트/액션/키를 전수 덤프하던 블록. 컨텍스트 하나당 수십 줄이 나온다.
-				// 입력이 안 먹는 문제를 다시 쫓게 되면 되살릴 것.
-				//UE_LOG(
-				//	LogTemp,
-				//	Warning,
-				//	TEXT("[OutlierInputDebug] AddMappingContext: PC=%s Context=%s"),
-				//	*GetNameSafe(this),
-				//	*GetNameSafe(CurrentContext)
-				//);
-				//
-				//if (CurrentContext)
-				//{
-				//	const TArray<FEnhancedActionKeyMapping>& Mappings = CurrentContext->GetMappings();
-				//	UE_LOG(
-				//		LogTemp,
-				//		Warning,
-				//		TEXT("[OutlierInputDebug] MappingContextDump: Context=%s MappingCount=%d"),
-				//		*GetNameSafe(CurrentContext),
-				//		Mappings.Num()
-				//	);
-				//
-				//	for (const FEnhancedActionKeyMapping& Mapping : Mappings)
-				//	{
-				//		UE_LOG(
-				//			LogTemp,
-				//			Warning,
-				//			TEXT("[OutlierInputDebug] Mapping: Context=%s Action=%s Key=%s Triggers=%d Modifiers=%d"),
-				//			*GetNameSafe(CurrentContext),
-				//			*GetNameSafe(Mapping.Action),
-				//			*Mapping.Key.ToString(),
-				//			Mapping.Triggers.Num(),
-				//			Mapping.Modifiers.Num()
-				//		);
-				//	}
-				//}
-
-				Subsystem->AddMappingContext(CurrentContext, 0);
-			}
-
-			CurrentFirstPersonInputMode = Subsystem->GetInputMode().First();
-		}
-		else
-		{
-			UE_LOG(LogTemp, Warning, TEXT("[OutlierInputDebug] EnhancedInputLocalPlayerSubsystem is null: %s"), *GetNameSafe(this));
-		}
+		return;
 	}
 
+	// Add Input Mapping Contexts
+	if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(GetLocalPlayer()))
+	{
+		for (UInputMappingContext* CurrentContext : DefaultMappingContexts)
+		{
+			Subsystem->AddMappingContext(CurrentContext, 0);
+		}
+
+		CurrentFirstPersonInputMode = Subsystem->GetInputMode().First();
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[OutlierInputDebug] EnhancedInputLocalPlayerSubsystem is null: %s"), *GetNameSafe(this));
+	}
+
+	// UI 입력은 폰이 아니라 컨트롤러 InputComponent에 묶어, 사망으로 폰이 없을 때도 유지한다.
+	UEnhancedInputComponent* EnhancedInputComponent = Cast<UEnhancedInputComponent>(InputComponent);
+	ULocalPlayerUILayerSubsystem* LayerSubsystem = GetLocalPlayer()
+		? GetLocalPlayer()->GetSubsystem<ULocalPlayerUILayerSubsystem>()
+		: nullptr;
+	if (!LayerSubsystem || !LayerSubsystem->BindWidgetInput(EnhancedInputComponent, ControllerInputConfig))
+	{
+		return;
+	}
+
+	for (UInputAction* EscapeAction : { ControllerInputConfig->WidgetEscapeAction.Get(), ControllerInputConfig->InGameSettingAction.Get() })
+	{
+		if (EscapeAction)
+		{
+			EscapeAction->bTriggerWhenPaused = true;
+			EnhancedInputComponent->BindAction(
+				EscapeAction, ETriggerEvent::Started, this, &AFirstPersonPlayerController::HandleWidgetEscapeInput);
+		}
+	}
+}
+
+void AFirstPersonPlayerController::HandleWidgetEscapeInput()
+{
+	PlayWidgetEscapeLocal2DAudio();
+
+	ULocalPlayerUILayerSubsystem* LayerSubsystem = GetLocalPlayer()
+		? GetLocalPlayer()->GetSubsystem<ULocalPlayerUILayerSubsystem>()
+		: nullptr;
+	const bool bHandled = LayerSubsystem && LayerSubsystem->RouteWidgetEscapeInput(false);
+	const bool bGameOverVisible = FindGameOverWidget() != nullptr;
+	if (bHandled)
+	{
+		return;
+	}
+
+	// 사망 중에는 UI 응답 외에 설정 창을 새로 열지 않는다.
+	if (GetPawn() && !bGameOverVisible)
+	{
+		RequestOpenInGameSetting();
+	}
+}
+
+void AFirstPersonPlayerController::PlayWidgetEscapeLocal2DAudio()
+{
+	const UOutlierUIAudioSettings* Settings = GetDefault<UOutlierUIAudioSettings>();
+	if (!Settings->UITypeTag.IsValid() || !Settings->WidgetEscape.IsValid())
+	{
+		return;
+	}
+
+	UOutlierAudioSubsystem* AudioSubsystem = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>()
+		: nullptr;
+	if (!AudioSubsystem)
+	{
+		return;
+	}
+
+	FOutlierAudioPlayRequest Request;
+	Request.EventTag = Settings->UITypeTag;
+	Request.ContextTags.AddTag(Settings->WidgetEscape);
+	Request.EmitterActor = GetPawn() ? static_cast<AActor*>(GetPawn()) : this;
+	AudioSubsystem->PlayLocal2D(Request);
 }
 
 
@@ -877,18 +1141,21 @@ void AFirstPersonPlayerController::EndPlay(const EEndPlayReason::Type EndPlayRea
 		ShooterUIInstance = nullptr;
 	}
 
-	// PostProcess 서브시스템은 LocalPlayer 소속이라 맵을 옮겨도 살아남는다. 월드를 떠날 때 기존 CA와
-	// 사망 연출을 끄지 않으면 로비 / 타이틀까지 그대로 따라간다.
+	// PostProcess 서브시스템은 LocalPlayer 소속이라 맵을 옮겨도 살아남는다.
+	// 월드 이탈 시 진행 중인 모든 효과를 정리해 로비 / 타이틀까지 따라가지 않게 한다.
 	// 교체돼서 이미 LocalPlayer를 넘겨준 옛 PC는 새 PC가 켠 상태를 건드리면 안 된다.
 	ULocalPlayer* LP = GetLocalPlayer();
 	if (LP && LP->PlayerController == this)
 	{
+		if (ULocalPlayerUISubSystem* UISubsystem = LP->GetSubsystem<ULocalPlayerUISubSystem>())
+		{
+			UISubsystem->SetTransientWidgetsSuppressed(false);
+		}
 		if (ULocalPlayerPostProcessSubsystem* PPSubsystem =
 			LP->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
 		{
-			PPSubsystem->OnDeathBlackoutStarted.RemoveAll(this);
-			PPSubsystem->ResetDeathTransition();
-			PPSubsystem->SetChromaticAberrationEnabled(false);
+			PPSubsystem->OnDeathBlackNoiseStarted.RemoveAll(this);
+			PPSubsystem->ResetAllPostProcess();
 		}
 	}
 
@@ -1057,12 +1324,10 @@ void AFirstPersonPlayerController::ClearLocalSuitTransition()
 	RequestSuitTransitionCleanup(Id);
 }
 
-// 암전 담당자 작업 위치: 아래 네 연결 지점의 실제 연출은 비워 둔다.
-// PIE의 기본 구현만 테스트 응답을 보낸다. 실제 연출 검증 시 Outlier.SuitTransition.BypassPresentation 0으로 끈다.
-// 기존 API 참고 경로: Plugins/RDG/Source/RDG/Public/LocalPlayerPostProcessSubsystem.h
-// 기존 구현 참고 경로: Plugins/RDG/Source/RDG/Private/LocalPlayerPostProcessSubsystem.cpp
-// 기존 사망/해킹 연출과의 우선순위는 담당자가 연결할 때 결정한다. 다른 연출을 여기서 강제 해제하지 않는다.
-// 비동기 콜백은 요청 ID를 값으로 캡처하고, 정리 요청에서는 해당 ID의 콜백만 해제한다.
+// Suit 전환 연출: 암전은 LocalPlayer PP의 Screen Blackout(Slate 이후, HUD 포함)으로 그린다.
+// 다른 연출(사망/해킹)과 파라미터를 공유하지 않으므로 여기서 다른 연출을 해제하지 않는다.
+// LocalPlayer가 없는 Controller는 연출도 완료 응답도 만들지 않고 서버 timeout에 맡긴다.
+// 비동기 콜백은 요청 ID를 값으로 캡처한다. 늦게 온 콜백은 Notify의 현재 ID/단계 검증에서 버려진다.
 void AFirstPersonPlayerController::RequestSuitFadeOut(const FGuid& TransitionId, float Duration)
 {
 	// 테스트도 기존 ID/소유자 검증과 서버 최소 시간을 거친다. 화면이 실제로 가려졌다는 보장은 없다.
@@ -1072,20 +1337,39 @@ void AFirstPersonPlayerController::RequestSuitFadeOut(const FGuid& TransitionId,
 		NotifySuitFadeOutFinished(TransitionId);
 		return;
 	}
-	// TODO(암전 담당자): 실제 화면이 가려진 콜백에서 NotifySuitFadeOutFinished(TransitionId)를 호출한다.
+	ULocalPlayerPostProcessSubsystem* PPSubsystem = FindSuitPostProcessSubsystem(this);
+	if (!PPSubsystem)
+	{
+		UE_LOG(LogTemp, Log, TEXT("[SuitTransition] No LocalPlayer presentation Controller=%s Phase=FadingOut"), *GetName());
+		return;
+	}
+	PPSubsystem->OnScreenBlackoutCovered.RemoveAll(this);
+	PPSubsystem->OnScreenBlackoutRevealed.RemoveAll(this);
+	PPSubsystem->OnScreenBlackoutCovered.AddUObject(
+		this, &AFirstPersonPlayerController::HandleSuitScreenBlackoutCovered, TransitionId);
+	PPSubsystem->StartScreenBlackout(Duration);
 }
 
 void AFirstPersonPlayerController::RequestSuitPresentationReady(const FGuid& TransitionId)
 {
-	// 테스트에서는 복제/첫 포즈 완료를 기다리지 않는다. 에셋의 실제 표시 준비 검증은 담당자 연결 후 수행한다.
+	// 테스트에서는 복제/첫 포즈 완료를 기다리지 않는다.
 	if (ShouldBypassSuitPresentationForTesting(GetWorld()))
 	{
 		UE_LOG(LogTemp, Log, TEXT("[SuitTransition] PIE presentation bypass Controller=%s Phase=Applying"), *GetName());
 		NotifySuitPresentationReady(TransitionId);
 		return;
 	}
-	// TODO(암전 담당자): 복제된 Mesh/ABP, 새 포즈와 무기 부착을 확인한 뒤 NotifySuitPresentationReady를 호출한다.
-	// Partner는 지급 무기 표시도 확인한다. RPC 도착/BlackHold 경과만으로 준비 완료를 보고하지 않는다.
+	if (!FindSuitPostProcessSubsystem(this))
+	{
+		UE_LOG(LogTemp, Log, TEXT("[SuitTransition] No LocalPlayer presentation Controller=%s Phase=Applying"), *GetName());
+		return;
+	}
+	// 암전은 FadeOut에서 1로 올린 채 둔다. RPC 도착/BlackHold 경과가 아닌 복제된 외형과 무기 표시를 확인한다.
+	bSuitPresentationReadyObserved = false;
+	SuitPresentationPollCount = 0;
+	GetWorldTimerManager().SetTimer(SuitPresentationPollTimer,
+		FTimerDelegate::CreateUObject(this, &AFirstPersonPlayerController::PollSuitPresentationReady, TransitionId),
+		SuitPresentationPollInterval, true);
 }
 
 void AFirstPersonPlayerController::RequestSuitFadeIn(const FGuid& TransitionId, float Duration)
@@ -1096,12 +1380,101 @@ void AFirstPersonPlayerController::RequestSuitFadeIn(const FGuid& TransitionId, 
 		NotifySuitFadeInFinished(TransitionId);
 		return;
 	}
-	// TODO(암전 담당자): 실제 화면 복귀 콜백에서 NotifySuitFadeInFinished(TransitionId)를 호출한다.
+	ULocalPlayerPostProcessSubsystem* PPSubsystem = FindSuitPostProcessSubsystem(this);
+	if (!PPSubsystem)
+	{
+		UE_LOG(LogTemp, Log, TEXT("[SuitTransition] No LocalPlayer presentation Controller=%s Phase=FadingIn"), *GetName());
+		return;
+	}
+	PPSubsystem->OnScreenBlackoutCovered.RemoveAll(this);
+	PPSubsystem->OnScreenBlackoutRevealed.RemoveAll(this);
+	PPSubsystem->OnScreenBlackoutRevealed.AddUObject(
+		this, &AFirstPersonPlayerController::HandleSuitScreenBlackoutRevealed, TransitionId);
+	PPSubsystem->StartScreenBlackoutReveal(Duration);
 }
 
 void AFirstPersonPlayerController::RequestSuitTransitionCleanup(const FGuid& TransitionId)
 {
-	// TODO(암전 담당자): 이 ID의 콜백/연출만 정리한다. 정상 종료, 취소, Pawn 교체와 EndPlay가 공유한다.
+	// 정상 종료, 취소, Pawn 교체와 EndPlay가 공유한다. 정상 종료면 암전은 이미 0이라 남은 일이 없다.
+	GetWorldTimerManager().ClearTimer(SuitPresentationPollTimer);
+	bSuitPresentationReadyObserved = false;
+	if (ULocalPlayerPostProcessSubsystem* PPSubsystem = FindSuitPostProcessSubsystem(this))
+	{
+		PPSubsystem->OnScreenBlackoutCovered.RemoveAll(this);
+		PPSubsystem->OnScreenBlackoutRevealed.RemoveAll(this);
+		// 취소로 화면이 덮인 채 끝나면 튀지 않게 남은 만큼 걷어낸다. 서브시스템은 Controller보다 오래 살아 끝까지 진행된다.
+		PPSubsystem->StartScreenBlackoutReveal(SuitCleanupRevealDuration);
+	}
+}
+
+void AFirstPersonPlayerController::HandleSuitScreenBlackoutCovered(FGuid TransitionId)
+{
+	if (ULocalPlayerPostProcessSubsystem* PPSubsystem = FindSuitPostProcessSubsystem(this))
+	{
+		PPSubsystem->OnScreenBlackoutCovered.RemoveAll(this);
+	}
+	NotifySuitFadeOutFinished(TransitionId);
+}
+
+void AFirstPersonPlayerController::HandleSuitScreenBlackoutRevealed(FGuid TransitionId)
+{
+	if (ULocalPlayerPostProcessSubsystem* PPSubsystem = FindSuitPostProcessSubsystem(this))
+	{
+		PPSubsystem->OnScreenBlackoutRevealed.RemoveAll(this);
+	}
+	NotifySuitFadeInFinished(TransitionId);
+}
+
+void AFirstPersonPlayerController::PollSuitPresentationReady(FGuid TransitionId)
+{
+	if (LocalSuitTransitionId != TransitionId || LocalSuitTransitionPhase != ESuitTransitionPhase::Applying)
+	{
+		GetWorldTimerManager().ClearTimer(SuitPresentationPollTimer);
+		bSuitPresentationReadyObserved = false;
+		return;
+	}
+	if (!IsSuitPresentationReady())
+	{
+		bSuitPresentationReadyObserved = false;
+		if (++SuitPresentationPollCount == SuitPresentationStallLogPolls)
+		{
+			const AShooterCharacter* Shooter = LocalSuitTransitionShooter.Get();
+			const APartnerCharacter* Partner = Cast<APartnerCharacter>(GetPawn());
+			UE_LOG(LogTemp, Warning,
+				TEXT("[SuitTransition] Presentation not ready Controller=%s ShooterSuitApplied=%d ShooterWeapon=%d PartnerWeapon=%d"),
+				*GetName(),
+				IsValid(Shooter) && Shooter->GetAppliedPresentation() == EShooterPresentation::Suit ? 1 : 0,
+				IsValid(Shooter) && IsWeaponPresentedOn(Shooter->GetCurrentWeapon(), Shooter) ? 1 : 0,
+				!Partner ? -1 : IsWeaponPresentedOn(Partner->GetCurrentWeapon(), Partner) ? 1 : 0);
+		}
+		return;
+	}
+	if (!bSuitPresentationReadyObserved)
+	{
+		bSuitPresentationReadyObserved = true;
+		return;
+	}
+	GetWorldTimerManager().ClearTimer(SuitPresentationPollTimer);
+	bSuitPresentationReadyObserved = false;
+	NotifySuitPresentationReady(TransitionId);
+}
+
+bool AFirstPersonPlayerController::IsSuitPresentationReady() const
+{
+	// 두 화면 모두 Shooter의 새 외형(Mesh/ABP)과 Rifle 부착을 확인한다.
+	// Shooter 포인터는 서버 RPC 인자로 받았으므로 이 클라이언트에 복제되어 있다.
+	const AShooterCharacter* Shooter = LocalSuitTransitionShooter.Get();
+	if (!IsValid(Shooter) || Shooter->GetAppliedPresentation() != EShooterPresentation::Suit
+		|| !IsWeaponPresentedOn(Shooter->GetCurrentWeapon(), Shooter))
+	{
+		return false;
+	}
+	// Partner는 자기 Pawn에 지급된 무기도 확인한다. Shooter 화면은 Partner 무기 복제를 기다리지 않는다.
+	if (const APartnerCharacter* Partner = Cast<APartnerCharacter>(GetPawn()))
+	{
+		return IsWeaponPresentedOn(Partner->GetCurrentWeapon(), Partner);
+	}
+	return true;
 }
 
 void AFirstPersonPlayerController::BindPostProcessSubSystem()
@@ -1125,15 +1498,6 @@ void AFirstPersonPlayerController::InitializeOutlierPlayerState()
 	//OutlierPlayerState->SetPlayerRole(DefaultPlayerRole);
 	//OutlierPlayerState->SetPairId(DefaultPairId);
 
-	//UE_LOG(
-	//	LogTemp,
-	//	Warning,
-	//	TEXT("[OutlierInputDebug] InitializeOutlierPlayerState: PC=%s PS=%s Role=%d PairId=%d"),
-	//	*GetNameSafe(this),
-	//	*GetNameSafe(OutlierPlayerState),
-	//	static_cast<int32>(DefaultPlayerRole),
-	//	DefaultPairId
-	//);
 }
 
 void AFirstPersonPlayerController::ClientArenaLoad_Implementation(
@@ -1589,13 +1953,14 @@ void AFirstPersonPlayerController::ServerCloseInGameSetting_Implementation()
 	}
 }
 
-void AFirstPersonPlayerController::ServerRequestLeaveGame_Implementation()
+void AFirstPersonPlayerController::ServerRequestLeaveGame_Implementation(bool bQuitAfterLeave)
 {
-	if (AOutlierGameMode* OutlierGameMode = GetWorld()
+	AOutlierGameMode* OutlierGameMode = GetWorld()
 		? GetWorld()->GetAuthGameMode<AOutlierGameMode>()
-		: nullptr)
+		: nullptr;
+	if (!OutlierGameMode || !OutlierGameMode->HandleExplicitPlayerLeave(this, bQuitAfterLeave))
 	{
-		OutlierGameMode->HandleExplicitPlayerLeave(this);
+		ConfirmExplicitLeaveFromServer(false, bQuitAfterLeave);
 	}
 }
 
@@ -1646,15 +2011,11 @@ void AFirstPersonPlayerController::RegisterCurrentPawnWithPlayerState()
 
 	if (AShooterCharacter* ShooterCharacter = Cast<AShooterCharacter>(GetPawn()))
 	{
-		// [입력 바인딩 디버그 — 2026-09-14 비활성화]
-		//UE_LOG(LogTemp, Warning, TEXT("[OutlierInputDebug] Register Shooter Pawn: %s"), *GetNameSafe(ShooterCharacter));
 		OutlierPlayerState->SetPlayerRole(EOutlierPlayerRole::Shooter);
 		OutlierPlayerState->SetShooterCharacter(ShooterCharacter);
 	}
 	else if (APartnerCharacter* PartnerCharacter = Cast<APartnerCharacter>(GetPawn()))
 	{
-		// [입력 바인딩 디버그 — 2026-09-14 비활성화]
-		//UE_LOG(LogTemp, Warning, TEXT("[OutlierInputDebug] Register Partner Pawn: %s"), *GetNameSafe(PartnerCharacter));
 		OutlierPlayerState->SetPlayerRole(EOutlierPlayerRole::Partner);
 		OutlierPlayerState->SetPartnerCharacter(PartnerCharacter);
 	}
@@ -1682,6 +2043,60 @@ void AFirstPersonPlayerController::ControlMainWidget(bool InFlag) const
 	{
 		ShooterUIInstance->ModulesControl(InFlag);
 	}
+}
+
+void FHudWidgetCollapseState::Apply(UWidget* Widget, bool bShow)
+{
+	if (!Widget)
+	{
+		return;
+	}
+
+	if (!bShow && !bCollapsed)
+	{
+		VisibilityBeforeCollapse = Widget->GetVisibility();
+		Widget->SetVisibility(ESlateVisibility::Collapsed);
+		bCollapsed = true;
+	}
+	else if (bShow && bCollapsed)
+	{
+		Widget->SetVisibility(VisibilityBeforeCollapse);
+		bCollapsed = false;
+	}
+}
+
+void AFirstPersonPlayerController::CollapseMainWidgetForDeath()
+{
+	bHudHiddenForDeath = true;
+	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalPlayer()
+		? GetLocalPlayer()->GetSubsystem<ULocalPlayerUISubSystem>()
+		: nullptr)
+	{
+		UISubsystem->SetTransientWidgetsSuppressed(true);
+	}
+	RefreshHudVisibility();
+}
+
+void AFirstPersonPlayerController::RestoreMainWidgetAfterDeath()
+{
+	bHudHiddenForDeath = false;
+	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalPlayer()
+		? GetLocalPlayer()->GetSubsystem<ULocalPlayerUISubSystem>()
+		: nullptr)
+	{
+		UISubsystem->SetTransientWidgetsSuppressed(false);
+	}
+	RefreshHudVisibility();
+}
+
+void AFirstPersonPlayerController::RefreshHudVisibility()
+{
+	MainWidgetCollapseState.Apply(ShooterUIInstance, ShouldShowMainWidget());
+}
+
+bool AFirstPersonPlayerController::ShouldShowMainWidget() const
+{
+	return !bHudHiddenForDeath;
 }
 
 void AFirstPersonPlayerController::RefreshPostProcessState()

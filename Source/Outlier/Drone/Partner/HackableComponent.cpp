@@ -62,6 +62,7 @@ void UHackableComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 
 	OnHackTargetInvalidated.Broadcast(this, EndPlayReason);
 	OnHackTargetInvalidated.Clear();
+	OnHackTargetUnavailable.Clear();
 
 	Super::EndPlay(EndPlayReason);
 }
@@ -98,9 +99,20 @@ bool UHackableComponent::CanBeHackTarget(const FHackQueryContext& Context) const
 
 void UHackableComponent::OnRep_HackTags()
 {
+	if (HackTags.HasTag(OutlierGameplayTags::State::Dead())
+		|| HackTags.HasTag(OutlierGameplayTags::State::Locked()))
+	{
+		NotifyHackTargetUnavailable();
+	}
+
 	// 완료 상태를 표현에 재적용하는 통보다. 새 해킹 성공 처리가 아니므로 보상/전투 시작을 재실행하지 않는다.
 	OnCheckpointHackStateRestored.Broadcast(
 		HackTags.HasTag(OutlierGameplayTags::State::HackedOnce()));
+}
+
+void UHackableComponent::NotifyHackTargetUnavailable()
+{
+	OnHackTargetUnavailable.Broadcast(this);
 }
 
 bool UHackableComponent::MatchesHackQuery(const FGameplayTagQuery& Query) const

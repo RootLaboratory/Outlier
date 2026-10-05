@@ -1560,6 +1560,9 @@ bool FOutlierGasEnemyDamageFlowTest::RunTest(const FString& Parameters)
 	TestTrue(
 		TEXT("Accepted weapon StunTime grants the authoritative stunned tag"),
 		AbilitySystem->HasMatchingGameplayTag(OutlierGameplayTags::State::Stunned()));
+	TestTrue(
+		TEXT("Accepted weapon stun starts its persistent presentation cue"),
+		AbilitySystem->IsGameplayCueActive(OutlierGameplayTags::Cue::Status::Stun()));
 	TestEqual(
 		TEXT("The Enemy enters its existing Stun combat state from the ASC tag"),
 		Enemy->GetCombatState(),
@@ -1572,10 +1575,29 @@ bool FOutlierGasEnemyDamageFlowTest::RunTest(const FString& Parameters)
 	TestFalse(
 		TEXT("The stunned tag expires after the configured weapon duration"),
 		AbilitySystem->HasMatchingGameplayTag(OutlierGameplayTags::State::Stunned()));
+	TestFalse(
+		TEXT("The presentation cue expires with the weapon stun"),
+		AbilitySystem->IsGameplayCueActive(OutlierGameplayTags::Cue::Status::Stun()));
 	TestNotEqual(
 		TEXT("The Enemy restores its previous state after the weapon stun expires"),
 		Enemy->GetCombatState(),
 		EEnemyCombatState::Stun);
+
+	const FActiveGameplayEffectHandle FirstStun = AbilitySystem->ApplyStunStateToSelf(1.0f, Enemy);
+	const FActiveGameplayEffectHandle SecondStun = AbilitySystem->ApplyStunStateToSelf(2.0f, AbilitySystem);
+	TestTrue(TEXT("Both overlapping stun applications are accepted"), FirstStun.IsValid() && SecondStun.IsValid());
+	TestTrue(TEXT("The first overlapping stun can be removed"), AbilitySystem->RemoveActiveEffectFromSelf(FirstStun));
+	TestTrue(
+		TEXT("Removing one stun preserves presentation while another stun is active"),
+		AbilitySystem->IsGameplayCueActive(OutlierGameplayTags::Cue::Status::Stun()));
+	TestEqual(TEXT("An overlapping stun keeps the Enemy stunned"), Enemy->GetCombatState(), EEnemyCombatState::Stun);
+	TestTrue(TEXT("The last overlapping stun can be removed"), AbilitySystem->RemoveActiveEffectFromSelf(SecondStun));
+	TestFalse(
+		TEXT("Removing the final stun stops presentation immediately"),
+		AbilitySystem->IsGameplayCueActive(OutlierGameplayTags::Cue::Status::Stun()));
+	TestFalse(
+		TEXT("Removing the final stun also removes the authoritative state"),
+		AbilitySystem->HasMatchingGameplayTag(OutlierGameplayTags::State::Stunned()));
 
 	FOutlierDamageRequest ExplosionDamageEvent;
 	ExplosionDamageEvent.DamageTag = OutlierGameplayTags::Damage::Explosion();

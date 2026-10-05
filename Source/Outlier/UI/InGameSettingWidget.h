@@ -2,17 +2,17 @@
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
-#include "Save/OutlierCheckpointRestartVote.h"
 #include "UI/UILayerContextReceiver.h"
 #include "UI/UILayerInputReceiver.h"
-#include "UI/UILayerTypes.h"
 #include "InGameSettingWidget.generated.h"
 
-class UButton;
+class UInGameSettingButtonsWidget;
 class UInGamePauseWidget;
 class USettingWidget;
 class UTextBlock;
 class UUILayerKeyHintWidget;
+enum class EInGameSettingButtonAction : uint8;
+enum class EOutlierCheckpointRestartVoteView : uint8;
 
 UCLASS(Abstract, Blueprintable)
 class OUTLIER_API UInGameSettingWidget : public UUserWidget,
@@ -22,6 +22,8 @@ class OUTLIER_API UInGameSettingWidget : public UUserWidget,
 	GENERATED_BODY()
 
 public:
+	TSubclassOf<UUILayerKeyHintWidget> GetKeyHintWidgetClass() const;
+
 	TSubclassOf<UInGamePauseWidget> GetInGamePauseWidgetClass() const
 	{
 		return InGamePauseWidgetClass;
@@ -40,23 +42,14 @@ protected:
 	virtual bool HandleUILayerLeft_Implementation() override;
 	virtual bool HandleUILayerRight_Implementation() override;
 
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "InGame Setting")
-	TObjectPtr<UButton> ContinueButton;
-
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "InGame Setting")
-	TObjectPtr<UButton> SettingButton;
-
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "InGame Setting")
-	TObjectPtr<UButton> RestartCheckpointButton;
-
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "InGame Setting")
-	TObjectPtr<UButton> TitleButton;
-
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "InGame Setting")
 	TObjectPtr<UTextBlock> MenuText;
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "InGame Setting")
 	TObjectPtr<UInGamePauseWidget> InGamePause;
+
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "InGame Setting")
+	TObjectPtr<UInGameSettingButtonsWidget> ButtonsWidget;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "InGame Setting|Layer")
 	TSubclassOf<UInGamePauseWidget> InGamePauseWidgetClass;
@@ -68,39 +61,17 @@ protected:
 	TSubclassOf<UUILayerKeyHintWidget> KeyHintWidgetClass;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "InGame Setting|Text")
-	FText CheckpointWaitingText = FText::FromString(TEXT("상대 플레이어의 응답을 기다리는 중입니다"));
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "InGame Setting|Text")
-	FText GameExitConfirmationText = FText::FromString(TEXT("정말 게임을 종료하시겠습니까?"));
+	FText GameLeaveWaitingText = FText::FromString(TEXT("매치를 종료하는 중입니다."));
 
 private:
-	UFUNCTION()
-	void HandleContinueButtonClicked();
-
-	UFUNCTION()
-	void HandleSettingButtonClicked();
-
-	UFUNCTION()
-	void HandleRestartCheckpointButtonClicked();
-
-	UFUNCTION()
-	void HandleTitleButtonClicked();
-
-	void PushKeyHintLayer();
-	void PopKeyHintLayer();
-	void PopSelfFromLayer();
+	void HandleButtonAction(EInGameSettingButtonAction Action);
 	void PushSettingLayer();
-	void CancelGameExitConfirmation();
-	void ConfirmGameExit();
 	void RefreshCheckpointRestartState(EOutlierCheckpointRestartVoteView VoteView);
-
-	UPROPERTY(Transient)
-	TObjectPtr<UUILayerKeyHintWidget> ActiveKeyHintWidget;
+	void RefreshMenuState();
 
 	UPROPERTY(Transient)
 	TObjectPtr<USettingWidget> ActiveSettingWidget;
 
-	FUILayerHandle KeyHintLayerHandle;
 	FText DefaultMenuText;
-	bool bConfirmingGameExit = false;
+	bool bLeavingGame = false;
 };

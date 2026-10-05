@@ -101,6 +101,7 @@ public:
 	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
 	virtual FGenericTeamId GetGenericTeamId() const override;
 	virtual FVector GetPawnViewLocation() const override;
+	virtual FVector GetHackTargetLocation() const override;
 	virtual FVector GetCombatAimPoint(const AActor* TargetActor) const override;
 	virtual FRotator GetViewRotation() const override;
 	virtual bool CanUseEnemyPerception() const override;

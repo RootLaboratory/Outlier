@@ -84,6 +84,14 @@ void UShooterCurrentAbilityIcon::ResetCooldown()
 	}
 }
 
+void UShooterCurrentAbilityIcon::SetAbilityEnabled(bool bEnabled)
+{
+	if (LockIcon)
+	{
+		LockIcon->SetVisibility(bEnabled ? ESlateVisibility::Hidden : ESlateVisibility::HitTestInvisible);
+	}
+}
+
 UTexture2D* UShooterCurrentAbilityIcon::GetTextureForAbility(const FGameplayTag& AbilityTag) const
 {
 	if (AbilityTag == TagDrivenUITags::Ability::Shooter::QuantumLeap())

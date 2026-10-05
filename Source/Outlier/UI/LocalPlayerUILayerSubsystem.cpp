@@ -5,11 +5,19 @@
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
 #include "Components/PanelWidget.h"
+#include "EnhancedInputComponent.h"
+#include "EnhancedInputSubsystems.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/LocalPlayer.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
 #include "FrontendPlayerController.h"
+#include "Input/ControllerInputConfig.h"
+#include "InputAction.h"
 #include "MainUIBase.h"
+#include "LocalPlayerPostProcessSubsystem.h"
+#include "UI/InGamePauseWidget.h"
+#include "UI/InGameSettingWidget.h"
+#include "UI/UpgradeMachineWidget.h"
 #include "UI/UILayerGameplayTags.h"
 #include "UI/UILayerContextReceiver.h"
 #include "UI/UILayerInputReceiver.h"
@@ -39,6 +47,7 @@ namespace
 void ULocalPlayerUILayerSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
+	Collection.InitializeDependency<ULocalPlayerPostProcessSubsystem>();
 }
 
 void ULocalPlayerUILayerSubsystem::Deinitialize()
@@ -500,6 +509,7 @@ void ULocalPlayerUILayerSubsystem::ClearAllLayersInternal(
 
 	// Widget 제거 콜백이 LayerEntries를 갱신할 수 있으므로 먼저 목록을 분리한다.
 	TArray<FUILayerEntry> EntriesToRemove = MoveTemp(LayerEntries);
+	RefreshPostProcessSuspension();
 
 	CachedTopLayerHandle.Reset();
 	CachedInputWidget.Reset();
@@ -557,6 +567,28 @@ UUserWidget* ULocalPlayerUILayerSubsystem::GetTopLayerWidget() const
 	return CachedInputWidget.Get();
 }
 
+UUserWidget* ULocalPlayerUILayerSubsystem::FindWidgetByOwnerAndClass(
+	UObject* RequestOwner,
+	TSubclassOf<UUserWidget> WidgetClass) const
+{
+	if (!WidgetClass)
+	{
+		return nullptr;
+	}
+
+	for (const FUILayerEntry& Entry : LayerEntries)
+	{
+		UUserWidget* Widget = Entry.Widget.Get();
+		if (Entry.RequestOwner.Get() == RequestOwner
+			&& IsValid(Widget)
+			&& Widget->IsA(WidgetClass))
+		{
+			return Widget;
+		}
+	}
+	return nullptr;
+}
+
 FGameplayTag ULocalPlayerUILayerSubsystem::GetActiveInputModeTag() const
 {
 	return CachedInputModeTag;
@@ -602,6 +634,59 @@ bool ULocalPlayerUILayerSubsystem::RouteWidgetRightInput()
 	return RouteWidgetInput(
 		&IUILayerInputReceiver::Execute_HandleUILayerRight,
 		false);
+}
+
+bool ULocalPlayerUILayerSubsystem::BindWidgetInput(
+	UEnhancedInputComponent* InputComponent,
+	const UControllerInputConfig* Config)
+{
+	if (!InputComponent || !Config)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[UIInput] Cannot bind widget input. LocalPlayer=%s Config=%s Component=%s"),
+			*GetNameSafe(GetLocalPlayer()), *GetNameSafe(Config), *GetNameSafe(InputComponent));
+		return false;
+	}
+
+	WidgetInputConfig = Config;
+
+	if (Config->WidgetMappingContext)
+	{
+		if (UEnhancedInputLocalPlayerSubsystem* InputSubsystem = GetLocalPlayer()
+			? GetLocalPlayer()->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>()
+			: nullptr)
+		{
+			InputSubsystem->AddMappingContext(Config->WidgetMappingContext, 0);
+		}
+	}
+
+	TWeakObjectPtr<ULocalPlayerUILayerSubsystem> WeakThis(this);
+	auto BindRoute = [InputComponent, WeakThis](
+		UInputAction* Action, bool (ULocalPlayerUILayerSubsystem::*Route)())
+	{
+		if (!Action)
+		{
+			return;
+		}
+
+		// 일시정지 중에도 설정/게임오버 UI는 조작할 수 있어야 한다.
+		Action->bTriggerWhenPaused = true;
+		InputComponent->BindActionValueLambda(Action, ETriggerEvent::Started,
+			[WeakThis, Route](const FInputActionValue&)
+			{
+				if (ULocalPlayerUILayerSubsystem* Subsystem = WeakThis.Get())
+				{
+					(Subsystem->*Route)();
+				}
+			});
+	};
+
+	BindRoute(Config->WidgetConfirmedAction, &ULocalPlayerUILayerSubsystem::RouteWidgetConfirmedInput);
+	BindRoute(Config->WidgetUpAction, &ULocalPlayerUILayerSubsystem::RouteWidgetUpInput);
+	BindRoute(Config->WidgetDownAction, &ULocalPlayerUILayerSubsystem::RouteWidgetDownInput);
+	BindRoute(Config->WidgetLeftAction, &ULocalPlayerUILayerSubsystem::RouteWidgetLeftInput);
+	BindRoute(Config->WidgetRightAction, &ULocalPlayerUILayerSubsystem::RouteWidgetRightInput);
+	return true;
 }
 
 bool ULocalPlayerUILayerSubsystem::RouteWidgetInput(
@@ -779,9 +864,31 @@ int32 ULocalPlayerUILayerSubsystem::GetLayerPriority(FGameplayTag LayerTag) cons
 	return GameplayLayerPriority;
 }
 
+void ULocalPlayerUILayerSubsystem::RefreshPostProcessSuspension()
+{
+	ULocalPlayer* LocalPlayer = GetLocalPlayer();
+	ULocalPlayerPostProcessSubsystem* PostProcess = LocalPlayer
+		? LocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>() : nullptr;
+	if (!PostProcess)
+	{
+		return;
+	}
+
+	// 최상위 레이어만 보면 설정 위에 확인 창이 뜨는 순간 효과가 재개된다.
+	// 스택에 대상 메뉴가 하나라도 남아 있는 동안 유지하고 마지막 메뉴가 닫힐 때 해제한다.
+	const bool bSuspendUIEffects = LayerEntries.ContainsByPredicate([](const FUILayerEntry& Entry)
+	{
+		const UUserWidget* Widget = Entry.Widget.Get();
+		return Widget && (Widget->IsA<UUpgradeMachineWidget>()
+			|| Widget->IsA<UInGameSettingWidget>() || Widget->IsA<UInGamePauseWidget>());
+	});
+	PostProcess->SetUIEffectsSuspended(bSuspendUIEffects);
+}
+
 void ULocalPlayerUILayerSubsystem::RefreshTopLayerInput()
 {
 	RemoveInvalidLayers();
+	RefreshPostProcessSuspension();
 
 	if (const FUILayerEntry* TopLayer = FindTopInputLayer())
 	{

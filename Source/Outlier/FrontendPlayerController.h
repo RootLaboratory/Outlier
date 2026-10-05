@@ -14,6 +14,7 @@
  * 
  */
 
+class UControllerInputConfig;
 class UInputAction;
 class UInputMappingContext;
 class ULocalPlayerUILayerSubsystem;
@@ -125,8 +126,6 @@ public:
 	FGameplayTag GetFrontendInputMode() const { return CurrentFrontendInputMode; }
 
 	const TArray<TObjectPtr<UInputMappingContext>>& GetDefaultMappingContexts() const { return DefaultMappingContexts; }
-	UInputAction* GetWidgetEscapeAction() const { return WidgetEscapeAction; }
-	UInputAction* GetWidgetConfirmedAction() const { return WidgetConfirmedAction; }
 
 protected:
 	virtual void SetupInputComponent() override;
@@ -134,23 +133,8 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "Input|Input Mappings")
 	TArray<TObjectPtr<UInputMappingContext>> DefaultMappingContexts;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input|Actions")
-	TObjectPtr<UInputAction> WidgetEscapeAction;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input|Actions")
-	TObjectPtr<UInputAction> WidgetConfirmedAction;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input|Actions")
-	TObjectPtr<UInputAction> WidgetUpAction;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input|Actions")
-	TObjectPtr<UInputAction> WidgetDownAction;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input|Actions")
-	TObjectPtr<UInputAction> WidgetLeftAction;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input|Actions")
-	TObjectPtr<UInputAction> WidgetRightAction;
+	UPROPERTY(EditDefaultsOnly, Category = "Input")
+	TObjectPtr<UControllerInputConfig> ControllerInputConfig;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input|Input Mode")
 	FGameplayTag DefaultFrontendInputMode;
@@ -159,11 +143,6 @@ protected:
 	FGameplayTag CurrentFrontendInputMode;
 
 	void HandleWidgetEscapeInput();
-	void HandleWidgetConfirmedInput();
-	void HandleWidgetUpInput();
-	void HandleWidgetDownInput();
-	void HandleWidgetLeftInput();
-	void HandleWidgetRightInput();
 
 public:
 	UPROPERTY(BlueprintAssignable, Category = "Party")

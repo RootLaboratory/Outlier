@@ -1,0 +1,27 @@
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/ScreenPass.ush"
+
+// 카메라 Split Prism. 화면 가운데 세로선을 기준으로 반 갈라
+// Offset > 0이면 왼쪽 절반은 +Y(아래), 오른쪽 절반은 -Y(위)로 민다. 초점을 지나쳐 Offset < 0이면 반대.
+// Slate 이후라 HUD까지 같이 갈라진다.
+
+Texture2D InputTexture;
+SamplerState InputSampler;
+
+// 화면 높이 대비 오프셋. 부호 있음.
+float Offset;
+
+void MainPS(
+	FScreenVertexOutput Input,
+	out float4 OutColor : SV_Target0)
+{
+	// 밀린 만큼 화면 밖을 읽지 않도록 가운데 기준으로 확대한다. Offset이 0이면 배율 1.
+	// 밀리는 쪽 모서리가 정확히 0 또는 1에 닿는 배율이다.
+	const float Scale = 1.0f - 2.0f * abs(Offset);
+	float2 UV = 0.5f + (Input.UV - 0.5f) * Scale;
+
+	// 왼쪽은 위쪽 내용을 가져와 아래로 밀린 것처럼, 오른쪽은 그 반대.
+	UV.y += Input.UV.x < 0.5f ? -Offset : Offset;
+
+	OutColor = InputTexture.SampleLevel(InputSampler, UV, 0);
+}

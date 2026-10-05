@@ -49,6 +49,33 @@ void ARoomVolume::BeginPlay()
 			CombatSubsystem->RegisterRoom(this, RoomTag);
 		}
 	}
+	RefreshOverlappingRoomAssignments();
+}
+
+void ARoomVolume::RefreshOverlappingRoomAssignments()
+{
+	if (!HasAuthority() || !RoomTag.IsValid() || !TriggerBox)
+	{
+		return;
+	}
+
+	TriggerBox->UpdateOverlaps();
+	TArray<AActor*> OverlappingActors;
+	TriggerBox->GetOverlappingActors(OverlappingActors);
+	for (AActor* Actor : OverlappingActors)
+	{
+		URoomTagComponent* RoomTagComp = FindRoomTagComponent(Actor);
+		if (!RoomTagComp || RoomTagComp->HasActiveRoom(this))
+		{
+			continue;
+		}
+
+		// UpdateOverlaps만 호출하면 이미 캐시된 overlap의 BeginOverlap은 재발행되지 않는다.
+		RoomTagComp->EnterRoom(this);
+		UE_LOG(LogTemp, Log, TEXT("[RoomVolume] Restored overlap assignment Room=%s Actor=%s"),
+			*RoomTag.ToString(), *GetNameSafe(Actor));
+		OnRoomActorOverlapChanged.Broadcast(Actor, true);
+	}
 }
 
 void ARoomVolume::EndPlay(const EEndPlayReason::Type EndPlayReason)

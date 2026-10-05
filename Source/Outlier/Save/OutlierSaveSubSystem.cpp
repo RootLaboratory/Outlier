@@ -374,6 +374,12 @@ bool UOutlierSaveSubSystem::HasCommittedCheckpoint(FName CheckpointId) const
 	return !CheckpointId.IsNone() && CommittedCheckpointIds.Contains(CheckpointId);
 }
 
+void UOutlierSaveSubSystem::ResetCommittedCheckpointIds()
+{
+	// 마지막 체크포인트 스냅샷은 유지한다. 같은 체크포인트를 새 진행에서 다시 저장할 수 있게 목록만 비운다.
+	CommittedCheckpointIds.Reset();
+}
+
 bool UOutlierSaveSubSystem::SetWorldProgressState(
 	EOutlierWorldProgressType Type,
 	FName ProgressId,

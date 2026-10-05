@@ -621,19 +621,11 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 			bIsWeakPointHit = HitExplosive->IsMountedOnSelfDestructDrone();
 		}
 
-		if (bShouldNotifyAttackSign)
-		{
-			ClientNotifyAttackSign(bIsWeakPointHit);
-		}
-
-		
-		
-
 		if (HitActor)
 		{
 			FOutlierDamageRequest DamageRequest;
 			DamageRequest.DamageAmount = DamageToApply;
-			DamageRequest.DamageTag = OutlierGameplayTags::Damage::Weapon();
+			DamageRequest.DamageTag = OutlierGameplayTags::Damage::Ranged();
 			DamageRequest.AdaptationDamageCategory = ResolveAdaptationDamageCategory(
 				OwnerCharacter,
 				WeaponType);
@@ -642,7 +634,12 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 			DamageRequest.DamageOrigin = Start;
 			DamageRequest.EventInstigator = OwnerCharacter->GetController();
 			DamageRequest.DamageCauser = this;
-			OutlierDamage::Apply(HitActor, DamageRequest);
+			const float AppliedDamage = OutlierDamage::Apply(HitActor, DamageRequest);
+			// 잔해/무적 대상에 충돌한 것만으로 명중 UI를 보내지 않는다. 치명타격도 적용된 피해로 판정한다.
+			if (bShouldNotifyAttackSign && AppliedDamage > 0.0f)
+			{
+				ClientNotifyAttackSign(bIsWeakPointHit);
+			}
 		}
 	}
 	{
@@ -655,7 +652,7 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 			HitActor,
 			GetNormalizedLastShotDirection(),
 			FiredMuzzleSocketName);
-
+		
 		// Weapon fire uses the shared tag-driven world-audio path. The server resolves
 		// the weighted variant once and delivers it to relevant clients, so enemy,
 		// partner, and possessed-enemy weapons all follow the same network behavior.

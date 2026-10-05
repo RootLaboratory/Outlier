@@ -30,12 +30,6 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Teleport Sprite Animation|Material")
 	TObjectPtr<UMaterialInterface> AnimationMaterial;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Teleport Sprite Animation|Animation", meta = (ClampMin = "0.0"))
-	float TimeMultiplierMin = 0.8f;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Teleport Sprite Animation|Animation", meta = (ClampMin = "0.0"))
-	float TimeMultiplierMax = 1.2f;
-
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Teleport Sprite Animation|Material")
 	FName TimeParameterName = TEXT("Time");
 

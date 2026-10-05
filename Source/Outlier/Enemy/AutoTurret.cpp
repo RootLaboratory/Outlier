@@ -87,6 +87,7 @@ AAutoTurret::AAutoTurret()
 		MovementComponent->MaxFlySpeed = 0.0f;
 	}
 
+	HackableComponent->HackTags.AddTag(HackGameplayTags::Info::Turret());
 	ConfigureTurretHackPolicy();
 }
 
@@ -278,6 +279,12 @@ FVector AAutoTurret::GetPawnViewLocation() const
 	}
 
 	return TurretHeadPivot ? TurretHeadPivot->GetComponentLocation() : Super::GetPawnViewLocation();
+}
+
+FVector AAutoTurret::GetHackTargetLocation() const
+{
+	// 해치/바닥에 놓인 Actor 원점 대신 전개된 머리를 시야 검사와 UI의 기준으로 사용한다.
+	return GetPawnViewLocation();
 }
 
 FVector AAutoTurret::GetCombatAimPoint(const AActor* TargetActor) const
@@ -472,6 +479,7 @@ void AAutoTurret::ConfigureTurretHackPolicy()
 
 	HackableComponent->HackTags.RemoveTag(HackGameplayTags::Target::Possessable());
 	HackableComponent->HackTags.AddTag(HackGameplayTags::Target::NonPossessable());
+	HackableComponent->HackTags.AddTag(HackGameplayTags::Info::Turret());
 	HackableComponent->SuccessEffectTags.RemoveTag(HackGameplayTags::Effect::Possess());
 	HackableComponent->SuccessEffectTags.AddTag(HackGameplayTags::Effect::ChangeTeam());
 }
@@ -752,6 +760,8 @@ void AAutoTurret::ApplyTurretLifecycleState()
 		else
 		{
 			HackableComponent->HackTags.AddTag(OutlierGameplayTags::State::Locked());
+			// 사망 후에도 Actor가 남으므로 EndPlay를 기다리지 않고 진행 중인 해킹을 종료한다.
+			HackableComponent->NotifyHackTargetUnavailable();
 		}
 	}
 

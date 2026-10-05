@@ -55,13 +55,7 @@ void UTeleportSpriteAnimation::NativeTick(const FGeometry& MyGeometry, float InD
 		return;
 	}
 
-	AnimationPhase = FMath::Fmod(
-		AnimationPhase + InDeltaTime * EffectiveTimeMultiplier,
-		1.0f);
-	if (AnimationPhase < 0.0f)
-	{
-		AnimationPhase += 1.0f;
-	}
+	AnimationPhase += InDeltaTime * EffectiveTimeMultiplier;
 	AnimationMaterialInstance->SetScalarParameterValue(TimeParameterName, AnimationPhase);
 	if (!bHasLoggedPlaybackTick)
 	{
@@ -80,11 +74,7 @@ void UTeleportSpriteAnimation::StartTeleportAnimation(float InLayerTimeMultiplie
 {
 	AnimationPhase = 0.0f;
 	bHasLoggedPlaybackTick = false;
-	const float MinMultiplier = FMath::Max(TimeMultiplierMin, 0.0f);
-	const float MaxMultiplier = FMath::Max(TimeMultiplierMax, MinMultiplier);
-	const float RandomMultiplier = FMath::FRandRange(MinMultiplier, MaxMultiplier);
-	EffectiveTimeMultiplier = FMath::Max(InLayerTimeMultiplier, 0.0f)
-		* RandomMultiplier;
+	EffectiveTimeMultiplier = FMath::Max(InLayerTimeMultiplier, 0.0f);
 	bIsPlaying = EffectiveTimeMultiplier > 0.0f;
 
 	if (AnimationMaterialInstance)
@@ -96,10 +86,9 @@ void UTeleportSpriteAnimation::StartTeleportAnimation(float InLayerTimeMultiplie
 	UE_LOG(
 		LogTemp,
 		Warning,
-		TEXT("[TeleportSprite] Start Widget=%s LayerMultiplier=%.3f RandomMultiplier=%.3f EffectiveMultiplier=%.3f MID=%s"),
+		TEXT("[TeleportSprite] Start Widget=%s LayerMultiplier=%.3f EffectiveMultiplier=%.3f MID=%s"),
 		*GetNameSafe(this),
 		InLayerTimeMultiplier,
-		RandomMultiplier,
 		EffectiveTimeMultiplier,
 		*GetNameSafe(AnimationMaterialInstance));
 }

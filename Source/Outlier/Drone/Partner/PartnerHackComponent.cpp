@@ -278,6 +278,12 @@ void UPartnerHackComponent::CompleteActiveHack(
 	const FHackResultContext& ResultContext,
 	bool bNotifyClient)
 {
+	// 사망 취소 뒤 도착한 미니게임 결과는 완료/취소 이벤트를 다시 발생시키지 않는다.
+	if (!ActiveHackableComponent)
+	{
+		return;
+	}
+
 	if (!IsValid(ActiveHackableComponent)
 		|| !IsValid(ActiveHackableComponent->GetOwner())
 		|| ActiveHackableComponent->GetOwner()->IsActorBeingDestroyed())
@@ -336,6 +342,17 @@ void UPartnerHackComponent::CompleteActiveHack(
 	FHackResultContext MutableResultContext = ResultContext;
 	MutableResultContext.TargetActor = CompletedTargetActor;
 	MutableResultContext.InstigatorActor = PartnerCharacter;
+
+	// 빙의 시작 시 Target 태그는 바뀔 수 있으므로 완료 시에는 차단 상태와 재사용 정책만 재검증한다.
+	FHackQueryContext CompletionQuery = BuildQueryContext();
+	CompletionQuery.RequiredTags.Reset();
+	CompletionQuery.BlockedTags.AddTag(OutlierGameplayTags::State::Dead());
+	CompletionQuery.BlockedTags.AddTag(OutlierGameplayTags::State::Locked());
+	if (MutableResultContext.Result != EHackResult::Cancelled
+		&& !CompletedHackableComponent->CanBeHackTarget(CompletionQuery))
+	{
+		MutableResultContext.Result = EHackResult::Cancelled;
+	}
 
 	if (IHackableInterface* Handler = Cast<IHackableInterface>(CompletedTargetActor))
 	{
@@ -546,7 +563,8 @@ void UPartnerHackComponent::ServerTryStartHack_Implementation(AActor* TargetActo
 	}
 
 	const float EffectiveRange = CachedAbilityData.EffectiveRange;
-	if (FVector::DistSquared(PartnerCharacter->GetActorLocation(), TargetActor->GetActorLocation()) > FMath::Square(EffectiveRange))
+	if (FVector::DistSquared(PartnerCharacter->GetActorLocation(),
+		IHackableInterface::ResolveHackTargetLocation(TargetActor)) > FMath::Square(EffectiveRange))
 	{
 		if (bDebugHack)
 		{
@@ -715,7 +733,8 @@ bool UPartnerHackComponent::IsInsidePartnerFrustum(AActor* Actor, FVector2D& Out
 	}
 
 	const FHackQueryContext Context = BuildQueryContext();
-	const FVector ToTarget = Actor->GetActorLocation() - Context.ViewLocation;
+	const FVector TargetLocation = IHackableInterface::ResolveHackTargetLocation(Actor);
+	const FVector ToTarget = TargetLocation - Context.ViewLocation;
 	const float DistanceSq = ToTarget.SizeSquared();
 
 	if (DistanceSq > FMath::Square(CachedAbilityData.EffectiveRange))
@@ -738,7 +757,7 @@ bool UPartnerHackComponent::IsInsidePartnerFrustum(AActor* Actor, FVector2D& Out
 		return true;
 	}
 
-	if (!PlayerController->ProjectWorldLocationToScreen(Actor->GetActorLocation(), OutScreenLocation, true))
+	if (!PlayerController->ProjectWorldLocationToScreen(TargetLocation, OutScreenLocation, true))
 	{
 		return false;
 	}
@@ -770,7 +789,7 @@ bool UPartnerHackComponent::HasLineOfSight(AActor* Actor) const
 	const bool bHit = GetWorld()->LineTraceSingleByChannel(
 		Hit,
 		Context.ViewLocation,
-		Actor->GetActorLocation(),
+		IHackableInterface::ResolveHackTargetLocation(Actor),
 		ECC_Visibility,
 		QueryParams
 	);
@@ -1092,6 +1111,9 @@ void UPartnerHackComponent::SetActiveHackableComponent(UHackableComponent* Hacka
 		ActiveHackableComponent->OnHackTargetInvalidated.AddUObject(
 			this,
 			&UPartnerHackComponent::HandleHackTargetInvalidated);
+		ActiveHackableComponent->OnHackTargetUnavailable.AddUObject(
+			this,
+			&UPartnerHackComponent::HandleHackTargetUnavailable);
 	}
 }
 
@@ -1100,6 +1122,7 @@ void UPartnerHackComponent::ClearActiveHackableComponent()
 	if (ActiveHackableComponent)
 	{
 		ActiveHackableComponent->OnHackTargetInvalidated.RemoveAll(this);
+		ActiveHackableComponent->OnHackTargetUnavailable.RemoveAll(this);
 	}
 
 	ActiveHackableComponent = nullptr;
@@ -1118,6 +1141,25 @@ void UPartnerHackComponent::AbortLocalHackForInvalidTarget()
 	DestroyCandidateLayerWidget();
 	ClearHackCandidates();
 	LastDebugCandidateCount = INDEX_NONE;
+}
+
+void UPartnerHackComponent::HandleHackTargetUnavailable(UHackableComponent* UnavailableComponent)
+{
+	if (UnavailableComponent != ActiveHackableComponent)
+	{
+		return;
+	}
+	if (GetOwner() && GetOwner()->HasAuthority())
+	{
+		FHackResultContext CancelledContext;
+		CancelledContext.TargetActor = UnavailableComponent->GetOwner();
+		CancelledContext.Result = EHackResult::Cancelled;
+		CompleteActiveHack(CancelledContext, true);
+	}
+	else
+	{
+		AbortLocalHackForInvalidTarget();
+	}
 }
 
 void UPartnerHackComponent::HandleHackTargetInvalidated(

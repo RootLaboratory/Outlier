@@ -188,6 +188,7 @@ private:
 	void HandleHackTargetInvalidated(
 		UHackableComponent* InvalidatedComponent,
 		EEndPlayReason::Type EndPlayReason);
+	void HandleHackTargetUnavailable(UHackableComponent* UnavailableComponent);
 
 	void StartHackMiniGame(AActor* TargetActor, UHackableComponent* HackableComponent);
 

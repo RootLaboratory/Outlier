@@ -132,9 +132,14 @@ void USpinningCircleMiniGameWidget::SpawnCircleBorders()
 	const int32 MaxCount = FMath::Max(MinCount, MaxCircleCount);
 	const int32 CircleCount = FMath::RandRange(MinCount, MaxCount);
 
-	const float EffectiveMaxRadius = FMath::Max(MaxCircleRadius, MinCircleRadius + 1.0f);
+	// The WBP background bounds the visible stroke, not just the ring centerline.
+	const float SafeBackgroundDiameter = FMath::Max(BackgroundCircleDiameter, 1.0f);
+	const float HalfThickness = FMath::Clamp(CircleThickness, 0.0f, SafeBackgroundDiameter - 1.0f) * 0.5f;
+	const float BackgroundMaxRadius = SafeBackgroundDiameter * 0.5f - HalfThickness;
+	const float EffectiveMinRadius = FMath::Min(FMath::Max(MinCircleRadius, HalfThickness), BackgroundMaxRadius);
+	const float EffectiveMaxRadius = FMath::Min(FMath::Max(MaxCircleRadius, EffectiveMinRadius), BackgroundMaxRadius);
 	const float RadiusInterval = CircleCount > 1
-		? (EffectiveMaxRadius - MinCircleRadius) / static_cast<float>(CircleCount - 1)
+		? (EffectiveMaxRadius - EffectiveMinRadius) / static_cast<float>(CircleCount - 1)
 		: 0.0f;
 
 	for (int32 Index = 0; Index < CircleCount; ++Index)
@@ -156,7 +161,8 @@ void USpinningCircleMiniGameWidget::SpawnCircleBorders()
 			? FMath::RandRange(MinRotationSpeedDegrees, MaxRotationSpeedDegrees) * Direction
 			: 0.0f;
 		const float AngleDegrees = FMath::RandRange(0.0f, 360.0f);
-		const FVector2D LayerSize(Radius * 2.0f, Radius * 2.0f);
+		const float LayerDiameter = (Radius + HalfThickness) * 2.0f;
+		const FVector2D LayerSize(LayerDiameter, LayerDiameter);
 
 		CircleBorder->SetRotateEnabled(true);
 		CircleBorder->SetAngle(AngleDegrees);
@@ -172,9 +178,8 @@ void USpinningCircleMiniGameWidget::SpawnCircleBorders()
 			CanvasSlot->SetSize(LayerSize);
 		}
 
-		const float HalfThicknessUV = CircleThickness * 0.5f / (Radius * 2.0f);
-		CircleBorder->SetInnerRadius(0.5f - HalfThicknessUV);
-		CircleBorder->SetOuterRadius(0.5f + HalfThicknessUV);
+		CircleBorder->SetInnerRadius(FMath::Max(Radius - HalfThickness, 0.0f) / LayerDiameter);
+		CircleBorder->SetOuterRadius((Radius + HalfThickness) / LayerDiameter);
 
 		CircleBorders.Add(CircleBorder);
 

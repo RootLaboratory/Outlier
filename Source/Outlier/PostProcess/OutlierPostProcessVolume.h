@@ -7,8 +7,10 @@
 #include "OutlierPostProcessVolume.generated.h"
 
 class UMaterialInterface;
+class UMaterialInstanceDynamic;
 class UMaterialParameterCollection;
 class UCurveFloat;
+class UTexture2D;
 
 UENUM(BlueprintType)
 enum class EOutlierPostProcessMaterialType : uint8
@@ -65,12 +67,24 @@ public:
 	}
 	// StealthFadeCurve 를 적용한 0~1 페이드 값.
 	float EvaluateStealthFade(float InLinearFade) const;
+
+	// 적 등장 디졸브도 은신처럼 메시 머티리얼 교체로 처리한다.
+	// 이 볼륨은 머티리얼 / 연출 시간 / Dissolve Amount 범위만 책임지고,
+	// 교체 / 진행 / 원복 / 완료 통보는 UMaterialPostProcessSubsystem 이 한다.
+	bool HasEnemySpawnDissolveMaterial() const { return EnemySpawnDissolveMaterial != nullptr; }
+	UMaterialInterface* GetEnemySpawnDissolveMaterial() const { return EnemySpawnDissolveMaterial; }
+	float GetEnemySpawnPresentationDuration() const { return FMath::Max(EnemySpawnPresentationDuration, 0.0f); }
+	// EnemySpawnDissolveMaterial 의 파라미터로 Dissolve Amount 의 시작 / 끝 값을 구한다.
+	// 시작 = 모든 픽셀이 투명, 끝 = 모든 픽셀이 불투명이고 경계 글로우 / 글리치가 0.
+	bool ComputeEnemySpawnDissolveRange(float& OutStartAmount, float& OutEndAmount) const;
+	void SetEnemySpawnDissolveAmount(UMaterialInstanceDynamic* DissolveMaterial, float Amount) const;
 	void UpdateDamagedMaterialParameters(float InPlayerHPRatio) const;
 	void UpdateDamagedMaterialParameters(float InPlayerHPRatio, FVector4 Color) const;
 	void DisableAllBlendablesHard();
 
 protected:
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 private:
 	bool SetBlendableWeight(EOutlierPostProcessMaterialType MaterialType, float Weight);
@@ -80,6 +94,20 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "PostProcess", meta = (AllowPrivateAccess = "true"))
 	TMap<EOutlierPostProcessMaterialType, TObjectPtr<UMaterialInterface>> PostProcessMaterials;
+
+	// RDG 사망 연출 Black 1번 레이어(Background). 장면이 이 텍스처 색으로 보간된다.
+	// 사망 연출 텍스처 세 개는 BP_OutlierPostProcessVolume에 값이 지정돼 있어서 이름을 바꾸지 않는다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Death Transition")
+	TObjectPtr<UTexture2D> DeathBlackTargetTexture = nullptr;
+
+	// 사망 연출 비네트(RGBA). 이름과 달리 Black 레이어가 아니다. Fade 시작 기준 지연 시간 뒤 나와서
+	// Fade / Black 결과 위에 rgb × a가 더해지고 리스폰까지 남는다.
+	UPROPERTY(EditAnywhere, Category = "Death Transition")
+	TObjectPtr<UTexture2D> DeathBlackVignetteTexture = nullptr;
+
+	// Black 2번 레이어(RGBA). Background가 나오고 지연 시간 뒤 rgb × a가 더해진다.
+	UPROPERTY(EditAnywhere, Category = "Death Transition")
+	TObjectPtr<UTexture2D> DeathBlackNoiseTexture = nullptr;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Scan", meta = (AllowPrivateAccess = "true"))
 	TObjectPtr<UMaterialParameterCollection> ScanParameterCollection;
@@ -112,6 +140,21 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Stealth|Materials",
 		meta = (DisplayName = "First Person Stealth Glass Material"))
 	TObjectPtr<UMaterialInterface> FirstPersonStealthGlassMaterial = nullptr;
+
+	// 적 등장 연출 동안 적 메시( 장착 무기 포함 )의 모든 슬롯에 덮어씌우는 디졸브 표면 머티리얼.
+	// MF_GlitchDissolve 를 쓰는 Masked 머티리얼이어야 한다. 미지정이면 머티리얼 없이 시간만 잰다.
+	UPROPERTY(EditAnywhere, Category = "Enemy Spawn|Materials")
+	TObjectPtr<UMaterialInterface> EnemySpawnDissolveMaterial = nullptr;
+
+	// 등장 연출 시간. 서버는 이 시간이 지나야 적의 충돌 / 피해 / AI 를 켠다.
+	// 0 이면 연출 없이 즉시 활성화된다. 디졸브는 이 시간 동안 시작 → 끝 값으로 정확히 맞춰 진행한다.
+	UPROPERTY(EditAnywhere, Category = "Enemy Spawn", meta = (ClampMin = "0.0", Units = "s"))
+	float EnemySpawnPresentationDuration = 1.5f;
+
+	// 디졸브 노이즈 텍스처( R 채널 )의 최대 밝기. 가장 늦게 나타나는 픽셀이 이 값을 기준으로 정해진다.
+	// 실제 최대값보다 작게 넣으면 연출 끝에 일부 블록이 덜 나온 채로 원본 머티리얼로 바뀐다.
+	UPROPERTY(EditAnywhere, Category = "Enemy Spawn", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float EnemySpawnDissolveNoiseMax = 1.0f;
 
 private:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Scan", meta = (AllowPrivateAccess = "true"))
