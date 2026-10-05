@@ -15,6 +15,7 @@
 #include "Weapon/RangedWeaponBase.h"
 #include "Weapon/FirstPickupDiagnostics.h"
 #include "OutlierGameMode.h"
+#include "OutlierPlayerState.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "GAS/Attributes/OutlierShieldAttributeSet.h"
@@ -44,6 +45,7 @@ void AShooterPlayerController::BeginPlay()
 
 void AShooterPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	UnbindSuitPlayerStateDelegates();
 	UnbindShooterCharacterDelegates();
 	CleanupPossessedShooterWeapons();
 
@@ -58,6 +60,73 @@ void AShooterPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	}
 
 	Super::EndPlay(EndPlayReason);
+}
+
+void AShooterPlayerController::OnRep_PlayerState()
+{
+	Super::OnRep_PlayerState();
+	BindSuitPlayerStateDelegates();
+	RefreshShooterSuitHUDFromPlayerState();
+}
+
+void AShooterPlayerController::BindSuitPlayerStateDelegates()
+{
+	if (!IsLocalController())
+	{
+		return;
+	}
+
+	AOutlierPlayerState* OutlierPlayerState = GetPlayerState<AOutlierPlayerState>();
+	if (BoundSuitPlayerState == OutlierPlayerState)
+	{
+		return;
+	}
+
+	UnbindSuitPlayerStateDelegates();
+	BoundSuitPlayerState = OutlierPlayerState;
+	if (BoundSuitPlayerState)
+	{
+		BoundSuitPlayerState->OnAcquiredSuitChanged.AddUObject(
+			this, &AShooterPlayerController::HandleAcquiredSuitChanged);
+	}
+}
+
+void AShooterPlayerController::UnbindSuitPlayerStateDelegates()
+{
+	if (BoundSuitPlayerState)
+	{
+		BoundSuitPlayerState->OnAcquiredSuitChanged.RemoveAll(this);
+		BoundSuitPlayerState = nullptr;
+	}
+}
+
+void AShooterPlayerController::HandleAcquiredSuitChanged(AOutlierPlayerState* ChangedPlayerState)
+{
+	if (ChangedPlayerState == GetPlayerState<AOutlierPlayerState>())
+	{
+		RefreshShooterSuitHUDFromPlayerState();
+	}
+}
+
+void AShooterPlayerController::RefreshShooterSuitHUDFromPlayerState()
+{
+	if (!IsLocalController())
+	{
+		return;
+	}
+
+	const AOutlierPlayerState* OutlierPlayerState = GetPlayerState<AOutlierPlayerState>();
+	const bool bSuitAcquired = OutlierPlayerState && OutlierPlayerState->GetAcquiredSuit();
+
+	ControlMainWidget(bSuitAcquired);
+	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
+	{
+		UISubsystem->OnShooterSuitAcquiredChanged(bSuitAcquired);
+	}
+	if (!bSuitAcquired && AbilityUIInstance)
+	{
+		AbilityUIInstance->SetVisibility(ESlateVisibility::Collapsed);
+	}
 }
 
 void AShooterPlayerController::ClientNotifyMeleeTargeted_Implementation(
@@ -90,6 +159,8 @@ void AShooterPlayerController::SetupInputComponent()
 void AShooterPlayerController::OnPossess(APawn* InPawn)
 {
 	Super::OnPossess(InPawn);
+	BindSuitPlayerStateDelegates();
+	RefreshShooterSuitHUDFromPlayerState();
 
 	if (!InPawn)
 	{
@@ -128,6 +199,8 @@ void AShooterPlayerController::OnPossess(APawn* InPawn)
 void AShooterPlayerController::AcknowledgePossession(APawn* P) 
 {
 	Super::AcknowledgePossession(P);
+	BindSuitPlayerStateDelegates();
+	RefreshShooterSuitHUDFromPlayerState();
 	BindShooterCharacterDelegates(Cast<AShooterCharacter>(P));
 
 	if (IsLocalController())
@@ -253,6 +326,9 @@ void AShooterPlayerController::RefreshShooterVitalityUI()
 
 void AShooterPlayerController::RefreshShooterSuitUI()
 {
+	// HUD 가시성은 Pawn이 없거나 아직 로컬 연결 전이어도 먼저 자기 PS로 적용한다.
+	RefreshShooterSuitHUDFromPlayerState();
+
 	if (!BoundShooterCharacter)
 	{
 		return;
@@ -389,6 +465,7 @@ void AShooterPlayerController::BindMainUI()
 		return;
 	}
 
+	BindSuitPlayerStateDelegates();
 	if (ShooterUIInstance)
 	{
 		RefreshShooterSuitUI();
@@ -420,6 +497,8 @@ void AShooterPlayerController::BindMainUI()
 	}
 
 	ShooterUIInstance->AddToViewport();
+	// 새 HUD 등록 시 이전 캐시 대신 현재 PS의 슈트 상태를 적용한다.
+	RefreshShooterSuitHUDFromPlayerState();
 	UE_LOG(LogTemp, Warning,
 		TEXT("[ShooterPC] MainUI added to viewport PC=%s UI=%s MainUIClass=%s"),
 		*GetNameSafe(this),
@@ -445,6 +524,7 @@ void AShooterPlayerController::BindMainUI()
 		}
 	}
 
+	RefreshShooterSuitHUDFromPlayerState();
 	if (AbilityUIInstance)
 	{
 		return;

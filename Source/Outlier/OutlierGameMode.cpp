@@ -1961,6 +1961,10 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 	}
 
 	RegisterSpawnedPair(NewShooterPS, NewPartnerPS, Shooter, Partner);
+	if (SaveSubsystem)
+	{
+		SaveSubsystem->SyncCurrentSuitState(NewShooterPS);
+	}
 	if (!bResuming)
 	{
 		// 역할 연결 후 기본 장비를 먼저 확정한다. 이어하기는 저장된 장비/현재 슬롯을 그대로 복원한다.
@@ -3455,6 +3459,12 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 	}
 
 	// 5) 로컬 possess 대기 바인딩 + 서버측 리로드 시작
+	// 이어하기는 복원된 PS, Preset은 유지된 PS를 주입한다. 새 배치 슈트는 저장 스냅샷을 읽지 않는다.
+	if (UOutlierSaveSubSystem* SaveSubsystem = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>() : nullptr)
+	{
+		SaveSubsystem->SyncCurrentSuitState(ShooterPlayerState);
+	}
 	bArenaReloadInProgress = true;
 	if (!GameplayReadyHandle.IsValid())
 	{

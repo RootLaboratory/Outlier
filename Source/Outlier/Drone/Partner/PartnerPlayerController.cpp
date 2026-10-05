@@ -93,6 +93,7 @@ void APartnerPlayerController::OnRep_PlayerState()
 {
 	Super::OnRep_PlayerState();
 	BindPlayerStateDelegates();
+	RefreshPartnerSuitUI();
 	RefreshShooterUIForRespawnFromPlayerState();
 }
 
@@ -129,6 +130,9 @@ void APartnerPlayerController::OnPossess(APawn* InPawn)
 
 	if (IsLocalController())
 	{
+		BindPlayerStateDelegates();
+		RefreshPartnerSuitUI();
+
 		if (UMaterialPostProcessSubsystem* PPS = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>())
 		{
 			PPS->Refresh();
@@ -865,6 +869,8 @@ void APartnerPlayerController::BindMainUI()
 
 	if (ShooterUIInstance)
 	{
+		BindPlayerStateDelegates();
+		RefreshPartnerSuitUI();
 		UE_LOG(LogTemp, Warning,
 			TEXT("[PartnerPC] BindMainUI skipped: already exists PC=%s UI=%s"),
 			*GetNameSafe(this),
@@ -892,6 +898,9 @@ void APartnerPlayerController::BindMainUI()
 	}
 
 	ShooterUIInstance->AddToViewport();
+	BindPlayerStateDelegates();
+	// RegisterMainUI가 이전 캐시를 적용하기 전에 현재 자기 PS 값으로 맞춘다.
+	RefreshPartnerSuitUI();
 
 	if (ULocalPlayer* LP = GetLocalPlayer())
 	{
@@ -910,6 +919,7 @@ void APartnerPlayerController::BindMainUI()
 			LayerSubsystem->RegisterMainUI(ShooterUIInstance);
 		}
 	}
+	RefreshPartnerSuitUI();
 }
 
 void APartnerPlayerController::BindPostProcessSubSystem()
@@ -982,6 +992,7 @@ void APartnerPlayerController::AcknowledgePossession(APawn* P)
 	}
 	BindPostProcessSubSystem();
 	BindPlayerStateDelegates();
+	RefreshPartnerSuitUI();
 	RefreshShooterUIForRespawnFromPlayerState();
 
 	if (IsLocalController())
@@ -999,6 +1010,22 @@ void APartnerPlayerController::AcknowledgePossession(APawn* P)
 void APartnerPlayerController::RefreshShooterUIForRespawnFromPlayerState()
 {
 	BindShooterCharacterDelegatesFromPlayerState();
+}
+
+void APartnerPlayerController::RefreshPartnerSuitUI()
+{
+	if (!IsLocalController())
+	{
+		return;
+	}
+
+	const AOutlierPlayerState* OutlierPlayerState = GetPlayerState<AOutlierPlayerState>();
+	ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem();
+	if (UISubsystem)
+	{
+		UISubsystem->OnShooterSuitAcquiredChanged(
+			OutlierPlayerState && OutlierPlayerState->GetAcquiredSuit());
+	}
 }
 
 void APartnerPlayerController::BindPartnerVitalityDelegates(APartnerCharacter* PartnerCharacter)
@@ -1065,18 +1092,25 @@ void APartnerPlayerController::BindPlayerStateDelegates()
 	}
 
 	AOutlierPlayerState* OutlierPlayerState = GetPlayerState<AOutlierPlayerState>();
-	if (!OutlierPlayerState || BoundOutlierPlayerState == OutlierPlayerState)
+	if (BoundOutlierPlayerState == OutlierPlayerState)
 	{
 		return;
 	}
 
 	UnbindPlayerStateDelegates();
+	if (!OutlierPlayerState)
+	{
+		return;
+	}
 	BoundOutlierPlayerState = OutlierPlayerState;
 	BoundOutlierPlayerState->OnPlayerCharactersChanged.AddUObject(
 		this,
 		&APartnerPlayerController::HandlePlayerCharactersChanged
 	);
-
+	BoundOutlierPlayerState->OnAcquiredSuitChanged.AddUObject(
+		this,
+		&APartnerPlayerController::HandleAcquiredSuitChanged
+	);
 }
 
 void APartnerPlayerController::UnbindPlayerStateDelegates()
@@ -1087,12 +1121,22 @@ void APartnerPlayerController::UnbindPlayerStateDelegates()
 	}
 
 	BoundOutlierPlayerState->OnPlayerCharactersChanged.RemoveAll(this);
+	BoundOutlierPlayerState->OnAcquiredSuitChanged.RemoveAll(this);
 	BoundOutlierPlayerState = nullptr;
 }
 
 void APartnerPlayerController::HandlePlayerCharactersChanged(AOutlierPlayerState* ChangedPlayerState)
 {
 	BindShooterCharacterDelegatesFromPlayerState();
+	RefreshPartnerSuitUI();
+}
+
+void APartnerPlayerController::HandleAcquiredSuitChanged(AOutlierPlayerState* ChangedPlayerState)
+{
+	if (ChangedPlayerState == GetPlayerState<AOutlierPlayerState>())
+	{
+		RefreshPartnerSuitUI();
+	}
 }
 
 void APartnerPlayerController::BindShooterCharacterDelegatesFromPlayerState()

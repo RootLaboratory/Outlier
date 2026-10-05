@@ -37,12 +37,10 @@ private:
 	virtual void ModuleDestruct() override;
 
 public:
-	// Shooter 가 슈트를 입기 전에는 Partner HUD 전체(모듈 + 능력 아이콘)를 숨긴다.
-	// Partner 클라는 Shooter 를 로컬 컨트롤하지 않아 Shooter 쪽 UI 갱신 경로가 막히므로,
-	// PlayerState 의 획득 플래그가 복제돼 올 때 UI 서브시스템이 이걸 호출한다.
+	// 자기 PlayerState의 슈트 상태: true는 전체 HUD, false는 Image_Hud만 표시한다.
 	void SetSuitGatedModulesEnabled(bool bEnabled);
 
-	// 최초 HUD 초기화에서 Image_Hud만 표시한다.
+	// 초기화 및 슈트 해제 시 Image_Hud만 표시한다.
 	UFUNCTION(BlueprintCallable, Category = "HUD")
 	void InitHudImageOnly();
 
