@@ -22,7 +22,6 @@ class OUTLIER_API UInGameSettingWidget : public UUserWidget,
 	GENERATED_BODY()
 
 public:
-	UInGameSettingWidget(const FObjectInitializer& ObjectInitializer);
 	TSubclassOf<UUILayerKeyHintWidget> GetKeyHintWidgetClass() const;
 
 	TSubclassOf<UInGamePauseWidget> GetInGamePauseWidgetClass() const

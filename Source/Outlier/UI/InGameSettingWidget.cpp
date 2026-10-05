@@ -9,15 +9,6 @@
 #include "UI/UILayerGameplayTags.h"
 #include "UI/UILayerKeyHintWidget.h"
 #include "UI/UILayerTypes.h"
-#include "UObject/ConstructorHelpers.h"
-
-UInGameSettingWidget::UInGameSettingWidget(const FObjectInitializer& ObjectInitializer)
-	: Super(ObjectInitializer)
-{
-	static ConstructorHelpers::FClassFinder<UUILayerKeyHintWidget> HintWidget(
-		TEXT("/Game/Blueprints/Widget/Outlier/WBP_UIHintKey"));
-	KeyHintWidgetClass = HintWidget.Class;
-}
 
 TSubclassOf<UUILayerKeyHintWidget> UInGameSettingWidget::GetKeyHintWidgetClass() const
 {

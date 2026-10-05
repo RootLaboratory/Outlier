@@ -10,15 +10,11 @@
 #include "Blueprint/WidgetTree.h"
 #include "Engine/Texture2D.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
-#include "UObject/ConstructorHelpers.h"
 
 UGameOverWidget::UGameOverWidget(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 	SetIsFocusable(true);
-	static ConstructorHelpers::FClassFinder<UUILayerKeyHintWidget> HintWidget(
-		TEXT("/Game/Blueprints/Widget/Outlier/WBP_UIHintKey"));
-	KeyHintWidgetClass = HintWidget.Class;
 }
 
 TSubclassOf<UGameOverPendingWidget> UGameOverWidget::GetGameOverPendingWidgetClass() const
