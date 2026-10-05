@@ -356,6 +356,8 @@ void AFirstPersonPlayerController::ClientCloseGameOverPending_Implementation()
 
 void AFirstPersonPlayerController::BeginGameOverRespawnTransition_Implementation()
 {
+	GameOverRoundId.Invalidate();
+	bGameOverReadySent = false;
 	if (ULocalPlayerPostProcessSubsystem* PPSubsystem = GetLocalPlayer()
 		? GetLocalPlayer()->GetSubsystem<ULocalPlayerPostProcessSubsystem>()
 		: nullptr)
@@ -563,13 +565,16 @@ void AFirstPersonPlayerController::ClientPopInGameSettingLayer_Implementation(
 	}
 }
 
-void AFirstPersonPlayerController::Client_ShowPresetSelect_Implementation(bool bImmediateSelections)
+void AFirstPersonPlayerController::Client_ShowPresetSelect_Implementation(
+	const FGuid& RoundId, bool bImmediateSelections)
 {
-	if (!IsLocalController())
+	if (!IsLocalController() || !RoundId.IsValid() || GameOverRoundId == RoundId)
 	{
 		return;
 	}
 
+	GameOverRoundId = RoundId;
+	bGameOverReadySent = false;
 	bGameOverImmediateSelections = bImmediateSelections;
 	CollapseMainWidgetForDeath();
 
@@ -609,7 +614,7 @@ void AFirstPersonPlayerController::HandleDeathBlackNoiseStarted()
 
 void AFirstPersonPlayerController::PushGameOverWidget()
 {
-	if (!IsLocalController())
+	if (!IsLocalController() || !GameOverRoundId.IsValid() || bGameOverReadySent)
 	{
 		return;
 	}
@@ -678,6 +683,21 @@ void AFirstPersonPlayerController::PushGameOverWidget()
 				bHasQueuedGameOverPendingRequest = false;
 			}
 		}
+	}
+
+	// 연출 콜백만으로 준비를 알리지 않는다. 실제 위젯 생성과 입력 설정이 끝난 뒤 한 번 통보한다.
+	if (FindGameOverWidget())
+	{
+		bGameOverReadySent = true;
+		ServerNotifyGameOverReady(GameOverRoundId);
+	}
+}
+
+void AFirstPersonPlayerController::ServerNotifyGameOverReady_Implementation(const FGuid& RoundId)
+{
+	if (AOutlierGameMode* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr)
+	{
+		GM->OnClientGameOverReady(this, RoundId);
 	}
 }
 
@@ -1104,8 +1124,19 @@ void AFirstPersonPlayerController::BindMainUI()
 
 }
 
+void AFirstPersonPlayerController::Destroyed()
+{
+	// 엔진은 Destroyed에서 Pauser를 다른 플레이어로 넘길 수 있다. 그 전에 GameOver 소유권을 정리한다.
+	if (AOutlierGameMode* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr)
+	{
+		GM->CancelGameOverPendingForDisconnect(this);
+	}
+	Super::Destroyed();
+}
+
 void AFirstPersonPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	GameOverRoundId.Invalidate();
 	ClearLocalSuitTransition();
 	ClearClientArenaContentWait();
 	// 재접속이나 역할 Controller 교체로 이전 PC가 먼저 파괴될 수 있다. Delegate가 남아 있으면
@@ -1822,6 +1853,12 @@ void AFirstPersonPlayerController::ClearClientArenaContentWait()
 }
 void AFirstPersonPlayerController::ServerOpenInGameSetting_Implementation()
 {
+	const AOutlierGameMode* GameMode = GetWorld()
+		? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr;
+	if (GameMode && GameMode->IsGameOverSelectionActive())
+	{
+		return;
+	}
 	if (!InGameSettingWidgetClass)
 	{
 		return;
@@ -1913,6 +1950,11 @@ void AFirstPersonPlayerController::ServerCloseInGameSetting_Implementation()
 	AOutlierGameMode* OutlierGameMode = GetWorld()
 		? GetWorld()->GetAuthGameMode<AOutlierGameMode>()
 		: nullptr;
+	// 늦게 도착한 설정 닫기 요청이 GameOver 정지를 해제하지 않도록 소유 흐름을 먼저 확인한다.
+	if (OutlierGameMode && OutlierGameMode->IsGameOverSelectionActive())
+	{
+		return;
+	}
 	if (OutlierGameMode && OutlierGameMode->HandleCheckpointRestartEscape(this))
 	{
 		return;

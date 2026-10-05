@@ -233,7 +233,10 @@ public:
 
 	// 사망 시 게임오버 화면을 띄운다 (페어 양쪽 컨트롤러에 각각 호출됨).
 	UFUNCTION(Client, Reliable)
-	void Client_ShowPresetSelect(bool bImmediateSelections = false);
+	void Client_ShowPresetSelect(const FGuid& RoundId, bool bImmediateSelections = false);
+
+	UFUNCTION(Server, Reliable)
+	void ServerNotifyGameOverReady(const FGuid& RoundId);
 
 	UFUNCTION(Server, Reliable)
 	void ServerRequestGameOverPendingChoice(const FGameOverPendingRequest& Request);
@@ -287,6 +290,7 @@ protected:
 	FGameplayTag CurrentFirstPersonInputMode;
 
 	virtual void BeginPlay() override;
+	virtual void Destroyed() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void AcknowledgePossession(APawn* P) override;
 
@@ -394,6 +398,8 @@ protected:
 	FGameOverPendingRequest QueuedGameOverPendingRequest;
 	bool bHasQueuedGameOverPendingRequest = false;
 	bool bGameOverImmediateSelections = false;
+	FGuid GameOverRoundId;
+	bool bGameOverReadySent = false;
 	bool bQueuedGameOverPendingRequester = false;
 
 	bool bCanRequestCheckpointRestart = false;

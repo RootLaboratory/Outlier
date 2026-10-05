@@ -50,6 +50,92 @@
 #include "TimerManager.h"
 #include "Containers/Ticker.h"
 
+bool FGameOverWorldPauseState::Begin(const TArray<APlayerController*>& Controllers)
+{
+	if (IsActive() || Controllers.IsEmpty())
+	{
+		return false;
+	}
+	for (APlayerController* Controller : Controllers)
+	{
+		if (IsValid(Controller))
+		{
+			ExpectedControllers.Add(Controller);
+		}
+	}
+	if (ExpectedControllers.IsEmpty())
+	{
+		return false;
+	}
+	RoundId = FGuid::NewGuid();
+	return true;
+}
+
+bool FGameOverWorldPauseState::Contains(const AController* Controller) const
+{
+	for (const TWeakObjectPtr<APlayerController>& Expected : ExpectedControllers)
+	{
+		if (Expected.IsValid() && Expected.Get() == Controller)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool FGameOverWorldPauseState::NotifyReady(
+	APlayerController* Controller, const FGuid& InRoundId, UWorld* World)
+{
+	// 이전 사망의 늦은 통보와 중복 통보는 다음 정지의 근거가 될 수 없다.
+	if (!World || World->GetNetMode() == NM_Client || !IsActive()
+		|| InRoundId != RoundId || !Contains(Controller)
+		|| ReadyControllers.Contains(Controller) || Controller->GetWorld() != World)
+	{
+		return false;
+	}
+	ReadyControllers.Add(Controller);
+	if (ReadyControllers.Num() != ExpectedControllers.Num())
+	{
+		return false;
+	}
+	for (const TWeakObjectPtr<APlayerController>& Expected : ExpectedControllers)
+	{
+		if (!Expected.IsValid())
+		{
+			return false;
+		}
+	}
+
+	APlayerState* Owner = Controller->PlayerState;
+	AWorldSettings* WorldSettings = World->GetWorldSettings();
+	if (!IsValid(Owner) || World->IsPaused() || !WorldSettings)
+	{
+		return false;
+	}
+
+	// 양쪽 UI가 준비된 뒤 네이티브 Pauser 복제로 서버와 클라이언트를 함께 멈춘다.
+	PauseOwner = Owner;
+	WorldSettings->SetPauserPlayerState(Owner);
+	WorldSettings->ForceNetUpdate();
+	return true;
+}
+
+void FGameOverWorldPauseState::Reset(UWorld* World)
+{
+	AWorldSettings* WorldSettings = World ? World->GetWorldSettings() : nullptr;
+	// 다른 Pause가 소유자를 바꿨다면 그 정지는 건드리지 않는다.
+	if (WorldSettings && PauseOwner.IsValid()
+		&& WorldSettings->GetPauserPlayerState() == PauseOwner.Get())
+	{
+		WorldSettings->SetPauserPlayerState(nullptr);
+		WorldSettings->ForceNetUpdate();
+	}
+	PauseOwner.Reset();
+	RoundId.Invalidate();
+	ExpectedControllers.Reset();
+	ReadyControllers.Reset();
+}
+
 AOutlierGameMode::AOutlierGameMode()
 {
 
@@ -415,6 +501,7 @@ void AOutlierGameMode::InitGameState()
 
 void AOutlierGameMode::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	GameOverWorldPause.Reset(GetWorld());
 	CheckpointRestartVote.Reset();
 	CheckpointRestartVoteLayerOwner.Reset();
 	ClearArenaGameplayReloadDelegates();
@@ -830,6 +917,10 @@ void AOutlierGameMode::BeginPresetRespawnSelection(AController* Controller)
 	}
 
 	const int32 PairId = TriggeringPS->GetPairId();
+	if (GameOverActivePairs.Contains(PairId))
+	{
+		return;
+	}
 	GameOverActivePairs.Add(PairId);
 	AOutlierPlayerState* ShooterPS = TriggeringPS->IsShooterPlayer()
 		? TriggeringPS
@@ -838,22 +929,43 @@ void AOutlierGameMode::BeginPresetRespawnSelection(AController* Controller)
 		? TriggeringPS
 		: FindPairPlayerState(PairId, EOutlierPlayerRole::Partner);
 
-	bool bNotifiedAny = false;
+	TArray<APlayerController*> Controllers;
 	if (AFirstPersonPlayerController* ShooterFPC = Cast<AFirstPersonPlayerController>(GetControllerFromPlayerState(ShooterPS)))
 	{
-		ShooterFPC->Client_ShowPresetSelect(GetNetMode() == NM_ListenServer);
-		bNotifiedAny = true;
+		Controllers.Add(ShooterFPC);
 	}
 	if (AFirstPersonPlayerController* PartnerFPC = Cast<AFirstPersonPlayerController>(GetControllerFromPlayerState(PartnerPS)))
 	{
-		PartnerFPC->Client_ShowPresetSelect(GetNetMode() == NM_ListenServer);
-		bNotifiedAny = true;
+		Controllers.AddUnique(PartnerFPC);
 	}
 
-	if (!bNotifiedAny)
+	if (Controllers.IsEmpty())
 	{
+		GameOverWorldPause.Reset(GetWorld());
 		GameOverActivePairs.Remove(PairId);
 		RespawnPairAtCheckpoint(Controller);
+		return;
+	}
+
+	// Listen 로컬 UI는 즉시 응답할 수 있으므로 전체 대상을 먼저 등록한다.
+	if (GameOverWorldPause.Begin(Controllers))
+	{
+		const FGuid RoundId = GameOverWorldPause.GetRoundId();
+		for (APlayerController* Target : Controllers)
+		{
+			CastChecked<AFirstPersonPlayerController>(Target)->Client_ShowPresetSelect(
+				RoundId, GetNetMode() == NM_ListenServer);
+		}
+	}
+}
+
+void AOutlierGameMode::OnClientGameOverReady(
+	AFirstPersonPlayerController* Controller, const FGuid& RoundId)
+{
+	if (HasAuthority() && GameOverWorldPause.NotifyReady(Controller, RoundId, GetWorld()))
+	{
+		UE_LOG(LogTemp, Display, TEXT("[GameOver] Both UIs ready; world paused Round=%s"),
+			*RoundId.ToString());
 	}
 }
 
@@ -1033,6 +1145,8 @@ bool AOutlierGameMode::ExecuteGameOverSelection(
 	}
 	const auto BeginGameOverTransition = [this, RequesterPS, Requester, OtherController]()
 	{
+		// 검증을 통과한 선택만 정지를 해제한다. 리스폰/스트리밍은 진행 중인 월드에서 시작한다.
+		GameOverWorldPause.Reset(GetWorld());
 		// 두 플레이어의 연속 선택도 한 번만 실행되도록 화면 정리 전에 상태를 소비한다.
 		GameOverActivePairs.Remove(RequesterPS->GetPairId());
 		for (AFirstPersonPlayerController* Controller : { Requester, OtherController })
@@ -1111,6 +1225,10 @@ bool AOutlierGameMode::ExecuteGameOverSelection(
 
 void AOutlierGameMode::CancelGameOverPendingForDisconnect(AController* Exiting)
 {
+	if (GameOverWorldPause.Contains(Exiting))
+	{
+		GameOverWorldPause.Reset(GetWorld());
+	}
 	TArray<int32> PairIdsToRemove;
 	for (const TPair<int32, FGameOverPendingServerState>& Entry : GameOverPendingByPair)
 	{
@@ -1303,6 +1421,10 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 	if (!FirstController || !SecondController)
 	{
 		return;
+	}
+	if (GameOverActivePairs.Contains(PairId))
+	{
+		GameOverWorldPause.Reset(GetWorld());
 	}
 	GameOverActivePairs.Remove(PairId);
 

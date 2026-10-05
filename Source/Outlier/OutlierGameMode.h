@@ -38,6 +38,23 @@ struct FGameOverPendingServerState
 	FGameOverPendingRequest Request;
 };
 
+// 현재 사망 흐름의 UI 준비와 정지 소유권을 함께 보관한다.
+struct FGameOverWorldPauseState
+{
+	bool Begin(const TArray<APlayerController*>& Controllers);
+	bool NotifyReady(APlayerController* Controller, const FGuid& InRoundId, UWorld* World);
+	void Reset(UWorld* World);
+	bool Contains(const AController* Controller) const;
+	bool IsActive() const { return RoundId.IsValid(); }
+	const FGuid& GetRoundId() const { return RoundId; }
+
+private:
+	FGuid RoundId;
+	TSet<TWeakObjectPtr<APlayerController>> ExpectedControllers;
+	TSet<TWeakObjectPtr<APlayerController>> ReadyControllers;
+	TWeakObjectPtr<APlayerState> PauseOwner;
+};
+
 /**
  *  Simple GameMode for a third person game
  */
@@ -68,6 +85,9 @@ public:
 		AFirstPersonPlayerController* Requester,
 		const FGameOverPendingRequest& Request);
 	bool RespondGameOverPending(AFirstPersonPlayerController* Responder, bool bApprove);
+	void OnClientGameOverReady(AFirstPersonPlayerController* Controller, const FGuid& RoundId);
+	bool IsGameOverSelectionActive() const { return GameOverWorldPause.IsActive(); }
+	void CancelGameOverPendingForDisconnect(AController* Exiting);
 
 	void StartMatchedPair(
 		AController* FirstController,
@@ -110,12 +130,12 @@ public:
 
 
 private:
-	void CancelGameOverPendingForDisconnect(AController* Exiting);
 	void FinishGameOverPending(const FGameOverPendingServerState& State, bool bApprove);
 	bool ExecuteGameOverSelection(AFirstPersonPlayerController* Requester,
 		AFirstPersonPlayerController* OtherController, const FGameOverPendingRequest& Request);
 	TMap<int32, FGameOverPendingServerState> GameOverPendingByPair;
 	TSet<int32> GameOverActivePairs;
+	FGameOverWorldPauseState GameOverWorldPause;
 
 	UPROPERTY()
 	TMap<TObjectPtr<APlayerController>, TObjectPtr<APawn>> PendingPossessions;
