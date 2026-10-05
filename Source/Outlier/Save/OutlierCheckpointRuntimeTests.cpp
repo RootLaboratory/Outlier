@@ -3,6 +3,8 @@
 #include "Engine/GameInstance.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
+#include "Components/BoxComponent.h"
+#include "Drone/Partner/PartnerCharacter.h"
 #include "HAL/FileManager.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/FileHelper.h"
@@ -11,10 +13,123 @@
 #include "Serialization/ObjectAndNameAsStringProxyArchive.h"
 #include "OutlierPlayerState.h"
 #include "Save/OutlierSaveSubSystem.h"
+#include "Save/OutlierCheckpoint.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Shooter/ShooterInventoryComponent.h"
 #include "Weapon/RangedWeaponBase.h"
 #include "Weapon/WeaponBase.h"
+#include "UObject/UnrealType.h"
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierCheckpointActivationOverlapTest,
+	"Outlier.Save.Checkpoint.ActivationOverlap",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierCheckpointActivationOverlapTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!TestNotNull(TEXT("Engine is available"), GEngine))
+	{
+		return false;
+	}
+	const FName WorldName = MakeUniqueObjectName(
+		GetTransientPackage(), UWorld::StaticClass(), NAME_None, EUniqueObjectNameOptions::GloballyUnique);
+	FWorldContext& Context = GEngine->CreateNewWorldContext(EWorldType::Game);
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, WorldName, GetTransientPackage());
+	if (!TestNotNull(TEXT("Activation overlap world is created"), World))
+	{
+		GEngine->DestroyWorldContext(World);
+		return false;
+	}
+	World->AddToRoot();
+	Context.SetCurrentWorld(World);
+	World->InitializeActorsForPlay(FURL());
+	const auto CleanupWorld = [World]()
+	{
+		GEngine->ShutdownWorldNetDriver(World);
+		World->DestroyWorld(true);
+		World->SetPhysicsScene(nullptr);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+	};
+
+	// 저장소 없이 실제 충돌과 통과 판정만 검증한다. Pawn의 게임플레이 BeginPlay는 실행하지 않는다.
+	AOutlierCheckpoint* Checkpoint = World->SpawnActor<AOutlierCheckpoint>();
+	UClass* ShooterClass = LoadClass<AShooterCharacter>(
+		nullptr, TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	AShooterCharacter* Shooter = ShooterClass
+		? World->SpawnActor<AShooterCharacter>(ShooterClass, FTransform(FVector(1000.0f, 0.0f, 0.0f)))
+		: nullptr;
+	APartnerCharacter* Partner = World->SpawnActor<APartnerCharacter>(
+		APartnerCharacter::StaticClass(), FTransform(FVector(2000.0f, 0.0f, 0.0f)));
+	AOutlierPlayerState* ShooterPS = World->SpawnActor<AOutlierPlayerState>();
+	AOutlierPlayerState* PartnerPS = World->SpawnActor<AOutlierPlayerState>();
+	FObjectProperty* PlayerStateProperty = FindFProperty<FObjectProperty>(APawn::StaticClass(), TEXT("PlayerState"));
+	if (!TestNotNull(TEXT("Checkpoint"), Checkpoint)
+		|| !TestNotNull(TEXT("Shooter"), Shooter) || !TestNotNull(TEXT("Partner"), Partner)
+		|| !TestNotNull(TEXT("Shooter state"), ShooterPS) || !TestNotNull(TEXT("Partner state"), PartnerPS)
+		|| !TestNotNull(TEXT("Pawn PlayerState property"), PlayerStateProperty))
+	{
+		CleanupWorld();
+		return false;
+	}
+	PlayerStateProperty->SetObjectPropertyValue_InContainer(Shooter, ShooterPS);
+	PlayerStateProperty->SetObjectPropertyValue_InContainer(Partner, PartnerPS);
+	ShooterPS->SetPairId(1);
+	PartnerPS->SetPairId(1);
+	ShooterPS->SetPlayerRole(EOutlierPlayerRole::Shooter);
+	PartnerPS->SetPlayerRole(EOutlierPlayerRole::Partner);
+	ShooterPS->SetShooterCharacter(Shooter);
+	PartnerPS->SetPartnerCharacter(Partner);
+	for (APawn* Pawn : { static_cast<APawn*>(Shooter), static_cast<APawn*>(Partner) })
+	{
+		UPrimitiveComponent* Root = CastChecked<UPrimitiveComponent>(Pawn->GetRootComponent());
+		Root->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+		Root->SetCollisionObjectType(ECC_Pawn);
+		Root->SetCollisionResponseToAllChannels(ECR_Overlap);
+		Root->SetGenerateOverlapEvents(true);
+	}
+	Checkpoint->Trigger->SetBoxExtent(FVector(300.0f));
+	Checkpoint->SetActivationConditionSatisfied(nullptr, false);
+	// UE는 BeginPlay 전의 UpdateOverlaps를 생략한다. Trigger 소유자는 실제 실행 상태로 준비한다.
+	Checkpoint->DispatchBeginPlay();
+	Shooter->SetActorLocation(FVector(-100.0f, 0.0f, 0.0f));
+	Partner->SetActorLocation(FVector(100.0f, 0.0f, 0.0f));
+	Checkpoint->ProcessTriggerOverlap(Shooter, CastChecked<UPrimitiveComponent>(Shooter->GetRootComponent()));
+	Checkpoint->ProcessTriggerOverlap(Partner, CastChecked<UPrimitiveComponent>(Partner->GetRootComponent()));
+	TestFalse(TEXT("Inactive overlap does not count Shooter"), Checkpoint->bShooterPassed);
+	TestFalse(TEXT("Inactive overlap does not count Partner"), Checkpoint->bPartnerPassed);
+
+	// 저장소 없는 테스트에서는 양쪽 통과 후 저장이 거절되어야 한다. 확정/전투 통지를 우회하지 않는다.
+	// 같은 패턴을 중복 등록하면 첫 항목만 로그를 소비한다. 두 저장 시도를 하나의 기대값으로 묶는다.
+	AddExpectedErrorPlain(TEXT("[Checkpoint] Commit blocked"), EAutomationExpectedErrorFlags::Contains, 2);
+	TestTrue(TEXT("Activation succeeds with both players already inside"),
+		Checkpoint->SetActivationConditionSatisfied(nullptr, true));
+	TestTrue(TEXT("Existing Shooter overlap counts without movement"), Checkpoint->bShooterPassed);
+	TestTrue(TEXT("Existing Partner overlap counts without movement"), Checkpoint->bPartnerPassed);
+	TestFalse(TEXT("Passes alone do not bypass disk commit"), Checkpoint->IsCheckpointCommitted());
+	TestTrue(TEXT("Repeated activation is idempotent"), Checkpoint->SetActivationConditionSatisfied(nullptr, true));
+
+	Checkpoint->SetActivationConditionSatisfied(nullptr, false);
+	TestFalse(TEXT("Deactivation clears Shooter pass"), Checkpoint->bShooterPassed);
+	TestFalse(TEXT("Deactivation clears Partner pass"), Checkpoint->bPartnerPassed);
+	Partner->SetActorLocation(FVector(2000.0f, 0.0f, 0.0f));
+	Checkpoint->SetActivationConditionSatisfied(nullptr, true);
+	TestTrue(TEXT("One existing player counts"), Checkpoint->bShooterPassed);
+	TestFalse(TEXT("A player who left before activation does not count"), Checkpoint->bPartnerPassed);
+	Checkpoint->ProcessTriggerOverlap(Partner, nullptr);
+	TestFalse(TEXT("Non-root overlap does not count"), Checkpoint->bPartnerPassed);
+	PartnerPS->SetPairId(2);
+	Checkpoint->ProcessTriggerOverlap(Partner, CastChecked<UPrimitiveComponent>(Partner->GetRootComponent()));
+	TestFalse(TEXT("Different pair cannot complete the checkpoint"), Checkpoint->bPartnerPassed);
+	PartnerPS->SetPairId(1);
+	Partner->SetActorLocation(FVector(100.0f, 0.0f, 0.0f));
+	Checkpoint->HandleTriggerBeginOverlap(Checkpoint->Trigger, Partner,
+		CastChecked<UPrimitiveComponent>(Partner->GetRootComponent()), 0, false, FHitResult());
+	TestTrue(TEXT("Later BeginOverlap completes the remaining role"), Checkpoint->bPartnerPassed);
+	CleanupWorld();
+	return true;
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FOutlierCheckpointRuntimeSnapshotTest,
