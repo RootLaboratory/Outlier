@@ -50,15 +50,260 @@
 #include "TimerManager.h"
 #include "Containers/Ticker.h"
 
+bool FGameOverWorldPauseState::Begin(const TArray<APlayerController*>& Controllers)
+{
+	if (IsActive() || Controllers.IsEmpty())
+	{
+		return false;
+	}
+	for (APlayerController* Controller : Controllers)
+	{
+		if (IsValid(Controller))
+		{
+			ExpectedControllers.Add(Controller);
+		}
+	}
+	if (ExpectedControllers.IsEmpty())
+	{
+		return false;
+	}
+	RoundId = FGuid::NewGuid();
+	return true;
+}
+
+bool FGameOverWorldPauseState::Contains(const AController* Controller) const
+{
+	for (const TWeakObjectPtr<APlayerController>& Expected : ExpectedControllers)
+	{
+		if (Expected.IsValid() && Expected.Get() == Controller)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool FGameOverWorldPauseState::NotifyReady(
+	APlayerController* Controller, const FGuid& InRoundId, UWorld* World)
+{
+	// 이전 사망의 늦은 통보와 중복 통보는 다음 정지의 근거가 될 수 없다.
+	if (!World || World->GetNetMode() == NM_Client || !IsActive()
+		|| bTransitioning || InRoundId != RoundId || !Contains(Controller)
+		|| ReadyControllers.Contains(Controller) || UnavailableControllers.Contains(Controller)
+		|| Controller->GetWorld() != World)
+	{
+		return false;
+	}
+	ReadyControllers.Add(Controller);
+	return TryPause(World);
+}
+
+bool FGameOverWorldPauseState::NotifyUnavailable(APlayerController* Controller, const FGuid& InRoundId)
+{
+	if (!IsActive() || bTransitioning || InRoundId != RoundId || !Contains(Controller)
+		|| ReadyControllers.Contains(Controller) || UnavailableControllers.Contains(Controller))
+	{
+		return false;
+	}
+	UnavailableControllers.Add(Controller);
+	return true;
+}
+
+bool FGameOverWorldPauseState::TryPause(UWorld* World)
+{
+	if (!World || World->GetNetMode() == NM_Client || !IsActive() || bTransitioning || !bPauseAllowed
+		|| PauseOwner.IsValid() || World->IsPaused())
+	{
+		return false;
+	}
+	if (ReadyControllers.Num() != ExpectedControllers.Num())
+	{
+		return false;
+	}
+	APlayerState* Owner = nullptr;
+	for (const TWeakObjectPtr<APlayerController>& Expected : ExpectedControllers)
+	{
+		if (!Expected.IsValid() || Expected->GetWorld() != World || !IsValid(Expected->PlayerState))
+		{
+			return false;
+		}
+		Owner = Expected->PlayerState;
+	}
+
+	AWorldSettings* WorldSettings = World->GetWorldSettings();
+	if (!Owner || !WorldSettings || WorldSettings->GetPauserPlayerState())
+	{
+		return false;
+	}
+
+	// 양쪽 UI가 준비된 뒤 네이티브 Pauser 복제로 서버와 클라이언트를 함께 멈춘다.
+	PauseOwner = Owner;
+	WorldSettings->SetPauserPlayerState(Owner);
+	WorldSettings->ForceNetUpdate();
+	return true;
+}
+
+bool FGameOverWorldPauseState::CanSelect(const AController* Controller, const FGuid& InRoundId) const
+{
+	return IsActive() && !bTransitioning && InRoundId == RoundId && Contains(Controller)
+		&& ReadyControllers.Num() == ExpectedControllers.Num();
+}
+
+bool FGameOverWorldPauseState::BeginTransition(UWorld* World)
+{
+	if (!World || World->GetNetMode() == NM_Client || !IsActive() || bTransitioning)
+	{
+		return false;
+	}
+	AWorldSettings* Settings = World->GetWorldSettings();
+	if (!Settings || (Settings->GetPauserPlayerState()
+		&& Settings->GetPauserPlayerState() != PauseOwner.Get()))
+	{
+		return false;
+	}
+	// 정지만 해제하고 대상과 식별자는 보존한다. 실패 복구 또는 완료까지 늦은 요청을 막는다.
+	if (PauseOwner.IsValid() && Settings->GetPauserPlayerState() == PauseOwner.Get())
+	{
+		Settings->SetPauserPlayerState(nullptr);
+		Settings->ForceNetUpdate();
+	}
+	PauseOwner.Reset();
+	bTransitioning = true;
+	return true;
+}
+
+bool FGameOverWorldPauseState::RestoreSelection()
+{
+	if (!IsActive() || !bTransitioning)
+	{
+		return false;
+	}
+	for (const TWeakObjectPtr<APlayerController>& Controller : ExpectedControllers)
+	{
+		if (!Controller.IsValid())
+		{
+			return false;
+		}
+	}
+	// 복구 UI의 준비를 다시 확인한다. 실패 전 선택/응답은 새 식별자와 일치하지 않는다.
+	RoundId = FGuid::NewGuid();
+	ReadyControllers.Reset();
+	UnavailableControllers.Reset();
+	bTransitioning = false;
+	return true;
+}
+
+void FGameOverWorldPauseState::RemoveDisconnectedController(AController* Controller, UWorld* World)
+{
+	// 남은 플레이어는 선택할 수 있지만 연결 종료 이후에는 다시 정지하지 않는다.
+	AWorldSettings* Settings = World ? World->GetWorldSettings() : nullptr;
+	if (Settings && PauseOwner.IsValid() && Settings->GetPauserPlayerState() == PauseOwner.Get())
+	{
+		Settings->SetPauserPlayerState(nullptr);
+		Settings->ForceNetUpdate();
+	}
+	PauseOwner.Reset();
+	bPauseAllowed = false;
+	for (auto It = ExpectedControllers.CreateIterator(); It; ++It)
+	{
+		if (It->Get() == Controller)
+		{
+			ReadyControllers.Remove(*It);
+			UnavailableControllers.Remove(*It);
+			It.RemoveCurrent();
+			break;
+		}
+	}
+	if (ExpectedControllers.IsEmpty())
+	{
+		Reset(World);
+	}
+}
+
+void FGameOverWorldPauseState::Reset(UWorld* World)
+{
+	AWorldSettings* WorldSettings = World ? World->GetWorldSettings() : nullptr;
+	// 다른 Pause가 소유자를 바꿨다면 그 정지는 건드리지 않는다.
+	if (WorldSettings && PauseOwner.IsValid()
+		&& WorldSettings->GetPauserPlayerState() == PauseOwner.Get())
+	{
+		WorldSettings->SetPauserPlayerState(nullptr);
+		WorldSettings->ForceNetUpdate();
+	}
+	PauseOwner.Reset();
+	RoundId.Invalidate();
+	ExpectedControllers.Reset();
+	ReadyControllers.Reset();
+	UnavailableControllers.Reset();
+	bTransitioning = false;
+	bPauseAllowed = true;
+}
+
 AOutlierGameMode::AOutlierGameMode()
 {
 
+}
+
+bool AOutlierGameMode::BeginSettingsPause(AFirstPersonPlayerController* Controller,
+	AActor* LayerOwner, AFirstPersonPlayerController* OtherController)
+{
+	UWorld* World = GetWorld();
+	if (!HasAuthority() || !Controller || !World || GameOverWorldPause.IsActive()
+		|| SettingsPauseOwner.IsValid() || World->IsPaused())
+	{
+		return false;
+	}
+	if (!UGameplayStatics::SetGamePaused(this, true))
+	{
+		return false;
+	}
+	SettingsPauseOwner = World->GetWorldSettings()->GetPauserPlayerState();
+	SettingsPauseController = Controller;
+	SettingsOtherController = OtherController;
+	SettingsPauseLayerOwner = LayerOwner;
+	return true;
+}
+
+void AOutlierGameMode::EndSettingsPause(AFirstPersonPlayerController* Controller)
+{
+	if (!HasAuthority() || GameOverWorldPause.IsActive()
+		|| !Controller || (Controller != SettingsPauseController.Get()
+			&& Controller != SettingsOtherController.Get()))
+	{
+		return;
+	}
+	ClearSettingsWorldPause();
+}
+
+void AOutlierGameMode::ClearSettingsWorldPause()
+{
+	AWorldSettings* Settings = GetWorld() ? GetWorld()->GetWorldSettings() : nullptr;
+	// 소유자를 기록한 설정 정지만 해제한다. GameOver/매치 시작 전 정지는 이 경로의 대상이 아니다.
+	if (Settings && SettingsPauseOwner.IsValid()
+		&& Settings->GetPauserPlayerState() == SettingsPauseOwner.Get())
+	{
+		UGameplayStatics::SetGamePaused(this, false);
+		Settings->ForceNetUpdate();
+	}
+	for (AFirstPersonPlayerController* Controller : { SettingsPauseController.Get(), SettingsOtherController.Get() })
+	{
+		if (Controller && SettingsPauseLayerOwner.IsValid())
+		{
+			Controller->ClientPopInGameSettingLayer(SettingsPauseLayerOwner.Get());
+		}
+	}
+	SettingsPauseOwner.Reset();
+	SettingsPauseLayerOwner.Reset();
+	SettingsPauseController.Reset();
+	SettingsOtherController.Reset();
+	GameOverWorldPause.TryPause(GetWorld());
 }
 
 bool AOutlierGameMode::CanControllerRequestCheckpointRestart(
 	const APlayerController* Controller) const
 {
 	return Controller
+		&& !GameOverWorldPause.IsActive()
 		&& !bArenaReloadInProgress
 		&& !bCheckpointRestartInProgress
 		&& !bListenHostReturnRequested
@@ -131,7 +376,7 @@ bool AOutlierGameMode::RequestCheckpointRestart(
 	bCheckpointRestartInProgress = false;
 	LastCheckpointRestartVoteResult = EOutlierCheckpointRestartVoteState::Rejected;
 	CheckpointRestartVoteLayerOwner.Reset();
-	UGameplayStatics::SetGamePaused(this, false);
+	ClearSettingsWorldPause();
 	return false;
 }
 
@@ -224,7 +469,7 @@ void AOutlierGameMode::FinishCheckpointRestartVote(
 	}
 
 	LastCheckpointRestartVoteResult = Result;
-	UGameplayStatics::SetGamePaused(this, false);
+	ClearSettingsWorldPause();
 	CheckpointRestartVote.Reset();
 	CheckpointRestartVoteLayerOwner.Reset();
 
@@ -235,7 +480,7 @@ void AOutlierGameMode::FinishCheckpointRestartVote(
 
 bool AOutlierGameMode::StartCheckpointRestart(
 	AFirstPersonPlayerController* Requester,
-	TFunction<void()> BeforeReload)
+	TFunction<bool()> BeforeReload)
 {
 	UOutlierSaveSubSystem* SaveSubsystem = GetGameInstance()
 		? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>()
@@ -297,80 +542,69 @@ bool AOutlierGameMode::StartCheckpointRestart(
 		}
 	}
 
-	// 검증 실패 시 GameOver 선택 화면을 유지한다. 성공하면 새 Pawn을 Possess하기 전에
-	// 화면 전환을 시작해야 Possess의 암전 해제가 뒤따라오는 암전에 덮이지 않는다.
-	if (BeforeReload)
-	{
-		BeforeReload();
-	}
-
-	if (UEnemyAdaptationSubsystem* EnemyAdaptationSubsystem =
-		GetWorld()->GetSubsystem<UEnemyAdaptationSubsystem>())
-	{
-		const int32 StackBeforeRestore =
-			EnemyAdaptationSubsystem->GetCurrentGunAdaptationStack();
-		if (EnemyAdaptationSubsystem->SetGunAdaptationStack(
-			Snapshot.GunAdaptationStack))
-		{
-			UE_LOG(
-				LogOutlier,
-				Display,
-				TEXT("[Checkpoint] Enemy adaptation restored Checkpoint=%s PreviousStack=%d RestoredStack=%d"),
-				*Snapshot.CheckpointId.ToString(),
-				StackBeforeRestore,
-				EnemyAdaptationSubsystem->GetCurrentGunAdaptationStack());
-		}
-		else
-		{
-			UE_LOG(
-				LogOutlier,
-				Warning,
-				TEXT("[Checkpoint] Enemy adaptation restore skipped Checkpoint=%s SavedStack=%d"),
-				*Snapshot.CheckpointId.ToString(),
-				Snapshot.GunAdaptationStack);
-		}
-	}
-
-	// 새 Actor가 BeginPlay에서 읽는 월드 진행과 공유 내성 Stack을 먼저 되돌린 뒤
-	// 설정된 게임플레이 서브레벨을 내린다. 순서를 뒤집으면 새 Actor가 재시작 직전 상태를 잠깐 적용한다.
-	SaveSubsystem->RestoreCurrentWorldProgress(Snapshot.WorldProgress);
-	SaveSubsystem->RestoreCurrentRoomPhaseProgress(Snapshot.RoomPhaseProgress);
-	SaveSubsystem->RestoreCurrentDestroyedTurretIds(Snapshot.DestroyedTurretIds);
-	ShooterPlayerState->RestoreCheckpointProgress(
-		Snapshot.ShooterProgress.NodeCount,
-		EOutlierUpgradeRole::Shooter,
-		Snapshot.ShooterProgress.ActivatedUpgradeNodeIds);
-	PartnerPlayerState->RestoreCheckpointProgress(
-		Snapshot.PartnerProgress.NodeCount,
-		EOutlierUpgradeRole::Partner,
-		Snapshot.PartnerProgress.ActivatedUpgradeNodeIds);
-	ShooterPlayerState->SetSuitMeshes(
-		Snapshot.SuitSnapshot.FirstPersonMesh,
-		Snapshot.SuitSnapshot.ThirdPersonMesh);
-	ShooterPlayerState->SetLoadoutSnapshot(Snapshot.LoadoutSnapshot);
-	ShooterPlayerState->SetAcquiredSuit(Snapshot.SuitSnapshot.bAcquired);
-
-	if (UEnemyRoomSubsystem* EnemyRoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
-	{
-		EnemyRoomSubsystem->ResetRuntimeCombatState();
-	}
-	if (URoomCombatSubsystem* RoomCombatSubsystem =
-		GetWorld()->GetSubsystem<URoomCombatSubsystem>())
-	{
-		RoomCombatSubsystem->ResetRuntimeCombatState();
-	}
-
-	// Listen Server의 전역 Pause는 서브레벨 스트리밍도 멈춘다.
-	// 기존 Pawn은 아래 리로드에서 즉시 제거되고 새 Pawn은 준비 완료 전까지 Possess하지 않으므로,
-	// Restarting 상태 자체로 플레이어 입력을 막은 채 월드만 다시 진행시켜 EndPlay/GC 이벤트를 받는다.
-	UGameplayStatics::SetGamePaused(this, false);
-
+	// 리로드 세대 예약까지 성공한 뒤에만 정지를 해제하고 저장 상태를 적용한다.
+	// 사전 실패는 현재 진행과 GameOver UI를 그대로 보존한다.
 	return ReloadArenaAndRespawnPair(
-		ShooterPlayerState,
-		PartnerPlayerState,
-		Snapshot.ShooterSpawnTransform,
-		Snapshot.PartnerSpawnTransform,
-		/*bRestoreCheckpointSnapshot=*/true);
+		ShooterPlayerState, PartnerPlayerState,
+		Snapshot.ShooterSpawnTransform, Snapshot.PartnerSpawnTransform,
+		/*bRestoreCheckpointSnapshot=*/true, INDEX_NONE,
+		[this, SaveSubsystem, ShooterPlayerState, PartnerPlayerState, Snapshot,
+			BeforeReload = MoveTemp(BeforeReload)]()
+		{
+			if (BeforeReload && !BeforeReload())
+			{
+				return false;
+			}
+
+			if (UEnemyAdaptationSubsystem* EnemyAdaptationSubsystem =
+				GetWorld()->GetSubsystem<UEnemyAdaptationSubsystem>())
+			{
+				const int32 StackBeforeRestore =
+					EnemyAdaptationSubsystem->GetCurrentGunAdaptationStack();
+				if (EnemyAdaptationSubsystem->SetGunAdaptationStack(
+					Snapshot.GunAdaptationStack))
+				{
+					UE_LOG(
+						LogOutlier,
+						Display,
+						TEXT("[Checkpoint] Enemy adaptation restored Checkpoint=%s PreviousStack=%d RestoredStack=%d"),
+						*Snapshot.CheckpointId.ToString(),
+						StackBeforeRestore,
+						EnemyAdaptationSubsystem->GetCurrentGunAdaptationStack());
+				}
+				else
+				{
+					UE_LOG(
+						LogOutlier,
+						Warning,
+						TEXT("[Checkpoint] Enemy adaptation restore skipped Checkpoint=%s SavedStack=%d"),
+						*Snapshot.CheckpointId.ToString(),
+						Snapshot.GunAdaptationStack);
+				}
+			}
+
+			// 새 Actor가 BeginPlay에서 읽는 월드 진행과 공유 내성 Stack을 먼저 되돌린 뒤
+			// 설정된 게임플레이 서브레벨을 내린다. 순서를 뒤집으면 새 Actor가 재시작 직전 상태를 잠깐 적용한다.
+			SaveSubsystem->RestoreCurrentWorldProgress(Snapshot.WorldProgress);
+			SaveSubsystem->RestoreCurrentRoomPhaseProgress(Snapshot.RoomPhaseProgress);
+			SaveSubsystem->RestoreCurrentDestroyedTurretIds(Snapshot.DestroyedTurretIds);
+			ShooterPlayerState->RestoreCheckpointProgress(
+				Snapshot.ShooterProgress.NodeCount,
+				EOutlierUpgradeRole::Shooter,
+				Snapshot.ShooterProgress.ActivatedUpgradeNodeIds);
+			PartnerPlayerState->RestoreCheckpointProgress(
+				Snapshot.PartnerProgress.NodeCount,
+				EOutlierUpgradeRole::Partner,
+				Snapshot.PartnerProgress.ActivatedUpgradeNodeIds);
+			ShooterPlayerState->SetSuitMeshes(
+				Snapshot.SuitSnapshot.FirstPersonMesh,
+				Snapshot.SuitSnapshot.ThirdPersonMesh);
+			ShooterPlayerState->SetLoadoutSnapshot(Snapshot.LoadoutSnapshot);
+			ShooterPlayerState->SetAcquiredSuit(Snapshot.SuitSnapshot.bAcquired);
+
+			ResetRuntimeCombatStateForRespawn();
+			return true;
+		});
 }
 
 void AOutlierGameMode::FinishCheckpointRestart()
@@ -384,7 +618,7 @@ void AOutlierGameMode::FinishCheckpointRestart()
 	LastCheckpointRestartVoteResult = EOutlierCheckpointRestartVoteState::Idle;
 	CheckpointRestartVote.Reset();
 	CheckpointRestartVoteLayerOwner.Reset();
-	UGameplayStatics::SetGamePaused(this, false);
+	ClearSettingsWorldPause();
 	UE_LOG(LogTemp, Log, TEXT("[Checkpoint.Restart] Reload completed; gameplay resumed"));
 }
 
@@ -423,6 +657,8 @@ void AOutlierGameMode::InitGameState()
 
 void AOutlierGameMode::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	GameOverWorldPause.Reset(GetWorld());
+	ClearSettingsWorldPause();
 	CheckpointRestartVote.Reset();
 	CheckpointRestartVoteLayerOwner.Reset();
 	ClearArenaGameplayReloadDelegates();
@@ -540,6 +776,7 @@ void AOutlierGameMode::ClearArenaWorkerWorldPause()
 		ArenaWorkerPauseOwner->Destroy();
 		ArenaWorkerPauseOwner = nullptr;
 	}
+	GameOverWorldPause.TryPause(World);
 }
 
 void AOutlierGameMode::ScheduleArenaWorkerPairSetup()
@@ -838,7 +1075,17 @@ void AOutlierGameMode::BeginPresetRespawnSelection(AController* Controller)
 	}
 
 	const int32 PairId = TriggeringPS->GetPairId();
+	if (GameOverActivePairs.Contains(PairId))
+	{
+		return;
+	}
 	GameOverActivePairs.Add(PairId);
+	if (CheckpointRestartVote.GetState() == EOutlierCheckpointRestartVoteState::VotePending)
+	{
+		FinishCheckpointRestartVote(EOutlierCheckpointRestartVoteState::Rejected);
+	}
+	// 설정 UI의 정지를 끝내고 사망 연출을 진행한다. 이후 양쪽 GameOver 준비가 정지를 인계받는다.
+	ClearSettingsWorldPause();
 	AOutlierPlayerState* ShooterPS = TriggeringPS->IsShooterPlayer()
 		? TriggeringPS
 		: FindPairPlayerState(PairId, EOutlierPlayerRole::Shooter);
@@ -846,23 +1093,105 @@ void AOutlierGameMode::BeginPresetRespawnSelection(AController* Controller)
 		? TriggeringPS
 		: FindPairPlayerState(PairId, EOutlierPlayerRole::Partner);
 
-	bool bNotifiedAny = false;
+	TArray<APlayerController*> Controllers;
 	if (AFirstPersonPlayerController* ShooterFPC = Cast<AFirstPersonPlayerController>(GetControllerFromPlayerState(ShooterPS)))
 	{
-		ShooterFPC->Client_ShowPresetSelect(GetNetMode() == NM_ListenServer);
-		bNotifiedAny = true;
+		Controllers.Add(ShooterFPC);
 	}
 	if (AFirstPersonPlayerController* PartnerFPC = Cast<AFirstPersonPlayerController>(GetControllerFromPlayerState(PartnerPS)))
 	{
-		PartnerFPC->Client_ShowPresetSelect(GetNetMode() == NM_ListenServer);
-		bNotifiedAny = true;
+		Controllers.AddUnique(PartnerFPC);
 	}
 
-	if (!bNotifiedAny)
+	if (Controllers.IsEmpty())
 	{
+		GameOverWorldPause.Reset(GetWorld());
 		GameOverActivePairs.Remove(PairId);
 		RespawnPairAtCheckpoint(Controller);
+		return;
 	}
+
+	// Listen 로컬 UI는 즉시 응답할 수 있으므로 전체 대상을 먼저 등록한다.
+	if (GameOverWorldPause.Begin(Controllers))
+	{
+		const FGuid RoundId = GameOverWorldPause.GetRoundId();
+		for (APlayerController* Target : Controllers)
+		{
+			// Listen 로컬 UI 실패는 이 호출 안에서 즉시 리스폰할 수 있다. 종료된 흐름을 더 보내지 않는다.
+			if (!GameOverWorldPause.IsActive() || GameOverWorldPause.GetRoundId() != RoundId)
+			{
+				break;
+			}
+			CastChecked<AFirstPersonPlayerController>(Target)->Client_ShowPresetSelect(
+				RoundId, GetNetMode() == NM_ListenServer);
+		}
+	}
+}
+
+void AOutlierGameMode::OnClientGameOverReady(
+	AFirstPersonPlayerController* Controller, const FGuid& RoundId)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	if (GameOverWorldPause.NotifyReady(Controller, RoundId, GetWorld()))
+	{
+		UE_LOG(LogTemp, Display, TEXT("[GameOver] Both UIs ready; world paused Round=%s"),
+			*RoundId.ToString());
+	}
+	if (GameOverWorldPause.GetRoundId() == RoundId && GameOverWorldPause.HasReadyUI()
+		&& GameOverWorldPause.HasUnavailableUI())
+	{
+		FailGameOverTransition();
+	}
+}
+
+void AOutlierGameMode::OnClientGameOverUnavailable(
+	AFirstPersonPlayerController* Controller, const FGuid& RoundId)
+{
+	if (!HasAuthority() || !GameOverWorldPause.NotifyUnavailable(Controller, RoundId))
+	{
+		return;
+	}
+	UE_LOG(LogTemp, Warning, TEXT("[GameOver] UI unavailable Controller=%s"),
+		*GetNameSafe(Controller));
+	// 한쪽의 UI 실패 통보만으로 상대 동의를 우회하지 않는다. 양쪽 모두 UI가 없을 때만 폴백한다.
+	if (GameOverWorldPause.AreAllUIsUnavailable())
+	{
+		if (!BeginGameOverTransition() || !RespawnPairAtCheckpoint(Controller))
+		{
+			FailGameOverTransition();
+		}
+	}
+	else if (GameOverWorldPause.HasReadyUI())
+	{
+		FailGameOverTransition();
+	}
+}
+
+void AOutlierGameMode::OnClientGameOverPendingUnavailable(
+	AFirstPersonPlayerController* Controller, const FGuid& RoundId, const FGuid& ProposalId)
+{
+	if (!HasAuthority() || !Controller || !GameOverWorldPause.Contains(Controller)
+		|| GameOverWorldPause.IsTransitioning() || GameOverWorldPause.GetRoundId() != RoundId)
+	{
+		return;
+	}
+	const AOutlierPlayerState* PlayerState = Controller->GetPlayerState<AOutlierPlayerState>();
+	FGameOverPendingServerState* State = PlayerState
+		? GameOverPendingByPair.Find(PlayerState->GetPairId()) : nullptr;
+	if (!State || !State->Request.MatchesProposal(RoundId, ProposalId)
+		|| (State->Requester.Get() != Controller && State->Responder.Get() != Controller))
+	{
+		return;
+	}
+	// 표시 실패는 현재 제안만 거절한다. 사망 흐름과 정지는 유지해 양쪽이 다시 선택할 수 있다.
+	const FGameOverPendingServerState FailedState = *State;
+	GameOverPendingByPair.Remove(PlayerState->GetPairId());
+	UE_LOG(LogTemp, Warning, TEXT("[GameOver] Pending UI unavailable; proposal cancelled Round=%s Proposal=%s"),
+		*RoundId.ToString(), *ProposalId.ToString());
+	FinishGameOverPending(FailedState, false);
 }
 
 bool AOutlierGameMode::RequestGameOverPendingChoice(
@@ -870,7 +1199,8 @@ bool AOutlierGameMode::RequestGameOverPendingChoice(
 	const FGameOverPendingRequest& Request)
 {
 	if (!HasAuthority() || !Requester || bArenaReloadInProgress
-		|| bCheckpointRestartInProgress || bListenHostReturnRequested || bArenaWorkerMatchCompleting)
+		|| bCheckpointRestartInProgress || bListenHostReturnRequested || bArenaWorkerMatchCompleting
+		|| !GameOverWorldPause.CanSelect(Requester, Request.RoundId))
 	{
 		return false;
 	}
@@ -925,6 +1255,7 @@ bool AOutlierGameMode::RequestGameOverPendingChoice(
 	State.Requester = Requester;
 	State.Responder = Responder;
 	State.Request = Request;
+	State.Request.ProposalId = FGuid::NewGuid();
 
 	if (!Responder)
 	{
@@ -934,16 +1265,22 @@ bool AOutlierGameMode::RequestGameOverPendingChoice(
 	}
 
 	GameOverPendingByPair.Add(RequesterPS->GetPairId(), State);
-	Requester->ShowGameOverPendingFromServer(Request, true);
-	Responder->ShowGameOverPendingFromServer(Request, false);
+	Requester->ShowGameOverPendingFromServer(State.Request, true);
+	// 로컬 RPC의 실패 통보는 즉시 돌아올 수 있다. 이미 취소한 제안은 상대에게 표시하지 않는다.
+	if (const FGameOverPendingServerState* Current = GameOverPendingByPair.Find(RequesterPS->GetPairId());
+		Current && Current->Request.MatchesProposal(State.Request.RoundId, State.Request.ProposalId))
+	{
+		Responder->ShowGameOverPendingFromServer(State.Request, false);
+	}
 	return true;
 }
 
 bool AOutlierGameMode::RespondGameOverPending(
 	AFirstPersonPlayerController* Responder,
-	bool bApprove)
+	const FGuid& RoundId, const FGuid& ProposalId, bool bApprove)
 {
-	if (!HasAuthority() || !Responder)
+	if (!HasAuthority() || !Responder || !ProposalId.IsValid()
+		|| !GameOverWorldPause.CanSelect(Responder, RoundId))
 	{
 		return false;
 	}
@@ -952,7 +1289,8 @@ bool AOutlierGameMode::RespondGameOverPending(
 	FGameOverPendingServerState* State = ResponderPS
 		? GameOverPendingByPair.Find(ResponderPS->GetPairId())
 		: nullptr;
-	if (!State || State->Responder.Get() != Responder || !State->Requester.IsValid())
+	if (!State || State->Responder.Get() != Responder || !State->Requester.IsValid()
+		|| !State->Request.MatchesProposal(RoundId, ProposalId))
 	{
 		UE_LOG(LogTemp, Warning,
 			TEXT("[GameOverPending][Input] ServerRejectResponse Responder=%s Pair=%d Pending=%d"),
@@ -1001,7 +1339,8 @@ bool AOutlierGameMode::ExecuteGameOverSelection(
 		? Requester->GetPlayerState<AOutlierPlayerState>() : nullptr;
 	if (!HasAuthority() || !RequesterPS || bArenaReloadInProgress
 		|| bCheckpointRestartInProgress || bListenHostReturnRequested || bArenaWorkerMatchCompleting
-		|| !GameOverActivePairs.Contains(RequesterPS->GetPairId()))
+		|| !GameOverActivePairs.Contains(RequesterPS->GetPairId())
+		|| !GameOverWorldPause.CanSelect(Requester, Request.RoundId))
 	{
 		return false;
 	}
@@ -1024,7 +1363,7 @@ bool AOutlierGameMode::ExecuteGameOverSelection(
 	}
 	else if (Request.Choice == EGameOverPendingChoice::Continue)
 	{
-		if ((!ShooterClass && !DefaultPawnClass) || !PartnerClass)
+		if (!ShooterClass || !PartnerClass)
 		{
 			return false;
 		}
@@ -1034,62 +1373,47 @@ bool AOutlierGameMode::ExecuteGameOverSelection(
 	{
 		return false;
 	}
-	const bool bCheckpointTest = PresetStageId == OutlierPresetStageIds::CheckpointTest;
-	if (bCheckpointTest && CheckpointRestartVote.GetState() != EOutlierCheckpointRestartVoteState::Idle)
+	// 이탈을 지원하지 않는 실행 환경은 UI나 재접속 상태를 변경하기 전에 거절한다.
+	if ((Request.Choice == EGameOverPendingChoice::MainMenu
+		|| Request.Choice == EGameOverPendingChoice::QuitGame)
+		&& !IsArenaWorkerProcess() && GetNetMode() != NM_Standalone && GetNetMode() != NM_ListenServer)
 	{
 		return false;
 	}
-	const auto BeginGameOverTransition = [this, RequesterPS, Requester, OtherController]()
+	const bool bCheckpointRestart = Request.Choice == EGameOverPendingChoice::Continue
+		|| PresetStageId == OutlierPresetStageIds::CheckpointTest;
+	if (bCheckpointRestart && CheckpointRestartVote.GetState() != EOutlierCheckpointRestartVoteState::Idle)
 	{
-		// 두 플레이어의 연속 선택도 한 번만 실행되도록 화면 정리 전에 상태를 소비한다.
-		GameOverActivePairs.Remove(RequesterPS->GetPairId());
-		for (AFirstPersonPlayerController* Controller : { Requester, OtherController })
-		{
-			if (Controller)
-			{
-				Controller->BeginGameOverRespawnTransition();
-			}
-		}
-		const auto CloseGameOverLayer = [](AFirstPersonPlayerController* Controller)
-		{
-			if (!Controller || !Controller->PlayerState)
-			{
-				return;
-			}
-			if (Controller->IsLocalController())
-			{
-				Controller->ClientPopInGameSettingLayer_Implementation(Controller->PlayerState);
-			}
-			else
-			{
-				Controller->ClientPopInGameSettingLayer(Controller->PlayerState);
-			}
-		};
-		CloseGameOverLayer(Requester);
-		CloseGameOverLayer(OtherController);
-	};
-	if (bCheckpointTest)
+		return false;
+	}
+	if (bCheckpointRestart)
 	{
-		// Level04는 Dev의 체크포인트 복원 테스트다. 프리셋 초기화 없이 저장 당시 상태를 되돌린다.
+		// 이어하기도 기존 체크포인트 리로드를 사용한다. 저장 상태와 Door/전투 Actor를 함께 복원한다.
+		// GameOver 선택은 이미 확정됐으므로 추가 투표 없이, 사전 검증 후에만 정지를 해제한다.
 		bCheckpointRestartInProgress = true;
 		LastCheckpointRestartVoteResult = EOutlierCheckpointRestartVoteState::Restarting;
-		if (!StartCheckpointRestart(Requester, BeginGameOverTransition))
+		if (!StartCheckpointRestart(Requester, [this]() { return BeginGameOverTransition(); }))
 		{
 			bCheckpointRestartInProgress = false;
 			LastCheckpointRestartVoteResult = EOutlierCheckpointRestartVoteState::Rejected;
+			RestoreGameOverSelection();
 			return false;
 		}
 		return true;
 	}
-	BeginGameOverTransition();
+	if (!BeginGameOverTransition())
+	{
+		return false;
+	}
 
 	switch (Request.Choice)
 	{
-	case EGameOverPendingChoice::Continue:
-		RespawnPairAtCheckpoint(Requester);
-		break;
 	case EGameOverPendingChoice::PresetLevel:
-		RequestPresetRespawn(Requester, PresetStageId);
+		if (!RequestPresetRespawn(Requester, PresetStageId))
+		{
+			RestoreGameOverSelection();
+			return false;
+		}
 		break;
 	case EGameOverPendingChoice::MainMenu:
 	case EGameOverPendingChoice::QuitGame:
@@ -1109,7 +1433,11 @@ bool AOutlierGameMode::ExecuteGameOverSelection(
 				Controller->ClientPrepareForArenaExit();
 			}
 		}
-		HandleExplicitPlayerLeave(Requester, Request.Choice == EGameOverPendingChoice::QuitGame);
+		if (!HandleExplicitPlayerLeave(Requester, Request.Choice == EGameOverPendingChoice::QuitGame))
+		{
+			RestoreGameOverSelection();
+			return false;
+		}
 		break;
 	default:
 		break;
@@ -1117,26 +1445,108 @@ bool AOutlierGameMode::ExecuteGameOverSelection(
 	return true;
 }
 
+bool AOutlierGameMode::BeginGameOverTransition()
+{
+	if (!GameOverWorldPause.BeginTransition(GetWorld()))
+	{
+		return false;
+	}
+	// 전환 중에는 상태를 소비하지 않는다. 복구에 필요한 대상은 보존하고 UI 입력만 닫는다.
+	const TSet<TWeakObjectPtr<APlayerController>> Targets = GameOverWorldPause.GetControllers();
+	for (const TWeakObjectPtr<APlayerController>& Target : Targets)
+	{
+		if (AFirstPersonPlayerController* Controller = Cast<AFirstPersonPlayerController>(Target.Get()))
+		{
+			Controller->BeginGameOverRespawnTransition();
+			Controller->ClientPopInGameSettingLayer(Controller->PlayerState);
+		}
+	}
+	return true;
+}
+
+void AOutlierGameMode::RestoreGameOverSelection()
+{
+	if (!GameOverWorldPause.IsTransitioning())
+	{
+		return;
+	}
+	if (!GameOverWorldPause.RestoreSelection())
+	{
+		FailGameOverTransition();
+		return;
+	}
+	GameOverPendingByPair.Reset();
+	// Listen 로컬 복구 RPC는 즉시 준비 응답을 보낼 수 있으므로 식별자는 루프 밖에서 고정한다.
+	const FGuid RoundId = GameOverWorldPause.GetRoundId();
+	const TSet<TWeakObjectPtr<APlayerController>> Targets = GameOverWorldPause.GetControllers();
+	for (const TWeakObjectPtr<APlayerController>& Target : Targets)
+	{
+		if (!GameOverWorldPause.IsActive() || GameOverWorldPause.GetRoundId() != RoundId
+			|| GameOverWorldPause.IsTransitioning())
+		{
+			break;
+		}
+		if (AFirstPersonPlayerController* Controller = Cast<AFirstPersonPlayerController>(Target.Get()))
+		{
+			Controller->ClientRestoreGameOverSelection(RoundId);
+		}
+	}
+}
+
+void AOutlierGameMode::FinishGameOverFlow()
+{
+	GameOverWorldPause.Reset(GetWorld());
+	GameOverActivePairs.Reset();
+	GameOverPendingByPair.Reset();
+}
+
+void AOutlierGameMode::FailGameOverTransition()
+{
+	// Pawn 제거 후 실패나 한쪽 UI 부재는 선택 화면만 복구해도 정상 합의를 할 수 없다. 세션을 종료한다.
+	UE_LOG(LogTemp, Error, TEXT("[GameOver] Unrecoverable arena state; leaving arena"));
+	for (const TWeakObjectPtr<APlayerController>& Target : GameOverWorldPause.GetControllers())
+	{
+		if (AFirstPersonPlayerController* Controller = Cast<AFirstPersonPlayerController>(Target.Get()))
+		{
+			Controller->ClientPrepareForArenaExit();
+		}
+	}
+	FinishGameOverFlow();
+	ClearSettingsWorldPause();
+	if (IsArenaWorkerProcess())
+	{
+		BeginArenaWorkerReleaseShutdown();
+	}
+	else
+	{
+		bListenHostReturnRequested = true;
+		ReturnToMainMenuHost();
+	}
+}
+
 void AOutlierGameMode::CancelGameOverPendingForDisconnect(AController* Exiting)
 {
-	TArray<int32> PairIdsToRemove;
-	for (const TPair<int32, FGameOverPendingServerState>& Entry : GameOverPendingByPair)
+	if (GameOverWorldPause.Contains(Exiting))
 	{
-		if (Entry.Value.Requester.Get() == Exiting || Entry.Value.Responder.Get() == Exiting)
+		// 연결 종료는 복구 UI로 돌아가지 않는다. 남은 위젯의 이전 제안도 함께 닫는다.
+		for (const TWeakObjectPtr<APlayerController>& Target : GameOverWorldPause.GetControllers())
 		{
-			PairIdsToRemove.Add(Entry.Key);
-			if (AFirstPersonPlayerController* Other =
-				Entry.Value.Requester.Get() == Exiting
-					? Entry.Value.Responder.Get()
-					: Entry.Value.Requester.Get())
+			if (AFirstPersonPlayerController* Other = Cast<AFirstPersonPlayerController>(Target.Get());
+				Other && Other != Exiting)
 			{
 				Other->CloseGameOverPendingFromServer();
 			}
 		}
+		GameOverPendingByPair.Reset();
+		GameOverWorldPause.RemoveDisconnectedController(Exiting, GetWorld());
+		if (!GameOverWorldPause.IsActive())
+		{
+			GameOverActivePairs.Reset();
+		}
 	}
-	for (int32 PairId : PairIdsToRemove)
+	if (SettingsPauseController.Get() == Exiting || SettingsOtherController.Get() == Exiting)
 	{
-		GameOverPendingByPair.Remove(PairId);
+		ClearSettingsWorldPause();
 	}
 }
 
@@ -1264,17 +1674,17 @@ bool AOutlierGameMode::ResolvePresetStageSpawn(
 	return false;
 }
 
-void AOutlierGameMode::RequestPresetRespawn(AController* Requester, FName StageId)
+bool AOutlierGameMode::RequestPresetRespawn(AController* Requester, FName StageId)
 {
-	if (!Requester)
+	if (!HasAuthority() || !Requester)
 	{
-		return;
+		return false;
 	}
 
 	AOutlierPlayerState* TriggeringPS = Requester->GetPlayerState<AOutlierPlayerState>();
 	if (!TriggeringPS)
 	{
-		return;
+		return false;
 	}
 
 	const int32 PairId = TriggeringPS->GetPairId();
@@ -1301,9 +1711,7 @@ void AOutlierGameMode::RequestPresetRespawn(AController* Requester, FName StageI
 	}
 
 	const int32 NewNodeCount = ResolvePresetNodeCount(StageId);
-	FlushUpgradeNodesForPair(TriggeringPS, NewNodeCount);
-
-	ReloadArenaAndRespawnPair(ShooterPS, PartnerPS, ShooterSpawn, PartnerSpawn);
+	return ReloadArenaAndRespawnPair(ShooterPS, PartnerPS, ShooterSpawn, PartnerSpawn, false, NewNodeCount);
 }
 
 void AOutlierGameMode::StartMatchedPair(AController* FirstController, AController* SecondController, int32 PairId, EOutlierPlayerRole FirstRole, EOutlierPlayerRole SecondRole)
@@ -1311,6 +1719,10 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 	if (!FirstController || !SecondController)
 	{
 		return;
+	}
+	if (GameOverActivePairs.Contains(PairId))
+	{
+		GameOverWorldPause.Reset(GetWorld());
 	}
 	GameOverActivePairs.Remove(PairId);
 
@@ -1711,9 +2123,15 @@ bool AOutlierGameMode::HandleExplicitPlayerLeave(
 	{
 		return false;
 	}
+	const ENetMode NetMode = GetNetMode();
+	if (!IsArenaWorkerProcess() && NetMode != NM_Standalone && NetMode != NM_ListenServer)
+	{
+		return false;
+	}
 
 	CancelCheckpointRestartVoteForDisconnect(Requester);
-	UGameplayStatics::SetGamePaused(this, false);
+	FinishGameOverFlow();
+	ClearSettingsWorldPause();
 
 	if (IsArenaWorkerProcess())
 	{
@@ -1732,11 +2150,6 @@ bool AOutlierGameMode::HandleExplicitPlayerLeave(
 		return true;
 	}
 
-	const ENetMode NetMode = GetNetMode();
-	if (NetMode != NM_Standalone && NetMode != NM_ListenServer)
-	{
-		return false;
-	}
 	if (bListenHostReturnRequested)
 	{
 		Requester->ConfirmExplicitLeaveFromServer(true, bQuitAfterLeave);
@@ -2563,17 +2976,17 @@ void AOutlierGameMode::Logout(AController* Exiting)
 }
 
 
-void AOutlierGameMode::RespawnPairAtCheckpoint(AController* Controller)
+bool AOutlierGameMode::RespawnPairAtCheckpoint(AController* Controller)
 {
-	if (!Controller)
+	if (!HasAuthority() || !Controller || (!ShooterClass && !DefaultPawnClass) || !PartnerClass)
 	{
-		return;
+		return false;
 	}
 
 	AOutlierPlayerState* TriggeringPlayerState = Controller->GetPlayerState<AOutlierPlayerState>();
 	if (!TriggeringPlayerState)
 	{
-		return;
+		return false;
 	}
 
 	AOutlierPlayerState* ShooterPlayerState = TriggeringPlayerState->IsShooterPlayer()
@@ -2633,6 +3046,13 @@ void AOutlierGameMode::RespawnPairAtCheckpoint(AController* Controller)
 		OldPartner = PartnerPlayerState->GetPartnerCharacter();
 	}
 
+	// 직접 리스폰 호출도 GameOver 소유 정지를 먼저 해제한다. 실패는 기존 UI에서 재선택할 수 있다.
+	if (GameOverWorldPause.IsActive() && !GameOverWorldPause.IsTransitioning()
+		&& !BeginGameOverTransition())
+	{
+		return false;
+	}
+	ClearSettingsWorldPause();
 	if (APartnerPlayerController* PartnerController = Cast<APartnerPlayerController>(GetControllerFromPlayerState(PartnerPlayerState)))
 	{
 		if (Cast<AEnemyBase>(PartnerController->GetPawn()))
@@ -2640,6 +3060,7 @@ void AOutlierGameMode::RespawnPairAtCheckpoint(AController* Controller)
 			PartnerController->ReleaseEnemyPossession();
 		}
 	}
+	ResetRuntimeCombatStateForRespawn();
 
 	ShooterPlayerState->SetShooterCharacter(nullptr);
 	ShooterPlayerState->SetPartnerCharacter(nullptr);
@@ -2684,6 +3105,19 @@ void AOutlierGameMode::RespawnPairAtCheckpoint(AController* Controller)
 	APartnerCharacter* NewPartner = PartnerClass
 		? GetWorld()->SpawnActor<APartnerCharacter>(PartnerClass, PartnerSpawnTransform)
 		: nullptr;
+	if (!NewShooter || !NewPartner)
+	{
+		if (NewShooter)
+		{
+			NewShooter->Destroy();
+		}
+		if (NewPartner)
+		{
+			NewPartner->Destroy();
+		}
+		FailGameOverTransition();
+		return true;
+	}
 
 	// 체크포인트 리스폰 지점의 바닥은 Arena 지형 레벨에 유지된다.
 
@@ -2716,6 +3150,8 @@ void AOutlierGameMode::RespawnPairAtCheckpoint(AController* Controller)
 	// GameOver Continue는 서브레벨 재로드 없이 리스폰하므로 Ready 콜백을 거치지 않는다.
 	// 새 페어 연결과 장비 복원 뒤 기존 Volume의 누락된 RoomTag/입장 알림도 복구한다.
 	RefreshRoomOverlapAssignments();
+	FinishGameOverFlow();
+	return true;
 }
 
 /*
@@ -2762,9 +3198,9 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 	AOutlierPlayerState* PartnerPlayerState,
 	const FTransform& ShooterSpawn,
 	const FTransform& PartnerSpawn,
-	bool bRestoreCheckpointSnapshot)
+	bool bRestoreCheckpointSnapshot, int32 PresetNodeCount, TFunction<bool()> BeforeRespawn)
 {
-	if (!ShooterPlayerState)
+	if (!HasAuthority() || !ShooterPlayerState || !ShooterClass || !PartnerClass)
 	{
 		return false;
 	}
@@ -2800,6 +3236,21 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 	{
 		UE_LOG(LogTemp, Error, TEXT("[ReloadArenaAndRespawnPair] Gameplay reload is already in progress"));
 		return false;
+	}
+	if (BeforeRespawn && !BeforeRespawn())
+	{
+		return false;
+	}
+	if (GameOverWorldPause.IsActive() && !GameOverWorldPause.IsTransitioning()
+		&& !BeginGameOverTransition())
+	{
+		return false;
+	}
+	ClearSettingsWorldPause();
+	// 모든 사전 검증을 통과한 뒤에만 프리셋 진행을 소비한다. 복구 가능한 실패는 기존 노드를 유지한다.
+	if (PresetNodeCount != INDEX_NONE)
+	{
+		FlushUpgradeNodesForPair(ShooterPlayerState, PresetNodeCount);
 	}
 	PendingGameplayGeneration = ReloadGeneration;
 	bResumeRoomPhasesAfterReload = bRestoreCheckpointSnapshot;
@@ -3885,7 +4336,11 @@ void AOutlierGameMode::HandleArenaGameplayReloadFailed(
 		TEXT("Gameplay reload failed. Generation=%u Failure=%s"),
 		GameplayGeneration,
 		*UEnum::GetValueAsString(Failure));
-	if (IsArenaWorkerProcess())
+	if (GameOverWorldPause.IsTransitioning())
+	{
+		FailGameOverTransition();
+	}
+	else if (IsArenaWorkerProcess())
 	{
 		BeginArenaWorkerReleaseShutdown();
 	}
@@ -3916,6 +4371,10 @@ void AOutlierGameMode::BeginArenaWorkerReleaseShutdown(
 	{
 		return;
 	}
+	FinishGameOverFlow();
+	ClearSettingsWorldPause();
+	// 종료 타이머는 월드 시간으로 진행되므로 준비 단계의 소유 정지도 해제한다.
+	ClearArenaWorkerWorldPause();
 
 	// 정상 Match 완료와 복구 불가능한 Reload/재접속 실패는 같은 종료 계약을 사용한다.
 	// 제어 채널에 Releasing을 먼저 알리고 플레이어를 Lobby로 보낸 뒤 Worker를 종료한다.
@@ -4023,6 +4482,26 @@ void AOutlierGameMode::RefreshRoomOverlapAssignments()
 	}
 }
 
+void AOutlierGameMode::ResetRuntimeCombatStateForRespawn()
+{
+	UWorld* World = GetWorld();
+	if (!HasAuthority() || !World)
+	{
+		return;
+	}
+
+	if (UEnemyRoomSubsystem* EnemyRoomSubsystem =
+		World->GetSubsystem<UEnemyRoomSubsystem>())
+	{
+		EnemyRoomSubsystem->ResetRuntimeCombatState();
+	}
+	if (URoomCombatSubsystem* RoomCombatSubsystem =
+		World->GetSubsystem<URoomCombatSubsystem>())
+	{
+		RoomCombatSubsystem->ResetRuntimeCombatState();
+	}
+}
+
 void AOutlierGameMode::CompleteServerArenaReload()
 {
 	const UOutlierArenaSubsystem* ArenaSubsystem = GetWorld()
@@ -4102,6 +4581,10 @@ void AOutlierGameMode::TryFinishArenaReload()
 	// ClientLoadAuthorizedAt.Reset();
 	ArenaReloadStartedAt = 0.0;
 	FinishCheckpointRestart();
+	if (GameOverWorldPause.IsTransitioning())
+	{
+		FinishGameOverFlow();
+	}
 	if (bResumeRoomPhasesAfterReload
 		&& (!IsArenaWorkerProcess() || bArenaWorkerGameplayStarted))
 	{

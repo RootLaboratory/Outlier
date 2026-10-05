@@ -19,6 +19,19 @@ struct FGameOverPendingRequest
 {
 	GENERATED_BODY()
 
+	UPROPERTY()
+	FGuid RoundId;
+
+	// 서버가 제안을 만들 때 발급한다. 같은 사망 흐름에서 이전 제안의 응답도 구분한다.
+	UPROPERTY()
+	FGuid ProposalId;
+
+	bool MatchesProposal(const FGuid& InRoundId, const FGuid& InProposalId) const
+	{
+		return RoundId.IsValid() && ProposalId.IsValid()
+			&& RoundId == InRoundId && ProposalId == InProposalId;
+	}
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Game Over|Pending")
 	EGameOverPendingChoice Choice = EGameOverPendingChoice::Continue;
 

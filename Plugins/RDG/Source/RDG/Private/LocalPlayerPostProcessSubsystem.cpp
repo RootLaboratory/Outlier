@@ -76,6 +76,18 @@ void ULocalPlayerPostProcessSubsystem::Deinitialize()
 
 void ULocalPlayerPostProcessSubsystem::Tick(float DeltaTime)
 {
+	// 전역 Tick은 월드 정지와 무관하게 호출된다. 정지 중에는 사망 UI 연출만 진행한다.
+	if (const UWorld* World = GetWorld(); World && World->IsPaused())
+	{
+		if (DeathTransition.IsActive() || bGameOverBlackoutActive)
+		{
+			RefreshDeathTransitionTextures();
+			UpdateDeathTransition(DeltaTime);
+			UpdateDeathNoise(DeltaTime);
+		}
+		return;
+	}
+
 	// 텍스처 리소스는 지정 직후엔 아직 없을 수 있어서, 준비될 때까지 매 틱 확인한다.
 	RefreshDeathTransitionTextures();
 	RefreshDroneDamageMaskTextures();

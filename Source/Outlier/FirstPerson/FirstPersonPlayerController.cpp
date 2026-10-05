@@ -330,16 +330,29 @@ void AFirstPersonPlayerController::ClientShowGameOverPending_Implementation(
 	const FGameOverPendingRequest& Request,
 	bool bIsRequester)
 {
+	if (!GameOverRoundId.IsValid() || Request.RoundId != GameOverRoundId)
+	{
+		return;
+	}
 	if (!IsLocalController())
 	{
 		return;
 	}
 	if (UGameOverWidget* GameOver = FindGameOverWidget())
 	{
-		GameOver->ShowPendingRequest(Request, bIsRequester);
+		if (!GameOver->ShowPendingRequest(Request, bIsRequester))
+		{
+			ServerNotifyGameOverPendingUnavailable(Request.RoundId, Request.ProposalId);
+		}
 		return;
 	}
-	// 사망 연출이 끝나기 전에 상대 요청이 도착할 수 있으므로 화면 생성까지 보관한다.
+	// 이미 준비 완료한 화면이 사라졌다면 재생성 콜백을 기다리지 않고 현재 제안을 취소한다.
+	if (bGameOverReadySent)
+	{
+		ServerNotifyGameOverPendingUnavailable(Request.RoundId, Request.ProposalId);
+		return;
+	}
+	// 화면 준비 전 요청은 기존 생성 경로가 처리할 수 있도록 보관한다.
 	QueuedGameOverPendingRequest = Request;
 	bQueuedGameOverPendingRequester = bIsRequester;
 	bHasQueuedGameOverPendingRequest = true;
@@ -356,6 +369,9 @@ void AFirstPersonPlayerController::ClientCloseGameOverPending_Implementation()
 
 void AFirstPersonPlayerController::BeginGameOverRespawnTransition_Implementation()
 {
+	GameOverRoundId.Invalidate();
+	bGameOverReadySent = false;
+	bHasQueuedGameOverPendingRequest = false;
 	if (ULocalPlayerPostProcessSubsystem* PPSubsystem = GetLocalPlayer()
 		? GetLocalPlayer()->GetSubsystem<ULocalPlayerPostProcessSubsystem>()
 		: nullptr)
@@ -363,6 +379,19 @@ void AFirstPersonPlayerController::BeginGameOverRespawnTransition_Implementation
 		PPSubsystem->OnDeathBlackNoiseStarted.RemoveAll(this);
 		PPSubsystem->StartGameOverBlackout();
 	}
+}
+
+void AFirstPersonPlayerController::ClientRestoreGameOverSelection_Implementation(const FGuid& RoundId)
+{
+	if (!IsLocalController() || !RoundId.IsValid())
+	{
+		return;
+	}
+	// 전환 시작 때 닫힌 UI만 복구한다. 이미 끝난 사망 연출은 다시 시작하지 않는다.
+	GameOverRoundId = RoundId;
+	bGameOverReadySent = false;
+	bHasQueuedGameOverPendingRequest = false;
+	PushGameOverWidget();
 }
 
 void AFirstPersonPlayerController::RequestOpenInGameSetting()
@@ -438,15 +467,26 @@ void AFirstPersonPlayerController::RequestGameOverPendingChoice(
 {
 	if (IsLocalController())
 	{
-		ServerRequestGameOverPendingChoice(Request);
+		if (!GameOverRoundId.IsValid())
+		{
+			return;
+		}
+		FGameOverPendingRequest CurrentRequest = Request;
+		CurrentRequest.RoundId = GameOverRoundId;
+		CurrentRequest.ProposalId.Invalidate();
+		ServerRequestGameOverPendingChoice(CurrentRequest);
 	}
 }
 
-void AFirstPersonPlayerController::RequestGameOverPendingResponse(bool bApprove)
+void AFirstPersonPlayerController::RequestGameOverPendingResponse(
+	const FGameOverPendingRequest& Request, bool bApprove)
 {
 	if (IsLocalController())
 	{
-		ServerRespondGameOverPending(bApprove);
+		if (Request.RoundId == GameOverRoundId && Request.ProposalId.IsValid())
+		{
+			ServerRespondGameOverPending(Request.RoundId, Request.ProposalId, bApprove);
+		}
 	}
 }
 
@@ -563,13 +603,16 @@ void AFirstPersonPlayerController::ClientPopInGameSettingLayer_Implementation(
 	}
 }
 
-void AFirstPersonPlayerController::Client_ShowPresetSelect_Implementation(bool bImmediateSelections)
+void AFirstPersonPlayerController::Client_ShowPresetSelect_Implementation(
+	const FGuid& RoundId, bool bImmediateSelections)
 {
-	if (!IsLocalController())
+	if (!IsLocalController() || !RoundId.IsValid() || GameOverRoundId == RoundId)
 	{
 		return;
 	}
 
+	GameOverRoundId = RoundId;
+	bGameOverReadySent = false;
 	bGameOverImmediateSelections = bImmediateSelections;
 	CollapseMainWidgetForDeath();
 
@@ -609,7 +652,7 @@ void AFirstPersonPlayerController::HandleDeathBlackNoiseStarted()
 
 void AFirstPersonPlayerController::PushGameOverWidget()
 {
-	if (!IsLocalController())
+	if (!IsLocalController() || !GameOverRoundId.IsValid() || bGameOverReadySent)
 	{
 		return;
 	}
@@ -619,6 +662,7 @@ void AFirstPersonPlayerController::PushGameOverWidget()
 		UE_LOG(LogTemp, Warning,
 			TEXT("[GameOver] GameOverWidgetClass is not set on %s"),
 			*GetNameSafe(GetClass()));
+		NotifyGameOverUIUnavailable();
 		return;
 	}
 
@@ -628,6 +672,7 @@ void AFirstPersonPlayerController::PushGameOverWidget()
 		: nullptr;
 	if (!LayerSubsystem)
 	{
+		NotifyGameOverUIUnavailable();
 		return;
 	}
 
@@ -643,6 +688,7 @@ void AFirstPersonPlayerController::PushGameOverWidget()
 
 	if (!LayerSubsystem->PushWidget(Request).IsValid())
 	{
+		NotifyGameOverUIUnavailable();
 		return;
 	}
 	if (UGameOverWidget* GameOver = FindGameOverWidget())
@@ -677,7 +723,60 @@ void AFirstPersonPlayerController::PushGameOverWidget()
 			{
 				bHasQueuedGameOverPendingRequest = false;
 			}
+			else
+			{
+				// 현재 제안만 취소하게 한다. 원본 GameOver의 준비 통보는 아래에서 그대로 진행한다.
+				bHasQueuedGameOverPendingRequest = false;
+				ServerNotifyGameOverPendingUnavailable(
+					QueuedGameOverPendingRequest.RoundId, QueuedGameOverPendingRequest.ProposalId);
+			}
 		}
+	}
+
+	// 연출 콜백만으로 준비를 알리지 않는다. 실제 위젯 생성과 입력 설정이 끝난 뒤 한 번 통보한다.
+	if (FindGameOverWidget())
+	{
+		bGameOverReadySent = true;
+		ServerNotifyGameOverReady(GameOverRoundId);
+	}
+	else
+	{
+		NotifyGameOverUIUnavailable();
+	}
+}
+
+void AFirstPersonPlayerController::NotifyGameOverUIUnavailable()
+{
+	const FGuid RoundId = GameOverRoundId;
+	GameOverRoundId.Invalidate();
+	if (RoundId.IsValid())
+	{
+		ServerNotifyGameOverUnavailable(RoundId);
+	}
+}
+
+void AFirstPersonPlayerController::ServerNotifyGameOverUnavailable_Implementation(const FGuid& RoundId)
+{
+	if (AOutlierGameMode* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr)
+	{
+		GM->OnClientGameOverUnavailable(this, RoundId);
+	}
+}
+
+void AFirstPersonPlayerController::ServerNotifyGameOverReady_Implementation(const FGuid& RoundId)
+{
+	if (AOutlierGameMode* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr)
+	{
+		GM->OnClientGameOverReady(this, RoundId);
+	}
+}
+
+void AFirstPersonPlayerController::ServerNotifyGameOverPendingUnavailable_Implementation(
+	const FGuid& RoundId, const FGuid& ProposalId)
+{
+	if (AOutlierGameMode* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr)
+	{
+		GM->OnClientGameOverPendingUnavailable(this, RoundId, ProposalId);
 	}
 }
 
@@ -701,11 +800,12 @@ void AFirstPersonPlayerController::ServerRequestGameOverPendingChoice_Implementa
 	}
 }
 
-void AFirstPersonPlayerController::ServerRespondGameOverPending_Implementation(bool bApprove)
+void AFirstPersonPlayerController::ServerRespondGameOverPending_Implementation(
+	const FGuid& RoundId, const FGuid& ProposalId, bool bApprove)
 {
 	if (AOutlierGameMode* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr)
 	{
-		const bool bAccepted = GM->RespondGameOverPending(this, bApprove);
+		GM->RespondGameOverPending(this, RoundId, ProposalId, bApprove);
 	}
 }
 
@@ -1104,8 +1204,19 @@ void AFirstPersonPlayerController::BindMainUI()
 
 }
 
+void AFirstPersonPlayerController::Destroyed()
+{
+	// 엔진은 Destroyed에서 Pauser를 다른 플레이어로 넘길 수 있다. 그 전에 GameOver 소유권을 정리한다.
+	if (AOutlierGameMode* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr)
+	{
+		GM->CancelGameOverPendingForDisconnect(this);
+	}
+	Super::Destroyed();
+}
+
 void AFirstPersonPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	GameOverRoundId.Invalidate();
 	ClearLocalSuitTransition();
 	ClearClientArenaContentWait();
 	// 재접속이나 역할 Controller 교체로 이전 PC가 먼저 파괴될 수 있다. Delegate가 남아 있으면
@@ -1822,6 +1933,12 @@ void AFirstPersonPlayerController::ClearClientArenaContentWait()
 }
 void AFirstPersonPlayerController::ServerOpenInGameSetting_Implementation()
 {
+	AOutlierGameMode* GameMode = GetWorld()
+		? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr;
+	if (GameMode && GameMode->IsGameOverSelectionActive())
+	{
+		return;
+	}
 	if (!InGameSettingWidgetClass)
 	{
 		return;
@@ -1870,6 +1987,12 @@ void AFirstPersonPlayerController::ServerOpenInGameSetting_Implementation()
 	PushRequest.FocusTarget = EUILayerFocusTarget::Widget;
 	PushRequest.bShowCursor = true;
 
+	AFirstPersonPlayerController* OtherController = ShooterController == this
+		? PartnerController : ShooterController;
+	if (!GameMode || !GameMode->BeginSettingsPause(this, PausingCharacter, OtherController))
+	{
+		return;
+	}
 	PushUILayerToController(this, PushRequest);
 
 	AFirstPersonPlayerController* WaitingController = nullptr;
@@ -1905,7 +2028,6 @@ void AFirstPersonPlayerController::ServerOpenInGameSetting_Implementation()
 		PushUILayerToController(WaitingController, PausePushRequest);
 	}
 
-	UGameplayStatics::SetGamePaused(this, true);
 }
 
 void AFirstPersonPlayerController::ServerCloseInGameSetting_Implementation()
@@ -1913,43 +2035,19 @@ void AFirstPersonPlayerController::ServerCloseInGameSetting_Implementation()
 	AOutlierGameMode* OutlierGameMode = GetWorld()
 		? GetWorld()->GetAuthGameMode<AOutlierGameMode>()
 		: nullptr;
+	// 늦게 도착한 설정 닫기 요청이 GameOver 정지를 해제하지 않도록 소유 흐름을 먼저 확인한다.
+	if (OutlierGameMode && OutlierGameMode->IsGameOverSelectionActive())
+	{
+		return;
+	}
 	if (OutlierGameMode && OutlierGameMode->HandleCheckpointRestartEscape(this))
 	{
 		return;
 	}
 
-	UGameplayStatics::SetGamePaused(this, false);
-
-	AShooterCharacter* ShooterCharacter = nullptr;
-	APartnerCharacter* PartnerCharacter = nullptr;
-	ResolvePairCharactersForController(this, ShooterCharacter, PartnerCharacter);
-
-	const AOutlierPlayerState* RequestingPlayerState = GetPlayerState<AOutlierPlayerState>();
-	AActor* PausingCharacter = GetPawn();
-	if (RequestingPlayerState && RequestingPlayerState->IsShooterPlayer() && ShooterCharacter)
+	if (OutlierGameMode)
 	{
-		PausingCharacter = ShooterCharacter;
-	}
-	else if (RequestingPlayerState && RequestingPlayerState->IsPartnerPlayer() && PartnerCharacter)
-	{
-		PausingCharacter = PartnerCharacter;
-	}
-
-	AFirstPersonPlayerController* ShooterController = ShooterCharacter
-		? Cast<AFirstPersonPlayerController>(ShooterCharacter->GetController())
-		: nullptr;
-	AFirstPersonPlayerController* PartnerController = PartnerCharacter
-		? Cast<AFirstPersonPlayerController>(PartnerCharacter->GetController())
-		: nullptr;
-
-	if (ShooterController)
-	{
-		PopInGameSettingLayerFromController(ShooterController, PausingCharacter);
-	}
-
-	if (PartnerController && PartnerController != ShooterController)
-	{
-		PopInGameSettingLayerFromController(PartnerController, PausingCharacter);
+		OutlierGameMode->EndSettingsPause(this);
 	}
 }
 

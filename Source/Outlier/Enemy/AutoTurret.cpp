@@ -783,9 +783,24 @@ void AAutoTurret::ApplyWaitingForWaveState()
 	CombatState = EEnemyCombatState::NonCombat;
 	bPlayerCurrentlyVisible = false;
 	bHasSharedTargetContact = false;
+	StopImpactRecovery();
+	CurrentAimOffset = FRotator::ZeroRotator;
+	CurrentAimLocation = FVector::ZeroVector;
+	ResetTurretImpactRecovery();
+	ResetWeaponMuzzleSequence();
 	StopMontageOnMesh(GetMesh(), DeployMontage);
 	StopMontageOnMesh(TurretHeadMesh, FireMontage);
 	StopMontageOnMesh(TurretHeadMesh, DeathMontage);
+	if (UAnimInstance* BodyAnimInstance = GetMesh() ? GetMesh()->GetAnimInstance() : nullptr)
+	{
+		if (DeployMontage)
+		{
+			// 몽타주 중단만으로는 전개 포즈가 남을 수 있어 닫힌 시작 프레임을 고정한다.
+			BodyAnimInstance->Montage_Play(DeployMontage);
+			BodyAnimInstance->Montage_SetPosition(DeployMontage, 0.0f);
+			BodyAnimInstance->Montage_Pause(DeployMontage);
+		}
+	}
 
 	// 초기화 순서상 전투 참여 흔적이 먼저 생겼더라도 대기 진입 경로에서 모두 되돌린다.
 	if (HasActorBegunPlay())

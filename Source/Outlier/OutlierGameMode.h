@@ -38,6 +38,37 @@ struct FGameOverPendingServerState
 	FGameOverPendingRequest Request;
 };
 
+// 현재 사망 흐름의 UI 준비와 정지 소유권을 함께 보관한다.
+struct FGameOverWorldPauseState
+{
+	bool Begin(const TArray<APlayerController*>& Controllers);
+	bool NotifyReady(APlayerController* Controller, const FGuid& InRoundId, UWorld* World);
+	bool NotifyUnavailable(APlayerController* Controller, const FGuid& InRoundId);
+	bool AreAllUIsUnavailable() const { return IsActive() && UnavailableControllers.Num() == ExpectedControllers.Num(); }
+	bool HasUnavailableUI() const { return !UnavailableControllers.IsEmpty(); }
+	bool HasReadyUI() const { return !ReadyControllers.IsEmpty(); }
+	bool TryPause(UWorld* World);
+	bool CanSelect(const AController* Controller, const FGuid& InRoundId) const;
+	bool BeginTransition(UWorld* World);
+	bool RestoreSelection();
+	void RemoveDisconnectedController(AController* Controller, UWorld* World);
+	bool IsTransitioning() const { return bTransitioning; }
+	const TSet<TWeakObjectPtr<APlayerController>>& GetControllers() const { return ExpectedControllers; }
+	void Reset(UWorld* World);
+	bool Contains(const AController* Controller) const;
+	bool IsActive() const { return RoundId.IsValid(); }
+	const FGuid& GetRoundId() const { return RoundId; }
+
+private:
+	FGuid RoundId;
+	TSet<TWeakObjectPtr<APlayerController>> ExpectedControllers;
+	TSet<TWeakObjectPtr<APlayerController>> ReadyControllers;
+	TSet<TWeakObjectPtr<APlayerController>> UnavailableControllers;
+	TWeakObjectPtr<APlayerState> PauseOwner;
+	bool bTransitioning = false;
+	bool bPauseAllowed = true;
+};
+
 /**
  *  Simple GameMode for a third person game
  */
@@ -63,11 +94,21 @@ public:
 	void HandlePlayerDeath(AShooterCharacter* Character);
 
 	// StageId에 대응하는 APresetPlayerStart 위치로 페어를 리스폰시킨다 (레벨 리셋 + 업그레이드 노드 플러시 포함).
-	void RequestPresetRespawn(AController* Requester, FName StageId);
+	bool RequestPresetRespawn(AController* Requester, FName StageId);
 	bool RequestGameOverPendingChoice(
 		AFirstPersonPlayerController* Requester,
 		const FGameOverPendingRequest& Request);
-	bool RespondGameOverPending(AFirstPersonPlayerController* Responder, bool bApprove);
+	bool RespondGameOverPending(AFirstPersonPlayerController* Responder,
+		const FGuid& RoundId, const FGuid& ProposalId, bool bApprove);
+	void OnClientGameOverReady(AFirstPersonPlayerController* Controller, const FGuid& RoundId);
+	void OnClientGameOverUnavailable(AFirstPersonPlayerController* Controller, const FGuid& RoundId);
+	void OnClientGameOverPendingUnavailable(AFirstPersonPlayerController* Controller,
+		const FGuid& RoundId, const FGuid& ProposalId);
+	bool IsGameOverSelectionActive() const { return GameOverWorldPause.IsActive(); }
+	void CancelGameOverPendingForDisconnect(AController* Exiting);
+	bool BeginSettingsPause(AFirstPersonPlayerController* Controller, AActor* LayerOwner,
+		AFirstPersonPlayerController* OtherController);
+	void EndSettingsPause(AFirstPersonPlayerController* Controller);
 
 	void StartMatchedPair(
 		AController* FirstController,
@@ -110,12 +151,22 @@ public:
 
 
 private:
-	void CancelGameOverPendingForDisconnect(AController* Exiting);
+	friend class FOutlierGameOverPendingFailureTest;
+	bool BeginGameOverTransition();
+	void RestoreGameOverSelection();
+	void FinishGameOverFlow();
+	void FailGameOverTransition();
+	void ClearSettingsWorldPause();
 	void FinishGameOverPending(const FGameOverPendingServerState& State, bool bApprove);
 	bool ExecuteGameOverSelection(AFirstPersonPlayerController* Requester,
 		AFirstPersonPlayerController* OtherController, const FGameOverPendingRequest& Request);
 	TMap<int32, FGameOverPendingServerState> GameOverPendingByPair;
 	TSet<int32> GameOverActivePairs;
+	FGameOverWorldPauseState GameOverWorldPause;
+	TWeakObjectPtr<APlayerState> SettingsPauseOwner;
+	TWeakObjectPtr<AActor> SettingsPauseLayerOwner;
+	TWeakObjectPtr<AFirstPersonPlayerController> SettingsPauseController;
+	TWeakObjectPtr<AFirstPersonPlayerController> SettingsOtherController;
 
 	UPROPERTY()
 	TMap<TObjectPtr<APlayerController>, TObjectPtr<APawn>> PendingPossessions;
@@ -141,9 +192,10 @@ private:
 	void CompleteServerArenaReload();
 	// Preset/체크포인트 재로드와 즉시 리스폰이 공유하는 위치 기반 RoomTag 복구.
 	void RefreshRoomOverlapAssignments();
+	void ResetRuntimeCombatStateForRespawn();
 	void TryFinishArenaReload();
 	bool StartCheckpointRestart(AFirstPersonPlayerController* Requester,
-		TFunction<void()> BeforeReload = {});
+		TFunction<bool()> BeforeReload = {});
 	void FinishCheckpointRestart();
 	void FinishCheckpointRestartVote(EOutlierCheckpointRestartVoteState Result);
 	void CancelCheckpointRestartVoteForDisconnect(APlayerController* ExitingPlayer);
@@ -211,7 +263,8 @@ protected:
 	virtual void InitGameState() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
-	void RespawnPairAtCheckpoint(AController* Controller);
+	// false는 기존 Pawn을 유지한 사전 실패다. true는 리스폰 또는 복구 불가능한 실패의 종료를 처리했다.
+	bool RespawnPairAtCheckpoint(AController* Controller);
 	bool ResolveCheckpointTransform(AController* Controller, FTransform& OutTransform) const;
 	FString GetPlayerSaveId(AController* Controller) const;
 
@@ -233,7 +286,8 @@ protected:
 		AOutlierPlayerState* PartnerPlayerState,
 		const FTransform& ShooterSpawn,
 		const FTransform& PartnerSpawn,
-		bool bRestoreCheckpointSnapshot = false);
+		bool bRestoreCheckpointSnapshot = false, int32 PresetNodeCount = INDEX_NONE,
+		TFunction<bool()> BeforeRespawn = {});
 
 	AOutlierPlayerState* FindPairPlayerState(int32 PairId, EOutlierPlayerRole PlayerRole) const;
 	AController* GetControllerFromPlayerState(AOutlierPlayerState* PlayerState) const;

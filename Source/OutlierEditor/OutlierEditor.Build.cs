@@ -27,6 +27,6 @@ public class OutlierEditor : ModuleRules
 			"GraphicSettingDebuggerEditor"
 		});
 
-		PrivateDependencyModuleNames.Add("LevelEditor");
+		PrivateDependencyModuleNames.AddRange(new string[] { "LevelEditor", "RDG" });
 	}
 }

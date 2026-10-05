@@ -107,7 +107,7 @@ bool AOutlierCheckpoint::SetActivationConditionSatisfied(
 	{
 		return true;
 	}
-	// 활성화 이전의 접촉은 통과로 세지 않는다. 다음 BeginOverlap부터 새 페어를 누적한다.
+	// 이전 접촉 기록은 버린다. 활성화 순간에도 실제로 겹쳐 있는 플레이어만 새 통과로 반영한다.
 	bActivationConditionSatisfied = bSatisfied;
 	OverlappingPairId = INDEX_NONE;
 	bShooterPassed = false;
@@ -116,6 +116,20 @@ bool AOutlierCheckpoint::SetActivationConditionSatisfied(
 	ForceNetUpdate();
 	UE_LOG(LogTemp, Display, TEXT("[Checkpoint] Activation Id=%s Active=%d Actor=%s"),
 		*CheckpointId.ToString(), bActivationConditionSatisfied ? 1 : 0, *GetNameSafe(this));
+	if (bActivationConditionSatisfied)
+	{
+		// 박스 안에 머물러 있으면 BeginOverlap이 다시 오지 않으므로 활성화 시 한 번만 보정한다.
+		Trigger->UpdateOverlaps();
+		TArray<UPrimitiveComponent*> OverlappingComponents;
+		Trigger->GetOverlappingComponents(OverlappingComponents);
+		for (UPrimitiveComponent* Component : OverlappingComponents)
+		{
+			if (IsValid(Component))
+			{
+				ProcessTriggerOverlap(Component->GetOwner(), Component);
+			}
+		}
+	}
 	return true;
 }
 
@@ -152,6 +166,11 @@ void AOutlierCheckpoint::HandleTriggerBeginOverlap(
 	(void)OtherBodyIndex;
 	(void)bFromSweep;
 	(void)SweepResult;
+	ProcessTriggerOverlap(OtherActor, OtherComp);
+}
+
+void AOutlierCheckpoint::ProcessTriggerOverlap(AActor* OtherActor, UPrimitiveComponent* OtherComp)
+{
 	const APawn* Pawn = Cast<APawn>(OtherActor);
 	if (!HasAuthority() || !Pawn || OtherComp != Pawn->GetRootComponent()
 		|| (!Pawn->IsA<AShooterCharacter>() && !Pawn->IsA<APartnerCharacter>()))

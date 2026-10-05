@@ -14,6 +14,7 @@
 #include "Shooter/ShooterCharacter.h"
 #include "Net/UnrealNetwork.h"
 #include "Engine/DataTable.h"
+#include "Engine/SkeletalMesh.h"
 #include "Interaction/InteractableComponent.h"
 #include "Weapon/WeaponCoreRow.h"
 #include "Weapon/WeaponRangeRow.h"
@@ -643,10 +644,18 @@ void AWeaponBase::AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacter* New
 		{
 			USceneComponent* FirstPersonParent = Partner->GetFirstPersonWeaponRoot();
 			const bool bSocketExists = FirstPersonReferenceMesh->DoesSocketExist(FirstPersonSocketName);
-			if (FirstPersonParent && bSocketExists)
+			USkeletalMesh* ReferenceMeshAsset = FirstPersonReferenceMesh->GetSkeletalMeshAsset();
+			if (FirstPersonParent && bSocketExists && ReferenceMeshAsset)
 			{
-				FirstPersonParent->SetWorldTransform(
-					FirstPersonReferenceMesh->GetSocketTransform(FirstPersonSocketName, RTS_World));
+				// 장착 순간의 자세는 제외하고 기준 포즈와 소켓에 지정한 위치·회전을 유지한다.
+				const APartnerCharacter* Defaults = Partner->GetClass()->GetDefaultObject<APartnerCharacter>();
+				const FTransform SocketReferenceTransform(
+					ReferenceMeshAsset->GetComposedRefPoseMatrix(FirstPersonSocketName));
+				const FTransform CameraRelativeTransform = SocketReferenceTransform
+					* Defaults->GetFirstPersonMesh()->GetRelativeTransform()
+					* Defaults->GetFirstPersonViewModelRoot()->GetRelativeTransform();
+				FirstPersonParent->SetRelativeLocationAndRotation(
+					CameraRelativeTransform.GetLocation(), CameraRelativeTransform.GetRotation());
 			}
 
 			if (FirstPersonParent)
