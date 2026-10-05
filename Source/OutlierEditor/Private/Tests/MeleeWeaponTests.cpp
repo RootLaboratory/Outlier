@@ -480,6 +480,24 @@ bool FOutlierMeleeAttackLifecycleTest::RunTest(const FString& Parameters)
 
 			Shooter->GetCharacterMovement()->SetMovementMode(MOVE_Walking);
 			Shooter->GetCharacterMovement()->Velocity = FVector(600.0f, 0.0f, 0.0f);
+			Shooter->bAllowMeleeAttackWhileSliding = false;
+			Movement->TrySlide();
+			TestTrue(TEXT("Fixture starts sliding"), Shooter->IsSliding());
+			TestFalse(TEXT("Slide blocks melee attack eligibility by default"), InputWeapon->CanAttack());
+			Combat->TryStartAttack();
+			TestFalse(TEXT("Slide blocks combat attack input"), InputWeapon->IsAttacking());
+			InputWeapon->StartAttack();
+			TestFalse(TEXT("Slide also blocks direct server weapon attack"), InputWeapon->IsAttacking());
+			Shooter->bAllowMeleeAttackWhileSliding = true;
+			TestTrue(TEXT("Slide attack toggle enables melee eligibility"), InputWeapon->CanAttack());
+			Combat->TryStartAttack();
+			TestTrue(TEXT("Slide attack toggle permits combat attack without aiming"), InputWeapon->IsAttacking());
+			Combat->CancelMeleeAttack();
+			Movement->StopSlide(ESlideEndReason::ForcedCancel);
+			Shooter->UnCrouch();
+			Shooter->bAllowMeleeAttackWhileSliding = false;
+			TestTrue(TEXT("Melee attack becomes eligible after slide ends"), InputWeapon->CanAttack());
+			Shooter->GetCharacterMovement()->Velocity = FVector(600.0f, 0.0f, 0.0f);
 			Movement->HandleSprintPressed();
 			TestTrue(TEXT("Fixture starts sprinting"), Shooter->IsSprinting());
 			Combat->TryStartAttack();

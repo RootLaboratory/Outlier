@@ -7,33 +7,6 @@ namespace
 {
 constexpr float MinimumTacticalFlightZ = 150.0f;
 
-bool ResolveFloorAdjustedLocation(
-	UWorld& World,
-	const FVector& HorizontalLocation,
-	float FlightHeightOffset,
-	float FloorTraceHalfHeight,
-	FVector& OutLocation)
-{
-	const float TraceHalfHeight = FMath::Max(FloorTraceHalfHeight, 1.0f);
-	FHitResult FloorHit;
-	const bool bFoundFloor = World.LineTraceSingleByChannel(
-		FloorHit,
-		HorizontalLocation + FVector::UpVector * TraceHalfHeight,
-		HorizontalLocation - FVector::UpVector * TraceHalfHeight,
-		ECC_WorldStatic);
-	if (!bFoundFloor)
-	{
-		return false;
-	}
-
-	OutLocation = FVector(
-		HorizontalLocation.X,
-		HorizontalLocation.Y,
-		FMath::Max(
-			FloorHit.ImpactPoint.Z + FlightHeightOffset,
-			MinimumTacticalFlightZ));
-	return true;
-}
 }
 
 FEnemyRequestSearchRingSlotTask::FEnemyRequestSearchRingSlotTask()
@@ -56,9 +29,6 @@ EStateTreeRunStatus FEnemyRequestSearchRingSlotTask::EnterState(
 
 	// 슬롯 요청이 실패해도 기본값인 월드 원점이 후속 이동 Task로 전달되지 않게 한다.
 	InstanceData.Destination = InstanceData.Enemy->GetActorLocation();
-	InstanceData.Destination.Z = FMath::Max(
-		InstanceData.Destination.Z,
-		MinimumTacticalFlightZ);
 	InstanceData.FacingLocation = InstanceData.SearchCenter;
 
 	UEnemyRoomSubsystem* RoomSubsystem =
@@ -142,15 +112,8 @@ EStateTreeRunStatus FEnemySelectHorizontalOrbitLocationTask::EnterState(
 		InstanceData.OrbitCenter.Y + FMath::Sin(TargetAngle) * SafeRadius,
 		InstanceData.OrbitCenter.Z);
 
-	if (!ResolveFloorAdjustedLocation(
-		*Enemy->GetWorld(),
-		HorizontalLocation,
-		InstanceData.FlightHeightOffset,
-		InstanceData.FloorTraceHalfHeight,
-		InstanceData.Destination))
-	{
-		return EStateTreeRunStatus::Failed;
-	}
+	InstanceData.Destination = HorizontalLocation;
+	InstanceData.Destination.Z = Enemy->GetActorLocation().Z;
 
 	InstanceData.FacingLocation = InstanceData.OrbitCenter;
 	return EStateTreeRunStatus::Succeeded;

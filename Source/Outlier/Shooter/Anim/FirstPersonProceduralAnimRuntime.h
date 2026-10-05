@@ -16,6 +16,16 @@ struct OUTLIER_API FFirstPersonProceduralAnimRuntime
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hip")
 	FRotator HipPoseRot = FRotator::ZeroRotator;
 
+	// Offset에는 Alpha를 곱하지 않는다. Hip 뒤의 Transform Bone에서 Alpha를 한 번만 적용한다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Melee Attack")
+	FVector MeleeAttackOffsetLoc = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Melee Attack")
+	FRotator MeleeAttackOffsetRot = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Melee Attack")
+	float MeleeAttackAlpha = 0.0f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite,Category = "Idle")
 	float IdleIntensity = 1.0f;
 
@@ -68,42 +78,12 @@ struct OUTLIER_API FFirstPersonProceduralAnimRuntime
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reload|Left Hand IK")
 	float LeftHandReloadIKAlpha = 0.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Equip")
-	float EquipPoseAlpha = 0.0f;
-
 	// Apply to root after the other FP procedural controls so both hands and the attached weapon move together.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon Switch")
 	FVector WeaponSwitchLowerLoc = FVector::ZeroVector;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon Switch")
 	float WeaponSwitchLowerAlpha = 0.0f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Equip|Left Hand")
-	FVector LeftHandEquipGripOffsetLoc = FVector::ZeroVector;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Equip|Left Hand")
-	FRotator LeftHandEquipGripOffsetRot = FRotator::ZeroRotator;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Equip|Left Hand")
-	FVector LeftUpperArmEquipLoc = FVector::ZeroVector;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Equip|Left Hand")
-	FRotator LeftUpperArmEquipRot = FRotator::ZeroRotator;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Equip|Left Hand")
-	FRotator LeftLowerArmEquipRot = FRotator::ZeroRotator;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Equip|Left Hand IK")
-	FVector LeftHandEquipIKLoc = FVector::ZeroVector;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Equip|Left Hand IK")
-	FRotator LeftHandEquipIKRot = FRotator::ZeroRotator;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Equip|Left Hand IK")
-	FVector LeftHandEquipJointTargetLoc = FVector::ZeroVector;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Equip|Left Hand IK")
-	float LeftHandEquipIKAlpha = 0.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Slide")
 	float SlidePoseAlpha = 0.0f;
@@ -144,7 +124,7 @@ struct OUTLIER_API FFirstPersonProceduralAnimRuntime
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Left Hand")
 	float LeftHandFreeAlpha = 0.0f;
 
-	// Final LeftHand IK(TwoBoneIK hand_l -> ik_hand_l) 전용 alpha. LeftHandIKAlpha + Equip IK alpha.
+	// Final grip IK uses LeftHandIKAlpha; Reload is solved by its own action IK.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Left Hand")
 	float LeftHandFinalIKAlpha = 0.0f;
 

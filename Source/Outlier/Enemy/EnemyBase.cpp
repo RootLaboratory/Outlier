@@ -1358,6 +1358,11 @@ bool AEnemyBase::BeginPossessionProcess(APartnerCharacter* PartnerCharacter)
 	}
 
 	PartnerCharacter->SetEnemyPossessionProtection(true);
+	ConsumeMovementInputVector();
+	if (UCharacterMovementComponent* Movement = GetCharacterMovement())
+	{
+		Movement->StopMovementImmediately();
+	}
 	ForceNetUpdate();
 
 	// Global Sync가 ASC PossessPending 태그를 먼저 읽은 뒤 Pending 상태를 선택하게 한다.

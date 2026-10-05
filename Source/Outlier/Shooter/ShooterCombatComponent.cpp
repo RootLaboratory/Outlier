@@ -1105,9 +1105,13 @@ bool UShooterCombatComponent::CanFireInCurrentState() const
 		return false;
 	}
 
-	if (ShooterCharacter->IsSliding() && !bWantsToAim && !bIsAiming)
+	if (ShooterCharacter->IsSliding())
 	{
-		return false;
+		const bool bIsMelee = ShooterCharacter->GetWeaponType() == EWeaponType::Melee;
+		if (bIsMelee ? !ShooterCharacter->AllowsMeleeAttackWhileSliding() : (!bWantsToAim && !bIsAiming))
+		{
+			return false;
+		}
 	}
 
 	if (bIsReloading)

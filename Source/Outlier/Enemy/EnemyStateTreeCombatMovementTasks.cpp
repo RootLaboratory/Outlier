@@ -205,6 +205,13 @@ void ApplyFlightMovement(
 		return;
 	}
 
+	if (Enemy.IsPossessionInProgress())
+	{
+		Enemy.ConsumeMovementInputVector();
+		Movement->StopMovementImmediately();
+		return;
+	}
+
 	if (Movement->MovementMode != MOVE_Flying)
 	{
 		Movement->SetMovementMode(MOVE_Flying);

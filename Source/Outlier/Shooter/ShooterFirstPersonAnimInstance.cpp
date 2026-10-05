@@ -19,6 +19,7 @@
 #include "Shooter/Anim/ProceduralAnimValues.h"
 #include "Shooter/ShooterAnimInstance.h"
 #include "Weapon/RangedWeaponBase.h"
+#include "Weapon/FirstPickupDiagnostics.h"
 
 namespace
 {
@@ -49,7 +50,7 @@ namespace
 	TAutoConsoleVariable<int32> CVarOutlierFirstPersonDAAxis(
 		TEXT("outlier.FPAnimDAAxis"),
 		0,
-		TEXT("Draws DA axes independently of frame logging. 0=off, 1-4=Equip, 5-6=Reload, 7=Aim pose location, 8=Aim midpoint in, 9=Aim midpoint out, 10=Aim final bone axes/rotation."),
+		TEXT("Draws DA axes independently of frame logging. 0=off, 5-6=Reload, 7=Aim pose location, 8=Aim midpoint in, 9=Aim midpoint out, 10=Aim final bone axes/rotation. 1-4 are retired."),
 		ECVF_Cheat);
 	TAutoConsoleVariable<float> CVarOutlierFirstPersonAxisSize(
 		TEXT("outlier.FPAnimAxisSize"),
@@ -79,7 +80,7 @@ namespace
 	TAutoConsoleVariable<float> CVarOutlierFirstPersonWeaponSwitchBlendDuration(
 		TEXT("outlier.FPAnimWeaponSwitchBlendDuration"),
 		0.15f,
-		TEXT("Seconds to blend first-person Hip, WeaponRoot and right-hand Equip IK runtime offsets after switching firearm DAs. 0 disables the blend."),
+		TEXT("Seconds to blend first-person Hip, WeaponRoot and right-hand IK runtime offsets after switching firearm DAs. 0 disables the blend."),
 		ECVF_Cheat);
 
 	FVector GetPitchCurveVectorValue(const UCurveVector* Curve, const FVector& FallbackValue, float AimPitch, float MinPitch, float MaxPitch)
@@ -285,6 +286,9 @@ void UShooterFirstPersonAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 	if (!CachedShooterCharacter)
 	{
 		Speed = 0.0f;
+		ViewModelProceduralRuntime.MeleeAttackAlpha = 0.0f;
+		ViewModelProceduralRuntime.MeleeAttackOffsetLoc = FVector::ZeroVector;
+		ViewModelProceduralRuntime.MeleeAttackOffsetRot = FRotator::ZeroRotator;
 		Direction = 0.0f;
 		CurrentWeapon = nullptr;
 		PreviousWeapon = nullptr;
@@ -301,7 +305,6 @@ void UShooterFirstPersonAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 		ViewModelWeaponEquipDetailAlpha = 0.0f;
 		ViewModelSprintExitDetailAlpha = 1.0f;
 		ViewModelReloadIKBlendAlpha = 0.0f;
-		ViewModelEquipIKBlendAlpha = 0.0f;
 		ViewModelSlideIKBlendAlpha = 0.0f;
 		SprintExitDetailBlockTimer = 0.0f;
 		bWasSprinting = false;
@@ -312,6 +315,9 @@ void UShooterFirstPersonAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 	UCharacterMovementComponent* CharacterMovement = CachedShooterCharacter->GetCharacterMovement();
 	if (!CharacterMovement)
 	{
+		ViewModelProceduralRuntime.MeleeAttackAlpha = 0.0f;
+		ViewModelProceduralRuntime.MeleeAttackOffsetLoc = FVector::ZeroVector;
+		ViewModelProceduralRuntime.MeleeAttackOffsetRot = FRotator::ZeroRotator;
 		bWeaponSwitchPoseActive = false;
 		Speed = 0.0f;
 		Direction = 0.0f;
@@ -365,6 +371,7 @@ void UShooterFirstPersonAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 
 	if (bWeaponChanged)
 	{
+		ViewModelProceduralRuntime.MeleeAttackAlpha = 0.0f;
 		if (CurrentWeaponType == EWeaponType::Melee)
 		{
 			ViewModelSwayLoc = FVector::ZeroVector;
@@ -421,7 +428,7 @@ void UShooterFirstPersonAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 		CurrentWeaponType == EWeaponType::Pistol;
 	const ECombatState CombatState = CachedShooterCharacter->GetCombatState();
 	const bool bCanUseMeleeDetail = CurrentWeaponType == EWeaponType::Melee &&
-		!bIsDead && !bIsEquipping &&
+		!bIsDead && !bIsEquipping && !bIsSliding &&
 		CombatState != ECombatState::Attack && CombatState != ECombatState::Recovery;
 	const bool bCanUseSharedDetail = bCanUseFirearmProcedural || bCanUseMeleeDetail;
 	const bool bWantsNonSprintDetail = !bIsSprinting && bCanUseSharedDetail;
@@ -475,8 +482,6 @@ void UShooterFirstPersonAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 	const float SlideBlendOutSpeed = WeaponValues ? WeaponValues->SlideBlendOutSpeed : 8.0f;
 	const float ReloadIKBlendInSpeed = WeaponValues ? WeaponValues->LeftHandReloadIKBlendInSpeed : ReloadBlendInSpeed;
 	const float ReloadIKBlendOutSpeed = WeaponValues ? WeaponValues->LeftHandReloadIKBlendOutSpeed : ReloadBlendOutSpeed;
-	const float EquipIKBlendInSpeed = WeaponValues ? WeaponValues->LeftHandEquipIKBlendInSpeed : ReloadBlendInSpeed;
-	const float EquipIKBlendOutSpeed = WeaponValues ? WeaponValues->LeftHandEquipIKBlendOutSpeed : ReloadBlendOutSpeed;
 	const float SlideIKBlendInSpeed = WeaponValues ? WeaponValues->LeftHandSlideIKBlendInSpeed : SlideBlendInSpeed;
 	const float SlideIKBlendOutSpeed = WeaponValues ? WeaponValues->LeftHandSlideIKBlendOutSpeed : SlideBlendOutSpeed;
 	const float ActionProceduralReleaseTime = WeaponValues ? FMath::Max(WeaponValues->LeftHandActionProceduralReleaseTime, 0.0f) : 0.16f;
@@ -484,10 +489,8 @@ void UShooterFirstPersonAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 		bIsReloading &&
 		bCanUseFirearmProcedural &&
 		IsMontageInProceduralActionWindow(CachedShooterCharacter ? CachedShooterCharacter->GetFirstPersonReloadMontage() : nullptr, ActionProceduralReleaseTime);
-	// 장착 표현은 몽타주 재생 시간이 아니라 서버 장착 잠금과 Procedural Switch 상태를 따른다.
-	const bool bEquipProceduralActive = bIsEquipping && bCanUseWeaponPose;
 	
-	// ── 액션 알파 (스프린트/재장전/슬라이드/장착 + 각 IK 블렌드) ─────────
+	// ── 액션 알파 (스프린트/재장전/슬라이드 + 각 IK 블렌드) ─────────────
 	ViewModelSprintAlpha = FMath::FInterpTo(
 		ViewModelSprintAlpha,
 		bIsSprinting ? 1.0f : 0.0f,
@@ -516,18 +519,6 @@ void UShooterFirstPersonAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 		bIsSliding ? SlideBlendInSpeed : SlideBlendOutSpeed
 	);
 
-	ViewModelEquipPoseAlpha = FMath::FInterpTo(
-		ViewModelEquipPoseAlpha,
-		bEquipProceduralActive ? 1.0f : 0.0f,
-		DeltaSeconds,
-		bEquipProceduralActive ? EquipIKBlendInSpeed : EquipIKBlendOutSpeed
-	);
-	ViewModelEquipIKBlendAlpha = FMath::FInterpTo(
-		ViewModelEquipIKBlendAlpha,
-		ViewModelEquipPoseAlpha,
-		DeltaSeconds,
-		ViewModelEquipPoseAlpha > ViewModelEquipIKBlendAlpha ? EquipIKBlendInSpeed : EquipIKBlendOutSpeed
-	);
 	ViewModelSlideIKBlendAlpha = FMath::FInterpTo(
 		ViewModelSlideIKBlendAlpha,
 		(bIsSliding && bCanUseFirearmProcedural) ? 1.0f : 0.0f,
@@ -558,6 +549,12 @@ void UShooterFirstPersonAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 			? NonSprintOutSpeed : NonSprintInSpeed
 	);
 
+	if (CachedShooterCharacter->IsLocallyControlled() && (OutlierFirstPickup::GetMode() & 2) != 0 && CurrentWeapon)
+	{
+		ViewModelWeaponPoseAlpha = 1.0f;
+		ViewModelWeaponEquipDetailAlpha = 1.0f;
+		ViewModelNonSprintProceduralAlpha = bWantsNonSprintDetail ? 1.0f : 0.0f;
+	}
 	const bool bNonSprintProceduralReady =
 		ViewModelNonSprintProceduralAlpha > 0.95f &&
 		ViewModelSprintExitDetailAlpha > 0.95f &&
@@ -784,6 +781,30 @@ void UShooterFirstPersonAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 			0.0f, 0.0f, -CachedShooterCharacter->GetFirstPersonSwitchLowerDistance());
 	}
 	UpdateFirstPersonDiagnostics(DeltaSeconds, bWeaponChanged);
+	if (OutlierFirstPickup::GetMode() != 0 && CachedShooterCharacter->IsLocallyControlled())
+	{
+		if (bWeaponChanged)
+		{
+			FirstPickupDiagnosticFrames = 120;
+		}
+		if (FirstPickupDiagnosticFrames > 0)
+		{
+			--FirstPickupDiagnosticFrames;
+			const USkeletalMeshComponent* Mesh = CurrentWeapon ? CurrentWeapon->GetFirstPersonWeaponMesh() : nullptr;
+			const USkeletalMeshComponent* Arms = GetOwningComponent();
+			UE_LOG(LogTemp, Log, TEXT("[FPFirstPickup][Sample] Frame=%llu Wall=%.6f DtMs=%.3f Mode=%d Weapon=%s Anim=%s Lower=%.4f Pose=%.4f Detail=%.4f Grip=%.4f GripOffset=%s PSOPending=%d Proxy=%d Rendered=%d Hidden=%d ArmsPSOPending=%d ArmsProxy=%d"),
+				GFrameCounter, FPlatformTime::Seconds(), DeltaSeconds * 1000.0f, OutlierFirstPickup::GetMode(),
+				*GetNameSafe(CurrentWeapon), *GetNameSafe(this), CachedShooterCharacter->GetFirstPersonSwitchLowerAlpha(),
+				ViewModelWeaponPoseAlpha, ViewModelNonSprintProceduralAlpha, ViewModelProceduralRuntime.LeftHandIKAlpha,
+				*ViewModelLeftHandGripOffsetLoc.ToCompactString(), Mesh && Mesh->IsPSOPrecaching(),
+				Mesh && Mesh->GetSceneProxy() != nullptr, Mesh && Mesh->WasRecentlyRendered(0.1f), Mesh && Mesh->bHiddenInGame,
+				Arms && Arms->IsPSOPrecaching(), Arms && Arms->GetSceneProxy() != nullptr);
+		}
+	}
+	else
+	{
+		FirstPickupDiagnosticFrames = 0;
+	}
 
 	bWasSprinting = bIsSprinting;
 	bHadWeaponPose = bCanUseWeaponPose;
@@ -958,7 +979,7 @@ void UShooterFirstPersonAnimInstance::TraceFinalizedFirstPersonBones()
 		return;
 	}
 	const bool bTraceEquip = (TraceMode & 1) != 0 &&
-		(bIsEquipping || ViewModelProceduralRuntime.EquipPoseAlpha > 0.005f || ViewModelProceduralRuntime.LeftHandEquipIKAlpha > 0.005f);
+		(bIsEquipping || CachedShooterCharacter->GetFirstPersonSwitchLowerAlpha() > 0.005f);
 	const bool bTraceReload = (TraceMode & 2) != 0 &&
 		(bIsReloading || ViewModelProceduralRuntime.ReloadPoseAlpha > 0.005f || ViewModelProceduralRuntime.LeftHandReloadIKAlpha > 0.005f);
 	const bool bLogFrame = (bTraceEquip || bTraceReload) && BoneTraceFrameCount < 600;
@@ -1069,25 +1090,6 @@ void UShooterFirstPersonAnimInstance::TraceFinalizedFirstPersonBones()
 		FVector RuntimeOffset = FVector::ZeroVector;
 		switch (DAAxisMode)
 		{
-		case 1:
-			TargetBone = TEXT("ik_hand_r"); FieldName = TEXT("RightHandEquipIKLocOffset");
-			RawOffset = Values.RightHandEquipIKLocOffset;
-			RuntimeOffset = ViewModelProceduralRuntime.RightHandIKLocOffset;
-			break;
-		case 2:
-			TargetBone = TEXT("ik_hand_l"); FieldName = TEXT("LeftHandEquipIKLoc");
-			RawOffset = Values.LeftHandEquipIKLoc;
-			RuntimeOffset = ViewModelProceduralRuntime.LeftHandEquipIKLoc;
-			break;
-		case 3:
-			TargetBone = TEXT("upperarm_l"); FieldName = TEXT("LeftUpperArmEquipLoc");
-			RawOffset = Values.LeftUpperArmEquipLoc;
-			break;
-		case 4:
-			TargetBone = TEXT("hand_l"); FieldName = TEXT("LeftHandEquipGripOffsetLoc");
-			RawOffset = Values.LeftHandEquipGripOffsetLoc;
-			RuntimeOffset = ViewModelProceduralRuntime.LeftHandEquipGripOffsetLoc;
-			break;
 		case 5:
 			TargetBone = TEXT("ik_hand_r"); FieldName = TEXT("RightHandReloadIKLocOffset");
 			RawOffset = Values.RightHandReloadIKLocOffset;
@@ -1140,11 +1142,8 @@ void UShooterFirstPersonAnimInstance::TraceFinalizedFirstPersonBones()
 				{
 					DrawDebugDirectionalArrow(World, Origin, Origin + ArmsWorld.TransformVectorNoScale(RawOffset),
 						5.0f, FColor::White, false, 0.0f, SDPG_Foreground, 3.0f);
-					if (DAAxisMode != 3)
-					{
-						DrawDebugDirectionalArrow(World, Origin, Origin + ArmsWorld.TransformVectorNoScale(RuntimeOffset),
-							5.0f, FColor::Yellow, false, 0.0f, SDPG_Foreground, 3.0f);
-					}
+					DrawDebugDirectionalArrow(World, Origin, Origin + ArmsWorld.TransformVectorNoScale(RuntimeOffset),
+						5.0f, FColor::Yellow, false, 0.0f, SDPG_Foreground, 3.0f);
 				}
 				const FString ValueText = DAAxisMode == 10
 					? FString::Printf(TEXT("AimPoseRot Bone=%s DA=%s Runtime=%s AimAlpha=%.2f (final axes)"),
@@ -1154,7 +1153,7 @@ void UShooterFirstPersonAnimInstance::TraceFinalizedFirstPersonBones()
 						ViewModelProceduralRuntime.AimAlpha)
 					: FString::Printf(TEXT("%s Bone=%s DA=%s Runtime=%s AimAlpha=%.2f"), *FieldName.ToString(),
 						*TargetBone.ToString(),
-						*RawOffset.ToCompactString(), DAAxisMode == 3 ? TEXT("mixed with base pose") : *RuntimeOffset.ToCompactString(),
+						*RawOffset.ToCompactString(), *RuntimeOffset.ToCompactString(),
 						ViewModelProceduralRuntime.AimAlpha);
 				DrawDebugString(World, Origin + FVector(0.0f, 0.0f, 5.0f),
 					ValueText,
@@ -1202,7 +1201,7 @@ void UShooterFirstPersonAnimInstance::TraceFinalizedFirstPersonBones()
 	++BoneTraceFrameCount;
 
 	UE_LOG(LogOutlier, Log,
-		TEXT("[FPBoneTrace] Frame=%llu Sample=%d Anim=%s Class=%s Mesh=%s Master=%d ForceOff=%d Effective=%d Action=%s Weapon=%s MontageTime=%.3f EquipState=%d ReloadState=%d PoseEquip=%.3f IKEquip=%.3f PoseReload=%.3f IKReload=%.3f WeaponPose=%.3f RightOffset=%s LeftEquipOffset=%s HandR=%s IkHandR=%s HandL=%s IkHandL=%s IkHandGun=%s WeaponOrigin=%s Grip=%s RightBoneGap=%.2f LeftGripGap=%.2f"),
+		TEXT("[FPBoneTrace] Frame=%llu Sample=%d Anim=%s Class=%s Mesh=%s Master=%d ForceOff=%d Effective=%d Action=%s Weapon=%s MontageTime=%.3f EquipState=%d ReloadState=%d SwitchLower=%.3f GripIK=%.3f FinalIK=%.3f FreeHand=%.3f PoseReload=%.3f IKReload=%.3f WeaponPose=%.3f RightOffset=%s HandR=%s IkHandR=%s HandL=%s IkHandL=%s IkHandGun=%s WeaponOrigin=%s Grip=%s RightBoneGap=%.2f LeftGripGap=%.2f"),
 		static_cast<uint64>(GFrameCounter), BoneTraceFrameCount,
 		*GetNameSafe(this), *GetNameSafe(GetClass()), *GetNameSafe(ArmsMesh),
 		bEnableProceduralAnimation ? 1 : 0,
@@ -1210,11 +1209,11 @@ void UShooterFirstPersonAnimInstance::TraceFinalizedFirstPersonBones()
 		IsFirstPersonProceduralEnabled(bEnableProceduralAnimation) ? 1 : 0,
 		bTraceEquip ? TEXT("Equip") : TEXT("Reload"),
 		*GetNameSafe(CurrentWeapon), MontageTime, bIsEquipping ? 1 : 0, bIsReloading ? 1 : 0,
-		ViewModelProceduralRuntime.EquipPoseAlpha, ViewModelProceduralRuntime.LeftHandEquipIKAlpha,
+		CachedShooterCharacter->GetFirstPersonSwitchLowerAlpha(), ViewModelProceduralRuntime.LeftHandIKAlpha,
+		ViewModelProceduralRuntime.LeftHandFinalIKAlpha, ViewModelProceduralRuntime.LeftHandFreeAlpha,
 		ViewModelProceduralRuntime.ReloadPoseAlpha, ViewModelProceduralRuntime.LeftHandReloadIKAlpha,
 		ViewModelProceduralRuntime.WeaponPoseAlpha,
 		*ViewModelProceduralRuntime.RightHandIKLocOffset.ToCompactString(),
-		*ViewModelProceduralRuntime.LeftHandEquipIKLoc.ToCompactString(),
 		bHasHandR ? *HandR.ToCompactString() : TEXT("NA"),
 		bHasIkHandR ? *IkHandR.ToCompactString() : TEXT("NA"),
 		bHasHandL ? *HandL.ToCompactString() : TEXT("NA"),
@@ -1317,6 +1316,9 @@ void UShooterFirstPersonAnimInstance::UpdateViewModelRecoil(float DeltaSeconds)
 void UShooterFirstPersonAnimInstance::HandleOwnerDeath()
 {
 	bIsDead = true;
+	ViewModelProceduralRuntime.MeleeAttackAlpha = 0.0f;
+	ViewModelProceduralRuntime.MeleeAttackOffsetLoc = FVector::ZeroVector;
+	ViewModelProceduralRuntime.MeleeAttackOffsetRot = FRotator::ZeroRotator;
 }
 
 bool UShooterFirstPersonAnimInstance::IsMontageInProceduralActionWindow(const UAnimMontage* Montage, float EarlyReleaseTime) const
@@ -1467,8 +1469,6 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralValues(float De
 		ViewModelReloadPoseAlpha = 0.0f;
 		ViewModelReloadIKBlendAlpha = 0.0f;
 		ViewModelFireIKAlpha = 0.0f;
-		ViewModelEquipPoseAlpha = 0.0f;
-		ViewModelEquipIKBlendAlpha = 0.0f;
 		ViewModelSlidePoseAlpha = 0.0f;
 		ViewModelSlideIKBlendAlpha = 0.0f;
 		ViewModelSprintExitDetailAlpha = 1.0f;
@@ -1667,12 +1667,10 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralValues(float De
 	);
 	const float LeftHandWeaponDetailAlpha = GetEasedAlpha(LeftHandRawWeaponDetailAlpha, WeaponValues.WeaponDetailAlphaEaseStrength);
 	const float LeftHandFirearmAlpha = bUseFirearmProcedural ? LeftHandWeaponDetailAlpha : 0.0f;
-	const float LeftHandEquipIKBlendAlpha = FMath::Clamp(ViewModelEquipIKBlendAlpha, 0.0f, 1.0f);
 	const float LeftHandSlideIKBlendAlpha = FMath::Clamp(ViewModelSlideIKBlendAlpha, 0.0f, 1.0f);
 	const float LeftHandFirePoseAlpha = FMath::Clamp(ViewModelFireIKAlpha, 0.0f, 1.0f);
 
 	const float LeftHandActionIKAlphaScale =
-		FMath::Lerp(1.0f, FMath::Clamp(WeaponValues.LeftHandEquipIKAlphaScale, 0.0f, 1.0f), LeftHandEquipIKBlendAlpha) *
 		FMath::Lerp(1.0f, FMath::Clamp(WeaponValues.LeftHandSlideIKAlphaScale, 0.0f, 1.0f), LeftHandSlideIKBlendAlpha) *
 		FMath::Lerp(1.0f, FMath::Clamp(WeaponValues.LeftHandFireIKAlphaScale, 0.0f, 1.0f), LeftHandFirePoseAlpha);
 	const float LeftHandSprintAnimMultiplier = FMath::Max(WeaponValues.LeftHandSprintAnimMultiplier, 0.0f);
@@ -1742,7 +1740,7 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralValues(float De
 				const FQuat SocketLocalQuat = SocketLocalRot.Quaternion();
 				const FVector BaseGripSocketLocRaw =
 					SocketLocalQuat.RotateVector(WeaponValues.LeftHandGripSocketLocOffset);
-				const float ActionPoseAlpha = FMath::Clamp(FMath::Max(ViewModelReloadPoseAlpha, ViewModelEquipPoseAlpha), 0.0f, 1.0f);
+				const float ActionPoseAlpha = FMath::Clamp(FMath::Max(ViewModelReloadPoseAlpha, bIsEquipping ? 1.0f : 0.0f), 0.0f, 1.0f);
 				const float WallActionLeftHandScale = FMath::Lerp(
 					1.0f,
 					FMath::Clamp(WeaponValues.WallActionLeftHandScale, 0.0f, 1.0f),
@@ -1799,7 +1797,7 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralValues(float De
 	ViewModelLeftHandIKLoc = FVector::ZeroVector;
 	ViewModelLeftHandIKRot = FRotator::ZeroRotator;
 	ViewModelLeftHandIKAlpha = TargetLeftHandIKAlpha;
-	const float ActionIKBlendAlphaForTarget = FMath::Clamp(FMath::Max(ViewModelReloadIKBlendAlpha, ViewModelEquipIKBlendAlpha), 0.0f, 1.0f);
+	const float ActionIKBlendAlphaForTarget = FMath::Clamp(ViewModelReloadIKBlendAlpha, 0.0f, 1.0f);
 	const bool bReturningFromActionIK =
 		(ActionIKBlendAlphaForTarget > KINDA_SMALL_NUMBER || LeftHandActionReturnTimer > 0.0f);
 	if (PreviousLeftHandActionIKAlpha > KINDA_SMALL_NUMBER && ActionIKBlendAlphaForTarget <= KINDA_SMALL_NUMBER)
@@ -1822,7 +1820,9 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralValues(float De
 		FMath::Max(WallHardStopAlpha, WallHardStopSafetyAlpha)
 	);
 	const bool bWallGripSnap = WallGripStageAlpha > KINDA_SMALL_NUMBER && !bReturningFromActionIK;
-	if (!bLeftHandIKSocketValid || LeftHandIKTargetBlendSpeed <= 0.0f || bWallGripSnap)
+	const bool bDiagnosticGripSnap = CachedShooterCharacter && CachedShooterCharacter->IsLocallyControlled() &&
+		(OutlierFirstPickup::GetMode() & 4) != 0;
+	if (!bLeftHandIKSocketValid || LeftHandIKTargetBlendSpeed <= 0.0f || bWallGripSnap || bDiagnosticGripSnap)
 	{
 		ViewModelLeftHandGripOffsetLoc = TargetLeftHandGripOffsetLoc;
 		ViewModelLeftHandGripOffsetRot = TargetLeftHandGripOffsetRot;
@@ -1864,6 +1864,26 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralRuntime(float D
 	}
 
 	const FWeaponValues& WeaponValues = CurrentProceduralValues->WeaponValues;
+	const bool bCanUseMeleeAttackOffset = CachedShooterCharacter &&
+		CurrentWeaponType == EWeaponType::Melee && !bIsDead && !bIsEquipping &&
+		bEnableProceduralAction;
+	const ECombatState MeleeCombatState = CachedShooterCharacter
+		? CachedShooterCharacter->GetCombatState() : ECombatState::Idle;
+	// 타격 Notify 구간만이 아니라 준비/복귀를 포함한다. 취소되거나 몽타주가 끝나면 보정을 해제한다.
+	const bool bMeleeAttackOffsetActive = bCanUseMeleeAttackOffset &&
+		(MeleeCombatState == ECombatState::Attack || MeleeCombatState == ECombatState::Recovery) &&
+		IsMontageInProceduralActionWindow(CachedShooterCharacter->GetFirstPersonMeleeAttackMontage(), 0.0f);
+	const float MeleeAttackBlendSpeed = bMeleeAttackOffsetActive
+		? WeaponValues.MeleeAttackBlendInSpeed : WeaponValues.MeleeAttackBlendOutSpeed;
+	ViewModelProceduralRuntime.MeleeAttackAlpha = bCanUseMeleeAttackOffset
+		? FMath::FInterpTo(ViewModelProceduralRuntime.MeleeAttackAlpha,
+			bMeleeAttackOffsetActive ? 1.0f : 0.0f, DeltaSeconds, FMath::Max(MeleeAttackBlendSpeed, 0.0f))
+		: 0.0f;
+	ViewModelProceduralRuntime.MeleeAttackOffsetLoc = bCanUseMeleeAttackOffset
+		? WeaponValues.MeleeAttackOffsetLoc : FVector::ZeroVector;
+	ViewModelProceduralRuntime.MeleeAttackOffsetRot = bCanUseMeleeAttackOffset
+		? WeaponValues.MeleeAttackOffsetRot : FRotator::ZeroRotator;
+
 	const float RawSprintAlphaForAim = bEnableProceduralSprint
 		? GetEasedAlpha(ViewModelSprintAlpha, WeaponValues.SprintAlphaEaseStrength)
 		: 0.0f;
@@ -1894,7 +1914,8 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralRuntime(float D
 	ViewModelProceduralRuntime.AimAlpha = RuntimeAimAlpha;
 	ViewModelProceduralRuntime.ReloadAimAlpha = RuntimeReloadAimAlpha;
 
-	ViewModelProceduralRuntime.IdleIntensity = bEnableProceduralIdle ? ViewModelIdleIntensity : 0.0f;
+	const bool bSuppressMeleeSlideDetail = CurrentWeaponType == EWeaponType::Melee && bIsSliding;
+	ViewModelProceduralRuntime.IdleIntensity = bEnableProceduralIdle && !bSuppressMeleeSlideDetail ? ViewModelIdleIntensity : 0.0f;
 	ViewModelProceduralRuntime.LeanRot = bEnableProceduralMovement ? ViewModelLeanRot : FRotator::ZeroRotator;
 	ViewModelProceduralRuntime.LeanAlpha = bEnableProceduralMovement ? ViewModelLeanAlpha : 0.0f;
 
@@ -1920,17 +1941,15 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralRuntime(float D
 	const float FirearmAlpha = bUseFirearmProcedural ? WeaponDetailAlpha : 0.0f;
 	const float SharedWeaponAlpha = (bUseFirearmProcedural || bUseMeleeProcedural) ? WeaponDetailAlpha : 0.0f;
 	const float FirearmMinorProceduralAlpha = FirearmAlpha * NonSprintProceduralAlpha;
-	const float SharedMinorProceduralAlpha = SharedWeaponAlpha * NonSprintProceduralAlpha;
+	const float SharedMinorProceduralAlpha = bSuppressMeleeSlideDetail ? 0.0f : SharedWeaponAlpha * NonSprintProceduralAlpha;
 	const float MeleeMinorProceduralAlpha = bUseMeleeProcedural ? SharedMinorProceduralAlpha : 0.0f;
 	const float RawSprintAlpha = RawSprintAlphaForAim;
 	const float ReloadPoseAlpha = bEnableProceduralAction ? FMath::Clamp(ViewModelReloadPoseAlpha, 0.0f, 1.0f) : 0.0f;
 	const float ReloadCrossfadeAlpha = ReloadPoseAlpha;
-	const float EquipPoseAlpha = bEnableProceduralAction ? FMath::Clamp(ViewModelEquipPoseAlpha, 0.0f, 1.0f) : 0.0f;
-	const float EquipCrossfadeAlpha = EquipPoseAlpha;
 	const float ReloadIKCrossfadeAlpha = bEnableProceduralAction ? FMath::Clamp(ViewModelReloadIKBlendAlpha, 0.0f, 1.0f) : 0.0f;
-	const float EquipIKCrossfadeAlpha = bEnableProceduralAction ? FMath::Clamp(ViewModelEquipIKBlendAlpha, 0.0f, 1.0f) : 0.0f;
-	const float NonActionCrossfadeAlpha = 1.0f - FMath::Clamp(FMath::Max(ReloadIKCrossfadeAlpha, EquipIKCrossfadeAlpha), 0.0f, 1.0f);
-	const float WallActionAlpha = FMath::Clamp(FMath::Max(ReloadCrossfadeAlpha, EquipCrossfadeAlpha), 0.0f, 1.0f);
+	const float NonActionCrossfadeAlpha = 1.0f - ReloadIKCrossfadeAlpha;
+	const float WallActionAlpha = FMath::Clamp(FMath::Max(ReloadCrossfadeAlpha,
+		bEnableProceduralAction && bIsEquipping ? 1.0f : 0.0f), 0.0f, 1.0f);
 	const float WallActionPoseScale = FMath::Lerp(
 		1.0f,
 		FMath::Clamp(WeaponValues.WallActionPoseScale, 0.0f, 1.0f),
@@ -2044,11 +2063,9 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralRuntime(float D
 	ViewModelProceduralRuntime.WeaponRootRotOffset = RuntimeWeaponRootRotOffset;
 
 	ViewModelProceduralRuntime.RightHandIKLocOffset =
-		(WeaponValues.RightHandReloadIKLocOffset * ReloadCrossfadeAlpha) +
-		(WeaponValues.RightHandEquipIKLocOffset * EquipCrossfadeAlpha);
+		WeaponValues.RightHandReloadIKLocOffset * ReloadCrossfadeAlpha;
 	ViewModelProceduralRuntime.RightHandIKRotOffset =
-		(WeaponValues.RightHandReloadIKRotOffset * ReloadCrossfadeAlpha) +
-		(WeaponValues.RightHandEquipIKRotOffset * EquipCrossfadeAlpha);
+		WeaponValues.RightHandReloadIKRotOffset * ReloadCrossfadeAlpha;
 	ViewModelProceduralRuntime.SprintPoseLoc = bEnableProceduralSprint ? ViewModelSprintPoseLoc : FVector::ZeroVector;
 	ViewModelProceduralRuntime.SprintPoseRot = bEnableProceduralSprint ? ViewModelSprintPoseRot : FRotator::ZeroRotator;
 	ViewModelProceduralRuntime.SprintAlpha = RuntimeSprintAlpha;
@@ -2104,20 +2121,13 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralRuntime(float D
 		PreviousLeftHandActionIKAlpha = 0.0f;
 		LeftHandActionReturnTimer = 0.0f;
 	}
-	const float LeftHandActionIKAlpha = FMath::Clamp(FMath::Max(ReloadIKCrossfadeAlpha, EquipIKCrossfadeAlpha), 0.0f, 1.0f);
+	const float LeftHandActionIKAlpha = ReloadIKCrossfadeAlpha;
 	const FVector ReloadActionGripOffsetLoc = WeaponValues.LeftHandReloadGripOffsetLoc + WallActionHandFollowLoc;
 	const FRotator ReloadActionGripOffsetRot = WeaponValues.LeftHandReloadGripOffsetRot + WallActionHandFollowRot;
-	const FVector EquipActionGripOffsetLoc = WeaponValues.LeftHandEquipGripOffsetLoc + WallActionHandFollowLoc;
-	const FRotator EquipActionGripOffsetRot = WeaponValues.LeftHandEquipGripOffsetRot + WallActionHandFollowRot;
-	const float ActionGripWeight = ReloadIKCrossfadeAlpha + EquipIKCrossfadeAlpha;
-	if (ActionGripWeight > KINDA_SMALL_NUMBER)
+	if (ReloadIKCrossfadeAlpha > KINDA_SMALL_NUMBER)
 	{
-		LastLeftHandActionGripOffsetLoc =
-			((ReloadActionGripOffsetLoc * ReloadIKCrossfadeAlpha) + (EquipActionGripOffsetLoc * EquipIKCrossfadeAlpha)) /
-			ActionGripWeight;
-		LastLeftHandActionGripOffsetRot =
-			((ReloadActionGripOffsetRot * ReloadIKCrossfadeAlpha) + (EquipActionGripOffsetRot * EquipIKCrossfadeAlpha)) *
-			(1.0f / ActionGripWeight);
+		LastLeftHandActionGripOffsetLoc = ReloadActionGripOffsetLoc;
+		LastLeftHandActionGripOffsetRot = ReloadActionGripOffsetRot;
 	}
 	if (PreviousLeftHandActionIKAlpha > KINDA_SMALL_NUMBER && LeftHandActionIKAlpha <= KINDA_SMALL_NUMBER)
 	{
@@ -2191,10 +2201,6 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralRuntime(float D
 		ReloadActionGripOffsetLoc;
 	ViewModelProceduralRuntime.LeftHandReloadGripOffsetRot =
 		ReloadActionGripOffsetRot;
-	ViewModelProceduralRuntime.LeftHandEquipGripOffsetLoc =
-		EquipActionGripOffsetLoc;
-	ViewModelProceduralRuntime.LeftHandEquipGripOffsetRot =
-		EquipActionGripOffsetRot;
 	const float RuntimeLeftHandIKAlpha = bUseFirearmProcedural && bEnableProceduralLeftHandIK
 		? ViewModelLeftHandIKAlpha * NonActionCrossfadeAlpha
 		: 0.0f;
@@ -2204,14 +2210,6 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralRuntime(float D
 	const float RuntimeLeftHandReloadArmAlpha = bUseFirearmProcedural && bEnableProceduralLeftHandIK && bEnableProceduralAction
 		? FMath::Clamp(WeaponValues.LeftHandReloadArmAlpha, 0.0f, 1.0f) * ReloadCrossfadeAlpha
 		: 0.0f;
-	const float RuntimeLeftHandEquipIKAlpha = bUseFirearmProcedural && bEnableProceduralLeftHandIK && bEnableProceduralAction
-		? FMath::Clamp(WeaponValues.LeftHandEquipIKAlpha, 0.0f, 1.0f) * EquipIKCrossfadeAlpha
-		: 0.0f;
-	const float RuntimeLeftHandEquipArmAlpha = bUseFirearmProcedural && bEnableProceduralLeftHandIK && bEnableProceduralAction
-		? FMath::Clamp(WeaponValues.LeftHandEquipArmAlpha, 0.0f, 1.0f) * EquipCrossfadeAlpha
-		: 0.0f;
-	// Equip 중에는 hand_l -> ik_hand_l 복사(LeftHand Free)를 유지해 ik_hand_l(ik_hand_gun 자식)이
-	// 몽타주 왼손을 총 기준으로 들고, ik_hand_gun의 절차적 이동(HipPose 등)을 함께 따라가게 한다.
 	const float RuntimeLeftHandTargetIKAlpha = FMath::Clamp(
 		RuntimeLeftHandIKAlpha + RuntimeLeftHandReloadIKAlpha,
 		0.0f,
@@ -2221,10 +2219,7 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralRuntime(float D
 	ViewModelProceduralRuntime.LeftHandFreeAlpha = bUseFirearmProcedural && bEnableProceduralLeftHandIK
 		? (1.0f - RuntimeLeftHandTargetIKAlpha)
 		: 1.0f;
-	// 최종 왼손 IK(hand_l -> ik_hand_l) 전용. Equip 중 1로 유지하고, 끝나면 LeftHandIKAlpha(그립 스냅)로 넘어간다.
-	ViewModelProceduralRuntime.LeftHandFinalIKAlpha = bUseFirearmProcedural && bEnableProceduralLeftHandIK
-		? FMath::Clamp(RuntimeLeftHandIKAlpha + RuntimeLeftHandEquipIKAlpha, 0.0f, 1.0f)
-		: 0.0f;
+	ViewModelProceduralRuntime.LeftHandFinalIKAlpha = RuntimeLeftHandIKAlpha;
 	const FVector RuntimeLeftHandJointTargetLoc =
 		ViewModelLeftHandJointTargetLoc +
 		(WeaponValues.LeftHandSprintJointTargetLoc * RuntimeSprintAlpha) +
@@ -2242,15 +2237,6 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralRuntime(float D
 		WallActionArmFollowLoc +
 		(WeaponValues.LeftHandReloadJointTargetLoc * RuntimeLeftHandReloadArmAlpha);
 	ViewModelProceduralRuntime.LeftHandReloadIKAlpha = RuntimeLeftHandReloadIKAlpha;
-	ViewModelProceduralRuntime.LeftHandEquipIKLoc =
-		(WeaponValues.LeftHandEquipIKLoc + WallActionHandFollowLoc) * EquipIKCrossfadeAlpha;
-	ViewModelProceduralRuntime.LeftHandEquipIKRot =
-		(WeaponValues.LeftHandEquipIKRot + WallActionHandFollowRot) * EquipIKCrossfadeAlpha;
-	ViewModelProceduralRuntime.LeftHandEquipJointTargetLoc =
-		ViewModelStandLeftHandJointTargetLoc +
-		WallActionArmFollowLoc +
-		(WeaponValues.LeftHandEquipJointTargetLoc * RuntimeLeftHandEquipArmAlpha);
-	ViewModelProceduralRuntime.LeftHandEquipIKAlpha = RuntimeLeftHandEquipIKAlpha;
 	ViewModelProceduralRuntime.LeftUpperArmPitchLoc =
 		ViewModelLeftUpperArmPitchLoc +
 		(WeaponValues.LeftUpperArmSprintLoc * RuntimeSprintAlpha) +
@@ -2284,20 +2270,6 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralRuntime(float D
 		ViewModelStandLeftLowerArmPitchRot + WeaponValues.LeftLowerArmReloadRot,
 		RuntimeLeftHandReloadArmAlpha
 	);
-	ViewModelProceduralRuntime.LeftUpperArmEquipLoc =
-		ViewModelStandLeftUpperArmPitchLoc +
-		WallActionArmFollowLoc +
-		(WeaponValues.LeftUpperArmEquipLoc * RuntimeLeftHandEquipArmAlpha);
-	ViewModelProceduralRuntime.LeftUpperArmEquipRot = BlendRotatorOffset(
-		ViewModelStandLeftUpperArmPitchRot + WallActionArmFollowRot,
-		ViewModelStandLeftUpperArmPitchRot + WallActionArmFollowRot + WeaponValues.LeftUpperArmEquipRot,
-		RuntimeLeftHandEquipArmAlpha
-	);
-	ViewModelProceduralRuntime.LeftLowerArmEquipRot = BlendRotatorOffset(
-		ViewModelStandLeftLowerArmPitchRot,
-		ViewModelStandLeftLowerArmPitchRot + WeaponValues.LeftLowerArmEquipRot,
-		RuntimeLeftHandEquipArmAlpha
-	);
 
 	// 재장전 시 팔을 앞/아래로 밀어 카메라 클리핑 방지 (reload 알파로 자동 페이드인/아웃)
 	ViewModelProceduralRuntime.ReloadPushLoc = bEnableProceduralAction ? WeaponValues.ReloadPushLoc : FVector::ZeroVector;
@@ -2317,7 +2289,6 @@ void UShooterFirstPersonAnimInstance::UpdateFirstPersonProceduralRuntime(float D
 		? ViewModelCurrentStrafeWalkRot * NonSprintMovementProceduralAlpha
 		: FRotator::ZeroRotator;
 	ViewModelProceduralRuntime.ReloadPoseAlpha = FirearmAlpha * ReloadCrossfadeAlpha;
-	ViewModelProceduralRuntime.EquipPoseAlpha = SharedWeaponAlpha * EquipPoseAlpha;
 	ViewModelProceduralRuntime.SlidePoseAlpha = FirearmAlpha * SlidePoseAlpha;
 	ViewModelProceduralRuntime.RecoilLoc = RuntimeRecoilLoc;
 	ViewModelProceduralRuntime.RecoilRot = RuntimeRecoilRot;
@@ -3070,7 +3041,7 @@ void UShooterFirstPersonAnimInstance::UpdateWallOffset(float DeltaSeconds, const
 	const float EasedHardStopAlpha = FMath::InterpEaseOut(0.0f, 1.0f, WallHardStopAlpha, 2.0f);
 	const float EasedHardStopSafetyAlpha = FMath::InterpEaseOut(0.0f, 1.0f, WallHardStopSafetyAlpha, 2.0f);
 	const float EasedFinalHardStopAlpha = FMath::Max(EasedHardStopAlpha, EasedHardStopSafetyAlpha);
-	const float ActionWallAlpha = FMath::Clamp(FMath::Max(ViewModelReloadPoseAlpha, ViewModelEquipPoseAlpha), 0.0f, 1.0f);
+	const float ActionWallAlpha = FMath::Clamp(FMath::Max(ViewModelReloadPoseAlpha, bIsEquipping ? 1.0f : 0.0f), 0.0f, 1.0f);
 	const float ActionWallOffsetScale = FMath::Lerp(
 		1.0f,
 		FMath::Clamp(WeaponValues->WallActionOffsetScale, 0.0f, 1.0f),

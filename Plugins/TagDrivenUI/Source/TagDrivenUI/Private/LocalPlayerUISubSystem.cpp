@@ -195,6 +195,7 @@ void ULocalPlayerUISubSystem::SyncRegisteredModule(UEventDrivenUI* InModule)
 	{
 		AmmoUI->SetAmmoState(CachedAmmoCount, CachedMaxAmmo);
 		AmmoUI->SetWeaponOverchargeActive(bCachedWeaponOvercharge);
+		AmmoUI->SetInfiniteAmmoDisplayActive(bCachedInfiniteAmmoDisplay);
 	}
 }
 
@@ -224,6 +225,16 @@ void ULocalPlayerUISubSystem::OnRep_WeaponOverchargeChanged(bool bActive)
 	if (UAmmoUI* AmmoUI = Cast<UAmmoUI>(GetModule(TagDrivenUITags::Shooter::Ammo())))
 	{
 		AmmoUI->SetWeaponOverchargeActive(bActive);
+	}
+}
+
+void ULocalPlayerUISubSystem::OnRep_InfiniteAmmoDisplayChanged(bool bActive)
+{
+	bCachedInfiniteAmmoDisplay = bActive;
+
+	if (UAmmoUI* AmmoUI = Cast<UAmmoUI>(GetModule(TagDrivenUITags::Shooter::Ammo())))
+	{
+		AmmoUI->SetInfiniteAmmoDisplayActive(bActive);
 	}
 }
 

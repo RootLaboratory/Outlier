@@ -39,6 +39,7 @@
 #include "ShooterMovementComponent.h"
 #include "LocalPlayerPostProcessSubsystem.h"
 #include "Weapon/WeaponBase.h"
+#include "Weapon/FirstPickupDiagnostics.h"
 #include "Weapon/RangedWeaponBase.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
@@ -1163,8 +1164,13 @@ void AShooterCharacter::RefreshShooterAmmoUI()
 		return;
 	}
 
+	const bool bSuitAcquired = HasAcquiredSuit();
 	const ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(CurrentWeapon);
-	const bool bShowAmmo = HasAcquiredSuit() && RangedWeapon != nullptr;
+	const bool bShowAmmo = bSuitAcquired && RangedWeapon != nullptr;
+	const bool bShowMeleeInfiniteAmmo = bSuitAcquired
+		&& CurrentWeapon
+		&& CurrentWeapon->GetWeaponType() == EWeaponType::Melee;
+	UISubsystem->OnRep_InfiniteAmmoDisplayChanged(bShowMeleeInfiniteAmmo);
 	UISubsystem->OnRep_AmmoCountChanged(
 		bShowAmmo ? RangedWeapon->GetCurrentAmmo() : 0,
 		bShowAmmo ? RangedWeapon->GetMagazineSize() : 0);
@@ -3083,6 +3089,7 @@ FName AShooterCharacter::GetThirdPersonSwitchPairRaiseSectionName(
 
 void AShooterCharacter::PlayThirdPersonSwitchPhase(EWeaponType WeaponType, FName Phase, FName SectionOverride)
 {
+	OutlierFirstPickup::FScope Scope(TEXT("ThirdPersonSwitchMontage"), this);
 	static const FName LowerPhase(TEXT("Lower"));
 	static const FName RaisePhase(TEXT("Raise"));
 	UAnimMontage* SwitchMontage = GetThirdPersonSwitchMontage();
@@ -3499,11 +3506,11 @@ void AShooterCharacter::BeginProceduralEquipRaise(AWeaponBase* ExpectedWeapon)
 	}
 	if (IsLocallyControlled())
 	{
-		StartLocalProceduralEquipRaise(ExpectedWeapon);
+		StartLocalProceduralEquipRaise(ExpectedWeapon, CurrentWeapon);
 	}
 	else if (HasAuthority())
 	{
-		ClientBeginProceduralEquipRaise(ExpectedWeapon);
+		ClientBeginProceduralEquipRaise(ExpectedWeapon, CurrentWeapon);
 	}
 }
 
@@ -3513,18 +3520,22 @@ void AShooterCharacter::StartLocalProceduralWeaponSwitch(int32 SwitchId)
 	WeaponAtSwitchStart = CurrentWeapon;
 	WeaponExpectedOnRaise.Reset();
 	bProceduralEquipRaiseOnly = false;
+	bProceduralEquipExpectedWeaponUnmapped = false;
 	FirstPersonSwitchVisualPhase = EFirstPersonWeaponSwitchVisualPhase::Lowering;
 	FirstPersonSwitchVisualElapsed = 0.0f;
 	FirstPersonSwitchLowerAlpha = 0.0f;
 	bFirstPersonSwitchConfirmSent = false;
 }
 
-void AShooterCharacter::StartLocalProceduralEquipRaise(AWeaponBase* ExpectedWeapon)
+void AShooterCharacter::StartLocalProceduralEquipRaise(AWeaponBase* ExpectedWeapon, AWeaponBase* PreviousWeapon)
 {
+	OutlierFirstPickup::FScope Scope(TEXT("StartLocalRaise"), ExpectedWeapon);
 	ActiveProceduralSwitchId = 0;
-	WeaponAtSwitchStart.Reset();
+	WeaponAtSwitchStart = PreviousWeapon;
 	WeaponExpectedOnRaise = ExpectedWeapon;
 	bProceduralEquipRaiseOnly = true;
+	// A newly spawned weapon may not be mapped when its owning-client RPC arrives.
+	bProceduralEquipExpectedWeaponUnmapped = ExpectedWeapon == nullptr;
 	FirstPersonSwitchVisualPhase = EFirstPersonWeaponSwitchVisualPhase::WaitingForWeapon;
 	FirstPersonSwitchVisualElapsed = 0.0f;
 	FirstPersonSwitchLowerAlpha = 1.0f;
@@ -3566,7 +3577,9 @@ void AShooterCharacter::UpdateLocalProceduralWeaponSwitch(float DeltaSeconds)
 	{
 		if (CurrentWeapon &&
 			(bProceduralEquipRaiseOnly
-				? CurrentWeapon == WeaponExpectedOnRaise.Get()
+				? (bProceduralEquipExpectedWeaponUnmapped
+					? CurrentWeapon != WeaponAtSwitchStart.Get()
+					: CurrentWeapon == WeaponExpectedOnRaise.Get())
 				: CurrentWeapon != WeaponAtSwitchStart.Get()))
 		{
 			FirstPersonSwitchRaiseStartAlpha = FirstPersonSwitchLowerAlpha;
@@ -3593,6 +3606,7 @@ void AShooterCharacter::UpdateLocalProceduralWeaponSwitch(float DeltaSeconds)
 			WeaponAtSwitchStart.Reset();
 			WeaponExpectedOnRaise.Reset();
 			bProceduralEquipRaiseOnly = false;
+			bProceduralEquipExpectedWeaponUnmapped = false;
 			ActiveProceduralSwitchId = 0;
 		}
 	}
@@ -3611,9 +3625,9 @@ void AShooterCharacter::ClientCancelProceduralWeaponSwitch_Implementation(int32 
 	}
 }
 
-void AShooterCharacter::ClientBeginProceduralEquipRaise_Implementation(AWeaponBase* ExpectedWeapon)
+void AShooterCharacter::ClientBeginProceduralEquipRaise_Implementation(AWeaponBase* ExpectedWeapon, AWeaponBase* PreviousWeapon)
 {
-	StartLocalProceduralEquipRaise(ExpectedWeapon);
+	StartLocalProceduralEquipRaise(ExpectedWeapon, PreviousWeapon);
 }
 
 void AShooterCharacter::ServerConfirmProceduralWeaponLowered_Implementation(int32 SwitchId)

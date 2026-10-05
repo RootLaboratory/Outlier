@@ -13,6 +13,7 @@
 #include "ShooterInventoryComponent.h"
 #include "ShooterMainWidget.h"
 #include "Weapon/RangedWeaponBase.h"
+#include "Weapon/FirstPickupDiagnostics.h"
 #include "OutlierGameMode.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
@@ -522,6 +523,7 @@ void AShooterPlayerController::HandleMovementStateChanged(EMovementState NewStat
 
 void AShooterPlayerController::OnWeaponChanged(EWeaponType NewType)
 {
+	OutlierFirstPickup::FScope Scope(TEXT("WeaponHUD"), this);
 	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalUISubsystem())
 	{
 		UISubsystem->OnCurrentWeaponChanged(static_cast<EWidgetWeaponType>(NewType));

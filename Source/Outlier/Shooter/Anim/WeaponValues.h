@@ -62,6 +62,19 @@ struct OUTLIER_API FWeaponValues
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Hip")
 	FRotator HipPoseRot = FRotator::ZeroRotator;
 
+	// Hip 위에 추가하는 공격 전용 보정. 판정 소켓과 대기 포즈는 변경하지 않는다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Melee Attack")
+	FVector MeleeAttackOffsetLoc = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Melee Attack")
+	FRotator MeleeAttackOffsetRot = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Melee Attack", meta = (ClampMin = "0.0"))
+	float MeleeAttackBlendInSpeed = 18.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Melee Attack", meta = (ClampMin = "0.0"))
+	float MeleeAttackBlendOutSpeed = 8.0f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Aim")
 	FVector AimPoseLoc = FVector::ZeroVector;
 
@@ -183,42 +196,6 @@ struct OUTLIER_API FWeaponValues
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Reload|RightHand")
 	FRotator RightHandReloadIKRotOffset = FRotator::ZeroRotator;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Equip|LeftHand")
-	FVector LeftHandEquipGripOffsetLoc = FVector::ZeroVector;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Equip|LeftHand")
-	FRotator LeftHandEquipGripOffsetRot = FRotator::ZeroRotator;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Equip|LeftHand")
-	FVector LeftUpperArmEquipLoc = FVector::ZeroVector;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Equip|LeftHand")
-	FRotator LeftUpperArmEquipRot = FRotator::ZeroRotator;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Equip|LeftHand")
-	FRotator LeftLowerArmEquipRot = FRotator::ZeroRotator;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Equip|LeftHand IK")
-	FVector LeftHandEquipJointTargetLoc = FVector::ZeroVector;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Equip|LeftHand IK")
-	FVector LeftHandEquipIKLoc = FVector::ZeroVector;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Equip|LeftHand IK")
-	FRotator LeftHandEquipIKRot = FRotator::ZeroRotator;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Equip|LeftHand IK", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-	float LeftHandEquipIKAlpha = 0.35f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Equip|LeftHand IK", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-	float LeftHandEquipArmAlpha = 1.0f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Equip|RightHand")
-	FVector RightHandEquipIKLocOffset = FVector::ZeroVector;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Equip|RightHand")
-	FRotator RightHandEquipIKRotOffset = FRotator::ZeroRotator;
-
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ViewModel|Slide")
 	float SlideBlendInSpeed = 18.0f;
 
@@ -314,15 +291,6 @@ struct OUTLIER_API FWeaponValues
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LeftHand|IK Alpha", meta = (ClampMin = "0.0"))
 	float LeftHandReloadIKBlendOutSpeed = 8.0f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LeftHand|IK Alpha", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-	float LeftHandEquipIKAlphaScale = 0.15f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LeftHand|IK Alpha", meta = (ClampMin = "0.0"))
-	float LeftHandEquipIKBlendInSpeed = 18.0f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LeftHand|IK Alpha", meta = (ClampMin = "0.0"))
-	float LeftHandEquipIKBlendOutSpeed = 8.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LeftHand|IK Alpha", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float LeftHandSlideIKAlphaScale = 0.05f;

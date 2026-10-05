@@ -161,10 +161,7 @@ void UShooterMainWidget::OnChangeWeapon(EWidgetWeaponType Type)
 	{
 		//UE_LOG(LogTemp, Error, TEXT("Melee"));
 
-		if (AmmoUI)
-		{
-			AmmoUI->Deactivate();
-		}
+		SetModuleActive(AmmoUI, true);
 
 		if (CurrentCrossHairUI)
 		{

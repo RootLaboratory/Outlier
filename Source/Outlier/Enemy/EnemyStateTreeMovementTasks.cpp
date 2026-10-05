@@ -304,6 +304,17 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::Tick(
 		return EStateTreeRunStatus::Failed;
 	}
 
+	// Keep the task resumable if hacking is cancelled before the state transition.
+	if (Enemy->IsPossessionInProgress())
+	{
+		Enemy->ConsumeMovementInputVector();
+		if (UCharacterMovementComponent* Movement = Enemy->GetCharacterMovement())
+		{
+			Movement->StopMovementImmediately();
+		}
+		return EStateTreeRunStatus::Running;
+	}
+
 	ApplyFlyTaskSpeedMultiplier(*Enemy, InstanceData.SpeedMultiplier);
 	const FVector ToDestination = InstanceData.Destination - Enemy->GetActorLocation();
 	const float AcceptanceRadius = FMath::Max(InstanceData.AcceptanceRadius, 0.0f);
@@ -654,9 +665,9 @@ FEnemyLookAroundTaskInstanceData::FEnemyLookAroundTaskInstanceData()
 	Steps =
 	{
 		{FRotator::ZeroRotator, 0.15f},
-		{FRotator(10.0f, -60.0f, 0.0f), 0.5f},
+		{FRotator(0.0f, -60.0f, 0.0f), 0.5f},
 		{FRotator::ZeroRotator, 0.2f},
-		{FRotator(-10.0f, 60.0f, 0.0f), 0.5f},
+		{FRotator(0.0f, 60.0f, 0.0f), 0.5f},
 		{FRotator::ZeroRotator, 0.2f}
 	};
 }
@@ -685,7 +696,9 @@ EStateTreeRunStatus FEnemyLookAroundTask::EnterState(
 	}
 
 	InstanceData.BaseControlRotation = AIController->GetControlRotation().GetNormalized();
+	InstanceData.BaseControlRotation.Pitch = 0.0f;
 	InstanceData.BaseControlRotation.Roll = 0.0f;
+	AIController->SetControlRotation(InstanceData.BaseControlRotation);
 	if (!InstanceData.bOwnsTaskDrivenPitch)
 	{
 		if (AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(AIController))
@@ -725,13 +738,16 @@ EStateTreeRunStatus FEnemyLookAroundTask::Tick(
 	// 시작 시점의 방향을 기준으로 계산해 각 단계의 회전 오차가 다음 단계에 누적되지 않게 한다.
 	FRotator DesiredRotation =
 		(InstanceData.BaseControlRotation + Step.RelativeRotation).GetNormalized();
+	// Existing StateTree steps may still contain authored pitch offsets.
+	DesiredRotation.Pitch = 0.0f;
 	DesiredRotation.Roll = 0.0f;
 
-	const FRotator NewRotation = FMath::RInterpConstantTo(
+	FRotator NewRotation = FMath::RInterpConstantTo(
 		AIController->GetControlRotation(),
 		DesiredRotation,
 		DeltaTime,
 		FMath::Max(InstanceData.RotationSpeed, 0.0f)).GetNormalized();
+	NewRotation.Pitch = 0.0f;
 	AIController->SetControlRotation(NewRotation);
 	Enemy->SetActorRotation(FRotator(0.0f, NewRotation.Yaw, 0.0f));
 

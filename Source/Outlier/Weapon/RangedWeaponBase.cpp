@@ -2,6 +2,7 @@
 
 
 #include "Weapon/RangedWeaponBase.h"
+#include "Weapon/FirstPickupDiagnostics.h"
 
 #include "Damage/OutlierDamageReceiver.h"
 #include "GameplayTags/OutlierGameplayTags.h"
@@ -1409,6 +1410,7 @@ void ARangedWeaponBase::OnDropped(const FTransform& DropTransform, AFirstPersonC
 
 void ARangedWeaponBase::ShowEquippedPresentation()
 {
+	OutlierFirstPickup::FScope Scope(TEXT("ShowMeshesAndMaterials"), this);
 	Super::ShowEquippedPresentation();
 	ApplySightMesh();
 	CacheSightAimMaterials();
@@ -2136,6 +2138,7 @@ void ARangedWeaponBase::SetSightAimMaterialFlag(bool bAiming)
 
 void ARangedWeaponBase::InitializeFromDataTables()
 {
+	OutlierFirstPickup::FScope Scope(TEXT("InitializeWeaponDataAndMeshes"), this);
 	Super::InitializeFromDataTables();
 
 	if (const FWeaponCoreRow* CoreRow = WeaponCoreRow.GetRow<FWeaponCoreRow>(TEXT("InitializeRangedWeaponCore")))

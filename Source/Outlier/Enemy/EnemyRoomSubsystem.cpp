@@ -490,8 +490,6 @@ bool UEnemyRoomSubsystem::RebuildSearchRingAssignments(
 	float FlightHeightOffset,
 	float FloorTraceHalfHeight)
 {
-	constexpr float MinimumEnemyFlightZ = 150.0f;
-	constexpr int32 SearchRingPhaseCount = 8;
 
 	UWorld* World = GetWorld();
 	UOutlierArenaSubsystem* ArenaSubsystem = World
@@ -545,60 +543,14 @@ bool UEnemyRoomSubsystem::RebuildSearchRingAssignments(
 	TArray<FVector> AvailableSlots;
 	AvailableSlots.Reserve(EligibleEnemies.Num());
 	const float SafeRadius = FMath::Max(Radius, 0.0f);
-	const float TraceHalfHeight = FMath::Max(FloorTraceHalfHeight, 1.0f);
-
-	// Keep the configured radius and equal spacing, but rotate the whole ring when
-	// the first layout falls outside walkable floor geometry.
-	for (int32 PhaseIndex = 0;
-		PhaseIndex < SearchRingPhaseCount && AvailableSlots.IsEmpty();
-		++PhaseIndex)
+	for (int32 SlotIndex = 0; SlotIndex < EligibleEnemies.Num(); ++SlotIndex)
 	{
-		TArray<FVector> PhaseSlots;
-		PhaseSlots.Reserve(EligibleEnemies.Num());
-		const float PhaseOffset = UE_TWO_PI
-			* static_cast<float>(PhaseIndex)
-			/ static_cast<float>(SearchRingPhaseCount);
-
-		for (int32 SlotIndex = 0; SlotIndex < EligibleEnemies.Num(); ++SlotIndex)
-		{
-			const float AngleRadians = PhaseOffset
-				+ UE_TWO_PI
-					* static_cast<float>(SlotIndex)
-					/ static_cast<float>(EligibleEnemies.Num());
-			const FVector2D Offset(
-				FMath::Cos(AngleRadians) * SafeRadius,
-				FMath::Sin(AngleRadians) * SafeRadius);
-			const FVector TraceOrigin(Center.X + Offset.X, Center.Y + Offset.Y, Center.Z);
-
-			FHitResult FloorHit;
-			const bool bFoundFloor = World->LineTraceSingleByChannel(
-				FloorHit,
-				TraceOrigin + FVector::UpVector * TraceHalfHeight,
-				TraceOrigin - FVector::UpVector * TraceHalfHeight,
-				ECC_WorldStatic);
-			if (!bFoundFloor)
-			{
-				PhaseSlots.Reset();
-				break;
-			}
-
-			PhaseSlots.Add(FVector(
-				TraceOrigin.X,
-				TraceOrigin.Y,
-				FMath::Max(
-					FloorHit.ImpactPoint.Z + FlightHeightOffset,
-					MinimumEnemyFlightZ)));
-		}
-
-		if (PhaseSlots.Num() == EligibleEnemies.Num())
-		{
-			AvailableSlots = MoveTemp(PhaseSlots);
-		}
-	}
-
-	if (AvailableSlots.Num() != EligibleEnemies.Num())
-	{
-		return false;
+		const float AngleRadians = UE_TWO_PI * static_cast<float>(SlotIndex)
+			/ static_cast<float>(EligibleEnemies.Num());
+		AvailableSlots.Add(FVector(
+			Center.X + FMath::Cos(AngleRadians) * SafeRadius,
+			Center.Y + FMath::Sin(AngleRadians) * SafeRadius,
+			Center.Z));
 	}
 
 	FEnemyRoomSearchState NewState;
@@ -615,7 +567,7 @@ bool UEnemyRoomSubsystem::RebuildSearchRingAssignments(
 		float BestDistanceSquared = TNumericLimits<float>::Max();
 		for (int32 SlotIndex = 0; SlotIndex < AvailableSlots.Num(); ++SlotIndex)
 		{
-			const float DistanceSquared = FVector::DistSquared(
+			const float DistanceSquared = FVector::DistSquared2D(
 				Candidate->GetActorLocation(),
 				AvailableSlots[SlotIndex]);
 			if (DistanceSquared < BestDistanceSquared)
@@ -630,9 +582,11 @@ bool UEnemyRoomSubsystem::RebuildSearchRingAssignments(
 			return false;
 		}
 
+		FVector AssignedLocation = AvailableSlots[BestSlotIndex];
+		AssignedLocation.Z = Candidate->GetActorLocation().Z;
 		NewState.Assignments.Add(
 			TWeakObjectPtr<AEnemyBase>(Candidate),
-			AvailableSlots[BestSlotIndex]);
+			AssignedLocation);
 		AvailableSlots.RemoveAtSwap(BestSlotIndex, EAllowShrinking::No);
 	}
 
