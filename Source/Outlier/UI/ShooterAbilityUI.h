@@ -37,6 +37,8 @@ public:
 public:
 	bool TryGetHoveredAbility(FGameplayTag& OutAbilityTag, bool bBroadcastSelection = true);
 	bool ApplyCooldownIfMatches(const FGameplayTag& AbilityTag, float CoolTime);
+	// 해금 = Grant 여부. 위젯은 판정하지 않고 캐릭터가 계산한 결과만 받는다( 기본은 전부 잠김 ).
+	void SetAbilityUnlocked(const FGameplayTag& AbilityTag, bool bUnlocked);
 	void ResetCooldowns();
 	void BeginRelativeSelection();
 	void TryHovering();
@@ -75,7 +77,7 @@ public:
 	
 private:
 	bool TryCalculateCoordinate(float& OutAngleDeg);
-	void RegisterAbilityIcon(UAbilityIconUI* Icon, const FGameplayTag& AbilityTag, bool bUnlock = false);
+	void RegisterAbilityIcon(UAbilityIconUI* Icon, const FGameplayTag& AbilityTag);
 	FGameplayTag GetAbilityTagByAngle(float AngleDeg) const;
 	bool IsAbilityUnlocked(const FGameplayTag& AbilityTag) const;
 

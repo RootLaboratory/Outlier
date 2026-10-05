@@ -657,6 +657,22 @@ bool ULocalPlayerUILayerSubsystem::BindWidgetInput(
 			: nullptr)
 		{
 			InputSubsystem->AddMappingContext(Config->WidgetMappingContext, 0);
+
+#if WITH_EDITOR
+			// PIE에서는 에디터가 ESC를 Stop 단축키로 먼저 가져가므로 PIE 전용 IMC를 같이 붙인다.
+			// Standalone은 GIsEditor가 false라 원본 IMC의 ESC만 쓴다.
+			// 키 힌트는 우선순위가 높은 컨텍스트의 키부터 보여주므로 한 단계 위에 둬서 PIE 키가 표시되게 한다.
+			if (GIsEditor)
+			{
+				for (const UInputMappingContext* PIEMappingContext : Config->PIEMappingContexts)
+				{
+					if (PIEMappingContext)
+					{
+						InputSubsystem->AddMappingContext(PIEMappingContext, 1);
+					}
+				}
+			}
+#endif
 		}
 	}
 

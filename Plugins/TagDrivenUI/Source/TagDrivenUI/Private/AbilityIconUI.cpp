@@ -99,6 +99,17 @@ void UAbilityIconUI::AbilityUnLock()
 	}
 }
 
+void UAbilityIconUI::AbilityLock()
+{
+	bAbilityUnlocked = false;
+	CooldownDone();
+
+	if (AbilityIcon)
+	{
+		AbilityIcon->SetVisibility(ESlateVisibility::Collapsed);
+	}
+}
+
 void UAbilityIconUI::VisibilityControl(bool InFlag)
 {
 	if (InFlag)

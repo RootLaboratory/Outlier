@@ -18,10 +18,10 @@ void UShooterAbilityUI::NativeConstruct()
 	LeftAbilityTag   = TagDrivenUITags::Ability::Shooter::Stealth();
 	TopAbilityTag    = TagDrivenUITags::Ability::Shooter::WeaponOvercharge();
 
-	RegisterAbilityIcon(IconQuantumLeap, RightAbilityTag, true);
-	RegisterAbilityIcon(IconBulletReflection, BottomAbilityTag, true);
-	RegisterAbilityIcon(IconStealth, LeftAbilityTag, true);
-	RegisterAbilityIcon(IconWeaponOvercharge, TopAbilityTag, true);
+	RegisterAbilityIcon(IconQuantumLeap, RightAbilityTag);
+	RegisterAbilityIcon(IconBulletReflection, BottomAbilityTag);
+	RegisterAbilityIcon(IconStealth, LeftAbilityTag);
+	RegisterAbilityIcon(IconWeaponOvercharge, TopAbilityTag);
 
 	// 부모 ShooterMainWidget(MainUIBase)의 AbilitySections에도 등록
 	// → OnAbilityDisabledByDistance 등 거리 lock 신호를 받을 수 있도록
@@ -106,6 +106,24 @@ bool UShooterAbilityUI::ApplyCooldownIfMatches(const FGameplayTag& AbilityTag, f
 	return true;
 }
 
+void UShooterAbilityUI::SetAbilityUnlocked(const FGameplayTag& AbilityTag, bool bUnlocked)
+{
+	UAbilityIconUI* AbilityIcon = GetAbilityIcon(AbilityTag);
+	if (!AbilityIcon || AbilityIcon->IsUnLock() == bUnlocked)
+	{
+		return;
+	}
+
+	if (bUnlocked)
+	{
+		AbilityIcon->AbilityUnLock();
+	}
+	else
+	{
+		AbilityIcon->AbilityLock();
+	}
+}
+
 void UShooterAbilityUI::ResetCooldowns()
 {
 	for (const TPair<FGameplayTag, TObjectPtr<UAbilityIconUI>>& AbilitySection : AbilitySections)
@@ -167,7 +185,7 @@ void UShooterAbilityUI::TryHovering()
 	}
 }
 
-void UShooterAbilityUI::RegisterAbilityIcon(UAbilityIconUI* Icon, const FGameplayTag& AbilityTag, bool bUnlock)
+void UShooterAbilityUI::RegisterAbilityIcon(UAbilityIconUI* Icon, const FGameplayTag& AbilityTag)
 {
 	if (!Icon || !AbilityTag.IsValid())
 	{
@@ -176,11 +194,6 @@ void UShooterAbilityUI::RegisterAbilityIcon(UAbilityIconUI* Icon, const FGamepla
 
 	Icon->AbilityTag = AbilityTag;
 	AbilitySections.Add(AbilityTag, Icon);
-
-	if (bUnlock)
-	{
-		Icon->AbilityUnLock();
-	}
 }
 
 UAbilityIconUI* UShooterAbilityUI::GetAbilityIcon(const FGameplayTag& AbilityTag) const

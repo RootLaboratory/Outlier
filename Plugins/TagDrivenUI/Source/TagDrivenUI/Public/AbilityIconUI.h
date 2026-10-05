@@ -33,6 +33,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Ability")
 	void AbilityUnLock();
 
+	// Grant 가 빠진 능력( 업그레이드 초기화 등 )을 다시 잠근다. 진행 중이던 쿨타임 표시도 같이 정리한다.
+	void AbilityLock();
+
 	void VisibilityControl(bool InFlag);
 
 public:

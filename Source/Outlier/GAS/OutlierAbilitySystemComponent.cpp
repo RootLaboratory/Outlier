@@ -678,6 +678,47 @@ bool UOutlierAbilitySystemComponent::IsShooterSuitAbilityUpgradeGrantRequired(
 	return false;
 }
 
+bool UOutlierAbilitySystemComponent::IsShooterSuitAbilityGranted(
+	const FGameplayTag& AbilityTag,
+	bool bHasGrantTag) const
+{
+	// 그랜트가 필요 없는 능력(false)은 항상 통과, 필요한 능력(true)은 근거 태그가 있어야 통과.
+	if (!IsShooterSuitAbilityUpgradeGrantRequired(AbilityTag) || bHasGrantTag)
+	{
+		return true;
+	}
+
+#if UE_BUILD_SHIPPING
+	return false;
+#else
+	// 테스트 전용 마스터 스위치( bNoGrantMode, 기본 true ): 켜져 있으면 업그레이드 트리를 하나도 안
+	// 찍었어도 Shooter 슈트 능력을 전부 바로 테스트할 수 있도록 무조건 통과.
+	// 꺼두면 에디터/개발 빌드에서도 Shipping 과 완전히 같은 판정을 그대로 탄다.
+	return bNoGrantMode;
+#endif
+}
+
+FGameplayTag UOutlierAbilitySystemComponent::GetDefaultShooterSuitAbilityTag() const
+{
+	// 기본 제공 능력이 여러 개면 이 순서에서 앞쪽이 우선한다.
+	const FGameplayTag AbilityTags[] =
+	{
+		OutlierGameplayTags::Ability::Shooter::QuantumLeap(),
+		OutlierGameplayTags::Ability::Shooter::BulletReflection(),
+		OutlierGameplayTags::Ability::Shooter::WeaponOvercharge(),
+		OutlierGameplayTags::Ability::Shooter::Stealth(),
+	};
+	for (const FGameplayTag& AbilityTag : AbilityTags)
+	{
+		if (!IsShooterSuitAbilityUpgradeGrantRequired(AbilityTag))
+		{
+			return AbilityTag;
+		}
+	}
+
+	return FGameplayTag();
+}
+
 bool UOutlierAbilitySystemComponent::UpdateShooterSuitConfig(const FOutlierShooterSuitConfig& Config)
 {
 	if (!IsOwnerActorAuthoritative() || !bShooterSuitConfigured)

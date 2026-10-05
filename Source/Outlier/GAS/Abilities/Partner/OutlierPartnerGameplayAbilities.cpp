@@ -356,19 +356,6 @@ void UOutlierPartnerHackAbility::EndAbility(
 	bool bReplicateEndAbility,
 	bool bWasCancelled)
 {
-	const bool bStoppedHackAudio = StopAbilityAudioLoopAtLocationFromServer(
-		GetPartnerCharacter(),
-		GetDefault<UOutlierAbilityAudioSettings>()->PartnerHackTryLoop);
-	// 아래 디버그 로그 전용 값이다. 로그를 되살리면 이 줄을 지운다.
-	(void)bStoppedHackAudio;
-	/*UE_LOG(
-		LogTemp,
-		Warning,
-		TEXT("[PartnerAbilityAudioDebug] Hack End Cancelled=%d TryLoopStopped=%d ActiveComponent=%d"),
-		bWasCancelled ? 1 : 0,
-		bStoppedHackAudio ? 1 : 0,
-		ActiveHackComponent.IsValid() ? 1 : 0);*/
-
 	bool bCancelledActiveHack = false;
 	if (UPartnerHackComponent* Component = ActiveHackComponent.Get())
 	{
@@ -381,12 +368,26 @@ void UOutlierPartnerHackAbility::EndAbility(
 	}
 	ActiveHackComponent.Reset();
 	HackFinishedHandle.Reset();
+
+	// Fail DA는 StopLoopThenOneShot 이라 시도 루프가 살아 있을 때만 소리가 난다. 루프 정리보다 먼저 낸다.
 	if (bCancelledActiveHack)
 	{
 		PlayAbilityAudioAtLocationFromServer(
 			GetPartnerCharacter(),
 			GetDefault<UOutlierAbilityAudioSettings>()->PartnerHackFail);
 	}
+	const bool bStoppedHackAudio = StopAbilityAudioLoopAtLocationFromServer(
+		GetPartnerCharacter(),
+		GetDefault<UOutlierAbilityAudioSettings>()->PartnerHackTryLoop);
+	// 아래 디버그 로그 전용 값이다. 로그를 되살리면 이 줄을 지운다.
+	(void)bStoppedHackAudio;
+	/*UE_LOG(
+		LogTemp,
+		Warning,
+		TEXT("[PartnerAbilityAudioDebug] Hack End Cancelled=%d CancelledActiveHack=%d TryLoopStopped=%d"),
+		bWasCancelled ? 1 : 0,
+		bCancelledActiveHack ? 1 : 0,
+		bStoppedHackAudio ? 1 : 0);*/
 	Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);
 }
 
@@ -394,6 +395,20 @@ void UOutlierPartnerHackAbility::HandleHackFinished(
 	EHackResult Result,
 	bool bPossessionTarget)
 {
+	// Success/Fail DA는 StopLoopThenOneShot 이라 시도 루프가 살아 있을 때만 소리가 난다. 결과음을 먼저 내고,
+	// 결과음이 없는 취소를 위해 남은 루프는 그 뒤에 정리한다.
+	if (Result == EHackResult::Success)
+	{
+		PlayAbilityAudioAtLocationFromServer(
+			GetPartnerCharacter(),
+			GetDefault<UOutlierAbilityAudioSettings>()->PartnerHackSuccess);
+	}
+	else if (Result == EHackResult::Fail)
+	{
+		PlayAbilityAudioAtLocationFromServer(
+			GetPartnerCharacter(),
+			GetDefault<UOutlierAbilityAudioSettings>()->PartnerHackFail);
+	}
 	StopAbilityAudioLoopAtLocationFromServer(
 		GetPartnerCharacter(),
 		GetDefault<UOutlierAbilityAudioSettings>()->PartnerHackTryLoop);
@@ -413,18 +428,6 @@ void UOutlierPartnerHackAbility::HandleHackFinished(
 			? AbilitySystem->GetPartnerAbilityConfig().HackCooldown * HackCancellationCooldownScale
 			: 0.0f;
 		bCommitted = CommitConfiguredCooldown(CancellationCooldown);
-	}
-	if (Result == EHackResult::Success)
-	{
-		PlayAbilityAudioAtLocationFromServer(
-			GetPartnerCharacter(),
-			GetDefault<UOutlierAbilityAudioSettings>()->PartnerHackSuccess);
-	}
-	else if (Result == EHackResult::Fail)
-	{
-		PlayAbilityAudioAtLocationFromServer(
-			GetPartnerCharacter(),
-			GetDefault<UOutlierAbilityAudioSettings>()->PartnerHackFail);
 	}
 	EndAbility(
 		CurrentSpecHandle,

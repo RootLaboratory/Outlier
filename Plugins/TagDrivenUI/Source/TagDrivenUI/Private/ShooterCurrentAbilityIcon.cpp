@@ -15,7 +15,7 @@ void UShooterCurrentAbilityIcon::NativeConstruct()
 
 	if (!CurrentAbilityTag.IsValid())
 	{
-		CurrentAbilityTag = TagDrivenUITags::Ability::Shooter::Stealth();
+		CurrentAbilityTag = TagDrivenUITags::Ability::Shooter::QuantumLeap();
 	}
 
 	SetCurrentAbility(CurrentAbilityTag);
