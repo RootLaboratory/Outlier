@@ -2,6 +2,7 @@
 
 
 #include "Weapon/WeaponBase.h"
+#include "Weapon/FirstPickupDiagnostics.h"
 #include "Components/SceneComponent.h"
 #include "Components/MeshComponent.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -19,6 +20,11 @@
 #include "Shooter/Anim/ProceduralAnimValues.h"
 #include "Materials/MaterialInterface.h"
 #include "TimerManager.h"
+
+static TAutoConsoleVariable<int32> CVarFirstPickupTest(
+	TEXT("outlier.FPFirstPickupTest"), 0,
+	TEXT("Development FP pickup probe: 0=off, 1=capture, add 2=snap local pose/detail, add 4=snap local grip target. Use 1/3/5/7 in separate runs."),
+	ECVF_Cheat);
 
 AWeaponBase::AWeaponBase()
 {
@@ -625,6 +631,9 @@ void AWeaponBase::AttachWeaponMeshesToOwner(AWeaponBase* Weapon, ACharacter* New
 
 	if (APartnerCharacter* Partner = Cast<APartnerCharacter>(NewOwner))
 	{
+		// 기존 BP의 렌더링 설정과 무관하게 Partner의 1인칭 총은 전용 투영을 사용한다.
+		Weapon->GetFirstPersonWeaponMesh()->SetFirstPersonPrimitiveType(EFirstPersonPrimitiveType::FirstPerson);
+
 		const FAttachmentTransformRules PartnerAttachRules =
 			FAttachmentTransformRules::SnapToTargetNotIncludingScale;
 		const FName FirstPersonSocketName = Partner->GetFirstPersonWeaponAttachSocketName();
@@ -872,6 +881,7 @@ void AWeaponBase::OnDropped(const FTransform& DropTransform, AFirstPersonCharact
 
 bool AWeaponBase::Interact(class AFirstPersonCharacter* Interactor)
 {
+	OutlierFirstPickup::FScope PickupScope(TEXT("Interact"), this);
 	if (!Interactor)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("%s [%s] Interact blocked: interactor is null"), OutlierNet::GetNetPrefix(this), *GetName());
@@ -939,6 +949,7 @@ void AWeaponBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifet
 AWeaponBase* AWeaponBase::SpawnLoadoutWeapon(
 	UWorld* World, TSubclassOf<AWeaponBase> WeaponClass, ACharacter* OwnerCharacter)
 {
+	OutlierFirstPickup::FScope SpawnScope(TEXT("SpawnOwnedCopy"), WeaponClass.Get());
 	if (!World || !WeaponClass || !OwnerCharacter)
 	{
 		return nullptr;

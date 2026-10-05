@@ -957,6 +957,99 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	"Outlier.Animation.Shooter.PresentationAnimation",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierProceduralEquipReferenceOrderTest,
+	"Outlier.Animation.FP.FirstPickup.ReferenceOrder",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierProceduralEquipReferenceOrderTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FScopedSuitInteractionTestWorld TestWorld;
+	if (!TestWorld.Initialize(*this)) { return false; }
+	UClass* ShooterClass = LoadClass<AShooterCharacter>(nullptr,
+		TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	if (!TestNotNull(TEXT("Shooter BP exists"), ShooterClass)) { return false; }
+	AShooterCharacter* Shooter = TestWorld.World->SpawnActor<AShooterCharacter>(ShooterClass);
+	APlayerController* Controller = TestWorld.World->SpawnActor<APlayerController>();
+	ASuitInteractionTestRifle* Previous = TestWorld.World->SpawnActor<ASuitInteractionTestRifle>();
+	ASuitInteractionTestRifle* Granted = TestWorld.World->SpawnActor<ASuitInteractionTestRifle>();
+	ASuitInteractionTestRifle* Other = TestWorld.World->SpawnActor<ASuitInteractionTestRifle>();
+	if (!TestNotNull(TEXT("Shooter"), Shooter) || !TestNotNull(TEXT("Controller"), Controller)
+		|| !TestNotNull(TEXT("Previous weapon"), Previous) || !TestNotNull(TEXT("Granted weapon"), Granted)
+		|| !TestNotNull(TEXT("Other weapon"), Other)) { return false; }
+	Controller->Possess(Shooter);
+	if (!TestTrue(TEXT("Fixture is locally controlled"), Shooter->IsLocallyControlled())) { return false; }
+	Shooter->FirstPersonSwitchRaiseDuration = 0.22f;
+	const auto TickSwitch = [Shooter]() { Shooter->UpdateLocalProceduralWeaponSwitch(1.0f / 60.0f); };
+	const auto CompleteRaise = [this, Shooter, &TickSwitch]()
+	{
+		TestTrue(TEXT("Raise phase starts"),
+			Shooter->FirstPersonSwitchVisualPhase == EFirstPersonWeaponSwitchVisualPhase::Raising);
+		TickSwitch();
+		TestTrue(TEXT("Lower alpha immediately starts decreasing"), Shooter->FirstPersonSwitchLowerAlpha < 1.0f);
+		for (int32 Frame = 0; Frame < 14; ++Frame) { TickSwitch(); }
+		TestEqual(TEXT("Raise completes at authored duration"), Shooter->FirstPersonSwitchLowerAlpha, 0.0f);
+		TestFalse(TEXT("Completed Raise clears unmapped fallback"), Shooter->bProceduralEquipExpectedWeaponUnmapped);
+	};
+
+	// Reproduce an RPC with an unmapped new actor before CurrentWeapon replicates.
+	Shooter->CurrentWeapon = Previous;
+	Shooter->ClientBeginProceduralEquipRaise_Implementation(nullptr, Previous);
+	TickSwitch();
+	TestEqual(TEXT("Old weapon stays fully lowered"), Shooter->FirstPersonSwitchLowerAlpha, 1.0f);
+	TestTrue(TEXT("Old weapon does not start Raise"),
+		Shooter->FirstPersonSwitchVisualPhase == EFirstPersonWeaponSwitchVisualPhase::WaitingForWeapon);
+	Shooter->CurrentWeapon = nullptr;
+	TickSwitch();
+	TestTrue(TEXT("Transient null CurrentWeapon keeps waiting"),
+		Shooter->FirstPersonSwitchVisualPhase == EFirstPersonWeaponSwitchVisualPhase::WaitingForWeapon);
+	Shooter->CurrentWeapon = Granted;
+	TickSwitch();
+	CompleteRaise();
+
+	// CurrentWeapon may also arrive before the Raise RPC.
+	Shooter->CurrentWeapon = Granted;
+	Shooter->ClientBeginProceduralEquipRaise_Implementation(nullptr, Previous);
+	TickSwitch();
+	CompleteRaise();
+
+	Shooter->CurrentWeapon = nullptr;
+	Shooter->ClientBeginProceduralEquipRaise_Implementation(nullptr, nullptr);
+	TickSwitch();
+	TestTrue(TEXT("Unarmed acquisition waits for a real weapon"),
+		Shooter->FirstPersonSwitchVisualPhase == EFirstPersonWeaponSwitchVisualPhase::WaitingForWeapon);
+	Shooter->CurrentWeapon = Granted;
+	TickSwitch();
+	CompleteRaise();
+
+	Shooter->CurrentWeapon = Other;
+	Shooter->ClientBeginProceduralEquipRaise_Implementation(Granted, Previous);
+	TickSwitch();
+	TestTrue(TEXT("Mapped target still requires exact actor equality"),
+		Shooter->FirstPersonSwitchVisualPhase == EFirstPersonWeaponSwitchVisualPhase::WaitingForWeapon);
+	Shooter->CurrentWeapon = Granted;
+	TickSwitch();
+	CompleteRaise();
+
+	Shooter->CurrentWeapon = Previous;
+	Shooter->BeginProceduralEquipRaise(Granted);
+	TickSwitch();
+	TestTrue(TEXT("Listen/local acquisition waits for the exact target"),
+		Shooter->FirstPersonSwitchVisualPhase == EFirstPersonWeaponSwitchVisualPhase::WaitingForWeapon);
+	Shooter->CurrentWeapon = Granted;
+	TickSwitch();
+	CompleteRaise();
+
+	Shooter->ClientBeginProceduralEquipRaise_Implementation(nullptr, Granted);
+	Shooter->StartLocalProceduralWeaponSwitch(1);
+	TestFalse(TEXT("Ordinary slot switch clears acquisition fallback"), Shooter->bProceduralEquipExpectedWeaponUnmapped);
+	Shooter->ClientBeginProceduralEquipRaise_Implementation(nullptr, Granted);
+	Shooter->UpdateLocalProceduralWeaponSwitch(3.6f);
+	CompleteRaise();
+	return true;
+}
+
 bool FOutlierShooterPresentationAnimationTest::RunTest(const FString& Parameters)
 {
 	FScopedSuitInteractionTestWorld TestWorld;
@@ -1106,6 +1199,23 @@ bool FOutlierShooterPresentationAnimationTest::RunTest(const FString& Parameters
 	SettleDetail();
 	TestTrue(TEXT("Firearm walk detail remains enabled"), DetailFP->ViewModelProceduralRuntime.ForwardWalkAlpha > 0.9f);
 	TestTrue(TEXT("Melee sway resets before firearm use"), DetailFP->ViewModelProceduralRuntime.SwayLoc.IsNearlyZero());
+	// Equip is a gameplay lock; Lower/Raise must keep the ordinary firearm grip.
+	DetailFP->ViewModelLeftHandIKAlpha = 1.0f;
+	DetailFP->bIsEquipping = true;
+	DetailFP->UpdateFirstPersonProceduralRuntime(1.0f / 60.0f);
+	TestEqual(TEXT("Equip retains the ordinary grip IK"), DetailFP->ViewModelProceduralRuntime.LeftHandIKAlpha, 1.0f);
+	TestEqual(TEXT("Equip retains the final grip IK"), DetailFP->ViewModelProceduralRuntime.LeftHandFinalIKAlpha, 1.0f);
+	TestEqual(TEXT("Equip does not free the left hand"), DetailFP->ViewModelProceduralRuntime.LeftHandFreeAlpha, 0.0f);
+	DetailFP->ViewModelReloadPoseAlpha = 1.0f;
+	DetailFP->ViewModelReloadIKBlendAlpha = 1.0f;
+	DetailFP->UpdateFirstPersonProceduralRuntime(1.0f / 60.0f);
+	TestEqual(TEXT("Reload still releases ordinary grip IK"), DetailFP->ViewModelProceduralRuntime.LeftHandIKAlpha, 0.0f);
+	TestEqual(TEXT("Reload retains its action IK"), DetailFP->ViewModelProceduralRuntime.LeftHandReloadIKAlpha,
+		DetailValues->WeaponValues.LeftHandReloadIKAlpha);
+	TestEqual(TEXT("Reload keeps final grip IK disabled"), DetailFP->ViewModelProceduralRuntime.LeftHandFinalIKAlpha, 0.0f);
+	DetailFP->ViewModelReloadPoseAlpha = 0.0f;
+	DetailFP->ViewModelReloadIKBlendAlpha = 0.0f;
+	DetailFP->bIsEquipping = false;
 	Shooter->GetCharacterMovement()->Velocity = SavedVelocity;
 	Weapon->ConfigureProceduralValues(Common, PreSuit, Suit);
 	FP->RefreshPresentationState();

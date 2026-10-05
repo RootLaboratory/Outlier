@@ -72,13 +72,16 @@ bool AMeleeWeaponBase::CanAttack() const
 	return Super::CanAttack()
 		&& AttackPhase == EMeleeAttackPhase::Idle
 		&& !bIsAttacking
-		&& (!Shooter || !Shooter->IsDead());
+		&& (!Shooter || (!Shooter->IsDead()
+			&& (!Shooter->IsSliding() || Shooter->AllowsMeleeAttackWhileSliding())));
 }
 
 void AMeleeWeaponBase::StartAttack()
 {
 	const AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
-	if (!HasAuthority() || !Super::CanAttack() || (Shooter && Shooter->IsDead()))
+	if (!HasAuthority() || !Super::CanAttack()
+		|| (Shooter && (Shooter->IsDead()
+			|| (Shooter->IsSliding() && !Shooter->AllowsMeleeAttackWhileSliding()))))
 	{
 		return;
 	}

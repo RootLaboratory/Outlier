@@ -382,12 +382,6 @@ protected:
 	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|Fire")
 	float ViewModelFireIKAlpha = 0.0f;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|Equip")
-	float ViewModelEquipPoseAlpha = 0.0f;
-
-	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|Equip")
-	float ViewModelEquipIKBlendAlpha = 0.0f;
-
 	UPROPERTY(BlueprintReadOnly, Category = "Anim|FP Procedural|Slide")
 	float ViewModelSlidePoseAlpha = 0.0f;
 
@@ -513,6 +507,7 @@ protected:
 	float StartStopDuration = 0.15f;
 	float SprintExitDetailBlockTimer = 0.0f;
 	float FirstPersonDiagnosticLogTimeRemaining = 0.0f;
+	int32 FirstPickupDiagnosticFrames = 0;
 	TWeakObjectPtr<USkeletalMeshComponent> BoneTraceMesh;
 	FDelegateHandle BoneTraceDelegateHandle;
 	int32 BoneTraceFrameCount = 0;

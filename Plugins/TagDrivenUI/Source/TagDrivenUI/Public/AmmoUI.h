@@ -29,6 +29,7 @@ public:
 
 	// 과충전 중에는 AmmoCanvas 아래 표시 위젯을 접고 OverLoad_Infinity만 켠다. 해제 시 반대.
 	void SetWeaponOverchargeActive(bool bActive);
+	void SetInfiniteAmmoDisplayActive(bool bActive);
 
 public:
 	UPROPERTY(BlueprintReadOnly, Category = "Data")
@@ -62,4 +63,5 @@ private:
 	void ApplyWeaponOverchargeVisibility();
 
 	bool bWeaponOverchargeActive = false;
+	bool bInfiniteAmmoDisplayActive = false;
 };

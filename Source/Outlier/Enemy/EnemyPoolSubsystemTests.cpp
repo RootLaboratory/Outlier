@@ -13,7 +13,9 @@
 #include "Engine/World.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "Misc/AutomationTest.h"
+#if WITH_EDITOR
 #include "Misc/DataValidation.h"
+#endif
 #include "Room/RoomTagComponent.h"
 #include "StateTree.h"
 #include "TimerManager.h"
@@ -391,6 +393,7 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+#if WITH_EDITOR
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FEnemyPoolDefinitionValidationTest,
 	"Outlier.Enemy.PoolDefinition.Validation",
@@ -448,5 +451,6 @@ bool FEnemyPoolDefinitionValidationTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+#endif
 
 #endif
