@@ -116,6 +116,9 @@ public:
 	UFUNCTION(Client, Reliable)
 	void BeginGameOverRespawnTransition();
 
+	UFUNCTION(Client, Reliable)
+	void ClientRestoreGameOverSelection(const FGuid& RoundId);
+
 	UFUNCTION(BlueprintCallable, Category = "UI|InGame Setting")
 	void RequestOpenInGameSetting();
 
@@ -128,7 +131,7 @@ public:
 	void ConfirmExplicitLeaveFromServer(bool bAccepted, bool bQuitAfterLeave);
 
 	void RequestGameOverPendingChoice(const FGameOverPendingRequest& Request);
-	void RequestGameOverPendingResponse(bool bApprove);
+	void RequestGameOverPendingResponse(const FGameOverPendingRequest& Request, bool bApprove);
 	void ShowGameOverPendingFromServer(const FGameOverPendingRequest& Request, bool bIsRequester);
 	void CloseGameOverPendingFromServer();
 	bool HasGameOverPendingWidgetClass() const;
@@ -239,10 +242,13 @@ public:
 	void ServerNotifyGameOverReady(const FGuid& RoundId);
 
 	UFUNCTION(Server, Reliable)
+	void ServerNotifyGameOverUnavailable(const FGuid& RoundId);
+
+	UFUNCTION(Server, Reliable)
 	void ServerRequestGameOverPendingChoice(const FGameOverPendingRequest& Request);
 
 	UFUNCTION(Server, Reliable)
-	void ServerRespondGameOverPending(bool bApprove);
+	void ServerRespondGameOverPending(const FGuid& RoundId, const FGuid& ProposalId, bool bApprove);
 
 	UFUNCTION()
 	void HandleArenaShown();
@@ -327,6 +333,7 @@ protected:
 	// 사망 연출의 Black Noise 텍스처가 나타날 때 GameOverWidget을 띄운다.
 	void HandleDeathBlackNoiseStarted();
 	void PushGameOverWidget();
+	void NotifyGameOverUIUnavailable();
 	UGameOverWidget* FindGameOverWidget() const;
 
 	// Suit 전환 연출 지점. 암전은 LocalPlayer PP의 Screen Blackout(HUD 포함)으로 그리고, 완료 콜백에서 서버에 알린다.

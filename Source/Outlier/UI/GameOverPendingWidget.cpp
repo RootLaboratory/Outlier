@@ -73,7 +73,7 @@ bool UGameOverPendingWidget::SubmitResponse(bool bApprove)
 		Cast<AFirstPersonPlayerController>(GetOwningPlayer()))
 	{
 		bResponseSubmitted = true;
-		Controller->RequestGameOverPendingResponse(bApprove);
+		Controller->RequestGameOverPendingResponse(PendingRequest, bApprove);
 	}
 	return true;
 }
