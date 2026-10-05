@@ -1966,10 +1966,21 @@ bool FRoomCombatWaveTurretReloadSafetyTest::RunTest(const FString& Parameters)
 	Turret->NotifyDeploySequenceFinished(ActiveGeneration, ActiveSerial);
 	TestEqual(TEXT("Turret reaches Active before Arena reset"),
 		Turret->GetTurretLifecycleState(), EAutoTurretLifecycleState::Active);
+	const FVector AimTarget = Turret->GetPawnViewLocation()
+		+ FVector(1000.0f, 1000.0f, 300.0f);
+	Turret->UpdateTurretAimAtLocation(AimTarget, 10.0f, false);
+	TestFalse(TEXT("Active turret turns toward its target before reset"),
+		Turret->GetViewRotation().Equals(Turret->GetActorRotation()));
 
 	Combat->ResetRuntimeCombatState();
 	TestEqual(TEXT("Arena reset returns an active turret to WaitingForWave"),
 		Turret->GetTurretLifecycleState(), EAutoTurretLifecycleState::WaitingForWave);
+	TestFalse(TEXT("Arena reset clears the deployed flag"), Turret->IsDeployed());
+	TestFalse(TEXT("Arena reset clears the deploying flag"), Turret->IsDeploying());
+	TestTrue(TEXT("Arena reset restores the turret's neutral aim"),
+		Turret->GetViewRotation().Equals(Turret->GetActorRotation()));
+	TestTrue(TEXT("Arena reset clears the previous aim target"),
+		Turret->GetCurrentTurretAimLocation().IsZero());
 	TestEqual(TEXT("Arena reset clears pending activation state"),
 		Combat->GetPendingActivationCount(RoomTag), 0);
 	Turret->NotifyDeploySequenceFinished(ActiveGeneration, ActiveSerial);

@@ -350,15 +350,7 @@ bool AOutlierGameMode::StartCheckpointRestart(
 	ShooterPlayerState->SetLoadoutSnapshot(Snapshot.LoadoutSnapshot);
 	ShooterPlayerState->SetAcquiredSuit(Snapshot.SuitSnapshot.bAcquired);
 
-	if (UEnemyRoomSubsystem* EnemyRoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
-	{
-		EnemyRoomSubsystem->ResetRuntimeCombatState();
-	}
-	if (URoomCombatSubsystem* RoomCombatSubsystem =
-		GetWorld()->GetSubsystem<URoomCombatSubsystem>())
-	{
-		RoomCombatSubsystem->ResetRuntimeCombatState();
-	}
+	ResetRuntimeCombatStateForRespawn();
 
 	// Listen Server의 전역 Pause는 서브레벨 스트리밍도 멈춘다.
 	// 기존 Pawn은 아래 리로드에서 즉시 제거되고 새 Pawn은 준비 완료 전까지 Possess하지 않으므로,
@@ -2641,6 +2633,8 @@ void AOutlierGameMode::RespawnPairAtCheckpoint(AController* Controller)
 		}
 	}
 
+	ResetRuntimeCombatStateForRespawn();
+
 	ShooterPlayerState->SetShooterCharacter(nullptr);
 	ShooterPlayerState->SetPartnerCharacter(nullptr);
 	ShooterPlayerState->SetSuitDisabledByPartnerBoundary(false);
@@ -4020,6 +4014,26 @@ void AOutlierGameMode::RefreshRoomOverlapAssignments()
 	for (AActor* Actor : RoomVolumes)
 	{
 		CastChecked<ARoomVolume>(Actor)->RefreshOverlappingRoomAssignments();
+	}
+}
+
+void AOutlierGameMode::ResetRuntimeCombatStateForRespawn()
+{
+	UWorld* World = GetWorld();
+	if (!HasAuthority() || !World)
+	{
+		return;
+	}
+
+	if (UEnemyRoomSubsystem* EnemyRoomSubsystem =
+		World->GetSubsystem<UEnemyRoomSubsystem>())
+	{
+		EnemyRoomSubsystem->ResetRuntimeCombatState();
+	}
+	if (URoomCombatSubsystem* RoomCombatSubsystem =
+		World->GetSubsystem<URoomCombatSubsystem>())
+	{
+		RoomCombatSubsystem->ResetRuntimeCombatState();
 	}
 }
 

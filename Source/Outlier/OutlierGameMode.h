@@ -141,6 +141,7 @@ private:
 	void CompleteServerArenaReload();
 	// Preset/체크포인트 재로드와 즉시 리스폰이 공유하는 위치 기반 RoomTag 복구.
 	void RefreshRoomOverlapAssignments();
+	void ResetRuntimeCombatStateForRespawn();
 	void TryFinishArenaReload();
 	bool StartCheckpointRestart(AFirstPersonPlayerController* Requester,
 		TFunction<void()> BeforeReload = {});
