@@ -30,6 +30,7 @@ public:
 	UOutlierUpgradeComponent();
 
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	UFUNCTION(BlueprintCallable, Category = "Upgrade")
@@ -159,6 +160,17 @@ private:
 	void RebuildUnlockedNodes();
 	bool ConsumeNodeCost(int32 Cost, AOutlierPlayerState* InPlayerState = nullptr) const;
 	AOutlierPlayerState* GetOwningOutlierPlayerState() const;
+
+	// PS 가 노드 목록의 원본이다. 폰 재생성 없이 PS 만 바뀌어도( Flush / 체크포인트·재접속 복원 )
+	// 사본( ActivatedNodeIds )과 ASC 투영이 따라가도록 PS 변경 통보를 구독한다.
+	void BindPlayerStateNodesChanged(AOutlierPlayerState* PlayerState);
+	void UnbindPlayerStateNodesChanged();
+	void HandlePlayerStateNodesChanged();
+
+	TWeakObjectPtr<AOutlierPlayerState> BoundPlayerState;
+	FDelegateHandle PlayerStateNodesChangedHandle;
+	// 자기 구매를 PS 에 기록하는 동안 돌아오는 통보는 ActivateNodeInternal 이 이어서 처리하므로 무시한다.
+	bool bWritingNodeToPlayerState = false;
 
 	// ── ASC 투영 ──────────────────────────────────────────────
 	UOutlierAbilitySystemComponent* GetOwningAbilitySystem() const;

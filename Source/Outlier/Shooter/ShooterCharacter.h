@@ -590,6 +590,9 @@ protected:
 	void HandleWeaponOverchargeCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleStealthCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void RefreshShooterSuitCooldownUI();
+	// 휠 아이콘 해금( = Grant )을 4개 전부 다시 계산한다. 선택 중인 능력이 잠기면 기본 제공 능력으로 되돌린다.
+	void RefreshShooterSuitGrantUI();
+	bool IsShooterSuitAbilityGranted(const FGameplayTag& AbilityTag) const;
 	void BindPartnerSuitStateObserver();
 	void UnbindPartnerSuitStateObserver();
 	void HandlePartnerRebootTagChanged(const FGameplayTag Tag, int32 NewCount);
@@ -658,6 +661,9 @@ public:
 
 	UFUNCTION()
 	void HandlePresentationWeaponChanged(EWeaponType NewWeaponType);
+
+	UFUNCTION()
+	void HandleUpgradeStateChanged();
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual FVector GetPawnViewLocation() const override;

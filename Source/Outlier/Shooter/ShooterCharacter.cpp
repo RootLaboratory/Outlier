@@ -343,6 +343,10 @@ void AShooterCharacter::BeginPlay()
 	Super::BeginPlay();
 	CaptureInitialPresentation();
 	OnWeaponChanged.AddUniqueDynamic(this, &AShooterCharacter::HandlePresentationWeaponChanged);
+	if (UpgradeComponent)
+	{
+		UpgradeComponent->OnUpgradeStateChanged.AddUniqueDynamic(this, &AShooterCharacter::HandleUpgradeStateChanged);
+	}
 	// Apply the crouched ledge policy after Blueprint defaults have been loaded.
 	GetCharacterMovement()->bCanWalkOffLedges = true;
 	GetCharacterMovement()->bCanWalkOffLedgesWhenCrouching = true;
@@ -350,9 +354,9 @@ void AShooterCharacter::BeginPlay()
 	BindGasVitalityObservers();
 	InitializeGasVitality();
 	InitializeGasSuitAbilities();
-	if (!SelectedAbilityTag.IsValid())
+	if (!SelectedAbilityTag.IsValid() && OutlierAbilitySystemComponent)
 	{
-		SelectedAbilityTag = OutlierGameplayTags::Ability::Shooter::Stealth();
+		SelectedAbilityTag = OutlierAbilitySystemComponent->GetDefaultShooterSuitAbilityTag();
 	}
 
 	RefreshFirstPersonShadowPolicy();
@@ -499,6 +503,10 @@ void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	CancelSuitTransition();
 	OnSuitTransitionPhaseChanged.Clear();
 	OnWeaponChanged.RemoveDynamic(this, &AShooterCharacter::HandlePresentationWeaponChanged);
+	if (UpgradeComponent)
+	{
+		UpgradeComponent->OnUpgradeStateChanged.RemoveDynamic(this, &AShooterCharacter::HandleUpgradeStateChanged);
+	}
 	PopTeleportLayer();
 	PopReflectionBarrierWidget();
 	UnbindPartnerSuitStateObserver();
@@ -1140,6 +1148,77 @@ void AShooterCharacter::RefreshShooterSuitCooldownUI()
 		OutlierAbilitySystemComponent->GetShooterStealthCooldownRemaining());
 }
 
+void AShooterCharacter::HandleUpgradeStateChanged()
+{
+	RefreshShooterSuitGrantUI();
+}
+
+bool AShooterCharacter::IsShooterSuitAbilityGranted(const FGameplayTag& AbilityTag) const
+{
+	// 발동 게이트와 같은 규칙을 쓰되, 근거 태그는 ASC 대신 업그레이드 캐시에서 읽는다.
+	// 캐시는 복제된 노드 목록으로 클라에서 직접 계산되므로 서버 투영 GE 가 도착했는지와 무관하다.
+	return OutlierAbilitySystemComponent
+		&& OutlierAbilitySystemComponent->IsShooterSuitAbilityGranted(
+			AbilityTag,
+			UpgradeComponent && UpgradeComponent->HasUpgradeTag(AbilityTag));
+}
+
+void AShooterCharacter::RefreshShooterSuitGrantUI()
+{
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+
+	AShooterPlayerController* ShooterController = Cast<AShooterPlayerController>(GetController());
+	if (!ShooterController)
+	{
+		return;
+	}
+
+	// 이벤트로 바뀐 것만 반영하지 않고 매번 4개를 전부 다시 계산한다.
+	// 기본 제공 능력은 Grant 이벤트가 오지 않고, 폰 교체 전 위젯 상태도 남아 있기 때문이다.
+	if (UShooterAbilityUI* AbilityUI = ShooterController->AbilityUIInstance)
+	{
+		const FGameplayTag AbilityTags[] =
+		{
+			OutlierGameplayTags::Ability::Shooter::QuantumLeap(),
+			OutlierGameplayTags::Ability::Shooter::BulletReflection(),
+			OutlierGameplayTags::Ability::Shooter::WeaponOvercharge(),
+			OutlierGameplayTags::Ability::Shooter::Stealth(),
+		};
+		for (const FGameplayTag& AbilityTag : AbilityTags)
+		{
+			AbilityUI->SetAbilityUnlocked(AbilityTag, IsShooterSuitAbilityGranted(AbilityTag));
+		}
+	}
+
+	if (!SelectedAbilityTag.IsValid() || IsShooterSuitAbilityGranted(SelectedAbilityTag))
+	{
+		return;
+	}
+
+	// 업그레이드 초기화 등으로 선택 중인 능력의 Grant 가 빠졌다. 기본 제공 능력으로 되돌린다.
+	// 기본 제공 능력이 없으면 되돌릴 곳이 없으므로 선택을 그대로 둔다.
+	const FGameplayTag DefaultAbilityTag = OutlierAbilitySystemComponent
+		? OutlierAbilitySystemComponent->GetDefaultShooterSuitAbilityTag()
+		: FGameplayTag();
+	if (!DefaultAbilityTag.IsValid())
+	{
+		return;
+	}
+
+	SelectedAbilityTag = DefaultAbilityTag;
+	if (ULocalPlayer* LocalPlayer = ShooterController->GetLocalPlayer())
+	{
+		if (ULocalPlayerUISubSystem* UISubsystem = LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>())
+		{
+			UISubsystem->OnCurrentAbilityChanged(SelectedAbilityTag);
+		}
+	}
+	RefreshShooterSuitCooldownUI();
+}
+
 bool AShooterCharacter::HasAcquiredSuit() const
 {
 	const AOutlierPlayerState* OutlierPS = GetPlayerState<AOutlierPlayerState>();
@@ -1176,6 +1255,9 @@ void AShooterCharacter::RefreshShooterSuitUI()
 	{
 		return;
 	}
+
+	// 선택 능력 보정이 아래 OnCurrentAbilityChanged 보다, 해금이 쿨타임 투영( 잠긴 아이콘은 거부 )보다 먼저여야 한다.
+	RefreshShooterSuitGrantUI();
 
 	if (AShooterPlayerController* ShooterController = Cast<AShooterPlayerController>(GetController()))
 	{

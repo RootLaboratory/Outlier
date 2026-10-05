@@ -734,6 +734,10 @@ void AOutlierPlayerState::RestoreReconnectGameplayState(
 	{
 		return;
 	}
+	const bool bUpgradeNodesChanged =
+		ShooterActivatedUpgradeNodeIds != State.ShooterActivatedUpgradeNodeIds
+		|| PartnerActivatedUpgradeNodeIds != State.PartnerActivatedUpgradeNodeIds;
+
 	CheckpointData = State.CheckpointData;
 	NodeCount = State.NodeCount;
 	bStatAllocatorExitPending = State.bStatAllocatorExitPending;
@@ -744,6 +748,12 @@ void AOutlierPlayerState::RestoreReconnectGameplayState(
 	SuitFirstPersonMesh = State.SuitFirstPersonMesh;
 	SuitThirdPersonMesh = State.SuitThirdPersonMesh;
 	LoadoutSnapshot = State.LoadoutSnapshot;
+
+	// 서버는 자기 값 변경에 OnRep 이 오지 않는다. 슈트 UI 갱신이 업그레이드 상태를 읽기 전에 먼저 통보한다.
+	if (bUpgradeNodesChanged)
+	{
+		HandleActivatedUpgradeNodesChanged();
+	}
 	OnRep_AcquiredSuit();
 	ForceNetUpdate();
 }

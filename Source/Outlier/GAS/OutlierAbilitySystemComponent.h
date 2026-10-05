@@ -75,8 +75,11 @@ public:
 	bool UpdateShooterSuitConfig(const FOutlierShooterSuitConfig& Config);
 	bool TryActivateShooterSuitAbility(const FGameplayTag& AbilityTag);
 	bool IsShooterSuitAbilityUpgradeGrantRequired(const FGameplayTag& AbilityTag) const;
-	// 테스트 전용 마스터 스위치( bNoGrantMode ). Shipping 빌드에서는 아예 안 쓰인다.
-	bool IsUpgradeGrantTestModeEnabled() const { return bNoGrantMode; }
+	// Grant 판정 규칙( 기본 제공이거나 Grant 근거가 있으면 통과 ). 근거 태그의 출처는 호출부가 고른다.
+	// 발동 게이트는 ASC 소유 태그를, UI 는 업그레이드 캐시( 클라에서 GE 복제를 기다리지 않음 )를 넘긴다.
+	bool IsShooterSuitAbilityGranted(const FGameplayTag& AbilityTag, bool bHasGrantTag) const;
+	// 기본 제공( Requires...UpgradeGrant == false ) 능력. 기본 선택과 잠김 폴백이 쓴다. 없으면 invalid.
+	FGameplayTag GetDefaultShooterSuitAbilityTag() const;
 	bool IsShooterSuitConfigured() const { return bShooterSuitConfigured; }
 	const FOutlierShooterSuitConfig& GetShooterSuitConfig() const { return ShooterSuitConfig; }
 	const FOutlierShooterSuitConfig& GetBaseShooterSuitConfig() const { return BaseShooterSuitConfig; }
@@ -122,7 +125,7 @@ private:
 	// 이 능력이 업그레이드 트리로 실제 Grant 되어야만 발동하는지. ( 항상 이 의미로 판정됨 - Shipping/에디터 동일 )
 	// true  = Ability.* 태그가 ASC 에 실제로 붙어 있어야 발동 ( GrantAbility 업그레이드 필요 ).
 	// false = 태그 유무와 무관하게 항상 통과 ( 기본 지급 능력 ).
-	// ( UOutlierShooterGameplayAbility::PassesUpgradeGrantGate 참고. bNoGrantMode 가 켜져 있으면
+	// ( IsShooterSuitAbilityGranted 참고. bNoGrantMode 가 켜져 있으면
 	//   에디터/개발 빌드에 한해 이 판정 자체를 통째로 건너뛴다 - 아래 주석 참고 )
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GAS|Shooter Suit|Upgrade Grant", meta = (AllowPrivateAccess = "true"))
 	bool bQuantumLeapRequiresUpgradeGrant = false;
@@ -134,7 +137,7 @@ private:
 	bool bWeaponOverchargeRequiresUpgradeGrant = true;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GAS|Shooter Suit|Upgrade Grant", meta = (AllowPrivateAccess = "true"))
-	bool bStealthRequiresUpgradeGrant = false;
+	bool bStealthRequiresUpgradeGrant = true;
 
 	// 테스트 전용 마스터 스위치. 기본 true.
 	// - Shipping 빌드에서는 이 값을 아예 안 본다 ( 항상 위의 bXRequiresUpgradeGrant 로만 판정 ).

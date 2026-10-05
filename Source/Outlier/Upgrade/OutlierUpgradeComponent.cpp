@@ -6,6 +6,7 @@
 #include "Engine/DataTable.h"
 #include "GameFramework/Controller.h"
 #include "GameFramework/Pawn.h"
+#include "GameFramework/PlayerController.h"
 #include "Net/UnrealNetwork.h"
 #include "OutlierPlayerState.h"
 #include "Shooter/ShooterCharacter.h"
@@ -34,6 +35,12 @@ void UOutlierUpgradeComponent::BeginPlay()
 	}
 
 	RebuildNodeCache();
+}
+
+void UOutlierUpgradeComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	UnbindPlayerStateNodesChanged();
+	Super::EndPlay(EndPlayReason);
 }
 
 void UOutlierUpgradeComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -196,6 +203,14 @@ void UOutlierUpgradeComponent::RefreshActivatedNodesFromPlayerState()
 		return;
 	}
 
+	// PS 노드 배열은 OwnerOnly 복제라 비소유 클라에서는 항상 비어 있다. 거기서 읽으면 복제받은
+	// 사본을 빈 값으로 덮고, 서버 값이 다시 바뀌기 전까지 그대로 남는다. 서버/소유 클라만 읽는다.
+	const APlayerController* OwningController = PlayerState->GetPlayerController();
+	if (!PlayerState->HasAuthority() && !(OwningController && OwningController->IsLocalController()))
+	{
+		return;
+	}
+
 	ActivatedNodeIds = PlayerState->GetActivatedUpgradeNodeIds(Role);
 }
 
@@ -330,6 +345,9 @@ int32 UOutlierUpgradeComponent::GetCurrentNodeCount() const
 
 void UOutlierUpgradeComponent::SyncFromPlayerState()
 {
+	// 빙의/PS 도착 시점마다 불리므로 여기서 구독 대상 PS 도 함께 맞춘다.
+	BindPlayerStateNodesChanged(GetOwningOutlierPlayerState());
+
 	// (1) PS 의 ActivatedNodeIds 를 다시 읽어온다 ( 세이브 로드 / 리스폰 등으로 PS 쪽이 먼저 갱신됐을 수 있음 ).
 	RefreshActivatedNodesFromPlayerState();
 
@@ -342,6 +360,45 @@ void UOutlierUpgradeComponent::SyncFromPlayerState()
 	ReconcileUpgradeProjection();
 
 	OnUpgradeStateChanged.Broadcast();
+}
+
+void UOutlierUpgradeComponent::BindPlayerStateNodesChanged(AOutlierPlayerState* PlayerState)
+{
+	if (BoundPlayerState.Get() == PlayerState)
+	{
+		return;
+	}
+
+	UnbindPlayerStateNodesChanged();
+	if (!PlayerState)
+	{
+		return;
+	}
+
+	BoundPlayerState = PlayerState;
+	PlayerStateNodesChangedHandle = PlayerState->OnActivatedUpgradeNodesChanged.AddUObject(
+		this, &UOutlierUpgradeComponent::HandlePlayerStateNodesChanged);
+}
+
+void UOutlierUpgradeComponent::UnbindPlayerStateNodesChanged()
+{
+	if (AOutlierPlayerState* PlayerState = BoundPlayerState.Get())
+	{
+		PlayerState->OnActivatedUpgradeNodesChanged.Remove(PlayerStateNodesChangedHandle);
+	}
+
+	BoundPlayerState.Reset();
+	PlayerStateNodesChangedHandle.Reset();
+}
+
+void UOutlierUpgradeComponent::HandlePlayerStateNodesChanged()
+{
+	if (bWritingNodeToPlayerState)
+	{
+		return;
+	}
+
+	SyncFromPlayerState();
 }
 
 void UOutlierUpgradeComponent::ServerTryActivateNode_Implementation(FName NodeIdOrRowName)
@@ -408,7 +465,10 @@ bool UOutlierUpgradeComponent::ActivateNodeInternal(FName NodeIdOrRowName, AOutl
 	AOutlierPlayerState* PersistentPlayerState = InPlayerState ? InPlayerState : GetOwningOutlierPlayerState();
 	if (PersistentPlayerState && PersistentPlayerState->HasAuthority())
 	{
-		PersistentPlayerState->AddActivatedUpgradeNode(Role, RowName);
+		{
+			TGuardValue<bool> WritingGuard(bWritingNodeToPlayerState, true);
+			PersistentPlayerState->AddActivatedUpgradeNode(Role, RowName);
+		}
 		ActivatedNodeIds = PersistentPlayerState->GetActivatedUpgradeNodeIds(Role);
 	}
 	else
