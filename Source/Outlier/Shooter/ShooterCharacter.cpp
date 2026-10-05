@@ -534,6 +534,21 @@ void AShooterCharacter::PossessedBy(AController* NewController)
 {
 	Super::PossessedBy(NewController);
 	RefreshAbilitySystemActorInfo();
+	// PS 업그레이드가 ASC에 반영된 최종 최대치로 리로드 쉴드를 한 번만 채운다.
+	if (HasAuthority() && bPendingReloadShieldFill
+		&& GetPlayerState<AOutlierPlayerState>() && OutlierAbilitySystemComponent)
+	{
+		bPendingReloadShieldFill = false;
+		const float MissingShield = FMath::Max(GetMaxShield() - GetCurShield(), 0.0f);
+		if (MissingShield > 0.0f
+			&& !OutlierAbilitySystemComponent->ApplyShieldRecoveryToSelf(MissingShield))
+		{
+			UE_LOG(LogOutlier, Warning,
+				TEXT("[ReloadShield] Failed to fill shield after upgrade projection Pawn=%s MissingShield=%.2f"),
+				*GetNameSafe(this), MissingShield);
+		}
+		ForceNetUpdate();
+	}
 	RefreshPresentationFromPlayerState();
 
 	RefreshFirstPersonShadowPolicy();
@@ -547,6 +562,7 @@ void AShooterCharacter::OnRep_Controller()
 	RefreshShooterSuitCooldownUI();
 
 	RefreshFirstPersonShadowPolicy();
+	RefreshShooterSuitUI();
 }
 
 void AShooterCharacter::OnRep_PlayerState()
@@ -558,11 +574,20 @@ void AShooterCharacter::OnRep_PlayerState()
 	{
 		RefreshReplicatedPresentation();
 	}
+	RefreshShooterSuitUI();
 }
 
 UAbilitySystemComponent* AShooterCharacter::GetAbilitySystemComponent() const
 {
 	return OutlierAbilitySystemComponent;
+}
+
+void AShooterCharacter::ArmReloadShieldFillOnPossess()
+{
+	if (HasAuthority())
+	{
+		bPendingReloadShieldFill = true;
+	}
 }
 
 float AShooterCharacter::GetCurPartnerShield() const
@@ -1267,20 +1292,13 @@ void AShooterCharacter::RefreshShooterSuitUI()
 
 	if (AShooterPlayerController* ShooterController = Cast<AShooterPlayerController>(GetController()))
 	{
-		const AOutlierPlayerState* OutlierPS = GetPlayerState<AOutlierPlayerState>();
-		const bool bSuitAcquired = OutlierPS && OutlierPS->GetAcquiredSuit();
-		ShooterController->ControlMainWidget(bSuitAcquired);
+		ShooterController->RefreshShooterSuitHUDFromPlayerState();
 
 		if (ULocalPlayerUISubSystem* UISubsystem = ShooterController->GetLocalPlayer()
 			? ShooterController->GetLocalPlayer()->GetSubsystem<ULocalPlayerUISubSystem>()
 			: nullptr)
 		{
 			UISubsystem->OnCurrentAbilityChanged(SelectedAbilityTag);
-
-			// 서브시스템에도 슈트 상태를 알린다. 여기가 빠져 있어서 Shooter 클라에서는
-			// bShooterSuitAcquired 가 계속 false 였고, 크로스헤어 갱신이 통째로 막혀 있었다.
-			// (MainWidget 게이트는 PlayerState 를 직접 읽어서 따로 동작했다.)
-			UISubsystem->OnShooterSuitAcquiredChanged(bSuitAcquired);
 
 			// 캐릭터가 교체되면 이전 캐릭터의 과충전 해제 신호가 오지 않을 수 있어 현재 태그로 다시 맞춘다.
 			UISubsystem->OnRep_WeaponOverchargeChanged(

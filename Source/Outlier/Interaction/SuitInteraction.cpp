@@ -6,9 +6,10 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Drone/Partner/PartnerCharacter.h"
+#include "Engine/GameInstance.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/World.h"
 #include "Interaction/InteractableComponent.h"
-#include "Save/OutlierCheckpointSnapshot.h"
 #include "Save/OutlierSaveSubSystem.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Shooter/ShooterInventoryComponent.h"
@@ -42,15 +43,14 @@ void ASuitInteraction::BeginPlay()
 
 	if (HasAuthority())
 	{
-		// 체크포인트 복원 시 Gameplay 서브레벨의 이 액터가 다시 생성된다.
-		// 저장 시점에 슈트를 이미 획득했다면 재지급할 무기를 만들지 않고 제거한다.
+		// Gameplay 리로드 전에 서버 PS에서 주입한 현재 상태로 판단한다.
+		// Preset은 PS를 유지하므로 과거 체크포인트의 슈트 상태를 직접 읽으면 안 된다.
 		// 서버의 제거가 클라이언트에도 복제되어 표시와 상호작용이 함께 사라진다.
-		FOutlierCheckpointSnapshot Snapshot;
 		const UOutlierSaveSubSystem* SaveSubsystem = GetGameInstance()
 			? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>()
 			: nullptr;
-		if (SaveSubsystem && SaveSubsystem->GetRestoreSnapshot(Snapshot)
-			&& Snapshot.SuitSnapshot.bAcquired)
+		const bool bCurrentSuitAcquired = SaveSubsystem && SaveSubsystem->IsCurrentSuitAcquired();
+		if (bCurrentSuitAcquired)
 		{
 			Destroy();
 			return;

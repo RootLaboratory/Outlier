@@ -116,6 +116,10 @@ public:
 	UFUNCTION(Client, Reliable)
 	void BeginGameOverRespawnTransition();
 
+	// 체크포인트 재시작이 확정된 뒤 GameOver 이어하기와 같은 암막으로 덮는다. 해제는 새 Pawn Possess에서 한다.
+	UFUNCTION(Client, Reliable)
+	void ClientBeginCheckpointRestartTransition();
+
 	UFUNCTION(Client, Reliable)
 	void ClientRestoreGameOverSelection(const FGuid& RoundId);
 

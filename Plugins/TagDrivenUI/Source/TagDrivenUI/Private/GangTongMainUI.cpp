@@ -54,9 +54,6 @@ void UGangTongMainUI::ModuleInit()
 		SetModuleActive(Module.Value, true);
 	}
 
-	// 슈트 착용이 확인되기 전까지 ModuleLayer 전체를 숨겨둔다.
-	SetSuitGatedModulesEnabled(false);
-
 	if (UEventDrivenUI* PartnerCamModule = GetModule(TagDrivenUITags::Partner::PartnerCam()))
 	{
 		// 모듈은 Activate로 마운트(토글 동작 위해 bHudActive=true 필요).
@@ -64,8 +61,8 @@ void UGangTongMainUI::ModuleInit()
 		// 단 슈트 게이트를 우회하면 안 되므로 게이트를 존중하는 쪽으로 켠다.
 		SetModuleActive(PartnerCamModule, true);
 	}
-
-	InitHudImageOnly();
+	// 슈트 상태가 전달되기 전에는 Image_Hud만 표시한다.
+	SetSuitGatedModulesEnabled(false);
 }
 
 void UGangTongMainUI::InitHudImageOnly()
@@ -102,15 +99,18 @@ void UGangTongMainUI::InitHudImageOnly()
 
 void UGangTongMainUI::SetSuitGatedModulesEnabled(bool bEnabled)
 {
+	if (!bEnabled)
+	{
+		if (!bHudImageInitialized)
+		{
+			ModulesControl(false);
+			InitHudImageOnly();
+		}
+		return;
+	}
+
 	if (!InitialHudWidgetVisibilities.IsEmpty())
 	{
-		// 초기 UI 등록에서 반복되는 미착용 상태는 최초 이미지 표시를 지우지 않는다.
-		// 해킹/EMP 등의 전체 숨김은 기존 ModulesControl(false)가 부모까지 숨긴다.
-		if (!bEnabled)
-		{
-			return;
-		}
-
 		for (const TPair<TObjectPtr<UWidget>, ESlateVisibility>& Entry : InitialHudWidgetVisibilities)
 		{
 			if (Entry.Key)
@@ -120,6 +120,8 @@ void UGangTongMainUI::SetSuitGatedModulesEnabled(bool bEnabled)
 		}
 		InitialHudWidgetVisibilities.Empty();
 	}
+	// 리로드 등으로 슈트가 해제되면 이미지 전용 상태를 다시 적용할 수 있어야 한다.
+	bHudImageInitialized = false;
 
 	// Shooter 와 같은 흐름 — ModuleLayer만 제어하고 자식의 개별 상태는 보존한다.
 	// (AFirstPersonPlayerController::ControlMainWidget 이 Shooter 쪽에서 하는 것과 동일)

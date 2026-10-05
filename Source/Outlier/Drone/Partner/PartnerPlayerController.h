@@ -75,6 +75,7 @@ protected:
 	void BindPlayerStateDelegates();
 	void UnbindPlayerStateDelegates();
 	void HandlePlayerCharactersChanged(AOutlierPlayerState* ChangedPlayerState);
+	void HandleAcquiredSuitChanged(AOutlierPlayerState* ChangedPlayerState);
 	void BindShooterCharacterDelegatesFromPlayerState();
 	void UnbindShooterCharacterDelegates();
 	void RefreshShooterVitalityUI();
@@ -171,6 +172,9 @@ protected:
 
 public:
 	APartnerPlayerController();
+
+	// HUD 슈트 상태는 빙의된 Pawn 대신 이 Controller의 PlayerState를 기준으로 한다.
+	void RefreshPartnerSuitUI();
 
 	UPROPERTY(BlueprintAssignable, Category = "Partner|EnemyPossession")
 	FOnPartnerPossessionStateChanged OnPartnerPossessionStateChanged;

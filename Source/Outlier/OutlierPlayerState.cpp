@@ -10,6 +10,7 @@
 #include "GameFramework/GameStateBase.h"
 #include "Net/UnrealNetwork.h"
 #include "Network/OutlierArenaSubsystem.h"
+#include "Save/OutlierSaveSubSystem.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Drone/Partner/PartnerCharacter.h"
 
@@ -615,6 +616,12 @@ void AOutlierPlayerState::SetAcquiredSuit(bool Acquire)
 
 	if (bHasAcquiredSuit == Acquire)
 	{
+		// 같은 값으로 복원해도 초기화된 Subsystem의 현재 상태를 다시 맞춘다.
+		if (UOutlierSaveSubSystem* SaveSubsystem = GetGameInstance()
+			? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>() : nullptr)
+		{
+			SaveSubsystem->SyncCurrentSuitState(this);
+		}
 		return;
 	}
 
@@ -631,10 +638,19 @@ void AOutlierPlayerState::SetAcquiredSuit(bool Acquire)
 
 void AOutlierPlayerState::OnRep_AcquiredSuit()
 {
+	// 로컬 Controller는 Pawn 연결 여부와 무관하게 자기 PS의 슈트 상태를 읽는다.
+	OnAcquiredSuitChanged.Broadcast(this);
+
 	// 획득 권위는 PlayerState에 두고, 서버만 Pawn의 외형 선택으로 투영한다.
 	// 클라이언트는 Pawn의 PresentationState를 사용해 두 Actor의 복제 도착 순서에 의존하지 않는다.
 	if (HasAuthority())
 	{
+		// 획득/체크포인트 복원/재접속 모두 서버 PS의 확정 값을 현재 매치 상태에 투영한다.
+		if (UOutlierSaveSubSystem* SaveSubsystem = GetGameInstance()
+			? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>() : nullptr)
+		{
+			SaveSubsystem->SyncCurrentSuitState(this);
+		}
 		if (AShooterCharacter* Shooter = GetShooterCharacter())
 		{
 			Shooter->RefreshPresentationFromPlayerState();

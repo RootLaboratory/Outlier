@@ -2,6 +2,7 @@
 
 
 #include "Save/OutlierSaveSubSystem.h"
+#include "OutlierPlayerState.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "HAL/FileManager.h"
@@ -112,6 +113,7 @@ void UOutlierSaveSubSystem::ResetRuntimeCheckpointState()
 	InitialSnapshot = FOutlierCheckpointSnapshot();
 	bHasLatestCheckpointSnapshot = false;
 	LatestCheckpointSnapshot = FOutlierCheckpointSnapshot();
+	bCurrentSuitAcquired = false;
 	CurrentWorldProgress.Reset();
 	CurrentRoomPhaseProgress.Reset();
 	CurrentDestroyedTurretIds.Reset();
@@ -378,6 +380,16 @@ void UOutlierSaveSubSystem::ResetCommittedCheckpointIds()
 {
 	// 마지막 체크포인트 스냅샷은 유지한다. 같은 체크포인트를 새 진행에서 다시 저장할 수 있게 목록만 비운다.
 	CommittedCheckpointIds.Reset();
+}
+
+void UOutlierSaveSubSystem::SyncCurrentSuitState(const AOutlierPlayerState* ShooterPlayerState)
+{
+	if (!ShooterPlayerState || !ShooterPlayerState->HasAuthority() || !ShooterPlayerState->IsShooterPlayer())
+	{
+		return;
+	}
+
+	bCurrentSuitAcquired = ShooterPlayerState->GetAcquiredSuit();
 }
 
 bool UOutlierSaveSubSystem::SetWorldProgressState(

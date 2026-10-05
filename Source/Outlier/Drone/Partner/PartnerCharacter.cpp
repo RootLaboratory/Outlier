@@ -2,6 +2,7 @@
 
 
 #include "Drone/Partner/PartnerCharacter.h"
+#include "Drone/Partner/PartnerPlayerController.h"
 #include "Drone/Partner/PartnerInputConfig.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
@@ -345,23 +346,10 @@ void APartnerCharacter::RefreshPartnerCooldownUI()
 
 void APartnerCharacter::RefreshPartnerSuitUI()
 {
-	if (!IsLocallyControlled())
+	if (APartnerPlayerController* PartnerController = Cast<APartnerPlayerController>(GetController()))
 	{
-		return;
+		PartnerController->RefreshPartnerSuitUI();
 	}
-
-	APlayerController* PlayerController = Cast<APlayerController>(GetController());
-	ULocalPlayer* LocalPlayer = PlayerController ? PlayerController->GetLocalPlayer() : nullptr;
-	ULocalPlayerUISubSystem* UISubsystem = LocalPlayer
-		? LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>()
-		: nullptr;
-	if (!UISubsystem)
-	{
-		return;
-	}
-
-	const AOutlierPlayerState* OutlierPS = GetPlayerState<AOutlierPlayerState>();
-	UISubsystem->OnShooterSuitAcquiredChanged(OutlierPS && OutlierPS->IsPairSuitAcquired());
 }
 
 void APartnerCharacter::NotifyPartnerCooldownUI(const FGameplayTag& CooldownTag)

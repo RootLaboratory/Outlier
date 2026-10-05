@@ -8,6 +8,8 @@
 #include "Save/OutlierCheckpointSnapshot.h"
 #include "OutlierSaveSubSystem.generated.h"
 
+class AOutlierPlayerState;
+
 /**
  * 
  */
@@ -35,6 +37,10 @@ public:
 	bool HasCommittedCheckpoint(FName CheckpointId) const;
 	// 프리셋/디버그 재로드처럼 새 진행을 시작할 때 비운다. 체크포인트 Actor는 BeginPlay에서 이 목록을 읽는다.
 	void ResetCommittedCheckpointIds();
+
+	// 저장 스냅샷과 별개인 현재 매치 상태. 서버 Shooter PS가 확정된 뒤, Gameplay 로드 전에 주입한다.
+	void SyncCurrentSuitState(const AOutlierPlayerState* ShooterPlayerState);
+	bool IsCurrentSuitAcquired() const { return bCurrentSuitAcquired; }
 
 	bool SetWorldProgressState(EOutlierWorldProgressType Type, FName ProgressId, bool bCompleted);
 	bool HasWorldProgress(EOutlierWorldProgressType Type, FName ProgressId) const;
@@ -90,6 +96,9 @@ private:
 
 	UPROPERTY(Transient)
 	FOutlierCheckpointSnapshot LatestCheckpointSnapshot;
+
+	UPROPERTY(Transient)
+	bool bCurrentSuitAcquired = false;
 
 	UPROPERTY(Transient)
 	FOutlierWorldProgressSnapshot CurrentWorldProgress;

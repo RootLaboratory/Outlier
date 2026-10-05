@@ -11,6 +11,7 @@
 
 
 class AShooterCharacter;
+class AOutlierPlayerState;
 class ULocalPlayerUISubSystem;
 class UOutlierAbilitySystemComponent;
 struct FGameplayTag;
@@ -36,6 +37,13 @@ protected:
 	/** Gameplay initialization */
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	virtual void OnRep_PlayerState() override;
+	void BindSuitPlayerStateDelegates();
+	void UnbindSuitPlayerStateDelegates();
+	void HandleAcquiredSuitChanged(AOutlierPlayerState* ChangedPlayerState);
+
+	UPROPERTY()
+	TObjectPtr<AOutlierPlayerState> BoundSuitPlayerState;
 
 	/** Input mapping context setup */
 	virtual void SetupInputComponent() override;
@@ -84,6 +92,9 @@ protected:
 
 public:
 	AShooterPlayerController();
+
+	// 슈트 HUD 표시는 Pawn 연결 순서와 무관하게 자기 PS에서 읽어 적용한다.
+	void RefreshShooterSuitHUDFromPlayerState();
 
 	UFUNCTION(Client, Reliable)
 	void ClientNotifyMeleeTargeted(AActor* Target, AShooterCharacter* SourceShooter, bool bTargeted);
