@@ -518,6 +518,19 @@ bool UOutlierAudioSubsystem::StopTaggedAtLocationFromServer(
 		return false;
 	}
 
+	// 정책은 DA가 정한다. OneShot 은 루프로 등록되지 않아 끌 수 없으므로, 코드 기대와 어긋난 DA를 알린다.
+	if (Entry->PlaybackPolicy == EOutlierAudioPlaybackPolicy::OneShot)
+	{
+		UE_LOG(
+			LogOutlier,
+			Error,
+			TEXT("[Audio] Stop requested for a OneShot definition; set its PlaybackPolicy to Loop. Source=%s Context=%s Emitter=%s"),
+			*Entry->SourceName,
+			*ContextTag.ToString(),
+			*GetNameSafe(EmitterActor));
+		return false;
+	}
+
 	const FGameplayTag LoopContextTag = Entry->LoopContextTag.IsValid()
 		? Entry->LoopContextTag
 		: Entry->RequiredContext;
@@ -1223,8 +1236,9 @@ bool UOutlierAudioSubsystem::RouteRelevant(
 			*GetNameSafe(PlayerController),
 			ResolvedPlay.bAtLocation,
 			*FVector(ResolvedPlay.Location).ToCompactString(),
-			ApproximateDistance);
-		++DeliveryCount;*/
+			ApproximateDistance);*/
+		// 0으로 남으면 PlayAudio 가 전달 실패로 보고 루프 등록을 지워, 이후 Stop 과 StopLoopThenOneShot 이 모두 무시된다.
+		++DeliveryCount;
 	}
 
 	if (DeliveryCount == 0)

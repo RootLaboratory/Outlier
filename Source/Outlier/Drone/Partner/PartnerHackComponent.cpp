@@ -1186,6 +1186,8 @@ void UPartnerHackComponent::HandleHackTargetInvalidated(
 	{
 		ClientAbortHackForInvalidTarget();
 		DefaultWidgetControl(false);
+		// 알리지 않으면 해킹 어빌리티가 끝나지 않아 시도 루프 사운드와 Partner 스킬 차단이 남는다.
+		OnHackFinished.Broadcast(EHackResult::Cancelled, false);
 	}
 }
 
