@@ -1170,6 +1170,30 @@ void AOutlierGameMode::OnClientGameOverUnavailable(
 	}
 }
 
+void AOutlierGameMode::OnClientGameOverPendingUnavailable(
+	AFirstPersonPlayerController* Controller, const FGuid& RoundId, const FGuid& ProposalId)
+{
+	if (!HasAuthority() || !Controller || !GameOverWorldPause.Contains(Controller)
+		|| GameOverWorldPause.IsTransitioning() || GameOverWorldPause.GetRoundId() != RoundId)
+	{
+		return;
+	}
+	const AOutlierPlayerState* PlayerState = Controller->GetPlayerState<AOutlierPlayerState>();
+	FGameOverPendingServerState* State = PlayerState
+		? GameOverPendingByPair.Find(PlayerState->GetPairId()) : nullptr;
+	if (!State || !State->Request.MatchesProposal(RoundId, ProposalId)
+		|| (State->Requester.Get() != Controller && State->Responder.Get() != Controller))
+	{
+		return;
+	}
+	// 표시 실패는 현재 제안만 거절한다. 사망 흐름과 정지는 유지해 양쪽이 다시 선택할 수 있다.
+	const FGameOverPendingServerState FailedState = *State;
+	GameOverPendingByPair.Remove(PlayerState->GetPairId());
+	UE_LOG(LogTemp, Warning, TEXT("[GameOver] Pending UI unavailable; proposal cancelled Round=%s Proposal=%s"),
+		*RoundId.ToString(), *ProposalId.ToString());
+	FinishGameOverPending(FailedState, false);
+}
+
 bool AOutlierGameMode::RequestGameOverPendingChoice(
 	AFirstPersonPlayerController* Requester,
 	const FGameOverPendingRequest& Request)
@@ -1242,7 +1266,12 @@ bool AOutlierGameMode::RequestGameOverPendingChoice(
 
 	GameOverPendingByPair.Add(RequesterPS->GetPairId(), State);
 	Requester->ShowGameOverPendingFromServer(State.Request, true);
-	Responder->ShowGameOverPendingFromServer(State.Request, false);
+	// 로컬 RPC의 실패 통보는 즉시 돌아올 수 있다. 이미 취소한 제안은 상대에게 표시하지 않는다.
+	if (const FGameOverPendingServerState* Current = GameOverPendingByPair.Find(RequesterPS->GetPairId());
+		Current && Current->Request.MatchesProposal(State.Request.RoundId, State.Request.ProposalId))
+	{
+		Responder->ShowGameOverPendingFromServer(State.Request, false);
+	}
 	return true;
 }
 
@@ -1334,7 +1363,7 @@ bool AOutlierGameMode::ExecuteGameOverSelection(
 	}
 	else if (Request.Choice == EGameOverPendingChoice::Continue)
 	{
-		if ((!ShooterClass && !DefaultPawnClass) || !PartnerClass)
+		if (!ShooterClass || !PartnerClass)
 		{
 			return false;
 		}
@@ -1351,14 +1380,16 @@ bool AOutlierGameMode::ExecuteGameOverSelection(
 	{
 		return false;
 	}
-	const bool bCheckpointTest = PresetStageId == OutlierPresetStageIds::CheckpointTest;
-	if (bCheckpointTest && CheckpointRestartVote.GetState() != EOutlierCheckpointRestartVoteState::Idle)
+	const bool bCheckpointRestart = Request.Choice == EGameOverPendingChoice::Continue
+		|| PresetStageId == OutlierPresetStageIds::CheckpointTest;
+	if (bCheckpointRestart && CheckpointRestartVote.GetState() != EOutlierCheckpointRestartVoteState::Idle)
 	{
 		return false;
 	}
-	if (bCheckpointTest)
+	if (bCheckpointRestart)
 	{
-		// Level04는 Dev의 체크포인트 복원 테스트다. 프리셋 초기화 없이 저장 당시 상태를 되돌린다.
+		// 이어하기도 기존 체크포인트 리로드를 사용한다. 저장 상태와 Door/전투 Actor를 함께 복원한다.
+		// GameOver 선택은 이미 확정됐으므로 추가 투표 없이, 사전 검증 후에만 정지를 해제한다.
 		bCheckpointRestartInProgress = true;
 		LastCheckpointRestartVoteResult = EOutlierCheckpointRestartVoteState::Restarting;
 		if (!StartCheckpointRestart(Requester, [this]() { return BeginGameOverTransition(); }))
@@ -1377,13 +1408,6 @@ bool AOutlierGameMode::ExecuteGameOverSelection(
 
 	switch (Request.Choice)
 	{
-	case EGameOverPendingChoice::Continue:
-		if (!RespawnPairAtCheckpoint(Requester))
-		{
-			RestoreGameOverSelection();
-			return false;
-		}
-		break;
 	case EGameOverPendingChoice::PresetLevel:
 		if (!RequestPresetRespawn(Requester, PresetStageId))
 		{

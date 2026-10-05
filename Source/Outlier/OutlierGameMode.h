@@ -102,6 +102,8 @@ public:
 		const FGuid& RoundId, const FGuid& ProposalId, bool bApprove);
 	void OnClientGameOverReady(AFirstPersonPlayerController* Controller, const FGuid& RoundId);
 	void OnClientGameOverUnavailable(AFirstPersonPlayerController* Controller, const FGuid& RoundId);
+	void OnClientGameOverPendingUnavailable(AFirstPersonPlayerController* Controller,
+		const FGuid& RoundId, const FGuid& ProposalId);
 	bool IsGameOverSelectionActive() const { return GameOverWorldPause.IsActive(); }
 	void CancelGameOverPendingForDisconnect(AController* Exiting);
 	bool BeginSettingsPause(AFirstPersonPlayerController* Controller, AActor* LayerOwner,
@@ -149,6 +151,7 @@ public:
 
 
 private:
+	friend class FOutlierGameOverPendingFailureTest;
 	bool BeginGameOverTransition();
 	void RestoreGameOverSelection();
 	void FinishGameOverFlow();

@@ -245,6 +245,9 @@ public:
 	void ServerNotifyGameOverUnavailable(const FGuid& RoundId);
 
 	UFUNCTION(Server, Reliable)
+	void ServerNotifyGameOverPendingUnavailable(const FGuid& RoundId, const FGuid& ProposalId);
+
+	UFUNCTION(Server, Reliable)
 	void ServerRequestGameOverPendingChoice(const FGameOverPendingRequest& Request);
 
 	UFUNCTION(Server, Reliable)

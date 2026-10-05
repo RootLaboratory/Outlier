@@ -46,6 +46,7 @@ UCLASS()
 class RDG_API ULocalPlayerPostProcessSubsystem : public ULocalPlayerSubsystem, public FTickableGameObject
 {
 	GENERATED_BODY()
+	friend class FOutlierGameOverPostProcessPauseTest;
 	
 public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;

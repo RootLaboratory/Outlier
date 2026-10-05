@@ -340,10 +340,19 @@ void AFirstPersonPlayerController::ClientShowGameOverPending_Implementation(
 	}
 	if (UGameOverWidget* GameOver = FindGameOverWidget())
 	{
-		GameOver->ShowPendingRequest(Request, bIsRequester);
+		if (!GameOver->ShowPendingRequest(Request, bIsRequester))
+		{
+			ServerNotifyGameOverPendingUnavailable(Request.RoundId, Request.ProposalId);
+		}
 		return;
 	}
-	// 사망 연출이 끝나기 전에 상대 요청이 도착할 수 있으므로 화면 생성까지 보관한다.
+	// 이미 준비 완료한 화면이 사라졌다면 재생성 콜백을 기다리지 않고 현재 제안을 취소한다.
+	if (bGameOverReadySent)
+	{
+		ServerNotifyGameOverPendingUnavailable(Request.RoundId, Request.ProposalId);
+		return;
+	}
+	// 화면 준비 전 요청은 기존 생성 경로가 처리할 수 있도록 보관한다.
 	QueuedGameOverPendingRequest = Request;
 	bQueuedGameOverPendingRequester = bIsRequester;
 	bHasQueuedGameOverPendingRequest = true;
@@ -714,6 +723,13 @@ void AFirstPersonPlayerController::PushGameOverWidget()
 			{
 				bHasQueuedGameOverPendingRequest = false;
 			}
+			else
+			{
+				// 현재 제안만 취소하게 한다. 원본 GameOver의 준비 통보는 아래에서 그대로 진행한다.
+				bHasQueuedGameOverPendingRequest = false;
+				ServerNotifyGameOverPendingUnavailable(
+					QueuedGameOverPendingRequest.RoundId, QueuedGameOverPendingRequest.ProposalId);
+			}
 		}
 	}
 
@@ -752,6 +768,15 @@ void AFirstPersonPlayerController::ServerNotifyGameOverReady_Implementation(cons
 	if (AOutlierGameMode* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr)
 	{
 		GM->OnClientGameOverReady(this, RoundId);
+	}
+}
+
+void AFirstPersonPlayerController::ServerNotifyGameOverPendingUnavailable_Implementation(
+	const FGuid& RoundId, const FGuid& ProposalId)
+{
+	if (AOutlierGameMode* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr)
+	{
+		GM->OnClientGameOverPendingUnavailable(this, RoundId, ProposalId);
 	}
 }
 
