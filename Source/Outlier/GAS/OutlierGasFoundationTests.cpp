@@ -16,6 +16,7 @@
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "Enemy/AutoTurret.h"
 #include "Enemy/EnemyBase.h"
 #include "Enemy/EnemyTargetRules.h"
@@ -158,7 +159,14 @@ bool FOutlierGasEnemyPossessPendingStateTest::RunTest(const FString& Parameters)
 
 	FHackQueryContext QueryContext;
 	QueryContext.InstigatorActor = Partner;
+	Enemy->GetCharacterMovement()->SetMovementMode(MOVE_Flying);
+	Enemy->GetCharacterMovement()->Velocity = FVector(300.0f, 150.0f, 200.0f);
+	Enemy->AddMovementInput(FVector::UpVector, 1.0f, true);
 	Enemy->HandleHackStarted(QueryContext);
+	TestTrue(TEXT("Hack start stops flight velocity immediately"), Enemy->GetVelocity().IsNearlyZero());
+	TestTrue(TEXT("Hack start clears pending flight input"), Enemy->GetPendingMovementInputVector().IsNearlyZero());
+	TestEqual(TEXT("Hack start preserves flying movement mode"),
+		static_cast<EMovementMode>(Enemy->GetCharacterMovement()->MovementMode), MOVE_Flying);
 	TestTrue(TEXT("Hack start applies PossessPending through ASC"), Enemy->IsPossessionInProgress());
 	TestEqual(TEXT("PossessPending GE grants exactly one tag"), EnemyASC->GetGameplayTagCount(PossessPendingTag), 1);
 	TestFalse(

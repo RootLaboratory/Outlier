@@ -4,6 +4,7 @@
 #include "Shooter/ShooterCharacter.h"
 #include "Shooter/ShooterCombatComponent.h"
 #include "Weapon/RangedWeaponBase.h"
+#include "Weapon/FirstPickupDiagnostics.h"
 #include "Net/UnrealNetwork.h"
 #include "OutlierNetUtils.h"
 #include "OutlierPlayerState.h"
@@ -429,6 +430,7 @@ void UShooterInventoryComponent::CancelPendingWeaponSwitch()
 void UShooterInventoryComponent::ApplyWeaponToSlot(
 	AWeaponBase* Weapon, EWeaponSlot Slot, bool bPlayEquipPresentation)
 {
+	OutlierFirstPickup::FScope Scope(TEXT("ApplyWeaponToSlot"), Weapon);
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 	if (!ShooterCharacter || !IsValidWeaponSlot(Slot))
 	{

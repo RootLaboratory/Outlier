@@ -11,7 +11,9 @@
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "Misc/AutomationTest.h"
+#if WITH_EDITOR
 #include "Misc/DataValidation.h"
+#endif
 #include "Network/OutlierArenaSubsystem.h"
 #include "Room/RoomTagComponent.h"
 
@@ -254,6 +256,7 @@ bool FEnemyAdaptationDefinitionValidationTest::RunTest(const FString& Parameters
 		Definition->ResolveGunDamageMultiplier(10), 0.5f);
 	TestEqual(TEXT("Shield break damage is disabled by default"),
 		Definition->ShieldBreakDamage, 0.0f);
+#if WITH_EDITOR
 	{
 		FDataValidationContext Context;
 		TestEqual(TEXT("Default adaptation settings are valid"),
@@ -290,6 +293,7 @@ bool FEnemyAdaptationDefinitionValidationTest::RunTest(const FString& Parameters
 		TestEqual(TEXT("Negative shield break damage is rejected"),
 			Definition->IsDataValid(Context), EDataValidationResult::Invalid);
 	}
+#endif
 
 	return true;
 }

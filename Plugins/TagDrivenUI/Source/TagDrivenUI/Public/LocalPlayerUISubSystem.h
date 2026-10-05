@@ -42,6 +42,7 @@ public:
 	void OnRep_ShieldChanged( float InCurShield ,  float InMaxShield);
 	void OnRep_AmmoCountChanged(int32 InCurrentAmmo, int32 InMaxAmmo);
 	void OnRep_WeaponOverchargeChanged(bool bActive);
+	void OnRep_InfiniteAmmoDisplayChanged(bool bActive);
 	void OnDamageFeedback(AActor* DamagedCharacter, const FVector& DamageOrigin);
 
 	// Shooter 의 슈트 획득 상태가 바뀌었을 때 로컬 화면에 반영한다.
@@ -86,6 +87,7 @@ private:
 	int32 CachedAmmoCount = 0;
 	int32 CachedMaxAmmo = 0;
 	bool bCachedWeaponOvercharge = false;
+	bool bCachedInfiniteAmmoDisplay = false;
 
 	// 슈트 획득 신호는 MainUI 가 생기기 전에 도착할 수 있다(OnRep 은 값이 바뀌는 순간 한 번뿐).
 	// 마지막 상태를 들고 있다가 RegisterMainUI 에서 새 위젯에 그대로 물려준다.

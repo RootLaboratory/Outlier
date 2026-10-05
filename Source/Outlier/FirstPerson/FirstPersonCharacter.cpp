@@ -19,6 +19,7 @@
 #include "InputActionValue.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Weapon/WeaponBase.h"
+#include "Weapon/FirstPickupDiagnostics.h"
 #include "Net/UnrealNetwork.h"
 #include "Engine/OverlapResult.h"
 #include "OutlierNetUtils.h"
@@ -629,6 +630,7 @@ void AFirstPersonCharacter::TryStopAttack()
 
 void AFirstPersonCharacter::EquipWeapon(AWeaponBase* Weapon)
 {
+	OutlierFirstPickup::FScope Scope(TEXT("EquipLifecycleAndDelegates"), Weapon);
 	if (CurrentWeapon == Weapon)
 	{
 		UE_LOG(

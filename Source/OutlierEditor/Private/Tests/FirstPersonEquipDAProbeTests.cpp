@@ -11,6 +11,8 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "HAL/IConsoleManager.h"
+#include "HAL/FileManager.h"
+#include "HAL/PlatformTime.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/DateTime.h"
 #include "Misc/FileHelper.h"
@@ -22,6 +24,7 @@
 #include "Shooter/ShooterInventoryComponent.h"
 #include "UObject/UnrealType.h"
 #include "Weapon/RangedWeaponBase.h"
+#include "Weapon/FirstPickupDiagnostics.h"
 
 namespace
 {
@@ -33,22 +36,7 @@ enum class EProbeVariant : uint8
 	NoBlend,
 	Baseline,
 	SourceDA,
-	SourceHip,
-	SourceRightEquip,
-	SourceLeftEquip,
-	// 무기가 ik_hand_gun에 붙으므로 오른손 IK만 옮기는 Equip 오프셋은 손-총 분리를 만든다. 0 적용 효과를 보간 ON/OFF로 검증.
-	ZeroRightEquip,
-	ZeroRightEquipNoBlend,
-	// Equip 왼손 IK 오프셋(ik_hand_l에 더해짐)을 0으로 해 "ik_hand_l이 몽타주 왼손을 총 기준으로 드는지"만 분리
-	ZeroLeftEquipIK,
-	// 추가로 HipPose까지 0: 총의 절차 이동이 없으므로 복사된 ik_hand_l은 hand_l과 거의 같아야 한다
-	ZeroLeftEquipIKAndHip,
-	// 추가로 Equip 왼손 TwoBoneIK(alpha=LeftHandEquipIKAlpha)까지 끔: 복사 후 hand_l을 움직이는 노드인지 분리
-	ZeroLeftEquipIKHipAndEquipIKNode,
-	// ZeroLeftEquipIKAndHip 기준에서 왼팔 절차 요소를 추가로 끔(원인 분리)
-	HipZeroNoArmPitch,     // 조준 피치 팔 커브 + LeftLowerArmRot (Stand 팔 오프셋)
-	HipZeroNoArmEquipDA,   // Equip 윗팔/아랫팔/손 그립 DA 오프셋
-	HipZeroNoArmAll        // 위 둘 모두
+	SourceHip
 };
 
 const TCHAR* VariantName(EProbeVariant Variant)
@@ -60,16 +48,6 @@ const TCHAR* VariantName(EProbeVariant Variant)
 	case EProbeVariant::Baseline: return TEXT("Baseline");
 	case EProbeVariant::SourceDA: return TEXT("SourceDA");
 	case EProbeVariant::SourceHip: return TEXT("SourceHip");
-	case EProbeVariant::SourceRightEquip: return TEXT("SourceRightEquip");
-	case EProbeVariant::SourceLeftEquip: return TEXT("SourceLeftEquip");
-	case EProbeVariant::ZeroRightEquip: return TEXT("ZeroRightEquip");
-	case EProbeVariant::ZeroRightEquipNoBlend: return TEXT("ZeroRightEquipNoBlend");
-	case EProbeVariant::ZeroLeftEquipIK: return TEXT("ZeroLeftEquipIK");
-	case EProbeVariant::ZeroLeftEquipIKAndHip: return TEXT("ZeroLeftEquipIKAndHip");
-	case EProbeVariant::ZeroLeftEquipIKHipAndEquipIKNode: return TEXT("ZeroLeftEquipIKHipAndEquipIKNode");
-	case EProbeVariant::HipZeroNoArmPitch: return TEXT("HipZeroNoArmPitch");
-	case EProbeVariant::HipZeroNoArmEquipDA: return TEXT("HipZeroNoArmEquipDA");
-	case EProbeVariant::HipZeroNoArmAll: return TEXT("HipZeroNoArmAll");
 	default: return TEXT("Unknown");
 	}
 }
@@ -133,8 +111,6 @@ struct FProbeSample
 	int32 Frame = 0;
 	float SwitchLowerAlpha = 0.0f;
 	bool bIsEquipping = false;
-	float EquipPoseAlpha = 0.0f;
-	float EquipIKAlpha = 0.0f;
 	float HandGripGap = 0.0f;
 	float IKGripGap = 0.0f;
 	float HandStep = 0.0f;
@@ -164,6 +140,7 @@ struct FProbeSample
 	float SlotWeight = 0.0f;
 	float LeftHandIKAlpha = 0.0f;
 	float WeaponPoseAlpha = 0.0f;
+	FVector GripOffset = FVector::ZeroVector;
 	bool bWeaponHidden = false;
 	FName AttachParentBone = NAME_None;
 };
@@ -230,6 +207,7 @@ bool CaptureSample(AShooterCharacter* Shooter, AWeaponBase* Weapon, int32 Frame,
 	OutSample.SlotWeight = Anim->GetSlotMontageGlobalWeight(TEXT("UpperBody"));
 	OutSample.LeftHandIKAlpha = Runtime->LeftHandIKAlpha;
 	OutSample.WeaponPoseAlpha = Runtime->WeaponPoseAlpha;
+	OutSample.GripOffset = Runtime->LeftHandGripOffsetLoc;
 	OutSample.HandStep = Previous ? FVector::Distance(Previous->Hand, OutSample.Hand) : 0.0f;
 	OutSample.Hip = Runtime->HipPoseLoc;
 	OutSample.WeaponRoot = Runtime->WeaponRootLocOffset;
@@ -237,8 +215,6 @@ bool CaptureSample(AShooterCharacter* Shooter, AWeaponBase* Weapon, int32 Frame,
 	OutSample.HipStep = Previous ? FVector::Distance(Previous->Hip, OutSample.Hip) : 0.0f;
 	OutSample.WeaponRootStep = Previous ? FVector::Distance(Previous->WeaponRoot, OutSample.WeaponRoot) : 0.0f;
 	OutSample.RightHandIKStep = Previous ? FVector::Distance(Previous->RightHandIK, OutSample.RightHandIK) : 0.0f;
-	OutSample.EquipPoseAlpha = Runtime->EquipPoseAlpha;
-	OutSample.EquipIKAlpha = Runtime->LeftHandEquipIKAlpha;
 	// 1P Equip은 몽타주가 없으므로 실제 Procedural Lower/Raise 진행값을 기록한다.
 	OutSample.SwitchLowerAlpha = Shooter->GetFirstPersonSwitchLowerAlpha();
 	OutSample.bIsEquipping = Shooter->GetActionLock() == EShooterActionLock::Equip;
@@ -260,73 +236,6 @@ void ApplyVariant(UProceduralAnimValues* Destination, const UProceduralAnimValue
 	case EProbeVariant::SourceHip:
 		To.HipPoseLoc = From.HipPoseLoc;
 		To.HipPoseRot = From.HipPoseRot;
-		break;
-	case EProbeVariant::SourceRightEquip:
-		To.RightHandEquipIKLocOffset = From.RightHandEquipIKLocOffset;
-		To.RightHandEquipIKRotOffset = From.RightHandEquipIKRotOffset;
-		break;
-	case EProbeVariant::ZeroRightEquip:
-	case EProbeVariant::ZeroRightEquipNoBlend:
-		To.RightHandEquipIKLocOffset = FVector::ZeroVector;
-		To.RightHandEquipIKRotOffset = FRotator::ZeroRotator;
-		break;
-	case EProbeVariant::ZeroLeftEquipIK:
-		To.LeftHandEquipIKLoc = FVector::ZeroVector;
-		To.LeftHandEquipIKRot = FRotator::ZeroRotator;
-		break;
-	case EProbeVariant::ZeroLeftEquipIKAndHip:
-		To.LeftHandEquipIKLoc = FVector::ZeroVector;
-		To.LeftHandEquipIKRot = FRotator::ZeroRotator;
-		To.HipPoseLoc = FVector::ZeroVector;
-		To.HipPoseRot = FRotator::ZeroRotator;
-		break;
-	case EProbeVariant::ZeroLeftEquipIKHipAndEquipIKNode:
-		To.LeftHandEquipIKLoc = FVector::ZeroVector;
-		To.LeftHandEquipIKRot = FRotator::ZeroRotator;
-		To.HipPoseLoc = FVector::ZeroVector;
-		To.HipPoseRot = FRotator::ZeroRotator;
-		To.LeftHandEquipIKAlpha = 0.0f;
-		break;
-	case EProbeVariant::HipZeroNoArmPitch:
-	case EProbeVariant::HipZeroNoArmEquipDA:
-	case EProbeVariant::HipZeroNoArmAll:
-		To.LeftHandEquipIKLoc = FVector::ZeroVector;
-		To.LeftHandEquipIKRot = FRotator::ZeroRotator;
-		To.HipPoseLoc = FVector::ZeroVector;
-		To.HipPoseRot = FRotator::ZeroRotator;
-		if (Variant != EProbeVariant::HipZeroNoArmEquipDA)
-		{
-			To.PitchLeftUpperArmLocCurve = nullptr;
-			To.PitchLeftUpperArmRotCurve = nullptr;
-			To.PitchLeftHandJointTargetLocCurve = nullptr;
-			To.CrouchPitchLeftUpperArmLocCurve = nullptr;
-			To.CrouchPitchLeftUpperArmRotCurve = nullptr;
-			To.CrouchPitchLeftHandJointTargetLocCurve = nullptr;
-			To.LeftLowerArmRot = FRotator::ZeroRotator;
-		}
-		if (Variant != EProbeVariant::HipZeroNoArmPitch)
-		{
-			To.LeftUpperArmEquipLoc = FVector::ZeroVector;
-			To.LeftUpperArmEquipRot = FRotator::ZeroRotator;
-			To.LeftLowerArmEquipRot = FRotator::ZeroRotator;
-			To.LeftHandEquipGripOffsetLoc = FVector::ZeroVector;
-			To.LeftHandEquipGripOffsetRot = FRotator::ZeroRotator;
-		}
-		break;
-	case EProbeVariant::SourceLeftEquip:
-		To.LeftHandEquipGripOffsetLoc = From.LeftHandEquipGripOffsetLoc;
-		To.LeftHandEquipGripOffsetRot = From.LeftHandEquipGripOffsetRot;
-		To.LeftHandEquipIKLoc = From.LeftHandEquipIKLoc;
-		To.LeftHandEquipIKRot = From.LeftHandEquipIKRot;
-		To.LeftHandEquipJointTargetLoc = From.LeftHandEquipJointTargetLoc;
-		To.LeftHandEquipIKAlpha = From.LeftHandEquipIKAlpha;
-		To.LeftHandEquipArmAlpha = From.LeftHandEquipArmAlpha;
-		To.LeftHandEquipIKAlphaScale = From.LeftHandEquipIKAlphaScale;
-		To.LeftHandEquipIKBlendInSpeed = From.LeftHandEquipIKBlendInSpeed;
-		To.LeftHandEquipIKBlendOutSpeed = From.LeftHandEquipIKBlendOutSpeed;
-		To.LeftUpperArmEquipLoc = From.LeftUpperArmEquipLoc;
-		To.LeftUpperArmEquipRot = From.LeftUpperArmEquipRot;
-		To.LeftLowerArmEquipRot = From.LeftLowerArmEquipRot;
 		break;
 	default:
 		break;
@@ -628,7 +537,7 @@ bool FOutlierFirstPersonEquipDAProbeTest::RunTest(const FString& Parameters)
 	IConsoleVariable* ForceProceduralOff = IConsoleManager::Get().FindConsoleVariable(
 		TEXT("outlier.FPAnimForceProceduralOff"));
 	TArray<FString> CsvLines;
-	CsvLines.Add(TEXT("Direction,Variant,Frame,SwitchLowerAlpha,EquipPoseAlpha,EquipIKAlpha,HandGripGapCm,IKGripGapCm,HandStepCm,HipStepCm,WeaponRootStepCm,RightHandIKStepCm,HandX,HandY,HandZ,GripX,GripY,GripZ,")
+	CsvLines.Add(TEXT("Direction,Variant,Frame,SwitchLowerAlpha,EquipState,HandGripGapCm,IKGripGapCm,HandStepCm,HipStepCm,WeaponRootStepCm,RightHandIKStepCm,HandX,HandY,HandZ,GripX,GripY,GripZ,")
 		TEXT("SlotWeight,LeftHandIKAlpha,WeaponPoseAlpha,WeaponHidden,AttachBone,WeaponToAttachSocketCm,")
 		TEXT("HandPitch,HandYaw,HandRoll,HandIKX,HandIKY,HandIKZ,HandIKPitch,HandIKYaw,HandIKRoll,GripPitch,GripYaw,GripRoll,")
 		TEXT("RightHandX,RightHandY,RightHandZ,GunBoneX,GunBoneY,GunBoneZ,AttachSocketX,AttachSocketY,AttachSocketZ,")
@@ -639,18 +548,15 @@ bool FOutlierFirstPersonEquipDAProbeTest::RunTest(const FString& Parameters)
 		TArray<FProbeSample> ProceduralOff;
 		TArray<FProbeSample> Baseline;
 		TArray<FProbeSample> NoBlend;
-		for (EProbeVariant Variant : {EProbeVariant::ProceduralOff, EProbeVariant::NoBlend, EProbeVariant::Baseline,
-			EProbeVariant::SourceDA, EProbeVariant::SourceHip, EProbeVariant::SourceRightEquip, EProbeVariant::SourceLeftEquip,
-			EProbeVariant::ZeroRightEquip, EProbeVariant::ZeroRightEquipNoBlend, EProbeVariant::ZeroLeftEquipIK,
-			EProbeVariant::ZeroLeftEquipIKAndHip, EProbeVariant::ZeroLeftEquipIKHipAndEquipIKNode,
-			EProbeVariant::HipZeroNoArmPitch, EProbeVariant::HipZeroNoArmEquipDA, EProbeVariant::HipZeroNoArmAll})
+		for (EProbeVariant Variant : {EProbeVariant::ProceduralOff, EProbeVariant::NoBlend,
+			EProbeVariant::Baseline, EProbeVariant::SourceDA, EProbeVariant::SourceHip})
 		{
 			if (Variant == EProbeVariant::ProceduralOff && !ForceProceduralOff)
 			{
 				continue;
 			}
 			TArray<FProbeSample> Samples;
-			const bool bNoBlend = Variant == EProbeVariant::NoBlend || Variant == EProbeVariant::ZeroRightEquipNoBlend;
+			const bool bNoBlend = Variant == EProbeVariant::NoBlend;
 			BlendDuration->Set(bNoBlend ? 0.0f : OriginalBlendDuration, ECVF_SetByCode);
 			if (Variant == EProbeVariant::ProceduralOff)
 			{
@@ -722,13 +628,13 @@ bool FOutlierFirstPersonEquipDAProbeTest::RunTest(const FString& Parameters)
 				{
 					SettledGapSum += Sample.HandGripGap;
 				}
-				CsvLines.Add(FString::Printf(TEXT("%s,%s,%d,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,")
+				CsvLines.Add(FString::Printf(TEXT("%s,%s,%d,%.4f,%d,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,")
 					TEXT("%.4f,%.4f,%.4f,%d,%s,%.4f,")
 					TEXT("%.3f,%.3f,%.3f,%.4f,%.4f,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,")
 					TEXT("%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,")
 					TEXT("%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f"),
 					Direction, VariantName(Variant), Sample.Frame, Sample.SwitchLowerAlpha,
-					Sample.EquipPoseAlpha, Sample.EquipIKAlpha, Sample.HandGripGap, Sample.IKGripGap,
+					Sample.bIsEquipping ? 1 : 0, Sample.HandGripGap, Sample.IKGripGap,
 					Sample.HandStep, Sample.HipStep, Sample.WeaponRootStep, Sample.RightHandIKStep,
 					Sample.Hand.X, Sample.Hand.Y, Sample.Hand.Z,
 					Sample.Grip.X, Sample.Grip.Y, Sample.Grip.Z,
@@ -751,24 +657,19 @@ bool FOutlierFirstPersonEquipDAProbeTest::RunTest(const FString& Parameters)
 				SettledGapSum / 20.0f, MaxHandStep, MaxBaselineHandDelta,
 				MaxEquipRightHandGunGap, SettledRightHandGunGap, MaxEquipHandInGunDelta, MaxEquipHandIKInGunDelta,
 				MaxEquipIKHandGap));
-			if (Variant == EProbeVariant::ZeroRightEquip || Variant == EProbeVariant::ZeroRightEquipNoBlend)
+			if (Variant != EProbeVariant::ProceduralOff)
 			{
-				// 기준: Procedural OFF의 장착 구간 오른손-총 간격. 없으면 정착값.
-				float ReferenceRightHandGunGap = SettledRightHandGunGap;
-				if (!ProceduralOff.IsEmpty())
+				for (const FProbeSample& Sample : Samples)
 				{
-					ReferenceRightHandGunGap = 0.0f;
-					for (const FProbeSample& OffSample : ProceduralOff)
+					TestEqual(TEXT("Final IK follows ordinary grip IK through Raise"),
+						Sample.LeftHandFinalIKAlpha, Sample.LeftHandIKAlpha);
+					TestTrue(TEXT("Equip does not select the free-hand target"),
+						FMath::IsNearlyEqual(Sample.LeftHandFreeAlpha, 1.0f - Sample.LeftHandIKAlpha));
+					if (Sample.bIsEquipping && Sample.WeaponPoseAlpha > 0.999f)
 					{
-						if (OffSample.bIsEquipping)
-						{
-							ReferenceRightHandGunGap = FMath::Max(ReferenceRightHandGunGap,
-								FVector::Distance(OffSample.RightHand, OffSample.GunBone));
-						}
+						TestTrue(TEXT("Settled weapon pose retains its grip during Equip"), Sample.LeftHandIKAlpha > 0.99f);
 					}
 				}
-				TestTrue(FString::Printf(TEXT("%s %s keeps the right hand on the gun during Equip"), Direction, VariantName(Variant)),
-					MaxEquipRightHandGunGap <= ReferenceRightHandGunGap + 1.0f);
 			}
 			if (Variant == EProbeVariant::ProceduralOff)
 			{
@@ -846,6 +747,179 @@ bool FOutlierFirstPersonFramingDumpTest::RunTest(const FString& Parameters)
 	}
 	AddInfo(FString::Printf(TEXT("Framing dump: %s"), *OutputPath));
 	return true;
+}
+
+namespace
+{
+bool RunFirstPickupTest(FAutomationTestBase& Test, int32 Mode)
+{
+	IConsoleVariable* Probe = IConsoleManager::Get().FindConsoleVariable(TEXT("outlier.FPFirstPickupTest"));
+	if (!Probe)
+	{
+		Test.AddError(TEXT("First-pickup diagnostic console variable is missing"));
+		return false;
+	}
+	const int32 PreviousMode = Probe->GetInt();
+	struct FRestoreMode
+	{
+		IConsoleVariable* Variable;
+		int32 Value;
+		~FRestoreMode() { Variable->Set(Value, ECVF_SetByCode); }
+	} RestoreMode{ Probe, PreviousMode };
+	Probe->Set(Mode, ECVF_SetByCode);
+	FScopedEquipProbeWorld Fixture;
+	if (!Fixture.Initialize())
+	{
+		Test.AddError(TEXT("First-pickup world could not be initialized"));
+		return false;
+	}
+	UClass* ShooterClass = LoadClass<AShooterCharacter>(nullptr,
+		TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	UClass* PistolClass = LoadClass<ARangedWeaponBase>(nullptr,
+		TEXT("/Game/Blueprints/Weapon/BP_Pistol.BP_Pistol_C"));
+	if (!ShooterClass || !PistolClass)
+	{
+		Test.AddError(TEXT("Saved Shooter/Pistol Blueprints are required"));
+		return false;
+	}
+	FActorSpawnParameters SpawnParameters;
+	SpawnParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AShooterCharacter* Shooter = Fixture.World->SpawnActor<AShooterCharacter>(ShooterClass,
+		FTransform::Identity, SpawnParameters);
+	APlayerController* Controller = Fixture.World->SpawnActor<APlayerController>();
+	if (!Shooter || !Controller || !Shooter->GetFirstPersonMesh())
+	{
+		Test.AddError(TEXT("First-pickup actors or FP mesh are missing"));
+		return false;
+	}
+	Controller->Possess(Shooter);
+	Controller->SetAsLocalPlayerController();
+	Shooter->GetCharacterMovement()->SetMovementMode(MOVE_Flying);
+	USkeletalMeshComponent* Arms = Shooter->GetFirstPersonMesh();
+	Arms->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
+	if (!Arms->GetAnimInstance())
+	{
+		Arms->InitAnim(true);
+	}
+	if (!Shooter->IsLocallyControlled() || !Arms->GetAnimInstance())
+	{
+		Test.AddError(TEXT("First-pickup fixture requires local FP animation"));
+		return false;
+	}
+	for (int32 Frame = 0; Frame < 30; ++Frame)
+	{
+		TickProbeWorld(Fixture.World);
+	}
+	const FFloatProperty* RaiseDuration = FindFProperty<FFloatProperty>(Shooter->GetClass(),
+		TEXT("FirstPersonSwitchRaiseDuration"));
+	if (!RaiseDuration)
+	{
+		Test.AddError(TEXT("Raise duration property is missing"));
+		return false;
+	}
+	const int32 RaiseFrameBudget = FMath::CeilToInt(
+		FMath::Max(RaiseDuration->GetPropertyValue_InContainer(Shooter), 0.05f) / ProbeStep) + 3;
+	TArray<FString> Csv;
+	Csv.Add(TEXT("Pass,Mode,Frame,LowerAlpha,PoseAlpha,GripAlpha,FinalGripAlpha,PSOPending,HasProxy,GripX,GripY,GripZ,HandGripGapCm"));
+	bool bPassed = true;
+	for (int32 Pass = 0; Pass < 2; ++Pass)
+	{
+		const double SpawnStart = FPlatformTime::Seconds();
+		ARangedWeaponBase* Pickup = Fixture.World->SpawnActor<ARangedWeaponBase>(PistolClass,
+			FTransform::Identity, SpawnParameters);
+		Test.AddInfo(FString::Printf(TEXT("Pass=%d world pickup spawn %.3f ms (class already loaded)"),
+			Pass, (FPlatformTime::Seconds() - SpawnStart) * 1000.0));
+		if (!Pickup)
+		{
+			Test.AddError(TEXT("Pistol pickup could not be spawned"));
+			return false;
+		}
+		const double InteractStart = FPlatformTime::Seconds();
+		if (!Test.TestTrue(TEXT("Actual server pickup succeeds"), Pickup->Interact(Shooter)))
+		{
+			return false;
+		}
+		Test.AddInfo(FString::Printf(TEXT("Pass=%d Interact including owned copy/equip %.3f ms"),
+			Pass, (FPlatformTime::Seconds() - InteractStart) * 1000.0));
+		AWeaponBase* Owned = Shooter->GetCurrentWeapon();
+		if (!Test.TestNotNull(TEXT("Pickup immediately assigns CurrentWeapon on authority"), Owned))
+		{
+			return false;
+		}
+		bPassed &= Test.TestTrue(TEXT("Pickup grants a distinct persistent owned copy"),
+			Owned != Pickup && Owned->GetOwner() == Shooter && Owned->GetLevel() == Fixture.World->PersistentLevel);
+		bPassed &= Test.TestEqual(TEXT("Pickup starts fully lowered before local Raise"),
+			Shooter->GetFirstPersonSwitchLowerAlpha(), 1.0f);
+		int32 FirstRaisedFrame = INDEX_NONE;
+		for (int32 Frame = 0; Frame < 120; ++Frame)
+		{
+			TickProbeWorld(Fixture.World);
+			FProbeSample Sample;
+			if (!CaptureSample(Shooter, Owned, Frame, nullptr, Sample))
+			{
+				Test.AddError(TEXT("FP hand, grip socket or runtime sample is missing"));
+				return false;
+			}
+			const USkeletalMeshComponent* Mesh = Owned->GetFirstPersonWeaponMesh();
+			Csv.Add(FString::Printf(TEXT("%d,%d,%d,%.6f,%.6f,%.6f,%.6f,%d,%d,%.6f,%.6f,%.6f,%.6f"), Pass, Mode, Frame,
+				Sample.SwitchLowerAlpha, Sample.WeaponPoseAlpha, Sample.LeftHandIKAlpha,
+				Sample.LeftHandFinalIKAlpha, Mesh->IsPSOPrecaching(), Mesh->GetSceneProxy() != nullptr,
+				Sample.GripOffset.X, Sample.GripOffset.Y, Sample.GripOffset.Z, Sample.HandGripGap));
+			if (FirstRaisedFrame == INDEX_NONE && Sample.SwitchLowerAlpha <= KINDA_SMALL_NUMBER)
+			{
+				FirstRaisedFrame = Frame;
+			}
+			if ((Mode & 2) != 0 && Frame == 1)
+			{
+				bPassed &= Test.TestEqual(TEXT("Pose isolation snaps FP pose without skipping Raise"), Sample.WeaponPoseAlpha, 1.0f);
+			}
+			bPassed &= Test.TestEqual(TEXT("Equip keeps final IK on ordinary grip"), Sample.LeftHandFinalIKAlpha, Sample.LeftHandIKAlpha);
+		}
+		bPassed &= Test.TestTrue(TEXT("Local Raise completes within authored duration plus tick allowance"),
+			FirstRaisedFrame != INDEX_NONE && FirstRaisedFrame <= RaiseFrameBudget);
+		for (int32 Frame = 0; Frame < 360 && Shooter->IsActionLocked(); ++Frame)
+		{
+			TickProbeWorld(Fixture.World);
+		}
+		bPassed &= Test.TestFalse(TEXT("Equip lock eventually releases before repeated pickup"), Shooter->IsActionLocked());
+	}
+	const FString Directory = FPaths::ProjectSavedDir() / TEXT("ProceduralAnimExports");
+	IFileManager::Get().MakeDirectory(*Directory, true);
+	const FString Path = Directory / FString::Printf(TEXT("FirstPickup_Mode%d_%s.csv"), Mode,
+		*FDateTime::Now().ToString(TEXT("%Y%m%d_%H%M%S")));
+	bPassed &= Test.TestTrue(TEXT("First-pickup samples saved"), FFileHelper::SaveStringToFile(
+		FString::Join(Csv, TEXT("\n")), *Path, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM));
+	Test.AddInfo(FString::Printf(TEXT("Samples: %s. Synthetic 60 Hz editor world; not a cold packaged rendering benchmark."), *Path));
+	return bPassed;
+}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FOutlierFirstPickupBaseline, "Outlier.Animation.FP.FirstPickup.Baseline",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FOutlierFirstPickupBaseline::RunTest(const FString& Parameters)
+{
+	return RunFirstPickupTest(*this, 1);
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FOutlierFirstPickupPose, "Outlier.Animation.FP.FirstPickup.PoseIsolation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FOutlierFirstPickupPose::RunTest(const FString& Parameters)
+{
+	return RunFirstPickupTest(*this, 3);
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FOutlierFirstPickupGrip, "Outlier.Animation.FP.FirstPickup.GripIsolation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FOutlierFirstPickupGrip::RunTest(const FString& Parameters)
+{
+	return RunFirstPickupTest(*this, 5);
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FOutlierFirstPickupCombined, "Outlier.Animation.FP.FirstPickup.CombinedIsolation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FOutlierFirstPickupCombined::RunTest(const FString& Parameters)
+{
+	return RunFirstPickupTest(*this, 7);
 }
 
 #endif

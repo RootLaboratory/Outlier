@@ -232,7 +232,9 @@ class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbil
 	friend class FShooterPresentationReplicationTest;
 	friend class FOutlierSuitInteractionEquipTest;
 	friend class FOutlierShooterPresentationAnimationTest;
+	friend class FOutlierProceduralEquipReferenceOrderTest;
 	friend class FOutlierSuitTransitionTest;
+	friend class FOutlierMeleeAttackLifecycleTest;
 
 protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
@@ -330,6 +332,9 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, Category = "Slide")
 	float MinSlideSpeed = 200.f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Slide", meta = (ToolTip = "Allow melee attacks during sliding. Does not enable melee weapon sway during sliding."))
+	bool bAllowMeleeAttackWhileSliding = false;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Slide")
 	float SlideWallStopDotThreshold = 0.5f;
@@ -474,6 +479,7 @@ protected:
 	float FirstPersonSwitchVisualElapsed = 0.0f;
 	bool bFirstPersonSwitchConfirmSent = false;
 	bool bProceduralEquipRaiseOnly = false;
+	bool bProceduralEquipExpectedWeaponUnmapped = false;
 	int32 NextProceduralSwitchId = 0;
 	int32 ActiveProceduralSwitchId = 0;
 
@@ -725,6 +731,7 @@ public:
 	bool WantsToAim() const;
 	bool IsAiming() const;
 	bool IsSliding() const;
+	bool AllowsMeleeAttackWhileSliding() const { return bAllowMeleeAttackWhileSliding; }
 	bool IsSprinting() const;
 	bool IsSlidingCanceled() const;
 
@@ -956,7 +963,7 @@ protected:
 	void ClientCancelProceduralWeaponSwitch(int32 SwitchId);
 
 	UFUNCTION(Client, Reliable)
-	void ClientBeginProceduralEquipRaise(AWeaponBase* ExpectedWeapon);
+	void ClientBeginProceduralEquipRaise(AWeaponBase* ExpectedWeapon, AWeaponBase* PreviousWeapon);
 
 	UFUNCTION(NetMulticast, Reliable)
 	void MulticastPlayThirdPersonSwitchPhase(EWeaponType WeaponType, FName Phase);
@@ -1017,7 +1024,7 @@ public:
 	int32 BeginProceduralWeaponSwitch();
 	void BeginProceduralEquipRaise(AWeaponBase* ExpectedWeapon);
 	void StartLocalProceduralWeaponSwitch(int32 SwitchId);
-	void StartLocalProceduralEquipRaise(AWeaponBase* ExpectedWeapon);
+	void StartLocalProceduralEquipRaise(AWeaponBase* ExpectedWeapon, AWeaponBase* PreviousWeapon);
 	void CancelLocalProceduralWeaponSwitch();
 	void UpdateLocalProceduralWeaponSwitch(float DeltaSeconds);
 	void PlayProceduralSwitchThirdPersonEquip(EWeaponType PreviousWeaponType);
@@ -1063,6 +1070,7 @@ public:
 	// 장착은 1P Procedural Raise와 3P Switch로만 표현한다.
 	void PlayEquipPresentation();
 	UAnimMontage* GetFirstPersonReloadMontage() const { return GetActionMontage(EShooterMontageAction::Reload, true); }
+	UAnimMontage* GetFirstPersonMeleeAttackMontage() const { return GetActionMontage(EShooterMontageAction::MeleeAttack, true); }
 	UAnimMontage* GetThirdPersonMeleeAttackMontage() const { return GetActionMontage(EShooterMontageAction::MeleeAttack, false); }
 	void ClearInputIntent();
 

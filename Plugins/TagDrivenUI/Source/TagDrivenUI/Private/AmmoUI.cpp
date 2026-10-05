@@ -56,6 +56,17 @@ void UAmmoUI::SetWeaponOverchargeActive(bool bActive)
 	ApplyWeaponOverchargeVisibility();
 }
 
+void UAmmoUI::SetInfiniteAmmoDisplayActive(bool bActive)
+{
+	if (bInfiniteAmmoDisplayActive == bActive)
+	{
+		return;
+	}
+
+	bInfiniteAmmoDisplayActive = bActive;
+	ApplyWeaponOverchargeVisibility();
+}
+
 void UAmmoUI::ApplyWeaponOverchargeVisibility()
 {
 	if (!AmmoCanvas)
@@ -63,15 +74,17 @@ void UAmmoUI::ApplyWeaponOverchargeVisibility()
 		return;
 	}
 
+	const bool bShowInfinity = bWeaponOverchargeActive || bInfiniteAmmoDisplayActive;
+
 	// 패널(SizeBox 등)은 그대로 두고 표시 위젯만 뒤집는다. 무한 이미지와 나머지는 항상 반대 상태다.
-	UWidgetTree::ForWidgetAndChildren(AmmoCanvas, [this](UWidget* Widget)
+	UWidgetTree::ForWidgetAndChildren(AmmoCanvas, [this, bShowInfinity](UWidget* Widget)
 	{
 		if (!Widget || Widget->IsA<UPanelWidget>())
 		{
 			return;
 		}
 
-		const bool bShow = (Widget == OverLoad_Infinity) == bWeaponOverchargeActive;
+		const bool bShow = (Widget == OverLoad_Infinity) == bShowInfinity;
 		Widget->SetVisibility(bShow ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
 	});
 }
