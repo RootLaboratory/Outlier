@@ -4,6 +4,7 @@
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
 #include "Drone/Partner/PartnerHackComponent.h"
+#include "Interface/HackableInterface.h"
 #include "UI/HackCandidateMarkerWidget.h"
 
 void UHackCandidateLayerWidget::BindHackComponent(UPartnerHackComponent* InHackComponent)
@@ -82,7 +83,8 @@ void UHackCandidateLayerWidget::NativeTick(const FGeometry& MyGeometry, float In
 		}
 
 		FVector2D ScreenLocation = FVector2D::ZeroVector;
-		if (!PC->ProjectWorldLocationToScreen(TargetActor->GetActorLocation(), ScreenLocation, true))
+		if (!PC->ProjectWorldLocationToScreen(
+			IHackableInterface::ResolveHackTargetLocation(TargetActor), ScreenLocation, true))
 		{
 			Marker->SetVisibility(ESlateVisibility::Collapsed);
 			continue;

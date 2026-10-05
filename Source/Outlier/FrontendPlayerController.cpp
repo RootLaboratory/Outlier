@@ -6,6 +6,8 @@
 #include "EnhancedInputSubsystems.h"
 #include "Engine/LocalPlayer.h"
 #include "GameFramework/GameModeBase.h" //디버깅
+#include "Input/ControllerInputConfig.h"
+#include "InputAction.h"
 #include "InputMappingContext.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
@@ -198,63 +200,20 @@ void AFrontendPlayerController::SetupInputComponent()
 
 	UEnhancedInputComponent* EnhancedInputComponent =
 		Cast<UEnhancedInputComponent>(InputComponent);
-	if (!EnhancedInputComponent)
+	ULocalPlayerUILayerSubsystem* LayerSubsystem = GetLocalPlayer()
+		? GetLocalPlayer()->GetSubsystem<ULocalPlayerUILayerSubsystem>()
+		: nullptr;
+	if (!LayerSubsystem || !LayerSubsystem->BindWidgetInput(EnhancedInputComponent, ControllerInputConfig))
 	{
 		return;
 	}
 
-	if (WidgetEscapeAction)
+	// InGameSettingAction은 인게임 전용이라 Frontend에서는 바인딩하지 않는다.
+	if (ControllerInputConfig->WidgetEscapeAction)
 	{
 		EnhancedInputComponent->BindAction(
-			WidgetEscapeAction,
-			ETriggerEvent::Started,
-			this,
-			&AFrontendPlayerController::HandleWidgetEscapeInput);
-	}
-
-	if (WidgetConfirmedAction)
-	{
-		EnhancedInputComponent->BindAction(
-			WidgetConfirmedAction,
-			ETriggerEvent::Started,
-			this,
-			&AFrontendPlayerController::HandleWidgetConfirmedInput);
-	}
-
-	if (WidgetUpAction)
-	{
-		EnhancedInputComponent->BindAction(
-			WidgetUpAction,
-			ETriggerEvent::Started,
-			this,
-			&AFrontendPlayerController::HandleWidgetUpInput);
-	}
-
-	if (WidgetDownAction)
-	{
-		EnhancedInputComponent->BindAction(
-			WidgetDownAction,
-			ETriggerEvent::Started,
-			this,
-			&AFrontendPlayerController::HandleWidgetDownInput);
-	}
-
-	if (WidgetLeftAction)
-	{
-		EnhancedInputComponent->BindAction(
-			WidgetLeftAction,
-			ETriggerEvent::Started,
-			this,
-			&AFrontendPlayerController::HandleWidgetLeftInput);
-	}
-
-	if (WidgetRightAction)
-	{
-		EnhancedInputComponent->BindAction(
-			WidgetRightAction,
-			ETriggerEvent::Started,
-			this,
-			&AFrontendPlayerController::HandleWidgetRightInput);
+			ControllerInputConfig->WidgetEscapeAction, ETriggerEvent::Started,
+			this, &AFrontendPlayerController::HandleWidgetEscapeInput);
 	}
 }
 
@@ -329,66 +288,6 @@ void AFrontendPlayerController::HandleWidgetEscapeInput()
 	if (LayerSubsystem)
 	{
 		LayerSubsystem->RouteWidgetEscapeInput();
-	}
-}
-
-void AFrontendPlayerController::HandleWidgetConfirmedInput()
-{
-	ULocalPlayer* LocalPlayer = GetLocalPlayer();
-	ULocalPlayerUILayerSubsystem* LayerSubsystem = LocalPlayer
-		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()
-		: nullptr;
-	if (LayerSubsystem)
-	{
-		LayerSubsystem->RouteWidgetConfirmedInput();
-	}
-}
-
-void AFrontendPlayerController::HandleWidgetUpInput()
-{
-	ULocalPlayer* LocalPlayer = GetLocalPlayer();
-	ULocalPlayerUILayerSubsystem* LayerSubsystem = LocalPlayer
-		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()
-		: nullptr;
-	if (LayerSubsystem)
-	{
-		LayerSubsystem->RouteWidgetUpInput();
-	}
-}
-
-void AFrontendPlayerController::HandleWidgetDownInput()
-{
-	ULocalPlayer* LocalPlayer = GetLocalPlayer();
-	ULocalPlayerUILayerSubsystem* LayerSubsystem = LocalPlayer
-		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()
-		: nullptr;
-	if (LayerSubsystem)
-	{
-		LayerSubsystem->RouteWidgetDownInput();
-	}
-}
-
-void AFrontendPlayerController::HandleWidgetLeftInput()
-{
-	ULocalPlayer* LocalPlayer = GetLocalPlayer();
-	ULocalPlayerUILayerSubsystem* LayerSubsystem = LocalPlayer
-		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()
-		: nullptr;
-	if (LayerSubsystem)
-	{
-		LayerSubsystem->RouteWidgetLeftInput();
-	}
-}
-
-void AFrontendPlayerController::HandleWidgetRightInput()
-{
-	ULocalPlayer* LocalPlayer = GetLocalPlayer();
-	ULocalPlayerUILayerSubsystem* LayerSubsystem = LocalPlayer
-		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()
-		: nullptr;
-	if (LayerSubsystem)
-	{
-		LayerSubsystem->RouteWidgetRightInput();
 	}
 }
 

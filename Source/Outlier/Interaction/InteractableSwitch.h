@@ -1,62 +1,27 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "GameFramework/Actor.h"
-#include "Interface/InteractableInterface.h"
+#include "Interaction/InteractableSwitchBase.h"
 #include "InteractableSwitch.generated.h"
 
-class AFirstPersonCharacter;
 class AInteractableDoor;
-class UInteractableComponent;
-class UStaticMeshComponent;
 
+/**
+ * 문 전용 스위치. 해킹 여부는 BP 태그로 나뉜다(BP_DoorSwitch: 일반, BP_LevelDoorSwitch: 해킹 잠금).
+ * 클래스/프로퍼티 이름은 레벨에 배치된 TargetDoor 참조를 유지하려고 그대로 둔다.
+ */
 UCLASS()
-class OUTLIER_API AInteractableSwitch : public AActor, public IInteractableInterface
+class OUTLIER_API AInteractableSwitch : public AInteractableSwitchBase
 {
 	GENERATED_BODY()
 
-public:
-	AInteractableSwitch();
-
-public:
-	virtual UInteractableComponent* GetInteractableComponent() const override;
-	virtual bool Interact(AFirstPersonCharacter* Interactor) override;
-	virtual void BeginPlay() override;
-	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
-	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
-
 protected:
-	UFUNCTION(BlueprintImplementableEvent, Category = "Switch")
-	void OnSwitchActivated(AFirstPersonCharacter* Interactor);
-
-private:
-	UFUNCTION()
-	void OnRep_IsActivated();
-
-	UFUNCTION(NetMulticast, Reliable)
-	void Multicast_OnSwitchActivated(AFirstPersonCharacter* Interactor);
-
-	void ApplySwitchActivated(AFirstPersonCharacter* Interactor);
-
-	bool bProgressIdRegistered = false;
-	bool bActivationEventApplied = false;
+	virtual bool ActivateTarget() override;
 
 public:
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")
-	TObjectPtr<UStaticMeshComponent> SwitchMesh;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")
-	TObjectPtr<UInteractableComponent> InteractableComponent;
-
 	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Switch")
 	TObjectPtr<AInteractableDoor> TargetDoor;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Switch")
 	bool bCanToggleDoor = true;
-
-	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Switch")
-	FName SwitchId = NAME_None;
-
-	UPROPERTY(ReplicatedUsing = OnRep_IsActivated, VisibleInstanceOnly, BlueprintReadOnly, Category = "Switch")
-	bool bIsActivated = false;
 };

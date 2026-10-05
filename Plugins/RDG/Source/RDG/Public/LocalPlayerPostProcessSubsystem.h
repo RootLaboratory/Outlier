@@ -4,15 +4,29 @@
 #include "Subsystems/LocalPlayerSubsystem.h"
 #include "FPostProcessStructures.h"
 #include "DeathTransitionSequence.h"
+#include "RHIResources.h"
 #include "Tickable.h"
 #include "LocalPlayerPostProcessSubsystem.generated.h"
 
 class FOutlierPostProcessSceneViewExtension;
 class APostProcessVolume;
+class UTexture2D;
 
 DECLARE_MULTICAST_DELEGATE(FOnHackTransitionCovered);
 DECLARE_MULTICAST_DELEGATE(FOnHackTransitionFinished);
-DECLARE_MULTICAST_DELEGATE(FOnDeathBlackoutStarted);
+DECLARE_MULTICAST_DELEGATE(FOnDeathBlackNoiseStarted);
+DECLARE_MULTICAST_DELEGATE(FOnScreenBlackoutCovered);
+DECLARE_MULTICAST_DELEGATE(FOnScreenBlackoutRevealed);
+
+// Split Prism 진행 단계.
+// Focusing: d(t)가 1 → 0. Settling: (A) 깊이 잔차를 0으로 줄이는 중. Holding: (B) 깊이 잔차를 Stop까지 유지.
+enum class ESplitPrismPhase : uint8
+{
+	Idle,
+	Focusing,
+	Settling,
+	Holding
+};
 
 enum class EHackPossessionTransitionPhase : uint8
 {
@@ -39,6 +53,16 @@ public:
 	virtual void Tick(float DeltaTime) override;
 	virtual TStatId GetStatId() const override;
 	virtual bool IsTickable() const override;
+
+	// 튜닝값은 유지하고 모든 효과의 런타임 상태를 즉시 초기화한다.
+	// 리로드 중 사망 연출 / GameOver 암막은 새 Pawn 빙의까지 유지할 수 있다.
+	UFUNCTION(BlueprintCallable, Category = "RDG")
+	void ResetAllPostProcess(bool bPreserveDeathTransition = false);
+
+	// 메뉴가 열린 동안 Slate 이후 효과의 출력만 숨긴다. 원본 설정/타임라인은 유지한다.
+	// 사망/빙의/리스폰 화면 전환은 계속 그려 콜백과 암막 상태를 보존한다.
+	void SetUIEffectsSuspended(bool bSuspended);
+	bool AreUIEffectsSuspended() const { return bUIEffectsSuspended; }
 
 	void ActivateSlideState();
 	void DeActivateSlideState();
@@ -94,12 +118,17 @@ public:
 	void SetDeathNoiseParameters(const FDeathNoiseParameters& InParameters);
 	void SetDeathFadeParameters(const FDeathFadeParameters& InParameters);
 	void SetDeathBlackParameters(const FDeathBlackParameters& InParameters);
+	void SetDeathTransitionTexture(EDeathTransitionTexture Slot, UTexture2D* InTexture);
+	UTexture2D* GetDeathTransitionTexture(EDeathTransitionTexture Slot) const { return DeathTransitionTextures[static_cast<int32>(Slot)].Get(); }
+	bool IsDeathTransitionTextureReady(EDeathTransitionTexture Slot) const { return DeathTransitionTextureRHIs[static_cast<int32>(Slot)].IsValid(); }
 	void SetDeathChromaticAberrationParameters(const FDeathChromaticAberrationParameters& InParameters);
 
-	// 사망 연출(Noise → Fade → Black). 진행 중이면 처음부터 다시 시작한다.
+	// 사망 연출(Fade → Black, Noise는 그 위에서 끝까지). 진행 중이면 처음부터 다시 시작한다.
 	// 연출을 돌릴 수 없으면 false — 호출자는 기다리지 말고 바로 다음 단계로 넘어가야 한다.
 	bool StartDeathTransition();
 	void ResetDeathTransition();
+	// 사망 연출을 종료하고 기존 ZoomBlur 암막만 켠다. 리로드 중 유지하고 전체 Reset에서 해제한다.
+	void StartGameOverBlackout();
 	bool IsDeathTransitionActive() const { return DeathTransition.IsActive(); }
 	EDeathTransitionPhase GetDeathTransitionPhase() const { return DeathTransition.GetPhase(); }
 
@@ -107,8 +136,36 @@ public:
 	void SetDeathTransitionPassEnabled(EDeathTransitionPass Pass, bool bEnabled);
 	bool IsDeathTransitionPassEnabled(EDeathTransitionPass Pass) const { return DeathTransition.IsPassEnabled(Pass); }
 
-	// Black 패스가 시작되는 순간 한 번 발생한다. PreSetLoadWidget은 여기서 뜬다.
-	FOnDeathBlackoutStarted OnDeathBlackoutStarted;
+	// Black 패스의 Noise 텍스처가 처음 보이는 틱에 한 번 발생한다.
+	FOnDeathBlackNoiseStarted OnDeathBlackNoiseStarted;
+
+	// Drone Damage Feedback. 마스크 텍스처와 드러낼 모서리는 Enemy HUD가 정한다. 튜닝값은 RDG Debugger에서 조정한다.
+	void SetDroneDamageMaskTexture(EDroneDamageMask Slot, UTexture2D* InTexture);
+	UTexture2D* GetDroneDamageMaskTexture(EDroneDamageMask Slot) const { return DroneDamageMaskTextures[static_cast<int32>(Slot)].Get(); }
+	bool IsDroneDamageMaskTextureReady(EDroneDamageMask Slot) const { return DroneDamageMaskTextureRHIs[static_cast<int32>(Slot)].IsValid(); }
+	void SetDroneDamageMaskRevealed(EDroneDamageMask Slot, bool bRevealed);
+	bool IsDroneDamageMaskRevealed(EDroneDamageMask Slot) const;
+	// 사망 연출 등으로 HUD가 숨겨진 동안 그리기만 멈춘다. 드러난 상태는 유지한다.
+	void SetDroneDamageSuppressed(bool bSuppressed);
+	// 마스크 텍스처와 드러난 상태를 모두 지운다.
+	void ClearDroneDamage();
+	// 튜닝값만 갱신한다. 켜짐 / 드러남 / 시간 같은 런타임 필드는 입력값을 무시하고 유지한다.
+	void SetDroneDamageFeedbackParameters(const FDroneDamageFeedbackParameters& InParameters);
+
+	// Split Prism(Slate 갈라짐 + 씬 PP 블러 + 깊이 잔차). 진행 중이면 처음부터 다시 시작한다.
+	// FocusDuration 뒤: 깊이 잔차가 꺼져 있으면 바로 끝, A(Settle)는 잔차를 줄이고 끝, B(Persist)는 Stop까지 유지.
+	void StartSplitPrism();
+	void StopSplitPrism();
+	bool IsSplitPrismActive() const { return SplitPrismPhase != ESplitPrismPhase::Idle; }
+	ESplitPrismPhase GetSplitPrismPhase() const { return SplitPrismPhase; }
+	// 초점이 빗나간 양 d(t). 부호 있음. Focusing이 아니면 0.
+	float GetSplitPrismDefocus() const;
+	// 깊이 잔차 세기 0~1.
+	float GetSplitPrismResidualWeight() const;
+	// 고정된 피사체 거리(cm). 아직 못 정했으면 음수.
+	float GetSplitPrismSubjectDistance() const { return SplitPrismSubjectDistance; }
+	const FSplitPrismSettings& GetSplitPrismSettings() const { return SplitPrismSettings; }
+	void SetSplitPrismSettings(const FSplitPrismSettings& InSettings);
 
 	void StartHackPossessionTransition();
 	bool StartHackPossessionReveal();
@@ -117,6 +174,18 @@ public:
 
 	FOnHackTransitionCovered OnHackTransitionCovered;
 	FOnHackTransitionFinished OnHackTransitionFinished;
+
+	// Screen Blackout(Slate 이후, HUD 포함). 현재 Alpha에서 출발하므로 진행 중에 방향을 바꿔도 튀지 않는다.
+	// Duration은 0 ↔ 1 전체에 걸리는 시간이다. 중간에서 시작하면 남은 거리만큼만 걸리고, 0이면 즉시 도달한다.
+	// 목표에 도달하면 다음 Tick에 완료를 알린다. 이미 목표 값이어도 알린다.
+	void StartScreenBlackout(float Duration);
+	void StartScreenBlackoutReveal(float Duration);
+	// 즉시 0으로 끈다. 완료는 알리지 않는다. ResetAllPostProcess도 같은 정리를 한다.
+	void ResetScreenBlackout();
+	float GetScreenBlackoutAlpha() const { return UIPostProcessParameters.ScreenBlackout.Alpha; }
+
+	FOnScreenBlackoutCovered OnScreenBlackoutCovered;
+	FOnScreenBlackoutRevealed OnScreenBlackoutRevealed;
 
 	UFUNCTION(BlueprintCallable, Category = "RDG|ADS Blur")
 	void SetADSBlurAiming(bool bInAiming, int32 InWeaponStencilValue = 3);
@@ -158,6 +227,9 @@ public:
 	bool IsDirty();
 
 private:
+	friend class FOutlierRDGPostProcessResetTest;
+	bool bUIEffectsSuspended = false;
+
 	void MarkDirty();
 	void UpdateADSBlur(float DeltaTime);
 	void UpdateOverlay(float DeltaTime);
@@ -165,6 +237,19 @@ private:
 	void UpdateHackPossessionTransition(float DeltaTime);
 	void UpdateDeathNoise(float DeltaTime);
 	void UpdateDeathTransition(float DeltaTime);
+	void UpdateDroneDamageFeedback(float DeltaTime);
+	void RefreshDroneDamageEnabled();
+	void RefreshDroneDamageMaskTextures();
+	void UpdateSplitPrism(float DeltaTime);
+	void ApplySplitPrism();
+	void ApplySplitPrismOff();
+	void TraceSplitPrismSubjectDistance();
+	void EnterSplitPrismPhaseAfterFocus();
+	void ApplySplitPrismDefocus(float Defocus);
+	void StartScreenBlackoutFade(float TargetAlpha, float Duration);
+	void UpdateScreenBlackout(float DeltaTime);
+	void ApplyScreenBlackoutAlpha(float Alpha);
+	void RefreshDeathTransitionTextures();
 	void UpdateDepthOfField();
 	void ApplyADSBlurRuntimeParameters();
 	float GetADSBlurAlpha() const;
@@ -197,7 +282,33 @@ private:
 	float HackTransitionBlackoutDuration = 0.35f;
 	uint8 bHackTransitionCoveredBroadcastSent : 1 = false;
 
+	// EDroneDamageMask 순서. UPROPERTY 배열 크기는 숫자로 적고, 슬롯 수와 같은지는 cpp에서 검사한다.
+	UPROPERTY(Transient)
+	TObjectPtr<UTexture2D> DroneDamageMaskTextures[4];
+	FTextureRHIRef DroneDamageMaskTextureRHIs[DroneDamageMaskCount];
+	uint8 bDroneDamageSuppressed : 1 = false;
+
+	FSplitPrismSettings SplitPrismSettings;
+	ESplitPrismPhase SplitPrismPhase = ESplitPrismPhase::Idle;
+	// Focusing 경과 시간.
+	float SplitPrismElapsedTime = 0.0f;
+	// Settling 경과 시간.
+	float SplitPrismSettleElapsedTime = 0.0f;
+	// D_subj(cm). 음수면 아직 트레이스 전.
+	float SplitPrismSubjectDistance = -1.0f;
+
+	float ScreenBlackoutTargetAlpha = 0.0f;
+	// 초당 Alpha 변화량. 0이면 즉시 목표 값.
+	float ScreenBlackoutFadeSpeed = 0.0f;
+	// 목표 도달 후 완료 통보를 기다리는 동안 켜져 있다.
+	uint8 bScreenBlackoutFading : 1 = false;
+
 	FDeathTransitionSequence DeathTransition;
+	bool bGameOverBlackoutActive = false;
+	// EDeathTransitionTexture 순서. UPROPERTY 배열 크기는 숫자로 적고, 슬롯 수와 같은지는 cpp에서 검사한다.
+	UPROPERTY(Transient)
+	TObjectPtr<UTexture2D> DeathTransitionTextures[3];
+	FTextureRHIRef DeathTransitionTextureRHIs[DeathTransitionTextureCount];
 
 	TWeakObjectPtr<APostProcessVolume> DoFVolume;
 	uint8 bADSDoFEnabled : 1 = true;

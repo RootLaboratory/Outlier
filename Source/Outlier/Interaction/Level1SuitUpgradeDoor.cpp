@@ -199,13 +199,7 @@ void ALevel1SuitUpgradeDoor::OnRoomOverlapChanged(AActor* Actor, bool bEntered)
 			!bAwaitingGameplayReady, bEntrySealed);
 	}
 	// 입장/퇴장 모두 현재 페어 위치를 다시 판정한다. 태그만 남은 이전 위치는 인정하지 않는다.
-	const bool bEntryAborted = AbortEntryIfPairOutside();
-	// 퇴장 이벤트 자체가 안전 개방을 시작했어도, 그 실제 퇴장을 새 입장 사이클의 시작으로 기록한다.
-	HandleSafetyReentry(Actor, bEntered);
-	if (bEntryAborted)
-	{
-		return;
-	}
+	AbortEntryIfPairOutside();
 	EvaluateEntry();
 }
 
@@ -444,11 +438,22 @@ bool ALevel1SuitUpgradeDoor::IsInsideRoom(const AActor* Character) const
 	return Room && Room->GetCurrentRoomTag() == TargetRoomVolume->GetRoomTag();
 }
 
+void ALevel1SuitUpgradeDoor::ScheduleEntryRecheck()
+{
+	if (!GetWorldTimerManager().IsTimerActive(EntryRecheckTimer))
+	{
+		GetWorldTimerManager().SetTimer(EntryRecheckTimer,
+			this, &ThisClass::EvaluateEntry, 0.1f, true);
+	}
+}
+
 void ALevel1SuitUpgradeDoor::EvaluateEntry()
 {
-	if (!HasAuthority() || bAwaitingGameplayReady || bEntrySealed || bEntryCloseRejected
-		|| !IsValid(TargetRoomVolume))
+	if (!HasAuthority() || bAwaitingGameplayReady || bEntrySealed
+		|| !IsValid(TargetRoomVolume) || !ArenaSubsystem.IsValid()
+		|| GameplayGeneration != ArenaSubsystem->GetGameplayGeneration())
 	{
+		GetWorldTimerManager().ClearTimer(EntryRecheckTimer);
 		return;
 	}
 	AOutlierPlayerState* Shooter = nullptr;
@@ -468,11 +473,7 @@ void ALevel1SuitUpgradeDoor::EvaluateEntry()
 		if (OverlappingPlayers.Contains(TWeakObjectPtr<AActor>(Shooter->GetShooterCharacter()))
 			&& OverlappingPlayers.Contains(TWeakObjectPtr<AActor>(Partner->GetPartnerCharacter())))
 		{
-			if (!GetWorldTimerManager().IsTimerActive(EntryRecheckTimer))
-			{
-				GetWorldTimerManager().SetTimer(EntryRecheckTimer,
-					this, &ThisClass::EvaluateEntry, 0.1f, true);
-			}
+			ScheduleEntryRecheck();
 		}
 		else
 		{
@@ -481,27 +482,33 @@ void ALevel1SuitUpgradeDoor::EvaluateEntry()
 		LogEntryStatus(TEXT("PlayerOutsideOrRoomTagMismatch"), Shooter, Partner);
 		return;
 	}
-	GetWorldTimerManager().ClearTimer(EntryRecheckTimer);
 	if (!IsDoorOpen() || !HasMovementCurve())
 	{
+		GetWorldTimerManager().ClearTimer(EntryRecheckTimer);
 		LogEntryStatus(TEXT("DoorClosedOrCurveMissing"), Shooter, Partner);
 		UE_LOG(LogTemp, Error, TEXT("[Level1Door] Cannot close door. Door=%s Room=%s Generation=%u Open=%d Curve=%d"),
 			*GetNameSafe(this), *TargetRoomVolume->GetRoomTag().ToString(), GameplayGeneration,
 			IsDoorOpen(), HasMovementCurve());
 		return;
 	}
-
-	// 여기서는 닫기만 요청한다. 닫힘 완료 전에는 UI가 모두 끝나도 재개방하지 않는다.
-	LogEntryStatus(TEXT("BothPlayersInside"), Shooter, Partner);
-	if (!TrySetDoorOpen(false))
+	// 안전 개방은 정상 완료 콜백을 보내지 않는다. 완전히 열린 뒤 타이머에서 재시도한다.
+	// 열리는 중에는 안전 범위가 비어도 문을 다시 닫는 방향으로 반전하지 않는다.
+	if (IsActorTickEnabled())
 	{
-		// 닫기 거절은 봉쇄 성공이 아니다. 반복 입장/상태 이벤트도 같은 요청을
-		// 재시도하지 않게 대기한다. 실제 퇴장 후 재입장만 새로운 요청을 만든다.
-		bEntryCloseRejected = true;
-		SafetyReentryPlayers.Reset();
-		LogEntryStatus(TEXT("DoorCloseRejected"), Shooter, Partner);
+		ScheduleEntryRecheck();
+		LogEntryStatus(TEXT("WaitingForDoorOpen"), Shooter, Partner);
 		return;
 	}
+
+	// 여기서는 닫기만 요청한다. 닫힘 완료 전에는 UI가 모두 끝나도 재개방하지 않는다.
+	if (!TrySetDoorOpen(false))
+	{
+		// 두 플레이어가 방 안에 있는 동안 안전 범위가 비는 시점을 기다린다.
+		ScheduleEntryRecheck();
+		LogEntryStatus(TEXT("WaitingForSafetyClearance"), Shooter, Partner);
+		return;
+	}
+	GetWorldTimerManager().ClearTimer(EntryRecheckTimer);
 	bEntrySealed = true;
 	UE_LOG(LogTemp, Display, TEXT("[Level1Door] Entry sealed. Door=%s Room=%s Generation=%u"),
 		*GetNameSafe(this), *TargetRoomVolume->GetRoomTag().ToString(), GameplayGeneration);
@@ -515,7 +522,7 @@ bool ALevel1SuitUpgradeDoor::AbortEntryIfPairOutside()
 		return false;
 	}
 	// 퇴장 오버랩이 문 Tick보다 먼저 올 수 있다. 보호 대상이 경로에 있다면
-	// 기존 즉시 Snap보다 안전 반전을 우선해 현재 위치에서 열고 새 요청을 기다린다.
+	// 기존 즉시 Snap보다 안전 반전을 우선해 현재 위치에서 열고 입장을 다시 확인한다.
 	if (TrySafetyReopen())
 	{
 		return true;
@@ -652,20 +659,17 @@ void ALevel1SuitUpgradeDoor::HandleDoorSafetyReopenStarted(AInteractableDoor* Do
 	{
 		return;
 	}
-	// 닫힘 중단 -> 봉쇄/정상 개방 완료 취소 -> 재평가 차단 순서로 정리한다.
-	// 기존 퇴장 기록도 버린다. 이 중단 이후 실제 퇴장/재입장만 새 요청을 만든다.
-	GetWorldTimerManager().ClearTimer(EntryRecheckTimer);
-	SafetyReentryPlayers.Reset();
+	// 안전 개방은 정상 진행이 아니다. 봉쇄/개방 완료를 취소하고 입장을 다시 확인한다.
 	bEntrySealed = false;
 	bCloseFinished = false;
 	bReopenRequested = false;
 	bOpenFinished = false;
-	bEntryCloseRejected = true;
 	if (IsValid(EntranceCheckpoint) && !EntranceCheckpoint->IsCheckpointCommitted())
 	{
 		EntranceCheckpoint->SetActivationConditionSatisfied(nullptr, false);
 	}
 	LogEntryStatus(TEXT("DoorSafetyReopen"), nullptr, nullptr);
+	EvaluateEntry();
 }
 
 void ALevel1SuitUpgradeDoor::HandleDoorMotionFinished(AInteractableDoor* Door, bool bOpen)

@@ -1,19 +1,40 @@
 #include "/Engine/Private/Common.ush"
+#include "/Engine/Private/GammaCorrectionCommon.ush"
 #include "/Engine/Private/ScreenPass.ush"
 
-// 사망 연출 Fade / Black 공용. 게임 화면 전체를 LerpColor 쪽으로 Amount만큼 균등하게 보간한다.
-// Fade는 Amount가 MaxStrength에서 멈춰서 픽셀마다 원본 차이가 남고, Black은 1까지 가서 완전히 검어진다.
+// 사망 연출 Fade / 비네트 공용. 장면색을 LerpColor 쪽으로 Amount만큼 보간한 뒤 비네트 텍스처 rgb × a를 더한다.
+// Fade는 비네트 없이 보간만, 비네트 패스는 보간량 0으로 비네트만 쓴다. 비네트는 뷰 영역 전체에 한 장 깔린다.
 
 Texture2D InputTexture;
 SamplerState InputSampler;
+Texture2D VignetteTexture;
+SamplerState VignetteSampler;
 
 float3 LerpColor;
 float Amount;
+float VignetteAmount;
+int bEncodeVignetteToSRGB;
+float2 InputUVMin;
+float2 InputUVSizeInverse;
 
 void MainPS(
 	FScreenVertexOutput Input,
 	out float4 OutColor : SV_Target0)
 {
 	const float4 SceneColor = InputTexture.Sample(InputSampler, Input.UV);
-	OutColor = float4(lerp(SceneColor.rgb, LerpColor, saturate(Amount)), SceneColor.a);
+	float3 Color = lerp(SceneColor.rgb, LerpColor, saturate(Amount));
+
+	// 비네트는 straight alpha 텍스처라서 rgb에 알파를 곱해 더한다. sRGB 인코딩은 rgb에만 한다.
+	if (VignetteAmount > 0.0f)
+	{
+		const float2 VignetteUV = saturate((Input.UV - InputUVMin) * InputUVSizeInverse);
+		float4 Vignette = VignetteTexture.Sample(VignetteSampler, VignetteUV);
+		if (bEncodeVignetteToSRGB != 0)
+		{
+			Vignette.rgb = LinearToSrgbBranchless(Vignette.rgb);
+		}
+		Color += Vignette.rgb * Vignette.a * VignetteAmount;
+	}
+
+	OutColor = float4(Color, SceneColor.a);
 }

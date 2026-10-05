@@ -11,6 +11,7 @@
 #include "OutlierPlayerState.h"
 #include "Room/RoomCombatSubsystem.h"
 #include "Save/OutlierCheckpointRestartVote.h"
+#include "UI/GameOverPendingTypes.h"
 #include "OutlierGameMode.generated.h"
 
 class APlayerController;
@@ -29,6 +30,13 @@ enum class EOutlierGameplayReloadPhase : uint8;
 enum class EOutlierGameplayReloadFailure : uint8;
 struct FOutlierCheckpointData;
 struct FOutlierCheckpointSnapshot;
+
+struct FGameOverPendingServerState
+{
+	TWeakObjectPtr<AFirstPersonPlayerController> Requester;
+	TWeakObjectPtr<AFirstPersonPlayerController> Responder;
+	FGameOverPendingRequest Request;
+};
 
 /**
  *  Simple GameMode for a third person game
@@ -54,12 +62,12 @@ public:
 	UFUNCTION()
 	void HandlePlayerDeath(AShooterCharacter* Character);
 
-	// PreSetLoadWidget에서 페어 한쪽이 스테이지를 고를 때마다 호출됨.
-	// 페어 양쪽이 같은 StageId를 고른 순간에만 실제로 RequestPresetRespawn까지 진행한다.
-	void HandlePresetStageSelected(AController* Requester, FName StageId);
-
 	// StageId에 대응하는 APresetPlayerStart 위치로 페어를 리스폰시킨다 (레벨 리셋 + 업그레이드 노드 플러시 포함).
 	void RequestPresetRespawn(AController* Requester, FName StageId);
+	bool RequestGameOverPendingChoice(
+		AFirstPersonPlayerController* Requester,
+		const FGameOverPendingRequest& Request);
+	bool RespondGameOverPending(AFirstPersonPlayerController* Responder, bool bApprove);
 
 	void StartMatchedPair(
 		AController* FirstController,
@@ -94,7 +102,7 @@ public:
 	bool RespondCheckpointRestart(AFirstPersonPlayerController* Responder, bool bApprove);
 	bool CancelCheckpointRestart(AFirstPersonPlayerController* Requester);
 	bool HandleCheckpointRestartEscape(AFirstPersonPlayerController* Controller);
-	bool HandleExplicitPlayerLeave(AFirstPersonPlayerController* Requester);
+	bool HandleExplicitPlayerLeave(AFirstPersonPlayerController* Requester, bool bQuitAfterLeave = false);
 	EOutlierCheckpointRestartVoteState GetLastCheckpointRestartVoteResult() const
 	{
 		return LastCheckpointRestartVoteResult;
@@ -102,6 +110,13 @@ public:
 
 
 private:
+	void CancelGameOverPendingForDisconnect(AController* Exiting);
+	void FinishGameOverPending(const FGameOverPendingServerState& State, bool bApprove);
+	bool ExecuteGameOverSelection(AFirstPersonPlayerController* Requester,
+		AFirstPersonPlayerController* OtherController, const FGameOverPendingRequest& Request);
+	TMap<int32, FGameOverPendingServerState> GameOverPendingByPair;
+	TSet<int32> GameOverActivePairs;
+
 	UPROPERTY()
 	TMap<TObjectPtr<APlayerController>, TObjectPtr<APawn>> PendingPossessions;
 
@@ -119,12 +134,16 @@ private:
 		uint32 GameplayGeneration,
 		EOutlierGameplayReloadFailure Failure);
 	void HandleArenaWorkerReloadStallTimeout();
-	void BeginArenaWorkerReleaseShutdown();
+	void BeginArenaWorkerReleaseShutdown(
+		AFirstPersonPlayerController* ExitRequester = nullptr, bool bQuitAfterLeave = false);
 	void ClearArenaGameplayReloadDelegates();
 	void ClearPendingArenaReloadPawns();
 	void CompleteServerArenaReload();
+	// Preset/체크포인트 재로드와 즉시 리스폰이 공유하는 위치 기반 RoomTag 복구.
+	void RefreshRoomOverlapAssignments();
 	void TryFinishArenaReload();
-	bool StartCheckpointRestart(AFirstPersonPlayerController* Requester);
+	bool StartCheckpointRestart(AFirstPersonPlayerController* Requester,
+		TFunction<void()> BeforeReload = {});
 	void FinishCheckpointRestart();
 	void FinishCheckpointRestartVote(EOutlierCheckpointRestartVoteState Result);
 	void CancelCheckpointRestartVoteForDisconnect(APlayerController* ExitingPlayer);

@@ -166,5 +166,11 @@ private:
 	// 사망 연출(Noise / Fade / Black / CA) 전체 섹션. Play / Reset과 모든 튜닝값을 담는다.
 	TSharedRef<SWidget> MakeDeathTransitionSection();
 
+	// Split Prism 섹션. Play / Stop과 튜닝값(FSplitPrismSettings)을 담는다.
+	TSharedRef<SWidget> MakeSplitPrismSection();
+
+	// Drone Damage Feedback 섹션. 모서리별 드러냄 토글과 글리치 튜닝값을 담는다.
+	TSharedRef<SWidget> MakeDroneDamageFeedbackSection();
+
 	mutable TWeakObjectPtr<ULocalPlayerPostProcessSubsystem> CachedSubsystem;
 };

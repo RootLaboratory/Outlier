@@ -56,6 +56,7 @@ private:
 	void OnArenaGameplayReady(uint32 ReadyGeneration);
 	void ReconcileRestoredProgress();
 	void EvaluateEntry();
+	void ScheduleEntryRecheck();
 	bool AbortEntryIfPairOutside();
 	void LogEntryStatus(const TCHAR* Reason, const AOutlierPlayerState* Shooter,
 		const AOutlierPlayerState* Partner);

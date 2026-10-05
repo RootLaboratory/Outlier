@@ -29,6 +29,14 @@ void URoomTagComponent::LeaveRoom(ARoomVolume* Room)
 	RefreshCurrentRoom();
 }
 
+bool URoomTagComponent::HasActiveRoom(const ARoomVolume* Room) const
+{
+	return ActiveRooms.ContainsByPredicate([Room](const TWeakObjectPtr<ARoomVolume>& ActiveRoom)
+	{
+		return ActiveRoom.IsValid() && ActiveRoom.Get() == Room;
+	});
+}
+
 void URoomTagComponent::AssignDefaultRoomTag(FGameplayTag InRoomTag)
 {
 	if (!GetOwner() || !GetOwner()->HasAuthority())

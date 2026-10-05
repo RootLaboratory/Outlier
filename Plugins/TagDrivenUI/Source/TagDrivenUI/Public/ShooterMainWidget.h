@@ -37,6 +37,10 @@ public:
 	virtual void ModuleInit() override;
 	virtual void ModuleDestruct() override;
 
+	// Shooter는 AbilitySections가 비어 있으므로 현재 능력 아이콘을 직접 잠근다(GangTong의 Shield와 같은 방식).
+	virtual void On_RepAbilityDisabledByDistance() override;
+	virtual void On_RepAbilityabledByDistance() override;
+
 public:
 
 	void DefaultModuleInit(); //초기에는 아무것도 갖고 있지 않음.Wrapping

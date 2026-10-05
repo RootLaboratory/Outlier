@@ -15,6 +15,8 @@ class TAGDRIVENUI_API URedDamageFeedbackWidget : public UDamageFeedbackIndicator
 	GENERATED_BODY()
 
 protected:
+	virtual UImage* GetFeedbackImage() const override { return RedFeedback.Get(); }
+
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UImage> RedFeedback;
 };

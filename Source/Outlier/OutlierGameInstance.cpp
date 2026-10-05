@@ -10,6 +10,7 @@
 #include "Engine/NetDriver.h"
 #include "Engine/NetConnection.h"
 #include "GameFramework/PlayerController.h"
+#include "Kismet/KismetSystemLibrary.h"
 #include "Misc/CommandLine.h"
 #include "Network/OutlierArenaProcessSubsystem.h"
 #include "Network/OutlierArenaSubsystem.h"
@@ -206,9 +207,15 @@ void UOutlierGameInstance::PrepareForExplicitLeave()
 	ResetListenReconnectState();
 }
 
+void UOutlierGameInstance::RequestQuitAfterExplicitLeave()
+{
+	PrepareForExplicitLeave();
+	bQuitAfterExplicitLeave = true;
+}
+
 void UOutlierGameInstance::HandlePostLoadMap(UWorld* LoadedWorld)
 {
-	if (!LoadedWorld)
+	if (!LoadedWorld || LoadedWorld->GetGameInstance() != this)
 	{
 		return;
 	}
@@ -216,6 +223,15 @@ void UOutlierGameInstance::HandlePostLoadMap(UWorld* LoadedWorld)
 	if (LoadedWorld->GetNetMode() == NM_DedicatedServer)
 	{
 		TryBootstrapArenaWorker(LoadedWorld);
+		return;
+	}
+
+	if (bQuitAfterExplicitLeave)
+	{
+		// 리슨 호스트도 상대에게 복귀 RPC를 보내고 기존 NetDriver를 정리한 뒤 종료한다.
+		bQuitAfterExplicitLeave = false;
+		UKismetSystemLibrary::QuitGame(
+			LoadedWorld, LoadedWorld->GetFirstPlayerController(), EQuitPreference::Quit, false);
 		return;
 	}
 

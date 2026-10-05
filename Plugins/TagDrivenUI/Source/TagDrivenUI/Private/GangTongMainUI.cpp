@@ -3,6 +3,8 @@
 
 #include "GangTongMainUI.h"
 #include "AbilityIconUI.h"
+#include "Components/Image.h"
+#include "Components/PanelWidget.h"
 #include "EventDrivenUI.h"
 #include "StaticCrossHair.h"
 #include "PartnerLeftHudWidget.h"
@@ -29,16 +31,6 @@ void UGangTongMainUI::CacheNestedHudWidgets()
 	AbilityHackingIcon = PartnerRightHUD->GetAbilityHackingIcon();
 	AbilityScanIcon = PartnerRightHUD->GetAbilityScanIcon();
 	AbilityEMPIcon = PartnerRightHUD->GetAbilityEMPIcon();
-
-	UE_LOG(LogTemp, Log,
-		TEXT("[PartnerHUD][Binding] Main=%s Left=%s Right=%s Shield=%s Hacking=%s Scan=%s EMP=%s"),
-		*GetNameSafe(this),
-		*GetNameSafe(PartnerLeftHUD),
-		*GetNameSafe(PartnerRightHUD),
-		*GetNameSafe(AbilityShieldIcon),
-		*GetNameSafe(AbilityHackingIcon),
-		*GetNameSafe(AbilityScanIcon),
-		*GetNameSafe(AbilityEMPIcon));
 }
 
 void UGangTongMainUI::ModuleInit()
@@ -72,29 +64,66 @@ void UGangTongMainUI::ModuleInit()
 		// 단 슈트 게이트를 우회하면 안 되므로 게이트를 존중하는 쪽으로 켠다.
 		SetModuleActive(PartnerCamModule, true);
 	}
+
+	InitHudImageOnly();
+}
+
+void UGangTongMainUI::InitHudImageOnly()
+{
+	if (bHudImageInitialized || !Image_Hud)
+	{
+		return;
+	}
+	bHudImageInitialized = true;
+
+	// 이미지까지 이어지는 부모만 열고, 같은 부모 아래의 나머지 위젯은 숨긴다.
+	// DefaultLayer가 Collapsed인 상태에서도 이미지가 실제로 보이게 한다.
+	UWidget* ImageBranch = Image_Hud;
+	for (UPanelWidget* Parent = ImageBranch->GetParent(); Parent; Parent = ImageBranch->GetParent())
+	{
+		InitialHudWidgetVisibilities.Add(Parent, Parent->GetVisibility());
+		Parent->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
+
+		for (int32 Index = 0; Index < Parent->GetChildrenCount(); ++Index)
+		{
+			UWidget* Child = Parent->GetChildAt(Index);
+			if (Child && Child != ImageBranch)
+			{
+				InitialHudWidgetVisibilities.Add(Child, Child->GetVisibility());
+				Child->SetVisibility(ESlateVisibility::Collapsed);
+			}
+		}
+
+		ImageBranch = Parent;
+	}
+
+	Image_Hud->SetVisibility(ESlateVisibility::Visible);
 }
 
 void UGangTongMainUI::SetSuitGatedModulesEnabled(bool bEnabled)
 {
+	if (!InitialHudWidgetVisibilities.IsEmpty())
+	{
+		// 초기 UI 등록에서 반복되는 미착용 상태는 최초 이미지 표시를 지우지 않는다.
+		// 해킹/EMP 등의 전체 숨김은 기존 ModulesControl(false)가 부모까지 숨긴다.
+		if (!bEnabled)
+		{
+			return;
+		}
+
+		for (const TPair<TObjectPtr<UWidget>, ESlateVisibility>& Entry : InitialHudWidgetVisibilities)
+		{
+			if (Entry.Key)
+			{
+				Entry.Key->SetVisibility(Entry.Value);
+			}
+		}
+		InitialHudWidgetVisibilities.Empty();
+	}
+
 	// Shooter 와 같은 흐름 — ModuleLayer만 제어하고 자식의 개별 상태는 보존한다.
 	// (AFirstPersonPlayerController::ControlMainWidget 이 Shooter 쪽에서 하는 것과 동일)
 	ModulesControl(bEnabled);
-}
-
-void UGangTongMainUI::On_RepAbilityDisabledByDistance()
-{
-	if (UAbilityIconUI* ShieldIcon = GetAbilityIcon(TagDrivenUITags::Ability::Partner::Shield()))
-	{
-		ShieldIcon->SetAbilityEnabled(false);
-	}
-}
-
-void UGangTongMainUI::On_RepAbilityabledByDistance()
-{
-	if (UAbilityIconUI* ShieldIcon = GetAbilityIcon(TagDrivenUITags::Ability::Partner::Shield()))
-	{
-		ShieldIcon->SetAbilityEnabled(true);
-	}
 }
 
 void UGangTongMainUI::ModuleDestruct()

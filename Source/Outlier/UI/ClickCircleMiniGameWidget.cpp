@@ -80,9 +80,13 @@ void UClickCircleMiniGameWidget::SpawnCircleWidgets()
 	const int32 MaxCount = FMath::Max(MinCount, MaxCircleCount);
 	const int32 CircleCount = FMath::RandRange(MinCount, MaxCount);
 
-	const float EffectiveMaxRadius = FMath::Max(MaxCircleRadius, MinCircleRadius + 1.0f);
+	const float SafeBackgroundDiameter = FMath::Max(BackgroundCircleDiameter, 1.0f);
+	const float HalfThickness = FMath::Clamp(CircleThickness, 0.0f, SafeBackgroundDiameter - 1.0f) * 0.5f;
+	const float BackgroundMaxRadius = SafeBackgroundDiameter * 0.5f - HalfThickness;
+	const float EffectiveMinRadius = FMath::Min(FMath::Max(MinCircleRadius, HalfThickness), BackgroundMaxRadius);
+	const float EffectiveMaxRadius = FMath::Min(FMath::Max(MaxCircleRadius, EffectiveMinRadius), BackgroundMaxRadius);
 	const float RadiusInterval = CircleCount > 1
-		? (EffectiveMaxRadius - MinCircleRadius) / static_cast<float>(CircleCount - 1)
+		? (EffectiveMaxRadius - EffectiveMinRadius) / static_cast<float>(CircleCount - 1)
 		: 0.0f;
 
 	for (int32 Index = 0; Index < CircleCount; ++Index)
@@ -141,22 +145,20 @@ UHackCircleBorderWidget* UClickCircleMiniGameWidget::CreateCircleBorderLayer(flo
 	CircleBorder->SetAmount(FMath::Clamp(Amount, 0.0f, 1.0f));
 	CircleBorder->SetAngle(AngleDegrees - 90.0f - Amount * 180.0f);
 
+	const float HalfThickness = FMath::Max(CircleThickness, 0.0f) * 0.5f;
+	const float LayerDiameter = FMath::Max((Radius + HalfThickness) * 2.0f, 1.0f);
 	UCanvasPanelSlot* CanvasSlot = CircleCanvas->AddChildToCanvas(CircleBorder);
 	if (CanvasSlot)
 	{
-		const FVector2D LayerSize(Radius * 2.0f, Radius * 2.0f);
-
 		CanvasSlot->SetAutoSize(false);
 		CanvasSlot->SetAnchors(FAnchors(0.5f, 0.5f));
 		CanvasSlot->SetAlignment(FVector2D(0.5f, 0.5f));
 		CanvasSlot->SetPosition(CircleCenter);
-		CanvasSlot->SetSize(LayerSize);
+		CanvasSlot->SetSize(FVector2D(LayerDiameter, LayerDiameter));
 	}
 
-	const float SafeDiameter = FMath::Max(Radius * 2.0f, 1.0f);
-	const float HalfThicknessUV = CircleThickness * 0.5f / SafeDiameter;
-	CircleBorder->SetInnerRadius(0.5f - HalfThicknessUV);
-	CircleBorder->SetOuterRadius(0.5f + HalfThicknessUV);
+	CircleBorder->SetInnerRadius(FMath::Max(Radius - HalfThickness, 0.0f) / LayerDiameter);
+	CircleBorder->SetOuterRadius((Radius + HalfThickness) / LayerDiameter);
 
 	return CircleBorder;
 }

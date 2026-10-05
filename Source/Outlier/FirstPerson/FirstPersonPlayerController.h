@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Components/SlateWrapperTypes.h"
 #include "GameFramework/PlayerController.h"
 #include "GameplayTagContainer.h"
 #include "Audio/OutlierAudioTypes.h"
@@ -10,18 +11,33 @@
 #include "PlayerUIProvider.h"
 #include "Save/OutlierCheckpointRestartVote.h"
 #include "UI/UILayerTypes.h"
+#include "UI/GameOverPendingTypes.h"
 #include "Upgrade/OutlierUpgradeTypes.h"
 #include "Containers/Ticker.h"
 #include "FirstPersonPlayerController.generated.h"
 
 class UInputMappingContext;
+class UInputAction;
+class UControllerInputConfig;
 class UInGameSettingWidget;
 class UCameraShakeBase;
 class UOutlierUpgradeSetData;
-class UPreSetLoadWidget;
+class UGameOverWidget;
+class UGameOverPendingWidget;
+class UWidget;
 class AActor;
 class AShooterCharacter;
 enum class ESuitTransitionPhase : uint8;
+
+// HUD 위젯을 숨길 사유가 생기는 순간의 Visibility를 저장했다가, 사유가 모두 풀리면 그 값으로 되돌린다.
+struct FHudWidgetCollapseState
+{
+	ESlateVisibility VisibilityBeforeCollapse = ESlateVisibility::Visible;
+	bool bCollapsed = false;
+
+	void Apply(UWidget* Widget, bool bShow);
+	void Reset() { bCollapsed = false; }
+};
 
 namespace FirstPersonInputModeTags
 {
@@ -68,14 +84,9 @@ public:
 	void SendSuitTransitionPhaseFromServer(AShooterCharacter* Shooter, const FGuid& TransitionId,
 		ESuitTransitionPhase Phase, float Duration);
 
-	// 담당자의 실제 완료 콜백에서 요청받은 ID를 전달한다. 요청 수신/타이머만으로 호출하지 않는다.
-	UFUNCTION(BlueprintCallable, Category = "Suit|Transition")
+	// 실제 연출 완료 콜백에서 요청받은 ID를 전달한다. 요청 수신/타이머만으로 호출하지 않는다.
 	void NotifySuitFadeOutFinished(const FGuid& TransitionId);
-
-	UFUNCTION(BlueprintCallable, Category = "Suit|Transition")
 	void NotifySuitPresentationReady(const FGuid& TransitionId);
-
-	UFUNCTION(BlueprintCallable, Category = "Suit|Transition")
 	void NotifySuitFadeInFinished(const FGuid& TransitionId);
 
 	/** Client-owned transport for relevant AtLocation audio requests. */
@@ -96,13 +107,31 @@ public:
 	UFUNCTION(Client, Reliable)
 	void ClientPushUILayer(const FUILayerPushRequest& Request);
 
+	UFUNCTION(Client, Reliable)
+	void ClientShowGameOverPending(const FGameOverPendingRequest& Request, bool bIsRequester);
+
+	UFUNCTION(Client, Reliable)
+	void ClientCloseGameOverPending();
+
+	UFUNCTION(Client, Reliable)
+	void BeginGameOverRespawnTransition();
+
 	UFUNCTION(BlueprintCallable, Category = "UI|InGame Setting")
 	void RequestOpenInGameSetting();
 
 	UFUNCTION(BlueprintCallable, Category = "UI|InGame Setting")
 	void RequestCloseInGameSetting();
 
-	void RequestLeaveGame();
+	void RequestLeaveGame(bool bQuitAfterLeave = false);
+	bool HasRequestedExplicitLeave() const { return bExplicitLeaveRequested; }
+	FSimpleMulticastDelegate OnExplicitLeaveStateChanged;
+	void ConfirmExplicitLeaveFromServer(bool bAccepted, bool bQuitAfterLeave);
+
+	void RequestGameOverPendingChoice(const FGameOverPendingRequest& Request);
+	void RequestGameOverPendingResponse(bool bApprove);
+	void ShowGameOverPendingFromServer(const FGameOverPendingRequest& Request, bool bIsRequester);
+	void CloseGameOverPendingFromServer();
+	bool HasGameOverPendingWidgetClass() const;
 
 	void RequestCheckpointRestart();
 	void RequestCheckpointRestartResponse(bool bApprove);
@@ -143,7 +172,10 @@ public:
 	void ServerCloseInGameSetting();
 
 	UFUNCTION(Server, Reliable)
-	void ServerRequestLeaveGame();
+	void ServerRequestLeaveGame(bool bQuitAfterLeave);
+
+	UFUNCTION(Client, Reliable)
+	void ClientConfirmExplicitLeave(bool bAccepted, bool bQuitAfterLeave);
 
 	UFUNCTION(Server, Reliable)
 	void ServerRequestCheckpointRestart();
@@ -199,21 +231,27 @@ public:
 	// UFUNCTION(Exec)
 	// void ArenaDumpClientGameplayActors();
 
-	// 사망 시 프리셋 스테이지 선택 팝업을 띄운다 (페어 양쪽 컨트롤러에 각각 호출됨).
+	// 사망 시 게임오버 화면을 띄운다 (페어 양쪽 컨트롤러에 각각 호출됨).
 	UFUNCTION(Client, Reliable)
-	void Client_ShowPresetSelect();
+	void Client_ShowPresetSelect(bool bImmediateSelections = false);
 
-	// 위젯에서 고른 스테이지를 서버에 보고한다. 즉시 확정이 아니라 페어 상대와 같은
-	// 스테이지가 모일 때까지 GameMode가 대기하는 후보 제출일 뿐이다.
 	UFUNCTION(Server, Reliable)
-	void Server_SelectPresetStage(FName StageId);
+	void ServerRequestGameOverPendingChoice(const FGameOverPendingRequest& Request);
+
+	UFUNCTION(Server, Reliable)
+	void ServerRespondGameOverPending(bool bApprove);
 
 	UFUNCTION()
 	void HandleArenaShown();
 	void HandleArenaGameplayReady(uint32 GameplayGeneration);
 	void HandleArenaGameplayUnloaded(uint32 GameplayGeneration);
 	void ControlMainWidget(bool InFlag) const;
-	void ArmDeathTransitionReleaseOnPossess(); //리슨 서버일 때 호스트 클라에게도 PP Flag 해제.
+	// 사망 사유를 켜고 끈다. 실제 표시 여부는 RefreshHudVisibility가 다른 사유와 합쳐서 정한다.
+	void CollapseMainWidgetForDeath();
+	void RestoreMainWidgetAfterDeath();
+	// 서버가 소유 클라이언트에 예약한다. 실제 암전/HUD 해제는 새 Pawn을 잡을 때 실행한다.
+	UFUNCTION(Client, Reliable)
+	void ArmDeathTransitionReleaseOnPossess();
 
 	UFUNCTION(BlueprintCallable, Category = "Input|Input Mode")
 	bool SetFirstPersonInputMode(FGameplayTag NewInputMode);
@@ -236,6 +274,9 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "Input|Input Mappings")
 	TArray<UInputMappingContext*> DefaultMappingContexts;
 
+	UPROPERTY(EditDefaultsOnly, Category = "Input")
+	TObjectPtr<UControllerInputConfig> ControllerInputConfig;
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Pair")
 	EOutlierPlayerRole DefaultPlayerRole = EOutlierPlayerRole::None;
 
@@ -254,6 +295,8 @@ protected:
 
 	// Input Mapping Context Setup
 	virtual void SetupInputComponent() override;
+	void HandleWidgetEscapeInput();
+	void PlayWidgetEscapeLocal2DAudio();
 
 	virtual TSubclassOf<UMainUIBase> GetMainUIClass_Implementation() const;
 
@@ -272,15 +315,18 @@ protected:
 	void ClearClientArenaContentWait();
 	virtual void RefreshPostProcessState();
 
-	UFUNCTION()
-	void HandleLocalPresetStageSelected(FName StageId);
+	// 숨김 사유(사망, Partner 빙의)를 합쳐 HUD 표시 여부를 다시 맞춘다. 사유가 바뀔 때마다 호출한다.
+	virtual void RefreshHudVisibility();
+	virtual bool ShouldShowMainWidget() const;
+	bool IsHudHiddenForDeath() const { return bHudHiddenForDeath; }
 
-	// 사망 연출의 Black 패스가 시작될 때 PreSetLoadWidget을 띄운다.
-	void HandleDeathBlackoutStarted();
-	void PushPresetSelectWidget();
+	// 사망 연출의 Black Noise 텍스처가 나타날 때 GameOverWidget을 띄운다.
+	void HandleDeathBlackNoiseStarted();
+	void PushGameOverWidget();
+	UGameOverWidget* FindGameOverWidget() const;
 
-	// 암전 담당자 연결 지점. PIE에서는 테스트용 완료 응답을 보내며, 일반 실행에서는 실제 연출 연결을 기다린다.
-	// 실제 콜백 검증 시 Outlier.SuitTransition.BypassPresentation 0으로 테스트 우회를 끈다.
+	// Suit 전환 연출 지점. 암전은 LocalPlayer PP의 Screen Blackout(HUD 포함)으로 그리고, 완료 콜백에서 서버에 알린다.
+	// Outlier.SuitTransition.BypassPresentation 1이면 PIE에서 연출 없이 바로 응답한다.
 	virtual void RequestSuitFadeOut(const FGuid& TransitionId, float Duration);
 	virtual void RequestSuitPresentationReady(const FGuid& TransitionId);
 	virtual void RequestSuitFadeIn(const FGuid& TransitionId, float Duration);
@@ -300,9 +346,19 @@ private:
 	void NotifySuitTransitionPhaseFinished(const FGuid& TransitionId, ESuitTransitionPhase Phase);
 	void ClearLocalSuitTransition();
 
+	// Screen Blackout 완료 콜백. 요청 ID를 값으로 받고, 현재 ID/단계 검증은 Notify가 맡는다.
+	void HandleSuitScreenBlackoutCovered(FGuid TransitionId);
+	void HandleSuitScreenBlackoutRevealed(FGuid TransitionId);
+	void PollSuitPresentationReady(FGuid TransitionId);
+	bool IsSuitPresentationReady() const;
+
 	TWeakObjectPtr<AShooterCharacter> LocalSuitTransitionShooter;
 	TWeakObjectPtr<APawn> LocalSuitTransitionPawn;
 	FGuid LocalSuitTransitionId;
+	FTimerHandle SuitPresentationPollTimer;
+	// 조건이 처음 맞은 폴링에서는 새 ABP가 포즈를 한 번 평가하도록 다음 폴링까지 기다린다.
+	bool bSuitPresentationReadyObserved = false;
+	int32 SuitPresentationPollCount = 0;
 	ESuitTransitionPhase LocalSuitTransitionPhase;
 	bool bLocalSuitTransitionReadySent = false;
 
@@ -323,6 +379,8 @@ protected:
 
 	UPROPERTY()
 	TObjectPtr<UMainUIBase> ShooterUIInstance;
+	FHudWidgetCollapseState MainWidgetCollapseState;
+	bool bHudHiddenForDeath = false;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "UI")
 	TSubclassOf<UMainUIBase> MainUIClass;
@@ -330,8 +388,13 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "UI|InGame Setting")
 	TSubclassOf<UInGameSettingWidget> InGameSettingWidgetClass;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "UI|Preset")
-	TSubclassOf<UPreSetLoadWidget> PresetLoadWidgetClass;
+	UPROPERTY(EditDefaultsOnly, Category = "UI|Game Over")
+	TSubclassOf<UGameOverWidget> GameOverWidgetClass;
+
+	FGameOverPendingRequest QueuedGameOverPendingRequest;
+	bool bHasQueuedGameOverPendingRequest = false;
+	bool bGameOverImmediateSelections = false;
+	bool bQueuedGameOverPendingRequester = false;
 
 	bool bCanRequestCheckpointRestart = false;
 	bool bExplicitLeaveRequested = false;

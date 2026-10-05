@@ -282,7 +282,7 @@ void AMeleeWeaponBase::RefreshTargetSearchState()
 	const bool bShouldSearch = bIsEquipped
 		&& OwnerCharacter
 		&& OwnerCharacter->IsLocallyControlled()
-		&& (!Shooter || Shooter->GetCurrentWeapon() == this);
+		&& (!Shooter || (!Shooter->IsDead() && Shooter->GetCurrentWeapon() == this));
 	if (!bShouldSearch)
 	{
 		StopTargetSearch();
@@ -311,7 +311,7 @@ void AMeleeWeaponBase::RefreshMeleeTarget()
 	ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
 	const AShooterCharacter* Shooter = Cast<AShooterCharacter>(OwnerCharacter);
 	if (!bIsEquipped || !OwnerCharacter || !OwnerCharacter->IsLocallyControlled()
-		|| (Shooter && Shooter->GetCurrentWeapon() != this))
+		|| (Shooter && (Shooter->IsDead() || Shooter->GetCurrentWeapon() != this)))
 	{
 		StopTargetSearch();
 		return;
@@ -775,7 +775,7 @@ void AMeleeWeaponBase::ApplyHitToTarget(AActor* Target, const FHitResult& HitRes
 
 	FOutlierDamageRequest DamageRequest;
 	DamageRequest.DamageAmount = DamageToApply;
-	DamageRequest.DamageTag = OutlierGameplayTags::Damage::Weapon();
+	DamageRequest.DamageTag = OutlierGameplayTags::Damage::Melee();
 	const AEnemyBase* OwnerEnemy = Cast<AEnemyBase>(WeaponOwner);
 	const bool bPlayerAttributedAttack = Cast<AShooterCharacter>(WeaponOwner)
 		|| Cast<APartnerCharacter>(WeaponOwner)

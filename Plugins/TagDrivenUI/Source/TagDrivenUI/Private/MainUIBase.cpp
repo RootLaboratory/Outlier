@@ -3,6 +3,7 @@
 #include "AbilityIconUI.h"
 #include "Components/CanvasPanel.h"
 #include "Components/Widget.h"
+#include "DamageFeedbackLayer.h"
 #include "EventDrivenUI.h"
 #include "LocalPlayerUISubSystem.h"
 #include "Engine/LocalPlayer.h"
@@ -56,32 +57,25 @@ void UMainUIBase::ResetAbilityCooldowns()
 	}
 }
 
+void UMainUIBase::FlushTransientWidgets()
+{
+	if (InteractionLayer)
+	{
+		InteractionLayer->ClearChildren();
+	}
+	if (DamageFeedbackLayer)
+	{
+		DamageFeedbackLayer->ClearDamageFeedback();
+	}
+}
+
+// 거리 잠금 표시는 HUD마다 다르다(Shooter: CurrentAbility의 LockIcon). 표시가 필요한 HUD만 override한다.
 void UMainUIBase::On_RepAbilityDisabledByDistance()
 {
-	for (const TPair<FGameplayTag, TObjectPtr<UAbilityIconUI>>& AbilitySection : AbilitySections)
-	{
-		UAbilityIconUI* Icon = AbilitySection.Value;
-		if (!Icon || !Icon->IsUnLock())
-		{
-			continue;
-		}
-
-		Icon->SetAbilityEnabled(false);
-	}
 }
 
 void UMainUIBase::On_RepAbilityabledByDistance()
 {
-	for (const TPair<FGameplayTag, TObjectPtr<UAbilityIconUI>>& AbilitySection : AbilitySections)
-	{
-		UAbilityIconUI* Icon = AbilitySection.Value;
-		if (!Icon || !Icon->IsUnLock())
-		{
-			continue;
-		}
-
-		Icon->SetAbilityEnabled(true);
-	}
 }
 
 void UMainUIBase::ModulesControl(bool Flag)

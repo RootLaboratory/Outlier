@@ -65,6 +65,9 @@ UOutlierStunGameplayEffect::UOutlierStunGameplayEffect(const FObjectInitializer&
 	: Super(ObjectInitializer)
 {
 	DurationPolicy = EGameplayEffectDurationType::HasDuration;
+	// EMP and weapon stuns share this effect. GAS owns the looping cue's lifetime,
+	// including overlapping stuns and effects removed before their duration expires.
+	GameplayCues.Emplace(OutlierGameplayTags::Cue::Status::Stun(), 0.0f, 1.0f);
 	FInheritedTagContainer GrantedTags;
 	GrantedTags.AddTag(OutlierGameplayTags::State::Stunned());
 	UTargetTagsGameplayEffectComponent* TargetTags =

@@ -4,8 +4,15 @@
 #include "RDGExplosionVolumeProvider.h"
 #include "RenderingThread.h"
 #include "SceneViewExtension.h"
+#include "TextureResource.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/PostProcessVolume.h"
+#include "Engine/Texture2D.h"
+#include "Engine/World.h"
+#include "Engine/HitResult.h"
+#include "GameFramework/Pawn.h"
+#include "GameFramework/PlayerController.h"
+#include "CollisionQueryParams.h"
 
 namespace PostProcessAnimation
 {
@@ -48,10 +55,13 @@ void ULocalPlayerPostProcessSubsystem::Deinitialize()
 {
 	OnHackTransitionCovered.Clear();
 	OnHackTransitionFinished.Clear();
-	OnDeathBlackoutStarted.Clear();
+	OnDeathBlackNoiseStarted.Clear();
+	OnScreenBlackoutCovered.Clear();
+	OnScreenBlackoutRevealed.Clear();
 	DeathTransition.Reset(PostProcessParameters, UIPostProcessParameters);
 	HackPossessionTransitionPhase = EHackPossessionTransitionPhase::Idle;
 	bHackTransitionCoveredBroadcastSent = false;
+	bScreenBlackoutFading = false;
 
 	Super::Deinitialize();
 	ViewExtension.Reset();
@@ -66,12 +76,19 @@ void ULocalPlayerPostProcessSubsystem::Deinitialize()
 
 void ULocalPlayerPostProcessSubsystem::Tick(float DeltaTime)
 {
+	// 텍스처 리소스는 지정 직후엔 아직 없을 수 있어서, 준비될 때까지 매 틱 확인한다.
+	RefreshDeathTransitionTextures();
+	RefreshDroneDamageMaskTextures();
+
 	UpdateOverlay(DeltaTime);
 	UpdateADSBlur(DeltaTime);
 	UpdatePixelSorting(DeltaTime);
 	UpdateHackPossessionTransition(DeltaTime);
 	UpdateDeathTransition(DeltaTime);
 	UpdateDeathNoise(DeltaTime);
+	UpdateDroneDamageFeedback(DeltaTime);
+	UpdateSplitPrism(DeltaTime);
+	UpdateScreenBlackout(DeltaTime);
 	UpdateDepthOfField();
 }
 
@@ -89,7 +106,100 @@ void ULocalPlayerPostProcessSubsystem::MarkDirty()
 {
 	CachedPostProcessParameters = PostProcessParameters;
 	CachedUIPostProcessParameters = UIPostProcessParameters;
+	if (bUIEffectsSuspended && !DeathTransition.IsActive()
+		&& !bGameOverBlackoutActive && !IsHackPossessionTransitionActive())
+	{
+		// Slate 이후 backbuffer 체인에 전달하는 복사본만 바꾼다. 모든 갱신 경로가
+		// 이 함수를 거치므로 메뉴 중 효과가 다시 켜져도 UI에는 적용되지 않는다.
+		CachedPostProcessParameters.PixelSorting.bEnabled = false;
+		CachedPostProcessParameters.ZoomBlur.bEnabled = false;
+		CachedUIPostProcessParameters.ChromaticAberration.bEnabled = false;
+		CachedUIPostProcessParameters.DeathChromaticAberration.bEnabled = false;
+		CachedUIPostProcessParameters.Overlay.bEnabled = false;
+		CachedUIPostProcessParameters.SplitPrism.bEnabled = false;
+	}
 	bDirty = true;
+}
+
+void ULocalPlayerPostProcessSubsystem::SetUIEffectsSuspended(bool bSuspended)
+{
+	if (bUIEffectsSuspended == bSuspended)
+	{
+		return;
+	}
+	bUIEffectsSuspended = bSuspended;
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::ResetAllPostProcess(bool bPreserveDeathTransition)
+{
+	bGameOverBlackoutActive = bPreserveDeathTransition && bGameOverBlackoutActive;
+	PlayerState = FPPGameplayState();
+	bOverlayRequested = false;
+	bADSBlurAiming = false;
+	ADSBlurElapsedTime = 0.0f;
+	HackPossessionTransitionPhase = EHackPossessionTransitionPhase::Idle;
+	HackTransitionZoomBlurElapsedTime = 0.0f;
+	HackTransitionBlackoutElapsedTime = 0.0f;
+	bHackTransitionCoveredBroadcastSent = false;
+	SplitPrismPhase = ESplitPrismPhase::Idle;
+	SplitPrismElapsedTime = 0.0f;
+	SplitPrismSettleElapsedTime = 0.0f;
+	SplitPrismSubjectDistance = -1.0f;
+	bScreenBlackoutFading = false;
+	ScreenBlackoutTargetAlpha = 0.0f;
+	ScreenBlackoutFadeSpeed = 0.0f;
+
+	PostProcessParameters.MotionBlur.bEnabled = false;
+	PostProcessParameters.LensFlare.bEnabled = false;
+	PostProcessParameters.BloomBlur.bEnabled = false;
+	PostProcessParameters.DualKawaseBlur.bEnabled = false;
+	PostProcessParameters.Datamoshing.bEnabled = false;
+	PostProcessParameters.Datamoshing.Progress = 0.0f;
+	PostProcessParameters.PixelSorting.bEnabled = false;
+	PixelSortingAnimation::Reset(PostProcessParameters.PixelSorting);
+	PostProcessParameters.ZoomBlur.bEnabled = bGameOverBlackoutActive;
+	PostProcessParameters.ZoomBlur.Progress = 0.0f;
+	PostProcessParameters.ZoomBlur.BlackFlushAlpha = bGameOverBlackoutActive ? 1.0f : 0.0f;
+	PostProcessParameters.ZoomBlur.Strength = 0.0f;
+	PostProcessParameters.ADSBlur.bEnabled = false;
+	PostProcessParameters.SplitPrismDefocus.bEnabled = false;
+	PostProcessParameters.SplitPrismDefocus.Defocus = 0.0f;
+	PostProcessParameters.SplitPrismDefocus.ResidualWeight = 0.0f;
+	UIPostProcessParameters.ChromaticAberration.bEnabled = false;
+	UIPostProcessParameters.Overlay.bEnabled = false;
+	UIPostProcessParameters.Overlay.AccumulatedValue = 0.0f;
+	UIPostProcessParameters.SplitPrism.bEnabled = false;
+	UIPostProcessParameters.SplitPrism.Offset = 0.0f;
+	UIPostProcessParameters.ScreenBlackout.bEnabled = false;
+	UIPostProcessParameters.ScreenBlackout.Alpha = 0.0f;
+	bDroneDamageSuppressed = false;
+	PostProcessParameters.DroneDamageFeedback.bEnabled = false;
+	PostProcessParameters.DroneDamageFeedback.Time = 0.0f;
+	for (float& MaskWeight : PostProcessParameters.DroneDamageFeedback.MaskWeights)
+	{
+		MaskWeight = 0.0f;
+	}
+	if (!bPreserveDeathTransition)
+	{
+		DeathTransition.Reset(PostProcessParameters, UIPostProcessParameters);
+	}
+
+	UpdateDepthOfField();
+	MarkDirty();
+	TickFrame();
+	if (ViewExtension.IsValid())
+	{
+		// 렌더 스레드 캐시는 해당 스레드에서만 지운다. 명령 완료까지 확장을 유지한다.
+		const auto Extension = ViewExtension;
+		ENQUEUE_RENDER_COMMAND(ResetOutlierPostProcessHistory)(
+			[Extension](FRHICommandListImmediate&)
+			{
+				Extension->ResetRuntimeHistory_RenderThread();
+			});
+	}
+	UE_LOG(LogTemp, Log, TEXT("[PostProcessReset][RDG] PreserveDeathTransition=%d"), bPreserveDeathTransition);
 }
 
 void ULocalPlayerPostProcessSubsystem::ActivateSlideState()
@@ -491,7 +601,9 @@ void ULocalPlayerPostProcessSubsystem::UpdateDeathNoise(float DeltaTime)
 void ULocalPlayerPostProcessSubsystem::SetDeathNoiseParameters(const FDeathNoiseParameters& InParameters)
 {
 	FDeathNoiseParameters& DeathNoise = PostProcessParameters.DeathNoise;
-	DeathNoise.Intensity = FMath::Max(0.0f, InParameters.Intensity);
+	DeathNoise.MaxIntensity = FMath::Max(0.0f, InParameters.MaxIntensity);
+	DeathNoise.bRampIntensity = InParameters.bRampIntensity ? 1 : 0;
+	DeathNoise.RampDuration = FMath::Max(0.0f, InParameters.RampDuration);
 	DeathNoise.Seed = InParameters.Seed;
 	DeathNoise.SliceRows = FMath::Clamp(InParameters.SliceRows, 1.0f, 1024.0f);
 	DeathNoise.SliceSplitChance = FMath::Clamp(InParameters.SliceSplitChance, 0.0f, 1.0f);
@@ -513,16 +625,65 @@ void ULocalPlayerPostProcessSubsystem::SetDeathFadeParameters(const FDeathFadePa
 	DeathFade.TargetColor = InParameters.TargetColor.GetClamped(0.0f, 1.0f);
 	DeathFade.MaxStrength = FMath::Clamp(InParameters.MaxStrength, 0.0f, 1.0f);
 	DeathFade.Duration = FMath::Max(0.0f, InParameters.Duration);
+	DeathFade.bEaseIn = InParameters.bEaseIn ? 1 : 0;
+	DeathFade.EaseInPower = FMath::Clamp(InParameters.EaseInPower, 1.0f, 16.0f);
 	DeathFade.Delay = FMath::Max(0.0f, InParameters.Delay);
+	DeathFade.VignetteDelay = FMath::Max(0.0f, InParameters.VignetteDelay);
+	DeathFade.VignetteFadeDuration = FMath::Max(0.0f, InParameters.VignetteFadeDuration);
 	MarkDirty();
 	TickFrame();
 }
 
 void ULocalPlayerPostProcessSubsystem::SetDeathBlackParameters(const FDeathBlackParameters& InParameters)
 {
-	PostProcessParameters.DeathBlack.Duration = FMath::Max(0.0f, InParameters.Duration);
+	FDeathBlackParameters& DeathBlack = PostProcessParameters.DeathBlack;
+	for (int32 LayerIndex = 0; LayerIndex < DeathBlackLayerCount; ++LayerIndex)
+	{
+		DeathBlack.LayerDelays[LayerIndex] = FMath::Max(0.0f, InParameters.LayerDelays[LayerIndex]);
+		DeathBlack.LayerFadeDurations[LayerIndex] = FMath::Max(0.0f, InParameters.LayerFadeDurations[LayerIndex]);
+	}
 	MarkDirty();
 	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetDeathTransitionTexture(EDeathTransitionTexture Slot, UTexture2D* InTexture)
+{
+	if (Slot >= EDeathTransitionTexture::Count)
+	{
+		return;
+	}
+
+	DeathTransitionTextures[static_cast<int32>(Slot)] = InTexture;
+	RefreshDeathTransitionTextures();
+}
+
+void ULocalPlayerPostProcessSubsystem::RefreshDeathTransitionTextures()
+{
+	static_assert(UE_ARRAY_COUNT(DeathTransitionTextures) == DeathTransitionTextureCount, "DeathTransitionTextures must match EDeathTransitionTexture");
+
+	for (int32 SlotIndex = 0; SlotIndex < DeathTransitionTextureCount; ++SlotIndex)
+	{
+		const UTexture2D* Texture = DeathTransitionTextures[SlotIndex];
+		const FTextureRHIRef NewTextureRHI = Texture && Texture->GetResource()
+			? Texture->GetResource()->TextureRHI
+			: FTextureRHIRef();
+		if (DeathTransitionTextureRHIs[SlotIndex] == NewTextureRHI)
+		{
+			continue;
+		}
+
+		DeathTransitionTextureRHIs[SlotIndex] = NewTextureRHI;
+		if (ViewExtension.IsValid())
+		{
+			const TSharedPtr<FOutlierPostProcessSceneViewExtension, ESPMode::ThreadSafe> TargetViewExtension = ViewExtension;
+			const EDeathTransitionTexture Slot = static_cast<EDeathTransitionTexture>(SlotIndex);
+			ENQUEUE_RENDER_COMMAND(UpdateDeathTransitionTexture)(
+				[TargetViewExtension, Slot, NewTextureRHI](FRHICommandListImmediate&)
+				{
+					TargetViewExtension->UpdateDeathTransitionTexture(Slot, NewTextureRHI);
+				});
+		}
+	}
 }
 
 void ULocalPlayerPostProcessSubsystem::SetDeathChromaticAberrationParameters(const FDeathChromaticAberrationParameters& InParameters)
@@ -536,8 +697,11 @@ void ULocalPlayerPostProcessSubsystem::SetDeathChromaticAberrationParameters(con
 
 bool ULocalPlayerPostProcessSubsystem::StartDeathTransition()
 {
-	// SVE가 없으면 화면이 안 가려진 채로 Black 시점만 기다리게 되므로, 호출자가 바로 넘어가게 한다.
-	if (!ViewExtension.IsValid())
+	RefreshDeathTransitionTextures();
+	// 텍스처가 없으면 Noise 레이어를 보여줄 수 없으므로 호출자가 프리셋 UI로 바로 넘어간다.
+	if (!ViewExtension.IsValid()
+		|| !IsDeathTransitionTextureReady(EDeathTransitionTexture::BlackBackground)
+		|| !IsDeathTransitionTextureReady(EDeathTransitionTexture::BlackNoise))
 	{
 		return false;
 	}
@@ -555,6 +719,17 @@ void ULocalPlayerPostProcessSubsystem::ResetDeathTransition()
 	TickFrame();
 }
 
+void ULocalPlayerPostProcessSubsystem::StartGameOverBlackout()
+{
+	// 해킹 전환 등 다른 런타임 연출도 정리해 암막 파라미터를 다시 덮어쓰지 않게 한다.
+	ResetAllPostProcess();
+	bGameOverBlackoutActive = true;
+	PostProcessParameters.ZoomBlur.bEnabled = true;
+	PostProcessParameters.ZoomBlur.BlackFlushAlpha = 1.0f;
+	MarkDirty();
+	TickFrame();
+}
+
 void ULocalPlayerPostProcessSubsystem::SetDeathTransitionPassEnabled(EDeathTransitionPass Pass, bool bEnabled)
 {
 	DeathTransition.SetPassEnabled(Pass, bEnabled, PostProcessParameters, UIPostProcessParameters);
@@ -564,8 +739,8 @@ void ULocalPlayerPostProcessSubsystem::SetDeathTransitionPassEnabled(EDeathTrans
 
 void ULocalPlayerPostProcessSubsystem::UpdateDeathTransition(float DeltaTime)
 {
-	bool bBlackoutStarted = false;
-	if (!DeathTransition.Tick(DeltaTime, PostProcessParameters, UIPostProcessParameters, bBlackoutStarted))
+	bool bBlackNoiseStarted = false;
+	if (!DeathTransition.Tick(DeltaTime, PostProcessParameters, UIPostProcessParameters, bBlackNoiseStarted))
 	{
 		return;
 	}
@@ -573,10 +748,511 @@ void ULocalPlayerPostProcessSubsystem::UpdateDeathTransition(float DeltaTime)
 	MarkDirty();
 	TickFrame();
 
-	if (bBlackoutStarted)
+	if (bBlackNoiseStarted)
 	{
-		OnDeathBlackoutStarted.Broadcast();
+		OnDeathBlackNoiseStarted.Broadcast();
 	}
+}
+
+void ULocalPlayerPostProcessSubsystem::SetDroneDamageMaskTexture(EDroneDamageMask Slot, UTexture2D* InTexture)
+{
+	if (Slot >= EDroneDamageMask::Count)
+	{
+		return;
+	}
+
+	DroneDamageMaskTextures[static_cast<int32>(Slot)] = InTexture;
+	RefreshDroneDamageMaskTextures();
+}
+
+void ULocalPlayerPostProcessSubsystem::RefreshDroneDamageMaskTextures()
+{
+	static_assert(UE_ARRAY_COUNT(DroneDamageMaskTextures) == DroneDamageMaskCount, "DroneDamageMaskTextures must match EDroneDamageMask");
+
+	for (int32 SlotIndex = 0; SlotIndex < DroneDamageMaskCount; ++SlotIndex)
+	{
+		const UTexture2D* Texture = DroneDamageMaskTextures[SlotIndex];
+		const FTextureRHIRef NewTextureRHI = Texture && Texture->GetResource()
+			? Texture->GetResource()->TextureRHI
+			: FTextureRHIRef();
+		if (DroneDamageMaskTextureRHIs[SlotIndex] == NewTextureRHI)
+		{
+			continue;
+		}
+
+		DroneDamageMaskTextureRHIs[SlotIndex] = NewTextureRHI;
+		if (ViewExtension.IsValid())
+		{
+			const TSharedPtr<FOutlierPostProcessSceneViewExtension, ESPMode::ThreadSafe> TargetViewExtension = ViewExtension;
+			const EDroneDamageMask Slot = static_cast<EDroneDamageMask>(SlotIndex);
+			ENQUEUE_RENDER_COMMAND(UpdateDroneDamageMaskTexture)(
+				[TargetViewExtension, Slot, NewTextureRHI](FRHICommandListImmediate&)
+				{
+					TargetViewExtension->UpdateDroneDamageMaskTexture(Slot, NewTextureRHI);
+				});
+		}
+	}
+}
+
+void ULocalPlayerPostProcessSubsystem::SetDroneDamageMaskRevealed(EDroneDamageMask Slot, bool bRevealed)
+{
+	if (Slot >= EDroneDamageMask::Count)
+	{
+		return;
+	}
+
+	PostProcessParameters.DroneDamageFeedback.MaskWeights[static_cast<int32>(Slot)] = bRevealed ? 1.0f : 0.0f;
+	RefreshDroneDamageEnabled();
+}
+
+bool ULocalPlayerPostProcessSubsystem::IsDroneDamageMaskRevealed(EDroneDamageMask Slot) const
+{
+	return Slot < EDroneDamageMask::Count
+		&& PostProcessParameters.DroneDamageFeedback.MaskWeights[static_cast<int32>(Slot)] > 0.0f;
+}
+
+void ULocalPlayerPostProcessSubsystem::SetDroneDamageSuppressed(bool bSuppressed)
+{
+	if (bDroneDamageSuppressed == bSuppressed)
+	{
+		return;
+	}
+
+	bDroneDamageSuppressed = bSuppressed;
+	RefreshDroneDamageEnabled();
+}
+
+void ULocalPlayerPostProcessSubsystem::ClearDroneDamage()
+{
+	for (int32 SlotIndex = 0; SlotIndex < DroneDamageMaskCount; ++SlotIndex)
+	{
+		DroneDamageMaskTextures[SlotIndex] = nullptr;
+		PostProcessParameters.DroneDamageFeedback.MaskWeights[SlotIndex] = 0.0f;
+	}
+	bDroneDamageSuppressed = false;
+	RefreshDroneDamageMaskTextures();
+	RefreshDroneDamageEnabled();
+}
+
+void ULocalPlayerPostProcessSubsystem::RefreshDroneDamageEnabled()
+{
+	FDroneDamageFeedbackParameters& DroneDamage = PostProcessParameters.DroneDamageFeedback;
+
+	bool bAnyRevealed = false;
+	for (const float MaskWeight : DroneDamage.MaskWeights)
+	{
+		bAnyRevealed |= MaskWeight > 0.0f;
+	}
+
+	DroneDamage.bEnabled = bAnyRevealed && !bDroneDamageSuppressed ? 1 : 0;
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::SetDroneDamageFeedbackParameters(const FDroneDamageFeedbackParameters& InParameters)
+{
+	FDroneDamageFeedbackParameters& DroneDamage = PostProcessParameters.DroneDamageFeedback;
+	DroneDamage.bSliceGlitch = InParameters.bSliceGlitch ? 1 : 0;
+	DroneDamage.bPixelSort = InParameters.bPixelSort ? 1 : 0;
+	DroneDamage.bShiftToBlack = InParameters.bShiftToBlack ? 1 : 0;
+	DroneDamage.Intensity = FMath::Max(0.0f, InParameters.Intensity);
+	DroneDamage.Seed = InParameters.Seed;
+	DroneDamage.SliceRows = FMath::Clamp(InParameters.SliceRows, 1.0f, 1024.0f);
+	DroneDamage.SliceSplitChance = FMath::Clamp(InParameters.SliceSplitChance, 0.0f, 1.0f);
+	DroneDamage.GlitchRate = FMath::Clamp(InParameters.GlitchRate, 1.0f, 120.0f);
+	DroneDamage.GlitchStrength = FMath::Max(0.0f, InParameters.GlitchStrength);
+	DroneDamage.GlitchThreshold = FMath::Clamp(InParameters.GlitchThreshold, 0.0f, 1.0f);
+	DroneDamage.GlitchGlow = FMath::Max(0.0f, InParameters.GlitchGlow);
+	DroneDamage.BurstChance = FMath::Clamp(InParameters.BurstChance, 0.0f, 1.0f);
+	DroneDamage.BurstStrength = FMath::Max(1.0f, InParameters.BurstStrength);
+	DroneDamage.BurstThreshold = FMath::Clamp(InParameters.BurstThreshold, 0.0f, 1.0f);
+	DroneDamage.PixelSortMode = FMath::Clamp(
+		InParameters.PixelSortMode,
+		static_cast<int32>(EPixelSortingMode::White),
+		static_cast<int32>(EPixelSortingMode::Dark));
+	DroneDamage.PixelSortThreshold = FMath::Clamp(InParameters.PixelSortThreshold, 0.0f, 255.0f);
+	DroneDamage.bPixelSortRows = InParameters.bPixelSortRows ? 1 : 0;
+	DroneDamage.bPixelSortColumns = InParameters.bPixelSortColumns ? 1 : 0;
+	DroneDamage.PixelSortResolutionDivisor = FMath::Clamp(InParameters.PixelSortResolutionDivisor, 1, 8);
+	DroneDamage.ShiftOffsetX = FMath::Clamp(InParameters.ShiftOffsetX, -0.5f, 0.5f);
+	DroneDamage.ShiftOffsetY = FMath::Clamp(InParameters.ShiftOffsetY, -0.5f, 0.5f);
+	DroneDamage.ShiftJitter = FMath::Clamp(InParameters.ShiftJitter, 0.0f, 0.2f);
+	DroneDamage.MaskGlow = FMath::Max(0.0f, InParameters.MaskGlow);
+	DroneDamage.Tint = InParameters.Tint.GetClamped(0.0f, 1.0f);
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::UpdateDroneDamageFeedback(float DeltaTime)
+{
+	FDroneDamageFeedbackParameters& DroneDamage = PostProcessParameters.DroneDamageFeedback;
+	if (DroneDamage.bEnabled == 0 || DeltaTime <= 0.0f)
+	{
+		return;
+	}
+
+	DroneDamage.Time += DeltaTime;
+	MarkDirty();
+	TickFrame();
+}
+
+namespace SplitPrismAnimation
+{
+	constexpr int32 MaxOvershootCount = 3;
+
+	// 지나침 한 번이 끝날 때마다 다음 지나침 깊이에 곱하는 값.
+	constexpr float OvershootDecay = 0.35f;
+
+	// 초점이 빗나간 양 d(Alpha). 꼭짓점 1 → -A → +A·k → ... → 0 을 차례로 잇는다.
+	// 구간 길이는 꼭짓점 사이 거리의 제곱근에 비례해서, 작은 보정일수록 상대적으로 천천히 움직인다.
+	// 첫 구간(링을 돌려 지나치는 동작)은 감속 곡선, 이후 보정 구간은 가속 → 감속.
+	float EvaluateDefocus(const FSplitPrismSettings& Settings, float Alpha)
+	{
+		float Peaks[MaxOvershootCount + 2];
+		int32 PeakCount = 0;
+		Peaks[PeakCount++] = 1.0f;
+
+		const int32 OvershootCount = Settings.OvershootAmount > 0.0f
+			? FMath::Clamp(Settings.OvershootCount, 0, MaxOvershootCount)
+			: 0;
+		float Amount = Settings.OvershootAmount;
+		for (int32 Index = 0; Index < OvershootCount; ++Index)
+		{
+			Peaks[PeakCount++] = (Index % 2 == 0 ? -Amount : Amount);
+			Amount *= OvershootDecay;
+		}
+		Peaks[PeakCount++] = 0.0f;
+
+		float SegmentLengths[MaxOvershootCount + 1];
+		float TotalLength = 0.0f;
+		for (int32 Index = 0; Index < PeakCount - 1; ++Index)
+		{
+			SegmentLengths[Index] = FMath::Sqrt(FMath::Abs(Peaks[Index + 1] - Peaks[Index]));
+			TotalLength += SegmentLengths[Index];
+		}
+
+		float Remaining = FMath::Clamp(Alpha, 0.0f, 1.0f) * TotalLength;
+		for (int32 Index = 0; Index < PeakCount - 1; ++Index)
+		{
+			const bool bLastSegment = Index == PeakCount - 2;
+			if (Remaining <= SegmentLengths[Index] || bLastSegment)
+			{
+				const float SegmentAlpha = SegmentLengths[Index] > 0.0f
+					? FMath::Clamp(Remaining / SegmentLengths[Index], 0.0f, 1.0f)
+					: 1.0f;
+				const float Eased = Index == 0
+					? 1.0f - FMath::Pow(1.0f - SegmentAlpha, Settings.FocusEasePower)
+					: FMath::SmoothStep(0.0f, 1.0f, SegmentAlpha);
+				return FMath::Lerp(Peaks[Index], Peaks[Index + 1], Eased);
+			}
+			Remaining -= SegmentLengths[Index];
+		}
+
+		return 0.0f;
+	}
+}
+
+void ULocalPlayerPostProcessSubsystem::StartSplitPrism()
+{
+	SplitPrismPhase = ESplitPrismPhase::Focusing;
+	SplitPrismElapsedTime = 0.0f;
+	SplitPrismSettleElapsedTime = 0.0f;
+	// 빙의 직후엔 카메라가 아직 새 뷰로 안 넘어왔을 수 있어서, 피사체 거리는 첫 틱에 잰다.
+	SplitPrismSubjectDistance = -1.0f;
+	ApplySplitPrism();
+}
+
+void ULocalPlayerPostProcessSubsystem::StopSplitPrism()
+{
+	if (SplitPrismPhase == ESplitPrismPhase::Idle)
+	{
+		return;
+	}
+
+	SplitPrismPhase = ESplitPrismPhase::Idle;
+	ApplySplitPrismOff();
+}
+
+float ULocalPlayerPostProcessSubsystem::GetSplitPrismDefocus() const
+{
+	if (SplitPrismPhase != ESplitPrismPhase::Focusing || SplitPrismSettings.FocusDuration <= 0.0f)
+	{
+		return 0.0f;
+	}
+
+	return SplitPrismAnimation::EvaluateDefocus(
+		SplitPrismSettings,
+		SplitPrismElapsedTime / SplitPrismSettings.FocusDuration);
+}
+
+float ULocalPlayerPostProcessSubsystem::GetSplitPrismResidualWeight() const
+{
+	if (!SplitPrismSettings.bDepthSplit)
+	{
+		return 0.0f;
+	}
+
+	switch (SplitPrismPhase)
+	{
+	case ESplitPrismPhase::Focusing:
+	case ESplitPrismPhase::Holding:
+		return 1.0f;
+	case ESplitPrismPhase::Settling:
+		return SplitPrismSettings.DepthSettleDuration > 0.0f
+			? 1.0f - FMath::SmoothStep(0.0f, 1.0f, SplitPrismSettleElapsedTime / SplitPrismSettings.DepthSettleDuration)
+			: 0.0f;
+	default:
+		return 0.0f;
+	}
+}
+
+void ULocalPlayerPostProcessSubsystem::SetSplitPrismSettings(const FSplitPrismSettings& InSettings)
+{
+	SplitPrismSettings.FocusDuration = FMath::Max(InSettings.FocusDuration, 0.01f);
+	SplitPrismSettings.FocusEasePower = FMath::Clamp(InSettings.FocusEasePower, 0.1f, 8.0f);
+	SplitPrismSettings.OvershootAmount = FMath::Clamp(InSettings.OvershootAmount, 0.0f, 0.5f);
+	SplitPrismSettings.OvershootCount = FMath::Clamp(InSettings.OvershootCount, 0, SplitPrismAnimation::MaxOvershootCount);
+	// 0.25면 확대 배율이 0.5까지 내려간다. 그 이상은 화면이 너무 커진다.
+	SplitPrismSettings.StartOffset = FMath::Clamp(InSettings.StartOffset, 0.0f, 0.25f);
+	SplitPrismSettings.MaxBlurRadius = FMath::Clamp(InSettings.MaxBlurRadius, 0.0f, 64.0f);
+	SplitPrismSettings.BlurSampleCount = FMath::Clamp(InSettings.BlurSampleCount, 8, 128);
+	// 0.5 이하라 R/B 반경 배율(1 ± Fringe)이 항상 양수다.
+	SplitPrismSettings.FringeAmount = FMath::Clamp(InSettings.FringeAmount, 0.0f, 0.5f);
+	SplitPrismSettings.BokehRimBias = FMath::Clamp(InSettings.BokehRimBias, 0.0f, 1.0f);
+	SplitPrismSettings.bDepthSplit = InSettings.bDepthSplit;
+	SplitPrismSettings.bPersistDepthSplit = InSettings.bPersistDepthSplit;
+	SplitPrismSettings.FocusSwingDiopter = FMath::Clamp(InSettings.FocusSwingDiopter, 0.05f, 10.0f);
+	SplitPrismSettings.MaxDepthResidual = FMath::Clamp(InSettings.MaxDepthResidual, 0.0f, 4.0f);
+	SplitPrismSettings.DepthSettleDuration = FMath::Clamp(InSettings.DepthSettleDuration, 0.0f, 3.0f);
+	SplitPrismSettings.FallbackSubjectDistance = FMath::Clamp(InSettings.FallbackSubjectDistance, 10.0f, 100000.0f);
+	SplitPrismSettings.SubjectTraceDistance = FMath::Clamp(InSettings.SubjectTraceDistance, 100.0f, 100000.0f);
+
+	// 초점이 다 맞은 뒤 단계에서 플래그가 바뀌면 그에 맞는 단계로 옮긴다.
+	if (SplitPrismPhase == ESplitPrismPhase::Holding || SplitPrismPhase == ESplitPrismPhase::Settling)
+	{
+		EnterSplitPrismPhaseAfterFocus();
+	}
+
+	// 진행 중이면 바뀐 값을 바로 보이게 한다.
+	if (SplitPrismPhase != ESplitPrismPhase::Idle)
+	{
+		ApplySplitPrism();
+	}
+	else
+	{
+		ApplySplitPrismOff();
+	}
+}
+
+void ULocalPlayerPostProcessSubsystem::EnterSplitPrismPhaseAfterFocus()
+{
+	if (!SplitPrismSettings.bDepthSplit)
+	{
+		SplitPrismPhase = ESplitPrismPhase::Idle;
+	}
+	else if (SplitPrismSettings.bPersistDepthSplit)
+	{
+		SplitPrismPhase = ESplitPrismPhase::Holding;
+	}
+	else if (SplitPrismPhase != ESplitPrismPhase::Settling)
+	{
+		// Holding → Settling 전환도 여기로 온다. 페이드는 처음부터.
+		SplitPrismPhase = SplitPrismSettings.DepthSettleDuration > 0.0f
+			? ESplitPrismPhase::Settling
+			: ESplitPrismPhase::Idle;
+		SplitPrismSettleElapsedTime = 0.0f;
+	}
+}
+
+void ULocalPlayerPostProcessSubsystem::TraceSplitPrismSubjectDistance()
+{
+	SplitPrismSubjectDistance = SplitPrismSettings.FallbackSubjectDistance;
+
+	const ULocalPlayer* LP = GetLocalPlayer();
+	UWorld* World = LP ? LP->GetWorld() : nullptr;
+	APlayerController* PC = World ? LP->GetPlayerController(World) : nullptr;
+	if (!PC)
+	{
+		return;
+	}
+
+	// 화면 가운데 = 카메라 정면. 가운데 픽셀의 뷰 깊이와 광선 길이가 같다.
+	FVector ViewLocation;
+	FRotator ViewRotation;
+	PC->GetPlayerViewPoint(ViewLocation, ViewRotation);
+
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(SplitPrismSubjectTrace), true);
+	if (APawn* Pawn = PC->GetPawn())
+	{
+		QueryParams.AddIgnoredActor(Pawn);
+	}
+
+	FHitResult Hit;
+	const FVector TraceEnd = ViewLocation + ViewRotation.Vector() * SplitPrismSettings.SubjectTraceDistance;
+	if (World->LineTraceSingleByChannel(Hit, ViewLocation, TraceEnd, ECC_Visibility, QueryParams))
+	{
+		SplitPrismSubjectDistance = FMath::Max(Hit.Distance, 10.0f);
+	}
+}
+
+void ULocalPlayerPostProcessSubsystem::UpdateSplitPrism(float DeltaTime)
+{
+	switch (SplitPrismPhase)
+	{
+	case ESplitPrismPhase::Focusing:
+		if (SplitPrismSubjectDistance < 0.0f)
+		{
+			TraceSplitPrismSubjectDistance();
+		}
+
+		SplitPrismElapsedTime += DeltaTime;
+		if (SplitPrismElapsedTime >= SplitPrismSettings.FocusDuration)
+		{
+			EnterSplitPrismPhaseAfterFocus();
+		}
+		break;
+
+	case ESplitPrismPhase::Settling:
+		SplitPrismSettleElapsedTime += DeltaTime;
+		if (SplitPrismSettleElapsedTime >= SplitPrismSettings.DepthSettleDuration)
+		{
+			SplitPrismPhase = ESplitPrismPhase::Idle;
+		}
+		break;
+
+	default:
+		// Idle / Holding은 값이 안 바뀐다. 깊이는 셰이더가 매 프레임 읽는다.
+		return;
+	}
+
+	if (SplitPrismPhase == ESplitPrismPhase::Idle)
+	{
+		ApplySplitPrismOff();
+	}
+	else
+	{
+		ApplySplitPrism();
+	}
+}
+
+void ULocalPlayerPostProcessSubsystem::ApplySplitPrism()
+{
+	const float Defocus = GetSplitPrismDefocus();
+	const float ResidualWeight = SplitPrismSubjectDistance > 0.0f ? GetSplitPrismResidualWeight() : 0.0f;
+
+	FSplitPrismParameters& SplitPrism = UIPostProcessParameters.SplitPrism;
+	SplitPrism.Offset = SplitPrismSettings.StartOffset * Defocus;
+	SplitPrism.bEnabled = SplitPrism.Offset != 0.0f;
+
+	FSplitPrismDefocusParameters& Blur = PostProcessParameters.SplitPrismDefocus;
+	Blur.Defocus = Defocus;
+	Blur.MaxRadius = SplitPrismSettings.MaxBlurRadius;
+	Blur.SampleCount = SplitPrismSettings.BlurSampleCount;
+	Blur.FringeAmount = SplitPrismSettings.FringeAmount;
+	Blur.RimBias = SplitPrismSettings.BokehRimBias;
+
+	// 깊이 잔차 r = (1/D_subj - 1/D) / Δ. 거리는 m 단위 디옵터로 맞춘다(UE 길이는 cm).
+	Blur.DepthOffset = SplitPrismSettings.StartOffset;
+	Blur.InvSubjectDistance = SplitPrismSubjectDistance > 0.0f ? 100.0f / SplitPrismSubjectDistance : 0.0f;
+	Blur.InvFocusSwing = 1.0f / SplitPrismSettings.FocusSwingDiopter;
+	Blur.MaxResidual = SplitPrismSettings.MaxDepthResidual;
+	Blur.ResidualWeight = ResidualWeight;
+
+	const bool bBlur = Defocus != 0.0f && Blur.MaxRadius > 0.0f;
+	const bool bResidual = ResidualWeight > 0.0f && Blur.DepthOffset > 0.0f && Blur.MaxResidual > 0.0f;
+	Blur.bEnabled = bBlur || bResidual;
+
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::ApplySplitPrismOff()
+{
+	UIPostProcessParameters.SplitPrism.Offset = 0.0f;
+	UIPostProcessParameters.SplitPrism.bEnabled = false;
+
+	FSplitPrismDefocusParameters& Blur = PostProcessParameters.SplitPrismDefocus;
+	Blur.Defocus = 0.0f;
+	Blur.ResidualWeight = 0.0f;
+	Blur.bEnabled = false;
+
+	MarkDirty();
+	TickFrame();
+}
+
+void ULocalPlayerPostProcessSubsystem::StartScreenBlackout(float Duration)
+{
+	StartScreenBlackoutFade(1.0f, Duration);
+}
+
+void ULocalPlayerPostProcessSubsystem::StartScreenBlackoutReveal(float Duration)
+{
+	StartScreenBlackoutFade(0.0f, Duration);
+}
+
+void ULocalPlayerPostProcessSubsystem::ResetScreenBlackout()
+{
+	bScreenBlackoutFading = false;
+	ScreenBlackoutTargetAlpha = 0.0f;
+	ScreenBlackoutFadeSpeed = 0.0f;
+	ApplyScreenBlackoutAlpha(0.0f);
+}
+
+void ULocalPlayerPostProcessSubsystem::StartScreenBlackoutFade(float TargetAlpha, float Duration)
+{
+	ScreenBlackoutTargetAlpha = TargetAlpha;
+	ScreenBlackoutFadeSpeed = FMath::IsFinite(Duration) && Duration > 0.0f ? 1.0f / Duration : 0.0f;
+	bScreenBlackoutFading = true;
+
+	// 즉시 도달이면 이번 프레임부터 그린다. 완료 통보는 호출자 재진입을 피하려고 다음 Tick에서 한다.
+	if (ScreenBlackoutFadeSpeed <= 0.0f)
+	{
+		ApplyScreenBlackoutAlpha(TargetAlpha);
+	}
+}
+
+void ULocalPlayerPostProcessSubsystem::UpdateScreenBlackout(float DeltaTime)
+{
+	if (!bScreenBlackoutFading)
+	{
+		return;
+	}
+
+	const float CurrentAlpha = UIPostProcessParameters.ScreenBlackout.Alpha;
+	const float NextAlpha = ScreenBlackoutFadeSpeed > 0.0f
+		? FMath::FInterpConstantTo(CurrentAlpha, ScreenBlackoutTargetAlpha, FMath::Max(DeltaTime, 0.0f), ScreenBlackoutFadeSpeed)
+		: ScreenBlackoutTargetAlpha;
+	ApplyScreenBlackoutAlpha(NextAlpha);
+	if (NextAlpha != ScreenBlackoutTargetAlpha)
+	{
+		return;
+	}
+
+	bScreenBlackoutFading = false;
+	if (ScreenBlackoutTargetAlpha > 0.0f)
+	{
+		OnScreenBlackoutCovered.Broadcast();
+	}
+	else
+	{
+		OnScreenBlackoutRevealed.Broadcast();
+	}
+}
+
+void ULocalPlayerPostProcessSubsystem::ApplyScreenBlackoutAlpha(float Alpha)
+{
+	FScreenBlackoutParameters& ScreenBlackout = UIPostProcessParameters.ScreenBlackout;
+	const float ClampedAlpha = FMath::Clamp(Alpha, 0.0f, 1.0f);
+	const int32 bEnabled = ClampedAlpha > 0.0f;
+	if (ScreenBlackout.Alpha == ClampedAlpha && ScreenBlackout.bEnabled == bEnabled)
+	{
+		return;
+	}
+
+	ScreenBlackout.Alpha = ClampedAlpha;
+	ScreenBlackout.bEnabled = bEnabled;
+	MarkDirty();
+	TickFrame();
 }
 
 void ULocalPlayerPostProcessSubsystem::StartHackPossessionTransition()
@@ -650,8 +1326,9 @@ void ULocalPlayerPostProcessSubsystem::CancelHackPossessionTransition()
 	PixelSortingAnimation::Reset(PixelSorting);
 
 	FZoomBlurParameters& ZoomBlur = PostProcessParameters.ZoomBlur;
-	ZoomBlur.bEnabled = false;
-	ZoomBlur.BlackFlushAlpha = 0.0f;
+	// 빙의 해제 중에도 GameOver 암막은 새 Pawn 확인까지 유지한다.
+	ZoomBlur.bEnabled = bGameOverBlackoutActive;
+	ZoomBlur.BlackFlushAlpha = bGameOverBlackoutActive ? 1.0f : 0.0f;
 	ZoomBlur.Progress = 0.0f;
 	ZoomBlur.Strength = 0.0f;
 	ZoomBlur.StartOffset = 0.0f;

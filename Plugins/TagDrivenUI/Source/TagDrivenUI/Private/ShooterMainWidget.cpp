@@ -68,6 +68,22 @@ void UShooterMainWidget::ModuleDestruct()
 {
 }
 
+void UShooterMainWidget::On_RepAbilityDisabledByDistance()
+{
+	if (CurrentAbilityUI)
+	{
+		CurrentAbilityUI->SetAbilityEnabled(false);
+	}
+}
+
+void UShooterMainWidget::On_RepAbilityabledByDistance()
+{
+	if (CurrentAbilityUI)
+	{
+		CurrentAbilityUI->SetAbilityEnabled(true);
+	}
+}
+
 void UShooterMainWidget::DefaultModuleInit()
 {
 	ModuleDeActivate();

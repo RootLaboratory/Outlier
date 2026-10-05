@@ -34,6 +34,10 @@ void ULocalPlayerUISubSystem::Deinitialize()
 void ULocalPlayerUISubSystem::RegisterMainUI(UMainUIBase* InMainUI)
 {
 	MainUIInstance = InMainUI;
+	if (bTransientWidgetsSuppressed)
+	{
+		FlushMainUITransientWidgets();
+	}
 
 	// 마지막으로 받은 슈트 상태를 새 MainUI 에 물려준다.
 	// 위젯이 신호보다 늦게 생겨도 게이트가 맞도록 하는 유일한 경로다.
@@ -46,6 +50,24 @@ void ULocalPlayerUISubSystem::UnregisterMainUI(UMainUIBase* InMainUI)
 	{
 		InteractionWidgetInstance = nullptr;
 		MainUIInstance = nullptr;
+	}
+}
+
+void ULocalPlayerUISubSystem::FlushMainUITransientWidgets()
+{
+	if (UMainUIBase* MainUI = GetMainUI())
+	{
+		MainUI->FlushTransientWidgets();
+	}
+	InteractionWidgetInstance = nullptr;
+}
+
+void ULocalPlayerUISubSystem::SetTransientWidgetsSuppressed(bool bSuppressed)
+{
+	bTransientWidgetsSuppressed = bSuppressed;
+	if (bSuppressed)
+	{
+		FlushMainUITransientWidgets();
 	}
 }
 
@@ -172,6 +194,7 @@ void ULocalPlayerUISubSystem::SyncRegisteredModule(UEventDrivenUI* InModule)
 	if (UAmmoUI* AmmoUI = Cast<UAmmoUI>(InModule))
 	{
 		AmmoUI->SetAmmoState(CachedAmmoCount, CachedMaxAmmo);
+		AmmoUI->SetWeaponOverchargeActive(bCachedWeaponOvercharge);
 	}
 }
 
@@ -193,10 +216,25 @@ void ULocalPlayerUISubSystem::OnRep_AmmoCountChanged(int32 InCurrentAmmo, int32 
 
 }
 
+void ULocalPlayerUISubSystem::OnRep_WeaponOverchargeChanged(bool bActive)
+{
+	// 탄약과 같이 모듈 등록 전 신호도 남겨두고 SyncRegisteredModule 에서 재생한다.
+	bCachedWeaponOvercharge = bActive;
+
+	if (UAmmoUI* AmmoUI = Cast<UAmmoUI>(GetModule(TagDrivenUITags::Shooter::Ammo())))
+	{
+		AmmoUI->SetWeaponOverchargeActive(bActive);
+	}
+}
+
 void ULocalPlayerUISubSystem::OnDamageFeedback(
 	AActor* DamagedCharacter,
 	const FVector& DamageOrigin)
 {
+	if (bTransientWidgetsSuppressed)
+	{
+		return;
+	}
 	UMainUIBase* MainUI = GetMainUI();
 	if (MainUI && MainUI->DamageFeedbackLayer)
 	{
@@ -408,6 +446,10 @@ void ULocalPlayerUISubSystem::BindInteractionWidget(UUserWidget* InteractionWidg
 
 void ULocalPlayerUISubSystem::BindInteractionWidget(UUserWidget* InteractionWidget, const FVector2D& WidgetPosition)
 {
+	if (bTransientWidgetsSuppressed)
+	{
+		return;
+	}
 	UMainUIBase* MainUI = GetMainUI();
 	if (!MainUI || !MainUI->InteractionLayer || !InteractionWidget)
 	{

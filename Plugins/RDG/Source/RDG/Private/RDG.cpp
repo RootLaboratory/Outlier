@@ -7,6 +7,8 @@
 #include "FRDGOverlayPass.h"
 #include "FRDGPixelSortingPass.h"
 #include "FRDGSceneColorCopyPass.h"
+#include "FRDGScreenBlackoutPass.h"
+#include "FRDGSplitPrismPass.h"
 #include "FRDGUIChromaticAberrationPass.h"
 #include "FRDGZoomBlurPass.h"
 #include "Framework/Application/SlateApplication.h"
@@ -182,9 +184,13 @@ void FRDGModule::ShutdownModule()
 }
 
 // Slate가 그린 뒤, present 직전의 backbuffer에 도는 체인:
-// Pixel Sorting -> Zoom Blur -> Chromatic Aberration -> Death Chromatic Aberration -> Overlay -> Present
+// Pixel Sorting -> Zoom Blur -> Split Prism -> Chromatic Aberration -> Death Chromatic Aberration -> Overlay -> Screen Blackout -> Present
+//
+// Screen Blackout은 맨 끝이라 HUD와 앞선 효과까지 전부 덮는다.
 //
 // 두 CA는 동시에 켜지지 않는다. 사망 연출이 시작될 때 기존 렌즈 CA를 끄고 사망 CA를 켠다.
+//
+// Split Prism은 CA보다 앞이라 렌즈 CA가 갈라진 결과 위에 얹힌다. 블러는 Tonemap 앞 씬 PP(SplitPrismDefocus)가 따로 맡는다.
 //
 // 줌 블러가 정렬보다 뒤인 이유: 먼저 흐리면 대비가 뭉개져 임계값을 넘는 픽셀이
 // 줄어들어 정렬 결과가 약해짐. 반대 순서면 줄무늬가 살아있는 채로 부드러워지고,
@@ -215,12 +221,18 @@ void FRDGModule::HandleBackBufferReadyRDG(FRDGBuilder& GraphBuilder, SWindow& Wi
 		Subsystem->GetUIPostProcessStrcture().DeathChromaticAberration;
 	const FOverlayParameters& OverlayParams =
 		Subsystem->GetUIPostProcessStrcture().Overlay;
+	const FSplitPrismParameters& SplitPrismParams =
+		Subsystem->GetUIPostProcessStrcture().SplitPrism;
+	const FScreenBlackoutParameters& ScreenBlackoutParams =
+		Subsystem->GetUIPostProcessStrcture().ScreenBlackout;
 
 	if (!PixelSortingParams.bEnabled
 		&& !ZoomBlurParams.bEnabled
+		&& !SplitPrismParams.bEnabled
 		&& !ChromaticParams.bEnabled
 		&& !DeathChromaticParams.bEnabled
-		&& !OverlayParams.bEnabled)
+		&& !OverlayParams.bEnabled
+		&& !ScreenBlackoutParams.bEnabled)
 	{
 		return;
 	}
@@ -231,9 +243,11 @@ void FRDGModule::HandleBackBufferReadyRDG(FRDGBuilder& GraphBuilder, SWindow& Wi
 
 	Current = FRDGPixelSortingPass::AddPass(GraphBuilder, Current, PixelSortingParams);
 	Current = FRDGZoomBlurPass::AddPass(GraphBuilder, Current, ZoomBlurParams);
+	Current = FRDGSplitPrismPass::AddPass(GraphBuilder, Current, SplitPrismParams);
 	Current = FRDGUIChromaticAberrationPass::AddPass(GraphBuilder, Current, ChromaticParams);
 	Current = FRDGDeathChromaticAberrationPass::AddPass(GraphBuilder, Current, DeathChromaticParams);
 	Current = FRDGOverlayPass::AddPass(GraphBuilder, Current, OverlayParams);
+	Current = FRDGScreenBlackoutPass::AddPass(GraphBuilder, Current, ScreenBlackoutParams);
 
 	if (!Current.IsValid() || Current.Texture == BackBuffer)
 	{

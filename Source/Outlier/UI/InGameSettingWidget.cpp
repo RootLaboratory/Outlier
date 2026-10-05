@@ -1,45 +1,37 @@
 #include "UI/InGameSettingWidget.h"
 
-#include "Components/Button.h"
+#include "Components/TextBlock.h"
 #include "Engine/LocalPlayer.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
+#include "UI/InGameSettingButtonsWidget.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
 #include "UI/SettingWidget.h"
 #include "UI/UILayerGameplayTags.h"
 #include "UI/UILayerKeyHintWidget.h"
 #include "UI/UILayerTypes.h"
-#include "Components/TextBlock.h"
+#include "UObject/ConstructorHelpers.h"
+
+UInGameSettingWidget::UInGameSettingWidget(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	static ConstructorHelpers::FClassFinder<UUILayerKeyHintWidget> HintWidget(
+		TEXT("/Game/Blueprints/Widget/Outlier/WBP_UIHintKey"));
+	KeyHintWidgetClass = HintWidget.Class;
+}
+
+TSubclassOf<UUILayerKeyHintWidget> UInGameSettingWidget::GetKeyHintWidgetClass() const
+{
+	return KeyHintWidgetClass;
+}
 
 void UInGameSettingWidget::NativeOnInitialized()
 {
 	Super::NativeOnInitialized();
 
-	if (ContinueButton)
+	if (ButtonsWidget)
 	{
-		ContinueButton->OnClicked.AddUniqueDynamic(
-			this,
-			&UInGameSettingWidget::HandleContinueButtonClicked);
-	}
-
-	if (SettingButton)
-	{
-		SettingButton->OnClicked.AddUniqueDynamic(
-			this,
-			&UInGameSettingWidget::HandleSettingButtonClicked);
-	}
-
-	if (RestartCheckpointButton)
-	{
-		RestartCheckpointButton->OnClicked.AddUniqueDynamic(
-			this,
-			&UInGameSettingWidget::HandleRestartCheckpointButtonClicked);
-	}
-
-	if (TitleButton)
-	{
-		TitleButton->OnClicked.AddUniqueDynamic(
-			this,
-			&UInGameSettingWidget::HandleTitleButtonClicked);
+		ButtonsWidget->OnActionConfirmed.AddUObject(
+			this, &ThisClass::HandleButtonAction);
 	}
 }
 
@@ -50,18 +42,14 @@ void UInGameSettingWidget::NativeConstruct()
 	{
 		DefaultMenuText = MenuText->GetText();
 	}
-	bConfirmingGameExit = false;
-
 	if (AFirstPersonPlayerController* FirstPersonController =
 		Cast<AFirstPersonPlayerController>(GetOwningPlayer()))
 	{
+		FirstPersonController->OnExplicitLeaveStateChanged.AddUObject(this, &ThisClass::RefreshMenuState);
 		FirstPersonController->OnCheckpointRestartVoteViewChanged.AddUObject(
-			this,
-			&UInGameSettingWidget::RefreshCheckpointRestartState);
-		RefreshCheckpointRestartState(
-			FirstPersonController->GetCheckpointRestartVoteView());
+			this, &ThisClass::RefreshCheckpointRestartState);
 	}
-	PushKeyHintLayer();
+	RefreshMenuState();
 }
 
 void UInGameSettingWidget::NativeDestruct()
@@ -69,9 +57,9 @@ void UInGameSettingWidget::NativeDestruct()
 	if (AFirstPersonPlayerController* FirstPersonController =
 		Cast<AFirstPersonPlayerController>(GetOwningPlayer()))
 	{
+		FirstPersonController->OnExplicitLeaveStateChanged.RemoveAll(this);
 		FirstPersonController->OnCheckpointRestartVoteViewChanged.RemoveAll(this);
 	}
-	PopKeyHintLayer();
 	Super::NativeDestruct();
 }
 
@@ -83,206 +71,84 @@ void UInGameSettingWidget::InitializeUILayerContext_Implementation(
 
 bool UInGameSettingWidget::HandleUILayerEscape_Implementation()
 {
-	// 같은 Escape라도 나가기 확인 취소 -> 투표 철회 -> 메뉴 닫기 순으로 현재 모드가 우선한다.
-	if (bConfirmingGameExit)
-	{
-		CancelGameExitConfirmation();
-		return true;
-	}
-
-	if (AFirstPersonPlayerController* FirstPersonController =
-		Cast<AFirstPersonPlayerController>(GetOwningPlayer());
-		FirstPersonController
-		&& FirstPersonController->GetCheckpointRestartVoteView()
-			== EOutlierCheckpointRestartVoteView::RequesterWaiting)
-	{
-		FirstPersonController->RequestCancelCheckpointRestart();
-		return true;
-	}
-
-	HandleContinueButtonClicked();
-	return true;
+	return bLeavingGame || (ButtonsWidget
+		&& IUILayerInputReceiver::Execute_HandleUILayerEscape(ButtonsWidget));
 }
 
 bool UInGameSettingWidget::HandleUILayerConfirmed_Implementation()
 {
-	if (bConfirmingGameExit)
-	{
-		ConfirmGameExit();
-		return true;
-	}
-
-	if (const AFirstPersonPlayerController* FirstPersonController =
-		Cast<AFirstPersonPlayerController>(GetOwningPlayer());
-		FirstPersonController
-		&& FirstPersonController->GetCheckpointRestartVoteView()
-			== EOutlierCheckpointRestartVoteView::RequesterWaiting)
-	{
-		return true;
-	}
-
-	HandleContinueButtonClicked();
-	return true;
+	return bLeavingGame || (ButtonsWidget
+		&& IUILayerInputReceiver::Execute_HandleUILayerConfirmed(ButtonsWidget));
 }
 
 bool UInGameSettingWidget::HandleUILayerUp_Implementation()
 {
-	return false;
+	return bLeavingGame || (ButtonsWidget
+		&& IUILayerInputReceiver::Execute_HandleUILayerUp(ButtonsWidget));
 }
 
 bool UInGameSettingWidget::HandleUILayerDown_Implementation()
 {
-	return false;
+	return bLeavingGame || (ButtonsWidget
+		&& IUILayerInputReceiver::Execute_HandleUILayerDown(ButtonsWidget));
 }
 
 bool UInGameSettingWidget::HandleUILayerLeft_Implementation()
 {
-	return false;
+	return bLeavingGame || (ButtonsWidget
+		&& IUILayerInputReceiver::Execute_HandleUILayerLeft(ButtonsWidget));
 }
 
 bool UInGameSettingWidget::HandleUILayerRight_Implementation()
 {
-	return false;
+	return bLeavingGame || (ButtonsWidget
+		&& IUILayerInputReceiver::Execute_HandleUILayerRight(ButtonsWidget));
 }
 
-void UInGameSettingWidget::HandleContinueButtonClicked()
+void UInGameSettingWidget::HandleButtonAction(EInGameSettingButtonAction Action)
 {
-	if (bConfirmingGameExit)
+	if (bLeavingGame)
 	{
-		CancelGameExitConfirmation();
 		return;
 	}
-
-	PopSelfFromLayer();
-
-	if (AFirstPersonPlayerController* FirstPersonController =
-		Cast<AFirstPersonPlayerController>(GetOwningPlayer()))
-	{
-		FirstPersonController->RequestCloseInGameSetting();
-	}
-}
-
-void UInGameSettingWidget::HandleSettingButtonClicked()
-{
-	PushSettingLayer();
-}
-
-void UInGameSettingWidget::HandleRestartCheckpointButtonClicked()
-{
-	if (AFirstPersonPlayerController* FirstPersonController =
-		Cast<AFirstPersonPlayerController>(GetOwningPlayer()))
-	{
-		FirstPersonController->RequestCheckpointRestart();
-	}
-}
-
-void UInGameSettingWidget::HandleTitleButtonClicked()
-{
-	if (bConfirmingGameExit)
-	{
-		ConfirmGameExit();
-		return;
-	}
-
-	bConfirmingGameExit = true;
-	RefreshCheckpointRestartState(EOutlierCheckpointRestartVoteView::None);
-}
-
-void UInGameSettingWidget::CancelGameExitConfirmation()
-{
-	bConfirmingGameExit = false;
-	const AFirstPersonPlayerController* FirstPersonController =
+	AFirstPersonPlayerController* FirstPersonController =
 		Cast<AFirstPersonPlayerController>(GetOwningPlayer());
-	RefreshCheckpointRestartState(FirstPersonController
-		? FirstPersonController->GetCheckpointRestartVoteView()
-		: EOutlierCheckpointRestartVoteView::None);
-}
-
-void UInGameSettingWidget::ConfirmGameExit()
-{
-	if (!bConfirmingGameExit)
+	switch (Action)
 	{
-		return;
-	}
-
-	bConfirmingGameExit = false;
-	if (AFirstPersonPlayerController* FirstPersonController =
-		Cast<AFirstPersonPlayerController>(GetOwningPlayer()))
-	{
-		FirstPersonController->RequestLeaveGame();
-	}
-}
-
-void UInGameSettingWidget::PushKeyHintLayer()
-{
-	if (KeyHintLayerHandle.IsValid())
-	{
-		return;
-	}
-
-	APlayerController* OwningPlayer = GetOwningPlayer();
-	if (!OwningPlayer || !KeyHintWidgetClass)
-	{
-		return;
-	}
-
-	ActiveKeyHintWidget = CreateWidget<UUILayerKeyHintWidget>(
-		OwningPlayer,
-		KeyHintWidgetClass);
-	if (!ActiveKeyHintWidget)
-	{
-		return;
-	}
-
-	ActiveKeyHintWidget->SetVisibility(ESlateVisibility::HitTestInvisible);
-
-	ULocalPlayer* LocalPlayer = GetOwningLocalPlayer();
-	ULocalPlayerUILayerSubsystem* LayerSubsystem = LocalPlayer
-		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()
-		: nullptr;
-	if (LayerSubsystem)
-	{
-		KeyHintLayerHandle = LayerSubsystem->PushWidget(
-			UILayerTags::Modal(),
-			ActiveKeyHintWidget,
-			FirstPersonInputModeTags::UI(),
-			GetOwningPlayer(),
-			EUILayerFocusTarget::None,
-			true,
-			false);
+	case EInGameSettingButtonAction::Continue:
+		if (FirstPersonController)
+		{
+			FirstPersonController->RequestCloseInGameSetting();
+		}
+		break;
+	case EInGameSettingButtonAction::RestartCheckpoint:
+		if (FirstPersonController)
+		{
+			FirstPersonController->RequestCheckpointRestart();
+		}
+		break;
+	case EInGameSettingButtonAction::Setting:
+		PushSettingLayer();
+		break;
+	case EInGameSettingButtonAction::Title:
+		if (FirstPersonController)
+		{
+			FirstPersonController->RequestLeaveGame(false);
+		}
+		break;
+	case EInGameSettingButtonAction::Exit:
+		if (FirstPersonController)
+		{
+			FirstPersonController->RequestLeaveGame(true);
+		}
+		break;
 	}
 }
 
-void UInGameSettingWidget::PopKeyHintLayer()
+void UInGameSettingWidget::RefreshCheckpointRestartState(EOutlierCheckpointRestartVoteView VoteView)
 {
-	if (!KeyHintLayerHandle.IsValid())
-	{
-		return;
-	}
-
-	ULocalPlayer* LocalPlayer = GetOwningLocalPlayer();
-	ULocalPlayerUILayerSubsystem* LayerSubsystem = LocalPlayer
-		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()
-		: nullptr;
-	if (LayerSubsystem)
-	{
-		LayerSubsystem->PopLayer(KeyHintLayerHandle);
-	}
-
-	KeyHintLayerHandle.Reset();
-	ActiveKeyHintWidget = nullptr;
-}
-
-void UInGameSettingWidget::PopSelfFromLayer()
-{
-	ULocalPlayer* LocalPlayer = GetOwningLocalPlayer();
-	ULocalPlayerUILayerSubsystem* LayerSubsystem = LocalPlayer
-		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()
-		: nullptr;
-	if (LayerSubsystem)
-	{
-		LayerSubsystem->PopWidget(this);
-	}
+	(void)VoteView;
+	RefreshMenuState();
 }
 
 void UInGameSettingWidget::PushSettingLayer()
@@ -329,38 +195,24 @@ void UInGameSettingWidget::PushSettingLayer()
 		true);
 }
 
-void UInGameSettingWidget::RefreshCheckpointRestartState(
-	EOutlierCheckpointRestartVoteView VoteView)
+void UInGameSettingWidget::RefreshMenuState()
 {
-	const bool bWaitingForResponse =
-		VoteView == EOutlierCheckpointRestartVoteView::RequesterWaiting;
 	const AFirstPersonPlayerController* FirstPersonController =
 		Cast<AFirstPersonPlayerController>(GetOwningPlayer());
-
+	bLeavingGame = FirstPersonController && FirstPersonController->HasRequestedExplicitLeave();
 	if (MenuText)
 	{
-		MenuText->SetText(bConfirmingGameExit
-			? GameExitConfirmationText
-			: (bWaitingForResponse ? CheckpointWaitingText : DefaultMenuText));
+		MenuText->SetText(bLeavingGame ? GameLeaveWaitingText : DefaultMenuText);
 	}
-	if (ContinueButton)
+	if (ButtonsWidget)
 	{
-		ContinueButton->SetIsEnabled(!bWaitingForResponse);
-	}
-	if (SettingButton)
-	{
-		SettingButton->SetIsEnabled(!bWaitingForResponse && !bConfirmingGameExit);
-	}
-	if (RestartCheckpointButton)
-	{
-		RestartCheckpointButton->SetIsEnabled(
-			!bWaitingForResponse
-			&& !bConfirmingGameExit
-			&& FirstPersonController
-			&& FirstPersonController->CanRequestCheckpointRestart());
-	}
-	if (TitleButton)
-	{
-		TitleButton->SetIsEnabled(!bWaitingForResponse);
+		ButtonsWidget->SetActionEnabled(EInGameSettingButtonAction::Continue, !bLeavingGame);
+		ButtonsWidget->SetActionEnabled(EInGameSettingButtonAction::RestartCheckpoint,
+			!bLeavingGame && FirstPersonController && FirstPersonController->CanRequestCheckpointRestart());
+		ButtonsWidget->SetActionEnabled(EInGameSettingButtonAction::Setting,
+			!bLeavingGame);
+		ButtonsWidget->SetActionEnabled(EInGameSettingButtonAction::Title, !bLeavingGame);
+		ButtonsWidget->SetActionEnabled(EInGameSettingButtonAction::Exit,
+			!bLeavingGame);
 	}
 }

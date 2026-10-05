@@ -9,6 +9,7 @@
 class APartnerCharacter;
 class AShooterCharacter;
 class AEnemyBase;
+class UEnemyHudWidget;
 class AOutlierPlayerState;
 class ULocalPlayerUISubSystem;
 class UOutlierAbilitySystemComponent;
@@ -63,6 +64,12 @@ protected:
 	virtual void BindMainUI() override;
 
 	virtual void BindPostProcessSubSystem() override;
+
+	// MainWidget은 PartnerControlled일 때만 보이고, Enemy HUD는 사망 중에 숨긴다.
+	virtual void RefreshHudVisibility() override;
+	virtual bool ShouldShowMainWidget() const override;
+	void PushEnemyHud(AEnemyBase* PossessedEnemy);
+	void PopEnemyHud();
 
 	void RefreshShooterUIForRespawnFromPlayerState();
 	void BindPlayerStateDelegates();
@@ -119,6 +126,11 @@ protected:
 
 	UPROPERTY(Transient)
 	TWeakObjectPtr<AEnemyBase> LocalPendingEnemyPossessionTarget;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UEnemyHudWidget> EnemyHudInstance;
+	FUILayerHandle EnemyHudLayerHandle;
+	FHudWidgetCollapseState EnemyHudCollapseState;
 
 	bool bHackTransitionInputBlocked = false;
 	bool bHackTransitionCoveredNotified = false;

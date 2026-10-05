@@ -1,0 +1,16 @@
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/ScreenPass.ush"
+
+// Screen Blackout. Slate 이후 backbuffer(HUD 포함)를 Alpha만큼 검정으로 보간한다.
+
+Texture2D InputTexture;
+SamplerState InputSampler;
+float Alpha;
+
+void MainPS(
+	FScreenVertexOutput Input,
+	out float4 OutColor : SV_Target0)
+{
+	const float4 BaseColor = InputTexture.Sample(InputSampler, Input.UV);
+	OutColor = float4(BaseColor.rgb * (1.0f - saturate(Alpha)), BaseColor.a);
+}

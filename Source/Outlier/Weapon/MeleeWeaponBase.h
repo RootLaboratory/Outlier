@@ -147,6 +147,7 @@ public:
 	EMeleeAttackPhase GetAttackPhase() const { return AttackPhase; }
 
 	int32 GetAttackSequence() const { return AttackSequence; }
+	AActor* GetCurrentMeleeTarget() const { return CurrentMeleeTarget.Get(); }
 
 	virtual void TraceMeleeHit();
 	virtual void ApplyHitToTarget(AActor* Target);

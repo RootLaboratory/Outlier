@@ -65,6 +65,18 @@ namespace OutlierGameplayTags
 			return Tag;
 		}
 
+		inline FGameplayTag Melee()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Damage.Weapon.Melee")));
+			return Tag;
+		}
+
+		inline FGameplayTag Ranged()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Damage.Weapon.Ranged")));
+			return Tag;
+		}
+
 		inline FGameplayTag Explosion()
 		{
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Damage.Explosion")));
@@ -92,6 +104,24 @@ namespace OutlierGameplayTags
 			inline FGameplayTag Shooter()
 			{
 				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Actor.Role.Shooter")));
+				return Tag;
+			}
+
+			inline FGameplayTag Partner()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Actor.Role.Partner")));
+				return Tag;
+			}
+		}
+	}
+
+	namespace Interact
+	{
+		namespace Target
+		{
+			inline FGameplayTag PannelSwitch()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Interact.Target.PannelSwitch")));
 				return Tag;
 			}
 		}
@@ -411,6 +441,15 @@ namespace OutlierGameplayTags
 	// 부모인 GameplayCue.Drone.Death 가 대신 처리한다 ( Config/Tags/CueTags.ini 참고 ).
 	namespace Cue
 	{
+		namespace Status
+		{
+			inline FGameplayTag Stun()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("GameplayCue.Status.Stun")));
+				return Tag;
+			}
+		}
+
 		namespace Drone
 		{
 			inline FGameplayTag Hit()

@@ -68,8 +68,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "SpinningCircle", meta = (ClampMin = "1.0"))
 	float MinCircleRadius = 80.0f;
 
+	// Requested centerline radius; spawn clamps it so the stroke fits the background.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "SpinningCircle", meta = (ClampMin = "1.0"))
 	float MaxCircleRadius = 280.0f;
+
+	// WBP background image diameter. Keep the full outer ring inside this area.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "SpinningCircle", meta = (ClampMin = "1.0"))
+	float BackgroundCircleDiameter = 796.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "SpinningCircle", meta = (ClampMin = "0.0"))
 	float CircleThickness = 12.0f;
