@@ -253,11 +253,13 @@ bool AOutlierGameMode::BeginSettingsPause(AFirstPersonPlayerController* Controll
 	{
 		return false;
 	}
-	if (!UGameplayStatics::SetGamePaused(this, true))
+	// 데디 서버에는 로컬 PC가 없으므로 서버의 요청자 컨트롤러로 정지를 소유한다.
+	if (!SetPause(Controller))
 	{
 		return false;
 	}
 	SettingsPauseOwner = World->GetWorldSettings()->GetPauserPlayerState();
+	World->GetWorldSettings()->ForceNetUpdate();
 	SettingsPauseController = Controller;
 	SettingsOtherController = OtherController;
 	SettingsPauseLayerOwner = LayerOwner;
@@ -282,7 +284,7 @@ void AOutlierGameMode::ClearSettingsWorldPause()
 	if (Settings && SettingsPauseOwner.IsValid()
 		&& Settings->GetPauserPlayerState() == SettingsPauseOwner.Get())
 	{
-		UGameplayStatics::SetGamePaused(this, false);
+		ClearPause();
 		Settings->ForceNetUpdate();
 	}
 	for (AFirstPersonPlayerController* Controller : { SettingsPauseController.Get(), SettingsOtherController.Get() })
@@ -338,7 +340,6 @@ bool AOutlierGameMode::RequestCheckpointRestart(
 		Requester->GetPlayerState<AOutlierPlayerState>();
 	if (!RequesterPlayerState)
 	{
-		CheckpointRestartVoteLayerOwner.Reset();
 		return false;
 	}
 
@@ -353,30 +354,26 @@ bool AOutlierGameMode::RequestCheckpointRestart(
 	AFirstPersonPlayerController* Responder = Cast<AFirstPersonPlayerController>(
 		GetControllerFromPlayerState(ResponderPlayerState));
 
-	// 재시작은 상대 동의 없이 실행한다. 기존 메뉴와 상대의 Pause 화면을 함께 닫는다.
-	AActor* LayerOwner = RequesterPlayerState->IsShooterPlayer()
-		? static_cast<AActor*>(RequesterPlayerState->GetShooterCharacter())
-		: static_cast<AActor*>(RequesterPlayerState->GetPartnerCharacter());
-	CheckpointRestartVoteLayerOwner = LayerOwner ? LayerOwner : Requester->GetPawn();
-	Requester->SetCheckpointRestartVoteViewFromServer(EOutlierCheckpointRestartVoteView::None);
-	Requester->CloseCheckpointRestartVoteUIFromServer(CheckpointRestartVoteLayerOwner.Get());
-	if (Responder && Responder != Requester)
-	{
-		Responder->SetCheckpointRestartVoteViewFromServer(EOutlierCheckpointRestartVoteView::None);
-		Responder->CloseCheckpointRestartVoteUIFromServer(CheckpointRestartVoteLayerOwner.Get());
-	}
-
+	// 재시작은 상대 동의 없이 실행한다. 메뉴와 상대의 Pause 화면은 리로드가 확정된 뒤
+	// 설정 정지 해제에서 함께 닫는다. 사전 실패는 GameOver처럼 메뉴와 정지를 그대로 둔다.
 	LastCheckpointRestartVoteResult = EOutlierCheckpointRestartVoteState::Restarting;
 	bCheckpointRestartInProgress = true;
-	if (StartCheckpointRestart(Requester))
+	if (StartCheckpointRestart(Requester, [Requester, Responder]()
+		{
+			// 사전 검증을 모두 통과한 뒤에만 호출되므로 암막이 켜진 뒤 기존 Pawn으로 돌아가는 일은 없다.
+			Requester->ClientBeginCheckpointRestartTransition();
+			if (Responder && Responder != Requester)
+			{
+				Responder->ClientBeginCheckpointRestartTransition();
+			}
+			return true;
+		}))
 	{
 		return true;
 	}
 
 	bCheckpointRestartInProgress = false;
 	LastCheckpointRestartVoteResult = EOutlierCheckpointRestartVoteState::Rejected;
-	CheckpointRestartVoteLayerOwner.Reset();
-	ClearSettingsWorldPause();
 	return false;
 }
 
@@ -601,6 +598,8 @@ bool AOutlierGameMode::StartCheckpointRestart(
 				Snapshot.SuitSnapshot.ThirdPersonMesh);
 			ShooterPlayerState->SetLoadoutSnapshot(Snapshot.LoadoutSnapshot);
 			ShooterPlayerState->SetAcquiredSuit(Snapshot.SuitSnapshot.bAcquired);
+			// 슈트는 페어 단위 획득이다. 획득 전 체크포인트로 돌아가면 양쪽 PS를 함께 되돌린다.
+			PartnerPlayerState->SetAcquiredSuit(Snapshot.SuitSnapshot.bAcquired);
 
 			ResetRuntimeCombatStateForRespawn();
 			return true;
@@ -1948,6 +1947,7 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 			ResumeSnapshot.SuitSnapshot.ThirdPersonMesh);
 		NewShooterPS->SetLoadoutSnapshot(ResumeSnapshot.LoadoutSnapshot);
 		NewShooterPS->SetAcquiredSuit(ResumeSnapshot.SuitSnapshot.bAcquired);
+		NewPartnerPS->SetAcquiredSuit(ResumeSnapshot.SuitSnapshot.bAcquired);
 		if (UEnemyAdaptationSubsystem* Adaptation = GetWorld()->GetSubsystem<UEnemyAdaptationSubsystem>())
 		{
 			Adaptation->SetGunAdaptationStack(ResumeSnapshot.GunAdaptationStack);
@@ -3327,6 +3327,9 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 		HandleArenaGameplayReloadFailed(ReloadGeneration, EOutlierGameplayReloadFailure::InvalidRuntime);
 		return true;
 	}
+
+	// 업그레이드는 뒤의 Possess에서 PS 연결 후 투영되므로 그 시점의 최대치로 쉴드를 채운다.
+	NewShooter->ArmReloadShieldFillOnPossess();
 
 	// 새 Shooter가 리로드 중 바닥 충돌을 잠시 잃어도 생성 직후 1초간 낙하하지 않게 한다.
 	// MovementMode는 복제되므로 원격 소유 클라이언트에도 같은 보호가 적용된다.

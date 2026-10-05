@@ -534,6 +534,21 @@ void AShooterCharacter::PossessedBy(AController* NewController)
 {
 	Super::PossessedBy(NewController);
 	RefreshAbilitySystemActorInfo();
+	// PS 업그레이드가 ASC에 반영된 최종 최대치로 리로드 쉴드를 한 번만 채운다.
+	if (HasAuthority() && bPendingReloadShieldFill
+		&& GetPlayerState<AOutlierPlayerState>() && OutlierAbilitySystemComponent)
+	{
+		bPendingReloadShieldFill = false;
+		const float MissingShield = FMath::Max(GetMaxShield() - GetCurShield(), 0.0f);
+		if (MissingShield > 0.0f
+			&& !OutlierAbilitySystemComponent->ApplyShieldRecoveryToSelf(MissingShield))
+		{
+			UE_LOG(LogOutlier, Warning,
+				TEXT("[ReloadShield] Failed to fill shield after upgrade projection Pawn=%s MissingShield=%.2f"),
+				*GetNameSafe(this), MissingShield);
+		}
+		ForceNetUpdate();
+	}
 	RefreshPresentationFromPlayerState();
 
 	RefreshFirstPersonShadowPolicy();
@@ -563,6 +578,14 @@ void AShooterCharacter::OnRep_PlayerState()
 UAbilitySystemComponent* AShooterCharacter::GetAbilitySystemComponent() const
 {
 	return OutlierAbilitySystemComponent;
+}
+
+void AShooterCharacter::ArmReloadShieldFillOnPossess()
+{
+	if (HasAuthority())
+	{
+		bPendingReloadShieldFill = true;
+	}
 }
 
 float AShooterCharacter::GetCurPartnerShield() const

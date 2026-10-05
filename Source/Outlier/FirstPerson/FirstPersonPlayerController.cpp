@@ -381,6 +381,19 @@ void AFirstPersonPlayerController::BeginGameOverRespawnTransition_Implementation
 	}
 }
 
+void AFirstPersonPlayerController::ClientBeginCheckpointRestartTransition_Implementation()
+{
+	// GameOver와 달리 HUD가 켜진 상태라 사망 사유로 직접 접는다.
+	// 암막과 HUD는 리로드된 새 Pawn을 잡을 때 기존 사망 연출 해제 경로가 함께 되돌린다.
+	CollapseMainWidgetForDeath();
+	if (ULocalPlayerPostProcessSubsystem* PPSubsystem = GetLocalPlayer()
+		? GetLocalPlayer()->GetSubsystem<ULocalPlayerPostProcessSubsystem>()
+		: nullptr)
+	{
+		PPSubsystem->StartGameOverBlackout();
+	}
+}
+
 void AFirstPersonPlayerController::ClientRestoreGameOverSelection_Implementation(const FGuid& RoundId)
 {
 	if (!IsLocalController() || !RoundId.IsValid())

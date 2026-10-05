@@ -513,6 +513,8 @@ protected:
 	float MaxShield = 100.0f;
 
 	float PartnerShieldDuration = 0.0f;
+	// 서버의 리로드용 새 Pawn만 예약한다. 업그레이드 투영 후 첫 Possess에서 소비한다.
+	bool bPendingReloadShieldFill = false;
 	FDelegateHandle HealthChangedHandle;
 	FDelegateHandle ShieldChangedHandle;
 	FDelegateHandle DeadTagChangedHandle;
@@ -773,6 +775,7 @@ public:
 	// 양쪽 경로에서 모두 불러 "나중에 도착한 쪽"이 항상 올바른 값을 남기게 한다.
 	void RefreshShooterAmmoUI();
 
+	void ArmReloadShieldFillOnPossess();
 	void ApplyPartnerShield(float Amount, float Duration);
 	float GetCurPartnerShield() const;
 	float GetMaxPartnerShield() const;
