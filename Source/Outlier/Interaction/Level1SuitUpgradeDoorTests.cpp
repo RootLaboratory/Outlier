@@ -25,6 +25,7 @@
 #include "Save/OutlierSaveSubSystem.h"
 #include "Save/OutlierCheckpoint.h"
 #include "Shooter/ShooterCharacter.h"
+#include "TimerManager.h"
 #include "UObject/UnrealType.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -161,7 +162,19 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	Door->EntranceCheckpoint = Checkpoint;
 	Door->FinishSpawning(FTransform::Identity);
 	BeginActor(Door);
-	TestTrue(TEXT("Level 1 door starts open without a motion"), Door->IsDoorOpen());
+	// 이 테스트에는 서버 GameMode와 디스크 저장이 없으므로 저장 성공 경계를 직접 설정한다.
+	const auto SupplyUpgradeSave = [Door]()
+	{
+		Door->bUpgradeSaveCommitted = true;
+	};
+	const auto AdvanceDelay = [World](float Seconds)
+	{
+		++GFrameCounter;
+		World->GetTimerManager().Tick(0.0f);
+		++GFrameCounter;
+		World->GetTimerManager().Tick(Seconds);
+	};
+	TestFalse(TEXT("Level 1 door starts closed without a motion"), Door->IsDoorOpen());
 	int32 OpenedCount = 0;
 	Door->OnLevel1DoorOpened.AddLambda([&OpenedCount](AActor*, uint32) { ++OpenedCount; });
 
@@ -193,39 +206,44 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	Shooter->GetRoomTagComp()->AssignDefaultRoomTag(EntryRoomTag);
 	Partner->GetRoomTagComp()->AssignDefaultRoomTag(EntryRoomTag);
 	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, true);
-	TestTrue(TEXT("Room tag alone does not close the door"), Door->IsDoorOpen());
+	TestFalse(TEXT("Room tag alone keeps the default door closed"), Door->IsDoorOpen());
 	Shooter->SetActorLocation(FVector(100.0f, 0.0f, 0.0f));
 	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, true);
-	TestTrue(TEXT("One player inside keeps the door open"), Door->IsDoorOpen());
+	TestFalse(TEXT("One player inside keeps the default door closed"), Door->IsDoorOpen());
 	Shooter->SetActorLocation(FVector(1000.0f, 0.0f, 0.0f));
 	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, false);
 	Partner->SetActorLocation(FVector(200.0f, 0.0f, 0.0f));
 	Room->OnRoomActorOverlapChanged.Broadcast(Partner, true);
-	TestTrue(TEXT("First player leaving before the second enters keeps the door open"), Door->IsDoorOpen());
+	TestFalse(TEXT("Incomplete pair entry keeps the default door closed"), Door->IsDoorOpen());
 	// 캡슐 오버랩은 원점이 Box 경계(500) 안으로 들어오기 전에 발생할 수 있다.
 	Shooter->SetActorLocation(FVector(550.0f, 0.0f, 0.0f));
 	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, true);
-	TestTrue(TEXT("Capsule overlap alone does not seal the room"), Door->IsDoorOpen());
+	TestFalse(TEXT("Capsule overlap alone does not complete entry"), Door->bEntrySealed);
 	Shooter->SetActorLocation(FVector(0.0f, 0.0f, 450.0f));
 	World->Tick(LEVELTICK_All, 0.11f);
-	TestTrue(TEXT("Capsule crossing the Room ceiling does not start closing"), Door->IsDoorOpen());
+	TestFalse(TEXT("Capsule crossing the Room ceiling does not complete entry"), Door->bEntrySealed);
 	Shooter->SetActorLocation(FVector(480.0f, 0.0f, 0.0f));
 	World->Tick(LEVELTICK_All, 0.11f);
-	TestTrue(TEXT("Capsule still crossing the Room boundary does not start closing"), Door->IsDoorOpen());
+	TestFalse(TEXT("Capsule still crossing the Room boundary does not complete entry"), Door->bEntrySealed);
 	Shooter->SetActorLocation(FVector(100.0f, 0.0f, 0.0f));
 	// 단순 Automation 월드의 반복 Tick은 GFrameCounter를 올리지 않아 타이머를 재실행하지 않는다.
 	// 위치가 완전히 들어온 뒤 입장 이벤트를 보내 동일한 서버 입장 판정을 확인한다.
 	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, true);
 	TestFalse(TEXT("Entry event starts closing after both capsules fully enter"), Door->IsDoorOpen());
+	TestTrue(TEXT("Default closed door completes the close gate without animation"), Door->bCloseFinished);
+	TestFalse(TEXT("Default closed door needs no closing Tick"), Door->IsActorTickEnabled());
 	Shooter->SetActorLocation(FVector(1000.0f, 0.0f, 0.0f));
 	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, false);
 	TestTrue(TEXT("Leaving during close cancels the entry and reopens"), Door->IsDoorOpen());
+	// 이후 기존 개방 시작 및 안전 재진입 회귀 검증은 명시적으로 열린 초기 상태를 사용한다.
+	Door->bInitiallyOpen = true;
 	Shooter->SetActorLocation(FVector(100.0f, 0.0f, 0.0f));
 	Room->OnRoomActorOverlapChanged.Broadcast(Shooter, true);
 	TestFalse(TEXT("Both players reentering starts a fresh close"), Door->IsDoorOpen());
 	Room->OnRoomActorOverlapChanged.Broadcast(Partner, true);
 
 	const uint32 Generation = World->GetSubsystem<UOutlierArenaSubsystem>()->GetGameplayGeneration();
+	SupplyUpgradeSave();
 	ShooterPS->SetAcquiredSuit(true);
 	PartnerPS->SetAcquiredSuit(true);
 	ShooterPS->ReportStatAllocatorUIOpened(Generation);
@@ -255,7 +273,7 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	if (FBoolProperty* ActiveProperty = FindFProperty<FBoolProperty>(
 		AOutlierCheckpoint::StaticClass(), TEXT("bActivationConditionSatisfied")))
 	{
-		TestTrue(TEXT("Open door activates entrance checkpoint"),
+		TestTrue(TEXT("Entrance checkpoint is available independently of opening"),
 			ActiveProperty->GetPropertyValue_InContainer(Checkpoint));
 	}
 	TestEqual(TEXT("Door waits for the configured SpawnPoint roster"),
@@ -285,15 +303,19 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 		Combat->GetRoomState(RoomTag), ERoomCombatState::WaitingForTrigger);
 	TestTrue(TEXT("Second matching SpawnPoint registers"), Combat->RegisterSpawnPoint(
 		ThirdPoint, RoomTag, MatchingTags, FGameplayTag()));
-	TestEqual(TEXT("Ready roster still waits for entrance save"),
-		Combat->GetRoomState(RoomTag), ERoomCombatState::WaitingForTrigger);
+	TestTrue(TEXT("Ready roster blocks exits immediately after the door opens"), Combat->IsExitBlocked(RoomTag));
+	TestEqual(TEXT("Ready roster does not spawn immediately"), Combat->GetAliveEnemyCount(RoomTag), 0);
 	if (FBoolProperty* CommittedProperty = FindFProperty<FBoolProperty>(
 		AOutlierCheckpoint::StaticClass(), TEXT("bCheckpointCommitted")))
 	{
 		CommittedProperty->SetPropertyValue_InContainer(Checkpoint, true);
 	}
 	Checkpoint->OnCheckpointCommitted.Broadcast(Checkpoint);
-	TestEqual(TEXT("Successful entrance save starts combat"),
+	TestEqual(TEXT("Arrival save does not replay sequence start"), CombatStartCount, 1);
+	AdvanceDelay(2.99f);
+	TestEqual(TEXT("Enemy spawning waits for the full three seconds"), Combat->GetAliveEnemyCount(RoomTag), 0);
+	AdvanceDelay(0.02f);
+	TestEqual(TEXT("Successful upgrade save reserves combat before delayed spawning"),
 		Combat->GetRoomState(RoomTag), ERoomCombatState::Combat);
 	TestEqual(TEXT("Door starts the sequence once"), CombatStartCount, 1);
 	UOutlierSaveSubSystem* Save = GameInstance->GetSubsystem<UOutlierSaveSubSystem>();
@@ -321,6 +343,8 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("One restored point is not enough"), CombatStartCount, 1);
 	TestTrue(TEXT("Reloaded second matching point registers"), Combat->RegisterSpawnPoint(
 		ThirdPoint, RoomTag, MatchingTags, FGameplayTag()));
+	TestTrue(TEXT("Restored sequence blocks exits before delayed spawning"), Combat->IsExitBlocked(RoomTag));
+	AdvanceDelay(3.01f);
 	TestEqual(TEXT("Restored open door resumes combat once"), CombatStartCount, 2);
 	World->GetSubsystem<UOutlierArenaSubsystem>()->OnArenaGameplayReady.Broadcast(NextGeneration);
 	TestEqual(TEXT("Duplicate ready signal does not restart combat"), CombatStartCount, 2);
@@ -510,7 +534,7 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	if (FBoolProperty* ActiveProperty = FindFProperty<FBoolProperty>(
 		AOutlierCheckpoint::StaticClass(), TEXT("bActivationConditionSatisfied")))
 	{
-		TestFalse(TEXT("Safety opening keeps the entrance checkpoint inactive"),
+		TestTrue(TEXT("Safety opening keeps the respawn checkpoint available"),
 			ActiveProperty->GetPropertyValue_InContainer(Checkpoint));
 	}
 	Shooter->SetActorLocation(FVector(350.0f, 0.0f, 0.0f));
@@ -646,6 +670,7 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	ShooterPS->ReportStatAllocatorUIOpened(OverlapGeneration);
 	ShooterPS->ReportStatAllocatorUIClosed(OverlapGeneration);
 	TestFalse(TEXT("One UI completion still cannot reopen after safety retry"), Door->IsDoorOpen());
+	SupplyUpgradeSave();
 	PartnerPS->ReportStatAllocatorUIOpened(OverlapGeneration);
 	PartnerPS->ReportStatAllocatorUIClosed(OverlapGeneration);
 	TestTrue(TEXT("Both UIs request normal opening after a successful reentry close"), Door->IsDoorOpen());
@@ -657,7 +682,7 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 	if (FBoolProperty* ActiveProperty = FindFProperty<FBoolProperty>(
 		AOutlierCheckpoint::StaticClass(), TEXT("bActivationConditionSatisfied")))
 	{
-		TestTrue(TEXT("Only normal opening completion activates the entrance checkpoint"),
+		TestTrue(TEXT("Entrance checkpoint remains active after normal opening"),
 			ActiveProperty->GetPropertyValue_InContainer(Checkpoint));
 	}
 	TestEqual(TEXT("Successful opening still waits for checkpoint confirmation"), CombatStartCount, CombatBeforeSafety);
@@ -666,14 +691,16 @@ bool FLevel1SuitUpgradeDoorTest::RunTest(const FString& Parameters)
 		SecondPoint, RoomTag, MatchingTags, FGameplayTag()));
 	TestTrue(TEXT("Retry second matching spawn point registers"), Combat->RegisterSpawnPoint(
 		ThirdPoint, RoomTag, MatchingTags, FGameplayTag()));
-	TestEqual(TEXT("Ready retry roster cannot bypass checkpoint confirmation"), CombatStartCount, CombatBeforeSafety);
+	TestEqual(TEXT("Ready retry roster starts the saved sequence immediately"), CombatStartCount, CombatBeforeSafety + 1);
 	if (FBoolProperty* CommittedProperty = FindFProperty<FBoolProperty>(
 		AOutlierCheckpoint::StaticClass(), TEXT("bCheckpointCommitted")))
 	{
 		CommittedProperty->SetPropertyValue_InContainer(Checkpoint, true);
 	}
 	Checkpoint->OnCheckpointCommitted.Broadcast(Checkpoint);
-	TestEqual(TEXT("Checkpoint confirmation starts combat once after retry"), CombatStartCount, CombatBeforeSafety + 1);
+	TestEqual(TEXT("Checkpoint confirmation cannot replay the retry sequence"), CombatStartCount, CombatBeforeSafety + 1);
+	AdvanceDelay(3.01f);
+	TestEqual(TEXT("Upgrade delay starts combat once after retry"), CombatStartCount, CombatBeforeSafety + 1);
 	Checkpoint->OnCheckpointCommitted.Broadcast(Checkpoint);
 	Room->OnRoomActorOverlapChanged.Broadcast(Partner, true);
 	Door->OnDoorMotionFinished.Broadcast(Door, true);

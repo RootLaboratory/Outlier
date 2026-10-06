@@ -40,6 +40,7 @@ protected:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 private:
+	friend class FLevel1SuitUpgradeDoorTest;
 	void ObservePlayerState(AActor* Actor);
 	void OnPlayerStateChanged(AOutlierPlayerState* PlayerState);
 	void OnUICompleted(AOutlierPlayerState* PlayerState, uint32 CompletedGeneration);
@@ -70,6 +71,7 @@ private:
 	TWeakObjectPtr<URoomCombatSubsystem> CombatSubsystem;
 	FDelegateHandle ActorSpawnedHandle;
 	FTimerHandle EntryRecheckTimer;
+	FTimerHandle UpgradeSaveRetryTimer;
 	TSet<TWeakObjectPtr<AActor>> OverlappingPlayers;
 	TSet<TWeakObjectPtr<AActor>> SafetyReentryPlayers;
 	uint32 GameplayGeneration = 0;
@@ -78,6 +80,7 @@ private:
 	bool bCloseFinished = false;
 	bool bReopenRequested = false;
 	bool bOpenFinished = false;
+	bool bUpgradeSaveCommitted = false;
 	bool bCombatStartSucceeded = false;
 	bool bCombatStartInProgress = false;
 	bool bAwaitingGameplayReady = false;

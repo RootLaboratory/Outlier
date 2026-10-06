@@ -1,5 +1,3 @@
-// Fill out your copyright notice in the Description page of Project Settings.
-
 #pragma once
 
 #include "CoreMinimal.h"
@@ -30,7 +28,7 @@ public:
 	static FString MakeKeyVerifier(const FGuid& ResumeKey);
 	FGuid GetActiveSaveId() const { return ActiveSaveId; }
 	bool CaptureInitialSnapshot(const FOutlierCheckpointSnapshot& Snapshot);
-	bool CommitDurableCheckpointSnapshot(const FOutlierCheckpointSnapshot& Snapshot);
+	bool CommitDurableCheckpointSnapshot(const FOutlierCheckpointSnapshot& Snapshot, bool bRefreshSnapshot = false);
 	bool GetRestoreSnapshot(FOutlierCheckpointSnapshot& OutSnapshot) const;
 	bool HasInitialSnapshot() const { return bHasInitialSnapshot; }
 	bool HasLatestCheckpointSnapshot() const { return bHasLatestCheckpointSnapshot; }
@@ -79,7 +77,7 @@ public:
 #endif
 
 private:
-	bool CommitCheckpointSnapshot(const FOutlierCheckpointSnapshot& Snapshot);
+	bool CommitCheckpointSnapshot(const FOutlierCheckpointSnapshot& Snapshot, bool bRefreshSnapshot = false);
 	bool RegisterStableId(FName StableId, UObject* Owner, const TCHAR* IdKind);
 	void UnregisterStableId(FName StableId, const UObject* Owner);
 

@@ -1,5 +1,3 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
-
 #pragma once
 
 #include "CoreMinimal.h"
@@ -85,7 +83,7 @@ public:
 	bool IsArenaWorkerPreloadReady() const;
 	void PauseArenaWorkerWorld();
 
-	bool RegisterCheckpoint(AController* Controller, AOutlierCheckpoint* Checkpoint);
+	bool RegisterCheckpoint(AController* Controller, AOutlierCheckpoint* Checkpoint, bool bRefreshSnapshot = false);
 	bool CommitCombatPhaseCheckpoint(FGameplayTag RoomTag, int32 NextPhaseIndex,
 		bool bEncounterCleared, int32 GameplayGeneration);
 	void RefreshPairLinks(AOutlierPlayerState* TriggeringPlayerState);

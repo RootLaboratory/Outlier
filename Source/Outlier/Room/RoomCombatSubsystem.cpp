@@ -254,6 +254,12 @@ bool URoomCombatSubsystem::CreateTriggerContext(
 bool URoomCombatSubsystem::StartTriggeredSequence(
 	AActor* Requester, const FRoomCombatTriggerContext& Context)
 {
+	return StartTriggeredSequenceWithSpawnDelay(Requester, Context, 0.0f);
+}
+
+bool URoomCombatSubsystem::StartTriggeredSequenceWithSpawnDelay(
+	AActor* Requester, const FRoomCombatTriggerContext& Context, float SpawnDelaySeconds)
+{
 	FRoomCombatTriggerContext CurrentContext;
 	// 해킹 중 리로드되거나 같은 태그의 Room이 재등록되면 이전 성공 콜백으로 전투를 시작할 수 없다.
 	if (!CreateTriggerContext(Requester, Context.RoomTag, Context.ActivationGroupTag, CurrentContext)
@@ -361,7 +367,21 @@ bool URoomCombatSubsystem::StartTriggeredSequence(
 				*CurrentContext.RoomTag.ToString(), CurrentContext.GameplayGeneration);
 		}
 	}
-	ResumeDeferredSpawning(CurrentContext.RoomTag, CurrentContext.RoomRegistrationId);
+	Runtime = RoomRuntimes.Find(CurrentContext.RoomTag);
+	if (SpawnDelaySeconds > 0.0f && Runtime
+		&& Runtime->RegistrationId == CurrentContext.RoomRegistrationId
+		&& Runtime->State == ERoomCombatState::Combat && Runtime->bDeferSpawnExecution)
+	{
+		GetWorld()->GetTimerManager().SetTimer(Runtime->InitialSpawnDelayTimer,
+			FTimerDelegate::CreateWeakLambda(this, [this, CurrentContext]()
+			{
+				ResumeDeferredSpawning(CurrentContext.RoomTag, CurrentContext.RoomRegistrationId);
+			}), SpawnDelaySeconds, false);
+	}
+	else
+	{
+		ResumeDeferredSpawning(CurrentContext.RoomTag, CurrentContext.RoomRegistrationId);
+	}
 	return true;
 }
 
@@ -652,6 +672,7 @@ void URoomCombatSubsystem::UnregisterRoom(ARoomVolume* RoomVolume)
 		|| Runtime->State == ERoomCombatState::Preparing;
 	const int32 CancelledPhase = Runtime->CurrentCombatPhaseIndex;
 	const int32 CancelledGeneration = Runtime->GameplayGeneration;
+	GetWorld()->GetTimerManager().ClearTimer(Runtime->InitialSpawnDelayTimer);
 	SetActivationGroupActive(RoomTag, Runtime->ActiveActivationGroupTag, false);
 	ResetWaveTurretsForRoom(RoomTag, TEXT("Room combat unregistered"));
 
@@ -2367,8 +2388,9 @@ void URoomCombatSubsystem::ResetRuntimeCombatState()
 	}
 	RegisteredWaveTurretRooms.GetKeys(WaveTurretsToReset);
 	CancelSpawnRetry();
-	for (const TPair<FGameplayTag, FRoomCombatRuntime>& Entry : RoomRuntimes)
+	for (TPair<FGameplayTag, FRoomCombatRuntime>& Entry : RoomRuntimes)
 	{
+		GetWorld()->GetTimerManager().ClearTimer(Entry.Value.InitialSpawnDelayTimer);
 		SetActivationGroupActive(Entry.Key, Entry.Value.ActiveActivationGroupTag, false);
 		// 준비 중에는 차단막이 없어도 대기 중인 합류 요청에 취소를 알려야 한다.
 		if (Entry.Value.bExitBlockActive || Entry.Value.bTriggeredSequenceActive
