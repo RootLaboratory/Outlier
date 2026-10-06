@@ -364,6 +364,19 @@ bool FOutlierCheckpointDurableCommitTest::RunTest(const FString& Parameters)
 		PhaseProgress.bExitBlockActive = true;
 		First.RoomPhaseProgress.Add(PhaseRoom, PhaseProgress);
 		TestTrue(TEXT("First disk commit succeeds"), Save->CommitDurableCheckpointSnapshot(First));
+		FOutlierCheckpointSnapshot Upgraded = First;
+		Upgraded.WorldProgress.OpenedDoorIds.Add(TEXT("Door.UpgradeCompleted"));
+		TestFalse(TEXT("Arrival duplicate still cannot save twice"), Save->CommitDurableCheckpointSnapshot(Upgraded));
+		TestTrue(TEXT("Upgrade can refresh the arrival checkpoint on disk"),
+			Save->CommitDurableCheckpointSnapshot(Upgraded, true));
+		Save->ResetRuntimeCheckpointState();
+		TestTrue(TEXT("Refreshed upgrade checkpoint reloads from disk"), Save->LoadLatestSave(OwnerId, SaveId, Verifier));
+		FOutlierCheckpointSnapshot Refreshed;
+		TestTrue(TEXT("Refreshed snapshot exists"), Save->GetRestoreSnapshot(Refreshed));
+		TestTrue(TEXT("Upgrade completion persists in the refreshed snapshot"),
+			Refreshed.WorldProgress.OpenedDoorIds.Contains(TEXT("Door.UpgradeCompleted")));
+		TestEqual(TEXT("Upgrade refresh retains the respawn checkpoint Id"), Refreshed.CheckpointId, First.CheckpointId);
+		TestTrue(TEXT("Restore fixture retains its original baseline"), Save->CommitDurableCheckpointSnapshot(First, true));
 		const FString Latest = FPaths::Combine(Directory,
 			SaveId.ToString(EGuidFormats::Digits), TEXT("LatestAutoSave.sav"));
 		TArray<uint8> OriginalBytes;

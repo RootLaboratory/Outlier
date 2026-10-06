@@ -108,6 +108,7 @@ struct FRoomCombatRuntime
 	bool bExitBlockActive = false;
 	// 시작/차수 완료 이벤트에서 차단 상태를 적용한 뒤 실제 Pool 대여를 실행한다.
 	bool bDeferSpawnExecution = false;
+	FTimerHandle InitialSpawnDelayTimer;
 	double LastSpawnRetryLogSeconds = -1000000.0;
 	int32 SpawnRetryAttempts = 0;
 	bool bHadPreplacedEnemy = false;
@@ -171,6 +172,8 @@ public:
 
 	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "Room Combat")
 	bool StartTriggeredSequence(AActor* Requester, const FRoomCombatTriggerContext& Context);
+	bool StartTriggeredSequenceWithSpawnDelay(AActor* Requester,
+		const FRoomCombatTriggerContext& Context, float SpawnDelaySeconds);
 
 	// 서버 상태 조회다. 차단 Actor는 이 값으로 충돌을 적용하고 자신의 상태를 Client에 복제한다.
 	UFUNCTION(BlueprintPure, Category = "Room Combat")

@@ -1,5 +1,3 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
-
 #include "OutlierGameMode.h"
 #include "Outlier.h"
 #include "Drone/Partner/PartnerCharacter.h"
@@ -798,7 +796,7 @@ bool AOutlierGameMode::HandleArenaWorkerPairSetupTick(float DeltaTime)
 	return false;
 }
 
-bool AOutlierGameMode::RegisterCheckpoint(AController* Controller, AOutlierCheckpoint* Checkpoint)
+bool AOutlierGameMode::RegisterCheckpoint(AController* Controller, AOutlierCheckpoint* Checkpoint, bool bRefreshSnapshot)
 {
 	if (!HasAuthority() || !Controller || !Checkpoint || Checkpoint->GetCheckpointId().IsNone())
 	{
@@ -882,7 +880,7 @@ bool AOutlierGameMode::RegisterCheckpoint(AController* Controller, AOutlierCheck
 	Snapshot.SaveReason = EOutlierCheckpointSaveReason::Trigger;
 	Snapshot.RoomTag = Checkpoint->GetCombatRoomTag();
 	Snapshot.NextPhaseIndex = Snapshot.RoomTag.IsValid() ? 0 : INDEX_NONE;
-	if (!SaveSubsystem->CommitDurableCheckpointSnapshot(Snapshot))
+	if (!SaveSubsystem->CommitDurableCheckpointSnapshot(Snapshot, bRefreshSnapshot))
 	{
 		UE_LOG(LogTemp, Warning,
 			TEXT("[Checkpoint] Disk commit failed; trigger remains pending. Id=%s"),

@@ -990,7 +990,7 @@ bool FRoomCombatTriggeredSequenceTest::RunTest(const FString& Parameters)
 		Combat->GetRoomState(RoomTag), ERoomCombatState::WaitingForTrigger);
 	TestEqual(TEXT("Invalid start emits no start event"), Starts, 0);
 	Definition->RoomDefinitions[0].CombatPhases[1].Waves[0].Enemies[0].Count = 1;
-	TestTrue(TEXT("Hack starts sequence"), Combat->StartTriggeredSequence(Requester, Context));
+	TestTrue(TEXT("Delayed sequence starts"), Combat->StartTriggeredSequenceWithSpawnDelay(Requester, Context, 3.0f));
 	TestTrue(TEXT("Started sequence blocks its barrier"), Barrier->IsBlocked());
 	TestTrue(TEXT("Group point activates"), Point->IsRuntimeActive());
 	TestEqual(TEXT("Location failure remains pending"), Combat->GetPendingSpawnCount(RoomTag), 1);
@@ -1007,6 +1007,15 @@ bool FRoomCombatTriggeredSequenceTest::RunTest(const FString& Parameters)
 	Point->SetForceSpawnLocationFailureForTesting(false);
 	LatePoint->SetForceSpawnLocationFailureForTesting(false);
 	Combat->RetryPendingSpawnsForTesting();
+	TestEqual(TEXT("Spawn retries cannot bypass the initial delay"), Combat->GetAliveEnemyCount(RoomTag), 0);
+	++GFrameCounter;
+	World->GetTimerManager().Tick(0.0f);
+	++GFrameCounter;
+	World->GetTimerManager().Tick(2.99f);
+	TestEqual(TEXT("Barrier remains blocked during the delay"), Barrier->IsBlocked(), true);
+	TestEqual(TEXT("No enemies spawn before three seconds"), Combat->GetAliveEnemyCount(RoomTag), 0);
+	++GFrameCounter;
+	World->GetTimerManager().Tick(0.02f);
 	TestEqual(TEXT("First phase spawns"), Combat->GetAliveEnemyCount(RoomTag), 1);
 	AEnemyBase* Enemy = nullptr;
 	for (TActorIterator<AEnemyBase> It(World); It; ++It)
@@ -1066,7 +1075,7 @@ bool FRoomCombatTriggeredSequenceTest::RunTest(const FString& Parameters)
 
 	Combat->RegisterRoom(Room, RoomTag);
 	Combat->CreateTriggerContext(Requester, RoomTag, GroupTag, Context);
-	Combat->StartTriggeredSequence(Requester, Context);
+	Combat->StartTriggeredSequenceWithSpawnDelay(Requester, Context, 3.0f);
 	TestTrue(TEXT("New sequence blocks before Reset"), Barrier->IsBlocked());
 	Combat->ResetRuntimeCombatState();
 	Combat->ResetRuntimeCombatState();
@@ -1075,6 +1084,11 @@ bool FRoomCombatTriggeredSequenceTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Reset does not count as a clear"), Clears, 1);
 	TestFalse(TEXT("Reset deactivates group"), Point->IsRuntimeActive());
 	TestEqual(TEXT("Reset removes pending work"), Combat->GetPendingSpawnCount(RoomTag), 0);
+	++GFrameCounter;
+	World->GetTimerManager().Tick(0.0f);
+	++GFrameCounter;
+	World->GetTimerManager().Tick(3.1f);
+	TestEqual(TEXT("Cancelled delay cannot spawn after Reset"), Combat->GetAliveEnemyCount(RoomTag), 0);
 	Combat->RegisterRoom(Room, RoomTag);
 	TestFalse(TEXT("Reset invalidates previous contexts"), Combat->StartTriggeredSequence(Requester, Context));
 

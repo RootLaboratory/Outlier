@@ -1,5 +1,3 @@
-// Fill out your copyright notice in the Description page of Project Settings.
-
 #pragma once
 
 #include "CoreMinimal.h"
@@ -35,6 +33,7 @@ public:
 	bool SetActivationConditionSatisfied(AController* ActivatingController, bool bSatisfied = true);
 	void SetCombatRoomTag(FGameplayTag InRoomTag);
 	bool RetryCommit();
+	bool RefreshSnapshot(AController* Controller);
 
 	UFUNCTION(BlueprintPure, Category = "Checkpoint")
 	bool IsCheckpointCommitted() const { return bCheckpointCommitted; }

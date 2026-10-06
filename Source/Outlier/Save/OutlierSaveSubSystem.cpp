@@ -1,5 +1,3 @@
-// Fill out your copyright notice in the Description page of Project Settings.
-
 
 #include "Save/OutlierSaveSubSystem.h"
 #include "OutlierPlayerState.h"
@@ -231,10 +229,10 @@ bool UOutlierSaveSubSystem::CaptureInitialSnapshot(const FOutlierCheckpointSnaps
 	return true;
 }
 
-bool UOutlierSaveSubSystem::CommitCheckpointSnapshot(const FOutlierCheckpointSnapshot& Snapshot)
+bool UOutlierSaveSubSystem::CommitCheckpointSnapshot(const FOutlierCheckpointSnapshot& Snapshot, bool bRefreshSnapshot)
 {
 	if (!Snapshot.IsValid() || Snapshot.bInitialSnapshot || Snapshot.CheckpointId.IsNone()
-		|| CommittedCheckpointIds.Contains(Snapshot.CheckpointId)
+		|| (!bRefreshSnapshot && CommittedCheckpointIds.Contains(Snapshot.CheckpointId))
 		|| !bStableIdsValid)
 	{
 		return false;
@@ -246,10 +244,10 @@ bool UOutlierSaveSubSystem::CommitCheckpointSnapshot(const FOutlierCheckpointSna
 	return true;
 }
 
-bool UOutlierSaveSubSystem::CommitDurableCheckpointSnapshot(const FOutlierCheckpointSnapshot& Snapshot)
+bool UOutlierSaveSubSystem::CommitDurableCheckpointSnapshot(const FOutlierCheckpointSnapshot& Snapshot, bool bRefreshSnapshot)
 {
 	if (!Snapshot.IsValid() || Snapshot.bInitialSnapshot || Snapshot.CheckpointId.IsNone()
-		|| CommittedCheckpointIds.Contains(Snapshot.CheckpointId) || !bStableIdsValid
+		|| (!bRefreshSnapshot && CommittedCheckpointIds.Contains(Snapshot.CheckpointId)) || !bStableIdsValid
 		|| !ActiveOwnerId.IsValid() || !ActiveSaveId.IsValid()
 		|| ActiveKeyVerifier.Len() != 40)
 	{
@@ -352,7 +350,7 @@ bool UOutlierSaveSubSystem::CommitDurableCheckpointSnapshot(const FOutlierCheckp
 		return false;
 	}
 	Files.Delete(*Backup);
-	return CommitCheckpointSnapshot(Snapshot);
+	return CommitCheckpointSnapshot(Snapshot, bRefreshSnapshot);
 }
 
 bool UOutlierSaveSubSystem::GetRestoreSnapshot(FOutlierCheckpointSnapshot& OutSnapshot) const

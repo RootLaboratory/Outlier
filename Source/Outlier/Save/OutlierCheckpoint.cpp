@@ -1,6 +1,3 @@
-// Fill out your copyright notice in the Description page of Project Settings.
-
-
 #include "Save/OutlierCheckpoint.h"
 #include "OutlierGameMode.h"
 #include "OutlierPlayerState.h"
@@ -14,7 +11,6 @@
 #include "GameFramework/Controller.h"
 #include "GameFramework/Pawn.h"
 
-// Sets default values
 AOutlierCheckpoint::AOutlierCheckpoint()
 {
 	PrimaryActorTick.bCanEverTick = false;
@@ -38,7 +34,6 @@ AOutlierCheckpoint::AOutlierCheckpoint()
 	bActivationConditionSatisfied = bInitiallyActive;
 }
 
-// Called when the game starts or when spawned
 void AOutlierCheckpoint::BeginPlay()
 {
 	Super::BeginPlay();
@@ -135,7 +130,7 @@ bool AOutlierCheckpoint::SetActivationConditionSatisfied(
 
 void AOutlierCheckpoint::SetCombatRoomTag(FGameplayTag InRoomTag)
 {
-	if (HasAuthority() && !bCheckpointCommitted)
+	if (HasAuthority())
 	{
 		CombatRoomTag = InRoomTag;
 	}
@@ -223,6 +218,20 @@ void AOutlierCheckpoint::ProcessTriggerOverlap(AActor* OtherActor, UPrimitiveCom
 bool AOutlierCheckpoint::RetryCommit()
 {
 	return TryCommit();
+}
+
+bool AOutlierCheckpoint::RefreshSnapshot(AController* Controller)
+{
+	AOutlierGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<AOutlierGameMode>() : nullptr;
+	if (!HasAuthority() || !bCheckpointIdRegistered || !GameMode
+		|| !GameMode->RegisterCheckpoint(Controller, this, true))
+	{
+		return false;
+	}
+	bCheckpointCommitted = true;
+	ForceNetUpdate();
+	OnCheckpointCommitted.Broadcast(this);
+	return true;
 }
 
 bool AOutlierCheckpoint::TryCommit()

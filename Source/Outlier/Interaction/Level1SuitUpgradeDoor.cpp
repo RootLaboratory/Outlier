@@ -5,6 +5,7 @@
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "GameFramework/Controller.h"
 #include "Interaction/InteractableDoor.h"
 #include "Network/OutlierArenaSubsystem.h"
 #include "OutlierPlayerState.h"
@@ -17,13 +18,12 @@
 #include "TimerManager.h"
 
 // Level 1 진행의 서버 측 순서:
-// 두 플레이어가 입장 Room 안에 모임 -> 이 문 닫기 -> 닫힘 Timeline 완료
-// -> 양쪽 UI의 실제 종료 확인 -> 이 문 열기 -> 열림 Timeline 완료
-// -> 입구 체크포인트의 디스크 저장 성공 -> 전투 Room/SpawnPoint 준비 후 ExternalTrigger 시작.
+// 두 플레이어 입장 -> 문 닫힘 -> 양쪽 업그레이드 UI 종료 -> 체크포인트 추가 저장
+// -> 문 열림 완료와 차단막 활성화 -> 3초 뒤 첫 Wave 소환.
 ALevel1SuitUpgradeDoor::ALevel1SuitUpgradeDoor()
 {
 	// 부모 Door의 Tick이 Timeline을 구동한다. 자식은 초기 문 상태만 바꾼다.
-	bInitiallyOpen = true;
+	bInitiallyOpen = false;
 }
 
 void ALevel1SuitUpgradeDoor::BeginPlay()
@@ -51,7 +51,7 @@ void ALevel1SuitUpgradeDoor::BeginPlay()
 	}
 	if (!EntranceCheckpoint->IsCheckpointCommitted())
 	{
-		EntranceCheckpoint->SetActivationConditionSatisfied(nullptr, false);
+		EntranceCheckpoint->SetActivationConditionSatisfied(nullptr, true);
 	}
 
 	UOutlierArenaSubsystem* Arena = GetWorld()->GetSubsystem<UOutlierArenaSubsystem>();
@@ -105,6 +105,7 @@ void ALevel1SuitUpgradeDoor::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	if (UWorld* World = GetWorld())
 	{
 		World->GetTimerManager().ClearTimer(EntryRecheckTimer);
+		World->GetTimerManager().ClearTimer(UpgradeSaveRetryTimer);
 		if (ActorSpawnedHandle.IsValid())
 		{
 			World->RemoveOnActorSpawnedHandler(ActorSpawnedHandle);
@@ -297,6 +298,7 @@ void ALevel1SuitUpgradeDoor::OnCombatEvent(
 void ALevel1SuitUpgradeDoor::OnArenaReloadStarted(uint32 NewGeneration)
 {
 	GetWorldTimerManager().ClearTimer(EntryRecheckTimer);
+	GetWorldTimerManager().ClearTimer(UpgradeSaveRetryTimer);
 	OverlappingPlayers.Reset();
 	SafetyReentryPlayers.Reset();
 	// 이전 문/위젯 콜백이 다음 플레이 세대의 진행 플래그를 재사용하지 못하게 끊는다.
@@ -306,13 +308,14 @@ void ALevel1SuitUpgradeDoor::OnArenaReloadStarted(uint32 NewGeneration)
 	bReopenRequested = false;
 	bEntryCloseRejected = false;
 	bOpenFinished = false;
+	bUpgradeSaveCommitted = false;
 	bCombatStartSucceeded = false;
 	bCombatStartInProgress = false;
 	bAwaitingGameplayReady = true;
 	LastEntryStatus.Reset();
 	if (IsValid(EntranceCheckpoint) && !EntranceCheckpoint->IsCheckpointCommitted())
 	{
-		EntranceCheckpoint->SetActivationConditionSatisfied(nullptr, false);
+		EntranceCheckpoint->SetActivationConditionSatisfied(nullptr, true);
 	}
 }
 
@@ -354,6 +357,7 @@ void ALevel1SuitUpgradeDoor::ReconcileRestoredProgress()
 		bCloseFinished = true;
 		bReopenRequested = true;
 		bOpenFinished = true;
+		bUpgradeSaveCommitted = true;
 		bCombatStartSucceeded = bEncounterCleared || bSavedPastEntrance;
 		UE_LOG(LogTemp, Display,
 			TEXT("[Level1Door] Progress restored. Door=%s Room=%s Generation=%u Open=%d EncounterCleared=%d"),
@@ -372,7 +376,7 @@ void ALevel1SuitUpgradeDoor::ReconcileRestoredProgress()
 	}
 
 	// 문 열림 기록이 없는 복귀는 Suit 보유 여부와 무관하게 입장을 다시 판정한다.
-	SnapDoorState(true);
+	SnapDoorState(bInitiallyOpen);
 	EvaluateEntry();
 }
 
@@ -482,13 +486,22 @@ void ALevel1SuitUpgradeDoor::EvaluateEntry()
 		LogEntryStatus(TEXT("PlayerOutsideOrRoomTagMismatch"), Shooter, Partner);
 		return;
 	}
-	if (!IsDoorOpen() || !HasMovementCurve())
+	if (!HasMovementCurve())
 	{
 		GetWorldTimerManager().ClearTimer(EntryRecheckTimer);
 		LogEntryStatus(TEXT("DoorClosedOrCurveMissing"), Shooter, Partner);
 		UE_LOG(LogTemp, Error, TEXT("[Level1Door] Cannot close door. Door=%s Room=%s Generation=%u Open=%d Curve=%d"),
 			*GetNameSafe(this), *TargetRoomVolume->GetRoomTag().ToString(), GameplayGeneration,
 			IsDoorOpen(), HasMovementCurve());
+		return;
+	}
+	// 기본 닫힘 상태에서는 닫힘 연출 없이 UI 종료와 추가 저장을 기다린다.
+	if (!IsDoorOpen() && !IsActorTickEnabled())
+	{
+		GetWorldTimerManager().ClearTimer(EntryRecheckTimer);
+		bEntrySealed = true;
+		bCloseFinished = true;
+		EvaluateReopen();
 		return;
 	}
 	// 안전 개방은 정상 완료 콜백을 보내지 않는다. 완전히 열린 뒤 타이머에서 재시도한다.
@@ -583,8 +596,9 @@ void ALevel1SuitUpgradeDoor::LogEntryStatus(
 void ALevel1SuitUpgradeDoor::EvaluateReopen()
 {
 	// UI 완료 이벤트가 먼저 오면 대기하고, 닫힘 Timeline 완료 콜백에서 같은 조건을 다시 본다.
-	if (!HasAuthority() || !bEntrySealed || !bCloseFinished || bReopenRequested
-		|| !IsValid(TargetRoomVolume))
+	if (!HasAuthority() || bAwaitingGameplayReady || !bEntrySealed || !bCloseFinished || bReopenRequested
+		|| !IsValid(TargetRoomVolume) || !ArenaSubsystem.IsValid()
+		|| GameplayGeneration != ArenaSubsystem->GetGameplayGeneration())
 	{
 		return;
 	}
@@ -600,6 +614,28 @@ void ALevel1SuitUpgradeDoor::EvaluateReopen()
 	{
 		return;
 	}
+	if (!bUpgradeSaveCommitted)
+	{
+		UOutlierSaveSubSystem* Save = GetGameInstance()
+			? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>() : nullptr;
+		if (!Save || !IsValid(EntranceCheckpoint) || !IsValid(CombatRoomVolume))
+		{
+			return;
+		}
+		const bool bWasOpen = Save->HasWorldProgress(EOutlierWorldProgressType::OpenedDoor, DoorId);
+		// 복원 시 업그레이드 절차를 반복하지 않도록 완료된 UI 진행 경계를 함께 저장한다.
+		Save->SetWorldProgressState(EOutlierWorldProgressType::OpenedDoor, DoorId, true);
+		EntranceCheckpoint->SetCombatRoomTag(CombatRoomVolume->GetRoomTag());
+		if (!EntranceCheckpoint->RefreshSnapshot(Cast<AController>(Shooter->GetOwner())))
+		{
+			Save->SetWorldProgressState(EOutlierWorldProgressType::OpenedDoor, DoorId, bWasOpen);
+			GetWorldTimerManager().SetTimer(UpgradeSaveRetryTimer,
+				this, &ThisClass::EvaluateReopen, 1.0f, false);
+			return;
+		}
+		bUpgradeSaveCommitted = true;
+		GetWorldTimerManager().ClearTimer(UpgradeSaveRetryTimer);
+	}
 	bReopenRequested = true;
 	SetDoorOpen(true);
 	UE_LOG(LogTemp, Display, TEXT("[Level1Door] Reopening. Door=%s Room=%s Generation=%u"),
@@ -608,10 +644,10 @@ void ALevel1SuitUpgradeDoor::EvaluateReopen()
 
 bool ALevel1SuitUpgradeDoor::TryStartCombat()
 {
-	if (!HasAuthority() || bAwaitingGameplayReady || !bOpenFinished
+	if (!HasAuthority() || bAwaitingGameplayReady || !bUpgradeSaveCommitted || !bOpenFinished
 		|| bCombatStartSucceeded || bCombatStartInProgress
 		|| !IsValid(CombatRoomVolume) || !CombatSubsystem.IsValid()
-		|| !IsValid(EntranceCheckpoint) || !EntranceCheckpoint->IsCheckpointCommitted())
+		|| !IsValid(EntranceCheckpoint))
 	{
 		return false;
 	}
@@ -633,7 +669,7 @@ bool ALevel1SuitUpgradeDoor::TryStartCombat()
 	bCombatStartInProgress = true;
 	const bool bStarted = CombatSubsystem->CreateTriggerContext(
 		this, RoomTag, FGameplayTag(), Context)
-		&& CombatSubsystem->StartTriggeredSequence(this, Context);
+		&& CombatSubsystem->StartTriggeredSequenceWithSpawnDelay(this, Context, 3.0f);
 	bCombatStartInProgress = false;
 	if (GameplayGeneration != StartGeneration
 		|| ArenaSubsystem->GetGameplayGeneration() != StartGeneration)
@@ -664,10 +700,7 @@ void ALevel1SuitUpgradeDoor::HandleDoorSafetyReopenStarted(AInteractableDoor* Do
 	bCloseFinished = false;
 	bReopenRequested = false;
 	bOpenFinished = false;
-	if (IsValid(EntranceCheckpoint) && !EntranceCheckpoint->IsCheckpointCommitted())
-	{
-		EntranceCheckpoint->SetActivationConditionSatisfied(nullptr, false);
-	}
+	GetWorldTimerManager().ClearTimer(UpgradeSaveRetryTimer);
 	LogEntryStatus(TEXT("DoorSafetyReopen"), nullptr, nullptr);
 	EvaluateEntry();
 }
@@ -695,15 +728,11 @@ void ALevel1SuitUpgradeDoor::HandleDoorMotionFinished(AInteractableDoor* Door, b
 	}
 	else if (bOpen && bReopenRequested && !bOpenFinished)
 	{
-		// 2단계: 열림 완료 후 입구 저장을 허용한다. 전투는 체크포인트 확정 통지까지 대기한다.
+		// 문 열림이 끝나면 차단막을 즉시 활성화하고 적 소환만 지연한다.
 		bOpenFinished = true;
 		UE_LOG(LogTemp, Display, TEXT("[Level1Door] Door opened. Door=%s Room=%s Generation=%u"),
 			*GetNameSafe(this), *TargetRoomVolume->GetRoomTag().ToString(), GameplayGeneration);
 		OnLevel1DoorOpened.Broadcast(this, GameplayGeneration);
-		if (IsValid(EntranceCheckpoint) && IsValid(CombatRoomVolume))
-		{
-			EntranceCheckpoint->SetCombatRoomTag(CombatRoomVolume->GetRoomTag());
-			EntranceCheckpoint->SetActivationConditionSatisfied(nullptr, true);
-		}
+		TryStartCombat();
 	}
 }
