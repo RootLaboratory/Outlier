@@ -123,6 +123,14 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ClickCircle")
 	float MaxRotationSpeedDegrees = 120.0f;
 
+	// Rotation speed multiplier at the innermost circle. Interpolated by circle index.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ClickCircle", meta = (ClampMin = "0.0"))
+	float MinSpeedScalePerIndex = 1.0f;
+
+	// Rotation speed multiplier at the outermost circle. Interpolated by circle index.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ClickCircle", meta = (ClampMin = "0.0"))
+	float MaxSpeedScalePerIndex = 2.0f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ClickCircle")
 	FVector2D CircleCenter = FVector2D(0.0f, 0.0f);
 
