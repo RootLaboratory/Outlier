@@ -927,13 +927,15 @@ AActor* AFirstPersonCharacter::FindInteractTargetByTrace() const
 	FRotator CameraRotation;
 	GetController()->GetPlayerViewPoint(CameraLocation, CameraRotation);
 
-	 FVector Start = CameraLocation;
-	 FVector End = Start + CameraRotation.Vector() * InteractRange;
+	const bool bSphereTrace =
+		InteractionTraceMode == EInteractionTraceMode::SphereTrace;
+	const float SphereRadius = FMath::Max(InteractionSphereTraceRadius, 0.0f);
+	const float TraceDistance = bSphereTrace
+		? FMath::Max(InteractRange - SphereRadius, 0.0f)
+		: FMath::Max(InteractRange, 0.0f);
 
-	if (InteractionTraceMode == EInteractionTraceMode::SphereTrace)
-	{
-		End = Start + CameraRotation.Vector() * InteractRange - InteractionSphereTraceRadius;
-	}
+	const FVector Start = CameraLocation;
+	const FVector End = Start + CameraRotation.Vector() * TraceDistance;
 
 	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(InteractionTrace), false, this);
 	QueryParams.AddIgnoredActor(this);
@@ -942,15 +944,15 @@ AActor* AFirstPersonCharacter::FindInteractTargetByTrace() const
 	FHitResult Hit;
 	bool bHit = false;
 
-	if (InteractionTraceMode == EInteractionTraceMode::SphereTrace)
+	if (bSphereTrace)
 	{
 		bHit = GetWorld()->SweepSingleByChannel(
 			Hit,
 			Start,
-			End - InteractionSphereTraceRadius,
+			End,
 			FQuat::Identity,
 			InteractionTraceChannel,
-			FCollisionShape::MakeSphere(InteractionSphereTraceRadius),
+			FCollisionShape::MakeSphere(SphereRadius),
 			QueryParams
 		);
 	}
@@ -969,22 +971,23 @@ AActor* AFirstPersonCharacter::FindInteractTargetByTrace() const
 	{
 		const FColor TraceColor = bHit ? FColor::Cyan : FColor::Orange;
 
-		if (InteractionTraceMode == EInteractionTraceMode::SphereTrace)
+		if (bSphereTrace)
 		{
 			const FVector TraceVector = End - Start;
 			const float TraceLength = TraceVector.Size();
 			const FVector TraceDirection = TraceLength > UE_KINDA_SMALL_NUMBER
 				? TraceVector / TraceLength
-				: FVector::ForwardVector;
+				: CameraRotation.Vector();
 			const FVector CapsuleCenter = (Start + End) * 0.5f;
-			const float CapsuleHalfHeight = TraceLength * 0.5f + InteractionSphereTraceRadius;
-			const FQuat CapsuleRotation = FQuat::FindBetweenNormals(FVector::UpVector, TraceDirection);
+			const float CapsuleHalfHeight = TraceLength * 0.5f + SphereRadius;
+			const FQuat CapsuleRotation =
+				FQuat::FindBetweenNormals(FVector::UpVector, TraceDirection);
 
 			DrawDebugCapsule(
 				GetWorld(),
 				CapsuleCenter,
 				CapsuleHalfHeight,
-				InteractionSphereTraceRadius,
+				SphereRadius,
 				CapsuleRotation,
 				TraceColor,
 				false,
@@ -993,9 +996,23 @@ AActor* AFirstPersonCharacter::FindInteractTargetByTrace() const
 				1.5f
 			);
 
-			DrawDebugSphere(GetWorld(), Start, InteractionSphereTraceRadius, 16, FColor::Yellow, false, InteractionTraceInterval, 0, 1.0f);
-			DrawDebugSphere(GetWorld(), End, InteractionSphereTraceRadius, 16, TraceColor, false, InteractionTraceInterval, 0, 1.0f);
-			DrawDebugString(GetWorld(), CapsuleCenter + FVector(0.0f, 0.0f, 16.0f), TEXT("Interact SphereTrace"), nullptr, TraceColor, InteractionTraceInterval, true);
+			DrawDebugSphere(
+				GetWorld(), Start, SphereRadius, 16,
+				FColor::Yellow, false, InteractionTraceInterval, 0, 1.0f
+			);
+			DrawDebugSphere(
+				GetWorld(), End, SphereRadius, 16,
+				TraceColor, false, InteractionTraceInterval, 0, 1.0f
+			);
+			DrawDebugString(
+				GetWorld(),
+				CapsuleCenter + FVector(0.0f, 0.0f, 16.0f),
+				TEXT("Interact SphereTrace"),
+				nullptr,
+				TraceColor,
+				InteractionTraceInterval,
+				true
+			);
 		}
 		else
 		{
@@ -1010,16 +1027,40 @@ AActor* AFirstPersonCharacter::FindInteractTargetByTrace() const
 				2.0f
 			);
 
-			DrawDebugPoint(GetWorld(), Start, 8.0f, FColor::Yellow, false, InteractionTraceInterval, 0);
-			DrawDebugPoint(GetWorld(), End, 8.0f, TraceColor, false, InteractionTraceInterval, 0);
-			DrawDebugString(GetWorld(), (Start + End) * 0.5f + FVector(0.0f, 0.0f, 16.0f), TEXT("Interact LineTrace"), nullptr, TraceColor, InteractionTraceInterval, true);
+			DrawDebugPoint(
+				GetWorld(), Start, 8.0f,
+				FColor::Yellow, false, InteractionTraceInterval, 0
+			);
+			DrawDebugPoint(
+				GetWorld(), End, 8.0f,
+				TraceColor, false, InteractionTraceInterval, 0
+			);
+			DrawDebugString(
+				GetWorld(),
+				(Start + End) * 0.5f + FVector(0.0f, 0.0f, 16.0f),
+				TEXT("Interact LineTrace"),
+				nullptr,
+				TraceColor,
+				InteractionTraceInterval,
+				true
+			);
 		}
-
 
 		if (bHit)
 		{
-			DrawDebugPoint(GetWorld(), Hit.ImpactPoint, 12.0f, FColor::Cyan, false, InteractionTraceInterval, 0);
-			DrawDebugString(GetWorld(), Hit.ImpactPoint + FVector(0.0f, 0.0f, 16.0f), TEXT("Interact Trace Hit"), nullptr, FColor::Cyan, InteractionTraceInterval, true);
+			DrawDebugPoint(
+				GetWorld(), Hit.ImpactPoint, 12.0f,
+				FColor::Cyan, false, InteractionTraceInterval, 0
+			);
+			DrawDebugString(
+				GetWorld(),
+				Hit.ImpactPoint + FVector(0.0f, 0.0f, 16.0f),
+				TEXT("Interact Trace Hit"),
+				nullptr,
+				FColor::Cyan,
+				InteractionTraceInterval,
+				true
+			);
 		}
 	}
 
@@ -1035,8 +1076,11 @@ AActor* AFirstPersonCharacter::FindInteractTargetByTrace() const
 		return nullptr;
 	}
 
-	UInteractableComponent* InteractableComponent = Interactable->GetInteractableComponent();
-	if (!InteractableComponent || !InteractableComponent->CanInteract(GetOwnedGameplayTagsForQuery()))
+	UInteractableComponent* InteractableComponent =
+		Interactable->GetInteractableComponent();
+
+	if (!InteractableComponent ||
+		!InteractableComponent->CanInteract(GetOwnedGameplayTagsForQuery()))
 	{
 		return nullptr;
 	}
@@ -1049,7 +1093,6 @@ AActor* AFirstPersonCharacter::FindInteractTargetByTrace() const
 
 	return HitActor;
 }
-
 bool AFirstPersonCharacter::IsInteractTargetByTrace(AActor* TargetActor) const
 {
 	if (!TargetActor)

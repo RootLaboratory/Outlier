@@ -396,13 +396,13 @@ struct FDroneDamageFeedbackParameters
 	// 1. 슬라이스 글리치: 무작위 높이 가로 띠를 좌우로 민다. 사망 Noise와 같은 방식.
 	int32 bSliceGlitch = true;
 	// 2. 픽셀 소팅: 기존 Pixel Sorting 패스로 정렬한 화면을 마스크 안에 보여준다.
-	int32 bPixelSort = false;
+	int32 bPixelSort = true;
 	// 3. 밀고 검게: 마스크 안 내용을 ShiftOffset만큼 밀고, 밀려서 빈 자리는 검게. 글리치 프레임마다 UV를 살짝 흔든다.
 	int32 bShiftToBlack = false;
 
 	// 슬라이스 글리치. 기본값은 사망 연출 Noise(FDeathNoiseParameters)와 같다.
 	// 이동량과 글리치 밝기에 Intensity가 곱해진다(사망 Noise의 MaxIntensity).
-	float Intensity = 0.09f;
+	float Intensity = 0.05f;
 	float Seed = 0.0f;
 	// 슬라이스 경계가 생길 수 있는 세로 격자 줄 수.
 	float SliceRows = 255.0f;
@@ -411,7 +411,7 @@ struct FDroneDamageFeedbackParameters
 	// 초당 글리치 프레임 수. 밀고 검게의 UV 흔들림도 이 박자를 따른다.
 	float GlitchRate = 16.0f;
 	// 글리치 슬라이스의 최대 가로 이동량(뷰 폭 대비).
-	float GlitchStrength = 0.06f;
+	float GlitchStrength = 0.02f;
 	// 이 값 이상 난수를 뽑은 슬라이스만 글리치에 걸린다. 밀고 검게의 흔들림도 같은 문턱을 쓴다.
 	float GlitchThreshold = 0.6f;
 	// 글리치에 걸린 슬라이스에 더해지는 밝기.
@@ -437,7 +437,7 @@ struct FDroneDamageFeedbackParameters
 	float MaskGlow = 0.1f;
 
 	// 더해지는 색. RGB만 사용한다.
-	FLinearColor Tint = FLinearColor::White;
+	FLinearColor Tint = FLinearColor::Black;
 };
 
 // Split Prism 튜닝값. RDG Debugger에서 조정한다.
@@ -449,7 +449,7 @@ struct FSplitPrismSettings
 	float FocusDuration = 2.0f;
 
 	// 첫 접근(시작 → 첫 지나침) 곡선. 1이면 선형, 높을수록 초반에 빨리 붙고 끝에서 천천히.
-	float FocusEasePower = 2.0f;
+	float FocusEasePower = 3.0f;
 
 	// 첫 지나침 깊이(시작 대비). 0이면 지나치지 않고 바로 맞는다.
 	float OvershootAmount = 0.15f;
@@ -459,7 +459,7 @@ struct FSplitPrismSettings
 	float StartOffset = 0.01f;
 
 	// d = 1일 때 블러 원판 반경. 1080p 기준 px.
-	float MaxBlurRadius = 4.0f;
+	float MaxBlurRadius = 24.0f;
 	int32 BlurSampleCount = 64;
 
 	// 색 번짐. R/B 반경이 G의 (1 ± FringeAmount)배. 앞초점(d > 0) 보라, 뒤초점(d < 0) 초록 테두리.

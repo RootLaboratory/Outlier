@@ -171,8 +171,8 @@ void UClickCircleMiniGameWidget::UpdateSpinningPointer(float DeltaTime)
 	}
 
 	const float DirectionSign = SpinningPointer.Direction == EClickCirclePointerDirection::Clockwise ? 1.0f : -1.0f;
-	const float RadiusSpeedScale = GetPointerSpeedScale(); //Radius 비례 속도가 느려짐에 따라 원크기로 보정
-	SpinningPointer.AngleDegrees = FMath::Fmod(SpinningPointer.AngleDegrees + SpinningPointer.Speed * RadiusSpeedScale * DirectionSign * DeltaTime, 360.0f);
+	const float SpeedScalePerIndex = GetPointerSpeedScale();
+	SpinningPointer.AngleDegrees = FMath::Fmod(SpinningPointer.AngleDegrees + SpinningPointer.Speed * SpeedScalePerIndex * DirectionSign * DeltaTime, 360.0f);
 	if (SpinningPointer.AngleDegrees < 0.0f)
 	{
 		SpinningPointer.AngleDegrees += 360.0f;
@@ -275,12 +275,13 @@ float UClickCircleMiniGameWidget::GetAngularDistanceDegrees(float A, float B) co
 
 float UClickCircleMiniGameWidget::GetPointerSpeedScale() const
 {
-	if (!ClickCircleWidgets.IsValidIndex(CurrentCircleIndex) || ClickCircleWidgets.IsEmpty())
+	if (!ClickCircleWidgets.IsValidIndex(CurrentCircleIndex) || ClickCircleWidgets.Num() <= 1)
 	{
 		return 1.0f;
 	}
 
-	const float ReferenceRadius = FMath::Max(ClickCircleWidgets[0].ClickRadius, 1.0f);
-	const float CurrentRadius = FMath::Max(ClickCircleWidgets[CurrentCircleIndex].ClickRadius, 1.0f);
-	return ReferenceRadius / CurrentRadius;
+	const float MinScale = FMath::Max(0.0f, FMath::Min(MinSpeedScalePerIndex, MaxSpeedScalePerIndex));
+	const float MaxScale = FMath::Max(MinScale, FMath::Max(MinSpeedScalePerIndex, MaxSpeedScalePerIndex));
+	const float IndexAlpha = static_cast<float>(CurrentCircleIndex) / static_cast<float>(ClickCircleWidgets.Num() - 1);
+	return FMath::Lerp(MaxScale, MinScale, IndexAlpha);
 }
