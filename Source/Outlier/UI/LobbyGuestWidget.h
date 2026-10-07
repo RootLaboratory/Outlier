@@ -43,7 +43,12 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Lobby|Guest")
 	bool IsConfirmed() const { return bConfirmed; }
 
+	bool GetFrameCenterInLocalSpace(FVector2D& OutCenter) const;
+
 protected:
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	TObjectPtr<UImage> Frame;
+
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UTextBlock> GuestText;
 

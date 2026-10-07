@@ -49,8 +49,11 @@ protected:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<ULobbyGuestWidget> Guest2Widget;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lobby|Guest", meta = (ClampMin = "0.0"))
-	float RoleOffsetViewportScale = 0.32f;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	TObjectPtr<UWidget> GuestTargetUp;
+
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	TObjectPtr<UWidget> GuestTargetDown;
 
 	UFUNCTION(BlueprintImplementableEvent, Category = "Lobby|Guest")
 	void OnGuestWidgetStateChanged(int32 GuestIndex, ELobbyGuestWidgetState State, bool bIsLocalGuest);
@@ -81,7 +84,7 @@ private:
 		ELobbyGuestWidgetState State,
 		bool bIsLocalGuest,
 		bool bIsConfirmed);
-	float GetRoleOffsetPixels() const;
+	FVector2D GetRoleOffset(int32 GuestIndex) const;
 
 private:
 	//Widget delegate 설정이 PS array 촉기화보다 일러서 Timer로 지연 delegate 초기화;
