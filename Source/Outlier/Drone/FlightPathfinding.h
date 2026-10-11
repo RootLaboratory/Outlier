@@ -1,11 +1,13 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "FlightPathfinding.generated.h"
 
 class ARoomVolume;
 class UCapsuleComponent;
 class UWorld;
 
+UENUM(BlueprintType)
 enum class EFlightPathStatus : uint8
 {
 	Success,
@@ -15,7 +17,9 @@ enum class EFlightPathStatus : uint8
 	// 현재 탐색 범위/격자에서 경로를 찾지 못했다. 연속 공간의 절대 도달 불가능을 의미하지 않는다.
 	NoPathWithinBounds,
 	BudgetExceeded,
-	Cancelled
+	Cancelled,
+	// 이미 선정된 경로의 다음 직선 구간이 새 장애물로 막힌 경우다.
+	BlockedSegment
 };
 
 // 목적지 선정(EQS)과 실제 이동 사이에서 사용하는, 한 번의 제한된 탐색 요청이다.
@@ -29,6 +33,8 @@ struct OUTLIER_API FFlightPathRequest
 	FBox SearchBounds = FBox(ForceInit);
 	float CellSize = 100.0f;
 	float Clearance = 5.0f;
+	// 0이면 정확한 목적지만 사용한다. 막힌 목적지의 근처 접근점을 찾을 때만 지정한다.
+	float GoalSearchRadius = 0.0f;
 
 	// 어느 한도든 넘으면 BudgetExceeded다. 경로가 물리적으로 없다는 판정과 구분한다.
 	int32 MaxSearchNodes = 512;
@@ -54,11 +60,18 @@ struct OUTLIER_API FFlightPathResult
 	int32 CollisionChecks = 0;
 	double ElapsedMilliseconds = 0.0;
 	double PathLength = 0.0;
+	bool bStartBlocked = false;
+	bool bGoalAdjusted = false;
+	bool bUsedClearanceEscape = false;
 };
 
 // 상태/Tick/이동 입력을 소유하지 않는 공용 함수다. 호출자는 결과를 보관하고 이동을 실행한다.
 namespace FlightPathfinding
 {
+	// 경유점 추종 중 실제 위치에서 다음 지점까지 검사한다. A*는 실행하지 않는다.
+	OUTLIER_API EFlightPathStatus CheckSegment(
+		UWorld& World, const UCapsuleComponent& MovementCapsule, const FFlightPathRequest& Request);
+
 	// 서버 게임 스레드에서 실제 캡슐과 선택적 방 경계를 검증한 뒤 경로를 반환한다.
 	OUTLIER_API FFlightPathResult FindPath(
 		UWorld& World, const UCapsuleComponent& MovementCapsule, const FFlightPathRequest& Request);

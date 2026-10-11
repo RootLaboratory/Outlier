@@ -241,6 +241,7 @@ public:
 	void ResumeRestoredAutomaticPhases();
 
 	bool IsRoomRegistered(FGameplayTag RoomTag) const;
+	ARoomVolume* GetRegisteredRoomVolume(FGameplayTag RoomTag) const;
 	ERoomCombatState GetRoomState(FGameplayTag RoomTag) const;
 	FGameplayTag GetActiveCombatRoomTag() const { return ActiveCombatRoomTag; }
 	int32 GetCurrentCombatPhaseIndex(FGameplayTag RoomTag) const;

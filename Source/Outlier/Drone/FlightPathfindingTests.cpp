@@ -134,6 +134,33 @@ bool FFlightPathFailureTest::RunTest(const FString& Parameters)
 	const FBox StartObstacle(Request.Start - FVector(10.0), Request.Start + FVector(10.0));
 	Result = FindAroundBox(Request, StartObstacle);
 	TestTrue(TEXT("Blocked start is explicit"), Result.Status == EFlightPathStatus::BlockedEndpoint);
+	TestTrue(TEXT("Blocked start is distinguished from blocked goal"), Result.bStartBlocked);
+
+	// 보정은 막힌 목적지에만 적용한다. 시작점/방 경계/경로 검사와 요청당 예산은 우회하지 않는다.
+	Request.GoalSearchRadius = 100.0f;
+	Result = FindAroundBox(Request, GoalObstacle);
+	TestTrue(TEXT("Blocked goal can resolve to a nearby reachable point"), Result.Status == EFlightPathStatus::Success);
+	TestTrue(TEXT("Successful fallback reports adjusted goal"), Result.bGoalAdjusted);
+	if (!Result.Waypoints.IsEmpty())
+	{
+		TestTrue(TEXT("Resolved goal stays within configured radius"),
+			FVector::Distance(Result.Waypoints.Last(), Request.Goal) <= Request.GoalSearchRadius);
+		TestFalse(TEXT("Resolved goal is outside blocked volume"), GoalObstacle.IsInsideOrOn(Result.Waypoints.Last()));
+		TestFalse(TEXT("Final segment does not cut blocked volume"), FMath::LineBoxIntersection(
+			GoalObstacle, Result.Waypoints[0], Result.Waypoints.Last(), Result.Waypoints.Last() - Result.Waypoints[0]));
+	}
+	Result = FindAroundBox(Request, StartObstacle);
+	TestTrue(TEXT("Goal fallback never moves an invalid start"),
+		Result.Status == EFlightPathStatus::BlockedEndpoint && Result.bStartBlocked);
+	const FBox LargeGoalObstacle(Request.Goal - FVector(150.0), Request.Goal + FVector(150.0));
+	Result = FindAroundBox(Request, LargeGoalObstacle);
+	TestTrue(TEXT("No candidate within radius fails without partial path"),
+		Result.Status == EFlightPathStatus::BlockedEndpoint && Result.Waypoints.IsEmpty());
+	Request.MaxCollisionChecks = 3;
+	Result = FindAroundBox(Request, LargeGoalObstacle);
+	TestTrue(TEXT("Goal candidates share collision budget with path search"),
+		Result.Status == EFlightPathStatus::BudgetExceeded && Result.CollisionChecks == 3);
+	Request = MakeRequest();
 
 	Request.MaxSearchNodes = 1;
 	Result = FindAroundBox(Request, SealedWall);
@@ -238,6 +265,53 @@ bool FFlightPathWorldTest::RunTest(const FString& Parameters)
 	FFlightPathResult Result = FlightPathfinding::FindPath(*World, *Capsule, Request);
 	TestTrue(TEXT("Actual capsule can detour inside room"), Result.Status == EFlightPathStatus::Success);
 	TestTrue(TEXT("Pawn-blocking wall requires a detour"), Result.Waypoints.Num() > 2);
+	TestTrue(TEXT("Straight segment rejects wall without running a detour search"),
+		FlightPathfinding::CheckSegment(*World, *Capsule, Request) == EFlightPathStatus::BlockedSegment);
+	Capsule->IgnoreActorWhenMoving(Wall, true);
+	TestTrue(TEXT("Path validation respects movement ignored actors"),
+		FlightPathfinding::CheckSegment(*World, *Capsule, Request) == EFlightPathStatus::Success);
+	Capsule->IgnoreActorWhenMoving(Wall, false);
+	Capsule->IgnoreComponentWhenMoving(WallBox, true);
+	TestTrue(TEXT("Path validation respects movement ignored components"),
+		FlightPathfinding::CheckSegment(*World, *Capsule, Request) == EFlightPathStatus::Success);
+	Capsule->IgnoreComponentWhenMoving(WallBox, false);
+	if (Result.Waypoints.Num() > 1)
+	{
+		const FVector Goal = Request.Goal;
+		Request.Goal = Result.Waypoints[1];
+		TestTrue(TEXT("First detour segment is traversable"),
+			FlightPathfinding::CheckSegment(*World, *Capsule, Request) == EFlightPathStatus::Success);
+		Request.Goal = Goal;
+	}
+
+	// 플레이어처럼 목적지 중심을 점유하는 Pawn도 무시하지 않고 주변 접근점으로 보정한다.
+	AActor* Target = World->SpawnActor<AActor>();
+	if (TestNotNull(TEXT("Destination occupant exists"), Target))
+	{
+		UCapsuleComponent* TargetCapsule = NewObject<UCapsuleComponent>(Target);
+		TargetCapsule->InitCapsuleSize(45.0f, 96.0f);
+		TargetCapsule->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+		TargetCapsule->SetCollisionObjectType(ECC_Pawn);
+		TargetCapsule->SetCollisionResponseToAllChannels(ECR_Block);
+		Target->SetRootComponent(TargetCapsule);
+		TargetCapsule->RegisterComponent();
+		Target->SetActorLocation(Request.Goal);
+		World->GetPhysicsScene()->ProcessDeferredCreatePhysicsState();
+		World->GetPhysicsScene()->Flush();
+		Result = FlightPathfinding::FindPath(*World, *Capsule, Request);
+		TestTrue(TEXT("Exact player center is blocked"), Result.Status == EFlightPathStatus::BlockedEndpoint);
+		Request.GoalSearchRadius = 150.0f;
+		Result = FlightPathfinding::FindPath(*World, *Capsule, Request);
+		TestTrue(TEXT("Occupied destination resolves to a reachable nearby point"),
+			Result.Status == EFlightPathStatus::Success && Result.bGoalAdjusted);
+		if (!Result.Waypoints.IsEmpty())
+		{
+			TestTrue(TEXT("Resolved point stays outside target capsule"),
+				FVector::Distance(Result.Waypoints.Last(), Request.Goal) >= 70.0);
+		}
+		Request.GoalSearchRadius = 0.0f;
+		Target->Destroy();
+	}
 
 	// 방을 좁히면 Enemy는 실패하지만, 방 제한 없는 Partner 요청은 같은 벽을 우회할 수 있다.
 	RoomBox->SetBoxExtent(FVector(400.0, 100.0, 200.0));
@@ -252,15 +326,68 @@ bool FFlightPathWorldTest::RunTest(const FString& Parameters)
 	Request.Room.Reset();
 	Result = FlightPathfinding::FindPath(*World, *Capsule, Request);
 	TestTrue(TEXT("Missing required room does not remove restriction"), Result.Status == EFlightPathStatus::Unavailable);
+	TestTrue(TEXT("Segment check also requires a valid room"),
+		FlightPathfinding::CheckSegment(*World, *Capsule, Request) == EFlightPathStatus::Unavailable);
 	Request.Room = Room;
 	RoomBox->SetBoxExtent(FVector(400.0, 350.0, 200.0));
 	Request.Goal = FVector(390.0, 0.0, 0.0);
 	Result = FlightPathfinding::FindPath(*World, *Capsule, Request);
 	TestTrue(TEXT("Capsule clearance must fit, not just its center"), Result.Status == EFlightPathStatus::BlockedEndpoint);
+	TestTrue(TEXT("Segment check cannot cut across room clearance"),
+		FlightPathfinding::CheckSegment(*World, *Capsule, Request) == EFlightPathStatus::BlockedEndpoint);
+	Request.GoalSearchRadius = 100.0f;
+	Result = FlightPathfinding::FindPath(*World, *Capsule, Request);
+	TestTrue(TEXT("Goal near boundary can resolve inside room"), Result.Status == EFlightPathStatus::Success);
+	if (!Result.Waypoints.IsEmpty())
+	{
+		TestTrue(TEXT("Resolved boundary goal respects actual capsule clearance"),
+			Result.Waypoints.Last().X <= 375.0);
+	}
+	Request.GoalSearchRadius = 0.0f;
+
+	// 실제 캡슐은 벽에서 2cm 떨어져 있지만 5cm 안전 여유는 겹친다. 첫 탈출 구간만 실제 크기를 쓴다.
+	Drone->SetActorLocation(FVector(-52.0, 0.0, 0.0));
+	Request.Start = Drone->GetActorLocation();
+	Request.Goal = FVector(-300.0, 0.0, 0.0);
+	Result = FlightPathfinding::FindPath(*World, *Capsule, Request);
+	TestTrue(TEXT("Clearance-only overlap permits a validated escape"), Result.Status == EFlightPathStatus::Success);
+	TestTrue(TEXT("Clearance escape is reported"), Result.bUsedClearanceEscape);
+	TestTrue(TEXT("Long direct route cannot bypass clearance"), Result.Waypoints.Num() > 2);
+	TestTrue(TEXT("Segment validator rejects a long clearance escape"),
+		FlightPathfinding::CheckSegment(*World, *Capsule, Request) == EFlightPathStatus::BlockedSegment);
+	if (Result.Waypoints.Num() > 1)
+	{
+		Request.Goal = Result.Waypoints[1];
+		TestTrue(TEXT("Following the first short escape segment is allowed"),
+			FlightPathfinding::CheckSegment(*World, *Capsule, Request) == EFlightPathStatus::Success);
+	}
+	Drone->SetActorLocation(FVector(-49.0, 0.0, 0.0));
+	Request.Start = Drone->GetActorLocation();
+	Request.Goal = FVector(-300.0, 0.0, 0.0);
+	Result = FlightPathfinding::FindPath(*World, *Capsule, Request);
+	TestTrue(TEXT("Actual penetration still rejects start"),
+		Result.Status == EFlightPathStatus::BlockedEndpoint && Result.bStartBlocked);
+	Drone->SetActorLocation(FVector(-300.0, 0.0, 0.0));
+	Request = MakeRequest();
+	Request.Room = Room;
+	Request.bRequireRoom = true;
+
+	FVector ClampedGoal;
+	TestTrue(TEXT("Room can clamp an outside destination with capsule extent"),
+		Room->TryClampFlightLocation(FVector(900.0, 0.0, 0.0), FVector(25.0, 25.0, 45.0), ClampedGoal));
+	TestTrue(TEXT("Clamped capsule stays fully inside room"), ClampedGoal.X < 375.0);
 
 	// 회전/스케일된 방도 기존 ContainsWorldLocation의 로컬 좌표 판정을 재사용한다.
 	Room->SetActorRotation(FRotator(0.0, 90.0, 0.0));
 	Room->SetActorScale3D(FVector(2.0, 1.0, 1.0));
+	TestTrue(TEXT("Rotated scaled room clamps in its local axes"),
+		Room->TryClampFlightLocation(FVector(1000.0, 1000.0, 0.0), FVector(25.0, 25.0, 45.0), ClampedGoal));
+	for (int32 Corner = 0; Corner < 8; ++Corner)
+	{
+		const FVector Offset((Corner & 1) ? 25.0 : -25.0,
+			(Corner & 2) ? 25.0 : -25.0, (Corner & 4) ? 45.0 : -45.0);
+		TestTrue(TEXT("Every clamped clearance corner is inside rotated room"), Room->ContainsWorldLocation(ClampedGoal + Offset));
+	}
 	Request.Goal = FVector(340.0, 0.0, 0.0);
 	Result = FlightPathfinding::FindPath(*World, *Capsule, Request);
 	TestTrue(TEXT("Rotated room rejects capsule crossing its local boundary"),

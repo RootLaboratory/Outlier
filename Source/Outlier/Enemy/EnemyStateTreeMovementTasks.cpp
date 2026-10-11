@@ -2,9 +2,13 @@
 
 #include "AIController.h"
 #include "Components/ActorComponent.h"
+#include "Components/CapsuleComponent.h"
 #include "Enemy/EnemyAIController.h"
+#include "Engine/World.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "HAL/IConsoleManager.h"
+#include "Room/RoomCombatSubsystem.h"
+#include "Room/RoomVolume.h"
 #if WITH_DEV_AUTOMATION_TESTS
 #include "Misc/AutomationTest.h"
 #endif
@@ -43,6 +47,13 @@ void LogFlight(
 		Data.bRotateTowardDestination, *GetNameSafe(Enemy ? Enemy->GetController() : nullptr),
 		*GetNameSafe(Data.CachedController), Enemy && Enemy->HasAuthority(),
 		*ChangeType, *CurrentState, *TargetState, *RunStatus, *Priority);
+	if (Data.bUsePathfinding)
+	{
+		UE_LOG(LogEnemyFlight, Log,
+			TEXT("[FlightPath] %s Status=%s Waypoint=%d/%d Retry=%d RetryElapsed=%.2f Waiting=%d"),
+			Phase, *UEnum::GetValueAsString(Data.PathStatus), Data.WaypointIndex,
+			Data.PathWaypoints.Num(), Data.RepathAttempts, Data.RetryElapsed, Data.bWaitingForPath);
+	}
 }
 
 AAIController* ResolveAIController(AEnemyBase* Enemy)
@@ -190,6 +201,12 @@ EEnemyFlightMoveResult UpdateFlightProgress(FEnemyFlyToLocationTaskInstanceData&
 void StopFlyTask(FEnemyFlyToLocationTaskInstanceData& Data)
 {
 	LogFlight(TEXT("Stop"), Data);
+	Data.PathWaypoints.Reset();
+	Data.CachedCapsule = nullptr;
+	Data.CachedRoomSubsystem = nullptr;
+	Data.CachedRoom.Reset();
+	Data.bWaitingForPath = false;
+	Data.bRepathEpisode = false;
 	if (!Data.bOwnsMovement || !IsValid(Data.Enemy) || !Data.Enemy->HasAuthority()) return;
 	// 빙의/재점유 이후 새 Controller의 이동은 이전 AI Task가 정리하지 않는다.
 	if (IsValid(Data.CachedController) && Data.Enemy->GetController() == Data.CachedController)
@@ -202,6 +219,265 @@ void StopFlyTask(FEnemyFlyToLocationTaskInstanceData& Data)
 		RestoreFlyTaskBaseSpeed(*Data.Enemy);
 	}
 	Data.bOwnsMovement = false;
+}
+
+void PauseFlyMovement(AEnemyBase& Enemy)
+{
+	Enemy.ConsumeMovementInputVector();
+	if (UCharacterMovementComponent* Movement = Enemy.GetCharacterMovement())
+	{
+		Movement->StopMovementImmediately();
+	}
+}
+
+FFlightPathRequest MakeFlightPathRequest(
+	const FEnemyFlyToLocationTaskInstanceData& Data, const FVector& Goal)
+{
+	FFlightPathRequest Request;
+	Request.Start = Data.CachedCapsule->GetComponentLocation();
+	Request.Goal = Goal;
+	Request.SearchBounds = FBox(Request.Start.ComponentMin(Goal), Request.Start.ComponentMax(Goal))
+		.ExpandBy(Data.SearchPadding);
+	Request.CellSize = Data.PathCellSize;
+	Request.Clearance = Data.PathClearance;
+	Request.GoalSearchRadius = Data.GoalSearchRadius;
+	Request.MaxSearchNodes = Data.MaxSearchNodes;
+	Request.MaxCollisionChecks = Data.MaxCollisionChecks;
+	Request.MaxSearchMilliseconds = Data.MaxSearchMilliseconds;
+	Request.bRequireRoom = true;
+	Request.Room = Data.CachedRoom;
+	return Request;
+}
+
+bool HasCurrentFlightRoom(const FEnemyFlyToLocationTaskInstanceData& Data)
+{
+	return IsValid(Data.CachedCapsule) && IsValid(Data.CachedRoomSubsystem)
+		&& Data.CachedRoom.IsValid() && Data.PathRoomTag == Data.Enemy->GetDefaultRoomTag()
+		&& Data.CachedRoomSubsystem->GetRegisteredRoomVolume(Data.PathRoomTag) == Data.CachedRoom.Get();
+}
+
+bool IsRetryableFlightFailure(EFlightPathStatus Status)
+{
+	return Status == EFlightPathStatus::BlockedEndpoint
+		|| Status == EFlightPathStatus::BlockedSegment
+		|| Status == EFlightPathStatus::NoPathWithinBounds
+		|| Status == EFlightPathStatus::BudgetExceeded;
+}
+
+bool RecordFlightPathProgress(FEnemyFlyToLocationTaskInstanceData& Data, float Distance, bool bReachedPoint)
+{
+	if (!bReachedPoint && Data.BestDistance - Distance < FMath::Max(Data.ProgressDistance, 1.0f))
+	{
+		return false;
+	}
+	Data.BestDistance = Distance;
+	Data.NoProgressElapsed = 0.0f;
+	// 경로 계산 성공이 아니라 실제 경유점 접근/통과가 재시도 한도를 복구한다.
+	Data.bRepathEpisode = false;
+	Data.RepathAttempts = 0;
+	Data.RetryElapsed = 0.0f;
+	Data.RetryDelay = 0.0f;
+	return true;
+}
+
+bool HasFlightRepathLimitExpired(const FEnemyFlyToLocationTaskInstanceData& Data)
+{
+	// 마지막 허용 탐색이 성공했다면 이동할 수 있다. 횟수 제한은 다음 시도가 필요할 때 적용한다.
+	return Data.bRepathEpisode && (Data.RetryElapsed >= Data.RepathTimeout
+		|| (Data.bWaitingForPath && Data.RepathAttempts >= Data.MaxRepathAttempts));
+}
+
+void WaitForFlightPath(FEnemyFlyToLocationTaskInstanceData& Data)
+{
+	// 첫 실패부터 시간을 유지한다. 재탐색 성공만으로 한도를 초기화하지 않는다.
+	if (!Data.bRepathEpisode)
+	{
+		Data.RetryElapsed = 0.0f;
+		Data.RetryDelay = 0.0f;
+		Data.bRepathEpisode = true;
+	}
+	Data.bWaitingForPath = true;
+	Data.PathWaypoints.Reset();
+	PauseFlyMovement(*Data.Enemy);
+}
+
+EStateTreeRunStatus RequestFlightPath(FEnemyFlyToLocationTaskInstanceData& Data)
+{
+	if (!HasCurrentFlightRoom(Data))
+	{
+		Data.PathStatus = EFlightPathStatus::Unavailable;
+		Data.MoveResult = EEnemyFlightMoveResult::Invalid;
+		StopFlyTask(Data);
+		return EStateTreeRunStatus::Failed;
+	}
+
+	// StateTree 목적지는 Actor 좌표다. 캡슐 중심과의 차이만 보정해 기존 바인딩을 유지한다.
+	// 재진입한 Task도 Pawn에 남은 탐색 간격을 존중한다. 실패 후 Root 반복으로 예산을 우회하지 않는다.
+	const double Now = Data.Enemy->GetWorld()->GetTimeSeconds();
+	const double RemainingDelay = Data.Enemy->GetNextFlightPathRequestTime() - Now;
+	if (RemainingDelay > 0.0)
+	{
+		WaitForFlightPath(Data);
+		Data.RetryDelay = Data.RepathInterval - static_cast<float>(RemainingDelay);
+		return EStateTreeRunStatus::Running;
+	}
+	Data.Enemy->SetNextFlightPathRequestTime(Now + Data.RepathInterval);
+	const FVector CapsuleOffset = Data.CachedCapsule->GetComponentLocation() - Data.Enemy->GetActorLocation();
+	FFlightPathRequest Request = MakeFlightPathRequest(Data, Data.Destination + CapsuleOffset);
+	bool bRoomAdjusted = false;
+	if (Data.GoalSearchRadius > 0.0f)
+	{
+		const float Radius = Data.CachedCapsule->GetScaledCapsuleRadius() + Data.PathClearance;
+		const float HalfHeight = Data.CachedCapsule->GetScaledCapsuleHalfHeight() + Data.PathClearance;
+		const FVector Extent = FBox(-FVector(Radius, Radius, HalfHeight), FVector(Radius, Radius, HalfHeight))
+			.TransformBy(FTransform(Data.CachedCapsule->GetComponentQuat())).GetExtent();
+		FVector RoomGoal;
+		if (Data.CachedRoom->TryClampFlightLocation(Request.Goal, Extent, RoomGoal))
+		{
+			bRoomAdjusted = !RoomGoal.Equals(Request.Goal, 0.01);
+			Request = MakeFlightPathRequest(Data, RoomGoal);
+		}
+	}
+	FFlightPathResult Result = FlightPathfinding::FindPath(*Data.Enemy->GetWorld(), *Data.CachedCapsule, Request);
+	Data.PathStatus = Result.Status;
+	Data.LastDestination = Data.Destination;
+	Data.SegmentCheckElapsed = 0.0f;
+	if (CVarEnemyFlightDebug.GetValueOnGameThread() != 0)
+	{
+		UE_LOG(LogEnemyFlight, Log,
+			TEXT("[FlightPath] Enemy=%s Status=%s Points=%d Nodes=%d Checks=%d Milliseconds=%.3f Retry=%d StartBlocked=%d GoalAdjusted=%d RoomAdjusted=%d ClearanceEscape=%d GoalSearchRadius=%.1f ResolvedGoal=%s"),
+			*GetNameSafe(Data.Enemy), *UEnum::GetValueAsString(Result.Status), Result.Waypoints.Num(),
+			Result.SearchNodes, Result.CollisionChecks, Result.ElapsedMilliseconds, Data.RepathAttempts,
+			Result.bStartBlocked, Result.bGoalAdjusted, bRoomAdjusted, Result.bUsedClearanceEscape, Data.GoalSearchRadius,
+			Result.Waypoints.IsEmpty() ? TEXT("None") : *Result.Waypoints.Last().ToString());
+	}
+	if (Result.Status == EFlightPathStatus::Success)
+	{
+		Data.PathWaypoints = MoveTemp(Result.Waypoints);
+		Data.WaypointIndex = Data.PathWaypoints.Num() > 1 ? 1 : 0;
+		Data.bWaitingForPath = false;
+		Data.NoProgressElapsed = 0.0f;
+		Data.BestDistance = FVector::Distance(Request.Start, Data.PathWaypoints[Data.WaypointIndex]);
+		return EStateTreeRunStatus::Running;
+	}
+	if (IsRetryableFlightFailure(Result.Status))
+	{
+		WaitForFlightPath(Data);
+		return EStateTreeRunStatus::Running;
+	}
+	Data.MoveResult = EEnemyFlightMoveResult::Invalid;
+	StopFlyTask(Data);
+	return EStateTreeRunStatus::Failed;
+}
+
+EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, float DeltaTime)
+{
+	// 전체 이동 제한 -> 목적지 변경 -> 제한된 재탐색 -> 구간 검증 -> 이동 입력 순서다.
+	Data.MoveElapsed += DeltaTime;
+	Data.SegmentCheckElapsed += DeltaTime;
+	if (Data.MoveTimeout > 0.0f && Data.MoveElapsed >= Data.MoveTimeout)
+	{
+		Data.MoveResult = EEnemyFlightMoveResult::TimedOut;
+		StopFlyTask(Data);
+		return EStateTreeRunStatus::Failed;
+	}
+	if (Data.bRepathEpisode)
+	{
+		Data.RetryElapsed += DeltaTime;
+	}
+	if (HasFlightRepathLimitExpired(Data))
+	{
+		Data.MoveResult = EEnemyFlightMoveResult::Blocked;
+		StopFlyTask(Data);
+		return EStateTreeRunStatus::Failed;
+	}
+	if (!IsValid(Data.CachedCapsule) || !Data.CachedRoom.IsValid()
+		|| Data.PathRoomTag != Data.Enemy->GetDefaultRoomTag())
+	{
+		Data.PathStatus = EFlightPathStatus::Unavailable;
+		Data.MoveResult = EEnemyFlightMoveResult::Invalid;
+		StopFlyTask(Data);
+		return EStateTreeRunStatus::Failed;
+	}
+	if (!Data.LastDestination.Equals(Data.Destination, FMath::Max(Data.DestinationChangeDistance, 0.0f)))
+	{
+		WaitForFlightPath(Data);
+	}
+	if (Data.bWaitingForPath)
+	{
+		Data.RetryDelay += DeltaTime;
+		if (HasFlightRepathLimitExpired(Data))
+		{
+			Data.MoveResult = EEnemyFlightMoveResult::Blocked;
+			StopFlyTask(Data);
+			return EStateTreeRunStatus::Failed;
+		}
+		if (Data.RetryDelay >= Data.RepathInterval)
+		{
+			Data.RetryDelay = 0.0f;
+			++Data.RepathAttempts;
+			return RequestFlightPath(Data);
+		}
+		return EStateTreeRunStatus::Running;
+	}
+
+	const FVector Position = Data.CachedCapsule->GetComponentLocation();
+	FVector NextPoint = Data.PathWaypoints[Data.WaypointIndex];
+	const bool bFinalPoint = Data.WaypointIndex == Data.PathWaypoints.Num() - 1;
+	const float Radius = bFinalPoint ? FMath::Max(Data.AcceptanceRadius, 0.0f)
+		: FMath::Min(10.0f, Data.PathCellSize * 0.1f);
+	const bool bReachedPoint = FVector::DistSquared(Position, NextPoint) <= FMath::Square(Radius);
+
+	// 중간점 허용 반경 때문에 모서리를 가로지르지 않도록 다음 구간을 먼저 검사한다.
+	if (bReachedPoint && !bFinalPoint)
+	{
+		NextPoint = Data.PathWaypoints[Data.WaypointIndex + 1];
+	}
+	if (bReachedPoint || Data.SegmentCheckElapsed >= Data.PathCheckInterval)
+	{
+		Data.SegmentCheckElapsed = 0.0f;
+		Data.PathStatus = HasCurrentFlightRoom(Data)
+			? FlightPathfinding::CheckSegment(*Data.Enemy->GetWorld(), *Data.CachedCapsule,
+				MakeFlightPathRequest(Data, NextPoint)) : EFlightPathStatus::Unavailable;
+		if (Data.PathStatus != EFlightPathStatus::Success)
+		{
+			if (IsRetryableFlightFailure(Data.PathStatus))
+			{
+				WaitForFlightPath(Data);
+				return EStateTreeRunStatus::Running;
+			}
+			Data.MoveResult = EEnemyFlightMoveResult::Invalid;
+			StopFlyTask(Data);
+			return EStateTreeRunStatus::Failed;
+		}
+	}
+	if (bReachedPoint && bFinalPoint)
+	{
+		Data.MoveResult = EEnemyFlightMoveResult::Arrived;
+		StopFlyTask(Data);
+		return EStateTreeRunStatus::Succeeded;
+	}
+	if (bReachedPoint)
+	{
+		++Data.WaypointIndex;
+	}
+
+	const float Distance = FVector::Distance(Position, NextPoint);
+	Data.NoProgressElapsed += DeltaTime;
+	RecordFlightPathProgress(Data, Distance, bReachedPoint);
+	if (Data.NoProgressTimeout > 0.0f && Data.NoProgressElapsed >= Data.NoProgressTimeout)
+	{
+		WaitForFlightPath(Data);
+		return EStateTreeRunStatus::Running;
+	}
+	if (Data.bRotateTowardDestination)
+	{
+		RotateTowardLocation(*Data.Enemy, *Data.CachedController, NextPoint,
+			Data.RotationSpeed, 0.0f, DeltaTime);
+	}
+	ApplyFlyTaskSpeedMultiplier(*Data.Enemy, Data.SpeedMultiplier);
+	Data.Enemy->AddMovementInput((NextPoint - Position).GetSafeNormal());
+	return EStateTreeRunStatus::Running;
 }
 }
 
@@ -234,6 +510,50 @@ bool FEnemyFlightProgressTest::RunTest(const FString& Parameters)
 		UpdateFlightProgress(Data, 1900.0f, 0.5f) == EEnemyFlightMoveResult::TimedOut);
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyFlightPathProgressTest,
+	"Outlier.Enemy.Flight.PathProgress", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyFlightPathProgressTest::RunTest(const FString& Parameters)
+{
+	FEnemyFlyToLocationTaskInstanceData Data;
+	TestFalse(TEXT("Existing assets retain direct movement by default"), Data.bUsePathfinding);
+	TestEqual(TEXT("Path movement resolves nearby approach points by default"), Data.GoalSearchRadius, 200.0f);
+	Data.bRepathEpisode = true;
+	Data.RepathAttempts = 2;
+	Data.RetryElapsed = 1.5f;
+	Data.NoProgressElapsed = 0.75f;
+	Data.BestDistance = 150.0f;
+	Data.MoveElapsed = 5.0f;
+	TestFalse(TEXT("No physical progress preserves retry episode"), RecordFlightPathProgress(Data, 150.0f, false));
+	TestEqual(TEXT("No progress preserves attempt count"), Data.RepathAttempts, 2);
+	TestEqual(TEXT("No progress preserves retry deadline"), Data.RetryElapsed, 1.5f);
+	// 우회 중 최종 목적지와 멀어져도 다음 경유점에 접근했다면 정상 진행이다.
+	TestTrue(TEXT("Approaching waypoint counts as progress"), RecordFlightPathProgress(Data, 125.0f, false));
+	TestFalse(TEXT("Physical progress clears retry episode"), Data.bRepathEpisode);
+	TestEqual(TEXT("Physical progress restores retry allowance"), Data.RepathAttempts, 0);
+	TestEqual(TEXT("Progress does not reset total movement deadline"), Data.MoveElapsed, 5.0f);
+	Data.bRepathEpisode = true;
+	Data.RepathAttempts = 1;
+	TestTrue(TEXT("Passing a short segment counts as progress"), RecordFlightPathProgress(Data, 300.0f, true));
+	TestEqual(TEXT("New waypoint resets distance baseline"), Data.BestDistance, 300.0f);
+	TestTrue(TEXT("Budget exhaustion is retryable"), IsRetryableFlightFailure(EFlightPathStatus::BudgetExceeded));
+	TestFalse(TEXT("Unregistered room is not a collision retry"), IsRetryableFlightFailure(EFlightPathStatus::Unavailable));
+	TestFalse(TEXT("Invalid settings fail without retries"), IsRetryableFlightFailure(EFlightPathStatus::InvalidRequest));
+	TestTrue(TEXT("Dynamic segment blockage can be retried"), IsRetryableFlightFailure(EFlightPathStatus::BlockedSegment));
+	Data.bRepathEpisode = true;
+	Data.bWaitingForPath = true;
+	Data.MaxRepathAttempts = 2;
+	Data.RepathAttempts = 1;
+	TestFalse(TEXT("Remaining attempts allow another search"), HasFlightRepathLimitExpired(Data));
+	Data.RepathAttempts = 2;
+	TestTrue(TEXT("Attempt limit stops further searches"), HasFlightRepathLimitExpired(Data));
+	Data.bWaitingForPath = false;
+	TestFalse(TEXT("Last successful retry still permits movement"), HasFlightRepathLimitExpired(Data));
+	Data.RetryElapsed = Data.RepathTimeout;
+	TestTrue(TEXT("No physical progress cannot extend retry deadline"), HasFlightRepathLimitExpired(Data));
+	return true;
+}
 #endif
 
 FEnemyFlyToLocationTask::FEnemyFlyToLocationTask()
@@ -254,6 +574,16 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::EnterState(
 	InstanceData.MoveElapsed = 0.0f;
 	InstanceData.NoProgressElapsed = 0.0f;
 	InstanceData.bOwnsMovement = false;
+	InstanceData.PathWaypoints.Reset();
+	InstanceData.CachedRoom.Reset();
+	InstanceData.CachedCapsule = nullptr;
+	InstanceData.CachedRoomSubsystem = nullptr;
+	InstanceData.bWaitingForPath = false;
+	InstanceData.bRepathEpisode = false;
+	InstanceData.RepathAttempts = 0;
+	InstanceData.RetryElapsed = 0.0f;
+	InstanceData.RetryDelay = 0.0f;
+	InstanceData.PathStatus = EFlightPathStatus::Unavailable;
 	LogFlight(TEXT("Enter"), InstanceData, &Transition);
 	if (!Enemy || !Enemy->HasAuthority() || !AIController)
 	{
@@ -271,6 +601,27 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::EnterState(
 	{
 		StopFlyTask(InstanceData);
 		return EStateTreeRunStatus::Failed;
+	}
+	if (InstanceData.bUsePathfinding)
+	{
+		if (!FMath::IsFinite(InstanceData.RepathInterval) || InstanceData.RepathInterval <= 0.0f
+			|| !FMath::IsFinite(InstanceData.RepathTimeout) || InstanceData.RepathTimeout <= 0.0f
+			|| !FMath::IsFinite(InstanceData.PathCheckInterval) || InstanceData.PathCheckInterval <= 0.0f
+			|| !FMath::IsFinite(InstanceData.SearchPadding) || InstanceData.SearchPadding <= 0.0f
+			|| !FMath::IsFinite(InstanceData.DestinationChangeDistance) || InstanceData.DestinationChangeDistance < 0.0f
+			|| InstanceData.MaxRepathAttempts < 0)
+		{
+			InstanceData.PathStatus = EFlightPathStatus::InvalidRequest;
+			StopFlyTask(InstanceData);
+			return EStateTreeRunStatus::Failed;
+		}
+		InstanceData.CachedCapsule = Enemy->GetCapsuleComponent();
+		InstanceData.CachedRoomSubsystem = Enemy->GetWorld()->GetSubsystem<URoomCombatSubsystem>();
+		InstanceData.PathRoomTag = Enemy->GetDefaultRoomTag();
+		InstanceData.CachedRoom = InstanceData.CachedRoomSubsystem
+			? InstanceData.CachedRoomSubsystem->GetRegisteredRoomVolume(InstanceData.PathRoomTag) : nullptr;
+		InstanceData.MoveResult = EEnemyFlightMoveResult::Moving;
+		return RequestFlightPath(InstanceData);
 	}
 
 	const float AcceptanceRadius = FMath::Max(InstanceData.AcceptanceRadius, 0.0f);
@@ -313,6 +664,11 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::Tick(
 			Movement->StopMovementImmediately();
 		}
 		return EStateTreeRunStatus::Running;
+	}
+
+	if (InstanceData.bUsePathfinding)
+	{
+		return TickFlightPath(InstanceData, DeltaTime);
 	}
 
 	ApplyFlyTaskSpeedMultiplier(*Enemy, InstanceData.SpeedMultiplier);

@@ -2,12 +2,15 @@
 
 #include "CoreMinimal.h"
 #include "EnemyBase.h"
+#include "Drone/FlightPathfinding.h"
 #include "StateTreeExecutionContext.h"
 #include "StateTreeExecutionTypes.h"
 #include "StateTreeTaskBase.h"
 #include "EnemyStateTreeMovementTasks.generated.h"
 
 class AAIController;
+class UCapsuleComponent;
+class URoomCombatSubsystem;
 
 UENUM(BlueprintType)
 enum class EEnemyFlightMoveResult : uint8
@@ -49,16 +52,77 @@ struct FEnemyFlyToLocationTaskInstanceData
 	UPROPERTY(EditAnywhere, Category = Output)
 	EEnemyFlightMoveResult MoveResult = EEnemyFlightMoveResult::None;
 
+	// 기존 직진 이동은 유지한다. 새 경로 이동은 초기 소속 방 안에서만 실행한다.
+	UPROPERTY(EditAnywhere, Category = Parameter)
+	bool bUsePathfinding = false;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "1.0", Units = "cm"))
+	float PathCellSize = 100.0f;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0", Units = "cm"))
+	float PathClearance = 5.0f;
+	// 플레이어/마지막 목격 좌표가 막혔으면 이 범위 안의 접근점으로 보정한다. 정확한 지점 이동은 0.
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0", Units = "cm"))
+	float GoalSearchRadius = 200.0f;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "1.0", Units = "cm"))
+	float SearchPadding = 800.0f;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "1", ClampMax = "65536"))
+	int32 MaxSearchNodes = 512;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "1", ClampMax = "262144"))
+	int32 MaxCollisionChecks = 2048;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.01"))
+	float MaxSearchMilliseconds = 4.0f;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.01", Units = "s"))
+	float RepathInterval = 0.5f;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0"))
+	int32 MaxRepathAttempts = 3;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.01", Units = "s"))
+	float RepathTimeout = 3.0f;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.01", Units = "s"))
+	float PathCheckInterval = 0.1f;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0", Units = "cm"))
+	float DestinationChangeDistance = 25.0f;
+	UPROPERTY(EditAnywhere, Category = Output)
+	EFlightPathStatus PathStatus = EFlightPathStatus::Unavailable;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UCapsuleComponent> CachedCapsule = nullptr;
+	UPROPERTY(Transient)
+	TObjectPtr<URoomCombatSubsystem> CachedRoomSubsystem = nullptr;
+	UPROPERTY(Transient)
+	TWeakObjectPtr<ARoomVolume> CachedRoom;
+	UPROPERTY(Transient)
+	FGameplayTag PathRoomTag;
+	UPROPERTY(Transient)
+	TArray<FVector> PathWaypoints;
+	UPROPERTY(Transient)
+	int32 WaypointIndex = 0;
+	UPROPERTY(Transient)
+	int32 RepathAttempts = 0;
+	UPROPERTY(Transient)
+	float RetryElapsed = 0.0f;
+	UPROPERTY(Transient)
+	float RetryDelay = 0.0f;
+	UPROPERTY(Transient)
+	float SegmentCheckElapsed = 0.0f;
+	UPROPERTY(Transient)
+	bool bWaitingForPath = false;
+	UPROPERTY(Transient)
+	bool bRepathEpisode = false;
+
 	UPROPERTY(Transient)
 	TObjectPtr<AAIController> CachedController = nullptr;
+	UPROPERTY(Transient)
 	float MoveElapsed = 0.0f;
+	UPROPERTY(Transient)
 	float NoProgressElapsed = 0.0f;
+	UPROPERTY(Transient)
 	float BestDistance = 0.0f;
+	UPROPERTY(Transient)
 	FVector LastDestination = FVector::ZeroVector;
+	UPROPERTY(Transient)
 	bool bOwnsMovement = false;
 };
 
-// 지상 NavMesh에 투영하지 않고 비행 Pawn을 3D 목적지로 직접 이동시킨다.
+// 지상 NavMesh에 투영하지 않는다. 설정에 따라 직접 이동하거나 검증된 비행 경로를 추종한다.
 USTRUCT(meta = (DisplayName = "Enemy Fly To Location", Category = "Enemy|Movement"))
 struct OUTLIER_API FEnemyFlyToLocationTask : public FStateTreeTaskCommonBase
 {

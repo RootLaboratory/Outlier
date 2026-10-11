@@ -771,6 +771,10 @@ void AEnemyBase::ApplyPoolState(EEnemyPoolState PreviousState)
 
 	const bool bIdle = PoolState == EEnemyPoolState::Idle;
 	const bool bCombatActive = PoolState == EEnemyPoolState::CombatActive;
+	if (bIdle)
+	{
+		NextFlightPathRequestTime = 0.0;
+	}
 	SetActorHiddenInGame(bIdle);
 	SetActorEnableCollision(bCombatActive);
 	SetCanBeDamaged(bCombatActive);

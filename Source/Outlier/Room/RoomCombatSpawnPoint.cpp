@@ -6,6 +6,7 @@
 #include "Components/SphereComponent.h"
 #include "Components/TextRenderComponent.h"
 #include "Enemy/EnemyBase.h"
+#include "Enemy/EnemyPoolSubsystem.h"
 #include "Engine/World.h"
 #include "Net/UnrealNetwork.h"
 #include "Room/RoomCombatSubsystem.h"
@@ -206,6 +207,7 @@ bool ARoomCombatSpawnPoint::FindSpawnTransform(
 		Capsule->GetUnscaledCapsuleRadius(),
 		Capsule->GetUnscaledCapsuleHalfHeight());
 	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(RoomCombatSpawn), false);
+	const UEnemyPoolSubsystem* Pool = World->GetSubsystem<UEnemyPoolSubsystem>();
 
 	for (int32 AttemptIndex = 0; AttemptIndex < MaxLocationAttempts; ++AttemptIndex)
 	{
@@ -227,7 +229,11 @@ bool ARoomCombatSpawnPoint::FindSpawnTransform(
 			CollisionShape,
 			QueryParams,
 			FCollisionResponseParams(Capsule->GetCollisionResponseToChannels()));
-		if (!bBlocked)
+		// 소환 연출 중 적은 물리 Overlap에 잡히지 않는다. 대여 목록의 캡슐 점유도 함께 검사한다.
+		const bool bPresentationOccupied = !bBlocked && Pool
+			&& Pool->IsSpawnPresentationSpaceOccupied(Candidate, Rotation,
+				Capsule->GetUnscaledCapsuleRadius(), Capsule->GetUnscaledCapsuleHalfHeight());
+		if (!bBlocked && !bPresentationOccupied)
 		{
 			OutSpawnTransform = FTransform(Rotation, Candidate, FVector::OneVector);
 			return true;

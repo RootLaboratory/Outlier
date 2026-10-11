@@ -107,6 +107,39 @@ bool ARoomVolume::ContainsWorldLocation(const FVector& Location) const
 		&& FMath::Abs(Local.Z) <= Extent.Z;
 }
 
+bool ARoomVolume::TryClampFlightLocation(
+	const FVector& Location, const FVector& WorldExtent, FVector& OutLocation) const
+{
+	if (!TriggerBox || Location.ContainsNaN() || WorldExtent.ContainsNaN() || WorldExtent.GetMin() < 0.0)
+	{
+		return false;
+	}
+	const FTransform Transform = TriggerBox->GetComponentTransform();
+	if (Transform.GetScale3D().GetAbs().GetMin() <= UE_SMALL_NUMBER)
+	{
+		return false;
+	}
+	// 월드 여유를 방의 로컬 축으로 옮긴다. 회전/비균일 스케일에서도 기존 내부 판정과 일치한다.
+	FVector LocalExtent = FVector::ZeroVector;
+	for (int32 Corner = 0; Corner < 8; ++Corner)
+	{
+		const FVector Offset((Corner & 1) ? WorldExtent.X : -WorldExtent.X,
+			(Corner & 2) ? WorldExtent.Y : -WorldExtent.Y, (Corner & 4) ? WorldExtent.Z : -WorldExtent.Z);
+		LocalExtent = LocalExtent.ComponentMax(Transform.InverseTransformVector(Offset).GetAbs());
+	}
+	const FVector AllowedExtent = TriggerBox->GetUnscaledBoxExtent() - LocalExtent - FVector(1.0);
+	if (AllowedExtent.GetMin() < 0.0)
+	{
+		return false;
+	}
+	const FVector Local = Transform.InverseTransformPosition(Location);
+	OutLocation = Transform.TransformPosition(FVector(
+		FMath::Clamp(Local.X, -AllowedExtent.X, AllowedExtent.X),
+		FMath::Clamp(Local.Y, -AllowedExtent.Y, AllowedExtent.Y),
+		FMath::Clamp(Local.Z, -AllowedExtent.Z, AllowedExtent.Z)));
+	return true;
+}
+
 #if WITH_EDITOR
 EDataValidationResult ARoomVolume::IsDataValid(FDataValidationContext& Context) const
 {

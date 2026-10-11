@@ -349,6 +349,16 @@ public:
 
 	virtual FGameplayTag GetDefaultRoomTag() const override;
 
+	// StateTree Task가 재생성/재진입되어도 동일 Pawn의 경로 탐색 간격은 유지한다.
+	double GetNextFlightPathRequestTime() const { return NextFlightPathRequestTime; }
+	void SetNextFlightPathRequestTime(double Time)
+	{
+		if (HasAuthority())
+		{
+			NextFlightPathRequestTime = Time;
+		}
+	}
+
 	virtual URoomTagComponent* GetRoomTagComp() const override;
 
 	UFUNCTION(BlueprintCallable, Category = "Enemy|State")
@@ -578,6 +588,8 @@ public:
 protected:
 	UFUNCTION()
 	void OnRep_RuntimeStat();
+
+	double NextFlightPathRequestTime = 0.0;
 
 	void InitializeGasVitality();
 	void BindGasVitalityObservers();
