@@ -26,6 +26,7 @@
 #include "MainUIBase.h"
 #include "UI/UILayerGameplayTags.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Tutorial/TutorialComponent.h"
 #include "Weapon/WeaponBase.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "TimerManager.h"
@@ -1039,6 +1040,18 @@ void AFirstPersonPlayerController::AcknowledgePossession(APawn* P)
 	TryNotifyArenaStartReady();
 }
 
+void AFirstPersonPlayerController::ClientRestart_Implementation(APawn* NewPawn)
+{
+	Super::ClientRestart_Implementation(NewPawn);
+	// 엔진은 SetController보다 AcknowledgePossession을 먼저 부르므로, Pawn이 로컬 제어로 확정된 여기서 붙인다.
+	// 리슨 호스트는 OnPossess 안에서 로컬로 실행되고, 리스폰·리로드로 새 Pawn을 잡을 때마다 다시 들어온다.
+	// 이미 붙어 있으면 그대로 쓰고, 빙의한 적처럼 대상이 아닌 Pawn에는 붙지 않는다.
+	if (IsLocalController())
+	{
+		UTutorialComponent::AttachTutorial(GetPawn());
+	}
+}
+
 void AFirstPersonPlayerController::ArmDeathTransitionReleaseOnPossess_Implementation()
 {
 	bReleaseDeathTransitionOnPossess = true;
@@ -1102,7 +1115,6 @@ void AFirstPersonPlayerController::OnPossess(APawn* InPawn)
 			PPSubsystem->SetChromaticAberrationEnabled(true);
 		}
 	}
-
 	InitializeOutlierPlayerState();
 	RegisterCurrentPawnWithPlayerState();
 }

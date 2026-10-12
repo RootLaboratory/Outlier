@@ -306,6 +306,7 @@ protected:
 	virtual void Destroyed() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void AcknowledgePossession(APawn* P) override;
+	virtual void ClientRestart_Implementation(APawn* NewPawn) override;
 
 	virtual void OnPossess(APawn* InPawn) override;
 	virtual void OnRep_PlayerState() override;

@@ -42,6 +42,7 @@ public class Outlier : ModuleRules
 
         PrivateDependencyModuleNames.AddRange(new string[]
         {
+            "SlateCore"
         });
 
         if (Target.bBuildEditor)

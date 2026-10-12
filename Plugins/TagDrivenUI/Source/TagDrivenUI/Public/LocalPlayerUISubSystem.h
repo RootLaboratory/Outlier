@@ -8,13 +8,32 @@
 #include "CrossHairBase.h"
 #include "MainUIBase.h"
 #include "PartnerHPUI.h"
+#include "OutlierInfoTypes.h"
 #include "LocalPlayerUISubSystem.generated.h"
 
 class UEventDrivenUI;
-class UUserWidget;
 class AActor;
+class UInfoCanvasBase;
+class UWorld;
 enum class EWidgetWeaponType : uint8;
 
+enum class EOutlierInfoRequestOperation : uint8
+{
+	Show,
+	Complete,
+	CompleteInput,
+	Overlap,
+	CancelInputs
+};
+
+/** Only used until MainUI is ready. Live content/lifetime is never cached here. */
+struct FOutlierPendingInfoRequest
+{
+	EOutlierInfoRegion Region = EOutlierInfoRegion::Upper;
+	EOutlierInfoRequestOperation Operation = EOutlierInfoRequestOperation::Show;
+	FOutlierInfoWidgetRequest Request;
+	TWeakObjectPtr<UWorld> World;
+};
 
 UCLASS()
 class TAGDRIVENUI_API ULocalPlayerUISubSystem : public ULocalPlayerSubsystem
@@ -25,11 +44,41 @@ public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 
+	/** Dispatch requests through MainUI.InfoLayer. Widgets resolve data and own their queues. */
+	UFUNCTION(BlueprintPure, Category = "UI|Info")
+	UInfoCanvasBase* GetInfoCanvas() const;
+
+	UFUNCTION(BlueprintCallable, Category = "UI|Info")
+	bool QueueInfoEvent(EOutlierInfoRegion Region, const FOutlierInfoWidgetRequest& Request);
+
+	UFUNCTION(BlueprintCallable, Category = "UI|Info")
+	bool CancelInfoEvent(EOutlierInfoRegion Region, FGameplayTag EventTag);
+
+	UFUNCTION(BlueprintCallable, Category = "UI|Info")
+	bool CompleteInfoEvent(EOutlierInfoRegion Region, FGameplayTag EventTag);
+
+	bool CompleteInputEvent(FGameplayTag EventTag);
+	bool NotifyInfoOverlap(FGameplayTag EventTag);
+	void CancelInputInfos();
+	FGameplayTag GetActiveInputEventTag() const;
+	void ClearEventInfo();
+	bool ShowEventUpper(const FOutlierInfoWidgetRequest& Request);
+	bool HideEventUpper(FGameplayTag EventTag);
+	bool ShowEventGif(FGameplayTag EventTag, FGameplayTag GifTag);
+	bool HideEventGif(FGameplayTag EventTag);
+	/** A positive FallbackDuration times the subtitle for a voice that could not play; otherwise the voice ends it. */
+	bool ShowEventScript(FGameplayTag EventTag, FGameplayTag TTSTag = FGameplayTag(), float FallbackDuration = 0.0f);
+	void FinishEventScript(FGameplayTag EventTag, bool bCompleted);
+
+	/** Transfers undelivered requests to a HUD created later; active widget state is not replayed. */
+	UFUNCTION(BlueprintCallable, Category = "UI|Event")
+	void RefreshEventUI();
+
 public:
 	void RegisterMainUI(UMainUIBase* InMainUI);
 	void UnregisterMainUI(UMainUIBase* InMainUI);
 	void FlushMainUITransientWidgets();
-	// 사망 중 늦게 도착한 피격 / interaction 표시가 다시 쌓이지 않게 한다.
+	// 사망 중 늦게 도착한 피격 표시가 다시 쌓이지 않게 한다.
 	void SetTransientWidgetsSuppressed(bool bSuppressed);
 	void OnRep_PlayerStateChanged(EUIPlayerState State);
 
@@ -71,11 +120,17 @@ public:
 	void OnAbilityUsed(const FGameplayTag& AbilityTag, float CoolTime);
 	void OnAbilityDisabledByDistance();
 	void OnAbilityEnabledByDistance();
-	void BindInteractionWidget(UUserWidget* InteractionWidget);
-	void BindInteractionWidget(UUserWidget* InteractionWidget, const FVector2D& WidgetPosition);
-	void UnbindInteractionWidget(UUserWidget* InteractionWidget);
 
 private:
+	bool SubmitInfoRequest(const FOutlierPendingInfoRequest& Pending);
+	bool DispatchInfoRequest(UInfoCanvasBase* Canvas, const FOutlierPendingInfoRequest& Pending);
+	void HandleInfoWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources);
+	TArray<FOutlierPendingInfoRequest> PendingInfoRequests;
+	FDelegateHandle InfoWorldCleanupHandle;
+	bool bDispatchingInfoRequests = false;
+	bool bClearingEventInfo = false;
+	bool bIsDeinitializing = false;
+
 	UMainUIBase* GetMainUI() const;
 	UEventDrivenUI* GetModule(const FGameplayTag& ModuleTag) const;
 	UEventDrivenUI* GetModuleAny(const FGameplayTag& FirstTag, const FGameplayTag& SecondTag) const;
@@ -93,7 +148,5 @@ private:
 	// 마지막 상태를 들고 있다가 RegisterMainUI 에서 새 위젯에 그대로 물려준다.
 	bool bShooterSuitAcquired = false;
 
-	UPROPERTY()
-	TObjectPtr<UUserWidget> InteractionWidgetInstance;
 	bool bTransientWidgetsSuppressed = false;
 };

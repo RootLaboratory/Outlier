@@ -6,6 +6,7 @@
 #include "CrossHairBase.h"
 #include "EventDrivenUI.h"
 #include "HPBarUI.h"
+#include "InfoCanvasBase.h"
 #include "ShooterCurrentAbilityIcon.h"
 #include "ShooterCurrentWeaponIcon.h"
 #include "ShooterStatusBarWidget.h"
@@ -59,9 +60,14 @@ void UShooterMainWidget::ModuleInit()
 	RegisterModule(TagDrivenUITags::Shooter::CurrentAbility(), CurrentAbilityUI);
 	RegisterModule(TagDrivenUITags::Shooter::CurrentWeapon(), CurrentWeaponUI);
 
-	// 전역 HUD 가시성은 ModuleLayer가 담당하고, 각 모듈의 상태는 별도로 초기화한다.
-	ModulesControl(false);
+	// 모듈 상태를 먼저 준비하고, 마지막에 Layer를 닫아 InfoLayer만 남긴다.
 	SuitOnModuleInit();
+	ModulesControl(false);
+}
+
+void UShooterMainWidget::ApplyExceptionVisibility()
+{
+	ShowExceptionLayer(InfoLayer);
 }
 
 void UShooterMainWidget::ModuleDestruct()

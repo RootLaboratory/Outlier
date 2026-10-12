@@ -76,8 +76,8 @@ EPartnerSkillUseResult UPartnerSupportComponent::TryScan_Server()
 	const float InScanDuration = Config.ScanDuration;
 	PartnerCharacter->bScanning = true;
 
-	//Multicast 수정
-	ClientStartScanVisual(
+	// Shooter도 같은 스캔 연출을 보도록 모든 클라이언트에 보낸다.
+	MulticastStartScanVisual(
 		InScanOrigin,
 		InScanRange,
 		InScanDuration
@@ -358,11 +358,8 @@ void UPartnerSupportComponent::CancelForReboot()
 	}
 
 	EndScan_Server();
-	ClientCancelScanForReboot();
-	if (ShouldProcessLocalScanVisual())
-	{
-		EndScan_Client();
-	}
+	// Multicast는 리슨 서버 자신에서도 실행되므로 로컬 정리를 따로 호출하지 않는다.
+	MulticastCancelScanForReboot();
 }
 
 void UPartnerSupportComponent::EndScan_Client()
@@ -477,13 +474,13 @@ void UPartnerSupportComponent::ClearScanEffect(AActor* Actor)
 
 bool UPartnerSupportComponent::ShouldProcessLocalScanVisual() const
 {
+	// Partner 조종 여부와 무관하게 화면이 있는 모든 인스턴스에서 연출한다.
 	return PartnerCharacter
-		&& PartnerCharacter->IsLocallyControlled()
 		&& GetWorld()
 		&& GetWorld()->GetNetMode() != NM_DedicatedServer;
 }
 
-void UPartnerSupportComponent::ClientStartScanVisual_Implementation(
+void UPartnerSupportComponent::MulticastStartScanVisual_Implementation(
 	FVector InScanOrigin,
 	float InScanRange,
 	float InScanDuration)
@@ -522,7 +519,7 @@ void UPartnerSupportComponent::ClientStartScanVisual_Implementation(
 	);
 }
 
-void UPartnerSupportComponent::ClientCancelScanForReboot_Implementation()
+void UPartnerSupportComponent::MulticastCancelScanForReboot_Implementation()
 {
 	EndScan_Client();
 }

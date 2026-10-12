@@ -9,6 +9,8 @@
 #include "Engine/LocalPlayer.h"
 #include "Engine/Texture2D.h"
 #include "Settings/LocalPlayerSettingsSubsystem.h"
+#include "UI/InputKeyTextureDataRow.h"
+#include "Outlier.h"
 
 namespace
 {
@@ -45,11 +47,6 @@ FText GetCompactKeyDisplayName(const FKey& Key)
 		{EKeys::Decimal, TEXT("N.")},
 		{EKeys::NumLock, TEXT("Num")},
 		{EKeys::ScrollLock, TEXT("ScrLk")},
-		{EKeys::MiddleMouseButton, TEXT("MMB")},
-		{EKeys::ThumbMouseButton, TEXT("M4")},
-		{EKeys::ThumbMouseButton2, TEXT("M5")},
-		{EKeys::MouseScrollUp, TEXT("Wheel ↑")},
-		{EKeys::MouseScrollDown, TEXT("Wheel ↓")},
 	};
 
 	for (const TPair<FKey, const TCHAR*>& Alias : Aliases)
@@ -62,6 +59,12 @@ FText GetCompactKeyDisplayName(const FKey& Key)
 
 	return Key.GetDisplayName(false);
 }
+}
+
+void UInputActionKeyDisplayWidget::SynchronizeProperties()
+{
+	Super::SynchronizeProperties();
+	RefreshBorderBrush();
 }
 
 void UInputActionKeyDisplayWidget::NativeConstruct()
@@ -154,13 +157,13 @@ bool UInputActionKeyDisplayWidget::RefreshDisplayedKey()
 
 	if (!TextOverride.IsEmpty())
 	{
-		KeyText->SetText(TextOverride);
+		ShowKeyText(TextOverride);
 		return true;
 	}
 
 	if (!WatchedInputAction)
 	{
-		KeyText->SetText(MissingKeyText);
+		ShowKeyText(MissingKeyText);
 		return false;
 	}
 
@@ -170,7 +173,7 @@ bool UInputActionKeyDisplayWidget::RefreshDisplayedKey()
 		: nullptr;
 	if (!InputSubsystem)
 	{
-		KeyText->SetText(MissingKeyText);
+		ShowKeyText(MissingKeyText);
 		return false;
 	}
 
@@ -181,12 +184,61 @@ bool UInputActionKeyDisplayWidget::RefreshDisplayedKey()
 	const TArray<FKey> MappedKeys = InputSubsystem->QueryKeysMappedToAction(WatchedInputAction);
 	if (MappedKeys.IsValidIndex(0) && MappedKeys[0].IsValid())
 	{
-		KeyText->SetText(GetCompactKeyDisplayName(MappedKeys[0]));
+		const FKey Key = MappedKeys[0];
+		if (Key.IsMouseButton() || Key.GetMenuCategory() == EKeys::NAME_MouseCategory)
+		{
+			ShowMouseKey(Key);
+		}
+		else
+		{
+			ShowKeyText(GetCompactKeyDisplayName(Key), Key);
+		}
 		return true;
 	}
 
-	KeyText->SetText(MissingKeyText);
+	ShowKeyText(MissingKeyText);
 	return false;
+}
+
+UTexture2D* UInputActionKeyDisplayWidget::FindKeyTexture(FKey Key) const
+{
+	if (!Key.IsValid() || !MouseKeyTextureTable || MouseKeyTextureTable->GetRowStruct() != FInputKeyTextureDataRow::StaticStruct())
+	{
+		return nullptr;
+	}
+	const FInputKeyTextureDataRow* Row = MouseKeyTextureTable->FindRow<FInputKeyTextureDataRow>(
+		Key.GetFName(), TEXT("InputBindKeyTexture"), false);
+	return Row && IsValid(Row->Texture) ? Row->Texture.Get() : nullptr;
+}
+
+void UInputActionKeyDisplayWidget::ShowKeyText(const FText& Text, FKey Key)
+{
+	bDisplayingMouseKey = false;
+	DisplayedKeyTexture = FindKeyTexture(Key);
+	RefreshBorderBrush();
+	if (KeyText)
+	{
+		KeyText->SetText(Text);
+		KeyText->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
+	}
+}
+
+void UInputActionKeyDisplayWidget::ShowMouseKey(FKey Key)
+{
+	bDisplayingMouseKey = true;
+	DisplayedKeyTexture = FindKeyTexture(Key);
+	if (KeyText)
+	{
+		KeyText->SetText(FText::GetEmpty());
+		KeyText->SetVisibility(ESlateVisibility::Collapsed);
+	}
+	if (!DisplayedKeyTexture && !WarnedMissingMouseKeys.Contains(Key.GetFName()))
+	{
+		WarnedMissingMouseKeys.Add(Key.GetFName());
+		UE_LOG(LogOutlier, Warning, TEXT("[InputBindKey] No mouse texture for key '%s' in table '%s'. Assign InputKeyTextureDataRow and a valid Texture; Row Name must equal the key name."),
+			*Key.ToString(), *GetNameSafe(MouseKeyTextureTable));
+	}
+	RefreshBorderBrush();
 }
 
 void UInputActionKeyDisplayWidget::SetBorderImage(UTexture2D* NewImage)
@@ -197,12 +249,37 @@ void UInputActionKeyDisplayWidget::SetBorderImage(UTexture2D* NewImage)
 
 void UInputActionKeyDisplayWidget::RefreshBorderBrush()
 {
-	if (!Border || !BorderImage)
+	if (!Border)
 	{
 		return;
 	}
 
-	Border->SetBrushFromTexture(BorderImage);
+	if (!bHasDefaultBorderBrush)
+	{
+		DefaultBorderBrush = Border->Background;
+		bHasDefaultBorderBrush = true;
+	}
+	FSlateBrush Brush = DefaultBorderBrush;
+	if (bDisplayingMouseKey)
+	{
+		Brush.SetResourceObject(DisplayedKeyTexture);
+		// Mouse textures are complete icons rather than a sliced keyboard frame.
+		Brush.DrawAs = DisplayedKeyTexture ? ESlateBrushDrawType::Image : ESlateBrushDrawType::NoDrawType;
+		Brush.Margin = FMargin(0.0f);
+		Brush.Tiling = ESlateBrushTileType::NoTile;
+	}
+	else if (DisplayedKeyTexture)
+	{
+		Brush.SetResourceObject(DisplayedKeyTexture);
+		Brush.DrawAs = ESlateBrushDrawType::Image;
+		Brush.Margin = FMargin(0.0f);
+		Brush.Tiling = ESlateBrushTileType::NoTile;
+	}
+	else if (BorderImage)
+	{
+		Brush.SetResourceObject(BorderImage);
+	}
+	Border->SetBrush(Brush);
 }
 
 void UInputActionKeyDisplayWidget::EnsureWatchedKeyIsResolved()

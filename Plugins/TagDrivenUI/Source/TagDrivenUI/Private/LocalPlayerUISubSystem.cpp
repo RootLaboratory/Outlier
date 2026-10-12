@@ -1,8 +1,6 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 #include "LocalPlayerUISubSystem.h"
 #include "GameFramework/PlayerController.h"
-#include "Components/CanvasPanel.h"
-#include "Components/CanvasPanelSlot.h"
 #include "AbilityIconUI.h"
 #include "MainUIBase.h"
 #include "HPBarUI.h"
@@ -18,21 +16,249 @@
 #include "ShooterCurrentAbilityIcon.h"
 #include "ShooterMainWidget.h"
 #include "TagDrivenUIGameplayTags.h"
-#include "Blueprint/UserWidget.h"
+#include "Engine/World.h"
+#include "InfoCanvasBase.h"
+
+UInfoCanvasBase* ULocalPlayerUISubSystem::GetInfoCanvas() const
+{
+	UMainUIBase* MainUI = GetMainUI();
+	return MainUI && IsValid(MainUI->InfoLayer) ? MainUI->InfoLayer.Get() : nullptr;
+}
+
+bool ULocalPlayerUISubSystem::DispatchInfoRequest(UInfoCanvasBase* Canvas, const FOutlierPendingInfoRequest& Pending)
+{
+	if (!Canvas) return false;
+	switch (Pending.Operation)
+	{
+	case EOutlierInfoRequestOperation::Show:
+		return Canvas->EnqueueInfo(Pending.Region, Pending.Request);
+	case EOutlierInfoRequestOperation::Complete:
+		return Canvas->CompleteInfo(Pending.Region, Pending.Request.EventTag);
+	case EOutlierInfoRequestOperation::CompleteInput:
+		return Canvas->CompleteInputInfo(Pending.Request.EventTag);
+	case EOutlierInfoRequestOperation::Overlap:
+		return Canvas->NotifyInfoOverlap(Pending.Request.EventTag);
+	case EOutlierInfoRequestOperation::CancelInputs:
+		Canvas->CancelInputInfos();
+		return true;
+	default:
+		return false;
+	}
+}
+
+bool ULocalPlayerUISubSystem::SubmitInfoRequest(const FOutlierPendingInfoRequest& Pending)
+{
+	UWorld* World = GetWorld();
+	if (bIsDeinitializing || bClearingEventInfo || !World || World->bIsTearingDown
+		|| (Pending.Operation != EOutlierInfoRequestOperation::CancelInputs && !Pending.Request.EventTag.IsValid()))
+	{
+		return false;
+	}
+	if (Pending.Operation == EOutlierInfoRequestOperation::Show
+		&& (!FMath::IsFinite(Pending.Request.Duration) || Pending.Request.Duration < 0.0f))
+	{
+		return false;
+	}
+	if (UInfoCanvasBase* Canvas = GetInfoCanvas(); Canvas && (!bDispatchingInfoRequests
+		|| (Pending.Operation != EOutlierInfoRequestOperation::Show
+			&& Pending.Operation != EOutlierInfoRequestOperation::CancelInputs)))
+	{
+		return DispatchInfoRequest(Canvas, Pending);
+	}
+	if (Pending.Operation == EOutlierInfoRequestOperation::Show)
+	{
+		for (int32 Index = PendingInfoRequests.Num() - 1; Index >= 0; --Index)
+		{
+			const FOutlierPendingInfoRequest& Existing = PendingInfoRequests[Index];
+			if (Existing.Region != Pending.Region) continue;
+			if (Existing.Operation == EOutlierInfoRequestOperation::CancelInputs) break;
+			if (Existing.Operation == EOutlierInfoRequestOperation::Show
+				&& Existing.Request.EventTag == Pending.Request.EventTag) return true;
+		}
+	}
+	if (Pending.Operation != EOutlierInfoRequestOperation::Show
+		&& Pending.Operation != EOutlierInfoRequestOperation::CancelInputs
+		&& !PendingInfoRequests.ContainsByPredicate([&Pending](const FOutlierPendingInfoRequest& Existing)
+		{
+			return Existing.Operation == EOutlierInfoRequestOperation::Show
+				&& Existing.Region == Pending.Region && Existing.Request.EventTag == Pending.Request.EventTag;
+		}))
+	{
+		return false;
+	}
+	FOutlierPendingInfoRequest Copy = Pending;
+	Copy.World = World;
+	PendingInfoRequests.Add(Copy);
+	return true;
+}
+
+bool ULocalPlayerUISubSystem::QueueInfoEvent(EOutlierInfoRegion Region, const FOutlierInfoWidgetRequest& Request)
+{
+	FOutlierPendingInfoRequest Pending;
+	Pending.Region = Region;
+	Pending.Request = Request;
+	return SubmitInfoRequest(Pending);
+}
+
+bool ULocalPlayerUISubSystem::CancelInfoEvent(EOutlierInfoRegion Region, FGameplayTag EventTag)
+{
+	if (!EventTag.IsValid()) return false;
+	const int32 Removed = PendingInfoRequests.RemoveAll([Region, EventTag](const FOutlierPendingInfoRequest& Pending)
+	{
+		return Pending.Region == Region && Pending.Request.EventTag == EventTag;
+	});
+	UInfoCanvasBase* Canvas = GetInfoCanvas();
+	return (Canvas && Canvas->CancelInfo(Region, EventTag)) || Removed > 0;
+}
+
+bool ULocalPlayerUISubSystem::CompleteInfoEvent(EOutlierInfoRegion Region, FGameplayTag EventTag)
+{
+	FOutlierPendingInfoRequest Pending;
+	Pending.Region = Region;
+	Pending.Operation = EOutlierInfoRequestOperation::Complete;
+	Pending.Request.EventTag = EventTag;
+	return SubmitInfoRequest(Pending);
+}
+
+bool ULocalPlayerUISubSystem::CompleteInputEvent(FGameplayTag EventTag)
+{
+	FOutlierPendingInfoRequest Pending;
+	Pending.Operation = EOutlierInfoRequestOperation::CompleteInput;
+	Pending.Request.EventTag = EventTag;
+	return SubmitInfoRequest(Pending);
+}
+
+bool ULocalPlayerUISubSystem::NotifyInfoOverlap(FGameplayTag EventTag)
+{
+	FOutlierPendingInfoRequest Pending;
+	Pending.Operation = EOutlierInfoRequestOperation::Overlap;
+	Pending.Request.EventTag = EventTag;
+	return SubmitInfoRequest(Pending);
+}
+
+void ULocalPlayerUISubSystem::CancelInputInfos()
+{
+	FOutlierPendingInfoRequest Pending;
+	Pending.Operation = EOutlierInfoRequestOperation::CancelInputs;
+	SubmitInfoRequest(Pending);
+}
+
+FGameplayTag ULocalPlayerUISubSystem::GetActiveInputEventTag() const
+{
+	UInfoCanvasBase* Canvas = GetInfoCanvas();
+	return Canvas ? Canvas->GetActiveInputEventTag() : FGameplayTag();
+}
+
+void ULocalPlayerUISubSystem::ClearEventInfo()
+{
+	if (bClearingEventInfo) return;
+	TGuardValue<bool> ClearingGuard(bClearingEventInfo, true);
+	PendingInfoRequests.Reset();
+	if (UInfoCanvasBase* Canvas = GetInfoCanvas()) Canvas->ClearInfoQueues();
+}
+
+bool ULocalPlayerUISubSystem::ShowEventUpper(const FOutlierInfoWidgetRequest& Request)
+{
+	return QueueInfoEvent(EOutlierInfoRegion::Upper, Request);
+}
+
+bool ULocalPlayerUISubSystem::HideEventUpper(FGameplayTag EventTag)
+{
+	return CancelInfoEvent(EOutlierInfoRegion::Upper, EventTag);
+}
+
+bool ULocalPlayerUISubSystem::ShowEventGif(FGameplayTag EventTag, FGameplayTag GifTag)
+{
+	FOutlierInfoWidgetRequest Request;
+	Request.EventTag = EventTag;
+	Request.GifTag = GifTag;
+	Request.EndCondition = EOutlierInfoEndCondition::Time;
+	return GifTag.IsValid() && QueueInfoEvent(EOutlierInfoRegion::Right, Request);
+}
+
+bool ULocalPlayerUISubSystem::HideEventGif(FGameplayTag EventTag)
+{
+	return CancelInfoEvent(EOutlierInfoRegion::Right, EventTag);
+}
+
+bool ULocalPlayerUISubSystem::ShowEventScript(FGameplayTag EventTag, FGameplayTag TTSTag, float FallbackDuration)
+{
+	FOutlierInfoWidgetRequest Request;
+	Request.EventTag = EventTag;
+	Request.TTSTag = TTSTag;
+	if (FallbackDuration > 0.0f)
+	{
+		Request.EndCondition = EOutlierInfoEndCondition::Time;
+		Request.Duration = FallbackDuration;
+	}
+	return QueueInfoEvent(EOutlierInfoRegion::BottomTTS, Request);
+}
+
+void ULocalPlayerUISubSystem::FinishEventScript(FGameplayTag EventTag, bool bCompleted)
+{
+	// An undelivered subtitle expires with its voice. A live widget decides its own lifetime.
+	PendingInfoRequests.RemoveAll([EventTag](const FOutlierPendingInfoRequest& Pending)
+	{
+		return Pending.Region == EOutlierInfoRegion::BottomTTS && Pending.Request.EventTag == EventTag;
+	});
+	if (UInfoCanvasBase* Canvas = GetInfoCanvas())
+	{
+		Canvas->FinishInfoSource(EOutlierInfoRegion::BottomTTS, EventTag, bCompleted);
+	}
+}
+
+void ULocalPlayerUISubSystem::RefreshEventUI()
+{
+	if (bDispatchingInfoRequests || bIsDeinitializing || bClearingEventInfo) return;
+	TGuardValue<bool> DispatchGuard(bDispatchingInfoRequests, true);
+	while (!PendingInfoRequests.IsEmpty())
+	{
+		UInfoCanvasBase* Canvas = GetInfoCanvas();
+		if (!Canvas) break;
+		const FOutlierPendingInfoRequest Pending = PendingInfoRequests[0];
+		PendingInfoRequests.RemoveAt(0);
+		if (Pending.World.IsValid() && Pending.World.Get() == GetWorld() && !Pending.World->bIsTearingDown)
+		{
+			DispatchInfoRequest(Canvas, Pending);
+		}
+	}
+}
+
+void ULocalPlayerUISubSystem::HandleInfoWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources)
+{
+	PendingInfoRequests.RemoveAll([World](const FOutlierPendingInfoRequest& Pending)
+	{
+		return !Pending.World.IsValid() || Pending.World.Get() == World;
+	});
+	if (UInfoCanvasBase* Canvas = GetInfoCanvas(); Canvas && Canvas->GetWorld() == World)
+	{
+		ClearEventInfo();
+	}
+}
 
 void ULocalPlayerUISubSystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
+	InfoWorldCleanupHandle = FWorldDelegates::OnWorldCleanup.AddUObject(this, &ThisClass::HandleInfoWorldCleanup);
 	//UE_LOG(LogTemp, Warning, TEXT("LocalPlayerUISubSystem Initialized"));
 }
 
 void ULocalPlayerUISubSystem::Deinitialize()
 {
+	bIsDeinitializing = true;
+	FWorldDelegates::OnWorldCleanup.Remove(InfoWorldCleanupHandle);
+	ClearEventInfo();
 	Super::Deinitialize();
 }
 
 void ULocalPlayerUISubSystem::RegisterMainUI(UMainUIBase* InMainUI)
 {
+	if (!IsValid(InMainUI)) return;
+	if (MainUIInstance != InMainUI)
+	{
+		TGuardValue<bool> ClearingGuard(bClearingEventInfo, true);
+		if (UInfoCanvasBase* PreviousCanvas = GetInfoCanvas()) PreviousCanvas->ClearInfoQueues();
+	}
 	MainUIInstance = InMainUI;
 	if (bTransientWidgetsSuppressed)
 	{
@@ -42,24 +268,25 @@ void ULocalPlayerUISubSystem::RegisterMainUI(UMainUIBase* InMainUI)
 	// 마지막으로 받은 슈트 상태를 새 MainUI 에 물려준다.
 	// 위젯이 신호보다 늦게 생겨도 게이트가 맞도록 하는 유일한 경로다.
 	OnShooterSuitAcquiredChanged(bShooterSuitAcquired);
+	RefreshEventUI();
 }
 
 void ULocalPlayerUISubSystem::UnregisterMainUI(UMainUIBase* InMainUI)
 {
 	if (MainUIInstance == InMainUI)
 	{
-		InteractionWidgetInstance = nullptr;
+		ClearEventInfo();
 		MainUIInstance = nullptr;
 	}
 }
 
 void ULocalPlayerUISubSystem::FlushMainUITransientWidgets()
 {
+	ClearEventInfo();
 	if (UMainUIBase* MainUI = GetMainUI())
 	{
 		MainUI->FlushTransientWidgets();
 	}
-	InteractionWidgetInstance = nullptr;
 }
 
 void ULocalPlayerUISubSystem::SetTransientWidgetsSuppressed(bool bSuppressed)
@@ -448,54 +675,4 @@ void ULocalPlayerUISubSystem::OnAbilityUsed(const FGameplayTag& AbilityTag, floa
 	{
 		CurrentAbilityIcon->ApplyCooldownIfMatches(AbilityTag, CoolTime);
 	}
-}
-
-void ULocalPlayerUISubSystem::BindInteractionWidget(UUserWidget* InteractionWidget)
-{
-	BindInteractionWidget(InteractionWidget, FVector2D(0.0f, 160.0f));
-}
-
-void ULocalPlayerUISubSystem::BindInteractionWidget(UUserWidget* InteractionWidget, const FVector2D& WidgetPosition)
-{
-	if (bTransientWidgetsSuppressed)
-	{
-		return;
-	}
-	UMainUIBase* MainUI = GetMainUI();
-	if (!MainUI || !MainUI->InteractionLayer || !InteractionWidget)
-	{
-		return;
-	}
-
-	InteractionWidgetInstance = InteractionWidget;
-
-	if (!InteractionWidget->GetParent())
-	{
-		UCanvasPanelSlot* CanvasSlot = MainUI->InteractionLayer->AddChildToCanvas(InteractionWidget);
-		if (CanvasSlot)
-		{
-			CanvasSlot->SetAnchors(FAnchors(0.0f, 0.0f));
-			CanvasSlot->SetAlignment(FVector2D(0.5f, 0.5f));
-			CanvasSlot->SetPosition(WidgetPosition);
-			CanvasSlot->SetAutoSize(false);
-			CanvasSlot->SetSize(FVector2D(64.0f, 64.0f));
-			CanvasSlot->SetZOrder(0);
-		}
-	}
-	else if (UCanvasPanelSlot* CanvasSlot = Cast<UCanvasPanelSlot>(InteractionWidget->Slot))
-	{
-		CanvasSlot->SetPosition(WidgetPosition);
-	}
-
-	InteractionWidget->SetVisibility(ESlateVisibility::HitTestInvisible);
-}
-
-void ULocalPlayerUISubSystem::UnbindInteractionWidget(UUserWidget* InteractionWidget)
-{
-	if (!InteractionWidget || InteractionWidgetInstance != InteractionWidget)
-	{
-		return;
-	}
-
-	InteractionWidget->SetVisibility(ESlateVisibility::Collapsed);
 }

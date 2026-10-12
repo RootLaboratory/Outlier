@@ -10,6 +10,11 @@ class USoundBase;
 class UAudioComponent;
 class AActor;
 class AFirstPersonPlayerController;
+class ULocalPlayer;
+
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnOutlierVoiceStarted, ULocalPlayer*, FGameplayTag);
+DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnOutlierVoiceFinished, ULocalPlayer*, FGameplayTag, bool);
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnOutlierVoiceUnavailable, ULocalPlayer*, FGameplayTag);
 
 /**
  * Resolves an audio play request (Type + Context) against Audio Bank content, loads the
@@ -37,6 +42,16 @@ public:
 
 	/** Local-only 2D playback. Suitable for input and UI feedback. */
 	bool PlayLocal2D(const FOutlierAudioPlayRequest& Request);
+
+	/** Serialized local Voice-bank playback. P0 may interrupt P2/P3; other voices wait. */
+	bool PlayLocalVoice(FGameplayTag SoundTag, int32 Priority, FGameplayTag RequestTag, ULocalPlayer* Listener);
+	void StopLocalVoices(ULocalPlayer* Listener);
+	/** Emitted when the Voice audio component begins playback; RequestTag is the caller's EventTag. */
+	FOnOutlierVoiceStarted OnVoiceStarted;
+	/** bCompleted=true on natural audio finish; false on interruption, explicit stop or playback failure. */
+	FOnOutlierVoiceFinished OnVoiceFinished;
+	/** Follows OnVoiceFinished(false) only when the voice could not play at all (missing variant, load or spawn failure). */
+	FOnOutlierVoiceUnavailable OnVoiceUnavailable;
 
 	/**
 	 * Local-only 3D playback, for callers that already execute on every client and must not
@@ -128,7 +143,31 @@ private:
 		EOutlierAudioVolumeType VolumeType = EOutlierAudioVolumeType::SFX;
 		int32 AudioInstanceId = 0;
 		bool bLooping = false;
+		int32 VoiceRequestId = 0;
 	};
+
+	struct FVoiceRequest
+	{
+		int32 Id = 0;
+		FGameplayTag SoundTag;
+		FGameplayTag RequestTag;
+		TWeakObjectPtr<ULocalPlayer> Listener;
+		TWeakObjectPtr<UWorld> World;
+		int32 Priority = 1;
+	};
+
+	void StartNextVoice();
+	void FinishActiveVoice(bool bCompleted);
+	/** Playback failure, not interruption: finishes the active voice, then reports it unavailable. */
+	void FailActiveVoice();
+	void HandleVoiceAudioFinished(UAudioComponent* AudioComponent);
+	void HandleVoiceWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources);
+	TArray<FVoiceRequest> VoiceQueue;
+	FVoiceRequest ActiveVoice;
+	TWeakObjectPtr<UAudioComponent> VoiceAudioComponent;
+	FDelegateHandle VoiceWorldCleanupHandle;
+	int32 NextVoiceRequestId = 1;
+	bool bStartingVoice = false;
 
 	// Bank 발견 결과. bLoadImmediately/BankId 는 Bank 메타데이터가 로드되는 즉시 알 수 있다 (가벼움).
 	// bContentLoaded 는 그 Bank 의 Definitions/Variants 까지 실제로 카탈로그에 반영됐는지.

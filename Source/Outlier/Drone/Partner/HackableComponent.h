@@ -78,6 +78,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Hack")
 	bool IsHackTargetType() const;
 
+	// Hack.MiniGame 하위 태그가 없거나 None이면 미니게임 없이 바로 성공 처리한다.
+	bool RequiresMiniGame() const;
+
 	UFUNCTION(NetMulticast, Reliable)
 	void MulticastTriggerHackEffects(const FGameplayTagContainer& EffectTags, const FHackResultContext& Context);
 

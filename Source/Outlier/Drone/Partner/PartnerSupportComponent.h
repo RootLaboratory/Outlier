@@ -79,9 +79,9 @@ private:
 	void ClearScanEffect(AActor* Actor);
 	bool ShouldProcessLocalScanVisual() const;
 
-	UFUNCTION(Client, Reliable)
-	void ClientStartScanVisual(FVector InScanOrigin, float InScanRange, float InScanDuration);
+	UFUNCTION(NetMulticast, Reliable)
+	void MulticastStartScanVisual(FVector InScanOrigin, float InScanRange, float InScanDuration);
 
-	UFUNCTION(Client, Reliable)
-	void ClientCancelScanForReboot();
+	UFUNCTION(NetMulticast, Reliable)
+	void MulticastCancelScanForReboot();
 };

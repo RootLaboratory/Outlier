@@ -15,7 +15,7 @@ class URetainerBox;
 class UShieldDamageFeedbackWidget;
 
 /**
- * Cached damage feedback layer placed under the main widget's root canvas, like InteractionLayer.
+ * Cached damage feedback layer placed under the main widget's root canvas.
  * Indicators are created once and pooled; the layer drives their tick and collapses itself when none are active.
  */
 UCLASS(Abstract, Blueprintable)

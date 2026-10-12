@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
 #include "InputCoreTypes.h"
+#include "Styling/SlateBrush.h"
 #include "InputActionKeyDisplayWidget.generated.h"
 
 class UEnhancedInputLocalPlayerSubsystem;
@@ -13,9 +14,11 @@ class ULocalPlayerSettingsSubsystem;
 class UBorder;
 class UTextBlock;
 class UTexture2D;
+class UDataTable;
 
 /**
- * 특정 Input Action 하나의 현재 바인딩 키를 텍스트로 보여주는 공용 부품.
+ * 특정 Input Action 하나의 현재 바인딩 키를 보여주는 공용 부품.
+ * 실제 키 이름으로 DT의 Texture를 조회한다. 마우스는 이미지만, 그 외 키는 프레임과 텍스트로 표시한다.
  * UILayerKeyHintWidget의 Confirm/Escape 키 표시가 이 클래스를 멤버로 갖는 식으로
  * 쓰이고, InteractKeyWidget 등 "이 키를 누르세요" UI도 동일하게
  * WatchedInputAction만 넣어서 재사용하면 된다.
@@ -43,6 +46,8 @@ class OUTLIER_API UInputActionKeyDisplayWidget : public UUserWidget
 	GENERATED_BODY()
 
 public:
+	virtual void SynchronizeProperties() override;
+
 	UFUNCTION(BlueprintCallable, Category = "UI|Input")
 	void SetWatchedInputAction(UInputAction* NewInputAction);
 
@@ -84,6 +89,11 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI|Input")
 	TObjectPtr<UTexture2D> BorderImage;
 
+	/** Shared table assigned on the base BindKey WBP. Row Name must equal the engine key name. */
+	// Keep the serialized property name so existing WBP assignments remain valid.
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "UI|Input", meta = (DisplayName = "Key Texture Table", RequiredAssetDataTags = "RowStructure=/Script/Outlier.InputKeyTextureDataRow"))
+	TObjectPtr<UDataTable> MouseKeyTextureTable;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI|Input")
 	TObjectPtr<UInputAction> WatchedInputAction;
 
@@ -104,6 +114,9 @@ private:
 	void BindSettingsSubsystem();
 	void UnbindSettingsSubsystem();
 	void RefreshBorderBrush();
+	UTexture2D* FindKeyTexture(FKey Key) const;
+	void ShowKeyText(const FText& Text, FKey Key = FKey());
+	void ShowMouseKey(FKey Key);
 	void BindControlMappingsRebuiltDelegate();
 	void UnbindControlMappingsRebuiltDelegate();
 
@@ -115,6 +128,16 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UEnhancedInputLocalPlayerSubsystem> BoundInputSubsystemForRebuild;
+
+	UPROPERTY(Transient)
+	FSlateBrush DefaultBorderBrush;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UTexture2D> DisplayedKeyTexture;
+
+	TSet<FName> WarnedMissingMouseKeys;
+	bool bHasDefaultBorderBrush = false;
+	bool bDisplayingMouseKey = false;
 
 	bool bIsConstructed = false;
 };
