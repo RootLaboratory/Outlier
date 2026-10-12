@@ -9,6 +9,7 @@
 #include "EnemyStateTreeMovementTasks.generated.h"
 
 class AAIController;
+class AEnemyAIController;
 class UCapsuleComponent;
 class URoomCombatSubsystem;
 
@@ -55,6 +56,11 @@ struct FEnemyFlyToLocationTaskInstanceData
 	// 기존 직진 이동은 유지한다. 새 경로 이동은 초기 소속 방 안에서만 실행한다.
 	UPROPERTY(EditAnywhere, Category = Parameter)
 	bool bUsePathfinding = false;
+	// 선회 EQS가 검증한 Actor 좌표 경로를 사용한다. A*와 동시에 켜지 않는다.
+	UPROPERTY(EditAnywhere, Category = Parameter)
+	bool bUsePlannedPath = false;
+	UPROPERTY(EditAnywhere, Category = Input, meta = (Optional))
+	TArray<FVector> PlannedWaypoints;
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "1.0", Units = "cm"))
 	float PathCellSize = 100.0f;
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0", Units = "cm"))
@@ -120,6 +126,8 @@ struct FEnemyFlyToLocationTaskInstanceData
 	FVector LastDestination = FVector::ZeroVector;
 	UPROPERTY(Transient)
 	bool bOwnsMovement = false;
+	FVector LastPathPosition = FVector::ZeroVector;
+	float TravelledPathLength = 0.0f;
 };
 
 // 지상 NavMesh에 투영하지 않는다. 설정에 따라 직접 이동하거나 검증된 비행 경로를 추종한다.
@@ -145,6 +153,42 @@ struct OUTLIER_API FEnemyFlyToLocationTask : public FStateTreeTaskCommonBase
 		float DeltaTime) const override;
 	virtual void ExitState(
 		FStateTreeExecutionContext& Context,
+		const FStateTreeTransitionResult& Transition) const override;
+};
+
+USTRUCT()
+struct FEnemyStationaryFireTaskInstanceData
+{
+	GENERATED_BODY()
+	UPROPERTY(EditAnywhere, Category = Context)
+	TObjectPtr<AEnemyBase> Enemy = nullptr;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.01", Units = "s"))
+	float MinDuration = 0.5f;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.01", Units = "s"))
+	float MaxDuration = 1.0f;
+	UPROPERTY(EditAnywhere, Category = Output)
+	float SelectedDuration = 0.0f;
+	UPROPERTY(Transient)
+	TObjectPtr<AEnemyAIController> CachedController = nullptr;
+	UPROPERTY(Transient)
+	TWeakObjectPtr<AActor> CapturedTarget;
+	int32 CapturedGeneration = 0;
+	int32 CapturedLease = 0;
+	float Elapsed = 0.0f;
+};
+
+// 이동을 멈춘 채 지정 시간만 유지한다. 조준/발사는 기존 Facing/FireCycle이 담당한다.
+USTRUCT(meta = (DisplayName = "Enemy Stationary Fire Hold", Category = "Enemy|Movement"))
+struct OUTLIER_API FEnemyStationaryFireTask : public FStateTreeTaskCommonBase
+{
+	GENERATED_BODY()
+	using FInstanceDataType = FEnemyStationaryFireTaskInstanceData;
+	FEnemyStationaryFireTask();
+	virtual const UStruct* GetInstanceDataType() const override { return FInstanceDataType::StaticStruct(); }
+	virtual EStateTreeRunStatus EnterState(FStateTreeExecutionContext& Context,
+		const FStateTreeTransitionResult& Transition) const override;
+	virtual EStateTreeRunStatus Tick(FStateTreeExecutionContext& Context, float DeltaTime) const override;
+	virtual void ExitState(FStateTreeExecutionContext& Context,
 		const FStateTreeTransitionResult& Transition) const override;
 };
 

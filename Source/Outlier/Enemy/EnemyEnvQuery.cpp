@@ -5,6 +5,7 @@
 #include "Enemy/EnemyAIController.h"
 #include "Enemy/EnemyBase.h"
 #include "Engine/World.h"
+#include "EnvironmentQuery/EnvQueryManager.h"
 #include "EnvironmentQuery/Items/EnvQueryItemType_Actor.h"
 #include "EnvironmentQuery/Items/EnvQueryItemType_VectorBase.h"
 #include "EnvironmentQuery/Items/EnvQueryItemType_Point.h"
@@ -104,6 +105,111 @@ bool CanCheckFlightDestination(const AEnemyBase* Enemy, const UWorld* World, con
 	}
 	return !Enemy->IsDead() && Enemy->CanUseEnemyPerception();
 }
+
+const FName OrbitStartX(TEXT("OrbitStartX"));
+const FName OrbitStartY(TEXT("OrbitStartY"));
+const FName OrbitStartZ(TEXT("OrbitStartZ"));
+const FName OrbitCenterX(TEXT("OrbitCenterX"));
+const FName OrbitCenterY(TEXT("OrbitCenterY"));
+const FName OrbitCenterZ(TEXT("OrbitCenterZ"));
+const FName OrbitLength(TEXT("OrbitLength"));
+const FName OrbitLeft(TEXT("OrbitLeft"));
+
+FVector MakeOrbitPoint(const FVector& Start, const FVector& Center, float Length, bool bLeft)
+{
+	FVector Radial = Start - Center;
+	Radial.Z = 0.0;
+	// 플레이어를 바라보는 드론 기준 Left는 양의 Z축 회전이다.
+	const float Degrees = FMath::RadiansToDegrees(Length / Radial.Size()) * (bLeft ? 1.0f : -1.0f);
+	FVector Point = Center + Radial.RotateAngleAxis(Degrees, FVector::UpVector);
+	Point.Z = Start.Z;
+	return Point;
+}
+}
+
+bool EnemyOrbit::IsCombatRadius(const FVector& Start, const FVector& Center)
+{
+	if (Start.ContainsNaN() || Center.ContainsNaN()) return false;
+	const double Radius = FVector::Dist2D(Start, Center);
+	return Radius > 1000.0 && Radius <= 2000.0;
+}
+
+void EnemyOrbit::BuildCandidates(const FVector& Start, const FVector& Center,
+	float PreferredLength, bool bPrefersLeft, TArray<FEnemyOrbitCandidate>& OutCandidates)
+{
+	OutCandidates.Reset();
+	if (!IsCombatRadius(Start, Center) || !FMath::IsFinite(PreferredLength)) return;
+	const float Length = FMath::Clamp(PreferredLength, 300.0f, 500.0f);
+	// 선호 구간 -> 같은 방향 3m/1.5m -> 반대 방향 동일 순서. 점수로 이 순서를 뒤집지 않는다.
+	for (bool bLeft : {bPrefersLeft, !bPrefersLeft})
+	{
+		for (float ArcLength : {Length, 300.0f, 150.0f})
+		{
+			if (ArcLength == 300.0f && Length == 300.0f
+				&& !OutCandidates.IsEmpty() && OutCandidates.Last().bLeft == bLeft) continue;
+			FEnemyOrbitCandidate& Candidate = OutCandidates.AddDefaulted_GetRef();
+			Candidate.ArcLength = ArcLength;
+			Candidate.bLeft = bLeft;
+			Candidate.Destination = MakeOrbitPoint(Start, Center, ArcLength, bLeft);
+		}
+	}
+}
+
+void EnemyOrbit::BuildWaypoints(const FVector& Start, const FVector& Center,
+	const FEnemyOrbitCandidate& Candidate, TArray<FVector>& OutWaypoints)
+{
+	OutWaypoints.Reset();
+	if (!IsCombatRadius(Start, Center) || !FMath::IsFinite(Candidate.ArcLength)
+		|| Candidate.ArcLength <= 0.0f || Candidate.ArcLength > 500.0f) return;
+	// 최대 50cm 간격의 짧은 현으로 곡선을 근사한다. 끝점만 이동하면 생기는 직선 지름길을 막는다.
+	const int32 Segments = FMath::CeilToInt(Candidate.ArcLength / 50.0f);
+	OutWaypoints.Reserve(Segments + 1);
+	OutWaypoints.Add(Start);
+	for (int32 Index = 1; Index <= Segments; ++Index)
+	{
+		OutWaypoints.Add(MakeOrbitPoint(Start, Center, Candidate.ArcLength * Index / Segments, Candidate.bLeft));
+	}
+}
+
+void EnemyOrbit::SetQuerySnapshot(FEnvQueryRequest& Request, const FVector& Start,
+	const FVector& Center, float PreferredLength, bool bPrefersLeft)
+{
+	Request.SetFloatParam(OrbitStartX, Start.X).SetFloatParam(OrbitStartY, Start.Y).SetFloatParam(OrbitStartZ, Start.Z);
+	Request.SetFloatParam(OrbitCenterX, Center.X).SetFloatParam(OrbitCenterY, Center.Y).SetFloatParam(OrbitCenterZ, Center.Z);
+	Request.SetFloatParam(OrbitLength, PreferredLength).SetFloatParam(OrbitLeft, bPrefersLeft ? 1.0f : 0.0f);
+}
+
+UEnemyEnvQueryGenerator_Orbit::UEnemyEnvQueryGenerator_Orbit()
+{
+	ItemType = UEnvQueryItemType_Point::StaticClass();
+}
+
+void UEnemyEnvQueryGenerator_Orbit::GenerateItems(FEnvQueryInstance& QueryInstance) const
+{
+	const AEnemyBase* Enemy = Cast<AEnemyBase>(QueryInstance.Owner.Get());
+	const AActor* Target = GetVisibleEnvQueryTarget(Enemy);
+	if (!Target) return;
+	FVector Start = Enemy->GetActorLocation();
+	FVector Center = Target->GetActorLocation();
+	float Length = 400.0f;
+	bool bLeft = Enemy->PrefersCombatLeft();
+	if (QueryInstance.NamedParams.Contains(OrbitLength))
+	{
+		// 비동기 EQS 실행 중 위치가 바뀌어도 요청 당시의 곡선 후보를 유지한다.
+		Start = FVector(QueryInstance.NamedParams.FindRef(OrbitStartX), QueryInstance.NamedParams.FindRef(OrbitStartY),
+			QueryInstance.NamedParams.FindRef(OrbitStartZ));
+		Center = FVector(QueryInstance.NamedParams.FindRef(OrbitCenterX), QueryInstance.NamedParams.FindRef(OrbitCenterY),
+			QueryInstance.NamedParams.FindRef(OrbitCenterZ));
+		Length = QueryInstance.NamedParams.FindRef(OrbitLength);
+		bLeft = QueryInstance.NamedParams.FindRef(OrbitLeft) != 0.0f;
+	}
+	TArray<FEnemyOrbitCandidate> Candidates;
+	EnemyOrbit::BuildCandidates(Start, Center, Length, bLeft, Candidates);
+	for (const FEnemyOrbitCandidate& Candidate : Candidates)
+	{
+		QueryInstance.AddItemData<UEnvQueryItemType_Point>(Candidate.Destination);
+	}
+	LogGeneratorResult(QueryInstance, Enemy, Target, TEXT("OrbitCompleted"), Candidates.Num(), Candidates.Num());
 }
 
 void UEnemyEnvQueryContext_VisibleTarget::ProvideContext(
@@ -189,6 +295,54 @@ bool FEnemyApproachCandidatesTest::RunTest(const FString& Parameters)
 			TestTrue(TEXT("Candidate remains on drone side of target"), FVector::DotProduct(Candidate - Center, Radial) > 0.0);
 		}
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyOrbitCandidatesTest,
+	"Outlier.Enemy.EQS.OrbitCandidates", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyOrbitCandidatesTest::RunTest(const FString& Parameters)
+{
+	const FVector Center(100.0, 200.0, 0.0);
+	const FVector Start(1600.0, 200.0, 250.0);
+	TArray<FEnemyOrbitCandidate> Candidates;
+	TArray<FVector> Waypoints;
+	EnemyOrbit::BuildCandidates(Start, Center, 400.0f, true, Candidates);
+	TestEqual(TEXT("Two directions each have three ordered candidates"), Candidates.Num(), 6);
+	if (Candidates.Num() != 6) return false;
+	TestTrue(TEXT("Preference precedes opposite direction"), Candidates[0].bLeft && !Candidates[3].bLeft);
+	TestEqual(TEXT("Preferred random segment is first"), Candidates[0].ArcLength, 400.0f);
+	TestEqual(TEXT("Same direction minimum full segment is second"), Candidates[1].ArcLength, 300.0f);
+	TestEqual(TEXT("Short fallback is before the opposite direction"), Candidates[2].ArcLength, 150.0f);
+	TestTrue(TEXT("Left is drone-relative when facing the player"), Candidates[0].Destination.Y > Start.Y);
+	for (const FEnemyOrbitCandidate& Candidate : Candidates)
+	{
+		EnemyOrbit::BuildWaypoints(Start, Center, Candidate, Waypoints);
+		TestTrue(TEXT("Curve has intermediate points, not only a destination"), Waypoints.Num() > 2);
+		double Length = 0.0;
+		for (int32 Index = 0; Index < Waypoints.Num(); ++Index)
+		{
+			TestTrue(TEXT("Curve preserves combat radius"),
+				FMath::IsNearlyEqual(FVector::Dist2D(Waypoints[Index], Center), 1500.0, 0.01));
+			TestEqual(TEXT("Curve preserves flight height"), Waypoints[Index].Z, Start.Z);
+			if (Index > 0) Length += FVector::Distance(Waypoints[Index - 1], Waypoints[Index]);
+		}
+		TestTrue(TEXT("Polyline approximates arc length within one centimetre"),
+			Length <= Candidate.ArcLength && Candidate.ArcLength - Length < 1.0);
+		TestTrue(TEXT("Final waypoint matches EQS candidate"), Waypoints.Last().Equals(Candidate.Destination, 0.01));
+	}
+	EnemyOrbit::BuildCandidates(Start, Center, 500.0f, false, Candidates);
+	EnemyOrbit::BuildWaypoints(Start, Center, Candidates[0], Waypoints);
+	TestEqual(TEXT("Maximum arc has ten segments"), Waypoints.Num(), 11);
+	TestTrue(TEXT("Right preference is preserved"), !Candidates[0].bLeft && Candidates[0].Destination.Y < Start.Y);
+	EnemyOrbit::BuildCandidates(Start, Center, 300.0f, true, Candidates);
+	TestEqual(TEXT("Duplicate minimum-length candidates are removed"), Candidates.Num(), 4);
+	EnemyOrbit::BuildCandidates(Center + FVector(1000, 0, 250), Center, 400.0f, true, Candidates);
+	TestTrue(TEXT("Ten metre boundary belongs to retreat"), Candidates.IsEmpty());
+	EnemyOrbit::BuildCandidates(Center + FVector(2000, 0, 250), Center, 400.0f, true, Candidates);
+	TestFalse(TEXT("Twenty metre boundary permits orbit"), Candidates.IsEmpty());
+	EnemyOrbit::BuildCandidates(Center + FVector(2001, 0, 250), Center, 400.0f, true, Candidates);
+	TestTrue(TEXT("Beyond twenty metres belongs to approach"), Candidates.IsEmpty());
 	return true;
 }
 #endif

@@ -1,12 +1,14 @@
 #include "Enemy/EnemyStateTreeTacticalTasks.h"
 
 #include "Enemy/EnemyRoomSubsystem.h"
+#include "Enemy/EnemyEnvQuery.h"
 #include "Components/CapsuleComponent.h"
 #include "Drone/FlightPathfinding.h"
 #include "Enemy/EnemyAIController.h"
 #include "Engine/World.h"
 #include "EnvironmentQuery/EnvQuery.h"
 #include "EnvironmentQuery/EnvQueryManager.h"
+#include "EnvironmentQuery/EnvQueryOption.h"
 #include "EnvironmentQuery/Items/EnvQueryItemType_ActorBase.h"
 #include "EnvironmentQuery/Items/EnvQueryItemType_VectorBase.h"
 #include "HAL/IConsoleManager.h"
@@ -74,23 +76,41 @@ int32 ExecuteEnvQueryWithDiagnostics(FEnvQueryRequest& Request, EEnvQueryRunMode
 	return Request.Execute(RunMode, Finished);
 }
 
-void LogEnvQuery(const TCHAR* Phase, const FEnemyRunEnvQueryTaskInstanceData& Data, int32 Items = 0)
+void LogEnvQuery(const TCHAR* Phase, const FEnemyRunEnvQueryTaskInstanceData& Data, int32 Items = 0,
+	int32 CompletedRequest = INDEX_NONE)
 {
 	if (CVarEnemyEQSDebug.GetValueOnGameThread() != 0)
 	{
 		UE_LOG(LogEnemyEQS, Log,
 			TEXT("[EnemyEQS] %s Enemy=%s Query=%s Request=%d Result=%s Items=%d HasDestination=%d Destination=%s SelectedTarget=%s SelectedTargetLocation=%s CheckedCandidates=%d SelectionPathStatus=%s"),
-			Phase, *GetNameSafe(Data.Enemy), *GetNameSafe(Data.QueryTemplate), Data.RequestId,
+			Phase, *GetNameSafe(Data.Enemy), *GetNameSafe(Data.QueryTemplate),
+			CompletedRequest != INDEX_NONE ? CompletedRequest : Data.RequestId,
 			*UEnum::GetValueAsString(Data.QueryResult), Items, Data.bHasDestination,
 			*Data.Destination.ToCompactString(), *GetNameSafe(Data.SelectedTargetActor),
 			*Data.SelectedTargetLocation.ToCompactString(), Data.CheckedPathCandidates,
 			*UEnum::GetValueAsString(Data.SelectionPathStatus));
+		// 결과 적용 시 RequestId가 해제되므로 완료 번호를 별도로 남겨 요청과 결과를 연결한다.
+		UE_LOG(LogEnemyEQS, Log,
+			TEXT("[EnemyEQSContext] %s Enemy=%s Request=%d Time=%.3f Room=%s Orbit=%d Reachability=%d Target=%s Start=%s Center=%s PreferredLeft=%d PreferredArc=%.1f CandidateLimit=%d CheckLimit=%d TimeLimitMs=%.3f"),
+			Phase, *GetNameSafe(Data.Enemy), CompletedRequest != INDEX_NONE ? CompletedRequest : Data.RequestId,
+			IsValid(Data.Enemy) && Data.Enemy->GetWorld() ? Data.Enemy->GetWorld()->GetTimeSeconds() : 0.0,
+			*Data.CapturedRoomTag.ToString(), Data.bValidateOrbitPath, Data.bValidateReachability,
+			*GetNameSafe(Data.SelectedTargetActor), *Data.CapturedOrbitStart.ToCompactString(),
+			*Data.CapturedOrbitCenter.ToCompactString(), Data.bCapturedOrbitLeft, Data.CapturedOrbitLength,
+			Data.MaxPathCandidates, Data.MaxCollisionChecks, Data.MaxSearchMilliseconds);
+		if (Data.bValidateOrbitPath)
+		{
+			UE_LOG(LogEnemyEQS, Log, TEXT("[EnemyOrbitResult] %s Enemy=%s NoOrbitDestination=%d Left=%d ArcLength=%.1f Points=%d"),
+				Phase, *GetNameSafe(Data.Enemy), Data.bNoOrbitDestination, Data.bSelectedOrbitLeft,
+				Data.SelectedArcLength, Data.SelectedWaypoints.Num());
+		}
 	}
 }
 
 bool IsReachabilityConfigurationValid(const FEnemyRunEnvQueryTaskInstanceData& Data)
 {
-	if (!Data.bValidateReachability) return true;
+	if (!Data.bValidateReachability && !Data.bValidateOrbitPath) return true;
+	if (Data.bValidateReachability && Data.bValidateOrbitPath) return false;
 	const bool bValidLimits = Data.MaxPathCandidates >= 1 && Data.MaxPathCandidates <= 32
 		&& Data.MaxSearchNodes >= 1 && Data.MaxSearchNodes <= 65536
 		&& Data.MaxCollisionChecks >= 1 && Data.MaxCollisionChecks <= 262144;
@@ -100,10 +120,21 @@ bool IsReachabilityConfigurationValid(const FEnemyRunEnvQueryTaskInstanceData& D
 	return Data.RunMode == EEnvQueryRunMode::AllMatching && bValidLimits && bValidGeometry && bValidTime;
 }
 
+bool IsOrbitQueryConfigurationValid(const FEnemyRunEnvQueryTaskInstanceData& Data)
+{
+	if (!Data.bValidateOrbitPath) return true;
+	if (!Data.bRequireVisibleTarget || !Data.QueryTemplate) return false;
+	// 다른 Generator/복수 옵션을 선회로 해석하면 빈 결과를 잘못 정밀 사격으로 판단할 수 있다.
+	const TArray<UEnvQueryOption*>& Options = Data.QueryTemplate->GetOptions();
+	return Options.Num() == 1 && Options[0]
+		&& Options[0]->Generator && Options[0]->Generator->IsA<UEnemyEnvQueryGenerator_Orbit>();
+}
+
 bool IsEnvQueryConfigurationValid(const FEnemyRunEnvQueryTaskInstanceData& Data)
 {
 	if (!FMath::IsFinite(Data.TargetChangeDistance) || Data.TargetChangeDistance < 0.0f) return false;
 	if (!IsReachabilityConfigurationValid(Data)) return false;
+	if (!IsOrbitQueryConfigurationValid(Data)) return false;
 	if (!FMath::IsFinite(Data.Clearance) || Data.Clearance < 0.0f)
 	{
 		return false;
@@ -168,9 +199,11 @@ bool IsEnvQueryTargetCurrent(const FEnemyRunEnvQueryTaskInstanceData& Data)
 	}
 	if (!Data.Enemy->IsPlayerCurrentlyVisible() || !Data.CapturedTarget.IsValid()
 		|| Data.CachedController->GetCachedVisibleTarget() != Data.CapturedTarget.Get()) return false;
-	return Data.TargetChangeDistance <= 0.0f
+	const float ChangeDistance = Data.bValidateOrbitPath && Data.TargetChangeDistance <= 0.0f
+		? 200.0f : Data.TargetChangeDistance;
+	return ChangeDistance <= 0.0f
 		|| FVector::DistSquared2D(Data.SelectedTargetLocation, Data.CapturedTarget->GetActorLocation())
-			< FMath::Square(Data.TargetChangeDistance);
+			< FMath::Square(ChangeDistance);
 }
 
 bool IsEnvQuerySnapshotCurrent(const FEnemyRunEnvQueryTaskInstanceData& Data)
@@ -180,7 +213,31 @@ bool IsEnvQuerySnapshotCurrent(const FEnemyRunEnvQueryTaskInstanceData& Data)
 	return IsEnvQueryEnemyCurrent(Data)
 		&& IsEnvQueryControllerCurrent(Data)
 		&& IsEnvQueryRoomCurrent(Data)
-		&& IsEnvQueryTargetCurrent(Data);
+		&& IsEnvQueryTargetCurrent(Data)
+		&& (!Data.bValidateOrbitPath
+			|| Data.Enemy->GetActorLocation().Equals(Data.CapturedOrbitStart, 25.0));
+}
+
+void LogEnvQuerySnapshotFailure(const FEnemyRunEnvQueryTaskInstanceData& Data, int32 CompletedRequest = INDEX_NONE)
+{
+	if (CVarEnemyEQSDebug.GetValueOnGameThread() == 0) return;
+	const TCHAR* Reason = TEXT("OrbitStartMoved");
+	if (!IsEnvQueryEnemyCurrent(Data)) Reason = TEXT("EnemyLifetimeOrCombatStateChanged");
+	else if (!IsEnvQueryControllerCurrent(Data)) Reason = TEXT("ControllerChanged");
+	else if (!IsEnvQueryRoomCurrent(Data)) Reason = TEXT("RoomChangedOrUnavailable");
+	else if (!IsEnvQueryTargetCurrent(Data)) Reason = TEXT("SightLostTargetChangedOrMoved");
+	UE_LOG(LogEnemyEQS, Log, TEXT("[EnemyEQSSnapshot] Enemy=%s Request=%d Reason=%s Start=%s Current=%s Target=%s CurrentTargetLocation=%s"),
+		*GetNameSafe(Data.Enemy), CompletedRequest != INDEX_NONE ? CompletedRequest : Data.RequestId,
+		Reason, *Data.CapturedOrbitStart.ToCompactString(),
+		IsValid(Data.Enemy) ? *Data.Enemy->GetActorLocation().ToCompactString() : TEXT("None"),
+		*GetNameSafe(Data.CapturedTarget.Get()),
+		Data.CapturedTarget.IsValid() ? *Data.CapturedTarget->GetActorLocation().ToCompactString() : TEXT("None"));
+}
+
+FVector ToQueryParamLocation(const FVector& Location)
+{
+	// EQS NamedParam은 float다. Generator와 검증이 같은 정밀도의 좌표를 사용한다.
+	return FVector(static_cast<float>(Location.X), static_cast<float>(Location.Y), static_cast<float>(Location.Z));
 }
 
 void CaptureEnvQuerySnapshot(FEnemyRunEnvQueryTaskInstanceData& Data)
@@ -198,6 +255,10 @@ void CaptureEnvQuerySnapshot(FEnemyRunEnvQueryTaskInstanceData& Data)
 	Data.CapturedGeneration = Enemy->GetPoolGameplayGeneration();
 	Data.CapturedLease = Enemy->GetPoolLeaseSerial();
 	Data.CapturedCombatState = Enemy->GetCombatState();
+	Data.CapturedOrbitStart = ToQueryParamLocation(Enemy->GetActorLocation());
+	Data.CapturedOrbitCenter = ToQueryParamLocation(Data.SelectedTargetLocation);
+	Data.CapturedOrbitLength = Data.bValidateOrbitPath ? FMath::FRandRange(300.0f, 500.0f) : 0.0f;
+	Data.bCapturedOrbitLeft = Enemy->PrefersCombatLeft();
 }
 
 bool HasEnvQueryTimedOut(const FEnemyRunEnvQueryTaskInstanceData& Data)
@@ -326,6 +387,140 @@ bool SelectReachableDestination(FEnemyRunEnvQueryTaskInstanceData& Data, const F
 	return false;
 }
 
+bool HasOrbitCandidateResult(const FEnvQueryResult& Result, const FVector& Destination)
+{
+	for (int32 Index = 0; Index < Result.Items.Num(); ++Index)
+	{
+		if (Result.GetItemAsLocation(Index).Equals(Destination, 1.0)) return true;
+	}
+	return false;
+}
+
+EFlightPathStatus CheckOrbitRoute(FEnemyRunEnvQueryTaskInstanceData& Data,
+	const TArray<FVector>& Waypoints, int32& RemainingChecks, double Started, int32 QueryId)
+{
+	UCapsuleComponent* Capsule = Data.Enemy->GetCapsuleComponent();
+	const FVector Offset = Capsule->GetComponentLocation() - Data.Enemy->GetActorLocation();
+	FCollisionQueryParams SightParams(SCENE_QUERY_STAT(EnemyOrbitSight), false, Data.Enemy);
+	SightParams.AddIgnoredActor(Data.SelectedTargetActor);
+	for (int32 Index = 1; Index < Waypoints.Num(); ++Index)
+	{
+		// 출발점 여유 공간 탈출 예외까지 캡슐 최대 4회 + 시야 1회로 보수적으로 예산을 잡는다.
+		if (RemainingChecks < 5 || (FPlatformTime::Seconds() - Started) * 1000.0 >= Data.MaxSearchMilliseconds)
+		{
+			if (CVarEnemyEQSDebug.GetValueOnGameThread() != 0)
+			{
+				UE_LOG(LogEnemyEQS, Log, TEXT("[EnemyOrbitSegment] Enemy=%s Request=%d Segment=%d Reason=BudgetExceeded RemainingChecks=%d ElapsedMs=%.3f"),
+					*GetNameSafe(Data.Enemy), QueryId, Index, RemainingChecks, (FPlatformTime::Seconds() - Started) * 1000.0);
+			}
+			return EFlightPathStatus::BudgetExceeded;
+		}
+		RemainingChecks -= 5;
+		FFlightPathRequest Request = MakeCandidatePathRequest(Data, *Capsule, Waypoints[Index],
+			Data.MaxSearchNodes, 5, Data.MaxSearchMilliseconds);
+		Request.Start = Waypoints[Index - 1] + Offset;
+		const EFlightPathStatus Status = FlightPathfinding::CheckSegment(*Data.Enemy->GetWorld(), *Capsule, Request);
+		// 경로가 막혔으면 시야 Trace는 생략한다. 상세 로그도 이번 검사 결과만 사용한다.
+		const bool bSightBlocked = Status == EFlightPathStatus::Success
+			&& Data.Enemy->GetWorld()->LineTraceTestByChannel(Waypoints[Index], Data.SelectedTargetLocation,
+				ECC_Visibility, SightParams);
+		if (CVarEnemyEQSDebug.GetValueOnGameThread() >= 2)
+		{
+			UE_LOG(LogEnemyEQS, Log, TEXT("[EnemyOrbitSegment] Enemy=%s Request=%d Candidate=%d Segment=%d Start=%s End=%s PathStatus=%s SightBlocked=%d ElapsedMs=%.3f"),
+				*GetNameSafe(Data.Enemy), QueryId, Data.CheckedPathCandidates, Index,
+				*Waypoints[Index - 1].ToCompactString(), *Waypoints[Index].ToCompactString(),
+				*UEnum::GetValueAsString(Status), bSightBlocked, (FPlatformTime::Seconds() - Started) * 1000.0);
+		}
+		if (Status != EFlightPathStatus::Success) return Status;
+		if (bSightBlocked) return EFlightPathStatus::BlockedSegment;
+	}
+	return EFlightPathStatus::Success;
+}
+
+bool SelectOrbitDestination(FEnemyRunEnvQueryTaskInstanceData& Data, const FEnvQueryResult& Result)
+{
+	TArray<FEnemyOrbitCandidate> Candidates;
+	EnemyOrbit::BuildCandidates(Data.CapturedOrbitStart, Data.CapturedOrbitCenter,
+		Data.CapturedOrbitLength, Data.bCapturedOrbitLeft, Candidates);
+	if (Candidates.IsEmpty())
+	{
+		LogEnvQuery(TEXT("OrbitRejected: no canonical candidates"), Data);
+		return false;
+	}
+	// 결과 점수순이 아니라 Generator와 동일한 방향/거리 순서로 살아남은 후보를 확인한다.
+	int32 Available = 0;
+	for (const FEnemyOrbitCandidate& Candidate : Candidates)
+	{
+		if (HasOrbitCandidateResult(Result, Candidate.Destination)) ++Available;
+	}
+	if (Available != Result.Items.Num())
+	{
+		LogEnvQuery(TEXT("OrbitRejected: query items do not match orbit generator"), Data, Result.Items.Num());
+		return false;
+	}
+	int32 RemainingChecks = Data.MaxCollisionChecks;
+	const double Started = FPlatformTime::Seconds();
+	for (const FEnemyOrbitCandidate& Candidate : Candidates)
+	{
+		const bool bPassedQuery = HasOrbitCandidateResult(Result, Candidate.Destination);
+		if (Data.CheckedPathCandidates >= Data.MaxPathCandidates)
+		{
+			Data.QueryResult = EEnemyEnvQueryResult::CandidateLimitReached;
+			LogEnvQuery(TEXT("OrbitRejected: candidate limit; not proof of both sides blocked"), Data);
+			return false;
+		}
+		TArray<FVector> Waypoints;
+		EnemyOrbit::BuildWaypoints(Data.CapturedOrbitStart, Data.CapturedOrbitCenter, Candidate, Waypoints);
+		++Data.CheckedPathCandidates;
+		Data.SelectionPathStatus = CheckOrbitRoute(Data, Waypoints, RemainingChecks, Started, Result.QueryID);
+		if (CVarEnemyEQSDebug.GetValueOnGameThread() != 0)
+		{
+			UE_LOG(LogEnemyEQS, Log, TEXT("[EnemyOrbit] Enemy=%s Request=%d Candidate=%d Left=%d ArcLength=%.1f PassedQuery=%d Points=%d Status=%s RemainingChecks=%d"),
+				*GetNameSafe(Data.Enemy), Result.QueryID, Data.CheckedPathCandidates, Candidate.bLeft, Candidate.ArcLength, bPassedQuery, Waypoints.Num(),
+				*UEnum::GetValueAsString(Data.SelectionPathStatus), RemainingChecks);
+		}
+		if ((FPlatformTime::Seconds() - Started) * 1000.0 >= Data.MaxSearchMilliseconds)
+		{
+			Data.SelectionPathStatus = EFlightPathStatus::BudgetExceeded;
+		}
+		if (Data.SelectionPathStatus == EFlightPathStatus::Success)
+		{
+			// EQS가 제거한 후보도 실제 경로가 유효하면 양쪽 불가라고 확정할 수 없다.
+			// 잘못된 Trace/Context 설정은 정밀 사격 대신 Failed로 드러낸다.
+			if (!bPassedQuery)
+			{
+				LogEnvQuery(TEXT("OrbitRejected: clear route was filtered by EQS; check tests/context"), Data);
+				return false;
+			}
+			Data.Destination = Candidate.Destination;
+			Data.SelectedWaypoints = MoveTemp(Waypoints);
+			Data.SelectedArcLength = Candidate.ArcLength;
+			Data.bSelectedOrbitLeft = Candidate.bLeft;
+			return true;
+		}
+		if (Data.SelectionPathStatus == EFlightPathStatus::BudgetExceeded)
+		{
+			Data.QueryResult = EEnemyEnvQueryResult::PathBudgetExceeded;
+			return false;
+		}
+		if (Data.SelectionPathStatus != EFlightPathStatus::BlockedEndpoint
+			&& Data.SelectionPathStatus != EFlightPathStatus::BlockedSegment) return false;
+	}
+	Data.QueryResult = EEnemyEnvQueryResult::NoReachableDestination;
+	Data.bNoOrbitDestination = true;
+	return false;
+}
+
+bool CanClassifyEmptyOrbitResult(const FEnemyRunEnvQueryTaskInstanceData& Data)
+{
+	if (!EnemyOrbit::IsCombatRadius(Data.CapturedOrbitStart, Data.CapturedOrbitCenter)) return false;
+	// 환경 설정 누락/출발점 관통을 양쪽 후보 없음으로 오인하지 않는다.
+	UCapsuleComponent* Capsule = Data.Enemy->GetCapsuleComponent();
+	const FFlightPathRequest Request = MakeCandidatePathRequest(Data, *Capsule, Data.Enemy->GetActorLocation(),
+		Data.MaxSearchNodes, Data.MaxCollisionChecks, Data.MaxSearchMilliseconds);
+	return FlightPathfinding::CheckSegment(*Data.Enemy->GetWorld(), *Capsule, Request) == EFlightPathStatus::Success;
+}
+
 void ApplyEnvQueryResult(FEnemyRunEnvQueryTaskInstanceData& Data, const FEnvQueryResult& Result)
 {
 	Data.RequestId = INDEX_NONE;
@@ -333,6 +528,7 @@ void ApplyEnvQueryResult(FEnemyRunEnvQueryTaskInstanceData& Data, const FEnvQuer
 	// 요청 당시 상태 유지 -> 시간 제한 -> 결과 형식 -> 목적지 안전 검사 후에만 출력을 기록한다.
 	if (!IsEnvQuerySnapshotCurrent(Data))
 	{
+		LogEnvQuerySnapshotFailure(Data, Result.QueryID);
 		Data.QueryResult = EEnemyEnvQueryResult::Stale;
 		return;
 	}
@@ -344,13 +540,24 @@ void ApplyEnvQueryResult(FEnemyRunEnvQueryTaskInstanceData& Data, const FEnvQuer
 	if (IsEmptyEnvQueryResult(Result))
 	{
 		Data.QueryResult = EEnemyEnvQueryResult::NoResults;
+		if (Data.bValidateOrbitPath && CanClassifyEmptyOrbitResult(Data))
+		{
+			// 빈 결과만으로는 후보 전체 탈락과 설정 오류를 구분할 수 없다. 곡선을 다시 검증한다.
+			Data.QueryResult = EEnemyEnvQueryResult::Failed;
+			SelectOrbitDestination(Data, Result);
+		}
 		return;
 	}
 	if (!IsLocationEnvQueryResult(Result))
 	{
 		return;
 	}
-	if (Data.bValidateReachability)
+	if (Data.bValidateOrbitPath)
+	{
+		if (!CanClassifyEmptyOrbitResult(Data)) return;
+		if (!SelectOrbitDestination(Data, Result)) return;
+	}
+	else if (Data.bValidateReachability)
 	{
 		if (!SelectReachableDestination(Data, Result)) return;
 	}
@@ -385,6 +592,9 @@ void CancelEnvQuery(FEnemyRunEnvQueryTaskInstanceData& Data, EEnemyEnvQueryResul
 	Data.bActive = false;
 	Data.bHasDestination = false;
 	Data.QueryResult = Reason;
+	Data.SelectedWaypoints.Reset();
+	Data.SelectedArcLength = 0.0f;
+	Data.bNoOrbitDestination = false;
 	if (RequestId != INDEX_NONE && IsValid(Data.Enemy))
 	{
 		if (UEnvQueryManager* Manager = UEnvQueryManager::GetCurrent(Data.Enemy))
@@ -392,7 +602,7 @@ void CancelEnvQuery(FEnemyRunEnvQueryTaskInstanceData& Data, EEnemyEnvQueryResul
 			Manager->AbortQuery(RequestId);
 		}
 	}
-	LogEnvQuery(TEXT("Cancel"), Data);
+	LogEnvQuery(TEXT("Cancel"), Data, 0, RequestId);
 }
 
 EStateTreeRunStatus StartEnvQuery(FStateTreeExecutionContext& Context,
@@ -401,6 +611,7 @@ EStateTreeRunStatus StartEnvQuery(FStateTreeExecutionContext& Context,
 	const double Now = Data.Enemy->GetWorld()->GetTimeSeconds();
 	if (Now < Data.Enemy->GetNextEnvQueryRequestTime())
 	{
+		if (Data.QueryResult != EEnemyEnvQueryResult::Waiting) LogEnvQuery(TEXT("WaitingForRequestInterval"), Data);
 		Data.QueryResult = EEnemyEnvQueryResult::Waiting;
 		return EStateTreeRunStatus::Running;
 	}
@@ -412,6 +623,11 @@ EStateTreeRunStatus StartEnvQuery(FStateTreeExecutionContext& Context,
 	for (FAIDynamicParam& Param : Data.QueryConfig)
 	{
 		Request.SetDynamicParam(Param, nullptr);
+	}
+	if (Data.bValidateOrbitPath)
+	{
+		EnemyOrbit::SetQuerySnapshot(Request, Data.CapturedOrbitStart, Data.CapturedOrbitCenter,
+			Data.CapturedOrbitLength, Data.bCapturedOrbitLeft);
 	}
 	const FQueryFinishedSignature Finished = FQueryFinishedSignature::CreateLambda([WeakContext = Context.MakeWeakExecutionContext()]
 			(TSharedPtr<FEnvQueryResult> Result) mutable
@@ -427,7 +643,7 @@ EStateTreeRunStatus StartEnvQuery(FStateTreeExecutionContext& Context,
 			LogEnvQueryRejections(*StaticCastSharedPtr<FEnvQueryInstance>(Result), *Pending);
 			ApplyEnvQueryResult(*Pending, *Result);
 			const bool bSuccess = Pending->bHasDestination;
-			LogEnvQuery(TEXT("Finished"), *Pending, Result->Items.Num());
+			LogEnvQuery(TEXT("Finished"), *Pending, Result->Items.Num(), Result->QueryID);
 			StrongContext.FinishTask(bSuccess ? EStateTreeFinishTaskType::Succeeded : EStateTreeFinishTaskType::Failed);
 		});
 	Data.RequestId = ExecuteEnvQueryWithDiagnostics(Request, Data.RunMode, Finished, *Data.Enemy->GetWorld());
@@ -476,6 +692,10 @@ EStateTreeRunStatus FEnemyRunEnvQueryTask::EnterState(
 {
 	FInstanceDataType& Data = Context.GetInstanceData(*this);
 	Data.bHasDestination = false;
+	Data.SelectedWaypoints.Reset();
+	Data.SelectedArcLength = 0.0f;
+	Data.bSelectedOrbitLeft = false;
+	Data.bNoOrbitDestination = false;
 	Data.QueryResult = EEnemyEnvQueryResult::Invalid;
 	Data.CheckedPathCandidates = 0;
 	Data.SelectionPathStatus = EFlightPathStatus::Unavailable;
@@ -499,8 +719,15 @@ EStateTreeRunStatus FEnemyRunEnvQueryTask::EnterState(
 		return EStateTreeRunStatus::Failed;
 	}
 	CaptureEnvQuerySnapshot(Data);
+	if (Data.bValidateOrbitPath && !EnemyOrbit::IsCombatRadius(Data.CapturedOrbitStart, Data.CapturedOrbitCenter))
+	{
+		Data.bActive = false;
+		LogEnvQuery(TEXT("RejectedOrbitRadius"), Data);
+		return EStateTreeRunStatus::Failed;
+	}
 	if (!IsEnvQuerySnapshotCurrent(Data))
 	{
+		LogEnvQuerySnapshotFailure(Data);
 		Data.bActive = false;
 		LogEnvQuery(TEXT("RejectedSnapshot"), Data);
 		return EStateTreeRunStatus::Failed;
@@ -513,6 +740,7 @@ EStateTreeRunStatus FEnemyRunEnvQueryTask::Tick(FStateTreeExecutionContext& Cont
 	FInstanceDataType& Data = Context.GetInstanceData(*this);
 	if (!IsEnvQuerySnapshotCurrent(Data))
 	{
+		LogEnvQuerySnapshotFailure(Data);
 		CancelEnvQuery(Data, EEnemyEnvQueryResult::Stale);
 		return EStateTreeRunStatus::Failed;
 	}
@@ -540,6 +768,13 @@ void FEnemyRunEnvQueryTask::ExitState(
 	FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const
 {
 	FInstanceDataType& Data = Context.GetInstanceData(*this);
+	if (CVarEnemyEQSDebug.GetValueOnGameThread() != 0)
+	{
+		UE_LOG(LogEnemyEQS, Log, TEXT("[EnemyEQSTransition] Enemy=%s Result=%s NoOrbitDestination=%d Current=%s Target=%s RunStatus=%s"),
+			*GetNameSafe(Data.Enemy), *UEnum::GetValueAsString(Data.QueryResult), Data.bNoOrbitDestination,
+			*Transition.CurrentState.Describe(), *Transition.TargetState.Describe(),
+			*UEnum::GetValueAsString(Transition.CurrentRunStatus));
+	}
 	if (Data.QueryResult == EEnemyEnvQueryResult::Waiting || Data.QueryResult == EEnemyEnvQueryResult::Running)
 	{
 		CancelEnvQuery(Data, EEnemyEnvQueryResult::Cancelled);
@@ -578,6 +813,34 @@ bool FEnemyEnvQueryPathSelectionTest::RunTest(const FString& Parameters)
 		ResolveCandidateFailure(true, 4, 15), EEnemyEnvQueryResult::PathBudgetExceeded);
 	TestEqual(TEXT("All failed candidates have distinct result"),
 		ResolveCandidateFailure(false, 3, 3), EEnemyEnvQueryResult::NoReachableDestination);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyOrbitQueryConfigurationTest,
+	"Outlier.Enemy.EQS.OrbitConfiguration", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyOrbitQueryConfigurationTest::RunTest(const FString& Parameters)
+{
+	FEnemyRunEnvQueryTaskInstanceData Data;
+	Data.QueryTemplate = NewObject<UEnvQuery>();
+	Data.bValidateOrbitPath = true;
+	TestFalse(TEXT("Orbit requires all matching results"), IsReachabilityConfigurationValid(Data));
+	Data.RunMode = EEnvQueryRunMode::AllMatching;
+	TestTrue(TEXT("Orbit permits bounded validation without A star"), IsReachabilityConfigurationValid(Data));
+	Data.bValidateReachability = true;
+	TestFalse(TEXT("Orbit cannot also request unrestricted A star"), IsReachabilityConfigurationValid(Data));
+	Data.bValidateReachability = false;
+	TestFalse(TEXT("Missing orbit generator cannot classify empty results"), IsOrbitQueryConfigurationValid(Data));
+	UEnvQueryOption* Option = NewObject<UEnvQueryOption>(Data.QueryTemplate);
+	Data.QueryTemplate->GetOptionsMutable().Add(Option);
+	Option->Generator = NewObject<UEnemyEnvQueryGenerator_Orbit>(Option);
+	TestTrue(TEXT("Single orbit generator is accepted"), IsOrbitQueryConfigurationValid(Data));
+	Data.bRequireVisibleTarget = false;
+	TestFalse(TEXT("Orbit requires a visible target"), IsOrbitQueryConfigurationValid(Data));
+	Data.bRequireVisibleTarget = true;
+	Option->Generator = NewObject<UEnemyEnvQueryGenerator_Approach>(Option);
+	TestFalse(TEXT("Approach query cannot be misclassified as orbit"), IsOrbitQueryConfigurationValid(Data));
+	TestFalse(TEXT("Precision flag defaults to false"), Data.bNoOrbitDestination);
 	return true;
 }
 

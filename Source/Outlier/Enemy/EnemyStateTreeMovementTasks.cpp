@@ -7,6 +7,7 @@
 #include "Engine/World.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "HAL/IConsoleManager.h"
+#include "HAL/PlatformTime.h"
 #include "Room/RoomCombatSubsystem.h"
 #include "Room/RoomVolume.h"
 #if WITH_DEV_AUTOMATION_TESTS
@@ -19,7 +20,7 @@ DEFINE_LOG_CATEGORY_STATIC(LogEnemyFlight, Log, All);
 
 TAutoConsoleVariable<int32> CVarEnemyFlightDebug(
 	TEXT("outlier.Enemy.FlightDebug"), 0,
-	TEXT("Log enemy flight task entry, exit and facing failures. 0: off, 1: on."));
+	TEXT("Log enemy flight. 0: off, 1: lifecycle/failures, 2: planned route checks and waypoint progress."));
 
 void LogFlight(
 	const TCHAR* Phase,
@@ -47,12 +48,15 @@ void LogFlight(
 		Data.bRotateTowardDestination, *GetNameSafe(Enemy ? Enemy->GetController() : nullptr),
 		*GetNameSafe(Data.CachedController), Enemy && Enemy->HasAuthority(),
 		*ChangeType, *CurrentState, *TargetState, *RunStatus, *Priority);
-	if (Data.bUsePathfinding)
+	if (Data.bUsePathfinding || Data.bUsePlannedPath)
 	{
 		UE_LOG(LogEnemyFlight, Log,
-			TEXT("[FlightPath] %s Status=%s Waypoint=%d/%d Retry=%d RetryElapsed=%.2f Waiting=%d"),
-			Phase, *UEnum::GetValueAsString(Data.PathStatus), Data.WaypointIndex,
-			Data.PathWaypoints.Num(), Data.RepathAttempts, Data.RetryElapsed, Data.bWaitingForPath);
+			TEXT("[FlightPath] %s Enemy=%s Time=%.3f Room=%s Planned=%d AStar=%d Status=%s Waypoint=%d/%d TravelledCm=%.1f Speed=%.1f Retry=%d RetryElapsed=%.2f Waiting=%d"),
+			Phase, *GetNameSafe(Enemy), Enemy && Enemy->GetWorld() ? Enemy->GetWorld()->GetTimeSeconds() : 0.0,
+			*Data.PathRoomTag.ToString(), Data.bUsePlannedPath, Data.bUsePathfinding,
+			*UEnum::GetValueAsString(Data.PathStatus), Data.WaypointIndex,
+			Data.PathWaypoints.Num(), Data.TravelledPathLength, Enemy ? Enemy->GetVelocity().Size() : 0.0,
+			Data.RepathAttempts, Data.RetryElapsed, Data.bWaitingForPath);
 	}
 }
 
@@ -301,6 +305,78 @@ void WaitForFlightPath(FEnemyFlyToLocationTaskInstanceData& Data)
 	PauseFlyMovement(*Data.Enemy);
 }
 
+bool IsPlannedPathGeometryValid(const TArray<FVector>& Points, const FVector& Start, const FVector& Destination)
+{
+	if (Points.Num() < 2 || Points.Num() > 11 || Start.ContainsNaN() || Destination.ContainsNaN()) return false;
+	if (Points[0].ContainsNaN() || !Points[0].Equals(Start, 25.0)
+		|| !Points.Last().Equals(Destination, 1.0)) return false;
+	double Length = 0.0;
+	FVector Previous = Start;
+	for (int32 Index = 1; Index < Points.Num(); ++Index)
+	{
+		if (Points[Index].ContainsNaN()) return false;
+		const double SegmentLength = FVector::Distance(Previous, Points[Index]);
+		if (SegmentLength <= 0.0 || SegmentLength > 75.0) return false;
+		Length += SegmentLength;
+		Previous = Points[Index];
+	}
+	return Length > 0.0 && Length <= 500.01;
+}
+
+EStateTreeRunStatus FailPlannedFlight(FEnemyFlyToLocationTaskInstanceData& Data, const TCHAR* Reason)
+{
+	// 새 장애물이 생기면 같은 끝점으로 A* 우회하지 않는다. StateTree가 새 선회 후보를 요청한다.
+	Data.MoveResult = EEnemyFlightMoveResult::Blocked;
+	LogFlight(Reason, Data);
+	StopFlyTask(Data);
+	return EStateTreeRunStatus::Failed;
+}
+
+EStateTreeRunStatus StartPlannedFlight(FEnemyFlyToLocationTaskInstanceData& Data)
+{
+	if (!HasCurrentFlightRoom(Data)
+		|| !FMath::IsFinite(Data.MaxSearchMilliseconds) || Data.MaxSearchMilliseconds <= 0.0f
+		|| !FMath::IsFinite(Data.PathClearance) || Data.PathClearance < 0.0f
+		|| Data.MaxCollisionChecks < (Data.PlannedWaypoints.Num() - 1) * 4
+		|| !IsPlannedPathGeometryValid(Data.PlannedWaypoints, Data.Enemy->GetActorLocation(), Data.Destination))
+	{
+		Data.PathStatus = EFlightPathStatus::InvalidRequest;
+		LogFlight(TEXT("PlannedPathRejected: room/configuration/waypoint geometry"), Data);
+		StopFlyTask(Data);
+		return EStateTreeRunStatus::Failed;
+	}
+	const FVector Offset = Data.CachedCapsule->GetComponentLocation() - Data.Enemy->GetActorLocation();
+	Data.PathWaypoints.Reserve(Data.PlannedWaypoints.Num());
+	Data.PathWaypoints.Add(Data.CachedCapsule->GetComponentLocation());
+	const double Started = FPlatformTime::Seconds();
+	for (int32 Index = 1; Index < Data.PlannedWaypoints.Num(); ++Index)
+	{
+		FFlightPathRequest Request = MakeFlightPathRequest(Data, Data.PlannedWaypoints[Index] + Offset);
+		Request.Start = Data.PathWaypoints.Last();
+		Data.PathStatus = FlightPathfinding::CheckSegment(*Data.Enemy->GetWorld(), *Data.CachedCapsule, Request);
+		if ((FPlatformTime::Seconds() - Started) * 1000.0 >= Data.MaxSearchMilliseconds)
+		{
+			Data.PathStatus = EFlightPathStatus::BudgetExceeded;
+		}
+		if (CVarEnemyFlightDebug.GetValueOnGameThread() >= 2)
+		{
+			UE_LOG(LogEnemyFlight, Log, TEXT("[PlannedFlightSegment] Enemy=%s Segment=%d Start=%s End=%s Status=%s ElapsedMs=%.3f"),
+				*GetNameSafe(Data.Enemy), Index, *Request.Start.ToCompactString(), *Request.Goal.ToCompactString(),
+				*UEnum::GetValueAsString(Data.PathStatus), (FPlatformTime::Seconds() - Started) * 1000.0);
+		}
+		if (Data.PathStatus != EFlightPathStatus::Success) return FailPlannedFlight(Data, TEXT("PlannedPathRejected: segment validation"));
+		Data.PathWaypoints.Add(Request.Goal);
+	}
+	Data.WaypointIndex = 1;
+	Data.BestDistance = FVector::Distance(Data.PathWaypoints[0], Data.PathWaypoints[1]);
+	Data.LastPathPosition = Data.PathWaypoints[0];
+	Data.TravelledPathLength = 0.0f;
+	Data.SegmentCheckElapsed = 0.0f;
+	Data.MoveResult = EEnemyFlightMoveResult::Moving;
+	LogFlight(TEXT("PlannedPathStarted"), Data);
+	return EStateTreeRunStatus::Running;
+}
+
 EStateTreeRunStatus RequestFlightPath(FEnemyFlyToLocationTaskInstanceData& Data)
 {
 	if (!HasCurrentFlightRoom(Data))
@@ -401,6 +477,7 @@ EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, fl
 	}
 	if (!Data.LastDestination.Equals(Data.Destination, FMath::Max(Data.DestinationChangeDistance, 0.0f)))
 	{
+		if (Data.bUsePlannedPath) return FailPlannedFlight(Data, TEXT("PlannedPathInterrupted: destination changed"));
 		WaitForFlightPath(Data);
 	}
 	if (Data.bWaitingForPath)
@@ -422,11 +499,25 @@ EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, fl
 	}
 
 	const FVector Position = Data.CachedCapsule->GetComponentLocation();
+	if (!Data.PathWaypoints.IsValidIndex(Data.WaypointIndex))
+	{
+		Data.MoveResult = EEnemyFlightMoveResult::Invalid;
+		StopFlyTask(Data);
+		return EStateTreeRunStatus::Failed;
+	}
 	FVector NextPoint = Data.PathWaypoints[Data.WaypointIndex];
 	const bool bFinalPoint = Data.WaypointIndex == Data.PathWaypoints.Num() - 1;
-	const float Radius = bFinalPoint ? FMath::Max(Data.AcceptanceRadius, 0.0f)
+	const float Radius = Data.bUsePlannedPath ? FMath::Min(10.0f, FMath::Max(Data.AcceptanceRadius, 1.0f))
+		: bFinalPoint ? FMath::Max(Data.AcceptanceRadius, 0.0f)
 		: FMath::Min(10.0f, Data.PathCellSize * 0.1f);
 	const bool bReachedPoint = FVector::DistSquared(Position, NextPoint) <= FMath::Square(Radius);
+	if (Data.bUsePlannedPath)
+	{
+		Data.TravelledPathLength += FVector::Distance(Data.LastPathPosition, Position);
+		Data.LastPathPosition = Position;
+		if (Data.TravelledPathLength >= 500.0f && !(bReachedPoint && bFinalPoint))
+			return FailPlannedFlight(Data, TEXT("PlannedPathInterrupted: 500cm travel limit"));
+	}
 
 	// 중간점 허용 반경 때문에 모서리를 가로지르지 않도록 다음 구간을 먼저 검사한다.
 	if (bReachedPoint && !bFinalPoint)
@@ -443,6 +534,7 @@ EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, fl
 		{
 			if (IsRetryableFlightFailure(Data.PathStatus))
 			{
+				if (Data.bUsePlannedPath) return FailPlannedFlight(Data, TEXT("PlannedPathInterrupted: segment blocked or budget exceeded"));
 				WaitForFlightPath(Data);
 				return EStateTreeRunStatus::Running;
 			}
@@ -454,19 +546,24 @@ EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, fl
 	if (bReachedPoint && bFinalPoint)
 	{
 		Data.MoveResult = EEnemyFlightMoveResult::Arrived;
+		LogFlight(TEXT("PathArrived"), Data);
 		StopFlyTask(Data);
 		return EStateTreeRunStatus::Succeeded;
 	}
 	if (bReachedPoint)
 	{
+		// 경유점 통과 시에만 출력한다. 매 프레임 로그가 이동 성능을 가리지 않게 한다.
+		if (CVarEnemyFlightDebug.GetValueOnGameThread() >= 2) LogFlight(TEXT("WaypointReached"), Data);
 		++Data.WaypointIndex;
 	}
 
 	const float Distance = FVector::Distance(Position, NextPoint);
 	Data.NoProgressElapsed += DeltaTime;
 	RecordFlightPathProgress(Data, Distance, bReachedPoint);
-	if (Data.NoProgressTimeout > 0.0f && Data.NoProgressElapsed >= Data.NoProgressTimeout)
+	const float NoProgressLimit = Data.bUsePlannedPath && Data.NoProgressTimeout <= 0.0f ? 2.0f : Data.NoProgressTimeout;
+	if (NoProgressLimit > 0.0f && Data.NoProgressElapsed >= NoProgressLimit)
 	{
+		if (Data.bUsePlannedPath) return FailPlannedFlight(Data, TEXT("PlannedPathInterrupted: no progress"));
 		WaitForFlightPath(Data);
 		return EStateTreeRunStatus::Running;
 	}
@@ -476,6 +573,17 @@ EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, fl
 			Data.RotationSpeed, 0.0f, DeltaTime);
 	}
 	ApplyFlyTaskSpeedMultiplier(*Data.Enemy, Data.SpeedMultiplier);
+	if (Data.bUsePlannedPath)
+	{
+		// 짧은 경유점을 한 프레임에 지나치지 않도록 속도를 제한한다. 가감속 커브는 별도 Slice다.
+		if (UCharacterMovementComponent* Movement = Data.Enemy->GetCharacterMovement())
+		{
+			const float Remaining = FMath::Max(500.0f - Data.TravelledPathLength, 0.0f);
+			Movement->MaxFlySpeed = FMath::Min(Movement->MaxFlySpeed,
+				FMath::Min(Distance, Remaining) / FMath::Max(DeltaTime, UE_SMALL_NUMBER));
+			Movement->Velocity = Movement->Velocity.GetClampedToMaxSize(Movement->MaxFlySpeed);
+		}
+	}
 	Data.Enemy->AddMovementInput((NextPoint - Position).GetSafeNormal());
 	return EStateTreeRunStatus::Running;
 }
@@ -554,6 +662,29 @@ bool FEnemyFlightPathProgressTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("No physical progress cannot extend retry deadline"), HasFlightRepathLimitExpired(Data));
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyPlannedFlightGeometryTest,
+	"Outlier.Enemy.Flight.PlannedGeometry", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyPlannedFlightGeometryTest::RunTest(const FString& Parameters)
+{
+	const FVector Start(100, 200, 300);
+	TArray<FVector> Points;
+	Points.Add(Start);
+	for (int32 Index = 1; Index <= 10; ++Index) Points.Add(Start + FVector(Index * 50, 0, 0));
+	TestTrue(TEXT("Ten short segments permit five metre route"),
+		IsPlannedPathGeometryValid(Points, Start, Points.Last()));
+	TestFalse(TEXT("Endpoint cannot substitute a different destination"),
+		IsPlannedPathGeometryValid(Points, Start, Points.Last() + FVector(10, 0, 0)));
+	TestFalse(TEXT("Moved start cannot accept stale geometry"),
+		IsPlannedPathGeometryValid(Points, Start + FVector(30, 0, 0), Points.Last()));
+	Points.Add(Start + FVector(550, 0, 0));
+	TestFalse(TEXT("More than five metres is rejected"), IsPlannedPathGeometryValid(Points, Start, Points.Last()));
+	Points = {Start, Start + FVector(300, 0, 0)};
+	TestFalse(TEXT("Destination-only shortcut cannot replace an arc"), IsPlannedPathGeometryValid(Points, Start, Points.Last()));
+	TestFalse(TEXT("Existing assets do not opt into planned movement"), FEnemyFlyToLocationTaskInstanceData().bUsePlannedPath);
+	return true;
+}
 #endif
 
 FEnemyFlyToLocationTask::FEnemyFlyToLocationTask()
@@ -602,8 +733,14 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::EnterState(
 		StopFlyTask(InstanceData);
 		return EStateTreeRunStatus::Failed;
 	}
-	if (InstanceData.bUsePathfinding)
+	if (InstanceData.bUsePathfinding || InstanceData.bUsePlannedPath)
 	{
+		if (InstanceData.bUsePathfinding && InstanceData.bUsePlannedPath)
+		{
+			InstanceData.PathStatus = EFlightPathStatus::InvalidRequest;
+			StopFlyTask(InstanceData);
+			return EStateTreeRunStatus::Failed;
+		}
 		if (!FMath::IsFinite(InstanceData.RepathInterval) || InstanceData.RepathInterval <= 0.0f
 			|| !FMath::IsFinite(InstanceData.RepathTimeout) || InstanceData.RepathTimeout <= 0.0f
 			|| !FMath::IsFinite(InstanceData.PathCheckInterval) || InstanceData.PathCheckInterval <= 0.0f
@@ -621,6 +758,7 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::EnterState(
 		InstanceData.CachedRoom = InstanceData.CachedRoomSubsystem
 			? InstanceData.CachedRoomSubsystem->GetRegisteredRoomVolume(InstanceData.PathRoomTag) : nullptr;
 		InstanceData.MoveResult = EEnemyFlightMoveResult::Moving;
+		if (InstanceData.bUsePlannedPath) return StartPlannedFlight(InstanceData);
 		return RequestFlightPath(InstanceData);
 	}
 
@@ -666,7 +804,7 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::Tick(
 		return EStateTreeRunStatus::Running;
 	}
 
-	if (InstanceData.bUsePathfinding)
+	if (InstanceData.bUsePathfinding || InstanceData.bUsePlannedPath)
 	{
 		return TickFlightPath(InstanceData, DeltaTime);
 	}
@@ -716,6 +854,138 @@ void FEnemyFlyToLocationTask::ExitState(
 	StopFlyTask(InstanceData);
 	LogFlight(TEXT("Exit"), InstanceData, &Transition);
 	InstanceData.CachedController = nullptr;
+}
+
+namespace
+{
+bool IsStationaryFireConfigurationValid(const FEnemyStationaryFireTaskInstanceData& Data)
+{
+	return FMath::IsFinite(Data.MinDuration) && FMath::IsFinite(Data.MaxDuration)
+		&& Data.MinDuration > 0.0f && Data.MaxDuration >= Data.MinDuration;
+}
+
+bool CanHoldStationaryFire(const FEnemyStationaryFireTaskInstanceData& Data)
+{
+	const AEnemyBase* Enemy = Data.Enemy;
+	if (!IsValid(Enemy) || !Enemy->HasAuthority() || !IsValid(Data.CachedController)) return false;
+	if (Enemy->GetController() != Data.CachedController || Data.CachedController->GetPawn() != Enemy) return false;
+	if (Enemy->IsDead() || !Enemy->CanUseEnemyPerception() || Enemy->IsPossessionInProgress()
+		|| Enemy->GetCombatState() == EEnemyCombatState::Stun || !Enemy->IsPlayerCurrentlyVisible()) return false;
+	return Data.CapturedTarget.IsValid() && Data.CachedController->GetCachedVisibleTarget() == Data.CapturedTarget.Get()
+		&& Enemy->GetPoolGameplayGeneration() == Data.CapturedGeneration
+		&& Enemy->GetPoolLeaseSerial() == Data.CapturedLease;
+}
+
+const TCHAR* GetStationaryFireReason(const FEnemyStationaryFireTaskInstanceData& Data)
+{
+	if (!IsStationaryFireConfigurationValid(Data)) return TEXT("InvalidDurationRange");
+	const AEnemyBase* Enemy = Data.Enemy;
+	if (!IsValid(Enemy)) return TEXT("InvalidEnemy");
+	if (!Enemy->HasAuthority()) return TEXT("NoAuthority");
+	if (!IsValid(Data.CachedController) || Enemy->GetController() != Data.CachedController
+		|| Data.CachedController->GetPawn() != Enemy) return TEXT("ControllerChanged");
+	if (Enemy->IsDead()) return TEXT("Dead");
+	if (!Enemy->CanUseEnemyPerception()) return TEXT("PerceptionDisabled");
+	if (Enemy->IsPossessionInProgress()) return TEXT("PossessionInProgress");
+	if (Enemy->GetCombatState() == EEnemyCombatState::Stun) return TEXT("Stun");
+	if (!Enemy->IsPlayerCurrentlyVisible()) return TEXT("SightLost");
+	if (!Data.CapturedTarget.IsValid()
+		|| Data.CachedController->GetCachedVisibleTarget() != Data.CapturedTarget.Get()) return TEXT("TargetChangedOrInvalid");
+	if (Enemy->GetPoolGameplayGeneration() != Data.CapturedGeneration
+		|| Enemy->GetPoolLeaseSerial() != Data.CapturedLease) return TEXT("PoolLifetimeChanged");
+	return TEXT("Valid");
+}
+
+void LogStationaryFire(const TCHAR* Phase, const FEnemyStationaryFireTaskInstanceData& Data,
+	const FStateTreeTransitionResult* Transition = nullptr)
+{
+	if (CVarEnemyFlightDebug.GetValueOnGameThread() == 0) return;
+	UE_LOG(LogEnemyFlight, Log, TEXT("[StationaryFire] %s Enemy=%s Time=%.3f Target=%s Reason=%s Duration=%.2f Elapsed=%.2f Speed=%.1f Current=%s TargetState=%s RunStatus=%s"),
+		Phase, *GetNameSafe(Data.Enemy),
+		IsValid(Data.Enemy) && Data.Enemy->GetWorld() ? Data.Enemy->GetWorld()->GetTimeSeconds() : 0.0,
+		*GetNameSafe(Data.CapturedTarget.Get()), GetStationaryFireReason(Data), Data.SelectedDuration, Data.Elapsed,
+		IsValid(Data.Enemy) ? Data.Enemy->GetVelocity().Size() : 0.0,
+		Transition ? *Transition->CurrentState.Describe() : TEXT("None"),
+		Transition ? *Transition->TargetState.Describe() : TEXT("None"),
+		Transition ? *UEnum::GetValueAsString(Transition->CurrentRunStatus) : TEXT("None"));
+}
+}
+
+#if WITH_DEV_AUTOMATION_TESTS
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyStationaryFireConfigurationTest,
+	"Outlier.Enemy.Flight.StationaryFire", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyStationaryFireConfigurationTest::RunTest(const FString& Parameters)
+{
+	FEnemyStationaryFireTaskInstanceData Data;
+	TestTrue(TEXT("Default hold range is valid"), IsStationaryFireConfigurationValid(Data));
+	TestEqual(TEXT("Diagnostics identify a missing enemy"), FString(GetStationaryFireReason(Data)), FString(TEXT("InvalidEnemy")));
+	TestEqual(TEXT("Minimum pause is half a second"), Data.MinDuration, 0.5f);
+	TestEqual(TEXT("Maximum pause is one second"), Data.MaxDuration, 1.0f);
+	Data.MaxDuration = 0.25f;
+	TestFalse(TEXT("Reversed duration range is rejected"), IsStationaryFireConfigurationValid(Data));
+	TestEqual(TEXT("Diagnostics identify invalid duration before enemy validation"),
+		FString(GetStationaryFireReason(Data)), FString(TEXT("InvalidDurationRange")));
+	Data.MinDuration = 0.0f;
+	TestFalse(TEXT("Immediate completion loop is rejected"), IsStationaryFireConfigurationValid(Data));
+	TestFalse(TEXT("Missing enemy cannot hold movement"), CanHoldStationaryFire(Data));
+	return true;
+}
+#endif
+
+FEnemyStationaryFireTask::FEnemyStationaryFireTask()
+{
+	bShouldCallTick = true;
+	bShouldCopyBoundPropertiesOnTick = false;
+	bShouldCopyBoundPropertiesOnExitState = false;
+	bShouldStateChangeOnReselect = true;
+}
+
+EStateTreeRunStatus FEnemyStationaryFireTask::EnterState(FStateTreeExecutionContext& Context,
+	const FStateTreeTransitionResult& Transition) const
+{
+	FInstanceDataType& Data = Context.GetInstanceData(*this);
+	Data.Enemy = ResolveEnemy(Context, Data.Enemy);
+	Data.Elapsed = 0.0f;
+	Data.SelectedDuration = 0.0f;
+	Data.CachedController = IsValid(Data.Enemy) ? Cast<AEnemyAIController>(Data.Enemy->GetController()) : nullptr;
+	Data.CapturedTarget = IsValid(Data.CachedController) ? Data.CachedController->GetCachedVisibleTarget() : nullptr;
+	Data.CapturedGeneration = IsValid(Data.Enemy) ? Data.Enemy->GetPoolGameplayGeneration() : 0;
+	Data.CapturedLease = IsValid(Data.Enemy) ? Data.Enemy->GetPoolLeaseSerial() : 0;
+	if (!IsStationaryFireConfigurationValid(Data) || !CanHoldStationaryFire(Data))
+	{
+		LogStationaryFire(TEXT("Rejected"), Data, &Transition);
+		return EStateTreeRunStatus::Failed;
+	}
+	// 진입 시 한 번만 시간을 정한다. 이동을 소유하지 않고 조준/사격은 병렬 Task에 맡긴다.
+	Data.SelectedDuration = FMath::FRandRange(Data.MinDuration, Data.MaxDuration);
+	Data.CachedController->StopMovement();
+	PauseFlyMovement(*Data.Enemy);
+	LogStationaryFire(TEXT("Started"), Data, &Transition);
+	return EStateTreeRunStatus::Running;
+}
+
+EStateTreeRunStatus FEnemyStationaryFireTask::Tick(FStateTreeExecutionContext& Context, float DeltaTime) const
+{
+	FInstanceDataType& Data = Context.GetInstanceData(*this);
+	// 소유권/시야가 바뀌면 새 조종자의 이동에 손대지 않고 상위 전환을 따른다.
+	if (!CanHoldStationaryFire(Data))
+	{
+		LogStationaryFire(TEXT("Interrupted"), Data);
+		return EStateTreeRunStatus::Failed;
+	}
+	PauseFlyMovement(*Data.Enemy);
+	Data.Elapsed += DeltaTime;
+	if (Data.Elapsed < Data.SelectedDuration) return EStateTreeRunStatus::Running;
+	LogStationaryFire(TEXT("Completed"), Data);
+	return EStateTreeRunStatus::Succeeded;
+}
+
+void FEnemyStationaryFireTask::ExitState(FStateTreeExecutionContext& Context,
+	const FStateTreeTransitionResult& Transition) const
+{
+	// 상위 전환으로 Tick 없이 종료된 경우도 남긴다. 이동이나 사격 상태는 변경하지 않는다.
+	LogStationaryFire(TEXT("Exit"), Context.GetInstanceData(*this), &Transition);
 }
 
 FEnemyFaceLocationTask::FEnemyFaceLocationTask()

@@ -46,6 +46,9 @@ struct FEnemyRunEnvQueryTaskInstanceData
 	// 접근 질의에서만 켠다. AllMatching 결과의 상위 후보를 제한된 공용 예산으로 검사한다.
 	UPROPERTY(EditAnywhere, Category = Parameter)
 	bool bValidateReachability = false;
+	// 선회는 A* 지름길/긴 우회를 사용하지 않고 EQS 후보의 곡선 구간을 검증한다.
+	UPROPERTY(EditAnywhere, Category = Parameter)
+	bool bValidateOrbitPath = false;
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "1", ClampMax = "32"))
 	int32 MaxPathCandidates = 4;
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "1.0", Units = "cm"))
@@ -75,6 +78,21 @@ struct FEnemyRunEnvQueryTaskInstanceData
 	bool bHasDestination = false;
 	UPROPERTY(EditAnywhere, Category = Output)
 	EEnemyEnvQueryResult QueryResult = EEnemyEnvQueryResult::None;
+	// 부모 State의 파라미터로 복사한 뒤 Fly의 PlannedWaypoints에 전달한다.
+	UPROPERTY(EditAnywhere, Category = Output)
+	TArray<FVector> SelectedWaypoints;
+	UPROPERTY(EditAnywhere, Category = Output)
+	float SelectedArcLength = 0.0f;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bSelectedOrbitLeft = false;
+	// 양쪽의 모든 후보가 탈락/차단된 경우만 참이다. 예산/한도/무효 결과는 포함하지 않는다.
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bNoOrbitDestination = false;
+
+	FVector CapturedOrbitStart = FVector::ZeroVector;
+	FVector CapturedOrbitCenter = FVector::ZeroVector;
+	float CapturedOrbitLength = 0.0f;
+	bool bCapturedOrbitLeft = false;
 
 	UPROPERTY(Transient)
 	TWeakObjectPtr<AEnemyAIController> CachedController;
