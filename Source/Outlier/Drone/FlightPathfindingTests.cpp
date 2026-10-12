@@ -63,6 +63,28 @@ namespace
 	}
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlightCapsuleExtentTest,
+	"Outlier.Flight.Pathfinding.CapsuleExtent",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlightCapsuleExtentTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	// 경계 근처의 구형 드론은 회전 후에도 동일한 공간을 차지해야 한다.
+	for (const FRotator Rotation : { FRotator::ZeroRotator, FRotator(0.0, 45.0, 0.0), FRotator(35.0, 60.0, 20.0) })
+	{
+		TestTrue(TEXT("Sphere extent does not grow with rotation"),
+			FlightPathfinding::GetCapsuleWorldExtent(65.0f, 65.0f, Rotation.Quaternion()).Equals(FVector(65.0), 0.001));
+		TestTrue(TEXT("Upright capsule extent does not grow with yaw"),
+			FlightPathfinding::GetCapsuleWorldExtent(30.0f, 80.0f, FRotator(0.0, Rotation.Yaw, 0.0).Quaternion())
+				.Equals(FVector(30.0, 30.0, 80.0), 0.001));
+	}
+	TestTrue(TEXT("Horizontal capsule preserves its axial length"),
+		FlightPathfinding::GetCapsuleWorldExtent(30.0f, 80.0f, FRotator(90.0, 0.0, 0.0).Quaternion())
+			.Equals(FVector(80.0, 30.0, 30.0), 0.001));
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlightPathGeometryTest,
 	"Outlier.Flight.Pathfinding.Geometry",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -96,6 +118,21 @@ bool FFlightPathGeometryTest::RunTest(const FString& Parameters)
 		{
 			return Point.Z > 50.0;
 		}));
+
+	// 작은 장애물 뒤의 긴 열린 구간은 끝까지 격자를 확장하지 않고 검증된 직선으로 연결한다.
+	Request.Start = FVector::ZeroVector;
+	Request.Goal = FVector(10000.0, 0.0, 0.0);
+	Request.SearchBounds = FBox(FVector(-100.0, -300.0, -100.0), FVector(10100.0, 300.0, 100.0));
+	Request.MaxSearchNodes = 512;
+	Request.MaxCollisionChecks = 2048;
+	const FBox SmallBlocker(FVector(150.0, -80.0, -500.0), FVector(250.0, 80.0, 500.0));
+	Result = FindAroundBox(Request, SmallBlocker);
+	CheckPath(*this, Request, Result, SmallBlocker);
+	if (Result.Waypoints.Num() > 1)
+	{
+		TestTrue(TEXT("Clear final segment skips distant grid expansion"),
+			FVector::Distance(Result.Waypoints[Result.Waypoints.Num() - 2], Result.Waypoints.Last()) > Request.CellSize * 1.75f);
+	}
 
 	Request.Start = Request.Goal;
 	Result = FindAroundBox(Request, FarObstacle);
@@ -411,6 +448,30 @@ bool FFlightPathWorldTest::RunTest(const FString& Parameters)
 	Request.Goal = FVector(310.0, 0.0, 0.0);
 	Result = FlightPathfinding::FindPath(*World, *Capsule, Request);
 	TestTrue(TEXT("Scaled rotated room permits an internal detour"), Result.Status == EFlightPathStatus::Success);
+
+	// 목적지 보정 후 방향 전환만으로 구간이 OutsideRoom이 되는 회귀를 재현한다.
+	WallBox->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	Room->SetActorRotation(FRotator::ZeroRotator);
+	Room->SetActorScale3D(FVector::OneVector);
+	Capsule->SetCapsuleSize(60.0f, 60.0f);
+	Drone->SetActorRotation(FRotator::ZeroRotator);
+	Request = MakeRequest();
+	Request.Room = Room;
+	Request.bRequireRoom = true;
+	Request.Start = Capsule->GetComponentLocation();
+	TestTrue(TEXT("Sphere destination clamps near room boundary"),
+		Room->TryClampFlightLocation(FVector(900.0, 0.0, 0.0),
+			FlightPathfinding::GetCapsuleWorldExtent(65.0f, 65.0f, Capsule->GetComponentQuat()), Request.Goal));
+	Result = FlightPathfinding::FindPath(*World, *Capsule, Request);
+	TestTrue(TEXT("Clamped sphere path succeeds before rotation"), Result.Status == EFlightPathStatus::Success);
+	Drone->SetActorRotation(FRotator(0.0, 45.0, 0.0));
+	TestTrue(TEXT("Clamped sphere destination stays valid after yaw"),
+		FlightPathfinding::CheckDestination(*World, *Capsule, Request) == EFlightPathStatus::Success);
+	TestTrue(TEXT("Clamped sphere segment stays valid after yaw"),
+		FlightPathfinding::CheckSegment(*World, *Capsule, Request) == EFlightPathStatus::Success);
+	Request.Goal.X = 400.0;
+	TestTrue(TEXT("Actual capsule crossing room boundary is still rejected"),
+		FlightPathfinding::CheckDestination(*World, *Capsule, Request) == EFlightPathStatus::BlockedEndpoint);
 
 	Cleanup();
 	return true;

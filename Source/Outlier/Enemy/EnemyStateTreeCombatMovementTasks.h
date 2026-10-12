@@ -8,11 +8,46 @@
 #include "StateTreeTaskBase.h"
 #include "EnemyStateTreeCombatMovementTasks.generated.h"
 
+class ARoomVolume;
+
 UENUM(BlueprintType)
 enum class EEnemyTacticalDistanceMode : uint8
 {
 	Horizontal2D,
 	Spatial3D
+};
+
+USTRUCT()
+struct FEnemyCombatDestinationGuardTaskInstanceData
+{
+	GENERATED_BODY()
+	UPROPERTY(EditAnywhere, Category = Context)
+	TObjectPtr<AEnemyBase> Enemy = nullptr;
+	UPROPERTY(EditAnywhere, Category = Input)
+	TObjectPtr<AActor> SelectedTargetActor = nullptr;
+	UPROPERTY(EditAnywhere, Category = Input)
+	FVector SelectedTargetLocation = FVector::ZeroVector;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "1.0", Units = "cm"))
+	float TargetChangeDistance = 200.0f;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bShouldReselect = false;
+	UPROPERTY(Transient)
+	TWeakObjectPtr<AEnemyAIController> CachedController;
+};
+
+// Fly와 병렬로 실행한다. ShouldReselect를 Move의 OnTick 전이 조건에 연결해 목적지를 다시 선정한다.
+USTRUCT(meta = (DisplayName = "Enemy Combat Destination Guard", Category = "Enemy|Combat"))
+struct OUTLIER_API FEnemyCombatDestinationGuardTask : public FStateTreeTaskCommonBase
+{
+	GENERATED_BODY()
+	using FInstanceDataType = FEnemyCombatDestinationGuardTaskInstanceData;
+	FEnemyCombatDestinationGuardTask();
+	virtual const UStruct* GetInstanceDataType() const override { return FInstanceDataType::StaticStruct(); }
+	virtual EStateTreeRunStatus EnterState(FStateTreeExecutionContext& Context,
+		const FStateTreeTransitionResult& Transition) const override;
+	virtual EStateTreeRunStatus Tick(FStateTreeExecutionContext& Context, float DeltaTime) const override;
+	virtual void ExitState(FStateTreeExecutionContext& Context,
+		const FStateTreeTransitionResult& Transition) const override;
 };
 
 USTRUCT()
@@ -121,6 +156,9 @@ struct FEnemyApproachTargetTaskInstanceData
 	UPROPERTY(EditAnywhere, Category = Output)
 	bool bShouldEnterOrbit = false;
 
+	UPROPERTY(Transient)
+	TWeakObjectPtr<ARoomVolume> CachedRoom;
+
 	float RefreshElapsedTime = 0.0f;
 	bool bHasMoveDestination = false;
 };
@@ -223,6 +261,9 @@ struct FEnemyOrbitTargetTaskInstanceData
 
 	UPROPERTY(EditAnywhere, Category = Output)
 	bool bShouldExitOrbit = false;
+
+	UPROPERTY(Transient)
+	TWeakObjectPtr<ARoomVolume> CachedRoom;
 
 	float RefreshElapsedTime = 0.0f;
 	float RetryElapsedTime = 0.0f;

@@ -68,6 +68,9 @@ struct OUTLIER_API FFlightPathResult
 // 상태/Tick/이동 입력을 소유하지 않는 공용 함수다. 호출자는 결과를 보관하고 이동을 실행한다.
 namespace FlightPathfinding
 {
+	// 회전된 박스가 아니라 캡슐 중심축과 구형 끝부분으로 월드 경계 범위를 계산한다.
+	OUTLIER_API FVector GetCapsuleWorldExtent(float Radius, float HalfHeight, const FQuat& Rotation);
+
 	// EQS 후보의 캡슐 공간/방 경계만 검사한다. 우회 경로를 찾거나 목적지를 보정하지 않는다.
 	OUTLIER_API EFlightPathStatus CheckDestination(
 		UWorld& World, const UCapsuleComponent& MovementCapsule, const FFlightPathRequest& Request);

@@ -21,6 +21,9 @@ namespace
 	TAutoConsoleVariable<int32> CVarFlightEndpointDebug(
 		TEXT("outlier.Flight.EndpointDebug"), 0,
 		TEXT("Log rejected flight endpoints and blocking components. 0: off, 1: on."));
+	TAutoConsoleVariable<int32> CVarFlightSegmentDebug(
+		TEXT("outlier.Flight.SegmentDebug"), 0,
+		TEXT("Log failed movement segment bounds and blockers using extra diagnostic queries. 0: off, 1: on."));
 
 	struct FFlightCostWindow
 	{
@@ -226,15 +229,16 @@ namespace
 
 		int32 GetNeighbour(int32 Node, int32 NeighbourIndex) const
 		{
-			// 목적지는 격자 중심으로 반올림하지 않는다. 근처 격자에서 정확한 목적지로 연결한다.
-			if (NeighbourIndex == 26)
+			// 장애물을 돌아선 지점에서는 목적지 직결을 먼저 검사한다.
+			// 거리만으로 허용하지 않고 Filter의 캡슐 Sweep을 통과한 연결만 사용한다.
+			if (NeighbourIndex == 0)
 			{
-				return FVector::DistSquared(ToPosition(Node), Request.Goal)
-					<= FMath::Square(Request.CellSize * 1.75f) ? GoalNode : INDEX_NONE;
+				return GoalNode;
 			}
 
 			// 3x3x3 이웃에서 중앙(13번)은 자기 자신이므로 건너뛴다.
-			const int32 OffsetIndex = NeighbourIndex >= 13 ? NeighbourIndex + 1 : NeighbourIndex;
+			const int32 GridNeighbourIndex = NeighbourIndex - 1;
+			const int32 OffsetIndex = GridNeighbourIndex >= 13 ? GridNeighbourIndex + 1 : GridNeighbourIndex;
 			const FIntVector Offset(OffsetIndex % 3 - 1, (OffsetIndex / 3) % 3 - 1, OffsetIndex / 9 - 1);
 			return ToNode(ToCell(Node) + Offset);
 		}
@@ -361,6 +365,13 @@ namespace
 
 		return true;
 	}
+}
+
+FVector FlightPathfinding::GetCapsuleWorldExtent(float Radius, float HalfHeight, const FQuat& Rotation)
+{
+	// 구형 캡슐은 회전해도 크기가 같다. 긴 캡슐만 중심 선분의 기울기만큼 범위가 늘어난다.
+	const FVector Axis = Rotation.GetAxisZ().GetAbs();
+	return FVector(Radius) + Axis * FMath::Max(HalfHeight - Radius, 0.0f);
 }
 
 FFlightPathResult FlightPathfinding::FindPathWithChecks(
@@ -492,6 +503,89 @@ FFlightPathResult FlightPathfinding::FindPathWithChecks(
 	return Finish(EFlightPathStatus::Success);
 }
 
+static void LogFailedFlightSegment(
+	UWorld& World, const UCapsuleComponent& Capsule, const FFlightPathRequest& Request,
+	const FFlightPathResult& Result, bool bClearanceEscape)
+{
+	if (CVarFlightSegmentDebug.GetValueOnGameThread() == 0
+		|| (Result.Status != EFlightPathStatus::BlockedEndpoint && Result.Status != EFlightPathStatus::BlockedSegment))
+	{
+		return;
+	}
+
+	// 실제 구간 판정은 유지한다. 실패한 구간에만 별도 조회해 충돌 대상과 방 경계를 구분한다.
+	const AActor* Owner = Capsule.GetOwner();
+	const ARoomVolume* Room = Request.Room.Get();
+	const float Radius = Capsule.GetScaledCapsuleRadius() + Request.Clearance;
+	const float HalfHeight = Capsule.GetScaledCapsuleHalfHeight() + Request.Clearance;
+	const FQuat Rotation = Capsule.GetComponentQuat();
+	const FVector Extent = FlightPathfinding::GetCapsuleWorldExtent(Radius, HalfHeight, Rotation);
+	const FVector ActualExtent = FlightPathfinding::GetCapsuleWorldExtent(
+		Capsule.GetScaledCapsuleRadius(), Capsule.GetScaledCapsuleHalfHeight(), Rotation);
+	const bool bStartInsideRoom = !Request.bRequireRoom
+		|| IsCapsuleInsideRoom(*Room, Request.Start, bClearanceEscape ? ActualExtent : Extent);
+	const bool bGoalInsideRoom = !Request.bRequireRoom || IsCapsuleInsideRoom(*Room, Request.Goal, Extent);
+	UE_LOG(LogFlightPathCost, Log,
+		TEXT("[FlightSegment] Enemy=%s Status=%s StartBlocked=%d From=%s To=%s Room=%s StartInsideRoom=%d GoalInsideRoom=%d Radius=%.1f HalfHeight=%.1f ClearanceEscape=%d"),
+		*GetNameSafe(Owner), *UEnum::GetValueAsString(Result.Status), Result.bStartBlocked,
+		*Request.Start.ToString(), *Request.Goal.ToString(), *GetNameSafe(Room),
+		bStartInsideRoom, bGoalInsideRoom, Radius, HalfHeight, bClearanceEscape);
+	if (!bStartInsideRoom || !bGoalInsideRoom)
+	{
+		UE_LOG(LogFlightPathCost, Log, TEXT("[FlightSegment] Enemy=%s Reason=OutsideRoom"), *GetNameSafe(Owner));
+		return;
+	}
+
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(FlightSegmentDebug), false, Owner);
+	Params.AddIgnoredActors(Capsule.GetMoveIgnoreActors());
+	Params.AddIgnoredComponents(Capsule.GetMoveIgnoreComponents());
+	const FCollisionResponseParams Responses(Capsule.GetCollisionResponseToChannels());
+	const ECollisionChannel Channel = Capsule.GetCollisionObjectType();
+	const FCollisionShape Shape = FCollisionShape::MakeCapsule(Radius, HalfHeight);
+	// 진단 조회는 탐색 검사 한도와 별도이며, PathCostLog에는 진단 비용도 포함된다.
+	if (Result.Status == EFlightPathStatus::BlockedEndpoint)
+	{
+		const FVector Position = Result.bStartBlocked ? Request.Start : Request.Goal;
+		TArray<FOverlapResult> Overlaps;
+		World.OverlapMultiByChannel(Overlaps, Position, Rotation, Channel, Shape, Params, Responses);
+		int32 LoggedBlockers = 0;
+		for (const FOverlapResult& Overlap : Overlaps)
+		{
+			if (Overlap.bBlockingHit)
+			{
+				UE_LOG(LogFlightPathCost, Log,
+					TEXT("[FlightSegment] Enemy=%s Endpoint=%s Blocker=%s Component=%s"),
+					*GetNameSafe(Owner), Result.bStartBlocked ? TEXT("Start") : TEXT("Goal"),
+					*GetNameSafe(Overlap.GetActor()), *GetNameSafe(Overlap.GetComponent()));
+				if (++LoggedBlockers >= 8)
+				{
+					break;
+				}
+			}
+		}
+		UE_LOG(LogFlightPathCost, Log, TEXT("[FlightSegment] Enemy=%s DiagnosticBlockers=%d Limit=8"),
+			*GetNameSafe(Owner), LoggedBlockers);
+		return;
+	}
+	if (bClearanceEscape
+		&& FVector::DistSquared(Request.Start, Request.Goal) > FMath::Square(Request.CellSize * 1.75f))
+	{
+		UE_LOG(LogFlightPathCost, Log, TEXT("[FlightSegment] Enemy=%s Reason=ClearanceEscapeLengthLimit"),
+			*GetNameSafe(Owner));
+		return;
+	}
+	FHitResult Hit;
+	const FCollisionShape SweepShape = bClearanceEscape
+		? FCollisionShape::MakeCapsule(Capsule.GetScaledCapsuleRadius(), Capsule.GetScaledCapsuleHalfHeight()) : Shape;
+	const bool bHit = World.SweepSingleByChannel(Hit, Request.Start, Request.Goal,
+		Rotation, Channel, SweepShape, Params, Responses);
+	UE_LOG(LogFlightPathCost, Log,
+		TEXT("[FlightSegment] Enemy=%s DiagnosticHit=%d Blocker=%s Component=%s ImpactPoint=%s ImpactNormal=%s StartPenetrating=%d PenetrationDepth=%.2f Channel=%d"),
+		*GetNameSafe(Owner), bHit, *GetNameSafe(Hit.GetActor()), *GetNameSafe(Hit.GetComponent()),
+		*Hit.ImpactPoint.ToString(), *Hit.ImpactNormal.ToString(), Hit.bStartPenetrating, Hit.PenetrationDepth,
+		static_cast<int32>(Channel));
+}
+
 static FFlightPathResult FindPathOrCheckSegment(
 	UWorld& World, const UCapsuleComponent& MovementCapsule, const FFlightPathRequest& Request,
 	EFlightCheckMode Mode)
@@ -530,10 +624,8 @@ static FFlightPathResult FindPathOrCheckSegment(
 	const float ActualHalfHeight = MovementCapsule.GetScaledCapsuleHalfHeight();
 	const FCollisionShape ActualShape = FCollisionShape::MakeCapsule(ActualRadius, ActualHalfHeight);
 	const FQuat Rotation = MovementCapsule.GetComponentQuat();
-	const FVector Extent = FBox(-FVector(Radius, Radius, HalfHeight), FVector(Radius, Radius, HalfHeight))
-		.TransformBy(FTransform(Rotation)).GetExtent();
-	const FVector ActualExtent = FBox(-FVector(ActualRadius, ActualRadius, ActualHalfHeight),
-		FVector(ActualRadius, ActualRadius, ActualHalfHeight)).TransformBy(FTransform(Rotation)).GetExtent();
+	const FVector Extent = FlightPathfinding::GetCapsuleWorldExtent(Radius, HalfHeight, Rotation);
+	const FVector ActualExtent = FlightPathfinding::GetCapsuleWorldExtent(ActualRadius, ActualHalfHeight, Rotation);
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(FlightPathfinding), false, Owner);
 	// 실제 이동에서 무시하는 대상은 경로 검증에서도 동일하게 무시한다.
 	Params.AddIgnoredActors(MovementCapsule.GetMoveIgnoreActors());
@@ -629,6 +721,7 @@ static FFlightPathResult FindPathOrCheckSegment(
 			Failure.Status = IsSegmentClear(Request.Start, Request.Goal)
 				? EFlightPathStatus::Success : EFlightPathStatus::BlockedSegment;
 		}
+		LogFailedFlightSegment(World, MovementCapsule, Request, Failure, bStartNeedsClearanceEscape);
 		return Failure;
 	}
 	Failure = FlightPathfinding::FindPathWithChecks(Request, IsPositionClear, IsSegmentClear);

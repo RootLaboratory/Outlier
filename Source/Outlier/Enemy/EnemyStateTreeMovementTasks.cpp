@@ -329,8 +329,8 @@ EStateTreeRunStatus RequestFlightPath(FEnemyFlyToLocationTaskInstanceData& Data)
 	{
 		const float Radius = Data.CachedCapsule->GetScaledCapsuleRadius() + Data.PathClearance;
 		const float HalfHeight = Data.CachedCapsule->GetScaledCapsuleHalfHeight() + Data.PathClearance;
-		const FVector Extent = FBox(-FVector(Radius, Radius, HalfHeight), FVector(Radius, Radius, HalfHeight))
-			.TransformBy(FTransform(Data.CachedCapsule->GetComponentQuat())).GetExtent();
+		const FVector Extent = FlightPathfinding::GetCapsuleWorldExtent(
+			Radius, HalfHeight, Data.CachedCapsule->GetComponentQuat());
 		FVector RoomGoal;
 		if (Data.CachedRoom->TryClampFlightLocation(Request.Goal, Extent, RoomGoal))
 		{

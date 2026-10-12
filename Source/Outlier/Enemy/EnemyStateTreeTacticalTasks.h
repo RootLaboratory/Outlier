@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "EnemyBase.h"
+#include "Drone/FlightPathfinding.h"
 #include "EnvironmentQuery/EnvQueryTypes.h"
 #include "StateTreeExecutionContext.h"
 #include "StateTreeExecutionTypes.h"
@@ -16,7 +17,8 @@ class ARoomVolume;
 UENUM(BlueprintType)
 enum class EEnemyEnvQueryResult : uint8
 {
-	None, Waiting, Running, Success, NoResults, Failed, Invalid, Stale, TimedOut, Cancelled
+	None, Waiting, Running, Success, NoResults, Failed, Invalid, Stale, TimedOut, Cancelled,
+	NoReachableDestination, PathBudgetExceeded, CandidateLimitReached
 };
 
 USTRUCT()
@@ -41,6 +43,32 @@ struct FEnemyRunEnvQueryTaskInstanceData
 	float QueryInterval = 0.5f;
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.01", Units = "s"))
 	float QueryTimeout = 2.0f;
+	// 접근 질의에서만 켠다. AllMatching 결과의 상위 후보를 제한된 공용 예산으로 검사한다.
+	UPROPERTY(EditAnywhere, Category = Parameter)
+	bool bValidateReachability = false;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "1", ClampMax = "32"))
+	int32 MaxPathCandidates = 4;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "1.0", Units = "cm"))
+	float PathCellSize = 100.0f;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "1.0", Units = "cm"))
+	float SearchPadding = 800.0f;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "1", ClampMax = "65536"))
+	int32 MaxSearchNodes = 512;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "1", ClampMax = "262144"))
+	int32 MaxCollisionChecks = 2048;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.01"))
+	float MaxSearchMilliseconds = 4.0f;
+	// 0이면 기존 타깃 위치 변화 허용을 유지한다. 급이동한 타깃의 오래된 결과는 적용하지 않는다.
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0", Units = "cm"))
+	float TargetChangeDistance = 0.0f;
+	UPROPERTY(EditAnywhere, Category = Output)
+	FVector SelectedTargetLocation = FVector::ZeroVector;
+	UPROPERTY(EditAnywhere, Category = Output)
+	TObjectPtr<AActor> SelectedTargetActor = nullptr;
+	UPROPERTY(EditAnywhere, Category = Output)
+	int32 CheckedPathCandidates = 0;
+	UPROPERTY(EditAnywhere, Category = Output)
+	EFlightPathStatus SelectionPathStatus = EFlightPathStatus::Unavailable;
 	UPROPERTY(EditAnywhere, Category = Output)
 	FVector Destination = FVector::ZeroVector;
 	UPROPERTY(EditAnywhere, Category = Output)
