@@ -8,6 +8,12 @@
 
 struct FEnvQueryRequest;
 
+namespace EnemyRetreat
+{
+	OUTLIER_API void BuildCandidates(const FVector& Start, const FVector& Center, TArray<FVector>& OutCandidates);
+	OUTLIER_API void SetQuerySnapshot(FEnvQueryRequest& Request, const FVector& Start, const FVector& Center);
+}
+
 // Generator와 결과 검증이 같은 순서/곡선을 사용한다. 좌표는 Actor 원점 기준이다.
 struct FEnemyOrbitCandidate
 {
@@ -66,6 +72,16 @@ class OUTLIER_API UEnemyEnvQueryGenerator_Orbit : public UEnvQueryGenerator
 	GENERATED_BODY()
 public:
 	UEnemyEnvQueryGenerator_Orbit();
+	virtual void GenerateItems(FEnvQueryInstance& QueryInstance) const override;
+};
+
+// 현재 고도에서 플레이어 반대 방향으로 10m 초과~15m 이내 후보를 만든다.
+UCLASS(meta = (DisplayName = "Enemy Retreat Candidates"))
+class OUTLIER_API UEnemyEnvQueryGenerator_Retreat : public UEnvQueryGenerator
+{
+	GENERATED_BODY()
+public:
+	UEnemyEnvQueryGenerator_Retreat();
 	virtual void GenerateItems(FEnvQueryInstance& QueryInstance) const override;
 };
 

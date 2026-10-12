@@ -139,6 +139,9 @@ namespace
 
 	bool IsValidRequest(const FFlightPathRequest& Request)
 	{
+		if (Request.bRequireAwayHalfSpace && (!IsFiniteVector(Request.AwayOrigin)
+			|| !IsFiniteVector(Request.AwayDirection) || !FMath::IsNearlyZero(Request.AwayDirection.Z)
+			|| !FMath::IsNearlyEqual(Request.AwayDirection.SizeSquared2D(), 1.0, 0.001))) return false;
 		return IsFiniteVector(Request.Start) && IsFiniteVector(Request.Goal)
 			&& Request.SearchBounds.IsValid && IsFiniteVector(Request.SearchBounds.Min)
 			&& IsFiniteVector(Request.SearchBounds.Max)
@@ -304,7 +307,8 @@ namespace
 				return false;
 			}
 
-			const bool bClear = PositionCheck(Grid.ToPosition(Node));
+			const FVector Position = Grid.ToPosition(Node);
+			const bool bClear = FlightPathfinding::IsInsideAwayHalfSpace(Grid.Request, Position) && PositionCheck(Position);
 			PositionCache.Add(Node, bClear);
 			return bClear;
 		}
@@ -312,6 +316,7 @@ namespace
 		bool IsTraversalAllowed(int32 From, int32 To) const
 		{
 			// 위치만 비어 있어도 대각선 구간이 벽 모서리를 통과할 수 있으므로 전체 구간을 Sweep한다.
+			// 후퇴 반공간은 볼록하므로 양 끝점이 내부이면 직선 연결도 플레이어 반대편으로 나가지 않는다.
 			return IsPositionClear(To) && BeginCheck()
 				&& SegmentCheck(Grid.ToPosition(From), Grid.ToPosition(To));
 		}
@@ -365,6 +370,12 @@ namespace
 
 		return true;
 	}
+}
+
+bool FlightPathfinding::IsInsideAwayHalfSpace(const FFlightPathRequest& Request, const FVector& Position)
+{
+	return !Request.bRequireAwayHalfSpace
+		|| FVector::DotProduct(Position - Request.AwayOrigin, Request.AwayDirection) >= 0.0;
 }
 
 FVector FlightPathfinding::GetCapsuleWorldExtent(float Radius, float HalfHeight, const FQuat& Rotation)
@@ -447,7 +458,7 @@ FFlightPathResult FlightPathfinding::FindPathWithChecks(
 				const FVector Offset = Direction == 0 ? (Request.Start - Request.Goal).GetSafeNormal()
 					: FVector(OffsetIndex % 3 - 1, (OffsetIndex / 3) % 3 - 1, OffsetIndex / 9 - 1).GetSafeNormal();
 				const FVector Candidate = Request.Goal + Offset * (Request.GoalSearchRadius * Ring * 0.5f);
-				if (Request.SearchBounds.IsInsideOrOn(Candidate) && Filter.BeginCheck()
+				if (Request.SearchBounds.IsInsideOrOn(Candidate) && IsInsideAwayHalfSpace(Request, Candidate) && Filter.BeginCheck()
 					&& IsPositionClear(Candidate))
 				{
 					ResolvedRequest.Goal = Candidate;
@@ -635,7 +646,8 @@ static FFlightPathResult FindPathOrCheckSegment(
 
 	const auto IsInsideRoom = [&](const FVector& Position)
 	{
-		return !Request.bRequireRoom || IsCapsuleInsideRoom(*Room, Position, Extent);
+		return FlightPathfinding::IsInsideAwayHalfSpace(Request, Position)
+			&& (!Request.bRequireRoom || IsCapsuleInsideRoom(*Room, Position, Extent));
 	};
 	if (Mode == EFlightCheckMode::Destination)
 	{
@@ -677,7 +689,8 @@ static FFlightPathResult FindPathOrCheckSegment(
 		// 안전 여유만 겹친 실제 현재 위치에서는 탈출할 수 있어야 한다. 실제 관통/방 이탈은 계속 거부한다.
 		if (!bClear && Request.Start.Equals(MovementCapsule.GetComponentLocation(), 0.01))
 		{
-			bStartClear = (!Request.bRequireRoom || IsCapsuleInsideRoom(*Room, Position, ActualExtent))
+			bStartClear = FlightPathfinding::IsInsideAwayHalfSpace(Request, Position)
+				&& (!Request.bRequireRoom || IsCapsuleInsideRoom(*Room, Position, ActualExtent))
 				&& !World.OverlapBlockingTestByChannel(Position, Rotation, Channel, ActualShape, Params, Responses);
 			bStartNeedsClearanceEscape = bStartClear;
 		}

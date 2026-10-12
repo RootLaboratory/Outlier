@@ -114,6 +114,12 @@ const FName OrbitCenterY(TEXT("OrbitCenterY"));
 const FName OrbitCenterZ(TEXT("OrbitCenterZ"));
 const FName OrbitLength(TEXT("OrbitLength"));
 const FName OrbitLeft(TEXT("OrbitLeft"));
+const FName RetreatStartX(TEXT("RetreatStartX"));
+const FName RetreatStartY(TEXT("RetreatStartY"));
+const FName RetreatStartZ(TEXT("RetreatStartZ"));
+const FName RetreatCenterX(TEXT("RetreatCenterX"));
+const FName RetreatCenterY(TEXT("RetreatCenterY"));
+const FName RetreatCenterZ(TEXT("RetreatCenterZ"));
 
 FVector MakeOrbitPoint(const FVector& Start, const FVector& Center, float Length, bool bLeft)
 {
@@ -132,6 +138,56 @@ bool EnemyOrbit::IsCombatRadius(const FVector& Start, const FVector& Center)
 	if (Start.ContainsNaN() || Center.ContainsNaN()) return false;
 	const double Radius = FVector::Dist2D(Start, Center);
 	return Radius > 1000.0 && Radius <= 2000.0;
+}
+
+void EnemyRetreat::BuildCandidates(const FVector& Start, const FVector& Center, TArray<FVector>& OutCandidates)
+{
+	OutCandidates.Reset();
+	if (Start.ContainsNaN() || Center.ContainsNaN()) return;
+	const FVector Away = (Start - Center).GetSafeNormal2D();
+	if (Away.IsNearlyZero() || FVector::Dist2D(Start, Center) > 1000.0) return;
+	// 10m 경계/도착 허용 반경을 피한 세 거리에서 직후방부터 확인한다.
+	// 사선 후보도 현재 위치보다 뒤에 있어야 한다. 고도는 현재 드론 높이를 유지한다.
+	for (float Distance : {1250.0f, 1100.0f, 1400.0f})
+	{
+		for (float Degrees : {0.0f, -30.0f, 30.0f})
+		{
+			FVector Candidate = MakeApproachCandidate(Center, Away, Distance, Degrees);
+			Candidate.Z = Start.Z;
+			if (FVector::DotProduct(Candidate - Start, Away) >= 25.0) OutCandidates.Add(Candidate);
+		}
+	}
+}
+
+void EnemyRetreat::SetQuerySnapshot(FEnvQueryRequest& Request, const FVector& Start, const FVector& Center)
+{
+	Request.SetFloatParam(RetreatStartX, Start.X).SetFloatParam(RetreatStartY, Start.Y).SetFloatParam(RetreatStartZ, Start.Z);
+	Request.SetFloatParam(RetreatCenterX, Center.X).SetFloatParam(RetreatCenterY, Center.Y).SetFloatParam(RetreatCenterZ, Center.Z);
+}
+
+UEnemyEnvQueryGenerator_Retreat::UEnemyEnvQueryGenerator_Retreat()
+{
+	ItemType = UEnvQueryItemType_Point::StaticClass();
+}
+
+void UEnemyEnvQueryGenerator_Retreat::GenerateItems(FEnvQueryInstance& QueryInstance) const
+{
+	const AEnemyBase* Enemy = Cast<AEnemyBase>(QueryInstance.Owner.Get());
+	const AActor* Target = GetVisibleEnvQueryTarget(Enemy);
+	if (!Target) return;
+	FVector Start = Enemy->GetActorLocation();
+	FVector Center = Target->GetActorLocation();
+	if (QueryInstance.NamedParams.Contains(RetreatStartX))
+	{
+		Start = FVector(QueryInstance.NamedParams.FindRef(RetreatStartX), QueryInstance.NamedParams.FindRef(RetreatStartY),
+			QueryInstance.NamedParams.FindRef(RetreatStartZ));
+		Center = FVector(QueryInstance.NamedParams.FindRef(RetreatCenterX), QueryInstance.NamedParams.FindRef(RetreatCenterY),
+			QueryInstance.NamedParams.FindRef(RetreatCenterZ));
+	}
+	TArray<FVector> Candidates;
+	EnemyRetreat::BuildCandidates(Start, Center, Candidates);
+	for (const FVector& Candidate : Candidates) QueryInstance.AddItemData<UEnvQueryItemType_Point>(Candidate);
+	LogGeneratorResult(QueryInstance, Enemy, Target, TEXT("RetreatCompleted"), Candidates.Num(), Candidates.Num());
 }
 
 void EnemyOrbit::BuildCandidates(const FVector& Start, const FVector& Center,
@@ -295,6 +351,35 @@ bool FEnemyApproachCandidatesTest::RunTest(const FString& Parameters)
 			TestTrue(TEXT("Candidate remains on drone side of target"), FVector::DotProduct(Candidate - Center, Radial) > 0.0);
 		}
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyRetreatCandidatesTest,
+	"Outlier.Enemy.EQS.RetreatCandidates", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyRetreatCandidatesTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const FVector Center(100, 200, 1000);
+	TArray<FVector> Candidates;
+	for (const FVector Start : {FVector(600, 200, 250), FVector(-400, 200, 250), FVector(700, 1000, 250)})
+	{
+		EnemyRetreat::BuildCandidates(Start, Center, Candidates);
+		TestFalse(TEXT("Near and ten metre targets have retreat candidates"), Candidates.IsEmpty());
+		TestTrue(TEXT("Candidate count is bounded"), Candidates.Num() <= 9);
+		const FVector Away = (Start - Center).GetSafeNormal2D();
+		for (const FVector& Candidate : Candidates)
+		{
+			const double Distance = FVector::Dist2D(Candidate, Center);
+			TestTrue(TEXT("Goal keeps margin beyond ten and within fifteen metres"), Distance > 1050.0 && Distance <= 1450.0);
+			TestEqual(TEXT("Goal preserves current altitude"), Candidate.Z, Start.Z);
+			TestTrue(TEXT("Goal moves away rather than across player"), FVector::DotProduct(Candidate - Start, Away) >= 25.0);
+		}
+	}
+	EnemyRetreat::BuildCandidates(Center, Center, Candidates);
+	TestTrue(TEXT("Undefined away direction cannot make arbitrary goals"), Candidates.IsEmpty());
+	EnemyRetreat::BuildCandidates(Center + FVector(1001, 0, 0), Center, Candidates);
+	TestTrue(TEXT("Beyond ten metres does not start retreat"), Candidates.IsEmpty());
 	return true;
 }
 

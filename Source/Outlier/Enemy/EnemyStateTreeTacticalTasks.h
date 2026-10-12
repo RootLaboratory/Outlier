@@ -43,12 +43,15 @@ struct FEnemyRunEnvQueryTaskInstanceData
 	float QueryInterval = 0.5f;
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.01", Units = "s"))
 	float QueryTimeout = 2.0f;
-	// 접근 질의에서만 켠다. AllMatching 결과의 상위 후보를 제한된 공용 예산으로 검사한다.
+	// 접근 질의에서 켠다. 후퇴/선회는 아래의 전용 검증 옵션을 사용한다.
 	UPROPERTY(EditAnywhere, Category = Parameter)
 	bool bValidateReachability = false;
 	// 선회는 A* 지름길/긴 우회를 사용하지 않고 EQS 후보의 곡선 구간을 검증한다.
 	UPROPERTY(EditAnywhere, Category = Parameter)
 	bool bValidateOrbitPath = false;
+	// 후퇴 전용 Generator와 함께 사용한다. 접근/선회 검증과 동시에 켜지 않는다.
+	UPROPERTY(EditAnywhere, Category = Parameter)
+	bool bValidateRetreatPath = false;
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "1", ClampMax = "32"))
 	int32 MaxPathCandidates = 4;
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "1.0", Units = "cm"))
@@ -88,6 +91,14 @@ struct FEnemyRunEnvQueryTaskInstanceData
 	// 양쪽의 모든 후보가 탈락/차단된 경우만 참이다. 예산/한도/무효 결과는 포함하지 않는다.
 	UPROPERTY(EditAnywhere, Category = Output)
 	bool bNoOrbitDestination = false;
+	// 제한된 후보를 모두 검사한 경우만 참이다. 실패 전이에서 이 Task 출력에 직접 바인딩한다.
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bNoRetreatDestination = false;
+	UPROPERTY(EditAnywhere, Category = Output)
+	FVector RetreatOrigin = FVector::ZeroVector;
+	UPROPERTY(EditAnywhere, Category = Output)
+	FVector RetreatDirection = FVector::ZeroVector;
+	FVector CapturedRetreatStart = FVector::ZeroVector;
 
 	FVector CapturedOrbitStart = FVector::ZeroVector;
 	FVector CapturedOrbitCenter = FVector::ZeroVector;

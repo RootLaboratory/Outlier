@@ -104,13 +104,24 @@ void LogEnvQuery(const TCHAR* Phase, const FEnemyRunEnvQueryTaskInstanceData& Da
 				Phase, *GetNameSafe(Data.Enemy), Data.bNoOrbitDestination, Data.bSelectedOrbitLeft,
 				Data.SelectedArcLength, Data.SelectedWaypoints.Num());
 		}
+		if (Data.bValidateRetreatPath)
+		{
+			UE_LOG(LogEnemyEQS, Log,
+				TEXT("[EnemyRetreatResult] %s Enemy=%s Result=%s NoRetreatDestination=%d Start=%s Origin=%s Direction=%s Goal=%s GoalDistance2D=%.1f Checked=%d Path=%s"),
+				Phase, *GetNameSafe(Data.Enemy), *UEnum::GetValueAsString(Data.QueryResult), Data.bNoRetreatDestination,
+				*Data.CapturedRetreatStart.ToCompactString(), *Data.RetreatOrigin.ToCompactString(),
+				*Data.RetreatDirection.ToCompactString(), *Data.Destination.ToCompactString(),
+				FVector::Dist2D(Data.Destination, Data.RetreatOrigin), Data.CheckedPathCandidates,
+				*UEnum::GetValueAsString(Data.SelectionPathStatus));
+		}
 	}
 }
 
 bool IsReachabilityConfigurationValid(const FEnemyRunEnvQueryTaskInstanceData& Data)
 {
-	if (!Data.bValidateReachability && !Data.bValidateOrbitPath) return true;
-	if (Data.bValidateReachability && Data.bValidateOrbitPath) return false;
+	const int32 Modes = int32(Data.bValidateReachability) + int32(Data.bValidateOrbitPath) + int32(Data.bValidateRetreatPath);
+	if (Modes == 0) return true;
+	if (Modes != 1) return false;
 	const bool bValidLimits = Data.MaxPathCandidates >= 1 && Data.MaxPathCandidates <= 32
 		&& Data.MaxSearchNodes >= 1 && Data.MaxSearchNodes <= 65536
 		&& Data.MaxCollisionChecks >= 1 && Data.MaxCollisionChecks <= 262144;
@@ -130,11 +141,21 @@ bool IsOrbitQueryConfigurationValid(const FEnemyRunEnvQueryTaskInstanceData& Dat
 		&& Options[0]->Generator && Options[0]->Generator->IsA<UEnemyEnvQueryGenerator_Orbit>();
 }
 
+bool IsRetreatQueryConfigurationValid(const FEnemyRunEnvQueryTaskInstanceData& Data)
+{
+	if (!Data.bValidateRetreatPath) return true;
+	if (!Data.bRequireVisibleTarget || !Data.QueryTemplate) return false;
+	const TArray<UEnvQueryOption*>& Options = Data.QueryTemplate->GetOptions();
+	return Options.Num() == 1 && Options[0] && Options[0]->Generator
+		&& Options[0]->Generator->GetClass() == UEnemyEnvQueryGenerator_Retreat::StaticClass();
+}
+
 bool IsEnvQueryConfigurationValid(const FEnemyRunEnvQueryTaskInstanceData& Data)
 {
 	if (!FMath::IsFinite(Data.TargetChangeDistance) || Data.TargetChangeDistance < 0.0f) return false;
 	if (!IsReachabilityConfigurationValid(Data)) return false;
 	if (!IsOrbitQueryConfigurationValid(Data)) return false;
+	if (!IsRetreatQueryConfigurationValid(Data)) return false;
 	if (!FMath::IsFinite(Data.Clearance) || Data.Clearance < 0.0f)
 	{
 		return false;
@@ -199,7 +220,7 @@ bool IsEnvQueryTargetCurrent(const FEnemyRunEnvQueryTaskInstanceData& Data)
 	}
 	if (!Data.Enemy->IsPlayerCurrentlyVisible() || !Data.CapturedTarget.IsValid()
 		|| Data.CachedController->GetCachedVisibleTarget() != Data.CapturedTarget.Get()) return false;
-	const float ChangeDistance = Data.bValidateOrbitPath && Data.TargetChangeDistance <= 0.0f
+	const float ChangeDistance = (Data.bValidateOrbitPath || Data.bValidateRetreatPath) && Data.TargetChangeDistance <= 0.0f
 		? 200.0f : Data.TargetChangeDistance;
 	return ChangeDistance <= 0.0f
 		|| FVector::DistSquared2D(Data.SelectedTargetLocation, Data.CapturedTarget->GetActorLocation())
@@ -215,13 +236,15 @@ bool IsEnvQuerySnapshotCurrent(const FEnemyRunEnvQueryTaskInstanceData& Data)
 		&& IsEnvQueryRoomCurrent(Data)
 		&& IsEnvQueryTargetCurrent(Data)
 		&& (!Data.bValidateOrbitPath
-			|| Data.Enemy->GetActorLocation().Equals(Data.CapturedOrbitStart, 25.0));
+			|| Data.Enemy->GetActorLocation().Equals(Data.CapturedOrbitStart, 25.0))
+		&& (!Data.bValidateRetreatPath
+			|| Data.Enemy->GetActorLocation().Equals(Data.CapturedRetreatStart, 25.0));
 }
 
 void LogEnvQuerySnapshotFailure(const FEnemyRunEnvQueryTaskInstanceData& Data, int32 CompletedRequest = INDEX_NONE)
 {
 	if (CVarEnemyEQSDebug.GetValueOnGameThread() == 0) return;
-	const TCHAR* Reason = TEXT("OrbitStartMoved");
+	const TCHAR* Reason = Data.bValidateRetreatPath ? TEXT("RetreatStartMoved") : TEXT("OrbitStartMoved");
 	if (!IsEnvQueryEnemyCurrent(Data)) Reason = TEXT("EnemyLifetimeOrCombatStateChanged");
 	else if (!IsEnvQueryControllerCurrent(Data)) Reason = TEXT("ControllerChanged");
 	else if (!IsEnvQueryRoomCurrent(Data)) Reason = TEXT("RoomChangedOrUnavailable");
@@ -259,6 +282,9 @@ void CaptureEnvQuerySnapshot(FEnemyRunEnvQueryTaskInstanceData& Data)
 	Data.CapturedOrbitCenter = ToQueryParamLocation(Data.SelectedTargetLocation);
 	Data.CapturedOrbitLength = Data.bValidateOrbitPath ? FMath::FRandRange(300.0f, 500.0f) : 0.0f;
 	Data.bCapturedOrbitLeft = Enemy->PrefersCombatLeft();
+	Data.CapturedRetreatStart = ToQueryParamLocation(Enemy->GetActorLocation());
+	Data.RetreatOrigin = ToQueryParamLocation(Data.SelectedTargetLocation);
+	Data.RetreatDirection = (Data.CapturedRetreatStart - Data.RetreatOrigin).GetSafeNormal2D();
 }
 
 bool HasEnvQueryTimedOut(const FEnemyRunEnvQueryTaskInstanceData& Data)
@@ -325,6 +351,9 @@ FFlightPathRequest MakeCandidatePathRequest(const FEnemyRunEnvQueryTaskInstanceD
 	Request.MaxSearchNodes = Nodes;
 	Request.MaxCollisionChecks = Checks;
 	Request.MaxSearchMilliseconds = Milliseconds;
+	Request.bRequireAwayHalfSpace = Data.bValidateRetreatPath;
+	Request.AwayOrigin = Data.RetreatOrigin + Request.Start - Data.Enemy->GetActorLocation();
+	Request.AwayDirection = Data.RetreatDirection;
 	return Request;
 }
 
@@ -387,7 +416,7 @@ bool SelectReachableDestination(FEnemyRunEnvQueryTaskInstanceData& Data, const F
 	return false;
 }
 
-bool HasOrbitCandidateResult(const FEnvQueryResult& Result, const FVector& Destination)
+bool HasCandidateResult(const FEnvQueryResult& Result, const FVector& Destination)
 {
 	for (int32 Index = 0; Index < Result.Items.Num(); ++Index)
 	{
@@ -451,7 +480,7 @@ bool SelectOrbitDestination(FEnemyRunEnvQueryTaskInstanceData& Data, const FEnvQ
 	int32 Available = 0;
 	for (const FEnemyOrbitCandidate& Candidate : Candidates)
 	{
-		if (HasOrbitCandidateResult(Result, Candidate.Destination)) ++Available;
+		if (HasCandidateResult(Result, Candidate.Destination)) ++Available;
 	}
 	if (Available != Result.Items.Num())
 	{
@@ -462,7 +491,7 @@ bool SelectOrbitDestination(FEnemyRunEnvQueryTaskInstanceData& Data, const FEnvQ
 	const double Started = FPlatformTime::Seconds();
 	for (const FEnemyOrbitCandidate& Candidate : Candidates)
 	{
-		const bool bPassedQuery = HasOrbitCandidateResult(Result, Candidate.Destination);
+		const bool bPassedQuery = HasCandidateResult(Result, Candidate.Destination);
 		if (Data.CheckedPathCandidates >= Data.MaxPathCandidates)
 		{
 			Data.QueryResult = EEnemyEnvQueryResult::CandidateLimitReached;
@@ -521,6 +550,156 @@ bool CanClassifyEmptyOrbitResult(const FEnemyRunEnvQueryTaskInstanceData& Data)
 	return FlightPathfinding::CheckSegment(*Data.Enemy->GetWorld(), *Capsule, Request) == EFlightPathStatus::Success;
 }
 
+bool IsRetreatStartClear(FEnemyRunEnvQueryTaskInstanceData& Data)
+{
+	const UCapsuleComponent* Capsule = Data.Enemy->GetCapsuleComponent();
+	const FFlightPathRequest Request = MakeCandidatePathRequest(Data, *Capsule, Data.Enemy->GetActorLocation(),
+		Data.MaxSearchNodes, Data.MaxCollisionChecks, Data.MaxSearchMilliseconds);
+	Data.SelectionPathStatus = FlightPathfinding::CheckSegment(*Data.Enemy->GetWorld(), *Capsule, Request);
+	if (Data.SelectionPathStatus != EFlightPathStatus::Success)
+	{
+		LogEnvQuery(TEXT("RetreatRejected: start unavailable or blocked; not proof of no destination"), Data);
+		return false;
+	}
+	return true;
+}
+
+bool IsPhysicalRetreatFailure(EFlightPathStatus Status)
+{
+	return Status == EFlightPathStatus::BlockedEndpoint || Status == EFlightPathStatus::BlockedSegment
+		|| Status == EFlightPathStatus::NoPathWithinBounds;
+}
+
+bool HasOnlyRetreatCandidates(const FEnvQueryResult& Result, const TArray<FVector>& Candidates)
+{
+	for (int32 Index = 0; Index < Result.Items.Num(); ++Index)
+	{
+		bool bFound = false;
+		for (const FVector& Candidate : Candidates)
+		{
+			if (Candidate.Equals(Result.GetItemAsLocation(Index), 1.0))
+			{
+				bFound = true;
+				break;
+			}
+		}
+		if (!bFound) return false;
+	}
+	return true;
+}
+
+FFlightPathResult CheckRetreatCandidate(const FEnemyRunEnvQueryTaskInstanceData& Data, const FVector& Candidate,
+	const FCollisionQueryParams& SightParams, int32 Nodes, int32& Checks, double Started, bool& bSightBlocked)
+{
+	// 시야가 없으면 A*를 생략한다. 시야 Trace와 A*가 전체 후보 선택 예산을 함께 사용한다.
+	--Checks;
+	bSightBlocked = Data.Enemy->GetWorld()->LineTraceTestByChannel(
+		Candidate, Data.SelectedTargetLocation, ECC_Visibility, SightParams);
+	FFlightPathResult Path;
+	Path.Status = EFlightPathStatus::BlockedSegment;
+	if (bSightBlocked) return Path;
+	const double Time = Data.MaxSearchMilliseconds - (FPlatformTime::Seconds() - Started) * 1000.0;
+	if (!HasCandidatePathBudget(Nodes, Checks, Time))
+	{
+		Path.Status = EFlightPathStatus::BudgetExceeded;
+		return Path;
+	}
+	const UCapsuleComponent* Capsule = Data.Enemy->GetCapsuleComponent();
+	const FFlightPathRequest Request = MakeCandidatePathRequest(Data, *Capsule, Candidate, Nodes, Checks, Time);
+	return FlightPathfinding::FindPath(*Data.Enemy->GetWorld(), *Capsule, Request);
+}
+
+void LogRetreatCandidate(const FEnemyRunEnvQueryTaskInstanceData& Data, int32 QueryId, const FVector& Candidate,
+	const FFlightPathResult& Path, bool bPassedQuery, bool bSightBlocked)
+{
+	if (CVarEnemyEQSDebug.GetValueOnGameThread() == 0) return;
+	UE_LOG(LogEnemyEQS, Log,
+		TEXT("[EnemyRetreatCandidate] Enemy=%s Request=%d Candidate=%d Goal=%s Distance2D=%.1f PassedQuery=%d SightBlocked=%d Path=%s Nodes=%d Checks=%d Milliseconds=%.3f"),
+		*GetNameSafe(Data.Enemy), QueryId, Data.CheckedPathCandidates, *Candidate.ToCompactString(),
+		FVector::Dist2D(Candidate, Data.RetreatOrigin), bPassedQuery, bSightBlocked,
+		*UEnum::GetValueAsString(Path.Status), Path.SearchNodes, Path.CollisionChecks, Path.ElapsedMilliseconds);
+}
+
+bool SelectRetreatDestination(FEnemyRunEnvQueryTaskInstanceData& Data, const FEnvQueryResult& Result)
+{
+	TArray<FVector> Candidates;
+	EnemyRetreat::BuildCandidates(Data.CapturedRetreatStart, Data.RetreatOrigin, Candidates);
+	const double Started = FPlatformTime::Seconds();
+	if (Candidates.IsEmpty() || !IsRetreatStartClear(Data)) return false;
+	// Generator의 전체 후보를 다시 확인한다. 빈 결과나 잘못된 EQS 필터를 후퇴 불가로 숨기지 않는다.
+	if (!HasOnlyRetreatCandidates(Result, Candidates)) return false;
+	FCollisionQueryParams SightParams(SCENE_QUERY_STAT(EnemyRetreatSight), false, Data.Enemy);
+	SightParams.AddIgnoredActor(Data.CapturedTarget.Get());
+	int32 RemainingNodes = Data.MaxSearchNodes;
+	// 시작점의 확장/실제 캡슐 예외까지 포함한 최대 검사 수를 먼저 확보한다.
+	int32 RemainingChecks = Data.MaxCollisionChecks - 6;
+	for (const FVector& Candidate : Candidates)
+	{
+		if (!IsEnvQuerySnapshotCurrent(Data))
+		{
+			Data.QueryResult = EEnemyEnvQueryResult::Stale;
+			return false;
+		}
+		if (HasEnvQueryTimedOut(Data))
+		{
+			Data.QueryResult = EEnemyEnvQueryResult::TimedOut;
+			return false;
+		}
+		if (Data.CheckedPathCandidates >= Data.MaxPathCandidates)
+		{
+			Data.QueryResult = EEnemyEnvQueryResult::CandidateLimitReached;
+			return false;
+		}
+		const double RemainingTime = Data.MaxSearchMilliseconds - (FPlatformTime::Seconds() - Started) * 1000.0;
+		if (!HasCandidatePathBudget(RemainingNodes, RemainingChecks, RemainingTime))
+		{
+			Data.QueryResult = EEnemyEnvQueryResult::PathBudgetExceeded;
+			Data.SelectionPathStatus = EFlightPathStatus::BudgetExceeded;
+			return false;
+		}
+		++Data.CheckedPathCandidates;
+		bool bSightBlocked = false;
+		const FFlightPathResult Path = CheckRetreatCandidate(Data, Candidate, SightParams,
+			RemainingNodes, RemainingChecks, Started, bSightBlocked);
+		RemainingNodes -= Path.SearchNodes;
+		RemainingChecks -= Path.CollisionChecks;
+		Data.SelectionPathStatus = Path.Status;
+		const bool bPassedQuery = HasCandidateResult(Result, Candidate);
+		LogRetreatCandidate(Data, Result.QueryID, Candidate, Path, bPassedQuery, bSightBlocked);
+		if (Path.Status == EFlightPathStatus::Success)
+		{
+			// 공간/시야/경로가 있는데 EQS가 제외했으면 설정 오류다. 제자리 사격으로 덮지 않는다.
+			if (!bPassedQuery)
+			{
+				LogEnvQuery(TEXT("RetreatRejected: clear candidate filtered by EQS; check tests/context"), Data);
+				return false;
+			}
+			Data.Destination = Candidate;
+			return true;
+		}
+		if (Path.Status == EFlightPathStatus::BudgetExceeded)
+		{
+			Data.QueryResult = EEnemyEnvQueryResult::PathBudgetExceeded;
+			return false;
+		}
+		if (!IsPhysicalRetreatFailure(Path.Status)) return false;
+	}
+	if (HasEnvQueryTimedOut(Data))
+	{
+		Data.QueryResult = EEnemyEnvQueryResult::TimedOut;
+		return false;
+	}
+	if ((FPlatformTime::Seconds() - Started) * 1000.0 >= Data.MaxSearchMilliseconds)
+	{
+		Data.QueryResult = EEnemyEnvQueryResult::PathBudgetExceeded;
+		Data.SelectionPathStatus = EFlightPathStatus::BudgetExceeded;
+		return false;
+	}
+	Data.QueryResult = EEnemyEnvQueryResult::NoReachableDestination;
+	Data.bNoRetreatDestination = true;
+	return false;
+}
+
 void ApplyEnvQueryResult(FEnemyRunEnvQueryTaskInstanceData& Data, const FEnvQueryResult& Result)
 {
 	Data.RequestId = INDEX_NONE;
@@ -540,6 +719,11 @@ void ApplyEnvQueryResult(FEnemyRunEnvQueryTaskInstanceData& Data, const FEnvQuer
 	if (IsEmptyEnvQueryResult(Result))
 	{
 		Data.QueryResult = EEnemyEnvQueryResult::NoResults;
+		if (Data.bValidateRetreatPath)
+		{
+			Data.QueryResult = EEnemyEnvQueryResult::Failed;
+			SelectRetreatDestination(Data, Result);
+		}
 		if (Data.bValidateOrbitPath && CanClassifyEmptyOrbitResult(Data))
 		{
 			// 빈 결과만으로는 후보 전체 탈락과 설정 오류를 구분할 수 없다. 곡선을 다시 검증한다.
@@ -552,7 +736,11 @@ void ApplyEnvQueryResult(FEnemyRunEnvQueryTaskInstanceData& Data, const FEnvQuer
 	{
 		return;
 	}
-	if (Data.bValidateOrbitPath)
+	if (Data.bValidateRetreatPath)
+	{
+		if (!SelectRetreatDestination(Data, Result)) return;
+	}
+	else if (Data.bValidateOrbitPath)
 	{
 		if (!CanClassifyEmptyOrbitResult(Data)) return;
 		if (!SelectOrbitDestination(Data, Result)) return;
@@ -595,6 +783,7 @@ void CancelEnvQuery(FEnemyRunEnvQueryTaskInstanceData& Data, EEnemyEnvQueryResul
 	Data.SelectedWaypoints.Reset();
 	Data.SelectedArcLength = 0.0f;
 	Data.bNoOrbitDestination = false;
+	Data.bNoRetreatDestination = false;
 	if (RequestId != INDEX_NONE && IsValid(Data.Enemy))
 	{
 		if (UEnvQueryManager* Manager = UEnvQueryManager::GetCurrent(Data.Enemy))
@@ -628,6 +817,10 @@ EStateTreeRunStatus StartEnvQuery(FStateTreeExecutionContext& Context,
 	{
 		EnemyOrbit::SetQuerySnapshot(Request, Data.CapturedOrbitStart, Data.CapturedOrbitCenter,
 			Data.CapturedOrbitLength, Data.bCapturedOrbitLeft);
+	}
+	if (Data.bValidateRetreatPath)
+	{
+		EnemyRetreat::SetQuerySnapshot(Request, Data.CapturedRetreatStart, Data.RetreatOrigin);
 	}
 	const FQueryFinishedSignature Finished = FQueryFinishedSignature::CreateLambda([WeakContext = Context.MakeWeakExecutionContext()]
 			(TSharedPtr<FEnvQueryResult> Result) mutable
@@ -696,6 +889,9 @@ EStateTreeRunStatus FEnemyRunEnvQueryTask::EnterState(
 	Data.SelectedArcLength = 0.0f;
 	Data.bSelectedOrbitLeft = false;
 	Data.bNoOrbitDestination = false;
+	Data.bNoRetreatDestination = false;
+	Data.RetreatOrigin = FVector::ZeroVector;
+	Data.RetreatDirection = FVector::ZeroVector;
 	Data.QueryResult = EEnemyEnvQueryResult::Invalid;
 	Data.CheckedPathCandidates = 0;
 	Data.SelectionPathStatus = EFlightPathStatus::Unavailable;
@@ -719,6 +915,13 @@ EStateTreeRunStatus FEnemyRunEnvQueryTask::EnterState(
 		return EStateTreeRunStatus::Failed;
 	}
 	CaptureEnvQuerySnapshot(Data);
+	if (Data.bValidateRetreatPath && (Data.RetreatDirection.IsNearlyZero()
+		|| FVector::Dist2D(Data.CapturedRetreatStart, Data.RetreatOrigin) > 1000.0))
+	{
+		Data.bActive = false;
+		LogEnvQuery(TEXT("RejectedRetreatRadiusOrDirection"), Data);
+		return EStateTreeRunStatus::Failed;
+	}
 	if (Data.bValidateOrbitPath && !EnemyOrbit::IsCombatRadius(Data.CapturedOrbitStart, Data.CapturedOrbitCenter))
 	{
 		Data.bActive = false;
@@ -841,6 +1044,43 @@ bool FEnemyOrbitQueryConfigurationTest::RunTest(const FString& Parameters)
 	Option->Generator = NewObject<UEnemyEnvQueryGenerator_Approach>(Option);
 	TestFalse(TEXT("Approach query cannot be misclassified as orbit"), IsOrbitQueryConfigurationValid(Data));
 	TestFalse(TEXT("Precision flag defaults to false"), Data.bNoOrbitDestination);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyRetreatQueryConfigurationTest,
+	"Outlier.Enemy.EQS.RetreatConfiguration", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyRetreatQueryConfigurationTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FEnemyRunEnvQueryTaskInstanceData Data;
+	TestFalse(TEXT("Legacy tasks do not enable retreat validation"), Data.bValidateRetreatPath);
+	TestFalse(TEXT("No destination must be proven, not defaulted"), Data.bNoRetreatDestination);
+	Data.QueryTemplate = NewObject<UEnvQuery>();
+	Data.bValidateRetreatPath = true;
+	TestFalse(TEXT("Retreat requires all matching results"), IsReachabilityConfigurationValid(Data));
+	Data.RunMode = EEnvQueryRunMode::AllMatching;
+	UEnvQueryOption* Option = NewObject<UEnvQueryOption>(Data.QueryTemplate);
+	Data.QueryTemplate->GetOptionsMutable().Add(Option);
+	Option->Generator = NewObject<UEnemyEnvQueryGenerator_Retreat>(Option);
+	TestTrue(TEXT("Retreat generator and bounded path settings are valid"), IsEnvQueryConfigurationValid(Data));
+	Data.bValidateReachability = true;
+	TestFalse(TEXT("Retreat owns its constrained path validation"), IsReachabilityConfigurationValid(Data));
+	Data.bValidateReachability = false;
+	Data.bValidateOrbitPath = true;
+	TestFalse(TEXT("Retreat and orbit cannot be enabled together"), IsReachabilityConfigurationValid(Data));
+	Data.bValidateOrbitPath = false;
+	Data.bRequireVisibleTarget = false;
+	TestFalse(TEXT("Retreat requires direct sight"), IsRetreatQueryConfigurationValid(Data));
+	Data.bRequireVisibleTarget = true;
+	Option->Generator = NewObject<UEnemyEnvQueryGenerator_Approach>(Option);
+	TestFalse(TEXT("Approach cannot stand in for retreat generator"), IsRetreatQueryConfigurationValid(Data));
+	Option->Generator = NewObject<UEnemyEnvQueryGenerator_Retreat>(Option);
+	Data.QueryTemplate->GetOptionsMutable().Add(NewObject<UEnvQueryOption>(Data.QueryTemplate));
+	TestFalse(TEXT("Additional options cannot invalidate no-candidate proof"), IsRetreatQueryConfigurationValid(Data));
+	TestTrue(TEXT("Blocked segment is a physical candidate rejection"), IsPhysicalRetreatFailure(EFlightPathStatus::BlockedSegment));
+	TestFalse(TEXT("Budget exhaustion is not a no-destination proof"), IsPhysicalRetreatFailure(EFlightPathStatus::BudgetExceeded));
+	TestFalse(TEXT("Missing room is not a no-destination proof"), IsPhysicalRetreatFailure(EFlightPathStatus::Unavailable));
 	return true;
 }
 

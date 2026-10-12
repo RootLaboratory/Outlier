@@ -45,6 +45,12 @@ struct OUTLIER_API FFlightPathRequest
 	bool bRequireRoom = false;
 	TWeakObjectPtr<ARoomVolume> Room;
 
+	// 후퇴는 플레이어를 기준으로 드론 쪽 반공간 안에서만 탐색/이동한다.
+	// Origin은 캡슐 좌표, Direction은 수평 단위 벡터다. 기본값은 기존 경로에 영향을 주지 않는다.
+	bool bRequireAwayHalfSpace = false;
+	FVector AwayOrigin = FVector::ZeroVector;
+	FVector AwayDirection = FVector::ZeroVector;
+
 	// 탐색은 동기 실행이다. 호출자는 타깃/상태 변경 등으로 요청이 무효해졌는지 검사할 수 있다.
 	TFunction<bool()> ShouldCancel;
 };
@@ -68,6 +74,7 @@ struct OUTLIER_API FFlightPathResult
 // 상태/Tick/이동 입력을 소유하지 않는 공용 함수다. 호출자는 결과를 보관하고 이동을 실행한다.
 namespace FlightPathfinding
 {
+	OUTLIER_API bool IsInsideAwayHalfSpace(const FFlightPathRequest& Request, const FVector& Position);
 	// 회전된 박스가 아니라 캡슐 중심축과 구형 끝부분으로 월드 경계 범위를 계산한다.
 	OUTLIER_API FVector GetCapsuleWorldExtent(float Radius, float HalfHeight, const FQuat& Rotation);
 

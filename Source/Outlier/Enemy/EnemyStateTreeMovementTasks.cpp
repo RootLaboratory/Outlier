@@ -58,6 +58,15 @@ void LogFlight(
 			Data.PathWaypoints.Num(), Data.TravelledPathLength, Enemy ? Enemy->GetVelocity().Size() : 0.0,
 			Data.RepathAttempts, Data.RetryElapsed, Data.bWaitingForPath);
 	}
+	if (Data.bConstrainRetreatPath)
+	{
+		UE_LOG(LogEnemyFlight, Log,
+			TEXT("[EnemyRetreatMove] %s Enemy=%s Result=%s Origin=%s Direction=%s CurrentDistance2D=%.1f GoalDistance2D=%.1f Acceptance=%.1f GoalSearchRadius=%.1f"),
+			Phase, *GetNameSafe(Enemy), *UEnum::GetValueAsString(Data.MoveResult),
+			*Data.RetreatOrigin.ToCompactString(), *Data.RetreatDirection.ToCompactString(),
+			FVector::Dist2D(Location, Data.RetreatOrigin), FVector::Dist2D(Data.Destination, Data.RetreatOrigin),
+			Data.AcceptanceRadius, Data.GoalSearchRadius);
+	}
 }
 
 AAIController* ResolveAIController(AEnemyBase* Enemy)
@@ -250,7 +259,22 @@ FFlightPathRequest MakeFlightPathRequest(
 	Request.MaxSearchMilliseconds = Data.MaxSearchMilliseconds;
 	Request.bRequireRoom = true;
 	Request.Room = Data.CachedRoom;
+	Request.bRequireAwayHalfSpace = Data.bConstrainRetreatPath;
+	Request.AwayOrigin = Data.RetreatOrigin + Request.Start - Data.Enemy->GetActorLocation();
+	Request.AwayDirection = Data.RetreatDirection;
 	return Request;
+}
+
+bool IsRetreatFlightConfigurationValid(const FEnemyFlyToLocationTaskInstanceData& Data)
+{
+	if (!Data.bConstrainRetreatPath) return true;
+	const double Distance = FVector::Dist2D(Data.Destination, Data.RetreatOrigin);
+	return Data.bUsePathfinding && !Data.bUsePlannedPath && Data.GoalSearchRadius == 0.0f
+		&& !Data.RetreatOrigin.ContainsNaN() && !Data.RetreatDirection.ContainsNaN()
+		&& FMath::IsNearlyZero(Data.RetreatDirection.Z)
+		&& FMath::IsNearlyEqual(Data.RetreatDirection.SizeSquared2D(), 1.0, 0.001)
+		&& FMath::IsFinite(Data.AcceptanceRadius) && Data.AcceptanceRadius >= 0.0f
+		&& Data.AcceptanceRadius <= 50.0f && Distance > 1050.0 && Distance <= 1450.0;
 }
 
 bool HasCurrentFlightRoom(const FEnemyFlyToLocationTaskInstanceData& Data)
@@ -499,6 +523,15 @@ EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, fl
 	}
 
 	const FVector Position = Data.CachedCapsule->GetComponentLocation();
+	if (Data.bConstrainRetreatPath && FVector::DotProduct(
+		Data.Enemy->GetActorLocation() - Data.RetreatOrigin, Data.RetreatDirection) < 0.0)
+	{
+		Data.PathStatus = EFlightPathStatus::BlockedSegment;
+		Data.MoveResult = EEnemyFlightMoveResult::Blocked;
+		LogFlight(TEXT("RetreatInterrupted: outside captured target half-space"), Data);
+		StopFlyTask(Data);
+		return EStateTreeRunStatus::Failed;
+	}
 	if (!Data.PathWaypoints.IsValidIndex(Data.WaypointIndex))
 	{
 		Data.MoveResult = EEnemyFlightMoveResult::Invalid;
@@ -573,6 +606,15 @@ EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, fl
 			Data.RotationSpeed, 0.0f, DeltaTime);
 	}
 	ApplyFlyTaskSpeedMultiplier(*Data.Enemy, Data.SpeedMultiplier);
+	if (Data.bConstrainRetreatPath)
+	{
+		// 경유점/최종점의 뒤까지 관성으로 지나치지 않는다. 가감속 커브는 후속 Slice에서 적용한다.
+		if (UCharacterMovementComponent* Movement = Data.Enemy->GetCharacterMovement())
+		{
+			Movement->MaxFlySpeed = FMath::Min(Movement->MaxFlySpeed, Distance / FMath::Max(DeltaTime, UE_SMALL_NUMBER));
+			Movement->Velocity = Movement->Velocity.GetClampedToMaxSize(Movement->MaxFlySpeed);
+		}
+	}
 	if (Data.bUsePlannedPath)
 	{
 		// 짧은 경유점을 한 프레임에 지나치지 않도록 속도를 제한한다. 가감속 커브는 별도 Slice다.
@@ -663,6 +705,35 @@ bool FEnemyFlightPathProgressTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyRetreatFlightConfigurationTest,
+	"Outlier.Enemy.Flight.RetreatConfiguration", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyRetreatFlightConfigurationTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FEnemyFlyToLocationTaskInstanceData Data;
+	TestTrue(TEXT("Other movements do not require retreat inputs"), IsRetreatFlightConfigurationValid(Data));
+	Data.bConstrainRetreatPath = true;
+	TestFalse(TEXT("Direct flight cannot bypass retreat path safety"), IsRetreatFlightConfigurationValid(Data));
+	Data.bUsePathfinding = true;
+	Data.GoalSearchRadius = 0.0f;
+	Data.RetreatDirection = FVector::ForwardVector;
+	Data.Destination = FVector(1250, 0, 250);
+	TestTrue(TEXT("Retreat uses exact bounded goal and normalized horizontal direction"), IsRetreatFlightConfigurationValid(Data));
+	Data.GoalSearchRadius = 200.0f;
+	TestFalse(TEXT("Retreat endpoint cannot be adjusted into another distance band"), IsRetreatFlightConfigurationValid(Data));
+	Data.GoalSearchRadius = 0.0f;
+	Data.AcceptanceRadius = 100.0f;
+	TestFalse(TEXT("Large acceptance radius cannot consume retreat boundary margin"), IsRetreatFlightConfigurationValid(Data));
+	Data.AcceptanceRadius = 50.0f;
+	Data.RetreatDirection = FVector::ZeroVector;
+	TestFalse(TEXT("Missing binding does not disable safety"), IsRetreatFlightConfigurationValid(Data));
+	Data.RetreatDirection = FVector::ForwardVector;
+	Data.Destination.X = 1000.0;
+	TestFalse(TEXT("Exactly ten metre goal is forbidden"), IsRetreatFlightConfigurationValid(Data));
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyPlannedFlightGeometryTest,
 	"Outlier.Enemy.Flight.PlannedGeometry", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
@@ -728,8 +799,10 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::EnterState(
 	Enemy->ConsumeMovementInputVector();
 	InstanceData.LastDestination = InstanceData.Destination;
 	InstanceData.BestDistance = FVector::Distance(Enemy->GetActorLocation(), InstanceData.Destination);
-	if (InstanceData.Destination.ContainsNaN())
+	if (InstanceData.Destination.ContainsNaN() || !IsRetreatFlightConfigurationValid(InstanceData))
 	{
+		InstanceData.PathStatus = EFlightPathStatus::InvalidRequest;
+		LogFlight(TEXT("Rejected: invalid destination or retreat configuration"), InstanceData);
 		StopFlyTask(InstanceData);
 		return EStateTreeRunStatus::Failed;
 	}

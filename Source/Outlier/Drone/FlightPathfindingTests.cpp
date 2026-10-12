@@ -141,6 +141,47 @@ bool FFlightPathGeometryTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlightRetreatHalfSpaceTest,
+	"Outlier.Flight.Pathfinding.RetreatHalfSpace",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlightRetreatHalfSpaceTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FFlightPathRequest Request = MakeRequest();
+	Request.Start = FVector(500, 0, 0);
+	Request.Goal = FVector(1400, 0, 0);
+	Request.SearchBounds = FBox(FVector(-400, -500, -300), FVector(1600, 500, 300));
+	Request.bRequireAwayHalfSpace = true;
+	Request.AwayDirection = FVector::ForwardVector;
+	const FBox Wall(FVector(800, -150, -500), FVector(1000, 150, 500));
+	const FFlightPathResult Detour = FindAroundBox(Request, Wall);
+	CheckPath(*this, Request, Detour, Wall);
+	TestTrue(TEXT("Retreat uses AStar to go around a wall"), Detour.SearchNodes > 0);
+	for (const FVector& Point : Detour.Waypoints)
+	{
+		TestTrue(TEXT("Every detour point remains on drone side"), FlightPathfinding::IsInsideAwayHalfSpace(Request, Point));
+	}
+	const FBox FarObstacle(FVector(10000), FVector(11000));
+	Request.Goal = FVector(-200, 0, 0);
+	TestTrue(TEXT("Goal across player is rejected even in open space"),
+		FindAroundBox(Request, FarObstacle).Status == EFlightPathStatus::BlockedEndpoint);
+	Request.bRequireAwayHalfSpace = false;
+	TestTrue(TEXT("Other movements retain unconstrained paths"),
+		FindAroundBox(Request, FarObstacle).Status == EFlightPathStatus::Success);
+	Request.bRequireAwayHalfSpace = true;
+	Request.Goal = FVector(-25, 0, 0);
+	Request.GoalSearchRadius = 200.0f;
+	const FFlightPathResult Adjusted = FindAroundBox(Request, FarObstacle);
+	TestTrue(TEXT("Optional endpoint adjustment respects the same half-space"),
+		Adjusted.Status == EFlightPathStatus::Success && Adjusted.bGoalAdjusted
+		&& !Adjusted.Waypoints.IsEmpty() && Adjusted.Waypoints.Last().X >= 0.0);
+	Request.AwayDirection = FVector::ZeroVector;
+	TestTrue(TEXT("Invalid constraint does not silently disable retreat safety"),
+		FindAroundBox(Request, FarObstacle).Status == EFlightPathStatus::InvalidRequest);
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlightPathFailureTest,
 	"Outlier.Flight.Pathfinding.Failures",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
