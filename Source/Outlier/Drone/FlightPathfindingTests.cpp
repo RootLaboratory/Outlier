@@ -320,6 +320,13 @@ bool FFlightPathWorldTest::RunTest(const FString& Parameters)
 	Request.bRequireRoom = false;
 	Result = FlightPathfinding::FindPath(*World, *Capsule, Request);
 	TestTrue(TEXT("Partner can use the same route without room restriction"), Result.Status == EFlightPathStatus::Success);
+	TestTrue(TEXT("Destination filtering does not reject a point merely behind a wall"),
+		FlightPathfinding::CheckDestination(*World, *Capsule, Request) == EFlightPathStatus::Success);
+	const FVector UnblockedGoal = Request.Goal;
+	Request.Goal = FVector::ZeroVector;
+	TestTrue(TEXT("Destination filtering rejects actual movement-channel overlap"),
+		FlightPathfinding::CheckDestination(*World, *Capsule, Request) == EFlightPathStatus::BlockedEndpoint);
+	Request.Goal = UnblockedGoal;
 
 	// 방 참조 누락은 제한 해제가 아니며, 경계 근처 목적지는 캡슐 전체가 들어가야 한다.
 	Request.bRequireRoom = true;
@@ -328,11 +335,15 @@ bool FFlightPathWorldTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Missing required room does not remove restriction"), Result.Status == EFlightPathStatus::Unavailable);
 	TestTrue(TEXT("Segment check also requires a valid room"),
 		FlightPathfinding::CheckSegment(*World, *Capsule, Request) == EFlightPathStatus::Unavailable);
+	TestTrue(TEXT("Destination check requires the registered room too"),
+		FlightPathfinding::CheckDestination(*World, *Capsule, Request) == EFlightPathStatus::Unavailable);
 	Request.Room = Room;
 	RoomBox->SetBoxExtent(FVector(400.0, 350.0, 200.0));
 	Request.Goal = FVector(390.0, 0.0, 0.0);
 	Result = FlightPathfinding::FindPath(*World, *Capsule, Request);
 	TestTrue(TEXT("Capsule clearance must fit, not just its center"), Result.Status == EFlightPathStatus::BlockedEndpoint);
+	TestTrue(TEXT("Destination filtering also requires full capsule clearance inside room"),
+		FlightPathfinding::CheckDestination(*World, *Capsule, Request) == EFlightPathStatus::BlockedEndpoint);
 	TestTrue(TEXT("Segment check cannot cut across room clearance"),
 		FlightPathfinding::CheckSegment(*World, *Capsule, Request) == EFlightPathStatus::BlockedEndpoint);
 	Request.GoalSearchRadius = 100.0f;
@@ -352,6 +363,11 @@ bool FFlightPathWorldTest::RunTest(const FString& Parameters)
 	Result = FlightPathfinding::FindPath(*World, *Capsule, Request);
 	TestTrue(TEXT("Clearance-only overlap permits a validated escape"), Result.Status == EFlightPathStatus::Success);
 	TestTrue(TEXT("Clearance escape is reported"), Result.bUsedClearanceEscape);
+	const FVector EscapeGoal = Request.Goal;
+	Request.Goal = Request.Start;
+	TestTrue(TEXT("A candidate cannot use the start clearance escape exception"),
+		FlightPathfinding::CheckDestination(*World, *Capsule, Request) == EFlightPathStatus::BlockedEndpoint);
+	Request.Goal = EscapeGoal;
 	TestTrue(TEXT("Long direct route cannot bypass clearance"), Result.Waypoints.Num() > 2);
 	TestTrue(TEXT("Segment validator rejects a long clearance escape"),
 		FlightPathfinding::CheckSegment(*World, *Capsule, Request) == EFlightPathStatus::BlockedSegment);

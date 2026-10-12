@@ -13,6 +13,7 @@
 
 namespace
 {
+	enum class EFlightCheckMode : uint8 { Path, Segment, Destination };
 	DEFINE_LOG_CATEGORY_STATIC(LogFlightPathCost, Log, All);
 	TAutoConsoleVariable<int32> CVarFlightPathCost(
 		TEXT("outlier.Flight.PathCostLog"), 0,
@@ -26,11 +27,13 @@ namespace
 		double StartedAt = 0.0;
 		int32 Paths = 0;
 		int32 Segments = 0;
+		int32 Destinations = 0;
 		int32 Failures = 0;
 		int32 Budgets = 0;
 		int64 Checks = 0;
 		double PathMs = 0.0;
 		double SegmentMs = 0.0;
+		double DestinationMs = 0.0;
 		double PeakCallMs = 0.0;
 		uint64 Frame = MAX_uint64;
 		double FrameMs = 0.0;
@@ -41,15 +44,16 @@ namespace
 	void DumpFlightCost()
 	{
 		const FFlightCostWindow& Data = FlightCostWindow;
-		if (Data.Paths + Data.Segments == 0)
+		if (Data.Paths + Data.Segments + Data.Destinations == 0)
 		{
 			return;
 		}
 		const double Seconds = FMath::Max(FPlatformTime::Seconds() - Data.StartedAt, 0.001);
 		UE_LOG(LogFlightPathCost, Log,
-			TEXT("[FlightCost] Scope=AllServerWorlds Window=%.2fs Paths=%d PathTotal=%.3fms PathAvg=%.3fms Segments=%d SegmentTotal=%.3fms SegmentAvg=%.3fms PeakCall=%.3fms PeakFrame=%.3fms Checks=%lld FailedPaths=%d BudgetExceeded=%d"),
+			TEXT("[FlightCost] Scope=AllServerWorlds Window=%.2fs Paths=%d PathTotal=%.3fms PathAvg=%.3fms Segments=%d SegmentTotal=%.3fms SegmentAvg=%.3fms Destinations=%d DestinationTotal=%.3fms PeakCall=%.3fms PeakFrame=%.3fms Checks=%lld FailedPaths=%d BudgetExceeded=%d"),
 			Seconds, Data.Paths, Data.PathMs, Data.Paths ? Data.PathMs / Data.Paths : 0.0,
 			Data.Segments, Data.SegmentMs, Data.Segments ? Data.SegmentMs / Data.Segments : 0.0,
+			Data.Destinations, Data.DestinationMs,
 			Data.PeakCallMs, Data.PeakFrameMs, static_cast<long long>(Data.Checks), Data.Failures, Data.Budgets);
 		// 같은 프레임 안에서 요약이 나가도 프레임 누적 부하는 끊지 않는다.
 		const uint64 LastFrame = Data.Frame;
@@ -65,11 +69,11 @@ namespace
 	struct FScopedFlightCost
 	{
 		const FFlightPathResult& Result;
-		bool bSegmentOnly;
+		EFlightCheckMode Mode;
 		double StartedAt = 0.0;
 
-		FScopedFlightCost(const FFlightPathResult& InResult, bool bInSegmentOnly, bool bServerWorld)
-			: Result(InResult), bSegmentOnly(bInSegmentOnly)
+		FScopedFlightCost(const FFlightPathResult& InResult, EFlightCheckMode InMode, bool bServerWorld)
+			: Result(InResult), Mode(InMode)
 		{
 			// 진단을 끄면 계측 시계도 읽지 않는다. 서버의 실제 충돌 탐색만 집계한다.
 			if (bServerWorld && IsInGameThread() && CVarFlightPathCost.GetValueOnGameThread() != 0)
@@ -91,7 +95,12 @@ namespace
 			{
 				Data.StartedAt = StartedAt;
 			}
-			if (bSegmentOnly)
+			if (Mode == EFlightCheckMode::Destination)
+			{
+				++Data.Destinations;
+				Data.DestinationMs += Milliseconds;
+			}
+			else if (Mode == EFlightCheckMode::Segment)
 			{
 				++Data.Segments;
 				Data.SegmentMs += Milliseconds;
@@ -485,11 +494,11 @@ FFlightPathResult FlightPathfinding::FindPathWithChecks(
 
 static FFlightPathResult FindPathOrCheckSegment(
 	UWorld& World, const UCapsuleComponent& MovementCapsule, const FFlightPathRequest& Request,
-	bool bSegmentOnly)
+	EFlightCheckMode Mode)
 {
 	// 게임 호출부: 권한/환경 검증 -> 캡슐 충돌 설정 구성 -> 공용 탐색에 검사 함수 전달.
 	FFlightPathResult Failure;
-	FScopedFlightCost Cost(Failure, bSegmentOnly, World.GetNetMode() != NM_Client);
+	FScopedFlightCost Cost(Failure, Mode, World.GetNetMode() != NM_Client);
 	if (!IsInGameThread() || !IsValidRequest(Request))
 	{
 		return Failure;
@@ -536,6 +545,23 @@ static FFlightPathResult FindPathOrCheckSegment(
 	{
 		return !Request.bRequireRoom || IsCapsuleInsideRoom(*Room, Position, Extent);
 	};
+	if (Mode == EFlightCheckMode::Destination)
+	{
+		// 목적지 후보에는 출발점의 여유 공간 탈출 예외를 적용하지 않는다.
+		// 직선 통과 여부도 여기서 거르지 않아 벽 뒤의 우회 가능한 후보는 남긴다.
+		if (Request.ShouldCancel && Request.ShouldCancel())
+		{
+			Failure.Status = EFlightPathStatus::Cancelled;
+		}
+		else
+		{
+			Failure.CollisionChecks = 1;
+			Failure.Status = IsInsideRoom(Request.Goal) && !World.OverlapBlockingTestByChannel(
+				Request.Goal, Rotation, Channel, Shape, Params, Responses)
+				? EFlightPathStatus::Success : EFlightPathStatus::BlockedEndpoint;
+		}
+		return Failure;
+	}
 	bool bStartNeedsClearanceEscape = false;
 	bool bCheckedStart = false;
 	bool bStartClear = false;
@@ -582,7 +608,7 @@ static FFlightPathResult FindPathOrCheckSegment(
 			From, To, Rotation, Channel, Shape, Params, Responses);
 	};
 
-	if (bSegmentOnly)
+	if (Mode == EFlightCheckMode::Segment)
 	{
 		if (Request.ShouldCancel && Request.ShouldCancel())
 		{
@@ -639,11 +665,17 @@ static FFlightPathResult FindPathOrCheckSegment(
 FFlightPathResult FlightPathfinding::FindPath(
 	UWorld& World, const UCapsuleComponent& MovementCapsule, const FFlightPathRequest& Request)
 {
-	return FindPathOrCheckSegment(World, MovementCapsule, Request, false);
+	return FindPathOrCheckSegment(World, MovementCapsule, Request, EFlightCheckMode::Path);
 }
 
 EFlightPathStatus FlightPathfinding::CheckSegment(
 	UWorld& World, const UCapsuleComponent& MovementCapsule, const FFlightPathRequest& Request)
 {
-	return FindPathOrCheckSegment(World, MovementCapsule, Request, true).Status;
+	return FindPathOrCheckSegment(World, MovementCapsule, Request, EFlightCheckMode::Segment).Status;
+}
+
+EFlightPathStatus FlightPathfinding::CheckDestination(
+	UWorld& World, const UCapsuleComponent& MovementCapsule, const FFlightPathRequest& Request)
+{
+	return FindPathOrCheckSegment(World, MovementCapsule, Request, EFlightCheckMode::Destination).Status;
 }

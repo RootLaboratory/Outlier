@@ -2,10 +2,88 @@
 
 #include "CoreMinimal.h"
 #include "EnemyBase.h"
+#include "EnvironmentQuery/EnvQueryTypes.h"
 #include "StateTreeExecutionContext.h"
 #include "StateTreeExecutionTypes.h"
 #include "StateTreeTaskBase.h"
 #include "EnemyStateTreeTacticalTasks.generated.h"
+
+class AEnemyAIController;
+class UEnvQuery;
+class URoomCombatSubsystem;
+class ARoomVolume;
+
+UENUM(BlueprintType)
+enum class EEnemyEnvQueryResult : uint8
+{
+	None, Waiting, Running, Success, NoResults, Failed, Invalid, Stale, TimedOut, Cancelled
+};
+
+USTRUCT()
+struct FEnemyRunEnvQueryTaskInstanceData
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = Context)
+	TObjectPtr<AEnemyBase> Enemy = nullptr;
+	UPROPERTY(EditAnywhere, Category = Parameter)
+	TObjectPtr<UEnvQuery> QueryTemplate = nullptr;
+	UPROPERTY(EditAnywhere, Category = Parameter)
+	TArray<FAIDynamicParam> QueryConfig;
+	UPROPERTY(EditAnywhere, Category = Parameter)
+	TEnumAsByte<EEnvQueryRunMode::Type> RunMode = EEnvQueryRunMode::SingleResult;
+	// 수색/고정 위치 질의에서는 끈다. 직접 교전 질의는 시야 상실/타깃 변경 시 폐기한다.
+	UPROPERTY(EditAnywhere, Category = Parameter)
+	bool bRequireVisibleTarget = true;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0", Units = "cm"))
+	float Clearance = 5.0f;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.01", Units = "s"))
+	float QueryInterval = 0.5f;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.01", Units = "s"))
+	float QueryTimeout = 2.0f;
+	UPROPERTY(EditAnywhere, Category = Output)
+	FVector Destination = FVector::ZeroVector;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bHasDestination = false;
+	UPROPERTY(EditAnywhere, Category = Output)
+	EEnemyEnvQueryResult QueryResult = EEnemyEnvQueryResult::None;
+
+	UPROPERTY(Transient)
+	TWeakObjectPtr<AEnemyAIController> CachedController;
+	UPROPERTY(Transient)
+	TWeakObjectPtr<AActor> CapturedTarget;
+	UPROPERTY(Transient)
+	TWeakObjectPtr<ARoomVolume> CapturedRoom;
+	UPROPERTY(Transient)
+	TObjectPtr<URoomCombatSubsystem> CachedRooms = nullptr;
+	UPROPERTY(Transient)
+	FGameplayTag CapturedRoomTag;
+	int32 CapturedGeneration = 0;
+	int32 CapturedLease = 0;
+	EEnemyCombatState CapturedCombatState = EEnemyCombatState::NonCombat;
+	int32 RequestId = INDEX_NONE;
+	double QueryStartedAt = 0.0;
+	bool bActive = false;
+};
+
+// 목적지 선정만 수행한다. 성공 후 별도 자식 State의 Fly Task로 이동한다.
+USTRUCT(meta = (DisplayName = "Enemy Run Env Query", Category = "Enemy|Tactical"))
+struct OUTLIER_API FEnemyRunEnvQueryTask : public FStateTreeTaskCommonBase
+{
+	GENERATED_BODY()
+	using FInstanceDataType = FEnemyRunEnvQueryTaskInstanceData;
+	FEnemyRunEnvQueryTask();
+	virtual const UStruct* GetInstanceDataType() const override { return FInstanceDataType::StaticStruct(); }
+	virtual EStateTreeRunStatus EnterState(FStateTreeExecutionContext& Context,
+		const FStateTreeTransitionResult& Transition) const override;
+	virtual EStateTreeRunStatus Tick(FStateTreeExecutionContext& Context, float DeltaTime) const override;
+	virtual void ExitState(FStateTreeExecutionContext& Context,
+		const FStateTreeTransitionResult& Transition) const override;
+#if WITH_EDITOR
+	virtual void PostEditInstanceDataChangeChainProperty(
+		const FPropertyChangedChainEvent& PropertyChangedEvent, FStateTreeDataView InstanceDataView) override;
+#endif
+};
 
 UENUM(BlueprintType)
 enum class EEnemyOrbitDirection : uint8

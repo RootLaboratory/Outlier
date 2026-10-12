@@ -774,6 +774,7 @@ void AEnemyBase::ApplyPoolState(EEnemyPoolState PreviousState)
 	if (bIdle)
 	{
 		NextFlightPathRequestTime = 0.0;
+		NextEnvQueryRequestTime = 0.0;
 	}
 	SetActorHiddenInGame(bIdle);
 	SetActorEnableCollision(bCombatActive);

@@ -114,6 +114,9 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 	const bool bMeshHiddenInGame = FirstLease->GetMesh()->bHiddenInGame;
 	const bool bCoreVisible = FirstLease->GetCoreHitboxComponent()->IsVisible();
 	FirstLease->SetNextFlightPathRequestTime(123.0);
+	FirstLease->SetNextEnvQueryRequestTime(124.0);
+	TestEqual(TEXT("EQS request throttle survives transient Task replacement"),
+		FirstLease->GetNextEnvQueryRequestTime(), 124.0);
 	TestEqual(TEXT("Flight request throttle belongs to Pawn, not transient Task"),
 		FirstLease->GetNextFlightPathRequestTime(), 123.0);
 	FirstLease->SimulateDeathPresentationForPoolTesting();
@@ -127,6 +130,8 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Returned Enemy is idle"), FirstLease->GetEnemyPoolState(), EEnemyPoolState::Idle);
 	TestEqual(TEXT("Pool return clears previous flight request throttle"),
 		FirstLease->GetNextFlightPathRequestTime(), 0.0);
+	TestEqual(TEXT("Pool return clears previous EQS request throttle"),
+		FirstLease->GetNextEnvQueryRequestTime(), 0.0);
 	TestTrue(TEXT("Returned Enemy is hidden"), FirstLease->IsHidden());
 	TestFalse(TEXT("Returned Enemy cannot be damaged"), FirstLease->CanBeDamaged());
 	TestFalse(TEXT("Returned Enemy collision is disabled"), FirstLease->GetActorEnableCollision());

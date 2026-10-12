@@ -68,6 +68,10 @@ struct OUTLIER_API FFlightPathResult
 // 상태/Tick/이동 입력을 소유하지 않는 공용 함수다. 호출자는 결과를 보관하고 이동을 실행한다.
 namespace FlightPathfinding
 {
+	// EQS 후보의 캡슐 공간/방 경계만 검사한다. 우회 경로를 찾거나 목적지를 보정하지 않는다.
+	OUTLIER_API EFlightPathStatus CheckDestination(
+		UWorld& World, const UCapsuleComponent& MovementCapsule, const FFlightPathRequest& Request);
+
 	// 경유점 추종 중 실제 위치에서 다음 지점까지 검사한다. A*는 실행하지 않는다.
 	OUTLIER_API EFlightPathStatus CheckSegment(
 		UWorld& World, const UCapsuleComponent& MovementCapsule, const FFlightPathRequest& Request);
