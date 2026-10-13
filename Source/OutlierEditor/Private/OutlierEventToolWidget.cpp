@@ -152,7 +152,7 @@ void SOutlierEventToolWidget::Construct(const FArguments& InArgs)
 			.Padding(0.0f, 0.0f, 6.0f, 0.0f)
 			[
 				SNew(STextBlock)
-				.Text(LOCTEXT("TargetLabel", "Target"))
+				.Text(LOCTEXT("TargetLabel", "Request from"))
 			]
 			+ SHorizontalBox::Slot()
 			.FillWidth(1.0f)
@@ -175,7 +175,7 @@ void SOutlierEventToolWidget::Construct(const FArguments& InArgs)
 			.Padding(8.0f, 0.0f, 0.0f, 0.0f)
 			[
 				SNew(SSegmentedControl<EOutlierPlayerRole>)
-				.ToolTipText(LOCTEXT("RoleTooltip", "Which role's Event DT to list. Picking a single PIE player switches to that player's role."))
+				.ToolTipText(LOCTEXT("RoleTooltip", "Preview this role's Event DT. This does not select recipients; the server sends the same EventID to both players."))
 				.Value_Lambda([this]() { return Role; })
 				.OnValueChanged_Lambda([this](EOutlierPlayerRole NewRole) { SetRole(NewRole); })
 				+ SSegmentedControl<EOutlierPlayerRole>::Slot(EOutlierPlayerRole::Shooter)
@@ -265,7 +265,7 @@ void SOutlierEventToolWidget::Construct(const FArguments& InArgs)
 			[
 				SNew(SButton)
 				.Text(LOCTEXT("Send", "Send"))
-				.ToolTipText(LOCTEXT("SendTooltip", "Send the selected event to the target PIE players. Double-clicking a row also sends."))
+				.ToolTipText(LOCTEXT("SendTooltip", "Request the selected EventID on the server. Both players resolve it with their own DataTables. The role selector only previews data."))
 				.IsEnabled_Lambda([this]() { return CanSend(); })
 				.OnClicked_Lambda([this]()
 				{
@@ -303,6 +303,7 @@ void SOutlierEventToolWidget::ReloadRows()
 	}
 	const UDataTable* TTSTable = DataAsset->TTSTable.LoadSynchronous();
 	const UDataTable* InputTable = DataAsset->InputTable.LoadSynchronous();
+	const UDataTable* InputDisplayTable = DataAsset->InputDisplayTable.LoadSynchronous();
 	const UDataTable* GoalTable = DataAsset->GoalTable.LoadSynchronous();
 	const UDataTable* GifTable = DataAsset->GifTable.LoadSynchronous();
 
@@ -332,7 +333,8 @@ void SOutlierEventToolWidget::ReloadRows()
 				const FOutlierInputDataRow* Input = FindToolRow<FOutlierInputDataRow>(InputTable, Event.InputTag);
 				Row->Upper = TEXT("Input: ") + (Input ? FirstLine(Input->Text) : Event.InputTag.ToString());
 				if (!Input) Warnings.Add(TEXT("No Input row"));
-				else if (!IsValid(Input->InputAction)) Warnings.Add(TEXT("No IA"));
+				const FOutlierInputDisplayDataRow* Display = FindToolRow<FOutlierInputDisplayDataRow>(InputDisplayTable, Event.InputTag);
+				if (!Display || !Display->Display.IsValid()) Warnings.Add(TEXT("No Input expression"));
 			}
 			else if (Event.GoalTag.IsValid())
 			{
@@ -345,6 +347,11 @@ void SOutlierEventToolWidget::ReloadRows()
 				const FOutlierGifDataRow* Gif = FindToolRow<FOutlierGifDataRow>(GifTable, Event.GifTag);
 				Row->Gif = Gif ? Gif->Subject.ToString() : Event.GifTag.ToString();
 				if (!Gif) Warnings.Add(TEXT("No GIF row"));
+				else if (Gif->InputTag.IsValid())
+				{
+					const FOutlierInputDisplayDataRow* Display = FindToolRow<FOutlierInputDisplayDataRow>(InputDisplayTable, Gif->InputTag);
+					if (!Display || !Display->Display.IsValid()) Warnings.Add(TEXT("No GIF input expression"));
+				}
 			}
 			Row->Warning = FString::Join(Warnings, TEXT(", "));
 			Rows.Add(Row);
@@ -394,8 +401,8 @@ void SOutlierEventToolWidget::RefreshTargets()
 	TArray<UWorld*> Worlds;
 	CollectPIEWorlds(Worlds);
 	AllTarget->Label = Worlds.IsEmpty()
-		? LOCTEXT("AllTargetIdle", "All PIE players (PIE not running)")
-		: FText::Format(LOCTEXT("AllTarget", "All PIE players ({0})"), FText::AsNumber(Worlds.Num()));
+		? LOCTEXT("AllTargetIdle", "Automatic requester (PIE not running)")
+		: LOCTEXT("AllTarget", "Automatic requester (server sends to both)");
 
 	// 기존 항목을 재사용해 콤보가 열린 채로 갱신돼도 선택이 바뀌지 않게 한다.
 	TArray<FTargetPtr> NewTargets;
@@ -510,10 +517,13 @@ void SOutlierEventToolWidget::SendSelectedEvent()
 		{
 			RestoreEditorWorld(EditorWorld);
 		}
+		// One request already targets both recipients. Never request again from every PIE client.
+		if (SentCount > 0) break;
 	}
 	// 각 플레이어는 자기 역할의 DT로 태그를 해석한다. 실패 사유는 Output Log에 남는다.
-	StatusText = FText::Format(LOCTEXT("SentStatus", "{0}: sent to {1}/{2} PIE players. See Output Log [Event] / [EventTrigger]."),
-		FText::FromString(EventTag.ToString()), FText::AsNumber(SentCount), FText::AsNumber(Worlds.Num()));
+	StatusText = SentCount > 0
+		? FText::Format(LOCTEXT("SentStatus", "{0}: requested once on the server for both players. See Output Log [EventTrigger] / [EventRelay]."), FText::FromString(EventTag.ToString()))
+		: LOCTEXT("RequestFailed", "No local player controller could request the event.");
 }
 
 #undef LOCTEXT_NAMESPACE

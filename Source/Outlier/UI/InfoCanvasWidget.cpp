@@ -60,7 +60,13 @@ bool UInfoCanvasWidget::CompleteInputInfo(FGameplayTag EventTag)
 
 bool UInfoCanvasWidget::NotifyInfoOverlap(FGameplayTag EventTag)
 {
-	return UpperWidget && UpperWidget->NotifyOverlap(EventTag);
+	return NotifyInfoOverlap(EOutlierInfoRegion::Upper, EventTag);
+}
+
+bool UInfoCanvasWidget::NotifyInfoOverlap(EOutlierInfoRegion Region, FGameplayTag EventTag)
+{
+	UInfoQueueWidget* Widget = GetInfoRegion(Region);
+	return Widget && Widget->NotifyOverlap(EventTag);
 }
 
 void UInfoCanvasWidget::CancelInputInfos()

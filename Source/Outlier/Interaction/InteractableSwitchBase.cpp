@@ -35,6 +35,14 @@ UHackableComponent* AInteractableSwitchBase::GetHackableComponent() const
 	return HackableComponent;
 }
 
+EScanRevealCondition AInteractableSwitchBase::GetScanRevealCondition() const
+{
+	// Hack.Target 태그가 있는 스위치만 해킹 대상으로 보고, 나머지는 일반 Interactable 규칙을 따른다.
+	return HackableComponent && HackableComponent->IsHackTargetType()
+		? EScanRevealCondition::RevealHackable
+		: IInteractableInterface::GetScanRevealCondition();
+}
+
 void AInteractableSwitchBase::BeginPlay()
 {
 	Super::BeginPlay();

@@ -23,6 +23,7 @@ public:
 	virtual bool CompleteInfo(EOutlierInfoRegion Region, FGameplayTag EventTag) override;
 	virtual bool CompleteInputInfo(FGameplayTag EventTag) override;
 	virtual bool NotifyInfoOverlap(FGameplayTag EventTag) override;
+	virtual bool NotifyInfoOverlap(EOutlierInfoRegion Region, FGameplayTag EventTag) override;
 	virtual void CancelInputInfos() override;
 	virtual FGameplayTag GetActiveInputEventTag() const override;
 	virtual void FinishInfoSource(EOutlierInfoRegion Region, FGameplayTag EventTag, bool bCompleted) override;

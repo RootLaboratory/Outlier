@@ -5,6 +5,7 @@
 #include "Engine/LocalPlayer.h"
 #include "Event/OutlierEventSubsystem.h"
 #include "GameFramework/PlayerController.h"
+#include "FirstPerson/FirstPersonPlayerController.h"
 #include "InputAction.h"
 #include "InputActionValue.h"
 #include "Outlier.h"
@@ -44,8 +45,9 @@ UTutorialComponent* UTutorialComponent::AttachTutorial(APawn* Pawn)
 
 bool UTutorialComponent::SendTriggerEvent(APawn* Pawn, FGameplayTag EventTag, const FString& Source)
 {
-	UTutorialComponent* Tutorial = AttachTutorial(Pawn);
-	const bool bSent = Tutorial && Tutorial->ReceiveEvent(EventTag);
+	AFirstPersonPlayerController* Controller = IsValid(Pawn) && Pawn->IsLocallyControlled()
+		? Cast<AFirstPersonPlayerController>(Pawn->GetController()) : nullptr;
+	const bool bSent = Controller && Controller->RequestTutorialEvent(EventTag);
 	if (bSent)
 	{
 		UE_LOG(LogOutlier, Log, TEXT("[EventTrigger] %s sent '%s' for %s."),
@@ -53,8 +55,8 @@ bool UTutorialComponent::SendTriggerEvent(APawn* Pawn, FGameplayTag EventTag, co
 	}
 	else
 	{
-		UE_LOG(LogOutlier, Warning, TEXT("[EventTrigger] %s failed '%s' for %s (Tutorial=%s)."),
-			*Source, *EventTag.ToString(), *GetNameSafe(Pawn), Tutorial ? TEXT("O") : TEXT("X"));
+		UE_LOG(LogOutlier, Warning, TEXT("[EventTrigger] %s could not request '%s' for %s."),
+			*Source, *EventTag.ToString(), *GetNameSafe(Pawn));
 	}
 	return bSent;
 }
@@ -122,10 +124,9 @@ bool UTutorialComponent::ReceiveEvent(FGameplayTag EventTag)
 	}
 	FOutlierUpperData Upper;
 	if (Events->TryGetEventUpperData(EventTag, Upper) && Upper.Type == EOutlierUpperInfoType::Input
-		&& !IsValid(Upper.InputAction))
+		&& !Upper.InputDisplay.IsValid())
 	{
-		// Voice and GIF still play; the upper widget rejects an input row without an action, which also stops its chain.
-		UE_LOG(LogOutlier, Warning, TEXT("[Tutorial] '%s' input row '%s' has no InputAction."),
+		UE_LOG(LogOutlier, Warning, TEXT("[Tutorial] '%s' input row '%s' has no valid input display definition."),
 			*EventTag.ToString(), *Upper.UpperTag.ToString());
 	}
 	// Sheet rule: every upper row, key hints included, closes after its DT Duration so chains advance on time.
@@ -140,7 +141,7 @@ bool UTutorialComponent::StartInputTutorial(FGameplayTag EventTag, ETriggerEvent
 	UOutlierEventSubsystem* Events = IsActive() ? GetEventSubsystem() : nullptr;
 	FOutlierUpperData Row;
 	if (!Events || !Events->TryGetEventUpperData(EventTag, Row) || Row.Type != EOutlierUpperInfoType::Input
-		|| !IsValid(Row.InputAction))
+		|| !Row.InputDisplay.IsValid())
 	{
 		return false;
 	}
@@ -150,8 +151,15 @@ bool UTutorialComponent::StartInputTutorial(FGameplayTag EventTag, ETriggerEvent
 		if (!FMath::IsFinite(Duration) || Duration <= 0.0f) return false;
 	}
 	// Manual uses input completion; Time is owned by the widget and Overlap waits for its trigger.
+	UInputAction* CompletionAction = Row.InputDisplay.CompletionInputAction;
+	if (!CompletionAction && Row.InputDisplay.Expression.Num() == 1)
+	{
+		CompletionAction = Row.InputDisplay.Expression[0].InputAction;
+	}
+	// A display '+' does not define a gameplay completion condition. Composite manual hints
+	// must explicitly select an action rather than completing on an arbitrary operand.
 	if (Context.EndCondition == EOutlierEventEndCondition::Manual
-		&& !AddInputWatch(Row.InputAction, TriggerEvent, EventTag, Context, true, true))
+		&& !AddInputWatch(CompletionAction, TriggerEvent, EventTag, Context, true, true))
 	{
 		return false;
 	}

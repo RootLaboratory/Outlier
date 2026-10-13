@@ -31,6 +31,10 @@ struct TAGDRIVENUI_API FOutlierInfoWidgetRequest
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info", meta = (Categories = "Event"))
 	FGameplayTag EventTag;
 
+	/** Original event that started this region's chain. Completion/cancellation can address the whole origin. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info", meta = (Categories = "Event"))
+	FGameplayTag OriginEventTag;
+
 	/** Optional direct TTS reference, including voices without an Event DT row. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info", meta = (Categories = "Audio.Context"))
 	FGameplayTag TTSTag;

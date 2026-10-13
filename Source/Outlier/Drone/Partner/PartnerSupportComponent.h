@@ -56,6 +56,10 @@ private:
 	float ActiveScanRange = 0.0f;
 	float ActiveScanDuration = 0.0f;
 
+	// 스캔 시작 시점의 정찰 해금 상태. 서버가 업그레이드 태그로 정해 Multicast로 넘긴다.
+	bool bScanRevealHackable = false;
+	bool bScanRevealNodeFragments = false;
+
 	TArray<TObjectPtr<AActor>> ScannedActors;
 
 	FVector ScanOrigin = FVector::ZeroVector;
@@ -80,7 +84,8 @@ private:
 	bool ShouldProcessLocalScanVisual() const;
 
 	UFUNCTION(NetMulticast, Reliable)
-	void MulticastStartScanVisual(FVector InScanOrigin, float InScanRange, float InScanDuration);
+	void MulticastStartScanVisual(FVector InScanOrigin, float InScanRange, float InScanDuration,
+		bool bInRevealHackable, bool bInRevealNodeFragments);
 
 	UFUNCTION(NetMulticast, Reliable)
 	void MulticastCancelScanForReboot();

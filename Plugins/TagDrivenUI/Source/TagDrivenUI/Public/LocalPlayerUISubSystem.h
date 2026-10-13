@@ -59,6 +59,7 @@ public:
 
 	bool CompleteInputEvent(FGameplayTag EventTag);
 	bool NotifyInfoOverlap(FGameplayTag EventTag);
+	bool NotifyInfoOverlap(EOutlierInfoRegion Region, FGameplayTag EventTag);
 	void CancelInputInfos();
 	FGameplayTag GetActiveInputEventTag() const;
 	void ClearEventInfo();

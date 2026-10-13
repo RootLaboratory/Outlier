@@ -2,11 +2,11 @@
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
+#include "UI/InputDisplayTypes.h"
 #include "GifInputWidget.generated.h"
 
 class UHorizontalBox;
-class UInputAction;
-class UInputActionKeyDisplayWidget;
+class UInputCombinationWidget;
 class UTextBlock;
 
 /** Input layout module. Displays a rebound key and its optional description. */
@@ -16,7 +16,7 @@ class OUTLIER_API UGifInputWidget : public UUserWidget
 	GENERATED_BODY()
 
 public:
-	void SetInputData(UInputAction* InputAction, const FText& Description);
+	void SetInputData(const FInputDisplayDefinition& Display, const FText& Description);
 	void ClearInputData();
 
 	/** Preserves the existing Input HorizontalBox name inside the module WBP. */
@@ -24,7 +24,7 @@ public:
 	TObjectPtr<UHorizontalBox> Input;
 
 	UPROPERTY(meta = (BindWidget))
-	TObjectPtr<UInputActionKeyDisplayWidget> InputBindWidgetKey;
+	TObjectPtr<UInputCombinationWidget> InputDisplay;
 
 	UPROPERTY(meta = (BindWidgetOptional))
 	TObjectPtr<UTextBlock> InputDisplayDescText;

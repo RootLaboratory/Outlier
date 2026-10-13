@@ -46,6 +46,13 @@ bool URightGifBindedWidget::PresentInfo(const FOutlierInfoWidgetRequest& Request
 {
 	ResetInfoContent();
 	if (!TryResolveGifData(Request, CurrentGifData)) return false;
+	FInputDisplayDefinition Display;
+	if (CurrentGifData.InputTag.IsValid())
+	{
+		ULocalPlayer* LocalPlayer = GetOwningLocalPlayer();
+		UOutlierEventSubsystem* Events = LocalPlayer ? LocalPlayer->GetSubsystem<UOutlierEventSubsystem>() : nullptr;
+		if (!Events || !Events->TryGetInputDisplayData(CurrentGifData.InputTag, Display)) return false;
+	}
 	if (DescriptionText) DescriptionText->SetText(CurrentGifData.Description);
 	if (CurrentGifData.bSubjectIconExist && !IsValid(CurrentGifData.SubjectIconTexture))
 	{
@@ -57,7 +64,7 @@ bool URightGifBindedWidget::PresentInfo(const FOutlierInfoWidgetRequest& Request
 	}
 	if (InputWidget)
 	{
-		InputWidget->SetInputData(CurrentGifData.InputAction, CurrentGifData.InputDisplayDesc);
+		InputWidget->SetInputData(Display, CurrentGifData.InputDisplayDesc);
 	}
 	return true;
 }

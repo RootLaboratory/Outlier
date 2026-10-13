@@ -17,6 +17,10 @@ public:
 	virtual bool CompleteInfo(EOutlierInfoRegion Region, FGameplayTag EventTag) { return false; }
 	virtual bool CompleteInputInfo(FGameplayTag EventTag) { return false; }
 	virtual bool NotifyInfoOverlap(FGameplayTag EventTag) { return false; }
+	virtual bool NotifyInfoOverlap(EOutlierInfoRegion Region, FGameplayTag EventTag)
+	{
+		return Region == EOutlierInfoRegion::Upper && NotifyInfoOverlap(EventTag);
+	}
 	virtual void CancelInputInfos() {}
 	virtual FGameplayTag GetActiveInputEventTag() const { return FGameplayTag(); }
 

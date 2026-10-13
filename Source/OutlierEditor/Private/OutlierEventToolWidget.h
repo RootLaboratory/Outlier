@@ -21,7 +21,7 @@ struct FOutlierEventToolRow
 	FString Warning;  // 데이터 누락 요약
 };
 
-// 전송 대상. World가 비어 있으면 실행 중인 모든 PIE 플레이어.
+// 요청 출발점. World가 비어 있으면 준비된 PIE 플레이어 하나를 선택한다. 서버는 양쪽에 전송한다.
 struct FOutlierEventToolTarget
 {
 	TWeakObjectPtr<UWorld> World;
@@ -29,7 +29,7 @@ struct FOutlierEventToolTarget
 	FText Label;
 };
 
-// 역할별 Event DT를 나열하고, 고른 이벤트를 트리거 볼륨·콘솔과 같은 경로로 PIE 플레이어에게 보낸다.
+// 역할별 Event DT를 미리 보고, 선택한 EventID를 서버에 한 번 요청한다.
 class SOutlierEventToolWidget : public SCompoundWidget
 {
 public:

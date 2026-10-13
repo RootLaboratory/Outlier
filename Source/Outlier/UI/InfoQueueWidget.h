@@ -61,6 +61,8 @@ protected:
 	TArray<FOutlierInfoWidgetRequest> GetInfoRequests() const;
 
 private:
+	bool CompleteInfoExact(FGameplayTag RequestTag, FGameplayTag OriginEventTag);
+	bool CancelInfoExact(FGameplayTag RequestTag, FGameplayTag OriginEventTag);
 	void AdvanceQueue();
 	void FinishCurrentInfo(bool bCompleted);
 	void HandleVisibilityChanged(ESlateVisibility Visibility);

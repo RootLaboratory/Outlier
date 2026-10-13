@@ -49,7 +49,7 @@ public:
 	/** Attaches the role-specific component once, only to a locally controlled pawn. */
 	static UTutorialComponent* AttachTutorial(APawn* Pawn);
 
-	/** Shared trigger path for volumes, the console and the editor event tool: attach (or reuse), then ReceiveEvent. */
+	/** Console/editor preview compatibility entry: request on the owning controller, server sends to both players. */
 	static bool SendTriggerEvent(APawn* Pawn, FGameplayTag EventTag, const FString& Source);
 
 	bool SendTutorialEvent(FGameplayTag EventTag, const FOutlierEventContext& Context);

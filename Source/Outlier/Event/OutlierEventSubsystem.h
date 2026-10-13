@@ -9,6 +9,7 @@
 
 class UOutlierAudioSubsystem;
 class UOutlierEventDataAsset;
+struct FOutlierWorldGuideDataRow;
 
 /** Local presentation endpoint. World/UI/gameplay triggers all submit the same EventTag. */
 UCLASS()
@@ -28,12 +29,17 @@ public:
 
 	UOutlierEventDataAsset* GetEventDataAsset();
 
+	/** Uses each Upper/GIF row's DT end condition and display time. */
+	bool SendEvent(FGameplayTag EventTag);
+	/** Explicit runtime upper-lifetime override retained for existing callers. GIF still uses its own row. */
 	bool SendEvent(FGameplayTag EventTag, const FOutlierEventContext& Context);
 
 	/** Direct data-tag requests do not dispatch other regions from the Event DT. */
 	bool SendTTS(FGameplayTag TTSTag);
 
+	bool SendUpper(FGameplayTag UpperTag);
 	bool SendUpper(FGameplayTag UpperTag, const FOutlierEventContext& Context);
+	bool SendGif(FGameplayTag GifTag);
 
 	bool TryGetEventData(FGameplayTag EventTag, FOutlierEventDataRow& OutData);
 
@@ -46,6 +52,13 @@ public:
 
 	bool TryGetInputData(FGameplayTag InputTag, FOutlierInputDataRow& OutData);
 
+	UFUNCTION(BlueprintCallable, Category = "Event|Input")
+	bool TryGetInputDisplayData(FGameplayTag InputTag, FInputDisplayDefinition& OutDisplay);
+
+	/** Resolve the event's InputTag, or its GIF row's InputTag if no upper input is selected. */
+	UFUNCTION(BlueprintCallable, Category = "Event|Input")
+	bool TryGetEventInputDisplayData(FGameplayTag EventTag, FInputDisplayDefinition& OutDisplay);
+
 	bool TryGetGoalData(FGameplayTag GoalTag, FOutlierGoalDataRow& OutData);
 
 	bool TryGetGifData(FGameplayTag GifTag, FOutlierGifDataRow& OutData);
@@ -53,7 +66,12 @@ public:
 	/** Resolves the GIF reference from the active role's event table. */
 	bool TryGetEventGifData(FGameplayTag EventTag, FOutlierGifDataRow& OutData);
 
+	bool TryGetWorldGuideData(FGameplayTag WidgetID, FOutlierWorldGuideDataRow& OutData);
+	/** Shared progression is authoritative; client-local events do not create another guide queue. */
+	bool SendWorldGuide(FGameplayTag WidgetID);
+
 	bool CompleteUpperEvent(FGameplayTag EventTag);
+	bool CompleteGifEvent(FGameplayTag EventTag);
 
 	bool CancelUpperEvent(FGameplayTag EventTag);
 
@@ -63,6 +81,7 @@ public:
 
 	/** Called by the overlap source, after filtering the appropriate local player. */
 	bool NotifyOverlap(FGameplayTag EventTag);
+	bool NotifyGifOverlap(FGameplayTag EventTag);
 
 	/** Cancels all pending/displayed input tutorials without chaining. */
 	void CancelInputEvent();
@@ -81,7 +100,10 @@ private:
 	void ClearPresentation();
 	void HandlePlayerRoleChanged(AOutlierPlayerState* PlayerState);
 	FGameplayTag ResolveUpperTag(const FOutlierEventDataRow& Event) const;
-	bool SubmitUpper(FGameplayTag UpperTag, FGameplayTag RequestTag, const FOutlierEventContext& Context);
+	bool SendEventInternal(FGameplayTag EventTag, const FOutlierEventContext* Context);
+	bool SubmitUpper(FGameplayTag UpperTag, FGameplayTag RequestTag, const FOutlierEventContext* Context,
+		FGameplayTag OriginEventTag = FGameplayTag());
+	bool SubmitGif(FGameplayTag GifTag, FGameplayTag RequestTag, FGameplayTag OriginEventTag = FGameplayTag());
 	void HandleVoiceStarted(ULocalPlayer* Listener, FGameplayTag RequestTag);
 	void HandleVoiceFinished(ULocalPlayer* Listener, FGameplayTag RequestTag, bool bCompleted);
 	void HandleVoiceUnavailable(ULocalPlayer* Listener, FGameplayTag RequestTag);
@@ -100,10 +122,16 @@ private:
 	TObjectPtr<UDataTable> InputTable;
 
 	UPROPERTY(Transient)
+	TObjectPtr<UDataTable> InputDisplayTable;
+
+	UPROPERTY(Transient)
 	TObjectPtr<UDataTable> GoalTable;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UDataTable> GifTable;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UDataTable> WorldGuideTable;
 
 	// ChainFrom tag -> rows that start when it completes, one map per region.
 	TMultiMap<FGameplayTag, FGameplayTag> TTSChains;

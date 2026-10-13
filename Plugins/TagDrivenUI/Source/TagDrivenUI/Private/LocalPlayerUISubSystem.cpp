@@ -37,7 +37,7 @@ bool ULocalPlayerUISubSystem::DispatchInfoRequest(UInfoCanvasBase* Canvas, const
 	case EOutlierInfoRequestOperation::CompleteInput:
 		return Canvas->CompleteInputInfo(Pending.Request.EventTag);
 	case EOutlierInfoRequestOperation::Overlap:
-		return Canvas->NotifyInfoOverlap(Pending.Request.EventTag);
+		return Canvas->NotifyInfoOverlap(Pending.Region, Pending.Request.EventTag);
 	case EOutlierInfoRequestOperation::CancelInputs:
 		Canvas->CancelInputInfos();
 		return true;
@@ -72,8 +72,13 @@ bool ULocalPlayerUISubSystem::SubmitInfoRequest(const FOutlierPendingInfoRequest
 			const FOutlierPendingInfoRequest& Existing = PendingInfoRequests[Index];
 			if (Existing.Region != Pending.Region) continue;
 			if (Existing.Operation == EOutlierInfoRequestOperation::CancelInputs) break;
+			// A later Show is a new occurrence after an end command, even before the HUD exists.
+			if (Existing.Operation != EOutlierInfoRequestOperation::Show
+				&& (Existing.Request.EventTag == Pending.Request.EventTag
+					|| Existing.Request.EventTag == Pending.Request.OriginEventTag)) break;
 			if (Existing.Operation == EOutlierInfoRequestOperation::Show
-				&& Existing.Request.EventTag == Pending.Request.EventTag) return true;
+				&& Existing.Request.EventTag == Pending.Request.EventTag
+				&& Existing.Request.OriginEventTag == Pending.Request.OriginEventTag) return true;
 		}
 	}
 	if (Pending.Operation != EOutlierInfoRequestOperation::Show
@@ -81,7 +86,8 @@ bool ULocalPlayerUISubSystem::SubmitInfoRequest(const FOutlierPendingInfoRequest
 		&& !PendingInfoRequests.ContainsByPredicate([&Pending](const FOutlierPendingInfoRequest& Existing)
 		{
 			return Existing.Operation == EOutlierInfoRequestOperation::Show
-				&& Existing.Region == Pending.Region && Existing.Request.EventTag == Pending.Request.EventTag;
+				&& Existing.Region == Pending.Region && (Existing.Request.EventTag == Pending.Request.EventTag
+					|| Existing.Request.OriginEventTag == Pending.Request.EventTag);
 		}))
 	{
 		return false;
@@ -97,6 +103,7 @@ bool ULocalPlayerUISubSystem::QueueInfoEvent(EOutlierInfoRegion Region, const FO
 	FOutlierPendingInfoRequest Pending;
 	Pending.Region = Region;
 	Pending.Request = Request;
+	if (!Pending.Request.OriginEventTag.IsValid()) Pending.Request.OriginEventTag = Request.EventTag;
 	return SubmitInfoRequest(Pending);
 }
 
@@ -105,7 +112,7 @@ bool ULocalPlayerUISubSystem::CancelInfoEvent(EOutlierInfoRegion Region, FGamepl
 	if (!EventTag.IsValid()) return false;
 	const int32 Removed = PendingInfoRequests.RemoveAll([Region, EventTag](const FOutlierPendingInfoRequest& Pending)
 	{
-		return Pending.Region == Region && Pending.Request.EventTag == EventTag;
+		return Pending.Region == Region && (Pending.Request.EventTag == EventTag || Pending.Request.OriginEventTag == EventTag);
 	});
 	UInfoCanvasBase* Canvas = GetInfoCanvas();
 	return (Canvas && Canvas->CancelInfo(Region, EventTag)) || Removed > 0;
@@ -130,7 +137,13 @@ bool ULocalPlayerUISubSystem::CompleteInputEvent(FGameplayTag EventTag)
 
 bool ULocalPlayerUISubSystem::NotifyInfoOverlap(FGameplayTag EventTag)
 {
+	return NotifyInfoOverlap(EOutlierInfoRegion::Upper, EventTag);
+}
+
+bool ULocalPlayerUISubSystem::NotifyInfoOverlap(EOutlierInfoRegion Region, FGameplayTag EventTag)
+{
 	FOutlierPendingInfoRequest Pending;
+	Pending.Region = Region;
 	Pending.Operation = EOutlierInfoRequestOperation::Overlap;
 	Pending.Request.EventTag = EventTag;
 	return SubmitInfoRequest(Pending);

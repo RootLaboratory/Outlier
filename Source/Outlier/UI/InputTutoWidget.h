@@ -3,13 +3,13 @@
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
 #include "GameplayTagContainer.h"
+#include "UI/InputDisplayTypes.h"
 #include "InputTutoWidget.generated.h"
 
-class UInputActionKeyDisplayWidget;
-class UInputAction;
+class UInputCombinationWidget;
 class UTextBlock;
 
-/** UpperWidget child. Uses the Upper DT's InputAction to display the current rebound key. */
+/** Displays tutorial text and a resolved definition from the role's InputDisplay DT. */
 UCLASS(Blueprintable, meta = (DisableNativeTick))
 class OUTLIER_API UInputTutoWidget : public UUserWidget
 {
@@ -17,11 +17,12 @@ class OUTLIER_API UInputTutoWidget : public UUserWidget
 
 public:
 	bool SetInputEvent(FGameplayTag EventTag);
-	bool SetInputData(FGameplayTag EventTag, UInputAction* InputAction, const FText& Text);
+	bool SetInputTag(FGameplayTag InputTag);
+	bool SetInputData(FGameplayTag RequestTag, const FInputDisplayDefinition& Display, const FText& Text);
 	void ClearInputEvent();
 
 	UPROPERTY(meta = (BindWidget))
-	TObjectPtr<UInputActionKeyDisplayWidget> InputBindWidgetKey;
+	TObjectPtr<UInputCombinationWidget> InputDisplay;
 
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UTextBlock> InstructionText;

@@ -15,10 +15,13 @@ class UBorder;
 class UTextBlock;
 class UTexture2D;
 class UDataTable;
+struct FInputKeyTextureDataRow;
 
 /**
  * 특정 Input Action 하나의 현재 바인딩 키를 보여주는 공용 부품.
- * 실제 키 이름으로 DT의 Texture를 조회한다. 마우스는 이미지만, 그 외 키는 프레임과 텍스트로 표시한다.
+ * 실제 키 이름으로 DT의 Texture를 조회한다. 전용 키 이미지는 텍스트 없이,
+ * 일반 키 또는 bShowKeyText 행은 공용 프레임과 텍스트로 표시한다.
+ * 조합 위젯은 SetDisplayedKey로 이미 조회한 FKey를 전달하여 같은 표시 경로를 재사용한다.
  * UILayerKeyHintWidget의 Confirm/Escape 키 표시가 이 클래스를 멤버로 갖는 식으로
  * 쓰이고, InteractKeyWidget 등 "이 키를 누르세요" UI도 동일하게
  * WatchedInputAction만 넣어서 재사용하면 된다.
@@ -51,6 +54,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UI|Input")
 	void SetWatchedInputAction(UInputAction* NewInputAction);
 
+	/** Display one resolved key using the same texture/text rules, without watching an IA. */
+	UFUNCTION(BlueprintCallable, Category = "UI|Input")
+	void SetDisplayedKey(FKey NewKey);
+
 	UFUNCTION(BlueprintPure, Category = "UI|Input")
 	UInputAction* GetWatchedInputAction() const { return WatchedInputAction; }
 
@@ -73,6 +80,19 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UI|Input")
 	void SetBorderImage(UTexture2D* NewImage);
 
+	UFUNCTION(BlueprintSetter, Category = "UI|Input")
+	void SetKeyTextColor(FLinearColor NewColor);
+
+	UFUNCTION(BlueprintCallable, Category = "UI|Input")
+	void SetDisplayHeight(float NewHeight);
+
+	UFUNCTION(BlueprintPure, Category = "UI|Input")
+	UTexture2D* GetBorderImage() const { return BorderImage; }
+
+	/** Resolved image dimensions, or the minimum frame dimensions for text keys. */
+	UFUNCTION(BlueprintPure, Category = "UI|Input")
+	FVector2D GetKeyDisplaySize() const;
+
 protected:
 	virtual void NativeConstruct() override;
 	virtual void NativeDestruct() override;
@@ -88,6 +108,23 @@ protected:
 	// WBP 파생 클래스에서 이미지 텍스처를 주입하면 Border Brush에 반영된다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI|Input")
 	TObjectPtr<UTexture2D> BorderImage;
+
+	/** Color for key labels and override text; can be changed in BP defaults or at runtime. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, BlueprintSetter = SetKeyTextColor, Category = "UI|Input")
+	FLinearColor KeyTextColor = FLinearColor::Black;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI|Layout", meta = (ClampMin = "1.0"))
+	float DisplayHeight = 40.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI|Layout", meta = (ClampMin = "1.0"))
+	float MinTextKeyWidth = 48.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI|Layout", meta = (ClampMin = "1.0"))
+	float MaxTextKeyWidth = 88.0f;
+
+	/** Nine-slice margin lets the common frame grow with the key label. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI|Layout")
+	FMargin FrameSliceMargin = FMargin(0.15f);
 
 	/** Shared table assigned on the base BindKey WBP. Row Name must equal the engine key name. */
 	// Keep the serialized property name so existing WBP assignments remain valid.
@@ -114,9 +151,12 @@ private:
 	void BindSettingsSubsystem();
 	void UnbindSettingsSubsystem();
 	void RefreshBorderBrush();
-	UTexture2D* FindKeyTexture(FKey Key) const;
+	void RefreshKeyTextColor();
+	const FInputKeyTextureDataRow* FindKeyTextureRow(FKey Key) const;
 	void ShowKeyText(const FText& Text, FKey Key = FKey());
-	void ShowMouseKey(FKey Key);
+	void ShowKeyImage(const FInputKeyTextureDataRow& Row);
+	void RefreshKeyLayout();
+	bool ShowResolvedKey(FKey Key);
 	void BindControlMappingsRebuiltDelegate();
 	void UnbindControlMappingsRebuiltDelegate();
 
@@ -135,9 +175,18 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UTexture2D> DisplayedKeyTexture;
 
+	UPROPERTY(Transient)
+	FKey ExplicitKey;
+
+	FVector2D ImageDisplaySize = FVector2D::ZeroVector;
+	FMargin DefaultBorderPadding;
+	bool bHasDefaultBorderPadding = false;
+
+	bool bUseExplicitKey = false;
+
 	TSet<FName> WarnedMissingMouseKeys;
 	bool bHasDefaultBorderBrush = false;
-	bool bDisplayingMouseKey = false;
+	bool bDisplayingImageKey = false;
 
 	bool bIsConstructed = false;
 };

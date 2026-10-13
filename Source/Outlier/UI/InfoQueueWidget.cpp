@@ -1,5 +1,13 @@
 #include "UI/InfoQueueWidget.h"
 
+namespace
+{
+	bool MatchesEvent(const FOutlierInfoWidgetRequest& Request, FGameplayTag Tag)
+	{
+		return Request.EventTag == Tag || Request.OriginEventTag == Tag;
+	}
+}
+
 UInfoQueueWidget::UInfoQueueWidget(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -34,12 +42,14 @@ bool UInfoQueueWidget::EnqueueInfo(const FOutlierInfoWidgetRequest& Request)
 		return false;
 	}
 	FOutlierInfoWidgetRequest WidgetRequest = Request;
+	if (!WidgetRequest.OriginEventTag.IsValid()) WidgetRequest.OriginEventTag = WidgetRequest.EventTag;
 	if (!PrepareInfoRequest(WidgetRequest)) return false;
 	// Repeated requests keep their original duration and position.
-	if ((bHasCurrentInfo && CurrentRequest.EventTag == Request.EventTag)
-		|| PendingRequests.ContainsByPredicate([&Request](const FOutlierInfoWidgetRequest& Pending)
+	if ((bHasCurrentInfo && CurrentRequest.EventTag == WidgetRequest.EventTag
+		&& CurrentRequest.OriginEventTag == WidgetRequest.OriginEventTag)
+		|| PendingRequests.ContainsByPredicate([&WidgetRequest](const FOutlierInfoWidgetRequest& Pending)
 		{
-			return Pending.EventTag == Request.EventTag;
+			return Pending.EventTag == WidgetRequest.EventTag && Pending.OriginEventTag == WidgetRequest.OriginEventTag;
 		}))
 	{
 		return true;
@@ -123,13 +133,13 @@ void UInfoQueueWidget::CompleteCurrentInfo()
 
 bool UInfoQueueWidget::TryGetInfoRequest(FGameplayTag EventTag, FOutlierInfoWidgetRequest& OutRequest) const
 {
-	if (bHasCurrentInfo && CurrentRequest.EventTag == EventTag)
+	if (bHasCurrentInfo && MatchesEvent(CurrentRequest, EventTag))
 	{
 		OutRequest = CurrentRequest;
 		return true;
 	}
 	if (const FOutlierInfoWidgetRequest* Pending = PendingRequests.FindByPredicate(
-		[EventTag](const FOutlierInfoWidgetRequest& Request) { return Request.EventTag == EventTag; }))
+		[EventTag](const FOutlierInfoWidgetRequest& Request) { return MatchesEvent(Request, EventTag); }))
 	{
 		OutRequest = *Pending;
 		return true;
@@ -147,26 +157,46 @@ TArray<FOutlierInfoWidgetRequest> UInfoQueueWidget::GetInfoRequests() const
 bool UInfoQueueWidget::CompleteInfo(FGameplayTag EventTag)
 {
 	if (!EventTag.IsValid() || bClearingQueue) return false;
-	if (bHasCurrentInfo && CurrentRequest.EventTag == EventTag)
+	// Snapshot only existing matches: completion may enqueue the next chain, which must remain running.
+	const TArray<FOutlierInfoWidgetRequest> Requests = GetInfoRequests();
+	bool bCompleted = false;
+	for (const FOutlierInfoWidgetRequest& Request : Requests)
+	{
+		if (MatchesEvent(Request, EventTag)) bCompleted |= CompleteInfoExact(Request.EventTag, Request.OriginEventTag);
+	}
+	return bCompleted;
+}
+
+bool UInfoQueueWidget::CompleteInfoExact(FGameplayTag RequestTag, FGameplayTag OriginEventTag)
+{
+	if (bHasCurrentInfo && CurrentRequest.EventTag == RequestTag && CurrentRequest.OriginEventTag == OriginEventTag)
 	{
 		FinishCurrentInfo(true);
 		return true;
 	}
 	const int32 Index = PendingRequests.IndexOfByPredicate(
-		[EventTag](const FOutlierInfoWidgetRequest& Request) { return Request.EventTag == EventTag; });
+		[RequestTag, OriginEventTag](const FOutlierInfoWidgetRequest& Request)
+		{
+			return Request.EventTag == RequestTag && Request.OriginEventTag == OriginEventTag;
+		});
 	if (Index == INDEX_NONE) return false;
 	const FOutlierInfoWidgetRequest Request = PendingRequests[Index];
 	PendingRequests.RemoveAt(Index);
 	InfoFinished(Request, true);
-	OnInfoItemFinished.Broadcast(EventTag, true);
+	OnInfoItemFinished.Broadcast(RequestTag, true);
 	return true;
 }
 
 bool UInfoQueueWidget::NotifyOverlap(FGameplayTag EventTag)
 {
-	FOutlierInfoWidgetRequest Request;
-	return TryGetInfoRequest(EventTag, Request) && Request.EndCondition == EOutlierInfoEndCondition::Overlap
-		&& CompleteInfo(EventTag);
+	const TArray<FOutlierInfoWidgetRequest> Requests = GetInfoRequests();
+	bool bCompleted = false;
+	for (const FOutlierInfoWidgetRequest& Request : Requests)
+	{
+		if (MatchesEvent(Request, EventTag) && Request.EndCondition == EOutlierInfoEndCondition::Overlap)
+			bCompleted |= CompleteInfoExact(Request.EventTag, Request.OriginEventTag);
+	}
+	return bCompleted;
 }
 
 void UInfoQueueWidget::FinishSource(FGameplayTag EventTag, bool bCompleted)
@@ -182,13 +212,8 @@ void UInfoQueueWidget::FinishSource(FGameplayTag EventTag, bool bCompleted)
 
 bool UInfoQueueWidget::IsInfoTimed(FGameplayTag EventTag) const
 {
-	if (bHasCurrentInfo && CurrentRequest.EventTag == EventTag)
-	{
-		return CurrentRequest.Duration > 0.0f;
-	}
-	const FOutlierInfoWidgetRequest* Pending = PendingRequests.FindByPredicate(
-		[EventTag](const FOutlierInfoWidgetRequest& Request) { return Request.EventTag == EventTag; });
-	return Pending && Pending->Duration > 0.0f;
+	FOutlierInfoWidgetRequest Request;
+	return TryGetInfoRequest(EventTag, Request) && Request.Duration > 0.0f;
 }
 
 void UInfoQueueWidget::FinishCurrentInfo(bool bCompleted)
@@ -216,22 +241,35 @@ void UInfoQueueWidget::FinishCurrentInfo(bool bCompleted)
 
 bool UInfoQueueWidget::CancelInfo(FGameplayTag EventTag)
 {
-	if (!EventTag.IsValid())
+	if (!EventTag.IsValid() || bClearingQueue) return false;
+	const TArray<FOutlierInfoWidgetRequest> Requests = GetInfoRequests();
+	bool bCancelled = false;
+	// Remove pending matches first, so cancelling the active item cannot promote a cancelled item.
+	for (int32 Index = Requests.Num() - 1; Index >= 0; --Index)
 	{
-		return false;
+		const FOutlierInfoWidgetRequest& Request = Requests[Index];
+		if (MatchesEvent(Request, EventTag)) bCancelled |= CancelInfoExact(Request.EventTag, Request.OriginEventTag);
 	}
-	if (bHasCurrentInfo && CurrentRequest.EventTag == EventTag)
+	return bCancelled;
+}
+
+bool UInfoQueueWidget::CancelInfoExact(FGameplayTag RequestTag, FGameplayTag OriginEventTag)
+{
+	if (bHasCurrentInfo && CurrentRequest.EventTag == RequestTag && CurrentRequest.OriginEventTag == OriginEventTag)
 	{
 		FinishCurrentInfo(false);
 		return true;
 	}
 	const int32 Index = PendingRequests.IndexOfByPredicate(
-		[EventTag](const FOutlierInfoWidgetRequest& Request) { return Request.EventTag == EventTag; });
+		[RequestTag, OriginEventTag](const FOutlierInfoWidgetRequest& Request)
+		{
+			return Request.EventTag == RequestTag && Request.OriginEventTag == OriginEventTag;
+		});
 	if (Index == INDEX_NONE) return false;
 	const FOutlierInfoWidgetRequest Request = PendingRequests[Index];
 	PendingRequests.RemoveAt(Index);
 	InfoFinished(Request, false);
-	OnInfoItemFinished.Broadcast(EventTag, false);
+	OnInfoItemFinished.Broadcast(RequestTag, false);
 	return true;
 }
 

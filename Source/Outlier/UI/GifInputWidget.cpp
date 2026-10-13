@@ -1,8 +1,7 @@
 #include "UI/GifInputWidget.h"
 
 #include "Components/TextBlock.h"
-#include "InputAction.h"
-#include "UI/InputActionKeyDisplayWidget.h"
+#include "UI/InputCombinationWidget.h"
 
 void UGifInputWidget::NativeOnInitialized()
 {
@@ -10,16 +9,15 @@ void UGifInputWidget::NativeOnInitialized()
 	ClearInputData();
 }
 
-void UGifInputWidget::SetInputData(UInputAction* InputAction, const FText& Description)
+void UGifInputWidget::SetInputData(const FInputDisplayDefinition& Display, const FText& Description)
 {
 	ClearInputData();
-	const bool bHasKey = IsValid(InputAction) && InputBindWidgetKey;
+	const bool bHasKey = Display.IsValid() && InputDisplay;
 	const bool bHasDescription = !Description.IsEmpty() && InputDisplayDescText;
 	if (bHasKey)
 	{
-		InputBindWidgetKey->ClearTextOverride();
-		InputBindWidgetKey->SetWatchedInputAction(InputAction);
-		InputBindWidgetKey->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
+		InputDisplay->SetDisplayDefinition(Display);
+		InputDisplay->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
 	}
 	if (bHasDescription)
 	{
@@ -31,10 +29,10 @@ void UGifInputWidget::SetInputData(UInputAction* InputAction, const FText& Descr
 
 void UGifInputWidget::ClearInputData()
 {
-	if (InputBindWidgetKey)
+	if (InputDisplay)
 	{
-		InputBindWidgetKey->SetWatchedInputAction(nullptr);
-		InputBindWidgetKey->SetVisibility(ESlateVisibility::Collapsed);
+		InputDisplay->ClearExpression();
+		InputDisplay->SetVisibility(ESlateVisibility::Collapsed);
 	}
 	if (InputDisplayDescText)
 	{

@@ -3,9 +3,9 @@
 #include "CoreMinimal.h"
 #include "Engine/DataTable.h"
 #include "GameplayTagContainer.h"
+#include "UI/InputDisplayTypes.h"
 #include "OutlierEventTypes.generated.h"
 
-class UInputAction;
 class UTexture2D;
 
 UENUM(BlueprintType)
@@ -83,6 +83,10 @@ struct OUTLIER_API FOutlierEventDataRow : public FTableRowBase
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Event")
 	FGameplayTag GifTag;
+
+	/** Optional reference to the shared world guide DT. Older Event CSVs remain importable. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Event", meta = (Categories = "UI.Info.World", DataTableImportOptional))
+	FGameplayTag WorldGuideID;
 };
 
 /** Row Name must equal TTSTag, the context tag used by the existing Voice audio bank. */
@@ -112,7 +116,20 @@ struct OUTLIER_API FOutlierTTSDataRow : public FTableRowBase
 	EOutlierTTSPriority Priority = EOutlierTTSPriority::P1;
 };
 
-/** Role-specific input table. Row Name must equal InputTag; the table selects the role. */
+/** Role-specific reusable input expression. Row Name must equal InputTag. */
+USTRUCT(BlueprintType)
+struct OUTLIER_API FOutlierInputDisplayDataRow : public FTableRowBase
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input Display", meta = (Categories = "UI.Info"))
+	FGameplayTag InputTag;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input Display")
+	FInputDisplayDefinition Display;
+};
+
+/** Tutorial text and lifetime. InputTag also references the separate role InputDisplay DT. */
 USTRUCT(BlueprintType)
 struct OUTLIER_API FOutlierInputDataRow : public FTableRowBase
 {
@@ -132,9 +149,9 @@ struct OUTLIER_API FOutlierInputDataRow : public FTableRowBase
 	FText Text;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input UI")
-	TObjectPtr<UInputAction> InputAction = nullptr;
+	EOutlierEventEndCondition EndCondition = EOutlierEventEndCondition::Time;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input UI", meta = (ClampMin = "0.001"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input UI", meta = (ClampMin = "0.001", EditCondition = "EndCondition == EOutlierEventEndCondition::Time"))
 	float Duration = 3.0f;
 };
 
@@ -156,7 +173,10 @@ struct OUTLIER_API FOutlierGoalDataRow : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Goal UI", meta = (MultiLine = "true"))
 	FText Text;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Goal UI", meta = (ClampMin = "0.001"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Goal UI")
+	EOutlierEventEndCondition EndCondition = EOutlierEventEndCondition::Time;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Goal UI", meta = (ClampMin = "0.001", EditCondition = "EndCondition == EOutlierEventEndCondition::Time"))
 	float Duration = 3.0f;
 };
 
@@ -183,7 +203,11 @@ struct OUTLIER_API FOutlierUpperData
 	FText Text;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Upper UI", meta = (EditCondition = "Type == EOutlierUpperInfoType::Input", EditConditionHides))
-	TObjectPtr<UInputAction> InputAction = nullptr;
+	FInputDisplayDefinition InputDisplay;
+
+	/** Resolved from the selected Input/Goal DT row. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Upper UI")
+	EOutlierEventEndCondition EndCondition = EOutlierEventEndCondition::Time;
 
 	/** Used for Time requests when Context.Duration is zero. Manual/Overlap ignore this value. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Upper UI", meta = (ClampMin = "0.001"))
@@ -208,13 +232,17 @@ struct OUTLIER_API FOutlierGifDataRow : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GIF UI", meta = (MultiLine = "true"))
 	FText Description;
 
+	/** Defaults to Time so existing rows retain their previous display lifetime. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GIF UI")
+	EOutlierEventEndCondition EndCondition = EOutlierEventEndCondition::Time;
+
 	/** Time requests use this value when no explicit request duration is supplied. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GIF UI", meta = (ClampMin = "0.001"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GIF UI", meta = (ClampMin = "0.001", EditCondition = "EndCondition == EOutlierEventEndCondition::Time"))
 	float Time = 3.0f;
 
-	/** Optional action whose current rebound key is displayed by the Right widget. */
+	/** Optional reference into this role's InputDisplay DT, shared with tutorial prompts. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GIF UI")
-	TObjectPtr<UInputAction> InputAction = nullptr;
+	FGameplayTag InputTag;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GIF UI", meta = (DisplayName = "Subject Icon Exist"))
 	bool bSubjectIconExist = false;

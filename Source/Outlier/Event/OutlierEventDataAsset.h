@@ -19,6 +19,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Data Tables", meta = (RequiredAssetDataTags = "RowStructure=/Script/Outlier.OutlierInputDataRow"))
 	TSoftObjectPtr<UDataTable> InputTable;
 
+	/** IA expressions, separate from the InputTable's tutorial text and lifetime. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Data Tables", meta = (RequiredAssetDataTags = "RowStructure=/Script/Outlier.OutlierInputDisplayDataRow"))
+	TSoftObjectPtr<UDataTable> InputDisplayTable;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Data Tables", meta = (RequiredAssetDataTags = "RowStructure=/Script/Outlier.OutlierGoalDataRow"))
 	TSoftObjectPtr<UDataTable> GoalTable;
 
@@ -27,4 +31,8 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Data Tables", meta = (RequiredAssetDataTags = "RowStructure=/Script/Outlier.OutlierTTSDataRow"))
 	TSoftObjectPtr<UDataTable> TTSTable;
+
+	/** Shared world-space guide definitions; both role assets should reference the same table. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Data Tables", meta = (RequiredAssetDataTags = "RowStructure=/Script/Outlier.OutlierWorldGuideDataRow"))
+	TSoftObjectPtr<UDataTable> WorldGuideTable;
 };

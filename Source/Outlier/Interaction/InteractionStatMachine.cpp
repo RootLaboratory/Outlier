@@ -152,6 +152,14 @@ UHackableComponent* AInteractionStatMachine::GetHackableComponent() const
 	return HackableComponent;
 }
 
+EScanRevealCondition AInteractionStatMachine::GetScanRevealCondition() const
+{
+	// Hack.Target 태그가 있을 때만 해킹 대상으로 보고, 나머지는 일반 Interactable 규칙을 따른다.
+	return HackableComponent && HackableComponent->IsHackTargetType()
+		? EScanRevealCondition::RevealHackable
+		: IInteractableInterface::GetScanRevealCondition();
+}
+
 void AInteractionStatMachine::HandleHackEffect(
 	FGameplayTag EffectTag,
 	const FHackResultContext& Context)

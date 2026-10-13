@@ -3,8 +3,7 @@
 #include "Engine/LocalPlayer.h"
 #include "Components/TextBlock.h"
 #include "Event/OutlierEventSubsystem.h"
-#include "InputAction.h"
-#include "UI/InputActionKeyDisplayWidget.h"
+#include "UI/InputCombinationWidget.h"
 
 bool UInputTutoWidget::SetInputEvent(FGameplayTag EventTag)
 {
@@ -15,23 +14,31 @@ bool UInputTutoWidget::SetInputEvent(FGameplayTag EventTag)
 	{
 		return false;
 	}
-	return SetInputData(EventTag, Data.InputAction, Data.Text);
+	return SetInputData(EventTag, Data.InputDisplay, Data.Text);
 }
 
-bool UInputTutoWidget::SetInputData(FGameplayTag EventTag, UInputAction* InputAction, const FText& Text)
+bool UInputTutoWidget::SetInputTag(FGameplayTag InputTag)
 {
-	if (!EventTag.IsValid() || !IsValid(InputAction) || !InputBindWidgetKey)
+	ULocalPlayer* LocalPlayer = GetOwningLocalPlayer();
+	UOutlierEventSubsystem* Events = LocalPlayer ? LocalPlayer->GetSubsystem<UOutlierEventSubsystem>() : nullptr;
+	FOutlierUpperData Data;
+	return Events && Events->TryGetUpperData(InputTag, Data) && Data.Type == EOutlierUpperInfoType::Input
+		&& SetInputData(InputTag, Data.InputDisplay, Data.Text);
+}
+
+bool UInputTutoWidget::SetInputData(FGameplayTag RequestTag, const FInputDisplayDefinition& Display, const FText& Text)
+{
+	if (!RequestTag.IsValid() || !Display.IsValid() || !InputDisplay)
 	{
 		return false;
 	}
-	CurrentEventTag = EventTag;
+	CurrentEventTag = RequestTag;
 	CurrentText = Text;
 	if (InstructionText)
 	{
 		InstructionText->SetText(Text);
 	}
-	InputBindWidgetKey->ClearTextOverride();
-	InputBindWidgetKey->SetWatchedInputAction(InputAction);
+	InputDisplay->SetDisplayDefinition(Display);
 	return true;
 }
 
@@ -43,8 +50,8 @@ void UInputTutoWidget::ClearInputEvent()
 	{
 		InstructionText->SetText(FText::GetEmpty());
 	}
-	if (InputBindWidgetKey)
+	if (InputDisplay)
 	{
-		InputBindWidgetKey->SetWatchedInputAction(nullptr);
+		InputDisplay->ClearExpression();
 	}
 }

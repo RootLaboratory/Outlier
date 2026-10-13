@@ -38,7 +38,7 @@ bool UUpperWidget::PresentInfo(const FOutlierInfoWidgetRequest& Request)
 	}
 	if (Data.Type == EOutlierUpperInfoType::Input)
 	{
-		if (!InputTutoWidget || !InputTutoWidget->SetInputData(Request.EventTag, Data.InputAction, Data.Text))
+		if (!InputTutoWidget || !InputTutoWidget->SetInputData(Request.EventTag, Data.InputDisplay, Data.Text))
 		{
 			return false;
 		}
@@ -77,7 +77,12 @@ FGameplayTag UUpperWidget::GetActiveInputEventTag() const
 
 bool UUpperWidget::CompleteInputInfo(FGameplayTag EventTag)
 {
-	return EventTag.IsValid() && EventTag == GetActiveInputEventTag() && CompleteInfo(EventTag);
+	FOutlierInfoWidgetRequest Request;
+	if (!EventTag.IsValid() || !bCurrentInput || !TryGetInfoRequest(GetCurrentEventTag(), Request)
+		|| (Request.EventTag != EventTag && Request.OriginEventTag != EventTag)) return false;
+	// An input action completes only the displayed tutorial, even if another origin uses the same row.
+	CompleteCurrentInfo();
+	return true;
 }
 
 bool UUpperWidget::IsInputRequest(const FOutlierInfoWidgetRequest& Request) const
@@ -108,6 +113,6 @@ void UUpperWidget::InfoFinished(const FOutlierInfoWidgetRequest& Request, bool b
 	if (UOutlierEventSubsystem* Events = LocalPlayer ? LocalPlayer->GetSubsystem<UOutlierEventSubsystem>() : nullptr)
 	{
 		Events->NotifyInfoCompleted(EOutlierInfoRegion::Upper, Request);
-		if (Request.NextEventTag.IsValid()) Events->SendEvent(Request.NextEventTag, FOutlierEventContext());
+		if (Request.NextEventTag.IsValid()) Events->SendEvent(Request.NextEventTag);
 	}
 }

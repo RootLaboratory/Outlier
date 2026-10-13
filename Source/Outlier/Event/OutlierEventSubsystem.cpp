@@ -10,9 +10,21 @@
 #include "LocalPlayerUISubSystem.h"
 #include "Outlier.h"
 #include "OutlierPlayerState.h"
+#include "Tutorial/WorldGuide/OutlierWorldGuideManager.h"
 
 namespace
 {
+	bool ToInfoEndCondition(EOutlierEventEndCondition Condition, EOutlierInfoEndCondition& OutCondition)
+	{
+		switch (Condition)
+		{
+		case EOutlierEventEndCondition::Time: OutCondition = EOutlierInfoEndCondition::Time; return true;
+		case EOutlierEventEndCondition::Manual: OutCondition = EOutlierInfoEndCondition::Manual; return true;
+		case EOutlierEventEndCondition::Overlap: OutCondition = EOutlierInfoEndCondition::Overlap; return true;
+		default: return false;
+		}
+	}
+
 	template <typename RowType>
 	const RowType* FindTaggedRow(UDataTable* Table, FGameplayTag Tag, FGameplayTag RowType::* TagField)
 	{
@@ -137,18 +149,24 @@ bool UOutlierEventSubsystem::ApplyDataAsset(UOutlierEventDataAsset* DataAsset)
 	UDataTable* NewEvent = DataAsset ? DataAsset->EventTable.LoadSynchronous() : nullptr;
 	UDataTable* NewTTS = DataAsset ? DataAsset->TTSTable.LoadSynchronous() : nullptr;
 	UDataTable* NewInput = DataAsset ? DataAsset->InputTable.LoadSynchronous() : nullptr;
+	UDataTable* NewInputDisplay = DataAsset ? DataAsset->InputDisplayTable.LoadSynchronous() : nullptr;
 	UDataTable* NewGoal = DataAsset ? DataAsset->GoalTable.LoadSynchronous() : nullptr;
 	UDataTable* NewGif = DataAsset ? DataAsset->GifTable.LoadSynchronous() : nullptr;
+	UDataTable* NewWorldGuide = DataAsset ? DataAsset->WorldGuideTable.LoadSynchronous() : nullptr;
 	if (DataAsset && ((!DataAsset->EventTable.IsNull() && !NewEvent)
 		|| (!DataAsset->TTSTable.IsNull() && !NewTTS)
 		|| (!DataAsset->InputTable.IsNull() && !NewInput)
+		|| (!DataAsset->InputDisplayTable.IsNull() && !NewInputDisplay)
 		|| (!DataAsset->GoalTable.IsNull() && !NewGoal)
 		|| (!DataAsset->GifTable.IsNull() && !NewGif)
+		|| (!DataAsset->WorldGuideTable.IsNull() && !NewWorldGuide)
 		|| (NewEvent && NewEvent->GetRowStruct() != FOutlierEventDataRow::StaticStruct())
 		|| (NewTTS && NewTTS->GetRowStruct() != FOutlierTTSDataRow::StaticStruct())
 		|| (NewInput && NewInput->GetRowStruct() != FOutlierInputDataRow::StaticStruct())
+		|| (NewInputDisplay && NewInputDisplay->GetRowStruct() != FOutlierInputDisplayDataRow::StaticStruct())
 		|| (NewGoal && NewGoal->GetRowStruct() != FOutlierGoalDataRow::StaticStruct())
-		|| (NewGif && NewGif->GetRowStruct() != FOutlierGifDataRow::StaticStruct())))
+		|| (NewGif && NewGif->GetRowStruct() != FOutlierGifDataRow::StaticStruct())
+		|| (NewWorldGuide && NewWorldGuide->GetRowStruct() != FOutlierWorldGuideDataRow::StaticStruct())))
 	{
 		UE_LOG(LogOutlier, Warning, TEXT("[Event] Data asset '%s' has unavailable tables or incompatible row structures."), *GetNameSafe(DataAsset));
 		return false;
@@ -158,8 +176,10 @@ bool UOutlierEventSubsystem::ApplyDataAsset(UOutlierEventDataAsset* DataAsset)
 	EventTable = NewEvent;
 	TTSTable = NewTTS;
 	InputTable = NewInput;
+	InputDisplayTable = NewInputDisplay;
 	GoalTable = NewGoal;
 	GifTable = NewGif;
+	WorldGuideTable = NewWorldGuide;
 	RebuildChains();
 	return true;
 }
@@ -241,20 +261,18 @@ void UOutlierEventSubsystem::NotifyInfoCompleted(EOutlierInfoRegion Region, cons
 	default:
 		return;
 	}
-	ULocalPlayerUISubSystem* UI = GetLocalPlayer()->GetSubsystem<ULocalPlayerUISubSystem>();
 	for (const FGameplayTag& NextTag : NextTags)
 	{
 		bool bStarted = false;
 		if (Region == EOutlierInfoRegion::Upper)
 		{
-			// Chained upper rows close after their DT Duration, like trigger-sent ones.
-			FOutlierEventContext Context;
-			Context.EndCondition = EOutlierEventEndCondition::Time;
-			bStarted = SendUpper(NextTag, Context);
+			bStarted = SubmitUpper(NextTag, NextTag, nullptr,
+				Request.OriginEventTag.IsValid() ? Request.OriginEventTag : Request.EventTag);
 		}
 		else if (Region == EOutlierInfoRegion::Right)
 		{
-			bStarted = UI && UI->ShowEventGif(NextTag, NextTag);
+			bStarted = SubmitGif(NextTag, NextTag,
+				Request.OriginEventTag.IsValid() ? Request.OriginEventTag : Request.EventTag);
 		}
 		else
 		{
@@ -364,19 +382,47 @@ bool UOutlierEventSubsystem::TryGetGoalData(FGameplayTag GoalTag, FOutlierGoalDa
 	return false;
 }
 
+bool UOutlierEventSubsystem::TryGetInputDisplayData(FGameplayTag InputTag, FInputDisplayDefinition& OutDisplay)
+{
+	OutDisplay = FInputDisplayDefinition();
+	LoadConfiguredTables();
+	const FOutlierInputDisplayDataRow* Row = FindTaggedRow<FOutlierInputDisplayDataRow>(
+		InputDisplayTable, InputTag, &FOutlierInputDisplayDataRow::InputTag);
+	if (!Row || !Row->Display.IsValid())
+	{
+		UE_LOG(LogOutlier, Warning, TEXT("[Event] Input display '%s' is missing or has an invalid expression in '%s'."),
+			*InputTag.ToString(), *GetNameSafe(InputDisplayTable));
+		return false;
+	}
+	OutDisplay = Row->Display;
+	return true;
+}
+
+bool UOutlierEventSubsystem::TryGetEventInputDisplayData(FGameplayTag EventTag, FInputDisplayDefinition& OutDisplay)
+{
+	OutDisplay = FInputDisplayDefinition();
+	FOutlierEventDataRow Event;
+	if (!TryGetEventData(EventTag, Event)) return false;
+	if (Event.InputTag.IsValid()) return TryGetInputDisplayData(Event.InputTag, OutDisplay);
+	FOutlierGifDataRow Gif;
+	return Event.GifTag.IsValid() && TryGetGifData(Event.GifTag, Gif)
+		&& Gif.InputTag.IsValid() && TryGetInputDisplayData(Gif.InputTag, OutDisplay);
+}
+
 bool UOutlierEventSubsystem::TryGetUpperData(FGameplayTag UpperTag, FOutlierUpperData& OutData)
 {
 	OutData = FOutlierUpperData();
 	FOutlierInputDataRow Input;
 	if (TryGetInputData(UpperTag, Input))
 	{
+		if (!TryGetInputDisplayData(Input.InputTag, OutData.InputDisplay)) return false;
 		OutData.UpperTag = Input.InputTag;
 		OutData.Type = EOutlierUpperInfoType::Input;
 		OutData.TriggerType = Input.TriggerType;
 		OutData.ChainFromTag = Input.ChainFromTag;
 		OutData.Text = Input.Text;
-		OutData.InputAction = Input.InputAction;
 		OutData.Duration = Input.Duration;
+		OutData.EndCondition = Input.EndCondition;
 		return true;
 	}
 	FOutlierGoalDataRow Goal;
@@ -388,6 +434,7 @@ bool UOutlierEventSubsystem::TryGetUpperData(FGameplayTag UpperTag, FOutlierUppe
 		OutData.ChainFromTag = Goal.ChainFromTag;
 		OutData.Text = Goal.Text;
 		OutData.Duration = Goal.Duration;
+		OutData.EndCondition = Goal.EndCondition;
 		return true;
 	}
 	return false;
@@ -421,12 +468,23 @@ bool UOutlierEventSubsystem::SendTTS(FGameplayTag TTSTag)
 	return Audio && Audio->PlayLocalVoice(TTSTag, static_cast<int32>(TTS.Priority), TTSTag, GetLocalPlayer());
 }
 
-bool UOutlierEventSubsystem::SendUpper(FGameplayTag UpperTag, const FOutlierEventContext& Context)
+bool UOutlierEventSubsystem::SendUpper(FGameplayTag UpperTag)
 {
-	return SubmitUpper(UpperTag, UpperTag, Context);
+	return SubmitUpper(UpperTag, UpperTag, nullptr);
 }
 
-bool UOutlierEventSubsystem::SubmitUpper(FGameplayTag UpperTag, FGameplayTag RequestTag, const FOutlierEventContext& Context)
+bool UOutlierEventSubsystem::SendUpper(FGameplayTag UpperTag, const FOutlierEventContext& Context)
+{
+	return SubmitUpper(UpperTag, UpperTag, &Context);
+}
+
+bool UOutlierEventSubsystem::SendGif(FGameplayTag GifTag)
+{
+	return SubmitGif(GifTag, GifTag);
+}
+
+bool UOutlierEventSubsystem::SubmitUpper(FGameplayTag UpperTag, FGameplayTag RequestTag, const FOutlierEventContext* Context,
+	FGameplayTag OriginEventTag)
 {
 	UWorld* World = GetWorld();
 	if (!World || World->bIsTearingDown || World->GetNetMode() == NM_DedicatedServer) return false;
@@ -436,24 +494,28 @@ bool UOutlierEventSubsystem::SubmitUpper(FGameplayTag UpperTag, FGameplayTag Req
 	if (!UI) return false;
 	FOutlierInfoWidgetRequest Request;
 	Request.EventTag = RequestTag;
+	Request.OriginEventTag = OriginEventTag.IsValid() ? OriginEventTag : RequestTag;
 	Request.UpperTag = UpperTag;
-	Request.NextEventTag = Context.NextEventTag;
-	switch (Context.EndCondition)
-	{
-	case EOutlierEventEndCondition::Manual:
-		Request.EndCondition = EOutlierInfoEndCondition::Manual;
-		break;
-	case EOutlierEventEndCondition::Time:
-		Request.EndCondition = EOutlierInfoEndCondition::Time;
-		Request.Duration = Context.Duration;
-		break;
-	case EOutlierEventEndCondition::Overlap:
-		Request.EndCondition = EOutlierInfoEndCondition::Overlap;
-		break;
-	default:
-		return false;
-	}
+	Request.NextEventTag = Context ? Context->NextEventTag : FGameplayTag();
+	if (!ToInfoEndCondition(Context ? Context->EndCondition : Data.EndCondition, Request.EndCondition)) return false;
+	if (Request.EndCondition == EOutlierInfoEndCondition::Time) Request.Duration = Context ? Context->Duration : 0.0f;
 	return UI->ShowEventUpper(Request);
+}
+
+bool UOutlierEventSubsystem::SubmitGif(FGameplayTag GifTag, FGameplayTag RequestTag, FGameplayTag OriginEventTag)
+{
+	UWorld* World = GetWorld();
+	if (!World || World->bIsTearingDown || World->GetNetMode() == NM_DedicatedServer) return false;
+	FOutlierGifDataRow Data;
+	if (!TryGetGifData(GifTag, Data)) return false;
+	ULocalPlayerUISubSystem* UI = GetLocalPlayer()->GetSubsystem<ULocalPlayerUISubSystem>();
+	if (!UI) return false;
+	FOutlierInfoWidgetRequest Request;
+	Request.EventTag = RequestTag;
+	Request.OriginEventTag = OriginEventTag.IsValid() ? OriginEventTag : RequestTag;
+	Request.GifTag = GifTag;
+	if (!ToInfoEndCondition(Data.EndCondition, Request.EndCondition)) return false;
+	return UI->QueueInfoEvent(EOutlierInfoRegion::Right, Request);
 }
 
 bool UOutlierEventSubsystem::TryGetGifData(FGameplayTag GifTag, FOutlierGifDataRow& OutData)
@@ -475,7 +537,38 @@ bool UOutlierEventSubsystem::TryGetEventGifData(FGameplayTag EventTag, FOutlierG
 	return TryGetEventData(EventTag, Event) && TryGetGifData(Event.GifTag, OutData);
 }
 
+bool UOutlierEventSubsystem::SendEvent(FGameplayTag EventTag)
+{
+	return SendEventInternal(EventTag, nullptr);
+}
+
+bool UOutlierEventSubsystem::TryGetWorldGuideData(FGameplayTag WidgetID, FOutlierWorldGuideDataRow& OutData)
+{
+	LoadConfiguredTables();
+	if (const FOutlierWorldGuideDataRow* Row = FindTaggedRow<FOutlierWorldGuideDataRow>(WorldGuideTable, WidgetID, &FOutlierWorldGuideDataRow::WidgetID))
+	{
+		if (!Row->IsValid()) return false;
+		OutData = *Row;
+		return true;
+	}
+	return false;
+}
+
+bool UOutlierEventSubsystem::SendWorldGuide(FGameplayTag WidgetID)
+{
+	AOutlierWorldGuideManager* Manager = AOutlierWorldGuideManager::Find(GetWorld());
+	if (!Manager || !Manager->HasAuthority()) return false;
+	FOutlierWorldGuideContext Context;
+	Context.WidgetID = WidgetID;
+	return Manager->EnqueueGuide(Context);
+}
+
 bool UOutlierEventSubsystem::SendEvent(FGameplayTag EventTag, const FOutlierEventContext& Context)
+{
+	return SendEventInternal(EventTag, &Context);
+}
+
+bool UOutlierEventSubsystem::SendEventInternal(FGameplayTag EventTag, const FOutlierEventContext* Context)
 {
 	UWorld* World = GetWorld();
 	if (!EventTag.IsValid() || !World || World->bIsTearingDown || World->GetNetMode() == NM_DedicatedServer)
@@ -490,6 +583,12 @@ bool UOutlierEventSubsystem::SendEvent(FGameplayTag EventTag, const FOutlierEven
 	}
 
 	bool bTTSAccepted = false;
+	bool bWorldGuideAccepted = false;
+	if (Event.WorldGuideID.IsValid())
+	{
+		if (AOutlierWorldGuideManager* Manager = AOutlierWorldGuideManager::Find(World))
+			if (Manager->HasAuthority()) bWorldGuideAccepted = Manager->TriggerEvent(EventTag);
+	}
 	if (Event.TTSTag.IsValid())
 	{
 		FOutlierTTSDataRow TTS;
@@ -516,14 +615,15 @@ bool UOutlierEventSubsystem::SendEvent(FGameplayTag EventTag, const FOutlierEven
 	{
 		bHasCanvas = UI->GetInfoCanvas() != nullptr;
 		if (UpperTag.IsValid()) bUpperAccepted = SubmitUpper(UpperTag, EventTag, Context);
-		if (Event.GifTag.IsValid()) bGifAccepted = UI->ShowEventGif(EventTag, Event.GifTag);
+		if (Event.GifTag.IsValid()) bGifAccepted = SubmitGif(Event.GifTag, EventTag);
 	}
 	// '-' unused, 'O' accepted, 'X' rejected. Without a canvas, accepted UI requests wait in the UI subsystem.
 	auto Mark = [](bool bUsed, bool bOk) { return !bUsed ? TEXT("-") : bOk ? TEXT("O") : TEXT("X"); };
-	UE_LOG(LogOutlier, Log, TEXT("[Event] '%s' TTS=%s Upper=%s Gif=%s Canvas=%s"), *EventTag.ToString(),
+	UE_LOG(LogOutlier, Log, TEXT("[Event] '%s' TTS=%s Upper=%s Gif=%s Canvas=%s WorldGuide=%s"), *EventTag.ToString(),
 		Mark(Event.TTSTag.IsValid(), bTTSAccepted), Mark(UpperTag.IsValid(), bUpperAccepted),
-		Mark(Event.GifTag.IsValid(), bGifAccepted), bHasCanvas ? TEXT("O") : TEXT("X"));
-	return bTTSAccepted || bUpperAccepted || bGifAccepted;
+		Mark(Event.GifTag.IsValid(), bGifAccepted), bHasCanvas ? TEXT("O") : TEXT("X"),
+		World->GetNetMode() == NM_Client && Event.WorldGuideID.IsValid() ? TEXT("server") : Mark(Event.WorldGuideID.IsValid(), bWorldGuideAccepted));
+	return bTTSAccepted || bUpperAccepted || bGifAccepted || bWorldGuideAccepted;
 }
 
 bool UOutlierEventSubsystem::CompleteInputEvent(FGameplayTag EventTag)
@@ -536,6 +636,12 @@ bool UOutlierEventSubsystem::CompleteUpperEvent(FGameplayTag EventTag)
 {
 	ULocalPlayerUISubSystem* UI = GetLocalPlayer()->GetSubsystem<ULocalPlayerUISubSystem>();
 	return UI && UI->CompleteInfoEvent(EOutlierInfoRegion::Upper, EventTag);
+}
+
+bool UOutlierEventSubsystem::CompleteGifEvent(FGameplayTag EventTag)
+{
+	ULocalPlayerUISubSystem* UI = GetLocalPlayer()->GetSubsystem<ULocalPlayerUISubSystem>();
+	return UI && UI->CompleteInfoEvent(EOutlierInfoRegion::Right, EventTag);
 }
 
 bool UOutlierEventSubsystem::CancelUpperEvent(FGameplayTag EventTag)
@@ -554,6 +660,12 @@ bool UOutlierEventSubsystem::NotifyOverlap(FGameplayTag EventTag)
 {
 	ULocalPlayerUISubSystem* UI = GetLocalPlayer()->GetSubsystem<ULocalPlayerUISubSystem>();
 	return UI && UI->NotifyInfoOverlap(EventTag);
+}
+
+bool UOutlierEventSubsystem::NotifyGifOverlap(FGameplayTag EventTag)
+{
+	ULocalPlayerUISubSystem* UI = GetLocalPlayer()->GetSubsystem<ULocalPlayerUISubSystem>();
+	return UI && UI->NotifyInfoOverlap(EOutlierInfoRegion::Right, EventTag);
 }
 
 void UOutlierEventSubsystem::CancelInputEvent()
