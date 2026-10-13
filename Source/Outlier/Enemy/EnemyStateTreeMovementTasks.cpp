@@ -1213,6 +1213,7 @@ EStateTreeRunStatus FEnemyAlertHoldTask::Tick(
 		return EStateTreeRunStatus::Running;
 	}
 	// 증원은 직접 감지하지 못해도 같은 방의 타깃 공유를 받으면 즉시 Battle로 합류한다.
+	// 청각으로 Alert에 들어온 경우도 이 조건을 통과할 수 있다. 소리만 듣고 합류하는 조건은 아니다.
 	if (Enemy->IsPoolManaged() && Enemy->HasSharedTargetContact())
 	{
 		const bool bCommitted = Enemy->CommitAlertToCombat();
@@ -1256,6 +1257,7 @@ EStateTreeRunStatus FEnemyAlertHoldTask::Tick(
 	if (bPlayerVisible)
 	{
 		InstanceData.VisibleElapsedTime += SafeDeltaTime;
+		// 공유 정보로 합류하지 않은 적은 직접 보이는 시간을 채워 Combat을 확정한다.
 		InstanceData.LostElapsedTime = 0.0f;
 
 		if (InstanceData.VisibleElapsedTime >= FMath::Max(InstanceData.VisibleCommitDuration, 0.0f))

@@ -475,7 +475,7 @@ void AEnemyAIController::UpdateVisibleTarget(AEnemyBase* Enemy, AActor* Preferre
 
 void AEnemyAIController::HandleHearingStimulus(AEnemyBase* Enemy, AActor* Actor, const FAIStimulus& Stimulus)
 {
-	if (!Stimulus.WasSuccessfullySensed())
+	if (!Enemy->HasAuthority() || !Stimulus.WasSuccessfullySensed())
 	{
 		return;
 	}
@@ -486,9 +486,27 @@ void AEnemyAIController::HandleHearingStimulus(AEnemyBase* Enemy, AActor* Actor,
 
 	const FVector HeardLocation = Stimulus.StimulusLocation;
 
+	// 청각은 들린 위치만 기록한다. 직접 시야 확보나 방 공유 정보로 취급하지 않는다.
+	// 진행 중인 수색의 고정 중심/공유 버전도 이 갱신만으로는 바뀌지 않는다.
 	Enemy->UpdateLastKnownPlayerLocation(HeardLocation);
 
 	const EEnemyCombatState State = Enemy->GetCombatState();
+	// 이미 참여 중인 적은 들린 위치만 갱신한다. 진행 중인 수색이나 공격을 다시 시작하지 않는다.
+	if (State == EEnemyCombatState::Combat)
+	{
+		return;
+	}
+
+	// 소속 방이 전투 중이면 공유 타깃/시야/Alert 대기 없이 자신만 합류한다.
+	// 방 전투를 다시 전파하지 않으며, Stun이면 기존 진입 함수가 복귀 상태만 Combat으로 바꾼다.
+	const UEnemyRoomSubsystem* Rooms = Enemy->GetWorld()->GetSubsystem<UEnemyRoomSubsystem>();
+	if (Rooms && Rooms->IsRoomInCombat(Enemy->GetDefaultRoomTag()))
+	{
+		Enemy->EnterCombatFromRoom(HeardLocation, false, true);
+		return;
+	}
+
+	// 아직 전투가 시작되지 않은 방에서는 기존 경계 흐름을 유지한다.
 	if (State == EEnemyCombatState::NonCombat ||
 		State == EEnemyCombatState::Stun)
 	{

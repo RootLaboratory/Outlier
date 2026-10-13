@@ -9,17 +9,6 @@ class AEnemyBase;
 class AActor;
 class ULevel;
 
-// LKP 원형 수색의 현재 배치 결과.
-// Enemy는 약한 참조로 보관해 파괴된 Actor가 슬롯 상태를 붙잡지 않도록 한다.
-struct FEnemyRoomSearchState
-{
-	FVector Center = FVector::ZeroVector;
-	float Radius = 0.0f;
-	float FlightHeightOffset = 0.0f;
-	float FloorTraceHalfHeight = 0.0f;
-	TMap<TWeakObjectPtr<AEnemyBase>, FVector> Assignments;
-};
-
 // 직접 시야를 가진 Enemy만 Observer로 등록한다.
 // 수신한 공유 좌표만으로는 Observer가 되지 않으므로 방 안에서 위치가 재전파되지 않는다.
 struct FEnemyRoomTargetContactState
@@ -29,6 +18,8 @@ struct FEnemyRoomTargetContactState
 	TSet<TWeakObjectPtr<AEnemyBase>> DirectObservers;
 	FTimerHandle ForcedShareTimerHandle;
 	bool bSharedContactActive = false;
+	bool bForcedShareConsumed = false;
+	uint64 SharedRevision = 0;
 };
 
 UCLASS()
@@ -55,6 +46,10 @@ public:
 #if WITH_DEV_AUTOMATION_TESTS
 	void SetActiveRoomTargetForTesting(FGameplayTag RoomTag, const FVector& TargetLocation,
 		bool bSharedContactActive = true);
+	uint64 GetSharedRevisionForTesting(FGameplayTag RoomTag) const;
+	bool IsForcedShareConsumedForTesting(FGameplayTag RoomTag) const;
+	float GetForcedShareDelayForTesting() const { return ForcedTargetShareDelay; }
+	void TriggerForcedShareForTesting(FGameplayTag RoomTag) { HandleForcedTargetShare(RoomTag); }
 #endif
 
 	// Sight로 직접 대상을 관측한 Enemy만 호출한다.
@@ -70,30 +65,12 @@ public:
 	// 스텔스 해제처럼 Actor는 유지되지만 감지 조건이 바뀐 경우 등록된 Enemy의 Sight를 다시 평가한다.
 	void RefreshDetectionTarget(AActor* TargetActor);
 
-	// 전투 중이며 플레이어를 놓친 이동 가능 Enemy에게 LKP 원형 슬롯을 배정한다.
-	// 중심/반경/높이 설정 또는 참여 개체가 달라지면 같은 방의 슬롯을 다시 계산한다.
-	bool RequestSearchRingSlot(
-		AEnemyBase* Enemy,
-		const FVector& Center,
-		float Radius,
-		float FlightHeightOffset,
-		float ReassignmentDistance,
-		float FloorTraceHalfHeight,
-		FVector& OutSlotLocation);
-
-	// Enemy가 수색 행동을 끝내거나 유효하지 않은 상태가 되면 배정만 제거한다.
-	void ReleaseSearchRingSlot(AEnemyBase* Enemy);
+	bool IsSearchDestinationReserved(const AEnemyBase* Enemy, const FVector& Location, float Separation) const;
+	bool ReserveSearchDestinations(AEnemyBase* Enemy, const TArray<FVector>& Locations, float Separation);
+	void ReleaseSearchDestinations(AEnemyBase* Enemy);
 
 private:
-	// 같은 방의 유효 Enemy를 모아 수평 원 슬롯을 만들고 가까운 슬롯부터 배정한다.
-	bool RebuildSearchRingAssignments(
-		FGameplayTag RoomTag,
-		const FVector& Center,
-		float Radius,
-		float FlightHeightOffset,
-		float FloorTraceHalfHeight);
-	void CompactSearchState(FEnemyRoomSearchState& SearchState);
-	void BroadcastSharedTargetContact(FGameplayTag RoomTag, const FVector& TargetLocation);
+	void BroadcastSharedTargetContact(FGameplayTag RoomTag, const FVector& TargetLocation, bool bNewInformation = true);
 	void BroadcastSharedTargetLost(FGameplayTag RoomTag);
 	void CompactTargetContactState(FEnemyRoomTargetContactState& ContactState);
 	void SynchronizeEnemyWithRoomState(AEnemyBase* Enemy);
@@ -112,10 +89,12 @@ private:
 	TMap<TWeakObjectPtr<AEnemyBase>, FGameplayTag> RegisteredEnemyKeys;
 
 	// Arena 해제 시 HandleArenaReleased에서 함께 제거한다.
-	TMap<FGameplayTag, FEnemyRoomSearchState> SearchStates;
 	TMap<FGameplayTag, FEnemyRoomTargetContactState> TargetContactStates;
+	// 한 회차에서 사전 선정한 두 지점만 보관한다. 풀 반환/수색 종료 시 해제한다.
+	TMap<TWeakObjectPtr<AEnemyBase>, TArray<FVector>> SearchDestinations;
+	uint64 NextSharedRevision = 0;
 
 	// 방의 모든 직접 시야가 끊긴 뒤 이 시간이 지나면 마지막 타겟의 현재 위치를 한 번 공유한다.
 	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Room", meta = (ClampMin = "0.0"))
-	float ForcedTargetShareDelay = 8.0f;
+	float ForcedTargetShareDelay = 180.0f;
 };

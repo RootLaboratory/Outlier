@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "EnemyBase.h"
+#include "EnemyEnvQuery.h"
 #include "Drone/FlightPathfinding.h"
 #include "EnvironmentQuery/EnvQueryTypes.h"
 #include "StateTreeExecutionContext.h"
@@ -52,6 +53,18 @@ struct FEnemyRunEnvQueryTaskInstanceData
 	// 후퇴 전용 Generator와 함께 사용한다. 접근/선회 검증과 동시에 켜지 않는다.
 	UPROPERTY(EditAnywhere, Category = Parameter)
 	bool bValidateRetreatPath = false;
+	// None은 기존 전투 질의다. Anchor/Points는 Search Session 안에서만 실행한다.
+	UPROPERTY(EditAnywhere, Category = Parameter)
+	EEnemySearchQueryMode SearchMode = EEnemySearchQueryMode::None;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "1.0", Units = "cm"))
+	float SearchPointSeparation = 200.0f;
+	UPROPERTY(EditAnywhere, Category = Output)
+	TArray<FVector> SelectedSearchPoints;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bSearchSelectionLimited = false;
+	uint64 CapturedSearchSerial = 0;
+	uint64 CapturedSharedRevision = 0;
+	float CapturedSearchHeight = 0.0f;
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "1", ClampMax = "32"))
 	int32 MaxPathCandidates = 4;
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "1.0", Units = "cm"))
@@ -149,89 +162,89 @@ enum class EEnemyOrbitDirection : uint8
 	Right
 };
 
-// RoomSubsystem에서 LKP 원형 슬롯을 요청하고 Move To/Maintain Facing에 바인딩할 좌표를 출력한다.
 USTRUCT()
-struct FEnemyRequestSearchRingSlotTaskInstanceData
+struct FEnemySearchSessionTaskInstanceData
 {
 	GENERATED_BODY()
-
 	UPROPERTY(EditAnywhere, Category = Context)
 	TObjectPtr<AEnemyBase> Enemy = nullptr;
-
-	UPROPERTY(EditAnywhere, Category = Input)
+	UPROPERTY(EditAnywhere, Category = Output)
 	FVector SearchCenter = FVector::ZeroVector;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bSkipLossWait = false;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bShouldRestart = false;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bLocalGuard = false;
+};
 
-	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0"))
-	float RingRadius = 1200.0f;
+// Lost/Shared/LocalGuard를 모두 포함하는 부모 State에 둔다. 자식 이동 완료를 기다리지 않는다.
+USTRUCT(meta = (DisplayName = "Enemy Search Session", Category = "Enemy|Tactical"))
+struct OUTLIER_API FEnemySearchSessionTask : public FStateTreeTaskCommonBase
+{
+	GENERATED_BODY()
+	using FInstanceDataType = FEnemySearchSessionTaskInstanceData;
+	FEnemySearchSessionTask();
+	virtual const UStruct* GetInstanceDataType() const override { return FInstanceDataType::StaticStruct(); }
+	virtual EStateTreeRunStatus EnterState(FStateTreeExecutionContext& Context,
+		const FStateTreeTransitionResult& Transition) const override;
+	virtual EStateTreeRunStatus Tick(FStateTreeExecutionContext& Context, float DeltaTime) const override;
+	virtual void ExitState(FStateTreeExecutionContext& Context,
+		const FStateTreeTransitionResult& Transition) const override;
+};
 
+UENUM(BlueprintType)
+enum class EEnemySearchProgress : uint8
+{
+	RestartWithHint,
+	AnchorArrived,
+	SelectCurrentPoint,
+	PointChecked,
+	LocalGuard
+};
+
+USTRUCT()
+struct FEnemySearchProgressTaskInstanceData
+{
+	GENERATED_BODY()
+	UPROPERTY(EditAnywhere, Category = Context)
+	TObjectPtr<AEnemyBase> Enemy = nullptr;
 	UPROPERTY(EditAnywhere, Category = Parameter)
-	float FlightHeightOffset = 300.0f;
-
-	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0"))
-	float ReassignmentDistance = 200.0f;
-
-	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "1.0"))
-	float FloorTraceHalfHeight = 10000.0f;
-
+	EEnemySearchProgress Action = EEnemySearchProgress::SelectCurrentPoint;
 	UPROPERTY(EditAnywhere, Category = Output)
 	FVector Destination = FVector::ZeroVector;
-
 	UPROPERTY(EditAnywhere, Category = Output)
-	FVector FacingLocation = FVector::ZeroVector;
+	int32 PointIndex = 0;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bHasPoint = false;
 };
 
-// 슬롯을 보유하는 동안 Running을 유지한다.
-// 재감지 등으로 State를 이탈하면 ExitState에서 슬롯을 자동 반환한다.
-USTRUCT(meta = (DisplayName = "Enemy Request Search Ring Slot", Category = "Enemy|Tactical"))
-struct OUTLIER_API FEnemyRequestSearchRingSlotTask : public FStateTreeTaskCommonBase
+// SelectCurrentPoint 성공 -> Fly, 실패 -> LocalGuard. PointChecked는 LookAround 완료 뒤에만 실행한다.
+USTRUCT(meta = (DisplayName = "Enemy Search Progress", Category = "Enemy|Tactical"))
+struct OUTLIER_API FEnemySearchProgressTask : public FStateTreeTaskCommonBase
 {
 	GENERATED_BODY()
-
-	using FInstanceDataType = FEnemyRequestSearchRingSlotTaskInstanceData;
-
-	FEnemyRequestSearchRingSlotTask();
-
-	virtual const UStruct* GetInstanceDataType() const override
-	{
-		return FInstanceDataType::StaticStruct();
-	}
-
-	virtual EStateTreeRunStatus EnterState(
-		FStateTreeExecutionContext& Context,
-		const FStateTreeTransitionResult& Transition) const override;
-
-	virtual void ExitState(
-		FStateTreeExecutionContext& Context,
+	using FInstanceDataType = FEnemySearchProgressTaskInstanceData;
+	FEnemySearchProgressTask();
+	virtual const UStruct* GetInstanceDataType() const override { return FInstanceDataType::StaticStruct(); }
+	virtual EStateTreeRunStatus EnterState(FStateTreeExecutionContext& Context,
 		const FStateTreeTransitionResult& Transition) const override;
 };
 
-USTRUCT()
-struct FEnemyReleaseSearchRingSlotTaskInstanceData
+#if WITH_DEV_AUTOMATION_TESTS
+// 테스트도 실제 Task의 판단을 호출한다. 테스트 전용 수색 로직을 별도로 만들지 않는다.
+namespace EnemySearchTesting
 {
-	GENERATED_BODY()
+	OUTLIER_API void CaptureQuery(FEnemyRunEnvQueryTaskInstanceData& Data);
+	OUTLIER_API void CompleteQuery(FEnemyRunEnvQueryTaskInstanceData& Data, const FEnvQueryResult& Result);
+	OUTLIER_API bool SelectDestinations(FEnemyRunEnvQueryTaskInstanceData& Data, const FEnvQueryResult& Result);
+	OUTLIER_API EStateTreeRunStatus EnterSession(FEnemySearchSessionTaskInstanceData& Data);
+	OUTLIER_API EStateTreeRunStatus TickSession(FEnemySearchSessionTaskInstanceData& Data);
+	OUTLIER_API void ExitSession(FEnemySearchSessionTaskInstanceData& Data);
+	OUTLIER_API EStateTreeRunStatus Progress(FEnemySearchProgressTaskInstanceData& Data);
+}
+#endif
 
-	UPROPERTY(EditAnywhere, Category = Context)
-	TObjectPtr<AEnemyBase> Enemy = nullptr;
-};
-
-USTRUCT(meta = (DisplayName = "Enemy Release Search Ring Slot", Category = "Enemy|Tactical"))
-struct OUTLIER_API FEnemyReleaseSearchRingSlotTask : public FStateTreeTaskCommonBase
-{
-	GENERATED_BODY()
-
-	using FInstanceDataType = FEnemyReleaseSearchRingSlotTaskInstanceData;
-
-	FEnemyReleaseSearchRingSlotTask();
-
-	virtual const UStruct* GetInstanceDataType() const override
-	{
-		return FInstanceDataType::StaticStruct();
-	}
-
-	virtual EStateTreeRunStatus EnterState(
-		FStateTreeExecutionContext& Context,
-		const FStateTreeTransitionResult& Transition) const override;
-};
 
 // 현재 위치를 기준으로 수평 원의 다음 후보를 계산한다.
 // 1차 구현은 바닥 Trace + 고정 높이를 사용하고, 향후 3D EQS가 이 위치 선택 단계만 대체한다.

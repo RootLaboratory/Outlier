@@ -419,7 +419,7 @@ void AEnemyBase::ResetReusableCombatRuntime(const TCHAR* StateTreeStopReason)
 	ResetPossessedAttackInput();
 	StopCurrentAttack();
 	RemoveRoomTargetObserver();
-	ReleaseSearchRingSlot();
+	ReleaseSearchDestinations();
 	ClearPossessedPlayerState();
 
 	if (StateTreeComponent)
@@ -910,6 +910,10 @@ void AEnemyBase::ReturnToOwningPool()
 
 void AEnemyBase::ResetPoolRuntimeState()
 {
+	EndSearchEpisode();
+	SharedTargetRevision = 0;
+	ConsumedSharedTargetRevision = 0;
+	bHasLastKnownPlayerLocation = false;
 	LastAcceptedAdaptationDamageCategory = EOutlierAdaptationDamageCategory::Ignore;
 	ResetPoolPresentationState();
 }
@@ -961,7 +965,7 @@ void AEnemyBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	EndPossessedImpactInputLock();
 	StopCurrentAttack();
 	RemoveRoomTargetObserver();
-	ReleaseSearchRingSlot();
+	ReleaseSearchDestinations();
 
 	if (HasAuthority())
 	{
@@ -1292,7 +1296,7 @@ void AEnemyBase::SetEnemyPossessed(bool bNewIsPossessed)
 		StopCurrentAttack();
 		RemoveRoomTargetObserver();
 		ClearSharedTargetContact();
-		ReleaseSearchRingSlot();
+		ReleaseSearchDestinations();
 	}
 
 	if (!bIsPossessed)
@@ -1353,7 +1357,7 @@ bool AEnemyBase::BeginPossessionProcess(APartnerCharacter* PartnerCharacter)
 	StopCurrentAttack();
 	RemoveRoomTargetObserver();
 	ClearSharedTargetContact();
-	ReleaseSearchRingSlot();
+	ReleaseSearchDestinations();
 	SetPlayerCurrentlyVisible(false);
 
 	if (AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(GetCachedAIController()))
@@ -1514,6 +1518,7 @@ void AEnemyBase::UpdateLastKnownPlayerLocation(const FVector& NewLocation)
 	}
 
 	LastKnownPlayerLocation = NewLocation;
+	bHasLastKnownPlayerLocation = !NewLocation.ContainsNaN();
 }
 
 void AEnemyBase::SetPatternStartPlayerLocation(const FVector& NewLocation)
@@ -1538,7 +1543,8 @@ void AEnemyBase::SetPlayerCurrentlyVisible(bool bNewVisible)
 	if (bNewVisible)
 	{
 		StopCurrentAttack();
-		ReleaseSearchRingSlot();
+		ConsumedSharedTargetRevision = SharedTargetRevision;
+		EndSearchEpisode();
 	}
 
 	const FGameplayTag PerceptionEvent = FGameplayTag::RequestGameplayTag(
@@ -1552,6 +1558,8 @@ void AEnemyBase::SetPlayerCurrentlyVisible(bool bNewVisible)
 	}
 	else
 	{
+		// 병렬 FireCycle이 이전 공격을 유지하지 않도록 상실 시점에서 먼저 중단한다.
+		StopCurrentAttack();
 
 		// StateTree Global Task가 갱신된 가시성으로 전이 조건을 평가하도록 상실 이벤트를 다음 틱에 보낸다.
 		// 다음 틱 전에 재감지되었다면 오래된 TargetLost 이벤트는 폐기한다.
@@ -1570,7 +1578,8 @@ void AEnemyBase::SetPlayerCurrentlyVisible(bool bNewVisible)
 
 void AEnemyBase::ApplySharedTargetContact(
 	const FVector& TargetLocation,
-	bool bDeferStateTreeEvent)
+	bool bDeferStateTreeEvent,
+	uint64 Revision)
 {
 	if (!HasAuthority()
 		|| (CombatState != EEnemyCombatState::Combat
@@ -1581,12 +1590,18 @@ void AEnemyBase::ApplySharedTargetContact(
 		return;
 	}
 
-	const bool bContactChanged = !bHasSharedTargetContact
-		|| !SharedTargetLocation.Equals(TargetLocation, 1.0f);
+	if (TargetLocation.ContainsNaN()) return;
+	// 기존 호출자는 좌표 변경을 새 정보로 취급한다. 방 공유는 명시적 번호로 재목격을 구분한다.
+	const bool bContactChanged = Revision != 0 ? Revision > SharedTargetRevision
+		: !bHasSharedTargetContact || !SharedTargetLocation.Equals(TargetLocation, 1.0f);
+	if (Revision != 0 && Revision < SharedTargetRevision) return;
+	if (bContactChanged) SharedTargetRevision = Revision != 0 ? Revision : SharedTargetRevision + 1;
+	// 직접 시야가 더 정확하다. 이때의 공유 정보는 이미 확인한 것으로 처리한다.
+	if (bPlayerCurrentlyVisible) ConsumedSharedTargetRevision = SharedTargetRevision;
 	bHasSharedTargetContact = true;
 	SharedTargetLocation = TargetLocation;
-	UpdateLastKnownPlayerLocation(TargetLocation);
-	ReleaseSearchRingSlot();
+	if (!bPlayerCurrentlyVisible) UpdateLastKnownPlayerLocation(TargetLocation);
+	if (bContactChanged) ReleaseSearchDestinations();
 
 	if (bContactChanged)
 	{
@@ -1610,9 +1625,8 @@ void AEnemyBase::ClearSharedTargetContact()
 		return;
 	}
 
-	// 방에서 마지막으로 공유한 위치를 모든 적의 공통 수색 중심으로 보존한다.
-	// 개별 Perception 콜백 순서 때문에 Partner 위치가 LKP를 덮어쓴 경우도 여기서 정규화된다.
-	UpdateLastKnownPlayerLocation(SharedTargetLocation);
+	// 직접 시야가 없는 개체만 방의 마지막 공유 좌표를 수색 중심으로 보존한다.
+	if (!bPlayerCurrentlyVisible) UpdateLastKnownPlayerLocation(SharedTargetLocation);
 	bHasSharedTargetContact = false;
 
 	const FGameplayTag SharedTargetLostEvent = FGameplayTag::RequestGameplayTag(
@@ -1808,7 +1822,7 @@ void AEnemyBase::EnterStun()
 	ResetPossessedAttackInput();
 	StopCurrentAttack();
 	RemoveRoomTargetObserver();
-	ReleaseSearchRingSlot();
+	ReleaseSearchDestinations();
 	RefreshPerceptionConfigForCurrentState();
 
 	SendEnemyStateTreeEvent(
@@ -2344,7 +2358,7 @@ bool AEnemyBase::BeginImpactReaction()
 
 	bImpactReactionActive = true;
 	StopCurrentAttack();
-	ReleaseSearchRingSlot();
+	ReleaseSearchDestinations();
 
 	AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(GetController());
 	if (!EnemyAIController)
@@ -3115,6 +3129,8 @@ bool AEnemyBase::StartAttackTarget(AActor* TargetActor)
 
 bool AEnemyBase::StartAttackLocation(const FVector& TargetLocation)
 {
+	// 수색 중 병렬 공격 Task가 잘못 연결되어도 숨은 플레이어에게 사격하지 않는다.
+	if (SearchEpisode.bActive && !bPlayerCurrentlyVisible && !bIsPossessed) return false;
 	// 방 합류 준비 중에는 StateTree가 Combat으로 전환돼도 실제 발사를 시작하지 않는다.
 	if (HasAuthority() && GetWorld())
 	{
@@ -3179,6 +3195,7 @@ bool AEnemyBase::ConsumePossessedAttackRequest()
 
 bool AEnemyBase::UpdateAttackLocation(const FVector& TargetLocation)
 {
+	if (SearchEpisode.bActive && !bPlayerCurrentlyVisible && !bIsPossessed) return false;
 	if (!HasAuthority()
 		|| CombatState == EEnemyCombatState::Stun
 		|| IsAIControlSuppressed()
@@ -3247,17 +3264,86 @@ void AEnemyBase::OnRep_AttackPhase(EEnemyAttackPhase PreviousPhase)
 	OnAttackPhaseChanged(PreviousPhase, AttackPhase);
 }
 
-void AEnemyBase::ReleaseSearchRingSlot()
+void AEnemyBase::ReleaseSearchDestinations()
 {
-	if (!HasAuthority())
+	if (!HasAuthority() || !GetWorld())
 	{
 		return;
 	}
 
 	if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
 	{
-		RoomSubsystem->ReleaseSearchRingSlot(this);
+		RoomSubsystem->ReleaseSearchDestinations(this);
 	}
+}
+
+bool AEnemyBase::BeginSearchEpisode()
+{
+	if (!HasAuthority() || IsDead() || !CanUseEnemyPerception()
+		|| CombatState != EEnemyCombatState::Combat || bPlayerCurrentlyVisible
+		|| (!bHasLastKnownPlayerLocation && !HasFreshSharedTargetLocation())) return false;
+	// 이전 회차의 예약부터 해제하고, 이번 회차가 사용할 중심과 정보 버전을 고정한다.
+	// 이후 LKP가 갱신되어도 진행 중인 수색 중심은 바꾸지 않는다.
+	EndSearchEpisode();
+	SearchEpisode.bActive = true;
+	SearchEpisode.Serial = ++NextSearchEpisodeSerial;
+	SearchEpisode.SharedRevision = SharedTargetRevision;
+	SearchEpisode.Center = HasFreshSharedTargetLocation() ? SharedTargetLocation : LastKnownPlayerLocation;
+	StopCurrentAttack();
+	if (UCharacterMovementComponent* Movement = GetCharacterMovement()) Movement->StopMovementImmediately();
+	return true;
+}
+
+void AEnemyBase::EndSearchEpisode()
+{
+	if (!HasAuthority()) return;
+	ReleaseSearchDestinations();
+	SearchEpisode = FEnemySearchEpisode();
+}
+
+void AEnemyBase::CompleteSearchAnchor()
+{
+	if (!HasAuthority() || !SearchEpisode.bActive) return;
+	// 도착한 회차의 정보만 소비한다. 이동 중 받은 더 최신 정보는 다음 회차가 확인한다.
+	ConsumedSharedTargetRevision = FMath::Max(ConsumedSharedTargetRevision, SearchEpisode.SharedRevision);
+}
+
+bool AEnemyBase::SetSearchPoints(const TArray<FVector>& Points)
+{
+	if (!HasAuthority() || !SearchEpisode.bActive || SearchEpisode.bLocalGuard
+		|| SearchEpisode.bPointsSelected || Points.Num() > 2) return false;
+	for (const FVector& Point : Points)
+	{
+		if (Point.ContainsNaN()) return false;
+	}
+	// 경로 검증을 통과한 최대 두 지점을 한 번만 확정한다. 이동 중 후보를 보충하지 않는다.
+	SearchEpisode.Points = Points;
+	SearchEpisode.bPointsSelected = true;
+	SearchEpisode.PointIndex = 0;
+	if (Points.IsEmpty()) EnterSearchLocalGuard();
+	return true;
+}
+
+bool AEnemyBase::CompleteSearchPoint()
+{
+	if (!HasAuthority() || !SearchEpisode.bActive
+		|| !SearchEpisode.Points.IsValidIndex(SearchEpisode.PointIndex)) return false;
+	// 도착 후 LookAround까지 끝낸 지점을 기록하고 다음 지점으로 진행한다.
+	SearchEpisode.CheckedPoints.Add(SearchEpisode.Points[SearchEpisode.PointIndex++]);
+	if (!SearchEpisode.Points.IsValidIndex(SearchEpisode.PointIndex)) EnterSearchLocalGuard();
+	return true;
+}
+
+void AEnemyBase::EnterSearchLocalGuard()
+{
+	if (!HasAuthority() || !SearchEpisode.bActive) return;
+	CompleteSearchAnchor();
+	// 방 전투와 수색 회차는 유지하되 이동 예약은 반납한다.
+	// 현재 위치에서 경계하다가 직접 재감지 또는 새 공유 정보로 다시 행동한다.
+	SearchEpisode.bLocalGuard = true;
+	ReleaseSearchDestinations();
+	StopCurrentAttack();
+	if (UCharacterMovementComponent* Movement = GetCharacterMovement()) Movement->StopMovementImmediately();
 }
 
 void AEnemyBase::HandleCurrentRoomTagChanged(
@@ -3268,7 +3354,7 @@ void AEnemyBase::HandleCurrentRoomTagChanged(
 	(void)NewRoomTag;
 	RemoveRoomTargetObserver();
 	ClearSharedTargetContact();
-	ReleaseSearchRingSlot();
+	ReleaseSearchDestinations();
 }
 
 void AEnemyBase::RemoveRoomTargetObserver()
@@ -3480,7 +3566,7 @@ void AEnemyBase::PerformDeathCleanup()
 	}
 
 	RemoveRoomTargetObserver();
-	ReleaseSearchRingSlot();
+	ReleaseSearchDestinations();
 
 	if (bIsPossessed)
 	{

@@ -5,10 +5,26 @@
 #include "Enemy/EnemyTargetRules.h"
 #include "Engine/Level.h"
 #include "Engine/World.h"
+#include "HAL/IConsoleManager.h"
 #include "Network/OutlierArenaSubsystem.h"
 #include "Room/RoomCombatSubsystem.h"
 #include "Subsystems/SubsystemCollection.h"
 #include "TimerManager.h"
+
+namespace
+{
+DEFINE_LOG_CATEGORY_STATIC(LogEnemySearchSharing, Log, All);
+
+void LogSearchSharing(const TCHAR* Phase, FGameplayTag RoomTag, const FEnemyRoomTargetContactState& Contact)
+{
+	static const IConsoleVariable* Debug = IConsoleManager::Get().FindConsoleVariable(TEXT("outlier.Enemy.EQSDebug"));
+	if (!Debug || Debug->GetInt() == 0) return;
+	UE_LOG(LogEnemySearchSharing, Log,
+		TEXT("[EnemySearchSharing] %s Room=%s Revision=%llu Observers=%d PingConsumed=%d Location=%s"),
+		Phase, *RoomTag.ToString(), Contact.SharedRevision, Contact.DirectObservers.Num(),
+		Contact.bForcedShareConsumed, *Contact.LastReportedLocation.ToCompactString());
+}
+}
 
 void UEnemyRoomSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -39,7 +55,7 @@ void UEnemyRoomSubsystem::Deinitialize()
 	CombatRoomLastKnownLocations.Reset();
 	RegisteredEnemiesByRoom.Reset();
 	RegisteredEnemyKeys.Reset();
-	SearchStates.Reset();
+	SearchDestinations.Reset();
 	TargetContactStates.Reset();
 	Super::Deinitialize();
 }
@@ -55,6 +71,7 @@ void UEnemyRoomSubsystem::RegisterEnemy(AEnemyBase* Enemy)
 
 void UEnemyRoomSubsystem::UnregisterEnemy(AEnemyBase* Enemy)
 {
+	ReleaseSearchDestinations(Enemy);
 	if (!Enemy)
 	{
 		return;
@@ -172,7 +189,8 @@ bool UEnemyRoomSubsystem::NotifyRoomCombat(FGameplayTag RoomTag, const FVector& 
 	if (const FEnemyRoomTargetContactState* ContactState = TargetContactStates.Find(RoomTag);
 		ContactState && ContactState->bSharedContactActive)
 	{
-		BroadcastSharedTargetContact(RoomTag, ContactState->LastReportedLocation);
+		// 전투 합류 때 기존 정보를 재전달할 뿐, 새 목격 회차를 만들지는 않는다.
+		BroadcastSharedTargetContact(RoomTag, ContactState->LastReportedLocation, false);
 	}
 	return true;
 }
@@ -187,7 +205,10 @@ void UEnemyRoomSubsystem::NotifyRoomCombatEnded(FGameplayTag RoomTag)
 
 	CombatRooms.Remove(RoomTag);
 	CombatRoomLastKnownLocations.Remove(RoomTag);
-	SearchStates.Remove(RoomTag);
+	for (auto It = SearchDestinations.CreateIterator(); It; ++It)
+	{
+		if (!It.Key().IsValid() || It.Key()->GetDefaultRoomTag() == RoomTag) It.RemoveCurrent();
+	}
 	if (FEnemyRoomTargetContactState* ContactState = TargetContactStates.Find(RoomTag))
 	{
 		if (UWorld* World = GetWorld())
@@ -249,7 +270,11 @@ void UEnemyRoomSubsystem::ReportRoomTargetContact(
 
 	FEnemyRoomTargetContactState& ContactState = TargetContactStates.FindOrAdd(RoomTag);
 	CompactTargetContactState(ContactState);
+	// 다른 드론이 계속 보고 있어도, 시야를 잃었던 개체의 실제 재목격은 새 정보다.
+	const bool bRediscovered = !ContactState.DirectObservers.Contains(TWeakObjectPtr<AEnemyBase>(Observer));
 	World->GetTimerManager().ClearTimer(ContactState.ForcedShareTimerHandle);
+	// 직접 재발견은 다음 시야 상실 회차의 단발 핑을 다시 허용한다.
+	ContactState.bForcedShareConsumed = false;
 	ContactState.DirectObservers.Add(TWeakObjectPtr<AEnemyBase>(Observer));
 
 	const bool bTargetChanged = ContactState.TargetActor.Get() != TargetActor;
@@ -258,7 +283,7 @@ void UEnemyRoomSubsystem::ReportRoomTargetContact(
 		TargetLocation) > FMath::Square(50.0f);
 
 	ContactState.TargetActor = TargetActor;
-	if (!bTargetChanged && !bLocationChanged && ContactState.bSharedContactActive)
+	if (!bRediscovered && !bTargetChanged && !bLocationChanged && ContactState.bSharedContactActive)
 	{
 		return;
 	}
@@ -295,7 +320,9 @@ void UEnemyRoomSubsystem::ScheduleForcedTargetShare(FGameplayTag RoomTag)
 {
 	UWorld* World = GetWorld();
 	FEnemyRoomTargetContactState* ContactState = TargetContactStates.Find(RoomTag);
-	if (!World || !ContactState || !ContactState->TargetActor.IsValid())
+	if (!World || World->GetNetMode() == NM_Client || !ContactState
+		|| !IsRoomInCombat(RoomTag) || ContactState->bForcedShareConsumed
+		|| !ContactState->DirectObservers.IsEmpty() || !ContactState->TargetActor.IsValid())
 	{
 		return;
 	}
@@ -306,12 +333,13 @@ void UEnemyRoomSubsystem::ScheduleForcedTargetShare(FGameplayTag RoomTag)
 		FTimerDelegate::CreateUObject(this, &UEnemyRoomSubsystem::HandleForcedTargetShare, RoomTag),
 		FMath::Max(ForcedTargetShareDelay, KINDA_SMALL_NUMBER),
 		false);
+	LogSearchSharing(TEXT("AllSightLost:Scheduled180Seconds"), RoomTag, *ContactState);
 }
 
 void UEnemyRoomSubsystem::HandleForcedTargetShare(FGameplayTag RoomTag)
 {
 	FEnemyRoomTargetContactState* ContactState = TargetContactStates.Find(RoomTag);
-	if (!ContactState)
+	if (!ContactState || !IsRoomInCombat(RoomTag) || ContactState->bForcedShareConsumed)
 	{
 		return;
 	}
@@ -330,12 +358,14 @@ void UEnemyRoomSubsystem::HandleForcedTargetShare(FGameplayTag RoomTag)
 
 	if (OutlierEnemyTargetRules::IsUnavailable(TargetActor))
 	{
-		// 타겟 불가 상태 중 경과 시간을 인정하지 않고 해제 뒤 다시 8초를 계산한다.
+		// 타겟 불가 상태의 현재 위치는 공개하지 않는다. 유효해진 뒤 새 대기 시간을 적용한다.
 		ScheduleForcedTargetShare(RoomTag);
 		return;
 	}
 
 	ContactState->LastReportedLocation = TargetActor->GetActorLocation();
+	ContactState->bForcedShareConsumed = true;
+	LogSearchSharing(TEXT("ForcedPingOnce"), RoomTag, *ContactState);
 	BroadcastSharedTargetContact(RoomTag, ContactState->LastReportedLocation);
 }
 
@@ -393,221 +423,11 @@ void UEnemyRoomSubsystem::RefreshDetectionTarget(AActor* TargetActor)
 	}
 }
 
-bool UEnemyRoomSubsystem::RequestSearchRingSlot(
-	AEnemyBase* Enemy,
-	const FVector& Center,
-	float Radius,
-	float FlightHeightOffset,
-	float ReassignmentDistance,
-	float FloorTraceHalfHeight,
-	FVector& OutSlotLocation)
-{
-	if (!IsValid(Enemy))
-	{
-		return false;
-	}
-
-	const FGameplayTag RoomTag = ResolveEnemyRoomTag(Enemy);
-	if (!Enemy->HasAuthority()
-		// 고정형 터렛은 능력치가 바뀌어도 이동용 수색 Ring에 참여하지 않는다.
-		|| Enemy->GetRuntimeStat().Type == EEnemyType::Turret
-		|| Enemy->GetRuntimeStat().MoveSpeed <= KINDA_SMALL_NUMBER
-		|| Enemy->GetCombatState() != EEnemyCombatState::Combat
-		|| Enemy->IsPlayerCurrentlyVisible()
-		|| Enemy->HasSharedTargetContact()
-		|| Enemy->IsEnemyPossessed()
-		|| !RoomTag.IsValid())
-	{
-		return false;
-	}
-
-	const FGameplayTag Key = RoomTag;
-	const TWeakObjectPtr<AEnemyBase> EnemyKey(Enemy);
-	FEnemyRoomSearchState* SearchState = SearchStates.Find(Key);
-	if (SearchState)
-	{
-		CompactSearchState(*SearchState);
-	}
-
-	// LKP가 충분히 움직였거나 슬롯 형태/참여 Enemy가 달라졌을 때만 방 전체 배치를 다시 만든다.
-	const bool bNeedsRebuild = !SearchState
-		|| FVector::DistSquared2D(SearchState->Center, Center)
-			> FMath::Square(FMath::Max(ReassignmentDistance, 0.0f))
-		|| !FMath::IsNearlyEqual(SearchState->Radius, Radius)
-		|| !FMath::IsNearlyEqual(SearchState->FlightHeightOffset, FlightHeightOffset)
-		|| !FMath::IsNearlyEqual(SearchState->FloorTraceHalfHeight, FloorTraceHalfHeight)
-		|| !SearchState->Assignments.Contains(EnemyKey);
-
-	if (bNeedsRebuild
-		&& !RebuildSearchRingAssignments(
-			Key,
-			Center,
-			Radius,
-			FlightHeightOffset,
-			FloorTraceHalfHeight))
-	{
-		return false;
-	}
-
-	SearchState = SearchStates.Find(Key);
-	if (!SearchState)
-	{
-		return false;
-	}
-
-	const FVector* AssignedLocation = SearchState->Assignments.Find(EnemyKey);
-	if (!AssignedLocation)
-	{
-		return false;
-	}
-
-	OutSlotLocation = *AssignedLocation;
-	return true;
-}
-
-void UEnemyRoomSubsystem::ReleaseSearchRingSlot(AEnemyBase* Enemy)
-{
-	if (!Enemy)
-	{
-		return;
-	}
-
-	for (auto SearchStateIt = SearchStates.CreateIterator(); SearchStateIt; ++SearchStateIt)
-	{
-		SearchStateIt.Value().Assignments.Remove(TWeakObjectPtr<AEnemyBase>(Enemy));
-		CompactSearchState(SearchStateIt.Value());
-		if (SearchStateIt.Value().Assignments.IsEmpty())
-		{
-			SearchStateIt.RemoveCurrent();
-		}
-	}
-}
-
-bool UEnemyRoomSubsystem::RebuildSearchRingAssignments(
-	FGameplayTag RoomTag,
-	const FVector& Center,
-	float Radius,
-	float FlightHeightOffset,
-	float FloorTraceHalfHeight)
-{
-
-	UWorld* World = GetWorld();
-	UOutlierArenaSubsystem* ArenaSubsystem = World
-		? World->GetSubsystem<UOutlierArenaSubsystem>()
-		: nullptr;
-	ULevel* ArenaLevel = ArenaSubsystem ? ArenaSubsystem->GetArenaLoadedLevel() : nullptr;
-	if (!World || !ArenaLevel)
-	{
-		return false;
-	}
-
-	TArray<AEnemyBase*> EligibleEnemies;
-	CompactRegisteredEnemies(RoomTag);
-	const TSet<TWeakObjectPtr<AEnemyBase>>* RegisteredEnemies =
-		RegisteredEnemiesByRoom.Find(RoomTag);
-	if (!RegisteredEnemies)
-	{
-		SearchStates.Remove(RoomTag);
-		return false;
-	}
-
-	for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : *RegisteredEnemies)
-	{
-		AEnemyBase* Candidate = EnemyPtr.Get();
-		if (!IsValid(Candidate)
-			|| Candidate->GetCombatState() != EEnemyCombatState::Combat
-			|| Candidate->IsPlayerCurrentlyVisible()
-			|| Candidate->HasSharedTargetContact()
-			|| Candidate->IsEnemyPossessed()
-			|| Candidate->GetRuntimeStat().Type == EEnemyType::Turret
-			|| Candidate->GetRuntimeStat().MoveSpeed <= KINDA_SMALL_NUMBER)
-		{
-			continue;
-		}
-
-		EligibleEnemies.Add(Candidate);
-	}
-
-	if (EligibleEnemies.IsEmpty())
-	{
-		SearchStates.Remove(RoomTag);
-		return false;
-	}
-
-	EligibleEnemies.Sort(
-		[](const AEnemyBase& Left, const AEnemyBase& Right)
-		{
-			return Left.GetFName().LexicalLess(Right.GetFName());
-		});
-
-	TArray<FVector> AvailableSlots;
-	AvailableSlots.Reserve(EligibleEnemies.Num());
-	const float SafeRadius = FMath::Max(Radius, 0.0f);
-	for (int32 SlotIndex = 0; SlotIndex < EligibleEnemies.Num(); ++SlotIndex)
-	{
-		const float AngleRadians = UE_TWO_PI * static_cast<float>(SlotIndex)
-			/ static_cast<float>(EligibleEnemies.Num());
-		AvailableSlots.Add(FVector(
-			Center.X + FMath::Cos(AngleRadians) * SafeRadius,
-			Center.Y + FMath::Sin(AngleRadians) * SafeRadius,
-			Center.Z));
-	}
-
-	FEnemyRoomSearchState NewState;
-	NewState.Center = Center;
-	NewState.Radius = SafeRadius;
-	NewState.FlightHeightOffset = FlightHeightOffset;
-	NewState.FloorTraceHalfHeight = FloorTraceHalfHeight;
-
-	// 이름 순서로 고정한 Enemy 각각에 현재 위치에서 가장 가까운 미사용 슬롯을 배정한다.
-	// 같은 입력에서는 항상 같은 결과가 나와 멀티플레이 디버깅이 쉬워진다.
-	for (AEnemyBase* Candidate : EligibleEnemies)
-	{
-		int32 BestSlotIndex = INDEX_NONE;
-		float BestDistanceSquared = TNumericLimits<float>::Max();
-		for (int32 SlotIndex = 0; SlotIndex < AvailableSlots.Num(); ++SlotIndex)
-		{
-			const float DistanceSquared = FVector::DistSquared2D(
-				Candidate->GetActorLocation(),
-				AvailableSlots[SlotIndex]);
-			if (DistanceSquared < BestDistanceSquared)
-			{
-				BestDistanceSquared = DistanceSquared;
-				BestSlotIndex = SlotIndex;
-			}
-		}
-
-		if (BestSlotIndex == INDEX_NONE)
-		{
-			return false;
-		}
-
-		FVector AssignedLocation = AvailableSlots[BestSlotIndex];
-		AssignedLocation.Z = Candidate->GetActorLocation().Z;
-		NewState.Assignments.Add(
-			TWeakObjectPtr<AEnemyBase>(Candidate),
-			AssignedLocation);
-		AvailableSlots.RemoveAtSwap(BestSlotIndex, EAllowShrinking::No);
-	}
-
-	SearchStates.Add(RoomTag, MoveTemp(NewState));
-	return true;
-}
-
-void UEnemyRoomSubsystem::CompactSearchState(FEnemyRoomSearchState& SearchState)
-{
-	for (auto AssignmentIt = SearchState.Assignments.CreateIterator(); AssignmentIt; ++AssignmentIt)
-	{
-		if (!AssignmentIt.Key().IsValid())
-		{
-			AssignmentIt.RemoveCurrent();
-		}
-	}
-}
 
 void UEnemyRoomSubsystem::BroadcastSharedTargetContact(
 	FGameplayTag RoomTag,
-	const FVector& TargetLocation)
+	const FVector& TargetLocation,
+	bool bNewInformation)
 {
 	if (CombatRooms.Contains(RoomTag))
 	{
@@ -616,6 +436,11 @@ void UEnemyRoomSubsystem::BroadcastSharedTargetContact(
 	if (FEnemyRoomTargetContactState* ContactState = TargetContactStates.Find(RoomTag))
 	{
 		ContactState->bSharedContactActive = true;
+		if (bNewInformation || ContactState->SharedRevision == 0)
+		{
+			ContactState->SharedRevision = ++NextSharedRevision;
+		}
+		LogSearchSharing(TEXT("Publish"), RoomTag, *ContactState);
 	}
 
 	UWorld* World = GetWorld();
@@ -627,8 +452,6 @@ void UEnemyRoomSubsystem::BroadcastSharedTargetContact(
 	{
 		return;
 	}
-
-	SearchStates.Remove(RoomTag);
 
 	CompactRegisteredEnemies(RoomTag);
 	const TSet<TWeakObjectPtr<AEnemyBase>>* RegisteredEnemies =
@@ -650,7 +473,8 @@ void UEnemyRoomSubsystem::BroadcastSharedTargetContact(
 			continue;
 		}
 
-		Enemy->ApplySharedTargetContact(TargetLocation);
+		const FEnemyRoomTargetContactState* ContactState = TargetContactStates.Find(RoomTag);
+		Enemy->ApplySharedTargetContact(TargetLocation, false, ContactState ? ContactState->SharedRevision : 0);
 	}
 }
 
@@ -751,7 +575,7 @@ void UEnemyRoomSubsystem::SynchronizeEnemyWithRoomState(AEnemyBase* Enemy)
 	Enemy->EnterCombatFromRoom(TargetLocation, false, true);
 	if (ContactState && ContactState->bSharedContactActive)
 	{
-		Enemy->ApplySharedTargetContact(TargetLocation, true);
+		Enemy->ApplySharedTargetContact(TargetLocation, true, ContactState->SharedRevision);
 	}
 }
 
@@ -766,8 +590,64 @@ void UEnemyRoomSubsystem::SetActiveRoomTargetForTesting(
 	FEnemyRoomTargetContactState& ContactState = TargetContactStates.FindOrAdd(RoomTag);
 	ContactState.LastReportedLocation = TargetLocation;
 	ContactState.bSharedContactActive = bSharedContactActive;
+	ContactState.SharedRevision = ++NextSharedRevision;
+}
+
+uint64 UEnemyRoomSubsystem::GetSharedRevisionForTesting(FGameplayTag RoomTag) const
+{
+	const FEnemyRoomTargetContactState* Contact = TargetContactStates.Find(RoomTag);
+	return Contact ? Contact->SharedRevision : 0;
+}
+
+bool UEnemyRoomSubsystem::IsForcedShareConsumedForTesting(FGameplayTag RoomTag) const
+{
+	const FEnemyRoomTargetContactState* Contact = TargetContactStates.Find(RoomTag);
+	return Contact && Contact->bForcedShareConsumed;
 }
 #endif
+
+bool UEnemyRoomSubsystem::IsSearchDestinationReserved(
+	const AEnemyBase* Enemy, const FVector& Location, float Separation) const
+{
+	if (!IsValid(Enemy)) return true;
+	const FGameplayTag RoomTag = Enemy->GetDefaultRoomTag();
+	for (const auto& Entry : SearchDestinations)
+	{
+		const AEnemyBase* Other = Entry.Key.Get();
+		if (!Other || Other == Enemy || Other->IsDead() || !Other->GetSearchEpisode().bActive
+			|| Other->GetSearchEpisode().bLocalGuard
+			|| Other->GetDefaultRoomTag() != RoomTag) continue;
+		for (const FVector& Point : Entry.Value)
+		{
+			if (FVector::DistSquared(Location, Point) < FMath::Square(Separation)) return true;
+		}
+	}
+	return false;
+}
+
+bool UEnemyRoomSubsystem::ReserveSearchDestinations(
+	AEnemyBase* Enemy, const TArray<FVector>& Locations, float Separation)
+{
+	if (!IsValid(Enemy) || !Enemy->HasAuthority() || !Enemy->GetSearchEpisode().bActive
+		|| Enemy->GetSearchEpisode().bLocalGuard
+		|| Locations.Num() > 2 || !FMath::IsFinite(Separation) || Separation <= 0.0f) return false;
+	// 결과 적용 시 다시 검사한다. 먼저 끝난 질의가 같은 위치를 예약했을 수 있다.
+	for (const FVector& Point : Locations)
+	{
+		if (Point.ContainsNaN() || IsSearchDestinationReserved(Enemy, Point, Separation)) return false;
+	}
+	for (auto It = SearchDestinations.CreateIterator(); It; ++It)
+	{
+		if (!It.Key().IsValid()) It.RemoveCurrent();
+	}
+	SearchDestinations.Add(TWeakObjectPtr<AEnemyBase>(Enemy), Locations);
+	return true;
+}
+
+void UEnemyRoomSubsystem::ReleaseSearchDestinations(AEnemyBase* Enemy)
+{
+	if (Enemy) SearchDestinations.Remove(TWeakObjectPtr<AEnemyBase>(Enemy));
+}
 
 FGameplayTag UEnemyRoomSubsystem::ResolveEnemyRoomTag(const AEnemyBase* Enemy) const
 {
@@ -840,12 +720,12 @@ void UEnemyRoomSubsystem::HandleArenaReleased()
 
 void UEnemyRoomSubsystem::ResetRuntimeCombatState()
 {
+	SearchDestinations.Reset();
 	UWorld* World = GetWorld();
 	CombatRooms.Reset();
 	CombatRoomLastKnownLocations.Reset();
 	RegisteredEnemiesByRoom.Reset();
 	RegisteredEnemyKeys.Reset();
-	SearchStates.Reset();
 
 	for (auto ContactIt = TargetContactStates.CreateIterator(); ContactIt; ++ContactIt)
 	{

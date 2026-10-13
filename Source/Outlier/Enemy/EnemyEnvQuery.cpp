@@ -140,6 +140,77 @@ bool EnemyOrbit::IsCombatRadius(const FVector& Start, const FVector& Center)
 	return Radius > 1000.0 && Radius <= 2000.0;
 }
 
+namespace
+{
+const FName SearchCenterX(TEXT("SearchCenterX"));
+const FName SearchCenterY(TEXT("SearchCenterY"));
+const FName SearchCenterZ(TEXT("SearchCenterZ"));
+const FName SearchFlightHeight(TEXT("SearchFlightHeight"));
+}
+
+void EnemySearch::SetQuerySnapshot(FEnvQueryRequest& Request, const FVector& Center, float FlightHeight)
+{
+	Request.SetFloatParam(SearchCenterX, Center.X).SetFloatParam(SearchCenterY, Center.Y)
+		.SetFloatParam(SearchCenterZ, Center.Z).SetFloatParam(SearchFlightHeight, FlightHeight);
+}
+
+bool EnemySearch::IsCandidateInRange(const FVector& Candidate, const FVector& Center,
+	float FlightHeight, EEnemySearchQueryMode Mode)
+{
+	if (Candidate.ContainsNaN() || Center.ContainsNaN() || !FMath::IsFinite(FlightHeight)) return false;
+	const double Radius = FVector::Dist2D(Candidate, Center);
+	const bool bRadiusValid = Mode == EEnemySearchQueryMode::Anchor ? Radius <= 400.01
+		: Mode == EEnemySearchQueryMode::Points && Radius >= 499.99 && Radius <= 800.01;
+	return bRadiusValid && FMath::Abs(Candidate.Z - FlightHeight) <= 100.01;
+}
+
+void EnemySearch::BuildCandidates(const FVector& Center, float FlightHeight,
+	EEnemySearchQueryMode Mode, TArray<FVector>& OutCandidates)
+{
+	OutCandidates.Reset();
+	if (Center.ContainsNaN() || !FMath::IsFinite(FlightHeight) || Mode == EEnemySearchQueryMode::None) return;
+	// 마지막 목격 위치는 먼저 같은 XY의 안전 비행 높이로 접근한다. 막혔을 때만 주변을 보정한다.
+	if (Mode == EEnemySearchQueryMode::Anchor) OutCandidates.Add(FVector(Center.X, Center.Y, FlightHeight));
+	for (int32 Ring = 0; Ring < 3; ++Ring)
+	{
+		const float Radius = Mode == EEnemySearchQueryMode::Anchor ? 100.0f * (1 << Ring) : 500.0f + Ring * 150.0f;
+		for (float HeightOffset : {0.0f, -100.0f, 100.0f})
+		{
+			for (int32 Direction = 0; Direction < 8; ++Direction)
+			{
+				FVector Point = Center + FVector::ForwardVector.RotateAngleAxis(Direction * 45.0f, FVector::UpVector) * Radius;
+				Point.Z = FlightHeight + HeightOffset;
+				OutCandidates.Add(Point);
+			}
+		}
+	}
+}
+
+UEnemyEnvQueryGenerator_Search::UEnemyEnvQueryGenerator_Search()
+{
+	ItemType = UEnvQueryItemType_Point::StaticClass();
+}
+
+void UEnemyEnvQueryGenerator_Search::GenerateItems(FEnvQueryInstance& QueryInstance) const
+{
+	const AEnemyBase* Enemy = Cast<AEnemyBase>(QueryInstance.Owner.Get());
+	if (!Enemy || !Enemy->GetSearchEpisode().bActive || Enemy->IsPlayerCurrentlyVisible()
+		|| !QueryInstance.NamedParams.Contains(SearchCenterX)
+		|| !QueryInstance.NamedParams.Contains(SearchCenterY)
+		|| !QueryInstance.NamedParams.Contains(SearchCenterZ)
+		|| !QueryInstance.NamedParams.Contains(SearchFlightHeight))
+	{
+		LogGeneratorResult(QueryInstance, Enemy, nullptr, TEXT("MissingSearchSnapshot"));
+		return;
+	}
+	const FVector Center(QueryInstance.NamedParams.FindRef(SearchCenterX), QueryInstance.NamedParams.FindRef(SearchCenterY),
+		QueryInstance.NamedParams.FindRef(SearchCenterZ));
+	TArray<FVector> Candidates;
+	EnemySearch::BuildCandidates(Center, QueryInstance.NamedParams.FindRef(SearchFlightHeight), Mode, Candidates);
+	for (const FVector& Point : Candidates) QueryInstance.AddItemData<UEnvQueryItemType_Point>(Point);
+	LogGeneratorResult(QueryInstance, Enemy, nullptr, TEXT("SearchCompleted"), Candidates.Num(), Candidates.Num());
+}
+
 void EnemyRetreat::BuildCandidates(const FVector& Start, const FVector& Center, TArray<FVector>& OutCandidates)
 {
 	OutCandidates.Reset();
@@ -334,6 +405,38 @@ void UEnemyEnvQueryGenerator_Approach::GenerateItems(FEnvQueryInstance& QueryIns
 }
 
 #if WITH_DEV_AUTOMATION_TESTS
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemySearchCandidatesTest,
+	"Outlier.Enemy.Search.Candidates", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemySearchCandidatesTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const FVector Center(100, 200, 0);
+	TArray<FVector> Candidates;
+	EnemySearch::BuildCandidates(Center, 350.0f, EEnemySearchQueryMode::Anchor, Candidates);
+	TestEqual(TEXT("Anchor correction candidate count is bounded"), Candidates.Num(), 73);
+	TestTrue(TEXT("Anchor starts at remembered XY and current flight height"), Candidates[0].Equals(FVector(100, 200, 350)));
+	for (const FVector& Candidate : Candidates)
+	{
+		TestTrue(TEXT("Anchor correction remains nearby and within height band"),
+			EnemySearch::IsCandidateInRange(Candidate, Center, 350.0f, EEnemySearchQueryMode::Anchor));
+	}
+	EnemySearch::BuildCandidates(Center, 350.0f, EEnemySearchQueryMode::Points, Candidates);
+	TestEqual(TEXT("Search generates a bounded set before selecting at most two"), Candidates.Num(), 72);
+	for (const FVector& Candidate : Candidates)
+	{
+		TestTrue(TEXT("Search points remain five to eight metres and within one metre altitude"),
+			EnemySearch::IsCandidateInRange(Candidate, Center, 350.0f, EEnemySearchQueryMode::Points));
+	}
+	TestFalse(TEXT("Old twelve metre ring cannot enter new search"),
+		EnemySearch::IsCandidateInRange(Center + FVector(1200, 0, 350), Center, 350.0f, EEnemySearchQueryMode::Points));
+	TestFalse(TEXT("Points above allowed flight band are rejected"),
+		EnemySearch::IsCandidateInRange(Center + FVector(600, 0, 451), Center, 350.0f, EEnemySearchQueryMode::Points));
+	EnemySearch::BuildCandidates(Center, 350.0f, EEnemySearchQueryMode::None, Candidates);
+	TestTrue(TEXT("Disabled search does not produce candidates"), Candidates.IsEmpty());
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyApproachCandidatesTest,
 	"Outlier.Enemy.EQS.ApproachCandidates", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 

@@ -63,6 +63,7 @@ void FEnemyStateTreeSyncTask::SyncFromEnemy(FInstanceDataType& InstanceData) con
 			InstanceData.bHasPossessedAttackRequest ? TEXT("true") : TEXT("false"));
 	}
 	InstanceData.bHasSharedTargetContact = InstanceData.Enemy->HasSharedTargetContact();
+	InstanceData.bHasFreshSharedTargetLocation = InstanceData.Enemy->HasFreshSharedTargetLocation();
 	InstanceData.SharedTargetLocation = InstanceData.Enemy->GetSharedTargetLocation();
 	InstanceData.AIController = Cast<AAIController>(InstanceData.Enemy->GetController());
 	const AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(InstanceData.AIController);

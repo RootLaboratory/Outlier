@@ -37,6 +37,10 @@ public:
 	// Perception 이벤트/공유 갱신이 선택한 타깃이다. EQS 대기 중에는 감지 목록을 매 프레임 재검색하지 않는다.
 	AActor* GetCachedVisibleTarget() const { return LastVisibleTarget.Get(); }
 
+#if WITH_DEV_AUTOMATION_TESTS
+	friend class FEnemyHearingCombatJoinTest;
+#endif
+
 protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|AI")
 	TObjectPtr<UAIPerceptionComponent> EnemyPerceptionComponent;

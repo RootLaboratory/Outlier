@@ -237,7 +237,7 @@ bool ASelfDestructDrone::BeginCommittedSelfDestructInternal(
 		VECMovementComponent->ClearFlightInput();
 	}
 	StopCurrentAttack();
-	ReleaseSearchRingSlot();
+	ReleaseSearchDestinations();
 	if (AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(GetController()))
 	{
 		EnemyAIController->StopMovement();

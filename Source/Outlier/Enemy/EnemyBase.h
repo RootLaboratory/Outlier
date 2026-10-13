@@ -41,6 +41,20 @@ class UPrimitiveComponent;
 class USceneComponent;
 struct FOnAttributeChangeData;
 
+// 자식 State가 바뀌어도 한 수색 회차의 중심/선정 지점은 유지한다. 서버에서만 사용한다.
+struct FEnemySearchEpisode
+{
+	FVector Center = FVector::ZeroVector;
+	uint64 SharedRevision = 0;
+	uint64 Serial = 0;
+	TArray<FVector> Points;
+	TArray<FVector> CheckedPoints;
+	int32 PointIndex = 0;
+	bool bActive = false;
+	bool bPointsSelected = false;
+	bool bLocalGuard = false;
+};
+
 UENUM(BlueprintType)
 enum class EEnemyCombatState : uint8
 {
@@ -466,8 +480,8 @@ public:
 	// 다음 틱에 현재 가시성/공유 접촉 상태에 맞는 전투 결정을 다시 요청한다.
 	void RequestCombatDecisionRefresh();
 
-	// 재감지, 스턴, 빙의, 사망, 방 이동 시 방 Subsystem에 보관된 수색 슬롯을 반환한다.
-	void ReleaseSearchRingSlot();
+	// 재감지, 스턴, 빙의, 사망, 방 이동 시 방 Subsystem의 수색 목적지 예약을 반환한다.
+	void ReleaseSearchDestinations();
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|AI")
 	UStateTreeComponent* GetStateTreeComponent() const { return StateTreeComponent; }
@@ -508,8 +522,19 @@ public:
 	// RoomSubsystem만 호출하는 서버 권한 공유 접촉 API.
 	void ApplySharedTargetContact(
 		const FVector& TargetLocation,
-		bool bDeferStateTreeEvent = false);
+		bool bDeferStateTreeEvent = false,
+		uint64 Revision = 0);
 	void ClearSharedTargetContact();
+
+	bool HasFreshSharedTargetLocation() const { return SharedTargetRevision > ConsumedSharedTargetRevision; }
+	uint64 GetSharedTargetRevision() const { return SharedTargetRevision; }
+	const FEnemySearchEpisode& GetSearchEpisode() const { return SearchEpisode; }
+	bool BeginSearchEpisode();
+	void EndSearchEpisode();
+	void CompleteSearchAnchor();
+	bool SetSearchPoints(const TArray<FVector>& Points);
+	bool CompleteSearchPoint();
+	void EnterSearchLocalGuard();
 
 	UFUNCTION(BlueprintCallable, Category = "Enemy|State")
 	void EnterCombat(const FVector& PlayerLocation);
@@ -599,6 +624,11 @@ protected:
 
 	double NextFlightPathRequestTime = 0.0;
 	double NextEnvQueryRequestTime = 0.0;
+	uint64 SharedTargetRevision = 0;
+	uint64 ConsumedSharedTargetRevision = 0;
+	uint64 NextSearchEpisodeSerial = 0;
+	bool bHasLastKnownPlayerLocation = false;
+	FEnemySearchEpisode SearchEpisode;
 
 	void InitializeGasVitality();
 	void BindGasVitalityObservers();
@@ -654,7 +684,7 @@ protected:
 	// 서버에서 기본 무기를 스폰하고 Enemy 소켓에 장착한다.
 	void EquipDefaultWeapon();
 
-	// 방이 바뀌면 이전 방 기준으로 받은 수색 슬롯을 즉시 반환한다.
+	// 방이 바뀌면 이전 방의 수색 목적지 예약을 즉시 반환한다.
 	void HandleCurrentRoomTagChanged(FGameplayTag PreviousRoomTag, FGameplayTag NewRoomTag);
 	void RemoveRoomTargetObserver();
 	virtual void HandleDeath();

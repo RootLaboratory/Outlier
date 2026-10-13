@@ -8,6 +8,35 @@
 
 struct FEnvQueryRequest;
 
+UENUM(BlueprintType)
+enum class EEnemySearchQueryMode : uint8
+{
+	None,
+	Anchor,
+	Points
+};
+
+namespace EnemySearch
+{
+	OUTLIER_API void BuildCandidates(const FVector& Center, float FlightHeight,
+		EEnemySearchQueryMode Mode, TArray<FVector>& OutCandidates);
+	OUTLIER_API void SetQuerySnapshot(FEnvQueryRequest& Request, const FVector& Center, float FlightHeight);
+	OUTLIER_API bool IsCandidateInRange(const FVector& Candidate, const FVector& Center,
+		float FlightHeight, EEnemySearchQueryMode Mode);
+}
+
+// 숨은 TargetActor를 조회하지 않는다. Task가 저장한 마지막 목격/공유 좌표만 사용한다.
+UCLASS(meta = (DisplayName = "Enemy Search Candidates"))
+class OUTLIER_API UEnemyEnvQueryGenerator_Search : public UEnvQueryGenerator
+{
+	GENERATED_BODY()
+public:
+	UEnemyEnvQueryGenerator_Search();
+	virtual void GenerateItems(FEnvQueryInstance& QueryInstance) const override;
+	UPROPERTY(EditDefaultsOnly, Category = Search)
+	EEnemySearchQueryMode Mode = EEnemySearchQueryMode::Anchor;
+};
+
 namespace EnemyRetreat
 {
 	OUTLIER_API void BuildCandidates(const FVector& Start, const FVector& Center, TArray<FVector>& OutCandidates);
