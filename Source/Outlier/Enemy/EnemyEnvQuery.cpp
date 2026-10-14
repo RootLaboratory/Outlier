@@ -306,6 +306,83 @@ void EnemyOrbit::SetQuerySnapshot(FEnvQueryRequest& Request, const FVector& Star
 	Request.SetFloatParam(OrbitLength, PreferredLength).SetFloatParam(OrbitLeft, bPrefersLeft ? 1.0f : 0.0f);
 }
 
+namespace
+{
+const FName ChaseStartX(TEXT("ChaseStartX"));
+const FName ChaseStartY(TEXT("ChaseStartY"));
+const FName ChaseStartZ(TEXT("ChaseStartZ"));
+const FName ChaseTargetX(TEXT("ChaseTargetX"));
+const FName ChaseTargetY(TEXT("ChaseTargetY"));
+const FName ChaseTargetZ(TEXT("ChaseTargetZ"));
+const FName ChaseLane(TEXT("ChaseLane"));
+}
+
+void EnemyChase::BuildCandidates(const FVector& Start, const FVector& Target, int32 Lane, TArray<FVector>& OutCandidates)
+{
+	OutCandidates.Reset();
+	if (Start.ContainsNaN() || Target.ContainsNaN() || Lane < -1 || Lane > 1) return;
+	FVector Toward = (Target - Start).GetSafeNormal2D();
+	if (Toward.IsNearlyZero()) Toward = FVector::ForwardVector;
+	const FVector Right = FVector::CrossProduct(FVector::UpVector, Toward);
+	const float Blend = FMath::Clamp(float(FVector::Dist2D(Start, Target) - 300.0) / 700.0f, 0.0f, 1.0f);
+	const float HeightBias = FMath::Clamp(float(Start.Z - Target.Z), -150.0f, 150.0f) * Blend;
+	const int32 Alternative = Lane == 0 ? -1 : 0;
+	const int32 Opposite = Lane == 0 ? 1 : -Lane;
+	// 각 거리/높이에서 선호 성향 -> 중앙 -> 반대 성향을 확인한다. 작은 후보 한도로도 양쪽을 검사할 수 있다.
+	// 3~4.5m 접근점은 타깃 캡슐과 겹치지 않으면서 5m 돌진 진입을 검사할 수 있는 초기 튜닝값이다.
+	for (float Radius : {350.0f, 300.0f, 450.0f})
+	{
+		for (float HeightScale : {1.0f, 0.5f, 0.0f})
+		{
+			for (int32 CandidateLane : {Lane, Alternative, Opposite})
+			{
+				FVector Candidate = Target - Toward * Radius + Right * (CandidateLane * 150.0f * Blend);
+				Candidate.Z = Target.Z + HeightBias * HeightScale;
+				OutCandidates.AddUnique(Candidate);
+			}
+		}
+	}
+}
+
+void EnemyChase::SetQuerySnapshot(FEnvQueryRequest& Request, const FVector& Start, const FVector& Target, int32 Lane)
+{
+	Request.SetFloatParam(ChaseStartX, Start.X).SetFloatParam(ChaseStartY, Start.Y).SetFloatParam(ChaseStartZ, Start.Z);
+	Request.SetFloatParam(ChaseTargetX, Target.X).SetFloatParam(ChaseTargetY, Target.Y).SetFloatParam(ChaseTargetZ, Target.Z);
+	Request.SetFloatParam(ChaseLane, float(Lane));
+}
+
+UEnemyEnvQueryGenerator_Chase::UEnemyEnvQueryGenerator_Chase()
+{
+	ItemType = UEnvQueryItemType_Point::StaticClass();
+}
+
+void UEnemyEnvQueryGenerator_Chase::GenerateItems(FEnvQueryInstance& QueryInstance) const
+{
+	const AEnemyBase* Enemy = Cast<AEnemyBase>(QueryInstance.Owner.Get());
+	const AActor* Target = GetVisibleEnvQueryTarget(Enemy);
+	if (!Target)
+	{
+		LogGeneratorResult(QueryInstance, Enemy, Target, TEXT("ChaseNoVisibleTarget"));
+		return;
+	}
+	FVector Start = Enemy->GetActorLocation();
+	FVector Center = Target->GetActorLocation();
+	int32 Lane = Enemy->GetCombatChaseLane();
+	if (QueryInstance.NamedParams.Contains(ChaseLane))
+	{
+		// 질의가 여러 프레임에 걸쳐 실행되어도 후보와 A* 검증은 요청 당시의 동일 좌표를 사용한다.
+		Start = FVector(QueryInstance.NamedParams.FindRef(ChaseStartX), QueryInstance.NamedParams.FindRef(ChaseStartY), QueryInstance.NamedParams.FindRef(ChaseStartZ));
+		Center = FVector(QueryInstance.NamedParams.FindRef(ChaseTargetX), QueryInstance.NamedParams.FindRef(ChaseTargetY), QueryInstance.NamedParams.FindRef(ChaseTargetZ));
+		const float LaneValue = QueryInstance.NamedParams.FindRef(ChaseLane);
+		if (!FMath::IsFinite(LaneValue) || LaneValue < -1.0f || LaneValue > 1.0f) return;
+		Lane = FMath::RoundToInt(LaneValue);
+	}
+	TArray<FVector> Candidates;
+	EnemyChase::BuildCandidates(Start, Center, Lane, Candidates);
+	for (const FVector& Candidate : Candidates) QueryInstance.AddItemData<UEnvQueryItemType_Point>(Candidate);
+	LogGeneratorResult(QueryInstance, Enemy, Target, TEXT("ChaseCompleted"), Candidates.Num(), Candidates.Num());
+}
+
 UEnemyEnvQueryGenerator_Orbit::UEnemyEnvQueryGenerator_Orbit()
 {
 	ItemType = UEnvQueryItemType_Point::StaticClass();

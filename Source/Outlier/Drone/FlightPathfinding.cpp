@@ -9,10 +9,16 @@
 #include "HAL/PlatformTime.h"
 #include "HAL/IConsoleManager.h"
 #include "CoreGlobals.h"
+#include "Misc/ScopeExit.h"
 #include "Room/RoomVolume.h"
 
 namespace
 {
+#if WITH_DEV_AUTOMATION_TESTS
+	TWeakObjectPtr<UWorld> TestBudgetWorld;
+	int32 TestCollisionChecks = 0;
+	FlightPathfinding::FTestCost TestCost;
+#endif
 	enum class EFlightCheckMode : uint8 { Path, Segment, Destination };
 	DEFINE_LOG_CATEGORY_STATIC(LogFlightPathCost, Log, All);
 	TAutoConsoleVariable<int32> CVarFlightPathCost(
@@ -603,6 +609,27 @@ static FFlightPathResult FindPathOrCheckSegment(
 {
 	// 게임 호출부: 권한/환경 검증 -> 캡슐 충돌 설정 구성 -> 공용 탐색에 검사 함수 전달.
 	FFlightPathResult Failure;
+#if WITH_DEV_AUTOMATION_TESTS
+	const double TestStarted = TestBudgetWorld.Get() == &World ? FPlatformTime::Seconds() : 0.0;
+	// 최종 결과를 scope 종료 시 집계하므로 직선 성공과 조기 실패도 빠지지 않는다.
+	ON_SCOPE_EXIT
+	{
+		if (TestBudgetWorld.Get() == &World)
+		{
+			TestCost.Checks += Failure.CollisionChecks;
+			TestCost.Nodes += Failure.SearchNodes;
+			const double Ms = (FPlatformTime::Seconds() - TestStarted) * 1000.0;
+			TestCost.TotalMs += Ms;
+			TestCost.PeakMs = FMath::Max(TestCost.PeakMs, Ms);
+			if (Mode == EFlightCheckMode::Path)
+			{
+				++TestCost.Paths;
+				TestCost.Failures += Failure.Status != EFlightPathStatus::Success;
+				TestCost.Budgets += Failure.Status == EFlightPathStatus::BudgetExceeded;
+			}
+		}
+	};
+#endif
 	FScopedFlightCost Cost(Failure, Mode, World.GetNetMode() != NM_Client);
 	if (!IsInGameThread() || !IsValidRequest(Request))
 	{
@@ -785,3 +812,36 @@ EFlightPathStatus FlightPathfinding::CheckDestination(
 {
 	return FindPathOrCheckSegment(World, MovementCapsule, Request, EFlightCheckMode::Destination).Status;
 }
+
+#if WITH_DEV_AUTOMATION_TESTS
+void FlightPathfinding::BeginTestBudget(UWorld& World, int32 CollisionChecks)
+{
+	check(IsInGameThread() && !TestBudgetWorld.IsValid());
+	TestBudgetWorld = &World;
+	TestCollisionChecks = FMath::Clamp(CollisionChecks, 1, 262144);
+	TestCost = FTestCost();
+}
+
+void FlightPathfinding::EndTestBudget()
+{
+	TestBudgetWorld.Reset();
+	TestCollisionChecks = 0;
+}
+
+int32 FlightPathfinding::GetTestBudget(UWorld& World, int32 AssetBudget)
+{
+	return TestBudgetWorld.Get() == &World ? TestCollisionChecks : AssetBudget;
+}
+
+FlightPathfinding::FTestCost FlightPathfinding::GetTestCost()
+{
+	return TestCost;
+}
+
+void FlightPathfinding::RecordTestQuery(UWorld* World, bool bFinished)
+{
+	if (!World || TestBudgetWorld.Get() != World) return;
+	if (bFinished) ++TestCost.QueriesFinished;
+	else ++TestCost.QueriesStarted;
+}
+#endif

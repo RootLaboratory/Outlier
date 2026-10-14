@@ -298,6 +298,8 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "Enemy|Combat")
 	bool bPrefersCombatLeft = false;
+	// 전투 진입 시 정하고 해당 전투 동안 유지한다. -1/0/1은 Left/Center/Right다.
+	int32 CombatChaseLane = 0;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "Enemy|State")
 	uint8 bIsPossessed : 1 = false;
@@ -425,6 +427,7 @@ public:
 	void RemoveEnemyTraitForTesting(FGameplayTag TraitTag) { EnemyTraits.RemoveTag(TraitTag); }
 #endif
 	bool PrefersCombatLeft() const { return bPrefersCombatLeft; }
+	int32 GetCombatChaseLane() const { return CombatChaseLane; }
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|State")
 	EEnemyCombatState GetCombatState() const { return CombatState; }

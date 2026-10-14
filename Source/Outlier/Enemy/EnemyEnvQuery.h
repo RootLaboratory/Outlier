@@ -8,6 +8,22 @@
 
 struct FEnvQueryRequest;
 
+namespace EnemyChase
+{
+	OUTLIER_API void BuildCandidates(const FVector& Start, const FVector& Target, int32 Lane, TArray<FVector>& OutCandidates);
+	OUTLIER_API void SetQuerySnapshot(FEnvQueryRequest& Request, const FVector& Start, const FVector& Target, int32 Lane);
+}
+
+// 사격형의 10~20m 접근 후보와 구분한다. 타깃 근처에서 높이/좌우 편차를 줄인다.
+UCLASS(meta = (DisplayName = "Enemy Chase Candidates"))
+class OUTLIER_API UEnemyEnvQueryGenerator_Chase : public UEnvQueryGenerator
+{
+	GENERATED_BODY()
+public:
+	UEnemyEnvQueryGenerator_Chase();
+	virtual void GenerateItems(FEnvQueryInstance& QueryInstance) const override;
+};
+
 UENUM(BlueprintType)
 enum class EEnemySearchQueryMode : uint8
 {

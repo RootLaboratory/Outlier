@@ -15,7 +15,8 @@ struct FEnemyRoomTargetContactState
 {
 	TWeakObjectPtr<AActor> TargetActor;
 	FVector LastReportedLocation = FVector::ZeroVector;
-	TSet<TWeakObjectPtr<AEnemyBase>> DirectObservers;
+	// 관측자별 실제 타깃을 보관해 서로 다른 플레이어 보고가 공유 위치를 덮어쓰지 않게 한다.
+	TMap<TWeakObjectPtr<AEnemyBase>, TWeakObjectPtr<AActor>> DirectObservers;
 	FTimerHandle ForcedShareTimerHandle;
 	bool bSharedContactActive = false;
 	bool bForcedShareConsumed = false;

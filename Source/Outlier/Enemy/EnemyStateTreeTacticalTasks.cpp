@@ -83,13 +83,14 @@ void LogEnvQuery(const TCHAR* Phase, const FEnemyRunEnvQueryTaskInstanceData& Da
 	if (CVarEnemyEQSDebug.GetValueOnGameThread() != 0)
 	{
 		UE_LOG(LogEnemyEQS, Log,
-			TEXT("[EnemyEQS] %s Enemy=%s Query=%s Request=%d Result=%s Items=%d HasDestination=%d Destination=%s SelectedTarget=%s SelectedTargetLocation=%s CheckedCandidates=%d SelectionPathStatus=%s"),
+			TEXT("[EnemyEQS] %s Enemy=%s Query=%s Request=%d Result=%s Items=%d HasDestination=%d Destination=%s SelectedTarget=%s SelectedTargetLocation=%s CheckedCandidates=%d SelectionPathStatus=%s SearchRetry=%d/%d NextSearchCandidate=%d SelectionPending=%d"),
 			Phase, *GetNameSafe(Data.Enemy), *GetNameSafe(Data.QueryTemplate),
 			CompletedRequest != INDEX_NONE ? CompletedRequest : Data.RequestId,
 			*UEnum::GetValueAsString(Data.QueryResult), Items, Data.bHasDestination,
 			*Data.Destination.ToCompactString(), *GetNameSafe(Data.SelectedTargetActor),
 			*Data.SelectedTargetLocation.ToCompactString(), Data.CheckedPathCandidates,
-			*UEnum::GetValueAsString(Data.SelectionPathStatus));
+			*UEnum::GetValueAsString(Data.SelectionPathStatus), Data.SearchSelectionRetries,
+			Data.MaxSearchSelectionRetries, Data.NextSearchCandidate, Data.bSearchSelectionPending);
 		// 결과 적용 시 RequestId가 해제되므로 완료 번호를 별도로 남겨 요청과 결과를 연결한다.
 		UE_LOG(LogEnemyEQS, Log,
 			TEXT("[EnemyEQSContext] %s Enemy=%s Request=%d Time=%.3f Room=%s Orbit=%d Reachability=%d Target=%s Start=%s Center=%s PreferredLeft=%d PreferredArc=%.1f CandidateLimit=%d CheckLimit=%d TimeLimitMs=%.3f"),
@@ -115,6 +116,13 @@ void LogEnvQuery(const TCHAR* Phase, const FEnemyRunEnvQueryTaskInstanceData& Da
 				FVector::Dist2D(Data.Destination, Data.RetreatOrigin), Data.CheckedPathCandidates,
 				*UEnum::GetValueAsString(Data.SelectionPathStatus));
 		}
+		if (Data.bValidateChasePath)
+		{
+			UE_LOG(LogEnemyEQS, Log, TEXT("[EnemyChaseResult] %s Enemy=%s Lane=%d Start=%s Target=%s Goal=%s Checked=%d Result=%s Path=%s"),
+				Phase, *GetNameSafe(Data.Enemy), Data.CapturedChaseLane, *Data.CapturedChaseStart.ToCompactString(),
+				*Data.CapturedOrbitCenter.ToCompactString(), *Data.Destination.ToCompactString(), Data.CheckedPathCandidates,
+				*UEnum::GetValueAsString(Data.QueryResult), *UEnum::GetValueAsString(Data.SelectionPathStatus));
+		}
 		if (Data.SearchMode != EEnemySearchQueryMode::None)
 		{
 			UE_LOG(LogEnemyEQS, Log,
@@ -129,10 +137,12 @@ void LogEnvQuery(const TCHAR* Phase, const FEnemyRunEnvQueryTaskInstanceData& Da
 bool IsReachabilityConfigurationValid(const FEnemyRunEnvQueryTaskInstanceData& Data)
 {
 	const int32 Modes = int32(Data.bValidateReachability) + int32(Data.bValidateOrbitPath)
-		+ int32(Data.bValidateRetreatPath) + int32(Data.SearchMode != EEnemySearchQueryMode::None);
+		+ int32(Data.bValidateRetreatPath) + int32(Data.bValidateChasePath)
+		+ int32(Data.SearchMode != EEnemySearchQueryMode::None);
 	if (Modes == 0) return true;
 	if (Modes != 1) return false;
 	const bool bValidLimits = Data.MaxPathCandidates >= 1 && Data.MaxPathCandidates <= 32
+		&& Data.MaxSearchSelectionRetries >= 0 && Data.MaxSearchSelectionRetries <= 8
 		&& Data.MaxSearchNodes >= 1 && Data.MaxSearchNodes <= 65536
 		&& Data.MaxCollisionChecks >= 1 && Data.MaxCollisionChecks <= 262144;
 	const bool bValidGeometry = FMath::IsFinite(Data.PathCellSize) && Data.PathCellSize >= 1.0f
@@ -160,6 +170,15 @@ bool IsRetreatQueryConfigurationValid(const FEnemyRunEnvQueryTaskInstanceData& D
 		&& Options[0]->Generator->GetClass() == UEnemyEnvQueryGenerator_Retreat::StaticClass();
 }
 
+bool IsChaseQueryConfigurationValid(const FEnemyRunEnvQueryTaskInstanceData& Data)
+{
+	if (!Data.bValidateChasePath) return true;
+	if (!Data.bRequireVisibleTarget || !Data.QueryTemplate) return false;
+	const TArray<UEnvQueryOption*>& Options = Data.QueryTemplate->GetOptions();
+	return Options.Num() == 1 && Options[0] && Options[0]->Generator
+		&& Options[0]->Generator->GetClass() == UEnemyEnvQueryGenerator_Chase::StaticClass();
+}
+
 bool IsEnvQueryConfigurationValid(const FEnemyRunEnvQueryTaskInstanceData& Data)
 {
 	if (Data.SearchMode != EEnemySearchQueryMode::None)
@@ -175,6 +194,7 @@ bool IsEnvQueryConfigurationValid(const FEnemyRunEnvQueryTaskInstanceData& Data)
 	if (!IsReachabilityConfigurationValid(Data)) return false;
 	if (!IsOrbitQueryConfigurationValid(Data)) return false;
 	if (!IsRetreatQueryConfigurationValid(Data)) return false;
+	if (!IsChaseQueryConfigurationValid(Data)) return false;
 	if (!FMath::IsFinite(Data.Clearance) || Data.Clearance < 0.0f)
 	{
 		return false;
@@ -246,7 +266,7 @@ bool IsEnvQueryTargetCurrent(const FEnemyRunEnvQueryTaskInstanceData& Data)
 	}
 	if (!Data.Enemy->IsPlayerCurrentlyVisible() || !Data.CapturedTarget.IsValid()
 		|| Data.CachedController->GetCachedVisibleTarget() != Data.CapturedTarget.Get()) return false;
-	const float ChangeDistance = (Data.bValidateOrbitPath || Data.bValidateRetreatPath) && Data.TargetChangeDistance <= 0.0f
+	const float ChangeDistance = (Data.bValidateOrbitPath || Data.bValidateRetreatPath || Data.bValidateChasePath) && Data.TargetChangeDistance <= 0.0f
 		? 200.0f : Data.TargetChangeDistance;
 	return ChangeDistance <= 0.0f
 		|| FVector::DistSquared2D(Data.SelectedTargetLocation, Data.CapturedTarget->GetActorLocation())
@@ -309,6 +329,8 @@ void CaptureEnvQuerySnapshot(FEnemyRunEnvQueryTaskInstanceData& Data)
 	Data.CapturedOrbitLength = Data.bValidateOrbitPath ? FMath::FRandRange(300.0f, 500.0f) : 0.0f;
 	Data.bCapturedOrbitLeft = Enemy->PrefersCombatLeft();
 	Data.CapturedRetreatStart = ToQueryParamLocation(Enemy->GetActorLocation());
+	Data.CapturedChaseStart = ToQueryParamLocation(Enemy->GetActorLocation());
+	Data.CapturedChaseLane = Enemy->GetCombatChaseLane();
 	Data.RetreatOrigin = ToQueryParamLocation(Data.SelectedTargetLocation);
 	Data.RetreatDirection = (Data.CapturedRetreatStart - Data.RetreatOrigin).GetSafeNormal2D();
 	if (Data.SearchMode != EEnemySearchQueryMode::None)
@@ -393,6 +415,31 @@ FFlightPathRequest MakeCandidatePathRequest(const FEnemyRunEnvQueryTaskInstanceD
 	return Request;
 }
 
+void GetReachableCandidateOrder(const FEnemyRunEnvQueryTaskInstanceData& Data,
+	const FEnvQueryResult& Result, TArray<FVector>& Candidates)
+{
+	Candidates.Reset();
+	if (!Data.bValidateChasePath)
+	{
+		for (int32 Index = 0; Index < Result.Items.Num(); ++Index) Candidates.Add(Result.GetItemAsLocation(Index));
+		return;
+	}
+	// EQS의 동점 정렬에 개체 성향을 맡기지 않는다. 생성 순서에서 필터를 통과한 후보만 검사한다.
+	TArray<FVector> Generated;
+	EnemyChase::BuildCandidates(Data.CapturedChaseStart, Data.CapturedOrbitCenter, Data.CapturedChaseLane, Generated);
+	for (const FVector& Candidate : Generated)
+	{
+		for (int32 Index = 0; Index < Result.Items.Num(); ++Index)
+		{
+			if (Candidate.Equals(Result.GetItemAsLocation(Index), 1.0))
+			{
+				Candidates.Add(Candidate);
+				break;
+			}
+		}
+	}
+}
+
 bool SelectReachableDestination(FEnemyRunEnvQueryTaskInstanceData& Data, const FEnvQueryResult& Result)
 {
 	UCapsuleComponent* Capsule = Data.Enemy->GetCapsuleComponent();
@@ -401,7 +448,9 @@ bool SelectReachableDestination(FEnemyRunEnvQueryTaskInstanceData& Data, const F
 	int32 RemainingChecks = Data.MaxCollisionChecks;
 	bool bBudgetExceeded = false;
 	// EQS는 점수순으로 정렬한 후보를 제공한다. 각 후보가 아니라 전체 선택 시도가 예산을 공유한다.
-	const int32 Limit = FMath::Min(Data.MaxPathCandidates, Result.Items.Num());
+	TArray<FVector> Candidates;
+	GetReachableCandidateOrder(Data, Result, Candidates);
+	const int32 Limit = FMath::Min(Data.MaxPathCandidates, Candidates.Num());
 	for (int32 Index = 0; Index < Limit; ++Index)
 	{
 		const double RemainingTime = Data.MaxSearchMilliseconds - (FPlatformTime::Seconds() - Started) * 1000.0;
@@ -421,7 +470,7 @@ bool SelectReachableDestination(FEnemyRunEnvQueryTaskInstanceData& Data, const F
 			Data.QueryResult = EEnemyEnvQueryResult::TimedOut;
 			return false;
 		}
-		const FVector Candidate = Result.GetItemAsLocation(Index);
+		const FVector Candidate = Candidates[Index];
 		const FFlightPathRequest Request = MakeCandidatePathRequest(Data, *Capsule, Candidate,
 			RemainingNodes, RemainingChecks, RemainingTime);
 		const FFlightPathResult Path = FlightPathfinding::FindPath(*Data.Enemy->GetWorld(), *Capsule, Request);
@@ -447,7 +496,7 @@ bool SelectReachableDestination(FEnemyRunEnvQueryTaskInstanceData& Data, const F
 			return false;
 		}
 	}
-	Data.QueryResult = ResolveCandidateFailure(bBudgetExceeded, Data.CheckedPathCandidates, Result.Items.Num());
+	Data.QueryResult = ResolveCandidateFailure(bBudgetExceeded, Data.CheckedPathCandidates, Candidates.Num());
 	if (bBudgetExceeded) Data.SelectionPathStatus = EFlightPathStatus::BudgetExceeded;
 	return false;
 }
@@ -756,6 +805,7 @@ const TCHAR* GetSearchCandidateRejection(const FEnemyRunEnvQueryTaskInstanceData
 
 bool SelectSearchDestinations(FEnemyRunEnvQueryTaskInstanceData& Data, const FEnvQueryResult& Result)
 {
+	Data.bSearchSelectionPending = false;
 	UEnemyRoomSubsystem* Rooms = Data.Enemy->GetWorld()->GetSubsystem<UEnemyRoomSubsystem>();
 	UCapsuleComponent* Capsule = Data.Enemy->GetCapsuleComponent();
 	if (!Rooms || !Capsule || (Data.SearchMode == EEnemySearchQueryMode::Points
@@ -776,10 +826,13 @@ bool SelectSearchDestinations(FEnemyRunEnvQueryTaskInstanceData& Data, const FEn
 	const double Started = FPlatformTime::Seconds();
 	int32 RemainingNodes = Data.MaxSearchNodes;
 	int32 RemainingChecks = Data.MaxCollisionChecks;
-	// 후보마다 예산을 새로 주지 않는다. 이번 선정 전체가 하나의 A* 예산을 나눠 쓴다.
-	EEnemyEnvQueryResult SearchFailure = EEnemyEnvQueryResult::NoReachableDestination;
-	for (int32 Index : Order)
+	// 한 검증 묶음 안에서는 예산을 공유한다. 다음 묶음은 간격/횟수/전체 질의 제한 안에서만 실행한다.
+	// 이전 묶음의 예산 초과 후보는 미확정이다. 뒤 후보가 전부 탈락해도 전체 경로 불가로 바꾸지 않는다.
+	EEnemyEnvQueryResult SearchFailure = Data.bSearchPathBudgetExceeded
+		? EEnemyEnvQueryResult::PathBudgetExceeded : EEnemyEnvQueryResult::NoReachableDestination;
+	for (; Data.NextSearchCandidate < Order.Num();)
 	{
+		const int32 Index = Order[Data.NextSearchCandidate];
 		const FVector Candidate = Result.GetItemAsLocation(Index);
 		// 범위/예약/중복을 먼저 거른 뒤, 남은 후보에만 실제 비행 경로 검증 비용을 쓴다.
 		if (const TCHAR* Reason = GetSearchCandidateRejection(Data, Candidate, *Rooms, Separation))
@@ -789,6 +842,7 @@ bool SelectSearchDestinations(FEnemyRunEnvQueryTaskInstanceData& Data, const FEn
 				UE_LOG(LogEnemyEQS, Log, TEXT("[EnemySearchCandidate] Enemy=%s Episode=%llu Candidate=%d Reason=%s Goal=%s"),
 					*GetNameSafe(Data.Enemy), Data.CapturedSearchSerial, Index, Reason, *Candidate.ToCompactString());
 			}
+			++Data.NextSearchCandidate;
 			continue;
 		}
 		const double RemainingTime = Data.MaxSearchMilliseconds - (FPlatformTime::Seconds() - Started) * 1000.0;
@@ -797,6 +851,7 @@ bool SelectSearchDestinations(FEnemyRunEnvQueryTaskInstanceData& Data, const FEn
 		{
 			Data.bSearchSelectionLimited = true;
 			SearchFailure = bHasBudget ? EEnemyEnvQueryResult::CandidateLimitReached : EEnemyEnvQueryResult::PathBudgetExceeded;
+			Data.bSearchPathBudgetExceeded |= !bHasBudget;
 			break;
 		}
 		FFlightPathRequest Request = MakeCandidatePathRequest(Data, *Capsule, Candidate,
@@ -810,6 +865,7 @@ bool SelectSearchDestinations(FEnemyRunEnvQueryTaskInstanceData& Data, const FEn
 			Request.SearchBounds = Request.SearchBounds.ExpandBy(Data.SearchPadding);
 		}
 		const FFlightPathResult Path = FlightPathfinding::FindPath(*Data.Enemy->GetWorld(), *Capsule, Request);
+		++Data.NextSearchCandidate;
 		++Data.CheckedPathCandidates;
 		RemainingNodes -= Path.SearchNodes;
 		RemainingChecks -= Path.CollisionChecks;
@@ -836,6 +892,7 @@ bool SelectSearchDestinations(FEnemyRunEnvQueryTaskInstanceData& Data, const FEn
 		{
 			Data.bSearchSelectionLimited = true;
 			SearchFailure = EEnemyEnvQueryResult::PathBudgetExceeded;
+			Data.bSearchPathBudgetExceeded = true;
 			break;
 		}
 		else if (Path.Status == EFlightPathStatus::InvalidRequest || Path.Status == EFlightPathStatus::Unavailable)
@@ -847,6 +904,23 @@ bool SelectSearchDestinations(FEnemyRunEnvQueryTaskInstanceData& Data, const FEn
 	if (Data.SelectedSearchPoints.IsEmpty())
 	{
 		Data.QueryResult = SearchFailure;
+		if (SearchFailure == EEnemyEnvQueryResult::PathBudgetExceeded)
+			Data.SelectionPathStatus = EFlightPathStatus::BudgetExceeded;
+		// 예산 부족은 경로 불가의 증거가 아니다. 미검증 후보가 남으면 Task를 완료하지 않고 재개한다.
+		if (SearchFailure == EEnemyEnvQueryResult::PathBudgetExceeded
+			&& Data.NextSearchCandidate < Order.Num() && Data.CheckedPathCandidates < Data.MaxPathCandidates
+			&& Data.SearchSelectionRetries < Data.MaxSearchSelectionRetries)
+		{
+			++Data.SearchSelectionRetries;
+			Data.bSearchSelectionPending = true;
+			Data.QueryResult = EEnemyEnvQueryResult::Running;
+			Data.NextSearchSelectionTime = Data.Enemy->GetWorld()->GetTimeSeconds() + Data.QueryInterval;
+			LogEnvQuery(TEXT("SearchSelectionDeferred"), Data, Result.Items.Num(), Result.QueryID);
+		}
+		else if (SearchFailure == EEnemyEnvQueryResult::PathBudgetExceeded)
+		{
+			LogEnvQuery(TEXT("SearchSelectionBudgetExhausted"), Data, Result.Items.Num(), Result.QueryID);
+		}
 		return false;
 	}
 	// 예산 안에서 한 곳만 검증됐어도 그 지점은 사용한다. 제한 종료를 전체 경로 불가로 취급하지 않는다.
@@ -903,7 +977,7 @@ void ApplyEnvQueryResult(FEnemyRunEnvQueryTaskInstanceData& Data, const FEnvQuer
 		if (!CanClassifyEmptyOrbitResult(Data)) return;
 		if (!SelectOrbitDestination(Data, Result)) return;
 	}
-	else if (Data.bValidateReachability)
+	else if (Data.bValidateReachability || Data.bValidateChasePath)
 	{
 		if (!SelectReachableDestination(Data, Result)) return;
 	}
@@ -953,6 +1027,8 @@ void CancelEnvQuery(FEnemyRunEnvQueryTaskInstanceData& Data, EEnemyEnvQueryResul
 	Data.bHasDestination = false;
 	Data.QueryResult = Reason;
 	Data.SelectedWaypoints.Reset();
+	Data.DeferredSearchResult.Reset();
+	Data.bSearchSelectionPending = false;
 	Data.SelectedArcLength = 0.0f;
 	Data.bNoOrbitDestination = false;
 	Data.bNoRetreatDestination = false;
@@ -964,6 +1040,36 @@ void CancelEnvQuery(FEnemyRunEnvQueryTaskInstanceData& Data, EEnemyEnvQueryResul
 		}
 	}
 	LogEnvQuery(TEXT("Cancel"), Data, 0, RequestId);
+}
+
+EStateTreeRunStatus ResumeSearchSelection(FEnemyRunEnvQueryTaskInstanceData& Data)
+{
+	// 대기 중 새 정보/시야/풀 수명이 바뀌면 저장 결과를 버린다. 이전 회차의 목적지는 공개하지 않는다.
+	if (!IsEnvQuerySnapshotCurrent(Data))
+	{
+		CancelEnvQuery(Data, EEnemyEnvQueryResult::Stale);
+		return EStateTreeRunStatus::Failed;
+	}
+	if (HasEnvQueryTimedOut(Data))
+	{
+		CancelEnvQuery(Data, EEnemyEnvQueryResult::TimedOut);
+		return EStateTreeRunStatus::Failed;
+	}
+	if (Data.Enemy->GetWorld()->GetTimeSeconds() < Data.NextSearchSelectionTime)
+		return EStateTreeRunStatus::Running;
+	const TSharedPtr<FEnvQueryResult> Result = Data.DeferredSearchResult;
+	if (!Result)
+	{
+		CancelEnvQuery(Data, EEnemyEnvQueryResult::Failed);
+		return EStateTreeRunStatus::Failed;
+	}
+	// EQS는 재실행하지 않는다. 간격을 둔 새 예산으로 미검증 후보만 확인한다.
+	LogEnvQuery(TEXT("SearchSelectionResume"), Data, Result->Items.Num(), Result->QueryID);
+	ApplyEnvQueryResult(Data, *Result);
+	if (Data.bSearchSelectionPending) return EStateTreeRunStatus::Running;
+	Data.DeferredSearchResult.Reset();
+	LogEnvQuery(TEXT("Finished"), Data, Result->Items.Num(), Result->QueryID);
+	return Data.bHasDestination ? EStateTreeRunStatus::Succeeded : EStateTreeRunStatus::Failed;
 }
 
 EStateTreeRunStatus StartEnvQuery(FStateTreeExecutionContext& Context,
@@ -994,13 +1100,25 @@ EStateTreeRunStatus StartEnvQuery(FStateTreeExecutionContext& Context,
 	{
 		EnemyRetreat::SetQuerySnapshot(Request, Data.CapturedRetreatStart, Data.RetreatOrigin);
 	}
+	if (Data.bValidateChasePath)
+	{
+		EnemyChase::SetQuerySnapshot(Request, Data.CapturedChaseStart, Data.CapturedOrbitCenter, Data.CapturedChaseLane);
+	}
 	if (Data.SearchMode != EEnemySearchQueryMode::None)
 	{
 		EnemySearch::SetQuerySnapshot(Request, Data.CapturedOrbitCenter, Data.CapturedSearchHeight);
 	}
-	const FQueryFinishedSignature Finished = FQueryFinishedSignature::CreateLambda([WeakContext = Context.MakeWeakExecutionContext()]
+	const FQueryFinishedSignature Finished = FQueryFinishedSignature::CreateLambda([WeakContext = Context.MakeWeakExecutionContext()
+#if WITH_DEV_AUTOMATION_TESTS
+		, QueryWorld = TWeakObjectPtr<UWorld>(Data.Enemy->GetWorld())
+#endif
+		]
 			(TSharedPtr<FEnvQueryResult> Result) mutable
 		{
+#if WITH_DEV_AUTOMATION_TESTS
+			// 무효화된 결과도 완료 횟수에는 포함한다. 다른 월드의 요청은 집계하지 않는다.
+			FlightPathfinding::RecordTestQuery(QueryWorld.Get(), true);
+#endif
 			const FStateTreeStrongExecutionContext StrongContext = WeakContext.MakeStrongExecutionContext();
 			FEnemyRunEnvQueryTaskInstanceData* Pending =
 				StrongContext.GetInstanceDataPtr<FEnemyRunEnvQueryTaskInstanceData>();
@@ -1011,11 +1129,19 @@ EStateTreeRunStatus StartEnvQuery(FStateTreeExecutionContext& Context,
 			// EQS Manager는 완료 Delegate에 실제 FEnvQueryInstance를 전달한다.
 			LogEnvQueryRejections(*StaticCastSharedPtr<FEnvQueryInstance>(Result), *Pending);
 			ApplyEnvQueryResult(*Pending, *Result);
+			if (Pending->bSearchSelectionPending)
+			{
+				Pending->DeferredSearchResult = Result;
+				return;
+			}
 			const bool bSuccess = Pending->bHasDestination;
 			LogEnvQuery(TEXT("Finished"), *Pending, Result->Items.Num(), Result->QueryID);
 			StrongContext.FinishTask(bSuccess ? EStateTreeFinishTaskType::Succeeded : EStateTreeFinishTaskType::Failed);
 		});
 	Data.RequestId = ExecuteEnvQueryWithDiagnostics(Request, Data.RunMode, Finished, *Data.Enemy->GetWorld());
+#if WITH_DEV_AUTOMATION_TESTS
+	if (Data.RequestId != INDEX_NONE) FlightPathfinding::RecordTestQuery(Data.Enemy->GetWorld(), false);
+#endif
 	if (Data.RequestId == INDEX_NONE)
 	{
 		Data.QueryResult = EEnemyEnvQueryResult::Failed;
@@ -1063,6 +1189,12 @@ EStateTreeRunStatus FEnemyRunEnvQueryTask::EnterState(
 	Data.bHasDestination = false;
 	Data.SelectedSearchPoints.Reset();
 	Data.bSearchSelectionLimited = false;
+	Data.DeferredSearchResult.Reset();
+	Data.NextSearchCandidate = 0;
+	Data.SearchSelectionRetries = 0;
+	Data.bSearchPathBudgetExceeded = false;
+	Data.NextSearchSelectionTime = 0.0;
+	Data.bSearchSelectionPending = false;
 	Data.SelectedWaypoints.Reset();
 	Data.SelectedArcLength = 0.0f;
 	Data.bSelectedOrbitLeft = false;
@@ -1079,6 +1211,9 @@ EStateTreeRunStatus FEnemyRunEnvQueryTask::EnterState(
 	Data.bActive = true;
 	AEnemyBase* Enemy = Data.Enemy;
 	Data.Destination = IsValid(Enemy) ? Enemy->GetActorLocation() : FVector::ZeroVector;
+#if WITH_DEV_AUTOMATION_TESTS
+	if (IsValid(Enemy) && Enemy->GetWorld()) Data.MaxCollisionChecks = FlightPathfinding::GetTestBudget(*Enemy->GetWorld(), Data.MaxCollisionChecks);
+#endif
 	// 실행 환경/설정 검증 -> 요청 당시 상태 저장 -> 현재 상태 검증 -> 비동기 요청.
 	if (!IsValid(Enemy) || !Enemy->HasAuthority() || !Enemy->GetWorld() || !IsEnvQueryConfigurationValid(Data))
 	{
@@ -1142,6 +1277,7 @@ EStateTreeRunStatus FEnemyRunEnvQueryTask::Tick(FStateTreeExecutionContext& Cont
 		CancelEnvQuery(Data, EEnemyEnvQueryResult::TimedOut);
 		return EStateTreeRunStatus::Failed;
 	}
+	if (Data.bSearchSelectionPending) return ResumeSearchSelection(Data);
 	return EStateTreeRunStatus::Running;
 }
 
@@ -1186,6 +1322,7 @@ void LogSearchEpisode(const TCHAR* Phase, const AEnemyBase& Enemy)
 FEnemySearchSessionTask::FEnemySearchSessionTask()
 {
 	bShouldCallTick = true;
+	bShouldAffectTransitions = true;
 	bShouldCopyBoundPropertiesOnTick = false;
 	bShouldCopyBoundPropertiesOnExitState = false;
 	bShouldStateChangeOnReselect = false;
@@ -1228,6 +1365,23 @@ EStateTreeRunStatus TickSearchSession(FEnemySearchSessionTaskInstanceData& Data)
 	Data.SearchCenter = Episode.Center;
 	return EStateTreeRunStatus::Running;
 }
+
+void RefreshSearchSessionTransitions(FEnemySearchSessionTaskInstanceData& Data)
+{
+	// 자식 EnterState가 회차를 교체한 뒤 같은 프레임에 전이를 다시 평가할 수 있다.
+	// 부모 Tick의 이전 출력으로 RestartHint에 재진입하지 않도록 조건 평가 전에 갱신한다.
+	const bool bWasRestartRequested = Data.bShouldRestart;
+	if (TickSearchSession(Data) == EStateTreeRunStatus::Failed) Data.bShouldRestart = false;
+	if (bWasRestartRequested && !Data.bShouldRestart && IsValid(Data.Enemy))
+	{
+		LogSearchEpisode(TEXT("RestartRequestClearedBeforeTransitions"), *Data.Enemy);
+	}
+}
+}
+
+void FEnemySearchSessionTask::TriggerTransitions(FStateTreeExecutionContext& Context) const
+{
+	RefreshSearchSessionTransitions(Context.GetInstanceData(*this));
 }
 
 EStateTreeRunStatus FEnemySearchSessionTask::EnterState(FStateTreeExecutionContext& Context,
@@ -1340,6 +1494,11 @@ bool SelectDestinations(FEnemyRunEnvQueryTaskInstanceData& Data, const FEnvQuery
 	return SelectSearchDestinations(Data, Result);
 }
 
+EStateTreeRunStatus ResumeSelection(FEnemyRunEnvQueryTaskInstanceData& Data)
+{
+	return ResumeSearchSelection(Data);
+}
+
 EStateTreeRunStatus EnterSession(FEnemySearchSessionTaskInstanceData& Data)
 {
 	return EnterSearchSession(Data);
@@ -1348,6 +1507,11 @@ EStateTreeRunStatus EnterSession(FEnemySearchSessionTaskInstanceData& Data)
 EStateTreeRunStatus TickSession(FEnemySearchSessionTaskInstanceData& Data)
 {
 	return TickSearchSession(Data);
+}
+
+void RefreshSessionTransitions(FEnemySearchSessionTaskInstanceData& Data)
+{
+	RefreshSearchSessionTransitions(Data);
 }
 
 void ExitSession(FEnemySearchSessionTaskInstanceData& Data)
@@ -1388,6 +1552,31 @@ bool FEnemySearchQueryConfigurationTest::RunTest(const FString& Parameters)
 	Data.bValidateReachability = false;
 	Data.SearchPointSeparation = 0;
 	TestFalse(TEXT("Zero separation is invalid"), IsEnvQueryConfigurationValid(Data));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyChaseQueryConfigurationTest,
+	"Outlier.Enemy.EQS.ChaseConfiguration", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyChaseQueryConfigurationTest::RunTest(const FString& Parameters)
+{
+	FEnemyRunEnvQueryTaskInstanceData Data;
+	Data.QueryTemplate = NewObject<UEnvQuery>();
+	UEnvQueryOption* Option = NewObject<UEnvQueryOption>(Data.QueryTemplate);
+	Data.QueryTemplate->GetOptionsMutable().Add(Option);
+	Option->Generator = NewObject<UEnemyEnvQueryGenerator_Chase>(Option);
+	Data.bValidateChasePath = true;
+	TestFalse(TEXT("Chase requires all matching"), IsEnvQueryConfigurationValid(Data));
+	Data.RunMode = EEnvQueryRunMode::AllMatching;
+	TestTrue(TEXT("Chase has bounded path validation"), IsEnvQueryConfigurationValid(Data));
+	Data.bValidateReachability = true;
+	TestFalse(TEXT("Two validation modes cannot be combined"), IsEnvQueryConfigurationValid(Data));
+	Data.bValidateReachability = false;
+	Data.bRequireVisibleTarget = false;
+	TestFalse(TEXT("Chase cannot use hidden target data"), IsEnvQueryConfigurationValid(Data));
+	Data.bRequireVisibleTarget = true;
+	Option->Generator = NewObject<UEnemyEnvQueryGenerator_Approach>(Option);
+	TestFalse(TEXT("Gun approach cannot be used for self destruct chase"), IsEnvQueryConfigurationValid(Data));
 	return true;
 }
 

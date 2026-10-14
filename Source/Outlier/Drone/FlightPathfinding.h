@@ -74,6 +74,26 @@ struct OUTLIER_API FFlightPathResult
 // 상태/Tick/이동 입력을 소유하지 않는 공용 함수다. 호출자는 결과를 보관하고 이동을 실행한다.
 namespace FlightPathfinding
 {
+#if WITH_DEV_AUTOMATION_TESTS
+	// 테스트 월드의 Task 예산만 교체한다. 에셋과 다른 PIE 월드에는 적용하지 않는다.
+	struct FTestCost
+	{
+		int64 Paths = 0;
+		int64 Failures = 0;
+		int64 Budgets = 0;
+		int64 Checks = 0;
+		int64 Nodes = 0;
+		int64 QueriesStarted = 0;
+		int64 QueriesFinished = 0;
+		double TotalMs = 0.0;
+		double PeakMs = 0.0;
+	};
+	OUTLIER_API void BeginTestBudget(UWorld& World, int32 CollisionChecks);
+	OUTLIER_API void EndTestBudget();
+	OUTLIER_API int32 GetTestBudget(UWorld& World, int32 AssetBudget);
+	OUTLIER_API FTestCost GetTestCost();
+	OUTLIER_API void RecordTestQuery(UWorld* World, bool bFinished);
+#endif
 	OUTLIER_API bool IsInsideAwayHalfSpace(const FFlightPathRequest& Request, const FVector& Position);
 	// 회전된 박스가 아니라 캡슐 중심축과 구형 끝부분으로 월드 경계 범위를 계산한다.
 	OUTLIER_API FVector GetCapsuleWorldExtent(float Radius, float HalfHeight, const FQuat& Rotation);

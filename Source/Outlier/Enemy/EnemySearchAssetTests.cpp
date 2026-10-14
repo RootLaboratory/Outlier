@@ -129,12 +129,20 @@ void CheckDestinationBinding(FAutomationTestBase& Test, const UStateTree& Tree,
 }
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemySearchAssetsTest, "Outlier.Enemy.Search.Assets",
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemySearchAssetsTest, "Outlier.Enemy.Search.Assets",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FEnemySearchAssetsTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Type : {TEXT("Gun"), TEXT("Melee")})
+	{
+		Names.Add(Type);
+		Commands.Add(Type);
+	}
+}
 
 bool FEnemySearchAssetsTest::RunTest(const FString& Parameters)
 {
-	(void)Parameters;
 	for (EEnemySearchQueryMode Mode : {EEnemySearchQueryMode::Anchor, EEnemySearchQueryMode::Points})
 	{
 		const FName Name = Mode == EEnemySearchQueryMode::Anchor ? TEXT("EQS_Drone_SearchAnchor") : TEXT("EQS_SearchPoints");
@@ -154,7 +162,9 @@ bool FEnemySearchAssetsTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("Clearance matches search Fly"), Flight->Clearance, 5.0f);
 	}
 
-	const UStateTree* Tree = Cast<UStateTree>(LoadSearchAsset(*this, TEXT("ST_VECDroneBattle_Gun"), UStateTree::StaticClass()));
+	// 두 유형 모두 저장된 실제 에셋의 수색 Task / 바인딩 / 전이를 같은 기준으로 확인한다.
+	const FName TreeName = Parameters == TEXT("Melee") ? TEXT("ST_VECDroneBattle_Melee") : TEXT("ST_VECDroneBattle_Gun");
+	const UStateTree* Tree = Cast<UStateTree>(LoadSearchAsset(*this, TreeName, UStateTree::StaticClass()));
 	if (!TestNotNull(TEXT("Battle StateTree loads"), Tree) || !TestTrue(TEXT("StateTree is compiled and ready"), Tree->IsReadyToRun())) return false;
 	const FCompactStateTreeState* Search = FindSearchState(*this, *Tree, TEXT("Search"));
 	const FEnemySearchSessionTask* Session = FindSearchTask<FEnemySearchSessionTask>(*this, *Tree, Search);

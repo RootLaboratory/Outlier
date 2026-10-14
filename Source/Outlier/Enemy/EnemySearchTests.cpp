@@ -166,6 +166,60 @@ bool FEnemySearchReservationTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemySearchSharedTargetStabilityTest,
+	"Outlier.Enemy.Search.SharedTargetStability", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemySearchSharedTargetStabilityTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FEnemySearchTestWorld Fixture;
+	if (!TestNotNull(TEXT("Authority world exists"), Fixture.World)) return false;
+	UEnemyRoomSubsystem* Rooms = Fixture.World->GetSubsystem<UEnemyRoomSubsystem>();
+	const FGameplayTag Room = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.1")));
+	AEnemyBase* FirstObserver = Fixture.SpawnEnemy(Room);
+	AEnemyBase* SecondObserver = Fixture.SpawnEnemy(Room, FVector(2000, 0, 0));
+	AActor* FirstTarget = Fixture.World->SpawnActor<AActor>();
+	AActor* SecondTarget = Fixture.World->SpawnActor<AActor>();
+	if (!Rooms || !FirstObserver || !SecondObserver || !FirstTarget || !SecondTarget) return false;
+	const FVector FirstLocation(300, 200, 350);
+	const FVector SecondLocation(1800, 1600, 350);
+	Rooms->ReportRoomTargetContact(FirstObserver, FirstTarget, FirstLocation);
+	const uint64 InitialRevision = Rooms->GetSharedRevisionForTesting(Room);
+	TestTrue(TEXT("First contact publishes a revision"), InitialRevision > 0);
+
+	// 같은 우선순위의 서로 다른 타깃 보고가 공유 위치를 번갈아 바꾸지 않아야 한다.
+	for (int32 Report = 0; Report < 5; ++Report)
+	{
+		Rooms->ReportRoomTargetContact(SecondObserver, SecondTarget, SecondLocation);
+		Rooms->ReportRoomTargetContact(FirstObserver, FirstTarget, FirstLocation);
+	}
+	TestEqual(TEXT("Alternating targets preserve the observed shared target"),
+		Rooms->GetSharedRevisionForTesting(Room), InitialRevision);
+	Rooms->ReportRoomTargetContact(FirstObserver, FirstTarget, FirstLocation + FVector(100, 0, 0));
+	const uint64 MovedRevision = Rooms->GetSharedRevisionForTesting(Room);
+	TestTrue(TEXT("Same target movement still publishes new information"), MovedRevision > InitialRevision);
+
+	// 공유 타깃의 관측이 끊기면 다른 타깃으로 전환할 수 있으며, 남은 관측자는 핑을 차단한다.
+	Rooms->RemoveRoomTargetObserver(FirstObserver);
+	Rooms->TriggerForcedShareForTesting(Room);
+	TestFalse(TEXT("Other target observer still prevents the all-unseen ping"), Rooms->IsForcedShareConsumedForTesting(Room));
+	Rooms->ReportRoomTargetContact(SecondObserver, SecondTarget, SecondLocation);
+	const uint64 SwitchedRevision = Rooms->GetSharedRevisionForTesting(Room);
+	TestTrue(TEXT("Unobserved target can be replaced"), SwitchedRevision > MovedRevision);
+	Rooms->ReportRoomTargetContact(FirstObserver, FirstTarget, FirstLocation);
+	TestEqual(TEXT("Rediscovery cannot steal an equally ranked observed target"),
+		Rooms->GetSharedRevisionForTesting(Room), SwitchedRevision);
+	AEnemyBase* HigherPriorityTarget = Fixture.SpawnEnemy(Room, FVector(6000, 0, 0));
+	if (!TestNotNull(TEXT("Higher-priority target exists"), HigherPriorityTarget)) return false;
+	Rooms->ReportRoomTargetContact(FirstObserver, HigherPriorityTarget, HigherPriorityTarget->GetActorLocation());
+	const uint64 PriorityRevision = Rooms->GetSharedRevisionForTesting(Room);
+	TestTrue(TEXT("Higher priority replaces an observed target"), PriorityRevision > SwitchedRevision);
+	Rooms->ReportRoomTargetContact(SecondObserver, SecondTarget, SecondLocation);
+	TestEqual(TEXT("Lower-priority report cannot switch the target back"),
+		Rooms->GetSharedRevisionForTesting(Room), PriorityRevision);
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemySearchForcedSharingTest,
 	"Outlier.Enemy.Search.ForcedSharing", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
@@ -317,7 +371,8 @@ void FEnemySearchScenarioTest::GetTests(TArray<FString>& Names, TArray<FString>&
 {
 	for (const TCHAR* Scenario : {TEXT("Points0"), TEXT("Points1"), TEXT("Points2"),
 		TEXT("FrozenCenter"), TEXT("FreshHint"), TEXT("DuplicateHint"),
-		TEXT("LocalGuardRestart"), TEXT("MovementFailure"), TEXT("Rediscovery"), TEXT("Interrupted"), TEXT("Possessed")})
+		TEXT("LocalGuardRestart"), TEXT("SameFrameRestart"), TEXT("ConsecutiveHints"),
+		TEXT("MovementFailure"), TEXT("Rediscovery"), TEXT("Interrupted"), TEXT("Possessed")})
 	{
 		Names.Add(Scenario);
 		Commands.Add(Scenario);
@@ -386,7 +441,8 @@ bool FEnemySearchScenarioTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("Remembered position alone cannot request restart"), Session.bShouldRestart);
 	}
 	else if (Parameters == TEXT("FreshHint") || Parameters == TEXT("DuplicateHint")
-		|| Parameters == TEXT("LocalGuardRestart"))
+		|| Parameters == TEXT("LocalGuardRestart") || Parameters == TEXT("SameFrameRestart")
+		|| Parameters == TEXT("ConsecutiveHints"))
 	{
 		if (Parameters == TEXT("LocalGuardRestart"))
 		{
@@ -400,11 +456,30 @@ bool FEnemySearchScenarioTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("Restart child replaces the episode"), EnemySearchTesting::Progress(Progress), EStateTreeRunStatus::Succeeded);
 		TestTrue(TEXT("Restart produces a new serial"), Enemy->GetSearchEpisode().Serial > Serial);
 		TestEqual(TEXT("Restart pins the new shared center"), Enemy->GetSearchEpisode().Center, Hint);
-		EnemySearchTesting::TickSession(Session);
+		// 부모 Tick 없이 전이를 재평가한다. 이전에는 true가 남아 중복 RestartHint 실패로 이어졌다.
+		TestTrue(TEXT("Parent tick output still contains the previous restart request"), Session.bShouldRestart);
+		const FEnemySearchSessionTask SessionTask;
+		TestTrue(TEXT("Session refresh participates in transition evaluation"), SessionTask.bShouldAffectTransitions);
+		EnemySearchTesting::RefreshSessionTransitions(Session);
 		TestFalse(TEXT("Restart request clears after consuming the revision into a new episode"), Session.bShouldRestart);
+		TestFalse(TEXT("Restart does not enter LocalGuard"), Session.bLocalGuard);
+		const uint64 RestartSerial = Enemy->GetSearchEpisode().Serial;
+		EnemySearchTesting::RefreshSessionTransitions(Session);
+		TestFalse(TEXT("Repeated same-frame evaluation cannot request another restart"), Session.bShouldRestart);
+		TestEqual(TEXT("Transition refresh preserves the new episode"), Enemy->GetSearchEpisode().Serial, RestartSerial);
+		if (Parameters == TEXT("ConsecutiveHints"))
+		{
+			const FVector NextHint(500, 400, 350);
+			Enemy->ApplySharedTargetContact(NextHint, true, 12);
+			EnemySearchTesting::RefreshSessionTransitions(Session);
+			TestTrue(TEXT("A genuinely newer hint can restart in the same frame"), Session.bShouldRestart);
+			TestEqual(TEXT("Next hint restarts successfully"), EnemySearchTesting::Progress(Progress), EStateTreeRunStatus::Succeeded);
+			EnemySearchTesting::RefreshSessionTransitions(Session);
+			TestFalse(TEXT("Next restart request is cleared before transitions"), Session.bShouldRestart);
+			TestEqual(TEXT("Next hint becomes the new center"), Session.SearchCenter, NextHint);
+		}
 		if (Parameters == TEXT("DuplicateHint"))
 		{
-			const uint64 RestartSerial = Enemy->GetSearchEpisode().Serial;
 			Enemy->ApplySharedTargetContact(Hint, true, 11);
 			EnemySearchTesting::TickSession(Session);
 			TestFalse(TEXT("Duplicate revision does not request restart"), Session.bShouldRestart);

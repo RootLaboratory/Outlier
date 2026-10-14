@@ -7,6 +7,65 @@
 #include "StateTreeTaskBase.h"
 #include "EnemyStateTreeSelfDestructTasks.generated.h"
 
+class UCapsuleComponent;
+class AEnemyAIController;
+
+UENUM(BlueprintType)
+enum class EEnemyChargeEligibility : uint8
+{
+	Ready, Invalid, NotInCombat, NoVisibleTarget, OutOfRange, BlockedPath, AlreadyCommitted
+};
+
+namespace EnemyCharge
+{
+	OUTLIER_API bool IsWithinChargeRange(const FVector& Start, const FVector& Target, float Distance);
+	OUTLIER_API bool IsStraightPathClear(UWorld& World, const UCapsuleComponent& Capsule, const AActor& Target, float Clearance);
+	OUTLIER_API EEnemyChargeEligibility Assess(const ASelfDestructDrone* Drone, const AEnemyAIController* Controller,
+		const AActor* Target, float Distance, float Clearance);
+}
+
+USTRUCT()
+struct FEnemySelfDestructAssessmentTaskInstanceData
+{
+	GENERATED_BODY()
+	UPROPERTY(EditAnywhere, Category = Context)
+	TObjectPtr<AEnemyBase> Drone = nullptr;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.01", Units = "s"))
+	float UpdateInterval = 0.2f;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "1.0", ClampMax = "500.0", Units = "cm"))
+	float ChargeEntryDistance = 500.0f;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0", Units = "cm"))
+	float ChargeClearance = 5.0f;
+	UPROPERTY(EditAnywhere, Category = Output)
+	TObjectPtr<AActor> TargetActor = nullptr;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bHasVisibleTarget = false;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bCanCharge = false;
+	UPROPERTY(EditAnywhere, Category = Output)
+	float HorizontalDistance = 0.0f;
+	UPROPERTY(EditAnywhere, Category = Output)
+	float SpatialDistance = 0.0f;
+	UPROPERTY(EditAnywhere, Category = Output)
+	EEnemyChargeEligibility Eligibility = EEnemyChargeEligibility::Invalid;
+	TWeakObjectPtr<ASelfDestructDrone> CachedDrone;
+	TWeakObjectPtr<AEnemyAIController> CachedController;
+	float Elapsed = 0.0f;
+};
+
+// DirectPursuit 부모에 둔다. 자식 이동/재시도 중에도 돌진 가능 여부를 갱신하되 완료 판정에는 참여하지 않는다.
+USTRUCT(meta = (DisplayName = "Enemy Self Destruct Assessment", Category = "Enemy|Self Destruct"))
+struct OUTLIER_API FEnemySelfDestructAssessmentTask : public FStateTreeTaskCommonBase
+{
+	GENERATED_BODY()
+	using FInstanceDataType = FEnemySelfDestructAssessmentTaskInstanceData;
+	FEnemySelfDestructAssessmentTask();
+	virtual const UStruct* GetInstanceDataType() const override { return FInstanceDataType::StaticStruct(); }
+	virtual EStateTreeRunStatus EnterState(FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const override;
+	virtual EStateTreeRunStatus Tick(FStateTreeExecutionContext& Context, float DeltaTime) const override;
+	virtual void ExitState(FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const override;
+};
+
 USTRUCT()
 struct FEnemyChargeLastDirectionTaskInstanceData
 {
@@ -17,6 +76,12 @@ struct FEnemyChargeLastDirectionTaskInstanceData
 
 	UPROPERTY(EditAnywhere, Category = Input)
 	TObjectPtr<AActor> TargetActor = nullptr;
+
+	// Assessment와 동일한 값을 사용한다. 전이와 실제 Commit 사이의 상태 변화를 다시 검사한다.
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "1.0", ClampMax = "500.0", Units = "cm"))
+	float ChargeEntryDistance = 500.0f;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0", Units = "cm"))
+	float ChargeClearance = 5.0f;
 
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0"))
 	float TelegraphDuration = 2.0f;

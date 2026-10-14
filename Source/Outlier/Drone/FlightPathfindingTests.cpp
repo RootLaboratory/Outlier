@@ -67,6 +67,29 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlightCapsuleExtentTest,
 	"Outlier.Flight.Pathfinding.CapsuleExtent",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlightNarrowGridPhaseTest,
+	"Outlier.Flight.Pathfinding.NarrowGridPhase",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlightNarrowGridPhaseTest::RunTest(const FString& Parameters)
+{
+	// 캡슐 크기까지 확장한 장애물과 축소한 통로를 모델링한다. 검사 예산 부족과 격자 해상도를 구분한다.
+	FFlightPathRequest Request = MakeRequest();
+	Request.Start = FVector(800, 0, 0);
+	Request.Goal = FVector(500, 0, 0);
+	Request.SearchBounds = FBox(FVector(450, -260, -1), FVector(900, 260, 1));
+	const FBox Wall(FVector(610, -230, -1000), FVector(690, 230, 1000));
+	TestEqual(TEXT("100cm grid misses the physically open 30cm strip"), FindAroundBox(Request, Wall).Status,
+		EFlightPathStatus::NoPathWithinBounds);
+	Request.Start.Y = 50;
+	TestEqual(TEXT("Shifted start exposes the same corridor without increasing budget"), FindAroundBox(Request, Wall).Status,
+		EFlightPathStatus::Success);
+	Request.Start.Y = 0;
+	Request.CellSize = 50;
+	TestEqual(TEXT("Finer grid represents the narrow corridor"), FindAroundBox(Request, Wall).Status, EFlightPathStatus::Success);
+	return true;
+}
+
 bool FFlightCapsuleExtentTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;

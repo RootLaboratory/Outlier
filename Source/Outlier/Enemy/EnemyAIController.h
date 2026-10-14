@@ -39,6 +39,8 @@ public:
 
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FEnemyHearingCombatJoinTest;
+	friend class FEnemyChaseIntegrationTest;
+	friend class FEnemySearchWorldLifecycleTest;
 #endif
 
 protected:

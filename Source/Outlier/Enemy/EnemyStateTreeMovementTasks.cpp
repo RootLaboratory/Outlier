@@ -243,6 +243,11 @@ void PauseFlyMovement(AEnemyBase& Enemy)
 	}
 }
 
+bool ShouldResetWaypointVelocity(const FVector& Velocity, const FVector& ToNextPoint)
+{
+	return FVector::DotProduct(Velocity.GetSafeNormal(), ToNextPoint.GetSafeNormal()) < 0.99;
+}
+
 FFlightPathRequest MakeFlightPathRequest(
 	const FEnemyFlyToLocationTaskInstanceData& Data, const FVector& Goal)
 {
@@ -588,6 +593,10 @@ EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, fl
 		// 경유점 통과 시에만 출력한다. 매 프레임 로그가 이동 성능을 가리지 않게 한다.
 		if (CVarEnemyFlightDebug.GetValueOnGameThread() >= 2) LogFlight(TEXT("WaypointReached"), Data);
 		++Data.WaypointIndex;
+		// 방향을 바꾸는 경유점에서는 이전 구간의 관성이 좁은 통로 밖으로 밀지 않게 한다.
+		// 같은 방향의 직선 경유점은 속도를 유지한다.
+		if (ShouldResetWaypointVelocity(Data.Enemy->GetVelocity(), NextPoint - Position))
+			PauseFlyMovement(*Data.Enemy);
 	}
 
 	const float Distance = FVector::Distance(Position, NextPoint);
@@ -606,9 +615,9 @@ EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, fl
 			Data.RotationSpeed, 0.0f, DeltaTime);
 	}
 	ApplyFlyTaskSpeedMultiplier(*Data.Enemy, Data.SpeedMultiplier);
-	if (Data.bConstrainRetreatPath)
+	if (!Data.bUsePlannedPath)
 	{
-		// 경유점/최종점의 뒤까지 관성으로 지나치지 않는다. 가감속 커브는 후속 Slice에서 적용한다.
+		// 일반 A* 이동도 한 프레임에 경유점을 지나치지 않는다. 모서리에서의 불필요한 재탐색을 막는다.
 		if (UCharacterMovementComponent* Movement = Data.Enemy->GetCharacterMovement())
 		{
 			Movement->MaxFlySpeed = FMath::Min(Movement->MaxFlySpeed, Distance / FMath::Max(DeltaTime, UE_SMALL_NUMBER));
@@ -634,6 +643,18 @@ EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, fl
 #if WITH_DEV_AUTOMATION_TESTS
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyFlightProgressTest,
 	"Outlier.Enemy.Flight.Progress", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyFlightWaypointTurnTest,
+	"Outlier.Enemy.Flight.WaypointTurn", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyFlightWaypointTurnTest::RunTest(const FString& Parameters)
+{
+	TestFalse(TEXT("Straight waypoint preserves momentum"), ShouldResetWaypointVelocity(FVector(450, 0, 0), FVector(100, 0, 0)));
+	TestFalse(TEXT("Small steering change preserves momentum"), ShouldResetWaypointVelocity(FVector(450, 0, 0), FVector(100, 1, 0)));
+	TestTrue(TEXT("Corner clears sideways momentum"), ShouldResetWaypointVelocity(FVector(450, 0, 0), FVector(0, 100, 0)));
+	TestTrue(TEXT("Reversal clears old momentum"), ShouldResetWaypointVelocity(FVector(450, 0, 0), FVector(-100, 0, 0)));
+	return true;
+}
 
 bool FEnemyFlightProgressTest::RunTest(const FString& Parameters)
 {
@@ -771,6 +792,9 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::EnterState(
 	AEnemyBase* Enemy = ResolveEnemy(Context, InstanceData.Enemy);
 	InstanceData.Enemy = Enemy;
 	AAIController* AIController = ResolveAIController(Enemy);
+#if WITH_DEV_AUTOMATION_TESTS
+	if (Enemy) InstanceData.MaxCollisionChecks = FlightPathfinding::GetTestBudget(*Enemy->GetWorld(), InstanceData.MaxCollisionChecks);
+#endif
 	InstanceData.CachedController = AIController;
 	InstanceData.MoveResult = EEnemyFlightMoveResult::Invalid;
 	InstanceData.MoveElapsed = 0.0f;

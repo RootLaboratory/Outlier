@@ -353,8 +353,9 @@ void UOutlierAudioSubsystem::IngestBank(UOutlierAudioBank* Bank)
 		if (!Definition)
 		{
 			UE_LOG(LogOutlier, Error,
-				TEXT("[Audio] Bank '%s' has a Definition entry that failed to resolve."),
-				*GetNameSafe(Bank));
+				TEXT("[Audio] Bank '%s' has a Definition entry that failed to resolve. Path='%s' Null=%d Pending=%d"),
+				*GetNameSafe(Bank), *DefinitionSoftPtr.ToSoftObjectPath().ToString(),
+				DefinitionSoftPtr.IsNull(), DefinitionSoftPtr.IsPending());
 			continue;
 		}
 

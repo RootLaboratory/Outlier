@@ -107,42 +107,7 @@ namespace
 			*GetNameSafe(VisibilityHit.GetComponent()));
 	}
 
-	enum class EEnemyTargetPriority : uint8
-	{
-		HackedTurret,
-		PossessedDrone,
-		Shooter,
-		Partner,
-		EnemyUnit,
-		Invalid
-	};
-
-	EEnemyTargetPriority GetEnemyTargetPriority(const AActor* TargetActor)
-	{
-		if (const AEnemyBase* Enemy = Cast<AEnemyBase>(TargetActor))
-		{
-			if (Enemy->GetGenericTeamId() == FGenericTeamId(OutlierTeamIds::Player))
-			{
-				return Enemy->GetRuntimeStat().Type == EEnemyType::Turret
-				? EEnemyTargetPriority::HackedTurret
-				: EEnemyTargetPriority::PossessedDrone;
-			}
-
-			return EEnemyTargetPriority::EnemyUnit;
-		}
-
-		if (TargetActor->IsA<AShooterCharacter>())
-		{
-			return EEnemyTargetPriority::Shooter;
-		}
-
-		if (TargetActor->IsA<APartnerCharacter>())
-		{
-			return EEnemyTargetPriority::Partner;
-		}
-
-		return EEnemyTargetPriority::Invalid;
-	}
+	using EEnemyTargetPriority = OutlierEnemyTargetRules::ETargetPriority;
 }
 
 AEnemyAIController::AEnemyAIController()
@@ -341,7 +306,7 @@ AActor* AEnemyAIController::SelectPreferredVisibleTarget(
 			continue;
 		}
 
-		const EEnemyTargetPriority TargetPriority = GetEnemyTargetPriority(Target);
+		const EEnemyTargetPriority TargetPriority = OutlierEnemyTargetRules::GetPriority(Target);
 		if (TargetPriority == EEnemyTargetPriority::Invalid)
 		{
 			continue;

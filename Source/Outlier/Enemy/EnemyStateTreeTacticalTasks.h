@@ -53,11 +53,25 @@ struct FEnemyRunEnvQueryTaskInstanceData
 	// 후퇴 전용 Generator와 함께 사용한다. 접근/선회 검증과 동시에 켜지 않는다.
 	UPROPERTY(EditAnywhere, Category = Parameter)
 	bool bValidateRetreatPath = false;
+	// 자폭 추격 전용 후보를 초기 방 안의 A* 경로로 검증한다. 다른 검증 모드와 동시에 켜지 않는다.
+	UPROPERTY(EditAnywhere, Category = Parameter)
+	bool bValidateChasePath = false;
+	FVector CapturedChaseStart = FVector::ZeroVector;
+	int32 CapturedChaseLane = 0;
 	// None은 기존 전투 질의다. Anchor/Points는 Search Session 안에서만 실행한다.
 	UPROPERTY(EditAnywhere, Category = Parameter)
 	EEnemySearchQueryMode SearchMode = EEnemySearchQueryMode::None;
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "1.0", Units = "cm"))
 	float SearchPointSeparation = 200.0f;
+	// 한 후보가 예산을 소진하면 간격을 두고 다음 후보부터 검증한다. 같은 후보를 무한 재검사하지 않는다.
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0", ClampMax = "8"))
+	int32 MaxSearchSelectionRetries = 2;
+	TSharedPtr<FEnvQueryResult> DeferredSearchResult;
+	int32 NextSearchCandidate = 0;
+	int32 SearchSelectionRetries = 0;
+	double NextSearchSelectionTime = 0.0;
+	bool bSearchSelectionPending = false;
+	bool bSearchPathBudgetExceeded = false;
 	UPROPERTY(EditAnywhere, Category = Output)
 	TArray<FVector> SelectedSearchPoints;
 	UPROPERTY(EditAnywhere, Category = Output)
@@ -186,6 +200,7 @@ struct OUTLIER_API FEnemySearchSessionTask : public FStateTreeTaskCommonBase
 	using FInstanceDataType = FEnemySearchSessionTaskInstanceData;
 	FEnemySearchSessionTask();
 	virtual const UStruct* GetInstanceDataType() const override { return FInstanceDataType::StaticStruct(); }
+	virtual void TriggerTransitions(FStateTreeExecutionContext& Context) const override;
 	virtual EStateTreeRunStatus EnterState(FStateTreeExecutionContext& Context,
 		const FStateTreeTransitionResult& Transition) const override;
 	virtual EStateTreeRunStatus Tick(FStateTreeExecutionContext& Context, float DeltaTime) const override;
@@ -238,8 +253,10 @@ namespace EnemySearchTesting
 	OUTLIER_API void CaptureQuery(FEnemyRunEnvQueryTaskInstanceData& Data);
 	OUTLIER_API void CompleteQuery(FEnemyRunEnvQueryTaskInstanceData& Data, const FEnvQueryResult& Result);
 	OUTLIER_API bool SelectDestinations(FEnemyRunEnvQueryTaskInstanceData& Data, const FEnvQueryResult& Result);
+	OUTLIER_API EStateTreeRunStatus ResumeSelection(FEnemyRunEnvQueryTaskInstanceData& Data);
 	OUTLIER_API EStateTreeRunStatus EnterSession(FEnemySearchSessionTaskInstanceData& Data);
 	OUTLIER_API EStateTreeRunStatus TickSession(FEnemySearchSessionTaskInstanceData& Data);
+	OUTLIER_API void RefreshSessionTransitions(FEnemySearchSessionTaskInstanceData& Data);
 	OUTLIER_API void ExitSession(FEnemySearchSessionTaskInstanceData& Data);
 	OUTLIER_API EStateTreeRunStatus Progress(FEnemySearchProgressTaskInstanceData& Data);
 }

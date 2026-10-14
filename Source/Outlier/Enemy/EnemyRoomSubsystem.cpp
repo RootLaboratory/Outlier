@@ -20,9 +20,19 @@ void LogSearchSharing(const TCHAR* Phase, FGameplayTag RoomTag, const FEnemyRoom
 	static const IConsoleVariable* Debug = IConsoleManager::Get().FindConsoleVariable(TEXT("outlier.Enemy.EQSDebug"));
 	if (!Debug || Debug->GetInt() == 0) return;
 	UE_LOG(LogEnemySearchSharing, Log,
-		TEXT("[EnemySearchSharing] %s Room=%s Revision=%llu Observers=%d PingConsumed=%d Location=%s"),
+		TEXT("[EnemySearchSharing] %s Room=%s Revision=%llu Observers=%d PingConsumed=%d Location=%s Target=%s"),
 		Phase, *RoomTag.ToString(), Contact.SharedRevision, Contact.DirectObservers.Num(),
-		Contact.bForcedShareConsumed, *Contact.LastReportedLocation.ToCompactString());
+		Contact.bForcedShareConsumed, *Contact.LastReportedLocation.ToCompactString(), *GetNameSafe(Contact.TargetActor.Get()));
+}
+
+bool IsSharedTargetObserved(const FEnemyRoomTargetContactState& Contact)
+{
+	if (OutlierEnemyTargetRules::IsUnavailable(Contact.TargetActor.Get())) return false;
+	for (const auto& Observer : Contact.DirectObservers)
+	{
+		if (Observer.Value == Contact.TargetActor) return true;
+	}
+	return false;
 }
 }
 
@@ -271,13 +281,22 @@ void UEnemyRoomSubsystem::ReportRoomTargetContact(
 	FEnemyRoomTargetContactState& ContactState = TargetContactStates.FindOrAdd(RoomTag);
 	CompactTargetContactState(ContactState);
 	// 다른 드론이 계속 보고 있어도, 시야를 잃었던 개체의 실제 재목격은 새 정보다.
-	const bool bRediscovered = !ContactState.DirectObservers.Contains(TWeakObjectPtr<AEnemyBase>(Observer));
+	const TWeakObjectPtr<AActor>* PreviousTarget = ContactState.DirectObservers.Find(Observer);
+	const bool bRediscovered = !PreviousTarget || PreviousTarget->Get() != TargetActor;
 	World->GetTimerManager().ClearTimer(ContactState.ForcedShareTimerHandle);
 	// 직접 재발견은 다음 시야 상실 회차의 단발 핑을 다시 허용한다.
 	ContactState.bForcedShareConsumed = false;
-	ContactState.DirectObservers.Add(TWeakObjectPtr<AEnemyBase>(Observer));
+	ContactState.DirectObservers.Add(TWeakObjectPtr<AEnemyBase>(Observer), TWeakObjectPtr<AActor>(TargetActor));
 
 	const bool bTargetChanged = ContactState.TargetActor.Get() != TargetActor;
+	// 관측 등록과 핑 초기화는 모든 타깃에 적용하되, 공유 타깃 교체는 우선순위로 제한한다.
+	// 같은 우선순위에서는 현재 타깃의 관측이 끊길 때까지 유지해 보고 순서에 따른 왕복을 막는다.
+	if (bTargetChanged && IsSharedTargetObserved(ContactState)
+		&& OutlierEnemyTargetRules::GetPriority(TargetActor)
+			>= OutlierEnemyTargetRules::GetPriority(ContactState.TargetActor.Get()))
+	{
+		return;
+	}
 	const bool bLocationChanged = FVector::DistSquared(
 		ContactState.LastReportedLocation,
 		TargetLocation) > FMath::Square(50.0f);
@@ -519,7 +538,7 @@ void UEnemyRoomSubsystem::CompactTargetContactState(FEnemyRoomTargetContactState
 {
 	for (auto ObserverIt = ContactState.DirectObservers.CreateIterator(); ObserverIt; ++ObserverIt)
 	{
-		if (!(*ObserverIt).IsValid())
+		if (!ObserverIt.Key().IsValid() || !ObserverIt.Value().IsValid())
 		{
 			ObserverIt.RemoveCurrent();
 		}
