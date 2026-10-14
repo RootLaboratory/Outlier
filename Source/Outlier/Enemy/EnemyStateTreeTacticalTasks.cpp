@@ -25,6 +25,248 @@
 
 namespace
 {
+TAutoConsoleVariable<int32> CVarEnemyPatrolDebug(
+	TEXT("outlier.Enemy.PatrolDebug"), 0, TEXT("Log patrol selection, rejection and reservation lifetime."));
+DEFINE_LOG_CATEGORY_STATIC(LogEnemyPatrol, Log, All);
+
+bool IsPatrolLifetimeCurrent(const FEnemyPatrolTaskInstanceData& Data)
+{
+	const AEnemyBase* Enemy = Data.Enemy;
+	return IsValid(Enemy) && Enemy->HasAuthority() && !Enemy->IsDead()
+		&& Enemy->CanUseEnemyPerception() && !Enemy->IsAIControlSuppressed()
+		&& Enemy->GetCombatState() == EEnemyCombatState::NonCombat
+		&& Enemy->GetNonCombatBehavior() == EEnemyNonCombatBehavior::PatrolRoute
+		&& Data.Controller.IsValid() && Enemy->GetController() == Data.Controller.Get()
+		&& Enemy->GetPoolGameplayGeneration() == Data.Generation
+		&& Enemy->GetPoolLeaseSerial() == Data.Lease;
+}
+
+bool IsPatrolConfigurationValid(const FEnemyPatrolTaskInstanceData& Data)
+{
+	return FMath::IsFinite(Data.AcceptanceRadius) && Data.AcceptanceRadius > 0.0f
+		&& FMath::IsFinite(Data.DestinationSeparation) && Data.DestinationSeparation > 0.0f
+		&& FMath::IsFinite(Data.RetryInterval) && Data.RetryInterval > 0.0f
+		&& FMath::IsFinite(Data.CellSize) && Data.CellSize > 0.0f
+		&& FMath::IsFinite(Data.Clearance) && Data.Clearance >= 0.0f
+		&& FMath::IsFinite(Data.SearchPadding) && Data.SearchPadding > 0.0f
+		&& FMath::IsFinite(Data.MaxSearchMilliseconds) && Data.MaxSearchMilliseconds > 0.0f
+		&& Data.MaxSearchNodes > 0 && Data.MaxCollisionChecks > 0;
+}
+
+void ReleasePatrol(FEnemyPatrolTaskInstanceData& Data)
+{
+	if (IsValid(Data.RoomSubsystem))
+	{
+		Data.RoomSubsystem->ReleasePatrolDestination(Data.Enemy, Data.Generation, Data.Lease, Data.Controller.Get());
+		if (CVarEnemyPatrolDebug.GetValueOnGameThread())
+		{
+			UE_LOG(LogEnemyPatrol, Log, TEXT("[EnemyPatrol] ReleaseRequested Enemy=%s Generation=%d Lease=%d Controller=%s"),
+				*GetNameSafe(Data.Enemy), Data.Generation, Data.Lease, *GetNameSafe(Data.Controller.Get()));
+		}
+	}
+}
+
+void LogPatrolCandidate(const FEnemyPatrolTaskInstanceData& Data, int32 Index, const FFlightPathResult& Result)
+{
+	if (!CVarEnemyPatrolDebug.GetValueOnGameThread()) return;
+	UE_LOG(LogEnemyPatrol, Log, TEXT("[EnemyPatrol] Enemy=%s Point=%d Status=%s Checks=%d Nodes=%d Ms=%.3f Waypoints=%d"),
+		*GetNameSafe(Data.Enemy), Index, *UEnum::GetValueAsString(Result.Status),
+		Result.CollisionChecks, Result.SearchNodes, Result.ElapsedMilliseconds, Result.Waypoints.Num());
+}
+
+EStateTreeRunStatus SelectPatrolDestination(FEnemyPatrolTaskInstanceData& Data)
+{
+	if (!IsPatrolLifetimeCurrent(Data) || !IsValid(Data.RoomSubsystem) || !IsValid(Data.CombatSubsystem))
+	{
+		ReleasePatrol(Data);
+		return EStateTreeRunStatus::Failed;
+	}
+	AEnemyBase& Enemy = *Data.Enemy;
+	const double Now = Enemy.GetWorld()->GetTimeSeconds();
+	// Root 재진입도 Pawn의 탐색 간격을 공유한다. 기다리는 프레임에는 경로 탐색을 하지 않는다.
+	if (Now < Enemy.GetNextFlightPathRequestTime()) return EStateTreeRunStatus::Running;
+	Enemy.SetNextFlightPathRequestTime(Now + Data.RetryInterval);
+	ReleasePatrol(Data);
+	Data.bHasDestination = false;
+	Data.SelectedWaypoints.Reset();
+	Data.PathStatus = EFlightPathStatus::Unavailable;
+	ARoomVolume* Room = Data.CombatSubsystem->GetRegisteredRoomVolume(Enemy.GetDefaultRoomTag());
+	UCapsuleComponent* Capsule = Enemy.GetCapsuleComponent();
+	if (!IsValid(Room) || !IsValid(Capsule)) return EStateTreeRunStatus::Failed;
+
+	const FVector Points[2] = { Enemy.GetPatrolPointA(), Enemy.GetPatrolPointB() };
+	int32 Order[2] = { Data.NextPointIndex, 1 - Data.NextPointIndex };
+	const bool bPreferredUsed = Data.RoomSubsystem->IsPatrolDestinationUsed(&Enemy, Points[Order[0]], Data.DestinationSeparation);
+	const bool bOtherUsed = Data.RoomSubsystem->IsPatrolDestinationUsed(&Enemy, Points[Order[1]], Data.DestinationSeparation);
+	if (bPreferredUsed && !bOtherUsed) Swap(Order[0], Order[1]);
+
+	const FVector Offset = Capsule->GetComponentLocation() - Enemy.GetActorLocation();
+	const double Started = FPlatformTime::Seconds();
+	int32 RemainingNodes = Data.MaxSearchNodes;
+	int32 RemainingChecks = Data.MaxCollisionChecks;
+	bool bBudgetExceeded = false;
+	for (int32 Index : Order)
+	{
+		// 스폰 지점 A 또는 겹치는 A/B를 성공 처리하면 매 프레임 같은 지점으로 재진입한다.
+		if (Points[Index].ContainsNaN()
+			|| FVector::DistSquared(Enemy.GetActorLocation(), Points[Index]) <= FMath::Square(Data.AcceptanceRadius)) continue;
+		const double RemainingMs = Data.MaxSearchMilliseconds - (FPlatformTime::Seconds() - Started) * 1000.0;
+		if (RemainingNodes <= 0 || RemainingChecks <= 0 || RemainingMs <= 0.0)
+		{
+			bBudgetExceeded = true;
+			break;
+		}
+		FFlightPathRequest Request;
+		Request.Start = Capsule->GetComponentLocation();
+		Request.Goal = Points[Index] + Offset;
+		Request.SearchBounds = (FBox(Request.Start, Request.Start) + Request.Goal).ExpandBy(Data.SearchPadding);
+		Request.CellSize = Data.CellSize;
+		Request.Clearance = Data.Clearance;
+		Request.bRequireRoom = true;
+		Request.Room = Room;
+		Request.MaxSearchNodes = RemainingNodes;
+		Request.MaxCollisionChecks = RemainingChecks;
+		Request.MaxSearchMilliseconds = RemainingMs;
+		// 고정 순찰점은 보정하지 않는다. 벽 속의 B를 다른 좌표로 바꾸지 않고 A를 검사한다.
+		const FFlightPathResult Result = FlightPathfinding::FindPath(*Enemy.GetWorld(), *Capsule, Request);
+		RemainingNodes -= Result.SearchNodes;
+		RemainingChecks -= Result.CollisionChecks;
+		Data.PathStatus = Result.Status;
+		bBudgetExceeded |= Result.Status == EFlightPathStatus::BudgetExceeded;
+		LogPatrolCandidate(Data, Index, Result);
+		if (Result.Status != EFlightPathStatus::Success) continue;
+		if (!Data.RoomSubsystem->ReservePatrolDestination(&Enemy, Points[Index])) return EStateTreeRunStatus::Failed;
+		Data.Destination = Points[Index];
+		for (const FVector& Point : Result.Waypoints) Data.SelectedWaypoints.Add(Point - Offset);
+		Data.NextPointIndex = 1 - Index;
+		Data.bHasDestination = true;
+		if (CVarEnemyPatrolDebug.GetValueOnGameThread())
+		{
+			UE_LOG(LogEnemyPatrol, Log, TEXT("[EnemyPatrol] Selected Enemy=%s Point=%d Destination=%s NextPoint=%d"),
+				*GetNameSafe(&Enemy), Index, *Data.Destination.ToCompactString(), Data.NextPointIndex);
+		}
+		return EStateTreeRunStatus::Succeeded;
+	}
+	// 예산 부족은 도달 불가능과 구분한다. 둘 다 Guard에서 기다린 뒤 제한된 간격으로 재검사한다.
+	if (bBudgetExceeded) Data.PathStatus = EFlightPathStatus::BudgetExceeded;
+	if (CVarEnemyPatrolDebug.GetValueOnGameThread())
+	{
+		UE_LOG(LogEnemyPatrol, Log, TEXT("[EnemyPatrol] Enemy=%s Guard Status=%s"),
+			*GetNameSafe(&Enemy), *UEnum::GetValueAsString(Data.PathStatus));
+	}
+	return EStateTreeRunStatus::Failed;
+}
+
+EStateTreeRunStatus EnterPatrol(FEnemyPatrolTaskInstanceData& Data)
+{
+	if (!IsValid(Data.Enemy)) return EStateTreeRunStatus::Failed;
+	AEnemyAIController* Controller = Cast<AEnemyAIController>(Data.Enemy->GetController());
+	const int32 Generation = Data.Enemy->GetPoolGameplayGeneration();
+	const int32 Lease = Data.Enemy->GetPoolLeaseSerial();
+	if (Data.Controller.Get() != Controller || Data.Generation != Generation || Data.Lease != Lease) Data.NextPointIndex = 1;
+	Data.Controller = Controller;
+	Data.Generation = Generation;
+	Data.Lease = Lease;
+	Data.RoomSubsystem = Data.Enemy->GetWorld()->GetSubsystem<UEnemyRoomSubsystem>();
+	Data.CombatSubsystem = Data.Enemy->GetWorld()->GetSubsystem<URoomCombatSubsystem>();
+	Data.bHasDestination = false;
+	Data.SelectedWaypoints.Reset();
+	Data.PathStatus = EFlightPathStatus::Unavailable;
+	if (!IsPatrolLifetimeCurrent(Data)) return EStateTreeRunStatus::Failed;
+	if (Data.Action == EEnemyPatrolAction::Session) return EStateTreeRunStatus::Running;
+	if (Data.Action == EEnemyPatrolAction::Release)
+	{
+		ReleasePatrol(Data);
+		Controller->StopMovement();
+		Data.Enemy->ConsumeMovementInputVector();
+		if (UCharacterMovementComponent* Movement = Data.Enemy->GetCharacterMovement()) Movement->StopMovementImmediately();
+		return EStateTreeRunStatus::Succeeded;
+	}
+	if (!IsPatrolConfigurationValid(Data))
+	{
+		ReleasePatrol(Data);
+		Data.PathStatus = EFlightPathStatus::InvalidRequest;
+		return EStateTreeRunStatus::Failed;
+	}
+	return SelectPatrolDestination(Data);
+}
+
+EStateTreeRunStatus TickPatrol(FEnemyPatrolTaskInstanceData& Data)
+{
+	if (!IsPatrolLifetimeCurrent(Data))
+	{
+		ReleasePatrol(Data);
+		Data.bHasDestination = false;
+		Data.SelectedWaypoints.Reset();
+		Data.PathStatus = EFlightPathStatus::Cancelled;
+		return EStateTreeRunStatus::Failed;
+	}
+	if (Data.Action == EEnemyPatrolAction::Select)
+	{
+		return Data.bHasDestination ? EStateTreeRunStatus::Succeeded : SelectPatrolDestination(Data);
+	}
+	return Data.Action == EEnemyPatrolAction::Release ? EStateTreeRunStatus::Succeeded : EStateTreeRunStatus::Running;
+}
+
+void ExitPatrol(FEnemyPatrolTaskInstanceData& Data)
+{
+	// Select 성공 직후에는 Move가 예약을 사용한다. 부모 Session 종료 때만 최종 해제한다.
+	if (Data.Action == EEnemyPatrolAction::Session) ReleasePatrol(Data);
+}
+}
+
+FEnemyPatrolTask::FEnemyPatrolTask()
+{
+	bShouldCallTick = true;
+	bShouldCopyBoundPropertiesOnTick = false;
+	bShouldCopyBoundPropertiesOnExitState = false;
+	bShouldStateChangeOnReselect = true;
+}
+
+FEnemyPatrolSessionTask::FEnemyPatrolSessionTask()
+{
+	bShouldStateChangeOnReselect = false;
+#if WITH_EDITORONLY_DATA
+	bConsideredForCompletion = false;
+#endif
+}
+
+EStateTreeRunStatus FEnemyPatrolSessionTask::EnterState(FStateTreeExecutionContext& Context,
+	const FStateTreeTransitionResult& Transition) const
+{
+	FInstanceDataType& Data = Context.GetInstanceData(*this);
+	Data.Action = EEnemyPatrolAction::Session;
+	return EnterPatrol(Data);
+}
+
+EStateTreeRunStatus FEnemyPatrolTask::EnterState(FStateTreeExecutionContext& Context,
+	const FStateTreeTransitionResult& Transition) const
+{
+	return EnterPatrol(Context.GetInstanceData(*this));
+}
+
+EStateTreeRunStatus FEnemyPatrolTask::Tick(FStateTreeExecutionContext& Context, float DeltaTime) const
+{
+	return TickPatrol(Context.GetInstanceData(*this));
+}
+
+void FEnemyPatrolTask::ExitState(FStateTreeExecutionContext& Context,
+	const FStateTreeTransitionResult& Transition) const
+{
+	ExitPatrol(Context.GetInstanceData(*this));
+}
+
+#if WITH_DEV_AUTOMATION_TESTS
+namespace EnemyPatrolTesting
+{
+EStateTreeRunStatus Enter(FEnemyPatrolTaskInstanceData& Data) { return EnterPatrol(Data); }
+EStateTreeRunStatus Tick(FEnemyPatrolTaskInstanceData& Data) { return TickPatrol(Data); }
+void Exit(FEnemyPatrolTaskInstanceData& Data) { ExitPatrol(Data); }
+}
+#endif
+
+namespace
+{
 constexpr float MinimumTacticalFlightZ = 150.0f;
 
 DEFINE_LOG_CATEGORY_STATIC(LogEnemyEQS, Log, All);

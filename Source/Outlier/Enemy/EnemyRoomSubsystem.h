@@ -8,6 +8,17 @@
 class AEnemyBase;
 class AActor;
 class ULevel;
+class AController;
+
+// 순찰 예약은 수색 회차와 분리한다. 같은 Actor의 새 대여나 Controller 교체도 이전 예약과 구분한다.
+struct FEnemyPatrolDestination
+{
+	FVector Location = FVector::ZeroVector;
+	FGameplayTag RoomTag;
+	TWeakObjectPtr<AController> Controller;
+	int32 Generation = 0;
+	int32 Lease = 0;
+};
 
 // 직접 시야를 가진 Enemy만 Observer로 등록한다.
 // 수신한 공유 좌표만으로는 Observer가 되지 않으므로 방 안에서 위치가 재전파되지 않는다.
@@ -69,6 +80,11 @@ public:
 	bool IsSearchDestinationReserved(const AEnemyBase* Enemy, const FVector& Location, float Separation) const;
 	bool ReserveSearchDestinations(AEnemyBase* Enemy, const TArray<FVector>& Locations, float Separation);
 	void ReleaseSearchDestinations(AEnemyBase* Enemy);
+	bool IsPatrolDestinationUsed(const AEnemyBase* Enemy, const FVector& Location, float Separation) const;
+	bool ReservePatrolDestination(AEnemyBase* Enemy, const FVector& Location);
+	void ReleasePatrolDestination(AEnemyBase* Enemy);
+	// 이전 부모 Task의 Exit가 새 풀 대여의 예약을 지우지 않도록 수명을 확인한다.
+	void ReleasePatrolDestination(AEnemyBase* Enemy, int32 Generation, int32 Lease, AController* Controller);
 
 private:
 	void BroadcastSharedTargetContact(FGameplayTag RoomTag, const FVector& TargetLocation, bool bNewInformation = true);
@@ -93,6 +109,7 @@ private:
 	TMap<FGameplayTag, FEnemyRoomTargetContactState> TargetContactStates;
 	// 한 회차에서 사전 선정한 두 지점만 보관한다. 풀 반환/수색 종료 시 해제한다.
 	TMap<TWeakObjectPtr<AEnemyBase>, TArray<FVector>> SearchDestinations;
+	TMap<TWeakObjectPtr<AEnemyBase>, FEnemyPatrolDestination> PatrolDestinations;
 	uint64 NextSharedRevision = 0;
 
 	// 방의 모든 직접 시야가 끊긴 뒤 이 시간이 지나면 마지막 타겟의 현재 위치를 한 번 공유한다.

@@ -59,6 +59,9 @@ struct FEnemyFlyToLocationTaskInstanceData
 	// 선회 EQS가 검증한 Actor 좌표 경로를 사용한다. A*와 동시에 켜지 않는다.
 	UPROPERTY(EditAnywhere, Category = Parameter)
 	bool bUsePlannedPath = false;
+	// 순찰 선정에서 얻은 A* 경로를 최초 이동에 재사용한다. 이후 장애물은 일반 A* 재탐색으로 처리한다.
+	UPROPERTY(EditAnywhere, Category = Parameter)
+	bool bUseInitialPath = false;
 	// 후퇴 EQS의 스냅샷을 전달한다. 다른 이동에는 끄고, 후퇴는 A* / 정확한 목적지만 사용한다.
 	UPROPERTY(EditAnywhere, Category = Parameter)
 	bool bConstrainRetreatPath = false;

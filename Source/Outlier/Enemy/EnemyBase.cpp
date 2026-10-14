@@ -153,13 +153,18 @@ AEnemyBase::AEnemyBase()
 	CoreHitboxComponent->SetGenerateOverlapEvents(false);
 }
 
+void AEnemyBase::ResetPatrolPoints()
+{
+	PatrolPointA = GetActorLocation();
+	PatrolPointB = GetActorTransform().TransformPositionNoScale(PatrolPointBLocalOffset);
+}
+
 void AEnemyBase::PostInitializeComponents()
 {
 	Super::PostInitializeComponents();
 	ApplyCoreWeakPointRuntimeState();
 
-	PatrolPointA = GetActorLocation();
-	PatrolPointB = GetActorTransform().TransformPositionNoScale(PatrolPointBLocalOffset);
+	ResetPatrolPoints();
 
 	if (!StateTreeComponent)
 	{
@@ -391,6 +396,8 @@ bool AEnemyBase::BeginPoolLease(
 	PoolCombatPhaseIndex = Context.CombatPhaseIndex;
 	PoolWaveIndex = Context.WaveIndex;
 	SetActorTransform(SpawnTransform, false, nullptr, ETeleportType::TeleportPhysics);
+	// 풀 재사용은 PostInitializeComponents를 다시 호출하지 않는다. 새 스폰 기준으로 순찰도 옮긴다.
+	ResetPatrolPoints();
 	InitializeFromEnemyStatRow();
 	ResetPoolRuntimeState();
 
@@ -412,6 +419,7 @@ bool AEnemyBase::BeginPoolLease(
 
 void AEnemyBase::ResetReusableCombatRuntime(const TCHAR* StateTreeStopReason)
 {
+	ReleasePatrolDestination();
 	GetWorldTimerManager().ClearAllTimersForObject(this);
 	CancelPossessionProcess();
 	EndPossessedImpactInputLock();
@@ -953,6 +961,7 @@ void AEnemyBase::PrepareForPoolIdle()
 
 void AEnemyBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	ReleasePatrolDestination();
 	if (UMaterialPostProcessSubsystem* PostProcessSubsystem = GetWorld()
 		? GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>()
 		: nullptr)
@@ -1281,6 +1290,7 @@ void AEnemyBase::SetEnemyPossessed(bool bNewIsPossessed)
 	bPossessedAttackHeld = false;
 	EndPossessedImpactInputLock();
 	bIsPossessed = bNewIsPossessed;
+	if (bIsPossessed) ReleasePatrolDestination();
 	if (bIsPossessed)
 	{
 		CancelCommittedAction();
@@ -1358,6 +1368,7 @@ bool AEnemyBase::BeginPossessionProcess(APartnerCharacter* PartnerCharacter)
 	RemoveRoomTargetObserver();
 	ClearSharedTargetContact();
 	ReleaseSearchDestinations();
+	ReleasePatrolDestination();
 	SetPlayerCurrentlyVisible(false);
 
 	if (AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(GetCachedAIController()))
@@ -1688,6 +1699,7 @@ void AEnemyBase::EnterCombatFromRoom(
 	}
 
 	const bool bEnteredCombat = CombatState != EEnemyCombatState::Combat;
+	ReleasePatrolDestination();
 	bInCombat = true;
 	CombatState = EEnemyCombatState::Combat;
 	UpdateLastKnownPlayerLocation(PlayerLocation);
@@ -1796,6 +1808,7 @@ void AEnemyBase::EnterAlertFromPerception(const FVector& PlayerLocation)
 	}
 
 	CombatState = EEnemyCombatState::Alert;
+	ReleasePatrolDestination();
 	UpdateLastKnownPlayerLocation(PlayerLocation);
 	RefreshPerceptionConfigForCurrentState();
 
@@ -1817,6 +1830,7 @@ void AEnemyBase::EnterStun()
 	}
 
 	PreStunCombatState = CombatState;
+	ReleasePatrolDestination();
 	CombatState = EEnemyCombatState::Stun;
 	CancelCommittedAction();
 	EndImpactReaction();
@@ -2358,6 +2372,7 @@ bool AEnemyBase::BeginImpactReaction()
 	}
 
 	bImpactReactionActive = true;
+	ReleasePatrolDestination();
 	StopCurrentAttack();
 	ReleaseSearchDestinations();
 
@@ -3266,6 +3281,15 @@ void AEnemyBase::OnRep_AttackPhase(EEnemyAttackPhase PreviousPhase)
 	OnAttackPhaseChanged(PreviousPhase, AttackPhase);
 }
 
+void AEnemyBase::ReleasePatrolDestination()
+{
+	if (!HasAuthority() || !GetWorld()) return;
+	if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
+	{
+		RoomSubsystem->ReleasePatrolDestination(this);
+	}
+}
+
 void AEnemyBase::ReleaseSearchDestinations()
 {
 	if (!HasAuthority() || !GetWorld())
@@ -3530,6 +3554,7 @@ void AEnemyBase::SaveSourceMeshVisibility(USceneComponent* SourceMeshRoot)
 
 void AEnemyBase::PerformDeathCleanup()
 {
+	ReleasePatrolDestination();
 	if (bDeathCleanupPerformed)
 	{
 		return;

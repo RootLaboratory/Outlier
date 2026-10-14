@@ -1293,4 +1293,178 @@ bool FEnemySearchLoadTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+namespace
+{
+AEnemyBase* SpawnPatrolEnemy(FEnemySearchIntegrationWorld& Fixture, const FVector& Location)
+{
+	FActorSpawnParameters Parameters;
+	Parameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AEnemyBase* Enemy = Fixture.World->SpawnActor<AEnemyBase>(AEnemyBase::StaticClass(), FTransform(Location), Parameters);
+	if (!Enemy) return nullptr;
+	Enemy->GetRoomTagComp()->AssignDefaultRoomTag(Fixture.SearchRoomTag);
+	FEnumProperty* Behavior = FindFProperty<FEnumProperty>(AEnemyBase::StaticClass(), TEXT("NonCombatBehavior"));
+	if (!Behavior) return nullptr;
+	Behavior->GetUnderlyingProperty()->SetIntPropertyValue(Behavior->ContainerPtrToValuePtr<void>(Enemy),
+		static_cast<int64>(EEnemyNonCombatBehavior::PatrolRoute));
+	AEnemyAIController* Controller = Fixture.World->SpawnActor<AEnemyAIController>();
+	if (!Controller) return nullptr;
+	Controller->Possess(Enemy);
+	Enemy->GetCapsuleComponent()->SetCapsuleSize(20.0f, 40.0f);
+	return Enemy;
+}
+
+FEnemyPatrolTaskInstanceData MakePatrolData(AEnemyBase* Enemy)
+{
+	FEnemyPatrolTaskInstanceData Data;
+	Data.Enemy = Enemy;
+	Data.MaxSearchMilliseconds = 100.0f;
+	Data.MaxSearchNodes = 4096;
+	Data.MaxCollisionChecks = 16384;
+	return Data;
+}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyPatrolSelectionTest, "Outlier.Enemy.Patrol.SelectionAndResume",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyPatrolSelectionTest::RunTest(const FString& Parameters)
+{
+	FEnemySearchIntegrationWorld Fixture;
+	if (!TestTrue(TEXT("Patrol room created"), Fixture.CreateRoom())) return false;
+	AEnemyBase* Enemy = SpawnPatrolEnemy(Fixture, FVector::ZeroVector);
+	if (!TestNotNull(TEXT("Patrol enemy created"), Enemy)) return false;
+	FEnemyPatrolTaskInstanceData Data = MakePatrolData(Enemy);
+	TestEqual(TEXT("Select B first, not the current spawn point A"), EnemyPatrolTesting::Enter(Data), EStateTreeRunStatus::Succeeded);
+	TestTrue(TEXT("B is selected"), Data.bHasDestination && Data.Destination.Equals(Enemy->GetPatrolPointB()));
+	TestTrue(TEXT("Selection supplies an initial A* path"), Data.SelectedWaypoints.Num() >= 2);
+	TestEqual(TEXT("Reenter respects the shared path cooldown"), EnemyPatrolTesting::Enter(Data), EStateTreeRunStatus::Running);
+	Enemy->SetNextFlightPathRequestTime(0.0);
+	Enemy->SetActorLocation(Enemy->GetPatrolPointB());
+	TestEqual(TEXT("After B, select A"), EnemyPatrolTesting::Tick(Data), EStateTreeRunStatus::Succeeded);
+	TestTrue(TEXT("A is selected"), Data.Destination.Equals(Enemy->GetPatrolPointA()));
+	Enemy->SetActorLocation(FVector::ZeroVector);
+	AActor* Block = Fixture.SpawnBlockingBox(Enemy->GetPatrolPointB(), FVector(100.0));
+	if (!TestNotNull(TEXT("B blocker created"), Block)) return false;
+	Enemy->SetNextFlightPathRequestTime(0.0);
+	TestEqual(TEXT("Blocked B and already-reached A enter guard"), EnemyPatrolTesting::Enter(Data), EStateTreeRunStatus::Failed);
+	TestFalse(TEXT("Guard has no stale destination"), Data.bHasDestination);
+	TestTrue(TEXT("Guard has no stale path"), Data.SelectedWaypoints.IsEmpty());
+	Enemy->SetActorLocation(FVector(0.0, 300.0, 0.0));
+	AActor* BlockA = Fixture.SpawnBlockingBox(Enemy->GetPatrolPointA(), FVector(100.0));
+	if (!TestNotNull(TEXT("A blocker created"), BlockA)) return false;
+	Enemy->SetNextFlightPathRequestTime(0.0);
+	TestEqual(TEXT("Both blocked endpoints enter guard without movement"), EnemyPatrolTesting::Enter(Data), EStateTreeRunStatus::Failed);
+	BlockA->SetActorEnableCollision(false);
+	Enemy->SetNextFlightPathRequestTime(0.0);
+	TestEqual(TEXT("Only reachable A is selected when B is blocked"), EnemyPatrolTesting::Enter(Data), EStateTreeRunStatus::Succeeded);
+	TestTrue(TEXT("Fallback is A"), Data.Destination.Equals(Enemy->GetPatrolPointA()));
+	Enemy->SetActorLocation(FVector::ZeroVector);
+	Block->SetActorEnableCollision(false);
+	Enemy->SetNextFlightPathRequestTime(0.0);
+	TestEqual(TEXT("Opening B resumes patrol"), EnemyPatrolTesting::Enter(Data), EStateTreeRunStatus::Succeeded);
+	Data.MaxCollisionChecks = 1;
+	Enemy->SetNextFlightPathRequestTime(0.0);
+	TestEqual(TEXT("Limited selection returns to guard"), EnemyPatrolTesting::Enter(Data), EStateTreeRunStatus::Failed);
+	TestEqual(TEXT("Budget is not reported as no path"), Data.PathStatus, EFlightPathStatus::BudgetExceeded);
+	Data.RetryInterval = 0.0f;
+	TestEqual(TEXT("Invalid interval is rejected"), EnemyPatrolTesting::Enter(Data), EStateTreeRunStatus::Failed);
+	TestEqual(TEXT("Invalid configuration is explicit"), Data.PathStatus, EFlightPathStatus::InvalidRequest);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyPatrolReservationTest, "Outlier.Enemy.Patrol.ReservationLifecycle",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyPatrolReservationTest::RunTest(const FString& Parameters)
+{
+	FEnemySearchIntegrationWorld Fixture;
+	if (!Fixture.CreateRoom()) return false;
+	AEnemyBase* Enemy = SpawnPatrolEnemy(Fixture, FVector::ZeroVector);
+	AEnemyBase* Other = SpawnPatrolEnemy(Fixture, FVector(0.0, 300.0, 0.0));
+	if (!TestNotNull(TEXT("Patrol owner"), Enemy) || !TestNotNull(TEXT("Patrol observer"), Other)) return false;
+	UEnemyRoomSubsystem* Rooms = Fixture.World->GetSubsystem<UEnemyRoomSubsystem>();
+	FEnemyPatrolTaskInstanceData Session = MakePatrolData(Enemy);
+	Session.Action = EEnemyPatrolAction::Session;
+	TestEqual(TEXT("Parent session remains running"), EnemyPatrolTesting::Enter(Session), EStateTreeRunStatus::Running);
+	const FVector Point = Enemy->GetPatrolPointB();
+	TestTrue(TEXT("Reserve patrol point"), Rooms->ReservePatrolDestination(Enemy, Point));
+	TestTrue(TEXT("Other drone deprioritizes the reserved point"), Rooms->IsPatrolDestinationUsed(Other, Point, 200.0f));
+	TestTrue(TEXT("Reservation is soft, not an exclusion"), Rooms->ReservePatrolDestination(Other, Point));
+	Rooms->ReleasePatrolDestination(Other);
+	Rooms->ReleasePatrolDestination(Enemy, Session.Generation, Session.Lease + 1, Enemy->GetController());
+	TestTrue(TEXT("Stale lease cannot release current reservation"), Rooms->IsPatrolDestinationUsed(Other, Point, 200.0f));
+	EnemyPatrolTesting::Exit(Session);
+	TestFalse(TEXT("Parent exit releases reservation"), Rooms->IsPatrolDestinationUsed(Other, Point, 200.0f));
+	Enemy->SetActorLocation(FVector(0.0, -300.0, 0.0));
+	Rooms->ReservePatrolDestination(Other, Point);
+	FEnemyPatrolTaskInstanceData Select = MakePatrolData(Enemy);
+	TestEqual(TEXT("Select a reachable non-shared point first"), EnemyPatrolTesting::Enter(Select), EStateTreeRunStatus::Succeeded);
+	TestTrue(TEXT("Unused A precedes preferred but shared B"), Select.Destination.Equals(Enemy->GetPatrolPointA()));
+	Rooms->ReleasePatrolDestination(Other);
+	AEnemyAIController* Replacement = Fixture.World->SpawnActor<AEnemyAIController>();
+	if (!TestNotNull(TEXT("Replacement controller"), Replacement)) return false;
+	Replacement->Possess(Enemy);
+	Rooms->ReservePatrolDestination(Enemy, Point);
+	EnemyPatrolTesting::Exit(Session);
+	TestTrue(TEXT("Old controller exit cannot clear new controller reservation"), Rooms->IsPatrolDestinationUsed(Other, Point, 200.0f));
+	Rooms->ReservePatrolDestination(Enemy, Point);
+	Enemy->EnterAlert(FVector::ZeroVector);
+	TestFalse(TEXT("Alert releases patrol reservation"), Rooms->IsPatrolDestinationUsed(Other, Point, 200.0f));
+	TestEqual(TEXT("Session stops on alert"), EnemyPatrolTesting::Tick(Session), EStateTreeRunStatus::Failed);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyPatrolDetourTest, "Outlier.Enemy.Patrol.DetourAndBoundary",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyPatrolDetourTest::RunTest(const FString& Parameters)
+{
+	FEnemySearchIntegrationWorld Fixture;
+	if (!Fixture.CreateRoom()) return false;
+	AEnemyBase* Enemy = SpawnPatrolEnemy(Fixture, FVector::ZeroVector);
+	if (!Enemy) return false;
+	if (!Fixture.SpawnBlockingBox(FVector(500.0, 0.0, 0.0), FVector(60.0, 200.0, 200.0))) return false;
+	FEnemyPatrolTaskInstanceData Data = MakePatrolData(Enemy);
+	TestEqual(TEXT("Reachable B is selected around a wall"), EnemyPatrolTesting::Enter(Data), EStateTreeRunStatus::Succeeded);
+	TestTrue(TEXT("Wall requires a detour"), Data.SelectedWaypoints.Num() > 2);
+	// 초기 방 경계 밖의 B는 사용하지 않는다. 현재 위치 A도 후보가 아니므로 Guard로 간다.
+	Enemy->SetNextFlightPathRequestTime(0.0);
+	CastChecked<UBoxComponent>(Fixture.Room->GetRootComponent())->SetBoxExtent(FVector(300.0, 300.0, 700.0));
+	TestEqual(TEXT("Outside-room B is rejected"), EnemyPatrolTesting::Enter(Data), EStateTreeRunStatus::Failed);
+	TestFalse(TEXT("Boundary rejection produces no destination"), Data.bHasDestination);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyPatrolSpawnTransformTest, "Outlier.Enemy.Patrol.SpawnTransformReset",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyPatrolSpawnTransformTest::RunTest(const FString& Parameters)
+{
+	FEnemySearchIntegrationWorld Fixture;
+	if (!Fixture.CreateRoom()) return false;
+	AEnemyBase* Enemy = SpawnPatrolEnemy(Fixture, FVector::ZeroVector);
+	if (!Enemy) return false;
+	const FTransform SpawnTransform(FRotator(0.0, 90.0, 0.0), FVector(200.0, 300.0, 100.0), FVector(2.0));
+	Enemy->SetActorTransform(SpawnTransform);
+	// 풀 대여에서도 호출하는 동일 초기화 경로다. 위치/회전만 적용하고 Actor Scale은 오프셋에 곱하지 않는다.
+	Enemy->ResetPatrolPointsForTesting();
+	TestTrue(TEXT("A follows the new spawn origin"), Enemy->GetPatrolPointA().Equals(SpawnTransform.GetLocation()));
+	TestTrue(TEXT("B follows new spawn rotation without scaling"),
+		Enemy->GetPatrolPointB().Equals(SpawnTransform.TransformPositionNoScale(FVector(1000.0, 0.0, 0.0))));
+	FIntProperty* Lease = FindFProperty<FIntProperty>(AEnemyBase::StaticClass(), TEXT("PoolLeaseSerial"));
+	if (!TestNotNull(TEXT("Pool lease reflection"), Lease)) return false;
+	FEnemyPatrolTaskInstanceData Session = MakePatrolData(Enemy);
+	Session.Action = EEnemyPatrolAction::Session;
+	EnemyPatrolTesting::Enter(Session);
+	UEnemyRoomSubsystem* Rooms = Fixture.World->GetSubsystem<UEnemyRoomSubsystem>();
+	Rooms->ReservePatrolDestination(Enemy, Enemy->GetPatrolPointB());
+	Lease->SetPropertyValue_InContainer(Enemy, Session.Lease + 1);
+	TestEqual(TEXT("Old session cannot continue across pool lease"), EnemyPatrolTesting::Tick(Session), EStateTreeRunStatus::Failed);
+	FEnemyPatrolTaskInstanceData Selection = MakePatrolData(Enemy);
+	Selection.NextPointIndex = 0;
+	TestEqual(TEXT("New lease starts from B"), EnemyPatrolTesting::Enter(Selection), EStateTreeRunStatus::Succeeded);
+	TestTrue(TEXT("New lease does not reuse the old spawn target"), Selection.Destination.Equals(Enemy->GetPatrolPointB()));
+	return true;
+}
+
 #endif

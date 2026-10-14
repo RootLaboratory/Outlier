@@ -475,6 +475,64 @@ EStateTreeRunStatus RequestFlightPath(FEnemyFlyToLocationTaskInstanceData& Data)
 	return EStateTreeRunStatus::Failed;
 }
 
+bool IsInitialFlightGeometryValid(const TArray<FVector>& Points, const FVector& Start,
+	const FVector& Destination, int32 MaxSearchNodes)
+{
+	if (Points.Num() < 2 || static_cast<int64>(Points.Num()) > static_cast<int64>(MaxSearchNodes) + 2
+		|| Start.ContainsNaN() || Destination.ContainsNaN()
+		|| !Points[0].Equals(Start, 25.0f) || !Points.Last().Equals(Destination, 1.0f)) return false;
+	for (const FVector& Point : Points)
+	{
+		if (Point.ContainsNaN()) return false;
+	}
+	return true;
+}
+
+EStateTreeRunStatus StartInitialFlight(FEnemyFlyToLocationTaskInstanceData& Data)
+{
+	if (!HasCurrentFlightRoom(Data) || !FMath::IsFinite(Data.MaxSearchMilliseconds) || Data.MaxSearchMilliseconds <= 0.0f
+		|| !FMath::IsFinite(Data.PathCellSize) || Data.PathCellSize <= 0.0f
+		|| !FMath::IsFinite(Data.PathClearance) || Data.PathClearance < 0.0f
+		|| Data.MaxSearchNodes <= 0 || Data.MaxCollisionChecks <= 0
+		|| !IsInitialFlightGeometryValid(Data.PlannedWaypoints, Data.Enemy->GetActorLocation(), Data.Destination, Data.MaxSearchNodes))
+	{
+		Data.PathStatus = EFlightPathStatus::InvalidRequest;
+		StopFlyTask(Data);
+		return EStateTreeRunStatus::Failed;
+	}
+	const FVector Offset = Data.CachedCapsule->GetComponentLocation() - Data.Enemy->GetActorLocation();
+	const double Started = FPlatformTime::Seconds();
+	Data.PathWaypoints.Add(Data.CachedCapsule->GetComponentLocation());
+	for (int32 Index = 1; Index < Data.PlannedWaypoints.Num(); ++Index)
+	{
+		// Select와 Move 사이에도 장애물이 생길 수 있다. 예산 안에서 구간을 재검증하고 막히면 정지 후 재탐색한다.
+		if (Index > Data.MaxCollisionChecks / 4
+			|| (FPlatformTime::Seconds() - Started) * 1000.0 >= Data.MaxSearchMilliseconds)
+		{
+			Data.PathStatus = EFlightPathStatus::BudgetExceeded;
+			WaitForFlightPath(Data);
+			return EStateTreeRunStatus::Running;
+		}
+		FFlightPathRequest Request = MakeFlightPathRequest(Data, Data.PlannedWaypoints[Index] + Offset);
+		Request.Start = Data.PathWaypoints.Last();
+		Data.PathStatus = FlightPathfinding::CheckSegment(*Data.Enemy->GetWorld(), *Data.CachedCapsule, Request);
+		if (Data.PathStatus != EFlightPathStatus::Success)
+		{
+			WaitForFlightPath(Data);
+			return EStateTreeRunStatus::Running;
+		}
+		Data.PathWaypoints.Add(Request.Goal);
+	}
+	Data.WaypointIndex = 1;
+	Data.BestDistance = FVector::Distance(Data.PathWaypoints[0], Data.PathWaypoints[1]);
+	Data.LastPathPosition = Data.PathWaypoints[0];
+	Data.TravelledPathLength = 0.0f;
+	Data.SegmentCheckElapsed = 0.0f;
+	Data.bWaitingForPath = false;
+	LogFlight(TEXT("InitialPathStarted"), Data);
+	return EStateTreeRunStatus::Running;
+}
+
 EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, float DeltaTime)
 {
 	// 전체 이동 제한 -> 목적지 변경 -> 제한된 재탐색 -> 구간 검증 -> 이동 입력 순서다.
@@ -777,6 +835,23 @@ bool FEnemyPlannedFlightGeometryTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Existing assets do not opt into planned movement"), FEnemyFlyToLocationTaskInstanceData().bUsePlannedPath);
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyInitialFlightGeometryTest,
+	"Outlier.Enemy.Patrol.InitialPathGeometry", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyInitialFlightGeometryTest::RunTest(const FString& Parameters)
+{
+	const FVector Start(100.0, 200.0, 300.0);
+	const FVector Goal = Start + FVector(1200.0, 0.0, 0.0);
+	TArray<FVector> Points = { Start, Start + FVector(600.0, 200.0, 0.0), Goal };
+	TestTrue(TEXT("Initial A* path may exceed orbit distance and segment limits"), IsInitialFlightGeometryValid(Points, Start, Goal, 512));
+	TestFalse(TEXT("Stale start is rejected"), IsInitialFlightGeometryValid(Points, Start + FVector(30.0, 0.0, 0.0), Goal, 512));
+	TestFalse(TEXT("Endpoint must match destination binding"), IsInitialFlightGeometryValid(Points, Start, Goal + FVector(10.0), 512));
+	Points.Reset();
+	TestFalse(TEXT("Missing waypoint binding is rejected"), IsInitialFlightGeometryValid(Points, Start, Goal, 512));
+	TestFalse(TEXT("Existing assets do not opt into initial path reuse"), FEnemyFlyToLocationTaskInstanceData().bUseInitialPath);
+	return true;
+}
 #endif
 
 FEnemyFlyToLocationTask::FEnemyFlyToLocationTask()
@@ -830,6 +905,13 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::EnterState(
 		StopFlyTask(InstanceData);
 		return EStateTreeRunStatus::Failed;
 	}
+	if (InstanceData.bUseInitialPath && (!InstanceData.bUsePathfinding || InstanceData.bUsePlannedPath
+		|| InstanceData.bConstrainRetreatPath || InstanceData.GoalSearchRadius != 0.0f))
+	{
+		InstanceData.PathStatus = EFlightPathStatus::InvalidRequest;
+		StopFlyTask(InstanceData);
+		return EStateTreeRunStatus::Failed;
+	}
 	if (InstanceData.bUsePathfinding || InstanceData.bUsePlannedPath)
 	{
 		if (InstanceData.bUsePathfinding && InstanceData.bUsePlannedPath)
@@ -856,6 +938,7 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::EnterState(
 			? InstanceData.CachedRoomSubsystem->GetRegisteredRoomVolume(InstanceData.PathRoomTag) : nullptr;
 		InstanceData.MoveResult = EEnemyFlightMoveResult::Moving;
 		if (InstanceData.bUsePlannedPath) return StartPlannedFlight(InstanceData);
+		if (InstanceData.bUseInitialPath) return StartInitialFlight(InstanceData);
 		return RequestFlightPath(InstanceData);
 	}
 

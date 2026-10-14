@@ -14,6 +14,95 @@ class AEnemyAIController;
 class UEnvQuery;
 class URoomCombatSubsystem;
 class ARoomVolume;
+class UEnemyRoomSubsystem;
+
+UENUM()
+enum class EEnemyPatrolAction : uint8
+{
+	Session, Select, Release
+};
+
+USTRUCT()
+struct FEnemyPatrolTaskInstanceData
+{
+	GENERATED_BODY()
+	UPROPERTY(EditAnywhere, Category = Context)
+	TObjectPtr<AEnemyBase> Enemy = nullptr;
+	UPROPERTY(EditAnywhere, Category = Parameter)
+	EEnemyPatrolAction Action = EEnemyPatrolAction::Select;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "1.0"))
+	float AcceptanceRadius = 50.0f;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "1.0"))
+	float DestinationSeparation = 200.0f;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.01"))
+	float RetryInterval = 1.0f;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "1.0"))
+	float CellSize = 100.0f;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0"))
+	float Clearance = 5.0f;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "1.0"))
+	float SearchPadding = 800.0f;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "1"))
+	int32 MaxSearchNodes = 512;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "1"))
+	int32 MaxCollisionChecks = 2048;
+	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.01"))
+	float MaxSearchMilliseconds = 4.0f;
+	UPROPERTY(EditAnywhere, Category = Output)
+	FVector Destination = FVector::ZeroVector;
+	UPROPERTY(EditAnywhere, Category = Output)
+	TArray<FVector> SelectedWaypoints;
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bHasDestination = false;
+	UPROPERTY(EditAnywhere, Category = Output)
+	EFlightPathStatus PathStatus = EFlightPathStatus::Unavailable;
+	UPROPERTY(Transient)
+	TWeakObjectPtr<AEnemyAIController> Controller;
+	UPROPERTY(Transient)
+	TObjectPtr<UEnemyRoomSubsystem> RoomSubsystem = nullptr;
+	UPROPERTY(Transient)
+	TObjectPtr<URoomCombatSubsystem> CombatSubsystem = nullptr;
+	UPROPERTY(Transient)
+	int32 Generation = INDEX_NONE;
+	UPROPERTY(Transient)
+	int32 Lease = INDEX_NONE;
+	// 같은 Select Task의 재진입에서는 다음 지점을 유지하고, 풀 대여/Controller 교체 시 B부터 시작한다.
+	UPROPERTY(Transient)
+	int32 NextPointIndex = 1;
+};
+
+USTRUCT(meta = (DisplayName = "Enemy Patrol", Category = "Enemy|Tactical"))
+struct OUTLIER_API FEnemyPatrolTask : public FStateTreeTaskCommonBase
+{
+	GENERATED_BODY()
+	using FInstanceDataType = FEnemyPatrolTaskInstanceData;
+	FEnemyPatrolTask();
+	virtual const UStruct* GetInstanceDataType() const override { return FInstanceDataType::StaticStruct(); }
+	virtual EStateTreeRunStatus EnterState(FStateTreeExecutionContext& Context,
+		const FStateTreeTransitionResult& Transition) const override;
+	virtual EStateTreeRunStatus Tick(FStateTreeExecutionContext& Context, float DeltaTime) const override;
+	virtual void ExitState(FStateTreeExecutionContext& Context,
+		const FStateTreeTransitionResult& Transition) const override;
+};
+
+// 부모 순찰 수명은 자식 Select/Move 재진입과 분리한다. 이 Task는 상태 완료를 기다리게 하지 않는다.
+USTRUCT(meta = (DisplayName = "Enemy Patrol Session", Category = "Enemy|Tactical"))
+struct OUTLIER_API FEnemyPatrolSessionTask : public FEnemyPatrolTask
+{
+	GENERATED_BODY()
+	FEnemyPatrolSessionTask();
+	virtual EStateTreeRunStatus EnterState(FStateTreeExecutionContext& Context,
+		const FStateTreeTransitionResult& Transition) const override;
+};
+
+#if WITH_DEV_AUTOMATION_TESTS
+namespace EnemyPatrolTesting
+{
+	OUTLIER_API EStateTreeRunStatus Enter(FEnemyPatrolTaskInstanceData& Data);
+	OUTLIER_API EStateTreeRunStatus Tick(FEnemyPatrolTaskInstanceData& Data);
+	OUTLIER_API void Exit(FEnemyPatrolTaskInstanceData& Data);
+}
+#endif
 
 UENUM(BlueprintType)
 enum class EEnemyEnvQueryResult : uint8

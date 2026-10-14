@@ -137,6 +137,8 @@ public:
 	int32 GetPoolLeaseSerial() const { return PoolLeaseSerial; }
 
 #if WITH_DEV_AUTOMATION_TESTS
+	void ResetPatrolPointsForTesting() { ResetPatrolPoints(); }
+
 	void SetPoolPresentationAutoCompleteForTesting(bool bEnabled)
 	{
 		bPoolPresentationAutoCompleteForTesting = bEnabled;
@@ -485,6 +487,7 @@ public:
 
 	// 재감지, 스턴, 빙의, 사망, 방 이동 시 방 Subsystem의 수색 목적지 예약을 반환한다.
 	void ReleaseSearchDestinations();
+	void ReleasePatrolDestination();
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|AI")
 	UStateTreeComponent* GetStateTreeComponent() const { return StateTreeComponent; }
@@ -698,6 +701,7 @@ protected:
 	UEnemyAdaptationSubsystem* GetEnemyAdaptationSubsystem();
 	void ReportFinalAdaptationResult();
 	virtual void ResetPoolRuntimeState();
+	void ResetPatrolPoints();
 	virtual void ResetPoolPresentationState();
 	virtual void PrepareForPoolIdle();
 

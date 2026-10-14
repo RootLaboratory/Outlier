@@ -67,6 +67,7 @@ void UEnemyRoomSubsystem::Deinitialize()
 	RegisteredEnemyKeys.Reset();
 	SearchDestinations.Reset();
 	TargetContactStates.Reset();
+	PatrolDestinations.Reset();
 	Super::Deinitialize();
 }
 
@@ -82,6 +83,7 @@ void UEnemyRoomSubsystem::RegisterEnemy(AEnemyBase* Enemy)
 void UEnemyRoomSubsystem::UnregisterEnemy(AEnemyBase* Enemy)
 {
 	ReleaseSearchDestinations(Enemy);
+	ReleasePatrolDestination(Enemy);
 	if (!Enemy)
 	{
 		return;
@@ -668,6 +670,69 @@ void UEnemyRoomSubsystem::ReleaseSearchDestinations(AEnemyBase* Enemy)
 	if (Enemy) SearchDestinations.Remove(TWeakObjectPtr<AEnemyBase>(Enemy));
 }
 
+namespace
+{
+bool IsCurrentPatrolReservation(const AEnemyBase* Enemy, const FEnemyPatrolDestination& Reservation)
+{
+	return IsValid(Enemy) && Enemy->HasAuthority() && Enemy->CanUseEnemyPerception()
+		&& !Enemy->IsDead() && !Enemy->IsAIControlSuppressed()
+		&& Enemy->GetCombatState() == EEnemyCombatState::NonCombat
+		&& Enemy->GetNonCombatBehavior() == EEnemyNonCombatBehavior::PatrolRoute
+		&& Enemy->GetController() && Enemy->GetController() == Reservation.Controller.Get()
+		&& Enemy->GetDefaultRoomTag() == Reservation.RoomTag
+		&& Enemy->GetPoolGameplayGeneration() == Reservation.Generation
+		&& Enemy->GetPoolLeaseSerial() == Reservation.Lease;
+}
+}
+
+bool UEnemyRoomSubsystem::IsPatrolDestinationUsed(
+	const AEnemyBase* Enemy, const FVector& Location, float Separation) const
+{
+	if (!IsValid(Enemy)) return false;
+	for (const auto& Entry : PatrolDestinations)
+	{
+		const AEnemyBase* Other = Entry.Key.Get();
+		if (Other == Enemy || !IsCurrentPatrolReservation(Other, Entry.Value)
+			|| Entry.Value.RoomTag != Enemy->GetDefaultRoomTag()) continue;
+		if (FVector::DistSquared(Location, Entry.Value.Location) < FMath::Square(Separation)) return true;
+	}
+	return false;
+}
+
+bool UEnemyRoomSubsystem::ReservePatrolDestination(AEnemyBase* Enemy, const FVector& Location)
+{
+	if (!IsValid(Enemy) || Location.ContainsNaN()) return false;
+	FEnemyPatrolDestination Reservation;
+	Reservation.Location = Location;
+	Reservation.RoomTag = Enemy->GetDefaultRoomTag();
+	Reservation.Controller = Enemy->GetController();
+	Reservation.Generation = Enemy->GetPoolGameplayGeneration();
+	Reservation.Lease = Enemy->GetPoolLeaseSerial();
+	if (!IsCurrentPatrolReservation(Enemy, Reservation)) return false;
+	for (auto It = PatrolDestinations.CreateIterator(); It; ++It)
+	{
+		if (!IsCurrentPatrolReservation(It.Key().Get(), It.Value())) It.RemoveCurrent();
+	}
+	// 순찰은 공유 목적지를 금지하지 않는다. 대체 지점이 없으면 같은 지점도 사용할 수 있다.
+	PatrolDestinations.Add(TWeakObjectPtr<AEnemyBase>(Enemy), Reservation);
+	return true;
+}
+
+void UEnemyRoomSubsystem::ReleasePatrolDestination(AEnemyBase* Enemy)
+{
+	if (Enemy) PatrolDestinations.Remove(TWeakObjectPtr<AEnemyBase>(Enemy));
+}
+
+void UEnemyRoomSubsystem::ReleasePatrolDestination(AEnemyBase* Enemy, int32 Generation, int32 Lease, AController* Controller)
+{
+	const FEnemyPatrolDestination* Reservation = PatrolDestinations.Find(Enemy);
+	if (Reservation && Reservation->Generation == Generation && Reservation->Lease == Lease
+		&& Reservation->Controller.Get() == Controller)
+	{
+		ReleasePatrolDestination(Enemy);
+	}
+}
+
 FGameplayTag UEnemyRoomSubsystem::ResolveEnemyRoomTag(const AEnemyBase* Enemy) const
 {
 	if (!Enemy)
@@ -740,6 +805,7 @@ void UEnemyRoomSubsystem::HandleArenaReleased()
 void UEnemyRoomSubsystem::ResetRuntimeCombatState()
 {
 	SearchDestinations.Reset();
+	PatrolDestinations.Reset();
 	UWorld* World = GetWorld();
 	CombatRooms.Reset();
 	CombatRoomLastKnownLocations.Reset();
