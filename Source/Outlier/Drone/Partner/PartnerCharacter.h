@@ -85,6 +85,7 @@ class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeap
 	GENERATED_BODY()
 
 	friend class UPartnerMovementComponent;
+	friend class FPartnerAssistNavigationTest;
 	friend class UPartnerSupportComponent;
 	friend class UPartnerCombatComponent;
 	friend class UPartnerDistanceComponent;

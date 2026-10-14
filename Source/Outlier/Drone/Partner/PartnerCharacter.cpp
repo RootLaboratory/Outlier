@@ -182,6 +182,8 @@ void APartnerCharacter::UnPossessed()
 
 	if (MovementComponent)
 	{
+		// 소유권이 바뀌면 이전 소유자의 추종 요청과 입력 세션을 남기지 않는다.
+		MovementComponent->ResetAutoFollowForOwnerChange();
 		MovementComponent->ClearFlightInput();
 	}
 
@@ -192,6 +194,10 @@ void APartnerCharacter::UnPossessed()
 void APartnerCharacter::OnRep_Controller()
 {
 	Super::OnRep_Controller();
+	if (MovementComponent && !IsLocallyControlled())
+	{
+		MovementComponent->ResetAutoFollowForOwnerChange();
+	}
 	RefreshAbilitySystemActorInfo();
 	RefreshPartnerCooldownUI();
 }
@@ -429,6 +435,7 @@ void APartnerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 	// CameraAssist
 	EnhancedInputComponent->BindAction(PartnerInputConfig->CameraAssistAction,	ETriggerEvent::Triggered, this, &APartnerCharacter::CameraAssist);
 	EnhancedInputComponent->BindAction(PartnerInputConfig->CameraAssistAction,  ETriggerEvent::Completed, this, &APartnerCharacter::StopCameraAssist);
+	EnhancedInputComponent->BindAction(PartnerInputConfig->CameraAssistAction, ETriggerEvent::Canceled, this, &APartnerCharacter::StopCameraAssist);
 
 	// Hacking
 	EnhancedInputComponent->BindAction(PartnerInputConfig->HackingAction,		ETriggerEvent::Started,	  this, &APartnerCharacter::TryHacking);
@@ -445,6 +452,7 @@ void APartnerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 	// SyncMove
 	EnhancedInputComponent->BindAction(PartnerInputConfig->SyncMoveAction,		ETriggerEvent::Triggered, this, &APartnerCharacter::SyncMove);
 	EnhancedInputComponent->BindAction(PartnerInputConfig->SyncMoveAction,		ETriggerEvent::Completed, this, &APartnerCharacter::StopSyncMove);
+	EnhancedInputComponent->BindAction(PartnerInputConfig->SyncMoveAction, ETriggerEvent::Canceled, this, &APartnerCharacter::StopSyncMove);
 
 	// Accelerate
 	EnhancedInputComponent->BindAction(PartnerInputConfig->AccelerateAction,	ETriggerEvent::Started,	  this, &APartnerCharacter::ToggleAccelerate);
@@ -576,7 +584,7 @@ void APartnerCharacter::StopCameraAssist()
 {
 	if (MovementComponent)
 	{
-		MovementComponent->StopCameraAssist();
+		MovementComponent->ReleaseCameraAssistInput();
 	}
 }
 
@@ -916,7 +924,7 @@ void APartnerCharacter::StopActionsForReboot()
 	if (MovementComponent)
 	{
 		MovementComponent->ClearFlightInput();
-		MovementComponent->StopCameraAssist();
+		MovementComponent->StopAutoFollow();
 		ApplyMoveMode(EPartnerMoveMode::Normal);
 	}
 }
@@ -958,6 +966,7 @@ void APartnerCharacter::PrepareForSuitTransition()
 	}
 	if (MovementComponent)
 	{
+		MovementComponent->StopAutoFollow();
 		MovementComponent->ClearFlightInput();
 	}
 }
@@ -1188,6 +1197,11 @@ void APartnerCharacter::ServerSetAccelerate_Implementation(bool bNewAccelerate)
 
 void APartnerCharacter::ServerSetMoveMode_Implementation(EPartnerMoveMode NewMode)
 {
+	// 자동 추종은 누름/해제 식별자를 검증하는 Component RPC로만 시작한다.
+	if (NewMode == EPartnerMoveMode::CameraAssist || NewMode == EPartnerMoveMode::SyncMove)
+	{
+		return;
+	}
 	if (!CanApplyMoveMode(NewMode))
 	{
 		return;
@@ -1530,7 +1544,7 @@ void APartnerCharacter::OnRep_MoveMode()
 {
 	if (MovementComponent)
 	{
-		MovementComponent->OnMoveModeChanged(MoveMode);
+		MovementComponent->OnReplicatedMoveMode();
 	}
 }
 
