@@ -583,6 +583,7 @@ bool AOutlierGameMode::StartCheckpointRestart(
 			SaveSubsystem->RestoreCurrentWorldProgress(Snapshot.WorldProgress);
 			SaveSubsystem->RestoreCurrentRoomPhaseProgress(Snapshot.RoomPhaseProgress);
 			SaveSubsystem->RestoreCurrentDestroyedTurretIds(Snapshot.DestroyedTurretIds);
+			SaveSubsystem->RestoreFiredTutorialEvents(Snapshot.FiredTutorialEvents);
 			ShooterPlayerState->RestoreCheckpointProgress(
 				Snapshot.ShooterProgress.NodeCount,
 				EOutlierUpgradeRole::Shooter,
@@ -1962,6 +1963,7 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 	if (SaveSubsystem)
 	{
 		SaveSubsystem->SyncCurrentSuitState(NewShooterPS);
+		SaveSubsystem->SyncCurrentLoadoutState(NewShooterPS);
 	}
 	if (!bResuming)
 	{
@@ -3462,6 +3464,7 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 		? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>() : nullptr)
 	{
 		SaveSubsystem->SyncCurrentSuitState(ShooterPlayerState);
+		SaveSubsystem->SyncCurrentLoadoutState(ShooterPlayerState);
 	}
 	bArenaReloadInProgress = true;
 	if (!GameplayReadyHandle.IsValid())
@@ -4840,6 +4843,7 @@ bool AOutlierGameMode::BuildPairCheckpointSnapshot(
 		OutSnapshot.WorldProgress = SaveSubsystem->GetCurrentWorldProgress();
 		OutSnapshot.RoomPhaseProgress = SaveSubsystem->GetCurrentRoomPhaseProgress();
 		OutSnapshot.DestroyedTurretIds = SaveSubsystem->GetCurrentDestroyedTurretIds();
+		OutSnapshot.FiredTutorialEvents = SaveSubsystem->GetFiredTutorialEvents();
 	}
 	if (const UEnemyAdaptationSubsystem* EnemyAdaptationSubsystem = GetWorld()
 		? GetWorld()->GetSubsystem<UEnemyAdaptationSubsystem>()

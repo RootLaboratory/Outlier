@@ -212,6 +212,9 @@ public:
 
 	virtual bool Interact(class AFirstPersonCharacter* Interactor) override;
 
+	// 픽업이 실제로 지급하고 로드아웃에 기록할 클래스. 배치 전용 픽업 클래스는 일반 무기 클래스를 돌려준다.
+	virtual TSubclassOf<AWeaponBase> GetGrantedWeaponClass() const { return GetClass(); }
+
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	void OnOwnerLost();
