@@ -44,7 +44,7 @@ void AOutlierWorldGuideManager::BeginPlay()
 {
 	Super::BeginPlay();
 	LoadTables();
-	// Components can begin play before their level manager, or stream in after it.
+	// Component는 레벨 Manager보다 먼저 BeginPlay되거나, 이후에 스트리밍될 수 있다.
 	for (TActorIterator<AActor> It(GetWorld()); It; ++It)
 	{
 		TArray<UOutlierWorldGuideTargetComponent*> Components;
@@ -127,7 +127,7 @@ bool AOutlierWorldGuideManager::TriggerEvent(FGameplayTag EventTag)
 	Context.OriginEventTag = EventTag;
 	OutlierWorldGuideDebug::Trace(GetWorld(), FString::Printf(TEXT("EVENT %s -> Guide=%s Completed=%d"),
 		*EventTag.ToString(), *WidgetID.ToString(), CompletedWidgetIDs.Contains(WidgetID)));
-	if (CompletedWidgetIDs.Contains(WidgetID)) return true;
+	// 이미 달성한 안내도 Queue를 거쳐 표시 없이 완료되고 후속 체인으로 이어진다.
 	return EnqueueGuide(Context);
 }
 
@@ -147,7 +147,7 @@ bool AOutlierWorldGuideManager::EnqueueGuide(FOutlierWorldGuideContext Context)
 	}
 	const auto SameRequest = [&Context](const FOutlierWorldGuideContext& Existing)
 	{
-		// Both roles and a gameplay trigger may submit the same shared goal. Keep one occurrence.
+		// 두 역할과 게임플레이 트리거가 같은 공유 목표를 제출할 수 있다. 하나만 유지한다.
 		return Existing.WidgetID == Context.WidgetID;
 	};
 	if ((ActiveContext.RequestID != 0 && SameRequest(ActiveContext)) || PendingContexts.ContainsByPredicate(SameRequest))
@@ -155,7 +155,16 @@ bool AOutlierWorldGuideManager::EnqueueGuide(FOutlierWorldGuideContext Context)
 		OutlierWorldGuideDebug::Trace(GetWorld(), FString::Printf(TEXT("DEDUP ID=%s already active/pending."), *Context.WidgetID.ToString()));
 		return true;
 	}
-	// Already achieved goals are skipped, and their configured successors can still advance.
+	// 뒤 단계가 먼저 진행됐으면 늦게 온 앞 단계는 표시하지 않고 달성으로만 기록한다.
+	if (IsPassedByLaterGuide(Context.WidgetID))
+	{
+		CompletedWidgetIDs.Add(Context.WidgetID);
+		OutlierWorldGuideDebug::Trace(GetWorld(), FString::Printf(TEXT("PASSED ID=%s: a later chain step is already reached."), *Context.WidgetID.ToString()));
+		return true;
+	}
+	// 앞 단계를 건너뛰고 뒤 단계가 들어오면 앞 단계가 Queue를 막지 않도록 지나간 것으로 처리한다.
+	SkipGuidesBefore(Context.WidgetID);
+	// 이미 달성한 목표는 건너뛰며, 설정된 후속 목표는 계속 진행될 수 있다.
 	Context.EndCondition = Row.EndCondition;
 	if (Row.TriggerType == EOutlierEventTriggerType::CHAIN && !Context.NextWidgetID.IsValid())
 		if (const FOutlierWorldGuideContext* Template = ChainContexts.FindByPredicate(
@@ -223,7 +232,7 @@ bool AOutlierWorldGuideManager::FinishMatching(FGameplayTag Tag, bool bByEvent, 
 	TArray<FOutlierWorldGuideContext> Finished;
 	{
 		TGuardValue<bool> ChangingGuard(bChangingQueue, true);
-		// Capture matches before callbacks/chain creation; never finish a newly enqueued successor.
+		// 콜백/Chain 생성 전에 매칭을 확보한다. 새로 Enqueue된 후속 목표는 완료하지 않는다.
 		for (int32 Index = PendingContexts.Num() - 1; Index >= 0; --Index)
 		{
 			if (Matches(PendingContexts[Index]))
@@ -247,12 +256,82 @@ bool AOutlierWorldGuideManager::FinishMatching(FGameplayTag Tag, bool bByEvent, 
 
 bool AOutlierWorldGuideManager::CompleteWidget(FGameplayTag WidgetID, FGameplayTag NextWidgetID)
 {
+	// 앞 단계를 건너뛰고 이 단계를 달성했으면 앞 단계가 활성으로 남아 Queue를 막지 않게 한다.
+	if (HasAuthority() && !bEndingPlay && !bChangingQueue && WidgetID.IsValid()) SkipGuidesBefore(WidgetID);
 	if (FinishMatching(WidgetID, false, true, false, NextWidgetID)) return true;
-	// Interaction can occur before the guide is queued. Remember achievement, without inventing a chain origin.
+	// 가이드가 Queue에 들어가기 전에 상호작용이 일어날 수 있다. Chain 시작점을 만들지 않고 달성만 기록한다.
 	FOutlierWorldGuideDataRow Row;
-	if (!HasAuthority() || bEndingPlay || bChangingQueue || CompletedWidgetIDs.Contains(WidgetID) || !TryGetDefinition(WidgetID, Row)) return false;
+	if (!HasAuthority() || bEndingPlay || bChangingQueue || CompletedWidgetIDs.Contains(WidgetID) || !TryGetDefinition(WidgetID, Row))
+	{
+		AdvanceQueue();
+		return false;
+	}
 	CompletedWidgetIDs.Add(WidgetID);
+	AdvanceQueue();
 	return true;
+}
+
+bool AOutlierWorldGuideManager::IsChainAncestor(FGameplayTag Ancestor, FGameplayTag Descendant) const
+{
+	if (!Ancestor.IsValid() || !Descendant.IsValid() || Ancestor == Descendant) return false;
+	FGameplayTag Current = Ancestor;
+	// 순환 설정이 있어도 끝나도록 체인 길이만큼만 따라간다.
+	for (int32 Step = 0; Step <= ChainContexts.Num(); ++Step)
+	{
+		const FOutlierWorldGuideContext* Link = ChainContexts.FindByPredicate(
+			[&Current](const FOutlierWorldGuideContext& Item) { return Item.WidgetID == Current; });
+		if (!Link || !Link->NextWidgetID.IsValid()) return false;
+		if (Link->NextWidgetID == Descendant) return true;
+		Current = Link->NextWidgetID;
+	}
+	return false;
+}
+
+bool AOutlierWorldGuideManager::IsPassedByLaterGuide(FGameplayTag WidgetID) const
+{
+	const auto IsLater = [this, WidgetID](FGameplayTag Other) { return IsChainAncestor(WidgetID, Other); };
+	if (ActiveContext.RequestID != 0 && IsLater(ActiveContext.WidgetID)) return true;
+	if (PendingContexts.ContainsByPredicate([&IsLater](const FOutlierWorldGuideContext& Item) { return IsLater(Item.WidgetID); })) return true;
+	for (const FGameplayTag& Completed : CompletedWidgetIDs)
+		if (IsLater(Completed)) return true;
+	return false;
+}
+
+void AOutlierWorldGuideManager::SkipGuidesBefore(FGameplayTag Reached)
+{
+	TArray<FOutlierWorldGuideContext> Passed;
+	for (int32 Index = PendingContexts.Num() - 1; Index >= 0; --Index)
+	{
+		if (IsChainAncestor(PendingContexts[Index].WidgetID, Reached))
+		{
+			Passed.Insert(PendingContexts[Index], 0);
+			PendingContexts.RemoveAt(Index);
+		}
+	}
+	if (ActiveContext.RequestID != 0 && IsChainAncestor(ActiveContext.WidgetID, Reached))
+	{
+		Passed.Insert(ActiveContext, 0);
+		ActiveContext = FOutlierWorldGuideContext();
+		RefreshPresentation();
+		ForceNetUpdate();
+	}
+	for (const FOutlierWorldGuideContext& Context : Passed)
+	{
+		// 지나간 단계와 Reached 사이의 단계도 다시 표시되지 않도록 함께 달성으로 기록한다. 후속 체인은 만들지 않는다.
+		for (FGameplayTag Step = Context.WidgetID; Step.IsValid() && Step != Reached;)
+		{
+			CompletedWidgetIDs.Add(Step);
+			const FOutlierWorldGuideContext* Link = ChainContexts.FindByPredicate(
+				[&Step](const FOutlierWorldGuideContext& Item) { return Item.WidgetID == Step; });
+			Step = Link ? Link->NextWidgetID : FGameplayTag();
+			if (CompletedWidgetIDs.Contains(Step)) break;
+		}
+		OutlierWorldGuideDebug::Trace(GetWorld(), FString::Printf(TEXT("SKIP Request=%d ID=%s: passed by %s"),
+			Context.RequestID, *Context.WidgetID.ToString(), *Reached.ToString()));
+		OnGuideFinished.Broadcast(Context, true);
+	}
+	if (!Passed.IsEmpty())
+		UE_LOG(LogOutlier, Log, TEXT("[WorldGuide] %d earlier guide(s) passed by '%s'."), Passed.Num(), *Reached.ToString());
 }
 
 bool AOutlierWorldGuideManager::NotifyWidgetOverlap(FGameplayTag WidgetID)
@@ -367,7 +446,7 @@ void AOutlierWorldGuideManager::RemoveOutline(UOutlierWorldGuideTargetComponent*
 		if (!State || --State->Users > 0) continue;
 		if (UPrimitiveComponent* Mesh = MeshKey.Get())
 		{
-			// Do not overwrite a different stencil installed by another effect while the guide was active.
+			// 가이드 활성 중 다른 효과가 설정한 Stencil은 덮어쓰지 않는다.
 			if (Mesh->CustomDepthStencilValue == State->AppliedStencil)
 			{
 				Mesh->SetCustomDepthStencilValue(State->OriginalStencil);

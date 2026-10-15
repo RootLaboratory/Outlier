@@ -20,7 +20,7 @@ struct FOutlierGuideStencilState
 	int32 Users = 0;
 };
 
-/** Place one manager in the persistent level. Server owns one shared FIFO; clients only render ActiveContext. */
+/** Persistent 레벨에 Manager 하나를 배치한다. 서버가 공유 FIFO 하나를 소유하고, 클라이언트는 ActiveContext만 렌더링한다. */
 UCLASS(Blueprintable)
 class OUTLIER_API AOutlierWorldGuideManager : public AActor
 {
@@ -30,21 +30,21 @@ public:
 	AOutlierWorldGuideManager();
 	static AOutlierWorldGuideManager* Find(UWorld* World);
 
-	/** Shooter DA slot. Keep the serialized name so existing BP/level bindings survive. */
+	/** Shooter DA 슬롯. 기존 BP/레벨 바인딩 유지를 위해 직렬화 이름을 바꾸지 않는다. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "World Guide", meta = (DisplayName = "Shooter Event Data Asset"))
 	TObjectPtr<UOutlierEventDataAsset> EventDataAsset;
 
-	/** Partner DA slot. Each empty slot falls back to its role DA in project settings. */
+	/** Partner DA 슬롯. 빈 슬롯은 프로젝트 설정의 역할별 DA로 대체된다. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "World Guide")
 	TObjectPtr<UOutlierEventDataAsset> PartnerEventDataAsset;
 
-	/** Only unconditional successors belong here. A branch actor supplies its selected NextWidgetID. */
+	/** 무조건 후속 목표만 둔다. 분기 액터는 선택한 NextWidgetID를 직접 전달한다. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "World Guide", meta = (TitleProperty = "WidgetID"))
 	TArray<FOutlierWorldGuideContext> ChainContexts;
 
-	/** Match the stencil consumed by the existing Outlier outline material. */
+	/** 가이드 전용 Stencil. 복원 가드가 구분할 수 있도록 스캔/근접 Outline(1, 2), 무기 조준(3)과 달라야 한다. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "World Guide", meta = (ClampMin = "1", ClampMax = "255"))
-	int32 OutlineStencilValue = 1;
+	int32 OutlineStencilValue = 8;
 
 	UPROPERTY(ReplicatedUsing = OnRep_ActiveContext, BlueprintReadOnly, Category = "World Guide")
 	FOutlierWorldGuideContext ActiveContext;
@@ -76,7 +76,7 @@ public:
 	void UnregisterTarget(UOutlierWorldGuideTargetComponent* Target);
 	int32 GetTargetCount(FGameplayTag WidgetID) const;
 	int32 GetPendingCount() const { return PendingContexts.Num(); }
-	/** Read-only setup/queue snapshot used by the development console. */
+	/** 개발 콘솔용 읽기 전용 설정/Queue 스냅샷. */
 	FString BuildDebugReport();
 	FOnOutlierWorldGuideFinished OnGuideFinished;
 
@@ -90,6 +90,12 @@ private:
 	void LoadTables();
 	void AdvanceQueue();
 	void FinishContext(const FOutlierWorldGuideContext& Context, bool bCompleted, FGameplayTag NextWidgetID = FGameplayTag());
+	/** ChainContexts를 따라 Ancestor에서 Descendant에 도달하면 true. 같은 ID는 false. */
+	bool IsChainAncestor(FGameplayTag Ancestor, FGameplayTag Descendant) const;
+	/** 체인상 뒤 단계가 이미 활성/대기/완료이면 이 안내는 지나간 것이다. */
+	bool IsPassedByLaterGuide(FGameplayTag WidgetID) const;
+	/** Reached의 앞 단계인 활성/대기 안내와 그 사이 단계를 표시 없이 완료로 기록한다. */
+	void SkipGuidesBefore(FGameplayTag Reached);
 	bool FinishMatching(FGameplayTag Tag, bool bByEvent, bool bCompleted, bool bOverlapOnly, FGameplayTag NextWidgetID = FGameplayTag());
 	void RefreshPresentation();
 	void AddOutline(UOutlierWorldGuideTargetComponent* Target);
