@@ -858,6 +858,8 @@ bool FEnemyFlightCleanupTest::RunTest(const FString& Parameters)
 bool FEnemyFlightProgressTest::RunTest(const FString& Parameters)
 {
 	FEnemyFlyToLocationTaskInstanceData Data;
+	TestFalse(TEXT("Sustained Move reselection does not invoke stop/restart callbacks"),
+		FEnemyFlyToLocationTask().bShouldStateChangeOnReselect);
 	TestTrue(TEXT("Legacy destination facing remains enabled"), Data.bRotateTowardDestination);
 	Data.BestDistance = 1000.0f;
 	TestTrue(TEXT("Legacy timeouts remain disabled"),
@@ -997,6 +999,8 @@ bool FEnemyInitialFlightGeometryTest::RunTest(const FString& Parameters)
 
 FEnemyFlyToLocationTask::FEnemyFlyToLocationTask()
 {
+	// 같은 Move 상태의 재선정은 Exit/Enter를 건너뛰어 경로와 가속 시간을 유지한다.
+	// Select로 실제 이탈하는 경우에는 미검증 경로로 이동하지 않도록 Exit에서 정지한다.
 	bShouldStateChangeOnReselect = false;
 }
 

@@ -35,6 +35,8 @@ struct OUTLIER_API FFlightSpeedProfileState
 	float Elapsed = 0.0f;
 	float StartSpeed = 0.0f;
 	float TargetSpeed = -1.0f;
+	float LastSpeedLimit = -1.0f;
+	float LastBrakingLimit = -1.0f;
 	TArray<float> PathSuffixDistances;
 	float LogElapsed = 0.0f;
 	TWeakObjectPtr<const UObject> LogOwner;
