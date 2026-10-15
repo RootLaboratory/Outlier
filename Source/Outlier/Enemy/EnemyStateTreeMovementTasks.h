@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "EnemyBase.h"
 #include "Drone/FlightPathfinding.h"
+#include "Drone/FlightMovementComponentBase.h"
 #include "StateTreeExecutionContext.h"
 #include "StateTreeExecutionTypes.h"
 #include "StateTreeTaskBase.h"
@@ -36,6 +37,11 @@ struct FEnemyFlyToLocationTaskInstanceData
 	// RuntimeStat.MoveSpeed를 기준으로 이 Task에서 사용할 이동 속도 비율이다.
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0"))
 	float SpeedMultiplier = 1.0f;
+
+	UPROPERTY(EditAnywhere, Category = Parameter)
+	FFlightSpeedProfile SpeedProfile;
+
+	FFlightSpeedProfileState SpeedProfileState;
 
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0"))
 	float RotationSpeed = 180.0f;

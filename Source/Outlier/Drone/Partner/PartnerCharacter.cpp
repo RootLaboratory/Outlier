@@ -747,8 +747,6 @@ void APartnerCharacter::NullifyDamagedEvenet() const
 	UMaterialPostProcessSubsystem* MaterialSub = GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>();
 	if (MaterialSub)
 	{
-		UE_LOG(LogTemp, Error, TEXT("MaterialSub"));
-
 		MaterialSub->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Damaged, false);
 		MaterialSub->UpdateDamagedPostProcess(1);
 	}

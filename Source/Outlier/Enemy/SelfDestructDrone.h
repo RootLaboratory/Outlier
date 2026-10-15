@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Enemy/VECDrone.h"
+#include "Drone/FlightMovementComponentBase.h"
 #include "SelfDestructDrone.generated.h"
 
 class UExplosionComponent;
@@ -17,6 +18,8 @@ public:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	virtual float GetWeakPointDamageMultiplier(const UPrimitiveComponent* HitComponent) const override;
+	virtual void NotifyHit(UPrimitiveComponent* MyComp, AActor* Other, UPrimitiveComponent* OtherComp,
+		bool bSelfMoved, FVector HitLocation, FVector HitNormal, FVector NormalImpulse, const FHitResult& Hit) override;
 
 	// StateTree 전조가 끝났을 때 호출한다. GAS로 치명 피해를 적용해 폭발 및 사망 처리에 진입한다.
 	UFUNCTION(BlueprintCallable, Category = "Self Destruct Drone")
@@ -51,6 +54,9 @@ public:
 	bool IsSelfDestructCommitted() const { return bHasCommittedSelfDestruct; }
 
 protected:
+	// AI 돌진은 가속만 적용한다. 목적지 감속이나 타겟 재추적은 하지 않는다.
+	UPROPERTY(EditDefaultsOnly, Category = "Self Destruct Drone|Movement")
+	FFlightSpeedProfile AIChargeSpeedProfile;
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void HandleDeath() override;
@@ -94,6 +100,9 @@ private:
 		float ChargeDistanceLimit);
 
 	bool bDeathHandling = false;
+	FFlightSpeedProfileState ChargeSpeedState;
+	friend class FEnemyChargeSpeedProfileTest;
+	friend class FEnemyChargeCollisionTest;
 
 	UPROPERTY(Replicated)
 	bool bHasCommittedSelfDestruct = false;

@@ -2,6 +2,9 @@
 
 #include "Enemy/EnemyStateTreeSelfDestructTasks.h"
 #include "Enemy/EnemyEnvQuery.h"
+#include "Enemy/SelfDestructDrone.h"
+#include "Curves/CurveFloat.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "Components/BoxComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Engine/Engine.h"
@@ -68,6 +71,38 @@ bool FEnemyChargeRangeTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyChargeSpeedProfileTest,
+	"Outlier.Enemy.SelfDestruct.SpeedProfile", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyChargeSpeedProfileTest::RunTest(const FString& Parameters)
+{
+	FChargeTestWorld Fixture;
+	if (!TestNotNull(TEXT("World"), Fixture.World)) return false;
+	ASelfDestructDrone* Drone = Fixture.World->SpawnActor<ASelfDestructDrone>();
+	if (!TestNotNull(TEXT("Drone"), Drone)) return false;
+	UCurveFloat* Curve = NewObject<UCurveFloat>(Drone);
+	Curve->FloatCurve.AddKey(0, 0);
+	Curve->FloatCurve.AddKey(1, 1);
+	Drone->AIChargeSpeedProfile.AccelerationCurve = Curve;
+	Drone->AIChargeSpeedProfile.AccelerationDuration = 1.0f;
+	Drone->AIChargeSpeedProfile.DecelerationCurve = Curve;
+	Drone->AIChargeSpeedProfile.DecelerationDistance = 10000;
+	UCharacterMovementComponent* Movement = Drone->GetCharacterMovement();
+	Movement->Velocity = FVector::ZeroVector;
+	if (!TestTrue(TEXT("AI commits direction"), Drone->BeginCommittedSelfDestructDirection(FVector::ForwardVector, 0, 400, 1000))) return false;
+	Drone->UpdateCommittedSelfDestructMovement(0.25f, 400);
+	TestTrue(TEXT("AI accelerates without applying approach braking"), Movement->Velocity.Equals(FVector(100, 0, 0)));
+	Drone->CancelCommittedSelfDestruct();
+	TestTrue(TEXT("Cancel immediately stops charge"), Movement->Velocity.IsNearlyZero());
+	TestEqual(TEXT("Cancel clears profile clock"), Drone->ChargeSpeedState.TargetSpeed, -1.0f);
+	Drone->SetEnemyPossessed(true);
+	if (!TestTrue(TEXT("Possessed drone can commit"), Drone->BeginCommittedSelfDestructDirection(FVector::ForwardVector, 0, 400, 1000))) return false;
+	Drone->UpdateCommittedSelfDestructMovement(0.25f, 400);
+	TestTrue(TEXT("Possessed charge keeps original speed"), Movement->Velocity.Equals(FVector(400, 0, 0)));
+	Drone->CancelCommittedSelfDestruct();
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyChargeSweepTest,
 	"Outlier.Enemy.SelfDestruct.StraightPath", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
@@ -95,6 +130,48 @@ bool FEnemyChargeSweepTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Nonblocking contact permits entry"), EnemyCharge::IsStraightPathClear(*Fixture.World, *Capsule, *Target, 5));
 	Capsule->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	TestFalse(TEXT("Spawn presentation without collision cannot charge"), EnemyCharge::IsStraightPathClear(*Fixture.World, *Capsule, *Target, 5));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyChargeCollisionTest,
+	"Outlier.Enemy.SelfDestruct.CollisionDetonation", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyChargeCollisionTest::RunTest(const FString& Parameters)
+{
+	FChargeTestWorld Fixture;
+	if (!TestNotNull(TEXT("World"), Fixture.World)) return false;
+	ASelfDestructDrone* Drone = Fixture.World->SpawnActor<ASelfDestructDrone>();
+	AActor* Wall = Fixture.AddBox(FVector(200, 0, 150), FVector(20, 200, 200));
+	if (!TestNotNull(TEXT("Drone"), Drone) || !TestNotNull(TEXT("Wall"), Wall)) return false;
+	UCapsuleComponent* Capsule = Drone->GetCapsuleComponent();
+	Capsule->SetCapsuleSize(30, 50);
+	Capsule->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+	Capsule->SetCollisionResponseToAllChannels(ECR_Block);
+	Drone->SetActorLocation(FVector(0, 0, 150));
+	FHitResult Hit;
+	Hit.bBlockingHit = true;
+	Drone->NotifyHit(Capsule, Wall, Cast<UPrimitiveComponent>(Wall->GetRootComponent()), true,
+		FVector(180, 0, 150), -FVector::ForwardVector, FVector::ZeroVector, Hit);
+	TestFalse(TEXT("Ordinary chase contact does not detonate"), Drone->bDeathHandling);
+	if (!TestTrue(TEXT("Charge commits"), Drone->BeginCommittedSelfDestructDirection(FVector::ForwardVector, 1, 400, 1000))) return false;
+	Hit.bBlockingHit = false;
+	Drone->NotifyHit(Capsule, Wall, Cast<UPrimitiveComponent>(Wall->GetRootComponent()), true,
+		FVector(180, 0, 150), -FVector::ForwardVector, FVector::ZeroVector, Hit);
+	TestFalse(TEXT("Nonblocking touch does not detonate"), Drone->bDeathHandling);
+	Drone->CancelCommittedSelfDestruct();
+	Hit.bBlockingHit = true;
+	Drone->NotifyHit(Capsule, Wall, Cast<UPrimitiveComponent>(Wall->GetRootComponent()), true,
+		FVector(180, 0, 150), -FVector::ForwardVector, FVector::ZeroVector, Hit);
+	TestFalse(TEXT("Cancelled charge no longer detonates on contact"), Drone->bDeathHandling);
+	if (!TestTrue(TEXT("A new charge can commit after cancellation"),
+		Drone->BeginCommittedSelfDestructDirection(FVector::ForwardVector, 1, 400, 1000))) return false;
+	// 실제 캡슐 Sweep을 사용한다. 콜백을 직접 호출하는 테스트만으로 이동 연결 완료를 주장하지 않는다.
+	Fixture.World->GetPhysicsScene()->ProcessDeferredCreatePhysicsState();
+	Fixture.World->GetPhysicsScene()->Flush();
+	Drone->GetCharacterMovement()->MoveUpdatedComponent(FVector(400, 0, 0), FQuat::Identity, true, &Hit);
+	TestTrue(TEXT("Charge movement hits the wall"), Hit.bBlockingHit);
+	TestTrue(TEXT("Blocking movement immediately enters death/explosion"), Drone->bDeathHandling);
+	TestFalse(TEXT("Detonation clears commitment"), Drone->IsSelfDestructCommitted());
 	return true;
 }
 

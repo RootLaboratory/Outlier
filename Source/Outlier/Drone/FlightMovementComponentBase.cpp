@@ -4,6 +4,147 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "Curves/CurveFloat.h"
+#include "HAL/IConsoleManager.h"
+#if WITH_DEV_AUTOMATION_TESTS
+#include "Misc/AutomationTest.h"
+#endif
+
+DEFINE_LOG_CATEGORY_STATIC(LogFlightSpeed, Log, All);
+static TAutoConsoleVariable<int32> CVarFlightSpeedDebug(TEXT("outlier.Flight.SpeedDebug"), 0,
+	TEXT("Automatic flight speed profile: 0=off, 1=start/stop and one-second samples."));
+
+#if WITH_DEV_AUTOMATION_TESTS
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlightSpeedProfileTest,
+	"Outlier.Drone.Flight.SpeedProfile", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlightSpeedProfileTest::RunTest(const FString& Parameters)
+{
+	FFlightSpeedProfile Profile;
+	FFlightSpeedProfileState State;
+	TestFalse(TEXT("Existing assets are opt-in"), Profile.IsEnabled());
+	TestEqual(TEXT("Missing curves preserve requested speed"), State.Update(Profile, 400, 0, 100, 0.25f), 400.0f);
+	UCurveFloat* Curve = NewObject<UCurveFloat>();
+	Curve->FloatCurve.AddKey(0, 0);
+	Curve->FloatCurve.AddKey(1, 1);
+	Profile.AccelerationCurve = Curve;
+	Profile.AccelerationDuration = 1.0f;
+	TestEqual(TEXT("Accelerates from actual speed"), State.Update(Profile, 400, 100, 1000, 0.25f), 175.0f);
+	TestEqual(TEXT("Retarget does not restart acceleration"), State.Update(Profile, 400, 175, 800, 0.25f), 250.0f);
+	Curve->FloatCurve.UpdateOrAddKey(1, 0.5f);
+	TestEqual(TEXT("Duration completes even with a low curve endpoint"), State.Update(Profile, 400, 250, 800, 0.5f), 400.0f);
+	Curve->FloatCurve.UpdateOrAddKey(1, 1);
+	Profile.DecelerationCurve = Curve;
+	TestEqual(TEXT("Half braking distance limits speed by half"), State.Update(Profile, 400, 400, 100, 0.1f), 200.0f);
+	TestEqual(TEXT("Endpoint retains enough speed to arrive"), State.Update(Profile, 400, 200, 0, 0.1f), 20.0f);
+	TestEqual(TEXT("Charge ignores braking"), State.Update(Profile, 400, 400, 0, 0.1f, false), 400.0f);
+	State.Reset();
+	TestEqual(TEXT("Hard stop restarts from rest"), State.Update(Profile, 400, 0, 1000, 0.25f), 100.0f);
+	const TArray<FVector> Path = { FVector::ZeroVector, FVector(10, 0, 0), FVector(10, 1000, 0) };
+	State.SetPath(Path);
+	TestEqual(TEXT("Braking uses entire detour, not nearby waypoint"), State.GetRemainingDistance(FVector::ZeroVector, Path, 1), 1010.0f);
+	const float BeforeReselect = State.Elapsed;
+	State.SetPath({ FVector::ZeroVector, FVector(2000, 0, 0) });
+	TestEqual(TEXT("Replacing route retains acceleration clock"), State.Elapsed, BeforeReselect);
+	Profile.AccelerationDuration = -1;
+	Profile.DecelerationDistance = -1;
+	TestFalse(TEXT("Invalid durations and distances disable their curves"), Profile.IsEnabled());
+	TestEqual(TEXT("Negative speed cannot move backwards"), State.Update(Profile, -100, 0, 100, 1), 0.0f);
+	return true;
+}
+#endif
+
+namespace
+{
+float GetFlightCurveAlpha(const UCurveFloat& Curve, float Input)
+{
+	const float Value = Curve.GetFloatValue(Input);
+	return FMath::IsFinite(Value) ? FMath::Clamp(Value, 0.0f, 1.0f) : Input;
+}
+}
+
+bool FFlightSpeedProfile::IsEnabled() const
+{
+	return (AccelerationCurve && FMath::IsFinite(AccelerationDuration) && AccelerationDuration > 0.0f)
+		|| (DecelerationCurve && FMath::IsFinite(DecelerationDistance) && DecelerationDistance > 0.0f);
+}
+
+void FFlightSpeedProfileState::Reset()
+{
+	if (TargetSpeed >= 0.0f && CVarFlightSpeedDebug.GetValueOnGameThread() > 0)
+	{
+		UE_LOG(LogFlightSpeed, Log, TEXT("[Speed] Stop Owner=%s Elapsed=%.2f"), *GetNameSafe(LogOwner.Get()), Elapsed);
+	}
+	*this = FFlightSpeedProfileState();
+}
+
+void FFlightSpeedProfileState::SetPath(const TArray<FVector>& Points)
+{
+	// 선정 시 한 번 합산한다. Tick에서는 현재 구간과 남은 길이를 O(1)로 읽는다.
+	PathSuffixDistances.SetNumZeroed(Points.Num());
+	for (int32 Index = Points.Num() - 2; Index >= 0; --Index)
+	{
+		PathSuffixDistances[Index] = PathSuffixDistances[Index + 1]
+			+ FVector::Distance(Points[Index], Points[Index + 1]);
+	}
+}
+
+float FFlightSpeedProfileState::GetRemainingDistance(const FVector& Position,
+	const TArray<FVector>& Points, int32 Index) const
+{
+	if (!Points.IsValidIndex(Index) || !PathSuffixDistances.IsValidIndex(Index)) return 0.0f;
+	return FVector::Distance(Position, Points[Index]) + PathSuffixDistances[Index];
+}
+
+float FFlightSpeedProfileState::Update(const FFlightSpeedProfile& Profile, float DesiredSpeed,
+	float ActualSpeed, float RemainingDistance, float DeltaTime, bool bAllowDeceleration,
+	const UObject* Owner, const TCHAR* Mode)
+{
+	const float SafeSpeed = FMath::IsFinite(DesiredSpeed) ? FMath::Max(DesiredSpeed, 0.0f) : 0.0f;
+	if (!Profile.IsEnabled()) return SafeSpeed;
+	// 목적지/경유점 변경은 시간을 초기화하지 않는다. 속도 설정이 바뀔 때만 실제 속도에서 새 구간을 시작한다.
+	if (!FMath::IsNearlyEqual(TargetSpeed, SafeSpeed))
+	{
+		StartSpeed = FMath::IsFinite(ActualSpeed) ? FMath::Clamp(ActualSpeed, 0.0f, SafeSpeed) : 0.0f;
+		TargetSpeed = SafeSpeed;
+		Elapsed = 0.0f;
+		LogOwner = Owner;
+		if (CVarFlightSpeedDebug.GetValueOnGameThread() > 0)
+		{
+			UE_LOG(LogFlightSpeed, Log, TEXT("[Speed] Begin Owner=%s Mode=%s Start=%.1f Target=%.1f"),
+				*GetNameSafe(Owner), Mode, StartSpeed, TargetSpeed);
+		}
+	}
+	Elapsed += FMath::IsFinite(DeltaTime) ? FMath::Max(DeltaTime, 0.0f) : 0.0f;
+	float Speed = SafeSpeed;
+	if (Profile.AccelerationCurve && FMath::IsFinite(Profile.AccelerationDuration)
+		&& Profile.AccelerationDuration > 0.0f && Elapsed < Profile.AccelerationDuration)
+	{
+		const float Alpha = GetFlightCurveAlpha(*Profile.AccelerationCurve, Elapsed / Profile.AccelerationDuration);
+		Speed = FMath::Lerp(StartSpeed, SafeSpeed, Alpha);
+	}
+	if (bAllowDeceleration && Profile.DecelerationCurve && FMath::IsFinite(Profile.DecelerationDistance)
+		&& Profile.DecelerationDistance > 0.0f && FMath::IsFinite(RemainingDistance))
+	{
+		const float Ratio = FMath::Clamp(RemainingDistance / Profile.DecelerationDistance, 0.0f, 1.0f);
+		if (Ratio < 1.0f)
+		{
+			const float Minimum = FMath::IsFinite(Profile.MinimumApproachSpeed)
+				? FMath::Clamp(Profile.MinimumApproachSpeed, 1.0f, FMath::Max(SafeSpeed, 1.0f)) : 20.0f;
+			Speed = FMath::Min(Speed, FMath::Max(Minimum,
+				SafeSpeed * GetFlightCurveAlpha(*Profile.DecelerationCurve, Ratio)));
+		}
+	}
+	Speed = FMath::Clamp(Speed, 0.0f, SafeSpeed);
+	LogElapsed += FMath::IsFinite(DeltaTime) ? FMath::Max(DeltaTime, 0.0f) : 0.0f;
+	if (CVarFlightSpeedDebug.GetValueOnGameThread() > 0 && LogElapsed >= 1.0f)
+	{
+		LogElapsed = 0.0f;
+		UE_LOG(LogFlightSpeed, Log, TEXT("[Speed] Sample Owner=%s Mode=%s Actual=%.1f Limit=%.1f Remaining=%.1f Elapsed=%.2f"),
+			*GetNameSafe(Owner), Mode, ActualSpeed, Speed, RemainingDistance, Elapsed);
+	}
+	return Speed;
+}
 
 UFlightMovementComponentBase::UFlightMovementComponentBase()
 {

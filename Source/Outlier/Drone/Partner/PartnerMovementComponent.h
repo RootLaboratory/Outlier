@@ -110,6 +110,14 @@ public:
 	void ApplyPartnerFlightSettings();
 
 protected:
+	// cm/s. 0이면 기존 MoveSpeed/BoostSpeed를 유지하고, 양수이면 CameraAssist에만 전용 최대 속도를 적용한다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Partner|AutoFollow|Speed", meta = (ClampMin = "0", Units = "cm/s"))
+	float CameraAssistMaxSpeed = 0.0f;
+	UPROPERTY(EditAnywhere, Category = "Partner|AutoFollow|Speed")
+	FFlightSpeedProfile CameraAssistSpeedProfile;
+	UPROPERTY(EditAnywhere, Category = "Partner|AutoFollow|Speed")
+	FFlightSpeedProfile SyncMoveSpeedProfile;
+
 	virtual void BeginPlay() override;
 	virtual ACharacter* GetFlightOwnerCharacter() const override;
 	virtual USceneComponent* GetFlightVisualTiltRoot() const override;
@@ -132,12 +140,24 @@ protected:
 	float FollowPathMargin = 800.0f;
 	UPROPERTY(EditAnywhere, Category = "Partner|AutoFollow|Path", meta = (ClampMin = "0"))
 	float FollowGoalSearchRadius = 150.0f;
+	// 최종 목적지는 유지하고, 막힌 장거리만 이 반경의 지역 경유지로 나누어 탐색한다.
+	UPROPERTY(EditAnywhere, Category = "Partner|AutoFollow|Path", meta = (ClampMin = "500"))
+	float FollowTravelHorizon = 2000.0f;
+	UPROPERTY(EditAnywhere, Category = "Partner|AutoFollow|Path", meta = (ClampMin = "100"))
+	float FollowPrefetchDistance = 1000.0f;
 	UPROPERTY(EditAnywhere, Category = "Partner|AutoFollow|Path", meta = (ClampMin = "1"))
 	int32 FollowMaxSearchNodes = 512;
 	UPROPERTY(EditAnywhere, Category = "Partner|AutoFollow|Path", meta = (ClampMin = "1"))
 	int32 FollowMaxCollisionChecks = 2048;
 	UPROPERTY(EditAnywhere, Category = "Partner|AutoFollow|Path", meta = (ClampMin = "0.1"))
 	float FollowMaxSearchMilliseconds = 4.0f;
+	// 위 세 한도는 요청 전체의 누적 예산이다. 아래 한도만 프레임별 작업량을 제한한다.
+	UPROPERTY(EditAnywhere, Category = "Partner|AutoFollow|Path", meta = (ClampMin = "128"))
+	int32 FollowSearchSliceChecks = 256;
+	UPROPERTY(EditAnywhere, Category = "Partner|AutoFollow|Path", meta = (ClampMin = "0.1"))
+	float FollowSearchSliceMilliseconds = 1.0f;
+	UPROPERTY(EditAnywhere, Category = "Partner|AutoFollow|Path", meta = (ClampMin = "0.1"))
+	float FollowSearchTimeout = 2.0f;
 	UPROPERTY(EditAnywhere, Category = "Partner|AutoFollow|Path", meta = (ClampMin = "0.05"))
 	float FollowRepathInterval = 0.25f;
 	UPROPERTY(EditAnywhere, Category = "Partner|AutoFollow|Path", meta = (ClampMin = "10"))
@@ -161,11 +181,24 @@ private:
 	FFlightPathRequest MakeFollowPathRequest(const FVector& Goal) const;
 	void UpdateFollowPath(double Now, const FVector& Goal);
 	void FindFollowPath(double Now, const FVector& Goal);
+	void AdvanceFollowPath(double Now, const FVector& Goal);
+	void CompleteFollowPath(double Now);
+	bool ShouldPrefetchFollowPath(const FVector& Current) const;
+	EFlightPathStatus CheckFollowSegment(const FVector& Goal) const;
+	float GetFollowTravelHorizon() const;
+	void RememberFollowRoute(const FVector& Start);
+	bool TryJoinFollowPath(TArray<FVector>& Points) const;
 	void FollowStoredPath(float DeltaTime);
-	void FailFollowPath(double Now, EFlightPathStatus Status);
+	bool HasReachedFollowWaypoint(const FVector& Current) const;
+	void UpdateFollowProgress(double Now, const FVector& Current);
+	void FailFollowPath(double Now, EFlightPathStatus Status, bool bKeepCurrentPath = false);
 	void ClearFollowPath();
 	void PublishFollowPath(bool bStopped);
 	void StopFollowMovement();
+	const FFlightSpeedProfile& GetFollowSpeedProfile() const;
+	float GetFollowDesiredSpeed() const;
+	FFlightSpeedProfileState FollowSpeedState;
+	bool bOwnsFollowSpeed = false;
 
 	UFUNCTION(Server, Reliable)
 	void ServerSetAutoFollowInput(EPartnerMoveMode Mode, bool bHeld, uint32 InputSerial);
@@ -176,16 +209,26 @@ private:
 	FPartnerFollowInputState SyncMoveInput;
 	EPartnerMoveMode FollowMode;
 	FPartnerFollowRetryState FollowRetry;
+	EFlightPathStatus FollowLastFailure = EFlightPathStatus::Success;
 	TArray<FVector> FollowPath;
+	TSharedPtr<FFlightPathSearch> FollowSearch;
+	double FollowSearchStartedAt = 0.0;
 	int32 FollowWaypoint = 0;
 	FVector FollowTargetSnapshot = FVector::ZeroVector;
 	FVector FollowHoldLocation = FVector::ZeroVector;
 	FVector FollowProgressLocation = FVector::ZeroVector;
+	int32 FollowProgressWaypoint = INDEX_NONE;
 	double FollowLastProgressAt = 0.0;
 	double FollowNextPathCheckAt = 0.0;
 	double FollowNextRepathAt = 0.0;
+	double FollowNextDiagnosticAt = 0.0;
 	bool bFollowWasActive = false;
 	bool bFollowHolding = false;
+	bool bFollowPartialRoute = false;
+	bool bFollowSearchContinuation = false;
+	int32 FollowRouteSegments = 0;
+	double FollowBestGoalDistance = TNumericLimits<double>::Max();
+	TArray<FVector> FollowRouteHistory;
 	friend class FPartnerAssistNavigationTest;
 
 	UPROPERTY(Transient)
