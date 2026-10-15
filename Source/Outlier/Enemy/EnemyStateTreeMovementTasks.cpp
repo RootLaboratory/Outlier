@@ -11,7 +11,10 @@
 #include "Room/RoomCombatSubsystem.h"
 #include "Room/RoomVolume.h"
 #if WITH_DEV_AUTOMATION_TESTS
+#include "AbilitySystemComponent.h"
+#include "Engine/Engine.h"
 #include "Misc/AutomationTest.h"
+#include "Misc/ScopeExit.h"
 #endif
 
 namespace
@@ -739,6 +742,97 @@ bool FEnemyFlightWaypointTurnTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Small steering change preserves momentum"), ShouldResetWaypointVelocity(FVector(450, 0, 0), FVector(100, 1, 0)));
 	TestTrue(TEXT("Corner clears sideways momentum"), ShouldResetWaypointVelocity(FVector(450, 0, 0), FVector(0, 100, 0)));
 	TestTrue(TEXT("Reversal clears old momentum"), ShouldResetWaypointVelocity(FVector(450, 0, 0), FVector(-100, 0, 0)));
+	return true;
+}
+
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyFlightCleanupTest,
+	"Outlier.Enemy.Flight.Cleanup", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FEnemyFlightCleanupTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Scenario : {TEXT("StateExit"), TEXT("Stun"), TEXT("Impact"), TEXT("Death"), TEXT("ControllerChanged")})
+	{
+		Names.Add(Scenario);
+		Commands.Add(Scenario);
+	}
+}
+
+bool FEnemyFlightCleanupTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false,
+		MakeUniqueObjectName(nullptr, UWorld::StaticClass(), TEXT("FlightCleanup")));
+	if (!TestNotNull(TEXT("World exists"), World)) return false;
+	GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(World);
+	ON_SCOPE_EXIT
+	{
+		World->DestroyWorld(false);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+	};
+	World->InitializeActorsForPlay(FURL());
+	AEnemyBase* Enemy = World->SpawnActor<AEnemyBase>();
+	AEnemyAIController* Controller = World->SpawnActor<AEnemyAIController>();
+	if (!TestNotNull(TEXT("Enemy exists"), Enemy) || !TestNotNull(TEXT("Controller exists"), Controller)) return false;
+	Controller->Possess(Enemy);
+	UCharacterMovementComponent* Movement = Enemy->GetCharacterMovement();
+	FEnemyFlyToLocationTaskInstanceData Data;
+	Data.Enemy = Enemy;
+	Data.CachedController = Controller;
+	Data.bOwnsMovement = true;
+	Data.bWaitingForPath = true;
+	Data.bRepathEpisode = true;
+	Data.CachedCapsule = Enemy->GetCapsuleComponent();
+	Data.PathWaypoints = {FVector::ZeroVector, FVector(500, 0, 0)};
+	Data.SpeedProfileState.TargetSpeed = 100.0f;
+	Movement->MaxFlySpeed = 100.0f;
+	Movement->Velocity = FVector(100, 0, 0);
+	Enemy->AddMovementInput(FVector::ForwardVector, 1.0f, true);
+
+	// 중단 사유가 달라도 Exit에서 같은 정리 경로를 사용한다. 새 Controller의 입력만 예외로 보호한다.
+	if (Parameters == TEXT("Stun")) Enemy->EnterStun();
+	else if (Parameters == TEXT("Impact"))
+	{
+		Enemy->ApplyMagneticPullVelocity(FVector(1000, 0, 0), Enemy);
+		if (!TestTrue(TEXT("Impact reaction starts"), Enemy->BeginImpactReaction())) return false;
+	}
+	else if (Parameters == TEXT("Death"))
+	{
+		// 사망 시 StopLogic의 Exit 정리는 AI Controller를 파괴하기 전에 수행된다.
+		Enemy->GetAbilitySystemComponent()->AddLooseGameplayTag(FGameplayTag::RequestGameplayTag(TEXT("State.Dead")));
+		TestTrue(TEXT("Death state is active before exit cleanup"), Enemy->IsDead());
+	}
+	else if (Parameters == TEXT("ControllerChanged"))
+	{
+		AEnemyAIController* Replacement = World->SpawnActor<AEnemyAIController>();
+		if (!TestNotNull(TEXT("Replacement controller exists"), Replacement)) return false;
+		Replacement->Possess(Enemy);
+		Movement->Velocity = FVector(250, 0, 0);
+		Movement->MaxFlySpeed = 250.0f;
+		Enemy->ConsumeMovementInputVector();
+		Enemy->AddMovementInput(FVector::RightVector, 1.0f, true);
+	}
+	StopFlyTask(Data);
+	TestTrue(TEXT("Exit releases path and capsule"), Data.PathWaypoints.IsEmpty() && !Data.CachedCapsule);
+	TestFalse(TEXT("Exit clears waiting and repath flags"), Data.bWaitingForPath || Data.bRepathEpisode);
+	TestFalse(TEXT("Exit releases movement ownership"), Data.bOwnsMovement);
+	TestEqual(TEXT("Exit clears profile state"), Data.SpeedProfileState.TargetSpeed, -1.0f);
+	if (Parameters == TEXT("ControllerChanged"))
+	{
+		TestEqual(TEXT("Old task cannot change new controller speed"), Movement->MaxFlySpeed, 250.0f);
+		TestEqual(TEXT("Old task cannot stop new controller velocity"), Movement->Velocity, FVector(250, 0, 0));
+		TestEqual(TEXT("Old task cannot consume new controller input"), Enemy->GetPendingMovementInputVector(), FVector::RightVector);
+	}
+	else
+	{
+		TestTrue(TEXT("Exit clears pending input and velocity"),
+			Enemy->GetPendingMovementInputVector().IsNearlyZero() && Movement->Velocity.IsNearlyZero());
+		TestEqual(TEXT("Exit restores AI base speed"), Movement->MaxFlySpeed, FMath::Max(Enemy->GetRuntimeStat().MoveSpeed, 0.0f));
+	}
+	// 중복 종료도 정리 이후의 새 입력을 지우지 않아야 한다.
+	Enemy->AddMovementInput(FVector::UpVector, 1.0f, true);
+	const FVector InputAfterExit = Enemy->GetPendingMovementInputVector();
+	StopFlyTask(Data);
+	TestEqual(TEXT("Duplicate cleanup cannot consume later input"), Enemy->GetPendingMovementInputVector(), InputAfterExit);
 	return true;
 }
 

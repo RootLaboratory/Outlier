@@ -4,6 +4,7 @@
 #include "Enemy/EnemyAIController.h"
 #include "Enemy/EnemyRoomSubsystem.h"
 #include "Enemy/EnemyStateTreeSelfDestructTasks.h"
+#include "AbilitySystemComponent.h"
 
 #include "Components/BoxComponent.h"
 #include "Components/CapsuleComponent.h"
@@ -575,7 +576,9 @@ IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemySearchQueryCompletionTest,
 void FEnemySearchQueryCompletionTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
 {
 	for (const TCHAR* Scenario : {TEXT("Success"), TEXT("FreshHint"), TEXT("NewEpisode"), TEXT("Rediscovery"),
-		TEXT("LocalGuard"), TEXT("Stun"), TEXT("Possessed"), TEXT("LeaseChanged"), TEXT("TimedOut"), TEXT("Empty")})
+		TEXT("LocalGuard"), TEXT("Stun"), TEXT("Impact"), TEXT("Death"), TEXT("Possessed"),
+		TEXT("LeaseChanged"), TEXT("GenerationChanged"), TEXT("ControllerLost"), TEXT("RoomUnregistered"),
+		TEXT("SessionEnded"), TEXT("TimedOut"), TEXT("Empty")})
 	{
 		Names.Add(Scenario);
 		Commands.Add(Scenario);
@@ -602,8 +605,24 @@ bool FEnemySearchQueryCompletionTest::RunTest(const FString& Parameters)
 	else if (Parameters == TEXT("Rediscovery")) Enemy->SetPlayerCurrentlyVisible(true);
 	else if (Parameters == TEXT("LocalGuard")) Enemy->EnterSearchLocalGuard();
 	else if (Parameters == TEXT("Stun")) Enemy->EnterStun();
+	else if (Parameters == TEXT("Impact"))
+	{
+		// 충격 입력만 준비한다. 결과 폐기는 실제 Impact 상태/질의 적용 함수를 거친다.
+		Enemy->ApplyMagneticPullVelocity(FVector(1000, 0, 0), Enemy);
+		if (!TestTrue(TEXT("Impact reaction starts"), Enemy->BeginImpactReaction())) return false;
+	}
+	else if (Parameters == TEXT("Death"))
+	{
+		Enemy->GetAbilitySystemComponent()->AddLooseGameplayTag(FGameplayTag::RequestGameplayTag(TEXT("State.Dead")));
+		Enemy->BeginDeathForPoolTesting();
+		TestTrue(TEXT("Death state is active before the query completes"), Enemy->IsDead());
+	}
 	else if (Parameters == TEXT("Possessed")) Enemy->SetEnemyPossessed(true);
 	else if (Parameters == TEXT("LeaseChanged")) ++Data.CapturedLease;
+	else if (Parameters == TEXT("GenerationChanged")) ++Data.CapturedGeneration;
+	else if (Parameters == TEXT("ControllerLost")) Controller->UnPossess();
+	else if (Parameters == TEXT("RoomUnregistered")) Data.CachedRooms->UnregisterRoom(Fixture.Room);
+	else if (Parameters == TEXT("SessionEnded")) Enemy->EndSearchEpisode();
 	else if (Parameters == TEXT("TimedOut"))
 	{
 		Data.QueryStartedAt -= Data.QueryTimeout + 1.0;

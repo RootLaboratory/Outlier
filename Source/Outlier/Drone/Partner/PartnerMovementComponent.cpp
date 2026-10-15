@@ -972,7 +972,7 @@ void UPartnerMovementComponent::FollowStoredPath(float DeltaTime)
 	}
 	const float BaseSpeed = GetFollowDesiredSpeed();
 	bOwnsFollowSpeed = true;
-	if (Profile.IsEnabled())
+	if (Profile.IsEnabled()) 
 	{
 		const float Remaining = FMath::Max(FollowSpeedState.GetRemainingDistance(Current, FollowPath, FollowWaypoint)
 			- GetFollowAcceptanceRadius(), bFollowPartialRoute ? Profile.DecelerationDistance + 100.0f : 0.0f);

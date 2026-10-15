@@ -86,6 +86,7 @@ class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeap
 
 	friend class UPartnerMovementComponent;
 	friend class FPartnerAssistNavigationTest;
+	friend class FPartnerFollowLifecycleTest;
 	friend class UPartnerSupportComponent;
 	friend class UPartnerCombatComponent;
 	friend class UPartnerDistanceComponent;

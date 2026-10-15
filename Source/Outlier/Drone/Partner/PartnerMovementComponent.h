@@ -230,6 +230,7 @@ private:
 	double FollowBestGoalDistance = TNumericLimits<double>::Max();
 	TArray<FVector> FollowRouteHistory;
 	friend class FPartnerAssistNavigationTest;
+	friend class FPartnerFollowLifecycleTest;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UCapsuleComponent> MovementCapsule;

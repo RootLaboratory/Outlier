@@ -5,10 +5,12 @@
 #include "Enemy/SelfDestructDrone.h"
 #include "Curves/CurveFloat.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "AbilitySystemComponent.h"
 #include "Components/BoxComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
+#include "Explosion/ExplosionComponent.h"
 #include "Misc/AutomationTest.h"
 #include "Physics/Experimental/PhysScene_Chaos.h"
 
@@ -143,6 +145,27 @@ bool FEnemyChargeCollisionTest::RunTest(const FString& Parameters)
 	ASelfDestructDrone* Drone = Fixture.World->SpawnActor<ASelfDestructDrone>();
 	AActor* Wall = Fixture.AddBox(FVector(200, 0, 150), FVector(20, 200, 200));
 	if (!TestNotNull(TEXT("Drone"), Drone) || !TestNotNull(TEXT("Wall"), Wall)) return false;
+	// BP/DataTable이 없는 네이티브 테스트 액터에도 살아 있는 체력과 유효한 폭발 설정을 준비한다.
+	// BeginPlay 이후에 체력을 보정하면 초기 체력 0으로 이미 사망한 상태를 되돌리게 된다.
+	Drone->RuntimeStat.Health = 100.0f;
+	UExplosionComponent* Explosion = Drone->GetExplosionComponent();
+	if (!TestNotNull(TEXT("Explosion component"), Explosion)) return false;
+	UDataTable* ExplosionTable = NewObject<UDataTable>(Drone);
+	ExplosionTable->RowStruct = FExplosionProfileRow::StaticStruct();
+	ExplosionTable->AddRow(TEXT("CollisionTest"), FExplosionProfileRow());
+	FDataTableRowHandle ExplosionRow;
+	ExplosionRow.DataTable = ExplosionTable;
+	ExplosionRow.RowName = TEXT("CollisionTest");
+	Explosion->SetExplosionProfileRow(ExplosionRow);
+	// 이 테스트는 충돌/피해/폭발 요청을 검증하며 비동기 GameplayCue 연출은 실행하지 않는다.
+	if (UAbilitySystemComponent* AbilitySystem = Drone->GetAbilitySystemComponent())
+		AbilitySystem->bSuppressGameplayCues = true;
+	// 충돌 후 피해가 사망으로 이어지려면 BeginPlay의 GAS 초기화/체력 감시가 먼저 실행되어야 한다.
+	Drone->DispatchBeginPlay();
+	if (!TestTrue(TEXT("Drone begins play before collision"), Drone->HasActorBegunPlay())
+		|| !TestTrue(TEXT("Damage receiver has initialized GAS actor info"),
+			Drone->GetAbilitySystemComponent() && Drone->GetAbilitySystemComponent()->GetAvatarActor() == Drone)
+		|| !TestTrue(TEXT("Drone starts with positive health"), Drone->GetCurrentHealth() > 0.0f)) return false;
 	UCapsuleComponent* Capsule = Drone->GetCapsuleComponent();
 	Capsule->SetCapsuleSize(30, 50);
 	Capsule->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
@@ -171,6 +194,8 @@ bool FEnemyChargeCollisionTest::RunTest(const FString& Parameters)
 	Drone->GetCharacterMovement()->MoveUpdatedComponent(FVector(400, 0, 0), FQuat::Identity, true, &Hit);
 	TestTrue(TEXT("Charge movement hits the wall"), Hit.bBlockingHit);
 	TestTrue(TEXT("Blocking movement immediately enters death/explosion"), Drone->bDeathHandling);
+	TestTrue(TEXT("Blocking movement consumes remaining health"), Drone->GetCurrentHealth() <= 0.0f);
+	TestTrue(TEXT("Blocking movement submits an actual explosion"), Explosion->HasDetonated());
 	TestFalse(TEXT("Detonation clears commitment"), Drone->IsSelfDestructCommitted());
 	return true;
 }

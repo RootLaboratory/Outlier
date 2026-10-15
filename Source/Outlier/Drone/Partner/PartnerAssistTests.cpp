@@ -10,6 +10,7 @@
 #include "Engine/World.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Misc/AutomationTest.h"
+#include "Misc/ScopeExit.h"
 #include "Physics/Experimental/PhysScene_Chaos.h"
 #include "AIController.h"
 #include "Shooter/ShooterCharacter.h"
@@ -646,6 +647,111 @@ bool FPartnerAssistNavigationTest::RunTest(const FString& Parameters)
 	World->DestroyWorld(false);
 	GEngine->DestroyWorldContext(World);
 	World->RemoveFromRoot();
+	return true;
+}
+
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FPartnerFollowLifecycleTest,
+	"Outlier.Partner.AutoFollow.Lifecycle",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FPartnerFollowLifecycleTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Mode : {TEXT("CameraAssist"), TEXT("SyncMove")})
+	{
+		for (const TCHAR* Scenario : {TEXT("Stop"), TEXT("OwnerChange"), TEXT("LateSuccess"), TEXT("LateStop"), TEXT("ModeSwitch")})
+		{
+			const FString Name = FString::Printf(TEXT("%s.%s"), Mode, Scenario);
+			Names.Add(Name);
+			Commands.Add(Name);
+		}
+	}
+}
+
+bool FPartnerFollowLifecycleTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false,
+		MakeUniqueObjectName(nullptr, UWorld::StaticClass(), TEXT("PartnerFollowLifecycle")));
+	if (!TestNotNull(TEXT("World exists"), World)) return false;
+	GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(World);
+	ON_SCOPE_EXIT
+	{
+		World->DestroyWorld(false);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+	};
+	World->InitializeActorsForPlay(FURL());
+	APartnerCharacter* Partner = World->SpawnActor<APartnerCharacter>();
+	UPartnerMovementComponent* Move = Partner ? Partner->FindComponentByClass<UPartnerMovementComponent>() : nullptr;
+	if (!TestNotNull(TEXT("Partner movement exists"), Move)) return false;
+	Move->RefreshCharacterRefsFromPlayerState();
+	const EPartnerMoveMode Mode = Parameters.StartsWith(TEXT("CameraAssist."))
+		? EPartnerMoveMode::CameraAssist : EPartnerMoveMode::SyncMove;
+	FString ModeName, Scenario;
+	Parameters.Split(TEXT("."), &ModeName, &Scenario);
+	Move->StartAutoFollow(Mode);
+	if (!TestEqual(TEXT("Input enables requested mode"), Partner->MoveMode, Mode)) return false;
+	Move->FollowMode = Mode;
+	const uint32 OldSerial = Move->GetFollowInput(Mode).Serial;
+	const FVector Start = Partner->GetCapsuleComponent()->GetComponentLocation();
+	const TArray<FVector> OldPath = {Start, Start + FVector(600, 0, 0)};
+	Move->FollowPath = OldPath;
+	Move->FollowWaypoint = 1;
+	Move->bOwnsFollowSpeed = true;
+	Move->FollowSpeedState.TargetSpeed = 100.0f;
+	Partner->GetCharacterMovement()->MaxFlySpeed = 100.0f;
+	Partner->GetCharacterMovement()->Velocity = FVector(100, 0, 0);
+	Partner->AddMovementInput(FVector::ForwardVector, 1.0f, true);
+	Move->FollowSearch = FlightPathfinding::BeginSearch(*World, *Partner->GetCapsuleComponent(),
+		Move->MakeFollowPathRequest(OldPath.Last()));
+	if (!TestTrue(TEXT("A pending search is owned by the component"), Move->FollowSearch.IsValid())) return false;
+	const TWeakPtr<FFlightPathSearch> PendingSearch = Move->FollowSearch;
+
+	// 실제 종료 API가 경로/진행 중 탐색/입력/속도를 함께 정리하는지 확인한다.
+	if (Scenario == TEXT("OwnerChange")) Move->ResetAutoFollowForOwnerChange();
+	else Move->StopAutoFollow();
+	TestEqual(TEXT("Stop returns to manual mode"), Partner->MoveMode, EPartnerMoveMode::Normal);
+	TestTrue(TEXT("Stop releases pending search, not just its route"), !Move->FollowSearch && !PendingSearch.IsValid());
+	TestTrue(TEXT("Stop clears path, input and velocity"), Move->FollowPath.IsEmpty()
+		&& Partner->GetPendingMovementInputVector().IsNearlyZero() && Partner->GetCharacterMovement()->Velocity.IsNearlyZero());
+	TestFalse(TEXT("Stop releases speed ownership"), Move->bOwnsFollowSpeed);
+	TestEqual(TEXT("Stop resets speed curve state"), Move->FollowSpeedState.TargetSpeed, -1.0f);
+	const float ManualSpeed = Partner->bIsAccelerate ? Partner->BoostSpeed : Partner->MoveSpeed;
+	TestEqual(TEXT("Stop restores manual speed"), Partner->GetCharacterMovement()->MaxFlySpeed, ManualSpeed);
+
+	if (Scenario == TEXT("LateSuccess") || Scenario == TEXT("LateStop") || Scenario == TEXT("ModeSwitch"))
+	{
+		Move->ReleaseAutoFollow(Mode);
+		const EPartnerMoveMode NewMode = Scenario == TEXT("ModeSwitch")
+			? (Mode == EPartnerMoveMode::CameraAssist ? EPartnerMoveMode::SyncMove : EPartnerMoveMode::CameraAssist) : Mode;
+		Move->StartAutoFollow(NewMode);
+		Move->FollowMode = NewMode;
+		if (!TestEqual(TEXT("A fresh input enables the next session"), Partner->MoveMode, NewMode)) return false;
+		const TArray<FVector> NewPath = {Start, Start + FVector(0, 600, 0)};
+		Move->FollowPath = NewPath;
+		// RPC 수신 함수의 지연/순서 계약만 검사한다. 실제 네트워크 전송 검증과 구분한다.
+		Move->ClientReceiveFollowPath_Implementation(Mode, OldSerial, OldPath, Scenario == TEXT("LateStop"));
+		TestEqual(TEXT("Late reply cannot change the active mode"), Partner->MoveMode, NewMode);
+		TestTrue(TEXT("Late reply cannot overwrite or clear the new route"), Move->FollowPath == NewPath);
+		Move->ServerSetAutoFollowInput_Implementation(Mode, false, OldSerial);
+		TestEqual(TEXT("Late release cannot stop the new session"), Partner->MoveMode, NewMode);
+	}
+	else
+	{
+		Move->ClientReceiveFollowPath_Implementation(Mode, OldSerial, OldPath, false);
+		TestTrue(TEXT("A stopped session cannot be revived by a delayed success"), Move->FollowPath.IsEmpty());
+		if (Scenario == TEXT("OwnerChange"))
+			TestFalse(TEXT("Owner change releases both input latches"), Move->CameraAssistInput.bHeld || Move->SyncMoveInput.bHeld);
+		else
+		{
+			Move->StartAutoFollow(Mode);
+			TestEqual(TEXT("Held input cannot automatically restart"), Partner->MoveMode, EPartnerMoveMode::Normal);
+			Move->ReleaseAutoFollow(Mode);
+			Move->StartAutoFollow(Mode);
+			TestEqual(TEXT("Release and press rearms the session"), Partner->MoveMode, Mode);
+		}
+	}
+	Move->ResetAutoFollowForOwnerChange();
+	AddInfo(FString::Printf(TEXT("[FollowLifecycle] Scenario=%s Coverage=LocalRpcDeliveryAndCleanup; real network transport remains separate"), *Parameters));
 	return true;
 }
 

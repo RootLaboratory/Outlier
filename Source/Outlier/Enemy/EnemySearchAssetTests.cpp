@@ -3,6 +3,7 @@
 #include "Enemy/EnemyEnvQuery.h"
 #include "Enemy/EnemyStateTreeMovementTasks.h"
 #include "Enemy/EnemyStateTreeTacticalTasks.h"
+#include "Enemy/EnemyStateTreeComponent.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "EnvironmentQuery/EnvQuery.h"
 #include "EnvironmentQuery/EnvQueryOption.h"
@@ -127,6 +128,97 @@ void CheckDestinationBinding(FAutomationTestBase& Test, const UStateTree& Tree,
 		&& Output->SourceLeafProperty == Input->SourceLeafProperty
 		&& Output->SourceIndirection.Offset == Input->SourceIndirection.Offset);
 }
+
+void CheckLinkedQueries(FAutomationTestBase& Test, const UStateTree& Tree, TSet<const UStateTree*>& Visited)
+{
+	// Linked Tree와 BP Override를 함께 검사한다. 순환 참조는 한 번만 방문한다.
+	if (Visited.Contains(&Tree)) return;
+	Visited.Add(&Tree);
+	if (!Test.TestTrue(FString::Printf(TEXT("%s is compiled and ready"), *Tree.GetPathName()), Tree.IsReadyToRun())) return;
+	for (const FCompactStateTreeState& State : Tree.GetStates())
+	{
+		for (int32 Index = 0; Index < State.TasksNum; ++Index)
+		{
+			const FEnemyRunEnvQueryTask* Task = Tree.GetNode(State.TasksBegin + Index).GetPtr<const FEnemyRunEnvQueryTask>();
+			if (!Task || !Task->bTaskEnabled) continue;
+			const FString Location = FString::Printf(TEXT("%s / %s / Run Env Query"), *Tree.GetPathName(), *State.Name.ToString());
+			const auto* Data = GetSearchTaskData(Tree, Task);
+			if (!Test.TestNotNull(Location + TEXT(" instance data"), Data)) continue;
+			const UEnvQuery* Query = Data->QueryTemplate.Get();
+			if (!Test.TestNotNull(Location + TEXT(" QueryTemplate must be assigned in Details"), Query)) continue;
+			Test.AddInfo(FString::Printf(TEXT("[DroneAsset] %s -> %s"), *Location, *Query->GetPathName()));
+			Test.TestTrue(Location + TEXT(" query has an option"), !Query->GetOptions().IsEmpty());
+			for (const UEnvQueryOption* Option : Query->GetOptions())
+			{
+				if (!Test.TestNotNull(Location + TEXT(" EQS option"), Option)) continue;
+				Test.TestNotNull(Location + TEXT(" EQS generator"), Option->Generator.Get());
+				bool bHasFlightFilter = false;
+				bool bHasFlightTest = false;
+				for (const UEnvQueryTest* QueryTest : Option->Tests)
+				{
+					const auto* Flight = Cast<UEnemyEnvQueryTest_FlightDestination>(QueryTest);
+					bHasFlightTest |= Flight != nullptr;
+					// 실패 시 필터 누락과 잘못된 목적/Bool 설정을 로그에서 구분한다.
+					Test.AddInfo(FString::Printf(TEXT("[DroneAsset] Query=%s Test=%s FlightDestination=%d Purpose=%d BoolMatch=%d"),
+						*Query->GetPathName(), *GetNameSafe(QueryTest), Flight != nullptr,
+						QueryTest ? int32(QueryTest->TestPurpose.GetValue()) : -1,
+						Flight ? int32(Flight->BoolValue.DefaultValue) : -1));
+					bHasFlightFilter |= Flight && Flight->BoolValue.DefaultValue
+						&& Flight->TestPurpose != EEnvTestPurpose::Score;
+				}
+				// 선회는 목적지 단독 필터 없이도 Task가 실제 곡선의 모든 구간을 검사한다.
+				// 단, 존재하는 FlightDestination 필터의 잘못된 설정까지 예외로 숨기지는 않는다.
+				const bool bUsesOrbitRouteValidation = Data->bValidateOrbitPath
+					&& Cast<UEnemyEnvQueryGenerator_Orbit>(Option->Generator) != nullptr;
+				Test.TestTrue(Location + TEXT(" destination needs a valid FlightDestination filter or dedicated orbit route validation"),
+					bHasFlightFilter || (!bHasFlightTest && bUsesOrbitRouteValidation));
+				if (!bHasFlightTest && bUsesOrbitRouteValidation)
+					Test.AddInfo(FString::Printf(TEXT("[DroneAsset] Query=%s Validation=OrbitCapsuleSegmentsAndRoom"), *Query->GetPathName()));
+			}
+		}
+		if (State.LinkedAsset) CheckLinkedQueries(Test, *State.LinkedAsset, Visited);
+	}
+}
+}
+
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyDroneAssetReferencesTest, "Outlier.Enemy.Regression.AssetReferences",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FEnemyDroneAssetReferencesTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Type : {TEXT("Gun"), TEXT("Melee")})
+	{
+		Names.Add(Type);
+		Commands.Add(Type);
+	}
+}
+
+bool FEnemyDroneAssetReferencesTest::RunTest(const FString& Parameters)
+{
+	const bool bMelee = Parameters == TEXT("Melee");
+	const UClass* Class = LoadClass<AEnemyBase>(nullptr, bMelee
+		? TEXT("/Game/Blueprints/Enemy/VECDrone/BP_VECDrone_Explosion.BP_VECDrone_Explosion_C")
+		: TEXT("/Game/Blueprints/Enemy/VECDrone/BP_VECDrone_Gun.BP_VECDrone_Gun_C"));
+	if (!TestNotNull(TEXT("Actual enemy BP class loads"), Class)) return false;
+	const AEnemyBase* Enemy = Class->GetDefaultObject<AEnemyBase>();
+	const auto* Component = Cast<UEnemyStateTreeComponent>(Enemy->GetStateTreeComponent());
+	if (!TestNotNull(TEXT("BP StateTreeComponent uses EnemyStateTreeComponent"), Component)) return false;
+	TSet<const UStateTree*> Visited;
+	const UStateTree* Common = Component->GetConfiguredStateTreeReference().GetStateTree();
+	if (TestNotNull(TEXT("BP StateTreeComponent common tree is assigned"), Common)) CheckLinkedQueries(*this, *Common, Visited);
+	for (const FName PropertyName : {FName(TEXT("BattleStateTreeReference")), FName(TEXT("PossessedAttackStateTreeReference"))})
+	{
+		const FStructProperty* Property = FindFProperty<FStructProperty>(Class, PropertyName);
+		if (!TestNotNull(PropertyName.ToString() + TEXT(" property"), Property)) continue;
+		const FStateTreeReference* Reference = Property->ContainerPtrToValuePtr<FStateTreeReference>(Enemy);
+		const UStateTree* Tree = Reference->GetStateTree();
+		if (!TestNotNull(PropertyName.ToString() + TEXT(" must be assigned on BP"), Tree)) continue;
+		if (PropertyName == TEXT("BattleStateTreeReference"))
+			TestEqual(TEXT("BP uses its own battle type, not the other drone's tree"), Tree->GetFName(),
+				FName(bMelee ? TEXT("ST_VECDroneBattle_Melee") : TEXT("ST_VECDroneBattle_Gun")));
+		CheckLinkedQueries(*this, *Tree, Visited);
+	}
+	return true;
 }
 
 IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemySearchAssetsTest, "Outlier.Enemy.Search.Assets",

@@ -5,6 +5,7 @@
 #include "Enemy/EnemyPoolDefinition.h"
 #include "Enemy/EnemyPoolSubsystem.h"
 #include "Enemy/EnemyRoomSubsystem.h"
+#include "Enemy/EnemyStateTreeTacticalTasks.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/SphereComponent.h"
@@ -310,14 +311,20 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 		bool bFoundSearch = false;
 		for (const FCompactStateTreeState& State : GunBattleTree->GetStates())
 		{
-			if (State.Name == FName(TEXT("LostContactSearch")))
+			if (State.Name == FName(TEXT("Search")))
 			{
 				bFoundSearch = true;
-				TestEqual(TEXT("Search remains the fallback after other combat choices fail"),
-					State.EnterConditionsNum, static_cast<uint8>(0));
+				// 새 구조는 공유 추적과 시야 상실 수색을 Search Session으로 통합한다.
+				bool bHasSession = false;
+				for (int32 Index = 0; Index < State.TasksNum; ++Index)
+				{
+					const auto* Task = GunBattleTree->GetNode(State.TasksBegin + Index).GetPtr<const FEnemySearchSessionTask>();
+					bHasSession |= Task && Task->bTaskEnabled && !Task->bConsideredForCompletion;
+				}
+				TestTrue(TEXT("Search owns a non-completing search session"), bHasSession);
 			}
 		}
-		TestTrue(TEXT("Gun battle StateTree contains LostContactSearch"), bFoundSearch);
+		TestTrue(TEXT("Gun battle StateTree contains Search"), bFoundSearch);
 	}
 
 	UClass* GunClass = LoadClass<AEnemyBase>(nullptr,
@@ -388,8 +395,8 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 						const TArray<FName> BattleStates = SharedStateTree->GetActiveStateNames();
 						TestTrue(TEXT("Shared-target gun transitions into Battle"),
 							BattleStates.Contains(FName(TEXT("Battle"))));
-						TestTrue(TEXT("Shared-target gun pursues the room target"),
-							BattleStates.Contains(FName(TEXT("SharedPursuit"))));
+						TestTrue(TEXT("Shared-target gun enters the unified Search branch"),
+							BattleStates.Contains(FName(TEXT("Search"))));
 						TestFalse(TEXT("Shared-target gun never returns to NonBattle"),
 							BattleStates.Contains(FName(TEXT("NonBattle"))));
 
@@ -399,8 +406,8 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 						SharedStateTree->TickComponent(0.016f, LEVELTICK_All, nullptr);
 						TestFalse(TEXT("Living gun does not fall into Death during a target-selection gap"),
 							SharedStateTree->GetActiveStateNames().Contains(FName(TEXT("Death"))));
-						TestTrue(TEXT("Gun keeps shared pursuit without a visible target Actor"),
-							SharedStateTree->GetActiveStateNames().Contains(FName(TEXT("SharedPursuit"))));
+						TestTrue(TEXT("Gun keeps Search without a visible target Actor"),
+							SharedStateTree->GetActiveStateNames().Contains(FName(TEXT("Search"))));
 						SharedGunLease->SetPlayerCurrentlyVisible(false);
 						SharedStateTree->TickComponent(0.016f, LEVELTICK_All, nullptr);
 
@@ -427,7 +434,7 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 						TestFalse(TEXT("Living gun does not select Death after target-selection restart"),
 							SharedStateTree->GetActiveStateNames().Contains(FName(TEXT("Death"))));
 						TestTrue(TEXT("Gun searches when the visible target Actor is missing"),
-							SharedStateTree->GetActiveStateNames().Contains(FName(TEXT("LostContactSearch"))));
+							SharedStateTree->GetActiveStateNames().Contains(FName(TEXT("Search"))));
 					}
 				}
 			}
