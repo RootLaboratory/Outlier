@@ -29,7 +29,7 @@ struct FTuto_EventDelivery
 	ETuto_EventRegion Region = ETuto_EventRegion::Both;
 };
 
-/** Owner-only transport created on demand. Uses existing controllers and PlayerStates unchanged. */
+/** 필요 시 생성되는 Owner 전용 transport. 기존 컨트롤러와 PlayerState를 그대로 사용한다. */
 UCLASS(Transient, NotBlueprintable)
 class OUTLIER_API ATuto_EventRelay : public AActor
 {
@@ -39,7 +39,6 @@ public:
 	ATuto_EventRelay();
 	static ATuto_EventRelay* FindOrCreate(APlayerController* Controller);
 	static ATuto_EventRelay* Find(const APlayerController* Controller);
-	void QueueEvent(FGameplayTag EventTag, const FString& Source);
 	void QueueCommand(FGameplayTag EventTag, ETuto_EventOperation Operation, ETuto_EventRegion Region,
 		const FString& Source);
 	const TArray<FTuto_EventDelivery>& GetPendingEvents() const { return PendingEvents; }
@@ -52,7 +51,7 @@ protected:
 	void ProcessPendingEvents();
 
 private:
-	/** Initial replication creates the relay before delivering events, even if the source pickup was destroyed. */
+	/** 원본 픽업이 파괴됐더라도 초기 리플리케이션이 이벤트 전달 전에 relay를 생성한다. */
 	UPROPERTY(ReplicatedUsing = OnRep_PendingEvents)
 	TArray<FTuto_EventDelivery> PendingEvents;
 

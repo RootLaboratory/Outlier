@@ -21,12 +21,10 @@ enum class EOutlierInfoRequestOperation : uint8
 {
 	Show,
 	Complete,
-	CompleteInput,
-	Overlap,
-	CancelInputs
+	Overlap
 };
 
-/** Only used until MainUI is ready. Live content/lifetime is never cached here. */
+/** MainUI 준비 전까지만 쓴다. 활성 콘텐츠/수명은 여기에 캐시하지 않는다. */
 struct FOutlierPendingInfoRequest
 {
 	EOutlierInfoRegion Region = EOutlierInfoRegion::Upper;
@@ -44,7 +42,7 @@ public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 
-	/** Dispatch requests through MainUI.InfoLayer. Widgets resolve data and own their queues. */
+	/** 요청을 MainUI.InfoLayer로 전달한다. 데이터 해석과 큐는 위젯이 소유한다. */
 	UFUNCTION(BlueprintPure, Category = "UI|Info")
 	UInfoCanvasBase* GetInfoCanvas() const;
 
@@ -57,21 +55,18 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UI|Info")
 	bool CompleteInfoEvent(EOutlierInfoRegion Region, FGameplayTag EventTag);
 
-	bool CompleteInputEvent(FGameplayTag EventTag);
 	bool NotifyInfoOverlap(FGameplayTag EventTag);
 	bool NotifyInfoOverlap(EOutlierInfoRegion Region, FGameplayTag EventTag);
-	void CancelInputInfos();
-	FGameplayTag GetActiveInputEventTag() const;
 	void ClearEventInfo();
 	bool ShowEventUpper(const FOutlierInfoWidgetRequest& Request);
 	bool HideEventUpper(FGameplayTag EventTag);
 	bool ShowEventGif(FGameplayTag EventTag, FGameplayTag GifTag);
 	bool HideEventGif(FGameplayTag EventTag);
-	/** A positive FallbackDuration times the subtitle for a voice that could not play; otherwise the voice ends it. */
-	bool ShowEventScript(FGameplayTag EventTag, FGameplayTag TTSTag = FGameplayTag(), float FallbackDuration = 0.0f);
+	/** 자막은 음성과 수명이 같다. FinishEventScript가 종료한다. */
+	bool ShowEventScript(FGameplayTag EventTag, FGameplayTag TTSTag = FGameplayTag());
 	void FinishEventScript(FGameplayTag EventTag, bool bCompleted);
 
-	/** Transfers undelivered requests to a HUD created later; active widget state is not replayed. */
+	/** 미전달 요청을 나중에 생성된 HUD로 넘긴다. 활성 위젯 상태는 재생하지 않는다. */
 	UFUNCTION(BlueprintCallable, Category = "UI|Event")
 	void RefreshEventUI();
 

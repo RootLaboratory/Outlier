@@ -9,7 +9,7 @@
 void UInfoCanvasWidget::NativeOnInitialized()
 {
 	Super::NativeOnInitialized();
-	// Regions anchor to the full screen at every resolution, whatever slot MainUI placed this in.
+	// MainUI가 어느 slot에 배치하든 모든 해상도에서 영역은 전체 화면에 앵커된다.
 	if (UCanvasPanelSlot* CanvasSlot = Cast<UCanvasPanelSlot>(Slot))
 	{
 		CanvasSlot->SetAnchors(FAnchors(0.0f, 0.0f, 1.0f, 1.0f));
@@ -53,11 +53,6 @@ bool UInfoCanvasWidget::CompleteInfo(EOutlierInfoRegion Region, FGameplayTag Eve
 	return Widget && Widget->CompleteInfo(EventTag);
 }
 
-bool UInfoCanvasWidget::CompleteInputInfo(FGameplayTag EventTag)
-{
-	return UpperWidget && UpperWidget->CompleteInputInfo(EventTag);
-}
-
 bool UInfoCanvasWidget::NotifyInfoOverlap(FGameplayTag EventTag)
 {
 	return NotifyInfoOverlap(EOutlierInfoRegion::Upper, EventTag);
@@ -67,16 +62,6 @@ bool UInfoCanvasWidget::NotifyInfoOverlap(EOutlierInfoRegion Region, FGameplayTa
 {
 	UInfoQueueWidget* Widget = GetInfoRegion(Region);
 	return Widget && Widget->NotifyOverlap(EventTag);
-}
-
-void UInfoCanvasWidget::CancelInputInfos()
-{
-	if (UpperWidget) UpperWidget->CancelInputInfos();
-}
-
-FGameplayTag UInfoCanvasWidget::GetActiveInputEventTag() const
-{
-	return UpperWidget ? UpperWidget->GetActiveInputEventTag() : FGameplayTag();
 }
 
 void UInfoCanvasWidget::FinishInfoSource(EOutlierInfoRegion Region, FGameplayTag EventTag, bool bCompleted)

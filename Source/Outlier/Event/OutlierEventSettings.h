@@ -17,14 +17,4 @@ public:
 
 	UPROPERTY(Config, EditAnywhere, Category = "Role Data Assets")
 	TSoftObjectPtr<UOutlierEventDataAsset> PartnerDataAsset;
-
-	/** A subtitle whose voice cannot play stays for (non-whitespace characters x this), clamped below. */
-	UPROPERTY(Config, EditAnywhere, Category = "Subtitle Fallback", meta = (ClampMin = "0.01"))
-	float FallbackSecondsPerCharacter = 0.15f;
-
-	UPROPERTY(Config, EditAnywhere, Category = "Subtitle Fallback", meta = (ClampMin = "0.1"))
-	float FallbackMinSeconds = 2.0f;
-
-	UPROPERTY(Config, EditAnywhere, Category = "Subtitle Fallback", meta = (ClampMin = "0.1"))
-	float FallbackMaxSeconds = 8.0f;
 };

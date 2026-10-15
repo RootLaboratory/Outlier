@@ -10,8 +10,8 @@
 
 namespace
 {
-// UTextLayoutWidget exposes these settings to the designer but has no C++ getters in UE 5.7.
-// Read the existing settings so measurement also respects authored margins, shaping and wrapping policy.
+// UTextLayoutWidget은 이 설정들을 디자이너에 노출하지만 UE 5.7에는 C++ getter가 없다.
+// 측정에도 설정된 margin, shaping, wrapping 정책이 반영되도록 기존 설정을 읽는다.
 struct FTextLayoutProperties
 {
 	const FStructProperty* ShapedTextOptions = FindFProperty<FStructProperty>(UTextLayoutWidget::StaticClass(), TEXT("ShapedTextOptions"));
@@ -20,6 +20,12 @@ struct FTextLayoutProperties
 	const FProperty* Justification = FindFProperty<FProperty>(UTextLayoutWidget::StaticClass(), TEXT("Justification"));
 	const FFloatProperty* LineHeight = FindFProperty<FFloatProperty>(UTextLayoutWidget::StaticClass(), TEXT("LineHeightPercentage"));
 	const FBoolProperty* ApplyLineHeight = FindFProperty<FBoolProperty>(UTextLayoutWidget::StaticClass(), TEXT("ApplyLineHeightToBottomLine"));
+
+	// 엔진 업그레이드로 이름이 바뀔 수 있다. 그 경우 첫 자막에서 크래시하지 않고 정렬을 건너뛴다.
+	bool IsValid() const
+	{
+		return ShapedTextOptions && Margin && WrappingPolicy && Justification && LineHeight && ApplyLineHeight;
+	}
 };
 }
 
@@ -78,6 +84,13 @@ bool FBottomTTSSpeakerLayout::GetFirstLineOffset(const UTextBlock& Text, const F
 	}
 
 	static const FTextLayoutProperties Properties;
+	if (!Properties.IsValid())
+	{
+		static bool bWarned = false;
+		UE_CLOG(!bWarned, LogTemp, Warning, TEXT("[BottomTTS] UTextLayoutWidget properties not found; speaker alignment disabled."));
+		bWarned = true;
+		return false;
+	}
 	const FShapedTextOptions& Shaping = *Properties.ShapedTextOptions->ContainerPtrToValuePtr<FShapedTextOptions>(&Text);
 	const FMargin& Margin = *Properties.Margin->ContainerPtrToValuePtr<FMargin>(&Text);
 	const ETextWrappingPolicy Wrapping = *Properties.WrappingPolicy->ContainerPtrToValuePtr<ETextWrappingPolicy>(&Text);
@@ -96,7 +109,7 @@ bool FBottomTTSSpeakerLayout::GetFirstLineOffset(const UTextBlock& Text, const F
 	LayoutCache->SetTextShapingMethod(Shaping.bOverride_TextShapingMethod ? TOptional<ETextShapingMethod>(Shaping.TextShapingMethod) : TOptional<ETextShapingMethod>());
 	LayoutCache->SetTextFlowDirection(Shaping.bOverride_TextFlowDirection ? TOptional<ETextFlowDirection>(Shaping.TextFlowDirection) : TOptional<ETextFlowDirection>());
 
-	// STextBlock selects the smaller positive width when explicit and automatic wrapping are both enabled.
+	// 명시적 wrapping과 자동 wrapping이 모두 켜져 있으면 STextBlock은 더 작은 양수 폭을 선택한다.
 	float WrapWidth = Text.GetWrapTextAt();
 	if (Text.GetAutoWrapText())
 	{
@@ -107,7 +120,7 @@ bool FBottomTTSSpeakerLayout::GetFirstLineOffset(const UTextBlock& Text, const F
 		Properties.ApplyLineHeight->GetPropertyValue_InContainer(&Text), Justification);
 	LayoutCache->ComputeDesiredSize(Args, Scale, Style);
 
-	// Match STextBlock's paint-time justification and scrolling when an unbreakable line exceeds the allotted width.
+	// 끊을 수 없는 줄이 할당 폭을 넘을 때 STextBlock의 paint 시점 justification과 스크롤에 맞춘다.
 	FVector2D Scroll = FVector2D::ZeroVector;
 	const float ExcessWidth = FMath::Max(0.0f, TextLayout->GetSize().X - static_cast<float>(LocalSize.X));
 	if (TextLayout->GetVisualJustification() == ETextJustify::Center) Scroll.X = ExcessWidth * 0.5f;
@@ -123,7 +136,7 @@ FVector2D FBottomTTSSpeakerLayout::GetSpeakerTranslation(const FGeometry& Script
 	const FGeometry& SpeakerGeometry, const FGeometry& SpeakerParentGeometry,
 	const FWidgetTransform& SpeakerTransform, const FVector2D& SpeakerPivot, float Gap)
 {
-	// A scale-to-zero visibility animation has no invertible layout geometry yet.
+	// scale-to-zero visibility 애니메이션 중에는 아직 역변환 가능한 layout geometry가 없다.
 	if (SpeakerParentGeometry.GetAccumulatedLayoutTransform().GetScale() <= UE_SMALL_NUMBER
 		|| SpeakerGeometry.GetAccumulatedLayoutTransform().GetScale() <= UE_SMALL_NUMBER)
 	{

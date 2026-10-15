@@ -28,7 +28,6 @@ public class TagDrivenUI : ModuleRules
 				"Core",
 				"CoreUObject",
 				"GameplayTags",
-				"EnhancedInput",
 				"UMG",
 				"Slate",
 				"SlateCore",

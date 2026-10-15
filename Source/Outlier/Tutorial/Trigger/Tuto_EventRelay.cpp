@@ -41,11 +41,6 @@ ATuto_EventRelay* ATuto_EventRelay::FindOrCreate(APlayerController* Controller)
 		FTransform::Identity, Parameters);
 }
 
-void ATuto_EventRelay::QueueEvent(FGameplayTag EventTag, const FString& Source)
-{
-	QueueCommand(EventTag, ETuto_EventOperation::Trigger, ETuto_EventRegion::All, Source);
-}
-
 void ATuto_EventRelay::QueueCommand(FGameplayTag EventTag, ETuto_EventOperation Operation, ETuto_EventRegion Region,
 	const FString& Source)
 {
@@ -73,7 +68,7 @@ void ATuto_EventRelay::QueueCommand(FGameplayTag EventTag, ETuto_EventOperation 
 	Delivery.Operation = Operation;
 	Delivery.Region = Region;
 	ForceNetUpdate();
-	// Listen host/standalone uses the same delivery logic immediately; remote clients receive the replicated queue.
+	// Listen 호스트/standalone은 같은 전달 로직을 즉시 사용하고, 원격 클라이언트는 리플리케이트된 큐를 받는다.
 	ProcessPendingEvents();
 }
 
@@ -113,7 +108,7 @@ void ATuto_EventRelay::DeliverEvent(const FTuto_EventDelivery& Delivery)
 			default: return false;
 			}
 		};
-		// Evaluate both independently: a successful Upper completion must not short-circuit GIF completion.
+		// 둘을 독립적으로 평가한다. Upper 완료 성공이 GIF 완료를 단락시키면 안 된다.
 		if (Delivery.Region != ETuto_EventRegion::Gif) bAccepted |= ApplyToRegion(false);
 		if (Delivery.Region != ETuto_EventRegion::Upper) bAccepted |= ApplyToRegion(true);
 	}
@@ -124,7 +119,7 @@ void ATuto_EventRelay::DeliverEvent(const FTuto_EventDelivery& Delivery)
 void ATuto_EventRelay::ProcessPendingEvents()
 {
 	if (PendingEvents.IsEmpty() || !IsReceiverReady()) return;
-	// A local delivery/ack may mutate PendingEvents, so iterate a snapshot.
+	// 로컬 전달/ack가 PendingEvents를 변경할 수 있으므로 스냅샷을 순회한다.
 	const TArray<FTuto_EventDelivery> Deliveries = PendingEvents;
 	for (const FTuto_EventDelivery& Delivery : Deliveries)
 	{
@@ -155,7 +150,7 @@ void ATuto_EventRelay::Tick(float DeltaSeconds)
 		Destroy();
 		return;
 	}
-	// Owner/PS role may arrive after the initial queue. No TutorialComponent or possessed pawn is required.
+	// Owner/PS role은 초기 큐보다 늦게 도착할 수 있다. 빙의된 폰은 필요 없다.
 	ProcessPendingEvents();
 }
 

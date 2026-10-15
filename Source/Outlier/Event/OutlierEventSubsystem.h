@@ -11,7 +11,7 @@ class UOutlierAudioSubsystem;
 class UOutlierEventDataAsset;
 struct FOutlierWorldGuideDataRow;
 
-/** Local presentation endpoint. World/UI/gameplay triggers all submit the same EventTag. */
+/** 로컬 표시 진입점. World/UI/gameplay 트리거 모두 같은 EventTag를 제출한다. */
 UCLASS()
 class OUTLIER_API UOutlierEventSubsystem : public ULocalPlayerSubsystem
 {
@@ -21,29 +21,15 @@ public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 
-	/** Overrides the Config-selected role asset, e.g. for a tutorial loaded at runtime. */
-	bool SetEventDataAsset(UOutlierEventDataAsset* DataAsset);
-
-	/** Clears a runtime override and refreshes the asset selected by PlayerState.Role. */
-	void RefreshEventDataAsset();
-
-	UOutlierEventDataAsset* GetEventDataAsset();
-
-	/** Uses each Upper/GIF row's DT end condition and display time. */
+	/** 각 Upper/GIF 행의 DT 종료 조건과 표시 시간을 쓴다. */
 	bool SendEvent(FGameplayTag EventTag);
-	/** Explicit runtime upper-lifetime override retained for existing callers. GIF still uses its own row. */
-	bool SendEvent(FGameplayTag EventTag, const FOutlierEventContext& Context);
 
-	/** Direct data-tag requests do not dispatch other regions from the Event DT. */
+	/** 데이터 태그 직접 요청은 Event DT의 다른 영역을 디스패치하지 않는다. */
 	bool SendTTS(FGameplayTag TTSTag);
-
-	bool SendUpper(FGameplayTag UpperTag);
-	bool SendUpper(FGameplayTag UpperTag, const FOutlierEventContext& Context);
-	bool SendGif(FGameplayTag GifTag);
 
 	bool TryGetEventData(FGameplayTag EventTag, FOutlierEventDataRow& OutData);
 
-	/** Looks up a TTS row by its audio context tag, not an event tag. */
+	/** 이벤트 태그가 아닌 오디오 컨텍스트 태그로 TTS 행을 찾는다. */
 	bool TryGetTTSData(FGameplayTag TTSTag, FOutlierTTSDataRow& OutData);
 
 	bool TryGetUpperData(FGameplayTag UpperTag, FOutlierUpperData& OutData);
@@ -55,7 +41,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Event|Input")
 	bool TryGetInputDisplayData(FGameplayTag InputTag, FInputDisplayDefinition& OutDisplay);
 
-	/** Resolve the event's InputTag, or its GIF row's InputTag if no upper input is selected. */
+	/** 이벤트의 InputTag를 해석한다. upper 입력이 없으면 GIF 행의 InputTag를 쓴다. */
 	UFUNCTION(BlueprintCallable, Category = "Event|Input")
 	bool TryGetEventInputDisplayData(FGameplayTag EventTag, FInputDisplayDefinition& OutDisplay);
 
@@ -63,12 +49,8 @@ public:
 
 	bool TryGetGifData(FGameplayTag GifTag, FOutlierGifDataRow& OutData);
 
-	/** Resolves the GIF reference from the active role's event table. */
+	/** 활성 역할의 이벤트 테이블에서 GIF 참조를 해석한다. */
 	bool TryGetEventGifData(FGameplayTag EventTag, FOutlierGifDataRow& OutData);
-
-	bool TryGetWorldGuideData(FGameplayTag WidgetID, FOutlierWorldGuideDataRow& OutData);
-	/** Shared progression is authoritative; client-local events do not create another guide queue. */
-	bool SendWorldGuide(FGameplayTag WidgetID);
 
 	bool CompleteUpperEvent(FGameplayTag EventTag);
 	bool CompleteGifEvent(FGameplayTag EventTag);
@@ -77,20 +59,13 @@ public:
 
 	bool CancelGifEvent(FGameplayTag EventTag);
 
-	bool CompleteInputEvent(FGameplayTag EventTag);
-
-	/** Called by the overlap source, after filtering the appropriate local player. */
+	/** 해당 로컬 플레이어를 필터링한 뒤 overlap 소스가 호출한다. */
 	bool NotifyOverlap(FGameplayTag EventTag);
 	bool NotifyGifOverlap(FGameplayTag EventTag);
 
-	/** Cancels all pending/displayed input tutorials without chaining. */
-	void CancelInputEvent();
-
-	FGameplayTag GetActiveInputEventTag() const;
-
 	/**
-	 * A region's item finished normally on screen (time, voice end or fallback subtitle).
-	 * Starts the rows that chain from it in the same region only. Cancelled items never call this.
+	 * 영역 항목이 화면에서 정상 종료됐다(시간 또는 음성 종료).
+	 * 같은 영역에서 이어지는 행만 시작한다. 취소된 항목은 호출하지 않는다.
 	 */
 	void NotifyInfoCompleted(EOutlierInfoRegion Region, const FOutlierInfoWidgetRequest& Request);
 
@@ -100,16 +75,13 @@ private:
 	void ClearPresentation();
 	void HandlePlayerRoleChanged(AOutlierPlayerState* PlayerState);
 	FGameplayTag ResolveUpperTag(const FOutlierEventDataRow& Event) const;
-	bool SendEventInternal(FGameplayTag EventTag, const FOutlierEventContext* Context);
-	bool SubmitUpper(FGameplayTag UpperTag, FGameplayTag RequestTag, const FOutlierEventContext* Context,
-		FGameplayTag OriginEventTag = FGameplayTag());
+	bool SubmitUpper(FGameplayTag UpperTag, FGameplayTag RequestTag, FGameplayTag OriginEventTag = FGameplayTag());
 	bool SubmitGif(FGameplayTag GifTag, FGameplayTag RequestTag, FGameplayTag OriginEventTag = FGameplayTag());
 	void HandleVoiceStarted(ULocalPlayer* Listener, FGameplayTag RequestTag);
 	void HandleVoiceFinished(ULocalPlayer* Listener, FGameplayTag RequestTag, bool bCompleted);
-	void HandleVoiceUnavailable(ULocalPlayer* Listener, FGameplayTag RequestTag);
 	FGameplayTag ResolveRequestTTSTag(FGameplayTag RequestTag);
 	void EnsureAudioCallbacks();
-	/** Rebuilds the per-region ChainFrom -> rows maps from the active tables, reporting broken links and cycles. */
+	/** 활성 테이블에서 영역별 ChainFrom -> rows 맵을 재구성하고, 끊긴 링크와 순환을 보고한다. */
 	void RebuildChains();
 
 	UPROPERTY(Transient)
@@ -133,7 +105,7 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UDataTable> WorldGuideTable;
 
-	// ChainFrom tag -> rows that start when it completes, one map per region.
+	// ChainFrom 태그 -> 완료 시 시작할 행. 영역마다 맵 하나.
 	TMultiMap<FGameplayTag, FGameplayTag> TTSChains;
 	TMultiMap<FGameplayTag, FGameplayTag> UpperChains;
 	TMultiMap<FGameplayTag, FGameplayTag> GifChains;
@@ -144,6 +116,5 @@ private:
 	TWeakObjectPtr<AOutlierPlayerState> CachedPlayerState;
 	EOutlierPlayerRole CachedRole = EOutlierPlayerRole::None;
 	bool bRoleDataAssetResolved = false;
-	bool bDataAssetOverridden = false;
 	bool bApplyingDataAsset = false;
 };

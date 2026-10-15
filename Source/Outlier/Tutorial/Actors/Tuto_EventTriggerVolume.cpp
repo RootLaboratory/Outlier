@@ -7,7 +7,6 @@
 #include "HAL/IConsoleManager.h"
 #include "Net/UnrealNetwork.h"
 #include "OutlierPlayerState.h"
-#include "Tutorial/TutorialComponent.h"
 #include "Tutorial/WorldGuide/OutlierWorldGuideTargetComponent.h"
 
 namespace
@@ -17,8 +16,9 @@ namespace
 	{
 		const FGameplayTag EventID = Args.Num() > 0
 			? FGameplayTag::RequestGameplayTag(FName(*Args[0]), false) : FGameplayTag();
-		APlayerController* Controller = GEngine && World ? GEngine->GetFirstLocalPlayerController(World) : nullptr;
-		UTutorialComponent::SendTriggerEvent(Controller ? Controller->GetPawn() : nullptr, EventID, TEXT("Console"));
+		AFirstPersonPlayerController* Controller = GEngine && World
+			? Cast<AFirstPersonPlayerController>(GEngine->GetFirstLocalPlayerController(World)) : nullptr;
+		if (Controller) Controller->RequestTutorialEvent(EventID, TEXT("Console"));
 	}
 
 	FAutoConsoleCommandWithWorldAndArgs GOutlierEventSendCommand(
@@ -76,7 +76,7 @@ void ATuto_EventTriggerVolume::Tick(float DeltaSeconds)
 	APlayerController* Controller = GEngine ? GEngine->GetFirstLocalPlayerController(GetWorld()) : nullptr;
 	APawn* Pawn = Controller ? Controller->GetPawn() : nullptr;
 	if (bRequestPending && PendingController.Get() != Controller) bRequestPending = false;
-	// Covers an initially overlapping pawn and retries until both server recipients are available.
+	// 처음부터 겹쳐 있는 폰을 처리하고, 서버 수신자 둘이 모두 준비될 때까지 재시도한다.
 	if (IsValid(Pawn) && TriggerBox->IsOverlappingActor(Pawn)) RequestLocalEntry(Pawn);
 }
 
@@ -89,8 +89,8 @@ bool ATuto_EventTriggerVolume::ConfirmClientEntry(AFirstPersonPlayerController* 
 	AOutlierPlayerState* State = Controller->GetPlayerState<AOutlierPlayerState>();
 	if (!IsValid(Pawn) || !IsValid(State)
 		|| Pawn->GetPlayerState<AOutlierPlayerState>() != State) return false;
-	// Entry is detected locally. The server verifies the request against its current pawn/volume,
-	// allowing capsule radius and a small movement replication margin, without a server overlap callback.
+	// 진입은 로컬에서 감지한다. 서버는 서버 overlap 콜백 없이 현재 폰/볼륨 기준으로 요청을 검증하며,
+	// 캡슐 반경과 작은 이동 리플리케이션 오차를 허용한다.
 	const double Margin = Pawn->GetSimpleCollisionRadius() + 50.0;
 	if (!TriggerBox->Bounds.GetBox().ExpandBy(Margin).IsInsideOrOn(Pawn->GetActorLocation())) return false;
 	TGuardValue<bool> ConfirmGuard(bConfirmingEntry, true);
@@ -119,9 +119,10 @@ void ATuto_EventTriggerVolume::OnRep_HasTriggered()
 
 bool ATuto_EventTriggerVolume::HandlePawnEntered(AOutlierPlayerState* SourcePlayerState)
 {
-	// An event-bearing volume must not consume the arrival before transport is ready.
-	// Empty EventTag supports a WorldGuide arrival-only volume.
-	if (EventTag.IsValid() && !TriggerEvent(0, SourcePlayerState)) return false;
+	// 이벤트가 있는 볼륨은 transport 준비 전에 도착을 소비하면 안 된다.
+	// EventTag가 비어 있으면 WorldGuide 도착 전용 볼륨으로 쓴다.
+	// game-flow 스킵은 slot을 제출됨으로 표시하므로, 매 틱 재시도하지 않고 도착을 소비한다.
+	if (EventTag.IsValid() && !TriggerEvent(0, SourcePlayerState) && !IsEventSubmitted(0)) return false;
 	const bool bGuideCompleted = UOutlierWorldGuideTargetComponent::NotifyOverlapOnActor(this);
 	return EventTag.IsValid() || bGuideCompleted;
 }

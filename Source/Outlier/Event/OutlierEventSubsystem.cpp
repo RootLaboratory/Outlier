@@ -52,7 +52,7 @@ namespace
 		}
 	}
 
-	// Registers ChainFrom -> Row. A broken link is reported instead of silently never running.
+	// ChainFrom -> Row를 등록한다. 끊긴 링크는 조용히 무시하지 않고 보고한다.
 	void AddChainLink(TMultiMap<FGameplayTag, FGameplayTag>& Chains, EOutlierInfoRegion Region, FGameplayTag Row,
 		FGameplayTag ChainFrom, bool bMarkedChain, bool bPredecessorExists)
 	{
@@ -74,7 +74,7 @@ namespace
 		Chains.AddUnique(ChainFrom, Row);
 	}
 
-	// A chain leading back to its own source would replay forever, so that source's links are dropped.
+	// 자기 소스로 돌아오는 체인은 무한 재생되므로 해당 소스의 링크를 버린다.
 	void RemoveChainCycles(TMultiMap<FGameplayTag, FGameplayTag>& Chains, EOutlierInfoRegion Region)
 	{
 		TArray<FGameplayTag> Sources;
@@ -124,7 +124,6 @@ void UOutlierEventSubsystem::Deinitialize()
 	{
 		Audio->OnVoiceStarted.RemoveAll(this);
 		Audio->OnVoiceFinished.RemoveAll(this);
-		Audio->OnVoiceUnavailable.RemoveAll(this);
 		Audio->StopLocalVoices(GetLocalPlayer());
 	}
 	Super::Deinitialize();
@@ -198,7 +197,7 @@ void UOutlierEventSubsystem::RebuildChains()
 				FindTaggedRow<FOutlierTTSDataRow>(TTSTable, Row.ChainFromTag, &FOutlierTTSDataRow::TTSTag) != nullptr);
 		});
 	}
-	// Input and Goal share the upper region, so either may follow the other.
+	// Input과 Goal은 upper 영역을 공유하므로 서로 이어질 수 있다.
 	auto IsUpperRow = [this](FGameplayTag Tag)
 	{
 		return FindTaggedRow<FOutlierInputDataRow>(InputTable, Tag, &FOutlierInputDataRow::InputTag) != nullptr
@@ -241,7 +240,7 @@ void UOutlierEventSubsystem::NotifyInfoCompleted(EOutlierInfoRegion Region, cons
 		return;
 	}
 	LoadConfiguredTables();
-	// Chains never cross regions: TTS -> TTS, Upper -> Upper, GIF -> GIF.
+	// 체인은 영역을 넘지 않는다: TTS -> TTS, Upper -> Upper, GIF -> GIF.
 	FGameplayTag CompletedTag;
 	TArray<FGameplayTag> NextTags;
 	switch (Region)
@@ -266,7 +265,7 @@ void UOutlierEventSubsystem::NotifyInfoCompleted(EOutlierInfoRegion Region, cons
 		bool bStarted = false;
 		if (Region == EOutlierInfoRegion::Upper)
 		{
-			bStarted = SubmitUpper(NextTag, NextTag, nullptr,
+			bStarted = SubmitUpper(NextTag, NextTag,
 				Request.OriginEventTag.IsValid() ? Request.OriginEventTag : Request.EventTag);
 		}
 		else if (Region == EOutlierInfoRegion::Right)
@@ -283,28 +282,6 @@ void UOutlierEventSubsystem::NotifyInfoCompleted(EOutlierInfoRegion Region, cons
 	}
 }
 
-bool UOutlierEventSubsystem::SetEventDataAsset(UOutlierEventDataAsset* DataAsset)
-{
-	if (!DataAsset || !ApplyDataAsset(DataAsset)) return false;
-	bDataAssetOverridden = true;
-	return true;
-}
-
-void UOutlierEventSubsystem::RefreshEventDataAsset()
-{
-	bDataAssetOverridden = false;
-	bRoleDataAssetResolved = false;
-	CachedRole = EOutlierPlayerRole::None;
-	ApplyDataAsset(nullptr);
-	LoadConfiguredTables();
-}
-
-UOutlierEventDataAsset* UOutlierEventSubsystem::GetEventDataAsset()
-{
-	LoadConfiguredTables();
-	return CachedDataAsset;
-}
-
 void UOutlierEventSubsystem::HandlePlayerRoleChanged(AOutlierPlayerState* PlayerState)
 {
 	if (PlayerState == CachedPlayerState.Get()) LoadConfiguredTables();
@@ -312,7 +289,7 @@ void UOutlierEventSubsystem::HandlePlayerRoleChanged(AOutlierPlayerState* Player
 
 void UOutlierEventSubsystem::LoadConfiguredTables()
 {
-	if (bDataAssetOverridden || bApplyingDataAsset) return;
+	if (bApplyingDataAsset) return;
 	const APlayerController* Controller = GetLocalPlayer()->GetPlayerController(GetWorld());
 	AOutlierPlayerState* PlayerState = Controller ? Controller->GetPlayerState<AOutlierPlayerState>() : nullptr;
 	const EOutlierPlayerRole Role = PlayerState ? PlayerState->GetPlayerRole() : EOutlierPlayerRole::None;
@@ -328,7 +305,7 @@ void UOutlierEventSubsystem::LoadConfiguredTables()
 	const UOutlierEventSettings* Settings = GetDefault<UOutlierEventSettings>();
 	UOutlierEventDataAsset* DataAsset = Role == EOutlierPlayerRole::Shooter ? Settings->ShooterDataAsset.LoadSynchronous()
 		: Role == EOutlierPlayerRole::Partner ? Settings->PartnerDataAsset.LoadSynchronous() : nullptr;
-	// Never keep a previous role's tables if the new role is unconfigured or invalid.
+	// 새 역할이 미설정이거나 유효하지 않아도 이전 역할의 테이블은 유지하지 않는다.
 	if (!ApplyDataAsset(DataAsset)) ApplyDataAsset(nullptr);
 }
 
@@ -468,23 +445,7 @@ bool UOutlierEventSubsystem::SendTTS(FGameplayTag TTSTag)
 	return Audio && Audio->PlayLocalVoice(TTSTag, static_cast<int32>(TTS.Priority), TTSTag, GetLocalPlayer());
 }
 
-bool UOutlierEventSubsystem::SendUpper(FGameplayTag UpperTag)
-{
-	return SubmitUpper(UpperTag, UpperTag, nullptr);
-}
-
-bool UOutlierEventSubsystem::SendUpper(FGameplayTag UpperTag, const FOutlierEventContext& Context)
-{
-	return SubmitUpper(UpperTag, UpperTag, &Context);
-}
-
-bool UOutlierEventSubsystem::SendGif(FGameplayTag GifTag)
-{
-	return SubmitGif(GifTag, GifTag);
-}
-
-bool UOutlierEventSubsystem::SubmitUpper(FGameplayTag UpperTag, FGameplayTag RequestTag, const FOutlierEventContext* Context,
-	FGameplayTag OriginEventTag)
+bool UOutlierEventSubsystem::SubmitUpper(FGameplayTag UpperTag, FGameplayTag RequestTag, FGameplayTag OriginEventTag)
 {
 	UWorld* World = GetWorld();
 	if (!World || World->bIsTearingDown || World->GetNetMode() == NM_DedicatedServer) return false;
@@ -496,9 +457,8 @@ bool UOutlierEventSubsystem::SubmitUpper(FGameplayTag UpperTag, FGameplayTag Req
 	Request.EventTag = RequestTag;
 	Request.OriginEventTag = OriginEventTag.IsValid() ? OriginEventTag : RequestTag;
 	Request.UpperTag = UpperTag;
-	Request.NextEventTag = Context ? Context->NextEventTag : FGameplayTag();
-	if (!ToInfoEndCondition(Context ? Context->EndCondition : Data.EndCondition, Request.EndCondition)) return false;
-	if (Request.EndCondition == EOutlierInfoEndCondition::Time) Request.Duration = Context ? Context->Duration : 0.0f;
+	// Duration 0이면 위젯이 Input/Goal DT의 Duration을 쓴다.
+	if (!ToInfoEndCondition(Data.EndCondition, Request.EndCondition)) return false;
 	return UI->ShowEventUpper(Request);
 }
 
@@ -539,37 +499,6 @@ bool UOutlierEventSubsystem::TryGetEventGifData(FGameplayTag EventTag, FOutlierG
 
 bool UOutlierEventSubsystem::SendEvent(FGameplayTag EventTag)
 {
-	return SendEventInternal(EventTag, nullptr);
-}
-
-bool UOutlierEventSubsystem::TryGetWorldGuideData(FGameplayTag WidgetID, FOutlierWorldGuideDataRow& OutData)
-{
-	LoadConfiguredTables();
-	if (const FOutlierWorldGuideDataRow* Row = FindTaggedRow<FOutlierWorldGuideDataRow>(WorldGuideTable, WidgetID, &FOutlierWorldGuideDataRow::WidgetID))
-	{
-		if (!Row->IsValid()) return false;
-		OutData = *Row;
-		return true;
-	}
-	return false;
-}
-
-bool UOutlierEventSubsystem::SendWorldGuide(FGameplayTag WidgetID)
-{
-	AOutlierWorldGuideManager* Manager = AOutlierWorldGuideManager::Find(GetWorld());
-	if (!Manager || !Manager->HasAuthority()) return false;
-	FOutlierWorldGuideContext Context;
-	Context.WidgetID = WidgetID;
-	return Manager->EnqueueGuide(Context);
-}
-
-bool UOutlierEventSubsystem::SendEvent(FGameplayTag EventTag, const FOutlierEventContext& Context)
-{
-	return SendEventInternal(EventTag, &Context);
-}
-
-bool UOutlierEventSubsystem::SendEventInternal(FGameplayTag EventTag, const FOutlierEventContext* Context)
-{
 	UWorld* World = GetWorld();
 	if (!EventTag.IsValid() || !World || World->bIsTearingDown || World->GetNetMode() == NM_DedicatedServer)
 	{
@@ -582,13 +511,9 @@ bool UOutlierEventSubsystem::SendEventInternal(FGameplayTag EventTag, const FOut
 		return false;
 	}
 
+	// WorldGuide는 공유 서버 상태로, Relay 전달 전 서버 디스패치에서 한 번만 트리거한다.
+	// 로컬 표시에서는 재트리거하지 않는다. 그러면 리슨 호스트가 같은 가이드를 두 번 넣는다.
 	bool bTTSAccepted = false;
-	bool bWorldGuideAccepted = false;
-	if (Event.WorldGuideID.IsValid())
-	{
-		if (AOutlierWorldGuideManager* Manager = AOutlierWorldGuideManager::Find(World))
-			if (Manager->HasAuthority()) bWorldGuideAccepted = Manager->TriggerEvent(EventTag);
-	}
 	if (Event.TTSTag.IsValid())
 	{
 		FOutlierTTSDataRow TTS;
@@ -614,22 +539,16 @@ bool UOutlierEventSubsystem::SendEventInternal(FGameplayTag EventTag, const FOut
 	if (ULocalPlayerUISubSystem* UI = GetLocalPlayer()->GetSubsystem<ULocalPlayerUISubSystem>())
 	{
 		bHasCanvas = UI->GetInfoCanvas() != nullptr;
-		if (UpperTag.IsValid()) bUpperAccepted = SubmitUpper(UpperTag, EventTag, Context);
+		if (UpperTag.IsValid()) bUpperAccepted = SubmitUpper(UpperTag, EventTag);
 		if (Event.GifTag.IsValid()) bGifAccepted = SubmitGif(Event.GifTag, EventTag);
 	}
-	// '-' unused, 'O' accepted, 'X' rejected. Without a canvas, accepted UI requests wait in the UI subsystem.
+	// '-' 미사용, 'O' 수락, 'X' 거부. 캔버스가 없으면 수락된 UI 요청은 UI 서브시스템에서 대기한다.
 	auto Mark = [](bool bUsed, bool bOk) { return !bUsed ? TEXT("-") : bOk ? TEXT("O") : TEXT("X"); };
 	UE_LOG(LogOutlier, Log, TEXT("[Event] '%s' TTS=%s Upper=%s Gif=%s Canvas=%s WorldGuide=%s"), *EventTag.ToString(),
 		Mark(Event.TTSTag.IsValid(), bTTSAccepted), Mark(UpperTag.IsValid(), bUpperAccepted),
 		Mark(Event.GifTag.IsValid(), bGifAccepted), bHasCanvas ? TEXT("O") : TEXT("X"),
-		World->GetNetMode() == NM_Client && Event.WorldGuideID.IsValid() ? TEXT("server") : Mark(Event.WorldGuideID.IsValid(), bWorldGuideAccepted));
-	return bTTSAccepted || bUpperAccepted || bGifAccepted || bWorldGuideAccepted;
-}
-
-bool UOutlierEventSubsystem::CompleteInputEvent(FGameplayTag EventTag)
-{
-	ULocalPlayerUISubSystem* UI = GetLocalPlayer()->GetSubsystem<ULocalPlayerUISubSystem>();
-	return UI && UI->CompleteInputEvent(EventTag);
+		Event.WorldGuideID.IsValid() ? TEXT("server") : TEXT("-"));
+	return bTTSAccepted || bUpperAccepted || bGifAccepted;
 }
 
 bool UOutlierEventSubsystem::CompleteUpperEvent(FGameplayTag EventTag)
@@ -668,20 +587,6 @@ bool UOutlierEventSubsystem::NotifyGifOverlap(FGameplayTag EventTag)
 	return UI && UI->NotifyInfoOverlap(EOutlierInfoRegion::Right, EventTag);
 }
 
-void UOutlierEventSubsystem::CancelInputEvent()
-{
-	if (ULocalPlayerUISubSystem* UI = GetLocalPlayer()->GetSubsystem<ULocalPlayerUISubSystem>())
-	{
-		UI->CancelInputInfos();
-	}
-}
-
-FGameplayTag UOutlierEventSubsystem::GetActiveInputEventTag() const
-{
-	ULocalPlayerUISubSystem* UI = GetLocalPlayer()->GetSubsystem<ULocalPlayerUISubSystem>();
-	return UI ? UI->GetActiveInputEventTag() : FGameplayTag();
-}
-
 void UOutlierEventSubsystem::EnsureAudioCallbacks()
 {
 	UOutlierAudioSubsystem* Audio = GetLocalPlayer()->GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>();
@@ -694,13 +599,12 @@ void UOutlierEventSubsystem::EnsureAudioCallbacks()
 	{
 		Audio->OnVoiceStarted.AddUObject(this, &ThisClass::HandleVoiceStarted);
 		Audio->OnVoiceFinished.AddUObject(this, &ThisClass::HandleVoiceFinished);
-		Audio->OnVoiceUnavailable.AddUObject(this, &ThisClass::HandleVoiceUnavailable);
 	}
 }
 
 FGameplayTag UOutlierEventSubsystem::ResolveRequestTTSTag(FGameplayTag RequestTag)
 {
-	// SendTTS requests by TTSTag, SendEvent by EventTag.
+	// SendTTS는 TTSTag로, SendEvent는 EventTag로 요청한다.
 	FOutlierTTSDataRow TTS;
 	FOutlierEventDataRow Event;
 	return TryGetTTSData(RequestTag, TTS) ? RequestTag
@@ -717,30 +621,6 @@ void UOutlierEventSubsystem::HandleVoiceStarted(ULocalPlayer* Listener, FGamepla
 	{
 		UI->ShowEventScript(RequestTag, ResolveRequestTTSTag(RequestTag));
 	}
-}
-
-void UOutlierEventSubsystem::HandleVoiceUnavailable(ULocalPlayer* Listener, FGameplayTag RequestTag)
-{
-	ULocalPlayerUISubSystem* UI = Listener == GetLocalPlayer()
-		? GetLocalPlayer()->GetSubsystem<ULocalPlayerUISubSystem>() : nullptr;
-	const FGameplayTag TTSTag = UI ? ResolveRequestTTSTag(RequestTag) : FGameplayTag();
-	FOutlierTTSDataRow TTS;
-	if (!TTSTag.IsValid() || !TryGetTTSData(TTSTag, TTS))
-	{
-		return;
-	}
-	// Without a voice to follow, the subtitle stays long enough to read its script.
-	int32 Characters = 0;
-	for (const TCHAR Character : TTS.Script.ToString())
-	{
-		if (!FChar::IsWhitespace(Character)) ++Characters;
-	}
-	const UOutlierEventSettings* Settings = GetDefault<UOutlierEventSettings>();
-	const float Duration = FMath::Clamp(Characters * Settings->FallbackSecondsPerCharacter,
-		Settings->FallbackMinSeconds, FMath::Max(Settings->FallbackMinSeconds, Settings->FallbackMaxSeconds));
-	UE_LOG(LogOutlier, Warning, TEXT("[Event] Voice '%s' unavailable for '%s'; subtitle shown for %.1fs (%d chars)."),
-		*TTSTag.ToString(), *RequestTag.ToString(), Duration, Characters);
-	UI->ShowEventScript(RequestTag, TTSTag, Duration);
 }
 
 void UOutlierEventSubsystem::HandleVoiceFinished(ULocalPlayer* Listener, FGameplayTag RequestTag, bool bCompleted)

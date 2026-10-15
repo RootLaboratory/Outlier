@@ -81,7 +81,7 @@ public:
 	AFirstPersonPlayerController();
 	virtual void SetPawn(APawn* InPawn) override;
 
-	/** Local volume entry uses this owned transport, never an RPC on the level actor. */
+	/** 로컬 볼륨 진입은 레벨 액터의 RPC가 아닌 이 소유 transport를 사용한다. */
 	bool NotifyTutorialVolumeEntered(ATuto_EventTriggerVolume* Volume);
 
 	UFUNCTION(Server, Reliable)
@@ -90,13 +90,13 @@ public:
 	UFUNCTION(Client, Reliable)
 	void ClientTutorialVolumeEntryResult(ATuto_EventTriggerVolume* Volume, bool bAccepted);
 
-	/** Editor/console preview: request one EventID for both players, using the same server transport. */
-	bool RequestTutorialEvent(FGameplayTag EventTag);
+	/** 에디터/콘솔 미리보기: 같은 서버 transport로 두 플레이어에게 EventID 하나를 요청한다. */
+	bool RequestTutorialEvent(FGameplayTag EventTag, const FString& Source);
 
 	UFUNCTION(Server, Reliable)
 	void ServerRequestTutorialEvent(FGameplayTag EventTag);
 
-	/** NonShipping WorldGuide console transport; changes always run on the server. */
+	/** NonShipping WorldGuide 콘솔 transport. 변경은 항상 서버에서 실행한다. */
 	UFUNCTION(Server, Reliable)
 	void ServerDebugWorldGuide(FName Command, FGameplayTag WidgetID, FGameplayTag NextWidgetID);
 
@@ -326,7 +326,6 @@ protected:
 	virtual void Destroyed() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void AcknowledgePossession(APawn* P) override;
-	virtual void ClientRestart_Implementation(APawn* NewPawn) override;
 
 	virtual void OnPossess(APawn* InPawn) override;
 	virtual void OnRep_PlayerState() override;

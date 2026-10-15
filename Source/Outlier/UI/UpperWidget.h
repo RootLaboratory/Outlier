@@ -7,17 +7,13 @@
 class UInputTutoWidget;
 class UGoalWidget;
 
-/** Input tutorial and goal share the upper region's FIFO queue. */
+/** Input 튜토리얼과 goal은 Upper 영역의 FIFO Queue를 공유한다. */
 UCLASS(Blueprintable)
 class OUTLIER_API UUpperWidget : public UInfoQueueWidget
 {
 	GENERATED_BODY()
 
 public:
-	FGameplayTag GetActiveInputEventTag() const;
-	bool CompleteInputInfo(FGameplayTag EventTag);
-	void CancelInputInfos();
-
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UInputTutoWidget> InputTutoWidget;
 
@@ -30,8 +26,4 @@ protected:
 	virtual bool PresentInfo(const FOutlierInfoWidgetRequest& Request) override;
 	virtual void ResetInfoContent() override;
 	virtual void InfoFinished(const FOutlierInfoWidgetRequest& Request, bool bCompleted) override;
-
-private:
-	bool IsInputRequest(const FOutlierInfoWidgetRequest& Request) const;
-	bool bCurrentInput = false;
 };

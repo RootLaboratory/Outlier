@@ -89,11 +89,13 @@ void UMainUIBase::ModulesControl(bool Flag)
 		return;
 	}
 
-	// Keep the root open. Only change the layer containers, never their internal widget states.
+	// 루트는 열어 둔다. 레이어 컨테이너만 바꾸고 내부 위젯 상태는 건드리지 않는다.
 	DefaultLayer->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
 	for (int32 Index = 0; Index < DefaultLayer->GetChildrenCount(); ++Index)
 	{
-		if (UWidget* Layer = DefaultLayer->GetChildAt(Index))
+		UWidget* Layer = DefaultLayer->GetChildAt(Index);
+		// 데미지 피드백은 스스로 표시/축소하며, 모듈이 꺼져 있어도 살아 있어야 한다.
+		if (Layer && Layer != DamageFeedbackLayer.Get())
 		{
 			Layer->SetVisibility(Flag ? ESlateVisibility::SelfHitTestInvisible : ESlateVisibility::Collapsed);
 		}
@@ -111,7 +113,7 @@ void UMainUIBase::ShowExceptionLayer(UWidget* Layer)
 		return;
 	}
 
-	// Locate the branch before opening it. A MainUI hidden for death is never opened here.
+	// 열기 전에 브랜치를 찾는다. 사망으로 숨겨진 MainUI는 여기서 열지 않는다.
 	TArray<UWidget*> Branch;
 	for (UWidget* Widget = Layer; Widget && Widget != DefaultLayer; Widget = Widget->GetParent())
 	{

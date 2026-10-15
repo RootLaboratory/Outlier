@@ -18,11 +18,11 @@ enum class EOutlierInfoEndCondition : uint8
 	Manual,
 	Time,
 	Overlap,
-	/** Ends only when the source reports completion or cancellation. */
+	/** 소스가 완료나 취소를 알릴 때만 종료한다. */
 	Source
 };
 
-/** A presentation request only. Content and live state belong to the receiving widget. */
+/** 표시 요청일 뿐이다. 콘텐츠와 활성 상태는 받는 위젯이 소유한다. */
 USTRUCT(BlueprintType)
 struct TAGDRIVENUI_API FOutlierInfoWidgetRequest
 {
@@ -31,11 +31,11 @@ struct TAGDRIVENUI_API FOutlierInfoWidgetRequest
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info", meta = (Categories = "Event"))
 	FGameplayTag EventTag;
 
-	/** Original event that started this region's chain. Completion/cancellation can address the whole origin. */
+	/** 이 영역 체인을 시작한 원본 이벤트. 완료/취소는 원본 전체를 대상으로 할 수 있다. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info", meta = (Categories = "Event"))
 	FGameplayTag OriginEventTag;
 
-	/** Optional direct TTS reference, including voices without an Event DT row. */
+	/** 선택적 TTS 직접 참조. Event DT 행이 없는 음성도 포함한다. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info", meta = (Categories = "Audio.Context"))
 	FGameplayTag TTSTag;
 
@@ -48,10 +48,7 @@ struct TAGDRIVENUI_API FOutlierInfoWidgetRequest
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info")
 	EOutlierInfoEndCondition EndCondition = EOutlierInfoEndCondition::Source;
 
-	/** Starts when displayed. Zero lets a Time widget read its DT default; Source ignores duration. */
+	/** 표시 시점부터 센다. 0이면 Time 위젯이 DT 기본값을 읽고, Source는 duration을 무시한다. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info", meta = (ClampMin = "0.0"))
 	float Duration = 0.0f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info", meta = (Categories = "Event"))
-	FGameplayTag NextEventTag;
 };

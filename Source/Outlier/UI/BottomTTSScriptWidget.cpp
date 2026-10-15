@@ -23,7 +23,7 @@ void UBottomTTSScriptWidget::NativeConstruct()
 	if (Speaker)
 	{
 		OriginalSpeakerTranslation = Speaker->GetRenderTransform().Translation;
-		// Keep the measured label width equal to its text width, even inside the original fixed-width SizeBox.
+		// 기존 고정 폭 SizeBox 안에서도 측정되는 라벨 폭을 텍스트 폭과 같게 유지한다.
 		if (USizeBoxSlot* SpeakerSlot = Cast<USizeBoxSlot>(Speaker->Slot))
 		{
 			SpeakerSlot->SetHorizontalAlignment(HAlign_Left);
@@ -73,13 +73,10 @@ void UBottomTTSScriptWidget::UpdateSpeakerPosition(const TSharedRef<SWidget>& Co
 
 bool UBottomTTSScriptWidget::PrepareInfoRequest(FOutlierInfoWidgetRequest& Request) const
 {
-	// Subtitle lifetime follows the actual voice, including pitch changes and interruptions.
-	// Only a voice that could not play arrives as Time with its reading duration.
-	if (Request.EndCondition != EOutlierInfoEndCondition::Time || Request.Duration <= 0.0f)
-	{
-		Request.EndCondition = EOutlierInfoEndCondition::Source;
-		Request.Duration = 0.0f;
-	}
+	// 자막 수명은 pitch 변경과 중단을 포함해 실제 음성을 따른다.
+	// 재생할 수 없는 음성은 자막을 표시하지 않는다.
+	Request.EndCondition = EOutlierInfoEndCondition::Source;
+	Request.Duration = 0.0f;
 	return Super::PrepareInfoRequest(Request);
 }
 
@@ -130,7 +127,7 @@ void UBottomTTSScriptWidget::ResetInfoContent()
 
 void UBottomTTSScriptWidget::InfoFinished(const FOutlierInfoWidgetRequest& Request, bool bCompleted)
 {
-	// The voice ended naturally, or its fallback subtitle ran its time: continue the TTS chain.
+	// 음성이 자연 종료됐거나 fallback 자막 시간이 끝났다: TTS chain을 이어간다.
 	ULocalPlayer* LocalPlayer = GetOwningLocalPlayer();
 	if (UOutlierEventSubsystem* Events = bCompleted && LocalPlayer ? LocalPlayer->GetSubsystem<UOutlierEventSubsystem>() : nullptr)
 	{

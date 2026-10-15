@@ -10,7 +10,7 @@ class UUpperWidget;
 class URightGifBindedWidget;
 class UBottomTTSScriptWidget;
 
-/** MainUIBase.InfoLayer: three independent presentation queues. */
+/** MainUIBase.InfoLayer: 독립된 세 개의 표시 Queue. */
 UCLASS(Blueprintable, meta = (DisableNativeTick))
 class OUTLIER_API UInfoCanvasWidget : public UInfoCanvasBase
 {
@@ -21,11 +21,8 @@ public:
 
 	virtual bool CancelInfo(EOutlierInfoRegion Region, FGameplayTag EventTag) override;
 	virtual bool CompleteInfo(EOutlierInfoRegion Region, FGameplayTag EventTag) override;
-	virtual bool CompleteInputInfo(FGameplayTag EventTag) override;
 	virtual bool NotifyInfoOverlap(FGameplayTag EventTag) override;
 	virtual bool NotifyInfoOverlap(EOutlierInfoRegion Region, FGameplayTag EventTag) override;
-	virtual void CancelInputInfos() override;
-	virtual FGameplayTag GetActiveInputEventTag() const override;
 	virtual void FinishInfoSource(EOutlierInfoRegion Region, FGameplayTag EventTag, bool bCompleted) override;
 
 	UInfoQueueWidget* GetInfoRegion(EOutlierInfoRegion Region) const;

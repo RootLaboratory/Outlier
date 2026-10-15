@@ -10,7 +10,7 @@
 #include "GameFramework/PlayerController.h"
 #include "InputAction.h"
 #include "OutlierPlayerState.h"
-#include "Tutorial/TutorialComponent.h"
+#include "FirstPerson/FirstPersonPlayerController.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SComboBox.h"
 #include "Widgets/Input/SSearchBox.h"
@@ -506,10 +506,10 @@ void SOutlierEventToolWidget::SendSelectedEvent()
 	int32 SentCount = 0;
 	for (UWorld* World : Worlds)
 	{
-		APlayerController* Controller = GEngine->GetFirstLocalPlayerController(World);
+		AFirstPersonPlayerController* Controller = Cast<AFirstPersonPlayerController>(GEngine->GetFirstLocalPlayerController(World));
 		// 그 PIE 창의 콘솔처럼 해당 월드를 GWorld/PIE ID로 잡은 채 보낸다.
 		UWorld* EditorWorld = GIsPlayInEditorWorld ? nullptr : SetPlayInEditorWorld(World);
-		if (UTutorialComponent::SendTriggerEvent(Controller ? Controller->GetPawn() : nullptr, EventTag, TEXT("EventTool")))
+		if (Controller && Controller->RequestTutorialEvent(EventTag, TEXT("EventTool")))
 		{
 			++SentCount;
 		}

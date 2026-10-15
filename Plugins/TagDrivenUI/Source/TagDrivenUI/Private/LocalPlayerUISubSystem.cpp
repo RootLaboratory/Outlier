@@ -34,13 +34,8 @@ bool ULocalPlayerUISubSystem::DispatchInfoRequest(UInfoCanvasBase* Canvas, const
 		return Canvas->EnqueueInfo(Pending.Region, Pending.Request);
 	case EOutlierInfoRequestOperation::Complete:
 		return Canvas->CompleteInfo(Pending.Region, Pending.Request.EventTag);
-	case EOutlierInfoRequestOperation::CompleteInput:
-		return Canvas->CompleteInputInfo(Pending.Request.EventTag);
 	case EOutlierInfoRequestOperation::Overlap:
 		return Canvas->NotifyInfoOverlap(Pending.Region, Pending.Request.EventTag);
-	case EOutlierInfoRequestOperation::CancelInputs:
-		Canvas->CancelInputInfos();
-		return true;
 	default:
 		return false;
 	}
@@ -49,8 +44,7 @@ bool ULocalPlayerUISubSystem::DispatchInfoRequest(UInfoCanvasBase* Canvas, const
 bool ULocalPlayerUISubSystem::SubmitInfoRequest(const FOutlierPendingInfoRequest& Pending)
 {
 	UWorld* World = GetWorld();
-	if (bIsDeinitializing || bClearingEventInfo || !World || World->bIsTearingDown
-		|| (Pending.Operation != EOutlierInfoRequestOperation::CancelInputs && !Pending.Request.EventTag.IsValid()))
+	if (bIsDeinitializing || bClearingEventInfo || !World || World->bIsTearingDown || !Pending.Request.EventTag.IsValid())
 	{
 		return false;
 	}
@@ -60,8 +54,7 @@ bool ULocalPlayerUISubSystem::SubmitInfoRequest(const FOutlierPendingInfoRequest
 		return false;
 	}
 	if (UInfoCanvasBase* Canvas = GetInfoCanvas(); Canvas && (!bDispatchingInfoRequests
-		|| (Pending.Operation != EOutlierInfoRequestOperation::Show
-			&& Pending.Operation != EOutlierInfoRequestOperation::CancelInputs)))
+		|| Pending.Operation != EOutlierInfoRequestOperation::Show))
 	{
 		return DispatchInfoRequest(Canvas, Pending);
 	}
@@ -71,8 +64,7 @@ bool ULocalPlayerUISubSystem::SubmitInfoRequest(const FOutlierPendingInfoRequest
 		{
 			const FOutlierPendingInfoRequest& Existing = PendingInfoRequests[Index];
 			if (Existing.Region != Pending.Region) continue;
-			if (Existing.Operation == EOutlierInfoRequestOperation::CancelInputs) break;
-			// A later Show is a new occurrence after an end command, even before the HUD exists.
+			// 종료 명령 뒤의 Show는 HUD 생성 전이라도 새 발생으로 본다.
 			if (Existing.Operation != EOutlierInfoRequestOperation::Show
 				&& (Existing.Request.EventTag == Pending.Request.EventTag
 					|| Existing.Request.EventTag == Pending.Request.OriginEventTag)) break;
@@ -82,7 +74,6 @@ bool ULocalPlayerUISubSystem::SubmitInfoRequest(const FOutlierPendingInfoRequest
 		}
 	}
 	if (Pending.Operation != EOutlierInfoRequestOperation::Show
-		&& Pending.Operation != EOutlierInfoRequestOperation::CancelInputs
 		&& !PendingInfoRequests.ContainsByPredicate([&Pending](const FOutlierPendingInfoRequest& Existing)
 		{
 			return Existing.Operation == EOutlierInfoRequestOperation::Show
@@ -127,14 +118,6 @@ bool ULocalPlayerUISubSystem::CompleteInfoEvent(EOutlierInfoRegion Region, FGame
 	return SubmitInfoRequest(Pending);
 }
 
-bool ULocalPlayerUISubSystem::CompleteInputEvent(FGameplayTag EventTag)
-{
-	FOutlierPendingInfoRequest Pending;
-	Pending.Operation = EOutlierInfoRequestOperation::CompleteInput;
-	Pending.Request.EventTag = EventTag;
-	return SubmitInfoRequest(Pending);
-}
-
 bool ULocalPlayerUISubSystem::NotifyInfoOverlap(FGameplayTag EventTag)
 {
 	return NotifyInfoOverlap(EOutlierInfoRegion::Upper, EventTag);
@@ -147,19 +130,6 @@ bool ULocalPlayerUISubSystem::NotifyInfoOverlap(EOutlierInfoRegion Region, FGame
 	Pending.Operation = EOutlierInfoRequestOperation::Overlap;
 	Pending.Request.EventTag = EventTag;
 	return SubmitInfoRequest(Pending);
-}
-
-void ULocalPlayerUISubSystem::CancelInputInfos()
-{
-	FOutlierPendingInfoRequest Pending;
-	Pending.Operation = EOutlierInfoRequestOperation::CancelInputs;
-	SubmitInfoRequest(Pending);
-}
-
-FGameplayTag ULocalPlayerUISubSystem::GetActiveInputEventTag() const
-{
-	UInfoCanvasBase* Canvas = GetInfoCanvas();
-	return Canvas ? Canvas->GetActiveInputEventTag() : FGameplayTag();
 }
 
 void ULocalPlayerUISubSystem::ClearEventInfo()
@@ -194,22 +164,17 @@ bool ULocalPlayerUISubSystem::HideEventGif(FGameplayTag EventTag)
 	return CancelInfoEvent(EOutlierInfoRegion::Right, EventTag);
 }
 
-bool ULocalPlayerUISubSystem::ShowEventScript(FGameplayTag EventTag, FGameplayTag TTSTag, float FallbackDuration)
+bool ULocalPlayerUISubSystem::ShowEventScript(FGameplayTag EventTag, FGameplayTag TTSTag)
 {
 	FOutlierInfoWidgetRequest Request;
 	Request.EventTag = EventTag;
 	Request.TTSTag = TTSTag;
-	if (FallbackDuration > 0.0f)
-	{
-		Request.EndCondition = EOutlierInfoEndCondition::Time;
-		Request.Duration = FallbackDuration;
-	}
 	return QueueInfoEvent(EOutlierInfoRegion::BottomTTS, Request);
 }
 
 void ULocalPlayerUISubSystem::FinishEventScript(FGameplayTag EventTag, bool bCompleted)
 {
-	// An undelivered subtitle expires with its voice. A live widget decides its own lifetime.
+	// 전달되지 않은 자막은 음성과 함께 만료된다. 활성 위젯은 수명을 스스로 정한다.
 	PendingInfoRequests.RemoveAll([EventTag](const FOutlierPendingInfoRequest& Pending)
 	{
 		return Pending.Region == EOutlierInfoRegion::BottomTTS && Pending.Request.EventTag == EventTag;
