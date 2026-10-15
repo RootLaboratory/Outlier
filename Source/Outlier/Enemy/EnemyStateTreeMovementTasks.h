@@ -172,6 +172,16 @@ struct OUTLIER_API FEnemyFlyToLocationTask : public FStateTreeTaskCommonBase
 		const FStateTreeTransitionResult& Transition) const override;
 };
 
+#if WITH_DEV_AUTOMATION_TESTS
+// 통합 테스트의 캐시 입력으로 실제 Fly 경로 시작/추종/정리 함수를 호출한다.
+namespace EnemyFlightTesting
+{
+	OUTLIER_API EStateTreeRunStatus StartPath(FEnemyFlyToLocationTaskInstanceData& Data);
+	OUTLIER_API EStateTreeRunStatus TickPath(FEnemyFlyToLocationTaskInstanceData& Data, float DeltaTime);
+	OUTLIER_API void Stop(FEnemyFlyToLocationTaskInstanceData& Data);
+}
+#endif
+
 USTRUCT()
 struct FEnemyStationaryFireTaskInstanceData
 {

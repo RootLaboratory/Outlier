@@ -38,6 +38,8 @@ public:
 	AActor* GetCachedVisibleTarget() const { return LastVisibleTarget.Get(); }
 
 #if WITH_DEV_AUTOMATION_TESTS
+	void SetCachedVisibleTargetForTesting(AActor* TargetActor) { LastVisibleTarget = TargetActor; }
+
 	friend class FEnemyHearingCombatJoinTest;
 	friend class FEnemyChaseIntegrationTest;
 	friend class FEnemySearchWorldLifecycleTest;

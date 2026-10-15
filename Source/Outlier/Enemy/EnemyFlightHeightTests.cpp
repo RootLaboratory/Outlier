@@ -1,8 +1,13 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "Enemy/EnemyBase.h"
+#include "Enemy/EnemyAIController.h"
 #include "Enemy/EnemyEnvQuery.h"
 #include "Enemy/EnemyPoolSubsystem.h"
+#include "Enemy/EnemyStateTreeMovementTasks.h"
+#include "Enemy/EnemyStateTreeTacticalTasks.h"
+#include "Enemy/EnemyStateTreeSelfDestructTasks.h"
+#include "AbilitySystemComponent.h"
 #include "Components/BoxComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Engine/Engine.h"
@@ -12,7 +17,9 @@
 #include "EnvironmentQuery/EnvQueryManager.h"
 #include "EnvironmentQuery/EnvQueryOption.h"
 #include "EnvironmentQuery/EnvQueryTypes.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "Misc/AutomationTest.h"
+#include "Misc/ScopeExit.h"
 #include "Physics/Experimental/PhysScene_Chaos.h"
 #include "Room/RoomCombatDefinition.h"
 #include "Room/RoomCombatSubsystem.h"
@@ -159,6 +166,104 @@ bool CheckCandidates(FAutomationTestBase& Test, const FEnemyFlightHeightSnapshot
 		}
 	}
 	return bPassed;
+}
+
+bool MakeHeightCombatQuery(FEnemyFlightHeightTestWorld& Fixture, const FString& Mode,
+	FEnemyRunEnvQueryTaskInstanceData& Data, double TargetHeight = 50.0)
+{
+	AEnemyAIController* Controller = Fixture.World->SpawnActor<AEnemyAIController>();
+	AActor* Target = Fixture.World->SpawnActor<AActor>();
+	if (!Controller || !Target) return false;
+	UBoxComponent* TargetRoot = NewObject<UBoxComponent>(Target);
+	Target->SetRootComponent(TargetRoot);
+	TargetRoot->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	TargetRoot->RegisterComponent();
+	const double TargetDistance = Mode == TEXT("Approach") ? 3000.0
+		: Mode == TEXT("Orbit") ? 1500.0 : Mode == TEXT("Retreat") ? 500.0 : 1000.0;
+	Target->SetActorLocation(FVector(TargetDistance, 0, TargetHeight));
+	Controller->Possess(Fixture.Enemy);
+	Controller->SetCachedVisibleTargetForTesting(Target);
+	Fixture.Enemy->SetPlayerCurrentlyVisible(true);
+
+	Data.Enemy = Fixture.Enemy;
+	Data.bValidateReachability = Mode == TEXT("Approach");
+	Data.bValidateOrbitPath = Mode == TEXT("Orbit");
+	Data.bValidateRetreatPath = Mode == TEXT("Retreat");
+	Data.bValidateChasePath = Mode == TEXT("Chase");
+	Data.RunMode = EEnvQueryRunMode::AllMatching;
+	Data.MaxSearchMilliseconds = HeightTestMaxMilliseconds;
+	Data.MaxCollisionChecks = 4096;
+	Data.MaxPathCandidates = 32;
+	Data.QueryTemplate = NewObject<UEnvQuery>(Fixture.World);
+	UEnvQueryOption* Option = NewObject<UEnvQueryOption>(Data.QueryTemplate);
+	Data.QueryTemplate->GetOptionsMutable().Add(Option);
+	if (Data.bValidateReachability)
+	{
+		UEnemyEnvQueryGenerator_Approach* Generator = NewObject<UEnemyEnvQueryGenerator_Approach>(Option);
+		Generator->AngularSamples = 3;
+		Generator->DistanceSpread = 0;
+		Option->Generator = Generator;
+	}
+	else if (Data.bValidateOrbitPath) Option->Generator = NewObject<UEnemyEnvQueryGenerator_Orbit>(Option);
+	else if (Data.bValidateRetreatPath) Option->Generator = NewObject<UEnemyEnvQueryGenerator_Retreat>(Option);
+	else if (Data.bValidateChasePath) Option->Generator = NewObject<UEnemyEnvQueryGenerator_Chase>(Option);
+	else return false;
+	Option->Tests.Add(NewObject<UEnemyEnvQueryTest_FlightDestination>(Option));
+	EnemySearchTesting::CaptureQuery(Data);
+	// 무작위 선회 길이 대신 재현 가능한 3.5m를 사용한다. 높이 보정/실제 질의/경로 검사는 그대로 실행한다.
+	Data.CapturedOrbitLength = Data.bValidateOrbitPath ? 350.0f : 0.0f;
+	Data.QueryResult = EEnemyEnvQueryResult::Running;
+	return true;
+}
+
+bool FinishHeightQuery(FAutomationTestBase& Test, FEnemyFlightHeightTestWorld& Fixture,
+	FEnemyRunEnvQueryTaskInstanceData& Data, FEnvQueryRequest& Request,
+	TSharedPtr<FEnvQueryResult>& OutResult, TFunctionRef<void()> BeforeCompletion)
+{
+	UEnvQueryManager* Manager = UEnvQueryManager::GetCurrent(Fixture.World);
+	if (!Test.TestNotNull(TEXT("EQS manager exists"), Manager)) return false;
+	bool bCompleted = false;
+	const FQueryFinishedSignature Finished = FQueryFinishedSignature::CreateLambda(
+		[&Data, &OutResult, &bCompleted](TSharedPtr<FEnvQueryResult> Result)
+		{
+			OutResult = Result;
+			bCompleted = true;
+			if (Result) EnemySearchTesting::CompletePendingQuery(Data, *Result);
+		});
+	const int32 RequestId = Request.Execute(Data.RunMode, Finished);
+	Data.RequestId = RequestId;
+	if (!Test.TestTrue(TEXT("Actual asynchronous EQS request starts"), RequestId != INDEX_NONE)) return false;
+	// 실패/조기 종료에도 스택 참조를 잡은 Delegate를 다음 테스트까지 남기지 않는다.
+	ON_SCOPE_EXIT { if (!bCompleted) Manager->AbortQuery(RequestId); };
+	BeforeCompletion();
+	for (int32 Tick = 0; Tick < 256 && !bCompleted; ++Tick) Manager->Tick(1.0f / 60.0f);
+	return Test.TestTrue(TEXT("Actual EQS delegate finishes within bounded manager ticks"), bCompleted)
+		&& Test.TestTrue(TEXT("Actual EQS result exists"), OutResult.IsValid());
+}
+
+FEnemyFlyToLocationTaskInstanceData MakeHeightFlightData(const FEnemyRunEnvQueryTaskInstanceData& Query)
+{
+	FEnemyFlyToLocationTaskInstanceData Fly;
+	Fly.Enemy = Query.Enemy;
+	Fly.Destination = Query.Destination;
+	Fly.LastDestination = Query.Destination;
+	Fly.CachedController = Query.CachedController.Get();
+	Fly.CachedCapsule = Query.Enemy->GetCapsuleComponent();
+	Fly.CachedRoomSubsystem = Query.CachedRooms;
+	Fly.CachedRoom = Query.CapturedRoom;
+	Fly.PathRoomTag = Query.CapturedRoomTag;
+	Fly.bOwnsMovement = true;
+	Fly.bUsePlannedPath = Query.bValidateOrbitPath;
+	Fly.bUsePathfinding = !Fly.bUsePlannedPath;
+	Fly.PlannedWaypoints = Query.SelectedWaypoints;
+	Fly.bConstrainRetreatPath = Query.bValidateRetreatPath;
+	Fly.RetreatOrigin = Query.RetreatOrigin;
+	Fly.RetreatDirection = Query.RetreatDirection;
+	Fly.GoalSearchRadius = 0;
+	Fly.MaxSearchMilliseconds = HeightTestMaxMilliseconds;
+	Fly.MaxCollisionChecks = 4096;
+	Fly.bRotateTowardDestination = false;
+	return Fly;
 }
 }
 
@@ -682,6 +787,428 @@ bool FEnemyFlightHeightOrbit3DTest::RunTest(const FString& Parameters)
 		EnemyOrbit::BuildWaypoints(Start, Center, TooHigh, Rejected);
 		TestTrue(TEXT("More than five metres of spatial travel produces no Fly route"), Rejected.IsEmpty());
 	}
+	return true;
+}
+
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyFlightHeightQueryIntegrationTest,
+	"Outlier.Enemy.EQS.FlightHeight.Integration.QueryToFly",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FEnemyFlightHeightQueryIntegrationTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Mode : {TEXT("Approach"), TEXT("Orbit"), TEXT("Retreat"), TEXT("Chase")})
+	{
+		for (const TCHAR* Height : {TEXT("Low"), TEXT("Mid"), TEXT("High"), TEXT("Disabled")})
+		{
+			const FString Scenario = FString::Printf(TEXT("%s.%s"), Mode, Height);
+			Names.Add(Scenario);
+			Commands.Add(Scenario);
+		}
+	}
+}
+
+bool FEnemyFlightHeightQueryIntegrationTest::RunTest(const FString& Parameters)
+{
+	FString Mode, Height;
+	if (!Parameters.Split(TEXT("."), &Mode, &Height)) return false;
+	FEnemyFlightHeightTestWorld Fixture;
+	if (!TestTrue(TEXT("Fixture initializes"), Fixture.Initialize())) return false;
+	Fixture.Enemy->FlightHeightSettings.bEnabled = Height != TEXT("Disabled");
+	Fixture.Enemy->CombatHeightPreference = Height == TEXT("Low") ? EEnemyFlightHeightPreference::Low
+		: Height == TEXT("High") ? EEnemyFlightHeightPreference::High : EEnemyFlightHeightPreference::Mid;
+	FEnemyRunEnvQueryTaskInstanceData Data;
+	if (!TestTrue(TEXT("Combat query inputs initialize"), MakeHeightCombatQuery(Fixture, Mode, Data))) return false;
+	FEnvQueryRequest Request(Data.QueryTemplate, Fixture.Enemy);
+	if (!TestTrue(TEXT("Actual Task request preparation succeeds"), EnemySearchTesting::PrepareRequest(Data, Request))) return false;
+	TSharedPtr<FEnvQueryResult> Result;
+	if (!FinishHeightQuery(*this, Fixture, Data, Request, Result, [] {})) return false;
+	if (!TestEqual(TEXT("Live EQS result passes actual Task selection"), Data.QueryResult, EEnemyEnvQueryResult::Success)
+		|| !TestTrue(TEXT("Selection exposes a destination"), Data.bHasDestination)) return false;
+	TestTrue(TEXT("EQS actually generated candidates"), Result->IsSuccessful() && !Result->Items.IsEmpty());
+	TestEqual(TEXT("Request handle clears after completion"), Data.RequestId, INDEX_NONE);
+
+	if (Data.HeightSnapshot.bEnabled)
+	{
+		bool bMatchesCorrectedCandidate = false;
+		for (const FEnemyFlightHeightCandidate& Candidate : Data.HeightSnapshot.Candidates)
+		{
+			bMatchesCorrectedCandidate |= Candidate.Status == EFlightPathStatus::Success
+				&& Candidate.Location.Equals(Data.Destination, 1.0);
+		}
+		TestTrue(TEXT("Selected endpoint retains the prepared height correction"), bMatchesCorrectedCandidate);
+	}
+	else
+	{
+		TestTrue(TEXT("Opt-out does not prepare height candidates"), Data.HeightSnapshot.Candidates.IsEmpty());
+		if (Data.bValidateChasePath)
+		{
+			TArray<FVector> Candidates;
+			EnemyChase::BuildCandidates(Data.CapturedChaseStart, Data.CapturedOrbitCenter, Data.CapturedChaseLane, Candidates);
+			TestTrue(TEXT("Opt-out retains a legacy chase candidate"), Candidates.ContainsByPredicate(
+				[&Data](const FVector& Candidate) { return Candidate.Equals(Data.Destination, 1.0); }));
+		}
+		else
+		{
+			const double ExpectedZ = Mode == TEXT("Approach") ? 150.0 : Fixture.Enemy->GetActorLocation().Z;
+			TestTrue(TEXT("Opt-out retains legacy generator altitude"), FMath::IsNearlyEqual(Data.Destination.Z, ExpectedZ, 1.0));
+		}
+	}
+	if (Data.bValidateRetreatPath)
+	{
+		const double Distance = FVector::Dist2D(Data.Destination, Data.RetreatOrigin);
+		TestTrue(TEXT("Corrected retreat still ends beyond 10m and within 15m"), Distance > 1000 && Distance <= 1500);
+		TestTrue(TEXT("Retreat stays on the captured away side"),
+			FVector::DotProduct(Data.Destination - Data.RetreatOrigin, Data.RetreatDirection) > 0);
+	}
+	if (Data.bValidateOrbitPath)
+	{
+		if (!TestTrue(TEXT("Selected orbit contains a curve"), Data.SelectedWaypoints.Num() >= 2)) return false;
+		double Length = 0;
+		for (int32 Index = 1; Index < Data.SelectedWaypoints.Num(); ++Index)
+		{
+			Length += FVector::Dist(Data.SelectedWaypoints[Index - 1], Data.SelectedWaypoints[Index]);
+			TestTrue(TEXT("Corrected curve retains horizontal combat radius"), FMath::IsNearlyEqual(
+				FVector::Dist2D(Data.SelectedWaypoints[Index], Data.CapturedOrbitCenter), 1500.0, 1.0));
+		}
+		TestTrue(TEXT("Selected three-dimensional curve stays within five metres"), Length <= 500.01);
+	}
+
+	// BP의 출력 바인딩과 같은 값을 전달한다. 위치를 경유점에 옮기는 것은 경로 소비 검증용이며 물리 이동 QA는 별도다.
+	FEnemyFlyToLocationTaskInstanceData Fly = MakeHeightFlightData(Data);
+	ON_SCOPE_EXIT { EnemyFlightTesting::Stop(Fly); };
+	if (!TestEqual(TEXT("Real Fly path accepts the selected endpoint/curve"),
+		EnemyFlightTesting::StartPath(Fly), EStateTreeRunStatus::Running)) return false;
+	if (!TestTrue(TEXT("Fly has a non-empty validated route"), Fly.PathWaypoints.Num() >= 2)) return false;
+	const FVector CapsuleOffset = Fly.CachedCapsule->GetComponentLocation() - Fixture.Enemy->GetActorLocation();
+	TestTrue(TEXT("Fly retains corrected destination in capsule coordinates"),
+		Fly.PathWaypoints.Last().Equals(Data.Destination + CapsuleOffset, 1.0));
+	const TArray<FVector> Route = Fly.PathWaypoints;
+	EStateTreeRunStatus Status = EStateTreeRunStatus::Running;
+	for (int32 Index = 1; Index < Route.Num() && Status == EStateTreeRunStatus::Running; ++Index)
+	{
+		Fixture.Enemy->SetActorLocation(Route[Index] - CapsuleOffset);
+		Status = EnemyFlightTesting::TickPath(Fly, 1.0f / 60.0f);
+	}
+	TestEqual(TEXT("Real Fly consumes every waypoint and completes"), Status, EStateTreeRunStatus::Succeeded);
+	TestEqual(TEXT("Fly records arrival"), Fly.MoveResult, EEnemyFlightMoveResult::Arrived);
+	TestTrue(TEXT("Arrival releases the consumed path"), Fly.PathWaypoints.IsEmpty() && !Fly.bOwnsMovement);
+	AddInfo(FString::Printf(TEXT("[FlightHeightScenario] %s Result=%s Checks=%d Destination=%s"),
+		*Parameters, *UEnum::GetValueAsString(Data.QueryResult), Data.HeightSnapshot.CollisionChecks,
+		*Data.Destination.ToCompactString()));
+	return true;
+}
+
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyFlightHeightCompletionIntegrationTest,
+	"Outlier.Enemy.EQS.FlightHeight.Integration.PendingResult",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FEnemyFlightHeightCompletionIntegrationTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Scenario : {TEXT("SettingsChanged"), TEXT("Disabled"), TEXT("Enabled"),
+		TEXT("PreferenceChanged"), TEXT("SightLost"), TEXT("TargetChanged"), TEXT("TargetMoved"),
+		TEXT("Possessed"), TEXT("Death"), TEXT("PoolReuse"), TEXT("Inactive"), TEXT("RequestReplaced")})
+	{
+		Names.Add(Scenario);
+		Commands.Add(Scenario);
+	}
+}
+
+bool FEnemyFlightHeightCompletionIntegrationTest::RunTest(const FString& Parameters)
+{
+	FEnemyFlightHeightTestWorld Fixture;
+	if (!TestTrue(TEXT("Fixture initializes"), Fixture.Initialize())) return false;
+	if (Parameters == TEXT("Enabled")) Fixture.Enemy->FlightHeightSettings.bEnabled = false;
+	FEnemyRunEnvQueryTaskInstanceData Data;
+	if (!TestTrue(TEXT("Combat query inputs initialize"), MakeHeightCombatQuery(Fixture, TEXT("Approach"), Data))) return false;
+	Data.TargetChangeDistance = 200;
+	FEnvQueryRequest Request(Data.QueryTemplate, Fixture.Enemy);
+	if (!TestTrue(TEXT("Request prepares before interruption"), EnemySearchTesting::PrepareRequest(Data, Request))) return false;
+	TSharedPtr<FEnvQueryResult> Result;
+	bool bPoolReused = false;
+	const auto Interrupt = [&]
+	{
+		if (Parameters == TEXT("SettingsChanged")) Fixture.Enemy->FlightHeightSettings.MidHeight += 50;
+		else if (Parameters == TEXT("Disabled")) Fixture.Enemy->FlightHeightSettings.bEnabled = false;
+		else if (Parameters == TEXT("Enabled")) Fixture.Enemy->FlightHeightSettings.bEnabled = true;
+		else if (Parameters == TEXT("PreferenceChanged")) Fixture.Enemy->CombatHeightPreference = EEnemyFlightHeightPreference::High;
+		else if (Parameters == TEXT("SightLost")) Fixture.Enemy->SetPlayerCurrentlyVisible(false);
+		else if (Parameters == TEXT("TargetChanged")) Data.CachedController->SetCachedVisibleTargetForTesting(nullptr);
+		else if (Parameters == TEXT("TargetMoved")) Data.CapturedTarget->AddActorWorldOffset(FVector(250, 0, 0));
+		else if (Parameters == TEXT("Possessed")) Fixture.Enemy->SetEnemyPossessed(true);
+		else if (Parameters == TEXT("Death")) Fixture.Enemy->GetAbilitySystemComponent()->AddLooseGameplayTag(
+			FGameplayTag::RequestGameplayTag(TEXT("State.Dead")));
+		else if (Parameters == TEXT("PoolReuse"))
+		{
+			Fixture.Enemy->PrepareForPoolSpawn(Fixture.World->GetSubsystem<UEnemyPoolSubsystem>());
+			FEnemyPoolLeaseContext Lease;
+			Lease.RoomTag = Fixture.RoomTag;
+			Lease.GameplayGeneration = Data.CapturedGeneration + 1;
+			bPoolReused = Fixture.Enemy->BeginPoolLease(Lease,
+				FTransform(Fixture.Enemy->GetActorLocation()), Data.CapturedLease + 1);
+		}
+		else if (Parameters == TEXT("Inactive")) Data.bActive = false;
+		else if (Parameters == TEXT("RequestReplaced")) ++Data.RequestId;
+	};
+	if (!FinishHeightQuery(*this, Fixture, Data, Request, Result, Interrupt)) return false;
+	if (Parameters == TEXT("PoolReuse")) TestTrue(TEXT("Actual pool lease reset occurred before completion"), bPoolReused);
+	TestFalse(TEXT("Interrupted live query never exposes a destination"), Data.bHasDestination);
+	TestTrue(TEXT("Interrupted live query never leaves orbit waypoints"), Data.SelectedWaypoints.IsEmpty());
+	const bool bIgnoredRequest = Parameters == TEXT("Inactive") || Parameters == TEXT("RequestReplaced");
+	TestEqual(TEXT("Inactive/replaced requests are ignored; changed snapshots are rejected"),
+		Data.QueryResult, bIgnoredRequest ? EEnemyEnvQueryResult::Running : EEnemyEnvQueryResult::Stale);
+	AddInfo(FString::Printf(TEXT("[FlightHeightScenario] Pending=%s Result=%s"),
+		*Parameters, *UEnum::GetValueAsString(Data.QueryResult)));
+	return true;
+}
+
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyFlightHeightEnvironmentIntegrationTest,
+	"Outlier.Enemy.EQS.FlightHeight.Integration.Environment",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FEnemyFlightHeightEnvironmentIntegrationTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Mode : {TEXT("Approach"), TEXT("Orbit"), TEXT("Retreat"), TEXT("Chase")})
+	{
+		for (const TCHAR* Environment : {TEXT("LowCeiling"), TEXT("FloorStep"), TEXT("Obstacle"),
+			TEXT("RoomBoundary"), TEXT("MissingFloor")})
+		{
+			const FString Scenario = FString::Printf(TEXT("%s.%s"), Mode, Environment);
+			Names.Add(Scenario);
+			Commands.Add(Scenario);
+		}
+	}
+}
+
+bool FEnemyFlightHeightEnvironmentIntegrationTest::RunTest(const FString& Parameters)
+{
+	FString Mode, Environment;
+	if (!Parameters.Split(TEXT("."), &Mode, &Environment)) return false;
+	const bool bMissingFloor = Environment == TEXT("MissingFloor");
+	FEnemyFlightHeightTestWorld Fixture;
+	if (!TestTrue(TEXT("Fixture initializes"), Fixture.Initialize(!bMissingFloor))) return false;
+	if (Environment == TEXT("LowCeiling"))
+	{
+		Fixture.Enemy->FlightHeightSettings.HighHeight = 800;
+		Fixture.Enemy->CombatHeightPreference = EEnemyFlightHeightPreference::High;
+		if (!TestNotNull(TEXT("Low ceiling spawns"), Fixture.SpawnBlockingBox(FVector(0, 0, 675), FVector(5000, 5000, 25)))) return false;
+	}
+	else if (Environment == TEXT("FloorStep"))
+	{
+		if (!TestNotNull(TEXT("Raised floor spawns"), Fixture.SpawnBlockingBox(FVector(0, 0, 25), FVector(5000, 5000, 50)))) return false;
+	}
+	else if (Environment == TEXT("RoomBoundary"))
+	{
+		CastChecked<UBoxComponent>(Fixture.Room->GetRootComponent())->SetBoxExtent(FVector(2000, 2500, 2000));
+	}
+	FEnemyRunEnvQueryTaskInstanceData Data;
+	// 단차로 바닥이 75cm 올라가면 타깃도 같은 만큼 올린다. 타깃이 바닥 아래면 선회/후퇴의 시야 검사가 정상적으로 실패한다.
+	const double TargetHeight = Environment == TEXT("FloorStep") ? 125.0 : 50.0;
+	if (!TestTrue(TEXT("Combat query inputs initialize"), MakeHeightCombatQuery(Fixture, Mode, Data, TargetHeight))) return false;
+	if (Environment == TEXT("FloorStep"))
+		TestTrue(TEXT("Raised-floor target remains above the floor"), Data.CapturedOrbitCenter.Z > 75.0);
+	FEnvQueryRequest Request(Data.QueryTemplate, Fixture.Enemy);
+	if (!TestTrue(TEXT("Environmental query prepares"), EnemySearchTesting::PrepareRequest(Data, Request))) return false;
+	if (Environment == TEXT("Obstacle"))
+	{
+		const FEnemyFlightHeightCandidate* Candidate = Data.HeightSnapshot.Candidates.FindByPredicate(
+			[](const FEnemyFlightHeightCandidate& Item) { return Item.Status == EFlightPathStatus::Success; });
+		if (!TestNotNull(TEXT("Original corrected candidate exists"), Candidate)) return false;
+		if (!TestNotNull(TEXT("Candidate obstacle spawns"), Fixture.SpawnBlockingBox(Candidate->Location, FVector(80, 80, 80)))) return false;
+		// 후보가 있던 곳에 장애물을 놓은 뒤 실제 요청 준비부터 다시 진행한다.
+		Request = FEnvQueryRequest(Data.QueryTemplate, Fixture.Enemy);
+		if (!TestTrue(TEXT("Obstacle-aware query prepares"), EnemySearchTesting::PrepareRequest(Data, Request))) return false;
+	}
+	TSharedPtr<FEnvQueryResult> Result;
+	if (!FinishHeightQuery(*this, Fixture, Data, Request, Result, [] {})) return false;
+	AddInfo(FString::Printf(TEXT("[FlightHeightScenario] Environment=%s Result=%s Path=%s Checks=%d Items=%d TargetZ=%.1f"),
+		*Parameters, *UEnum::GetValueAsString(Data.QueryResult), *UEnum::GetValueAsString(Data.SelectionPathStatus),
+		Data.HeightSnapshot.CollisionChecks, Result->Items.Num(), Data.CapturedOrbitCenter.Z));
+	if (bMissingFloor)
+	{
+		TestTrue(TEXT("Missing floor produces no accepted EQS items"), Result->Items.IsEmpty());
+		TestFalse(TEXT("Missing floor never exposes a destination"), Data.bHasDestination);
+		TestFalse(TEXT("Unknown floor is not proof that both orbit sides are blocked"), Data.bNoOrbitDestination);
+		TestFalse(TEXT("Unknown floor is not proof that all retreat routes are blocked"), Data.bNoRetreatDestination);
+		TestTrue(TEXT("Missing floor is distinct from exhausted path budget"), Data.QueryResult != EEnemyEnvQueryResult::PathBudgetExceeded);
+		return true;
+	}
+	if (!TestEqual(TEXT("Environmental query selects a safe candidate"), Data.QueryResult, EEnemyEnvQueryResult::Success)) return false;
+	if (Environment == TEXT("LowCeiling"))
+		TestTrue(TEXT("Selected capsule fits below the ceiling"), Data.Destination.Z + Fixture.VerticalExtent() <= 650.01);
+	if (Environment == TEXT("FloorStep"))
+		TestTrue(TEXT("Selected height uses the raised floor"), Data.Destination.Z >= 75.0 + Fixture.VerticalExtent() - 0.01);
+	FEnemyFlyToLocationTaskInstanceData Fly = MakeHeightFlightData(Data);
+	ON_SCOPE_EXIT { EnemyFlightTesting::Stop(Fly); };
+	TestEqual(TEXT("Actual Fly validates corrected environmental route"), EnemyFlightTesting::StartPath(Fly), EStateTreeRunStatus::Running);
+	TestFalse(TEXT("Safe environmental route is not waiting for a retry"), Fly.bWaitingForPath);
+	TestTrue(TEXT("Safe environmental route contains waypoints"), Fly.PathWaypoints.Num() >= 2);
+	return true;
+}
+
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyFlightHeightFailureIntegrationTest,
+	"Outlier.Enemy.EQS.FlightHeight.Integration.FailureClassification",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FEnemyFlightHeightFailureIntegrationTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Mode : {TEXT("Approach"), TEXT("Orbit"), TEXT("Retreat"), TEXT("Chase")})
+	{
+		for (const TCHAR* Failure : {TEXT("InvalidSettings"), TEXT("PreparationBudget"), TEXT("SelectionBudget")})
+		{
+			const FString Scenario = FString::Printf(TEXT("%s.%s"), Mode, Failure);
+			Names.Add(Scenario);
+			Commands.Add(Scenario);
+		}
+	}
+}
+
+bool FEnemyFlightHeightFailureIntegrationTest::RunTest(const FString& Parameters)
+{
+	FString Mode, Failure;
+	if (!Parameters.Split(TEXT("."), &Mode, &Failure)) return false;
+	FEnemyFlightHeightTestWorld Fixture;
+	if (!TestTrue(TEXT("Fixture initializes"), Fixture.Initialize())) return false;
+	if (Failure == TEXT("InvalidSettings")) Fixture.Enemy->FlightHeightSettings.MidHeight = -1;
+	FEnemyRunEnvQueryTaskInstanceData Data;
+	if (!TestTrue(TEXT("Combat query inputs initialize"), MakeHeightCombatQuery(Fixture, Mode, Data))) return false;
+	if (Failure == TEXT("PreparationBudget")) Data.MaxCollisionChecks = 1;
+	FEnvQueryRequest Request(Data.QueryTemplate, Fixture.Enemy);
+	if (Failure == TEXT("InvalidSettings"))
+	{
+		TestFalse(TEXT("Invalid height settings reject request before EQS execution"), EnemySearchTesting::PrepareRequest(Data, Request));
+		TestEqual(TEXT("No asynchronous request was submitted"), Data.RequestId, INDEX_NONE);
+	}
+	else if (Failure == TEXT("PreparationBudget"))
+	{
+		TestFalse(TEXT("Height preparation respects its bounded collision budget"), EnemySearchTesting::PrepareRequest(Data, Request));
+		TestEqual(TEXT("Preparation budget has an explicit retryable classification"), Data.QueryResult, EEnemyEnvQueryResult::PathBudgetExceeded);
+		TestTrue(TEXT("Preparation never exceeds the configured check count"), Data.HeightSnapshot.CollisionChecks <= Data.MaxCollisionChecks);
+	}
+	else
+	{
+		if (!TestTrue(TEXT("Height preparation succeeds before selection budget is exhausted"), EnemySearchTesting::PrepareRequest(Data, Request))) return false;
+		TSharedPtr<FEnvQueryResult> Result;
+		// 보정에 사용한 검사만 남겨 선택 단계의 공유 예산 소진을 재현한다. 높이 보정 자체는 다시 실행하지 않는다.
+		const auto ExhaustSelectionBudget = [&] { Data.MaxCollisionChecks = Data.HeightSnapshot.CollisionChecks; };
+		if (!FinishHeightQuery(*this, Fixture, Data, Request, Result, ExhaustSelectionBudget)) return false;
+		TestEqual(TEXT("Selection also respects consumed height budget"), Data.QueryResult, EEnemyEnvQueryResult::PathBudgetExceeded);
+	}
+	TestFalse(TEXT("Failed query never exposes a destination"), Data.bHasDestination);
+	TestFalse(TEXT("Configuration/budget failure cannot force stationary orbit fire"), Data.bNoOrbitDestination);
+	TestFalse(TEXT("Configuration/budget failure cannot force stationary retreat fire"), Data.bNoRetreatDestination);
+	return true;
+}
+
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyFlightHeightSearchRegressionTest,
+	"Outlier.Enemy.EQS.FlightHeight.Integration.SearchUnchanged",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FEnemyFlightHeightSearchRegressionTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Scenario : {TEXT("Anchor"), TEXT("Points")})
+	{
+		Names.Add(Scenario);
+		Commands.Add(Scenario);
+	}
+}
+
+bool FEnemyFlightHeightSearchRegressionTest::RunTest(const FString& Parameters)
+{
+	FEnemyFlightHeightTestWorld Fixture;
+	if (!TestTrue(TEXT("Fixture initializes"), Fixture.Initialize())) return false;
+	// 컨트롤러/직접 시야 입력을 준비한 뒤 시야를 잃은 실제 수색 회차로 전환한다.
+	FEnemyRunEnvQueryTaskInstanceData Combat;
+	if (!TestTrue(TEXT("Combat inputs initialize"), MakeHeightCombatQuery(Fixture, TEXT("Approach"), Combat))) return false;
+	Fixture.Enemy->SetPlayerCurrentlyVisible(false);
+	Fixture.Enemy->UpdateLastKnownPlayerLocation(FVector(100, 0, 400));
+	if (!TestTrue(TEXT("Search episode begins"), Fixture.Enemy->BeginSearchEpisode())) return false;
+	ON_SCOPE_EXIT { Fixture.Enemy->EndSearchEpisode(); };
+	FEnemyRunEnvQueryTaskInstanceData Data;
+	Data.Enemy = Fixture.Enemy;
+	Data.SearchMode = Parameters == TEXT("Anchor") ? EEnemySearchQueryMode::Anchor : EEnemySearchQueryMode::Points;
+	Data.bRequireVisibleTarget = false;
+	Data.RunMode = EEnvQueryRunMode::AllMatching;
+	Data.MaxCollisionChecks = 4096;
+	Data.MaxPathCandidates = 32;
+	Data.MaxSearchMilliseconds = HeightTestMaxMilliseconds;
+	Data.QueryTemplate = NewObject<UEnvQuery>(Fixture.World);
+	UEnvQueryOption* Option = NewObject<UEnvQueryOption>(Data.QueryTemplate);
+	Data.QueryTemplate->GetOptionsMutable().Add(Option);
+	UEnemyEnvQueryGenerator_Search* Generator = NewObject<UEnemyEnvQueryGenerator_Search>(Option);
+	Generator->Mode = Data.SearchMode;
+	Option->Generator = Generator;
+	Option->Tests.Add(NewObject<UEnemyEnvQueryTest_FlightDestination>(Option));
+	EnemySearchTesting::CaptureQuery(Data);
+	Data.QueryResult = EEnemyEnvQueryResult::Running;
+	FEnvQueryRequest Request(Data.QueryTemplate, Fixture.Enemy);
+	if (!TestTrue(TEXT("Search request prepares with combat height enabled"), EnemySearchTesting::PrepareRequest(Data, Request))) return false;
+	TestTrue(TEXT("Search does not spend combat height correction checks"), Data.HeightSnapshot.Candidates.IsEmpty() && Data.HeightSnapshot.CollisionChecks == 0);
+	TSharedPtr<FEnvQueryResult> Result;
+	const auto ChangeCombatHeight = [&]
+	{
+		Fixture.Enemy->FlightHeightSettings.HighHeight = 800;
+		Fixture.Enemy->CombatHeightPreference = EEnemyFlightHeightPreference::High;
+	};
+	if (!FinishHeightQuery(*this, Fixture, Data, Request, Result, ChangeCombatHeight)) return false;
+	if (!TestEqual(TEXT("Combat height changes cannot invalidate search selection"), Data.QueryResult, EEnemyEnvQueryResult::Success)) return false;
+	TestTrue(TEXT("Search altitude stays within current height plus/minus one metre"),
+		FMath::Abs(Data.Destination.Z - Data.CapturedSearchHeight) <= 100.0);
+	TestTrue(TEXT("Search does not snap to the changed combat high altitude"), Data.Destination.Z < 800);
+	if (Data.SearchMode == EEnemySearchQueryMode::Points)
+		TestTrue(TEXT("Search still selects at most two points"), Data.SelectedSearchPoints.Num() >= 1 && Data.SelectedSearchPoints.Num() <= 2);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyFlightHeightChargeRegressionTest,
+	"Outlier.Enemy.EQS.FlightHeight.Integration.ChargeUnchanged",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyFlightHeightChargeRegressionTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FEnemyFlightHeightTestWorld Fixture;
+	if (!TestTrue(TEXT("Fixture initializes"), Fixture.Initialize())) return false;
+	FActorSpawnParameters Spawn;
+	Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	ASelfDestructDrone* Drone = Fixture.World->SpawnActor<ASelfDestructDrone>(
+		ASelfDestructDrone::StaticClass(), FTransform(FVector(0, 1000, 400)), Spawn);
+	AEnemyAIController* Controller = Fixture.World->SpawnActor<AEnemyAIController>();
+	AActor* Target = Fixture.World->SpawnActor<AActor>();
+	if (!TestNotNull(TEXT("Charge drone exists"), Drone) || !TestNotNull(TEXT("Charge controller exists"), Controller)
+		|| !TestNotNull(TEXT("Charge target exists"), Target)) return false;
+	UBoxComponent* Root = NewObject<UBoxComponent>(Target);
+	Target->SetRootComponent(Root);
+	Root->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	Root->RegisterComponent();
+	Target->SetActorLocation(FVector(400, 1000, 400));
+	Drone->GetRoomTagComp()->AssignDefaultRoomTag(Fixture.RoomTag);
+	Drone->FlightHeightSettings.bEnabled = true;
+	Drone->FlightHeightSettings.HighHeight = 800;
+	Drone->EnterCombatFromRoom(Target->GetActorLocation(), false);
+	Controller->Possess(Drone);
+	Controller->SetCachedVisibleTargetForTesting(Target);
+	Drone->SetPlayerCurrentlyVisible(true);
+	UCapsuleComponent* Capsule = Drone->GetCapsuleComponent();
+	Capsule->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+	Capsule->SetCollisionResponseToAllChannels(ECR_Block);
+	Fixture.World->GetPhysicsScene()->ProcessDeferredCreatePhysicsState();
+	Fixture.World->GetPhysicsScene()->Flush();
+	for (EEnemyFlightHeightPreference Preference : {EEnemyFlightHeightPreference::Low,
+		EEnemyFlightHeightPreference::Mid, EEnemyFlightHeightPreference::High})
+	{
+		Drone->CombatHeightPreference = Preference;
+		TestEqual(TEXT("Height preference cannot alter charge range/straight path eligibility"),
+			EnemyCharge::Assess(Drone, Controller, Target, 500, 5), EEnemyChargeEligibility::Ready);
+	}
+	if (!TestTrue(TEXT("Charge commits the current direct heading"),
+		Drone->BeginCommittedSelfDestruct(Target, 0, 400, 1000, 0))) return false;
+	ON_SCOPE_EXIT { Drone->CancelCommittedSelfDestruct(); };
+	Target->SetActorLocation(FVector(400, 1400, 800));
+	Drone->CombatHeightPreference = EEnemyFlightHeightPreference::High;
+	Drone->SetPlayerCurrentlyVisible(false);
+	Drone->UpdateCommittedSelfDestructMovement(0.1f, 400);
+	TestTrue(TEXT("Height change and sight loss do not retarget a committed charge"),
+		Drone->GetCharacterMovement()->Velocity.GetSafeNormal().Equals(FVector::ForwardVector, 0.001));
 	return true;
 }
 

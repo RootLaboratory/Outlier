@@ -1391,27 +1391,17 @@ EStateTreeRunStatus ResumeSearchSelection(FEnemyRunEnvQueryTaskInstanceData& Dat
 	return Data.bHasDestination ? EStateTreeRunStatus::Succeeded : EStateTreeRunStatus::Failed;
 }
 
-EStateTreeRunStatus StartEnvQuery(FStateTreeExecutionContext& Context,
-	FEnemyRunEnvQueryTaskInstanceData& Data)
+bool PrepareEnvQueryRequest(FEnemyRunEnvQueryTaskInstanceData& Data, FEnvQueryRequest& Request)
 {
-	const double Now = Data.Enemy->GetWorld()->GetTimeSeconds();
-	if (Now < Data.Enemy->GetNextEnvQueryRequestTime())
-	{
-		if (Data.QueryResult != EEnemyEnvQueryResult::Waiting) LogEnvQuery(TEXT("WaitingForRequestInterval"), Data);
-		Data.QueryResult = EEnemyEnvQueryResult::Waiting;
-		return EStateTreeRunStatus::Running;
-	}
-	// 간격은 Pawn에 보관해 실패 후 같은 State로 재진입해도 요청이 한 프레임에 반복되지 않게 한다.
-	Data.Enemy->SetNextEnvQueryRequestTime(Now + Data.QueryInterval);
-	Data.QueryStartedAt = Now;
-	Data.QueryResult = EEnemyEnvQueryResult::Running;
+	// 보정 후보 생성 -> 공유 예산 기록 -> NamedParam 저장 순서로 준비한다.
+	// 실행 방식과 분리해도 실제 Task와 통합 테스트가 같은 후보/좌표를 사용한다.
 	if (Data.bRequireVisibleTarget && Data.SearchMode == EEnemySearchQueryMode::None && Data.HeightSnapshot.bEnabled)
 	{
 		const TArray<UEnvQueryOption*>& Options = Data.QueryTemplate->GetOptions();
 		if (Options.Num() != 1 || !Options[0] || !Options[0]->Generator)
 		{
 			Data.QueryResult = EEnemyEnvQueryResult::Invalid;
-			return EStateTreeRunStatus::Failed;
+			return false;
 		}
 		const EFlightPathStatus HeightStatus = EnemyFlightHeight::PrepareQuery(*Data.Enemy, *Options[0]->Generator,
 			Data.CapturedOrbitStart, Data.CapturedOrbitCenter, Data.CapturedOrbitLength,
@@ -1426,10 +1416,9 @@ EStateTreeRunStatus StartEnvQuery(FStateTreeExecutionContext& Context,
 		{
 			Data.QueryResult = HeightStatus == EFlightPathStatus::BudgetExceeded
 				? EEnemyEnvQueryResult::PathBudgetExceeded : EEnemyEnvQueryResult::Invalid;
-			return EStateTreeRunStatus::Failed;
+			return false;
 		}
 	}
-	FEnvQueryRequest Request(Data.QueryTemplate, Data.Enemy);
 	for (FAIDynamicParam& Param : Data.QueryConfig)
 	{
 		Request.SetDynamicParam(Param, nullptr);
@@ -1453,6 +1442,25 @@ EStateTreeRunStatus StartEnvQuery(FStateTreeExecutionContext& Context,
 	{
 		EnemySearch::SetQuerySnapshot(Request, Data.CapturedOrbitCenter, Data.CapturedSearchHeight);
 	}
+	return true;
+}
+
+EStateTreeRunStatus StartEnvQuery(FStateTreeExecutionContext& Context,
+	FEnemyRunEnvQueryTaskInstanceData& Data)
+{
+	const double Now = Data.Enemy->GetWorld()->GetTimeSeconds();
+	if (Now < Data.Enemy->GetNextEnvQueryRequestTime())
+	{
+		if (Data.QueryResult != EEnemyEnvQueryResult::Waiting) LogEnvQuery(TEXT("WaitingForRequestInterval"), Data);
+		Data.QueryResult = EEnemyEnvQueryResult::Waiting;
+		return EStateTreeRunStatus::Running;
+	}
+	// 간격은 Pawn에 보관해 실패 후 같은 State로 재진입해도 요청이 한 프레임에 반복되지 않게 한다.
+	Data.Enemy->SetNextEnvQueryRequestTime(Now + Data.QueryInterval);
+	Data.QueryStartedAt = Now;
+	Data.QueryResult = EEnemyEnvQueryResult::Running;
+	FEnvQueryRequest Request(Data.QueryTemplate, Data.Enemy);
+	if (!PrepareEnvQueryRequest(Data, Request)) return EStateTreeRunStatus::Failed;
 	const FQueryFinishedSignature Finished = FQueryFinishedSignature::CreateLambda([WeakContext = Context.MakeWeakExecutionContext()
 #if WITH_DEV_AUTOMATION_TESTS
 		, QueryWorld = TWeakObjectPtr<UWorld>(Data.Enemy->GetWorld())
@@ -1822,6 +1830,20 @@ EStateTreeRunStatus FEnemySearchProgressTask::EnterState(FStateTreeExecutionCont
 #if WITH_DEV_AUTOMATION_TESTS
 namespace EnemySearchTesting
 {
+bool PrepareRequest(FEnemyRunEnvQueryTaskInstanceData& Data, FEnvQueryRequest& Request)
+{
+	return IsEnvQueryConfigurationValid(Data) && HasValidEnvQueryParameters(Data)
+		&& IsEnvQuerySnapshotCurrent(Data) && PrepareEnvQueryRequest(Data, Request);
+}
+
+bool CompletePendingQuery(FEnemyRunEnvQueryTaskInstanceData& Data, const FEnvQueryResult& Result)
+{
+	// Delegate와 같은 요청 번호/활성 검사 후 결과를 적용한다. 종료된 요청은 출력에 손대지 않는다.
+	if (!CanAcceptEnvQueryResult(Data, Result.QueryID)) return false;
+	ApplyEnvQueryResult(Data, Result);
+	return true;
+}
+
 void CaptureQuery(FEnemyRunEnvQueryTaskInstanceData& Data)
 {
 	Data.bActive = true;

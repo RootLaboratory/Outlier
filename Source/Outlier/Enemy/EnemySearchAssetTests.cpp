@@ -129,7 +129,37 @@ void CheckDestinationBinding(FAutomationTestBase& Test, const UStateTree& Tree,
 		&& Output->SourceIndirection.Offset == Input->SourceIndirection.Offset);
 }
 
-void CheckLinkedQueries(FAutomationTestBase& Test, const UStateTree& Tree, TSet<const UStateTree*>& Visited)
+void CheckHeightQueryConfiguration(FAutomationTestBase& Test, const FEnemyRunEnvQueryTaskInstanceData& Data,
+	const UEnvQuery& Query, const FString& Location)
+{
+	// 수색은 현재 고도 범위를 유지한다. 전투 높이 스냅샷을 사용하는 질의만 추가 검사한다.
+	if (Data.SearchMode != EEnemySearchQueryMode::None) return;
+	if (!Test.TestEqual(Location + TEXT(" flight height requires exactly one EQS option"), Query.GetOptions().Num(), 1)) return;
+	const UEnvQueryOption* Option = Query.GetOptions()[0];
+	if (!Option || !Option->Generator) return;
+	const UEnvQueryGenerator* Generator = Option->Generator.Get();
+	const bool bApproach = Generator->IsA<UEnemyEnvQueryGenerator_Approach>();
+	const bool bOrbit = Generator->IsA<UEnemyEnvQueryGenerator_Orbit>();
+	const bool bRetreat = Generator->GetClass() == UEnemyEnvQueryGenerator_Retreat::StaticClass();
+	const bool bChase = Generator->GetClass() == UEnemyEnvQueryGenerator_Chase::StaticClass();
+	Test.TestTrue(Location + TEXT(" flight height requires a supported combat generator"), bApproach || bOrbit || bRetreat || bChase);
+	Test.TestTrue(Location + TEXT(" flight height requires the visible-target snapshot"), Data.bRequireVisibleTarget);
+	Test.TestEqual(Location + TEXT(" flight height returns all candidates for path validation"),
+		Data.RunMode.GetValue(), EEnvQueryRunMode::AllMatching);
+	Test.TestTrue(Location + TEXT(" flight height generator matches exactly one path validation mode"),
+		Data.bValidateReachability == bApproach && Data.bValidateOrbitPath == bOrbit
+		&& Data.bValidateRetreatPath == bRetreat && Data.bValidateChasePath == bChase);
+	// 높이 보정과 EQS 필터의 캡슐 여유가 다르면 안전 후보가 다시 탈락할 수 있다.
+	for (const UEnvQueryTest* QueryTest : Option->Tests)
+	{
+		if (const auto* Flight = Cast<UEnemyEnvQueryTest_FlightDestination>(QueryTest))
+			Test.TestTrue(Location + TEXT(" flight height and destination filter use the same finite clearance"),
+				FMath::IsFinite(Data.Clearance) && Data.Clearance >= 0.0f && Flight->Clearance == Data.Clearance);
+	}
+}
+
+void CheckLinkedQueries(FAutomationTestBase& Test, const UStateTree& Tree, TSet<const UStateTree*>& Visited,
+	bool bHeightEnabled)
 {
 	// Linked Tree와 BP Override를 함께 검사한다. 순환 참조는 한 번만 방문한다.
 	if (Visited.Contains(&Tree)) return;
@@ -146,6 +176,7 @@ void CheckLinkedQueries(FAutomationTestBase& Test, const UStateTree& Tree, TSet<
 			if (!Test.TestNotNull(Location + TEXT(" instance data"), Data)) continue;
 			const UEnvQuery* Query = Data->QueryTemplate.Get();
 			if (!Test.TestNotNull(Location + TEXT(" QueryTemplate must be assigned in Details"), Query)) continue;
+			if (bHeightEnabled) CheckHeightQueryConfiguration(Test, *Data, *Query, Location);
 			Test.AddInfo(FString::Printf(TEXT("[DroneAsset] %s -> %s"), *Location, *Query->GetPathName()));
 			Test.TestTrue(Location + TEXT(" query has an option"), !Query->GetOptions().IsEmpty());
 			for (const UEnvQueryOption* Option : Query->GetOptions())
@@ -176,7 +207,7 @@ void CheckLinkedQueries(FAutomationTestBase& Test, const UStateTree& Tree, TSet<
 					Test.AddInfo(FString::Printf(TEXT("[DroneAsset] Query=%s Validation=OrbitCapsuleSegmentsAndRoom"), *Query->GetPathName()));
 			}
 		}
-		if (State.LinkedAsset) CheckLinkedQueries(Test, *State.LinkedAsset, Visited);
+		if (State.LinkedAsset) CheckLinkedQueries(Test, *State.LinkedAsset, Visited, bHeightEnabled);
 	}
 }
 }
@@ -201,11 +232,14 @@ bool FEnemyDroneAssetReferencesTest::RunTest(const FString& Parameters)
 		: TEXT("/Game/Blueprints/Enemy/VECDrone/BP_VECDrone_Gun.BP_VECDrone_Gun_C"));
 	if (!TestNotNull(TEXT("Actual enemy BP class loads"), Class)) return false;
 	const AEnemyBase* Enemy = Class->GetDefaultObject<AEnemyBase>();
+	// 높이는 BP별 선택 사항이다. 비활성 BP에 활성화나 새 수치를 강제하지 않는다.
+	const bool bHeightEnabled = Enemy->FlightHeightSettings.bEnabled;
+	if (bHeightEnabled) TestTrue(TEXT("Enabled BP flight height settings are valid"), Enemy->FlightHeightSettings.IsValid());
 	const auto* Component = Cast<UEnemyStateTreeComponent>(Enemy->GetStateTreeComponent());
 	if (!TestNotNull(TEXT("BP StateTreeComponent uses EnemyStateTreeComponent"), Component)) return false;
 	TSet<const UStateTree*> Visited;
 	const UStateTree* Common = Component->GetConfiguredStateTreeReference().GetStateTree();
-	if (TestNotNull(TEXT("BP StateTreeComponent common tree is assigned"), Common)) CheckLinkedQueries(*this, *Common, Visited);
+	if (TestNotNull(TEXT("BP StateTreeComponent common tree is assigned"), Common)) CheckLinkedQueries(*this, *Common, Visited, bHeightEnabled);
 	for (const FName PropertyName : {FName(TEXT("BattleStateTreeReference")), FName(TEXT("PossessedAttackStateTreeReference"))})
 	{
 		const FStructProperty* Property = FindFProperty<FStructProperty>(Class, PropertyName);
@@ -216,7 +250,7 @@ bool FEnemyDroneAssetReferencesTest::RunTest(const FString& Parameters)
 		if (PropertyName == TEXT("BattleStateTreeReference"))
 			TestEqual(TEXT("BP uses its own battle type, not the other drone's tree"), Tree->GetFName(),
 				FName(bMelee ? TEXT("ST_VECDroneBattle_Melee") : TEXT("ST_VECDroneBattle_Gun")));
-		CheckLinkedQueries(*this, *Tree, Visited);
+		CheckLinkedQueries(*this, *Tree, Visited, bHeightEnabled);
 	}
 	return true;
 }

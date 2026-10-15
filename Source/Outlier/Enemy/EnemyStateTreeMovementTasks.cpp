@@ -730,6 +730,25 @@ EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, fl
 }
 
 #if WITH_DEV_AUTOMATION_TESTS
+namespace EnemyFlightTesting
+{
+EStateTreeRunStatus StartPath(FEnemyFlyToLocationTaskInstanceData& Data)
+{
+	if (!IsRetreatFlightConfigurationValid(Data)) return EStateTreeRunStatus::Failed;
+	return Data.bUsePlannedPath ? StartPlannedFlight(Data) : RequestFlightPath(Data);
+}
+
+EStateTreeRunStatus TickPath(FEnemyFlyToLocationTaskInstanceData& Data, float DeltaTime)
+{
+	return TickFlightPath(Data, DeltaTime);
+}
+
+void Stop(FEnemyFlyToLocationTaskInstanceData& Data)
+{
+	StopFlyTask(Data);
+}
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyFlightProgressTest,
 	"Outlier.Enemy.Flight.Progress", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 

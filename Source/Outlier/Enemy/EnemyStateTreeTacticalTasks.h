@@ -340,6 +340,8 @@ struct OUTLIER_API FEnemySearchProgressTask : public FStateTreeTaskCommonBase
 // 테스트도 실제 Task의 판단을 호출한다. 테스트 전용 수색 로직을 별도로 만들지 않는다.
 namespace EnemySearchTesting
 {
+	OUTLIER_API bool PrepareRequest(FEnemyRunEnvQueryTaskInstanceData& Data, FEnvQueryRequest& Request);
+	OUTLIER_API bool CompletePendingQuery(FEnemyRunEnvQueryTaskInstanceData& Data, const FEnvQueryResult& Result);
 	OUTLIER_API void CaptureQuery(FEnemyRunEnvQueryTaskInstanceData& Data);
 	OUTLIER_API void CompleteQuery(FEnemyRunEnvQueryTaskInstanceData& Data, const FEnvQueryResult& Result);
 	OUTLIER_API bool SelectDestinations(FEnemyRunEnvQueryTaskInstanceData& Data, const FEnvQueryResult& Result);
