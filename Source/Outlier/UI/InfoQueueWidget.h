@@ -8,7 +8,7 @@
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnOutlierInfoItemShown, FGameplayTag /*EventTag*/);
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnOutlierInfoItemFinished, FGameplayTag /*EventTag*/, bool /*bCompleted*/);
 
-/** One region, one FIFO queue. An idle region is collapsed and does not receive Slate ticks. */
+/** 영역 하나당 FIFO Queue 하나. 유휴 영역은 Collapsed되어 Slate tick을 받지 않는다. */
 UCLASS(Abstract, Blueprintable)
 class OUTLIER_API UInfoQueueWidget : public UUserWidget
 {
@@ -25,10 +25,10 @@ public:
 
 	bool NotifyOverlap(FGameplayTag EventTag);
 
-	/** Completes/cancels a Source item without an independent timer. */
+	/** 독립 타이머 없이 Source 항목을 완료/취소한다. */
 	void FinishSource(FGameplayTag EventTag, bool bCompleted);
 
-	/** Removes this tag from both the active item and pending items. */
+	/** 활성 항목과 대기 항목 모두에서 이 태그를 제거한다. */
 	bool CancelInfo(FGameplayTag EventTag);
 
 	void ClearInfoQueue();
@@ -41,7 +41,7 @@ public:
 
 	float GetRemainingDuration() const { return RemainingDuration; }
 
-	/** Uses the duration captured at enqueue time, including pending items. */
+	/** 대기 항목을 포함해 enqueue 시점에 캡처한 지속 시간을 사용한다. */
 	bool IsInfoTimed(FGameplayTag EventTag) const;
 
 	FOnOutlierInfoItemShown OnInfoItemShown;
@@ -52,7 +52,7 @@ protected:
 	virtual void NativeConstruct() override;
 	virtual void NativeDestruct() override;
 	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
-	/** Resolves widget-owned DT defaults before retaining the request. */
+	/** 요청을 보관하기 전에 위젯이 소유한 DT 기본값을 해석한다. */
 	virtual bool PrepareInfoRequest(FOutlierInfoWidgetRequest& Request) const;
 	virtual bool PresentInfo(const FOutlierInfoWidgetRequest& Request) { return true; }
 	virtual void ResetInfoContent() {}

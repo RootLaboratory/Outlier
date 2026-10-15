@@ -153,7 +153,7 @@ void UOutlierAudioSubsystem::StartNextVoice()
 		if (Bank && !Bank->bContentLoaded)
 		{
 			LoadBankContent(VoiceType);
-			// An empty bank may become ready synchronously.
+			// 빈 뱅크는 동기적으로 준비될 수 있다.
 			if (!Bank->bContentLoaded)
 			{
 				if (!BankContentLoadHandles.Contains(VoiceType))
@@ -1595,7 +1595,7 @@ void UOutlierAudioSubsystem::ExecutePlay(
 	{
 		return;
 	}
-	// A voice interrupted during async loading must never play when its asset arrives.
+	// 비동기 로딩 중 중단된 음성은 에셋이 도착해도 재생하지 않는다.
 	if (PendingPlay.VoiceRequestId != 0 && PendingPlay.VoiceRequestId != ActiveVoice.Id)
 	{
 		return;

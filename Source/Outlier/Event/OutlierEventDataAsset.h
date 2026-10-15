@@ -6,7 +6,7 @@
 
 class UDataTable;
 
-/** One role's data sources. Goal and TTS references may be shared by both role assets. */
+/** 한 역할의 데이터 소스. Goal/TTS 참조는 두 역할 에셋이 공유할 수 있다. */
 UCLASS(BlueprintType)
 class OUTLIER_API UOutlierEventDataAsset : public UDataAsset
 {
@@ -19,7 +19,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Data Tables", meta = (RequiredAssetDataTags = "RowStructure=/Script/Outlier.OutlierInputDataRow"))
 	TSoftObjectPtr<UDataTable> InputTable;
 
-	/** IA expressions, separate from the InputTable's tutorial text and lifetime. */
+	/** IA 표현. InputTable의 튜토리얼 텍스트/수명과 별개이다. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Data Tables", meta = (RequiredAssetDataTags = "RowStructure=/Script/Outlier.OutlierInputDisplayDataRow"))
 	TSoftObjectPtr<UDataTable> InputDisplayTable;
 
@@ -32,7 +32,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Data Tables", meta = (RequiredAssetDataTags = "RowStructure=/Script/Outlier.OutlierTTSDataRow"))
 	TSoftObjectPtr<UDataTable> TTSTable;
 
-	/** Shared world-space guide definitions; both role assets should reference the same table. */
+	/** 공유 월드 공간 가이드 정의. 두 역할 에셋이 같은 테이블을 참조해야 한다. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Data Tables", meta = (RequiredAssetDataTags = "RowStructure=/Script/Outlier.OutlierWorldGuideDataRow"))
 	TSoftObjectPtr<UDataTable> WorldGuideTable;
 };

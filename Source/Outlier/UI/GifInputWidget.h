@@ -9,7 +9,7 @@ class UHorizontalBox;
 class UInputCombinationWidget;
 class UTextBlock;
 
-/** Input layout module. Displays a rebound key and its optional description. */
+/** Input 레이아웃 모듈. 리바인드된 키와 선택적 설명을 표시한다. */
 UCLASS(Blueprintable, meta = (DisableNativeTick))
 class OUTLIER_API UGifInputWidget : public UUserWidget
 {
@@ -19,7 +19,7 @@ public:
 	void SetInputData(const FInputDisplayDefinition& Display, const FText& Description);
 	void ClearInputData();
 
-	/** Preserves the existing Input HorizontalBox name inside the module WBP. */
+	/** 모듈 WBP 내부의 기존 Input HorizontalBox 이름을 유지한다. */
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UHorizontalBox> Input;
 

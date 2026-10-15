@@ -90,7 +90,7 @@ void UOutlierWorldGuideTargetComponent::TickComponent(float DeltaTime, ELevelTic
 void UOutlierWorldGuideTargetComponent::UpdateDisplayPlacement()
 {
 	if (!DisplayComponent) return;
-	// The widget stays in the viewport; only its projection anchor follows the world.
+	// 위젯은 뷰포트에 남고, 투영 앵커만 월드를 따라간다.
 	DisplayComponent->SetWorldLocation(GetComponentLocation() + WorldOffset);
 	const FVector2D Size(FMath::Max(1, FMath::RoundToInt(DrawSize.X)), FMath::Max(1, FMath::RoundToInt(DrawSize.Y)));
 	if (DisplayComponent->GetDrawSize() != Size) DisplayComponent->SetDrawSize(Size);

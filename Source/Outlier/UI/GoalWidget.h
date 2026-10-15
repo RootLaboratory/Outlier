@@ -7,7 +7,7 @@
 
 class UTextBlock;
 
-/** UpperWidget child. Goal lookup/routing is supplied separately by the event layer. */
+/** UpperWidget의 child. Goal 조회/라우팅은 이벤트 레이어가 별도로 제공한다. */
 UCLASS(Blueprintable, meta = (DisableNativeTick))
 class OUTLIER_API UGoalWidget : public UUserWidget
 {

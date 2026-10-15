@@ -13,7 +13,7 @@ enum class EInputDisplayKeySelection : uint8
 	FirstMapped
 };
 
-/** Display notation only; these symbols do not evaluate gameplay conditions. */
+/** 표시용 표기일 뿐이며, 이 기호들은 게임플레이 조건을 평가하지 않는다. */
 UENUM(BlueprintType)
 enum class EInputDisplaySeparator : uint8
 {
@@ -33,7 +33,7 @@ struct OUTLIER_API FInputDisplayTerm
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input")
 	EInputDisplayKeySelection KeySelection = EInputDisplayKeySelection::AllMapped;
 
-	/** Ignored for the first displayed group. None places groups side by side. */
+	/** 첫 번째로 표시되는 그룹에서는 무시된다. None은 그룹을 나란히 배치한다. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input")
 	EInputDisplaySeparator SeparatorBefore = EInputDisplaySeparator::None;
 
@@ -43,12 +43,12 @@ struct OUTLIER_API FInputDisplayTerm
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input", meta = (EditCondition = "SeparatorBefore == EInputDisplaySeparator::Custom", EditConditionHides))
 	FText SymbolText;
 
-	/** Additional padding around the entire IA group. */
+	/** IA 그룹 전체를 둘러싼 추가 padding. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layout")
 	FMargin Padding;
 };
 
-/** Authored in the role's InputDisplay DT and passed to a display-only widget. */
+/** 역할별 InputDisplay DT에서 작성되어 표시 전용 위젯에 전달된다. */
 USTRUCT(BlueprintType)
 struct OUTLIER_API FInputDisplayDefinition
 {
@@ -57,7 +57,7 @@ struct OUTLIER_API FInputDisplayDefinition
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input")
 	TArray<FInputDisplayTerm> Expression;
 
-	/** Optional completion action for Manual tutorials. Single-term definitions default to their only IA. */
+	/** Manual 튜토리얼용 선택적 완료 액션. 단일 term 정의는 그 유일한 IA가 기본값이다. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tutorial")
 	TObjectPtr<UInputAction> CompletionInputAction = nullptr;
 

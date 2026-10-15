@@ -15,10 +15,10 @@ class UTexture2D;
 class UWidget;
 
 /**
- * Reuses the BindKey WBP to render a runtime input expression horizontally.
- * Assign KeyDisplayWidgetClass to the existing InputActionKeyDisplayWidget WBP.
- * A native instance supplies its own HorizontalBox; a WBP can supply InputItems.
- * Examples (each entry is a term, with its preceding separator):
+ * BindKey WBP를 재사용해 런타임 입력 표현식을 가로로 렌더링한다.
+ * KeyDisplayWidgetClass에는 기존 InputActionKeyDisplayWidget WBP를 할당한다.
+ * native 인스턴스는 자체 HorizontalBox를 만들고, WBP는 InputItems를 제공할 수 있다.
+ * 예시 (각 항목은 앞 구분자를 포함한 term이다):
  * Move(AllMapped); Sprint(FirstMapped), + Move(AllMapped);
  * Crouch(FirstMapped), + Sprint(FirstMapped), + Move(AllMapped).
  */
@@ -37,7 +37,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UI|Input")
 	void ClearExpression();
 
-	/** Re-query active mappings. False means a missing mapping or invalid widget configuration. */
+	/** 활성 매핑을 다시 조회한다. false면 매핑 누락 또는 잘못된 위젯 설정이다. */
 	UFUNCTION(BlueprintCallable, Category = "UI|Input")
 	bool RefreshExpression();
 
@@ -49,19 +49,19 @@ public:
 
 	virtual void SynchronizeProperties() override;
 
-	/** Runtime data supplied by the resolver; WBP defaults do not author expressions. */
+	/** resolver가 제공하는 런타임 데이터. WBP 기본값으로 표현식을 작성하지 않는다. */
 	UPROPERTY(Transient, BlueprintReadOnly, Category = "UI|Input")
 	TArray<FInputDisplayTerm> Expression;
 
-	/** Concrete WBP subclass carrying the shared key texture table, frame and text styling. */
+	/** 공용 키 texture 테이블, frame, 텍스트 스타일을 가진 구체 WBP 서브클래스. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI|Input")
 	TSubclassOf<UInputActionKeyDisplayWidget> KeyDisplayWidgetClass;
 
-	/** One frame injected into every generated text key. Dedicated image keys keep their own texture. */
+	/** 생성되는 모든 텍스트 키에 주입하는 frame. 전용 이미지 키는 자체 texture를 유지한다. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI|Input")
 	TObjectPtr<UTexture2D> DefaultKeyFrameTexture;
 
-	/** Color injected into every generated key display, overriding the leaf WBP's default. */
+	/** 생성되는 모든 키 표시에 주입하는 색상. leaf WBP 기본값을 덮어쓴다. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, BlueprintSetter = SetKeyTextColor, Category = "UI|Input")
 	FLinearColor KeyTextColor = FLinearColor::Black;
 
@@ -71,14 +71,14 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI|Input")
 	TObjectPtr<UTexture2D> PlusTexture;
 
-	/** Texture symbols are scaled to fit this area while preserving their aspect ratio. */
+	/** Texture 기호는 종횡비를 유지한 채 이 영역에 맞게 스케일된다. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI|Layout")
 	FVector2D SymbolSize = FVector2D(16.0, 16.0);
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI|Layout", meta = (ClampMin = "0.0"))
 	float KeySpacing = 8.0f;
 
-	/** Gap between adjacent IA groups when no visible symbol separates them. */
+	/** 보이는 기호로 구분되지 않을 때 인접한 IA 그룹 사이 간격. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI|Layout", meta = (ClampMin = "0.0"))
 	float GroupSpacing = 8.0f;
 
@@ -91,7 +91,7 @@ protected:
 	virtual void NativeConstruct() override;
 	virtual void NativeDestruct() override;
 
-	/** Optional for native use. A custom WBP root must contain a HorizontalBox named InputItems. */
+	/** native 사용 시 선택 사항. 커스텀 WBP 루트에는 InputItems라는 HorizontalBox가 있어야 한다. */
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
 	TObjectPtr<UHorizontalBox> InputItems;
 

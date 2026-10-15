@@ -91,7 +91,7 @@ namespace
 			UE_LOG(LogOutlier, Warning, TEXT("[WorldGuideDebug] No local FirstPersonPlayerController; run this in a PIE player window."));
 			return;
 		}
-		// The owning controller carries client commands; never invoke server RPCs on a level manager.
+		// 클라이언트 명령은 소유 Controller가 전달한다. 레벨 Manager에서 서버 RPC를 직접 호출하지 않는다.
 		if (Controller->HasAuthority()) Controller->ServerDebugWorldGuide_Implementation(Operation, ID, Next);
 		else Controller->ServerDebugWorldGuide(Operation, ID, Next);
 	}

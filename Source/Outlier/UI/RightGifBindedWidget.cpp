@@ -26,14 +26,14 @@ bool URightGifBindedWidget::TryResolveGifData(const FOutlierInfoWidgetRequest& R
 
 bool URightGifBindedWidget::PrepareInfoRequest(FOutlierInfoWidgetRequest& Request) const
 {
-	// GIF has no audio source: default requests use the GIF DT's display time.
+	// GIF에는 오디오 소스가 없다: 기본 요청은 GIF DT의 표시 시간을 사용한다.
 	if (Request.EndCondition == EOutlierInfoEndCondition::Source)
 	{
 		Request.EndCondition = EOutlierInfoEndCondition::Time;
 	}
 	FOutlierGifDataRow Data;
 	if (!TryResolveGifData(Request, Data)) return false;
-	// Chains key on the resolved GIF row, including requests that named only the event.
+	// 이벤트만 지정한 요청을 포함해 chain은 해석된 GIF row를 키로 한다.
 	Request.GifTag = Data.Tag;
 	if (Request.EndCondition == EOutlierInfoEndCondition::Time && Request.Duration == 0.0f)
 	{

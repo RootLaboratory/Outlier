@@ -54,7 +54,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UI|Input")
 	void SetWatchedInputAction(UInputAction* NewInputAction);
 
-	/** Display one resolved key using the same texture/text rules, without watching an IA. */
+	/** IA를 감시하지 않고 동일한 texture/text 규칙으로 해석된 키 하나를 표시한다. */
 	UFUNCTION(BlueprintCallable, Category = "UI|Input")
 	void SetDisplayedKey(FKey NewKey);
 
@@ -89,7 +89,7 @@ public:
 	UFUNCTION(BlueprintPure, Category = "UI|Input")
 	UTexture2D* GetBorderImage() const { return BorderImage; }
 
-	/** Resolved image dimensions, or the minimum frame dimensions for text keys. */
+	/** 해석된 이미지 크기. 텍스트 키는 최소 frame 크기. */
 	UFUNCTION(BlueprintPure, Category = "UI|Input")
 	FVector2D GetKeyDisplaySize() const;
 
@@ -109,7 +109,7 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI|Input")
 	TObjectPtr<UTexture2D> BorderImage;
 
-	/** Color for key labels and override text; can be changed in BP defaults or at runtime. */
+	/** 키 라벨과 override 텍스트 색상. BP 기본값이나 런타임에 변경할 수 있다. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, BlueprintSetter = SetKeyTextColor, Category = "UI|Input")
 	FLinearColor KeyTextColor = FLinearColor::Black;
 
@@ -122,12 +122,12 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI|Layout", meta = (ClampMin = "1.0"))
 	float MaxTextKeyWidth = 88.0f;
 
-	/** Nine-slice margin lets the common frame grow with the key label. */
+	/** Nine-slice margin으로 공용 frame이 키 라벨에 맞춰 늘어난다. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI|Layout")
 	FMargin FrameSliceMargin = FMargin(0.15f);
 
-	/** Shared table assigned on the base BindKey WBP. Row Name must equal the engine key name. */
-	// Keep the serialized property name so existing WBP assignments remain valid.
+	/** 기본 BindKey WBP에 할당하는 공용 테이블. Row Name은 엔진 키 이름과 같아야 한다. */
+	// 기존 WBP 할당이 유효하도록 직렬화된 프로퍼티 이름을 유지한다.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "UI|Input", meta = (DisplayName = "Key Texture Table", RequiredAssetDataTags = "RowStructure=/Script/Outlier.InputKeyTextureDataRow"))
 	TObjectPtr<UDataTable> MouseKeyTextureTable;
 

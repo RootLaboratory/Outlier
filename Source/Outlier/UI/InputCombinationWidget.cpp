@@ -63,7 +63,7 @@ bool UInputCombinationWidget::EnsureInputPanel()
 	}
 	if (InputItems && (!WidgetTree->RootWidget || WidgetTree->RootWidget == InputItems))
 	{
-		// Keep the whole row centered even when its desired width exceeds the available space.
+		// desired width가 가용 공간을 넘어도 행 전체를 가운데 정렬로 유지한다.
 		UScaleBox* Scale = WidgetTree->ConstructWidget<UScaleBox>(UScaleBox::StaticClass(), TEXT("InputContentScale"));
 		Scale->SetStretch(EStretch::ScaleToFit);
 		Scale->SetStretchDirection(EStretchDirection::DownOnly);
@@ -168,8 +168,8 @@ bool UInputCombinationWidget::RefreshExpression()
 		}
 		if (Keys.IsEmpty())
 		{
-			// Keep an unresolved operand visible as the leaf widget's missing-key marker.
-			// A later mapping rebuild replaces it with the complete group.
+			// 해석되지 않은 operand는 leaf 위젯의 missing-key 마커로 표시해 둔다.
+			// 이후 매핑 재구성 시 완전한 그룹으로 교체된다.
 			bAllResolved = false;
 			Keys.Add(FKey());
 		}
@@ -264,7 +264,7 @@ void UInputCombinationWidget::BindInputEvents()
 	BoundInputSubsystem = LocalPlayer->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>();
 	if (BoundInputSubsystem)
 	{
-		// Stay subscribed after success: context changes can add/remove keys in an AllMapped group.
+		// 성공 후에도 구독을 유지한다: context 변경으로 AllMapped 그룹의 키가 추가/제거될 수 있다.
 		BoundInputSubsystem->ControlMappingsRebuiltDelegate.AddUniqueDynamic(this, &UInputCombinationWidget::HandleControlMappingsRebuilt);
 	}
 	BoundSettingsSubsystem = LocalPlayer->GetSubsystem<ULocalPlayerSettingsSubsystem>();

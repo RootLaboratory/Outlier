@@ -44,7 +44,7 @@ bool UInfoQueueWidget::EnqueueInfo(const FOutlierInfoWidgetRequest& Request)
 	FOutlierInfoWidgetRequest WidgetRequest = Request;
 	if (!WidgetRequest.OriginEventTag.IsValid()) WidgetRequest.OriginEventTag = WidgetRequest.EventTag;
 	if (!PrepareInfoRequest(WidgetRequest)) return false;
-	// Repeated requests keep their original duration and position.
+	// 반복 요청은 원래의 지속 시간과 위치를 유지한다.
 	if ((bHasCurrentInfo && CurrentRequest.EventTag == WidgetRequest.EventTag
 		&& CurrentRequest.OriginEventTag == WidgetRequest.OriginEventTag)
 		|| PendingRequests.ContainsByPredicate([&WidgetRequest](const FOutlierInfoWidgetRequest& Pending)
@@ -157,7 +157,7 @@ TArray<FOutlierInfoWidgetRequest> UInfoQueueWidget::GetInfoRequests() const
 bool UInfoQueueWidget::CompleteInfo(FGameplayTag EventTag)
 {
 	if (!EventTag.IsValid() || bClearingQueue) return false;
-	// Snapshot only existing matches: completion may enqueue the next chain, which must remain running.
+	// 기존 매치만 스냅샷한다: 완료 처리 중 다음 chain이 enqueue될 수 있고, 그 chain은 계속 실행되어야 한다.
 	const TArray<FOutlierInfoWidgetRequest> Requests = GetInfoRequests();
 	bool bCompleted = false;
 	for (const FOutlierInfoWidgetRequest& Request : Requests)
@@ -230,7 +230,7 @@ void UInfoQueueWidget::FinishCurrentInfo(bool bCompleted)
 		CurrentRequest = FOutlierInfoWidgetRequest();
 		RemainingDuration = 0.0f;
 		++PresentationGeneration;
-		// Queue continuations while the finishing guard still prevents their presentation.
+		// finishing guard가 아직 표시를 막고 있는 동안 후속 항목을 Queue에 넣는다.
 		InfoFinished(FinishedRequest, bCompleted);
 		SetVisibility(ESlateVisibility::Collapsed);
 		ResetInfoContent();
@@ -244,7 +244,7 @@ bool UInfoQueueWidget::CancelInfo(FGameplayTag EventTag)
 	if (!EventTag.IsValid() || bClearingQueue) return false;
 	const TArray<FOutlierInfoWidgetRequest> Requests = GetInfoRequests();
 	bool bCancelled = false;
-	// Remove pending matches first, so cancelling the active item cannot promote a cancelled item.
+	// 활성 항목 취소 시 취소된 항목이 승격되지 않도록 대기 중인 매치를 먼저 제거한다.
 	for (int32 Index = Requests.Num() - 1; Index >= 0; --Index)
 	{
 		const FOutlierInfoWidgetRequest& Request = Requests[Index];

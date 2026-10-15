@@ -7,7 +7,7 @@
 class UTextBlock;
 class FBottomTTSSpeakerLayout;
 
-/** Resolves EventTag -> TTSTag -> Speaker/Script and stays visible until its voice finishes or is interrupted. */
+/** EventTag -> TTSTag -> Speaker/Script를 해석하고, 음성이 끝나거나 중단될 때까지 표시를 유지한다. */
 UCLASS(Blueprintable)
 class OUTLIER_API UBottomTTSScriptWidget : public UInfoQueueWidget
 {
@@ -16,21 +16,21 @@ class OUTLIER_API UBottomTTSScriptWidget : public UInfoQueueWidget
 public:
 	UBottomTTSScriptWidget(const FObjectInitializer& ObjectInitializer);
 
-	/** Bind a TextBlock named Speaker in the WBP. */
+	/** WBP에서 Speaker라는 이름의 TextBlock을 바인딩한다. */
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UTextBlock> Speaker;
 
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UTextBlock> ScriptText;
 
-	/** Keys match the DT's speaker strings exactly. Configure colors in the WBP. */
+	/** 키는 DT의 speaker 문자열과 정확히 일치해야 한다. 색상은 WBP에서 설정한다. */
 	UPROPERTY(EditDefaultsOnly, Category = "UI|Info|Speaker")
 	TMap<FString, FLinearColor> SpeakerColors;
 
 	UPROPERTY(EditDefaultsOnly, Category = "UI|Info|Speaker")
 	FLinearColor DefaultSpeakerColor = FLinearColor::White;
 
-	/** Gap between the speaker's right edge and the first rendered subtitle line, in widget units. */
+	/** speaker 오른쪽 끝과 첫 번째 자막 줄 사이 간격(widget 단위). */
 	UPROPERTY(EditDefaultsOnly, Category = "UI|Info|Speaker", meta = (ClampMin = "0.0"))
 	float SpeakerGap = 12.0f;
 

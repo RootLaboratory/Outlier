@@ -15,7 +15,7 @@ class OUTLIER_API ATuto_Suit : public ASuitInteraction, public ITuto_EventTrigge
 public:
 	ATuto_Suit();
 
-	/** Configure WidgetID, WidgetClass and the marker anchor on this inherited component. */
+	/** 이 상속 컴포넌트에서 WidgetID, WidgetClass, 마커 anchor를 설정한다. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tutorial|World Guide")
 	TObjectPtr<UOutlierWorldGuideTargetComponent> WorldGuideTarget;
 	virtual bool Interact(AFirstPersonCharacter* Interactor) override;
@@ -27,7 +27,7 @@ public:
 protected:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
-	/** Slot 0: actual suit acquisition, after weapons/presentation are applied. */
+	/** Slot 0: 무기/연출 적용 후 실제 슈트 획득. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tutorial|Event", meta = (TitleProperty = "EventTag"))
 	TArray<FTuto_EventTriggerData> EventTriggers;
 

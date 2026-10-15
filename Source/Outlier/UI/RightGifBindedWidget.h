@@ -9,18 +9,18 @@ class UGifSubjectWidget;
 class UGifInputWidget;
 class UTextBlock;
 
-/** Owns the right-region queue, GIF metadata and optional input key. GIF rendering is reserved. */
+/** 오른쪽 영역 Queue, GIF 메타데이터, 선택적 입력 키를 소유한다. GIF 렌더링은 예약 상태다. */
 UCLASS(Blueprintable)
 class OUTLIER_API URightGifBindedWidget : public UInfoQueueWidget
 {
 	GENERATED_BODY()
 
 public:
-	/** Subject layout and internal icon/text bindings belong to this module's WBP. */
+	/** Subject 레이아웃과 내부 아이콘/텍스트 바인딩은 이 모듈의 WBP가 담당한다. */
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UGifSubjectWidget> SubjectWidget;
 
-	/** Input layout and internal key/description bindings belong to this module's WBP. */
+	/** Input 레이아웃과 내부 키/설명 바인딩은 이 모듈의 WBP가 담당한다. */
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UGifInputWidget> InputWidget;
 

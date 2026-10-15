@@ -5,7 +5,7 @@
 #include "Tutorial/WorldGuide/OutlierWorldGuideTypes.h"
 #include "OutlierWorldGuideWidget.generated.h"
 
-/** Optional native base for a target marker WBP. The component also accepts existing UserWidget BPs. */
+/** 대상 마커 WBP용 선택적 네이티브 베이스. Component는 기존 UserWidget BP도 허용한다. */
 UCLASS(Blueprintable, meta = (DisableNativeTick))
 class OUTLIER_API UOutlierWorldGuideWidget : public UUserWidget
 {

@@ -43,7 +43,7 @@ bool ATuto_StatMachine::Interact(AFirstPersonCharacter* Interactor)
 		WatchPlayerState(ShooterState);
 		WatchPlayerState(PartnerState);
 	}
-	// Bind before the owning clients can report closure; rejected interactions never create an active session.
+	// 소유 클라이언트가 닫힘을 보고하기 전에 바인딩한다. 거부된 상호작용은 활성 세션을 만들지 않는다.
 	const bool bAccepted = Super::Interact(Interactor);
 	if (!bAccepted)
 	{

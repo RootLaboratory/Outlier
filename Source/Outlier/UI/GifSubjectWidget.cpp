@@ -18,7 +18,7 @@ void UGifSubjectWidget::SetSubjectData(const FText& Text, bool bShowIcon, UTextu
 	const bool bHasIcon = bShowIcon && IsValid(IconTexture) && SubjectIcon && SubjectIconContainer;
 	if (bHasIcon)
 	{
-		// Let the ScaleBox use the source aspect ratio; the SizeBox controls the display area.
+		// ScaleBox는 원본 종횡비를 사용하고, 표시 영역은 SizeBox가 제어한다.
 		SubjectIcon->SetBrushFromTexture(IconTexture, true);
 		SubjectIcon->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
 		SubjectIconContainer->SetVisibility(ESlateVisibility::SelfHitTestInvisible);

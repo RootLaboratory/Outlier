@@ -304,7 +304,7 @@ FVector2D UInputActionKeyDisplayWidget::GetKeyDisplaySize() const
 		int32 TextureWidth = DisplayedKeyTexture->GetSizeX();
 		int32 TextureHeight = DisplayedKeyTexture->GetSizeY();
 #if WITH_EDITORONLY_DATA
-		// Editor previews, cooking and headless checks can run before render data exists.
+		// 에디터 프리뷰, 쿠킹, headless 검사는 render data가 생기기 전에 실행될 수 있다.
 		if (TextureWidth <= 0 || TextureHeight <= 0)
 		{
 			TextureWidth = DisplayedKeyTexture->Source.GetSizeX();

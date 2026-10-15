@@ -15,8 +15,8 @@ class URetainerBox;
 class UShieldDamageFeedbackWidget;
 
 /**
- * Cached damage feedback layer placed under the main widget's root canvas.
- * Indicators are created once and pooled; the layer drives their tick and collapses itself when none are active.
+ * 메인 위젯 루트 캔버스 아래에 배치되는 캐시된 데미지 피드백 레이어.
+ * 인디케이터는 한 번 생성해 풀링한다. 레이어가 Tick을 구동하고, 활성 항목이 없으면 스스로 축소한다.
  */
 UCLASS(Abstract, Blueprintable)
 class TAGDRIVENUI_API UDamageFeedbackLayer : public UUserWidget

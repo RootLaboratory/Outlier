@@ -9,7 +9,7 @@
 class UInputCombinationWidget;
 class UTextBlock;
 
-/** Displays tutorial text and a resolved definition from the role's InputDisplay DT. */
+/** 튜토리얼 텍스트와 역할별 InputDisplay DT에서 해석한 정의를 표시한다. */
 UCLASS(Blueprintable, meta = (DisableNativeTick))
 class OUTLIER_API UInputTutoWidget : public UUserWidget
 {

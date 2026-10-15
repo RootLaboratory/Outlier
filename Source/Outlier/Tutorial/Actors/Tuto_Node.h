@@ -15,7 +15,7 @@ class OUTLIER_API ATuto_Node : public AInteractionNode, public ITuto_EventTrigge
 public:
 	ATuto_Node();
 
-	/** Configure WidgetID, WidgetClass and the marker anchor on this inherited component. */
+	/** 이 상속 컴포넌트에서 WidgetID, WidgetClass, 마커 anchor를 설정한다. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tutorial|World Guide")
 	TObjectPtr<UOutlierWorldGuideTargetComponent> WorldGuideTarget;
 	virtual bool Interact(AFirstPersonCharacter* Interactor) override;
@@ -25,7 +25,7 @@ public:
 	}
 
 protected:
-	/** Slot 0: first interaction attempt. Slot 1: first successful collection. */
+	/** Slot 0: 첫 상호작용 시도. Slot 1: 첫 수집 성공. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tutorial|Event", meta = (TitleProperty = "EventTag"))
 	TArray<FTuto_EventTriggerData> EventTriggers;
 

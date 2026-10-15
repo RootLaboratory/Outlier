@@ -10,7 +10,7 @@ class USizeBox;
 class UTextBlock;
 class UTexture2D;
 
-/** Subject layout module. Its WBP owns the icon display area, scaling and text style. */
+/** Subject 레이아웃 모듈. 아이콘 표시 영역, 스케일링, 텍스트 스타일은 WBP가 담당한다. */
 UCLASS(Blueprintable, meta = (DisableNativeTick))
 class OUTLIER_API UGifSubjectWidget : public UUserWidget
 {
@@ -20,14 +20,14 @@ public:
 	void SetSubjectData(const FText& Text, bool bShowIcon, UTexture2D* IconTexture);
 	void ClearSubjectData();
 
-	/** HorizontalBox with Auto child slots for SubjectIconContainer and SubjectText. */
+	/** SubjectIconContainer와 SubjectText를 Auto child slot으로 담는 HorizontalBox. */
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UHorizontalBox> SubjectRow;
 
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UTextBlock> SubjectText;
 
-	/** Contains ScaleBox -> SubjectIcon. Collapsed as a unit when no icon is displayed. */
+	/** ScaleBox -> SubjectIcon을 포함한다. 아이콘이 없으면 통째로 Collapsed된다. */
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<USizeBox> SubjectIconContainer;
 

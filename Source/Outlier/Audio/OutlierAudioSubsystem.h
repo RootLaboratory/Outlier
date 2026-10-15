@@ -43,14 +43,14 @@ public:
 	/** Local-only 2D playback. Suitable for input and UI feedback. */
 	bool PlayLocal2D(const FOutlierAudioPlayRequest& Request);
 
-	/** Serialized local Voice-bank playback. P0 may interrupt P2/P3; other voices wait. */
+	/** 로컬 Voice 뱅크 직렬 재생. P0는 P2/P3를 중단할 수 있고, 나머지는 대기한다. */
 	bool PlayLocalVoice(FGameplayTag SoundTag, int32 Priority, FGameplayTag RequestTag, ULocalPlayer* Listener);
 	void StopLocalVoices(ULocalPlayer* Listener);
-	/** Emitted when the Voice audio component begins playback; RequestTag is the caller's EventTag. */
+	/** Voice 오디오 컴포넌트 재생 시작 시 발생한다. RequestTag는 호출자의 EventTag이다. */
 	FOnOutlierVoiceStarted OnVoiceStarted;
-	/** bCompleted=true on natural audio finish; false on interruption, explicit stop or playback failure. */
+	/** 자연 종료 시 bCompleted=true, 중단/명시적 정지/재생 실패 시 false. */
 	FOnOutlierVoiceFinished OnVoiceFinished;
-	/** Follows OnVoiceFinished(false) only when the voice could not play at all (missing variant, load or spawn failure). */
+	/** 음성을 아예 재생하지 못했을 때만(variant 없음, 로드/스폰 실패) OnVoiceFinished(false) 뒤에 발생한다. */
 	FOnOutlierVoiceUnavailable OnVoiceUnavailable;
 
 	/**
@@ -158,7 +158,7 @@ private:
 
 	void StartNextVoice();
 	void FinishActiveVoice(bool bCompleted);
-	/** Playback failure, not interruption: finishes the active voice, then reports it unavailable. */
+	/** 중단이 아닌 재생 실패. 활성 음성을 종료한 뒤 사용 불가로 알린다. */
 	void FailActiveVoice();
 	void HandleVoiceAudioFinished(UAudioComponent* AudioComponent);
 	void HandleVoiceWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources);

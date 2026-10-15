@@ -47,7 +47,7 @@ public:
 	virtual void On_RepAbilityabledByDistance();
 
 	virtual void ModulesControl(bool Flag);
-	/** Called after hiding layers when the HUD is disabled. Does not run for death visibility. */
+	/** HUD 비활성화 시 레이어를 숨긴 뒤 호출된다. 사망 가시성에는 실행되지 않는다. */
 	virtual void ApplyExceptionVisibility() {}
 
 	// 개별 모듈 상태는 부모 Layer의 가시성과 독립적으로 유지한다.
@@ -63,7 +63,7 @@ public:
 	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
 
 protected:
-	// Open the exception widget's branch up to DefaultLayer, without changing MainUI visibility.
+	// MainUI 가시성은 바꾸지 않고 예외 위젯의 브랜치를 DefaultLayer까지 연다.
 	void ShowExceptionLayer(UWidget* Layer);
 	void RegisterModule(UEventDrivenUI* InModule);
 	void RegisterModule(const FGameplayTag& ModuleTag, UEventDrivenUI* InModule);

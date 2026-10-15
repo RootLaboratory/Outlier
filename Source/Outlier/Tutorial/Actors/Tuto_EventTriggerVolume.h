@@ -9,7 +9,7 @@ class AFirstPersonPlayerController;
 class UBoxComponent;
 class UOutlierWorldGuideTargetComponent;
 
-/** One location, one EventID. Local entry is notified through the owning controller. */
+/** 위치 하나에 EventID 하나. 로컬 진입은 소유 컨트롤러를 통해 알린다. */
 UCLASS()
 class OUTLIER_API ATuto_EventTriggerVolume : public AActor, public ITuto_EventTriggerInterface
 {
@@ -23,7 +23,7 @@ public:
 
 	virtual FGameplayTag GetEventTag(int32 EventIndex) const override { return EventIndex == 0 ? EventTag : FGameplayTag(); }
 
-	/** Called only by the server controller's entry RPC; the client does not supply EventID or PlayerState. */
+	/** 서버 컨트롤러의 진입 RPC만 호출한다. 클라이언트는 EventID나 PlayerState를 넘기지 않는다. */
 	bool ConfirmClientEntry(AFirstPersonPlayerController* Controller);
 	void ReceiveEntryResult(AFirstPersonPlayerController* Controller, bool bAccepted);
 	virtual void Tick(float DeltaSeconds) override;
@@ -40,7 +40,7 @@ protected:
 	virtual bool HandlePawnEntered(AOutlierPlayerState* SourcePlayerState);
 
 private:
-	// Serialized old Tuto volume settings are migrated once; no editable array remains.
+	// 직렬화된 구 Tuto 볼륨 설정은 한 번 마이그레이션되며, 편집 가능한 배열은 남지 않는다.
 	UPROPERTY()
 	TArray<FTuto_EventTriggerData> EventTriggers_DEPRECATED;
 
