@@ -4,6 +4,10 @@
 #include "Enemy/EnemyStateTreeMovementTasks.h"
 #include "Enemy/EnemyStateTreeTacticalTasks.h"
 #include "Enemy/EnemyStateTreeComponent.h"
+#include "Enemy/EnemyCombatTestHelpers.h"
+#include "Enemy/EnemyStateTreeCombatMovementTasks.h"
+#include "Enemy/EnemyStateTreeSelfDestructTasks.h"
+#include "Conditions/StateTreeCommonConditions.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "EnvironmentQuery/EnvQuery.h"
 #include "EnvironmentQuery/EnvQueryOption.h"
@@ -387,6 +391,255 @@ bool FEnemySearchAssetsTest::RunTest(const FString& Parameters)
 		TestEqual(FString::Printf(TEXT("%s duration"), Name), DurationProperty->GetPropertyValue_InContainer(DelayData.GetMemory()), Duration);
 		TestFalse(TEXT("Search delay must finish"), ForeverProperty->GetPropertyValue_InContainer(DelayData.GetMemory()));
 	}
+	return true;
+}
+
+namespace
+{
+const FPropertyBindingCopyInfo* FindCombatCopy(const UStateTree& Tree, const FStateTreeNodeBase& Node,
+	FName Property, bool bOutput)
+{
+	const FStateTreeIndex16 Batch = bOutput ? Node.OutputBindingsBatch : Node.BindingsBatch;
+	// 파생 타입에는 같은 이름의 구형 API가 남아 있어 공용 컬렉션의 CopyInfo API를 명시한다.
+	const FPropertyBindingBindingCollection& Bindings = Tree.GetPropertyBindings();
+	if (!Batch.IsValid() || !Bindings.GetCopyBatches().IsValidIndex(Batch.Get())) return nullptr;
+	for (const auto& Copy : Bindings.GetBatchCopies(Bindings.GetCopyBatches()[Batch.Get()]))
+		if (Copy.TargetLeafProperty && Copy.TargetLeafProperty->GetFName() == Property
+			&& Copy.bCopyFromTargetToSource == bOutput) return &Copy;
+	return nullptr;
+}
+
+bool IsCombatBinding(const UStateTree& Tree, const FStateTreeNodeBase& Producer, FName OutputName,
+	const FStateTreeNodeBase& Consumer, FName InputName)
+{
+	const auto* Input = FindCombatCopy(Tree, Consumer, InputName, false);
+	if (!Input || !Input->SourceLeafProperty) return false;
+	const auto* InputHandle = Input->SourceDataHandle.GetPtr<FStateTreeDataHandle>();
+	if (!InputHandle) return false;
+	// Task 출력을 직접 참조하거나 부모 파라미터를 경유하는 두 에디터 바인딩 방식을 모두 허용한다.
+	if (*InputHandle == Producer.InstanceDataHandle && Input->SourceLeafProperty->GetFName() == OutputName) return true;
+	const auto* Output = FindCombatCopy(Tree, Producer, OutputName, true);
+	const auto* OutputHandle = Output ? Output->SourceDataHandle.GetPtr<FStateTreeDataHandle>() : nullptr;
+	return OutputHandle && *OutputHandle == *InputHandle && Output->SourceLeafProperty == Input->SourceLeafProperty
+		&& Output->SourceIndirection.Offset == Input->SourceIndirection.Offset;
+}
+
+const FCompactStateTransition* FindCombatTransition(const UStateTree& Tree, const FCompactStateTreeState& State,
+	EStateTreeTransitionTrigger Trigger)
+{
+	for (int32 Index = 0; Index < State.TransitionsNum; ++Index)
+	{
+		const auto* Transition = Tree.GetTransitionFromIndex(FStateTreeIndex16(State.TransitionsBegin + Index));
+		if (Transition && Transition->bTransitionEnabled && EnumHasAnyFlags(Transition->Trigger, Trigger)) return Transition;
+	}
+	return nullptr;
+}
+
+bool HasCombatBoolCondition(const UStateTree& Tree, const FCompactStateTransition& Transition,
+	const FStateTreeNodeBase& Producer, FName OutputName)
+{
+	// 재선정/물리적 후보 없음은 단일 true 조건이어야 한다. OR 그룹에 매달린 무관한 조건은 인정하지 않는다.
+	if (Transition.ConditionsNum != 1) return false;
+	const auto* Condition = Tree.GetNode(Transition.ConditionsBegin).GetPtr<const FStateTreeCompareBoolCondition>();
+	const auto* Data = EnemyCombatTesting::GetDefaultData(Tree, Condition);
+	return Data && Data->bRight && !Condition->bInvert
+		&& Condition->EvaluationMode == EStateTreeConditionEvaluationMode::Evaluated
+		&& !FindCombatCopy(Tree, *Condition, TEXT("bRight"), false)
+		&& IsCombatBinding(Tree, Producer, OutputName, *Condition, TEXT("bLeft"));
+}
+
+bool HasTimedCombatRetry(const UStateTree& Tree, const FCompactStateTreeState* State,
+	const FCompactStateTreeState& Select)
+{
+	if (!State) return false;
+	bool bFiniteDelay = false;
+	for (int32 Index = 0; Index < State->TasksNum; ++Index)
+	{
+		const auto* Node = Tree.GetNode(State->TasksBegin + Index).GetPtr<const FStateTreeTaskBase>();
+		if (!Node || !Node->bTaskEnabled || !Node->InstanceTemplateIndex.IsValid()
+			|| !Tree.GetDefaultInstanceData().IsValidIndex(Node->InstanceTemplateIndex.Get())) continue;
+		const FConstStructView Data = Tree.GetDefaultInstanceData().GetStruct(Node->InstanceTemplateIndex.Get());
+		if (!Data.IsValid()) continue;
+		const FFloatProperty* Duration = FindFProperty<FFloatProperty>(Data.GetScriptStruct(), TEXT("Duration"));
+		const FBoolProperty* Forever = FindFProperty<FBoolProperty>(Data.GetScriptStruct(), TEXT("bRunForever"));
+		if (!Duration || !Forever) continue;
+		const float Seconds = Duration->GetPropertyValue_InContainer(Data.GetMemory());
+		bFiniteDelay |= FMath::IsFinite(Seconds) && Seconds > 0 && !Forever->GetPropertyValue_InContainer(Data.GetMemory());
+	}
+	const auto* Retry = FindCombatTransition(Tree, *State, EStateTreeTransitionTrigger::OnStateSucceeded);
+	return bFiniteDelay && Retry && Retry->ConditionsNum == 0 && Tree.GetStateFromHandle(Retry->State) == &Select;
+}
+
+void CheckCombatAssessments(FAutomationTestBase& Test, const UStateTree& Tree)
+{
+	// Global Task도 포함한다. 계속 Running인 판단 Task가 자식 이동의 완료를 붙잡지 않아야 한다.
+	for (int32 Index = 0; Index < Tree.GetNodes().Num(); ++Index)
+	{
+		const FConstStructView Node = Tree.GetNode(Index);
+		const auto* Task = Node.GetPtr<const FStateTreeTaskBase>();
+		if (!Task || !Task->bTaskEnabled) continue;
+		if (Node.GetPtr<const FEnemyCombatAssessmentTask>() || Node.GetPtr<const FEnemySelfDestructAssessmentTask>())
+			Test.TestFalse(Tree.GetPathName() + TEXT(" assessment does not block child completion"), Task->bConsideredForCompletion);
+	}
+}
+
+void CheckCombatQueryWiring(FAutomationTestBase& Test, const UStateTree& Tree,
+	const FCompactStateTreeState& Select, const FEnemyRunEnvQueryTask& Query)
+{
+	const FString Label = EnemyCombatTesting::StatePath(Tree, &Select);
+	const auto* Data = GetSearchTaskData(Tree, &Query);
+	if (!Test.TestNotNull(Label + TEXT(" query data"), Data)) return;
+	const int32 Modes = int32(Data->bValidateReachability) + int32(Data->bValidateOrbitPath)
+		+ int32(Data->bValidateRetreatPath) + int32(Data->bValidateChasePath);
+	Test.TestEqual(Label + TEXT(" exactly one combat validation mode"), Modes, 1);
+	Test.TestTrue(Label + TEXT(" requires direct sight"), Data->bRequireVisibleTarget);
+	Test.TestEqual(Label + TEXT(" all candidates reach path validation"), Data->RunMode.GetValue(), EEnvQueryRunMode::AllMatching);
+	Test.TestTrue(Label + TEXT(" finite positive query interval and timeout"),
+		FMath::IsFinite(Data->QueryInterval) && Data->QueryInterval > 0
+		&& FMath::IsFinite(Data->QueryTimeout) && Data->QueryTimeout > 0);
+	const auto* Success = FindCombatTransition(Tree, Select, EStateTreeTransitionTrigger::OnStateSucceeded);
+	const auto* Move = Success ? Tree.GetStateFromHandle(Success->State) : nullptr;
+	if (!Test.TestNotNull(Label + TEXT(" success leads to Move"), Move)) return;
+	const auto* Fly = FindSearchTask<FEnemyFlyToLocationTask>(Test, Tree, Move);
+	const auto* Guard = FindSearchTask<FEnemyCombatDestinationGuardTask>(Test, Tree, Move);
+	const auto* FlyData = GetSearchTaskData(Tree, Fly);
+	const auto* GuardData = GetSearchTaskData(Tree, Guard);
+	if (!Test.TestNotNull(Label + TEXT(" Fly instance data"), FlyData)
+		|| !Test.TestNotNull(Label + TEXT(" Guard instance data"), GuardData)) return;
+	Test.TestTrue(Label + TEXT(" Destination reaches Fly"), IsCombatBinding(Tree, Query, TEXT("Destination"), *Fly, TEXT("Destination")));
+	for (FName Property : {FName(TEXT("SelectedTargetActor")), FName(TEXT("SelectedTargetLocation"))})
+		Test.TestTrue(Label + TEXT(" Guard snapshot binding: ") + Property.ToString(), IsCombatBinding(Tree, Query, Property, *Guard, Property));
+	Test.TestFalse(Label + TEXT(" Guard does not block Move completion"), Guard->bConsideredForCompletion);
+	Test.TestTrue(Label + TEXT(" Fly completes Move"), Fly->bConsideredForCompletion);
+	Test.AddInfo(FString::Printf(TEXT("[CombatAssetMove] %s MoveTimeout=%.2f NoProgressTimeout=%.2f Planned=%d GoalSearchRadius=%.1f"),
+		*EnemyCombatTesting::StatePath(Tree, Move), FlyData->MoveTimeout, FlyData->NoProgressTimeout,
+		FlyData->bUsePlannedPath, FlyData->GoalSearchRadius));
+	Test.TestTrue(Label + TEXT(" finite movement/progress timeouts"),
+		FMath::IsFinite(FlyData->MoveTimeout) && FlyData->MoveTimeout > 0
+		&& FMath::IsFinite(FlyData->NoProgressTimeout) && FlyData->NoProgressTimeout > 0);
+	Test.TestTrue(Label + TEXT(" finite positive target-change threshold"),
+		FMath::IsFinite(GuardData->TargetChangeDistance) && GuardData->TargetChangeDistance > 0);
+	Test.TestEqual(Label + TEXT(" orbit uses planned path; others use AStar"), FlyData->bUsePlannedPath, Data->bValidateOrbitPath);
+	Test.TestEqual(Label + TEXT(" only non-orbit uses AStar"), FlyData->bUsePathfinding, !Data->bValidateOrbitPath);
+	// 선회는 전달받은 경유점만 사용한다. A* 목적지 보정 반경은 실제로 사용하는 이동에서만 검사한다.
+	if (!Data->bValidateOrbitPath)
+		Test.TestEqual(Label + TEXT(" exact validated destination"), FlyData->GoalSearchRadius, 0.0f);
+	if (Data->bValidateOrbitPath)
+		Test.TestTrue(Label + TEXT(" arc waypoints reach Fly"), IsCombatBinding(Tree, Query, TEXT("SelectedWaypoints"), *Fly, TEXT("PlannedWaypoints")));
+	if (Data->bValidateRetreatPath)
+	{
+		Test.TestTrue(Label + TEXT(" retreat cannot cross the target half-space"), FlyData->bConstrainRetreatPath);
+		for (FName Property : {FName(TEXT("RetreatOrigin")), FName(TEXT("RetreatDirection"))})
+			Test.TestTrue(Label + TEXT(" retreat binding: ") + Property.ToString(), IsCombatBinding(Tree, Query, Property, *Fly, Property));
+	}
+
+	const auto* Reselect = FindCombatTransition(Tree, *Move, EStateTreeTransitionTrigger::OnTick);
+	Test.TestTrue(Label + TEXT(" Move OnTick uses Guard.ShouldReselect == true"),
+		Reselect && HasCombatBoolCondition(Tree, *Reselect, *Guard, TEXT("bShouldReselect")));
+	if (Reselect)
+	{
+		const auto* Target = Tree.GetStateFromHandle(Reselect->State);
+		Test.AddInfo(FString::Printf(TEXT("[CombatAssetReselect] From=%s To=%s Expected=%s"),
+			*EnemyCombatTesting::StatePath(Tree, Move), *EnemyCombatTesting::StatePath(Tree, Target), *Label));
+		Test.TestTrue(Label + TEXT(" reselection returns directly or through a timed retry"),
+			Target == &Select || HasTimedCombatRetry(Tree, Target, Select));
+	}
+	const auto* Failed = FindCombatTransition(Tree, Select, EStateTreeTransitionTrigger::OnStateFailed);
+	Test.TestNotNull(Label + TEXT(" query failure has a fallback"), Failed);
+	if (Data->bValidateChasePath)
+	{
+		Test.TestTrue(Label + TEXT(" failed chase retries with a finite delay, not Search/LocalGuard"),
+			Failed && Failed->ConditionsNum == 0 && HasTimedCombatRetry(Tree, Tree.GetStateFromHandle(Failed->State), Select));
+		const auto* MoveFailed = FindCombatTransition(Tree, *Move, EStateTreeTransitionTrigger::OnStateFailed);
+		Test.TestTrue(Label + TEXT(" blocked chase movement retries with a delay"), MoveFailed
+			&& HasTimedCombatRetry(Tree, Tree.GetStateFromHandle(MoveFailed->State), Select));
+	}
+	else if (Data->bValidateOrbitPath || Data->bValidateRetreatPath)
+	{
+		const FName NoDestination = Data->bValidateOrbitPath ? TEXT("bNoOrbitDestination") : TEXT("bNoRetreatDestination");
+		Test.TestTrue(Label + TEXT(" physical fallback cannot be triggered by budget exhaustion"),
+			Failed && HasCombatBoolCondition(Tree, *Failed, Query, NoDestination));
+	}
+	if (Data->bValidateOrbitPath)
+	{
+		const auto* Arrived = FindCombatTransition(Tree, *Move, EStateTreeTransitionTrigger::OnStateSucceeded);
+		const auto* HoldState = Arrived ? Tree.GetStateFromHandle(Arrived->State) : nullptr;
+		const auto* Hold = FindSearchTask<FEnemyStationaryFireTask>(Test, Tree, HoldState);
+		const auto* HoldData = GetSearchTaskData(Tree, Hold);
+		if (Test.TestNotNull(Label + TEXT(" orbit arrival has stationary fire hold"), HoldData))
+			Test.TestTrue(Label + TEXT(" stationary fire lasts 0.5..1 seconds"),
+				FMath::IsFinite(HoldData->MinDuration) && FMath::IsFinite(HoldData->MaxDuration)
+				&& HoldData->MinDuration >= 0.5f && HoldData->MaxDuration <= 1.0f && HoldData->MinDuration <= HoldData->MaxDuration);
+	}
+}
+}
+
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyCombatAssetsTest, "Outlier.Enemy.Combat.Assets",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FEnemyCombatAssetsTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Type : {TEXT("Gun"), TEXT("Melee")}) { Names.Add(Type); Commands.Add(Type); }
+}
+
+bool FEnemyCombatAssetsTest::RunTest(const FString& Parameters)
+{
+	const bool bMelee = Parameters == TEXT("Melee");
+	const UClass* Class = LoadClass<AEnemyBase>(nullptr, bMelee
+		? TEXT("/Game/Blueprints/Enemy/VECDrone/BP_VECDrone_Explosion.BP_VECDrone_Explosion_C")
+		: TEXT("/Game/Blueprints/Enemy/VECDrone/BP_VECDrone_Gun.BP_VECDrone_Gun_C"));
+	if (!TestNotNull(TEXT("Actual combat BP loads"), Class)) return false;
+	const AEnemyBase* Enemy = Class->GetDefaultObject<AEnemyBase>();
+	const auto* Component = Cast<UEnemyStateTreeComponent>(Enemy->GetStateTreeComponent());
+	const FStructProperty* Battle = FindFProperty<FStructProperty>(Class, TEXT("BattleStateTreeReference"));
+	if (!TestNotNull(TEXT("Enemy StateTree component"), Component) || !TestNotNull(TEXT("BP battle reference"), Battle)) return false;
+	const UStateTree* Common = Component->GetConfiguredStateTreeReference().GetStateTree();
+	if (!TestNotNull(TEXT("BP has a configured common tree"), Common)) return false;
+	if (!TestTrue(Common->GetPathName() + TEXT(" common tree compiled and ready"), Common->IsReadyToRun())) return false;
+	CheckCombatAssessments(*this, *Common);
+	TArray<const UStateTree*> Trees;
+	EnemyCombatTesting::CollectTrees(Battle->ContainerPtrToValuePtr<FStateTreeReference>(Enemy)->GetStateTree(), *Component, Trees);
+	int32 Approach = 0, Orbit = 0, Retreat = 0, Chase = 0, Charge = 0;
+	for (const UStateTree* Tree : Trees)
+	{
+		if (!TestTrue(Tree->GetPathName() + TEXT(" compiled and ready"), Tree->IsReadyToRun())) continue;
+		CheckCombatAssessments(*this, *Tree);
+		for (const auto& State : Tree->GetStates())
+		{
+			const FString Label = EnemyCombatTesting::StatePath(*Tree, &State);
+			for (int32 Index = 0; Index < State.TasksNum; ++Index)
+			{
+				const FConstStructView Node = Tree->GetNode(State.TasksBegin + Index);
+				const auto* Task = Node.GetPtr<const FStateTreeTaskBase>();
+				if (!Task || !Task->bTaskEnabled) continue;
+				if (const auto* Query = Node.GetPtr<const FEnemyRunEnvQueryTask>())
+				{
+					const auto* Data = GetSearchTaskData(*Tree, Query);
+					if (!Data || Data->SearchMode != EEnemySearchQueryMode::None) continue;
+					Approach += Data->bValidateReachability; Orbit += Data->bValidateOrbitPath;
+					Retreat += Data->bValidateRetreatPath; Chase += Data->bValidateChasePath;
+					AddInfo(TEXT("[CombatAsset] ") + Label);
+					CheckCombatQueryWiring(*this, *Tree, State, *Query);
+				}
+				if (const auto* ChargeTask = Node.GetPtr<const FEnemyChargeLastDirectionTask>())
+				{
+					++Charge;
+					const auto* Data = GetSearchTaskData(*Tree, ChargeTask);
+					if (TestNotNull(Label + TEXT(" charge data"), Data))
+						TestTrue(Label + TEXT(" charge distance is capped at 5m"), Data->ChargeEntryDistance > 0 && Data->ChargeEntryDistance <= 500);
+					const auto* Success = FindCombatTransition(*Tree, State, EStateTreeTransitionTrigger::OnStateSucceeded);
+					const auto* Detonate = Success ? Tree->GetStateFromHandle(Success->State) : nullptr;
+					if (TestNotNull(Label + TEXT(" charge success leads to detonation"), Detonate))
+						FindSearchTask<FEnemyBombDetonateTask>(*this, *Tree, Detonate);
+				}
+			}
+		}
+	}
+	TestEqual(TEXT("Enabled approach query count"), Approach, bMelee ? 0 : 1);
+	TestEqual(TEXT("Enabled orbit query count"), Orbit, bMelee ? 0 : 1);
+	TestEqual(TEXT("Enabled retreat query count"), Retreat, bMelee ? 0 : 1);
+	TestEqual(TEXT("Enabled chase query count"), Chase, bMelee ? 1 : 0);
+	TestEqual(TEXT("Enabled AI charge count"), Charge, bMelee ? 1 : 0);
 	return true;
 }
 

@@ -3,6 +3,10 @@
 #include "Enemy/EnemyStateTreeTacticalTasks.h"
 #include "Enemy/EnemyAIController.h"
 #include "Enemy/EnemyRoomSubsystem.h"
+#include "Enemy/EnemyCombatTestHelpers.h"
+#include "Enemy/EnemyEnvQuery.h"
+#include "Enemy/EnemyStateTreeCombatMovementTasks.h"
+#include "Enemy/EnemyStateTreeMovementTasks.h"
 #include "Enemy/EnemyStateTreeSelfDestructTasks.h"
 #include "AbilitySystemComponent.h"
 
@@ -1485,5 +1489,452 @@ bool FEnemyPatrolSpawnTransformTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("New lease does not reuse the old spawn target"), Selection.Destination.Equals(Enemy->GetPatrolPointB()));
 	return true;
 }
+
+#if WITH_EDITOR
+namespace
+{
+struct FEnemyCombatIntegrationWorld : FEnemySearchIntegrationWorld
+{
+	static constexpr float Step = 1.0f / 60.0f;
+	FAutomationTestBase& Test;
+	AEnemyBase* Enemy = nullptr;
+	AShooterCharacter* Target = nullptr;
+	AEnemyAIController* Controller = nullptr;
+	UEnemyStateTreeComponent* Tree = nullptr;
+	EnemyCombatTesting::FSnapshot Snapshot;
+	FString LastStates;
+	FString Scenario;
+	bool bSawFiring = false;
+
+	FEnemyCombatIntegrationWorld(FAutomationTestBase& InTest, const FString& InScenario)
+		: FEnemySearchIntegrationWorld(true), Test(InTest), Scenario(InScenario) {}
+
+	~FEnemyCombatIntegrationWorld()
+	{
+		if (Tree) Tree->StopLogic(TEXT("Combat integration test complete"));
+	}
+
+	bool Initialize(bool bMelee, const FVector& TargetOffset)
+	{
+		if (!Test.TestTrue(TEXT("Combat room created"), CreateRoom(FVector(6000, 6000, 2500)))) return false;
+		if (!Test.TestNotNull(TEXT("Combat floor created"), SpawnBlockingBox(
+			FVector(0, 0, -40), FVector(6000, 6000, 40)))) return false;
+		UClass* EnemyClass = LoadClass<AEnemyBase>(nullptr, bMelee
+			? TEXT("/Game/Blueprints/Enemy/VECDrone/BP_VECDrone_Explosion.BP_VECDrone_Explosion_C")
+			: TEXT("/Game/Blueprints/Enemy/VECDrone/BP_VECDrone_Gun.BP_VECDrone_Gun_C"));
+		UClass* TargetClass = LoadClass<AShooterCharacter>(nullptr,
+			TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+		if (!Test.TestNotNull(TEXT("Combat BP loads"), EnemyClass)
+			|| !Test.TestNotNull(TEXT("Shooter BP loads"), TargetClass)) return false;
+		const AEnemyBase* Defaults = EnemyClass->GetDefaultObject<AEnemyBase>();
+		const float Height = Defaults->FlightHeightSettings.bEnabled ? Defaults->GetPreferredFlightHeight() : 300.0f;
+		FActorSpawnParameters Spawn;
+		Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		Enemy = World->SpawnActor<AEnemyBase>(EnemyClass, FTransform(FVector(0, 0, Height)), Spawn);
+		if (!Test.TestNotNull(TEXT("Combat enemy spawns"), Enemy)) return false;
+		if (bMelee && !Test.TestNotNull(TEXT("Melee BP is a self-destruct drone"), Cast<ASelfDestructDrone>(Enemy))) return false;
+		Tree = Cast<UEnemyStateTreeComponent>(Enemy->GetStateTreeComponent());
+		Controller = Cast<AEnemyAIController>(Enemy->GetController());
+		if (!Test.TestNotNull(TEXT("Actual enemy StateTree exists"), Tree)
+			|| !Test.TestNotNull(TEXT("Actual AI controller exists"), Controller)) return false;
+		Tree->StopLogic(TEXT("Controlled combat setup"));
+		Controller->SetEnemyPerceptionEnabled(false);
+		if (Enemy->FlightHeightSettings.bEnabled)
+			Enemy->SetActorLocation(FVector(0, 0, Enemy->GetPreferredFlightHeight()));
+		Enemy->GetRoomTagComp()->AssignDefaultRoomTag(SearchRoomTag);
+		Target = World->SpawnActor<AShooterCharacter>(TargetClass,
+			FTransform(Enemy->GetActorLocation() + TargetOffset), Spawn);
+		if (!Test.TestNotNull(TEXT("Controlled shooter target spawns"), Target)) return false;
+		// 감지 입력과 타깃 이동만 통제한다. 드론의 EQS, 이동, 공격, 전이는 실제 구현을 실행한다.
+		Target->SetActorEnableCollision(false);
+		Target->SetCanBeDamaged(false);
+		Target->GetCharacterMovement()->DisableMovement();
+		Target->SetActorTickEnabled(false);
+		Enemy->EnterCombatFromRoom(Target->GetActorLocation(), false);
+		Controller->SetEnemyPerceptionEnabled(false);
+		Enemy->GetCharacterMovement()->SetMovementMode(MOVE_Flying);
+		SetSight(true);
+		return Test.TestEqual(TEXT("Real perception cache selects the shooter"),
+			Controller->GetPreferredVisibleTarget(), static_cast<AActor*>(Target));
+	}
+
+	void SetSight(bool bVisible)
+	{
+		UAIPerceptionComponent* Perception = Controller->GetPerceptionComponent();
+		if (!Test.TestNotNull(TEXT("Combat perception component exists"), Perception)) return;
+		FAIStimulus Stimulus(*GetDefault<UAISense_Sight>(), 1.0f,
+			Target->GetActorLocation(), Enemy->GetActorLocation());
+		if (!bVisible) Stimulus.MarkNoLongerSensed();
+		Perception->RegisterStimulus(Target, Stimulus);
+		Perception->ProcessStimuli();
+	}
+
+	void Start()
+	{
+		Tree->StartLogic();
+		Observe();
+	}
+
+	void Observe()
+	{
+		// Snapshot의 인스턴스 뷰는 다음 Tick까지만 유효하다. 비교할 값은 Tick 전에 복사한다.
+		Snapshot = EnemyCombatTesting::ReadComponent(*Tree);
+		bSawFiring |= Enemy->GetAttackPhase() == EEnemyAttackPhase::Firing;
+		const FString States = Snapshot.Describe();
+		if (States == LastStates) return;
+		Test.AddInfo(FString::Printf(TEXT("[CombatWorld] Scenario=%s Time=%.3f States=%s Location=%s D2D=%.1f D3D=%.1f Attack=%s"),
+			*Scenario, World->GetTimeSeconds(), *States, *Enemy->GetActorLocation().ToCompactString(),
+			FVector::Dist2D(Enemy->GetActorLocation(), Target->GetActorLocation()),
+			FVector::Dist(Enemy->GetActorLocation(), Target->GetActorLocation()), *UEnum::GetValueAsString(Enemy->GetAttackPhase())));
+		if (const auto* Fly = Data<FEnemyFlyToLocationTask>())
+			Test.AddInfo(FString::Printf(TEXT("[CombatMove] Destination=%s Path=%s Result=%s Waypoints=%d"),
+				*Fly->Destination.ToCompactString(), *UEnum::GetValueAsString(Fly->PathStatus),
+				*UEnum::GetValueAsString(Fly->MoveResult), Fly->PathWaypoints.Num()));
+		LastStates = States;
+	}
+
+	bool Advance()
+	{
+		Tick(Step);
+		Observe();
+		return !Enemy->IsDead() && Tree->GetStateTreeRunStatus() == EStateTreeRunStatus::Running;
+	}
+
+	template<typename TaskType>
+	const typename TaskType::FInstanceDataType* Data() const
+	{
+		const auto* Task = Snapshot.FindTask<TaskType>();
+		return Task ? Task->Data.template GetPtr<const typename TaskType::FInstanceDataType>() : nullptr;
+	}
+
+	template<typename TaskType>
+	bool WaitForTask(int32 MaxFrames = 900)
+	{
+		for (int32 Frame = 0; Frame < MaxFrames; ++Frame)
+		{
+			if (Data<TaskType>()) return true;
+			if (!Advance()) break;
+		}
+		Test.AddError(FString::Printf(TEXT("[CombatWorld] %s: task %s not reached. States=%s"),
+			*Scenario, *TaskType::StaticStruct()->GetName(), *Snapshot.Describe()));
+		return false;
+	}
+};
+
+bool CheckCombatDistanceBranch(FEnemyCombatIntegrationWorld& Fixture, float Distance, bool bMelee)
+{
+	Fixture.Start();
+	// 첫 EQS를 이동 전에 관측한다. 이동 후 거리가 바뀐 결과를 경계 조건 성공으로 오인하지 않는다.
+	if (bMelee && Distance <= 500)
+	{
+		if (!Fixture.WaitForTask<FEnemyChargeLastDirectionTask>(2)) return false;
+		return Fixture.Test.TestTrue(TEXT("At 5m the real melee tree commits charge"),
+			CastChecked<ASelfDestructDrone>(Fixture.Enemy)->IsSelfDestructCommitted());
+	}
+	if (!Fixture.WaitForTask<FEnemyRunEnvQueryTask>(2)) return false;
+	const auto* Data = Fixture.Data<FEnemyRunEnvQueryTask>();
+	Fixture.Test.TestEqual(TEXT("First query is combat, not search"), Data->SearchMode, EEnemySearchQueryMode::None);
+	Fixture.Test.TestEqual(TEXT("Approach is selected only above 20m"), Data->bValidateReachability, !bMelee && Distance > 2000);
+	Fixture.Test.TestEqual(TEXT("Orbit is selected above 10m through 20m"), Data->bValidateOrbitPath, !bMelee && Distance > 1000 && Distance <= 2000);
+	Fixture.Test.TestEqual(TEXT("Retreat includes the 10m boundary"), Data->bValidateRetreatPath, !bMelee && Distance <= 1000);
+	Fixture.Test.TestEqual(TEXT("Melee outside 5m keeps chasing"), Data->bValidateChasePath, bMelee);
+	return true;
+}
+
+bool CheckRetreatArrival(FEnemyCombatIntegrationWorld& Fixture)
+{
+	Fixture.Start();
+	if (!Fixture.WaitForTask<FEnemyFlyToLocationTask>()) return false;
+	const auto* Fly = Fixture.Data<FEnemyFlyToLocationTask>();
+	if (!Fixture.Test.TestTrue(TEXT("Retreat Fly runs with its half-space constraint"), Fly->bConstrainRetreatPath)) return false;
+	const FVector Destination = Fly->Destination;
+	const float Acceptance = Fly->AcceptanceRadius;
+	bool bCrossedBoundary = false;
+	bool bArrived = false;
+	for (int32 Frame = 0; Frame < 900; ++Frame)
+	{
+		const float Remaining = FVector::Dist(Fixture.Enemy->GetActorLocation(), Destination);
+		bArrived |= Remaining <= Acceptance + 5.0f;
+		Fly = Fixture.Data<FEnemyFlyToLocationTask>();
+		if (!Fly || !Fly->bConstrainRetreatPath || !Fly->Destination.Equals(Destination, 1)) break;
+		bCrossedBoundary |= FVector::Dist2D(Fixture.Enemy->GetActorLocation(), Fixture.Target->GetActorLocation()) > 1000
+			&& Remaining > Acceptance + 10;
+		if (!Fixture.Advance()) break;
+	}
+	Fixture.Test.TestTrue(TEXT("Retreat crosses 10m while still moving to its original destination"), bCrossedBoundary);
+	return Fixture.Test.TestTrue(TEXT("Retreat does not rebranch before arrival"), bArrived);
+}
+
+bool CheckOrbitHold(FEnemyCombatIntegrationWorld& Fixture)
+{
+	Fixture.Start();
+	if (!Fixture.WaitForTask<FEnemyFlyToLocationTask>()) return false;
+	if (!Fixture.Test.TestTrue(TEXT("Orbit follows validated arc waypoints"),
+		Fixture.Data<FEnemyFlyToLocationTask>()->bUsePlannedPath)) return false;
+	const FVector Start = Fixture.Enemy->GetActorLocation();
+	if (!Fixture.WaitForTask<FEnemyStationaryFireTask>()) return false;
+	const auto* Hold = Fixture.Data<FEnemyStationaryFireTask>();
+	const float Duration = Hold->SelectedDuration;
+	const float Elapsed = Hold->Elapsed;
+	const float EnterTime = Fixture.World->GetTimeSeconds();
+	const FVector HoldLocation = Fixture.Enemy->GetActorLocation();
+	Fixture.Test.TestTrue(TEXT("Orbit actually moves before holding"), FVector::Dist(Start, HoldLocation) > 50);
+	Fixture.Test.TestTrue(TEXT("Hold selects a duration within 0.5..1 seconds"), Duration >= 0.5f && Duration <= 1.0f);
+	Fixture.Test.TestEqual(TEXT("Hold retains the visible shooter"), Hold->CapturedTarget.Get(), static_cast<AActor*>(Fixture.Target));
+	bool bStopped = true;
+	for (int32 Frame = 0; Frame < 120 && Fixture.Data<FEnemyStationaryFireTask>(); ++Frame)
+	{
+		bStopped &= Fixture.Enemy->GetActorLocation().Equals(HoldLocation, 10);
+		if (!Fixture.Advance()) break;
+	}
+	const float HeldTime = Fixture.World->GetTimeSeconds() - EnterTime + Elapsed;
+	Fixture.Test.TestTrue(TEXT("Hold does not drift"), bStopped);
+	Fixture.Test.TestTrue(TEXT("Hold completes at its selected duration"),
+		!Fixture.Data<FEnemyStationaryFireTask>() && FMath::Abs(HeldTime - Duration) <= Fixture.Step * 3);
+	Fixture.Test.TestTrue(TEXT("Parallel fire cycle actually fires during the orbit/hold sequence"), Fixture.bSawFiring);
+	return Fixture.WaitForTask<FEnemyFlyToLocationTask>();
+}
+
+bool CheckCombatReselection(FEnemyCombatIntegrationWorld& Fixture)
+{
+	Fixture.Start();
+	if (!Fixture.WaitForTask<FEnemyFlyToLocationTask>()) return false;
+	const auto* Guard = Fixture.Data<FEnemyCombatDestinationGuardTask>();
+	if (!Fixture.Test.TestNotNull(TEXT("Moving combat has an actual destination guard"), Guard)) return false;
+	const FVector Captured = Guard->SelectedTargetLocation;
+	const float Threshold = Guard->TargetChangeDistance;
+	Fixture.Target->SetActorLocation(Captured + FVector(0, Threshold * 0.1f, 0));
+	if (!Fixture.Advance()) return false;
+	Guard = Fixture.Data<FEnemyCombatDestinationGuardTask>();
+	if (!Fixture.Test.TestTrue(TEXT("Small target movement preserves the captured destination"),
+		Guard && !Guard->bShouldReselect && Guard->SelectedTargetLocation.Equals(Captured, 1))) return false;
+	const FVector Changed = Captured + FVector(0, Threshold * 2, 0);
+	Fixture.Target->SetActorLocation(Changed);
+	for (int32 Frame = 0; Frame < 180; ++Frame)
+	{
+		if (!Fixture.Advance()) break;
+		Guard = Fixture.Data<FEnemyCombatDestinationGuardTask>();
+		if (Guard && Guard->SelectedTargetLocation.Equals(Changed, 1)) return true;
+	}
+	Fixture.Test.AddError(TEXT("Large target movement did not reach a newly selected Fly destination within 3 seconds"));
+	return false;
+}
+
+bool CheckOrbitObstacles(FEnemyCombatIntegrationWorld& Fixture, bool bBothBlocked)
+{
+	TArray<FEnemyOrbitCandidate> Candidates;
+	const FVector Start = Fixture.Enemy->GetActorLocation();
+	EnemyOrbit::BuildCandidates(Start, Fixture.Target->GetActorLocation(), 400,
+		Fixture.Enemy->PrefersCombatLeft(), Candidates);
+	if (!Fixture.Test.TestTrue(TEXT("Orbit geometry has a preferred side"), !Candidates.IsEmpty())) return false;
+	const double PreferredSign = FMath::Sign(Candidates[0].Destination.Y - Start.Y);
+	const double InnerEdge = Fixture.Enemy->GetCapsuleComponent()->GetScaledCapsuleRadius() + 15;
+	// 시작 캡슐과 시선은 비워 두고, 가장 짧은 1.5m 호까지 막는다. 높이를 바꿔도 벽을 넘지 못한다.
+	if (!Fixture.SpawnBlockingBox(Start + FVector(0, PreferredSign * (InnerEdge + 300), 0), FVector(600, 300, 2500))) return false;
+	if (bBothBlocked && !Fixture.SpawnBlockingBox(Start - FVector(0, PreferredSign * (InnerEdge + 300), 0), FVector(600, 300, 2500))) return false;
+	Fixture.Start();
+	for (int32 Frame = 0; Frame < 360; ++Frame)
+	{
+		const auto* Fly = Fixture.Data<FEnemyFlyToLocationTask>();
+		if (Fly && Fly->bUsePlannedPath)
+		{
+			if (bBothBlocked)
+			{
+				Fixture.Test.AddError(TEXT("Both orbit sides are blocked but the tree entered orbit Fly"));
+				return false;
+			}
+			return Fixture.Test.TestTrue(TEXT("One blocked side chooses the opposite arc, not precision fire"),
+				(Fly->Destination.Y - Start.Y) * PreferredSign < 0);
+		}
+		if (Fixture.Snapshot.HasState(TEXT("PrecisionFire")))
+		{
+			Fixture.Test.TestTrue(TEXT("Precision fire requires both physical sides to be blocked"), bBothBlocked);
+			return Fixture.Test.TestTrue(TEXT("Blocked orbit does not move"), Fixture.Enemy->GetActorLocation().Equals(Start, 10));
+		}
+		if (!Fixture.Advance()) break;
+	}
+	Fixture.Test.AddError(TEXT("Orbit obstacle scenario reached neither opposite-side Fly nor PrecisionFire"));
+	return false;
+}
+
+bool CheckCombatSightLoss(FEnemyCombatIntegrationWorld& Fixture)
+{
+	Fixture.Start();
+	if (!Fixture.WaitForTask<FEnemyFlyToLocationTask>()) return false;
+	Fixture.SetSight(false);
+	const float LostAt = Fixture.World->GetTimeSeconds();
+	bool bSawWait = false;
+	for (int32 Frame = 0; Frame < 240; ++Frame)
+	{
+		if (!Fixture.Advance()) break;
+		bSawWait |= Fixture.Snapshot.HasState(TEXT("LossWait"));
+		if (Fixture.Snapshot.HasState(TEXT("SelectAnchor")) || Fixture.Snapshot.HasState(TEXT("MoveAnchor")))
+		{
+			Fixture.Test.TestTrue(TEXT("Sight loss passes through LossWait"), bSawWait);
+			Fixture.Test.TestTrue(TEXT("Search waits two seconds before selecting its anchor"),
+				Fixture.World->GetTimeSeconds() - LostAt >= 2.0f - Fixture.Step);
+			return Fixture.Test.TestEqual(TEXT("Lost target is no longer fired upon"), Fixture.Enemy->GetAttackPhase(), EEnemyAttackPhase::Idle);
+		}
+	}
+	Fixture.Test.AddError(TEXT("Precommit sight loss did not enter the real two-second search flow"));
+	return false;
+}
+
+bool CheckCombatMovementStun(FEnemyCombatIntegrationWorld& Fixture)
+{
+	Fixture.Start();
+	if (!Fixture.WaitForTask<FEnemyFlyToLocationTask>()) return false;
+	Fixture.Enemy->EnterStun();
+	Fixture.Advance();
+	Fixture.Test.TestEqual(TEXT("Combat movement yields to Stun"), Fixture.Enemy->GetCombatState(), EEnemyCombatState::Stun);
+	Fixture.Test.TestTrue(TEXT("Stun exits combat Fly"), !Fixture.Data<FEnemyFlyToLocationTask>());
+	return Fixture.Test.TestTrue(TEXT("Stun leaves no movement velocity"), Fixture.Enemy->GetVelocity().IsNearlyZero(1));
+}
+
+bool CheckMeleeChargeRejection(FEnemyCombatIntegrationWorld& Fixture, bool bBlocked)
+{
+	if (bBlocked && !Fixture.SpawnBlockingBox(Fixture.Enemy->GetActorLocation() + FVector(200, 0, 0),
+		FVector(30, 600, 1000))) return false;
+	const EEnemyChargeEligibility Expected = bBlocked ? EEnemyChargeEligibility::BlockedPath : EEnemyChargeEligibility::OutOfRange;
+	Fixture.Test.TestEqual(TEXT("Entry geometry independently rejects charge"), EnemyCharge::Assess(
+		CastChecked<ASelfDestructDrone>(Fixture.Enemy), Fixture.Controller, Fixture.Target, 500, 5), Expected);
+	Fixture.Start();
+	if (!Fixture.WaitForTask<FEnemyRunEnvQueryTask>(2)) return false;
+	Fixture.Test.TestTrue(TEXT("Rejected charge keeps the actual chase branch"), Fixture.Data<FEnemyRunEnvQueryTask>()->bValidateChasePath);
+	return Fixture.Test.TestFalse(TEXT("Rejected entry never commits charge"),
+		CastChecked<ASelfDestructDrone>(Fixture.Enemy)->IsSelfDestructCommitted());
+}
+
+bool CheckMeleeUnreachable(FEnemyCombatIntegrationWorld& Fixture)
+{
+	if (!Fixture.SpawnBlockingBox(FVector(700, 0, 0), FVector(50, 6000, 2500))) return false;
+	Fixture.Start();
+	int32 Attempts = 0;
+	double LastStarted = -1;
+	bool bSawRetry = false;
+	bool bSearchStarted = false;
+	const FVector Start = Fixture.Enemy->GetActorLocation();
+	for (int32 Frame = 0; Frame < 480; ++Frame)
+	{
+		const auto* Query = Fixture.Data<FEnemyRunEnvQueryTask>();
+		if (Query && Query->bActive && Query->bValidateChasePath && Query->QueryStartedAt != LastStarted)
+		{
+			LastStarted = Query->QueryStartedAt;
+			++Attempts;
+		}
+		bSawRetry |= Fixture.Snapshot.HasState(TEXT("RetryWait"));
+		bSearchStarted |= Fixture.Enemy->GetSearchEpisode().bActive;
+		if (!Fixture.Advance()) break;
+	}
+	Fixture.Test.AddInfo(FString::Printf(TEXT("[CombatWorld] Unreachable Attempts=%d Retry=%d Search=%d"), Attempts, bSawRetry, bSearchStarted));
+	Fixture.Test.TestTrue(TEXT("Visible unreachable target retries, without a per-frame request loop"), Attempts >= 2 && Attempts <= 20 && bSawRetry);
+	Fixture.Test.TestFalse(TEXT("Path failure alone never enters search or LocalGuard"), bSearchStarted || Fixture.Enemy->GetSearchEpisode().bLocalGuard);
+	Fixture.Test.TestTrue(TEXT("Failed query does not move toward an invalid destination"), Fixture.Enemy->GetActorLocation().Equals(Start, 10));
+	return Fixture.Test.TestTrue(TEXT("Unreachable chase remains running"), Fixture.Tree->GetStateTreeRunStatus() == EStateTreeRunStatus::Running);
+}
+
+bool CheckCommittedCharge(FEnemyCombatIntegrationWorld& Fixture, const FString& Scenario)
+{
+	Fixture.Start();
+	if (!Fixture.WaitForTask<FEnemyChargeLastDirectionTask>()) return false;
+	ASelfDestructDrone* Drone = CastChecked<ASelfDestructDrone>(Fixture.Enemy);
+	if (!Fixture.Test.TestTrue(TEXT("Real charge task commits before stimulus changes"), Drone->IsSelfDestructCommitted())) return false;
+	const FVector Direction = Drone->GetActorForwardVector();
+	const FVector Start = Drone->GetActorLocation();
+	if (Scenario == TEXT("ChargeStun"))
+	{
+		Drone->EnterStun();
+		Fixture.Advance();
+		Fixture.Test.TestFalse(TEXT("Stun cancels committed charge"), Drone->IsSelfDestructCommitted());
+		Fixture.Test.TestTrue(TEXT("Stun exits the actual charge task"), !Fixture.Data<FEnemyChargeLastDirectionTask>());
+		Fixture.Test.TestTrue(TEXT("Stun stops charge movement"), Drone->GetVelocity().IsNearlyZero(1));
+		return Fixture.Test.TestFalse(TEXT("Canceled charge does not detonate"), Drone->IsDead());
+	}
+	if (Scenario == TEXT("ChargeSightLoss")) Fixture.SetSight(false);
+	else if (Scenario == TEXT("ChargeTargetSwitch"))
+	{
+		Fixture.SetSight(false);
+		FActorSpawnParameters Spawn;
+		Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		Fixture.Target = Fixture.World->SpawnActor<AShooterCharacter>(Fixture.Target->GetClass(),
+			FTransform(Start + FVector(0, 1500, 0)), Spawn);
+		if (!Fixture.Test.TestNotNull(TEXT("Replacement shooter spawns"), Fixture.Target)) return false;
+		Fixture.Target->SetActorEnableCollision(false);
+		Fixture.Target->SetCanBeDamaged(false);
+		Fixture.Target->GetCharacterMovement()->DisableMovement();
+		Fixture.Target->SetActorTickEnabled(false);
+		Fixture.SetSight(true);
+		if (!Fixture.Test.TestEqual(TEXT("Perception switches to the replacement target"),
+			Fixture.Controller->GetPreferredVisibleTarget(), static_cast<AActor*>(Fixture.Target))) return false;
+	}
+	else Fixture.Target->SetActorLocation(Start + FVector(0, 1500, 0));
+	bool bDirectionStable = true;
+	bool bEnteredSearch = false;
+	int32 CommittedFrames = 0;
+	for (int32 Frame = 0; Frame < 240; ++Frame)
+	{
+		if (!Fixture.Advance()) break;
+		if (!Drone->IsSelfDestructCommitted()) break;
+		++CommittedFrames;
+		bDirectionStable &= FVector::DotProduct(Direction, Drone->GetActorForwardVector()) > 0.999;
+		bEnteredSearch |= Drone->GetSearchEpisode().bActive;
+	}
+	Fixture.Test.TestTrue(TEXT("Committed charge survives stimulus changes over multiple frames"), CommittedFrames > 2);
+	Fixture.Test.TestTrue(TEXT("Committed direction does not track the moved or lost player"), bDirectionStable);
+	Fixture.Test.TestFalse(TEXT("Committed sight loss cannot start search"), bEnteredSearch);
+	Fixture.Test.TestTrue(TEXT("Committed charge physically moves"), FVector::Dist(Start, Drone->GetActorLocation()) > 50);
+	return Fixture.Test.TestTrue(TEXT("Charge completes in detonation rather than silently canceling"), Drone->IsDead());
+}
+}
+
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FEnemyCombatWorldTest, "Outlier.Enemy.Combat.Integration",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FEnemyCombatWorldTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+	for (const TCHAR* Scenario : {TEXT("Gun.Boundary999"), TEXT("Gun.Boundary1000"), TEXT("Gun.Boundary1001"),
+		TEXT("Gun.Boundary1999"), TEXT("Gun.Boundary2000"), TEXT("Gun.Boundary2001"),
+		TEXT("Gun.RetreatArrival"), TEXT("Gun.OrbitHold"), TEXT("Gun.Reselection"), TEXT("Gun.SightLoss"),
+		TEXT("Gun.OrbitOneSideBlocked"), TEXT("Gun.OrbitBothSidesBlocked"), TEXT("Gun.MovementStun"),
+		TEXT("Melee.Boundary500"), TEXT("Melee.Boundary501"), TEXT("Melee.Unreachable"), TEXT("Melee.SightLoss"),
+		TEXT("Melee.SpatialRange"), TEXT("Melee.BlockedChargeEntry"), TEXT("Melee.MovementStun"),
+		TEXT("Melee.ChargeSightLoss"), TEXT("Melee.ChargeTargetMove"), TEXT("Melee.ChargeTargetSwitch"), TEXT("Melee.ChargeStun")})
+	{
+		Names.Add(Scenario);
+		Commands.Add(Scenario);
+	}
+}
+
+bool FEnemyCombatWorldTest::RunTest(const FString& Parameters)
+{
+	TGuardValue<uint64> FrameGuard(GFrameCounter, GFrameCounter);
+	FString Type, Scenario;
+	if (!Parameters.Split(TEXT("."), &Type, &Scenario)) return false;
+	const bool bMelee = Type == TEXT("Melee");
+	float Distance = 1500;
+	if (Scenario.StartsWith(TEXT("Boundary"))) Distance = FCString::Atof(*Scenario.Mid(8));
+	else if (Scenario == TEXT("RetreatArrival")) Distance = 900;
+	else if (Scenario == TEXT("Reselection")) Distance = 3500;
+	else if (Scenario.StartsWith(TEXT("Charge"))) Distance = 400;
+	FEnemyCombatIntegrationWorld Fixture(*this, Parameters);
+	const FVector Offset = Scenario == TEXT("SpatialRange") ? FVector(300, 0, 450)
+		: Scenario == TEXT("BlockedChargeEntry") ? FVector(400, 0, 0) : FVector(Distance, 0, 0);
+	if (!Fixture.Initialize(bMelee, Offset)) return false;
+	if (Scenario.StartsWith(TEXT("Boundary"))) return CheckCombatDistanceBranch(Fixture, Distance, bMelee);
+	if (Scenario == TEXT("RetreatArrival")) return CheckRetreatArrival(Fixture);
+	if (Scenario == TEXT("OrbitHold")) return CheckOrbitHold(Fixture);
+	if (Scenario == TEXT("Reselection")) return CheckCombatReselection(Fixture);
+	if (Scenario.StartsWith(TEXT("OrbitOneSide"))) return CheckOrbitObstacles(Fixture, false);
+	if (Scenario.StartsWith(TEXT("OrbitBothSides"))) return CheckOrbitObstacles(Fixture, true);
+	if (Scenario == TEXT("SightLoss")) return CheckCombatSightLoss(Fixture);
+	if (Scenario == TEXT("MovementStun")) return CheckCombatMovementStun(Fixture);
+	if (Scenario == TEXT("SpatialRange")) return CheckMeleeChargeRejection(Fixture, false);
+	if (Scenario == TEXT("BlockedChargeEntry")) return CheckMeleeChargeRejection(Fixture, true);
+	if (Scenario == TEXT("Unreachable")) return CheckMeleeUnreachable(Fixture);
+	if (Scenario.StartsWith(TEXT("Charge"))) return CheckCommittedCharge(Fixture, Scenario);
+	AddError(TEXT("Unknown combat integration scenario"));
+	return false;
+}
+#endif
 
 #endif
