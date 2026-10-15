@@ -455,6 +455,7 @@ void AEnemyBase::ResetReusableCombatRuntime(const TCHAR* StateTreeStopReason)
 	bPossessedAttackQueued = false;
 	CombatState = EEnemyCombatState::NonCombat;
 	PreStunCombatState = EEnemyCombatState::NonCombat;
+	CombatHeightPreference = EEnemyFlightHeightPreference::Mid;
 	AttackPhase = EEnemyAttackPhase::Idle;
 	LastKnownPlayerLocation = FVector::ZeroVector;
 	PatternStartPlayerLocation = FVector::ZeroVector;
@@ -1706,8 +1707,7 @@ void AEnemyBase::EnterCombatFromRoom(
 
 	if (bEnteredCombat)
 	{
-		bPrefersCombatLeft = FMath::RandBool();
-		CombatChaseLane = FMath::RandRange(-1, 1);
+		InitializeCombatMovementPreferences();
 		RefreshPerceptionConfigForCurrentState();
 	}
 
@@ -3058,6 +3058,20 @@ bool AEnemyBase::RemovePossessionPendingState()
 	return bRemoved;
 }
 
+void AEnemyBase::InitializeCombatMovementPreferences()
+{
+	// 일반 진입과 스턴 중 승격 모두 같은 성향을 정하고 해당 전투 동안 유지한다.
+	bPrefersCombatLeft = FMath::RandBool();
+	CombatChaseLane = FMath::RandRange(-1, 1);
+	CombatHeightPreference = EEnemyFlightHeightPreference::Mid;
+	if (FlightHeightSettings.bEnabled && FlightHeightSettings.IsValid())
+	{
+		CombatHeightPreference = FlightHeightSettings.bRandomizePreference
+			? static_cast<EEnemyFlightHeightPreference>(FMath::RandRange(0, 2))
+			: FlightHeightSettings.FixedPreference;
+	}
+}
+
 void AEnemyBase::PromotePreStunState(EEnemyCombatState DetectedState)
 {
 	if (CombatState != EEnemyCombatState::Stun)
@@ -3070,8 +3084,7 @@ void AEnemyBase::PromotePreStunState(EEnemyCombatState DetectedState)
 		PreStunCombatState = EEnemyCombatState::Combat;
 		if (!bInCombat)
 		{
-			bPrefersCombatLeft = FMath::RandBool();
-			CombatChaseLane = FMath::RandRange(-1, 1);
+			InitializeCombatMovementPreferences();
 			bInCombat = true;
 			RefreshPerceptionConfigForCurrentState();
 		}

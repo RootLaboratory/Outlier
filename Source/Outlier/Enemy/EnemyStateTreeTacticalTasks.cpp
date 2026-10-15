@@ -523,6 +523,8 @@ bool IsEnvQuerySnapshotCurrent(const FEnemyRunEnvQueryTaskInstanceData& Data)
 		&& IsEnvQueryControllerCurrent(Data)
 		&& IsEnvQueryRoomCurrent(Data)
 		&& IsEnvQueryTargetCurrent(Data)
+		&& (!(Data.bRequireVisibleTarget && Data.SearchMode == EEnemySearchQueryMode::None)
+			|| EnemyFlightHeight::IsSnapshotCurrent(*Data.Enemy, Data.HeightSnapshot))
 		&& (!Data.bValidateOrbitPath
 			|| Data.Enemy->GetActorLocation().Equals(Data.CapturedOrbitStart, 25.0))
 		&& (!Data.bValidateRetreatPath
@@ -537,6 +539,8 @@ void LogEnvQuerySnapshotFailure(const FEnemyRunEnvQueryTaskInstanceData& Data, i
 	else if (!IsEnvQueryControllerCurrent(Data)) Reason = TEXT("ControllerChanged");
 	else if (!IsEnvQueryRoomCurrent(Data)) Reason = TEXT("RoomChangedOrUnavailable");
 	else if (!IsEnvQueryTargetCurrent(Data)) Reason = TEXT("SightLostTargetChangedOrMoved");
+	else if (Data.bRequireVisibleTarget && Data.SearchMode == EEnemySearchQueryMode::None
+		&& !EnemyFlightHeight::IsSnapshotCurrent(*Data.Enemy, Data.HeightSnapshot)) Reason = TEXT("FlightHeightSettingsChanged");
 	UE_LOG(LogEnemyEQS, Log, TEXT("[EnemyEQSSnapshot] Enemy=%s Request=%d Reason=%s Start=%s Current=%s Target=%s CurrentTargetLocation=%s"),
 		*GetNameSafe(Data.Enemy), CompletedRequest != INDEX_NONE ? CompletedRequest : Data.RequestId,
 		Reason, *Data.CapturedOrbitStart.ToCompactString(),
@@ -573,6 +577,10 @@ void CaptureEnvQuerySnapshot(FEnemyRunEnvQueryTaskInstanceData& Data)
 	Data.CapturedRetreatStart = ToQueryParamLocation(Enemy->GetActorLocation());
 	Data.CapturedChaseStart = ToQueryParamLocation(Enemy->GetActorLocation());
 	Data.CapturedChaseLane = Enemy->GetCombatChaseLane();
+	Data.HeightSnapshot = FEnemyFlightHeightSnapshot();
+	Data.HeightSnapshot.bEnabled = Enemy->FlightHeightSettings.bEnabled;
+	Data.HeightSnapshot.Settings = Enemy->FlightHeightSettings;
+	Data.HeightSnapshot.Preference = Enemy->GetCombatHeightPreference();
 	Data.RetreatOrigin = ToQueryParamLocation(Data.SelectedTargetLocation);
 	Data.RetreatDirection = (Data.CapturedRetreatStart - Data.RetreatOrigin).GetSafeNormal2D();
 	if (Data.SearchMode != EEnemySearchQueryMode::None)
@@ -635,6 +643,12 @@ bool HasCandidatePathBudget(int32 RemainingNodes, int32 RemainingChecks, double 
 	return RemainingNodes > 0 && RemainingChecks > 0 && RemainingTime > 0.0;
 }
 
+double GetCandidatePathMilliseconds(const FEnemyRunEnvQueryTaskInstanceData& Data)
+{
+	// 높이 보정도 같은 선택 시도의 비용이다. A*를 시작한다고 검사/시간 예산을 새로 주지 않는다.
+	return Data.MaxSearchMilliseconds - Data.HeightSnapshot.Milliseconds;
+}
+
 FFlightPathRequest MakeCandidatePathRequest(const FEnemyRunEnvQueryTaskInstanceData& Data,
 	const UCapsuleComponent& Capsule, const FVector& Candidate, int32 Nodes, int32 Checks, double Milliseconds)
 {
@@ -668,7 +682,12 @@ void GetReachableCandidateOrder(const FEnemyRunEnvQueryTaskInstanceData& Data,
 	}
 	// EQS의 동점 정렬에 개체 성향을 맡기지 않는다. 생성 순서에서 필터를 통과한 후보만 검사한다.
 	TArray<FVector> Generated;
-	EnemyChase::BuildCandidates(Data.CapturedChaseStart, Data.CapturedOrbitCenter, Data.CapturedChaseLane, Generated);
+	if (Data.HeightSnapshot.bEnabled)
+	{
+		for (const FEnemyFlightHeightCandidate& Candidate : Data.HeightSnapshot.Candidates)
+			if (Candidate.Status == EFlightPathStatus::Success) Generated.Add(Candidate.Location);
+	}
+	else EnemyChase::BuildCandidates(Data.CapturedChaseStart, Data.CapturedOrbitCenter, Data.CapturedChaseLane, Generated);
 	for (const FVector& Candidate : Generated)
 	{
 		for (int32 Index = 0; Index < Result.Items.Num(); ++Index)
@@ -687,7 +706,7 @@ bool SelectReachableDestination(FEnemyRunEnvQueryTaskInstanceData& Data, const F
 	UCapsuleComponent* Capsule = Data.Enemy->GetCapsuleComponent();
 	const double Started = FPlatformTime::Seconds();
 	int32 RemainingNodes = Data.MaxSearchNodes;
-	int32 RemainingChecks = Data.MaxCollisionChecks;
+	int32 RemainingChecks = Data.MaxCollisionChecks - Data.HeightSnapshot.CollisionChecks;
 	bool bBudgetExceeded = false;
 	// EQS는 점수순으로 정렬한 후보를 제공한다. 각 후보가 아니라 전체 선택 시도가 예산을 공유한다.
 	TArray<FVector> Candidates;
@@ -695,7 +714,7 @@ bool SelectReachableDestination(FEnemyRunEnvQueryTaskInstanceData& Data, const F
 	const int32 Limit = FMath::Min(Data.MaxPathCandidates, Candidates.Num());
 	for (int32 Index = 0; Index < Limit; ++Index)
 	{
-		const double RemainingTime = Data.MaxSearchMilliseconds - (FPlatformTime::Seconds() - Started) * 1000.0;
+		const double RemainingTime = GetCandidatePathMilliseconds(Data) - (FPlatformTime::Seconds() - Started) * 1000.0;
 		if (!HasCandidatePathBudget(RemainingNodes, RemainingChecks, RemainingTime))
 		{
 			bBudgetExceeded = true;
@@ -755,6 +774,7 @@ bool HasCandidateResult(const FEnvQueryResult& Result, const FVector& Destinatio
 EFlightPathStatus CheckOrbitRoute(FEnemyRunEnvQueryTaskInstanceData& Data,
 	const TArray<FVector>& Waypoints, int32& RemainingChecks, double Started, int32 QueryId)
 {
+	if (Waypoints.Num() < 2) return EFlightPathStatus::BlockedSegment;
 	UCapsuleComponent* Capsule = Data.Enemy->GetCapsuleComponent();
 	const FVector Offset = Capsule->GetComponentLocation() - Data.Enemy->GetActorLocation();
 	FCollisionQueryParams SightParams(SCENE_QUERY_STAT(EnemyOrbitSight), false, Data.Enemy);
@@ -762,7 +782,7 @@ EFlightPathStatus CheckOrbitRoute(FEnemyRunEnvQueryTaskInstanceData& Data,
 	for (int32 Index = 1; Index < Waypoints.Num(); ++Index)
 	{
 		// 출발점 여유 공간 탈출 예외까지 캡슐 최대 4회 + 시야 1회로 보수적으로 예산을 잡는다.
-		if (RemainingChecks < 5 || (FPlatformTime::Seconds() - Started) * 1000.0 >= Data.MaxSearchMilliseconds)
+		if (RemainingChecks < 5 || (FPlatformTime::Seconds() - Started) * 1000.0 >= GetCandidatePathMilliseconds(Data))
 		{
 			if (CVarEnemyEQSDebug.GetValueOnGameThread() != 0)
 			{
@@ -773,7 +793,7 @@ EFlightPathStatus CheckOrbitRoute(FEnemyRunEnvQueryTaskInstanceData& Data,
 		}
 		RemainingChecks -= 5;
 		FFlightPathRequest Request = MakeCandidatePathRequest(Data, *Capsule, Waypoints[Index],
-			Data.MaxSearchNodes, 5, Data.MaxSearchMilliseconds);
+			Data.MaxSearchNodes, 5, GetCandidatePathMilliseconds(Data));
 		Request.Start = Waypoints[Index - 1] + Offset;
 		const EFlightPathStatus Status = FlightPathfinding::CheckSegment(*Data.Enemy->GetWorld(), *Capsule, Request);
 		// 경로가 막혔으면 시야 Trace는 생략한다. 상세 로그도 이번 검사 결과만 사용한다.
@@ -798,6 +818,12 @@ bool SelectOrbitDestination(FEnemyRunEnvQueryTaskInstanceData& Data, const FEnvQ
 	TArray<FEnemyOrbitCandidate> Candidates;
 	EnemyOrbit::BuildCandidates(Data.CapturedOrbitStart, Data.CapturedOrbitCenter,
 		Data.CapturedOrbitLength, Data.bCapturedOrbitLeft, Candidates);
+	if (Data.HeightSnapshot.bEnabled)
+	{
+		if (Candidates.Num() != Data.HeightSnapshot.Candidates.Num()) return false;
+		for (int32 Index = 0; Index < Candidates.Num(); ++Index)
+			Candidates[Index].Destination = Data.HeightSnapshot.Candidates[Index].Location;
+	}
 	if (Candidates.IsEmpty())
 	{
 		LogEnvQuery(TEXT("OrbitRejected: no canonical candidates"), Data);
@@ -814,10 +840,21 @@ bool SelectOrbitDestination(FEnemyRunEnvQueryTaskInstanceData& Data, const FEnvQ
 		LogEnvQuery(TEXT("OrbitRejected: query items do not match orbit generator"), Data, Result.Items.Num());
 		return false;
 	}
-	int32 RemainingChecks = Data.MaxCollisionChecks;
+	int32 RemainingChecks = Data.MaxCollisionChecks - Data.HeightSnapshot.CollisionChecks - 6;
 	const double Started = FPlatformTime::Seconds();
-	for (const FEnemyOrbitCandidate& Candidate : Candidates)
+	bool bHeightUnavailable = false;
+	for (int32 CandidateIndex = 0; CandidateIndex < Candidates.Num(); ++CandidateIndex)
 	{
+		const FEnemyOrbitCandidate& Candidate = Candidates[CandidateIndex];
+		if (Data.HeightSnapshot.bEnabled)
+		{
+			const EFlightPathStatus HeightStatus = Data.HeightSnapshot.Candidates[CandidateIndex].Status;
+			if (HeightStatus != EFlightPathStatus::Success)
+			{
+				bHeightUnavailable |= HeightStatus != EFlightPathStatus::BlockedEndpoint;
+				continue;
+			}
+		}
 		const bool bPassedQuery = HasCandidateResult(Result, Candidate.Destination);
 		if (Data.CheckedPathCandidates >= Data.MaxPathCandidates)
 		{
@@ -826,6 +863,15 @@ bool SelectOrbitDestination(FEnemyRunEnvQueryTaskInstanceData& Data, const FEnvQ
 			return false;
 		}
 		TArray<FVector> Waypoints;
+		const double SpatialLength = FMath::Sqrt(FMath::Square(double(Candidate.ArcLength))
+			+ FMath::Square(Candidate.Destination.Z - Data.CapturedOrbitStart.Z));
+		// 고도 변화까지 포함해 한 구간 5m를 지킨다. 긴 수직 이동을 선회로 숨기지 않는다.
+		if (SpatialLength > 500.01)
+		{
+			// 거리 제한으로 제외한 후보는 물리적으로 막혔다는 증거가 아니다.
+			bHeightUnavailable = true;
+			continue;
+		}
 		EnemyOrbit::BuildWaypoints(Data.CapturedOrbitStart, Data.CapturedOrbitCenter, Candidate, Waypoints);
 		++Data.CheckedPathCandidates;
 		Data.SelectionPathStatus = CheckOrbitRoute(Data, Waypoints, RemainingChecks, Started, Result.QueryID);
@@ -835,7 +881,7 @@ bool SelectOrbitDestination(FEnemyRunEnvQueryTaskInstanceData& Data, const FEnvQ
 				*GetNameSafe(Data.Enemy), Result.QueryID, Data.CheckedPathCandidates, Candidate.bLeft, Candidate.ArcLength, bPassedQuery, Waypoints.Num(),
 				*UEnum::GetValueAsString(Data.SelectionPathStatus), RemainingChecks);
 		}
-		if ((FPlatformTime::Seconds() - Started) * 1000.0 >= Data.MaxSearchMilliseconds)
+		if ((FPlatformTime::Seconds() - Started) * 1000.0 >= GetCandidatePathMilliseconds(Data))
 		{
 			Data.SelectionPathStatus = EFlightPathStatus::BudgetExceeded;
 		}
@@ -850,7 +896,7 @@ bool SelectOrbitDestination(FEnemyRunEnvQueryTaskInstanceData& Data, const FEnvQ
 			}
 			Data.Destination = Candidate.Destination;
 			Data.SelectedWaypoints = MoveTemp(Waypoints);
-			Data.SelectedArcLength = Candidate.ArcLength;
+			Data.SelectedArcLength = SpatialLength;
 			Data.bSelectedOrbitLeft = Candidate.bLeft;
 			return true;
 		}
@@ -862,27 +908,39 @@ bool SelectOrbitDestination(FEnemyRunEnvQueryTaskInstanceData& Data, const FEnvQ
 		if (Data.SelectionPathStatus != EFlightPathStatus::BlockedEndpoint
 			&& Data.SelectionPathStatus != EFlightPathStatus::BlockedSegment) return false;
 	}
+	if (bHeightUnavailable) return false;
 	Data.QueryResult = EEnemyEnvQueryResult::NoReachableDestination;
 	Data.bNoOrbitDestination = true;
 	return false;
 }
 
-bool CanClassifyEmptyOrbitResult(const FEnemyRunEnvQueryTaskInstanceData& Data)
+EFlightPathStatus CheckSelectionStart(FEnemyRunEnvQueryTaskInstanceData& Data)
+{
+	// 높이 보정과 출발점 검사는 같은 예산을 사용한다. 예산 부족을 물리적 막힘으로 확정하지 않는다.
+	const int32 Checks = Data.MaxCollisionChecks - Data.HeightSnapshot.CollisionChecks;
+	const double Time = GetCandidatePathMilliseconds(Data);
+	if (Checks < 6 || !HasCandidatePathBudget(Data.MaxSearchNodes, Checks, Time))
+	{
+		Data.QueryResult = EEnemyEnvQueryResult::PathBudgetExceeded;
+		return EFlightPathStatus::BudgetExceeded;
+	}
+	const UCapsuleComponent* Capsule = Data.Enemy->GetCapsuleComponent();
+	const FFlightPathRequest Request = MakeCandidatePathRequest(Data, *Capsule, Data.Enemy->GetActorLocation(),
+		Data.MaxSearchNodes, Checks, Time);
+	return FlightPathfinding::CheckSegment(*Data.Enemy->GetWorld(), *Capsule, Request);
+}
+
+bool CanClassifyEmptyOrbitResult(FEnemyRunEnvQueryTaskInstanceData& Data)
 {
 	if (!EnemyOrbit::IsCombatRadius(Data.CapturedOrbitStart, Data.CapturedOrbitCenter)) return false;
 	// 환경 설정 누락/출발점 관통을 양쪽 후보 없음으로 오인하지 않는다.
-	UCapsuleComponent* Capsule = Data.Enemy->GetCapsuleComponent();
-	const FFlightPathRequest Request = MakeCandidatePathRequest(Data, *Capsule, Data.Enemy->GetActorLocation(),
-		Data.MaxSearchNodes, Data.MaxCollisionChecks, Data.MaxSearchMilliseconds);
-	return FlightPathfinding::CheckSegment(*Data.Enemy->GetWorld(), *Capsule, Request) == EFlightPathStatus::Success;
+	Data.SelectionPathStatus = CheckSelectionStart(Data);
+	return Data.SelectionPathStatus == EFlightPathStatus::Success;
 }
 
 bool IsRetreatStartClear(FEnemyRunEnvQueryTaskInstanceData& Data)
 {
-	const UCapsuleComponent* Capsule = Data.Enemy->GetCapsuleComponent();
-	const FFlightPathRequest Request = MakeCandidatePathRequest(Data, *Capsule, Data.Enemy->GetActorLocation(),
-		Data.MaxSearchNodes, Data.MaxCollisionChecks, Data.MaxSearchMilliseconds);
-	Data.SelectionPathStatus = FlightPathfinding::CheckSegment(*Data.Enemy->GetWorld(), *Capsule, Request);
+	Data.SelectionPathStatus = CheckSelectionStart(Data);
 	if (Data.SelectionPathStatus != EFlightPathStatus::Success)
 	{
 		LogEnvQuery(TEXT("RetreatRejected: start unavailable or blocked; not proof of no destination"), Data);
@@ -925,7 +983,7 @@ FFlightPathResult CheckRetreatCandidate(const FEnemyRunEnvQueryTaskInstanceData&
 	FFlightPathResult Path;
 	Path.Status = EFlightPathStatus::BlockedSegment;
 	if (bSightBlocked) return Path;
-	const double Time = Data.MaxSearchMilliseconds - (FPlatformTime::Seconds() - Started) * 1000.0;
+	const double Time = GetCandidatePathMilliseconds(Data) - (FPlatformTime::Seconds() - Started) * 1000.0;
 	if (!HasCandidatePathBudget(Nodes, Checks, Time))
 	{
 		Path.Status = EFlightPathStatus::BudgetExceeded;
@@ -951,6 +1009,12 @@ bool SelectRetreatDestination(FEnemyRunEnvQueryTaskInstanceData& Data, const FEn
 {
 	TArray<FVector> Candidates;
 	EnemyRetreat::BuildCandidates(Data.CapturedRetreatStart, Data.RetreatOrigin, Candidates);
+	if (Data.HeightSnapshot.bEnabled)
+	{
+		if (Candidates.Num() != Data.HeightSnapshot.Candidates.Num()) return false;
+		for (int32 Index = 0; Index < Candidates.Num(); ++Index)
+			Candidates[Index] = Data.HeightSnapshot.Candidates[Index].Location;
+	}
 	const double Started = FPlatformTime::Seconds();
 	if (Candidates.IsEmpty() || !IsRetreatStartClear(Data)) return false;
 	// Generator의 전체 후보를 다시 확인한다. 빈 결과나 잘못된 EQS 필터를 후퇴 불가로 숨기지 않는다.
@@ -959,9 +1023,20 @@ bool SelectRetreatDestination(FEnemyRunEnvQueryTaskInstanceData& Data, const FEn
 	SightParams.AddIgnoredActor(Data.CapturedTarget.Get());
 	int32 RemainingNodes = Data.MaxSearchNodes;
 	// 시작점의 확장/실제 캡슐 예외까지 포함한 최대 검사 수를 먼저 확보한다.
-	int32 RemainingChecks = Data.MaxCollisionChecks - 6;
-	for (const FVector& Candidate : Candidates)
+	int32 RemainingChecks = Data.MaxCollisionChecks - Data.HeightSnapshot.CollisionChecks - 6;
+	bool bHeightUnavailable = false;
+	for (int32 CandidateIndex = 0; CandidateIndex < Candidates.Num(); ++CandidateIndex)
 	{
+		const FVector& Candidate = Candidates[CandidateIndex];
+		if (Data.HeightSnapshot.bEnabled)
+		{
+			const EFlightPathStatus HeightStatus = Data.HeightSnapshot.Candidates[CandidateIndex].Status;
+			if (HeightStatus != EFlightPathStatus::Success)
+			{
+				bHeightUnavailable |= HeightStatus != EFlightPathStatus::BlockedEndpoint;
+				continue;
+			}
+		}
 		if (!IsEnvQuerySnapshotCurrent(Data))
 		{
 			Data.QueryResult = EEnemyEnvQueryResult::Stale;
@@ -977,7 +1052,7 @@ bool SelectRetreatDestination(FEnemyRunEnvQueryTaskInstanceData& Data, const FEn
 			Data.QueryResult = EEnemyEnvQueryResult::CandidateLimitReached;
 			return false;
 		}
-		const double RemainingTime = Data.MaxSearchMilliseconds - (FPlatformTime::Seconds() - Started) * 1000.0;
+		const double RemainingTime = GetCandidatePathMilliseconds(Data) - (FPlatformTime::Seconds() - Started) * 1000.0;
 		if (!HasCandidatePathBudget(RemainingNodes, RemainingChecks, RemainingTime))
 		{
 			Data.QueryResult = EEnemyEnvQueryResult::PathBudgetExceeded;
@@ -1016,12 +1091,13 @@ bool SelectRetreatDestination(FEnemyRunEnvQueryTaskInstanceData& Data, const FEn
 		Data.QueryResult = EEnemyEnvQueryResult::TimedOut;
 		return false;
 	}
-	if ((FPlatformTime::Seconds() - Started) * 1000.0 >= Data.MaxSearchMilliseconds)
+	if ((FPlatformTime::Seconds() - Started) * 1000.0 >= GetCandidatePathMilliseconds(Data))
 	{
 		Data.QueryResult = EEnemyEnvQueryResult::PathBudgetExceeded;
 		Data.SelectionPathStatus = EFlightPathStatus::BudgetExceeded;
 		return false;
 	}
+	if (bHeightUnavailable) return false;
 	Data.QueryResult = EEnemyEnvQueryResult::NoReachableDestination;
 	Data.bNoRetreatDestination = true;
 	return false;
@@ -1274,6 +1350,7 @@ void CancelEnvQuery(FEnemyRunEnvQueryTaskInstanceData& Data, EEnemyEnvQueryResul
 	Data.SelectedArcLength = 0.0f;
 	Data.bNoOrbitDestination = false;
 	Data.bNoRetreatDestination = false;
+	Data.HeightSnapshot.Candidates.Reset();
 	if (RequestId != INDEX_NONE && IsValid(Data.Enemy))
 	{
 		if (UEnvQueryManager* Manager = UEnvQueryManager::GetCurrent(Data.Enemy))
@@ -1328,11 +1405,37 @@ EStateTreeRunStatus StartEnvQuery(FStateTreeExecutionContext& Context,
 	Data.Enemy->SetNextEnvQueryRequestTime(Now + Data.QueryInterval);
 	Data.QueryStartedAt = Now;
 	Data.QueryResult = EEnemyEnvQueryResult::Running;
+	if (Data.bRequireVisibleTarget && Data.SearchMode == EEnemySearchQueryMode::None && Data.HeightSnapshot.bEnabled)
+	{
+		const TArray<UEnvQueryOption*>& Options = Data.QueryTemplate->GetOptions();
+		if (Options.Num() != 1 || !Options[0] || !Options[0]->Generator)
+		{
+			Data.QueryResult = EEnemyEnvQueryResult::Invalid;
+			return EStateTreeRunStatus::Failed;
+		}
+		const EFlightPathStatus HeightStatus = EnemyFlightHeight::PrepareQuery(*Data.Enemy, *Options[0]->Generator,
+			Data.CapturedOrbitStart, Data.CapturedOrbitCenter, Data.CapturedOrbitLength,
+			Data.bCapturedOrbitLeft, Data.CapturedChaseLane, Data.Clearance, Data.MaxCollisionChecks,
+			Data.MaxSearchMilliseconds, Data.HeightSnapshot);
+		Data.SelectionPathStatus = HeightStatus;
+		if (CVarEnemyEQSDebug.GetValueOnGameThread() != 0)
+			UE_LOG(LogEnemyEQS, Log, TEXT("[EnemyFlightHeightQuery] Enemy=%s Status=%s Candidates=%d Checks=%d Ms=%.3f"),
+				*GetNameSafe(Data.Enemy), *UEnum::GetValueAsString(HeightStatus), Data.HeightSnapshot.Candidates.Num(),
+				Data.HeightSnapshot.CollisionChecks, Data.HeightSnapshot.Milliseconds);
+		if (HeightStatus != EFlightPathStatus::Success)
+		{
+			Data.QueryResult = HeightStatus == EFlightPathStatus::BudgetExceeded
+				? EEnemyEnvQueryResult::PathBudgetExceeded : EEnemyEnvQueryResult::Invalid;
+			return EStateTreeRunStatus::Failed;
+		}
+	}
 	FEnvQueryRequest Request(Data.QueryTemplate, Data.Enemy);
 	for (FAIDynamicParam& Param : Data.QueryConfig)
 	{
 		Request.SetDynamicParam(Param, nullptr);
 	}
+	if (Data.bRequireVisibleTarget && Data.SearchMode == EEnemySearchQueryMode::None)
+		EnemyFlightHeight::SetQuerySnapshot(Request, Data.HeightSnapshot);
 	if (Data.bValidateOrbitPath)
 	{
 		EnemyOrbit::SetQuerySnapshot(Request, Data.CapturedOrbitStart, Data.CapturedOrbitCenter,
@@ -1962,6 +2065,29 @@ bool FEnemyEnvQueryValidationTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Nonempty result is not classified as no results"), IsEmptyEnvQueryResult(Result));
 	Result.ItemType = UEnvQueryItemType_ActorBase::StaticClass();
 	TestFalse(TEXT("Actor result is not a movement destination"), IsLocationEnvQueryResult(Result));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyHeightSelectionBudgetTest,
+	"Outlier.Enemy.EQS.FlightHeight.SelectionBudget",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyHeightSelectionBudgetTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FEnemyRunEnvQueryTaskInstanceData Data;
+	Data.MaxCollisionChecks = 32;
+	Data.MaxSearchMilliseconds = 4.0;
+	Data.HeightSnapshot.CollisionChecks = 27;
+	TestEqual(TEXT("Height checks leave insufficient start-check budget"),
+		CheckSelectionStart(Data), EFlightPathStatus::BudgetExceeded);
+	TestEqual(TEXT("Insufficient checks are not physical failure"), Data.QueryResult, EEnemyEnvQueryResult::PathBudgetExceeded);
+	TestFalse(TEXT("Insufficient checks never enable stationary firing"), Data.bNoOrbitDestination);
+	TestFalse(TEXT("Insufficient checks never prove retreat impossible"), Data.bNoRetreatDestination);
+	Data.HeightSnapshot.CollisionChecks = 0;
+	Data.HeightSnapshot.Milliseconds = 4.0;
+	TestEqual(TEXT("Height time exhausts the shared selection budget"),
+		CheckSelectionStart(Data), EFlightPathStatus::BudgetExceeded);
 	return true;
 }
 

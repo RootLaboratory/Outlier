@@ -147,6 +147,7 @@ struct FEnemyRunEnvQueryTaskInstanceData
 	bool bValidateChasePath = false;
 	FVector CapturedChaseStart = FVector::ZeroVector;
 	int32 CapturedChaseLane = 0;
+	FEnemyFlightHeightSnapshot HeightSnapshot;
 	// None은 기존 전투 질의다. Anchor/Points는 Search Session 안에서만 실행한다.
 	UPROPERTY(EditAnywhere, Category = Parameter)
 	EEnemySearchQueryMode SearchMode = EEnemySearchQueryMode::None;

@@ -20,6 +20,47 @@ namespace
 {
 DEFINE_LOG_CATEGORY_STATIC(LogEnemyEQSCandidates, Log, All);
 
+const FName HeightCandidateCount(TEXT("FlightHeightCandidateCount"));
+
+FName HeightCandidateParam(int32 Index, const TCHAR* Field)
+{
+	return FName(*FString::Printf(TEXT("FlightHeight%d%s"), Index, Field));
+}
+
+bool AddHeightSnapshotItems(FEnvQueryInstance& Query)
+{
+	const float* Count = Query.NamedParams.Find(HeightCandidateCount);
+	if (!Count) return false;
+	// 스냅샷이 손상됐을 때 현재 Pawn 좌표로 재생성하지 않는다.
+	if (!FMath::IsFinite(*Count) || *Count < 0.0f || *Count > 81.0f || *Count != FMath::FloorToFloat(*Count)) return true;
+	for (int32 Index = 0; Index < int32(*Count); ++Index)
+	{
+		const float* X = Query.NamedParams.Find(HeightCandidateParam(Index, TEXT("X")));
+		const float* Y = Query.NamedParams.Find(HeightCandidateParam(Index, TEXT("Y")));
+		const float* Z = Query.NamedParams.Find(HeightCandidateParam(Index, TEXT("Z")));
+		if (X && Y && Z && FMath::IsFinite(*X) && FMath::IsFinite(*Y) && FMath::IsFinite(*Z))
+			Query.AddItemData<UEnvQueryItemType_Point>(FVector(*X, *Y, *Z));
+	}
+	return true;
+}
+
+bool GenerateHeightCandidates(FEnvQueryInstance& Query, const AEnemyBase* Enemy, const UEnvQueryGenerator& Generator,
+	const FVector& Start, const FVector& Target, float Length = 400.0f, bool bLeft = false, int32 Lane = 0)
+{
+	if (AddHeightSnapshotItems(Query)) return true;
+	if (!Enemy || !Enemy->FlightHeightSettings.bEnabled) return false;
+	// Testing Pawn/직접 EQS 실행도 같은 계산을 사용한다. StateTree 요청은 위의 고정 결과만 읽는다.
+	FEnemyFlightHeightSnapshot Snapshot;
+	const EFlightPathStatus Status = EnemyFlightHeight::PrepareQuery(*Enemy, Generator, Start, Target,
+		Length, bLeft, Lane, 5.0f, 512, 4.0, Snapshot);
+	if (Status == EFlightPathStatus::Success)
+	{
+		for (const FEnemyFlightHeightCandidate& Candidate : Snapshot.Candidates)
+			if (Candidate.Status == EFlightPathStatus::Success) Query.AddItemData<UEnvQueryItemType_Point>(Candidate.Location);
+	}
+	return true;
+}
+
 bool ShouldLogCandidateDetails()
 {
 	static const IConsoleVariable* Debug = IConsoleManager::Get().FindConsoleVariable(TEXT("outlier.Enemy.EQSDebug"));
@@ -256,6 +297,7 @@ void UEnemyEnvQueryGenerator_Retreat::GenerateItems(FEnvQueryInstance& QueryInst
 			QueryInstance.NamedParams.FindRef(RetreatCenterZ));
 	}
 	TArray<FVector> Candidates;
+	if (GenerateHeightCandidates(QueryInstance, Enemy, *this, Start, Center)) return;
 	EnemyRetreat::BuildCandidates(Start, Center, Candidates);
 	for (const FVector& Candidate : Candidates) QueryInstance.AddItemData<UEnvQueryItemType_Point>(Candidate);
 	LogGeneratorResult(QueryInstance, Enemy, Target, TEXT("RetreatCompleted"), Candidates.Num(), Candidates.Num());
@@ -287,14 +329,19 @@ void EnemyOrbit::BuildWaypoints(const FVector& Start, const FVector& Center,
 {
 	OutWaypoints.Reset();
 	if (!IsCombatRadius(Start, Center) || !FMath::IsFinite(Candidate.ArcLength)
-		|| Candidate.ArcLength <= 0.0f || Candidate.ArcLength > 500.0f) return;
-	// 최대 50cm 간격의 짧은 현으로 곡선을 근사한다. 끝점만 이동하면 생기는 직선 지름길을 막는다.
-	const int32 Segments = FMath::CeilToInt(Candidate.ArcLength / 50.0f);
+		|| Candidate.Destination.ContainsNaN() || Candidate.ArcLength <= 0.0f || Candidate.ArcLength > 500.0f) return;
+	const double SpatialLength = FMath::Sqrt(FMath::Square(double(Candidate.ArcLength))
+		+ FMath::Square(Candidate.Destination.Z - Start.Z));
+	if (SpatialLength > 500.01) return;
+	// 높이 변화까지 최대 50cm 간격으로 나눈다. Fly도 동일한 곡선을 끊김 없이 따라간다.
+	const int32 Segments = FMath::Min(10, FMath::CeilToInt(SpatialLength / 50.0));
 	OutWaypoints.Reserve(Segments + 1);
 	OutWaypoints.Add(Start);
 	for (int32 Index = 1; Index <= Segments; ++Index)
 	{
-		OutWaypoints.Add(MakeOrbitPoint(Start, Center, Candidate.ArcLength * Index / Segments, Candidate.bLeft));
+		FVector Point = MakeOrbitPoint(Start, Center, Candidate.ArcLength * Index / Segments, Candidate.bLeft);
+		Point.Z = FMath::Lerp(Start.Z, Candidate.Destination.Z, double(Index) / Segments);
+		OutWaypoints.Add(Point);
 	}
 }
 
@@ -378,6 +425,7 @@ void UEnemyEnvQueryGenerator_Chase::GenerateItems(FEnvQueryInstance& QueryInstan
 		Lane = FMath::RoundToInt(LaneValue);
 	}
 	TArray<FVector> Candidates;
+	if (GenerateHeightCandidates(QueryInstance, Enemy, *this, Start, Center, 0.0f, false, Lane)) return;
 	EnemyChase::BuildCandidates(Start, Center, Lane, Candidates);
 	for (const FVector& Candidate : Candidates) QueryInstance.AddItemData<UEnvQueryItemType_Point>(Candidate);
 	LogGeneratorResult(QueryInstance, Enemy, Target, TEXT("ChaseCompleted"), Candidates.Num(), Candidates.Num());
@@ -408,6 +456,7 @@ void UEnemyEnvQueryGenerator_Orbit::GenerateItems(FEnvQueryInstance& QueryInstan
 		bLeft = QueryInstance.NamedParams.FindRef(OrbitLeft) != 0.0f;
 	}
 	TArray<FEnemyOrbitCandidate> Candidates;
+	if (GenerateHeightCandidates(QueryInstance, Enemy, *this, Start, Center, Length, bLeft)) return;
 	EnemyOrbit::BuildCandidates(Start, Center, Length, bLeft, Candidates);
 	for (const FEnemyOrbitCandidate& Candidate : Candidates)
 	{
@@ -444,6 +493,7 @@ void UEnemyEnvQueryGenerator_Approach::GenerateItems(FEnvQueryInstance& QueryIns
 		return;
 	}
 	const FVector Center = Target->GetActorLocation();
+	if (GenerateHeightCandidates(QueryInstance, Enemy, *this, Enemy->GetActorLocation(), Center)) return;
 	const FVector Radial = (Enemy->GetActorLocation() - Center).GetSafeNormal2D();
 	if (Radial.IsNearlyZero())
 	{
@@ -479,6 +529,224 @@ void UEnemyEnvQueryGenerator_Approach::GenerateItems(FEnvQueryInstance& QueryIns
 		}
 	}
 	LogGeneratorResult(QueryInstance, Enemy, Target, TEXT("Completed"), Samples * 3, Generated, NoFloor);
+}
+
+namespace
+{
+bool BuildHeightSourceCandidates(const UEnvQueryGenerator& Generator, const FVector& Start, const FVector& Target,
+	float Length, bool bLeft, int32 Lane, TArray<FVector>& OutCandidates)
+{
+	if (Generator.IsA<UEnemyEnvQueryGenerator_Orbit>())
+	{
+		TArray<FEnemyOrbitCandidate> Orbit;
+		EnemyOrbit::BuildCandidates(Start, Target, Length, bLeft, Orbit);
+		for (const FEnemyOrbitCandidate& Candidate : Orbit) OutCandidates.Add(Candidate.Destination);
+	}
+	else if (Generator.IsA<UEnemyEnvQueryGenerator_Retreat>())
+		EnemyRetreat::BuildCandidates(Start, Target, OutCandidates);
+	else if (Generator.IsA<UEnemyEnvQueryGenerator_Chase>())
+	{
+		TArray<FVector> Chase;
+		EnemyChase::BuildCandidates(Start, Target, Lane, Chase);
+		// 기존 높이 편차 후보는 안전 높이 탐색으로 대체한다. 같은 XY를 세 번 Trace하지 않는다.
+		for (FVector Candidate : Chase)
+		{
+			Candidate.Z = Target.Z;
+			OutCandidates.AddUnique(Candidate);
+		}
+	}
+	else if (const UEnemyEnvQueryGenerator_Approach* Approach = Cast<UEnemyEnvQueryGenerator_Approach>(&Generator))
+	{
+		if (!FMath::IsFinite(Approach->PreferredDistance) || !FMath::IsFinite(Approach->DistanceSpread)
+			|| !FMath::IsFinite(Approach->HalfAngleDegrees)) return false;
+		const FVector Radial = (Start - Target).GetSafeNormal2D();
+		if (Radial.IsNearlyZero()) return false;
+		const int32 Samples = FMath::Clamp(Approach->AngularSamples, 1, 9);
+		const float Angle = FMath::Clamp(Approach->HalfAngleDegrees, 0.0f, 80.0f);
+		for (int32 Ring = -1; Ring <= 1; ++Ring)
+		{
+			const float Radius = FMath::Clamp(Approach->PreferredDistance
+				+ Ring * FMath::Clamp(Approach->DistanceSpread, 0.0f, 500.0f), 1000.0f, 2000.0f);
+			for (int32 Index = 0; Index < Samples; ++Index)
+			{
+				const float Degrees = Samples == 1 ? 0.0f : FMath::Lerp(-Angle, Angle, float(Index) / (Samples - 1));
+				OutCandidates.Add(MakeApproachCandidate(Target, Radial, Radius, Degrees));
+			}
+		}
+	}
+	else return false;
+	return true;
+}
+
+bool HasHeightBudget(const FEnemyFlightHeightSnapshot& Snapshot, int32 MaxChecks, double Started, double MaxMilliseconds)
+{
+	return Snapshot.CollisionChecks < MaxChecks && (FPlatformTime::Seconds() - Started) * 1000.0 < MaxMilliseconds;
+}
+
+EFlightPathStatus ResolveCandidateHeight(const AEnemyBase& Enemy, const UCapsuleComponent& Capsule, ARoomVolume& Room,
+	const FVector& Start, const FVector& Target, bool bChase, float Clearance, int32 MaxChecks,
+	double Started, double MaxMilliseconds, FEnemyFlightHeightSnapshot& Snapshot, FEnemyFlightHeightCandidate& OutCandidate)
+{
+	FVector& Candidate = OutCandidate.Location;
+	OutCandidate.Reason = TEXT("BudgetExceeded");
+	if (!HasHeightBudget(Snapshot, MaxChecks, Started, MaxMilliseconds)) return EFlightPathStatus::BudgetExceeded;
+	const FEnemyFlightHeightSettings& Settings = Snapshot.Settings;
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(EnemyFlightHeightFloor), false, &Enemy);
+	// Object 검사에서는 채널 응답과 관계없이 방 트리거가 잡힐 수 있다. 지형과 분리한다.
+	Params.AddIgnoredActor(&Room);
+	Params.AddIgnoredActors(Capsule.GetMoveIgnoreActors());
+	Params.AddIgnoredComponents(Capsule.GetMoveIgnoreComponents());
+	// 현재 비행 층에서 아래쪽 바닥만 찾는다. 천장 위에서 내려 쏴 천장을 바닥으로 선택하지 않는다.
+	const FVector Probe(Candidate.X, Candidate.Y, Start.Z);
+	FHitResult Floor;
+	const FCollisionObjectQueryParams FloorObjects(ECC_WorldStatic);
+	++Snapshot.CollisionChecks;
+	if (!Enemy.GetWorld()->LineTraceSingleByObjectType(Floor, Probe,
+		Probe - FVector::UpVector * Settings.FloorProbeDistance, FloorObjects, Params)
+		|| Floor.ImpactNormal.Z < 0.5f)
+	{
+		OutCandidate.Reason = TEXT("NoFloorInCurrentLayer");
+		return EFlightPathStatus::Unavailable;
+	}
+
+	const FVector Offset = Capsule.GetComponentLocation() - Enemy.GetActorLocation();
+	const FVector Extent = FlightPathfinding::GetCapsuleWorldExtent(Capsule.GetScaledCapsuleRadius() + Clearance,
+		Capsule.GetScaledCapsuleHalfHeight() + Clearance, Capsule.GetComponentQuat());
+	const double MinimumZ = Floor.ImpactPoint.Z + Extent.Z - Offset.Z + 1.0;
+	double DesiredZ = Floor.ImpactPoint.Z + Settings.GetHeight(Snapshot.Preference);
+	if (bChase)
+	{
+		// 근접 시 타깃 높이에 수렴하되 캡슐이 바닥을 관통하는 높이는 허용하지 않는다.
+		const double Blend = FMath::Clamp((FVector::Dist2D(Start, Target) - 300.0) / 700.0, 0.0, 1.0);
+		DesiredZ = FMath::Lerp(Target.Z, DesiredZ, Blend);
+	}
+	if (!HasHeightBudget(Snapshot, MaxChecks, Started, MaxMilliseconds)) return EFlightPathStatus::BudgetExceeded;
+	FHitResult Ceiling;
+	const FVector CeilingStart(Candidate.X, Candidate.Y, Floor.ImpactPoint.Z + 1.0);
+	const double ProbeTop = FMath::Max(DesiredZ, MinimumZ) + Offset.Z + Extent.Z
+		+ Settings.CorrectionStep * Settings.CorrectionSteps + 1.0;
+	++Snapshot.CollisionChecks;
+	const bool bHasCeiling = Enemy.GetWorld()->LineTraceSingleByObjectType(Ceiling, CeilingStart,
+		FVector(Candidate.X, Candidate.Y, ProbeTop), FloorObjects, Params);
+	const double MaximumZ = bHasCeiling ? Ceiling.ImpactPoint.Z - Extent.Z - Offset.Z - 1.0 : ProbeTop;
+	if (MaximumZ < MinimumZ)
+	{
+		OutCandidate.Reason = TEXT("InsufficientVerticalSpace");
+		return EFlightPathStatus::BlockedEndpoint;
+	}
+	// 좁은 공간의 유효 높이가 50cm 표본 사이에 있어도 놓치지 않도록 먼저 수직 여유 범위로 보정한다.
+	DesiredZ = FMath::Clamp(DesiredZ, MinimumZ, MaximumZ);
+	FFlightPathRequest Request;
+	Request.bRequireRoom = true;
+	Request.Room = &Room;
+	Request.Clearance = Clearance;
+	Request.Start = Capsule.GetComponentLocation();
+
+	// 선호 높이 -> 가까운 아래/위 순서의 작은 집합만 검사한다. 우회 경로는 이후 A*의 책임이다.
+	for (int32 Step = 0; Step <= Settings.CorrectionSteps; ++Step)
+	{
+		for (int32 Sign : {-1, 1})
+		{
+			if (Step == 0 && Sign == 1) continue;
+			const double Height = DesiredZ + Sign * Step * Settings.CorrectionStep;
+			if (Height < MinimumZ || Height > MaximumZ) continue;
+			if (!HasHeightBudget(Snapshot, MaxChecks, Started, MaxMilliseconds)) return EFlightPathStatus::BudgetExceeded;
+			Request.Goal = FVector(Candidate.X, Candidate.Y, Height) + Offset;
+			Request.SearchBounds = FBox(Request.Start, Request.Start);
+			Request.SearchBounds += Request.Goal;
+			++Snapshot.CollisionChecks;
+			const EFlightPathStatus Status = FlightPathfinding::CheckDestination(*Enemy.GetWorld(), Capsule, Request);
+			if (Status == EFlightPathStatus::Success)
+			{
+				Candidate.Z = Height;
+				OutCandidate.Reason = TEXT("SafeHeight");
+				return Status;
+			}
+			if (Status != EFlightPathStatus::BlockedEndpoint)
+			{
+				OutCandidate.Reason = TEXT("DestinationCheckUnavailable");
+				return Status;
+			}
+		}
+	}
+	OutCandidate.Reason = TEXT("NoClearHeightOrOutsideRoom");
+	return EFlightPathStatus::BlockedEndpoint;
+}
+}
+
+EFlightPathStatus EnemyFlightHeight::PrepareQuery(const AEnemyBase& Enemy, const UEnvQueryGenerator& Generator,
+	const FVector& Start, const FVector& Target, float PreferredOrbitLength, bool bLeft, int32 Lane,
+	float Clearance, int32 MaxChecks, double MaxMilliseconds, FEnemyFlightHeightSnapshot& OutSnapshot)
+{
+	OutSnapshot = FEnemyFlightHeightSnapshot();
+	OutSnapshot.bEnabled = Enemy.FlightHeightSettings.bEnabled;
+	if (!OutSnapshot.bEnabled) return EFlightPathStatus::Success;
+	OutSnapshot.Settings = Enemy.FlightHeightSettings;
+	OutSnapshot.Preference = Enemy.GetCombatHeightPreference();
+	const UCapsuleComponent* Capsule = Enemy.GetCapsuleComponent();
+	if (!Enemy.HasAuthority() || !Enemy.GetWorld() || !Capsule || !OutSnapshot.Settings.IsValid()
+		|| Start.ContainsNaN() || Target.ContainsNaN() || !FMath::IsFinite(Clearance) || Clearance < 0.0f
+		|| MaxChecks <= 0 || !FMath::IsFinite(MaxMilliseconds) || MaxMilliseconds <= 0.0)
+		return EFlightPathStatus::InvalidRequest;
+	const URoomCombatSubsystem* Rooms = Enemy.GetWorld()->GetSubsystem<URoomCombatSubsystem>();
+	ARoomVolume* Room = Rooms ? Rooms->GetRegisteredRoomVolume(Enemy.GetDefaultRoomTag()) : nullptr;
+	if (!Room) return EFlightPathStatus::Unavailable;
+	TArray<FVector> Sources;
+	if (!BuildHeightSourceCandidates(Generator, Start, Target, PreferredOrbitLength, bLeft, Lane, Sources))
+		return EFlightPathStatus::InvalidRequest;
+	const double Started = FPlatformTime::Seconds();
+	EFlightPathStatus Result = EFlightPathStatus::Success;
+	for (FVector Source : Sources)
+	{
+		FEnemyFlightHeightCandidate& Candidate = OutSnapshot.Candidates.AddDefaulted_GetRef();
+		Candidate.Location = Source;
+		Candidate.Status = ResolveCandidateHeight(Enemy, *Capsule, *Room, Start, Target,
+			Generator.IsA<UEnemyEnvQueryGenerator_Chase>(), Clearance, MaxChecks, Started, MaxMilliseconds,
+			OutSnapshot, Candidate);
+		// NamedParam은 float다. Task도 EQS가 실제로 받은 정밀도의 좌표를 사용한다.
+		Candidate.Location = FVector(float(Candidate.Location.X), float(Candidate.Location.Y), float(Candidate.Location.Z));
+		if (ShouldLogCandidateDetails())
+			UE_LOG(LogEnemyEQSCandidates, Log,
+				TEXT("[EnemyFlightHeight] Enemy=%s Candidate=%d Preference=%s FloorOffset=%.1f Raw=%s Goal=%s Status=%s Reason=%s Checks=%d"),
+				*Enemy.GetName(), OutSnapshot.Candidates.Num() - 1, *UEnum::GetValueAsString(OutSnapshot.Preference),
+				OutSnapshot.Settings.GetHeight(OutSnapshot.Preference), *Source.ToCompactString(),
+				*Candidate.Location.ToCompactString(), *UEnum::GetValueAsString(Candidate.Status), Candidate.Reason, OutSnapshot.CollisionChecks);
+		if (Candidate.Status == EFlightPathStatus::BudgetExceeded || Candidate.Status == EFlightPathStatus::InvalidRequest)
+		{
+			Result = Candidate.Status;
+			break;
+		}
+	}
+	OutSnapshot.Milliseconds = (FPlatformTime::Seconds() - Started) * 1000.0;
+	if (OutSnapshot.Milliseconds >= MaxMilliseconds) Result = EFlightPathStatus::BudgetExceeded;
+	return Result;
+}
+
+void EnemyFlightHeight::SetQuerySnapshot(FEnvQueryRequest& Request, const FEnemyFlightHeightSnapshot& Snapshot)
+{
+	if (!Snapshot.bEnabled) return;
+	int32 Index = 0;
+	for (const FEnemyFlightHeightCandidate& Candidate : Snapshot.Candidates)
+	{
+		if (Candidate.Status != EFlightPathStatus::Success) continue;
+		Request.SetFloatParam(HeightCandidateParam(Index, TEXT("X")), Candidate.Location.X)
+			.SetFloatParam(HeightCandidateParam(Index, TEXT("Y")), Candidate.Location.Y)
+			.SetFloatParam(HeightCandidateParam(Index, TEXT("Z")), Candidate.Location.Z);
+		++Index;
+	}
+	Request.SetFloatParam(HeightCandidateCount, Index);
+}
+
+bool EnemyFlightHeight::IsSnapshotCurrent(const AEnemyBase& Enemy, const FEnemyFlightHeightSnapshot& Snapshot)
+{
+	if (!Snapshot.bEnabled) return !Enemy.FlightHeightSettings.bEnabled;
+	const FEnemyFlightHeightSettings& Current = Enemy.FlightHeightSettings;
+	const FEnemyFlightHeightSettings& Captured = Snapshot.Settings;
+	return Current.bEnabled && Current.IsValid() && Enemy.GetCombatHeightPreference() == Snapshot.Preference
+		&& Current.bRandomizePreference == Captured.bRandomizePreference && Current.FixedPreference == Captured.FixedPreference
+		&& Current.LowHeight == Captured.LowHeight && Current.MidHeight == Captured.MidHeight && Current.HighHeight == Captured.HighHeight
+		&& Current.FloorProbeDistance == Captured.FloorProbeDistance && Current.CorrectionStep == Captured.CorrectionStep
+		&& Current.CorrectionSteps == Captured.CorrectionSteps;
 }
 
 #if WITH_DEV_AUTOMATION_TESTS

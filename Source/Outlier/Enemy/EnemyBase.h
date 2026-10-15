@@ -18,6 +18,7 @@
 #include "Damage/OutlierDamageReceiver.h"
 #include "Enemy/EnemyAdaptationTypes.h"
 #include "Enemy/EnemyPoolTypes.h"
+#include "Enemy/EnemyFlightHeightTypes.h"
 #include "PostProcess/OutlierSpawnVisualTarget.h"
 #include "EnemyBase.generated.h"
 
@@ -94,6 +95,13 @@ class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, pub
 
 public:
 	AEnemyBase();
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Enemy|Flight Height")
+	FEnemyFlightHeightSettings FlightHeightSettings;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "Enemy|Flight Height")
+	EEnemyFlightHeightPreference CombatHeightPreference = EEnemyFlightHeightPreference::Mid;
+
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
 	UOutlierAbilitySystemComponent* GetOutlierAbilitySystemComponent() const
 	{
@@ -198,8 +206,8 @@ protected:
 		meta = (Schema = "/Script/Outlier.EnemyStateTreeSchema", SchemaCanBeOverriden))
 	FStateTreeReference PossessedAttackStateTreeReference;
 
-	// Enemy BP에서 비전투 시 제자리 경계와 경로 순찰 중 사용할 행동을 선택한다.
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|AI")
+	// BP 기본값 또는 배치된 개체별로 비전투 시 제자리 경계/경로 순찰을 선택한다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Enemy|AI")
 	EEnemyNonCombatBehavior NonCombatBehavior = EEnemyNonCombatBehavior::Stationary;
 
 	// PatrolPointA는 스폰 위치를 사용하고, B는 이 로컬 오프셋을 적용한 월드 위치로 계산한다.
@@ -430,6 +438,12 @@ public:
 #endif
 	bool PrefersCombatLeft() const { return bPrefersCombatLeft; }
 	int32 GetCombatChaseLane() const { return CombatChaseLane; }
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Flight Height")
+	EEnemyFlightHeightPreference GetCombatHeightPreference() const { return CombatHeightPreference; }
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Flight Height")
+	float GetPreferredFlightHeight() const { return FlightHeightSettings.GetHeight(CombatHeightPreference); }
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|State")
 	EEnemyCombatState GetCombatState() const { return CombatState; }
@@ -673,6 +687,7 @@ protected:
 	bool ApplyPossessionPendingState();
 	bool RemovePossessionPendingState();
 	void PromotePreStunState(EEnemyCombatState DetectedState);
+	void InitializeCombatMovementPreferences();
 	void RefreshPerceptionConfigForCurrentState();
 	void RefreshPerceptionTeamRegistration();
 

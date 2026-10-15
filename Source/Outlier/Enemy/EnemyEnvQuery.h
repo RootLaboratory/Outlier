@@ -1,12 +1,42 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "EnemyFlightHeightTypes.h"
+#include "Drone/FlightPathfinding.h"
 #include "EnvironmentQuery/EnvQueryContext.h"
 #include "EnvironmentQuery/EnvQueryTest.h"
 #include "EnvironmentQuery/EnvQueryGenerator.h"
 #include "EnemyEnvQuery.generated.h"
 
 struct FEnvQueryRequest;
+class AEnemyBase;
+
+// 보정 결과는 요청 단위로 고정한다. EQS 완료 후 같은 위치를 다시 Trace해 좌표를 바꾸지 않는다.
+struct FEnemyFlightHeightCandidate
+{
+	FVector Location = FVector::ZeroVector;
+	EFlightPathStatus Status = EFlightPathStatus::Unavailable;
+	const TCHAR* Reason = TEXT("NotChecked");
+};
+
+struct FEnemyFlightHeightSnapshot
+{
+	FEnemyFlightHeightSettings Settings;
+	EEnemyFlightHeightPreference Preference = EEnemyFlightHeightPreference::Mid;
+	TArray<FEnemyFlightHeightCandidate> Candidates;
+	int32 CollisionChecks = 0;
+	double Milliseconds = 0.0;
+	bool bEnabled = false;
+};
+
+namespace EnemyFlightHeight
+{
+	OUTLIER_API EFlightPathStatus PrepareQuery(const AEnemyBase& Enemy, const UEnvQueryGenerator& Generator,
+		const FVector& Start, const FVector& Target, float PreferredOrbitLength, bool bLeft, int32 Lane,
+		float Clearance, int32 MaxChecks, double MaxMilliseconds, FEnemyFlightHeightSnapshot& OutSnapshot);
+	OUTLIER_API void SetQuerySnapshot(FEnvQueryRequest& Request, const FEnemyFlightHeightSnapshot& Snapshot);
+	OUTLIER_API bool IsSnapshotCurrent(const AEnemyBase& Enemy, const FEnemyFlightHeightSnapshot& Snapshot);
+}
 
 namespace EnemyChase
 {
