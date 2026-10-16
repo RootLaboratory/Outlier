@@ -32,7 +32,8 @@
 
 
 // Sets default values
-AFirstPersonCharacter::AFirstPersonCharacter()
+AFirstPersonCharacter::AFirstPersonCharacter(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
 {
 	// Set size for collision capsule
 	GetCapsuleComponent()->InitCapsuleSize(55.0f, 96.0f);

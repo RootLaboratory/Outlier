@@ -227,6 +227,7 @@ class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbil
 	friend class UShooterCombatComponent;
 	friend class UShooterMovementComponent;
 	friend class FShooterGroundedMovementTest;
+	friend class FShooterCoyoteTimeTest;
 	friend class FShooterPresentationConfigurationTest;
 	friend class FOutlierShooterPresentationAssetsTest;
 	friend class FShooterPresentationReplicationTest;
@@ -631,7 +632,13 @@ protected:
 public:
 	// Construction
 	/** Constructor */
-	AShooterCharacter();
+	AShooterCharacter(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+
+	/** 발판을 걸어서 벗어난 뒤 첫 점프를 허용하는 시간. 0이면 비활성화한다. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Movement|Jump", meta = (ClampMin = "0.0", Units = "s"))
+	float CoyoteTime = 0.1f;
+
+	virtual void UnPossessed() override;
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
 	virtual void BeginJumperEffect(FName EffectId, const FJumperMovementEffect& Effect, AActor* SourceActor) override;
 	virtual void EndJumperEffect(FName EffectId, AActor* SourceActor) override;

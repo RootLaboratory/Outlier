@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ShooterCharacter.h"
+#include "Shooter/ShooterCharacterMovementComponent.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimClassInterface.h"
 #include "Animation/AnimMontage.h"
@@ -269,7 +270,9 @@ UOutlierUpgradeComponent* AShooterCharacter::GetUpgradeComponent() const
 	return UpgradeComponent;
 }
 
-AShooterCharacter::AShooterCharacter() : AFirstPersonCharacter()
+AShooterCharacter::AShooterCharacter(const FObjectInitializer& ObjectInitializer)
+	: AFirstPersonCharacter(ObjectInitializer.SetDefaultSubobjectClass<UShooterCharacterMovementComponent>(
+		ACharacter::CharacterMovementComponentName))
 {
 	PrimaryActorTick.bCanEverTick = true;
 	OwnedQueryTags.AddTag(OutlierGameplayTags::Actor::Role::Shooter());
@@ -532,6 +535,7 @@ void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 
 void AShooterCharacter::PossessedBy(AController* NewController)
 {
+	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->ResetCoyoteTime();
 	Super::PossessedBy(NewController);
 	RefreshAbilitySystemActorInfo();
 	// PS 업그레이드가 ASC에 반영된 최종 최대치로 리로드 쉴드를 한 번만 채운다.
@@ -555,8 +559,15 @@ void AShooterCharacter::PossessedBy(AController* NewController)
 	RefreshShooterSuitCooldownUI();
 }
 
+void AShooterCharacter::UnPossessed()
+{
+	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->ResetCoyoteTime();
+	Super::UnPossessed();
+}
+
 void AShooterCharacter::OnRep_Controller()
 {
+	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->ResetCoyoteTime();
 	Super::OnRep_Controller();
 	RefreshAbilitySystemActorInfo();
 	RefreshShooterSuitCooldownUI();
@@ -1483,6 +1494,12 @@ void AShooterCharacter::OnMovementModeChanged(EMovementMode  PrevMovementMode, u
 
 bool AShooterCharacter::CanJumpInternal_Implementation() const
 {
+	const auto* JumpMovement = CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement());
+	if (JumpMovement->IsFalling() && JumpCurrentCount == 0 && !bWasJumping
+		&& !JumpMovement->IsCoyoteJumpAttempt() && !JumpMovement->HasCoyoteOpportunity())
+	{
+		return false;
+	}
 	if (IsSuitTransitionBlocked() || !Super::CanJumpInternal_Implementation())
 	{
 		return false;
@@ -1491,13 +1508,17 @@ bool AShooterCharacter::CanJumpInternal_Implementation() const
 	// 슈트 전에도 첫 점프의 누르고 있기 동작은 유지하되, 버튼을 다시 눌러 시작하는 추가 점프는 막는다.
 	const bool bContinuingJumpHold = bWasJumping && bPressedJump
 		&& JumpKeyHoldTime < GetJumpMaxHoldTime();
-	return HasAcquiredSuit() || JumpCurrentCount == 0 || bContinuingJumpHold;
+	return !IsDead() && (HasAcquiredSuit() || JumpCurrentCount == 0 || bContinuingJumpHold
+		|| JumpMovement->IsCoyoteJumpAttempt());
 }
 
 void AShooterCharacter::CheckJumpInput(float DeltaTime)
 {
+	auto* JumpMovement = CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement());
+	JumpMovement->PrepareJumpInput(DeltaTime);
 	const int32 PreviousJumpCount = JumpCurrentCount;
 	Super::CheckJumpInput(DeltaTime);
+	JumpMovement->FinishJumpInput();
 
 	// Jump()는 입력만 예약한다. 엔진이 실제 점프에 성공해 횟수를 1에서 2로 올린 뒤 서버에서만 알린다.
 	if (HasAuthority() && PreviousJumpCount == 1 && JumpCurrentCount == 2)
@@ -3036,6 +3057,7 @@ void AShooterCharacter::HandleSlideWallHit(const FHitResult& Hit)
 
 void AShooterCharacter::HandleDeath()
 {
+	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->ResetCoyoteTime();
 	CancelSuitTransition();
 	ClearInputIntent();
 	if (InventoryComponent && HasAuthority())
@@ -3830,18 +3852,16 @@ void AShooterCharacter::ServerRequestUncrouch_Implementation()
 
 void AShooterCharacter::ServerJumpStart_Implementation()
 {
-	if (MovementComponent)
+	// 실제 점프 입력은 CharacterMovement 패킷만 처리한다. 기존 RPC는 슬라이드 취소 의도만 전달한다.
+	if (MovementComponent && IsSliding())
 	{
-		MovementComponent->DoJumpStart();
+		StopSlide(ESlideEndReason::JumpCancel);
 	}
 }
 
 void AShooterCharacter::ServerJumpEnd_Implementation()
 {
-	if (MovementComponent)
-	{
-		MovementComponent->DoJumpEnd();
-	}
+	// 기존 BP 호출과의 호환용이다. 종료 입력도 이동 패킷에서 복원하므로 여기서는 중복 처리하지 않는다.
 }
 
 void AShooterCharacter::MulticastNotifyThirdPersonDoubleJump_Implementation(FVector_NetQuantize WorldLocation)

@@ -2,6 +2,7 @@
 
 #include "Shooter/ShooterMovementComponent.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Shooter/ShooterCharacterMovementComponent.h"
 #include "Curves/CurveFloat.h"
 #include "Engine/World.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -271,19 +272,20 @@ void UShooterMovementComponent::DoJumpStart()
 		return;
 	}
 
-	if (!ShooterCharacter->HasAuthority())
-	{
-		ShooterCharacter->ServerJumpStart();
-	}
-
 	if (bIsSliding)
 	{
+		if (!ShooterCharacter->HasAuthority())
+		{
+			ShooterCharacter->ServerJumpStart();
+		}
 		StopSlide(ESlideEndReason::JumpCancel);
 		return;
 	}
 
-	// 엔진은 낙하 중 첫 점프도 허용하므로, 지상 점프 없이 떨어진 경우에는 입력을 넘기지 않는다.
-	if (ShooterCharacter->GetCharacterMovement()->IsFalling() && ShooterCharacter->JumpCurrentCount == 0)
+	const auto* JumpMovement = CastChecked<UShooterCharacterMovementComponent>(ShooterCharacter->GetCharacterMovement());
+	// 바닥에서 바로 떨어진 첫 입력은 남아 있는 코요테 기회에 한해 허용한다.
+	if (JumpMovement->IsFalling() && ShooterCharacter->JumpCurrentCount == 0
+		&& !JumpMovement->HasCoyoteOpportunity())
 	{
 		return;
 	}
@@ -298,11 +300,6 @@ void UShooterMovementComponent::DoJumpEnd()
 	if (!ShooterCharacter)
 	{
 		return;
-	}
-
-	if (!ShooterCharacter->HasAuthority())
-	{
-		ShooterCharacter->ServerJumpEnd();
 	}
 
 	ShooterCharacter->StopJumping();

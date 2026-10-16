@@ -14,6 +14,7 @@ class OUTLIER_API UShooterCombatComponent : public UShooterCharacterComponentBas
 {
 	GENERATED_BODY()
 	friend class FOutlierShooterPresentationAnimationTest;
+	friend class FShooterGroundedMovementTest;
 
 protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
