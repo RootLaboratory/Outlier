@@ -17,7 +17,7 @@ struct FEnemyAdaptationUpdateResult;
  * 그중 무엇이 튜토리얼 순간인지는 이 액터가 결정한다. 방의 gameplay sublevel에 배치한다. 체크포인트 리로드가
  * 복원된 방 상태로 다시 생성하고, game-flow 기록이 이미 발동한 slot의 반복을 막는다. 방이 클리어되거나,
  * BeginPlay 시 복원된 방이 이미 클리어 상태이거나 설정된 slot 이벤트가 모두 이미 나갔으면 스스로 파괴한다.
- * 증원은 RoomCombat이 알림을 주지 않으므로 전투 중 Wave index를 직접 폴링해 판정한다.
+ * 증원은 RoomCombat의 OnReinforcementStarted(남은 적 비율로 후속 Wave가 시작된 순간)로 판정한다.
  */
 UCLASS()
 class OUTLIER_API ATuto_CombatObserver : public AActor, public ITuto_EventTriggerInterface
@@ -71,20 +71,16 @@ private:
 	UFUNCTION()
 	void HandleCombatEvent(FGameplayTag EventRoomTag, ERoomCombatEvent Event, int32 CombatPhaseIndex,
 		int32 GameplayGeneration);
+	void HandleReinforcementStarted(FGameplayTag EventRoomTag, int32 CombatPhaseIndex, int32 WaveIndex,
+		int32 GameplayGeneration);
 	void HandleAdaptationUpdated(const FEnemyAdaptationUpdateResult& Result);
 	AOutlierPlayerState* FindPlayerInRoom() const;
 	void StopObserving();
 	bool IsSlotFired(int32 Slot) const;
 	bool AreAllSlotsFired() const;
-	void StartWavePolling();
-	void StopWavePolling();
-	void PollWave();
-
-	static constexpr float WavePollInterval = 0.25f;
+	bool IsReinforcementWave(int32 WaveIndex) const;
+	void TryReinforcementAtWave(int32 WaveIndex);
 
 	TWeakObjectPtr<URoomCombatSubsystem> ObservedCombat;
 	TWeakObjectPtr<UEnemyAdaptationSubsystem> ObservedAdaptation;
-	FTimerHandle WavePollTimer;
-	int32 LastPolledPhase = INDEX_NONE;
-	int32 LastPolledWave = INDEX_NONE;
 };

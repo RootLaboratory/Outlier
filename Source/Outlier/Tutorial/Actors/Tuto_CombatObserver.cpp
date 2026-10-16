@@ -11,7 +11,6 @@
 #include "OutlierPlayerState.h"
 #include "Room/RoomVolume.h"
 #include "Save/OutlierSaveSubSystem.h"
-#include "TimerManager.h"
 #include "Tutorial/WorldGuide/OutlierWorldGuideTargetComponent.h"
 
 namespace
@@ -70,7 +69,7 @@ namespace
 				*ServerWorld->GetName());
 	}
 
-	FAutoConsoleCommandWithWorldAndArgs DumpCommand(TEXT("Outlier.Tuto.CombatObserver.Dump"),
+	FAutoConsoleCommandWithWorldAndArgs CombatObserverDumpCommand(TEXT("Outlier.Tuto.CombatObserver.Dump"),
 		TEXT("Dump each observer's RoomTag, slots and the observed room's combat state."),
 		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>&, UWorld* World)
 		{
@@ -93,7 +92,7 @@ namespace
 			ForEachObserver(World, [Slot](ATuto_CombatObserver& Observer) { Observer.DebugFireSlot(Slot); });
 		}));
 
-	FAutoConsoleCommandWithWorldAndArgs ResetCommand(TEXT("Outlier.Tuto.CombatObserver.Reset"),
+	FAutoConsoleCommandWithWorldAndArgs CombatObserverResetCommand(TEXT("Outlier.Tuto.CombatObserver.Reset"),
 		TEXT("Clear every observer's one-shot slot record so the slots can fire again."),
 		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>&, UWorld* World)
 		{
@@ -156,8 +155,10 @@ void ATuto_CombatObserver::BeginPlay()
 	{
 		ObservedCombat = Combat;
 		Combat->OnCombatEvent.AddDynamic(this, &ThisClass::HandleCombatEvent);
-		// 전투 도중의 체크포인트로 복원되면 SequenceStarted가 다시 오지 않으므로 바로 추적을 시작한다.
-		if (Combat->GetRoomState(RoomTag) == ERoomCombatState::Combat) StartWavePolling();
+		Combat->OnReinforcementStarted.AddUObject(this, &ThisClass::HandleReinforcementStarted);
+		// 전투 도중의 체크포인트로 복원되면 이미 시작된 증원은 다시 알려지지 않으므로 현재 Wave를 한 번 확인한다.
+		if (Combat->GetRoomState(RoomTag) == ERoomCombatState::Combat)
+			TryReinforcementAtWave(Combat->GetCurrentWaveIndex(RoomTag));
 	}
 	if (UEnemyAdaptationSubsystem* Adaptation = World->GetSubsystem<UEnemyAdaptationSubsystem>())
 	{
@@ -187,38 +188,25 @@ bool ATuto_CombatObserver::AreAllSlotsFired() const
 	return bAnyConfigured;
 }
 
-void ATuto_CombatObserver::StartWavePolling()
+bool ATuto_CombatObserver::IsReinforcementWave(int32 WaveIndex) const
 {
-	UWorld* World = GetWorld();
-	// 증원 slot이 비었거나 이미 나갔으면 Wave를 볼 이유가 없다.
-	if (!World || !GetEventTag(ReinforcementSlot).IsValid() || IsSlotFired(ReinforcementSlot)
-		|| World->GetTimerManager().IsTimerActive(WavePollTimer)) return;
-	LastPolledPhase = INDEX_NONE;
-	LastPolledWave = INDEX_NONE;
-	World->GetTimerManager().SetTimer(WavePollTimer, this, &ThisClass::PollWave, WavePollInterval, true, 0.0f);
-	Trace(this, TEXT("Wave polling started."));
-}
-
-void ATuto_CombatObserver::StopWavePolling()
-{
-	if (UWorld* World = GetWorld()) World->GetTimerManager().ClearTimer(WavePollTimer);
-}
-
-void ATuto_CombatObserver::PollWave()
-{
-	const URoomCombatSubsystem* Combat = ObservedCombat.Get();
-	if (!Combat || Combat->GetRoomState(RoomTag) != ERoomCombatState::Combat) return;
-	const int32 Phase = Combat->GetCurrentCombatPhaseIndex(RoomTag);
-	const int32 Wave = Combat->GetCurrentWaveIndex(RoomTag);
-	if (Phase == LastPolledPhase && Wave == LastPolledWave) return;
-	LastPolledPhase = Phase;
-	LastPolledWave = Wave;
-	Trace(this, FString::Printf(TEXT("Wave changed Phase=%d Wave=%d"), Phase, Wave));
 	// Wave 0은 각 phase의 시작 병력이므로 증원이 아니다.
-	const bool bReinforcement = ReinforcementWaveIndex == INDEX_NONE ? Wave >= 1 : Wave == ReinforcementWaveIndex;
-	if (!bReinforcement) return;
+	return ReinforcementWaveIndex == INDEX_NONE ? WaveIndex >= 1 : WaveIndex == ReinforcementWaveIndex;
+}
+
+void ATuto_CombatObserver::TryReinforcementAtWave(int32 WaveIndex)
+{
+	// 증원 slot이 비었거나 이미 나갔으면 플레이어를 찾을 필요가 없다.
+	if (!IsReinforcementWave(WaveIndex) || !GetEventTag(ReinforcementSlot).IsValid() || IsSlotFired(ReinforcementSlot)) return;
 	if (AOutlierPlayerState* Source = FindPlayerInRoom()) HandleReinforcement(Source);
-	StopWavePolling();
+}
+
+void ATuto_CombatObserver::HandleReinforcementStarted(FGameplayTag EventRoomTag, int32 CombatPhaseIndex, int32 WaveIndex,
+	int32 GameplayGeneration)
+{
+	if (EventRoomTag != RoomTag) return;
+	Trace(this, FString::Printf(TEXT("ReinforcementStarted Phase=%d Wave=%d Gen=%d"), CombatPhaseIndex, WaveIndex, GameplayGeneration));
+	TryReinforcementAtWave(WaveIndex);
 }
 
 void ATuto_CombatObserver::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -254,16 +242,6 @@ void ATuto_CombatObserver::HandleCombatEvent(FGameplayTag EventRoomTag, ERoomCom
 		*UEnum::GetValueAsString(Event), CombatPhaseIndex, GameplayGeneration,
 		Combat ? *UEnum::GetValueAsString(Combat->GetRoomState(RoomTag)) : TEXT("None"),
 		Combat ? Combat->GetCurrentCombatPhaseIndex(RoomTag) : INDEX_NONE));
-	if (Event == ERoomCombatEvent::SequenceStarted)
-	{
-		StartWavePolling();
-		return;
-	}
-	if (Event == ERoomCombatEvent::Cancelled)
-	{
-		StopWavePolling();
-		return;
-	}
 	if (Event != ERoomCombatEvent::RoomCleared) return;
 	if (AOutlierPlayerState* Source = FindPlayerInRoom()) HandleRoomCleared(Source);
 	// 클리어된 방에서는 증원과 저항이 더 이상 발생하지 않으므로 observer를 종료한다.
@@ -298,10 +276,9 @@ FString ATuto_CombatObserver::BuildDebugReport() const
 			if (IsValid(*It) && It->GetRoomTag() == RoomTag) ++RoomVolumes;
 	}
 	FString Report = FString::Printf(
-		TEXT("%s Room=%s RoomVolumes=%d ReinforcementWave=%d Observing(Combat=%d Adaptation=%d WavePolling=%d) ActiveRoom=%s RoomState=%s CurrentPhase=%d CurrentWave=%d"),
+		TEXT("%s Room=%s RoomVolumes=%d ReinforcementWave=%d Observing(Combat=%d Adaptation=%d) ActiveRoom=%s RoomState=%s CurrentPhase=%d CurrentWave=%d"),
 		*GetName(), *RoomTag.ToString(), RoomVolumes, ReinforcementWaveIndex,
 		Combat ? 1 : 0, ObservedAdaptation.IsValid() ? 1 : 0,
-		GetWorld() && GetWorld()->GetTimerManager().IsTimerActive(WavePollTimer) ? 1 : 0,
 		Combat ? *Combat->GetActiveCombatRoomTag().ToString() : TEXT("None"),
 		Combat ? *UEnum::GetValueAsString(Combat->GetRoomState(RoomTag)) : TEXT("None"),
 		Combat ? Combat->GetCurrentCombatPhaseIndex(RoomTag) : INDEX_NONE,
@@ -376,9 +353,11 @@ AOutlierPlayerState* ATuto_CombatObserver::FindPlayerInRoom() const
 
 void ATuto_CombatObserver::StopObserving()
 {
-	StopWavePolling();
 	if (URoomCombatSubsystem* Combat = ObservedCombat.Get())
+	{
 		Combat->OnCombatEvent.RemoveDynamic(this, &ThisClass::HandleCombatEvent);
+		Combat->OnReinforcementStarted.RemoveAll(this);
+	}
 	if (UEnemyAdaptationSubsystem* Adaptation = ObservedAdaptation.Get())
 		Adaptation->OnAdaptationUpdated.RemoveAll(this);
 	ObservedCombat.Reset();

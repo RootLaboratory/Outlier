@@ -96,7 +96,7 @@ namespace
 		else Controller->ServerDebugWorldGuide(Operation, ID, Next);
 	}
 
-	FAutoConsoleCommandWithWorldAndArgs DumpCommand(TEXT("Outlier.WorldGuide.Dump"),
+	FAutoConsoleCommandWithWorldAndArgs WorldGuideDumpCommand(TEXT("Outlier.WorldGuide.Dump"),
 		TEXT("Dump local setup/targets/state. Add 'server' for the server FIFO and completed IDs."),
 		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
 		{
@@ -114,7 +114,7 @@ namespace
 		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World) { Request(World, TEXT("cancel"), Args); }));
 	FAutoConsoleCommandWithWorldAndArgs ClearCommand(TEXT("Outlier.WorldGuide.Clear"), TEXT("Clear the shared FIFO; retain completed IDs."),
 		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>&, UWorld* World) { Request(World, TEXT("clear"), {}); }));
-	FAutoConsoleCommandWithWorldAndArgs ResetCommand(TEXT("Outlier.WorldGuide.Reset"), TEXT("Clear shared guides AND completed IDs. Does not reset gameplay Volume/Actor one-shot state."),
+	FAutoConsoleCommandWithWorldAndArgs WorldGuideResetCommand(TEXT("Outlier.WorldGuide.Reset"), TEXT("Clear shared guides AND completed IDs. Does not reset gameplay Volume/Actor one-shot state."),
 		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>&, UWorld* World) { Request(World, TEXT("reset"), {}); }));
 
 	FAutoConsoleCommandWithWorldAndArgs MarkCommand(TEXT("Outlier.WorldGuide.Mark"), TEXT("Mark [seconds=10]: draw local target anchors and IDs; green=active, yellow=inactive."),
