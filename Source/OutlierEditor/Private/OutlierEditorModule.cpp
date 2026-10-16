@@ -7,6 +7,7 @@
 #include "LevelEditor.h"
 #include "Misc/MessageDialog.h"
 #include "Misc/Paths.h"
+#include "OutlierEventToolWidget.h"
 #include "OutlierInputMappableToolWidget.h"
 #include "OutlierUpgradeEffectToolWidget.h"
 #include "PlayInEditorDataTypes.h"
@@ -22,6 +23,7 @@ namespace OutlierEditor
 {
 	const FName InputMappableToolTabName(TEXT("OutlierInputMappableTool"));
 	const FName UpgradeEffectToolTabName(TEXT("OutlierUpgradeEffectTool"));
+	const FName EventToolTabName(TEXT("OutlierEventTool"));
 	const FString ListenServerStartMap(TEXT("/Game/Maps/Title"));
 }
 
@@ -42,6 +44,13 @@ public:
 			FOnSpawnTab::CreateRaw(this, &FOutlierEditorModule::SpawnUpgradeEffectToolTab))
 			.SetDisplayName(LOCTEXT("UpgradeEffectToolTabTitle", "Outlier Upgrade Effect Tool"))
 			.SetTooltipText(LOCTEXT("UpgradeEffectToolTooltip", "Author upgrade effect rows with dropdowns; writes raw CSV and reimports the DataTable."))
+			.SetMenuType(ETabSpawnerMenuType::Hidden);
+
+		FGlobalTabmanager::Get()->RegisterNomadTabSpawner(
+			OutlierEditor::EventToolTabName,
+			FOnSpawnTab::CreateRaw(this, &FOutlierEditorModule::SpawnEventToolTab))
+			.SetDisplayName(LOCTEXT("EventToolTabTitle", "Outlier Event Tester"))
+			.SetTooltipText(LOCTEXT("EventToolTooltip", "List Event DT rows and send one to PIE players like a trigger volume."))
 			.SetMenuType(ETabSpawnerMenuType::Hidden);
 
 		UToolMenus::RegisterStartupCallback(
@@ -65,6 +74,8 @@ public:
 				OutlierEditor::InputMappableToolTabName);
 			FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(
 				OutlierEditor::UpgradeEffectToolTabName);
+			FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(
+				OutlierEditor::EventToolTabName);
 		}
 	}
 
@@ -88,6 +99,13 @@ private:
 			LOCTEXT("OpenUpgradeEffectToolTooltip", "Author upgrade effect rows with dropdowns; writes CSV and reimports."),
 			FSlateIcon(),
 			FUIAction(FExecuteAction::CreateRaw(this, &FOutlierEditorModule::OpenUpgradeEffectTool)));
+
+		Section.AddMenuEntry(
+			TEXT("OpenOutlierEventTool"),
+			LOCTEXT("OpenEventToolLabel", "Outlier Event Tester"),
+			LOCTEXT("OpenEventToolTooltip", "List Event DT rows and send one to PIE players (same path as trigger volumes)."),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateRaw(this, &FOutlierEditorModule::OpenEventTool)));
 
 		Section.AddMenuEntry(
 			TEXT("ExportProceduralAnimValues"),
@@ -128,6 +146,11 @@ private:
 	void OpenUpgradeEffectTool()
 	{
 		FGlobalTabmanager::Get()->TryInvokeTab(OutlierEditor::UpgradeEffectToolTabName);
+	}
+
+	void OpenEventTool()
+	{
+		FGlobalTabmanager::Get()->TryInvokeTab(OutlierEditor::EventToolTabName);
 	}
 
 	void ExportProceduralAnimValuesCsv()
@@ -241,6 +264,15 @@ private:
 			.TabRole(ETabRole::NomadTab)
 			[
 				SNew(SOutlierUpgradeEffectToolWidget)
+			];
+	}
+
+	TSharedRef<SDockTab> SpawnEventToolTab(const FSpawnTabArgs& SpawnTabArgs)
+	{
+		return SNew(SDockTab)
+			.TabRole(ETabRole::NomadTab)
+			[
+				SNew(SOutlierEventToolWidget)
 			];
 	}
 };

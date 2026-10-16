@@ -5,6 +5,10 @@
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Drone/Partner/PartnerShieldSphere.h"
 #include "Interface/ScannableInterface.h"
+#include "Interface/HackableInterface.h"
+#include "Drone/Partner/HackableComponent.h"
+#include "GameplayTags/OutlierGameplayTags.h"
+#include "Upgrade/OutlierUpgradeComponent.h"
 #include "Shooter/ShooterCharacter.h"
 #include "OutlierPlayerState.h"
 #include "PostProcess/MaterialPostProcessSubsystem.h"
@@ -74,13 +78,22 @@ EPartnerSkillUseResult UPartnerSupportComponent::TryScan_Server()
 	const FOutlierPartnerAbilityConfig& Config = AbilitySystem->GetPartnerAbilityConfig();
 	const float InScanRange = Config.ScanRange;
 	const float InScanDuration = Config.ScanDuration;
+
+	// 정찰 해금도 범위처럼 서버에서 정해 보낸다. 클라가 태그 복제보다 RPC를 먼저 받을 수 있어서다.
+	const UOutlierUpgradeComponent* UpgradeComponent = PartnerCharacter->GetUpgradeComponent();
+	const bool bRevealHackable = UpgradeComponent
+		&& UpgradeComponent->HasUpgradeTag(OutlierGameplayTags::Upgrade::Partner::Scan::RevealHackable());
+	const bool bRevealNodeFragments = UpgradeComponent
+		&& UpgradeComponent->HasUpgradeTag(OutlierGameplayTags::Upgrade::Partner::Scan::RevealNodeFragments());
 	PartnerCharacter->bScanning = true;
 
-	//Multicast 수정
-	ClientStartScanVisual(
+	// Shooter도 같은 스캔 연출을 보도록 모든 클라이언트에 보낸다.
+	MulticastStartScanVisual(
 		InScanOrigin,
 		InScanRange,
-		InScanDuration
+		InScanDuration,
+		bRevealHackable,
+		bRevealNodeFragments
 	);
 
 	World->GetTimerManager().SetTimer(
@@ -358,11 +371,8 @@ void UPartnerSupportComponent::CancelForReboot()
 	}
 
 	EndScan_Server();
-	ClientCancelScanForReboot();
-	if (ShouldProcessLocalScanVisual())
-	{
-		EndScan_Client();
-	}
+	// Multicast는 리슨 서버 자신에서도 실행되므로 로컬 정리를 따로 호출하지 않는다.
+	MulticastCancelScanForReboot();
 }
 
 void UPartnerSupportComponent::EndScan_Client()
@@ -387,6 +397,8 @@ void UPartnerSupportComponent::EndScan_Client()
 	ScanElapsedTime = 0.0f;
 	ActiveScanRange = 0.0f;
 	ActiveScanDuration = 0.0f;
+	bScanRevealHackable = false;
+	bScanRevealNodeFragments = false;
 
 	if (World)
 	{
@@ -430,13 +442,35 @@ int32 UPartnerSupportComponent::ResolveScanStencilValue(AActor* Actor) const
 		return 0;
 	}
 
+	int32 StencilValue = DefaultScanStencilValue;
+	EScanRevealCondition RevealCondition = EScanRevealCondition::Always;
+
+	// Scannable이 우선이라 Hackable 액터도 Scannable을 직접 구현하면 자기 값을 쓴다 (EnemyBase = Enemy).
 	if (const IScannableInterface* NativeScannable = Cast<IScannableInterface>(Actor))
 	{
-		const int32 StencilValue = NativeScannable->GetScanStencilValue();
-		return StencilValue;
+		StencilValue = NativeScannable->GetScanStencilValue();
+		RevealCondition = NativeScannable->GetScanRevealCondition();
+	}
+	// Hackable만 구현한 액터는 해킹 대상(Hack.Target 태그)일 때만 Interactable과 같은 색으로 잡는다.
+	else if (const IHackableInterface* NativeHackable = Cast<IHackableInterface>(Actor))
+	{
+		const UHackableComponent* HackableComponent = NativeHackable->GetHackableComponent();
+		if (HackableComponent && HackableComponent->IsHackTargetType())
+		{
+			StencilValue = static_cast<int32>(EScanType::Interaction);
+			RevealCondition = EScanRevealCondition::RevealHackable;
+		}
 	}
 
-	return DefaultScanStencilValue;
+	switch (RevealCondition)
+	{
+	case EScanRevealCondition::RevealHackable:
+		return bScanRevealHackable ? StencilValue : DefaultScanStencilValue;
+	case EScanRevealCondition::RevealNodeFragments:
+		return bScanRevealNodeFragments ? StencilValue : DefaultScanStencilValue;
+	default:
+		return StencilValue;
+	}
 }
 
 void UPartnerSupportComponent::ApplyScanEffect(AActor* Actor)
@@ -477,16 +511,18 @@ void UPartnerSupportComponent::ClearScanEffect(AActor* Actor)
 
 bool UPartnerSupportComponent::ShouldProcessLocalScanVisual() const
 {
+	// Partner 조종 여부와 무관하게 화면이 있는 모든 인스턴스에서 연출한다.
 	return PartnerCharacter
-		&& PartnerCharacter->IsLocallyControlled()
 		&& GetWorld()
 		&& GetWorld()->GetNetMode() != NM_DedicatedServer;
 }
 
-void UPartnerSupportComponent::ClientStartScanVisual_Implementation(
+void UPartnerSupportComponent::MulticastStartScanVisual_Implementation(
 	FVector InScanOrigin,
 	float InScanRange,
-	float InScanDuration)
+	float InScanDuration,
+	bool bInRevealHackable,
+	bool bInRevealNodeFragments)
 {
 	if (!ShouldProcessLocalScanVisual())
 	{
@@ -506,6 +542,8 @@ void UPartnerSupportComponent::ClientStartScanVisual_Implementation(
 	ScanElapsedTime = 0.0f;
 	ActiveScanRange = FMath::Max(0.0f, InScanRange);
 	ActiveScanDuration = FMath::Max(0.0f, InScanDuration);
+	bScanRevealHackable = bInRevealHackable;
+	bScanRevealNodeFragments = bInRevealNodeFragments;
 	ScannedActors.Reset();
 
 	if (UMaterialPostProcessSubsystem* PostProcessSubsystem = World->GetSubsystem<UMaterialPostProcessSubsystem>())
@@ -522,7 +560,7 @@ void UPartnerSupportComponent::ClientStartScanVisual_Implementation(
 	);
 }
 
-void UPartnerSupportComponent::ClientCancelScanForReboot_Implementation()
+void UPartnerSupportComponent::MulticastCancelScanForReboot_Implementation()
 {
 	EndScan_Client();
 }

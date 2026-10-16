@@ -915,9 +915,17 @@ bool AWeaponBase::Interact(class AFirstPersonCharacter* Interactor)
 
 	// 이 액터를 그대로 넘기지 않는다. 배치 액터의 ULevel 소속은 런타임에 옮길 수 없어
 	// Gameplay 서브레벨 리로드 때 장착한 무기까지 사라질 수 있다.
-	// 같은 클래스로 PersistentLevel 에 하나 만들어 넘기고,
+	// 지급 클래스로 PersistentLevel 에 하나 만들어 넘기고,
 	// 원본은 소비 처리한다 (일회성 획득이므로 월드에 남아서도 안 된다).
-	AWeaponBase* GrantedWeapon = SpawnLoadoutWeapon(GetWorld(), GetClass(), Interactor);
+	const TSubclassOf<AWeaponBase> GrantedClass = GetGrantedWeaponClass();
+	if (!GrantedClass)
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("%s [%s] Interact failed: no granted weapon class"),
+			OutlierNet::GetNetPrefix(this), *GetName());
+		return false;
+	}
+	AWeaponBase* GrantedWeapon = SpawnLoadoutWeapon(GetWorld(), GrantedClass, Interactor);
 	if (!GrantedWeapon)
 	{
 		UE_LOG(LogTemp, Error,

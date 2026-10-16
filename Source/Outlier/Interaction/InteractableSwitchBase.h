@@ -33,6 +33,8 @@ public:
 	virtual UHackableComponent* GetHackableComponent() const override;
 	virtual void HandleHackEffect(FGameplayTag EffectTag, const FHackResultContext& Context) override;
 
+	virtual EScanRevealCondition GetScanRevealCondition() const override;
+
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	UFUNCTION(BlueprintPure, Category = "Switch|Hack")

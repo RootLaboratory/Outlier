@@ -38,6 +38,7 @@ struct FOutlierUpgradeNodeToolRow
 	int32 Cost = 0;
 	FText DisplayName;
 	FText Desc;
+	bool bInitiallyActivated = false; // 기본 지급 노드. CSV 저장 시 빠지면 모든 노드가 미보유로 Reimport 된다.
 };
 
 // 기획자용 Upgrade 효과 편집 툴.
@@ -67,6 +68,7 @@ private:
 	void RefreshConfigFieldOptions();     // ConfigField 콤보: Node 의 Role 에 맞는 AbilityConfig struct 필드로 갱신
 	FGameplayTag GetSelectedNodeAbilityTag() const; // EditRow.NodeRowName 이 가리키는 Node 의 AbilityTag
 	EOutlierUpgradeRole GetSelectedNodeRole() const; // EditRow.NodeRowName 이 가리키는 Node 의 Role
+	FString CurrentTargetTagPrefix() const;         // EffectType + Node 의 Role/AbilityTag 에 맞는 TargetTag 접두사
 
 	// ── 리스트 ───────────────────────────────────────
 	TSharedRef<ITableRow> GenerateRow(FRowPtr Row, const TSharedRef<STableViewBase>& OwnerTable);

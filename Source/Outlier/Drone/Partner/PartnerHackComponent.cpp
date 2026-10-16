@@ -585,7 +585,7 @@ void UPartnerHackComponent::ServerTryStartHack_Implementation(AActor* TargetActo
 		Handler->HandleHackStarted(Context);
 	}
 
-	if (HackableComponent->HackTags.HasTag(HackGameplayTags::MiniGame::None()))
+	if (!HackableComponent->RequiresMiniGame())
 	{
 		ClientStopCandidateSearch();
 

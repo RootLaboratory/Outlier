@@ -102,6 +102,7 @@ public:
 	virtual FGenericTeamId GetGenericTeamId() const override;
 	virtual FVector GetPawnViewLocation() const override;
 	virtual FVector GetHackTargetLocation() const override;
+	virtual EScanRevealCondition GetScanRevealCondition() const override { return EScanRevealCondition::RevealHackable; }
 	virtual FVector GetCombatAimPoint(const AActor* TargetActor) const override;
 	virtual FRotator GetViewRotation() const override;
 	virtual bool CanUseEnemyPerception() const override;

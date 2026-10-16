@@ -2332,6 +2332,7 @@ void URoomCombatSubsystem::EvaluateWaveProgress(
 		return;
 	}
 
+	const int32 PhaseIndex = Runtime.CurrentCombatPhaseIndex;
 	const int32 NextWaveIndex = Runtime.CurrentWaveIndex + 1;
 	UE_LOG(LogTemp, Display,
 		TEXT("[Reinforcement] Enemy=None Stage=WaveTriggered Room=%s Phase=%d CurrentWave=%d NextWave=%d Alive=%d Baseline=%d Ratio=%.3f Required=%.3f"),
@@ -2354,7 +2355,10 @@ void URoomCombatSubsystem::EvaluateWaveProgress(
 			Runtime.WaveBaselineEnemyCount,
 			RemainingRatio,
 			RequiredRatio);
+		return;
 	}
+	// 즉시 소환이 다음 Wave/차수 전환까지 이어질 수 있으므로 Phase는 시작 요청 시점 값으로 보낸다.
+	OnReinforcementStarted.Broadcast(RoomTag, PhaseIndex, NextWaveIndex, Runtime.GameplayGeneration);
 }
 
 void URoomCombatSubsystem::ResetRuntimeCombatState()

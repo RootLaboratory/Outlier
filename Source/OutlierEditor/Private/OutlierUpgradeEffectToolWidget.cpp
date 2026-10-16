@@ -15,6 +15,7 @@
 #include "GAS/Data/OutlierShooterSuitAbilityDataRow.h"
 #include "Upgrade/OutlierUpgradeTypes.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SComboBox.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SMultiLineEditableTextBox.h"
@@ -108,23 +109,34 @@ namespace OutlierUpgradeEffectTool
 		return EOutlierUpgradeModOp::Additive;
 	}
 
-	// EffectType 별 TargetTag 네임스페이스 프리픽스
-	FString TargetTagPrefix(EOutlierUpgradeEffectType Type)
+	// Node Role 별 태그 하위 경로. Node 를 고르기 전에는 두 Role 을 모두 후보로 둔다.
+	FString RoleTagSuffix(EOutlierUpgradeRole Role)
+	{
+		switch (Role)
+		{
+		case EOutlierUpgradeRole::Shooter: return TEXT(".Shooter");
+		case EOutlierUpgradeRole::Partner: return TEXT(".Partner");
+		default:                           return FString();
+		}
+	}
+
+	// EffectType 별 TargetTag 네임스페이스 프리픽스. Ability/Upgrade 는 Node 의 Role 을 따른다.
+	FString TargetTagPrefix(EOutlierUpgradeEffectType Type, EOutlierUpgradeRole Role)
 	{
 		switch (Type)
 		{
 		case EOutlierUpgradeEffectType::Attribute:        return TEXT("Attribute");
-		case EOutlierUpgradeEffectType::GrantAbility:     return TEXT("Ability.Shooter");
-		case EOutlierUpgradeEffectType::AbilityConfig:    return TEXT("Ability.Shooter");
-		case EOutlierUpgradeEffectType::FunctionOverride: return TEXT("Upgrade.Shooter");
+		case EOutlierUpgradeEffectType::GrantAbility:     return TEXT("Ability") + RoleTagSuffix(Role);
+		case EOutlierUpgradeEffectType::AbilityConfig:    return TEXT("Ability") + RoleTagSuffix(Role);
+		case EOutlierUpgradeEffectType::FunctionOverride: return TEXT("Upgrade") + RoleTagSuffix(Role);
 		default:                                          return FString();
 		}
 	}
 
 	// FunctionOverride 전용: 선택된 Node 의 AbilityTag ( "Ability.Shooter.X" ) 를
 	// 대응하는 Upgrade 네임스페이스 ( "Upgrade.Shooter.X" ) 로 바꿔, 그 하위 태그만 후보로 남긴다.
-	// AbilityTag 가 없으면 기존 "Upgrade.Shooter" 전체로 폴백한다.
-	FString FunctionOverrideTargetTagPrefix(const FGameplayTag& AbilityTag)
+	// AbilityTag 가 없으면 Node Role 의 "Upgrade.<Role>" 전체로 폴백한다.
+	FString FunctionOverrideTargetTagPrefix(const FGameplayTag& AbilityTag, EOutlierUpgradeRole Role)
 	{
 		static const FString AbilityRoot = TEXT("Ability.");
 		static const FString UpgradeRoot = TEXT("Upgrade.");
@@ -136,7 +148,7 @@ namespace OutlierUpgradeEffectTool
 				return UpgradeRoot + S.RightChop(AbilityRoot.Len());
 			}
 		}
-		return TargetTagPrefix(EOutlierUpgradeEffectType::FunctionOverride);
+		return TargetTagPrefix(EOutlierUpgradeEffectType::FunctionOverride, Role);
 	}
 
 	void GatherTagsByPrefix(const FString& Prefix, TArray<TSharedPtr<FName>>& Out)
@@ -269,6 +281,44 @@ namespace OutlierUpgradeEffectTool
 		Bytes.Append(reinterpret_cast<const uint8*>(Utf8Csv.Get()), Utf8Csv.Length());
 		return FFileHelper::SaveArrayToFile(Bytes, *Path);
 	}
+
+	FOutlierUpgradeNodeToolRow MakeNodeToolRow(FName RowName, const FOutlierUpgradeNodeRow& Src)
+	{
+		FOutlierUpgradeNodeToolRow Row;
+		Row.RowName = RowName;
+		Row.Role = Src.Role;
+		Row.TreeId = Src.TreeId;
+		Row.NodeId = Src.NodeId;
+		Row.ParentId = Src.ParentId;
+		Row.AbilityTag = Src.AbilityTag;
+		Row.Cost = Src.Cost;
+		Row.DisplayName = Src.DisplayName;
+		Row.Desc = Src.Desc;
+		Row.bInitiallyActivated = Src.bInitiallyActivated;
+		return Row;
+	}
+
+	// FOutlierUpgradeNodeRow 의 모든 컬럼을 쓴다. 빠진 컬럼은 Reimport 때 기본값으로 덮인다.
+	FString BuildNodeCsv(const TArray<TSharedPtr<FOutlierUpgradeNodeToolRow>>& Rows)
+	{
+		FString Csv = TEXT("Name,Role,TreeId,NodeId,ParentId,AbilityTag,Cost,DisplayName,Desc,bInitiallyActivated\r\n");
+		for (const TSharedPtr<FOutlierUpgradeNodeToolRow>& N : Rows)
+		{
+			if (!N.IsValid()) { continue; }
+			Csv += FString::Printf(TEXT("%s,%s,%s,%s,%s,%s,%d,%s,%s,%s\r\n"),
+				*N->RowName.ToString(),
+				*RoleEnumString(N->Role),
+				*NameOrEmpty(N->TreeId),
+				*NameOrEmpty(N->NodeId),
+				*NameOrEmpty(N->ParentId),
+				*WrapTag(N->AbilityTag),
+				N->Cost,
+				*CsvField(N->DisplayName.ToString()),
+				*CsvField(N->Desc.ToString()),
+				N->bInitiallyActivated ? TEXT("True") : TEXT("False"));
+		}
+		return Csv;
+	}
 }
 
 using namespace OutlierUpgradeEffectTool;
@@ -345,6 +395,7 @@ namespace
 			else if (ColumnName == TEXT("NodeId"))      { Text = NameOrEmpty(Item->NodeId); }
 			else if (ColumnName == TEXT("ParentId"))    { Text = NameOrEmpty(Item->ParentId); }
 			else if (ColumnName == TEXT("Cost"))        { Text = FString::FromInt(Item->Cost); }
+			else if (ColumnName == TEXT("Initial"))     { Text = Item->bInitiallyActivated ? TEXT("O") : FString(); }
 			else if (ColumnName == TEXT("DisplayName")) { Text = Item->DisplayName.ToString(); }
 
 			return SNew(SBox).Padding(4, 2).VAlign(VAlign_Center)
@@ -495,6 +546,7 @@ void SOutlierUpgradeEffectToolWidget::Construct(const FArguments& InArgs)
 				+ SHeaderRow::Column(TEXT("NodeId")).DefaultLabel(LOCTEXT("H_NodeId", "NodeId")).FillWidth(0.10f)
 				+ SHeaderRow::Column(TEXT("ParentId")).DefaultLabel(LOCTEXT("H_ParentId", "ParentId")).FillWidth(0.20f)
 				+ SHeaderRow::Column(TEXT("Cost")).DefaultLabel(LOCTEXT("H_Cost", "Cost")).FillWidth(0.06f)
+				+ SHeaderRow::Column(TEXT("Initial")).DefaultLabel(LOCTEXT("H_Initial", "기본")).FillWidth(0.06f)
 				+ SHeaderRow::Column(TEXT("DisplayName")).DefaultLabel(LOCTEXT("H_DisplayName", "DisplayName")).FillWidth(0.20f)
 			)
 		]
@@ -514,11 +566,10 @@ void SOutlierUpgradeEffectToolWidget::Construct(const FArguments& InArgs)
 					[this](FName N)
 					{
 						EditRow.NodeRowName = N;
-						// FunctionOverride 의 대상 태그 후보는 Node 의 AbilityTag 하위로 좁혀지므로,
+						// 대상 태그 후보는 Node 의 Role ( 와 FunctionOverride 면 AbilityTag ) 로 정해지므로,
 						// Node 가 바뀌면 후보를 다시 모으고 더 이상 맞지 않는 선택은 비운다.
-						if (EditRow.EffectType == EOutlierUpgradeEffectType::FunctionOverride)
 						{
-							const FString NewPrefix = FunctionOverrideTargetTagPrefix(GetSelectedNodeAbilityTag());
+							const FString NewPrefix = CurrentTargetTagPrefix();
 							if (EditRow.TargetTag.IsValid() && !EditRow.TargetTag.ToString().StartsWith(NewPrefix))
 							{
 								EditRow.TargetTag = FGameplayTag();
@@ -559,7 +610,7 @@ void SOutlierUpgradeEffectToolWidget::Construct(const FArguments& InArgs)
 						EditRow.EffectType = EffectTypeFromLabel(*S);
 						// 대상 태그가 새 종류의 네임스페이스와 안 맞으면 비운다.
 						{
-							const FString NewPrefix = TargetTagPrefix(EditRow.EffectType);
+							const FString NewPrefix = CurrentTargetTagPrefix();
 							if (EditRow.TargetTag.IsValid() && !EditRow.TargetTag.ToString().StartsWith(NewPrefix))
 							{
 								EditRow.TargetTag = FGameplayTag();
@@ -735,6 +786,15 @@ void SOutlierUpgradeEffectToolWidget::Construct(const FArguments& InArgs)
 					.OnTextCommitted_Lambda([this](const FText& T, ETextCommit::Type) { NodeEditRow.Desc = T; })
 				]
 			]
+			// bInitiallyActivated
+			+ SGridPanel::Slot(0, 9).Padding(2) [ SNew(STextBlock).Text(LOCTEXT("NodeInitiallyActivated", "기본 지급 (bInitiallyActivated)")) ]
+			+ SGridPanel::Slot(1, 9).Padding(2)
+			[
+				SNew(SCheckBox)
+				.ToolTipText(LOCTEXT("NodeInitiallyActivatedTip", "체크하면 구매 없이 처음부터 활성인 노드입니다. 보통 각 트리의 첫 노드입니다."))
+				.IsChecked_Lambda([this]() { return NodeEditRow.bInitiallyActivated ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+				.OnCheckStateChanged_Lambda([this](ECheckBoxState S) { NodeEditRow.bInitiallyActivated = S == ECheckBoxState::Checked; })
+			]
 			]
 		]
 
@@ -849,14 +909,16 @@ void SOutlierUpgradeEffectToolWidget::ReloadRowsFromEffectTable()
 	SetStatus(FText::Format(LOCTEXT("Loaded", "{0}개 행 로드됨."), FText::AsNumber(Rows.Num())));
 }
 
+FString SOutlierUpgradeEffectToolWidget::CurrentTargetTagPrefix() const
+{
+	return EditRow.EffectType == EOutlierUpgradeEffectType::FunctionOverride
+		? FunctionOverrideTargetTagPrefix(GetSelectedNodeAbilityTag(), GetSelectedNodeRole())
+		: TargetTagPrefix(EditRow.EffectType, GetSelectedNodeRole());
+}
+
 void SOutlierUpgradeEffectToolWidget::RefreshTargetTagOptions()
 {
-	FString Prefix = TargetTagPrefix(EditRow.EffectType);
-	if (EditRow.EffectType == EOutlierUpgradeEffectType::FunctionOverride)
-	{
-		Prefix = FunctionOverrideTargetTagPrefix(GetSelectedNodeAbilityTag());
-	}
-	GatherTagsByPrefix(Prefix, TargetTagOptions);
+	GatherTagsByPrefix(CurrentTargetTagPrefix(), TargetTagOptions);
 }
 
 void SOutlierUpgradeEffectToolWidget::ReloadRowsFromNodeTable()
@@ -871,17 +933,7 @@ void SOutlierUpgradeEffectToolWidget::ReloadRowsFromNodeTable()
 			{
 				continue;
 			}
-			FNodeRowPtr New = MakeShared<FOutlierUpgradeNodeToolRow>();
-			New->RowName = Pair.Key;
-			New->Role = Src->Role;
-			New->TreeId = Src->TreeId;
-			New->NodeId = Src->NodeId;
-			New->ParentId = Src->ParentId;
-			New->AbilityTag = Src->AbilityTag;
-			New->Cost = Src->Cost;
-			New->DisplayName = Src->DisplayName;
-			New->Desc = Src->Desc;
-			NodeRows.Add(New);
+			NodeRows.Add(MakeShared<FOutlierUpgradeNodeToolRow>(MakeNodeToolRow(Pair.Key, *Src)));
 		}
 		NodeRows.Sort([](const FNodeRowPtr& A, const FNodeRowPtr& B) { return A->RowName.Compare(B->RowName) < 0; });
 	}
@@ -1463,21 +1515,7 @@ bool SOutlierUpgradeEffectToolWidget::SaveNodeTableCsv(FString& OutSavedFileName
 	}
 
 	// CSV 문자열 빌드 ( DT_ShooterUpgradeNode.csv 등의 컬럼 순서와 동일하게 )
-	FString Csv = TEXT("Name,Role,TreeId,NodeId,ParentId,AbilityTag,Cost,DisplayName,Desc\r\n");
-	for (const FNodeRowPtr& N : NodeRows)
-	{
-		if (!N.IsValid()) { continue; }
-		Csv += FString::Printf(TEXT("%s,%s,%s,%s,%s,%s,%d,%s,%s\r\n"),
-			*N->RowName.ToString(),
-			*RoleEnumString(N->Role),
-			*NameOrEmpty(N->TreeId),
-			*NameOrEmpty(N->NodeId),
-			*NameOrEmpty(N->ParentId),
-			*WrapTag(N->AbilityTag),
-			N->Cost,
-			*CsvField(N->DisplayName.ToString()),
-			*CsvField(N->Desc.ToString()));
-	}
+	const FString Csv = BuildNodeCsv(NodeRows);
 
 	if (!WriteUtf8CsvFile(CsvPath, Csv))
 	{

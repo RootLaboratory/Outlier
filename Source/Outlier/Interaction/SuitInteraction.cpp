@@ -199,9 +199,11 @@ AWeaponBase* ASuitInteraction::SpawnStoredWeapon(UClass* WeaponClass)
 		return nullptr;
 	}
 
+	// 지급 후 플레이어 소유가 되므로 SpawnLoadoutWeapon처럼 PersistentLevel에 둔다.
+	// 이 Interaction이 Gameplay 서브레벨에 있어도 장착한 무기가 리로드로 함께 사라지지 않는다.
+	// 지급 전에는 EndPlay의 DestroyStoredWeapons가 정리한다.
 	FActorSpawnParameters SpawnParams;
 	SpawnParams.Owner = this;
-	SpawnParams.OverrideLevel = GetLevel();
 	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 
 	AWeaponBase* Weapon = GetWorld()->SpawnActor<AWeaponBase>(

@@ -9,6 +9,8 @@
 #include "Engine/LocalPlayer.h"
 #include "Engine/Texture2D.h"
 #include "Settings/LocalPlayerSettingsSubsystem.h"
+#include "UI/InputKeyTextureDataRow.h"
+#include "Outlier.h"
 
 namespace
 {
@@ -45,11 +47,6 @@ FText GetCompactKeyDisplayName(const FKey& Key)
 		{EKeys::Decimal, TEXT("N.")},
 		{EKeys::NumLock, TEXT("Num")},
 		{EKeys::ScrollLock, TEXT("ScrLk")},
-		{EKeys::MiddleMouseButton, TEXT("MMB")},
-		{EKeys::ThumbMouseButton, TEXT("M4")},
-		{EKeys::ThumbMouseButton2, TEXT("M5")},
-		{EKeys::MouseScrollUp, TEXT("Wheel ↑")},
-		{EKeys::MouseScrollDown, TEXT("Wheel ↓")},
 	};
 
 	for (const TPair<FKey, const TCHAR*>& Alias : Aliases)
@@ -64,6 +61,14 @@ FText GetCompactKeyDisplayName(const FKey& Key)
 }
 }
 
+void UInputActionKeyDisplayWidget::SynchronizeProperties()
+{
+	Super::SynchronizeProperties();
+	RefreshKeyTextColor();
+	RefreshBorderBrush();
+	RefreshKeyLayout();
+}
+
 void UInputActionKeyDisplayWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
@@ -74,22 +79,10 @@ void UInputActionKeyDisplayWidget::NativeConstruct()
 		KeyText->SetWrapTextAt(0.f);
 		KeyText->SetJustification(ETextJustify::Center);
 	}
+	RefreshKeyTextColor();
 
 	if (WidgetTree)
 	{
-		USizeBox* KeySizeBox = WidgetTree->FindWidget<USizeBox>(TEXT("SizeBox"));
-		if (!KeySizeBox)
-		{
-			KeySizeBox = WidgetTree->FindWidget<USizeBox>(TEXT("SizeBox_0"));
-		}
-		if (KeySizeBox)
-		{
-			KeySizeBox->ClearWidthOverride();
-			KeySizeBox->SetMinDesiredWidth(48.f);
-			KeySizeBox->SetMaxDesiredWidth(88.f);
-			KeySizeBox->SetHeightOverride(40.f);
-		}
-
 		UScaleBox* KeyScaleBox = WidgetTree->FindWidget<UScaleBox>(TEXT("ScaleBox"));
 		if (!KeyScaleBox)
 		{
@@ -108,7 +101,10 @@ void UInputActionKeyDisplayWidget::NativeConstruct()
 	}
 
 	RefreshBorderBrush();
-	BindSettingsSubsystem();
+	if (!bUseExplicitKey)
+	{
+		BindSettingsSubsystem();
+	}
 	EnsureWatchedKeyIsResolved();
 }
 
@@ -123,14 +119,28 @@ void UInputActionKeyDisplayWidget::NativeDestruct()
 
 void UInputActionKeyDisplayWidget::SetWatchedInputAction(UInputAction* NewInputAction)
 {
+	bUseExplicitKey = false;
+	ExplicitKey = FKey();
 	WatchedInputAction = NewInputAction;
 
 	// NativeConstruct 이전 호출이면 값만 저장한다.
 	// 실제 delegate 연결은 NativeConstruct에서 담당한다.
 	if (bIsConstructed)
 	{
+		BindSettingsSubsystem();
 		EnsureWatchedKeyIsResolved();
 	}
+}
+
+void UInputActionKeyDisplayWidget::SetDisplayedKey(FKey NewKey)
+{
+	bUseExplicitKey = true;
+	ExplicitKey = NewKey;
+	WatchedInputAction = nullptr;
+	TextOverride = FText::GetEmpty();
+	UnbindSettingsSubsystem();
+	UnbindControlMappingsRebuiltDelegate();
+	EnsureWatchedKeyIsResolved();
 }
 
 void UInputActionKeyDisplayWidget::SetTextOverride(const FText& InOverrideText)
@@ -154,13 +164,18 @@ bool UInputActionKeyDisplayWidget::RefreshDisplayedKey()
 
 	if (!TextOverride.IsEmpty())
 	{
-		KeyText->SetText(TextOverride);
+		ShowKeyText(TextOverride);
 		return true;
+	}
+
+	if (bUseExplicitKey)
+	{
+		return ShowResolvedKey(ExplicitKey);
 	}
 
 	if (!WatchedInputAction)
 	{
-		KeyText->SetText(MissingKeyText);
+		ShowKeyText(MissingKeyText);
 		return false;
 	}
 
@@ -170,7 +185,7 @@ bool UInputActionKeyDisplayWidget::RefreshDisplayedKey()
 		: nullptr;
 	if (!InputSubsystem)
 	{
-		KeyText->SetText(MissingKeyText);
+		ShowKeyText(MissingKeyText);
 		return false;
 	}
 
@@ -181,12 +196,77 @@ bool UInputActionKeyDisplayWidget::RefreshDisplayedKey()
 	const TArray<FKey> MappedKeys = InputSubsystem->QueryKeysMappedToAction(WatchedInputAction);
 	if (MappedKeys.IsValidIndex(0) && MappedKeys[0].IsValid())
 	{
-		KeyText->SetText(GetCompactKeyDisplayName(MappedKeys[0]));
-		return true;
+		return ShowResolvedKey(MappedKeys[0]);
 	}
 
-	KeyText->SetText(MissingKeyText);
+	ShowKeyText(MissingKeyText);
 	return false;
+}
+
+bool UInputActionKeyDisplayWidget::ShowResolvedKey(FKey Key)
+{
+	if (!Key.IsValid())
+	{
+		ShowKeyText(MissingKeyText);
+		return false;
+	}
+	const FInputKeyTextureDataRow* Row = FindKeyTextureRow(Key);
+	if (Row && IsValid(Row->Texture) && !Row->bShowKeyText)
+	{
+		ShowKeyImage(*Row);
+	}
+	else
+	{
+		if ((Key.IsMouseButton() || Key.GetMenuCategory() == EKeys::NAME_MouseCategory)
+			&& (!Row || !IsValid(Row->Texture)) && !WarnedMissingMouseKeys.Contains(Key.GetFName()))
+		{
+			WarnedMissingMouseKeys.Add(Key.GetFName());
+			UE_LOG(LogOutlier, Warning, TEXT("[InputBindKey] No texture for mouse key '%s' in '%s'; using the common frame and key name."),
+				*Key.ToString(), *GetNameSafe(MouseKeyTextureTable));
+		}
+		ShowKeyText(GetCompactKeyDisplayName(Key), Key);
+	}
+	return true;
+}
+
+const FInputKeyTextureDataRow* UInputActionKeyDisplayWidget::FindKeyTextureRow(FKey Key) const
+{
+	if (!Key.IsValid() || !MouseKeyTextureTable || MouseKeyTextureTable->GetRowStruct() != FInputKeyTextureDataRow::StaticStruct())
+	{
+		return nullptr;
+	}
+	return MouseKeyTextureTable->FindRow<FInputKeyTextureDataRow>(
+		Key.GetFName(), TEXT("InputBindKeyTexture"), false);
+}
+
+void UInputActionKeyDisplayWidget::ShowKeyText(const FText& Text, FKey Key)
+{
+	(void)Key;
+	bDisplayingImageKey = false;
+	DisplayedKeyTexture = nullptr;
+	ImageDisplaySize = FVector2D::ZeroVector;
+	if (KeyText)
+	{
+		KeyText->SetText(Text);
+		KeyText->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
+	}
+	RefreshKeyTextColor();
+	RefreshBorderBrush();
+	RefreshKeyLayout();
+}
+
+void UInputActionKeyDisplayWidget::ShowKeyImage(const FInputKeyTextureDataRow& Row)
+{
+	bDisplayingImageKey = true;
+	DisplayedKeyTexture = Row.Texture;
+	ImageDisplaySize = Row.DisplaySize;
+	if (KeyText)
+	{
+		KeyText->SetText(FText::GetEmpty());
+		KeyText->SetVisibility(ESlateVisibility::Collapsed);
+	}
+	RefreshBorderBrush();
+	RefreshKeyLayout();
 }
 
 void UInputActionKeyDisplayWidget::SetBorderImage(UTexture2D* NewImage)
@@ -195,14 +275,111 @@ void UInputActionKeyDisplayWidget::SetBorderImage(UTexture2D* NewImage)
 	RefreshBorderBrush();
 }
 
+void UInputActionKeyDisplayWidget::SetKeyTextColor(FLinearColor NewColor)
+{
+	KeyTextColor = NewColor;
+	RefreshKeyTextColor();
+}
+
+void UInputActionKeyDisplayWidget::RefreshKeyTextColor()
+{
+	if (KeyText)
+	{
+		KeyText->SetColorAndOpacity(FSlateColor(KeyTextColor));
+	}
+}
+
+void UInputActionKeyDisplayWidget::SetDisplayHeight(float NewHeight)
+{
+	DisplayHeight = FMath::Max(1.0f, NewHeight);
+	RefreshBorderBrush();
+	RefreshKeyLayout();
+}
+
+FVector2D UInputActionKeyDisplayWidget::GetKeyDisplaySize() const
+{
+	const double Height = FMath::Max(1.0f, DisplayHeight);
+	if (bDisplayingImageKey && DisplayedKeyTexture)
+	{
+		int32 TextureWidth = DisplayedKeyTexture->GetSizeX();
+		int32 TextureHeight = DisplayedKeyTexture->GetSizeY();
+#if WITH_EDITORONLY_DATA
+		// 에디터 프리뷰, 쿠킹, headless 검사는 render data가 생기기 전에 실행될 수 있다.
+		if (TextureWidth <= 0 || TextureHeight <= 0)
+		{
+			TextureWidth = DisplayedKeyTexture->Source.GetSizeX();
+			TextureHeight = DisplayedKeyTexture->Source.GetSizeY();
+		}
+#endif
+		const double Aspect = static_cast<double>(FMath::Max(1, TextureWidth)) / FMath::Max(1, TextureHeight);
+		if (ImageDisplaySize.X > 0.0 && ImageDisplaySize.Y > 0.0) return ImageDisplaySize;
+		if (ImageDisplaySize.Y > 0.0) return FVector2D(ImageDisplaySize.Y * Aspect, ImageDisplaySize.Y);
+		if (ImageDisplaySize.X > 0.0) return FVector2D(ImageDisplaySize.X, ImageDisplaySize.X / Aspect);
+		return FVector2D(Height * Aspect, Height);
+	}
+	return FVector2D(FMath::Max(1.0f, MinTextKeyWidth), Height);
+}
+
+void UInputActionKeyDisplayWidget::RefreshKeyLayout()
+{
+	if (Border)
+	{
+		if (!bHasDefaultBorderPadding)
+		{
+			DefaultBorderPadding = Border->GetPadding();
+			bHasDefaultBorderPadding = true;
+		}
+		Border->SetPadding(bDisplayingImageKey ? FMargin(0.0f) : DefaultBorderPadding);
+	}
+	if (!WidgetTree) return;
+	USizeBox* KeySizeBox = WidgetTree->FindWidget<USizeBox>(TEXT("SizeBox"));
+	if (!KeySizeBox) KeySizeBox = WidgetTree->FindWidget<USizeBox>(TEXT("SizeBox_0"));
+	if (!KeySizeBox) return;
+	const FVector2D Size = GetKeyDisplaySize();
+	KeySizeBox->SetHeightOverride(Size.Y);
+	if (bDisplayingImageKey)
+	{
+		KeySizeBox->ClearMinDesiredWidth();
+		KeySizeBox->ClearMaxDesiredWidth();
+		KeySizeBox->SetWidthOverride(Size.X);
+	}
+	else
+	{
+		KeySizeBox->ClearWidthOverride();
+		KeySizeBox->SetMinDesiredWidth(Size.X);
+		KeySizeBox->SetMaxDesiredWidth(FMath::Max(static_cast<float>(Size.X), MaxTextKeyWidth));
+	}
+}
+
 void UInputActionKeyDisplayWidget::RefreshBorderBrush()
 {
-	if (!Border || !BorderImage)
+	if (!Border)
 	{
 		return;
 	}
 
-	Border->SetBrushFromTexture(BorderImage);
+	if (!bHasDefaultBorderBrush)
+	{
+		DefaultBorderBrush = Border->Background;
+		bHasDefaultBorderBrush = true;
+	}
+	FSlateBrush Brush = DefaultBorderBrush;
+	if (bDisplayingImageKey)
+	{
+		Brush.SetResourceObject(DisplayedKeyTexture);
+		Brush.DrawAs = ESlateBrushDrawType::Image;
+		Brush.Margin = FMargin(0.0f);
+		Brush.Tiling = ESlateBrushTileType::NoTile;
+		Brush.SetImageSize(GetKeyDisplaySize());
+	}
+	else if (BorderImage)
+	{
+		Brush.SetResourceObject(BorderImage);
+		Brush.DrawAs = ESlateBrushDrawType::Box;
+		Brush.Margin = FrameSliceMargin;
+		Brush.Tiling = ESlateBrushTileType::NoTile;
+	}
+	Border->SetBrush(Brush);
 }
 
 void UInputActionKeyDisplayWidget::EnsureWatchedKeyIsResolved()

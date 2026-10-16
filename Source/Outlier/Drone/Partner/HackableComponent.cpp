@@ -143,6 +143,12 @@ bool UHackableComponent::IsHackTargetType() const
 		|| HackTags.HasTag(HackGameplayTags::Target::NonPossessable());
 }
 
+bool UHackableComponent::RequiresMiniGame() const
+{
+	return HackTags.HasTag(HackGameplayTags::MiniGame::Root())
+		&& !HackTags.HasTag(HackGameplayTags::MiniGame::None());
+}
+
 void UHackableComponent::MarkAsHackedOnce()
 {
 	if (!GetOwner() || !GetOwner()->HasAuthority())
