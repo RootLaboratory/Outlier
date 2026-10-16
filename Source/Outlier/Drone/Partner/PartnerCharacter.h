@@ -92,6 +92,7 @@ class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeap
 	friend class UPartnerDistanceComponent;
 	friend class UPartnerHackComponent;
 	friend class UPartnerEMPComponent;
+	friend class FPartnerStandbyTest;
 protected:
 	// Components
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
@@ -421,6 +422,7 @@ protected:
 
 protected:
 	virtual void BeginPlay() override;
+	virtual void Tick(float DeltaSeconds) override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void PossessedBy(AController* NewController) override;
 	virtual void OnRep_Controller() override;
@@ -502,7 +504,36 @@ protected:
 	FDelegateHandle BoostSpeedChangedHandle;
 
 	virtual void LookInput(const FInputActionValue& Value) override;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Partner|Standby", meta = (ClampMin = "0.5", Units = "s"))
+	float StandbyDelay = 3.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Partner|Standby", meta = (ClampMin = "0.0", Units = "cm/s"))
+	float StandbySpeedThreshold = 5.0f;
+
+	void UpdateStandby(float DeltaSeconds);
+	bool CanEnterStandby() const;
+	void SetStandby(bool bNewStandby);
+
+	UFUNCTION(Server, Unreliable)
+	void ServerNotifyStandbyActivity();
+
+	float StandbyInactiveSeconds = 0.0f;
+	double NextStandbyActivityReportTime = 0.0;
+	FRotator StandbyLastAimRotation = FRotator::ZeroRotator;
+	bool bStandbyAimInitialized = false;
 public:
+	/** 서버에서 판정하고 복제하는 대기 상태. AnimBP의 Active / Standby 전이에 사용한다. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "Partner|Standby")
+	bool bIsStandby = false;
+
+	/** 소유 클라이언트는 활동 사실만 알리고, 대기 판정과 게임플레이 권한은 서버가 유지한다. */
+	UFUNCTION(BlueprintCallable, Category = "Partner|Standby")
+	void NotifyStandbyActivity();
+
+	/** 서버에서 스킬 실행에 성공했을 때만 화난 표정을 잠시 표시한다. */
+	void NotifySkillExecuted();
+
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
 	virtual void BeginJumperEffect(FName EffectId, const FJumperMovementEffect& Effect, AActor* SourceActor) override;
 	virtual void EndJumperEffect(FName EffectId, AActor* SourceActor) override;

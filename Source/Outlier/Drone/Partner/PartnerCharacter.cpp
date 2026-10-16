@@ -39,6 +39,7 @@
 #include "NiagaraFunctionLibrary.h"
 #include "Upgrade/OutlierUpgradeComponent.h"
 #include "Weapon/WeaponBase.h"
+#include "Weapon/RangedWeaponBase.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "GAS/Attributes/OutlierVitalAttributeSet.h"
 #include "GAS/Attributes/OutlierPartnerMovementAttributeSet.h"
@@ -103,6 +104,7 @@ void APartnerCharacter::BeginPlay()
 
 void APartnerCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	SetStandby(false);
 	if (HasAuthority())
 	{
 		if (CombatComponent)
@@ -143,6 +145,8 @@ void APartnerCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 void APartnerCharacter::PossessedBy(AController* NewController)
 {
 	Super::PossessedBy(NewController);
+	NotifyStandbyActivity();
+	bStandbyAimInitialized = false;
 	RefreshAbilitySystemActorInfo();
 
 	if (bIsAccelerate)
@@ -165,6 +169,12 @@ float APartnerCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 		Request.DamageTag);
 	if (bApplied)
 	{
+		NotifyStandbyActivity();
+		if (FaceSpriteAnimationComponent)
+		{
+			FaceSpriteAnimationComponent->SetDeathEmotionActive(!CanResumeMovementAfterSuitTransition());
+			FaceSpriteAnimationComponent->SetTemporaryEmotion(EPartnerEmotion::Surprised);
+		}
 		ClientShowDamageFeedback(Request.DamageOrigin);
 	}
 
@@ -173,6 +183,8 @@ float APartnerCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 
 void APartnerCharacter::UnPossessed()
 {
+	NotifyStandbyActivity();
+	bStandbyAimInitialized = false;
 	StopBoostNoiseTimer();
 
 	if (CombatComponent)
@@ -469,6 +481,10 @@ void APartnerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 void APartnerCharacter::DoMove(float Right, float Forward)
 {
 	const FVector2D MoveValue(Right, Forward);
+	if (!MoveValue.IsNearlyZero() && CanAcceptInput())
+	{
+		NotifyStandbyActivity();
+	}
 
 	if (!CanAcceptInput())
 	{
@@ -517,6 +533,7 @@ void APartnerCharacter::HandleAutoReloadRequested()
 
 void APartnerCharacter::StartWeaponAttack()
 {
+	NotifyStandbyActivity();
 	if (CombatComponent)
 	{
 		CombatComponent->TryStartAttack();
@@ -544,6 +561,117 @@ void APartnerCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	DOREPLIFETIME(APartnerCharacter, bScanning);
 	DOREPLIFETIME(APartnerCharacter, bIsAccelerate);
 	DOREPLIFETIME(APartnerCharacter, bHiddenForEnemyPossession);
+	DOREPLIFETIME(APartnerCharacter, bIsStandby);
+}
+
+void APartnerCharacter::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+	// 이동 입력 없이 해킹/EMP 후보 선택 화면만 열어 둔 경우에도 대기를 막는다.
+	const UPartnerHackComponent* RuntimeHack = GetRuntimeHackComponent();
+	const UPartnerEMPComponent* RuntimeEMP = GetRuntimeEMPComponent();
+	if (IsLocallyControlled()
+		&& ((RuntimeHack && RuntimeHack->IsHackInteractionActive())
+			|| (RuntimeEMP && RuntimeEMP->IsEMPInteractionActive())))
+	{
+		NotifyStandbyActivity();
+	}
+	if (HasAuthority())
+	{
+		UpdateStandby(DeltaSeconds);
+	}
+}
+
+bool APartnerCharacter::CanEnterStandby() const
+{
+	if (!Controller || !CanAcceptInput() || bHiddenForEnemyPossession || IsHidden()
+		|| bScanning || bShieldActive || bIsAccelerate || MoveMode != EPartnerMoveMode::Normal)
+	{
+		return false;
+	}
+	const AWeaponBase* Weapon = GetCurrentWeapon();
+	const ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(Weapon);
+	if ((Weapon && Weapon->IsAttacking()) || (RangedWeapon && RangedWeapon->IsReloading()))
+	{
+		return false;
+	}
+	const UPartnerHackComponent* RuntimeHack = GetRuntimeHackComponent();
+	const UPartnerEMPComponent* RuntimeEMP = GetRuntimeEMPComponent();
+	return !(RuntimeHack && RuntimeHack->IsHackInteractionActive())
+		&& !(RuntimeEMP && RuntimeEMP->IsEMPInteractionActive());
+}
+
+void APartnerCharacter::UpdateStandby(float DeltaSeconds)
+{
+	if (FaceSpriteAnimationComponent)
+	{
+		FaceSpriteAnimationComponent->SetDeathEmotionActive(!CanResumeMovementAfterSuitTransition());
+	}
+	const FRotator Aim = GetBaseAimRotation();
+	const bool bLooking = bStandbyAimInitialized && !Aim.Equals(StandbyLastAimRotation, 0.1f);
+	StandbyLastAimRotation = Aim;
+	bStandbyAimInitialized = true;
+	const UCharacterMovementComponent* MoveComp = GetCharacterMovement();
+	if (!CanEnterStandby() || bLooking
+		|| GetVelocity().SizeSquared() > FMath::Square(FMath::Max(StandbySpeedThreshold, 0.0f))
+		|| (MoveComp && !MoveComp->GetCurrentAcceleration().IsNearlyZero())
+		|| !GetPendingMovementInputVector().IsNearlyZero())
+	{
+		StandbyInactiveSeconds = 0.0f;
+		SetStandby(false);
+		return;
+	}
+	StandbyInactiveSeconds += FMath::Max(DeltaSeconds, 0.0f);
+	// 활동 알림의 0.25초 간격보다 짧은 설정으로 대기가 반복 진입하지 않도록 한다.
+	SetStandby(StandbyInactiveSeconds >= FMath::Max(StandbyDelay, 0.5f));
+}
+
+void APartnerCharacter::SetStandby(bool bNewStandby)
+{
+	if (!HasAuthority() || bIsStandby == bNewStandby)
+	{
+		return;
+	}
+	bIsStandby = bNewStandby;
+	ForceNetUpdate();
+}
+
+void APartnerCharacter::NotifyStandbyActivity()
+{
+	if (HasAuthority())
+	{
+		StandbyInactiveSeconds = 0.0f;
+		SetStandby(false);
+	}
+	else if (IsLocallyControlled() && GetWorld())
+	{
+		// 벽에 막힌 이동이나 시점 입력도 매 프레임 발생하므로 서버 알림은 초당 4회로 제한한다.
+		const double Now = GetWorld()->GetTimeSeconds();
+		if (Now >= NextStandbyActivityReportTime)
+		{
+			NextStandbyActivityReportTime = Now + 0.25;
+			ServerNotifyStandbyActivity();
+		}
+	}
+}
+
+void APartnerCharacter::ServerNotifyStandbyActivity_Implementation()
+{
+	NotifyStandbyActivity();
+}
+
+void APartnerCharacter::NotifySkillExecuted()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	NotifyStandbyActivity();
+	if (FaceSpriteAnimationComponent)
+	{
+		FaceSpriteAnimationComponent->SetDeathEmotionActive(!CanResumeMovementAfterSuitTransition());
+		FaceSpriteAnimationComponent->SetTemporaryEmotion(EPartnerEmotion::Angry);
+	}
 }
 
 FGameplayTagContainer APartnerCharacter::GetOwnedGameplayTagsForQuery() const
@@ -594,6 +722,7 @@ void APartnerCharacter::TryHacking()
 	{
 		return;
 	}
+	NotifyStandbyActivity();
 
 	if (UPartnerHackComponent* RuntimeHackComponent = GetRuntimeHackComponent())
 	{
@@ -615,7 +744,6 @@ void APartnerCharacter::TryHacking()
 
 	OutlierAbilitySystemComponent->TryActivatePartnerAbility(
 		OutlierGameplayTags::Ability::Partner::Hacking());
-	FaceSpriteAnimationComponent->SetEmotion(EPartnerEmotion::Happy);
 }
 
 void APartnerCharacter::EndHacking()
@@ -632,6 +760,7 @@ void APartnerCharacter::TryEMP()
 	{
 		return;
 	}
+	NotifyStandbyActivity();
 
 	if (UPartnerEMPComponent* RuntimeEMPComponent = GetRuntimeEMPComponent();
 		RuntimeEMPComponent && RuntimeEMPComponent->IsEMPInteractionActive())
@@ -642,7 +771,6 @@ void APartnerCharacter::TryEMP()
 
 	OutlierAbilitySystemComponent->TryActivatePartnerAbility(
 		OutlierGameplayTags::Ability::Partner::EMP());
-	FaceSpriteAnimationComponent->SetEmotion(EPartnerEmotion::Surprised);
 
 }
 
@@ -664,8 +792,8 @@ void APartnerCharacter::Scan()
 	{
 		return;
 	}
+	NotifyStandbyActivity();
 	UE_LOG(LogTemp, Error, TEXT("Scan Valid"));
-	FaceSpriteAnimationComponent->SetEmotion(EPartnerEmotion::Sad);
 
 	if (OutlierAbilitySystemComponent)
 	{
@@ -680,6 +808,7 @@ void APartnerCharacter::Shield()
 	{
 		return;
 	}
+	NotifyStandbyActivity();
 
 	UE_LOG(LogTemp, Error, TEXT("Shield Valid"));
 
@@ -688,7 +817,6 @@ void APartnerCharacter::Shield()
 		OutlierAbilitySystemComponent->TryActivatePartnerAbility(
 			OutlierGameplayTags::Ability::Partner::Shield());
 	}
-	FaceSpriteAnimationComponent->SetEmotion(EPartnerEmotion::Angry);
 
 }
 
@@ -822,6 +950,10 @@ void APartnerCharacter::VerticalMove(const FInputActionValue& Value)
 	}
 
 	const float Axis = Value.Get<float>();
+	if (!FMath::IsNearlyZero(Axis))
+	{
+		NotifyStandbyActivity();
+	}
 
 	if (MovementComponent)
 	{
@@ -895,6 +1027,7 @@ void APartnerCharacter::StopActionsForReboot()
 	{
 		return;
 	}
+	NotifyStandbyActivity();
 	if (CachedShooterCharacter)
 	{
 		CachedShooterCharacter->CancelActiveQuantumLeap(true);
@@ -1422,6 +1555,10 @@ void APartnerCharacter::LookInput(const FInputActionValue& Value)
 	{
 		return;
 	}
+	if (!LookAxis.IsNearlyZero())
+	{
+		NotifyStandbyActivity();
+	}
 
 	float YawInput   =  LookAxis.X * LookSensitivity;
 	float PitchInput = -LookAxis.Y * LookSensitivity;
@@ -1453,7 +1590,7 @@ void APartnerCharacter::LookInput(const FInputActionValue& Value)
 
 APartnerCharacter::APartnerCharacter()
 {
-	PrimaryActorTick.bCanEverTick = false;
+	PrimaryActorTick.bCanEverTick = true;
 
 	OutlierAbilitySystemComponent = CreateDefaultSubobject<UOutlierAbilitySystemComponent>(
 		TEXT("AbilitySystemComponent"));

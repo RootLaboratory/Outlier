@@ -212,6 +212,7 @@ void UOutlierPartnerEMPAbility::ActivateAbility(
 	PlayAbilityAudioAtLocationFromServer(
 		Partner,
 		GetDefault<UOutlierAbilityAudioSettings>()->PartnerEMPCharge);
+	Partner->NotifySkillExecuted();
 }
 
 void UOutlierPartnerEMPAbility::EndAbility(
@@ -306,6 +307,7 @@ void UOutlierPartnerShieldAbility::ActivateAbility(
 		PlayAbilityAudioAtLocationFromServer(
 			Partner,
 			GetDefault<UOutlierAbilityAudioSettings>()->PartnerShield);
+		Partner->NotifySkillExecuted();
 	}
 	EndAbility(Handle, ActorInfo, ActivationInfo, true, !bCommitted);
 }
@@ -347,6 +349,7 @@ void UOutlierPartnerHackAbility::ActivateAbility(
 	PlayAbilityAudioAtLocationFromServer(
 		Partner,
 		GetDefault<UOutlierAbilityAudioSettings>()->PartnerHackTryLoop);
+	Partner->NotifySkillExecuted();
 }
 
 void UOutlierPartnerHackAbility::EndAbility(
@@ -474,6 +477,7 @@ void UOutlierPartnerScanAbility::ActivateAbility(
 	PlayAbilityAudioAtLocationFromServer(
 		Partner,
 		GetDefault<UOutlierAbilityAudioSettings>()->PartnerScan);
+	Partner->NotifySkillExecuted();
 }
 
 void UOutlierPartnerScanAbility::EndAbility(
