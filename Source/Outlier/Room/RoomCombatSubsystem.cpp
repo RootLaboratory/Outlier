@@ -2494,6 +2494,12 @@ ERoomCombatState URoomCombatSubsystem::GetRoomState(FGameplayTag RoomTag) const
 	return Runtime ? Runtime->State : ERoomCombatState::Dormant;
 }
 
+ARoomVolume* URoomCombatSubsystem::GetRegisteredRoomVolume(FGameplayTag RoomTag) const
+{
+	const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
+	return CanRunServerGameplay() && Runtime ? Runtime->RoomVolume.Get() : nullptr;
+}
+
 int32 URoomCombatSubsystem::GetCurrentCombatPhaseIndex(FGameplayTag RoomTag) const
 {
 	const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);

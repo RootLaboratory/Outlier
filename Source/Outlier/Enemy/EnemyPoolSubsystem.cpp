@@ -1,6 +1,7 @@
 #include "Enemy/EnemyPoolSubsystem.h"
 
 #include "Enemy/AutoTurret.h"
+#include "Components/CapsuleComponent.h"
 #include "Enemy/EnemyBase.h"
 #include "Enemy/EnemyPoolDefinition.h"
 #include "Engine/World.h"
@@ -267,6 +268,45 @@ bool UEnemyPoolSubsystem::ReturnEnemy(
 	Enemy->FinishPoolReturn(GameplayGeneration, LeaseSerial);
 	Bucket->IdleEnemies.AddUnique(Enemy);
 	return true;
+}
+
+bool UEnemyPoolSubsystem::IsSpawnPresentationSpaceOccupied(
+	const FVector& CapsuleCenter, const FQuat& CapsuleRotation,
+	float CapsuleRadius, float CapsuleHalfHeight) const
+{
+	// 월드 검색/별도 예약 목록 없이 기존 대여 목록을 사용한다. 반환·연출 완료도 즉시 반영된다.
+	const FVector Axis = CapsuleRotation.GetAxisZ() * FMath::Max(CapsuleHalfHeight - CapsuleRadius, 0.0f);
+	for (const TPair<TSubclassOf<AEnemyBase>, FEnemyPoolBucket>& Entry : Buckets)
+	{
+		for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : Entry.Value.LeasedEnemies)
+		{
+			const AEnemyBase* Enemy = EnemyPtr.Get();
+			if (!Enemy || Enemy->GetEnemyPoolState() != EEnemyPoolState::SpawnPresentation)
+			{
+				continue;
+			}
+			const UCapsuleComponent* Capsule = Enemy->GetCapsuleComponent();
+			if (!Capsule)
+			{
+				continue;
+			}
+			const float OtherRadius = Capsule->GetScaledCapsuleRadius();
+			const FVector OtherCenter = Capsule->GetComponentLocation();
+			const FVector OtherAxis = Capsule->GetComponentQuat().GetAxisZ()
+				* FMath::Max(Capsule->GetScaledCapsuleHalfHeight() - OtherRadius, 0.0f);
+			FVector ClosestCandidate;
+			FVector ClosestOccupied;
+			// 캡슐은 선분 + 반경으로 비교한다. 높이/회전이 다른 적과 인접 SpawnPoint도 함께 처리한다.
+			FMath::SegmentDistToSegmentSafe(CapsuleCenter - Axis, CapsuleCenter + Axis,
+				OtherCenter - OtherAxis, OtherCenter + OtherAxis, ClosestCandidate, ClosestOccupied);
+			if (FVector::DistSquared(ClosestCandidate, ClosestOccupied)
+				<= FMath::Square(CapsuleRadius + OtherRadius))
+			{
+				return true;
+			}
+		}
+	}
+	return false;
 }
 
 void UEnemyPoolSubsystem::DestroyPool()

@@ -1,5 +1,6 @@
 #include "UI/LobbyWidget.h"
 
+#include "Components/CanvasPanelSlot.h"
 #include "Engine/Engine.h"
 #include "Engine/LocalPlayer.h"
 #include "GameFramework/GameStateBase.h"
@@ -441,14 +442,15 @@ void ULobbyWidget::ApplyGuestWidgetState(
 	}
 
 	FWidgetTransform Transform = GuestWidget->GetRenderTransform();
-	Transform.Translation.X = 0.0f;
+	Transform.Translation = FVector2D::ZeroVector;
 	if (State == ELobbyGuestWidgetState::Shooter)
 	{
-		Transform.Translation.X = -GetRoleOffsetPixels();
+		Transform.Translation = GetRoleOffset(GuestIndex);
 	}
 	else if (State == ELobbyGuestWidgetState::Partner)
 	{
-		Transform.Translation.X = GetRoleOffsetPixels();
+		Transform.Translation = GetRoleOffset(GuestIndex);
+		Transform.Translation.X *= -1.0f;
 	}
 
 	GuestWidget->SetRenderTransform(Transform);
@@ -458,15 +460,44 @@ void ULobbyWidget::ApplyGuestWidgetState(
 	OnGuestWidgetStateChanged(GuestIndex, State, bIsLocalGuest);
 }
 
-float ULobbyWidget::GetRoleOffsetPixels() const
+FVector2D ULobbyWidget::GetRoleOffset(int32 GuestIndex) const
 {
-	FVector2D ViewportSize = FVector2D::ZeroVector;
-	if (GEngine && GetWorld())
+	const ULobbyGuestWidget* GuestWidget = GetGuestWidgetByIndex(GuestIndex);
+	const UWidget* LeftTarget = GuestIndex == 0 ? GuestTargetUp.Get() : GuestTargetDown.Get();
+	if (!GuestWidget || !LeftTarget || GuestWidget->GetParent() != LeftTarget->GetParent())
 	{
-		GEngine->GameViewport->GetViewportSize(ViewportSize);
+		return FVector2D::ZeroVector;
 	}
 
-	return ViewportSize.X * RoleOffsetViewportScale;
+	const UCanvasPanelSlot* GuestSlot = Cast<UCanvasPanelSlot>(GuestWidget->Slot);
+	const UCanvasPanelSlot* TargetSlot = Cast<UCanvasPanelSlot>(LeftTarget->Slot);
+	if (!GuestSlot || !TargetSlot)
+	{
+		return FVector2D::ZeroVector;
+	}
+
+	const FAnchors GuestAnchors = GuestSlot->GetAnchors();
+	const FAnchors TargetAnchors = TargetSlot->GetAnchors();
+	if (!GuestAnchors.Minimum.Equals(TargetAnchors.Minimum)
+		|| !GuestAnchors.Maximum.Equals(TargetAnchors.Maximum)
+		|| !GuestAnchors.Minimum.Equals(GuestAnchors.Maximum))
+	{
+		return FVector2D::ZeroVector;
+	}
+
+	FVector2D FrameCenter;
+	if (!GuestWidget->GetFrameCenterInLocalSpace(FrameCenter))
+	{
+		return FVector2D::ZeroVector;
+	}
+
+	// 기본 슬롯 위치에서 계산하여 반복 갱신 시 Render Translation이 누적되지 않도록 한다.
+	const FVector2D DefaultFrameCenter = GuestSlot->GetPosition()
+		- GuestSlot->GetAlignment() * GuestWidget->GetCachedGeometry().GetLocalSize() + FrameCenter;
+	const FVector2D TargetSize = TargetSlot->GetAutoSize() ? LeftTarget->GetDesiredSize() : TargetSlot->GetSize();
+	const FVector2D TargetCenter = TargetSlot->GetPosition()
+		+ (FVector2D(0.5f, 0.5f) - TargetSlot->GetAlignment()) * TargetSize;
+	return TargetCenter - DefaultFrameCenter;
 }
 
 void ULobbyWidget::StartLobbyRefreshTimer()

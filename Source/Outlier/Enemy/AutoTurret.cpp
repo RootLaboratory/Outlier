@@ -808,7 +808,7 @@ void AAutoTurret::ApplyWaitingForWaveState()
 		StopCurrentAttack();
 		RemoveRoomTargetObserver();
 		ClearSharedTargetContact();
-		ReleaseSearchRingSlot();
+		ReleaseSearchDestinations();
 		if (StateTreeComponent)
 		{
 			StateTreeComponent->StopLogic(TEXT("Turret waiting for Room Wave activation"));
@@ -1358,7 +1358,7 @@ void AAutoTurret::ApplyHackedTeamState()
 	SetPlayerCurrentlyVisible(false);
 	RemoveRoomTargetObserver();
 	ClearSharedTargetContact();
-	ReleaseSearchRingSlot();
+	ReleaseSearchDestinations();
 	if (AEnemyAIController* EnemyController = Cast<AEnemyAIController>(GetController()))
 	{
 		EnemyController->RefreshTeamAndPerceptionFromPawn();

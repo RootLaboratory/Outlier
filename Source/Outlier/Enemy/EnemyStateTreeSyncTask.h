@@ -43,6 +43,9 @@ struct FEnemyStateTreeSyncTaskInstanceData
 
 	UPROPERTY(EditAnywhere, Category = Output)
 	bool bHasSharedTargetContact = false;
+	// 접촉 활성 여부와 별개다. 확인한 공유 정보로 추적을 반복하지 않는다.
+	UPROPERTY(EditAnywhere, Category = Output)
+	bool bHasFreshSharedTargetLocation = false;
 
 	UPROPERTY(EditAnywhere, Category = Output)
 	FVector SharedTargetLocation = FVector::ZeroVector;

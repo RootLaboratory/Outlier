@@ -21,6 +21,8 @@ public:
 
 	FGameplayTag GetRoomTag() const { return RoomTag; }
 	bool ContainsWorldLocation(const FVector& Location) const;
+	// 캡슐을 감싼 월드 박스 전체가 방 안에 들어오도록 목적지 중심을 보정한다.
+	bool TryClampFlightLocation(const FVector& Location, const FVector& WorldExtent, FVector& OutLocation) const;
 	// 스트리밍이 BeginOverlap 알림 없이 만든 기존 overlap에서도 RoomTag를 복구한다.
 	void RefreshOverlappingRoomAssignments();
 	FOnRoomActorOverlapChanged OnRoomActorOverlapChanged;

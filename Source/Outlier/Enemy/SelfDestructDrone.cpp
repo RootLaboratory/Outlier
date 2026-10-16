@@ -1,6 +1,7 @@
 #include "Enemy/SelfDestructDrone.h"
 
 #include "Components/PrimitiveComponent.h"
+#include "Components/CapsuleComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Enemy/EnemyAIController.h"
 #include "Enemy/VECDroneMovementComponent.h"
@@ -12,6 +13,8 @@
 #include "Engine/World.h"
 #include "Net/UnrealNetwork.h"
 #include "Outlier.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogEnemyChargeCollision, Log, All);
 
 namespace
 {
@@ -157,12 +160,31 @@ void ASelfDestructDrone::TriggerSelfDestruct()
 	{
 		return;
 	}
+	UE_LOG(LogEnemyChargeCollision, Log, TEXT("[Charge] DetonateRequested Drone=%s Committed=%d Health=%.1f"),
+		*GetNameSafe(this), bHasCommittedSelfDestruct, GetCurrentHealth());
 
 	ApplyDamageInternal(
 		FMath::Max(GetCurrentHealth(), 1.0f),
 		GetController(),
 		this,
 		OutlierGameplayTags::Damage::Explosion());
+}
+
+void ASelfDestructDrone::NotifyHit(UPrimitiveComponent* MyComp, AActor* Other,
+	UPrimitiveComponent* OtherComp, bool bSelfMoved, FVector HitLocation, FVector HitNormal,
+	FVector NormalImpulse, const FHitResult& Hit)
+{
+	Super::NotifyHit(MyComp, Other, OtherComp, bSelfMoved, HitLocation, HitNormal, NormalImpulse, Hit);
+	// 메시/부착물 접촉은 제외한다. 커밋된 본체의 실제 차단 충돌만 폭발한다.
+	if (!HasAuthority() || !bHasCommittedSelfDestruct || bDeathHandling || IsDead()
+		|| MyComp != GetCapsuleComponent() || !Hit.bBlockingHit
+		|| !IsValid(Other) || Other == this || Other->GetOwner() == this)
+	{
+		return;
+	}
+	UE_LOG(LogEnemyChargeCollision, Log, TEXT("[Charge] CollisionDetonate Drone=%s Other=%s Component=%s Location=%s"),
+		*GetNameSafe(this), *GetNameSafe(Other), *GetNameSafe(OtherComp), *HitLocation.ToCompactString());
+	TriggerSelfDestruct();
 }
 
 bool ASelfDestructDrone::BeginCommittedSelfDestruct(
@@ -222,6 +244,7 @@ bool ASelfDestructDrone::BeginCommittedSelfDestructInternal(
 	}
 	CommittedChargeTargetDirection = CommittedChargeDirection;
 	CommittedChargeStartLocation = GetActorLocation();
+	ChargeSpeedState.Reset();
 	CommittedChargeSpeed = FMath::Max(ChargeSpeed, 0.0f);
 	CommittedChargeDistanceLimit = FMath::Max(ChargeDistanceLimit, 0.0f);
 	CommittedImpactElapsedTime = 0.0f;
@@ -237,7 +260,7 @@ bool ASelfDestructDrone::BeginCommittedSelfDestructInternal(
 		VECMovementComponent->ClearFlightInput();
 	}
 	StopCurrentAttack();
-	ReleaseSearchRingSlot();
+	ReleaseSearchDestinations();
 	if (AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(GetController()))
 	{
 		EnemyAIController->StopMovement();
@@ -251,6 +274,8 @@ bool ASelfDestructDrone::BeginCommittedSelfDestructInternal(
 	}
 	SetActorRotation(FRotator(0.0f, ChargeRotation.Yaw, 0.0f));
 	MulticastSelfDestructTelegraphStarted(FMath::Max(TelegraphDuration, 0.0f));
+	UE_LOG(LogEnemyChargeCollision, Log, TEXT("[Charge] Commit Drone=%s Direction=%s Speed=%.1f Distance=%.1f Duration=%.2f"),
+		*GetNameSafe(this), *CommittedChargeDirection.ToCompactString(), ChargeSpeed, ChargeDistanceLimit, TelegraphDuration);
 	ForceNetUpdate();
 	return true;
 }
@@ -306,8 +331,12 @@ bool ASelfDestructDrone::UpdateCommittedSelfDestructMovement(
 		CommittedChargeDistanceLimit - TraveledChargeDistance,
 		0.0f);
 	const float SafeDeltaTime = FMath::Max(DeltaTime, SMALL_NUMBER);
+	// 빙의 돌진과 외부 충격 속도는 기존대로 유지하고 AI의 전진 속도만 가속한다.
+	const float ProfiledChargeSpeed = IsEnemyPossessed() ? FMath::Max(ChargeSpeed, 0.0f)
+		: ChargeSpeedState.Update(AIChargeSpeedProfile, ChargeSpeed, Movement->Velocity.Size(),
+			RemainingChargeDistance, DeltaTime, false, this, TEXT("Charge"));
 	const float LimitedChargeSpeed = FMath::Min(
-		FMath::Max(ChargeSpeed, 0.0f),
+		ProfiledChargeSpeed,
 		RemainingChargeDistance / SafeDeltaTime);
 	const FVector ChargeVelocity = CommittedChargeDirection * LimitedChargeSpeed;
 	const FVector FinalVelocity = ChargeVelocity + AccumulatedImpactVelocity;
@@ -332,8 +361,10 @@ void ASelfDestructDrone::CancelCommittedSelfDestruct()
 	{
 		return;
 	}
+	UE_LOG(LogEnemyChargeCollision, Log, TEXT("[Charge] Cancel Drone=%s"), *GetNameSafe(this));
 
 	bHasCommittedSelfDestruct = false;
+	ChargeSpeedState.Reset();
 	if (HackableComponent)
 	{
 		// 기절 등으로 자폭 커밋이 취소되면 살아 있는 드론은 다시 해킹 후보가 될 수 있다.
@@ -453,6 +484,7 @@ void ASelfDestructDrone::HandleDeath()
 
 void ASelfDestructDrone::ResetPoolRuntimeState()
 {
+	ChargeSpeedState.Reset();
 	// 본체는 재사용하지만 부착 폭발물은 Idle 진입 때 제거한다. 새 대여마다 폭발 가능한 부품을 다시 만든다.
 	Super::ResetPoolRuntimeState();
 	bDeathHandling = false;
@@ -468,6 +500,7 @@ void ASelfDestructDrone::ResetPoolRuntimeState()
 
 void ASelfDestructDrone::PrepareForPoolIdle()
 {
+	ChargeSpeedState.Reset();
 	Super::PrepareForPoolIdle();
 	DestroyMountedExplosives();
 }

@@ -7,6 +7,47 @@
 class ACharacter;
 class USceneComponent;
 class USkeletalMeshComponent;
+class UCurveFloat;
+
+// 자동 이동에만 적용한다. 커브가 없으면 기존 CharacterMovement 설정을 사용한다.
+USTRUCT(BlueprintType)
+struct OUTLIER_API FFlightSpeedProfile
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flight")
+	TObjectPtr<UCurveFloat> AccelerationCurve = nullptr;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flight", meta = (ClampMin = "0.0", Units = "s"))
+	float AccelerationDuration = 0.5f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flight")
+	TObjectPtr<UCurveFloat> DecelerationCurve = nullptr;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flight", meta = (ClampMin = "0.0", Units = "cm"))
+	float DecelerationDistance = 200.0f;
+	// 끝점이 0인 커브도 허용 반경에 도달할 수 있도록 최소 접근 속도를 남긴다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flight", meta = (ClampMin = "1.0", Units = "cm/s"))
+	float MinimumApproachSpeed = 20.0f;
+
+	bool IsEnabled() const;
+};
+
+struct OUTLIER_API FFlightSpeedProfileState
+{
+	float Elapsed = 0.0f;
+	float StartSpeed = 0.0f;
+	float TargetSpeed = -1.0f;
+	float LastSpeedLimit = -1.0f;
+	float LastBrakingLimit = -1.0f;
+	TArray<float> PathSuffixDistances;
+	float LogElapsed = 0.0f;
+	TWeakObjectPtr<const UObject> LogOwner;
+
+	void Reset();
+	void SetPath(const TArray<FVector>& Points);
+	float GetRemainingDistance(const FVector& Position, const TArray<FVector>& Points, int32 Index) const;
+	float Update(const FFlightSpeedProfile& Profile, float DesiredSpeed, float ActualSpeed,
+		float RemainingDistance, float DeltaTime, bool bAllowDeceleration = true,
+		const UObject* Owner = nullptr, const TCHAR* Mode = TEXT("Auto"));
+};
 
 enum class EFlightInputMode : uint8
 {

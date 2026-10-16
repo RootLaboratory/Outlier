@@ -5,6 +5,26 @@
 #include "Blueprint/WidgetTree.h"
 #include "Engine/Texture2D.h"
 
+bool ULobbyGuestWidget::GetFrameCenterInLocalSpace(FVector2D& OutCenter) const
+{
+	if (!Frame)
+	{
+		return false;
+	}
+
+	const FGeometry& GuestGeometry = GetCachedGeometry();
+	const FGeometry& FrameGeometry = Frame->GetCachedGeometry();
+	if (GuestGeometry.GetLocalSize().IsNearlyZero() || FrameGeometry.GetLocalSize().IsNearlyZero())
+	{
+		return false;
+	}
+
+	// 이동된 Guest의 좌표를 제외하고 배경 중심을 Guest 로컬 좌표로 되돌린다.
+	OutCenter = GuestGeometry.AbsoluteToLocal(
+		FrameGeometry.LocalToAbsolute(FrameGeometry.GetLocalSize() * 0.5f));
+	return true;
+}
+
 void ULobbyGuestWidget::NativePreConstruct()
 {
 	Super::NativePreConstruct();

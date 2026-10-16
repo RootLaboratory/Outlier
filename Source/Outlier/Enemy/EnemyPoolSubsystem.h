@@ -29,6 +29,10 @@ public:
 	int32 GetTotalCount(TSubclassOf<AEnemyBase> EnemyClass) const;
 	int32 GetIdleCount(TSubclassOf<AEnemyBase> EnemyClass) const;
 	int32 GetLeasedCount(TSubclassOf<AEnemyBase> EnemyClass) const;
+	// 충돌이 꺼진 소환 연출 중에도 다음 스폰은 해당 캡슐 영역을 피해야 한다.
+	bool IsSpawnPresentationSpaceOccupied(
+		const FVector& CapsuleCenter, const FQuat& CapsuleRotation,
+		float CapsuleRadius, float CapsuleHalfHeight) const;
 
 private:
 	struct FEnemyPoolBucket

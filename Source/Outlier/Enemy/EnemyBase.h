@@ -18,6 +18,7 @@
 #include "Damage/OutlierDamageReceiver.h"
 #include "Enemy/EnemyAdaptationTypes.h"
 #include "Enemy/EnemyPoolTypes.h"
+#include "Enemy/EnemyFlightHeightTypes.h"
 #include "PostProcess/OutlierSpawnVisualTarget.h"
 #include "EnemyBase.generated.h"
 
@@ -40,6 +41,20 @@ class UMeshComponent;
 class UPrimitiveComponent;
 class USceneComponent;
 struct FOnAttributeChangeData;
+
+// 자식 State가 바뀌어도 한 수색 회차의 중심/선정 지점은 유지한다. 서버에서만 사용한다.
+struct FEnemySearchEpisode
+{
+	FVector Center = FVector::ZeroVector;
+	uint64 SharedRevision = 0;
+	uint64 Serial = 0;
+	TArray<FVector> Points;
+	TArray<FVector> CheckedPoints;
+	int32 PointIndex = 0;
+	bool bActive = false;
+	bool bPointsSelected = false;
+	bool bLocalGuard = false;
+};
 
 UENUM(BlueprintType)
 enum class EEnemyCombatState : uint8
@@ -80,6 +95,13 @@ class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, pub
 
 public:
 	AEnemyBase();
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Enemy|Flight Height")
+	FEnemyFlightHeightSettings FlightHeightSettings;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "Enemy|Flight Height")
+	EEnemyFlightHeightPreference CombatHeightPreference = EEnemyFlightHeightPreference::Mid;
+
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
 	UOutlierAbilitySystemComponent* GetOutlierAbilitySystemComponent() const
 	{
@@ -123,6 +145,8 @@ public:
 	int32 GetPoolLeaseSerial() const { return PoolLeaseSerial; }
 
 #if WITH_DEV_AUTOMATION_TESTS
+	void ResetPatrolPointsForTesting() { ResetPatrolPoints(); }
+
 	void SetPoolPresentationAutoCompleteForTesting(bool bEnabled)
 	{
 		bPoolPresentationAutoCompleteForTesting = bEnabled;
@@ -182,8 +206,8 @@ protected:
 		meta = (Schema = "/Script/Outlier.EnemyStateTreeSchema", SchemaCanBeOverriden))
 	FStateTreeReference PossessedAttackStateTreeReference;
 
-	// Enemy BP에서 비전투 시 제자리 경계와 경로 순찰 중 사용할 행동을 선택한다.
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|AI")
+	// BP 기본값 또는 배치된 개체별로 비전투 시 제자리 경계/경로 순찰을 선택한다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Enemy|AI")
 	EEnemyNonCombatBehavior NonCombatBehavior = EEnemyNonCombatBehavior::Stationary;
 
 	// PatrolPointA는 스폰 위치를 사용하고, B는 이 로컬 오프셋을 적용한 월드 위치로 계산한다.
@@ -284,6 +308,8 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "Enemy|Combat")
 	bool bPrefersCombatLeft = false;
+	// 전투 진입 시 정하고 해당 전투 동안 유지한다. -1/0/1은 Left/Center/Right다.
+	int32 CombatChaseLane = 0;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "Enemy|State")
 	uint8 bIsPossessed : 1 = false;
@@ -349,6 +375,24 @@ public:
 
 	virtual FGameplayTag GetDefaultRoomTag() const override;
 
+	// StateTree Task가 재생성/재진입되어도 동일 Pawn의 경로 탐색 간격은 유지한다.
+	double GetNextFlightPathRequestTime() const { return NextFlightPathRequestTime; }
+	double GetNextEnvQueryRequestTime() const { return NextEnvQueryRequestTime; }
+	void SetNextEnvQueryRequestTime(double Time)
+	{
+		if (HasAuthority())
+		{
+			NextEnvQueryRequestTime = Time;
+		}
+	}
+	void SetNextFlightPathRequestTime(double Time)
+	{
+		if (HasAuthority())
+		{
+			NextFlightPathRequestTime = Time;
+		}
+	}
+
 	virtual URoomTagComponent* GetRoomTagComp() const override;
 
 	UFUNCTION(BlueprintCallable, Category = "Enemy|State")
@@ -393,6 +437,13 @@ public:
 	void RemoveEnemyTraitForTesting(FGameplayTag TraitTag) { EnemyTraits.RemoveTag(TraitTag); }
 #endif
 	bool PrefersCombatLeft() const { return bPrefersCombatLeft; }
+	int32 GetCombatChaseLane() const { return CombatChaseLane; }
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Flight Height")
+	EEnemyFlightHeightPreference GetCombatHeightPreference() const { return CombatHeightPreference; }
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Flight Height")
+	float GetPreferredFlightHeight() const { return FlightHeightSettings.GetHeight(CombatHeightPreference); }
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|State")
 	EEnemyCombatState GetCombatState() const { return CombatState; }
@@ -448,8 +499,9 @@ public:
 	// 다음 틱에 현재 가시성/공유 접촉 상태에 맞는 전투 결정을 다시 요청한다.
 	void RequestCombatDecisionRefresh();
 
-	// 재감지, 스턴, 빙의, 사망, 방 이동 시 방 Subsystem에 보관된 수색 슬롯을 반환한다.
-	void ReleaseSearchRingSlot();
+	// 재감지, 스턴, 빙의, 사망, 방 이동 시 방 Subsystem의 수색 목적지 예약을 반환한다.
+	void ReleaseSearchDestinations();
+	void ReleasePatrolDestination();
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|AI")
 	UStateTreeComponent* GetStateTreeComponent() const { return StateTreeComponent; }
@@ -490,8 +542,19 @@ public:
 	// RoomSubsystem만 호출하는 서버 권한 공유 접촉 API.
 	void ApplySharedTargetContact(
 		const FVector& TargetLocation,
-		bool bDeferStateTreeEvent = false);
+		bool bDeferStateTreeEvent = false,
+		uint64 Revision = 0);
 	void ClearSharedTargetContact();
+
+	bool HasFreshSharedTargetLocation() const { return SharedTargetRevision > ConsumedSharedTargetRevision; }
+	uint64 GetSharedTargetRevision() const { return SharedTargetRevision; }
+	const FEnemySearchEpisode& GetSearchEpisode() const { return SearchEpisode; }
+	bool BeginSearchEpisode();
+	void EndSearchEpisode();
+	void CompleteSearchAnchor();
+	bool SetSearchPoints(const TArray<FVector>& Points);
+	bool CompleteSearchPoint();
+	void EnterSearchLocalGuard();
 
 	UFUNCTION(BlueprintCallable, Category = "Enemy|State")
 	void EnterCombat(const FVector& PlayerLocation);
@@ -579,6 +642,14 @@ protected:
 	UFUNCTION()
 	void OnRep_RuntimeStat();
 
+	double NextFlightPathRequestTime = 0.0;
+	double NextEnvQueryRequestTime = 0.0;
+	uint64 SharedTargetRevision = 0;
+	uint64 ConsumedSharedTargetRevision = 0;
+	uint64 NextSearchEpisodeSerial = 0;
+	bool bHasLastKnownPlayerLocation = false;
+	FEnemySearchEpisode SearchEpisode;
+
 	void InitializeGasVitality();
 	void BindGasVitalityObservers();
 	void UnbindGasVitalityObservers();
@@ -616,6 +687,7 @@ protected:
 	bool ApplyPossessionPendingState();
 	bool RemovePossessionPendingState();
 	void PromotePreStunState(EEnemyCombatState DetectedState);
+	void InitializeCombatMovementPreferences();
 	void RefreshPerceptionConfigForCurrentState();
 	void RefreshPerceptionTeamRegistration();
 
@@ -633,7 +705,7 @@ protected:
 	// 서버에서 기본 무기를 스폰하고 Enemy 소켓에 장착한다.
 	void EquipDefaultWeapon();
 
-	// 방이 바뀌면 이전 방 기준으로 받은 수색 슬롯을 즉시 반환한다.
+	// 방이 바뀌면 이전 방의 수색 목적지 예약을 즉시 반환한다.
 	void HandleCurrentRoomTagChanged(FGameplayTag PreviousRoomTag, FGameplayTag NewRoomTag);
 	void RemoveRoomTargetObserver();
 	virtual void HandleDeath();
@@ -644,6 +716,7 @@ protected:
 	UEnemyAdaptationSubsystem* GetEnemyAdaptationSubsystem();
 	void ReportFinalAdaptationResult();
 	virtual void ResetPoolRuntimeState();
+	void ResetPatrolPoints();
 	virtual void ResetPoolPresentationState();
 	virtual void PrepareForPoolIdle();
 

@@ -37,6 +37,12 @@ public:
 		FTransform& OutSpawnTransform) const;
 
 #if WITH_DEV_AUTOMATION_TESTS
+	void SetSpawnSearchForTesting(float Radius, float HeightOffset)
+	{
+		SpawnRadius = Radius;
+		SpawnHeightOffset = HeightOffset;
+	}
+
 	void SetForceSpawnLocationFailureForTesting(bool bEnabled)
 	{
 		bForceSpawnLocationFailureForTesting = bEnabled;

@@ -296,6 +296,10 @@ bool FRoomCombatSubsystemRuntimeTest::RunTest(const FString& Parameters)
 		CombatSubsystem->RegisterRoom(SecondRoom, SecondRoomTag));
 	TestTrue(TEXT("A registered Room can be queried"),
 		CombatSubsystem->IsRoomRegistered(FirstRoomTag));
+	TestTrue(TEXT("Navigation resolves the exact registered room"),
+		CombatSubsystem->GetRegisteredRoomVolume(FirstRoomTag) == FirstRoom);
+	TestNull(TEXT("Invalid room tag does not resolve another room"),
+		CombatSubsystem->GetRegisteredRoomVolume(FGameplayTag()));
 	CombatSubsystem->RegisterPreplacedEnemy(FirstEnemy);
 	CombatSubsystem->RegisterPreplacedEnemy(SecondEnemy);
 	TestEqual(TEXT("A preplaced Enemy is counted"),
@@ -436,6 +440,8 @@ bool FRoomCombatSubsystemRuntimeTest::RunTest(const FString& Parameters)
 			FGameplayTagContainer(), FGameplayTag()));
 	TestTrue(TEXT("Late SpawnPoint inherits cleared state"), LateClearedPoint->IsRoomCleared());
 	CombatSubsystem->UnregisterRoom(FirstRoom);
+	TestNull(TEXT("Unregistered room cannot be used for navigation"),
+		CombatSubsystem->GetRegisteredRoomVolume(FirstRoomTag));
 	ARoomCombatSpawnPoint* BeforeRoomPoint = World->SpawnActor<ARoomCombatSpawnPoint>();
 	TestTrue(TEXT("SpawnPoint can register before restored Room"),
 		CombatSubsystem->RegisterSpawnPoint(BeforeRoomPoint, FirstRoomTag,

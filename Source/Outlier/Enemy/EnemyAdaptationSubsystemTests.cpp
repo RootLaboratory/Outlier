@@ -368,6 +368,8 @@ bool FEnemyAdaptationBreakFieldTest::RunTest(const FString& Parameters)
 		{
 			Enemy->RemoveEnemyTraitForTesting(TargetTag);
 		}
+		// 피해/스턴 판정만 검증한다. 월드 정리 뒤 비동기 GC_Stun 연출이 다음 테스트에 도착하지 않게 한다.
+		Enemy->GetOutlierAbilitySystemComponent()->bSuppressGameplayCues = true;
 		Enemy->GetOutlierAbilitySystemComponent()->InitializeVitalityToSelf(100.0f);
 		if (bEnterCombat)
 		{

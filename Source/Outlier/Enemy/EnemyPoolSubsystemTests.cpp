@@ -5,6 +5,7 @@
 #include "Enemy/EnemyPoolDefinition.h"
 #include "Enemy/EnemyPoolSubsystem.h"
 #include "Enemy/EnemyRoomSubsystem.h"
+#include "Enemy/EnemyStateTreeTacticalTasks.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/SphereComponent.h"
@@ -17,6 +18,7 @@
 #include "Misc/DataValidation.h"
 #endif
 #include "Room/RoomTagComponent.h"
+#include "Room/RoomCombatSpawnPoint.h"
 #include "StateTree.h"
 #include "TimerManager.h"
 
@@ -112,6 +114,12 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 	const bool bMeshVisible = FirstLease->GetMesh()->IsVisible();
 	const bool bMeshHiddenInGame = FirstLease->GetMesh()->bHiddenInGame;
 	const bool bCoreVisible = FirstLease->GetCoreHitboxComponent()->IsVisible();
+	FirstLease->SetNextFlightPathRequestTime(123.0);
+	FirstLease->SetNextEnvQueryRequestTime(124.0);
+	TestEqual(TEXT("EQS request throttle survives transient Task replacement"),
+		FirstLease->GetNextEnvQueryRequestTime(), 124.0);
+	TestEqual(TEXT("Flight request throttle belongs to Pawn, not transient Task"),
+		FirstLease->GetNextFlightPathRequestTime(), 123.0);
 	FirstLease->SimulateDeathPresentationForPoolTesting();
 	TestFalse(TEXT("Death presentation hides the source mesh"), FirstLease->GetMesh()->IsVisible());
 	TestEqual(TEXT("Death presentation disables the capsule"),
@@ -121,6 +129,10 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Active Enemy returns to the pool"),
 		Pool->ReturnEnemy(FirstLease, FirstContext.GameplayGeneration, FirstLeaseSerial));
 	TestEqual(TEXT("Returned Enemy is idle"), FirstLease->GetEnemyPoolState(), EEnemyPoolState::Idle);
+	TestEqual(TEXT("Pool return clears previous flight request throttle"),
+		FirstLease->GetNextFlightPathRequestTime(), 0.0);
+	TestEqual(TEXT("Pool return clears previous EQS request throttle"),
+		FirstLease->GetNextEnvQueryRequestTime(), 0.0);
 	TestTrue(TEXT("Returned Enemy is hidden"), FirstLease->IsHidden());
 	TestFalse(TEXT("Returned Enemy cannot be damaged"), FirstLease->CanBeDamaged());
 	TestFalse(TEXT("Returned Enemy collision is disabled"), FirstLease->GetActorEnableCollision());
@@ -147,6 +159,38 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 		SecondLease->GetCombatState(), EEnemyCombatState::NonCombat);
 	TestFalse(TEXT("Spawn presentation blocks damage"), SecondLease->CanBeDamaged());
 	TestFalse(TEXT("Spawn presentation blocks collision"), SecondLease->GetActorEnableCollision());
+	const UCapsuleComponent* PresentingCapsule = SecondLease->GetCapsuleComponent();
+	const FVector PresentingCenter = PresentingCapsule->GetComponentLocation();
+	const float PresentingRadius = PresentingCapsule->GetScaledCapsuleRadius();
+	const float PresentingHalfHeight = PresentingCapsule->GetScaledCapsuleHalfHeight();
+	TestTrue(TEXT("Collision-disabled presentation still occupies spawn space"),
+		Pool->IsSpawnPresentationSpaceOccupied(PresentingCenter, FQuat::Identity,
+			PresentingRadius, PresentingHalfHeight));
+	TestFalse(TEXT("Separated capsule remains available"),
+		Pool->IsSpawnPresentationSpaceOccupied(PresentingCenter + FVector(4.0f * PresentingRadius, 0.0, 0.0),
+			FQuat::Identity, PresentingRadius, PresentingHalfHeight));
+	TestFalse(TEXT("Capsules separated vertically do not reserve each other"),
+		Pool->IsSpawnPresentationSpaceOccupied(PresentingCenter + FVector(0.0, 0.0, 4.0f * PresentingHalfHeight),
+			FQuat::Identity, PresentingRadius, PresentingHalfHeight));
+	ARoomCombatSpawnPoint* OverlappingPoint = World->SpawnActor<ARoomCombatSpawnPoint>();
+	if (TestNotNull(TEXT("Overlapping spawn point exists"), OverlappingPoint))
+	{
+		OverlappingPoint->SetSpawnSearchForTesting(0.0f, 0.0f);
+		OverlappingPoint->SetActorLocation(PresentingCenter);
+		FTransform SpawnTransform;
+		TestFalse(TEXT("No alternate location leaves spawn request pending"),
+			OverlappingPoint->FindSpawnTransform(AEnemyBase::StaticClass(), 42, SpawnTransform));
+		OverlappingPoint->SetSpawnSearchForTesting(300.0f, 0.0f);
+		const bool bFoundAlternative = OverlappingPoint->FindSpawnTransform(
+			AEnemyBase::StaticClass(), 42, SpawnTransform);
+		TestTrue(TEXT("Spawn point can select an alternative location"), bFoundAlternative);
+		if (bFoundAlternative)
+		{
+			TestFalse(TEXT("Alternative does not overlap presenting enemy"),
+				Pool->IsSpawnPresentationSpaceOccupied(SpawnTransform.GetLocation(), SpawnTransform.GetRotation(),
+				PresentingRadius, PresentingHalfHeight));
+		}
+	}
 	TestFalse(TEXT("Previous Dead state is not retained"), SecondLease->IsDead());
 	// 연출 대기 중에는 Actor 충돌이 꺼져 GetCollisionEnabled가 NoCollision을 반환한다.
 	// 컴포넌트 충돌 복원은 현재 대여가 전투 상태로 활성화된 뒤 확인한다.
@@ -166,6 +210,9 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("A stale spawn callback cannot activate a new lease"),
 		SecondLease->GetEnemyPoolState(), EEnemyPoolState::SpawnPresentation);
 	SecondLease->CompletePoolSpawnPresentation(SecondContext.GameplayGeneration, SecondLeaseSerial);
+	TestFalse(TEXT("Completed presentation no longer needs a virtual reservation"),
+		Pool->IsSpawnPresentationSpaceOccupied(PresentingCenter, FQuat::Identity,
+			PresentingRadius, PresentingHalfHeight));
 	TestEqual(TEXT("The current callback activates combat"),
 		SecondLease->GetEnemyPoolState(), EEnemyPoolState::CombatActive);
 	TestEqual(TEXT("Reused Enemy restores capsule collision"),
@@ -264,14 +311,20 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 		bool bFoundSearch = false;
 		for (const FCompactStateTreeState& State : GunBattleTree->GetStates())
 		{
-			if (State.Name == FName(TEXT("LostContactSearch")))
+			if (State.Name == FName(TEXT("Search")))
 			{
 				bFoundSearch = true;
-				TestEqual(TEXT("Search remains the fallback after other combat choices fail"),
-					State.EnterConditionsNum, static_cast<uint8>(0));
+				// 새 구조는 공유 추적과 시야 상실 수색을 Search Session으로 통합한다.
+				bool bHasSession = false;
+				for (int32 Index = 0; Index < State.TasksNum; ++Index)
+				{
+					const auto* Task = GunBattleTree->GetNode(State.TasksBegin + Index).GetPtr<const FEnemySearchSessionTask>();
+					bHasSession |= Task && Task->bTaskEnabled && !Task->bConsideredForCompletion;
+				}
+				TestTrue(TEXT("Search owns a non-completing search session"), bHasSession);
 			}
 		}
-		TestTrue(TEXT("Gun battle StateTree contains LostContactSearch"), bFoundSearch);
+		TestTrue(TEXT("Gun battle StateTree contains Search"), bFoundSearch);
 	}
 
 	UClass* GunClass = LoadClass<AEnemyBase>(nullptr,
@@ -342,8 +395,8 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 						const TArray<FName> BattleStates = SharedStateTree->GetActiveStateNames();
 						TestTrue(TEXT("Shared-target gun transitions into Battle"),
 							BattleStates.Contains(FName(TEXT("Battle"))));
-						TestTrue(TEXT("Shared-target gun pursues the room target"),
-							BattleStates.Contains(FName(TEXT("SharedPursuit"))));
+						TestTrue(TEXT("Shared-target gun enters the unified Search branch"),
+							BattleStates.Contains(FName(TEXT("Search"))));
 						TestFalse(TEXT("Shared-target gun never returns to NonBattle"),
 							BattleStates.Contains(FName(TEXT("NonBattle"))));
 
@@ -353,8 +406,8 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 						SharedStateTree->TickComponent(0.016f, LEVELTICK_All, nullptr);
 						TestFalse(TEXT("Living gun does not fall into Death during a target-selection gap"),
 							SharedStateTree->GetActiveStateNames().Contains(FName(TEXT("Death"))));
-						TestTrue(TEXT("Gun keeps shared pursuit without a visible target Actor"),
-							SharedStateTree->GetActiveStateNames().Contains(FName(TEXT("SharedPursuit"))));
+						TestTrue(TEXT("Gun keeps Search without a visible target Actor"),
+							SharedStateTree->GetActiveStateNames().Contains(FName(TEXT("Search"))));
 						SharedGunLease->SetPlayerCurrentlyVisible(false);
 						SharedStateTree->TickComponent(0.016f, LEVELTICK_All, nullptr);
 
@@ -381,7 +434,7 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 						TestFalse(TEXT("Living gun does not select Death after target-selection restart"),
 							SharedStateTree->GetActiveStateNames().Contains(FName(TEXT("Death"))));
 						TestTrue(TEXT("Gun searches when the visible target Actor is missing"),
-							SharedStateTree->GetActiveStateNames().Contains(FName(TEXT("LostContactSearch"))));
+							SharedStateTree->GetActiveStateNames().Contains(FName(TEXT("Search"))));
 					}
 				}
 			}

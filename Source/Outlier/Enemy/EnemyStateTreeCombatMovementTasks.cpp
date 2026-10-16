@@ -2,17 +2,83 @@
 
 #include "AIController.h"
 #include "CollisionQueryParams.h"
+#include "Components/CapsuleComponent.h"
+#include "Drone/FlightPathfinding.h"
 #include "Enemy/EnemyAIController.h"
 #include "Engine/OverlapResult.h"
 #include "Engine/World.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "HAL/IConsoleManager.h"
+#include "Room/RoomCombatSubsystem.h"
+#include "Room/RoomVolume.h"
 #if WITH_DEV_AUTOMATION_TESTS
+#include "Components/BoxComponent.h"
 #include "Misc/AutomationTest.h"
 #endif
 
 namespace
 {
+DEFINE_LOG_CATEGORY_STATIC(LogEnemyCombatNavigation, Log, All);
+
 float CalculateTacticalDistance(const FVector& From, const FVector& To, EEnemyTacticalDistanceMode DistanceMode);
+
+bool HasCombatTargetMoved(const FVector& Selected, const FVector& Current, float Threshold)
+{
+	return FVector::DistSquared2D(Selected, Current) >= FMath::Square(Threshold);
+}
+
+bool IsCombatDestinationCurrent(const FEnemyCombatDestinationGuardTaskInstanceData& Data)
+{
+	const AEnemyBase* Enemy = Data.Enemy;
+	const AEnemyAIController* Controller = Data.CachedController.Get();
+	if (!IsValid(Enemy) || !Enemy->HasAuthority() || Enemy->IsDead() || !Enemy->CanUseEnemyPerception()
+		|| Enemy->GetCombatState() != EEnemyCombatState::Combat || !Enemy->IsPlayerCurrentlyVisible()
+		|| !Controller || Enemy->GetController() != Controller || Controller->GetPawn() != Enemy
+		|| !IsValid(Data.SelectedTargetActor) || Controller->GetCachedVisibleTarget() != Data.SelectedTargetActor)
+	{
+		return false;
+	}
+	return !HasCombatTargetMoved(Data.SelectedTargetLocation, Data.SelectedTargetActor->GetActorLocation(), Data.TargetChangeDistance);
+}
+
+const TCHAR* GetCombatDestinationGuardReason(const FEnemyCombatDestinationGuardTaskInstanceData& Data)
+{
+	if (!FMath::IsFinite(Data.TargetChangeDistance) || Data.TargetChangeDistance < 1.0f
+		|| Data.SelectedTargetLocation.ContainsNaN()) return TEXT("InvalidConfiguration");
+	const AEnemyBase* Enemy = Data.Enemy;
+	if (!IsValid(Enemy)) return TEXT("InvalidEnemy");
+	if (!Enemy->HasAuthority()) return TEXT("NoAuthority");
+	if (Enemy->IsDead()) return TEXT("Dead");
+	if (!Enemy->CanUseEnemyPerception()) return TEXT("PerceptionDisabled");
+	if (Enemy->GetCombatState() != EEnemyCombatState::Combat) return TEXT("CombatEnded");
+	if (!Enemy->IsPlayerCurrentlyVisible()) return TEXT("SightLost");
+	const AEnemyAIController* Controller = Data.CachedController.Get();
+	if (!Controller || Enemy->GetController() != Controller || Controller->GetPawn() != Enemy)
+		return TEXT("ControllerChanged");
+	if (!IsValid(Data.SelectedTargetActor)) return TEXT("InvalidSelectedTarget");
+	if (Controller->GetCachedVisibleTarget() != Data.SelectedTargetActor) return TEXT("TargetChanged");
+	if (HasCombatTargetMoved(Data.SelectedTargetLocation, Data.SelectedTargetActor->GetActorLocation(), Data.TargetChangeDistance))
+		return TEXT("TargetMoved");
+	return Data.bShouldReselect ? TEXT("ReselectLatched") : TEXT("Current");
+}
+
+void LogCombatDestinationGuard(const TCHAR* Phase, const FEnemyCombatDestinationGuardTaskInstanceData& Data,
+	const FStateTreeTransitionResult* Transition = nullptr)
+{
+	// 기존 FlightDebug 옵션을 공유한다. 진입/신호 발생/종료 시에만 로그를 남긴다.
+	static const IConsoleVariable* Debug = IConsoleManager::Get().FindConsoleVariable(TEXT("outlier.Enemy.FlightDebug"));
+	if (!Debug || Debug->GetInt() == 0) return;
+	const AActor* Target = IsValid(Data.SelectedTargetActor) ? Data.SelectedTargetActor.Get() : nullptr;
+	const FVector CurrentLocation = Target ? Target->GetActorLocation() : FVector::ZeroVector;
+	UE_LOG(LogEnemyCombatNavigation, Log,
+		TEXT("[CombatDestinationGuard] %s Enemy=%s ShouldReselect=%d Reason=%s SelectedTarget=%s CurrentTarget=%s SelectedLocation=%s CurrentLocation=%s Moved2D=%.1f Threshold=%.1f CurrentState=%s TargetState=%s"),
+		Phase, *GetNameSafe(Data.Enemy), Data.bShouldReselect, GetCombatDestinationGuardReason(Data),
+		*GetNameSafe(Target), *GetNameSafe(Data.CachedController.IsValid() ? Data.CachedController->GetCachedVisibleTarget() : nullptr),
+		*Data.SelectedTargetLocation.ToCompactString(), *CurrentLocation.ToCompactString(),
+		Target ? FVector::Dist2D(Data.SelectedTargetLocation, CurrentLocation) : 0.0f, Data.TargetChangeDistance,
+		Transition ? *Transition->CurrentState.Describe() : TEXT("None"),
+		Transition ? *Transition->TargetState.Describe() : TEXT("None"));
+}
 
 void ResetAssessment(FEnemyCombatAssessmentTaskInstanceData& Data)
 {
@@ -65,6 +131,68 @@ void UpdateAssessment(FEnemyCombatAssessmentTaskInstanceData& Data)
 }
 
 constexpr float MinimumEnemyFlightZ = 150.0f;
+constexpr float CombatFlightClearance = 5.0f;
+
+ARoomVolume* ResolveCombatFlightRoom(const AEnemyBase& Enemy)
+{
+	URoomCombatSubsystem* Rooms = Enemy.GetWorld()->GetSubsystem<URoomCombatSubsystem>();
+	return Rooms ? Rooms->GetRegisteredRoomVolume(Enemy.GetDefaultRoomTag()) : nullptr;
+}
+
+FVector GetCombatFlightExtent(const UCapsuleComponent& Capsule)
+{
+	return FlightPathfinding::GetCapsuleWorldExtent(
+		Capsule.GetScaledCapsuleRadius() + CombatFlightClearance,
+		Capsule.GetScaledCapsuleHalfHeight() + CombatFlightClearance,
+		Capsule.GetComponentQuat());
+}
+
+bool ClampCombatFlightDestination(const AEnemyBase& Enemy, const ARoomVolume* Room, FVector& Destination)
+{
+	const UCapsuleComponent* Capsule = Enemy.GetCapsuleComponent();
+	if (!IsValid(Room) || !Capsule) return false;
+	// 기존 Task의 Actor 좌표를 Fly와 같은 캡슐 중심/여유 기준으로 보정한다.
+	const FVector Offset = Capsule->GetComponentLocation() - Enemy.GetActorLocation();
+	FVector ClampedCenter;
+	if (!Room->TryClampFlightLocation(Destination + Offset, GetCombatFlightExtent(*Capsule), ClampedCenter))
+	{
+		return false;
+	}
+	Destination = ClampedCenter - Offset;
+	return true;
+}
+
+bool IsCombatFlightStepInsideRoom(const ARoomVolume* Room, const FVector& Center, const FVector& CapsuleExtent,
+	const FVector& Velocity, float MaxAcceleration, float DeltaTime)
+{
+	if (!IsValid(Room)) return false;
+	// 목적지만 보정하면 관성으로 경계를 넘을 수 있다. 다음 이동의 속도와 최대 가속 여유도 검사한다.
+	const float Step = FMath::Max(DeltaTime, 0.0f);
+	const FVector Prediction = Center + Velocity * Step;
+	const FVector Extent = CapsuleExtent + FVector(FMath::Max(MaxAcceleration, 0.0f) * Step * Step);
+	FVector ClampedPrediction;
+	return Room->TryClampFlightLocation(Prediction, Extent, ClampedPrediction)
+		&& Prediction.Equals(ClampedPrediction, 0.01);
+}
+
+bool CanRemainInCombatFlightRoom(const AEnemyBase& Enemy, const ARoomVolume* Room, float DeltaTime)
+{
+	const UCapsuleComponent* Capsule = Enemy.GetCapsuleComponent();
+	const UCharacterMovementComponent* Movement = Enemy.GetCharacterMovement();
+	return Capsule && Movement && IsCombatFlightStepInsideRoom(Room, Capsule->GetComponentLocation(),
+		GetCombatFlightExtent(*Capsule), Movement->Velocity, Movement->GetMaxAcceleration(), DeltaTime);
+}
+
+void LogCombatFlightRoom(const TCHAR* Phase, const AEnemyBase& Enemy, const ARoomVolume* Room,
+	const FVector& Requested, const FVector& Resolved)
+{
+	static const IConsoleVariable* Debug = IConsoleManager::Get().FindConsoleVariable(TEXT("outlier.Enemy.FlightDebug"));
+	if (!Debug || Debug->GetInt() == 0) return;
+	UE_LOG(LogEnemyCombatNavigation, Log,
+		TEXT("[CombatFlightRoom] %s Enemy=%s Room=%s Position=%s Requested=%s Resolved=%s"),
+		Phase, *Enemy.GetName(), *GetNameSafe(Room), *Enemy.GetActorLocation().ToCompactString(),
+		*Requested.ToCompactString(), *Resolved.ToCompactString());
+}
 
 AEnemyAIController* ResolveEnemyAIController(AEnemyBase* Enemy)
 {
@@ -192,6 +320,7 @@ void RestoreCombatTaskBaseSpeed(AEnemyBase& Enemy)
 void ApplyFlightMovement(
 	AEnemyBase& Enemy,
 	AEnemyAIController& AIController,
+	const ARoomVolume* Room,
 	const FVector& Destination,
 	const FVector& FacingLocation,
 	float AcceptanceRadius,
@@ -218,8 +347,20 @@ void ApplyFlightMovement(
 	}
 	ApplyCombatTaskSpeedMultiplier(Enemy, SpeedMultiplier);
 
+	FVector SafeDestination = Destination;
+	if (!ClampCombatFlightDestination(Enemy, Room, SafeDestination)
+		|| !CanRemainInCombatFlightRoom(Enemy, Room, DeltaTime))
+	{
+		if (!Movement->Velocity.IsNearlyZero())
+		{
+			LogCombatFlightRoom(TEXT("BoundaryBrake"), Enemy, Room, Destination, SafeDestination);
+		}
+		Enemy.ConsumeMovementInputVector();
+		Movement->StopMovementImmediately();
+		return;
+	}
 	const FVector EnemyLocation = Enemy.GetActorLocation();
-	const FVector ToDestination = Destination - EnemyLocation;
+	const FVector ToDestination = SafeDestination - EnemyLocation;
 	const float DistanceToDestination = ToDestination.Size();
 
 	// 전투 이동 방향과 시선 방향을 분리한다. 선회 중에는 원의 접선으로 이동하더라도
@@ -312,6 +453,9 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyCombatAssessmentMathTest,
 bool FEnemyCombatAssessmentMathTest::RunTest(const FString& Parameters)
 {
 	const FVector Origin = FVector::ZeroVector;
+	TestFalse(TEXT("Small target movement keeps destination"), HasCombatTargetMoved(Origin, FVector(199, 0, 999), 200));
+	TestTrue(TEXT("Target movement at threshold invalidates destination"), HasCombatTargetMoved(Origin, FVector(200, 0, 0), 200));
+	TestFalse(TEXT("Target height does not change horizontal retarget threshold"), HasCombatTargetMoved(Origin, FVector(0, 0, 999), 200));
 	TestEqual(TEXT("10m horizontal boundary ignores height"),
 		CalculateTacticalDistance(Origin, FVector(1000, 0, 5000), EEnemyTacticalDistanceMode::Horizontal2D), 1000.0f);
 	TestEqual(TEXT("20m horizontal boundary ignores height"),
@@ -328,7 +472,96 @@ bool FEnemyCombatAssessmentMathTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Missing enemy clears distance"), Data.HorizontalDistance, 0.0f);
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyCombatFlightRoomTest,
+	"Outlier.Enemy.Combat.FlightRoom", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyCombatFlightRoomTest::RunTest(const FString& Parameters)
+{
+	const UWorld::InitializationValues Values = UWorld::InitializationValues().AllowAudioPlayback(false)
+		.RequiresHitProxies(false).CreatePhysicsScene(false).CreateNavigation(false).CreateAISystem(false)
+		.ShouldSimulatePhysics(false).SetTransactional(false);
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false,
+		MakeUniqueObjectName(nullptr, UWorld::StaticClass(), TEXT("CombatFlightRoomTest")),
+		nullptr, false, ERHIFeatureLevel::Num, &Values);
+	if (!TestNotNull(TEXT("World exists"), World)) return false;
+	ARoomVolume* Room = World->SpawnActor<ARoomVolume>();
+	if (!TestNotNull(TEXT("Room exists"), Room))
+	{
+		World->DestroyWorld(false);
+		return false;
+	}
+	CastChecked<UBoxComponent>(Room->GetRootComponent())->SetBoxExtent(FVector(400.0, 350.0, 200.0));
+	const FVector Extent(65.0);
+	FVector Clamped;
+	TestTrue(TEXT("High orbit destination can be clamped"),
+		Room->TryClampFlightLocation(FVector(0.0, 0.0, 380.0), Extent, Clamped));
+	TestTrue(TEXT("High orbit destination leaves capsule clearance inside room"),
+		Clamped.Equals(FVector(0.0, 0.0, 134.0), 0.01));
+	TestTrue(TEXT("Interior movement is allowed"),
+		IsCombatFlightStepInsideRoom(Room, FVector::ZeroVector, Extent, FVector(100.0, 0.0, 0.0), 2048.0f, 0.016f));
+	TestFalse(TEXT("Vertical inertia crossing room ceiling is stopped"),
+		IsCombatFlightStepInsideRoom(Room, FVector(0.0, 0.0, 130.0), Extent, FVector(0.0, 0.0, 600.0), 2048.0f, 0.016f));
+	TestFalse(TEXT("Horizontal inertia crossing room edge is stopped"),
+		IsCombatFlightStepInsideRoom(Room, FVector(330.0, 0.0, 0.0), Extent, FVector(600.0, 0.0, 0.0), 2048.0f, 0.016f));
+	TestTrue(TEXT("Movement back into room is allowed"),
+		IsCombatFlightStepInsideRoom(Room, FVector(330.0, 0.0, 0.0), Extent, FVector(-600.0, 0.0, 0.0), 2048.0f, 0.016f));
+	TestFalse(TEXT("Acceleration margin stops a resting capsule at the edge"),
+		IsCombatFlightStepInsideRoom(Room, FVector(333.9, 0.0, 0.0), Extent, FVector::ZeroVector, 2048.0f, 0.016f));
+	TestFalse(TEXT("Already outside room is not silently accepted"),
+		IsCombatFlightStepInsideRoom(Room, FVector(0.0, 0.0, 380.0), Extent, FVector::ZeroVector, 2048.0f, 0.016f));
+	TestFalse(TEXT("Missing room is not an unrestricted movement fallback"),
+		IsCombatFlightStepInsideRoom(nullptr, FVector::ZeroVector, Extent, FVector::ZeroVector, 2048.0f, 0.016f));
+	Room->SetActorRotation(FRotator(0.0, 90.0, 0.0));
+	Room->SetActorScale3D(FVector(2.0, 1.0, 1.0));
+	TestTrue(TEXT("Rotated scaled room allows interior movement"),
+		IsCombatFlightStepInsideRoom(Room, FVector::ZeroVector, Extent, FVector(100.0, 0.0, 0.0), 2048.0f, 0.016f));
+	TestFalse(TEXT("Rotated scaled room still stops boundary crossing"),
+		IsCombatFlightStepInsideRoom(Room, FVector(280.0, 0.0, 0.0), Extent, FVector(600.0, 0.0, 0.0), 2048.0f, 0.016f));
+	World->DestroyWorld(false);
+	return true;
+}
 #endif
+
+FEnemyCombatDestinationGuardTask::FEnemyCombatDestinationGuardTask()
+{
+	bShouldCallTick = true;
+	bShouldCopyBoundPropertiesOnTick = false;
+	bShouldCopyBoundPropertiesOnExitState = false;
+#if WITH_EDITORONLY_DATA
+	bConsideredForCompletion = false;
+#endif
+}
+
+EStateTreeRunStatus FEnemyCombatDestinationGuardTask::EnterState(FStateTreeExecutionContext& Context,
+	const FStateTreeTransitionResult& Transition) const
+{
+	FInstanceDataType& Data = Context.GetInstanceData(*this);
+	Data.CachedController = IsValid(Data.Enemy) ? Cast<AEnemyAIController>(Data.Enemy->GetController()) : nullptr;
+	Data.bShouldReselect = !FMath::IsFinite(Data.TargetChangeDistance) || Data.TargetChangeDistance < 1.0f
+		|| Data.SelectedTargetLocation.ContainsNaN() || !IsCombatDestinationCurrent(Data);
+	LogCombatDestinationGuard(TEXT("Enter"), Data, &Transition);
+	return EStateTreeRunStatus::Running;
+}
+
+EStateTreeRunStatus FEnemyCombatDestinationGuardTask::Tick(FStateTreeExecutionContext& Context, float DeltaTime) const
+{
+	FInstanceDataType& Data = Context.GetInstanceData(*this);
+	// 보조 Task는 State 완료에 참여하지 않는다. OnTick 조건으로 신호를 소비해야 Fly의 도착도 방해하지 않는다.
+	const bool bWasReselectRequested = Data.bShouldReselect;
+	Data.bShouldReselect |= !IsCombatDestinationCurrent(Data);
+	if (!bWasReselectRequested && Data.bShouldReselect)
+	{
+		LogCombatDestinationGuard(TEXT("ReselectRequested"), Data);
+	}
+	return EStateTreeRunStatus::Running;
+}
+
+void FEnemyCombatDestinationGuardTask::ExitState(FStateTreeExecutionContext& Context,
+	const FStateTreeTransitionResult& Transition) const
+{
+	LogCombatDestinationGuard(TEXT("Exit"), Context.GetInstanceData(*this), &Transition);
+}
 
 FEnemyCombatAssessmentTask::FEnemyCombatAssessmentTask()
 {
@@ -412,6 +645,12 @@ EStateTreeRunStatus FEnemyApproachTargetTask::EnterState(
 	InstanceData.bHasMoveDestination = false;
 	InstanceData.bShouldEnterOrbit = false;
 	StopFlightMovement(*InstanceData.Enemy, *AIController);
+	InstanceData.CachedRoom = ResolveCombatFlightRoom(*InstanceData.Enemy);
+	if (!InstanceData.CachedRoom.IsValid())
+	{
+		LogCombatFlightRoom(TEXT("MissingRoom"), *InstanceData.Enemy, nullptr, FVector::ZeroVector, FVector::ZeroVector);
+		return EStateTreeRunStatus::Failed;
+	}
 	ApplyCombatTaskSpeedMultiplier(
 		*InstanceData.Enemy,
 		InstanceData.SpeedMultiplier);
@@ -427,6 +666,11 @@ EStateTreeRunStatus FEnemyApproachTargetTask::Tick(
 	AEnemyAIController* AIController = ResolveEnemyAIController(Enemy);
 	if (!Enemy || !Enemy->HasAuthority() || !AIController || !Enemy->GetWorld())
 	{
+		return EStateTreeRunStatus::Failed;
+	}
+	if (!InstanceData.CachedRoom.IsValid() || InstanceData.CachedRoom->GetRoomTag() != Enemy->GetDefaultRoomTag())
+	{
+		StopFlightMovement(*Enemy, *AIController);
 		return EStateTreeRunStatus::Failed;
 	}
 
@@ -457,6 +701,7 @@ EStateTreeRunStatus FEnemyApproachTargetTask::Tick(
 			ApplyFlightMovement(
 				*Enemy,
 				*AIController,
+				InstanceData.CachedRoom.Get(),
 				InstanceData.MoveDestination,
 				TargetLocation,
 				InstanceData.AcceptanceRadius,
@@ -504,6 +749,7 @@ EStateTreeRunStatus FEnemyApproachTargetTask::Tick(
 			ApplyFlightMovement(
 				*Enemy,
 				*AIController,
+				InstanceData.CachedRoom.Get(),
 				InstanceData.MoveDestination,
 				TargetLocation,
 				InstanceData.AcceptanceRadius,
@@ -514,6 +760,13 @@ EStateTreeRunStatus FEnemyApproachTargetTask::Tick(
 		return EStateTreeRunStatus::Running;
 	}
 
+	const FVector RequestedCandidate = Candidate;
+	if (!ClampCombatFlightDestination(*Enemy, InstanceData.CachedRoom.Get(), Candidate))
+	{
+		InstanceData.bHasMoveDestination = false;
+		StopFlightMovement(*Enemy, *AIController);
+		return EStateTreeRunStatus::Failed;
+	}
 	if (ShouldIssueMove(
 		Candidate,
 		InstanceData.MoveDestination,
@@ -522,6 +775,10 @@ EStateTreeRunStatus FEnemyApproachTargetTask::Tick(
 	{
 		InstanceData.MoveDestination = Candidate;
 		InstanceData.bHasMoveDestination = true;
+		if (!Candidate.Equals(RequestedCandidate, 0.01))
+		{
+			LogCombatFlightRoom(TEXT("ApproachAdjusted"), *Enemy, InstanceData.CachedRoom.Get(), RequestedCandidate, Candidate);
+		}
 	}
 
 	if (InstanceData.bHasMoveDestination)
@@ -529,6 +786,7 @@ EStateTreeRunStatus FEnemyApproachTargetTask::Tick(
 		ApplyFlightMovement(
 			*Enemy,
 			*AIController,
+			InstanceData.CachedRoom.Get(),
 			InstanceData.MoveDestination,
 			TargetLocation,
 			InstanceData.AcceptanceRadius,
@@ -593,6 +851,12 @@ EStateTreeRunStatus FEnemyOrbitTargetTask::EnterState(
 	InstanceData.bShouldFallbackToApproach = false;
 	InstanceData.bShouldExitOrbit = false;
 	StopFlightMovement(*InstanceData.Enemy, *AIController);
+	InstanceData.CachedRoom = ResolveCombatFlightRoom(*InstanceData.Enemy);
+	if (!InstanceData.CachedRoom.IsValid())
+	{
+		LogCombatFlightRoom(TEXT("MissingRoom"), *InstanceData.Enemy, nullptr, FVector::ZeroVector, FVector::ZeroVector);
+		return EStateTreeRunStatus::Failed;
+	}
 	ApplyCombatTaskSpeedMultiplier(
 		*InstanceData.Enemy,
 		InstanceData.SpeedMultiplier);
@@ -608,6 +872,11 @@ EStateTreeRunStatus FEnemyOrbitTargetTask::Tick(
 	AEnemyAIController* AIController = ResolveEnemyAIController(Enemy);
 	if (!Enemy || !Enemy->HasAuthority() || !AIController || !Enemy->GetWorld())
 	{
+		return EStateTreeRunStatus::Failed;
+	}
+	if (!InstanceData.CachedRoom.IsValid() || InstanceData.CachedRoom->GetRoomTag() != Enemy->GetDefaultRoomTag())
+	{
+		StopFlightMovement(*Enemy, *AIController);
 		return EStateTreeRunStatus::Failed;
 	}
 
@@ -637,6 +906,7 @@ EStateTreeRunStatus FEnemyOrbitTargetTask::Tick(
 			ApplyFlightMovement(
 				*Enemy,
 				*AIController,
+				InstanceData.CachedRoom.Get(),
 				InstanceData.MoveDestination,
 				OrbitCenter,
 				InstanceData.AcceptanceRadius,
@@ -675,7 +945,12 @@ EStateTreeRunStatus FEnemyOrbitTargetTask::Tick(
 			OrbitCenter,
 			InstanceData.FlightHeightOffset,
 			InstanceData.FloorTraceHalfHeight,
-			Candidate)
+			Candidate))
+		{
+			continue;
+		}
+		const FVector RequestedCandidate = Candidate;
+		if (!ClampCombatFlightDestination(*Enemy, InstanceData.CachedRoom.Get(), Candidate)
 			|| IsCandidateOccupied(
 				*Enemy->GetWorld(),
 				*Enemy,
@@ -695,6 +970,7 @@ EStateTreeRunStatus FEnemyOrbitTargetTask::Tick(
 			ApplyFlightMovement(
 				*Enemy,
 				*AIController,
+				InstanceData.CachedRoom.Get(),
 				InstanceData.MoveDestination,
 				OrbitCenter,
 				InstanceData.AcceptanceRadius,
@@ -707,9 +983,14 @@ EStateTreeRunStatus FEnemyOrbitTargetTask::Tick(
 		InstanceData.MoveDestination = Candidate;
 		InstanceData.bHasMoveDestination = true;
 		InstanceData.bShouldFallbackToApproach = false;
+		if (!Candidate.Equals(RequestedCandidate, 0.01))
+		{
+			LogCombatFlightRoom(TEXT("OrbitAdjusted"), *Enemy, InstanceData.CachedRoom.Get(), RequestedCandidate, Candidate);
+		}
 		ApplyFlightMovement(
 			*Enemy,
 			*AIController,
+			InstanceData.CachedRoom.Get(),
 			InstanceData.MoveDestination,
 			OrbitCenter,
 			InstanceData.AcceptanceRadius,
@@ -727,6 +1008,7 @@ EStateTreeRunStatus FEnemyOrbitTargetTask::Tick(
 		ApplyFlightMovement(
 			*Enemy,
 			*AIController,
+			InstanceData.CachedRoom.Get(),
 			InstanceData.MoveDestination,
 			OrbitCenter,
 			InstanceData.AcceptanceRadius,

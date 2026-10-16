@@ -34,6 +34,16 @@ public:
 	// 같은 우선순위 안에서는 가장 가까운 대상을 반환한다.
 	// StateTree AttackTarget에 명시적 TargetActor 바인딩이 없을 때 사용하는 서버용 폴백이다.
 	AActor* GetPreferredVisibleTarget() const;
+	// Perception 이벤트/공유 갱신이 선택한 타깃이다. EQS 대기 중에는 감지 목록을 매 프레임 재검색하지 않는다.
+	AActor* GetCachedVisibleTarget() const { return LastVisibleTarget.Get(); }
+
+#if WITH_DEV_AUTOMATION_TESTS
+	void SetCachedVisibleTargetForTesting(AActor* TargetActor) { LastVisibleTarget = TargetActor; }
+
+	friend class FEnemyHearingCombatJoinTest;
+	friend class FEnemyChaseIntegrationTest;
+	friend class FEnemySearchWorldLifecycleTest;
+#endif
 
 protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|AI")
