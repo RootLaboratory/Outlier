@@ -37,12 +37,10 @@ private:
 	virtual void ModuleDestruct() override;
 
 public:
-	// 자기 PlayerState의 슈트 상태: true는 전체 HUD, false는 Image_Hud만 표시한다.
+	// 자기 PlayerState의 슈트 상태: true는 모든 Layer, false는 예외 Layer만 표시한다.
 	void SetSuitGatedModulesEnabled(bool bEnabled);
 
-	// 초기화 및 슈트 해제 시 Image_Hud만 표시한다.
-	UFUNCTION(BlueprintCallable, Category = "HUD")
-	void InitHudImageOnly();
+	virtual void ApplyExceptionVisibility() override;
 
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UImage> Image_Hud;
@@ -64,12 +62,6 @@ public:
 
 private:
 	void CacheNestedHudWidgets();
-
-	bool bHudImageInitialized = false;
-
-	// 최초 이미지 표시 때문에 숨긴 위젯의 상태는 일반 HUD가 켜질 때 복원한다.
-	UPROPERTY(Transient)
-	TMap<TObjectPtr<UWidget>, ESlateVisibility> InitialHudWidgetVisibilities;
 
 	// Main은 컨테이너까지만 직접 바인딩하고, 컨테이너가 내부 모듈을 소유한다.
 	UPROPERTY(meta = (BindWidget))

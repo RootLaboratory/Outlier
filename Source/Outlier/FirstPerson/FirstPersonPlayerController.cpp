@@ -26,6 +26,13 @@
 #include "MainUIBase.h"
 #include "UI/UILayerGameplayTags.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Tutorial/Actors/Tuto_EventTriggerVolume.h"
+#include "Tutorial/Trigger/Tuto_EventTriggerInterface.h"
+#include "Tutorial/WorldGuide/OutlierWorldGuideManager.h"
+#include "Engine/DataTable.h"
+#include "Event/OutlierEventDataAsset.h"
+#include "Event/OutlierEventSettings.h"
+#include "Event/OutlierEventTypes.h"
 #include "Weapon/WeaponBase.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "TimerManager.h"
@@ -44,6 +51,108 @@
 #include "Engine/Level.h"
 #include "Engine/LevelStreaming.h"
 #include "HAL/PlatformTime.h"
+
+bool AFirstPersonPlayerController::NotifyTutorialVolumeEntered(ATuto_EventTriggerVolume* Volume)
+{
+	if (!IsLocalController() || !IsValid(Volume) || Volume->GetWorld() != GetWorld()) return false;
+	if (HasAuthority()) ServerNotifyTutorialVolumeEntered_Implementation(Volume);
+	else ServerNotifyTutorialVolumeEntered(Volume);
+	return true;
+}
+
+void AFirstPersonPlayerController::ServerNotifyTutorialVolumeEntered_Implementation(ATuto_EventTriggerVolume* Volume)
+{
+	const bool bAccepted = IsValid(Volume) && Volume->GetWorld() == GetWorld() && Volume->ConfirmClientEntry(this);
+	if (IsLocalController())
+	{
+		if (IsValid(Volume)) Volume->ReceiveEntryResult(this, bAccepted);
+	}
+	else ClientTutorialVolumeEntryResult(Volume, bAccepted);
+}
+
+void AFirstPersonPlayerController::ClientTutorialVolumeEntryResult_Implementation(ATuto_EventTriggerVolume* Volume, bool bAccepted)
+{
+	if (IsLocalController() && IsValid(Volume) && Volume->GetWorld() == GetWorld())
+		Volume->ReceiveEntryResult(this, bAccepted);
+}
+
+bool AFirstPersonPlayerController::RequestTutorialEvent(FGameplayTag EventTag, const FString& Source)
+{
+#if !UE_BUILD_SHIPPING
+	if (!IsLocalController() || !EventTag.IsValid())
+	{
+		UE_LOG(LogOutlier, Warning, TEXT("[EventTrigger] %s could not request '%s' from %s."),
+			*Source, *EventTag.ToString(), *GetName());
+		return false;
+	}
+	if (HasAuthority()) ServerRequestTutorialEvent_Implementation(EventTag);
+	else ServerRequestTutorialEvent(EventTag);
+	UE_LOG(LogOutlier, Log, TEXT("[EventTrigger] %s sent '%s' from %s."), *Source, *EventTag.ToString(), *GetName());
+	return true;
+#else
+	return false;
+#endif
+}
+
+void AFirstPersonPlayerController::ServerRequestTutorialEvent_Implementation(FGameplayTag EventTag)
+{
+#if !UE_BUILD_SHIPPING
+	if (!HasAuthority() || !EventTag.IsValid()) return;
+	const UOutlierEventSettings* Settings = GetDefault<UOutlierEventSettings>();
+	bool bKnownEvent = false;
+	for (UOutlierEventDataAsset* Asset : {Settings->ShooterDataAsset.LoadSynchronous(), Settings->PartnerDataAsset.LoadSynchronous()})
+	{
+		UDataTable* Table = Asset ? Asset->EventTable.LoadSynchronous() : nullptr;
+		if (!Table || Table->GetRowStruct() != FOutlierEventDataRow::StaticStruct()) continue;
+		const auto* Row = Table->FindRow<FOutlierEventDataRow>(EventTag.GetTagName(), TEXT("TutorialEventPreview"), false);
+		bKnownEvent |= Row && Row->EventTag == EventTag;
+	}
+	const bool bAccepted = bKnownEvent && ITuto_EventTriggerInterface::DispatchEventTag(GetWorld(), EventTag,
+		GetPlayerState<AOutlierPlayerState>(), ETuto_EventOperation::Trigger, ETuto_EventRegion::Both, TEXT("EventTool/Console"));
+	UE_LOG(LogOutlier, Log, TEXT("[EventTrigger] Preview '%s' server accepted=%s"), *EventTag.ToString(), bAccepted ? TEXT("O") : TEXT("X"));
+#endif
+}
+
+void AFirstPersonPlayerController::ServerDebugWorldGuide_Implementation(FName Command, FGameplayTag WidgetID, FGameplayTag NextWidgetID)
+{
+#if !UE_BUILD_SHIPPING
+	if (!HasAuthority() || !GetWorld()) return;
+	AOutlierWorldGuideManager* Manager = AOutlierWorldGuideManager::Find(GetWorld());
+	if (!Manager)
+	{
+		UE_LOG(LogOutlier, Warning, TEXT("[WorldGuideDebug][%s] No unique WorldGuideManager on the server."), *GetWorld()->GetName());
+		return;
+	}
+	if (Command == TEXT("dump"))
+	{
+		UE_LOG(LogOutlier, Log, TEXT("[WorldGuideDebug] %s"), *Manager->BuildDebugReport());
+		return;
+	}
+	bool bAccepted = false;
+	if (Command == TEXT("show"))
+	{
+		FOutlierWorldGuideContext Context;
+		Context.WidgetID = WidgetID;
+		bAccepted = Manager->EnqueueGuide(Context);
+	}
+	else if (Command == TEXT("complete") || Command == TEXT("overlap") || Command == TEXT("cancel"))
+	{
+		if (!WidgetID.IsValid()) WidgetID = Manager->ActiveContext.WidgetID;
+		if (Command == TEXT("complete")) bAccepted = Manager->CompleteWidget(WidgetID, NextWidgetID);
+		else if (Command == TEXT("overlap")) bAccepted = Manager->NotifyWidgetOverlap(WidgetID);
+		else bAccepted = Manager->CancelWidget(WidgetID);
+	}
+	else if (Command == TEXT("clear") || Command == TEXT("reset"))
+	{
+		Manager->ClearGuides(Command == TEXT("reset"));
+		bAccepted = true;
+	}
+	else return;
+	UE_LOG(LogOutlier, Log, TEXT("[WorldGuideDebug][%s] Command=%s ID=%s Next=%s accepted=%d Active=%s Pending=%d"),
+		*GetWorld()->GetName(), *Command.ToString(), *WidgetID.ToString(), *NextWidgetID.ToString(), bAccepted,
+		*Manager->ActiveContext.WidgetID.ToString(), Manager->GetPendingCount());
+#endif
+}
 
 namespace
 {
@@ -1102,7 +1211,6 @@ void AFirstPersonPlayerController::OnPossess(APawn* InPawn)
 			PPSubsystem->SetChromaticAberrationEnabled(true);
 		}
 	}
-
 	InitializeOutlierPlayerState();
 	RegisterCurrentPawnWithPlayerState();
 }
@@ -2179,6 +2287,11 @@ void FHudWidgetCollapseState::Apply(UWidget* Widget, bool bShow)
 void AFirstPersonPlayerController::CollapseMainWidgetForDeath()
 {
 	bHudHiddenForDeath = true;
+	// 튜토리얼 보이스는 자막과 함께 끝난다. 중단된 체인은 리스폰 후 재개하지 않고 버린다.
+	if (UOutlierAudioSubsystem* Audio = GetGameInstance() ? GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>() : nullptr)
+	{
+		Audio->StopLocalVoices(GetLocalPlayer());
+	}
 	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalPlayer()
 		? GetLocalPlayer()->GetSubsystem<ULocalPlayerUISubSystem>()
 		: nullptr)

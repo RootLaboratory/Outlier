@@ -27,6 +27,7 @@ class UGameOverPendingWidget;
 class UWidget;
 class AActor;
 class AShooterCharacter;
+class ATuto_EventTriggerVolume;
 enum class ESuitTransitionPhase : uint8;
 
 // HUD 위젯을 숨길 사유가 생기는 순간의 Visibility를 저장했다가, 사유가 모두 풀리면 그 값으로 되돌린다.
@@ -79,6 +80,25 @@ class OUTLIER_API AFirstPersonPlayerController : public APlayerController ,  pub
 public:
 	AFirstPersonPlayerController();
 	virtual void SetPawn(APawn* InPawn) override;
+
+	/** 로컬 볼륨 진입은 레벨 액터의 RPC가 아닌 이 소유 transport를 사용한다. */
+	bool NotifyTutorialVolumeEntered(ATuto_EventTriggerVolume* Volume);
+
+	UFUNCTION(Server, Reliable)
+	void ServerNotifyTutorialVolumeEntered(ATuto_EventTriggerVolume* Volume);
+
+	UFUNCTION(Client, Reliable)
+	void ClientTutorialVolumeEntryResult(ATuto_EventTriggerVolume* Volume, bool bAccepted);
+
+	/** 에디터/콘솔 미리보기: 같은 서버 transport로 두 플레이어에게 EventID 하나를 요청한다. */
+	bool RequestTutorialEvent(FGameplayTag EventTag, const FString& Source);
+
+	UFUNCTION(Server, Reliable)
+	void ServerRequestTutorialEvent(FGameplayTag EventTag);
+
+	/** NonShipping WorldGuide 콘솔 transport. 변경은 항상 서버에서 실행한다. */
+	UFUNCTION(Server, Reliable)
+	void ServerDebugWorldGuide(FName Command, FGameplayTag WidgetID, FGameplayTag NextWidgetID);
 
 	// 서버가 시작 당시 확보한 두 Controller에만 전달한다. Listen Host도 같은 로컬 처리 함수를 사용한다.
 	void SendSuitTransitionPhaseFromServer(AShooterCharacter* Shooter, const FGuid& TransitionId,

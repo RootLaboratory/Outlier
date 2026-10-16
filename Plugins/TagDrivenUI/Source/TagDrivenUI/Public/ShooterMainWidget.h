@@ -36,6 +36,7 @@ public:
 	//그 Construct 키워드 함수 사용 
 	virtual void ModuleInit() override;
 	virtual void ModuleDestruct() override;
+	virtual void ApplyExceptionVisibility() override;
 
 	// Shooter는 AbilitySections가 비어 있으므로 현재 능력 아이콘을 직접 잠근다(GangTong의 Shield와 같은 방식).
 	virtual void On_RepAbilityDisabledByDistance() override;

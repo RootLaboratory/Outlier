@@ -10,6 +10,11 @@ class USoundBase;
 class UAudioComponent;
 class AActor;
 class AFirstPersonPlayerController;
+class ULocalPlayer;
+
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnOutlierVoiceStarted, ULocalPlayer*, FGameplayTag);
+DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnOutlierVoiceFinished, ULocalPlayer*, FGameplayTag, bool);
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnOutlierVoiceUnavailable, ULocalPlayer*, FGameplayTag);
 
 /**
  * Resolves an audio play request (Type + Context) against Audio Bank content, loads the
@@ -37,6 +42,16 @@ public:
 
 	/** Local-only 2D playback. Suitable for input and UI feedback. */
 	bool PlayLocal2D(const FOutlierAudioPlayRequest& Request);
+
+	/** 로컬 Voice 뱅크 직렬 재생. P0는 P2/P3를 중단할 수 있고, 나머지는 대기한다. */
+	bool PlayLocalVoice(FGameplayTag SoundTag, int32 Priority, FGameplayTag RequestTag, ULocalPlayer* Listener);
+	void StopLocalVoices(ULocalPlayer* Listener);
+	/** Voice 오디오 컴포넌트 재생 시작 시 발생한다. RequestTag는 호출자의 EventTag이다. */
+	FOnOutlierVoiceStarted OnVoiceStarted;
+	/** 자연 종료 시 bCompleted=true, 중단/명시적 정지/재생 실패 시 false. */
+	FOnOutlierVoiceFinished OnVoiceFinished;
+	/** 음성을 아예 재생하지 못했을 때만(variant 없음, 로드/스폰 실패) OnVoiceFinished(false) 뒤에 발생한다. */
+	FOnOutlierVoiceUnavailable OnVoiceUnavailable;
 
 	/**
 	 * Local-only 3D playback, for callers that already execute on every client and must not
@@ -128,7 +143,31 @@ private:
 		EOutlierAudioVolumeType VolumeType = EOutlierAudioVolumeType::SFX;
 		int32 AudioInstanceId = 0;
 		bool bLooping = false;
+		int32 VoiceRequestId = 0;
 	};
+
+	struct FVoiceRequest
+	{
+		int32 Id = 0;
+		FGameplayTag SoundTag;
+		FGameplayTag RequestTag;
+		TWeakObjectPtr<ULocalPlayer> Listener;
+		TWeakObjectPtr<UWorld> World;
+		int32 Priority = 1;
+	};
+
+	void StartNextVoice();
+	void FinishActiveVoice(bool bCompleted);
+	/** 중단이 아닌 재생 실패. 활성 음성을 종료한 뒤 사용 불가로 알린다. */
+	void FailActiveVoice();
+	void HandleVoiceAudioFinished(UAudioComponent* AudioComponent);
+	void HandleVoiceWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources);
+	TArray<FVoiceRequest> VoiceQueue;
+	FVoiceRequest ActiveVoice;
+	TWeakObjectPtr<UAudioComponent> VoiceAudioComponent;
+	FDelegateHandle VoiceWorldCleanupHandle;
+	int32 NextVoiceRequestId = 1;
+	bool bStartingVoice = false;
 
 	// Bank 발견 결과. bLoadImmediately/BankId 는 Bank 메타데이터가 로드되는 즉시 알 수 있다 (가벼움).
 	// bContentLoaded 는 그 Bank 의 Definitions/Variants 까지 실제로 카탈로그에 반영됐는지.

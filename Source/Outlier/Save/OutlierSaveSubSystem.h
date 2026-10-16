@@ -39,6 +39,9 @@ public:
 	// 저장 스냅샷과 별개인 현재 매치 상태. 서버 Shooter PS가 확정된 뒤, Gameplay 로드 전에 주입한다.
 	void SyncCurrentSuitState(const AOutlierPlayerState* ShooterPlayerState);
 	bool IsCurrentSuitAcquired() const { return bCurrentSuitAcquired; }
+	// 배치 무기 픽업이 BeginPlay에서 읽는 현재 소유 무기. 슈트 상태와 같은 시점에 서버 Shooter PS에서 주입한다.
+	void SyncCurrentLoadoutState(const AOutlierPlayerState* ShooterPlayerState);
+	bool IsCurrentWeaponOwned(TSubclassOf<AWeaponBase> WeaponClass) const;
 
 	bool SetWorldProgressState(EOutlierWorldProgressType Type, FName ProgressId, bool bCompleted);
 	bool HasWorldProgress(EOutlierWorldProgressType Type, FName ProgressId) const;
@@ -58,6 +61,14 @@ public:
 	bool IsTurretDestroyed(FName TurretId) const;
 	void RestoreCurrentDestroyedTurretIds(const TSet<FName>& DestroyedTurretIds);
 	const TSet<FName>& GetCurrentDestroyedTurretIds() const { return CurrentDestroyedTurretIds; }
+
+	// 튜토리얼 이벤트 1회 기록. 체크포인트 복원과 프리셋 리로드로 줄어들지 않고 새 매치에서만 비운다.
+	// 세션 안의 사망 복원은 합집합이라 다시 나가지 않는다. 이어하기는 디스크 체크포인트 기록부터 다시 시작한다.
+	bool HasFiredTutorialEvent(FGameplayTag EventTag) const;
+	bool MarkTutorialEventFired(FGameplayTag EventTag);
+	void UnmarkTutorialEventFired(FGameplayTag EventTag);
+	void RestoreFiredTutorialEvents(const TSet<FGameplayTag>& FiredEvents);
+	const TSet<FGameplayTag>& GetFiredTutorialEvents() const { return CurrentFiredTutorialEvents; }
 
 	bool RegisterWorldProgressId(EOutlierWorldProgressType Type, FName ProgressId, UObject* Owner);
 	void UnregisterWorldProgressId(EOutlierWorldProgressType Type, FName ProgressId, const UObject* Owner);
@@ -99,6 +110,9 @@ private:
 	bool bCurrentSuitAcquired = false;
 
 	UPROPERTY(Transient)
+	TArray<TSubclassOf<AWeaponBase>> CurrentOwnedWeaponClasses;
+
+	UPROPERTY(Transient)
 	FOutlierWorldProgressSnapshot CurrentWorldProgress;
 
 	UPROPERTY(Transient)
@@ -109,6 +123,9 @@ private:
 
 	UPROPERTY(Transient)
 	TSet<FName> CommittedCheckpointIds;
+
+	UPROPERTY(Transient)
+	TSet<FGameplayTag> CurrentFiredTutorialEvents;
 
 	TMap<FName, TWeakObjectPtr<UObject>> RegisteredStableIds;
 	bool bStableIdsValid = true;

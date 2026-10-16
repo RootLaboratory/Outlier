@@ -2,11 +2,13 @@
 #include "MainUIBase.h"
 #include "AbilityIconUI.h"
 #include "Components/CanvasPanel.h"
+#include "Components/PanelWidget.h"
 #include "Components/Widget.h"
 #include "DamageFeedbackLayer.h"
 #include "EventDrivenUI.h"
 #include "LocalPlayerUISubSystem.h"
 #include "Engine/LocalPlayer.h"
+#include "InfoCanvasBase.h"
 
 void UMainUIBase::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 {
@@ -59,13 +61,13 @@ void UMainUIBase::ResetAbilityCooldowns()
 
 void UMainUIBase::FlushTransientWidgets()
 {
-	if (InteractionLayer)
-	{
-		InteractionLayer->ClearChildren();
-	}
 	if (DamageFeedbackLayer)
 	{
 		DamageFeedbackLayer->ClearDamageFeedback();
+	}
+	if (InfoLayer)
+	{
+		InfoLayer->ClearInfoQueues();
 	}
 }
 
@@ -82,29 +84,47 @@ void UMainUIBase::ModulesControl(bool Flag)
 {
 	bModulesActive = Flag;
 
-	UWidget* VisibilityRoot = ModuleLayer ? ModuleLayer.Get() : DefaultLayer.Get();
-	if (VisibilityRoot)
+	if (!DefaultLayer)
 	{
-		VisibilityRoot->SetVisibility(
-			Flag
-				? ESlateVisibility::SelfHitTestInvisible
-				: ESlateVisibility::Collapsed);
 		return;
 	}
 
-	// Native class나 아직 ModuleLayer를 반영하지 않은 WBP를 위한 안전한 fallback.
-	for (const TPair<FGameplayTag, TObjectPtr<UEventDrivenUI>>& Module : Modules)
+	// 루트는 열어 둔다. 레이어 컨테이너만 바꾸고 내부 위젯 상태는 건드리지 않는다.
+	DefaultLayer->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
+	for (int32 Index = 0; Index < DefaultLayer->GetChildrenCount(); ++Index)
 	{
-		if (UEventDrivenUI* Widget = Module.Value)
+		UWidget* Layer = DefaultLayer->GetChildAt(Index);
+		// 데미지 피드백은 스스로 표시/축소하며, 모듈이 꺼져 있어도 살아 있어야 한다.
+		if (Layer && Layer != DamageFeedbackLayer.Get())
 		{
-			if (Flag)
+			Layer->SetVisibility(Flag ? ESlateVisibility::SelfHitTestInvisible : ESlateVisibility::Collapsed);
+		}
+	}
+	if (!Flag)
+	{
+		ApplyExceptionVisibility();
+	}
+}
+
+void UMainUIBase::ShowExceptionLayer(UWidget* Layer)
+{
+	if (!DefaultLayer || !Layer)
+	{
+		return;
+	}
+
+	// 열기 전에 브랜치를 찾는다. 사망으로 숨겨진 MainUI는 여기서 열지 않는다.
+	TArray<UWidget*> Branch;
+	for (UWidget* Widget = Layer; Widget && Widget != DefaultLayer; Widget = Widget->GetParent())
+	{
+		Branch.Add(Widget);
+		if (Widget->GetParent() == DefaultLayer)
+		{
+			for (UWidget* BranchWidget : Branch)
 			{
-				Widget->Activate();
+				BranchWidget->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
 			}
-			else
-			{
-				Widget->Deactivate();
-			}
+			return;
 		}
 	}
 }

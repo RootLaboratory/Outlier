@@ -256,6 +256,26 @@ namespace OutlierGameplayTags
 				}
 			}
 		}
+
+		namespace Partner
+		{
+			namespace Scan
+			{
+				inline FGameplayTag RevealHackable()
+				{
+					static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(
+						FName(TEXT("Upgrade.Partner.Scan.RevealHackable")));
+					return Tag;
+				}
+
+				inline FGameplayTag RevealNodeFragments()
+				{
+					static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(
+						FName(TEXT("Upgrade.Partner.Scan.RevealNodeFragments")));
+					return Tag;
+				}
+			}
+		}
 	}
 
 	namespace Cooldown

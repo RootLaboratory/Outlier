@@ -112,10 +112,12 @@ void UOutlierSaveSubSystem::ResetRuntimeCheckpointState()
 	bHasLatestCheckpointSnapshot = false;
 	LatestCheckpointSnapshot = FOutlierCheckpointSnapshot();
 	bCurrentSuitAcquired = false;
+	CurrentOwnedWeaponClasses.Reset();
 	CurrentWorldProgress.Reset();
 	CurrentRoomPhaseProgress.Reset();
 	CurrentDestroyedTurretIds.Reset();
 	CommittedCheckpointIds.Reset();
+	CurrentFiredTutorialEvents.Reset();
 	ActiveOwnerId.Invalidate();
 	ActiveSaveId.Invalidate();
 	ActiveKeyVerifier.Reset();
@@ -214,6 +216,7 @@ bool UOutlierSaveSubSystem::LoadLatestSave(
 		return false;
 	}
 	RestoreCurrentRoomPhaseProgress(File.Snapshot.RoomPhaseProgress);
+	RestoreFiredTutorialEvents(File.Snapshot.FiredTutorialEvents);
 	return true;
 }
 
@@ -374,6 +377,32 @@ bool UOutlierSaveSubSystem::HasCommittedCheckpoint(FName CheckpointId) const
 	return !CheckpointId.IsNone() && CommittedCheckpointIds.Contains(CheckpointId);
 }
 
+bool UOutlierSaveSubSystem::HasFiredTutorialEvent(FGameplayTag EventTag) const
+{
+	return EventTag.IsValid() && CurrentFiredTutorialEvents.Contains(EventTag);
+}
+
+bool UOutlierSaveSubSystem::MarkTutorialEventFired(FGameplayTag EventTag)
+{
+	if (!EventTag.IsValid()) return false;
+	bool bAlreadyFired = false;
+	CurrentFiredTutorialEvents.Add(EventTag, &bAlreadyFired);
+	return !bAlreadyFired;
+}
+
+void UOutlierSaveSubSystem::UnmarkTutorialEventFired(FGameplayTag EventTag)
+{
+	CurrentFiredTutorialEvents.Remove(EventTag);
+}
+
+void UOutlierSaveSubSystem::RestoreFiredTutorialEvents(const TSet<FGameplayTag>& FiredEvents)
+{
+	// 체크포인트가 이전 기록을 갖고 있어도 이미 나간 이벤트를 되살리지 않도록 합집합만 취한다.
+	CurrentFiredTutorialEvents.Append(FiredEvents);
+	UE_LOG(LogTemp, Log, TEXT("[TutorialEvent] Restore merged %d events -> %d fired"),
+		FiredEvents.Num(), CurrentFiredTutorialEvents.Num());
+}
+
 void UOutlierSaveSubSystem::ResetCommittedCheckpointIds()
 {
 	// 마지막 체크포인트 스냅샷은 유지한다. 같은 체크포인트를 새 진행에서 다시 저장할 수 있게 목록만 비운다.
@@ -388,6 +417,29 @@ void UOutlierSaveSubSystem::SyncCurrentSuitState(const AOutlierPlayerState* Shoo
 	}
 
 	bCurrentSuitAcquired = ShooterPlayerState->GetAcquiredSuit();
+}
+
+void UOutlierSaveSubSystem::SyncCurrentLoadoutState(const AOutlierPlayerState* ShooterPlayerState)
+{
+	if (!ShooterPlayerState || !ShooterPlayerState->HasAuthority() || !ShooterPlayerState->IsShooterPlayer())
+	{
+		return;
+	}
+
+	CurrentOwnedWeaponClasses.Reset();
+	for (const FOutlierWeaponSnapshot& Slot : ShooterPlayerState->GetLoadoutSnapshot().SlotSnapshots)
+	{
+		if (Slot.WeaponClass)
+		{
+			CurrentOwnedWeaponClasses.AddUnique(Slot.WeaponClass);
+		}
+	}
+	UE_LOG(LogTemp, Log, TEXT("[Loadout] Synced current owned weapons Count=%d"), CurrentOwnedWeaponClasses.Num());
+}
+
+bool UOutlierSaveSubSystem::IsCurrentWeaponOwned(TSubclassOf<AWeaponBase> WeaponClass) const
+{
+	return WeaponClass && CurrentOwnedWeaponClasses.Contains(WeaponClass);
 }
 
 bool UOutlierSaveSubSystem::SetWorldProgressState(

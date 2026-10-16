@@ -4,6 +4,7 @@
 #include "Engine/AssetManager.h"
 #include "Engine/StreamableManager.h"
 #include "Engine/World.h"
+#include "Engine/LocalPlayer.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
 #include "GameFramework/Pawn.h"
 #include "Kismet/GameplayStatics.h"
@@ -81,11 +82,183 @@ void UOutlierAudioSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	VolumeMultipliers.Add(EOutlierAudioVolumeType::BGM, 1.0f);
 	VolumeMultipliers.Add(EOutlierAudioVolumeType::SFX, 1.0f);
 	VolumeMultipliers.Add(EOutlierAudioVolumeType::Voice, 1.0f);
+	VoiceWorldCleanupHandle = FWorldDelegates::OnWorldCleanup.AddUObject(this, &ThisClass::HandleVoiceWorldCleanup);
 	ReloadCatalog();
+}
+
+bool UOutlierAudioSubsystem::PlayLocalVoice(FGameplayTag SoundTag, int32 Priority,
+	FGameplayTag RequestTag, ULocalPlayer* Listener)
+{
+	UWorld* World = GetWorld();
+	if (!SoundTag.IsValid() || !RequestTag.IsValid() || !IsValid(Listener)
+		|| Listener->GetGameInstance() != GetGameInstance() || !World
+		|| World->bIsTearingDown || World->GetNetMode() == NM_DedicatedServer || Priority < 0 || Priority > 3)
+	{
+		return false;
+	}
+	if ((ActiveVoice.Id != 0 && ActiveVoice.Listener == Listener && ActiveVoice.RequestTag == RequestTag)
+		|| VoiceQueue.ContainsByPredicate([Listener, RequestTag](const FVoiceRequest& Request)
+		{
+			return Request.Listener == Listener && Request.RequestTag == RequestTag;
+		}))
+	{
+		return true;
+	}
+	FVoiceRequest& Request = VoiceQueue.AddDefaulted_GetRef();
+	Request.Id = NextVoiceRequestId++;
+	Request.SoundTag = SoundTag;
+	Request.RequestTag = RequestTag;
+	Request.Listener = Listener;
+	Request.World = World;
+	Request.Priority = Priority;
+	if (Priority == 0 && ActiveVoice.Id != 0 && ActiveVoice.Priority >= 2)
+	{
+		FinishActiveVoice(false);
+	}
+	StartNextVoice();
+	return true;
+}
+
+void UOutlierAudioSubsystem::StartNextVoice()
+{
+	if (bStartingVoice || ActiveVoice.Id != 0)
+	{
+		return;
+	}
+	TGuardValue<bool> Guard(bStartingVoice, true);
+	const FGameplayTag VoiceType = FGameplayTag::RequestGameplayTag(TEXT("Audio.Type.Voice"));
+	while (!VoiceQueue.IsEmpty() && ActiveVoice.Id == 0)
+	{
+		VoiceQueue.RemoveAll([this](const FVoiceRequest& Request)
+		{
+			return !Request.Listener.IsValid() || !Request.World.IsValid() || Request.World.Get() != GetWorld();
+		});
+		if (VoiceQueue.IsEmpty())
+		{
+			return;
+		}
+		int32 NextIndex = 0;
+		for (int32 Index = 1; Index < VoiceQueue.Num(); ++Index)
+		{
+			if (VoiceQueue[Index].Priority < VoiceQueue[NextIndex].Priority)
+			{
+				NextIndex = Index;
+			}
+		}
+		FDiscoveredBank* Bank = DiscoveredBanksByType.Find(VoiceType);
+		if (!Bank && BankMetadataLoadHandle.IsValid())
+		{
+			return;
+		}
+		if (Bank && !Bank->bContentLoaded)
+		{
+			LoadBankContent(VoiceType);
+			// 빈 뱅크는 동기적으로 준비될 수 있다.
+			if (!Bank->bContentLoaded)
+			{
+				if (!BankContentLoadHandles.Contains(VoiceType))
+				{
+					ActiveVoice = VoiceQueue[NextIndex];
+					VoiceQueue.RemoveAt(NextIndex);
+					FailActiveVoice();
+					continue;
+				}
+				return;
+			}
+		}
+		ActiveVoice = VoiceQueue[NextIndex];
+		VoiceQueue.RemoveAt(NextIndex);
+		FGameplayTagContainer ContextTags;
+		ContextTags.AddTag(ActiveVoice.SoundTag);
+		const FRuntimeCatalogEntry* Entry = ResolveBestEntry(VoiceType, ContextTags);
+		if (!Entry || Entry->VolumeType != EOutlierAudioVolumeType::Voice
+			|| Entry->PlaybackPolicy != EOutlierAudioPlaybackPolicy::OneShot)
+		{
+			UE_LOG(LogOutlier, Warning, TEXT("[Audio] Voice context '%s' needs a Voice-volume OneShot variant."),
+				*ActiveVoice.SoundTag.ToString());
+			FailActiveVoice();
+			continue;
+		}
+		FPendingPlay PendingPlay;
+		PendingPlay.World = ActiveVoice.World;
+		PendingPlay.SourceName = Entry->SourceName;
+		PendingPlay.VolumeMultiplier = Entry->VolumeMultiplier;
+		PendingPlay.PitchMultiplier = Entry->PitchMultiplier;
+		PendingPlay.VolumeType = EOutlierAudioVolumeType::Voice;
+		PendingPlay.VoiceRequestId = ActiveVoice.Id;
+		if (!QueueOrPlay(*Entry, PendingPlay))
+		{
+			FailActiveVoice();
+		}
+	}
+}
+
+void UOutlierAudioSubsystem::FailActiveVoice()
+{
+	if (ActiveVoice.Id == 0)
+	{
+		return;
+	}
+	const TWeakObjectPtr<ULocalPlayer> Listener = ActiveVoice.Listener;
+	const FGameplayTag RequestTag = ActiveVoice.RequestTag;
+	FinishActiveVoice(false);
+	OnVoiceUnavailable.Broadcast(Listener.Get(), RequestTag);
+}
+
+void UOutlierAudioSubsystem::FinishActiveVoice(bool bCompleted)
+{
+	if (ActiveVoice.Id == 0)
+	{
+		return;
+	}
+	const FVoiceRequest Finished = ActiveVoice;
+	ActiveVoice = FVoiceRequest();
+	UAudioComponent* Component = VoiceAudioComponent.Get();
+	VoiceAudioComponent.Reset();
+	if (Component)
+	{
+		Component->OnAudioFinishedNative.RemoveAll(this);
+		if (!bCompleted)
+		{
+			Component->Stop();
+		}
+	}
+	OnVoiceFinished.Broadcast(Finished.Listener.Get(), Finished.RequestTag, bCompleted);
+}
+
+void UOutlierAudioSubsystem::HandleVoiceAudioFinished(UAudioComponent* AudioComponent)
+{
+	if (AudioComponent == VoiceAudioComponent.Get())
+	{
+		FinishActiveVoice(true);
+		StartNextVoice();
+	}
+}
+
+void UOutlierAudioSubsystem::StopLocalVoices(ULocalPlayer* Listener)
+{
+	VoiceQueue.RemoveAll([Listener](const FVoiceRequest& Request) { return Request.Listener == Listener; });
+	if (ActiveVoice.Listener == Listener)
+	{
+		FinishActiveVoice(false);
+	}
+	StartNextVoice();
+}
+
+void UOutlierAudioSubsystem::HandleVoiceWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources)
+{
+	VoiceQueue.RemoveAll([World](const FVoiceRequest& Request) { return Request.World.Get() == World; });
+	if (ActiveVoice.World.Get() == World)
+	{
+		FinishActiveVoice(false);
+	}
 }
 
 void UOutlierAudioSubsystem::Deinitialize()
 {
+	FWorldDelegates::OnWorldCleanup.Remove(VoiceWorldCleanupHandle);
+	VoiceQueue.Reset();
+	FinishActiveVoice(false);
 	if (BankMetadataLoadHandle.IsValid())
 	{
 		BankMetadataLoadHandle->CancelHandle();
@@ -126,6 +299,8 @@ void UOutlierAudioSubsystem::Deinitialize()
 
 bool UOutlierAudioSubsystem::ReloadCatalog()
 {
+	VoiceQueue.Reset();
+	FinishActiveVoice(false);
 	if (BankMetadataLoadHandle.IsValid())
 	{
 		BankMetadataLoadHandle->CancelHandle();
@@ -247,6 +422,7 @@ void UOutlierAudioSubsystem::HandleBankMetadataLoaded(TArray<FPrimaryAssetId> Ba
 		TEXT("[Audio] Discovered %d Audio Banks (%d eager)."),
 		DiscoveredBanksByType.Num(),
 		EagerBankCount);
+	StartNextVoice();
 }
 
 void UOutlierAudioSubsystem::LoadBankContent(FGameplayTag TypeTag)
@@ -333,6 +509,7 @@ void UOutlierAudioSubsystem::HandleBankContentLoaded(FGameplayTag TypeTag)
 
 	IngestBank(Bank);
 	FlushPendingPlaysForType(TypeTag);
+	StartNextVoice();
 }
 
 void UOutlierAudioSubsystem::IngestBank(UOutlierAudioBank* Bank)
@@ -983,6 +1160,8 @@ float UOutlierAudioSubsystem::GetVolumeMultiplier(EOutlierAudioVolumeType Volume
 
 void UOutlierAudioSubsystem::StopAllLocalAudio()
 {
+	VoiceQueue.Reset();
+	FinishActiveVoice(false);
 	for (FActiveAudioPlayback& ActivePlayback : ActiveAudioPlaybacks)
 	{
 		if (UAudioComponent* AudioComponent = ActivePlayback.Component.Get())
@@ -1392,6 +1571,12 @@ void UOutlierAudioSubsystem::HandleSoundLoaded(FSoftObjectPath SoundPath)
 		UE_LOG(LogOutlier, Error,
 			TEXT("[Audio] Async load completed without a valid USoundBase for '%s'."),
 			*SoundPath.ToString());
+		if (PendingPlays.ContainsByPredicate([this](const FPendingPlay& Play)
+			{ return Play.VoiceRequestId != 0 && Play.VoiceRequestId == ActiveVoice.Id; }))
+		{
+			FailActiveVoice();
+			StartNextVoice();
+		}
 		return;
 	}
 
@@ -1407,6 +1592,11 @@ void UOutlierAudioSubsystem::ExecutePlay(
 {
 	UWorld* World = PendingPlay.World.Get();
 	if (!World || !Sound)
+	{
+		return;
+	}
+	// 비동기 로딩 중 중단된 음성은 에셋이 도착해도 재생하지 않는다.
+	if (PendingPlay.VoiceRequestId != 0 && PendingPlay.VoiceRequestId != ActiveVoice.Id)
 	{
 		return;
 	}
@@ -1538,6 +1728,18 @@ void UOutlierAudioSubsystem::ExecutePlay(
 		AudioComponent,
 		PendingPlay.VolumeMultiplier,
 		PendingPlay.VolumeType);
+	if (PendingPlay.VoiceRequestId != 0)
+	{
+		if (!AudioComponent)
+		{
+			FailActiveVoice();
+			StartNextVoice();
+			return;
+		}
+		VoiceAudioComponent = AudioComponent;
+		AudioComponent->OnAudioFinishedNative.AddUObject(this, &ThisClass::HandleVoiceAudioFinished);
+		OnVoiceStarted.Broadcast(ActiveVoice.Listener.Get(), ActiveVoice.RequestTag);
+	}
 }
 
 void UOutlierAudioSubsystem::TrackActiveAudioComponent(

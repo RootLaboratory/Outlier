@@ -207,6 +207,10 @@ struct OUTLIER_API FOutlierCheckpointSnapshot
 	UPROPERTY()
 	int32 GunAdaptationStack = 0;
 
+	// 튜토리얼 EventTag는 게임 플로우 전체에서 한 번만 나간다. 복원은 현재 기록과 합칠 뿐 되돌리지 않는다.
+	UPROPERTY()
+	TSet<FGameplayTag> FiredTutorialEvents;
+
 	bool IsValid() const
 	{
 		return bInitialSnapshot || !CheckpointId.IsNone();

@@ -35,6 +35,8 @@ public:
 	virtual UHackableComponent* GetHackableComponent() const override;
 	virtual void HandleHackEffect(FGameplayTag EffectTag, const FHackResultContext& Context) override;
 
+	virtual EScanRevealCondition GetScanRevealCondition() const override;
+
 	virtual FGameplayTag GetCurrentRoomTag() const override;
 	virtual FGameplayTag GetDefaultRoomTag() const override;
 	virtual URoomTagComponent* GetRoomTagComp() const override;

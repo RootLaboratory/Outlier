@@ -96,6 +96,12 @@ namespace HackGameplayTags
 
 	namespace MiniGame
 	{
+		inline FGameplayTag Root()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.MiniGame")));
+			return Tag;
+		}
+
 		inline FGameplayTag None()
 		{
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.MiniGame.None")));

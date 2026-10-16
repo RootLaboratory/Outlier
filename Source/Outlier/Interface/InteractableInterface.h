@@ -27,6 +27,11 @@ public:
 		return static_cast<int32>(EScanType::Interaction);
 	}
 
+	virtual EScanRevealCondition GetScanRevealCondition() const override
+	{
+		return EScanRevealCondition::RevealNodeFragments;
+	}
+
 	virtual UInteractableComponent* GetInteractableComponent() const = 0;
 	virtual bool Interact(AFirstPersonCharacter* Interactor) = 0;
 	// 기본 상호작용은 즉시 완료한다. 비동기 대상만 실제 commit 이후 성공을 별도로 통지한다.
