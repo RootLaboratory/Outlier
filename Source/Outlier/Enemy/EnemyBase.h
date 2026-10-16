@@ -719,6 +719,10 @@ protected:
 	void ResetPatrolPoints();
 	virtual void ResetPoolPresentationState();
 	virtual void PrepareForPoolIdle();
+	// 행동 중단 여부는 기존 상태 로직이 결정하고, 파생 클래스는 작은 피격 연출만 정리한다.
+	virtual void InterruptDamagePresentation(float BlendOutTime) {}
+	virtual void OnPoolStateApplied(EEnemyPoolState PreviousState) {}
+	virtual bool ShouldResetPoolMontages() const { return true; }
 
 	// 사망 시 원본 메시를 대체할, 미리 프랙처된 Geometry Collection.
 	// 비워두면 파편 연출을 통째로 건너뛰고 기존 사망 동작 그대로 간다.

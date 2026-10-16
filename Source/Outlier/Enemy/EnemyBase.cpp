@@ -847,6 +847,7 @@ void AEnemyBase::ApplyPoolState(EEnemyPoolState PreviousState)
 		}
 	}
 
+	OnPoolStateApplied(PreviousState);
 	OnEnemyPoolStateChanged(PreviousState, PoolState);
 }
 
@@ -947,7 +948,7 @@ void AEnemyBase::ResetPoolPresentationState()
 	}
 	SavedDeathCollision.Reset();
 
-	if (USkeletalMeshComponent* CharacterMesh = GetMesh())
+	if (USkeletalMeshComponent* CharacterMesh = ShouldResetPoolMontages() ? GetMesh() : nullptr)
 	{
 		if (UAnimInstance* AnimInstance = CharacterMesh->GetAnimInstance())
 		{
@@ -1288,6 +1289,7 @@ void AEnemyBase::SetEnemyPossessed(bool bNewIsPossessed)
 		return;
 	}
 
+	InterruptDamagePresentation(0.05f);
 	bPossessedAttackHeld = false;
 	EndPossessedImpactInputLock();
 	bIsPossessed = bNewIsPossessed;
@@ -1365,6 +1367,7 @@ bool AEnemyBase::BeginPossessionProcess(APartnerCharacter* PartnerCharacter)
 		return false;
 	}
 
+	InterruptDamagePresentation(0.05f);
 	StopCurrentAttack();
 	RemoveRoomTargetObserver();
 	ClearSharedTargetContact();
@@ -1829,6 +1832,7 @@ void AEnemyBase::EnterStun()
 		return;
 	}
 
+	InterruptDamagePresentation(0.05f);
 	PreStunCombatState = CombatState;
 	ReleasePatrolDestination();
 	CombatState = EEnemyCombatState::Stun;
@@ -2106,6 +2110,10 @@ void AEnemyBase::ApplyExplosionReaction(
 		1.0f);
 	const FVector ImpactVelocity =
 		Direction * ImpulseStrength * (1.0f - ResistanceRatio);
+	if (ImpactVelocity.Size() >= RuntimeImpactReactionProfile.MinReactionStrength)
+	{
+		InterruptDamagePresentation(0.05f);
+	}
 	if (IsEnemyImpactReactionDiagnosticsEnabled())
 	{
 		UE_LOG(
@@ -2371,6 +2379,7 @@ bool AEnemyBase::BeginImpactReaction()
 		return false;
 	}
 
+	InterruptDamagePresentation(0.05f);
 	bImpactReactionActive = true;
 	ReleasePatrolDestination();
 	StopCurrentAttack();
@@ -2745,6 +2754,11 @@ void AEnemyBase::UnbindGasVitalityObservers()
 
 void AEnemyBase::HandleHealthChanged(const FOnAttributeChangeData& ChangeData)
 {
+	if (!HasAuthority() && ChangeData.NewValue <= 0.0f)
+	{
+		InterruptDamagePresentation(0.0f);
+	}
+
 	if (HasAuthority() && ChangeData.OldValue > 0.0f && ChangeData.NewValue <= 0.0f)
 	{
 		Die();
@@ -2772,6 +2786,12 @@ void AEnemyBase::HandleHealthChanged(const FOnAttributeChangeData& ChangeData)
 
 void AEnemyBase::HandleStunnedTagChanged(const FGameplayTag StunnedTag, int32 NewCount)
 {
+	// 복제된 스턴도 로컬 피격 연출을 정리한다. 실제 전투 상태 변경은 아래 서버 경로만 담당한다.
+	if (!HasAuthority() && StunnedTag == OutlierGameplayTags::State::Stunned() && NewCount > 0)
+	{
+		InterruptDamagePresentation(0.05f);
+	}
+
 	if (!HasAuthority() || StunnedTag != OutlierGameplayTags::State::Stunned())
 	{
 		return;
@@ -3573,6 +3593,7 @@ void AEnemyBase::PerformDeathCleanup()
 		return;
 	}
 	bDeathCleanupPerformed = true;
+	InterruptDamagePresentation(0.0f);
 
 	if (HasAuthority())
 	{
