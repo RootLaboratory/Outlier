@@ -2045,6 +2045,13 @@ bool FOutlierGasShooterBulletReflectionTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Reflected explosion applies the same amount to the source"), Enemy->GetCurrentHealth(), 65.0f);
 
 	FOutlierShooterSuitConfig UpgradedConfig = ShooterASC->GetShooterSuitConfig();
+	UpgradedConfig.BulletReflection.ReflectDamageMult = 1.4f;
+	TestTrue(TEXT("First reflection upgrade updates the damage multiplier"),
+		ShooterASC->UpdateShooterSuitConfig(UpgradedConfig));
+	ApplyDamageRequest(Shooter, 5.0f, WeaponDamageEvent, nullptr, Enemy);
+	TestEqual(TEXT("140% reflection returns 7 damage for a 5 damage hit"), Enemy->GetCurrentHealth(), 58.0f);
+	// 이후 기존 피해 판정 검증은 동일한 체력 기준을 사용한다.
+	EnemyASC->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetHealthAttribute(), 65.0f);
 	UpgradedConfig.BulletReflection.ReflectDamageMult = 2.0f;
 	TestTrue(
 		TEXT("Bullet Reflection damage multiplier updates in the ASC config cache"),

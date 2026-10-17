@@ -238,6 +238,7 @@ public:
 	float GetDamageAtDistance(float DistanceCm) const;
 	float GetMovementSpeedMultiplier() const { return MovementSpeedMultiplier; }
 	float GetFirstPersonProceduralRecoilMultiplier() const;
+	float GetUpgradeRecoilMultiplier() const;
 	float GetThirdPersonProceduralRecoilMultiplier() const;
 	float GetThirdPersonProceduralSprintMultiplier() const;
 	float GetThirdPersonProceduralWallOffsetMultiplier() const;

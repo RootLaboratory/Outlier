@@ -752,13 +752,15 @@ void ARangedWeaponBase::ApplyRecoil()
 		return;
 	}
 
+	const float UpgradeRecoilMultiplier = GetUpgradeRecoilMultiplier();
 	++RecoilShotSequence;
 	LastCalculatedControlRecoil = OutlierWeaponRecoil::CalculateControlRecoil(
 		ActiveRecoilProfile,
 		RecoilMultiplier,
 		RecoilShotSequence,
-		RecoilRuntimeState);
-	LastWeaponCameraShakeScale = FMath::Max(ActiveRecoilProfile.CameraShakeScale, 0.0f);
+		RecoilRuntimeState,
+		UpgradeRecoilMultiplier);
+	LastWeaponCameraShakeScale = FMath::Max(ActiveRecoilProfile.CameraShakeScale, 0.0f) * UpgradeRecoilMultiplier;
 	LastWeaponCameraShakeDuration = FMath::Max(ActiveRecoilProfile.CameraShakeDuration, 0.0f);
 
 	const float ResetDelay = FMath::Max(ActiveRecoilProfile.RecoilResetDelay, 0.0f);
@@ -822,6 +824,7 @@ void ARangedWeaponBase::ApplyLocalRecoilPresentation(
 		return;
 	}
 
+	// 조준 반동과 카메라 흔들림은 서버에서 배율 적용이 끝난 값이다. 여기서 다시 곱하지 않는다.
 	QueueLocalControlRecoil(ControlRecoilDelta, ControlKickInterpSpeed);
 
 	if (APlayerController* PlayerController = Cast<APlayerController>(OwnerCharacter->GetController()))
@@ -855,7 +858,8 @@ void ARangedWeaponBase::ApplyLocalRecoilPresentation(
 	{
 		FPAnim->AddViewModelRecoil(
 			RecoilMultiplier * GetFirstPersonProceduralRecoilMultiplier(),
-			NormalizedShotDirection
+			NormalizedShotDirection,
+			GetUpgradeRecoilMultiplier()
 		);
 	}
 }
@@ -1330,7 +1334,7 @@ void ARangedWeaponBase::MulticastPlayFireFX_Implementation(
 			if (UShooterAnimInstance* TPAnim = Cast<UShooterAnimInstance>(ThirdPersonMesh->GetAnimInstance()))
 			{
 				TPAnim->AddThirdPersonRecoil(
-					RecoilMultiplier * GetThirdPersonProceduralRecoilMultiplier(),
+					RecoilMultiplier * GetThirdPersonProceduralRecoilMultiplier() * GetUpgradeRecoilMultiplier(),
 					NormalizedShotDirection
 				);
 			}

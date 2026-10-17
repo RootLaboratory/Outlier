@@ -30,6 +30,7 @@ class APartnerCharacter;
 class UOutlierAbilitySystemComponent;
 class UOutlierVitalAttributeSet;
 class UOutlierShieldAttributeSet;
+class UOutlierWeaponAttributeSet;
 class UDataTable;
 class USphereComponent;
 class USkeletalMesh;
@@ -246,6 +247,9 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
 	TObjectPtr<UOutlierShieldAttributeSet> ShieldAttributeSet;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
+	TObjectPtr<UOutlierWeaponAttributeSet> WeaponAttributeSet;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UShooterHealthComponent> HealthComponent;
@@ -649,6 +653,7 @@ public:
 	}
 	const UOutlierVitalAttributeSet* GetVitalAttributeSet() const { return VitalAttributeSet; }
 	const UOutlierShieldAttributeSet* GetShieldAttributeSet() const { return ShieldAttributeSet; }
+	float GetWeaponRecoilMultiplier() const;
 
 	// Events
 	UPROPERTY(BlueprintAssignable, Category = "Event")

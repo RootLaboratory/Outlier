@@ -46,6 +46,7 @@
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "GAS/Attributes/OutlierVitalAttributeSet.h"
 #include "GAS/Attributes/OutlierShieldAttributeSet.h"
+#include "GAS/Attributes/OutlierWeaponAttributeSet.h"
 #include "Upgrade/OutlierUpgradeComponent.h"
 #include "Net/UnrealNetwork.h"
 #include "OutlierPlayerState.h"
@@ -282,6 +283,7 @@ AShooterCharacter::AShooterCharacter(const FObjectInitializer& ObjectInitializer
 	OutlierAbilitySystemComponent->SetReplicationMode(EGameplayEffectReplicationMode::Mixed);
 	VitalAttributeSet = CreateDefaultSubobject<UOutlierVitalAttributeSet>(TEXT("VitalAttributeSet"));
 	ShieldAttributeSet = CreateDefaultSubobject<UOutlierShieldAttributeSet>(TEXT("ShieldAttributeSet"));
+	WeaponAttributeSet = CreateDefaultSubobject<UOutlierWeaponAttributeSet>(TEXT("WeaponAttributeSet"));
 
 	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
 	GetCharacterMovement()->bCanWalkOffLedgesWhenCrouching = true;
@@ -586,6 +588,11 @@ void AShooterCharacter::OnRep_PlayerState()
 		RefreshReplicatedPresentation();
 	}
 	RefreshShooterSuitUI();
+}
+
+float AShooterCharacter::GetWeaponRecoilMultiplier() const
+{
+	return WeaponAttributeSet ? WeaponAttributeSet->GetRecoilMultiplier() : 1.0f;
 }
 
 UAbilitySystemComponent* AShooterCharacter::GetAbilitySystemComponent() const
