@@ -68,6 +68,14 @@ public:
 };
 
 UCLASS()
+class OUTLIER_API UOutlierShooterStealthExitSpeedGameplayEffect : public UGameplayEffect
+{
+	GENERATED_BODY()
+public:
+	UOutlierShooterStealthExitSpeedGameplayEffect(const FObjectInitializer& ObjectInitializer);
+};
+
+UCLASS()
 class OUTLIER_API UOutlierPartnerShieldGameplayEffect : public UGameplayEffect
 {
 	GENERATED_BODY()

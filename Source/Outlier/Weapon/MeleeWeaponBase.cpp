@@ -8,6 +8,8 @@
 #include "Drone/Partner/PartnerVitalityComponent.h"
 #include "Enemy/EnemyBase.h"
 #include "GAS/Attributes/OutlierVitalAttributeSet.h"
+#include "GAS/OutlierAbilitySystemComponent.h"
+#include "OutlierPlayerState.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Team/OutlierTeamIds.h"
@@ -94,6 +96,30 @@ void AMeleeWeaponBase::StartAttack()
 	}
 
 	Super::StartAttack();
+	// Notify의 실제 피해까지 같은 공격 시작 자격을 보존한다.
+	// 일반/자동 은신 해제는 애니메이션과 피해 실행보다 먼저 끝낸다.
+	SwingStealthSession.Reset();
+	if (AShooterCharacter* OwnerShooter = Cast<AShooterCharacter>(WeaponOwner))
+	{
+		if (UOutlierAbilitySystemComponent* AbilitySystem = OwnerShooter->GetOutlierAbilitySystemComponent())
+		{
+			SwingStealthSession = AbilitySystem->BeginShooterStealthAttack();
+		}
+	}
+	else if (APartnerCharacter* Partner = Cast<APartnerCharacter>(WeaponOwner))
+	{
+		Partner->NotifyOffensiveActionExecuted();
+	}
+	else if (AEnemyBase* Enemy = Cast<AEnemyBase>(WeaponOwner); Enemy && Enemy->IsEnemyPossessed())
+	{
+		if (AOutlierPlayerState* PlayerState = Enemy->GetPlayerState<AOutlierPlayerState>())
+		{
+			if (AShooterCharacter* PairShooter = PlayerState->GetShooterCharacter())
+			{
+				PairShooter->NotifyOffensiveActionExecuted();
+			}
+		}
+	}
 	AttackSequence = AttackSequence == MAX_int32 ? 1 : AttackSequence + 1;
 	AttackPhase = EMeleeAttackPhase::Attack;
 	RefreshOwnerCombatState();
@@ -131,6 +157,7 @@ void AMeleeWeaponBase::StopAttack()
 
 	bWantsToAttack = false;
 	bUsesAnimationTiming = false;
+	SwingStealthSession.Reset();
 	ResetMeleeTraceState();
 	if (AShooterCharacter* OwnerShooter = Cast<AShooterCharacter>(WeaponOwner))
 	{
@@ -791,6 +818,7 @@ void AMeleeWeaponBase::ApplyHitToTarget(AActor* Target, const FHitResult& HitRes
 		: GetActorLocation();
 	DamageRequest.EventInstigator = IsValid(WeaponOwner) ? WeaponOwner->GetController() : nullptr;
 	DamageRequest.DamageCauser = this;
+	DamageRequest.StealthSession = SwingStealthSession;
 	DamageRequest.HitResult = HitResult;
 	if (OutlierDamage::Apply(Target, DamageRequest) <= 0.0f)
 	{

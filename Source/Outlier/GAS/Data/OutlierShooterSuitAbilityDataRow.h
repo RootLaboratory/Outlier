@@ -15,6 +15,14 @@ struct OUTLIER_API FOutlierShooterSuitAbilityDataRow : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (ClampMin = "0.0", Units = "Seconds"))
 	float CooldownSeconds = 0.0f;
 
+	// Stealth 행: 30이면 기본 이동속도에 30%를 더한다. 은신 중/해제 후에 같은 값을 쓴다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (ClampMin = "0.0", Units = "Percent"))
+	float MovementSpeedBonusPercent = 30.0f;
+
+	// Stealth 행: 실제 은신 해제 후 이동속도 보너스를 유지할 시간. 0이면 종료 버프를 생략한다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (ClampMin = "0.0", Units = "Seconds"))
+	float ExitSpeedBuffDurationSeconds = 2.0f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (ClampMin = "0.0", Units = "Seconds"))
 	float CastTimeSeconds = 0.0f;
 

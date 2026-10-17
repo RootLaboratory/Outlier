@@ -7,6 +7,16 @@
 
 class AActor;
 class AController;
+class AShooterCharacter;
+
+// 한 은신에서 시작한 공격들이 공유하는 서버 전용 자격이다.
+// 공격 때문에 은신이 먼저 끝나도 막타까지 살아 있고, 첫 처치 보상은 한 번만 소비된다.
+struct FOutlierStealthSession
+{
+	TWeakObjectPtr<AShooterCharacter> Shooter;
+	uint32 Generation = 0;
+	bool bAssassinsStrikeConsumed = false;
+};
 
 // Enemy 내성 시스템이 피해 감소와 최종 처치 결과를 같은 기준으로 판정할 수 있도록
 // 공격을 만든 지점에서 확정해 전달한다. 기본값은 시스템/환경 피해가 Stack에 관여하지 않는 Ignore다.
@@ -30,6 +40,7 @@ struct OUTLIER_API FOutlierDamageRequest
 	bool bReflectedDamage = false;
 	AController* EventInstigator = nullptr;
 	AActor* DamageCauser = nullptr;
+	TSharedPtr<FOutlierStealthSession> StealthSession;
 };
 
 UINTERFACE(MinimalAPI)

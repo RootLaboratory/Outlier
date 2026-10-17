@@ -638,6 +638,11 @@ void ULocalPlayerUISubSystem::OnAbilityEnabledByDistance()
 
 void ULocalPlayerUISubSystem::OnAbilityUsed(const FGameplayTag& AbilityTag, float CoolTime)
 {
+	if (!AbilityTag.IsValid() || CoolTime < 0.0f)
+	{
+		return;
+	}
+
 	UMainUIBase* MainUI = GetMainUI();
 	if (!MainUI)
 	{
@@ -646,7 +651,15 @@ void ULocalPlayerUISubSystem::OnAbilityUsed(const FGameplayTag& AbilityTag, floa
 
 	if (UAbilityIconUI* Icon = MainUI->GetAbilityIcon(AbilityTag))
 	{
-		Icon->SetCoolTime(CoolTime);
+		// 0초를 새 타이머로 넣으면 갱신되지 않는 쿨타임 상태가 남으므로 명시적으로 종료한다.
+		if (CoolTime == 0.0f)
+		{
+			Icon->CooldownDone();
+		}
+		else
+		{
+			Icon->SetCoolTime(CoolTime);
+		}
 	}
 
 	if (UShooterCurrentAbilityIcon* CurrentAbilityIcon = Cast<UShooterCurrentAbilityIcon>(GetModule(TagDrivenUITags::Shooter::CurrentAbility())))

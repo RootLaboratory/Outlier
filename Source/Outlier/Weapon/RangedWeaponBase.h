@@ -17,6 +17,7 @@ class UWeaponFeedbackDefinition;
 class UStaticMesh;
 class UStaticMeshComponent;
 class AShooterCharacter;
+struct FOutlierStealthSession;
 /**
  * 
  */
@@ -386,7 +387,9 @@ protected:
 
 	void ResolveMuzzleTransforms(bool bFirstPerson, FName FiredMuzzleSocketName,
 		TArray<FTransform>& OutMuzzleTransforms) const;
-	void FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPlayShotSound);
+	TSharedPtr<FOutlierStealthSession> BeginStealthAttack();
+	void FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPlayShotSound,
+		const TSharedPtr<FOutlierStealthSession>& StealthSession);
 
 	ULocalPlayerUISubSystem* GetLocalUISubsystem() const; //Helper
 };

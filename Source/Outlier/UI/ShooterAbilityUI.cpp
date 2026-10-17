@@ -91,7 +91,7 @@ bool UShooterAbilityUI::TryGetHoveredAbility(FGameplayTag& OutAbilityTag, bool b
 
 bool UShooterAbilityUI::ApplyCooldownIfMatches(const FGameplayTag& AbilityTag, float CoolTime)
 {
-	if (!AbilityTag.IsValid() || CoolTime <= 0.0f)
+	if (!AbilityTag.IsValid() || CoolTime < 0.0f)
 	{
 		return false;
 	}
@@ -102,7 +102,15 @@ bool UShooterAbilityUI::ApplyCooldownIfMatches(const FGameplayTag& AbilityTag, f
 		return false;
 	}
 
-	AbilityIcon->SetCoolTime(CoolTime);
+	// 쿨타임 감소로 즉시 준비되면 해당 아이콘만 완료 처리한다.
+	if (CoolTime == 0.0f)
+	{
+		AbilityIcon->CooldownDone();
+	}
+	else
+	{
+		AbilityIcon->SetCoolTime(CoolTime);
+	}
 	return true;
 }
 

@@ -839,6 +839,7 @@ protected:
 	TWeakObjectPtr<UEnemyAdaptationSubsystem> CachedEnemyAdaptationSubsystem;
 	EOutlierAdaptationDamageCategory LastAcceptedAdaptationDamageCategory =
 		EOutlierAdaptationDamageCategory::Ignore;
+	TSharedPtr<FOutlierStealthSession> LastAcceptedStealthSession;
 	bool bDeathCleanupPerformed = false;
 #if WITH_DEV_AUTOMATION_TESTS
 	bool bPoolPresentationAutoCompleteForTesting = true;

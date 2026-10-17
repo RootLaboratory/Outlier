@@ -31,12 +31,40 @@
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "GameplayEffectComponents/AssetTagsGameplayEffectComponent.h"
 #include "GameplayTags/OutlierGameplayTags.h"
+#include "OutlierPlayerState.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Weapon/RangedWeaponBase.h"
 #include "UObject/UnrealType.h"
 
 namespace
 {
+	bool PrepareStealthTestShooter(AShooterCharacter* Shooter)
+	{
+		UOutlierAbilitySystemComponent* AbilitySystem = Shooter->GetOutlierAbilitySystemComponent();
+		if (!AbilitySystem || !AbilitySystem->IsShooterSuitConfigured())
+		{
+			return false;
+		}
+		AOutlierPlayerState* PlayerState = Shooter->GetWorld()->SpawnActor<AOutlierPlayerState>();
+		if (!PlayerState)
+		{
+			return false;
+		}
+		// 실제 발동 게이트를 통과할 슈트 획득/Grant 근거를 준비한다.
+		// 에디터의 bNoGrantMode나 Blueprint의 초기 업그레이드 설정에는 의존하지 않는다.
+		Shooter->SetPlayerState(PlayerState);
+		PlayerState->SetAcquiredSuit(true);
+		AbilitySystem->AddLooseGameplayTag(OutlierGameplayTags::Ability::Shooter::Stealth());
+
+		// 수명/쿨타임 검사는 디스크 DT를 조정해도 같은 조건으로 재현한다.
+		FOutlierShooterSuitConfig Config = AbilitySystem->GetShooterSuitConfig();
+		Config.Stealth.DurationSeconds = 5.0f;
+		Config.Stealth.CooldownSeconds = 20.0f;
+		Config.Stealth.MovementSpeedBonusPercent = 30.0f;
+		Config.Stealth.ExitSpeedBuffDurationSeconds = 2.0f;
+		return AbilitySystem->UpdateShooterSuitConfig(Config) && Shooter->IsSuitUsable();
+	}
+
 	FDataTableRowHandle MakeDataTableRowHandle(UDataTable* DataTable, FName RowName)
 	{
 		FDataTableRowHandle Handle;
@@ -1808,7 +1836,9 @@ bool FOutlierGasShooterStealthLifecycleTest::RunTest(const FString& Parameters)
 	World->AddToRoot();
 	WorldContext.SetCurrentWorld(World);
 	World->SetGameInstance(NewObject<UGameInstance>(GEngine));
-	TestTrue(TEXT("Shooter stealth world creates an authority game mode"), World->SetGameMode(FURL()));
+	FURL TestURL;
+	TestURL.AddOption(TEXT("game=/Script/Engine.GameModeBase"));
+	TestTrue(TEXT("Shooter stealth world creates an authority game mode"), World->SetGameMode(TestURL));
 	World->InitializeActorsForPlay(FURL());
 
 	UClass* ShooterClass = LoadClass<AShooterCharacter>(
@@ -1841,6 +1871,14 @@ bool FOutlierGasShooterStealthLifecycleTest::RunTest(const FString& Parameters)
 	ShooterASC->InitializeForPawn(Shooter);
 	PartnerASC->InitializeForPawn(Partner);
 	TestTrue(TEXT("Shooter suit abilities are configured from the Blueprint DataTable"), ShooterASC->IsShooterSuitConfigured());
+	if (!TestTrue(TEXT("Stealth fixture has an acquired suit, explicit grant and fixed tuning"), PrepareStealthTestShooter(Shooter)))
+	{
+		World->DestroyWorld(true);
+		World->SetPhysicsScene(nullptr);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+		return false;
+	}
 	TestTrue(
 		TEXT("Stealth activates through the authoritative Shooter ASC"),
 		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::Stealth()));
@@ -1857,10 +1895,16 @@ bool FOutlierGasShooterStealthLifecycleTest::RunTest(const FString& Parameters)
 	FOutlierDamageRequest NonLethalDamageEvent;
 	NonLethalDamageEvent.DamageTag = OutlierGameplayTags::Damage::Weapon();
 	TestEqual(
-		TEXT("Incoming damage is applied while Stealth remains active"),
+		TEXT("Incoming damage is applied before normal Stealth breaks"),
 		ApplyDamageRequest(Shooter, 5.0f, NonLethalDamageEvent, nullptr, Shooter),
 		5.0f);
-	TestTrue(TEXT("Incoming damage does not break Stealth"), Shooter->IsStealthed());
+	TestFalse(TEXT("Actual Shooter damage removes paired normal Stealth"), Shooter->IsStealthed());
+	TestFalse(TEXT("Shooter damage also removes Partner Stealth"), PartnerASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Stealthed()));
+	FGameplayTagContainer DamageCooldownTags;
+	DamageCooldownTags.AddTag(OutlierGameplayTags::Cooldown::Shooter::Stealth());
+	ShooterASC->RemoveActiveEffectsWithGrantedTags(DamageCooldownTags);
+	TestTrue(TEXT("Stealth reactivates for non-damage lifecycle coverage"),
+		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::Stealth()));
 	Shooter->NotifyStealthDetected();
 	TestTrue(TEXT("Detector notification does not break Stealth"), Shooter->IsStealthed());
 	Shooter->SetSuitDisabledByPartnerBoundary(true);
@@ -1908,6 +1952,13 @@ bool FOutlierGasShooterStealthLifecycleTest::RunTest(const FString& Parameters)
 	Partner->NotifyOffensiveActionExecuted();
 	TestFalse(TEXT("Partner attack removes paired Stealth"), Shooter->IsStealthed());
 	TestTrue(TEXT("Partner attack starts full cooldown"), ShooterASC->IsShooterStealthCooldownActive());
+	ShooterASC->RemoveActiveEffectsWithGrantedTags(StealthCooldownTags);
+	TestTrue(TEXT("Stealth activates for Partner incoming damage coverage"),
+		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::Stealth()));
+	TestEqual(TEXT("Actual Partner damage passes through the damage boundary"),
+		ApplyDamageRequest(Partner, 1.0f, NonLethalDamageEvent, nullptr, Shooter), 1.0f);
+	TestFalse(TEXT("Partner damage removes Shooter normal Stealth"), Shooter->IsStealthed());
+	TestFalse(TEXT("Partner damage removes its own normal Stealth"), PartnerASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Stealthed()));
 
 	TestEqual(
 		TEXT("Test fixture removes Partner attack cooldown"),
@@ -1932,6 +1983,281 @@ bool FOutlierGasShooterStealthLifecycleTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Death cleanup removes the active Stealth state"), Shooter->IsStealthed());
 	TestTrue(TEXT("Lethal damage applies Dead after Stealth cleanup"), Shooter->IsDead());
 
+	Shooter->Destroy(true);
+	Partner->Destroy(true);
+	GEngine->ShutdownWorldNetDriver(World);
+	World->DestroyWorld(true);
+	World->SetPhysicsScene(nullptr);
+	GEngine->DestroyWorldContext(World);
+	World->RemoveFromRoot();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierGasShooterStealthUpgradeTest,
+	"Outlier.GAS.ShooterSuit.StealthUpgrades",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierGasShooterStealthUpgradeTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const FName WorldName = MakeUniqueObjectName(
+		nullptr, UWorld::StaticClass(), NAME_None, EUniqueObjectNameOptions::GloballyUnique);
+	FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, WorldName, GetTransientPackage());
+	if (!TestNotNull(TEXT("Transient stealth upgrade world is created"), World))
+	{
+		GEngine->DestroyWorldContext(World);
+		return false;
+	}
+	World->AddToRoot();
+	WorldContext.SetCurrentWorld(World);
+	World->SetGameInstance(NewObject<UGameInstance>(GEngine));
+	FURL TestURL;
+	TestURL.AddOption(TEXT("game=/Script/Engine.GameModeBase"));
+	TestTrue(TEXT("Stealth upgrade world creates an authority game mode"), World->SetGameMode(TestURL));
+	World->InitializeActorsForPlay(FURL());
+	UClass* ShooterClass = LoadClass<AShooterCharacter>(
+		nullptr, TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	UClass* PartnerClass = LoadClass<APartnerCharacter>(
+		nullptr, TEXT("/Game/Blueprints/Partner/BP_PartnerCharacter.BP_PartnerCharacter_C"));
+	AShooterCharacter* Shooter = ShooterClass ? World->SpawnActor<AShooterCharacter>(ShooterClass) : nullptr;
+	APartnerCharacter* Partner = PartnerClass ? World->SpawnActor<APartnerCharacter>(PartnerClass) : nullptr;
+	if (!TestNotNull(TEXT("Shooter spawns for stealth upgrades"), Shooter)
+		|| !TestNotNull(TEXT("Partner spawns for stealth upgrades"), Partner))
+	{
+		World->DestroyWorld(true);
+		World->SetPhysicsScene(nullptr);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+		return false;
+	}
+	if (!Shooter->HasActorBegunPlay())
+	{
+		Shooter->DispatchBeginPlay();
+	}
+	if (!Partner->HasActorBegunPlay())
+	{
+		Partner->DispatchBeginPlay();
+	}
+	Shooter->SetPartnerCharacter(Partner);
+	Partner->SetShooterCharacter(Shooter);
+	UOutlierAbilitySystemComponent* ShooterASC = Shooter->GetOutlierAbilitySystemComponent();
+	UOutlierAbilitySystemComponent* PartnerASC = Partner->GetOutlierAbilitySystemComponent();
+	ShooterASC->InitializeForPawn(Shooter);
+	PartnerASC->InitializeForPawn(Partner);
+	if (!TestTrue(TEXT("Stealth upgrade fixture has an acquired suit, explicit grant and fixed tuning"), PrepareStealthTestShooter(Shooter)))
+	{
+		World->DestroyWorld(true);
+		World->SetPhysicsScene(nullptr);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+		return false;
+	}
+	const FGameplayTag StealthTag = OutlierGameplayTags::Ability::Shooter::Stealth();
+	FGameplayTagContainer CooldownTags;
+	CooldownTags.AddTag(OutlierGameplayTags::Cooldown::Shooter::Stealth());
+	const auto ClearCooldown = [&]() { ShooterASC->RemoveActiveEffectsWithGrantedTags(CooldownTags); };
+	const auto TickSeconds = [&](float Seconds)
+	{
+		for (float Elapsed = 0.0f; Elapsed < Seconds; Elapsed += 0.02f)
+		{
+			++GFrameCounter;
+			World->Tick(LEVELTICK_All, 0.02f);
+		}
+	};
+	const auto RemainingStealth = [&]()
+	{
+		FGameplayTagContainer Tags;
+		Tags.AddTag(OutlierGameplayTags::State::Stealthed());
+		const TArray<float> Times = ShooterASC->GetActiveEffectsTimeRemaining(
+			FGameplayEffectQuery::MakeQuery_MatchAnyOwningTags(Tags));
+		return Times.IsEmpty() ? 0.0f : Times[0];
+	};
+	ShooterASC->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetMaxHealthAttribute(), 100.0f);
+	ShooterASC->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetHealthAttribute(), 100.0f);
+	PartnerASC->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetMaxHealthAttribute(), 100.0f);
+	PartnerASC->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetHealthAttribute(), 100.0f);
+	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetMaxShieldAttribute(), 100.0f);
+	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetShieldAttribute(), 100.0f);
+	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetMaxPartnerShieldAttribute(), 100.0f);
+	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetPartnerShieldAttribute(), 100.0f);
+	UClass* WeaponClass = LoadClass<ARangedWeaponBase>(
+		nullptr, TEXT("/Game/Blueprints/Weapon/BP_Pistol.BP_Pistol_C"));
+	UClass* EnemyClass = LoadClass<AEnemyBase>(
+		nullptr, TEXT("/Game/Blueprints/Enemy/VECDrone/BP_VECDrone_Gun.BP_VECDrone_Gun_C"));
+	ARangedWeaponBase* Weapon = WeaponClass ? World->SpawnActor<ARangedWeaponBase>(WeaponClass) : nullptr;
+	const auto KillThroughDamageBoundary = [&](FOutlierDamageRequest Request)
+	{
+		FActorSpawnParameters SpawnParameters;
+		SpawnParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		AEnemyBase* Enemy = EnemyClass
+			? World->SpawnActor<AEnemyBase>(EnemyClass, FVector(1000.0f, 0.0f, 0.0f), FRotator::ZeroRotator, SpawnParameters)
+			: nullptr;
+		if (!TestNotNull(TEXT("Enemy spawns for stealth kill attribution"), Enemy))
+		{
+			return;
+		}
+		if (!Enemy->HasActorBegunPlay())
+		{
+			Enemy->DispatchBeginPlay();
+		}
+		UOutlierAbilitySystemComponent* EnemyASC = Enemy->GetOutlierAbilitySystemComponent();
+		EnemyASC->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetMaxHealthAttribute(), 10.0f);
+		EnemyASC->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetHealthAttribute(), 10.0f);
+		TestTrue(TEXT("Lethal request is accepted by the actual Enemy damage receiver"),
+			ApplyDamageRequest(Enemy, 1000.0f, Request, nullptr, Weapon) > 0.0f);
+		TestTrue(TEXT("Damage receiver enters the Enemy death path"), Enemy->IsDead());
+		Enemy->Destroy(true);
+	};
+	TestNotNull(TEXT("Weapon spawns for direct owner attribution"), Weapon);
+	if (Weapon)
+	{
+		Weapon->SetOwner(Shooter);
+	}
+
+	ShooterASC->AddLooseGameplayTag(OutlierGameplayTags::Upgrade::Shooter::Stealth::AssassinsStrike());
+	ShooterASC->AddLooseGameplayTag(OutlierGameplayTags::Upgrade::Shooter::Stealth::ShadowStep());
+	TestTrue(TEXT("Manual stealth starts for attack snapshot coverage"), ShooterASC->TryActivateShooterSuitAbility(StealthTag));
+	TestTrue(TEXT("Shadow Step grants speed while stealthed"),
+		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::ShooterStealthSpeedBoost()));
+	const TSharedPtr<FOutlierStealthSession> FirstSession = ShooterASC->BeginShooterStealthAttack();
+	TestTrue(TEXT("Stealthed attack captures a session before normal stealth breaks"), FirstSession.IsValid());
+	TestFalse(TEXT("Actual offense breaks normal stealth before hit resolution"), Shooter->IsStealthed());
+	FOutlierDamageRequest DirectKill;
+	DirectKill.DamageTag = OutlierGameplayTags::Damage::Ranged();
+	DirectKill.StealthSession = FirstSession;
+	KillThroughDamageBoundary(DirectKill);
+	TestTrue(TEXT("Post-break kill reduces the running cooldown to 15 seconds"),
+		FMath::IsNearlyEqual(ShooterASC->GetShooterStealthCooldownRemaining(), 15.0f, 0.05f));
+	ShooterASC->NotifyShooterStealthKill(FirstSession, true);
+	TestTrue(TEXT("Another kill from the same continuous session gives no second reduction"),
+		FMath::IsNearlyEqual(ShooterASC->GetShooterStealthCooldownRemaining(), 15.0f, 0.05f));
+	TestTrue(TEXT("Actual stealth exit retains Shadow Step speed"),
+		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::ShooterStealthSpeedBoost()));
+	TickSeconds(2.1f);
+	TestFalse(TEXT("Exit speed expires after two seconds"),
+		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::ShooterStealthSpeedBoost()));
+	ClearCooldown();
+	ShooterASC->ResetShooterStealthUpgradeState();
+	ShooterASC->NotifyShooterStealthKill(FirstSession, true);
+	TestTrue(TEXT("A stale pre-reset attack cannot reserve a cooldown reduction"),
+		ShooterASC->TryActivateShooterSuitAbility(StealthTag));
+	ShooterASC->BeginShooterStealthAttack();
+	TestTrue(TEXT("Reset invalidates the old session generation"),
+		FMath::IsNearlyEqual(ShooterASC->GetShooterStealthCooldownRemaining(), 20.0f, 0.05f));
+	ClearCooldown();
+	for (int32 ExcludedSource = 0; ExcludedSource < 4; ++ExcludedSource)
+	{
+		TestTrue(TEXT("Normal stealth starts for excluded kill source coverage"),
+			ShooterASC->TryActivateShooterSuitAbility(StealthTag));
+		FOutlierDamageRequest ExcludedKill;
+		ExcludedKill.DamageTag = ExcludedSource == 1
+			? OutlierGameplayTags::Damage::Explosion() : OutlierGameplayTags::Damage::Ranged();
+		ExcludedKill.StealthSession = ShooterASC->BeginShooterStealthAttack();
+		ExcludedKill.bReflectedDamage = ExcludedSource == 0;
+		if (ExcludedSource == 3)
+		{
+			ExcludedKill.StealthSession.Reset();
+		}
+		if (Weapon)
+		{
+			Weapon->SetOwner(ExcludedSource == 2 ? static_cast<AActor*>(Partner) : Shooter);
+		}
+		KillThroughDamageBoundary(ExcludedKill);
+		TestTrue(TEXT("Reflected, explosion, Partner-owned and non-stealth kills give no cooldown reduction"),
+			FMath::IsNearlyEqual(ShooterASC->GetShooterStealthCooldownRemaining(), 20.0f, 0.05f));
+		ClearCooldown();
+	}
+	if (Weapon)
+	{
+		Weapon->SetOwner(Shooter);
+	}
+
+	ShooterASC->AddLooseGameplayTag(OutlierGameplayTags::Upgrade::Shooter::Stealth::ConcealmentProtocol());
+	ShooterASC->NotifyShooterStealthKill(nullptr, true);
+	for (int32 KillIndex = 0; KillIndex < 5; ++KillIndex)
+	{
+		TestTrue(TEXT("A fresh manual stealth supplies each qualifying attack"),
+			ShooterASC->TryActivateShooterSuitAbility(StealthTag));
+		const TSharedPtr<FOutlierStealthSession> Session = ShooterASC->BeginShooterStealthAttack();
+		if (KillIndex == 0)
+		{
+			ShooterASC->NotifyShooterStealthKill(Session, false);
+		}
+		if (KillIndex == 4)
+		{
+			FOutlierDamageRequest FifthKill;
+			FifthKill.DamageTag = OutlierGameplayTags::Damage::Melee();
+			FifthKill.StealthSession = Session;
+			KillThroughDamageBoundary(FifthKill);
+		}
+		else
+		{
+			ShooterASC->NotifyShooterStealthKill(Session, true);
+		}
+		if (KillIndex < 4)
+		{
+			TestFalse(TEXT("Fewer than five eligible drone kills do not trigger automatic stealth"), Shooter->IsStealthed());
+			ClearCooldown();
+		}
+	}
+	TestTrue(TEXT("The fifth qualified kill starts automatic stealth after attack break"),
+		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::ShooterAutomaticStealth()));
+	TestTrue(TEXT("Automatic stealth lasts 1.5 seconds"), FMath::IsNearlyEqual(RemainingStealth(), 1.5f, 0.05f));
+	Partner->NotifyOffensiveActionExecuted();
+	TestFalse(TEXT("Automatic stealth breaks on Partner offense"), Shooter->IsStealthed());
+	ClearCooldown();
+	ShooterASC->ResetShooterStealthUpgradeState();
+	ShooterASC->AddLooseGameplayTag(OutlierGameplayTags::Upgrade::Shooter::Stealth::ShadowChain());
+	TestTrue(TEXT("Normal stealth starts for passive conversion"), ShooterASC->TryActivateShooterSuitAbility(StealthTag));
+	const TSharedPtr<FOutlierStealthSession> ConversionSession = ShooterASC->BeginShooterStealthAttack();
+	for (int32 KillIndex = 0; KillIndex < 5; ++KillIndex)
+	{
+		ShooterASC->NotifyShooterStealthKill(ConversionSession, true);
+	}
+	TestTrue(TEXT("Shadow Chain converts automatic stealth into passive stealth"),
+		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::ShooterPassiveStealth()));
+	TestFalse(TEXT("Manual input cannot cancel passive stealth"), ShooterASC->TryActivateShooterSuitAbility(StealthTag));
+	const TSharedPtr<FOutlierStealthSession> PassiveSession = ShooterASC->BeginShooterStealthAttack();
+	TestTrue(TEXT("Passive stealth survives Shooter offense"), Shooter->IsStealthed());
+	Partner->NotifyOffensiveActionExecuted();
+	TestTrue(TEXT("Passive stealth survives Partner offense"), Shooter->IsStealthed());
+	FOutlierDamageRequest Damage;
+	Damage.DamageTag = OutlierGameplayTags::Damage::Weapon();
+	TestEqual(TEXT("Partner still receives actual damage during passive stealth"),
+		ApplyDamageRequest(Partner, 1.0f, Damage, nullptr, Shooter), 1.0f);
+	TestTrue(TEXT("Passive stealth survives actual Partner damage"), Shooter->IsStealthed());
+	TestTrue(TEXT("Passive stealth remains paired after damage"),
+		PartnerASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Stealthed()));
+	ClearCooldown();
+	TickSeconds(1.0f);
+	ShooterASC->NotifyShooterStealthKill(PassiveSession, true);
+	const float CooldownAfterFirstPassiveKill = ShooterASC->GetShooterStealthCooldownRemaining();
+	for (int32 KillIndex = 1; KillIndex < 5; ++KillIndex)
+	{
+		ShooterASC->NotifyShooterStealthKill(PassiveSession, true);
+	}
+	TestTrue(TEXT("Five more passive kills reset remaining time to 1.5 seconds"),
+		FMath::IsNearlyEqual(RemainingStealth(), 1.5f, 0.05f));
+	TestTrue(TEXT("Passive refresh does not grant another first-kill reward"),
+		FMath::IsNearlyEqual(ShooterASC->GetShooterStealthCooldownRemaining(), CooldownAfterFirstPassiveKill, 0.05f));
+	TestTrue(TEXT("Duration refresh preserves the continuous stealth session"),
+		ShooterASC->BeginShooterStealthAttack() == PassiveSession);
+	TickSeconds(1.0f);
+	TestTrue(TEXT("Refreshed passive stealth survives beyond the original expiry"), Shooter->IsStealthed());
+	TickSeconds(0.6f);
+	TestFalse(TEXT("Refreshed passive stealth expires after its replacement duration"), Shooter->IsStealthed());
+	TestTrue(TEXT("Manual stealth starts after the passive session expires"),
+		ShooterASC->TryActivateShooterSuitAbility(StealthTag));
+	ShooterASC->BeginShooterStealthAttack();
+	TestTrue(TEXT("Only one passive first-kill reduction is reserved for the next normal cooldown"),
+		FMath::IsNearlyEqual(ShooterASC->GetShooterStealthCooldownRemaining(), 15.0f, 0.05f));
+
+	if (Weapon)
+	{
+		Weapon->Destroy(true);
+	}
 	Shooter->Destroy(true);
 	Partner->Destroy(true);
 	GEngine->ShutdownWorldNetDriver(World);

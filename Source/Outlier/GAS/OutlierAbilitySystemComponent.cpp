@@ -10,6 +10,8 @@
 #include "PostProcess/MaterialPostProcessSubsystem.h"
 #include "Engine/World.h"
 #include "Outlier.h"
+#include "Damage/OutlierDamageReceiver.h"
+#include "Shooter/ShooterCharacter.h"
 
 namespace
 {
@@ -80,6 +82,7 @@ void UOutlierAbilitySystemComponent::ClearForActor(const AActor* Actor)
 {
 	if (GetOwnerActor() == Actor || GetAvatarActor() == Actor)
 	{
+		ResetShooterStealthUpgradeState();
 		if (UWorld* World = GetWorld())
 		{
 			if (UMaterialPostProcessSubsystem* MaterialSubsystem =
@@ -646,6 +649,11 @@ bool UOutlierAbilitySystemComponent::TryActivateShooterSuitAbility(const FGamepl
 		&& StealthSpec
 		&& StealthSpec->IsActive())
 	{
+		const UOutlierShooterStealthAbility* Stealth = Cast<UOutlierShooterStealthAbility>(StealthSpec->GetPrimaryInstance());
+		if (Stealth && Stealth->IsAutomaticStealth())
+		{
+			return false;
+		}
 		// 같은 은신 입력은 새 Ability 재활성화가 아니라 플레이어의 명시적 취소로 처리한다.
 		return EndActiveShooterStealth(true);
 	}
@@ -859,10 +867,16 @@ bool UOutlierAbilitySystemComponent::EndActiveShooterWeaponOvercharge(bool bComm
 
 bool UOutlierAbilitySystemComponent::CommitShooterStealthCooldown()
 {
+	const float Duration = FMath::Max(0.0f, ShooterSuitConfig.Stealth.CooldownSeconds - PendingStealthCooldownReduction);
+	PendingStealthCooldownReduction = 0.0f;
+	if (Duration <= 0.0f)
+	{
+		return true;
+	}
 	return CommitTimedCooldown(
 		UOutlierShooterStealthCooldownGameplayEffect::StaticClass(),
 		OutlierGameplayTags::Cooldown::Shooter::Stealth(),
-		ShooterSuitConfig.Stealth.CooldownSeconds,
+		Duration,
 		GetAvatarActor()).WasSuccessfullyApplied();
 }
 
@@ -882,6 +896,10 @@ float UOutlierAbilitySystemComponent::GetShooterStealthCooldownRemaining() const
 
 bool UOutlierAbilitySystemComponent::EndActiveShooterStealth(bool bCommitCooldown)
 {
+	if (!bCommitCooldown && IsOwnerActorAuthoritative())
+	{
+		ResetShooterStealthUpgradeState();
+	}
 	FGameplayAbilitySpec* Spec = FindAbilitySpecFromHandle(GrantedShooterStealthAbilityHandle);
 	if (!Spec || !Spec->IsActive())
 	{
@@ -890,6 +908,121 @@ bool UOutlierAbilitySystemComponent::EndActiveShooterStealth(bool bCommitCooldow
 	UOutlierShooterStealthAbility* Ability = Cast<UOutlierShooterStealthAbility>(
 		Spec->GetPrimaryInstance());
 	return Ability && Ability->EndStealth(bCommitCooldown);
+}
+
+void UOutlierAbilitySystemComponent::BeginShooterStealthSession()
+{
+	ShooterStealthSession = MakeShared<FOutlierStealthSession>();
+	ShooterStealthSession->Shooter = Cast<AShooterCharacter>(GetAvatarActor());
+	ShooterStealthSession->Generation = StealthGeneration;
+}
+
+void UOutlierAbilitySystemComponent::FinishShooterStealthSession()
+{
+	// 이미 실행한 공격은 공유 자격을 보유한다. 현재 은신만 해제해 다음 공격에 재사용하지 않는다.
+	ShooterStealthSession.Reset();
+}
+
+TSharedPtr<FOutlierStealthSession> UOutlierAbilitySystemComponent::BeginShooterStealthAttack()
+{
+	if (!IsOwnerActorAuthoritative())
+	{
+		return nullptr;
+	}
+	TSharedPtr<FOutlierStealthSession> Session = HasMatchingGameplayTag(OutlierGameplayTags::State::Stealthed())
+		? ShooterStealthSession : nullptr;
+	FGameplayAbilitySpec* Spec = FindAbilitySpecFromHandle(GrantedShooterStealthAbilityHandle);
+	if (UOutlierShooterStealthAbility* Ability = Spec ? Cast<UOutlierShooterStealthAbility>(Spec->GetPrimaryInstance()) : nullptr)
+	{
+		Ability->NotifyOffensiveAction();
+	}
+	return Session;
+}
+
+void UOutlierAbilitySystemComponent::NotifyShooterStealthDamage()
+{
+	if (!IsOwnerActorAuthoritative())
+	{
+		return;
+	}
+	FGameplayAbilitySpec* Spec = FindAbilitySpecFromHandle(GrantedShooterStealthAbilityHandle);
+	if (UOutlierShooterStealthAbility* Ability = Spec ? Cast<UOutlierShooterStealthAbility>(Spec->GetPrimaryInstance()) : nullptr)
+	{
+		Ability->NotifyIncomingDamage();
+	}
+}
+
+void UOutlierAbilitySystemComponent::NotifyShooterStealthKill(
+	const TSharedPtr<FOutlierStealthSession>& Session, bool bDrone)
+{
+	if (!IsOwnerActorAuthoritative() || !Session || Session->Shooter.Get() != GetAvatarActor()
+		|| Session->Generation != StealthGeneration || HasMatchingGameplayTag(OutlierGameplayTags::State::Dead()))
+	{
+		return;
+	}
+
+	// 기존 은신의 첫 처치 보상을 먼저 소비한 뒤, 다섯 번째 처치의 새 은신을 발동한다.
+	if (!Session->bAssassinsStrikeConsumed
+		&& HasMatchingGameplayTag(OutlierGameplayTags::Upgrade::Shooter::Stealth::AssassinsStrike()))
+	{
+		Session->bAssassinsStrikeConsumed = true;
+		const float Remaining = GetShooterStealthCooldownRemaining();
+		if (Remaining > 0.0f)
+		{
+			RemoveActiveEffects(MakeOwningTagQuery(OutlierGameplayTags::Cooldown::Shooter::Stealth()));
+			if (Remaining > 5.0f)
+			{
+				CommitTimedCooldown(UOutlierShooterStealthCooldownGameplayEffect::StaticClass(),
+					OutlierGameplayTags::Cooldown::Shooter::Stealth(), Remaining - 5.0f, GetAvatarActor());
+			}
+		}
+		else
+		{
+			PendingStealthCooldownReduction += 5.0f;
+		}
+	}
+
+	if (bDrone && HasMatchingGameplayTag(OutlierGameplayTags::Upgrade::Shooter::Stealth::ConcealmentProtocol()))
+	{
+		if (++StealthDroneKillCount >= 5)
+		{
+			StealthDroneKillCount -= 5;
+			FGameplayAbilitySpec* Spec = FindAbilitySpecFromHandle(GrantedShooterStealthAbilityHandle);
+			if (UOutlierShooterStealthAbility* Ability = Spec ? Cast<UOutlierShooterStealthAbility>(Spec->GetPrimaryInstance()) : nullptr)
+			{
+				Ability->TriggerAutomaticStealth();
+			}
+		}
+	}
+}
+
+void UOutlierAbilitySystemComponent::ApplyShooterStealthExitSpeedBoost()
+{
+	if (IsOwnerActorAuthoritative()
+		&& HasMatchingGameplayTag(OutlierGameplayTags::Upgrade::Shooter::Stealth::ShadowStep())
+		&& ShooterSuitConfig.Stealth.ExitSpeedBuffDurationSeconds > 0.0f
+		&& !HasMatchingGameplayTag(OutlierGameplayTags::State::Dead()))
+	{
+		const FActiveGameplayEffectHandle Previous = StealthExitSpeedHandle;
+		StealthExitSpeedHandle = ApplyTimedGameplayEffectToSelf(
+			UOutlierShooterStealthExitSpeedGameplayEffect::StaticClass(),
+			ShooterSuitConfig.Stealth.ExitSpeedBuffDurationSeconds, GetAvatarActor());
+		RemoveActiveEffectFromSelf(Previous);
+	}
+}
+
+void UOutlierAbilitySystemComponent::ResetShooterStealthUpgradeState()
+{
+	if (!IsOwnerActorAuthoritative())
+	{
+		return;
+	}
+	++StealthGeneration;
+	ShooterStealthSession.Reset();
+	StealthDroneKillCount = 0;
+	PendingStealthCooldownReduction = 0.0f;
+	RemoveActiveEffectFromSelf(StealthExitSpeedHandle);
+	StealthExitSpeedHandle.Invalidate();
 }
 
 int32 UOutlierAbilitySystemComponent::GetGrantedPartnerAbilityCount() const

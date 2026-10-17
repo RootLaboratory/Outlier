@@ -530,6 +530,7 @@ protected:
 	FDelegateHandle BulletReflectionCooldownTagChangedHandle;
 	FDelegateHandle WeaponOverchargeCooldownTagChangedHandle;
 	FDelegateHandle StealthCooldownTagChangedHandle;
+	FDelegateHandle StealthSpeedTagChangedHandle;
 	FDelegateHandle PartnerRebootTagChangedHandle;
 	FUILayerHandle ReflectionBarrierLayerHandle;
 	FUILayerHandle TeleportLayerHandle;
@@ -602,6 +603,7 @@ protected:
 	void HandleBulletReflectionCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleWeaponOverchargeCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleStealthCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
+	void HandleStealthSpeedTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void RefreshShooterSuitCooldownUI();
 	// 휠 아이콘 해금( = Grant )을 4개 전부 다시 계산한다. 선택 중인 능력이 잠기면 기본 제공 능력으로 되돌린다.
 	void RefreshShooterSuitGrantUI();
@@ -851,6 +853,7 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Suit|Stealth")
 	bool IsStealthed() const;
+	float GetStealthMovementSpeedMultiplier() const;
 
 	void HandleWeaponAttackStoppedInternal();
 	void HandleAutoReloadRequested();

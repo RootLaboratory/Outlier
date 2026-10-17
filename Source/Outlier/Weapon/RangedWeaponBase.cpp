@@ -357,7 +357,40 @@ void ARangedWeaponBase::ResetForEnemyPoolLease()
 
 void ARangedWeaponBase::FireShot()
 {
-	FireShotFromMuzzle(NAME_None, true);
+	const TSharedPtr<FOutlierStealthSession> StealthSession = BeginStealthAttack();
+	FireShotFromMuzzle(NAME_None, true, StealthSession);
+}
+
+TSharedPtr<FOutlierStealthSession> ARangedWeaponBase::BeginStealthAttack()
+{
+	const ACharacter* OwnerCharacter = Cast<ACharacter>(WeaponOwner);
+	if (!HasAuthority() || !OwnerCharacter || !OwnerCharacter->GetController())
+	{
+		return nullptr;
+	}
+	if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner))
+	{
+		if (UOutlierAbilitySystemComponent* AbilitySystem = Shooter->GetOutlierAbilitySystemComponent())
+		{
+			return AbilitySystem->BeginShooterStealthAttack();
+		}
+	}
+	else if (APartnerCharacter* Partner = Cast<APartnerCharacter>(WeaponOwner))
+	{
+		Partner->NotifyOffensiveActionExecuted();
+	}
+	else if (AEnemyBase* Enemy = Cast<AEnemyBase>(WeaponOwner); Enemy && Enemy->IsEnemyPossessed())
+	{
+		// 빙의 Pawn의 공격은 Pair 은신만 해제하며 Shooter 직접 처치 자격은 전달하지 않는다.
+		if (AOutlierPlayerState* PlayerState = Enemy->GetPlayerState<AOutlierPlayerState>())
+		{
+			if (AShooterCharacter* PairShooter = PlayerState->GetShooterCharacter())
+			{
+				PairShooter->NotifyOffensiveActionExecuted();
+			}
+		}
+	}
+	return nullptr;
 }
 
 bool ARangedWeaponBase::TryResolveWallOffsetMuzzleShot(
@@ -481,7 +514,8 @@ bool ARangedWeaponBase::TryResolveWallOffsetMuzzleShot(
 	return true;
 }
 
-void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPlayShotSound)
+void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPlayShotSound,
+	const TSharedPtr<FOutlierStealthSession>& StealthSession)
 {
 	if (Cast<APartnerCharacter>(WeaponOwner))
 	{
@@ -635,6 +669,7 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 			DamageRequest.DamageOrigin = Start;
 			DamageRequest.EventInstigator = OwnerCharacter->GetController();
 			DamageRequest.DamageCauser = this;
+			DamageRequest.StealthSession = StealthSession;
 			const float AppliedDamage = OutlierDamage::Apply(HitActor, DamageRequest);
 			// 잔해/무적 대상에 충돌한 것만으로 명중 UI를 보내지 않는다. 치명타격도 적용된 피해로 판정한다.
 			if (bShouldNotifyAttackSign && AppliedDamage > 0.0f)
@@ -2532,6 +2567,9 @@ void ARangedWeaponBase::PerformAttack()
 	}
 
 	LastAttackMuzzleShotCount = 0;
+	// 같은 발사 그룹은 공격 시작의 은신 자격을 공유한다. 피해 전에 해제하여
+	// 다섯 번째 처치가 새로 발동한 자동 은신을 발사 종료 시 다시 해제하지 않는다.
+	TSharedPtr<FOutlierStealthSession> StealthSession;
 	for (const FName MuzzleSocket : MuzzleSockets)
 	{
 		if ((BurstShotCount > 0 && CurrentBurstShotCount >= BurstShotCount)
@@ -2540,8 +2578,12 @@ void ARangedWeaponBase::PerformAttack()
 			break;
 		}
 
+		if (LastAttackMuzzleShotCount == 0)
+		{
+			StealthSession = BeginStealthAttack();
+		}
 		ConsumeAmmo();
-		FireShotFromMuzzle(MuzzleSocket, LastAttackMuzzleShotCount == 0);
+		FireShotFromMuzzle(MuzzleSocket, LastAttackMuzzleShotCount == 0, StealthSession);
 		++CurrentBurstShotCount;
 		++LastAttackMuzzleShotCount;
 	}
@@ -2572,23 +2614,7 @@ void ARangedWeaponBase::PerformAttack()
 
 	if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner))
 	{
-		Shooter->NotifyOffensiveActionExecuted();
 		Shooter->HandleFireShotAnimation();
-	}
-	else if (APartnerCharacter* Partner = Cast<APartnerCharacter>(WeaponOwner))
-	{
-		Partner->NotifyOffensiveActionExecuted();
-	}
-	else if (AEnemyBase* Enemy = Cast<AEnemyBase>(WeaponOwner); Enemy && Enemy->IsEnemyPossessed())
-	{
-		// 빙의 Enemy는 은신을 공유하지 않지만, 그 Enemy로 실제 사격하면 원래 Pair의 은신은 해제한다.
-		if (AOutlierPlayerState* OutlierPlayerState = Enemy->GetPlayerState<AOutlierPlayerState>())
-		{
-			if (AShooterCharacter* PairShooter = OutlierPlayerState->GetShooterCharacter())
-			{
-				PairShooter->NotifyOffensiveActionExecuted();
-			}
-		}
 	}
 
 	StartAttackCooldown();

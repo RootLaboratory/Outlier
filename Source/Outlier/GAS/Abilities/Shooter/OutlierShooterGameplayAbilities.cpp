@@ -702,11 +702,11 @@ bool UOutlierShooterStealthAbility::CanActivateAbility(
 	const FGameplayTagContainer* TargetTags,
 	FGameplayTagContainer* OptionalRelevantTags) const
 {
-	if (!PassesUpgradeGrantGate(ActorInfo, OutlierGameplayTags::Ability::Shooter::Stealth()))
+	if (!bRequestAutomaticStealth && !PassesUpgradeGrantGate(ActorInfo, OutlierGameplayTags::Ability::Shooter::Stealth()))
 	{
 		return false;
 	}
-	if (!Super::CanActivateAbility(Handle, ActorInfo, SourceTags, TargetTags, OptionalRelevantTags))
+	if (!bRequestAutomaticStealth && !Super::CanActivateAbility(Handle, ActorInfo, SourceTags, TargetTags, OptionalRelevantTags))
 	{
 		return false;
 	}
@@ -719,7 +719,7 @@ bool UOutlierShooterStealthAbility::CanActivateAbility(
 		: nullptr;
 	const APartnerCharacter* Partner = Shooter ? Shooter->GetPartnerCharacter() : nullptr;
 	const UAbilitySystemComponent* PartnerASC = Partner ? Partner->GetAbilitySystemComponent() : nullptr;
-	if (!Shooter || !AbilitySystem)
+	if (!Shooter || !AbilitySystem || Shooter->IsDead())
 	{
 		return false;
 	}
@@ -727,7 +727,7 @@ bool UOutlierShooterStealthAbility::CanActivateAbility(
 	{
 		return false;
 	}
-	if (AbilitySystem->IsShooterStealthCooldownActive())
+	if (!bRequestAutomaticStealth && AbilitySystem->IsShooterStealthCooldownActive())
 	{
 		return false;
 	}
@@ -776,23 +776,137 @@ void UOutlierShooterStealthAbility::ActivateAbility(
 		ShooterEffectRemovedDelegateHandle.IsValid() && PartnerEffectRemovedDelegateHandle.IsValid(),
 		TEXT("Shooter stealth removal observers must bind to both AbilitySystemComponents."));
 
-	const float Duration = ShooterASC->GetShooterSuitConfig().Stealth.DurationSeconds;
-	// 은신은 원래 Pair의 두 ASC에만 적용한다. Partner가 빙의한 Enemy ASC에는 공유하지 않는다.
-	ShooterStealthHandle = ShooterASC->ApplyTimedGameplayEffectToSelf(
-		UOutlierShooterStealthGameplayEffect::StaticClass(), Duration, Shooter);
-	PartnerStealthHandle = PartnerASC->ApplyTimedGameplayEffectToSelf(
-		UOutlierShooterStealthGameplayEffect::StaticClass(), Duration, Shooter);
-
-	if (!ShooterStealthHandle.IsValid() || !PartnerStealthHandle.IsValid())
+	bAutomaticStealth = bRequestAutomaticStealth;
+	bPassiveStealth = bAutomaticStealth
+		&& ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::Upgrade::Shooter::Stealth::ShadowChain());
+	if (bAutomaticStealth)
+	{
+		// 처치형 은신은 실행 중인 다른 슈트와 병행하며 이후 입력도 막지 않는다.
+		SetShouldBlockOtherAbilities(false);
+	}
+	const float Duration = bAutomaticStealth ? 1.5f : ShooterASC->GetShooterSuitConfig().Stealth.DurationSeconds;
+	if (!ApplyStealthEffects(Duration))
 	{
 		EndStealth(false);
 		return;
 	}
+	ShooterASC->BeginShooterStealthSession();
 
 	PlayShooterAbilityAudioAtLocationFromServer(
 		Shooter,
 		GetDefault<UOutlierAbilityAudioSettings>()->ShooterStealthOn);
 	RefreshEnemyDetection();
+}
+
+bool UOutlierShooterStealthAbility::ApplyStealthEffects(float Duration)
+{
+	UOutlierAbilitySystemComponent* ShooterASC = ShooterAbilitySystem.Get();
+	UOutlierAbilitySystemComponent* PartnerASC = PartnerAbilitySystem.Get();
+	if (!ShooterASC || !PartnerASC || Duration <= 0.0f)
+	{
+		return false;
+	}
+	// 새 효과를 먼저 확보해 Pair 전환/시간 갱신 중 은신 태그가 잠시 사라지지 않게 한다.
+	const auto ApplyPairEffect = [this, Duration](UOutlierAbilitySystemComponent* TargetASC)
+	{
+		FGameplayEffectContextHandle Context = TargetASC->MakeEffectContext();
+		Context.AddSourceObject(GetShooterCharacter());
+		FGameplayEffectSpecHandle Spec = TargetASC->MakeOutgoingSpec(
+			UOutlierShooterStealthGameplayEffect::StaticClass(), 1.0f, Context);
+		if (!Spec.IsValid())
+		{
+			return FActiveGameplayEffectHandle();
+		}
+		Spec.Data->SetDuration(Duration, true);
+		if (bAutomaticStealth)
+		{
+			Spec.Data->DynamicGrantedTags.AddTag(OutlierGameplayTags::State::ShooterAutomaticStealth());
+		}
+		if (bPassiveStealth)
+		{
+			Spec.Data->DynamicGrantedTags.AddTag(OutlierGameplayTags::State::ShooterPassiveStealth());
+		}
+		return TargetASC->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
+	};
+	const FActiveGameplayEffectHandle NewShooter = ApplyPairEffect(ShooterASC);
+	const FActiveGameplayEffectHandle NewPartner = ApplyPairEffect(PartnerASC);
+	if (!NewShooter.IsValid() || !NewPartner.IsValid())
+	{
+		ShooterASC->RemoveActiveEffectFromSelf(NewShooter);
+		PartnerASC->RemoveActiveEffectFromSelf(NewPartner);
+		return false;
+	}
+	const FActiveGameplayEffectHandle PreviousShooter = ShooterStealthHandle;
+	const FActiveGameplayEffectHandle PreviousPartner = PartnerStealthHandle;
+	const FActiveGameplayEffectHandle PreviousSpeed = StealthSpeedHandle;
+	ShooterStealthHandle = NewShooter;
+	PartnerStealthHandle = NewPartner;
+	StealthSpeedHandle.Invalidate();
+	if (ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::Upgrade::Shooter::Stealth::ShadowStep()))
+	{
+		StealthSpeedHandle = ShooterASC->ApplyTimedGameplayEffectToSelf(
+			UOutlierShooterStealthExitSpeedGameplayEffect::StaticClass(), Duration, GetShooterCharacter());
+	}
+	// 현재 핸들을 교체한 뒤 이전 효과를 제거해야 제거 콜백이 새 은신을 끝내지 않는다.
+	ShooterASC->RemoveActiveEffectFromSelf(PreviousShooter);
+	PartnerASC->RemoveActiveEffectFromSelf(PreviousPartner);
+	ShooterASC->RemoveActiveEffectFromSelf(PreviousSpeed);
+	return true;
+}
+
+bool UOutlierShooterStealthAbility::TriggerAutomaticStealth()
+{
+	UOutlierAbilitySystemComponent* AbilitySystem = GetOutlierAbilitySystem();
+	if (!AbilitySystem || !CurrentActorInfo || !CurrentActorInfo->IsNetAuthority())
+	{
+		return false;
+	}
+	bRequestAutomaticStealth = true;
+	if (!CanActivateAbility(CurrentSpecHandle, CurrentActorInfo))
+	{
+		bRequestAutomaticStealth = false;
+		return false;
+	}
+	if (!IsActive())
+	{
+		const bool bActivated = AbilitySystem->TryActivateAbility(CurrentSpecHandle);
+		bRequestAutomaticStealth = false;
+		return bActivated;
+	}
+	bRequestAutomaticStealth = false;
+	const bool bWasAutomatic = bAutomaticStealth;
+	const bool bWasPassive = bPassiveStealth;
+	bAutomaticStealth = true;
+	bPassiveStealth = AbilitySystem->HasMatchingGameplayTag(OutlierGameplayTags::Upgrade::Shooter::Stealth::ShadowChain());
+	if (!ApplyStealthEffects(1.5f))
+	{
+		bAutomaticStealth = bWasAutomatic;
+		bPassiveStealth = bWasPassive;
+		return false;
+	}
+	if (!bWasAutomatic)
+	{
+		// 일반 은신 종료의 쿨타임만 시작한다. 연속 은신의 처치 자격과 이동 버프는 유지한다.
+		AbilitySystem->CommitShooterStealthCooldown();
+		SetShouldBlockOtherAbilities(false);
+	}
+	return true;
+}
+
+void UOutlierShooterStealthAbility::NotifyOffensiveAction()
+{
+	if (IsActive() && !bPassiveStealth)
+	{
+		EndStealth(true);
+	}
+}
+
+void UOutlierShooterStealthAbility::NotifyIncomingDamage()
+{
+	if (IsActive() && !bPassiveStealth)
+	{
+		EndStealth(true);
+	}
 }
 
 bool UOutlierShooterStealthAbility::EndStealth(bool bCommitCooldown)
@@ -842,11 +956,21 @@ void UOutlierShooterStealthAbility::EndAbility(
 	RefreshEnemyDetection();
 
 	bool bCooldownCommitted = false;
-	if (bCommitCooldownOnEnd && ShooterASC)
+	if (bCommitCooldownOnEnd && ShooterASC && !bAutomaticStealth)
 	{
 		bCooldownCommitted = ShooterASC->CommitShooterStealthCooldown();
 		ensureMsgf(bCooldownCommitted, TEXT("Shooter stealth must commit its configured cooldown on a gameplay end."));
 	}
+	if (ShooterASC)
+	{
+		if (bCommitCooldownOnEnd)
+		{
+			ShooterASC->ApplyShooterStealthExitSpeedBoost();
+		}
+		ShooterASC->RemoveActiveEffectFromSelf(StealthSpeedHandle);
+		ShooterASC->FinishShooterStealthSession();
+	}
+	StealthSpeedHandle.Invalidate();
 	ShooterAbilitySystem.Reset();
 	PartnerAbilitySystem.Reset();
 	if (bShouldPlayStealthOff)
@@ -856,6 +980,8 @@ void UOutlierShooterStealthAbility::EndAbility(
 			GetDefault<UOutlierAbilityAudioSettings>()->ShooterStealthOff);
 	}
 	bCommitCooldownOnEnd = false;
+	bAutomaticStealth = false;
+	bPassiveStealth = false;
 	bEndingStealth = false;
 	Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);
 }

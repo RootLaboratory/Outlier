@@ -93,6 +93,19 @@ UOutlierDamageImmuneGameplayEffect::UOutlierDamageImmuneGameplayEffect(
 	TargetTags->SetAndApplyTargetTagChanges(GrantedTags);
 }
 
+UOutlierShooterStealthExitSpeedGameplayEffect::UOutlierShooterStealthExitSpeedGameplayEffect(
+	const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	DurationPolicy = EGameplayEffectDurationType::HasDuration;
+	FInheritedTagContainer GrantedTags;
+	GrantedTags.AddTag(OutlierGameplayTags::State::ShooterStealthSpeedBoost());
+	UTargetTagsGameplayEffectComponent* TargetTags = ObjectInitializer.CreateDefaultSubobject<UTargetTagsGameplayEffectComponent>(
+		this, TEXT("StealthExitSpeedTags"));
+	GEComponents.Add(TargetTags);
+	TargetTags->SetAndApplyTargetTagChanges(GrantedTags);
+}
+
 UOutlierDamageGameplayEffect::UOutlierDamageGameplayEffect()
 {
 	DurationPolicy = EGameplayEffectDurationType::Instant;

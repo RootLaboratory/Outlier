@@ -1,4 +1,5 @@
 #include "Enemy/EnemyBase.h"
+#include "Enemy/AutoTurret.h"
 #include "Camera/CameraComponent.h"
 #include "Enemy/EnemyStateTreeComponent.h"
 #include "Enemy/EnemyPoolSubsystem.h"
@@ -925,6 +926,7 @@ void AEnemyBase::ResetPoolRuntimeState()
 	ConsumedSharedTargetRevision = 0;
 	bHasLastKnownPlayerLocation = false;
 	LastAcceptedAdaptationDamageCategory = EOutlierAdaptationDamageCategory::Ignore;
+	LastAcceptedStealthSession.Reset();
 	ResetPoolPresentationState();
 }
 
@@ -1924,9 +1926,21 @@ float AEnemyBase::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 	const float FinalDamage = Request.DamageAmount * FMath::Max(DamageMultiplier, 0.0f);
 	const EOutlierAdaptationDamageCategory PreviousDamageCategory =
 		LastAcceptedAdaptationDamageCategory;
+	const TSharedPtr<FOutlierStealthSession> PreviousStealthSession = LastAcceptedStealthSession;
+	const AWeaponBase* DirectWeapon = Cast<AWeaponBase>(Request.DamageCauser);
+	const AShooterCharacter* DirectShooter = DirectWeapon
+		? Cast<AShooterCharacter>(DirectWeapon->GetOwner()) : nullptr;
+	const bool bDirectStealthAttack = !Request.bReflectedDamage && !bIsPossessed
+		&& (Request.DamageTag.MatchesTagExact(OutlierGameplayTags::Damage::Ranged())
+			|| Request.DamageTag.MatchesTagExact(OutlierGameplayTags::Damage::Melee()))
+		&& Request.StealthSession && DirectShooter
+		&& Request.StealthSession->Shooter.Get() == DirectShooter;
 	// GAS의 Health 변경 콜백은 ApplyDamageInternal 안에서 즉시 사망 처리를 호출한다.
 	// 이번 공격 분류를 먼저 기록해야 사망 경로가 정확한 최종 원인을 소비할 수 있다.
 	LastAcceptedAdaptationDamageCategory = Request.AdaptationDamageCategory;
+	// 사망 콜백이 동기 실행되므로 막타의 직접 공격 자격도 피해 적용 전에 교체한다.
+	// 환경/폭발/Partner 피해는 이전 공격의 자격을 상속하지 않는다.
+	LastAcceptedStealthSession = bDirectStealthAttack ? Request.StealthSession : nullptr;
 	const bool bDamageApplied = ApplyDamageInternal(
 		FinalDamage,
 		Request.EventInstigator,
@@ -1935,6 +1949,12 @@ float AEnemyBase::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 	if (!bDamageApplied)
 	{
 		LastAcceptedAdaptationDamageCategory = PreviousDamageCategory;
+		LastAcceptedStealthSession = PreviousStealthSession;
+	}
+	else if (!IsDead())
+	{
+		// 비치명타의 자격이 나중의 스크립트 사망이나 수명 종료에 재사용되지 않게 한다.
+		LastAcceptedStealthSession.Reset();
 	}
 	const float AppliedDamage = bDamageApplied ? FinalDamage : 0.0f;
 	if (bAdaptationGunDamage)
@@ -3598,6 +3618,17 @@ void AEnemyBase::PerformDeathCleanup()
 	if (HasAuthority())
 	{
 		ReportFinalAdaptationResult();
+		const TSharedPtr<FOutlierStealthSession> KillingSession = MoveTemp(LastAcceptedStealthSession);
+		if (KillingSession && !bIsPossessed)
+		{
+			if (AShooterCharacter* Shooter = KillingSession->Shooter.Get())
+			{
+				if (UOutlierAbilitySystemComponent* AbilitySystem = Shooter->GetOutlierAbilitySystemComponent())
+				{
+					AbilitySystem->NotifyShooterStealthKill(KillingSession, !IsA<AAutoTurret>());
+				}
+			}
+		}
 		if (UEnemyAdaptationSubsystem* AdaptationSubsystem = GetEnemyAdaptationSubsystem())
 		{
 			// 처치 결과를 Stack에 반영한 뒤 즉시 활성 목록에서 제외한다.

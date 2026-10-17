@@ -67,12 +67,19 @@ void UShooterCurrentAbilityIcon::SetCurrentAbility(const FGameplayTag& AbilityTa
 
 bool UShooterCurrentAbilityIcon::ApplyCooldownIfMatches(const FGameplayTag& AbilityTag, float CoolTime)
 {
-	if (!CurrentAbilityIcon || AbilityTag != CurrentAbilityTag || CoolTime <= 0.0f)
+	if (!CurrentAbilityIcon || !AbilityTag.IsValid() || AbilityTag != CurrentAbilityTag || CoolTime < 0.0f)
 	{
 		return false;
 	}
 
-	CurrentAbilityIcon->SetCoolTime(CoolTime);
+	if (CoolTime == 0.0f)
+	{
+		CurrentAbilityIcon->CooldownDone();
+	}
+	else
+	{
+		CurrentAbilityIcon->SetCoolTime(CoolTime);
+	}
 	return true;
 }
 

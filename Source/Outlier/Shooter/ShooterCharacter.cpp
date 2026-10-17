@@ -755,6 +755,9 @@ void AShooterCharacter::BindGasVitalityObservers()
 	StealthCooldownTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::Cooldown::Shooter::Stealth()).AddUObject(
 			this, &AShooterCharacter::HandleStealthCooldownTagChanged);
+	StealthSpeedTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::State::ShooterStealthSpeedBoost()).AddUObject(
+			this, &AShooterCharacter::HandleStealthSpeedTagChanged);
 }
 
 void AShooterCharacter::UnbindGasVitalityObservers()
@@ -784,6 +787,8 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 		OutlierGameplayTags::Cooldown::Shooter::WeaponOvercharge()).Remove(WeaponOverchargeCooldownTagChangedHandle);
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::Cooldown::Shooter::Stealth()).Remove(StealthCooldownTagChangedHandle);
+	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::State::ShooterStealthSpeedBoost()).Remove(StealthSpeedTagChangedHandle);
 
 	HealthChangedHandle.Reset();
 	ShieldChangedHandle.Reset();
@@ -795,6 +800,7 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 	BulletReflectionCooldownTagChangedHandle.Reset();
 	WeaponOverchargeCooldownTagChangedHandle.Reset();
 	StealthCooldownTagChangedHandle.Reset();
+	StealthSpeedTagChangedHandle.Reset();
 }
 
 void AShooterCharacter::HandleHealthChanged(const FOnAttributeChangeData& ChangeData)
@@ -1107,10 +1113,19 @@ void AShooterCharacter::RefreshWeaponOverchargeEmissive(bool bActive)
 	}
 }
 
+void AShooterCharacter::HandleStealthSpeedTagChanged(const FGameplayTag Tag, int32 NewCount)
+{
+	(void)Tag;
+	(void)NewCount;
+	// 서버와 소유 클라이언트 모두 태그의 시작/종료 시점에 속도를 갱신한다.
+	RefreshMovementState();
+}
+
 void AShooterCharacter::HandleStealthCooldownTagChanged(const FGameplayTag Tag, int32 NewCount)
 {
 	(void)Tag;
-	if (NewCount <= 0 || !IsLocallyControlled())
+	(void)NewCount;
+	if (!IsLocallyControlled())
 	{
 		return;
 	}
@@ -1165,7 +1180,7 @@ void AShooterCharacter::RefreshShooterSuitCooldownUI()
 		const FGameplayTag& AbilityTag,
 		float Remaining)
 	{
-		if (Remaining <= 0.0f)
+		if (Remaining <= 0.0f && AbilityTag != OutlierGameplayTags::Ability::Shooter::Stealth())
 		{
 			return;
 		}
@@ -1988,6 +2003,15 @@ FGameplayTagContainer AShooterCharacter::GetOwnedGameplayTagsForQuery() const
 	return GameplayTags;
 }
 
+float AShooterCharacter::GetStealthMovementSpeedMultiplier() const
+{
+	// 능력 설정은 서버 ASC에만 등록된다. 클라이언트 예측 이동은 직접 읽어 둔 동일 DT를 사용한다.
+	const FOutlierShooterSuitAbilityDataRow& StealthConfig = HasAuthority()
+		&& OutlierAbilitySystemComponent && OutlierAbilitySystemComponent->IsShooterSuitConfigured()
+		? OutlierAbilitySystemComponent->GetShooterSuitConfig().Stealth : ShooterSuitConfig.Stealth;
+	return 1.0f + StealthConfig.MovementSpeedBonusPercent / 100.0f;
+}
+
 bool AShooterCharacter::IsStealthed() const
 {
 	return OutlierAbilitySystemComponent
@@ -2562,6 +2586,11 @@ float AShooterCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 		Request.DamageTag);
 	if (bApplied)
 	{
+		// 사망 정리가 먼저 끝난 경우에는 해제 버프나 새 쿨타임을 만들지 않는다.
+		if (OutlierAbilitySystemComponent && !IsDead())
+		{
+			OutlierAbilitySystemComponent->NotifyShooterStealthDamage();
+		}
 		ClientShowDamageFeedback(Request.DamageOrigin);
 	}
 
@@ -4039,9 +4068,9 @@ void AShooterCharacter::RefreshShooterSuitAvailabilityUI()
 
 void AShooterCharacter::NotifyOffensiveActionExecuted()
 {
-	if (HasAuthority())
+	if (HasAuthority() && OutlierAbilitySystemComponent)
 	{
-		EndActiveStealth(true);
+		OutlierAbilitySystemComponent->BeginShooterStealthAttack();
 	}
 }
 

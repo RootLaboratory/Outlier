@@ -5,7 +5,9 @@
 #include "Shooter/ShooterCharacterMovementComponent.h"
 #include "Curves/CurveFloat.h"
 #include "Engine/World.h"
+#include "GAS/OutlierAbilitySystemComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "GameplayTags/OutlierGameplayTags.h"
 #include "InputActionValue.h"
 #include "Net/UnrealNetwork.h"
 #include "OutlierNetUtils.h"
@@ -175,6 +177,7 @@ void UShooterMovementComponent::TrySlide()
 	ShooterCharacter->StopLean();
 	ShooterCharacter->BeginActionLock(EShooterActionLock::Slide);
 	SlideDirection = Velocity2D;
+	// 실제 진입 속도에는 은신 이동 보너스가 이미 반영되므로 슬라이드에서 다시 곱하지 않는다.
 	SlideStartSpeed = ShooterCharacter->GetVelocity().Size2D() * FMath::Max(0.0f, ShooterCharacter->SlideSpeedMultiplier);
 	CurrentSlideSpeed = SlideStartSpeed;
 	SlideElapsedTime = 0.0f;
@@ -405,8 +408,20 @@ void UShooterMovementComponent::RefreshMovementState()
 	const bool bCanUseSprintSpeed = bWantsToSprint && CanSprint();
 	const bool bWasSprinting = bIsSprinting;
 	bIsSprinting = bCanUseSprintSpeed && ShooterCharacter->GetVelocity().Size2D() > KINDA_SMALL_NUMBER;
-	ShooterCharacter->GetCharacterMovement()->MaxWalkSpeed = bCanUseSprintSpeed
-		? ShooterCharacter->SprintSpeed : ShooterCharacter->WalkSpeed;
+	UCharacterMovementComponent* CharacterMovement = ShooterCharacter->GetCharacterMovement();
+	const float StealthSpeedMultiplier = GetStealthSpeedMultiplier();
+	CharacterMovement->MaxWalkSpeed = (bCanUseSprintSpeed
+		? ShooterCharacter->SprintSpeed : ShooterCharacter->WalkSpeed) * StealthSpeedMultiplier;
+	if (BaseMaxWalkSpeedCrouched < 0.0f)
+	{
+		BaseMaxWalkSpeedCrouched = CharacterMovement->MaxWalkSpeedCrouched;
+	}
+	// 항상 원래 속도에서 계산해 반복 갱신이나 은신/종료 버프 중첩으로 배율이 누적되지 않게 한다.
+	// 슬라이드 중의 앉기 속도는 기존 감속 커브가 소유한다.
+	if (!bIsSliding)
+	{
+		CharacterMovement->MaxWalkSpeedCrouched = BaseMaxWalkSpeedCrouched * StealthSpeedMultiplier;
+	}
 	if (bIsSprinting && !bWasSprinting
 		&& (ShooterCharacter->HasAuthority() || ShooterCharacter->IsLocallyControlled()))
 	{
@@ -483,7 +498,7 @@ void UShooterMovementComponent::SuspendSprintInternal()
 
 	if (!bIsSliding)
 	{
-		ShooterCharacter->GetCharacterMovement()->MaxWalkSpeed = ShooterCharacter->WalkSpeed;
+		ShooterCharacter->GetCharacterMovement()->MaxWalkSpeed = ShooterCharacter->WalkSpeed * GetStealthSpeedMultiplier();
 	}
 }
 
@@ -519,4 +534,13 @@ bool UShooterMovementComponent::CanSprint() const
 		&& !ShooterCharacter->WantsToAim()
 		&& !ShooterCharacter->IsReloading()
 		&& !ShooterCharacter->IsActionLocked();
+}
+
+float UShooterMovementComponent::GetStealthSpeedMultiplier() const
+{
+	const AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	const UOutlierAbilitySystemComponent* AbilitySystem = ShooterCharacter
+		? ShooterCharacter->GetOutlierAbilitySystemComponent() : nullptr;
+	return AbilitySystem && AbilitySystem->HasMatchingGameplayTag(OutlierGameplayTags::State::ShooterStealthSpeedBoost())
+		? ShooterCharacter->GetStealthMovementSpeedMultiplier() : 1.0f;
 }

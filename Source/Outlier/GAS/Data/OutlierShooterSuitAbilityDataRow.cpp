@@ -28,6 +28,8 @@ bool NearlyEqualRow(
 {
 	return FMath::IsNearlyEqual(A.DurationSeconds, B.DurationSeconds)
 		&& FMath::IsNearlyEqual(A.CooldownSeconds, B.CooldownSeconds)
+		&& FMath::IsNearlyEqual(A.MovementSpeedBonusPercent, B.MovementSpeedBonusPercent)
+		&& FMath::IsNearlyEqual(A.ExitSpeedBuffDurationSeconds, B.ExitSpeedBuffDurationSeconds)
 		&& FMath::IsNearlyEqual(A.CastTimeSeconds, B.CastTimeSeconds)
 		&& FMath::IsNearlyEqual(A.MaxPartnerDistance, B.MaxPartnerDistance)
 		&& FMath::IsNearlyEqual(A.PartnerOffset, B.PartnerOffset)
@@ -55,6 +57,8 @@ bool FOutlierShooterSuitConfig::IsValid(FString& OutError) const
 			TEXT("BulletReflection.ShieldRecoveryBonusPerSecond"), OutError)
 		&& RequireNonNegative(Stealth.DurationSeconds, TEXT("Stealth.DurationSeconds"), OutError)
 		&& RequireNonNegative(Stealth.CooldownSeconds, TEXT("Stealth.CooldownSeconds"), OutError)
+		&& RequireNonNegative(Stealth.MovementSpeedBonusPercent, TEXT("Stealth.MovementSpeedBonusPercent"), OutError)
+		&& RequireNonNegative(Stealth.ExitSpeedBuffDurationSeconds, TEXT("Stealth.ExitSpeedBuffDurationSeconds"), OutError)
 		&& RequireNonNegative(WeaponOvercharge.DurationSeconds, TEXT("WeaponOvercharge.DurationSeconds"), OutError)
 		&& RequireNonNegative(WeaponOvercharge.CooldownSeconds, TEXT("WeaponOvercharge.CooldownSeconds"), OutError)
 		&& RequireNonNegative(WeaponOvercharge.ShieldDrainPerSecond, TEXT("WeaponOvercharge.ShieldDrainPerSecond"), OutError)

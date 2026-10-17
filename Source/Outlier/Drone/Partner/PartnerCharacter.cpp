@@ -169,6 +169,14 @@ float APartnerCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 		Request.DamageTag);
 	if (bApplied)
 	{
+		// Partner의 실제 피격도 같은 쌍의 은신을 해제한다. 패시브 은신 예외는 능력이 판단한다.
+		if (CachedShooterCharacter && !CachedShooterCharacter->IsDead())
+		{
+			if (UOutlierAbilitySystemComponent* ShooterASC = CachedShooterCharacter->GetOutlierAbilitySystemComponent())
+			{
+				ShooterASC->NotifyShooterStealthDamage();
+			}
+		}
 		NotifyStandbyActivity();
 		if (FaceSpriteAnimationComponent)
 		{
@@ -1730,7 +1738,7 @@ void APartnerCharacter::NotifyOffensiveActionExecuted()
 {
 	if (HasAuthority() && CachedShooterCharacter)
 	{
-		CachedShooterCharacter->EndActiveStealth(true);
+		CachedShooterCharacter->NotifyOffensiveActionExecuted();
 	}
 }
 

@@ -9,6 +9,7 @@
 class AController;
 class AActor;
 class APawn;
+struct FOutlierStealthSession;
 
 UCLASS(ClassGroup = GAS)
 class OUTLIER_API UOutlierAbilitySystemComponent : public UAbilitySystemComponent
@@ -100,6 +101,13 @@ public:
 	bool IsShooterStealthCooldownActive() const;
 	float GetShooterStealthCooldownRemaining() const;
 	bool EndActiveShooterStealth(bool bCommitCooldown);
+	TSharedPtr<FOutlierStealthSession> BeginShooterStealthAttack();
+	void BeginShooterStealthSession();
+	void FinishShooterStealthSession();
+	void NotifyShooterStealthDamage();
+	void NotifyShooterStealthKill(const TSharedPtr<FOutlierStealthSession>& Session, bool bDrone);
+	void ResetShooterStealthUpgradeState();
+	void ApplyShooterStealthExitSpeedBoost();
 	EGameplayEffectReplicationMode GetConfiguredReplicationMode() const { return ReplicationMode; }
 
 private:
@@ -121,6 +129,11 @@ private:
 	FGameplayAbilitySpecHandle GrantedShooterWeaponOverchargeAbilityHandle;
 	FGameplayAbilitySpecHandle GrantedShooterStealthAbilityHandle;
 	bool bShooterSuitConfigured = false;
+	TSharedPtr<FOutlierStealthSession> ShooterStealthSession;
+	int32 StealthDroneKillCount = 0;
+	uint32 StealthGeneration = 0;
+	float PendingStealthCooldownReduction = 0.0f;
+	FActiveGameplayEffectHandle StealthExitSpeedHandle;
 
 	// 이 능력이 업그레이드 트리로 실제 Grant 되어야만 발동하는지. ( 항상 이 의미로 판정됨 - Shipping/에디터 동일 )
 	// true  = Ability.* 태그가 ASC 에 실제로 붙어 있어야 발동 ( GrantAbility 업그레이드 필요 ).
