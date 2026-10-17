@@ -9,10 +9,13 @@
 #include "Engine/World.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "GAS/Attributes/OutlierWeaponAttributeSet.h"
+#include "GAS/Attributes/OutlierShieldAttributeSet.h"
+#include "GameplayTags/OutlierGameplayTags.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Misc/ScopeExit.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Shooter/ShooterHealthComponent.h"
 #endif
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -64,6 +67,29 @@ bool FInitiallyActivatedUpgradePrerequisiteTest::RunTest(const FString& Paramete
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierReflectionRecoveryConfigTest,
+	"Outlier.Upgrade.Shooter.ReflectionRecoveryConfig",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierReflectionRecoveryConfigTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FOutlierShooterSuitConfig BaseConfig;
+	FString Error;
+	TestEqual(TEXT("Existing suit data defaults to no recovery bonus"),
+		BaseConfig.BulletReflection.ShieldRecoveryBonusPerSecond, 0.0f);
+	TestTrue(TEXT("A zero recovery bonus remains valid"), BaseConfig.IsValid(Error));
+
+	FOutlierShooterSuitConfig UpgradedConfig = BaseConfig;
+	UpgradedConfig.BulletReflection.ShieldRecoveryBonusPerSecond = 10.0f;
+	TestTrue(TEXT("A positive recovery bonus is valid"), UpgradedConfig.IsValid(Error));
+	TestFalse(TEXT("Suit config comparison includes the recovery bonus"), BaseConfig.Equals(UpgradedConfig));
+	UpgradedConfig.BulletReflection.ShieldRecoveryBonusPerSecond = -1.0f;
+	TestFalse(TEXT("A negative recovery bonus is rejected"), UpgradedConfig.IsValid(Error));
+	return true;
+}
+
 #if WITH_EDITOR
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FOutlierShooterRecoilAndReflectionProjectionTest,
@@ -73,7 +99,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FOutlierShooterRecoilAndReflectionProjectionTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
-	// 테스트 전용 수치를 복제하지 않고 실제 CSV의 네 행을 기존 투영 경로로 검증한다.
+	// 테스트 전용 수치를 복제하지 않고 실제 CSV의 대상 행을 기존 투영 경로로 검증한다.
 	FString CSV;
 	if (!TestTrue(TEXT("Shooter effect source CSV is readable"), FFileHelper::LoadFileToString(CSV,
 		*FPaths::Combine(FPaths::ProjectContentDir(),
@@ -99,7 +125,8 @@ bool FOutlierShooterRecoilAndReflectionProjectionTest::RunTest(const FString& Pa
 	Effects->RowStruct = FOutlierUpgradeEffectRow::StaticStruct();
 	const FName EffectNames[] = {
 		TEXT("Combat_002_Recoil"), TEXT("Combat_004_Recoil"),
-		TEXT("Reflect_003A_ReflectDamage"), TEXT("Reflect_004A_ReflectDamage")
+		TEXT("Reflect_003A_ReflectDamage"), TEXT("Reflect_004A_ReflectDamage"),
+		TEXT("Reflect_003B_ShieldRegen"), TEXT("Reflect_003B_Duration")
 	};
 	TArray<FName> NodeNames;
 	for (const FName& EffectName : EffectNames)
@@ -117,8 +144,10 @@ bool FOutlierShooterRecoilAndReflectionProjectionTest::RunTest(const FString& Pa
 		NodeNames.Add(Effect->NodeRowName);
 	}
 
-	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false,
-		MakeUniqueObjectName(nullptr, UWorld::StaticClass()), GetTransientPackage());
+	// 실제 생성 Outer에서 고유 이름을 확보한다. 이름이 충돌하면 기존 월드를 정리 없이 재생성할 수 있다.
+	const FName WorldName = MakeUniqueObjectName(GetTransientPackage(), UWorld::StaticClass(),
+		TEXT("ShooterUpgradeProjectionTestWorld"), EUniqueObjectNameOptions::GloballyUnique);
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, WorldName, GetTransientPackage());
 	if (!TestNotNull(TEXT("Projection test world is created"), World))
 	{
 		return false;
@@ -145,7 +174,9 @@ bool FOutlierShooterRecoilAndReflectionProjectionTest::RunTest(const FString& Pa
 	}
 	UOutlierAbilitySystemComponent* ASC = Shooter->GetOutlierAbilitySystemComponent();
 	ASC->InitializeForPawn(Shooter);
-	TestTrue(TEXT("Base suit config is accepted"), ASC->ConfigureShooterSuitAbilities(FOutlierShooterSuitConfig()));
+	FOutlierShooterSuitConfig BaseConfig;
+	BaseConfig.BulletReflection.DurationSeconds = 4.0f;
+	TestTrue(TEXT("Base suit config is accepted"), ASC->ConfigureShooterSuitAbilities(BaseConfig));
 	UOutlierUpgradeComponent* Component = Shooter->GetUpgradeComponent();
 	Component->SetUpgradeRole(EOutlierUpgradeRole::Shooter);
 	Component->SetUpgradeDataTable(Nodes);
@@ -163,12 +194,79 @@ bool FOutlierShooterRecoilAndReflectionProjectionTest::RunTest(const FString& Pa
 	TestTrue(TEXT("Reflection upgrades add to 200%"),
 		FMath::IsNearlyEqual(ASC->GetShooterSuitConfig().BulletReflection.ReflectDamageMult, 2.0f));
 
+	UShooterHealthComponent* Recovery = Cast<UShooterHealthComponent>(
+		Shooter->GetDefaultSubobjectByName(TEXT("HealthComponent")));
+	if (!TestNotNull(TEXT("Shooter has its natural recovery component"), Recovery))
+	{
+		return false;
+	}
+	ASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetMaxShieldAttribute(), 100.0f);
+	ASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetShieldAttribute(), 0.0f);
+	ASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetMaxPartnerShieldAttribute(), 50.0f);
+	ASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetPartnerShieldAttribute(), 30.0f);
+	Shooter->SetSuitDisabledByPartnerBoundary(false);
+	Recovery->ShieldRecoveryInterval = 1.0f;
+	Recovery->ShieldRecoveryValue = 20.0f;
+	Recovery->HitInterval = 3.0f;
+	Recovery->HitHistoryRefresh();
+
+	// 회복 경계만 검증하도록 반사 상태를 직접 제공하고, World 대신 컴포넌트의 시간을 진행한다.
+	// 기반 클래스의 public TickComponent를 통해 실제 회복 override를 호출한다.
+	ASC->AddLooseGameplayTag(OutlierGameplayTags::State::BulletReflecting());
+	UActorComponent* RecoveryTick = Recovery;
+	RecoveryTick->TickComponent(1.0f, LEVELTICK_All, nullptr);
+	TestEqual(TEXT("Reflection without 3B retains normal recovery"), Shooter->GetCurShield(), 20.0f);
+	TestTrue(TEXT("Reflection recovery upgrade activates"), Component->TryActivateNode(NodeNames[4]));
+	TestEqual(TEXT("3B projects its recovery bonus from CSV"),
+		ASC->GetShooterSuitConfig().BulletReflection.ShieldRecoveryBonusPerSecond, 10.0f);
+	TestEqual(TEXT("3B retains the existing duration extension"),
+		ASC->GetShooterSuitConfig().BulletReflection.DurationSeconds, 6.0f);
+	TestEqual(TEXT("Buying 3B does not immediately recover Shield"), Shooter->GetCurShield(), 20.0f);
+	RecoveryTick->TickComponent(0.5f, LEVELTICK_All, nullptr);
+	TestEqual(TEXT("Bonus waits for the existing recovery interval"), Shooter->GetCurShield(), 20.0f);
+	RecoveryTick->TickComponent(0.5f, LEVELTICK_All, nullptr);
+	TestEqual(TEXT("Reflection adds 10 to the normal 20 recovery"), Shooter->GetCurShield(), 50.0f);
+	ASC->RemoveLooseGameplayTag(OutlierGameplayTags::State::BulletReflecting());
+	RecoveryTick->TickComponent(1.0f, LEVELTICK_All, nullptr);
+	TestEqual(TEXT("Reflection end immediately restores the normal recovery amount"), Shooter->GetCurShield(), 70.0f);
+	ASC->AddLooseGameplayTag(OutlierGameplayTags::State::BulletReflecting());
+
+	ASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetShieldAttribute(), 0.0f);
+	Recovery->GetHit();
+	RecoveryTick->TickComponent(1.0f, LEVELTICK_All, nullptr);
+	RecoveryTick->TickComponent(1.0f, LEVELTICK_All, nullptr);
+	TestEqual(TEXT("Reflection cannot bypass the hit recovery delay"), Shooter->GetCurShield(), 0.0f);
+	RecoveryTick->TickComponent(1.0f, LEVELTICK_All, nullptr);
+	TestEqual(TEXT("Bonus resumes with natural recovery after its delay"), Shooter->GetCurShield(), 30.0f);
+	Shooter->SetSuitDisabledByPartnerBoundary(true);
+	RecoveryTick->TickComponent(1.0f, LEVELTICK_All, nullptr);
+	TestEqual(TEXT("Partner boundary blocks the bonus with natural recovery"), Shooter->GetCurShield(), 30.0f);
+	Shooter->SetSuitDisabledByPartnerBoundary(false);
+	ASC->AddLooseGameplayTag(OutlierGameplayTags::State::WeaponOvercharged());
+	RecoveryTick->TickComponent(1.0f, LEVELTICK_All, nullptr);
+	TestEqual(TEXT("Overcharge blocks the bonus with natural recovery"), Shooter->GetCurShield(), 30.0f);
+	ASC->RemoveLooseGameplayTag(OutlierGameplayTags::State::WeaponOvercharged());
+
+	ASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetShieldAttribute(), 95.0f);
+	RecoveryTick->TickComponent(1.0f, LEVELTICK_All, nullptr);
+	TestEqual(TEXT("Recovery cannot exceed MaxShield"), Shooter->GetCurShield(), 100.0f);
+	TestEqual(TEXT("Reflection recovery never changes Partner Shield"), Shooter->GetCurPartnerShield(), 30.0f);
+	ASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetShieldAttribute(), 0.0f);
+	Recovery->ShieldRecoveryInterval = 2.0f;
+	Recovery->HitHistoryRefresh();
+	RecoveryTick->TickComponent(2.0f, LEVELTICK_All, nullptr);
+	TestEqual(TEXT("A two-second interval adds 20 bonus instead of 10"), Shooter->GetCurShield(), 40.0f);
+	Recovery->ShieldRecoveryInterval = 1.0f;
+	Recovery->HitHistoryRefresh();
+
 	Component->ReconcileUpgradeProjection();
 	Component->RebuildNodeCache();
 	TestTrue(TEXT("Reconciliation does not stack recoil twice"),
 		FMath::IsNearlyEqual(Shooter->GetWeaponRecoilMultiplier(), 0.8f));
 	TestTrue(TEXT("Reconciliation does not stack reflection twice"),
 		FMath::IsNearlyEqual(ASC->GetShooterSuitConfig().BulletReflection.ReflectDamageMult, 2.0f));
+	TestEqual(TEXT("Reconciliation does not stack recovery twice"),
+		ASC->GetShooterSuitConfig().BulletReflection.ShieldRecoveryBonusPerSecond, 10.0f);
 	TestEqual(TEXT("Recoil base stays unchanged"),
 		ASC->GetNumericAttributeBase(UOutlierWeaponAttributeSet::GetRecoilMultiplierAttribute()), 1.0f);
 
@@ -176,6 +274,11 @@ bool FOutlierShooterRecoilAndReflectionProjectionTest::RunTest(const FString& Pa
 	Component->SetUpgradeEffectDataTable(nullptr);
 	TestEqual(TEXT("Removing effects restores recoil"), Shooter->GetWeaponRecoilMultiplier(), 1.0f);
 	TestEqual(TEXT("Removing effects restores reflection"), ASC->GetShooterSuitConfig().BulletReflection.ReflectDamageMult, 1.0f);
+	TestEqual(TEXT("Removing effects clears the recovery bonus"),
+		ASC->GetShooterSuitConfig().BulletReflection.ShieldRecoveryBonusPerSecond, 0.0f);
+	RecoveryTick->TickComponent(1.0f, LEVELTICK_All, nullptr);
+	TestEqual(TEXT("Active reflection returns to normal recovery after upgrade removal"), Shooter->GetCurShield(), 60.0f);
+	ASC->RemoveLooseGameplayTag(OutlierGameplayTags::State::BulletReflecting());
 	return true;
 }
 #endif

@@ -33,6 +33,7 @@ bool NearlyEqualRow(
 		&& FMath::IsNearlyEqual(A.PartnerOffset, B.PartnerOffset)
 		&& FMath::IsNearlyEqual(A.ReflectionRadius, B.ReflectionRadius)
 		&& FMath::IsNearlyEqual(A.ReflectDamageMult, B.ReflectDamageMult)
+		&& FMath::IsNearlyEqual(A.ShieldRecoveryBonusPerSecond, B.ShieldRecoveryBonusPerSecond)
 		&& FMath::IsNearlyEqual(A.ShieldDrainPerSecond, B.ShieldDrainPerSecond)
 		&& FMath::IsNearlyEqual(A.FireRateMultiplier, B.FireRateMultiplier)
 		&& FMath::IsNearlyEqual(A.SpreadMultiplier, B.SpreadMultiplier)
@@ -50,6 +51,8 @@ bool FOutlierShooterSuitConfig::IsValid(FString& OutError) const
 		&& RequireNonNegative(BulletReflection.CooldownSeconds, TEXT("BulletReflection.CooldownSeconds"), OutError)
 		&& RequireNonNegative(BulletReflection.ReflectionRadius, TEXT("BulletReflection.ReflectionRadius"), OutError)
 		&& RequireNonNegative(BulletReflection.ReflectDamageMult, TEXT("BulletReflection.ReflectDamageMult"), OutError)
+		&& RequireNonNegative(BulletReflection.ShieldRecoveryBonusPerSecond,
+			TEXT("BulletReflection.ShieldRecoveryBonusPerSecond"), OutError)
 		&& RequireNonNegative(Stealth.DurationSeconds, TEXT("Stealth.DurationSeconds"), OutError)
 		&& RequireNonNegative(Stealth.CooldownSeconds, TEXT("Stealth.CooldownSeconds"), OutError)
 		&& RequireNonNegative(WeaponOvercharge.DurationSeconds, TEXT("WeaponOvercharge.DurationSeconds"), OutError)

@@ -30,6 +30,10 @@ struct OUTLIER_API FOutlierShooterSuitAbilityDataRow : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (ClampMin = "0.0"))
 	float ReflectDamageMult = 1.0f;
 
+	// 반사 중 기존 자연 회복에 더할 초당 회복량이다. 0이면 추가 회복이 없다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (ClampMin = "0.0"))
+	float ShieldRecoveryBonusPerSecond = 0.0f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (ClampMin = "0.0"))
 	float ShieldDrainPerSecond = 0.0f;
 

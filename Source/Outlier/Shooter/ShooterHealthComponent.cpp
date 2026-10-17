@@ -127,6 +127,14 @@ void UShooterHealthComponent::TickComponent(float DeltaTime, ELevelTick TickType
 	RecoveryAccumulated = 0.0f;
 	if (UOutlierAbilitySystemComponent* AbilitySystem = ShooterCharacter->GetOutlierAbilitySystemComponent())
 	{
-		AbilitySystem->ApplyShieldRecoveryToSelf(ShieldRecoveryValue);
+		// 위 자연 회복 조건과 주기를 통과한 경우에만 반사 보너스를 합산한다.
+		// 초당 수치를 기존 회복 주기로 환산하며, 반사 시작/종료가 회복 대기나 누적 시간을 바꾸지 않는다.
+		const float ReflectionRecoveryBonus = ShooterCharacter->IsBulletReflecting()
+			? AbilitySystem->GetShooterSuitConfig().BulletReflection.ShieldRecoveryBonusPerSecond
+				* FMath::Max(ShieldRecoveryInterval, 0.0f)
+			: 0.0f;
+
+		// 기존 GAS 효과가 기본 Shield만 회복하고 MaxShield 상한을 적용한다.
+		AbilitySystem->ApplyShieldRecoveryToSelf(ShieldRecoveryValue + ReflectionRecoveryBonus);
 	}
 }
