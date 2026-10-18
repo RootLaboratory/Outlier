@@ -15,6 +15,7 @@ class UCrossHairBase;
 class UShooterCurrentAbilityIcon;
 class UShooterCurrentWeaponIcon;
 class UShooterStatusBarWidget;
+class UImage;
 
 UENUM(BlueprintType)
 enum class EWidgetWeaponType : uint8
@@ -53,6 +54,9 @@ public:
 	// 현재 등록된 쪽만 건드리면 안 쓰던 쪽에 이전 확산이 그대로 남는다.
 	void ResetCrossHairs();
 
+	// 일반 크로스헤어의 ADS 표시 여부와 별도로 오토에임 원을 제어한다.
+	void SetAutoAimPresentation(bool bActive);
+
 public:	
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UHPBarUI> HPBarUI;
@@ -75,6 +79,14 @@ public:
 
 private:
 	void CacheStatusBarWidgets();
+
+	void UpdateAutoAimRadiusImage();
+
+	// HUD BP의 전체 화면 Canvas에 중앙 정렬한다. 텍스처와 색상은 Image에서 설정한다.
+	UPROPERTY(meta = (BindWidgetOptional))
+	TObjectPtr<UImage> AutoAimRadiusImage;
+
+	bool bAutoAimPresentationActive = false;
 
 	// Main은 오른쪽 컨테이너까지만 직접 바인딩하고, 컨테이너가 내부 모듈을 소유한다.
 	UPROPERTY(meta = (BindWidget))

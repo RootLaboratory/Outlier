@@ -1572,6 +1572,14 @@ bool FOutlierGasEnemyDamageFlowTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Rejected Enemy friendly fire preserves GAS Health"), Enemy->GetCurrentHealth(), 100.0f);
 	WeaponDamageEvent.StunDurationSeconds = 0.0f;
 
+	// 보정 여부를 피해 요청에 전달하지 않는다. 몸통은 일반 피해, 코어는 아래 검사처럼 약점 피해다.
+	FOutlierDamageRequest BodyDamageEvent = WeaponDamageEvent;
+	BodyDamageEvent.HitResult.Component = nullptr;
+	TestEqual(TEXT("Body hit applies ordinary damage"),
+		ApplyDamageRequest(Enemy, 10.0f, BodyDamageEvent, nullptr, nullptr), 10.0f);
+	TestEqual(TEXT("Body hit commits ordinary damage to GAS Health"), Enemy->GetCurrentHealth(), 90.0f);
+	AbilitySystem->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetHealthAttribute(), 100.0f);
+
 	const float AppliedWeakPointDamage = ApplyDamageRequest(
 		Enemy,
 		10.0f,

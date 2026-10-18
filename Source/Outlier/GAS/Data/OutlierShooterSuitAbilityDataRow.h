@@ -51,6 +51,10 @@ struct OUTLIER_API FOutlierShooterSuitAbilityDataRow : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (ClampMin = "0.0"))
 	float SpreadMultiplier = 0.0f;
 
+	// WeaponOvercharge 행: 조준 원 지름 / 화면 가로폭. 표시와 서버 후보 판정에 같은 비율을 쓴다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (ClampMin = "0.001", ClampMax = "1.0"))
+	float AutoAimDiameterWidthRatio = 1.0f / 3.0f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (ClampMin = "0.0", Units = "Seconds"))
 	float ShieldRecoveryDelay = 0.0f;
 };

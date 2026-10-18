@@ -22,6 +22,8 @@ class UShooterCombatComponent;
 class UShooterMovementComponent;
 class UOutlierUpgradeComponent;
 class ULocalPlayerUISubSystem;
+class UShooterMainWidget;
+class ULocalPlayer;
 enum class EWeaponType : uint8;
 class UAnimMontage;
 class UCurveFloat;
@@ -551,6 +553,20 @@ protected:
 	bool bShooterSuitDataInitialized = false;
 	FOutlierShooterSuitConfig ShooterSuitConfig;
 
+	// 화면 투영 정보만 소유 클라이언트에서 받는다. 적 선정과 충돌/피해는 서버에서 다시 계산한다.
+	TWeakObjectPtr<ULocalPlayer> AutoAimLocalPlayer;
+	TWeakObjectPtr<ULocalPlayerUISubSystem> AutoAimUISubsystem;
+	TWeakObjectPtr<UShooterMainWidget> AutoAimHUD;
+	float AutoAimHorizontalFOV = 0.0f;
+	float AutoAimAspectRatio = 0.0f;
+	double AutoAimViewReceivedAt = -1.0;
+	double AutoAimViewSentAt = -1.0;
+	bool bAutoAimWasActive = false;
+	void UpdateAutoAimView();
+
+	UFUNCTION(Server, Unreliable)
+	void ServerUpdateAutoAimView(float HorizontalFOV, float AspectRatio);
+
 	// 은신 비주얼( 1인칭 / 3인칭 메시 머티리얼 교체와 페이드 )은 State.Stealthed 태그를 보고
 	// UMaterialPostProcessSubsystem 이 전담한다. 머티리얼과 페이드 설정은 AOutlierPostProcessVolume 에 있다.
 
@@ -854,6 +870,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Suit|Stealth")
 	bool IsStealthed() const;
 	float GetStealthMovementSpeedMultiplier() const;
+	bool IsAutoAimEnabled() const;
+	float GetAutoAimDiameterWidthRatio() const;
+	bool GetAutoAimProjection(float& OutHorizontalFOV, float& OutAspectRatio) const;
+	void InitializeAutoAimLocalView(ULocalPlayer* LocalPlayer);
 
 	void HandleWeaponAttackStoppedInternal();
 	void HandleAutoReloadRequested();

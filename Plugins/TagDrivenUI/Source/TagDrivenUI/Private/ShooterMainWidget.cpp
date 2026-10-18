@@ -11,6 +11,7 @@
 #include "ShooterCurrentWeaponIcon.h"
 #include "ShooterStatusBarWidget.h"
 #include "TagDrivenUIGameplayTags.h"
+#include "Components/Image.h"
 
 void UShooterMainWidget::NativeConstruct()
 {
@@ -21,6 +22,27 @@ void UShooterMainWidget::NativeConstruct()
 
 	CacheStatusBarWidgets();
 	ModuleInit();
+	UpdateAutoAimRadiusImage();
+}
+
+void UShooterMainWidget::SetAutoAimPresentation(bool bActive)
+{
+	if (bAutoAimPresentationActive == bActive)
+	{
+		return;
+	}
+
+	bAutoAimPresentationActive = bActive;
+	UpdateAutoAimRadiusImage();
+}
+
+void UShooterMainWidget::UpdateAutoAimRadiusImage()
+{
+	if (AutoAimRadiusImage)
+	{
+		AutoAimRadiusImage->SetVisibility(bAutoAimPresentationActive
+			? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+	}
 }
 
 void UShooterMainWidget::CacheStatusBarWidgets()

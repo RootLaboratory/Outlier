@@ -20,6 +20,7 @@
 #include "GameplayEffect.h"
 #include "Animation/AnimInstance.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/SceneComponent.h"
 #include "Components/SkinnedMeshComponent.h"
 #include "Components/SphereComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -152,6 +153,11 @@ AEnemyBase::AEnemyBase()
 	CoreHitboxComponent->SetCollisionResponseToAllChannels(ECR_Ignore);
 	CoreHitboxComponent->SetCollisionResponseToChannel(ECC_PhysicsBody, ECR_Block);
 	CoreHitboxComponent->SetGenerateOverlapEvents(false);
+
+	// 메시의 위치/회전을 따라가는 편집용 기준점이다. 조준에는 위치만 사용하며 충돌과 Tick은 없다.
+	AutoAimBodyAnchor = CreateDefaultSubobject<USceneComponent>(TEXT("AutoAimBodyAnchor"));
+	AutoAimBodyAnchor->SetupAttachment(GetMesh());
+	AutoAimBodyAnchor->PrimaryComponentTick.bCanEverTick = false;
 }
 
 void AEnemyBase::ResetPatrolPoints()
@@ -1890,6 +1896,14 @@ bool AEnemyBase::ApplyDamageInternal(
 		DamageTag);
 }
 
+FVector AEnemyBase::GetAutoAimBodyLocation() const
+{
+	// Anchor 기본 Transform은 항등값이므로, 기존 Offset만 설정된 BP도 같은 위치를 사용한다.
+	const FTransform& BodyTransform = AutoAimBodyAnchor
+		? AutoAimBodyAnchor->GetComponentTransform() : GetMesh()->GetComponentTransform();
+	return BodyTransform.TransformPosition(AutoAimBodyLocalOffset);
+}
+
 float AEnemyBase::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 {
 	if (!HasAuthority() || !CanBeDamaged() || Request.DamageAmount <= 0.0f || IsDead() || GetCurrentHealth() <= 0.0f)
@@ -1901,6 +1915,7 @@ float AEnemyBase::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 	float AdaptationMultiplier = 1.0f;
 	int32 AdaptationStackBeforeDamage = 0;
 	bool bCoreWeakPointHit = false;
+	// 자동 보정 여부와 관계없이 실제 피격 부위로 약점 배율을 결정한다.
 	if (Request.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Weapon()))
 	{
 		const UPrimitiveComponent* HitComponent = Request.HitResult.GetComponent();

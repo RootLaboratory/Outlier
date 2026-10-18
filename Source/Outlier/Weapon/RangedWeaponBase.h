@@ -17,6 +17,8 @@ class UWeaponFeedbackDefinition;
 class UStaticMesh;
 class UStaticMeshComponent;
 class AShooterCharacter;
+class AEnemyBase;
+class UEnemyRoomSubsystem;
 struct FOutlierStealthSession;
 /**
  * 
@@ -258,6 +260,15 @@ protected:
 	float GetAutomaticFireInterval() const;
 	float GetEffectiveAttackInterval() const;
 	bool IsWeaponOvercharged() const;
+	bool IsDirectCoreAim(const FVector& ViewLocation, const FVector& ViewDirection,
+		const FCollisionQueryParams& Params) const;
+	AEnemyBase* SelectAutoAimTarget(const AShooterCharacter* Shooter, const FVector& ViewLocation,
+		const FRotator& ViewRotation, const FVector& ShotStart, const FCollisionQueryParams& Params);
+	bool HasOpenBodyPath(AEnemyBase* Target, const FVector& Start,
+		const FCollisionQueryParams& Params) const;
+	// 등록 목록과 후보 버퍼를 재사용하되, 선택 결과는 발사 사이에 보관하지 않는다.
+	TWeakObjectPtr<UEnemyRoomSubsystem> AutoAimEnemyRegistry;
+	TArray<AEnemyBase*> AutoAimCandidateBuffer;
 	bool HasUsableAmmo() const;
 	void StartAttackCooldown();
 	void ResetAttackCooldown();

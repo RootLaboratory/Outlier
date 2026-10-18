@@ -10,6 +10,7 @@
 #include "Room/RoomCombatSubsystem.h"
 #include "Subsystems/SubsystemCollection.h"
 #include "TimerManager.h"
+#include "Team/OutlierTeamIds.h"
 
 namespace
 {
@@ -69,6 +70,22 @@ void UEnemyRoomSubsystem::Deinitialize()
 	TargetContactStates.Reset();
 	PatrolDestinations.Reset();
 	Super::Deinitialize();
+}
+
+void UEnemyRoomSubsystem::GetAutoAimCandidates(TArray<AEnemyBase*>& OutEnemies) const
+{
+	OutEnemies.Reset();
+	for (const auto& Entry : RegisteredEnemyKeys)
+	{
+		if (AEnemyBase* Enemy = Entry.Key.Get(); IsValid(Enemy) && Enemy->CanBeDamaged()
+			&& !Enemy->IsDead() && Enemy->GetCurrentHealth() > 0.0f
+			&& Enemy->GetGenericTeamId() == FGenericTeamId(OutlierTeamIds::Enemy)
+			&& (!Enemy->IsPoolManaged() || Enemy->GetEnemyPoolState() == EEnemyPoolState::CombatActive)
+			&& !Enemy->IsEnemyPossessed() && !Enemy->IsHidden())
+		{
+			OutEnemies.Add(Enemy);
+		}
+	}
 }
 
 void UEnemyRoomSubsystem::RegisterEnemy(AEnemyBase* Enemy)

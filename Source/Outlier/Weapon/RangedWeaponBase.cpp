@@ -3,6 +3,7 @@
 
 #include "Weapon/RangedWeaponBase.h"
 #include "Weapon/FirstPickupDiagnostics.h"
+#include "Weapon/WeaponAutoAimCalculation.h"
 
 #include "Damage/OutlierDamageReceiver.h"
 #include "GameplayTags/OutlierGameplayTags.h"
@@ -514,6 +515,102 @@ bool ARangedWeaponBase::TryResolveWallOffsetMuzzleShot(
 	return true;
 }
 
+bool ARangedWeaponBase::HasOpenBodyPath(AEnemyBase* Target, const FVector& Start,
+	const FCollisionQueryParams& Params) const
+{
+	const FVector BodyPoint = Target->GetAutoAimBodyLocation();
+	const FVector End = BodyPoint + (BodyPoint - Start).GetSafeNormal() * 2.0f;
+	const auto IsTargetHit = [Target](const FHitResult& Hit)
+	{
+		const AExplosiveProp* Explosive = Cast<AExplosiveProp>(Hit.GetActor());
+		return Hit.GetActor() == Target || (Explosive && Explosive->GetOwner() == Target);
+	};
+	// 카메라 시야와 실제 탄환 채널을 모두 확인한다. 보이는 적이라도 총구에서 막히면 제외한다.
+	FHitResult VisibilityHit;
+	if (GetWorld()->LineTraceSingleByChannel(VisibilityHit, Start, End, ECC_Visibility, Params)
+		&& !IsTargetHit(VisibilityHit)) return false;
+	FHitResult BodyHit;
+	return GetWorld()->LineTraceSingleByChannel(BodyHit, Start, End, ECC_PhysicsBody, Params)
+		&& IsTargetHit(BodyHit);
+}
+
+bool ARangedWeaponBase::IsDirectCoreAim(const FVector& ViewLocation, const FVector& ViewDirection,
+	const FCollisionQueryParams& Params) const
+{
+	FHitResult FirstHit;
+	if (!GetWorld()->LineTraceSingleByChannel(FirstHit, ViewLocation,
+		ViewLocation + ViewDirection * EffectiveRange, ECC_PhysicsBody, Params)) return false;
+	const AEnemyBase* Enemy = Cast<AEnemyBase>(FirstHit.GetActor());
+	if (!Enemy)
+	{
+		const AExplosiveProp* Explosive = Cast<AExplosiveProp>(FirstHit.GetActor());
+		return Explosive && Explosive->IsMountedOnSelfDestructDrone();
+	}
+	if (Enemy->GetWeakPointDamageMultiplier(FirstHit.GetComponent()) > 1.0f) return true;
+	if (!Enemy->HasCoreWeakPoint()) return false;
+
+	// 몸통 Physics Asset 안에 겹친 코어도 직접 조준할 수 있다.
+	// 첫 충돌로 확정한 적만 검사하고 사거리 밖으로는 프로브를 연장하지 않는다.
+	FCollisionQueryParams ProbeParams = Params;
+	ProbeParams.AddIgnoredComponent(Enemy->GetMesh());
+	TArray<FHitResult> CoreHits;
+	const float ProbeDistance = FMath::Min(FirstHit.Distance + 1000.0f, EffectiveRange);
+	GetWorld()->LineTraceMultiByChannel(CoreHits, ViewLocation,
+		ViewLocation + ViewDirection * ProbeDistance, ECC_PhysicsBody, ProbeParams);
+	for (const FHitResult& CoreHit : CoreHits)
+	{
+		if (CoreHit.GetActor() == Enemy && Enemy->GetWeakPointDamageMultiplier(CoreHit.GetComponent()) > 1.0f)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+AEnemyBase* ARangedWeaponBase::SelectAutoAimTarget(const AShooterCharacter* Shooter,
+	const FVector& ViewLocation, const FRotator& ViewRotation, const FVector& ShotStart,
+	const FCollisionQueryParams& Params)
+{
+	float HorizontalFOV = 0.0f;
+	float AspectRatio = 0.0f;
+	UEnemyRoomSubsystem* Registry = AutoAimEnemyRegistry.Get();
+	if (!Registry || !Shooter->GetAutoAimProjection(HorizontalFOV, AspectRatio)) return nullptr;
+	Registry->GetAutoAimCandidates(AutoAimCandidateBuffer);
+	struct FScoredTarget
+	{
+		AEnemyBase* Enemy;
+		float ScreenDistanceSquared;
+	};
+	TArray<FScoredTarget, TInlineAllocator<32>> Candidates;
+	for (AEnemyBase* Enemy : AutoAimCandidateBuffer)
+	{
+		const FVector BodyPoint = Enemy->GetAutoAimBodyLocation();
+		if (FVector::DistSquared(ShotStart, BodyPoint) > FMath::Square(EffectiveRange)) continue;
+		float ScreenDistanceSquared = 0.0f;
+		if (OutlierAutoAim::TryGetScreenDistanceSquared(ViewRotation.UnrotateVector(BodyPoint - ViewLocation),
+			HorizontalFOV, AspectRatio, Shooter->GetAutoAimDiameterWidthRatio(), ScreenDistanceSquared))
+		{
+			Candidates.Add({Enemy, ScreenDistanceSquared});
+		}
+	}
+	Candidates.Sort([](const FScoredTarget& A, const FScoredTarget& B)
+	{
+		return A.ScreenDistanceSquared == B.ScreenDistanceSquared
+			? A.Enemy->GetUniqueID() < B.Enemy->GetUniqueID()
+			: A.ScreenDistanceSquared < B.ScreenDistanceSquared;
+	});
+	// 가까운 후보부터 경로를 확인하고, 가려진 후보는 건너뛴다.
+	for (const FScoredTarget& Candidate : Candidates)
+	{
+		if (HasOpenBodyPath(Candidate.Enemy, ViewLocation, Params)
+			&& (ShotStart.Equals(ViewLocation) || HasOpenBodyPath(Candidate.Enemy, ShotStart, Params)))
+		{
+			return Candidate.Enemy;
+		}
+	}
+	return nullptr;
+}
+
 void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPlayShotSound,
 	const TSharedPtr<FOutlierStealthSession>& StealthSession)
 {
@@ -564,8 +661,23 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 		CameraRotation,
 		Start,
 		BaseDirection);
+	FCollisionQueryParams Params;
+	Params.AddIgnoredActor(this);
+	Params.AddIgnoredActor(OwnerCharacter);
+	const AShooterCharacter* AutoAimShooter = Cast<AShooterCharacter>(OwnerCharacter);
+	const bool bAutoAimActive = IsWeaponOvercharged() && AutoAimShooter && AutoAimShooter->IsAutoAimEnabled();
+	const bool bDirectCoreAim = bAutoAimActive
+		&& IsDirectCoreAim(CameraLocation, CameraRotation.Vector(), Params);
+	// 1. 코어를 직접 조준하면 수동 조준 방향을 유지한다.
+	// 그 외에는 매 발사마다 가장 가까운 적을 골라 몸통 방향으로 보정한다.
+	AEnemyBase* AutoAimTarget = bAutoAimActive && !bDirectCoreAim
+		? SelectAutoAimTarget(AutoAimShooter, CameraLocation, CameraRotation, Start, Params) : nullptr;
+	if (AutoAimTarget)
+	{
+		BaseDirection = (AutoAimTarget->GetAutoAimBodyLocation() - Start).GetSafeNormal();
+	}
 	const float ShotSpreadDegrees = FMath::Max(GetCurrentSpread(), 0.0f);
-	const FVector ShotDirection = ShotSpreadDegrees > KINDA_SMALL_NUMBER
+	FVector ShotDirection = ShotSpreadDegrees > KINDA_SMALL_NUMBER
 		? FMath::VRandCone(BaseDirection, FMath::DegreesToRadians(ShotSpreadDegrees)).GetSafeNormal()
 		: BaseDirection;
 	LastShotBaseDirection = BaseDirection;
@@ -575,17 +687,26 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 	FVector End = Start + (ShotDirection * EffectiveRange);
 
 	FHitResult Hit;
-	FCollisionQueryParams Params;
-	Params.AddIgnoredActor(this);
-	Params.AddIgnoredActor(OwnerCharacter);
 
-	const bool bHit = GetWorld()->LineTraceSingleByChannel(
+	bool bHit = GetWorld()->LineTraceSingleByChannel(
 		Hit,
 		Start,
 		End,
 		ECC_PhysicsBody,
 		Params
 	);
+	FHitResult SpreadVisibilityHit;
+	const bool bSpreadPathBlocked = AutoAimTarget && bHit && Hit.GetActor() == AutoAimTarget
+		&& GetWorld()->LineTraceSingleByChannel(SpreadVisibilityHit, Start, Hit.ImpactPoint, ECC_Visibility, Params)
+		&& SpreadVisibilityHit.GetActor() != AutoAimTarget;
+	if (AutoAimTarget && (!bHit || Hit.GetActor() != AutoAimTarget || bSpreadPathBlocked))
+	{
+		// 2. 탄퍼짐 때문에 선택한 적을 빗나가면, 후보 선정 때 확인한 몸통 경로로 다시 보정한다.
+		ShotDirection = BaseDirection;
+		End = Start + ShotDirection * EffectiveRange;
+		bHit = GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECC_PhysicsBody, Params);
+		LastShotDirection = ShotDirection;
+	}
 	//DrawDebugLine(
 	//	GetWorld(),
 	//	Start,
@@ -606,17 +727,13 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 		bool bShouldNotifyAttackSign = false;
 		bool bIsWeakPointHit = false;
 
-		// 적 본체는 실제 약점 배율을 기준으로 Critical 표시 여부를 결정한다.
+		// 3. 최종 탄 경로가 맞힌 부위로 피해와 치명타 표시를 결정한다.
+		// 몸통을 겨냥한 보정탄도 코어에 맞았다면 약점 피해를 적용한다.
 		if (AEnemyBase* HitEnemy = Cast<AEnemyBase>(HitActor))
 		{
 			bShouldNotifyAttackSign = true;
-			// 어떤 걸 맞았는지(HitEnemy 확정)는 위의 단일 트레이스 결과 그대로 사용 — 벽/다른 액터에 대한
-			// 판정은 절대 안 바뀜. CoreHitboxComponent가 Body(SkeletalMeshComponent)의 Physics Asset
-			// 바디 안쪽에 겹쳐 있으면, 별도 컴포넌트로 분리했음에도 여전히 더 가까운 Body 바디에 가려져서
-			// 안 잡히는 것으로 보임 — 그래서 이 2차 프로브에서는 아예 Mesh(Body/Gun이 붙어있는 컴포넌트)
-			// 자체를 무시해서, Core가 Body 안쪽 어디에 있든 상관없이 확실히 잡히게 함
-
-
+			// 몸통 충돌체 안쪽에 겹친 코어를 놓치지 않도록 같은 탄 경로를 한 번 더 검사한다.
+			// 이때 몸통 Mesh만 무시하며, 최초로 맞힌 적의 약점만 피해 판정에 반영한다.
 			if (HitEnemy->HasCoreWeakPoint())
 			{
 				constexpr float CoreProbeExtraDistance = 1000.0f;
@@ -1926,6 +2043,7 @@ ARangedWeaponBase::ARangedWeaponBase() : AWeaponBase()
 void ARangedWeaponBase::BeginPlay()
 {
 	Super::BeginPlay();
+	AutoAimEnemyRegistry = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>();
 
 	if (!WeaponAudioContextTag.IsValid())
 	{

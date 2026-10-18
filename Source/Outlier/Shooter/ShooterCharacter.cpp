@@ -25,6 +25,10 @@
 #include "PostProcess/MaterialPostProcessSubsystem.h"
 #include "PostProcess/OutlierPostProcessVolume.h"
 #include "LocalPlayerUISubSystem.h"
+#include "ShooterMainWidget.h"
+#include "Engine/GameViewportClient.h"
+#include "SceneView.h"
+#include "UnrealClient.h"
 #include "InputActionValue.h"
 #include "NiagaraFunctionLibrary.h"
 #include "Drone/Partner/PartnerCharacter.h"
@@ -506,6 +510,7 @@ void AShooterCharacter::Tick(float DeltaSeconds)
 
 void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	InitializeAutoAimLocalView(nullptr);
 	CancelSuitTransition();
 	OnSuitTransitionPhaseChanged.Clear();
 	OnWeaponChanged.RemoveDynamic(this, &AShooterCharacter::HandlePresentationWeaponChanged);
@@ -563,6 +568,8 @@ void AShooterCharacter::PossessedBy(AController* NewController)
 
 void AShooterCharacter::UnPossessed()
 {
+	InitializeAutoAimLocalView(nullptr);
+	AutoAimViewReceivedAt = -1.0;
 	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->ResetCoyoteTime();
 	Super::UnPossessed();
 }
@@ -1061,6 +1068,10 @@ void AShooterCharacter::HandleWeaponOverchargeTagChanged(const FGameplayTag Tag,
 {
 	(void)Tag;
 	const bool bOverchargeActive = NewCount > 0;
+	if (!bOverchargeActive)
+	{
+		AutoAimViewReceivedAt = -1.0;
+	}
 	if (IsLocallyControlled())
 	{
 		if (const APlayerController* PlayerController = Cast<APlayerController>(GetController()))
@@ -2914,6 +2925,115 @@ void AShooterCharacter::UpdateCameraFOV(float DeltaSeconds)
 		FOVInterpSpeed
 	);
 	FirstPersonCamera->SetFieldOfView(NewFOV);
+	UpdateAutoAimView();
+}
+
+bool AShooterCharacter::IsAutoAimEnabled() const
+{
+	return !IsDead() && GetWeaponMode() == EWeaponMode::Primary
+		&& GetWeaponType() == EWeaponType::Rifle && CurrentWeapon
+		&& IsWeaponOvercharged() && OutlierAbilitySystemComponent
+		&& OutlierAbilitySystemComponent->HasMatchingGameplayTag(
+			OutlierGameplayTags::Upgrade::Shooter::WeaponOvercharge::AutoAim());
+}
+
+float AShooterCharacter::GetAutoAimDiameterWidthRatio() const
+{
+	const auto& Config = HasAuthority() && OutlierAbilitySystemComponent
+		&& OutlierAbilitySystemComponent->IsShooterSuitConfigured()
+		? OutlierAbilitySystemComponent->GetShooterSuitConfig() : ShooterSuitConfig;
+	return Config.WeaponOvercharge.AutoAimDiameterWidthRatio;
+}
+
+void AShooterCharacter::InitializeAutoAimLocalView(ULocalPlayer* LocalPlayer)
+{
+	if (UShooterMainWidget* HUD = AutoAimHUD.Get())
+	{
+		HUD->SetAutoAimPresentation(false);
+	}
+	AutoAimHUD.Reset();
+	AutoAimLocalPlayer = LocalPlayer;
+	AutoAimUISubsystem = LocalPlayer ? LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>() : nullptr;
+	AutoAimViewSentAt = -1.0;
+	bAutoAimWasActive = false;
+}
+
+void AShooterCharacter::UpdateAutoAimView()
+{
+	const bool bActive = IsAutoAimEnabled();
+	// HUD가 늦게 생성되거나 교체돼도 캐시된 Subsystem에서 새 인스턴스만 다시 연결한다.
+	if (bActive || bAutoAimWasActive)
+	{
+		if (ULocalPlayerUISubSystem* UI = AutoAimUISubsystem.Get())
+		{
+			UMainUIBase* MainUI = UI->GetMainUI();
+			if (AutoAimHUD.Get() != MainUI)
+			{
+				if (UShooterMainWidget* PreviousHUD = AutoAimHUD.Get())
+				{
+					PreviousHUD->SetAutoAimPresentation(false);
+				}
+				AutoAimHUD = Cast<UShooterMainWidget>(MainUI);
+			}
+			if (UShooterMainWidget* HUD = AutoAimHUD.Get())
+			{
+				HUD->SetAutoAimPresentation(bActive);
+			}
+		}
+	}
+	if (!bActive)
+	{
+		bAutoAimWasActive = false;
+		AutoAimViewSentAt = -1.0;
+		return;
+	}
+	bAutoAimWasActive = true;
+	ULocalPlayer* LocalPlayer = AutoAimLocalPlayer.Get();
+	UGameViewportClient* ViewportClient = LocalPlayer ? LocalPlayer->ViewportClient.Get() : nullptr;
+	if (!ViewportClient || !ViewportClient->Viewport) return;
+	FSceneViewProjectionData Projection;
+	if (!LocalPlayer->GetProjectionData(ViewportClient->Viewport, Projection)) return;
+	const FIntRect ViewRect = Projection.GetConstrainedViewRect();
+	const FIntPoint ViewportSize = ViewportClient->Viewport->GetSizeXY();
+	if (ViewRect.Width() <= 0 || ViewportSize.X <= 0 || ViewportSize.Y <= 0) return;
+
+	// 실제 투영 행렬에서 가로 FOV를 복원한다. 검은 여백이 있어도 전체 화면 가로폭 기준 원과 맞춘다.
+	const double TanHalfFOV = double(ViewportSize.X) / ViewRect.Width() / Projection.ProjectionMatrix.M[0][0];
+	const float HorizontalFOV = FMath::RadiansToDegrees(2.0 * FMath::Atan(TanHalfFOV));
+	const float AspectRatio = float(ViewportSize.X) / ViewportSize.Y;
+	const double Now = GetWorld()->GetTimeSeconds();
+	const bool bChanged = !FMath::IsNearlyEqual(HorizontalFOV, AutoAimHorizontalFOV, 0.01f)
+		|| !FMath::IsNearlyEqual(AspectRatio, AutoAimAspectRatio, 0.001f);
+	// FOV 보간 중에는 최대 20Hz, 정지 중에는 0.25초 간격으로만 전송한다. 타깃/명중점은 보내지 않는다.
+	if (AutoAimViewSentAt < 0.0 || (Now - AutoAimViewSentAt >= 0.05
+		&& (bChanged || Now - AutoAimViewSentAt >= 0.25)))
+	{
+		AutoAimHorizontalFOV = HorizontalFOV;
+		AutoAimAspectRatio = AspectRatio;
+		AutoAimViewSentAt = Now;
+		ServerUpdateAutoAimView(HorizontalFOV, AspectRatio);
+	}
+}
+
+void AShooterCharacter::ServerUpdateAutoAimView_Implementation(float HorizontalFOV, float AspectRatio)
+{
+	if (!IsAutoAimEnabled() || !FMath::IsFinite(HorizontalFOV) || !FMath::IsFinite(AspectRatio)
+		|| HorizontalFOV < 5.0f || HorizontalFOV > 170.0f || AspectRatio < 0.25f || AspectRatio > 8.0f) return;
+	const double Now = GetWorld()->GetTimeSeconds();
+	if (AutoAimViewReceivedAt >= 0.0 && Now - AutoAimViewReceivedAt < 0.025) return;
+	AutoAimHorizontalFOV = HorizontalFOV;
+	AutoAimAspectRatio = AspectRatio;
+	AutoAimViewReceivedAt = Now;
+}
+
+bool AShooterCharacter::GetAutoAimProjection(float& OutHorizontalFOV, float& OutAspectRatio) const
+{
+	// 오래된 화면 정보로 넓은 범위의 적을 보정하지 않는다. 미수신 시에는 기존 방향으로 발사한다.
+	if (!HasAuthority() || AutoAimViewReceivedAt < 0.0
+		|| GetWorld()->GetTimeSeconds() - AutoAimViewReceivedAt > 1.0) return false;
+	OutHorizontalFOV = AutoAimHorizontalFOV;
+	OutAspectRatio = AutoAimAspectRatio;
+	return true;
 }
 
 float AShooterCharacter::GetEffectiveFirstPersonAimAlpha() const

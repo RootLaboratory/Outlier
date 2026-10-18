@@ -39,7 +39,19 @@ bool NearlyEqualRow(
 		&& FMath::IsNearlyEqual(A.ShieldDrainPerSecond, B.ShieldDrainPerSecond)
 		&& FMath::IsNearlyEqual(A.FireRateMultiplier, B.FireRateMultiplier)
 		&& FMath::IsNearlyEqual(A.SpreadMultiplier, B.SpreadMultiplier)
+		&& FMath::IsNearlyEqual(A.AutoAimDiameterWidthRatio, B.AutoAimDiameterWidthRatio)
 		&& FMath::IsNearlyEqual(A.ShieldRecoveryDelay, B.ShieldRecoveryDelay);
+}
+
+bool RequireValidAutoAimDiameterWidthRatio(float Value, FString& OutError)
+{
+	if (FMath::IsFinite(Value) && Value > 0.0f && Value <= 1.0f)
+	{
+		return true;
+	}
+
+	OutError = TEXT("WeaponOvercharge.AutoAimDiameterWidthRatio must be finite and in (0, 1]");
+	return false;
 }
 }
 
@@ -64,6 +76,7 @@ bool FOutlierShooterSuitConfig::IsValid(FString& OutError) const
 		&& RequireNonNegative(WeaponOvercharge.ShieldDrainPerSecond, TEXT("WeaponOvercharge.ShieldDrainPerSecond"), OutError)
 		&& RequireNonNegative(WeaponOvercharge.FireRateMultiplier, TEXT("WeaponOvercharge.FireRateMultiplier"), OutError)
 		&& RequireNonNegative(WeaponOvercharge.SpreadMultiplier, TEXT("WeaponOvercharge.SpreadMultiplier"), OutError)
+		&& RequireValidAutoAimDiameterWidthRatio(WeaponOvercharge.AutoAimDiameterWidthRatio, OutError)
 		&& RequireNonNegative(WeaponOvercharge.ShieldRecoveryDelay, TEXT("WeaponOvercharge.ShieldRecoveryDelay"), OutError);
 }
 
