@@ -498,9 +498,9 @@ void AEnemyBase::CompletePoolSpawnPresentation(
 		return;
 	}
 
-	// 방 소속만 등록한다. 풀 증원은 방의 공유 표적으로 선행 경계하지 않고
-	// 활성화 후 자기 Perception에서 감지할 때 NonBattle을 벗어난다.
-	// 같은 호출에서 곧바로 CombatActive로 전환하므로 연출 중 AI나 피해 판정은 활성화하지 않는다.
+	// 연출 완료가 승인된 뒤 방에 등록하고, 전투 중인 방의 표적 정보를 먼저 받는다.
+	// StateTree를 시작하기 전에 전투 상태를 준비해 공유만으로도 추적/수색에 합류한다.
+	// 이 시점까지 AI와 피해 판정은 비활성이고, 아래 CombatActive 전환에서 활성화한다.
 	if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
 	{
 		RoomSubsystem->RegisterEnemy(this);

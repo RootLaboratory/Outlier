@@ -41,6 +41,7 @@ public:
 	void SetCachedVisibleTargetForTesting(AActor* TargetActor) { LastVisibleTarget = TargetActor; }
 
 	friend class FEnemyHearingCombatJoinTest;
+	friend class FEnemySightCombatJoinTest;
 	friend class FEnemyChaseIntegrationTest;
 	friend class FEnemySearchWorldLifecycleTest;
 #endif

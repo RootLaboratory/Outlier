@@ -262,8 +262,13 @@ protected:
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Enemy|Turret|Data")
 	FAutoTurretBehaviorRow RuntimeTurretBehavior;
 
-	// 공격을 유지하는 병행 복구와 공격을 중단하는 StateTree 반응을 BP별로 비교한다.
+	// 배치 인스턴스별로 폭발에 의한 머리 반동을 켜거나 끈다. 피해 적용에는 영향을 주지 않는다.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Enemy|Turret|Impact")
+	bool bEnableImpactReaction = true;
+
+	// 반응을 켠 개체는 공격을 유지하며 복구할지, 공격을 중단하고 StateTree로 복구할지 선택한다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Enemy|Turret|Impact",
+		meta = (EditCondition = "bEnableImpactReaction"))
 	EAutoTurretImpactReactionMode ImpactReactionMode =
 		EAutoTurretImpactReactionMode::ConcurrentOffsetRecovery;
 

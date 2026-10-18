@@ -397,7 +397,17 @@ void AEnemyAIController::HandleSightStimulus(AEnemyBase* Enemy, AActor* Actor, c
 
 		if (!Enemy->IsInCombat())
 		{
-			Enemy->EnterAlertFromPerception(TargetLocation);
+			// 이미 전투 중인 방에서는 직접 감지도 즉시 합류 조건이다.
+			// 아직 전투가 시작되지 않은 방은 기존 Alert 확인 절차를 유지한다.
+			const UEnemyRoomSubsystem* Rooms = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>();
+			if (Rooms && Rooms->IsRoomInCombat(Enemy->GetDefaultRoomTag()))
+			{
+				Enemy->EnterCombatFromRoom(TargetLocation, false, true);
+			}
+			else
+			{
+				Enemy->EnterAlertFromPerception(TargetLocation);
+			}
 		}
 
 		if (Enemy->CanUseRoomTargetSharing())

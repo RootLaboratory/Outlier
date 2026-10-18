@@ -104,10 +104,13 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Combat-active Enemy accepts damage"), FirstLease->CanBeDamaged());
 	TestTrue(TEXT("Combat-active Enemy enables collision"), FirstLease->GetActorEnableCollision());
 	TestEqual(TEXT("Lease applies runtime RoomTag"), FirstLease->GetDefaultRoomTag(), RoomTag);
-	TestEqual(TEXT("Reinforcement starts in NonCombat even in an active room"),
-		FirstLease->GetCombatState(), EEnemyCombatState::NonCombat);
-	TestFalse(TEXT("Reinforcement does not inherit room target before perception"),
+	TestEqual(TEXT("Reinforcement joins the active room without direct perception"),
+		FirstLease->GetCombatState(), EEnemyCombatState::Combat);
+	TestTrue(TEXT("Reinforcement inherits the active shared target"),
 		FirstLease->HasSharedTargetContact());
+	TestEqual(TEXT("Reinforcement remembers the shared target location"),
+		FirstLease->GetSharedTargetLocation(), SharedTargetLocation);
+	TestFalse(TEXT("Shared contact does not invent direct sight"), FirstLease->IsPlayerCurrentlyVisible());
 	const ECollisionEnabled::Type CapsuleCollision = FirstLease->GetCapsuleComponent()->GetCollisionEnabled();
 	const ECollisionEnabled::Type MeshCollision = FirstLease->GetMesh()->GetCollisionEnabled();
 	const ECollisionEnabled::Type CoreCollision = FirstLease->GetCoreHitboxComponent()->GetCollisionEnabled();
@@ -139,7 +142,7 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Returned Enemy clears RoomTag"), FirstLease->GetDefaultRoomTag().IsValid());
 
 	FirstLease->SetPoolPresentationAutoCompleteForTesting(false);
-	// 마지막 직접 관측자가 시야를 잃은 뒤 재사용해도 방의 마지막 위치로 선행 경계하지 않는다.
+	// 현재 공유가 끊겨도 재사용된 증원은 방의 마지막 전투 위치를 받아 수색에 합류한다.
 	if (RoomSubsystem)
 	{
 		RoomSubsystem->SetActiveRoomTargetForTesting(RoomTag, SharedTargetLocation, false);
@@ -221,12 +224,13 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 		SecondLease->GetMesh()->GetCollisionEnabled(), MeshCollision);
 	TestEqual(TEXT("Reused Enemy restores core collision"),
 		SecondLease->GetCoreHitboxComponent()->GetCollisionEnabled(), CoreCollision);
-	TestEqual(TEXT("Reused reinforcement also starts in NonCombat"),
-		SecondLease->GetCombatState(), EEnemyCombatState::NonCombat);
+	TestEqual(TEXT("Reused reinforcement joins combat using room history"),
+		SecondLease->GetCombatState(), EEnemyCombatState::Combat);
 	TestFalse(TEXT("Lost sight is not restored as shared contact"),
 		SecondLease->HasSharedTargetContact());
-	TestEqual(TEXT("Room history does not pre-alert a reused reinforcement"),
-		SecondLease->GetLastKnownPlayerLocation(), FVector::ZeroVector);
+	TestEqual(TEXT("Room history supplies the last known target location"),
+		SecondLease->GetLastKnownPlayerLocation(), SharedTargetLocation);
+	TestFalse(TEXT("Room history does not invent direct sight"), SecondLease->IsPlayerCurrentlyVisible());
 
 	UOutlierAbilitySystemComponent* ASC = SecondLease->GetOutlierAbilitySystemComponent();
 	if (TestNotNull(TEXT("Pooled Enemy has an ASC"), ASC))
@@ -285,7 +289,7 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Rejected AutoTurret prewarm creates no Actors"),
 		Pool->GetTotalCount(AAutoTurret::StaticClass()), 0);
 
-	// 실제 사격형 BP의 StateTree가 방 전투 중에도 NonBattle에서 시작하는지 확인한다.
+	// 실제 사격형 BP가 방의 전투 정보 유무에 따라 NonBattle 또는 Battle을 선택하는지 확인한다.
 	// Alive 아래 전투 상태 선택이 실패해도 Death가 일반 fallback이 되면 안 된다.
 	const UStateTree* GunCommonTree = LoadObject<UStateTree>(nullptr,
 		TEXT("/Game/Blueprints/AI/VECDrone/StateTree/ST_VECDrone_Common.ST_VECDrone_Common"));
@@ -338,6 +342,8 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 		GunEntry.MaxCount = 1;
 		if (TestTrue(TEXT("Gun reinforcement prewarms"), Pool->PrewarmPool(GunDefinition)))
 		{
+			// 전투/공유 정보가 없는 방에서는 증원도 기존 비전투 정책으로 시작한다.
+			RoomSubsystem->NotifyRoomCombatEnded(RoomTag);
 			AEnemyBase* GunLease = Pool->LeaseEnemy(GunClass,
 				FTransform(FVector(100.0, 200.0, 300.0)), FirstContext);
 			if (TestNotNull(TEXT("Gun reinforcement leases"), GunLease))
@@ -355,7 +361,7 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 						GunStateTree->GetStateTreeRunStatus(), EStateTreeRunStatus::Running);
 					TestTrue(TEXT("Gun reinforcement selects NonBattle immediately"),
 						ActiveStates.Contains(FName(TEXT("NonBattle"))));
-					TestFalse(TEXT("Gun reinforcement is not alerted by room history"),
+					TestFalse(TEXT("Gun reinforcement is not alerted in an inactive room"),
 						ActiveStates.Contains(FName(TEXT("Alert"))));
 				}
 				TestTrue(TEXT("Gun reinforcement returns before a shared-target lease"),
@@ -371,22 +377,14 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 						SharedGunLease->CompletePoolSpawnPresentation(
 							FirstContext.GameplayGeneration, SharedGunLease->GetPoolLeaseSerial());
 					}
-					TestFalse(TEXT("Shared target does not pre-alert the gun reinforcement"),
+					TestTrue(TEXT("Shared target reaches the gun reinforcement without perception"),
 						SharedGunLease->HasSharedTargetContact());
 					if (UStateTreeComponent* SharedStateTree = SharedGunLease->GetStateTreeComponent())
 					{
 						const TArray<FName> SharedInitialStates = SharedStateTree->GetActiveStateNames();
-						TestTrue(TEXT("Shared-target gun also starts in NonBattle"),
-							SharedInitialStates.Contains(FName(TEXT("NonBattle"))));
-						// 실제 감지가 일어난 뒤에만 경계와 공유 추적을 시작한다.
-						SharedGunLease->EnterAlertFromPerception(SharedTargetLocation);
-						SharedGunLease->ApplySharedTargetContact(SharedTargetLocation, true);
-						for (int32 TickIndex = 0; TickIndex < 4
-							&& SharedGunLease->GetCombatState() != EEnemyCombatState::Combat; ++TickIndex)
-						{
-							SharedStateTree->TickComponent(0.016f, LEVELTICK_All, nullptr);
-						}
-						TestEqual(TEXT("Detected gun commits to combat after entering Alert"),
+						TestTrue(TEXT("Shared-target gun starts in Battle"),
+							SharedInitialStates.Contains(FName(TEXT("Battle"))));
+						TestEqual(TEXT("Shared target joins combat without an Alert perception step"),
 							SharedGunLease->GetCombatState(), EEnemyCombatState::Combat);
 						// 별도 월드 틱이 없는 fixture에서 다음 틱 예약 이벤트를 직접 전달한다.
 						SharedGunLease->SendEnemyStateTreeEvent(FGameplayTag::RequestGameplayTag(
