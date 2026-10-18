@@ -288,6 +288,12 @@ namespace OutlierGameplayTags
 				return Tag;
 			}
 
+			inline FGameplayTag QuantumLeapRetry()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Cooldown.Shooter.QuantumLeapRetry")));
+				return Tag;
+			}
+
 			inline FGameplayTag BulletReflection()
 			{
 				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Cooldown.Shooter.BulletReflection")));

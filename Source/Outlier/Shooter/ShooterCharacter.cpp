@@ -840,6 +840,10 @@ void AShooterCharacter::HandleDeadTagChanged(const FGameplayTag Tag, int32 NewCo
 	if (NewCount > 0)
 	{
 		CancelActiveQuantumLeap(false);
+		if (OutlierAbilitySystemComponent)
+		{
+			OutlierAbilitySystemComponent->ResetShooterQuantumLeapTransientState();
+		}
 		EndActiveBulletReflection(false);
 		EndActiveWeaponOvercharge(false);
 		EndActiveStealth(false);

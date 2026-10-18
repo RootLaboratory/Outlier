@@ -85,7 +85,11 @@ public:
 	const FOutlierShooterSuitConfig& GetShooterSuitConfig() const { return ShooterSuitConfig; }
 	const FOutlierShooterSuitConfig& GetBaseShooterSuitConfig() const { return BaseShooterSuitConfig; }
 	int32 GetGrantedShooterSuitAbilityCount() const;
-	bool CommitShooterQuantumLeapCooldown(float DurationMultiplier = 1.0f);
+	bool CommitShooterQuantumLeapCooldown();
+	bool CommitShooterQuantumLeapRetryDelay();
+	bool IsShooterQuantumLeapRetryActive() const;
+	void RefreshShooterQuantumLeapImmunity();
+	void ResetShooterQuantumLeapTransientState();
 	bool IsShooterQuantumLeapCooldownActive() const;
 	float GetShooterQuantumLeapCooldownRemaining() const;
 	bool CancelActiveShooterQuantumLeap(bool bCommitFailureCooldown = false);
@@ -134,6 +138,9 @@ private:
 	uint32 StealthGeneration = 0;
 	float PendingStealthCooldownReduction = 0.0f;
 	FActiveGameplayEffectHandle StealthExitSpeedHandle;
+	// 능력 종료 후에도 유지되는 도약 무적과 실패 제한만 추적한다. 시전 중 무적은 능력이 관리한다.
+	FActiveGameplayEffectHandle QuantumLeapImmunityHandle;
+	FActiveGameplayEffectHandle QuantumLeapRetryHandle;
 
 	// 이 능력이 업그레이드 트리로 실제 Grant 되어야만 발동하는지. ( 항상 이 의미로 판정됨 - Shipping/에디터 동일 )
 	// true  = Ability.* 태그가 ASC 에 실제로 붙어 있어야 발동 ( GrantAbility 업그레이드 필요 ).

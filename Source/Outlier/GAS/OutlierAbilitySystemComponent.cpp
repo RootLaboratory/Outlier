@@ -83,6 +83,7 @@ void UOutlierAbilitySystemComponent::ClearForActor(const AActor* Actor)
 	if (GetOwnerActor() == Actor || GetAvatarActor() == Actor)
 	{
 		ResetShooterStealthUpgradeState();
+		ResetShooterQuantumLeapTransientState();
 		if (UWorld* World = GetWorld())
 		{
 			if (UMaterialPostProcessSubsystem* MaterialSubsystem =
@@ -760,13 +761,74 @@ int32 UOutlierAbilitySystemComponent::GetGrantedShooterSuitAbilityCount() const
 	return Count;
 }
 
-bool UOutlierAbilitySystemComponent::CommitShooterQuantumLeapCooldown(float DurationMultiplier)
+bool UOutlierAbilitySystemComponent::CommitShooterQuantumLeapCooldown()
 {
-	return DurationMultiplier > 0.0f && CommitTimedCooldown(
+	return CommitTimedCooldown(
 		UOutlierShooterQuantumLeapCooldownGameplayEffect::StaticClass(),
 		OutlierGameplayTags::Cooldown::Shooter::QuantumLeap(),
-		ShooterSuitConfig.QuantumLeap.CooldownSeconds * DurationMultiplier,
+		ShooterSuitConfig.QuantumLeap.CooldownSeconds,
 		GetAvatarActor()).WasSuccessfullyApplied();
+}
+
+bool UOutlierAbilitySystemComponent::CommitShooterQuantumLeapRetryDelay()
+{
+	if (!IsOwnerActorAuthoritative() || HasMatchingGameplayTag(OutlierGameplayTags::State::Dead()))
+	{
+		return false;
+	}
+	if (IsShooterQuantumLeapRetryActive())
+	{
+		return true;
+	}
+
+	// 실패 제한은 성공 쿨타임과 별도 효과다. 진행 중인 재충전 효과를 교체하거나 연장하지 않는다.
+	constexpr float RetryDelaySeconds = 0.5f;
+	QuantumLeapRetryHandle = CommitTimedCooldown(
+		UOutlierShooterQuantumLeapRetryGameplayEffect::StaticClass(),
+		OutlierGameplayTags::Cooldown::Shooter::QuantumLeapRetry(),
+		RetryDelaySeconds,
+		GetAvatarActor());
+	return QuantumLeapRetryHandle.WasSuccessfullyApplied();
+}
+
+bool UOutlierAbilitySystemComponent::IsShooterQuantumLeapRetryActive() const
+{
+	return IsTimedCooldownActive(OutlierGameplayTags::Cooldown::Shooter::QuantumLeapRetry(), GetAvatarActor());
+}
+
+void UOutlierAbilitySystemComponent::RefreshShooterQuantumLeapImmunity()
+{
+	if (!IsOwnerActorAuthoritative() || !bShooterSuitConfigured
+		|| HasMatchingGameplayTag(OutlierGameplayTags::State::Dead())
+		|| !HasMatchingGameplayTag(OutlierGameplayTags::Upgrade::Shooter::QuantumLeap::InvincibleAfterLeap()))
+	{
+		return;
+	}
+
+	const FActiveGameplayEffectHandle NewHandle = ApplyTimedGameplayEffectToSelf(
+		UOutlierDamageImmuneGameplayEffect::StaticClass(), ShooterSuitConfig.QuantumLeap.DurationSeconds, GetAvatarActor());
+	if (!NewHandle.IsValid())
+	{
+		return;
+	}
+
+	// 새 무적을 먼저 부여해 보호가 끊기지 않게 한다. 이전 도약 무적만 지워 시간을 새로 시작한다.
+	const FActiveGameplayEffectHandle PreviousHandle = QuantumLeapImmunityHandle;
+	QuantumLeapImmunityHandle = NewHandle;
+	RemoveActiveEffectFromSelf(PreviousHandle);
+}
+
+void UOutlierAbilitySystemComponent::ResetShooterQuantumLeapTransientState()
+{
+	if (!IsOwnerActorAuthoritative())
+	{
+		return;
+	}
+	// 사망·Pawn 종료에서 도약이 남긴 효과만 정리한다. 다른 원인의 무적과 성공 쿨타임은 건드리지 않는다.
+	RemoveActiveEffectFromSelf(QuantumLeapImmunityHandle);
+	QuantumLeapImmunityHandle.Invalidate();
+	RemoveActiveEffectFromSelf(QuantumLeapRetryHandle);
+	QuantumLeapRetryHandle.Invalidate();
 }
 
 bool UOutlierAbilitySystemComponent::IsShooterQuantumLeapCooldownActive() const

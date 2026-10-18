@@ -122,7 +122,7 @@ bool UOutlierShooterQuantumLeapAbility::CanActivateAbility(
 	{
 		return false;
 	}
-	if (AbilitySystem->IsShooterQuantumLeapCooldownActive())
+	if (AbilitySystem->IsShooterQuantumLeapCooldownActive() || AbilitySystem->IsShooterQuantumLeapRetryActive())
 	{
 		return false;
 	}
@@ -240,13 +240,13 @@ void UOutlierShooterQuantumLeapAbility::EndAbility(
 	}
 	QuantumLeapStateHandle.Invalidate();
 
-	bool bCooldownCommitted = false;
-	float CooldownMultiplier = 0.0f;
 	if (ShooterASC && (bTeleportSucceeded || bCommitFailureCooldown))
 	{
-		CooldownMultiplier = bTeleportSucceeded ? 1.0f : 0.5f;
-		bCooldownCommitted = ShooterASC->CommitShooterQuantumLeapCooldown(CooldownMultiplier);
-		ensureMsgf(bCooldownCommitted, TEXT("Quantum Leap must commit its configured cooldown after a resolved attempt."));
+		// 성공만 기본 쿨타임을 시작하고, 실패는 0.5초 동안 재시도만 막는다.
+		const bool bDelayCommitted = bTeleportSucceeded
+			? ShooterASC->CommitShooterQuantumLeapCooldown()
+			: ShooterASC->CommitShooterQuantumLeapRetryDelay();
+		ensureMsgf(bDelayCommitted, TEXT("Quantum Leap must commit a success cooldown or failure retry delay after a resolved attempt."));
 	}
 
 	Destination = FVector::ZeroVector;
@@ -362,6 +362,8 @@ void UOutlierShooterQuantumLeapAbility::CompleteQuantumLeap()
 	}
 	else
 	{
+		// EndAbility가 시전 무적을 지우기 전에 성공 후 무적으로 이어 준다.
+		ShooterASC->RefreshShooterQuantumLeapImmunity();
 		Shooter->ForceNetUpdate();
 	}
 	EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, !bTeleportSucceeded);

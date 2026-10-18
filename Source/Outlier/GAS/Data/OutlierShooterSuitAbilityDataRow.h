@@ -9,6 +9,7 @@ struct OUTLIER_API FOutlierShooterSuitAbilityDataRow : public FTableRowBase
 {
 	GENERATED_BODY()
 
+	// QuantumLeap 행에서는 무적 도약 획득 후 이동 성공 시 부여할 무적 시간이다. 시전 시간과는 별개다.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (ClampMin = "0.0", Units = "Seconds"))
 	float DurationSeconds = 0.0f;
 

@@ -121,6 +121,15 @@ public:
 };
 
 UCLASS()
+class OUTLIER_API UOutlierShooterQuantumLeapRetryGameplayEffect : public UGameplayEffect
+{
+	GENERATED_BODY()
+
+public:
+	UOutlierShooterQuantumLeapRetryGameplayEffect(const FObjectInitializer& ObjectInitializer);
+};
+
+UCLASS()
 class OUTLIER_API UOutlierShooterQuantumLeapGameplayEffect : public UGameplayEffect
 {
 	GENERATED_BODY()

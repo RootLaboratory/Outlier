@@ -59,6 +59,7 @@ bool FOutlierShooterSuitConfig::IsValid(FString& OutError) const
 {
 	return RequireNonNegative(MaxPartnerDistance, TEXT("Common.MaxPartnerDistance"), OutError)
 		&& RequireNonNegative(QuantumLeap.CastTimeSeconds, TEXT("QuantumLeap.CastTimeSeconds"), OutError)
+		&& RequireNonNegative(QuantumLeap.DurationSeconds, TEXT("QuantumLeap.DurationSeconds"), OutError)
 		&& RequireNonNegative(QuantumLeap.CooldownSeconds, TEXT("QuantumLeap.CooldownSeconds"), OutError)
 		&& RequireNonNegative(QuantumLeap.PartnerOffset, TEXT("QuantumLeap.PartnerOffset"), OutError)
 		&& RequireNonNegative(BulletReflection.DurationSeconds, TEXT("BulletReflection.DurationSeconds"), OutError)
