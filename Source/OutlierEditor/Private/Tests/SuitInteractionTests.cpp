@@ -625,6 +625,11 @@ bool FOutlierShooterPresentationAssetsTest::RunTest(const FString& Parameters)
 		const AWeaponBase* WeaponDefaults = WeaponClass->GetDefaultObject<AWeaponBase>();
 		for (const FName Property : { FName(TEXT("PreSuitProceduralValues")), FName(TEXT("SuitProceduralValues")) })
 		{
+			// Rifle은 슈트 획득 후에만 사용하므로 PreSuit 전용 설정은 요구하지 않는다.
+			if (WeaponDefaults->GetWeaponType() == EWeaponType::Rifle && Property == TEXT("PreSuitProceduralValues"))
+			{
+				continue;
+			}
 			// 같은 DA 공유는 허용하지만 공통 fallback에만 의존하는 설정은 최종 통합 완료로 보지 않는다.
 			bAssetsValid &= TestNotNull(*FString::Printf(TEXT("%s.%s is explicitly assigned"),
 				*WeaponClass->GetName(), *Property.ToString()), ReadObjectProperty<UProceduralAnimValues>(WeaponDefaults, Property));
@@ -645,7 +650,11 @@ bool FOutlierShooterPresentationAssetsTest::RunTest(const FString& Parameters)
 			TArray<FName> Sections;
 			if (Action == EShooterMontageAction::Fire || Action == EShooterMontageAction::Reload)
 			{
-				Sections = { Defaults->RifleMontageSectionName, Defaults->PistolMontageSectionName };
+				Sections = { Defaults->PistolMontageSectionName };
+				if (StateIndex == 1)
+				{
+					Sections.Add(Defaults->RifleMontageSectionName);
+				}
 			}
 			for (const bool bFirstPerson : { true, false })
 			{
@@ -658,6 +667,10 @@ bool FOutlierShooterPresentationAssetsTest::RunTest(const FString& Parameters)
 		TArray<FName> SwitchSections;
 		for (const EWeaponType Type : { EWeaponType::Rifle, EWeaponType::Pistol, EWeaponType::Melee })
 		{
+			if (StateIndex == 0 && Type == EWeaponType::Rifle)
+			{
+				continue;
+			}
 			for (const FName Phase : { FName(TEXT("Lower")), FName(TEXT("Lowered")), FName(TEXT("Raise")) })
 			{
 				SwitchSections.Add(Defaults->GetThirdPersonSwitchSectionName(Type, Phase));
@@ -696,10 +709,19 @@ bool FOutlierShooterPresentationAssetsTest::RunTest(const FString& Parameters)
 	{
 		AWeaponBase* Weapon = TestWorld.World->SpawnActor<AWeaponBase>(WeaponClass);
 		if (!TestNotNull(TEXT("Asset integration weapon spawns"), Weapon)) { return false; }
+		const bool bSuitOnlyWeapon = Weapon->GetWeaponType() == EWeaponType::Rifle;
+		if (bSuitOnlyWeapon && !TestTrue(TEXT("Rifle equips only with Suit presentation"), Shooter->SetSuitPresentation(true)))
+		{
+			return false;
+		}
 		Shooter->CurrentWeapon = Weapon;
 		Weapon->OnEquipped(Shooter);
 		for (const int32 StateIndex : { 0, 1, 0 })
 		{
+			if (bSuitOnlyWeapon && StateIndex == 0)
+			{
+				continue;
+			}
 			const FString Label = FString::Printf(TEXT("%s %s"), StateNames[StateIndex], *WeaponClass->GetName());
 			if (!TestTrue(*(Label + TEXT(" presentation applies")), Shooter->SetSuitPresentation(StateIndex == 1))) { return false; }
 			USkeletalMeshComponent* FP = Shooter->GetFirstPersonMesh();
@@ -979,6 +1001,7 @@ bool FOutlierProceduralEquipReferenceOrderTest::RunTest(const FString& Parameter
 		|| !TestNotNull(TEXT("Previous weapon"), Previous) || !TestNotNull(TEXT("Granted weapon"), Granted)
 		|| !TestNotNull(TEXT("Other weapon"), Other)) { return false; }
 	Controller->Possess(Shooter);
+	Controller->SetAsLocalPlayerController();
 	if (!TestTrue(TEXT("Fixture is locally controlled"), Shooter->IsLocallyControlled())) { return false; }
 	Shooter->FirstPersonSwitchRaiseDuration = 0.22f;
 	const auto TickSwitch = [Shooter]() { Shooter->UpdateLocalProceduralWeaponSwitch(1.0f / 60.0f); };

@@ -859,9 +859,11 @@ bool FRoomCombatTriggeredSequenceTest::RunTest(const FString& Parameters)
 	World->AddToRoot();
 	WorldContext.SetCurrentWorld(World);
 	World->SetGameInstance(NewObject<UGameInstance>(GEngine));
+	UGameInstance* GameInstance = World->GetGameInstance();
+	GameInstance->Init();
 	TestTrue(TEXT("Sequence world has authority game mode"), World->SetGameMode(FURL()));
 	World->InitializeActorsForPlay(FURL());
-	auto CleanupWorld = [World]()
+	auto CleanupWorld = [World, GameInstance]()
 	{
 		if (URoomCombatSubsystem* Combat = World->GetSubsystem<URoomCombatSubsystem>())
 		{
@@ -869,6 +871,7 @@ bool FRoomCombatTriggeredSequenceTest::RunTest(const FString& Parameters)
 		}
 		GEngine->ShutdownWorldNetDriver(World);
 		World->DestroyWorld(true);
+		GameInstance->Shutdown();
 		World->SetPhysicsScene(nullptr);
 		GEngine->DestroyWorldContext(World);
 		World->RemoveFromRoot();
@@ -1032,6 +1035,11 @@ bool FRoomCombatTriggeredSequenceTest::RunTest(const FString& Parameters)
 	Combat->NotifyEnemyDefeated(Enemy);
 	TestEqual(TEXT("The second phase starts automatically"), Combat->GetCurrentCombatPhaseIndex(RoomTag), 1);
 	UOutlierSaveSubSystem* Saves = World->GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>();
+	if (!TestNotNull(TEXT("Sequence save subsystem is initialized"), Saves))
+	{
+		CleanupWorld();
+		return false;
+	}
 	const FOutlierRoomPhaseProgress* SavedAutomaticPhase = Saves
 		? Saves->GetCurrentRoomPhaseProgress().Find(RoomTag) : nullptr;
 	TestTrue(TEXT("Automatic phase boundary records the next phase"), SavedAutomaticPhase != nullptr);
@@ -1066,6 +1074,9 @@ bool FRoomCombatTriggeredSequenceTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Completed context cannot restart"), Combat->StartTriggeredSequence(Requester, Context));
 	Pool->ReturnEnemy(Enemy, Enemy->GetPoolGameplayGeneration(), Enemy->GetPoolLeaseSerial());
 
+	// The following cancellation scenarios represent a fresh encounter. Keep the
+	// completed-progress assertions above, then clear it before re-registration.
+	Saves->RestoreCurrentWorldProgress(FOutlierWorldProgressSnapshot());
 	Combat->UnregisterRoom(Room);
 	Combat->RegisterRoom(Room, RoomTag);
 	TestFalse(TEXT("Old context cannot target re-registered Room"), Combat->StartTriggeredSequence(Requester, Context));

@@ -15,6 +15,8 @@
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "Misc/App.h"
+#include "OutlierPlayerState.h"
+#include "Shooter/ShooterCharacter.h"
 
 namespace
 {
@@ -50,6 +52,23 @@ struct FPartnerAbilityTestWorld
 		}
 
 		Partner->GetOutlierAbilitySystemComponent()->InitializeForPawn(Partner);
+		// Partner ability activation reads the acquired suit through its paired Shooter PS.
+		UClass* ShooterClass = LoadClass<AShooterCharacter>(nullptr,
+			TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+		AShooterCharacter* Shooter = ShooterClass ? World->SpawnActor<AShooterCharacter>(ShooterClass) : nullptr;
+		AOutlierPlayerState* ShooterState = World->SpawnActor<AOutlierPlayerState>();
+		AOutlierPlayerState* PartnerState = World->SpawnActor<AOutlierPlayerState>();
+		if (!Test.TestNotNull(TEXT("Paired Shooter spawns for the suit gate"), Shooter)
+			|| !Test.TestNotNull(TEXT("Shooter PlayerState spawns"), ShooterState)
+			|| !Test.TestNotNull(TEXT("Partner PlayerState spawns"), PartnerState))
+		{
+			Shutdown();
+			return false;
+		}
+		Shooter->SetPlayerState(ShooterState);
+		Partner->SetPlayerState(PartnerState);
+		PartnerState->SetShooterCharacter(Shooter);
+		ShooterState->SetAcquiredSuit(true);
 		Controller = World->SpawnActor<APartnerPlayerController>();
 		if (!Test.TestNotNull(TEXT("Native Partner controller is spawned"), Controller))
 		{
@@ -57,6 +76,8 @@ struct FPartnerAbilityTestWorld
 			return false;
 		}
 		Controller->Possess(Partner);
+		// The transient controller has no GameMode-created PlayerState of its own.
+		Partner->SetPlayerState(PartnerState);
 		if (!Test.TestTrue(TEXT("Controller possesses native Partner"), Controller->GetPawn() == Partner))
 		{
 			Shutdown();

@@ -634,7 +634,8 @@ bool FFlightHierarchicalSafetyTest::RunTest(const FString& Parameters)
 		bool bCancel = false;
 		bool bBlock = false;
 		int32 StartChecks = 0;
-		Request.MaxCollisionChecks = Mode == 0 ? 70 : 20000;
+		// 시작/목표 검사 이후 예산을 소진시켜 탐색 최적화와 무관하게 실패를 재현한다.
+		Request.MaxCollisionChecks = Mode == 0 ? 3 : 20000;
 		Request.ShouldCancel = [&bCancel]() { return bCancel; };
 		TSharedPtr<FFlightPathSearch> Search = FlightPathfinding::BeginSearchWithChecks(Request,
 			[&](const FVector& Point)
@@ -655,7 +656,7 @@ bool FFlightHierarchicalSafetyTest::RunTest(const FString& Parameters)
 		const EFlightPathStatus Expected = Mode == 0 ? EFlightPathStatus::BudgetExceeded
 			: Mode == 1 ? EFlightPathStatus::Cancelled
 			: Mode == 2 ? EFlightPathStatus::BlockedEndpoint : EFlightPathStatus::BlockedSegment;
-		TestEqual(TEXT("Hierarchical search preserves failure semantics"), Result.Status, Expected);
+		TestEqual(FString::Printf(TEXT("Hierarchical search preserves failure semantics (mode %d)"), Mode), Result.Status, Expected);
 		TestTrue(TEXT("Failure does not expose an unvalidated coarse route"), Result.Waypoints.IsEmpty());
 		TestTrue(TEXT("All passes share one check cap"), Result.CollisionChecks <= Request.MaxCollisionChecks);
 		if (Mode == 3) TestTrue(TEXT("Coarse route gets fresh validation before handoff"), bBlock);

@@ -5,9 +5,11 @@
 #include "Components/StaticMeshComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/Engine.h"
+#include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Weapon/RangedWeaponBase.h"
+#include "UObject/UnrealType.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FOutlierWeaponFirstPersonRenderingDefaultsTest,
@@ -88,6 +90,17 @@ bool FOutlierWeaponSightPresentationTest::RunTest(const FString& Parameters)
 	}
 
 	UStaticMeshComponent* FirstSight = Weapon->GetFirstSightMesh();
+	FObjectProperty* SightMeshProperty = FindFProperty<FObjectProperty>(ARangedWeaponBase::StaticClass(), TEXT("SightMesh"));
+	UStaticMesh* TestSightMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+	if (!TestNotNull(TEXT("Optional sight mesh setting"), SightMeshProperty)
+		|| !TestNotNull(TEXT("Explicit sight fixture mesh"), TestSightMesh))
+	{
+		World->DestroyWorld(true);
+		World->SetPhysicsScene(nullptr);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+		return false;
+	}
 	UStaticMeshComponent* ShadowSight = Cast<UStaticMeshComponent>(
 		Weapon->GetDefaultSubobjectByName(TEXT("ShadowSight")));
 	TestNotNull(TEXT("Pistol has a first-person sight component"), FirstSight);
@@ -97,10 +110,28 @@ bool FOutlierWeaponSightPresentationTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Sight is hidden while the weapon is a pickup"), FirstSight->bHiddenInGame);
 	}
 
+	// 실제 권총 BP의 선택적 SightMesh 유무와 무관하게 두 설정의 수명주기를 검사한다.
+	for (const FName ComponentName : { FName(TEXT("FirstSight")), FName(TEXT("ThirdSight")), FName(TEXT("ShadowSight")) })
+	{
+		if (UStaticMeshComponent* Sight = Cast<UStaticMeshComponent>(Weapon->GetDefaultSubobjectByName(ComponentName)))
+		{
+			Sight->SetStaticMesh(nullptr);
+		}
+	}
+	SightMeshProperty->SetObjectPropertyValue_InContainer(Weapon, nullptr);
 	Weapon->OnEquipped(Shooter);
 	Weapon->ShowEquippedPresentation();
 	if (FirstSight)
 	{
+		TestTrue(TEXT("Unconfigured sight stays hidden while equipped"), FirstSight->bHiddenInGame);
+	}
+	Weapon->OnUnequipped();
+	SightMeshProperty->SetObjectPropertyValue_InContainer(Weapon, TestSightMesh);
+	Weapon->OnEquipped(Shooter);
+	Weapon->ShowEquippedPresentation();
+	if (FirstSight)
+	{
+		TestTrue(TEXT("Configured sight mesh is applied"), FirstSight->GetStaticMesh() == TestSightMesh);
 		TestFalse(TEXT("Current weapon sight is shown after equip presentation"), FirstSight->bHiddenInGame);
 	}
 

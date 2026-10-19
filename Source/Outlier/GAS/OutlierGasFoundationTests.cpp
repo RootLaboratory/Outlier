@@ -38,7 +38,7 @@
 
 namespace
 {
-	bool PrepareStealthTestShooter(AShooterCharacter* Shooter)
+	bool PrepareShooterSuitTest(AShooterCharacter* Shooter, const FGameplayTag& AbilityTag)
 	{
 		UOutlierAbilitySystemComponent* AbilitySystem = Shooter->GetOutlierAbilitySystemComponent();
 		if (!AbilitySystem || !AbilitySystem->IsShooterSuitConfigured())
@@ -54,7 +54,17 @@ namespace
 		// 에디터의 bNoGrantMode나 Blueprint의 초기 업그레이드 설정에는 의존하지 않는다.
 		Shooter->SetPlayerState(PlayerState);
 		PlayerState->SetAcquiredSuit(true);
-		AbilitySystem->AddLooseGameplayTag(OutlierGameplayTags::Ability::Shooter::Stealth());
+		AbilitySystem->AddLooseGameplayTag(AbilityTag);
+		return Shooter->IsSuitUsable();
+	}
+
+	bool PrepareStealthTestShooter(AShooterCharacter* Shooter)
+	{
+		if (!PrepareShooterSuitTest(Shooter, OutlierGameplayTags::Ability::Shooter::Stealth()))
+		{
+			return false;
+		}
+		UOutlierAbilitySystemComponent* AbilitySystem = Shooter->GetOutlierAbilitySystemComponent();
 
 		// 수명/쿨타임 검사는 디스크 DT를 조정해도 같은 조건으로 재현한다.
 		FOutlierShooterSuitConfig Config = AbilitySystem->GetShooterSuitConfig();
@@ -675,6 +685,21 @@ bool FOutlierGasPartnerDamageBoundaryTest::RunTest(const FString& Parameters)
 	{
 		return false;
 	}
+
+	// Deferred native Partners do not run the Blueprint's ability data initialization.
+	FOutlierPartnerAbilityConfig AbilityConfig;
+	AbilityConfig.EMPCooldown = 30.0f;
+	AbilityConfig.ShieldCooldown = 20.0f;
+	AbilityConfig.HackCooldown = 3.0f;
+	AbilityConfig.ScanCooldown = 10.0f;
+	AbilityConfig.ScanDuration = 3.0f;
+	AbilityConfig.ScanRange = 1000.0f;
+	AbilityConfig.HackEffectiveRange = 500.0f;
+	AbilityConfig.ShieldAmount = 100.0f;
+	AbilityConfig.MarkDuration = 3.0f;
+	AbilityConfig.StunDuration = 3.0f;
+	TestTrue(TEXT("Deferred Partner abilities configure before interaction setup"),
+		AbilitySystem->ConfigurePartnerAbilities(AbilityConfig));
 
 	FOutlierDamageRequest TaggedDamageEvent;
 	TaggedDamageEvent.DamageTag = OutlierGameplayTags::Damage::Weapon();
@@ -1630,6 +1655,9 @@ bool FOutlierGasEnemyDamageFlowTest::RunTest(const FString& Parameters)
 	const FActiveGameplayEffectHandle FirstStun = AbilitySystem->ApplyStunStateToSelf(1.0f, Enemy);
 	const FActiveGameplayEffectHandle SecondStun = AbilitySystem->ApplyStunStateToSelf(2.0f, AbilitySystem);
 	TestTrue(TEXT("Both overlapping stun applications are accepted"), FirstStun.IsValid() && SecondStun.IsValid());
+	AbilitySystem->InitializeForPawn(Enemy);
+	TestEqual(TEXT("Repeated initialization keeps one shared stun cue"),
+		AbilitySystem->GetTagCount(OutlierGameplayTags::Cue::Status::Stun()), 1);
 	TestTrue(TEXT("The first overlapping stun can be removed"), AbilitySystem->RemoveActiveEffectFromSelf(FirstStun));
 	TestTrue(
 		TEXT("Removing one stun preserves presentation while another stun is active"),
@@ -1651,7 +1679,20 @@ bool FOutlierGasEnemyDamageFlowTest::RunTest(const FString& Parameters)
 	TestTrue(
 		TEXT("Lethal Enemy damage grants the authoritative dead tag"),
 		AbilitySystem->HasMatchingGameplayTag(OutlierGameplayTags::State::Dead()));
-	TestTrue(TEXT("Enemy death enters the existing destruction path"), Enemy->IsActorBeingDestroyed());
+	const float DeathLifeSpan = Enemy->GetLifeSpan();
+	TestTrue(TEXT("Enemy death destroys immediately or schedules its death presentation cleanup"),
+		Enemy->IsActorBeingDestroyed() || DeathLifeSpan > 0.0f);
+	if (!Enemy->IsActorBeingDestroyed() && DeathLifeSpan > 0.0f)
+	{
+		// WorldSettings가 큰 프레임 시간을 제한하므로 작은 프레임으로 수명을 진행한다.
+		for (int32 Frame = 0; Frame < FMath::CeilToInt(DeathLifeSpan / 0.05f) + 2
+			&& !Enemy->IsActorBeingDestroyed(); ++Frame)
+		{
+			++GFrameCounter;
+			World->Tick(LEVELTICK_All, 0.05f);
+		}
+		TestTrue(TEXT("Enemy death presentation ends in destruction"), Enemy->IsActorBeingDestroyed());
+	}
 
 	GEngine->ShutdownWorldNetDriver(World);
 	World->DestroyWorld(true);
@@ -2353,6 +2394,11 @@ bool FOutlierGasShooterBulletReflectionTest::RunTest(const FString& Parameters)
 	EnemyASC->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetHealthAttribute(), 100.0f);
 
 	TestNull(TEXT("Bullet Reflection fixture starts without an equipped weapon"), Shooter->GetCurrentWeapon());
+	TestTrue(TEXT("Bullet Reflection fixture acquires the suit and ability grant"),
+		PrepareShooterSuitTest(Shooter, OutlierGameplayTags::Ability::Shooter::BulletReflection()));
+	FOutlierShooterSuitConfig ReflectionConfig = ShooterASC->GetShooterSuitConfig();
+	ReflectionConfig.BulletReflection.CooldownSeconds = 20.0f;
+	TestTrue(TEXT("Bullet Reflection fixture configures its cooldown"), ShooterASC->UpdateShooterSuitConfig(ReflectionConfig));
 	TestTrue(
 		TEXT("Bullet Reflection activates independently of the equipped weapon"),
 		ShooterASC->TryActivateShooterSuitAbility(
@@ -2523,6 +2569,11 @@ bool FOutlierGasShooterWeaponOverchargeTest::RunTest(const FString& Parameters)
 	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetShieldAttribute(), 40.0f);
 	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetMaxPartnerShieldAttribute(), 5.0f);
 	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetPartnerShieldAttribute(), 5.0f);
+	TestTrue(TEXT("Weapon Overcharge fixture acquires the suit and ability grant"),
+		PrepareShooterSuitTest(Shooter, OutlierGameplayTags::Ability::Shooter::WeaponOvercharge()));
+	FOutlierShooterSuitConfig OverchargeConfig = ShooterASC->GetShooterSuitConfig();
+	OverchargeConfig.WeaponOvercharge.CooldownSeconds = 25.0f;
+	TestTrue(TEXT("Weapon Overcharge fixture configures its cooldown"), ShooterASC->UpdateShooterSuitConfig(OverchargeConfig));
 
 	TestFalse(
 		TEXT("Weapon Overcharge rejects activation without a primary rifle"),

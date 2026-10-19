@@ -216,10 +216,12 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FOutlierPartyJoinIntegrationTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
-	AddExpectedError(
+	// 에셋 최초 로드에서만 발생하므로 캐시된 에셋으로 반복 실행해도 통과해야 한다.
+	AddExpectedMessage(
 		TEXT("DA_Sample_PipeDrop.uasset: Asset has been saved with empty engine version"),
-		EAutomationExpectedErrorFlags::Contains,
-		1);
+		ELogVerbosity::Warning,
+		EAutomationExpectedMessageFlags::Contains,
+		-1, false);
 
 	UGameInstance* GameInstance = NewObject<UGameInstance>(GEngine);
 	const FName WorldName = MakeUniqueObjectName(

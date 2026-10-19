@@ -136,6 +136,7 @@ struct FProbeSample
 	FVector HandInGun = FVector::ZeroVector;
 	FVector HandIKInGun = FVector::ZeroVector;
 	float LeftHandFinalIKAlpha = 0.0f;
+	float LeftHandReloadIKAlpha = 0.0f;
 	float LeftHandFreeAlpha = 0.0f;
 	float SlotWeight = 0.0f;
 	float LeftHandIKAlpha = 0.0f;
@@ -193,6 +194,7 @@ bool CaptureSample(AShooterCharacter* Shooter, AWeaponBase* Weapon, int32 Frame,
 		OutSample.HandIKInGun = GunTransform.InverseTransformPositionNoScale(OutSample.HandIK);
 	}
 	OutSample.LeftHandFinalIKAlpha = Runtime->LeftHandFinalIKAlpha;
+	OutSample.LeftHandReloadIKAlpha = Runtime->LeftHandReloadIKAlpha;
 	OutSample.LeftHandFreeAlpha = Runtime->LeftHandFreeAlpha;
 	OutSample.bWeaponHidden = WeaponMesh->bHiddenInGame;
 	const FName AttachSocketName = WeaponMesh->GetAttachSocketName();
@@ -541,7 +543,7 @@ bool FOutlierFirstPersonEquipDAProbeTest::RunTest(const FString& Parameters)
 		TEXT("SlotWeight,LeftHandIKAlpha,WeaponPoseAlpha,WeaponHidden,AttachBone,WeaponToAttachSocketCm,")
 		TEXT("HandPitch,HandYaw,HandRoll,HandIKX,HandIKY,HandIKZ,HandIKPitch,HandIKYaw,HandIKRoll,GripPitch,GripYaw,GripRoll,")
 		TEXT("RightHandX,RightHandY,RightHandZ,GunBoneX,GunBoneY,GunBoneZ,AttachSocketX,AttachSocketY,AttachSocketZ,")
-		TEXT("HandInGunX,HandInGunY,HandInGunZ,HandIKInGunX,HandIKInGunY,HandIKInGunZ,LeftHandFinalIKAlpha,LeftHandFreeAlpha"));
+		TEXT("HandInGunX,HandInGunY,HandInGunZ,HandIKInGunX,HandIKInGunY,HandIKInGunZ,LeftHandFinalIKAlpha,LeftHandFreeAlpha,LeftHandReloadIKAlpha"));
 	for (EWeaponType SourceType : {EWeaponType::Pistol, EWeaponType::Rifle})
 	{
 		const TCHAR* Direction = SourceType == EWeaponType::Pistol ? TEXT("PistolToRifle") : TEXT("RifleToPistol");
@@ -632,7 +634,7 @@ bool FOutlierFirstPersonEquipDAProbeTest::RunTest(const FString& Parameters)
 					TEXT("%.4f,%.4f,%.4f,%d,%s,%.4f,")
 					TEXT("%.3f,%.3f,%.3f,%.4f,%.4f,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,")
 					TEXT("%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,")
-					TEXT("%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f"),
+					TEXT("%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f"),
 					Direction, VariantName(Variant), Sample.Frame, Sample.SwitchLowerAlpha,
 					Sample.bIsEquipping ? 1 : 0, Sample.HandGripGap, Sample.IKGripGap,
 					Sample.HandStep, Sample.HipStep, Sample.WeaponRootStep, Sample.RightHandIKStep,
@@ -649,7 +651,7 @@ bool FOutlierFirstPersonEquipDAProbeTest::RunTest(const FString& Parameters)
 					Sample.AttachSocket.X, Sample.AttachSocket.Y, Sample.AttachSocket.Z,
 					Sample.HandInGun.X, Sample.HandInGun.Y, Sample.HandInGun.Z,
 					Sample.HandIKInGun.X, Sample.HandIKInGun.Y, Sample.HandIKInGun.Z,
-					Sample.LeftHandFinalIKAlpha, Sample.LeftHandFreeAlpha));
+					Sample.LeftHandFinalIKAlpha, Sample.LeftHandFreeAlpha, Sample.LeftHandReloadIKAlpha));
 			}
 			TestTrue(FString::Printf(TEXT("%s %s samples the Procedural Equip window"), Direction, VariantName(Variant)), ActiveEquipFrames > 0);
 			AddInfo(FString::Printf(TEXT("%s %s: frames=%d max grip gap=%.2f cm, settled gap=%.2f cm, max hand step=%.2f cm, max hand deviation from baseline=%.2f cm, equip right-hand/gun gap=%.2f cm (settled %.2f cm), equip left-hand-in-gun delta vs ProceduralOff=%.2f cm, ik_hand_l-in-gun delta=%.2f cm, equip ik_hand_l/hand_l gap=%.2f cm"),
@@ -663,8 +665,10 @@ bool FOutlierFirstPersonEquipDAProbeTest::RunTest(const FString& Parameters)
 				{
 					TestEqual(TEXT("Final IK follows ordinary grip IK through Raise"),
 						Sample.LeftHandFinalIKAlpha, Sample.LeftHandIKAlpha);
-					TestTrue(TEXT("Equip does not select the free-hand target"),
-						FMath::IsNearlyEqual(Sample.LeftHandFreeAlpha, 1.0f - Sample.LeftHandIKAlpha));
+					// Reload 복귀 중 남아 있는 action IK도 free-hand 목표의 보완 가중치에 포함된다.
+					TestTrue(TEXT("Free-hand target complements grip and reload IK"),
+						FMath::IsNearlyEqual(Sample.LeftHandFreeAlpha,
+							1.0f - FMath::Clamp(Sample.LeftHandIKAlpha + Sample.LeftHandReloadIKAlpha, 0.0f, 1.0f)));
 					if (Sample.bIsEquipping && Sample.WeaponPoseAlpha > 0.999f)
 					{
 						TestTrue(TEXT("Settled weapon pose retains its grip during Equip"), Sample.LeftHandIKAlpha > 0.99f);
