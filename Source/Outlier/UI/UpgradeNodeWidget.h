@@ -170,6 +170,19 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Upgrade|Appearance", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float OverlayIntensity = 1.0f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Fill")
+	TObjectPtr<UMaterialInterface> NodeFillMaterial;
+
+	// 배경 텍스처를 별도로 지정할 때 사용한다. 비워 두면 Background의 기존 이미지를 유지한다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Fill")
+	TObjectPtr<UTexture2D> NodeFillTexture;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Upgrade|Fill", meta = (DeprecatedProperty, DeprecationMessage = "State fill now uses UnlockedColor and ActivatedColor."))
+	FLinearColor FillColor = FLinearColor(0.3f, 0.65f, 1.0f);
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Upgrade|Appearance")
+	FLinearColor HoverColor = FLinearColor(0.65f, 0.8f, 1.0f);
+
 	// 기존 BP 참조는 유지하되 클릭 구매를 우회하지 않도록 더 이상 방송하지 않는다.
 	UPROPERTY(BlueprintAssignable, Category = "Upgrade", meta = (DeprecatedProperty, DeprecationMessage = "Upgrade purchases now use hold input."))
 	FOnUpgradeNodeWidgetEvent OnUpgradeNodeClicked;
@@ -186,6 +199,9 @@ protected:
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "Upgrade|Appearance")
 	TObjectPtr<UImage> Background;
+
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "Upgrade|Fill")
+	TObjectPtr<UImage> NodeFill;
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "Upgrade|Appearance")
 	TObjectPtr<UImage> Frame;
@@ -285,10 +301,16 @@ private:
 	void RefreshVisibleDescWidget();
 	void RefreshEnabledState();
 	UMaterialInstanceDynamic* EnsureOverlayMaterial(UImage* Image, UMaterialInstanceDynamic* CachedMaterial) const;
+	UMaterialInstanceDynamic* EnsureNodeFillMaterial(UImage* Image, UMaterialInstanceDynamic* CachedMaterial, UTexture2D* TextureOverride = nullptr);
 	void RefreshNodeAppearance();
 	void RefreshNodeTexture();
+	void RefreshNodeFill();
+	void SetNodeHovered(bool bInHovered);
 
 	bool bHoverDescVisible = false;
+	bool bNodeHovered = false;
+	bool bFrameHoverTintApplied = false;
+	FLinearColor FrameBaseTint = FLinearColor::White;
 	bool bSuppressDescUntilUnhover = false;
 	bool bHoldingUpgrade = false;
 	float HoldProgress = 0.0f;
@@ -314,6 +336,12 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> IconMaterial;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> BackgroundMaterial;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInterface> CachedNodeFillSource;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UTexture2D> UnlockedNodeTexture;

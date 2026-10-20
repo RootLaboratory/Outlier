@@ -10,6 +10,7 @@
 #include "Engine/Texture2D.h"
 #include "Engine/World.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "Misc/AutomationTest.h"
 #include "OutlierPlayerState.h"
 #include "Upgrade/OutlierUpgradeComponent.h"
@@ -34,6 +35,60 @@ struct FUpgradeNodeInteractionTestAccess
 	}
 
 	static void Begin(UUpgradeNodeWidget* Node) { Node->bHoldingUpgrade = true; Node->HoldProgress = 0.0f; }
+	static UImage* ConfigureFill(UUpgradeNodeWidget* Node, UMaterialInterface* Material)
+	{
+		if (!Node->Background)
+		{
+			Node->Background = NewObject<UImage>(Node);
+			Node->Background->SetBrushFromTexture(NewObject<UTexture2D>());
+		}
+		Node->NodeFill = NewObject<UImage>(Node);
+		Node->NodeFillMaterial = Material;
+		Node->RefreshNodeAppearance();
+		return Node->Background;
+	}
+	static UMaterialInstanceDynamic* FillMaterial(UUpgradeNodeWidget* Node) { return Node->BackgroundMaterial; }
+	static float MaterialProgress(UMaterialInstanceDynamic* Material)
+	{
+		float Value = -1.0f;
+		if (Material) Material->GetScalarParameterValue(FHashedMaterialParameterInfo(TEXT("Progress")), Value);
+		return Value;
+	}
+	static UImage* OldFillImage(UUpgradeNodeWidget* Node) { return Node->NodeFill; }
+	static void ConfigureIconFill(UUpgradeNodeWidget* Node, UMaterialInterface* Material)
+	{
+		Node->Icon = NewObject<UImage>(Node);
+		Node->NodeFillMaterial = Material;
+		Node->RefreshNodeAppearance();
+		Node->RefreshNodeTexture();
+	}
+	static void RefreshAppearance(UUpgradeNodeWidget* Node) { Node->RefreshNodeAppearance(); }
+	static void Hover(UUpgradeNodeWidget* Node)
+	{
+		// 설명창을 숨기는 조기 반환 경로에서도 강조는 적용되어야 한다. 상태는 각 테스트에서 주입한다.
+		Node->bSuppressDescUntilUnhover = true;
+		Node->HandleHovered();
+	}
+	static void ConfigureAppearance(UUpgradeNodeWidget* Node, UMaterialInterface* Material)
+	{
+		Node->NodeColorMaterial = Material;
+		Node->Background = NewObject<UImage>(Node);
+		Node->Background->SetBrushFromTexture(NewObject<UTexture2D>());
+		Node->Frame = NewObject<UImage>(Node);
+		Node->Glow = NewObject<UImage>(Node);
+		Node->Icon = NewObject<UImage>(Node);
+		Node->NodeIconTextureOverride = NewObject<UTexture2D>();
+		for (UImage* Image : { Node->Frame.Get(), Node->Glow.Get(), Node->Icon.Get() })
+		{
+			Image->SetBrushFromTexture(Node->NodeIconTextureOverride);
+		}
+		Node->RefreshNodeAppearance();
+	}
+	static UImage* FrameImage(UUpgradeNodeWidget* Node) { return Node->Frame; }
+	static UImage* GlowImage(UUpgradeNodeWidget* Node) { return Node->Glow; }
+	static UImage* IconImage(UUpgradeNodeWidget* Node) { return Node->Icon; }
+	static UMaterialInstanceDynamic* FrameMID(UUpgradeNodeWidget* Node) { return Node->FrameMaterial; }
+	static UMaterialInstanceDynamic* IconMID(UUpgradeNodeWidget* Node) { return Node->IconMaterial; }
 	static bool Advance(UUpgradeNodeWidget* Node, float Seconds) { return Node->AdvanceHold(Seconds); }
 	static void Release(UUpgradeNodeWidget* Node) { Node->HandleReleased(); }
 	static void Leave(UUpgradeNodeWidget* Node) { Node->HandleUnhovered(); }
@@ -53,6 +108,7 @@ struct FUpgradeNodeInteractionTestAccess
 		Node->PendingUpgradeOwner = Owner;
 		Node->HoldProgress = 1.0f;
 		Node->RequestStartedTime = 100.0;
+		Node->RefreshNodeFill();
 	}
 
 	static void Result(UUpgradeNodeWidget* Node, AActor* Owner, uint32 Id, bool bSucceeded, FName Row = TEXT("Node"))
@@ -414,6 +470,273 @@ bool FUpgradeDescStatusImageTest::RunTest(const FString& Parameters)
 	Desc->UpdateNodeData(TEXT("Node"), Row, EOutlierUpgradeNodeState::Activated, 0, false);
 	TestTrue(TEXT("Activation takes priority over affordability"), Image->GetBrush().GetResourceObject() == Textures[3]);
 	TestTrue(TEXT("Status images cannot intercept node input"), Image->GetVisibility() == ESlateVisibility::HitTestInvisible);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FUpgradeFillIndependenceTest, "Outlier.UI.Upgrade.Fill.IndependentMaterials",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUpgradeFillIndependenceTest::RunTest(const FString& Parameters)
+{
+	using Access = FUpgradeNodeInteractionTestAccess;
+	UMaterialInterface* Material = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Material/Widget/M_UI_NodeFill.M_UI_NodeFill"));
+	if (!TestNotNull(TEXT("Node fill material exists"), Material)) return false;
+	// 같은 MID를 설정해도 각각 복제되어야 한다. 공용 원본의 진행도는 변경하지 않는다.
+	UMaterialInstanceDynamic* SharedMaterial = UMaterialInstanceDynamic::Create(Material, GetTransientPackage());
+	SharedMaterial->SetScalarParameterValue(TEXT("Progress"), 0.9f);
+	UUpgradeNodeWidget* First = Access::MakeNode();
+	UUpgradeNodeWidget* Second = Access::MakeNode();
+	First->UnlockedColor = FLinearColor(0.2f, 0.3f, 0.4f);
+	First->ActivatedColor = FLinearColor(0.7f, 0.8f, 0.9f);
+	First->NodeFillTexture = NewObject<UTexture2D>();
+	Second->NodeFillTexture = NewObject<UTexture2D>();
+	Access::ConfigureAppearance(First, nullptr);
+	Access::ConfigureAppearance(Second, nullptr);
+	Access::ConfigureFill(First, SharedMaterial);
+	Access::ConfigureFill(Second, SharedMaterial);
+	UMaterialInstanceDynamic* FirstMID = Access::FillMaterial(First);
+	UMaterialInstanceDynamic* SecondMID = Access::FillMaterial(Second);
+	if (!TestNotNull(TEXT("First node owns a MID"), FirstMID)
+		|| !TestNotNull(TEXT("Second node owns a MID"), SecondMID)) return false;
+	TestTrue(TEXT("Nodes never share their fill MID"), FirstMID != SecondMID && FirstMID != SharedMaterial && SecondMID != SharedMaterial);
+	TestTrue(TEXT("Layers also own separate MIDs"), FirstMID != Access::FrameMID(First)
+		&& FirstMID != Access::IconMID(First) && Access::FrameMID(First) != Access::IconMID(First));
+	Access::Begin(First);
+	Access::Advance(First, 0.4f);
+	float Progress = -1.0f;
+	TestTrue(TEXT("Fill material exposes Progress"), FirstMID->GetScalarParameterValue(FHashedMaterialParameterInfo(TEXT("Progress")), Progress));
+	TestEqual(TEXT("First node follows its hold"), Progress, 0.4f);
+	SecondMID->GetScalarParameterValue(FHashedMaterialParameterInfo(TEXT("Progress")), Progress);
+	TestEqual(TEXT("The other node stays empty"), Progress, 0.0f);
+	SharedMaterial->GetScalarParameterValue(FHashedMaterialParameterInfo(TEXT("Progress")), Progress);
+	TestEqual(TEXT("The shared source is untouched"), Progress, 0.9f);
+	UTexture* Mask = nullptr;
+	TestTrue(TEXT("Fill material exposes NodeTexture"), FirstMID->GetTextureParameterValue(FHashedMaterialParameterInfo(TEXT("NodeTexture")), Mask));
+	TestTrue(TEXT("Each node uses its own mask"), Mask == First->NodeFillTexture.Get());
+	SecondMID->GetTextureParameterValue(FHashedMaterialParameterInfo(TEXT("NodeTexture")), Mask);
+	TestTrue(TEXT("The second mask is independent"), Mask == Second->NodeFillTexture.Get());
+	FLinearColor Color;
+	TestTrue(TEXT("State material exposes UnlockedColor"), FirstMID->GetVectorParameterValue(FHashedMaterialParameterInfo(TEXT("UnlockedColor")), Color));
+	TestEqual(TEXT("Base color follows the node"), Color, First->UnlockedColor);
+	TestTrue(TEXT("State material exposes ActivatedColor"), FirstMID->GetVectorParameterValue(FHashedMaterialParameterInfo(TEXT("ActivatedColor")), Color));
+	TestEqual(TEXT("Activated color follows the node"), Color, First->ActivatedColor);
+	TestEqual(TEXT("The frame uses the same progress"), Access::MaterialProgress(Access::FrameMID(First)), 0.4f);
+	TestEqual(TEXT("The icon uses the same progress"), Access::MaterialProgress(Access::IconMID(First)), 0.4f);
+	Access::IconMID(First)->GetTextureParameterValue(FHashedMaterialParameterInfo(TEXT("NodeTexture")), Mask);
+	TestTrue(TEXT("The icon keeps its own image instead of the background mask"), Mask == First->NodeIconTextureOverride.Get());
+	Access::FrameMID(First)->GetTextureParameterValue(FHashedMaterialParameterInfo(TEXT("NodeTexture")), Mask);
+	TestTrue(TEXT("The frame also keeps its own image"), Mask == First->NodeIconTextureOverride.Get());
+	Access::RefreshAppearance(First);
+	TestTrue(TEXT("State refresh reuses the existing MID"), Access::FillMaterial(First) == FirstMID);
+	Access::RefreshAppearance(Second);
+	TestTrue(TEXT("The second node also reuses its MID"), Access::FillMaterial(Second) == SecondMID);
+	Access::Release(First);
+	FirstMID->GetScalarParameterValue(FHashedMaterialParameterInfo(TEXT("Progress")), Progress);
+	TestEqual(TEXT("Cancellation resets the material immediately"), Progress, 0.0f);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FUpgradeFillStateTest, "Outlier.UI.Upgrade.Fill.StateTransitions",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUpgradeFillStateTest::RunTest(const FString& Parameters)
+{
+	using Access = FUpgradeNodeInteractionTestAccess;
+	UMaterialInterface* Material = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Material/Widget/M_UI_NodeFill.M_UI_NodeFill"));
+	if (!TestNotNull(TEXT("Node fill material exists"), Material)) return false;
+	UpgradeNodeInteractionTests::FTestWorld Context;
+	if (!TestNotNull(TEXT("Fill test world exists"), Context.World)) return false;
+	AActor* Owner = Context.World->SpawnActor<AActor>();
+	if (!TestNotNull(TEXT("Request owner exists"), Owner)) return false;
+	UUpgradeNodeWidget* Node = Access::MakeNode();
+	Access::ConfigureAppearance(Node, nullptr);
+	UImage* Fill = Access::ConfigureFill(Node, Material);
+	UMaterialInstanceDynamic* FillMID = Access::FillMaterial(Node);
+	if (!TestNotNull(TEXT("Background has a state material"), FillMID)) return false;
+	TestEqual(TEXT("Idle starts at the base state"), Access::MaterialProgress(FillMID), 0.0f);
+	TestTrue(TEXT("The base image stays visible and cannot intercept input"), Fill->GetVisibility() == ESlateVisibility::HitTestInvisible);
+	TestTrue(TEXT("The old separate fill overlay is hidden"), Access::OldFillImage(Node)->GetVisibility() == ESlateVisibility::Hidden);
+	FLinearColor Color;
+	FillMID->GetVectorParameterValue(FHashedMaterialParameterInfo(TEXT("ActivatedColor")), Color);
+	TestEqual(TEXT("Zero progress has no activated boundary pixel"), Color, Node->UnlockedColor);
+	Access::Begin(Node);
+	Access::Advance(Node, 0.5f);
+	TestEqual(TEXT("Partial hold transitions the existing image"), Access::MaterialProgress(FillMID), 0.5f);
+	Access::Leave(Node);
+	TestEqual(TEXT("Leaving immediately restores base progress"), Access::MaterialProgress(FillMID), 0.0f);
+	Access::Pending(Node, Owner, 1);
+	Access::Release(Node);
+	Access::Result(Node, Owner, 1, true);
+	TestEqual(TEXT("Success response preserves full progress until activation arrives"), Access::MaterialProgress(FillMID), 1.0f);
+	TestTrue(TEXT("Full appearance alone cannot activate the node"), Node->GetNodeState() == EOutlierUpgradeNodeState::Unlocked);
+	Node->SetNodeState(EOutlierUpgradeNodeState::Activated, true);
+	TestEqual(TEXT("Activation clears temporary hold progress"), Node->GetHoldProgress(), 0.0f);
+	TestEqual(TEXT("The material keeps the actual activated appearance"), Access::MaterialProgress(FillMID), 1.0f);
+	TestEqual(TEXT("Activation does not hide the existing background"), Fill->GetRenderOpacity(), 1.0f);
+	FillMID->GetVectorParameterValue(FHashedMaterialParameterInfo(TEXT("UnlockedColor")), Color);
+	TestEqual(TEXT("Full progress has no inactive boundary pixel"), Color, Node->ActivatedColor);
+	TestEqual(TEXT("Activation keeps Glow on"), Access::GlowImage(Node)->GetRenderOpacity(), 1.0f);
+	Access::Leave(Node);
+	TestEqual(TEXT("Leaving an activated node preserves Glow"), Access::GlowImage(Node)->GetRenderOpacity(), 1.0f);
+	Access::RefreshAppearance(Node);
+	TestEqual(TEXT("Refreshing an activated node never replays fill"), Access::MaterialProgress(FillMID), 1.0f);
+	Node->SetNodeState(EOutlierUpgradeNodeState::Unlocked, true);
+	Access::Pending(Node, Owner, 2);
+	Access::Result(Node, Owner, 2, false);
+	TestEqual(TEXT("Rejection restores base progress"), Access::MaterialProgress(FillMID), 0.0f);
+	Access::Pending(Node, Owner, 3);
+	Access::Timeout(Node, 106.0);
+	TestEqual(TEXT("Timeout restores base progress"), Access::MaterialProgress(FillMID), 0.0f);
+	Access::Begin(Node);
+	Access::Advance(Node, 0.5f);
+	Access::Deactivate(Node);
+	TestEqual(TEXT("Focus loss restores base progress"), Access::MaterialProgress(FillMID), 0.0f);
+	Access::Begin(Node);
+	Access::Advance(Node, 0.5f);
+	Access::Destruct(Node);
+	TestEqual(TEXT("Widget removal restores base progress"), Access::MaterialProgress(FillMID), 0.0f);
+	Node->bAlwaysShowUnlockedIcon = true;
+	Access::RefreshAppearance(Node);
+	TestEqual(TEXT("Display-only activated nodes also show the full appearance"), Access::MaterialProgress(FillMID), 1.0f);
+	UUpgradeNodeWidget* Unconfigured = Access::MakeNode();
+	UImage* MissingFill = Access::ConfigureFill(Unconfigured, nullptr);
+	Access::Begin(Unconfigured);
+	Access::Advance(Unconfigured, 0.5f);
+	TestNull(TEXT("Missing state material is safe"), Access::FillMaterial(Unconfigured));
+	TestEqual(TEXT("Missing material preserves the existing image"), MissingFill->GetRenderOpacity(), 1.0f);
+	Unconfigured->ResetUpgradeInteraction();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FUpgradeIconTextureFillTest, "Outlier.UI.Upgrade.Fill.IconTextures",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUpgradeIconTextureFillTest::RunTest(const FString& Parameters)
+{
+	using Access = FUpgradeNodeInteractionTestAccess;
+	UMaterialInterface* Material = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Material/Widget/M_UI_NodeFill.M_UI_NodeFill"));
+	if (!TestNotNull(TEXT("Node fill material exists"), Material)) return false;
+	float Mode = -1.0f;
+	if (!TestTrue(TEXT("Apply the texture fill graph before this test"),
+		Material->GetScalarParameterValue(FHashedMaterialParameterInfo(TEXT("UseActivatedTexture")), Mode))) return false;
+	UUpgradeNodeWidget* Node = Access::MakeNode();
+	Node->LockedIconTextureOverride = NewObject<UTexture2D>();
+	Node->UnlockedIconTextureOverride = NewObject<UTexture2D>();
+	Access::ConfigureIconFill(Node, Material);
+	UMaterialInstanceDynamic* MID = Access::IconMID(Node);
+	if (!TestNotNull(TEXT("An icon without a background receives its own MID"), MID)) return false;
+	MID->GetScalarParameterValue(FHashedMaterialParameterInfo(TEXT("UseActivatedTexture")), Mode);
+	TestEqual(TEXT("Separate icon images enable texture blending"), Mode, 1.0f);
+	Access::Begin(Node);
+	Access::Advance(Node, 0.5f);
+	TestEqual(TEXT("Icon texture blending follows hold progress"), Access::MaterialProgress(MID), 0.5f);
+	Access::Release(Node);
+	TestEqual(TEXT("Cancellation restores the basic image"), Access::MaterialProgress(MID), 0.0f);
+	Node->SetNodeState(EOutlierUpgradeNodeState::Activated, true);
+	TestTrue(TEXT("Activation reuses the icon MID"), MID == Access::IconMID(Node));
+	TestEqual(TEXT("Activation retains the full active image"), Access::MaterialProgress(MID), 1.0f);
+	UTexture* Texture = nullptr;
+	MID->GetTextureParameterValue(FHashedMaterialParameterInfo(TEXT("NodeTexture")), Texture);
+	TestTrue(TEXT("Activation does not replace the base texture"), Texture == Node->LockedIconTextureOverride.Get());
+	MID->GetTextureParameterValue(FHashedMaterialParameterInfo(TEXT("ActivatedTexture")), Texture);
+	TestTrue(TEXT("The active texture remains bound separately"), Texture == Node->UnlockedIconTextureOverride.Get());
+	Node->LockedIconTextureOverride = nullptr;
+	Node->UnlockedIconTextureOverride = nullptr;
+	Node->NodeIconTextureOverride = NewObject<UTexture2D>();
+	Node->SetNodeState(EOutlierUpgradeNodeState::Unlocked, true);
+	MID->GetScalarParameterValue(FHashedMaterialParameterInfo(TEXT("UseActivatedTexture")), Mode);
+	TestEqual(TEXT("A single image falls back to color filling"), Mode, 0.0f);
+	MID->GetTextureParameterValue(FHashedMaterialParameterInfo(TEXT("ActivatedTexture")), Texture);
+	TestTrue(TEXT("Fallback clears the previously bound active image"), Texture == Node->NodeIconTextureOverride.Get());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FUpgradeHoverAppearanceTest, "Outlier.UI.Upgrade.Hover.StateRestoration",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUpgradeHoverAppearanceTest::RunTest(const FString& Parameters)
+{
+	using Access = FUpgradeNodeInteractionTestAccess;
+	UMaterialInterface* Material = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Material/Widget/M_NodeColor.M_NodeColor"));
+	if (!TestNotNull(TEXT("Node color material exists"), Material)) return false;
+	UUpgradeNodeWidget* Node = Access::MakeNode();
+	Access::ConfigureAppearance(Node, Material);
+	UMaterialInstanceDynamic* FrameMID = Access::FrameMID(Node);
+	UMaterialInstanceDynamic* IconMID = Access::IconMID(Node);
+	if (!TestNotNull(TEXT("Frame material exists"), FrameMID) || !TestNotNull(TEXT("Icon material exists"), IconMID)) return false;
+	for (EOutlierUpgradeNodeState State : { EOutlierUpgradeNodeState::Locked, EOutlierUpgradeNodeState::Unlocked, EOutlierUpgradeNodeState::Activated })
+	{
+		Node->SetNodeState(State, false);
+		const bool bActivated = State == EOutlierUpgradeNodeState::Activated;
+		const FLinearColor StateColor = bActivated ? Node->ActivatedColor
+			: State == EOutlierUpgradeNodeState::Locked ? Node->LockedColor : Node->UnlockedColor;
+		Access::Hover(Node);
+		FLinearColor Color;
+		TestTrue(TEXT("Frame material exposes Color"), FrameMID->GetVectorParameterValue(FHashedMaterialParameterInfo(TEXT("Color")), Color));
+		TestEqual(TEXT("Hover highlights the frame while preserving activated color"), Color, bActivated ? StateColor : Node->HoverColor);
+		IconMID->GetVectorParameterValue(FHashedMaterialParameterInfo(TEXT("Color")), Color);
+		TestEqual(TEXT("Hover preserves the icon state color"), Color, StateColor);
+		TestEqual(TEXT("Hover shows Glow even when purchase is unavailable"), Access::GlowImage(Node)->GetRenderOpacity(), 1.0f);
+		Access::Leave(Node);
+		FrameMID->GetVectorParameterValue(FHashedMaterialParameterInfo(TEXT("Color")), Color);
+		TestEqual(TEXT("Leaving restores the frame state color"), Color, StateColor);
+		TestEqual(TEXT("Only activated nodes keep Glow after leaving"), Access::GlowImage(Node)->GetRenderOpacity(), bActivated ? 1.0f : 0.0f);
+	}
+	TestTrue(TEXT("Frame cannot intercept input"), Access::FrameImage(Node)->GetVisibility() == ESlateVisibility::HitTestInvisible);
+	TestTrue(TEXT("Icon cannot intercept input"), Access::IconImage(Node)->GetVisibility() == ESlateVisibility::HitTestInvisible);
+	// 일반 이미지 모드도 디자이너에서 지정한 Tint를 잃지 않고 되돌아와야 한다.
+	Node->bUseMaterialStateColors = false;
+	Node->SetNodeState(EOutlierUpgradeNodeState::Unlocked, true);
+	const FLinearColor OriginalTint(0.7f, 0.5f, 0.3f, 0.8f);
+	Access::FrameImage(Node)->SetColorAndOpacity(OriginalTint);
+	Access::Hover(Node);
+	Access::RefreshAppearance(Node);
+	TestEqual(TEXT("Repeated refresh does not accumulate hover tint"), Access::FrameImage(Node)->GetColorAndOpacity(), OriginalTint * Node->HoverColor);
+	Access::Leave(Node);
+	TestEqual(TEXT("Plain image restores its original tint"), Access::FrameImage(Node)->GetColorAndOpacity(), OriginalTint);
+
+	// 새 채움 머티리얼에서도 호버는 기본 쪽 색상만 강조하고 활성 쪽 색상은 유지한다.
+	UMaterialInterface* StateMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Material/Widget/M_UI_NodeFill.M_UI_NodeFill"));
+	if (!TestNotNull(TEXT("Node state material exists"), StateMaterial)) return false;
+	Node->bUseMaterialStateColors = true;
+	Access::ConfigureFill(Node, StateMaterial);
+	FrameMID = Access::FrameMID(Node);
+	IconMID = Access::IconMID(Node);
+	if (!TestNotNull(TEXT("State frame material exists"), FrameMID) || !TestNotNull(TEXT("State icon material exists"), IconMID)) return false;
+	Node->SetNodeState(EOutlierUpgradeNodeState::Locked, false);
+	FLinearColor Color;
+	FrameMID->GetVectorParameterValue(FHashedMaterialParameterInfo(TEXT("UnlockedColor")), Color);
+	TestEqual(TEXT("Locked base color reaches the state material"), Color, Node->LockedColor);
+	Access::Hover(Node);
+	FrameMID->GetVectorParameterValue(FHashedMaterialParameterInfo(TEXT("UnlockedColor")), Color);
+	TestEqual(TEXT("Locked nodes can still highlight their frame"), Color, Node->HoverColor);
+	Access::Leave(Node);
+	Node->SetNodeState(EOutlierUpgradeNodeState::Unlocked, true);
+	Access::Hover(Node);
+	Access::Begin(Node);
+	Access::Advance(Node, 0.5f);
+	FrameMID->GetVectorParameterValue(FHashedMaterialParameterInfo(TEXT("UnlockedColor")), Color);
+	TestEqual(TEXT("Partial fill keeps hover on the base portion of the frame"), Color, Node->HoverColor);
+	FrameMID->GetVectorParameterValue(FHashedMaterialParameterInfo(TEXT("ActivatedColor")), Color);
+	TestEqual(TEXT("Partial fill keeps the configured activated color"), Color, Node->ActivatedColor);
+	IconMID->GetVectorParameterValue(FHashedMaterialParameterInfo(TEXT("UnlockedColor")), Color);
+	TestEqual(TEXT("The icon base is independent of frame hover"), Color, Node->UnlockedColor);
+	Access::Leave(Node);
+	FrameMID->GetVectorParameterValue(FHashedMaterialParameterInfo(TEXT("UnlockedColor")), Color);
+	TestEqual(TEXT("Leaving restores the state material base color"), Color, Node->UnlockedColor);
+	TestEqual(TEXT("Leaving resets progress on the frame"), Access::MaterialProgress(FrameMID), 0.0f);
+	Node->SetNodeState(EOutlierUpgradeNodeState::Activated, true);
+	Access::Hover(Node);
+	FrameMID->GetVectorParameterValue(FHashedMaterialParameterInfo(TEXT("UnlockedColor")), Color);
+	TestEqual(TEXT("Hover never replaces an activated frame color"), Color, Node->ActivatedColor);
+	TestEqual(TEXT("Hover keeps activated progress full"), Access::MaterialProgress(FrameMID), 1.0f);
+	Access::Leave(Node);
+	Node->NodeFillMaterial = nullptr;
+	Access::RefreshAppearance(Node);
+	TestNull(TEXT("Removing the fill material clears the background MID"), Access::FillMaterial(Node));
+	UTexture* Texture = nullptr;
+	TestTrue(TEXT("Removing state fill restores the regular color material"), Access::FrameMID(Node)->GetTextureParameterValue(FHashedMaterialParameterInfo(TEXT("Texture")), Texture));
+	TestTrue(TEXT("Removing state fill preserves the original frame texture"), Texture == Node->NodeIconTextureOverride.Get());
 	return true;
 }
 

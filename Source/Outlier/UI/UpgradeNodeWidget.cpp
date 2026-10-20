@@ -29,6 +29,12 @@ namespace
 	const FName ColorParameterName(TEXT("Color"));
 	const FName IntensityParameterName(TEXT("Intensity"));
 	const FName TextureParameterName(TEXT("Texture"));
+	const FName NodeTextureParameterName(TEXT("NodeTexture"));
+	const FName ActivatedTextureParameterName(TEXT("ActivatedTexture"));
+	const FName UseActivatedTextureParameterName(TEXT("UseActivatedTexture"));
+	const FName UnlockedColorParameterName(TEXT("UnlockedColor"));
+	const FName ActivatedColorParameterName(TEXT("ActivatedColor"));
+	const FName ProgressParameterName(TEXT("Progress"));
 }
 
 void UUpgradeNodeWidget::NativeOnInitialized()
@@ -68,6 +74,7 @@ void UUpgradeNodeWidget::SynchronizeProperties()
 
 void UUpgradeNodeWidget::NativeDestruct()
 {
+	SetNodeHovered(false);
 	ResetUpgradeInteraction();
 	UnbindUpgradeContextEvents();
 	if (GetWorld())
@@ -307,6 +314,7 @@ void UUpgradeNodeWidget::HandlePressed()
 	}
 	bHoldingUpgrade = true;
 	HoldProgress = 0.0f;
+	RefreshNodeFill();
 	StartInteractionTicker();
 }
 
@@ -339,6 +347,7 @@ bool UUpgradeNodeWidget::AdvanceHold(float DeltaSeconds)
 	{
 		HoldProgress = FMath::Min(1.0f, HoldProgress + DeltaSeconds / Duration);
 	}
+	RefreshNodeFill();
 	if (HoldProgress < 1.0f)
 	{
 		return false;
@@ -358,6 +367,7 @@ void UUpgradeNodeWidget::CancelHold()
 		StopInteractionTicker();
 		InteractionVisibilityWidgets.Reset();
 	}
+	RefreshNodeFill();
 }
 
 void UUpgradeNodeWidget::ClearPendingRequest()
@@ -404,6 +414,7 @@ void UUpgradeNodeWidget::RequestUpgrade()
 	PendingUpgradeOwner = UpgradeComponent->GetOwner();
 	RequestStartedTime = FPlatformTime::Seconds();
 	HoldProgress = 1.0f;
+	RefreshNodeFill();
 	UpgradeResultHandle = Controller->OnUpgradePurchaseResult.AddUObject(this, &UUpgradeNodeWidget::HandleUpgradeResult);
 
 	// Listen 호스트는 이 호출 안에서 바로 응답/상태 변경을 받을 수 있으므로 대기를 먼저 등록한다.
@@ -485,6 +496,7 @@ void UUpgradeNodeWidget::HandleApplicationActivationChanged(bool bIsActive)
 {
 	if (!bIsActive)
 	{
+		SetNodeHovered(false);
 		CancelHold();
 	}
 }
@@ -547,6 +559,7 @@ bool UUpgradeNodeWidget::TickUpgradeInteraction(float DeltaSeconds)
 	LastInteractionTime = Now;
 	if (!IsInteractionVisible())
 	{
+		SetNodeHovered(false);
 		ResetUpgradeInteraction();
 		return false;
 	}
@@ -604,6 +617,8 @@ void UUpgradeNodeWidget::BeginDestroy()
 
 void UUpgradeNodeWidget::HandleHovered()
 {
+	// 설명창이 없거나 구매 직후 설명을 숨긴 상태여도 노드 자체의 호버 강조는 갱신한다.
+	SetNodeHovered(true);
 	if (const UUpgradeNodeGroupWidget* NodeGroupWidget = FindOwningNodeGroupWidget())
 	{
 		NodeGroupWidget->DismissOtherNodeDescriptions(this);
@@ -674,6 +689,7 @@ void UUpgradeNodeWidget::HandleHovered()
 
 void UUpgradeNodeWidget::HandleUnhovered()
 {
+	SetNodeHovered(false);
 	CancelHold();
 	bSuppressDescUntilUnhover = false;
 	ScheduleDescHide();
@@ -1217,6 +1233,10 @@ UMaterialInstanceDynamic* UUpgradeNodeWidget::EnsureOverlayMaterial(UImage* Imag
 	if (BrushMaterial && !SourceTexture)
 	{
 		BrushMaterial->GetTextureParameterValue(FHashedMaterialParameterInfo(TextureParameterName), SourceTexture);
+		if (!SourceTexture)
+		{
+			BrushMaterial->GetTextureParameterValue(FHashedMaterialParameterInfo(NodeTextureParameterName), SourceTexture);
+		}
 	}
 	if (NodeColorMaterial && BrushMaterial != NodeColorMaterial.Get()
 		&& (!BrushMaterial || SourceTexture || Image == Icon.Get()))
@@ -1232,13 +1252,99 @@ UMaterialInstanceDynamic* UUpgradeNodeWidget::EnsureOverlayMaterial(UImage* Imag
 	return DynamicMaterial;
 }
 
+UMaterialInstanceDynamic* UUpgradeNodeWidget::EnsureNodeFillMaterial(UImage* Image, UMaterialInstanceDynamic* CachedMaterial, UTexture2D* TextureOverride)
+{
+	if (!Image || !NodeFillMaterial)
+	{
+		return nullptr;
+	}
+
+	UObject* BrushResource = Image->GetBrush().GetResourceObject();
+	UTexture* SourceTexture = TextureOverride ? TextureOverride : Cast<UTexture>(BrushResource);
+	if (!SourceTexture)
+	{
+		if (UMaterialInterface* BrushMaterial = Cast<UMaterialInterface>(BrushResource))
+		{
+			// 기존 색상용 브러시의 텍스처도 이어받아 아이콘이 머티리얼의 기본 배경으로 바뀌지 않게 한다.
+			BrushMaterial->GetTextureParameterValue(FHashedMaterialParameterInfo(NodeTextureParameterName), SourceTexture);
+			if (!SourceTexture)
+			{
+				BrushMaterial->GetTextureParameterValue(FHashedMaterialParameterInfo(TextureParameterName), SourceTexture);
+			}
+		}
+	}
+	if (!SourceTexture)
+	{
+		// 이미지가 없는 레이어에 머티리얼의 기본 배경 이미지를 임의로 표시하지 않는다.
+		return nullptr;
+	}
+
+	UMaterialInstanceDynamic* DynamicMaterial = CachedMaterial;
+	if (!DynamicMaterial || BrushResource != DynamicMaterial || CachedNodeFillSource != NodeFillMaterial)
+	{
+		// 이미지마다 MID를 따로 만든다. 공용 MID가 지정되어도 부모에서 복제해 공유를 막는다.
+		UMaterialInstanceDynamic* SourceDynamic = Cast<UMaterialInstanceDynamic>(NodeFillMaterial.Get());
+		DynamicMaterial = UMaterialInstanceDynamic::Create(SourceDynamic ? SourceDynamic->Parent.Get() : NodeFillMaterial.Get(), this);
+		if (SourceDynamic && DynamicMaterial)
+		{
+			DynamicMaterial->CopyParameterOverrides(SourceDynamic);
+		}
+		Image->SetBrushFromMaterial(DynamicMaterial);
+	}
+	if (DynamicMaterial)
+	{
+		DynamicMaterial->SetTextureParameterValue(NodeTextureParameterName, SourceTexture);
+	}
+	return DynamicMaterial;
+}
+
 void UUpgradeNodeWidget::RefreshNodeAppearance()
 {
-	if (bUseMaterialStateColors)
+	const bool bActivated = CurrentState == EOutlierUpgradeNodeState::Activated;
+	const bool bHighlight = bNodeHovered && !bActivated;
+	// 호버 강조는 외곽선과 Glow에만 적용한다. 아이콘은 기존 상태 색상을 유지한다.
+	if (Frame && bFrameHoverTintApplied && (!bHighlight || bUseMaterialStateColors || NodeFillMaterial))
 	{
-		FrameMaterial = EnsureOverlayMaterial(Frame, FrameMaterial);
+		Frame->SetColorAndOpacity(FrameBaseTint);
+		bFrameHoverTintApplied = false;
+	}
+	if (NodeFillMaterial)
+	{
+		BackgroundMaterial = EnsureNodeFillMaterial(Background, BackgroundMaterial, NodeFillTexture);
+		FrameMaterial = EnsureNodeFillMaterial(Frame, FrameMaterial);
+		IconMaterial = EnsureNodeFillMaterial(Icon, IconMaterial);
+		CachedNodeFillSource = NodeFillMaterial;
+	}
+	else if (CachedNodeFillSource)
+	{
+		// 설정을 해제하면 텍스처를 이어받아 기존 색상용 머티리얼 갱신으로 되돌린다.
+		for (UImage* Image : { Background.Get(), Frame.Get(), Icon.Get() })
+		{
+			if (Image)
+			{
+				if (UMaterialInterface* Material = Cast<UMaterialInterface>(Image->GetBrush().GetResourceObject()))
+				{
+					UTexture* Texture = nullptr;
+					if (Material->GetTextureParameterValue(FHashedMaterialParameterInfo(NodeTextureParameterName), Texture))
+					{
+						Image->SetBrushFromTexture(Cast<UTexture2D>(Texture));
+					}
+				}
+			}
+		}
+		BackgroundMaterial = nullptr;
+		FrameMaterial = nullptr;
+		IconMaterial = nullptr;
+		CachedNodeFillSource = nullptr;
+	}
+	if (bUseMaterialStateColors || NodeFillMaterial)
+	{
+		if (!NodeFillMaterial)
+		{
+			FrameMaterial = EnsureOverlayMaterial(Frame, FrameMaterial);
+			IconMaterial = EnsureOverlayMaterial(Icon, IconMaterial);
+		}
 		GlowMaterial = EnsureOverlayMaterial(Glow, GlowMaterial);
-		IconMaterial = EnsureOverlayMaterial(Icon, IconMaterial);
 
 		FLinearColor StateColor = LockedColor;
 		if (CurrentState == EOutlierUpgradeNodeState::Unlocked)
@@ -1252,17 +1358,85 @@ void UUpgradeNodeWidget::RefreshNodeAppearance()
 
 		for (UMaterialInstanceDynamic* Material : { FrameMaterial.Get(), GlowMaterial.Get(), IconMaterial.Get() })
 		{
-			if (Material)
+			if (Material && (!NodeFillMaterial || Material == GlowMaterial.Get()))
 			{
 				Material->SetVectorParameterValue(ColorParameterName, StateColor);
 				Material->SetScalarParameterValue(IntensityParameterName, OverlayIntensity);
 			}
 		}
+		if (bHighlight)
+		{
+			for (UMaterialInstanceDynamic* Material : { FrameMaterial.Get(), GlowMaterial.Get() })
+			{
+				if (Material && (!NodeFillMaterial || Material == GlowMaterial.Get()))
+				{
+					Material->SetVectorParameterValue(ColorParameterName, HoverColor);
+				}
+			}
+		}
 	}
 
+	if (Frame && bHighlight && ((!bUseMaterialStateColors && !NodeFillMaterial) || !FrameMaterial))
+	{
+		if (!bFrameHoverTintApplied)
+		{
+			FrameBaseTint = Frame->GetColorAndOpacity();
+			bFrameHoverTintApplied = true;
+		}
+		Frame->SetColorAndOpacity(FrameBaseTint * HoverColor);
+	}
+	for (UImage* Image : { Background.Get(), Frame.Get(), Glow.Get(), Icon.Get() })
+	{
+		if (Image && Image->IsVisible())
+		{
+			Image->SetVisibility(ESlateVisibility::HitTestInvisible);
+		}
+	}
 	if (Glow)
 	{
-		Glow->SetRenderOpacity(CurrentState == EOutlierUpgradeNodeState::Activated ? 1.0f : 0.0f);
+		Glow->SetRenderOpacity(bActivated || bNodeHovered ? 1.0f : 0.0f);
+		Glow->SetVisibility(bActivated || bNodeHovered ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Hidden);
+	}
+	// 별도 색상 덮개 대신 기존 배경/테두리/아이콘 자체를 전환하므로 이전 Fill 이미지는 숨긴다.
+	if (NodeFill)
+	{
+		NodeFill->SetRenderOpacity(0.0f);
+		NodeFill->SetVisibility(ESlateVisibility::Hidden);
+	}
+	RefreshNodeFill();
+}
+
+void UUpgradeNodeWidget::SetNodeHovered(bool bInHovered)
+{
+	bNodeHovered = bInHovered;
+	RefreshNodeAppearance();
+}
+
+void UUpgradeNodeWidget::RefreshNodeFill()
+{
+	if (!NodeFillMaterial)
+	{
+		return;
+	}
+	const bool bShowActivated = CurrentState == EOutlierUpgradeNodeState::Activated || bAlwaysShowUnlockedIcon;
+	const float Progress = bShowActivated ? 1.0f : FMath::Clamp(HoldProgress, 0.0f, 1.0f);
+	const FLinearColor StateColor = CurrentState == EOutlierUpgradeNodeState::Locked ? LockedColor : UnlockedColor;
+	for (UMaterialInstanceDynamic* Material : { BackgroundMaterial.Get(), FrameMaterial.Get(), IconMaterial.Get() })
+	{
+		if (!Material)
+		{
+			continue;
+		}
+		const FLinearColor BaseColor = Material == FrameMaterial.Get() && bNodeHovered && !bShowActivated ? HoverColor : StateColor;
+		// 0/1에서는 양쪽 색을 같게 해 If의 경계 픽셀도 완전히 기본/활성 모습이 되도록 한다.
+		// 활성화 후에는 이미지를 숨기지 않는다. 실제 상태가 Progress=1을 유지하고 Glow만 별도로 켠다.
+		Material->SetVectorParameterValue(UnlockedColorParameterName, Progress >= 1.0f ? ActivatedColor : BaseColor);
+		Material->SetVectorParameterValue(ActivatedColorParameterName, Progress <= 0.0f ? BaseColor : ActivatedColor);
+		Material->SetScalarParameterValue(ProgressParameterName, Progress);
+		if (Material != IconMaterial.Get())
+		{
+			Material->SetScalarParameterValue(UseActivatedTextureParameterName, 0.0f);
+		}
 	}
 }
 
@@ -1274,6 +1448,28 @@ void UUpgradeNodeWidget::RefreshNodeTexture()
 	}
 
 	UTexture2D* BaseTexture = NodeIconTextureOverride ? NodeIconTextureOverride.Get() : NodeTexture.Get();
+	if (NodeFillMaterial)
+	{
+		UTexture2D* InactiveTexture = LockedIconTextureOverride ? LockedIconTextureOverride.Get() : BaseTexture;
+		if (!InactiveTexture) InactiveTexture = DeactivatedNodeTexture.Get();
+		UTexture2D* ActiveTexture = UnlockedIconTextureOverride ? UnlockedIconTextureOverride.Get() : BaseTexture;
+		if (!ActiveTexture) ActiveTexture = UnlockedNodeTexture.Get();
+		// 한쪽 이미지만 있어도 표시를 유지한다. 두 이미지는 같은 MID에 넣고 Progress로 전환한다.
+		if (!InactiveTexture) InactiveTexture = ActiveTexture;
+		if (!ActiveTexture) ActiveTexture = InactiveTexture;
+		Icon->SetVisibility(InactiveTexture ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+		if (InactiveTexture)
+		{
+			IconMaterial = EnsureNodeFillMaterial(Icon, IconMaterial, InactiveTexture);
+			if (IconMaterial)
+			{
+				IconMaterial->SetTextureParameterValue(ActivatedTextureParameterName, ActiveTexture);
+				IconMaterial->SetScalarParameterValue(UseActivatedTextureParameterName, ActiveTexture != InactiveTexture ? 1.0f : 0.0f);
+			}
+		}
+		RefreshNodeFill();
+		return;
+	}
 	UTexture2D* DisplayTexture = nullptr;
 	const bool bShowUnlockedIcon = IsDesignTime() || bAlwaysShowUnlockedIcon
 		|| CurrentState == EOutlierUpgradeNodeState::Activated;
@@ -1304,7 +1500,7 @@ void UUpgradeNodeWidget::RefreshNodeTexture()
 		DisplayTexture = BaseTexture ? BaseTexture : UnlockedNodeTexture.Get();
 	}
 
-	Icon->SetVisibility(DisplayTexture ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
+	Icon->SetVisibility(DisplayTexture ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
 	if (DisplayTexture)
 	{
 		if (bUseMaterialStateColors)
