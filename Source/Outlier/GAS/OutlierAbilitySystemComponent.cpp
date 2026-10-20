@@ -126,6 +126,14 @@ void UOutlierAbilitySystemComponent::InitializeForActor(AActor* Actor)
 				.AddUObject(this, &ThisClass::HandleQuantumLeapChargeUpgrade);
 		}
 		RefreshShooterQuantumLeapCharges();
+		if (!StunStateChangedHandle.IsValid())
+		{
+			StunStateChangedHandle = RegisterGameplayTagEvent(
+				OutlierGameplayTags::State::Stunned(), EGameplayTagEventType::NewOrRemoved)
+				.AddUObject(this, &ThisClass::HandleStunStateChanged);
+		}
+		HandleStunStateChanged(OutlierGameplayTags::State::Stunned(),
+			GetTagCount(OutlierGameplayTags::State::Stunned()));
 	}
 
 	// 은신 비주얼은 State.Stealthed 태그를 보고 서브시스템이 전담한다. 여기서 구독만 걸어준다.
@@ -151,6 +159,13 @@ void UOutlierAbilitySystemComponent::ClearForActor(const AActor* Actor)
 		RegisterGameplayTagEvent(OutlierGameplayTags::Upgrade::Shooter::QuantumLeap::DoubleCharge())
 			.Remove(QuantumLeapChargeUpgradeHandle);
 		QuantumLeapChargeUpgradeHandle.Reset();
+		if (StunStateChangedHandle.IsValid())
+		{
+			RegisterGameplayTagEvent(OutlierGameplayTags::State::Stunned(), EGameplayTagEventType::NewOrRemoved)
+				.Remove(StunStateChangedHandle);
+			StunStateChangedHandle.Reset();
+		}
+		HandleStunStateChanged(OutlierGameplayTags::State::Stunned(), 0);
 		ResetShooterStealthUpgradeState();
 		ResetShooterQuantumLeapTransientState();
 		if (UWorld* World = GetWorld())
@@ -164,6 +179,17 @@ void UOutlierAbilitySystemComponent::ClearForActor(const AActor* Actor)
 
 		ClearActorInfo();
 	}
+}
+
+void UOutlierAbilitySystemComponent::HandleStunStateChanged(const FGameplayTag Tag, int32 NewCount)
+{
+	if (!IsOwnerActorAuthoritative()) return;
+	const bool bStunned = NewCount > 0;
+	if (bOwnsStunCue == bStunned) return;
+	bOwnsStunCue = bStunned;
+	// Mixed 복제에서도 동일 태그 cue를 하나만 소유해 중첩 스턴의 조기 종료를 막는다.
+	if (bStunned) AddGameplayCue(OutlierGameplayTags::Cue::Status::Stun());
+	else RemoveGameplayCue(OutlierGameplayTags::Cue::Status::Stun());
 }
 
 void UOutlierAbilitySystemComponent::ClearForPawn(const APawn* Pawn)

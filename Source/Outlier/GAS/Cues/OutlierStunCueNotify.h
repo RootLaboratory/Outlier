@@ -7,7 +7,7 @@
 /**
  * Shared presentation for EMP and weapon stuns.
  * Create a Blueprint child in /Game/GameplayCues and assign the desired Niagara
- * system in Looping Effects -> Looping Particles. The Stun GE owns its lifetime.
+ * system in Looping Effects -> Looping Particles. The ASC owns its lifetime through State.Stunned.
  */
 UCLASS(Blueprintable, meta = (DisplayName = "Outlier Stun Looping Cue"))
 class OUTLIER_API AOutlierStunCueNotify : public AGameplayCueNotify_Looping

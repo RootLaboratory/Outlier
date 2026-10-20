@@ -167,6 +167,10 @@ private:
 	UPROPERTY(ReplicatedUsing = OnRep_QuantumLeapCharges)
 	FOutlierQuantumLeapChargeState QuantumLeapCharges;
 
+	void HandleStunStateChanged(const FGameplayTag Tag, int32 NewCount);
+	FDelegateHandle StunStateChangedHandle;
+	bool bOwnsStunCue = false;
+
 	float ResolvePartnerCooldownDuration(const FGameplayTag& CooldownTag) const;
 	TSubclassOf<UGameplayEffect> ResolvePartnerCooldownEffectClass(const FGameplayTag& CooldownTag) const;
 
