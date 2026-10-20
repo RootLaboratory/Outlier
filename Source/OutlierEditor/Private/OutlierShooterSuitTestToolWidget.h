@@ -71,6 +71,8 @@ private:
 	void CaptureOriginalState();
 	FReply RestoreOriginalState();
 	FReply DamageShooter();
+	FReply OpenUpgradeUI();
+	FReply AddUpgradeNodes();
 	FReply StartLevel1Combat();
 	void StopAbilities() const;
 	void ApplyNodes(const TArray<FName>& Nodes) const;

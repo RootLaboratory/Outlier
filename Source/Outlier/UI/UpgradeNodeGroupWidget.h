@@ -4,6 +4,7 @@
 #include "Blueprint/UserWidget.h"
 #include "OutlierPlayerState.h"
 #include "UI/UILayerInputReceiver.h"
+#include "UI/UILayerContextReceiver.h"
 #include "Upgrade/OutlierUpgradeTypes.h"
 #include "UpgradeNodeGroupWidget.generated.h"
 
@@ -20,7 +21,8 @@ class UUpgradeNodeWidget;
 class UWidget;
 
 UCLASS(Blueprintable, meta = (DisplayName = "Upgrade Node Group Widget"))
-class OUTLIER_API UUpgradeNodeGroupWidget : public UUserWidget, public IUILayerInputReceiver
+class OUTLIER_API UUpgradeNodeGroupWidget : public UUserWidget, public IUILayerInputReceiver,
+	public IUILayerContextReceiver
 {
 	GENERATED_BODY()
 
@@ -28,6 +30,7 @@ public:
 	virtual void NativeConstruct() override;
 	virtual void NativeDestruct() override;
 	virtual bool HandleUILayerEscape_Implementation() override;
+	virtual void InitializeUILayerContext_Implementation(const TArray<AActor*>& ContextActors) override;
 
 	UFUNCTION(BlueprintCallable, Category = "Upgrade")
 	void InjectUpgradeContext(

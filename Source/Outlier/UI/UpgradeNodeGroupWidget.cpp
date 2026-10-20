@@ -5,6 +5,8 @@
 #include "Engine/DataTable.h"
 #include "Engine/Texture2D.h"
 #include "Engine/LocalPlayer.h"
+#include "Drone/Partner/PartnerCharacter.h"
+#include "GameFramework/PlayerController.h"
 #include "Shooter/ShooterCharacter.h"
 #include "UI/UpgradeDescWidget.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
@@ -35,6 +37,25 @@ bool UUpgradeNodeGroupWidget::HandleUILayerEscape_Implementation()
 		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()
 		: nullptr;
 	return LayerSubsystem && LayerSubsystem->PopWidget(this);
+}
+
+void UUpgradeNodeGroupWidget::InitializeUILayerContext_Implementation(const TArray<AActor*>& ContextActors)
+{
+	AShooterCharacter* ContextShooter = ContextActors.IsValidIndex(0) ? Cast<AShooterCharacter>(ContextActors[0]) : nullptr;
+	APartnerCharacter* ContextPartner = ContextActors.IsValidIndex(1) ? Cast<APartnerCharacter>(ContextActors[1]) : nullptr;
+	AOutlierPlayerState* LocalPlayerState = GetOwningPlayer()
+		? GetOwningPlayer()->GetPlayerState<AOutlierPlayerState>() : nullptr;
+	UOutlierUpgradeComponent* LocalUpgrades = nullptr;
+	if (LocalPlayerState && LocalPlayerState->IsShooterPlayer() && ContextShooter)
+	{
+		LocalUpgrades = ContextShooter->GetUpgradeComponent();
+	}
+	else if (LocalPlayerState && LocalPlayerState->IsPartnerPlayer() && ContextPartner)
+	{
+		LocalUpgrades = ContextPartner->GetUpgradeComponent();
+	}
+	// UI 레이어에서 바로 열어도 일반 업그레이드 화면과 같은 초기화 경로를 사용한다.
+	InjectUpgradeContext(ContextShooter, ContextPartner, LocalUpgrades, LocalPlayerState);
 }
 
 void UUpgradeNodeGroupWidget::InjectUpgradeContext(

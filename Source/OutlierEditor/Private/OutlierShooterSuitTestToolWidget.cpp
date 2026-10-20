@@ -7,6 +7,8 @@
 #include "Engine/SkeletalMesh.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "FirstPerson/FirstPersonPlayerController.h"
+#include "Drone/Partner/PartnerCharacter.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "Interaction/SuitInteraction.h"
@@ -17,6 +19,9 @@
 #include "Room/RoomCombatSubsystem.h"
 #include "Room/RoomVolume.h"
 #include "Upgrade/OutlierUpgradeComponent.h"
+#include "UI/UILayerGameplayTags.h"
+#include "UI/UILayerTypes.h"
+#include "UI/UpgradeNodeGroupWidget.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SComboBox.h"
@@ -104,6 +109,24 @@ void SOutlierShooterSuitTestToolWidget::Construct(const FArguments& InArgs)
 		.OnCheckStateChanged(this, &SOutlierShooterSuitTestToolWidget::SetSuitState)
 		.ToolTipText(LOCTEXT("SuitTip", "적용 시 Shooter 슈트 메시와 소총을 함께 지급합니다. 소총 설정은 현재 장비 기록 또는 맵의 SuitInteraction에서 읽습니다. 해제 시 도구가 추가한 소총만 회수합니다."))
 		[SNew(STextBlock).Text(LOCTEXT("Suit", "슈트 획득"))]
+	];
+	Rows->AddSlot().AutoHeight().Padding(6.0f)
+	[
+		SNew(SHorizontalBox)
+		+ SHorizontalBox::Slot().AutoWidth()
+		[
+			SNew(SButton).Text(LOCTEXT("OpenUpgradeUI", "노드 업그레이드 UI 열기"))
+			.ToolTipText(LOCTEXT("OpenUpgradeUITip", "선택한 Shooter의 화면에 노드 업그레이드 UI를 엽니다. 구매 비용과 선행 조건은 그대로 적용됩니다."))
+			.IsEnabled_Lambda([this]() { return CanEdit(); })
+			.OnClicked(this, &SOutlierShooterSuitTestToolWidget::OpenUpgradeUI)
+		]
+		+ SHorizontalBox::Slot().AutoWidth().Padding(8.0f, 0.0f)
+		[
+			SNew(SButton).Text(LOCTEXT("AddUpgradeNodes", "노드 +100"))
+			.ToolTipText(LOCTEXT("AddUpgradeNodesTip", "선택한 Shooter에게 노드 100개를 추가합니다. 복원 버튼을 눌러도 잔액은 유지됩니다."))
+			.IsEnabled_Lambda([this]() { return CanEdit(); })
+			.OnClicked(this, &SOutlierShooterSuitTestToolWidget::AddUpgradeNodes)
+		]
 	];
 	for (int32 Index = 0; Index < Features.Num(); ++Index)
 	{
@@ -500,6 +523,42 @@ FReply SOutlierShooterSuitTestToolWidget::DamageShooter()
 	Status = FText::Format(LOCTEXT("DamageAppliedWithResult", "{0}: 요청 피해 {1}, 처리 피해 {2} / HP {3}, 실드 {4} / {5}"),
 		FText::FromString(Shooter->GetName()), FText::AsNumber(TestDamageAmount), FText::AsNumber(Applied),
 		FText::AsNumber(Shooter->GetCurHealth()), FText::AsNumber(Shooter->GetCurShield()), Result);
+	return FReply::Handled();
+}
+
+FReply SOutlierShooterSuitTestToolWidget::OpenUpgradeUI()
+{
+	if (!CanEdit()) return FReply::Handled();
+	AShooterCharacter* Shooter = SelectedTarget->Shooter.Get();
+	AFirstPersonPlayerController* Controller = Cast<AFirstPersonPlayerController>(Shooter->GetController());
+	const TSubclassOf<UUpgradeNodeGroupWidget> WidgetClass = LoadClass<UUpgradeNodeGroupWidget>(nullptr,
+		TEXT("/Game/Blueprints/Widget/FirstPerson/Upgrade/WBP_ShooterNodeGroup.WBP_ShooterNodeGroup_C"));
+	if (!Controller || !WidgetClass)
+	{
+		Status = LOCTEXT("UpgradeUIUnavailable", "Shooter 컨트롤러 또는 WBP_ShooterNodeGroup을 찾지 못했습니다.");
+		return FReply::Handled();
+	}
+
+	// 서버에 위젯을 만들지 않고 선택한 Shooter의 소유 클라이언트에만 요청한다.
+	FUILayerPushRequest Request;
+	Request.WidgetClass = WidgetClass;
+	Request.LayerTag = UILayerTags::GameMenu();
+	Request.InputModeTag = FirstPersonInputModeTags::UI();
+	Request.RequestOwner = Shooter;
+	Request.ContextActors = {Shooter, SelectedTarget->PlayerState->GetPartnerCharacter()};
+	Controller->ClientPushUILayer(Request);
+	Status = LOCTEXT("UpgradeUIRequested", "선택한 Shooter에게 노드 업그레이드 UI 열기를 요청했습니다. 해당 PIE 창에서 확인하세요.");
+	return FReply::Handled();
+}
+
+FReply SOutlierShooterSuitTestToolWidget::AddUpgradeNodes()
+{
+	if (!CanEdit()) return FReply::Handled();
+	// 기존 서버 지급 경로를 사용해 잔액 통보와 소유 클라이언트 복제를 유지한다.
+	AOutlierPlayerState* PlayerState = SelectedTarget->PlayerState.Get();
+	Status = PlayerState->AddNode(100)
+		? FText::Format(LOCTEXT("UpgradeNodesAdded", "노드 100개 추가 완료 / 현재 {0}개"), FText::AsNumber(PlayerState->GetNodeCount()))
+		: LOCTEXT("UpgradeNodesRejected", "노드를 추가하지 못했습니다. Pair 배정 여부와 잔액 상한을 확인하세요.");
 	return FReply::Handled();
 }
 
