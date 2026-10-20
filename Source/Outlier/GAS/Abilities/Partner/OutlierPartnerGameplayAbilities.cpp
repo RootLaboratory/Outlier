@@ -267,8 +267,6 @@ void UOutlierPartnerEMPAbility::HandleEMPFinished(bool bAppliedTargets, bool bCa
 		PlayAbilityAudioAtLocationFromServer(
 			GetPartnerCharacter(),
 			GetDefault<UOutlierAbilityAudioSettings>()->PartnerEMPBurst);
-
-		UE_LOG(LogTemp, Error, TEXT("PREFinishcall called"));
 	}
 	else
 	{
