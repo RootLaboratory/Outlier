@@ -7,11 +7,24 @@
 #include "EventDrivenUI.h"
 #include "HPBarUI.h"
 #include "InfoCanvasBase.h"
-#include "ShooterCurrentAbilityIcon.h"
+#include "AbilitySlotUI.h"
 #include "ShooterCurrentWeaponIcon.h"
 #include "ShooterStatusBarWidget.h"
 #include "TagDrivenUIGameplayTags.h"
 #include "Components/Image.h"
+
+void UShooterMainWidget::NativePreConstruct()
+{
+	Super::NativePreConstruct();
+	UpdateAutoAimRadiusImage();
+}
+
+void UShooterMainWidget::ModulesControl(bool Flag)
+{
+	Super::ModulesControl(Flag);
+	// DefaultLayer 직속 Image도 공통 레이어 처리에서 다시 열린다. 기능별 표시 조건을 마지막에 적용한다.
+	UpdateAutoAimRadiusImage();
+}
 
 void UShooterMainWidget::NativeConstruct()
 {
@@ -27,11 +40,6 @@ void UShooterMainWidget::NativeConstruct()
 
 void UShooterMainWidget::SetAutoAimPresentation(bool bActive)
 {
-	if (bAutoAimPresentationActive == bActive)
-	{
-		return;
-	}
-
 	bAutoAimPresentationActive = bActive;
 	UpdateAutoAimRadiusImage();
 }
@@ -40,7 +48,7 @@ void UShooterMainWidget::UpdateAutoAimRadiusImage()
 {
 	if (AutoAimRadiusImage)
 	{
-		AutoAimRadiusImage->SetVisibility(bAutoAimPresentationActive
+		AutoAimRadiusImage->SetVisibility(bAutoAimPresentationActive && bModulesActive
 			? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
 	}
 }
@@ -81,6 +89,12 @@ void UShooterMainWidget::ModuleInit()
 	RegisterModule(TagDrivenUITags::Shooter::CrossHair(), nullptr);
 	RegisterModule(TagDrivenUITags::Shooter::CurrentAbility(), CurrentAbilityUI);
 	RegisterModule(TagDrivenUITags::Shooter::CurrentWeapon(), CurrentWeaponUI);
+	if (CurrentAbilityUI)
+	{
+		const FGameplayTag SelectedTag = CurrentAbilityUI->GetCurrentAbilityTag().IsValid()
+			? CurrentAbilityUI->GetCurrentAbilityTag() : TagDrivenUITags::Ability::Shooter::QuantumLeap();
+		SetCurrentAbilityPresentation(SelectedTag);
+	}
 
 	// 모듈 상태를 먼저 준비하고, 마지막에 Layer를 닫아 InfoLayer만 남긴다.
 	SuitOnModuleInit();
@@ -253,5 +267,13 @@ void UShooterMainWidget::OnChangeWeapon(EWidgetWeaponType Type)
 		RegisterModule(TagDrivenUITags::Shooter::CrossHair(), CurrentCrossHairUI);
 		break;
 	}
+	}
+}
+
+void UShooterMainWidget::SetCurrentAbilityPresentation(const FGameplayTag& AbilityTag)
+{
+	if (ShooterStatusBarHUD)
+	{
+		ShooterStatusBarHUD->SetCurrentAbilityPresentation(AbilityTag);
 	}
 }

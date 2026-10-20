@@ -113,6 +113,9 @@ public:
 	void PartnerDistanceUpdate(const float Distance);
 	void OnCurrentWeaponChanged(EWidgetWeaponType WeaponType);
 	void OnCurrentAbilityChanged(const FGameplayTag& AbilityTag);
+	void SetShooterAbilitySkillCount(const FGameplayTag& AbilityTag, int32 SkillCount);
+	void SetShooterAbilityChargeState(const FGameplayTag& AbilityTag, int32 CurrentCharges, int32 MaxCharges,
+		float RechargeDuration, float RechargeRemaining, bool bPlayRecoveryFeedback);
 	void ResetShooterAbilityState(const FGameplayTag& SelectedAbilityTag);
 	bool ApplyCurrentAbilityCooldownIfMatches(const FGameplayTag& AbilityTag, float CoolTime);
 	void OnAbilityUsed(const FGameplayTag& AbilityTag, float CoolTime);

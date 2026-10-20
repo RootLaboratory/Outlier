@@ -256,6 +256,22 @@ void APartnerCharacter::BindPartnerCooldownUIObserver()
 		OutlierAbilitySystemComponent->OnActiveGameplayEffectAddedDelegateToSelf.AddUObject(
 			this,
 			&APartnerCharacter::HandlePartnerCooldownEffectAdded);
+
+	// 쿨타임 시작은 EffectAdded로 받고, 종료는 태그 제거로 받는다.
+	// 로컬 게이지 예상 시간이 아니라 GAS의 종료 통지에서 회복 연출을 확정한다.
+	const FGameplayTag CooldownTags[] =
+	{
+		OutlierGameplayTags::Cooldown::Partner::EMP(),
+		OutlierGameplayTags::Cooldown::Partner::Shield(),
+		OutlierGameplayTags::Cooldown::Partner::Hacking(),
+		OutlierGameplayTags::Cooldown::Partner::Scan()
+	};
+	for (const FGameplayTag& CooldownTag : CooldownTags)
+	{
+		PartnerCooldownTagHandles.Add(CooldownTag,
+			OutlierAbilitySystemComponent->RegisterGameplayTagEvent(CooldownTag, EGameplayTagEventType::NewOrRemoved)
+			.AddUObject(this, &APartnerCharacter::HandlePartnerCooldownTagChanged));
+	}
 }
 
 void APartnerCharacter::UnbindPartnerCooldownUIObserver()
@@ -266,6 +282,23 @@ void APartnerCharacter::UnbindPartnerCooldownUIObserver()
 			PartnerCooldownEffectAddedHandle);
 	}
 	PartnerCooldownEffectAddedHandle.Reset();
+	if (OutlierAbilitySystemComponent)
+	{
+		for (const auto& Entry : PartnerCooldownTagHandles)
+		{
+			OutlierAbilitySystemComponent->RegisterGameplayTagEvent(Entry.Key, EGameplayTagEventType::NewOrRemoved)
+				.Remove(Entry.Value);
+		}
+	}
+	PartnerCooldownTagHandles.Reset();
+}
+
+void APartnerCharacter::HandlePartnerCooldownTagChanged(const FGameplayTag CooldownTag, int32 NewCount)
+{
+	if (NewCount == 0)
+	{
+		NotifyPartnerCooldownUI(CooldownTag);
+	}
 }
 
 void APartnerCharacter::BindGasMobilityObservers()
@@ -386,10 +419,6 @@ void APartnerCharacter::NotifyPartnerCooldownUI(const FGameplayTag& CooldownTag)
 	}
 
 	const float Remaining = OutlierAbilitySystemComponent->GetPartnerCooldownRemaining(CooldownTag);
-	if (Remaining <= 0.0f)
-	{
-		return;
-	}
 
 	APlayerController* PlayerController = Cast<APlayerController>(GetController());
 	ULocalPlayer* LocalPlayer = PlayerController ? PlayerController->GetLocalPlayer() : nullptr;

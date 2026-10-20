@@ -25,6 +25,7 @@
 #include "PostProcess/MaterialPostProcessSubsystem.h"
 #include "PostProcess/OutlierPostProcessVolume.h"
 #include "LocalPlayerUISubSystem.h"
+#include "AbilityIconUI.h"
 #include "ShooterMainWidget.h"
 #include "Engine/GameViewportClient.h"
 #include "SceneView.h"
@@ -750,9 +751,8 @@ void AShooterCharacter::BindGasVitalityObservers()
 	WeaponOverchargeTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::WeaponOvercharged()).AddUObject(
 			this, &AShooterCharacter::HandleWeaponOverchargeTagChanged);
-	QuantumLeapCooldownTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
-		OutlierGameplayTags::Cooldown::Shooter::QuantumLeap()).AddUObject(
-			this, &AShooterCharacter::HandleQuantumLeapCooldownTagChanged);
+	QuantumLeapChargesChangedHandle = OutlierAbilitySystemComponent->OnQuantumLeapChargesChanged.AddUObject(
+		this, &AShooterCharacter::HandleQuantumLeapChargesChanged);
 	BulletReflectionCooldownTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::Cooldown::Shooter::BulletReflection()).AddUObject(
 			this, &AShooterCharacter::HandleBulletReflectionCooldownTagChanged);
@@ -786,8 +786,7 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 		OutlierGameplayTags::State::QuantumLeaping()).Remove(QuantumLeapTagChangedHandle);
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::WeaponOvercharged()).Remove(WeaponOverchargeTagChangedHandle);
-	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
-		OutlierGameplayTags::Cooldown::Shooter::QuantumLeap()).Remove(QuantumLeapCooldownTagChangedHandle);
+	OutlierAbilitySystemComponent->OnQuantumLeapChargesChanged.Remove(QuantumLeapChargesChangedHandle);
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::Cooldown::Shooter::BulletReflection()).Remove(BulletReflectionCooldownTagChangedHandle);
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
@@ -803,7 +802,7 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 	BulletReflectionTagChangedHandle.Reset();
 	QuantumLeapTagChangedHandle.Reset();
 	WeaponOverchargeTagChangedHandle.Reset();
-	QuantumLeapCooldownTagChangedHandle.Reset();
+	QuantumLeapChargesChangedHandle.Reset();
 	BulletReflectionCooldownTagChangedHandle.Reset();
 	WeaponOverchargeCooldownTagChangedHandle.Reset();
 	StealthCooldownTagChangedHandle.Reset();
@@ -1147,19 +1146,11 @@ void AShooterCharacter::HandleStealthCooldownTagChanged(const FGameplayTag Tag, 
 	RefreshShooterSuitCooldownUI();
 }
 
-void AShooterCharacter::HandleQuantumLeapCooldownTagChanged(const FGameplayTag Tag, int32 NewCount)
-{
-	(void)Tag;
-	if (NewCount > 0 && IsLocallyControlled())
-	{
-		RefreshShooterSuitCooldownUI();
-	}
-}
-
 void AShooterCharacter::HandleBulletReflectionCooldownTagChanged(const FGameplayTag Tag, int32 NewCount)
 {
 	(void)Tag;
-	if (NewCount > 0 && IsLocallyControlled())
+	(void)NewCount;
+	if (IsLocallyControlled())
 	{
 		RefreshShooterSuitCooldownUI();
 	}
@@ -1168,7 +1159,8 @@ void AShooterCharacter::HandleBulletReflectionCooldownTagChanged(const FGameplay
 void AShooterCharacter::HandleWeaponOverchargeCooldownTagChanged(const FGameplayTag Tag, int32 NewCount)
 {
 	(void)Tag;
-	if (NewCount > 0 && IsLocallyControlled())
+	(void)NewCount;
+	if (IsLocallyControlled())
 	{
 		RefreshShooterSuitCooldownUI();
 	}
@@ -1195,10 +1187,7 @@ void AShooterCharacter::RefreshShooterSuitCooldownUI()
 		const FGameplayTag& AbilityTag,
 		float Remaining)
 	{
-		if (Remaining <= 0.0f && AbilityTag != OutlierGameplayTags::Ability::Shooter::Stealth())
-		{
-			return;
-		}
+		// 0초도 전달해야 막대가 다시 점등되고 실제 쿨타임 종료의 회복 연출을 재생할 수 있다.
 		if (ShooterController->AbilityUIInstance)
 		{
 			ShooterController->AbilityUIInstance->ApplyCooldownIfMatches(AbilityTag, Remaining);
@@ -1208,9 +1197,7 @@ void AShooterCharacter::RefreshShooterSuitCooldownUI()
 			UISubsystem->OnAbilityUsed(AbilityTag, Remaining);
 		}
 	};
-	ApplyCooldown(
-		OutlierGameplayTags::Ability::Shooter::QuantumLeap(),
-		OutlierAbilitySystemComponent->GetShooterQuantumLeapCooldownRemaining());
+	RefreshQuantumLeapChargeUI();
 	ApplyCooldown(
 		OutlierGameplayTags::Ability::Shooter::BulletReflection(),
 		OutlierAbilitySystemComponent->GetShooterBulletReflectionCooldownRemaining());
@@ -1225,6 +1212,41 @@ void AShooterCharacter::RefreshShooterSuitCooldownUI()
 void AShooterCharacter::HandleUpgradeStateChanged()
 {
 	RefreshShooterSuitGrantUI();
+	RefreshQuantumLeapChargeUI();
+}
+
+void AShooterCharacter::HandleQuantumLeapChargesChanged(bool bRecovered)
+{
+	RefreshQuantumLeapChargeUI(bRecovered);
+}
+
+void AShooterCharacter::RefreshQuantumLeapChargeUI(bool bPlayRecoveryFeedback)
+{
+	if (!IsLocallyControlled() || !OutlierAbilitySystemComponent)
+	{
+		return;
+	}
+	const AShooterPlayerController* ShooterController = Cast<AShooterPlayerController>(GetController());
+	ULocalPlayer* LocalPlayer = ShooterController ? ShooterController->GetLocalPlayer() : nullptr;
+	ULocalPlayerUISubSystem* UI = LocalPlayer ? LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>() : nullptr;
+	if (!UI)
+	{
+		return;
+	}
+
+	// 최대치와 잔여 횟수는 같은 서버 상태에서 읽는다. 클라이언트 업그레이드 캐시로 충전을 예측 지급하지 않는다.
+	const FOutlierQuantumLeapChargeState& State = OutlierAbilitySystemComponent->GetShooterQuantumLeapChargeState();
+	const float Remaining = OutlierAbilitySystemComponent->GetShooterQuantumLeapCooldownRemaining();
+	const FGameplayTag AbilityTag = OutlierGameplayTags::Ability::Shooter::QuantumLeap();
+	UI->SetShooterAbilityChargeState(AbilityTag, State.CurrentCharges, State.MaxCharges,
+		State.RechargeDuration, Remaining, bPlayRecoveryFeedback);
+	if (ShooterController->AbilityUIInstance)
+	{
+		if (UAbilityIconUI* Icon = ShooterController->AbilityUIInstance->GetAbilityIcon(AbilityTag))
+		{
+			Icon->SetChargePresentation(State.CurrentCharges > 0, State.RechargeDuration, Remaining);
+		}
+	}
 }
 
 bool AShooterCharacter::IsShooterSuitAbilityGranted(const FGameplayTag& AbilityTag) const

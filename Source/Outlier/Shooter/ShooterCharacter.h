@@ -528,7 +528,7 @@ protected:
 	FDelegateHandle BulletReflectionTagChangedHandle;
 	FDelegateHandle QuantumLeapTagChangedHandle;
 	FDelegateHandle WeaponOverchargeTagChangedHandle;
-	FDelegateHandle QuantumLeapCooldownTagChangedHandle;
+	FDelegateHandle QuantumLeapChargesChangedHandle;
 	FDelegateHandle BulletReflectionCooldownTagChangedHandle;
 	FDelegateHandle WeaponOverchargeCooldownTagChangedHandle;
 	FDelegateHandle StealthCooldownTagChangedHandle;
@@ -615,7 +615,6 @@ protected:
 	void NotifyLocalBulletReflected(const FVector& IncomingOrigin);
 	void HandleWeaponOverchargeTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void RefreshWeaponOverchargeEmissive(bool bActive);
-	void HandleQuantumLeapCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleBulletReflectionCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleWeaponOverchargeCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleStealthCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
@@ -623,6 +622,8 @@ protected:
 	void RefreshShooterSuitCooldownUI();
 	// 휠 아이콘 해금( = Grant )을 4개 전부 다시 계산한다. 선택 중인 능력이 잠기면 기본 제공 능력으로 되돌린다.
 	void RefreshShooterSuitGrantUI();
+	void HandleQuantumLeapChargesChanged(bool bRecovered);
+	void RefreshQuantumLeapChargeUI(bool bPlayRecoveryFeedback = false);
 	bool IsShooterSuitAbilityGranted(const FGameplayTag& AbilityTag) const;
 	void BindPartnerSuitStateObserver();
 	void UnbindPartnerSuitStateObserver();

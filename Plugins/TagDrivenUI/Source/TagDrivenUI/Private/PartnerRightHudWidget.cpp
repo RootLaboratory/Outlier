@@ -2,7 +2,7 @@
 
 #include "PartnerRightHudWidget.h"
 
-#include "AbilityIconUI.h"
+#include "AbilitySlotUI.h"
 
 void UPartnerRightHudWidget::NativeConstruct()
 {
@@ -11,8 +11,8 @@ void UPartnerRightHudWidget::NativeConstruct()
 	UE_LOG(LogTemp, Log,
 		TEXT("[PartnerHUD][Right] Construct Widget=%s Shield=%s Hacking=%s Scan=%s EMP=%s"),
 		*GetNameSafe(this),
-		*GetNameSafe(AbilityShieldIcon),
-		*GetNameSafe(AbilityHackingIcon),
-		*GetNameSafe(AbilityScanIcon),
-		*GetNameSafe(AbilityEMPIcon));
+		*GetNameSafe(ShieldAbilitySlot),
+		*GetNameSafe(HackingAbilitySlot),
+		*GetNameSafe(ScanAbilitySlot),
+		*GetNameSafe(EMPAbilitySlot));
 }

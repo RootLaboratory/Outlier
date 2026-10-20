@@ -13,7 +13,7 @@
 #include "PartnerHPUI.h"
 #include "PartnerHealthUI.h"
 #include "PartnerLeftHudWidget.h"
-#include "ShooterCurrentAbilityIcon.h"
+#include "AbilitySlotUI.h"
 #include "ShooterMainWidget.h"
 #include "TagDrivenUIGameplayTags.h"
 #include "Engine/World.h"
@@ -500,9 +500,26 @@ void ULocalPlayerUISubSystem::OnCurrentWeaponChanged(EWidgetWeaponType WeaponTyp
 
 void ULocalPlayerUISubSystem::OnCurrentAbilityChanged(const FGameplayTag& AbilityTag)
 {
-	if (UShooterCurrentAbilityIcon* CurrentAbilityIcon = Cast<UShooterCurrentAbilityIcon>(GetModule(TagDrivenUITags::Shooter::CurrentAbility())))
+	if (UShooterMainWidget* ShooterMainUI = Cast<UShooterMainWidget>(GetMainUI()))
 	{
-		CurrentAbilityIcon->SetCurrentAbility(AbilityTag);
+		ShooterMainUI->SetCurrentAbilityPresentation(AbilityTag);
+	}
+}
+
+void ULocalPlayerUISubSystem::SetShooterAbilitySkillCount(const FGameplayTag& AbilityTag, int32 SkillCount)
+{
+	if (UAbilitySlotUI* AbilityIcon = Cast<UAbilitySlotUI>(GetModule(TagDrivenUITags::Shooter::CurrentAbility())))
+	{
+		AbilityIcon->SetAbilitySkillCount(AbilityTag, SkillCount);
+	}
+}
+
+void ULocalPlayerUISubSystem::SetShooterAbilityChargeState(const FGameplayTag& AbilityTag, int32 CurrentCharges,
+	int32 MaxCharges, float RechargeDuration, float RechargeRemaining, bool bPlayRecoveryFeedback)
+{
+	if (UAbilitySlotUI* AbilityIcon = Cast<UAbilitySlotUI>(GetModule(TagDrivenUITags::Shooter::CurrentAbility())))
+	{
+		AbilityIcon->SetAbilityChargeState(AbilityTag, CurrentCharges, MaxCharges, RechargeDuration, RechargeRemaining, bPlayRecoveryFeedback);
 	}
 }
 
@@ -513,17 +530,20 @@ void ULocalPlayerUISubSystem::ResetShooterAbilityState(const FGameplayTag& Selec
 		MainUI->ResetAbilityCooldowns();
 	}
 
-	if (UShooterCurrentAbilityIcon* CurrentAbilityIcon = Cast<UShooterCurrentAbilityIcon>(
+	if (UAbilitySlotUI* CurrentAbilityIcon = Cast<UAbilitySlotUI>(
 		GetModule(TagDrivenUITags::Shooter::CurrentAbility())))
 	{
 		CurrentAbilityIcon->ResetCooldown();
-		CurrentAbilityIcon->SetCurrentAbility(SelectedAbilityTag);
+		if (UShooterMainWidget* ShooterMainUI = Cast<UShooterMainWidget>(GetMainUI()))
+		{
+			ShooterMainUI->SetCurrentAbilityPresentation(SelectedAbilityTag);
+		}
 	}
 }
 
 bool ULocalPlayerUISubSystem::ApplyCurrentAbilityCooldownIfMatches(const FGameplayTag& AbilityTag, float CoolTime)
 {
-	if (UShooterCurrentAbilityIcon* CurrentAbilityIcon = Cast<UShooterCurrentAbilityIcon>(GetModule(TagDrivenUITags::Shooter::CurrentAbility())))
+	if (UAbilitySlotUI* CurrentAbilityIcon = Cast<UAbilitySlotUI>(GetModule(TagDrivenUITags::Shooter::CurrentAbility())))
 	{
 		return CurrentAbilityIcon->ApplyCooldownIfMatches(AbilityTag, CoolTime);
 	}
@@ -649,7 +669,12 @@ void ULocalPlayerUISubSystem::OnAbilityUsed(const FGameplayTag& AbilityTag, floa
 		return;
 	}
 
-	if (UAbilityIconUI* Icon = MainUI->GetAbilityIcon(AbilityTag))
+	if (UAbilitySlotUI* Slot = MainUI->GetAbilitySlot(AbilityTag))
+	{
+		// 서버의 시작/종료 통지를 막대와 Glow에도 함께 반영한다.
+		Slot->ApplyCooldownIfMatches(AbilityTag, CoolTime);
+	}
+	else if (UAbilityIconUI* Icon = MainUI->GetAbilityIcon(AbilityTag))
 	{
 		// 0초를 새 타이머로 넣으면 갱신되지 않는 쿨타임 상태가 남으므로 명시적으로 종료한다.
 		if (CoolTime == 0.0f)
@@ -662,7 +687,7 @@ void ULocalPlayerUISubSystem::OnAbilityUsed(const FGameplayTag& AbilityTag, floa
 		}
 	}
 
-	if (UShooterCurrentAbilityIcon* CurrentAbilityIcon = Cast<UShooterCurrentAbilityIcon>(GetModule(TagDrivenUITags::Shooter::CurrentAbility())))
+	if (UAbilitySlotUI* CurrentAbilityIcon = Cast<UAbilitySlotUI>(GetModule(TagDrivenUITags::Shooter::CurrentAbility())))
 	{
 		CurrentAbilityIcon->ApplyCooldownIfMatches(AbilityTag, CoolTime);
 	}

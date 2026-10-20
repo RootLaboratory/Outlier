@@ -6,32 +6,32 @@
 #include "Blueprint/UserWidget.h"
 #include "PartnerRightHudWidget.generated.h"
 
-class UAbilityIconUI;
+class UAbilitySlotUI;
 
-/** 모듈화된 Partner 오른쪽 HUD가 네 능력 아이콘의 바인딩을 소유한다. */
+/** 모듈화된 Partner 오른쪽 HUD가 네 공용 능력 슬롯의 바인딩을 소유한다. */
 UCLASS(Blueprintable)
 class TAGDRIVENUI_API UPartnerRightHudWidget : public UUserWidget
 {
 	GENERATED_BODY()
 
 public:
-	UAbilityIconUI* GetAbilityShieldIcon() const { return AbilityShieldIcon; }
-	UAbilityIconUI* GetAbilityHackingIcon() const { return AbilityHackingIcon; }
-	UAbilityIconUI* GetAbilityScanIcon() const { return AbilityScanIcon; }
-	UAbilityIconUI* GetAbilityEMPIcon() const { return AbilityEMPIcon; }
+	UAbilitySlotUI* GetShieldAbilitySlot() const { return ShieldAbilitySlot; }
+	UAbilitySlotUI* GetHackingAbilitySlot() const { return HackingAbilitySlot; }
+	UAbilitySlotUI* GetScanAbilitySlot() const { return ScanAbilitySlot; }
+	UAbilitySlotUI* GetEMPAbilitySlot() const { return EMPAbilitySlot; }
 
 protected:
 	virtual void NativeConstruct() override;
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr<UAbilityIconUI> AbilityShieldIcon;
+	TObjectPtr<UAbilitySlotUI> ShieldAbilitySlot;
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr<UAbilityIconUI> AbilityHackingIcon;
+	TObjectPtr<UAbilitySlotUI> HackingAbilitySlot;
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr<UAbilityIconUI> AbilityScanIcon;
+	TObjectPtr<UAbilitySlotUI> ScanAbilitySlot;
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr<UAbilityIconUI> AbilityEMPIcon;
+	TObjectPtr<UAbilitySlotUI> EMPAbilitySlot;
 };

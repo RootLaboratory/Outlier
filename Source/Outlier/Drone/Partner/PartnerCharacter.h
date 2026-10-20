@@ -493,7 +493,9 @@ protected:
 		FActiveGameplayEffectHandle EffectHandle);
 	void RefreshPartnerCooldownUI();
 	void NotifyPartnerCooldownUI(const FGameplayTag& CooldownTag);
+	void HandlePartnerCooldownTagChanged(const FGameplayTag CooldownTag, int32 NewCount);
 	FDelegateHandle PartnerCooldownEffectAddedHandle;
+	TMap<FGameplayTag, FDelegateHandle> PartnerCooldownTagHandles;
 
 	void BindGasMobilityObservers();
 	void UnbindGasMobilityObservers();

@@ -12,7 +12,7 @@ class UPartnerCamUI;
 class UHPBarUI;
 class UAmmoUI;
 class UCrossHairBase;
-class UShooterCurrentAbilityIcon;
+class UAbilitySlotUI;
 class UShooterCurrentWeaponIcon;
 class UShooterStatusBarWidget;
 class UImage;
@@ -33,6 +33,8 @@ class TAGDRIVENUI_API UShooterMainWidget : public UMainUIBase
 public:
 
 	virtual void NativeConstruct() override;
+	virtual void NativePreConstruct() override;
+	virtual void ModulesControl(bool Flag) override;
 
 	//그 Construct 키워드 함수 사용 
 	virtual void ModuleInit() override;
@@ -49,12 +51,13 @@ public:
 	void SuitOnModuleInit(); // Suit 착용 시, 활성화 되어야 하는 모듈 상태 초기화
 
 	void OnChangeWeapon(EWidgetWeaponType Type);
+	void SetCurrentAbilityPresentation(const FGameplayTag& AbilityTag);
 
 	// 슈트 획득 시점에 라이플/권총 크로스헤어를 둘 다 초기화한다.
 	// 현재 등록된 쪽만 건드리면 안 쓰던 쪽에 이전 확산이 그대로 남는다.
 	void ResetCrossHairs();
 
-	// 일반 크로스헤어의 ADS 표시 여부와 별도로 오토에임 원을 제어한다.
+	// Shooter가 과부하 중 AutoAim 업그레이드 활성 여부를 전달한다. ADS 표시와 별도로 제어한다.
 	void SetAutoAimPresentation(bool bActive);
 
 public:	
@@ -72,7 +75,7 @@ public:
 	TObjectPtr<UCrossHairBase> PistolCrossHairUI;
 
 	UPROPERTY(Transient)
-	TObjectPtr<UShooterCurrentAbilityIcon> CurrentAbilityUI;
+	TObjectPtr<UAbilitySlotUI> CurrentAbilityUI;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UShooterCurrentWeaponIcon> CurrentWeaponUI;
