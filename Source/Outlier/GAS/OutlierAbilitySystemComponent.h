@@ -103,6 +103,11 @@ public:
 	// Grant 판정 규칙( 기본 제공이거나 Grant 근거가 있으면 통과 ). 근거 태그의 출처는 호출부가 고른다.
 	// 발동 게이트는 ASC 소유 태그를, UI 는 업그레이드 캐시( 클라에서 GE 복제를 기다리지 않음 )를 넘긴다.
 	bool IsShooterSuitAbilityGranted(const FGameplayTag& AbilityTag, bool bHasGrantTag) const;
+#if WITH_EDITOR
+	// PIE 테스트 도구에서만 변경한다. 서버/소유 클라이언트가 같은 해금 규칙을 사용한다.
+	void SetEditorShooterSuitGrantChecks(bool bEnabled);
+	bool AreEditorShooterSuitGrantChecksEnabled() const { return bEditorShooterSuitGrantChecks; }
+#endif
 	// 기본 제공( Requires...UpgradeGrant == false ) 능력. 기본 선택과 잠김 폴백이 쓴다. 없으면 invalid.
 	FGameplayTag GetDefaultShooterSuitAbilityTag() const;
 	bool IsShooterSuitConfigured() const { return bShooterSuitConfigured; }
@@ -143,6 +148,13 @@ public:
 	EGameplayEffectReplicationMode GetConfiguredReplicationMode() const { return ReplicationMode; }
 
 private:
+	UFUNCTION()
+	void OnRep_EditorShooterSuitGrantChecks();
+
+	// Editor 빌드의 PIE에서만 복제/설정한다. 실제 업그레이드 노드가 해금의 근거다.
+	UPROPERTY(Transient, ReplicatedUsing = OnRep_EditorShooterSuitGrantChecks)
+	bool bEditorShooterSuitGrantChecks = false;
+
 	UFUNCTION()
 	void OnRep_QuantumLeapCharges(const FOutlierQuantumLeapChargeState& PreviousState);
 	void HandleQuantumLeapChargeUpgrade(const FGameplayTag Tag, int32 NewCount);

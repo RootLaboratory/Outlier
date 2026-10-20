@@ -28,6 +28,13 @@ public:
 	bool CanReserveFor(AShooterCharacter* ShooterCharacter) const;
 	bool IsReservedFor(const AShooterCharacter* ShooterCharacter) const;
 
+#if WITH_EDITOR
+	// PIE 테스트 도구도 실제 슈트 지급과 같은 콘텐츠 설정을 읽는다.
+	TSubclassOf<AWeaponBase> GetEditorShooterRifleClass() const { return ShooterRifleClass; }
+	USkeletalMesh* GetEditorShooterFirstPersonMesh() const { return ShooterFirstPersonMesh; }
+	USkeletalMesh* GetEditorShooterThirdPersonMesh() const { return ShooterThirdPersonMesh; }
+#endif
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;

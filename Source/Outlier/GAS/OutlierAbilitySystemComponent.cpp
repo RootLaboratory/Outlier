@@ -52,8 +52,54 @@ void UOutlierAbilitySystemComponent::GetLifetimeReplicatedProps(TArray<FLifetime
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME_CONDITION(UOutlierAbilitySystemComponent, QuantumLeapCharges, COND_OwnerOnly);
+#if WITH_EDITOR
+	DOREPLIFETIME_CONDITION(UOutlierAbilitySystemComponent, bEditorShooterSuitGrantChecks, COND_OwnerOnly);
+#else
+	DOREPLIFETIME_CONDITION(UOutlierAbilitySystemComponent, bEditorShooterSuitGrantChecks, COND_Never);
+#endif
 }
 
+#if WITH_EDITOR
+void UOutlierAbilitySystemComponent::SetEditorShooterSuitGrantChecks(bool bEnabled)
+{
+	if (!IsOwnerActorAuthoritative() || !GetWorld() || GetWorld()->WorldType != EWorldType::PIE)
+	{
+		return;
+	}
+	bEditorShooterSuitGrantChecks = bEnabled;
+	if (bEnabled)
+	{
+		// 우회 모드에서 이미 켠 능력도 잠금 상태와 일치시킨다. 새 쿨타임은 추가하지 않는다.
+		if (!HasMatchingGameplayTag(OutlierGameplayTags::Ability::Shooter::Stealth()))
+		{
+			EndActiveShooterStealth(false);
+		}
+		if (!HasMatchingGameplayTag(OutlierGameplayTags::Ability::Shooter::BulletReflection()))
+		{
+			EndActiveShooterBulletReflection(false);
+		}
+		if (!HasMatchingGameplayTag(OutlierGameplayTags::Ability::Shooter::WeaponOvercharge()))
+		{
+			EndActiveShooterWeaponOvercharge(false);
+		}
+	}
+	OnRep_EditorShooterSuitGrantChecks();
+	if (AActor* OwningActor = GetOwner())
+	{
+		OwningActor->ForceNetUpdate();
+	}
+}
+#endif
+
+void UOutlierAbilitySystemComponent::OnRep_EditorShooterSuitGrantChecks()
+{
+#if WITH_EDITOR
+	if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(GetAvatarActor()))
+	{
+		Shooter->RefreshShooterSuitUI();
+	}
+#endif
+}
 
 void UOutlierAbilitySystemComponent::InitializeForActor(AActor* Actor)
 {
@@ -715,6 +761,17 @@ bool UOutlierAbilitySystemComponent::IsShooterSuitAbilityGranted(
 	const FGameplayTag& AbilityTag,
 	bool bHasGrantTag) const
 {
+#if WITH_EDITOR
+	// 기본 NoGrantMode가 켜져 있어도 테스트 체크박스의 해금/잠금이 양쪽에서 동일하게 보인다.
+	// 도약은 기존 기본 지급 규칙을 유지하고, 도구가 제어하는 세 능력만 실제 태그로 판정한다.
+	if (bEditorShooterSuitGrantChecks
+		&& (AbilityTag == OutlierGameplayTags::Ability::Shooter::Stealth()
+			|| AbilityTag == OutlierGameplayTags::Ability::Shooter::BulletReflection()
+			|| AbilityTag == OutlierGameplayTags::Ability::Shooter::WeaponOvercharge()))
+	{
+		return bHasGrantTag;
+	}
+#endif
 	// 그랜트가 필요 없는 능력(false)은 항상 통과, 필요한 능력(true)은 근거 태그가 있어야 통과.
 	if (!IsShooterSuitAbilityUpgradeGrantRequired(AbilityTag) || bHasGrantTag)
 	{
