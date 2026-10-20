@@ -2,6 +2,8 @@
 
 #include "GameFramework/Actor.h"
 #include "GameFramework/Pawn.h"
+#include "GameFramework/GameStateBase.h"
+#include "Net/UnrealNetwork.h"
 #include "GAS/Attributes/OutlierVitalAttributeSet.h"
 #include "GAS/Effects/OutlierGameplayEffects.h"
 #include "GAS/Abilities/Partner/OutlierPartnerGameplayAbilities.h"
@@ -46,6 +48,13 @@ UOutlierAbilitySystemComponent::UOutlierAbilitySystemComponent()
 	SetIsReplicatedByDefault(true);
 }
 
+void UOutlierAbilitySystemComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME_CONDITION(UOutlierAbilitySystemComponent, QuantumLeapCharges, COND_OwnerOnly);
+}
+
+
 void UOutlierAbilitySystemComponent::InitializeForActor(AActor* Actor)
 {
 	if (!ensure(Actor) || GetOwner() != Actor)
@@ -60,6 +69,17 @@ void UOutlierAbilitySystemComponent::InitializeForActor(AActor* Actor)
 	else
 	{
 		RefreshAbilityActorInfo();
+	}
+
+	if (IsOwnerActorAuthoritative())
+	{
+		if (!QuantumLeapChargeUpgradeHandle.IsValid())
+		{
+			QuantumLeapChargeUpgradeHandle = RegisterGameplayTagEvent(
+				OutlierGameplayTags::Upgrade::Shooter::QuantumLeap::DoubleCharge(), EGameplayTagEventType::NewOrRemoved)
+				.AddUObject(this, &ThisClass::HandleQuantumLeapChargeUpgrade);
+		}
+		RefreshShooterQuantumLeapCharges();
 	}
 
 	// 은신 비주얼은 State.Stealthed 태그를 보고 서브시스템이 전담한다. 여기서 구독만 걸어준다.
@@ -82,6 +102,9 @@ void UOutlierAbilitySystemComponent::ClearForActor(const AActor* Actor)
 {
 	if (GetOwnerActor() == Actor || GetAvatarActor() == Actor)
 	{
+		RegisterGameplayTagEvent(OutlierGameplayTags::Upgrade::Shooter::QuantumLeap::DoubleCharge())
+			.Remove(QuantumLeapChargeUpgradeHandle);
+		QuantumLeapChargeUpgradeHandle.Reset();
 		ResetShooterStealthUpgradeState();
 		ResetShooterQuantumLeapTransientState();
 		if (UWorld* World = GetWorld())
@@ -634,6 +657,7 @@ bool UOutlierAbilitySystemComponent::ConfigureShooterSuitAbilities(
 		return false;
 	}
 	bShooterSuitConfigured = true;
+	RefreshShooterQuantumLeapCharges();
 	return true;
 }
 
@@ -748,6 +772,7 @@ bool UOutlierAbilitySystemComponent::UpdateShooterSuitConfig(const FOutlierShoot
 	}
 
 	ShooterSuitConfig = Config;
+	RefreshShooterQuantumLeapCharges();
 	return true;
 }
 
@@ -763,11 +788,143 @@ int32 UOutlierAbilitySystemComponent::GetGrantedShooterSuitAbilityCount() const
 
 bool UOutlierAbilitySystemComponent::CommitShooterQuantumLeapCooldown()
 {
-	return CommitTimedCooldown(
-		UOutlierShooterQuantumLeapCooldownGameplayEffect::StaticClass(),
-		OutlierGameplayTags::Cooldown::Shooter::QuantumLeap(),
-		ShooterSuitConfig.QuantumLeap.CooldownSeconds,
-		GetAvatarActor()).WasSuccessfullyApplied();
+	if (!IsOwnerActorAuthoritative() || !bShooterSuitConfigured
+		|| HasMatchingGameplayTag(OutlierGameplayTags::State::Dead()))
+	{
+		return false;
+	}
+	RefreshShooterQuantumLeapCharges();
+	if (QuantumLeapCharges.CurrentCharges <= 0)
+	{
+		return false;
+	}
+
+	// 이동 성공 뒤에만 호출한다. 추가 사용은 횟수만 줄이고 진행 중인 충전 주기는 유지한다.
+	--QuantumLeapCharges.CurrentCharges;
+	BeginQuantumLeapRecharge();
+	NotifyQuantumLeapChargesChanged(false);
+	return true;
+}
+
+void UOutlierAbilitySystemComponent::RefreshShooterQuantumLeapCharges()
+{
+	if (!IsOwnerActorAuthoritative() || !bShooterSuitConfigured
+		|| HasMatchingGameplayTag(OutlierGameplayTags::State::Dead()))
+	{
+		return;
+	}
+	const int32 DesiredMax = HasMatchingGameplayTag(
+		OutlierGameplayTags::Upgrade::Shooter::QuantumLeap::DoubleCharge()) ? 2 : 1;
+	if (QuantumLeapCharges.bInitialized && QuantumLeapCharges.MaxCharges == DesiredMax)
+	{
+		return;
+	}
+
+	// 실제 최대치 증가분만 지급한다. 투영 GE를 교체하거나 같은 설정을 다시 적용해도 추가 지급하지 않는다.
+	QuantumLeapCharges.CurrentCharges = QuantumLeapCharges.bInitialized
+		? FMath::Clamp(QuantumLeapCharges.CurrentCharges + FMath::Max(0, DesiredMax - QuantumLeapCharges.MaxCharges), 0, DesiredMax)
+		: DesiredMax;
+	QuantumLeapCharges.MaxCharges = DesiredMax;
+	QuantumLeapCharges.bInitialized = true;
+	if (QuantumLeapCharges.CurrentCharges == DesiredMax)
+	{
+		StopQuantumLeapRecharge();
+	}
+	NotifyQuantumLeapChargesChanged(false);
+}
+
+void UOutlierAbilitySystemComponent::HandleQuantumLeapChargeUpgrade(const FGameplayTag Tag, int32 NewCount)
+{
+	RefreshShooterQuantumLeapCharges();
+}
+
+void UOutlierAbilitySystemComponent::BeginQuantumLeapRecharge()
+{
+	if (QuantumLeapRechargeHandle.IsValid() || QuantumLeapCharges.CurrentCharges >= QuantumLeapCharges.MaxCharges)
+	{
+		return;
+	}
+	const float Duration = ShooterSuitConfig.QuantumLeap.CooldownSeconds;
+	if (Duration <= 0.0f)
+	{
+		// 0초 설정도 유효하다. 타이머 재귀 없이 부족한 횟수를 즉시 회복한다.
+		QuantumLeapCharges.RecoverySerial += QuantumLeapCharges.MaxCharges - QuantumLeapCharges.CurrentCharges;
+		QuantumLeapCharges.CurrentCharges = QuantumLeapCharges.MaxCharges;
+		QuantumLeapCharges.RechargeDuration = 0.0f;
+		QuantumLeapCharges.RechargeStartServerTime = 0.0f;
+		NotifyQuantumLeapChargesChanged(true);
+		return;
+	}
+
+	QuantumLeapRechargeHandle = ApplyTimedGameplayEffectToSelf(
+		UOutlierShooterQuantumLeapCooldownGameplayEffect::StaticClass(), Duration, GetAvatarActor());
+	if (!ensure(QuantumLeapRechargeHandle.IsValid()))
+	{
+		return;
+	}
+	QuantumLeapCharges.RechargeDuration = Duration;
+	QuantumLeapCharges.RechargeStartServerTime = GetWorld()->GetTimeSeconds();
+	if (FOnActiveGameplayEffectRemoved_Info* Removed = OnGameplayEffectRemoved_InfoDelegate(QuantumLeapRechargeHandle))
+	{
+		Removed->AddUObject(this, &ThisClass::HandleQuantumLeapRechargeRemoved, QuantumLeapRechargeHandle);
+	}
+}
+
+void UOutlierAbilitySystemComponent::HandleQuantumLeapRechargeRemoved(
+	const FGameplayEffectRemovalInfo& RemovalInfo, FActiveGameplayEffectHandle ExpectedHandle)
+{
+	if (QuantumLeapRechargeHandle != ExpectedHandle || !IsOwnerActorAuthoritative())
+	{
+		return;
+	}
+	QuantumLeapRechargeHandle.Invalidate();
+	QuantumLeapCharges.RechargeDuration = 0.0f;
+	QuantumLeapCharges.RechargeStartServerTime = 0.0f;
+	if (RemovalInfo.bPrematureRemoval)
+	{
+		// 관리용 쿨타임 제거는 준비 상태로 복귀시키되, 자연 회복 연출로 전달하지 않는다.
+		QuantumLeapCharges.CurrentCharges = QuantumLeapCharges.MaxCharges;
+		NotifyQuantumLeapChargesChanged(false);
+		return;
+	}
+	if (HasMatchingGameplayTag(OutlierGameplayTags::State::Dead()))
+	{
+		return;
+	}
+	QuantumLeapCharges.CurrentCharges = FMath::Min(QuantumLeapCharges.CurrentCharges + 1, QuantumLeapCharges.MaxCharges);
+	++QuantumLeapCharges.RecoverySerial;
+	// 만료된 한 주기만 회복하고, 아직 부족하면 현재 설정으로 다음 주기를 시작한다.
+	BeginQuantumLeapRecharge();
+	NotifyQuantumLeapChargesChanged(true);
+}
+
+void UOutlierAbilitySystemComponent::StopQuantumLeapRecharge()
+{
+	// 제거 콜백보다 먼저 소유권을 해제해 사망·종료 정리가 회복으로 처리되지 않게 한다.
+	const FActiveGameplayEffectHandle PreviousHandle = QuantumLeapRechargeHandle;
+	QuantumLeapRechargeHandle.Invalidate();
+	RemoveActiveEffectFromSelf(PreviousHandle);
+	QuantumLeapCharges.RechargeDuration = 0.0f;
+	QuantumLeapCharges.RechargeStartServerTime = 0.0f;
+}
+
+void UOutlierAbilitySystemComponent::NotifyQuantumLeapChargesChanged(bool bRecovered)
+{
+	OnQuantumLeapChargesChanged.Broadcast(bRecovered);
+	if (AActor* OwningActor = GetOwnerActor())
+	{
+		OwningActor->ForceNetUpdate();
+	}
+}
+
+void UOutlierAbilitySystemComponent::OnRep_QuantumLeapCharges(const FOutlierQuantumLeapChargeState& PreviousState)
+{
+	// 최초 복제·최대치 변경은 회복이 아니다. 실제 회복 이력이 있고 횟수가 늘었을 때만 연출한다.
+	const bool bRecovered = PreviousState.bInitialized && QuantumLeapCharges.bInitialized
+		&& PreviousState.MaxCharges == QuantumLeapCharges.MaxCharges
+		&& PreviousState.RecoverySerial != QuantumLeapCharges.RecoverySerial
+		&& QuantumLeapCharges.CurrentCharges > PreviousState.CurrentCharges;
+	OnQuantumLeapChargesChanged.Broadcast(bRecovered);
 }
 
 bool UOutlierAbilitySystemComponent::CommitShooterQuantumLeapRetryDelay()
@@ -824,25 +981,33 @@ void UOutlierAbilitySystemComponent::ResetShooterQuantumLeapTransientState()
 	{
 		return;
 	}
-	// 사망·Pawn 종료에서 도약이 남긴 효과만 정리한다. 다른 원인의 무적과 성공 쿨타임은 건드리지 않는다.
+	// 사망·Pawn 종료에서 도약 전용 효과와 충전 콜백을 정리한다. 다른 원인의 무적은 유지한다.
+	StopQuantumLeapRecharge();
+	QuantumLeapCharges.CurrentCharges = QuantumLeapCharges.MaxCharges;
+	QuantumLeapCharges.bInitialized = false;
 	RemoveActiveEffectFromSelf(QuantumLeapImmunityHandle);
 	QuantumLeapImmunityHandle.Invalidate();
 	RemoveActiveEffectFromSelf(QuantumLeapRetryHandle);
 	QuantumLeapRetryHandle.Invalidate();
+	NotifyQuantumLeapChargesChanged(false);
 }
 
 bool UOutlierAbilitySystemComponent::IsShooterQuantumLeapCooldownActive() const
 {
-	return IsTimedCooldownActive(
-		OutlierGameplayTags::Cooldown::Shooter::QuantumLeap(),
-		GetAvatarActor());
+	return GetShooterQuantumLeapCooldownRemaining() > 0.0f;
 }
 
 float UOutlierAbilitySystemComponent::GetShooterQuantumLeapCooldownRemaining() const
 {
-	return GetTimedCooldownRemaining(
-		OutlierGameplayTags::Cooldown::Shooter::QuantumLeap(),
-		GetAvatarActor());
+	const UWorld* World = GetWorld();
+	if (!World || QuantumLeapCharges.RechargeDuration <= 0.0f)
+	{
+		return 0.0f;
+	}
+	const AGameStateBase* GameState = World->GetGameState();
+	const float ServerTime = GameState ? GameState->GetServerWorldTimeSeconds() : World->GetTimeSeconds();
+	return FMath::Clamp(QuantumLeapCharges.RechargeStartServerTime + QuantumLeapCharges.RechargeDuration - ServerTime,
+		0.0f, QuantumLeapCharges.RechargeDuration);
 }
 
 bool UOutlierAbilitySystemComponent::CancelActiveShooterQuantumLeap(bool bCommitFailureCooldown)

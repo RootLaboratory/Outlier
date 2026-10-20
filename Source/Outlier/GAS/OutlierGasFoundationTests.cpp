@@ -2796,6 +2796,8 @@ bool FOutlierGasShooterQuantumLeapTest::RunTest(const FString& Parameters)
 		TEXT("Blocked Quantum Leap ends without leaving damage immunity active"),
 		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune()));
 	TestFalse(TEXT("Blocked Quantum Leap does not start a recharge cooldown"), ShooterASC->IsShooterQuantumLeapCooldownActive());
+	TestEqual(TEXT("Blocked Quantum Leap preserves its available charge"),
+		ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges, 1);
 	TestTrue(TEXT("Blocked Quantum Leap starts a separate retry delay"), ShooterASC->IsShooterQuantumLeapRetryActive());
 	const float FailureDelay = ShooterASC->GetTimedCooldownRemaining(
 		OutlierGameplayTags::Cooldown::Shooter::QuantumLeapRetry(), Shooter);
@@ -2849,6 +2851,8 @@ bool FOutlierGasShooterQuantumLeapTest::RunTest(const FString& Parameters)
 		TEXT("Quantum Leap removes its exact damage immunity after relocation"),
 		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune()));
 	TestTrue(TEXT("Successful Quantum Leap starts its full cooldown"), ShooterASC->IsShooterQuantumLeapCooldownActive());
+	TestEqual(TEXT("Only successful relocation consumes the single charge"),
+		ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges, 0);
 	TestTrue(
 		TEXT("Successful Quantum Leap cooldown is approximately 8 seconds"),
 		ShooterASC->GetShooterQuantumLeapCooldownRemaining() > 7.0f);
@@ -2860,6 +2864,96 @@ bool FOutlierGasShooterQuantumLeapTest::RunTest(const FString& Parameters)
 		TEXT("Test fixture removes the successful Quantum Leap cooldown"),
 		ShooterASC->RemoveActiveEffectsWithGrantedTags(QuantumCooldownTags),
 		1);
+	TestEqual(TEXT("Administrative cooldown removal restores readiness without a recovery event"),
+		ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges, 1);
+
+	// 짧은 실제 도약 두 번으로 '충전 중 잔여 1회 사용'까지 발동 경계를 검증한다.
+	const FGameplayTag DoubleChargeTag = OutlierGameplayTags::Upgrade::Shooter::QuantumLeap::DoubleCharge();
+	FOutlierShooterSuitConfig ChargeConfig = TestConfig;
+	ChargeConfig.QuantumLeap.CastTimeSeconds = 0.1f;
+	ChargeConfig.QuantumLeap.CooldownSeconds = 0.8f;
+	TestTrue(TEXT("Sequential recharge fixture applies short fixed timings"), ShooterASC->UpdateShooterSuitConfig(ChargeConfig));
+	ShooterASC->AddLooseGameplayTag(DoubleChargeTag);
+	TestEqual(TEXT("Double Charge increases maximum to two"), ShooterASC->GetShooterQuantumLeapChargeState().MaxCharges, 2);
+	TestEqual(TEXT("Acquiring Double Charge while ready immediately supplies two charges"),
+		ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges, 2);
+	TestTrue(TEXT("First charged leap activates"),
+		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::QuantumLeap()));
+	TestEqual(TEXT("Cast start does not consume a charge before relocation succeeds"),
+		ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges, 2);
+	TickWorld(10);
+	TestEqual(TEXT("First successful charged leap leaves one use"), ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges, 1);
+	const float FirstRechargeStart = ShooterASC->GetShooterQuantumLeapChargeState().RechargeStartServerTime;
+	const uint32 RecoveryBeforeUse = ShooterASC->GetShooterQuantumLeapChargeState().RecoverySerial;
+	TestTrue(TEXT("Remaining charge activates while a recharge is running"),
+		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::QuantumLeap()));
+	TickWorld(10);
+	TestEqual(TEXT("Second success exhausts the two charges"), ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges, 0);
+	TestEqual(TEXT("Second success preserves the original recharge start"),
+		ShooterASC->GetShooterQuantumLeapChargeState().RechargeStartServerTime, FirstRechargeStart);
+	TestEqual(TEXT("Spending a charge does not signal charge recovery"),
+		ShooterASC->GetShooterQuantumLeapChargeState().RecoverySerial, RecoveryBeforeUse);
+	TestFalse(TEXT("Zero charges reject a further leap"),
+		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::QuantumLeap()));
+	TestFalse(TEXT("Charge exhaustion rejects input without adding a retry penalty"), ShooterASC->IsShooterQuantumLeapRetryActive());
+
+	// 현재 주기는 0.8초를 유지하고, 변경된 쿨타임은 다음 1회 충전부터 사용한다.
+	ChargeConfig.QuantumLeap.CooldownSeconds = 0.4f;
+	TestTrue(TEXT("Cooldown tuning updates during recharge"), ShooterASC->UpdateShooterSuitConfig(ChargeConfig));
+	TestEqual(TEXT("Reprojection does not grant another charge"), ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges, 0);
+	TestEqual(TEXT("Cooldown changes do not replace the active cycle duration"),
+		ShooterASC->GetShooterQuantumLeapChargeState().RechargeDuration, 0.8f);
+	TickWorld(35);
+	TestEqual(TEXT("One completed cycle restores exactly one charge"), ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges, 1);
+	TestEqual(TEXT("A completed cycle advances the recovery event serial once"),
+		ShooterASC->GetShooterQuantumLeapChargeState().RecoverySerial, RecoveryBeforeUse + 1);
+	TestEqual(TEXT("Next sequential cycle uses the changed cooldown duration"),
+		ShooterASC->GetShooterQuantumLeapChargeState().RechargeDuration, 0.4f);
+	TestTrue(TEXT("A missing second charge keeps recharge active"), ShooterASC->IsShooterQuantumLeapCooldownActive());
+	TickWorld(25);
+	TestEqual(TEXT("Second cycle restores full charges"), ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges, 2);
+	TestEqual(TEXT("Two cycles produce two recovery events"),
+		ShooterASC->GetShooterQuantumLeapChargeState().RecoverySerial, RecoveryBeforeUse + 2);
+	TestFalse(TEXT("Recharge stops at full capacity"), ShooterASC->IsShooterQuantumLeapCooldownActive());
+	TestEqual(TEXT("Full capacity clears the HUD recharge duration"), ShooterASC->GetShooterQuantumLeapChargeState().RechargeDuration, 0.0f);
+
+	// 기본 1회가 충전 중일 때 업그레이드하면 1회만 지급하고 기존 주기는 보존한다.
+	ShooterASC->RemoveLooseGameplayTag(DoubleChargeTag);
+	ShooterASC->ResetShooterQuantumLeapTransientState();
+	TestEqual(TEXT("Removing Double Charge returns maximum capacity to one"), ShooterASC->GetShooterQuantumLeapChargeState().MaxCharges, 1);
+	TestTrue(TEXT("Single-charge fixture starts a successful-use recharge"), ShooterASC->CommitShooterQuantumLeapCooldown());
+	TickWorld(5);
+	const float RechargeStartBeforeUpgrade = ShooterASC->GetShooterQuantumLeapChargeState().RechargeStartServerTime;
+	const uint32 RecoveryBeforeUpgrade = ShooterASC->GetShooterQuantumLeapChargeState().RecoverySerial;
+	ShooterASC->AddLooseGameplayTag(DoubleChargeTag);
+	TestEqual(TEXT("Acquiring Double Charge during recharge supplies one immediate use"),
+		ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges, 1);
+	TestEqual(TEXT("Capacity increase preserves the existing recharge start"),
+		ShooterASC->GetShooterQuantumLeapChargeState().RechargeStartServerTime, RechargeStartBeforeUpgrade);
+	TestEqual(TEXT("Capacity reward is not a timed recovery event"),
+		ShooterASC->GetShooterQuantumLeapChargeState().RecoverySerial, RecoveryBeforeUpgrade);
+	TestTrue(TEXT("Upgrade reprojection succeeds during recharge"), ShooterASC->UpdateShooterSuitConfig(ChargeConfig));
+	TestEqual(TEXT("Repeated projection does not repeat the capacity reward"), ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges, 1);
+	TestTrue(TEXT("Failure retry can coexist with recharge and a remaining charge"), ShooterASC->CommitShooterQuantumLeapRetryDelay());
+	TestEqual(TEXT("Failure retry preserves the available charge"), ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges, 1);
+	TestEqual(TEXT("Failure retry preserves the active cycle start"),
+		ShooterASC->GetShooterQuantumLeapChargeState().RechargeStartServerTime, RechargeStartBeforeUpgrade);
+	TickWorld(17);
+	TestTrue(TEXT("Retry remains active when the prior recharge completes"), ShooterASC->IsShooterQuantumLeapRetryActive());
+	TestEqual(TEXT("Recharge still restores capacity during a failure retry"), ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges, 2);
+	TestEqual(TEXT("Recovery during retry still produces a HUD recovery event"),
+		ShooterASC->GetShooterQuantumLeapChargeState().RecoverySerial, RecoveryBeforeUpgrade + 1);
+
+	// 0초 설정은 충전을 즉시 반환하고 재충전 효과/콜백을 남기지 않는다.
+	ShooterASC->ResetShooterQuantumLeapTransientState();
+	ChargeConfig.QuantumLeap.CooldownSeconds = 0.0f;
+	TestTrue(TEXT("Zero recharge duration remains valid"), ShooterASC->UpdateShooterSuitConfig(ChargeConfig));
+	TestTrue(TEXT("Zero-duration recharge still accepts a successful use"), ShooterASC->CommitShooterQuantumLeapCooldown());
+	TestEqual(TEXT("Zero-duration recharge returns immediately to full capacity"), ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges, 2);
+	TestFalse(TEXT("Zero-duration recharge leaves no running cooldown"), ShooterASC->IsShooterQuantumLeapCooldownActive());
+	ShooterASC->RemoveLooseGameplayTag(DoubleChargeTag);
+	ShooterASC->ResetShooterQuantumLeapTransientState();
+	TestTrue(TEXT("Original timings are restored for immunity and failure coverage"), ShooterASC->UpdateShooterSuitConfig(TestConfig));
 
 	// 시전 시간을 짧게 해 이전 무적이 남은 동안 두 번째 도약을 성공시킨다.
 	FOutlierShooterSuitConfig UpgradedConfig = ShooterASC->GetShooterSuitConfig();
@@ -2911,8 +3005,10 @@ bool FOutlierGasShooterQuantumLeapTest::RunTest(const FString& Parameters)
 	ShooterASC->RemoveActiveEffectFromSelf(CleanupOtherImmunity);
 	TestFalse(TEXT("Lifecycle cleanup leaves no leap immunity behind"),
 		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune()));
-	TestTrue(TEXT("Transient cleanup preserves the success cooldown"), ShooterASC->IsShooterQuantumLeapCooldownActive());
-	ShooterASC->RemoveActiveEffectsWithGrantedTags(QuantumCooldownTags);
+	TestFalse(TEXT("Lifecycle cleanup removes the tracked recharge cooldown"), ShooterASC->IsShooterQuantumLeapCooldownActive());
+	TestEqual(TEXT("Lifecycle cleanup resets charges to current capacity"),
+		ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges,
+		ShooterASC->GetShooterQuantumLeapChargeState().MaxCharges);
 
 	TestTrue(TEXT("Upgraded leap starts for failed-cast coverage"),
 		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::QuantumLeap()));

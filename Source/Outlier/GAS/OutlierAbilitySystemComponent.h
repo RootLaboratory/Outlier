@@ -11,6 +11,29 @@ class AActor;
 class APawn;
 struct FOutlierStealthSession;
 
+// 서버의 한 충전 주기를 통째로 전달한다. UI가 남은 시간을 새 쿨타임으로 오해하지 않게 한다.
+USTRUCT()
+struct FOutlierQuantumLeapChargeState
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	int32 CurrentCharges = 1;
+	UPROPERTY()
+	int32 MaxCharges = 1;
+	UPROPERTY()
+	float RechargeStartServerTime = 0.0f;
+	UPROPERTY()
+	float RechargeDuration = 0.0f;
+	// 자연 회복만 증가시킨다. 횟수 증가만으로 업그레이드 보상과 회복을 혼동하지 않게 한다.
+	UPROPERTY()
+	uint32 RecoverySerial = 0;
+	UPROPERTY()
+	bool bInitialized = false;
+};
+
+DECLARE_MULTICAST_DELEGATE_OneParam(FOutlierQuantumLeapChargesChanged, bool /* bRecovered */);
+
 UCLASS(ClassGroup = GAS)
 class OUTLIER_API UOutlierAbilitySystemComponent : public UAbilitySystemComponent
 {
@@ -18,6 +41,7 @@ class OUTLIER_API UOutlierAbilitySystemComponent : public UAbilitySystemComponen
 
 public:
 	UOutlierAbilitySystemComponent();
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	void InitializeForActor(AActor* Actor);
 	void InitializeForPawn(APawn* Pawn);
@@ -85,7 +109,11 @@ public:
 	const FOutlierShooterSuitConfig& GetShooterSuitConfig() const { return ShooterSuitConfig; }
 	const FOutlierShooterSuitConfig& GetBaseShooterSuitConfig() const { return BaseShooterSuitConfig; }
 	int32 GetGrantedShooterSuitAbilityCount() const;
+	// 기존 호출 이름을 유지한다. 성공한 도약의 충전 1회 소모와 순차 재충전 시작을 함께 처리한다.
 	bool CommitShooterQuantumLeapCooldown();
+	void RefreshShooterQuantumLeapCharges();
+	const FOutlierQuantumLeapChargeState& GetShooterQuantumLeapChargeState() const { return QuantumLeapCharges; }
+	FOutlierQuantumLeapChargesChanged OnQuantumLeapChargesChanged;
 	bool CommitShooterQuantumLeapRetryDelay();
 	bool IsShooterQuantumLeapRetryActive() const;
 	void RefreshShooterQuantumLeapImmunity();
@@ -115,6 +143,18 @@ public:
 	EGameplayEffectReplicationMode GetConfiguredReplicationMode() const { return ReplicationMode; }
 
 private:
+	UFUNCTION()
+	void OnRep_QuantumLeapCharges(const FOutlierQuantumLeapChargeState& PreviousState);
+	void HandleQuantumLeapChargeUpgrade(const FGameplayTag Tag, int32 NewCount);
+	void BeginQuantumLeapRecharge();
+	void HandleQuantumLeapRechargeRemoved(const FGameplayEffectRemovalInfo& RemovalInfo, FActiveGameplayEffectHandle ExpectedHandle);
+	void NotifyQuantumLeapChargesChanged(bool bRecovered);
+	void StopQuantumLeapRecharge();
+	FDelegateHandle QuantumLeapChargeUpgradeHandle;
+	FActiveGameplayEffectHandle QuantumLeapRechargeHandle;
+	UPROPERTY(ReplicatedUsing = OnRep_QuantumLeapCharges)
+	FOutlierQuantumLeapChargeState QuantumLeapCharges;
+
 	float ResolvePartnerCooldownDuration(const FGameplayTag& CooldownTag) const;
 	TSubclassOf<UGameplayEffect> ResolvePartnerCooldownEffectClass(const FGameplayTag& CooldownTag) const;
 

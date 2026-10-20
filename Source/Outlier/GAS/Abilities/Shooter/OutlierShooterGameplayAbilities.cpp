@@ -122,7 +122,8 @@ bool UOutlierShooterQuantumLeapAbility::CanActivateAbility(
 	{
 		return false;
 	}
-	if (AbilitySystem->IsShooterQuantumLeapCooldownActive() || AbilitySystem->IsShooterQuantumLeapRetryActive())
+	// 재충전 중이어도 남은 횟수로 도약할 수 있다. 실패 후 재시도 제한은 별도로 적용한다.
+	if (AbilitySystem->GetShooterQuantumLeapChargeState().CurrentCharges <= 0 || AbilitySystem->IsShooterQuantumLeapRetryActive())
 	{
 		return false;
 	}
@@ -242,7 +243,7 @@ void UOutlierShooterQuantumLeapAbility::EndAbility(
 
 	if (ShooterASC && (bTeleportSucceeded || bCommitFailureCooldown))
 	{
-		// 성공만 기본 쿨타임을 시작하고, 실패는 0.5초 동안 재시도만 막는다.
+		// 성공은 충전 1회를 소모한다. 실패는 충전 주기를 건드리지 않고 재시도만 0.5초 제한한다.
 		const bool bDelayCommitted = bTeleportSucceeded
 			? ShooterASC->CommitShooterQuantumLeapCooldown()
 			: ShooterASC->CommitShooterQuantumLeapRetryDelay();
