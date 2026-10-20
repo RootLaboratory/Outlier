@@ -931,34 +931,80 @@ void AFirstPersonPlayerController::ServerRespondGameOverPending_Implementation(
 	}
 }
 
+uint32 AFirstPersonPlayerController::AllocateUpgradeRequestId()
+{
+	if (++LastUpgradeRequestId == 0)
+	{
+		++LastUpgradeRequestId;
+	}
+	return LastUpgradeRequestId;
+}
+
 void AFirstPersonPlayerController::ServerTryActivateUpgradeNode_Implementation(
-	AActor* UpgradeOwner,
-	FName NodeIdOrRowName,
-	UOutlierUpgradeSetData* UpgradeSetData)
+	AActor* UpgradeOwner, FName NodeIdOrRowName, UOutlierUpgradeSetData* UpgradeSetData, uint32 RequestId)
+{
+	const bool bSucceeded = RequestId != 0 && TryActivateUpgradeNodeForRequest(UpgradeOwner, NodeIdOrRowName, UpgradeSetData);
+	// 거절 경로도 반드시 응답하여 UI가 성공 여부를 추측하지 않게 한다.
+	ClientUpgradePurchaseResult(RequestId, UpgradeOwner, NodeIdOrRowName, bSucceeded);
+}
+
+void AFirstPersonPlayerController::ClientUpgradePurchaseResult_Implementation(
+	uint32 RequestId, AActor* UpgradeOwner, FName RowName, bool bSucceeded)
+{
+	OnUpgradePurchaseResult.Broadcast(RequestId, UpgradeOwner, RowName, bSucceeded);
+}
+
+bool AFirstPersonPlayerController::TryActivateUpgradeNodeForRequest(
+	AActor* UpgradeOwner, FName RowName, UOutlierUpgradeSetData* UpgradeSetData)
 {
 	AOutlierPlayerState* OutlierPlayerState = GetPlayerState<AOutlierPlayerState>();
-	UOutlierUpgradeComponent* UpgradeComponent = UpgradeOwner
-		? UpgradeOwner->FindComponentByClass<UOutlierUpgradeComponent>()
-		: nullptr;
-	if (!UpgradeComponent)
+	if (!HasAuthority() || !IsValid(OutlierPlayerState) || !IsValid(UpgradeOwner) || RowName.IsNone())
 	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("[Upgrade] Server activate failed: component not found Controller=%s Owner=%s PlayerState=%s Node=%s"),
-			*GetNameSafe(this),
-			*GetNameSafe(UpgradeOwner),
-			*GetNameSafe(OutlierPlayerState),
-			*NodeIdOrRowName.ToString());
-		return;
+		return false;
 	}
 
+	// 클라이언트가 다른 플레이어나 다른 역할의 업그레이드 대상을 지정할 수 없게 한다.
+	const EOutlierUpgradeRole UpgradeRole = OutlierPlayerState->IsShooterPlayer() ? EOutlierUpgradeRole::Shooter
+		: OutlierPlayerState->IsPartnerPlayer() ? EOutlierUpgradeRole::Partner : EOutlierUpgradeRole::None;
+	AActor* ExpectedOwner = UpgradeRole == EOutlierUpgradeRole::Shooter
+		? static_cast<AActor*>(OutlierPlayerState->GetShooterCharacter())
+		: UpgradeRole == EOutlierUpgradeRole::Partner ? static_cast<AActor*>(OutlierPlayerState->GetPartnerCharacter()) : nullptr;
+	if (UpgradeOwner != ExpectedOwner)
+	{
+		return false;
+	}
+
+	UOutlierUpgradeComponent* UpgradeComponent = UpgradeOwner->FindComponentByClass<UOutlierUpgradeComponent>();
+	if (!IsValid(UpgradeComponent))
+	{
+		return false;
+	}
+	UOutlierUpgradeSetData* ServerSetData = UpgradeComponent->GetUpgradeSetData();
 	if (UpgradeSetData)
 	{
-		UpgradeComponent->SetUpgradeSetData(UpgradeSetData);
+		if (UpgradeSetData->UpgradeRole != UpgradeRole || (ServerSetData && ServerSetData != UpgradeSetData))
+		{
+			return false;
+		}
+		// 기존처럼 화면에서 컨텍스트를 주입하는 구성도 지원하되, 서버에 지정된 데이터는 교체하지 않는다.
+		if (!ServerSetData)
+		{
+			UDataTable* Table = UpgradeSetData->UpgradeDataTable;
+			if (!Table || Table->GetRowStruct() != FOutlierUpgradeNodeRow::StaticStruct())
+			{
+				return false;
+			}
+			const FOutlierUpgradeNodeRow* Row = Table->FindRow<FOutlierUpgradeNodeRow>(RowName, TEXT("UpgradePurchase"), false);
+			if (!Row || Row->Role != UpgradeRole)
+			{
+				return false;
+			}
+			UpgradeComponent->SetUpgradeSetData(UpgradeSetData);
+		}
 	}
-
-	UpgradeComponent->TryActivateNodeForPlayerState(
-		NodeIdOrRowName,
-		OutlierPlayerState);
+	FOutlierUpgradeNodeRow Row;
+	return UpgradeComponent->GetNodeRow(RowName, Row) && Row.Role == UpgradeRole
+		&& UpgradeComponent->TryActivateNodeForPlayerState(RowName, OutlierPlayerState);
 }
 
 void AFirstPersonPlayerController::ClientPlayExplosionCameraShake_Implementation(

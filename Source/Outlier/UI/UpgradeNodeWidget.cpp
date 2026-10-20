@@ -21,6 +21,8 @@
 #include "Upgrade/OutlierUpgradeComponent.h"
 #include "Upgrade/OutlierUpgradeSetData.h"
 #include "TimerManager.h"
+#include "HAL/PlatformTime.h"
+#include "Widgets/SWidget.h"
 
 namespace
 {
@@ -40,6 +42,11 @@ void UUpgradeNodeWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
 
+	BindUpgradeContextEvents();
+	if (IsValid(CachedUpgradeComponent))
+	{
+		RefreshFromUpgradeComponent(CachedUpgradeComponent);
+	}
 	RefreshNodeAppearance();
 	RefreshNodeTexture();
 }
@@ -61,16 +68,14 @@ void UUpgradeNodeWidget::SynchronizeProperties()
 
 void UUpgradeNodeWidget::NativeDestruct()
 {
+	ResetUpgradeInteraction();
+	UnbindUpgradeContextEvents();
 	if (GetWorld())
 	{
 		GetWorld()->GetTimerManager().ClearTimer(DescHideTimerHandle);
 	}
 	HideUpgradeDescWidget();
 
-	if (CachedUpgradeDescWidget)
-	{
-		CachedUpgradeDescWidget->OnPurchaseRequested.RemoveAll(this);
-	}
 	if (CachedUpgradeDescWidget && CachedUpgradeDescWidget->GetParent())
 	{
 		CachedUpgradeDescWidget->RemoveFromParent();
@@ -83,6 +88,11 @@ void UUpgradeNodeWidget::NativeDestruct()
 
 void UUpgradeNodeWidget::InjectNodeData(FName InNodeRowName, const FOutlierUpgradeNodeRow& InNodeData)
 {
+	if (CurrentNodeRowName != InNodeRowName || TreeId != InNodeData.TreeId || NodeId != InNodeData.NodeId
+		|| CurrentNodeData.Role != InNodeData.Role)
+	{
+		ResetUpgradeInteraction();
+	}
 	CurrentNodeRowName = InNodeRowName;
 	CurrentNodeData = InNodeData;
 	NodeRowName = InNodeRowName;
@@ -105,8 +115,18 @@ void UUpgradeNodeWidget::RefreshFromUpgradeComponent(UOutlierUpgradeComponent* U
 		return;
 	}
 
-	CachedUpgradeComponent = UpgradeComponent;
+	if (CachedUpgradeComponent != UpgradeComponent)
+	{
+		SetUpgradeComponent(UpgradeComponent);
+		return;
+	}
 
+	// 같은 컴포넌트를 재사용해도 데이터 묶음이 교체되면 이전 화면의 입력/응답을 이어받지 않는다.
+	if (CachedUpgradeSetData.Get() != UpgradeComponent->GetUpgradeSetData())
+	{
+		ResetUpgradeInteraction();
+		CachedUpgradeSetData = UpgradeComponent->GetUpgradeSetData();
+	}
 	const FName LookupName = GetNodeLookupName();
 
 	FOutlierUpgradeNodeViewData ViewData;
@@ -115,18 +135,35 @@ void UUpgradeNodeWidget::RefreshFromUpgradeComponent(UOutlierUpgradeComponent* U
 		ApplyInjectedPlayerState(ViewData);
 		InjectViewData(ViewData);
 	}
+	else
+	{
+		ResetUpgradeInteraction();
+		SetNodeState(EOutlierUpgradeNodeState::Locked, false);
+	}
 }
 
 void UUpgradeNodeWidget::SetUpgradeComponent(UOutlierUpgradeComponent* InUpgradeComponent)
 {
+	if (CachedUpgradeComponent != InUpgradeComponent)
+	{
+		ResetUpgradeInteraction();
+		UnbindUpgradeContextEvents();
+	}
 	CachedUpgradeComponent = InUpgradeComponent;
+	BindUpgradeContextEvents();
 	RefreshNodeRowNameFromIds();
 	RefreshFromUpgradeComponent(CachedUpgradeComponent);
 }
 
 void UUpgradeNodeWidget::SetUpgradePlayerState(AOutlierPlayerState* InPlayerState)
 {
+	if (CachedPlayerState != InPlayerState)
+	{
+		ResetUpgradeInteraction();
+		UnbindUpgradeContextEvents();
+	}
 	CachedPlayerState = InPlayerState;
+	BindUpgradeContextEvents();
 
 	if (CachedUpgradeComponent)
 	{
@@ -148,10 +185,6 @@ bool UUpgradeNodeWidget::RefreshNodeRowNameFromIds()
 
 void UUpgradeNodeWidget::SetUpgradeDescWidget(UUpgradeDescWidget* InUpgradeDescWidget)
 {
-	if (CachedUpgradeDescWidget)
-	{
-		CachedUpgradeDescWidget->OnPurchaseRequested.RemoveAll(this);
-	}
 	CachedUpgradeDescWidget = InUpgradeDescWidget;
 }
 
@@ -192,6 +225,15 @@ void UUpgradeNodeWidget::SetNodeState(EOutlierUpgradeNodeState InState, bool bIn
 
 	CurrentState = InState;
 	bCanAfford = bInCanAfford;
+	if (CurrentState == EOutlierUpgradeNodeState::Activated)
+	{
+		// 성공 응답보다 상태 복제가 먼저 와도 여기서 완료한다. 이후 늦은 응답은 무시된다.
+		ResetUpgradeInteraction();
+	}
+	else if (CurrentState != EOutlierUpgradeNodeState::Unlocked || !bCanAfford)
+	{
+		CancelHold();
+	}
 	RefreshEnabledState();
 	RefreshNodeAppearance();
 	RefreshNodeTexture();
@@ -233,81 +275,331 @@ bool UUpgradeNodeWidget::GetNodeData(FOutlierUpgradeNodeRow& OutNodeData) const
 	return true;
 }
 
-void UUpgradeNodeWidget::HandleClicked()
+void UUpgradeNodeWidget::HandlePressed()
 {
-	OnUpgradeNodeClicked.Broadcast(this, CurrentNodeRowName);
+	if (bHoldingUpgrade || IsUpgradeRequestPending())
+	{
+		return;
+	}
+
+	UOutlierUpgradeComponent* UpgradeComponent = ResolveUpgradeComponent();
+	if (!IsValid(UpgradeComponent) || !IsValid(UpgradeComponent->GetOwner()))
+	{
+		return;
+	}
+	RefreshFromUpgradeComponent(UpgradeComponent);
+	UpgradeController = Cast<AFirstPersonPlayerController>(GetOwningPlayer());
+	if (!CachedPlayerState && UpgradeController.IsValid())
+	{
+		SetUpgradePlayerState(UpgradeController->GetPlayerState<AOutlierPlayerState>());
+	}
+	if (!CanBeginHold() || !UpgradeController.IsValid()
+		|| !NodeButton || !NodeButton->IsHovered()
+		|| !FSlateApplication::IsInitialized() || !FSlateApplication::Get().IsActive())
+	{
+		return;
+	}
+
+	CacheInteractionVisibility();
+	if (!IsInteractionVisible())
+	{
+		return;
+	}
+	bHoldingUpgrade = true;
+	HoldProgress = 0.0f;
+	StartInteractionTicker();
 }
 
-void UUpgradeNodeWidget::HandlePurchaseRequested()
+void UUpgradeNodeWidget::HandleReleased()
 {
-	if (!bAlwaysShowUnlockedIcon && CurrentState == EOutlierUpgradeNodeState::Unlocked && bCanAfford)
+	CancelHold();
+}
+
+bool UUpgradeNodeWidget::CanBeginHold() const
+{
+	return !bAlwaysShowUnlockedIcon && !IsUpgradeRequestPending()
+		&& CurrentState == EOutlierUpgradeNodeState::Unlocked && bCanAfford
+		&& IsValid(CachedUpgradeComponent) && !CurrentNodeRowName.IsNone();
+}
+
+bool UUpgradeNodeWidget::AdvanceHold(float DeltaSeconds)
+{
+	if (!bHoldingUpgrade)
 	{
-		if (UOutlierUpgradeComponent* UpgradeComponent = ResolveUpgradeComponent())
+		return false;
+	}
+	if (!CanBeginHold())
+	{
+		CancelHold();
+		return false;
+	}
+
+	const float Duration = FMath::IsFinite(HoldDuration) ? FMath::Max(0.01f, HoldDuration) : 1.0f;
+	if (FMath::IsFinite(DeltaSeconds) && DeltaSeconds > 0.0f)
+	{
+		HoldProgress = FMath::Min(1.0f, HoldProgress + DeltaSeconds / Duration);
+	}
+	if (HoldProgress < 1.0f)
+	{
+		return false;
+	}
+
+	// 완료를 먼저 소비한 뒤 요청한다. 같은 프레임의 해제나 다음 갱신이 구매를 다시 보내지 않는다.
+	bHoldingUpgrade = false;
+	return true;
+}
+
+void UUpgradeNodeWidget::CancelHold()
+{
+	bHoldingUpgrade = false;
+	if (!IsUpgradeRequestPending())
+	{
+		HoldProgress = 0.0f;
+		StopInteractionTicker();
+		InteractionVisibilityWidgets.Reset();
+	}
+}
+
+void UUpgradeNodeWidget::ClearPendingRequest()
+{
+	if (AFirstPersonPlayerController* Controller = UpgradeController.Get())
+	{
+		Controller->OnUpgradePurchaseResult.Remove(UpgradeResultHandle);
+	}
+	UpgradeResultHandle.Reset();
+	PendingRequestId = 0;
+	PendingNodeRowName = NAME_None;
+	PendingUpgradeOwner.Reset();
+	RequestStartedTime = 0.0;
+}
+
+void UUpgradeNodeWidget::ResetUpgradeInteraction()
+{
+	ClearPendingRequest();
+	CancelHold();
+}
+
+void UUpgradeNodeWidget::RequestUpgrade()
+{
+	UOutlierUpgradeComponent* UpgradeComponent = CachedUpgradeComponent;
+	AFirstPersonPlayerController* Controller = UpgradeController.Get();
+	if (!IsValid(UpgradeComponent) || !IsValid(Controller))
+	{
+		ResetUpgradeInteraction();
+		return;
+	}
+
+	// 누르는 사이 비용이나 선행 조건이 바뀌었을 수 있다. 전송 직전 최신 상태로 다시 검사한다.
+	RefreshFromUpgradeComponent(UpgradeComponent);
+	if (!CanBeginHold() || HoldProgress < 1.0f || !IsValid(UpgradeComponent->GetOwner()))
+	{
+		ResetUpgradeInteraction();
+		return;
+	}
+
+	const UUpgradeNodeGroupWidget* NodeGroup = FindOwningNodeGroupWidget();
+	UOutlierUpgradeSetData* SetData = NodeGroup ? NodeGroup->GetUpgradeSetData() : UpgradeComponent->GetUpgradeSetData();
+	PendingRequestId = Controller->AllocateUpgradeRequestId();
+	PendingNodeRowName = CurrentNodeRowName;
+	PendingUpgradeOwner = UpgradeComponent->GetOwner();
+	RequestStartedTime = FPlatformTime::Seconds();
+	HoldProgress = 1.0f;
+	UpgradeResultHandle = Controller->OnUpgradePurchaseResult.AddUObject(this, &UUpgradeNodeWidget::HandleUpgradeResult);
+
+	// Listen 호스트는 이 호출 안에서 바로 응답/상태 변경을 받을 수 있으므로 대기를 먼저 등록한다.
+	Controller->ServerTryActivateUpgradeNode(PendingUpgradeOwner.Get(), PendingNodeRowName, SetData, PendingRequestId);
+}
+
+void UUpgradeNodeWidget::HandleUpgradeResult(uint32 RequestId, AActor* UpgradeOwner, FName RowName, bool bSucceeded)
+{
+	if (!IsUpgradeRequestPending() || PendingRequestId != RequestId
+		|| PendingUpgradeOwner.Get() != UpgradeOwner || PendingNodeRowName != RowName)
+	{
+		return;
+	}
+
+	if (IsValid(CachedUpgradeComponent))
+	{
+		RefreshFromUpgradeComponent(CachedUpgradeComponent);
+	}
+	if (!IsUpgradeRequestPending())
+	{
+		return;
+	}
+	if (!bSucceeded)
+	{
+		ResetUpgradeInteraction();
+	}
+	// 성공 응답만으로 활성화하지 않는다. 아직 상태 복제가 오지 않았다면 대기를 유지한다.
+}
+
+void UUpgradeNodeWidget::BindUpgradeContextEvents()
+{
+	if (IsValid(CachedUpgradeComponent))
+	{
+		CachedUpgradeComponent->OnUpgradeStateChanged.AddUniqueDynamic(this, &UUpgradeNodeWidget::HandleUpgradeStateChanged);
+	}
+	if (IsValid(CachedPlayerState))
+	{
+		if (!NodeCountChangedHandle.IsValid())
 		{
-			const FName LookupName = GetNodeLookupName();
-			bool bActivationRequested = false;
-			if (!LookupName.IsNone())
-			{
-				const UUpgradeNodeGroupWidget* NodeGroupWidget = FindOwningNodeGroupWidget();
-				UOutlierUpgradeSetData* ContextSetData = NodeGroupWidget
-					? NodeGroupWidget->GetUpgradeSetData()
-					: nullptr;
-				UDataTable* ContextDataTable = NodeGroupWidget
-					? NodeGroupWidget->GetResolvedUpgradeDataTable()
-					: nullptr;
-				const EOutlierUpgradeRole ContextRole = NodeGroupWidget
-					? NodeGroupWidget->GetResolvedUpgradeRole()
-					: EOutlierUpgradeRole::None;
-				if (ContextSetData)
-				{
-					UpgradeComponent->SetUpgradeSetData(ContextSetData);
-				}
-				else if (ContextRole != EOutlierUpgradeRole::None)
-				{
-					UpgradeComponent->SetUpgradeRole(ContextRole);
-				}
-				if (!ContextSetData && ContextDataTable)
-				{
-					UpgradeComponent->SetUpgradeDataTable(ContextDataTable);
-				}
-
-				if (AFirstPersonPlayerController* PlayerController = Cast<AFirstPersonPlayerController>(GetOwningPlayer()))
-				{
-					AActor* UpgradeOwner = UpgradeComponent->GetOwner();
-					if (PlayerController->HasAuthority())
-					{
-						bActivationRequested = UpgradeComponent->TryActivateNodeForPlayerState(
-							LookupName,
-							CachedPlayerState ? CachedPlayerState.Get() : PlayerController->GetPlayerState<AOutlierPlayerState>());
-					}
-					else if (UpgradeOwner)
-					{
-						PlayerController->ServerTryActivateUpgradeNode(
-							UpgradeOwner,
-							LookupName,
-							ContextSetData);
-						bActivationRequested = true;
-					}
-				}
-				else if (!UpgradeComponent->GetOwner() || UpgradeComponent->GetOwner()->HasAuthority())
-				{
-					bActivationRequested = UpgradeComponent->TryActivateNodeForPlayerState(LookupName, CachedPlayerState);
-				}
-				else
-				{
-					bActivationRequested = UpgradeComponent->TryActivateNode(LookupName);
-				}
-			}
-
-			if (bActivationRequested)
-			{
-				HideUpgradeDescWidget();
-				bHoverDescVisible = false;
-				bSuppressDescUntilUnhover = NodeButton && NodeButton->IsHovered();
-				RefreshFromUpgradeComponent(UpgradeComponent);
-			}
+			NodeCountChangedHandle = CachedPlayerState->OnNodeCountChanged.AddUObject(this, &UUpgradeNodeWidget::HandleNodeCountChanged);
+		}
+		if (!ActivatedNodesChangedHandle.IsValid())
+		{
+			ActivatedNodesChangedHandle = CachedPlayerState->OnActivatedUpgradeNodesChanged.AddUObject(
+				this, &UUpgradeNodeWidget::HandleUpgradeStateChanged);
 		}
 	}
+}
+
+void UUpgradeNodeWidget::UnbindUpgradeContextEvents()
+{
+	if (IsValid(CachedUpgradeComponent))
+	{
+		CachedUpgradeComponent->OnUpgradeStateChanged.RemoveDynamic(this, &UUpgradeNodeWidget::HandleUpgradeStateChanged);
+	}
+	if (IsValid(CachedPlayerState))
+	{
+		CachedPlayerState->OnNodeCountChanged.Remove(NodeCountChangedHandle);
+		CachedPlayerState->OnActivatedUpgradeNodesChanged.Remove(ActivatedNodesChangedHandle);
+	}
+	NodeCountChangedHandle.Reset();
+	ActivatedNodesChangedHandle.Reset();
+}
+
+void UUpgradeNodeWidget::HandleUpgradeStateChanged()
+{
+	if (IsValid(CachedUpgradeComponent))
+	{
+		RefreshFromUpgradeComponent(CachedUpgradeComponent);
+	}
+}
+
+void UUpgradeNodeWidget::HandleNodeCountChanged(int32 NewNodeCount)
+{
+	HandleUpgradeStateChanged();
+}
+
+void UUpgradeNodeWidget::HandleApplicationActivationChanged(bool bIsActive)
+{
+	if (!bIsActive)
+	{
+		CancelHold();
+	}
+}
+
+void UUpgradeNodeWidget::CacheInteractionVisibility()
+{
+	InteractionVisibilityWidgets.Reset();
+	// 중첩 UserWidget의 루트까지 한 번만 수집한다. 이후 갱신은 검색 없이 표시/활성 여부만 확인한다.
+	UWidget* Widget = this;
+	while (Widget && !InteractionVisibilityWidgets.Contains(Widget))
+	{
+		InteractionVisibilityWidgets.Add(Widget);
+		Widget = Widget->GetParent() ? static_cast<UWidget*>(Widget->GetParent()) : Widget->GetTypedOuter<UUserWidget>();
+	}
+}
+
+bool UUpgradeNodeWidget::IsInteractionVisible() const
+{
+	for (const TWeakObjectPtr<UWidget>& Widget : InteractionVisibilityWidgets)
+	{
+		if (!Widget.IsValid() || !Widget->IsVisible() || !Widget->GetIsEnabled())
+		{
+			return false;
+		}
+	}
+	return !InteractionVisibilityWidgets.IsEmpty();
+}
+
+void UUpgradeNodeWidget::StartInteractionTicker()
+{
+	// 월드 일시정지/Time Dilation과 무관한 UI 시간이다. 누르기나 응답 대기가 끝나면 즉시 해제한다.
+	if (!InteractionTickerHandle.IsValid())
+	{
+		LastInteractionTime = FPlatformTime::Seconds();
+		InteractionTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+			FTickerDelegate::CreateUObject(this, &UUpgradeNodeWidget::TickUpgradeInteraction), 1.0f / 60.0f);
+	}
+	if (!ApplicationActivationHandle.IsValid() && FSlateApplication::IsInitialized())
+	{
+		ApplicationActivationHandle = FSlateApplication::Get().OnApplicationActivationStateChanged().AddUObject(
+			this, &UUpgradeNodeWidget::HandleApplicationActivationChanged);
+	}
+}
+
+void UUpgradeNodeWidget::StopInteractionTicker()
+{
+	FTSTicker::GetCoreTicker().RemoveTicker(InteractionTickerHandle);
+	InteractionTickerHandle.Reset();
+	if (FSlateApplication::IsInitialized())
+	{
+		FSlateApplication::Get().OnApplicationActivationStateChanged().Remove(ApplicationActivationHandle);
+	}
+	ApplicationActivationHandle.Reset();
+}
+
+bool UUpgradeNodeWidget::TickUpgradeInteraction(float DeltaSeconds)
+{
+	const double Now = FPlatformTime::Seconds();
+	const float Elapsed = static_cast<float>(Now - LastInteractionTime);
+	LastInteractionTime = Now;
+	if (!IsInteractionVisible())
+	{
+		ResetUpgradeInteraction();
+		return false;
+	}
+
+	if (bHoldingUpgrade)
+	{
+		const TSharedPtr<SWidget> ButtonWidget = NodeButton ? NodeButton->GetCachedWidget() : nullptr;
+		if (!NodeButton || !NodeButton->IsPressed() || !NodeButton->IsHovered()
+			|| !ButtonWidget.IsValid() || !ButtonWidget->HasMouseCapture()
+			|| !FSlateApplication::IsInitialized() || !FSlateApplication::Get().IsActive())
+		{
+			CancelHold();
+			return false;
+		}
+		if (AdvanceHold(Elapsed))
+		{
+			RequestUpgrade();
+		}
+	}
+
+	CheckRequestTimeout(Now);
+	if (!bHoldingUpgrade && !IsUpgradeRequestPending())
+	{
+		StopInteractionTicker();
+		return false;
+	}
+	return true;
+}
+
+void UUpgradeNodeWidget::CheckRequestTimeout(double Now)
+{
+	const float Timeout = FMath::IsFinite(RequestTimeout) ? FMath::Max(0.01f, RequestTimeout) : 5.0f;
+	if (IsUpgradeRequestPending()
+		&& (!PendingUpgradeOwner.IsValid() || !UpgradeController.IsValid() || Now - RequestStartedTime >= Timeout))
+	{
+		// 시간 초과는 구매 취소가 아니다. 지금 상태를 반영하고 로컬 대기만 해제한다.
+		HandleUpgradeStateChanged();
+		ResetUpgradeInteraction();
+	}
+}
+
+void UUpgradeNodeWidget::NativeOnMouseCaptureLost(const FCaptureLostEvent& CaptureLostEvent)
+{
+	CancelHold();
+	Super::NativeOnMouseCaptureLost(CaptureLostEvent);
+}
+
+void UUpgradeNodeWidget::BeginDestroy()
+{
+	StopInteractionTicker();
+	ClearPendingRequest();
+	UnbindUpgradeContextEvents();
+	Super::BeginDestroy();
 }
 
 void UUpgradeNodeWidget::HandleHovered()
@@ -382,6 +674,7 @@ void UUpgradeNodeWidget::HandleHovered()
 
 void UUpgradeNodeWidget::HandleUnhovered()
 {
+	CancelHold();
 	bSuppressDescUntilUnhover = false;
 	ScheduleDescHide();
 
@@ -419,7 +712,9 @@ void UUpgradeNodeWidget::BindButtonEvents()
 		return;
 	}
 
-	NodeButton->OnClicked.AddUniqueDynamic(this, &UUpgradeNodeWidget::HandleClicked);
+	NodeButton->OnPressed.AddUniqueDynamic(this, &UUpgradeNodeWidget::HandlePressed);
+	NodeButton->OnReleased.AddUniqueDynamic(this, &UUpgradeNodeWidget::HandleReleased);
+	NodeButton->SetClickMethod(EButtonClickMethod::DownAndUp);
 	NodeButton->OnHovered.AddUniqueDynamic(this, &UUpgradeNodeWidget::HandleHovered);
 	NodeButton->OnUnhovered.AddUniqueDynamic(this, &UUpgradeNodeWidget::HandleUnhovered);
 }
@@ -437,7 +732,7 @@ UOutlierUpgradeComponent* UUpgradeNodeWidget::ResolveUpgradeComponent()
 		return nullptr;
 	}
 
-	CachedUpgradeComponent = OwningPawn->FindComponentByClass<UOutlierUpgradeComponent>();
+	SetUpgradeComponent(OwningPawn->FindComponentByClass<UOutlierUpgradeComponent>());
 	return CachedUpgradeComponent;
 }
 
@@ -584,9 +879,6 @@ UUpgradeDescWidget* UUpgradeNodeWidget::EnsureUpgradeDescWidget()
 		CachedUpgradeDescWidget->RemoveFromParent();
 		ParentCanvas->AddChildToCanvas(CachedUpgradeDescWidget);
 	}
-	CachedUpgradeDescWidget->OnPurchaseRequested.RemoveAll(this);
-	CachedUpgradeDescWidget->OnPurchaseRequested.AddUObject(this, &UUpgradeNodeWidget::HandlePurchaseRequested);
-
 	return CachedUpgradeDescWidget;
 }
 

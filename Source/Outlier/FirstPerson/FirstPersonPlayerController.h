@@ -68,6 +68,9 @@ DECLARE_MULTICAST_DELEGATE_OneParam(
 	FOnCheckpointRestartVoteViewChanged,
 	EOutlierCheckpointRestartVoteView);
 
+DECLARE_MULTICAST_DELEGATE_FourParams(
+	FOnUpgradePurchaseResult, uint32, AActor*, FName, bool);
+
 /**
  * 
  */
@@ -76,6 +79,7 @@ class OUTLIER_API AFirstPersonPlayerController : public APlayerController ,  pub
 {
 	GENERATED_BODY()
 	friend class FOutlierSuitTransitionTest;
+	friend struct FUpgradeNodeInteractionTestAccess;
 	
 public:
 	AFirstPersonPlayerController();
@@ -178,7 +182,15 @@ public:
 	void ServerTryActivateUpgradeNode(
 		AActor* UpgradeOwner,
 		FName NodeIdOrRowName,
-		UOutlierUpgradeSetData* UpgradeSetData);
+		UOutlierUpgradeSetData* UpgradeSetData,
+		uint32 RequestId);
+
+	// 위젯이 다시 만들어져도 이전 응답과 새 요청의 ID가 겹치지 않게 컨트롤러가 발급한다.
+	uint32 AllocateUpgradeRequestId();
+	FOnUpgradePurchaseResult OnUpgradePurchaseResult;
+
+	UFUNCTION(Client, Reliable)
+	void ClientUpgradePurchaseResult(uint32 RequestId, AActor* UpgradeOwner, FName RowName, bool bSucceeded);
 
 	UFUNCTION(Server, Reliable)
 	void ServerNotifyArenaReady(uint32 GameplayGeneration);
@@ -371,6 +383,9 @@ protected:
 	virtual void RequestSuitTransitionCleanup(const FGuid& TransitionId);
 
 private:
+	bool TryActivateUpgradeNodeForRequest(AActor* UpgradeOwner, FName RowName, UOutlierUpgradeSetData* UpgradeSetData);
+	uint32 LastUpgradeRequestId = 0;
+
 	UFUNCTION(Client, Reliable)
 	void ClientSetSuitTransitionPhase(AShooterCharacter* Shooter, FGuid TransitionId,
 		ESuitTransitionPhase Phase, float Duration);
