@@ -116,14 +116,14 @@ void SOutlierShooterSuitTestToolWidget::Construct(const FArguments& InArgs)
 		+ SHorizontalBox::Slot().AutoWidth()
 		[
 			SNew(SButton).Text(LOCTEXT("OpenUpgradeUI", "노드 업그레이드 UI 열기"))
-			.ToolTipText(LOCTEXT("OpenUpgradeUITip", "선택한 Shooter의 화면에 노드 업그레이드 UI를 엽니다. 구매 비용과 선행 조건은 그대로 적용됩니다."))
+			.ToolTipText(LOCTEXT("OpenUpgradeUITip", "선택한 Shooter와 짝 Partner의 화면에 각각 노드 업그레이드 UI를 엽니다. 구매 비용과 선행 조건은 그대로 적용됩니다."))
 			.IsEnabled_Lambda([this]() { return CanEdit(); })
 			.OnClicked(this, &SOutlierShooterSuitTestToolWidget::OpenUpgradeUI)
 		]
 		+ SHorizontalBox::Slot().AutoWidth().Padding(8.0f, 0.0f)
 		[
 			SNew(SButton).Text(LOCTEXT("AddUpgradeNodes", "노드 +100"))
-			.ToolTipText(LOCTEXT("AddUpgradeNodesTip", "선택한 Shooter에게 노드 100개를 추가합니다. 복원 버튼을 눌러도 잔액은 유지됩니다."))
+			.ToolTipText(LOCTEXT("AddUpgradeNodesTip", "선택한 Shooter와 짝 Partner에게 각각 노드 100개를 추가합니다. 복원 버튼을 눌러도 잔액은 유지됩니다."))
 			.IsEnabled_Lambda([this]() { return CanEdit(); })
 			.OnClicked(this, &SOutlierShooterSuitTestToolWidget::AddUpgradeNodes)
 		]
@@ -539,15 +539,33 @@ FReply SOutlierShooterSuitTestToolWidget::OpenUpgradeUI()
 		return FReply::Handled();
 	}
 
-	// 서버에 위젯을 만들지 않고 선택한 Shooter의 소유 클라이언트에만 요청한다.
+	APartnerCharacter* Partner = Shooter->GetPartnerCharacter();
+	// 각 UI는 해당 캐릭터의 소유 클라이언트에서 만든다. 두 화면에 같은 Pair 문맥을 전달한다.
 	FUILayerPushRequest Request;
 	Request.WidgetClass = WidgetClass;
 	Request.LayerTag = UILayerTags::GameMenu();
 	Request.InputModeTag = FirstPersonInputModeTags::UI();
 	Request.RequestOwner = Shooter;
-	Request.ContextActors = {Shooter, SelectedTarget->PlayerState->GetPartnerCharacter()};
+	Request.ContextActors = {Shooter, Partner};
 	Controller->ClientPushUILayer(Request);
-	Status = LOCTEXT("UpgradeUIRequested", "선택한 Shooter에게 노드 업그레이드 UI 열기를 요청했습니다. 해당 PIE 창에서 확인하세요.");
+	AFirstPersonPlayerController* PartnerController = Partner
+		? Cast<AFirstPersonPlayerController>(Partner->GetController()) : nullptr;
+	if (!PartnerController)
+	{
+		Status = LOCTEXT("UpgradePartnerUnavailable", "Shooter UI 열기를 요청했습니다. 짝 Partner의 컨트롤러를 찾지 못해 Partner UI는 열지 못했습니다.");
+		return FReply::Handled();
+	}
+	const TSubclassOf<UUpgradeNodeGroupWidget> PartnerWidgetClass = LoadClass<UUpgradeNodeGroupWidget>(nullptr,
+		TEXT("/Game/Blueprints/Widget/FirstPerson/Upgrade/WBP_PartnerNodeGroup.WBP_PartnerNodeGroup_C"));
+	if (!PartnerWidgetClass)
+	{
+		Status = LOCTEXT("UpgradePartnerWidgetUnavailable", "Shooter UI 열기를 요청했습니다. WBP_PartnerNodeGroup을 찾지 못해 Partner UI는 열지 못했습니다.");
+		return FReply::Handled();
+	}
+	Request.WidgetClass = PartnerWidgetClass;
+	Request.RequestOwner = Partner;
+	PartnerController->ClientPushUILayer(Request);
+	Status = LOCTEXT("UpgradeUIRequested", "Shooter와 짝 Partner에게 각각 노드 업그레이드 UI 열기를 요청했습니다. 각 PIE 창에서 확인하세요.");
 	return FReply::Handled();
 }
 
@@ -556,9 +574,20 @@ FReply SOutlierShooterSuitTestToolWidget::AddUpgradeNodes()
 	if (!CanEdit()) return FReply::Handled();
 	// 기존 서버 지급 경로를 사용해 잔액 통보와 소유 클라이언트 복제를 유지한다.
 	AOutlierPlayerState* PlayerState = SelectedTarget->PlayerState.Get();
-	Status = PlayerState->AddNode(100)
-		? FText::Format(LOCTEXT("UpgradeNodesAdded", "노드 100개 추가 완료 / 현재 {0}개"), FText::AsNumber(PlayerState->GetNodeCount()))
-		: LOCTEXT("UpgradeNodesRejected", "노드를 추가하지 못했습니다. Pair 배정 여부와 잔액 상한을 확인하세요.");
+	APartnerCharacter* Partner = SelectedTarget->Shooter->GetPartnerCharacter();
+	AOutlierPlayerState* PartnerState = Partner ? Partner->GetPlayerState<AOutlierPlayerState>() : nullptr;
+	const bool bShooterAdded = PlayerState->AddNode(100);
+	const bool bPartnerAdded = IsValid(PartnerState) && PartnerState != PlayerState
+		&& PartnerState->IsPartnerPlayer() && PartnerState->GetPairId() == PlayerState->GetPairId()
+		&& PartnerState->AddNode(100);
+	// 한쪽 지급만 성공한 경우에도 실제 결과를 표시해 중복 충전을 피할 수 있게 한다.
+	const FText ShooterResult = bShooterAdded
+		? LOCTEXT("UpgradeNodesGranted", "+100 완료") : LOCTEXT("UpgradeNodesNotGranted", "추가 실패");
+	const FText PartnerResult = bPartnerAdded
+		? LOCTEXT("UpgradeNodesGranted", "+100 완료") : LOCTEXT("UpgradeNodesNotGranted", "추가 실패");
+	Status = FText::Format(LOCTEXT("UpgradePairNodesResult", "Shooter: {0} / 현재 {1}개 · Partner: {2} / 현재 {3}"),
+		ShooterResult, FText::AsNumber(PlayerState->GetNodeCount()), PartnerResult,
+		IsValid(PartnerState) ? FText::AsNumber(PartnerState->GetNodeCount()) : LOCTEXT("UpgradePartnerNodesUnavailable", "확인 불가"));
 	return FReply::Handled();
 }
 
