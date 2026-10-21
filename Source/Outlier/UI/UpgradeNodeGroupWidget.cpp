@@ -182,6 +182,8 @@ float UUpgradeNodeGroupWidget::MeasureDisplayedLineLength(const FUpgradeLineRunt
 void UUpgradeNodeGroupWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
+	CacheNodeWidgets();
+	ResetNodeUnlockPresentations();
 
 	BindUpgradeStateChanged();
 	BindPlayerStateNodeCountChanged();
@@ -192,6 +194,7 @@ void UUpgradeNodeGroupWidget::NativeConstruct()
 
 void UUpgradeNodeGroupWidget::NativeDestruct()
 {
+	ResetNodeUnlockPresentations();
 	ClearConnectionLines();
 	UnbindUpgradePresentationChanged();
 	UnbindUpgradeStateChanged();
@@ -201,6 +204,7 @@ void UUpgradeNodeGroupWidget::NativeDestruct()
 
 void UUpgradeNodeGroupWidget::BeginDestroy()
 {
+	ResetNodeUnlockPresentations();
 	StopLineFillTicker();
 	UnbindUpgradePresentationChanged();
 	UnbindUpgradeStateChanged();
@@ -242,6 +246,7 @@ void UUpgradeNodeGroupWidget::InjectUpgradeContext(
 	UOutlierUpgradeComponent* InUpgradeComponent,
 	AOutlierPlayerState* InPlayerState)
 {
+	ResetNodeUnlockPresentations();
 	ClearConnectionLines();
 	UnbindUpgradePresentationChanged();
 	if (UpgradeComponent != InUpgradeComponent)
@@ -468,6 +473,11 @@ void UUpgradeNodeGroupWidget::CacheNodeWidgetsRecursive(UWidget* Widget)
 	if (UUpgradeNodeWidget* NodeWidget = Cast<UUpgradeNodeWidget>(Widget))
 	{
 		NodeWidgets.Add(NodeWidget);
+		if (!NodeWidget->OnUnlockPresentationFinished.IsBoundToObject(this))
+		{
+			NodeWidget->OnUnlockPresentationFinished.AddUObject(this, &UUpgradeNodeGroupWidget::HandleUnlockPresentationFinished);
+			NodeWidget->OnUnlockPresentationCancelled.AddUObject(this, &UUpgradeNodeGroupWidget::HandleUnlockPresentationCancelled);
+		}
 	}
 
 	UPanelWidget* PanelWidget = Cast<UPanelWidget>(Widget);
@@ -571,6 +581,7 @@ void UUpgradeNodeGroupWidget::ClearConnectionLines()
 void UUpgradeNodeGroupWidget::RebuildConnectionLines()
 {
 	ClearConnectionLines();
+	RefreshNodeWidgets();
 #if WITH_EDITOR
 	UpdateLineMeasurements();
 #endif
@@ -622,6 +633,7 @@ void UUpgradeNodeGroupWidget::RebuildConnectionLines()
 		Line.OriginalOpacity = Image->GetRenderOpacity();
 		Line.OriginalVisibility = Image->GetVisibility();
 		Line.ActivationNodeRowName = bNoSourceNode ? NAME_None : Source.RowName;
+		Line.SourceNode = bNoSourceNode ? nullptr : Cast<UUpgradeNodeWidget>(GetWidgetFromName(Binding.SourceNodeWidgetName));
 		Line.Length = FMath::Max(0.0f, Binding.LineLength);
 		if (Line.Length <= 0.0f && Binding.MeasuredTexture == Texture)
 		{
@@ -673,12 +685,21 @@ void UUpgradeNodeGroupWidget::SetLineProgress(FUpgradeLineRuntime& Line, float P
 void UUpgradeNodeGroupWidget::RefreshConnectionLines(bool bImmediate)
 {
 	const uint32 RestoreRevision = PlayerState ? PlayerState->GetUpgradeRestoreRevision(GetResolvedUpgradeRole()) : 0;
-	bImmediate |= RestoreRevision != CachedRestoreRevision;
+	const bool bRestored = RestoreRevision != CachedRestoreRevision;
+	bImmediate |= bRestored;
 	CachedRestoreRevision = RestoreRevision;
+	// 알림을 받는 순서와 무관하게 노드의 재생 여부를 먼저 확정한 뒤 선의 시작 조건을 판정한다.
+	for (UUpgradeNodeWidget* Node : NodeWidgets)
+	{
+		if (!Node) continue;
+		if (bRestored) Node->ResetUnlockPresentation();
+		Node->RefreshFromUpgradeComponent(UpgradeComponent);
+	}
 	bool bNeedsAnimation = false;
 	for (FUpgradeLineRuntime& Line : RuntimeLines)
 	{
-		const bool bActivated = IsLineSourceActivated(Line.ActivationNodeRowName);
+		const bool bWaitingForUnlock = Line.SourceNode && Line.SourceNode->IsUnlockPresentationPlaying();
+		const bool bActivated = IsLineSourceActivated(Line.ActivationNodeRowName) && !bWaitingForUnlock;
 		// 최초 레이아웃 뒤의 실제 크기는 새 구매를 시작할 때 한 번만 반영한다.
 		if (bActivated && !Line.bSourceActivated && !Line.AutoLengthExtent.IsNearlyZero())
 		{
@@ -694,6 +715,7 @@ void UUpgradeNodeGroupWidget::RefreshConnectionLines(bool bImmediate)
 			// 새 활성화만 시작한다. 같은 상태가 다시 통보돼도 진행도를 되돌리지 않는다.
 			SetLineProgress(Line, 0.0f);
 			Line.bAnimating = true;
+			Line.FillStartedTime = FPlatformTime::Seconds();
 		}
 		Line.bSourceActivated = bActivated;
 		bNeedsAnimation |= Line.bAnimating;
@@ -717,7 +739,7 @@ float UUpgradeNodeGroupWidget::GetLineFillDuration(const FUpgradeLineRuntime& Li
 		? Line.Length / LineFillSpeed : LineFillDuration;
 }
 
-bool UUpgradeNodeGroupWidget::AdvanceLineFills(float DeltaSeconds)
+bool UUpgradeNodeGroupWidget::AdvanceLineFills(float DeltaSeconds, double Now)
 {
 	bool bStillAnimating = false;
 	for (FUpgradeLineRuntime& Line : RuntimeLines)
@@ -725,8 +747,12 @@ bool UUpgradeNodeGroupWidget::AdvanceLineFills(float DeltaSeconds)
 		if (Line.bAnimating)
 		{
 			const float Duration = GetLineFillDuration(Line);
+			// 다른 선을 주기적으로 갱신 중이어도 이 선이 대기한 시간은 채움에 포함하지 않는다.
+			const float Elapsed = Now > 0.0
+				? static_cast<float>(FMath::Max(0.0, Now - FMath::Max(LastLineFillTime, Line.FillStartedTime)))
+				: FMath::Max(0.0f, DeltaSeconds);
 			SetLineProgress(Line, Duration > 0.0f
-				? Line.Progress + FMath::Max(0.0f, DeltaSeconds) / Duration : 1.0f);
+				? Line.Progress + Elapsed / Duration : 1.0f);
 			Line.bAnimating = Line.Progress < 1.0f;
 			bStillAnimating |= Line.bAnimating;
 		}
@@ -748,13 +774,52 @@ bool UUpgradeNodeGroupWidget::TickLineFills(float DeltaSeconds)
 	}
 	const double Now = FPlatformTime::Seconds();
 	const float Elapsed = static_cast<float>(FMath::Max(0.0, Now - LastLineFillTime));
+	const bool bStillAnimating = AdvanceLineFills(Elapsed, Now);
 	LastLineFillTime = Now;
-	if (!AdvanceLineFills(Elapsed))
+	if (!bStillAnimating)
 	{
 		LineFillTickerHandle.Reset();
 		return false;
 	}
 	return true;
+}
+
+void UUpgradeNodeGroupWidget::ResetNodeUnlockPresentations()
+{
+	for (UUpgradeNodeWidget* Node : NodeWidgets)
+	{
+		if (Node)
+		{
+			Node->OnUnlockPresentationFinished.RemoveAll(this);
+			Node->OnUnlockPresentationCancelled.RemoveAll(this);
+			Node->ResetUnlockPresentation();
+		}
+	}
+}
+
+void UUpgradeNodeGroupWidget::HandleUnlockPresentationFinished(UUpgradeNodeWidget* Node)
+{
+	if (!NodeWidgets.Contains(Node) || !IsVisible()) return;
+	for (const UWidget* Parent = GetParent(); Parent; Parent = Parent->GetParent())
+	{
+		if (!Parent->IsVisible()) return;
+	}
+	// 완료된 노드에서 나가는 선만 새로 출발한다. 다른 선의 진행도는 유지한다.
+	RefreshConnectionLines(false);
+}
+
+void UUpgradeNodeGroupWidget::HandleUnlockPresentationCancelled(UUpgradeNodeWidget* Node)
+{
+	// 숨김으로 중단된 선은 애니메이션 없이 서버 상태로 맞춘다. 다시 보일 때 대기 상태가 남지 않는다.
+	for (FUpgradeLineRuntime& Line : RuntimeLines)
+	{
+		if (Line.SourceNode == Node)
+		{
+			Line.bSourceActivated = IsLineSourceActivated(Line.ActivationNodeRowName);
+			Line.bAnimating = false;
+			SetLineProgress(Line, Line.bSourceActivated ? 1.0f : 0.0f);
+		}
+	}
 }
 
 void UUpgradeNodeGroupWidget::StopLineFillTicker()

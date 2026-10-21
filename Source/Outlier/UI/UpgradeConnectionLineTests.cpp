@@ -17,6 +17,35 @@
 // 입력/구매 권한 테스트와 분리해 실제 PS 통보 -> 연결선 MID 갱신 경로를 검증한다.
 struct FUpgradeConnectionLineTestAccess
 {
+	static UUpgradeNodeWidget* ConfigureUnlock(UUpgradeNodeGroupWidget* Group, FName WidgetName, UMaterialInterface* Material)
+	{
+		UUpgradeNodeWidget* Node = CastChecked<UUpgradeNodeWidget>(Group->GetWidgetFromName(WidgetName));
+		Node->bUseUnlockPresentation = true;
+		Node->UnlockLock = NewObject<UImage>(Node);
+		Node->UnlockLock->SetBrushFromMaterial(Material);
+		Node->RefreshNodeTexture();
+		return Node;
+	}
+	static bool AdvanceUnlock(UUpgradeNodeWidget* Node, float Seconds) { return Node->AdvanceUnlockPlayback(Seconds); }
+	static bool IsComponentActivated(UUpgradeNodeGroupWidget* Group, FName RowName)
+	{
+		return Group->UpgradeComponent->IsNodeActivated(RowName);
+	}
+	static void UnbindNodeEvents(UUpgradeNodeWidget* Node) { Node->UnbindUpgradeContextEvents(); }
+	static void HideUnlock(UUpgradeNodeWidget* Node)
+	{
+		Node->SetVisibility(ESlateVisibility::Collapsed);
+		Node->TickUnlockPlayback(0.0f);
+	}
+	static bool AdvanceAt(UUpgradeNodeGroupWidget* Group, double LastTime, double Now)
+	{
+		Group->LastLineFillTime = LastTime;
+		// 서로 다른 시각에 출발한 선을 같은 주기적 갱신 함수가 처리하는 상황을 재현한다.
+		Group->RuntimeLines[0].FillStartedTime = LastTime;
+		Group->RuntimeLines[1].FillStartedTime = LastTime;
+		Group->RuntimeLines[2].FillStartedTime = Now - 0.1;
+		return Group->AdvanceLineFills(static_cast<float>(Now - LastTime), Now);
+	}
 	static UUpgradeNodeGroupWidget* MakeGroup(AOutlierPlayerState* State, UMaterialInterface* Material)
 	{
 		UUpgradeNodeGroupWidget* Group = NewObject<UUpgradeNodeGroupWidget>();
@@ -458,6 +487,97 @@ bool FUpgradeLineRepNotifyTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Destruction restores the original brush"),
 		Image->GetBrush().GetResourceObject() == Context.Group->ConnectionLines[0].LineTexture);
 	TestEqual(TEXT("Destruction restores the original opacity"), Image->GetRenderOpacity(), 1.0f);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FUpgradeLineUnlockOrderTest, "Outlier.UI.Upgrade.Unlock.LineOrder",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUpgradeLineUnlockOrderTest::RunTest(const FString& Parameters)
+{
+	using Access = FUpgradeConnectionLineTestAccess;
+	UpgradeConnectionLineTests::FFixture Context;
+	if (!TestTrue(TEXT("Line fixture is available"), Context.Initialize())) return false;
+	UMaterialInterface* Material = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Material/Widget/M_SkillUnlock.M_SkillUnlock"));
+	if (!TestNotNull(TEXT("Unlock material exists"), Material)) return false;
+	const TSharedRef<SWidget> SlateWidget = Context.Group->TakeWidget();
+	Context.Group->ConnectionLines[3].SourceNodeWidgetName = NAME_None;
+	Context.Group->RebuildConnectionLines();
+	UUpgradeNodeWidget* A = Access::ConfigureUnlock(Context.Group, TEXT("Node_A"), Material);
+	UUpgradeNodeWidget* B = Access::ConfigureUnlock(Context.Group, TEXT("Node_B"), Material);
+	// 노드가 먼저 알림을 받지 못해도 그룹이 선을 갱신하기 전에 재생 대기를 확정해야 한다.
+	Access::UnbindNodeEvents(A);
+	Context.State->AddActivatedUpgradeNode(EOutlierUpgradeRole::Shooter, TEXT("A"));
+	TestFalse(TEXT("Component activation may still lag behind PlayerState"), Access::IsComponentActivated(Context.Group, TEXT("A")));
+	TestTrue(TEXT("Group-first notification still starts the lock"), A->IsUnlockPresentationPlaying());
+	TestEqual(TEXT("Outgoing line waits at zero"), Access::Lines(Context.Group)[0].Progress, 0.0f);
+	TestFalse(TEXT("Waiting is not line animation"), Access::Lines(Context.Group)[0].bAnimating);
+	Context.State->AddActivatedUpgradeNode(EOutlierUpgradeRole::Shooter, TEXT("B"));
+	TestTrue(TEXT("Another node has independent unlock playback"), B->IsUnlockPresentationPlaying());
+	Access::AdvanceUnlock(A, 0.3f);
+	Context.Group->RebuildConnectionLines();
+	TestTrue(TEXT("Rebuild preserves ongoing unlock playback"), A->IsUnlockPresentationPlaying());
+	TestEqual(TEXT("Rebuild does not bypass the unlock gate"), Access::Lines(Context.Group)[0].Progress, 0.0f);
+	TestEqual(TEXT("Initial connection remains full"), Access::Lines(Context.Group)[3].Progress, 1.0f);
+	// 마지막 프레임이 표시되는 동안에도 선은 비워 두고, 전체 표시 시간이 끝난 뒤 출발한다.
+	Access::AdvanceUnlock(A, 0.28f);
+	Access::Advance(Context.Group, 0.5f);
+	TestTrue(TEXT("Final lock frame still holds the outgoing line"), A->IsUnlockPresentationPlaying());
+	TestEqual(TEXT("Line remains empty throughout the last frame"), Access::Lines(Context.Group)[0].Progress, 0.0f);
+	Access::AdvanceUnlock(A, 0.03f);
+	TestTrue(TEXT("Completion starts both outgoing branches"), Access::Lines(Context.Group)[0].bAnimating && Access::Lines(Context.Group)[1].bAnimating);
+	TestEqual(TEXT("Completion starts the line from zero"), Access::Lines(Context.Group)[0].Progress, 0.0f);
+	TestFalse(TEXT("Other node still waits for its own lock"), Access::Lines(Context.Group)[2].bAnimating);
+	Access::Advance(Context.Group, 0.1f);
+	Access::AdvanceUnlock(B, 0.61f);
+	TestTrue(TEXT("Second completion starts its own line"), Access::Lines(Context.Group)[2].bAnimating);
+	TestEqual(TEXT("Second completion preserves the first line"), Access::Lines(Context.Group)[0].Progress, 0.1f);
+	Access::AdvanceAt(Context.Group, 10.0, 10.7);
+	TestTrue(TEXT("Existing branch receives the elapsed interval"), FMath::IsNearlyEqual(Access::Lines(Context.Group)[0].Progress, 0.8f));
+	TestTrue(TEXT("New branch excludes time before its own start"), FMath::IsNearlyEqual(Access::Lines(Context.Group)[2].Progress, 0.1f));
+	Access::Refresh(Context.Group);
+	TestTrue(TEXT("Duplicate notification preserves line progress"), FMath::IsNearlyEqual(Access::Lines(Context.Group)[0].Progress, 0.8f));
+	TestFalse(TEXT("Destination remains unpurchased"), Context.State->GetActivatedUpgradeNodeIds(EOutlierUpgradeRole::Shooter).Contains(TEXT("EndA")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FUpgradeLineUnlockRestoreTest, "Outlier.UI.Upgrade.Unlock.RestoreAndCleanup",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUpgradeLineUnlockRestoreTest::RunTest(const FString& Parameters)
+{
+	using Access = FUpgradeConnectionLineTestAccess;
+	UpgradeConnectionLineTests::FFixture Context;
+	if (!TestTrue(TEXT("Line fixture is available"), Context.Initialize())) return false;
+	UMaterialInterface* Material = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Material/Widget/M_SkillUnlock.M_SkillUnlock"));
+	if (!TestNotNull(TEXT("Unlock material exists"), Material)) return false;
+	const TSharedRef<SWidget> SlateWidget = Context.Group->TakeWidget();
+	UUpgradeNodeWidget* A = Access::ConfigureUnlock(Context.Group, TEXT("Node_A"), Material);
+	Access::ReceiveNodes(Context.State, { TEXT("A") });
+	Context.State->PostRepNotifies();
+	TestTrue(TEXT("Replicated activation starts the lock"), A->IsUnlockPresentationPlaying());
+	Access::ReceiveRestore(Context.State);
+	Context.State->PostRepNotifies();
+	TestFalse(TEXT("Restore cancels playback even without another node-list change"), A->IsUnlockPresentationPlaying());
+	TestEqual(TEXT("Restored line is immediately full"), Access::Lines(Context.Group)[0].Progress, 1.0f);
+	TestFalse(TEXT("Old completion cannot run after restore"), Access::AdvanceUnlock(A, 5.0f));
+	Access::ReceiveNodes(Context.State, {});
+	Context.State->PostRepNotifies();
+	Access::ReceiveNodes(Context.State, { TEXT("A") });
+	Context.State->PostRepNotifies();
+	TestTrue(TEXT("Fresh purchase after reset plays again"), A->IsUnlockPresentationPlaying());
+	Access::HideUnlock(A);
+	TestFalse(TEXT("Hidden lock is cleaned up"), A->IsUnlockPresentationPlaying());
+	TestEqual(TEXT("Cancelled hidden line is ready when shown again"), Access::Lines(Context.Group)[0].Progress, 1.0f);
+	TestFalse(TEXT("Hidden cancellation never starts line animation"), Access::Lines(Context.Group)[0].bAnimating);
+	A->SetVisibility(ESlateVisibility::Visible);
+	Access::ReceiveNodes(Context.State, {});
+	Context.State->PostRepNotifies();
+	Access::ReceiveNodes(Context.State, { TEXT("A") });
+	Context.State->PostRepNotifies();
+	Access::Destruct(Context.Group);
+	TestFalse(TEXT("Closing the group cancels node playback"), A->IsUnlockPresentationPlaying());
+	TestFalse(TEXT("Closing leaves no delayed completion"), Access::AdvanceUnlock(A, 5.0f));
 	return true;
 }
 

@@ -23,12 +23,14 @@ class AOutlierPlayerState;
 class AFirstPersonPlayerController;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnUpgradeNodeWidgetEvent, UUpgradeNodeWidget*, NodeWidget, FName, NodeRowName);
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnUpgradeUnlockFinished, UUpgradeNodeWidget*);
 
 UCLASS(Blueprintable, meta = (DisplayName = "Upgrade Node Widget"))
 class OUTLIER_API UUpgradeNodeWidget : public UUserWidget
 {
 	GENERATED_BODY()
 	friend struct FUpgradeNodeInteractionTestAccess;
+	friend struct FUpgradeConnectionLineTestAccess;
 
 public:
 	virtual void NativeOnInitialized() override;
@@ -97,6 +99,25 @@ public:
 	// 화면을 닫거나 컨텍스트를 바꿀 때 로컬 입력과 응답 대기를 정리한다. 이미 보낸 구매는 취소하지 않는다.
 	UFUNCTION(BlueprintCallable, Category = "Upgrade|Hold")
 	void ResetUpgradeInteraction();
+
+	// 게임플레이 활성 상태와 별개로, 연결선이 기다려야 하는 로컬 연출 상태다.
+	bool IsUnlockPresentationPlaying() const { return bUnlockPlaying; }
+	void ResetUnlockPresentation();
+	FOnUpgradeUnlockFinished OnUnlockPresentationFinished;
+	FOnUpgradeUnlockFinished OnUnlockPresentationCancelled;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Unlock")
+	bool bUseUnlockPresentation = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Unlock", meta = (ClampMin = "0.01", Units = "s"))
+	float UnlockDuration = 0.6f;
+
+	// M_SkillUnlock의 5x4 시트에서 마지막 빈 칸을 제외한다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Unlock", meta = (ClampMin = "1", ClampMax = "19"))
+	int32 UnlockFrameCount = 19;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Unlock")
+	bool bHideIconWhileLocked = true;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Upgrade|Hold", meta = (ClampMin = "0.01", Units = "s"))
 	float HoldDuration = 1.0f;
@@ -212,6 +233,9 @@ protected:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Upgrade|Appearance")
 	TObjectPtr<UImage> Icon;
 
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "Upgrade|Unlock")
+	TObjectPtr<UImage> UnlockLock;
+
 	UPROPERTY(BlueprintReadOnly, Category = "Upgrade")
 	FName CurrentNodeRowName = NAME_None;
 
@@ -280,6 +304,13 @@ private:
 	bool TickUpgradeInteraction(float DeltaSeconds);
 	void CheckRequestTimeout(double Now);
 	void ClearPendingRequest();
+	bool EnsureUnlockMaterial();
+	void RefreshUnlockImage();
+	void StopUnlockPlayback();
+	bool AdvanceUnlockPlayback(float DeltaSeconds);
+	bool TickUnlockPlayback(float DeltaSeconds);
+	bool IsUnlockVisible() const;
+	bool ShouldShowActivatedAppearance() const;
 
 	void BindButtonEvents();
 	UOutlierUpgradeComponent* ResolveUpgradeComponent();
@@ -328,6 +359,17 @@ private:
 	FDelegateHandle NodeCountChangedHandle;
 	FDelegateHandle ActivatedNodesChangedHandle;
 	FTimerHandle DescHideTimerHandle;
+	bool bUnlockStateInitialized = false;
+	bool bUnlockPlaying = false;
+	bool bUnlockConfigurationWarned = false;
+	uint32 UnlockRestoreRevision = 0;
+	float UnlockElapsed = 0.0f;
+	double LastUnlockTime = 0.0;
+	FTSTicker::FDelegateHandle UnlockTickerHandle;
+	TArray<TWeakObjectPtr<UWidget>> UnlockVisibilityWidgets;
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> UnlockMaterial;
+
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> FrameMaterial;
 

@@ -19,6 +19,31 @@
 // 테스트는 입력 장치를 흉내 내지 않고 실제 위젯의 상태 전이와 전송 경로를 호출한다.
 struct FUpgradeNodeInteractionTestAccess
 {
+	static void ConfigureUnlock(UUpgradeNodeWidget* Node, UMaterialInterface* Material)
+	{
+		Node->bUseUnlockPresentation = true;
+		Node->UnlockLock = NewObject<UImage>(Node);
+		Node->UnlockLock->SetBrushFromMaterial(Material);
+		Node->Icon = NewObject<UImage>(Node);
+		Node->Glow = NewObject<UImage>(Node);
+		Node->NodeIconTextureOverride = NewObject<UTexture2D>(Node);
+		Node->bUseMaterialStateColors = false;
+		Node->RefreshNodeTexture();
+	}
+	static bool AdvanceUnlock(UUpgradeNodeWidget* Node, float Seconds) { return Node->AdvanceUnlockPlayback(Seconds); }
+	static float UnlockFrame(UUpgradeNodeWidget* Node)
+	{
+		float Value = -1.0f;
+		if (Node->UnlockMaterial) Node->UnlockMaterial->GetScalarParameterValue(FHashedMaterialParameterInfo(TEXT("FrameIndex")), Value);
+		return Value;
+	}
+	static UImage* LockImage(UUpgradeNodeWidget* Node) { return Node->UnlockLock; }
+	static bool ActivatedAppearance(UUpgradeNodeWidget* Node) { return Node->ShouldShowActivatedAppearance(); }
+	static void HideUnlock(UUpgradeNodeWidget* Node)
+	{
+		Node->SetVisibility(ESlateVisibility::Collapsed);
+		Node->TickUnlockPlayback(0.0f);
+	}
 	static UUpgradeNodeWidget* MakeNode()
 	{
 		UDataTable* Table = NewObject<UDataTable>();
@@ -737,6 +762,135 @@ bool FUpgradeHoverAppearanceTest::RunTest(const FString& Parameters)
 	UTexture* Texture = nullptr;
 	TestTrue(TEXT("Removing state fill restores the regular color material"), Access::FrameMID(Node)->GetTextureParameterValue(FHashedMaterialParameterInfo(TEXT("Texture")), Texture));
 	TestTrue(TEXT("Removing state fill preserves the original frame texture"), Texture == Node->NodeIconTextureOverride.Get());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FUpgradeUnlockTimingTest, "Outlier.UI.Upgrade.Unlock.Timing",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUpgradeUnlockTimingTest::RunTest(const FString& Parameters)
+{
+	using Access = FUpgradeNodeInteractionTestAccess;
+	UMaterialInterface* Material = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Material/Widget/M_SkillUnlock.M_SkillUnlock"));
+	if (!TestNotNull(TEXT("Unlock material exists"), Material)) return false;
+	UUpgradeNodeWidget* Node = Access::MakeNode();
+	const TSharedRef<SWidget> SlateWidget = Node->TakeWidget();
+	Access::ConfigureUnlock(Node, Material);
+	Node->SetNodeState(EOutlierUpgradeNodeState::Unlocked, true);
+	TestEqual(TEXT("Unpurchased lock stays on frame zero"), Access::UnlockFrame(Node), 0.0f);
+	TestTrue(TEXT("Closed lock is visible"), Access::LockImage(Node)->GetVisibility() == ESlateVisibility::HitTestInvisible);
+	TestTrue(TEXT("Existing locked icon is hidden to avoid two locks"), Access::IconImage(Node)->GetVisibility() == ESlateVisibility::Hidden);
+	Access::Begin(Node);
+	Access::Advance(Node, 0.5f);
+	TestEqual(TEXT("Holding does not advance the unlock animation"), Access::UnlockFrame(Node), 0.0f);
+	int32 Completions = 0;
+	const FDelegateHandle Handle = Node->OnUnlockPresentationFinished.AddLambda([&Completions](UUpgradeNodeWidget*) { ++Completions; });
+	Node->SetNodeState(EOutlierUpgradeNodeState::Activated, true);
+	TestTrue(TEXT("Gameplay activation is immediate"), Node->GetNodeState() == EOutlierUpgradeNodeState::Activated);
+	TestTrue(TEXT("New activation starts lock playback"), Node->IsUnlockPresentationPlaying());
+	TestFalse(TEXT("Active appearance waits for the lock"), Access::ActivatedAppearance(Node));
+	TestEqual(TEXT("Active glow waits for the lock"), Access::GlowImage(Node)->GetRenderOpacity(), 0.0f);
+	TestTrue(TEXT("Last frame keeps its own display interval"), Access::AdvanceUnlock(Node, 0.58f));
+	TestEqual(TEXT("Last valid frame is 18, not the blank cell"), Access::UnlockFrame(Node), 18.0f);
+	Node->SetNodeState(EOutlierUpgradeNodeState::Activated, true);
+	Access::Release(Node);
+	TestEqual(TEXT("Duplicate state and release do not restart playback"), Access::UnlockFrame(Node), 18.0f);
+	TestEqual(TEXT("Entering the last frame is not completion"), Completions, 0);
+	TestFalse(TEXT("Full duration finishes playback"), Access::AdvanceUnlock(Node, 0.03f));
+	TestEqual(TEXT("Completion is sent once"), Completions, 1);
+	TestTrue(TEXT("Active appearance is shown after completion"), Access::ActivatedAppearance(Node));
+	TestTrue(TEXT("Lock disappears after completion"), Access::LockImage(Node)->GetVisibility() == ESlateVisibility::Collapsed);
+	TestTrue(TEXT("Active icon is visible"), Access::IconImage(Node)->GetVisibility() == ESlateVisibility::HitTestInvisible);
+	TestFalse(TEXT("Finished playback cannot run again"), Access::AdvanceUnlock(Node, 1.0f));
+	TestEqual(TEXT("No second completion"), Completions, 1);
+	Node->OnUnlockPresentationFinished.Remove(Handle);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FUpgradeUnlockLifecycleTest, "Outlier.UI.Upgrade.Unlock.Lifecycle",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUpgradeUnlockLifecycleTest::RunTest(const FString& Parameters)
+{
+	using Access = FUpgradeNodeInteractionTestAccess;
+	UMaterialInterface* Material = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Material/Widget/M_SkillUnlock.M_SkillUnlock"));
+	if (!TestNotNull(TEXT("Unlock material exists"), Material)) return false;
+	UUpgradeNodeWidget* Node = Access::MakeNode();
+	const TSharedRef<SWidget> SlateWidget = Node->TakeWidget();
+	Access::ConfigureUnlock(Node, Material);
+	Node->ResetUnlockPresentation();
+	Node->SetNodeState(EOutlierUpgradeNodeState::Activated, true);
+	TestFalse(TEXT("Initial active state skips playback"), Node->IsUnlockPresentationPlaying());
+	Node->SetNodeState(EOutlierUpgradeNodeState::Unlocked, true);
+	Node->SetNodeState(EOutlierUpgradeNodeState::Activated, true);
+	TestTrue(TEXT("Later activation plays once"), Node->IsUnlockPresentationPlaying());
+	Access::HideUnlock(Node);
+	TestFalse(TEXT("Hiding cancels playback"), Node->IsUnlockPresentationPlaying());
+	Node->SetVisibility(ESlateVisibility::Visible);
+	Node->SetNodeState(EOutlierUpgradeNodeState::Activated, true);
+	TestFalse(TEXT("Showing the same purchase does not replay"), Node->IsUnlockPresentationPlaying());
+	Node->SetNodeState(EOutlierUpgradeNodeState::Unlocked, true);
+	TestEqual(TEXT("Reset returns to the closed frame"), Access::UnlockFrame(Node), 0.0f);
+	Node->SetNodeState(EOutlierUpgradeNodeState::Activated, true);
+	Node->ResetUnlockPresentation();
+	TestFalse(TEXT("Context cleanup cancels the old completion"), Access::AdvanceUnlock(Node, 5.0f));
+	Node->SetNodeState(EOutlierUpgradeNodeState::Activated, true);
+	TestFalse(TEXT("Reopening uses the current activated state"), Node->IsUnlockPresentationPlaying());
+	Node->bUseUnlockPresentation = false;
+	Node->SetNodeState(EOutlierUpgradeNodeState::Unlocked, true);
+	TestTrue(TEXT("Unselected nodes hide the lock"), Access::LockImage(Node)->GetVisibility() == ESlateVisibility::Collapsed);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FUpgradeUnlockMissingMaterialTest, "Outlier.UI.Upgrade.Unlock.MissingMaterial",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUpgradeUnlockMissingMaterialTest::RunTest(const FString& Parameters)
+{
+	using Access = FUpgradeNodeInteractionTestAccess;
+	UUpgradeNodeWidget* Node = Access::MakeNode();
+	AddExpectedError(TEXT("[Upgrade.Unlock] Invalid UnlockLock"), EAutomationExpectedErrorFlags::Contains, 1);
+	Access::ConfigureUnlock(Node, nullptr);
+	Node->SetNodeState(EOutlierUpgradeNodeState::Activated, true);
+	TestFalse(TEXT("Missing material never leaves an unlock wait"), Node->IsUnlockPresentationPlaying());
+	TestTrue(TEXT("Missing material keeps the authoritative active appearance"), Access::ActivatedAppearance(Node));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FUpgradeUnlockResponseOrderTest, "Outlier.UI.Upgrade.Unlock.ResponseOrder",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUpgradeUnlockResponseOrderTest::RunTest(const FString& Parameters)
+{
+	using Access = FUpgradeNodeInteractionTestAccess;
+	UpgradeNodeInteractionTests::FTestWorld Context;
+	if (!TestNotNull(TEXT("Response world exists"), Context.World)) return false;
+	AActor* Owner = Context.World->SpawnActor<AActor>();
+	UMaterialInterface* Material = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Material/Widget/M_SkillUnlock.M_SkillUnlock"));
+	if (!TestNotNull(TEXT("Purchase owner exists"), Owner) || !TestNotNull(TEXT("Unlock material exists"), Material)) return false;
+	UUpgradeNodeWidget* Node = Access::MakeNode();
+	const TSharedRef<SWidget> SlateWidget = Node->TakeWidget();
+	Access::ConfigureUnlock(Node, Material);
+	Access::Pending(Node, Owner, 1);
+	Access::Result(Node, Owner, 1, true);
+	TestFalse(TEXT("Success response alone cannot open the lock"), Node->IsUnlockPresentationPlaying());
+	TestTrue(TEXT("Success response still waits for activation"), Node->IsUpgradeRequestPending());
+	Node->SetNodeState(EOutlierUpgradeNodeState::Activated, true);
+	TestTrue(TEXT("Activation after response starts playback"), Node->IsUnlockPresentationPlaying());
+	Access::AdvanceUnlock(Node, 0.3f);
+	Access::Result(Node, Owner, 1, false);
+	TestEqual(TEXT("Late response cannot reset the lock frame"), Access::UnlockFrame(Node), 9.0f);
+	Node->SetNodeState(EOutlierUpgradeNodeState::Unlocked, true);
+	Access::Pending(Node, Owner, 2);
+	Node->SetNodeState(EOutlierUpgradeNodeState::Activated, true);
+	Access::Result(Node, Owner, 2, true);
+	TestTrue(TEXT("Activation before response also plays once"), Node->IsUnlockPresentationPlaying());
+	TestFalse(TEXT("Replication clears the request independently of animation"), Node->IsUpgradeRequestPending());
+	Node->SetNodeState(EOutlierUpgradeNodeState::Unlocked, true);
+	Access::Pending(Node, Owner, 3);
+	Access::Result(Node, Owner, 3, false);
+	TestFalse(TEXT("Rejected purchase does not play"), Node->IsUnlockPresentationPlaying());
+	TestEqual(TEXT("Rejected purchase leaves the closed frame"), Access::UnlockFrame(Node), 0.0f);
 	return true;
 }
 

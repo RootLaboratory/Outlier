@@ -78,11 +78,14 @@ struct OUTLIER_API FUpgradeLineRuntime
 	float OriginalOpacity = 1.0f;
 	ESlateVisibility OriginalVisibility = ESlateVisibility::Visible;
 	FName ActivationNodeRowName;
+	UPROPERTY(Transient)
+	TObjectPtr<UUpgradeNodeWidget> SourceNode;
 	float Length = 0.0f;
 	FVector2D AutoLengthExtent = FVector2D::ZeroVector;
 	float Progress = 0.0f;
 	bool bSourceActivated = false;
 	bool bAnimating = false;
+	double FillStartedTime = 0.0;
 };
 
 UCLASS(Blueprintable, meta = (DisplayName = "Upgrade Node Group Widget"))
@@ -210,12 +213,15 @@ private:
 #endif
 	void RefreshConnectionLines(bool bImmediate);
 	void HandleUpgradePresentationChanged();
+	void HandleUnlockPresentationFinished(UUpgradeNodeWidget* Node);
+	void HandleUnlockPresentationCancelled(UUpgradeNodeWidget* Node);
+	void ResetNodeUnlockPresentations();
 	void BindUpgradePresentationChanged();
 	void UnbindUpgradePresentationChanged();
 	bool IsLineSourceActivated(FName RowName) const;
 	void SetLineProgress(FUpgradeLineRuntime& Line, float Progress);
 	float GetLineFillDuration(const FUpgradeLineRuntime& Line) const;
-	bool AdvanceLineFills(float DeltaSeconds);
+	bool AdvanceLineFills(float DeltaSeconds, double Now = 0.0);
 	bool TickLineFills(float DeltaSeconds);
 	void StopLineFillTicker();
 	void ClearConnectionLines();
