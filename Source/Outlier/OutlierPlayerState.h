@@ -70,6 +70,7 @@ class OUTLIER_API AOutlierPlayerState : public APlayerState
 	GENERATED_BODY()
 
 public:
+	friend struct FUpgradeConnectionLineTestAccess;
 	void SetTemporaryPlayerId(const FGuid& NewPlayerId);
 
 	UFUNCTION(BlueprintPure, Category = "Lobby")
@@ -81,6 +82,7 @@ public:
 	const FOutlierCheckpointData& GetCheckpointData() const { return CheckpointData; }
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	virtual void PostRepNotifies() override;
 
 	AShooterCharacter* GetShooterCharacter() const;
 	APartnerCharacter* GetPartnerCharacter() const;
@@ -159,6 +161,7 @@ public:
 	bool AddActivatedUpgradeNode(EOutlierUpgradeRole UpgradeRole, FName RowName);
 
 	const TArray<FName>& GetActivatedUpgradeNodeIds(EOutlierUpgradeRole UpgradeRole) const;
+	uint32 GetUpgradeRestoreRevision(EOutlierUpgradeRole UpgradeRole) const;
 
 	// 활성화된 업그레이드 노드 전부(Shooter/Partner 둘 다)를 비우고 NodeCount를 NewNodeCount로 덮어쓴다.
 	// 프리셋 스테이지 확정 시 GameMode가 페어 양쪽 PlayerState에 호출한다.
@@ -218,6 +221,13 @@ protected:
 
 	UPROPERTY(ReplicatedUsing = OnRep_ActivatedUpgradeNodes, VisibleInstanceOnly, BlueprintReadOnly, Category = "Upgrade")
 	TArray<FName> PartnerActivatedUpgradeNodeIds;
+
+	// 목록과 복원 번호를 함께 읽어야 저장 복원을 새 구매로 재생하지 않는다.
+	UPROPERTY(ReplicatedUsing = OnRep_UpgradeRestoreRevision)
+	uint32 ShooterUpgradeRestoreRevision = 0;
+
+	UPROPERTY(ReplicatedUsing = OnRep_UpgradeRestoreRevision)
+	uint32 PartnerUpgradeRestoreRevision = 0;
 
 	// 사망 후 프리셋 선택 대기 중인 값. 페어 양쪽에 리플리케이트돼 있어야 이후 "상대가 뭘 기다리는지" UI도 붙일 수 있다.
 	UPROPERTY(ReplicatedUsing = OnRep_PendingPresetSelection)
@@ -287,6 +297,9 @@ protected:
 	void OnRep_ActivatedUpgradeNodes();
 
 	UFUNCTION()
+	void OnRep_UpgradeRestoreRevision();
+
+	UFUNCTION()
 	void OnRep_PendingPresetSelection();
 
 	UFUNCTION(Server, Reliable)
@@ -299,6 +312,7 @@ protected:
 	void HandlePendingLobbyStateChanged();
 	void HandleStatAllocatorExitPendingChanged();
 	void HandleActivatedUpgradeNodesChanged();
+	bool bUpgradePresentationDirty = false;
 	void HandlePendingPresetSelectionChanged();
 	void SetNodeCountInternal(int32 NewNodeCount);
 	void RecordStatAllocatorUIState(uint32 GameplayGeneration, bool bOpened);
@@ -315,6 +329,8 @@ public:
 	FOnNodeCountChanged OnNodeCountChanged;
 	FOnStatAllocatorExitPendingChanged OnStatAllocatorExitPendingChanged;
 	FOnActivatedUpgradeNodesChanged OnActivatedUpgradeNodesChanged;
+	// 클라이언트에서는 같은 복제 갱신의 모든 RepNotify가 끝난 뒤 UI에 통보한다.
+	FOnActivatedUpgradeNodesChanged OnUpgradePresentationChanged;
 
 	void SetAcquiredSuit(bool Acquire);
 	bool GetAcquiredSuit() const;

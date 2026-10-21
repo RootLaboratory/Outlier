@@ -34,7 +34,8 @@ namespace
 	const FName UseActivatedTextureParameterName(TEXT("UseActivatedTexture"));
 	const FName UnlockedColorParameterName(TEXT("UnlockedColor"));
 	const FName ActivatedColorParameterName(TEXT("ActivatedColor"));
-	const FName ProgressParameterName(TEXT("Progress"));
+	// Unity 빌드에서 다른 UI cpp의 익명 namespace 상수와 충돌하지 않도록 구분한다.
+	const FName UpgradeNodeProgressParameterName(TEXT("Progress"));
 }
 
 void UUpgradeNodeWidget::NativeOnInitialized()
@@ -1432,7 +1433,7 @@ void UUpgradeNodeWidget::RefreshNodeFill()
 		// 활성화 후에는 이미지를 숨기지 않는다. 실제 상태가 Progress=1을 유지하고 Glow만 별도로 켠다.
 		Material->SetVectorParameterValue(UnlockedColorParameterName, Progress >= 1.0f ? ActivatedColor : BaseColor);
 		Material->SetVectorParameterValue(ActivatedColorParameterName, Progress <= 0.0f ? BaseColor : ActivatedColor);
-		Material->SetScalarParameterValue(ProgressParameterName, Progress);
+		Material->SetScalarParameterValue(UpgradeNodeProgressParameterName, Progress);
 		if (Material != IconMaterial.Get())
 		{
 			Material->SetScalarParameterValue(UseActivatedTextureParameterName, 0.0f);
