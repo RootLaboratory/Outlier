@@ -65,6 +65,8 @@ namespace
 		RoomDefinition.CombatPhases.Add(InitialPhase);
 
 		FRoomCombatPhaseDefinition HackPhase;
+		// 기존 암살/해킹 테스트는 즉시 트리거 정책을 검증한다. 전환 딜레이는 별도로 검증한다.
+		HackPhase.DelayBeforeStartSeconds = 0.0f;
 		HackPhase.StartPolicy = ERoomCombatPhaseStartPolicy::HackTrigger;
 		FRoomCombatWaveDefinition HackWave;
 		HackWave.SpawnMode = ERoomCombatWaveSpawnMode::SpawnFromObjects;
@@ -1034,6 +1036,26 @@ bool FRoomCombatTriggeredSequenceTest::RunTest(const FString& Parameters)
 	if (!TestNotNull(TEXT("First leased Enemy"), Enemy)) { CleanupWorld(); return false; }
 	Combat->NotifyEnemyDefeated(Enemy);
 	TestEqual(TEXT("The second phase starts automatically"), Combat->GetCurrentCombatPhaseIndex(RoomTag), 1);
+	TestTrue(TEXT("Automatic successor waits for its default phase delay"), Combat->IsPhaseDelayPending(RoomTag));
+	TestEqual(TEXT("Delay identifies the next phase"), Combat->GetPendingCombatPhaseIndex(RoomTag), 1);
+	TestEqual(TEXT("Phase delay does not queue the next roster early"), Combat->GetPendingSpawnCount(RoomTag), 0);
+	TestEqual(TEXT("Phase delay retains Combat"), Combat->GetRoomState(RoomTag), ERoomCombatState::Combat);
+	TestTrue(TEXT("Phase delay retains the barrier"), Barrier->IsBlocked());
+	TestEqual(TEXT("Phase completion is emitted before delayed start"), Phases, 1);
+	Combat->NotifyEnemyDefeated(Enemy);
+	TestEqual(TEXT("Duplicate defeat does not complete another phase"), Phases, 1);
+	Combat->RetryPendingSpawnsForTesting();
+	++GFrameCounter;
+	World->GetTimerManager().Tick(0.0f);
+	++GFrameCounter;
+	World->GetTimerManager().Tick(2.99f);
+	TestTrue(TEXT("Default phase delay has not elapsed at 2.99 seconds"), Combat->IsPhaseDelayPending(RoomTag));
+	TestTrue(TEXT("Remaining phase delay is positive before expiry"), Combat->GetPhaseDelayRemainingSeconds(RoomTag) > 0.0f);
+	TestEqual(TEXT("No automatic roster is queued before expiry"), Combat->GetPendingSpawnCount(RoomTag), 0);
+	++GFrameCounter;
+	World->GetTimerManager().Tick(0.02f);
+	TestFalse(TEXT("Default phase delay finishes after three seconds"), Combat->IsPhaseDelayPending(RoomTag));
+	TestEqual(TEXT("Finished phase delay has no remaining time"), Combat->GetPhaseDelayRemainingSeconds(RoomTag), 0.0f);
 	UOutlierSaveSubSystem* Saves = World->GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>();
 	if (!TestNotNull(TEXT("Sequence save subsystem is initialized"), Saves))
 	{
@@ -1061,7 +1083,7 @@ bool FRoomCombatTriggeredSequenceTest::RunTest(const FString& Parameters)
 		EOutlierWorldProgressType::CompletedEncounter, RoomTag.GetTagName()));
 	TestFalse(TEXT("Final clear removes unfinished phase progress"), Saves
 		&& Saves->GetCurrentRoomPhaseProgress().Contains(RoomTag));
-	TestEqual(TEXT("Exactly one start event"), Starts, 1);
+	TestEqual(TEXT("Each started phase emits one start event"), Starts, 2);
 	TestEqual(TEXT("Both phases complete once"), Phases, 2);
 	TestEqual(TEXT("Exactly one overall clear event"), Clears, 1);
 	TestFalse(TEXT("All group points deactivate"), Point->IsRuntimeActive() || LatePoint->IsRuntimeActive());
@@ -1076,7 +1098,10 @@ bool FRoomCombatTriggeredSequenceTest::RunTest(const FString& Parameters)
 
 	// The following cancellation scenarios represent a fresh encounter. Keep the
 	// completed-progress assertions above, then clear it before re-registration.
+	// 이후 재진입 검증은 0초 설정으로 기존 즉시 전환 경로도 함께 확인한다.
+	Definition->RoomDefinitions[0].CombatPhases[1].DelayBeforeStartSeconds = 0.0f;
 	Saves->RestoreCurrentWorldProgress(FOutlierWorldProgressSnapshot());
+	Saves->RestoreCurrentRoomPhaseProgress(TMap<FGameplayTag, FOutlierRoomPhaseProgress>());
 	Combat->UnregisterRoom(Room);
 	Combat->RegisterRoom(Room, RoomTag);
 	TestFalse(TEXT("Old context cannot target re-registered Room"), Combat->StartTriggeredSequence(Requester, Context));
@@ -1146,22 +1171,84 @@ bool FRoomCombatTriggeredSequenceTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Phase listener reset disables group"), Point->IsRuntimeActive());
 	TestEqual(TEXT("Phase listener reset cancels the queued automatic phase"), Combat->GetPendingSpawnCount(RoomTag), 0);
 	Pool->ReturnEnemy(Enemy, Enemy->GetPoolGameplayGeneration(), Enemy->GetPoolLeaseSerial());
+	// 새 Room 수명을 다시 만든 뒤에도 이전 Phase 타이머가 이어지지 않아야 한다.
+	Combat->CombatEventObserverForTesting = nullptr;
+	for (bool bUnregisterOnly : {false, true})
+	{
+		Combat->ResetRuntimeCombatState();
+		// 월드 진행과 Phase 진행은 별도 저장소다. 둘 다 비워야 첫 차수부터 새로 시작한다.
+		Saves->RestoreCurrentWorldProgress(FOutlierWorldProgressSnapshot());
+		Saves->RestoreCurrentRoomPhaseProgress(TMap<FGameplayTag, FOutlierRoomPhaseProgress>());
+		Definition->RoomDefinitions[0].CombatPhases[1].DelayBeforeStartSeconds = 1.25f;
+		Combat->RegisterRoom(Room, RoomTag);
+		Point->SetRuntimeActive(true);
+		Combat->RegisterSpawnPoint(Point, RoomTag, FGameplayTagContainer(), GroupTag);
+		Combat->CreateTriggerContext(Requester, RoomTag, GroupTag, Context);
+		if (!TestTrue(TEXT("Lifetime cancellation starts the initial phase"), Combat->StartTriggeredSequence(Requester, Context))
+			|| !TestEqual(TEXT("Lifetime cancellation has one living Enemy"), Combat->GetAliveEnemyCount(RoomTag), 1))
+		{
+			CleanupWorld();
+			return false;
+		}
+		Combat->NotifyEnemyDefeated(Enemy);
+		Pool->ReturnEnemy(Enemy, Enemy->GetPoolGameplayGeneration(), Enemy->GetPoolLeaseSerial());
+		TestTrue(TEXT("Lifetime cancellation has a pending Phase delay"), Combat->IsPhaseDelayPending(RoomTag));
+		if (bUnregisterOnly)
+		{
+			Combat->UnregisterRoom(Room);
+		}
+		else
+		{
+			Combat->ResetRuntimeCombatState();
+		}
+		Saves->RestoreCurrentWorldProgress(FOutlierWorldProgressSnapshot());
+		Saves->RestoreCurrentRoomPhaseProgress(TMap<FGameplayTag, FOutlierRoomPhaseProgress>());
+		Combat->RegisterRoom(Room, RoomTag);
+		++GFrameCounter;
+		World->GetTimerManager().Tick(0.0f);
+		++GFrameCounter;
+		World->GetTimerManager().Tick(1.3f);
+		TestFalse(TEXT("Cancelled timer cannot delay a new Room lifetime"), Combat->IsPhaseDelayPending(RoomTag));
+		TestEqual(TEXT("Cancelled timer cannot advance a new Room lifetime"), Combat->GetCurrentCombatPhaseIndex(RoomTag), 0);
+		TestEqual(TEXT("Cancelled timer cannot lease an Enemy"), Pool->GetLeasedCount(AEnemyBase::StaticClass()), 0);
+	}
 	if (Saves)
 	{
 		// 완료 Encounter보다 차수 스냅샷이 우선되지 않으므로 독립된 재시작 상태를 만든다.
 		Saves->RestoreCurrentWorldProgress(FOutlierWorldProgressSnapshot());
+		Saves->RestoreCurrentRoomPhaseProgress(TMap<FGameplayTag, FOutlierRoomPhaseProgress>());
 		FOutlierRoomPhaseProgress RestoredPhase;
 		RestoredPhase.NextPhaseIndex = 1;
 		RestoredPhase.bExitBlockActive = true;
 		RestoredPhase.bTriggeredSequenceActive = true;
 		RestoredPhase.ActivationGroupTag = GroupTag;
 		Saves->SetCurrentRoomPhaseProgress(RoomTag, RestoredPhase);
+		Combat->UnregisterRoom(Room);
 		Combat->RegisterRoom(Room, RoomTag);
 		TestEqual(TEXT("Restored automatic phase waits for pair readiness"),
 			Combat->GetRoomState(RoomTag), ERoomCombatState::Dormant);
 		TestEqual(TEXT("Restored automatic phase skips completed phase"),
 			Combat->GetCurrentCombatPhaseIndex(RoomTag), 1);
 		TestTrue(TEXT("Restored automatic phase retains exit block"), Combat->IsExitBlocked(RoomTag));
+
+		// 외부 차수 복원도 남은 타이머를 저장하지 않고 전체 설정 시간부터 다시 기다린다.
+		Combat->UnregisterRoom(Room);
+		Definition->RoomDefinitions[0].CombatPhases[1].StartPolicy = ERoomCombatPhaseStartPolicy::ExternalTrigger;
+		Combat->RegisterRoom(Room, RoomTag);
+		TestEqual(TEXT("Restored external phase waits for a trigger"),
+			Combat->GetRoomState(RoomTag), ERoomCombatState::WaitingForTrigger);
+		TestTrue(TEXT("Restored external phase reapplies the full delay"), Combat->IsPhaseDelayPending(RoomTag));
+		TestTrue(TEXT("Restored external phase captures a fresh context"),
+			Combat->CreateTriggerContext(Requester, RoomTag, GroupTag, Context));
+		TestFalse(TEXT("Restored external phase rejects a trigger before its delay"),
+			Combat->StartTriggeredSequence(Requester, Context));
+		++GFrameCounter;
+		World->GetTimerManager().Tick(0.0f);
+		++GFrameCounter;
+		World->GetTimerManager().Tick(1.3f);
+		TestFalse(TEXT("Restored external delay eventually ends"), Combat->IsPhaseDelayPending(RoomTag));
+		TestEqual(TEXT("Restored external delay does not start without a new request"),
+			Combat->GetAliveEnemyCount(RoomTag), 0);
 	}
 	CleanupWorld();
 	return true;
@@ -1220,6 +1307,7 @@ bool FRoomCombatExternalTriggerTest::RunTest(const FString& Parameters)
 	{
 		FRoomCombatPhaseDefinition& Phase = RoomDefinition.CombatPhases.AddDefaulted_GetRef();
 		Phase.StartPolicy = ERoomCombatPhaseStartPolicy::ExternalTrigger;
+		Phase.DelayBeforeStartSeconds = 1.5f;
 		FRoomCombatWaveDefinition& Wave = Phase.Waves.AddDefaulted_GetRef();
 		Wave.SpawnMode = ERoomCombatWaveSpawnMode::SpawnFromObjects;
 		Wave.Enemies.AddDefaulted_GetRef().EnemyClass = AEnemyBase::StaticClass();
@@ -1298,8 +1386,22 @@ bool FRoomCombatExternalTriggerTest::RunTest(const FString& Parameters)
 	FRoomCombatTriggerContext SecondContext;
 	TestTrue(TEXT("Next event captures the waiting phase"),
 		Combat->CreateTriggerContext(Requester, RoomTag, FGameplayTag(), SecondContext));
+	TestTrue(TEXT("External phase also observes its configured delay"), Combat->IsPhaseDelayPending(RoomTag));
+	TestFalse(TEXT("An early external request is rejected, not queued"),
+		Combat->StartTriggeredSequence(Requester, SecondContext));
 	Pool->ReturnEnemy(LeasedEnemy, LeasedEnemy->GetPoolGameplayGeneration(),
 		LeasedEnemy->GetPoolLeaseSerial());
+	++GFrameCounter;
+	World->GetTimerManager().Tick(0.0f);
+	++GFrameCounter;
+	World->GetTimerManager().Tick(1.49f);
+	TestFalse(TEXT("An external request cannot bypass the last delay fraction"),
+		Combat->StartTriggeredSequence(Requester, SecondContext));
+	++GFrameCounter;
+	World->GetTimerManager().Tick(0.02f);
+	TestFalse(TEXT("Custom external delay expires"), Combat->IsPhaseDelayPending(RoomTag));
+	TestEqual(TEXT("Delay expiry alone does not replay a rejected trigger"), Combat->GetAliveEnemyCount(RoomTag), 0);
+	TestEqual(TEXT("External phase still waits after delay expiry"), Combat->GetRoomState(RoomTag), ERoomCombatState::WaitingForTrigger);
 	TestTrue(TEXT("Second event starts phase 2"), Combat->StartTriggeredSequence(Requester, SecondContext));
 	TestEqual(TEXT("Second phase leases one Enemy"), Combat->GetAliveEnemyCount(RoomTag), 1);
 	Combat->NotifyEnemyDefeated(LeasedEnemy);
@@ -1310,10 +1412,44 @@ bool FRoomCombatExternalTriggerTest::RunTest(const FString& Parameters)
 		Combat->IsReconnectContextCurrent(WaitingContext));
 	TestEqual(TEXT("Clear disables barrier collision"), BarrierCollision->GetCollisionEnabled(),
 		ECollisionEnabled::NoCollision);
+	// 전투 사망 통보는 풀 반환을 대신하지 않는다. 다음 시나리오 전에 남은 대여를 정리한다.
+	TestTrue(TEXT("Completed external phase returns its Enemy to the pool"),
+		Pool->ReturnEnemy(LeasedEnemy, LeasedEnemy->GetPoolGameplayGeneration(),
+			LeasedEnemy->GetPoolLeaseSerial()));
 	Combat->ResetRuntimeCombatState();
 	TestFalse(TEXT("Reset leaves the barrier open"), Barrier->IsBlocked());
 	TestFalse(TEXT("Reset cannot revive the previous phase wait"),
 		Combat->IsReconnectContextCurrent(WaitingContext));
+
+	// 0초 외부 차수는 완료 이벤트 안에서도 즉시 시작할 수 있다. 시작을 막는 임시 대기 상태를 노출하지 않는다.
+	Definition->RoomDefinitions[0].CombatPhases[1].DelayBeforeStartSeconds = 0.0f;
+	Combat->RegisterRoom(Room, RoomTag);
+	Point->SetRuntimeActive(true);
+	Combat->RegisterSpawnPoint(Point, RoomTag, FGameplayTagContainer(), FGameplayTag());
+	bool bStartedFromCompletionEvent = false;
+	Combat->CombatEventObserverForTesting = [&](FGameplayTag, ERoomCombatEvent Event, int32 PhaseIndex)
+	{
+		if (Event == ERoomCombatEvent::PhaseCompleted && PhaseIndex == 0)
+		{
+			FRoomCombatTriggerContext ImmediateContext;
+			TestFalse(TEXT("Zero delay is ready inside the completion event"), Combat->IsPhaseDelayPending(RoomTag));
+			TestTrue(TEXT("Completion event can capture the next external phase"),
+				Combat->CreateTriggerContext(Requester, RoomTag, FGameplayTag(), ImmediateContext));
+			bStartedFromCompletionEvent = Combat->StartTriggeredSequence(Requester, ImmediateContext);
+		}
+	};
+	Combat->CreateTriggerContext(Requester, RoomTag, FGameplayTag(), FirstContext);
+	TestTrue(TEXT("Zero delay regression starts its first phase"), Combat->StartTriggeredSequence(Requester, FirstContext));
+	if (!TestEqual(TEXT("Zero delay regression has one living Enemy"), Combat->GetAliveEnemyCount(RoomTag), 1))
+	{
+		Combat->CombatEventObserverForTesting = nullptr;
+		CleanupWorld();
+		return false;
+	}
+	Combat->NotifyEnemyDefeated(LeasedEnemy);
+	TestTrue(TEXT("Zero delay external phase starts reentrantly from completion"), bStartedFromCompletionEvent);
+	TestEqual(TEXT("Reentrant external start retains Combat"), Combat->GetRoomState(RoomTag), ERoomCombatState::Combat);
+	Combat->CombatEventObserverForTesting = nullptr;
 	CleanupWorld();
 	return true;
 }

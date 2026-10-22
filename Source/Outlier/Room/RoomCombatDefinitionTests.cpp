@@ -5,6 +5,7 @@
 #include "Misc/DataValidation.h"
 #include "Room/RoomCombatDefinition.h"
 #include "Room/RoomCombatSpawnPoint.h"
+#include <limits>
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FRoomCombatSpawnPointTemplateValidationTest,
@@ -94,6 +95,30 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FRoomCombatDefinitionValidationTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	TestEqual(TEXT("A new phase defaults to a three-second transition delay"),
+		FRoomCombatPhaseDefinition().DelayBeforeStartSeconds, 3.0f);
+	for (float Delay : {0.0f, 1.5f, 3.0f})
+	{
+		URoomCombatDefinition* Definition = MakeValidHackTriggerDefinition();
+		Definition->RoomDefinitions[0].CombatPhases[0].DelayBeforeStartSeconds = Delay;
+		FDataValidationContext Context;
+		TestEqual(TEXT("Finite nonnegative phase delays are valid"),
+			ValidateDefinition(Definition, Context), EDataValidationResult::Valid);
+	}
+	for (float Delay : {-1.0f, std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()})
+	{
+		URoomCombatDefinition* Definition = MakeValidHackTriggerDefinition();
+		FRoomCombatRoomDefinition& Room = Definition->RoomDefinitions[0];
+		FRoomCombatPhaseDefinition Automatic = Room.CombatPhases[0];
+		Automatic.StartPolicy = ERoomCombatPhaseStartPolicy::Automatic;
+		Automatic.DelayBeforeStartSeconds = Delay;
+		Room.CombatPhases.Add(Automatic);
+		FDataValidationContext Context;
+		TestEqual(TEXT("Negative and non-finite successor delays are invalid"),
+			ValidateDefinition(Definition, Context), EDataValidationResult::Invalid);
+		TestFalse(TEXT("Invalid successor delay rejects the sequence before blocking exits"),
+			Room.CanStartTriggeredSequence(0));
+	}
 
 	{
 		URoomCombatDefinition* Definition = MakeValidHackTriggerDefinition();

@@ -111,6 +111,9 @@ struct FRoomCombatRuntime
 	// 시작/차수 완료 이벤트에서 차단 상태를 적용한 뒤 실제 Pool 대여를 실행한다.
 	bool bDeferSpawnExecution = false;
 	FTimerHandle InitialSpawnDelayTimer;
+	// 차수 경계에서는 다음 인덱스만 확정한다. 이 대기가 끝나기 전에는 Wave 요청도 만들지 않는다.
+	bool bPhaseDelayPending = false;
+	FTimerHandle PhaseDelayTimer;
 	double LastSpawnRetryLogSeconds = -1000000.0;
 	int32 SpawnRetryAttempts = 0;
 	bool bHadPreplacedEnemy = false;
@@ -180,6 +183,16 @@ public:
 	// 서버 상태 조회다. 차단 Actor는 이 값으로 충돌을 적용하고 자신의 상태를 Client에 복제한다.
 	UFUNCTION(BlueprintPure, Category = "Room Combat")
 	bool IsExitBlocked(FGameplayTag RoomTag) const;
+
+	// 서버 조회용이다. 클라이언트 UI에 필요하면 호출자가 별도로 복제한다.
+	UFUNCTION(BlueprintPure, Category = "Room Combat")
+	bool IsPhaseDelayPending(FGameplayTag RoomTag) const;
+
+	UFUNCTION(BlueprintPure, Category = "Room Combat")
+	float GetPhaseDelayRemainingSeconds(FGameplayTag RoomTag) const;
+
+	UFUNCTION(BlueprintPure, Category = "Room Combat")
+	int32 GetPendingCombatPhaseIndex(FGameplayTag RoomTag) const;
 
 	// 델리게이트는 서버 로컬 알림이다. 늦게 로드된 오브젝트는 구독 후 IsExitBlocked도 조회한다.
 	UPROPERTY(BlueprintAssignable, Category = "Room Combat")
@@ -312,8 +325,9 @@ private:
 		FRoomCombatPendingSpawn& SpawnRequest,
 		const TArray<ARoomCombatSpawnPoint*>& EligibleSpawnPoints);
 	void CompleteCurrentPhase(FGameplayTag RoomTag, bool bCancelRemainingWaves);
-	void StartAutomaticPhase(FGameplayTag RoomTag, FRoomCombatRuntime& Runtime,
-		const FRoomCombatRoomDefinition& Definition);
+	void BeginPhaseDelay(FGameplayTag RoomTag, FRoomCombatRuntime& Runtime);
+	void CompletePhaseDelay(FGameplayTag RoomTag, FGuid RegistrationId, int32 Generation, int32 PhaseIndex);
+	void StartAutomaticPhase(FGameplayTag RoomTag);
 	void RecordPhaseBoundary(FGameplayTag RoomTag, const FRoomCombatRuntime& Runtime);
 	void TryStartRestoredAutomaticPhase(FGameplayTag RoomTag);
 	const FRoomCombatRoomDefinition* FindRoomDefinition(FGameplayTag RoomTag) const;

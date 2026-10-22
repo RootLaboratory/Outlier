@@ -274,6 +274,13 @@ bool URoomCombatSubsystem::StartTriggeredSequenceWithSpawnDelay(
 	}
 
 	FRoomCombatRuntime* Runtime = RoomRuntimes.Find(Context.RoomTag);
+	if (Runtime && Runtime->bPhaseDelayPending)
+	{
+		// 문맥 조회는 미리 허용하지만, 조기 성공 요청을 예약하거나 나중에 자동 재생하지 않는다.
+		UE_LOG(LogTemp, Verbose, TEXT("[RoomCombat] Trigger rejected: phase delay pending. Room=%s Phase=%d Remaining=%.3f"),
+			*Context.RoomTag.ToString(), Context.CombatPhaseIndex, GetPhaseDelayRemainingSeconds(Context.RoomTag));
+		return false;
+	}
 	const FRoomCombatRoomDefinition* Definition = FindRoomDefinition(Context.RoomTag);
 	if (!Definition)
 	{
@@ -389,6 +396,29 @@ bool URoomCombatSubsystem::IsExitBlocked(FGameplayTag RoomTag) const
 {
 	const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
 	return Runtime && Runtime->bExitBlockActive;
+}
+
+bool URoomCombatSubsystem::IsPhaseDelayPending(FGameplayTag RoomTag) const
+{
+	const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
+	return Runtime && Runtime->bPhaseDelayPending;
+}
+
+float URoomCombatSubsystem::GetPhaseDelayRemainingSeconds(FGameplayTag RoomTag) const
+{
+	const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
+	const UWorld* World = GetWorld();
+	if (!Runtime || !Runtime->bPhaseDelayPending || !World)
+	{
+		return 0.0f;
+	}
+	return FMath::Max(0.0f, World->GetTimerManager().GetTimerRemaining(Runtime->PhaseDelayTimer));
+}
+
+int32 URoomCombatSubsystem::GetPendingCombatPhaseIndex(FGameplayTag RoomTag) const
+{
+	const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
+	return Runtime && Runtime->bPhaseDelayPending ? Runtime->CurrentCombatPhaseIndex : INDEX_NONE;
 }
 
 void URoomCombatSubsystem::RegisterBarrier(ARoomCombatBarrier* Barrier)
@@ -564,6 +594,18 @@ bool URoomCombatSubsystem::RegisterRoom(
 	}
 	// SpawnPoint가 RoomVolume보다 먼저 등록됐어도 복원된 완료 상태를 적용한다.
 	ApplyRoomClearedToSpawnPoints(RoomTag, Runtime.State == ERoomCombatState::Cleared);
+	// 자동 복원은 양쪽 준비 완료 후에 대기를 시작한다. 외부 차수는 등록 후 트리거를 기다린다.
+	if (Runtime.CurrentCombatPhaseIndex > 0 && Runtime.State == ERoomCombatState::WaitingForTrigger)
+	{
+		const FGuid RegistrationId = Runtime.RegistrationId;
+		const int32 Generation = Runtime.GameplayGeneration;
+		const int32 PhaseIndex = Runtime.CurrentCombatPhaseIndex;
+		BeginPhaseDelay(RoomTag, Runtime);
+		if (GetPhaseDelayRemainingSeconds(RoomTag) == 0.0f)
+		{
+			CompletePhaseDelay(RoomTag, RegistrationId, Generation, PhaseIndex);
+		}
+	}
 	OnRoomStartReadinessChanged.Broadcast(RoomTag);
 	if (bRestoredAutomaticStartAllowed)
 	{
@@ -585,6 +627,7 @@ bool URoomCombatSubsystem::HasReadyExternalTriggerRoster(
 	if (!CanRunServerGameplay() || !IsValid(RoomVolume)
 		|| !Runtime || Runtime->RoomVolume.Get() != RoomVolume
 		|| Runtime->State != ERoomCombatState::WaitingForTrigger
+		|| Runtime->bPhaseDelayPending
 		|| (ActiveCombatRoomTag.IsValid() && ActiveCombatRoomTag != RoomTag)
 		|| !Phase || Phase->StartPolicy != ERoomCombatPhaseStartPolicy::ExternalTrigger
 		|| !FirstWave || !FirstWave->IsSpawnFromObjects()
@@ -673,6 +716,7 @@ void URoomCombatSubsystem::UnregisterRoom(ARoomVolume* RoomVolume)
 	const int32 CancelledPhase = Runtime->CurrentCombatPhaseIndex;
 	const int32 CancelledGeneration = Runtime->GameplayGeneration;
 	GetWorld()->GetTimerManager().ClearTimer(Runtime->InitialSpawnDelayTimer);
+	GetWorld()->GetTimerManager().ClearTimer(Runtime->PhaseDelayTimer);
 	SetActivationGroupActive(RoomTag, Runtime->ActiveActivationGroupTag, false);
 	ResetWaveTurretsForRoom(RoomTag, TEXT("Room combat unregistered"));
 
@@ -1779,7 +1823,8 @@ const FRoomCombatWaveDefinition* URoomCombatSubsystem::FindSpawnableWave(
 	const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
 	const FRoomCombatRoomDefinition* Definition = Runtime ? FindRoomDefinition(RoomTag) : nullptr;
 	if (!Runtime || !Definition || !IsActiveCombatRuntime(RoomTag, *Runtime)
-		|| Runtime->CurrentCombatPhaseIndex != CombatPhaseIndex)
+		|| Runtime->CurrentCombatPhaseIndex != CombatPhaseIndex
+		|| Runtime->bPhaseDelayPending)
 	{
 		return nullptr;
 	}
@@ -2395,6 +2440,7 @@ void URoomCombatSubsystem::ResetRuntimeCombatState()
 	for (TPair<FGameplayTag, FRoomCombatRuntime>& Entry : RoomRuntimes)
 	{
 		GetWorld()->GetTimerManager().ClearTimer(Entry.Value.InitialSpawnDelayTimer);
+		GetWorld()->GetTimerManager().ClearTimer(Entry.Value.PhaseDelayTimer);
 		SetActivationGroupActive(Entry.Key, Entry.Value.ActiveActivationGroupTag, false);
 		// 준비 중에는 차단막이 없어도 대기 중인 합류 요청에 취소를 알려야 한다.
 		if (Entry.Value.bExitBlockActive || Entry.Value.bTriggeredSequenceActive
@@ -2607,7 +2653,9 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 	const FRoomCombatPhaseDefinition* CurrentPhase = Runtime && Definition
 		? Definition->FindPhase(Runtime->CurrentCombatPhaseIndex)
 		: nullptr;
-	if (!Runtime || !Definition || !CurrentPhase)
+	if (!Runtime || !Definition || !CurrentPhase || Runtime->bPhaseDelayPending
+		|| Runtime->State == ERoomCombatState::Cleared
+		|| Runtime->State == ERoomCombatState::WaitingForTrigger)
 	{
 		return;
 	}
@@ -2624,32 +2672,27 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 	Runtime->bCurrentWaveSpawnStarted = false;
 	Runtime->SpawnAssignments.Reset();
 
-	if (Runtime->bTriggeredSequenceActive && NextPhase
-		&& NextPhase->StartPolicy == ERoomCombatPhaseStartPolicy::Automatic)
+	const bool bContinueAutomatically = Runtime->bTriggeredSequenceActive && NextPhase
+		&& NextPhase->StartPolicy == ERoomCombatPhaseStartPolicy::Automatic;
+	if (!bContinueAutomatically)
 	{
-		// Automatic 차수는 대기 상태를 거치지 않고 같은 차단 아래에서 바로 이어진다.
-		StartAutomaticPhase(RoomTag, *Runtime, *Definition);
-		return;
-	}
-
-	// 외부 트리거 대기 중에도 한 번 막힌 Room은 마지막 차수 완료 전까지 점유를 유지한다.
-	const bool bKeepRoomReserved = Runtime->bExitBlockActive && NextPhase != nullptr;
-	if (!bKeepRoomReserved && ActiveCombatRoomTag == RoomTag)
-	{
-		ActiveCombatRoomTag = FGameplayTag();
-	}
-	if (UWorld* World = GetWorld())
-	{
-		if (UEnemyRoomSubsystem* EnemyRoomSubsystem =
-			World->GetSubsystem<UEnemyRoomSubsystem>())
+		// 자동 연속 전투만 AI와 소환 그룹을 이어받는다. 외부 대기는 기존 차단/점유만 유지한다.
+		const bool bKeepRoomReserved = Runtime->bExitBlockActive && NextPhase != nullptr;
+		if (!bKeepRoomReserved && ActiveCombatRoomTag == RoomTag)
 		{
-			// 차수 종료 뒤 해킹을 기다리는 동안 기존 AI 공유 상태가 전투를 계속 붙잡지 않게 한다.
-			EnemyRoomSubsystem->NotifyRoomCombatEnded(RoomTag);
+			ActiveCombatRoomTag = FGameplayTag();
 		}
+		if (UWorld* World = GetWorld())
+		{
+			if (UEnemyRoomSubsystem* EnemyRoomSubsystem = World->GetSubsystem<UEnemyRoomSubsystem>())
+			{
+				EnemyRoomSubsystem->NotifyRoomCombatEnded(RoomTag);
+			}
+		}
+		Runtime->bTriggeredSequenceActive = false;
+		SetActivationGroupActive(RoomTag, Runtime->ActiveActivationGroupTag, false);
 	}
 
-	Runtime->bTriggeredSequenceActive = false;
-	SetActivationGroupActive(RoomTag, Runtime->ActiveActivationGroupTag, false);
 	if (!NextPhase)
 	{
 		Runtime->bExitBlockActive = false;
@@ -2677,13 +2720,23 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 		return;
 	}
 
+	// 완료 → 다음 차수/대기 확정 → 경계 저장 → 완료 통보 → 딜레이 종료 후 시작.
+	// 자동/외부 차수 모두 이 경로를 사용하며, 대기 중에는 다음 Wave 명단을 만들지 않는다.
 	Runtime->CurrentCombatPhaseIndex = NextPhaseIndex;
 	Runtime->CurrentWaveIndex = 0;
-	Runtime->State = (NextPhase->StartPolicy == ERoomCombatPhaseStartPolicy::HackTrigger
-		|| NextPhase->StartPolicy == ERoomCombatPhaseStartPolicy::ExternalTrigger)
-		? ERoomCombatState::WaitingForTrigger
-		: ERoomCombatState::Dormant;
+	if (!bContinueAutomatically)
+	{
+		const bool bWaitForTrigger = NextPhase->StartPolicy == ERoomCombatPhaseStartPolicy::HackTrigger
+			|| NextPhase->StartPolicy == ERoomCombatPhaseStartPolicy::ExternalTrigger;
+		Runtime->State = bWaitForTrigger ? ERoomCombatState::WaitingForTrigger : ERoomCombatState::Dormant;
+	}
+	BeginPhaseDelay(RoomTag, *Runtime);
 	RecordPhaseBoundary(RoomTag, *Runtime);
+	Runtime = RoomRuntimes.Find(RoomTag);
+	if (!Runtime || Runtime->RegistrationId != RegistrationId)
+	{
+		return;
+	}
 
 	UE_LOG(LogTemp, Display,
 		TEXT("[RoomCombat] Phase completed. RoomTag=%s Phase=%d CancelledRemainingWaves=%d NextPhase=%d State=%d"),
@@ -2693,34 +2746,119 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 		NextPhaseIndex,
 		static_cast<int32>(Runtime->State));
 	BroadcastCombatEvent(RoomTag, ERoomCombatEvent::PhaseCompleted, CompletedPhaseIndex, Generation);
+	// 0초 자동 차수도 완료 이벤트 처리가 끝난 뒤 시작한다. 이벤트 중 Reset됐다면 토큰 검증에서 거부된다.
+	if (GetPhaseDelayRemainingSeconds(RoomTag) == 0.0f)
+	{
+		CompletePhaseDelay(RoomTag, RegistrationId, Generation, NextPhaseIndex);
+	}
 }
 
-void URoomCombatSubsystem::StartAutomaticPhase(
-	FGameplayTag RoomTag,
-	FRoomCombatRuntime& Runtime,
-	const FRoomCombatRoomDefinition& Definition)
+void URoomCombatSubsystem::BeginPhaseDelay(FGameplayTag RoomTag, FRoomCombatRuntime& Runtime)
 {
-	const int32 CompletedPhaseIndex = Runtime.CurrentCombatPhaseIndex;
-	const int32 NextPhaseIndex = CompletedPhaseIndex + 1;
+	const FRoomCombatRoomDefinition* Definition = FindRoomDefinition(RoomTag);
+	const FRoomCombatPhaseDefinition* Phase = Definition
+		? Definition->FindPhase(Runtime.CurrentCombatPhaseIndex) : nullptr;
+	Runtime.bPhaseDelayPending = true;
+	if (!Phase || !FMath::IsFinite(Phase->DelayBeforeStartSeconds) || Phase->DelayBeforeStartSeconds < 0.0f)
+	{
+		// 잘못된 값은 즉시 전환으로 통과시키지 않는다. 차단을 유지하고 데이터 오류를 진단한다.
+		UE_LOG(LogTemp, Error, TEXT("[RoomCombat] Invalid phase delay. Room=%s Phase=%d"),
+			*RoomTag.ToString(), Runtime.CurrentCombatPhaseIndex);
+		return;
+	}
+	const int32 PhaseIndex = Runtime.CurrentCombatPhaseIndex;
 	const int32 Generation = Runtime.GameplayGeneration;
 	const FGuid RegistrationId = Runtime.RegistrationId;
-	const FRoomCombatPhaseDefinition* NextPhase = Definition.FindPhase(NextPhaseIndex);
-	Runtime.CurrentCombatPhaseIndex = NextPhaseIndex;
-	Runtime.CurrentWaveIndex = 0;
-	Runtime.bDeferSpawnExecution = true;
-	// 다음 Wave의 실제 소환보다 먼저 차수 경계의 최신본을 확정한다.
-	RecordPhaseBoundary(RoomTag, Runtime);
-
-	// 먼저 다음 명단만 준비한다. 외부 완료 이벤트가 Reset을 요청할 수 있어 실제 소환은 뒤로 미룬다.
-	if (!NextPhase || NextPhase->StartPolicy != ERoomCombatPhaseStartPolicy::Automatic
-		|| !StartWaveSpawning(RoomTag, NextPhaseIndex, 0))
+	// 0초 외부 차수는 완료 이벤트 안에서 바로 시작할 수 있다. 자동 차수만 통보 뒤에 재개한다.
+	if (Phase->DelayBeforeStartSeconds == 0.0f && Phase->StartPolicy != ERoomCombatPhaseStartPolicy::Automatic)
 	{
-		// 잘못된 런타임 데이터는 완료로 통과시키지 않는다. 출입 차단을 유지하고 원인을 남긴다.
-		UE_LOG(LogTemp, Error, TEXT("[RoomCombat] Automatic phase failed. Room=%s Phase=%d Generation=%d"),
-			*RoomTag.ToString(), NextPhaseIndex, Generation);
+		Runtime.bPhaseDelayPending = false;
 	}
-	BroadcastCombatEvent(RoomTag, ERoomCombatEvent::PhaseCompleted, CompletedPhaseIndex, Generation);
-	// 콜백 이후 Runtime 참조를 재사용하지 않고, 같은 Room 등록인지 확인한 뒤 소환을 재개한다.
+	if (Phase->DelayBeforeStartSeconds > 0.0f)
+	{
+		// World 타이머이므로 GameOver pause 중에는 남은 시간도 멈춘다.
+		GetWorld()->GetTimerManager().SetTimer(Runtime.PhaseDelayTimer,
+			FTimerDelegate::CreateWeakLambda(this, [this, RoomTag, RegistrationId, Generation, PhaseIndex]()
+			{
+				CompletePhaseDelay(RoomTag, RegistrationId, Generation, PhaseIndex);
+			}), Phase->DelayBeforeStartSeconds, false);
+	}
+	UE_LOG(LogTemp, Display, TEXT("[RoomCombat] Phase delay started. Room=%s Phase=%d Generation=%d Seconds=%.3f"),
+		*RoomTag.ToString(), PhaseIndex, Generation, Phase->DelayBeforeStartSeconds);
+}
+
+void URoomCombatSubsystem::CompletePhaseDelay(
+	FGameplayTag RoomTag, FGuid RegistrationId, int32 Generation, int32 PhaseIndex)
+{
+	FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
+	// 1. 콜백을 예약한 Room 등록/차수 수명이 아직 유효한지 확인한다.
+	if (!CanRunServerGameplay() || !Runtime || !Runtime->RoomVolume.IsValid()
+		|| !Runtime->bPhaseDelayPending || Runtime->RegistrationId != RegistrationId
+		|| Runtime->GameplayGeneration != Generation || Runtime->CurrentCombatPhaseIndex != PhaseIndex)
+	{
+		return;
+	}
+	const UOutlierArenaSubsystem* Arena = GetWorld()->GetSubsystem<UOutlierArenaSubsystem>();
+	if (Arena && static_cast<int32>(Arena->GetGameplayGeneration()) != Generation)
+	{
+		return;
+	}
+
+	// 2. 잘못된 설정이나 대기를 끝낼 수 없는 상태를 정상 만료로 통과시키지 않는다.
+	const FRoomCombatRoomDefinition* Definition = FindRoomDefinition(RoomTag);
+	const FRoomCombatPhaseDefinition* Phase = Definition ? Definition->FindPhase(PhaseIndex) : nullptr;
+	if (!Phase || !FMath::IsFinite(Phase->DelayBeforeStartSeconds) || Phase->DelayBeforeStartSeconds < 0.0f)
+	{
+		return;
+	}
+	const bool bCanFinishDelay = Runtime->State == ERoomCombatState::Combat
+		|| Runtime->State == ERoomCombatState::WaitingForTrigger
+		|| Runtime->State == ERoomCombatState::Dormant;
+	if (!bCanFinishDelay)
+	{
+		return;
+	}
+
+	// 3. 대기를 해제한 뒤 자동 차수는 시작하고, 외부 차수는 새 트리거를 기다린다.
+	Runtime->bPhaseDelayPending = false;
+	GetWorld()->GetTimerManager().ClearTimer(Runtime->PhaseDelayTimer);
+	UE_LOG(LogTemp, Display, TEXT("[RoomCombat] Phase delay finished. Room=%s Phase=%d Generation=%d"),
+		*RoomTag.ToString(), PhaseIndex, Generation);
+	if (Phase->StartPolicy == ERoomCombatPhaseStartPolicy::Automatic)
+	{
+		StartAutomaticPhase(RoomTag);
+	}
+	else
+	{
+		// 외부 차수는 시작 가능 상태만 알린다. 조기 요청은 보관하지 않았으므로 새 요청이 필요하다.
+		OnRoomStartReadinessChanged.Broadcast(RoomTag);
+	}
+}
+
+void URoomCombatSubsystem::StartAutomaticPhase(FGameplayTag RoomTag)
+{
+	FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
+	const FRoomCombatRoomDefinition* Definition = Runtime ? FindRoomDefinition(RoomTag) : nullptr;
+	const FRoomCombatPhaseDefinition* Phase = Runtime && Definition
+		? Definition->FindPhase(Runtime->CurrentCombatPhaseIndex) : nullptr;
+	if (!Runtime || Runtime->State != ERoomCombatState::Combat || Runtime->bPhaseDelayPending
+		|| !Phase || Phase->StartPolicy != ERoomCombatPhaseStartPolicy::Automatic)
+	{
+		return;
+	}
+	const FGuid RegistrationId = Runtime->RegistrationId;
+	const int32 PhaseIndex = Runtime->CurrentCombatPhaseIndex;
+	const int32 Generation = Runtime->GameplayGeneration;
+	Runtime->bDeferSpawnExecution = true;
+	if (!StartWaveSpawning(RoomTag, PhaseIndex, 0))
+	{
+		Runtime->bDeferSpawnExecution = false;
+		UE_LOG(LogTemp, Error, TEXT("[RoomCombat] Automatic phase failed. Room=%s Phase=%d Generation=%d"),
+			*RoomTag.ToString(), PhaseIndex, Generation);
+		return;
+	}
+	// 시작 통보에서 Reset될 수 있다. 콜백 뒤에는 기존 Runtime 참조를 재사용하지 않는다.
+	BroadcastCombatEvent(RoomTag, ERoomCombatEvent::SequenceStarted, PhaseIndex, Generation);
 	ResumeDeferredSpawning(RoomTag, RegistrationId);
 }
 
@@ -2780,27 +2918,19 @@ void URoomCombatSubsystem::TryStartRestoredAutomaticPhase(FGameplayTag RoomTag)
 		return;
 	}
 
-	const FGuid RegistrationId = Runtime->RegistrationId;
 	Runtime->State = ERoomCombatState::Combat;
-	Runtime->bDeferSpawnExecution = true;
 	ActiveCombatRoomTag = RoomTag;
 	SetActivationGroupActive(RoomTag, Runtime->ActiveActivationGroupTag, true);
-	if (!StartWaveSpawning(RoomTag, Runtime->CurrentCombatPhaseIndex, 0))
-	{
-		Runtime->State = ERoomCombatState::Dormant;
-		Runtime->bDeferSpawnExecution = false;
-		SetActivationGroupActive(RoomTag, Runtime->ActiveActivationGroupTag, false);
-		if (!Runtime->bExitBlockActive)
-		{
-			ActiveCombatRoomTag = FGameplayTag();
-		}
-		UE_LOG(LogTemp, Error, TEXT("[RoomCombat] Restored automatic phase could not start Room=%s Phase=%d"),
-			*RoomTag.ToString(), Runtime->CurrentCombatPhaseIndex);
-		return;
-	}
-	// Room 등록과 양쪽 클라이언트 준비가 모두 끝난 뒤에만 저장된 Wave 1을 실행한다.
+	// Room 등록과 양쪽 준비가 끝난 뒤 딜레이를 새로 시작한다. 이전 완료 이벤트는 재발행하지 않는다.
 	Runtime->bSavedAutomaticPhasePending = false;
-	ResumeDeferredSpawning(RoomTag, RegistrationId);
+	const FGuid RegistrationId = Runtime->RegistrationId;
+	const int32 Generation = Runtime->GameplayGeneration;
+	const int32 PhaseIndex = Runtime->CurrentCombatPhaseIndex;
+	BeginPhaseDelay(RoomTag, *Runtime);
+	if (GetPhaseDelayRemainingSeconds(RoomTag) == 0.0f)
+	{
+		CompletePhaseDelay(RoomTag, RegistrationId, Generation, PhaseIndex);
+	}
 }
 
 void URoomCombatSubsystem::MarkRoomCleared(
