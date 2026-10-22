@@ -13,6 +13,7 @@
 #include "Enemy/EnemyBase.h"
 #include "GAS/Abilities/Partner/OutlierPartnerGameplayAbilities.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
+#include "GameplayEffectComponents/TargetTagsGameplayEffectComponent.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "Misc/App.h"
 #include "OutlierPlayerState.h"
@@ -120,6 +121,16 @@ struct FPartnerAbilityTestWorld
 	~FPartnerAbilityTestWorld()
 	{
 		Shutdown();
+	}
+
+	void Tick(float Duration)
+	{
+		// 타이머와 GameplayEffect 만료가 같은 프레임에 처리되도록 실제 월드 시간을 진행한다.
+		for (float Elapsed = 0.0f; Elapsed < Duration; Elapsed += 0.02f)
+		{
+			++GFrameCounter;
+			World->Tick(LEVELTICK_All, 0.02f);
+		}
 	}
 };
 
@@ -315,19 +326,34 @@ bool FOutlierGasPartnerAbilityExecutionTest::RunTest(const FString& Parameters)
 	UPartnerHackComponent* HackComponent = Fixture.Partner->FindComponentByClass<UPartnerHackComponent>();
 	TestTrue(TEXT("Hack starts without pre-committing cooldown"), AbilitySystem->TryActivatePartnerAbility(HackAbility));
 	TestFalse(TEXT("Hack search has no cooldown before its result"), AbilitySystem->IsPartnerCooldownActive(HackCooldown));
-	HackComponent->OnHackFinished.Broadcast(EHackResult::Cancelled, false);
-	HackComponent->CancelForReboot();
-	TestTrue(TEXT("Cancelled Hack commits cooldown"), AbilitySystem->IsPartnerCooldownActive(HackCooldown));
-	TestTrue(
-		TEXT("Cancelled Hack commits half of the configured cooldown"),
-		IsNearlyEqualDuration(
-			AbilitySystem->GetPartnerCooldownRemaining(HackCooldown),
-			MakeTestConfig().HackCooldown * 0.5f));
-	AbilitySystem->RemoveActiveEffects(
-		FGameplayEffectQuery::MakeQuery_MatchAnyOwningTags(FGameplayTagContainer(HackCooldown)));
-	TestTrue(TEXT("Hack can restart after the cancellation cooldown is cleared"), AbilitySystem->TryActivatePartnerAbility(HackAbility));
+	// 실제 재입력으로 검색을 취소해야 결과 통지부터 재시도 제한까지 함께 검증된다.
+	HackComponent->TryHack();
+	TestFalse(TEXT("Cancelling search ends the interaction"), HackComponent->IsHackInteractionActive());
+	TestFalse(TEXT("Cancelling search ends its hacking ability"), IsAbilityWithTagActive(*AbilitySystem, HackAbility));
+	TestFalse(TEXT("Cancelled Hack does not start charge recovery"), AbilitySystem->IsPartnerCooldownActive(HackCooldown));
+	TestEqual(TEXT("Cancelled Hack preserves its charge"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 1);
+	TestTrue(TEXT("Cancelled Hack starts its separate retry restriction"), AbilitySystem->GetPartnerHackChargeState().bRetryBlocked);
+	TestTrue(TEXT("Cancellation exposes the remaining retry time for HUD"),
+		IsNearlyEqualDuration(AbilitySystem->GetPartnerHackRetryRemaining(), MakeTestConfig().HackCooldown * 0.5f));
+	TestFalse(TEXT("Cancellation retry blocks an otherwise available charge"), AbilitySystem->TryActivatePartnerAbility(HackAbility));
+	// 클라이언트에 남아 있던 검색 입력이 직접 Component RPC를 보내도 GAS 제한을 우회하지 못한다.
+	HackComponent->TryHack();
+	TestFalse(TEXT("A direct search RPC cannot bypass the cancellation retry"), HackComponent->IsHackInteractionActive());
+	TestFalse(TEXT("A rejected search RPC cannot leave a hacking ability active"), IsAbilityWithTagActive(*AbilitySystem, HackAbility));
+	Fixture.Tick(MakeTestConfig().HackCooldown * 0.5f - 0.1f);
+	TestTrue(TEXT("Cancellation restriction remains until half the configured cooldown"), AbilitySystem->GetPartnerHackChargeState().bRetryBlocked);
+	Fixture.Tick(0.2f);
+	TestFalse(TEXT("Cancellation retry restriction expires independently"), AbilitySystem->GetPartnerHackChargeState().bRetryBlocked);
+	TestEqual(TEXT("Expired retry clears the HUD duration"), AbilitySystem->GetPartnerHackChargeState().RetryDuration, 0.0f);
+	HackComponent->TryHack();
+	TestTrue(TEXT("A direct search request routes through the ability after retry expires"), IsAbilityWithTagActive(*AbilitySystem, HackAbility));
 	HackComponent->OnHackFinished.Broadcast(EHackResult::Fail, false);
 	HackComponent->CancelForReboot();
+	TestEqual(TEXT("Failed Hack consumes the single charge"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 0);
+	HackComponent->OnHackFinished.Broadcast(EHackResult::Fail, false);
+	TestEqual(TEXT("A repeated result does not consume another charge"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 0);
+	HackComponent->TryHack();
+	TestFalse(TEXT("A direct search RPC cannot bypass empty charges"), HackComponent->IsHackInteractionActive());
 	TestTrue(TEXT("Failed Hack commits cooldown"), AbilitySystem->IsPartnerCooldownActive(HackCooldown));
 	TestTrue(
 		TEXT("Failed Hack commits the full configured cooldown"),
@@ -340,6 +366,7 @@ bool FOutlierGasPartnerAbilityExecutionTest::RunTest(const FString& Parameters)
 	HackComponent->OnHackFinished.Broadcast(EHackResult::Success, false);
 	HackComponent->CancelForReboot();
 	TestTrue(TEXT("Normal confirmed Hack success commits cooldown"), AbilitySystem->IsPartnerCooldownActive(HackCooldown));
+	TestEqual(TEXT("Normal confirmed Hack success consumes the single charge"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 0);
 
 	const FGameplayTag EMPCooldown = OutlierGameplayTags::Cooldown::Partner::EMP();
 	AEnemyBase* EMPEnemy = Fixture.World->SpawnActor<AEnemyBase>();
@@ -425,11 +452,10 @@ bool FOutlierGasPartnerPossessionCooldownSessionTest::RunTest(const FString& Par
 	TestFalse(TEXT("Pre-commit finalization does not start Hack cooldown"), AbilitySystem->IsPartnerCooldownActive(HackCooldown));
 	UPartnerHackComponent* HackComponent = Fixture.Partner->FindComponentByClass<UPartnerHackComponent>();
 	TestTrue(TEXT("Possession Hack starts without pre-committing cooldown"), AbilitySystem->TryActivatePartnerAbility(OutlierGameplayTags::Ability::Partner::Hacking()));
-	HackComponent->OnHackFinished.Broadcast(EHackResult::Success, true);
-	HackComponent->CancelForReboot();
-	TestFalse(TEXT("Possession Hack success still has no cooldown before commit"), AbilitySystem->IsPartnerCooldownActive(HackCooldown));
 	TestTrue(TEXT("An existing EMP cooldown is active before possession"), AbilitySystem->CommitPartnerCooldown(EMPCooldown, 17.0f));
 	TestTrue(TEXT("Successful possession commit starts one cooldown session"), Fixture.Controller->BeginCommittedPartnerAbilityCooldownSession(Fixture.Partner));
+	HackComponent->OnHackFinished.Broadcast(EHackResult::Success, true);
+	HackComponent->CancelForReboot();
 	TestFalse(TEXT("Possession Hack has no cooldown while committed"), AbilitySystem->IsPartnerCooldownActive(HackCooldown));
 	TestFalse(TEXT("Duplicate possession commit cannot replace the snapshot"), Fixture.Controller->BeginCommittedPartnerAbilityCooldownSession(Fixture.Partner));
 
@@ -451,6 +477,190 @@ bool FOutlierGasPartnerPossessionCooldownSessionTest::RunTest(const FString& Par
 	Fixture.Controller->DiscardCommittedPartnerAbilityCooldownSession(Fixture.Partner);
 	TestFalse(TEXT("Logout-style discard clears the suspended session"), AbilitySystem->ArePartnerSkillCooldownsSuspended());
 	TestFalse(TEXT("Logout-style discard does not start Hack cooldown"), AbilitySystem->IsPartnerCooldownActive(HackCooldown));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierGasPartnerHackChargesTest,
+	"Outlier.GAS.Partner.Ability.HackCharges",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierGasPartnerHackChargesTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FPartnerAbilityTestWorld Fixture;
+	if (!Fixture.Initialize(*this))
+	{
+		return false;
+	}
+
+	UOutlierAbilitySystemComponent* AbilitySystem = Fixture.Partner->GetOutlierAbilitySystemComponent();
+	FOutlierPartnerAbilityConfig Config = MakeTestConfig();
+	Config.HackCooldown = 0.8f;
+	TestTrue(TEXT("Charge fixture configures the Partner abilities"), AbilitySystem->ConfigurePartnerAbilities(Config));
+	const FGameplayTag HackCooldown = OutlierGameplayTags::Cooldown::Partner::Hacking();
+	const FGameplayTag DoubleChargeTag = FGameplayTag::RequestGameplayTag(TEXT("Upgrade.Partner.Hacking.DoubleCharge"));
+	const FGameplayTag HackAbility = OutlierGameplayTags::Ability::Partner::Hacking();
+	UPartnerHackComponent* HackComponent = Fixture.Partner->FindComponentByClass<UPartnerHackComponent>();
+	if (!TestNotNull(TEXT("Charge fixture owns its hack component"), HackComponent))
+	{
+		return false;
+	}
+	TestEqual(TEXT("Hacking initially has one charge"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 1);
+	TestEqual(TEXT("Hacking initially has capacity one"), AbilitySystem->GetPartnerHackChargeState().MaxCharges, 1);
+	AbilitySystem->AddLooseGameplayTag(DoubleChargeTag);
+	AbilitySystem->RefreshPartnerHackCharges();
+	TestEqual(TEXT("Double Charge increases maximum capacity to two"), AbilitySystem->GetPartnerHackChargeState().MaxCharges, 2);
+	TestEqual(TEXT("Acquiring Double Charge while ready provides two uses"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 2);
+
+	TestTrue(TEXT("The first charged hack activates"), AbilitySystem->TryActivatePartnerAbility(HackAbility));
+	TestEqual(TEXT("Searching without a result does not consume a charge"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 2);
+	HackComponent->OnHackFinished.Broadcast(EHackResult::Fail, false);
+	HackComponent->CancelForReboot();
+	TestEqual(TEXT("The first use leaves one charge"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 1);
+	HackComponent->OnHackFinished.Broadcast(EHackResult::Fail, false);
+	TestEqual(TEXT("A duplicate completed failure cannot consume the remaining charge"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 1);
+	TestTrue(TEXT("A remaining charge is usable while recovery runs"), AbilitySystem->CanUsePartnerHackCharge());
+	const float FirstRechargeStart = AbilitySystem->GetPartnerHackChargeState().RechargeStartServerTime;
+	const uint32 RecoveryBeforeUse = AbilitySystem->GetPartnerHackChargeState().RecoverySerial;
+	Fixture.Tick(0.2f);
+	TestTrue(TEXT("The remaining charge activates through the ability gate during recharge"), AbilitySystem->TryActivatePartnerAbility(HackAbility));
+	HackComponent->OnHackFinished.Broadcast(EHackResult::Success, false);
+	HackComponent->CancelForReboot();
+	TestEqual(TEXT("Two results exhaust both charges"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 0);
+	TestEqual(TEXT("The second result preserves the first recharge clock"), AbilitySystem->GetPartnerHackChargeState().RechargeStartServerTime, FirstRechargeStart);
+	TestFalse(TEXT("Zero charges prevent a further use"), AbilitySystem->CanUsePartnerHackCharge());
+	TestFalse(TEXT("Zero charges cannot be consumed twice"), AbilitySystem->CommitPartnerHackCharge());
+	Fixture.Tick(0.7f);
+	TestEqual(TEXT("The first completed cycle recovers exactly one charge"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 1);
+	TestEqual(TEXT("The first natural recovery increments its event serial once"), AbilitySystem->GetPartnerHackChargeState().RecoverySerial, RecoveryBeforeUse + 1);
+	TestTrue(TEXT("The second charge starts its own sequential cycle"), AbilitySystem->IsPartnerCooldownActive(HackCooldown));
+	Fixture.Tick(0.9f);
+	TestEqual(TEXT("The second cycle restores full capacity"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 2);
+	TestEqual(TEXT("Two natural recoveries produce two events"), AbilitySystem->GetPartnerHackChargeState().RecoverySerial, RecoveryBeforeUse + 2);
+	TestFalse(TEXT("Full capacity stops recharge"), AbilitySystem->IsPartnerCooldownActive(HackCooldown));
+
+	// 1회 충전 중 획득한 추가 횟수와 취소 제한은 진행 중 주기를 건드리지 않는다.
+	AbilitySystem->RemoveLooseGameplayTag(DoubleChargeTag);
+	AbilitySystem->RefreshPartnerHackCharges();
+	TestEqual(TEXT("Removing the upgrade clamps current charges to one"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 1);
+	TestTrue(TEXT("The basic charge starts recovery"), AbilitySystem->CommitPartnerHackCharge());
+	Fixture.Tick(0.2f);
+	const float RechargeBeforeUpgrade = AbilitySystem->GetPartnerHackChargeState().RechargeStartServerTime;
+	const uint32 RecoveryBeforeUpgrade = AbilitySystem->GetPartnerHackChargeState().RecoverySerial;
+	AbilitySystem->AddLooseGameplayTag(DoubleChargeTag);
+	AbilitySystem->RefreshPartnerHackCharges();
+	TestEqual(TEXT("Upgrading during recovery supplies only the new capacity"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 1);
+	TestEqual(TEXT("Upgrading preserves the active recharge clock"), AbilitySystem->GetPartnerHackChargeState().RechargeStartServerTime, RechargeBeforeUpgrade);
+	TestEqual(TEXT("Upgrade grants do not trigger recovery feedback"), AbilitySystem->GetPartnerHackChargeState().RecoverySerial, RecoveryBeforeUpgrade);
+	TestTrue(TEXT("The same upgrade config can be projected again"), AbilitySystem->UpdatePartnerAbilityConfig(Config));
+	AbilitySystem->RefreshPartnerHackCharges();
+	TestEqual(TEXT("Repeated projection does not grant another use"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 1);
+	// 실제 업그레이드처럼 새 태그 GE를 먼저 적용하고 이전 GE를 제거해 태그 소유권을 이어 준다.
+	const auto ApplyDoubleChargeEffect = [AbilitySystem, DoubleChargeTag]()
+	{
+		UGameplayEffect* Effect = NewObject<UGameplayEffect>();
+		Effect->DurationPolicy = EGameplayEffectDurationType::Infinite;
+		FInheritedTagContainer Tags;
+		Tags.AddTag(DoubleChargeTag);
+		Effect->FindOrAddComponent<UTargetTagsGameplayEffectComponent>().SetAndApplyTargetTagChanges(Tags);
+		return AbilitySystem->ApplyGameplayEffectToSelf(Effect, 1.0f, AbilitySystem->MakeEffectContext());
+	};
+	const FActiveGameplayEffectHandle OriginalUpgrade = ApplyDoubleChargeEffect();
+	if (!TestTrue(TEXT("The first upgrade tag effect applies"), OriginalUpgrade.IsValid()))
+	{
+		return false;
+	}
+	AbilitySystem->RemoveLooseGameplayTag(DoubleChargeTag);
+	const FActiveGameplayEffectHandle ReplacementUpgrade = ApplyDoubleChargeEffect();
+	if (!TestTrue(TEXT("The replacement upgrade tag effect applies"), ReplacementUpgrade.IsValid()))
+	{
+		return false;
+	}
+	AbilitySystem->RemoveActiveGameplayEffect(OriginalUpgrade);
+	TestEqual(TEXT("Replacing the actual upgrade effect does not repeat its charge grant"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 1);
+	TestEqual(TEXT("Replacing the actual upgrade effect preserves recharge timing"), AbilitySystem->GetPartnerHackChargeState().RechargeStartServerTime, RechargeBeforeUpgrade);
+	TestTrue(TEXT("Cancellation starts a separate retry delay"), AbilitySystem->CommitPartnerHackRetryDelay());
+	TestEqual(TEXT("Cancellation preserves the available charge"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 1);
+	TestEqual(TEXT("Cancellation preserves the active recharge clock"), AbilitySystem->GetPartnerHackChargeState().RechargeStartServerTime, RechargeBeforeUpgrade);
+	TestFalse(TEXT("Retry delay blocks the remaining charge"), AbilitySystem->CanUsePartnerHackCharge());
+	Fixture.Tick(0.5f);
+	TestFalse(TEXT("Cancellation retry expires independently of recovery"), AbilitySystem->GetPartnerHackChargeState().bRetryBlocked);
+	TestTrue(TEXT("The remaining charge becomes usable after retry"), AbilitySystem->CanUsePartnerHackCharge());
+	TestEqual(TEXT("Retry expiry does not prematurely recover a charge"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 1);
+	Fixture.Tick(0.2f);
+	TestEqual(TEXT("Original recovery still completes on schedule after cancellation"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 2);
+
+	// 0초 설정은 재귀 충전이나 잔여 효과 없이 즉시 반환되어야 한다.
+	Config.HackCooldown = 0.0f;
+	TestTrue(TEXT("Zero hack cooldown remains a valid runtime configuration"), AbilitySystem->UpdatePartnerAbilityConfig(Config));
+	const uint32 RecoveryBeforeZeroDuration = AbilitySystem->GetPartnerHackChargeState().RecoverySerial;
+	TestTrue(TEXT("A successful use with zero duration still records consumption"), AbilitySystem->CommitPartnerHackCharge());
+	TestEqual(TEXT("Zero-duration recovery immediately restores both charges"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 2);
+	TestEqual(TEXT("Zero-duration recovery emits one recovery for the spent charge"), AbilitySystem->GetPartnerHackChargeState().RecoverySerial, RecoveryBeforeZeroDuration + 1);
+	TestFalse(TEXT("Zero-duration recovery leaves no active recharge effect"), AbilitySystem->IsPartnerCooldownActive(HackCooldown));
+	TestEqual(TEXT("Zero-duration recovery clears recharge presentation"), AbilitySystem->GetPartnerHackChargeState().RechargeDuration, 0.0f);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierGasPartnerHackPossessionRechargeTest,
+	"Outlier.GAS.Partner.Ability.HackPossessionRecharge",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierGasPartnerHackPossessionRechargeTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FPartnerAbilityTestWorld Fixture;
+	if (!Fixture.Initialize(*this))
+	{
+		return false;
+	}
+
+	UOutlierAbilitySystemComponent* AbilitySystem = Fixture.Partner->GetOutlierAbilitySystemComponent();
+	FOutlierPartnerAbilityConfig Config = MakeTestConfig();
+	Config.HackCooldown = 1.0f;
+	TestTrue(TEXT("Possession recharge fixture configures Partner abilities"), AbilitySystem->ConfigurePartnerAbilities(Config));
+	const FGameplayTag HackCooldown = OutlierGameplayTags::Cooldown::Partner::Hacking();
+	AbilitySystem->AddLooseGameplayTag(FGameplayTag::RequestGameplayTag(TEXT("Upgrade.Partner.Hacking.DoubleCharge")));
+	AbilitySystem->RefreshPartnerHackCharges();
+	TestTrue(TEXT("First hack starts an ordinary recharge"), AbilitySystem->CommitPartnerHackCharge());
+	Fixture.Tick(0.2f);
+	const float RemainingBeforePossession = AbilitySystem->GetPartnerCooldownRemaining(HackCooldown);
+	const uint32 RecoveryBeforePossession = AbilitySystem->GetPartnerHackChargeState().RecoverySerial;
+	TestTrue(TEXT("Possession suspends the already running recharge"), Fixture.Controller->BeginCommittedPartnerAbilityCooldownSession(Fixture.Partner));
+	// 실제 완료 순서와 같이 빙의가 먼저 확정된 뒤 성공 결과의 1회를 기록한다.
+	TestTrue(TEXT("Possession result consumes its charge while recovery is deferred"), AbilitySystem->CommitPartnerHackCharge(true));
+	TestEqual(TEXT("Possession result exhausts the second charge"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 0);
+	TestFalse(TEXT("No recovery effect runs during possession"), AbilitySystem->IsPartnerCooldownActive(HackCooldown));
+	TestTrue(TEXT("Suspension retains the running recharge remainder"), IsNearlyEqualDuration(AbilitySystem->GetSuspendedPartnerCooldownRemaining(HackCooldown), RemainingBeforePossession));
+	Fixture.Tick(1.2f);
+	TestEqual(TEXT("Possession time cannot recover a charge"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 0);
+	TestEqual(TEXT("Suspension emits no false recovery feedback"), AbilitySystem->GetPartnerHackChargeState().RecoverySerial, RecoveryBeforePossession);
+	TestTrue(TEXT("Possession keeps the recharge remainder frozen"), IsNearlyEqualDuration(AbilitySystem->GetSuspendedPartnerCooldownRemaining(HackCooldown), RemainingBeforePossession));
+	TestTrue(TEXT("Partner return resumes its committed session"), Fixture.Controller->FinalizeCommittedPartnerAbilityCooldownSession(Fixture.Partner));
+	TestTrue(TEXT("Return resumes the partial cycle rather than restarting it"), IsNearlyEqualDuration(AbilitySystem->GetPartnerCooldownRemaining(HackCooldown), RemainingBeforePossession));
+	TestEqual(TEXT("Return does not consume another charge"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 0);
+	TestFalse(TEXT("Duplicate return cannot replay the session"), Fixture.Controller->FinalizeCommittedPartnerAbilityCooldownSession(Fixture.Partner));
+	Fixture.Tick(RemainingBeforePossession + 0.1f);
+	TestEqual(TEXT("Resumed partial cycle returns exactly one charge"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 1);
+	TestTrue(TEXT("Next missing charge uses a full configured cycle"), IsNearlyEqualDuration(AbilitySystem->GetPartnerHackChargeState().RechargeDuration, Config.HackCooldown));
+	Fixture.Tick(1.1f);
+	TestEqual(TEXT("The second cycle returns full capacity after possession"), AbilitySystem->GetPartnerHackChargeState().CurrentCharges, 2);
+	TestEqual(TEXT("Only the two completed cycles produce recovery events"), AbilitySystem->GetPartnerHackChargeState().RecoverySerial, RecoveryBeforePossession + 2);
+
+	// 성공 직후 대상이 사라져 전환이 취소되면, 지연된 충전을 시작해 영구 사용 불가를 방지한다.
+	Fixture.Controller->PendingEnemyPossessionSource = Fixture.Partner;
+	TestTrue(TEXT("Pending transition defers possession recharge"), Fixture.Controller->ShouldDeferPartnerHackRecharge(Fixture.Partner));
+	TestTrue(TEXT("Pending possession consumes one charge without starting a new cycle"), AbilitySystem->CommitPartnerHackCharge(true));
+	TestFalse(TEXT("Pending transition keeps its recharge deferred"), AbilitySystem->IsPartnerCooldownActive(HackCooldown));
+	Fixture.Controller->CancelPendingEnemyPossessionTransition();
+	TestFalse(TEXT("Cancelled transition no longer defers recharge"), Fixture.Controller->ShouldDeferPartnerHackRecharge(Fixture.Partner));
+	TestTrue(TEXT("Cancelled transition releases the remaining charge"), AbilitySystem->CanUsePartnerHackCharge());
+	TestTrue(TEXT("Cancelled transition starts recovery for its spent charge"), AbilitySystem->IsPartnerCooldownActive(HackCooldown));
+	const float RechargeAfterCancel = AbilitySystem->GetPartnerHackChargeState().RechargeStartServerTime;
+	Fixture.Controller->CancelPendingEnemyPossessionTransition();
+	TestEqual(TEXT("Duplicate transition cancellation cannot restart recovery"), AbilitySystem->GetPartnerHackChargeState().RechargeStartServerTime, RechargeAfterCancel);
 	return true;
 }
 

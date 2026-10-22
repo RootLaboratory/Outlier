@@ -91,7 +91,7 @@ void UAbilitySlotUI::RegisterSkillCountImages(UImage* SingleImage, UImage* LeftI
 }
 
 void UAbilitySlotUI::SetAbilityChargeState(const FGameplayTag& AbilityTag, int32 CurrentCharges,
-	int32 MaxCharges, float RechargeDuration, float RechargeRemaining, bool bPlayRecoveryFeedback)
+	int32 MaxCharges, float RechargeDuration, float RechargeRemaining, bool bPlayRecoveryFeedback, bool bTemporarilyBlocked)
 {
 	if (!AbilityTag.IsValid())
 	{
@@ -101,17 +101,19 @@ void UAbilitySlotUI::SetAbilityChargeState(const FGameplayTag& AbilityTag, int32
 	const bool bHadState = Previous != nullptr;
 	const int32 PreviousCurrent = Previous ? Previous->Current : 0;
 	const int32 PreviousMaximum = Previous ? Previous->Maximum : 0;
+	const bool bWasTemporarilyBlocked = Previous && Previous->bTemporarilyBlocked;
 	FChargeDisplayState& State = ChargeDisplayStates.FindOrAdd(AbilityTag);
 	State.Maximum = FMath::Clamp(MaxCharges, 1, 2);
 	State.Current = FMath::Clamp(CurrentCharges, 0, State.Maximum);
 	State.Duration = FMath::Max(0.0f, RechargeDuration);
 	State.Remaining = FMath::Clamp(RechargeRemaining, 0.0f, State.Duration);
 	State.ReceivedTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	State.bTemporarilyBlocked = bTemporarilyBlocked;
 	if (AbilityTag != CurrentAbilityTag)
 	{
 		return;
 	}
-	if (State.Current < PreviousCurrent || State.Maximum != PreviousMaximum)
+	if (State.Current < PreviousCurrent || State.Maximum != PreviousMaximum || State.bTemporarilyBlocked)
 	{
 		ResetBarFeedback();
 		if (CurrentAbilityIcon)
@@ -121,13 +123,17 @@ void UAbilitySlotUI::SetAbilityChargeState(const FGameplayTag& AbilityTag, int32
 	}
 	UpdateSkillCountVisibility();
 	ApplyCurrentChargeState();
-	// 회복 이벤트만 연출한다. 초기 상태 수신과 최대 횟수 증가에는 점등만 반영한다.
-	if (bPlayRecoveryFeedback && bHadState && PreviousMaximum == State.Maximum && State.Current > PreviousCurrent)
+	// 취소 제한이 끝나면 보유 막대를 다시 켜고 펄스를 준다. 실제 충전 완료와 구분해 글로우는 생략한다.
+	// 초기 동기화와 최대 횟수 변경에는 연출을 재생하지 않는다.
+	const bool bRecoveredCharge = bPlayRecoveryFeedback && State.Current > PreviousCurrent;
+	const bool bRetryFinished = bWasTemporarilyBlocked && !State.bTemporarilyBlocked && State.Current > 0;
+	if (bHadState && PreviousMaximum == State.Maximum && !State.bTemporarilyBlocked
+		&& (bRecoveredCharge || bRetryFinished))
 	{
 		UImage* RecoveredImage = State.Maximum == 1 ? SkillCountSingleImage.Get()
 			: (State.Current == 2 ? SkillCountRightImage.Get() : SkillCountLeftImage.Get());
 		PlayBarFeedback(RecoveredImage);
-		if (State.Current == State.Maximum && CurrentAbilityIcon)
+		if (bRecoveredCharge && State.Current == State.Maximum && CurrentAbilityIcon)
 		{
 			CurrentAbilityIcon->PlayFullChargeFeedback();
 		}
@@ -144,7 +150,8 @@ void UAbilitySlotUI::ApplyCurrentChargeState()
 	// 선택하지 않은 동안 흐른 시간도 반영한다. 클라이언트는 시간이 끝나도 충전을 직접 지급하지 않는다.
 	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : State->ReceivedTime;
 	const float Remaining = FMath::Max(0.0f, State->Remaining - (Now - State->ReceivedTime));
-	CurrentAbilityIcon->SetChargePresentation(State->Current > 0, State->Duration, Remaining);
+	// 사용 제한은 보유 막대와 별개다. 전달받은 충전 또는 취소 쿨타임을 게이지로 표시한다.
+	CurrentAbilityIcon->SetChargePresentation(State->Current > 0 && !State->bTemporarilyBlocked, State->Duration, Remaining);
 }
 
 void UAbilitySlotUI::PlayBarFeedback(UImage* Image)
@@ -197,7 +204,9 @@ void UAbilitySlotUI::UpdateSkillCountVisibility()
 	}
 	const FChargeDisplayState* State = ChargeDisplayStates.Find(CurrentAbilityTag);
 	const bool* bCooldowning = AbilityCooldownStates.Find(CurrentAbilityTag);
-	const int32 Current = State ? State->Current : (bCooldowning && *bCooldowning ? 0 : SkillCount);
+	// 취소는 실제 횟수를 소모하지 않지만, 재사용 제한 동안은 사용할 수 없으므로 막대를 끈다.
+	const int32 Current = State ? (State->bTemporarilyBlocked ? 0 : State->Current)
+		: (bCooldowning && *bCooldowning ? 0 : SkillCount);
 	const auto SetBar = [this](UImage* Image, bool bOn)
 	{
 		if (Image)

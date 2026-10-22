@@ -17,6 +17,7 @@
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "GameFramework/PlayerController.h"
 #include "Enemy/AutoTurret.h"
 #include "Enemy/EnemyBase.h"
 #include "Enemy/EnemyTargetRules.h"
@@ -701,6 +702,21 @@ bool FOutlierGasPartnerDamageBoundaryTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Deferred Partner abilities configure before interaction setup"),
 		AbilitySystem->ConfigurePartnerAbilities(AbilityConfig));
 
+	// 해킹 검색도 실제 능력 발동 경로를 사용하므로 조종자와 슈트 획득 근거를 준비한다.
+	APlayerController* Controller = World->SpawnActor<APlayerController>();
+	AOutlierPlayerState* PartnerState = World->SpawnActor<AOutlierPlayerState>();
+	if (!TestNotNull(TEXT("Partner damage boundary controller spawns"), Controller)
+		|| !TestNotNull(TEXT("Partner damage boundary PlayerState spawns"), PartnerState))
+	{
+		World->DestroyWorld(true);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+		return false;
+	}
+	Controller->Possess(Partner);
+	Partner->SetPlayerState(PartnerState);
+	PartnerState->SetAcquiredSuit(true);
+
 	FOutlierDamageRequest TaggedDamageEvent;
 	TaggedDamageEvent.DamageTag = OutlierGameplayTags::Damage::Weapon();
 	const float AppliedDamage = ApplyDamageRequest(
@@ -796,6 +812,8 @@ bool FOutlierGasPartnerDamageBoundaryTest::RunTest(const FString& Parameters)
 		AbilitySystem->GetGameplayTagCount(OutlierGameplayTags::State::DamageImmune()),
 		0);
 
+	Controller->UnPossess();
+	Controller->Destroy(true);
 	Partner->Destroy(true);
 	GEngine->ShutdownWorldNetDriver(World);
 	World->DestroyWorld(true);

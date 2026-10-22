@@ -313,6 +313,12 @@ void APartnerPlayerController::CommitPendingEnemyPossession(AEnemyBase* Expected
 	UnbindPossessionTargetEndPlay(EnemyTarget);
 }
 
+bool APartnerPlayerController::ShouldDeferPartnerHackRecharge(const APartnerCharacter* PartnerCharacter) const
+{
+	return PartnerCharacter && (PendingEnemyPossessionSource.Get() == PartnerCharacter
+		|| bPartnerAbilityCooldownSessionCommitted);
+}
+
 void APartnerPlayerController::CancelPendingEnemyPossessionTransition()
 {
 	if (!HasAuthority())
@@ -331,6 +337,13 @@ void APartnerPlayerController::CancelPendingEnemyPossessionTransition()
 	}
 
 	PendingEnemyPossessionTarget.Reset();
+	if (APartnerCharacter* PartnerCharacter = PendingEnemyPossessionSource.Get())
+	{
+		if (UOutlierAbilitySystemComponent* AbilitySystem = PartnerCharacter->GetOutlierAbilitySystemComponent())
+		{
+			AbilitySystem->CancelPartnerHackDeferredRecharge();
+		}
+	}
 	PendingEnemyPossessionSource.Reset();
 	UnbindPossessionTargetEndPlay(EnemyTarget);
 	ClientCancelEnemyPossessionTransition(EnemyTarget);
@@ -819,9 +832,8 @@ bool APartnerPlayerController::FinalizeCommittedPartnerAbilityCooldownSession(
 	}
 
 	const bool bResumed = AbilitySystem->ResumePartnerSkillCooldownsAfterPossession();
-	const bool bHackCooldownCommitted = AbilitySystem->CommitPartnerCooldown(
-		OutlierGameplayTags::Cooldown::Partner::Hacking());
-	return bResumed && bHackCooldownCommitted;
+	// 소모는 해킹 결과에서 끝났다. 복귀 시에는 정지된 충전만 이어가며 다시 소모하지 않는다.
+	return bResumed;
 }
 
 void APartnerPlayerController::DiscardCommittedPartnerAbilityCooldownSession(
@@ -1025,6 +1037,11 @@ void APartnerPlayerController::RefreshPartnerSuitUI()
 	{
 		UISubsystem->OnShooterSuitAcquiredChanged(
 			OutlierPlayerState && OutlierPlayerState->GetAcquiredSuit());
+	}
+	// HUD 재등록 뒤에는 복제를 다시 기다리지 않고 현재 충전 상태를 고정 슬롯에 반영한다.
+	if (APartnerCharacter* Partner = Cast<APartnerCharacter>(GetPawn()))
+	{
+		Partner->RefreshPartnerHackChargeUI();
 	}
 }
 

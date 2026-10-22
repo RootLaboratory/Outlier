@@ -7,6 +7,7 @@
 #include "Engine/SkeletalMesh.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "Misc/ScopeExit.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
@@ -22,6 +23,7 @@
 #include "UI/UILayerGameplayTags.h"
 #include "UI/UILayerTypes.h"
 #include "UI/UpgradeNodeGroupWidget.h"
+#include "Weapon/RangedWeaponBase.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SComboBox.h"
@@ -107,7 +109,7 @@ void SOutlierShooterSuitTestToolWidget::Construct(const FArguments& InArgs)
 		SNew(SCheckBox).IsEnabled_Lambda([this]() { return CanEdit(); })
 		.IsChecked_Lambda([this]() { return CanEdit() && SelectedTarget->PlayerState->GetAcquiredSuit() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
 		.OnCheckStateChanged(this, &SOutlierShooterSuitTestToolWidget::SetSuitState)
-		.ToolTipText(LOCTEXT("SuitTip", "적용 시 Shooter 슈트 메시와 소총을 함께 지급합니다. 소총 설정은 현재 장비 기록 또는 맵의 SuitInteraction에서 읽습니다. 해제 시 도구가 추가한 소총만 회수합니다."))
+		.ToolTipText(LOCTEXT("SuitTip", "Shooter 슈트 메시·소총과 Partner 슈트 해금·무기를 함께 적용합니다. 장비 기록 또는 맵의 SuitInteraction 설정을 사용하며, 해제 시 도구가 추가한 무기만 회수합니다."))
 		[SNew(STextBlock).Text(LOCTEXT("Suit", "슈트 획득"))]
 	];
 	Rows->AddSlot().AutoHeight().Padding(6.0f)
@@ -316,6 +318,17 @@ void SOutlierShooterSuitTestToolWidget::CaptureOriginalState()
 		OriginalStates.Add(SelectedTarget->PlayerState, MoveTemp(Original));
 	}
 	FOriginalState& Original = OriginalStates.FindChecked(SelectedTarget->PlayerState);
+	if (!Original.PartnerPlayerState.IsValid())
+	{
+		if (APartnerCharacter* Partner = SelectedTarget->PlayerState->GetPartnerCharacter())
+		{
+			if (AOutlierPlayerState* PartnerPS = Partner->GetPlayerState<AOutlierPlayerState>())
+			{
+				Original.PartnerPlayerState = PartnerPS;
+				Original.bPartnerSuit = PartnerPS->GetAcquiredSuit();
+			}
+		}
+	}
 	// DT를 갱신한 뒤 새 노드를 시험해도 이번 도구가 건드린 범위는 복원 대상에 포함한다.
 	for (const FFeature& Feature : Features)
 	{
@@ -385,15 +398,27 @@ void SOutlierShooterSuitTestToolWidget::SetSuitState(ECheckBoxState State)
 	{
 		StopAbilities();
 		RemoveGrantedRifle(OriginalStates.FindChecked(SelectedTarget->PlayerState));
+		RemoveGrantedPartnerWeapon(OriginalStates.FindChecked(SelectedTarget->PlayerState));
 	}
 	SelectedTarget->ASC->SetEditorShooterSuitGrantChecks(true);
 	SelectedTarget->PlayerState->SetAcquiredSuit(State == ECheckBoxState::Checked);
-	Status = LOCTEXT("SuitApplied", "슈트 상태와 외형을 적용했습니다. 획득 시 소총을 지급·장착하며, 해제 시 도구가 추가한 소총만 회수합니다.");
+	if (AOutlierPlayerState* PartnerPS = OriginalStates.FindChecked(SelectedTarget->PlayerState).PartnerPlayerState.Get())
+	{
+		PartnerPS->SetAcquiredSuit(State == ECheckBoxState::Checked);
+	}
+	Status = LOCTEXT("SuitApplied", "페어의 슈트 상태와 Shooter 외형을 적용했습니다. Shooter 소총·Partner 무기를 지급하며, 해제 시 도구가 추가한 무기만 회수합니다.");
 }
 
 bool SOutlierShooterSuitTestToolWidget::GrantSuitEquipment()
 {
 	AShooterCharacter* Shooter = SelectedTarget->Shooter.Get();
+	APartnerCharacter* Partner = SelectedTarget->PlayerState->GetPartnerCharacter();
+	if (!IsValid(Partner) || !Partner->HasAuthority() || Partner->GetWorld() != Shooter->GetWorld()
+		|| !Partner->GetPlayerState<AOutlierPlayerState>())
+	{
+		Status = LOCTEXT("NoPartner", "같은 PIE 서버에 페어 Partner와 PlayerState가 있어야 슈트를 지급할 수 있습니다.");
+		return false;
+	}
 	UShooterInventoryComponent* Inventory = Shooter->GetInventoryComponent();
 	if (!Inventory)
 	{
@@ -434,6 +459,20 @@ bool SOutlierShooterSuitTestToolWidget::GrantSuitEquipment()
 		Status = LOCTEXT("NoRifleConfiguration", "소총 설정을 찾지 못했습니다. 맵에 ShooterRifleClass가 설정된 SuitInteraction이 필요합니다.");
 		return false;
 	}
+	AWeaponBase* PartnerWeapon = Partner->GetCurrentWeapon();
+	TSubclassOf<AWeaponBase> PartnerWeaponClass = SavedLoadout.PartnerWeaponClass;
+	if (!PartnerWeaponClass && SuitSource) PartnerWeaponClass = SuitSource->GetEditorPartnerWeaponClass();
+	if (!PartnerWeapon && (!PartnerWeaponClass || !PartnerWeaponClass->IsChildOf(ARangedWeaponBase::StaticClass())))
+	{
+		Status = LOCTEXT("NoPartnerWeaponConfiguration", "Partner 무기 설정을 찾지 못했습니다. 장비 기록 또는 맵의 SuitInteraction에 PartnerWeaponClass가 필요합니다.");
+		return false;
+	}
+	// 양쪽 지급을 확정하기 전 실패하면 새 Partner 무기만 정리한다. 기존 장비는 건드리지 않는다.
+	AWeaponBase* PendingPartnerWeapon = nullptr;
+	ON_SCOPE_EXIT
+	{
+		if (PendingPartnerWeapon) PendingPartnerWeapon->Destroy();
+	};
 
 	USkeletalMesh* FirstPersonMesh = SuitSource ? SuitSource->GetEditorShooterFirstPersonMesh() : SelectedTarget->PlayerState->GetSuitFirstPersonMesh();
 	USkeletalMesh* ThirdPersonMesh = SuitSource ? SuitSource->GetEditorShooterThirdPersonMesh() : SelectedTarget->PlayerState->GetSuitThirdPersonMesh();
@@ -444,6 +483,16 @@ bool SOutlierShooterSuitTestToolWidget::GrantSuitEquipment()
 	}
 
 	FOriginalState& Original = OriginalStates.FindChecked(SelectedTarget->PlayerState);
+	if (!PartnerWeapon)
+	{
+		PendingPartnerWeapon = AWeaponBase::SpawnLoadoutWeapon(Shooter->GetWorld(), PartnerWeaponClass, Partner);
+		if (!PendingPartnerWeapon)
+		{
+			Shooter->RefreshPresentationFromPlayerState();
+			Status = LOCTEXT("PartnerWeaponGrantFailed", "Partner 무기 생성에 실패했습니다. 슈트 획득 상태는 변경하지 않았습니다.");
+			return false;
+		}
+	}
 	if (!Rifle)
 	{
 		Original.BeforeRifleGrant = SelectedTarget->PlayerState->GetLoadoutSnapshot();
@@ -462,9 +511,45 @@ bool SOutlierShooterSuitTestToolWidget::GrantSuitEquipment()
 	{
 		Inventory->SelectWeaponSlot(EWeaponSlot::Primary);
 	}
+	if (PendingPartnerWeapon)
+	{
+		Original.BeforePartnerWeaponClass = SelectedTarget->PlayerState->GetLoadoutSnapshot().PartnerWeaponClass;
+		Partner->EquipWeapon(PendingPartnerWeapon);
+		PendingPartnerWeapon->ShowEquippedPresentation();
+		Original.GrantedPartnerWeapon = PendingPartnerWeapon;
+		Original.GrantedPartnerWeaponClass = PendingPartnerWeapon->GetClass();
+		// 실제 슈트 획득과 동일하게 리로드용 Partner 무기 클래스를 Shooter PS에 남긴다.
+		FOutlierLoadoutSnapshot Snapshot = SelectedTarget->PlayerState->GetLoadoutSnapshot();
+		Snapshot.PartnerWeaponClass = PendingPartnerWeapon->GetClass();
+		SelectedTarget->PlayerState->SetLoadoutSnapshot(Snapshot);
+		PendingPartnerWeapon = nullptr;
+	}
 	// PS의 획득 상태가 외형을 다시 투영할 때도 실제 적용한 메시를 사용하도록 맞춘다.
 	SelectedTarget->PlayerState->SetSuitMeshes(Shooter->GetFirstPersonMesh()->GetSkeletalMeshAsset(), Shooter->GetMesh()->GetSkeletalMeshAsset());
 	return true;
+}
+
+void SOutlierShooterSuitTestToolWidget::RemoveGrantedPartnerWeapon(FOriginalState& Original)
+{
+	if (AWeaponBase* Weapon = Original.GrantedPartnerWeapon.Get())
+	{
+		if (APartnerCharacter* Partner = Cast<APartnerCharacter>(Weapon->GetOwner()))
+		{
+			if (Partner->GetCurrentWeapon() == Weapon) Partner->EquipWeapon(nullptr);
+		}
+		Weapon->Destroy();
+	}
+	if (Original.GrantedPartnerWeaponClass)
+	{
+		FOutlierLoadoutSnapshot Snapshot = SelectedTarget->PlayerState->GetLoadoutSnapshot();
+		if (Snapshot.PartnerWeaponClass == Original.GrantedPartnerWeaponClass)
+		{
+			Snapshot.PartnerWeaponClass = Original.BeforePartnerWeaponClass;
+			SelectedTarget->PlayerState->SetLoadoutSnapshot(Snapshot);
+		}
+	}
+	Original.GrantedPartnerWeapon.Reset();
+	Original.GrantedPartnerWeaponClass = nullptr;
 }
 
 void SOutlierShooterSuitTestToolWidget::RemoveGrantedRifle(FOriginalState& Original)
@@ -638,13 +723,18 @@ FReply SOutlierShooterSuitTestToolWidget::RestoreOriginalState()
 		{
 			StopAbilities();
 			RemoveGrantedRifle(*Original);
+			RemoveGrantedPartnerWeapon(*Original);
 			ApplyNodes(OutlierShooterSuitTest::RestoreNodes(SelectedTarget->PlayerState->GetActivatedUpgradeNodeIds(EOutlierUpgradeRole::Shooter), Original->Nodes, Original->ControlledNodes));
 			SelectedTarget->PlayerState->SetSuitMeshes(Original->FirstPersonSuitMesh.Get(), Original->ThirdPersonSuitMesh.Get());
 			SelectedTarget->PlayerState->SetAcquiredSuit(Original->bSuit);
+			if (AOutlierPlayerState* PartnerPS = Original->PartnerPlayerState.Get())
+			{
+				PartnerPS->SetAcquiredSuit(Original->bPartnerSuit);
+			}
 			SelectedTarget->Shooter->RefreshPresentationFromPlayerState();
 			SelectedTarget->ASC->SetEditorShooterSuitGrantChecks(Original->bGrantChecks);
 			OriginalStates.Remove(SelectedTarget->PlayerState);
-			Status = LOCTEXT("Restored", "슈트와 테스트 대상 노드를 복원하고 도구가 지급한 소총을 회수했습니다. 다른 업그레이드와 노드 잔액은 유지합니다. 스킬 타이머는 되감지 않습니다.");
+			Status = LOCTEXT("Restored", "페어의 슈트와 테스트 대상 노드를 복원하고 도구가 지급한 무기를 회수했습니다. 다른 업그레이드와 노드 잔액은 유지합니다. 스킬 타이머는 되감지 않습니다.");
 		}
 	}
 	return FReply::Handled();

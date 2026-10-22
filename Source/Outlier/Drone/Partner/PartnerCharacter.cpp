@@ -148,6 +148,7 @@ void APartnerCharacter::PossessedBy(AController* NewController)
 	NotifyStandbyActivity();
 	bStandbyAimInitialized = false;
 	RefreshAbilitySystemActorInfo();
+	RefreshPartnerHackChargeUI();
 
 	if (bIsAccelerate)
 	{
@@ -256,6 +257,8 @@ void APartnerCharacter::BindPartnerCooldownUIObserver()
 		OutlierAbilitySystemComponent->OnActiveGameplayEffectAddedDelegateToSelf.AddUObject(
 			this,
 			&APartnerCharacter::HandlePartnerCooldownEffectAdded);
+	PartnerHackChargesChangedHandle = OutlierAbilitySystemComponent->OnPartnerHackChargeStateChanged.AddUObject(
+		this, &APartnerCharacter::HandlePartnerHackChargesChanged);
 
 	// 쿨타임 시작은 EffectAdded로 받고, 종료는 태그 제거로 받는다.
 	// 로컬 게이지 예상 시간이 아니라 GAS의 종료 통지에서 회복 연출을 확정한다.
@@ -263,7 +266,6 @@ void APartnerCharacter::BindPartnerCooldownUIObserver()
 	{
 		OutlierGameplayTags::Cooldown::Partner::EMP(),
 		OutlierGameplayTags::Cooldown::Partner::Shield(),
-		OutlierGameplayTags::Cooldown::Partner::Hacking(),
 		OutlierGameplayTags::Cooldown::Partner::Scan()
 	};
 	for (const FGameplayTag& CooldownTag : CooldownTags)
@@ -284,6 +286,7 @@ void APartnerCharacter::UnbindPartnerCooldownUIObserver()
 	PartnerCooldownEffectAddedHandle.Reset();
 	if (OutlierAbilitySystemComponent)
 	{
+		OutlierAbilitySystemComponent->OnPartnerHackChargeStateChanged.Remove(PartnerHackChargesChangedHandle);
 		for (const auto& Entry : PartnerCooldownTagHandles)
 		{
 			OutlierAbilitySystemComponent->RegisterGameplayTagEvent(Entry.Key, EGameplayTagEventType::NewOrRemoved)
@@ -291,6 +294,7 @@ void APartnerCharacter::UnbindPartnerCooldownUIObserver()
 		}
 	}
 	PartnerCooldownTagHandles.Reset();
+	PartnerHackChargesChangedHandle.Reset();
 }
 
 void APartnerCharacter::HandlePartnerCooldownTagChanged(const FGameplayTag CooldownTag, int32 NewCount)
@@ -375,7 +379,6 @@ void APartnerCharacter::HandlePartnerCooldownEffectAdded(
 	{
 		OutlierGameplayTags::Cooldown::Partner::EMP(),
 		OutlierGameplayTags::Cooldown::Partner::Shield(),
-		OutlierGameplayTags::Cooldown::Partner::Hacking(),
 		OutlierGameplayTags::Cooldown::Partner::Scan()
 	};
 	for (const FGameplayTag& CooldownTag : CooldownTags)
@@ -394,13 +397,13 @@ void APartnerCharacter::RefreshPartnerCooldownUI()
 	{
 		OutlierGameplayTags::Cooldown::Partner::EMP(),
 		OutlierGameplayTags::Cooldown::Partner::Shield(),
-		OutlierGameplayTags::Cooldown::Partner::Hacking(),
 		OutlierGameplayTags::Cooldown::Partner::Scan()
 	};
 	for (const FGameplayTag& CooldownTag : CooldownTags)
 	{
 		NotifyPartnerCooldownUI(CooldownTag);
 	}
+	RefreshPartnerHackChargeUI();
 }
 
 void APartnerCharacter::RefreshPartnerSuitUI()
@@ -413,6 +416,11 @@ void APartnerCharacter::RefreshPartnerSuitUI()
 
 void APartnerCharacter::NotifyPartnerCooldownUI(const FGameplayTag& CooldownTag)
 {
+	// 해킹은 쿨타임 중에도 잔여 횟수로 사용할 수 있다. 일반 쿨타임 경로가 막대를 덮어쓰지 않게 한다.
+	if (CooldownTag == OutlierGameplayTags::Cooldown::Partner::Hacking())
+	{
+		return;
+	}
 	if (!IsLocallyControlled() || !OutlierAbilitySystemComponent)
 	{
 		return;
@@ -439,10 +447,6 @@ void APartnerCharacter::NotifyPartnerCooldownUI(const FGameplayTag& CooldownTag)
 	{
 		AbilityTag = TagDrivenUITags::Ability::Partner::Shield();
 	}
-	else if (CooldownTag == OutlierGameplayTags::Cooldown::Partner::Hacking())
-	{
-		AbilityTag = TagDrivenUITags::Ability::Partner::Hacking();
-	}
 	else if (CooldownTag == OutlierGameplayTags::Cooldown::Partner::Scan())
 	{
 		AbilityTag = TagDrivenUITags::Ability::Partner::Scan();
@@ -450,6 +454,40 @@ void APartnerCharacter::NotifyPartnerCooldownUI(const FGameplayTag& CooldownTag)
 	if (AbilityTag.IsValid())
 	{
 		UISubsystem->OnAbilityUsed(AbilityTag, Remaining);
+	}
+}
+
+void APartnerCharacter::HandlePartnerHackChargesChanged(bool bRecovered)
+{
+	RefreshPartnerHackChargeUI(bRecovered);
+}
+
+void APartnerCharacter::RefreshPartnerHackChargeUI(bool bPlayRecoveryFeedback)
+{
+	if (!IsLocallyControlled() || !OutlierAbilitySystemComponent)
+	{
+		return;
+	}
+	APlayerController* PlayerController = Cast<APlayerController>(GetController());
+	ULocalPlayer* LocalPlayer = PlayerController ? PlayerController->GetLocalPlayer() : nullptr;
+	ULocalPlayerUISubSystem* UI = LocalPlayer ? LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>() : nullptr;
+	if (!UI)
+	{
+		return;
+	}
+
+	// 기존 횟수 충전 게이지를 우선한다. 충전 중이 아니면 취소 제한의 남은 시간을 표시한다.
+	const FOutlierPartnerHackChargeState& State = OutlierAbilitySystemComponent->GetPartnerHackChargeState();
+	if (State.bInitialized)
+	{
+		const bool bShowRecharge = State.RechargeDuration > 0.0f;
+		const float DisplayDuration = bShowRecharge ? State.RechargeDuration : State.RetryDuration;
+		const float DisplayRemaining = bShowRecharge
+			? OutlierAbilitySystemComponent->GetPartnerHackRechargeRemaining()
+			: OutlierAbilitySystemComponent->GetPartnerHackRetryRemaining();
+		UI->SetPartnerAbilityChargeState(OutlierGameplayTags::Ability::Partner::Hacking(),
+			State.CurrentCharges, State.MaxCharges, DisplayDuration,
+			DisplayRemaining, bPlayRecoveryFeedback, State.bRetryBlocked);
 	}
 }
 

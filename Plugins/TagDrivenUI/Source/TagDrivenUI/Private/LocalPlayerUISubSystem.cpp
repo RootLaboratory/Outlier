@@ -523,6 +523,20 @@ void ULocalPlayerUISubSystem::SetShooterAbilityChargeState(const FGameplayTag& A
 	}
 }
 
+void ULocalPlayerUISubSystem::SetPartnerAbilityChargeState(const FGameplayTag& AbilityTag, int32 CurrentCharges,
+	int32 MaxCharges, float RechargeDuration, float RechargeRemaining, bool bPlayRecoveryFeedback, bool bTemporarilyBlocked)
+{
+	// Partner는 능력별 고정 슬롯을 사용하므로 선택 스킬 모듈 대신 등록된 태그로 찾는다.
+	if (UMainUIBase* MainUI = GetMainUI())
+	{
+		if (UAbilitySlotUI* Slot = MainUI->GetAbilitySlot(AbilityTag))
+		{
+			Slot->SetAbilityChargeState(AbilityTag, CurrentCharges, MaxCharges,
+				RechargeDuration, RechargeRemaining, bPlayRecoveryFeedback, bTemporarilyBlocked);
+		}
+	}
+}
+
 void ULocalPlayerUISubSystem::ResetShooterAbilityState(const FGameplayTag& SelectedAbilityTag)
 {
 	if (UMainUIBase* MainUI = GetMainUI())

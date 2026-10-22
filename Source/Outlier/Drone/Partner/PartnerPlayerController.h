@@ -38,6 +38,7 @@ class OUTLIER_API APartnerPlayerController : public AFirstPersonPlayerController
 {
 	GENERATED_BODY()
 	friend class FOutlierGasPartnerPossessionCooldownSessionTest;
+	friend class FOutlierGasPartnerHackPossessionRechargeTest;
 
 protected:
 	/** Pawn class used when respawning the player. */
@@ -184,6 +185,7 @@ public:
 
 	void CachePartnerCharacterForEnemyPossession(APartnerCharacter* PartnerCharacter);
 	bool BeginEnemyPossessionTransition(AEnemyBase* EnemyTarget, APartnerCharacter* PartnerCharacter);
+	bool ShouldDeferPartnerHackRecharge(const APartnerCharacter* PartnerCharacter) const;
 
 	UFUNCTION(BlueprintPure, Category = "Partner|EnemyPossession")
 	EPartnerPossessionState GetPartnerPossessionState() const { return PartnerPossessionState; }

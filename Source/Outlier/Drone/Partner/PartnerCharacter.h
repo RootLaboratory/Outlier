@@ -494,7 +494,9 @@ protected:
 	void RefreshPartnerCooldownUI();
 	void NotifyPartnerCooldownUI(const FGameplayTag& CooldownTag);
 	void HandlePartnerCooldownTagChanged(const FGameplayTag CooldownTag, int32 NewCount);
+	void HandlePartnerHackChargesChanged(bool bRecovered);
 	FDelegateHandle PartnerCooldownEffectAddedHandle;
+	FDelegateHandle PartnerHackChargesChangedHandle;
 	TMap<FGameplayTag, FDelegateHandle> PartnerCooldownTagHandles;
 
 	void BindGasMobilityObservers();
@@ -617,4 +619,5 @@ public:
 	// PlayerState 가 페어의 양쪽 캐릭터 포인터를 들고 있으므로 거기서 이 함수를 부르고,
 	// 로컬 여부는 여기서 스스로 판단한다 (AShooterCharacter::RefreshShooterSuitUI 와 같은 방식).
 	void RefreshPartnerSuitUI();
+	void RefreshPartnerHackChargeUI(bool bPlayRecoveryFeedback = false);
 };

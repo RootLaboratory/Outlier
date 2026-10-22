@@ -46,7 +46,7 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Ability|Charges")
 	void SetAbilityChargeState(const FGameplayTag& AbilityTag, int32 CurrentCharges, int32 MaxCharges,
-		float RechargeDuration, float RechargeRemaining, bool bPlayRecoveryFeedback);
+		float RechargeDuration, float RechargeRemaining, bool bPlayRecoveryFeedback, bool bTemporarilyBlocked = false);
 
 	// 이름 바인딩 대신 기존 BP의 Image를 그대로 등록해도 된다.
 	UFUNCTION(BlueprintCallable, Category = "Ability|Charges")
@@ -131,6 +131,7 @@ private:
 		float Duration = 0.0f;
 		float Remaining = 0.0f;
 		float ReceivedTime = 0.0f;
+		bool bTemporarilyBlocked = false;
 	};
 	TMap<FGameplayTag, FChargeDisplayState> ChargeDisplayStates;
 	// 충전 상태를 따로 받지 않는 능력은 서버 쿨타임의 시작/종료로 막대를 갱신한다.

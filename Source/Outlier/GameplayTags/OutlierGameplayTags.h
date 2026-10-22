@@ -259,6 +259,16 @@ namespace OutlierGameplayTags
 
 		namespace Partner
 		{
+			namespace Hacking
+			{
+				inline FGameplayTag DoubleCharge()
+				{
+					static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(
+						FName(TEXT("Upgrade.Partner.Hacking.DoubleCharge")));
+					return Tag;
+				}
+			}
+
 			namespace Scan
 			{
 				inline FGameplayTag RevealHackable()

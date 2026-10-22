@@ -116,6 +116,8 @@ public:
 	void SetShooterAbilitySkillCount(const FGameplayTag& AbilityTag, int32 SkillCount);
 	void SetShooterAbilityChargeState(const FGameplayTag& AbilityTag, int32 CurrentCharges, int32 MaxCharges,
 		float RechargeDuration, float RechargeRemaining, bool bPlayRecoveryFeedback);
+	void SetPartnerAbilityChargeState(const FGameplayTag& AbilityTag, int32 CurrentCharges, int32 MaxCharges,
+		float RechargeDuration, float RechargeRemaining, bool bPlayRecoveryFeedback, bool bTemporarilyBlocked);
 	void ResetShooterAbilityState(const FGameplayTag& SelectedAbilityTag);
 	bool ApplyCurrentAbilityCooldownIfMatches(const FGameplayTag& AbilityTag, float CoolTime);
 	void OnAbilityUsed(const FGameplayTag& AbilityTag, float CoolTime);

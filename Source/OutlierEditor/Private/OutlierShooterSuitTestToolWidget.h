@@ -52,6 +52,11 @@ private:
 		bool bSuit = false;
 		bool bGrantChecks = false;
 		TWeakObjectPtr<AWeaponBase> GrantedRifle;
+		TWeakObjectPtr<AOutlierPlayerState> PartnerPlayerState;
+		bool bPartnerSuit = false;
+		TWeakObjectPtr<AWeaponBase> GrantedPartnerWeapon;
+		TSubclassOf<AWeaponBase> GrantedPartnerWeaponClass;
+		TSubclassOf<AWeaponBase> BeforePartnerWeaponClass;
 		FOutlierLoadoutSnapshot BeforeRifleGrant;
 		TWeakObjectPtr<USkeletalMesh> FirstPersonSuitMesh;
 		TWeakObjectPtr<USkeletalMesh> ThirdPersonSuitMesh;
@@ -68,6 +73,7 @@ private:
 	void SetSuitState(ECheckBoxState State);
 	bool GrantSuitEquipment();
 	void RemoveGrantedRifle(FOriginalState& Original);
+	void RemoveGrantedPartnerWeapon(FOriginalState& Original);
 	void CaptureOriginalState();
 	FReply RestoreOriginalState();
 	FReply DamageShooter();

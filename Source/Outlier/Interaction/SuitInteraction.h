@@ -31,6 +31,7 @@ public:
 #if WITH_EDITOR
 	// PIE 테스트 도구도 실제 슈트 지급과 같은 콘텐츠 설정을 읽는다.
 	TSubclassOf<AWeaponBase> GetEditorShooterRifleClass() const { return ShooterRifleClass; }
+	TSubclassOf<ARangedWeaponBase> GetEditorPartnerWeaponClass() const { return PartnerWeaponClass; }
 	USkeletalMesh* GetEditorShooterFirstPersonMesh() const { return ShooterFirstPersonMesh; }
 	USkeletalMesh* GetEditorShooterThirdPersonMesh() const { return ShooterThirdPersonMesh; }
 #endif

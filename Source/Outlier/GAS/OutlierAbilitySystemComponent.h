@@ -34,6 +34,34 @@ struct FOutlierQuantumLeapChargeState
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FOutlierQuantumLeapChargesChanged, bool /* bRecovered */);
 
+USTRUCT()
+struct FOutlierPartnerHackChargeState
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	int32 CurrentCharges = 1;
+	UPROPERTY()
+	int32 MaxCharges = 1;
+	UPROPERTY()
+	float RechargeStartServerTime = 0.0f;
+	UPROPERTY()
+	float RechargeDuration = 0.0f;
+	UPROPERTY()
+	uint32 RecoverySerial = 0;
+	UPROPERTY()
+	bool bInitialized = false;
+	// 취소 제한은 충전과 별개다. 충전 중이 아닐 때는 이 시간으로 HUD 게이지를 표시한다.
+	UPROPERTY()
+	float RetryStartServerTime = 0.0f;
+	UPROPERTY()
+	float RetryDuration = 0.0f;
+	UPROPERTY()
+	bool bRetryBlocked = false;
+};
+
+DECLARE_MULTICAST_DELEGATE_OneParam(FOutlierPartnerHackChargesChanged, bool /* bRecovered */);
+
 UCLASS(ClassGroup = GAS)
 class OUTLIER_API UOutlierAbilitySystemComponent : public UAbilitySystemComponent
 {
@@ -86,6 +114,16 @@ public:
 	// DT 기준 base ( grant 시점에 고정. 업그레이드 재계산의 기준값이자 grant 락 비교 대상 ).
 	const FOutlierPartnerAbilityConfig& GetBasePartnerAbilityConfig() const { return BasePartnerAbilityConfig; }
 	bool CommitPartnerCooldown(const FGameplayTag& CooldownTag, float OverrideDuration = 0.0f);
+	void RefreshPartnerHackCharges();
+	bool CanUsePartnerHackCharge() const;
+	bool CommitPartnerHackCharge(bool bDeferRecharge = false);
+	bool CommitPartnerHackRetryDelay();
+	float GetPartnerHackRetryRemaining() const;
+	bool ResumePartnerHackRecharge();
+	void CancelPartnerHackDeferredRecharge();
+	float GetPartnerHackRechargeRemaining() const;
+	const FOutlierPartnerHackChargeState& GetPartnerHackChargeState() const { return PartnerHackCharges; }
+	FOutlierPartnerHackChargesChanged OnPartnerHackChargeStateChanged;
 	bool IsPartnerCooldownActive(const FGameplayTag& CooldownTag) const;
 	float GetPartnerCooldownRemaining(const FGameplayTag& CooldownTag) const;
 	bool SuspendPartnerSkillCooldownsForPossession();
@@ -148,6 +186,24 @@ public:
 	EGameplayEffectReplicationMode GetConfiguredReplicationMode() const { return ReplicationMode; }
 
 private:
+	UFUNCTION()
+	void OnRep_PartnerHackCharges(const FOutlierPartnerHackChargeState& PreviousState);
+	void HandlePartnerHackChargeUpgrade(const FGameplayTag Tag, int32 NewCount);
+	void BeginPartnerHackRecharge(float RemainingDuration = 0.0f);
+	void StopPartnerHackRecharge();
+	void HandlePartnerHackRechargeRemoved(const FGameplayEffectRemovalInfo& RemovalInfo, FActiveGameplayEffectHandle ExpectedHandle);
+	void FinishPartnerHackRetryDelay();
+	void NotifyPartnerHackChargesChanged(bool bRecovered);
+	void ResetPartnerHackCharges();
+	FDelegateHandle PartnerHackChargeUpgradeHandle;
+	FActiveGameplayEffectHandle PartnerHackRechargeHandle;
+	FTimerHandle PartnerHackRetryTimer;
+	float SuspendedPartnerHackRechargeRemaining = 0.0f;
+	float SuspendedPartnerHackRetryRemaining = 0.0f;
+	bool bPartnerHackRechargeDeferred = false;
+	UPROPERTY(ReplicatedUsing = OnRep_PartnerHackCharges)
+	FOutlierPartnerHackChargeState PartnerHackCharges;
+
 	UFUNCTION()
 	void OnRep_EditorShooterSuitGrantChecks();
 

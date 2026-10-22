@@ -11,6 +11,7 @@
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "PostProcess/MaterialPostProcessSubsystem.h"
 #include "Engine/World.h"
+#include "TimerManager.h"
 #include "Outlier.h"
 #include "Damage/OutlierDamageReceiver.h"
 #include "Shooter/ShooterCharacter.h"
@@ -52,6 +53,7 @@ void UOutlierAbilitySystemComponent::GetLifetimeReplicatedProps(TArray<FLifetime
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME_CONDITION(UOutlierAbilitySystemComponent, QuantumLeapCharges, COND_OwnerOnly);
+	DOREPLIFETIME_CONDITION(UOutlierAbilitySystemComponent, PartnerHackCharges, COND_OwnerOnly);
 #if WITH_EDITOR
 	DOREPLIFETIME_CONDITION(UOutlierAbilitySystemComponent, bEditorShooterSuitGrantChecks, COND_OwnerOnly);
 #else
@@ -119,6 +121,13 @@ void UOutlierAbilitySystemComponent::InitializeForActor(AActor* Actor)
 
 	if (IsOwnerActorAuthoritative())
 	{
+		if (!PartnerHackChargeUpgradeHandle.IsValid())
+		{
+			PartnerHackChargeUpgradeHandle = RegisterGameplayTagEvent(
+				OutlierGameplayTags::Upgrade::Partner::Hacking::DoubleCharge(), EGameplayTagEventType::NewOrRemoved)
+				.AddUObject(this, &ThisClass::HandlePartnerHackChargeUpgrade);
+		}
+		RefreshPartnerHackCharges();
 		if (!QuantumLeapChargeUpgradeHandle.IsValid())
 		{
 			QuantumLeapChargeUpgradeHandle = RegisterGameplayTagEvent(
@@ -156,6 +165,10 @@ void UOutlierAbilitySystemComponent::ClearForActor(const AActor* Actor)
 {
 	if (GetOwnerActor() == Actor || GetAvatarActor() == Actor)
 	{
+		RegisterGameplayTagEvent(OutlierGameplayTags::Upgrade::Partner::Hacking::DoubleCharge())
+			.Remove(PartnerHackChargeUpgradeHandle);
+		PartnerHackChargeUpgradeHandle.Reset();
+		ResetPartnerHackCharges();
 		RegisterGameplayTagEvent(OutlierGameplayTags::Upgrade::Shooter::QuantumLeap::DoubleCharge())
 			.Remove(QuantumLeapChargeUpgradeHandle);
 		QuantumLeapChargeUpgradeHandle.Reset();
@@ -606,6 +619,7 @@ bool UOutlierAbilitySystemComponent::ConfigurePartnerAbilities(
 	}
 
 	bPartnerAbilitiesConfigured = true;
+	RefreshPartnerHackCharges();
 	return true;
 }
 
@@ -1348,6 +1362,238 @@ int32 UOutlierAbilitySystemComponent::GetGrantedPartnerAbilityCount() const
 	return Count;
 }
 
+void UOutlierAbilitySystemComponent::RefreshPartnerHackCharges()
+{
+	if (!IsOwnerActorAuthoritative() || !bPartnerAbilitiesConfigured)
+	{
+		return;
+	}
+	const int32 DesiredMax = HasMatchingGameplayTag(
+		OutlierGameplayTags::Upgrade::Partner::Hacking::DoubleCharge()) ? 2 : 1;
+	if (PartnerHackCharges.bInitialized && PartnerHackCharges.MaxCharges == DesiredMax)
+	{
+		return;
+	}
+	// 투영 GE는 새 효과를 먼저 적용한다. 동일 태그의 재투영은 최대치가 바뀌지 않아 추가 지급하지 않는다.
+	PartnerHackCharges.CurrentCharges = PartnerHackCharges.bInitialized
+		? FMath::Clamp(PartnerHackCharges.CurrentCharges + FMath::Max(0, DesiredMax - PartnerHackCharges.MaxCharges), 0, DesiredMax)
+		: DesiredMax;
+	PartnerHackCharges.MaxCharges = DesiredMax;
+	PartnerHackCharges.bInitialized = true;
+	if (PartnerHackCharges.CurrentCharges == DesiredMax)
+	{
+		StopPartnerHackRecharge();
+		SuspendedPartnerHackRechargeRemaining = 0.0f;
+	}
+	NotifyPartnerHackChargesChanged(false);
+}
+
+void UOutlierAbilitySystemComponent::HandlePartnerHackChargeUpgrade(const FGameplayTag Tag, int32 NewCount)
+{
+	RefreshPartnerHackCharges();
+}
+
+bool UOutlierAbilitySystemComponent::CanUsePartnerHackCharge() const
+{
+	return PartnerHackCharges.bInitialized && PartnerHackCharges.CurrentCharges > 0
+		&& !PartnerHackCharges.bRetryBlocked && !bPartnerSkillCooldownsSuspended
+		&& !bPartnerHackRechargeDeferred;
+}
+
+bool UOutlierAbilitySystemComponent::CommitPartnerHackCharge(bool bDeferRecharge)
+{
+	if (!IsOwnerActorAuthoritative() || !PartnerHackCharges.bInitialized || PartnerHackCharges.CurrentCharges <= 0)
+	{
+		return false;
+	}
+	--PartnerHackCharges.CurrentCharges;
+	// 대상 효과가 먼저 빙의를 시작할 수 있다. 정지 상태에서도 결과 소모는 기록하고 충전만 미룬다.
+	bPartnerHackRechargeDeferred |= bDeferRecharge;
+	if (!bPartnerHackRechargeDeferred)
+	{
+		BeginPartnerHackRecharge();
+	}
+	NotifyPartnerHackChargesChanged(false);
+	return true;
+}
+
+void UOutlierAbilitySystemComponent::BeginPartnerHackRecharge(float RemainingDuration)
+{
+	if (PartnerHackRechargeHandle.IsValid() || bPartnerSkillCooldownsSuspended || bPartnerHackRechargeDeferred
+		|| PartnerHackCharges.CurrentCharges >= PartnerHackCharges.MaxCharges)
+	{
+		return;
+	}
+	const float Duration = RemainingDuration > 0.0f ? RemainingDuration : PartnerAbilityConfig.HackCooldown;
+	if (Duration <= 0.0f)
+	{
+		PartnerHackCharges.RecoverySerial += PartnerHackCharges.MaxCharges - PartnerHackCharges.CurrentCharges;
+		PartnerHackCharges.CurrentCharges = PartnerHackCharges.MaxCharges;
+		NotifyPartnerHackChargesChanged(true);
+		return;
+	}
+	PartnerHackRechargeHandle = ApplyTimedGameplayEffectToSelf(
+		UOutlierPartnerHackCooldownGameplayEffect::StaticClass(), Duration, GetAvatarActor());
+	if (!ensure(PartnerHackRechargeHandle.IsValid()))
+	{
+		return;
+	}
+	PartnerHackCharges.RechargeDuration = Duration;
+	PartnerHackCharges.RechargeStartServerTime = GetWorld()->GetTimeSeconds();
+	if (FOnActiveGameplayEffectRemoved_Info* Removed = OnGameplayEffectRemoved_InfoDelegate(PartnerHackRechargeHandle))
+	{
+		Removed->AddUObject(this, &ThisClass::HandlePartnerHackRechargeRemoved, PartnerHackRechargeHandle);
+	}
+}
+
+void UOutlierAbilitySystemComponent::HandlePartnerHackRechargeRemoved(
+	const FGameplayEffectRemovalInfo& RemovalInfo, FActiveGameplayEffectHandle ExpectedHandle)
+{
+	if (!IsOwnerActorAuthoritative() || PartnerHackRechargeHandle != ExpectedHandle)
+	{
+		return;
+	}
+	PartnerHackRechargeHandle.Invalidate();
+	PartnerHackCharges.RechargeStartServerTime = 0.0f;
+	PartnerHackCharges.RechargeDuration = 0.0f;
+	if (RemovalInfo.bPrematureRemoval)
+	{
+		// 관리용 효과 제거는 준비 상태로 복귀한다. 빙의 정지는 Stop에서 핸들을 먼저 해제하므로 이 경로에 들어오지 않는다.
+		PartnerHackCharges.CurrentCharges = PartnerHackCharges.MaxCharges;
+		NotifyPartnerHackChargesChanged(false);
+		return;
+	}
+	PartnerHackCharges.CurrentCharges = FMath::Min(PartnerHackCharges.CurrentCharges + 1, PartnerHackCharges.MaxCharges);
+	++PartnerHackCharges.RecoverySerial;
+	BeginPartnerHackRecharge();
+	NotifyPartnerHackChargesChanged(true);
+}
+
+void UOutlierAbilitySystemComponent::StopPartnerHackRecharge()
+{
+	const FActiveGameplayEffectHandle PreviousHandle = PartnerHackRechargeHandle;
+	PartnerHackRechargeHandle.Invalidate();
+	RemoveActiveEffectFromSelf(PreviousHandle);
+	PartnerHackCharges.RechargeStartServerTime = 0.0f;
+	PartnerHackCharges.RechargeDuration = 0.0f;
+}
+
+float UOutlierAbilitySystemComponent::GetPartnerHackRechargeRemaining() const
+{
+	const UWorld* World = GetWorld();
+	if (!World || PartnerHackCharges.RechargeDuration <= 0.0f)
+	{
+		return 0.0f;
+	}
+	const AGameStateBase* GameState = World->GetGameState();
+	const float ServerTime = GameState ? GameState->GetServerWorldTimeSeconds() : World->GetTimeSeconds();
+	return FMath::Clamp(PartnerHackCharges.RechargeStartServerTime + PartnerHackCharges.RechargeDuration - ServerTime,
+		0.0f, PartnerHackCharges.RechargeDuration);
+}
+
+float UOutlierAbilitySystemComponent::GetPartnerHackRetryRemaining() const
+{
+	const UWorld* World = GetWorld();
+	if (!World || !PartnerHackCharges.bRetryBlocked || PartnerHackCharges.RetryDuration <= 0.0f)
+	{
+		return 0.0f;
+	}
+	const AGameStateBase* GameState = World->GetGameState();
+	const float ServerTime = GameState ? GameState->GetServerWorldTimeSeconds() : World->GetTimeSeconds();
+	return FMath::Clamp(PartnerHackCharges.RetryStartServerTime + PartnerHackCharges.RetryDuration - ServerTime,
+		0.0f, PartnerHackCharges.RetryDuration);
+}
+
+bool UOutlierAbilitySystemComponent::CommitPartnerHackRetryDelay()
+{
+	UWorld* World = GetWorld();
+	if (!IsOwnerActorAuthoritative() || !World || bPartnerSkillCooldownsSuspended)
+	{
+		return false;
+	}
+	if (PartnerHackCharges.bRetryBlocked)
+	{
+		return true;
+	}
+	const float Duration = PartnerAbilityConfig.HackCooldown * 0.5f;
+	if (Duration <= 0.0f)
+	{
+		return true;
+	}
+	PartnerHackCharges.bRetryBlocked = true;
+	PartnerHackCharges.RetryStartServerTime = World->GetTimeSeconds();
+	PartnerHackCharges.RetryDuration = Duration;
+	World->GetTimerManager().SetTimer(PartnerHackRetryTimer, this, &ThisClass::FinishPartnerHackRetryDelay, Duration, false);
+	NotifyPartnerHackChargesChanged(false);
+	return true;
+}
+
+void UOutlierAbilitySystemComponent::FinishPartnerHackRetryDelay()
+{
+	PartnerHackCharges.bRetryBlocked = false;
+	PartnerHackCharges.RetryStartServerTime = 0.0f;
+	PartnerHackCharges.RetryDuration = 0.0f;
+	NotifyPartnerHackChargesChanged(false);
+}
+
+bool UOutlierAbilitySystemComponent::ResumePartnerHackRecharge()
+{
+	if (!IsOwnerActorAuthoritative() || bPartnerSkillCooldownsSuspended)
+	{
+		return false;
+	}
+	bPartnerHackRechargeDeferred = false;
+	BeginPartnerHackRecharge(SuspendedPartnerHackRechargeRemaining);
+	SuspendedPartnerHackRechargeRemaining = 0.0f;
+	NotifyPartnerHackChargesChanged(false);
+	return true;
+}
+
+void UOutlierAbilitySystemComponent::ResetPartnerHackCharges()
+{
+	if (!IsOwnerActorAuthoritative())
+	{
+		return;
+	}
+	StopPartnerHackRecharge();
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(PartnerHackRetryTimer);
+	}
+	PartnerHackCharges = FOutlierPartnerHackChargeState();
+	bPartnerHackRechargeDeferred = false;
+	SuspendedPartnerHackRechargeRemaining = 0.0f;
+	SuspendedPartnerHackRetryRemaining = 0.0f;
+	NotifyPartnerHackChargesChanged(false);
+}
+
+void UOutlierAbilitySystemComponent::CancelPartnerHackDeferredRecharge()
+{
+	// 빙의가 확정되기 전에 대상이 사라져도, 이미 소모한 횟수의 충전이 영구 대기하지 않게 한다.
+	if (IsOwnerActorAuthoritative() && bPartnerHackRechargeDeferred && !bPartnerSkillCooldownsSuspended)
+	{
+		ResumePartnerHackRecharge();
+	}
+}
+
+void UOutlierAbilitySystemComponent::NotifyPartnerHackChargesChanged(bool bRecovered)
+{
+	OnPartnerHackChargeStateChanged.Broadcast(bRecovered);
+	if (AActor* OwningActor = GetOwnerActor())
+	{
+		OwningActor->ForceNetUpdate();
+	}
+}
+
+void UOutlierAbilitySystemComponent::OnRep_PartnerHackCharges(const FOutlierPartnerHackChargeState& PreviousState)
+{
+	const bool bRecovered = PreviousState.bInitialized && PartnerHackCharges.bInitialized
+		&& PreviousState.MaxCharges == PartnerHackCharges.MaxCharges
+		&& PreviousState.RecoverySerial != PartnerHackCharges.RecoverySerial
+		&& PartnerHackCharges.CurrentCharges > PreviousState.CurrentCharges;
+	OnPartnerHackChargeStateChanged.Broadcast(bRecovered);
+}
+
 bool UOutlierAbilitySystemComponent::CommitPartnerCooldown(
 	const FGameplayTag& CooldownTag,
 	float OverrideDuration)
@@ -1419,6 +1665,17 @@ bool UOutlierAbilitySystemComponent::SuspendPartnerSkillCooldownsForPossession()
 	}
 
 	bPartnerSkillCooldownsSuspended = true;
+	// 두 번째 해킹으로 빙의하면 첫 번째 사용분이 충전 중일 수 있다. 제거 전에 남은 시간을 보관한다.
+	SuspendedPartnerHackRechargeRemaining = GetPartnerHackRechargeRemaining();
+	StopPartnerHackRecharge();
+	if (UWorld* World = GetWorld())
+	{
+		SuspendedPartnerHackRetryRemaining = FMath::Max(0.0f, World->GetTimerManager().GetTimerRemaining(PartnerHackRetryTimer));
+		World->GetTimerManager().ClearTimer(PartnerHackRetryTimer);
+	}
+	PartnerHackCharges.RetryStartServerTime = 0.0f;
+	PartnerHackCharges.RetryDuration = 0.0f;
+	NotifyPartnerHackChargesChanged(false);
 	SuspendedPartnerCooldowns.Reset();
 	const FGameplayTag CooldownTags[] =
 	{
@@ -1452,6 +1709,15 @@ bool UOutlierAbilitySystemComponent::ResumePartnerSkillCooldownsAfterPossession(
 	}
 
 	bPartnerSkillCooldownsSuspended = false;
+	if (SuspendedPartnerHackRetryRemaining > 0.0f && GetWorld())
+	{
+		PartnerHackCharges.RetryStartServerTime = GetWorld()->GetTimeSeconds();
+		PartnerHackCharges.RetryDuration = SuspendedPartnerHackRetryRemaining;
+		GetWorld()->GetTimerManager().SetTimer(PartnerHackRetryTimer, this,
+			&ThisClass::FinishPartnerHackRetryDelay, SuspendedPartnerHackRetryRemaining, false);
+		SuspendedPartnerHackRetryRemaining = 0.0f;
+	}
+	ResumePartnerHackRecharge();
 	const TMap<FGameplayTag, float> CooldownsToResume = MoveTemp(SuspendedPartnerCooldowns);
 	SuspendedPartnerCooldowns.Reset();
 	bool bAllResumed = true;
@@ -1476,13 +1742,23 @@ bool UOutlierAbilitySystemComponent::ResumePartnerSkillCooldownsAfterPossession(
 
 void UOutlierAbilitySystemComponent::DiscardSuspendedPartnerSkillCooldowns()
 {
+	if (!IsOwnerActorAuthoritative())
+	{
+		return;
+	}
 	bPartnerSkillCooldownsSuspended = false;
 	SuspendedPartnerCooldowns.Reset();
+	ResetPartnerHackCharges();
+	RefreshPartnerHackCharges();
 }
 
 float UOutlierAbilitySystemComponent::GetSuspendedPartnerCooldownRemaining(
 	const FGameplayTag& CooldownTag) const
 {
+	if (CooldownTag == OutlierGameplayTags::Cooldown::Partner::Hacking())
+	{
+		return SuspendedPartnerHackRechargeRemaining;
+	}
 	const float* Remaining = SuspendedPartnerCooldowns.Find(CooldownTag);
 	return Remaining ? *Remaining : 0.0f;
 }
