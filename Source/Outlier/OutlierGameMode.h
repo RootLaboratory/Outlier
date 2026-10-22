@@ -82,6 +82,8 @@ public:
 	/** Constructor */
 	AOutlierGameMode();
 	virtual void InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage) override;
+	// 서버와 클라이언트가 같은 맵의 GameMode 설정으로 PIE 테스트 여부를 판단한다.
+	static bool IsDirectPairTestWorld(const UWorld* World);
 	bool IsArenaWorkerPreloadReady() const;
 	void PauseArenaWorkerWorld();
 
@@ -156,6 +158,11 @@ public:
 
 private:
 	friend class FOutlierGameOverPendingFailureTest;
+	friend class FOutlierDirectPairTest;
+	void TryStartDirectPairTest();
+	bool ResolveDirectPairTestSpawns(FTransform& ShooterSpawn, FTransform& PartnerSpawn) const;
+	TArray<TWeakObjectPtr<APlayerController>> DirectPairTestPlayers;
+	bool bDirectPairTestStarted = false;
 	bool BeginGameOverTransition();
 	void RestoreGameOverSelection();
 	void FinishGameOverFlow();
@@ -227,6 +234,10 @@ private:
 		EOutlierCheckpointRestartVoteState::Idle;
 
 protected:
+	UPROPERTY(EditDefaultsOnly, Category = "Testing", meta = (DisplayName = "Direct Pair Test (PIE Only)",
+		ToolTip = "Start two PIE players as Shooter and Partner in the current map. Requires unique PlayerStart Tags Shooter and Partner; skips Lobby and Arena streaming. Duplicate the gameplay GameMode BP before enabling."))
+	bool bDirectPairTest = false;
+
 	UPROPERTY(EditDefaultsOnly, Category = "Respawn")
 	TSubclassOf<AShooterCharacter> ShooterClass;
 
