@@ -28,6 +28,8 @@ class UWidget;
 class AActor;
 class AShooterCharacter;
 class ATuto_EventTriggerVolume;
+class AElevatorShaftController;
+class ULocalPlayerPostProcessSubsystem;
 enum class ESuitTransitionPhase : uint8;
 
 // HUD 위젯을 숨길 사유가 생기는 순간의 Visibility를 저장했다가, 사유가 모두 풀리면 그 값으로 되돌린다.
@@ -112,6 +114,11 @@ public:
 	void NotifySuitFadeOutFinished(const FGuid& TransitionId);
 	void NotifySuitPresentationReady(const FGuid& TransitionId);
 	void NotifySuitFadeInFinished(const FGuid& TransitionId);
+
+	// 서버 요청을 소유 클라이언트의 실제 암전 완료 콜백과 연결한다.
+	void SendElevatorFadeFromServer(AElevatorShaftController* Shaft, const FGuid& ExecutionId,
+		bool bReveal, float Duration);
+	void ClearElevatorFadeFromServer(AElevatorShaftController* Shaft, const FGuid& ExecutionId);
 
 	/** Client-owned transport for relevant AtLocation audio requests. */
 	UFUNCTION(Server, Unreliable)
@@ -383,6 +390,31 @@ protected:
 	virtual void RequestSuitTransitionCleanup(const FGuid& TransitionId);
 
 private:
+	UFUNCTION(Client, Reliable)
+	void ClientSetElevatorFade(AElevatorShaftController* Shaft, FGuid ExecutionId, bool bReveal, float Duration);
+
+	UFUNCTION(Client, Reliable)
+	void ClientClearElevatorFade(AElevatorShaftController* Shaft, FGuid ExecutionId);
+
+	UFUNCTION(Server, Reliable)
+	void ServerNotifyElevatorFadeFinished(AElevatorShaftController* Shaft, FGuid ExecutionId, bool bReveal);
+
+	void ApplyLocalElevatorFade(AElevatorShaftController* Shaft, const FGuid& ExecutionId,
+		bool bReveal, float Duration);
+	void HandleElevatorFadeFinished(FGuid ExecutionId, bool bReveal);
+	void ClearLocalElevatorFade();
+	void UnbindElevatorFadeCallbacks();
+
+	TWeakObjectPtr<AElevatorShaftController> LocalElevatorShaft;
+	TWeakObjectPtr<APawn> LocalElevatorFadePawn;
+	TWeakObjectPtr<ULocalPlayerPostProcessSubsystem> ElevatorPostProcessSubsystem;
+	FGuid LocalElevatorExecutionId;
+	FDelegateHandle ElevatorCoveredHandle;
+	FDelegateHandle ElevatorRevealedHandle;
+	bool bLocalElevatorRevealing = false;
+	bool bLocalElevatorFadeReadySent = false;
+	bool bElevatorOwnsLookInputBlock = false;
+
 	bool TryActivateUpgradeNodeForRequest(AActor* UpgradeOwner, FName RowName, UOutlierUpgradeSetData* UpgradeSetData);
 	uint32 LastUpgradeRequestId = 0;
 

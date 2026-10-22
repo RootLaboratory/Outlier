@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Components/TimelineComponent.h"
+#include "Engine/EngineTypes.h"
 #include "Engine/OverlapResult.h"
 #include "GameFramework/Actor.h"
 #include "GameplayTagContainer.h"
@@ -65,6 +66,20 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Door")
 	bool IsDoorOpen() const { return bIsOpen; }
+
+	UFUNCTION(BlueprintPure, Category = "Door")
+	bool IsDoorMoving() const;
+
+	// 고정 장벽이 차단을 인계한 뒤, 닫힌 문을 이동용 외형으로 전환한다.
+	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "Door|Presentation")
+	bool SetPresentationOnly(bool bNewPresentationOnly);
+
+	UFUNCTION(BlueprintPure, Category = "Door|Presentation")
+	bool IsPresentationOnly() const { return bPresentationOnly; }
+
+	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "Door|Presentation")
+	void ResetToInitialState();
+
 	bool HasMovementCurve() const;
 	FOnDoorMotionFinished OnDoorMotionFinished;
 	FOnDoorSafetyReopenStarted OnDoorSafetyReopenStarted;
@@ -131,6 +146,11 @@ private:
 	UFUNCTION()
 	void OnRep_DoorMotion();
 
+	UFUNCTION()
+	void OnRep_PresentationOnly();
+
+	void ApplyPresentationOnly();
+
 	void ApplyDoorState(bool bOpen);
 	void StartDoorMotion(bool bOpen, bool bSafetyReopen);
 	void PublishDoorMotion();
@@ -138,6 +158,11 @@ private:
 	void InitializeSafetyRegion(UBoxComponent* Region, UStaticMeshComponent* Mesh, const FVector& OpenOffset);
 	UPROPERTY(ReplicatedUsing = OnRep_DoorMotion)
 	FDoorMotionState ReplicatedDoorMotion;
+	UPROPERTY(ReplicatedUsing = OnRep_PresentationOnly)
+	bool bPresentationOnly = false;
+
+	ECollisionEnabled::Type InitialLeftCollision = ECollisionEnabled::NoCollision;
+	ECollisionEnabled::Type InitialRightCollision = ECollisionEnabled::NoCollision;
 	FDoorMotionState PendingInitialDoorMotion;
 	mutable TArray<FOverlapResult> SafetyOverlaps;
 	uint32 LastAppliedMotionRevision = 0;

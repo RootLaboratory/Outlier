@@ -3,6 +3,7 @@
 #include "Components/BoxComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/World.h"
+#include "Level/Elevator/ElevatorShaftController.h"
 #include "Net/UnrealNetwork.h"
 #include "Room/RoomCombatSubsystem.h"
 
@@ -34,6 +35,18 @@ void ARoomCombatBarrier::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& O
 
 void ARoomCombatBarrier::BeginPlay()
 {
+	if (HasAuthority())
+	{
+		// Section/Wall 아래에 중첩되어도 등록 전에 레벨 Controller 인스턴스의 전투 태그를 사용한다.
+		for (AActor* Parent = GetParentActor(); Parent; Parent = Parent->GetParentActor())
+		{
+			if (const AElevatorShaftController* Controller = Cast<AElevatorShaftController>(Parent))
+			{
+				RoomTag = Controller->CombatRoomTag;
+				break;
+			}
+		}
+	}
 	Super::BeginPlay();
 	ApplyBlockedState();
 	if (HasAuthority())

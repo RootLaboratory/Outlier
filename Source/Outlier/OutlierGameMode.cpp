@@ -927,6 +927,16 @@ bool AOutlierGameMode::CommitCombatPhaseCheckpoint(
 	const FName SaveEventId(*FString::Printf(TEXT("Room.%s.%s.%d"),
 		*RoomTag.ToString(), bEncounterCleared ? TEXT("Cleared") : TEXT("Phase"),
 		NextPhaseIndex));
+	FOutlierCheckpointSnapshot ExistingSnapshot;
+	// RoomCleared 직후 전환 호출자가 저장을 재확인할 수 있다. 이미 확정된 같은
+	// 완료 스냅샷은 성공으로 처리하고, 출구 이동 뒤 위치로 덮어쓰지 않는다.
+	if (bEncounterCleared && Saves->GetRestoreSnapshot(ExistingSnapshot)
+		&& ExistingSnapshot.CheckpointId == SaveEventId
+		&& ExistingSnapshot.SaveReason == EOutlierCheckpointSaveReason::EncounterCleared
+		&& ExistingSnapshot.RoomTag == RoomTag)
+	{
+		return true;
+	}
 	FOutlierCheckpointSnapshot Snapshot;
 	if (!BuildPairCheckpointSnapshot(ShooterPS, PartnerPS, SaveEventId, false,
 		Shooter->GetActorTransform(), Partner->GetActorTransform(), Snapshot))
@@ -945,6 +955,50 @@ bool AOutlierGameMode::CommitCombatPhaseCheckpoint(
 		return false;
 	}
 	return true;
+}
+
+bool AOutlierGameMode::IsPairGameplayReady() const
+{
+	const UOutlierArenaSubsystem* Arena = GetWorld()
+		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>() : nullptr;
+	if (!HasAuthority() || !Arena || !Arena->IsGameplayLevelsReady()
+		|| ActiveMatchPairId == INDEX_NONE || bPendingInitialSaveRestore || bArenaReloadInProgress
+		|| bListenGuestDisconnected || bListenHostReturnRequested || bArenaWorkerMatchCompleting
+		|| !PendingPossessions.IsEmpty() || !PendingLocalPossessions.IsEmpty()
+		|| !ReadyGameplayPossessPlayers.IsEmpty() || !ArenaWorkerDisconnectedPlayerIds.IsEmpty()
+		|| !ArenaWorkerReconnectPawns.IsEmpty()
+		|| (IsArenaWorkerProcess() && !bArenaWorkerGameplayStarted))
+	{
+		return false;
+	}
+	const AController* ShooterController = GetControllerFromPlayerState(
+		FindPairPlayerState(ActiveMatchPairId, EOutlierPlayerRole::Shooter));
+	const AController* PartnerController = GetControllerFromPlayerState(
+		FindPairPlayerState(ActiveMatchPairId, EOutlierPlayerRole::Partner));
+	return ShooterController && PartnerController && ShooterController != PartnerController
+		&& IsValid(ShooterController->GetPawn()) && IsValid(PartnerController->GetPawn());
+}
+
+void AOutlierGameMode::BroadcastPairGameplayReadyIfReady()
+{
+	if (IsPairGameplayReady())
+	{
+		const UOutlierArenaSubsystem* Arena = GetWorld()->GetSubsystem<UOutlierArenaSubsystem>();
+		OnPairGameplayReady.Broadcast(Arena->GetGameplayGeneration());
+	}
+}
+
+bool AOutlierGameMode::IsRestoringClearedEncounter(FGameplayTag RoomTag) const
+{
+	const UOutlierSaveSubSystem* Saves = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>() : nullptr;
+	FOutlierCheckpointSnapshot Snapshot;
+	// 누적 CompletedEncounter만 보면 이후 체크포인트에서도 옛 출구로 되돌아간다.
+	// 현재 복원 스냅샷 자체가 이 Room의 완료 저장일 때만 출구 재배치를 허용한다.
+	return HasAuthority() && RoomTag.IsValid() && Saves && Saves->GetRestoreSnapshot(Snapshot)
+		&& Snapshot.SaveReason == EOutlierCheckpointSaveReason::EncounterCleared
+		&& Snapshot.RoomTag == RoomTag
+		&& Snapshot.WorldProgress.CompletedEncounterIds.Contains(RoomTag.GetTagName());
 }
 
 void AOutlierGameMode::RefreshPairLinks(AOutlierPlayerState* TriggeringPlayerState)
@@ -2002,7 +2056,7 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 	{
 		TryScheduleArenaWorkerAutoComplete();
 	}
-
+	BroadcastPairGameplayReadyIfReady();
 }
 
 bool AOutlierGameMode::CompleteArenaMatch()
@@ -2332,6 +2386,7 @@ void AOutlierGameMode::OnClientArenaReady(APlayerController* PC, uint32 Gameplay
 			(FPlatformTime::Seconds() - ArenaReloadStartedAt) * 1000.0);
 	}
 	TryFinishArenaReload();
+	BroadcastPairGameplayReadyIfReady();
 }
 
 void AOutlierGameMode::OnClientArenaGameplayUnloaded(APlayerController* PC, uint32 GameplayGeneration)
@@ -3695,6 +3750,7 @@ void AOutlierGameMode::StartArenaWorkerGameplay()
 	}
 
 	UE_LOG(LogTemp, Display, TEXT("[ArenaWorker] Both clients are ready. Gameplay started"));
+	BroadcastPairGameplayReadyIfReady();
 }
 
 void AOutlierGameMode::RequestArenaWorkerExit()
@@ -4614,6 +4670,7 @@ void AOutlierGameMode::TryFinishArenaReload()
 	{
 		ScheduleArenaWorkerGameplayStart();
 	}
+	BroadcastPairGameplayReadyIfReady();
 }
 
 bool AOutlierGameMode::ResolveCheckpointTransform(AController* Controller, FTransform& OutTransform) const

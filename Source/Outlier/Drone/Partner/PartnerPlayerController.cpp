@@ -735,6 +735,23 @@ void APartnerPlayerController::ReleaseEnemyPossession()
 	RestoreCachedPartnerCharacter();
 }
 
+bool APartnerPlayerController::RestorePartnerForWorldTransition()
+{
+	if (!HasAuthority())
+	{
+		return false;
+	}
+	// 아직 Possess 전이면 Release만으로 취소되지 않는다. 먼저 지연 전환을 끊어
+	// 출구 이동 뒤 늦은 해킹 콜백이 Enemy로 다시 빙의시키는 경로를 막는다.
+	if (PendingEnemyPossessionTarget.IsValid() || PendingEnemyPossessionSource.IsValid())
+	{
+		CancelPendingEnemyPossessionTransition();
+	}
+	ReleaseEnemyPossession();
+	const AOutlierPlayerState* PS = GetPlayerState<AOutlierPlayerState>();
+	return PS && IsValid(PS->GetPartnerCharacter()) && GetPawn() == PS->GetPartnerCharacter();
+}
+
 void APartnerPlayerController::ServerReleaseEnemyPossession_Implementation()
 {
 	ReleaseEnemyPossession();

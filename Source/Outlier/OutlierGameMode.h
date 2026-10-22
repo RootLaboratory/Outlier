@@ -29,6 +29,8 @@ enum class EOutlierGameplayReloadFailure : uint8;
 struct FOutlierCheckpointData;
 struct FOutlierCheckpointSnapshot;
 
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnPairGameplayReady, uint32 /*GameplayGeneration*/);
+
 struct FGameOverPendingServerState
 {
 	TWeakObjectPtr<AFirstPersonPlayerController> Requester;
@@ -86,6 +88,10 @@ public:
 	bool RegisterCheckpoint(AController* Controller, AOutlierCheckpoint* Checkpoint, bool bRefreshSnapshot = false);
 	bool CommitCombatPhaseCheckpoint(FGameplayTag RoomTag, int32 NextPhaseIndex,
 		bool bEncounterCleared, int32 GameplayGeneration);
+	// 레벨 로드뿐 아니라 현재 페어의 Possess/재접속 대기까지 끝난 서버 준비 상태다.
+	bool IsPairGameplayReady() const;
+	FOnPairGameplayReady OnPairGameplayReady;
+	bool IsRestoringClearedEncounter(FGameplayTag RoomTag) const;
 	void RefreshPairLinks(AOutlierPlayerState* TriggeringPlayerState);
 
 	UFUNCTION()
@@ -192,6 +198,7 @@ private:
 	void RefreshRoomOverlapAssignments();
 	void ResetRuntimeCombatStateForRespawn();
 	void TryFinishArenaReload();
+	void BroadcastPairGameplayReadyIfReady();
 	bool StartCheckpointRestart(AFirstPersonPlayerController* Requester,
 		TFunction<bool()> BeforeReload = {});
 	void FinishCheckpointRestart();

@@ -2,6 +2,7 @@
 
 
 #include "FirstPersonPlayerController.h"
+#include "Level/Elevator/ElevatorShaftController.h"
 #include "Audio/OutlierAudioSubsystem.h"
 #include "Audio/OutlierUIAudioSettings.h"
 #include "EnhancedInputComponent.h"
@@ -661,6 +662,7 @@ void AFirstPersonPlayerController::ClientSetCheckpointRestartVoteView_Implementa
 
 void AFirstPersonPlayerController::ClientPrepareForArenaExit_Implementation()
 {
+	ClearLocalElevatorFade();
 	ClearLocalSuitTransition();
 	if (UOutlierGameInstance* OutlierGameInstance =
 		Cast<UOutlierGameInstance>(GetGameInstance()))
@@ -1384,6 +1386,7 @@ void AFirstPersonPlayerController::Destroyed()
 void AFirstPersonPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	GameOverRoundId.Invalidate();
+	ClearLocalElevatorFade();
 	ClearLocalSuitTransition();
 	ClearClientArenaContentWait();
 	// 재접속이나 역할 Controller 교체로 이전 PC가 먼저 파괴될 수 있다. Delegate가 남아 있으면
@@ -1442,6 +1445,10 @@ void AFirstPersonPlayerController::EndPlay(const EEndPlayReason::Type EndPlayRea
 
 void AFirstPersonPlayerController::SetPawn(APawn* InPawn)
 {
+	if (LocalElevatorExecutionId.IsValid() && LocalElevatorFadePawn.Get() != InPawn)
+	{
+		ClearLocalElevatorFade();
+	}
 	// SetPawn은 서버 Possess와 클라이언트 Pawn RepNotify 양쪽에서 호출된다.
 	// GetPawn은 RepNotify 진입 전에 이미 바뀔 수 있으므로 시작 당시 Pawn과 비교한다.
 	if (LocalSuitTransitionId.IsValid() && LocalSuitTransitionPawn.Get() != InPawn)
@@ -1449,6 +1456,175 @@ void AFirstPersonPlayerController::SetPawn(APawn* InPawn)
 		ClearLocalSuitTransition();
 	}
 	Super::SetPawn(InPawn);
+}
+
+void AFirstPersonPlayerController::SendElevatorFadeFromServer(
+	AElevatorShaftController* Shaft, const FGuid& ExecutionId, bool bReveal, float Duration)
+{
+	if (!HasAuthority() || IsActorBeingDestroyed() || !IsValid(Shaft)
+		|| Shaft->GetWorld() != GetWorld() || !ExecutionId.IsValid())
+	{
+		return;
+	}
+	if (IsLocalController())
+	{
+		ApplyLocalElevatorFade(Shaft, ExecutionId, bReveal, Duration);
+	}
+	else
+	{
+		ClientSetElevatorFade(Shaft, ExecutionId, bReveal, Duration);
+	}
+}
+
+void AFirstPersonPlayerController::ClearElevatorFadeFromServer(
+	AElevatorShaftController* Shaft, const FGuid& ExecutionId)
+{
+	if (!HasAuthority() || !ExecutionId.IsValid()) return;
+	if (IsLocalController())
+	{
+		ClientClearElevatorFade_Implementation(Shaft, ExecutionId);
+	}
+	else
+	{
+		ClientClearElevatorFade(Shaft, ExecutionId);
+	}
+}
+
+void AFirstPersonPlayerController::ClientSetElevatorFade_Implementation(
+	AElevatorShaftController* Shaft, FGuid ExecutionId, bool bReveal, float Duration)
+{
+	ApplyLocalElevatorFade(Shaft, ExecutionId, bReveal, Duration);
+}
+
+void AFirstPersonPlayerController::ClientClearElevatorFade_Implementation(
+	AElevatorShaftController* Shaft, FGuid ExecutionId)
+{
+	// 종료 시 Shaft가 먼저 사라져 참조가 null로 도착해도 실행 ID로 정리할 수 있다.
+	if (LocalElevatorExecutionId == ExecutionId
+		&& (!IsValid(Shaft) || LocalElevatorShaft.Get() == Shaft))
+	{
+		ClearLocalElevatorFade();
+	}
+}
+
+void AFirstPersonPlayerController::ApplyLocalElevatorFade(
+	AElevatorShaftController* Shaft, const FGuid& ExecutionId, bool bReveal, float Duration)
+{
+	if (!IsLocalController() || !IsValid(Shaft) || Shaft->GetWorld() != GetWorld()
+		|| !ExecutionId.IsValid() || !FMath::IsFinite(Duration) || Duration < 0.0f
+		|| !IsValid(GetPawn()) || LocalSuitTransitionId.IsValid())
+	{
+		return;
+	}
+	if (!bReveal)
+	{
+		if (LocalElevatorExecutionId.IsValid()) return;
+		ULocalPlayerPostProcessSubsystem* PP = FindSuitPostProcessSubsystem(this);
+		if (!PP)
+		{
+			UE_LOG(LogOutlier, Warning, TEXT("[Elevator] Missing local blackout presentation PC=%s"), *GetName());
+			return; // 화면이 준비되지 않았다면 서버에 완료를 가장하지 않는다.
+		}
+		LocalElevatorShaft = Shaft;
+		LocalElevatorFadePawn = GetPawn();
+		LocalElevatorExecutionId = ExecutionId;
+		ElevatorPostProcessSubsystem = PP;
+		SetIgnoreLookInput(true);
+		bElevatorOwnsLookInputBlock = true;
+	}
+	else if (LocalElevatorExecutionId != ExecutionId || LocalElevatorShaft.Get() != Shaft
+		|| bLocalElevatorRevealing || !bLocalElevatorFadeReadySent)
+	{
+		return;
+	}
+
+	ULocalPlayerPostProcessSubsystem* PP = ElevatorPostProcessSubsystem.Get();
+	if (!PP) return;
+	// 수신 -> 실제 PP 완료 -> 소유 PC RPC -> Shaft의 페어/단계/시간 검증 순서다.
+	// 같은 PP를 사용하는 슈트 연출의 콜백은 건드리지 않고 이 실행의 핸들만 교체한다.
+	UnbindElevatorFadeCallbacks();
+	bLocalElevatorRevealing = bReveal;
+	bLocalElevatorFadeReadySent = false;
+	if (bReveal)
+	{
+		ElevatorRevealedHandle = PP->OnScreenBlackoutRevealed.AddUObject(
+			this, &AFirstPersonPlayerController::HandleElevatorFadeFinished, ExecutionId, true);
+		PP->StartScreenBlackoutReveal(Duration);
+	}
+	else
+	{
+		ElevatorCoveredHandle = PP->OnScreenBlackoutCovered.AddUObject(
+			this, &AFirstPersonPlayerController::HandleElevatorFadeFinished, ExecutionId, false);
+		PP->StartScreenBlackout(Duration);
+	}
+}
+
+void AFirstPersonPlayerController::HandleElevatorFadeFinished(FGuid ExecutionId, bool bReveal)
+{
+	AElevatorShaftController* Shaft = LocalElevatorShaft.Get();
+	if (LocalElevatorExecutionId != ExecutionId || !ExecutionId.IsValid() || !IsValid(Shaft)
+		|| bLocalElevatorRevealing != bReveal || bLocalElevatorFadeReadySent
+		|| LocalElevatorFadePawn.Get() != GetPawn())
+	{
+		return;
+	}
+	UnbindElevatorFadeCallbacks();
+	// Listen의 동기 응답이 다음 단계/정리를 바로 실행할 수 있어 전송 전에 중복을 막는다.
+	bLocalElevatorFadeReadySent = true;
+	if (HasAuthority())
+	{
+		ServerNotifyElevatorFadeFinished_Implementation(Shaft, ExecutionId, bReveal);
+	}
+	else
+	{
+		ServerNotifyElevatorFadeFinished(Shaft, ExecutionId, bReveal);
+	}
+}
+
+void AFirstPersonPlayerController::ServerNotifyElevatorFadeFinished_Implementation(
+	AElevatorShaftController* Shaft, FGuid ExecutionId, bool bReveal)
+{
+	if (HasAuthority() && IsValid(Shaft) && Shaft->GetWorld() == GetWorld() && ExecutionId.IsValid())
+	{
+		// 발신자는 RPC 소유 Controller로 고정한다. 진행 권위는 Shaft가 검증한다.
+		Shaft->NotifyClientFadeFinished(this, ExecutionId, bReveal);
+	}
+}
+
+void AFirstPersonPlayerController::UnbindElevatorFadeCallbacks()
+{
+	if (ULocalPlayerPostProcessSubsystem* PP = ElevatorPostProcessSubsystem.Get())
+	{
+		PP->OnScreenBlackoutCovered.Remove(ElevatorCoveredHandle);
+		PP->OnScreenBlackoutRevealed.Remove(ElevatorRevealedHandle);
+	}
+	ElevatorCoveredHandle.Reset();
+	ElevatorRevealedHandle.Reset();
+}
+
+void AFirstPersonPlayerController::ClearLocalElevatorFade()
+{
+	if (!LocalElevatorExecutionId.IsValid()) return;
+	LocalElevatorExecutionId.Invalidate();
+	UnbindElevatorFadeCallbacks();
+	if (bElevatorOwnsLookInputBlock)
+	{
+		SetIgnoreLookInput(false);
+		bElevatorOwnsLookInputBlock = false;
+	}
+	const ULocalPlayer* LP = GetLocalPlayer();
+	if (LP && LP->PlayerController == this)
+	{
+		if (ULocalPlayerPostProcessSubsystem* PP = ElevatorPostProcessSubsystem.Get())
+		{
+			PP->StartScreenBlackoutReveal(SuitCleanupRevealDuration);
+		}
+	}
+	LocalElevatorShaft.Reset();
+	LocalElevatorFadePawn.Reset();
+	ElevatorPostProcessSubsystem.Reset();
+	bLocalElevatorRevealing = false;
+	bLocalElevatorFadeReadySent = false;
 }
 
 // 연결 흐름: 서버 단계 요청 -> 소유 클라이언트의 빈 연출 지점 -> 실제 완료 콜백 -> 서버 준비 검증.
@@ -1499,7 +1675,7 @@ void AFirstPersonPlayerController::ApplyLocalSuitTransitionPhase(
 	}
 	if (Phase == ESuitTransitionPhase::FadingOut)
 	{
-		if (LocalSuitTransitionId.IsValid())
+		if (LocalSuitTransitionId.IsValid() || LocalElevatorExecutionId.IsValid())
 		{
 			return;
 		}
@@ -1835,6 +2011,7 @@ void AFirstPersonPlayerController::ClientArenaGameplayReload_Implementation(
 	}
 
 	// 오래된 리로드 요청은 위에서 거부한다. 유효한 리로드가 시작될 때만 이전 슈트 연출 콜백을 끊는다.
+	ClearLocalElevatorFade();
 	ClearLocalSuitTransition();
 	ClientGameplayReloadStartedAt = FPlatformTime::Seconds();
 	UE_LOG(LogTemp, Display,
