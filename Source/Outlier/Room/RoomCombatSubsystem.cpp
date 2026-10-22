@@ -251,6 +251,27 @@ bool URoomCombatSubsystem::CreateTriggerContext(
 	return true;
 }
 
+bool URoomCombatSubsystem::HasCurrentWaveSpawned(const FRoomCombatTriggerContext& Context) const
+{
+	const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(Context.RoomTag);
+	return CanRunServerGameplay() && Runtime && Runtime->bCurrentWaveHasSpawned
+		&& Runtime->State == ERoomCombatState::Combat
+		&& Runtime->RegistrationId == Context.RoomRegistrationId
+		&& Runtime->GameplayGeneration == Context.GameplayGeneration
+		&& Runtime->CurrentCombatPhaseIndex == Context.CombatPhaseIndex;
+}
+
+bool URoomCombatSubsystem::IsSingleExternalTriggerEncounter(FGameplayTag RoomTag) const
+{
+	const FRoomCombatRoomDefinition* Definition = FindRoomDefinition(RoomTag);
+	if (!Definition || Definition->CombatPhases.Num() != 1 || !Definition->CanStartTriggeredSequence(0))
+	{
+		return false;
+	}
+	const FRoomCombatPhaseDefinition& Phase = Definition->CombatPhases[0];
+	return Phase.StartPolicy == ERoomCombatPhaseStartPolicy::ExternalTrigger;
+}
+
 bool URoomCombatSubsystem::StartTriggeredSequence(
 	AActor* Requester, const FRoomCombatTriggerContext& Context)
 {
@@ -1872,6 +1893,7 @@ bool URoomCombatSubsystem::StartWaveSpawning(
 	Runtime->WaveBaselineEnemyCount = INDEX_NONE;
 	Runtime->GameplayGeneration = GameplayGeneration;
 	Runtime->bCurrentWaveSpawnStarted = true;
+	Runtime->bCurrentWaveHasSpawned = false;
 	Runtime->SpawnAssignments.Reset();
 	QueueWaveSpawnRequests(RoomTag, *Runtime, *Wave, EnemyRoster);
 	QueueWaveTurretActivations(RoomTag, *Runtime, *Wave);
@@ -1996,6 +2018,7 @@ bool URoomCombatSubsystem::RegisterActivatedWaveTurret(
 		RegisteredEnemies.Remove(EnemyPtr);
 		return false;
 	}
+	NotifyFirstWaveSpawn(RoomTag, Runtime);
 	return true;
 }
 
@@ -2072,7 +2095,35 @@ bool URoomCombatSubsystem::RegisterSpawnedEnemy(
 	Registration.bPoolManaged = true;
 	// 소환 연출 중에도 이 전투 차수의 생존 적이다. AI 활성 완료 여부와 생존 집계를 분리한다.
 	Runtime->TrackedAliveEnemies.Add(EnemyPtr);
+	NotifyFirstWaveSpawn(SpawnRequest.RoomTag, *Runtime);
 	return true;
+}
+
+void URoomCombatSubsystem::NotifyFirstWaveSpawn(FGameplayTag RoomTag, FRoomCombatRuntime& Runtime)
+{
+	if (Runtime.bCurrentWaveHasSpawned)
+	{
+		return;
+	}
+	Runtime.bCurrentWaveHasSpawned = true;
+	const FGuid RegistrationId = Runtime.RegistrationId;
+	const int32 Generation = Runtime.GameplayGeneration;
+	const int32 PhaseIndex = Runtime.CurrentCombatPhaseIndex;
+	const int32 WaveIndex = Runtime.CurrentWaveIndex;
+	// Pool/터렛 등록의 호출 스택이 끝난 뒤 알린다. 수신자가 Reset하더라도 진행 중인
+	// Pending 배열이나 Runtime 참조를 무효화하지 않으며, 리로드된 알림은 수명 토큰으로 버린다.
+	GetWorld()->GetTimerManager().SetTimerForNextTick(FTimerDelegate::CreateWeakLambda(this,
+		[this, RoomTag, RegistrationId, Generation, PhaseIndex, WaveIndex]()
+		{
+			const FRoomCombatRuntime* Current = RoomRuntimes.Find(RoomTag);
+			if (!CanRunServerGameplay() || !Current || Current->RegistrationId != RegistrationId
+				|| Current->GameplayGeneration != Generation || Current->State != ERoomCombatState::Combat
+				|| Current->CurrentCombatPhaseIndex != PhaseIndex)
+			{
+				return;
+			}
+			OnWaveFirstSpawned.Broadcast(RoomTag, PhaseIndex, WaveIndex, Generation, RegistrationId);
+		}));
 }
 
 void URoomCombatSubsystem::TrySpawnPendingRequests(FGameplayTag RoomTag)
@@ -2670,6 +2721,7 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 	Runtime->PendingActivationCount = 0;
 	Runtime->PendingWaveTurretActivations.Reset();
 	Runtime->bCurrentWaveSpawnStarted = false;
+	Runtime->bCurrentWaveHasSpawned = false;
 	Runtime->SpawnAssignments.Reset();
 
 	const bool bContinueAutomatically = Runtime->bTriggeredSequenceActive && NextPhase

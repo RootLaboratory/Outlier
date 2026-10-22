@@ -74,6 +74,9 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(FOnRoomCombatEvent,
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnRoomStartReadinessChanged, FGameplayTag /*RoomTag*/);
 DECLARE_MULTICAST_DELEGATE_FourParams(FOnRoomReinforcementStarted,
 	FGameplayTag /*RoomTag*/, int32 /*CombatPhaseIndex*/, int32 /*WaveIndex*/, int32 /*GameplayGeneration*/);
+DECLARE_MULTICAST_DELEGATE_FiveParams(FOnRoomWaveFirstSpawned,
+	FGameplayTag /*RoomTag*/, int32 /*CombatPhaseIndex*/, int32 /*WaveIndex*/,
+	int32 /*GameplayGeneration*/, FGuid /*RoomRegistrationId*/);
 
 struct FRoomCombatPreparationContext // Room 재등록/Arena 리로드 뒤 이전 합류 완료 요청을 버리는 토큰.
 {
@@ -118,6 +121,7 @@ struct FRoomCombatRuntime
 	int32 SpawnRetryAttempts = 0;
 	bool bHadPreplacedEnemy = false;
 	bool bCurrentWaveSpawnStarted = false;
+	bool bCurrentWaveHasSpawned = false;
 	bool bEncounterIdRegistered = false;
 	bool bSavedAutomaticPhasePending = false;
 };
@@ -200,6 +204,10 @@ public:
 	FOnRoomStartReadinessChanged OnRoomStartReadinessChanged;
 	// 남은 적 비율이 기준 이하가 되어 후속 Wave(1 이상) 시작에 성공했을 때만 보낸다. 각 phase의 Wave 0 시작은 포함하지 않는다.
 	FOnRoomReinforcementStarted OnReinforcementStarted;
+	// Wave 0도 포함한다. 요청 생성이 아닌 첫 Pool 등록/터렛 활성화 성공 뒤 서버에서 알린다.
+	FOnRoomWaveFirstSpawned OnWaveFirstSpawned;
+	bool HasCurrentWaveSpawned(const FRoomCombatTriggerContext& Context) const;
+	bool IsSingleExternalTriggerEncounter(FGameplayTag RoomTag) const;
 	// ExternalTrigger의 첫 Wave가 등록된 Room과 설정한 수의 활성 SpawnPoint를 확보했는지 확인한다.
 	bool HasReadyExternalTriggerRoster(const ARoomVolume* RoomVolume, FGameplayTag RoomTag) const;
 
@@ -314,6 +322,7 @@ private:
 		AEnemyBase* Enemy,
 		const FRoomCombatPendingSpawn& SpawnRequest);
 	void TrySpawnPendingRequests(FGameplayTag RoomTag);
+	void NotifyFirstWaveSpawn(FGameplayTag RoomTag, FRoomCombatRuntime& Runtime);
 	void RetryPendingSpawns();
 	void ScheduleSpawnRetry();
 	void CancelSpawnRetry();
