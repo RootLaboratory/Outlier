@@ -45,7 +45,7 @@ public:
 	/** Local-only 2D playback. Suitable for input and UI feedback. */
 	bool PlayLocal2D(const FOutlierAudioPlayRequest& Request);
 
-	/** 로컬 Voice 뱅크 직렬 재생. P0는 P2/P3를 중단할 수 있고, 나머지는 대기한다. */
+	/** 로컬 Voice 뱅크 직렬 재생. P0 > P1 > P2 > P3 순이며, 더 높은 우선순위는 기존 음성과 자막을 중단한다. 같거나 낮으면 대기한다. */
 	bool PlayLocalVoice(FGameplayTag SoundTag, int32 Priority, FGameplayTag RequestTag, ULocalPlayer* Listener);
 	void StopLocalVoices(ULocalPlayer* Listener);
 	/** Voice 오디오 컴포넌트 재생 시작 시 발생한다. RequestTag는 호출자의 EventTag이다. */

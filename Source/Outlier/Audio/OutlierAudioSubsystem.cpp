@@ -1,4 +1,4 @@
-#include "Audio/OutlierAudioSubsystem.h"
+﻿#include "Audio/OutlierAudioSubsystem.h"
 
 #include "Components/AudioComponent.h"
 #include "Engine/AssetManager.h"
@@ -116,7 +116,7 @@ bool UOutlierAudioSubsystem::PlayLocalVoice(FGameplayTag SoundTag, int32 Priorit
 	Request.Listener = Listener;
 	Request.World = World;
 	Request.Priority = Priority;
-	if (Priority == 0 && ActiveVoice.Id != 0 && ActiveVoice.Priority >= 2)
+	if (ActiveVoice.Id != 0 && Priority < ActiveVoice.Priority)
 	{
 		FinishActiveVoice(false);
 	}
