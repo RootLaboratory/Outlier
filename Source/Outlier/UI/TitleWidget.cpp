@@ -2,6 +2,8 @@
 
 
 #include "UI/TitleWidget.h"
+#include "Audio/OutlierAudioSubsystem.h"
+#include "Engine/GameInstance.h"
 #include "Engine/LocalPlayer.h"
 #include "FrontendPlayerController.h"
 #include "Kismet/KismetSystemLibrary.h"
@@ -28,6 +30,13 @@ void UTitleWidget::NativeOnInitialized()
 void UTitleWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
+	if (UOutlierAudioSubsystem* Audio = GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>())
+	{
+		FOutlierAudioPlayRequest Request;
+		Request.EventTag = FGameplayTag::RequestGameplayTag(TEXT("Audio.Type.BGM"));
+		Request.ContextTags.AddTag(FGameplayTag::RequestGameplayTag(TEXT("Audio.Context.Bgm.intro.main")));
+		Audio->PlayLocal2D(Request);
+	}
 
 	PushKeyHintLayer();
 }

@@ -1,4 +1,5 @@
 #include "UI/EMPMarkWidget.h"
+#include "Audio/OutlierAudioFeedback.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/Button.h"
 #include "Components/SceneComponent.h"
@@ -71,6 +72,8 @@ void UEMPMarkWidget::HandleClicked()
 	{
 		return;
 	}
+
+	OutlierAudioFeedback::Local(this, TEXT("Audio.Context.Player.02.Skill.Emp.Select"), TEXT("Audio.Type.Player"));
 
 	if (BillboardFrame)
 	{

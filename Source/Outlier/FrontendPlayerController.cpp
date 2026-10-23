@@ -2,6 +2,7 @@
 
 
 #include "FrontendPlayerController.h"
+#include "Audio/OutlierAudioSubsystem.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
 #include "Engine/LocalPlayer.h"
@@ -474,6 +475,16 @@ void AFrontendPlayerController::PrepareForMatch()
 
 	TitleLayerHandle.Reset();
 	TitleWidget = nullptr;
+
+	// Finish removing frontend UI before stopping its persistent music.
+	// Remote server-side controllers share the listen host's GameInstance.
+	if (IsLocalController())
+	{
+		if (UOutlierAudioSubsystem* Audio = GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>())
+		{
+			Audio->EnterGameplayMusic();
+		}
+	}
 
 	SetInputMode(FInputModeGameOnly());
 	bShowMouseCursor = false;

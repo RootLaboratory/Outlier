@@ -1,4 +1,5 @@
 #include "UI/LobbyWidget.h"
+#include "Audio/OutlierAudioFeedback.h"
 
 #include "Components/CanvasPanelSlot.h"
 #include "Engine/Engine.h"
@@ -134,6 +135,7 @@ void ULobbyWidget::RequestCancelMatchmaking()
 
 void ULobbyWidget::PopSelfFromLayer()
 {
+	OutlierAudioFeedback::Local(this, TEXT("Audio.Context.UI.Menu.Back"));
 	ULocalPlayer* LocalPlayer = GetOwningLocalPlayer();
 	ULocalPlayerUILayerSubsystem* LayerSubsystem = LocalPlayer
 		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()

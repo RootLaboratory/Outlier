@@ -163,6 +163,9 @@ class OUTLIER_API URoomCombatSubsystem : public UWorldSubsystem
 	GENERATED_BODY()
 
 public:
+	bool IsCombatMusicActive() const;
+	void PublishCombatMusicState(bool bPlayEnd);
+	void SendCombatMusicToPlayer(class APlayerState* PlayerState, bool bActive, bool bPlayEnd);
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 	virtual void OnWorldBeginPlay(UWorld& InWorld) override;
@@ -321,6 +324,8 @@ private:
 	void CompactAliveEnemies(FRoomCombatRuntime& Runtime);
 	void CompactSpawnPoints(FGameplayTag RoomTag);
 	void ApplyRoomClearedToSpawnPoints(FGameplayTag RoomTag, bool bCleared);
+	// 배정된 Pending 소환이 남은 지점만 작동 상태로 둔다. 리셋 정리는 bPlayTransitionAudio=false.
+	void RefreshSpawnPointWorkStates(FGameplayTag RoomTag, bool bPlayTransitionAudio);
 	void CompactWaveTurrets(FGameplayTag RoomTag);
 	void ResetWaveTurretsForRoom(FGameplayTag RoomTag, const TCHAR* ResetReason);
 	void HandleArenaGameplayReloadStarted(uint32 GameplayGeneration);

@@ -1,4 +1,5 @@
 #include "Enemy/VECDrone.h"
+#include "Audio/OutlierAudioFeedback.h"
 
 #include "Camera/CameraComponent.h"
 #include "Components/CapsuleComponent.h"
@@ -47,6 +48,12 @@ namespace
 AVECDrone::AVECDrone()
 {
 	SetDefaultEnemyType(EEnemyType::Gun);
+	HitAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Drone.Gun.State.Hit"));
+	DeathAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Drone.Gun.State.Death"));
+	DetectAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Drone.Gun.State.Detect"));
+	HoverAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Drone.Gun.Hovering.Loop"));
+	AppearAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Drone.Gun.State.Appear"));
+
 	bUseControllerRotationPitch = false;
 
 	// Capsule -> AIFacingPitchRoot -> ThirdPersonTiltRoot -> Mesh 순으로 계층을 둔다.

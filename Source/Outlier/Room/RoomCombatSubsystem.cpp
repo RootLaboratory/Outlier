@@ -1,4 +1,6 @@
 #include "Room/RoomCombatSubsystem.h"
+#include "GameFramework/PlayerController.h"
+#include "Audio/OutlierAudioSubsystem.h"
 
 #include "Enemy/AutoTurret.h"
 #include "Enemy/EnemyBase.h"
@@ -412,6 +414,7 @@ void URoomCombatSubsystem::BroadcastCombatEvent(
 {
 	UE_LOG(LogTemp, Display, TEXT("[RoomCombat] Event=%d Room=%s Phase=%d Generation=%d"),
 		static_cast<int32>(Event), *RoomTag.ToString(), PhaseIndex, Generation);
+	PublishCombatMusicState(Event != ERoomCombatEvent::Cancelled);
 	OnCombatEvent.Broadcast(RoomTag, Event, PhaseIndex, Generation);
 #if WITH_DEV_AUTOMATION_TESTS
 	if (CombatEventObserverForTesting)
@@ -729,7 +732,9 @@ void URoomCombatSubsystem::UnregisterRoom(ARoomVolume* RoomVolume)
 		{
 			return Request.RoomTag == RoomTag;
 		});
+	RefreshSpawnPointWorkStates(RoomTag, false);
 	RoomRuntimes.Remove(RoomTag);
+	PublishCombatMusicState(false);
 
 	// Pool 반환은 UnregisterEnemy를 다시 호출하므로 Runtime 제거 뒤 별도 목록으로 처리한다.
 	if (UEnemyPoolSubsystem* PoolSubsystem = GetWorld()
@@ -1990,6 +1995,8 @@ void URoomCombatSubsystem::QueueWaveSpawnRequests(
 			Runtime.SpawnAssignments.FindOrAdd(EligibleSpawnPoints[SpawnPointIndex])++;
 		}
 	}
+	// 소환 지연이 있으면 On/Loop가 먼저 들리고, 지연이 없으면 첫 Act와 겹친다.
+	RefreshSpawnPointWorkStates(RoomTag, true);
 
 	UE_LOG(LogTemp, Display,
 		TEXT("[Reinforcement] Enemy=None Stage=WaveQueued Room=%s Phase=%d Wave=%d Generation=%d Requests=%d SpawnPoints=%d RequiredSpawnPointTag=%s"),
@@ -2132,9 +2139,15 @@ void URoomCombatSubsystem::TrySpawnPendingRequests(FGameplayTag RoomTag)
 			*SpawnTransform.GetLocation().ToCompactString(),
 			GetPendingSpawnCount(RoomTag) - 1);
 
+		SpawnPoint->PlaySpawnActAudio();
+		Enemy->PlaySpawnAppearAudio();
+
 		// Pool 대여와 Room 생존 집계 등록이 모두 성공해야 요청 하나가 완료된다.
 		PendingSpawnRequests.RemoveAtSwap(RequestIndex, 1, EAllowShrinking::No);
 	}
+
+	// 마지막 배정분을 내보낸 지점은 Off, 재배정으로 새로 일을 받은 지점은 On.
+	RefreshSpawnPointWorkStates(RoomTag, true);
 
 	if (PendingSpawnRequests.IsEmpty())
 	{
@@ -2222,6 +2235,7 @@ void URoomCombatSubsystem::RetryPendingSpawns()
 		&& Runtime->GameplayGeneration != static_cast<int32>(ArenaSubsystem->GetGameplayGeneration())))
 	{
 		PendingSpawnRequests.Reset();
+		RefreshSpawnPointWorkStates(ActiveCombatRoomTag, false);
 		CancelSpawnRetry();
 		return;
 	}
@@ -2431,9 +2445,14 @@ void URoomCombatSubsystem::ResetRuntimeCombatState()
 
 	// Pool 반환도 Room 등록 해제를 호출한다. 역호출이 이전 전투를 진행시키지 않도록 집계부터 비운다.
 	RoomRuntimes.Reset();
+	PublishCombatMusicState(false);
 	PendingPreplacedEnemies.Reset();
 	RegisteredEnemies.Reset();
 	PendingSpawnRequests.Reset();
+	for (const TPair<FGameplayTag, TArray<FRoomCombatSpawnPointRuntime>>& Entry : SpawnPointsByRoom)
+	{
+		RefreshSpawnPointWorkStates(Entry.Key, false);
+	}
 	SpawnPointsByRoom.Reset();
 	RegisteredSpawnPointRooms.Reset();
 	WaveTurretsByRoom.Reset();
@@ -2836,6 +2855,35 @@ void URoomCombatSubsystem::ApplyRoomClearedToSpawnPoints(FGameplayTag RoomTag, b
 	}
 }
 
+void URoomCombatSubsystem::RefreshSpawnPointWorkStates(FGameplayTag RoomTag, bool bPlayTransitionAudio)
+{
+	const TArray<FRoomCombatSpawnPointRuntime>* Points = SpawnPointsByRoom.Find(RoomTag);
+	if (!Points)
+	{
+		return;
+	}
+
+	TSet<const ARoomCombatSpawnPoint*> WorkingPoints;
+	for (const FRoomCombatPendingSpawn& Request : PendingSpawnRequests)
+	{
+		if (Request.RoomTag == RoomTag)
+		{
+			if (const ARoomCombatSpawnPoint* AssignedPoint = Request.AssignedSpawnPoint.Get())
+			{
+				WorkingPoints.Add(AssignedPoint);
+			}
+		}
+	}
+
+	for (const FRoomCombatSpawnPointRuntime& Entry : *Points)
+	{
+		if (ARoomCombatSpawnPoint* Point = Entry.SpawnPoint.Get())
+		{
+			Point->SetSpawnerWorking(WorkingPoints.Contains(Point), bPlayTransitionAudio);
+		}
+	}
+}
+
 void URoomCombatSubsystem::CompactAliveEnemies(FRoomCombatRuntime& Runtime)
 {
 	for (auto EnemyIt = Runtime.TrackedAliveEnemies.CreateIterator(); EnemyIt; ++EnemyIt)
@@ -2912,4 +2960,45 @@ void URoomCombatSubsystem::HandleArenaGameplayReloadStarted(uint32 GameplayGener
 void URoomCombatSubsystem::HandleArenaReleased()
 {
 	ResetRuntimeCombatState();
+}
+
+bool URoomCombatSubsystem::IsCombatMusicActive() const
+{
+ for (const auto& Pair : RoomRuntimes)
+  if (Pair.Value.State == ERoomCombatState::Combat
+   || (Pair.Value.State == ERoomCombatState::Preparing && Pair.Value.bExitBlockActive)) return true;
+ return false;
+}
+
+void URoomCombatSubsystem::PublishCombatMusicState(bool bPlayEnd)
+{
+	UWorld* World = GetWorld();
+	if (!World || World->GetNetMode() == NM_Client) return;
+	const AGameStateBase* GameState = World->GetGameState();
+	if (!GameState) return;
+	const bool bActive = IsCombatMusicActive();
+	for (APlayerState* PlayerState : GameState->PlayerArray)
+	{
+		SendCombatMusicToPlayer(PlayerState, bActive, bPlayEnd);
+	}
+}
+
+void URoomCombatSubsystem::SendCombatMusicToPlayer(
+	APlayerState* PlayerState, bool bActive, bool bPlayEnd)
+{
+	if (!GetWorld() || GetWorld()->GetNetMode() == NM_Client) return;
+	APlayerController* PC = PlayerState ? PlayerState->GetPlayerController() : nullptr;
+	UGameInstance* GI = PC ? PC->GetGameInstance() : nullptr;
+	UOutlierAudioSubsystem* Audio = GI ? GI->GetSubsystem<UOutlierAudioSubsystem>() : nullptr;
+	if (!Audio) return;
+
+	FOutlierAudioPlayRequest Request;
+	Request.EventTag = FGameplayTag::RequestGameplayTag(TEXT("Audio.Type.BGM"));
+	Request.ContextTags.AddTag(FGameplayTag::RequestGameplayTag(bActive
+		? TEXT("Audio.Context.Bgm.inbattle.Start")
+		: bPlayEnd ? TEXT("Audio.Context.Bgm.inbattle.End")
+		: TEXT("Audio.Context.Bgm.inbattle.Stop")));
+	Request.EmitterActor = PC;
+	Request.RecipientActor = PC;
+	Audio->PlayOwner2DFromServer(Request);
 }

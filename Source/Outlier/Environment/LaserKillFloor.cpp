@@ -1,4 +1,6 @@
 #include "Environment/LaserKillFloor.h"
+#include "Audio/OutlierAudioFeedback.h"
+#include "GameFramework/Pawn.h"
 
 #include "Components/BoxComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -118,6 +120,7 @@ void ALaserKillFloor::OnRep_HazardEnabled()
 
 void ALaserKillFloor::ApplyHazardState()
 {
+	OutlierAudioFeedback::Loop(this, TEXT("Audio.Context.Object.Laser.Act"), bHazardEnabled);
 	KillVolume->SetCollisionEnabled(bHazardEnabled
 		? ECollisionEnabled::QueryOnly
 		: ECollisionEnabled::NoCollision);
@@ -148,6 +151,7 @@ void ALaserKillFloor::ApplyInstantKillDamage(AActor* TargetActor, const FHitResu
 	const float AppliedDamage = OutlierDamage::Apply(TargetActor, DamageRequest);
 	if (AppliedDamage > 0.0f)
 	{
+		if (TargetActor->IsA<APawn>()) OutlierAudioFeedback::World(this, TEXT("Audio.Context.Object.Laser.Hit"), TEXT("Audio.Type.Interactable"), &DamageRequest.HitResult.ImpactPoint);
 		UE_LOG(
 			LogOutlier,
 			Verbose,

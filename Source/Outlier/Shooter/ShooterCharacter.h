@@ -582,6 +582,8 @@ protected:
 	void BindGasVitalityObservers();
 	void UnbindGasVitalityObservers();
 	void HandleHealthChanged(const FOnAttributeChangeData& ChangeData);
+	void RefreshLowHPAudio();
+	virtual void UnPossessed() override;
 	void HandleShieldChanged(const FOnAttributeChangeData& ChangeData);
 	void HandleDeadTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleBulletReflectionTagChanged(const FGameplayTag Tag, int32 NewCount);
@@ -629,6 +631,7 @@ protected:
 
 	virtual void LookInput(const FInputActionValue& Value) override;
 public:
+	void PlayWeaponEquipAudio();
 	// Construction
 	/** Constructor */
 	AShooterCharacter();

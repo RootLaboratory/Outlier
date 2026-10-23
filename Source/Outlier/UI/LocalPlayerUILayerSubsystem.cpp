@@ -1,4 +1,7 @@
 #include "UI/LocalPlayerUILayerSubsystem.h"
+#include "Audio/OutlierAudioFeedback.h"
+#include "Audio/OutlierAudioSubsystem.h"
+#include "Engine/GameInstance.h"
 
 #include "Blueprint/UserWidget.h"
 #include "Components/Button.h"
@@ -304,6 +307,7 @@ FUILayerHandle ULocalPlayerUILayerSubsystem::PushWidget(
 	Entry.bShowCursor = bShowCursor;
 	Entry.bReceivesInput = bReceivesInput;
 
+	if (auto* Audio = GetWorld()->GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>()) Audio->BindMenuButtons(Widget);
 	RefreshTopLayerInput();
 	return Handle;
 }
@@ -596,16 +600,22 @@ FGameplayTag ULocalPlayerUILayerSubsystem::GetActiveInputModeTag() const
 
 bool ULocalPlayerUILayerSubsystem::RouteWidgetEscapeInput(bool bPopUnhandledInput)
 {
-	return RouteWidgetInput(
-		&IUILayerInputReceiver::Execute_HandleUILayerEscape,
-		bPopUnhandledInput);
+	auto* Audio = GetWorld()->GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>();
+	const uint64 Before = Audio ? Audio->MenuAudioSerial : 0;
+	const bool bHandled = RouteWidgetInput(&IUILayerInputReceiver::Execute_HandleUILayerEscape, bPopUnhandledInput);
+	if (bHandled && Audio && Audio->MenuAudioSerial == Before)
+		OutlierAudioFeedback::Local(this, TEXT("Audio.Context.UI.Menu.Back"));
+	return bHandled;
 }
 
 bool ULocalPlayerUILayerSubsystem::RouteWidgetConfirmedInput()
 {
-	return RouteWidgetInput(
-		&IUILayerInputReceiver::Execute_HandleUILayerConfirmed,
-		false);
+	auto* Audio = GetWorld()->GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>();
+	const uint64 Before = Audio ? Audio->MenuAudioSerial : 0;
+	const bool bHandled = RouteWidgetInput(&IUILayerInputReceiver::Execute_HandleUILayerConfirmed, false);
+	if (bHandled && Audio && Audio->MenuAudioSerial == Before)
+		OutlierAudioFeedback::Local(this, TEXT("Audio.Context.UI.Menu.Click"));
+	return bHandled;
 }
 
 bool ULocalPlayerUILayerSubsystem::RouteWidgetUpInput()

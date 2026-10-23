@@ -2,6 +2,7 @@
 
 
 #include "Drone/Partner/PartnerShieldSphere.h"
+#include "Audio/OutlierAudioFeedback.h"
 
 #include "Components/SphereComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -73,7 +74,9 @@ float APartnerShieldSphere::ReceiveOutlierDamage(const FOutlierDamageRequest& Re
 		return 0.0f;
 	}
 
-	return OutlierDamage::Apply(ShieldTarget, Request);
+	const float Applied = OutlierDamage::Apply(ShieldTarget, Request);
+	OutlierAudioFeedback::World(this, TEXT("Audio.Context.Object.Shield.Deflect"));
+	return Applied;
 }
 
 void APartnerShieldSphere::InitializeShield(AShooterCharacter* InShieldTarget, APartnerCharacter* InSourcePartner)

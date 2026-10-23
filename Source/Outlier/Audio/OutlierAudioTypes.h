@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DataAsset.h"
+#include "Engine/NetSerialization.h"
 #include "GameplayTagContainer.h"
 #include "OutlierAudioTypes.generated.h"
 
@@ -180,6 +181,10 @@ USTRUCT(BlueprintType)
 struct OUTLIER_API FOutlierResolvedAudioPlay
 {
 	GENERATED_BODY()
+
+	/** BGM context delivered through the existing owner-audio route. */
+	UPROPERTY(BlueprintReadOnly, Category = "Audio")
+	FGameplayTag MusicContextTag;
 
 	// UOutlierAudioBank::TypeTag ( Audio.Type.* ). 필드명은 유지, 의미는 Type.
 	UPROPERTY(BlueprintReadOnly, Category = "Audio")

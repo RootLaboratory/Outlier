@@ -48,6 +48,7 @@ public class Outlier : ModuleRules
         if (Target.bBuildEditor)
         {
             PrivateDependencyModuleNames.Add("AssetRegistry");
+            PrivateDependencyModuleNames.Add("UnrealEd");
         }
 
         PublicIncludePaths.AddRange(new string[] {

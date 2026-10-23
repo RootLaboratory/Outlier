@@ -194,6 +194,10 @@ protected:
 	virtual void PrepareForStateTreeStart() override;
 	virtual bool ShouldActivateAsPreplacedEnemy() const override;
 	virtual void HandleDeath() override;
+	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Audio", meta = (Categories = "Audio.Context"))
+	FGameplayTag DeployAudioContext;
+	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Audio", meta = (Categories = "Audio.Context"))
+	FGameplayTag HackedAudioContext;
 	virtual void HandleHackEffect(FGameplayTag EffectTag, const FHackResultContext& Context) override;
 	virtual void HandleHackStarted(const FHackQueryContext& Context) override;
 	virtual void HandleHackCompleted(const FHackResultContext& Context) override;

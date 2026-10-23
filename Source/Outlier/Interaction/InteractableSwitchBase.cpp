@@ -194,6 +194,11 @@ void AInteractableSwitchBase::HandleHackEffect(FGameplayTag EffectTag, const FHa
 		{
 			HackableComponent->MarkAsHackedOnce();
 		}
+		UOutlierAudioSubsystem::PlayTaggedAtLocationFromServer(
+			this,
+			FGameplayTag::RequestGameplayTag(TEXT("Audio.Type.Interactable")),
+			FGameplayTag::RequestGameplayTag(TEXT("Audio.Context.Object.Hack.Active")));
+		ForceNetUpdate();
 	}
 
 	// HandleHackEffect itself is already invoked on every machine (server + all clients) via

@@ -94,6 +94,13 @@ class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, pub
 	GENERATED_BODY()
 
 public:
+
+	virtual FGameplayTag GetHitAudioContext() const { return HitAudioContext; }
+	virtual FGameplayTag GetDeathAudioContext() const { return DeathAudioContext; }
+	void RefreshEnemyAudioState();
+	// 증원 지점에서 소환됐을 때만 호출한다. 배치 Enemy는 등장 소리를 내지 않는다.
+	void PlaySpawnAppearAudio();
+
 	AEnemyBase();
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Enemy|Flight Height")
@@ -639,6 +646,24 @@ public:
 	virtual bool CanShowMeleeTargetIndicator_Implementation(const AActor* InstigatorActor) const override;
 	virtual void SetMeleeTargeted_Implementation(AActor* InstigatorActor, bool bTargeted) override;
 protected:
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Audio", meta = (Categories = "Audio.Context"))
+	FGameplayTag HitAudioContext;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Audio", meta = (Categories = "Audio.Context"))
+	FGameplayTag DeathAudioContext;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Audio", meta = (Categories = "Audio.Context"))
+	FGameplayTag DetectAudioContext;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Audio", meta = (Categories = "Audio.Context"))
+	FGameplayTag HoverAudioContext;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Audio", meta = (Categories = "Audio.Context"))
+	FGameplayTag DownAudioContext;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Audio", meta = (Categories = "Audio.Context"))
+	FGameplayTag AppearAudioContext;
+
 	UFUNCTION()
 	void OnRep_RuntimeStat();
 

@@ -2,6 +2,8 @@
 
 
 #include "FirstPersonPlayerController.h"
+#include "Room/RoomCombatSubsystem.h"
+#include "Audio/OutlierAudioFeedback.h"
 #include "Audio/OutlierAudioSubsystem.h"
 #include "Audio/OutlierUIAudioSettings.h"
 #include "EnhancedInputComponent.h"
@@ -798,6 +800,12 @@ void AFirstPersonPlayerController::PushGameOverWidget()
 		return;
 	}
 
+	// Discard gameplay playback before widget construction can play its own UI audio.
+	if (UOutlierAudioSubsystem* Audio = GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>())
+	{
+		Audio->StopAllLocalAudio();
+	}
+
 	FUILayerPushRequest Request;
 	Request.WidgetClass = GameOverWidgetClass;
 	Request.LayerTag = UILayerTags::Gameplay();
@@ -948,6 +956,7 @@ void AFirstPersonPlayerController::ServerTryActivateUpgradeNode_Implementation(
 			*GetNameSafe(UpgradeOwner),
 			*GetNameSafe(OutlierPlayerState),
 			*NodeIdOrRowName.ToString());
+		OutlierAudioFeedback::Owner(this, TEXT("Audio.Context.UI.Ingame.Upgrade.Fail"), TEXT("Audio.Type.UI"));
 		return;
 	}
 
@@ -956,9 +965,8 @@ void AFirstPersonPlayerController::ServerTryActivateUpgradeNode_Implementation(
 		UpgradeComponent->SetUpgradeSetData(UpgradeSetData);
 	}
 
-	UpgradeComponent->TryActivateNodeForPlayerState(
-		NodeIdOrRowName,
-		OutlierPlayerState);
+	const bool bSuccess = UpgradeComponent->TryActivateNodeForPlayerState(NodeIdOrRowName, OutlierPlayerState);
+	OutlierAudioFeedback::Owner(this, bSuccess ? TEXT("Audio.Context.UI.Ingame.Upgrade.Active") : TEXT("Audio.Context.UI.Ingame.Upgrade.Fail"), TEXT("Audio.Type.UI"));
 }
 
 void AFirstPersonPlayerController::ClientPlayExplosionCameraShake_Implementation(
@@ -1094,6 +1102,9 @@ bool AFirstPersonPlayerController::IsFirstPersonInputMode(FGameplayTag InputMode
 void AFirstPersonPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
+	if (IsLocalController())
+		if (UOutlierAudioSubsystem* Audio = GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>())
+			Audio->EnterGameplayMusic();
 	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalPlayer()
 		? GetLocalPlayer()->GetSubsystem<ULocalPlayerUISubSystem>()
 		: nullptr)
@@ -1111,6 +1122,14 @@ void AFirstPersonPlayerController::AcknowledgePossession(APawn* P)
 
 	if (IsLocalController())
 	{
+		if (P)
+		{
+			if (UOutlierAudioSubsystem* Audio = GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>())
+			{
+				Audio->EnterGameplayMusic();
+			}
+		}
+
 		// 원격 클라이언트는 새 Pawn 확인 시 기존 MainUI의 가시성을 되돌린다.
 		if (bReleaseDeathTransitionOnPossess)
 		{
@@ -1197,6 +1216,16 @@ void AFirstPersonPlayerController::ReportLoadedLevelsVisibilityToServer()
 void AFirstPersonPlayerController::OnPossess(APawn* InPawn)
 {
 	Super::OnPossess(InPawn);
+	// Listen controllers can BeginPlay before SwapPlayerControllers assigns their LocalPlayer.
+	// Possession happens after that assignment and is the authoritative host gameplay entry.
+	if (IsLocalController() && InPawn)
+	{
+		if (UOutlierAudioSubsystem* Audio = GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>())
+		{
+			Audio->EnterGameplayMusic();
+		}
+	}
+
 	// 리슨 서버 호스트는 서버 Possess에서 로컬 UI를 복구한다.
 	if (IsLocalController() && InPawn && bReleaseDeathTransitionOnPossess)
 	{
@@ -1270,7 +1299,6 @@ void AFirstPersonPlayerController::SetupInputComponent()
 
 void AFirstPersonPlayerController::HandleWidgetEscapeInput()
 {
-	PlayWidgetEscapeLocal2DAudio();
 
 	ULocalPlayerUILayerSubsystem* LayerSubsystem = GetLocalPlayer()
 		? GetLocalPlayer()->GetSubsystem<ULocalPlayerUILayerSubsystem>()
@@ -1285,6 +1313,7 @@ void AFirstPersonPlayerController::HandleWidgetEscapeInput()
 	// 사망 중에는 UI 응답 외에 설정 창을 새로 열지 않는다.
 	if (GetPawn() && !bGameOverVisible)
 	{
+		OutlierAudioFeedback::Local(this, TEXT("Audio.Context.UI.Menu.Click"));
 		RequestOpenInGameSetting();
 	}
 }
@@ -1729,6 +1758,13 @@ void AFirstPersonPlayerController::InitializeOutlierPlayerState()
 
 	//OutlierPlayerState->SetPlayerRole(DefaultPlayerRole);
 	//OutlierPlayerState->SetPairId(DefaultPairId);
+	if (URoomCombatSubsystem* Combat = GetWorld()->GetSubsystem<URoomCombatSubsystem>())
+	{
+		if (Combat->IsCombatMusicActive())
+		{
+			Combat->SendCombatMusicToPlayer(OutlierPlayerState, true, false);
+		}
+	}
 
 }
 

@@ -1,4 +1,7 @@
 #include "UI/UpgradeNodeWidget.h"
+#include "Audio/OutlierAudioFeedback.h"
+#include "Audio/OutlierAudioSubsystem.h"
+#include "Engine/GameInstance.h"
 
 #include "Components/Button.h"
 #include "Components/CanvasPanel.h"
@@ -240,6 +243,9 @@ void UUpgradeNodeWidget::HandleClicked()
 
 void UUpgradeNodeWidget::HandlePurchaseRequested()
 {
+	if (auto* Audio = GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>()) Audio->MarkMenuAction();
+	bool bAwaitingServerResult = false;
+	bool bPurchaseRequested = false;
 	if (!bAlwaysShowUnlockedIcon && CurrentState == EOutlierUpgradeNodeState::Unlocked && bCanAfford)
 	{
 		if (UOutlierUpgradeComponent* UpgradeComponent = ResolveUpgradeComponent())
@@ -287,6 +293,7 @@ void UUpgradeNodeWidget::HandlePurchaseRequested()
 							LookupName,
 							ContextSetData);
 						bActivationRequested = true;
+						bAwaitingServerResult = true;
 					}
 				}
 				else if (!UpgradeComponent->GetOwner() || UpgradeComponent->GetOwner()->HasAuthority())
@@ -299,6 +306,7 @@ void UUpgradeNodeWidget::HandlePurchaseRequested()
 				}
 			}
 
+			bPurchaseRequested = bActivationRequested;
 			if (bActivationRequested)
 			{
 				HideUpgradeDescWidget();
@@ -308,6 +316,8 @@ void UUpgradeNodeWidget::HandlePurchaseRequested()
 			}
 		}
 	}
+	if (!bAwaitingServerResult)
+		OutlierAudioFeedback::Local(this, bPurchaseRequested ? TEXT("Audio.Context.UI.Ingame.Upgrade.Active") : TEXT("Audio.Context.UI.Ingame.Upgrade.Fail"));
 }
 
 void UUpgradeNodeWidget::HandleHovered()

@@ -1,4 +1,5 @@
 #include "UI/InGameSettingButtonsWidget.h"
+#include "Audio/OutlierAudioFeedback.h"
 
 #include "Components/Button.h"
 
@@ -215,6 +216,7 @@ void UInGameSettingButtonsWidget::ConfirmAction(EInGameSettingButtonAction Actio
 {
 	if (IsActionEnabled(Action))
 	{
+		OutlierAudioFeedback::Local(this, TEXT("Audio.Context.UI.Menu.Click"));
 		OnActionConfirmed.Broadcast(Action);
 	}
 }

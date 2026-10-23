@@ -2,6 +2,7 @@
 
 
 #include "Drone/Partner/PartnerCharacter.h"
+#include "Audio/OutlierAudioFeedback.h"
 #include "Drone/Partner/PartnerPlayerController.h"
 #include "Drone/Partner/PartnerInputConfig.h"
 #include "EnhancedInputComponent.h"
@@ -165,6 +166,7 @@ float APartnerCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 		Request.DamageTag);
 	if (bApplied)
 	{
+		OutlierAudioFeedback::Owner(this, TEXT("Audio.Context.Player.02.State.Hit"));
 		ClientShowDamageFeedback(Request.DamageOrigin);
 	}
 

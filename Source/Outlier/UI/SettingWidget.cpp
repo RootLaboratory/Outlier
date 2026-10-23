@@ -1,4 +1,5 @@
 #include "UI/SettingWidget.h"
+#include "Audio/OutlierAudioFeedback.h"
 
 #include "Audio/OutlierAudioSubsystem.h"
 #include "Components/Button.h"
@@ -109,7 +110,7 @@ void USettingWidget::NativeConstruct()
 			if (UOutlierAudioSubsystem* AudioSubsystem =
 				GameInstance->GetSubsystem<UOutlierAudioSubsystem>())
 			{
-				AudioSubsystem->StopAllLocalAudio();
+				AudioSubsystem->StopTransientLocalAudio();
 			}
 		}
 	}
@@ -228,6 +229,7 @@ bool USettingWidget::HandleUILayerRight_Implementation()
 
 void USettingWidget::PopSelfFromLayer()
 {
+	if (IsInViewport() || GetParent()) OutlierAudioFeedback::Local(this, TEXT("Audio.Context.UI.Menu.Back"));
 	if (MouseSensitivityWidget)
 	{
 		MouseSensitivityWidget->ConfirmPendingValue();

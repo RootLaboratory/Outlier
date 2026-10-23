@@ -1,4 +1,5 @@
 #include "UI/RightGifBindedWidget.h"
+#include "Audio/OutlierAudioFeedback.h"
 
 #include "Components/TextBlock.h"
 #include "Engine/LocalPlayer.h"
@@ -66,6 +67,7 @@ bool URightGifBindedWidget::PresentInfo(const FOutlierInfoWidgetRequest& Request
 	{
 		InputWidget->SetInputData(Display, CurrentGifData.InputDisplayDesc);
 	}
+	OutlierAudioFeedback::Local(this, TEXT("Audio.Context.UI.Ingame.Tutorial.Explain"));
 	return true;
 }
 

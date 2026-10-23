@@ -60,6 +60,11 @@ protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void HandleDeath() override;
+	virtual FGameplayTag GetDeathAudioContext() const override { return bTriggeredSelfDestruct ? FGameplayTag() : DeathAudioContext; }
+	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Audio", meta = (Categories = "Audio.Context"))
+	FGameplayTag TelegraphAudioContext;
+	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Audio", meta = (Categories = "Audio.Context"))
+	FGameplayTag SelfDestructAudioContext;
 	virtual void ResetPoolRuntimeState() override;
 	virtual void PrepareForPoolIdle() override;
 	virtual bool TryApplyCommittedImpactVelocity(const FVector& ImpactVelocity) override;
@@ -100,6 +105,7 @@ private:
 		float ChargeDistanceLimit);
 
 	bool bDeathHandling = false;
+	bool bTriggeredSelfDestruct = false;
 	FFlightSpeedProfileState ChargeSpeedState;
 	friend class FEnemyChargeSpeedProfileTest;
 	friend class FEnemyChargeCollisionTest;

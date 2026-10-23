@@ -1,4 +1,5 @@
 #include "UI/TitleButtonsWidget.h"
+#include "Audio/OutlierAudioFeedback.h"
 
 #include "Components/Button.h"
 
@@ -170,6 +171,7 @@ void UTitleButtonsWidget::ApplySelection()
 
 void UTitleButtonsWidget::ConfirmAction(ETitleButtonAction Action)
 {
+	OutlierAudioFeedback::Local(this, TEXT("Audio.Context.UI.Menu.Click"));
 	OnActionConfirmed.Broadcast(Action);
 }
 

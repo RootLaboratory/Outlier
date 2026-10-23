@@ -1,8 +1,10 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Containers/Ticker.h"
 #include "Audio/OutlierAudioTypes.h"
 #include "Subsystems/GameInstanceSubsystem.h"
+#include "TimerManager.h"
 #include "OutlierAudioSubsystem.generated.h"
 
 struct FStreamableHandle;
@@ -96,7 +98,7 @@ public:
 	bool PlayResolvedAudioLocally(const FOutlierResolvedAudioPlay& ResolvedPlay);
 
 	/** Stops and releases one locally playing loop instance. */
-	bool StopLoopAudioLocally(int32 AudioInstanceId);
+	bool StopLoopAudioLocally(int32 AudioInstanceId, float FadeOutDuration = 0.0f);
 
 	UFUNCTION(BlueprintCallable, Category = "Outlier|Audio|Settings")
 	void SetVolumeMultiplier(EOutlierAudioVolumeType VolumeType, float NewMultiplier);
@@ -104,10 +106,93 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Outlier|Audio|Settings")
 	float GetVolumeMultiplier(EOutlierAudioVolumeType VolumeType) const;
 
+	/** Stops current playback and discards all queued plays; future UI requests remain usable. */
 	UFUNCTION(BlueprintCallable, Category = "Outlier|Audio|Playback")
 	void StopAllLocalAudio();
+	/** Menu entry stops transient feedback without discarding gameplay-owned desired loops. */
+	void StopTransientLocalAudio();
+	void StartFrontendMusic();
+	void EnterGameplayMusic();
+
+// Desired local loop state. The subsystem owns handles, retries and emitter attachment.
+	void SetLocalEmitterLoop(AActor* Emitter, FGameplayTag Type, FGameplayTag Context, bool bEnabled,
+		bool bTwoD = false, float FadeOutDuration = 0.0f);
+
+	/**
+	 * Ambient Volume 전용 BGM 채널. 기존 MusicComponent( 프론트엔드/전투 )와는 별개로 동시에 재생된다.
+	 * 가장 마지막에 들어간 영역의 Context 한 곡만 키우고 나머지는 줄인다. 줄어들던 곡으로 돌아오면
+	 * 새로 재생하지 않고 그 자리에서 다시 키운다.
+	 */
+	void SetZoneMusic(const UObject* Requester, FGameplayTag Context, bool bEnabled,
+		float FadeInDuration, float FadeOutDuration);
+
+	/**
+	 * Context 를 가진 Bank 의 TypeTag 를 찾는다. 아직 내용이 안 올라온 Bank 가 남아 있으면 그 로드를 걸고
+	 * bOutPending = true 로 돌려준다( 잠시 뒤 다시 호출 ). 모든 Bank 를 봤는데도 없으면 false + bOutPending = false.
+	 */
+	bool ResolveTypeForContext(FGameplayTag Context, FGameplayTag& OutType, bool& bOutPending);
+	void StopLocalEmitterLoops(AActor* Emitter);
+	void BindMenuButtons(class UUserWidget* Widget);
+	uint64 MenuAudioSerial = 0;
+	uint64 LastMenuAudioFrame = MAX_uint64;
+	void MarkMenuAction() { ++MenuAudioSerial; LastMenuAudioFrame = GFrameCounter; }
 
 private:
+	void HandleAudioWorldTick(UWorld* World, ELevelTick TickType, float DeltaTime);
+	void SyncAudioPause(UAudioComponent* Component);
+	FDelegateHandle AudioWorldTickHandle;
+	TSet<TWeakObjectPtr<UAudioComponent>> WorldPausedAudioComponents;
+
+	bool bStoppingAllLocalAudio = false;
+	UPROPERTY(Transient) TObjectPtr<UAudioComponent> MusicComponent;
+	FGameplayTag DesiredMusicContext;
+	TSharedPtr<FStreamableHandle> MusicLoadHandle;
+	FTSTicker::FDelegateHandle MusicTickerHandle;
+	uint64 MusicRevision = 0;
+	bool bFrontendMusic = false;
+	bool bCombatMusic = false;
+	float MusicBaseVolume = 1.0f;
+	FGameplayTag ResolveMusicContext(const FOutlierAudioPlayRequest& Request) const;
+	void HandleMusicContext(FGameplayTag Context);
+	void SetCombatMusicActive(bool bActive, bool bPlayEnd = true);
+	void RequestMusic(FGameplayTag Context);
+	void StopMusicPlayback();
+	bool TickMusic(float DeltaTime);
+	void UpdateMusicVolume();
+	UFUNCTION() void HandleMusicFinished();
+
+	struct FZoneMusicRequest
+	{
+		TWeakObjectPtr<const UObject> Requester;
+		FGameplayTag Context;
+		float FadeInDuration = 0.0f;
+		float FadeOutDuration = 0.0f;
+	};
+
+	struct FZoneMusicTrack
+	{
+		TWeakObjectPtr<UAudioComponent> Component;
+		FGameplayTag Context;
+		float BaseVolume = 1.0f;
+		EOutlierAudioVolumeType VolumeType = EOutlierAudioVolumeType::BGM;
+		float FadeAlpha = 0.0f;
+		float TargetAlpha = 1.0f;
+		float FadeInDuration = 0.0f;
+		float FadeOutDuration = 0.0f;
+	};
+
+	TArray<FZoneMusicRequest> ZoneMusicRequests; // 마지막 원소가 지금 재생할 곡
+	TArray<FZoneMusicTrack> ZoneMusicTracks;
+	TSharedPtr<FStreamableHandle> ZoneMusicLoadHandle;
+	FGameplayTag ZoneMusicLoadingContext;
+	TWeakObjectPtr<UWorld> ZoneMusicWorld;
+	FTSTicker::FDelegateHandle ZoneMusicTickerHandle;
+	const FZoneMusicRequest* RefreshZoneMusicTargets();
+	void TryStartZoneMusicTrack(const FZoneMusicRequest& Request);
+	bool TickZoneMusic(float DeltaTime);
+	void ApplyZoneMusicVolume(const FZoneMusicTrack& Track) const;
+	void UpdateZoneMusicVolumes();
+	void ClearZoneMusic();
 	struct FRuntimeCatalogEntry
 	{
 		FString SourceName;
@@ -124,6 +209,7 @@ private:
 
 	struct FActiveAudioPlayback
 	{
+		bool bPlayWhenPaused = false;
 		TWeakObjectPtr<UAudioComponent> Component;
 		float BaseVolumeMultiplier = 1.0f;
 		EOutlierAudioVolumeType VolumeType = EOutlierAudioVolumeType::SFX;
@@ -133,6 +219,7 @@ private:
 
 	struct FPendingPlay
 	{
+		bool bPlayWhenPaused = false;
 		TWeakObjectPtr<UWorld> World;
 		FString SourceName;
 		bool bAtLocation = false;
@@ -143,6 +230,8 @@ private:
 		EOutlierAudioVolumeType VolumeType = EOutlierAudioVolumeType::SFX;
 		int32 AudioInstanceId = 0;
 		bool bLooping = false;
+		TWeakObjectPtr<AActor> AttachedEmitter;
+		bool bAttachToEmitter = false;
 		int32 VoiceRequestId = 0;
 	};
 
@@ -237,7 +326,8 @@ private:
 		float BaseVolumeMultiplier,
 		EOutlierAudioVolumeType VolumeType,
 		int32 AudioInstanceId = 0,
-		bool bLooping = false);
+		bool bLooping = false,
+		bool bPlayWhenPaused = false);
 	void RemoveInactiveAudioComponents();
 	void RefreshActiveAudioComponentVolumes(EOutlierAudioVolumeType ChangedVolumeType);
 	float GetCombinedVolumeMultiplier(EOutlierAudioVolumeType VolumeType) const;
@@ -274,5 +364,19 @@ private:
 	TSet<int32> CancelledLoopAudioInstances;
 	TMap<FLoopPlaybackKey, int32> LoopInstances;
 
+	struct FLocalEmitterLoop
+	{
+		FGameplayTag Type;
+		int32 InstanceId = 0;
+		bool bTwoD = false;
+	};
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<class UOutlierMenuAudioBinding>> MenuAudioBindings;
+	TMap<FLoopPlaybackKey, FLocalEmitterLoop> LocalEmitterLoops;
+	FTimerHandle LocalLoopTimer;
+	TWeakObjectPtr<UWorld> LocalLoopWorld;
+	int32 NextLocalLoopId = -1; // Network instance IDs are positive.
+	void RefreshLocalEmitterLoops();
+	void ClearLocalEmitterLoops();
 	int32 NextAudioInstanceId = 1;
 };

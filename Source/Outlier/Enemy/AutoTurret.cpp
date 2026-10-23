@@ -1,4 +1,6 @@
 #include "Enemy/AutoTurret.h"
+#include "Audio/OutlierAudioFeedback.h"
+#include "Audio/OutlierAudioSubsystem.h"
 
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
@@ -46,6 +48,10 @@ namespace
 
 AAutoTurret::AAutoTurret()
 {
+	DeathAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Turret.Gun.State.Death"));
+	DownAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Turret.Gun.State.Down"));
+	DeployAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Turret.Gun.State.Appear"));
+	HackedAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Turret.Gun.State.Hacked"));
 	GetOutlierAbilitySystemComponent()->SetReplicationMode(EGameplayEffectReplicationMode::Minimal);
 	bUseCoreWeakPoint = false;
 	ApplyClassStatOverrides();
@@ -1007,6 +1013,14 @@ void AAutoTurret::MulticastBeginTurretDeployment_Implementation(
 	int32 GameplayGeneration,
 	int32 ActivationSerial)
 {
+	if (GetNetMode() != NM_DedicatedServer)
+	{
+		FOutlierAudioPlayRequest Request;
+		Request.EventTag = OutlierAudioFeedback::Tag(TEXT("Audio.Type.Enemy"));
+		Request.ContextTags.AddTag(DeployAudioContext);
+		Request.EmitterActor = this;
+		if (auto* Audio = GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>()) Audio->PlayLocalAtLocation(Request);
+	}
 	PlayMontageOnMesh(GetMesh(), DeployMontage);
 	OnTurretDeploymentStarted(GameplayGeneration, ActivationSerial);
 }
@@ -1331,7 +1345,9 @@ void AAutoTurret::HandleHackEffect(FGameplayTag EffectTag, const FHackResultCont
 		return;
 	}
 
+	if (bHackedToPlayerTeam) return;
 	bHackedToPlayerTeam = true;
+	OutlierAudioFeedback::World(this, *HackedAudioContext.ToString(), TEXT("Audio.Type.Enemy"));
 	if (HackableComponent)
 	{
 		HackableComponent->MarkAsHackedOnce();
