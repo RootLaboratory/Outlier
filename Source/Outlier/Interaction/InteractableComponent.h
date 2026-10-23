@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "GameplayTagContainer.h"
+#include "Interface/ActorBasedWidgetInterface.h"
 #include "InteractableComponent.generated.h"
 
 class AFirstPersonCharacter;
@@ -34,12 +35,14 @@ enum class EInteractionFlowResult : uint8
 };
 
 UCLASS(ClassGroup = (Custom), meta = (BlueprintSpawnableComponent))
-class OUTLIER_API UInteractableComponent : public UActorComponent
+class OUTLIER_API UInteractableComponent : public UActorComponent, public IActorBasedWidgetInterface
 {
 	GENERATED_BODY()
 
 public:
 	UInteractableComponent();
+	virtual void BeginPlay() override;
+	virtual void DismissActorBasedWidgets_Implementation() override;
 
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;

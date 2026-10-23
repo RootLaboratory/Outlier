@@ -6,7 +6,7 @@
 
 class APanelMover;
 
-/** 판넬 전용 스위치. 상호작용하면 TargetPanel을 목표 위치까지 한 번 이동시킨다. */
+/** Unblock 해킹으로 잠금을 푼 뒤 Shooter가 상호작용하면 TargetPanel을 목표 위치까지 한 번 이동시킨다. */
 UCLASS()
 class OUTLIER_API APanelMoverSwitch : public AInteractableSwitchBase
 {

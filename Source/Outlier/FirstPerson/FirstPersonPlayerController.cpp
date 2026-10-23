@@ -44,6 +44,7 @@
 #include "UI/InGamePauseWidget.h"
 #include "UI/InGameSettingWidget.h"
 #include "UI/GameOverWidget.h"
+#include "UI/ActorBasedWidgetSubsystem.h"
 #include "UI/GameOverPendingWidget.h"
 #include "UI/UILayerKeyHintWidget.h"
 #include "Upgrade/OutlierUpgradeComponent.h"
@@ -123,11 +124,6 @@ void AFirstPersonPlayerController::ServerDebugWorldGuide_Implementation(FName Co
 	if (!Manager)
 	{
 		UE_LOG(LogOutlier, Warning, TEXT("[WorldGuideDebug][%s] No unique WorldGuideManager on the server."), *GetWorld()->GetName());
-		return;
-	}
-	if (Command == TEXT("dump"))
-	{
-		UE_LOG(LogOutlier, Log, TEXT("[WorldGuideDebug] %s"), *Manager->BuildDebugReport());
 		return;
 	}
 	bool bAccepted = false;
@@ -2323,6 +2319,13 @@ void FHudWidgetCollapseState::Apply(UWidget* Widget, bool bShow)
 void AFirstPersonPlayerController::CollapseMainWidgetForDeath()
 {
 	bHudHiddenForDeath = true;
+	if (IsLocalController())
+	{
+		if (UActorBasedWidgetSubsystem* Subsystem = GetWorld()->GetSubsystem<UActorBasedWidgetSubsystem>())
+		{
+			Subsystem->DismissRegisteredWidgets();
+		}
+	}
 	// 튜토리얼 보이스는 자막과 함께 끝난다. 중단된 체인은 리스폰 후 재개하지 않고 버린다.
 	if (UOutlierAudioSubsystem* Audio = GetGameInstance() ? GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>() : nullptr)
 	{

@@ -3,6 +3,7 @@
 #include "Components/WidgetComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
+#include "UI/ActorBasedWidgetSubsystem.h"
 #include "GameFramework/PlayerController.h"
 #include "Tutorial/WorldGuide/OutlierWorldGuideManager.h"
 #include "Tutorial/WorldGuide/OutlierWorldGuideWidget.h"
@@ -18,6 +19,10 @@ UOutlierWorldGuideTargetComponent::UOutlierWorldGuideTargetComponent()
 void UOutlierWorldGuideTargetComponent::BeginPlay()
 {
 	Super::BeginPlay();
+	if (UActorBasedWidgetSubsystem* Subsystem = GetWorld()->GetSubsystem<UActorBasedWidgetSubsystem>())
+	{
+		Subsystem->RegisterWidgetOwner(this);
+	}
 	if (AOutlierWorldGuideManager* Manager = AOutlierWorldGuideManager::Find(GetWorld())) Manager->RegisterTarget(this);
 	else if (WidgetID.IsValid()) OutlierWorldGuideDebug::Trace(GetWorld(), FString::Printf(
 		TEXT("TARGET %s ID=%s has no manager at BeginPlay; check the level Manager."), *GetPathName(), *WidgetID.ToString()));
@@ -25,6 +30,10 @@ void UOutlierWorldGuideTargetComponent::BeginPlay()
 
 void UOutlierWorldGuideTargetComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	if (UActorBasedWidgetSubsystem* Subsystem = GetWorld()->GetSubsystem<UActorBasedWidgetSubsystem>())
+	{
+		Subsystem->UnregisterWidgetOwner(this);
+	}
 	if (AOutlierWorldGuideManager* Manager = GuideManager.Get()) Manager->UnregisterTarget(this);
 	ClearGuide();
 	Super::EndPlay(EndPlayReason);
@@ -66,7 +75,12 @@ void UOutlierWorldGuideTargetComponent::ApplyGuide(const FOutlierWorldGuideConte
 		DisplayComponent->SetVisibility(true);
 	}
 	SetComponentTickEnabled(DisplayComponent != nullptr);
-	OutlierWorldGuideDebug::Trace(GetWorld(), FString(TEXT("APPLY ")) + DescribeDebugState());
+}
+
+void UOutlierWorldGuideTargetComponent::DismissActorBasedWidgets_Implementation()
+{
+	// Only the local display is removed. The manager retains its active guide and chain history.
+	ClearGuide();
 }
 
 void UOutlierWorldGuideTargetComponent::ClearGuide()
@@ -123,17 +137,6 @@ bool UOutlierWorldGuideTargetComponent::NotifyGuideOverlap()
 	const bool bAccepted = GetOwner() && GetOwner()->HasAuthority() && Manager && Manager->NotifyWidgetOverlap(WidgetID);
 	OutlierWorldGuideDebug::Trace(GetWorld(), FString::Printf(TEXT("TARGET OVERLAP %s ID=%s accepted=%d"), *GetPathName(), *WidgetID.ToString(), bAccepted));
 	return bAccepted;
-}
-
-FString UOutlierWorldGuideTargetComponent::DescribeDebugState() const
-{
-	const UUserWidget* Widget = DisplayComponent ? DisplayComponent->GetUserWidgetObject() : nullptr;
-	return FString::Printf(TEXT("Target=%s ID=%s Class=%s Space=Screen GuideActive=%d WidgetCreated=%d Root=%s ComponentVisible=%d OwnerHidden=%d UISize=%s Pivot=%s WorldOffset=%s Anchor=%s WidgetLocation=%s"),
-		*GetPathName(), *WidgetID.ToString(), *GetPathNameSafe(WidgetClass.Get()), bGuideVisible,
-		Widget != nullptr, *GetNameSafe(Widget ? Widget->GetRootWidget() : nullptr),
-		DisplayComponent && DisplayComponent->IsVisible(), GetOwner() && GetOwner()->IsHidden(),
-		*DrawSize.ToString(), *Pivot.ToString(), *WorldOffset.ToString(), *GetComponentLocation().ToString(),
-		*(DisplayComponent ? DisplayComponent->GetComponentLocation() : GetComponentLocation() + WorldOffset).ToString());
 }
 
 bool UOutlierWorldGuideTargetComponent::CompleteOnActor(AActor* Actor, FGameplayTag NextWidgetID)

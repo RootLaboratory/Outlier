@@ -8,7 +8,6 @@
 #include "EngineUtils.h"
 #include "Event/OutlierEventDataAsset.h"
 #include "Event/OutlierEventSettings.h"
-#include "HAL/IConsoleManager.h"
 #include "Net/UnrealNetwork.h"
 #include "Outlier.h"
 #include "Tutorial/WorldGuide/OutlierWorldGuideTargetComponent.h"
@@ -462,83 +461,6 @@ void AOutlierWorldGuideManager::OnRep_ActiveContext()
 	OutlierWorldGuideDebug::Trace(GetWorld(), FString::Printf(TEXT("REPLICATED Request=%d ID=%s Targets=%d"),
 		ActiveContext.RequestID, *ActiveContext.WidgetID.ToString(), GetTargetCount(ActiveContext.WidgetID)));
 	RefreshPresentation();
-}
-
-FString AOutlierWorldGuideManager::BuildDebugReport()
-{
-	LoadTables();
-	FString Report = FString::Printf(TEXT("World=%s Net=%d Manager=%s Authority=%d\nDT=%s Rows=%d EventTables=%d OutlineStencil=%d\n"),
-		*GetNameSafe(GetWorld()), static_cast<int32>(GetNetMode()), *GetPathName(), HasAuthority(),
-		*GetPathNameSafe(GuideTable), GuideTable ? GuideTable->GetRowNames().Num() : 0, EventTables.Num(), OutlineStencilValue);
-	int32 Issues = 0;
-	const auto Issue = [&Report, &Issues](const FString& Message) { ++Issues; Report += TEXT("  ISSUE: ") + Message + TEXT("\n"); };
-	if (!GuideTable) Issue(TEXT("No WorldGuide DT loaded. Check the existing role DAs' WorldGuideTable."));
-	if (EventTables.IsEmpty()) Issue(TEXT("No Event DT loaded. EventID -> WorldGuideID cannot resolve."));
-	if (const IConsoleVariable* CustomDepth = IConsoleManager::Get().FindConsoleVariable(TEXT("r.CustomDepth")))
-	{
-		Report += FString::Printf(TEXT("r.CustomDepth=%d\n"), CustomDepth->GetInt());
-		if (CustomDepth->GetInt() != 3) Issue(TEXT("Stencil outline needs r.CustomDepth=3 (Enabled with Stencil)."));
-	}
-	Report += FString::Printf(TEXT("Active Request=%d ID=%s Origin=%s End=%s Next=%s Targets=%d\n"),
-		ActiveContext.RequestID, *ActiveContext.WidgetID.ToString(), *ActiveContext.OriginEventTag.ToString(),
-		*StaticEnum<EOutlierEventEndCondition>()->GetNameStringByValue(static_cast<int64>(ActiveContext.EndCondition)),
-		*ActiveContext.NextWidgetID.ToString(), GetTargetCount(ActiveContext.WidgetID));
-	if (ActiveContext.RequestID != 0 && GetTargetCount(ActiveContext.WidgetID) == 0)
-		Issue(TEXT("Active ID has no registered target in this world. Check WidgetID, BeginPlay and loaded level."));
-	if (HasAuthority())
-	{
-		Report += FString::Printf(TEXT("Pending=%d Completed=%d\n"), PendingContexts.Num(), CompletedWidgetIDs.Num());
-		for (int32 Index = 0; Index < PendingContexts.Num(); ++Index)
-		{
-			const auto& Context = PendingContexts[Index];
-			Report += FString::Printf(TEXT("  Queue[%d] Request=%d ID=%s Origin=%s Next=%s\n"), Index,
-				Context.RequestID, *Context.WidgetID.ToString(), *Context.OriginEventTag.ToString(), *Context.NextWidgetID.ToString());
-		}
-		for (const auto& ID : CompletedWidgetIDs) Report += TEXT("  Completed: ") + ID.ToString() + TEXT("\n");
-	}
-	else Report += TEXT("Pending/Completed live only on the server; use Outlier.WorldGuide.Dump server.\n");
-	Report += FString::Printf(TEXT("ChainContexts=%d\n"), ChainContexts.Num());
-	for (const auto& Context : ChainContexts)
-	{
-		Report += FString::Printf(TEXT("  Chain: %s -> %s\n"), *Context.WidgetID.ToString(), *Context.NextWidgetID.ToString());
-		FOutlierWorldGuideDataRow Row;
-		if (!TryGetDefinition(Context.WidgetID, Row) || (Context.NextWidgetID.IsValid() && !TryGetDefinition(Context.NextWidgetID, Row)))
-			Issue(TEXT("Chain references a missing/invalid DT definition: ") + Context.WidgetID.ToString());
-	}
-	int32 Configured = 0, Unconfigured = 0;
-	for (TActorIterator<AActor> It(GetWorld()); It; ++It)
-	{
-		TArray<UOutlierWorldGuideTargetComponent*> Components;
-		It->GetComponents(Components);
-		for (UOutlierWorldGuideTargetComponent* Target : Components)
-		{
-			if (!Target->WidgetID.IsValid()) { ++Unconfigured; continue; }
-			++Configured;
-			const auto* Registered = Targets.Find(Target->WidgetID);
-			const bool bRegistered = Registered && Registered->Contains(TWeakObjectPtr<UOutlierWorldGuideTargetComponent>(Target));
-			Report += FString::Printf(TEXT("  Registered=%d %s\n"), bRegistered, *Target->DescribeDebugState());
-			FOutlierWorldGuideDataRow Row;
-			if (!TryGetDefinition(Target->WidgetID, Row)) Issue(TEXT("Target ID has no valid DT row: ") + Target->GetPathName());
-			if (!bRegistered) Issue(TEXT("Configured target is not registered with this manager: ") + Target->GetPathName());
-			if (!Target->WidgetClass) Issue(TEXT("WidgetClass is empty: ") + Target->GetPathName());
-			else if (Target->WidgetClass->HasAnyClassFlags(CLASS_Abstract)) Issue(TEXT("WidgetClass is abstract: ") + Target->GetPathName());
-			if (Target->DrawSize.X <= 0.0 || Target->DrawSize.Y <= 0.0) Issue(TEXT("DrawSize must be positive: ") + Target->GetPathName());
-			if (Target->IsGuideVisible() && It->IsHidden()) Issue(TEXT("Active target owner is hidden: ") + It->GetPathName());
-			TArray<UMeshComponent*> Meshes;
-			It->GetComponents(Meshes);
-			int32 OwnerMeshes = 0;
-			for (const auto* Mesh : Meshes)
-			{
-				if (!IsValid(Mesh) || Mesh->IsA<UWidgetComponent>()) continue;
-				++OwnerMeshes;
-				Report += FString::Printf(TEXT("    Mesh=%s CustomDepth=%d Stencil=%d Visible=%d\n"),
-					*Mesh->GetName(), Mesh->bRenderCustomDepth, Mesh->CustomDepthStencilValue, Mesh->IsVisible());
-			}
-			if (OwnerMeshes == 0) Report += TEXT("    No owner mesh: marker only, no mesh outline.\n");
-		}
-	}
-	Report += FString::Printf(TEXT("Summary: ConfiguredTargets=%d EmptyIDs=%d Issues=%d\n"), Configured, Unconfigured, Issues);
-	return Report;
 }
 
 void AOutlierWorldGuideManager::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const

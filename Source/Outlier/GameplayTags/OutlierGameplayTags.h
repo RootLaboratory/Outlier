@@ -124,6 +124,12 @@ namespace OutlierGameplayTags
 				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Interact.Target.PannelSwitch")));
 				return Tag;
 			}
+
+			inline FGameplayTag LaserControlSwitch()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Interact.Target.LaserControlSwitch")));
+				return Tag;
+			}
 		}
 	}
 

@@ -4,6 +4,8 @@
 
 #include "Components/WidgetComponent.h"
 #include "Engine/LocalPlayer.h"
+#include "Engine/World.h"
+#include "UI/ActorBasedWidgetSubsystem.h"
 #include "FirstPerson/FirstPersonCharacter.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/PlayerController.h"
@@ -55,6 +57,21 @@ UInteractableComponent::UInteractableComponent()
 	HoldSessions.Reserve(MaxConcurrentHoldSessions);
 }
 
+void UInteractableComponent::BeginPlay()
+{
+	Super::BeginPlay();
+	if (UActorBasedWidgetSubsystem* Subsystem = GetWorld()->GetSubsystem<UActorBasedWidgetSubsystem>())
+	{
+		Subsystem->RegisterWidgetOwner(this);
+	}
+}
+
+void UInteractableComponent::DismissActorBasedWidgets_Implementation()
+{
+	InteractInfoWidgetDeactivate();
+	InteractKeyWidgetDeactivate();
+}
+
 void UInteractableComponent::TickComponent(
 	float DeltaTime,
 	ELevelTick TickType,
@@ -66,6 +83,10 @@ void UInteractableComponent::TickComponent(
 
 void UInteractableComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	if (UActorBasedWidgetSubsystem* Subsystem = GetWorld()->GetSubsystem<UActorBasedWidgetSubsystem>())
+	{
+		Subsystem->UnregisterWidgetOwner(this);
+	}
 	CancelAllHoldSessions();
 	ClearInteractionDescActor();
 	Super::EndPlay(EndPlayReason);

@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Components/SceneComponent.h"
+#include "Interface/ActorBasedWidgetInterface.h"
 #include "Tutorial/WorldGuide/OutlierWorldGuideTypes.h"
 #include "OutlierWorldGuideTargetComponent.generated.h"
 
@@ -11,12 +12,13 @@ class UWidgetComponent;
 
 /** 화면 공간 UI 마커용 월드 앵커. Tuto 액터를 포함한 모든 액터에 추가할 수 있다. */
 UCLASS(ClassGroup = (Tutorial), meta = (BlueprintSpawnableComponent))
-class OUTLIER_API UOutlierWorldGuideTargetComponent : public USceneComponent
+class OUTLIER_API UOutlierWorldGuideTargetComponent : public USceneComponent, public IActorBasedWidgetInterface
 {
 	GENERATED_BODY()
 
 public:
 	UOutlierWorldGuideTargetComponent();
+	virtual void DismissActorBasedWidgets_Implementation() override;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "World Guide", meta = (Categories = "UI.Info.World"))
 	FGameplayTag WidgetID;
@@ -51,7 +53,6 @@ public:
 	void ApplyGuide(const FOutlierWorldGuideContext& Context);
 	void ClearGuide();
 	void SetGuideManager(AOutlierWorldGuideManager* Manager);
-	FString DescribeDebugState() const;
 	static bool CompleteOnActor(AActor* Actor, FGameplayTag NextWidgetID = FGameplayTag());
 	static bool NotifyOverlapOnActor(AActor* Actor);
 

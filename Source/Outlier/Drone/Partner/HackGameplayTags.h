@@ -201,6 +201,12 @@ namespace HackGameplayTags
 			return Tag;
 		}
 
+		inline FGameplayTag LaserControlSwitch()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Info.LaserControlSwitch")));
+			return Tag;
+		}
+
 		inline FGameplayTag Magnetic()
 		{
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Hack.Info.Magnetic")));

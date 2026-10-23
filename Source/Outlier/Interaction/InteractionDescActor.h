@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "GameplayTagContainer.h"
+#include "Interface/ActorBasedWidgetInterface.h"
 #include "InteractionDescActor.generated.h"
 
 class AFirstPersonCharacter;
@@ -14,12 +15,13 @@ class USceneComponent;
 class UWidgetComponent;
 
 UCLASS()
-class OUTLIER_API AInteractionDescActor : public AActor
+class OUTLIER_API AInteractionDescActor : public AActor, public IActorBasedWidgetInterface
 {
 	GENERATED_BODY()
 
 public:
 	AInteractionDescActor();
+	virtual void DismissActorBasedWidgets_Implementation() override;
 
 	virtual void Tick(float DeltaSeconds) override;
 
@@ -38,6 +40,9 @@ public:
 	void PopupAnimationCall(bool Flag);
 
 protected:
+	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")
 	TObjectPtr<USceneComponent> SceneRoot;
 
@@ -66,9 +71,6 @@ private:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction|Trace", meta = (AllowPrivateAccess = "true", ClampMin = "1.0"))
 	FVector TraceCollisionExtent = FVector(80.0f, 20.0f, 80.0f);
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction|Trace", meta = (AllowPrivateAccess = "true"))
-	bool bDrawTraceCollisionDebug = false;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction|UI", meta = (AllowPrivateAccess = "true", ClampMin = "0.0", ClampMax = "1.0"))
 	float Progress = 0.0f;
