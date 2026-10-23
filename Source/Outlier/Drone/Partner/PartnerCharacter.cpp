@@ -1162,6 +1162,18 @@ bool APartnerCharacter::CanResumeMovementAfterSuitTransition() const
 			&& !OutlierAbilitySystemComponent->HasMatchingGameplayTag(OutlierGameplayTags::State::Dead()));
 }
 
+void APartnerCharacter::OnSuitTransitionBlockChanged()
+{
+	if (!HasAuthority() || IsSuitTransitionBlocked() || IsActorBeingDestroyed()) return;
+
+	// 전환 시작에서 취소한 빈 탄창의 Reload 타이머는 입력을 받을 수 있게 된 뒤 다시 예약한다.
+	if (const ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(GetCurrentWeapon());
+		RangedWeapon && RangedWeapon->GetCurrentAmmo() == 0)
+	{
+		HandleAutoReloadRequested();
+	}
+}
+
 void APartnerCharacter::PrepareForSuitTransition()
 {
 	Super::PrepareForSuitTransition();

@@ -433,6 +433,7 @@ protected:
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
 	virtual void DoMove(float Right, float Forward) override;
 	virtual void PrepareForSuitTransition() override;
+	virtual void OnSuitTransitionBlockChanged() override;
 	virtual bool CanResumeMovementAfterSuitTransition() const override;
 	virtual void OnMoveInputUpdated(const FVector2D& MoveValue);
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;

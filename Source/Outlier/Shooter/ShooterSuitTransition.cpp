@@ -13,6 +13,7 @@
 #include "Shooter/ShooterCombatComponent.h"
 #include "Shooter/ShooterInventoryComponent.h"
 #include "TimerManager.h"
+#include "Weapon/RangedWeaponBase.h"
 
 // 서버 전환 흐름: 검증/예약 -> 두 Pawn 차단 -> FadingOut -> commit -> Applying -> FadingIn -> 종료.
 // 각 단계는 두 소유 Controller의 해당 단계 완료 응답과 서버 최소 시간이 모두 충족되어야 진행한다.
@@ -253,7 +254,25 @@ void AShooterCharacter::PrepareForSuitTransition()
 
 void AShooterCharacter::OnSuitTransitionBlockChanged()
 {
-	RefreshShooterSuitAvailabilityUI();
+	if (IsSuitTransitionBlocked())
+	{
+		RefreshShooterSuitAvailabilityUI();
+		return;
+	}
+	if (IsActorBeingDestroyed() || IsDead()) return;
+
+	// 전환이 마지막 발 직후의 자동 재장전을 취소했다면, 잠금 해제 뒤 서버가 다시 시작한다.
+	// 탄약이 남은 수동 재장전이나 기존 발사/조준 입력은 자동으로 재개하지 않는다.
+	if (HasAuthority())
+	{
+		if (const ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(GetCurrentWeapon());
+			RangedWeapon && RangedWeapon->GetCurrentAmmo() == 0)
+		{
+			HandleAutoReloadRequested();
+		}
+	}
+	// 전환 중 종료된 능력의 이벤트를 놓쳐도 현재 탄약/능력/쿨타임으로 UI를 다시 투영한다.
+	RefreshShooterSuitUI();
 }
 
 void AShooterCharacter::EnterSuitTransitionPhase(ESuitTransitionPhase Phase)
