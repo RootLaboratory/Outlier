@@ -1,4 +1,6 @@
 #include "Enemy/AutoTurret.h"
+#include "GAS/Attributes/OutlierShieldAttributeSet.h"
+#include "Drone/Partner/PartnerShieldRecipientComponent.h"
 #include "Audio/OutlierAudioFeedback.h"
 #include "Audio/OutlierAudioSubsystem.h"
 
@@ -48,6 +50,10 @@ namespace
 
 AAutoTurret::AAutoTurret()
 {
+	ShieldAttributeSet = CreateDefaultSubobject<UOutlierShieldAttributeSet>(TEXT("ShieldAttributeSet"));
+	ShieldAttributeSet->InitShield(0.0f);
+	ShieldAttributeSet->InitMaxShield(0.0f);
+	PartnerShieldRecipient = CreateDefaultSubobject<UPartnerShieldRecipientComponent>(TEXT("PartnerShieldRecipient"));
 	DeathAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Turret.Gun.State.Death"));
 	DownAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Turret.Gun.State.Down"));
 	DeployAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Turret.Gun.State.Appear"));
@@ -660,6 +666,7 @@ void AAutoTurret::ResetRoomWaveLifecycle(const TCHAR* ResetReason)
 	const int32 PreviousGeneration = RoomWaveGameplayGeneration;
 	const int32 PreviousSerial = RoomWaveActivationSerial;
 	InvalidateRoomWaveLifecycle();
+	if (PartnerShieldRecipient) PartnerShieldRecipient->ClearShield();
 	bRoomWaveDeploymentRequested = false;
 	bHackedToPlayerTeam = false;
 	StopImpactRecovery();

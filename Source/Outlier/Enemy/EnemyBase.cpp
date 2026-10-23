@@ -421,6 +421,7 @@ bool AEnemyBase::BeginPoolLease(
 
 void AEnemyBase::ResetReusableCombatRuntime(const TCHAR* StateTreeStopReason)
 {
+	PossessionDamageMultiplier = 1.0f;
 	ReleasePatrolDestination();
 	GetWorldTimerManager().ClearAllTimersForObject(this);
 	CancelPossessionProcess();
@@ -1287,6 +1288,10 @@ URoomTagComponent* AEnemyBase::GetRoomTagComp() const
 
 void AEnemyBase::SetEnemyPossessed(bool bNewIsPossessed)
 {
+	if (HasAuthority() && !bNewIsPossessed)
+	{
+		PossessionDamageMultiplier = 1.0f;
+	}
 	if (!HasAuthority() || bIsPossessed == bNewIsPossessed)
 	{
 		return;
@@ -1345,6 +1350,18 @@ void AEnemyBase::SetEnemyPossessed(bool bNewIsPossessed)
 			bIsPossessed
 			? TEXT("Enemy.Event.Possession.Started")
 			: TEXT("Enemy.Event.Possession.Ended")));
+}
+
+void AEnemyBase::SetPossessionDamageMultiplier(float Multiplier)
+{
+	if (!HasAuthority() || !bIsPossessed || IsDead()) return;
+	PossessionDamageMultiplier = FMath::IsFinite(Multiplier) ? FMath::Max(0.0f, Multiplier) : 1.0f;
+}
+
+void AEnemyBase::GetWeaponDamageModifiers(FWeaponDamageModifiers& OutModifiers) const
+{
+	OutModifiers = FWeaponDamageModifiers{};
+	OutModifiers.DamageMultiplier = PossessionDamageMultiplier;
 }
 
 bool AEnemyBase::BeginPossessionProcess(APartnerCharacter* PartnerCharacter)
@@ -3577,6 +3594,7 @@ void AEnemyBase::SaveSourceMeshVisibility(USceneComponent* SourceMeshRoot)
 
 void AEnemyBase::PerformDeathCleanup()
 {
+	PossessionDamageMultiplier = 1.0f;
 	ReleasePatrolDestination();
 	if (bDeathCleanupPerformed)
 	{

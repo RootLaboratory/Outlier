@@ -9,6 +9,7 @@
 #include "Engine/OverlapResult.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
+#include "Upgrade/OutlierUpgradeComponent.h"
 #include "Drone/Partner/PartnerPlayerController.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
 #include "GameFramework/PlayerController.h"
@@ -223,7 +224,8 @@ void UPartnerHackComponent::ClientStopCandidateSearch_Implementation()
 	StopHackCandidateSearch();
 }
 
-void UPartnerHackComponent::ClientStartHackMiniGame_Implementation(AActor* TargetActor, UHackableComponent* HackableComponent)
+void UPartnerHackComponent::ClientStartHackMiniGame_Implementation(AActor* TargetActor, UHackableComponent* HackableComponent,
+	float ClickSuccessRangeMultiplier, float SpinningGapMultiplier)
 {
 	if (!PartnerCharacter || !PartnerCharacter->IsLocallyControlled())
 	{
@@ -236,7 +238,7 @@ void UPartnerHackComponent::ClientStartHackMiniGame_Implementation(AActor* Targe
 	bHackCandidateSearchActive = false;
 
 	SetActiveHackableComponent(HackableComponent);
-	StartHackMiniGame(TargetActor, HackableComponent);
+	StartHackMiniGame(TargetActor, HackableComponent, ClickSuccessRangeMultiplier, SpinningGapMultiplier);
 
 	ClearHackCandidates();
 	LastDebugCandidateCount = INDEX_NONE;
@@ -605,7 +607,9 @@ void UPartnerHackComponent::ServerTryStartHack_Implementation(AActor* TargetActo
 		return;
 	}
 
-	ClientStartHackMiniGame(TargetActor, HackableComponent);
+	// 시작 시 서버에서 고정한 배율을 전달한다. 클라이언트 Config/태그 복제 순서에 의존하지 않는다.
+	ClientStartHackMiniGame(TargetActor, HackableComponent,
+		ResolveMiniGameSuccessRangeMultiplier(false), ResolveMiniGameSuccessRangeMultiplier(true));
 
 	if (bDebugHack)
 	{
@@ -874,7 +878,22 @@ void UPartnerHackComponent::DestroyCandidateLayerWidget()
 	CandidateLayerWidget = nullptr;
 }
 
-bool UPartnerHackComponent::EnsureHackMiniGameWidget(AActor* TargetActor, UHackableComponent* HackableComponent)
+float UPartnerHackComponent::ResolveMiniGameSuccessRangeMultiplier(bool bSpinningCircle) const
+{
+	if (!PartnerCharacter || !PartnerCharacter->HasAuthority()) return 1.0f;
+	const UOutlierUpgradeComponent* Upgrade = PartnerCharacter->GetUpgradeComponent();
+	const UOutlierAbilitySystemComponent* ASC = PartnerCharacter->GetOutlierAbilitySystemComponent();
+	if (!Upgrade || !Upgrade->HasUpgradeTag(OutlierGameplayTags::Upgrade::Partner::Hacking::MinigameEase())
+		|| !ASC || !ASC->IsPartnerAbilitiesConfigured())
+	{
+		return 1.0f;
+	}
+	const FOutlierPartnerAbilityConfig& Config = ASC->GetPartnerAbilityConfig();
+	return bSpinningCircle ? Config.HackSpinningGapMultiplier : Config.HackClickSuccessRangeMultiplier;
+}
+
+bool UPartnerHackComponent::EnsureHackMiniGameWidget(AActor* TargetActor, UHackableComponent* HackableComponent,
+	float ClickSuccessRangeMultiplier, float SpinningGapMultiplier)
 {
 	if (!PartnerCharacter || !TargetActor || !HackableComponent)
 	{
@@ -904,7 +923,8 @@ bool UPartnerHackComponent::EnsureHackMiniGameWidget(AActor* TargetActor, UHacka
 		return false;
 	}
 
-	HackMiniGameWidget->InitializeHackMiniGame(TargetActor, HackableComponent, this);
+	HackMiniGameWidget->InitializeHackMiniGame(TargetActor, HackableComponent, this,
+		ClickSuccessRangeMultiplier, SpinningGapMultiplier);
 	HackMiniGameWidget->SetMiniGameTimeLimit(CachedAbilityData.MiniGameTime);
 	HackMiniGameWidget->OnHackMiniGameFinished.AddDynamic(this, &UPartnerHackComponent::HandleHackMiniGameFinished);
 
@@ -1191,14 +1211,15 @@ void UPartnerHackComponent::HandleHackTargetInvalidated(
 	}
 }
 
-void UPartnerHackComponent::StartHackMiniGame(AActor* TargetActor, UHackableComponent* HackableComponent)
+void UPartnerHackComponent::StartHackMiniGame(AActor* TargetActor, UHackableComponent* HackableComponent,
+	float ClickSuccessRangeMultiplier, float SpinningGapMultiplier)
 {
 	if (!PartnerCharacter || !PartnerCharacter->IsLocallyControlled())
 	{
 		return;
 	}
 
-	if (EnsureHackMiniGameWidget(TargetActor, HackableComponent))
+	if (EnsureHackMiniGameWidget(TargetActor, HackableComponent, ClickSuccessRangeMultiplier, SpinningGapMultiplier))
 	{
 		return;
 	}

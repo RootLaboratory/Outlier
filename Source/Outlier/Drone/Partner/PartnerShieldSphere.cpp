@@ -33,8 +33,8 @@ APartnerShieldSphere::APartnerShieldSphere()
 void APartnerShieldSphere::BeginPlay()
 {
 	Super::BeginPlay();
+	if (HasAuthority()) BaseShieldScale = GetActorScale3D();
 
-	ShieldCollision->OnComponentHit.AddDynamic(this, &APartnerShieldSphere::HandleShieldHit);
 	EnsureDynamicMaterial();
 	ApplyShieldRadius();
 	ApplyTargetTransform();
@@ -62,34 +62,48 @@ void APartnerShieldSphere::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>&
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
 	DOREPLIFETIME(APartnerShieldSphere, ShieldTarget);
+	DOREPLIFETIME(APartnerShieldSphere, ShieldTargetActor);
 	DOREPLIFETIME(APartnerShieldSphere, SourcePartner);
 	DOREPLIFETIME(APartnerShieldSphere, ShieldRadius);
 	DOREPLIFETIME(APartnerShieldSphere, TargetRelativeLocation);
+	DOREPLIFETIME(APartnerShieldSphere, RecipientLocalTransform);
+	DOREPLIFETIME(APartnerShieldSphere, BaseShieldScale);
 }
 
 float APartnerShieldSphere::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 {
-	if (!HasAuthority() || !ShieldTarget || Request.DamageAmount <= 0.0f)
+	if (!HasAuthority() || !IsValid(GetShieldTargetActor()) || Request.DamageAmount <= 0.0f)
 	{
 		return 0.0f;
 	}
 
-	const float Applied = OutlierDamage::Apply(ShieldTarget, Request);
+	const float Applied = OutlierDamage::Apply(GetShieldTargetActor(), Request);
 	OutlierAudioFeedback::World(this, TEXT("Audio.Context.Object.Shield.Deflect"));
 	return Applied;
 }
 
 void APartnerShieldSphere::InitializeShield(AShooterCharacter* InShieldTarget, APartnerCharacter* InSourcePartner)
 {
+	InitializeShieldForActor(InShieldTarget, InSourcePartner);
+}
+
+AActor* APartnerShieldSphere::GetShieldTargetActor() const
+{
+	return ShieldTargetActor ? ShieldTargetActor.Get() : ShieldTarget.Get();
+}
+
+void APartnerShieldSphere::InitializeShieldForActor(AActor* InShieldTarget, APartnerCharacter* InSourcePartner)
+{
 	if (!HasAuthority())
 	{
 		return;
 	}
 
-	ShieldTarget = InShieldTarget;
+	ShieldTargetActor = InShieldTarget;
+	ShieldTarget = Cast<AShooterCharacter>(InShieldTarget);
 	SourcePartner = InSourcePartner;
 
-	SetOwner(ShieldTarget);
+	SetOwner(GetShieldTargetActor());
 	ApplyShieldRadius();
 	ApplyTargetTransform();
 	RefreshOwnerVisibility();
@@ -125,6 +139,19 @@ void APartnerShieldSphere::SetTargetRelativeLocation(FVector InTargetRelativeLoc
 	}
 }
 
+void APartnerShieldSphere::SetRecipientLocalTransform(const FTransform& InLocalTransform)
+{
+	if (!HasAuthority()) return;
+	RecipientLocalTransform = InLocalTransform;
+	ApplyTargetTransform();
+	ForceNetUpdate();
+}
+
+void APartnerShieldSphere::OnRep_RecipientLocalTransform()
+{
+	ApplyTargetTransform();
+}
+
 void APartnerShieldSphere::EndShield()
 {
 	if (HasAuthority())
@@ -135,7 +162,7 @@ void APartnerShieldSphere::EndShield()
 
 void APartnerShieldSphere::OnRep_ShieldTarget()
 {
-	SetOwner(ShieldTarget);
+	SetOwner(GetShieldTargetActor());
 	ApplyTargetTransform();
 	RefreshOwnerVisibility();
 }
@@ -145,25 +172,18 @@ void APartnerShieldSphere::OnRep_ShieldRadius()
 	ApplyShieldRadius();
 }
 
-void APartnerShieldSphere::HandleShieldHit(UPrimitiveComponent* HitComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, FVector NormalImpulse, const FHitResult& Hit)
-{
-	/*if (!HasAuthority() || !OtherActor || OtherActor == ShieldTarget || OtherActor == SourcePartner)
-	{
-		UE_LOG(LogTemp, Error, TEXT("HandleShieldHit"));
-
-		return;
-	}*/
-}
-
 void APartnerShieldSphere::ApplyTargetTransform()
 {
-	if (!ShieldTarget)
+	AActor* Target = GetShieldTargetActor();
+	if (!IsValid(Target))
 	{
 		return;
 	}
 
-	const FVector TargetLocation = ShieldTarget->GetActorTransform().TransformPosition(TargetRelativeLocation);
-	SetActorLocation(TargetLocation);
+	const FVector TargetLocation = Target->GetActorTransform().TransformPosition(TargetRelativeLocation);
+	const FTransform BaseTransform(Target->GetActorQuat(), TargetLocation, BaseShieldScale);
+	// UE composes local transforms left-to-right: recipient adjustment, then shield placement.
+	SetActorTransform(RecipientLocalTransform * BaseTransform);
 }
 
 void APartnerShieldSphere::ApplyShieldRadius()

@@ -19,6 +19,7 @@
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "GAS/Attributes/OutlierShieldAttributeSet.h"
 #include "GAS/Attributes/OutlierVitalAttributeSet.h"
+#include "GAS/Attributes/OutlierPartnerCombatAttributeSet.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 
 APartnerPlayerController::APartnerPlayerController()
@@ -174,6 +175,11 @@ bool APartnerPlayerController::BeginEnemyPossessionTransition(
 	if (!HasAuthority()
 		|| !IsValid(EnemyTarget)
 		|| !IsValid(PartnerCharacter)
+		|| EnemyTarget->IsActorBeingDestroyed()
+		|| EnemyTarget->IsDead()
+		|| EnemyTarget->GetCurrentHealth() <= 0.0f
+		|| !EnemyTarget->IsPossessionInProgress()
+		|| !PartnerCharacter->CanAcceptInput()
 		|| GetPawn() != PartnerCharacter
 		|| EnemyTarget->IsEnemyPossessed())
 	{
@@ -264,10 +270,17 @@ void APartnerPlayerController::CommitPendingEnemyPossession(AEnemyBase* Expected
 	AEnemyBase* EnemyTarget = PendingEnemyPossessionTarget.Get();
 	APartnerCharacter* PartnerCharacter = PendingEnemyPossessionSource.Get();
 
+	// 화면을 가리는 동안 대상이 사망하거나 빙의 대기가 취소될 수 있다.
+	// 클라이언트의 연출 완료 통보는 생존 보장이 아니므로 Possess 직전에 서버에서 재검증한다.
 	if (!HasAuthority()
 		|| EnemyTarget != ExpectedTarget
 		|| !IsValid(EnemyTarget)
 		|| !IsValid(PartnerCharacter)
+		|| EnemyTarget->IsActorBeingDestroyed()
+		|| EnemyTarget->IsDead()
+		|| EnemyTarget->GetCurrentHealth() <= 0.0f
+		|| !EnemyTarget->IsPossessionInProgress()
+		|| !PartnerCharacter->CanAcceptInput()
 		|| GetPawn() != PartnerCharacter
 		|| EnemyTarget->IsEnemyPossessed())
 	{
@@ -306,6 +319,13 @@ void APartnerPlayerController::CommitPendingEnemyPossession(AEnemyBase* Expected
 			*GetNameSafe(PartnerCharacter),
 			*GetNameSafe(EnemyTarget));
 #endif
+	}
+
+	// 실제 빙의와 쿨타임 세션이 확정된 시점의 값만 복사한다.
+	if (const UOutlierAbilitySystemComponent* PartnerASC = PartnerCharacter->GetOutlierAbilitySystemComponent())
+	{
+		EnemyTarget->SetPossessionDamageMultiplier(PartnerASC->GetNumericAttribute(
+			UOutlierPartnerCombatAttributeSet::GetHackedDroneDamageMultiplierAttribute()));
 	}
 
 	PendingEnemyPossessionTarget.Reset();

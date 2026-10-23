@@ -147,6 +147,7 @@ private:
 	int32 CurrentCircleIndex = INDEX_NONE;
 
 private:
+	float GetEffectiveClickAngleToleranceDegrees() const;
 	void EnsureCircleCanvas();
 	void SpawnCircleWidgets();
 	void ClearCircleWidgets();

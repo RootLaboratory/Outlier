@@ -22,7 +22,8 @@ class OUTLIER_API UHackMiniGameWidget : public UUserWidget
 
 public:
 	UFUNCTION(BlueprintCallable, Category = "Hack|MiniGame")
-	void InitializeHackMiniGame(AActor* InTargetActor, UHackableComponent* InHackableComponent, UPartnerHackComponent* InHackComponent);
+	void InitializeHackMiniGame(AActor* InTargetActor, UHackableComponent* InHackableComponent,
+		UPartnerHackComponent* InHackComponent, float InClickSuccessRangeMultiplier = 1.0f, float InSpinningGapMultiplier = 1.0f);
 
 	UFUNCTION(BlueprintCallable, Category = "Hack|MiniGame")
 	void SetMiniGameTimeLimit(float InTimeLimit);
@@ -91,6 +92,8 @@ private:
 	TObjectPtr<UHackingMiniGameBase> ActiveMiniGameWidget;
 
 	float MiniGameTimeLimit = 0.0f;
+	float ClickSuccessRangeMultiplier = 1.0f;
+	float SpinningGapMultiplier = 1.0f;
 
 	FVector2D FakeCursorHotspot = FVector2D::ZeroVector;
 };

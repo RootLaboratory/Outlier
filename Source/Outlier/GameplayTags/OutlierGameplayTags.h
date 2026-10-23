@@ -281,6 +281,26 @@ namespace OutlierGameplayTags
 					return Tag;
 				}
 			}
+
+			namespace Mobility
+			{
+				inline FGameplayTag EvasiveBurst()
+				{
+					static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(
+						FName(TEXT("Upgrade.Partner.Mobility.EvasiveBurst")));
+					return Tag;
+				}
+			}
+
+			namespace Hacking
+			{
+				inline FGameplayTag MinigameEase()
+				{
+					static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(
+						FName(TEXT("Upgrade.Partner.Hacking.MinigameEase")));
+					return Tag;
+				}
+			}
 		}
 	}
 

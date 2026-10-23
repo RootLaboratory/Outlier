@@ -6,6 +6,8 @@
 #include "AutoTurret.generated.h"
 
 class USceneComponent;
+class UOutlierShieldAttributeSet;
+class UPartnerShieldRecipientComponent;
 class UBoxComponent;
 class UAnimMontage;
 class USkeletalMeshComponent;
@@ -182,6 +184,12 @@ public:
 	FVector GetCurrentTurretAimLocation() const { return CurrentAimLocation; }
 
 protected:
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
+	TObjectPtr<UOutlierShieldAttributeSet> ShieldAttributeSet;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Shield")
+	TObjectPtr<UPartnerShieldRecipientComponent> PartnerShieldRecipient;
+
 	virtual void OnConstruction(const FTransform& Transform) override;
 	virtual void PostInitializeComponents() override;
 	virtual void BeginPlay() override;

@@ -128,6 +128,23 @@ bool UOutlierAbilitySystemComponent::ApplyDamageToSelf(
 	return ApplySpecToSelf(*this, SpecHandle);
 }
 
+bool UOutlierAbilitySystemComponent::ApplyHealthRecoveryToSelf(float Amount)
+{
+	if (!IsOwnerActorAuthoritative() || !FMath::IsFinite(Amount) || Amount <= 0.0f
+		|| HasMatchingGameplayTag(OutlierGameplayTags::State::Dead())) return false;
+	const UOutlierVitalAttributeSet* Vital = GetSet<UOutlierVitalAttributeSet>();
+	if (!Vital || Vital->GetHealth() <= 0.0f || Vital->GetMaxHealth() <= 0.0f) return false;
+	const float CurrentHealth = Vital->GetHealth();
+	const float NewHealth = FMath::Clamp(CurrentHealth + Amount, 0.0f, Vital->GetMaxHealth());
+	if (NewHealth <= CurrentHealth) return false;
+	FGameplayEffectSpecHandle Spec = MakeSelfEffectSpec(*this,
+		UOutlierHealthRecoveryGameplayEffect::StaticClass(), nullptr, GetAvatarActor());
+	if (!Spec.IsValid()) return false;
+	// 기존 회복 GE는 Override이므로 회복량 대신 clamp한 최종 체력을 전달한다.
+	Spec.Data->SetSetByCallerMagnitude(OutlierGameplayTags::Data::Health(), NewHealth);
+	return ApplySpecToSelf(*this, Spec);
+}
+
 bool UOutlierAbilitySystemComponent::ApplyShieldRecoveryToSelf(float Amount)
 {
 	if (!IsOwnerActorAuthoritative() || Amount <= 0.0f)

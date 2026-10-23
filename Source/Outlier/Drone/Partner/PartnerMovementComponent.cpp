@@ -5,6 +5,11 @@
 #include "Engine/World.h"
 #include "DrawDebugHelpers.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "GameFramework/GameStateBase.h"
+#include "GAS/OutlierAbilitySystemComponent.h"
+#include "GameplayTags/OutlierGameplayTags.h"
+#include "Net/UnrealNetwork.h"
+#include "Upgrade/OutlierUpgradeComponent.h"
 #include "OutlierPlayerState.h"
 #include "HAL/IConsoleManager.h"
 #include "Shooter/ShooterCharacter.h"
@@ -21,6 +26,93 @@ UPartnerMovementComponent::UPartnerMovementComponent()
 	PrimaryComponentTick.bCanEverTick = true;
 	PrimaryComponentTick.bStartWithTickEnabled = true;
 	SetIsReplicatedByDefault(true);
+}
+
+float FPartnerEvasiveBurstState::GetMultiplier(double Now) const
+{
+	if (!FMath::IsFinite(Now) || !FMath::IsFinite(StartedAt)
+		|| !FMath::IsFinite(Duration) || Duration <= 0.0f
+		|| !FMath::IsFinite(Multiplier) || Multiplier <= 1.0f)
+	{
+		return 1.0f;
+	}
+	const float Progress = static_cast<float>(FMath::Clamp((Now - StartedAt) / Duration, 0.0, 1.0));
+	return FMath::Lerp(Multiplier, 1.0f, Progress);
+}
+
+void UPartnerMovementComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(UPartnerMovementComponent, EvasiveBurst);
+}
+
+double UPartnerMovementComponent::GetBurstServerTime() const
+{
+	const UWorld* World = GetWorld();
+	const AGameStateBase* GameState = World ? World->GetGameState() : nullptr;
+	return GameState ? GameState->GetServerWorldTimeSeconds() : (World ? World->GetTimeSeconds() : 0.0);
+}
+
+void UPartnerMovementComponent::HandleBoostStateChanged(bool bBoosting)
+{
+	if (!PartnerCharacter || !PartnerCharacter->HasAuthority()) return;
+
+	EvasiveBurst = FPartnerEvasiveBurstState();
+	const UOutlierUpgradeComponent* Upgrade = PartnerCharacter->GetUpgradeComponent();
+	const UOutlierAbilitySystemComponent* ASC = PartnerCharacter->GetOutlierAbilitySystemComponent();
+	if (bBoosting && PartnerCharacter->CanAcceptInput() && Upgrade
+		&& Upgrade->HasUpgradeTag(OutlierGameplayTags::Upgrade::Partner::Mobility::EvasiveBurst())
+		&& ASC && ASC->IsPartnerAbilitiesConfigured())
+	{
+		const FOutlierPartnerAbilityConfig& Config = ASC->GetPartnerAbilityConfig();
+		EvasiveBurst.StartedAt = GetBurstServerTime();
+		EvasiveBurst.Multiplier = Config.EvasiveBurstMultiplier;
+		EvasiveBurst.Duration = Config.EvasiveBurstDuration;
+	}
+	RefreshBoostSpeed(true);
+	PartnerCharacter->ForceNetUpdate();
+}
+
+float UPartnerMovementComponent::GetEffectiveBoostSpeed() const
+{
+	if (!PartnerCharacter) return BoostSpeed;
+	const float Weight = PartnerCharacter->bIsAccelerate && PartnerCharacter->CanAcceptInput()
+		? EvasiveBurst.GetMultiplier(GetBurstServerTime()) : 1.0f;
+	return PartnerCharacter->BoostSpeed * Weight;
+}
+
+void UPartnerMovementComponent::RefreshBoostSpeed(bool bForce)
+{
+	if (!PartnerCharacter) return;
+	const float PreviousSpeed = BoostSpeed;
+	SetBoostSpeed(GetEffectiveBoostSpeed());
+	if (CharacterMovement && !IsAutoFollowMoveMode()
+		&& (bForce || !FMath::IsNearlyEqual(PreviousSpeed, BoostSpeed)))
+	{
+		CharacterMovement->MaxFlySpeed = PartnerCharacter->bIsAccelerate ? BoostSpeed : PartnerCharacter->MoveSpeed;
+	}
+}
+
+void UPartnerMovementComponent::OnRep_EvasiveBurst()
+{
+	if (!PartnerCharacter) RefreshCharacterRefsFromPlayerState();
+	RefreshBoostSpeed(true);
+}
+
+void UPartnerMovementComponent::TickComponent(float DeltaTime, ELevelTick TickType,
+	FActorComponentTickFunction* ThisTickFunction)
+{
+	if (PartnerCharacter && PartnerCharacter->HasAuthority() && EvasiveBurst.Duration > 0.0f)
+	{
+		const UOutlierUpgradeComponent* Upgrade = PartnerCharacter->GetUpgradeComponent();
+		if (!PartnerCharacter->CanAcceptInput() || !PartnerCharacter->bIsAccelerate || !Upgrade
+			|| !Upgrade->HasUpgradeTag(OutlierGameplayTags::Upgrade::Partner::Mobility::EvasiveBurst()))
+		{
+			HandleBoostStateChanged(false);
+		}
+	}
+	RefreshBoostSpeed();
+	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 }
 
 void UPartnerMovementComponent::BeginPlay()
@@ -311,7 +403,7 @@ void UPartnerMovementComponent::ApplyPartnerFlightSettings()
 	}
 
 	SetMoveSpeed(PartnerCharacter->MoveSpeed);
-	SetBoostSpeed(PartnerCharacter->BoostSpeed);
+	RefreshBoostSpeed(true);
 	SetVerticalSpeed(PartnerCharacter->VerticalSpeed);
 	SetAcceleration(PartnerCharacter->Acceleration);
 	SetDeceleration(PartnerCharacter->Deceleration);
@@ -970,20 +1062,24 @@ void UPartnerMovementComponent::FollowStoredPath(float DeltaTime)
 	{
 		DistanceScale = 1.0f;
 	}
-	const float BaseSpeed = GetFollowDesiredSpeed();
+	// 감쇠 중인 가중치로 매 프레임 커브 목표 속도를 바꾸면 가속 커브가 계속 재시작된다.
+	// 기존 속도로 커브를 계산한 후 순간 회피 가중치를 곱하고, 코너/도착 제한은 마지막에 적용한다.
+	const float BaseSpeed = GetFollowDesiredSpeed(false);
+	const float BurstWeight = BaseSpeed > 0.0f ? GetFollowDesiredSpeed() / BaseSpeed : 1.0f;
 	bOwnsFollowSpeed = true;
 	if (Profile.IsEnabled()) 
 	{
 		const float Remaining = FMath::Max(FollowSpeedState.GetRemainingDistance(Current, FollowPath, FollowWaypoint)
 			- GetFollowAcceptanceRadius(), bFollowPartialRoute ? Profile.DecelerationDistance + 100.0f : 0.0f);
 		CharacterMovement->MaxFlySpeed = FollowSpeedState.Update(Profile, BaseSpeed,
-			CharacterMovement->Velocity.Size(), Remaining, DeltaTime, true, PartnerCharacter,
+			CharacterMovement->Velocity.Size() / BurstWeight, Remaining, DeltaTime, true, PartnerCharacter,
 			bCameraAssist ? TEXT("CameraAssist") : TEXT("SyncMove"));
 	}
 	else
 	{
 		CharacterMovement->MaxFlySpeed = BaseSpeed;
 	}
+	CharacterMovement->MaxFlySpeed *= BurstWeight;
 	// 급회전은 남은 거리와 실제 가속도로 진입 속도를 제한한다. 입력 크기만 줄이면 관성이 남는다.
 	const float SteeringMaxAcceleration = FMath::Max(CharacterMovement->MaxAcceleration, 1.0f);
 	if (!bFinalWaypoint)
@@ -1013,13 +1109,14 @@ const FFlightSpeedProfile& UPartnerMovementComponent::GetFollowSpeedProfile() co
 	return FollowMode == EPartnerMoveMode::CameraAssist ? CameraAssistSpeedProfile : SyncMoveSpeedProfile;
 }
 
-float UPartnerMovementComponent::GetFollowDesiredSpeed() const
+float UPartnerMovementComponent::GetFollowDesiredSpeed(bool bIncludeBurst) const
 {
 	if (FollowMode == EPartnerMoveMode::CameraAssist && FMath::IsFinite(CameraAssistMaxSpeed) && CameraAssistMaxSpeed > 0.0f)
 	{
 		return CameraAssistMaxSpeed;
 	}
-	return PartnerCharacter->bIsAccelerate ? PartnerCharacter->BoostSpeed : PartnerCharacter->MoveSpeed;
+	return PartnerCharacter->bIsAccelerate
+		? (bIncludeBurst ? GetEffectiveBoostSpeed() : PartnerCharacter->BoostSpeed) : PartnerCharacter->MoveSpeed;
 }
 
 void UPartnerMovementComponent::StopFollowMovement()
@@ -1035,7 +1132,7 @@ void UPartnerMovementComponent::StopFollowMovement()
 		// 자동 이동이 소유한 제한만 복구한다. 수동/빙의 이동 설정은 변경하지 않는다.
 		if (bOwnsFollowSpeed && PartnerCharacter)
 		{
-			CharacterMovement->MaxFlySpeed = PartnerCharacter->bIsAccelerate ? PartnerCharacter->BoostSpeed : PartnerCharacter->MoveSpeed;
+			CharacterMovement->MaxFlySpeed = PartnerCharacter->bIsAccelerate ? GetEffectiveBoostSpeed() : PartnerCharacter->MoveSpeed;
 		}
 	}
 	bOwnsFollowSpeed = false;

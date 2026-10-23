@@ -12,6 +12,7 @@
 #include "Interface/ScannableInterface.h"
 #include "Interface/HackableInterface.h"
 #include "Interface/MeleeTargetInterface.h"
+#include "Interface/WeaponDamageModifierProvider.h"
 #include "Interface/RoomTagInterface.h"
 #include "StateTreeReference.h"
 #include "AbilitySystemInterface.h"
@@ -89,11 +90,13 @@ enum class EEnemyAttackPhase : uint8
 };
 
 UCLASS()
-class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, public IEMPableInterface, public IScannableInterface, public IGenericTeamAgentInterface, public IRoomTagInterface, public IAbilitySystemInterface, public IOutlierDamageReceiver, public IMeleeTargetInterface, public IOutlierSpawnVisualTarget
+class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, public IEMPableInterface, public IScannableInterface, public IGenericTeamAgentInterface, public IRoomTagInterface, public IAbilitySystemInterface, public IOutlierDamageReceiver, public IMeleeTargetInterface, public IOutlierSpawnVisualTarget, public IWeaponDamageModifierProvider
 {
 	GENERATED_BODY()
 
 public:
+	void SetPossessionDamageMultiplier(float Multiplier);
+	virtual void GetWeaponDamageModifiers(FWeaponDamageModifiers& OutModifiers) const override;
 
 	virtual FGameplayTag GetHitAudioContext() const { return HitAudioContext; }
 	virtual FGameplayTag GetDeathAudioContext() const { return DeathAudioContext; }
@@ -102,6 +105,13 @@ public:
 	void PlaySpawnAppearAudio();
 
 	AEnemyBase();
+
+private:
+	// 서버의 빙의 세션 값. 무기 피해 판정은 서버에서만 이 값을 소비한다.
+	UPROPERTY(Transient)
+	float PossessionDamageMultiplier = 1.0f;
+
+public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Enemy|Flight Height")
 	FEnemyFlightHeightSettings FlightHeightSettings;

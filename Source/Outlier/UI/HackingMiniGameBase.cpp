@@ -1,9 +1,12 @@
 #include "UI/HackingMiniGameBase.h"
 
-void UHackingMiniGameBase::InitializeMiniGame(AActor* InTargetActor, UHackableComponent* InHackableComponent)
+void UHackingMiniGameBase::InitializeMiniGame(AActor* InTargetActor, UHackableComponent* InHackableComponent, float InSuccessRangeMultiplier)
 {
+	if (bMiniGameActive) return;
 	TargetActor = InTargetActor;
 	HackableComponent = InHackableComponent;
+	SuccessRangeMultiplier = FMath::IsFinite(InSuccessRangeMultiplier)
+		? FMath::Max(InSuccessRangeMultiplier, 1.0f) : 1.0f;
 }
 
 void UHackingMiniGameBase::StartMiniGame()

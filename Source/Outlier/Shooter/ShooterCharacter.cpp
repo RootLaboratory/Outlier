@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ShooterCharacter.h"
+#include "Drone/Partner/PartnerShieldRecipientComponent.h"
 #include "Audio/OutlierAudioFeedback.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimClassInterface.h"
@@ -280,6 +281,7 @@ AShooterCharacter::AShooterCharacter() : AFirstPersonCharacter()
 	OutlierAbilitySystemComponent->SetReplicationMode(EGameplayEffectReplicationMode::Mixed);
 	VitalAttributeSet = CreateDefaultSubobject<UOutlierVitalAttributeSet>(TEXT("VitalAttributeSet"));
 	ShieldAttributeSet = CreateDefaultSubobject<UOutlierShieldAttributeSet>(TEXT("ShieldAttributeSet"));
+	PartnerShieldRecipient = CreateDefaultSubobject<UPartnerShieldRecipientComponent>(TEXT("PartnerShieldRecipient"));
 
 	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
 	GetCharacterMovement()->bCanWalkOffLedgesWhenCrouching = true;
@@ -2985,28 +2987,6 @@ void AShooterCharacter::EndSlideCameraEffect()
 	TargetSlideCameraEffectAlpha = 0.0f;
 }
 
-void AShooterCharacter::UpdatePartnerShieldDecay()
-{
-	constexpr float DeltaTime = 1.0f / 60.0f;
-
-	if (PartnerShieldDuration <= KINDA_SMALL_NUMBER)
-	{
-		OutlierAbilitySystemComponent->ApplyPartnerShieldDeltaToSelf(
-			-GetCurPartnerShield(),
-			-GetMaxPartnerShield());
-		GetWorldTimerManager().ClearTimer(PartnerShieldTimerHandle);
-		return;
-	}
-
-	const float DecayAmount = (GetMaxPartnerShield() / PartnerShieldDuration) * DeltaTime;
-	OutlierAbilitySystemComponent->ApplyPartnerShieldDeltaToSelf(-DecayAmount, 0.0f);
-
-	if (GetCurPartnerShield() <= 0.0f)
-	{
-		GetWorldTimerManager().ClearTimer(PartnerShieldTimerHandle);
-	}
-}
-
 void AShooterCharacter::RefreshMovementState()
 {
 	if (MovementComponent)
@@ -4109,26 +4089,9 @@ void AShooterCharacter::FinishWeaponOvercharge(float ShieldRecoveryDelay)
 		HealthComponent->DelayShieldRecovery(ShieldRecoveryDelay);
 	}
 }
-void AShooterCharacter::ApplyPartnerShield(float Amount, float Duration)
+bool AShooterCharacter::ApplyPartnerShield(float Amount, float Duration, float HealthRegenRate)
 {
-	if (!HasAuthority() || !OutlierAbilitySystemComponent)
-	{
-		return;
-	}
-
-	const float ClampedAmount = FMath::Max(Amount, 0.0f);
-	OutlierAbilitySystemComponent->ApplyPartnerShieldDeltaToSelf(
-		ClampedAmount - GetCurPartnerShield(),
-		ClampedAmount - GetMaxPartnerShield());
-	PartnerShieldDuration = Duration;
-
-	GetWorldTimerManager().SetTimer(
-		PartnerShieldTimerHandle,
-		this,
-		&AShooterCharacter::UpdatePartnerShieldDecay,
-		1.0f / 60.0f,
-		true
-	);
+	return PartnerShieldRecipient && PartnerShieldRecipient->ApplyShield(Amount, Duration, HealthRegenRate);
 }
 
 void AShooterCharacter::RefreshLowHPAudio()

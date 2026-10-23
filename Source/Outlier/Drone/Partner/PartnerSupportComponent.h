@@ -8,6 +8,8 @@
 #include "PartnerSupportComponent.generated.h"
 
 class APartnerShieldSphere;
+class AAutoTurret;
+class UPartnerShieldRecipientComponent;
 
 DECLARE_MULTICAST_DELEGATE(FOnPartnerScanFinished);
 
@@ -32,20 +34,15 @@ public:
 	FOnPartnerScanFinished OnScanFinished;
 
 private:
+	AAutoTurret* FindNearestShieldTurret() const;
 	static constexpr int32 DefaultScanStencilValue = 0;
 	static constexpr float ScanUpdateInterval = 0.03f;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Shield")
 	TSubclassOf<APartnerShieldSphere> ShieldActorClass;
 
-	UPROPERTY(EditAnywhere, Category = "Shield|Debug")
-	uint8 bDebugShieldActorSpawn : 1 = true;
-
-	UPROPERTY(EditAnywhere, Category = "Shield|Debug", meta = (EditCondition = "bDebugShieldActorSpawn", ClampMin = "0.0"))
-	float ShieldActorDebugLifeTime = 3.0f;
-
 	UPROPERTY(Transient)
-	TObjectPtr<APartnerShieldSphere> ActiveShieldActor;
+	TArray<TObjectPtr<UPartnerShieldRecipientComponent>> ActiveShieldRecipients;
 
 	FTimerHandle ShieldMonitorTimerHandle;
 	FTimerHandle ScanServerStateTimerHandle;
@@ -65,7 +62,7 @@ private:
 	FVector ScanOrigin = FVector::ZeroVector;
 
 private:
-	void SpawnShieldActor_Server(AShooterCharacter* Shooter);
+	void SpawnShieldActor_Server(AActor* Target);
 	void DestroyShieldActor_Server();
 	void UpdateShield_Server();
 	void EndShield_Server();

@@ -11,6 +11,22 @@ class UCapsuleComponent;
 class UCharacterMovementComponent;
 enum class EPartnerMoveMode : uint8;
 
+// 발동 시점의 설정과 서버 시각을 함께 복제한다. 클라이언트 수신 시 감쇠를 다시 시작하지 않는다.
+USTRUCT()
+struct FPartnerEvasiveBurstState
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	double StartedAt = 0.0;
+	UPROPERTY()
+	float Multiplier = 1.0f;
+	UPROPERTY()
+	float Duration = 0.0f;
+
+	float GetMultiplier(double Now) const;
+};
+
 // 종료와 버튼 해제를 구분한다. 실패해도 Held는 유지하므로 Triggered로 자동 재개되지 않는다.
 struct FPartnerFollowInputState
 {
@@ -94,6 +110,10 @@ class OUTLIER_API UPartnerMovementComponent : public UFlightMovementComponentBas
 
 public:
 	UPartnerMovementComponent();
+	virtual void TickComponent(float DeltaTime, ELevelTick TickType,
+		FActorComponentTickFunction* ThisTickFunction) override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	void HandleBoostStateChanged(bool bBoosting);
 
 	void RefreshCharacterRefsFromPlayerState();
 	void RefreshMovementState();
@@ -170,6 +190,14 @@ protected:
 	float FollowNoProgressTimeout = 1.0f;
 
 private:
+	UPROPERTY(ReplicatedUsing = OnRep_EvasiveBurst)
+	FPartnerEvasiveBurstState EvasiveBurst;
+	UFUNCTION()
+	void OnRep_EvasiveBurst();
+	double GetBurstServerTime() const;
+	float GetEffectiveBoostSpeed() const;
+	void RefreshBoostSpeed(bool bForce = false);
+
 	bool IsAutoFollowMoveMode() const;
 	void EnterSyncMove();
 	void UpdateAutoFollow(float DeltaTime);
@@ -196,7 +224,7 @@ private:
 	void PublishFollowPath(bool bStopped);
 	void StopFollowMovement();
 	const FFlightSpeedProfile& GetFollowSpeedProfile() const;
-	float GetFollowDesiredSpeed() const;
+	float GetFollowDesiredSpeed(bool bIncludeBurst = true) const;
 	FFlightSpeedProfileState FollowSpeedState;
 	bool bOwnsFollowSpeed = false;
 

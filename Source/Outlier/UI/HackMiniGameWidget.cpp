@@ -14,11 +14,17 @@
 #include "UI/HackingMiniGameBase.h"
 #include "UI/SpinningCircleMiniGameWidget.h"
 
-void UHackMiniGameWidget::InitializeHackMiniGame(AActor* InTargetActor, UHackableComponent* InHackableComponent, UPartnerHackComponent* InHackComponent)
+void UHackMiniGameWidget::InitializeHackMiniGame(AActor* InTargetActor, UHackableComponent* InHackableComponent,
+	UPartnerHackComponent* InHackComponent, float InClickSuccessRangeMultiplier, float InSpinningGapMultiplier)
 {
+	if (ActiveMiniGameWidget && ActiveMiniGameWidget->IsMiniGameActive()) return;
 	TargetActor = InTargetActor;
 	HackableComponent = InHackableComponent;
 	HackComponent = InHackComponent;
+	ClickSuccessRangeMultiplier = FMath::IsFinite(InClickSuccessRangeMultiplier)
+		? FMath::Max(InClickSuccessRangeMultiplier, 1.0f) : 1.0f;
+	SpinningGapMultiplier = FMath::IsFinite(InSpinningGapMultiplier)
+		? FMath::Max(InSpinningGapMultiplier, 1.0f) : 1.0f;
 }
 
 void UHackMiniGameWidget::SetMiniGameTimeLimit(float InTimeLimit)
@@ -47,7 +53,7 @@ bool UHackMiniGameWidget::StartHacking()
 		return false;
 	}
 
-	ActiveMiniGameWidget = CreateWidget<UHackingMiniGameBase>(GetOwningPlayer(), MiniGameClass);
+	ActiveMiniGameWidget = CreateWidget<UHackingMiniGameBase>(this, MiniGameClass);
 	if (!ActiveMiniGameWidget)
 	{
 		return false;
@@ -60,7 +66,10 @@ bool UHackMiniGameWidget::StartHacking()
 		CanvasSlot->SetOffsets(FMargin(0.0f));
 	}
 
-	ActiveMiniGameWidget->InitializeMiniGame(TargetActor, HackableComponent);
+	// 실제 생성된 미니게임 타입(BP 파생 클래스 포함)에 맞는 배율 하나만 주입한다.
+	const float SuccessRangeMultiplier = MiniGameClass->IsChildOf(USpinningCircleMiniGameWidget::StaticClass())
+		? SpinningGapMultiplier : ClickSuccessRangeMultiplier;
+	ActiveMiniGameWidget->InitializeMiniGame(TargetActor, HackableComponent, SuccessRangeMultiplier);
 	ActiveMiniGameWidget->OnMiniGameFinished.AddDynamic(this, &UHackMiniGameWidget::HandleActiveMiniGameFinished);
 	ActiveMiniGameWidget->StartMiniGame();
 	SetFakeCursorVisible(bUseFakeCursor);

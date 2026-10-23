@@ -293,6 +293,14 @@ void UEMPLayerWidget::AddCandidate(AActor* TargetActor, UEMPableComponent* EMPab
 	MarkWidgets.Add(TargetActor, Mark);
 }
 
+void UEMPLayerWidget::SelectAutomaticCandidate(AActor* TargetActor)
+{
+	if (TObjectPtr<UEMPMarkWidget>* Mark = MarkWidgets.Find(TargetActor))
+	{
+		if (*Mark) (*Mark)->PlayAutomaticSelection();
+	}
+}
+
 void UEMPLayerWidget::RemoveCandidate(AActor* TargetActor, UEMPableComponent* EMPableComponent)
 {
 	if (TObjectPtr<UEMPMarkWidget>* Mark = MarkWidgets.Find(TargetActor))
