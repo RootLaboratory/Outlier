@@ -74,6 +74,9 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(FOnRoomCombatEvent,
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnRoomStartReadinessChanged, FGameplayTag /*RoomTag*/);
 DECLARE_MULTICAST_DELEGATE_FourParams(FOnRoomReinforcementStarted,
 	FGameplayTag /*RoomTag*/, int32 /*CombatPhaseIndex*/, int32 /*WaveIndex*/, int32 /*GameplayGeneration*/);
+DECLARE_MULTICAST_DELEGATE_FiveParams(FOnRoomWaveFirstSpawned,
+	FGameplayTag /*RoomTag*/, int32 /*CombatPhaseIndex*/, int32 /*WaveIndex*/,
+	int32 /*GameplayGeneration*/, FGuid /*RoomRegistrationId*/);
 
 struct FRoomCombatPreparationContext // Room 재등록/Arena 리로드 뒤 이전 합류 완료 요청을 버리는 토큰.
 {
@@ -111,10 +114,14 @@ struct FRoomCombatRuntime
 	// 시작/차수 완료 이벤트에서 차단 상태를 적용한 뒤 실제 Pool 대여를 실행한다.
 	bool bDeferSpawnExecution = false;
 	FTimerHandle InitialSpawnDelayTimer;
+	// 차수 경계에서는 다음 인덱스만 확정한다. 이 대기가 끝나기 전에는 Wave 요청도 만들지 않는다.
+	bool bPhaseDelayPending = false;
+	FTimerHandle PhaseDelayTimer;
 	double LastSpawnRetryLogSeconds = -1000000.0;
 	int32 SpawnRetryAttempts = 0;
 	bool bHadPreplacedEnemy = false;
 	bool bCurrentWaveSpawnStarted = false;
+	bool bCurrentWaveHasSpawned = false;
 	bool bEncounterIdRegistered = false;
 	bool bSavedAutomaticPhasePending = false;
 };
@@ -177,9 +184,23 @@ public:
 	bool StartTriggeredSequenceWithSpawnDelay(AActor* Requester,
 		const FRoomCombatTriggerContext& Context, float SpawnDelaySeconds);
 
+	// 암전 이동부터 착층까지 해당 Room의 새 전투 시작만 보류한다. 미등록 도착 방도 예약할 수 있다.
+	bool AcquireRoomStartHold(FGameplayTag RoomTag, FGuid ExecutionId, UObject* Owner);
+	void ReleaseRoomStartHold(FGuid ExecutionId);
+
 	// 서버 상태 조회다. 차단 Actor는 이 값으로 충돌을 적용하고 자신의 상태를 Client에 복제한다.
 	UFUNCTION(BlueprintPure, Category = "Room Combat")
 	bool IsExitBlocked(FGameplayTag RoomTag) const;
+
+	// 서버 조회용이다. 클라이언트 UI에 필요하면 호출자가 별도로 복제한다.
+	UFUNCTION(BlueprintPure, Category = "Room Combat")
+	bool IsPhaseDelayPending(FGameplayTag RoomTag) const;
+
+	UFUNCTION(BlueprintPure, Category = "Room Combat")
+	float GetPhaseDelayRemainingSeconds(FGameplayTag RoomTag) const;
+
+	UFUNCTION(BlueprintPure, Category = "Room Combat")
+	int32 GetPendingCombatPhaseIndex(FGameplayTag RoomTag) const;
 
 	// 델리게이트는 서버 로컬 알림이다. 늦게 로드된 오브젝트는 구독 후 IsExitBlocked도 조회한다.
 	UPROPERTY(BlueprintAssignable, Category = "Room Combat")
@@ -187,6 +208,10 @@ public:
 	FOnRoomStartReadinessChanged OnRoomStartReadinessChanged;
 	// 남은 적 비율이 기준 이하가 되어 후속 Wave(1 이상) 시작에 성공했을 때만 보낸다. 각 phase의 Wave 0 시작은 포함하지 않는다.
 	FOnRoomReinforcementStarted OnReinforcementStarted;
+	// Wave 0도 포함한다. 요청 생성이 아닌 첫 Pool 등록/터렛 활성화 성공 뒤 서버에서 알린다.
+	FOnRoomWaveFirstSpawned OnWaveFirstSpawned;
+	bool HasCurrentWaveSpawned(const FRoomCombatTriggerContext& Context) const;
+	bool IsSingleExternalTriggerEncounter(FGameplayTag RoomTag) const;
 	// ExternalTrigger의 첫 Wave가 등록된 Room과 설정한 수의 활성 SpawnPoint를 확보했는지 확인한다.
 	bool HasReadyExternalTriggerRoster(const ARoomVolume* RoomVolume, FGameplayTag RoomTag) const;
 
@@ -270,6 +295,15 @@ public:
 #endif
 
 private:
+	struct FRoomStartHold
+	{
+		FGuid ExecutionId;
+		FGuid RoomRegistrationId;
+		TWeakObjectPtr<UObject> Owner;
+	};
+	bool IsRoomStartHeld(FGameplayTag RoomTag) const;
+	void ResumeRoomAfterStartHold(FGameplayTag RoomTag, FGuid RegistrationId);
+	TMap<FGameplayTag, FRoomStartHold> RoomStartHolds;
 	bool IsPlayerInsideRoom(const AFirstPersonCharacter* Player, const ARoomVolume* Room) const;
 	bool IsSafeJoinDestination(const AFirstPersonCharacter* MovingPlayer,
 		const AFirstPersonCharacter* Anchor, const ARoomVolume* Room,
@@ -301,6 +335,7 @@ private:
 		AEnemyBase* Enemy,
 		const FRoomCombatPendingSpawn& SpawnRequest);
 	void TrySpawnPendingRequests(FGameplayTag RoomTag);
+	void NotifyFirstWaveSpawn(FGameplayTag RoomTag, FRoomCombatRuntime& Runtime);
 	void RetryPendingSpawns();
 	void ScheduleSpawnRetry();
 	void CancelSpawnRetry();
@@ -312,8 +347,9 @@ private:
 		FRoomCombatPendingSpawn& SpawnRequest,
 		const TArray<ARoomCombatSpawnPoint*>& EligibleSpawnPoints);
 	void CompleteCurrentPhase(FGameplayTag RoomTag, bool bCancelRemainingWaves);
-	void StartAutomaticPhase(FGameplayTag RoomTag, FRoomCombatRuntime& Runtime,
-		const FRoomCombatRoomDefinition& Definition);
+	void BeginPhaseDelay(FGameplayTag RoomTag, FRoomCombatRuntime& Runtime);
+	void CompletePhaseDelay(FGameplayTag RoomTag, FGuid RegistrationId, int32 Generation, int32 PhaseIndex);
+	void StartAutomaticPhase(FGameplayTag RoomTag);
 	void RecordPhaseBoundary(FGameplayTag RoomTag, const FRoomCombatRuntime& Runtime);
 	void TryStartRestoredAutomaticPhase(FGameplayTag RoomTag);
 	const FRoomCombatRoomDefinition* FindRoomDefinition(FGameplayTag RoomTag) const;

@@ -129,7 +129,13 @@ bool FRoomVolumeStreamingOverlapTest::RunTest(const FString& Parameters)
 	Room->RefreshOverlappingRoomAssignments();
 	TestEqual(TEXT("Reload-ready reconciliation restores a missing assignment"), Player->GetCurrentRoomTag(), RoomTag);
 	TestEqual(TEXT("A genuinely missing assignment emits another entry"), EnterNotifications, 2);
+	// This fixture has no GameMode to mark the world begun play. Components only
+	// dispatch runtime EndOverlap notifications after that world flag is set.
+	World->SetBegunPlay(true);
 	Player->SetActorLocation(FVector(10000.0f, 0.0f, 0.0f));
+	World->GetPhysicsScene()->Flush();
+	Box->UpdateOverlaps();
+	CastChecked<UBoxComponent>(OtherRoom->GetRootComponent())->UpdateOverlaps();
 	TestFalse(TEXT("Leaving the room removes the recovered tag"), Player->GetCurrentRoomTag().IsValid());
 	Room->RefreshOverlappingRoomAssignments();
 	TestFalse(TEXT("An outside player is not assigned to the room"), RoomTags->HasActiveRoom(Room));

@@ -86,7 +86,8 @@ bool FRoomCombatRoomDefinition::CanStartTriggeredSequence(int32 PhaseIndex) cons
 		{
 			break;
 		}
-		if (Phase.Waves.IsEmpty())
+		if (!FMath::IsFinite(Phase.DelayBeforeStartSeconds) || Phase.DelayBeforeStartSeconds < 0.0f
+			|| Phase.Waves.IsEmpty())
 		{
 			return false;
 		}
@@ -206,6 +207,12 @@ EDataValidationResult URoomCombatDefinition::IsDataValid(FDataValidationContext&
 		for (int32 PhaseIndex = 0; PhaseIndex < RoomDefinition.CombatPhases.Num(); ++PhaseIndex)
 		{
 			const FRoomCombatPhaseDefinition& Phase = RoomDefinition.CombatPhases[PhaseIndex];
+			if (!FMath::IsFinite(Phase.DelayBeforeStartSeconds) || Phase.DelayBeforeStartSeconds < 0.0f)
+			{
+				AddValidationError(FString::Printf(
+					TEXT("RoomDefinitions[%d].CombatPhases[%d] requires finite, non-negative DelayBeforeStartSeconds."),
+					RoomIndex, PhaseIndex));
+			}
 			if (Phase.ExpectedStartSpawnPointCount < 0
 				|| (Phase.ExpectedStartSpawnPointCount > 0
 					&& Phase.StartPolicy != ERoomCombatPhaseStartPolicy::ExternalTrigger))

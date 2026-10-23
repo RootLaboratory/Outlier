@@ -6,6 +6,7 @@
 #include "OutlierPartnerGameplayAbilities.generated.h"
 
 class APartnerCharacter;
+class APartnerPlayerController;
 class UOutlierAbilitySystemComponent;
 class UPartnerEMPComponent;
 class UPartnerHackComponent;
@@ -103,7 +104,9 @@ protected:
 private:
 	void HandleHackFinished(EHackResult Result, bool bPossessionTarget);
 	TWeakObjectPtr<UPartnerHackComponent> ActiveHackComponent;
+	TWeakObjectPtr<APartnerPlayerController> HackController;
 	FDelegateHandle HackFinishedHandle;
+	bool bHackResultHandled = false;
 };
 
 UCLASS()

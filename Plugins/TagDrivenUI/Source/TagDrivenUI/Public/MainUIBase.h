@@ -24,6 +24,7 @@ enum class EUIPlayerState : uint8
 
 class UEventDrivenUI;
 class UAbilityIconUI;
+class UAbilitySlotUI;
 class UCanvasPanel;
 class UDamageFeedbackLayer;
 class UWidget;
@@ -35,9 +36,9 @@ class TAGDRIVENUI_API UMainUIBase : public UUserWidget
 	GENERATED_BODY()
 
 public:
-
 	UEventDrivenUI* GetModule(const FGameplayTag& ModuleTag) const;
 	UAbilityIconUI* GetAbilityIcon(const FGameplayTag& AbilityTag) const;
+	UAbilitySlotUI* GetAbilitySlot(const FGameplayTag& AbilityTag) const;
 	void AddAbilityIconEntry(UAbilityIconUI* Icon, const FGameplayTag& AbilityTag);
 	void ResetAbilityCooldowns();
 	// 재사용할 HUD에 이전 피격 표시와 Info 요청이 남지 않도록 비운다.
@@ -68,6 +69,10 @@ protected:
 	void RegisterModule(UEventDrivenUI* InModule);
 	void RegisterModule(const FGameplayTag& ModuleTag, UEventDrivenUI* InModule);
 	void RegisterAbilityIcon(UAbilityIconUI* Icon, const FGameplayTag& AbilityTag, bool bUnlock = false);
+	void RegisterAbilitySlot(UAbilitySlotUI* AbilitySlot, const FGameplayTag& AbilityTag);
+
+	UPROPERTY(Transient)
+	TMap<FGameplayTag, TObjectPtr<UAbilitySlotUI>> AbilitySlots;
 
 	UPROPERTY()
 	TMap<FGameplayTag, TObjectPtr<UEventDrivenUI>> Modules;

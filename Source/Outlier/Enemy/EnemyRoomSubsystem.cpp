@@ -10,6 +10,7 @@
 #include "Room/RoomCombatSubsystem.h"
 #include "Subsystems/SubsystemCollection.h"
 #include "TimerManager.h"
+#include "Team/OutlierTeamIds.h"
 
 namespace
 {
@@ -69,6 +70,22 @@ void UEnemyRoomSubsystem::Deinitialize()
 	TargetContactStates.Reset();
 	PatrolDestinations.Reset();
 	Super::Deinitialize();
+}
+
+void UEnemyRoomSubsystem::GetAutoAimCandidates(TArray<AEnemyBase*>& OutEnemies) const
+{
+	OutEnemies.Reset();
+	for (const auto& Entry : RegisteredEnemyKeys)
+	{
+		if (AEnemyBase* Enemy = Entry.Key.Get(); IsValid(Enemy) && Enemy->CanBeDamaged()
+			&& !Enemy->IsDead() && Enemy->GetCurrentHealth() > 0.0f
+			&& Enemy->GetGenericTeamId() == FGenericTeamId(OutlierTeamIds::Enemy)
+			&& (!Enemy->IsPoolManaged() || Enemy->GetEnemyPoolState() == EEnemyPoolState::CombatActive)
+			&& !Enemy->IsEnemyPossessed() && !Enemy->IsHidden())
+		{
+			OutEnemies.Add(Enemy);
+		}
+	}
 }
 
 void UEnemyRoomSubsystem::RegisterEnemy(AEnemyBase* Enemy)
@@ -189,12 +206,15 @@ bool UEnemyRoomSubsystem::NotifyRoomCombat(FGameplayTag RoomTag, const FVector& 
 
 			if (Enemy->IsPoolManaged())
 			{
-				Enemy->EnterAlertFromPerception(PlayerLocation);
+				// 대기/등장/사망 연출 중인 풀 개체는 완료 콜백에서 따로 동기화한다.
+				if (Enemy->GetEnemyPoolState() != EEnemyPoolState::CombatActive
+					|| Enemy->IsDead() || Enemy->IsAIControlSuppressed()
+					|| !Enemy->CanUseRoomTargetSharing())
+				{
+					continue;
+				}
 			}
-			else
-			{
-				Enemy->EnterCombatFromRoom(PlayerLocation, false);
-			}
+			Enemy->EnterCombatFromRoom(PlayerLocation, false);
 		}
 	}
 
@@ -485,11 +505,31 @@ void UEnemyRoomSubsystem::BroadcastSharedTargetContact(
 	for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : *RegisteredEnemies)
 	{
 		AEnemyBase* Enemy = EnemyPtr.Get();
-		if (!IsValid(Enemy)
-			|| (Enemy->GetCombatState() != EEnemyCombatState::Combat
-				&& !(Enemy->IsPoolManaged()
-					&& Enemy->GetCombatState() == EEnemyCombatState::Alert))
-			|| !Enemy->CanUseRoomTargetSharing())
+		if (!IsValid(Enemy) || !Enemy->CanUseRoomTargetSharing())
+		{
+			continue;
+		}
+
+		if (Enemy->IsPoolManaged())
+		{
+			if (Enemy->GetEnemyPoolState() != EEnemyPoolState::CombatActive
+				|| Enemy->IsDead() || Enemy->IsAIControlSuppressed())
+			{
+				continue;
+			}
+			// 전투 중인 방의 공유는 직접 감지를 대신하는 합류 조건이다.
+			// 첫 발각의 Alert 확인이 끝나기 전에는 방 전투를 앞서 시작하지 않는다.
+			if (CombatRooms.Contains(RoomTag))
+			{
+				Enemy->EnterCombatFromRoom(TargetLocation, false);
+			}
+			else if (Enemy->GetCombatState() != EEnemyCombatState::Combat
+				&& Enemy->GetCombatState() != EEnemyCombatState::Alert)
+			{
+				continue;
+			}
+		}
+		else if (Enemy->GetCombatState() != EEnemyCombatState::Combat)
 		{
 			continue;
 		}
@@ -580,17 +620,8 @@ void UEnemyRoomSubsystem::SynchronizeEnemyWithRoomState(AEnemyBase* Enemy)
 		}
 		return;
 	}
-	// 풀 증원은 방의 전투/공유 위치만으로 적을 알아채지 않는다. 활성화 후
-	// 자신의 Perception이 감지해야 NonBattle에서 Alert로 넘어간다.
-	if (Enemy->IsPoolManaged())
-	{
-		UE_LOG(LogTemp, Display,
-			TEXT("[Reinforcement] Enemy=%s Stage=RoomSyncDeferred Generation=%d Lease=%d Room=%s Reason=AwaitOwnPerception"),
-			*GetNameSafe(Enemy), Enemy->GetPoolGameplayGeneration(),
-			Enemy->GetPoolLeaseSerial(), *RoomTag.ToString());
-		return;
-	}
-
+	// 새 증원도 방의 마지막 전투 위치를 받아 합류한다.
+	// 현재 공유가 끊겼다면 직접 시야를 만들지 않고 마지막 위치를 수색한다.
 	const FVector TargetLocation = ContactState
 		? ContactState->LastReportedLocation : *LastKnownLocation;
 	Enemy->EnterCombatFromRoom(TargetLocation, false, true);

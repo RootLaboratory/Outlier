@@ -26,8 +26,11 @@ class UGameOverWidget;
 class UGameOverPendingWidget;
 class UWidget;
 class AActor;
+class AGameStateBase;
 class AShooterCharacter;
 class ATuto_EventTriggerVolume;
+class AElevatorShaftController;
+class ULocalPlayerPostProcessSubsystem;
 enum class ESuitTransitionPhase : uint8;
 
 // HUD 위젯을 숨길 사유가 생기는 순간의 Visibility를 저장했다가, 사유가 모두 풀리면 그 값으로 되돌린다.
@@ -68,6 +71,9 @@ DECLARE_MULTICAST_DELEGATE_OneParam(
 	FOnCheckpointRestartVoteViewChanged,
 	EOutlierCheckpointRestartVoteView);
 
+DECLARE_MULTICAST_DELEGATE_FourParams(
+	FOnUpgradePurchaseResult, uint32, AActor*, FName, bool);
+
 /**
  * 
  */
@@ -76,6 +82,7 @@ class OUTLIER_API AFirstPersonPlayerController : public APlayerController ,  pub
 {
 	GENERATED_BODY()
 	friend class FOutlierSuitTransitionTest;
+	friend struct FUpgradeNodeInteractionTestAccess;
 	
 public:
 	AFirstPersonPlayerController();
@@ -108,6 +115,14 @@ public:
 	void NotifySuitFadeOutFinished(const FGuid& TransitionId);
 	void NotifySuitPresentationReady(const FGuid& TransitionId);
 	void NotifySuitFadeInFinished(const FGuid& TransitionId);
+
+	// 서버 요청을 소유 클라이언트의 실제 암전 완료 콜백과 연결한다.
+	void SendElevatorFadeFromServer(AElevatorShaftController* Shaft, const FGuid& ExecutionId,
+		bool bReveal, float Duration);
+	void SendElevatorArrivalPreparationFromServer(AElevatorShaftController* Shaft, const FGuid& ExecutionId);
+	void SendElevatorScheduledRevealFromServer(AElevatorShaftController* Shaft, const FGuid& ExecutionId,
+		double StartServerTime, float Duration);
+	void ClearElevatorFadeFromServer(AElevatorShaftController* Shaft, const FGuid& ExecutionId);
 
 	/** Client-owned transport for relevant AtLocation audio requests. */
 	UFUNCTION(Server, Unreliable)
@@ -178,7 +193,15 @@ public:
 	void ServerTryActivateUpgradeNode(
 		AActor* UpgradeOwner,
 		FName NodeIdOrRowName,
-		UOutlierUpgradeSetData* UpgradeSetData);
+		UOutlierUpgradeSetData* UpgradeSetData,
+		uint32 RequestId);
+
+	// 위젯이 다시 만들어져도 이전 응답과 새 요청의 ID가 겹치지 않게 컨트롤러가 발급한다.
+	uint32 AllocateUpgradeRequestId();
+	FOnUpgradePurchaseResult OnUpgradePurchaseResult;
+
+	UFUNCTION(Client, Reliable)
+	void ClientUpgradePurchaseResult(uint32 RequestId, AActor* UpgradeOwner, FName RowName, bool bSucceeded);
 
 	UFUNCTION(Server, Reliable)
 	void ServerNotifyArenaReady(uint32 GameplayGeneration);
@@ -371,6 +394,53 @@ protected:
 	virtual void RequestSuitTransitionCleanup(const FGuid& TransitionId);
 
 private:
+	UFUNCTION(Client, Reliable)
+	void ClientSetElevatorFade(AElevatorShaftController* Shaft, FGuid ExecutionId, bool bReveal, float Duration);
+
+	UFUNCTION(Client, Reliable)
+	void ClientClearElevatorFade(AElevatorShaftController* Shaft, FGuid ExecutionId);
+
+	UFUNCTION(Server, Reliable)
+	void ServerNotifyElevatorFadeFinished(AElevatorShaftController* Shaft, FGuid ExecutionId, bool bReveal);
+
+	UFUNCTION(Client, Reliable)
+	void ClientPrepareElevatorArrival(AElevatorShaftController* Shaft, FGuid ExecutionId);
+
+	UFUNCTION(Server, Reliable)
+	void ServerNotifyElevatorArrivalReady(AElevatorShaftController* Shaft, FGuid ExecutionId);
+
+	UFUNCTION(Client, Reliable)
+	void ClientScheduleElevatorReveal(AElevatorShaftController* Shaft, FGuid ExecutionId,
+		double StartServerTime, float Duration);
+
+	void ApplyLocalElevatorFade(AElevatorShaftController* Shaft, const FGuid& ExecutionId,
+		bool bReveal, float Duration);
+	void PollElevatorArrivalReady(FGuid ExecutionId);
+	void PollElevatorScheduledReveal(FGuid ExecutionId);
+	void HandleElevatorFadeFinished(FGuid ExecutionId, bool bReveal);
+	void ClearLocalElevatorFade();
+	void UnbindElevatorFadeCallbacks();
+
+	TWeakObjectPtr<AElevatorShaftController> LocalElevatorShaft;
+	TWeakObjectPtr<APawn> LocalElevatorFadePawn;
+	TWeakObjectPtr<ULocalPlayerPostProcessSubsystem> ElevatorPostProcessSubsystem;
+	FGuid LocalElevatorExecutionId;
+	FDelegateHandle ElevatorCoveredHandle;
+	FDelegateHandle ElevatorRevealedHandle;
+	FTimerHandle ElevatorArrivalPollTimer;
+	FTimerHandle ElevatorRevealTimer;
+	TWeakObjectPtr<AGameStateBase> ElevatorServerClock;
+	double ElevatorRevealStartServerTime = 0.0;
+	float ElevatorRevealDuration = 0.0f;
+	bool bLocalElevatorArrivalReadySent = false;
+	bool bLocalElevatorRevealScheduled = false;
+	bool bLocalElevatorRevealing = false;
+	bool bLocalElevatorFadeReadySent = false;
+	bool bElevatorOwnsLookInputBlock = false;
+
+	bool TryActivateUpgradeNodeForRequest(AActor* UpgradeOwner, FName RowName, UOutlierUpgradeSetData* UpgradeSetData);
+	uint32 LastUpgradeRequestId = 0;
+
 	UFUNCTION(Client, Reliable)
 	void ClientSetSuitTransitionPhase(AShooterCharacter* Shooter, FGuid TransitionId,
 		ESuitTransitionPhase Phase, float Duration);

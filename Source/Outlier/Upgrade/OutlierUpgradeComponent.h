@@ -45,6 +45,7 @@ public:
 	// 노드 RowName 에 조인된 효과 배열을 반환한다 ( 없으면 빈 배열 ).
 	// UFUNCTION 은 참조 반환을 지원하지 않으므로 순수 C++ 접근자로 둔다.
 	const TArray<FOutlierUpgradeEffectRow>& GetNodeEffects(FName NodeIdOrRowName) const;
+	void GetNodeRowNames(TArray<FName>& OutRowNames) const { NodeRowsByRowName.GetKeys(OutRowNames); }
 
 	UFUNCTION(BlueprintCallable, Category = "Upgrade")
 	void SetUpgradeSetData(UOutlierUpgradeSetData* InUpgradeSetData);

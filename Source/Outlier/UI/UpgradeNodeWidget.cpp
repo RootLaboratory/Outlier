@@ -15,18 +15,28 @@
 #include "OutlierPlayerState.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
+#include "Misc/ScopeExit.h"
 #include "Framework/Application/SlateApplication.h"
 #include "UI/UpgradeDescWidget.h"
 #include "UI/UpgradeNodeGroupWidget.h"
 #include "Upgrade/OutlierUpgradeComponent.h"
 #include "Upgrade/OutlierUpgradeSetData.h"
 #include "TimerManager.h"
+#include "HAL/PlatformTime.h"
+#include "Widgets/SWidget.h"
 
 namespace
 {
 	const FName ColorParameterName(TEXT("Color"));
 	const FName IntensityParameterName(TEXT("Intensity"));
 	const FName TextureParameterName(TEXT("Texture"));
+	const FName NodeTextureParameterName(TEXT("NodeTexture"));
+	const FName ActivatedTextureParameterName(TEXT("ActivatedTexture"));
+	const FName UseActivatedTextureParameterName(TEXT("UseActivatedTexture"));
+	const FName UnlockedColorParameterName(TEXT("UnlockedColor"));
+	const FName ActivatedColorParameterName(TEXT("ActivatedColor"));
+	// Unity 빌드에서 다른 UI cpp의 익명 namespace 상수와 충돌하지 않도록 구분한다.
+	const FName UpgradeNodeProgressParameterName(TEXT("Progress"));
 }
 
 void UUpgradeNodeWidget::NativeOnInitialized()
@@ -39,7 +49,13 @@ void UUpgradeNodeWidget::NativeOnInitialized()
 void UUpgradeNodeWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
+	ResetUnlockPresentation();
 
+	BindUpgradeContextEvents();
+	if (IsValid(CachedUpgradeComponent))
+	{
+		RefreshFromUpgradeComponent(CachedUpgradeComponent);
+	}
 	RefreshNodeAppearance();
 	RefreshNodeTexture();
 }
@@ -61,16 +77,16 @@ void UUpgradeNodeWidget::SynchronizeProperties()
 
 void UUpgradeNodeWidget::NativeDestruct()
 {
+	ResetUnlockPresentation();
+	SetNodeHovered(false);
+	ResetUpgradeInteraction();
+	UnbindUpgradeContextEvents();
 	if (GetWorld())
 	{
 		GetWorld()->GetTimerManager().ClearTimer(DescHideTimerHandle);
 	}
 	HideUpgradeDescWidget();
 
-	if (CachedUpgradeDescWidget)
-	{
-		CachedUpgradeDescWidget->OnPurchaseRequested.RemoveAll(this);
-	}
 	if (CachedUpgradeDescWidget && CachedUpgradeDescWidget->GetParent())
 	{
 		CachedUpgradeDescWidget->RemoveFromParent();
@@ -83,6 +99,12 @@ void UUpgradeNodeWidget::NativeDestruct()
 
 void UUpgradeNodeWidget::InjectNodeData(FName InNodeRowName, const FOutlierUpgradeNodeRow& InNodeData)
 {
+	if (CurrentNodeRowName != InNodeRowName || TreeId != InNodeData.TreeId || NodeId != InNodeData.NodeId
+		|| CurrentNodeData.Role != InNodeData.Role)
+	{
+		ResetUpgradeInteraction();
+		ResetUnlockPresentation();
+	}
 	CurrentNodeRowName = InNodeRowName;
 	CurrentNodeData = InNodeData;
 	NodeRowName = InNodeRowName;
@@ -105,8 +127,19 @@ void UUpgradeNodeWidget::RefreshFromUpgradeComponent(UOutlierUpgradeComponent* U
 		return;
 	}
 
-	CachedUpgradeComponent = UpgradeComponent;
+	if (CachedUpgradeComponent != UpgradeComponent)
+	{
+		SetUpgradeComponent(UpgradeComponent);
+		return;
+	}
 
+	// 같은 컴포넌트를 재사용해도 데이터 묶음이 교체되면 이전 화면의 입력/응답을 이어받지 않는다.
+	if (CachedUpgradeSetData.Get() != UpgradeComponent->GetUpgradeSetData())
+	{
+		ResetUpgradeInteraction();
+		ResetUnlockPresentation();
+		CachedUpgradeSetData = UpgradeComponent->GetUpgradeSetData();
+	}
 	const FName LookupName = GetNodeLookupName();
 
 	FOutlierUpgradeNodeViewData ViewData;
@@ -115,18 +148,37 @@ void UUpgradeNodeWidget::RefreshFromUpgradeComponent(UOutlierUpgradeComponent* U
 		ApplyInjectedPlayerState(ViewData);
 		InjectViewData(ViewData);
 	}
+	else
+	{
+		ResetUpgradeInteraction();
+		SetNodeState(EOutlierUpgradeNodeState::Locked, false);
+	}
 }
 
 void UUpgradeNodeWidget::SetUpgradeComponent(UOutlierUpgradeComponent* InUpgradeComponent)
 {
+	if (CachedUpgradeComponent != InUpgradeComponent)
+	{
+		ResetUpgradeInteraction();
+		ResetUnlockPresentation();
+		UnbindUpgradeContextEvents();
+	}
 	CachedUpgradeComponent = InUpgradeComponent;
+	BindUpgradeContextEvents();
 	RefreshNodeRowNameFromIds();
 	RefreshFromUpgradeComponent(CachedUpgradeComponent);
 }
 
 void UUpgradeNodeWidget::SetUpgradePlayerState(AOutlierPlayerState* InPlayerState)
 {
+	if (CachedPlayerState != InPlayerState)
+	{
+		ResetUpgradeInteraction();
+		ResetUnlockPresentation();
+		UnbindUpgradeContextEvents();
+	}
 	CachedPlayerState = InPlayerState;
+	BindUpgradeContextEvents();
 
 	if (CachedUpgradeComponent)
 	{
@@ -148,10 +200,6 @@ bool UUpgradeNodeWidget::RefreshNodeRowNameFromIds()
 
 void UUpgradeNodeWidget::SetUpgradeDescWidget(UUpgradeDescWidget* InUpgradeDescWidget)
 {
-	if (CachedUpgradeDescWidget)
-	{
-		CachedUpgradeDescWidget->OnPurchaseRequested.RemoveAll(this);
-	}
 	CachedUpgradeDescWidget = InUpgradeDescWidget;
 }
 
@@ -183,6 +231,31 @@ void UUpgradeNodeWidget::SetNodeState(EOutlierUpgradeNodeState InState, bool bIn
 {
 	const bool bJustPurchased = CurrentState != EOutlierUpgradeNodeState::Activated
 		&& InState == EOutlierUpgradeNodeState::Activated;
+	const uint32 RestoreRevision = CachedPlayerState
+		? CachedPlayerState->GetUpgradeRestoreRevision(CurrentNodeData.Role) : 0;
+	const bool bRestored = bUnlockStateInitialized && RestoreRevision != UnlockRestoreRevision;
+	if (bRestored || InState != EOutlierUpgradeNodeState::Activated)
+	{
+		StopUnlockPlayback();
+	}
+	// 최초 주입/복원은 즉시 표시한다. 화면을 보고 있는 동안의 실제 신규 활성화만 재생한다.
+	if (bJustPurchased && bUnlockStateInitialized && !bRestored && !IsDesignTime()
+		&& bUseUnlockPresentation && !bAlwaysShowUnlockedIcon && EnsureUnlockMaterial())
+	{
+		CacheInteractionVisibility();
+		UnlockVisibilityWidgets = InteractionVisibilityWidgets;
+		if (IsUnlockVisible())
+		{
+			bUnlockPlaying = true;
+			UnlockElapsed = 0.0f;
+			UnlockMaterial->SetScalarParameterValue(TEXT("FrameIndex"), 0.0f);
+			LastUnlockTime = FPlatformTime::Seconds();
+			UnlockTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+				FTickerDelegate::CreateUObject(this, &UUpgradeNodeWidget::TickUnlockPlayback), 1.0f / 60.0f);
+		}
+	}
+	bUnlockStateInitialized = true;
+	UnlockRestoreRevision = RestoreRevision;
 	if (bJustPurchased && bHoverDescVisible)
 	{
 		HideUpgradeDescWidget();
@@ -192,6 +265,16 @@ void UUpgradeNodeWidget::SetNodeState(EOutlierUpgradeNodeState InState, bool bIn
 
 	CurrentState = InState;
 	bCanAfford = bInCanAfford;
+	if (CurrentState == EOutlierUpgradeNodeState::Activated)
+	{
+		// 성공 응답보다 상태 복제가 먼저 와도 여기서 완료한다. 이후 늦은 응답은 무시된다.
+		ClearPendingRequest();
+		CancelHold();
+	}
+	else if (CurrentState != EOutlierUpgradeNodeState::Unlocked || !bCanAfford)
+	{
+		CancelHold();
+	}
 	RefreshEnabledState();
 	RefreshNodeAppearance();
 	RefreshNodeTexture();
@@ -233,85 +316,344 @@ bool UUpgradeNodeWidget::GetNodeData(FOutlierUpgradeNodeRow& OutNodeData) const
 	return true;
 }
 
-void UUpgradeNodeWidget::HandleClicked()
+void UUpgradeNodeWidget::HandlePressed()
 {
-	OnUpgradeNodeClicked.Broadcast(this, CurrentNodeRowName);
+	if (bHoldingUpgrade || IsUpgradeRequestPending())
+	{
+		return;
+	}
+
+	UOutlierUpgradeComponent* UpgradeComponent = ResolveUpgradeComponent();
+	if (!IsValid(UpgradeComponent) || !IsValid(UpgradeComponent->GetOwner()))
+	{
+		return;
+	}
+	RefreshFromUpgradeComponent(UpgradeComponent);
+	UpgradeController = Cast<AFirstPersonPlayerController>(GetOwningPlayer());
+	if (!CachedPlayerState && UpgradeController.IsValid())
+	{
+		SetUpgradePlayerState(UpgradeController->GetPlayerState<AOutlierPlayerState>());
+	}
+	if (!CanBeginHold() || !UpgradeController.IsValid()
+		|| !NodeButton || !NodeButton->IsHovered()
+		|| !FSlateApplication::IsInitialized() || !FSlateApplication::Get().IsActive())
+	{
+		return;
+	}
+
+	CacheInteractionVisibility();
+	if (!IsInteractionVisible())
+	{
+		return;
+	}
+	bHoldingUpgrade = true;
+	HoldProgress = 0.0f;
+	RefreshNodeFill();
+	StartInteractionTicker();
 }
 
-void UUpgradeNodeWidget::HandlePurchaseRequested()
+void UUpgradeNodeWidget::HandleReleased()
 {
-	if (!bAlwaysShowUnlockedIcon && CurrentState == EOutlierUpgradeNodeState::Unlocked && bCanAfford)
+	CancelHold();
+}
+
+bool UUpgradeNodeWidget::CanBeginHold() const
+{
+	return !bAlwaysShowUnlockedIcon && !IsUpgradeRequestPending()
+		&& CurrentState == EOutlierUpgradeNodeState::Unlocked && bCanAfford
+		&& IsValid(CachedUpgradeComponent) && !CurrentNodeRowName.IsNone();
+}
+
+bool UUpgradeNodeWidget::AdvanceHold(float DeltaSeconds)
+{
+	if (!bHoldingUpgrade)
 	{
-		if (UOutlierUpgradeComponent* UpgradeComponent = ResolveUpgradeComponent())
+		return false;
+	}
+	if (!CanBeginHold())
+	{
+		CancelHold();
+		return false;
+	}
+
+	const float Duration = FMath::IsFinite(HoldDuration) ? FMath::Max(0.01f, HoldDuration) : 1.0f;
+	if (FMath::IsFinite(DeltaSeconds) && DeltaSeconds > 0.0f)
+	{
+		HoldProgress = FMath::Min(1.0f, HoldProgress + DeltaSeconds / Duration);
+	}
+	RefreshNodeFill();
+	if (HoldProgress < 1.0f)
+	{
+		return false;
+	}
+
+	// 완료를 먼저 소비한 뒤 요청한다. 같은 프레임의 해제나 다음 갱신이 구매를 다시 보내지 않는다.
+	bHoldingUpgrade = false;
+	return true;
+}
+
+void UUpgradeNodeWidget::CancelHold()
+{
+	bHoldingUpgrade = false;
+	if (!IsUpgradeRequestPending())
+	{
+		HoldProgress = 0.0f;
+		StopInteractionTicker();
+		InteractionVisibilityWidgets.Reset();
+	}
+	RefreshNodeFill();
+}
+
+void UUpgradeNodeWidget::ClearPendingRequest()
+{
+	if (AFirstPersonPlayerController* Controller = UpgradeController.Get())
+	{
+		Controller->OnUpgradePurchaseResult.Remove(UpgradeResultHandle);
+	}
+	UpgradeResultHandle.Reset();
+	PendingRequestId = 0;
+	PendingNodeRowName = NAME_None;
+	PendingUpgradeOwner.Reset();
+	RequestStartedTime = 0.0;
+}
+
+void UUpgradeNodeWidget::ResetUpgradeInteraction()
+{
+	ClearPendingRequest();
+	CancelHold();
+}
+
+void UUpgradeNodeWidget::RequestUpgrade()
+{
+	UOutlierUpgradeComponent* UpgradeComponent = CachedUpgradeComponent;
+	AFirstPersonPlayerController* Controller = UpgradeController.Get();
+	if (!IsValid(UpgradeComponent) || !IsValid(Controller))
+	{
+		ResetUpgradeInteraction();
+		return;
+	}
+
+	// 누르는 사이 비용이나 선행 조건이 바뀌었을 수 있다. 전송 직전 최신 상태로 다시 검사한다.
+	RefreshFromUpgradeComponent(UpgradeComponent);
+	if (!CanBeginHold() || HoldProgress < 1.0f || !IsValid(UpgradeComponent->GetOwner()))
+	{
+		ResetUpgradeInteraction();
+		return;
+	}
+
+	const UUpgradeNodeGroupWidget* NodeGroup = FindOwningNodeGroupWidget();
+	UOutlierUpgradeSetData* SetData = NodeGroup ? NodeGroup->GetUpgradeSetData() : UpgradeComponent->GetUpgradeSetData();
+	PendingRequestId = Controller->AllocateUpgradeRequestId();
+	PendingNodeRowName = CurrentNodeRowName;
+	PendingUpgradeOwner = UpgradeComponent->GetOwner();
+	RequestStartedTime = FPlatformTime::Seconds();
+	HoldProgress = 1.0f;
+	RefreshNodeFill();
+	UpgradeResultHandle = Controller->OnUpgradePurchaseResult.AddUObject(this, &UUpgradeNodeWidget::HandleUpgradeResult);
+
+	// Listen 호스트는 이 호출 안에서 바로 응답/상태 변경을 받을 수 있으므로 대기를 먼저 등록한다.
+	Controller->ServerTryActivateUpgradeNode(PendingUpgradeOwner.Get(), PendingNodeRowName, SetData, PendingRequestId);
+}
+
+void UUpgradeNodeWidget::HandleUpgradeResult(uint32 RequestId, AActor* UpgradeOwner, FName RowName, bool bSucceeded)
+{
+	if (!IsUpgradeRequestPending() || PendingRequestId != RequestId
+		|| PendingUpgradeOwner.Get() != UpgradeOwner || PendingNodeRowName != RowName)
+	{
+		return;
+	}
+
+	if (IsValid(CachedUpgradeComponent))
+	{
+		RefreshFromUpgradeComponent(CachedUpgradeComponent);
+	}
+	if (!IsUpgradeRequestPending())
+	{
+		return;
+	}
+	if (!bSucceeded)
+	{
+		ResetUpgradeInteraction();
+	}
+	// 성공 응답만으로 활성화하지 않는다. 아직 상태 복제가 오지 않았다면 대기를 유지한다.
+}
+
+void UUpgradeNodeWidget::BindUpgradeContextEvents()
+{
+	if (IsValid(CachedUpgradeComponent))
+	{
+		CachedUpgradeComponent->OnUpgradeStateChanged.AddUniqueDynamic(this, &UUpgradeNodeWidget::HandleUpgradeStateChanged);
+	}
+	if (IsValid(CachedPlayerState))
+	{
+		if (!NodeCountChangedHandle.IsValid())
 		{
-			const FName LookupName = GetNodeLookupName();
-			bool bActivationRequested = false;
-			if (!LookupName.IsNone())
-			{
-				const UUpgradeNodeGroupWidget* NodeGroupWidget = FindOwningNodeGroupWidget();
-				UOutlierUpgradeSetData* ContextSetData = NodeGroupWidget
-					? NodeGroupWidget->GetUpgradeSetData()
-					: nullptr;
-				UDataTable* ContextDataTable = NodeGroupWidget
-					? NodeGroupWidget->GetResolvedUpgradeDataTable()
-					: nullptr;
-				const EOutlierUpgradeRole ContextRole = NodeGroupWidget
-					? NodeGroupWidget->GetResolvedUpgradeRole()
-					: EOutlierUpgradeRole::None;
-				if (ContextSetData)
-				{
-					UpgradeComponent->SetUpgradeSetData(ContextSetData);
-				}
-				else if (ContextRole != EOutlierUpgradeRole::None)
-				{
-					UpgradeComponent->SetUpgradeRole(ContextRole);
-				}
-				if (!ContextSetData && ContextDataTable)
-				{
-					UpgradeComponent->SetUpgradeDataTable(ContextDataTable);
-				}
-
-				if (AFirstPersonPlayerController* PlayerController = Cast<AFirstPersonPlayerController>(GetOwningPlayer()))
-				{
-					AActor* UpgradeOwner = UpgradeComponent->GetOwner();
-					if (PlayerController->HasAuthority())
-					{
-						bActivationRequested = UpgradeComponent->TryActivateNodeForPlayerState(
-							LookupName,
-							CachedPlayerState ? CachedPlayerState.Get() : PlayerController->GetPlayerState<AOutlierPlayerState>());
-					}
-					else if (UpgradeOwner)
-					{
-						PlayerController->ServerTryActivateUpgradeNode(
-							UpgradeOwner,
-							LookupName,
-							ContextSetData);
-						bActivationRequested = true;
-					}
-				}
-				else if (!UpgradeComponent->GetOwner() || UpgradeComponent->GetOwner()->HasAuthority())
-				{
-					bActivationRequested = UpgradeComponent->TryActivateNodeForPlayerState(LookupName, CachedPlayerState);
-				}
-				else
-				{
-					bActivationRequested = UpgradeComponent->TryActivateNode(LookupName);
-				}
-			}
-
-			if (bActivationRequested)
-			{
-				HideUpgradeDescWidget();
-				bHoverDescVisible = false;
-				bSuppressDescUntilUnhover = NodeButton && NodeButton->IsHovered();
-				RefreshFromUpgradeComponent(UpgradeComponent);
-			}
+			NodeCountChangedHandle = CachedPlayerState->OnNodeCountChanged.AddUObject(this, &UUpgradeNodeWidget::HandleNodeCountChanged);
+		}
+		if (!ActivatedNodesChangedHandle.IsValid())
+		{
+			ActivatedNodesChangedHandle = CachedPlayerState->OnActivatedUpgradeNodesChanged.AddUObject(
+				this, &UUpgradeNodeWidget::HandleUpgradeStateChanged);
 		}
 	}
 }
 
+void UUpgradeNodeWidget::UnbindUpgradeContextEvents()
+{
+	if (IsValid(CachedUpgradeComponent))
+	{
+		CachedUpgradeComponent->OnUpgradeStateChanged.RemoveDynamic(this, &UUpgradeNodeWidget::HandleUpgradeStateChanged);
+	}
+	if (IsValid(CachedPlayerState))
+	{
+		CachedPlayerState->OnNodeCountChanged.Remove(NodeCountChangedHandle);
+		CachedPlayerState->OnActivatedUpgradeNodesChanged.Remove(ActivatedNodesChangedHandle);
+	}
+	NodeCountChangedHandle.Reset();
+	ActivatedNodesChangedHandle.Reset();
+}
+
+void UUpgradeNodeWidget::HandleUpgradeStateChanged()
+{
+	if (IsValid(CachedUpgradeComponent))
+	{
+		RefreshFromUpgradeComponent(CachedUpgradeComponent);
+	}
+}
+
+void UUpgradeNodeWidget::HandleNodeCountChanged(int32 NewNodeCount)
+{
+	HandleUpgradeStateChanged();
+}
+
+void UUpgradeNodeWidget::HandleApplicationActivationChanged(bool bIsActive)
+{
+	if (!bIsActive)
+	{
+		SetNodeHovered(false);
+		CancelHold();
+	}
+}
+
+void UUpgradeNodeWidget::CacheInteractionVisibility()
+{
+	InteractionVisibilityWidgets.Reset();
+	// 중첩 UserWidget의 루트까지 한 번만 수집한다. 이후 갱신은 검색 없이 표시/활성 여부만 확인한다.
+	UWidget* Widget = this;
+	while (Widget && !InteractionVisibilityWidgets.Contains(Widget))
+	{
+		InteractionVisibilityWidgets.Add(Widget);
+		Widget = Widget->GetParent() ? static_cast<UWidget*>(Widget->GetParent()) : Widget->GetTypedOuter<UUserWidget>();
+	}
+}
+
+bool UUpgradeNodeWidget::IsInteractionVisible() const
+{
+	for (const TWeakObjectPtr<UWidget>& Widget : InteractionVisibilityWidgets)
+	{
+		if (!Widget.IsValid() || !Widget->IsVisible() || !Widget->GetIsEnabled())
+		{
+			return false;
+		}
+	}
+	return !InteractionVisibilityWidgets.IsEmpty();
+}
+
+void UUpgradeNodeWidget::StartInteractionTicker()
+{
+	// 월드 일시정지/Time Dilation과 무관한 UI 시간이다. 누르기나 응답 대기가 끝나면 즉시 해제한다.
+	if (!InteractionTickerHandle.IsValid())
+	{
+		LastInteractionTime = FPlatformTime::Seconds();
+		InteractionTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+			FTickerDelegate::CreateUObject(this, &UUpgradeNodeWidget::TickUpgradeInteraction), 1.0f / 60.0f);
+	}
+	if (!ApplicationActivationHandle.IsValid() && FSlateApplication::IsInitialized())
+	{
+		ApplicationActivationHandle = FSlateApplication::Get().OnApplicationActivationStateChanged().AddUObject(
+			this, &UUpgradeNodeWidget::HandleApplicationActivationChanged);
+	}
+}
+
+void UUpgradeNodeWidget::StopInteractionTicker()
+{
+	FTSTicker::GetCoreTicker().RemoveTicker(InteractionTickerHandle);
+	InteractionTickerHandle.Reset();
+	if (FSlateApplication::IsInitialized())
+	{
+		FSlateApplication::Get().OnApplicationActivationStateChanged().Remove(ApplicationActivationHandle);
+	}
+	ApplicationActivationHandle.Reset();
+}
+
+bool UUpgradeNodeWidget::TickUpgradeInteraction(float DeltaSeconds)
+{
+	const double Now = FPlatformTime::Seconds();
+	const float Elapsed = static_cast<float>(Now - LastInteractionTime);
+	LastInteractionTime = Now;
+	if (!IsInteractionVisible())
+	{
+		SetNodeHovered(false);
+		ResetUpgradeInteraction();
+		return false;
+	}
+
+	if (bHoldingUpgrade)
+	{
+		const TSharedPtr<SWidget> ButtonWidget = NodeButton ? NodeButton->GetCachedWidget() : nullptr;
+		if (!NodeButton || !NodeButton->IsPressed() || !NodeButton->IsHovered()
+			|| !ButtonWidget.IsValid() || !ButtonWidget->HasMouseCapture()
+			|| !FSlateApplication::IsInitialized() || !FSlateApplication::Get().IsActive())
+		{
+			CancelHold();
+			return false;
+		}
+		if (AdvanceHold(Elapsed))
+		{
+			RequestUpgrade();
+		}
+	}
+
+	CheckRequestTimeout(Now);
+	if (!bHoldingUpgrade && !IsUpgradeRequestPending())
+	{
+		StopInteractionTicker();
+		return false;
+	}
+	return true;
+}
+
+void UUpgradeNodeWidget::CheckRequestTimeout(double Now)
+{
+	const float Timeout = FMath::IsFinite(RequestTimeout) ? FMath::Max(0.01f, RequestTimeout) : 5.0f;
+	if (IsUpgradeRequestPending()
+		&& (!PendingUpgradeOwner.IsValid() || !UpgradeController.IsValid() || Now - RequestStartedTime >= Timeout))
+	{
+		// 시간 초과는 구매 취소가 아니다. 지금 상태를 반영하고 로컬 대기만 해제한다.
+		HandleUpgradeStateChanged();
+		ResetUpgradeInteraction();
+	}
+}
+
+void UUpgradeNodeWidget::NativeOnMouseCaptureLost(const FCaptureLostEvent& CaptureLostEvent)
+{
+	CancelHold();
+	Super::NativeOnMouseCaptureLost(CaptureLostEvent);
+}
+
+void UUpgradeNodeWidget::BeginDestroy()
+{
+	StopUnlockPlayback();
+	StopInteractionTicker();
+	ClearPendingRequest();
+	UnbindUpgradeContextEvents();
+	Super::BeginDestroy();
+}
+
 void UUpgradeNodeWidget::HandleHovered()
 {
+	// 설명창이 없거나 구매 직후 설명을 숨긴 상태여도 노드 자체의 호버 강조는 갱신한다.
+	SetNodeHovered(true);
 	if (const UUpgradeNodeGroupWidget* NodeGroupWidget = FindOwningNodeGroupWidget())
 	{
 		NodeGroupWidget->DismissOtherNodeDescriptions(this);
@@ -382,6 +724,8 @@ void UUpgradeNodeWidget::HandleHovered()
 
 void UUpgradeNodeWidget::HandleUnhovered()
 {
+	SetNodeHovered(false);
+	CancelHold();
 	bSuppressDescUntilUnhover = false;
 	ScheduleDescHide();
 
@@ -419,7 +763,9 @@ void UUpgradeNodeWidget::BindButtonEvents()
 		return;
 	}
 
-	NodeButton->OnClicked.AddUniqueDynamic(this, &UUpgradeNodeWidget::HandleClicked);
+	NodeButton->OnPressed.AddUniqueDynamic(this, &UUpgradeNodeWidget::HandlePressed);
+	NodeButton->OnReleased.AddUniqueDynamic(this, &UUpgradeNodeWidget::HandleReleased);
+	NodeButton->SetClickMethod(EButtonClickMethod::DownAndUp);
 	NodeButton->OnHovered.AddUniqueDynamic(this, &UUpgradeNodeWidget::HandleHovered);
 	NodeButton->OnUnhovered.AddUniqueDynamic(this, &UUpgradeNodeWidget::HandleUnhovered);
 }
@@ -437,7 +783,7 @@ UOutlierUpgradeComponent* UUpgradeNodeWidget::ResolveUpgradeComponent()
 		return nullptr;
 	}
 
-	CachedUpgradeComponent = OwningPawn->FindComponentByClass<UOutlierUpgradeComponent>();
+	SetUpgradeComponent(OwningPawn->FindComponentByClass<UOutlierUpgradeComponent>());
 	return CachedUpgradeComponent;
 }
 
@@ -584,9 +930,6 @@ UUpgradeDescWidget* UUpgradeNodeWidget::EnsureUpgradeDescWidget()
 		CachedUpgradeDescWidget->RemoveFromParent();
 		ParentCanvas->AddChildToCanvas(CachedUpgradeDescWidget);
 	}
-	CachedUpgradeDescWidget->OnPurchaseRequested.RemoveAll(this);
-	CachedUpgradeDescWidget->OnPurchaseRequested.AddUObject(this, &UUpgradeNodeWidget::HandlePurchaseRequested);
-
 	return CachedUpgradeDescWidget;
 }
 
@@ -685,7 +1028,7 @@ bool UUpgradeNodeWidget::CalculateDescWidgetLayout(
 	const FVector2D ScaledOffset = DescPopupOffset * OutRenderScale;
 	const float Gap = FMath::Max(ScaledOffset.X, 0.0f);
 	const float CenteredY = ButtonCenter.Y - RenderedSize.Y * 0.5f + ScaledOffset.Y;
-	// Keep radial tree popups facing inward instead of switching between four directions.
+	// 방사형 트리의 설명창은 네 방향으로 전환하지 않고 항상 안쪽을 향하게 한다.
 	const float PopupX = ButtonCenter.X < CanvasSize.X * 0.5f
 		? ButtonBottomRight.X + Gap
 		: ButtonTopLeft.X - Gap - RenderedSize.X;
@@ -719,6 +1062,25 @@ void UUpgradeNodeWidget::ApplyInjectedPlayerState(FOutlierUpgradeNodeViewData& I
 
 	InOutViewData.CurrentNodeCount = CachedPlayerState->GetNodeCount();
 	InOutViewData.bCanAfford = InOutViewData.CurrentNodeCount >= InOutViewData.NodeRow.Cost;
+
+	// 연결선과 같은 구매 목록을 사용한다. 컴포넌트의 복제가 늦어도 자물쇠 대기를 먼저 시작해야 한다.
+	const TArray<FName>& ActivatedNodes = CachedPlayerState->GetActivatedUpgradeNodeIds(InOutViewData.NodeRow.Role);
+	if (InOutViewData.NodeRow.bInitiallyActivated || ActivatedNodes.Contains(InOutViewData.RowName))
+	{
+		InOutViewData.State = EOutlierUpgradeNodeState::Activated;
+		return;
+	}
+
+	bool bParentActivated = InOutViewData.NodeRow.ParentId.IsNone();
+	if (!bParentActivated && CachedUpgradeComponent)
+	{
+		FOutlierUpgradeNodeViewData Parent;
+		if (CachedUpgradeComponent->GetNodeViewData(InOutViewData.NodeRow.ParentId, Parent))
+		{
+			bParentActivated = Parent.NodeRow.bInitiallyActivated || ActivatedNodes.Contains(Parent.RowName);
+		}
+	}
+	InOutViewData.State = bParentActivated ? EOutlierUpgradeNodeState::Unlocked : EOutlierUpgradeNodeState::Locked;
 }
 
 void UUpgradeNodeWidget::RefreshVisibleDescWidget()
@@ -925,6 +1287,10 @@ UMaterialInstanceDynamic* UUpgradeNodeWidget::EnsureOverlayMaterial(UImage* Imag
 	if (BrushMaterial && !SourceTexture)
 	{
 		BrushMaterial->GetTextureParameterValue(FHashedMaterialParameterInfo(TextureParameterName), SourceTexture);
+		if (!SourceTexture)
+		{
+			BrushMaterial->GetTextureParameterValue(FHashedMaterialParameterInfo(NodeTextureParameterName), SourceTexture);
+		}
 	}
 	if (NodeColorMaterial && BrushMaterial != NodeColorMaterial.Get()
 		&& (!BrushMaterial || SourceTexture || Image == Icon.Get()))
@@ -940,51 +1306,338 @@ UMaterialInstanceDynamic* UUpgradeNodeWidget::EnsureOverlayMaterial(UImage* Imag
 	return DynamicMaterial;
 }
 
+UMaterialInstanceDynamic* UUpgradeNodeWidget::EnsureNodeFillMaterial(UImage* Image, UMaterialInstanceDynamic* CachedMaterial, UTexture2D* TextureOverride)
+{
+	if (!Image || !NodeFillMaterial)
+	{
+		return nullptr;
+	}
+
+	UObject* BrushResource = Image->GetBrush().GetResourceObject();
+	UTexture* SourceTexture = TextureOverride ? TextureOverride : Cast<UTexture>(BrushResource);
+	if (!SourceTexture)
+	{
+		if (UMaterialInterface* BrushMaterial = Cast<UMaterialInterface>(BrushResource))
+		{
+			// 기존 색상용 브러시의 텍스처도 이어받아 아이콘이 머티리얼의 기본 배경으로 바뀌지 않게 한다.
+			BrushMaterial->GetTextureParameterValue(FHashedMaterialParameterInfo(NodeTextureParameterName), SourceTexture);
+			if (!SourceTexture)
+			{
+				BrushMaterial->GetTextureParameterValue(FHashedMaterialParameterInfo(TextureParameterName), SourceTexture);
+			}
+		}
+	}
+	if (!SourceTexture)
+	{
+		// 이미지가 없는 레이어에 머티리얼의 기본 배경 이미지를 임의로 표시하지 않는다.
+		return nullptr;
+	}
+
+	UMaterialInstanceDynamic* DynamicMaterial = CachedMaterial;
+	if (!DynamicMaterial || BrushResource != DynamicMaterial || CachedNodeFillSource != NodeFillMaterial)
+	{
+		// 이미지마다 MID를 따로 만든다. 공용 MID가 지정되어도 부모에서 복제해 공유를 막는다.
+		UMaterialInstanceDynamic* SourceDynamic = Cast<UMaterialInstanceDynamic>(NodeFillMaterial.Get());
+		DynamicMaterial = UMaterialInstanceDynamic::Create(SourceDynamic ? SourceDynamic->Parent.Get() : NodeFillMaterial.Get(), this);
+		if (SourceDynamic && DynamicMaterial)
+		{
+			DynamicMaterial->CopyParameterOverrides(SourceDynamic);
+		}
+		Image->SetBrushFromMaterial(DynamicMaterial);
+	}
+	if (DynamicMaterial)
+	{
+		DynamicMaterial->SetTextureParameterValue(NodeTextureParameterName, SourceTexture);
+	}
+	return DynamicMaterial;
+}
+
 void UUpgradeNodeWidget::RefreshNodeAppearance()
 {
-	if (bUseMaterialStateColors)
+	const bool bActivated = CurrentState == EOutlierUpgradeNodeState::Activated && !bUnlockPlaying;
+	const bool bHighlight = bNodeHovered && !bActivated;
+	// 호버 강조는 외곽선과 Glow에만 적용한다. 아이콘은 기존 상태 색상을 유지한다.
+	if (Frame && bFrameHoverTintApplied && (!bHighlight || bUseMaterialStateColors || NodeFillMaterial))
 	{
-		FrameMaterial = EnsureOverlayMaterial(Frame, FrameMaterial);
-		GlowMaterial = EnsureOverlayMaterial(Glow, GlowMaterial);
-		IconMaterial = EnsureOverlayMaterial(Icon, IconMaterial);
-
-		FLinearColor StateColor = LockedColor;
-		if (CurrentState == EOutlierUpgradeNodeState::Unlocked)
+		Frame->SetColorAndOpacity(FrameBaseTint);
+		bFrameHoverTintApplied = false;
+	}
+	if (NodeFillMaterial)
+	{
+		BackgroundMaterial = EnsureNodeFillMaterial(Background, BackgroundMaterial, NodeFillTexture);
+		FrameMaterial = EnsureNodeFillMaterial(Frame, FrameMaterial);
+		IconMaterial = EnsureNodeFillMaterial(Icon, IconMaterial);
+		CachedNodeFillSource = NodeFillMaterial;
+	}
+	else if (CachedNodeFillSource)
+	{
+		// 설정을 해제하면 텍스처를 이어받아 기존 색상용 머티리얼 갱신으로 되돌린다.
+		for (UImage* Image : { Background.Get(), Frame.Get(), Icon.Get() })
 		{
-			StateColor = UnlockedColor;
+			if (Image)
+			{
+				if (UMaterialInterface* Material = Cast<UMaterialInterface>(Image->GetBrush().GetResourceObject()))
+				{
+					UTexture* Texture = nullptr;
+					if (Material->GetTextureParameterValue(FHashedMaterialParameterInfo(NodeTextureParameterName), Texture))
+					{
+						Image->SetBrushFromTexture(Cast<UTexture2D>(Texture));
+					}
+				}
+			}
 		}
-		else if (CurrentState == EOutlierUpgradeNodeState::Activated)
+		BackgroundMaterial = nullptr;
+		FrameMaterial = nullptr;
+		IconMaterial = nullptr;
+		CachedNodeFillSource = nullptr;
+	}
+	if (bUseMaterialStateColors || NodeFillMaterial)
+	{
+		if (!NodeFillMaterial)
+		{
+			FrameMaterial = EnsureOverlayMaterial(Frame, FrameMaterial);
+			IconMaterial = EnsureOverlayMaterial(Icon, IconMaterial);
+		}
+		GlowMaterial = EnsureOverlayMaterial(Glow, GlowMaterial);
+
+		FLinearColor StateColor = CurrentState == EOutlierUpgradeNodeState::Locked ? LockedColor : UnlockedColor;
+		if (bActivated)
 		{
 			StateColor = ActivatedColor;
 		}
 
 		for (UMaterialInstanceDynamic* Material : { FrameMaterial.Get(), GlowMaterial.Get(), IconMaterial.Get() })
 		{
-			if (Material)
+			if (Material && (!NodeFillMaterial || Material == GlowMaterial.Get()))
 			{
 				Material->SetVectorParameterValue(ColorParameterName, StateColor);
 				Material->SetScalarParameterValue(IntensityParameterName, OverlayIntensity);
 			}
 		}
+		if (bHighlight)
+		{
+			for (UMaterialInstanceDynamic* Material : { FrameMaterial.Get(), GlowMaterial.Get() })
+			{
+				if (Material && (!NodeFillMaterial || Material == GlowMaterial.Get()))
+				{
+					Material->SetVectorParameterValue(ColorParameterName, HoverColor);
+				}
+			}
+		}
 	}
 
+	if (Frame && bHighlight && ((!bUseMaterialStateColors && !NodeFillMaterial) || !FrameMaterial))
+	{
+		if (!bFrameHoverTintApplied)
+		{
+			FrameBaseTint = Frame->GetColorAndOpacity();
+			bFrameHoverTintApplied = true;
+		}
+		Frame->SetColorAndOpacity(FrameBaseTint * HoverColor);
+	}
+	for (UImage* Image : { Background.Get(), Frame.Get(), Glow.Get(), Icon.Get() })
+	{
+		if (Image && Image->IsVisible())
+		{
+			Image->SetVisibility(ESlateVisibility::HitTestInvisible);
+		}
+	}
 	if (Glow)
 	{
-		Glow->SetRenderOpacity(CurrentState == EOutlierUpgradeNodeState::Activated ? 1.0f : 0.0f);
+		const bool bShowGlow = !bUnlockPlaying && (bActivated || bNodeHovered);
+		Glow->SetRenderOpacity(bShowGlow ? 1.0f : 0.0f);
+		Glow->SetVisibility(bShowGlow ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Hidden);
+	}
+	// 별도 색상 덮개 대신 기존 배경/테두리/아이콘 자체를 전환하므로 이전 Fill 이미지는 숨긴다.
+	if (NodeFill)
+	{
+		NodeFill->SetRenderOpacity(0.0f);
+		NodeFill->SetVisibility(ESlateVisibility::Hidden);
+	}
+	RefreshNodeFill();
+}
+
+bool UUpgradeNodeWidget::ShouldShowActivatedAppearance() const
+{
+	return !bUnlockPlaying && (CurrentState == EOutlierUpgradeNodeState::Activated || bAlwaysShowUnlockedIcon);
+}
+
+bool UUpgradeNodeWidget::EnsureUnlockMaterial()
+{
+	if (!bUseUnlockPresentation || bAlwaysShowUnlockedIcon) return false;
+	UMaterialInterface* Material = UnlockLock
+		? Cast<UMaterialInterface>(UnlockLock->GetBrush().GetResourceObject()) : nullptr;
+	const bool bValidSettings = FMath::IsFinite(UnlockDuration) && UnlockDuration > 0.0f
+		&& UnlockFrameCount > 0 && UnlockFrameCount <= 19;
+	// 재생 중에는 이미 검증한 동적 머티리얼을 재사용한다. 매 프레임 머티리얼 매개변수를 다시 검색하지 않는다.
+	if (Material && Material == UnlockMaterial && bValidSettings) return true;
+	float FrameValue = 0.0f;
+	// 시트는 머티리얼에 고정해도 된다. 코드에서 변경하는 프레임 값만 필수로 확인한다.
+	const bool bValid = Material && bValidSettings
+		&& Material->GetScalarParameterValue(FHashedMaterialParameterInfo(TEXT("FrameIndex")), FrameValue);
+	if (!bValid)
+	{
+		if (!bUnlockConfigurationWarned && !IsDesignTime())
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[Upgrade.Unlock] Invalid UnlockLock material/FrameIndex/duration: %s"), *GetName());
+			bUnlockConfigurationWarned = true;
+		}
+		return false;
+	}
+	if (!UnlockMaterial || Material != UnlockMaterial)
+	{
+		UnlockMaterial = UMaterialInstanceDynamic::Create(Material, this);
+		UnlockLock->SetBrushFromMaterial(UnlockMaterial);
+	}
+	return UnlockMaterial != nullptr;
+}
+
+void UUpgradeNodeWidget::RefreshUnlockImage()
+{
+	const bool bShowLock = bUseUnlockPresentation && !bAlwaysShowUnlockedIcon
+		&& (CurrentState != EOutlierUpgradeNodeState::Activated || bUnlockPlaying) && EnsureUnlockMaterial();
+	if (UnlockLock)
+	{
+		UnlockLock->SetVisibility(bShowLock ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+		if (bShowLock && !bUnlockPlaying) UnlockMaterial->SetScalarParameterValue(TEXT("FrameIndex"), 0.0f);
+	}
+	// 기존 잠금 아이콘에 그려진 자물쇠와 새 스프라이트가 겹치지 않게 한다.
+	if (Icon && bShowLock && bHideIconWhileLocked) Icon->SetVisibility(ESlateVisibility::Hidden);
+}
+
+void UUpgradeNodeWidget::StopUnlockPlayback()
+{
+	FTSTicker::GetCoreTicker().RemoveTicker(UnlockTickerHandle);
+	UnlockTickerHandle.Reset();
+	bUnlockPlaying = false;
+	UnlockElapsed = 0.0f;
+	UnlockVisibilityWidgets.Reset();
+}
+
+void UUpgradeNodeWidget::ResetUnlockPresentation()
+{
+	StopUnlockPlayback();
+	bUnlockStateInitialized = false;
+	UnlockRestoreRevision = 0;
+}
+
+bool UUpgradeNodeWidget::IsUnlockVisible() const
+{
+	for (const TWeakObjectPtr<UWidget>& Widget : UnlockVisibilityWidgets)
+	{
+		if (!Widget.IsValid() || !Widget->IsVisible()) return false;
+	}
+	return !UnlockVisibilityWidgets.IsEmpty();
+}
+
+bool UUpgradeNodeWidget::AdvanceUnlockPlayback(float DeltaSeconds)
+{
+	if (!bUnlockPlaying) return false;
+	const bool bValid = EnsureUnlockMaterial();
+	UnlockElapsed += FMath::IsFinite(DeltaSeconds) ? FMath::Max(0.0f, DeltaSeconds) : 0.0f;
+	if (bValid)
+	{
+		const int32 FrameIndex = FMath::Min(FMath::FloorToInt(FMath::Min(UnlockElapsed / UnlockDuration, 1.0f)
+			* UnlockFrameCount), UnlockFrameCount - 1);
+		UnlockMaterial->SetScalarParameterValue(TEXT("FrameIndex"), static_cast<float>(FrameIndex));
+	}
+	if (!bValid || UnlockElapsed >= UnlockDuration)
+	{
+		// 마지막 프레임에 진입한 순간이 아니라 표시 시간이 끝나야 완료한다. 선의 시간은 여기서 시작한다.
+		StopUnlockPlayback();
+		RefreshNodeAppearance();
+		RefreshNodeTexture();
+		OnUnlockPresentationFinished.Broadcast(this);
+		return false;
+	}
+	return true;
+}
+
+bool UUpgradeNodeWidget::TickUnlockPlayback(float DeltaSeconds)
+{
+	if (!IsUnlockVisible())
+	{
+		// 숨겨진 화면에는 완료를 통보하지 않는다. 다시 보이면 현재 서버 상태를 즉시 표시한다.
+		StopUnlockPlayback();
+		RefreshNodeAppearance();
+		RefreshNodeTexture();
+		OnUnlockPresentationCancelled.Broadcast(this);
+		return false;
+	}
+	const double Now = FPlatformTime::Seconds();
+	const float Elapsed = static_cast<float>(FMath::Max(0.0, Now - LastUnlockTime));
+	LastUnlockTime = Now;
+	return AdvanceUnlockPlayback(Elapsed);
+}
+
+void UUpgradeNodeWidget::SetNodeHovered(bool bInHovered)
+{
+	bNodeHovered = bInHovered;
+	RefreshNodeAppearance();
+}
+
+void UUpgradeNodeWidget::RefreshNodeFill()
+{
+	if (!NodeFillMaterial)
+	{
+		return;
+	}
+	const bool bShowActivated = ShouldShowActivatedAppearance();
+	const float Progress = bShowActivated ? 1.0f : FMath::Clamp(HoldProgress, 0.0f, 1.0f);
+	const FLinearColor StateColor = CurrentState == EOutlierUpgradeNodeState::Locked ? LockedColor : UnlockedColor;
+	for (UMaterialInstanceDynamic* Material : { BackgroundMaterial.Get(), FrameMaterial.Get(), IconMaterial.Get() })
+	{
+		if (!Material)
+		{
+			continue;
+		}
+		const FLinearColor BaseColor = Material == FrameMaterial.Get() && bNodeHovered && !bShowActivated ? HoverColor : StateColor;
+		// 0/1에서는 양쪽 색을 같게 해 If의 경계 픽셀도 완전히 기본/활성 모습이 되도록 한다.
+		// 활성화 후에는 이미지를 숨기지 않는다. 실제 상태가 Progress=1을 유지하고 Glow만 별도로 켠다.
+		Material->SetVectorParameterValue(UnlockedColorParameterName, Progress >= 1.0f ? ActivatedColor : BaseColor);
+		Material->SetVectorParameterValue(ActivatedColorParameterName, Progress <= 0.0f ? BaseColor : ActivatedColor);
+		Material->SetScalarParameterValue(UpgradeNodeProgressParameterName, Progress);
+		if (Material != IconMaterial.Get())
+		{
+			Material->SetScalarParameterValue(UseActivatedTextureParameterName, 0.0f);
+		}
 	}
 }
 
 void UUpgradeNodeWidget::RefreshNodeTexture()
 {
+	// 어떤 텍스처 경로로 반환해도 마지막에 자물쇠/중복 아이콘 표시를 맞춘다.
+	ON_SCOPE_EXIT { RefreshUnlockImage(); };
 	if (!Icon)
 	{
 		return;
 	}
 
 	UTexture2D* BaseTexture = NodeIconTextureOverride ? NodeIconTextureOverride.Get() : NodeTexture.Get();
+	if (NodeFillMaterial)
+	{
+		UTexture2D* InactiveTexture = LockedIconTextureOverride ? LockedIconTextureOverride.Get() : BaseTexture;
+		if (!InactiveTexture) InactiveTexture = DeactivatedNodeTexture.Get();
+		UTexture2D* ActiveTexture = UnlockedIconTextureOverride ? UnlockedIconTextureOverride.Get() : BaseTexture;
+		if (!ActiveTexture) ActiveTexture = UnlockedNodeTexture.Get();
+		// 한쪽 이미지만 있어도 표시를 유지한다. 두 이미지는 같은 MID에 넣고 Progress로 전환한다.
+		if (!InactiveTexture) InactiveTexture = ActiveTexture;
+		if (!ActiveTexture) ActiveTexture = InactiveTexture;
+		Icon->SetVisibility(InactiveTexture ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+		if (InactiveTexture)
+		{
+			IconMaterial = EnsureNodeFillMaterial(Icon, IconMaterial, InactiveTexture);
+			if (IconMaterial)
+			{
+				IconMaterial->SetTextureParameterValue(ActivatedTextureParameterName, ActiveTexture);
+				IconMaterial->SetScalarParameterValue(UseActivatedTextureParameterName, ActiveTexture != InactiveTexture ? 1.0f : 0.0f);
+			}
+		}
+		RefreshNodeFill();
+		return;
+	}
 	UTexture2D* DisplayTexture = nullptr;
-	const bool bShowUnlockedIcon = IsDesignTime() || bAlwaysShowUnlockedIcon
-		|| CurrentState == EOutlierUpgradeNodeState::Activated;
+	const bool bShowUnlockedIcon = IsDesignTime() || ShouldShowActivatedAppearance();
 	if (!bShowUnlockedIcon && LockedIconTextureOverride)
 	{
 		DisplayTexture = LockedIconTextureOverride.Get();
@@ -1012,7 +1665,7 @@ void UUpgradeNodeWidget::RefreshNodeTexture()
 		DisplayTexture = BaseTexture ? BaseTexture : UnlockedNodeTexture.Get();
 	}
 
-	Icon->SetVisibility(DisplayTexture ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
+	Icon->SetVisibility(DisplayTexture ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
 	if (DisplayTexture)
 	{
 		if (bUseMaterialStateColors)

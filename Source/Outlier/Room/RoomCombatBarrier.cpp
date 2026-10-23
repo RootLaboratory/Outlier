@@ -3,6 +3,7 @@
 #include "Components/BoxComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/World.h"
+#include "Level/Elevator/ElevatorShaftController.h"
 #include "Net/UnrealNetwork.h"
 #include "Room/RoomCombatSubsystem.h"
 
@@ -34,6 +35,18 @@ void ARoomCombatBarrier::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& O
 
 void ARoomCombatBarrier::BeginPlay()
 {
+	if (HasAuthority())
+	{
+		// Section/Wall 아래에 중첩되어도 등록 전에 레벨 Controller 인스턴스의 전투 태그를 사용한다.
+		for (AActor* Parent = GetParentActor(); Parent; Parent = Parent->GetParentActor())
+		{
+			if (const AElevatorShaftController* Controller = Cast<AElevatorShaftController>(Parent))
+			{
+				RoomTag = Controller->CombatRoomTag;
+				break;
+			}
+		}
+	}
 	Super::BeginPlay();
 	ApplyBlockedState();
 	if (HasAuthority())
@@ -127,15 +140,11 @@ void ARoomCombatBarrier::SetBlocked(bool bNewBlocked)
 	bBlocked = bNewBlocked;
 	ApplyBlockedState();
 	ForceNetUpdate();
-	UE_LOG(LogTemp, Display, TEXT("[RoomCombatBarrier] Server state Room=%s Blocked=%d Actor=%s"),
-		*RoomTag.ToString(), bBlocked, *GetName());
 }
 
 void ARoomCombatBarrier::OnRep_Blocked()
 {
 	ApplyBlockedState();
-	UE_LOG(LogTemp, Display, TEXT("[RoomCombatBarrier] Client state Room=%s Blocked=%d Actor=%s"),
-		*RoomTag.ToString(), bBlocked, *GetName());
 }
 
 void ARoomCombatBarrier::ApplyBlockedState()
@@ -144,4 +153,11 @@ void ARoomCombatBarrier::ApplyBlockedState()
 	VisualPlane->SetHiddenInGame(!bBlocked);
 	BlockingBox->SetCollisionEnabled(bBlocked
 		? ECollisionEnabled::QueryAndPhysics : ECollisionEnabled::NoCollision);
+	UE_LOG(LogTemp, Display,
+		TEXT("[RoomCombatBarrier] World=%s Authority=%d NetMode=%d Room=%s AdditionalRooms=%s Blocked=%d Component=%s Collision=%s ActorCollision=%d PawnResponse=%s Location=%s"),
+		*GetNameSafe(GetWorld()), HasAuthority(), static_cast<int32>(GetNetMode()),
+		*RoomTag.ToString(), *AdditionalRoomTags.ToStringSimple(), bBlocked, *BlockingBox->GetPathName(),
+		*UEnum::GetValueAsString(BlockingBox->GetCollisionEnabled()), GetActorEnableCollision(),
+		*UEnum::GetValueAsString(BlockingBox->GetCollisionResponseToChannel(ECC_Pawn)),
+		*BlockingBox->GetComponentLocation().ToString());
 }

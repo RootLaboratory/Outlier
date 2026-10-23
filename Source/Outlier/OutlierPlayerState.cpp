@@ -464,6 +464,12 @@ void AOutlierPlayerState::OnRep_ActivatedUpgradeNodes()
 	HandleActivatedUpgradeNodesChanged();
 }
 
+void AOutlierPlayerState::OnRep_UpgradeRestoreRevision()
+{
+	// 복원 번호 자체는 효과를 바꾸지 않는다. UI 통보만 PostRepNotifies까지 모은다.
+	bUpgradePresentationDirty = true;
+}
+
 void AOutlierPlayerState::OnRep_PendingPresetSelection()
 {
 	HandlePendingPresetSelectionChanged();
@@ -498,6 +504,31 @@ void AOutlierPlayerState::HandleStatAllocatorExitPendingChanged()
 void AOutlierPlayerState::HandleActivatedUpgradeNodesChanged()
 {
 	OnActivatedUpgradeNodesChanged.Broadcast();
+	if (HasAuthority())
+	{
+		OnUpgradePresentationChanged.Broadcast();
+	}
+	else
+	{
+		bUpgradePresentationDirty = true;
+	}
+}
+
+void AOutlierPlayerState::PostRepNotifies()
+{
+	Super::PostRepNotifies();
+	if (bUpgradePresentationDirty)
+	{
+		// 활성 목록/복원 번호의 RepNotify 호출 순서에 UI 연출이 의존하지 않게 한다.
+		bUpgradePresentationDirty = false;
+		OnUpgradePresentationChanged.Broadcast();
+	}
+}
+
+uint32 AOutlierPlayerState::GetUpgradeRestoreRevision(EOutlierUpgradeRole UpgradeRole) const
+{
+	return UpgradeRole == EOutlierUpgradeRole::Shooter ? ShooterUpgradeRestoreRevision
+		: UpgradeRole == EOutlierUpgradeRole::Partner ? PartnerUpgradeRestoreRevision : 0;
 }
 
 void AOutlierPlayerState::HandlePendingPresetSelectionChanged()
@@ -526,19 +557,16 @@ void AOutlierPlayerState::FlushActivatedUpgradeNodes(int32 NewNodeCount)
 
 	const int32 ClearedShooterNodes = ShooterActivatedUpgradeNodeIds.Num();
 	const int32 ClearedPartnerNodes = PartnerActivatedUpgradeNodeIds.Num();
-	const bool bHadNodes = ClearedShooterNodes > 0 || ClearedPartnerNodes > 0;
 	const int32 PreviousNodeCount = NodeCount;
 
 	ShooterActivatedUpgradeNodeIds.Reset();
 	PartnerActivatedUpgradeNodeIds.Reset();
+	++ShooterUpgradeRestoreRevision;
+	++PartnerUpgradeRestoreRevision;
 
-	if (bHadNodes)
-	{
-		HandleActivatedUpgradeNodesChanged();
-		ForceNetUpdate();
-	}
-
+	HandleActivatedUpgradeNodesChanged();
 	SetNodeCountInternal(NewNodeCount);
+	ForceNetUpdate();
 
 	// NodeCount가 "안 바뀐 것처럼" 보이는 경우가 두 가지다: 요청값이 0으로 내려온 경우와
 	// 이미 같은 값이라 SetNodeCountInternal이 조용히 조기 반환한 경우. 둘을 구분해서 남긴다.
@@ -591,18 +619,23 @@ void AOutlierPlayerState::RestoreCheckpointProgress(
 	}
 
 	// AttributeSet 수치를 저장해 덮는 대신 업그레이드 목록을 되돌리고 기존 변경 통보로 효과를 재적용한다.
-	const bool bNodesChanged = *ActivatedNodeIds != SavedActivatedNodeIds;
-	if (bNodesChanged)
+	*ActivatedNodeIds = SavedActivatedNodeIds;
+	if (UpgradeRole == EOutlierUpgradeRole::Shooter)
 	{
-		*ActivatedNodeIds = SavedActivatedNodeIds;
-		HandleActivatedUpgradeNodesChanged();
+		++ShooterUpgradeRestoreRevision;
 	}
+	else
+	{
+		++PartnerUpgradeRestoreRevision;
+	}
+	// 목록이 같아도 진행 중인 구매 연출을 끝내고 저장된 모습으로 맞춘다.
+	HandleActivatedUpgradeNodesChanged();
 
 	const int32 PreviousNodeCount = NodeCount;
 	SetNodeCountInternal(SavedNodeCount);
-	if (bNodesChanged && PreviousNodeCount == NodeCount)
+	if (PreviousNodeCount == NodeCount)
 	{
-		// SetNodeCountInternal이 같은 값에서 조기 반환해도 노드 배열 변경은 즉시 복제해야 한다.
+		// 노드 수가 같아도 활성 목록과 복원 번호는 즉시 복제해야 한다.
 		ForceNetUpdate();
 	}
 }
@@ -750,15 +783,13 @@ void AOutlierPlayerState::RestoreReconnectGameplayState(
 	{
 		return;
 	}
-	const bool bUpgradeNodesChanged =
-		ShooterActivatedUpgradeNodeIds != State.ShooterActivatedUpgradeNodeIds
-		|| PartnerActivatedUpgradeNodeIds != State.PartnerActivatedUpgradeNodeIds;
-
 	CheckpointData = State.CheckpointData;
 	NodeCount = State.NodeCount;
 	bStatAllocatorExitPending = State.bStatAllocatorExitPending;
 	ShooterActivatedUpgradeNodeIds = State.ShooterActivatedUpgradeNodeIds;
 	PartnerActivatedUpgradeNodeIds = State.PartnerActivatedUpgradeNodeIds;
+	++ShooterUpgradeRestoreRevision;
+	++PartnerUpgradeRestoreRevision;
 	PendingPresetSelection = State.PendingPresetSelection;
 	bHasAcquiredSuit = State.bHasAcquiredSuit;
 	SuitFirstPersonMesh = State.SuitFirstPersonMesh;
@@ -766,10 +797,7 @@ void AOutlierPlayerState::RestoreReconnectGameplayState(
 	LoadoutSnapshot = State.LoadoutSnapshot;
 
 	// 서버는 자기 값 변경에 OnRep 이 오지 않는다. 슈트 UI 갱신이 업그레이드 상태를 읽기 전에 먼저 통보한다.
-	if (bUpgradeNodesChanged)
-	{
-		HandleActivatedUpgradeNodesChanged();
-	}
+	HandleActivatedUpgradeNodesChanged();
 	OnRep_AcquiredSuit();
 	ForceNetUpdate();
 }
@@ -864,6 +892,8 @@ void AOutlierPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& 
 	DOREPLIFETIME(AOutlierPlayerState, bSuitDisabledByPartnerBoundary);
 	DOREPLIFETIME_CONDITION(AOutlierPlayerState, ShooterActivatedUpgradeNodeIds, COND_OwnerOnly);
 	DOREPLIFETIME_CONDITION(AOutlierPlayerState, PartnerActivatedUpgradeNodeIds, COND_OwnerOnly);
+	DOREPLIFETIME_CONDITION(AOutlierPlayerState, ShooterUpgradeRestoreRevision, COND_OwnerOnly);
+	DOREPLIFETIME_CONDITION(AOutlierPlayerState, PartnerUpgradeRestoreRevision, COND_OwnerOnly);
 	DOREPLIFETIME_CONDITION(AOutlierPlayerState, TemporaryPlayerId, COND_OwnerOnly);
 	DOREPLIFETIME(AOutlierPlayerState, PendingPresetSelection);
 	// 클라가 읽어야 한다 — MainWidget 활성화 여부가 이 값에 걸린다.

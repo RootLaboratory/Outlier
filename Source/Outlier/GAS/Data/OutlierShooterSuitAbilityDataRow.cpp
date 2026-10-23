@@ -28,15 +28,30 @@ bool NearlyEqualRow(
 {
 	return FMath::IsNearlyEqual(A.DurationSeconds, B.DurationSeconds)
 		&& FMath::IsNearlyEqual(A.CooldownSeconds, B.CooldownSeconds)
+		&& FMath::IsNearlyEqual(A.MovementSpeedBonusPercent, B.MovementSpeedBonusPercent)
+		&& FMath::IsNearlyEqual(A.ExitSpeedBuffDurationSeconds, B.ExitSpeedBuffDurationSeconds)
 		&& FMath::IsNearlyEqual(A.CastTimeSeconds, B.CastTimeSeconds)
 		&& FMath::IsNearlyEqual(A.MaxPartnerDistance, B.MaxPartnerDistance)
 		&& FMath::IsNearlyEqual(A.PartnerOffset, B.PartnerOffset)
 		&& FMath::IsNearlyEqual(A.ReflectionRadius, B.ReflectionRadius)
 		&& FMath::IsNearlyEqual(A.ReflectDamageMult, B.ReflectDamageMult)
+		&& FMath::IsNearlyEqual(A.ShieldRecoveryBonusPerSecond, B.ShieldRecoveryBonusPerSecond)
 		&& FMath::IsNearlyEqual(A.ShieldDrainPerSecond, B.ShieldDrainPerSecond)
 		&& FMath::IsNearlyEqual(A.FireRateMultiplier, B.FireRateMultiplier)
 		&& FMath::IsNearlyEqual(A.SpreadMultiplier, B.SpreadMultiplier)
+		&& FMath::IsNearlyEqual(A.AutoAimDiameterWidthRatio, B.AutoAimDiameterWidthRatio)
 		&& FMath::IsNearlyEqual(A.ShieldRecoveryDelay, B.ShieldRecoveryDelay);
+}
+
+bool RequireValidAutoAimDiameterWidthRatio(float Value, FString& OutError)
+{
+	if (FMath::IsFinite(Value) && Value > 0.0f && Value <= 1.0f)
+	{
+		return true;
+	}
+
+	OutError = TEXT("WeaponOvercharge.AutoAimDiameterWidthRatio must be finite and in (0, 1]");
+	return false;
 }
 }
 
@@ -44,19 +59,25 @@ bool FOutlierShooterSuitConfig::IsValid(FString& OutError) const
 {
 	return RequireNonNegative(MaxPartnerDistance, TEXT("Common.MaxPartnerDistance"), OutError)
 		&& RequireNonNegative(QuantumLeap.CastTimeSeconds, TEXT("QuantumLeap.CastTimeSeconds"), OutError)
+		&& RequireNonNegative(QuantumLeap.DurationSeconds, TEXT("QuantumLeap.DurationSeconds"), OutError)
 		&& RequireNonNegative(QuantumLeap.CooldownSeconds, TEXT("QuantumLeap.CooldownSeconds"), OutError)
 		&& RequireNonNegative(QuantumLeap.PartnerOffset, TEXT("QuantumLeap.PartnerOffset"), OutError)
 		&& RequireNonNegative(BulletReflection.DurationSeconds, TEXT("BulletReflection.DurationSeconds"), OutError)
 		&& RequireNonNegative(BulletReflection.CooldownSeconds, TEXT("BulletReflection.CooldownSeconds"), OutError)
 		&& RequireNonNegative(BulletReflection.ReflectionRadius, TEXT("BulletReflection.ReflectionRadius"), OutError)
 		&& RequireNonNegative(BulletReflection.ReflectDamageMult, TEXT("BulletReflection.ReflectDamageMult"), OutError)
+		&& RequireNonNegative(BulletReflection.ShieldRecoveryBonusPerSecond,
+			TEXT("BulletReflection.ShieldRecoveryBonusPerSecond"), OutError)
 		&& RequireNonNegative(Stealth.DurationSeconds, TEXT("Stealth.DurationSeconds"), OutError)
 		&& RequireNonNegative(Stealth.CooldownSeconds, TEXT("Stealth.CooldownSeconds"), OutError)
+		&& RequireNonNegative(Stealth.MovementSpeedBonusPercent, TEXT("Stealth.MovementSpeedBonusPercent"), OutError)
+		&& RequireNonNegative(Stealth.ExitSpeedBuffDurationSeconds, TEXT("Stealth.ExitSpeedBuffDurationSeconds"), OutError)
 		&& RequireNonNegative(WeaponOvercharge.DurationSeconds, TEXT("WeaponOvercharge.DurationSeconds"), OutError)
 		&& RequireNonNegative(WeaponOvercharge.CooldownSeconds, TEXT("WeaponOvercharge.CooldownSeconds"), OutError)
 		&& RequireNonNegative(WeaponOvercharge.ShieldDrainPerSecond, TEXT("WeaponOvercharge.ShieldDrainPerSecond"), OutError)
 		&& RequireNonNegative(WeaponOvercharge.FireRateMultiplier, TEXT("WeaponOvercharge.FireRateMultiplier"), OutError)
 		&& RequireNonNegative(WeaponOvercharge.SpreadMultiplier, TEXT("WeaponOvercharge.SpreadMultiplier"), OutError)
+		&& RequireValidAutoAimDiameterWidthRatio(WeaponOvercharge.AutoAimDiameterWidthRatio, OutError)
 		&& RequireNonNegative(WeaponOvercharge.ShieldRecoveryDelay, TEXT("WeaponOvercharge.ShieldRecoveryDelay"), OutError);
 }
 

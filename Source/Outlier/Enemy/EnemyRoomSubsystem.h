@@ -50,6 +50,8 @@ public:
 	void RegisterEnemy(AEnemyBase* Enemy);
 	void UnregisterEnemy(AEnemyBase* Enemy);
 	void RefreshEnemyRegistration(AEnemyBase* Enemy);
+	// 기존 등록 수명주기를 재사용한다. 발사 시점에만 호출하며 매 프레임 월드를 검색하지 않는다.
+	void GetAutoAimCandidates(TArray<AEnemyBase*>& OutEnemies) const;
 	bool NotifyRoomCombat(FGameplayTag RoomTag, const FVector& PlayerLocation, AEnemyBase* ExcludeEnemy);
 	void NotifyRoomCombatEnded(FGameplayTag RoomTag);
 	bool IsRoomInCombat(FGameplayTag RoomTag) const;

@@ -58,4 +58,54 @@ bool FWeaponRecoilDeterminismTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FWeaponRecoilUpgradeScalingTest,
+	"Outlier.Weapon.Recoil.UpgradeScaling",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FWeaponRecoilUpgradeScalingTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	// 무기 자체 배율이 달라도 업그레이드는 최종 반동을 같은 비율로 줄인다.
+	for (const float WeaponScale : { 1.0f, 0.6f })
+	{
+		FWeaponRecoilRow Profile;
+		Profile.ControlPitchPerShot = 1.0f;
+		Profile.ControlYawPerShot = 0.3f;
+		Profile.RecoilGrowthPerShot = 0.2f;
+		Profile.MaxRecoilMultiplier = 1.5f;
+		Profile.MaxAccumulatedPitchDegrees = 2.5f;
+		Profile.MaxAccumulatedYaw = 0.5f;
+		Profile.YawDirectionPersistence = 1.0f;
+
+		FWeaponRecoilRuntimeState BaseState;
+		FWeaponRecoilRuntimeState FirstUpgradeState;
+		FWeaponRecoilRuntimeState BothUpgradesState;
+		for (uint32 Shot = 1; Shot <= 8; ++Shot)
+		{
+			const FVector2D Base = OutlierWeaponRecoil::CalculateControlRecoil(Profile, WeaponScale, Shot, BaseState);
+			const FVector2D First = OutlierWeaponRecoil::CalculateControlRecoil(
+				Profile, WeaponScale, Shot, FirstUpgradeState, 0.9f);
+			const FVector2D Both = OutlierWeaponRecoil::CalculateControlRecoil(
+				Profile, WeaponScale, Shot, BothUpgradesState, 0.8f);
+			TestTrue(TEXT("First upgrade reduces every shot to 90%, including at the cap"), First.Equals(Base * 0.9f));
+			TestTrue(TEXT("Both upgrades reduce every shot to 80%, including at the cap"), Both.Equals(Base * 0.8f));
+		}
+		TestEqual(TEXT("Burst reaches the original pitch cap"), BaseState.AccumulatedPitch, 2.5f);
+		TestEqual(TEXT("Upgrade does not change the underlying burst state"),
+			BothUpgradesState.AccumulatedPitch, BaseState.AccumulatedPitch);
+	}
+
+	FWeaponRecoilRow Profile;
+	Profile.ControlPitchPerShot = 1.0f;
+	Profile.MaxAccumulatedPitchDegrees = 3.0f;
+	FWeaponRecoilRuntimeState State;
+	TestTrue(TEXT("A negative upgrade multiplier cannot reverse recoil"),
+		OutlierWeaponRecoil::CalculateControlRecoil(Profile, 1.0f, 1, State, -0.1f).IsNearlyZero());
+	State.Reset();
+	TestTrue(TEXT("A zero upgrade multiplier removes control recoil"),
+		OutlierWeaponRecoil::CalculateControlRecoil(Profile, 1.0f, 1, State, 0.0f).IsNearlyZero());
+	return true;
+}
+
 #endif

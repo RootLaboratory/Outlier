@@ -28,5 +28,6 @@ namespace OutlierWeaponRecoil
 		const FWeaponRecoilRow& Profile,
 		float WeaponRecoilMultiplier,
 		uint32 ShotSequence,
-		FWeaponRecoilRuntimeState& RuntimeState);
+		FWeaponRecoilRuntimeState& RuntimeState,
+		float UpgradeRecoilMultiplier = 1.0f);
 }

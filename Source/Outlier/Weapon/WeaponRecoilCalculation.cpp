@@ -6,7 +6,8 @@ FVector2D OutlierWeaponRecoil::CalculateControlRecoil(
 	const FWeaponRecoilRow& Profile,
 	float WeaponRecoilMultiplier,
 	uint32 ShotSequence,
-	FWeaponRecoilRuntimeState& RuntimeState)
+	FWeaponRecoilRuntimeState& RuntimeState,
+	float UpgradeRecoilMultiplier)
 {
 	if (WeaponRecoilMultiplier <= 0.0f)
 	{
@@ -48,7 +49,9 @@ FVector2D OutlierWeaponRecoil::CalculateControlRecoil(
 		FMath::Max(Profile.MaxAccumulatedYaw, 0.0f));
 	++RuntimeState.ConsecutiveShotCount;
 
+	// 누적 상태와 상한은 원본 프로필 기준으로 유지하고, 확정된 출력에만 업그레이드를 적용한다.
+	// 누적 전에 곱하면 상한에 도달하는 시점이 달라져 연사 반동이 정확히 10%/20% 줄지 않는다.
 	return FVector2D(
 		RuntimeState.AccumulatedPitch - PreviousPitch,
-		RuntimeState.AccumulatedYaw - PreviousYaw);
+		RuntimeState.AccumulatedYaw - PreviousYaw) * FMath::Max(UpgradeRecoilMultiplier, 0.0f);
 }

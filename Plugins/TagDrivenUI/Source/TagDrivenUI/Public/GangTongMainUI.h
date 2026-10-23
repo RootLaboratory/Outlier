@@ -9,7 +9,6 @@
 
 class UPartnerCamUI;
 class UStaticCrossHair;
-class UAbilityIconUI;
 class UImage;
 class UPartnerLeftHudWidget;
 class UPartnerRightHudWidget;
@@ -48,21 +47,7 @@ public:
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UStaticCrossHair> CrossHairUI;
 
-	UPROPERTY(Transient)
-	TObjectPtr<UAbilityIconUI> AbilityShieldIcon;
-
-	UPROPERTY(Transient)
-	TObjectPtr<UAbilityIconUI> AbilityHackingIcon;
-
-	UPROPERTY(Transient)
-	TObjectPtr<UAbilityIconUI> AbilityScanIcon;
-
-	UPROPERTY(Transient)
-	TObjectPtr<UAbilityIconUI> AbilityEMPIcon;
-
 private:
-	void CacheNestedHudWidgets();
-
 	// Main은 컨테이너까지만 직접 바인딩하고, 컨테이너가 내부 모듈을 소유한다.
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UPartnerLeftHudWidget> PartnerLeftHUD;

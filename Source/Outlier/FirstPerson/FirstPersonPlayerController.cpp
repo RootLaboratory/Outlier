@@ -2,6 +2,7 @@
 
 
 #include "FirstPersonPlayerController.h"
+#include "Level/Elevator/ElevatorShaftController.h"
 #include "Audio/OutlierAudioSubsystem.h"
 #include "Audio/OutlierUIAudioSettings.h"
 #include "EnhancedInputComponent.h"
@@ -661,6 +662,7 @@ void AFirstPersonPlayerController::ClientSetCheckpointRestartVoteView_Implementa
 
 void AFirstPersonPlayerController::ClientPrepareForArenaExit_Implementation()
 {
+	ClearLocalElevatorFade();
 	ClearLocalSuitTransition();
 	if (UOutlierGameInstance* OutlierGameInstance =
 		Cast<UOutlierGameInstance>(GetGameInstance()))
@@ -931,34 +933,80 @@ void AFirstPersonPlayerController::ServerRespondGameOverPending_Implementation(
 	}
 }
 
+uint32 AFirstPersonPlayerController::AllocateUpgradeRequestId()
+{
+	if (++LastUpgradeRequestId == 0)
+	{
+		++LastUpgradeRequestId;
+	}
+	return LastUpgradeRequestId;
+}
+
 void AFirstPersonPlayerController::ServerTryActivateUpgradeNode_Implementation(
-	AActor* UpgradeOwner,
-	FName NodeIdOrRowName,
-	UOutlierUpgradeSetData* UpgradeSetData)
+	AActor* UpgradeOwner, FName NodeIdOrRowName, UOutlierUpgradeSetData* UpgradeSetData, uint32 RequestId)
+{
+	const bool bSucceeded = RequestId != 0 && TryActivateUpgradeNodeForRequest(UpgradeOwner, NodeIdOrRowName, UpgradeSetData);
+	// 거절 경로도 반드시 응답하여 UI가 성공 여부를 추측하지 않게 한다.
+	ClientUpgradePurchaseResult(RequestId, UpgradeOwner, NodeIdOrRowName, bSucceeded);
+}
+
+void AFirstPersonPlayerController::ClientUpgradePurchaseResult_Implementation(
+	uint32 RequestId, AActor* UpgradeOwner, FName RowName, bool bSucceeded)
+{
+	OnUpgradePurchaseResult.Broadcast(RequestId, UpgradeOwner, RowName, bSucceeded);
+}
+
+bool AFirstPersonPlayerController::TryActivateUpgradeNodeForRequest(
+	AActor* UpgradeOwner, FName RowName, UOutlierUpgradeSetData* UpgradeSetData)
 {
 	AOutlierPlayerState* OutlierPlayerState = GetPlayerState<AOutlierPlayerState>();
-	UOutlierUpgradeComponent* UpgradeComponent = UpgradeOwner
-		? UpgradeOwner->FindComponentByClass<UOutlierUpgradeComponent>()
-		: nullptr;
-	if (!UpgradeComponent)
+	if (!HasAuthority() || !IsValid(OutlierPlayerState) || !IsValid(UpgradeOwner) || RowName.IsNone())
 	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("[Upgrade] Server activate failed: component not found Controller=%s Owner=%s PlayerState=%s Node=%s"),
-			*GetNameSafe(this),
-			*GetNameSafe(UpgradeOwner),
-			*GetNameSafe(OutlierPlayerState),
-			*NodeIdOrRowName.ToString());
-		return;
+		return false;
 	}
 
+	// 클라이언트가 다른 플레이어나 다른 역할의 업그레이드 대상을 지정할 수 없게 한다.
+	const EOutlierUpgradeRole UpgradeRole = OutlierPlayerState->IsShooterPlayer() ? EOutlierUpgradeRole::Shooter
+		: OutlierPlayerState->IsPartnerPlayer() ? EOutlierUpgradeRole::Partner : EOutlierUpgradeRole::None;
+	AActor* ExpectedOwner = UpgradeRole == EOutlierUpgradeRole::Shooter
+		? static_cast<AActor*>(OutlierPlayerState->GetShooterCharacter())
+		: UpgradeRole == EOutlierUpgradeRole::Partner ? static_cast<AActor*>(OutlierPlayerState->GetPartnerCharacter()) : nullptr;
+	if (UpgradeOwner != ExpectedOwner)
+	{
+		return false;
+	}
+
+	UOutlierUpgradeComponent* UpgradeComponent = UpgradeOwner->FindComponentByClass<UOutlierUpgradeComponent>();
+	if (!IsValid(UpgradeComponent))
+	{
+		return false;
+	}
+	UOutlierUpgradeSetData* ServerSetData = UpgradeComponent->GetUpgradeSetData();
 	if (UpgradeSetData)
 	{
-		UpgradeComponent->SetUpgradeSetData(UpgradeSetData);
+		if (UpgradeSetData->UpgradeRole != UpgradeRole || (ServerSetData && ServerSetData != UpgradeSetData))
+		{
+			return false;
+		}
+		// 기존처럼 화면에서 컨텍스트를 주입하는 구성도 지원하되, 서버에 지정된 데이터는 교체하지 않는다.
+		if (!ServerSetData)
+		{
+			UDataTable* Table = UpgradeSetData->UpgradeDataTable;
+			if (!Table || Table->GetRowStruct() != FOutlierUpgradeNodeRow::StaticStruct())
+			{
+				return false;
+			}
+			const FOutlierUpgradeNodeRow* Row = Table->FindRow<FOutlierUpgradeNodeRow>(RowName, TEXT("UpgradePurchase"), false);
+			if (!Row || Row->Role != UpgradeRole)
+			{
+				return false;
+			}
+			UpgradeComponent->SetUpgradeSetData(UpgradeSetData);
+		}
 	}
-
-	UpgradeComponent->TryActivateNodeForPlayerState(
-		NodeIdOrRowName,
-		OutlierPlayerState);
+	FOutlierUpgradeNodeRow Row;
+	return UpgradeComponent->GetNodeRow(RowName, Row) && Row.Role == UpgradeRole
+		&& UpgradeComponent->TryActivateNodeForPlayerState(RowName, OutlierPlayerState);
 }
 
 void AFirstPersonPlayerController::ClientPlayExplosionCameraShake_Implementation(
@@ -1338,6 +1386,7 @@ void AFirstPersonPlayerController::Destroyed()
 void AFirstPersonPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	GameOverRoundId.Invalidate();
+	ClearLocalElevatorFade();
 	ClearLocalSuitTransition();
 	ClearClientArenaContentWait();
 	// 재접속이나 역할 Controller 교체로 이전 PC가 먼저 파괴될 수 있다. Delegate가 남아 있으면
@@ -1396,6 +1445,10 @@ void AFirstPersonPlayerController::EndPlay(const EEndPlayReason::Type EndPlayRea
 
 void AFirstPersonPlayerController::SetPawn(APawn* InPawn)
 {
+	if (LocalElevatorExecutionId.IsValid() && LocalElevatorFadePawn.Get() != InPawn)
+	{
+		ClearLocalElevatorFade();
+	}
 	// SetPawn은 서버 Possess와 클라이언트 Pawn RepNotify 양쪽에서 호출된다.
 	// GetPawn은 RepNotify 진입 전에 이미 바뀔 수 있으므로 시작 당시 Pawn과 비교한다.
 	if (LocalSuitTransitionId.IsValid() && LocalSuitTransitionPawn.Get() != InPawn)
@@ -1403,6 +1456,286 @@ void AFirstPersonPlayerController::SetPawn(APawn* InPawn)
 		ClearLocalSuitTransition();
 	}
 	Super::SetPawn(InPawn);
+}
+
+void AFirstPersonPlayerController::SendElevatorFadeFromServer(
+	AElevatorShaftController* Shaft, const FGuid& ExecutionId, bool bReveal, float Duration)
+{
+	if (!HasAuthority() || IsActorBeingDestroyed() || !IsValid(Shaft)
+		|| Shaft->GetWorld() != GetWorld() || !ExecutionId.IsValid())
+	{
+		return;
+	}
+	if (IsLocalController())
+	{
+		ApplyLocalElevatorFade(Shaft, ExecutionId, bReveal, Duration);
+	}
+	else
+	{
+		ClientSetElevatorFade(Shaft, ExecutionId, bReveal, Duration);
+	}
+}
+
+void AFirstPersonPlayerController::ClearElevatorFadeFromServer(
+	AElevatorShaftController* Shaft, const FGuid& ExecutionId)
+{
+	if (!HasAuthority() || !ExecutionId.IsValid()) return;
+	if (IsLocalController())
+	{
+		ClientClearElevatorFade_Implementation(Shaft, ExecutionId);
+	}
+	else
+	{
+		ClientClearElevatorFade(Shaft, ExecutionId);
+	}
+}
+
+void AFirstPersonPlayerController::SendElevatorArrivalPreparationFromServer(
+	AElevatorShaftController* Shaft, const FGuid& ExecutionId)
+{
+	if (!HasAuthority() || IsActorBeingDestroyed() || !IsValid(Shaft)
+		|| Shaft->GetWorld() != GetWorld() || !ExecutionId.IsValid()) return;
+	if (IsLocalController()) ClientPrepareElevatorArrival_Implementation(Shaft, ExecutionId);
+	else ClientPrepareElevatorArrival(Shaft, ExecutionId);
+}
+
+void AFirstPersonPlayerController::ClientPrepareElevatorArrival_Implementation(
+	AElevatorShaftController* Shaft, FGuid ExecutionId)
+{
+	if (!IsLocalController() || !ExecutionId.IsValid() || LocalElevatorExecutionId != ExecutionId
+		|| !IsValid(Shaft) || LocalElevatorShaft.Get() != Shaft || bLocalElevatorRevealing
+		|| !bLocalElevatorFadeReadySent || bLocalElevatorArrivalReadySent
+		|| LocalElevatorFadePawn.Get() != GetPawn()) return;
+
+	// 요청 RPC보다 도착층/이동 상태 복제가 늦을 수 있다. 실제 로컬 준비를 확인할 때까지 암전을 유지한다.
+	GetWorldTimerManager().SetTimer(ElevatorArrivalPollTimer,
+		FTimerDelegate::CreateUObject(this, &AFirstPersonPlayerController::PollElevatorArrivalReady, ExecutionId),
+		0.02f, true);
+	PollElevatorArrivalReady(ExecutionId);
+}
+
+void AFirstPersonPlayerController::PollElevatorArrivalReady(FGuid ExecutionId)
+{
+	AElevatorShaftController* Shaft = LocalElevatorShaft.Get();
+	if (LocalElevatorExecutionId != ExecutionId || !IsValid(Shaft)
+		|| LocalElevatorFadePawn.Get() != GetPawn() || bLocalElevatorRevealing
+		|| bLocalElevatorArrivalReadySent)
+	{
+		GetWorldTimerManager().ClearTimer(ElevatorArrivalPollTimer);
+		return;
+	}
+	// 층 준비와 Pawn의 Teleport 복제는 별도로 도착한다. 둘 다 확인한 뒤에만 화면 복구를 예약한다.
+	if (!Shaft->AreArrivalVisualsReady(ExecutionId) || !Shaft->IsArrivalPawnReady(GetPawn())) return;
+
+	GetWorldTimerManager().ClearTimer(ElevatorArrivalPollTimer);
+	// Listen의 즉시 ACK가 다음 단계에 재진입할 수 있으므로 전송 전에 완료를 기록한다.
+	bLocalElevatorArrivalReadySent = true;
+	if (HasAuthority()) ServerNotifyElevatorArrivalReady_Implementation(Shaft, ExecutionId);
+	else ServerNotifyElevatorArrivalReady(Shaft, ExecutionId);
+}
+
+void AFirstPersonPlayerController::ServerNotifyElevatorArrivalReady_Implementation(
+	AElevatorShaftController* Shaft, FGuid ExecutionId)
+{
+	if (HasAuthority() && IsValid(Shaft) && Shaft->GetWorld() == GetWorld() && ExecutionId.IsValid())
+	{
+		Shaft->NotifyClientArrivalReady(this, ExecutionId);
+	}
+}
+
+void AFirstPersonPlayerController::SendElevatorScheduledRevealFromServer(
+	AElevatorShaftController* Shaft, const FGuid& ExecutionId, double StartServerTime, float Duration)
+{
+	if (!HasAuthority() || IsActorBeingDestroyed() || !IsValid(Shaft)
+		|| Shaft->GetWorld() != GetWorld() || !ExecutionId.IsValid()) return;
+	if (IsLocalController()) ClientScheduleElevatorReveal_Implementation(Shaft, ExecutionId, StartServerTime, Duration);
+	else ClientScheduleElevatorReveal(Shaft, ExecutionId, StartServerTime, Duration);
+}
+
+void AFirstPersonPlayerController::ClientScheduleElevatorReveal_Implementation(
+	AElevatorShaftController* Shaft, FGuid ExecutionId, double StartServerTime, float Duration)
+{
+	if (!IsLocalController() || !ExecutionId.IsValid() || LocalElevatorExecutionId != ExecutionId
+		|| !IsValid(Shaft) || LocalElevatorShaft.Get() != Shaft || bLocalElevatorRevealing
+		|| !bLocalElevatorArrivalReadySent || bLocalElevatorRevealScheduled
+		|| !FMath::IsFinite(StartServerTime) || !FMath::IsFinite(Duration) || Duration < 0.0f
+		|| LocalElevatorFadePawn.Get() != GetPawn()) return;
+
+	ElevatorServerClock = GetWorld()->GetGameState();
+	if (!ElevatorServerClock.IsValid()) return;
+	ElevatorRevealStartServerTime = StartServerTime;
+	ElevatorRevealDuration = Duration;
+	bLocalElevatorRevealScheduled = true;
+	GetWorldTimerManager().SetTimer(ElevatorRevealTimer,
+		FTimerDelegate::CreateUObject(this, &AFirstPersonPlayerController::PollElevatorScheduledReveal, ExecutionId),
+		0.01f, true);
+	PollElevatorScheduledReveal(ExecutionId);
+}
+
+void AFirstPersonPlayerController::PollElevatorScheduledReveal(FGuid ExecutionId)
+{
+	AElevatorShaftController* Shaft = LocalElevatorShaft.Get();
+	const AGameStateBase* Clock = ElevatorServerClock.Get();
+	if (LocalElevatorExecutionId != ExecutionId || !IsValid(Shaft) || !Clock
+		|| LocalElevatorFadePawn.Get() != GetPawn() || bLocalElevatorRevealing)
+	{
+		GetWorldTimerManager().ClearTimer(ElevatorRevealTimer);
+		return;
+	}
+	const double Elapsed = Clock->GetServerWorldTimeSeconds() - ElevatorRevealStartServerTime;
+	if (Elapsed < 0.0) return;
+	// 소유 PC의 RPC가 Shaft 상태 복제보다 먼저 도착할 수 있어 도착 좌표계 전환을 함께 기다린다.
+	const EElevatorShaftState State = Shaft->GetShaftState();
+	if (State != EElevatorShaftState::Arriving && State != EElevatorShaftState::Decelerating) return;
+	// 수신 시각 대신 공통 서버 시각에 맞춘다. 늦게 받은 클라이언트도 복구 종료 시각을 늘리지 않는다.
+	GetWorldTimerManager().ClearTimer(ElevatorRevealTimer);
+	const float RemainingDuration = static_cast<float>(
+		FMath::Max(0.0, static_cast<double>(ElevatorRevealDuration) - Elapsed));
+	ApplyLocalElevatorFade(Shaft, ExecutionId, true, RemainingDuration);
+}
+
+void AFirstPersonPlayerController::ClientSetElevatorFade_Implementation(
+	AElevatorShaftController* Shaft, FGuid ExecutionId, bool bReveal, float Duration)
+{
+	ApplyLocalElevatorFade(Shaft, ExecutionId, bReveal, Duration);
+}
+
+void AFirstPersonPlayerController::ClientClearElevatorFade_Implementation(
+	AElevatorShaftController* Shaft, FGuid ExecutionId)
+{
+	// 종료 시 Shaft가 먼저 사라져 참조가 null로 도착해도 실행 ID로 정리할 수 있다.
+	if (LocalElevatorExecutionId == ExecutionId
+		&& (!IsValid(Shaft) || LocalElevatorShaft.Get() == Shaft))
+	{
+		ClearLocalElevatorFade();
+	}
+}
+
+void AFirstPersonPlayerController::ApplyLocalElevatorFade(
+	AElevatorShaftController* Shaft, const FGuid& ExecutionId, bool bReveal, float Duration)
+{
+	if (!IsLocalController() || !IsValid(Shaft) || Shaft->GetWorld() != GetWorld()
+		|| !ExecutionId.IsValid() || !FMath::IsFinite(Duration) || Duration < 0.0f
+		|| !IsValid(GetPawn()) || LocalSuitTransitionId.IsValid())
+	{
+		return;
+	}
+	if (!bReveal)
+	{
+		if (LocalElevatorExecutionId.IsValid()) return;
+		ULocalPlayerPostProcessSubsystem* PP = FindSuitPostProcessSubsystem(this);
+		if (!PP)
+		{
+			UE_LOG(LogOutlier, Warning, TEXT("[Elevator] Missing local blackout presentation PC=%s"), *GetName());
+			return; // 화면이 준비되지 않았다면 서버에 완료를 가장하지 않는다.
+		}
+		LocalElevatorShaft = Shaft;
+		LocalElevatorFadePawn = GetPawn();
+		LocalElevatorExecutionId = ExecutionId;
+		ElevatorPostProcessSubsystem = PP;
+		SetIgnoreLookInput(true);
+		bElevatorOwnsLookInputBlock = true;
+	}
+	else if (LocalElevatorExecutionId != ExecutionId || LocalElevatorShaft.Get() != Shaft
+		|| bLocalElevatorRevealing || !bLocalElevatorFadeReadySent)
+	{
+		return;
+	}
+
+	ULocalPlayerPostProcessSubsystem* PP = ElevatorPostProcessSubsystem.Get();
+	if (!PP) return;
+	// 수신 -> 실제 PP 완료 -> 소유 PC RPC -> Shaft의 페어/단계/시간 검증 순서다.
+	// 같은 PP를 사용하는 슈트 연출의 콜백은 건드리지 않고 이 실행의 핸들만 교체한다.
+	UnbindElevatorFadeCallbacks();
+	bLocalElevatorRevealing = bReveal;
+	bLocalElevatorFadeReadySent = false;
+	if (bReveal)
+	{
+		ElevatorRevealedHandle = PP->OnScreenBlackoutRevealed.AddUObject(
+			this, &AFirstPersonPlayerController::HandleElevatorFadeFinished, ExecutionId, true);
+		PP->StartScreenBlackoutReveal(Duration);
+	}
+	else
+	{
+		ElevatorCoveredHandle = PP->OnScreenBlackoutCovered.AddUObject(
+			this, &AFirstPersonPlayerController::HandleElevatorFadeFinished, ExecutionId, false);
+		PP->StartScreenBlackout(Duration);
+	}
+}
+
+void AFirstPersonPlayerController::HandleElevatorFadeFinished(FGuid ExecutionId, bool bReveal)
+{
+	AElevatorShaftController* Shaft = LocalElevatorShaft.Get();
+	if (LocalElevatorExecutionId != ExecutionId || !ExecutionId.IsValid() || !IsValid(Shaft)
+		|| bLocalElevatorRevealing != bReveal || bLocalElevatorFadeReadySent
+		|| LocalElevatorFadePawn.Get() != GetPawn())
+	{
+		return;
+	}
+	UnbindElevatorFadeCallbacks();
+	// Listen의 동기 응답이 다음 단계/정리를 바로 실행할 수 있어 전송 전에 중복을 막는다.
+	bLocalElevatorFadeReadySent = true;
+	if (HasAuthority())
+	{
+		ServerNotifyElevatorFadeFinished_Implementation(Shaft, ExecutionId, bReveal);
+	}
+	else
+	{
+		ServerNotifyElevatorFadeFinished(Shaft, ExecutionId, bReveal);
+	}
+}
+
+void AFirstPersonPlayerController::ServerNotifyElevatorFadeFinished_Implementation(
+	AElevatorShaftController* Shaft, FGuid ExecutionId, bool bReveal)
+{
+	if (HasAuthority() && IsValid(Shaft) && Shaft->GetWorld() == GetWorld() && ExecutionId.IsValid())
+	{
+		// 발신자는 RPC 소유 Controller로 고정한다. 진행 권위는 Shaft가 검증한다.
+		Shaft->NotifyClientFadeFinished(this, ExecutionId, bReveal);
+	}
+}
+
+void AFirstPersonPlayerController::UnbindElevatorFadeCallbacks()
+{
+	if (ULocalPlayerPostProcessSubsystem* PP = ElevatorPostProcessSubsystem.Get())
+	{
+		PP->OnScreenBlackoutCovered.Remove(ElevatorCoveredHandle);
+		PP->OnScreenBlackoutRevealed.Remove(ElevatorRevealedHandle);
+	}
+	ElevatorCoveredHandle.Reset();
+	ElevatorRevealedHandle.Reset();
+}
+
+void AFirstPersonPlayerController::ClearLocalElevatorFade()
+{
+	GetWorldTimerManager().ClearTimer(ElevatorArrivalPollTimer);
+	GetWorldTimerManager().ClearTimer(ElevatorRevealTimer);
+	ElevatorServerClock.Reset();
+	ElevatorRevealStartServerTime = 0.0;
+	ElevatorRevealDuration = 0.0f;
+	bLocalElevatorArrivalReadySent = false;
+	bLocalElevatorRevealScheduled = false;
+	if (!LocalElevatorExecutionId.IsValid()) return;
+	LocalElevatorExecutionId.Invalidate();
+	UnbindElevatorFadeCallbacks();
+	if (bElevatorOwnsLookInputBlock)
+	{
+		SetIgnoreLookInput(false);
+		bElevatorOwnsLookInputBlock = false;
+	}
+	const ULocalPlayer* LP = GetLocalPlayer();
+	if (LP && LP->PlayerController == this)
+	{
+		if (ULocalPlayerPostProcessSubsystem* PP = ElevatorPostProcessSubsystem.Get())
+		{
+			PP->StartScreenBlackoutReveal(SuitCleanupRevealDuration);
+		}
+	}
+	LocalElevatorShaft.Reset();
+	LocalElevatorFadePawn.Reset();
+	ElevatorPostProcessSubsystem.Reset();
+	bLocalElevatorRevealing = false;
+	bLocalElevatorFadeReadySent = false;
 }
 
 // 연결 흐름: 서버 단계 요청 -> 소유 클라이언트의 빈 연출 지점 -> 실제 완료 콜백 -> 서버 준비 검증.
@@ -1453,7 +1786,7 @@ void AFirstPersonPlayerController::ApplyLocalSuitTransitionPhase(
 	}
 	if (Phase == ESuitTransitionPhase::FadingOut)
 	{
-		if (LocalSuitTransitionId.IsValid())
+		if (LocalSuitTransitionId.IsValid() || LocalElevatorExecutionId.IsValid())
 		{
 			return;
 		}
@@ -1789,6 +2122,7 @@ void AFirstPersonPlayerController::ClientArenaGameplayReload_Implementation(
 	}
 
 	// 오래된 리로드 요청은 위에서 거부한다. 유효한 리로드가 시작될 때만 이전 슈트 연출 콜백을 끊는다.
+	ClearLocalElevatorFade();
 	ClearLocalSuitTransition();
 	ClientGameplayReloadStartedAt = FPlatformTime::Seconds();
 	UE_LOG(LogTemp, Display,

@@ -17,6 +17,7 @@
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "GameFramework/PlayerController.h"
 #include "Enemy/AutoTurret.h"
 #include "Enemy/EnemyBase.h"
 #include "Enemy/EnemyTargetRules.h"
@@ -31,12 +32,50 @@
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "GameplayEffectComponents/AssetTagsGameplayEffectComponent.h"
 #include "GameplayTags/OutlierGameplayTags.h"
+#include "OutlierPlayerState.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Weapon/RangedWeaponBase.h"
 #include "UObject/UnrealType.h"
 
 namespace
 {
+	bool PrepareShooterSuitTest(AShooterCharacter* Shooter, const FGameplayTag& AbilityTag)
+	{
+		UOutlierAbilitySystemComponent* AbilitySystem = Shooter->GetOutlierAbilitySystemComponent();
+		if (!AbilitySystem || !AbilitySystem->IsShooterSuitConfigured())
+		{
+			return false;
+		}
+		AOutlierPlayerState* PlayerState = Shooter->GetWorld()->SpawnActor<AOutlierPlayerState>();
+		if (!PlayerState)
+		{
+			return false;
+		}
+		// 실제 발동 게이트를 통과할 슈트 획득/Grant 근거를 준비한다.
+		// 에디터의 bNoGrantMode나 Blueprint의 초기 업그레이드 설정에는 의존하지 않는다.
+		Shooter->SetPlayerState(PlayerState);
+		PlayerState->SetAcquiredSuit(true);
+		AbilitySystem->AddLooseGameplayTag(AbilityTag);
+		return Shooter->IsSuitUsable();
+	}
+
+	bool PrepareStealthTestShooter(AShooterCharacter* Shooter)
+	{
+		if (!PrepareShooterSuitTest(Shooter, OutlierGameplayTags::Ability::Shooter::Stealth()))
+		{
+			return false;
+		}
+		UOutlierAbilitySystemComponent* AbilitySystem = Shooter->GetOutlierAbilitySystemComponent();
+
+		// 수명/쿨타임 검사는 디스크 DT를 조정해도 같은 조건으로 재현한다.
+		FOutlierShooterSuitConfig Config = AbilitySystem->GetShooterSuitConfig();
+		Config.Stealth.DurationSeconds = 5.0f;
+		Config.Stealth.CooldownSeconds = 20.0f;
+		Config.Stealth.MovementSpeedBonusPercent = 30.0f;
+		Config.Stealth.ExitSpeedBuffDurationSeconds = 2.0f;
+		return AbilitySystem->UpdateShooterSuitConfig(Config) && Shooter->IsSuitUsable();
+	}
+
 	FDataTableRowHandle MakeDataTableRowHandle(UDataTable* DataTable, FName RowName)
 	{
 		FDataTableRowHandle Handle;
@@ -648,6 +687,36 @@ bool FOutlierGasPartnerDamageBoundaryTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
+	// Deferred native Partners do not run the Blueprint's ability data initialization.
+	FOutlierPartnerAbilityConfig AbilityConfig;
+	AbilityConfig.EMPCooldown = 30.0f;
+	AbilityConfig.ShieldCooldown = 20.0f;
+	AbilityConfig.HackCooldown = 3.0f;
+	AbilityConfig.ScanCooldown = 10.0f;
+	AbilityConfig.ScanDuration = 3.0f;
+	AbilityConfig.ScanRange = 1000.0f;
+	AbilityConfig.HackEffectiveRange = 500.0f;
+	AbilityConfig.ShieldAmount = 100.0f;
+	AbilityConfig.MarkDuration = 3.0f;
+	AbilityConfig.StunDuration = 3.0f;
+	TestTrue(TEXT("Deferred Partner abilities configure before interaction setup"),
+		AbilitySystem->ConfigurePartnerAbilities(AbilityConfig));
+
+	// 해킹 검색도 실제 능력 발동 경로를 사용하므로 조종자와 슈트 획득 근거를 준비한다.
+	APlayerController* Controller = World->SpawnActor<APlayerController>();
+	AOutlierPlayerState* PartnerState = World->SpawnActor<AOutlierPlayerState>();
+	if (!TestNotNull(TEXT("Partner damage boundary controller spawns"), Controller)
+		|| !TestNotNull(TEXT("Partner damage boundary PlayerState spawns"), PartnerState))
+	{
+		World->DestroyWorld(true);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+		return false;
+	}
+	Controller->Possess(Partner);
+	Partner->SetPlayerState(PartnerState);
+	PartnerState->SetAcquiredSuit(true);
+
 	FOutlierDamageRequest TaggedDamageEvent;
 	TaggedDamageEvent.DamageTag = OutlierGameplayTags::Damage::Weapon();
 	const float AppliedDamage = ApplyDamageRequest(
@@ -743,6 +812,8 @@ bool FOutlierGasPartnerDamageBoundaryTest::RunTest(const FString& Parameters)
 		AbilitySystem->GetGameplayTagCount(OutlierGameplayTags::State::DamageImmune()),
 		0);
 
+	Controller->UnPossess();
+	Controller->Destroy(true);
 	Partner->Destroy(true);
 	GEngine->ShutdownWorldNetDriver(World);
 	World->DestroyWorld(true);
@@ -1544,6 +1615,14 @@ bool FOutlierGasEnemyDamageFlowTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Rejected Enemy friendly fire preserves GAS Health"), Enemy->GetCurrentHealth(), 100.0f);
 	WeaponDamageEvent.StunDurationSeconds = 0.0f;
 
+	// 보정 여부를 피해 요청에 전달하지 않는다. 몸통은 일반 피해, 코어는 아래 검사처럼 약점 피해다.
+	FOutlierDamageRequest BodyDamageEvent = WeaponDamageEvent;
+	BodyDamageEvent.HitResult.Component = nullptr;
+	TestEqual(TEXT("Body hit applies ordinary damage"),
+		ApplyDamageRequest(Enemy, 10.0f, BodyDamageEvent, nullptr, nullptr), 10.0f);
+	TestEqual(TEXT("Body hit commits ordinary damage to GAS Health"), Enemy->GetCurrentHealth(), 90.0f);
+	AbilitySystem->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetHealthAttribute(), 100.0f);
+
 	const float AppliedWeakPointDamage = ApplyDamageRequest(
 		Enemy,
 		10.0f,
@@ -1594,6 +1673,9 @@ bool FOutlierGasEnemyDamageFlowTest::RunTest(const FString& Parameters)
 	const FActiveGameplayEffectHandle FirstStun = AbilitySystem->ApplyStunStateToSelf(1.0f, Enemy);
 	const FActiveGameplayEffectHandle SecondStun = AbilitySystem->ApplyStunStateToSelf(2.0f, AbilitySystem);
 	TestTrue(TEXT("Both overlapping stun applications are accepted"), FirstStun.IsValid() && SecondStun.IsValid());
+	AbilitySystem->InitializeForPawn(Enemy);
+	TestEqual(TEXT("Repeated initialization keeps one shared stun cue"),
+		AbilitySystem->GetTagCount(OutlierGameplayTags::Cue::Status::Stun()), 1);
 	TestTrue(TEXT("The first overlapping stun can be removed"), AbilitySystem->RemoveActiveEffectFromSelf(FirstStun));
 	TestTrue(
 		TEXT("Removing one stun preserves presentation while another stun is active"),
@@ -1615,7 +1697,20 @@ bool FOutlierGasEnemyDamageFlowTest::RunTest(const FString& Parameters)
 	TestTrue(
 		TEXT("Lethal Enemy damage grants the authoritative dead tag"),
 		AbilitySystem->HasMatchingGameplayTag(OutlierGameplayTags::State::Dead()));
-	TestTrue(TEXT("Enemy death enters the existing destruction path"), Enemy->IsActorBeingDestroyed());
+	const float DeathLifeSpan = Enemy->GetLifeSpan();
+	TestTrue(TEXT("Enemy death destroys immediately or schedules its death presentation cleanup"),
+		Enemy->IsActorBeingDestroyed() || DeathLifeSpan > 0.0f);
+	if (!Enemy->IsActorBeingDestroyed() && DeathLifeSpan > 0.0f)
+	{
+		// WorldSettings가 큰 프레임 시간을 제한하므로 작은 프레임으로 수명을 진행한다.
+		for (int32 Frame = 0; Frame < FMath::CeilToInt(DeathLifeSpan / 0.05f) + 2
+			&& !Enemy->IsActorBeingDestroyed(); ++Frame)
+		{
+			++GFrameCounter;
+			World->Tick(LEVELTICK_All, 0.05f);
+		}
+		TestTrue(TEXT("Enemy death presentation ends in destruction"), Enemy->IsActorBeingDestroyed());
+	}
 
 	GEngine->ShutdownWorldNetDriver(World);
 	World->DestroyWorld(true);
@@ -1731,6 +1826,7 @@ bool FOutlierGasShooterSuitDataContractTest::RunTest(const FString& Parameters)
 	Common.MaxPartnerDistance = 500.0f;
 	Table->AddRow(TEXT("Common"), Common);
 	FOutlierShooterSuitAbilityDataRow QuantumLeap;
+	QuantumLeap.DurationSeconds = 1.0f;
 	QuantumLeap.CastTimeSeconds = 1.0f;
 	QuantumLeap.CooldownSeconds = 8.0f;
 	QuantumLeap.PartnerOffset = 50.0f;
@@ -1760,13 +1856,20 @@ bool FOutlierGasShooterSuitDataContractTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Stealth duration comes from the table"), Config.Stealth.DurationSeconds, 5.0f);
 	TestEqual(TEXT("Stealth cooldown comes from the table"), Config.Stealth.CooldownSeconds, 20.0f);
 	TestEqual(TEXT("Common boundary comes from the table"), Config.MaxPartnerDistance, 500.0f);
+	TestEqual(TEXT("Quantum Leap post-success immunity duration comes from the table"), Config.QuantumLeap.DurationSeconds, 1.0f);
+	FOutlierShooterSuitConfig InvalidQuantumConfig = Config;
+	InvalidQuantumConfig.QuantumLeap.DurationSeconds = -1.0f;
+	TestFalse(TEXT("Negative Quantum Leap immunity duration fails validation"), InvalidQuantumConfig.IsValid(Error));
 
 	Table->RemoveRow(TEXT("WeaponOvercharge"));
 	TestFalse(TEXT("Missing required row fails validation"), OutlierShooterSuitData::TryResolveConfiguration(Table, Config, Error));
 	Table->AddRow(TEXT("WeaponOvercharge"), WeaponOvercharge);
 	Stealth.DurationSeconds = 0.0f;
 	Table->AddRow(TEXT("Stealth"), Stealth);
-	TestFalse(TEXT("Non-positive gameplay value fails validation"), OutlierShooterSuitData::TryResolveConfiguration(Table, Config, Error));
+	TestTrue(TEXT("Zero duration remains valid after upgrade clamping"), OutlierShooterSuitData::TryResolveConfiguration(Table, Config, Error));
+	Stealth.DurationSeconds = -1.0f;
+	Table->AddRow(TEXT("Stealth"), Stealth);
+	TestFalse(TEXT("Negative gameplay value fails validation"), OutlierShooterSuitData::TryResolveConfiguration(Table, Config, Error));
 
 	UDataTable* DiskTable = LoadObject<UDataTable>(
 		nullptr,
@@ -1782,7 +1885,7 @@ bool FOutlierGasShooterSuitDataContractTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Disk Bullet Reflection radius is 20 meters"), Config.BulletReflection.ReflectionRadius, 2000.0f);
 	TestEqual(TEXT("Disk Bullet Reflection damage multiplier is one"), Config.BulletReflection.ReflectDamageMult, 1.0f);
 	TestEqual(TEXT("Disk Stealth duration is 5 seconds"), Config.Stealth.DurationSeconds, 5.0f);
-	TestEqual(TEXT("Disk Stealth cooldown is 20 seconds"), Config.Stealth.CooldownSeconds, 20.0f);
+	TestEqual(TEXT("Disk Stealth cooldown is 8 seconds"), Config.Stealth.CooldownSeconds, 8.0f);
 	TestEqual(TEXT("Disk Weapon Overcharge duration is 8 seconds"), Config.WeaponOvercharge.DurationSeconds, 8.0f);
 	TestEqual(TEXT("Disk Weapon Overcharge shield drain is 12.5 per second"), Config.WeaponOvercharge.ShieldDrainPerSecond, 12.5f);
 	return true;
@@ -1808,7 +1911,9 @@ bool FOutlierGasShooterStealthLifecycleTest::RunTest(const FString& Parameters)
 	World->AddToRoot();
 	WorldContext.SetCurrentWorld(World);
 	World->SetGameInstance(NewObject<UGameInstance>(GEngine));
-	TestTrue(TEXT("Shooter stealth world creates an authority game mode"), World->SetGameMode(FURL()));
+	FURL TestURL;
+	TestURL.AddOption(TEXT("game=/Script/Engine.GameModeBase"));
+	TestTrue(TEXT("Shooter stealth world creates an authority game mode"), World->SetGameMode(TestURL));
 	World->InitializeActorsForPlay(FURL());
 
 	UClass* ShooterClass = LoadClass<AShooterCharacter>(
@@ -1841,6 +1946,14 @@ bool FOutlierGasShooterStealthLifecycleTest::RunTest(const FString& Parameters)
 	ShooterASC->InitializeForPawn(Shooter);
 	PartnerASC->InitializeForPawn(Partner);
 	TestTrue(TEXT("Shooter suit abilities are configured from the Blueprint DataTable"), ShooterASC->IsShooterSuitConfigured());
+	if (!TestTrue(TEXT("Stealth fixture has an acquired suit, explicit grant and fixed tuning"), PrepareStealthTestShooter(Shooter)))
+	{
+		World->DestroyWorld(true);
+		World->SetPhysicsScene(nullptr);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+		return false;
+	}
 	TestTrue(
 		TEXT("Stealth activates through the authoritative Shooter ASC"),
 		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::Stealth()));
@@ -1857,10 +1970,16 @@ bool FOutlierGasShooterStealthLifecycleTest::RunTest(const FString& Parameters)
 	FOutlierDamageRequest NonLethalDamageEvent;
 	NonLethalDamageEvent.DamageTag = OutlierGameplayTags::Damage::Weapon();
 	TestEqual(
-		TEXT("Incoming damage is applied while Stealth remains active"),
+		TEXT("Incoming damage is applied before normal Stealth breaks"),
 		ApplyDamageRequest(Shooter, 5.0f, NonLethalDamageEvent, nullptr, Shooter),
 		5.0f);
-	TestTrue(TEXT("Incoming damage does not break Stealth"), Shooter->IsStealthed());
+	TestFalse(TEXT("Actual Shooter damage removes paired normal Stealth"), Shooter->IsStealthed());
+	TestFalse(TEXT("Shooter damage also removes Partner Stealth"), PartnerASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Stealthed()));
+	FGameplayTagContainer DamageCooldownTags;
+	DamageCooldownTags.AddTag(OutlierGameplayTags::Cooldown::Shooter::Stealth());
+	ShooterASC->RemoveActiveEffectsWithGrantedTags(DamageCooldownTags);
+	TestTrue(TEXT("Stealth reactivates for non-damage lifecycle coverage"),
+		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::Stealth()));
 	Shooter->NotifyStealthDetected();
 	TestTrue(TEXT("Detector notification does not break Stealth"), Shooter->IsStealthed());
 	Shooter->SetSuitDisabledByPartnerBoundary(true);
@@ -1908,6 +2027,13 @@ bool FOutlierGasShooterStealthLifecycleTest::RunTest(const FString& Parameters)
 	Partner->NotifyOffensiveActionExecuted();
 	TestFalse(TEXT("Partner attack removes paired Stealth"), Shooter->IsStealthed());
 	TestTrue(TEXT("Partner attack starts full cooldown"), ShooterASC->IsShooterStealthCooldownActive());
+	ShooterASC->RemoveActiveEffectsWithGrantedTags(StealthCooldownTags);
+	TestTrue(TEXT("Stealth activates for Partner incoming damage coverage"),
+		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::Stealth()));
+	TestEqual(TEXT("Actual Partner damage passes through the damage boundary"),
+		ApplyDamageRequest(Partner, 1.0f, NonLethalDamageEvent, nullptr, Shooter), 1.0f);
+	TestFalse(TEXT("Partner damage removes Shooter normal Stealth"), Shooter->IsStealthed());
+	TestFalse(TEXT("Partner damage removes its own normal Stealth"), PartnerASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Stealthed()));
 
 	TestEqual(
 		TEXT("Test fixture removes Partner attack cooldown"),
@@ -1932,6 +2058,281 @@ bool FOutlierGasShooterStealthLifecycleTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Death cleanup removes the active Stealth state"), Shooter->IsStealthed());
 	TestTrue(TEXT("Lethal damage applies Dead after Stealth cleanup"), Shooter->IsDead());
 
+	Shooter->Destroy(true);
+	Partner->Destroy(true);
+	GEngine->ShutdownWorldNetDriver(World);
+	World->DestroyWorld(true);
+	World->SetPhysicsScene(nullptr);
+	GEngine->DestroyWorldContext(World);
+	World->RemoveFromRoot();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierGasShooterStealthUpgradeTest,
+	"Outlier.GAS.ShooterSuit.StealthUpgrades",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierGasShooterStealthUpgradeTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const FName WorldName = MakeUniqueObjectName(
+		nullptr, UWorld::StaticClass(), NAME_None, EUniqueObjectNameOptions::GloballyUnique);
+	FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, WorldName, GetTransientPackage());
+	if (!TestNotNull(TEXT("Transient stealth upgrade world is created"), World))
+	{
+		GEngine->DestroyWorldContext(World);
+		return false;
+	}
+	World->AddToRoot();
+	WorldContext.SetCurrentWorld(World);
+	World->SetGameInstance(NewObject<UGameInstance>(GEngine));
+	FURL TestURL;
+	TestURL.AddOption(TEXT("game=/Script/Engine.GameModeBase"));
+	TestTrue(TEXT("Stealth upgrade world creates an authority game mode"), World->SetGameMode(TestURL));
+	World->InitializeActorsForPlay(FURL());
+	UClass* ShooterClass = LoadClass<AShooterCharacter>(
+		nullptr, TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	UClass* PartnerClass = LoadClass<APartnerCharacter>(
+		nullptr, TEXT("/Game/Blueprints/Partner/BP_PartnerCharacter.BP_PartnerCharacter_C"));
+	AShooterCharacter* Shooter = ShooterClass ? World->SpawnActor<AShooterCharacter>(ShooterClass) : nullptr;
+	APartnerCharacter* Partner = PartnerClass ? World->SpawnActor<APartnerCharacter>(PartnerClass) : nullptr;
+	if (!TestNotNull(TEXT("Shooter spawns for stealth upgrades"), Shooter)
+		|| !TestNotNull(TEXT("Partner spawns for stealth upgrades"), Partner))
+	{
+		World->DestroyWorld(true);
+		World->SetPhysicsScene(nullptr);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+		return false;
+	}
+	if (!Shooter->HasActorBegunPlay())
+	{
+		Shooter->DispatchBeginPlay();
+	}
+	if (!Partner->HasActorBegunPlay())
+	{
+		Partner->DispatchBeginPlay();
+	}
+	Shooter->SetPartnerCharacter(Partner);
+	Partner->SetShooterCharacter(Shooter);
+	UOutlierAbilitySystemComponent* ShooterASC = Shooter->GetOutlierAbilitySystemComponent();
+	UOutlierAbilitySystemComponent* PartnerASC = Partner->GetOutlierAbilitySystemComponent();
+	ShooterASC->InitializeForPawn(Shooter);
+	PartnerASC->InitializeForPawn(Partner);
+	if (!TestTrue(TEXT("Stealth upgrade fixture has an acquired suit, explicit grant and fixed tuning"), PrepareStealthTestShooter(Shooter)))
+	{
+		World->DestroyWorld(true);
+		World->SetPhysicsScene(nullptr);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+		return false;
+	}
+	const FGameplayTag StealthTag = OutlierGameplayTags::Ability::Shooter::Stealth();
+	FGameplayTagContainer CooldownTags;
+	CooldownTags.AddTag(OutlierGameplayTags::Cooldown::Shooter::Stealth());
+	const auto ClearCooldown = [&]() { ShooterASC->RemoveActiveEffectsWithGrantedTags(CooldownTags); };
+	const auto TickSeconds = [&](float Seconds)
+	{
+		for (float Elapsed = 0.0f; Elapsed < Seconds; Elapsed += 0.02f)
+		{
+			++GFrameCounter;
+			World->Tick(LEVELTICK_All, 0.02f);
+		}
+	};
+	const auto RemainingStealth = [&]()
+	{
+		FGameplayTagContainer Tags;
+		Tags.AddTag(OutlierGameplayTags::State::Stealthed());
+		const TArray<float> Times = ShooterASC->GetActiveEffectsTimeRemaining(
+			FGameplayEffectQuery::MakeQuery_MatchAnyOwningTags(Tags));
+		return Times.IsEmpty() ? 0.0f : Times[0];
+	};
+	ShooterASC->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetMaxHealthAttribute(), 100.0f);
+	ShooterASC->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetHealthAttribute(), 100.0f);
+	PartnerASC->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetMaxHealthAttribute(), 100.0f);
+	PartnerASC->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetHealthAttribute(), 100.0f);
+	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetMaxShieldAttribute(), 100.0f);
+	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetShieldAttribute(), 100.0f);
+	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetMaxPartnerShieldAttribute(), 100.0f);
+	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetPartnerShieldAttribute(), 100.0f);
+	UClass* WeaponClass = LoadClass<ARangedWeaponBase>(
+		nullptr, TEXT("/Game/Blueprints/Weapon/BP_Pistol.BP_Pistol_C"));
+	UClass* EnemyClass = LoadClass<AEnemyBase>(
+		nullptr, TEXT("/Game/Blueprints/Enemy/VECDrone/BP_VECDrone_Gun.BP_VECDrone_Gun_C"));
+	ARangedWeaponBase* Weapon = WeaponClass ? World->SpawnActor<ARangedWeaponBase>(WeaponClass) : nullptr;
+	const auto KillThroughDamageBoundary = [&](FOutlierDamageRequest Request)
+	{
+		FActorSpawnParameters SpawnParameters;
+		SpawnParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		AEnemyBase* Enemy = EnemyClass
+			? World->SpawnActor<AEnemyBase>(EnemyClass, FVector(1000.0f, 0.0f, 0.0f), FRotator::ZeroRotator, SpawnParameters)
+			: nullptr;
+		if (!TestNotNull(TEXT("Enemy spawns for stealth kill attribution"), Enemy))
+		{
+			return;
+		}
+		if (!Enemy->HasActorBegunPlay())
+		{
+			Enemy->DispatchBeginPlay();
+		}
+		UOutlierAbilitySystemComponent* EnemyASC = Enemy->GetOutlierAbilitySystemComponent();
+		EnemyASC->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetMaxHealthAttribute(), 10.0f);
+		EnemyASC->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetHealthAttribute(), 10.0f);
+		TestTrue(TEXT("Lethal request is accepted by the actual Enemy damage receiver"),
+			ApplyDamageRequest(Enemy, 1000.0f, Request, nullptr, Weapon) > 0.0f);
+		TestTrue(TEXT("Damage receiver enters the Enemy death path"), Enemy->IsDead());
+		Enemy->Destroy(true);
+	};
+	TestNotNull(TEXT("Weapon spawns for direct owner attribution"), Weapon);
+	if (Weapon)
+	{
+		Weapon->SetOwner(Shooter);
+	}
+
+	ShooterASC->AddLooseGameplayTag(OutlierGameplayTags::Upgrade::Shooter::Stealth::AssassinsStrike());
+	ShooterASC->AddLooseGameplayTag(OutlierGameplayTags::Upgrade::Shooter::Stealth::ShadowStep());
+	TestTrue(TEXT("Manual stealth starts for attack snapshot coverage"), ShooterASC->TryActivateShooterSuitAbility(StealthTag));
+	TestTrue(TEXT("Shadow Step grants speed while stealthed"),
+		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::ShooterStealthSpeedBoost()));
+	const TSharedPtr<FOutlierStealthSession> FirstSession = ShooterASC->BeginShooterStealthAttack();
+	TestTrue(TEXT("Stealthed attack captures a session before normal stealth breaks"), FirstSession.IsValid());
+	TestFalse(TEXT("Actual offense breaks normal stealth before hit resolution"), Shooter->IsStealthed());
+	FOutlierDamageRequest DirectKill;
+	DirectKill.DamageTag = OutlierGameplayTags::Damage::Ranged();
+	DirectKill.StealthSession = FirstSession;
+	KillThroughDamageBoundary(DirectKill);
+	TestTrue(TEXT("Post-break kill reduces the running cooldown to 15 seconds"),
+		FMath::IsNearlyEqual(ShooterASC->GetShooterStealthCooldownRemaining(), 15.0f, 0.05f));
+	ShooterASC->NotifyShooterStealthKill(FirstSession, true);
+	TestTrue(TEXT("Another kill from the same continuous session gives no second reduction"),
+		FMath::IsNearlyEqual(ShooterASC->GetShooterStealthCooldownRemaining(), 15.0f, 0.05f));
+	TestTrue(TEXT("Actual stealth exit retains Shadow Step speed"),
+		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::ShooterStealthSpeedBoost()));
+	TickSeconds(2.1f);
+	TestFalse(TEXT("Exit speed expires after two seconds"),
+		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::ShooterStealthSpeedBoost()));
+	ClearCooldown();
+	ShooterASC->ResetShooterStealthUpgradeState();
+	ShooterASC->NotifyShooterStealthKill(FirstSession, true);
+	TestTrue(TEXT("A stale pre-reset attack cannot reserve a cooldown reduction"),
+		ShooterASC->TryActivateShooterSuitAbility(StealthTag));
+	ShooterASC->BeginShooterStealthAttack();
+	TestTrue(TEXT("Reset invalidates the old session generation"),
+		FMath::IsNearlyEqual(ShooterASC->GetShooterStealthCooldownRemaining(), 20.0f, 0.05f));
+	ClearCooldown();
+	for (int32 ExcludedSource = 0; ExcludedSource < 4; ++ExcludedSource)
+	{
+		TestTrue(TEXT("Normal stealth starts for excluded kill source coverage"),
+			ShooterASC->TryActivateShooterSuitAbility(StealthTag));
+		FOutlierDamageRequest ExcludedKill;
+		ExcludedKill.DamageTag = ExcludedSource == 1
+			? OutlierGameplayTags::Damage::Explosion() : OutlierGameplayTags::Damage::Ranged();
+		ExcludedKill.StealthSession = ShooterASC->BeginShooterStealthAttack();
+		ExcludedKill.bReflectedDamage = ExcludedSource == 0;
+		if (ExcludedSource == 3)
+		{
+			ExcludedKill.StealthSession.Reset();
+		}
+		if (Weapon)
+		{
+			Weapon->SetOwner(ExcludedSource == 2 ? static_cast<AActor*>(Partner) : Shooter);
+		}
+		KillThroughDamageBoundary(ExcludedKill);
+		TestTrue(TEXT("Reflected, explosion, Partner-owned and non-stealth kills give no cooldown reduction"),
+			FMath::IsNearlyEqual(ShooterASC->GetShooterStealthCooldownRemaining(), 20.0f, 0.05f));
+		ClearCooldown();
+	}
+	if (Weapon)
+	{
+		Weapon->SetOwner(Shooter);
+	}
+
+	ShooterASC->AddLooseGameplayTag(OutlierGameplayTags::Upgrade::Shooter::Stealth::ConcealmentProtocol());
+	ShooterASC->NotifyShooterStealthKill(nullptr, true);
+	for (int32 KillIndex = 0; KillIndex < 5; ++KillIndex)
+	{
+		TestTrue(TEXT("A fresh manual stealth supplies each qualifying attack"),
+			ShooterASC->TryActivateShooterSuitAbility(StealthTag));
+		const TSharedPtr<FOutlierStealthSession> Session = ShooterASC->BeginShooterStealthAttack();
+		if (KillIndex == 0)
+		{
+			ShooterASC->NotifyShooterStealthKill(Session, false);
+		}
+		if (KillIndex == 4)
+		{
+			FOutlierDamageRequest FifthKill;
+			FifthKill.DamageTag = OutlierGameplayTags::Damage::Melee();
+			FifthKill.StealthSession = Session;
+			KillThroughDamageBoundary(FifthKill);
+		}
+		else
+		{
+			ShooterASC->NotifyShooterStealthKill(Session, true);
+		}
+		if (KillIndex < 4)
+		{
+			TestFalse(TEXT("Fewer than five eligible drone kills do not trigger automatic stealth"), Shooter->IsStealthed());
+			ClearCooldown();
+		}
+	}
+	TestTrue(TEXT("The fifth qualified kill starts automatic stealth after attack break"),
+		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::ShooterAutomaticStealth()));
+	TestTrue(TEXT("Automatic stealth lasts 1.5 seconds"), FMath::IsNearlyEqual(RemainingStealth(), 1.5f, 0.05f));
+	Partner->NotifyOffensiveActionExecuted();
+	TestFalse(TEXT("Automatic stealth breaks on Partner offense"), Shooter->IsStealthed());
+	ClearCooldown();
+	ShooterASC->ResetShooterStealthUpgradeState();
+	ShooterASC->AddLooseGameplayTag(OutlierGameplayTags::Upgrade::Shooter::Stealth::ShadowChain());
+	TestTrue(TEXT("Normal stealth starts for passive conversion"), ShooterASC->TryActivateShooterSuitAbility(StealthTag));
+	const TSharedPtr<FOutlierStealthSession> ConversionSession = ShooterASC->BeginShooterStealthAttack();
+	for (int32 KillIndex = 0; KillIndex < 5; ++KillIndex)
+	{
+		ShooterASC->NotifyShooterStealthKill(ConversionSession, true);
+	}
+	TestTrue(TEXT("Shadow Chain converts automatic stealth into passive stealth"),
+		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::ShooterPassiveStealth()));
+	TestFalse(TEXT("Manual input cannot cancel passive stealth"), ShooterASC->TryActivateShooterSuitAbility(StealthTag));
+	const TSharedPtr<FOutlierStealthSession> PassiveSession = ShooterASC->BeginShooterStealthAttack();
+	TestTrue(TEXT("Passive stealth survives Shooter offense"), Shooter->IsStealthed());
+	Partner->NotifyOffensiveActionExecuted();
+	TestTrue(TEXT("Passive stealth survives Partner offense"), Shooter->IsStealthed());
+	FOutlierDamageRequest Damage;
+	Damage.DamageTag = OutlierGameplayTags::Damage::Weapon();
+	TestEqual(TEXT("Partner still receives actual damage during passive stealth"),
+		ApplyDamageRequest(Partner, 1.0f, Damage, nullptr, Shooter), 1.0f);
+	TestTrue(TEXT("Passive stealth survives actual Partner damage"), Shooter->IsStealthed());
+	TestTrue(TEXT("Passive stealth remains paired after damage"),
+		PartnerASC->HasMatchingGameplayTag(OutlierGameplayTags::State::Stealthed()));
+	ClearCooldown();
+	TickSeconds(1.0f);
+	ShooterASC->NotifyShooterStealthKill(PassiveSession, true);
+	const float CooldownAfterFirstPassiveKill = ShooterASC->GetShooterStealthCooldownRemaining();
+	for (int32 KillIndex = 1; KillIndex < 5; ++KillIndex)
+	{
+		ShooterASC->NotifyShooterStealthKill(PassiveSession, true);
+	}
+	TestTrue(TEXT("Five more passive kills reset remaining time to 1.5 seconds"),
+		FMath::IsNearlyEqual(RemainingStealth(), 1.5f, 0.05f));
+	TestTrue(TEXT("Passive refresh does not grant another first-kill reward"),
+		FMath::IsNearlyEqual(ShooterASC->GetShooterStealthCooldownRemaining(), CooldownAfterFirstPassiveKill, 0.05f));
+	TestTrue(TEXT("Duration refresh preserves the continuous stealth session"),
+		ShooterASC->BeginShooterStealthAttack() == PassiveSession);
+	TickSeconds(1.0f);
+	TestTrue(TEXT("Refreshed passive stealth survives beyond the original expiry"), Shooter->IsStealthed());
+	TickSeconds(0.6f);
+	TestFalse(TEXT("Refreshed passive stealth expires after its replacement duration"), Shooter->IsStealthed());
+	TestTrue(TEXT("Manual stealth starts after the passive session expires"),
+		ShooterASC->TryActivateShooterSuitAbility(StealthTag));
+	ShooterASC->BeginShooterStealthAttack();
+	TestTrue(TEXT("Only one passive first-kill reduction is reserved for the next normal cooldown"),
+		FMath::IsNearlyEqual(ShooterASC->GetShooterStealthCooldownRemaining(), 15.0f, 0.05f));
+
+	if (Weapon)
+	{
+		Weapon->Destroy(true);
+	}
 	Shooter->Destroy(true);
 	Partner->Destroy(true);
 	GEngine->ShutdownWorldNetDriver(World);
@@ -2011,6 +2412,11 @@ bool FOutlierGasShooterBulletReflectionTest::RunTest(const FString& Parameters)
 	EnemyASC->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetHealthAttribute(), 100.0f);
 
 	TestNull(TEXT("Bullet Reflection fixture starts without an equipped weapon"), Shooter->GetCurrentWeapon());
+	TestTrue(TEXT("Bullet Reflection fixture acquires the suit and ability grant"),
+		PrepareShooterSuitTest(Shooter, OutlierGameplayTags::Ability::Shooter::BulletReflection()));
+	FOutlierShooterSuitConfig ReflectionConfig = ShooterASC->GetShooterSuitConfig();
+	ReflectionConfig.BulletReflection.CooldownSeconds = 20.0f;
+	TestTrue(TEXT("Bullet Reflection fixture configures its cooldown"), ShooterASC->UpdateShooterSuitConfig(ReflectionConfig));
 	TestTrue(
 		TEXT("Bullet Reflection activates independently of the equipped weapon"),
 		ShooterASC->TryActivateShooterSuitAbility(
@@ -2045,6 +2451,13 @@ bool FOutlierGasShooterBulletReflectionTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Reflected explosion applies the same amount to the source"), Enemy->GetCurrentHealth(), 65.0f);
 
 	FOutlierShooterSuitConfig UpgradedConfig = ShooterASC->GetShooterSuitConfig();
+	UpgradedConfig.BulletReflection.ReflectDamageMult = 1.4f;
+	TestTrue(TEXT("First reflection upgrade updates the damage multiplier"),
+		ShooterASC->UpdateShooterSuitConfig(UpgradedConfig));
+	ApplyDamageRequest(Shooter, 5.0f, WeaponDamageEvent, nullptr, Enemy);
+	TestEqual(TEXT("140% reflection returns 7 damage for a 5 damage hit"), Enemy->GetCurrentHealth(), 58.0f);
+	// 이후 기존 피해 판정 검증은 동일한 체력 기준을 사용한다.
+	EnemyASC->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetHealthAttribute(), 65.0f);
 	UpgradedConfig.BulletReflection.ReflectDamageMult = 2.0f;
 	TestTrue(
 		TEXT("Bullet Reflection damage multiplier updates in the ASC config cache"),
@@ -2174,6 +2587,11 @@ bool FOutlierGasShooterWeaponOverchargeTest::RunTest(const FString& Parameters)
 	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetShieldAttribute(), 40.0f);
 	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetMaxPartnerShieldAttribute(), 5.0f);
 	ShooterASC->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetPartnerShieldAttribute(), 5.0f);
+	TestTrue(TEXT("Weapon Overcharge fixture acquires the suit and ability grant"),
+		PrepareShooterSuitTest(Shooter, OutlierGameplayTags::Ability::Shooter::WeaponOvercharge()));
+	FOutlierShooterSuitConfig OverchargeConfig = ShooterASC->GetShooterSuitConfig();
+	OverchargeConfig.WeaponOvercharge.CooldownSeconds = 25.0f;
+	TestTrue(TEXT("Weapon Overcharge fixture configures its cooldown"), ShooterASC->UpdateShooterSuitConfig(OverchargeConfig));
 
 	TestFalse(
 		TEXT("Weapon Overcharge rejects activation without a primary rifle"),
@@ -2303,7 +2721,10 @@ bool FOutlierGasShooterQuantumLeapTest::RunTest(const FString& Parameters)
 	World->AddToRoot();
 	WorldContext.SetCurrentWorld(World);
 	World->SetGameInstance(NewObject<UGameInstance>(GEngine));
-	TestTrue(TEXT("Quantum Leap world creates an authority game mode"), World->SetGameMode(FURL()));
+	// 프로젝트 기본 GameMode 에셋 유무와 무관하게 능력 검증용 월드를 만든다.
+	FURL TestURL;
+	TestURL.AddOption(TEXT("game=/Script/Engine.GameModeBase"));
+	TestTrue(TEXT("Quantum Leap world creates an authority game mode"), World->SetGameMode(TestURL));
 	World->InitializeActorsForPlay(FURL());
 
 	UClass* ShooterClass = LoadClass<AShooterCharacter>(
@@ -2341,6 +2762,39 @@ bool FOutlierGasShooterQuantumLeapTest::RunTest(const FString& Parameters)
 	PartnerASC->InitializeForPawn(Partner);
 	TestEqual(TEXT("Four implemented Shooter suit abilities are granted exactly once"), ShooterASC->GetGrantedShooterSuitAbilityCount(), 4);
 
+	// 실제 발동 조건인 슈트 획득과 Grant 태그를 준비한다. BP의 초기 업그레이드에는 의존하지 않는다.
+	AOutlierPlayerState* PlayerState = World->SpawnActor<AOutlierPlayerState>();
+	if (!TestNotNull(TEXT("Quantum Leap fixture creates a PlayerState"), PlayerState)
+		|| !TestTrue(TEXT("Quantum Leap fixture has configured suit abilities"), ShooterASC->IsShooterSuitConfigured()))
+	{
+		World->DestroyWorld(true);
+		World->SetPhysicsScene(nullptr);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+		return false;
+	}
+	Shooter->SetPlayerState(PlayerState);
+	PlayerState->SetAcquiredSuit(true);
+	ShooterASC->AddLooseGameplayTag(OutlierGameplayTags::Ability::Shooter::QuantumLeap());
+	ShooterASC->AddLooseGameplayTag(OutlierGameplayTags::Ability::Shooter::Stealth());
+
+	// 거리와 시간 경계는 고정해 DT 밸런스 수정이 기능 검증 결과를 바꾸지 않게 한다.
+	FOutlierShooterSuitConfig TestConfig = ShooterASC->GetShooterSuitConfig();
+	TestConfig.MaxPartnerDistance = 500.0f;
+	TestConfig.QuantumLeap.DurationSeconds = 1.0f;
+	TestConfig.QuantumLeap.CastTimeSeconds = 1.0f;
+	TestConfig.QuantumLeap.CooldownSeconds = 8.0f;
+	TestConfig.QuantumLeap.PartnerOffset = 50.0f;
+	if (!TestTrue(TEXT("Quantum Leap fixture applies fixed tuning"), ShooterASC->UpdateShooterSuitConfig(TestConfig))
+		|| !TestTrue(TEXT("Quantum Leap fixture has a usable acquired suit"), Shooter->IsSuitUsable()))
+	{
+		World->DestroyWorld(true);
+		World->SetPhysicsScene(nullptr);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+		return false;
+	}
+
 	AActor* Blocker = World->SpawnActor<AActor>();
 	UBoxComponent* BlockingBox = Blocker ? NewObject<UBoxComponent>(Blocker) : nullptr;
 	if (TestNotNull(TEXT("Blocked-destination fixture is created"), Blocker)
@@ -2359,16 +2813,28 @@ bool FOutlierGasShooterQuantumLeapTest::RunTest(const FString& Parameters)
 	TestFalse(
 		TEXT("Blocked Quantum Leap ends without leaving damage immunity active"),
 		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune()));
-	TestTrue(TEXT("Blocked Quantum Leap starts a failure cooldown"), ShooterASC->IsShooterQuantumLeapCooldownActive());
-	const float FailureCooldown = ShooterASC->GetShooterQuantumLeapCooldownRemaining();
-	TestTrue(TEXT("Quantum Leap failure cooldown is half of 8 seconds"), FailureCooldown > 3.5f && FailureCooldown <= 4.0f);
+	TestFalse(TEXT("Blocked Quantum Leap does not start a recharge cooldown"), ShooterASC->IsShooterQuantumLeapCooldownActive());
+	TestEqual(TEXT("Blocked Quantum Leap preserves its available charge"),
+		ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges, 1);
+	TestTrue(TEXT("Blocked Quantum Leap starts a separate retry delay"), ShooterASC->IsShooterQuantumLeapRetryActive());
+	const float FailureDelay = ShooterASC->GetTimedCooldownRemaining(
+		OutlierGameplayTags::Cooldown::Shooter::QuantumLeapRetry(), Shooter);
+	TestTrue(TEXT("Quantum Leap failure delay is 0.5 seconds"), FailureDelay > 0.49f && FailureDelay <= 0.5f);
+	TestFalse(TEXT("Retry delay blocks another attempt"),
+		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::QuantumLeap()));
+	const auto TickWorld = [World](int32 Count)
+	{
+		for (int32 Index = 0; Index < Count; ++Index)
+		{
+			++GFrameCounter;
+			World->Tick(LEVELTICK_All, 0.02f);
+		}
+	};
+	TickWorld(30);
+	TestFalse(TEXT("Retry delay expires without repeated input extending it"), ShooterASC->IsShooterQuantumLeapRetryActive());
 
 	FGameplayTagContainer QuantumCooldownTags;
 	QuantumCooldownTags.AddTag(OutlierGameplayTags::Cooldown::Shooter::QuantumLeap());
-	TestEqual(
-		TEXT("Test fixture removes the failed-attempt Quantum Leap cooldown"),
-		ShooterASC->RemoveActiveEffectsWithGrantedTags(QuantumCooldownTags),
-		1);
 	if (Blocker)
 	{
 		Blocker->SetActorEnableCollision(false);
@@ -2403,6 +2869,8 @@ bool FOutlierGasShooterQuantumLeapTest::RunTest(const FString& Parameters)
 		TEXT("Quantum Leap removes its exact damage immunity after relocation"),
 		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune()));
 	TestTrue(TEXT("Successful Quantum Leap starts its full cooldown"), ShooterASC->IsShooterQuantumLeapCooldownActive());
+	TestEqual(TEXT("Only successful relocation consumes the single charge"),
+		ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges, 0);
 	TestTrue(
 		TEXT("Successful Quantum Leap cooldown is approximately 8 seconds"),
 		ShooterASC->GetShooterQuantumLeapCooldownRemaining() > 7.0f);
@@ -2414,6 +2882,162 @@ bool FOutlierGasShooterQuantumLeapTest::RunTest(const FString& Parameters)
 		TEXT("Test fixture removes the successful Quantum Leap cooldown"),
 		ShooterASC->RemoveActiveEffectsWithGrantedTags(QuantumCooldownTags),
 		1);
+	TestEqual(TEXT("Administrative cooldown removal restores readiness without a recovery event"),
+		ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges, 1);
+
+	// 짧은 실제 도약 두 번으로 '충전 중 잔여 1회 사용'까지 발동 경계를 검증한다.
+	const FGameplayTag DoubleChargeTag = OutlierGameplayTags::Upgrade::Shooter::QuantumLeap::DoubleCharge();
+	FOutlierShooterSuitConfig ChargeConfig = TestConfig;
+	ChargeConfig.QuantumLeap.CastTimeSeconds = 0.1f;
+	ChargeConfig.QuantumLeap.CooldownSeconds = 0.8f;
+	TestTrue(TEXT("Sequential recharge fixture applies short fixed timings"), ShooterASC->UpdateShooterSuitConfig(ChargeConfig));
+	ShooterASC->AddLooseGameplayTag(DoubleChargeTag);
+	TestEqual(TEXT("Double Charge increases maximum to two"), ShooterASC->GetShooterQuantumLeapChargeState().MaxCharges, 2);
+	TestEqual(TEXT("Acquiring Double Charge while ready immediately supplies two charges"),
+		ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges, 2);
+	TestTrue(TEXT("First charged leap activates"),
+		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::QuantumLeap()));
+	TestEqual(TEXT("Cast start does not consume a charge before relocation succeeds"),
+		ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges, 2);
+	TickWorld(10);
+	TestEqual(TEXT("First successful charged leap leaves one use"), ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges, 1);
+	const float FirstRechargeStart = ShooterASC->GetShooterQuantumLeapChargeState().RechargeStartServerTime;
+	const uint32 RecoveryBeforeUse = ShooterASC->GetShooterQuantumLeapChargeState().RecoverySerial;
+	TestTrue(TEXT("Remaining charge activates while a recharge is running"),
+		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::QuantumLeap()));
+	TickWorld(10);
+	TestEqual(TEXT("Second success exhausts the two charges"), ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges, 0);
+	TestEqual(TEXT("Second success preserves the original recharge start"),
+		ShooterASC->GetShooterQuantumLeapChargeState().RechargeStartServerTime, FirstRechargeStart);
+	TestEqual(TEXT("Spending a charge does not signal charge recovery"),
+		ShooterASC->GetShooterQuantumLeapChargeState().RecoverySerial, RecoveryBeforeUse);
+	TestFalse(TEXT("Zero charges reject a further leap"),
+		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::QuantumLeap()));
+	TestFalse(TEXT("Charge exhaustion rejects input without adding a retry penalty"), ShooterASC->IsShooterQuantumLeapRetryActive());
+
+	// 현재 주기는 0.8초를 유지하고, 변경된 쿨타임은 다음 1회 충전부터 사용한다.
+	ChargeConfig.QuantumLeap.CooldownSeconds = 0.4f;
+	TestTrue(TEXT("Cooldown tuning updates during recharge"), ShooterASC->UpdateShooterSuitConfig(ChargeConfig));
+	TestEqual(TEXT("Reprojection does not grant another charge"), ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges, 0);
+	TestEqual(TEXT("Cooldown changes do not replace the active cycle duration"),
+		ShooterASC->GetShooterQuantumLeapChargeState().RechargeDuration, 0.8f);
+	TickWorld(35);
+	TestEqual(TEXT("One completed cycle restores exactly one charge"), ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges, 1);
+	TestEqual(TEXT("A completed cycle advances the recovery event serial once"),
+		ShooterASC->GetShooterQuantumLeapChargeState().RecoverySerial, RecoveryBeforeUse + 1);
+	TestEqual(TEXT("Next sequential cycle uses the changed cooldown duration"),
+		ShooterASC->GetShooterQuantumLeapChargeState().RechargeDuration, 0.4f);
+	TestTrue(TEXT("A missing second charge keeps recharge active"), ShooterASC->IsShooterQuantumLeapCooldownActive());
+	TickWorld(25);
+	TestEqual(TEXT("Second cycle restores full charges"), ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges, 2);
+	TestEqual(TEXT("Two cycles produce two recovery events"),
+		ShooterASC->GetShooterQuantumLeapChargeState().RecoverySerial, RecoveryBeforeUse + 2);
+	TestFalse(TEXT("Recharge stops at full capacity"), ShooterASC->IsShooterQuantumLeapCooldownActive());
+	TestEqual(TEXT("Full capacity clears the HUD recharge duration"), ShooterASC->GetShooterQuantumLeapChargeState().RechargeDuration, 0.0f);
+
+	// 기본 1회가 충전 중일 때 업그레이드하면 1회만 지급하고 기존 주기는 보존한다.
+	ShooterASC->RemoveLooseGameplayTag(DoubleChargeTag);
+	ShooterASC->ResetShooterQuantumLeapTransientState();
+	TestEqual(TEXT("Removing Double Charge returns maximum capacity to one"), ShooterASC->GetShooterQuantumLeapChargeState().MaxCharges, 1);
+	TestTrue(TEXT("Single-charge fixture starts a successful-use recharge"), ShooterASC->CommitShooterQuantumLeapCooldown());
+	TickWorld(5);
+	const float RechargeStartBeforeUpgrade = ShooterASC->GetShooterQuantumLeapChargeState().RechargeStartServerTime;
+	const uint32 RecoveryBeforeUpgrade = ShooterASC->GetShooterQuantumLeapChargeState().RecoverySerial;
+	ShooterASC->AddLooseGameplayTag(DoubleChargeTag);
+	TestEqual(TEXT("Acquiring Double Charge during recharge supplies one immediate use"),
+		ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges, 1);
+	TestEqual(TEXT("Capacity increase preserves the existing recharge start"),
+		ShooterASC->GetShooterQuantumLeapChargeState().RechargeStartServerTime, RechargeStartBeforeUpgrade);
+	TestEqual(TEXT("Capacity reward is not a timed recovery event"),
+		ShooterASC->GetShooterQuantumLeapChargeState().RecoverySerial, RecoveryBeforeUpgrade);
+	TestTrue(TEXT("Upgrade reprojection succeeds during recharge"), ShooterASC->UpdateShooterSuitConfig(ChargeConfig));
+	TestEqual(TEXT("Repeated projection does not repeat the capacity reward"), ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges, 1);
+	TestTrue(TEXT("Failure retry can coexist with recharge and a remaining charge"), ShooterASC->CommitShooterQuantumLeapRetryDelay());
+	TestEqual(TEXT("Failure retry preserves the available charge"), ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges, 1);
+	TestEqual(TEXT("Failure retry preserves the active cycle start"),
+		ShooterASC->GetShooterQuantumLeapChargeState().RechargeStartServerTime, RechargeStartBeforeUpgrade);
+	TickWorld(17);
+	TestTrue(TEXT("Retry remains active when the prior recharge completes"), ShooterASC->IsShooterQuantumLeapRetryActive());
+	TestEqual(TEXT("Recharge still restores capacity during a failure retry"), ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges, 2);
+	TestEqual(TEXT("Recovery during retry still produces a HUD recovery event"),
+		ShooterASC->GetShooterQuantumLeapChargeState().RecoverySerial, RecoveryBeforeUpgrade + 1);
+
+	// 0초 설정은 충전을 즉시 반환하고 재충전 효과/콜백을 남기지 않는다.
+	ShooterASC->ResetShooterQuantumLeapTransientState();
+	ChargeConfig.QuantumLeap.CooldownSeconds = 0.0f;
+	TestTrue(TEXT("Zero recharge duration remains valid"), ShooterASC->UpdateShooterSuitConfig(ChargeConfig));
+	TestTrue(TEXT("Zero-duration recharge still accepts a successful use"), ShooterASC->CommitShooterQuantumLeapCooldown());
+	TestEqual(TEXT("Zero-duration recharge returns immediately to full capacity"), ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges, 2);
+	TestFalse(TEXT("Zero-duration recharge leaves no running cooldown"), ShooterASC->IsShooterQuantumLeapCooldownActive());
+	ShooterASC->RemoveLooseGameplayTag(DoubleChargeTag);
+	ShooterASC->ResetShooterQuantumLeapTransientState();
+	TestTrue(TEXT("Original timings are restored for immunity and failure coverage"), ShooterASC->UpdateShooterSuitConfig(TestConfig));
+
+	// 시전 시간을 짧게 해 이전 무적이 남은 동안 두 번째 도약을 성공시킨다.
+	FOutlierShooterSuitConfig UpgradedConfig = ShooterASC->GetShooterSuitConfig();
+	UpgradedConfig.QuantumLeap.DurationSeconds = 1.0f;
+	UpgradedConfig.QuantumLeap.CastTimeSeconds = 0.1f;
+	TestTrue(TEXT("Quantum Leap test config updates without granting another ability"), ShooterASC->UpdateShooterSuitConfig(UpgradedConfig));
+	ShooterASC->AddLooseGameplayTag(OutlierGameplayTags::Upgrade::Shooter::QuantumLeap::InvincibleAfterLeap());
+	TestTrue(TEXT("Upgraded Quantum Leap starts"),
+		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::QuantumLeap()));
+	TickWorld(10);
+	TestFalse(TEXT("Post-success immunity outlives the cast state"),
+		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::QuantumLeaping()));
+	TestTrue(TEXT("Upgraded Quantum Leap retains immunity after success"),
+		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune()));
+	TestFalse(TEXT("Post-success immunity rejects damage"),
+		ShooterASC->ApplyDamageToSelf(10.0f, nullptr, Shooter, OutlierGameplayTags::Damage::Weapon()));
+	TickWorld(25);
+	ShooterASC->RemoveActiveEffectsWithGrantedTags(QuantumCooldownTags);
+	TestTrue(TEXT("A second leap can refresh the previous success immunity"),
+		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::QuantumLeap()));
+	TickWorld(30);
+	TestTrue(TEXT("Refreshed immunity survives the first leap's original expiry"),
+		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune()));
+	TickWorld(30);
+	TestFalse(TEXT("Refresh resets to one second instead of adding remaining duration"),
+		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune()));
+	TestTrue(TEXT("Damage is accepted after post-success immunity expires"),
+		ShooterASC->ApplyDamageToSelf(1.0f, nullptr, Shooter, OutlierGameplayTags::Damage::Weapon()));
+	ShooterASC->RemoveActiveEffectsWithGrantedTags(QuantumCooldownTags);
+
+	const FActiveGameplayEffectHandle OtherImmunity = ShooterASC->ApplyDamageImmuneStateToSelf();
+	ShooterASC->RefreshShooterQuantumLeapImmunity();
+	ShooterASC->RefreshShooterQuantumLeapImmunity();
+	TickWorld(55);
+	TestNotNull(TEXT("Expiry and refresh preserve unrelated immunity"), ShooterASC->GetActiveGameplayEffect(OtherImmunity));
+	ShooterASC->RemoveActiveEffectFromSelf(OtherImmunity);
+	TestFalse(TEXT("An unrelated immunity cannot hide a leaked leap effect after expiry"),
+		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune()));
+	const FActiveGameplayEffectHandle CleanupOtherImmunity = ShooterASC->ApplyDamageImmuneStateToSelf();
+	ShooterASC->RefreshShooterQuantumLeapImmunity();
+	TestTrue(TEXT("Retry delay can coexist with a recharge cooldown"), ShooterASC->CommitShooterQuantumLeapCooldown());
+	const float RechargeBeforeFailure = ShooterASC->GetShooterQuantumLeapCooldownRemaining();
+	TestTrue(TEXT("Independent failure delay commits without replacing recharge"), ShooterASC->CommitShooterQuantumLeapRetryDelay());
+	TestEqual(TEXT("Failure leaves the existing recharge time unchanged"),
+		ShooterASC->GetShooterQuantumLeapCooldownRemaining(), RechargeBeforeFailure);
+	ShooterASC->ResetShooterQuantumLeapTransientState();
+	TestFalse(TEXT("Lifecycle cleanup removes the tracked retry delay"), ShooterASC->IsShooterQuantumLeapRetryActive());
+	TestNotNull(TEXT("Lifecycle cleanup preserves unrelated immunity"), ShooterASC->GetActiveGameplayEffect(CleanupOtherImmunity));
+	ShooterASC->RemoveActiveEffectFromSelf(CleanupOtherImmunity);
+	TestFalse(TEXT("Lifecycle cleanup leaves no leap immunity behind"),
+		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune()));
+	TestFalse(TEXT("Lifecycle cleanup removes the tracked recharge cooldown"), ShooterASC->IsShooterQuantumLeapCooldownActive());
+	TestEqual(TEXT("Lifecycle cleanup resets charges to current capacity"),
+		ShooterASC->GetShooterQuantumLeapChargeState().CurrentCharges,
+		ShooterASC->GetShooterQuantumLeapChargeState().MaxCharges);
+
+	TestTrue(TEXT("Upgraded leap starts for failed-cast coverage"),
+		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::QuantumLeap()));
+	Partner->SetActorLocation(FVector(2000.0f, 0.0f, 0.0f));
+	TickWorld(10);
+	TestFalse(TEXT("Failed upgraded leap does not grant post-success immunity"),
+		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune()));
+	TestTrue(TEXT("Leaving range during a cast starts the retry delay"), ShooterASC->IsShooterQuantumLeapRetryActive());
+	TestFalse(TEXT("Failed cast leaves the ability ready after retry instead of consuming its cooldown"),
+		ShooterASC->IsShooterQuantumLeapCooldownActive());
+	TickWorld(30);
 	Shooter->SetActorLocation(FVector::ZeroVector);
 	Partner->SetActorLocation(FVector(1000.0f, 0.0f, 0.0f));
 	TestFalse(
@@ -2422,8 +3046,20 @@ bool FOutlierGasShooterQuantumLeapTest::RunTest(const FString& Parameters)
 	TestFalse(
 		TEXT("An invalid out-of-range input does not start a failure cooldown"),
 		ShooterASC->IsShooterQuantumLeapCooldownActive());
+	TestFalse(TEXT("An invalid input does not start a retry delay"), ShooterASC->IsShooterQuantumLeapRetryActive());
 
 	Partner->SetActorLocation(FVector(300.0f, 0.0f, 0.0f));
+	TestTrue(TEXT("Quantum Leap starts for Partner reboot coverage"),
+		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::QuantumLeap()));
+	const FActiveGameplayEffectHandle RebootHandle = PartnerASC->ApplyRebootStateToSelf(0.25f);
+	TestTrue(TEXT("Partner reboot starts"), RebootHandle.IsValid());
+	TickWorld(10);
+	TestTrue(TEXT("Partner reboot during a cast starts a retry delay"), ShooterASC->IsShooterQuantumLeapRetryActive());
+	TestFalse(TEXT("Partner reboot grants no post-success immunity"),
+		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune()));
+	TestFalse(TEXT("Partner reboot does not consume the success cooldown"), ShooterASC->IsShooterQuantumLeapCooldownActive());
+	TickWorld(30);
+
 	TestTrue(
 		TEXT("Quantum Leap starts for Partner teardown cleanup coverage"),
 		ShooterASC->TryActivateShooterSuitAbility(OutlierGameplayTags::Ability::Shooter::QuantumLeap()));
@@ -2437,6 +3073,7 @@ bool FOutlierGasShooterQuantumLeapTest::RunTest(const FString& Parameters)
 	TestFalse(
 		TEXT("Partner teardown does not start a Quantum Leap cooldown"),
 		ShooterASC->IsShooterQuantumLeapCooldownActive());
+	TestFalse(TEXT("Partner teardown does not start a retry delay"), ShooterASC->IsShooterQuantumLeapRetryActive());
 	for (int32 TickIndex = 0; TickIndex < 55; ++TickIndex)
 	{
 		++GFrameCounter;
@@ -2448,6 +3085,27 @@ bool FOutlierGasShooterQuantumLeapTest::RunTest(const FString& Parameters)
 	TestFalse(
 		TEXT("Partner teardown remains cooldown-free after the former cast delay"),
 		ShooterASC->IsShooterQuantumLeapCooldownActive());
+
+	ShooterASC->RefreshShooterQuantumLeapImmunity();
+	ShooterASC->CommitShooterQuantumLeapRetryDelay();
+	TestTrue(TEXT("Pawn cleanup starts with an active post-success immunity effect"),
+		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune()));
+	TestTrue(TEXT("Pawn cleanup starts with an active retry delay"), ShooterASC->IsShooterQuantumLeapRetryActive());
+	ShooterASC->ClearForPawn(Shooter);
+	TestFalse(TEXT("Pawn teardown clears post-success immunity"),
+		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune()));
+	TestFalse(TEXT("Pawn teardown clears the retry effect"),
+		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::Cooldown::Shooter::QuantumLeapRetry()));
+	ShooterASC->InitializeForPawn(Shooter);
+	ShooterASC->RefreshShooterQuantumLeapImmunity();
+	ShooterASC->CommitShooterQuantumLeapRetryDelay();
+	TestTrue(TEXT("Death cleanup starts with an active post-success immunity effect"),
+		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune()));
+	TestTrue(TEXT("Death cleanup starts with an active retry delay"), ShooterASC->IsShooterQuantumLeapRetryActive());
+	TestTrue(TEXT("Death state applies during post-success immunity"), ShooterASC->ApplyDeadStateToSelf());
+	TestFalse(TEXT("Death removes post-success immunity"),
+		ShooterASC->HasMatchingGameplayTag(OutlierGameplayTags::State::DamageImmune()));
+	TestFalse(TEXT("Death removes retry delay without starting another"), ShooterASC->IsShooterQuantumLeapRetryActive());
 
 	Shooter->Destroy(true);
 	GEngine->ShutdownWorldNetDriver(World);

@@ -65,9 +65,7 @@ UOutlierStunGameplayEffect::UOutlierStunGameplayEffect(const FObjectInitializer&
 	: Super(ObjectInitializer)
 {
 	DurationPolicy = EGameplayEffectDurationType::HasDuration;
-	// EMP and weapon stuns share this effect. GAS owns the looping cue's lifetime,
-	// including overlapping stuns and effects removed before their duration expires.
-	GameplayCues.Emplace(OutlierGameplayTags::Cue::Status::Stun(), 0.0f, 1.0f);
+	// 중첩 효과 하나가 사라져도 연출은 유지한다. ASC가 Stunned 태그의 전체 수명으로 cue를 관리한다.
 	FInheritedTagContainer GrantedTags;
 	GrantedTags.AddTag(OutlierGameplayTags::State::Stunned());
 	UTargetTagsGameplayEffectComponent* TargetTags =
@@ -89,6 +87,19 @@ UOutlierDamageImmuneGameplayEffect::UOutlierDamageImmuneGameplayEffect(
 		ObjectInitializer.CreateDefaultSubobject<UTargetTagsGameplayEffectComponent>(
 			this,
 			TEXT("TargetTags"));
+	GEComponents.Add(TargetTags);
+	TargetTags->SetAndApplyTargetTagChanges(GrantedTags);
+}
+
+UOutlierShooterStealthExitSpeedGameplayEffect::UOutlierShooterStealthExitSpeedGameplayEffect(
+	const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	DurationPolicy = EGameplayEffectDurationType::HasDuration;
+	FInheritedTagContainer GrantedTags;
+	GrantedTags.AddTag(OutlierGameplayTags::State::ShooterStealthSpeedBoost());
+	UTargetTagsGameplayEffectComponent* TargetTags = ObjectInitializer.CreateDefaultSubobject<UTargetTagsGameplayEffectComponent>(
+		this, TEXT("StealthExitSpeedTags"));
 	GEComponents.Add(TargetTags);
 	TargetTags->SetAndApplyTargetTagChanges(GrantedTags);
 }
@@ -184,6 +195,20 @@ UOutlierShooterBulletReflectionGameplayEffect::UOutlierShooterBulletReflectionGa
 		ObjectInitializer.CreateDefaultSubobject<UTargetTagsGameplayEffectComponent>(
 			this,
 			TEXT("BulletReflectionTargetTags"));
+	GEComponents.Add(TargetTags);
+	TargetTags->SetAndApplyTargetTagChanges(GrantedTags);
+}
+
+UOutlierShooterQuantumLeapRetryGameplayEffect::UOutlierShooterQuantumLeapRetryGameplayEffect(
+	const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	DurationPolicy = EGameplayEffectDurationType::HasDuration;
+	FInheritedTagContainer GrantedTags;
+	GrantedTags.AddTag(OutlierGameplayTags::Cooldown::Shooter::QuantumLeapRetry());
+	UTargetTagsGameplayEffectComponent* TargetTags =
+		ObjectInitializer.CreateDefaultSubobject<UTargetTagsGameplayEffectComponent>(
+			this, TEXT("QuantumLeapRetryTargetTags"));
 	GEComponents.Add(TargetTags);
 	TargetTags->SetAndApplyTargetTagChanges(GrantedTags);
 }

@@ -91,7 +91,7 @@ protected:
 
 public:
 	/** Sets default values for this character's properties */
-	AFirstPersonCharacter();
+	AFirstPersonCharacter(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
 
 	virtual FGenericTeamId GetGenericTeamId() const override;
 

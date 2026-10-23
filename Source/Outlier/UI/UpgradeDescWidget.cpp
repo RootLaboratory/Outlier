@@ -1,6 +1,5 @@
 #include "UI/UpgradeDescWidget.h"
 
-#include "Components/Button.h"
 #include "Components/CanvasPanelSlot.h"
 #include "Components/Image.h"
 #include "Components/SizeBox.h"
@@ -19,16 +18,6 @@ void UUpgradeDescWidget::NativeConstruct()
 	{
 		PopupRetainer->OnClosed.AddUniqueDynamic(this, &UUpgradeDescWidget::HandlePopupClosed);
 		PopupRetainer->ResetPopup();
-	}
-
-	if (Button && !bDefaultDisabledButtonBrushCached)
-	{
-		DefaultDisabledButtonBrush = Button->GetStyle().Disabled;
-		bDefaultDisabledButtonBrushCached = true;
-	}
-	if (Button)
-	{
-		Button->OnClicked.AddUniqueDynamic(this, &UUpgradeDescWidget::HandlePurchaseClicked);
 	}
 	if (Background && !bDefaultBackgroundBrushCached)
 	{
@@ -56,14 +45,6 @@ void UUpgradeDescWidget::NativeConstruct()
 
 	RefreshTextBlocks();
 	SetVisibility(ESlateVisibility::Collapsed);
-}
-
-void UUpgradeDescWidget::HandlePurchaseClicked()
-{
-	if (CurrentNodeState == EOutlierUpgradeNodeState::Unlocked && bCanAfford)
-	{
-		OnPurchaseRequested.Broadcast();
-	}
 }
 
 void UUpgradeDescWidget::InjectNodeData(
@@ -210,7 +191,7 @@ void UUpgradeDescWidget::RefreshTextBlocks()
 	}
 
 	RefreshCostTextStyle();
-	RefreshButtonStyle();
+	RefreshStatusImage();
 	RefreshBackground();
 }
 
@@ -291,43 +272,30 @@ void UUpgradeDescWidget::RefreshCostTextStyle()
 	}
 }
 
-void UUpgradeDescWidget::RefreshButtonStyle()
+void UUpgradeDescWidget::RefreshStatusImage()
 {
-	if (!Button)
+	if (!StatusImage)
 	{
 		return;
 	}
 
-	const bool bPurchased = CurrentNodeState == EOutlierUpgradeNodeState::Activated;
-	const bool bPurchasable = CurrentNodeState == EOutlierUpgradeNodeState::Unlocked && bCanAfford;
-	UTexture2D* DisabledTexture = nullptr;
-	if (bPurchased)
+	UTexture2D* Texture = AvailableTexture;
+	if (CurrentNodeState == EOutlierUpgradeNodeState::Activated)
 	{
-		DisabledTexture = PurchasedDisabledTexture.Get();
+		Texture = PurchasedDisabledTexture;
 	}
 	else if (CurrentNodeState == EOutlierUpgradeNodeState::Locked)
 	{
-		DisabledTexture = PrerequisiteDisabledTexture.Get();
+		Texture = PrerequisiteDisabledTexture;
 	}
 	else if (!bCanAfford)
 	{
-		DisabledTexture = InsufficientDisabledTexture.Get();
+		Texture = InsufficientDisabledTexture;
 	}
 
-	FButtonStyle Style = Button->GetStyle();
-	Style.Disabled = DefaultDisabledButtonBrush;
-	if (DisabledTexture)
-	{
-		Style.Disabled.SetResourceObject(DisabledTexture);
-		Style.Disabled.DrawAs = ESlateBrushDrawType::Image;
-		Style.Disabled.ImageType = ESlateBrushImageType::FullColor;
-		Style.Disabled.ImageSize = Style.Normal.ImageSize.X > 0.0f && Style.Normal.ImageSize.Y > 0.0f
-			? Style.Normal.ImageSize
-			: FVector2D(DisabledTexture->GetSizeX(), DisabledTexture->GetSizeY());
-		Style.Disabled.TintColor = FSlateColor(FLinearColor::White);
-	}
-	Button->SetStyle(Style);
-	Button->SetIsEnabled(bPurchasable);
+	// 상태 이미지는 구매 입력을 받지 않는다. 미설정 상태로 바뀌면 이전 이미지를 남기지 않는다.
+	StatusImage->SetBrushFromTexture(Texture);
+	StatusImage->SetVisibility(ESlateVisibility::HitTestInvisible);
 }
 
 FText UUpgradeDescWidget::BuildCostNeedText() const

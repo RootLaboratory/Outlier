@@ -68,6 +68,14 @@ public:
 };
 
 UCLASS()
+class OUTLIER_API UOutlierShooterStealthExitSpeedGameplayEffect : public UGameplayEffect
+{
+	GENERATED_BODY()
+public:
+	UOutlierShooterStealthExitSpeedGameplayEffect(const FObjectInitializer& ObjectInitializer);
+};
+
+UCLASS()
 class OUTLIER_API UOutlierPartnerShieldGameplayEffect : public UGameplayEffect
 {
 	GENERATED_BODY()
@@ -110,6 +118,15 @@ class OUTLIER_API UOutlierShooterQuantumLeapCooldownGameplayEffect : public UGam
 
 public:
 	UOutlierShooterQuantumLeapCooldownGameplayEffect(const FObjectInitializer& ObjectInitializer);
+};
+
+UCLASS()
+class OUTLIER_API UOutlierShooterQuantumLeapRetryGameplayEffect : public UGameplayEffect
+{
+	GENERATED_BODY()
+
+public:
+	UOutlierShooterQuantumLeapRetryGameplayEffect(const FObjectInitializer& ObjectInitializer);
 };
 
 UCLASS()

@@ -34,7 +34,8 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Anim|FP Procedural|Recoil")
 	void AddViewModelRecoil(float GameplayRecoilScale = 1.0f);
 
-	void AddViewModelRecoil(float GameplayRecoilScale, const FVector2D& NormalizedShotDirection);
+	void AddViewModelRecoil(float GameplayRecoilScale, const FVector2D& NormalizedShotDirection,
+		float UpgradeRecoilMultiplier = 1.0f);
 
 	float GetViewModelAimAlpha() const { return ViewModelAimAlpha; }
 	float GetViewModelSprintAlpha() const { return ViewModelSprintAlpha; }

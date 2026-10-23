@@ -9,6 +9,58 @@
 class AController;
 class AActor;
 class APawn;
+struct FOutlierStealthSession;
+
+// 서버의 한 충전 주기를 통째로 전달한다. UI가 남은 시간을 새 쿨타임으로 오해하지 않게 한다.
+USTRUCT()
+struct FOutlierQuantumLeapChargeState
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	int32 CurrentCharges = 1;
+	UPROPERTY()
+	int32 MaxCharges = 1;
+	UPROPERTY()
+	float RechargeStartServerTime = 0.0f;
+	UPROPERTY()
+	float RechargeDuration = 0.0f;
+	// 자연 회복만 증가시킨다. 횟수 증가만으로 업그레이드 보상과 회복을 혼동하지 않게 한다.
+	UPROPERTY()
+	uint32 RecoverySerial = 0;
+	UPROPERTY()
+	bool bInitialized = false;
+};
+
+DECLARE_MULTICAST_DELEGATE_OneParam(FOutlierQuantumLeapChargesChanged, bool /* bRecovered */);
+
+USTRUCT()
+struct FOutlierPartnerHackChargeState
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	int32 CurrentCharges = 1;
+	UPROPERTY()
+	int32 MaxCharges = 1;
+	UPROPERTY()
+	float RechargeStartServerTime = 0.0f;
+	UPROPERTY()
+	float RechargeDuration = 0.0f;
+	UPROPERTY()
+	uint32 RecoverySerial = 0;
+	UPROPERTY()
+	bool bInitialized = false;
+	// 취소 제한은 충전과 별개다. 충전 중이 아닐 때는 이 시간으로 HUD 게이지를 표시한다.
+	UPROPERTY()
+	float RetryStartServerTime = 0.0f;
+	UPROPERTY()
+	float RetryDuration = 0.0f;
+	UPROPERTY()
+	bool bRetryBlocked = false;
+};
+
+DECLARE_MULTICAST_DELEGATE_OneParam(FOutlierPartnerHackChargesChanged, bool /* bRecovered */);
 
 UCLASS(ClassGroup = GAS)
 class OUTLIER_API UOutlierAbilitySystemComponent : public UAbilitySystemComponent
@@ -17,6 +69,7 @@ class OUTLIER_API UOutlierAbilitySystemComponent : public UAbilitySystemComponen
 
 public:
 	UOutlierAbilitySystemComponent();
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	void InitializeForActor(AActor* Actor);
 	void InitializeForPawn(APawn* Pawn);
@@ -61,6 +114,16 @@ public:
 	// DT 기준 base ( grant 시점에 고정. 업그레이드 재계산의 기준값이자 grant 락 비교 대상 ).
 	const FOutlierPartnerAbilityConfig& GetBasePartnerAbilityConfig() const { return BasePartnerAbilityConfig; }
 	bool CommitPartnerCooldown(const FGameplayTag& CooldownTag, float OverrideDuration = 0.0f);
+	void RefreshPartnerHackCharges();
+	bool CanUsePartnerHackCharge() const;
+	bool CommitPartnerHackCharge(bool bDeferRecharge = false);
+	bool CommitPartnerHackRetryDelay();
+	float GetPartnerHackRetryRemaining() const;
+	bool ResumePartnerHackRecharge();
+	void CancelPartnerHackDeferredRecharge();
+	float GetPartnerHackRechargeRemaining() const;
+	const FOutlierPartnerHackChargeState& GetPartnerHackChargeState() const { return PartnerHackCharges; }
+	FOutlierPartnerHackChargesChanged OnPartnerHackChargeStateChanged;
 	bool IsPartnerCooldownActive(const FGameplayTag& CooldownTag) const;
 	float GetPartnerCooldownRemaining(const FGameplayTag& CooldownTag) const;
 	bool SuspendPartnerSkillCooldownsForPossession();
@@ -78,13 +141,26 @@ public:
 	// Grant 판정 규칙( 기본 제공이거나 Grant 근거가 있으면 통과 ). 근거 태그의 출처는 호출부가 고른다.
 	// 발동 게이트는 ASC 소유 태그를, UI 는 업그레이드 캐시( 클라에서 GE 복제를 기다리지 않음 )를 넘긴다.
 	bool IsShooterSuitAbilityGranted(const FGameplayTag& AbilityTag, bool bHasGrantTag) const;
+#if WITH_EDITOR
+	// PIE 테스트 도구에서만 변경한다. 서버/소유 클라이언트가 같은 해금 규칙을 사용한다.
+	void SetEditorShooterSuitGrantChecks(bool bEnabled);
+	bool AreEditorShooterSuitGrantChecksEnabled() const { return bEditorShooterSuitGrantChecks; }
+#endif
 	// 기본 제공( Requires...UpgradeGrant == false ) 능력. 기본 선택과 잠김 폴백이 쓴다. 없으면 invalid.
 	FGameplayTag GetDefaultShooterSuitAbilityTag() const;
 	bool IsShooterSuitConfigured() const { return bShooterSuitConfigured; }
 	const FOutlierShooterSuitConfig& GetShooterSuitConfig() const { return ShooterSuitConfig; }
 	const FOutlierShooterSuitConfig& GetBaseShooterSuitConfig() const { return BaseShooterSuitConfig; }
 	int32 GetGrantedShooterSuitAbilityCount() const;
-	bool CommitShooterQuantumLeapCooldown(float DurationMultiplier = 1.0f);
+	// 기존 호출 이름을 유지한다. 성공한 도약의 충전 1회 소모와 순차 재충전 시작을 함께 처리한다.
+	bool CommitShooterQuantumLeapCooldown();
+	void RefreshShooterQuantumLeapCharges();
+	const FOutlierQuantumLeapChargeState& GetShooterQuantumLeapChargeState() const { return QuantumLeapCharges; }
+	FOutlierQuantumLeapChargesChanged OnQuantumLeapChargesChanged;
+	bool CommitShooterQuantumLeapRetryDelay();
+	bool IsShooterQuantumLeapRetryActive() const;
+	void RefreshShooterQuantumLeapImmunity();
+	void ResetShooterQuantumLeapTransientState();
 	bool IsShooterQuantumLeapCooldownActive() const;
 	float GetShooterQuantumLeapCooldownRemaining() const;
 	bool CancelActiveShooterQuantumLeap(bool bCommitFailureCooldown = false);
@@ -100,9 +176,57 @@ public:
 	bool IsShooterStealthCooldownActive() const;
 	float GetShooterStealthCooldownRemaining() const;
 	bool EndActiveShooterStealth(bool bCommitCooldown);
+	TSharedPtr<FOutlierStealthSession> BeginShooterStealthAttack();
+	void BeginShooterStealthSession();
+	void FinishShooterStealthSession();
+	void NotifyShooterStealthDamage();
+	void NotifyShooterStealthKill(const TSharedPtr<FOutlierStealthSession>& Session, bool bDrone);
+	void ResetShooterStealthUpgradeState();
+	void ApplyShooterStealthExitSpeedBoost();
 	EGameplayEffectReplicationMode GetConfiguredReplicationMode() const { return ReplicationMode; }
 
 private:
+	UFUNCTION()
+	void OnRep_PartnerHackCharges(const FOutlierPartnerHackChargeState& PreviousState);
+	void HandlePartnerHackChargeUpgrade(const FGameplayTag Tag, int32 NewCount);
+	void BeginPartnerHackRecharge(float RemainingDuration = 0.0f);
+	void StopPartnerHackRecharge();
+	void HandlePartnerHackRechargeRemoved(const FGameplayEffectRemovalInfo& RemovalInfo, FActiveGameplayEffectHandle ExpectedHandle);
+	void FinishPartnerHackRetryDelay();
+	void NotifyPartnerHackChargesChanged(bool bRecovered);
+	void ResetPartnerHackCharges();
+	FDelegateHandle PartnerHackChargeUpgradeHandle;
+	FActiveGameplayEffectHandle PartnerHackRechargeHandle;
+	FTimerHandle PartnerHackRetryTimer;
+	float SuspendedPartnerHackRechargeRemaining = 0.0f;
+	float SuspendedPartnerHackRetryRemaining = 0.0f;
+	bool bPartnerHackRechargeDeferred = false;
+	UPROPERTY(ReplicatedUsing = OnRep_PartnerHackCharges)
+	FOutlierPartnerHackChargeState PartnerHackCharges;
+
+	UFUNCTION()
+	void OnRep_EditorShooterSuitGrantChecks();
+
+	// Editor 빌드의 PIE에서만 복제/설정한다. 실제 업그레이드 노드가 해금의 근거다.
+	UPROPERTY(Transient, ReplicatedUsing = OnRep_EditorShooterSuitGrantChecks)
+	bool bEditorShooterSuitGrantChecks = false;
+
+	UFUNCTION()
+	void OnRep_QuantumLeapCharges(const FOutlierQuantumLeapChargeState& PreviousState);
+	void HandleQuantumLeapChargeUpgrade(const FGameplayTag Tag, int32 NewCount);
+	void BeginQuantumLeapRecharge();
+	void HandleQuantumLeapRechargeRemoved(const FGameplayEffectRemovalInfo& RemovalInfo, FActiveGameplayEffectHandle ExpectedHandle);
+	void NotifyQuantumLeapChargesChanged(bool bRecovered);
+	void StopQuantumLeapRecharge();
+	FDelegateHandle QuantumLeapChargeUpgradeHandle;
+	FActiveGameplayEffectHandle QuantumLeapRechargeHandle;
+	UPROPERTY(ReplicatedUsing = OnRep_QuantumLeapCharges)
+	FOutlierQuantumLeapChargeState QuantumLeapCharges;
+
+	void HandleStunStateChanged(const FGameplayTag Tag, int32 NewCount);
+	FDelegateHandle StunStateChangedHandle;
+	bool bOwnsStunCue = false;
+
 	float ResolvePartnerCooldownDuration(const FGameplayTag& CooldownTag) const;
 	TSubclassOf<UGameplayEffect> ResolvePartnerCooldownEffectClass(const FGameplayTag& CooldownTag) const;
 
@@ -121,6 +245,14 @@ private:
 	FGameplayAbilitySpecHandle GrantedShooterWeaponOverchargeAbilityHandle;
 	FGameplayAbilitySpecHandle GrantedShooterStealthAbilityHandle;
 	bool bShooterSuitConfigured = false;
+	TSharedPtr<FOutlierStealthSession> ShooterStealthSession;
+	int32 StealthDroneKillCount = 0;
+	uint32 StealthGeneration = 0;
+	float PendingStealthCooldownReduction = 0.0f;
+	FActiveGameplayEffectHandle StealthExitSpeedHandle;
+	// 능력 종료 후에도 유지되는 도약 무적과 실패 제한만 추적한다. 시전 중 무적은 능력이 관리한다.
+	FActiveGameplayEffectHandle QuantumLeapImmunityHandle;
+	FActiveGameplayEffectHandle QuantumLeapRetryHandle;
 
 	// 이 능력이 업그레이드 트리로 실제 Grant 되어야만 발동하는지. ( 항상 이 의미로 판정됨 - Shipping/에디터 동일 )
 	// true  = Ability.* 태그가 ASC 에 실제로 붙어 있어야 발동 ( GrantAbility 업그레이드 필요 ).

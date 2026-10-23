@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 #include "MainUIBase.h"
 #include "AbilityIconUI.h"
+#include "AbilitySlotUI.h"
 #include "Components/CanvasPanel.h"
 #include "Components/PanelWidget.h"
 #include "Components/Widget.h"
@@ -17,7 +18,8 @@ void UMainUIBase::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 	for (const TPair<FGameplayTag, TObjectPtr<UAbilityIconUI>>& AbilitySection : AbilitySections)
 	{
 		UAbilityIconUI* Icon = AbilitySection.Value;
-		if (!Icon || !Icon->IsCooldowning())
+		// 공용 슬롯은 자체 Tick에서 게이지와 연출을 함께 갱신한다.
+		if (AbilitySlots.Contains(AbilitySection.Key) || !Icon || !Icon->IsCooldowning())
 		{
 			continue;
 		}
@@ -50,6 +52,13 @@ UAbilityIconUI* UMainUIBase::GetAbilityIcon(const FGameplayTag& AbilityTag) cons
 
 void UMainUIBase::ResetAbilityCooldowns()
 {
+	for (const auto& Entry : AbilitySlots)
+	{
+		if (Entry.Value)
+		{
+			Entry.Value->ResetCooldown();
+		}
+	}
 	for (const TPair<FGameplayTag, TObjectPtr<UAbilityIconUI>>& AbilitySection : AbilitySections)
 	{
 		if (UAbilityIconUI* Icon = AbilitySection.Value)
@@ -142,6 +151,13 @@ void UMainUIBase::ModuleDeActivate()
 
 void UMainUIBase::AbilitySectionControl(bool Flag)
 {
+	for (const auto& Entry : AbilitySlots)
+	{
+		if (Entry.Value)
+		{
+			Entry.Value->SetVisibility(Flag ? ESlateVisibility::SelfHitTestInvisible : ESlateVisibility::Collapsed);
+		}
+	}
 	if (Flag)
 	{
 		for (TPair<FGameplayTag, TObjectPtr<UAbilityIconUI>> Module : AbilitySections)
@@ -170,6 +186,23 @@ void UMainUIBase::AbilitySectionControl(bool Flag)
 	}
 }
 
+UAbilitySlotUI* UMainUIBase::GetAbilitySlot(const FGameplayTag& AbilityTag) const
+{
+	const auto* Found = AbilitySlots.Find(AbilityTag);
+	return Found ? Found->Get() : nullptr;
+}
+
+void UMainUIBase::RegisterAbilitySlot(UAbilitySlotUI* AbilitySlot, const FGameplayTag& AbilityTag)
+{
+	if (!AbilitySlot || !AbilityTag.IsValid())
+	{
+		return;
+	}
+	AbilitySlot->SetCurrentAbility(AbilityTag);
+	AbilitySlots.Add(AbilityTag, AbilitySlot);
+	RegisterAbilityIcon(AbilitySlot->CurrentAbilityIcon, AbilityTag, true);
+}
+
 void UMainUIBase::RegisterAbilityIcon(UAbilityIconUI* Icon, const FGameplayTag& AbilityTag, bool bUnlock)
 {
 	if (!Icon || !AbilityTag.IsValid())
@@ -178,7 +211,7 @@ void UMainUIBase::RegisterAbilityIcon(UAbilityIconUI* Icon, const FGameplayTag& 
 	}
 
 	Icon->AbilityTag = AbilityTag;
-	AbilitySections.Add(AbilityTag, Icon);
+	AddAbilityIconEntry(Icon, AbilityTag);
 
 	if (bUnlock)
 	{

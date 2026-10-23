@@ -10,6 +10,7 @@
 #include "OutlierEventToolWidget.h"
 #include "OutlierInputMappableToolWidget.h"
 #include "OutlierUpgradeEffectToolWidget.h"
+#include "OutlierShooterSuitTestToolWidget.h"
 #include "PlayInEditorDataTypes.h"
 #include "ProceduralAnimValuesExporter.h"
 #include "Settings/LevelEditorPlaySettings.h"
@@ -24,6 +25,7 @@ namespace OutlierEditor
 	const FName InputMappableToolTabName(TEXT("OutlierInputMappableTool"));
 	const FName UpgradeEffectToolTabName(TEXT("OutlierUpgradeEffectTool"));
 	const FName EventToolTabName(TEXT("OutlierEventTool"));
+	const FName ShooterSuitTestToolTabName(TEXT("OutlierShooterSuitTestTool"));
 	const FString ListenServerStartMap(TEXT("/Game/Maps/Title"));
 }
 
@@ -53,6 +55,13 @@ public:
 			.SetTooltipText(LOCTEXT("EventToolTooltip", "List Event DT rows and send one to PIE players like a trigger volume."))
 			.SetMenuType(ETabSpawnerMenuType::Hidden);
 
+		FGlobalTabmanager::Get()->RegisterNomadTabSpawner(
+			OutlierEditor::ShooterSuitTestToolTabName,
+			FOnSpawnTab::CreateRaw(this, &FOutlierEditorModule::SpawnShooterSuitTestToolTab))
+			.SetDisplayName(LOCTEXT("ShooterSuitTestTitle", "Outlier Shooter Suit Tester"))
+			.SetTooltipText(LOCTEXT("ShooterSuitTestTooltip", "Toggle Shooter suit and upgrade features on a running PIE server."))
+			.SetMenuType(ETabSpawnerMenuType::Hidden);
+
 		UToolMenus::RegisterStartupCallback(
 			FSimpleMulticastDelegate::FDelegate::CreateRaw(this, &FOutlierEditorModule::RegisterMenus));
 
@@ -76,6 +85,8 @@ public:
 				OutlierEditor::UpgradeEffectToolTabName);
 			FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(
 				OutlierEditor::EventToolTabName);
+			FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(
+				OutlierEditor::ShooterSuitTestToolTabName);
 		}
 	}
 
@@ -106,6 +117,13 @@ private:
 			LOCTEXT("OpenEventToolTooltip", "List Event DT rows and send one to PIE players (same path as trigger volumes)."),
 			FSlateIcon(),
 			FUIAction(FExecuteAction::CreateRaw(this, &FOutlierEditorModule::OpenEventTool)));
+
+		Section.AddMenuEntry(
+			TEXT("OpenOutlierShooterSuitTestTool"),
+			LOCTEXT("OpenShooterSuitTestLabel", "Outlier Shooter Suit Tester"),
+			LOCTEXT("OpenShooterSuitTestTooltip", "Toggle suit, ability unlocks and upgrade features in PIE."),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateRaw(this, &FOutlierEditorModule::OpenShooterSuitTestTool)));
 
 		Section.AddMenuEntry(
 			TEXT("ExportProceduralAnimValues"),
@@ -151,6 +169,11 @@ private:
 	void OpenEventTool()
 	{
 		FGlobalTabmanager::Get()->TryInvokeTab(OutlierEditor::EventToolTabName);
+	}
+
+	void OpenShooterSuitTestTool()
+	{
+		FGlobalTabmanager::Get()->TryInvokeTab(OutlierEditor::ShooterSuitTestToolTabName);
 	}
 
 	void ExportProceduralAnimValuesCsv()
@@ -264,6 +287,15 @@ private:
 			.TabRole(ETabRole::NomadTab)
 			[
 				SNew(SOutlierUpgradeEffectToolWidget)
+			];
+	}
+
+	TSharedRef<SDockTab> SpawnShooterSuitTestToolTab(const FSpawnTabArgs& SpawnTabArgs)
+	{
+		return SNew(SDockTab)
+			.TabRole(ETabRole::NomadTab)
+			[
+				SNew(SOutlierShooterSuitTestToolWidget)
 			];
 	}
 

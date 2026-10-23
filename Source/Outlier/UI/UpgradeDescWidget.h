@@ -7,7 +7,6 @@
 #include "UpgradeDescWidget.generated.h"
 
 class UTextBlock;
-class UButton;
 class UImage;
 class UMaterialInstanceDynamic;
 class UMaterialInterface;
@@ -15,16 +14,13 @@ class UMediaTexture;
 class UPopupRetainerBox;
 class UTexture2D;
 
-DECLARE_MULTICAST_DELEGATE(FOnUpgradeDescWidgetEvent);
-
 UCLASS(Abstract, Blueprintable)
 class OUTLIER_API UUpgradeDescWidget : public UUserWidget
 {
 	GENERATED_BODY()
+	friend struct FUpgradeNodeInteractionTestAccess;
 
 public:
-	FOnUpgradeDescWidgetEvent OnPurchaseRequested;
-
 	UFUNCTION(BlueprintCallable, Category = "Upgrade")
 	void InjectNodeData(
 		const FOutlierUpgradeNodeRow& InNodeData,
@@ -93,8 +89,9 @@ protected:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UTextBlock> Cost;
 
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr<UButton> Button;
+	// 기존 Button 대신 놓는 표시 전용 이미지. BP 전환 중에도 설명창을 열 수 있도록 Optional로 둔다.
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	TObjectPtr<UImage> StatusImage;
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
 	TObjectPtr<UImage> Background;
@@ -117,13 +114,17 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Background")
 	TObjectPtr<UTexture2D> PurchasedBackgroundTexture;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Button")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Status")
+	TObjectPtr<UTexture2D> AvailableTexture;
+
+	// 기존 BP에 저장된 상태별 텍스처 지정은 이름을 유지하여 그대로 사용한다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Status")
 	TObjectPtr<UTexture2D> InsufficientDisabledTexture;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Button")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Status")
 	TObjectPtr<UTexture2D> PrerequisiteDisabledTexture;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Button")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Status")
 	TObjectPtr<UTexture2D> PurchasedDisabledTexture;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Cost")
@@ -141,18 +142,12 @@ private:
 	UFUNCTION()
 	void HandlePopupClosed();
 
-	UFUNCTION()
-	void HandlePurchaseClicked();
-
 	void RefreshTextBlocks();
 	void InitializeMediaImage();
 	void RefreshBackground();
 	void RefreshCostTextStyle();
-	void RefreshButtonStyle();
+	void RefreshStatusImage();
 	FText BuildCostNeedText() const;
-
-	UPROPERTY(Transient)
-	FSlateBrush DefaultDisabledButtonBrush;
 
 	UPROPERTY(Transient)
 	FSlateBrush DefaultBackgroundBrush;
@@ -160,7 +155,6 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> MediaImageMaterial;
 
-	bool bDefaultDisabledButtonBrushCached = false;
 	bool bDefaultBackgroundBrushCached = false;
 	bool bClearWhenClosed = false;
 	FVector2D DefaultPopupDesignSize = FVector2D::ZeroVector;

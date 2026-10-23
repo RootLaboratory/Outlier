@@ -38,6 +38,7 @@ class OUTLIER_API APartnerPlayerController : public AFirstPersonPlayerController
 {
 	GENERATED_BODY()
 	friend class FOutlierGasPartnerPossessionCooldownSessionTest;
+	friend class FOutlierGasPartnerHackPossessionRechargeTest;
 
 protected:
 	/** Pawn class used when respawning the player. */
@@ -184,6 +185,7 @@ public:
 
 	void CachePartnerCharacterForEnemyPossession(APartnerCharacter* PartnerCharacter);
 	bool BeginEnemyPossessionTransition(AEnemyBase* EnemyTarget, APartnerCharacter* PartnerCharacter);
+	bool ShouldDeferPartnerHackRecharge(const APartnerCharacter* PartnerCharacter) const;
 
 	UFUNCTION(BlueprintPure, Category = "Partner|EnemyPossession")
 	EPartnerPossessionState GetPartnerPossessionState() const { return PartnerPossessionState; }
@@ -193,6 +195,9 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Partner|EnemyPossession")
 	void ReleaseEnemyPossession();
+
+	// 공간 전환 전 대기 중 해킹까지 취소하고 실제 제어 Pawn을 원래 Partner로 되돌린다.
+	bool RestorePartnerForWorldTransition();
 
 	/** 로그아웃 정리용 — 캐시된 원래 Partner 캐릭터를 꺼내면서 캐시를 비운다. 빙의를 복원하지는 않는다. */
 	APartnerCharacter* ExtractCachedPartnerCharacterForLogout();

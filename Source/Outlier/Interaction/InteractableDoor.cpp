@@ -12,6 +12,9 @@
 #include "Net/UnrealNetwork.h"
 #include "Outlier.h"
 #include "Save/OutlierSaveSubSystem.h"
+#include "Level/Elevator/ElevatorShaftController.h"
+#include "Level/Elevator/ElevatorShaftSection.h"
+#include "EngineUtils.h"
 
 AInteractableDoor::AInteractableDoor()
 {
@@ -42,10 +45,53 @@ AInteractableDoor::AInteractableDoor()
 
 void AInteractableDoor::BeginPlay()
 {
+	if (HasAuthority())
+	{
+		const AElevatorShaftSection* Section = nullptr;
+		bool bEntranceDoor = false;
+		// 부모 BeginPlay보다 먼저 문이 등록될 수 있으므로, 문이 직접 Controller 인스턴스의 ID를 읽는다.
+		for (AActor* Parent = GetParentActor(); Parent; Parent = Parent->GetParentActor())
+		{
+			if (const AElevatorShaftSection* ParentSection = Cast<AElevatorShaftSection>(Parent)) Section = ParentSection;
+			if (const AElevatorShaftController* Controller = Cast<AElevatorShaftController>(Parent))
+			{
+				DoorId = Controller->EntranceDoorId;
+				bEntranceDoor = true;
+				break;
+			}
+		}
+		if (Section && !bEntranceDoor)
+		{
+			// 도착층은 Controller의 자식이 아니다. 초기 등록 시 한 번만 역참조해 BeginPlay 순서를 피한다.
+			const AElevatorShaftController* ArrivalController = nullptr;
+			bool bAmbiguous = false;
+			for (TActorIterator<AElevatorShaftController> It(GetWorld()); It; ++It)
+			{
+				if (It->ArrivalSection != Section) continue;
+				if (ArrivalController)
+				{
+					bAmbiguous = true;
+					break;
+				}
+				ArrivalController = *It;
+			}
+			if (bAmbiguous)
+			{
+				// 잘못 연결된 두 Controller 중 하나의 저장 키를 임의로 선택하지 않는다.
+				DoorId = NAME_None;
+			}
+			else if (ArrivalController && !ArrivalController->ArrivalDoorId.IsNone())
+			{
+				DoorId = ArrivalController->ArrivalDoorId;
+			}
+		}
+	}
 	Super::BeginPlay();
 
 	ClosedLocationLeft = DoorMeshLeft ? DoorMeshLeft->GetRelativeLocation() : FVector::ZeroVector;
 	ClosedLocationRight = DoorMeshRight ? DoorMeshRight->GetRelativeLocation() : FVector::ZeroVector;
+	InitialLeftCollision = DoorMeshLeft ? DoorMeshLeft->GetCollisionEnabled() : ECollisionEnabled::NoCollision;
+	InitialRightCollision = DoorMeshRight ? DoorMeshRight->GetCollisionEnabled() : ECollisionEnabled::NoCollision;
 	InitializeSafetyRegion(SafetyRegionLeft, DoorMeshLeft, OpenOffsetLeft);
 	InitializeSafetyRegion(SafetyRegionRight, DoorMeshRight, OpenOffsetRight);
 
@@ -67,6 +113,11 @@ void AInteractableDoor::BeginPlay()
 	{
 		// 초기 복제가 BeginPlay보다 먼저 도착한 경우에도 서버의 이동 기준점을 적용한다.
 		ApplyReplicatedDoorMotion(ReplicatedDoorMotion);
+	}
+	// RepNotify가 BeginPlay보다 먼저 실행돼도 BP에서 설정한 원래 충돌을 먼저 보관한다.
+	if (bPresentationOnly)
+	{
+		ApplyPresentationOnly();
 	}
 
 	if (HasAuthority())
@@ -120,7 +171,7 @@ void AInteractableDoor::Tick(float DeltaTime)
 
 bool AInteractableDoor::TrySafetyReopen()
 {
-	if (!HasAuthority() || bIsOpen || !DoorTimeline.IsPlaying() || !HasBlockingPlayer())
+	if (!HasAuthority() || bPresentationOnly || bIsOpen || !DoorTimeline.IsPlaying() || !HasBlockingPlayer())
 	{
 		return false;
 	}
@@ -168,6 +219,78 @@ bool AInteractableDoor::HasMovementCurve() const
 	return EndTime > StartTime;
 }
 
+bool AInteractableDoor::IsDoorMoving() const
+{
+	return bDoorInitialized ? DoorTimeline.IsPlaying() : ReplicatedDoorMotion.bMoving;
+}
+
+bool AInteractableDoor::SetPresentationOnly(bool bNewPresentationOnly)
+{
+	if (!HasAuthority() || !bDoorInitialized)
+	{
+		return false;
+	}
+	if (bPresentationOnly == bNewPresentationOnly)
+	{
+		return true;
+	}
+	// 닫힘 요청만 승인된 시점에는 충돌을 넘기지 않는다. 안전 반전 중에도 진입할 수 없다.
+	if (bNewPresentationOnly && (bIsOpen || IsDoorMoving()))
+	{
+		return false;
+	}
+	bPresentationOnly = bNewPresentationOnly;
+	ApplyPresentationOnly();
+	ForceNetUpdate();
+	return true;
+}
+
+void AInteractableDoor::ResetToInitialState()
+{
+	if (!HasAuthority() || !bDoorInitialized)
+	{
+		return;
+	}
+	// 재시도는 새 문 조작이 아니다. 충돌과 배치를 복원하되 완료/사운드/진행 기록은 만들지 않는다.
+	SetPresentationOnly(false);
+	SnapDoorState(bInitiallyOpen);
+}
+
+void AInteractableDoor::OnRep_PresentationOnly()
+{
+	if (bDoorInitialized)
+	{
+		ApplyPresentationOnly();
+		if (!HasAuthority() && !bPresentationOnly)
+		{
+			// 재시도 이동 RPC가 외형 전용 해제보다 먼저 도착했으면 여기서 적용한다.
+			ApplyReplicatedDoorMotion(ReplicatedDoorMotion);
+		}
+	}
+}
+
+void AInteractableDoor::ApplyPresentationOnly()
+{
+	if (DoorMeshLeft)
+	{
+		DoorMeshLeft->SetCollisionEnabled(bPresentationOnly ? ECollisionEnabled::NoCollision : InitialLeftCollision);
+	}
+	if (DoorMeshRight)
+	{
+		DoorMeshRight->SetCollisionEnabled(bPresentationOnly ? ECollisionEnabled::NoCollision : InitialRightCollision);
+	}
+	if (bPresentationOnly)
+	{
+		// 속성 복제 순서와 무관하게 이동용 문은 닫힌 외형을 유지한다.
+		bIsOpen = false;
+		bMotionCompletionPending = false;
+		DoorTimeline.Stop();
+		DoorTimeline.SetPlaybackPosition(0.0f, false, false);
+		OnDoorTimelineUpdate(0.0f);
+		SetActorTickEnabled(false);
+	}
+}
+
 void AInteractableDoor::SnapDoorState(bool bOpen)
 {
 	bIsOpen = bOpen;
@@ -212,7 +335,7 @@ void AInteractableDoor::InitializeSafetyRegion(
 bool AInteractableDoor::HasBlockingPlayer() const
 {
 	UWorld* World = GetWorld();
-	if (!HasAuthority() || !World)
+	if (!HasAuthority() || bPresentationOnly || !World)
 	{
 		return false;
 	}
@@ -253,7 +376,7 @@ bool AInteractableDoor::HasBlockingPlayer() const
 
 bool AInteractableDoor::TrySetDoorOpen(bool bOpen)
 {
-	if (!HasAuthority())
+	if (!HasAuthority() || bPresentationOnly)
 	{
 		return false;
 	}
@@ -387,6 +510,13 @@ void AInteractableDoor::ApplyReplicatedDoorMotion(const FDoorMotionState& Incomi
 		return;
 	}
 	// RPC와 속성 복제가 같은 전환을 전달하거나 오래된 전환이 뒤늦게 와도 재시작하지 않는다.
+	if (bPresentationOnly)
+	{
+		// 해제 전에 도착한 재시도 기준점은 보류한다. 뒤늦은 속성 복제가 이를 덮지 않게 한다.
+		PendingInitialDoorMotion = State;
+		ApplyPresentationOnly();
+		return;
+	}
 	LastAppliedMotionRevision = State.Revision;
 	bIsOpen = State.bOpen;
 	DoorTimeline.Stop();
@@ -445,4 +575,5 @@ void AInteractableDoor::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(AInteractableDoor, ReplicatedDoorMotion);
+	DOREPLIFETIME(AInteractableDoor, bPresentationOnly);
 }

@@ -67,6 +67,9 @@ AAutoTurret::AAutoTurret()
 	TurretHeadMesh->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
 	TurretHeadMesh->SetIsReplicated(true);
 
+	// 터렛의 몸통 조준점은 Base가 아니라 회전하는 Head를 따라간다.
+	AutoAimBodyAnchor->SetupAttachment(TurretHeadMesh);
+
 	TurretBlockingBox = CreateDefaultSubobject<UBoxComponent>(TEXT("TurretBlockingBox"));
 	TurretBlockingBox->SetupAttachment(GetRootComponent());
 	TurretBlockingBox->InitBoxExtent(FVector(50.0f));
@@ -1151,7 +1154,7 @@ void AAutoTurret::ApplyExplosionReaction(const FVector& ExplosionOrigin, float E
 	float TurretReactionScale, float EffectRatio)
 {
 	(void)EnemyImpulseScale;
-	if (!HasAuthority() || !IsCombatActive()
+	if (!bEnableImpactReaction || !HasAuthority() || !IsCombatActive()
 		|| EffectRatio <= 0.0f || GetCurrentHealth() <= 0.0f)
 	{
 		return;
