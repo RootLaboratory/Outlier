@@ -10,11 +10,14 @@
 #include "Room/RoomVolume.h"
 #include "Room/RoomTagComponent.h"
 #include "Components/BoxComponent.h"
+#include "Components/AudioComponent.h"
+#include "Curves/CurveFloat.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/ChildActorComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/GameStateBase.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
 #include "Engine/OverlapResult.h"
 #include "CollisionQueryParams.h"
 #include "CollisionShape.h"
@@ -34,6 +37,7 @@ AElevatorShaftController::AElevatorShaftController()
 	PrimaryActorTick.bCanEverTick = true;
 	PrimaryActorTick.bStartWithTickEnabled = false;
 	SetRootComponent(CreateDefaultSubobject<USceneComponent>(TEXT("ShaftOrigin")));
+	RootComponent->SetMobility(EComponentMobility::Movable);
 	EntranceBlocker = CreateDefaultSubobject<UBoxComponent>(TEXT("EntranceBlocker"));
 	EntranceBlocker->SetupAttachment(RootComponent);
 	EntranceBlocker->SetBoxExtent(FVector(30, 150, 150));
@@ -41,12 +45,35 @@ AElevatorShaftController::AElevatorShaftController()
 	EntranceBlocker->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	EntranceBlocker->SetGenerateOverlapEvents(false);
 	EntranceBlocker->SetCanEverAffectNavigation(false);
+	ArrivalBlocker = CreateDefaultSubobject<UBoxComponent>(TEXT("ArrivalBlocker"));
+	ArrivalBlocker->SetupAttachment(RootComponent);
+	ArrivalBlocker->SetBoxExtent(FVector(30, 150, 150));
+	ArrivalBlocker->SetCollisionProfileName(TEXT("BlockAll"));
+	ArrivalBlocker->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	ArrivalBlocker->SetGenerateOverlapEvents(false);
+	ArrivalBlocker->SetCanEverAffectNavigation(false);
 }
 
 void AElevatorShaftController::OnConstruction(const FTransform& Transform)
 {
 	Super::OnConstruction(Transform);
 	ResolveEntranceActors();
+	ResolveArrivalActors();
+	UpdateBlockerVisibility();
+}
+
+void AElevatorShaftController::UpdateBlockerVisibility()
+{
+	EntranceBlocker->ShapeColor = FColor::Orange;
+	ArrivalBlocker->ShapeColor = FColor::Cyan;
+	for (UBoxComponent* Blocker : { EntranceBlocker.Get(), ArrivalBlocker.Get() })
+	{
+		Blocker->bDrawOnlyIfSelected = false;
+		Blocker->SetLineThickness(4.0f);
+		Blocker->SetVisibility(true);
+		Blocker->SetHiddenInGame(!bShowBlockers);
+		Blocker->MarkRenderStateDirty();
+	}
 }
 
 AElevatorShaftSection* AElevatorShaftController::FindEntranceSection() const
@@ -88,13 +115,40 @@ void AElevatorShaftController::ResolveEntranceActors()
 	}
 }
 
+void AElevatorShaftController::ResolveArrivalActors()
+{
+	// 실제 문은 서버 참조를 복제한다. 에디터에서는 Section 지정 즉시 연결 상태를 보여준다.
+	if (!HasAuthority()) return;
+	ArrivalDoor = nullptr;
+	if (ArrivalSection)
+	{
+		ArrivalSection->RefreshChildActors();
+		ArrivalDoor = ArrivalSection->GetEntranceDoor();
+	}
+}
+
 void AElevatorShaftController::BeginPlay()
 {
 	Super::BeginPlay();
+	UpdateBlockerVisibility();
 	// Section은 각 머신의 Child Actor를 사용하고, 실제 문 참조는 서버 복제로도 보완한다.
 	ResolveEntranceActors();
+	ResolveArrivalActors();
 	Clock = GetWorld()->GetGameState();
+	DepartureControllerTransform = GetActorTransform();
+	ControllerSectionOffset = DepartureControllerTransform.GetRelativeTransform(
+		EntranceSection ? EntranceSection->GetActorTransform() : DepartureControllerTransform);
+	// 암전 중에는 바닥/고정 외벽도 함께 옮긴다. 기존 BP에 저장된 Static 설정도 보완한다.
+	TInlineComponentArray<USceneComponent*> SceneComponents;
+	GetComponents(SceneComponents, true);
+	RootComponent->SetMobility(EComponentMobility::Movable);
+	for (USceneComponent* Component : SceneComponents)
+	{
+		Component->SetMobility(EComponentMobility::Movable);
+	}
 	Arena = GetWorld()->GetSubsystem<UOutlierArenaSubsystem>();
+	FString ErrorForProfiles;
+	bProfilesReady = BuildMotionProfiles(ErrorForProfiles);
 	bInitialized = true;
 	if (!HasAuthority())
 	{
@@ -107,6 +161,12 @@ void AElevatorShaftController::BeginPlay()
 	Motion.Generation = Arena.IsValid() ? Arena->GetGameplayGeneration() : 0;
 	Motion.ExecutionId = FGuid::NewGuid();
 	Motion.Speed = RiseSpeed;
+	Motion.AccelerationSeconds = AccelerationDuration;
+	Motion.DecelerationSeconds = DecelerationDuration;
+	if (ArrivalSection)
+	{
+		Motion.ArrivalTransform = ArrivalSection->GetActorTransform();
+	}
 	FString Error;
 	bConfigurationValid = ValidateConfiguration(Error);
 	if (!bConfigurationValid)
@@ -136,7 +196,16 @@ void AElevatorShaftController::BeginPlay()
 void AElevatorShaftController::EndPlay(const EEndPlayReason::Type Reason)
 {
 	GetWorldTimerManager().ClearAllTimersForObject(this);
+	SetControllerAtArrival(false);
+	RollbackPair();
+	if (IsValid(ArrivalSection))
+	{
+		ArrivalSection->SetActorTransform(Motion.ArrivalTransform);
+		ArrivalSection->SetSectionVisible(true);
+	}
+	if (HasAuthority() && IsValid(ArrivalDoor)) ArrivalDoor->SetPresentationOnly(false);
 	ReleaseTransition();
+	StopMotionAudio();
 	if (EntryRoom)
 	{
 		EntryRoom->OnRoomActorOverlapChanged.RemoveAll(this);
@@ -226,6 +295,55 @@ bool AElevatorShaftController::ValidateConfiguration(FString& Error) const
 		|| ShooterExitTarget->GetWorld() != GetWorld() || PartnerExitTarget->GetWorld() != GetWorld())
 	{
 		Error = TEXT("Exit requires distinct role targets in a separate room of the same world.");
+		return false;
+	}
+	if (!ArrivalSection || ArrivalSection == Section || ArrivalSection->GetWorld() != GetWorld()
+		|| ArrivalSection->GetParentActor() || !ArrivalSection->GetActorScale3D().Equals(FVector::OneVector)
+		|| !ArrivalSection->GetActorUpVector().Equals(FVector::UpVector)
+		|| !FMath::IsNearlyEqual(Section->GetSectionHeight(), ArrivalSection->GetSectionHeight()))
+	{
+		Error = TEXT("Arrival Section must be a separate level actor with matching height, unit scale and world +Z up.");
+		return false;
+	}
+	TArray<AActor*> ArrivalActors;
+	ArrivalSection->GetAllChildActors(ArrivalActors, true);
+	const AInteractableDoor* ExitDoor = nullptr;
+	int32 ArrivalDoors = 0;
+	for (const AActor* Actor : ArrivalActors)
+	{
+		if (const AInteractableDoor* Door = Cast<AInteractableDoor>(Actor))
+		{
+			ExitDoor = Door;
+			++ArrivalDoors;
+		}
+	}
+	const FName EffectiveArrivalDoorId = !ArrivalDoorId.IsNone() ? ArrivalDoorId
+		: (ExitDoor ? ExitDoor->DoorId : NAME_None);
+	if (ArrivalDoors != 1 || !ExitDoor || EffectiveArrivalDoorId.IsNone()
+		|| EntranceDoorId.IsNone() || EffectiveArrivalDoorId == EntranceDoorId)
+	{
+		Error = TEXT("Arrival Section requires one door and a non-empty ArrivalDoorId (or door DoorId), distinct from EntranceDoorId.");
+		return false;
+	}
+	for (TActorIterator<AElevatorShaftController> It(GetWorld()); It; ++It)
+	{
+		if (*It != this && It->ArrivalSection == ArrivalSection)
+		{
+			Error = TEXT("Arrival Section must belong to only one Elevator Controller.");
+			return false;
+		}
+	}
+	FElevatorShaftSpeedProfile Acceleration;
+	FElevatorShaftSpeedProfile Deceleration;
+	if (!Acceleration.Build(AccelerationCurve, true, Error) || !Deceleration.Build(DecelerationCurve, false, Error))
+	{
+		return false;
+	}
+	if (!FMath::IsFinite(AccelerationDuration) || AccelerationDuration <= 0
+		|| !FMath::IsFinite(DecelerationDuration) || DecelerationDuration <= 0
+		|| !FMath::IsFinite(ArrivalVisibleDuration) || ArrivalVisibleDuration < 0.1f)
+	{
+		Error = TEXT("Motion durations must be finite and positive; arrival visible duration must be at least 0.1 seconds.");
 		return false;
 	}
 	return true;
@@ -319,6 +437,7 @@ void AElevatorShaftController::EvaluateEntry()
 	}
 	if (GameMode->IsRestoringClearedEncounter(CombatRoomTag))
 	{
+		bRestoreCleared = true;
 		SetEntranceBlocked(true);
 		BeginExit();
 		return;
@@ -521,7 +640,9 @@ void AElevatorShaftController::OnFirstSpawn(FGameplayTag Room, int32 Phase, int3
 	}
 	Motion.StartServerTime = ServerTime();
 	Motion.StoppedDistance = 0;
+	Motion.bStarted = true;
 	SetState(EElevatorShaftState::RisingCombat);
+	UpdateMotionPhase();
 }
 
 void AElevatorShaftController::OnCombatEvent(FGameplayTag Room, ERoomCombatEvent Event, int32 Phase, int32 Generation)
@@ -542,7 +663,10 @@ void AElevatorShaftController::OnCombatEvent(FGameplayTag Room, ERoomCombatEvent
 	if (Event == ERoomCombatEvent::RoomCleared && (Motion.State == EElevatorShaftState::RisingCombat
 		|| Motion.State == EElevatorShaftState::AwaitingSpawn))
 	{
-		BeginExit();
+		// 완료 순간의 한 층 경계만 예약한다. 중복 RoomCleared는 이 상태에 다시 진입하지 않는다.
+		Motion.FinishDistance = FElevatorShaftSpeedProfile::FinishBoundary(CurrentDistance(), EntranceSection->GetSectionHeight());
+		SetState(EElevatorShaftState::FinishingCurrentSection);
+		UpdateMotionPhase();
 	}
 }
 
@@ -567,10 +691,86 @@ double AElevatorShaftController::ServerTime() const
 	return Clock.IsValid() ? Clock->GetServerWorldTimeSeconds() : GetWorld()->GetTimeSeconds();
 }
 
+bool AElevatorShaftController::BuildMotionProfiles(FString& Error)
+{
+	return AccelerationProfile.Build(AccelerationCurve, true, Error)
+		&& DecelerationProfile.Build(DecelerationCurve, false, Error);
+}
+
+double AElevatorShaftController::DepartureDistance(double Elapsed) const
+{
+	const double Time = FMath::Max(0.0, Elapsed);
+	return Motion.Speed * (Motion.AccelerationSeconds * AccelerationProfile.Integral(Time / Motion.AccelerationSeconds)
+		+ FMath::Max(0.0, Time - Motion.AccelerationSeconds));
+}
+
+double AElevatorShaftController::ArrivalTravel(double Elapsed) const
+{
+	const double Time = FMath::Clamp(Elapsed, 0.0, Motion.BrakeStartSeconds + Motion.DecelerationSeconds);
+	if (Time <= Motion.BrakeStartSeconds)
+	{
+		return DepartureDistance(Motion.DepartureElapsed + Time) - DepartureDistance(Motion.DepartureElapsed);
+	}
+	const double BeforeBrake = DepartureDistance(Motion.DepartureElapsed + Motion.BrakeStartSeconds)
+		- DepartureDistance(Motion.DepartureElapsed);
+	return BeforeBrake + Motion.Speed * Motion.DecelerationSeconds
+		* DecelerationProfile.Integral((Time - Motion.BrakeStartSeconds) / Motion.DecelerationSeconds);
+}
+
 double AElevatorShaftController::CurrentDistance() const
 {
-	return Motion.State == EElevatorShaftState::RisingCombat
-		? FMath::Max(0.0, ServerTime() - Motion.StartServerTime) * Motion.Speed : Motion.StoppedDistance;
+	if (Motion.bArrival)
+	{
+		return Motion.bLanded ? Motion.ArrivalDistance
+			: ArrivalTravel(Motion.ArrivalStartTime > 0 ? ServerTime() - Motion.ArrivalStartTime : 0);
+	}
+	return Motion.bStarted ? DepartureDistance(ServerTime() - Motion.StartServerTime) : Motion.StoppedDistance;
+}
+
+bool AElevatorShaftController::IsTransitionActive() const
+{
+	return Motion.State == EElevatorShaftState::TransitionOut || Motion.State == EElevatorShaftState::PreparingArrival
+		|| Motion.State == EElevatorShaftState::Arriving || Motion.State == EElevatorShaftState::Decelerating;
+}
+
+void AElevatorShaftController::UpdateMotionPhase()
+{
+	if (!HasAuthority()) return;
+	GetWorldTimerManager().ClearTimer(MotionPhaseTimer);
+	const double Now = ServerTime();
+	if (Motion.State == EElevatorShaftState::FinishingCurrentSection)
+	{
+		if (!Motion.bStarted || CurrentDistance() >= Motion.FinishDistance - UE_DOUBLE_SMALL_NUMBER)
+		{
+			BeginExit();
+			return;
+		}
+		// 거리가 증가하는 적분 프로파일을 역산한다. 서버는 경계 시각에 한 번만 깨어난다.
+		double Low = FMath::Max(0.0, Now - Motion.StartServerTime);
+		double High = Low + EntranceSection->GetSectionHeight() / Motion.Speed + Motion.AccelerationSeconds;
+		for (int32 Index = 0; Index < 48; ++Index)
+		{
+			const double Mid = (Low + High) * 0.5;
+			if (DepartureDistance(Mid) < Motion.FinishDistance) Low = Mid;
+			else High = Mid;
+		}
+		GetWorldTimerManager().SetTimer(MotionPhaseTimer, this, &ThisClass::UpdateMotionPhase,
+			FMath::Max(0.001f, static_cast<float>(Motion.StartServerTime + High - Now)), false);
+	}
+	else if (Motion.State == EElevatorShaftState::Arriving || Motion.State == EElevatorShaftState::Decelerating)
+	{
+		const double Elapsed = Now - Motion.ArrivalStartTime;
+		if (Elapsed >= Motion.BrakeStartSeconds + Motion.DecelerationSeconds)
+		{
+			CompleteLanding();
+			return;
+		}
+		const bool bBraking = Elapsed >= Motion.BrakeStartSeconds;
+		if (bBraking && Motion.State != EElevatorShaftState::Decelerating) SetState(EElevatorShaftState::Decelerating);
+		const double Next = Motion.ArrivalStartTime + Motion.BrakeStartSeconds + (bBraking ? Motion.DecelerationSeconds : 0);
+		GetWorldTimerManager().SetTimer(MotionPhaseTimer, this, &ThisClass::UpdateMotionPhase,
+			FMath::Max(0.001f, static_cast<float>(Next - Now)), false);
+	}
 }
 
 double AElevatorShaftController::CalculateLoopOffset(double Distance, int32 Slot, int32 Count, double Height)
@@ -620,6 +820,40 @@ void AElevatorShaftController::UpdateVisuals()
 		return;
 	}
 	const double Distance = CurrentDistance();
+	if (Motion.bArrival)
+	{
+		if (!ArrivalSection || !ArrivalDoor || (!Motion.bLanded && !ArrivalDoor->IsPresentationOnly())) return;
+		EntranceSection->SetSectionVisible(false);
+		if (EntranceDoor) EntranceDoor->SetActorHiddenInGame(true);
+		FTransform Transform = Motion.ArrivalTransform;
+		Transform.AddToTranslation(FVector(0, 0, Distance - Motion.ArrivalDistance));
+		ArrivalSection->SetActorTransform(Transform, false, nullptr, ETeleportType::TeleportPhysics);
+		ArrivalSection->SetSectionVisible(true);
+		ArrivalDoor->SetActorHiddenInGame(false);
+		const double Height = EntranceSection->GetSectionHeight();
+		for (int32 Index = 0; Index < LoopSections.Num(); ++Index)
+		{
+			// 반복 풀은 입구층 위를 덮는다. 아래에는 새 층을 보충하지 않아 도착 문이 한 번만 나타난다.
+			Transform = Motion.ArrivalTransform;
+			const double Offset = FMath::Fmod(Distance + (Index + 1) * Height, LoopSectionCount * Height) - Height;
+			Transform.AddToTranslation(FVector(0, 0, Offset));
+			const double EntranceTop = Distance - Motion.ArrivalDistance + Height;
+			LoopSections[Index]->SetSectionVisible(Transform.GetLocation().Z - Motion.ArrivalTransform.GetLocation().Z >= EntranceTop - 0.1);
+			LoopSections[Index]->SetActorTransform(Transform, false, nullptr, ETeleportType::TeleportPhysics);
+		}
+		UpdateMotionAudio();
+		return;
+	}
+	// 취소/Reload의 서버 Transform 변경은 시각 전용 Section에 복제되지 않는다.
+	// 출발 좌표계로 돌아온 각 클라이언트도 도착층을 제작된 최종 위치로 복구한다.
+	if (ArrivalSection && Motion.ExecutionId.IsValid())
+	{
+		if (!ArrivalSection->GetActorTransform().Equals(Motion.ArrivalTransform))
+		{
+			ArrivalSection->SetActorTransform(Motion.ArrivalTransform, false, nullptr, ETeleportType::TeleportPhysics);
+		}
+		ArrivalSection->SetSectionVisible(true);
+	}
 	if (Distance > 0 && (!EntranceDoor || !EntranceDoor->IsPresentationOnly()))
 	{
 		// 두 Actor의 복제 순서는 보장되지 않는다. 문 충돌 해제를 받은 뒤에만 세트를 움직인다.
@@ -645,8 +879,10 @@ void AElevatorShaftController::UpdateVisuals()
 	{
 		Transform = Motion.EntranceTransform;
 		Transform.AddToTranslation(FVector(0, 0, CalculateLoopOffset(Distance, Index, LoopSectionCount, Height)));
+		LoopSections[Index]->SetSectionVisible(true);
 		LoopSections[Index]->SetActorTransform(Transform, false, nullptr, ETeleportType::TeleportPhysics);
 	}
+	UpdateMotionAudio();
 }
 
 void AElevatorShaftController::Tick(float DeltaSeconds)
@@ -661,14 +897,38 @@ void AElevatorShaftController::OnRep_Motion()
 	{
 		return;
 	}
-	SetEntranceBlocked(Motion.State >= EElevatorShaftState::Intro);
+	// 위치 복제 대신 같은 상태와 도착층 기준으로 서버/클라이언트의 전체 구조물을 맞춘다.
+	SetControllerAtArrival(Motion.bArrival);
+	SetEntranceBlocked(Motion.State != EElevatorShaftState::WaitingForPair && Motion.State != EElevatorShaftState::ClosingEntrance);
+	ArrivalBlocker->SetCollisionEnabled(IsTransitionActive() ? ECollisionEnabled::QueryAndPhysics : ECollisionEnabled::NoCollision);
+	// 상태 적용 직후 두 고정 장벽을 함께 기록해, 별도 RoomCombatBarrier와 구분한다.
+	for (const UBoxComponent* Blocker : { EntranceBlocker.Get(), ArrivalBlocker.Get() })
+	{
+		UE_LOG(LogElevatorShaft, Log,
+			TEXT("[ElevatorBlocker] World=%s Authority=%d NetMode=%d State=%s Component=%s Collision=%s ActorCollision=%d PawnResponse=%s Location=%s"),
+			*GetNameSafe(GetWorld()), HasAuthority(), static_cast<int32>(GetNetMode()),
+			*UEnum::GetValueAsString(Motion.State), *Blocker->GetPathName(),
+			*UEnum::GetValueAsString(Blocker->GetCollisionEnabled()), GetActorEnableCollision(),
+			*UEnum::GetValueAsString(Blocker->GetCollisionResponseToChannel(ECC_Pawn)),
+			*Blocker->GetComponentLocation().ToString());
+	}
+	if (PresentationExecutionId != Motion.ExecutionId)
+	{
+		StopMotionAudio();
+		PresentationExecutionId = Motion.ExecutionId;
+		PresentedSegments = 0;
+	}
 	if (GetNetMode() != NM_DedicatedServer)
 	{
 		InitializeVisualPool();
 		UpdateVisuals();
 	}
 	// 매 프레임 필요한 것은 시각 위치 계산뿐이다. 게임플레이는 이벤트/타이머로만 진행한다.
-	SetActorTickEnabled(GetNetMode() != NM_DedicatedServer && Motion.State == EElevatorShaftState::RisingCombat);
+	SetActorTickEnabled(GetNetMode() != NM_DedicatedServer && bProfilesReady
+		&& (Motion.State == EElevatorShaftState::RisingCombat || Motion.State == EElevatorShaftState::FinishingCurrentSection
+			|| Motion.State == EElevatorShaftState::TransitionOut || Motion.State == EElevatorShaftState::Arriving
+			|| Motion.State == EElevatorShaftState::Decelerating));
+	if (Motion.bLanded || Motion.State == EElevatorShaftState::WaitingForPair) StopMotionAudio();
 	ShaftStateChanged(Motion.State);
 }
 
@@ -688,7 +948,25 @@ void AElevatorShaftController::ResetExecution(uint32 Generation)
 	GetWorldTimerManager().ClearTimer(FadeMinimumTimer);
 	GetWorldTimerManager().ClearTimer(EntryCheckTimer);
 	GetWorldTimerManager().ClearTimer(VisualReadyTimer);
+	GetWorldTimerManager().ClearTimer(MotionPhaseTimer);
+	SetControllerAtArrival(false);
+	RollbackPair();
 	ReleaseTransition();
+	StopMotionAudio();
+	Motion.bStarted = false;
+	Motion.bArrival = false;
+	Motion.bLanded = false;
+	Motion.ArrivalStartTime = 0;
+	Motion.ArrivalDistance = 0;
+	Motion.FinishDistance = 0;
+	bRestoreCleared = false;
+	bPairTeleported = false;
+	if (ArrivalSection)
+	{
+		ArrivalSection->SetActorTransform(Motion.ArrivalTransform);
+		ArrivalSection->SetSectionVisible(true);
+	}
+	if (ArrivalDoor) ArrivalDoor->ResetToInitialState();
 	Motion.ExecutionId = FGuid::NewGuid();
 	Motion.Generation = Generation;
 	Motion.StartServerTime = 0;
@@ -716,8 +994,28 @@ void AElevatorShaftController::BeginExit()
 	{
 		return;
 	}
-	Motion.StoppedDistance = CurrentDistance();
+	const FGuid Execution = Motion.ExecutionId;
 	SetState(EElevatorShaftState::TransitionOut);
+	if (Motion.ExecutionId != Execution || Motion.State != EElevatorShaftState::TransitionOut) return;
+	if (!ArrivalDoor || !Combat.IsValid() || !Combat->AcquireRoomStartHold(ExitRoom->GetRoomTag(), Motion.ExecutionId, this))
+	{
+		RetryExit();
+		return;
+	}
+	if (!ArrivalDoor->IsPresentationOnly())
+	{
+		if (ArrivalDoor->IsDoorOpen() || ArrivalDoor->IsDoorMoving())
+		{
+			ArrivalDoor->TrySetDoorOpen(false);
+			RetryExit();
+			return;
+		}
+		if (!ArrivalDoor->SetPresentationOnly(true))
+		{
+			RetryExit();
+			return;
+		}
+	}
 	if (!GameMode.IsValid() || GameMode->IsGameOverSelectionActive()
 		|| !GameMode->IsPairGameplayReady() || !CachePair())
 	{
@@ -776,8 +1074,10 @@ void AElevatorShaftController::RequestFade(bool bReveal)
 void AElevatorShaftController::NotifyClientFadeFinished(AFirstPersonPlayerController* Player,
 	const FGuid& ExecutionId, bool bReveal)
 {
-	if (!HasAuthority() || Motion.State != EElevatorShaftState::TransitionOut
+	if (!HasAuthority() || !IsValid(Player) || !IsTransitionActive()
 		|| !InputBlockId.IsValid() || ExecutionId != Motion.ExecutionId || bReveal != bRevealRequested
+		|| (!bReveal && Motion.State != EElevatorShaftState::TransitionOut)
+		|| (bReveal && Motion.State != EElevatorShaftState::Arriving && Motion.State != EElevatorShaftState::Decelerating)
 		|| (Arena.IsValid() && Arena->GetGameplayGeneration() != Motion.Generation))
 	{
 		return;
@@ -811,7 +1111,9 @@ void AElevatorShaftController::NotifyClientFadeFinished(AFirstPersonPlayerContro
 
 void AElevatorShaftController::FinishFadeWhenReady()
 {
-	if (Motion.State != EElevatorShaftState::TransitionOut || !InputBlockId.IsValid()
+	if (!IsTransitionActive() || !InputBlockId.IsValid()
+		|| (!bRevealRequested && Motion.State != EElevatorShaftState::TransitionOut)
+		|| (bRevealRequested && Motion.State != EElevatorShaftState::Arriving && Motion.State != EElevatorShaftState::Decelerating)
 		|| !bShooterFadeReady || !bPartnerFadeReady)
 	{
 		return;
@@ -834,7 +1136,7 @@ void AElevatorShaftController::FinishFadeWhenReady()
 	GetWorldTimerManager().ClearTimer(FadeMinimumTimer);
 	if (bRevealRequested)
 	{
-		FinishExit();
+		if (Motion.bLanded) FinishExit();
 	}
 	else
 	{
@@ -901,6 +1203,10 @@ void AElevatorShaftController::TryTeleportPair()
 	const FTransform PartnerTarget = PartnerExitTarget->GetActorTransform();
 	const float Separation = Shooter->GetCapsuleComponent()->GetScaledCapsuleRadius()
 		+ Partner->GetCapsuleComponent()->GetScaledCapsuleRadius();
+	// 전체 구조물을 먼저 옮겨 바닥/외벽이 도착한 실제 충돌 환경에서 목적지를 검사한다.
+	Shooter->SetBase(nullptr);
+	Partner->SetBase(nullptr);
+	SetControllerAtArrival(true);
 	// 양쪽을 모두 검사해 한쪽 실패가 다른 쪽의 진단을 가리지 않게 한다.
 	const bool bShooterExitValid = ValidateExit(Shooter, ShooterTarget);
 	const bool bPartnerExitValid = ValidateExit(Partner, PartnerTarget);
@@ -916,10 +1222,10 @@ void AElevatorShaftController::TryTeleportPair()
 		AbortTransition();
 		return;
 	}
-	const FTransform PreviousShooter = Shooter->GetActorTransform();
-	const FTransform PreviousPartner = Partner->GetActorTransform();
-	const FRotator PreviousShooterView = ShooterController->GetControlRotation();
-	const FRotator PreviousPartnerView = PartnerController->GetControlRotation();
+	PreviousShooterTransform = Shooter->GetActorTransform();
+	PreviousPartnerTransform = Partner->GetActorTransform();
+	PreviousShooterView = ShooterController->GetControlRotation();
+	PreviousPartnerView = PartnerController->GetControlRotation();
 	// 두 목적지를 먼저 검증하고 실제 이동도 모두 성공한 경우에만 Room/화면 전환을 확정한다.
 	const bool bShooterMoved = Shooter->TeleportTo(ShooterTarget.GetLocation(), ShooterTarget.Rotator());
 	const bool bPartnerMoved = bShooterMoved && Partner->TeleportTo(PartnerTarget.GetLocation(), PartnerTarget.Rotator());
@@ -927,8 +1233,9 @@ void AElevatorShaftController::TryTeleportPair()
 		|| !ExitRoom->ContainsWorldLocation(Shooter->GetActorLocation())
 		|| !ExitRoom->ContainsWorldLocation(Partner->GetActorLocation()))
 	{
-		Shooter->TeleportTo(PreviousShooter.GetLocation(), PreviousShooter.Rotator(), false, true);
-		Partner->TeleportTo(PreviousPartner.GetLocation(), PreviousPartner.Rotator(), false, true);
+		SetControllerAtArrival(false);
+		Shooter->TeleportTo(PreviousShooterTransform.GetLocation(), PreviousShooterTransform.Rotator(), false, true);
+		Partner->TeleportTo(PreviousPartnerTransform.GetLocation(), PreviousPartnerTransform.Rotator(), false, true);
 		ShooterController->SetControlRotation(PreviousShooterView);
 		PartnerController->SetControlRotation(PreviousPartnerView);
 		if (EntryRoom)
@@ -953,18 +1260,198 @@ void AElevatorShaftController::TryTeleportPair()
 		}
 		Pawns[Index]->ForceNetUpdate();
 	}
+	bPairTeleported = true;
 	ExitRoom->RefreshOverlappingRoomAssignments();
-	RequestFade(true);
+	PrepareArrival();
+}
+
+void AElevatorShaftController::SetControllerAtArrival(bool bArrival)
+{
+	if (bControllerAtArrival == bArrival) return;
+	bControllerAtArrival = bArrival;
+	// Section과 Controller의 원점이 달라도 제작 당시 상대 배치를 보존한다.
+	const FTransform Target = bArrival
+		? ControllerSectionOffset * Motion.ArrivalTransform : DepartureControllerTransform;
+	SetActorTransform(Target, false, nullptr, ETeleportType::TeleportPhysics);
+	UE_LOG(LogElevatorShaft, Log, TEXT("[ElevatorTransport] World=%s Authority=%d Arrival=%d Location=%s Rotation=%s"),
+		*GetNameSafe(GetWorld()), HasAuthority(), bArrival, *GetActorLocation().ToString(), *GetActorRotation().ToString());
+}
+
+void AElevatorShaftController::PrepareArrival()
+{
+	// 완전 암전 이후에만 풀의 좌표계를 바꾼다. 숨겨진 준비 시간에는 진입 속도를 보관한다.
+	Motion.DepartureElapsed = Motion.bStarted ? FMath::Max(0.0, ServerTime() - Motion.StartServerTime) : Motion.AccelerationSeconds;
+	Motion.bArrival = true;
+	Motion.bLanded = bRestoreCleared;
+	Motion.ArrivalStartTime = 0;
+	const double RemainingAcceleration = FMath::Max(0.0, Motion.AccelerationSeconds - Motion.DepartureElapsed);
+	const double AccelerationDistance = DepartureDistance(Motion.DepartureElapsed + RemainingAcceleration)
+		- DepartureDistance(Motion.DepartureElapsed);
+	const double BrakeDistance = Motion.Speed * Motion.DecelerationSeconds * DecelerationProfile.TotalIntegral();
+	const double Height = EntranceSection->GetSectionHeight();
+	// Fade In이 끝난 후에도 움직임이 보이도록 확보하고, 필요한 만큼 정수 층 아래에서 출발한다.
+	const double Required = AccelerationDistance + BrakeDistance + Motion.Speed * (FadeInDuration + ArrivalVisibleDuration);
+	Motion.ArrivalDistance = FMath::Max(1.0, FMath::CeilToDouble(Required / Height)) * Height;
+	Motion.BrakeStartSeconds = RemainingAcceleration
+		+ (Motion.ArrivalDistance - AccelerationDistance - BrakeDistance) / Motion.Speed;
+	bShooterArrivalReady = false;
+	bPartnerArrivalReady = false;
+	const FGuid Execution = Motion.ExecutionId;
+	SetState(EElevatorShaftState::PreparingArrival);
+	if (Motion.ExecutionId != Execution || Motion.State != EElevatorShaftState::PreparingArrival) return;
+	GetWorldTimerManager().SetTimer(FadeTimeoutTimer, this, &ThisClass::AbortTransition, TransitionTimeout, false);
+	ShooterController->SendElevatorArrivalPreparationFromServer(this, Execution);
+	if (Motion.ExecutionId == Execution && Motion.State == EElevatorShaftState::PreparingArrival)
+	{
+		PartnerController->SendElevatorArrivalPreparationFromServer(this, Execution);
+	}
+}
+
+bool AElevatorShaftController::IsArrivalPawnReady(const APawn* Pawn) const
+{
+	return IsValid(Pawn) && ExitRoom && Pawn->GetWorld() == GetWorld()
+		&& ExitRoom->ContainsWorldLocation(Pawn->GetActorLocation());
+}
+
+bool AElevatorShaftController::AreArrivalVisualsReady(const FGuid& ExecutionId)
+{
+	if (!Clock.IsValid()) Clock = GetWorld()->GetGameState();
+	if (!bInitialized || !bProfilesReady || Motion.ExecutionId != ExecutionId
+		|| Motion.State != EElevatorShaftState::PreparingArrival || !Motion.bArrival
+		|| !ArrivalSection || !ArrivalDoor || !EntranceSection || !EntranceDoor
+		|| !ArrivalDoor->IsPresentationOnly() || !Clock.IsValid()) return false;
+	InitializeVisualPool();
+	if (LoopSections.Num() != LoopSectionCount) return false;
+	UpdateVisuals();
+	return true;
+}
+
+void AElevatorShaftController::NotifyClientArrivalReady(AFirstPersonPlayerController* Player, const FGuid& ExecutionId)
+{
+	if (!HasAuthority() || !IsValid(Player) || Motion.State != EElevatorShaftState::PreparingArrival
+		|| Motion.ExecutionId != ExecutionId || !InputBlockId.IsValid()
+		|| (Arena.IsValid() && Arena->GetGameplayGeneration() != Motion.Generation)) return;
+	if (Player == ShooterController.Get()) bShooterArrivalReady = true;
+	else if (Player == PartnerController.Get()) bPartnerArrivalReady = true;
+	else return;
+	if (bShooterArrivalReady && bPartnerArrivalReady) StartArrival();
+}
+
+void AElevatorShaftController::StartArrival()
+{
+	if (!BlockedShooter.IsValid() || !BlockedPartner.IsValid() || !GameMode.IsValid()
+		|| !ShooterController.IsValid() || !PartnerController.IsValid()
+		|| !GameMode->IsPairGameplayReady() || GameMode->IsGameOverSelectionActive()
+		|| ShooterController->GetPawn() != BlockedShooter.Get() || PartnerController->GetPawn() != BlockedPartner.Get())
+	{
+		AbortTransition();
+		return;
+	}
+	GetWorldTimerManager().ClearTimer(FadeTimeoutTimer);
+	Motion.ArrivalStartTime = ServerTime() + 0.25;
+	bRevealRequested = true;
+	bShooterFadeReady = false;
+	bPartnerFadeReady = false;
+	FadeRequestTime = Motion.ArrivalStartTime;
+	const FGuid Execution = Motion.ExecutionId;
+	SetState(EElevatorShaftState::Arriving);
+	if (Motion.ExecutionId != Execution || Motion.State != EElevatorShaftState::Arriving) return;
+	// 암전 응답 타임아웃은 화면 복구에만 적용한다. 정상 착층 시간과 독립적으로 관리한다.
+	GetWorldTimerManager().SetTimer(FadeTimeoutTimer, this, &ThisClass::AbortTransition,
+		FMath::Max(TransitionTimeout, FadeInDuration + 2.f) + 0.25f, false);
+	ShooterController->SendElevatorScheduledRevealFromServer(this, Motion.ExecutionId, Motion.ArrivalStartTime, FadeInDuration);
+	PartnerController->SendElevatorScheduledRevealFromServer(this, Motion.ExecutionId, Motion.ArrivalStartTime, FadeInDuration);
+	if (!Motion.bLanded) UpdateMotionPhase();
+}
+
+void AElevatorShaftController::CompleteLanding()
+{
+	if (!HasAuthority() || !Motion.bArrival
+		|| (Motion.State != EElevatorShaftState::Arriving && Motion.State != EElevatorShaftState::Decelerating)) return;
+	const FGuid Execution = Motion.ExecutionId;
+	Motion.bLanded = true;
+	OnRep_Motion();
+	if (Motion.ExecutionId != Execution || !Motion.bLanded) return;
+	ForceNetUpdate();
+	// 화면 복구 이후 착층을 기다리는 동안에도 전멸/리로드/페어 교체가 발생할 수 있다.
+	if (bShooterFadeReady && bPartnerFadeReady) FinishFadeWhenReady();
+}
+
+void AElevatorShaftController::RegisterMotionAudioComponent(UAudioComponent* Component)
+{
+	if (GetNetMode() != NM_DedicatedServer && IsValid(Component) && Component->GetWorld() == GetWorld()
+		&& PresentationExecutionId == Motion.ExecutionId && PresentedSegments != 0 && !Motion.bLanded)
+	{
+		MotionAudioComponents.AddUnique(Component);
+	}
+}
+
+void AElevatorShaftController::StopMotionAudio()
+{
+	for (const TWeakObjectPtr<UAudioComponent>& Component : MotionAudioComponents)
+	{
+		if (Component.IsValid()) Component->Stop();
+	}
+	MotionAudioComponents.Reset();
+	if (PresentedSegments != 0 && PresentationExecutionId.IsValid())
+	{
+		// 먼저 비워 BP 종료 이벤트의 재진입에도 같은 실행을 두 번 정리하지 않는다.
+		PresentedSegments = 0;
+		MotionPresentationStopped(PresentationExecutionId);
+	}
+}
+
+void AElevatorShaftController::UpdateMotionAudio()
+{
+	if (GetNetMode() == NM_DedicatedServer || !bProfilesReady || !Motion.bStarted
+		|| Motion.bLanded || bRestoreCleared || Motion.State == EElevatorShaftState::PreparingArrival) return;
+	const double Now = ServerTime();
+	if (Motion.bArrival && Now < Motion.ArrivalStartTime) return;
+	const double ArrivalElapsed = Motion.bArrival ? Now - Motion.ArrivalStartTime : 0;
+	const double Elapsed = Motion.bArrival ? Motion.DepartureElapsed + ArrivalElapsed : Now - Motion.StartServerTime;
+	int32 Segment = Elapsed < Motion.AccelerationSeconds ? 1 : 2;
+	double Start = Segment == 1 ? Motion.StartServerTime : Motion.StartServerTime + Motion.AccelerationSeconds;
+	if (Motion.bArrival)
+	{
+		if (ArrivalElapsed >= Motion.BrakeStartSeconds)
+		{
+			Segment = 3;
+			Start = Motion.ArrivalStartTime + Motion.BrakeStartSeconds;
+		}
+		else
+		{
+			Start = Motion.ArrivalStartTime + (Segment == 1 ? -Motion.DepartureElapsed
+				: Motion.AccelerationSeconds - Motion.DepartureElapsed);
+		}
+	}
+	const uint8 Bit = static_cast<uint8>(1 << Segment);
+	if ((PresentedSegments & Bit) != 0) return;
+	// 건너뛴 구간도 처리됨으로 기록하여 큰 시각 보정 뒤 과거 시작음을 몰아 재생하지 않는다.
+	PresentedSegments |= static_cast<uint8>((1 << (Segment + 1)) - 2);
+	const double SegmentElapsed = FMath::Max(0.0, Now - Start);
+	if (Segment == 1) OnAccelerationStarted(Motion.ExecutionId, Segment, Start, SegmentElapsed);
+	else if (Segment == 2) OnCruiseStarted(Motion.ExecutionId, Segment, Start, SegmentElapsed);
+	else OnDecelerationStarted(Motion.ExecutionId, Segment, Start, SegmentElapsed);
 }
 
 void AElevatorShaftController::FinishExit()
 {
-	ReleaseTransition();
+	if (!HasAuthority() || !InputBlockId.IsValid() || !Motion.bLanded
+		|| !bShooterFadeReady || !bPartnerFadeReady || !IsTransitionActive()) return;
+	const FGuid Execution = Motion.ExecutionId;
+	if (!ArrivalDoor || !ArrivalDoor->SetPresentationOnly(false) || !ArrivalDoor->TrySetDoorOpen(true))
+	{
+		AbortTransition();
+		return;
+	}
+	bPairTeleported = false;
 	SetState(EElevatorShaftState::Completed);
+	if (Motion.ExecutionId == Execution && Motion.State == EElevatorShaftState::Completed) ReleaseTransition();
 }
 
 void AElevatorShaftController::ReleaseTransition()
 {
+	const FGuid ReleasedExecution = Motion.ExecutionId;
 	const FGuid PreviousBlockId = InputBlockId;
 	InputBlockId.Invalidate();
 	AFirstPersonCharacter* Pawns[] = {BlockedShooter.Get(), BlockedPartner.Get()};
@@ -986,30 +1473,58 @@ void AElevatorShaftController::ReleaseTransition()
 		{
 			continue;
 		}
-		Player->ClearElevatorFadeFromServer(this, Motion.ExecutionId);
+		Player->ClearElevatorFadeFromServer(this, ReleasedExecution);
 	}
+	if (Combat.IsValid()) Combat->ReleaseRoomStartHold(ReleasedExecution);
+}
+
+void AElevatorShaftController::RollbackPair()
+{
+	// 도착 뒤 실패도 성공으로 바꾸지 않는다. 페어와 시각 좌표계를 함께 출발 공간으로 되돌린다.
+	if (bPairTeleported)
+	{
+		AFirstPersonCharacter* Pawns[] = {BlockedShooter.Get(), BlockedPartner.Get()};
+		const FTransform Transforms[] = {PreviousShooterTransform, PreviousPartnerTransform};
+		AFirstPersonPlayerController* Players[] = {ShooterController.Get(), PartnerController.Get()};
+		const FRotator Views[] = {PreviousShooterView, PreviousPartnerView};
+		for (int32 Index = 0; Index < 2; ++Index)
+		{
+			if (Pawns[Index])
+			{
+				Pawns[Index]->TeleportTo(Transforms[Index].GetLocation(), Transforms[Index].Rotator(), false, true);
+				Pawns[Index]->GetCharacterMovement()->StopMovementImmediately();
+				if (URoomTagComponent* Room = Pawns[Index]->GetRoomTagComp()) Room->ClearRuntimeRoomAssignment();
+			}
+			if (Players[Index] && Pawns[Index] && Players[Index]->GetPawn() == Pawns[Index])
+			{
+				Players[Index]->SetControlRotation(Views[Index]);
+				Players[Index]->ClientSetRotation(Views[Index], true);
+			}
+		}
+		if (EntryRoom) EntryRoom->RefreshOverlappingRoomAssignments();
+		if (ExitRoom) ExitRoom->RefreshOverlappingRoomAssignments();
+	}
+	bPairTeleported = false;
 }
 
 void AElevatorShaftController::AbortTransition()
 {
-	if (!HasAuthority() || Motion.State != EElevatorShaftState::TransitionOut)
-	{
-		return;
-	}
+	if (!HasAuthority() || !IsTransitionActive()) return;
 	GetWorldTimerManager().ClearTimer(FadeTimeoutTimer);
 	GetWorldTimerManager().ClearTimer(FadeMinimumTimer);
-	const bool bAlreadyMoved = bRevealRequested;
+	GetWorldTimerManager().ClearTimer(MotionPhaseTimer);
+	SetControllerAtArrival(false);
+	RollbackPair();
 	ReleaseTransition();
+	StopMotionAudio();
 	Motion.ExecutionId = FGuid::NewGuid();
-	if (bAlreadyMoved)
-	{
-		// 이동이 끝난 뒤 화면 응답이 끊기면 잠금을 풀고 정리한다. 같은 출구 이동을 중복 실행하지 않는다.
-		SetState(EElevatorShaftState::Completed);
-	}
-	else
-	{
-		RetryExit();
-	}
+	Motion.bArrival = false;
+	Motion.bLanded = false;
+	Motion.ArrivalStartTime = 0;
+	if (ArrivalSection) ArrivalSection->SetActorTransform(Motion.ArrivalTransform);
+	if (ArrivalDoor) ArrivalDoor->SetPresentationOnly(false);
+	SetState(EElevatorShaftState::TransitionOut);
+	RetryExit();
 }
 
 void AElevatorShaftController::RetryExit()
@@ -1026,6 +1541,8 @@ void AElevatorShaftController::GetLifetimeReplicatedProps(TArray<FLifetimeProper
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(AElevatorShaftController, Motion);
 	DOREPLIFETIME(AElevatorShaftController, EntranceDoor);
+	DOREPLIFETIME(AElevatorShaftController, ArrivalSection);
+	DOREPLIFETIME(AElevatorShaftController, ArrivalDoor);
 }
 
 #if WITH_EDITOR

@@ -13,6 +13,8 @@
 #include "Outlier.h"
 #include "Save/OutlierSaveSubSystem.h"
 #include "Level/Elevator/ElevatorShaftController.h"
+#include "Level/Elevator/ElevatorShaftSection.h"
+#include "EngineUtils.h"
 
 AInteractableDoor::AInteractableDoor()
 {
@@ -45,13 +47,42 @@ void AInteractableDoor::BeginPlay()
 {
 	if (HasAuthority())
 	{
+		const AElevatorShaftSection* Section = nullptr;
+		bool bEntranceDoor = false;
 		// 부모 BeginPlay보다 먼저 문이 등록될 수 있으므로, 문이 직접 Controller 인스턴스의 ID를 읽는다.
 		for (AActor* Parent = GetParentActor(); Parent; Parent = Parent->GetParentActor())
 		{
+			if (const AElevatorShaftSection* ParentSection = Cast<AElevatorShaftSection>(Parent)) Section = ParentSection;
 			if (const AElevatorShaftController* Controller = Cast<AElevatorShaftController>(Parent))
 			{
 				DoorId = Controller->EntranceDoorId;
+				bEntranceDoor = true;
 				break;
+			}
+		}
+		if (Section && !bEntranceDoor)
+		{
+			// 도착층은 Controller의 자식이 아니다. 초기 등록 시 한 번만 역참조해 BeginPlay 순서를 피한다.
+			const AElevatorShaftController* ArrivalController = nullptr;
+			bool bAmbiguous = false;
+			for (TActorIterator<AElevatorShaftController> It(GetWorld()); It; ++It)
+			{
+				if (It->ArrivalSection != Section) continue;
+				if (ArrivalController)
+				{
+					bAmbiguous = true;
+					break;
+				}
+				ArrivalController = *It;
+			}
+			if (bAmbiguous)
+			{
+				// 잘못 연결된 두 Controller 중 하나의 저장 키를 임의로 선택하지 않는다.
+				DoorId = NAME_None;
+			}
+			else if (ArrivalController && !ArrivalController->ArrivalDoorId.IsNone())
+			{
+				DoorId = ArrivalController->ArrivalDoorId;
 			}
 		}
 	}

@@ -3,6 +3,8 @@
 #include "Components/LightComponent.h"
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Interaction/InteractableDoor.h"
+#include "Room/RoomCombatBarrier.h"
 
 AElevatorShaftWall::AElevatorShaftWall()
 {
@@ -33,11 +35,24 @@ void AElevatorShaftWall::ApplyPresentationDefaults()
 		return;
 	}
 
-	// 자식 액터까지 순회하면 실제 문짝과 안전 영역이 시각용 설정으로 덮인다.
+	// 메시/라이트가 Child Actor 안에 있어도 시각용 설정을 적용한다.
 	TInlineComponentArray<USceneComponent*> Components;
-	GetComponents(Components, false);
+	GetComponents(Components, true);
 	for (USceneComponent* Component : Components)
 	{
+		// 문과 전투 차단막의 하위 액터도 포함해 게임플레이 충돌은 건드리지 않는다.
+		bool bGameplayComponent = false;
+		for (AActor* ComponentActor = Component->GetOwner(); ComponentActor && ComponentActor != this;
+			ComponentActor = ComponentActor->GetParentActor())
+		{
+			if (ComponentActor->IsA<AInteractableDoor>() || ComponentActor->IsA<ARoomCombatBarrier>())
+			{
+				bGameplayComponent = true;
+				break;
+			}
+		}
+		if (bGameplayComponent) continue;
+
 		Component->SetMobility(EComponentMobility::Movable);
 		if (UStaticMeshComponent* Mesh = Cast<UStaticMeshComponent>(Component))
 		{

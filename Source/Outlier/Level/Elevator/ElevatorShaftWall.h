@@ -22,7 +22,7 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Elevator|Wall")
 	TObjectPtr<USceneComponent> SceneRoot;
 
-	// Harvest로 가져온 이 액터 소유의 시각 컴포넌트에만 적용한다. Child Actor의 문 충돌은 유지한다.
+	// 중첩 Child Actor의 메시/라이트까지 적용하되, 문과 전투 차단막 계층은 제외한다.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Elevator|Wall")
 	bool bApplyPresentationDefaults = true;
 

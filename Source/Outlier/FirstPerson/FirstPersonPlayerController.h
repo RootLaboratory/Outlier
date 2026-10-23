@@ -26,6 +26,7 @@ class UGameOverWidget;
 class UGameOverPendingWidget;
 class UWidget;
 class AActor;
+class AGameStateBase;
 class AShooterCharacter;
 class ATuto_EventTriggerVolume;
 class AElevatorShaftController;
@@ -118,6 +119,9 @@ public:
 	// 서버 요청을 소유 클라이언트의 실제 암전 완료 콜백과 연결한다.
 	void SendElevatorFadeFromServer(AElevatorShaftController* Shaft, const FGuid& ExecutionId,
 		bool bReveal, float Duration);
+	void SendElevatorArrivalPreparationFromServer(AElevatorShaftController* Shaft, const FGuid& ExecutionId);
+	void SendElevatorScheduledRevealFromServer(AElevatorShaftController* Shaft, const FGuid& ExecutionId,
+		double StartServerTime, float Duration);
 	void ClearElevatorFadeFromServer(AElevatorShaftController* Shaft, const FGuid& ExecutionId);
 
 	/** Client-owned transport for relevant AtLocation audio requests. */
@@ -399,8 +403,20 @@ private:
 	UFUNCTION(Server, Reliable)
 	void ServerNotifyElevatorFadeFinished(AElevatorShaftController* Shaft, FGuid ExecutionId, bool bReveal);
 
+	UFUNCTION(Client, Reliable)
+	void ClientPrepareElevatorArrival(AElevatorShaftController* Shaft, FGuid ExecutionId);
+
+	UFUNCTION(Server, Reliable)
+	void ServerNotifyElevatorArrivalReady(AElevatorShaftController* Shaft, FGuid ExecutionId);
+
+	UFUNCTION(Client, Reliable)
+	void ClientScheduleElevatorReveal(AElevatorShaftController* Shaft, FGuid ExecutionId,
+		double StartServerTime, float Duration);
+
 	void ApplyLocalElevatorFade(AElevatorShaftController* Shaft, const FGuid& ExecutionId,
 		bool bReveal, float Duration);
+	void PollElevatorArrivalReady(FGuid ExecutionId);
+	void PollElevatorScheduledReveal(FGuid ExecutionId);
 	void HandleElevatorFadeFinished(FGuid ExecutionId, bool bReveal);
 	void ClearLocalElevatorFade();
 	void UnbindElevatorFadeCallbacks();
@@ -411,6 +427,13 @@ private:
 	FGuid LocalElevatorExecutionId;
 	FDelegateHandle ElevatorCoveredHandle;
 	FDelegateHandle ElevatorRevealedHandle;
+	FTimerHandle ElevatorArrivalPollTimer;
+	FTimerHandle ElevatorRevealTimer;
+	TWeakObjectPtr<AGameStateBase> ElevatorServerClock;
+	double ElevatorRevealStartServerTime = 0.0;
+	float ElevatorRevealDuration = 0.0f;
+	bool bLocalElevatorArrivalReadySent = false;
+	bool bLocalElevatorRevealScheduled = false;
 	bool bLocalElevatorRevealing = false;
 	bool bLocalElevatorFadeReadySent = false;
 	bool bElevatorOwnsLookInputBlock = false;

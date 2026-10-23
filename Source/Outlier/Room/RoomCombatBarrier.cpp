@@ -140,15 +140,11 @@ void ARoomCombatBarrier::SetBlocked(bool bNewBlocked)
 	bBlocked = bNewBlocked;
 	ApplyBlockedState();
 	ForceNetUpdate();
-	UE_LOG(LogTemp, Display, TEXT("[RoomCombatBarrier] Server state Room=%s Blocked=%d Actor=%s"),
-		*RoomTag.ToString(), bBlocked, *GetName());
 }
 
 void ARoomCombatBarrier::OnRep_Blocked()
 {
 	ApplyBlockedState();
-	UE_LOG(LogTemp, Display, TEXT("[RoomCombatBarrier] Client state Room=%s Blocked=%d Actor=%s"),
-		*RoomTag.ToString(), bBlocked, *GetName());
 }
 
 void ARoomCombatBarrier::ApplyBlockedState()
@@ -157,4 +153,11 @@ void ARoomCombatBarrier::ApplyBlockedState()
 	VisualPlane->SetHiddenInGame(!bBlocked);
 	BlockingBox->SetCollisionEnabled(bBlocked
 		? ECollisionEnabled::QueryAndPhysics : ECollisionEnabled::NoCollision);
+	UE_LOG(LogTemp, Display,
+		TEXT("[RoomCombatBarrier] World=%s Authority=%d NetMode=%d Room=%s AdditionalRooms=%s Blocked=%d Component=%s Collision=%s ActorCollision=%d PawnResponse=%s Location=%s"),
+		*GetNameSafe(GetWorld()), HasAuthority(), static_cast<int32>(GetNetMode()),
+		*RoomTag.ToString(), *AdditionalRoomTags.ToStringSimple(), bBlocked, *BlockingBox->GetPathName(),
+		*UEnum::GetValueAsString(BlockingBox->GetCollisionEnabled()), GetActorEnableCollision(),
+		*UEnum::GetValueAsString(BlockingBox->GetCollisionResponseToChannel(ECC_Pawn)),
+		*BlockingBox->GetComponentLocation().ToString());
 }

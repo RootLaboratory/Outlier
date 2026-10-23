@@ -1490,6 +1490,110 @@ void AFirstPersonPlayerController::ClearElevatorFadeFromServer(
 	}
 }
 
+void AFirstPersonPlayerController::SendElevatorArrivalPreparationFromServer(
+	AElevatorShaftController* Shaft, const FGuid& ExecutionId)
+{
+	if (!HasAuthority() || IsActorBeingDestroyed() || !IsValid(Shaft)
+		|| Shaft->GetWorld() != GetWorld() || !ExecutionId.IsValid()) return;
+	if (IsLocalController()) ClientPrepareElevatorArrival_Implementation(Shaft, ExecutionId);
+	else ClientPrepareElevatorArrival(Shaft, ExecutionId);
+}
+
+void AFirstPersonPlayerController::ClientPrepareElevatorArrival_Implementation(
+	AElevatorShaftController* Shaft, FGuid ExecutionId)
+{
+	if (!IsLocalController() || !ExecutionId.IsValid() || LocalElevatorExecutionId != ExecutionId
+		|| !IsValid(Shaft) || LocalElevatorShaft.Get() != Shaft || bLocalElevatorRevealing
+		|| !bLocalElevatorFadeReadySent || bLocalElevatorArrivalReadySent
+		|| LocalElevatorFadePawn.Get() != GetPawn()) return;
+
+	// 요청 RPC보다 도착층/이동 상태 복제가 늦을 수 있다. 실제 로컬 준비를 확인할 때까지 암전을 유지한다.
+	GetWorldTimerManager().SetTimer(ElevatorArrivalPollTimer,
+		FTimerDelegate::CreateUObject(this, &AFirstPersonPlayerController::PollElevatorArrivalReady, ExecutionId),
+		0.02f, true);
+	PollElevatorArrivalReady(ExecutionId);
+}
+
+void AFirstPersonPlayerController::PollElevatorArrivalReady(FGuid ExecutionId)
+{
+	AElevatorShaftController* Shaft = LocalElevatorShaft.Get();
+	if (LocalElevatorExecutionId != ExecutionId || !IsValid(Shaft)
+		|| LocalElevatorFadePawn.Get() != GetPawn() || bLocalElevatorRevealing
+		|| bLocalElevatorArrivalReadySent)
+	{
+		GetWorldTimerManager().ClearTimer(ElevatorArrivalPollTimer);
+		return;
+	}
+	// 층 준비와 Pawn의 Teleport 복제는 별도로 도착한다. 둘 다 확인한 뒤에만 화면 복구를 예약한다.
+	if (!Shaft->AreArrivalVisualsReady(ExecutionId) || !Shaft->IsArrivalPawnReady(GetPawn())) return;
+
+	GetWorldTimerManager().ClearTimer(ElevatorArrivalPollTimer);
+	// Listen의 즉시 ACK가 다음 단계에 재진입할 수 있으므로 전송 전에 완료를 기록한다.
+	bLocalElevatorArrivalReadySent = true;
+	if (HasAuthority()) ServerNotifyElevatorArrivalReady_Implementation(Shaft, ExecutionId);
+	else ServerNotifyElevatorArrivalReady(Shaft, ExecutionId);
+}
+
+void AFirstPersonPlayerController::ServerNotifyElevatorArrivalReady_Implementation(
+	AElevatorShaftController* Shaft, FGuid ExecutionId)
+{
+	if (HasAuthority() && IsValid(Shaft) && Shaft->GetWorld() == GetWorld() && ExecutionId.IsValid())
+	{
+		Shaft->NotifyClientArrivalReady(this, ExecutionId);
+	}
+}
+
+void AFirstPersonPlayerController::SendElevatorScheduledRevealFromServer(
+	AElevatorShaftController* Shaft, const FGuid& ExecutionId, double StartServerTime, float Duration)
+{
+	if (!HasAuthority() || IsActorBeingDestroyed() || !IsValid(Shaft)
+		|| Shaft->GetWorld() != GetWorld() || !ExecutionId.IsValid()) return;
+	if (IsLocalController()) ClientScheduleElevatorReveal_Implementation(Shaft, ExecutionId, StartServerTime, Duration);
+	else ClientScheduleElevatorReveal(Shaft, ExecutionId, StartServerTime, Duration);
+}
+
+void AFirstPersonPlayerController::ClientScheduleElevatorReveal_Implementation(
+	AElevatorShaftController* Shaft, FGuid ExecutionId, double StartServerTime, float Duration)
+{
+	if (!IsLocalController() || !ExecutionId.IsValid() || LocalElevatorExecutionId != ExecutionId
+		|| !IsValid(Shaft) || LocalElevatorShaft.Get() != Shaft || bLocalElevatorRevealing
+		|| !bLocalElevatorArrivalReadySent || bLocalElevatorRevealScheduled
+		|| !FMath::IsFinite(StartServerTime) || !FMath::IsFinite(Duration) || Duration < 0.0f
+		|| LocalElevatorFadePawn.Get() != GetPawn()) return;
+
+	ElevatorServerClock = GetWorld()->GetGameState();
+	if (!ElevatorServerClock.IsValid()) return;
+	ElevatorRevealStartServerTime = StartServerTime;
+	ElevatorRevealDuration = Duration;
+	bLocalElevatorRevealScheduled = true;
+	GetWorldTimerManager().SetTimer(ElevatorRevealTimer,
+		FTimerDelegate::CreateUObject(this, &AFirstPersonPlayerController::PollElevatorScheduledReveal, ExecutionId),
+		0.01f, true);
+	PollElevatorScheduledReveal(ExecutionId);
+}
+
+void AFirstPersonPlayerController::PollElevatorScheduledReveal(FGuid ExecutionId)
+{
+	AElevatorShaftController* Shaft = LocalElevatorShaft.Get();
+	const AGameStateBase* Clock = ElevatorServerClock.Get();
+	if (LocalElevatorExecutionId != ExecutionId || !IsValid(Shaft) || !Clock
+		|| LocalElevatorFadePawn.Get() != GetPawn() || bLocalElevatorRevealing)
+	{
+		GetWorldTimerManager().ClearTimer(ElevatorRevealTimer);
+		return;
+	}
+	const double Elapsed = Clock->GetServerWorldTimeSeconds() - ElevatorRevealStartServerTime;
+	if (Elapsed < 0.0) return;
+	// 소유 PC의 RPC가 Shaft 상태 복제보다 먼저 도착할 수 있어 도착 좌표계 전환을 함께 기다린다.
+	const EElevatorShaftState State = Shaft->GetShaftState();
+	if (State != EElevatorShaftState::Arriving && State != EElevatorShaftState::Decelerating) return;
+	// 수신 시각 대신 공통 서버 시각에 맞춘다. 늦게 받은 클라이언트도 복구 종료 시각을 늘리지 않는다.
+	GetWorldTimerManager().ClearTimer(ElevatorRevealTimer);
+	const float RemainingDuration = static_cast<float>(
+		FMath::Max(0.0, static_cast<double>(ElevatorRevealDuration) - Elapsed));
+	ApplyLocalElevatorFade(Shaft, ExecutionId, true, RemainingDuration);
+}
+
 void AFirstPersonPlayerController::ClientSetElevatorFade_Implementation(
 	AElevatorShaftController* Shaft, FGuid ExecutionId, bool bReveal, float Duration)
 {
@@ -1604,6 +1708,13 @@ void AFirstPersonPlayerController::UnbindElevatorFadeCallbacks()
 
 void AFirstPersonPlayerController::ClearLocalElevatorFade()
 {
+	GetWorldTimerManager().ClearTimer(ElevatorArrivalPollTimer);
+	GetWorldTimerManager().ClearTimer(ElevatorRevealTimer);
+	ElevatorServerClock.Reset();
+	ElevatorRevealStartServerTime = 0.0;
+	ElevatorRevealDuration = 0.0f;
+	bLocalElevatorArrivalReadySent = false;
+	bLocalElevatorRevealScheduled = false;
 	if (!LocalElevatorExecutionId.IsValid()) return;
 	LocalElevatorExecutionId.Invalidate();
 	UnbindElevatorFadeCallbacks();
