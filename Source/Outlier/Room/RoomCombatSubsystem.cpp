@@ -166,6 +166,97 @@ bool URoomCombatSubsystem::CanRunServerGameplay() const
 	return World && World->GetNetMode() != NM_Client && !bResettingRuntime;
 }
 
+bool URoomCombatSubsystem::IsRoomStartHeld(FGameplayTag RoomTag) const
+{
+	const FRoomStartHold* Hold = RoomStartHolds.Find(RoomTag);
+	const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
+	return Hold && Hold->Owner.IsValid()
+		&& (!Hold->RoomRegistrationId.IsValid()
+			|| (Runtime && Hold->RoomRegistrationId == Runtime->RegistrationId));
+}
+
+bool URoomCombatSubsystem::AcquireRoomStartHold(
+	FGameplayTag RoomTag, FGuid ExecutionId, UObject* Owner)
+{
+	FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
+	if (!CanRunServerGameplay() || !RoomTag.IsValid() || !ExecutionId.IsValid() || !IsValid(Owner)
+		|| Owner->GetWorld() != GetWorld())
+	{
+		return false;
+	}
+	if (IsRoomStartHeld(RoomTag))
+	{
+		const FRoomStartHold& Hold = RoomStartHolds.FindChecked(RoomTag);
+		return Hold.ExecutionId == ExecutionId && Hold.Owner.Get() == Owner;
+	}
+	// 이미 시작한 Room을 중간 정지시키는 API가 아니다. 진입 전 예약에 실패하면 호출자가 이동을 보류한다.
+	if (Runtime && (Runtime->State == ERoomCombatState::Preparing || Runtime->State == ERoomCombatState::Combat))
+	{
+		return false;
+	}
+	FRoomStartHold& Hold = RoomStartHolds.FindOrAdd(RoomTag);
+	Hold.ExecutionId = ExecutionId;
+	// 전투 정의가 없는 안전 도착 방도 예약한다. 나중에 Room이 등록되면 그 수명에 결합한다.
+	Hold.RoomRegistrationId = Runtime ? Runtime->RegistrationId : FGuid();
+	Hold.Owner = Owner;
+	return true;
+}
+
+void URoomCombatSubsystem::ReleaseRoomStartHold(FGuid ExecutionId)
+{
+	if (!CanRunServerGameplay() || !ExecutionId.IsValid())
+	{
+		return;
+	}
+	// 재평가가 외부 콜백을 실행할 수 있으므로 먼저 예약을 모두 제거하고 등록 수명만 복사한다.
+	TArray<TPair<FGameplayTag, FGuid>> ReleasedRooms;
+	for (auto It = RoomStartHolds.CreateIterator(); It; ++It)
+	{
+		if (It.Value().ExecutionId == ExecutionId)
+		{
+			ReleasedRooms.Emplace(It.Key(), It.Value().RoomRegistrationId);
+			It.RemoveCurrent();
+		}
+	}
+	for (const TPair<FGameplayTag, FGuid>& Room : ReleasedRooms)
+	{
+		ResumeRoomAfterStartHold(Room.Key, Room.Value);
+	}
+}
+
+void URoomCombatSubsystem::ResumeRoomAfterStartHold(FGameplayTag RoomTag, FGuid RegistrationId)
+{
+	const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
+	if (!CanRunServerGameplay() || IsRoomStartHeld(RoomTag) || !Runtime
+		|| Runtime->RegistrationId != RegistrationId || !Runtime->RoomVolume.IsValid())
+	{
+		return;
+	}
+	TryStartRestoredAutomaticPhase(RoomTag);
+	// 각 경로가 델리게이트를 실행할 수 있다. 이전 Runtime 포인터를 다음 시작 요청에 재사용하지 않는다.
+	Runtime = RoomRuntimes.Find(RoomTag);
+	if (!CanRunServerGameplay() || IsRoomStartHeld(RoomTag) || !Runtime
+		|| Runtime->RegistrationId != RegistrationId)
+	{
+		return;
+	}
+	if (IsInitialDetectionPhase(RoomTag, *Runtime))
+	{
+		TryStartInitialDetectionForPlayers(RoomTag);
+	}
+	else
+	{
+		StartAutomaticPhase(RoomTag);
+	}
+	Runtime = RoomRuntimes.Find(RoomTag);
+	if (CanRunServerGameplay() && !IsRoomStartHeld(RoomTag) && Runtime
+		&& Runtime->RegistrationId == RegistrationId)
+	{
+		// 외부 트리거는 보류 중 요청을 재생하지 않고 현재 시작 가능 여부만 다시 알린다.
+		OnRoomStartReadinessChanged.Broadcast(RoomTag);
+	}
+}
+
 bool URoomCombatSubsystem::HasPendingSpawns(FGameplayTag RoomTag) const
 {
 	return PendingSpawnRequests.ContainsByPredicate(
@@ -204,6 +295,10 @@ void URoomCombatSubsystem::StartInitialDetectionCombat(
 	FGameplayTag RoomTag,
 	FRoomCombatRuntime& Runtime)
 {
+	if (IsRoomStartHeld(RoomTag))
+	{
+		return;
+	}
 	// 기존 즉시 시작과 합류 준비 완료가 같은 Wave 시작 경로를 사용한다.
 	Runtime.PreparingAnchorPlayer.Reset();
 	Runtime.State = ERoomCombatState::Combat;
@@ -227,7 +322,7 @@ bool URoomCombatSubsystem::CreateTriggerContext(
 		? Definition->FindPhase(Runtime->CurrentCombatPhaseIndex)
 		: nullptr;
 	// 앞선 차수에서 차단한 같은 Room만 재진입할 수 있고, 다른 Room의 시작은 막는다.
-	if (!CanRunServerGameplay()
+	if (!CanRunServerGameplay() || IsRoomStartHeld(RoomTag)
 		|| !IsValid(Requester) || Requester->IsActorBeingDestroyed()
 		|| !Requester->HasAuthority() || Requester->GetWorld() != World
 		|| !Runtime || !Runtime->RoomVolume.IsValid()
@@ -520,6 +615,12 @@ bool URoomCombatSubsystem::RegisterRoom(
 	FRoomCombatRuntime& Runtime = RoomRuntimes.Add(RoomTag);
 	Runtime.RoomVolume = RoomVolume;
 	Runtime.RegistrationId = FGuid::NewGuid();
+	if (FRoomStartHold* Hold = RoomStartHolds.Find(RoomTag);
+		Hold && !Hold->RoomRegistrationId.IsValid() && Hold->Owner.IsValid())
+	{
+		// 등록 완료 알림과 자동 시작보다 먼저 연결해야 도착 중의 늦은 등록도 같은 예약을 따른다.
+		Hold->RoomRegistrationId = Runtime.RegistrationId;
+	}
 	if (const UOutlierArenaSubsystem* Arena = World->GetSubsystem<UOutlierArenaSubsystem>())
 	{
 		Runtime.GameplayGeneration = static_cast<int32>(Arena->GetGameplayGeneration());
@@ -736,6 +837,7 @@ void URoomCombatSubsystem::UnregisterRoom(ARoomVolume* RoomVolume)
 		|| Runtime->State == ERoomCombatState::Preparing;
 	const int32 CancelledPhase = Runtime->CurrentCombatPhaseIndex;
 	const int32 CancelledGeneration = Runtime->GameplayGeneration;
+	RoomStartHolds.Remove(RoomTag);
 	GetWorld()->GetTimerManager().ClearTimer(Runtime->InitialSpawnDelayTimer);
 	GetWorld()->GetTimerManager().ClearTimer(Runtime->PhaseDelayTimer);
 	SetActivationGroupActive(RoomTag, Runtime->ActiveActivationGroupTag, false);
@@ -1564,7 +1666,7 @@ bool URoomCombatSubsystem::TryStartInitialDetectionForPlayers(FGameplayTag RoomT
 	// 실제 감지 진입점: 플레이어 위치 확인 -> Room 예약 -> 필요 시 합류 -> 차단막/Wave 확정.
 	FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
 	ARoomVolume* Room = Runtime ? Runtime->RoomVolume.Get() : nullptr;
-	if (!CanRunServerGameplay() || !Room || !GetWorld())
+	if (!CanRunServerGameplay() || IsRoomStartHeld(RoomTag) || !Room || !GetWorld())
 	{
 		return false;
 	}
@@ -1674,7 +1776,7 @@ bool URoomCombatSubsystem::BeginInitialDetectionPreparation(
 	FRoomCombatPreparationContext& OutContext)
 {
 	OutContext = FRoomCombatPreparationContext();
-	if (!CanRunServerGameplay() || !IsValid(AnchorPlayer)
+	if (!CanRunServerGameplay() || IsRoomStartHeld(RoomTag) || !IsValid(AnchorPlayer)
 		|| AnchorPlayer->IsActorBeingDestroyed()
 		|| !AnchorPlayer->HasAuthority() || AnchorPlayer->GetWorld() != GetWorld()
 		|| !RoomTag.IsValid())
@@ -1738,7 +1840,7 @@ bool URoomCombatSubsystem::CompleteInitialDetectionPreparation(
 {
 	FRoomCombatRuntime* Runtime = RoomRuntimes.Find(Context.RoomTag);
 	// 위치 검증은 합류 호출자가 맡고, 여기서는 지연 완료가 현재 Room 수명에 속하는지만 확인한다.
-	if (!CanRunServerGameplay() || !Runtime
+	if (!CanRunServerGameplay() || IsRoomStartHeld(Context.RoomTag) || !Runtime
 		|| Runtime->State != ERoomCombatState::Preparing
 		|| ActiveCombatRoomTag != Context.RoomTag
 		|| !Runtime->RoomVolume.IsValid()
@@ -1793,14 +1895,15 @@ bool URoomCombatSubsystem::IsEnemyAttackBlocked(AEnemyBase* Enemy) const
 		? RoomRuntimes.Find(Registration->RoomTag)
 		: nullptr;
 	return Registration && Registration->bPreplaced && Runtime
-		&& Runtime->State == ERoomCombatState::Preparing
-		&& ActiveCombatRoomTag == Registration->RoomTag;
+		&& (IsRoomStartHeld(Registration->RoomTag)
+			|| (Runtime->State == ERoomCombatState::Preparing
+				&& ActiveCombatRoomTag == Registration->RoomTag));
 }
 
 bool URoomCombatSubsystem::NotifyRoomCombatStarted(FGameplayTag RoomTag)
 {
 	// 기존 테스트/호환용 직접 시작 경로. 실제 감지 전파는 플레이어 합류 경로를 사용한다.
-	if (!CanRunServerGameplay() || !RoomTag.IsValid())
+	if (!CanRunServerGameplay() || IsRoomStartHeld(RoomTag) || !RoomTag.IsValid())
 	{
 		return false;
 	}
@@ -1836,7 +1939,7 @@ const FRoomCombatWaveDefinition* URoomCombatSubsystem::FindSpawnableWave(
 	int32 CombatPhaseIndex,
 	int32 WaveIndex) const
 {
-	if (!CanRunServerGameplay())
+	if (!CanRunServerGameplay() || IsRoomStartHeld(RoomTag))
 	{
 		return nullptr;
 	}
@@ -2465,6 +2568,7 @@ void URoomCombatSubsystem::ResetRuntimeCombatState()
 	}
 	// 취소 통보에서 Reset이 재진입하거나 새 전투를 시작하지 못하게 정리 전체를 하나의 경계로 묶는다.
 	TGuardValue<bool> ResetGuard(bResettingRuntime, true);
+	RoomStartHolds.Reset();
 	bRestoredAutomaticStartAllowed = false;
 	UE_LOG(LogTemp, Display,
 		TEXT("[RoomCombat] Runtime reset started. Rooms=%d Enemies=%d WaveTurrets=%d PendingSpawns=%d ActiveRoom=%s"),
@@ -2893,7 +2997,8 @@ void URoomCombatSubsystem::StartAutomaticPhase(FGameplayTag RoomTag)
 	const FRoomCombatRoomDefinition* Definition = Runtime ? FindRoomDefinition(RoomTag) : nullptr;
 	const FRoomCombatPhaseDefinition* Phase = Runtime && Definition
 		? Definition->FindPhase(Runtime->CurrentCombatPhaseIndex) : nullptr;
-	if (!Runtime || Runtime->State != ERoomCombatState::Combat || Runtime->bPhaseDelayPending
+	if (!CanRunServerGameplay() || IsRoomStartHeld(RoomTag)
+		|| !Runtime || Runtime->State != ERoomCombatState::Combat || Runtime->bPhaseDelayPending
 		|| !Phase || Phase->StartPolicy != ERoomCombatPhaseStartPolicy::Automatic)
 	{
 		return;
@@ -2960,7 +3065,7 @@ void URoomCombatSubsystem::TryStartRestoredAutomaticPhase(FGameplayTag RoomTag)
 		? Definition->FindPhase(Runtime->CurrentCombatPhaseIndex) : nullptr;
 	const UOutlierArenaSubsystem* Arena = GetWorld()
 		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>() : nullptr;
-	if (!bRestoredAutomaticStartAllowed || !CanRunServerGameplay()
+	if (!bRestoredAutomaticStartAllowed || !CanRunServerGameplay() || IsRoomStartHeld(RoomTag)
 		|| !Arena || !Arena->IsGameplayLevelsReady()
 		|| !Runtime || !Runtime->bSavedAutomaticPhasePending
 		|| Runtime->State != ERoomCombatState::Dormant

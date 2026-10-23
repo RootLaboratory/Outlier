@@ -184,6 +184,10 @@ public:
 	bool StartTriggeredSequenceWithSpawnDelay(AActor* Requester,
 		const FRoomCombatTriggerContext& Context, float SpawnDelaySeconds);
 
+	// 암전 이동부터 착층까지 해당 Room의 새 전투 시작만 보류한다. 미등록 도착 방도 예약할 수 있다.
+	bool AcquireRoomStartHold(FGameplayTag RoomTag, FGuid ExecutionId, UObject* Owner);
+	void ReleaseRoomStartHold(FGuid ExecutionId);
+
 	// 서버 상태 조회다. 차단 Actor는 이 값으로 충돌을 적용하고 자신의 상태를 Client에 복제한다.
 	UFUNCTION(BlueprintPure, Category = "Room Combat")
 	bool IsExitBlocked(FGameplayTag RoomTag) const;
@@ -291,6 +295,15 @@ public:
 #endif
 
 private:
+	struct FRoomStartHold
+	{
+		FGuid ExecutionId;
+		FGuid RoomRegistrationId;
+		TWeakObjectPtr<UObject> Owner;
+	};
+	bool IsRoomStartHeld(FGameplayTag RoomTag) const;
+	void ResumeRoomAfterStartHold(FGameplayTag RoomTag, FGuid RegistrationId);
+	TMap<FGameplayTag, FRoomStartHold> RoomStartHolds;
 	bool IsPlayerInsideRoom(const AFirstPersonCharacter* Player, const ARoomVolume* Room) const;
 	bool IsSafeJoinDestination(const AFirstPersonCharacter* MovingPlayer,
 		const AFirstPersonCharacter* Anchor, const ARoomVolume* Room,

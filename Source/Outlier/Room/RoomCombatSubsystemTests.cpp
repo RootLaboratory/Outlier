@@ -2546,4 +2546,147 @@ bool FRoomCombatInitialDetectionPreparationTest::RunTest(const FString& Paramete
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FRoomCombatStartHoldTest,
+	"Outlier.Room.StartHold",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRoomCombatStartHoldTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const FName WorldName = MakeUniqueObjectName(nullptr, UWorld::StaticClass(), NAME_None,
+		EUniqueObjectNameOptions::GloballyUnique);
+	FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, WorldName, GetTransientPackage());
+	if (!TestNotNull(TEXT("Start hold world exists"), World))
+	{
+		GEngine->DestroyWorldContext(World);
+		return false;
+	}
+	World->AddToRoot();
+	WorldContext.SetCurrentWorld(World);
+	UGameInstance* GameInstance = NewObject<UGameInstance>(GEngine);
+	World->SetGameInstance(GameInstance);
+	GameInstance->Init();
+	TestTrue(TEXT("Start hold world has authority"), World->SetGameMode(FURL()));
+	World->InitializeActorsForPlay(FURL());
+	auto CleanupWorld = [World, GameInstance]()
+	{
+		GEngine->ShutdownWorldNetDriver(World);
+		World->DestroyWorld(true);
+		GameInstance->Shutdown();
+		World->SetPhysicsScene(nullptr);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+	};
+	URoomCombatSubsystem* Combat = World->GetSubsystem<URoomCombatSubsystem>();
+	ARoomVolume* Room = World->SpawnActor<ARoomVolume>();
+	ARoomVolume* TriggerRoom = World->SpawnActor<ARoomVolume>();
+	AActor* Owner = World->SpawnActor<AActor>();
+	AActor* OtherOwner = World->SpawnActor<AActor>();
+	const FGameplayTag RoomTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.1")));
+	const FGameplayTag TriggerRoomTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.2")));
+	AEnemyBase* Enemy = SpawnTestEnemy(World, RoomTag);
+	if (!TestNotNull(TEXT("Combat subsystem"), Combat) || !TestNotNull(TEXT("Detection room"), Room)
+		|| !TestNotNull(TEXT("Trigger room"), TriggerRoom) || !TestNotNull(TEXT("Owner"), Owner)
+		|| !TestNotNull(TEXT("Other owner"), OtherOwner) || !TestNotNull(TEXT("Preplaced enemy"), Enemy))
+	{
+		CleanupWorld();
+		return false;
+	}
+	const FGuid EarlyExecution = FGuid::NewGuid();
+	TestTrue(TEXT("A safe arrival volume can be reserved before its combat definition exists"),
+		Combat->AcquireRoomStartHold(TriggerRoomTag, EarlyExecution, Owner));
+	TestFalse(TEXT("Another owner cannot steal an unregistered room reservation"),
+		Combat->AcquireRoomStartHold(TriggerRoomTag, FGuid::NewGuid(), OtherOwner));
+	URoomCombatDefinition* Definition = NewObject<URoomCombatDefinition>(World);
+	AddSingleWaveDefinition(Definition, RoomTag);
+	FRoomCombatPhaseDefinition& TriggerPhase = AddRoomDefinition(Definition, TriggerRoomTag)
+		.CombatPhases.AddDefaulted_GetRef();
+	TriggerPhase.StartPolicy = ERoomCombatPhaseStartPolicy::ExternalTrigger;
+	TriggerPhase.DelayBeforeStartSeconds = 0.0f;
+	FRoomCombatWaveDefinition& TriggerWave = TriggerPhase.Waves.AddDefaulted_GetRef();
+	TriggerWave.SpawnMode = ERoomCombatWaveSpawnMode::SpawnFromObjects;
+	TriggerWave.Enemies.AddDefaulted_GetRef().EnemyClass = AEnemyBase::StaticClass();
+	Combat->SetCombatDefinitionForTesting(Definition);
+	TestTrue(TEXT("Detection room registers"), Combat->RegisterRoom(Room, RoomTag));
+	TestTrue(TEXT("Trigger room registers"), Combat->RegisterRoom(TriggerRoom, TriggerRoomTag));
+	Combat->RegisterPreplacedEnemy(Enemy);
+	FRoomCombatTriggerContext EarlyTrigger;
+	TestFalse(TEXT("Late registration remains held before its first trigger"),
+		Combat->CreateTriggerContext(Owner, TriggerRoomTag, FGameplayTag(), EarlyTrigger));
+	Combat->ReleaseRoomStartHold(EarlyExecution);
+	TestTrue(TEXT("Release recognizes the newly bound registration lifetime"),
+		Combat->CreateTriggerContext(Owner, TriggerRoomTag, FGameplayTag(), EarlyTrigger));
+
+	const FGuid Execution = FGuid::NewGuid();
+	const FGuid OtherExecution = FGuid::NewGuid();
+	TestFalse(TEXT("An invalid execution cannot reserve the room"),
+		Combat->AcquireRoomStartHold(RoomTag, FGuid(), Owner));
+	TestTrue(TEXT("An arrival reserves its room before teleport"),
+		Combat->AcquireRoomStartHold(RoomTag, Execution, Owner));
+	TestTrue(TEXT("Repeated acquisition by the same execution is idempotent"),
+		Combat->AcquireRoomStartHold(RoomTag, Execution, Owner));
+	TestFalse(TEXT("A competing execution cannot replace the reservation"),
+		Combat->AcquireRoomStartHold(RoomTag, OtherExecution, Owner));
+	TestFalse(TEXT("The execution id does not let another owner take the reservation"),
+		Combat->AcquireRoomStartHold(RoomTag, Execution, OtherOwner));
+	Combat->ReleaseRoomStartHold(OtherExecution);
+	TestTrue(TEXT("A stale release leaves preplaced attacks blocked"), Combat->IsEnemyAttackBlocked(Enemy));
+	FRoomCombatPreparationContext Preparation;
+	TestFalse(TEXT("Detection preparation cannot bypass the arrival reservation"),
+		Combat->BeginInitialDetectionPreparation(RoomTag, Owner, Preparation));
+	TestFalse(TEXT("Direct combat start cannot bypass the arrival reservation"),
+		Combat->NotifyRoomCombatStarted(RoomTag));
+	TestEqual(TEXT("Blocked starts keep the room dormant"), Combat->GetRoomState(RoomTag), ERoomCombatState::Dormant);
+	TestFalse(TEXT("A different room remains available"), Combat->IsExitBlocked(TriggerRoomTag));
+
+	FRoomCombatTriggerContext Trigger;
+	TestTrue(TEXT("A trigger context can exist before the reservation"),
+		Combat->CreateTriggerContext(Owner, TriggerRoomTag, FGameplayTag(), Trigger));
+	TestTrue(TEXT("The same execution may reserve its separate trigger room"),
+		Combat->AcquireRoomStartHold(TriggerRoomTag, Execution, Owner));
+	FRoomCombatTriggerContext BlockedTrigger;
+	TestFalse(TEXT("A reserved room cannot issue a new trigger context"),
+		Combat->CreateTriggerContext(Owner, TriggerRoomTag, FGameplayTag(), BlockedTrigger));
+	TestFalse(TEXT("A context captured before arrival cannot start combat during arrival"),
+		Combat->StartTriggeredSequence(Owner, Trigger));
+	TestFalse(TEXT("A delayed spawn request cannot bypass the reservation"),
+		Combat->StartTriggeredSequenceWithSpawnDelay(Owner, Trigger, 0.25f));
+	TestEqual(TEXT("No wave is queued while the room is held"), Combat->GetPendingSpawnCount(TriggerRoomTag), 0);
+
+	Combat->ReleaseRoomStartHold(Execution);
+	TestFalse(TEXT("Matching release opens the preplaced attack gate"), Combat->IsEnemyAttackBlocked(Enemy));
+	TestTrue(TEXT("Matching release makes external triggers available again"),
+		Combat->CreateTriggerContext(Owner, TriggerRoomTag, FGameplayTag(), BlockedTrigger));
+	TestTrue(TEXT("A new execution can reserve after release"),
+		Combat->AcquireRoomStartHold(RoomTag, OtherExecution, OtherOwner));
+	Combat->ReleaseRoomStartHold(Execution);
+	TestTrue(TEXT("A late old release cannot open the new execution's attack gate"),
+		Combat->IsEnemyAttackBlocked(Enemy));
+
+	Combat->UnregisterRoom(Room);
+	TestTrue(TEXT("The same tag can register with a new room lifetime"), Combat->RegisterRoom(Room, RoomTag));
+	Combat->RegisterPreplacedEnemy(Enemy);
+	TestTrue(TEXT("Unregister removes the old lifetime's reservation"),
+		Combat->AcquireRoomStartHold(RoomTag, Execution, Owner));
+	Combat->ResetRuntimeCombatState();
+	TestTrue(TEXT("The room can register after reset"), Combat->RegisterRoom(Room, RoomTag));
+	Combat->RegisterPreplacedEnemy(Enemy);
+	TestTrue(TEXT("Reset removes all execution reservations"),
+		Combat->AcquireRoomStartHold(RoomTag, OtherExecution, OtherOwner));
+	Combat->ReleaseRoomStartHold(OtherExecution);
+	TestTrue(TEXT("Normal direct detection start works after cleanup"), Combat->NotifyRoomCombatStarted(RoomTag));
+	TestFalse(TEXT("A reservation cannot pause combat which already started"),
+		Combat->AcquireRoomStartHold(RoomTag, Execution, Owner));
+	Combat->UnregisterRoom(TriggerRoom);
+	TestTrue(TEXT("An unregistered safe room accepts an arrival hold"),
+		Combat->AcquireRoomStartHold(TriggerRoomTag, Execution, Owner));
+	Combat->ReleaseRoomStartHold(Execution);
+	TestTrue(TEXT("Releasing a never-registered hold allows another arrival"),
+		Combat->AcquireRoomStartHold(TriggerRoomTag, OtherExecution, OtherOwner));
+	CleanupWorld();
+	return true;
+}
+
 #endif
