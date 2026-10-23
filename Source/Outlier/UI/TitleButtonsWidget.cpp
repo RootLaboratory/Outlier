@@ -132,6 +132,10 @@ void UTitleButtonsWidget::MoveSelection(int32 Step)
 {
 	const int32 Index = (static_cast<int32>(SelectedAction) + Step + TitleButtonCount) % TitleButtonCount;
 	SelectAction(static_cast<ETitleButtonAction>(Index));
+	if (UButton* Button = GetButton(SelectedAction))
+	{
+		if (APlayerController* Player = GetOwningPlayer()) Button->SetUserFocus(Player);
+	}
 }
 
 void UTitleButtonsWidget::SelectAction(ETitleButtonAction Action)

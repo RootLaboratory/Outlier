@@ -92,6 +92,8 @@ public:
 	bool RouteWidgetDownInput();
 	bool RouteWidgetLeftInput();
 	bool RouteWidgetRightInput();
+	// Route before focused Slate controls consume menu keys in GameAndUI mode.
+	bool RouteWidgetPreviewKeyDown(UUserWidget* SourceWidget, const FKeyEvent& KeyEvent);
 	// 위젯 IMC를 추가하고 Confirm/상하좌우를 레이어 라우팅에 직접 묶는다.
 	// Escape는 컨트롤러마다 동작이 달라 성공 시 각 컨트롤러가 직접 바인딩한다.
 	bool BindWidgetInput(UEnhancedInputComponent* InputComponent, const UControllerInputConfig* Config);

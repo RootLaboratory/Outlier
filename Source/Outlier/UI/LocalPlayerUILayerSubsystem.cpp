@@ -715,6 +715,31 @@ bool ULocalPlayerUILayerSubsystem::BindWidgetInput(
 	return true;
 }
 
+bool ULocalPlayerUILayerSubsystem::RouteWidgetPreviewKeyDown(UUserWidget* SourceWidget, const FKeyEvent& KeyEvent)
+{
+	if (CachedInputWidget.Get() != SourceWidget || !WidgetInputConfig) return false;
+	const UEnhancedInputLocalPlayerSubsystem* InputSubsystem = GetLocalPlayer()
+		? GetLocalPlayer()->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>() : nullptr;
+	if (!InputSubsystem) return false;
+
+	const auto IsMapped = [InputSubsystem, &KeyEvent](const UInputAction* Action)
+	{
+		return Action && InputSubsystem->QueryKeysMappedToAction(Action).Contains(KeyEvent.GetKey());
+	};
+	// Match the Enhanced Input Started bindings: holding a key must not confirm twice.
+	const auto Route = [&KeyEvent](auto&& Callback)
+	{
+		return KeyEvent.IsRepeat() || Callback();
+	};
+	if (IsMapped(WidgetInputConfig->WidgetEscapeAction)) return Route([this] { return RouteWidgetEscapeInput(); });
+	if (IsMapped(WidgetInputConfig->WidgetConfirmedAction)) return Route([this] { return RouteWidgetConfirmedInput(); });
+	if (IsMapped(WidgetInputConfig->WidgetUpAction)) return Route([this] { return RouteWidgetUpInput(); });
+	if (IsMapped(WidgetInputConfig->WidgetDownAction)) return Route([this] { return RouteWidgetDownInput(); });
+	if (IsMapped(WidgetInputConfig->WidgetLeftAction)) return Route([this] { return RouteWidgetLeftInput(); });
+	if (IsMapped(WidgetInputConfig->WidgetRightAction)) return Route([this] { return RouteWidgetRightInput(); });
+	return false;
+}
+
 bool ULocalPlayerUILayerSubsystem::RouteWidgetInput(
 	bool (*InputExecutor)(UObject*),
 	bool bPopUnhandledInput)

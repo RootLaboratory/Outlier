@@ -8,6 +8,13 @@
 class UInputAction;
 class UInputMappingContext;
 
+enum class EOutlierInputBindingValidation : uint8
+{
+	Valid,
+	InputRequired,
+	AxisInputRequired
+};
+
 USTRUCT(BlueprintType)
 struct FOutlierInputBindingTableRow
 {
@@ -17,6 +24,13 @@ struct FOutlierInputBindingTableRow
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input Binding")
 	FText DisplayName;
+
+	// Opt in only for instantaneous actions. Hold/release-dependent actions must leave this off.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input Binding")
+	bool bAllowMouseWheel = false;
+
+	// Uses the original physical key, not the action's output type or the user's current key.
+	EOutlierInputBindingValidation ValidateReplacementKey(FKey NewKey) const;
 
 	// --- Filled in by RebuildRowsFromConfiguredIMCs; shown read-only for
 	// reference, since editing them here is overwritten on the next rebuild. ---

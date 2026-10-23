@@ -2,6 +2,7 @@
 
 #include "Components/Button.h"
 #include "Components/TextBlock.h"
+#include "UI/InputActionKeyDisplayWidget.h"
 
 void UInputBindingRowWidget::InitializeInputBindingRow(
 	const FOutlierInputBindingTableRow& InRow,
@@ -15,18 +16,15 @@ void UInputBindingRowWidget::InitializeInputBindingRow(
 		ActionNameText->SetText(Row.DisplayName);
 	}
 
-	if (KeyText)
-	{
-		KeyText->SetText(Row.DefaultKey.GetDisplayName());
-	}
+	SetDisplayedKey(Row.DefaultKey);
 
-	if (RebindButton)
+	if (InputBindButton)
 	{
-		RebindButton->SetIsEnabled(Row.bRebindable);
-		RebindButton->OnClicked.AddUniqueDynamic(
+		InputBindButton->SetIsEnabled(Row.bRebindable);
+		InputBindButton->OnClicked.AddUniqueDynamic(
 			this,
 			&UInputBindingRowWidget::HandleRebindButtonClicked);
-		RebindButton->OnHovered.AddUniqueDynamic(
+		InputBindButton->OnHovered.AddUniqueDynamic(
 			this,
 			&UInputBindingRowWidget::HandleRebindButtonHovered);
 	}
@@ -44,9 +42,9 @@ int32 UInputBindingRowWidget::GetInputBindingRowIndex() const
 
 void UInputBindingRowWidget::SetDisplayedKey(FKey NewKey)
 {
-	if (KeyText)
+	if (KeyDisplay)
 	{
-		KeyText->SetText(NewKey.GetDisplayName());
+		KeyDisplay->SetDisplayedKey(NewKey);
 	}
 }
 

@@ -87,5 +87,5 @@ void USettingSliderRowWidget::UpdateValueText(float NewValue)
 	const int32 PercentValue =
 		FMath::RoundToInt(FMath::Clamp(NewValue, 0.0f, 1.0f) * 100.0f);
 	ValueText->SetText(FText::FromString(
-		FString::Printf(TEXT("%d%%"), PercentValue)));
+		FString::Printf(TEXT("%d"), PercentValue)));
 }

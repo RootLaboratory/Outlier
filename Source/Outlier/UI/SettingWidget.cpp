@@ -2,1158 +2,221 @@
 #include "Audio/OutlierAudioFeedback.h"
 
 #include "Audio/OutlierAudioSubsystem.h"
-#include "Components/Button.h"
-#include "Components/CanvasPanel.h"
-#include "Components/CanvasPanelSlot.h"
-#include "Components/PanelWidget.h"
-#include "Components/TextBlock.h"
 #include "Components/WidgetSwitcher.h"
-#include "Components/Widget.h"
-#include "EnhancedInputSubsystems.h"
 #include "Engine/LocalPlayer.h"
-#include "Input/OutlierInputBindingTable.h"
-#include "InputCoreTypes.h"
-#include "InputMappingQuery.h"
-#include "InputMappingContext.h"
-#include "UI/InputBindingRowWidget.h"
+#include "Engine/World.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
-#include "UI/MouseSensitivityWidget.h"
-#include "UI/SettingSliderRowWidget.h"
-#include "UserSettings/EnhancedInputUserSettings.h"
+#include "UI/SettingButtonsWidget.h"
+#include "UI/SettingGraphicPageWidget.h"
+#include "UI/SettingSoundPageWidget.h"
+#include "UI/SettingInputPageWidget.h"
 
 void USettingWidget::NativeOnInitialized()
 {
 	Super::NativeOnInitialized();
-
-	CacheWidgetArrays();
-
-	if (GraphicButton)
+	SetIsFocusable(true);
+	if (SettingButtons)
 	{
-		GraphicButton->OnClicked.AddUniqueDynamic(
-			this,
-			&USettingWidget::HandleGraphicButtonClicked);
+		SettingButtons->OnPageRequested.AddUObject(this, &ThisClass::HandlePageRequested);
+		SettingButtons->OnExitRequested.AddUObject(this, &ThisClass::PopSelfFromLayer);
 	}
+	if (InputPage) InputPage->OnKeyboardCaptureRequested.AddUObject(this, &ThisClass::HandleKeyboardCaptureRequested);
+}
 
-	if (SoundButton)
+void USettingWidget::NativePreConstruct()
+{
+	Super::NativePreConstruct();
+#if WITH_EDITORONLY_DATA
+	if (IsDesignTime() && SettingSwitcher)
 	{
-		SoundButton->OnClicked.AddUniqueDynamic(
-			this,
-			&USettingWidget::HandleSoundButtonClicked);
+		UWidget* PreviewPage = nullptr;
+		switch (PreviewPageIndex)
+		{
+		case 0: PreviewPage = GraphicPage; break;
+		case 1: PreviewPage = SoundPage; break;
+		case 2: PreviewPage = InputPage; break;
+		}
+		if (PreviewPage && SettingSwitcher->GetChildIndex(PreviewPage) != INDEX_NONE)
+		{
+			SettingSwitcher->SetActiveWidget(PreviewPage);
+			if (SettingButtons) SettingButtons->SetSelectedPage(PreviewPageIndex);
+		}
 	}
-
-	if (InputButton)
-	{
-		InputButton->OnClicked.AddUniqueDynamic(
-			this,
-			&USettingWidget::HandleInputButtonClicked);
-	}
-
-	if (ExitButton)
-	{
-		ExitButton->OnClicked.AddUniqueDynamic(
-			this,
-			&USettingWidget::HandleExitButtonClicked);
-	}
-
-	if (GraphicLeftButton)
-	{
-		GraphicLeftButton->OnClicked.AddUniqueDynamic(
-			this,
-			&USettingWidget::HandleGraphicLeftButtonClicked);
-	}
-
-	if (GraphicRightButton)
-	{
-		GraphicRightButton->OnClicked.AddUniqueDynamic(
-			this,
-			&USettingWidget::HandleGraphicRightButtonClicked);
-	}
-
-	if (TotalVolumeRow)
-	{
-		TotalVolumeRow->OnValueChanged.AddDynamic(
-			this,
-			&USettingWidget::HandleTotalVolumeRowChanged);
-	}
-
-	if (BGMVolumeRow)
-	{
-		BGMVolumeRow->OnValueChanged.AddDynamic(
-			this,
-			&USettingWidget::HandleBGMVolumeRowChanged);
-	}
-
-	if (SFXVolumeRow)
-	{
-		SFXVolumeRow->OnValueChanged.AddDynamic(
-			this,
-			&USettingWidget::HandleSFXVolumeRowChanged);
-	}
-
-	if (VoiceVolumeRow)
-	{
-		VoiceVolumeRow->OnValueChanged.AddDynamic(
-			this,
-			&USettingWidget::HandleVoiceVolumeRowChanged);
-	}
+#endif
 }
 
 void USettingWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
-	SetIsFocusable(true);
-
-	if (const ULocalPlayer* LocalPlayer = GetOwningLocalPlayer())
+	// In-game settings must preserve paused voices and feedback for Continue.
+	if (const ULocalPlayer* LocalPlayer = GetOwningLocalPlayer();
+		LocalPlayer && (!GetWorld() || !GetWorld()->IsPaused()))
 	{
 		if (UGameInstance* GameInstance = LocalPlayer->GetGameInstance())
 		{
-			if (UOutlierAudioSubsystem* AudioSubsystem =
-				GameInstance->GetSubsystem<UOutlierAudioSubsystem>())
-			{
-				AudioSubsystem->StopTransientLocalAudio();
-			}
+			if (UOutlierAudioSubsystem* Audio = GameInstance->GetSubsystem<UOutlierAudioSubsystem>())
+				Audio->StopTransientLocalAudio();
 		}
 	}
-
-	BindSettingsSubsystem();
-	if (ULocalPlayerSettingsSubsystem* SettingsSubsystem = GetSettingsSubsystem())
-	{
-		PendingResolutionPresetIndex = SettingsSubsystem->GetResolutionPresetIndex();
-	}
-
-	SetActiveSettingPage(GraphicPageIndex);
-	RefreshGraphicsSettings();
-	RefreshSoundSettings();
+	SetActiveSettingPage(0);
+	FocusArea = EFocusArea::Buttons;
+	if (SettingButtons) SettingButtons->FocusSelectedPageButton();
 }
 
 void USettingWidget::NativeDestruct()
 {
-	UnbindSettingsSubsystem();
-	ClearInputBindingInteractionState(false);
-
+	if (ActivePage) ActivePage->DeactivatePage();
+	ActivePage = nullptr;
 	Super::NativeDestruct();
 }
 
-FReply USettingWidget::NativeOnPreviewMouseButtonDown(
-	const FGeometry& InGeometry,
-	const FPointerEvent& InMouseEvent)
-{
-	if (CurrentSettingPageIndex == InputPageIndex
-		&& !IsPointerOverInputBindingRow(InMouseEvent))
-	{
-		ClearInputBindingInteractionState(true);
-	}
+void USettingWidget::InitializeUILayerContext_Implementation(const TArray<AActor*>& ContextActors) {}
 
-	return Super::NativeOnPreviewMouseButtonDown(InGeometry, InMouseEvent);
+bool USettingWidget::SetActiveSettingPage(int32 PageIndex)
+{
+	USettingPageWidget* Page = nullptr;
+	switch (PageIndex)
+	{
+	case 0: Page = GraphicPage; break;
+	case 1: Page = SoundPage; break;
+	case 2: Page = InputPage; break;
+	default: return false;
+	}
+	if (!SettingSwitcher || !Page || SettingSwitcher->GetChildIndex(Page) == INDEX_NONE) return false;
+	if (ActivePage) ActivePage->DeactivatePage();
+	SettingSwitcher->SetActiveWidget(Page);
+	ActivePage = Page;
+	ActivePage->ActivatePage();
+	if (SettingButtons) SettingButtons->SetSelectedPage(PageIndex);
+	return true;
 }
 
-FReply USettingWidget::NativeOnKeyDown(
-	const FGeometry& InGeometry,
-	const FKeyEvent& InKeyEvent)
+void USettingWidget::HandlePageRequested(int32 PageIndex)
 {
-	if (bWaitingForInputRebind)
+	if (ActivePage && ActivePage->IsCapturingKeyboardInput()) return;
+	if (SetActiveSettingPage(PageIndex))
 	{
-		if (FPlatformTime::Seconds() - RebindStartTimeSeconds < 0.05)
-		{
-			return FReply::Handled();
-		}
-
-		TryCommitInputRebind(InKeyEvent.GetKey());
-		return FReply::Handled();
+		FocusArea = EFocusArea::Buttons;
+		if (SettingButtons) SettingButtons->FocusSelectedButton();
 	}
-
-	return Super::NativeOnKeyDown(InGeometry, InKeyEvent);
 }
 
-void USettingWidget::InitializeUILayerContext_Implementation(
-	const TArray<AActor*>& ContextActors)
+void USettingWidget::HandleKeyboardCaptureRequested()
 {
+	FocusArea = EFocusArea::Page;
+	SetKeyboardFocus();
+}
+
+void USettingWidget::FocusActivePage(bool bLastTarget)
+{
+	FocusArea = EFocusArea::Page;
+	if (ActivePage) ActivePage->FocusPage(bLastTarget);
+}
+
+bool USettingWidget::RoutePageInput(ESettingPageInput Input)
+{
+	return ActivePage && ActivePage->HandlePageInput(Input);
 }
 
 bool USettingWidget::HandleUILayerEscape_Implementation()
 {
+	if (RoutePageInput(ESettingPageInput::Escape)) return true;
 	PopSelfFromLayer();
 	return true;
 }
 
 bool USettingWidget::HandleUILayerConfirmed_Implementation()
 {
-	if (KeyboardFocusTargets.IsValidIndex(CurrentFocusedIndex)
-		&& KeyboardFocusTargets[CurrentFocusedIndex] == ExitButton)
+	if (ActivePage && ActivePage->IsCapturingKeyboardInput()) return RoutePageInput(ESettingPageInput::Confirm);
+	if (FocusArea == EFocusArea::Buttons)
 	{
-		PopSelfFromLayer();
+		if (SettingButtons && SettingButtons->IsExitSelected()) PopSelfFromLayer();
 		return true;
 	}
-
-	if (CurrentSettingPageIndex == GraphicPageIndex)
-	{
-		return ApplyPendingResolutionPreset();
-	}
-
-	if (CurrentSettingPageIndex == SoundPageIndex)
-	{
-		return false;
-	}
-
-	if (CurrentSettingPageIndex == InputPageIndex)
-	{
-		return StartInputRebind(HoveredInputBindingRow);
-	}
-
-	return false;
+	RoutePageInput(ESettingPageInput::Confirm);
+	return true;
 }
 
 bool USettingWidget::HandleUILayerUp_Implementation()
 {
-	MoveKeyboardFocus(-1);
+	if (ActivePage && ActivePage->IsCapturingKeyboardInput()) return RoutePageInput(ESettingPageInput::Up);
+	if (FocusArea == EFocusArea::Buttons && SettingButtons)
+		SettingButtons->OffsetSelection(-1);
+	else if (FocusArea == EFocusArea::Page && !RoutePageInput(ESettingPageInput::Up))
+	{
+		FocusArea = EFocusArea::Buttons;
+		if (SettingButtons) SettingButtons->FocusSelectedPageButton();
+	}
 	return true;
 }
 
 bool USettingWidget::HandleUILayerDown_Implementation()
 {
-	MoveKeyboardFocus(1);
+	if (ActivePage && ActivePage->IsCapturingKeyboardInput()) return RoutePageInput(ESettingPageInput::Down);
+	if (FocusArea == EFocusArea::Buttons)
+	{
+		if (SettingButtons) SettingButtons->OffsetSelection(1);
+	}
+	else if (FocusArea == EFocusArea::Page && !RoutePageInput(ESettingPageInput::Down))
+	{
+		FocusArea = EFocusArea::Buttons;
+		if (SettingButtons) SettingButtons->FocusExitButton();
+	}
 	return true;
 }
 
 bool USettingWidget::HandleUILayerLeft_Implementation()
 {
-	AdjustFocusedSetting(-0.01f);
+	if (ActivePage && ActivePage->IsCapturingKeyboardInput()) return RoutePageInput(ESettingPageInput::Left);
+	if (FocusArea == EFocusArea::Page && !RoutePageInput(ESettingPageInput::Left))
+	{
+		FocusArea = EFocusArea::Buttons;
+		if (SettingButtons) SettingButtons->FocusSelectedPageButton();
+	}
 	return true;
 }
 
 bool USettingWidget::HandleUILayerRight_Implementation()
 {
-	AdjustFocusedSetting(0.01f);
+	if (ActivePage && ActivePage->IsCapturingKeyboardInput()) return RoutePageInput(ESettingPageInput::Right);
+	if (FocusArea == EFocusArea::Buttons && SettingButtons && !SettingButtons->IsExitSelected()) FocusActivePage();
+	else if (FocusArea == EFocusArea::Page) RoutePageInput(ESettingPageInput::Right);
 	return true;
+}
+
+FReply USettingWidget::NativeOnPreviewKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent)
+{
+	if (ActivePage && ActivePage->HandlePageKeyDown(InKeyEvent)) return FReply::Handled();
+	if (ULocalPlayer* LocalPlayer = GetOwningLocalPlayer())
+	{
+		if (ULocalPlayerUILayerSubsystem* Layers = LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>())
+		{
+			if (Layers->RouteWidgetPreviewKeyDown(this, InKeyEvent)) return FReply::Handled();
+		}
+	}
+	return Super::NativeOnPreviewKeyDown(InGeometry, InKeyEvent);
+}
+
+FReply USettingWidget::NativeOnPreviewMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
+{
+	const FVector2D Position = InMouseEvent.GetScreenSpacePosition();
+	if (ActivePage) ActivePage->HandlePagePointerDown(InMouseEvent);
+	if (SettingButtons && SettingButtons->HandlePointerDown(InMouseEvent))
+	{
+		FocusArea = EFocusArea::Buttons;
+	}
+	else if (ActivePage && ActivePage->GetCachedGeometry().IsUnderLocation(Position)) FocusArea = EFocusArea::Page;
+	return Super::NativeOnPreviewMouseButtonDown(InGeometry, InMouseEvent);
 }
 
 void USettingWidget::PopSelfFromLayer()
 {
 	if (IsInViewport() || GetParent()) OutlierAudioFeedback::Local(this, TEXT("Audio.Context.UI.Menu.Back"));
-	if (MouseSensitivityWidget)
+	if (ActivePage) ActivePage->DeactivatePage();
+	ActivePage = nullptr;
+	if (ULocalPlayer* LocalPlayer = GetOwningLocalPlayer())
 	{
-		MouseSensitivityWidget->ConfirmPendingValue();
+		if (ULocalPlayerUILayerSubsystem* Layers = LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>())
+			Layers->PopWidget(this);
 	}
-
-	ULocalPlayer* LocalPlayer = GetOwningLocalPlayer();
-	ULocalPlayerUILayerSubsystem* LayerSubsystem = LocalPlayer
-		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()
-		: nullptr;
-	if (LayerSubsystem)
-	{
-		LayerSubsystem->PopWidget(this);
-	}
-}
-
-bool USettingWidget::SetActiveSettingPage(int32 PageIndex)
-{
-	if (!SettingSwitcher
-		|| PageIndex < 0
-		|| PageIndex >= SettingSwitcher->GetNumWidgets())
-	{
-		return false;
-	}
-
-	SettingSwitcher->SetActiveWidgetIndex(PageIndex);
-	CurrentSettingPageIndex = PageIndex;
-	CurrentFocusedIndex = INDEX_NONE;
-	if (PageIndex == InputPageIndex)
-	{
-		RebuildInputBindingList();
-	}
-
-	RebuildKeyboardFocusTargets();
-	if (!KeyboardFocusTargets.IsEmpty())
-	{
-		CurrentFocusedIndex = 0;
-		FocusCurrentKeyboardTarget();
-	}
-
-	return true;
-}
-
-void USettingWidget::RebuildKeyboardFocusTargets()
-{
-	KeyboardFocusTargets.Reset();
-
-	if (CurrentSettingPageIndex == GraphicPageIndex)
-	{
-		if (GraphicLeftButton)
-		{
-			KeyboardFocusTargets.Add(GraphicLeftButton);
-		}
-	}
-	else if (CurrentSettingPageIndex == SoundPageIndex)
-	{
-		for (USettingSliderRowWidget* Row : SoundVolumeRows)
-		{
-			if (Row)
-			{
-				Row->SetIsFocusable(true);
-				KeyboardFocusTargets.Add(Row);
-			}
-		}
-	}
-	else if (CurrentSettingPageIndex == InputPageIndex)
-	{
-		if (MouseSensitivityWidget)
-		{
-			KeyboardFocusTargets.Add(MouseSensitivityWidget);
-		}
-
-		for (UInputBindingRowWidget* Row : ActiveInputBindingRows)
-		{
-			if (Row)
-			{
-				Row->SetIsFocusable(true);
-				KeyboardFocusTargets.Add(Row);
-			}
-		}
-	}
-
-	if (ExitButton)
-	{
-		KeyboardFocusTargets.Add(ExitButton);
-	}
-}
-
-void USettingWidget::FocusCurrentKeyboardTarget()
-{
-	if (!KeyboardFocusTargets.IsValidIndex(CurrentFocusedIndex))
-	{
-		return;
-	}
-
-	UWidget* TargetWidget = KeyboardFocusTargets[CurrentFocusedIndex];
-	if (!IsValid(TargetWidget)
-		|| !TargetWidget->IsVisible()
-		|| !TargetWidget->GetIsEnabled())
-	{
-		return;
-	}
-
-	if (UInputBindingRowWidget* InputRow =
-		Cast<UInputBindingRowWidget>(TargetWidget))
-	{
-		HoveredInputBindingRow = InputRow;
-	}
-
-	if (APlayerController* OwningPlayer = GetOwningPlayer())
-	{
-		TargetWidget->SetUserFocus(OwningPlayer);
-	}
-}
-
-void USettingWidget::MoveKeyboardFocus(int32 Direction)
-{
-	RebuildKeyboardFocusTargets();
-
-	if (KeyboardFocusTargets.IsEmpty())
-	{
-		return;
-	}
-
-	const int32 StartIndex = KeyboardFocusTargets.IsValidIndex(
-		CurrentFocusedIndex)
-		? CurrentFocusedIndex
-		: 0;
-
-	CurrentFocusedIndex = FMath::Clamp(
-		StartIndex + Direction,
-		0,
-		KeyboardFocusTargets.Num() - 1);
-	FocusCurrentKeyboardTarget();
-}
-
-void USettingWidget::AdjustFocusedSetting(float Delta)
-{
-	if (!KeyboardFocusTargets.IsValidIndex(CurrentFocusedIndex))
-	{
-		return;
-	}
-	if (KeyboardFocusTargets[CurrentFocusedIndex] == ExitButton)
-	{
-		return;
-	}
-
-	if (CurrentSettingPageIndex == GraphicPageIndex)
-	{
-		OffsetResolutionPresetIndex(Delta > 0.0f ? 1 : -1);
-		return;
-	}
-
-	if (CurrentSettingPageIndex == SoundPageIndex)
-	{
-		USettingSliderRowWidget* Row = Cast<USettingSliderRowWidget>(
-			KeyboardFocusTargets[CurrentFocusedIndex]);
-		if (Row)
-		{
-			const int32 VolumeIndex = SoundVolumeRows.IndexOfByKey(Row);
-			SetSoundVolumeIndex(VolumeIndex, Row->GetValue() + Delta);
-		}
-		return;
-	}
-
-	if (CurrentSettingPageIndex == InputPageIndex
-		&& CurrentFocusedIndex == 0
-		&& MouseSensitivityWidget)
-	{
-		MouseSensitivityWidget->OffsetPendingValue(Delta);
-	}
-}
-
-bool USettingWidget::SetResolutionPresetIndex(int32 PresetIndex)
-{
-	ULocalPlayerSettingsSubsystem* SettingsSubsystem = GetSettingsSubsystem();
-	if (!SettingsSubsystem)
-	{
-		return false;
-	}
-
-	if (!SettingsSubsystem->GetResolutionOptions().IsValidIndex(PresetIndex))
-	{
-		return false;
-	}
-
-	PendingResolutionPresetIndex = PresetIndex;
-	RefreshGraphicsSettings();
-	return true;
-}
-
-bool USettingWidget::OffsetResolutionPresetIndex(int32 IndexOffset)
-{
-	ULocalPlayerSettingsSubsystem* SettingsSubsystem = GetSettingsSubsystem();
-	if (!SettingsSubsystem)
-	{
-		return false;
-	}
-
-	const TArray<FOutlierResolutionOption>& ResolutionOptions =
-		SettingsSubsystem->GetResolutionOptions();
-	if (ResolutionOptions.IsEmpty())
-	{
-		return false;
-	}
-
-	const int32 CurrentIndex = ResolutionOptions.IsValidIndex(PendingResolutionPresetIndex)
-		? PendingResolutionPresetIndex
-		: FMath::Max(SettingsSubsystem->GetResolutionPresetIndex(), 0);
-	const int32 OffsetIndex = (CurrentIndex + IndexOffset) % ResolutionOptions.Num();
-	const int32 WrappedIndex = OffsetIndex < 0
-		? OffsetIndex + ResolutionOptions.Num()
-		: OffsetIndex;
-	return SetResolutionPresetIndex(WrappedIndex);
-}
-
-bool USettingWidget::SetSoundVolumeIndex(int32 VolumeIndex, float NewValue)
-{
-	if (bRefreshingSoundSettings)
-	{
-		return false;
-	}
-
-	ULocalPlayerSettingsSubsystem* SettingsSubsystem = GetSettingsSubsystem();
-	if (!SettingsSubsystem)
-	{
-		return false;
-	}
-
-	return SettingsSubsystem->SetSoundVolumeByIndex(VolumeIndex, NewValue);
-}
-
-void USettingWidget::RefreshGraphicsSettings()
-{
-	ULocalPlayerSettingsSubsystem* SettingsSubsystem = GetSettingsSubsystem();
-	if (!SettingsSubsystem)
-	{
-		return;
-	}
-
-	const TArray<FOutlierResolutionOption>& ResolutionOptions =
-		SettingsSubsystem->GetResolutionOptions();
-	if (!ResolutionOptions.IsValidIndex(PendingResolutionPresetIndex))
-	{
-		PendingResolutionPresetIndex = SettingsSubsystem->GetResolutionPresetIndex();
-	}
-
-	if (ResolutionText && ResolutionOptions.IsValidIndex(PendingResolutionPresetIndex))
-	{
-		const FOutlierResolutionOption& ResolutionOption =
-			ResolutionOptions[PendingResolutionPresetIndex];
-		ResolutionText->SetText(FText::FromString(FString::Printf(
-			TEXT("%s - %d x %d"),
-			*ResolutionOption.DisplayName.ToString(),
-			ResolutionOption.Resolution.X,
-			ResolutionOption.Resolution.Y)));
-	}
-}
-
-void USettingWidget::RefreshSoundSettings()
-{
-	ULocalPlayerSettingsSubsystem* SettingsSubsystem = GetSettingsSubsystem();
-	if (!SettingsSubsystem)
-	{
-		return;
-	}
-
-	const TArray<FOutlierSoundVolumeOption>& SoundVolumeOptions =
-		SettingsSubsystem->GetSoundVolumeOptions();
-
-	bRefreshingSoundSettings = true;
-	for (int32 Index = 0; Index < SoundVolumeRows.Num(); ++Index)
-	{
-		USettingSliderRowWidget* SoundVolumeRow = SoundVolumeRows[Index];
-		if (!SoundVolumeRow || !SoundVolumeOptions.IsValidIndex(Index))
-		{
-			continue;
-		}
-
-		SoundVolumeRow->SetColumnWidths(
-			SoundLabelColumnWidth,
-			SoundSliderColumnWidth,
-			SoundValueColumnWidth);
-		SoundVolumeRow->SetLabelText(SoundVolumeOptions[Index].DisplayName);
-		SoundVolumeRow->SetValue(SoundVolumeOptions[Index].Value);
-	}
-	bRefreshingSoundSettings = false;
-}
-
-void USettingWidget::RebuildInputBindingList()
-{
-	if (bInputBindingListBuilt && !ActiveInputBindingRows.IsEmpty())
-	{
-		RefreshInputBindingDisplayedKeys();
-		return;
-	}
-
-	if (!InputBindingListHost)
-	{
-		return;
-	}
-
-	InputBindingListHost->ClearChildren();
-	ActiveInputBindingRows.Reset();
-
-	if (!InputBindingTable || !InputBindingRowWidgetClass)
-	{
-		return;
-	}
-
-	APlayerController* OwningPlayer = GetOwningPlayer();
-	if (!OwningPlayer)
-	{
-		return;
-	}
-
-	const TArray<FOutlierInputBindingTableRow> VisibleRows =
-		InputBindingTable->GetVisibleRowsSorted();
-
-	for (int32 RowIndex = 0; RowIndex < VisibleRows.Num(); ++RowIndex)
-	{
-		UInputBindingRowWidget* RowWidget = CreateWidget<UInputBindingRowWidget>(
-			OwningPlayer,
-			InputBindingRowWidgetClass);
-		if (!RowWidget)
-		{
-			continue;
-		}
-
-		RowWidget->InitializeInputBindingRow(VisibleRows[RowIndex], RowIndex);
-		RowWidget->SetDisplayedKey(ResolveInputBindingCurrentKey(VisibleRows[RowIndex]));
-		RowWidget->OnRowHovered.AddUniqueDynamic(
-			this,
-			&USettingWidget::HandleInputBindingRowHovered);
-		RowWidget->OnRebindRequested.AddUniqueDynamic(
-			this,
-			&USettingWidget::HandleInputBindingRebindRequested);
-		ActiveInputBindingRows.Add(RowWidget);
-
-		if (UCanvasPanel* CanvasPanel = Cast<UCanvasPanel>(InputBindingListHost))
-		{
-			if (UCanvasPanelSlot* CanvasSlot = CanvasPanel->AddChildToCanvas(RowWidget))
-			{
-				CanvasSlot->SetAnchors(FAnchors(0.0f, 0.0f));
-				CanvasSlot->SetAlignment(FVector2D::ZeroVector);
-				CanvasSlot->SetPosition(FVector2D(0.0f, InputBindingRowYOffset * RowIndex));
-				CanvasSlot->SetAutoSize(true);
-			}
-			continue;
-		}
-
-		InputBindingListHost->AddChild(RowWidget);
-	}
-
-	bInputBindingListBuilt = !ActiveInputBindingRows.IsEmpty();
-}
-
-void USettingWidget::HandleGraphicButtonClicked()
-{
-	SetActiveSettingPage(GraphicPageIndex);
-}
-
-void USettingWidget::HandleSoundButtonClicked()
-{
-	SetActiveSettingPage(SoundPageIndex);
-}
-
-void USettingWidget::HandleInputButtonClicked()
-{
-	SetActiveSettingPage(InputPageIndex);
-}
-
-void USettingWidget::HandleExitButtonClicked()
-{
-	PopSelfFromLayer();
-}
-
-void USettingWidget::HandleGraphicLeftButtonClicked()
-{
-	OffsetResolutionPresetIndex(-1);
-}
-
-void USettingWidget::HandleGraphicRightButtonClicked()
-{
-	OffsetResolutionPresetIndex(1);
-}
-
-void USettingWidget::HandleTotalVolumeRowChanged(float NewValue)
-{
-	SetSoundVolumeIndex(0, NewValue);
-}
-
-void USettingWidget::HandleBGMVolumeRowChanged(float NewValue)
-{
-	SetSoundVolumeIndex(1, NewValue);
-}
-
-void USettingWidget::HandleSFXVolumeRowChanged(float NewValue)
-{
-	SetSoundVolumeIndex(2, NewValue);
-}
-
-void USettingWidget::HandleVoiceVolumeRowChanged(float NewValue)
-{
-	SetSoundVolumeIndex(3, NewValue);
-}
-
-void USettingWidget::HandleInputBindingRowHovered(
-	UInputBindingRowWidget* RowWidget,
-	int32 RowIndex)
-{
-	(void)RowIndex;
-	HoveredInputBindingRow = RowWidget;
-}
-
-void USettingWidget::HandleInputBindingRebindRequested(
-	UInputBindingRowWidget* RowWidget,
-	int32 RowIndex)
-{
-	(void)RowIndex;
-	StartInputRebind(RowWidget);
-}
-
-bool USettingWidget::ApplyPendingResolutionPreset()
-{
-	ULocalPlayerSettingsSubsystem* SettingsSubsystem = GetSettingsSubsystem();
-	if (!SettingsSubsystem || PendingResolutionPresetIndex == INDEX_NONE)
-	{
-		return false;
-	}
-
-	const bool bApplied =
-		SettingsSubsystem->SetResolutionPresetByIndex(PendingResolutionPresetIndex, true);
-	RefreshGraphicsSettings();
-	return bApplied;
-}
-
-bool USettingWidget::StartInputRebind(UInputBindingRowWidget* RowWidget)
-{
-	if (!RowWidget)
-	{
-		return false;
-	}
-
-	const FOutlierInputBindingTableRow& Row = RowWidget->GetInputBindingRow();
-	if (!Row.bRebindable)
-	{
-		return false;
-	}
-
-	PendingRebindInputBindingRow = RowWidget;
-	bWaitingForInputRebind = true;
-	RebindStartTimeSeconds = FPlatformTime::Seconds();
-	SetKeyboardFocus();
-	SetInputResult(WaitingForInputText, InputResultDefaultColor);
-	return true;
-}
-
-bool USettingWidget::TryCommitInputRebind(FKey NewKey)
-{
-	UInputBindingRowWidget* RowWidget = PendingRebindInputBindingRow.Get();
-	if (!RowWidget || !NewKey.IsValid() || NewKey == EKeys::AnyKey)
-	{
-		SetInputResult(InputRebindFailedText, InputResultFailureColor);
-		bWaitingForInputRebind = false;
-		PendingRebindInputBindingRow = nullptr;
-		return false;
-	}
-
-	const FOutlierInputBindingTableRow& Row = RowWidget->GetInputBindingRow();
-	const bool bRestoringDefaultKey = NewKey == Row.DefaultKey;
-
-	if (IsInputKeyDuplicate(NewKey, RowWidget))
-	{
-		SetInputResult(DuplicateInputText, InputResultFailureColor);
-		bWaitingForInputRebind = false;
-		PendingRebindInputBindingRow = nullptr;
-		return false;
-	}
-
-	bool bMapped = false;
-	if (!Row.bRebindable)
-	{
-		UE_LOG(
-			LogTemp,
-			Warning,
-			TEXT("Input rebind rejected before query. Action=%s Context=%s NewKey=%s Reason=NotRebindable"),
-			*GetNameSafe(Row.InputAction),
-			*Row.MappingContext.ToSoftObjectPath().ToString(),
-			*NewKey.ToString());
-	}
-	else if (ULocalPlayer* LocalPlayer = GetOwningLocalPlayer())
-	{
-		if (UEnhancedInputLocalPlayerSubsystem* InputSubsystem =
-			LocalPlayer->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>())
-		{
-			UEnhancedInputUserSettings* UserSettings =
-				InputSubsystem->GetUserSettings();
-			if (UserSettings)
-			{
-				if (UInputMappingContext* MappingContext =
-					Row.MappingContext.LoadSynchronous())
-				{
-					if (!bRestoringDefaultKey)
-					{
-						TArray<UInputMappingContext*> QueryContexts;
-						BuildInputBindingQueryContexts(QueryContexts);
-						QueryContexts.AddUnique(MappingContext);
-
-						TArray<FMappingQueryIssue> QueryIssues;
-						const EMappingQueryResult QueryResult =
-							InputSubsystem->QueryMapKeyInContextSet(
-								QueryContexts,
-							MappingContext,
-							Row.InputAction,
-							NewKey,
-							QueryIssues,
-							EMappingQueryIssue::ReservedByAction);
-						if (QueryResult == EMappingQueryResult::NotMappable)
-						{
-							UE_LOG(
-								LogTemp,
-								Warning,
-								TEXT("Input rebind query rejected. MappingName=%s Action=%s NewKey=%s IssueCount=%d"),
-								*Row.MappingName.ToString(),
-								*GetNameSafe(Row.InputAction),
-								*NewKey.ToString(),
-								QueryIssues.Num());
-
-							SetInputResult(DuplicateInputText, InputResultFailureColor);
-							bWaitingForInputRebind = false;
-							PendingRebindInputBindingRow = nullptr;
-							return false;
-						}
-
-						if (QueryResult != EMappingQueryResult::MappingAvailable)
-						{
-							UE_LOG(
-								LogTemp,
-								Warning,
-								TEXT("Input rebind query failed. MappingName=%s Action=%s NewKey=%s QueryResult=%d"),
-								*Row.MappingName.ToString(),
-								*GetNameSafe(Row.InputAction),
-								*NewKey.ToString(),
-								static_cast<int32>(QueryResult));
-
-							SetInputResult(InputRebindFailedText, InputResultFailureColor);
-							bWaitingForInputRebind = false;
-							PendingRebindInputBindingRow = nullptr;
-							return false;
-						}
-					}
-
-					UserSettings->RegisterInputMappingContext(MappingContext);
-				}
-				else
-				{
-					UE_LOG(
-						LogTemp,
-						Warning,
-						TEXT("Input rebind failed before map. MappingName=%s Action=%s Context=%s NewKey=%s Reason=MissingMappingContext"),
-						*Row.MappingName.ToString(),
-						*GetNameSafe(Row.InputAction),
-						*Row.MappingContext.ToSoftObjectPath().ToString(),
-						*NewKey.ToString());
-				}
-
-				if (Row.MappingName.IsNone())
-				{
-					UE_LOG(
-						LogTemp,
-						Warning,
-						TEXT("Input rebind failed before map. Action=%s Context=%s NewKey=%s Reason=MissingPlayerMappableMappingName"),
-						*GetNameSafe(Row.InputAction),
-						*Row.MappingContext.ToSoftObjectPath().ToString(),
-						*NewKey.ToString());
-				}
-				else
-				{
-					FMapPlayerKeyArgs MapArgs;
-					MapArgs.MappingName = Row.MappingName;
-					MapArgs.Slot = EPlayerMappableKeySlot::First;
-					MapArgs.NewKey = NewKey;
-					MapArgs.bCreateMatchingSlotIfNeeded = true;
-
-					FGameplayTagContainer FailureReason;
-					if (bRestoringDefaultKey)
-					{
-						UserSettings->ResetAllPlayerKeysInRow(MapArgs, FailureReason);
-					}
-					else
-					{
-						UserSettings->MapPlayerKey(MapArgs, FailureReason);
-					}
-					bMapped = FailureReason.IsEmpty();
-					if (bMapped)
-					{
-						UserSettings->ApplySettings();
-						UserSettings->SaveSettings();
-					}
-					else
-					{
-						UE_LOG(
-							LogTemp,
-							Warning,
-							TEXT("Input rebind failed. MappingName=%s Action=%s NewKey=%s FailureReason=%s"),
-							*Row.MappingName.ToString(),
-							*GetNameSafe(Row.InputAction),
-							*NewKey.ToString(),
-							*FailureReason.ToStringSimple());
-					}
-				}
-			}
-			else
-			{
-				UE_LOG(
-					LogTemp,
-					Warning,
-					TEXT("Input rebind failed before query. MappingName=%s Action=%s NewKey=%s Reason=MissingEnhancedInputUserSettings"),
-					*Row.MappingName.ToString(),
-					*GetNameSafe(Row.InputAction),
-					*NewKey.ToString());
-			}
-		}
-		else
-		{
-			UE_LOG(
-				LogTemp,
-				Warning,
-				TEXT("Input rebind failed before query. MappingName=%s Action=%s NewKey=%s Reason=MissingEnhancedInputLocalPlayerSubsystem"),
-				*Row.MappingName.ToString(),
-				*GetNameSafe(Row.InputAction),
-				*NewKey.ToString());
-		}
-	}
-	else
-	{
-		UE_LOG(
-			LogTemp,
-			Warning,
-			TEXT("Input rebind failed before query. MappingName=%s Action=%s NewKey=%s Reason=MissingOwningLocalPlayer"),
-			*Row.MappingName.ToString(),
-			*GetNameSafe(Row.InputAction),
-			*NewKey.ToString());
-	}
-
-	if (!bMapped)
-	{
-		SetInputResult(InputRebindFailedText, InputResultFailureColor);
-		bWaitingForInputRebind = false;
-		PendingRebindInputBindingRow = nullptr;
-		return false;
-	}
-
-	if (bRestoringDefaultKey)
-	{
-		RuntimeInputKeyOverrides.Remove(Row.MappingName);
-	}
-	else
-	{
-		RuntimeInputKeyOverrides.Add(Row.MappingName, NewKey);
-	}
-	RowWidget->SetDisplayedKey(NewKey);
-
-	if (ULocalPlayerSettingsSubsystem* SettingsSubsystem = GetSettingsSubsystem())
-	{
-		SettingsSubsystem->NotifyInputActionKeyChanged(Row.InputAction, NewKey);
-	}
-
-	SetInputResult(InputChangedText, InputResultSuccessColor);
-	bWaitingForInputRebind = false;
-	PendingRebindInputBindingRow = nullptr;
-	return true;
-}
-
-bool USettingWidget::IsPointerOverInputBindingRow(
-	const FPointerEvent& InMouseEvent) const
-{
-	const FVector2D ScreenSpacePosition = InMouseEvent.GetScreenSpacePosition();
-	for (const TObjectPtr<UInputBindingRowWidget>& RowWidgetPtr : ActiveInputBindingRows)
-	{
-		const UInputBindingRowWidget* RowWidget = RowWidgetPtr.Get();
-		if (RowWidget && RowWidget->GetCachedGeometry().IsUnderLocation(ScreenSpacePosition))
-		{
-			return true;
-		}
-	}
-
-	return false;
-}
-
-void USettingWidget::ClearInputBindingInteractionState(bool bClearResultText)
-{
-	bWaitingForInputRebind = false;
-	PendingRebindInputBindingRow = nullptr;
-	HoveredInputBindingRow = nullptr;
-
-	if (bClearResultText)
-	{
-		SetInputResult(FText::GetEmpty(), InputResultDefaultColor);
-	}
-}
-
-bool USettingWidget::TryGetUserSettingsKeyForRow(
-	const FOutlierInputBindingTableRow& Row,
-	FKey& OutKey) const
-{
-	if (Row.MappingName.IsNone())
-	{
-		return false;
-	}
-
-	const ULocalPlayer* LocalPlayer = GetOwningLocalPlayer();
-	UEnhancedInputLocalPlayerSubsystem* InputSubsystem = LocalPlayer
-		? LocalPlayer->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>()
-		: nullptr;
-	UEnhancedInputUserSettings* UserSettings = InputSubsystem
-		? InputSubsystem->GetUserSettings()
-		: nullptr;
-	if (!UserSettings)
-	{
-		return false;
-	}
-
-	if (UInputMappingContext* MappingContext = Row.MappingContext.LoadSynchronous())
-	{
-		UserSettings->RegisterInputMappingContext(MappingContext);
-	}
-
-	const FPlayerKeyMapping* CurrentMapping =
-		UserSettings->FindCurrentMappingForSlot(
-			Row.MappingName,
-			EPlayerMappableKeySlot::First);
-	if (!CurrentMapping || !CurrentMapping->IsValid())
-	{
-		return false;
-	}
-
-	OutKey = CurrentMapping->GetCurrentKey();
-	return OutKey.IsValid() && OutKey != EKeys::AnyKey;
-}
-
-FKey USettingWidget::ResolveInputBindingCurrentKey(
-	const FOutlierInputBindingTableRow& Row) const
-{
-	if (const FKey* OverrideKey = RuntimeInputKeyOverrides.Find(Row.MappingName))
-	{
-		return *OverrideKey;
-	}
-
-	FKey UserSettingsKey;
-	if (TryGetUserSettingsKeyForRow(Row, UserSettingsKey))
-	{
-		return UserSettingsKey;
-	}
-
-	return Row.DefaultKey;
-}
-
-void USettingWidget::BuildInputBindingQueryContexts(
-	TArray<UInputMappingContext*>& OutContexts) const
-{
-	OutContexts.Reset();
-
-	if (!InputBindingTable)
-	{
-		return;
-	}
-
-	const TArray<FOutlierInputBindingTableRow> VisibleRows =
-		InputBindingTable->GetVisibleRowsSorted();
-	for (const FOutlierInputBindingTableRow& Row : VisibleRows)
-	{
-		if (UInputMappingContext* MappingContext = Row.MappingContext.LoadSynchronous())
-		{
-			OutContexts.AddUnique(MappingContext);
-		}
-	}
-}
-
-bool USettingWidget::IsInputKeyDuplicate(
-	FKey NewKey,
-	const UInputBindingRowWidget* IgnoredRowWidget) const
-{
-	if (!NewKey.IsValid() || NewKey == EKeys::AnyKey)
-	{
-		return false;
-	}
-
-	const FName IgnoredMappingName = IgnoredRowWidget
-		? IgnoredRowWidget->GetInputBindingRow().MappingName
-		: NAME_None;
-
-	for (const TObjectPtr<UInputBindingRowWidget>& RowWidgetPtr : ActiveInputBindingRows)
-	{
-		const UInputBindingRowWidget* RowWidget = RowWidgetPtr.Get();
-		if (!RowWidget || RowWidget == IgnoredRowWidget)
-		{
-			continue;
-		}
-
-		const FOutlierInputBindingTableRow& Row = RowWidget->GetInputBindingRow();
-		if (Row.MappingName == IgnoredMappingName)
-		{
-			continue;
-		}
-
-		if (IgnoredRowWidget
-			&& Row.ConflictGroup != IgnoredRowWidget->GetInputBindingRow().ConflictGroup)
-		{
-			continue;
-		}
-
-		const FKey ExistingKey = ResolveInputBindingCurrentKey(Row);
-		if (!ExistingKey.IsValid() || ExistingKey == EKeys::AnyKey)
-		{
-			continue;
-		}
-
-		if (ExistingKey == NewKey)
-		{
-			return true;
-		}
-	}
-
-	return false;
-}
-
-void USettingWidget::RefreshInputBindingDisplayedKeys()
-{
-	for (const TObjectPtr<UInputBindingRowWidget>& RowWidgetPtr : ActiveInputBindingRows)
-	{
-		UInputBindingRowWidget* RowWidget = RowWidgetPtr.Get();
-		if (!RowWidget)
-		{
-			continue;
-		}
-
-		const FOutlierInputBindingTableRow& Row = RowWidget->GetInputBindingRow();
-		RowWidget->SetDisplayedKey(ResolveInputBindingCurrentKey(Row));
-	}
-}
-
-void USettingWidget::SetInputResult(
-	const FText& ResultText,
-	const FLinearColor& ResultColor)
-{
-	if (!InputResultText)
-	{
-		return;
-	}
-
-	InputResultText->SetText(ResultText);
-	InputResultText->SetColorAndOpacity(FSlateColor(ResultColor));
-}
-
-void USettingWidget::CacheWidgetArrays()
-{
-	SettingTabButtons = {
-		GraphicButton,
-		SoundButton,
-		InputButton
-	};
-
-	SoundVolumeRows = {
-		TotalVolumeRow,
-		BGMVolumeRow,
-		SFXVolumeRow,
-		VoiceVolumeRow
-	};
-}
-
-void USettingWidget::BindSettingsSubsystem()
-{
-	ULocalPlayerSettingsSubsystem* SettingsSubsystem = GetSettingsSubsystem();
-	if (BoundSettingsSubsystem == SettingsSubsystem)
-	{
-		return;
-	}
-
-	UnbindSettingsSubsystem();
-	BoundSettingsSubsystem = SettingsSubsystem;
-
-	if (BoundSettingsSubsystem)
-	{
-		BoundSettingsSubsystem->OnResolutionPresetChanged.AddUniqueDynamic(
-			this,
-			&USettingWidget::HandleResolutionPresetChanged);
-		BoundSettingsSubsystem->OnSoundVolumeChanged.AddUniqueDynamic(
-			this,
-			&USettingWidget::HandleSoundVolumeChanged);
-	}
-}
-
-void USettingWidget::UnbindSettingsSubsystem()
-{
-	if (BoundSettingsSubsystem)
-	{
-		BoundSettingsSubsystem->OnResolutionPresetChanged.RemoveAll(this);
-		BoundSettingsSubsystem->OnSoundVolumeChanged.RemoveAll(this);
-	}
-
-	BoundSettingsSubsystem = nullptr;
-}
-
-void USettingWidget::HandleResolutionPresetChanged(
-	EOutlierResolutionPreset NewPreset)
-{
-	(void)NewPreset;
-	RefreshGraphicsSettings();
-}
-
-void USettingWidget::HandleSoundVolumeChanged(
-	EOutlierAudioVolumeType VolumeType,
-	float NewValue)
-{
-	(void)VolumeType;
-	(void)NewValue;
-	RefreshSoundSettings();
-}
-
-ULocalPlayerSettingsSubsystem* USettingWidget::GetSettingsSubsystem() const
-{
-	ULocalPlayer* LocalPlayer = GetOwningLocalPlayer();
-	return LocalPlayer
-		? LocalPlayer->GetSubsystem<ULocalPlayerSettingsSubsystem>()
-		: nullptr;
 }
