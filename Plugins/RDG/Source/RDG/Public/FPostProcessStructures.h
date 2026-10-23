@@ -157,7 +157,7 @@ struct FADSBlurParameters
 	int32 bUseSoftSightMask = true;        // 하드 마스크 vs 소프트 마스크 비교 토글.
 
 	// 디버거 전용 GPU 프로파일러 스코프. 켜면 ADS 관련 RDG 패스들이
-	// stat gpu / profilegpu에서 "Outlier ADS ..." 항목으로 표시됨.
+	// stat gpu / profilegpu에서 "OutlierADS_..." 항목으로 표시됨.
 	int32 bEnableGpuStatScopes = false;
 };
 

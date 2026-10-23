@@ -65,6 +65,14 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Damage Feedback|Material")
 	FName AlphaParameterName = TEXT("Alpha");
 
+	// FadeOut 구간 진행도(0→1). 머티리얼이 V 방향 와이프 마스크를 Alpha 에 추가로 곱하는 데 쓴다.
+	UPROPERTY(EditDefaultsOnly, Category = "Damage Feedback|Material")
+	FName WipeParameterName = TEXT("WipeProgress");
+
+	// 비워두면 FadeOut 진행도를 선형으로 넘긴다.
+	UPROPERTY(EditDefaultsOnly, Category = "Damage Feedback|Fade")
+	TObjectPtr<UCurveFloat> WipeCurve;
+
 private:
 	bool UpdateFeedbackRotation();
 
@@ -78,4 +86,5 @@ private:
 	float BaseImageOpacity = 1.0f;
 	bool bHasTimeParameter = false;
 	bool bHasAlphaParameter = false;
+	bool bHasWipeParameter = false;
 };

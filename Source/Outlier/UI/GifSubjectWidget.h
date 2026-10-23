@@ -10,7 +10,7 @@ class USizeBox;
 class UTextBlock;
 class UTexture2D;
 
-/** Subject 레이아웃 모듈. 아이콘 표시 영역, 스케일링, 텍스트 스타일은 WBP가 담당한다. */
+/** Subject 레이아웃 모듈. WBP의 최대 아이콘 크기에 맞춰 이미지의 Desired Size를 계산한다. */
 UCLASS(Blueprintable, meta = (DisableNativeTick))
 class OUTLIER_API UGifSubjectWidget : public UUserWidget
 {
@@ -27,7 +27,7 @@ public:
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UTextBlock> SubjectText;
 
-	/** ScaleBox -> SubjectIcon을 포함한다. 아이콘이 없으면 통째로 Collapsed된다. */
+	/** SubjectIcon을 포함하며 최대 아이콘 크기를 지정한다. 아이콘이 없으면 통째로 Collapsed된다. */
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<USizeBox> SubjectIconContainer;
 

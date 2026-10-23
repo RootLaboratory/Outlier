@@ -9,6 +9,7 @@
 #include "Misc/Paths.h"
 #include "OutlierEventToolWidget.h"
 #include "OutlierInputMappableToolWidget.h"
+#include "OutlierStableIdTool.h"
 #include "OutlierUpgradeEffectToolWidget.h"
 #include "PlayInEditorDataTypes.h"
 #include "ProceduralAnimValuesExporter.h"
@@ -59,11 +60,14 @@ public:
 		FEditorDelegates::BeginPIE.AddRaw(
 			this,
 			&FOutlierEditorModule::HandleBeginPIE);
+		FEditorDelegates::PreBeginPIE.AddRaw(&StableIdTool, &FOutlierStableIdTool::CheckBeforePIE);
 	}
 
 	virtual void ShutdownModule() override
 	{
 		FEditorDelegates::BeginPIE.RemoveAll(this);
+		FEditorDelegates::PreBeginPIE.RemoveAll(&StableIdTool);
+		StableIdTool.Shutdown();
 
 		UToolMenus::UnRegisterStartupCallback(this);
 		UToolMenus::UnregisterOwner(this);
@@ -80,12 +84,20 @@ public:
 	}
 
 private:
+	FOutlierStableIdTool StableIdTool;
+
 	void RegisterMenus()
 	{
 		FToolMenuOwnerScoped OwnerScoped(this);
 
 		UToolMenu* ToolsMenu = UToolMenus::Get()->ExtendMenu(TEXT("MainFrame.MainMenu.Tools"));
 		FToolMenuSection& Section = ToolsMenu->FindOrAddSection(TEXT("Outlier"));
+		Section.AddMenuEntry(
+			TEXT("CheckOutlierCheckpointIds"),
+			LOCTEXT("CheckCheckpointIdsLabel", "Outlier Checkpoint ID Check"),
+			LOCTEXT("CheckCheckpointIdsTooltip", "Find missing or duplicate persistent IDs in loaded editor levels."),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateRaw(&StableIdTool, &FOutlierStableIdTool::Open)));
 		Section.AddMenuEntry(
 			TEXT("OpenOutlierInputMappableTool"),
 			LOCTEXT("OpenInputMappableToolLabel", "Outlier Input Mappable Tool"),

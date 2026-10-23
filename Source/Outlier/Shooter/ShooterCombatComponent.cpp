@@ -269,10 +269,30 @@ void UShooterCombatComponent::StartAimInternal()
 	bIsAiming = true;
 	ShooterCharacter->CombatState = ECombatState::Aim;
 	RangedWeapon->SetAiming(true);
-	RangedWeapon->SetSightAimMaterialFlag(true);
 
-	ShooterCharacter->OnShooterDynamicCrosshairChanged.Broadcast(true);
-	ShooterCharacter->OnShooterAimingBlur.Broadcast(true, RangedWeapon->ResolveADSBlurStencil()); //PostPorcessing 전용 총 Mesh Stencil 받아오기.
+	NotifyAimPresentation();
+}
+
+void UShooterCombatComponent::OnRep_IsAiming()
+{
+	// 복제로 바뀐 조준 상태도 로컬 상태 전이와 같은 표시 갱신을 적용한다.
+	NotifyAimPresentation();
+}
+
+void UShooterCombatComponent::NotifyAimPresentation()
+{
+	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	if (!ShooterCharacter)
+	{
+		return;
+	}
+
+	ShooterCharacter->OnShooterDynamicCrosshairChanged.Broadcast(bIsAiming);
+	if (ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(ShooterCharacter->CurrentWeapon))
+	{
+		RangedWeapon->SetSightAimMaterialFlag(bIsAiming);
+		ShooterCharacter->OnShooterAimingBlur.Broadcast(bIsAiming, RangedWeapon->ResolveADSBlurStencil());
+	}
 }
 
 void UShooterCombatComponent::HandleAimReleased()
@@ -710,12 +730,11 @@ void UShooterCombatComponent::SuspendAimInternal()
 	{
 		RangedWeapon->SetAiming(false);
 		RangedWeapon->SetSightAimMaterialFlag(false);
+	}
 
-		if (bWasAiming)
-		{
-			ShooterCharacter->OnShooterDynamicCrosshairChanged.Broadcast(false);
-			ShooterCharacter->OnShooterAimingBlur.Broadcast(false, RangedWeapon->ResolveADSBlurStencil());
-		}
+	if (bWasAiming)
+	{
+		NotifyAimPresentation();
 	}
 }
 

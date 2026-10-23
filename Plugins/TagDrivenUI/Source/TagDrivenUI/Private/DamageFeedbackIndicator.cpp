@@ -30,6 +30,7 @@ void UDamageFeedbackIndicator::NativeOnInitialized()
 	float UnusedValue = 0.0f;
 	bHasTimeParameter = FeedbackMID->GetScalarParameterValue(FHashedMaterialParameterInfo(TimeParameterName), UnusedValue);
 	bHasAlphaParameter = FeedbackMID->GetScalarParameterValue(FHashedMaterialParameterInfo(AlphaParameterName), UnusedValue);
+	bHasWipeParameter = FeedbackMID->GetScalarParameterValue(FHashedMaterialParameterInfo(WipeParameterName), UnusedValue);
 }
 
 float UDamageFeedbackIndicator::GetFeedbackDuration() const
@@ -50,11 +51,15 @@ void UDamageFeedbackIndicator::HandleFeedbackTick(float NormalizedElapsedTime)
 	// TimeScale 이 있는 Red 는 FadeIn 동안 머티리얼 애니메이션이 진행된다.
 	// TimeScale 이 없는 Shield 는 같은 커브 값을 Alpha 에 적용해 나타나게 한다.
 	float Alpha = bHasTimeParameter ? 1.0f : FMath::Clamp(Phase, 0.0f, 1.0f);
+	float Wipe = 0.0f;
 	if (FeedbackElapsed >= InTime)
 	{
 		const float FadeOutProgress = OutTime > KINDA_SMALL_NUMBER
 			? FMath::Clamp((FeedbackElapsed - InTime) / OutTime, 0.0f, 1.0f) : 1.0f;
 		Alpha *= FadeOutCurve ? FadeOutCurve->GetFloatValue(FadeOutProgress) : 1.0f - FadeOutProgress;
+
+		// 플립북이 끝난 FadeOut 구간에서만 와이프가 진행된다. FadeIn 동안은 0 이라 마스크가 걸리지 않는다.
+		Wipe = WipeCurve ? WipeCurve->GetFloatValue(FadeOutProgress) : FadeOutProgress;
 	}
 
 	if (FeedbackMID)
@@ -66,6 +71,10 @@ void UDamageFeedbackIndicator::HandleFeedbackTick(float NormalizedElapsedTime)
 		if (bHasAlphaParameter)
 		{
 			FeedbackMID->SetScalarParameterValue(AlphaParameterName, Alpha);
+		}
+		if (bHasWipeParameter)
+		{
+			FeedbackMID->SetScalarParameterValue(WipeParameterName, Wipe);
 		}
 	}
 

@@ -1,5 +1,8 @@
 #include "UI/InfoQueueWidget.h"
 
+#include "CoreGlobals.h"
+#include "Engine/World.h"
+
 namespace
 {
 	bool MatchesEvent(const FOutlierInfoWidgetRequest& Request, FGameplayTag Tag)
@@ -90,8 +93,14 @@ void UInfoQueueWidget::AdvanceQueue()
 		RemainingDuration = CurrentRequest.Duration;
 		bHasCurrentInfo = true;
 		const uint32 Generation = ++PresentationGeneration;
-		const FGameplayTag EventTag = CurrentRequest.EventTag;
 		const FOutlierInfoWidgetRequest Request = CurrentRequest;
+		PresentationWarmupFramesRemaining = FMath::Max(0, GetPresentationWarmupFrames());
+		if (PresentationWarmupFramesRemaining > 0)
+		{
+			PresentationRenderOpacity = GetRenderOpacity();
+			LastPresentationWarmupFrame = GFrameCounter;
+			SetRenderOpacity(0.0f);
+		}
 		if (!PresentInfo(Request))
 		{
 			if (Generation == PresentationGeneration && bHasCurrentInfo)
@@ -105,20 +114,60 @@ void UInfoQueueWidget::AdvanceQueue()
 			SetVisibility(ESlateVisibility::SelfHitTestInvisible);
 			if (Generation == PresentationGeneration && bHasCurrentInfo)
 			{
-				OnInfoItemShown.Broadcast(EventTag);
+				if (PresentationWarmupFramesRemaining > 0)
+				{
+					// Keep the widget in layout/paint while transparent; Collapsed cannot warm up layout.
+					InvalidateLayoutAndVolatility();
+					ForceLayoutPrepass();
+				}
+				else
+				{
+					StartInfoPresentation();
+					if (Generation == PresentationGeneration && bHasCurrentInfo)
+					{
+						OnInfoItemShown.Broadcast(Request.EventTag);
+					}
+				}
 			}
 		}
 	}
 }
 
+bool UInfoQueueWidget::IsInfoPaused() const
+{
+	const UWorld* World = GetWorld();
+	return World && World->IsPaused();
+}
+
 void UInfoQueueWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 {
+	if (IsInfoPaused()) return;
 	const uint32 Generation = PresentationGeneration;
 	Super::NativeTick(MyGeometry, InDeltaTime);
-	if (!bHasCurrentInfo || Generation != PresentationGeneration || CurrentRequest.Duration <= 0.0f)
+	if (!bHasCurrentInfo || Generation != PresentationGeneration)
 	{
 		return;
 	}
+	if (PresentationWarmupFramesRemaining > 0)
+	{
+		// A request can start during this frame's Slate tick. Count only later frames,
+		// allowing two layout/paint passes before revealing Right/Upper.
+		if (LastPresentationWarmupFrame != GFrameCounter)
+		{
+			LastPresentationWarmupFrame = GFrameCounter;
+			if (--PresentationWarmupFramesRemaining == 0)
+			{
+				const FGameplayTag EventTag = CurrentRequest.EventTag;
+				SetRenderOpacity(PresentationRenderOpacity);
+				StartInfoPresentation();
+				if (Generation != PresentationGeneration || !bHasCurrentInfo) return;
+				OnInfoItemShown.Broadcast(EventTag);
+			}
+		}
+		// Neither preparation nor the reveal tick consumes the requested display duration.
+		return;
+	}
+	if (CurrentRequest.Duration <= 0.0f) return;
 	RemainingDuration = FMath::Max(0.0f, RemainingDuration - InDeltaTime);
 	if (RemainingDuration <= 0.0f)
 	{
@@ -129,6 +178,16 @@ void UInfoQueueWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime
 void UInfoQueueWidget::CompleteCurrentInfo()
 {
 	FinishCurrentInfo(true);
+}
+
+void UInfoQueueWidget::ResetPresentationWarmup()
+{
+	if (PresentationWarmupFramesRemaining > 0)
+	{
+		SetRenderOpacity(PresentationRenderOpacity);
+	}
+	PresentationWarmupFramesRemaining = 0;
+	LastPresentationWarmupFrame = 0;
 }
 
 bool UInfoQueueWidget::TryGetInfoRequest(FGameplayTag EventTag, FOutlierInfoWidgetRequest& OutRequest) const
@@ -233,6 +292,7 @@ void UInfoQueueWidget::FinishCurrentInfo(bool bCompleted)
 		// finishing guard가 아직 표시를 막고 있는 동안 후속 항목을 Queue에 넣는다.
 		InfoFinished(FinishedRequest, bCompleted);
 		SetVisibility(ESlateVisibility::Collapsed);
+		ResetPresentationWarmup();
 		ResetInfoContent();
 		OnInfoItemFinished.Broadcast(EventTag, bCompleted);
 	}
@@ -287,6 +347,7 @@ void UInfoQueueWidget::ClearInfoQueue()
 	RemainingDuration = 0.0f;
 	++PresentationGeneration;
 	SetVisibility(ESlateVisibility::Collapsed);
+	ResetPresentationWarmup();
 	ResetInfoContent();
 	for (const FOutlierInfoWidgetRequest& Request : CancelledRequests)
 	{

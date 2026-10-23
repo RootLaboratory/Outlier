@@ -48,6 +48,7 @@ public:
 	FOnOutlierInfoItemFinished OnInfoItemFinished;
 
 protected:
+	bool IsInfoPaused() const;
 	virtual void NativeOnInitialized() override;
 	virtual void NativeConstruct() override;
 	virtual void NativeDestruct() override;
@@ -55,6 +56,10 @@ protected:
 	/** 요청을 보관하기 전에 위젯이 소유한 DT 기본값을 해석한다. */
 	virtual bool PrepareInfoRequest(FOutlierInfoWidgetRequest& Request) const;
 	virtual bool PresentInfo(const FOutlierInfoWidgetRequest& Request) { return true; }
+	/** ScaleBox/줄바꿈의 초기 배치를 투명한 상태에서 준비할 프레임 수. */
+	virtual int32 GetPresentationWarmupFrames() const { return 0; }
+	/** 투명한 레이아웃 준비가 끝난 뒤 표시 효과를 시작한다. */
+	virtual void StartInfoPresentation() {}
 	virtual void ResetInfoContent() {}
 	virtual void InfoFinished(const FOutlierInfoWidgetRequest& Request, bool bCompleted) {}
 	bool TryGetInfoRequest(FGameplayTag EventTag, FOutlierInfoWidgetRequest& OutRequest) const;
@@ -65,6 +70,7 @@ private:
 	bool CancelInfoExact(FGameplayTag RequestTag, FGameplayTag OriginEventTag);
 	void AdvanceQueue();
 	void FinishCurrentInfo(bool bCompleted);
+	void ResetPresentationWarmup();
 	void HandleVisibilityChanged(ESlateVisibility Visibility);
 
 	UPROPERTY(Transient)
@@ -75,6 +81,9 @@ private:
 
 	float RemainingDuration = 0.0f;
 	uint32 PresentationGeneration = 0;
+	int32 PresentationWarmupFramesRemaining = 0;
+	uint64 LastPresentationWarmupFrame = 0;
+	float PresentationRenderOpacity = 1.0f;
 	bool bHasCurrentInfo = false;
 	bool bAdvancingQueue = false;
 	bool bFinishingCurrent = false;

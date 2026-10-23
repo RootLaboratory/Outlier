@@ -6,6 +6,7 @@
 #include "UI/InputDisplayTypes.h"
 #include "OutlierEventTypes.generated.h"
 
+class UFileMediaSource;
 class UTexture2D;
 
 UENUM(BlueprintType)
@@ -208,8 +209,17 @@ struct OUTLIER_API FOutlierGifDataRow : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GIF UI")
 	FText Subject;
 
+	/** 기획 전달 파일명. GifMedia의 MP4 파일명과 맞춘다. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GIF UI")
 	FName GifID;
+
+	/** 오른쪽 영역에서 재생할 MP4. 비어 있으면 Poster만 표시하고 Time으로 끝난다. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GIF UI")
+	TSoftObjectPtr<UFileMediaSource> GifMedia;
+
+	/** 영상이 열리기 전이나 열기에 실패했을 때 표시한다. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GIF UI")
+	TSoftObjectPtr<UTexture2D> PosterTexture;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GIF UI", meta = (MultiLine = "true"))
 	FText Description;
@@ -218,9 +228,17 @@ struct OUTLIER_API FOutlierGifDataRow : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GIF UI")
 	EOutlierEventEndCondition EndCondition = EOutlierEventEndCondition::Time;
 
-	/** 요청 duration이 명시되지 않은 Time 요청은 이 값을 쓴다. */
+	/** 요청 duration이 명시되지 않은 Time 요청은 이 값을 쓴다. 영상 종료 대기 중에는 열기 실패 시 최대 표시 시간이다. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GIF UI", meta = (ClampMin = "0.001", EditCondition = "EndCondition == EOutlierEventEndCondition::Time"))
 	float Time = 3.0f;
+
+	/** GifMedia가 있으면 Time 대신 영상 재생 종료 시 완료한다. 끄면 Time 동안 영상을 반복한다. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GIF UI", meta = (EditCondition = "EndCondition == EOutlierEventEndCondition::Time"))
+	bool bFinishOnMediaEnd = true;
+
+	/** 영상 종료 대기 시 완료 전까지 재생할 횟수. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GIF UI", meta = (ClampMin = "1", EditCondition = "bFinishOnMediaEnd && EndCondition == EOutlierEventEndCondition::Time"))
+	int32 PlayCount = 1;
 
 	/** 이 역할 InputDisplay DT의 선택적 참조. 튜토리얼 프롬프트와 공유한다. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GIF UI")

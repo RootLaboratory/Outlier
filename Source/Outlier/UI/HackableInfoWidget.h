@@ -11,6 +11,7 @@ class UImage;
 class UProgressBar;
 class UTextBlock;
 class UPopupRetainerBox;
+struct FHackInfoRow;
 
 UCLASS()
 class OUTLIER_API UHackableInfoWidget : public UUserWidget
@@ -87,6 +88,10 @@ private:
 	UPROPERTY(BlueprintReadOnly, Category = "Hack|InfoWidget", meta = (AllowPrivateAccess = "true"))
 	FGameplayTag CurrentHackInfoTag;
 
+	FSlateBrush DefaultInfoImageBrush;
+	bool bCachedDefaultInfoImageBrush = false;
+
 	bool ResolveHackInfoTag(FGameplayTag& OutHackInfoTag) const;
 	void UpdateInfoText();
+	void UpdateInfoImage(const FHackInfoRow* HackInfo);
 };

@@ -144,7 +144,7 @@ void UOutlierArenaSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 
 bool UOutlierArenaSubsystem::IsGameplayLevelsConfigured() const
 {
-	if (!bGameplayLevelsResolved || GameplaySublevels.Num() > 4)
+	if (!bGameplayLevelsResolved || GameplaySublevels.IsEmpty())
 	{
 		return false;
 	}
@@ -198,15 +198,10 @@ bool UOutlierArenaSubsystem::ResolveGameplaySublevels(const UWorld* ArenaWorld)
 	if (!IsGameplayLevelsConfigured())
 	{
 		UE_LOG(LogTemp, Error,
-			TEXT("[ArenaLevels] Arena map must contain at most 4 unique Blueprint-streamed gameplay sublevels"));
+			TEXT("[ArenaLevels] Arena map must contain at least one valid, unique Blueprint-streamed gameplay sublevel"));
 		GameplaySublevels.Reset();
 		bGameplayLevelsResolved = false;
 		return false;
-	}
-	if (GameplaySublevels.IsEmpty())
-	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("[ArenaLevels] Arena has no gameplay sublevels; keeping the current Arena map and using a no-op level reload"));
 	}
 	return true;
 }
@@ -565,7 +560,7 @@ bool UOutlierArenaSubsystem::ReloadGameplayLevels(uint32 Generation, bool bWaitF
 {
 	// 전용 워커는 실제 Arena Persistent 아래의 등록된 스트리밍 레벨을 전환한다.
 	// Listen은 Title에 동적으로 만든 Arena 지형과 게임플레이 레벨 중 뒤의 목록만 전환한다.
-	// 서브레벨이 없는 맵은 양쪽 모두 Arena를 유지하며 ACK/재시작 흐름만 진행한다.
+	// 게임플레이 서브레벨이 하나 이상 등록된 맵만 리로드할 수 있다.
 	if (!GetWorld() || GetWorld()->GetNetMode() == NM_Client || Generation == 0
 		|| Generation != GameplayGeneration || PendingGameplayReload.IsSet()
 		|| !AreGameplayLevelsShown() || !GetArenaLoadedLevel())
@@ -576,12 +571,6 @@ bool UOutlierArenaSubsystem::ReloadGameplayLevels(uint32 Generation, bool bWaitF
 			*UEnum::GetValueAsString(GetGameplayReloadPhase()),
 			AreGameplayLevelsShown() ? 1 : 0, *GetNameSafe(GetArenaLoadedLevel()));
 		return false;
-	}
-	if (GameplaySublevels.IsEmpty())
-	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("[ArenaReload][%s] Gen=%u No gameplay sublevels; Arena map and placed actors remain loaded"),
-			GetArenaReloadRole(GetWorld()), Generation);
 	}
 	PendingGameplayReload.Emplace();
 	FPendingGameplayReload& Pending = PendingGameplayReload.GetValue();
@@ -617,12 +606,6 @@ bool UOutlierArenaSubsystem::BeginClientGameplayReload(uint32 Generation)
 			GameplayStreamingLevels.Num(), GameplaySublevels.Num(),
 			*GetNameSafe(GetArenaLoadedLevel()));
 		return false;
-	}
-	if (GameplaySublevels.IsEmpty())
-	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("[ArenaReload][Client] Gen=%u No gameplay sublevels; Arena map and placed actors remain loaded"),
-			Generation);
 	}
 	GameplayGeneration = Generation;
 	PendingGameplayReload.Emplace();

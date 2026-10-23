@@ -24,6 +24,8 @@ protected:
 	virtual void NativeOnInitialized() override;
 	virtual bool PrepareInfoRequest(FOutlierInfoWidgetRequest& Request) const override;
 	virtual bool PresentInfo(const FOutlierInfoWidgetRequest& Request) override;
+	virtual int32 GetPresentationWarmupFrames() const override { return 2; }
+	virtual void StartInfoPresentation() override;
 	virtual void ResetInfoContent() override;
 	virtual void InfoFinished(const FOutlierInfoWidgetRequest& Request, bool bCompleted) override;
 };

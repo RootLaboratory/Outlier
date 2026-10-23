@@ -22,7 +22,7 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
 	uint8 bWantsToFire : 1 = false;
 
-	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
+	UPROPERTY(ReplicatedUsing = OnRep_IsAiming, VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
 	uint8 bIsAiming : 1 = false;
 
 	UPROPERTY(ReplicatedUsing = OnRep_IsReloading, VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
@@ -62,6 +62,11 @@ protected:
 
 	UFUNCTION()
 	void OnRep_IsReloading();
+
+	UFUNCTION()
+	void OnRep_IsAiming();
+
+	void NotifyAimPresentation();
 
 	void StartAimInternal();
 
