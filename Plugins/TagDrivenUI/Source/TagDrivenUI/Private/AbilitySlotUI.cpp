@@ -356,6 +356,10 @@ void UAbilitySlotUI::SetAbilityEnabled(bool bEnabled)
 	{
 		LockIcon->SetVisibility(bEnabled ? ESlateVisibility::Hidden : ESlateVisibility::HitTestInvisible);
 	}
+	if (CurrentAbilityIcon)
+	{
+		CurrentAbilityIcon->SetRenderOpacity(bEnabled ? 1.0f : 0.5f);
+	}
 }
 
 void UAbilitySlotUI::SetIconTexture(UTexture2D* InTexture)
