@@ -2103,6 +2103,22 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 	}
 
 	bPendingInitialSaveRestore = bResuming;
+	if (bDirectTest && Shooter && Partner)
+	{
+		// DirectPair PIE에서만 서버가 무기한 무적을 부여한다. 개별 능력의 보호 효과와
+		// 별도 수명으로 유지하여 도약/빙의 종료가 테스트 무적을 해제하지 않게 한다.
+		for (UAbilitySystemComponent* AbilitySystem :
+			{ Shooter->GetAbilitySystemComponent(), Partner->GetAbilitySystemComponent() })
+		{
+			UOutlierAbilitySystemComponent* OutlierASC = Cast<UOutlierAbilitySystemComponent>(AbilitySystem);
+			if (OutlierASC)
+			{
+				const bool bApplied = OutlierASC->ApplyDamageImmuneStateToSelf().IsValid();
+				UE_LOG(LogTemp, Display, TEXT("[DirectPairTest] Start invulnerability: Character=%s Applied=%d"),
+					*GetNameSafe(OutlierASC->GetAvatarActor()), bApplied ? 1 : 0);
+			}
+		}
+	}
 	PossessMatchedPawn(NewShooterPC, Shooter, ShooterSpawn.GetLocation());
 	PossessMatchedPawn(NewPartnerPC, Partner, PartnerSpawn.GetLocation());
 	TryStartInitialSaveRestore();
