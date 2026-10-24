@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ShooterCharacter.h"
+#include "Drone/Partner/PartnerShieldRecipientComponent.h"
+#include "Audio/OutlierAudioFeedback.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimClassInterface.h"
 #include "Animation/AnimMontage.h"
@@ -279,6 +281,7 @@ AShooterCharacter::AShooterCharacter() : AFirstPersonCharacter()
 	OutlierAbilitySystemComponent->SetReplicationMode(EGameplayEffectReplicationMode::Mixed);
 	VitalAttributeSet = CreateDefaultSubobject<UOutlierVitalAttributeSet>(TEXT("VitalAttributeSet"));
 	ShieldAttributeSet = CreateDefaultSubobject<UOutlierShieldAttributeSet>(TEXT("ShieldAttributeSet"));
+	PartnerShieldRecipient = CreateDefaultSubobject<UPartnerShieldRecipientComponent>(TEXT("PartnerShieldRecipient"));
 
 	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
 	GetCharacterMovement()->bCanWalkOffLedgesWhenCrouching = true;
@@ -353,6 +356,7 @@ void AShooterCharacter::BeginPlay()
 	GetCharacterMovement()->bCanWalkOffLedgesWhenCrouching = true;
 	RefreshAbilitySystemActorInfo();
 	BindGasVitalityObservers();
+	RefreshLowHPAudio();
 	InitializeGasVitality();
 	InitializeGasSuitAbilities();
 	if (!SelectedAbilityTag.IsValid() && OutlierAbilitySystemComponent)
@@ -501,6 +505,7 @@ void AShooterCharacter::Tick(float DeltaSeconds)
 
 void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	OutlierAudioFeedback::StopLoops(this);
 	CancelSuitTransition();
 	OnSuitTransitionPhaseChanged.Clear();
 	OnWeaponChanged.RemoveDynamic(this, &AShooterCharacter::HandlePresentationWeaponChanged);
@@ -533,6 +538,7 @@ void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 void AShooterCharacter::PossessedBy(AController* NewController)
 {
 	Super::PossessedBy(NewController);
+	RefreshLowHPAudio();
 	RefreshAbilitySystemActorInfo();
 	// PS 업그레이드가 ASC에 반영된 최종 최대치로 리로드 쉴드를 한 번만 채운다.
 	if (HasAuthority() && bPendingReloadShieldFill
@@ -558,6 +564,7 @@ void AShooterCharacter::PossessedBy(AController* NewController)
 void AShooterCharacter::OnRep_Controller()
 {
 	Super::OnRep_Controller();
+	RefreshLowHPAudio();
 	RefreshAbilitySystemActorInfo();
 	RefreshShooterSuitCooldownUI();
 
@@ -569,6 +576,7 @@ void AShooterCharacter::OnRep_PlayerState()
 {
 	Super::OnRep_PlayerState();
 	RefreshAbilitySystemActorInfo();
+	RefreshLowHPAudio();
 	// 클라이언트의 PlayerState 도착 순서로 선택을 바꾸지 않고 Pawn의 복제 구성만 재적용한다.
 	if (HasActorBegunPlay())
 	{
@@ -781,6 +789,7 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 
 void AShooterCharacter::HandleHealthChanged(const FOnAttributeChangeData& ChangeData)
 {
+	RefreshLowHPAudio();
 	if (HasAuthority() && ChangeData.OldValue > 0.0f && ChangeData.NewValue <= 0.0f)
 	{
 		Die();
@@ -808,6 +817,7 @@ void AShooterCharacter::HandleDeadTagChanged(const FGameplayTag Tag, int32 NewCo
 	(void)Tag;
 	if (NewCount > 0)
 	{
+		OutlierAudioFeedback::StopLoops(this);
 		CancelActiveQuantumLeap(false);
 		EndActiveBulletReflection(false);
 		EndActiveWeaponOvercharge(false);
@@ -2534,6 +2544,7 @@ float AShooterCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 		Request.DamageTag);
 	if (bApplied)
 	{
+		OutlierAudioFeedback::Owner(this, TEXT("Audio.Context.Player.01.State.Hit"));
 		ClientShowDamageFeedback(Request.DamageOrigin);
 	}
 
@@ -2620,6 +2631,7 @@ bool AShooterCharacter::TryReflectIncomingDamage(const FOutlierDamageRequest& Re
 		ReflectedRequest.DamageCauser = CurrentWeapon ? static_cast<AActor*>(CurrentWeapon) : this;
 		OutlierDamage::Apply(ReflectedTarget, ReflectedRequest);
 	}
+	OutlierAudioFeedback::Owner(this, TEXT("Audio.Context.Player.01.Skill.Reflect.Hit"));
 	ClientPlayReflectionRipple(Request.DamageOrigin);
 
 	// 팀과 관계없이 유효한 공격은 중간 충돌체 유무와 관계없이 보호막에서 소거된다.
@@ -2973,28 +2985,6 @@ void AShooterCharacter::EndSlideCameraEffect()
 	}
 
 	TargetSlideCameraEffectAlpha = 0.0f;
-}
-
-void AShooterCharacter::UpdatePartnerShieldDecay()
-{
-	constexpr float DeltaTime = 1.0f / 60.0f;
-
-	if (PartnerShieldDuration <= KINDA_SMALL_NUMBER)
-	{
-		OutlierAbilitySystemComponent->ApplyPartnerShieldDeltaToSelf(
-			-GetCurPartnerShield(),
-			-GetMaxPartnerShield());
-		GetWorldTimerManager().ClearTimer(PartnerShieldTimerHandle);
-		return;
-	}
-
-	const float DecayAmount = (GetMaxPartnerShield() / PartnerShieldDuration) * DeltaTime;
-	OutlierAbilitySystemComponent->ApplyPartnerShieldDeltaToSelf(-DecayAmount, 0.0f);
-
-	if (GetCurPartnerShield() <= 0.0f)
-	{
-		GetWorldTimerManager().ClearTimer(PartnerShieldTimerHandle);
-	}
 }
 
 void AShooterCharacter::RefreshMovementState()
@@ -3565,6 +3555,7 @@ void AShooterCharacter::PlayEquipPresentation()
 
 	if (HasAuthority())
 	{
+		PlayWeaponEquipAudio();
 		MulticastPlayThirdPersonSwitchPhase(EquippedWeaponType, TEXT("Raise"));
 	}
 
@@ -4098,24 +4089,35 @@ void AShooterCharacter::FinishWeaponOvercharge(float ShieldRecoveryDelay)
 		HealthComponent->DelayShieldRecovery(ShieldRecoveryDelay);
 	}
 }
-void AShooterCharacter::ApplyPartnerShield(float Amount, float Duration)
+bool AShooterCharacter::ApplyPartnerShield(float Amount, float Duration, float HealthRegenRate)
 {
-	if (!HasAuthority() || !OutlierAbilitySystemComponent)
-	{
-		return;
-	}
+	return PartnerShieldRecipient && PartnerShieldRecipient->ApplyShield(Amount, Duration, HealthRegenRate);
+}
 
-	const float ClampedAmount = FMath::Max(Amount, 0.0f);
-	OutlierAbilitySystemComponent->ApplyPartnerShieldDeltaToSelf(
-		ClampedAmount - GetCurPartnerShield(),
-		ClampedAmount - GetMaxPartnerShield());
-	PartnerShieldDuration = Duration;
+void AShooterCharacter::RefreshLowHPAudio()
+{
+	const float Health = GetCurHealth();
+	OutlierAudioFeedback::Loop(this, TEXT("Audio.Context.Player.01.State.LowHP"),
+		OutlierAudioFeedback::ShouldPlayShooterLowHP(IsLocallyControlled(), IsDead(), Health),
+		TEXT("Audio.Type.Player"), true);
+}
 
-	GetWorldTimerManager().SetTimer(
-		PartnerShieldTimerHandle,
-		this,
-		&AShooterCharacter::UpdatePartnerShieldDecay,
-		1.0f / 60.0f,
-		true
-	);
+void AShooterCharacter::UnPossessed()
+{
+	OutlierAudioFeedback::StopLoops(this);
+	Super::UnPossessed();
+}
+
+void AShooterCharacter::PlayWeaponEquipAudio()
+{
+	if (!HasAuthority()) return;
+		const TCHAR* Context = nullptr;
+		switch (GetWeaponType())
+		{
+		case EWeaponType::Pistol: Context = TEXT("Audio.Context.Player.01.Type.Pistol.Change"); break;
+		case EWeaponType::Rifle: Context = TEXT("Audio.Context.Player.01.Type.Rifle.Change"); break;
+		case EWeaponType::Melee: Context = TEXT("Audio.Context.Player.01.Type.Melee.change"); break;
+		default: break;
+		}
+		if (Context) OutlierAudioFeedback::Owner(this, Context, TEXT("Audio.Type.Weapon"));
 }

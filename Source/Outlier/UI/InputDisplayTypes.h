@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Layout/Margin.h"
 #include "InputDisplayTypes.generated.h"
 
 class UInputAction;

@@ -1,5 +1,6 @@
 #include "Room/RoomCombatSpawnPoint.h"
 
+#include "Audio/OutlierAudioFeedback.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -66,6 +67,7 @@ void ARoomCombatSpawnPoint::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(ARoomCombatSpawnPoint, bRoomCleared);
+	DOREPLIFETIME(ARoomCombatSpawnPoint, bSpawnerWorking);
 }
 
 void ARoomCombatSpawnPoint::OnConstruction(const FTransform& Transform)
@@ -118,6 +120,7 @@ void ARoomCombatSpawnPoint::BeginPlay()
 
 void ARoomCombatSpawnPoint::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	OutlierAudioFeedback::StopLoops(this);
 	if (HasAuthority())
 	{
 		if (URoomCombatSubsystem* CombatSubsystem = GetWorld()
@@ -156,6 +159,39 @@ void ARoomCombatSpawnPoint::SetRoomCleared(bool bCleared)
 void ARoomCombatSpawnPoint::OnRep_RoomCleared()
 {
 	RefreshClearedMaterial();
+}
+
+void ARoomCombatSpawnPoint::SetSpawnerWorking(bool bWorking, bool bPlayTransitionAudio)
+{
+	if (!HasAuthority() || bSpawnerWorking == bWorking)
+	{
+		return;
+	}
+
+	bSpawnerWorking = bWorking;
+	if (bPlayTransitionAudio)
+	{
+		OutlierAudioFeedback::World(this, bWorking
+			? TEXT("Audio.Context.Object.DroneAppear.On")
+			: TEXT("Audio.Context.Object.DroneAppear.Off"));
+	}
+	ApplySpawnerWorkingLoop();
+	ForceNetUpdate();
+}
+
+void ARoomCombatSpawnPoint::PlaySpawnActAudio()
+{
+	OutlierAudioFeedback::World(this, TEXT("Audio.Context.Object.DroneAppear.Act"));
+}
+
+void ARoomCombatSpawnPoint::OnRep_SpawnerWorking()
+{
+	ApplySpawnerWorkingLoop();
+}
+
+void ARoomCombatSpawnPoint::ApplySpawnerWorkingLoop()
+{
+	OutlierAudioFeedback::Loop(this, TEXT("Audio.Context.Object.DroneAppear.Loop"), bSpawnerWorking);
 }
 
 void ARoomCombatSpawnPoint::RefreshClearedMaterial()

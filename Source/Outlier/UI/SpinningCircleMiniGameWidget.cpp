@@ -153,14 +153,17 @@ void USpinningCircleMiniGameWidget::SpawnCircleBorders()
 		const float Radius = EffectiveMaxRadius - RadiusInterval * static_cast<float>(Index);
 		const bool bIsFirstCircle = Index == 0;
 
-		const float GapSize = bIsFirstCircle ? 0.0f : FMath::RandRange(MinGapSize, MaxGapSize);
+		const float BaseGapSize = bIsFirstCircle ? 0.0f : FMath::RandRange(MinGapSize, MaxGapSize);
+		const float GapSize = GetEffectiveGapSize(BaseGapSize);
 		const bool bSpinning = !bIsFirstCircle;
 
 		const float Direction = FMath::RandBool() ? 1.0f : -1.0f;
 		const float RotationSpeed = bSpinning
 			? FMath::RandRange(MinRotationSpeedDegrees, MaxRotationSpeedDegrees) * Direction
 			: 0.0f;
-		const float AngleDegrees = FMath::RandRange(0.0f, 360.0f);
+		// 성공 틈의 중심을 유지한 채 양쪽으로 넓힌다. 표시와 판정은 같은 GapSize/Angle을 쓴다.
+		const float AngleDegrees = FMath::Fmod(FMath::RandRange(0.0f, 360.0f)
+			- (GapSize - BaseGapSize) * 180.0f + 360.0f, 360.0f);
 		const float LayerDiameter = (Radius + HalfThickness) * 2.0f;
 		const FVector2D LayerSize(LayerDiameter, LayerDiameter);
 
@@ -342,6 +345,11 @@ FVector2D USpinningCircleMiniGameWidget::GetMouseLocalPosition() const
 	}
 
 	return CircleCanvas->GetCachedGeometry().AbsoluteToLocal(FSlateApplication::Get().GetCursorPos());
+}
+
+float USpinningCircleMiniGameWidget::GetEffectiveGapSize(float BaseGapSize) const
+{
+	return FMath::Clamp(BaseGapSize * SuccessRangeMultiplier, 0.0f, 1.0f);
 }
 
 bool USpinningCircleMiniGameWidget::IsAngleInsideGap(const FSpinningCircleLayer& Layer, float MouseAngleDegrees) const

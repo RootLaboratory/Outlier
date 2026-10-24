@@ -394,6 +394,7 @@ void UShooterInventoryComponent::FinishPendingWeaponSwitch(int32 SwitchId)
 		OutlierNet::GetNetPrefix(ShooterCharacter), *GetNameSafe(TargetWeapon), static_cast<int32>(TargetSlot));
 	const EWeaponType PreviousWeaponType = ShooterCharacter->GetWeaponType();
 	ApplyWeaponToSlot(TargetWeapon, TargetSlot, /*bPlayEquipPresentation=*/false);
+	ShooterCharacter->PlayWeaponEquipAudio();
 	ShooterCharacter->PlayProceduralSwitchThirdPersonEquip(PreviousWeaponType);
 }
 

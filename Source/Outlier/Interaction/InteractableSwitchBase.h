@@ -50,37 +50,35 @@ protected:
 	/** 서버에서만 불린다. 대상을 조작했으면 true, false면 상호작용 자체가 거절된다. */
 	virtual bool ActivateTarget() PURE_VIRTUAL(AInteractableSwitchBase::ActivateTarget, return false;);
 
+	/** 서버 전용. ActivateTarget 성공 뒤 활성화 상태 저장, 사운드, BP 통보를 처리한다. 상호작용 외 경로(해킹 등)에서도 쓴다. */
+	void CommitActivation(AFirstPersonCharacter* Interactor);
+
+	void ApplyMaterialState(bool bHacked);
+
 	UFUNCTION(BlueprintImplementableEvent, Category = "Switch")
 	void OnSwitchActivated(AFirstPersonCharacter* Interactor);
 
-	/**
-	 * Fires whenever the hacked visual state is (re)applied - BeginPlay sync and on hack
-	 * success - on every machine. Left as an extra hook in case material parameter access
-	 * ends up moving to BP instead of the C++ MID push below.
-	 */
+	/** 모든 머신에서 해킹 상태를 머티리얼에 적용한 뒤 통보한다. 색상은 머티리얼에서 설정한다. */
 	UFUNCTION(BlueprintImplementableEvent, Category = "Switch|Material")
 	void OnHackedStateChanged(bool bHacked);
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")
 	TObjectPtr<UHackableComponent> HackableComponent;
 
-	/** Material slot on SwitchMesh that the Color / Hacked parameters live on. */
+	/** 이 해킹 성공 이펙트가 오면 State.Locked를 풀어 상호작용을 허용한다. 기본은 Hack.Effect.Unblock. */
+	FGameplayTag UnblockEffectTag;
+
+	/** Material slot on SwitchMesh that the Activated / Hacked state parameters live on. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Switch|Material")
 	int32 SwitchMaterialSlot = 0;
+
+	/** Shared switch material parameter: 1 after hacking, 0 while locked. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Switch|Material")
+	FName ActivatedScalarParamName = TEXT("Activated");
 
 	/** Scalar (float) parameter that flags whether the switch has been hacked. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Switch|Material")
 	FName HackedScalarParamName = TEXT("Hacked");
-
-	/** Vector/color parameter on the switch mesh's material. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Switch|Material")
-	FName SwitchColorParamName = TEXT("Color");
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Switch|Material")
-	FLinearColor LockedColor = FLinearColor::Red;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Switch|Material")
-	FLinearColor HackedColor = FLinearColor::Green;
 
 private:
 	UFUNCTION()
@@ -94,7 +92,6 @@ private:
 
 	void ApplySwitchActivated(AFirstPersonCharacter* Interactor);
 	void CacheSwitchMaterial();
-	void ApplyMaterialState(bool bHacked);
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> SwitchMID;

@@ -1,4 +1,6 @@
 #include "Interaction/InteractionStatMachine.h"
+#include "Audio/OutlierAudioFeedback.h"
+#include "Net/UnrealNetwork.h"
 
 #include "Audio/OutlierAudioSubsystem.h"
 #include "Drone/Partner/HackableComponent.h"
@@ -138,6 +140,9 @@ bool AInteractionStatMachine::Interact(AFirstPersonCharacter* Interactor)
 	PushRequest.FocusTarget = EUILayerFocusTarget::Widget;
 	PushRequest.bShowCursor = true;
 
+	bIndicateAudio = false;
+	OnRep_IndicateAudio();
+	ForceNetUpdate();
 	ShooterController->ClientPushUILayer(PushRequest);
 	PartnerController->ClientPushUILayer(PushRequest);
 	UOutlierAudioSubsystem::PlayTaggedAtLocationFromServer(
@@ -272,4 +277,23 @@ void AInteractionStatMachine::ApplyUnblockEffect(const FHackResultContext& Conte
 		HackableComponent->MarkAsHackedOnce();
 	}
 
+	UOutlierAudioSubsystem::PlayTaggedAtLocationFromServer(
+		this,
+		FGameplayTag::RequestGameplayTag(TEXT("Audio.Type.Interactable")),
+		FGameplayTag::RequestGameplayTag(TEXT("Audio.Context.Object.Hack.Active")));
+}
+
+void AInteractionStatMachine::BeginPlay()
+{
+	Super::BeginPlay();
+	OnRep_IndicateAudio();
+}
+void AInteractionStatMachine::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(AInteractionStatMachine, bIndicateAudio);
+}
+void AInteractionStatMachine::OnRep_IndicateAudio()
+{
+	OutlierAudioFeedback::Loop(this, TEXT("Audio.Context.Object.SavePoint.Indicate"), bIndicateAudio);
 }

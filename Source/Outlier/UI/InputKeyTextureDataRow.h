@@ -15,7 +15,7 @@ struct OUTLIER_API FInputKeyTextureDataRow : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input")
 	TObjectPtr<UTexture2D> Texture = nullptr;
 
-	/** 완성형 키 아이콘은 텍스트를 숨긴다. 동적 라벨이 필요한 키(예: F1-F12)에만 켠다. */
+	/** 켜면 Texture를 프레임으로 사용하고 키 라벨을 겹쳐 표시한다. 끄면 완성형 아이콘만 표시한다. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input", meta = (DataTableImportOptional))
 	bool bShowKeyText = false;
 

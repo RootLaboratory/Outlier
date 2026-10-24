@@ -27,6 +27,7 @@ public:
 	virtual void NativeDestruct() override;
 
 protected:
+	virtual FReply NativeOnPreviewKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent) override;
 	virtual void InitializeUILayerContext_Implementation(
 		const TArray<AActor*>& ContextActors) override;
 	virtual bool HandleUILayerEscape_Implementation() override;

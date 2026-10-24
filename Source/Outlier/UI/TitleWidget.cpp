@@ -2,6 +2,8 @@
 
 
 #include "UI/TitleWidget.h"
+#include "Audio/OutlierAudioSubsystem.h"
+#include "Engine/GameInstance.h"
 #include "Engine/LocalPlayer.h"
 #include "FrontendPlayerController.h"
 #include "Kismet/KismetSystemLibrary.h"
@@ -17,6 +19,7 @@
 void UTitleWidget::NativeOnInitialized()
 {
 	Super::NativeOnInitialized();
+	SetIsFocusable(true);
 
 	// Construct는 레이어 재표시마다 다시 불릴 수 있어 native delegate는 초기화 때 한 번만 묶는다.
 	if (TitleButtons)
@@ -28,6 +31,13 @@ void UTitleWidget::NativeOnInitialized()
 void UTitleWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
+	if (UOutlierAudioSubsystem* Audio = GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>())
+	{
+		FOutlierAudioPlayRequest Request;
+		Request.EventTag = FGameplayTag::RequestGameplayTag(TEXT("Audio.Type.BGM"));
+		Request.ContextTags.AddTag(FGameplayTag::RequestGameplayTag(TEXT("Audio.Context.Bgm.intro.main")));
+		Audio->PlayLocal2D(Request);
+	}
 
 	PushKeyHintLayer();
 }
@@ -53,6 +63,18 @@ void UTitleWidget::NativeDestruct()
 void UTitleWidget::InitializeUILayerContext_Implementation(
 	const TArray<AActor*>& ContextActors)
 {
+}
+
+FReply UTitleWidget::NativeOnPreviewKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent)
+{
+	if (ULocalPlayer* LocalPlayer = GetOwningLocalPlayer())
+	{
+		if (ULocalPlayerUILayerSubsystem* Layers = LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>())
+		{
+			if (Layers->RouteWidgetPreviewKeyDown(this, InKeyEvent)) return FReply::Handled();
+		}
+	}
+	return Super::NativeOnPreviewKeyDown(InGeometry, InKeyEvent);
 }
 
 // 레이어 입력은 버튼 선택 상태를 가진 TitleButtons가 그대로 판단한다.

@@ -76,8 +76,6 @@ public:
 	void UnregisterTarget(UOutlierWorldGuideTargetComponent* Target);
 	int32 GetTargetCount(FGameplayTag WidgetID) const;
 	int32 GetPendingCount() const { return PendingContexts.Num(); }
-	/** 개발 콘솔용 읽기 전용 설정/Queue 스냅샷. */
-	FString BuildDebugReport();
 	FOnOutlierWorldGuideFinished OnGuideFinished;
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;

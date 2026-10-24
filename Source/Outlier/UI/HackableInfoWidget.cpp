@@ -1,11 +1,14 @@
 #include "UI/HackableInfoWidget.h"
 
+#include "Components/Border.h"
+#include "Components/Image.h"
 #include "Components/ProgressBar.h"
 #include "Components/TextBlock.h"
 #include "Drone/Partner/HackableComponent.h"
 #include "Drone/Partner/HackInfoRow.h"
 #include "Drone/Partner/HackInfoSubsystem.h"
 #include "Engine/GameInstance.h"
+#include "Engine/Texture2D.h"
 #include "PopupRetainerBox.h"
 #include "GameFramework/Actor.h"
 
@@ -89,11 +92,6 @@ bool UHackableInfoWidget::ResolveHackInfoTag(FGameplayTag& OutHackInfoTag) const
 
 void UHackableInfoWidget::UpdateInfoText()
 {
-	if (!TitleText)
-	{
-		return;
-	}
-
 	FHackInfoRow HackInfo;
 	FGameplayTag HackInfoTag;
 	const UGameInstance* GameInstance = GetGameInstance();
@@ -103,10 +101,42 @@ void UHackableInfoWidget::UpdateInfoText()
 		&& HackInfoSubsystem->TryGetHackInfo(HackInfoTag, HackInfo))
 	{
 		CurrentHackInfoTag = HackInfoTag;
-		TitleText->SetText(HackInfo.DisplayText);
+		if (TitleText)
+		{
+			TitleText->SetText(HackInfo.DisplayText);
+		}
+		UpdateInfoImage(&HackInfo);
 		return;
 	}
 
 	CurrentHackInfoTag = FGameplayTag();
-	TitleText->SetText(TargetActor ? FText::FromString(TargetActor->GetName()) : FText::GetEmpty());
+	if (TitleText)
+	{
+		TitleText->SetText(TargetActor ? FText::FromString(TargetActor->GetName()) : FText::GetEmpty());
+	}
+	UpdateInfoImage(nullptr);
+}
+
+void UHackableInfoWidget::UpdateInfoImage(const FHackInfoRow* HackInfo)
+{
+	if (!hackingInfoImage)
+	{
+		return;
+	}
+
+	if (!bCachedDefaultInfoImageBrush)
+	{
+		DefaultInfoImageBrush = hackingInfoImage->GetBrush();
+		bCachedDefaultInfoImageBrush = true;
+	}
+
+	UTexture2D* InfoTexture = HackInfo ? HackInfo->InfoBorderImage.LoadSynchronous() : nullptr;
+	if (InfoTexture)
+	{
+		hackingInfoImage->SetBrushFromTexture(InfoTexture);
+		return;
+	}
+
+	// info에 이미지가 없으면 WBP에 지정된 기본 브러시로 복구
+	hackingInfoImage->SetBrush(DefaultInfoImageBrush);
 }

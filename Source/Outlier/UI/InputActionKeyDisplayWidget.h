@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
 #include "InputCoreTypes.h"
+#include "Fonts/SlateFontInfo.h"
 #include "Styling/SlateBrush.h"
 #include "InputActionKeyDisplayWidget.generated.h"
 
@@ -20,7 +21,7 @@ struct FInputKeyTextureDataRow;
 /**
  * 특정 Input Action 하나의 현재 바인딩 키를 보여주는 공용 부품.
  * 실제 키 이름으로 DT의 Texture를 조회한다. 전용 키 이미지는 텍스트 없이,
- * 일반 키 또는 bShowKeyText 행은 공용 프레임과 텍스트로 표시한다.
+ * bShowKeyText 행은 매핑된 프레임과 텍스트로 표시하고, 텍스처가 없으면 공용 프레임을 사용한다.
  * 조합 위젯은 SetDisplayedKey로 이미 조회한 FKey를 전달하여 같은 표시 경로를 재사용한다.
  * UILayerKeyHintWidget의 Confirm/Escape 키 표시가 이 클래스를 멤버로 갖는 식으로
  * 쓰이고, InteractKeyWidget 등 "이 키를 누르세요" UI도 동일하게
@@ -89,7 +90,7 @@ public:
 	UFUNCTION(BlueprintPure, Category = "UI|Input")
 	UTexture2D* GetBorderImage() const { return BorderImage; }
 
-	/** 해석된 이미지 크기. 텍스트 키는 최소 frame 크기. */
+	/** 이미지 키 크기 또는 DisplayHeight 기준 폰트로 측정한 라벨 너비에 맞춘 텍스트 키 크기. */
 	UFUNCTION(BlueprintPure, Category = "UI|Input")
 	FVector2D GetKeyDisplaySize() const;
 
@@ -116,11 +117,24 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI|Layout", meta = (ClampMin = "1.0"))
 	float DisplayHeight = 40.0f;
 
+	/** 텍스트 키 너비 하한. DisplayHeight보다 작으면 DisplayHeight를 사용해 한 글자 키가 정사각형이 된다. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI|Layout", meta = (ClampMin = "1.0"))
 	float MinTextKeyWidth = 48.0f;
 
+	/** 텍스트 키 너비 상한. 이를 넘는 라벨만 내부 ScaleBox가 축소한다. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI|Layout", meta = (ClampMin = "1.0"))
 	float MaxTextKeyWidth = 88.0f;
+
+	/**
+	 * 텍스트 키에서 글자 줄 높이가 차지하는 비율 (Border 상하 padding을 뺀 높이 기준).
+	 * 폰트 크기는 DisplayHeight와 이 값으로 계산되며, KeyText에 지정한 폰트 크기는 무시된다.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI|Layout", meta = (ClampMin = "0.1", ClampMax = "1.0"))
+	float TextHeightRatio = 0.75f;
+
+	/** 라벨이 정사각형 키를 넘을 때만 좌우에 각각 추가하는 여백. DisplayHeight에 대한 비율이다. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI|Layout", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float LongLabelSidePaddingRatio = 0.15f;
 
 	/** Nine-slice margin으로 공용 frame이 키 라벨에 맞춰 늘어난다. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI|Layout")
@@ -130,6 +144,10 @@ protected:
 	// 기존 WBP 할당이 유효하도록 직렬화된 프로퍼티 이름을 유지한다.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "UI|Input", meta = (DisplayName = "Key Texture Table", RequiredAssetDataTags = "RowStructure=/Script/Outlier.InputKeyTextureDataRow"))
 	TObjectPtr<UDataTable> MouseKeyTextureTable;
+
+	/** 텍스트로 표시하는 키의 HUD 라벨 테이블. Row Name은 엔진 키 이름이며, 행이 없으면 엔진 표시 이름을 사용한다. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "UI|Input", meta = (RequiredAssetDataTags = "RowStructure=/Script/Outlier.InputKeyDisplayNameDataRow"))
+	TObjectPtr<UDataTable> KeyDisplayNameTable;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI|Input")
 	TObjectPtr<UInputAction> WatchedInputAction;
@@ -152,10 +170,14 @@ private:
 	void UnbindSettingsSubsystem();
 	void RefreshBorderBrush();
 	void RefreshKeyTextColor();
+	FText GetKeyDisplayName(FKey Key) const;
 	const FInputKeyTextureDataRow* FindKeyTextureRow(FKey Key) const;
 	void ShowKeyText(const FText& Text, FKey Key = FKey());
 	void ShowKeyImage(const FInputKeyTextureDataRow& Row);
 	void RefreshKeyLayout();
+	/** DisplayHeight에 맞춘 KeyText 폰트. Slate 폰트 측정을 사용할 수 없으면 false. */
+	bool GetFittedKeyFont(FSlateFontInfo& OutFont) const;
+	FMargin GetTextBorderPadding() const;
 	bool ShowResolvedKey(FKey Key);
 	void BindControlMappingsRebuiltDelegate();
 	void UnbindControlMappingsRebuiltDelegate();
@@ -181,6 +203,10 @@ private:
 	FVector2D ImageDisplaySize = FVector2D::ZeroVector;
 	FMargin DefaultBorderPadding;
 	bool bHasDefaultBorderPadding = false;
+
+	/** WBP에 지정된 KeyText 폰트. 크기만 DisplayHeight 기준으로 덮어쓴다. */
+	FSlateFontInfo DefaultKeyFont;
+	bool bHasDefaultKeyFont = false;
 
 	bool bUseExplicitKey = false;
 

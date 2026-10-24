@@ -7,6 +7,7 @@
 
 class UButton;
 class UTextBlock;
+class UInputActionKeyDisplayWidget;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
 	FOnInputBindingRowEvent,
@@ -43,11 +44,12 @@ protected:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "Input Binding")
 	TObjectPtr<UTextBlock> ActionNameText;
 
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "Input Binding")
-	TObjectPtr<UTextBlock> KeyText;
+	// Place WBP_InputBindKeyDisplayWidget here; the row injects its resolved key.
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Input Binding")
+	TObjectPtr<UInputActionKeyDisplayWidget> KeyDisplay;
 
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "Input Binding")
-	TObjectPtr<UButton> RebindButton;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Input Binding")
+	TObjectPtr<UButton> InputBindButton;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Input Binding")
 	FOutlierInputBindingTableRow Row;

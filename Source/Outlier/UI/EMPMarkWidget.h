@@ -17,6 +17,7 @@ class OUTLIER_API UEMPMarkWidget : public UUserWidget
 
 public:
 	void InitializeMark(AActor* InTargetActor, UEMPableComponent* InEMPableComponent, UPartnerEMPComponent* InEMPComponent);
+	void PlayAutomaticSelection();
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CollapsedTime")
 	float CollaspsedTime = 1.0f;

@@ -1,4 +1,5 @@
 #include "UI/CreditWidget.h"
+#include "Audio/OutlierAudioFeedback.h"
 
 #include "Engine/LocalPlayer.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
@@ -41,6 +42,7 @@ bool UCreditWidget::HandleUILayerRight_Implementation()
 
 void UCreditWidget::PopSelfFromLayer()
 {
+	OutlierAudioFeedback::Local(this, TEXT("Audio.Context.UI.Menu.Back"));
 	ULocalPlayer* LocalPlayer = GetOwningLocalPlayer();
 	ULocalPlayerUILayerSubsystem* LayerSubsystem = LocalPlayer
 		? LocalPlayer->GetSubsystem<ULocalPlayerUILayerSubsystem>()

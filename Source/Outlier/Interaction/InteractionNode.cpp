@@ -1,4 +1,5 @@
 #include "Interaction/InteractionNode.h"
+#include "Audio/OutlierAudioFeedback.h"
 
 #include "Audio/OutlierAudioSubsystem.h"
 #include "Components/SceneComponent.h"
@@ -23,6 +24,7 @@ AInteractionNode::AInteractionNode()
 void AInteractionNode::BeginPlay()
 {
 	Super::BeginPlay();
+	OutlierAudioFeedback::Loop(this, TEXT("Audio.Context.Object.Node.Indicate"), !bCollected);
 
 	if (!HasAuthority())
 	{
@@ -41,6 +43,7 @@ void AInteractionNode::BeginPlay()
 		{
 			// 저장된 습득 상태만 복원한다. AddNodeServer를 호출하면 이미 저장한 재화를 중복 지급한다.
 			bCollected = true;
+			OutlierAudioFeedback::StopLoops(this);
 			InteractableComponent->RestoreUsedState(true);
 			OnCollectedStateChanged(true);
 			ForceNetUpdate();
@@ -50,6 +53,7 @@ void AInteractionNode::BeginPlay()
 
 void AInteractionNode::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	OutlierAudioFeedback::StopLoops(this);
 	if (bProgressIdRegistered)
 	{
 		if (UOutlierSaveSubSystem* SaveSubsystem = GetGameInstance()
@@ -131,6 +135,7 @@ bool AInteractionNode::AddNodeServer(AFirstPersonCharacter* Interactor)
 		}
 	}
 	bCollected = true;
+	OutlierAudioFeedback::StopLoops(this);
 	OnCollectedStateChanged(true);
 	ForceNetUpdate();
 
@@ -145,6 +150,7 @@ bool AInteractionNode::AddNodeServer(AFirstPersonCharacter* Interactor)
 
 void AInteractionNode::OnRep_Collected()
 {
+	OutlierAudioFeedback::Loop(this, TEXT("Audio.Context.Object.Node.Indicate"), !bCollected);
 	OnCollectedStateChanged(bCollected);
 }
 

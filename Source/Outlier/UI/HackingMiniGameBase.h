@@ -16,7 +16,7 @@ class OUTLIER_API UHackingMiniGameBase : public UUserWidget
 
 public:
 	UFUNCTION(BlueprintCallable, Category = "Hack|MiniGame")
-	void InitializeMiniGame(AActor* InTargetActor, UHackableComponent* InHackableComponent);
+	void InitializeMiniGame(AActor* InTargetActor, UHackableComponent* InHackableComponent, float InSuccessRangeMultiplier = 1.0f);
 
 	UFUNCTION(BlueprintCallable, Category = "Hack|MiniGame")
 	void StartMiniGame();
@@ -49,4 +49,8 @@ protected:
 
 	UPROPERTY(BlueprintReadOnly, Category = "Hack|MiniGame")
 	uint8 bMiniGameActive : 1 = false;
+
+	// 시작 시 주입된 값만 사용한다. Widget은 GAS나 업그레이드 상태를 조회하지 않는다.
+	UPROPERTY(BlueprintReadOnly, Category = "Hack|MiniGame")
+	float SuccessRangeMultiplier = 1.0f;
 };

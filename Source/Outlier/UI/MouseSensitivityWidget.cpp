@@ -22,6 +22,16 @@ void UMouseSensitivityWidget::NativeOnInitialized()
 	UpdateValueText(PendingSensitivity);
 }
 
+void UMouseSensitivityWidget::NativePreConstruct()
+{
+	Super::NativePreConstruct();
+	if (IsDesignTime())
+	{
+		PendingSensitivity = 1.0f;
+		OffsetPendingValue(0.0f);
+	}
+}
+
 void UMouseSensitivityWidget::NativeConstruct()
 {
 	Super::NativeConstruct();

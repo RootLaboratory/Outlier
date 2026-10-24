@@ -1,4 +1,5 @@
 #include "Enemy/EnemyBase.h"
+#include "Audio/OutlierAudioFeedback.h"
 #include "Camera/CameraComponent.h"
 #include "Enemy/EnemyStateTreeComponent.h"
 #include "Enemy/EnemyPoolSubsystem.h"
@@ -321,6 +322,7 @@ void AEnemyBase::BeginPlay()
 	}
 
 	InitializeFromEnemyStatRow();
+	RefreshEnemyAudioState();
 	EquipDefaultWeapon();
 	PrepareForStateTreeStart();
 	if (IsPoolManaged())
@@ -419,6 +421,7 @@ bool AEnemyBase::BeginPoolLease(
 
 void AEnemyBase::ResetReusableCombatRuntime(const TCHAR* StateTreeStopReason)
 {
+	PossessionDamageMultiplier = 1.0f;
 	ReleasePatrolDestination();
 	GetWorldTimerManager().ClearAllTimersForObject(this);
 	CancelPossessionProcess();
@@ -847,6 +850,7 @@ void AEnemyBase::ApplyPoolState(EEnemyPoolState PreviousState)
 		}
 	}
 
+	RefreshEnemyAudioState();
 	OnEnemyPoolStateChanged(PreviousState, PoolState);
 }
 
@@ -962,6 +966,7 @@ void AEnemyBase::PrepareForPoolIdle()
 
 void AEnemyBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	OutlierAudioFeedback::StopLoops(this);
 	ReleasePatrolDestination();
 	if (UMaterialPostProcessSubsystem* PostProcessSubsystem = GetWorld()
 		? GetWorld()->GetSubsystem<UMaterialPostProcessSubsystem>()
@@ -1283,6 +1288,10 @@ URoomTagComponent* AEnemyBase::GetRoomTagComp() const
 
 void AEnemyBase::SetEnemyPossessed(bool bNewIsPossessed)
 {
+	if (HasAuthority() && !bNewIsPossessed)
+	{
+		PossessionDamageMultiplier = 1.0f;
+	}
 	if (!HasAuthority() || bIsPossessed == bNewIsPossessed)
 	{
 		return;
@@ -1341,6 +1350,18 @@ void AEnemyBase::SetEnemyPossessed(bool bNewIsPossessed)
 			bIsPossessed
 			? TEXT("Enemy.Event.Possession.Started")
 			: TEXT("Enemy.Event.Possession.Ended")));
+}
+
+void AEnemyBase::SetPossessionDamageMultiplier(float Multiplier)
+{
+	if (!HasAuthority() || !bIsPossessed || IsDead()) return;
+	PossessionDamageMultiplier = FMath::IsFinite(Multiplier) ? FMath::Max(0.0f, Multiplier) : 1.0f;
+}
+
+void AEnemyBase::GetWeaponDamageModifiers(FWeaponDamageModifiers& OutModifiers) const
+{
+	OutModifiers = FWeaponDamageModifiers{};
+	OutModifiers.DamageMultiplier = PossessionDamageMultiplier;
 }
 
 bool AEnemyBase::BeginPossessionProcess(APartnerCharacter* PartnerCharacter)
@@ -1551,6 +1572,8 @@ void AEnemyBase::SetPlayerCurrentlyVisible(bool bNewVisible)
 	}
 
 	bPlayerCurrentlyVisible = bNewVisible;
+	if (bNewVisible && DetectAudioContext.IsValid())
+		OutlierAudioFeedback::World(this, *DetectAudioContext.ToString(), TEXT("Audio.Type.Enemy"));
 
 	if (bNewVisible)
 	{
@@ -1832,6 +1855,8 @@ void AEnemyBase::EnterStun()
 	PreStunCombatState = CombatState;
 	ReleasePatrolDestination();
 	CombatState = EEnemyCombatState::Stun;
+	if (DownAudioContext.IsValid())
+		OutlierAudioFeedback::World(this, *DownAudioContext.ToString(), TEXT("Audio.Type.Enemy"));
 	CancelCommittedAction();
 	EndImpactReaction();
 	ResetPossessedAttackInput();
@@ -2007,6 +2032,7 @@ void AEnemyBase::BroadcastDamageCue(const FOutlierDamageRequest& Request, float 
 	}
 
 	FGameplayCueParameters CueParameters;
+	CueParameters.AggregatedTargetTags.AddTag(GetHitAudioContext());
 	CueParameters.RawMagnitude = AppliedDamage;
 	CueParameters.Instigator = Request.EventInstigator;
 	CueParameters.EffectCauser = Request.DamageCauser;
@@ -2048,6 +2074,7 @@ void AEnemyBase::BroadcastDeathCue() const
 	}
 
 	FGameplayCueParameters CueParameters;
+	CueParameters.AggregatedTargetTags.AddTag(GetDeathAudioContext());
 	CueParameters.Location = GetActorLocation();
 	CueParameters.Normal = FVector::UpVector;
 	CueParameters.EffectContext = OutlierAbilitySystemComponent->MakeEffectContext();
@@ -3567,6 +3594,7 @@ void AEnemyBase::SaveSourceMeshVisibility(USceneComponent* SourceMeshRoot)
 
 void AEnemyBase::PerformDeathCleanup()
 {
+	PossessionDamageMultiplier = 1.0f;
 	ReleasePatrolDestination();
 	if (bDeathCleanupPerformed)
 	{
@@ -3843,4 +3871,17 @@ void AEnemyBase::HandleReleasePossessionInput(const FInputActionValue& Value)
 	}
 
 	PartnerController->ReleaseEnemyPossession();
+}
+
+void AEnemyBase::PlaySpawnAppearAudio()
+{
+	if (AppearAudioContext.IsValid())
+		OutlierAudioFeedback::World(this, *AppearAudioContext.ToString(), TEXT("Audio.Type.Enemy"));
+}
+
+void AEnemyBase::RefreshEnemyAudioState()
+{
+	if (!HoverAudioContext.IsValid()) return;
+	const bool bActive = !IsDead() && (!IsPoolManaged() || PoolState == EEnemyPoolState::CombatActive);
+	OutlierAudioFeedback::Loop(this, *HoverAudioContext.ToString(), bActive, TEXT("Audio.Type.Enemy"));
 }

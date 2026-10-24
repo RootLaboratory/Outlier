@@ -1,4 +1,5 @@
 #include "UI/EMPMarkWidget.h"
+#include "Audio/OutlierAudioFeedback.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/Button.h"
 #include "Components/SceneComponent.h"
@@ -67,20 +68,26 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 void UEMPMarkWidget::HandleClicked()
 {
-	if (!EMPComponent || !TargetActor)
+	if (!EMPComponent || !TargetActor || EMPComponent->IsAutoTargetActive())
 	{
 		return;
 	}
 
-	if (BillboardFrame)
-	{
-		//AlignBillboardFrameToTarget();
-		BillboardFrame->PlayCollapse(CollaspsedTime);
-		BillboardFrame->PlayFrameColorTransition(CollaspsedTime);
-	}
+	OutlierAudioFeedback::Local(this, TEXT("Audio.Context.Player.02.Skill.Emp.Select"), TEXT("Audio.Type.Player"));
+	PlayAutomaticSelection();
 
 	EMPComponent->TryMarkEMPTarget(TargetActor);
 	EMPComponent->RefocusEMPInput();
+}
+
+void UEMPMarkWidget::PlayAutomaticSelection()
+{
+	// 수동 클릭과 자동 선택 모두 같은 마크 연출을 사용한다.
+	if (BillboardFrame)
+	{
+		BillboardFrame->PlayCollapse(CollaspsedTime);
+		BillboardFrame->PlayFrameColorTransition(CollaspsedTime);
+	}
 }
 
 void UEMPMarkWidget::CacheTargetSceneComponent()

@@ -2,6 +2,7 @@
 
 
 #include "Drone/Partner/PartnerCharacter.h"
+#include "Audio/OutlierAudioFeedback.h"
 #include "Drone/Partner/PartnerPlayerController.h"
 #include "Drone/Partner/PartnerInputConfig.h"
 #include "EnhancedInputComponent.h"
@@ -42,6 +43,7 @@
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "GAS/Attributes/OutlierVitalAttributeSet.h"
 #include "GAS/Attributes/OutlierPartnerMovementAttributeSet.h"
+#include "GAS/Attributes/OutlierPartnerCombatAttributeSet.h"
 #include "GameplayEffect.h"
 
 namespace
@@ -126,6 +128,7 @@ void APartnerCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		CachedShooterCharacter->EndActiveWeaponOvercharge(false);
 	}
 	UnbindPartnerCooldownUIObserver();
+	UnbindGasCombatObservers();
 	UnbindGasMobilityObservers();
 	CleanupBoostVFXComponents();
 	if (PartnerVitalityComponent)
@@ -165,6 +168,7 @@ float APartnerCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 		Request.DamageTag);
 	if (bApplied)
 	{
+		OutlierAudioFeedback::Owner(this, TEXT("Audio.Context.Player.02.State.Hit"));
 		ClientShowDamageFeedback(Request.DamageOrigin);
 	}
 
@@ -212,6 +216,7 @@ void APartnerCharacter::RefreshAbilitySystemActorInfo()
 	if (OutlierAbilitySystemComponent)
 	{
 		OutlierAbilitySystemComponent->InitializeForPawn(this);
+		BindGasCombatObservers();
 	}
 	if (UpgradeComponent
 		&& OutlierAbilitySystemComponent
@@ -246,6 +251,37 @@ void APartnerCharacter::UnbindPartnerCooldownUIObserver()
 			PartnerCooldownEffectAddedHandle);
 	}
 	PartnerCooldownEffectAddedHandle.Reset();
+}
+
+void APartnerCharacter::GetWeaponDamageModifiers(FWeaponDamageModifiers& OutModifiers) const
+{
+	OutModifiers = CachedWeaponDamageModifiers;
+}
+
+void APartnerCharacter::BindGasCombatObservers()
+{
+	if (!OutlierAbilitySystemComponent) return;
+	const FGameplayAttribute Attribute = UOutlierPartnerCombatAttributeSet::GetBasicAttackStunMultiplierAttribute();
+	if (!StunMultiplierChangedHandle.IsValid())
+	{
+		StunMultiplierChangedHandle = OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(Attribute)
+			.AddUObject(this, &APartnerCharacter::HandleStunMultiplierChanged);
+	}
+	// Upgrades may already have been projected before possession/rebinding.
+	CachedWeaponDamageModifiers.StunMultiplier = OutlierAbilitySystemComponent->GetNumericAttribute(Attribute);
+}
+
+void APartnerCharacter::UnbindGasCombatObservers()
+{
+	if (OutlierAbilitySystemComponent)
+		OutlierAbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
+			UOutlierPartnerCombatAttributeSet::GetBasicAttackStunMultiplierAttribute()).Remove(StunMultiplierChangedHandle);
+	StunMultiplierChangedHandle.Reset();
+}
+
+void APartnerCharacter::HandleStunMultiplierChanged(const FOnAttributeChangeData& ChangeData)
+{
+	CachedWeaponDamageModifiers.StunMultiplier = ChangeData.NewValue;
 }
 
 void APartnerCharacter::BindGasMobilityObservers()
@@ -1046,6 +1082,7 @@ bool APartnerCharacter::CanApplyMoveMode(EPartnerMoveMode NewMode) const
 
 void APartnerCharacter::ApplyAccelerateState(bool bNewAccelerate)
 {
+	const bool bStateChanged = bIsAccelerate != bNewAccelerate;
 	bIsAccelerate = bNewAccelerate;
 
 	if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
@@ -1056,6 +1093,10 @@ void APartnerCharacter::ApplyAccelerateState(bool bNewAccelerate)
 
 	if (MovementComponent)
 	{
+		if (bStateChanged && HasAuthority())
+		{
+			MovementComponent->HandleBoostStateChanged(bIsAccelerate);
+		}
 		MovementComponent->ApplyPartnerFlightSettings();
 		MovementComponent->ResetMovementFeel();
 	}
@@ -1460,6 +1501,7 @@ APartnerCharacter::APartnerCharacter()
 	OutlierAbilitySystemComponent->SetReplicationMode(EGameplayEffectReplicationMode::Mixed);
 	VitalAttributeSet = CreateDefaultSubobject<UOutlierVitalAttributeSet>(TEXT("VitalAttributeSet"));
 	MobilityAttributeSet = CreateDefaultSubobject<UOutlierPartnerMovementAttributeSet>(TEXT("MobilityAttributeSet"));
+	CombatAttributeSet = CreateDefaultSubobject<UOutlierPartnerCombatAttributeSet>(TEXT("CombatAttributeSet"));
 	PartnerVitalityComponent = CreateDefaultSubobject<UPartnerVitalityComponent>(TEXT("PartnerVitalityComponent"));
 
 	ThirdPersonTiltRoot = CreateDefaultSubobject<USceneComponent>(TEXT("Third Person Tilt Root"));

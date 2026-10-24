@@ -1,4 +1,5 @@
 #include "Drone/Partner/PartnerEMPComponent.h"
+#include "Audio/OutlierAudioFeedback.h"
 #include "Drone/Partner/EMPGameplayTags.h"
 #include "Drone/Partner/EMPableComponent.h"
 #include "Drone/Partner/PartnerCharacter.h"
@@ -15,6 +16,7 @@
 #include "UI/UILayerGameplayTags.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
 #include "Net/UnrealNetwork.h"
+#include "GameplayTags/OutlierGameplayTags.h"
 
 UPartnerEMPComponent::UPartnerEMPComponent()
 {
@@ -34,6 +36,7 @@ void UPartnerEMPComponent::BeginPlay()
 void UPartnerEMPComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	ResetEMPEarlyCompleteTimer();
+	ResetAutoTarget();
 	DestroyEMPLayerWidget();
 	ClearEMPCandidates();
 	Super::EndPlay(EndPlayReason);
@@ -50,6 +53,12 @@ void UPartnerEMPComponent::TickComponent(float DeltaTime, ELevelTick TickType, F
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
+	if (bAutoTargetActive)
+	{
+		if (PartnerCharacter && PartnerCharacter->HasAuthority() && bEMPActive && !bAwaitingAutoTargetSnapshot)
+			AdvanceAutoTargetPending(GetWorld()->GetTimeSeconds() - AutoTargetStartTime);
+		return;
+	}
 	if (!bEMPCandidateSearchActive)
 	{
 		return;
@@ -69,6 +78,8 @@ void UPartnerEMPComponent::TryEMP_Implementation()
 	{
 		return;
 	}
+
+	if (bAutoTargetActive) return; // 자동 선택 중 재입력으로 조기 실행하지 않는다.
 
 	const UOutlierAbilitySystemComponent* AbilitySystem =
 		PartnerCharacter->GetOutlierAbilitySystemComponent();
@@ -96,8 +107,141 @@ void UPartnerEMPComponent::TryEMP_Implementation()
 	bEMPActive = true;
 	MarkedActors.Empty();
 	InitializeEMPEarlyCompleteTimer();
-	ClientStartEMPSearch(EMPMarkingTime);
+	// 리슨 호스트에서는 대상 수집 요청 안에서 EMP가 즉시 종료될 수 있다.
+	// 먼저 HUD를 숨겨 종료 경로의 복원이 마지막에 적용되도록 한다.
 	DefaultWidgetControl(true);
+	const FGameplayTag AutoTargetTag = FGameplayTag::RequestGameplayTag(TEXT("Upgrade.Partner.EMP.AutoTarget"));
+	if (AbilitySystem->HasMatchingGameplayTag(AutoTargetTag))
+	{
+		bAutoTargetActive = true;
+		bAwaitingAutoTargetSnapshot = true;
+		AutoTargetPendingTime = Config.EMPAutoTargetPendingTime;
+		AutoTargetOrigin = PartnerCharacter->GetActorLocation();
+		AutoTargetForward = PartnerCharacter->GetActorForwardVector();
+		++AutoTargetSessionId;
+		ClientStartAutoTargetEMP(AutoTargetPendingTime, AutoTargetSessionId);
+	}
+	else
+	{
+		ClientStartEMPSearch(EMPMarkingTime);
+	}
+}
+
+void UPartnerEMPComponent::SortByForwardDepth(TArray<AActor*>& Actors, const FVector& Origin, const FVector& Forward)
+{
+	Actors.StableSort([&](const AActor& A, const AActor& B)
+	{
+		return FVector::DotProduct(A.GetActorLocation() - Origin, Forward)
+			< FVector::DotProduct(B.GetActorLocation() - Origin, Forward);
+	});
+}
+
+void UPartnerEMPComponent::GatherAutoTargetSnapshot(TArray<AActor*>& OutActors) const
+{
+	OutActors.Reset();
+	if (!PartnerCharacter || !GetWorld()) return;
+	FCollisionObjectQueryParams Objects;
+	Objects.AddObjectTypesToQuery(ECC_Pawn);
+	Objects.AddObjectTypesToQuery(ECC_WorldDynamic);
+	Objects.AddObjectTypesToQuery(ECC_PhysicsBody);
+	FCollisionQueryParams Query(SCENE_QUERY_STAT(PartnerEMPAutoSnapshot), false);
+	Query.AddIgnoredActor(PartnerCharacter);
+	TArray<FOverlapResult> Overlaps;
+	GetWorld()->OverlapMultiByObjectType(Overlaps, PartnerCharacter->GetActorLocation(), FQuat::Identity,
+		Objects, FCollisionShape::MakeSphere(EMPRange), Query);
+	for (const FOverlapResult& Overlap : Overlaps)
+	{
+		AActor* Actor = Overlap.GetActor();
+		FVector2D ScreenLocation;
+		if (IsValid(Actor) && IsCandidateActorValid(Actor, ResolveEMPableComponent(Actor), ScreenLocation))
+			OutActors.AddUnique(Actor);
+	}
+	SortByForwardDepth(OutActors, PartnerCharacter->GetActorLocation(), PartnerCharacter->GetActorForwardVector());
+}
+
+void UPartnerEMPComponent::ClientStartAutoTargetEMP_Implementation(float PendingTime, uint32 SessionId)
+{
+	if (!PartnerCharacter || !PartnerCharacter->IsLocallyControlled()) return;
+	bAutoTargetActive = true;
+	AutoTargetSessionId = SessionId;
+	bEMPCandidateSearchActive = true;
+	ClearEMPCandidates();
+	TArray<AActor*> Snapshot;
+	GatherAutoTargetSnapshot(Snapshot); // 최초 한 번만 캡처. 이후 HUD 검색 갱신은 차단한다.
+	const float DisplayDuration = Snapshot.IsEmpty() ? EMPInitialCaptureEmptyTimeout : PendingTime;
+	EnsureEMPLayerWidget();
+	if (EMPLayerWidget) EMPLayerWidget->InitializeMarkingTimer(DisplayDuration);
+	ServerSetAutoTargetSnapshot(Snapshot, SessionId);
+}
+
+void UPartnerEMPComponent::ServerSetAutoTargetSnapshot_Implementation(const TArray<AActor*>& Actors, uint32 SessionId)
+{
+	if (!bEMPActive || !bAutoTargetActive || !bAwaitingAutoTargetSnapshot || SessionId != AutoTargetSessionId) return;
+	TArray<AActor*> ValidatedActors;
+	for (AActor* Actor : Actors)
+	{
+		FVector2D ScreenLocation;
+		if (IsValid(Actor) && IsCandidateActorValid(Actor, ResolveEMPableComponent(Actor), ScreenLocation))
+			ValidatedActors.AddUnique(Actor);
+	}
+	BeginAutoTargetPending(ValidatedActors);
+}
+
+void UPartnerEMPComponent::BeginAutoTargetPending(const TArray<AActor*>& Actors)
+{
+	TArray<AActor*> Sorted = Actors;
+	SortByForwardDepth(Sorted, AutoTargetOrigin, AutoTargetForward);
+	AutoTargetSnapshot.Reset();
+	for (AActor* Actor : Sorted) AutoTargetSnapshot.Add(Actor);
+	// 서버 검증 후에도 대상이 없으면 기본 EMP와 같은 짧은 대기 시간으로 종료한다.
+	if (AutoTargetSnapshot.IsEmpty()) AutoTargetPendingTime = FMath::Max(EMPInitialCaptureEmptyTimeout, 0.0f);
+	NextAutoTargetIndex = 0;
+	bAwaitingAutoTargetSnapshot = false;
+	AutoTargetStartTime = GetWorld()->GetTimeSeconds();
+	AdvanceAutoTargetPending(0.0f);
+}
+
+void UPartnerEMPComponent::AdvanceAutoTargetPending(float ElapsedTime)
+{
+	if (!bEMPActive || !bAutoTargetActive || bAwaitingAutoTargetSnapshot) return;
+	const int32 Count = AutoTargetSnapshot.Num();
+	const float Interval = Count > 0 ? AutoTargetPendingTime / Count : 0.0f;
+	// 첫 대상은 즉시 선택하고 마지막 선택 뒤에도 한 슬롯을 남긴다.
+	// 선택음과 EMP 폭발음이 같은 시점에 시작되지 않도록 한다.
+	// 프레임이 늦어져도 경과 시간에 해당하는 슬롯을 순서대로 모두 처리한다.
+	while (NextAutoTargetIndex < Count
+		&& ElapsedTime + KINDA_SMALL_NUMBER >= Interval * NextAutoTargetIndex)
+	{
+		AActor* Actor = AutoTargetSnapshot[NextAutoTargetIndex++].Get();
+		if (!IsValid(Actor)) continue; // 슬롯 간격은 고정. 소멸 대상은 건너뛴다.
+		MarkedActors.AddUnique(Actor);
+		ClientRevealAutoTarget(Actor, AutoTargetSessionId);
+	}
+	if (ElapsedTime + KINDA_SMALL_NUMBER >= AutoTargetPendingTime)
+	{
+		const TArray<AActor*> Selected = MarkedActors;
+		CompleteEMPOnServer(Selected);
+	}
+}
+
+void UPartnerEMPComponent::ClientRevealAutoTarget_Implementation(AActor* Actor, uint32 SessionId)
+{
+	if (!bAutoTargetActive || SessionId != AutoTargetSessionId || !IsValid(Actor)) return;
+	UEMPableComponent* EMPable = ResolveEMPableComponent(Actor);
+	if (!EMPable) return;
+	// 마크 위젯 생성 여부와 무관하게 소유 클라이언트에서 선택음을 재생한다.
+	OutlierAudioFeedback::Local(this, TEXT("Audio.Context.Player.02.Skill.Emp.Select"), TEXT("Audio.Type.Player"));
+	AddEMPCandidate(Actor, EMPable, FVector2D::ZeroVector);
+	if (EMPLayerWidget) EMPLayerWidget->SelectAutomaticCandidate(Actor);
+}
+
+void UPartnerEMPComponent::ResetAutoTarget()
+{
+	bAutoTargetActive = false;
+	bAwaitingAutoTargetSnapshot = false;
+	AutoTargetSnapshot.Reset();
+	NextAutoTargetIndex = 0;
+	AutoTargetStartTime = 0.0f;
 }
 
 void UPartnerEMPComponent::CacheAbilityData(const FPartnerEMPAbilityData& InAbilityData)
@@ -153,6 +297,7 @@ void UPartnerEMPComponent::DefaultWidgetControl_Implementation(bool InFlag)
 
 void UPartnerEMPComponent::RefreshEMPCandidates()
 {
+	if (bAutoTargetActive) return;
 	if (!bEMPCandidateSearchActive)
 	{
 		return;
@@ -237,6 +382,7 @@ void UPartnerEMPComponent::ClearEMPCandidates()
 
 void UPartnerEMPComponent::StopEMPCandidateSearch()
 {
+	if (!PartnerCharacter || !PartnerCharacter->HasAuthority() || !bEMPActive) ResetAutoTarget();
 	bEMPCandidateSearchActive = false;
 	ClearEMPCandidates();
 	DestroyEMPLayerWidget();
@@ -254,6 +400,7 @@ void UPartnerEMPComponent::RefocusEMPInput()
 
 void UPartnerEMPComponent::TryMarkEMPTarget_Implementation(AActor* TargetActor)
 {
+	if (bAutoTargetActive) return;
 	if (!TargetActor || !PartnerCharacter || !PartnerCharacter->CanAcceptInput())
 	{
 		return;
@@ -285,6 +432,7 @@ void UPartnerEMPComponent::TryMarkEMPTarget_Implementation(AActor* TargetActor)
 
 bool UPartnerEMPComponent::NotifyEMPConfirmed()
 {
+	if (bAutoTargetActive) return true; // 소비하되 실행 요청은 보내지 않는다.
 	if (!bEMPCandidateSearchActive)
 	{
 		return false;
@@ -296,6 +444,7 @@ bool UPartnerEMPComponent::NotifyEMPConfirmed()
 
 void UPartnerEMPComponent::NotifyEMPExpired()
 {
+	if (bAutoTargetActive) return; // 자동 모드는 서버 Pending 타이머로 종료한다.
 	if (!bEMPCandidateSearchActive)
 	{
 		return;
@@ -307,7 +456,7 @@ void UPartnerEMPComponent::NotifyEMPExpired()
 
 void UPartnerEMPComponent::ServerCompleteEMP_Implementation(const TArray<AActor*>& InMarkedActors)
 {
-	CompleteEMPOnServer(InMarkedActors);
+	if (!bAutoTargetActive) CompleteEMPOnServer(InMarkedActors);
 }
 
 void UPartnerEMPComponent::CompleteEMPOnServer(const TArray<AActor*>& InMarkedActors)
@@ -327,6 +476,7 @@ void UPartnerEMPComponent::CompleteEMPOnServer(const TArray<AActor*>& InMarkedAc
 	{
 
 		bEMPActive = false;
+		ResetAutoTarget();
 		MarkedActors.Empty();
 		ResetEMPEarlyCompleteTimer();
 		ClientCompleteEMP();
@@ -338,7 +488,7 @@ void UPartnerEMPComponent::CompleteEMPOnServer(const TArray<AActor*>& InMarkedAc
 	int32 AppliedTargetCount = 0;
 	for (AActor* MarkedActor : InMarkedActors)
 	{
-		if (CachedAbilityData.MaxTargets > 0 && AppliedTargetCount >= CachedAbilityData.MaxTargets)
+		if (!bAutoTargetActive && CachedAbilityData.MaxTargets > 0 && AppliedTargetCount >= CachedAbilityData.MaxTargets)
 		{
 			break;
 		}
@@ -350,7 +500,12 @@ void UPartnerEMPComponent::CompleteEMPOnServer(const TArray<AActor*>& InMarkedAc
 
 		UEMPableComponent* EMPableComponent = ResolveEMPableComponent(MarkedActor);
 		FVector2D ScreenLocation = FVector2D::ZeroVector;
-		if (!IsCandidateActorValid(MarkedActor, EMPableComponent, ScreenLocation))
+		// 자동 모드는 최초 명단을 유지한다. 이동/시점 변경으로 대상을 다시 고르지 않는다.
+		const bool bEligible = bAutoTargetActive
+			? (EMPableComponent && EMPableComponent->IsEMPTargetType()
+				&& EMPableComponent->CanBeEMPTarget(RequiredEMPTags, BlockedEMPTags))
+			: IsCandidateActorValid(MarkedActor, EMPableComponent, ScreenLocation);
+		if (!bEligible)
 		{
 			continue;
 		}
@@ -377,6 +532,7 @@ void UPartnerEMPComponent::CompleteEMPOnServer(const TArray<AActor*>& InMarkedAc
 	}
 
 	bEMPActive = false;
+	ResetAutoTarget();
 	MarkedActors.Empty();
 	ResetEMPEarlyCompleteTimer();
 	ClientCompleteEMP();
@@ -386,11 +542,12 @@ void UPartnerEMPComponent::CompleteEMPOnServer(const TArray<AActor*>& InMarkedAc
 
 void UPartnerEMPComponent::ServerCancelEMP_Implementation()
 {
-	CancelEMPOnServer();
+	if (!bAutoTargetActive) CancelEMPOnServer();
 }
 
 void UPartnerEMPComponent::ServerExpireEMP_Implementation()
 {
+	if (bAutoTargetActive) return;
 
 	if (!MarkedActors.IsEmpty())
 	{
@@ -407,6 +564,7 @@ void UPartnerEMPComponent::CancelEMPOnServer()
 	const bool bWasActive = bEMPActive;
 
 	bEMPActive = false;
+	ResetAutoTarget();
 	MarkedActors.Empty();
 	ResetEMPEarlyCompleteTimer();
 	ClientCompleteEMP();
@@ -620,7 +778,7 @@ void UPartnerEMPComponent::EnsureEMPLayerWidget()
 			EMPLayerWidget,
 			FirstPersonInputModeTags::EMP(),
 			this,
-			EUILayerFocusTarget::Widget,
+			bAutoTargetActive ? EUILayerFocusTarget::GameViewport : EUILayerFocusTarget::Widget,
 			true);
 	}
 

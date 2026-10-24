@@ -3,8 +3,9 @@
 #include "Components/BoxComponent.h"
 #include "Components/SceneComponent.h"
 #include "Components/WidgetComponent.h"
-#include "DrawDebugHelpers.h"
 #include "Engine/LocalPlayer.h"
+#include "Engine/World.h"
+#include "UI/ActorBasedWidgetSubsystem.h"
 #include "FirstPerson/FirstPersonCharacter.h"
 #include "GameFramework/PlayerController.h"
 #include "Interaction/InteractableComponent.h"
@@ -40,26 +41,35 @@ AInteractionDescActor::AInteractionDescActor()
 	DescWidgetComponent->SetVisibility(false);
 }
 
+void AInteractionDescActor::BeginPlay()
+{
+	Super::BeginPlay();
+	if (UActorBasedWidgetSubsystem* Subsystem = GetWorld()->GetSubsystem<UActorBasedWidgetSubsystem>())
+	{
+		Subsystem->RegisterWidgetOwner(this);
+	}
+}
+
+void AInteractionDescActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (UActorBasedWidgetSubsystem* Subsystem = GetWorld()->GetSubsystem<UActorBasedWidgetSubsystem>())
+	{
+		Subsystem->UnregisterWidgetOwner(this);
+	}
+	Super::EndPlay(EndPlayReason);
+}
+
+void AInteractionDescActor::DismissActorBasedWidgets_Implementation()
+{
+	DeactivateDesc();
+}
+
 void AInteractionDescActor::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 
 	BillboardToCamera();
 
-	if (bDrawTraceCollisionDebug && TraceCollision)
-	{
-		DrawDebugBox(
-			GetWorld(),
-			TraceCollision->GetComponentLocation(),
-			TraceCollision->GetScaledBoxExtent(),
-			TraceCollision->GetComponentQuat(),
-			FColor::Cyan,
-			false,
-			0.0f,
-			0,
-			2.0f
-		);
-	}
 }
 
 void AInteractionDescActor::ActivateDesc(AFirstPersonCharacter* Interactor)

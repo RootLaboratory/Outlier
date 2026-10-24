@@ -6,6 +6,8 @@
 #include "AutoTurret.generated.h"
 
 class USceneComponent;
+class UOutlierShieldAttributeSet;
+class UPartnerShieldRecipientComponent;
 class UBoxComponent;
 class UAnimMontage;
 class USkeletalMeshComponent;
@@ -182,6 +184,12 @@ public:
 	FVector GetCurrentTurretAimLocation() const { return CurrentAimLocation; }
 
 protected:
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
+	TObjectPtr<UOutlierShieldAttributeSet> ShieldAttributeSet;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Shield")
+	TObjectPtr<UPartnerShieldRecipientComponent> PartnerShieldRecipient;
+
 	virtual void OnConstruction(const FTransform& Transform) override;
 	virtual void PostInitializeComponents() override;
 	virtual void BeginPlay() override;
@@ -194,6 +202,10 @@ protected:
 	virtual void PrepareForStateTreeStart() override;
 	virtual bool ShouldActivateAsPreplacedEnemy() const override;
 	virtual void HandleDeath() override;
+	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Audio", meta = (Categories = "Audio.Context"))
+	FGameplayTag DeployAudioContext;
+	UPROPERTY(EditDefaultsOnly, Category = "Enemy|Audio", meta = (Categories = "Audio.Context"))
+	FGameplayTag HackedAudioContext;
 	virtual void HandleHackEffect(FGameplayTag EffectTag, const FHackResultContext& Context) override;
 	virtual void HandleHackStarted(const FHackQueryContext& Context) override;
 	virtual void HandleHackCompleted(const FHackResultContext& Context) override;

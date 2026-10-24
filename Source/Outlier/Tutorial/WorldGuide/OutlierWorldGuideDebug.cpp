@@ -7,7 +7,6 @@
 #include "FirstPerson/FirstPersonPlayerController.h"
 #include "HAL/IConsoleManager.h"
 #include "Outlier.h"
-#include "Tutorial/WorldGuide/OutlierWorldGuideManager.h"
 #include "Tutorial/WorldGuide/OutlierWorldGuideTargetComponent.h"
 
 namespace OutlierWorldGuideDebug
@@ -38,27 +37,6 @@ namespace OutlierWorldGuideDebug
 #if !UE_BUILD_SHIPPING
 namespace
 {
-	void DumpLocal(UWorld* World)
-	{
-		if (!World) return;
-		int32 Managers = 0;
-		for (TActorIterator<AOutlierWorldGuideManager> It(World); It; ++It)
-		{
-			++Managers;
-			UE_LOG(LogOutlier, Log, TEXT("[WorldGuideDebug] %s"), *It->BuildDebugReport());
-		}
-		if (Managers == 1) return;
-		UE_LOG(LogOutlier, Warning, TEXT("[WorldGuideDebug][%s] Manager count=%d; place exactly one BP_OutlierWorldGuideManager."),
-			*World->GetName(), Managers);
-		for (TActorIterator<AActor> It(World); It; ++It)
-		{
-			TArray<UOutlierWorldGuideTargetComponent*> Targets;
-			It->GetComponents(Targets);
-			for (const auto* Target : Targets)
-				if (Target->WidgetID.IsValid()) UE_LOG(LogOutlier, Log, TEXT("[WorldGuideDebug] %s"), *Target->DescribeDebugState());
-		}
-	}
-
 	FGameplayTag ReadGuideID(const FString& Text)
 	{
 		const FString Name = Text.Contains(TEXT(".")) ? Text : FString(TEXT("UI.Info.World.LOC_TUT_")) + Text;
@@ -95,14 +73,6 @@ namespace
 		if (Controller->HasAuthority()) Controller->ServerDebugWorldGuide_Implementation(Operation, ID, Next);
 		else Controller->ServerDebugWorldGuide(Operation, ID, Next);
 	}
-
-	FAutoConsoleCommandWithWorldAndArgs WorldGuideDumpCommand(TEXT("Outlier.WorldGuide.Dump"),
-		TEXT("Dump local setup/targets/state. Add 'server' for the server FIFO and completed IDs."),
-		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
-		{
-			if (!Args.IsEmpty() && Args[0].Equals(TEXT("server"), ESearchCase::IgnoreCase)) Request(World, TEXT("dump"), {});
-			else DumpLocal(World);
-		}));
 
 	FAutoConsoleCommandWithWorldAndArgs ShowCommand(TEXT("Outlier.WorldGuide.Show"), TEXT("Show <ID>: enqueue the guide on the server; no HUD event."),
 		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World) { Request(World, TEXT("show"), Args); }));

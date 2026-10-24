@@ -119,6 +119,7 @@ private:
 	uint8 bPendingInitialMouseReset : 1 = false;
 
 private:
+	float GetEffectiveGapSize(float BaseGapSize) const;
 	void EnsureCircleCanvas();
 	void SpawnCircleBorders();
 	void ClearCircleBorders();

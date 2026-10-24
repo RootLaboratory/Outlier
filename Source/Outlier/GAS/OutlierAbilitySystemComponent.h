@@ -28,6 +28,7 @@ public:
 		AActor* DamageCauser,
 		const FGameplayTag& DamageTag);
 	bool ApplyShieldRecoveryToSelf(float Amount);
+	bool ApplyHealthRecoveryToSelf(float Amount);
 	bool ApplyShieldDeltaToSelf(float Amount);
 	bool ApplyPartnerShieldDeltaToSelf(float PartnerShieldDelta, float MaxPartnerShieldDelta);
 	bool ApplyDeadStateToSelf();

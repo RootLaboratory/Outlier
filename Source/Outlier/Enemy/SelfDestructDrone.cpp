@@ -1,4 +1,5 @@
 #include "Enemy/SelfDestructDrone.h"
+#include "Audio/OutlierAudioFeedback.h"
 
 #include "Components/PrimitiveComponent.h"
 #include "Components/CapsuleComponent.h"
@@ -51,6 +52,14 @@ void CollectMatchingExplosiveSockets(
 ASelfDestructDrone::ASelfDestructDrone()
 {
 	SetDefaultEnemyType(EEnemyType::Melee);
+	HitAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Drone.Melee.State.Hit"));
+	DeathAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Drone.Melee.State.Death"));
+	DetectAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Drone.Melee.State.Detect"));
+	HoverAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Drone.Melee.Hovering.Loop"));
+	AppearAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Drone.Melee.State.Appear"));
+	TelegraphAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Drone.Melee.State.Exlode.sign"));
+	SelfDestructAudioContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Enemy.Drone.Melee.State.Exlode.Act"));
+
 
 	ExplosionComponent = CreateDefaultSubobject<UExplosionComponent>(TEXT("ExplosionComponent"));
 }
@@ -163,11 +172,13 @@ void ASelfDestructDrone::TriggerSelfDestruct()
 	UE_LOG(LogEnemyChargeCollision, Log, TEXT("[Charge] DetonateRequested Drone=%s Committed=%d Health=%.1f"),
 		*GetNameSafe(this), bHasCommittedSelfDestruct, GetCurrentHealth());
 
+	bTriggeredSelfDestruct = true;
 	ApplyDamageInternal(
 		FMath::Max(GetCurrentHealth(), 1.0f),
 		GetController(),
 		this,
 		OutlierGameplayTags::Damage::Explosion());
+	if (!IsDead()) bTriggeredSelfDestruct = false;
 }
 
 void ASelfDestructDrone::NotifyHit(UPrimitiveComponent* MyComp, AActor* Other,
@@ -446,6 +457,7 @@ void ASelfDestructDrone::MulticastSelfDestructTelegraphStarted_Implementation(
 {
 	if (GetNetMode() != NM_DedicatedServer)
 	{
+		OutlierAudioFeedback::Loop(this, *TelegraphAudioContext.ToString(), true, TEXT("Audio.Type.Enemy"));
 		OnSelfDestructTelegraphStarted(TelegraphDuration);
 	}
 }
@@ -454,6 +466,7 @@ void ASelfDestructDrone::MulticastSelfDestructTelegraphCancelled_Implementation(
 {
 	if (GetNetMode() != NM_DedicatedServer)
 	{
+		OutlierAudioFeedback::Loop(this, *TelegraphAudioContext.ToString(), false, TEXT("Audio.Type.Enemy"));
 		OnSelfDestructTelegraphCancelled();
 	}
 }
@@ -470,6 +483,7 @@ void ASelfDestructDrone::HandleDeath()
 	// EnemyBase가 Actor를 제거하기 전에 폭발 Queue와 클라이언트 연출을 먼저 확정한다.
 	if (ExplosionComponent)
 	{
+		ExplosionComponent->SetAudioContextOverride(bTriggeredSelfDestruct ? SelfDestructAudioContext : FGameplayTag());
 		ExplosionComponent->DetonateAt(
 			GetActorLocation(),
 			GetController(),
@@ -488,6 +502,7 @@ void ASelfDestructDrone::ResetPoolRuntimeState()
 	// 본체는 재사용하지만 부착 폭발물은 Idle 진입 때 제거한다. 새 대여마다 폭발 가능한 부품을 다시 만든다.
 	Super::ResetPoolRuntimeState();
 	bDeathHandling = false;
+	bTriggeredSelfDestruct = false;
 	bHasCommittedSelfDestruct = false;
 	CommittedChargeDirection = FVector::ForwardVector;
 	CommittedChargeTargetDirection = FVector::ForwardVector;

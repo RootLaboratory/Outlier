@@ -2,6 +2,7 @@
 
 
 #include "Weapon/MeleeWeaponBase.h"
+#include "Audio/OutlierAudioFeedback.h"
 #include "Outlier.h"
 #include "Damage/OutlierDamageReceiver.h"
 #include "Drone/Partner/PartnerCharacter.h"
@@ -158,6 +159,8 @@ void AMeleeWeaponBase::CommitAttack(int32 ExpectedAttackSequence)
 		return;
 	}
 
+	if (Cast<AShooterCharacter>(WeaponOwner))
+		OutlierAudioFeedback::World(this, TEXT("Audio.Context.Player.01.Type.Melee.Swing"), TEXT("Audio.Type.Weapon"));
 	GetWorldTimerManager().ClearTimer(AttackTimerHandle);
 	AttackPhase = EMeleeAttackPhase::Recovery;
 	RefreshOwnerCombatState();
@@ -512,6 +515,8 @@ void AMeleeWeaponBase::SweepMeleeTrace(
 	FCollisionObjectQueryParams ObjectQueryParams;
 	ObjectQueryParams.AddObjectTypesToQuery(ECC_Pawn);
 	ObjectQueryParams.AddObjectTypesToQuery(ECC_PhysicsBody);
+	ObjectQueryParams.AddObjectTypesToQuery(ECC_WorldDynamic);
+	ObjectQueryParams.AddObjectTypesToQuery(ECC_WorldStatic);
 
 	FCollisionQueryParams TraceParams(SCENE_QUERY_STAT(MeleeSocketTrace), false, OwnerCharacter);
 	TraceParams.AddIgnoredActor(this);
@@ -549,11 +554,20 @@ void AMeleeWeaponBase::SweepMeleeTrace(
 		{
 			AActor* Candidate = HitResult.GetActor();
 			if (!IsValid(Candidate) || HitActorsThisSwing.Contains(Candidate)
-				|| !IsValidMeleeTarget(Candidate, true, false))
+				|| Candidate == WeaponOwner || Candidate == this)
 			{
 				continue;
 			}
 
+			if (!IsValidMeleeTarget(Candidate, true, false))
+			{
+				if (Cast<AShooterCharacter>(WeaponOwner) && !Cast<APawn>(Candidate))
+				{
+					HitActorsThisSwing.Add(Candidate);
+					OutlierAudioFeedback::World(this, TEXT("Audio.Context.Player.01.Type.Melee.Hit"), TEXT("Audio.Type.Weapon"), &HitResult.ImpactPoint);
+				}
+				continue;
+			}
 			FHitResult VisibilityHit;
 			FCollisionQueryParams VisibilityParams(SCENE_QUERY_STAT(MeleeSocketVisibility), false, OwnerCharacter);
 			VisibilityParams.AddIgnoredActor(this);
@@ -569,6 +583,8 @@ void AMeleeWeaponBase::SweepMeleeTrace(
 			}
 
 			HitActorsThisSwing.Add(Candidate);
+			if (Cast<AShooterCharacter>(WeaponOwner))
+				OutlierAudioFeedback::World(this, TEXT("Audio.Context.Player.01.Type.Melee.Hit"), TEXT("Audio.Type.Weapon"), &HitResult.ImpactPoint);
 			ApplyHitToTarget(Candidate, HitResult);
 			if (!bCanHitMultipleTargets)
 			{

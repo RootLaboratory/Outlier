@@ -6,6 +6,7 @@
 #include "FirstPerson/FirstPersonCharacter.h"
 #include "Engine/DataTable.h"
 #include "Interface/WeaponMuzzleProvider.h"
+#include "Interface/WeaponDamageModifierProvider.h"
 #include "Interface/MeleeTargetInterface.h"
 #include "AbilitySystemInterface.h"
 #include "Damage/OutlierDamageReceiver.h"
@@ -73,6 +74,7 @@ class UNiagaraSystem;
 class UOutlierAbilitySystemComponent;
 class UOutlierVitalAttributeSet;
 class UOutlierPartnerMovementAttributeSet;
+class UOutlierPartnerCombatAttributeSet;
 class UPartnerVitalityComponent;
 
 class USceneComponent;
@@ -80,7 +82,7 @@ struct FGameplayEffectSpec;
 struct FActiveGameplayEffectHandle;
 struct FOnAttributeChangeData;
 UCLASS()
-class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeaponMuzzleProvider, public IAbilitySystemInterface, public IOutlierDamageReceiver, public IMeleeTargetInterface, public IJumperAffectableInterface
+class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeaponMuzzleProvider, public IWeaponDamageModifierProvider, public IAbilitySystemInterface, public IOutlierDamageReceiver, public IMeleeTargetInterface, public IJumperAffectableInterface
 {
 	GENERATED_BODY()
 
@@ -105,6 +107,9 @@ protected:
 	// CharacterMovement / PartnerMovementComponent 에 즉시 반영한다.
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
 	TObjectPtr<UOutlierPartnerMovementAttributeSet> MobilityAttributeSet;
+
+	UPROPERTY(VisibleAnywhere, Category = "GAS")
+	TObjectPtr<UOutlierPartnerCombatAttributeSet> CombatAttributeSet;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
 	TObjectPtr<UPartnerVitalityComponent> PartnerVitalityComponent;
@@ -493,6 +498,12 @@ protected:
 	void NotifyPartnerCooldownUI(const FGameplayTag& CooldownTag);
 	FDelegateHandle PartnerCooldownEffectAddedHandle;
 
+	void BindGasCombatObservers();
+	void UnbindGasCombatObservers();
+	void HandleStunMultiplierChanged(const FOnAttributeChangeData& ChangeData);
+	FDelegateHandle StunMultiplierChangedHandle;
+	FWeaponDamageModifiers CachedWeaponDamageModifiers;
+
 	void BindGasMobilityObservers();
 	void UnbindGasMobilityObservers();
 	void HandleMoveSpeedChanged(const FOnAttributeChangeData& ChangeData);
@@ -513,6 +524,7 @@ public:
 		return OutlierAbilitySystemComponent;
 	}
 	const UOutlierVitalAttributeSet* GetVitalAttributeSet() const { return VitalAttributeSet; }
+	virtual void GetWeaponDamageModifiers(FWeaponDamageModifiers& OutModifiers) const override;
 	const UOutlierPartnerMovementAttributeSet* GetMobilityAttributeSet() const { return MobilityAttributeSet; }
 	UPartnerVitalityComponent* GetPartnerVitalityComponent() const { return PartnerVitalityComponent; }
 	bool CanAcceptInput() const;

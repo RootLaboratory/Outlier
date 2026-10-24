@@ -2,6 +2,7 @@
 
 
 #include "Weapon/RangedWeaponBase.h"
+#include "Interface/WeaponDamageModifierProvider.h"
 #include "Weapon/FirstPickupDiagnostics.h"
 
 #include "Damage/OutlierDamageReceiver.h"
@@ -481,6 +482,18 @@ bool ARangedWeaponBase::TryResolveWallOffsetMuzzleShot(
 	return true;
 }
 
+void ARangedWeaponBase::ApplyOwnerDamageModifiers(FOutlierDamageRequest& Request) const
+{
+	FWeaponDamageModifiers Modifiers;
+	const IWeaponDamageModifierProvider* Provider = Cast<IWeaponDamageModifierProvider>(WeaponOwner);
+	if (Provider) Provider->GetWeaponDamageModifiers(Modifiers);
+	const float Multiplier = FMath::IsFinite(Modifiers.StunMultiplier) ? FMath::Max(0.0f, Modifiers.StunMultiplier) : 1.0f;
+	Request.StunDurationSeconds *= Multiplier;
+	const float DamageMultiplier = FMath::IsFinite(Modifiers.DamageMultiplier)
+		? FMath::Max(0.0f, Modifiers.DamageMultiplier) : 1.0f;
+	Request.DamageAmount *= DamageMultiplier;
+}
+
 void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPlayShotSound)
 {
 	if (Cast<APartnerCharacter>(WeaponOwner))
@@ -635,6 +648,7 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 			DamageRequest.DamageOrigin = Start;
 			DamageRequest.EventInstigator = OwnerCharacter->GetController();
 			DamageRequest.DamageCauser = this;
+			ApplyOwnerDamageModifiers(DamageRequest);
 			const float AppliedDamage = OutlierDamage::Apply(HitActor, DamageRequest);
 			// 잔해/무적 대상에 충돌한 것만으로 명중 UI를 보내지 않는다. 치명타격도 적용된 피해로 판정한다.
 			if (bShouldNotifyAttackSign && AppliedDamage > 0.0f)

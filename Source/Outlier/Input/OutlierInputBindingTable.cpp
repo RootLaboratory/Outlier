@@ -155,6 +155,34 @@ namespace
 	}
 }
 
+EOutlierInputBindingValidation FOutlierInputBindingTableRow::ValidateReplacementKey(FKey NewKey) const
+{
+	const bool bWheelDirection = NewKey == EKeys::MouseScrollUp || NewKey == EKeys::MouseScrollDown;
+	if (!NewKey.IsValid() || NewKey == EKeys::AnyKey || NewKey.IsGamepadKey()
+		|| !NewKey.IsBindableInBlueprints() || !DefaultKey.IsValid())
+	{
+		return EOutlierInputBindingValidation::InputRequired;
+	}
+
+	if (DefaultKey.IsAnalog())
+	{
+		// A wheel pulse is not a substitute for mouse movement, even though both can be Axis1D.
+		const bool bMatchingAxis = (DefaultKey.IsAxis1D() && NewKey.IsAxis1D())
+			|| (DefaultKey.IsAxis2D() && NewKey.IsAxis2D())
+			|| (DefaultKey.IsAxis3D() && NewKey.IsAxis3D());
+		return bMatchingAxis && NewKey != EKeys::MouseWheelAxis
+			? EOutlierInputBindingValidation::Valid
+			: EOutlierInputBindingValidation::AxisInputRequired;
+	}
+
+	if (NewKey.IsAnalog() || (bWheelDirection && !bAllowMouseWheel))
+	{
+		return EOutlierInputBindingValidation::InputRequired;
+	}
+
+	return EOutlierInputBindingValidation::Valid;
+}
+
 TArray<FOutlierInputBindingTableRow> UOutlierInputBindingTable::GetVisibleRowsSorted() const
 {
 	TArray<FOutlierInputBindingTableRow> VisibleRows;
@@ -294,6 +322,7 @@ void UOutlierInputBindingTable::RebuildRowsFromConfiguredIMCs()
 			{
 				NewRow.SortOrder = ExistingRow->SortOrder;
 				NewRow.bRebindable = ExistingRow->bRebindable;
+				NewRow.bAllowMouseWheel = ExistingRow->bAllowMouseWheel;
 			}
 
 			if (Mapping.Key.IsMouseButton())

@@ -124,6 +124,12 @@ namespace OutlierGameplayTags
 				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Interact.Target.PannelSwitch")));
 				return Tag;
 			}
+
+			inline FGameplayTag LaserControlSwitch()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Interact.Target.LaserControlSwitch")));
+				return Tag;
+			}
 		}
 	}
 
@@ -272,6 +278,26 @@ namespace OutlierGameplayTags
 				{
 					static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(
 						FName(TEXT("Upgrade.Partner.Scan.RevealNodeFragments")));
+					return Tag;
+				}
+			}
+
+			namespace Mobility
+			{
+				inline FGameplayTag EvasiveBurst()
+				{
+					static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(
+						FName(TEXT("Upgrade.Partner.Mobility.EvasiveBurst")));
+					return Tag;
+				}
+			}
+
+			namespace Hacking
+			{
+				inline FGameplayTag MinigameEase()
+				{
+					static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(
+						FName(TEXT("Upgrade.Partner.Hacking.MinigameEase")));
 					return Tag;
 				}
 			}

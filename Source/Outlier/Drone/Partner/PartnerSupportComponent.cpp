@@ -4,6 +4,10 @@
 #include "Drone/Partner/PartnerSupportComponent.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Drone/Partner/PartnerShieldSphere.h"
+#include "Drone/Partner/PartnerShieldRecipientComponent.h"
+#include "Enemy/AutoTurret.h"
+#include "EngineUtils.h"
+#include "Team/OutlierTeamIds.h"
 #include "Interface/ScannableInterface.h"
 #include "Interface/HackableInterface.h"
 #include "Drone/Partner/HackableComponent.h"
@@ -141,9 +145,27 @@ EPartnerSkillUseResult UPartnerSupportComponent::TryShield_Server()
 	}
 	const float ShieldAmount = AbilitySystem->GetPartnerAbilityConfig().ShieldAmount;
 	const float ShieldDuration = PartnerCharacter->ShieldDuration;
+	const float HealthRegenRate = AbilitySystem->GetPartnerAbilityConfig().ShieldHealthRegenRate;
 
-	Shooter->ApplyPartnerShield(ShieldAmount, ShieldDuration);
+	if (!Shooter->ApplyPartnerShield(ShieldAmount, ShieldDuration, HealthRegenRate))
+	{
+		NotifySkillResult(EPartnerSkillType::Shield, EPartnerSkillUseResult::InvalidState);
+		return EPartnerSkillUseResult::InvalidState;
+	}
 	SpawnShieldActor_Server(Shooter);
+
+	const UOutlierUpgradeComponent* Upgrade = PartnerCharacter->GetUpgradeComponent();
+	const FGameplayTag TurretShieldTag = FGameplayTag::RequestGameplayTag(TEXT("Upgrade.Partner.Shield.HackedTurretShield"));
+	if (Upgrade && Upgrade->HasUpgradeTag(TurretShieldTag))
+	{
+		if (AAutoTurret* Turret = FindNearestShieldTurret())
+		{
+			if (UPartnerShieldRecipientComponent* Recipient = Turret->FindComponentByClass<UPartnerShieldRecipientComponent>())
+			{
+				if (Recipient->ApplyShield(ShieldAmount, ShieldDuration, HealthRegenRate)) SpawnShieldActor_Server(Turret);
+			}
+		}
+	}
 
 	PartnerCharacter->bShieldActive = true;
 
@@ -159,85 +181,42 @@ EPartnerSkillUseResult UPartnerSupportComponent::TryShield_Server()
 	return EPartnerSkillUseResult::Success;
 }
 
-void UPartnerSupportComponent::SpawnShieldActor_Server(AShooterCharacter* Shooter)
+AAutoTurret* UPartnerSupportComponent::FindNearestShieldTurret() const
 {
-	UWorld* World = GetWorld();
-	if (!World || !PartnerCharacter || !PartnerCharacter->HasAuthority() || !Shooter || !ShieldActorClass)
+	if (!PartnerCharacter || !GetWorld()) return nullptr;
+	AAutoTurret* Nearest = nullptr;
+	double NearestDistanceSq = FMath::Square(static_cast<double>(PartnerCharacter->ShieldRange));
+	for (TActorIterator<AAutoTurret> It(GetWorld()); It; ++It)
 	{
-		UE_LOG(
-			LogTemp,
-			Warning,
-			TEXT("[PartnerShieldSpawn] Blocked World=%d Partner=%s Authority=%d Shooter=%s ShieldActorClass=%s"),
-			World ? 1 : 0,
-			*GetNameSafe(PartnerCharacter),
-			PartnerCharacter && PartnerCharacter->HasAuthority() ? 1 : 0,
-			*GetNameSafe(Shooter),
-			*GetNameSafe(ShieldActorClass)
-		);
-		return;
+		AAutoTurret* Turret = *It;
+		if (!IsValid(Turret) || !Turret->IsHackedToPlayerTeam() || Turret->IsDead()
+			|| Turret->GetCurrentHealth() <= 0.0f || Turret->GetGenericTeamId().GetId() != OutlierTeamIds::Player
+			|| Turret->GetTurretLifecycleState() != EAutoTurretLifecycleState::Active) continue;
+		const double DistanceSq = FVector::DistSquared(PartnerCharacter->GetActorLocation(), Turret->GetActorLocation());
+		if (DistanceSq <= NearestDistanceSq)
+		{
+			Nearest = Turret;
+			NearestDistanceSq = DistanceSq;
+		}
 	}
+	return Nearest;
+}
 
-	UE_LOG(
-		LogTemp,
-		Log,
-		TEXT("[PartnerShieldSpawn] SpawnRequest Partner=%s Shooter=%s Class=%s Location=%s Rotation=%s"),
-		*GetNameSafe(PartnerCharacter),
-		*GetNameSafe(Shooter),
-		*GetNameSafe(ShieldActorClass),
-		*Shooter->GetActorLocation().ToString(),
-		*Shooter->GetActorRotation().ToString()
-	);
-
-	DestroyShieldActor_Server();
-
-	FActorSpawnParameters SpawnParams;
-	SpawnParams.Owner = Shooter;
-	SpawnParams.Instigator = PartnerCharacter;
-	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-
-	ActiveShieldActor = World->SpawnActor<APartnerShieldSphere>(
-		ShieldActorClass,
-		Shooter->GetActorLocation(),
-		Shooter->GetActorRotation(),
-		SpawnParams
-	);
-
-	if (ActiveShieldActor)
+void UPartnerSupportComponent::SpawnShieldActor_Server(AActor* Target)
+{
+	if (!IsValid(Target) || !PartnerCharacter || !PartnerCharacter->HasAuthority()) return;
+	if (UPartnerShieldRecipientComponent* Recipient = Target->FindComponentByClass<UPartnerShieldRecipientComponent>())
 	{
-		ActiveShieldActor->InitializeShield(Shooter, PartnerCharacter);
-
-		/*UE_LOG(
-			LogTemp,
-			Log,
-			TEXT("[PartnerShieldSpawn] SpawnSuccess Actor=%s Target=%s Radius=%.1f Offset=%s Location=%s"),
-			*GetNameSafe(ActiveShieldActor),
-			*GetNameSafe(ActiveShieldActor->GetShieldTarget()),
-			ActiveShieldActor->GetShieldRadius(),
-			*ActiveShieldActor->GetTargetRelativeLocation().ToString(),
-			*ActiveShieldActor->GetActorLocation().ToString()
-		);*/
-	}
-	else
-	{
-		UE_LOG(
-			LogTemp,
-			Error,
-			TEXT("[PartnerShieldSpawn] SpawnFailed Partner=%s Shooter=%s Class=%s"),
-			*GetNameSafe(PartnerCharacter),
-			*GetNameSafe(Shooter),
-			*GetNameSafe(ShieldActorClass)
-		);
+		ActiveShieldRecipients.AddUnique(Recipient);
+		Recipient->ShowShield(ShieldActorClass, PartnerCharacter);
 	}
 }
 
 void UPartnerSupportComponent::DestroyShieldActor_Server()
 {
-	if (ActiveShieldActor)
-	{
-		UE_LOG(LogTemp, Log, TEXT("[PartnerShieldSpawn] Destroy Actor=%s"), *GetNameSafe(ActiveShieldActor));
-		ActiveShieldActor->EndShield();
-		ActiveShieldActor = nullptr;
-	}
+	for (UPartnerShieldRecipientComponent* Recipient : ActiveShieldRecipients)
+		if (IsValid(Recipient)) Recipient->DestroyVisual();
+	ActiveShieldRecipients.Reset();
 }
 
 void UPartnerSupportComponent::UpdateShield_Server()
@@ -247,23 +226,22 @@ void UPartnerSupportComponent::UpdateShield_Server()
 		EndShield_Server();
 		return;
 	}
-
-	AShooterCharacter* Shooter = PartnerCharacter->CachedShooterCharacter;
-	if (!Shooter || Shooter->GetCurPartnerShield() <= 0.0f)
+	for (int32 Index = ActiveShieldRecipients.Num() - 1; Index >= 0; --Index)
 	{
-		EndShield_Server();
+		UPartnerShieldRecipientComponent* Recipient = ActiveShieldRecipients[Index];
+		if (!IsValid(Recipient) || !Recipient->HasShield())
+		{
+			if (IsValid(Recipient)) Recipient->DestroyVisual();
+			ActiveShieldRecipients.RemoveAtSwap(Index);
+		}
 	}
+	if (ActiveShieldRecipients.IsEmpty()) EndShield_Server();
 }
 
 void UPartnerSupportComponent::EndShield_Server()
 {
-	if (!PartnerCharacter)
-	{
-		return;
-	}
-
-	PartnerCharacter->bShieldActive = false;
-	GetWorld()->GetTimerManager().ClearTimer(ShieldMonitorTimerHandle);
+	if (PartnerCharacter) PartnerCharacter->bShieldActive = false;
+	if (GetWorld()) GetWorld()->GetTimerManager().ClearTimer(ShieldMonitorTimerHandle);
 	DestroyShieldActor_Server();
 }
 
@@ -424,7 +402,10 @@ bool UPartnerSupportComponent::CanUseShield() const
 	}
 
 	const float Distance = PS->GetPartnerDistance();
-	return Distance <= PartnerCharacter->ShieldRange;
+	const AShooterCharacter* Shooter = PartnerCharacter->CachedShooterCharacter;
+	return Distance <= PartnerCharacter->ShieldRange && IsValid(Shooter)
+		&& FVector::DistSquared(PartnerCharacter->GetActorLocation(), Shooter->GetActorLocation())
+			<= FMath::Square(PartnerCharacter->ShieldRange);
 }
 
 void UPartnerSupportComponent::NotifySkillResult(EPartnerSkillType SkillType, EPartnerSkillUseResult Result) const
