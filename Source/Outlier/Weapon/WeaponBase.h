@@ -20,6 +20,7 @@ class AFirstPersonCharacter;
 class UInteractableComponent;
 class UProceduralAnimValues;
 class UMaterialInterface;
+struct FCollisionQueryParams;
 
 UENUM(BlueprintType)
 enum class EWeaponType : uint8
@@ -153,6 +154,7 @@ protected:
 
 protected:
 	virtual void EnsureWeaponDataInitialized();
+	void AddWeaponTraceIgnoredActors(FCollisionQueryParams& Params) const;
 	virtual void InitializeFromDataTables();
 	virtual void InitializeRangeFromDataTable();
 

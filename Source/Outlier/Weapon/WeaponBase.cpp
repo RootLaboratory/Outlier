@@ -2,6 +2,9 @@
 
 
 #include "Weapon/WeaponBase.h"
+#include "CollisionQueryParams.h"
+#include "Drone/Partner/PartnerShieldSphere.h"
+#include "EngineUtils.h"
 #include "Weapon/FirstPickupDiagnostics.h"
 #include "Components/SceneComponent.h"
 #include "Components/MeshComponent.h"
@@ -26,6 +29,22 @@ static TAutoConsoleVariable<int32> CVarFirstPickupTest(
 	TEXT("outlier.FPFirstPickupTest"), 0,
 	TEXT("Development FP pickup probe: 0=off, 1=capture, add 2=snap local pose/detail, add 4=snap local grip target. Use 1/3/5/7 in separate runs."),
 	ECVF_Cheat);
+
+void AWeaponBase::AddWeaponTraceIgnoredActors(FCollisionQueryParams& Params) const
+{
+	Params.AddIgnoredActor(this);
+	Params.AddIgnoredActor(WeaponOwner);
+	if (!WeaponOwner || !GetWorld()) return;
+
+	// Resolve replicated shield actors directly: the recipient's visual pointer is server-only.
+	for (TActorIterator<APartnerShieldSphere> It(GetWorld()); It; ++It)
+	{
+		if (It->GetShieldTargetActor() == WeaponOwner || It->GetOwner() == WeaponOwner)
+		{
+			Params.AddIgnoredActor(*It);
+		}
+	}
+}
 
 AWeaponBase::AWeaponBase()
 {
