@@ -4,6 +4,7 @@
 #include "AbilitySystemComponent.h"
 #include "GAS/Data/OutlierPartnerAbilityConfig.h"
 #include "GAS/Data/OutlierShooterSuitAbilityDataRow.h"
+#include "VitalityPresentationTypes.h"
 #include "OutlierAbilitySystemComponent.generated.h"
 
 class AController;
@@ -61,6 +62,7 @@ struct FOutlierPartnerHackChargeState
 };
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FOutlierPartnerHackChargesChanged, bool /* bRecovered */);
+DECLARE_MULTICAST_DELEGATE_OneParam(FOutlierVitalityPresentationChanged, const FOutlierVitalityPresentationUpdate&);
 
 UCLASS(ClassGroup = GAS)
 class OUTLIER_API UOutlierAbilitySystemComponent : public UAbilitySystemComponent
@@ -69,6 +71,11 @@ class OUTLIER_API UOutlierAbilitySystemComponent : public UAbilitySystemComponen
 
 public:
 	UOutlierAbilitySystemComponent();
+	FOutlierVitalityPresentationChanged OnVitalityPresentationChanged;
+	void GetVitalityPresentationSnapshot(TArray<FOutlierVitalityPresentationUpdate>& OutUpdates) const;
+	// GE 한 번에 여러 속성이 바뀌어도 최종값과 원인을 한 쌍으로 확정한다.
+	void BeginVitalityPresentation(EOutlierVitalityUpdatePolicy Policy);
+	void EndVitalityPresentation();
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	void InitializeForActor(AActor* Actor);
@@ -82,8 +89,9 @@ public:
 		const FGameplayTag& DamageTag);
 	bool ApplyShieldRecoveryToSelf(float Amount);
 	bool ApplyHealthRecoveryToSelf(float Amount);
-	bool ApplyShieldDeltaToSelf(float Amount);
-	bool ApplyPartnerShieldDeltaToSelf(float PartnerShieldDelta, float MaxPartnerShieldDelta);
+	bool ApplyShieldDeltaToSelf(float Amount, EOutlierVitalityUpdatePolicy Policy = EOutlierVitalityUpdatePolicy::Animated);
+	bool ApplyPartnerShieldDeltaToSelf(float PartnerShieldDelta, float MaxPartnerShieldDelta,
+		EOutlierVitalityUpdatePolicy Policy = EOutlierVitalityUpdatePolicy::Animated);
 	bool ApplyDeadStateToSelf();
 	bool InitializeVitalityToSelf(float MaxHealth);
 	bool RestoreHealthToMax();
@@ -187,6 +195,16 @@ public:
 	EGameplayEffectReplicationMode GetConfiguredReplicationMode() const { return ReplicationMode; }
 
 private:
+	void BindVitalityPresentationAttributes();
+	void HandleVitalityPresentationAttribute(const FOnAttributeChangeData& Data);
+	void FlushVitalityPresentation();
+	TArray<FDelegateHandle> VitalityPresentationAttributeHandles;
+	int32 VitalityPresentationDepth = 0;
+	bool bHealthMaximumChanged = false;
+	bool bShieldMaximumChanged = false;
+	bool bHealthPresentationDirty = false;
+	bool bShieldPresentationDirty = false;
+	EOutlierVitalityUpdatePolicy VitalityPresentationPolicy = EOutlierVitalityUpdatePolicy::Animated;
 	UFUNCTION()
 	void OnRep_PartnerHackCharges(const FOutlierPartnerHackChargeState& PreviousState);
 	void HandlePartnerHackChargeUpgrade(const FGameplayTag Tag, int32 NewCount);

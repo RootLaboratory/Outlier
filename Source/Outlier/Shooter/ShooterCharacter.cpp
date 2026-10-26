@@ -681,6 +681,8 @@ void AShooterCharacter::InitializeGasVitality()
 		return;
 	}
 
+	// 초기화는 한 묶음으로 확정하여 중간 속성값의 피해 연출을 만들지 않는다.
+	OutlierAbilitySystemComponent->BeginVitalityPresentation(EOutlierVitalityUpdatePolicy::Immediate);
 	OutlierAbilitySystemComponent->SetNumericAttributeBase(
 		UOutlierVitalAttributeSet::GetMaxHealthAttribute(),
 		FMath::Max(MaxHP, 0.0f));
@@ -699,6 +701,7 @@ void AShooterCharacter::InitializeGasVitality()
 	OutlierAbilitySystemComponent->SetNumericAttributeBase(
 		UOutlierShieldAttributeSet::GetPartnerShieldAttribute(),
 		0.0f);
+	OutlierAbilitySystemComponent->EndVitalityPresentation();
 }
 
 void AShooterCharacter::InitializeGasSuitAbilities()

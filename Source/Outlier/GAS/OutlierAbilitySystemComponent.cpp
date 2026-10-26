@@ -15,6 +15,8 @@
 #include "Outlier.h"
 #include "Damage/OutlierDamageReceiver.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Drone/Partner/PartnerCharacter.h"
+#include "GAS/Attributes/OutlierShieldAttributeSet.h"
 
 namespace
 {
@@ -30,10 +32,14 @@ FGameplayEffectSpecHandle MakeSelfEffectSpec(
 	return AbilitySystem.MakeOutgoingSpec(EffectClass, 1.0f, Context);
 }
 
-bool ApplySpecToSelf(UOutlierAbilitySystemComponent& AbilitySystem, FGameplayEffectSpecHandle& SpecHandle)
+bool ApplySpecToSelf(UOutlierAbilitySystemComponent& AbilitySystem, FGameplayEffectSpecHandle& SpecHandle,
+	EOutlierVitalityUpdatePolicy Policy = EOutlierVitalityUpdatePolicy::Animated)
 {
-	return SpecHandle.IsValid()
-		&& AbilitySystem.ApplyGameplayEffectSpecToSelf(*SpecHandle.Data.Get()).WasSuccessfullyApplied();
+	if (!SpecHandle.IsValid()) return false;
+	AbilitySystem.BeginVitalityPresentation(Policy);
+	const bool bApplied = AbilitySystem.ApplyGameplayEffectSpecToSelf(*SpecHandle.Data.Get()).WasSuccessfullyApplied();
+	AbilitySystem.EndVitalityPresentation();
+	return bApplied;
 }
 
 FGameplayEffectQuery MakeOwningTagQuery(const FGameplayTag& Tag)
@@ -121,6 +127,7 @@ void UOutlierAbilitySystemComponent::InitializeForActor(AActor* Actor)
 
 	if (IsOwnerActorAuthoritative())
 	{
+		BindVitalityPresentationAttributes();
 		if (!PartnerHackChargeUpgradeHandle.IsValid())
 		{
 			PartnerHackChargeUpgradeHandle = RegisterGameplayTagEvent(
@@ -165,6 +172,18 @@ void UOutlierAbilitySystemComponent::ClearForActor(const AActor* Actor)
 {
 	if (GetOwnerActor() == Actor || GetAvatarActor() == Actor)
 	{
+		const FGameplayAttribute Attributes[] = {
+			UOutlierVitalAttributeSet::GetHealthAttribute(), UOutlierVitalAttributeSet::GetMaxHealthAttribute(),
+			UOutlierShieldAttributeSet::GetShieldAttribute(), UOutlierShieldAttributeSet::GetMaxShieldAttribute()
+		};
+		for (int32 Index = 0; Index < VitalityPresentationAttributeHandles.Num(); ++Index)
+		{
+			GetGameplayAttributeValueChangeDelegate(Attributes[Index]).Remove(VitalityPresentationAttributeHandles[Index]);
+		}
+		VitalityPresentationAttributeHandles.Reset();
+		VitalityPresentationPolicy = EOutlierVitalityUpdatePolicy::Animated;
+		bHealthMaximumChanged = bShieldMaximumChanged = false;
+		bHealthPresentationDirty = bShieldPresentationDirty = false;
 		RegisterGameplayTagEvent(OutlierGameplayTags::Upgrade::Partner::Hacking::DoubleCharge())
 			.Remove(PartnerHackChargeUpgradeHandle);
 		PartnerHackChargeUpgradeHandle.Reset();
@@ -266,7 +285,7 @@ bool UOutlierAbilitySystemComponent::ApplyShieldRecoveryToSelf(float Amount)
 	return ApplyShieldDeltaToSelf(Amount);
 }
 
-bool UOutlierAbilitySystemComponent::ApplyShieldDeltaToSelf(float Amount)
+bool UOutlierAbilitySystemComponent::ApplyShieldDeltaToSelf(float Amount, EOutlierVitalityUpdatePolicy Policy)
 {
 	if (!IsOwnerActorAuthoritative() || FMath::IsNearlyZero(Amount))
 	{
@@ -284,12 +303,13 @@ bool UOutlierAbilitySystemComponent::ApplyShieldDeltaToSelf(float Amount)
 	}
 
 	SpecHandle.Data->SetSetByCallerMagnitude(OutlierGameplayTags::Data::ShieldRecovery(), Amount);
-	return ApplySpecToSelf(*this, SpecHandle);
+	return ApplySpecToSelf(*this, SpecHandle, Policy);
 }
 
 bool UOutlierAbilitySystemComponent::ApplyPartnerShieldDeltaToSelf(
 	float PartnerShieldDelta,
-	float MaxPartnerShieldDelta)
+	float MaxPartnerShieldDelta,
+	EOutlierVitalityUpdatePolicy Policy)
 {
 	if (!IsOwnerActorAuthoritative())
 	{
@@ -312,7 +332,7 @@ bool UOutlierAbilitySystemComponent::ApplyPartnerShieldDeltaToSelf(
 	SpecHandle.Data->SetSetByCallerMagnitude(
 		OutlierGameplayTags::Data::MaxPartnerShield(),
 		MaxPartnerShieldDelta);
-	return ApplySpecToSelf(*this, SpecHandle);
+	return ApplySpecToSelf(*this, SpecHandle, Policy);
 }
 
 bool UOutlierAbilitySystemComponent::ApplyDeadStateToSelf()
@@ -349,7 +369,7 @@ bool UOutlierAbilitySystemComponent::InitializeVitalityToSelf(float MaxHealth)
 
 	SpecHandle.Data->SetSetByCallerMagnitude(OutlierGameplayTags::Data::MaxHealth(), MaxHealth);
 	SpecHandle.Data->SetSetByCallerMagnitude(OutlierGameplayTags::Data::Health(), MaxHealth);
-	return ApplySpecToSelf(*this, SpecHandle);
+	return ApplySpecToSelf(*this, SpecHandle, EOutlierVitalityUpdatePolicy::Immediate);
 }
 
 bool UOutlierAbilitySystemComponent::RestoreHealthToMax()
@@ -376,7 +396,7 @@ bool UOutlierAbilitySystemComponent::RestoreHealthToMax()
 	}
 
 	SpecHandle.Data->SetSetByCallerMagnitude(OutlierGameplayTags::Data::Health(), MaxHealth);
-	return ApplySpecToSelf(*this, SpecHandle);
+	return ApplySpecToSelf(*this, SpecHandle, EOutlierVitalityUpdatePolicy::Immediate);
 }
 
 FActiveGameplayEffectHandle UOutlierAbilitySystemComponent::ApplyRebootStateToSelf(float DurationSeconds)
@@ -1831,4 +1851,96 @@ TSubclassOf<UGameplayEffect> UOutlierAbilitySystemComponent::ResolvePartnerCoold
 		return UOutlierPartnerScanCooldownGameplayEffect::StaticClass();
 	}
 	return nullptr;
+}
+
+// 서버 속성 변경을 구독한다. 클라이언트의 복제 속성에서 연출 원인을 추측하지 않는다.
+void UOutlierAbilitySystemComponent::BindVitalityPresentationAttributes()
+{
+	if (!VitalityPresentationAttributeHandles.IsEmpty()) return;
+	const FGameplayAttribute Attributes[] = {
+		UOutlierVitalAttributeSet::GetHealthAttribute(), UOutlierVitalAttributeSet::GetMaxHealthAttribute(),
+		UOutlierShieldAttributeSet::GetShieldAttribute(), UOutlierShieldAttributeSet::GetMaxShieldAttribute()
+	};
+	for (const FGameplayAttribute& Attribute : Attributes)
+	{
+		VitalityPresentationAttributeHandles.Add(GetGameplayAttributeValueChangeDelegate(Attribute)
+			.AddUObject(this, &ThisClass::HandleVitalityPresentationAttribute));
+	}
+}
+
+void UOutlierAbilitySystemComponent::BeginVitalityPresentation(EOutlierVitalityUpdatePolicy Policy)
+{
+	if (VitalityPresentationDepth++ == 0) VitalityPresentationPolicy = Policy;
+	else if (Policy == EOutlierVitalityUpdatePolicy::Immediate) VitalityPresentationPolicy = Policy;
+}
+
+void UOutlierAbilitySystemComponent::EndVitalityPresentation()
+{
+	if (ensure(VitalityPresentationDepth > 0) && --VitalityPresentationDepth == 0) FlushVitalityPresentation();
+}
+
+void UOutlierAbilitySystemComponent::HandleVitalityPresentationAttribute(const FOnAttributeChangeData& Data)
+{
+	if (!IsOwnerActorAuthoritative() || Data.NewValue == Data.OldValue) return;
+	const bool bHealth = Data.Attribute == UOutlierVitalAttributeSet::GetHealthAttribute()
+		|| Data.Attribute == UOutlierVitalAttributeSet::GetMaxHealthAttribute();
+	AActor* Source = GetAvatarActor() ? GetAvatarActor() : GetOwner();
+	if (bHealth && Source && Source->IsA<APartnerCharacter>())
+	{
+		UE_LOG(LogTemp, Display,
+			TEXT("[PartnerHP][Attribute] Actor=%s World=%s Attribute=%s Old=%.2f New=%.2f Depth=%d"),
+			*GetNameSafe(Source), *GetNameSafe(GetWorld()), *Data.Attribute.GetName(),
+			Data.OldValue, Data.NewValue, VitalityPresentationDepth);
+	}
+	(bHealth ? bHealthPresentationDirty : bShieldPresentationDirty) = true;
+	if (Data.Attribute == UOutlierVitalAttributeSet::GetMaxHealthAttribute()) bHealthMaximumChanged = true;
+	if (Data.Attribute == UOutlierShieldAttributeSet::GetMaxShieldAttribute()) bShieldMaximumChanged = true;
+	if (VitalityPresentationDepth == 0) FlushVitalityPresentation();
+}
+
+void UOutlierAbilitySystemComponent::GetVitalityPresentationSnapshot(
+	TArray<FOutlierVitalityPresentationUpdate>& OutUpdates) const
+{
+	AActor* Source = GetAvatarActor() ? GetAvatarActor() : GetOwner();
+	const bool bShooter = Source && Source->IsA<AShooterCharacter>();
+	if (!bShooter && !(Source && Source->IsA<APartnerCharacter>())) return;
+	FOutlierVitalityPresentationUpdate Health;
+	Health.Source = Source;
+	Health.Channel = bShooter ? EOutlierVitalityChannel::ShooterHealth : EOutlierVitalityChannel::PartnerHealth;
+	Health.Current = GetNumericAttribute(UOutlierVitalAttributeSet::GetHealthAttribute());
+	Health.Maximum = GetNumericAttribute(UOutlierVitalAttributeSet::GetMaxHealthAttribute());
+	Health.Policy = EOutlierVitalityUpdatePolicy::Immediate;
+	Health.bSnapshot = true;
+	OutUpdates.Add(Health);
+	if (bShooter)
+	{
+		FOutlierVitalityPresentationUpdate Shield = Health;
+		Shield.Channel = EOutlierVitalityChannel::ShooterShield;
+		Shield.Current = GetNumericAttribute(UOutlierShieldAttributeSet::GetShieldAttribute());
+		Shield.Maximum = GetNumericAttribute(UOutlierShieldAttributeSet::GetMaxShieldAttribute());
+		OutUpdates.Add(Shield);
+	}
+}
+
+void UOutlierAbilitySystemComponent::FlushVitalityPresentation()
+{
+	if (!bHealthPresentationDirty && !bShieldPresentationDirty)
+	{
+		VitalityPresentationPolicy = EOutlierVitalityUpdatePolicy::Animated;
+		return;
+	}
+	TArray<FOutlierVitalityPresentationUpdate> Updates;
+	GetVitalityPresentationSnapshot(Updates);
+	for (FOutlierVitalityPresentationUpdate& Update : Updates)
+	{
+		const bool bHealth = Update.Channel != EOutlierVitalityChannel::ShooterShield;
+		if (!(bHealth ? bHealthPresentationDirty : bShieldPresentationDirty)) continue;
+		Update.bSnapshot = false;
+		Update.Policy = (bHealth ? bHealthMaximumChanged : bShieldMaximumChanged)
+			? EOutlierVitalityUpdatePolicy::Immediate : VitalityPresentationPolicy;
+		OnVitalityPresentationChanged.Broadcast(Update);
+	}
+	bHealthPresentationDirty = bShieldPresentationDirty = false;
+	bHealthMaximumChanged = bShieldMaximumChanged = false;
+	VitalityPresentationPolicy = EOutlierVitalityUpdatePolicy::Animated;
 }

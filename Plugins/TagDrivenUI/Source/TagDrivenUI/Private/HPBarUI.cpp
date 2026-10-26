@@ -2,6 +2,7 @@
 
 
 #include "HPBarUI.h"
+#include "GhostProgressBar.h"
 
 #include "Components/ProgressBar.h"
 #include "Components/TextBlock.h"
@@ -34,8 +35,8 @@ void UHPBarUI::NativeConstruct()
 	InitializeProgressBarMaterial(TEXT("Shield"), ShieldBar, ShieldColor, ProgressBarMID);
 	InitializeProgressBarMaterial(TEXT("PartnerShield"), PartnerShieldBar, PartnerShieldColor, ProgressBarMID);
 
-	SetProgressBarRatio(HPBar, CurrentHPRatio);
-	SetProgressBarRatio(ShieldBar, CurrentShieldRatio);
+	SetProgressBarRatio(HPBar, CurrentHPRatio, true);
+	SetProgressBarRatio(ShieldBar, CurrentShieldRatio, true);
 	SetProgressBarRatio(PartnerShieldBar, CurrentPartnerShieldRatio);
 
 	if (bDebugHPBarUI)
@@ -50,6 +51,21 @@ void UHPBarUI::NativeConstruct()
 	}
 }
 
+void UHPBarUI::Activate()
+{
+	// 숨겨진 동안 받은 최신 수치로 두 Fill을 맞춘 뒤 화면에 복귀한다.
+	SetProgressBarRatio(HPBar, CurrentHPRatio, true);
+	SetProgressBarRatio(ShieldBar, CurrentShieldRatio, true);
+	Super::Activate();
+}
+
+void UHPBarUI::Deactivate()
+{
+	SetProgressBarRatio(HPBar, CurrentHPRatio, true);
+	SetProgressBarRatio(ShieldBar, CurrentShieldRatio, true);
+	Super::Deactivate();
+}
+
 void UHPBarUI::ShieldChanged_Implementation(float InShieldRatio)
 {
 	CurrentShieldRatio = FMath::Clamp(InShieldRatio, 0.0f, 1.0f);
@@ -57,7 +73,7 @@ void UHPBarUI::ShieldChanged_Implementation(float InShieldRatio)
 	{
 		UE_LOG(LogTemp, Log, TEXT("[HPBarUI] ShieldChanged Raw=%.3f Clamped=%.3f Bar=%s"), InShieldRatio, CurrentShieldRatio, *GetNameSafe(ShieldBar));
 	}
-	SetProgressBarRatio(ShieldBar, CurrentShieldRatio);
+	SetProgressBarRatio(ShieldBar, CurrentShieldRatio, bShieldUpdateImmediate);
 }
 
 void UHPBarUI::HealthChanged_Implementation(float InHealthRatio)
@@ -67,7 +83,7 @@ void UHPBarUI::HealthChanged_Implementation(float InHealthRatio)
 	{
 		UE_LOG(LogTemp, Log, TEXT("[HPBarUI] HealthChanged Raw=%.3f Clamped=%.3f Bar=%s"), InHealthRatio, CurrentHPRatio, *GetNameSafe(HPBar));
 	}
-	SetProgressBarRatio(HPBar, CurrentHPRatio);
+	SetProgressBarRatio(HPBar, CurrentHPRatio, bHealthUpdateImmediate);
 }
 
 void UHPBarUI::PartnerShieldChanged_Implementation(float InPartnerShieldRatio)
@@ -80,28 +96,39 @@ void UHPBarUI::PartnerShieldChanged_Implementation(float InPartnerShieldRatio)
 	SetProgressBarRatio(PartnerShieldBar, CurrentPartnerShieldRatio);
 }
 
-void UHPBarUI::SetHealthState(float InHealth, float InMaxHealth)
+void UHPBarUI::SetHealthState(float InHealth, float InMaxHealth, bool bImmediate)
 {
-	CurrentHPValue = FMath::Max(InHealth, 0.0f);
-	CurrentHPRatio = InMaxHealth > 0.0f
+	const bool bValidState = FMath::IsFinite(InHealth) && FMath::IsFinite(InMaxHealth) && InMaxHealth > 0.0f;
+	// BP 이벤트 안의 Parent 호출과 이벤트 이후 최종 적용이 같은 정책을 사용한다.
+	TGuardValue<bool> ImmediateGuard(bHealthUpdateImmediate, bImmediate || !bHasHealthState
+		|| CachedMaxHealth != InMaxHealth || !bValidState || !IsVisible());
+	CurrentHPValue = bValidState ? FMath::Max(InHealth, 0.0f) : 0.0f;
+	CurrentHPRatio = bValidState
 		? FMath::Clamp(InHealth / InMaxHealth, 0.0f, 1.0f)
 		: 0.0f;
 
 	HealthChanged(CurrentHPRatio);
-	SetProgressBarRatio(HPBar, CurrentHPRatio);
+	SetProgressBarRatio(HPBar, CurrentHPRatio, bHealthUpdateImmediate);
 	SetValueText(HPText, CurrentHPValue);
+	CachedMaxHealth = InMaxHealth;
+	bHasHealthState = bValidState;
 }
 
-void UHPBarUI::SetShieldState(float InShield, float InMaxShield)
+void UHPBarUI::SetShieldState(float InShield, float InMaxShield, bool bImmediate)
 {
-	CurrentShieldValue = FMath::Max(InShield, 0.0f);
-	CurrentShieldRatio = InMaxShield > 0.0f
+	const bool bValidState = FMath::IsFinite(InShield) && FMath::IsFinite(InMaxShield) && InMaxShield > 0.0f;
+	TGuardValue<bool> ImmediateGuard(bShieldUpdateImmediate, bImmediate || !bHasShieldState
+		|| CachedMaxShield != InMaxShield || !bValidState || !IsVisible());
+	CurrentShieldValue = bValidState ? FMath::Max(InShield, 0.0f) : 0.0f;
+	CurrentShieldRatio = bValidState
 		? FMath::Clamp(InShield / InMaxShield, 0.0f, 1.0f)
 		: 0.0f;
 
 	ShieldChanged(CurrentShieldRatio);
-	SetProgressBarRatio(ShieldBar, CurrentShieldRatio);
+	SetProgressBarRatio(ShieldBar, CurrentShieldRatio, bShieldUpdateImmediate);
 	SetValueText(ShieldText, CurrentShieldValue);
+	CachedMaxShield = InMaxShield;
+	bHasShieldState = bValidState;
 }
 
 void UHPBarUI::InitializeProgressBarMaterial(
@@ -117,6 +144,11 @@ void UHPBarUI::InitializeProgressBarMaterial(
 		{
 			UE_LOG(LogTemp, Warning, TEXT("[HPBarUI] InitMaterial skipped: %s ProgressBar is null"), DebugName);
 		}
+		return;
+	}
+	if (ProgressBar->IsA<UGhostProgressBar>())
+	{
+		// 새 게이지의 외형은 자체 Brush/Tint가 원본이다. 기존 HUD 공통 MID로 덮어쓰지 않는다.
 		return;
 	}
 
@@ -184,7 +216,7 @@ void UHPBarUI::InitializeProgressBarMaterial(
 	}
 }
 
-void UHPBarUI::SetProgressBarRatio(UProgressBar* ProgressBar, float InRatio)
+void UHPBarUI::SetProgressBarRatio(UProgressBar* ProgressBar, float InRatio, bool bImmediate)
 {
 	if (!ProgressBar)
 	{
@@ -196,7 +228,16 @@ void UHPBarUI::SetProgressBarRatio(UProgressBar* ProgressBar, float InRatio)
 	}
 
 	const float ClampedRatio = FMath::Clamp(InRatio, 0.0f, 1.0f);
-	ProgressBar->SetPercent(ClampedRatio);
+	if (UGhostProgressBar* GhostBar = Cast<UGhostProgressBar>(ProgressBar))
+	{
+		if (bImmediate) GhostBar->SetPercentImmediate(ClampedRatio);
+		else GhostBar->SetTargetPercent(ClampedRatio);
+	}
+	else
+	{
+		// 기존 WBP도 교체 전까지 정상 표시한다. Ghost는 새 위젯에만 적용된다.
+		ProgressBar->SetPercent(ClampedRatio);
+	}
 
 	if (bDebugHPBarUI)
 	{
@@ -210,4 +251,11 @@ void UHPBarUI::SetValueText(UTextBlock* TextBlock, float InValue)
 	{
 		TextBlock->SetText(FText::AsNumber(FMath::RoundToInt(FMath::Max(InValue, 0.0f))));
 	}
+}
+
+void UHPBarUI::NativeDestruct()
+{
+	SetProgressBarRatio(HPBar, CurrentHPRatio, true);
+	SetProgressBarRatio(ShieldBar, CurrentShieldRatio, true);
+	Super::NativeDestruct();
 }

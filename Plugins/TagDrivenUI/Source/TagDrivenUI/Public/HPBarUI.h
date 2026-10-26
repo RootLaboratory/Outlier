@@ -21,6 +21,9 @@ class TAGDRIVENUI_API UHPBarUI : public UEventDrivenUI
 	
 public:
 	virtual void NativeConstruct() override;
+	virtual void NativeDestruct() override;
+	virtual void Activate() override;
+	virtual void Deactivate() override;
 
 	UFUNCTION(BlueprintNativeEvent, Category = "UI")
 	void ShieldChanged(float InShieldRatio);
@@ -30,13 +33,19 @@ public:
 	UFUNCTION(BlueprintNativeEvent, Category = "UI")
 	void PartnerShieldChanged(float InPartnerShieldRatio);
 
-	void SetHealthState(float InHealth, float InMaxHealth);
-	void SetShieldState(float InShield, float InMaxShield);
+	void SetHealthState(float InHealth, float InMaxHealth, bool bImmediate = false);
+	void SetShieldState(float InShield, float InMaxShield, bool bImmediate = false);
 
 private:
 	void InitializeProgressBarMaterial(const TCHAR* DebugName, UProgressBar* ProgressBar, const FColor& BarColor, TObjectPtr<UMaterialInstanceDynamic>& OutMID);
-	void SetProgressBarRatio(UProgressBar* ProgressBar, float InRatio);
+	void SetProgressBarRatio(UProgressBar* ProgressBar, float InRatio, bool bImmediate = false);
 	void SetValueText(UTextBlock* TextBlock, float InValue);
+	bool bHealthUpdateImmediate = false;
+	bool bShieldUpdateImmediate = false;
+	bool bHasHealthState = false;
+	bool bHasShieldState = false;
+	float CachedMaxHealth = 0.0f;
+	float CachedMaxShield = 0.0f;
 
 public:
 	UPROPERTY(BlueprintReadWrite, Category = "Data")

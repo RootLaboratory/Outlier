@@ -1386,7 +1386,18 @@ bool FOutlierGasFoundationVitalityPrimitiveTest::RunTest(const FString& Paramete
 	UOutlierAbilitySystemComponent* AbilitySystem = Shooter->GetOutlierAbilitySystemComponent();
 	AbilitySystem->InitializeForPawn(Shooter);
 
+	AbilitySystem->SetNumericAttributeBase(UOutlierVitalAttributeSet::GetHealthAttribute(), 1.0f);
+	TArray<FOutlierVitalityPresentationUpdate> PresentationUpdates;
+	const FDelegateHandle PresentationHandle = AbilitySystem->OnVitalityPresentationChanged.AddLambda(
+		[&PresentationUpdates](const FOutlierVitalityPresentationUpdate& Update) { PresentationUpdates.Add(Update); });
 	TestTrue(TEXT("Initialize vitality GameplayEffect applies"), AbilitySystem->InitializeVitalityToSelf(175.0f));
+	TestEqual(TEXT("Vitality initialization publishes one final health update"), PresentationUpdates.Num(), 1);
+	if (!PresentationUpdates.IsEmpty())
+	{
+		TestEqual(TEXT("Initialization uses immediate presentation"), PresentationUpdates.Last().Policy, EOutlierVitalityUpdatePolicy::Immediate);
+		TestEqual(TEXT("Initialization publishes final health"), PresentationUpdates.Last().Current, 175.0f);
+	}
+
 	TestEqual(TEXT("Initialize sets MaxHealth"), Shooter->GetVitalAttributeSet()->GetMaxHealth(), 175.0f);
 	TestEqual(TEXT("Initialize sets Health"), Shooter->GetVitalAttributeSet()->GetHealth(), 175.0f);
 	AbilitySystem->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetMaxShieldAttribute(), 0.0f);
@@ -1398,9 +1409,31 @@ bool FOutlierGasFoundationVitalityPrimitiveTest::RunTest(const FString& Paramete
 		TEXT("Damage can reduce initialized health"),
 		AbilitySystem->ApplyDamageToSelf(40.0f, nullptr, Shooter, OutlierGameplayTags::Damage::Weapon()));
 	TestEqual(TEXT("Damage changed Health before restore"), Shooter->GetVitalAttributeSet()->GetHealth(), 135.0f);
+	if (TestTrue(TEXT("Damage produces presentation data"), !PresentationUpdates.IsEmpty()))
+		TestEqual(TEXT("Ordinary damage remains animated"), PresentationUpdates.Last().Policy, EOutlierVitalityUpdatePolicy::Animated);
+
 
 	TestTrue(TEXT("Restore Health to Max GameplayEffect applies"), AbilitySystem->RestoreHealthToMax());
 	TestEqual(TEXT("Restore sets Health back to MaxHealth"), Shooter->GetVitalAttributeSet()->GetHealth(), 175.0f);
+	if (TestTrue(TEXT("Restoration produces presentation data"), !PresentationUpdates.IsEmpty()))
+		TestEqual(TEXT("Restoration uses immediate presentation"), PresentationUpdates.Last().Policy, EOutlierVitalityUpdatePolicy::Immediate);
+
+	AbilitySystem->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetMaxShieldAttribute(), 100.0f);
+	AbilitySystem->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetShieldAttribute(), 100.0f);
+	PresentationUpdates.Reset();
+	AbilitySystem->ApplyShieldDeltaToSelf(-10.0f, EOutlierVitalityUpdatePolicy::Immediate);
+	AbilitySystem->ApplyDamageToSelf(5.0f, nullptr, Shooter, OutlierGameplayTags::Damage::Weapon());
+	TestEqual(TEXT("Consumption and damage keep separate updates within one frame"), PresentationUpdates.Num(), 2);
+	if (PresentationUpdates.Num() == 2)
+	{
+		TestEqual(TEXT("Consumption is immediate"), PresentationUpdates[0].Policy, EOutlierVitalityUpdatePolicy::Immediate);
+		TestEqual(TEXT("Consumption carries its final shield"), PresentationUpdates[0].Current, 90.0f);
+		TestEqual(TEXT("Following real hit remains animated"), PresentationUpdates[1].Policy, EOutlierVitalityUpdatePolicy::Animated);
+		TestEqual(TEXT("Hit carries its final shield"), PresentationUpdates[1].Current, 85.0f);
+	}
+	AbilitySystem->OnVitalityPresentationChanged.Remove(PresentationHandle);
+	AbilitySystem->SetNumericAttributeBase(UOutlierShieldAttributeSet::GetMaxShieldAttribute(), 0.0f);
+
 
 	const FActiveGameplayEffectHandle RebootHandle = AbilitySystem->ApplyRebootStateToSelf(2.5f);
 	TestTrue(TEXT("Reboot state GameplayEffect applies"), RebootHandle.IsValid());

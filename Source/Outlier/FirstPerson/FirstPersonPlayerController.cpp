@@ -2,6 +2,7 @@
 
 
 #include "FirstPersonPlayerController.h"
+#include "GAS/OutlierAbilitySystemComponent.h"
 #include "Room/RoomCombatSubsystem.h"
 #include "Audio/OutlierAudioFeedback.h"
 #include "Level/Elevator/ElevatorShaftController.h"
@@ -1411,6 +1412,7 @@ void AFirstPersonPlayerController::Destroyed()
 
 void AFirstPersonPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	ClearVitalitySources();
 	GameOverRoundId.Invalidate();
 	ClearLocalElevatorFade();
 	ClearLocalSuitTransition();
@@ -2086,6 +2088,15 @@ void AFirstPersonPlayerController::InitializeOutlierPlayerState()
 		return;
 	}
 
+	if (VitalityPlayerState.Get() != OutlierPlayerState)
+	{
+		ClearVitalitySources();
+		VitalityPlayerState = OutlierPlayerState;
+		VitalityCharactersHandle = OutlierPlayerState->OnPlayerCharactersChanged.AddUObject(
+			this, &ThisClass::RefreshVitalitySources);
+	}
+	RefreshVitalitySources(OutlierPlayerState);
+
 	//OutlierPlayerState->SetPlayerRole(DefaultPlayerRole);
 	//OutlierPlayerState->SetPairId(DefaultPairId);
 	if (URoomCombatSubsystem* Combat = GetWorld()->GetSubsystem<URoomCombatSubsystem>())
@@ -2689,7 +2700,14 @@ void AFirstPersonPlayerController::RestoreMainWidgetAfterDeath()
 
 void AFirstPersonPlayerController::RefreshHudVisibility()
 {
+	const bool bWasCollapsed = MainWidgetCollapseState.bCollapsed;
 	MainWidgetCollapseState.Apply(ShooterUIInstance, ShouldShowMainWidget());
+	if (bWasCollapsed != MainWidgetCollapseState.bCollapsed && GetLocalPlayer())
+	{
+		// 사망/Partner 빙의로 HUD 루트만 접혀도, 닫기/복귀 시점에 과거 잔상을 버린다.
+		if (ULocalPlayerUISubSystem* UI = GetLocalPlayer()->GetSubsystem<ULocalPlayerUISubSystem>())
+			UI->RefreshVitalityPresentation();
+	}
 }
 
 bool AFirstPersonPlayerController::ShouldShowMainWidget() const
@@ -2700,4 +2718,149 @@ bool AFirstPersonPlayerController::ShouldShowMainWidget() const
 void AFirstPersonPlayerController::RefreshPostProcessState()
 {
 	
+}
+
+void AFirstPersonPlayerController::ClearVitalitySources()
+{
+	if (AOutlierPlayerState* State = VitalityPlayerState.Get())
+		State->OnPlayerCharactersChanged.Remove(VitalityCharactersHandle);
+	VitalityCharactersHandle.Reset();
+	VitalityPlayerState.Reset();
+	for (int32 Index = 0; Index < 2; ++Index)
+	{
+		if (UOutlierAbilitySystemComponent* Source = VitalitySources[Index].Get())
+			Source->OnVitalityPresentationChanged.Remove(VitalitySourceHandles[Index]);
+		VitalitySources[Index].Reset();
+		VitalitySourceHandles[Index].Reset();
+	}
+	GetWorldTimerManager().ClearTimer(VitalityFlushTimer);
+	PendingVitalityUpdates.Reset();
+}
+
+void AFirstPersonPlayerController::RefreshVitalitySources(AOutlierPlayerState* State)
+{
+	if (!HasAuthority() || !State || State != VitalityPlayerState.Get()) return;
+	AShooterCharacter* Shooter = State->GetShooterCharacter();
+	APartnerCharacter* Partner = State->GetPartnerCharacter();
+	UOutlierAbilitySystemComponent* Sources[] = {
+		Shooter ? Cast<UOutlierAbilitySystemComponent>(Shooter->GetAbilitySystemComponent()) : nullptr,
+		Partner ? Cast<UOutlierAbilitySystemComponent>(Partner->GetAbilitySystemComponent()) : nullptr
+	};
+	for (int32 SourceIndex = 0; SourceIndex < 2; ++SourceIndex)
+	{
+		UOutlierAbilitySystemComponent* Source = Sources[SourceIndex];
+		if (VitalitySources[SourceIndex].Get() == Source &&
+			(Source || (!VitalitySourceHandles[SourceIndex].IsValid()
+				&& VitalityGenerations[SourceIndex == 0 ? 0 : 2] != 0))) continue;
+		if (UOutlierAbilitySystemComponent* Previous = VitalitySources[SourceIndex].Get())
+			Previous->OnVitalityPresentationChanged.Remove(VitalitySourceHandles[SourceIndex]);
+		VitalitySources[SourceIndex] = Source;
+		VitalitySourceHandles[SourceIndex].Reset();
+		const int32 FirstChannel = SourceIndex == 0 ? 0 : 2;
+		const int32 LastChannel = SourceIndex == 0 ? 1 : 2;
+		for (int32 Channel = FirstChannel; Channel <= LastChannel; ++Channel)
+		{
+			++VitalityGenerations[Channel];
+			VitalitySequences[Channel] = 0;
+		}
+		TArray<FOutlierVitalityPresentationUpdate> Snapshots;
+		if (Source)
+		{
+			Source->GetVitalityPresentationSnapshot(Snapshots);
+			VitalitySourceHandles[SourceIndex] = Source->OnVitalityPresentationChanged.AddUObject(
+				this, &ThisClass::QueueVitalityPresentation);
+		}
+		else
+		{
+			// 원본이 사라진 채널도 새 세대의 0 스냅샷으로 잔상과 이전 캐시를 지운다.
+			for (int32 Channel = FirstChannel; Channel <= LastChannel; ++Channel)
+			{
+				FOutlierVitalityPresentationUpdate Empty;
+				Empty.Channel = static_cast<EOutlierVitalityChannel>(Channel);
+				Empty.Policy = EOutlierVitalityUpdatePolicy::Immediate;
+				Empty.bSnapshot = true;
+				Snapshots.Add(Empty);
+			}
+		}
+		for (const FOutlierVitalityPresentationUpdate& Snapshot : Snapshots) QueueVitalityPresentation(Snapshot);
+	}
+}
+
+void AFirstPersonPlayerController::QueueVitalityPresentation(const FOutlierVitalityPresentationUpdate& Update)
+{
+	if (!HasAuthority()) return;
+	const int32 Channel = static_cast<int32>(Update.Channel);
+	if (Channel < 0 || Channel >= 3) return;
+	FOutlierVitalityPresentationUpdate OrderedUpdate = Update;
+	OrderedUpdate.Generation = VitalityGenerations[Channel];
+	OrderedUpdate.Sequence = ++VitalitySequences[Channel];
+	if (Update.Channel == EOutlierVitalityChannel::PartnerHealth)
+	{
+		UE_LOG(LogTemp, Display,
+			TEXT("[PartnerHP][ServerQueue] PC=%s World=%s Source=%s HP=%.2f/%.2f Gen=%u Seq=%u Snapshot=%d Policy=%d"),
+			*GetNameSafe(this), *GetNameSafe(GetWorld()), *GetNameSafe(Update.Source.Get()),
+			Update.Current, Update.Maximum, OrderedUpdate.Generation, OrderedUpdate.Sequence,
+			Update.bSnapshot, static_cast<int32>(Update.Policy));
+	}
+	PendingVitalityUpdates.Add(OrderedUpdate);
+	// 같은 프레임은 RPC 하나로 묶되, 소모/피격의 원인과 순서는 합치거나 덮어쓰지 않는다.
+	if (!VitalityFlushTimer.IsValid())
+		VitalityFlushTimer = GetWorldTimerManager().SetTimerForNextTick(this, &ThisClass::FlushVitalityPresentation);
+}
+
+void AFirstPersonPlayerController::FlushVitalityPresentation()
+{
+	VitalityFlushTimer.Invalidate();
+	if (PendingVitalityUpdates.IsEmpty()) return;
+	ClientApplyVitalityPresentation(PendingVitalityUpdates);
+	PendingVitalityUpdates.Reset();
+}
+
+void AFirstPersonPlayerController::ClientApplyVitalityPresentation_Implementation(
+	const TArray<FOutlierVitalityPresentationUpdate>& Updates)
+{
+	for (const FOutlierVitalityPresentationUpdate& Update : Updates)
+	{
+		if (Update.Channel == EOutlierVitalityChannel::PartnerHealth)
+		{
+			UE_LOG(LogTemp, Display,
+				TEXT("[PartnerHP][ClientRPC] PC=%s World=%s LocalPlayer=%s Source=%s HP=%.2f/%.2f Gen=%u Seq=%u"),
+				*GetNameSafe(this), *GetNameSafe(GetWorld()), *GetNameSafe(GetLocalPlayer()),
+				*GetNameSafe(Update.Source.Get()), Update.Current, Update.Maximum, Update.Generation, Update.Sequence);
+		}
+	}
+	if (ULocalPlayer* LocalPlayer = GetLocalPlayer())
+	{
+		if (ULocalPlayerUISubSystem* UI = LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>())
+			for (const FOutlierVitalityPresentationUpdate& Update : Updates) UI->ApplyVitalityPresentation(Update);
+	}
+}
+
+void AFirstPersonPlayerController::ReceivedPlayer()
+{
+	Super::ReceivedPlayer();
+	// Listen 전환에서는 최초 서버 Snapshot보다 LocalPlayer 연결이 늦을 수 있다.
+	if (ULocalPlayer* LocalPlayer = GetLocalPlayer())
+	{
+		// Controller 교체는 세대 번호의 새 시작점이다. 이전 Controller의 캐시는 이어받지 않는다.
+		if (ULocalPlayerUISubSystem* UI = LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>())
+			UI->ResetVitalityPresentation();
+		ServerRequestVitalitySnapshot();
+	}
+}
+
+void AFirstPersonPlayerController::ServerRequestVitalitySnapshot_Implementation()
+{
+	if (!VitalityPlayerState.IsValid()) InitializeOutlierPlayerState();
+	if (!VitalityPlayerState.IsValid()) return;
+	RefreshVitalitySources(VitalityPlayerState.Get());
+	for (int32 SourceIndex = 0; SourceIndex < 2; ++SourceIndex)
+	{
+		if (UOutlierAbilitySystemComponent* Source = VitalitySources[SourceIndex].Get())
+		{
+			TArray<FOutlierVitalityPresentationUpdate> Snapshots;
+			Source->GetVitalityPresentationSnapshot(Snapshots);
+			for (const FOutlierVitalityPresentationUpdate& Snapshot : Snapshots) QueueVitalityPresentation(Snapshot);
+		}
+	}
 }
