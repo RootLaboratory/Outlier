@@ -222,6 +222,10 @@ void AShooterPlayerController::BindShooterCharacterDelegates(AShooterCharacter* 
 	}
 
 	BoundShooterCharacter = ShooterCharacter;
+	if (IsLocalController())
+	{
+		ShooterCharacter->InitializeAutoAimLocalView(GetLocalPlayer());
+	}
 	BoundShooterAbilitySystem = ShooterCharacter->GetOutlierAbilitySystemComponent();
 
 	ShooterCharacter->OnMovementStateChanged.AddDynamic(
@@ -279,6 +283,10 @@ void AShooterPlayerController::UnbindShooterCharacterDelegates()
 
 	if (BoundShooterCharacter)
 	{
+		if (IsLocalController())
+		{
+			BoundShooterCharacter->InitializeAutoAimLocalView(nullptr);
+		}
 		BoundShooterCharacter->OnMovementStateChanged.RemoveAll(this);
 		BoundShooterCharacter->OnWeaponChanged.RemoveAll(this);
 		BoundShooterCharacter->OnShooterDynamicCrosshairChanged.RemoveAll(this);

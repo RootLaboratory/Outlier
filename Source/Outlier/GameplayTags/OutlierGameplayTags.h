@@ -240,10 +240,10 @@ namespace OutlierGameplayTags
 					return Tag;
 				}
 
-				inline FGameplayTag DecoyOnCast()
+				inline FGameplayTag ConcealmentProtocol()
 				{
 					static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(
-						FName(TEXT("Upgrade.Shooter.Stealth.DecoyOnCast")));
+						FName(TEXT("Upgrade.Shooter.Stealth.ConcealmentProtocol")));
 					return Tag;
 				}
 
@@ -254,10 +254,10 @@ namespace OutlierGameplayTags
 					return Tag;
 				}
 
-				inline FGameplayTag DecoyExplosion()
+				inline FGameplayTag ShadowChain()
 				{
 					static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(
-						FName(TEXT("Upgrade.Shooter.Stealth.DecoyExplosion")));
+						FName(TEXT("Upgrade.Shooter.Stealth.ShadowChain")));
 					return Tag;
 				}
 			}
@@ -265,6 +265,16 @@ namespace OutlierGameplayTags
 
 		namespace Partner
 		{
+			namespace Hacking
+			{
+				inline FGameplayTag DoubleCharge()
+				{
+					static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(
+						FName(TEXT("Upgrade.Partner.Hacking.DoubleCharge")));
+					return Tag;
+				}
+			}
+
 			namespace Scan
 			{
 				inline FGameplayTag RevealHackable()
@@ -311,6 +321,12 @@ namespace OutlierGameplayTags
 			inline FGameplayTag QuantumLeap()
 			{
 				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Cooldown.Shooter.QuantumLeap")));
+				return Tag;
+			}
+
+			inline FGameplayTag QuantumLeapRetry()
+			{
+				static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("Cooldown.Shooter.QuantumLeapRetry")));
 				return Tag;
 			}
 
@@ -453,6 +469,24 @@ namespace OutlierGameplayTags
 		inline FGameplayTag Stealthed()
 		{
 			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("State.Stealthed")));
+			return Tag;
+		}
+
+		inline FGameplayTag ShooterStealthSpeedBoost()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("State.Shooter.StealthSpeedBoost")));
+			return Tag;
+		}
+
+		inline FGameplayTag ShooterAutomaticStealth()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("State.Shooter.AutomaticStealth")));
+			return Tag;
+		}
+
+		inline FGameplayTag ShooterPassiveStealth()
+		{
+			static const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TEXT("State.Shooter.PassiveStealth")));
 			return Tag;
 		}
 

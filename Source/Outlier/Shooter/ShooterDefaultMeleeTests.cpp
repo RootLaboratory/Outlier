@@ -144,6 +144,7 @@ bool FShooterDefaultMeleeTest::RunTest(const FString& Parameters)
 		return false;
 	}
 	Controller->Possess(Shooter);
+	Controller->SetAsLocalPlayerController();
 	TestTrue(TEXT("Presentation fixture is locally controlled"), Shooter->IsLocallyControlled());
 	Hammer->ShowEquippedPresentation();
 

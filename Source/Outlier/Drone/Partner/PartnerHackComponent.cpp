@@ -2,6 +2,7 @@
 
 
 #include "Drone/Partner/PartnerHackComponent.h"
+#include "Abilities/GameplayAbility.h"
 #include "Drone/Partner/HackGameplayTags.h"
 #include "Drone/Partner/HackableComponent.h"
 #include "Drone/Partner/PartnerCharacter.h"
@@ -90,11 +91,35 @@ void UPartnerHackComponent::TryHack_Implementation()
 		return ;
 	}
 
-	const UOutlierAbilitySystemComponent* AbilitySystem =
+	UOutlierAbilitySystemComponent* AbilitySystem =
 		PartnerCharacter->GetOutlierAbilitySystemComponent();
 	if (!AbilitySystem || !AbilitySystem->IsPartnerAbilitiesConfigured())
 	{
 		return;
+	}
+	if (!IsHackInteractionActive())
+	{
+		// 취소 직후 늦게 도착한 RPC도 검색을 직접 다시 켜면 안 된다.
+		// 실행 중인 해킹 능력이 없으면 GAS 발동 경로로 되돌려 횟수·재시도 제한을 함께 검사한다.
+		bool bHackAbilityActive = false;
+		for (const FGameplayAbilitySpec& Spec : AbilitySystem->GetActivatableAbilities())
+		{
+			if (Spec.IsActive() && Spec.Ability
+				&& Spec.Ability->GetAssetTags().HasTagExact(OutlierGameplayTags::Ability::Partner::Hacking()))
+			{
+				bHackAbilityActive = true;
+				break;
+			}
+		}
+		if (!bHackAbilityActive)
+		{
+			AbilitySystem->TryActivatePartnerAbility(OutlierGameplayTags::Ability::Partner::Hacking());
+			return;
+		}
+		if (!AbilitySystem->CanUsePartnerHackCharge())
+		{
+			return;
+		}
 	}
 	CachedAbilityData.EffectiveRange =
 		AbilitySystem->GetPartnerAbilityConfig().HackEffectiveRange;
@@ -536,6 +561,12 @@ void UPartnerHackComponent::ResetLocalHackHoldProgress()
 void UPartnerHackComponent::ServerTryStartHack_Implementation(AActor* TargetActor)
 {
 	if (!PartnerCharacter || !PartnerCharacter->CanAcceptInput())
+	{
+		return;
+	}
+	const UOutlierAbilitySystemComponent* AbilitySystem = PartnerCharacter->GetOutlierAbilitySystemComponent();
+	// 취소 전에 시작한 홀드의 완료 RPC가 뒤늦게 도착해도 새 해킹을 시작하지 않는다.
+	if (!bHackCandidateSearchActive || !AbilitySystem || !AbilitySystem->CanUsePartnerHackCharge())
 	{
 		return;
 	}

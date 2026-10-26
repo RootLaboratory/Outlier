@@ -30,6 +30,17 @@
 #include "Shooter/Anim/ProceduralAnimValues.h"
 #include "Shooter/ShooterInventoryComponent.h"
 #include "UObject/UnrealType.h"
+#include "AmmoUI.h"
+#include "AbilityIconUI.h"
+#include "LocalPlayerUISubSystem.h"
+#include "MainUIBase.h"
+#include "Engine/LocalPlayer.h"
+#include "Misc/ScopeExit.h"
+#include "Shooter/ShooterPlayerController.h"
+#include "Drone/Partner/PartnerCombatComponent.h"
+#include "Components/Image.h"
+#include "Engine/Texture2D.h"
+#include "Materials/Material.h"
 
 namespace
 {
@@ -625,6 +636,11 @@ bool FOutlierShooterPresentationAssetsTest::RunTest(const FString& Parameters)
 		const AWeaponBase* WeaponDefaults = WeaponClass->GetDefaultObject<AWeaponBase>();
 		for (const FName Property : { FName(TEXT("PreSuitProceduralValues")), FName(TEXT("SuitProceduralValues")) })
 		{
+			// Rifle은 슈트 획득 후에만 사용하므로 PreSuit 전용 설정은 요구하지 않는다.
+			if (WeaponDefaults->GetWeaponType() == EWeaponType::Rifle && Property == TEXT("PreSuitProceduralValues"))
+			{
+				continue;
+			}
 			// 같은 DA 공유는 허용하지만 공통 fallback에만 의존하는 설정은 최종 통합 완료로 보지 않는다.
 			bAssetsValid &= TestNotNull(*FString::Printf(TEXT("%s.%s is explicitly assigned"),
 				*WeaponClass->GetName(), *Property.ToString()), ReadObjectProperty<UProceduralAnimValues>(WeaponDefaults, Property));
@@ -645,7 +661,11 @@ bool FOutlierShooterPresentationAssetsTest::RunTest(const FString& Parameters)
 			TArray<FName> Sections;
 			if (Action == EShooterMontageAction::Fire || Action == EShooterMontageAction::Reload)
 			{
-				Sections = { Defaults->RifleMontageSectionName, Defaults->PistolMontageSectionName };
+				Sections = { Defaults->PistolMontageSectionName };
+				if (StateIndex == 1)
+				{
+					Sections.Add(Defaults->RifleMontageSectionName);
+				}
 			}
 			for (const bool bFirstPerson : { true, false })
 			{
@@ -658,6 +678,10 @@ bool FOutlierShooterPresentationAssetsTest::RunTest(const FString& Parameters)
 		TArray<FName> SwitchSections;
 		for (const EWeaponType Type : { EWeaponType::Rifle, EWeaponType::Pistol, EWeaponType::Melee })
 		{
+			if (StateIndex == 0 && Type == EWeaponType::Rifle)
+			{
+				continue;
+			}
 			for (const FName Phase : { FName(TEXT("Lower")), FName(TEXT("Lowered")), FName(TEXT("Raise")) })
 			{
 				SwitchSections.Add(Defaults->GetThirdPersonSwitchSectionName(Type, Phase));
@@ -696,10 +720,19 @@ bool FOutlierShooterPresentationAssetsTest::RunTest(const FString& Parameters)
 	{
 		AWeaponBase* Weapon = TestWorld.World->SpawnActor<AWeaponBase>(WeaponClass);
 		if (!TestNotNull(TEXT("Asset integration weapon spawns"), Weapon)) { return false; }
+		const bool bSuitOnlyWeapon = Weapon->GetWeaponType() == EWeaponType::Rifle;
+		if (bSuitOnlyWeapon && !TestTrue(TEXT("Rifle equips only with Suit presentation"), Shooter->SetSuitPresentation(true)))
+		{
+			return false;
+		}
 		Shooter->CurrentWeapon = Weapon;
 		Weapon->OnEquipped(Shooter);
 		for (const int32 StateIndex : { 0, 1, 0 })
 		{
+			if (bSuitOnlyWeapon && StateIndex == 0)
+			{
+				continue;
+			}
 			const FString Label = FString::Printf(TEXT("%s %s"), StateNames[StateIndex], *WeaponClass->GetName());
 			if (!TestTrue(*(Label + TEXT(" presentation applies")), Shooter->SetSuitPresentation(StateIndex == 1))) { return false; }
 			USkeletalMeshComponent* FP = Shooter->GetFirstPersonMesh();
@@ -979,6 +1012,7 @@ bool FOutlierProceduralEquipReferenceOrderTest::RunTest(const FString& Parameter
 		|| !TestNotNull(TEXT("Previous weapon"), Previous) || !TestNotNull(TEXT("Granted weapon"), Granted)
 		|| !TestNotNull(TEXT("Other weapon"), Other)) { return false; }
 	Controller->Possess(Shooter);
+	Controller->SetAsLocalPlayerController();
 	if (!TestTrue(TEXT("Fixture is locally controlled"), Shooter->IsLocallyControlled())) { return false; }
 	Shooter->FirstPersonSwitchRaiseDuration = 0.22f;
 	const auto TickSwitch = [Shooter]() { Shooter->UpdateLocalProceduralWeaponSwitch(1.0f / 60.0f); };
@@ -1674,6 +1708,150 @@ bool FOutlierSuitTransitionTest::RunTest(const FString& Parameters)
 		!ShooterController->LocalSuitTransitionId.IsValid()
 		&& ShooterController->CleanupRequests == CleanupRequestsBeforeEndPlay + 1);
 	TestFalse(TEXT("EndPlay callback cannot restart the completed server transition"), Shooter->GetSuitTransitionId().IsValid());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierTransitionRecoveryTest,
+	"Outlier.Elevator.Transition.StateRecovery",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierTransitionRecoveryTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FScopedSuitInteractionTestWorld TestWorld;
+	if (!TestWorld.Initialize(*this)) return false;
+	FShooterPresentationConfiguration Configuration;
+	if (!LoadSuitPresentationConfiguration(*this, Configuration)) return false;
+	UWorld* World = TestWorld.World;
+	UClass* ShooterClass = LoadClass<AShooterCharacter>(nullptr,
+		TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	UClass* ControllerClass = LoadClass<AShooterPlayerController>(nullptr,
+		TEXT("/Game/Blueprints/Shooter/BP_ShooterPlayerController.BP_ShooterPlayerController_C"));
+	if (!TestNotNull(TEXT("Shooter BP exists"), ShooterClass)
+		|| !TestNotNull(TEXT("Shooter Controller BP exists"), ControllerClass)) return false;
+	AShooterCharacter* Shooter = World->SpawnActor<AShooterCharacter>(ShooterClass);
+	AShooterPlayerController* Controller = World->SpawnActor<AShooterPlayerController>(ControllerClass);
+	ASuitInteractionTestRifle* Rifle = World->SpawnActor<ASuitInteractionTestRifle>();
+	AOutlierPlayerState* PlayerState = World->SpawnActor<AOutlierPlayerState>();
+	if (!TestNotNull(TEXT("Shooter spawns"), Shooter) || !TestNotNull(TEXT("Controller spawns"), Controller)
+		|| !TestNotNull(TEXT("Rifle spawns"), Rifle) || !TestNotNull(TEXT("PlayerState spawns"), PlayerState)) return false;
+	Shooter->PreSuitPresentation = Configuration;
+	Shooter->SuitPresentation = Configuration;
+	if (!Shooter->HasActorBegunPlay()) Shooter->DispatchBeginPlay();
+	Shooter->SetSuitPresentation(true);
+	Shooter->CurrentWeapon = Rifle;
+	Rifle->SetProceduralTestOwner(Shooter);
+	Shooter->SetPlayerState(PlayerState);
+	PlayerState->SetAcquiredSuit(true);
+
+	// 화면/입력 초기화 없이 실제 LocalPlayer UI 경로를 연결한다. 게임 플레이 Pair 등록은 제외한다.
+	ULocalPlayer* LocalPlayer = NewObject<ULocalPlayer>(GEngine);
+	LocalPlayer->PlayerAdded(nullptr, 0);
+	ON_SCOPE_EXIT { LocalPlayer->PlayerRemoved(); };
+	Controller->Player = LocalPlayer;
+	LocalPlayer->PlayerController = Controller;
+	Controller->SetAsLocalPlayerController();
+	Controller->SetPawn(Shooter);
+	Shooter->Controller = Controller;
+	ULocalPlayerUISubSystem* UI = LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>();
+	if (!TestNotNull(TEXT("Local UI subsystem exists"), UI)
+		|| !TestTrue(TEXT("Shooter is locally controlled"), Shooter->IsLocallyControlled())) return false;
+	UMainUIBase* MainUI = NewObject<UMainUIBase>(World);
+	UAbilityIconUI* CooldownIcon = NewObject<UAbilityIconUI>(World);
+	// Designer 없이도 쿨다운 표시 경로가 실행되도록 필수 Image/Brush/Material을 구성한다.
+	CooldownIcon->AbilityIcon = NewObject<UImage>(CooldownIcon);
+	CooldownIcon->M_AbilityIconMaster = UMaterial::GetDefaultMaterial(MD_Surface);
+	CooldownIcon->SetIconTexture(NewObject<UTexture2D>(CooldownIcon));
+	const FGameplayTag Reflection = OutlierGameplayTags::Ability::Shooter::BulletReflection();
+	CooldownIcon->SetAbility(Reflection);
+	CooldownIcon->AbilityUnLock();
+	MainUI->AddAbilityIconEntry(CooldownIcon, Reflection);
+	UI->RegisterMainUI(MainUI);
+	ON_SCOPE_EXIT { UI->UnregisterMainUI(MainUI); };
+	UShooterCombatComponent* Combat = Shooter->CombatComponent;
+	if (!TestNotNull(TEXT("Shooter combat exists"), Combat)
+		|| !TestNotNull(TEXT("Authoritative reload montage is configured"), Shooter->GetActionMontage(EShooterMontageAction::Reload, false))) return false;
+	FIntProperty* AmmoProperty = FindFProperty<FIntProperty>(ARangedWeaponBase::StaticClass(), TEXT("CurrentAmmo"));
+	if (!TestNotNull(TEXT("Ammo property exists"), AmmoProperty)) return false;
+	const auto SetAmmo = [AmmoProperty](ARangedWeaponBase* Weapon, int32 Ammo)
+	{
+		AmmoProperty->SetPropertyValue_InContainer(Weapon, Ammo);
+	};
+
+	// 마지막 발 직후 재장전 중에 이동이 시작되는 실제 취소 -> 잠금 -> 해제 경로를 검증한다.
+	SetAmmo(Rifle, 0);
+	Combat->HandleAutoReloadRequested();
+	if (!TestTrue(TEXT("Empty rifle starts an actual reload"), Combat->IsReloading() && Rifle->IsReloading())) return false;
+	const FGuid TransitionId = FGuid::NewGuid();
+	TestTrue(TEXT("Transition acquires the block"), Shooter->AcquireSuitTransitionBlock(TransitionId));
+	TestFalse(TEXT("Transition cancels character reload"), Combat->IsReloading());
+	TestFalse(TEXT("Transition cancels weapon reload"), Rifle->IsReloading());
+	TestEqual(TEXT("Transition clears the reload action lock"), Shooter->GetActionLock(), EShooterActionLock::None);
+	Shooter->ReleaseSuitTransitionBlock(FGuid::NewGuid());
+	TestTrue(TEXT("Stale release cannot unlock"), Shooter->IsSuitTransitionBlocked());
+	TestFalse(TEXT("Stale release cannot restart reload"), Combat->IsReloading());
+
+	// 종료 알림을 놓친 오래된 HUD를 만들고, 잠금 해제만으로 현재 상태가 복원되는지 확인한다.
+	UI->OnRep_AmmoCountChanged(999, 999);
+	CooldownIcon->SetCoolTime(99.0f);
+	TestTrue(TEXT("Fixture contains a stale cooldown"), CooldownIcon->IsCooldowning());
+	Shooter->ReleaseSuitTransitionBlock(TransitionId);
+	TestFalse(TEXT("Arrival unlocks the Shooter"), Shooter->IsSuitTransitionBlocked());
+	TestTrue(TEXT("Arrival restarts character reload"), Combat->IsReloading());
+	TestTrue(TEXT("Arrival restarts weapon reload"), Rifle->IsReloading());
+	TestEqual(TEXT("Restart owns the reload action lock"), Shooter->GetActionLock(), EShooterActionLock::Reload);
+	UAmmoUI* AmmoUI = NewObject<UAmmoUI>(World);
+	UI->SyncRegisteredModule(AmmoUI);
+	TestEqual(TEXT("Arrival replaces stale ammo cache"), AmmoUI->CurrentAmmo, 0);
+	TestEqual(TEXT("Arrival restores actual magazine capacity"), AmmoUI->MaxAmmo, Rifle->GetMagazineSize());
+	TestFalse(TEXT("Arrival clears expired ability cooldown"), CooldownIcon->IsCooldowning());
+	TestFalse(TEXT("Arrival does not resume firing intent"), Combat->WantsToFire());
+	TestFalse(TEXT("Arrival does not resume aiming intent"), Combat->WantsToAim());
+	Combat->HandleReloadCommitNotify();
+	Combat->FinishReloadInternal();
+	TestEqual(TEXT("Resumed reload refills the magazine"), Rifle->GetCurrentAmmo(), Rifle->GetMagazineSize());
+	TestEqual(TEXT("Completed reload releases the action lock"), Shooter->GetActionLock(), EShooterActionLock::None);
+
+	SetAmmo(Rifle, 5);
+	Combat->HandleAutoReloadRequested();
+	if (!TestTrue(TEXT("Partial magazine reload starts"), Combat->IsReloading())) return false;
+	const FGuid ManualId = FGuid::NewGuid();
+	Shooter->AcquireSuitTransitionBlock(ManualId);
+	Shooter->ReleaseSuitTransitionBlock(ManualId);
+	TestFalse(TEXT("Partial magazine reload is not automatically resumed"), Combat->IsReloading());
+	TestEqual(TEXT("Cancelled partial reload preserves ammo"), Rifle->GetCurrentAmmo(), 5);
+
+	// Partner는 몽타주 Notify 대신 타이머로 완료하므로, 해제 뒤 타이머 실행까지 진행한다.
+	UClass* PartnerClass = LoadClass<APartnerCharacter>(nullptr,
+		TEXT("/Game/Blueprints/Partner/BP_PartnerCharacter.BP_PartnerCharacter_C"));
+	APartnerCharacter* Partner = PartnerClass ? World->SpawnActor<APartnerCharacter>(PartnerClass) : nullptr;
+	ASuitInteractionTestRifle* PartnerRifle = World->SpawnActor<ASuitInteractionTestRifle>();
+	if (!TestNotNull(TEXT("Partner spawns"), Partner) || !TestNotNull(TEXT("Partner rifle spawns"), PartnerRifle)) return false;
+	if (!Partner->HasActorBegunPlay()) Partner->DispatchBeginPlay();
+	FObjectProperty* WeaponProperty = FindFProperty<FObjectProperty>(AFirstPersonCharacter::StaticClass(), TEXT("CurrentWeapon"));
+	if (!TestNotNull(TEXT("Partner weapon property exists"), WeaponProperty)) return false;
+	WeaponProperty->SetObjectPropertyValue_InContainer(Partner, PartnerRifle);
+	SetAmmo(PartnerRifle, 0);
+	UPartnerCombatComponent* PartnerCombat = Partner->FindComponentByClass<UPartnerCombatComponent>();
+	if (!TestNotNull(TEXT("Partner combat exists"), PartnerCombat)) return false;
+	PartnerCombat->StartAutoReload();
+	TestTrue(TEXT("Partner empty reload starts"), PartnerRifle->IsReloading());
+	const FGuid PartnerId = FGuid::NewGuid();
+	Partner->AcquireSuitTransitionBlock(PartnerId);
+	TestFalse(TEXT("Transition cancels Partner reload"), PartnerRifle->IsReloading());
+	Partner->ReleaseSuitTransitionBlock(PartnerId);
+	TestTrue(TEXT("Arrival restarts Partner reload"), PartnerRifle->IsReloading());
+	TestWorld.AdvanceTime(2.0f);
+	TestFalse(TEXT("Partner timer completes the resumed reload"), PartnerRifle->IsReloading());
+	TestEqual(TEXT("Partner timer refills the magazine"), PartnerRifle->GetCurrentAmmo(), PartnerRifle->GetMagazineSize());
+	SetAmmo(PartnerRifle, 0);
+	const FGuid RebootId = FGuid::NewGuid();
+	Partner->AcquireSuitTransitionBlock(RebootId);
+	Partner->GetAbilitySystemComponent()->AddLooseGameplayTag(OutlierGameplayTags::State::Rebooting());
+	Partner->ReleaseSuitTransitionBlock(RebootId);
+	TestFalse(TEXT("Reboot prevents automatic reload on unlock"), PartnerRifle->IsReloading());
+	Partner->GetAbilitySystemComponent()->RemoveLooseGameplayTag(OutlierGameplayTags::State::Rebooting());
 	return true;
 }
 

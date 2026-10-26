@@ -158,6 +158,10 @@ class OUTLIER_API UOutlierShooterStealthAbility : public UOutlierShooterGameplay
 public:
 	UOutlierShooterStealthAbility();
 	bool EndStealth(bool bCommitCooldown);
+	bool TriggerAutomaticStealth();
+	bool IsAutomaticStealth() const { return bAutomaticStealth; }
+	void NotifyOffensiveAction();
+	void NotifyIncomingDamage();
 
 protected:
 	virtual bool CanActivateAbility(
@@ -182,13 +186,18 @@ private:
 	void HandleShooterEffectRemoved(const FActiveGameplayEffect& RemovedEffect);
 	void HandlePartnerEffectRemoved(const FActiveGameplayEffect& RemovedEffect);
 	void RefreshEnemyDetection() const;
+	bool ApplyStealthEffects(float Duration);
 
 	TWeakObjectPtr<UOutlierAbilitySystemComponent> ShooterAbilitySystem;
 	TWeakObjectPtr<UOutlierAbilitySystemComponent> PartnerAbilitySystem;
 	FActiveGameplayEffectHandle ShooterStealthHandle;
 	FActiveGameplayEffectHandle PartnerStealthHandle;
+	FActiveGameplayEffectHandle StealthSpeedHandle;
 	FDelegateHandle ShooterEffectRemovedDelegateHandle;
 	FDelegateHandle PartnerEffectRemovedDelegateHandle;
 	bool bEndingStealth = false;
 	bool bCommitCooldownOnEnd = false;
+	bool bAutomaticStealth = false;
+	bool bPassiveStealth = false;
+	bool bRequestAutomaticStealth = false;
 };

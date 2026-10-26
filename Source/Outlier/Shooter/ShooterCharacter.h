@@ -22,6 +22,8 @@ class UShooterCombatComponent;
 class UShooterMovementComponent;
 class UOutlierUpgradeComponent;
 class ULocalPlayerUISubSystem;
+class UShooterMainWidget;
+class ULocalPlayer;
 enum class EWeaponType : uint8;
 class UAnimMontage;
 class UCurveFloat;
@@ -30,6 +32,7 @@ class APartnerCharacter;
 class UOutlierAbilitySystemComponent;
 class UOutlierVitalAttributeSet;
 class UOutlierShieldAttributeSet;
+class UOutlierWeaponAttributeSet;
 class UPartnerShieldRecipientComponent;
 class UDataTable;
 class USphereComponent;
@@ -228,6 +231,7 @@ class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbil
 	friend class UShooterCombatComponent;
 	friend class UShooterMovementComponent;
 	friend class FShooterGroundedMovementTest;
+	friend class FShooterCoyoteTimeTest;
 	friend class FShooterPresentationConfigurationTest;
 	friend class FOutlierShooterPresentationAssetsTest;
 	friend class FShooterPresentationReplicationTest;
@@ -235,6 +239,7 @@ class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbil
 	friend class FOutlierShooterPresentationAnimationTest;
 	friend class FOutlierProceduralEquipReferenceOrderTest;
 	friend class FOutlierSuitTransitionTest;
+	friend class FOutlierTransitionRecoveryTest;
 	friend class FOutlierMeleeAttackLifecycleTest;
 
 protected:
@@ -246,6 +251,9 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
 	TObjectPtr<UOutlierShieldAttributeSet> ShieldAttributeSet;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
+	TObjectPtr<UOutlierWeaponAttributeSet> WeaponAttributeSet;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Shield")
 	TObjectPtr<UPartnerShieldRecipientComponent> PartnerShieldRecipient;
@@ -523,10 +531,11 @@ protected:
 	FDelegateHandle BulletReflectionTagChangedHandle;
 	FDelegateHandle QuantumLeapTagChangedHandle;
 	FDelegateHandle WeaponOverchargeTagChangedHandle;
-	FDelegateHandle QuantumLeapCooldownTagChangedHandle;
+	FDelegateHandle QuantumLeapChargesChangedHandle;
 	FDelegateHandle BulletReflectionCooldownTagChangedHandle;
 	FDelegateHandle WeaponOverchargeCooldownTagChangedHandle;
 	FDelegateHandle StealthCooldownTagChangedHandle;
+	FDelegateHandle StealthSpeedTagChangedHandle;
 	FDelegateHandle PartnerRebootTagChangedHandle;
 	FUILayerHandle ReflectionBarrierLayerHandle;
 	FUILayerHandle TeleportLayerHandle;
@@ -546,6 +555,20 @@ protected:
 	bool bSuitDisabledByPartnerBoundary = false;
 	bool bShooterSuitDataInitialized = false;
 	FOutlierShooterSuitConfig ShooterSuitConfig;
+
+	// 화면 투영 정보만 소유 클라이언트에서 받는다. 적 선정과 충돌/피해는 서버에서 다시 계산한다.
+	TWeakObjectPtr<ULocalPlayer> AutoAimLocalPlayer;
+	TWeakObjectPtr<ULocalPlayerUISubSystem> AutoAimUISubsystem;
+	TWeakObjectPtr<UShooterMainWidget> AutoAimHUD;
+	float AutoAimHorizontalFOV = 0.0f;
+	float AutoAimAspectRatio = 0.0f;
+	double AutoAimViewReceivedAt = -1.0;
+	double AutoAimViewSentAt = -1.0;
+	bool bAutoAimWasActive = false;
+	void UpdateAutoAimView();
+
+	UFUNCTION(Server, Unreliable)
+	void ServerUpdateAutoAimView(float HorizontalFOV, float AspectRatio);
 
 	// 은신 비주얼( 1인칭 / 3인칭 메시 머티리얼 교체와 페이드 )은 State.Stealthed 태그를 보고
 	// UMaterialPostProcessSubsystem 이 전담한다. 머티리얼과 페이드 설정은 AOutlierPostProcessVolume 에 있다.
@@ -597,13 +620,15 @@ protected:
 	void NotifyLocalBulletReflected(const FVector& IncomingOrigin);
 	void HandleWeaponOverchargeTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void RefreshWeaponOverchargeEmissive(bool bActive);
-	void HandleQuantumLeapCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleBulletReflectionCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleWeaponOverchargeCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleStealthCooldownTagChanged(const FGameplayTag Tag, int32 NewCount);
+	void HandleStealthSpeedTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void RefreshShooterSuitCooldownUI();
 	// 휠 아이콘 해금( = Grant )을 4개 전부 다시 계산한다. 선택 중인 능력이 잠기면 기본 제공 능력으로 되돌린다.
 	void RefreshShooterSuitGrantUI();
+	void HandleQuantumLeapChargesChanged(bool bRecovered);
+	void RefreshQuantumLeapChargeUI(bool bPlayRecoveryFeedback = false);
 	bool IsShooterSuitAbilityGranted(const FGameplayTag& AbilityTag) const;
 	void BindPartnerSuitStateObserver();
 	void UnbindPartnerSuitStateObserver();
@@ -636,7 +661,12 @@ public:
 	void PlayWeaponEquipAudio();
 	// Construction
 	/** Constructor */
-	AShooterCharacter();
+	AShooterCharacter(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+
+	/** 발판을 걸어서 벗어난 뒤 첫 점프를 허용하는 시간. 0이면 비활성화한다. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Movement|Jump", meta = (ClampMin = "0.0", Units = "s"))
+	float CoyoteTime = 0.1f;
+
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
 	virtual void BeginJumperEffect(FName EffectId, const FJumperMovementEffect& Effect, AActor* SourceActor) override;
 	virtual void EndJumperEffect(FName EffectId, AActor* SourceActor) override;
@@ -647,6 +677,7 @@ public:
 	}
 	const UOutlierVitalAttributeSet* GetVitalAttributeSet() const { return VitalAttributeSet; }
 	const UOutlierShieldAttributeSet* GetShieldAttributeSet() const { return ShieldAttributeSet; }
+	float GetWeaponRecoilMultiplier() const;
 
 	// Events
 	UPROPERTY(BlueprintAssignable, Category = "Event")
@@ -844,6 +875,11 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Suit|Stealth")
 	bool IsStealthed() const;
+	float GetStealthMovementSpeedMultiplier() const;
+	bool IsAutoAimEnabled() const;
+	float GetAutoAimDiameterWidthRatio() const;
+	bool GetAutoAimProjection(float& OutHorizontalFOV, float& OutAspectRatio) const;
+	void InitializeAutoAimLocalView(ULocalPlayer* LocalPlayer);
 
 	void HandleWeaponAttackStoppedInternal();
 	void HandleAutoReloadRequested();

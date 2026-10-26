@@ -9,11 +9,20 @@ struct OUTLIER_API FOutlierShooterSuitAbilityDataRow : public FTableRowBase
 {
 	GENERATED_BODY()
 
+	// QuantumLeap 행에서는 무적 도약 획득 후 이동 성공 시 부여할 무적 시간이다. 시전 시간과는 별개다.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (ClampMin = "0.0", Units = "Seconds"))
 	float DurationSeconds = 0.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (ClampMin = "0.0", Units = "Seconds"))
 	float CooldownSeconds = 0.0f;
+
+	// Stealth 행: 30이면 기본 이동속도에 30%를 더한다. 은신 중/해제 후에 같은 값을 쓴다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (ClampMin = "0.0", Units = "Percent"))
+	float MovementSpeedBonusPercent = 30.0f;
+
+	// Stealth 행: 실제 은신 해제 후 이동속도 보너스를 유지할 시간. 0이면 종료 버프를 생략한다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (ClampMin = "0.0", Units = "Seconds"))
+	float ExitSpeedBuffDurationSeconds = 2.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (ClampMin = "0.0", Units = "Seconds"))
 	float CastTimeSeconds = 0.0f;
@@ -30,6 +39,10 @@ struct OUTLIER_API FOutlierShooterSuitAbilityDataRow : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (ClampMin = "0.0"))
 	float ReflectDamageMult = 1.0f;
 
+	// 반사 중 기존 자연 회복에 더할 초당 회복량이다. 0이면 추가 회복이 없다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (ClampMin = "0.0"))
+	float ShieldRecoveryBonusPerSecond = 0.0f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (ClampMin = "0.0"))
 	float ShieldDrainPerSecond = 0.0f;
 
@@ -38,6 +51,10 @@ struct OUTLIER_API FOutlierShooterSuitAbilityDataRow : public FTableRowBase
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (ClampMin = "0.0"))
 	float SpreadMultiplier = 0.0f;
+
+	// WeaponOvercharge 행: 조준 원 지름 / 화면 가로폭. 표시와 서버 후보 판정에 같은 비율을 쓴다.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (ClampMin = "0.001", ClampMax = "1.0"))
+	float AutoAimDiameterWidthRatio = 1.0f / 3.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (ClampMin = "0.0", Units = "Seconds"))
 	float ShieldRecoveryDelay = 0.0f;

@@ -1,5 +1,6 @@
 #include "Enemy/EnemyBase.h"
 #include "Audio/OutlierAudioFeedback.h"
+#include "Enemy/AutoTurret.h"
 #include "Camera/CameraComponent.h"
 #include "Enemy/EnemyStateTreeComponent.h"
 #include "Enemy/EnemyPoolSubsystem.h"
@@ -20,6 +21,7 @@
 #include "GameplayEffect.h"
 #include "Animation/AnimInstance.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/SceneComponent.h"
 #include "Components/SkinnedMeshComponent.h"
 #include "Components/SphereComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -152,6 +154,11 @@ AEnemyBase::AEnemyBase()
 	CoreHitboxComponent->SetCollisionResponseToAllChannels(ECR_Ignore);
 	CoreHitboxComponent->SetCollisionResponseToChannel(ECC_PhysicsBody, ECR_Block);
 	CoreHitboxComponent->SetGenerateOverlapEvents(false);
+
+	// 메시의 위치/회전을 따라가는 편집용 기준점이다. 조준에는 위치만 사용하며 충돌과 Tick은 없다.
+	AutoAimBodyAnchor = CreateDefaultSubobject<USceneComponent>(TEXT("AutoAimBodyAnchor"));
+	AutoAimBodyAnchor->SetupAttachment(GetMesh());
+	AutoAimBodyAnchor->PrimaryComponentTick.bCanEverTick = false;
 }
 
 void AEnemyBase::ResetPatrolPoints()
@@ -494,9 +501,9 @@ void AEnemyBase::CompletePoolSpawnPresentation(
 		return;
 	}
 
-	// 방 소속만 등록한다. 풀 증원은 방의 공유 표적으로 선행 경계하지 않고
-	// 활성화 후 자기 Perception에서 감지할 때 NonBattle을 벗어난다.
-	// 같은 호출에서 곧바로 CombatActive로 전환하므로 연출 중 AI나 피해 판정은 활성화하지 않는다.
+	// 연출 완료가 승인된 뒤 방에 등록하고, 전투 중인 방의 표적 정보를 먼저 받는다.
+	// StateTree를 시작하기 전에 전투 상태를 준비해 공유만으로도 추적/수색에 합류한다.
+	// 이 시점까지 AI와 피해 판정은 비활성이고, 아래 CombatActive 전환에서 활성화한다.
 	if (UEnemyRoomSubsystem* RoomSubsystem = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
 	{
 		RoomSubsystem->RegisterEnemy(this);
@@ -851,6 +858,7 @@ void AEnemyBase::ApplyPoolState(EEnemyPoolState PreviousState)
 	}
 
 	RefreshEnemyAudioState();
+	OnPoolStateApplied(PreviousState);
 	OnEnemyPoolStateChanged(PreviousState, PoolState);
 }
 
@@ -928,6 +936,7 @@ void AEnemyBase::ResetPoolRuntimeState()
 	ConsumedSharedTargetRevision = 0;
 	bHasLastKnownPlayerLocation = false;
 	LastAcceptedAdaptationDamageCategory = EOutlierAdaptationDamageCategory::Ignore;
+	LastAcceptedStealthSession.Reset();
 	ResetPoolPresentationState();
 }
 
@@ -951,7 +960,7 @@ void AEnemyBase::ResetPoolPresentationState()
 	}
 	SavedDeathCollision.Reset();
 
-	if (USkeletalMeshComponent* CharacterMesh = GetMesh())
+	if (USkeletalMeshComponent* CharacterMesh = ShouldResetPoolMontages() ? GetMesh() : nullptr)
 	{
 		if (UAnimInstance* AnimInstance = CharacterMesh->GetAnimInstance())
 		{
@@ -1297,6 +1306,7 @@ void AEnemyBase::SetEnemyPossessed(bool bNewIsPossessed)
 		return;
 	}
 
+	InterruptDamagePresentation(0.05f);
 	bPossessedAttackHeld = false;
 	EndPossessedImpactInputLock();
 	bIsPossessed = bNewIsPossessed;
@@ -1386,6 +1396,7 @@ bool AEnemyBase::BeginPossessionProcess(APartnerCharacter* PartnerCharacter)
 		return false;
 	}
 
+	InterruptDamagePresentation(0.05f);
 	StopCurrentAttack();
 	RemoveRoomTargetObserver();
 	ClearSharedTargetContact();
@@ -1852,6 +1863,7 @@ void AEnemyBase::EnterStun()
 		return;
 	}
 
+	InterruptDamagePresentation(0.05f);
 	PreStunCombatState = CombatState;
 	ReleasePatrolDestination();
 	CombatState = EEnemyCombatState::Stun;
@@ -1909,6 +1921,14 @@ bool AEnemyBase::ApplyDamageInternal(
 		DamageTag);
 }
 
+FVector AEnemyBase::GetAutoAimBodyLocation() const
+{
+	// Anchor 기본 Transform은 항등값이므로, 기존 Offset만 설정된 BP도 같은 위치를 사용한다.
+	const FTransform& BodyTransform = AutoAimBodyAnchor
+		? AutoAimBodyAnchor->GetComponentTransform() : GetMesh()->GetComponentTransform();
+	return BodyTransform.TransformPosition(AutoAimBodyLocalOffset);
+}
+
 float AEnemyBase::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 {
 	if (!HasAuthority() || !CanBeDamaged() || Request.DamageAmount <= 0.0f || IsDead() || GetCurrentHealth() <= 0.0f)
@@ -1920,6 +1940,7 @@ float AEnemyBase::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 	float AdaptationMultiplier = 1.0f;
 	int32 AdaptationStackBeforeDamage = 0;
 	bool bCoreWeakPointHit = false;
+	// 자동 보정 여부와 관계없이 실제 피격 부위로 약점 배율을 결정한다.
 	if (Request.DamageTag.MatchesTag(OutlierGameplayTags::Damage::Weapon()))
 	{
 		const UPrimitiveComponent* HitComponent = Request.HitResult.GetComponent();
@@ -1945,9 +1966,21 @@ float AEnemyBase::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 	const float FinalDamage = Request.DamageAmount * FMath::Max(DamageMultiplier, 0.0f);
 	const EOutlierAdaptationDamageCategory PreviousDamageCategory =
 		LastAcceptedAdaptationDamageCategory;
+	const TSharedPtr<FOutlierStealthSession> PreviousStealthSession = LastAcceptedStealthSession;
+	const AWeaponBase* DirectWeapon = Cast<AWeaponBase>(Request.DamageCauser);
+	const AShooterCharacter* DirectShooter = DirectWeapon
+		? Cast<AShooterCharacter>(DirectWeapon->GetOwner()) : nullptr;
+	const bool bDirectStealthAttack = !Request.bReflectedDamage && !bIsPossessed
+		&& (Request.DamageTag.MatchesTagExact(OutlierGameplayTags::Damage::Ranged())
+			|| Request.DamageTag.MatchesTagExact(OutlierGameplayTags::Damage::Melee()))
+		&& Request.StealthSession && DirectShooter
+		&& Request.StealthSession->Shooter.Get() == DirectShooter;
 	// GAS의 Health 변경 콜백은 ApplyDamageInternal 안에서 즉시 사망 처리를 호출한다.
 	// 이번 공격 분류를 먼저 기록해야 사망 경로가 정확한 최종 원인을 소비할 수 있다.
 	LastAcceptedAdaptationDamageCategory = Request.AdaptationDamageCategory;
+	// 사망 콜백이 동기 실행되므로 막타의 직접 공격 자격도 피해 적용 전에 교체한다.
+	// 환경/폭발/Partner 피해는 이전 공격의 자격을 상속하지 않는다.
+	LastAcceptedStealthSession = bDirectStealthAttack ? Request.StealthSession : nullptr;
 	const bool bDamageApplied = ApplyDamageInternal(
 		FinalDamage,
 		Request.EventInstigator,
@@ -1956,6 +1989,12 @@ float AEnemyBase::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 	if (!bDamageApplied)
 	{
 		LastAcceptedAdaptationDamageCategory = PreviousDamageCategory;
+		LastAcceptedStealthSession = PreviousStealthSession;
+	}
+	else if (!IsDead())
+	{
+		// 비치명타의 자격이 나중의 스크립트 사망이나 수명 종료에 재사용되지 않게 한다.
+		LastAcceptedStealthSession.Reset();
 	}
 	const float AppliedDamage = bDamageApplied ? FinalDamage : 0.0f;
 	if (bAdaptationGunDamage)
@@ -2133,6 +2172,10 @@ void AEnemyBase::ApplyExplosionReaction(
 		1.0f);
 	const FVector ImpactVelocity =
 		Direction * ImpulseStrength * (1.0f - ResistanceRatio);
+	if (ImpactVelocity.Size() >= RuntimeImpactReactionProfile.MinReactionStrength)
+	{
+		InterruptDamagePresentation(0.05f);
+	}
 	if (IsEnemyImpactReactionDiagnosticsEnabled())
 	{
 		UE_LOG(
@@ -2398,6 +2441,7 @@ bool AEnemyBase::BeginImpactReaction()
 		return false;
 	}
 
+	InterruptDamagePresentation(0.05f);
 	bImpactReactionActive = true;
 	ReleasePatrolDestination();
 	StopCurrentAttack();
@@ -2772,6 +2816,11 @@ void AEnemyBase::UnbindGasVitalityObservers()
 
 void AEnemyBase::HandleHealthChanged(const FOnAttributeChangeData& ChangeData)
 {
+	if (!HasAuthority() && ChangeData.NewValue <= 0.0f)
+	{
+		InterruptDamagePresentation(0.0f);
+	}
+
 	if (HasAuthority() && ChangeData.OldValue > 0.0f && ChangeData.NewValue <= 0.0f)
 	{
 		Die();
@@ -2799,6 +2848,12 @@ void AEnemyBase::HandleHealthChanged(const FOnAttributeChangeData& ChangeData)
 
 void AEnemyBase::HandleStunnedTagChanged(const FGameplayTag StunnedTag, int32 NewCount)
 {
+	// 복제된 스턴도 로컬 피격 연출을 정리한다. 실제 전투 상태 변경은 아래 서버 경로만 담당한다.
+	if (!HasAuthority() && StunnedTag == OutlierGameplayTags::State::Stunned() && NewCount > 0)
+	{
+		InterruptDamagePresentation(0.05f);
+	}
+
 	if (!HasAuthority() || StunnedTag != OutlierGameplayTags::State::Stunned())
 	{
 		return;
@@ -3601,10 +3656,22 @@ void AEnemyBase::PerformDeathCleanup()
 		return;
 	}
 	bDeathCleanupPerformed = true;
+	InterruptDamagePresentation(0.0f);
 
 	if (HasAuthority())
 	{
 		ReportFinalAdaptationResult();
+		const TSharedPtr<FOutlierStealthSession> KillingSession = MoveTemp(LastAcceptedStealthSession);
+		if (KillingSession && !bIsPossessed)
+		{
+			if (AShooterCharacter* Shooter = KillingSession->Shooter.Get())
+			{
+				if (UOutlierAbilitySystemComponent* AbilitySystem = Shooter->GetOutlierAbilitySystemComponent())
+				{
+					AbilitySystem->NotifyShooterStealthKill(KillingSession, !IsA<AAutoTurret>());
+				}
+			}
+		}
 		if (UEnemyAdaptationSubsystem* AdaptationSubsystem = GetEnemyAdaptationSubsystem())
 		{
 			// 처치 결과를 Stack에 반영한 뒤 즉시 활성 목록에서 제외한다.

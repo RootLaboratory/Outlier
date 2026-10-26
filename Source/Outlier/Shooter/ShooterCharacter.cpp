@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ShooterCharacter.h"
+#include "Shooter/ShooterCharacterMovementComponent.h"
 #include "Drone/Partner/PartnerShieldRecipientComponent.h"
 #include "Audio/OutlierAudioFeedback.h"
 #include "Animation/AnimInstance.h"
@@ -26,6 +27,11 @@
 #include "PostProcess/MaterialPostProcessSubsystem.h"
 #include "PostProcess/OutlierPostProcessVolume.h"
 #include "LocalPlayerUISubSystem.h"
+#include "AbilityIconUI.h"
+#include "ShooterMainWidget.h"
+#include "Engine/GameViewportClient.h"
+#include "SceneView.h"
+#include "UnrealClient.h"
 #include "InputActionValue.h"
 #include "NiagaraFunctionLibrary.h"
 #include "Drone/Partner/PartnerCharacter.h"
@@ -47,6 +53,7 @@
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "GAS/Attributes/OutlierVitalAttributeSet.h"
 #include "GAS/Attributes/OutlierShieldAttributeSet.h"
+#include "GAS/Attributes/OutlierWeaponAttributeSet.h"
 #include "Upgrade/OutlierUpgradeComponent.h"
 #include "Net/UnrealNetwork.h"
 #include "OutlierPlayerState.h"
@@ -271,7 +278,9 @@ UOutlierUpgradeComponent* AShooterCharacter::GetUpgradeComponent() const
 	return UpgradeComponent;
 }
 
-AShooterCharacter::AShooterCharacter() : AFirstPersonCharacter()
+AShooterCharacter::AShooterCharacter(const FObjectInitializer& ObjectInitializer)
+	: AFirstPersonCharacter(ObjectInitializer.SetDefaultSubobjectClass<UShooterCharacterMovementComponent>(
+		ACharacter::CharacterMovementComponentName))
 {
 	PrimaryActorTick.bCanEverTick = true;
 	OwnedQueryTags.AddTag(OutlierGameplayTags::Actor::Role::Shooter());
@@ -282,6 +291,7 @@ AShooterCharacter::AShooterCharacter() : AFirstPersonCharacter()
 	VitalAttributeSet = CreateDefaultSubobject<UOutlierVitalAttributeSet>(TEXT("VitalAttributeSet"));
 	ShieldAttributeSet = CreateDefaultSubobject<UOutlierShieldAttributeSet>(TEXT("ShieldAttributeSet"));
 	PartnerShieldRecipient = CreateDefaultSubobject<UPartnerShieldRecipientComponent>(TEXT("PartnerShieldRecipient"));
+	WeaponAttributeSet = CreateDefaultSubobject<UOutlierWeaponAttributeSet>(TEXT("WeaponAttributeSet"));
 
 	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
 	GetCharacterMovement()->bCanWalkOffLedgesWhenCrouching = true;
@@ -506,6 +516,7 @@ void AShooterCharacter::Tick(float DeltaSeconds)
 void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	OutlierAudioFeedback::StopLoops(this);
+	InitializeAutoAimLocalView(nullptr);
 	CancelSuitTransition();
 	OnSuitTransitionPhaseChanged.Clear();
 	OnWeaponChanged.RemoveDynamic(this, &AShooterCharacter::HandlePresentationWeaponChanged);
@@ -537,6 +548,7 @@ void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 
 void AShooterCharacter::PossessedBy(AController* NewController)
 {
+	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->ResetCoyoteTime();
 	Super::PossessedBy(NewController);
 	RefreshLowHPAudio();
 	RefreshAbilitySystemActorInfo();
@@ -561,8 +573,18 @@ void AShooterCharacter::PossessedBy(AController* NewController)
 	RefreshShooterSuitCooldownUI();
 }
 
+void AShooterCharacter::UnPossessed()
+{
+	InitializeAutoAimLocalView(nullptr);
+	AutoAimViewReceivedAt = -1.0;
+	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->ResetCoyoteTime();
+	OutlierAudioFeedback::StopLoops(this);
+	Super::UnPossessed();
+}
+
 void AShooterCharacter::OnRep_Controller()
 {
+	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->ResetCoyoteTime();
 	Super::OnRep_Controller();
 	RefreshLowHPAudio();
 	RefreshAbilitySystemActorInfo();
@@ -583,6 +605,11 @@ void AShooterCharacter::OnRep_PlayerState()
 		RefreshReplicatedPresentation();
 	}
 	RefreshShooterSuitUI();
+}
+
+float AShooterCharacter::GetWeaponRecoilMultiplier() const
+{
+	return WeaponAttributeSet ? WeaponAttributeSet->GetRecoilMultiplier() : 1.0f;
 }
 
 UAbilitySystemComponent* AShooterCharacter::GetAbilitySystemComponent() const
@@ -733,9 +760,8 @@ void AShooterCharacter::BindGasVitalityObservers()
 	WeaponOverchargeTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::WeaponOvercharged()).AddUObject(
 			this, &AShooterCharacter::HandleWeaponOverchargeTagChanged);
-	QuantumLeapCooldownTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
-		OutlierGameplayTags::Cooldown::Shooter::QuantumLeap()).AddUObject(
-			this, &AShooterCharacter::HandleQuantumLeapCooldownTagChanged);
+	QuantumLeapChargesChangedHandle = OutlierAbilitySystemComponent->OnQuantumLeapChargesChanged.AddUObject(
+		this, &AShooterCharacter::HandleQuantumLeapChargesChanged);
 	BulletReflectionCooldownTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::Cooldown::Shooter::BulletReflection()).AddUObject(
 			this, &AShooterCharacter::HandleBulletReflectionCooldownTagChanged);
@@ -745,6 +771,9 @@ void AShooterCharacter::BindGasVitalityObservers()
 	StealthCooldownTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::Cooldown::Shooter::Stealth()).AddUObject(
 			this, &AShooterCharacter::HandleStealthCooldownTagChanged);
+	StealthSpeedTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::State::ShooterStealthSpeedBoost()).AddUObject(
+			this, &AShooterCharacter::HandleStealthSpeedTagChanged);
 }
 
 void AShooterCharacter::UnbindGasVitalityObservers()
@@ -766,14 +795,15 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 		OutlierGameplayTags::State::QuantumLeaping()).Remove(QuantumLeapTagChangedHandle);
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::State::WeaponOvercharged()).Remove(WeaponOverchargeTagChangedHandle);
-	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
-		OutlierGameplayTags::Cooldown::Shooter::QuantumLeap()).Remove(QuantumLeapCooldownTagChangedHandle);
+	OutlierAbilitySystemComponent->OnQuantumLeapChargesChanged.Remove(QuantumLeapChargesChangedHandle);
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::Cooldown::Shooter::BulletReflection()).Remove(BulletReflectionCooldownTagChangedHandle);
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::Cooldown::Shooter::WeaponOvercharge()).Remove(WeaponOverchargeCooldownTagChangedHandle);
 	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
 		OutlierGameplayTags::Cooldown::Shooter::Stealth()).Remove(StealthCooldownTagChangedHandle);
+	OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+		OutlierGameplayTags::State::ShooterStealthSpeedBoost()).Remove(StealthSpeedTagChangedHandle);
 
 	HealthChangedHandle.Reset();
 	ShieldChangedHandle.Reset();
@@ -781,10 +811,11 @@ void AShooterCharacter::UnbindGasVitalityObservers()
 	BulletReflectionTagChangedHandle.Reset();
 	QuantumLeapTagChangedHandle.Reset();
 	WeaponOverchargeTagChangedHandle.Reset();
-	QuantumLeapCooldownTagChangedHandle.Reset();
+	QuantumLeapChargesChangedHandle.Reset();
 	BulletReflectionCooldownTagChangedHandle.Reset();
 	WeaponOverchargeCooldownTagChangedHandle.Reset();
 	StealthCooldownTagChangedHandle.Reset();
+	StealthSpeedTagChangedHandle.Reset();
 }
 
 void AShooterCharacter::HandleHealthChanged(const FOnAttributeChangeData& ChangeData)
@@ -819,6 +850,10 @@ void AShooterCharacter::HandleDeadTagChanged(const FGameplayTag Tag, int32 NewCo
 	{
 		OutlierAudioFeedback::StopLoops(this);
 		CancelActiveQuantumLeap(false);
+		if (OutlierAbilitySystemComponent)
+		{
+			OutlierAbilitySystemComponent->ResetShooterQuantumLeapTransientState();
+		}
 		EndActiveBulletReflection(false);
 		EndActiveWeaponOvercharge(false);
 		EndActiveStealth(false);
@@ -1047,6 +1082,10 @@ void AShooterCharacter::HandleWeaponOverchargeTagChanged(const FGameplayTag Tag,
 {
 	(void)Tag;
 	const bool bOverchargeActive = NewCount > 0;
+	if (!bOverchargeActive)
+	{
+		AutoAimViewReceivedAt = -1.0;
+	}
 	if (IsLocallyControlled())
 	{
 		if (const APlayerController* PlayerController = Cast<APlayerController>(GetController()))
@@ -1099,29 +1138,30 @@ void AShooterCharacter::RefreshWeaponOverchargeEmissive(bool bActive)
 	}
 }
 
+void AShooterCharacter::HandleStealthSpeedTagChanged(const FGameplayTag Tag, int32 NewCount)
+{
+	(void)Tag;
+	(void)NewCount;
+	// 서버와 소유 클라이언트 모두 태그의 시작/종료 시점에 속도를 갱신한다.
+	RefreshMovementState();
+}
+
 void AShooterCharacter::HandleStealthCooldownTagChanged(const FGameplayTag Tag, int32 NewCount)
 {
 	(void)Tag;
-	if (NewCount <= 0 || !IsLocallyControlled())
+	(void)NewCount;
+	if (!IsLocallyControlled())
 	{
 		return;
 	}
 	RefreshShooterSuitCooldownUI();
 }
 
-void AShooterCharacter::HandleQuantumLeapCooldownTagChanged(const FGameplayTag Tag, int32 NewCount)
-{
-	(void)Tag;
-	if (NewCount > 0 && IsLocallyControlled())
-	{
-		RefreshShooterSuitCooldownUI();
-	}
-}
-
 void AShooterCharacter::HandleBulletReflectionCooldownTagChanged(const FGameplayTag Tag, int32 NewCount)
 {
 	(void)Tag;
-	if (NewCount > 0 && IsLocallyControlled())
+	(void)NewCount;
+	if (IsLocallyControlled())
 	{
 		RefreshShooterSuitCooldownUI();
 	}
@@ -1130,7 +1170,8 @@ void AShooterCharacter::HandleBulletReflectionCooldownTagChanged(const FGameplay
 void AShooterCharacter::HandleWeaponOverchargeCooldownTagChanged(const FGameplayTag Tag, int32 NewCount)
 {
 	(void)Tag;
-	if (NewCount > 0 && IsLocallyControlled())
+	(void)NewCount;
+	if (IsLocallyControlled())
 	{
 		RefreshShooterSuitCooldownUI();
 	}
@@ -1157,10 +1198,7 @@ void AShooterCharacter::RefreshShooterSuitCooldownUI()
 		const FGameplayTag& AbilityTag,
 		float Remaining)
 	{
-		if (Remaining <= 0.0f)
-		{
-			return;
-		}
+		// 0초도 전달해야 막대가 다시 점등되고 실제 쿨타임 종료의 회복 연출을 재생할 수 있다.
 		if (ShooterController->AbilityUIInstance)
 		{
 			ShooterController->AbilityUIInstance->ApplyCooldownIfMatches(AbilityTag, Remaining);
@@ -1170,9 +1208,7 @@ void AShooterCharacter::RefreshShooterSuitCooldownUI()
 			UISubsystem->OnAbilityUsed(AbilityTag, Remaining);
 		}
 	};
-	ApplyCooldown(
-		OutlierGameplayTags::Ability::Shooter::QuantumLeap(),
-		OutlierAbilitySystemComponent->GetShooterQuantumLeapCooldownRemaining());
+	RefreshQuantumLeapChargeUI();
 	ApplyCooldown(
 		OutlierGameplayTags::Ability::Shooter::BulletReflection(),
 		OutlierAbilitySystemComponent->GetShooterBulletReflectionCooldownRemaining());
@@ -1187,6 +1223,41 @@ void AShooterCharacter::RefreshShooterSuitCooldownUI()
 void AShooterCharacter::HandleUpgradeStateChanged()
 {
 	RefreshShooterSuitGrantUI();
+	RefreshQuantumLeapChargeUI();
+}
+
+void AShooterCharacter::HandleQuantumLeapChargesChanged(bool bRecovered)
+{
+	RefreshQuantumLeapChargeUI(bRecovered);
+}
+
+void AShooterCharacter::RefreshQuantumLeapChargeUI(bool bPlayRecoveryFeedback)
+{
+	if (!IsLocallyControlled() || !OutlierAbilitySystemComponent)
+	{
+		return;
+	}
+	const AShooterPlayerController* ShooterController = Cast<AShooterPlayerController>(GetController());
+	ULocalPlayer* LocalPlayer = ShooterController ? ShooterController->GetLocalPlayer() : nullptr;
+	ULocalPlayerUISubSystem* UI = LocalPlayer ? LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>() : nullptr;
+	if (!UI)
+	{
+		return;
+	}
+
+	// 최대치와 잔여 횟수는 같은 서버 상태에서 읽는다. 클라이언트 업그레이드 캐시로 충전을 예측 지급하지 않는다.
+	const FOutlierQuantumLeapChargeState& State = OutlierAbilitySystemComponent->GetShooterQuantumLeapChargeState();
+	const float Remaining = OutlierAbilitySystemComponent->GetShooterQuantumLeapCooldownRemaining();
+	const FGameplayTag AbilityTag = OutlierGameplayTags::Ability::Shooter::QuantumLeap();
+	UI->SetShooterAbilityChargeState(AbilityTag, State.CurrentCharges, State.MaxCharges,
+		State.RechargeDuration, Remaining, bPlayRecoveryFeedback);
+	if (ShooterController->AbilityUIInstance)
+	{
+		if (UAbilityIconUI* Icon = ShooterController->AbilityUIInstance->GetAbilityIcon(AbilityTag))
+		{
+			Icon->SetChargePresentation(State.CurrentCharges > 0, State.RechargeDuration, Remaining);
+		}
+	}
 }
 
 bool AShooterCharacter::IsShooterSuitAbilityGranted(const FGameplayTag& AbilityTag) const
@@ -1493,6 +1564,12 @@ void AShooterCharacter::OnMovementModeChanged(EMovementMode  PrevMovementMode, u
 
 bool AShooterCharacter::CanJumpInternal_Implementation() const
 {
+	const auto* JumpMovement = CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement());
+	if (JumpMovement->IsFalling() && JumpCurrentCount == 0 && !bWasJumping
+		&& !JumpMovement->IsCoyoteJumpAttempt() && !JumpMovement->HasCoyoteOpportunity())
+	{
+		return false;
+	}
 	if (IsSuitTransitionBlocked() || !Super::CanJumpInternal_Implementation())
 	{
 		return false;
@@ -1501,13 +1578,17 @@ bool AShooterCharacter::CanJumpInternal_Implementation() const
 	// 슈트 전에도 첫 점프의 누르고 있기 동작은 유지하되, 버튼을 다시 눌러 시작하는 추가 점프는 막는다.
 	const bool bContinuingJumpHold = bWasJumping && bPressedJump
 		&& JumpKeyHoldTime < GetJumpMaxHoldTime();
-	return HasAcquiredSuit() || JumpCurrentCount == 0 || bContinuingJumpHold;
+	return !IsDead() && (HasAcquiredSuit() || JumpCurrentCount == 0 || bContinuingJumpHold
+		|| JumpMovement->IsCoyoteJumpAttempt());
 }
 
 void AShooterCharacter::CheckJumpInput(float DeltaTime)
 {
+	auto* JumpMovement = CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement());
+	JumpMovement->PrepareJumpInput(DeltaTime);
 	const int32 PreviousJumpCount = JumpCurrentCount;
 	Super::CheckJumpInput(DeltaTime);
+	JumpMovement->FinishJumpInput();
 
 	// Jump()는 입력만 예약한다. 엔진이 실제 점프에 성공해 횟수를 1에서 2로 올린 뒤 서버에서만 알린다.
 	if (HasAuthority() && PreviousJumpCount == 1 && JumpCurrentCount == 2)
@@ -1968,6 +2049,15 @@ FGameplayTagContainer AShooterCharacter::GetOwnedGameplayTagsForQuery() const
 		GameplayTags.AppendTags(AbilitySystemTags);
 	}
 	return GameplayTags;
+}
+
+float AShooterCharacter::GetStealthMovementSpeedMultiplier() const
+{
+	// 능력 설정은 서버 ASC에만 등록된다. 클라이언트 예측 이동은 직접 읽어 둔 동일 DT를 사용한다.
+	const FOutlierShooterSuitAbilityDataRow& StealthConfig = HasAuthority()
+		&& OutlierAbilitySystemComponent && OutlierAbilitySystemComponent->IsShooterSuitConfigured()
+		? OutlierAbilitySystemComponent->GetShooterSuitConfig().Stealth : ShooterSuitConfig.Stealth;
+	return 1.0f + StealthConfig.MovementSpeedBonusPercent / 100.0f;
 }
 
 bool AShooterCharacter::IsStealthed() const
@@ -2545,6 +2635,11 @@ float AShooterCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 	if (bApplied)
 	{
 		OutlierAudioFeedback::Owner(this, TEXT("Audio.Context.Player.01.State.Hit"));
+		// 사망 정리가 먼저 끝난 경우에는 해제 버프나 새 쿨타임을 만들지 않는다.
+		if (OutlierAbilitySystemComponent && !IsDead())
+		{
+			OutlierAbilitySystemComponent->NotifyShooterStealthDamage();
+		}
 		ClientShowDamageFeedback(Request.DamageOrigin);
 	}
 
@@ -2869,6 +2964,115 @@ void AShooterCharacter::UpdateCameraFOV(float DeltaSeconds)
 		FOVInterpSpeed
 	);
 	FirstPersonCamera->SetFieldOfView(NewFOV);
+	UpdateAutoAimView();
+}
+
+bool AShooterCharacter::IsAutoAimEnabled() const
+{
+	return !IsDead() && GetWeaponMode() == EWeaponMode::Primary
+		&& GetWeaponType() == EWeaponType::Rifle && CurrentWeapon
+		&& IsWeaponOvercharged() && OutlierAbilitySystemComponent
+		&& OutlierAbilitySystemComponent->HasMatchingGameplayTag(
+			OutlierGameplayTags::Upgrade::Shooter::WeaponOvercharge::AutoAim());
+}
+
+float AShooterCharacter::GetAutoAimDiameterWidthRatio() const
+{
+	const auto& Config = HasAuthority() && OutlierAbilitySystemComponent
+		&& OutlierAbilitySystemComponent->IsShooterSuitConfigured()
+		? OutlierAbilitySystemComponent->GetShooterSuitConfig() : ShooterSuitConfig;
+	return Config.WeaponOvercharge.AutoAimDiameterWidthRatio;
+}
+
+void AShooterCharacter::InitializeAutoAimLocalView(ULocalPlayer* LocalPlayer)
+{
+	if (UShooterMainWidget* HUD = AutoAimHUD.Get())
+	{
+		HUD->SetAutoAimPresentation(false);
+	}
+	AutoAimHUD.Reset();
+	AutoAimLocalPlayer = LocalPlayer;
+	AutoAimUISubsystem = LocalPlayer ? LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>() : nullptr;
+	AutoAimViewSentAt = -1.0;
+	bAutoAimWasActive = false;
+}
+
+void AShooterCharacter::UpdateAutoAimView()
+{
+	const bool bActive = IsAutoAimEnabled();
+	// HUD가 늦게 생성되거나 교체돼도 캐시된 Subsystem에서 새 인스턴스만 다시 연결한다.
+	if (bActive || bAutoAimWasActive)
+	{
+		if (ULocalPlayerUISubSystem* UI = AutoAimUISubsystem.Get())
+		{
+			UMainUIBase* MainUI = UI->GetMainUI();
+			if (AutoAimHUD.Get() != MainUI)
+			{
+				if (UShooterMainWidget* PreviousHUD = AutoAimHUD.Get())
+				{
+					PreviousHUD->SetAutoAimPresentation(false);
+				}
+				AutoAimHUD = Cast<UShooterMainWidget>(MainUI);
+			}
+			if (UShooterMainWidget* HUD = AutoAimHUD.Get())
+			{
+				HUD->SetAutoAimPresentation(bActive);
+			}
+		}
+	}
+	if (!bActive)
+	{
+		bAutoAimWasActive = false;
+		AutoAimViewSentAt = -1.0;
+		return;
+	}
+	bAutoAimWasActive = true;
+	ULocalPlayer* LocalPlayer = AutoAimLocalPlayer.Get();
+	UGameViewportClient* ViewportClient = LocalPlayer ? LocalPlayer->ViewportClient.Get() : nullptr;
+	if (!ViewportClient || !ViewportClient->Viewport) return;
+	FSceneViewProjectionData Projection;
+	if (!LocalPlayer->GetProjectionData(ViewportClient->Viewport, Projection)) return;
+	const FIntRect ViewRect = Projection.GetConstrainedViewRect();
+	const FIntPoint ViewportSize = ViewportClient->Viewport->GetSizeXY();
+	if (ViewRect.Width() <= 0 || ViewportSize.X <= 0 || ViewportSize.Y <= 0) return;
+
+	// 실제 투영 행렬에서 가로 FOV를 복원한다. 검은 여백이 있어도 전체 화면 가로폭 기준 원과 맞춘다.
+	const double TanHalfFOV = double(ViewportSize.X) / ViewRect.Width() / Projection.ProjectionMatrix.M[0][0];
+	const float HorizontalFOV = FMath::RadiansToDegrees(2.0 * FMath::Atan(TanHalfFOV));
+	const float AspectRatio = float(ViewportSize.X) / ViewportSize.Y;
+	const double Now = GetWorld()->GetTimeSeconds();
+	const bool bChanged = !FMath::IsNearlyEqual(HorizontalFOV, AutoAimHorizontalFOV, 0.01f)
+		|| !FMath::IsNearlyEqual(AspectRatio, AutoAimAspectRatio, 0.001f);
+	// FOV 보간 중에는 최대 20Hz, 정지 중에는 0.25초 간격으로만 전송한다. 타깃/명중점은 보내지 않는다.
+	if (AutoAimViewSentAt < 0.0 || (Now - AutoAimViewSentAt >= 0.05
+		&& (bChanged || Now - AutoAimViewSentAt >= 0.25)))
+	{
+		AutoAimHorizontalFOV = HorizontalFOV;
+		AutoAimAspectRatio = AspectRatio;
+		AutoAimViewSentAt = Now;
+		ServerUpdateAutoAimView(HorizontalFOV, AspectRatio);
+	}
+}
+
+void AShooterCharacter::ServerUpdateAutoAimView_Implementation(float HorizontalFOV, float AspectRatio)
+{
+	if (!IsAutoAimEnabled() || !FMath::IsFinite(HorizontalFOV) || !FMath::IsFinite(AspectRatio)
+		|| HorizontalFOV < 5.0f || HorizontalFOV > 170.0f || AspectRatio < 0.25f || AspectRatio > 8.0f) return;
+	const double Now = GetWorld()->GetTimeSeconds();
+	if (AutoAimViewReceivedAt >= 0.0 && Now - AutoAimViewReceivedAt < 0.025) return;
+	AutoAimHorizontalFOV = HorizontalFOV;
+	AutoAimAspectRatio = AspectRatio;
+	AutoAimViewReceivedAt = Now;
+}
+
+bool AShooterCharacter::GetAutoAimProjection(float& OutHorizontalFOV, float& OutAspectRatio) const
+{
+	// 오래된 화면 정보로 넓은 범위의 적을 보정하지 않는다. 미수신 시에는 기존 방향으로 발사한다.
+	if (!HasAuthority() || AutoAimViewReceivedAt < 0.0
+		|| GetWorld()->GetTimeSeconds() - AutoAimViewReceivedAt > 1.0) return false;
+	OutHorizontalFOV = AutoAimHorizontalFOV;
+	OutAspectRatio = AutoAimAspectRatio;
+	return true;
 }
 
 float AShooterCharacter::GetEffectiveFirstPersonAimAlpha() const
@@ -3026,6 +3230,7 @@ void AShooterCharacter::HandleSlideWallHit(const FHitResult& Hit)
 
 void AShooterCharacter::HandleDeath()
 {
+	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->ResetCoyoteTime();
 	CancelSuitTransition();
 	ClearInputIntent();
 	if (InventoryComponent && HasAuthority())
@@ -3821,18 +4026,16 @@ void AShooterCharacter::ServerRequestUncrouch_Implementation()
 
 void AShooterCharacter::ServerJumpStart_Implementation()
 {
-	if (MovementComponent)
+	// 실제 점프 입력은 CharacterMovement 패킷만 처리한다. 기존 RPC는 슬라이드 취소 의도만 전달한다.
+	if (MovementComponent && IsSliding())
 	{
-		MovementComponent->DoJumpStart();
+		StopSlide(ESlideEndReason::JumpCancel);
 	}
 }
 
 void AShooterCharacter::ServerJumpEnd_Implementation()
 {
-	if (MovementComponent)
-	{
-		MovementComponent->DoJumpEnd();
-	}
+	// 기존 BP 호출과의 호환용이다. 종료 입력도 이동 패킷에서 복원하므로 여기서는 중복 처리하지 않는다.
 }
 
 void AShooterCharacter::MulticastNotifyThirdPersonDoubleJump_Implementation(FVector_NetQuantize WorldLocation)
@@ -4003,9 +4206,9 @@ void AShooterCharacter::RefreshShooterSuitAvailabilityUI()
 
 void AShooterCharacter::NotifyOffensiveActionExecuted()
 {
-	if (HasAuthority())
+	if (HasAuthority() && OutlierAbilitySystemComponent)
 	{
-		EndActiveStealth(true);
+		OutlierAbilitySystemComponent->BeginShooterStealthAttack();
 	}
 }
 
@@ -4100,12 +4303,6 @@ void AShooterCharacter::RefreshLowHPAudio()
 	OutlierAudioFeedback::Loop(this, TEXT("Audio.Context.Player.01.State.LowHP"),
 		OutlierAudioFeedback::ShouldPlayShooterLowHP(IsLocallyControlled(), IsDead(), Health),
 		TEXT("Audio.Type.Player"), true);
-}
-
-void AShooterCharacter::UnPossessed()
-{
-	OutlierAudioFeedback::StopLoops(this);
-	Super::UnPossessed();
 }
 
 void AShooterCharacter::PlayWeaponEquipAudio()

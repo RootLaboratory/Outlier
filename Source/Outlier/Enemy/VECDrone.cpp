@@ -1,6 +1,8 @@
 #include "Enemy/VECDrone.h"
 #include "Audio/OutlierAudioFeedback.h"
 
+#include "Animation/AnimInstance.h"
+#include "Animation/AnimMontage.h"
 #include "Camera/CameraComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/SceneComponent.h"
@@ -126,6 +128,170 @@ void AVECDrone::BeginPlay()
 	}
 
 	Super::BeginPlay();
+}
+
+float AVECDrone::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
+{
+	// 피해·스턴·사망은 기존 경로에서 한 번만 처리한다. 반환 뒤에는 이미 사망했을 수도 있다.
+	const float AppliedDamage = Super::ReceiveOutlierDamage(Request);
+	if (!HasAuthority() || AppliedDamage <= 0.0f || !CanPlayHitReaction())
+	{
+		return AppliedDamage;
+	}
+
+	const double Now = GetWorld()->GetTimeSeconds();
+	if (Now >= NextHitReactionTime)
+	{
+		NextHitReactionTime = Now + FMath::Max(HitReactionMinInterval, 0.05f);
+		MulticastPlayHitReaction(GetPoolGameplayGeneration(), GetPoolLeaseSerial(), ++HitReactionSerial);
+	}
+	return AppliedDamage;
+}
+
+bool AVECDrone::CanPlayHitReaction() const
+{
+	return IsValid(this) && !IsActorBeingDestroyed() && HitReactionMontage
+		&& !IsDead() && GetCurrentHealth() > 0.0f
+		&& (!IsPoolManaged() || GetEnemyPoolState() == EEnemyPoolState::CombatActive)
+		&& !HasActiveStunTag() && GetCombatState() != EEnemyCombatState::Stun
+		&& !IsPossessionInProgress() && !IsImpactReactionActive();
+}
+
+bool AVECDrone::AcceptHitReactionMessage(int32 Generation, int32 Lease, int64 Serial)
+{
+	if (Serial <= LastReceivedHitReactionSerial)
+	{
+		return false;
+	}
+	LastReceivedHitReactionSerial = Serial;
+	return Generation == GetPoolGameplayGeneration() && Lease == GetPoolLeaseSerial();
+}
+
+void AVECDrone::MulticastPlayHitReaction_Implementation(int32 Generation, int32 Lease, int64 Serial)
+{
+	if (!AcceptHitReactionMessage(Generation, Lease, Serial)
+		|| GetNetMode() == NM_DedicatedServer || !CanPlayHitReaction())
+	{
+		return;
+	}
+
+	UAnimInstance* AnimInstance = GetMesh() ? GetMesh()->GetAnimInstance() : nullptr;
+	if (!AnimInstance || AnimInstance->GetInstanceForMontage(HitReactionMontage))
+	{
+		return;
+	}
+
+	// bStopAllMontages=false여도 같은 그룹은 중단된다. 다른 동작이 사용 중이면 작은 피격을 생략한다.
+	for (const FAnimMontageInstance* Instance : AnimInstance->MontageInstances)
+	{
+		if (Instance && Instance->Montage && Instance->IsActive()
+			&& Instance->Montage->GetGroupName() == HitReactionMontage->GetGroupName())
+		{
+			return;
+		}
+	}
+
+	if (AnimInstance->Montage_Play(HitReactionMontage, 1.0f,
+		EMontagePlayReturnType::MontageLength, 0.0f, false) > 0.0f)
+	{
+		PresentationGeneration = Generation;
+		PresentationLease = Lease;
+	}
+}
+
+void AVECDrone::StopHitReaction(float BlendOutTime)
+{
+	if (!HitReactionMontage || GetNetMode() == NM_DedicatedServer)
+	{
+		return;
+	}
+	UAnimInstance* AnimInstance = GetMesh() ? GetMesh()->GetAnimInstance() : nullptr;
+	FAnimMontageInstance* Instance = AnimInstance ? AnimInstance->GetInstanceForMontage(HitReactionMontage) : nullptr;
+	if (!Instance)
+	{
+		return;
+	}
+
+	// Montage_Stop은 이미 Blend Out 중인 인스턴스를 찾지 못한다.
+	// 사망·풀 반환의 즉시 중단은 이전 짧은 Blend Out도 0초로 줄여야 한다.
+	FMontageBlendSettings Settings;
+	Settings.Blend = HitReactionMontage->BlendOut;
+	Settings.Blend.BlendTime = BlendOutTime;
+	Settings.BlendMode = HitReactionMontage->BlendModeOut;
+	Settings.BlendProfile = HitReactionMontage->BlendProfileOut;
+	Instance->Stop(Settings);
+}
+
+void AVECDrone::InterruptDamagePresentation(float BlendOutTime)
+{
+	if (HasAuthority() && HitReactionMontage)
+	{
+		// 재생은 누락되어도 되지만 상태 전환의 중단은 전달한다. 순번으로 역순 도착도 방어한다.
+		MulticastStopHitReaction(GetPoolGameplayGeneration(), GetPoolLeaseSerial(), ++HitReactionSerial, BlendOutTime);
+	}
+	else
+	{
+		StopHitReaction(BlendOutTime);
+	}
+}
+
+void AVECDrone::MulticastStopHitReaction_Implementation(
+	int32 Generation, int32 Lease, int64 Serial, float BlendOutTime)
+{
+	if (AcceptHitReactionMessage(Generation, Lease, Serial))
+	{
+		StopHitReaction(BlendOutTime);
+	}
+}
+
+bool AVECDrone::ShouldResetPoolMontages() const
+{
+	// RPC가 CombatActive의 OnRep보다 먼저 도착해도 같은 수명의 새 피격을 복원 과정에서 끊지 않는다.
+	const UAnimInstance* AnimInstance = GetMesh() ? GetMesh()->GetAnimInstance() : nullptr;
+	return !HitReactionMontage || !AnimInstance || !AnimInstance->GetInstanceForMontage(HitReactionMontage)
+		|| GetEnemyPoolState() != EEnemyPoolState::CombatActive
+		|| PresentationGeneration != GetPoolGameplayGeneration()
+		|| PresentationLease != GetPoolLeaseSerial();
+}
+
+void AVECDrone::ResetPoolPresentationState()
+{
+	Super::ResetPoolPresentationState();
+	if (PresentationGeneration != GetPoolGameplayGeneration() || PresentationLease != GetPoolLeaseSerial())
+	{
+		StopHitReaction(0.0f);
+		NextHitReactionTime = 0.0;
+		PresentationGeneration = GetPoolGameplayGeneration();
+		PresentationLease = GetPoolLeaseSerial();
+	}
+}
+
+void AVECDrone::OnPoolStateApplied(EEnemyPoolState PreviousState)
+{
+	Super::OnPoolStateApplied(PreviousState);
+	if (GetEnemyPoolState() != EEnemyPoolState::CombatActive)
+	{
+		InterruptDamagePresentation(0.0f);
+		NextHitReactionTime = 0.0;
+	}
+}
+
+void AVECDrone::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	StopHitReaction(0.0f);
+	NextHitReactionTime = 0.0;
+	Super::EndPlay(EndPlayReason);
+}
+
+void AVECDrone::PostNetReceive()
+{
+	Super::PostNetReceive();
+	// 빠른 반환·재대여에서는 중간 PoolState가 생략될 수 있어 Lease 변경도 직접 확인한다.
+	if (IsPoolManaged() && (PresentationGeneration != GetPoolGameplayGeneration()
+		|| PresentationLease != GetPoolLeaseSerial()))
+	{
+		ResetPoolPresentationState();
+	}
 }
 
 void AVECDrone::ApplyExplosionReactionPresentation(const FVector& Direction, float ReactionScale)

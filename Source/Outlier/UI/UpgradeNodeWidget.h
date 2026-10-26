@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
+#include "Containers/Ticker.h"
 #include "TimerManager.h"
 #include "Upgrade/OutlierUpgradeTypes.h"
 #include "UObject/PropertyText.h"
@@ -14,17 +15,22 @@ class UImage;
 class UMaterialInstanceDynamic;
 class UMaterialInterface;
 class UOutlierUpgradeComponent;
+class UOutlierUpgradeSetData;
 class UTexture2D;
 class UUpgradeDescWidget;
 class UUpgradeNodeGroupWidget;
 class AOutlierPlayerState;
+class AFirstPersonPlayerController;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnUpgradeNodeWidgetEvent, UUpgradeNodeWidget*, NodeWidget, FName, NodeRowName);
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnUpgradeUnlockFinished, UUpgradeNodeWidget*);
 
 UCLASS(Blueprintable, meta = (DisplayName = "Upgrade Node Widget"))
 class OUTLIER_API UUpgradeNodeWidget : public UUserWidget
 {
 	GENERATED_BODY()
+	friend struct FUpgradeNodeInteractionTestAccess;
+	friend struct FUpgradeConnectionLineTestAccess;
 
 public:
 	virtual void NativeOnInitialized() override;
@@ -80,6 +86,44 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Upgrade")
 	bool CanAfford() const { return bCanAfford; }
+
+	UFUNCTION(BlueprintPure, Category = "Upgrade|Hold")
+	float GetHoldProgress() const { return HoldProgress; }
+
+	UFUNCTION(BlueprintPure, Category = "Upgrade|Hold")
+	bool IsHoldingUpgrade() const { return bHoldingUpgrade; }
+
+	UFUNCTION(BlueprintPure, Category = "Upgrade|Hold")
+	bool IsUpgradeRequestPending() const { return PendingRequestId != 0; }
+
+	// 화면을 닫거나 컨텍스트를 바꿀 때 로컬 입력과 응답 대기를 정리한다. 이미 보낸 구매는 취소하지 않는다.
+	UFUNCTION(BlueprintCallable, Category = "Upgrade|Hold")
+	void ResetUpgradeInteraction();
+
+	// 게임플레이 활성 상태와 별개로, 연결선이 기다려야 하는 로컬 연출 상태다.
+	bool IsUnlockPresentationPlaying() const { return bUnlockPlaying; }
+	void ResetUnlockPresentation();
+	FOnUpgradeUnlockFinished OnUnlockPresentationFinished;
+	FOnUpgradeUnlockFinished OnUnlockPresentationCancelled;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Unlock")
+	bool bUseUnlockPresentation = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Unlock", meta = (ClampMin = "0.01", Units = "s"))
+	float UnlockDuration = 0.6f;
+
+	// M_SkillUnlock의 5x4 시트에서 마지막 빈 칸을 제외한다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Unlock", meta = (ClampMin = "1", ClampMax = "19"))
+	int32 UnlockFrameCount = 19;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Unlock")
+	bool bHideIconWhileLocked = true;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Upgrade|Hold", meta = (ClampMin = "0.01", Units = "s"))
+	float HoldDuration = 1.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Upgrade|Hold", meta = (ClampMin = "0.01", Units = "s"))
+	float RequestTimeout = 5.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade", meta = (GetOptions = "GetNodeRowNameOptions"))
 	FName NodeRowName = NAME_None;
@@ -147,7 +191,21 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Upgrade|Appearance", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float OverlayIntensity = 1.0f;
 
-	UPROPERTY(BlueprintAssignable, Category = "Upgrade")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Fill")
+	TObjectPtr<UMaterialInterface> NodeFillMaterial;
+
+	// 배경 텍스처를 별도로 지정할 때 사용한다. 비워 두면 Background의 기존 이미지를 유지한다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Fill")
+	TObjectPtr<UTexture2D> NodeFillTexture;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Upgrade|Fill", meta = (DeprecatedProperty, DeprecationMessage = "State fill now uses UnlockedColor and ActivatedColor."))
+	FLinearColor FillColor = FLinearColor(0.3f, 0.65f, 1.0f);
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Upgrade|Appearance")
+	FLinearColor HoverColor = FLinearColor(0.65f, 0.8f, 1.0f);
+
+	// 기존 BP 참조는 유지하되 클릭 구매를 우회하지 않도록 더 이상 방송하지 않는다.
+	UPROPERTY(BlueprintAssignable, Category = "Upgrade", meta = (DeprecatedProperty, DeprecationMessage = "Upgrade purchases now use hold input."))
 	FOnUpgradeNodeWidgetEvent OnUpgradeNodeClicked;
 
 	UPROPERTY(BlueprintAssignable, Category = "Upgrade")
@@ -163,6 +221,9 @@ protected:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "Upgrade|Appearance")
 	TObjectPtr<UImage> Background;
 
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "Upgrade|Fill")
+	TObjectPtr<UImage> NodeFill;
+
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "Upgrade|Appearance")
 	TObjectPtr<UImage> Frame;
 
@@ -171,6 +232,9 @@ protected:
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Upgrade|Appearance")
 	TObjectPtr<UImage> Icon;
+
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "Upgrade|Unlock")
+	TObjectPtr<UImage> UnlockLock;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Upgrade")
 	FName CurrentNodeRowName = NAME_None;
@@ -197,15 +261,16 @@ protected:
 	TObjectPtr<UUpgradeDescWidget> CachedUpgradeDescWidget;
 
 	UFUNCTION()
-	void HandleClicked();
+	void HandlePressed();
+
+	UFUNCTION()
+	void HandleReleased();
 
 	UFUNCTION()
 	void HandleHovered();
 
 	UFUNCTION()
 	void HandleUnhovered();
-
-	void HandlePurchaseRequested();
 
 	UFUNCTION()
 	TArray<FPropertyTextFName> GetNodeRowNameOptions() const;
@@ -218,6 +283,34 @@ protected:
 
 private:
 	virtual void NativeDestruct() override;
+	virtual void BeginDestroy() override;
+	virtual void NativeOnMouseCaptureLost(const FCaptureLostEvent& CaptureLostEvent) override;
+
+	UFUNCTION()
+	void HandleUpgradeStateChanged();
+	void HandleNodeCountChanged(int32 NewNodeCount);
+	void HandleApplicationActivationChanged(bool bIsActive);
+	void BindUpgradeContextEvents();
+	void UnbindUpgradeContextEvents();
+	bool CanBeginHold() const;
+	bool AdvanceHold(float DeltaSeconds);
+	void CancelHold();
+	void RequestUpgrade();
+	void HandleUpgradeResult(uint32 RequestId, AActor* UpgradeOwner, FName RowName, bool bSucceeded);
+	void CacheInteractionVisibility();
+	bool IsInteractionVisible() const;
+	void StartInteractionTicker();
+	void StopInteractionTicker();
+	bool TickUpgradeInteraction(float DeltaSeconds);
+	void CheckRequestTimeout(double Now);
+	void ClearPendingRequest();
+	bool EnsureUnlockMaterial();
+	void RefreshUnlockImage();
+	void StopUnlockPlayback();
+	bool AdvanceUnlockPlayback(float DeltaSeconds);
+	bool TickUnlockPlayback(float DeltaSeconds);
+	bool IsUnlockVisible() const;
+	bool ShouldShowActivatedAppearance() const;
 
 	void BindButtonEvents();
 	UOutlierUpgradeComponent* ResolveUpgradeComponent();
@@ -239,12 +332,44 @@ private:
 	void RefreshVisibleDescWidget();
 	void RefreshEnabledState();
 	UMaterialInstanceDynamic* EnsureOverlayMaterial(UImage* Image, UMaterialInstanceDynamic* CachedMaterial) const;
+	UMaterialInstanceDynamic* EnsureNodeFillMaterial(UImage* Image, UMaterialInstanceDynamic* CachedMaterial, UTexture2D* TextureOverride = nullptr);
 	void RefreshNodeAppearance();
 	void RefreshNodeTexture();
+	void RefreshNodeFill();
+	void SetNodeHovered(bool bInHovered);
 
 	bool bHoverDescVisible = false;
+	bool bNodeHovered = false;
+	bool bFrameHoverTintApplied = false;
+	FLinearColor FrameBaseTint = FLinearColor::White;
 	bool bSuppressDescUntilUnhover = false;
+	bool bHoldingUpgrade = false;
+	float HoldProgress = 0.0f;
+	double LastInteractionTime = 0.0;
+	double RequestStartedTime = 0.0;
+	uint32 PendingRequestId = 0;
+	FName PendingNodeRowName = NAME_None;
+	TWeakObjectPtr<AActor> PendingUpgradeOwner;
+	TWeakObjectPtr<AFirstPersonPlayerController> UpgradeController;
+	TWeakObjectPtr<UOutlierUpgradeSetData> CachedUpgradeSetData;
+	TArray<TWeakObjectPtr<UWidget>> InteractionVisibilityWidgets;
+	FTSTicker::FDelegateHandle InteractionTickerHandle;
+	FDelegateHandle ApplicationActivationHandle;
+	FDelegateHandle UpgradeResultHandle;
+	FDelegateHandle NodeCountChangedHandle;
+	FDelegateHandle ActivatedNodesChangedHandle;
 	FTimerHandle DescHideTimerHandle;
+	bool bUnlockStateInitialized = false;
+	bool bUnlockPlaying = false;
+	bool bUnlockConfigurationWarned = false;
+	uint32 UnlockRestoreRevision = 0;
+	float UnlockElapsed = 0.0f;
+	double LastUnlockTime = 0.0;
+	FTSTicker::FDelegateHandle UnlockTickerHandle;
+	TArray<TWeakObjectPtr<UWidget>> UnlockVisibilityWidgets;
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> UnlockMaterial;
+
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> FrameMaterial;
 
@@ -253,6 +378,12 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> IconMaterial;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> BackgroundMaterial;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInterface> CachedNodeFillSource;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UTexture2D> UnlockedNodeTexture;

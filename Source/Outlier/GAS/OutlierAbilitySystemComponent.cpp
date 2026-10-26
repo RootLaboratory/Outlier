@@ -2,6 +2,8 @@
 
 #include "GameFramework/Actor.h"
 #include "GameFramework/Pawn.h"
+#include "GameFramework/GameStateBase.h"
+#include "Net/UnrealNetwork.h"
 #include "GAS/Attributes/OutlierVitalAttributeSet.h"
 #include "GAS/Effects/OutlierGameplayEffects.h"
 #include "GAS/Abilities/Partner/OutlierPartnerGameplayAbilities.h"
@@ -9,7 +11,10 @@
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "PostProcess/MaterialPostProcessSubsystem.h"
 #include "Engine/World.h"
+#include "TimerManager.h"
 #include "Outlier.h"
+#include "Damage/OutlierDamageReceiver.h"
+#include "Shooter/ShooterCharacter.h"
 
 namespace
 {
@@ -44,6 +49,60 @@ UOutlierAbilitySystemComponent::UOutlierAbilitySystemComponent()
 	SetIsReplicatedByDefault(true);
 }
 
+void UOutlierAbilitySystemComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME_CONDITION(UOutlierAbilitySystemComponent, QuantumLeapCharges, COND_OwnerOnly);
+	DOREPLIFETIME_CONDITION(UOutlierAbilitySystemComponent, PartnerHackCharges, COND_OwnerOnly);
+#if WITH_EDITOR
+	DOREPLIFETIME_CONDITION(UOutlierAbilitySystemComponent, bEditorShooterSuitGrantChecks, COND_OwnerOnly);
+#else
+	DOREPLIFETIME_CONDITION(UOutlierAbilitySystemComponent, bEditorShooterSuitGrantChecks, COND_Never);
+#endif
+}
+
+#if WITH_EDITOR
+void UOutlierAbilitySystemComponent::SetEditorShooterSuitGrantChecks(bool bEnabled)
+{
+	if (!IsOwnerActorAuthoritative() || !GetWorld() || GetWorld()->WorldType != EWorldType::PIE)
+	{
+		return;
+	}
+	bEditorShooterSuitGrantChecks = bEnabled;
+	if (bEnabled)
+	{
+		// 우회 모드에서 이미 켠 능력도 잠금 상태와 일치시킨다. 새 쿨타임은 추가하지 않는다.
+		if (!HasMatchingGameplayTag(OutlierGameplayTags::Ability::Shooter::Stealth()))
+		{
+			EndActiveShooterStealth(false);
+		}
+		if (!HasMatchingGameplayTag(OutlierGameplayTags::Ability::Shooter::BulletReflection()))
+		{
+			EndActiveShooterBulletReflection(false);
+		}
+		if (!HasMatchingGameplayTag(OutlierGameplayTags::Ability::Shooter::WeaponOvercharge()))
+		{
+			EndActiveShooterWeaponOvercharge(false);
+		}
+	}
+	OnRep_EditorShooterSuitGrantChecks();
+	if (AActor* OwningActor = GetOwner())
+	{
+		OwningActor->ForceNetUpdate();
+	}
+}
+#endif
+
+void UOutlierAbilitySystemComponent::OnRep_EditorShooterSuitGrantChecks()
+{
+#if WITH_EDITOR
+	if (AShooterCharacter* Shooter = Cast<AShooterCharacter>(GetAvatarActor()))
+	{
+		Shooter->RefreshShooterSuitUI();
+	}
+#endif
+}
+
 void UOutlierAbilitySystemComponent::InitializeForActor(AActor* Actor)
 {
 	if (!ensure(Actor) || GetOwner() != Actor)
@@ -58,6 +117,32 @@ void UOutlierAbilitySystemComponent::InitializeForActor(AActor* Actor)
 	else
 	{
 		RefreshAbilityActorInfo();
+	}
+
+	if (IsOwnerActorAuthoritative())
+	{
+		if (!PartnerHackChargeUpgradeHandle.IsValid())
+		{
+			PartnerHackChargeUpgradeHandle = RegisterGameplayTagEvent(
+				OutlierGameplayTags::Upgrade::Partner::Hacking::DoubleCharge(), EGameplayTagEventType::NewOrRemoved)
+				.AddUObject(this, &ThisClass::HandlePartnerHackChargeUpgrade);
+		}
+		RefreshPartnerHackCharges();
+		if (!QuantumLeapChargeUpgradeHandle.IsValid())
+		{
+			QuantumLeapChargeUpgradeHandle = RegisterGameplayTagEvent(
+				OutlierGameplayTags::Upgrade::Shooter::QuantumLeap::DoubleCharge(), EGameplayTagEventType::NewOrRemoved)
+				.AddUObject(this, &ThisClass::HandleQuantumLeapChargeUpgrade);
+		}
+		RefreshShooterQuantumLeapCharges();
+		if (!StunStateChangedHandle.IsValid())
+		{
+			StunStateChangedHandle = RegisterGameplayTagEvent(
+				OutlierGameplayTags::State::Stunned(), EGameplayTagEventType::NewOrRemoved)
+				.AddUObject(this, &ThisClass::HandleStunStateChanged);
+		}
+		HandleStunStateChanged(OutlierGameplayTags::State::Stunned(),
+			GetTagCount(OutlierGameplayTags::State::Stunned()));
 	}
 
 	// 은신 비주얼은 State.Stealthed 태그를 보고 서브시스템이 전담한다. 여기서 구독만 걸어준다.
@@ -80,6 +165,22 @@ void UOutlierAbilitySystemComponent::ClearForActor(const AActor* Actor)
 {
 	if (GetOwnerActor() == Actor || GetAvatarActor() == Actor)
 	{
+		RegisterGameplayTagEvent(OutlierGameplayTags::Upgrade::Partner::Hacking::DoubleCharge())
+			.Remove(PartnerHackChargeUpgradeHandle);
+		PartnerHackChargeUpgradeHandle.Reset();
+		ResetPartnerHackCharges();
+		RegisterGameplayTagEvent(OutlierGameplayTags::Upgrade::Shooter::QuantumLeap::DoubleCharge())
+			.Remove(QuantumLeapChargeUpgradeHandle);
+		QuantumLeapChargeUpgradeHandle.Reset();
+		if (StunStateChangedHandle.IsValid())
+		{
+			RegisterGameplayTagEvent(OutlierGameplayTags::State::Stunned(), EGameplayTagEventType::NewOrRemoved)
+				.Remove(StunStateChangedHandle);
+			StunStateChangedHandle.Reset();
+		}
+		HandleStunStateChanged(OutlierGameplayTags::State::Stunned(), 0);
+		ResetShooterStealthUpgradeState();
+		ResetShooterQuantumLeapTransientState();
 		if (UWorld* World = GetWorld())
 		{
 			if (UMaterialPostProcessSubsystem* MaterialSubsystem =
@@ -91,6 +192,17 @@ void UOutlierAbilitySystemComponent::ClearForActor(const AActor* Actor)
 
 		ClearActorInfo();
 	}
+}
+
+void UOutlierAbilitySystemComponent::HandleStunStateChanged(const FGameplayTag Tag, int32 NewCount)
+{
+	if (!IsOwnerActorAuthoritative()) return;
+	const bool bStunned = NewCount > 0;
+	if (bOwnsStunCue == bStunned) return;
+	bOwnsStunCue = bStunned;
+	// Mixed 복제에서도 동일 태그 cue를 하나만 소유해 중첩 스턴의 조기 종료를 막는다.
+	if (bStunned) AddGameplayCue(OutlierGameplayTags::Cue::Status::Stun());
+	else RemoveGameplayCue(OutlierGameplayTags::Cue::Status::Stun());
 }
 
 void UOutlierAbilitySystemComponent::ClearForPawn(const APawn* Pawn)
@@ -524,6 +636,7 @@ bool UOutlierAbilitySystemComponent::ConfigurePartnerAbilities(
 	}
 
 	bPartnerAbilitiesConfigured = true;
+	RefreshPartnerHackCharges();
 	return true;
 }
 
@@ -647,6 +760,7 @@ bool UOutlierAbilitySystemComponent::ConfigureShooterSuitAbilities(
 		return false;
 	}
 	bShooterSuitConfigured = true;
+	RefreshShooterQuantumLeapCharges();
 	return true;
 }
 
@@ -663,6 +777,11 @@ bool UOutlierAbilitySystemComponent::TryActivateShooterSuitAbility(const FGamepl
 		&& StealthSpec
 		&& StealthSpec->IsActive())
 	{
+		const UOutlierShooterStealthAbility* Stealth = Cast<UOutlierShooterStealthAbility>(StealthSpec->GetPrimaryInstance());
+		if (Stealth && Stealth->IsAutomaticStealth())
+		{
+			return false;
+		}
 		// 같은 은신 입력은 새 Ability 재활성화가 아니라 플레이어의 명시적 취소로 처리한다.
 		return EndActiveShooterStealth(true);
 	}
@@ -699,6 +818,17 @@ bool UOutlierAbilitySystemComponent::IsShooterSuitAbilityGranted(
 	const FGameplayTag& AbilityTag,
 	bool bHasGrantTag) const
 {
+#if WITH_EDITOR
+	// 기본 NoGrantMode가 켜져 있어도 테스트 체크박스의 해금/잠금이 양쪽에서 동일하게 보인다.
+	// 도약은 기존 기본 지급 규칙을 유지하고, 도구가 제어하는 세 능력만 실제 태그로 판정한다.
+	if (bEditorShooterSuitGrantChecks
+		&& (AbilityTag == OutlierGameplayTags::Ability::Shooter::Stealth()
+			|| AbilityTag == OutlierGameplayTags::Ability::Shooter::BulletReflection()
+			|| AbilityTag == OutlierGameplayTags::Ability::Shooter::WeaponOvercharge()))
+	{
+		return bHasGrantTag;
+	}
+#endif
 	// 그랜트가 필요 없는 능력(false)은 항상 통과, 필요한 능력(true)은 근거 태그가 있어야 통과.
 	if (!IsShooterSuitAbilityUpgradeGrantRequired(AbilityTag) || bHasGrantTag)
 	{
@@ -756,6 +886,7 @@ bool UOutlierAbilitySystemComponent::UpdateShooterSuitConfig(const FOutlierShoot
 	}
 
 	ShooterSuitConfig = Config;
+	RefreshShooterQuantumLeapCharges();
 	return true;
 }
 
@@ -769,27 +900,228 @@ int32 UOutlierAbilitySystemComponent::GetGrantedShooterSuitAbilityCount() const
 	return Count;
 }
 
-bool UOutlierAbilitySystemComponent::CommitShooterQuantumLeapCooldown(float DurationMultiplier)
+bool UOutlierAbilitySystemComponent::CommitShooterQuantumLeapCooldown()
 {
-	return DurationMultiplier > 0.0f && CommitTimedCooldown(
-		UOutlierShooterQuantumLeapCooldownGameplayEffect::StaticClass(),
-		OutlierGameplayTags::Cooldown::Shooter::QuantumLeap(),
-		ShooterSuitConfig.QuantumLeap.CooldownSeconds * DurationMultiplier,
-		GetAvatarActor()).WasSuccessfullyApplied();
+	if (!IsOwnerActorAuthoritative() || !bShooterSuitConfigured
+		|| HasMatchingGameplayTag(OutlierGameplayTags::State::Dead()))
+	{
+		return false;
+	}
+	RefreshShooterQuantumLeapCharges();
+	if (QuantumLeapCharges.CurrentCharges <= 0)
+	{
+		return false;
+	}
+
+	// 이동 성공 뒤에만 호출한다. 추가 사용은 횟수만 줄이고 진행 중인 충전 주기는 유지한다.
+	--QuantumLeapCharges.CurrentCharges;
+	BeginQuantumLeapRecharge();
+	NotifyQuantumLeapChargesChanged(false);
+	return true;
+}
+
+void UOutlierAbilitySystemComponent::RefreshShooterQuantumLeapCharges()
+{
+	if (!IsOwnerActorAuthoritative() || !bShooterSuitConfigured
+		|| HasMatchingGameplayTag(OutlierGameplayTags::State::Dead()))
+	{
+		return;
+	}
+	const int32 DesiredMax = HasMatchingGameplayTag(
+		OutlierGameplayTags::Upgrade::Shooter::QuantumLeap::DoubleCharge()) ? 2 : 1;
+	if (QuantumLeapCharges.bInitialized && QuantumLeapCharges.MaxCharges == DesiredMax)
+	{
+		return;
+	}
+
+	// 실제 최대치 증가분만 지급한다. 투영 GE를 교체하거나 같은 설정을 다시 적용해도 추가 지급하지 않는다.
+	QuantumLeapCharges.CurrentCharges = QuantumLeapCharges.bInitialized
+		? FMath::Clamp(QuantumLeapCharges.CurrentCharges + FMath::Max(0, DesiredMax - QuantumLeapCharges.MaxCharges), 0, DesiredMax)
+		: DesiredMax;
+	QuantumLeapCharges.MaxCharges = DesiredMax;
+	QuantumLeapCharges.bInitialized = true;
+	if (QuantumLeapCharges.CurrentCharges == DesiredMax)
+	{
+		StopQuantumLeapRecharge();
+	}
+	NotifyQuantumLeapChargesChanged(false);
+}
+
+void UOutlierAbilitySystemComponent::HandleQuantumLeapChargeUpgrade(const FGameplayTag Tag, int32 NewCount)
+{
+	RefreshShooterQuantumLeapCharges();
+}
+
+void UOutlierAbilitySystemComponent::BeginQuantumLeapRecharge()
+{
+	if (QuantumLeapRechargeHandle.IsValid() || QuantumLeapCharges.CurrentCharges >= QuantumLeapCharges.MaxCharges)
+	{
+		return;
+	}
+	const float Duration = ShooterSuitConfig.QuantumLeap.CooldownSeconds;
+	if (Duration <= 0.0f)
+	{
+		// 0초 설정도 유효하다. 타이머 재귀 없이 부족한 횟수를 즉시 회복한다.
+		QuantumLeapCharges.RecoverySerial += QuantumLeapCharges.MaxCharges - QuantumLeapCharges.CurrentCharges;
+		QuantumLeapCharges.CurrentCharges = QuantumLeapCharges.MaxCharges;
+		QuantumLeapCharges.RechargeDuration = 0.0f;
+		QuantumLeapCharges.RechargeStartServerTime = 0.0f;
+		NotifyQuantumLeapChargesChanged(true);
+		return;
+	}
+
+	QuantumLeapRechargeHandle = ApplyTimedGameplayEffectToSelf(
+		UOutlierShooterQuantumLeapCooldownGameplayEffect::StaticClass(), Duration, GetAvatarActor());
+	if (!ensure(QuantumLeapRechargeHandle.IsValid()))
+	{
+		return;
+	}
+	QuantumLeapCharges.RechargeDuration = Duration;
+	QuantumLeapCharges.RechargeStartServerTime = GetWorld()->GetTimeSeconds();
+	if (FOnActiveGameplayEffectRemoved_Info* Removed = OnGameplayEffectRemoved_InfoDelegate(QuantumLeapRechargeHandle))
+	{
+		Removed->AddUObject(this, &ThisClass::HandleQuantumLeapRechargeRemoved, QuantumLeapRechargeHandle);
+	}
+}
+
+void UOutlierAbilitySystemComponent::HandleQuantumLeapRechargeRemoved(
+	const FGameplayEffectRemovalInfo& RemovalInfo, FActiveGameplayEffectHandle ExpectedHandle)
+{
+	if (QuantumLeapRechargeHandle != ExpectedHandle || !IsOwnerActorAuthoritative())
+	{
+		return;
+	}
+	QuantumLeapRechargeHandle.Invalidate();
+	QuantumLeapCharges.RechargeDuration = 0.0f;
+	QuantumLeapCharges.RechargeStartServerTime = 0.0f;
+	if (RemovalInfo.bPrematureRemoval)
+	{
+		// 관리용 쿨타임 제거는 준비 상태로 복귀시키되, 자연 회복 연출로 전달하지 않는다.
+		QuantumLeapCharges.CurrentCharges = QuantumLeapCharges.MaxCharges;
+		NotifyQuantumLeapChargesChanged(false);
+		return;
+	}
+	if (HasMatchingGameplayTag(OutlierGameplayTags::State::Dead()))
+	{
+		return;
+	}
+	QuantumLeapCharges.CurrentCharges = FMath::Min(QuantumLeapCharges.CurrentCharges + 1, QuantumLeapCharges.MaxCharges);
+	++QuantumLeapCharges.RecoverySerial;
+	// 만료된 한 주기만 회복하고, 아직 부족하면 현재 설정으로 다음 주기를 시작한다.
+	BeginQuantumLeapRecharge();
+	NotifyQuantumLeapChargesChanged(true);
+}
+
+void UOutlierAbilitySystemComponent::StopQuantumLeapRecharge()
+{
+	// 제거 콜백보다 먼저 소유권을 해제해 사망·종료 정리가 회복으로 처리되지 않게 한다.
+	const FActiveGameplayEffectHandle PreviousHandle = QuantumLeapRechargeHandle;
+	QuantumLeapRechargeHandle.Invalidate();
+	RemoveActiveEffectFromSelf(PreviousHandle);
+	QuantumLeapCharges.RechargeDuration = 0.0f;
+	QuantumLeapCharges.RechargeStartServerTime = 0.0f;
+}
+
+void UOutlierAbilitySystemComponent::NotifyQuantumLeapChargesChanged(bool bRecovered)
+{
+	OnQuantumLeapChargesChanged.Broadcast(bRecovered);
+	if (AActor* OwningActor = GetOwnerActor())
+	{
+		OwningActor->ForceNetUpdate();
+	}
+}
+
+void UOutlierAbilitySystemComponent::OnRep_QuantumLeapCharges(const FOutlierQuantumLeapChargeState& PreviousState)
+{
+	// 최초 복제·최대치 변경은 회복이 아니다. 실제 회복 이력이 있고 횟수가 늘었을 때만 연출한다.
+	const bool bRecovered = PreviousState.bInitialized && QuantumLeapCharges.bInitialized
+		&& PreviousState.MaxCharges == QuantumLeapCharges.MaxCharges
+		&& PreviousState.RecoverySerial != QuantumLeapCharges.RecoverySerial
+		&& QuantumLeapCharges.CurrentCharges > PreviousState.CurrentCharges;
+	OnQuantumLeapChargesChanged.Broadcast(bRecovered);
+}
+
+bool UOutlierAbilitySystemComponent::CommitShooterQuantumLeapRetryDelay()
+{
+	if (!IsOwnerActorAuthoritative() || HasMatchingGameplayTag(OutlierGameplayTags::State::Dead()))
+	{
+		return false;
+	}
+	if (IsShooterQuantumLeapRetryActive())
+	{
+		return true;
+	}
+
+	// 실패 제한은 성공 쿨타임과 별도 효과다. 진행 중인 재충전 효과를 교체하거나 연장하지 않는다.
+	constexpr float RetryDelaySeconds = 0.5f;
+	QuantumLeapRetryHandle = CommitTimedCooldown(
+		UOutlierShooterQuantumLeapRetryGameplayEffect::StaticClass(),
+		OutlierGameplayTags::Cooldown::Shooter::QuantumLeapRetry(),
+		RetryDelaySeconds,
+		GetAvatarActor());
+	return QuantumLeapRetryHandle.WasSuccessfullyApplied();
+}
+
+bool UOutlierAbilitySystemComponent::IsShooterQuantumLeapRetryActive() const
+{
+	return IsTimedCooldownActive(OutlierGameplayTags::Cooldown::Shooter::QuantumLeapRetry(), GetAvatarActor());
+}
+
+void UOutlierAbilitySystemComponent::RefreshShooterQuantumLeapImmunity()
+{
+	if (!IsOwnerActorAuthoritative() || !bShooterSuitConfigured
+		|| HasMatchingGameplayTag(OutlierGameplayTags::State::Dead())
+		|| !HasMatchingGameplayTag(OutlierGameplayTags::Upgrade::Shooter::QuantumLeap::InvincibleAfterLeap()))
+	{
+		return;
+	}
+
+	const FActiveGameplayEffectHandle NewHandle = ApplyTimedGameplayEffectToSelf(
+		UOutlierDamageImmuneGameplayEffect::StaticClass(), ShooterSuitConfig.QuantumLeap.DurationSeconds, GetAvatarActor());
+	if (!NewHandle.IsValid())
+	{
+		return;
+	}
+
+	// 새 무적을 먼저 부여해 보호가 끊기지 않게 한다. 이전 도약 무적만 지워 시간을 새로 시작한다.
+	const FActiveGameplayEffectHandle PreviousHandle = QuantumLeapImmunityHandle;
+	QuantumLeapImmunityHandle = NewHandle;
+	RemoveActiveEffectFromSelf(PreviousHandle);
+}
+
+void UOutlierAbilitySystemComponent::ResetShooterQuantumLeapTransientState()
+{
+	if (!IsOwnerActorAuthoritative())
+	{
+		return;
+	}
+	// 사망·Pawn 종료에서 도약 전용 효과와 충전 콜백을 정리한다. 다른 원인의 무적은 유지한다.
+	StopQuantumLeapRecharge();
+	QuantumLeapCharges.CurrentCharges = QuantumLeapCharges.MaxCharges;
+	QuantumLeapCharges.bInitialized = false;
+	RemoveActiveEffectFromSelf(QuantumLeapImmunityHandle);
+	QuantumLeapImmunityHandle.Invalidate();
+	RemoveActiveEffectFromSelf(QuantumLeapRetryHandle);
+	QuantumLeapRetryHandle.Invalidate();
+	NotifyQuantumLeapChargesChanged(false);
 }
 
 bool UOutlierAbilitySystemComponent::IsShooterQuantumLeapCooldownActive() const
 {
-	return IsTimedCooldownActive(
-		OutlierGameplayTags::Cooldown::Shooter::QuantumLeap(),
-		GetAvatarActor());
+	return GetShooterQuantumLeapCooldownRemaining() > 0.0f;
 }
 
 float UOutlierAbilitySystemComponent::GetShooterQuantumLeapCooldownRemaining() const
 {
-	return GetTimedCooldownRemaining(
-		OutlierGameplayTags::Cooldown::Shooter::QuantumLeap(),
-		GetAvatarActor());
+	const UWorld* World = GetWorld();
+	if (!World || QuantumLeapCharges.RechargeDuration <= 0.0f)
+	{
+		return 0.0f;
+	}
+	const AGameStateBase* GameState = World->GetGameState();
+	const float ServerTime = GameState ? GameState->GetServerWorldTimeSeconds() : World->GetTimeSeconds();
+	return FMath::Clamp(QuantumLeapCharges.RechargeStartServerTime + QuantumLeapCharges.RechargeDuration - ServerTime,
+		0.0f, QuantumLeapCharges.RechargeDuration);
 }
 
 bool UOutlierAbilitySystemComponent::CancelActiveShooterQuantumLeap(bool bCommitFailureCooldown)
@@ -876,10 +1208,16 @@ bool UOutlierAbilitySystemComponent::EndActiveShooterWeaponOvercharge(bool bComm
 
 bool UOutlierAbilitySystemComponent::CommitShooterStealthCooldown()
 {
+	const float Duration = FMath::Max(0.0f, ShooterSuitConfig.Stealth.CooldownSeconds - PendingStealthCooldownReduction);
+	PendingStealthCooldownReduction = 0.0f;
+	if (Duration <= 0.0f)
+	{
+		return true;
+	}
 	return CommitTimedCooldown(
 		UOutlierShooterStealthCooldownGameplayEffect::StaticClass(),
 		OutlierGameplayTags::Cooldown::Shooter::Stealth(),
-		ShooterSuitConfig.Stealth.CooldownSeconds,
+		Duration,
 		GetAvatarActor()).WasSuccessfullyApplied();
 }
 
@@ -899,6 +1237,10 @@ float UOutlierAbilitySystemComponent::GetShooterStealthCooldownRemaining() const
 
 bool UOutlierAbilitySystemComponent::EndActiveShooterStealth(bool bCommitCooldown)
 {
+	if (!bCommitCooldown && IsOwnerActorAuthoritative())
+	{
+		ResetShooterStealthUpgradeState();
+	}
 	FGameplayAbilitySpec* Spec = FindAbilitySpecFromHandle(GrantedShooterStealthAbilityHandle);
 	if (!Spec || !Spec->IsActive())
 	{
@@ -907,6 +1249,121 @@ bool UOutlierAbilitySystemComponent::EndActiveShooterStealth(bool bCommitCooldow
 	UOutlierShooterStealthAbility* Ability = Cast<UOutlierShooterStealthAbility>(
 		Spec->GetPrimaryInstance());
 	return Ability && Ability->EndStealth(bCommitCooldown);
+}
+
+void UOutlierAbilitySystemComponent::BeginShooterStealthSession()
+{
+	ShooterStealthSession = MakeShared<FOutlierStealthSession>();
+	ShooterStealthSession->Shooter = Cast<AShooterCharacter>(GetAvatarActor());
+	ShooterStealthSession->Generation = StealthGeneration;
+}
+
+void UOutlierAbilitySystemComponent::FinishShooterStealthSession()
+{
+	// 이미 실행한 공격은 공유 자격을 보유한다. 현재 은신만 해제해 다음 공격에 재사용하지 않는다.
+	ShooterStealthSession.Reset();
+}
+
+TSharedPtr<FOutlierStealthSession> UOutlierAbilitySystemComponent::BeginShooterStealthAttack()
+{
+	if (!IsOwnerActorAuthoritative())
+	{
+		return nullptr;
+	}
+	TSharedPtr<FOutlierStealthSession> Session = HasMatchingGameplayTag(OutlierGameplayTags::State::Stealthed())
+		? ShooterStealthSession : nullptr;
+	FGameplayAbilitySpec* Spec = FindAbilitySpecFromHandle(GrantedShooterStealthAbilityHandle);
+	if (UOutlierShooterStealthAbility* Ability = Spec ? Cast<UOutlierShooterStealthAbility>(Spec->GetPrimaryInstance()) : nullptr)
+	{
+		Ability->NotifyOffensiveAction();
+	}
+	return Session;
+}
+
+void UOutlierAbilitySystemComponent::NotifyShooterStealthDamage()
+{
+	if (!IsOwnerActorAuthoritative())
+	{
+		return;
+	}
+	FGameplayAbilitySpec* Spec = FindAbilitySpecFromHandle(GrantedShooterStealthAbilityHandle);
+	if (UOutlierShooterStealthAbility* Ability = Spec ? Cast<UOutlierShooterStealthAbility>(Spec->GetPrimaryInstance()) : nullptr)
+	{
+		Ability->NotifyIncomingDamage();
+	}
+}
+
+void UOutlierAbilitySystemComponent::NotifyShooterStealthKill(
+	const TSharedPtr<FOutlierStealthSession>& Session, bool bDrone)
+{
+	if (!IsOwnerActorAuthoritative() || !Session || Session->Shooter.Get() != GetAvatarActor()
+		|| Session->Generation != StealthGeneration || HasMatchingGameplayTag(OutlierGameplayTags::State::Dead()))
+	{
+		return;
+	}
+
+	// 기존 은신의 첫 처치 보상을 먼저 소비한 뒤, 다섯 번째 처치의 새 은신을 발동한다.
+	if (!Session->bAssassinsStrikeConsumed
+		&& HasMatchingGameplayTag(OutlierGameplayTags::Upgrade::Shooter::Stealth::AssassinsStrike()))
+	{
+		Session->bAssassinsStrikeConsumed = true;
+		const float Remaining = GetShooterStealthCooldownRemaining();
+		if (Remaining > 0.0f)
+		{
+			RemoveActiveEffects(MakeOwningTagQuery(OutlierGameplayTags::Cooldown::Shooter::Stealth()));
+			if (Remaining > 5.0f)
+			{
+				CommitTimedCooldown(UOutlierShooterStealthCooldownGameplayEffect::StaticClass(),
+					OutlierGameplayTags::Cooldown::Shooter::Stealth(), Remaining - 5.0f, GetAvatarActor());
+			}
+		}
+		else
+		{
+			PendingStealthCooldownReduction += 5.0f;
+		}
+	}
+
+	if (bDrone && HasMatchingGameplayTag(OutlierGameplayTags::Upgrade::Shooter::Stealth::ConcealmentProtocol()))
+	{
+		if (++StealthDroneKillCount >= 5)
+		{
+			StealthDroneKillCount -= 5;
+			FGameplayAbilitySpec* Spec = FindAbilitySpecFromHandle(GrantedShooterStealthAbilityHandle);
+			if (UOutlierShooterStealthAbility* Ability = Spec ? Cast<UOutlierShooterStealthAbility>(Spec->GetPrimaryInstance()) : nullptr)
+			{
+				Ability->TriggerAutomaticStealth();
+			}
+		}
+	}
+}
+
+void UOutlierAbilitySystemComponent::ApplyShooterStealthExitSpeedBoost()
+{
+	if (IsOwnerActorAuthoritative()
+		&& HasMatchingGameplayTag(OutlierGameplayTags::Upgrade::Shooter::Stealth::ShadowStep())
+		&& ShooterSuitConfig.Stealth.ExitSpeedBuffDurationSeconds > 0.0f
+		&& !HasMatchingGameplayTag(OutlierGameplayTags::State::Dead()))
+	{
+		const FActiveGameplayEffectHandle Previous = StealthExitSpeedHandle;
+		StealthExitSpeedHandle = ApplyTimedGameplayEffectToSelf(
+			UOutlierShooterStealthExitSpeedGameplayEffect::StaticClass(),
+			ShooterSuitConfig.Stealth.ExitSpeedBuffDurationSeconds, GetAvatarActor());
+		RemoveActiveEffectFromSelf(Previous);
+	}
+}
+
+void UOutlierAbilitySystemComponent::ResetShooterStealthUpgradeState()
+{
+	if (!IsOwnerActorAuthoritative())
+	{
+		return;
+	}
+	++StealthGeneration;
+	ShooterStealthSession.Reset();
+	StealthDroneKillCount = 0;
+	PendingStealthCooldownReduction = 0.0f;
+	RemoveActiveEffectFromSelf(StealthExitSpeedHandle);
+	StealthExitSpeedHandle.Invalidate();
 }
 
 int32 UOutlierAbilitySystemComponent::GetGrantedPartnerAbilityCount() const
@@ -920,6 +1377,238 @@ int32 UOutlierAbilitySystemComponent::GetGrantedPartnerAbilityCount() const
 		}
 	}
 	return Count;
+}
+
+void UOutlierAbilitySystemComponent::RefreshPartnerHackCharges()
+{
+	if (!IsOwnerActorAuthoritative() || !bPartnerAbilitiesConfigured)
+	{
+		return;
+	}
+	const int32 DesiredMax = HasMatchingGameplayTag(
+		OutlierGameplayTags::Upgrade::Partner::Hacking::DoubleCharge()) ? 2 : 1;
+	if (PartnerHackCharges.bInitialized && PartnerHackCharges.MaxCharges == DesiredMax)
+	{
+		return;
+	}
+	// 투영 GE는 새 효과를 먼저 적용한다. 동일 태그의 재투영은 최대치가 바뀌지 않아 추가 지급하지 않는다.
+	PartnerHackCharges.CurrentCharges = PartnerHackCharges.bInitialized
+		? FMath::Clamp(PartnerHackCharges.CurrentCharges + FMath::Max(0, DesiredMax - PartnerHackCharges.MaxCharges), 0, DesiredMax)
+		: DesiredMax;
+	PartnerHackCharges.MaxCharges = DesiredMax;
+	PartnerHackCharges.bInitialized = true;
+	if (PartnerHackCharges.CurrentCharges == DesiredMax)
+	{
+		StopPartnerHackRecharge();
+		SuspendedPartnerHackRechargeRemaining = 0.0f;
+	}
+	NotifyPartnerHackChargesChanged(false);
+}
+
+void UOutlierAbilitySystemComponent::HandlePartnerHackChargeUpgrade(const FGameplayTag Tag, int32 NewCount)
+{
+	RefreshPartnerHackCharges();
+}
+
+bool UOutlierAbilitySystemComponent::CanUsePartnerHackCharge() const
+{
+	return PartnerHackCharges.bInitialized && PartnerHackCharges.CurrentCharges > 0
+		&& !PartnerHackCharges.bRetryBlocked && !bPartnerSkillCooldownsSuspended
+		&& !bPartnerHackRechargeDeferred;
+}
+
+bool UOutlierAbilitySystemComponent::CommitPartnerHackCharge(bool bDeferRecharge)
+{
+	if (!IsOwnerActorAuthoritative() || !PartnerHackCharges.bInitialized || PartnerHackCharges.CurrentCharges <= 0)
+	{
+		return false;
+	}
+	--PartnerHackCharges.CurrentCharges;
+	// 대상 효과가 먼저 빙의를 시작할 수 있다. 정지 상태에서도 결과 소모는 기록하고 충전만 미룬다.
+	bPartnerHackRechargeDeferred |= bDeferRecharge;
+	if (!bPartnerHackRechargeDeferred)
+	{
+		BeginPartnerHackRecharge();
+	}
+	NotifyPartnerHackChargesChanged(false);
+	return true;
+}
+
+void UOutlierAbilitySystemComponent::BeginPartnerHackRecharge(float RemainingDuration)
+{
+	if (PartnerHackRechargeHandle.IsValid() || bPartnerSkillCooldownsSuspended || bPartnerHackRechargeDeferred
+		|| PartnerHackCharges.CurrentCharges >= PartnerHackCharges.MaxCharges)
+	{
+		return;
+	}
+	const float Duration = RemainingDuration > 0.0f ? RemainingDuration : PartnerAbilityConfig.HackCooldown;
+	if (Duration <= 0.0f)
+	{
+		PartnerHackCharges.RecoverySerial += PartnerHackCharges.MaxCharges - PartnerHackCharges.CurrentCharges;
+		PartnerHackCharges.CurrentCharges = PartnerHackCharges.MaxCharges;
+		NotifyPartnerHackChargesChanged(true);
+		return;
+	}
+	PartnerHackRechargeHandle = ApplyTimedGameplayEffectToSelf(
+		UOutlierPartnerHackCooldownGameplayEffect::StaticClass(), Duration, GetAvatarActor());
+	if (!ensure(PartnerHackRechargeHandle.IsValid()))
+	{
+		return;
+	}
+	PartnerHackCharges.RechargeDuration = Duration;
+	PartnerHackCharges.RechargeStartServerTime = GetWorld()->GetTimeSeconds();
+	if (FOnActiveGameplayEffectRemoved_Info* Removed = OnGameplayEffectRemoved_InfoDelegate(PartnerHackRechargeHandle))
+	{
+		Removed->AddUObject(this, &ThisClass::HandlePartnerHackRechargeRemoved, PartnerHackRechargeHandle);
+	}
+}
+
+void UOutlierAbilitySystemComponent::HandlePartnerHackRechargeRemoved(
+	const FGameplayEffectRemovalInfo& RemovalInfo, FActiveGameplayEffectHandle ExpectedHandle)
+{
+	if (!IsOwnerActorAuthoritative() || PartnerHackRechargeHandle != ExpectedHandle)
+	{
+		return;
+	}
+	PartnerHackRechargeHandle.Invalidate();
+	PartnerHackCharges.RechargeStartServerTime = 0.0f;
+	PartnerHackCharges.RechargeDuration = 0.0f;
+	if (RemovalInfo.bPrematureRemoval)
+	{
+		// 관리용 효과 제거는 준비 상태로 복귀한다. 빙의 정지는 Stop에서 핸들을 먼저 해제하므로 이 경로에 들어오지 않는다.
+		PartnerHackCharges.CurrentCharges = PartnerHackCharges.MaxCharges;
+		NotifyPartnerHackChargesChanged(false);
+		return;
+	}
+	PartnerHackCharges.CurrentCharges = FMath::Min(PartnerHackCharges.CurrentCharges + 1, PartnerHackCharges.MaxCharges);
+	++PartnerHackCharges.RecoverySerial;
+	BeginPartnerHackRecharge();
+	NotifyPartnerHackChargesChanged(true);
+}
+
+void UOutlierAbilitySystemComponent::StopPartnerHackRecharge()
+{
+	const FActiveGameplayEffectHandle PreviousHandle = PartnerHackRechargeHandle;
+	PartnerHackRechargeHandle.Invalidate();
+	RemoveActiveEffectFromSelf(PreviousHandle);
+	PartnerHackCharges.RechargeStartServerTime = 0.0f;
+	PartnerHackCharges.RechargeDuration = 0.0f;
+}
+
+float UOutlierAbilitySystemComponent::GetPartnerHackRechargeRemaining() const
+{
+	const UWorld* World = GetWorld();
+	if (!World || PartnerHackCharges.RechargeDuration <= 0.0f)
+	{
+		return 0.0f;
+	}
+	const AGameStateBase* GameState = World->GetGameState();
+	const float ServerTime = GameState ? GameState->GetServerWorldTimeSeconds() : World->GetTimeSeconds();
+	return FMath::Clamp(PartnerHackCharges.RechargeStartServerTime + PartnerHackCharges.RechargeDuration - ServerTime,
+		0.0f, PartnerHackCharges.RechargeDuration);
+}
+
+float UOutlierAbilitySystemComponent::GetPartnerHackRetryRemaining() const
+{
+	const UWorld* World = GetWorld();
+	if (!World || !PartnerHackCharges.bRetryBlocked || PartnerHackCharges.RetryDuration <= 0.0f)
+	{
+		return 0.0f;
+	}
+	const AGameStateBase* GameState = World->GetGameState();
+	const float ServerTime = GameState ? GameState->GetServerWorldTimeSeconds() : World->GetTimeSeconds();
+	return FMath::Clamp(PartnerHackCharges.RetryStartServerTime + PartnerHackCharges.RetryDuration - ServerTime,
+		0.0f, PartnerHackCharges.RetryDuration);
+}
+
+bool UOutlierAbilitySystemComponent::CommitPartnerHackRetryDelay()
+{
+	UWorld* World = GetWorld();
+	if (!IsOwnerActorAuthoritative() || !World || bPartnerSkillCooldownsSuspended)
+	{
+		return false;
+	}
+	if (PartnerHackCharges.bRetryBlocked)
+	{
+		return true;
+	}
+	const float Duration = PartnerAbilityConfig.HackCooldown * 0.5f;
+	if (Duration <= 0.0f)
+	{
+		return true;
+	}
+	PartnerHackCharges.bRetryBlocked = true;
+	PartnerHackCharges.RetryStartServerTime = World->GetTimeSeconds();
+	PartnerHackCharges.RetryDuration = Duration;
+	World->GetTimerManager().SetTimer(PartnerHackRetryTimer, this, &ThisClass::FinishPartnerHackRetryDelay, Duration, false);
+	NotifyPartnerHackChargesChanged(false);
+	return true;
+}
+
+void UOutlierAbilitySystemComponent::FinishPartnerHackRetryDelay()
+{
+	PartnerHackCharges.bRetryBlocked = false;
+	PartnerHackCharges.RetryStartServerTime = 0.0f;
+	PartnerHackCharges.RetryDuration = 0.0f;
+	NotifyPartnerHackChargesChanged(false);
+}
+
+bool UOutlierAbilitySystemComponent::ResumePartnerHackRecharge()
+{
+	if (!IsOwnerActorAuthoritative() || bPartnerSkillCooldownsSuspended)
+	{
+		return false;
+	}
+	bPartnerHackRechargeDeferred = false;
+	BeginPartnerHackRecharge(SuspendedPartnerHackRechargeRemaining);
+	SuspendedPartnerHackRechargeRemaining = 0.0f;
+	NotifyPartnerHackChargesChanged(false);
+	return true;
+}
+
+void UOutlierAbilitySystemComponent::ResetPartnerHackCharges()
+{
+	if (!IsOwnerActorAuthoritative())
+	{
+		return;
+	}
+	StopPartnerHackRecharge();
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(PartnerHackRetryTimer);
+	}
+	PartnerHackCharges = FOutlierPartnerHackChargeState();
+	bPartnerHackRechargeDeferred = false;
+	SuspendedPartnerHackRechargeRemaining = 0.0f;
+	SuspendedPartnerHackRetryRemaining = 0.0f;
+	NotifyPartnerHackChargesChanged(false);
+}
+
+void UOutlierAbilitySystemComponent::CancelPartnerHackDeferredRecharge()
+{
+	// 빙의가 확정되기 전에 대상이 사라져도, 이미 소모한 횟수의 충전이 영구 대기하지 않게 한다.
+	if (IsOwnerActorAuthoritative() && bPartnerHackRechargeDeferred && !bPartnerSkillCooldownsSuspended)
+	{
+		ResumePartnerHackRecharge();
+	}
+}
+
+void UOutlierAbilitySystemComponent::NotifyPartnerHackChargesChanged(bool bRecovered)
+{
+	OnPartnerHackChargeStateChanged.Broadcast(bRecovered);
+	if (AActor* OwningActor = GetOwnerActor())
+	{
+		OwningActor->ForceNetUpdate();
+	}
+}
+
+void UOutlierAbilitySystemComponent::OnRep_PartnerHackCharges(const FOutlierPartnerHackChargeState& PreviousState)
+{
+	const bool bRecovered = PreviousState.bInitialized && PartnerHackCharges.bInitialized
+		&& PreviousState.MaxCharges == PartnerHackCharges.MaxCharges
+		&& PreviousState.RecoverySerial != PartnerHackCharges.RecoverySerial
+		&& PartnerHackCharges.CurrentCharges > PreviousState.CurrentCharges;
+	OnPartnerHackChargeStateChanged.Broadcast(bRecovered);
 }
 
 bool UOutlierAbilitySystemComponent::CommitPartnerCooldown(
@@ -993,6 +1682,17 @@ bool UOutlierAbilitySystemComponent::SuspendPartnerSkillCooldownsForPossession()
 	}
 
 	bPartnerSkillCooldownsSuspended = true;
+	// 두 번째 해킹으로 빙의하면 첫 번째 사용분이 충전 중일 수 있다. 제거 전에 남은 시간을 보관한다.
+	SuspendedPartnerHackRechargeRemaining = GetPartnerHackRechargeRemaining();
+	StopPartnerHackRecharge();
+	if (UWorld* World = GetWorld())
+	{
+		SuspendedPartnerHackRetryRemaining = FMath::Max(0.0f, World->GetTimerManager().GetTimerRemaining(PartnerHackRetryTimer));
+		World->GetTimerManager().ClearTimer(PartnerHackRetryTimer);
+	}
+	PartnerHackCharges.RetryStartServerTime = 0.0f;
+	PartnerHackCharges.RetryDuration = 0.0f;
+	NotifyPartnerHackChargesChanged(false);
 	SuspendedPartnerCooldowns.Reset();
 	const FGameplayTag CooldownTags[] =
 	{
@@ -1026,6 +1726,15 @@ bool UOutlierAbilitySystemComponent::ResumePartnerSkillCooldownsAfterPossession(
 	}
 
 	bPartnerSkillCooldownsSuspended = false;
+	if (SuspendedPartnerHackRetryRemaining > 0.0f && GetWorld())
+	{
+		PartnerHackCharges.RetryStartServerTime = GetWorld()->GetTimeSeconds();
+		PartnerHackCharges.RetryDuration = SuspendedPartnerHackRetryRemaining;
+		GetWorld()->GetTimerManager().SetTimer(PartnerHackRetryTimer, this,
+			&ThisClass::FinishPartnerHackRetryDelay, SuspendedPartnerHackRetryRemaining, false);
+		SuspendedPartnerHackRetryRemaining = 0.0f;
+	}
+	ResumePartnerHackRecharge();
 	const TMap<FGameplayTag, float> CooldownsToResume = MoveTemp(SuspendedPartnerCooldowns);
 	SuspendedPartnerCooldowns.Reset();
 	bool bAllResumed = true;
@@ -1050,13 +1759,23 @@ bool UOutlierAbilitySystemComponent::ResumePartnerSkillCooldownsAfterPossession(
 
 void UOutlierAbilitySystemComponent::DiscardSuspendedPartnerSkillCooldowns()
 {
+	if (!IsOwnerActorAuthoritative())
+	{
+		return;
+	}
 	bPartnerSkillCooldownsSuspended = false;
 	SuspendedPartnerCooldowns.Reset();
+	ResetPartnerHackCharges();
+	RefreshPartnerHackCharges();
 }
 
 float UOutlierAbilitySystemComponent::GetSuspendedPartnerCooldownRemaining(
 	const FGameplayTag& CooldownTag) const
 {
+	if (CooldownTag == OutlierGameplayTags::Cooldown::Partner::Hacking())
+	{
+		return SuspendedPartnerHackRechargeRemaining;
+	}
 	const float* Remaining = SuspendedPartnerCooldowns.Find(CooldownTag);
 	return Remaining ? *Remaining : 0.0f;
 }

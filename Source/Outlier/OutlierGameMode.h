@@ -29,6 +29,8 @@ enum class EOutlierGameplayReloadFailure : uint8;
 struct FOutlierCheckpointData;
 struct FOutlierCheckpointSnapshot;
 
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnPairGameplayReady, uint32 /*GameplayGeneration*/);
+
 struct FGameOverPendingServerState
 {
 	TWeakObjectPtr<AFirstPersonPlayerController> Requester;
@@ -80,12 +82,18 @@ public:
 	/** Constructor */
 	AOutlierGameMode();
 	virtual void InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage) override;
+	// 서버와 클라이언트가 같은 맵의 GameMode 설정으로 PIE 테스트 여부를 판단한다.
+	static bool IsDirectPairTestWorld(const UWorld* World);
 	bool IsArenaWorkerPreloadReady() const;
 	void PauseArenaWorkerWorld();
 
 	bool RegisterCheckpoint(AController* Controller, AOutlierCheckpoint* Checkpoint, bool bRefreshSnapshot = false);
 	bool CommitCombatPhaseCheckpoint(FGameplayTag RoomTag, int32 NextPhaseIndex,
 		bool bEncounterCleared, int32 GameplayGeneration);
+	// 레벨 로드뿐 아니라 현재 페어의 Possess/재접속 대기까지 끝난 서버 준비 상태다.
+	bool IsPairGameplayReady() const;
+	FOnPairGameplayReady OnPairGameplayReady;
+	bool IsRestoringClearedEncounter(FGameplayTag RoomTag) const;
 	void RefreshPairLinks(AOutlierPlayerState* TriggeringPlayerState);
 
 	UFUNCTION()
@@ -150,6 +158,11 @@ public:
 
 private:
 	friend class FOutlierGameOverPendingFailureTest;
+	friend class FOutlierDirectPairTest;
+	void TryStartDirectPairTest();
+	bool ResolveDirectPairTestSpawns(FTransform& ShooterSpawn, FTransform& PartnerSpawn) const;
+	TArray<TWeakObjectPtr<APlayerController>> DirectPairTestPlayers;
+	bool bDirectPairTestStarted = false;
 	bool BeginGameOverTransition();
 	void RestoreGameOverSelection();
 	void FinishGameOverFlow();
@@ -192,6 +205,7 @@ private:
 	void RefreshRoomOverlapAssignments();
 	void ResetRuntimeCombatStateForRespawn();
 	void TryFinishArenaReload();
+	void BroadcastPairGameplayReadyIfReady();
 	bool StartCheckpointRestart(AFirstPersonPlayerController* Requester,
 		TFunction<bool()> BeforeReload = {});
 	void FinishCheckpointRestart();
@@ -220,6 +234,10 @@ private:
 		EOutlierCheckpointRestartVoteState::Idle;
 
 protected:
+	UPROPERTY(EditDefaultsOnly, Category = "Testing", meta = (DisplayName = "Direct Pair Test (PIE Only)",
+		ToolTip = "Start two PIE players as Shooter and Partner in the current map. Requires unique PlayerStart Tags Shooter and Partner; skips Lobby and Arena streaming. Duplicate the gameplay GameMode BP before enabling."))
+	bool bDirectPairTest = false;
+
 	UPROPERTY(EditDefaultsOnly, Category = "Respawn")
 	TSubclassOf<AShooterCharacter> ShooterClass;
 

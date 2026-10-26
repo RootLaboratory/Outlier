@@ -2,7 +2,6 @@
 
 
 #include "GangTongMainUI.h"
-#include "AbilityIconUI.h"
 #include "Components/Image.h"
 #include "EventDrivenUI.h"
 #include "InfoCanvasBase.h"
@@ -15,26 +14,16 @@ void UGangTongMainUI::NativeConstruct()
 {
 	Super::NativeConstruct();
 
-	CacheNestedHudWidgets();
+	ensureMsgf(PartnerLeftHUD && PartnerRightHUD,
+		TEXT("GangTongMainUI requires PartnerLeftHUD and PartnerRightHUD container widgets."));
+
 	ModuleInit();
-}
-
-void UGangTongMainUI::CacheNestedHudWidgets()
-{
-	if (!ensureMsgf(PartnerLeftHUD && PartnerRightHUD,
-		TEXT("GangTongMainUI requires PartnerLeftHUD and PartnerRightHUD container widgets.")))
-	{
-		return;
-	}
-
-	AbilityShieldIcon = PartnerRightHUD->GetAbilityShieldIcon();
-	AbilityHackingIcon = PartnerRightHUD->GetAbilityHackingIcon();
-	AbilityScanIcon = PartnerRightHUD->GetAbilityScanIcon();
-	AbilityEMPIcon = PartnerRightHUD->GetAbilityEMPIcon();
 }
 
 void UGangTongMainUI::ModuleInit()
 {
+	AbilitySlots.Reset();
+	AbilitySections.Reset();
 	Modules.Empty();
 	Modules.Reserve(10);
 
@@ -43,10 +32,14 @@ void UGangTongMainUI::ModuleInit()
 	RegisterModule(TagDrivenUITags::Partner::CrossHair(), CrossHairUI);
 	RegisterModule(TagDrivenUITags::Partner::DistanceLimit(), PartnerLeftHUD);
 
-	RegisterAbilityIcon(AbilityShieldIcon,  TagDrivenUITags::Ability::Partner::Shield(),  true);
-	RegisterAbilityIcon(AbilityHackingIcon, TagDrivenUITags::Ability::Partner::Hacking(), true);
-	RegisterAbilityIcon(AbilityScanIcon,    TagDrivenUITags::Ability::Partner::Scan(),    true);
-	RegisterAbilityIcon(AbilityEMPIcon,     TagDrivenUITags::Ability::Partner::EMP(),     true);
+	// 슬롯 등록 시 내부 아이콘도 등록되어 쿨타임과 거리 제한 알림을 받는다.
+	if (PartnerRightHUD)
+	{
+		RegisterAbilitySlot(PartnerRightHUD->GetShieldAbilitySlot(), TagDrivenUITags::Ability::Partner::Shield());
+		RegisterAbilitySlot(PartnerRightHUD->GetHackingAbilitySlot(), TagDrivenUITags::Ability::Partner::Hacking());
+		RegisterAbilitySlot(PartnerRightHUD->GetScanAbilitySlot(), TagDrivenUITags::Ability::Partner::Scan());
+		RegisterAbilitySlot(PartnerRightHUD->GetEMPAbilitySlot(), TagDrivenUITags::Ability::Partner::EMP());
+	}
 
 	// Partner 모듈은 기본적으로 사용할 수 있는 상태로 준비하고, 전역 표시는 부모 Layer가 맡는다.
 	for (const TPair<FGameplayTag, TObjectPtr<UEventDrivenUI>>& Module : Modules)

@@ -35,6 +35,8 @@
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "GameFramework/PlayerStart.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "Components/CapsuleComponent.h"
+#include "Engine/OverlapResult.h"
 #include "Kismet/GameplayStatics.h"
 #include "GameFramework/PlayerState.h"
 #include "GameFramework/WorldSettings.h"
@@ -680,7 +682,8 @@ void AOutlierGameMode::EndPlay(const EEndPlayReason::Type EndPlayReason)
 
 bool AOutlierGameMode::IsArenaWorkerProcess() const
 {
-	return FParse::Param(FCommandLine::Get(), TEXT("OutlierArenaWorker"));
+	return !IsDirectPairTestWorld(GetWorld())
+		&& FParse::Param(FCommandLine::Get(), TEXT("OutlierArenaWorker"));
 }
 
 bool AOutlierGameMode::UsesStaticArenaHandoff() const
@@ -924,9 +927,26 @@ bool AOutlierGameMode::CommitCombatPhaseCheckpoint(
 		return false;
 	}
 
+	// 직접 실행하는 PIE 페어는 저장 소유권을 만들지 않는다. 위의 서버/페어/완료 검증은
+	// 그대로 거친 뒤 디스크 저장만 생략하여, 전투 완료 후 출구 전환을 시험할 수 있게 한다.
+	if (IsDirectPairTestWorld(World))
+	{
+		return true;
+	}
+
 	const FName SaveEventId(*FString::Printf(TEXT("Room.%s.%s.%d"),
 		*RoomTag.ToString(), bEncounterCleared ? TEXT("Cleared") : TEXT("Phase"),
 		NextPhaseIndex));
+	FOutlierCheckpointSnapshot ExistingSnapshot;
+	// RoomCleared 직후 전환 호출자가 저장을 재확인할 수 있다. 이미 확정된 같은
+	// 완료 스냅샷은 성공으로 처리하고, 출구 이동 뒤 위치로 덮어쓰지 않는다.
+	if (bEncounterCleared && Saves->GetRestoreSnapshot(ExistingSnapshot)
+		&& ExistingSnapshot.CheckpointId == SaveEventId
+		&& ExistingSnapshot.SaveReason == EOutlierCheckpointSaveReason::EncounterCleared
+		&& ExistingSnapshot.RoomTag == RoomTag)
+	{
+		return true;
+	}
 	FOutlierCheckpointSnapshot Snapshot;
 	if (!BuildPairCheckpointSnapshot(ShooterPS, PartnerPS, SaveEventId, false,
 		Shooter->GetActorTransform(), Partner->GetActorTransform(), Snapshot))
@@ -945,6 +965,50 @@ bool AOutlierGameMode::CommitCombatPhaseCheckpoint(
 		return false;
 	}
 	return true;
+}
+
+bool AOutlierGameMode::IsPairGameplayReady() const
+{
+	const UOutlierArenaSubsystem* Arena = GetWorld()
+		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>() : nullptr;
+	if (!HasAuthority() || !Arena || !Arena->IsGameplayLevelsReady()
+		|| ActiveMatchPairId == INDEX_NONE || bPendingInitialSaveRestore || bArenaReloadInProgress
+		|| bListenGuestDisconnected || bListenHostReturnRequested || bArenaWorkerMatchCompleting
+		|| !PendingPossessions.IsEmpty() || !PendingLocalPossessions.IsEmpty()
+		|| !ReadyGameplayPossessPlayers.IsEmpty() || !ArenaWorkerDisconnectedPlayerIds.IsEmpty()
+		|| !ArenaWorkerReconnectPawns.IsEmpty()
+		|| (IsArenaWorkerProcess() && !bArenaWorkerGameplayStarted))
+	{
+		return false;
+	}
+	const AController* ShooterController = GetControllerFromPlayerState(
+		FindPairPlayerState(ActiveMatchPairId, EOutlierPlayerRole::Shooter));
+	const AController* PartnerController = GetControllerFromPlayerState(
+		FindPairPlayerState(ActiveMatchPairId, EOutlierPlayerRole::Partner));
+	return ShooterController && PartnerController && ShooterController != PartnerController
+		&& IsValid(ShooterController->GetPawn()) && IsValid(PartnerController->GetPawn());
+}
+
+void AOutlierGameMode::BroadcastPairGameplayReadyIfReady()
+{
+	if (IsPairGameplayReady())
+	{
+		const UOutlierArenaSubsystem* Arena = GetWorld()->GetSubsystem<UOutlierArenaSubsystem>();
+		OnPairGameplayReady.Broadcast(Arena->GetGameplayGeneration());
+	}
+}
+
+bool AOutlierGameMode::IsRestoringClearedEncounter(FGameplayTag RoomTag) const
+{
+	const UOutlierSaveSubSystem* Saves = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>() : nullptr;
+	FOutlierCheckpointSnapshot Snapshot;
+	// 누적 CompletedEncounter만 보면 이후 체크포인트에서도 옛 출구로 되돌아간다.
+	// 현재 복원 스냅샷 자체가 이 Room의 완료 저장일 때만 출구 재배치를 허용한다.
+	return HasAuthority() && RoomTag.IsValid() && Saves && Saves->GetRestoreSnapshot(Snapshot)
+		&& Snapshot.SaveReason == EOutlierCheckpointSaveReason::EncounterCleared
+		&& Snapshot.RoomTag == RoomTag
+		&& Snapshot.WorldProgress.CompletedEncounterIds.Contains(RoomTag.GetTagName());
 }
 
 void AOutlierGameMode::RefreshPairLinks(AOutlierPlayerState* TriggeringPlayerState)
@@ -1718,6 +1782,13 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 	{
 		return;
 	}
+	FTransform ShooterSpawn;
+	FTransform PartnerSpawn;
+	const bool bDirectTest = IsDirectPairTestWorld(GetWorld());
+	if (bDirectTest && !ResolveDirectPairTestSpawns(ShooterSpawn, PartnerSpawn))
+	{
+		return;
+	}
 	if (GameOverActivePairs.Contains(PairId))
 	{
 		GameOverWorldPause.Reset(GetWorld());
@@ -1802,17 +1873,14 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 	AOutlierPlayerState* PartnerPS =
 		PartnerController->GetPlayerState<AOutlierPlayerState>();
 
-	FTransform ShooterSpawn;
-	FTransform PartnerSpawn;
-
 	// 로비 -> Arena 최초 진입은 이제 이 아레나 인스턴스 소속의 PresetId=Start APresetPlayerStart를 우선 찾는다.
 	// 아직 레벨에 안 놔뒀으면(구 맵) 기존 ResolveArenaSpawnTransforms/FindPlayerStart 폴백으로 내려간다.
-	if (bResuming)
+	if (!bDirectTest && bResuming)
 	{
 		ShooterSpawn = ResumeSnapshot.ShooterSpawnTransform;
 		PartnerSpawn = ResumeSnapshot.PartnerSpawnTransform;
 	}
-	else if (!ResolvePresetStageSpawn(OutlierPresetStageIds::Start, ShooterSpawn, PartnerSpawn))
+	else if (!bDirectTest && !ResolvePresetStageSpawn(OutlierPresetStageIds::Start, ShooterSpawn, PartnerSpawn))
 	{
 		ResolveFallbackSpawnTransforms(ShooterController, ShooterSpawn, PartnerSpawn);
 	}
@@ -1831,15 +1899,56 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 	const bool bHasPartnerPlayerId =
 		Identity && Identity->TryGetPlayerId(PartnerController, PartnerPlayerId);
 
+	FActorSpawnParameters PawnSpawnParams;
+	if (bDirectTest)
+	{
+		// PlayerStart와 실제 캐릭터의 캡슐 크기가 다를 수 있으므로 가벼운 겹침은 엔진이 보정한다.
+		PawnSpawnParams.SpawnCollisionHandlingOverride =
+			ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButDontSpawnIfColliding;
+	}
 	AShooterCharacter* Shooter = GetWorld()->SpawnActor<AShooterCharacter>(
 		ShooterClass,
-		ShooterSpawn
+		ShooterSpawn,
+		PawnSpawnParams
 	);
 
 	APartnerCharacter* Partner = GetWorld()->SpawnActor<APartnerCharacter>(
 		PartnerClass,
-		PartnerSpawn
+		PartnerSpawn,
+		PawnSpawnParams
 	);
+	if (bDirectTest && (!Shooter || !Partner))
+	{
+		// 보정할 공간도 없으면 강제로 생성하지 않고 시작 위치를 막는 컴포넌트를 기록한다.
+		auto LogSpawnBlockers = [this](const ACharacter* Defaults, const FTransform& Spawn)
+		{
+			const UCapsuleComponent* Capsule = Defaults->GetCapsuleComponent();
+			TArray<FOverlapResult> Overlaps;
+			GetWorld()->OverlapMultiByChannel(Overlaps, Spawn.GetLocation(), Spawn.GetRotation(),
+				Capsule->GetCollisionObjectType(), Capsule->GetCollisionShape(),
+				FCollisionQueryParams(SCENE_QUERY_STAT(DirectPairTestSpawn)),
+				FCollisionResponseParams(Capsule->GetCollisionResponseToChannels()));
+			for (const FOverlapResult& Overlap : Overlaps)
+			{
+				if (Overlap.bBlockingHit)
+				{
+					UE_LOG(LogTemp, Warning,
+						TEXT("[DirectPairTest] Spawn blocked: Character=%s Location=%s Actor=%s Component=%s"),
+						*Defaults->GetClass()->GetName(), *Spawn.GetLocation().ToString(),
+						*GetPathNameSafe(Overlap.GetActor()), *GetPathNameSafe(Overlap.GetComponent()));
+				}
+			}
+		};
+		if (!Shooter) LogSpawnBlockers(ShooterClass->GetDefaultObject<AShooterCharacter>(), ShooterSpawn);
+		if (!Partner) LogSpawnBlockers(PartnerClass->GetDefaultObject<APartnerCharacter>(), PartnerSpawn);
+		if (Shooter) Shooter->Destroy();
+		if (Partner) Partner->Destroy();
+		FirstPS->SetPairId(INDEX_NONE);
+		SecondPS->SetPairId(INDEX_NONE);
+		ActiveMatchPairId = INDEX_NONE;
+		UE_LOG(LogTemp, Error, TEXT("[DirectPairTest] Character spawn failed after collision adjustment. Check Spawn blocked entries and PlayerStart clearance, then restart PIE."));
+		return;
+	}
 
 	// 바닥과 시작 지점은 재로드하지 않는 Arena 지형 레벨에 배치한다.
 
@@ -1994,6 +2103,22 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 	}
 
 	bPendingInitialSaveRestore = bResuming;
+	if (bDirectTest && Shooter && Partner)
+	{
+		// DirectPair PIE에서만 서버가 무기한 무적을 부여한다. 개별 능력의 보호 효과와
+		// 별도 수명으로 유지하여 도약/빙의 종료가 테스트 무적을 해제하지 않게 한다.
+		for (UAbilitySystemComponent* AbilitySystem :
+			{ Shooter->GetAbilitySystemComponent(), Partner->GetAbilitySystemComponent() })
+		{
+			UOutlierAbilitySystemComponent* OutlierASC = Cast<UOutlierAbilitySystemComponent>(AbilitySystem);
+			if (OutlierASC)
+			{
+				const bool bApplied = OutlierASC->ApplyDamageImmuneStateToSelf().IsValid();
+				UE_LOG(LogTemp, Display, TEXT("[DirectPairTest] Start invulnerability: Character=%s Applied=%d"),
+					*GetNameSafe(OutlierASC->GetAvatarActor()), bApplied ? 1 : 0);
+			}
+		}
+	}
 	PossessMatchedPawn(NewShooterPC, Shooter, ShooterSpawn.GetLocation());
 	PossessMatchedPawn(NewPartnerPC, Partner, PartnerSpawn.GetLocation());
 	TryStartInitialSaveRestore();
@@ -2002,7 +2127,7 @@ void AOutlierGameMode::StartMatchedPair(AController* FirstController, AControlle
 	{
 		TryScheduleArenaWorkerAutoComplete();
 	}
-
+	BroadcastPairGameplayReadyIfReady();
 }
 
 bool AOutlierGameMode::CompleteArenaMatch()
@@ -2332,6 +2457,7 @@ void AOutlierGameMode::OnClientArenaReady(APlayerController* PC, uint32 Gameplay
 			(FPlatformTime::Seconds() - ArenaReloadStartedAt) * 1000.0);
 	}
 	TryFinishArenaReload();
+	BroadcastPairGameplayReadyIfReady();
 }
 
 void AOutlierGameMode::OnClientArenaGameplayUnloaded(APlayerController* PC, uint32 GameplayGeneration)
@@ -2479,6 +2605,18 @@ APlayerController* AOutlierGameMode::SpawnPlayerController(
 	ENetRole InRemoteRole,
 	const FString& Options)
 {
+	if (IsDirectPairTestWorld(GetWorld()))
+	{
+		// 로그인부터 역할별 PC를 써서 Controller 교체 중 HUD/네트워크 연결이 끊기지 않게 한다.
+		const TSubclassOf<APlayerController> RoleClass = DirectPairTestPlayers.IsEmpty()
+			? ShooterControllerClass : PartnerControllerClass;
+		if (!RoleClass || DirectPairTestPlayers.Num() >= 2 || bDirectPairTestStarted)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[DirectPairTest] Requires two players and configured role controller classes"));
+			return nullptr;
+		}
+		return SpawnPlayerControllerCommon(InRemoteRole, FVector::ZeroVector, FRotator::ZeroRotator, RoleClass);
+	}
 	if (IsListenReconnectRequest(Options))
 	{
 		const TSubclassOf<APlayerController> RoleClass = ListenGuestRole == EOutlierPlayerRole::Shooter
@@ -2546,6 +2684,14 @@ void AOutlierGameMode::PreLogin(
 	FString& ErrorMessage)
 {
 	Super::PreLogin(Options, Address, UniqueId, ErrorMessage);
+	if (IsDirectPairTestWorld(GetWorld()))
+	{
+		if (GetNumPlayers() >= 2 || bDirectPairTestStarted)
+		{
+			ErrorMessage = TEXT("Direct pair test already has two players. Restart PIE to test again.");
+		}
+		return;
+	}
 	if (ErrorMessage.IsEmpty() && GetNetMode() == NM_ListenServer
 		&& ListenGuestReconnectToken.IsValid()
 		&& !IsListenReconnectRequest(Options))
@@ -2685,6 +2831,11 @@ FString AOutlierGameMode::InitNewPlayer(
 
 void AOutlierGameMode::HandleStartingNewPlayer_Implementation(APlayerController* NewPlayer)
 {
+	if (IsDirectPairTestWorld(GetWorld()))
+	{
+		// 테스트도 페어 생성이 Pawn을 소유한다. DefaultPawn/PlayerStartPIE를 먼저 만들지 않는다.
+		return;
+	}
 	const AOutlierPlayerState* State = NewPlayer
 		? NewPlayer->GetPlayerState<AOutlierPlayerState>() : nullptr;
 	if (bListenGuestDisconnected && State
@@ -3497,6 +3648,15 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 void AOutlierGameMode::PostLogin(APlayerController* NewPlayer)
 {
 	Super::PostLogin(NewPlayer);
+	if (IsDirectPairTestWorld(GetWorld()))
+	{
+		DirectPairTestPlayers.AddUnique(NewPlayer);
+		if (DirectPairTestPlayers.Num() == 2)
+		{
+			GetWorldTimerManager().SetTimerForNextTick(this, &AOutlierGameMode::TryStartDirectPairTest);
+		}
+		return;
+	}
 	const AOutlierPlayerState* State = NewPlayer
 		? NewPlayer->GetPlayerState<AOutlierPlayerState>() : nullptr;
 	if (bListenGuestDisconnected && State
@@ -3695,6 +3855,7 @@ void AOutlierGameMode::StartArenaWorkerGameplay()
 	}
 
 	UE_LOG(LogTemp, Display, TEXT("[ArenaWorker] Both clients are ready. Gameplay started"));
+	BroadcastPairGameplayReadyIfReady();
 }
 
 void AOutlierGameMode::RequestArenaWorkerExit()
@@ -4614,6 +4775,7 @@ void AOutlierGameMode::TryFinishArenaReload()
 	{
 		ScheduleArenaWorkerGameplayStart();
 	}
+	BroadcastPairGameplayReadyIfReady();
 }
 
 bool AOutlierGameMode::ResolveCheckpointTransform(AController* Controller, FTransform& OutTransform) const

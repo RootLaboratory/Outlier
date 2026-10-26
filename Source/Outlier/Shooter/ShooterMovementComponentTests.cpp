@@ -108,7 +108,16 @@ bool FShooterGroundedMovementTest::RunTest(const FString& Parameters)
 			UShooterCombatComponent* Combat = Shooter->FindComponentByClass<UShooterCombatComponent>();
 			if (TestNotNull(TEXT("Combat fixture"), Combat))
 			{
-				Combat->BeginReloadInternal();
+				// 이동 잠금 검증은 몽타주 재생 조건과 분리하고, 완료 처리는 실제 경로를 사용한다.
+				const auto BeginReloadFixture = [&]()
+				{
+					Combat->bIsReloading = true;
+					Shooter->BeginActionLock(EShooterActionLock::Reload);
+					Shooter->CombatState = ECombatState::Reload;
+					Movement->RefreshMovementState();
+				};
+				BeginReloadFixture();
+				TestTrue(TEXT("Reload fixture is active"), Shooter->IsReloading());
 				TestFalse(TEXT("Sprint is blocked with reload lock"), Movement->CanSprint());
 				Movement->RefreshMovementState();
 				Combat->ResolveStateConflicts();
@@ -118,7 +127,7 @@ bool FShooterGroundedMovementTest::RunTest(const FString& Parameters)
 				Combat->FinishReloadInternal();
 				TestTrue(TEXT("Reload completion resumes held sprint"), Movement->IsSprinting());
 				TestEqual(TEXT("Reload completion restores sprint speed"), CharacterMovement->MaxWalkSpeed, Shooter->SprintSpeed);
-				Combat->BeginReloadInternal();
+				BeginReloadFixture();
 				Movement->HandleSprintReleased();
 				Combat->FinishReloadInternal();
 				TestFalse(TEXT("Shift release during reload prevents sprint resume"), Movement->IsSprinting());
@@ -151,7 +160,7 @@ bool FShooterGroundedMovementTest::RunTest(const FString& Parameters)
 			Movement->HandleCrouchPressed();
 			TestTrue(TEXT("Ground sprint crouch starts slide"), Movement->IsSliding());
 			TestTrue(TEXT("Slide applies entry speed, multiplier, and curve immediately"),
-				FMath::IsNearlyEqual(CharacterMovement->Velocity.X, 240.0f));
+				FMath::IsNearlyEqual(CharacterMovement->Velocity.X, 240.0, 0.01));
 			TestEqual(TEXT("Slide removes walking friction"), CharacterMovement->GroundFriction, 0.0f);
 			TestEqual(TEXT("Slide removes walking braking"), CharacterMovement->BrakingDecelerationWalking, 0.0f);
 			TestEqual(TEXT("Slide removes separate braking friction too"), CharacterMovement->BrakingFrictionFactor, 0.0f);

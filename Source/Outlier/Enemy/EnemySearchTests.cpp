@@ -10,6 +10,7 @@
 #include "Engine/World.h"
 #include "Misc/AutomationTest.h"
 #include "Perception/AISense_Hearing.h"
+#include "Perception/AISense_Sight.h"
 #include "Room/RoomTagComponent.h"
 #include "TimerManager.h"
 
@@ -256,6 +257,47 @@ bool FEnemySearchForcedSharingTest::RunTest(const FString& Parameters)
 	Rooms->NotifyRoomCombatEnded(Room);
 	Rooms->TriggerForcedShareForTesting(Room);
 	TestEqual(TEXT("Ended room cannot retain or publish target information"), Rooms->GetSharedRevisionForTesting(Room), uint64(0));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemySightCombatJoinTest,
+	"Outlier.Enemy.Perception.SightCombatJoin", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemySightCombatJoinTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FEnemySearchTestWorld Fixture;
+	if (!TestNotNull(TEXT("Authority world exists"), Fixture.World)) return false;
+	UEnemyRoomSubsystem* Rooms = Fixture.World->GetSubsystem<UEnemyRoomSubsystem>();
+	AEnemyAIController* Controller = Fixture.World->SpawnActor<AEnemyAIController>();
+	const FGameplayTag Room = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.1")));
+	const FGameplayTag OtherRoom = FGameplayTag::RequestGameplayTag(FName(TEXT("Room.Level01.2")));
+	AEnemyBase* JoiningEnemy = Fixture.SpawnEnemy(Room, FVector::ZeroVector, false);
+	AEnemyBase* OtherEnemy = Fixture.SpawnEnemy(OtherRoom, FVector(1000, 0, 0), false);
+	AEnemyBase* Target = Fixture.SpawnEnemy(OtherRoom, FVector(300, 200, 350), false);
+	if (!TestNotNull(TEXT("Room subsystem exists"), Rooms)
+		|| !Controller || !JoiningEnemy || !OtherEnemy || !Target) return false;
+	const FVector SeenLocation = Target->GetActorLocation();
+	const FAIStimulus Seen(*GetDefault<UAISense_Sight>(), 1.0f, SeenLocation, FVector::ZeroVector);
+	Rooms->SetActiveRoomTargetForTesting(Room, FVector::ZeroVector, false);
+
+	// 실제 Sight 콜백의 전투 합류를 검사한다. 비전투 방은 기존 Alert 절차를 유지해야 한다.
+	Controller->HandleSightStimulus(JoiningEnemy, Target, Seen);
+	TestEqual(TEXT("Successful sight joins active room immediately"),
+		JoiningEnemy->GetCombatState(), EEnemyCombatState::Combat);
+	TestTrue(TEXT("Sight retains direct visibility"), JoiningEnemy->IsPlayerCurrentlyVisible());
+	TestTrue(TEXT("Sight remembers the observed location"),
+		JoiningEnemy->GetLastKnownPlayerLocation().Equals(SeenLocation));
+	Controller->HandleSightStimulus(OtherEnemy, Target, Seen);
+	TestEqual(TEXT("Sight in another inactive room still enters Alert"),
+		OtherEnemy->GetCombatState(), EEnemyCombatState::Alert);
+	TestFalse(TEXT("Sight does not immediately start the inactive room's combat"),
+		Rooms->IsRoomInCombat(OtherRoom));
+
+	JoiningEnemy->EnterStun();
+	Controller->HandleSightStimulus(JoiningEnemy, Target, Seen);
+	TestEqual(TEXT("Sight combat join preserves active stun"),
+		JoiningEnemy->GetCombatState(), EEnemyCombatState::Stun);
 	return true;
 }
 

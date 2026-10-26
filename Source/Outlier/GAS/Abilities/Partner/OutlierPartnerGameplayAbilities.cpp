@@ -3,6 +3,7 @@
 #include "Audio/OutlierAbilityAudioSettings.h"
 #include "Audio/OutlierAudioSubsystem.h"
 #include "Drone/Partner/PartnerCharacter.h"
+#include "Drone/Partner/PartnerPlayerController.h"
 #include "OutlierPlayerState.h"
 #include "Drone/Partner/PartnerEMPComponent.h"
 #include "Drone/Partner/PartnerHackComponent.h"
@@ -12,8 +13,6 @@
 
 namespace
 {
-constexpr float HackCancellationCooldownScale = 0.5f;
-
 bool PlayAbilityAudioAtLocationFromServer(AActor* EmitterActor, const FGameplayTag& ContextTag)
 {
 	const UOutlierAbilityAudioSettings* Settings = GetDefault<UOutlierAbilityAudioSettings>();
@@ -137,7 +136,10 @@ bool UOutlierPartnerGameplayAbility::CanActivateAbility(
 		&& Partner->GetController()
 		&& Partner->GetController()->GetPawn() == Partner
 		&& !AbilitySystem->ArePartnerSkillCooldownsSuspended()
-		&& !AbilitySystem->IsPartnerCooldownActive(CooldownTag);
+		// 해킹은 충전 중에도 잔여 횟수로 사용할 수 있다. 다른 능력의 쿨타임 게이트는 유지한다.
+		&& (CooldownTag == OutlierGameplayTags::Cooldown::Partner::Hacking()
+			? AbilitySystem->CanUsePartnerHackCharge()
+			: !AbilitySystem->IsPartnerCooldownActive(CooldownTag));
 }
 
 APartnerCharacter* UOutlierPartnerGameplayAbility::GetPartnerCharacter() const
@@ -212,6 +214,7 @@ void UOutlierPartnerEMPAbility::ActivateAbility(
 	PlayAbilityAudioAtLocationFromServer(
 		Partner,
 		GetDefault<UOutlierAbilityAudioSettings>()->PartnerEMPCharge);
+	Partner->NotifySkillExecuted();
 }
 
 void UOutlierPartnerEMPAbility::EndAbility(
@@ -266,8 +269,6 @@ void UOutlierPartnerEMPAbility::HandleEMPFinished(bool bAppliedTargets, bool bCa
 		PlayAbilityAudioAtLocationFromServer(
 			GetPartnerCharacter(),
 			GetDefault<UOutlierAbilityAudioSettings>()->PartnerEMPBurst);
-
-		UE_LOG(LogTemp, Error, TEXT("PREFinishcall called"));
 	}
 	else
 	{
@@ -306,6 +307,7 @@ void UOutlierPartnerShieldAbility::ActivateAbility(
 		PlayAbilityAudioAtLocationFromServer(
 			Partner,
 			GetDefault<UOutlierAbilityAudioSettings>()->PartnerShield);
+		Partner->NotifySkillExecuted();
 	}
 	EndAbility(Handle, ActorInfo, ActivationInfo, true, !bCommitted);
 }
@@ -334,6 +336,8 @@ void UOutlierPartnerHackAbility::ActivateAbility(
 		return;
 	}
 
+	bHackResultHandled = false;
+	HackController = Cast<APartnerPlayerController>(Partner->GetController());
 	ActiveHackComponent = Component;
 	HackFinishedHandle = Component->OnHackFinished.AddUObject(
 		this,
@@ -347,6 +351,7 @@ void UOutlierPartnerHackAbility::ActivateAbility(
 	PlayAbilityAudioAtLocationFromServer(
 		Partner,
 		GetDefault<UOutlierAbilityAudioSettings>()->PartnerHackTryLoop);
+	Partner->NotifySkillExecuted();
 }
 
 void UOutlierPartnerHackAbility::EndAbility(
@@ -367,6 +372,7 @@ void UOutlierPartnerHackAbility::EndAbility(
 		}
 	}
 	ActiveHackComponent.Reset();
+	HackController.Reset();
 	HackFinishedHandle.Reset();
 
 	// Fail DA는 StopLoopThenOneShot 이라 시도 루프가 살아 있을 때만 소리가 난다. 루프 정리보다 먼저 낸다.
@@ -395,6 +401,11 @@ void UOutlierPartnerHackAbility::HandleHackFinished(
 	EHackResult Result,
 	bool bPossessionTarget)
 {
+	if (!IsActive() || bHackResultHandled)
+	{
+		return;
+	}
+	bHackResultHandled = true;
 	// Success/Fail DA는 StopLoopThenOneShot 이라 시도 루프가 살아 있을 때만 소리가 난다. 결과음을 먼저 내고,
 	// 결과음이 없는 취소를 위해 남은 루프는 그 뒤에 정리한다.
 	if (Result == EHackResult::Success)
@@ -413,22 +424,15 @@ void UOutlierPartnerHackAbility::HandleHackFinished(
 		GetPartnerCharacter(),
 		GetDefault<UOutlierAbilityAudioSettings>()->PartnerHackTryLoop);
 
-	const bool bFullCooldown = Result == EHackResult::Fail
-		|| (Result == EHackResult::Success && !bPossessionTarget);
-	const bool bCancelled = Result == EHackResult::Cancelled;
-	bool bCommitted = true;
-	if (bFullCooldown)
-	{
-		bCommitted = CommitConfiguredCooldown();
-	}
-	else if (bCancelled)
-	{
-		const UOutlierAbilitySystemComponent* AbilitySystem = GetOutlierAbilitySystem();
-		const float CancellationCooldown = AbilitySystem
-			? AbilitySystem->GetPartnerAbilityConfig().HackCooldown * HackCancellationCooldownScale
-			: 0.0f;
-		bCommitted = CommitConfiguredCooldown(CancellationCooldown);
-	}
+	UOutlierAbilitySystemComponent* AbilitySystem = GetOutlierAbilitySystem();
+	const APartnerPlayerController* Controller = HackController.Get();
+	// 대상 효과 처리 중 전환이 즉시 취소되었을 수도 있다. 실제 대기/빙의 세션이 있을 때만 충전을 미룬다.
+	const bool bDeferRecharge = Result == EHackResult::Success && bPossessionTarget
+		&& Controller && Controller->ShouldDeferPartnerHackRecharge(GetPartnerCharacter());
+	// 확정 결과에서만 한 번 소모한다. 빙의 성공은 복귀 때 충전을 시작하고, 취소는 횟수를 유지한다.
+	const bool bCommitted = AbilitySystem && (Result == EHackResult::Cancelled
+		? AbilitySystem->CommitPartnerHackRetryDelay()
+		: AbilitySystem->CommitPartnerHackCharge(bDeferRecharge));
 	EndAbility(
 		CurrentSpecHandle,
 		CurrentActorInfo,
@@ -474,6 +478,7 @@ void UOutlierPartnerScanAbility::ActivateAbility(
 	PlayAbilityAudioAtLocationFromServer(
 		Partner,
 		GetDefault<UOutlierAbilityAudioSettings>()->PartnerScan);
+	Partner->NotifySkillExecuted();
 }
 
 void UOutlierPartnerScanAbility::EndAbility(

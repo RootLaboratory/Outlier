@@ -251,6 +251,15 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|Damage")
 	TObjectPtr<USphereComponent> CoreHitboxComponent;
 
+	// BP 뷰포트에서 이 컴포넌트를 선택하고 이동해 몸통 조준점을 배치한다.
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|AutoAim")
+	TObjectPtr<USceneComponent> AutoAimBodyAnchor;
+
+	// 기존 BP 설정을 유지하기 위한 추가 오프셋이다. 새로 배치할 때는 0으로 두고 Anchor를 이동한다.
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, AdvancedDisplay, Category = "Enemy|AutoAim",
+		meta = (Units = "cm", ToolTip = "AutoAimBodyAnchor 기준 추가 오프셋입니다. 0으로 두면 컴포넌트 원점이 몸통 조준점입니다. 위치는 BP 뷰포트에서 AutoAimBodyAnchor를 이동해 조절하세요."))
+	FVector AutoAimBodyLocalOffset = FVector::ZeroVector;
+
 	// 코어가 없는 Enemy는 전용 콜리전과 무기의 추가 코어 탐색을 모두 생략한다.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Damage")
 	uint8 bUseCoreWeakPoint : 1 = true;
@@ -534,6 +543,7 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Enemy|State")
 	bool IsDead() const;
+	FVector GetAutoAimBodyLocation() const;
 
 	UFUNCTION(BlueprintCallable, Category = "Enemy|Data")
 	void InitializeFromEnemyStatRow();
@@ -754,6 +764,10 @@ protected:
 	void ResetPatrolPoints();
 	virtual void ResetPoolPresentationState();
 	virtual void PrepareForPoolIdle();
+	// 행동 중단 여부는 기존 상태 로직이 결정하고, 파생 클래스는 작은 피격 연출만 정리한다.
+	virtual void InterruptDamagePresentation(float BlendOutTime) {}
+	virtual void OnPoolStateApplied(EEnemyPoolState PreviousState) {}
+	virtual bool ShouldResetPoolMontages() const { return true; }
 
 	// 사망 시 원본 메시를 대체할, 미리 프랙처된 Geometry Collection.
 	// 비워두면 파편 연출을 통째로 건너뛰고 기존 사망 동작 그대로 간다.
@@ -870,6 +884,7 @@ protected:
 	TWeakObjectPtr<UEnemyAdaptationSubsystem> CachedEnemyAdaptationSubsystem;
 	EOutlierAdaptationDamageCategory LastAcceptedAdaptationDamageCategory =
 		EOutlierAdaptationDamageCategory::Ignore;
+	TSharedPtr<FOutlierStealthSession> LastAcceptedStealthSession;
 	bool bDeathCleanupPerformed = false;
 #if WITH_DEV_AUTOMATION_TESTS
 	bool bPoolPresentationAutoCompleteForTesting = true;

@@ -2,9 +2,12 @@
 
 #include "Shooter/ShooterMovementComponent.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Shooter/ShooterCharacterMovementComponent.h"
 #include "Curves/CurveFloat.h"
 #include "Engine/World.h"
+#include "GAS/OutlierAbilitySystemComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "GameplayTags/OutlierGameplayTags.h"
 #include "InputActionValue.h"
 #include "Net/UnrealNetwork.h"
 #include "OutlierNetUtils.h"
@@ -174,6 +177,7 @@ void UShooterMovementComponent::TrySlide()
 	ShooterCharacter->StopLean();
 	ShooterCharacter->BeginActionLock(EShooterActionLock::Slide);
 	SlideDirection = Velocity2D;
+	// 실제 진입 속도에는 은신 이동 보너스가 이미 반영되므로 슬라이드에서 다시 곱하지 않는다.
 	SlideStartSpeed = ShooterCharacter->GetVelocity().Size2D() * FMath::Max(0.0f, ShooterCharacter->SlideSpeedMultiplier);
 	CurrentSlideSpeed = SlideStartSpeed;
 	SlideElapsedTime = 0.0f;
@@ -271,19 +275,20 @@ void UShooterMovementComponent::DoJumpStart()
 		return;
 	}
 
-	if (!ShooterCharacter->HasAuthority())
-	{
-		ShooterCharacter->ServerJumpStart();
-	}
-
 	if (bIsSliding)
 	{
+		if (!ShooterCharacter->HasAuthority())
+		{
+			ShooterCharacter->ServerJumpStart();
+		}
 		StopSlide(ESlideEndReason::JumpCancel);
 		return;
 	}
 
-	// 엔진은 낙하 중 첫 점프도 허용하므로, 지상 점프 없이 떨어진 경우에는 입력을 넘기지 않는다.
-	if (ShooterCharacter->GetCharacterMovement()->IsFalling() && ShooterCharacter->JumpCurrentCount == 0)
+	const auto* JumpMovement = CastChecked<UShooterCharacterMovementComponent>(ShooterCharacter->GetCharacterMovement());
+	// 바닥에서 바로 떨어진 첫 입력은 남아 있는 코요테 기회에 한해 허용한다.
+	if (JumpMovement->IsFalling() && ShooterCharacter->JumpCurrentCount == 0
+		&& !JumpMovement->HasCoyoteOpportunity())
 	{
 		return;
 	}
@@ -298,11 +303,6 @@ void UShooterMovementComponent::DoJumpEnd()
 	if (!ShooterCharacter)
 	{
 		return;
-	}
-
-	if (!ShooterCharacter->HasAuthority())
-	{
-		ShooterCharacter->ServerJumpEnd();
 	}
 
 	ShooterCharacter->StopJumping();
@@ -408,8 +408,20 @@ void UShooterMovementComponent::RefreshMovementState()
 	const bool bCanUseSprintSpeed = bWantsToSprint && CanSprint();
 	const bool bWasSprinting = bIsSprinting;
 	bIsSprinting = bCanUseSprintSpeed && ShooterCharacter->GetVelocity().Size2D() > KINDA_SMALL_NUMBER;
-	ShooterCharacter->GetCharacterMovement()->MaxWalkSpeed = bCanUseSprintSpeed
-		? ShooterCharacter->SprintSpeed : ShooterCharacter->WalkSpeed;
+	UCharacterMovementComponent* CharacterMovement = ShooterCharacter->GetCharacterMovement();
+	const float StealthSpeedMultiplier = GetStealthSpeedMultiplier();
+	CharacterMovement->MaxWalkSpeed = (bCanUseSprintSpeed
+		? ShooterCharacter->SprintSpeed : ShooterCharacter->WalkSpeed) * StealthSpeedMultiplier;
+	if (BaseMaxWalkSpeedCrouched < 0.0f)
+	{
+		BaseMaxWalkSpeedCrouched = CharacterMovement->MaxWalkSpeedCrouched;
+	}
+	// 항상 원래 속도에서 계산해 반복 갱신이나 은신/종료 버프 중첩으로 배율이 누적되지 않게 한다.
+	// 슬라이드 중의 앉기 속도는 기존 감속 커브가 소유한다.
+	if (!bIsSliding)
+	{
+		CharacterMovement->MaxWalkSpeedCrouched = BaseMaxWalkSpeedCrouched * StealthSpeedMultiplier;
+	}
 	if (bIsSprinting && !bWasSprinting
 		&& (ShooterCharacter->HasAuthority() || ShooterCharacter->IsLocallyControlled()))
 	{
@@ -486,7 +498,7 @@ void UShooterMovementComponent::SuspendSprintInternal()
 
 	if (!bIsSliding)
 	{
-		ShooterCharacter->GetCharacterMovement()->MaxWalkSpeed = ShooterCharacter->WalkSpeed;
+		ShooterCharacter->GetCharacterMovement()->MaxWalkSpeed = ShooterCharacter->WalkSpeed * GetStealthSpeedMultiplier();
 	}
 }
 
@@ -522,4 +534,13 @@ bool UShooterMovementComponent::CanSprint() const
 		&& !ShooterCharacter->WantsToAim()
 		&& !ShooterCharacter->IsReloading()
 		&& !ShooterCharacter->IsActionLocked();
+}
+
+float UShooterMovementComponent::GetStealthSpeedMultiplier() const
+{
+	const AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	const UOutlierAbilitySystemComponent* AbilitySystem = ShooterCharacter
+		? ShooterCharacter->GetOutlierAbilitySystemComponent() : nullptr;
+	return AbilitySystem && AbilitySystem->HasMatchingGameplayTag(OutlierGameplayTags::State::ShooterStealthSpeedBoost())
+		? ShooterCharacter->GetStealthMovementSpeedMultiplier() : 1.0f;
 }

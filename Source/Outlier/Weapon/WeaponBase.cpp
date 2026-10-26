@@ -270,6 +270,17 @@ void AWeaponBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	Super::EndPlay(EndPlayReason);
 }
 
+float AWeaponBase::GetUpgradeRecoilMultiplier() const
+{
+	// 장착/복제 순서가 바뀐 경우에만 기존 Owner 캐시를 갱신한다. 매 발사 시 탐색하지 않는다.
+	if (!bProceduralOwnerInitialized || CachedProceduralOwner.Get() != WeaponOwner.Get())
+	{
+		const_cast<AWeaponBase*>(this)->RefreshProceduralPresentation();
+	}
+	const AShooterCharacter* Shooter = CachedProceduralShooter.Get();
+	return Shooter ? Shooter->GetWeaponRecoilMultiplier() : 1.0f;
+}
+
 float AWeaponBase::GetFirstPersonProceduralRecoilMultiplier() const
 {
 	const UProceduralAnimValues* Values = GetFirstPersonProceduralValues();

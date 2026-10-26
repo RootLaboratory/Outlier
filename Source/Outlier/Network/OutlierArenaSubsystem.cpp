@@ -14,6 +14,7 @@
 #include "GameFramework/WorldSettings.h"
 #include "HAL/PlatformTime.h"
 #include "OutlierArenaSettings.h"
+#include "OutlierGameMode.h"
 #include "Engine/NetConnection.h"
 #include "Misc/PackageName.h"
 #include "LocalPlayerPostProcessSubsystem.h"
@@ -105,6 +106,14 @@ void UOutlierArenaSubsystem::Deinitialize()
 void UOutlierArenaSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 {
 	Super::OnWorldBeginPlay(InWorld);
+	if (AOutlierGameMode::IsDirectPairTestWorld(&InWorld))
+	{
+		// 테스트 맵 자체가 이미 로드되어 있다. 전역 Arena 맵/서브레벨을 추가로 로드하지 않는다.
+		Arena.ArenaWorld = &InWorld;
+		Arena.InstanceTransform = FTransform::Identity;
+		RefreshArenaReadyState();
+		return;
+	}
 	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
 	ArenaLevel = Settings->ArenaLevel;
 	InitialLoadStartTime = FPlatformTime::Seconds();
@@ -259,6 +268,10 @@ ULevelStreamingDynamic* UOutlierArenaSubsystem::LoadLevelInstance(
 
 void UOutlierArenaSubsystem::PreloadArena()
 {
+	if (AOutlierGameMode::IsDirectPairTestWorld(GetWorld()))
+	{
+		return;
+	}
 	if (!GetWorld() || ArenaLevel.IsNull() || Arena.StreamingLevel || bPreloadAfterRelease)
 	{
 		return;
@@ -317,6 +330,11 @@ bool UOutlierArenaSubsystem::CreateListenGameplayLevels()
 
 void UOutlierArenaSubsystem::EnsureArenaLoaded()
 {
+	if (AOutlierGameMode::IsDirectPairTestWorld(GetWorld()))
+	{
+		RefreshArenaReadyState();
+		return;
+	}
 	UWorld* World = GetWorld();
 	if (!World || World->GetNetMode() != NM_Client || ArenaLevel.IsNull())
 	{
@@ -428,6 +446,10 @@ bool UOutlierArenaSubsystem::AreGameplayLevelsUnloaded() const
 
 bool UOutlierArenaSubsystem::AreGameplayLevelsShown() const
 {
+	if (AOutlierGameMode::IsDirectPairTestWorld(GetWorld()))
+	{
+		return GetWorld()->PersistentLevel != nullptr;
+	}
 	if (!IsGameplayLevelsConfigured()
 		|| GameplayStreamingLevels.Num() != GameplaySublevels.Num())
 	{
@@ -483,6 +505,12 @@ void UOutlierArenaSubsystem::RefreshArenaReadyState()
 
 uint32 UOutlierArenaSubsystem::ReserveGameplayGeneration()
 {
+	if (AOutlierGameMode::IsDirectPairTestWorld(GetWorld()))
+	{
+		// Persistent 테스트 Actor는 재생성 대상이 아니다. 체크포인트 리로드는 PIE 재시작으로 시험한다.
+		UE_LOG(LogTemp, Warning, TEXT("[DirectPairTest] Gameplay reload is unavailable; restart PIE to reset the test map"));
+		return 0;
+	}
 	if (!GetWorld() || GetWorld()->GetNetMode() == NM_Client || PendingGameplayReload.IsSet())
 	{
 		return 0;
@@ -1127,6 +1155,10 @@ ULevel* UOutlierArenaSubsystem::GetArenaLoadedLevel() const
 
 bool UOutlierArenaSubsystem::IsPersistentArenaWorld() const
 {
+	if (AOutlierGameMode::IsDirectPairTestWorld(GetWorld()))
+	{
+		return true;
+	}
 	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
 	return Settings && Settings->IsArenaWorld(GetWorld());
 }

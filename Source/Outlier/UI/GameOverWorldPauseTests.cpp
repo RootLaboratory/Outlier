@@ -328,6 +328,8 @@ bool FOutlierGameOverPendingFailureTest::RunTest(const FString& Parameters)
 	Pending.Request.RoundId = Round;
 	Pending.Request.ProposalId = FGuid::NewGuid();
 	Mode->GameOverPendingByPair.Add(1, Pending);
+	AddExpectedMessage(TEXT("[GameOver] Pending UI unavailable; proposal cancelled"),
+		ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 2, false);
 	Mode->OnClientGameOverPendingUnavailable(Stranger, Round, Pending.Request.ProposalId);
 	TestTrue(TEXT("Unrelated failure cannot cancel a proposal"), Mode->GameOverPendingByPair.Contains(1));
 	Mode->OnClientGameOverPendingUnavailable(First, FGuid::NewGuid(), Pending.Request.ProposalId);
@@ -365,7 +367,7 @@ bool FOutlierGameOverPendingFailureTest::RunTest(const FString& Parameters)
 	FGameOverPendingRequest Continue;
 	Continue.RoundId = Round;
 	Continue.Choice = EGameOverPendingChoice::Continue;
-	AddExpectedError(TEXT("[Checkpoint.Restart] Preflight failed"), EAutomationExpectedErrorFlags::Contains, 1);
+	AddExpectedError(TEXT("[Checkpoint.Restart] Preflight failed"), EAutomationExpectedErrorFlags::Contains, 1, false);
 	TestFalse(TEXT("Continue rejects an unavailable checkpoint restore"),
 		Mode->ExecuteGameOverSelection(First, Second, Continue));
 	TestTrue(TEXT("Continue preflight failure preserves pause and round"),

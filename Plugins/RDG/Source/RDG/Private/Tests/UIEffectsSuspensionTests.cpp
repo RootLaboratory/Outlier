@@ -1,6 +1,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "Engine/LocalPlayer.h"
+#include "Engine/Engine.h"
 #include "LocalPlayerPostProcessSubsystem.h"
 #include "Misc/AutomationTest.h"
 
@@ -11,7 +12,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRDGUIEffectsSuspensionTest,
 bool FRDGUIEffectsSuspensionTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
-	ULocalPlayer* LocalPlayer = NewObject<ULocalPlayer>();
+	if (!TestNotNull(TEXT("Engine is available"), GEngine)) return false;
+	ULocalPlayer* LocalPlayer = NewObject<ULocalPlayer>(GEngine);
 	ULocalPlayerPostProcessSubsystem* PostProcess =
 		NewObject<ULocalPlayerPostProcessSubsystem>(LocalPlayer);
 	PostProcess->SetChromaticAberrationEnabled(true);

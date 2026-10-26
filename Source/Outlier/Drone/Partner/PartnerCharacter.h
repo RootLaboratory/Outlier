@@ -94,6 +94,7 @@ class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeap
 	friend class UPartnerDistanceComponent;
 	friend class UPartnerHackComponent;
 	friend class UPartnerEMPComponent;
+	friend class FPartnerStandbyTest;
 protected:
 	// Components
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
@@ -426,6 +427,7 @@ protected:
 
 protected:
 	virtual void BeginPlay() override;
+	virtual void Tick(float DeltaSeconds) override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void PossessedBy(AController* NewController) override;
 	virtual void OnRep_Controller() override;
@@ -436,6 +438,7 @@ protected:
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
 	virtual void DoMove(float Right, float Forward) override;
 	virtual void PrepareForSuitTransition() override;
+	virtual void OnSuitTransitionBlockChanged() override;
 	virtual bool CanResumeMovementAfterSuitTransition() const override;
 	virtual void OnMoveInputUpdated(const FVector2D& MoveValue);
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
@@ -496,7 +499,11 @@ protected:
 		FActiveGameplayEffectHandle EffectHandle);
 	void RefreshPartnerCooldownUI();
 	void NotifyPartnerCooldownUI(const FGameplayTag& CooldownTag);
+	void HandlePartnerCooldownTagChanged(const FGameplayTag CooldownTag, int32 NewCount);
+	void HandlePartnerHackChargesChanged(bool bRecovered);
 	FDelegateHandle PartnerCooldownEffectAddedHandle;
+	FDelegateHandle PartnerHackChargesChangedHandle;
+	TMap<FGameplayTag, FDelegateHandle> PartnerCooldownTagHandles;
 
 	void BindGasCombatObservers();
 	void UnbindGasCombatObservers();
@@ -513,7 +520,36 @@ protected:
 	FDelegateHandle BoostSpeedChangedHandle;
 
 	virtual void LookInput(const FInputActionValue& Value) override;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Partner|Standby", meta = (ClampMin = "0.5", Units = "s"))
+	float StandbyDelay = 3.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Partner|Standby", meta = (ClampMin = "0.0", Units = "cm/s"))
+	float StandbySpeedThreshold = 5.0f;
+
+	void UpdateStandby(float DeltaSeconds);
+	bool CanEnterStandby() const;
+	void SetStandby(bool bNewStandby);
+
+	UFUNCTION(Server, Unreliable)
+	void ServerNotifyStandbyActivity();
+
+	float StandbyInactiveSeconds = 0.0f;
+	double NextStandbyActivityReportTime = 0.0;
+	FRotator StandbyLastAimRotation = FRotator::ZeroRotator;
+	bool bStandbyAimInitialized = false;
 public:
+	/** 서버에서 판정하고 복제하는 대기 상태. AnimBP의 Active / Standby 전이에 사용한다. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "Partner|Standby")
+	bool bIsStandby = false;
+
+	/** 소유 클라이언트는 활동 사실만 알리고, 대기 판정과 게임플레이 권한은 서버가 유지한다. */
+	UFUNCTION(BlueprintCallable, Category = "Partner|Standby")
+	void NotifyStandbyActivity();
+
+	/** 서버에서 스킬 실행에 성공했을 때만 화난 표정을 잠시 표시한다. */
+	void NotifySkillExecuted();
+
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
 	virtual void BeginJumperEffect(FName EffectId, const FJumperMovementEffect& Effect, AActor* SourceActor) override;
 	virtual void EndJumperEffect(FName EffectId, AActor* SourceActor) override;
@@ -596,4 +632,5 @@ public:
 	// PlayerState 가 페어의 양쪽 캐릭터 포인터를 들고 있으므로 거기서 이 함수를 부르고,
 	// 로컬 여부는 여기서 스스로 판단한다 (AShooterCharacter::RefreshShooterSuitUI 와 같은 방식).
 	void RefreshPartnerSuitUI();
+	void RefreshPartnerHackChargeUI(bool bPlayRecoveryFeedback = false);
 };

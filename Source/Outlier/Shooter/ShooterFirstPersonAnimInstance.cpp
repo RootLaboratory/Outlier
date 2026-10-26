@@ -1229,7 +1229,8 @@ void UShooterFirstPersonAnimInstance::AddViewModelRecoil(float GameplayRecoilSca
 	AddViewModelRecoil(GameplayRecoilScale, FVector2D::ZeroVector);
 }
 
-void UShooterFirstPersonAnimInstance::AddViewModelRecoil(float GameplayRecoilScale, const FVector2D& NormalizedShotDirection)
+void UShooterFirstPersonAnimInstance::AddViewModelRecoil(float GameplayRecoilScale,
+	const FVector2D& NormalizedShotDirection, float UpgradeRecoilMultiplier)
 {
 	if (!CurrentProceduralValues || !IsFirstPersonProceduralEnabled(bEnableProceduralAnimation) || !bEnableProceduralRecoil)
 	{
@@ -1261,17 +1262,21 @@ void UShooterFirstPersonAnimInstance::AddViewModelRecoil(float GameplayRecoilSca
 		NormalizedShotDirection.X * RecoilValues.DirectionYawInfluence
 	);
 
-	ViewModelRecoilLoc += (RecoilValues.RecoilAmplitudeLoc + RandomLoc + ShotDirectionLoc) * GameplayRecoilScale;
+	const float UpgradeScale = FMath::Max(UpgradeRecoilMultiplier, 0.0f);
+	const float RecoilScale = GameplayRecoilScale * UpgradeScale;
+	ViewModelRecoilLoc += (RecoilValues.RecoilAmplitudeLoc + RandomLoc + ShotDirectionLoc) * RecoilScale;
 	ViewModelRecoilRot += FRotator::MakeFromEuler(
-		(RecoilValues.RecoilAmplitudeRot + RandomRot + ShotDirectionRot) * GameplayRecoilScale
+		(RecoilValues.RecoilAmplitudeRot + RandomRot + ShotDirectionRot) * RecoilScale
 	);
 
 	// 연사 시 반동이 무한 누적되어 총/손이 치솟는 것 방지: 누적값에 상한을 둔다(런어웨이 방지용 넉넉한 캡).
-	ViewModelRecoilLoc = ViewModelRecoilLoc.GetClampedToMaxSize(4.0f);
+	// 입력뿐 아니라 상한도 같은 비율로 줄여 연사로 상한에 닿아도 업그레이드 효과를 유지한다.
+	ViewModelRecoilLoc = ViewModelRecoilLoc.GetClampedToMaxSize(4.0f * UpgradeScale);
 	FVector RecoilRotEuler = ViewModelRecoilRot.Euler();
-	RecoilRotEuler.X = FMath::Clamp(RecoilRotEuler.X, -10.0f, 10.0f); // Roll
-	RecoilRotEuler.Y = FMath::Clamp(RecoilRotEuler.Y, -10.0f, 10.0f); // Pitch
-	RecoilRotEuler.Z = FMath::Clamp(RecoilRotEuler.Z, -10.0f, 10.0f); // Yaw
+	const float RotationLimit = 10.0f * UpgradeScale;
+	RecoilRotEuler.X = FMath::Clamp(RecoilRotEuler.X, -RotationLimit, RotationLimit); // Roll
+	RecoilRotEuler.Y = FMath::Clamp(RecoilRotEuler.Y, -RotationLimit, RotationLimit); // Pitch
+	RecoilRotEuler.Z = FMath::Clamp(RecoilRotEuler.Z, -RotationLimit, RotationLimit); // Yaw
 	ViewModelRecoilRot = FRotator::MakeFromEuler(RecoilRotEuler);
 	ViewModelFireIKAlpha = 1.0f;
 }

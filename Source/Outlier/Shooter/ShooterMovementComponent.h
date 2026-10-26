@@ -45,9 +45,12 @@ protected:
 	float SavedBrakingFrictionFactor = 0.0f;
 	float SavedMaxAcceleration = 0.0f;
 	float SavedMaxWalkSpeedCrouched = 0.0f;
+	float BaseMaxWalkSpeedCrouched = -1.0f;
 
 	FTimerHandle SlideUpdateTimerHandle;
 	FTimerHandle SlideTimerHandle;
+
+	float GetStealthSpeedMultiplier() const;
 
 public:
 	UShooterMovementComponent();

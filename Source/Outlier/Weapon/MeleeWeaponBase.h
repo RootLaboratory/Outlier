@@ -9,6 +9,8 @@
 
 class UAnimMontage;
 
+struct FOutlierStealthSession;
+
 UENUM(BlueprintType)
 enum class EMeleeAttackPhase : uint8
 {
@@ -47,6 +49,7 @@ protected:
 	FVector PreviousMeleeTraceStart = FVector::ZeroVector;
 	FVector PreviousMeleeTraceEnd = FVector::ZeroVector;
 	TSet<AActor*> HitActorsThisSwing;
+	TSharedPtr<FOutlierStealthSession> SwingStealthSession;
 	TArray<FHitResult> MeleeTraceHitBuffer;
 	float CurrentTargetSearchInterval = 0.1f;
 	TWeakObjectPtr<AActor> CurrentMeleeTarget;
