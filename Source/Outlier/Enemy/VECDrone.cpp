@@ -7,12 +7,14 @@
 #include "Components/CapsuleComponent.h"
 #include "Components/SceneComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/SpotLightComponent.h"
 #include "Drone/DroneInputConfig.h"
 #include "EnhancedInputComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "InputActionValue.h"
 #include "Enemy/VECDroneMovementComponent.h"
 #include "Outlier.h"
+#include "TimerManager.h"
 
 namespace
 {
@@ -68,6 +70,11 @@ AVECDrone::AVECDrone()
 	ThirdPersonTiltRoot = CreateDefaultSubobject<USceneComponent>(TEXT("Third Person Tilt Root"));
 	ThirdPersonTiltRoot->SetupAttachment(AIFacingPitchRoot);
 	GetMesh()->SetupAttachment(ThirdPersonTiltRoot);
+
+	AlertLightSettings.LightColor = FLinearColor(1.0f, 0.25f, 0.0f);
+	AlertLightSettings.bPulseEnabled = true;
+	AlertLightSettings.MinIntensity = 0.0f;
+	CombatLightSettings.LightColor = FLinearColor::Red;
 
 	FirstPersonCameraRoot = CreateDefaultSubobject<USceneComponent>(TEXT("First Person Camera Root"));
 	FirstPersonCameraRoot->SetupAttachment(GetCapsuleComponent());
@@ -127,7 +134,174 @@ void AVECDrone::BeginPlay()
 		);
 	}
 
+	// BP 컴포넌트 생성이 끝난 뒤 기존 조명을 확보한다. 부모 초기화 중 상태 통지도 이 참조를 사용한다.
+	InitializeStateSpotLight();
 	Super::BeginPlay();
+	bStateLightReady = true;
+	RefreshStateSpotLight();
+}
+
+void AVECDrone::InitializeStateSpotLight()
+{
+	StateSpotLight = nullptr;
+	TInlineComponentArray<USpotLightComponent*> SpotLights;
+	GetComponents(SpotLights);
+	for (USpotLightComponent* SpotLight : SpotLights)
+	{
+		if (IsValid(SpotLight) && SpotLight->GetFName() == StateSpotLightComponentName)
+		{
+			StateSpotLight = SpotLight;
+			break;
+		}
+	}
+
+	if (!StateSpotLight)
+	{
+		if (bUseStateSpotLight)
+		{
+			UE_LOG(LogOutlier, Warning, TEXT("[DroneStateLight] Existing SpotLight not found. Drone=%s Component=%s"),
+				*GetNameSafe(this), *StateSpotLightComponentName.ToString());
+		}
+		return;
+	}
+
+	// 기존 소켓/Transform/원뿔 범위는 유지한다. 상태 연출에 필요한 조명 속성만 설정한다.
+	StateSpotLight->SetMobility(EComponentMobility::Movable);
+	StateSpotLight->SetIntensityUnits(ELightUnits::Lumens);
+	StateSpotLight->bUseTemperature = false;
+	ResetStateSpotLight();
+}
+
+void AVECDrone::RefreshCombatStatePresentation()
+{
+	Super::RefreshCombatStatePresentation();
+	RefreshStateSpotLight();
+}
+
+void AVECDrone::RefreshStateSpotLight()
+{
+	// 복제 순서와 무관하게 비활성/사망/기절이 상태 색상보다 우선한다.
+	// 서버는 상태만 결정하고 Dedicated Server에서는 조명 타이머를 만들지 않는다.
+	if (!bStateLightReady || GetNetMode() == NM_DedicatedServer || !GetWorld()
+		|| !IsValid(StateSpotLight) || !bUseStateSpotLight || IsActorBeingDestroyed()
+		|| bDeathCleanupPerformed || IsDead() || GetCurrentHealth() <= 0.0f
+		|| HasActiveStunTag() || GetCombatState() == EEnemyCombatState::Stun
+		|| (IsPoolManaged() && GetEnemyPoolState() != EEnemyPoolState::CombatActive))
+	{
+		ResetStateSpotLight();
+		return;
+	}
+
+	const EEnemyCombatState CurrentState = GetCombatState();
+	const bool bSameLifetime = StateLightGeneration == GetPoolGameplayGeneration()
+		&& StateLightLease == GetPoolLeaseSerial();
+	if (bStateLightApplied && bSameLifetime && AppliedStateLightState == CurrentState
+		&& (!ActiveStateLightSettings.bPulseEnabled
+			|| GetWorldTimerManager().IsTimerActive(StateLightPulseTimerHandle)))
+	{
+		// 같은 상태의 위치/속도 복제가 반복되어도 경계 밝기 주기를 다시 시작하지 않는다.
+		return;
+	}
+
+	const FDroneStateLightSettings* Settings = nullptr;
+	switch (CurrentState)
+	{
+	case EEnemyCombatState::NonCombat:
+		Settings = &NonCombatLightSettings;
+		break;
+	case EEnemyCombatState::Alert:
+		Settings = &AlertLightSettings;
+		break;
+	case EEnemyCombatState::Combat:
+		Settings = &CombatLightSettings;
+		break;
+	default:
+		ResetStateSpotLight();
+		return;
+	}
+
+	AppliedStateLightState = CurrentState;
+	StateLightGeneration = GetPoolGameplayGeneration();
+	StateLightLease = GetPoolLeaseSerial();
+	bStateLightApplied = true;
+	ApplyStateLightSettings(*Settings);
+}
+
+void AVECDrone::ApplyStateLightSettings(const FDroneStateLightSettings& Settings)
+{
+	StopStateLightPulse();
+	ActiveStateLightSettings = Settings;
+
+	// BP 원본은 보존하고 적용할 사본만 보정한다. 경고도 적용 시 한 번만 출력한다.
+	const bool bInvalidMin = !FMath::IsFinite(Settings.MinIntensity) || Settings.MinIntensity < 0.0f;
+	const bool bInvalidMax = !FMath::IsFinite(Settings.MaxIntensity) || Settings.MaxIntensity < 0.0f;
+	const bool bInvalidPeriod = !FMath::IsFinite(Settings.PulsePeriod) || Settings.PulsePeriod <= 0.0f;
+	float MinIntensity = FMath::IsFinite(Settings.MinIntensity) ? FMath::Max(Settings.MinIntensity, 0.0f) : 0.0f;
+	float MaxIntensity = FMath::IsFinite(Settings.MaxIntensity) ? FMath::Max(Settings.MaxIntensity, 0.0f) : 0.0f;
+	const bool bReversedRange = MinIntensity > MaxIntensity;
+	if (bReversedRange)
+	{
+		Swap(MinIntensity, MaxIntensity);
+	}
+	ActiveStateLightSettings.MinIntensity = MinIntensity;
+	ActiveStateLightSettings.MaxIntensity = MaxIntensity;
+	ActiveStateLightSettings.bPulseEnabled = Settings.bPulseEnabled && !bInvalidPeriod && MinIntensity < MaxIntensity;
+	if (bInvalidMin || bInvalidMax || bReversedRange || (Settings.bPulseEnabled && bInvalidPeriod))
+	{
+		UE_LOG(LogOutlier, Warning, TEXT("[DroneStateLight] Invalid settings corrected. Drone=%s State=%s Min=%g Max=%g Period=%g"),
+			*GetNameSafe(this), *UEnum::GetValueAsString(AppliedStateLightState),
+			Settings.MinIntensity, Settings.MaxIntensity, Settings.PulsePeriod);
+	}
+
+	StateSpotLight->SetLightColor(Settings.LightColor);
+	StateSpotLight->SetHiddenInGame(false);
+	StateSpotLight->SetVisibility(true);
+	StateSpotLight->SetIntensity(ActiveStateLightSettings.bPulseEnabled ? MinIntensity : MaxIntensity);
+	if (ActiveStateLightSettings.bPulseEnabled)
+	{
+		StateLightPulseStartTime = GetWorld()->GetTimeSeconds();
+		GetWorldTimerManager().SetTimer(StateLightPulseTimerHandle,
+			this, &AVECDrone::UpdateStateLightPulse, 1.0f / 30.0f, true);
+	}
+}
+
+void AVECDrone::UpdateStateLightPulse()
+{
+	RefreshStateSpotLight();
+	if (!bStateLightApplied || !ActiveStateLightSettings.bPulseEnabled)
+	{
+		return;
+	}
+
+	// 콜백 횟수 대신 게임 시간으로 위상을 계산한다. 프레임 지연에 주기가 늘어나지 않고 Pause도 따른다.
+	const double ElapsedTime = GetWorld()->GetTimeSeconds() - StateLightPulseStartTime;
+	const double Phase = FMath::Fmod(FMath::Max(ElapsedTime, 0.0), static_cast<double>(ActiveStateLightSettings.PulsePeriod))
+		/ ActiveStateLightSettings.PulsePeriod;
+	const float Alpha = static_cast<float>(0.5 - 0.5 * FMath::Cos(2.0 * PI * Phase));
+	StateSpotLight->SetIntensity(FMath::Lerp(
+		ActiveStateLightSettings.MinIntensity, ActiveStateLightSettings.MaxIntensity, Alpha));
+}
+
+void AVECDrone::StopStateLightPulse()
+{
+	if (GetWorld())
+	{
+		GetWorldTimerManager().ClearTimer(StateLightPulseTimerHandle);
+	}
+	StateLightPulseStartTime = 0.0;
+}
+
+void AVECDrone::ResetStateSpotLight()
+{
+	StopStateLightPulse();
+	bStateLightApplied = false;
+	StateLightGeneration = INDEX_NONE;
+	StateLightLease = INDEX_NONE;
+	if (IsValid(StateSpotLight))
+	{
+		StateSpotLight->SetIntensity(0.0f);
+		StateSpotLight->SetVisibility(false);
+	}
 }
 
 float AVECDrone::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
@@ -257,6 +431,10 @@ bool AVECDrone::ShouldResetPoolMontages() const
 void AVECDrone::ResetPoolPresentationState()
 {
 	Super::ResetPoolPresentationState();
+	if (StateLightGeneration != GetPoolGameplayGeneration() || StateLightLease != GetPoolLeaseSerial())
+	{
+		ResetStateSpotLight();
+	}
 	if (PresentationGeneration != GetPoolGameplayGeneration() || PresentationLease != GetPoolLeaseSerial())
 	{
 		StopHitReaction(0.0f);
@@ -264,6 +442,7 @@ void AVECDrone::ResetPoolPresentationState()
 		PresentationGeneration = GetPoolGameplayGeneration();
 		PresentationLease = GetPoolLeaseSerial();
 	}
+	RefreshStateSpotLight();
 }
 
 void AVECDrone::OnPoolStateApplied(EEnemyPoolState PreviousState)
@@ -274,10 +453,14 @@ void AVECDrone::OnPoolStateApplied(EEnemyPoolState PreviousState)
 		InterruptDamagePresentation(0.0f);
 		NextHitReactionTime = 0.0;
 	}
+	RefreshStateSpotLight();
 }
 
 void AVECDrone::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	// Super의 GAS/빙의 정리 중 상태 통지가 발생해도 조명이 다시 켜지지 않도록 먼저 막는다.
+	bStateLightReady = false;
+	ResetStateSpotLight();
 	StopHitReaction(0.0f);
 	NextHitReactionTime = 0.0;
 	Super::EndPlay(EndPlayReason);
@@ -292,6 +475,7 @@ void AVECDrone::PostNetReceive()
 	{
 		ResetPoolPresentationState();
 	}
+	RefreshStateSpotLight();
 }
 
 void AVECDrone::ApplyExplosionReactionPresentation(const FVector& Direction, float ReactionScale)
@@ -310,6 +494,7 @@ void AVECDrone::ApplyExplosionReactionPresentation(const FVector& Direction, flo
 
 void AVECDrone::HideSourceMeshes()
 {
+	ResetStateSpotLight();
 	Super::HideSourceMeshes();
 
 	if (FirstPersonMesh)

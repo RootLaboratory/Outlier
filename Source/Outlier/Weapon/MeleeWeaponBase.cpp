@@ -25,6 +25,8 @@
 #include "DrawDebugHelpers.h"
 #endif
 
+DEFINE_LOG_CATEGORY_STATIC(LogMeleeDiagnostics, Log, All);
+
 AMeleeWeaponBase::AMeleeWeaponBase()
 {
 	WeaponType = EWeaponType::Melee;
@@ -82,6 +84,9 @@ bool AMeleeWeaponBase::CanAttack() const
 void AMeleeWeaponBase::StartAttack()
 {
 	const AShooterCharacter* Shooter = Cast<AShooterCharacter>(WeaponOwner);
+	UE_LOG(LogMeleeDiagnostics, Log, TEXT("[MeleeDiag][Start] Weapon=%s Owner=%s Authority=%d NetMode=%d Equipped=%d CanAttack=%d Phase=%d Sequence=%d Attacking=%d"),
+		*GetNameSafe(this), *GetNameSafe(WeaponOwner), HasAuthority(), static_cast<int32>(GetNetMode()),
+		bIsEquipped, CanAttack(), static_cast<int32>(AttackPhase), AttackSequence, bIsAttacking);
 	if (!HasAuthority() || !Super::CanAttack()
 		|| (Shooter && (Shooter->IsDead()
 			|| (Shooter->IsSliding() && !Shooter->AllowsMeleeAttackWhileSliding()))))
@@ -131,6 +136,8 @@ void AMeleeWeaponBase::StartAttack()
 		OwnerShooter->SetMeleeTracePoseRefreshEnabled(true);
 	}
 	bUsesAnimationTiming = PlayAttackAnimation();
+	UE_LOG(LogMeleeDiagnostics, Log, TEXT("[MeleeDiag][Timing] Weapon=%s Sequence=%d AnimationTiming=%d AttackDelay=%.3f RecoveryDuration=%.3f"),
+		*GetNameSafe(this), AttackSequence, bUsesAnimationTiming, AttackDelay, RecoveryDuration);
 	if (!bUsesAnimationTiming)
 	{
 		GetWorldTimerManager().SetTimer(
@@ -156,6 +163,8 @@ void AMeleeWeaponBase::StopAttack()
 		return;
 	}
 
+	UE_LOG(LogMeleeDiagnostics, Log, TEXT("[MeleeDiag][Stop] Weapon=%s Sequence=%d Phase=%d TraceActive=%d UniqueHits=%d"),
+		*GetNameSafe(this), AttackSequence, static_cast<int32>(AttackPhase), bMeleeTraceActive, HitActorsThisSwing.Num());
 	bWantsToAttack = false;
 	bUsesAnimationTiming = false;
 	SwingStealthSession.Reset();
@@ -179,6 +188,8 @@ void AMeleeWeaponBase::PerformAttack()
 
 void AMeleeWeaponBase::CommitAttack(int32 ExpectedAttackSequence)
 {
+	UE_LOG(LogMeleeDiagnostics, Log, TEXT("[MeleeDiag][Commit] Weapon=%s Authority=%d ExpectedSequence=%d Sequence=%d Phase=%d Attacking=%d AnimationTiming=%d"),
+		*GetNameSafe(this), HasAuthority(), ExpectedAttackSequence, AttackSequence, static_cast<int32>(AttackPhase), bIsAttacking, bUsesAnimationTiming);
 	// Phase rejects duplicates/cancellation; sequence rejects callbacks from a previous swing.
 	if (!HasAuthority() || ExpectedAttackSequence != AttackSequence
 		|| AttackPhase != EMeleeAttackPhase::Attack || !bIsAttacking)
@@ -261,6 +272,11 @@ bool AMeleeWeaponBase::PlayAttackAnimation()
 	UAnimInstance* ThirdPersonAnimInstance = Shooter->GetMesh()
 		? Shooter->GetMesh()->GetAnimInstance()
 		: nullptr;
+	UE_LOG(LogMeleeDiagnostics, Log, TEXT("[MeleeDiag][Montage] Weapon=%s Sequence=%d Authority=%d Montage=%s AnimInstance=%s Playing=%d MeshTickEnabled=%d AnimTickOption=%d"),
+		*GetNameSafe(this), AttackSequence, HasAuthority(), *GetNameSafe(ThirdPersonMontage), *GetNameSafe(ThirdPersonAnimInstance),
+		ThirdPersonMontage && ThirdPersonAnimInstance && ThirdPersonAnimInstance->Montage_IsPlaying(ThirdPersonMontage),
+		Shooter->GetMesh() && Shooter->GetMesh()->IsComponentTickEnabled(),
+		Shooter->GetMesh() ? static_cast<int32>(Shooter->GetMesh()->VisibilityBasedAnimTickOption) : -1);
 	if (!ThirdPersonMontage || !ThirdPersonAnimInstance
 		|| !ThirdPersonAnimInstance->Montage_IsPlaying(ThirdPersonMontage))
 	{
@@ -278,9 +294,11 @@ bool AMeleeWeaponBase::PlayAttackAnimation()
 
 void AMeleeWeaponBase::HandleAttackMontageEnded(
 	UAnimMontage* /*Montage*/,
-	bool /*bInterrupted*/,
+	bool bInterrupted,
 	int32 ExpectedAttackSequence)
 {
+	UE_LOG(LogMeleeDiagnostics, Log, TEXT("[MeleeDiag][MontageEnd] Weapon=%s ExpectedSequence=%d Sequence=%d Phase=%d Interrupted=%d TraceActive=%d UniqueHits=%d"),
+		*GetNameSafe(this), ExpectedAttackSequence, AttackSequence, static_cast<int32>(AttackPhase), bInterrupted, bMeleeTraceActive, HitActorsThisSwing.Num());
 	if (!HasAuthority() || ExpectedAttackSequence != AttackSequence
 		|| AttackPhase == EMeleeAttackPhase::Idle)
 	{
@@ -440,6 +458,8 @@ void AMeleeWeaponBase::TraceMeleeHit()
 
 bool AMeleeWeaponBase::BeginMeleeTrace()
 {
+	UE_LOG(LogMeleeDiagnostics, Log, TEXT("[MeleeDiag][TraceBegin] Weapon=%s Authority=%d Sequence=%d Phase=%d Attacking=%d"),
+		*GetNameSafe(this), HasAuthority(), AttackSequence, static_cast<int32>(AttackPhase), bIsAttacking);
 	if (!HasAuthority() || AttackPhase != EMeleeAttackPhase::Attack || !bIsAttacking)
 	{
 		return false;
@@ -448,6 +468,10 @@ bool AMeleeWeaponBase::BeginMeleeTrace()
 	FVector TraceStart;
 	FVector TraceEnd;
 	const bool bHasTraceSockets = GetMeleeTraceSocketLocations(TraceStart, TraceEnd);
+	UE_LOG(LogMeleeDiagnostics, Log, TEXT("[MeleeDiag][Sockets] Weapon=%s Sequence=%d Mesh=%s Valid=%d StartSocket=%s EndSocket=%s Start=%s End=%s"),
+		*GetNameSafe(this), AttackSequence, *GetNameSafe(GetThirdPersonWeaponMesh()), bHasTraceSockets,
+		*MeleeTraceStartSocketName.ToString(), *MeleeTraceEndSocketName.ToString(),
+		bHasTraceSockets ? *TraceStart.ToString() : TEXT("Unavailable"), bHasTraceSockets ? *TraceEnd.ToString() : TEXT("Unavailable"));
 	if (!bHasTraceSockets)
 	{
 		LogMissingMeleeTraceSockets();
@@ -496,6 +520,8 @@ void AMeleeWeaponBase::TickMeleeTrace()
 
 void AMeleeWeaponBase::EndMeleeTrace()
 {
+	UE_LOG(LogMeleeDiagnostics, Log, TEXT("[MeleeDiag][TraceEnd] Weapon=%s Sequence=%d Phase=%d Active=%d UniqueHits=%d"),
+		*GetNameSafe(this), AttackSequence, static_cast<int32>(AttackPhase), bMeleeTraceActive, HitActorsThisSwing.Num());
 	ResetMeleeTraceState();
 }
 
@@ -553,6 +579,8 @@ void AMeleeWeaponBase::SweepMeleeTrace(
 	{
 		OwnerController->GetPlayerViewPoint(ViewLocation, ViewRotation);
 	}
+	UE_LOG(LogMeleeDiagnostics, Log, TEXT("[MeleeDiag][SweepPath] Weapon=%s Sequence=%d PreviousStart=%s PreviousEnd=%s CurrentStart=%s CurrentEnd=%s Radius=%.2f Samples=%d"),
+		*GetNameSafe(this), AttackSequence, *PreviousStart.ToString(), *PreviousEnd.ToString(), *CurrentStart.ToString(), *CurrentEnd.ToString(), SafeTraceRadius, SampleCount);
 
 	for (int32 SampleIndex = 0; SampleIndex < SampleCount; ++SampleIndex)
 	{
@@ -568,6 +596,8 @@ void AMeleeWeaponBase::SweepMeleeTrace(
 			ObjectQueryParams,
 			FCollisionShape::MakeSphere(SafeTraceRadius),
 			TraceParams);
+		UE_CLOG(!MeleeTraceHitBuffer.IsEmpty(), LogMeleeDiagnostics, Log, TEXT("[MeleeDiag][SweepHits] Weapon=%s Sequence=%d Sample=%d/%d Start=%s End=%s Radius=%.2f Hits=%d"),
+			*GetNameSafe(this), AttackSequence, SampleIndex + 1, SampleCount, *SweepStart.ToString(), *SweepEnd.ToString(), SafeTraceRadius, MeleeTraceHitBuffer.Num());
 
 #if ENABLE_DRAW_DEBUG
 		if (bDrawDebugMeleeTrace)
@@ -588,6 +618,8 @@ void AMeleeWeaponBase::SweepMeleeTrace(
 
 			if (!IsValidMeleeTarget(Candidate, true, false))
 			{
+				UE_LOG(LogMeleeDiagnostics, Log, TEXT("[MeleeDiag][RejectTarget] Weapon=%s Sequence=%d Target=%s CanBeDamaged=%d"),
+					*GetNameSafe(this), AttackSequence, *GetNameSafe(Candidate), Candidate->CanBeDamaged());
 				if (Cast<AShooterCharacter>(WeaponOwner) && !Cast<APawn>(Candidate))
 				{
 					HitActorsThisSwing.Add(Candidate);
@@ -606,6 +638,8 @@ void AMeleeWeaponBase::SweepMeleeTrace(
 				VisibilityParams);
 			if (bVisibilityBlocked && VisibilityHit.GetActor() != Candidate)
 			{
+				UE_LOG(LogMeleeDiagnostics, Log, TEXT("[MeleeDiag][Occluded] Weapon=%s Sequence=%d Target=%s Blocker=%s View=%s TargetLocation=%s"),
+					*GetNameSafe(this), AttackSequence, *GetNameSafe(Candidate), *GetNameSafe(VisibilityHit.GetActor()), *ViewLocation.ToString(), *Candidate->GetActorLocation().ToString());
 				continue;
 			}
 
@@ -783,11 +817,14 @@ void AMeleeWeaponBase::ApplyHitToTarget(AActor* Target)
 
 void AMeleeWeaponBase::ApplyHitToTarget(AActor* Target, const FHitResult& HitResult)
 {
+	UE_LOG(LogMeleeDiagnostics, Log, TEXT("[MeleeDiag][DamageRequest] Weapon=%s Authority=%d Sequence=%d Target=%s CanBeDamaged=%d Impact=%s"),
+		*GetNameSafe(this), HasAuthority(), AttackSequence, *GetNameSafe(Target), IsValid(Target) && Target->CanBeDamaged(), *HitResult.ImpactPoint.ToString());
 	AEnemyBase* Enemy = Cast<AEnemyBase>(Target);
 	APartnerCharacter* Partner = Cast<APartnerCharacter>(Target);
 	if (!HasAuthority() || (!IsValid(Enemy) && !IsValid(Partner))
 		|| !Target->CanBeDamaged())
 	{
+		UE_LOG(LogMeleeDiagnostics, Log, TEXT("[MeleeDiag][DamageRejected] Weapon=%s Sequence=%d Reason=AuthorityOrTargetTypeOrDamageDisabled"), *GetNameSafe(this), AttackSequence);
 		return;
 	}
 
@@ -797,6 +834,7 @@ void AMeleeWeaponBase::ApplyHitToTarget(AActor* Target, const FHitResult& HitRes
 	{
 		if (Enemy->IsDead() || Enemy->GetCurrentHealth() <= 0.0f)
 		{
+			UE_LOG(LogMeleeDiagnostics, Log, TEXT("[MeleeDiag][DamageRejected] Weapon=%s Sequence=%d Reason=EnemyDead Target=%s Health=%.3f"), *GetNameSafe(this), AttackSequence, *GetNameSafe(Target), Enemy->GetCurrentHealth());
 			return;
 		}
 
@@ -815,6 +853,8 @@ void AMeleeWeaponBase::ApplyHitToTarget(AActor* Target, const FHitResult& HitRes
 		const UPartnerVitalityComponent* Vitality = Partner->GetPartnerVitalityComponent();
 		if (!Vital || Vital->GetHealth() <= 0.0f || !Vitality || Vitality->IsRebooting())
 		{
+			UE_LOG(LogMeleeDiagnostics, Log, TEXT("[MeleeDiag][DamageRejected] Weapon=%s Sequence=%d Reason=PartnerVitality Target=%s Health=%.3f Rebooting=%d"),
+				*GetNameSafe(this), AttackSequence, *GetNameSafe(Target), Vital ? Vital->GetHealth() : -1.0f, Vitality && Vitality->IsRebooting());
 			return;
 		}
 	}
@@ -836,7 +876,10 @@ void AMeleeWeaponBase::ApplyHitToTarget(AActor* Target, const FHitResult& HitRes
 	DamageRequest.DamageCauser = this;
 	DamageRequest.StealthSession = SwingStealthSession;
 	DamageRequest.HitResult = HitResult;
-	if (OutlierDamage::Apply(Target, DamageRequest) <= 0.0f)
+	const float AppliedDamage = OutlierDamage::Apply(Target, DamageRequest);
+	UE_LOG(LogMeleeDiagnostics, Log, TEXT("[MeleeDiag][DamageResult] Weapon=%s Sequence=%d Target=%s Requested=%.3f Applied=%.3f ResultType=%d"),
+		*GetNameSafe(this), AttackSequence, *GetNameSafe(Target), DamageToApply, AppliedDamage, static_cast<int32>(ResultType));
+	if (AppliedDamage <= 0.0f)
 	{
 		return;
 	}

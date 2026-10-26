@@ -10,8 +10,30 @@ class UAnimMontage;
 class UInputComponent;
 class USceneComponent;
 class USkeletalMeshComponent;
+class USpotLightComponent;
 class UVECDroneMovementComponent;
 struct FInputActionValue;
+
+USTRUCT(BlueprintType)
+struct OUTLIER_API FDroneStateLightSettings
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Light")
+	FLinearColor LightColor = FLinearColor::White;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Light")
+	bool bPulseEnabled = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Light", meta = (ClampMin = "0.0", UIMin = "0.0"))
+	float MinIntensity = 1000.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Light", meta = (ClampMin = "0.0", UIMin = "0.0"))
+	float MaxIntensity = 1000.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Light", meta = (ClampMin = "0.01", UIMin = "0.01", Units = "s"))
+	float PulsePeriod = 1.0f;
+};
 
 UCLASS()
 class OUTLIER_API AVECDrone : public AEnemyBase, public IWeaponMuzzleProvider
@@ -64,6 +86,26 @@ protected:
 	virtual void OnPoolStateApplied(EEnemyPoolState PreviousState) override;
 	virtual void ResetPoolPresentationState() override;
 	virtual bool ShouldResetPoolMontages() const override;
+	virtual void RefreshCombatStatePresentation() override;
+
+	// BP에 이미 배치된 조명을 BeginPlay에서 한 번 찾아 캐시한다.
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Transient, Category = "Enemy|State Light")
+	TObjectPtr<USpotLightComponent> StateSpotLight;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|State Light")
+	FName StateSpotLightComponentName = TEXT("SpotLight");
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|State Light")
+	bool bUseStateSpotLight = true;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|State Light")
+	FDroneStateLightSettings NonCombatLightSettings;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|State Light")
+	FDroneStateLightSettings AlertLightSettings;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|State Light")
+	FDroneStateLightSettings CombatLightSettings;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Hit Reaction")
 	TObjectPtr<UAnimMontage> HitReactionMontage;
@@ -115,6 +157,22 @@ protected:
 	float PitchMax = 80.0f;
 
 private:
+	void InitializeStateSpotLight();
+	void RefreshStateSpotLight();
+	void ApplyStateLightSettings(const FDroneStateLightSettings& Settings);
+	void UpdateStateLightPulse();
+	void StopStateLightPulse();
+	void ResetStateSpotLight();
+
+	FTimerHandle StateLightPulseTimerHandle;
+	FDroneStateLightSettings ActiveStateLightSettings;
+	double StateLightPulseStartTime = 0.0;
+	EEnemyCombatState AppliedStateLightState = EEnemyCombatState::NonCombat;
+	int32 StateLightGeneration = INDEX_NONE;
+	int32 StateLightLease = INDEX_NONE;
+	bool bStateLightReady = false;
+	bool bStateLightApplied = false;
+
 	bool CanPlayHitReaction() const;
 	void StopHitReaction(float BlendOutTime);
 	bool AcceptHitReactionMessage(int32 Generation, int32 Lease, int64 Serial);
@@ -134,6 +192,7 @@ private:
 
 #if WITH_DEV_AUTOMATION_TESTS
 	friend struct FDroneHitReactionTestAccess;
+	friend struct FDroneStateLightTestAccess;
 #endif
 
 	void MoveInput(const FInputActionValue& Value);
