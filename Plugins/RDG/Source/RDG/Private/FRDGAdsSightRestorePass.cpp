@@ -7,7 +7,7 @@
 #include "ProfilingDebugging/RealtimeGPUProfiler.h"
 #include "RenderGraphEvent.h"
 
-DECLARE_GPU_STAT_NAMED(OutlierADSSightRestore, TEXT("Outlier ADS Sight Restore"));
+DECLARE_GPU_STAT_NAMED(OutlierADSSightRestore, TEXT("OutlierADS_Restore"));
 
 namespace
 {
@@ -88,7 +88,7 @@ FRDGTextureRef FRDGAdsSightRestorePass::AddPass(
 
 	if (bEnableGpuStats)
 	{
-		RDG_EVENT_SCOPE_STAT(GraphBuilder, OutlierADSSightRestore, "Outlier ADS Sight Restore");
+		RDG_EVENT_SCOPE_STAT(GraphBuilder, OutlierADSSightRestore, "OutlierADS_Restore");
 		AddRestorePass();
 	}
 	else

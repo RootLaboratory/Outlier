@@ -2,26 +2,17 @@
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
-#include "Settings/LocalPlayerSettingsSubsystem.h"
 #include "UI/UILayerContextReceiver.h"
 #include "UI/UILayerInputReceiver.h"
 #include "SettingWidget.generated.h"
 
-class UButton;
-class UInputBindingRowWidget;
-class UInputMappingContext;
-class ULocalPlayerSettingsSubsystem;
-class UMouseSensitivityWidget;
-class UOutlierInputBindingTable;
-class UPanelWidget;
-class USettingSliderRowWidget;
-class UTextBlock;
+class USettingButtonsWidget;
+class USettingPageWidget;
+class USettingGraphicPageWidget;
+class USettingSoundPageWidget;
+class USettingInputPageWidget;
 class UWidgetSwitcher;
-class UWidget;
-struct FGeometry;
-struct FKeyEvent;
-struct FPointerEvent;
-struct FOutlierInputBindingTableRow;
+enum class ESettingPageInput : uint8;
 
 UCLASS(Abstract, Blueprintable)
 class OUTLIER_API USettingWidget : public UUserWidget,
@@ -32,16 +23,12 @@ class OUTLIER_API USettingWidget : public UUserWidget,
 
 protected:
 	virtual void NativeOnInitialized() override;
+	virtual void NativePreConstruct() override;
 	virtual void NativeConstruct() override;
 	virtual void NativeDestruct() override;
-	virtual FReply NativeOnPreviewMouseButtonDown(
-		const FGeometry& InGeometry,
-		const FPointerEvent& InMouseEvent) override;
-	virtual FReply NativeOnKeyDown(
-		const FGeometry& InGeometry,
-		const FKeyEvent& InKeyEvent) override;
-	virtual void InitializeUILayerContext_Implementation(
-		const TArray<AActor*>& ContextActors) override;
+	virtual FReply NativeOnPreviewMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent) override;
+	virtual FReply NativeOnPreviewKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent) override;
+	virtual void InitializeUILayerContext_Implementation(const TArray<AActor*>& ContextActors) override;
 	virtual bool HandleUILayerEscape_Implementation() override;
 	virtual bool HandleUILayerConfirmed_Implementation() override;
 	virtual bool HandleUILayerUp_Implementation() override;
@@ -52,216 +39,43 @@ protected:
 	UFUNCTION(BlueprintCallable, Category = "UI|Layer")
 	void PopSelfFromLayer();
 
+	// WBP_SettingWidget contains SettingButtons (including ExitButton) and SettingSwitcher.
+	// GraphicPage, SoundPage, and InputPage are nested WBP instances, each deriving
+	// from its corresponding USetting*PageWidget and placed directly in the switcher.
+	// Move InputBindingTable / InputBindingRowWidgetClass defaults to the Input WBP.
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Setting|Navigation")
-	TObjectPtr<UButton> GraphicButton;
-
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Setting|Navigation")
-	TObjectPtr<UButton> SoundButton;
-
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Setting|Navigation")
-	TObjectPtr<UButton> InputButton;
+	TObjectPtr<USettingButtonsWidget> SettingButtons;
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Setting|Navigation")
 	TObjectPtr<UWidgetSwitcher> SettingSwitcher;
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Setting|Navigation")
-	TObjectPtr<UButton> ExitButton;
+	TObjectPtr<USettingGraphicPageWidget> GraphicPage;
 
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Setting|Graphics")
-	TObjectPtr<UTextBlock> ResolutionText;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Setting|Navigation")
+	TObjectPtr<USettingSoundPageWidget> SoundPage;
 
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Setting|Graphics")
-	TObjectPtr<UButton> GraphicLeftButton;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Setting|Navigation")
+	TObjectPtr<USettingInputPageWidget> InputPage;
 
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Setting|Graphics")
-	TObjectPtr<UButton> GraphicRightButton;
-
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Setting|Sound")
-	TObjectPtr<USettingSliderRowWidget> TotalVolumeRow;
-
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Setting|Sound")
-	TObjectPtr<USettingSliderRowWidget> BGMVolumeRow;
-
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Setting|Sound")
-	TObjectPtr<USettingSliderRowWidget> SFXVolumeRow;
-
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Setting|Sound")
-	TObjectPtr<USettingSliderRowWidget> VoiceVolumeRow;
-
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "Setting|Input")
-	TObjectPtr<UMouseSensitivityWidget> MouseSensitivityWidget;
-
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "Setting|Input")
-	TObjectPtr<UPanelWidget> InputBindingListHost;
-
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "Setting|Input")
-	TObjectPtr<UTextBlock> InputResultText;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Setting|Navigation")
-	int32 GraphicPageIndex = 0;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Setting|Navigation")
-	int32 SoundPageIndex = 1;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Setting|Navigation")
-	int32 InputPageIndex = 2;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Setting|Input")
-	TObjectPtr<UOutlierInputBindingTable> InputBindingTable;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Setting|Input")
-	TSubclassOf<UInputBindingRowWidget> InputBindingRowWidgetClass;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Setting|Input")
-	float InputBindingRowYOffset = 48.0f;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Setting|Sound")
-	float SoundLabelColumnWidth = 240.0f;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Setting|Sound")
-	float SoundSliderColumnWidth = 360.0f;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Setting|Sound")
-	float SoundValueColumnWidth = 80.0f;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Setting|Input")
-	FText WaitingForInputText = FText::FromString(TEXT("Press a key."));
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Setting|Input")
-	FText InputChangedText = FText::FromString(TEXT("Input has been changed."));
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Setting|Input")
-	FText DuplicateInputText = FText::FromString(TEXT("Input key is already bound."));
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Setting|Input")
-	FText InputRebindFailedText = FText::FromString(TEXT("Input key could not be changed."));
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Setting|Input")
-	FLinearColor InputResultDefaultColor = FLinearColor(1.0f, 0.0f, 0.0f, 1.0f);
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Setting|Input")
-	FLinearColor InputResultSuccessColor = FLinearColor(0.2f, 1.0f, 0.2f, 1.0f);
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Setting|Input")
-	FLinearColor InputResultFailureColor = FLinearColor(1.0f, 0.0f, 0.0f, 1.0f);
-
+	// PageIndex is the tab index: Graphic=0, Sound=1, Input=2.
 	UFUNCTION(BlueprintCallable, Category = "Setting|Navigation")
 	bool SetActiveSettingPage(int32 PageIndex);
 
-	UFUNCTION(BlueprintCallable, Category = "Setting|Graphics")
-	bool SetResolutionPresetIndex(int32 PresetIndex);
-
-	UFUNCTION(BlueprintCallable, Category = "Setting|Graphics")
-	bool OffsetResolutionPresetIndex(int32 IndexOffset);
-
-	UFUNCTION(BlueprintCallable, Category = "Setting|Graphics")
-	void RefreshGraphicsSettings();
-
-	UFUNCTION(BlueprintCallable, Category = "Setting|Sound")
-	bool SetSoundVolumeIndex(int32 VolumeIndex, float NewValue);
-
-	UFUNCTION(BlueprintCallable, Category = "Setting|Sound")
-	void RefreshSoundSettings();
-
-	UFUNCTION(BlueprintCallable, Category = "Setting|Input")
-	void RebuildInputBindingList();
+#if WITH_EDITORONLY_DATA
+	// Select which switcher page to show in the WBP designer: Graphic=0, Sound=1, Input=2.
+	UPROPERTY(EditAnywhere, Category = "Setting|Preview", meta = (ClampMin = "0", ClampMax = "2"))
+	int32 PreviewPageIndex = 0;
+#endif
 
 private:
-	UFUNCTION()
-	void HandleGraphicButtonClicked();
-
-	UFUNCTION()
-	void HandleSoundButtonClicked();
-
-	UFUNCTION()
-	void HandleInputButtonClicked();
-
-	UFUNCTION()
-	void HandleExitButtonClicked();
-
-	UFUNCTION()
-	void HandleGraphicLeftButtonClicked();
-
-	UFUNCTION()
-	void HandleGraphicRightButtonClicked();
-
-	UFUNCTION()
-	void HandleTotalVolumeRowChanged(float NewValue);
-
-	UFUNCTION()
-	void HandleBGMVolumeRowChanged(float NewValue);
-
-	UFUNCTION()
-	void HandleSFXVolumeRowChanged(float NewValue);
-
-	UFUNCTION()
-	void HandleVoiceVolumeRowChanged(float NewValue);
-
-	UFUNCTION()
-	void HandleInputBindingRowHovered(UInputBindingRowWidget* RowWidget, int32 RowIndex);
-
-	UFUNCTION()
-	void HandleInputBindingRebindRequested(UInputBindingRowWidget* RowWidget, int32 RowIndex);
-
-	bool ApplyPendingResolutionPreset();
-	bool StartInputRebind(UInputBindingRowWidget* RowWidget);
-	bool TryCommitInputRebind(FKey NewKey);
-	bool IsPointerOverInputBindingRow(const FPointerEvent& InMouseEvent) const;
-	void ClearInputBindingInteractionState(bool bClearResultText);
-	bool TryGetUserSettingsKeyForRow(
-		const FOutlierInputBindingTableRow& Row,
-		FKey& OutKey) const;
-	FKey ResolveInputBindingCurrentKey(
-		const FOutlierInputBindingTableRow& Row) const;
-	bool IsInputKeyDuplicate(FKey NewKey, const UInputBindingRowWidget* IgnoredRowWidget) const;
-	void BuildInputBindingQueryContexts(TArray<UInputMappingContext*>& OutContexts) const;
-	void RefreshInputBindingDisplayedKeys();
-	void SetInputResult(const FText& ResultText, const FLinearColor& ResultColor);
-	void RebuildKeyboardFocusTargets();
-	void FocusCurrentKeyboardTarget();
-	void MoveKeyboardFocus(int32 Direction);
-	void AdjustFocusedSetting(float Delta);
-	void CacheWidgetArrays();
-	void BindSettingsSubsystem();
-	void UnbindSettingsSubsystem();
-
-	UFUNCTION()
-	void HandleResolutionPresetChanged(EOutlierResolutionPreset NewPreset);
-
-	UFUNCTION()
-	void HandleSoundVolumeChanged(EOutlierAudioVolumeType VolumeType, float NewValue);
-
-	ULocalPlayerSettingsSubsystem* GetSettingsSubsystem() const;
+	enum class EFocusArea : uint8 { Buttons, Page };
+	bool RoutePageInput(ESettingPageInput Input);
+	void HandlePageRequested(int32 PageIndex);
+	void HandleKeyboardCaptureRequested();
+	void FocusActivePage(bool bLastTarget = false);
 
 	UPROPERTY(Transient)
-	TArray<TObjectPtr<UButton>> SettingTabButtons;
-
-	UPROPERTY(Transient)
-	TArray<TObjectPtr<USettingSliderRowWidget>> SoundVolumeRows;
-
-	UPROPERTY(Transient)
-	TArray<TObjectPtr<UInputBindingRowWidget>> ActiveInputBindingRows;
-
-	UPROPERTY(Transient)
-	TObjectPtr<UInputBindingRowWidget> HoveredInputBindingRow;
-
-	UPROPERTY(Transient)
-	TObjectPtr<UInputBindingRowWidget> PendingRebindInputBindingRow;
-
-	UPROPERTY(Transient)
-	TObjectPtr<ULocalPlayerSettingsSubsystem> BoundSettingsSubsystem;
-
-	//Mapping Name으로 override 관리.
-	TMap<FName, FKey> RuntimeInputKeyOverrides;
-
-	int32 PendingResolutionPresetIndex = INDEX_NONE;
-	int32 CurrentSettingPageIndex = INDEX_NONE;
-	int32 CurrentFocusedIndex = INDEX_NONE;
-
-	UPROPERTY(Transient)
-	TArray<TObjectPtr<UWidget>> KeyboardFocusTargets;
-	double RebindStartTimeSeconds = 0.0;
-	bool bWaitingForInputRebind = false;
-	bool bRefreshingSoundSettings = false;
-	bool bInputBindingListBuilt = false;
+	TObjectPtr<USettingPageWidget> ActivePage;
+	EFocusArea FocusArea = EFocusArea::Page;
 };

@@ -23,6 +23,8 @@ AInteractableSwitchBase::AInteractableSwitchBase()
 
 	InteractableComponent = CreateDefaultSubobject<UInteractableComponent>(TEXT("InteractableComponent"));
 	HackableComponent = CreateDefaultSubobject<UHackableComponent>(TEXT("HackableComponent"));
+
+	UnblockEffectTag = HackGameplayTags::Effect::Unblock();
 }
 
 UInteractableComponent* AInteractableSwitchBase::GetInteractableComponent() const
@@ -126,6 +128,17 @@ bool AInteractableSwitchBase::Interact(AFirstPersonCharacter* Interactor)
 		return false;
 	}
 
+	CommitActivation(Interactor);
+	return true;
+}
+
+void AInteractableSwitchBase::CommitActivation(AFirstPersonCharacter* Interactor)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
 	bIsActivated = true;
 	if (bProgressIdRegistered)
 	{
@@ -147,7 +160,6 @@ bool AInteractableSwitchBase::Interact(AFirstPersonCharacter* Interactor)
 
 	Multicast_OnSwitchActivated(Interactor);
 	ForceNetUpdate();
-	return true;
 }
 
 bool AInteractableSwitchBase::IsInteractionBlocked() const
@@ -177,13 +189,13 @@ void AInteractableSwitchBase::HandleCheckpointHackStateRestored(bool bHacked)
 void AInteractableSwitchBase::HandleHackEffect(FGameplayTag EffectTag, const FHackResultContext& Context)
 {
 	if (Context.Result != EHackResult::Success
-		|| EffectTag != HackGameplayTags::Effect::Unblock())
+		|| EffectTag != UnblockEffectTag)
 	{
 		return;
 	}
 
 	// Gameplay-state change is server-authoritative only, same as AInteractionStatMachine::ApplyUnblockEffect.
-	if (HasAuthority() && IsInteractionBlocked())
+	if (HasAuthority())
 	{
 		if (InteractableComponent)
 		{
@@ -194,6 +206,11 @@ void AInteractableSwitchBase::HandleHackEffect(FGameplayTag EffectTag, const FHa
 		{
 			HackableComponent->MarkAsHackedOnce();
 		}
+		UOutlierAudioSubsystem::PlayTaggedAtLocationFromServer(
+			this,
+			FGameplayTag::RequestGameplayTag(TEXT("Audio.Type.Interactable")),
+			FGameplayTag::RequestGameplayTag(TEXT("Audio.Context.Object.Hack.Active")));
+		ForceNetUpdate();
 	}
 
 	// HandleHackEffect itself is already invoked on every machine (server + all clients) via
@@ -232,7 +249,7 @@ void AInteractableSwitchBase::CacheSwitchMaterial()
 {
 	SwitchMID = nullptr;
 
-	if (!SwitchMesh || SwitchMaterialSlot >= SwitchMesh->GetNumMaterials())
+	if (!SwitchMesh || SwitchMaterialSlot < 0 || SwitchMaterialSlot >= SwitchMesh->GetNumMaterials())
 	{
 		return;
 	}
@@ -255,8 +272,9 @@ void AInteractableSwitchBase::ApplyMaterialState(bool bHacked)
 
 	if (SwitchMID)
 	{
+		// 상태 파라미터만 갱신한다. 색상은 원본 머티리얼/머티리얼 인스턴스 설정을 유지한다.
+		SwitchMID->SetScalarParameterValue(ActivatedScalarParamName, bHacked ? 1.0f : 0.0f);
 		SwitchMID->SetScalarParameterValue(HackedScalarParamName, bHacked ? 1.0f : 0.0f);
-		SwitchMID->SetVectorParameterValue(SwitchColorParamName, bHacked ? HackedColor : LockedColor);
 	}
 
 	OnHackedStateChanged(bHacked);

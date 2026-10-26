@@ -12,6 +12,7 @@
 #include "Interface/ScannableInterface.h"
 #include "Interface/HackableInterface.h"
 #include "Interface/MeleeTargetInterface.h"
+#include "Interface/WeaponDamageModifierProvider.h"
 #include "Interface/RoomTagInterface.h"
 #include "StateTreeReference.h"
 #include "AbilitySystemInterface.h"
@@ -89,12 +90,28 @@ enum class EEnemyAttackPhase : uint8
 };
 
 UCLASS()
-class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, public IEMPableInterface, public IScannableInterface, public IGenericTeamAgentInterface, public IRoomTagInterface, public IAbilitySystemInterface, public IOutlierDamageReceiver, public IMeleeTargetInterface, public IOutlierSpawnVisualTarget
+class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, public IEMPableInterface, public IScannableInterface, public IGenericTeamAgentInterface, public IRoomTagInterface, public IAbilitySystemInterface, public IOutlierDamageReceiver, public IMeleeTargetInterface, public IOutlierSpawnVisualTarget, public IWeaponDamageModifierProvider
 {
 	GENERATED_BODY()
 
 public:
+	void SetPossessionDamageMultiplier(float Multiplier);
+	virtual void GetWeaponDamageModifiers(FWeaponDamageModifiers& OutModifiers) const override;
+
+	virtual FGameplayTag GetHitAudioContext() const { return HitAudioContext; }
+	virtual FGameplayTag GetDeathAudioContext() const { return DeathAudioContext; }
+	void RefreshEnemyAudioState();
+	// 증원 지점에서 소환됐을 때만 호출한다. 배치 Enemy는 등장 소리를 내지 않는다.
+	void PlaySpawnAppearAudio();
+
 	AEnemyBase();
+
+private:
+	// 서버의 빙의 세션 값. 무기 피해 판정은 서버에서만 이 값을 소비한다.
+	UPROPERTY(Transient)
+	float PossessionDamageMultiplier = 1.0f;
+
+public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Enemy|Flight Height")
 	FEnemyFlightHeightSettings FlightHeightSettings;
@@ -649,6 +666,24 @@ public:
 	virtual bool CanShowMeleeTargetIndicator_Implementation(const AActor* InstigatorActor) const override;
 	virtual void SetMeleeTargeted_Implementation(AActor* InstigatorActor, bool bTargeted) override;
 protected:
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Audio", meta = (Categories = "Audio.Context"))
+	FGameplayTag HitAudioContext;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Audio", meta = (Categories = "Audio.Context"))
+	FGameplayTag DeathAudioContext;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Audio", meta = (Categories = "Audio.Context"))
+	FGameplayTag DetectAudioContext;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Audio", meta = (Categories = "Audio.Context"))
+	FGameplayTag HoverAudioContext;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Audio", meta = (Categories = "Audio.Context"))
+	FGameplayTag DownAudioContext;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Enemy|Audio", meta = (Categories = "Audio.Context"))
+	FGameplayTag AppearAudioContext;
+
 	UFUNCTION()
 	void OnRep_RuntimeStat();
 

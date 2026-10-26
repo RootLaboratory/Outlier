@@ -19,6 +19,7 @@ public:
 		SHADER_PARAMETER_RDG_TEXTURE_SRV(Texture2D<uint2>, CustomStencilTexture)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, CustomDepthTexture)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<uint>, InputMask)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<uint>, HardMask)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<uint>, OutMask)
 		SHADER_PARAMETER(FIntPoint, TextureExtent)
 		SHADER_PARAMETER(FIntPoint, SourceViewRectMin)
@@ -125,8 +126,49 @@ FRDGTextureRef FRDGAdsSightMaskPass::AddDilatePass(
 	const FSceneView& View,
 	FRDGTextureRef InputMask,
 	FIntPoint TextureExtent,
-	float Radius)
+	float Radius,
+	bool bHalfResolution)
 {
+	if (bHalfResolution)
+	{
+		// 2x2 max로 줄여서(조준경 픽셀이 하나라도 있으면 1) 반해상도에서 반경 절반으로 확장한 뒤 풀해상도로 되돌린다.
+		// 확장 결과는 원본 마스크를 항상 포함하므로 업샘플은 포인트 샘플로 충분하고, 2px 계단은 Soften이 덮는다.
+		const FIntPoint HalfExtent((TextureExtent.X + 1) / 2, (TextureExtent.Y + 1) / 2);
+
+		FRDGTextureRef HalfMask = AddIntegerMaskPass(
+			GraphBuilder,
+			View,
+			nullptr,
+			nullptr,
+			InputMask,
+			HalfExtent,
+			0u,
+			0.0f,
+			0.0f,
+			0.0f,
+			3u,
+			TEXT("Outlier.AdsSightMask.Half"),
+			TEXT("Outlier.AdsSightMask.Downsample"));
+
+		FRDGTextureRef HalfDilated = AddDilatePass(GraphBuilder, View, HalfMask, HalfExtent, Radius * 0.5f, false);
+
+		return AddIntegerMaskPass(
+			GraphBuilder,
+			View,
+			nullptr,
+			nullptr,
+			HalfDilated,
+			TextureExtent,
+			0u,
+			0.0f,
+			0.0f,
+			0.0f,
+			4u,
+			TEXT("Outlier.AdsSightMask.Dilated"),
+			TEXT("Outlier.AdsSightMask.Upsample"),
+			InputMask);
+	}
+
 	FRDGTextureRef HorizontalMask = AddIntegerMaskPass(
 		GraphBuilder,
 		View,
@@ -190,7 +232,8 @@ FRDGTextureRef FRDGAdsSightMaskPass::AddIntegerMaskPass(
 	float Radius,
 	uint32 PassMode,
 	const TCHAR* TextureName,
-	const TCHAR* EventName)
+	const TCHAR* EventName,
+	FRDGTextureRef ReferenceMask)
 {
 	if (TextureExtent.X <= 0 || TextureExtent.Y <= 0)
 	{
@@ -205,6 +248,7 @@ FRDGTextureRef FRDGAdsSightMaskPass::AddIntegerMaskPass(
 	PassParameters->CustomStencilTexture = CustomStencilTexture ? CustomStencilTexture : SystemTextures.StencilDummySRV;
 	PassParameters->CustomDepthTexture = CustomDepthTexture ? CustomDepthTexture : SystemTextures.Black;
 	PassParameters->InputMask = InputMask ? InputMask : DummyMask;
+	PassParameters->HardMask = ReferenceMask ? ReferenceMask : DummyMask;
 	PassParameters->OutMask = GraphBuilder.CreateUAV(OutputMask);
 	PassParameters->TextureExtent = TextureExtent;
 	PassParameters->SourceViewRectMin = UE::FXRenderingUtils::GetRawViewRectUnsafe(View).Min;

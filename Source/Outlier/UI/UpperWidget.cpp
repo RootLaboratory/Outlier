@@ -54,6 +54,11 @@ bool UUpperWidget::PresentInfo(const FOutlierInfoWidgetRequest& Request)
 	return false;
 }
 
+void UUpperWidget::StartInfoPresentation()
+{
+	if (GoalWidget && GoalWidget->IsVisible()) GoalWidget->PlayGoalPopup();
+}
+
 void UUpperWidget::ResetInfoContent()
 {
 	if (InputTutoWidget)

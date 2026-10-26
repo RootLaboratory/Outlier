@@ -31,6 +31,9 @@ public:
 	bool IsRoomCleared() const { return bRoomCleared; }
 	void SetRuntimeActive(bool bActive);
 	void SetRoomCleared(bool bCleared);
+	// 이 지점에 배정된 소환이 남아 있는 동안만 작동 상태다. 리셋/로드 정리는 On/Off 없이 Loop만 끈다.
+	void SetSpawnerWorking(bool bWorking, bool bPlayTransitionAudio);
+	void PlaySpawnActAudio();
 	bool FindSpawnTransform(
 		TSubclassOf<AEnemyBase> EnemyClass,
 		int32 SearchSeed,
@@ -105,8 +108,16 @@ private:
 	void OnRep_RoomCleared();
 	void RefreshClearedMaterial();
 
+	UFUNCTION()
+	void OnRep_SpawnerWorking();
+	void ApplySpawnerWorkingLoop();
+
 	UPROPERTY(ReplicatedUsing = OnRep_RoomCleared, BlueprintReadOnly, Category = "Room Combat|Visual", meta = (AllowPrivateAccess = "true"))
 	bool bRoomCleared = false;
+
+	// 늦게 접속하거나 늦게 로드된 클라이언트도 이 값으로 Loop만 맞춘다.
+	UPROPERTY(ReplicatedUsing = OnRep_SpawnerWorking)
+	bool bSpawnerWorking = false;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInterface> InitialMaterial;

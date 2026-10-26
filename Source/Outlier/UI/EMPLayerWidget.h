@@ -24,6 +24,7 @@ public:
 	void AddCandidate(AActor* TargetActor, UEMPableComponent* EMPableComponent);
 	void RemoveCandidate(AActor* TargetActor, UEMPableComponent* EMPableComponent);
 	void ClearMarkers();
+	void SelectAutomaticCandidate(AActor* TargetActor);
 
 protected:
 	virtual void NativeConstruct() override;

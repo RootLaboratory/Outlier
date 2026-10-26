@@ -29,6 +29,11 @@ public:
 	void InitializeShield(AShooterCharacter* InShieldTarget, APartnerCharacter* InSourcePartner);
 
 	UFUNCTION(BlueprintCallable, Category = "Shield")
+	void InitializeShieldForActor(AActor* InShieldTarget, APartnerCharacter* InSourcePartner);
+
+	AActor* GetShieldTargetActor() const;
+
+	UFUNCTION(BlueprintCallable, Category = "Shield")
 	void SetShieldMaterial(UMaterialInterface* InMaterial);
 
 	UFUNCTION(BlueprintCallable, Category = "Shield")
@@ -36,6 +41,8 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Shield")
 	void SetTargetRelativeLocation(FVector InTargetRelativeLocation);
+
+	void SetRecipientLocalTransform(const FTransform& InLocalTransform);
 
 	UFUNCTION(BlueprintCallable, Category = "Shield")
 	void EndShield();
@@ -63,6 +70,10 @@ protected:
 	UPROPERTY(ReplicatedUsing = OnRep_ShieldTarget, BlueprintReadOnly, Category = "Shield")
 	TObjectPtr<AShooterCharacter> ShieldTarget;
 
+	// 기존 Shooter 대상 BP 속성/함수는 유지하고 범용 대상만 별도로 확장한다.
+	UPROPERTY(ReplicatedUsing = OnRep_ShieldTarget, BlueprintReadOnly, Category = "Shield")
+	TObjectPtr<AActor> ShieldTargetActor;
+
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Shield")
 	TObjectPtr<APartnerCharacter> SourcePartner;
 
@@ -72,16 +83,22 @@ protected:
 	UPROPERTY(EditAnywhere, Replicated, BlueprintReadOnly, Category = "Shield")
 	FVector TargetRelativeLocation = FVector::ZeroVector;
 
+	UPROPERTY(ReplicatedUsing = OnRep_RecipientLocalTransform)
+	FTransform RecipientLocalTransform = FTransform::Identity;
+
+	UFUNCTION()
+	void OnRep_RecipientLocalTransform();
+
 	UFUNCTION()
 	void OnRep_ShieldTarget();
 
 	UFUNCTION()
 	void OnRep_ShieldRadius();
 
-	UFUNCTION()
-	void HandleShieldHit(UPrimitiveComponent* HitComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, FVector NormalImpulse, const FHitResult& Hit);
-
 private:
+	UPROPERTY(Replicated)
+	FVector BaseShieldScale = FVector::OneVector;
+
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> ShieldMID;
 

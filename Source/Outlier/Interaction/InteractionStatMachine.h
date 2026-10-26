@@ -45,6 +45,11 @@ public:
 	bool IsInteractionBlocked() const;
 
 protected:
+	virtual void BeginPlay() override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	UFUNCTION() void OnRep_IndicateAudio();
+	UPROPERTY(ReplicatedUsing = OnRep_IndicateAudio)
+	bool bIndicateAudio = true;
 	
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Component")
 	TObjectPtr<USceneComponent> SceneRoot;

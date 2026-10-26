@@ -1,7 +1,8 @@
-#include "Audio/OutlierAudioSubsystem.h"
+﻿#include "Audio/OutlierAudioSubsystem.h"
 
 #include "Components/AudioComponent.h"
 #include "Engine/AssetManager.h"
+#include "Engine/GameInstance.h"
 #include "Engine/StreamableManager.h"
 #include "Engine/World.h"
 #include "Engine/LocalPlayer.h"
@@ -11,6 +12,8 @@
 #include "Outlier.h"
 #include "Sound/SoundAttenuation.h"
 #include "Sound/SoundBase.h"
+#include "TimerManager.h"
+#include "Containers/Ticker.h"
 
 namespace
 {
@@ -83,12 +86,14 @@ void UOutlierAudioSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	VolumeMultipliers.Add(EOutlierAudioVolumeType::SFX, 1.0f);
 	VolumeMultipliers.Add(EOutlierAudioVolumeType::Voice, 1.0f);
 	VoiceWorldCleanupHandle = FWorldDelegates::OnWorldCleanup.AddUObject(this, &ThisClass::HandleVoiceWorldCleanup);
+	AudioWorldTickHandle = FWorldDelegates::OnWorldTickStart.AddUObject(this, &ThisClass::HandleAudioWorldTick);
 	ReloadCatalog();
 }
 
 bool UOutlierAudioSubsystem::PlayLocalVoice(FGameplayTag SoundTag, int32 Priority,
 	FGameplayTag RequestTag, ULocalPlayer* Listener)
 {
+	if (bStoppingAllLocalAudio) return false;
 	UWorld* World = GetWorld();
 	if (!SoundTag.IsValid() || !RequestTag.IsValid() || !IsValid(Listener)
 		|| Listener->GetGameInstance() != GetGameInstance() || !World
@@ -111,7 +116,7 @@ bool UOutlierAudioSubsystem::PlayLocalVoice(FGameplayTag SoundTag, int32 Priorit
 	Request.Listener = Listener;
 	Request.World = World;
 	Request.Priority = Priority;
-	if (Priority == 0 && ActiveVoice.Id != 0 && ActiveVoice.Priority >= 2)
+	if (ActiveVoice.Id != 0 && Priority < ActiveVoice.Priority)
 	{
 		FinishActiveVoice(false);
 	}
@@ -247,6 +252,12 @@ void UOutlierAudioSubsystem::StopLocalVoices(ULocalPlayer* Listener)
 
 void UOutlierAudioSubsystem::HandleVoiceWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources)
 {
+	if (World && World->GetGameInstance() == GetGameInstance() && !bFrontendMusic)
+	{
+		bCombatMusic = false;
+		RequestMusic(FGameplayTag());
+	}
+	if (LocalLoopWorld.Get() == World) ClearLocalEmitterLoops();
 	VoiceQueue.RemoveAll([World](const FVoiceRequest& Request) { return Request.World.Get() == World; });
 	if (ActiveVoice.World.Get() == World)
 	{
@@ -256,6 +267,15 @@ void UOutlierAudioSubsystem::HandleVoiceWorldCleanup(UWorld* World, bool bSessio
 
 void UOutlierAudioSubsystem::Deinitialize()
 {
+	FWorldDelegates::OnWorldTickStart.Remove(AudioWorldTickHandle);
+	WorldPausedAudioComponents.Reset();
+	RequestMusic(FGameplayTag());
+	FTSTicker::GetCoreTicker().RemoveTicker(MusicTickerHandle);
+	MusicTickerHandle.Reset();
+	ClearZoneMusic();
+	FTSTicker::GetCoreTicker().RemoveTicker(ZoneMusicTickerHandle);
+	ZoneMusicTickerHandle.Reset();
+	ClearLocalEmitterLoops();
 	FWorldDelegates::OnWorldCleanup.Remove(VoiceWorldCleanupHandle);
 	VoiceQueue.Reset();
 	FinishActiveVoice(false);
@@ -299,6 +319,11 @@ void UOutlierAudioSubsystem::Deinitialize()
 
 bool UOutlierAudioSubsystem::ReloadCatalog()
 {
+	for (auto& Pair : LocalEmitterLoops)
+	{
+		StopLoopAudioLocally(Pair.Value.InstanceId);
+		Pair.Value.InstanceId = 0;
+	}
 	VoiceQueue.Reset();
 	FinishActiveVoice(false);
 	if (BankMetadataLoadHandle.IsValid())
@@ -510,6 +535,43 @@ void UOutlierAudioSubsystem::HandleBankContentLoaded(FGameplayTag TypeTag)
 	IngestBank(Bank);
 	FlushPendingPlaysForType(TypeTag);
 	StartNextVoice();
+}
+
+bool UOutlierAudioSubsystem::ResolveTypeForContext(
+	FGameplayTag Context,
+	FGameplayTag& OutType,
+	bool& bOutPending)
+{
+	bOutPending = false;
+	if (!Context.IsValid())
+	{
+		return false;
+	}
+
+	for (const TPair<FGameplayTag, TArray<FRuntimeCatalogEntry>>& Pair : CatalogEntriesByType)
+	{
+		if (Pair.Value.ContainsByPredicate(
+			[Context](const FRuntimeCatalogEntry& Entry)
+			{
+				return Entry.RequiredContext == Context;
+			}))
+		{
+			OutType = Pair.Key;
+			return true;
+		}
+	}
+
+	// 지연 로드 Bank 는 내용이 올라와야 어떤 Context 를 가졌는지 알 수 있다.
+	bOutPending = BankMetadataLoadHandle.IsValid();
+	for (const TPair<FGameplayTag, FDiscoveredBank>& Pair : DiscoveredBanksByType)
+	{
+		if (!Pair.Value.bContentLoaded)
+		{
+			LoadBankContent(Pair.Key);
+			bOutPending = true;
+		}
+	}
+	return false;
 }
 
 void UOutlierAudioSubsystem::IngestBank(UOutlierAudioBank* Bank)
@@ -823,6 +885,7 @@ bool UOutlierAudioSubsystem::PlayAudio(
 	const FOutlierAudioPlayRequest& Request,
 	const FOutlierAudioExecutionPolicy& Policy)
 {
+	if (bStoppingAllLocalAudio) return false;
 	UWorld* World = GetWorld();
 	if (!World)
 	{
@@ -864,6 +927,20 @@ bool UOutlierAudioSubsystem::PlayAudio(
 		return true;
 	}
 
+	// These BGM tags own their loading and Start -> Loop transition on the listener.
+	// Deliver the context before bank loading so End/Stop can cancel a pending Start.
+	if (Policy.PlaybackMode == EOutlierAudioPlaybackMode::TwoD)
+	{
+		const FGameplayTag MusicContext = ResolveMusicContext(Request);
+		if (MusicContext.IsValid())
+		{
+			FOutlierResolvedAudioPlay ResolvedPlay;
+			ResolvedPlay.EventTag = Request.EventTag;
+			ResolvedPlay.MusicContextTag = MusicContext;
+			return RouteByAudience(Request, ResolvedPlay, Policy.Audience);
+		}
+	}
+
 	// Type 콘텐츠가 아직 로드되지 않은 Deferred Bank( BGM/Voice 등 )라면, 재생 요청 자체가
 	// 로드 트리거가 된다. 큐잉해두고 로드가 끝나면 FlushPendingPlaysForType 이 재시도한다.
 	if (!CatalogEntriesByType.Contains(Request.EventTag))
@@ -879,17 +956,10 @@ bool UOutlierAudioSubsystem::PlayAudio(
 
 		if (!Discovered->bContentLoaded)
 		{
-		/*	PendingPlaysByType.FindOrAdd(Request.EventTag).Emplace(Request, Policy);
-			UE_LOG(
-				LogOutlier,
-				Warning,
-				TEXT("[AudioSpatialDebug][QueuedRequest] NetMode=%d Type='%s' Context='%s' Emitter='%s' PendingCount=%d Reason=BankContentLoading"),
-				static_cast<int32>(World->GetNetMode()),
-				*Request.EventTag.ToString(),
-				*Request.ContextTags.ToString(),
-				*GetNameSafe(Request.EmitterActor),
-				PendingPlaysByType.Find(Request.EventTag)->Num());
-			LoadBankContent(Request.EventTag);*/
+			PendingPlaysByType.FindOrAdd(Request.EventTag).Emplace(Request, Policy);
+			UE_LOG(LogOutlier, Verbose, TEXT("[Audio] Queued Type='%s' Context='%s' while Bank content loads."),
+				*Request.EventTag.ToString(), *Request.ContextTags.ToString());
+			LoadBankContent(Request.EventTag);
 			return true;
 		}
 		// bContentLoaded 인데 카탈로그에 없다 = 그 Bank 에 유효한 Variant 가 하나도 없었던 경우.
@@ -1070,6 +1140,14 @@ bool UOutlierAudioSubsystem::HandleServerRelevantAtLocationRequest(
 bool UOutlierAudioSubsystem::PlayResolvedAudioLocally(
 	const FOutlierResolvedAudioPlay& ResolvedPlay)
 {
+	if (bStoppingAllLocalAudio) return false;
+	if (!ResolvedPlay.bAtLocation && ResolvedPlay.MusicContextTag.IsValid()
+		&& ResolvedPlay.EventTag == FGameplayTag::RequestGameplayTag(TEXT("Audio.Type.BGM")))
+	{
+		HandleMusicContext(ResolvedPlay.MusicContextTag);
+		return true;
+	}
+
 	const FRuntimeCatalogEntry* Entry =
 		FindResolvedEntry(ResolvedPlay.EventTag, ResolvedPlay.VariantIndex);
 	if (!Entry)
@@ -1083,6 +1161,8 @@ bool UOutlierAudioSubsystem::PlayResolvedAudioLocally(
 
 	FPendingPlay PendingPlay;
 	PendingPlay.World = GetWorld();
+	PendingPlay.bPlayWhenPaused = !ResolvedPlay.bAtLocation
+		&& Entry->RequiredContext.ToString().StartsWith(TEXT("Audio.Context.UI.Menu."));
 	PendingPlay.SourceName = Entry->SourceName;
 	PendingPlay.bAtLocation = ResolvedPlay.bAtLocation;
 	PendingPlay.Location = ResolvedPlay.Location;
@@ -1096,7 +1176,7 @@ bool UOutlierAudioSubsystem::PlayResolvedAudioLocally(
 	return QueueOrPlay(*Entry, PendingPlay);
 }
 
-bool UOutlierAudioSubsystem::StopLoopAudioLocally(int32 AudioInstanceId)
+bool UOutlierAudioSubsystem::StopLoopAudioLocally(int32 AudioInstanceId, float FadeOutDuration)
 {
 	if (AudioInstanceId == 0)
 	{
@@ -1114,9 +1194,23 @@ bool UOutlierAudioSubsystem::StopLoopAudioLocally(int32 AudioInstanceId)
 
 		if (UAudioComponent* AudioComponent = ActivePlayback.Component.Get())
 		{
+			if (FadeOutDuration > 0.0f)
+			{
+				// 페이드가 끝나면 엔진이 재생을 끝내고 bAutoDestroy 로 컴포넌트를 정리한다( 풀로 돌려받지 않음 ).
+				// 일회성 재생으로 남겨두어 페이드 중에도 옵션 볼륨 / StopAll 의 영향을 받게 한다.
+				AudioComponent->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
+				AudioComponent->bAutoDestroy = true;
+				AudioComponent->FadeOut(FadeOutDuration, 0.0f);
+				ActivePlayback.bLooping = false;
+				ActivePlayback.AudioInstanceId = 0;
+				return true;
+			}
+
 			AudioComponent->Stop();
+			AudioComponent->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
 			AudioComponent->SetSound(nullptr);
-			LoopAudioComponentPool.Add(AudioComponent);
+			if (AudioInstanceId < 0) AudioComponent->DestroyComponent();
+			else LoopAudioComponentPool.Add(AudioComponent);
 		}
 		ActiveAudioPlaybacks.RemoveAtSwap(Index);
 		return true;
@@ -1146,6 +1240,8 @@ void UOutlierAudioSubsystem::SetVolumeMultiplier(
 	float NewMultiplier)
 {
 	VolumeMultipliers.FindOrAdd(VolumeType) = FMath::Clamp(NewMultiplier, 0.0f, 1.0f);
+	UpdateMusicVolume();
+	UpdateZoneMusicVolumes();
 	RefreshActiveAudioComponentVolumes(VolumeType);
 }
 
@@ -1161,18 +1257,45 @@ float UOutlierAudioSubsystem::GetVolumeMultiplier(EOutlierAudioVolumeType Volume
 
 void UOutlierAudioSubsystem::StopAllLocalAudio()
 {
+	if (bStoppingAllLocalAudio) return;
+	// Stop/voice-finished callbacks must not enqueue replacement playback during cleanup.
+	TGuardValue<bool> StoppingGuard(bStoppingAllLocalAudio, true);
+	bFrontendMusic = false;
+	bCombatMusic = false;
+	RequestMusic(FGameplayTag());
+	ClearZoneMusic();
+	ClearLocalEmitterLoops();
 	VoiceQueue.Reset();
 	FinishActiveVoice(false);
-	for (FActiveAudioPlayback& ActivePlayback : ActiveAudioPlaybacks)
+
+	// Bank discovery/content loading may finish for future UI audio, but must not replay
+	// gameplay requests that were waiting for those banks before GameOver.
+	PendingPlaysByType.Empty();
+	PendingPlaysBySound.Empty();
+	auto LoadHandlesToCancel = MoveTemp(ActiveLoadHandles);
+	ActiveLoadHandles.Empty();
+	for (auto& Pair : LoadHandlesToCancel)
+	{
+		if (Pair.Value.IsValid()) Pair.Value->CancelHandle();
+	}
+
+	auto PlaybacksToStop = MoveTemp(ActiveAudioPlaybacks);
+	ActiveAudioPlaybacks.Empty();
+	for (const FActiveAudioPlayback& ActivePlayback : PlaybacksToStop)
 	{
 		if (UAudioComponent* AudioComponent = ActivePlayback.Component.Get())
 		{
 			AudioComponent->Stop();
+			AudioComponent->DestroyComponent();
 		}
 	}
-
-	ActiveAudioPlaybacks.Empty();
-	PendingPlaysBySound.Empty();
+	for (UAudioComponent* AudioComponent : LoopAudioComponentPool)
+	{
+		if (IsValid(AudioComponent)) AudioComponent->DestroyComponent();
+	}
+	LoopAudioComponentPool.Empty();
+	LoopInstances.Empty();
+	CancelledLoopAudioInstances.Empty();
 }
 
 const UOutlierAudioSubsystem::FRuntimeCatalogEntry* UOutlierAudioSubsystem::ResolveBestEntry(
@@ -1222,8 +1345,8 @@ const UOutlierAudioSubsystem::FRuntimeCatalogEntry* UOutlierAudioSubsystem::Reso
 	if (BestMatches.IsEmpty())
 	{
 		UE_LOG(LogOutlier, Warning,
-			TEXT("[Audio] Type '%s' has no row matching the supplied context tags."),
-			*TypeTag.ToString());
+			TEXT("[Audio] Type '%s' has no row matching Context='%s'."),
+			*TypeTag.ToString(), *ContextTags.ToString());
 		return nullptr;
 	}
 
@@ -1511,6 +1634,7 @@ bool UOutlierAudioSubsystem::QueueOrPlay(
 	const FRuntimeCatalogEntry& Entry,
 	const FPendingPlay& PendingPlay)
 {
+	if (bStoppingAllLocalAudio) return false;
 	if (!PendingPlay.World.IsValid())
 	{
 		return false;
@@ -1608,6 +1732,7 @@ void UOutlierAudioSubsystem::ExecutePlay(
 		return;
 	}
 
+	if (PendingPlay.bAttachToEmitter && !PendingPlay.AttachedEmitter.IsValid()) return;
 	FVector ListenerLocation = FVector::ZeroVector;
 	bool bHasLocalListener = false;
 	for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
@@ -1707,6 +1832,10 @@ void UOutlierAudioSubsystem::ExecutePlay(
 				nullptr,
 				true);
 		}
+		if (AudioComponent && PendingPlay.bAttachToEmitter)
+		{
+			AudioComponent->AttachToComponent(PendingPlay.AttachedEmitter->GetRootComponent(), FAttachmentTransformRules::SnapToTargetNotIncludingScale);
+		}
 		TrackActiveAudioComponent(
 			AudioComponent,
 			PendingPlay.VolumeMultiplier,
@@ -1724,11 +1853,11 @@ void UOutlierAudioSubsystem::ExecutePlay(
 		PendingPlay.StartTime,
 		nullptr,
 		false,
-		true);
+		!PendingPlay.bLooping);
 	TrackActiveAudioComponent(
 		AudioComponent,
 		PendingPlay.VolumeMultiplier,
-		PendingPlay.VolumeType);
+		PendingPlay.VolumeType, PendingPlay.AudioInstanceId, PendingPlay.bLooping, PendingPlay.bPlayWhenPaused);
 	if (PendingPlay.VoiceRequestId != 0)
 	{
 		if (!AudioComponent)
@@ -1748,7 +1877,8 @@ void UOutlierAudioSubsystem::TrackActiveAudioComponent(
 	float BaseVolumeMultiplier,
 	EOutlierAudioVolumeType VolumeType,
 	int32 AudioInstanceId,
-	bool bLooping)
+	bool bLooping,
+	bool bPlayWhenPaused)
 {
 	if (!AudioComponent)
 	{
@@ -1763,6 +1893,39 @@ void UOutlierAudioSubsystem::TrackActiveAudioComponent(
 	ActivePlayback.VolumeType = VolumeType;
 	ActivePlayback.AudioInstanceId = AudioInstanceId;
 	ActivePlayback.bLooping = bLooping;
+	ActivePlayback.bPlayWhenPaused = bPlayWhenPaused;
+	if (!bPlayWhenPaused) SyncAudioPause(AudioComponent);
+}
+
+void UOutlierAudioSubsystem::SyncAudioPause(UAudioComponent* Component)
+{
+	if (!Component) return;
+	const UWorld* World = Component->GetWorld();
+	const bool bPaused = World && World->IsPaused();
+	if (bPaused && !Component->bIsPaused && Component->IsPlaying())
+	{
+		WorldPausedAudioComponents.Add(Component);
+		Component->SetPaused(true);
+	}
+	else if (!bPaused && WorldPausedAudioComponents.Remove(Component) > 0)
+	{
+		Component->SetPaused(false);
+	}
+}
+
+void UOutlierAudioSubsystem::HandleAudioWorldTick(UWorld* World, ELevelTick TickType, float DeltaTime)
+{
+	if (!World || World->GetGameInstance() != GetGameInstance()) return;
+	for (auto It = WorldPausedAudioComponents.CreateIterator(); It; ++It)
+	{
+		if (!It->IsValid()) It.RemoveCurrent();
+	}
+	for (const FActiveAudioPlayback& Playback : ActiveAudioPlaybacks)
+	{
+		if (!Playback.bPlayWhenPaused) SyncAudioPause(Playback.Component.Get());
+	}
+	SyncAudioPause(MusicComponent);
+	for (const FZoneMusicTrack& Track : ZoneMusicTracks) SyncAudioPause(Track.Component.Get());
 }
 
 void UOutlierAudioSubsystem::RemoveInactiveAudioComponents()
@@ -1808,4 +1971,117 @@ float UOutlierAudioSubsystem::GetCombinedVolumeMultiplier(
 	}
 
 	return MasterMultiplier * GetVolumeMultiplier(VolumeType);
+}
+
+void UOutlierAudioSubsystem::SetLocalEmitterLoop(AActor* Emitter, FGameplayTag Type,
+	FGameplayTag Context, bool bEnabled, bool bTwoD, float FadeOutDuration)
+{
+	if (bStoppingAllLocalAudio) return;
+	UWorld* World = Emitter ? Emitter->GetWorld() : nullptr;
+	if (!World || World->GetNetMode() == NM_DedicatedServer || !Context.IsValid()) return;
+	if (LocalLoopWorld.IsValid() && LocalLoopWorld.Get() != World) ClearLocalEmitterLoops();
+	const FLoopPlaybackKey Key { Emitter, Context };
+	if (!bEnabled)
+	{
+		FLocalEmitterLoop Removed;
+		if (LocalEmitterLoops.RemoveAndCopyValue(Key, Removed)) StopLoopAudioLocally(Removed.InstanceId, FadeOutDuration);
+		return;
+	}
+	if (!IsValid(Emitter) || !Type.IsValid()) return;
+	if (!LocalEmitterLoops.Contains(Key))
+	{
+		FLocalEmitterLoop& Loop = LocalEmitterLoops.Add(Key);
+		Loop.Type = Type;
+		Loop.bTwoD = bTwoD;
+	}
+	LocalLoopWorld = World;
+	if (!World->GetTimerManager().IsTimerActive(LocalLoopTimer))
+		World->GetTimerManager().SetTimer(LocalLoopTimer, this, &ThisClass::RefreshLocalEmitterLoops, 0.2f, true);
+	RefreshLocalEmitterLoops();
+}
+
+void UOutlierAudioSubsystem::StopLocalEmitterLoops(AActor* Emitter)
+{
+	for (auto It = LocalEmitterLoops.CreateIterator(); It; ++It)
+	{
+		if (It.Key().EmitterActor == Emitter)
+		{
+			StopLoopAudioLocally(It.Value().InstanceId);
+			It.RemoveCurrent();
+		}
+	}
+}
+
+void UOutlierAudioSubsystem::ClearLocalEmitterLoops()
+{
+	if (UWorld* World = LocalLoopWorld.Get()) World->GetTimerManager().ClearTimer(LocalLoopTimer);
+	for (const auto& Pair : LocalEmitterLoops) StopLoopAudioLocally(Pair.Value.InstanceId);
+	LocalEmitterLoops.Empty();
+	LocalLoopWorld.Reset();
+}
+
+void UOutlierAudioSubsystem::RefreshLocalEmitterLoops()
+{
+	for (auto It = LocalEmitterLoops.CreateIterator(); It; ++It)
+	{
+		AActor* Emitter = It.Key().EmitterActor.Get();
+		FLocalEmitterLoop& Loop = It.Value();
+		if (!IsValid(Emitter) || Emitter->IsActorBeingDestroyed())
+		{
+			StopLoopAudioLocally(Loop.InstanceId);
+			It.RemoveCurrent();
+			continue;
+		}
+		if (Loop.InstanceId != 0)
+		{
+			const bool bPlaying = ActiveAudioPlaybacks.ContainsByPredicate([&Loop](const FActiveAudioPlayback& Play)
+			{ return Play.AudioInstanceId == Loop.InstanceId && Play.Component.IsValid() && Play.Component->IsPlaying(); });
+			bool bPending = false;
+			for (const auto& Pair : PendingPlaysBySound)
+				bPending |= Pair.Value.ContainsByPredicate([&Loop](const FPendingPlay& Play) { return Play.AudioInstanceId == Loop.InstanceId; });
+			if (bPlaying || bPending) continue;
+			StopLoopAudioLocally(Loop.InstanceId);
+			Loop.InstanceId = 0;
+		}
+		if (!CatalogEntriesByType.Contains(Loop.Type))
+		{
+			LoadBankContent(Loop.Type);
+			continue;
+		}
+		FGameplayTagContainer Contexts;
+		Contexts.AddTag(It.Key().LoopContextTag);
+		const FRuntimeCatalogEntry* Entry = ResolveBestEntry(Loop.Type, Contexts);
+		if (!Entry || Entry->PlaybackPolicy != EOutlierAudioPlaybackPolicy::Loop) continue;
+		Loop.InstanceId = NextLocalLoopId;
+		NextLocalLoopId = NextLocalLoopId == MIN_int32 ? -1 : NextLocalLoopId - 1;
+		FPendingPlay Pending;
+		Pending.World = Emitter->GetWorld();
+		Pending.SourceName = Entry->SourceName;
+		Pending.bAtLocation = !Loop.bTwoD;
+		Pending.Location = Emitter->GetActorLocation();
+		Pending.AttachedEmitter = Emitter;
+		Pending.bAttachToEmitter = !Loop.bTwoD;
+		Pending.VolumeMultiplier = Entry->VolumeMultiplier;
+		Pending.PitchMultiplier = Entry->PitchMultiplier;
+		Pending.VolumeType = Entry->VolumeType;
+		Pending.AudioInstanceId = Loop.InstanceId;
+		Pending.bLooping = true;
+		if (!QueueOrPlay(*Entry, Pending)) Loop.InstanceId = 0;
+	}
+	if (LocalEmitterLoops.IsEmpty())
+		if (UWorld* World = LocalLoopWorld.Get()) World->GetTimerManager().ClearTimer(LocalLoopTimer);
+}
+
+void UOutlierAudioSubsystem::StopTransientLocalAudio()
+{
+	VoiceQueue.Reset();
+	FinishActiveVoice(false);
+	for (int32 Index = ActiveAudioPlaybacks.Num() - 1; Index >= 0; --Index)
+	{
+		if (ActiveAudioPlaybacks[Index].bLooping) continue;
+		if (UAudioComponent* Component = ActiveAudioPlaybacks[Index].Component.Get()) Component->Stop();
+		ActiveAudioPlaybacks.RemoveAtSwap(Index);
+	}
+	for (auto& Pair : PendingPlaysBySound)
+		Pair.Value.RemoveAll([](const FPendingPlay& Pending) { return !Pending.bLooping; });
 }

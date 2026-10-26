@@ -8,58 +8,13 @@
 #include "EnhancedInputSubsystems.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/Texture2D.h"
+#include "Fonts/FontMeasure.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Rendering/SlateRenderer.h"
 #include "Settings/LocalPlayerSettingsSubsystem.h"
+#include "UI/InputKeyDisplayNameDataRow.h"
 #include "UI/InputKeyTextureDataRow.h"
 #include "Outlier.h"
-
-namespace
-{
-FText GetCompactKeyDisplayName(const FKey& Key)
-{
-	static const TPair<FKey, const TCHAR*> Aliases[] = {
-		{EKeys::LeftShift, TEXT("LShift")},
-		{EKeys::RightShift, TEXT("RShift")},
-		{EKeys::LeftControl, TEXT("LCtrl")},
-		{EKeys::RightControl, TEXT("RCtrl")},
-		{EKeys::LeftAlt, TEXT("LAlt")},
-		{EKeys::RightAlt, TEXT("RAlt")},
-		{EKeys::LeftCommand, TEXT("LWin")},
-		{EKeys::RightCommand, TEXT("RWin")},
-		{EKeys::BackSpace, TEXT("Bksp")},
-		{EKeys::Up, TEXT("↑")},
-		{EKeys::Down, TEXT("↓")},
-		{EKeys::Left, TEXT("←")},
-		{EKeys::Right, TEXT("→")},
-		{EKeys::NumPadZero, TEXT("N0")},
-		{EKeys::NumPadOne, TEXT("N1")},
-		{EKeys::NumPadTwo, TEXT("N2")},
-		{EKeys::NumPadThree, TEXT("N3")},
-		{EKeys::NumPadFour, TEXT("N4")},
-		{EKeys::NumPadFive, TEXT("N5")},
-		{EKeys::NumPadSix, TEXT("N6")},
-		{EKeys::NumPadSeven, TEXT("N7")},
-		{EKeys::NumPadEight, TEXT("N8")},
-		{EKeys::NumPadNine, TEXT("N9")},
-		{EKeys::Add, TEXT("N+")},
-		{EKeys::Subtract, TEXT("N-")},
-		{EKeys::Multiply, TEXT("N*")},
-		{EKeys::Divide, TEXT("N/")},
-		{EKeys::Decimal, TEXT("N.")},
-		{EKeys::NumLock, TEXT("Num")},
-		{EKeys::ScrollLock, TEXT("ScrLk")},
-	};
-
-	for (const TPair<FKey, const TCHAR*>& Alias : Aliases)
-	{
-		if (Key == Alias.Key)
-		{
-			return FText::FromString(Alias.Value);
-		}
-	}
-
-	return Key.GetDisplayName(false);
-}
-}
 
 void UInputActionKeyDisplayWidget::SynchronizeProperties()
 {
@@ -140,7 +95,15 @@ void UInputActionKeyDisplayWidget::SetDisplayedKey(FKey NewKey)
 	TextOverride = FText::GetEmpty();
 	UnbindSettingsSubsystem();
 	UnbindControlMappingsRebuiltDelegate();
-	EnsureWatchedKeyIsResolved();
+	if (IsDesignTime())
+	{
+		// Designer widgets do not run NativeConstruct; explicit keys need no player context.
+		RefreshDisplayedKey();
+	}
+	else
+	{
+		EnsureWatchedKeyIsResolved();
+	}
 }
 
 void UInputActionKeyDisplayWidget::SetTextOverride(const FText& InOverrideText)
@@ -224,9 +187,23 @@ bool UInputActionKeyDisplayWidget::ShowResolvedKey(FKey Key)
 			UE_LOG(LogOutlier, Warning, TEXT("[InputBindKey] No texture for mouse key '%s' in '%s'; using the common frame and key name."),
 				*Key.ToString(), *GetNameSafe(MouseKeyTextureTable));
 		}
-		ShowKeyText(GetCompactKeyDisplayName(Key), Key);
+		ShowKeyText(GetKeyDisplayName(Key), Key);
 	}
 	return true;
+}
+
+FText UInputActionKeyDisplayWidget::GetKeyDisplayName(FKey Key) const
+{
+	if (Key.IsValid() && KeyDisplayNameTable && KeyDisplayNameTable->GetRowStruct() == FInputKeyDisplayNameDataRow::StaticStruct())
+	{
+		const FInputKeyDisplayNameDataRow* Row = KeyDisplayNameTable->FindRow<FInputKeyDisplayNameDataRow>(
+			Key.GetFName(), TEXT("InputBindKeyDisplayName"), false);
+		if (Row && !Row->DisplayName.IsEmpty())
+		{
+			return Row->DisplayName;
+		}
+	}
+	return Key.GetDisplayName(false);
 }
 
 const FInputKeyTextureDataRow* UInputActionKeyDisplayWidget::FindKeyTextureRow(FKey Key) const
@@ -241,9 +218,10 @@ const FInputKeyTextureDataRow* UInputActionKeyDisplayWidget::FindKeyTextureRow(F
 
 void UInputActionKeyDisplayWidget::ShowKeyText(const FText& Text, FKey Key)
 {
-	(void)Key;
 	bDisplayingImageKey = false;
-	DisplayedKeyTexture = nullptr;
+	// Showing a label must not discard the key's mapped frame texture.
+	const FInputKeyTextureDataRow* Row = FindKeyTextureRow(Key);
+	DisplayedKeyTexture = Row && IsValid(Row->Texture) ? Row->Texture.Get() : nullptr;
 	ImageDisplaySize = FVector2D::ZeroVector;
 	if (KeyText)
 	{
@@ -273,6 +251,7 @@ void UInputActionKeyDisplayWidget::SetBorderImage(UTexture2D* NewImage)
 {
 	BorderImage = NewImage;
 	RefreshBorderBrush();
+	RefreshKeyLayout();
 }
 
 void UInputActionKeyDisplayWidget::SetKeyTextColor(FLinearColor NewColor)
@@ -317,7 +296,64 @@ FVector2D UInputActionKeyDisplayWidget::GetKeyDisplaySize() const
 		if (ImageDisplaySize.X > 0.0) return FVector2D(ImageDisplaySize.X, ImageDisplaySize.X / Aspect);
 		return FVector2D(Height * Aspect, Height);
 	}
-	return FVector2D(FMath::Max(1.0f, MinTextKeyWidth), Height);
+	// 폰트 크기는 높이에서 정하고, 프레임 너비는 그 폰트로 측정한 라벨에 맞춘다.
+	// nine-slice 프레임이 너비를 따라 늘어나므로 모든 키의 글자 크기가 같아진다.
+	const double MinWidth = FMath::Max(static_cast<double>(FMath::Max(1.0f, MinTextKeyWidth)), Height);
+	const double MaxWidth = FMath::Max(MinWidth, static_cast<double>(MaxTextKeyWidth));
+	double Width = MinWidth;
+	FSlateFontInfo FittedFont;
+	if (KeyText && GetFittedKeyFont(FittedFont))
+	{
+		const TSharedRef<FSlateFontMeasure> FontMeasure = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
+		const FMargin TextPadding = GetTextBorderPadding();
+		Width = FMath::CeilToDouble(FontMeasure->Measure(KeyText->GetText(), FittedFont).X) + TextPadding.Left + TextPadding.Right;
+		if (Width > Height)
+		{
+			// 짧은 라벨은 정사각형을 유지하고, 긴 라벨만 프레임과 글자 사이를 띄운다.
+			Width += Height * FMath::Max(0.0f, LongLabelSidePaddingRatio) * 2.0;
+		}
+	}
+	return FVector2D(FMath::Clamp(Width, MinWidth, MaxWidth), Height);
+}
+
+FMargin UInputActionKeyDisplayWidget::GetTextBorderPadding() const
+{
+	// 이미지 키는 Border padding을 0으로 바꾸므로 최초 WBP 값을 기준으로 한다.
+	if (bHasDefaultBorderPadding)
+	{
+		return DefaultBorderPadding;
+	}
+	return Border ? Border->GetPadding() : FMargin(0.0f);
+}
+
+bool UInputActionKeyDisplayWidget::GetFittedKeyFont(FSlateFontInfo& OutFont) const
+{
+	if (!KeyText || !FSlateApplication::IsInitialized() || !FSlateApplication::Get().GetRenderer())
+	{
+		return false;
+	}
+	OutFont = bHasDefaultKeyFont ? DefaultKeyFont : KeyText->GetFont();
+	if (!OutFont.HasValidFont())
+	{
+		return false;
+	}
+
+	// 줄 높이는 폰트 크기에 비례하므로 기준 크기에서 한 번 측정해 역산한다.
+	constexpr float ReferenceFontSize = 100.0f;
+	FSlateFontInfo ReferenceFont = OutFont;
+	ReferenceFont.Size = ReferenceFontSize;
+	const TSharedRef<FSlateFontMeasure> FontMeasure = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
+	const float ReferenceLineHeight = FontMeasure->GetMaxCharacterHeight(ReferenceFont);
+	if (ReferenceLineHeight <= 0.0f)
+	{
+		return false;
+	}
+
+	const FMargin TextPadding = GetTextBorderPadding();
+	const float InnerHeight = FMath::Max(1.0f, DisplayHeight - TextPadding.Top - TextPadding.Bottom);
+	const float TargetLineHeight = InnerHeight * FMath::Clamp(TextHeightRatio, 0.1f, 1.0f);
+	OutFont.Size = FMath::Max(1.0f, TargetLineHeight * ReferenceFontSize / ReferenceLineHeight);
+	return true;
 }
 
 void UInputActionKeyDisplayWidget::RefreshKeyLayout()
@@ -331,24 +367,28 @@ void UInputActionKeyDisplayWidget::RefreshKeyLayout()
 		}
 		Border->SetPadding(bDisplayingImageKey ? FMargin(0.0f) : DefaultBorderPadding);
 	}
+	if (KeyText)
+	{
+		if (!bHasDefaultKeyFont)
+		{
+			DefaultKeyFont = KeyText->GetFont();
+			bHasDefaultKeyFont = true;
+		}
+		FSlateFontInfo FittedFont;
+		if (!bDisplayingImageKey && GetFittedKeyFont(FittedFont))
+		{
+			KeyText->SetFont(FittedFont);
+		}
+	}
 	if (!WidgetTree) return;
 	USizeBox* KeySizeBox = WidgetTree->FindWidget<USizeBox>(TEXT("SizeBox"));
 	if (!KeySizeBox) KeySizeBox = WidgetTree->FindWidget<USizeBox>(TEXT("SizeBox_0"));
 	if (!KeySizeBox) return;
 	const FVector2D Size = GetKeyDisplaySize();
 	KeySizeBox->SetHeightOverride(Size.Y);
-	if (bDisplayingImageKey)
-	{
-		KeySizeBox->ClearMinDesiredWidth();
-		KeySizeBox->ClearMaxDesiredWidth();
-		KeySizeBox->SetWidthOverride(Size.X);
-	}
-	else
-	{
-		KeySizeBox->ClearWidthOverride();
-		KeySizeBox->SetMinDesiredWidth(Size.X);
-		KeySizeBox->SetMaxDesiredWidth(FMath::Max(static_cast<float>(Size.X), MaxTextKeyWidth));
-	}
+	KeySizeBox->ClearMinDesiredWidth();
+	KeySizeBox->ClearMaxDesiredWidth();
+	KeySizeBox->SetWidthOverride(Size.X);
 }
 
 void UInputActionKeyDisplayWidget::RefreshBorderBrush()
@@ -364,6 +404,7 @@ void UInputActionKeyDisplayWidget::RefreshBorderBrush()
 		bHasDefaultBorderBrush = true;
 	}
 	FSlateBrush Brush = DefaultBorderBrush;
+	UTexture2D* FrameTexture = IsValid(DisplayedKeyTexture) ? DisplayedKeyTexture.Get() : BorderImage.Get();
 	if (bDisplayingImageKey)
 	{
 		Brush.SetResourceObject(DisplayedKeyTexture);
@@ -372,12 +413,13 @@ void UInputActionKeyDisplayWidget::RefreshBorderBrush()
 		Brush.Tiling = ESlateBrushTileType::NoTile;
 		Brush.SetImageSize(GetKeyDisplaySize());
 	}
-	else if (BorderImage)
+	else if (FrameTexture)
 	{
-		Brush.SetResourceObject(BorderImage);
+		Brush.SetResourceObject(FrameTexture);
 		Brush.DrawAs = ESlateBrushDrawType::Box;
 		Brush.Margin = FrameSliceMargin;
 		Brush.Tiling = ESlateBrushTileType::NoTile;
+		Brush.SetImageSize(GetKeyDisplaySize());
 	}
 	Border->SetBrush(Brush);
 }

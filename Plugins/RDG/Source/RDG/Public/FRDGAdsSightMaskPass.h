@@ -20,7 +20,8 @@ public:
 		const FSceneView& View,
 		FRDGTextureRef InputMask,
 		FIntPoint TextureExtent,
-		float Radius);
+		float Radius,
+		bool bHalfResolution);
 
 	static FRDGTextureRef AddSoftenPass(
 		FRDGBuilder& GraphBuilder,
@@ -44,7 +45,8 @@ private:
 		float Radius,
 		uint32 PassMode,
 		const TCHAR* TextureName,
-		const TCHAR* EventName);
+		const TCHAR* EventName,
+		FRDGTextureRef ReferenceMask = nullptr);
 
 	static FRDGTextureRef AddSoftenMaskPass(
 		FRDGBuilder& GraphBuilder,

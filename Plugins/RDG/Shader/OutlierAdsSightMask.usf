@@ -90,6 +90,51 @@ void IntegerMaskMainCS(uint2 Pixel : SV_DispatchThreadID)
         return;
     }
 
+    if (PassMode == 3)
+    {
+        // 2x2 max 다운샘플. TextureExtent는 반해상도, InputMask는 풀해상도.
+        uint2 SourceExtent;
+        InputMask.GetDimensions(SourceExtent.x, SourceExtent.y);
+        int2 MaxSourcePixel = int2(SourceExtent) - 1;
+        int2 BasePixel = int2(Pixel) * 2;
+
+        uint Mask = InputMask.Load(int3(min(BasePixel, MaxSourcePixel), 0));
+        Mask = max(Mask, InputMask.Load(int3(min(BasePixel + int2(1, 0), MaxSourcePixel), 0)));
+        Mask = max(Mask, InputMask.Load(int3(min(BasePixel + int2(0, 1), MaxSourcePixel), 0)));
+        Mask = max(Mask, InputMask.Load(int3(min(BasePixel + int2(1, 1), MaxSourcePixel), 0)));
+
+        OutMask[Pixel] = Mask;
+        return;
+    }
+
+    if (PassMode == 4)
+    {
+        // 포인트 업샘플. TextureExtent는 풀해상도, InputMask는 반해상도, HardMask는 풀해상도 원본 스텐실 마스크.
+        // 2x2 max 다운샘플은 바깥 경계를 최대 1px 넓혀 2px 계단을 만든다.
+        // 원본이 0인 픽셀에서 반해상도 이웃 중 0이 있으면(경계 블록) 0으로 되돌려 경계를 원본 스텐실 윤곽에 맞춘다.
+        int2 HalfPixel = int2(Pixel) / 2;
+        uint Mask = InputMask.Load(int3(HalfPixel, 0));
+
+        if (Mask != 0u && HardMask.Load(int3(Pixel, 0)) == 0u)
+        {
+            uint2 HalfExtent;
+            InputMask.GetDimensions(HalfExtent.x, HalfExtent.y);
+            int2 MaxHalfPixel = int2(HalfExtent) - 1;
+
+            for (int Y = -1; Y <= 1; ++Y)
+            {
+                for (int X = -1; X <= 1; ++X)
+                {
+                    int2 NeighborPixel = clamp(HalfPixel + int2(X, Y), int2(0, 0), MaxHalfPixel);
+                    Mask = min(Mask, InputMask.Load(int3(NeighborPixel, 0)));
+                }
+            }
+        }
+
+        OutMask[Pixel] = Mask;
+        return;
+    }
+
 }
 
 [numthreads(8, 8, 1)]

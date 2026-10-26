@@ -124,6 +124,8 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "EMP")
 	bool HasMarkedTargets() const { return MarkedActors.Num() > 0; }
 
+	bool IsAutoTargetActive() const { return bAutoTargetActive; }
+
 protected:
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UEMPableComponent>> EMPCandidateComponents;
@@ -132,6 +134,30 @@ protected:
 	TObjectPtr<UEMPLayerWidget> EMPLayerWidget;
 
 private:
+
+	// 서버가 세션/시간/실행을 소유한다. 클라이언트는 화면 내 최초 목록과 HUD만 담당한다.
+	UFUNCTION(Client, Reliable)
+	void ClientStartAutoTargetEMP(float PendingTime, uint32 SessionId);
+	UFUNCTION(Server, Reliable)
+	void ServerSetAutoTargetSnapshot(const TArray<AActor*>& Actors, uint32 SessionId);
+	UFUNCTION(Client, Reliable)
+	void ClientRevealAutoTarget(AActor* Actor, uint32 SessionId);
+
+	void GatherAutoTargetSnapshot(TArray<AActor*>& OutActors) const;
+	void BeginAutoTargetPending(const TArray<AActor*>& Actors);
+	void AdvanceAutoTargetPending(float ElapsedTime);
+	void ResetAutoTarget();
+	static void SortByForwardDepth(TArray<AActor*>& Actors, const FVector& Origin, const FVector& Forward);
+
+	TArray<TWeakObjectPtr<AActor>> AutoTargetSnapshot;
+	FVector AutoTargetOrigin = FVector::ZeroVector;
+	FVector AutoTargetForward = FVector::ForwardVector;
+	float AutoTargetPendingTime = 0.0f;
+	float AutoTargetStartTime = 0.0f;
+	int32 NextAutoTargetIndex = 0;
+	uint32 AutoTargetSessionId = 0;
+	bool bAutoTargetActive = false;
+	bool bAwaitingAutoTargetSnapshot = false;
 	UPROPERTY(VisibleInstanceOnly, Category = "EMP")
 	FPartnerEMPAbilityData CachedAbilityData;
 

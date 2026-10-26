@@ -4,6 +4,8 @@
 #include "Engine/DataTable.h"
 #include "HackInfoRow.generated.h"
 
+class UTexture2D;
+
 USTRUCT(BlueprintType)
 struct OUTLIER_API FHackInfoRow : public FTableRowBase
 {
@@ -11,4 +13,7 @@ struct OUTLIER_API FHackInfoRow : public FTableRowBase
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hack|UI")
 	FText DisplayText;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hack|UI")
+	TSoftObjectPtr<UTexture2D> InfoBorderImage;
 };

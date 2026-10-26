@@ -1,4 +1,5 @@
 #include "Drone/Partner/PartnerVitalityComponent.h"
+#include "Audio/OutlierAudioFeedback.h"
 
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Drone/Partner/PartnerSurvivalDataRow.h"
@@ -329,6 +330,7 @@ void UPartnerVitalityComponent::EnterReboot()
 		return;
 	}
 
+	OutlierAudioFeedback::World(Partner, TEXT("Audio.Context.Player.02.State.Down"), TEXT("Audio.Type.Player"));
 	AbilitySystem->CancelAllAbilities();
 	FGameplayTagContainer DebuffTags;
 	DebuffTags.AddTag(OutlierGameplayTags::Effect::Debuff());
@@ -347,6 +349,7 @@ void UPartnerVitalityComponent::CompleteReboot()
 	}
 
 	AbilitySystem->RestoreHealthToMax();
+	OutlierAudioFeedback::World(Partner, TEXT("Audio.Context.Player.02.State.Reboot"), TEXT("Audio.Type.Player"));
 	Partner->RefreshEnemyDetectionForVitality();
 }
 

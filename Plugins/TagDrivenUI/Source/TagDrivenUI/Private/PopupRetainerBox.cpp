@@ -1,4 +1,5 @@
 #include "PopupRetainerBox.h"
+#include "Engine/World.h"
 
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Slate/SRetainerWidget.h"
@@ -150,6 +151,10 @@ EActiveTimerReturnType UPopupRetainerBox::HandlePopupTick(double CurrentTime, fl
 		return EActiveTimerReturnType::Stop;
 	}
 
+	if (bPauseWithWorld && GetWorld() && GetWorld()->IsPaused())
+	{
+		return EActiveTimerReturnType::Continue;
+	}
 	Elapsed += DeltaTime;
 	const float Alpha = FMath::Clamp(Elapsed / Duration, 0.0f, 1.0f);
 	const float Amount = bReversePlayback ? 1.0f - Alpha : Alpha;

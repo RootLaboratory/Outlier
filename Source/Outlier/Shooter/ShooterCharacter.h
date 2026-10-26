@@ -33,6 +33,7 @@ class UOutlierAbilitySystemComponent;
 class UOutlierVitalAttributeSet;
 class UOutlierShieldAttributeSet;
 class UOutlierWeaponAttributeSet;
+class UPartnerShieldRecipientComponent;
 class UDataTable;
 class USphereComponent;
 class USkeletalMesh;
@@ -253,6 +254,9 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
 	TObjectPtr<UOutlierWeaponAttributeSet> WeaponAttributeSet;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Shield")
+	TObjectPtr<UPartnerShieldRecipientComponent> PartnerShieldRecipient;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UShooterHealthComponent> HealthComponent;
@@ -515,12 +519,10 @@ protected:
 
 	FTimerHandle ActionLockTimerHandle;
 
-	FTimerHandle PartnerShieldTimerHandle;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Shield")
 	float MaxShield = 100.0f;
 
-	float PartnerShieldDuration = 0.0f;
 	// 서버의 리로드용 새 Pawn만 예약한다. 업그레이드 투영 후 첫 Possess에서 소비한다.
 	bool bPendingReloadShieldFill = false;
 	FDelegateHandle HealthChangedHandle;
@@ -605,6 +607,8 @@ protected:
 	void BindGasVitalityObservers();
 	void UnbindGasVitalityObservers();
 	void HandleHealthChanged(const FOnAttributeChangeData& ChangeData);
+	void RefreshLowHPAudio();
+	virtual void UnPossessed() override;
 	void HandleShieldChanged(const FOnAttributeChangeData& ChangeData);
 	void HandleDeadTagChanged(const FGameplayTag Tag, int32 NewCount);
 	void HandleBulletReflectionTagChanged(const FGameplayTag Tag, int32 NewCount);
@@ -654,6 +658,7 @@ protected:
 
 	virtual void LookInput(const FInputActionValue& Value) override;
 public:
+	void PlayWeaponEquipAudio();
 	// Construction
 	/** Constructor */
 	AShooterCharacter(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
@@ -662,7 +667,6 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Movement|Jump", meta = (ClampMin = "0.0", Units = "s"))
 	float CoyoteTime = 0.1f;
 
-	virtual void UnPossessed() override;
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
 	virtual void BeginJumperEffect(FName EffectId, const FJumperMovementEffect& Effect, AActor* SourceActor) override;
 	virtual void EndJumperEffect(FName EffectId, AActor* SourceActor) override;
@@ -808,7 +812,7 @@ public:
 	void RefreshShooterAmmoUI();
 
 	void ArmReloadShieldFillOnPossess();
-	void ApplyPartnerShield(float Amount, float Duration);
+	bool ApplyPartnerShield(float Amount, float Duration, float HealthRegenRate = 0.0f);
 	float GetCurPartnerShield() const;
 	float GetMaxPartnerShield() const;
 	float GetCurShield() const;
@@ -906,7 +910,6 @@ protected:
 		AController* EventInstigator,
 		AActor* DamageCauser,
 		const FGameplayTag& DamageTag);
-	void UpdatePartnerShieldDecay();
 
 	// Input Handlers
 	virtual void TryStartAttack() override;

@@ -1,4 +1,7 @@
 #include "UI/LocalPlayerUILayerSubsystem.h"
+#include "Audio/OutlierAudioFeedback.h"
+#include "Audio/OutlierAudioSubsystem.h"
+#include "Engine/GameInstance.h"
 
 #include "Blueprint/UserWidget.h"
 #include "Components/Button.h"
@@ -304,6 +307,7 @@ FUILayerHandle ULocalPlayerUILayerSubsystem::PushWidget(
 	Entry.bShowCursor = bShowCursor;
 	Entry.bReceivesInput = bReceivesInput;
 
+	if (auto* Audio = GetWorld()->GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>()) Audio->BindMenuButtons(Widget);
 	RefreshTopLayerInput();
 	return Handle;
 }
@@ -596,16 +600,22 @@ FGameplayTag ULocalPlayerUILayerSubsystem::GetActiveInputModeTag() const
 
 bool ULocalPlayerUILayerSubsystem::RouteWidgetEscapeInput(bool bPopUnhandledInput)
 {
-	return RouteWidgetInput(
-		&IUILayerInputReceiver::Execute_HandleUILayerEscape,
-		bPopUnhandledInput);
+	auto* Audio = GetWorld()->GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>();
+	const uint64 Before = Audio ? Audio->MenuAudioSerial : 0;
+	const bool bHandled = RouteWidgetInput(&IUILayerInputReceiver::Execute_HandleUILayerEscape, bPopUnhandledInput);
+	if (bHandled && Audio && Audio->MenuAudioSerial == Before)
+		OutlierAudioFeedback::Local(this, TEXT("Audio.Context.UI.Menu.Back"));
+	return bHandled;
 }
 
 bool ULocalPlayerUILayerSubsystem::RouteWidgetConfirmedInput()
 {
-	return RouteWidgetInput(
-		&IUILayerInputReceiver::Execute_HandleUILayerConfirmed,
-		false);
+	auto* Audio = GetWorld()->GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>();
+	const uint64 Before = Audio ? Audio->MenuAudioSerial : 0;
+	const bool bHandled = RouteWidgetInput(&IUILayerInputReceiver::Execute_HandleUILayerConfirmed, false);
+	if (bHandled && Audio && Audio->MenuAudioSerial == Before)
+		OutlierAudioFeedback::Local(this, TEXT("Audio.Context.UI.Menu.Click"));
+	return bHandled;
 }
 
 bool ULocalPlayerUILayerSubsystem::RouteWidgetUpInput()
@@ -703,6 +713,31 @@ bool ULocalPlayerUILayerSubsystem::BindWidgetInput(
 	BindRoute(Config->WidgetLeftAction, &ULocalPlayerUILayerSubsystem::RouteWidgetLeftInput);
 	BindRoute(Config->WidgetRightAction, &ULocalPlayerUILayerSubsystem::RouteWidgetRightInput);
 	return true;
+}
+
+bool ULocalPlayerUILayerSubsystem::RouteWidgetPreviewKeyDown(UUserWidget* SourceWidget, const FKeyEvent& KeyEvent)
+{
+	if (CachedInputWidget.Get() != SourceWidget || !WidgetInputConfig) return false;
+	const UEnhancedInputLocalPlayerSubsystem* InputSubsystem = GetLocalPlayer()
+		? GetLocalPlayer()->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>() : nullptr;
+	if (!InputSubsystem) return false;
+
+	const auto IsMapped = [InputSubsystem, &KeyEvent](const UInputAction* Action)
+	{
+		return Action && InputSubsystem->QueryKeysMappedToAction(Action).Contains(KeyEvent.GetKey());
+	};
+	// Match the Enhanced Input Started bindings: holding a key must not confirm twice.
+	const auto Route = [&KeyEvent](auto&& Callback)
+	{
+		return KeyEvent.IsRepeat() || Callback();
+	};
+	if (IsMapped(WidgetInputConfig->WidgetEscapeAction)) return Route([this] { return RouteWidgetEscapeInput(); });
+	if (IsMapped(WidgetInputConfig->WidgetConfirmedAction)) return Route([this] { return RouteWidgetConfirmedInput(); });
+	if (IsMapped(WidgetInputConfig->WidgetUpAction)) return Route([this] { return RouteWidgetUpInput(); });
+	if (IsMapped(WidgetInputConfig->WidgetDownAction)) return Route([this] { return RouteWidgetDownInput(); });
+	if (IsMapped(WidgetInputConfig->WidgetLeftAction)) return Route([this] { return RouteWidgetLeftInput(); });
+	if (IsMapped(WidgetInputConfig->WidgetRightAction)) return Route([this] { return RouteWidgetRightInput(); });
+	return false;
 }
 
 bool ULocalPlayerUILayerSubsystem::RouteWidgetInput(

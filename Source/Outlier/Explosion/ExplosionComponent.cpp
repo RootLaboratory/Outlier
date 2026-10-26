@@ -152,13 +152,13 @@ void UExplosionComponent::NotifyExplosionProcessed(
 
 	MulticastPlayExplosionEffects(
 		ExplosionLocation,
-		ExplosionVFX.Get());
+		ExplosionVFX.Get(), ExplosionAudioTypeTag, bHasAudioContextOverride ? AudioContextOverride : ExplosionAudioContextTag);
 	OnExplosionProcessed.Broadcast();
 }
 
 void UExplosionComponent::MulticastPlayExplosionEffects_Implementation(
 	FVector_NetQuantize InExplosionLocation,
-	UNiagaraSystem* InExplosionVFX)
+	UNiagaraSystem* InExplosionVFX, FGameplayTag InAudioType, FGameplayTag InAudioContext)
 {
 	if (GetNetMode() == NM_DedicatedServer)
 	{
@@ -170,12 +170,12 @@ void UExplosionComponent::MulticastPlayExplosionEffects_Implementation(
 		UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, InExplosionVFX, InExplosionLocation);
 	}
 
-	PlayExplosionAudio(InExplosionLocation);
+	PlayExplosionAudio(InExplosionLocation, InAudioType, InAudioContext);
 }
 
-void UExplosionComponent::PlayExplosionAudio(const FVector& ExplosionLocation) const
+void UExplosionComponent::PlayExplosionAudio(const FVector& ExplosionLocation, FGameplayTag AudioType, FGameplayTag AudioContext) const
 {
-	if (!ExplosionAudioTypeTag.IsValid() || !ExplosionAudioContextTag.IsValid())
+	if (!AudioType.IsValid() || !AudioContext.IsValid())
 	{
 		return;
 	}
@@ -190,8 +190,8 @@ void UExplosionComponent::PlayExplosionAudio(const FVector& ExplosionLocation) c
 	}
 
 	FOutlierAudioPlayRequest Request;
-	Request.EventTag = ExplosionAudioTypeTag;
-	Request.ContextTags.AddTag(ExplosionAudioContextTag);
+	Request.EventTag = AudioType;
+	Request.ContextTags.AddTag(AudioContext);
 	Request.EmitterActor = GetOwner();
 	Request.Location = ExplosionLocation;
 	Request.bHasLocation = true;

@@ -96,7 +96,7 @@ void UClickCircleMiniGameWidget::SpawnCircleWidgets()
 
 		FClickCircleWidget& ClickCircle = ClickCircleWidgets.AddDefaulted_GetRef();
 		ClickCircle.BaseBorderWidget = CreateCircleBorderLayer(Radius, 0.0f, 0.0f, BaseCircleMaterial);
-		ClickCircle.ValidBorderWidget = CreateCircleBorderLayer(Radius, ClickAngleToleranceDegrees / 360.0f, ValidAngleDegrees, ValidCircleMaterial);
+		ClickCircle.ValidBorderWidget = CreateCircleBorderLayer(Radius, GetEffectiveClickAngleToleranceDegrees() / 360.0f, ValidAngleDegrees, ValidCircleMaterial);
 		ClickCircle.PointerBorderWidget = CreateCircleBorderLayer(Radius, PointerArcDegrees / 360.0f, StartAngleDegrees, PointerCircleMaterial);
 		ClickCircle.ClickRadius = Radius;
 		ClickCircle.ValidAngleDegrees = ValidAngleDegrees;
@@ -247,7 +247,7 @@ EClickCircleMouseResult UClickCircleMiniGameWidget::EvaluateMouseClick() const
 
 	const FClickCircleWidget& CurrentCircle = ClickCircleWidgets[CurrentCircleIndex];
 	const float PointerDistance = GetAngularDistanceDegrees(SpinningPointer.AngleDegrees, CurrentCircle.ValidAngleDegrees);
-	if (PointerDistance > ClickAngleToleranceDegrees * 0.5f)
+	if (PointerDistance > GetEffectiveClickAngleToleranceDegrees() * 0.5f)
 	{
 		return EClickCircleMouseResult::Failed;
 	}
@@ -255,6 +255,11 @@ EClickCircleMouseResult UClickCircleMiniGameWidget::EvaluateMouseClick() const
 	return CurrentCircleIndex >= ClickCircleWidgets.Num() - 1
 		? EClickCircleMouseResult::Clear
 		: EClickCircleMouseResult::Valid;
+}
+
+float UClickCircleMiniGameWidget::GetEffectiveClickAngleToleranceDegrees() const
+{
+	return FMath::Clamp(ClickAngleToleranceDegrees * SuccessRangeMultiplier, 0.0f, 360.0f);
 }
 
 FVector2D UClickCircleMiniGameWidget::GetCircleCenterLocal() const

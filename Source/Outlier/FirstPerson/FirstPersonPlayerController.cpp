@@ -2,6 +2,8 @@
 
 
 #include "FirstPersonPlayerController.h"
+#include "Room/RoomCombatSubsystem.h"
+#include "Audio/OutlierAudioFeedback.h"
 #include "Level/Elevator/ElevatorShaftController.h"
 #include "Audio/OutlierAudioSubsystem.h"
 #include "Audio/OutlierUIAudioSettings.h"
@@ -43,6 +45,7 @@
 #include "UI/InGamePauseWidget.h"
 #include "UI/InGameSettingWidget.h"
 #include "UI/GameOverWidget.h"
+#include "UI/ActorBasedWidgetSubsystem.h"
 #include "UI/GameOverPendingWidget.h"
 #include "UI/UILayerKeyHintWidget.h"
 #include "Upgrade/OutlierUpgradeComponent.h"
@@ -122,11 +125,6 @@ void AFirstPersonPlayerController::ServerDebugWorldGuide_Implementation(FName Co
 	if (!Manager)
 	{
 		UE_LOG(LogOutlier, Warning, TEXT("[WorldGuideDebug][%s] No unique WorldGuideManager on the server."), *GetWorld()->GetName());
-		return;
-	}
-	if (Command == TEXT("dump"))
-	{
-		UE_LOG(LogOutlier, Log, TEXT("[WorldGuideDebug] %s"), *Manager->BuildDebugReport());
 		return;
 	}
 	bool bAccepted = false;
@@ -800,6 +798,12 @@ void AFirstPersonPlayerController::PushGameOverWidget()
 		return;
 	}
 
+	// Discard gameplay playback before widget construction can play its own UI audio.
+	if (UOutlierAudioSubsystem* Audio = GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>())
+	{
+		Audio->StopAllLocalAudio();
+	}
+
 	FUILayerPushRequest Request;
 	Request.WidgetClass = GameOverWidgetClass;
 	Request.LayerTag = UILayerTags::Gameplay();
@@ -946,6 +950,7 @@ void AFirstPersonPlayerController::ServerTryActivateUpgradeNode_Implementation(
 	AActor* UpgradeOwner, FName NodeIdOrRowName, UOutlierUpgradeSetData* UpgradeSetData, uint32 RequestId)
 {
 	const bool bSucceeded = RequestId != 0 && TryActivateUpgradeNodeForRequest(UpgradeOwner, NodeIdOrRowName, UpgradeSetData);
+	OutlierAudioFeedback::Owner(this, bSucceeded ? TEXT("Audio.Context.UI.Ingame.Upgrade.Active") : TEXT("Audio.Context.UI.Ingame.Upgrade.Fail"), TEXT("Audio.Type.UI"));
 	// 거절 경로도 반드시 응답하여 UI가 성공 여부를 추측하지 않게 한다.
 	ClientUpgradePurchaseResult(RequestId, UpgradeOwner, NodeIdOrRowName, bSucceeded);
 }
@@ -1142,6 +1147,9 @@ bool AFirstPersonPlayerController::IsFirstPersonInputMode(FGameplayTag InputMode
 void AFirstPersonPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
+	if (IsLocalController())
+		if (UOutlierAudioSubsystem* Audio = GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>())
+			Audio->EnterGameplayMusic();
 	if (ULocalPlayerUISubSystem* UISubsystem = GetLocalPlayer()
 		? GetLocalPlayer()->GetSubsystem<ULocalPlayerUISubSystem>()
 		: nullptr)
@@ -1159,6 +1167,14 @@ void AFirstPersonPlayerController::AcknowledgePossession(APawn* P)
 
 	if (IsLocalController())
 	{
+		if (P)
+		{
+			if (UOutlierAudioSubsystem* Audio = GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>())
+			{
+				Audio->EnterGameplayMusic();
+			}
+		}
+
 		// 원격 클라이언트는 새 Pawn 확인 시 기존 MainUI의 가시성을 되돌린다.
 		if (bReleaseDeathTransitionOnPossess)
 		{
@@ -1245,6 +1261,16 @@ void AFirstPersonPlayerController::ReportLoadedLevelsVisibilityToServer()
 void AFirstPersonPlayerController::OnPossess(APawn* InPawn)
 {
 	Super::OnPossess(InPawn);
+	// Listen controllers can BeginPlay before SwapPlayerControllers assigns their LocalPlayer.
+	// Possession happens after that assignment and is the authoritative host gameplay entry.
+	if (IsLocalController() && InPawn)
+	{
+		if (UOutlierAudioSubsystem* Audio = GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>())
+		{
+			Audio->EnterGameplayMusic();
+		}
+	}
+
 	// 리슨 서버 호스트는 서버 Possess에서 로컬 UI를 복구한다.
 	if (IsLocalController() && InPawn && bReleaseDeathTransitionOnPossess)
 	{
@@ -1318,7 +1344,6 @@ void AFirstPersonPlayerController::SetupInputComponent()
 
 void AFirstPersonPlayerController::HandleWidgetEscapeInput()
 {
-	PlayWidgetEscapeLocal2DAudio();
 
 	ULocalPlayerUILayerSubsystem* LayerSubsystem = GetLocalPlayer()
 		? GetLocalPlayer()->GetSubsystem<ULocalPlayerUILayerSubsystem>()
@@ -1333,6 +1358,7 @@ void AFirstPersonPlayerController::HandleWidgetEscapeInput()
 	// 사망 중에는 UI 응답 외에 설정 창을 새로 열지 않는다.
 	if (GetPawn() && !bGameOverVisible)
 	{
+		OutlierAudioFeedback::Local(this, TEXT("Audio.Context.UI.Menu.Click"));
 		RequestOpenInGameSetting();
 	}
 }
@@ -2062,6 +2088,13 @@ void AFirstPersonPlayerController::InitializeOutlierPlayerState()
 
 	//OutlierPlayerState->SetPlayerRole(DefaultPlayerRole);
 	//OutlierPlayerState->SetPairId(DefaultPairId);
+	if (URoomCombatSubsystem* Combat = GetWorld()->GetSubsystem<URoomCombatSubsystem>())
+	{
+		if (Combat->IsCombatMusicActive())
+		{
+			Combat->SendCombatMusicToPlayer(OutlierPlayerState, true, false);
+		}
+	}
 
 }
 
@@ -2621,6 +2654,13 @@ void FHudWidgetCollapseState::Apply(UWidget* Widget, bool bShow)
 void AFirstPersonPlayerController::CollapseMainWidgetForDeath()
 {
 	bHudHiddenForDeath = true;
+	if (IsLocalController())
+	{
+		if (UActorBasedWidgetSubsystem* Subsystem = GetWorld()->GetSubsystem<UActorBasedWidgetSubsystem>())
+		{
+			Subsystem->DismissRegisteredWidgets();
+		}
+	}
 	// 튜토리얼 보이스는 자막과 함께 끝난다. 중단된 체인은 리스폰 후 재개하지 않고 버린다.
 	if (UOutlierAudioSubsystem* Audio = GetGameInstance() ? GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>() : nullptr)
 	{

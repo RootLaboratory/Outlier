@@ -92,7 +92,8 @@ public:
 	void ClientStopCandidateSearch();
 
 	UFUNCTION(Client, Reliable)
-	void ClientStartHackMiniGame(AActor* TargetActor, UHackableComponent* HackableComponent);
+	void ClientStartHackMiniGame(AActor* TargetActor, UHackableComponent* HackableComponent,
+		float ClickSuccessRangeMultiplier = 1.0f, float SpinningGapMultiplier = 1.0f);
 
 	UFUNCTION(Client, Reliable)
 	void ClientStopHackMiniGame();
@@ -174,7 +175,9 @@ private:
 	bool HasLineOfSight(AActor* Actor) const;
 	void EnsureCandidateLayerWidget();
 	void DestroyCandidateLayerWidget();
-	bool EnsureHackMiniGameWidget(AActor* TargetActor, UHackableComponent* HackableComponent);
+	float ResolveMiniGameSuccessRangeMultiplier(bool bSpinningCircle) const;
+	bool EnsureHackMiniGameWidget(AActor* TargetActor, UHackableComponent* HackableComponent,
+		float ClickSuccessRangeMultiplier, float SpinningGapMultiplier);
 	void DestroyHackMiniGameWidget();
 	ULocalPlayerUILayerSubsystem* GetUILayerSubsystem() const;
 	void AddHackCandidate(AActor* Actor, UHackableComponent* HackableComponent, const FVector2D& ScreenLocation);
@@ -190,7 +193,8 @@ private:
 		EEndPlayReason::Type EndPlayReason);
 	void HandleHackTargetUnavailable(UHackableComponent* UnavailableComponent);
 
-	void StartHackMiniGame(AActor* TargetActor, UHackableComponent* HackableComponent);
+	void StartHackMiniGame(AActor* TargetActor, UHackableComponent* HackableComponent,
+		float ClickSuccessRangeMultiplier, float SpinningGapMultiplier);
 
 	UFUNCTION()
 	void HandleHackMiniGameFinished(const FHackResultContext& ResultContext);

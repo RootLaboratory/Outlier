@@ -52,7 +52,12 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Explosion")
 	FOnExplosionProcessed OnExplosionProcessed;
 
+public:
+	// Runtime selection is captured with the explosion RPC; an invalid context intentionally mutes it.
+	void SetAudioContextOverride(FGameplayTag Context) { AudioContextOverride = Context; bHasAudioContextOverride = true; }
 protected:
+	FGameplayTag AudioContextOverride;
+	bool bHasAudioContextOverride = false;
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Explosion")
 	FDataTableRowHandle ExplosionProfileRow;
 
@@ -96,10 +101,10 @@ private:
 	UFUNCTION(NetMulticast, Reliable)
 	void MulticastPlayExplosionEffects(
 		FVector_NetQuantize InExplosionLocation,
-		UNiagaraSystem* InExplosionVFX);
+		UNiagaraSystem* InExplosionVFX, FGameplayTag InAudioType, FGameplayTag InAudioContext);
 
 	// 이미 모든 클라이언트에서 실행 중인 지점에서 호출된다 — 반드시 Local 진입점을 쓴다.
-	void PlayExplosionAudio(const FVector& ExplosionLocation) const;
+	void PlayExplosionAudio(const FVector& ExplosionLocation, FGameplayTag AudioType, FGameplayTag AudioContext) const;
 
 	FExplosionProfileRow* RuntimeProfile = nullptr;
 	TOptional<FExplosionProfileRow> RuntimeProfileStorage;

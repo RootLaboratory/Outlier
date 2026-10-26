@@ -15,6 +15,10 @@ class TAGDRIVENUI_API UPopupRetainerBox : public URetainerBox
 	GENERATED_BODY()
 
 public:
+	/** Freeze the transition with gameplay while allowing menu popups to keep animating. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Popup")
+	bool bPauseWithWorld = false;
+
 	UFUNCTION(BlueprintCallable, Category = "Popup")
 	void PlayOpen();
 

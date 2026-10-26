@@ -9,6 +9,7 @@
 #include "Engine/DataTable.h"
 #include "RangedWeaponBase.generated.h"
 
+struct FOutlierDamageRequest;
 class UProjectionMarkDefinition;
 class UTrailEffectDefinition;
 class ULocalPlayerUISubSystem;
@@ -34,6 +35,8 @@ public:
 	virtual void OnConstruction(const FTransform& Transform) override;
 
 protected:
+	void ApplyOwnerDamageModifiers(FOutlierDamageRequest& Request) const;
+
 	// 1탄창
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Ammo")
 	int32 MagazineSize = 30;

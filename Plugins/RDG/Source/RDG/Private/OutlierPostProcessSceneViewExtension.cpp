@@ -18,6 +18,7 @@
 #include "Engine/World.h"
 #include "DrawDebugHelpers.h"
 #include "FXRenderingUtils.h"
+#include "HAL/IConsoleManager.h"
 #include "PostProcessInputs.h"
 #include "PostProcess/PostProcessMaterialInputs.h"
 #include "ProfilingDebugging/RealtimeGPUProfiler.h"
@@ -26,6 +27,34 @@
 #include "SceneManagement.h"
 #include "ScreenPass.h"
 #include "SceneTexturesConfig.h"
+
+// ADS 블러 비용 분해용. Insights GPU 트랙/stat gpu에 이름으로 뜬다.
+// rdg.ADSBlur.GpuStats 1 또는 디버거의 ADSBlur.bEnableGpuStatScopes 중 하나라도 켜져 있으면 기록.
+DECLARE_GPU_STAT_NAMED(OutlierADSSightMask, TEXT("OutlierADS_Mask"));
+DECLARE_GPU_STAT_NAMED(OutlierADSSightMaskBuild, TEXT("OutlierADS_MaskBuild"));
+DECLARE_GPU_STAT_NAMED(OutlierADSSightMaskDilate, TEXT("OutlierADS_MaskDilate"));
+DECLARE_GPU_STAT_NAMED(OutlierADSSightMaskSoften, TEXT("OutlierADS_MaskSoften"));
+DECLARE_GPU_STAT_NAMED(OutlierADSSightOutputCopy, TEXT("OutlierADS_OutputCopy"));
+
+namespace
+{
+TAutoConsoleVariable<int32> CVarADSBlurGpuStats(
+	TEXT("rdg.ADSBlur.GpuStats"),
+	0,
+	TEXT("Emit named GPU stat scopes for ADS blur mask/restore passes. 0=off, 1=on."),
+	ECVF_RenderThreadSafe);
+
+TAutoConsoleVariable<int32> CVarADSBlurHalfResDilate(
+	TEXT("rdg.ADSBlur.HalfResDilate"),
+	1,
+	TEXT("Run ADS sight mask dilation at half resolution. 0=full res, 1=half res."),
+	ECVF_RenderThreadSafe);
+
+bool IsADSGpuStatsEnabled(const FADSBlurParameters& Parameters)
+{
+	return Parameters.bEnableGpuStatScopes != 0 || CVarADSBlurGpuStats.GetValueOnRenderThread() != 0;
+}
+}
 
 FOutlierPostProcessSceneViewExtension::FOutlierPostProcessSceneViewExtension(const FAutoRegister& AutoRegister, ULocalPlayer* InLocalPlayer)
 	: FSceneViewExtensionBase(AutoRegister)
@@ -251,29 +280,43 @@ void FOutlierPostProcessSceneViewExtension::PrePostProcessPass_RenderThread(FRDG
 				: 1.0f;
 			const float ScaledDilateRadius = CachedParameters.ADSBlur.SightMaskDilateRadius * PrimaryResolutionFraction;
 			const float ScaledSoftness = CachedParameters.ADSBlur.SightMaskSoftness * PrimaryResolutionFraction;
+			const bool bEnableADSGpuStats = IsADSGpuStatsEnabled(CachedParameters.ADSBlur);
 
-			FRDGTextureRef SightHardMask = FRDGAdsSightMaskPass::AddBuildMaskPass(
-				GraphBuilder,
-				InView,
-				CustomStencilTexture,
-				CustomDepthTexture,
-				MaskExtent,
-				CachedParameters.ADSBlur);
+			RDG_EVENT_SCOPE_CONDITIONAL_STAT(GraphBuilder, bEnableADSGpuStats, OutlierADSSightMask, "OutlierADS_Mask");
 
-			CachedADSSightHardMask = FRDGAdsSightMaskPass::AddDilatePass(
-				GraphBuilder,
-				InView,
-				SightHardMask,
-				MaskExtent,
-				ScaledDilateRadius);
+			FRDGTextureRef SightHardMask = nullptr;
+			{
+				RDG_EVENT_SCOPE_CONDITIONAL_STAT(GraphBuilder, bEnableADSGpuStats, OutlierADSSightMaskBuild, "OutlierADS_MaskBuild");
+				SightHardMask = FRDGAdsSightMaskPass::AddBuildMaskPass(
+					GraphBuilder,
+					InView,
+					CustomStencilTexture,
+					CustomDepthTexture,
+					MaskExtent,
+					CachedParameters.ADSBlur);
+			}
 
-			CachedADSSightSoftMask = FRDGAdsSightMaskPass::AddSoftenPass(
-				GraphBuilder,
-				InView,
-				CachedADSSightHardMask,
-				CachedADSSightHardMask,
-				MaskExtent,
-				ScaledSoftness);
+			{
+				RDG_EVENT_SCOPE_CONDITIONAL_STAT(GraphBuilder, bEnableADSGpuStats, OutlierADSSightMaskDilate, "OutlierADS_MaskDilate");
+				CachedADSSightHardMask = FRDGAdsSightMaskPass::AddDilatePass(
+					GraphBuilder,
+					InView,
+					SightHardMask,
+					MaskExtent,
+					ScaledDilateRadius,
+					CVarADSBlurHalfResDilate.GetValueOnRenderThread() != 0);
+			}
+
+			{
+				RDG_EVENT_SCOPE_CONDITIONAL_STAT(GraphBuilder, bEnableADSGpuStats, OutlierADSSightMaskSoften, "OutlierADS_MaskSoften");
+				CachedADSSightSoftMask = FRDGAdsSightMaskPass::AddSoftenPass(
+					GraphBuilder,
+					InView,
+					CachedADSSightHardMask,
+					CachedADSSightHardMask,
+					MaskExtent,
+					ScaledSoftness);
+			}
 		}
 	}
 
@@ -481,7 +524,7 @@ FScreenPassTexture FOutlierPostProcessSceneViewExtension::ADSSightRestoreCallbac
 		return SceneColor;
 	}
 
-	const bool bEnableADSGpuStats = CachedParameters.ADSBlur.bEnableGpuStatScopes != 0;
+	const bool bEnableADSGpuStats = IsADSGpuStatsEnabled(CachedParameters.ADSBlur);
 	FRDGTextureRef Restored = FRDGAdsSightRestorePass::AddPass(
 		GraphBuilder,
 		SceneColor.Texture,
@@ -494,6 +537,7 @@ FScreenPassTexture FOutlierPostProcessSceneViewExtension::ADSSightRestoreCallbac
 
 	if (Inputs.OverrideOutput.IsValid())
 	{
+		RDG_EVENT_SCOPE_CONDITIONAL_STAT(GraphBuilder, bEnableADSGpuStats, OutlierADSSightOutputCopy, "OutlierADS_OutputCopy");
 		return FRDGSceneColorCopyPass::AddPass(
 			GraphBuilder,
 			View,

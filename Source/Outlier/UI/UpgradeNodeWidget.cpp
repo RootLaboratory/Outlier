@@ -35,7 +35,7 @@ namespace
 	const FName UseActivatedTextureParameterName(TEXT("UseActivatedTexture"));
 	const FName UnlockedColorParameterName(TEXT("UnlockedColor"));
 	const FName ActivatedColorParameterName(TEXT("ActivatedColor"));
-	// Unity 빌드에서 다른 UI cpp의 익명 namespace 상수와 충돌하지 않도록 구분한다.
+	// Unity ��忡�� �ٸ� UI cpp�� �͸� namespace ����� �浹���� �ʵ��� �����Ѵ�.
 	const FName UpgradeNodeProgressParameterName(TEXT("Progress"));
 }
 
@@ -133,7 +133,7 @@ void UUpgradeNodeWidget::RefreshFromUpgradeComponent(UOutlierUpgradeComponent* U
 		return;
 	}
 
-	// 같은 컴포넌트를 재사용해도 데이터 묶음이 교체되면 이전 화면의 입력/응답을 이어받지 않는다.
+	// ���� ������Ʈ�� �����ص� ������ ������ ��ü�Ǹ� ���� ȭ���� �Է�/������ �̾���� �ʴ´�.
 	if (CachedUpgradeSetData.Get() != UpgradeComponent->GetUpgradeSetData())
 	{
 		ResetUpgradeInteraction();
@@ -238,7 +238,7 @@ void UUpgradeNodeWidget::SetNodeState(EOutlierUpgradeNodeState InState, bool bIn
 	{
 		StopUnlockPlayback();
 	}
-	// 최초 주입/복원은 즉시 표시한다. 화면을 보고 있는 동안의 실제 신규 활성화만 재생한다.
+	// ���� ����/������ ��� ǥ���Ѵ�. ȭ���� ���� �ִ� ������ ���� �ű� Ȱ��ȭ�� ����Ѵ�.
 	if (bJustPurchased && bUnlockStateInitialized && !bRestored && !IsDesignTime()
 		&& bUseUnlockPresentation && !bAlwaysShowUnlockedIcon && EnsureUnlockMaterial())
 	{
@@ -267,7 +267,7 @@ void UUpgradeNodeWidget::SetNodeState(EOutlierUpgradeNodeState InState, bool bIn
 	bCanAfford = bInCanAfford;
 	if (CurrentState == EOutlierUpgradeNodeState::Activated)
 	{
-		// 성공 응답보다 상태 복제가 먼저 와도 여기서 완료한다. 이후 늦은 응답은 무시된다.
+		// ���� ���亸�� ���� ������ ���� �͵� ���⼭ �Ϸ��Ѵ�. ���� ���� ������ ���õȴ�.
 		ClearPendingRequest();
 		CancelHold();
 	}
@@ -387,7 +387,7 @@ bool UUpgradeNodeWidget::AdvanceHold(float DeltaSeconds)
 		return false;
 	}
 
-	// 완료를 먼저 소비한 뒤 요청한다. 같은 프레임의 해제나 다음 갱신이 구매를 다시 보내지 않는다.
+	// �ϷḦ ���� �Һ��� �� ��û�Ѵ�. ���� �������� ������ ���� ������ ���Ÿ� �ٽ� ������ �ʴ´�.
 	bHoldingUpgrade = false;
 	return true;
 }
@@ -538,7 +538,7 @@ void UUpgradeNodeWidget::HandleApplicationActivationChanged(bool bIsActive)
 void UUpgradeNodeWidget::CacheInteractionVisibility()
 {
 	InteractionVisibilityWidgets.Reset();
-	// 중첩 UserWidget의 루트까지 한 번만 수집한다. 이후 갱신은 검색 없이 표시/활성 여부만 확인한다.
+	// ��ø UserWidget�� ��Ʈ���� �� ���� �����Ѵ�. ���� ������ �˻� ���� ǥ��/Ȱ�� ���θ� Ȯ���Ѵ�.
 	UWidget* Widget = this;
 	while (Widget && !InteractionVisibilityWidgets.Contains(Widget))
 	{
@@ -652,7 +652,7 @@ void UUpgradeNodeWidget::BeginDestroy()
 
 void UUpgradeNodeWidget::HandleHovered()
 {
-	// 설명창이 없거나 구매 직후 설명을 숨긴 상태여도 노드 자체의 호버 강조는 갱신한다.
+	// ����â�� ���ų� ���� ���� ������ ���� ���¿��� ��� ��ü�� ȣ�� ������ �����Ѵ�.
 	SetNodeHovered(true);
 	if (const UUpgradeNodeGroupWidget* NodeGroupWidget = FindOwningNodeGroupWidget())
 	{
@@ -694,11 +694,11 @@ void UUpgradeNodeWidget::HandleHovered()
 	}
 
 	DescWidget->ShowNodeData(
-			CurrentNodeRowName,
-			CurrentNodeData,
-			GetDisplayedDescState(),
-			CurrentNodeCount,
-			bCanAfford);
+		CurrentNodeRowName,
+		CurrentNodeData,
+		GetDisplayedDescState(),
+		CurrentNodeCount,
+		bCanAfford);
 
 	FVector2D PopupPosition = FVector2D::ZeroVector;
 	FVector2D PopupSize = FVector2D::ZeroVector;
@@ -1028,7 +1028,7 @@ bool UUpgradeNodeWidget::CalculateDescWidgetLayout(
 	const FVector2D ScaledOffset = DescPopupOffset * OutRenderScale;
 	const float Gap = FMath::Max(ScaledOffset.X, 0.0f);
 	const float CenteredY = ButtonCenter.Y - RenderedSize.Y * 0.5f + ScaledOffset.Y;
-	// 방사형 트리의 설명창은 네 방향으로 전환하지 않고 항상 안쪽을 향하게 한다.
+	// ����� Ʈ���� ����â�� �� �������� ��ȯ���� �ʰ� �׻� ������ ���ϰ� �Ѵ�.
 	const float PopupX = ButtonCenter.X < CanvasSize.X * 0.5f
 		? ButtonBottomRight.X + Gap
 		: ButtonTopLeft.X - Gap - RenderedSize.X;
@@ -1063,7 +1063,7 @@ void UUpgradeNodeWidget::ApplyInjectedPlayerState(FOutlierUpgradeNodeViewData& I
 	InOutViewData.CurrentNodeCount = CachedPlayerState->GetNodeCount();
 	InOutViewData.bCanAfford = InOutViewData.CurrentNodeCount >= InOutViewData.NodeRow.Cost;
 
-	// 연결선과 같은 구매 목록을 사용한다. 컴포넌트의 복제가 늦어도 자물쇠 대기를 먼저 시작해야 한다.
+	// ���ἱ�� ���� ���� ����� ����Ѵ�. ������Ʈ�� ������ �ʾ �ڹ��� ��⸦ ���� �����ؾ� �Ѵ�.
 	const TArray<FName>& ActivatedNodes = CachedPlayerState->GetActivatedUpgradeNodeIds(InOutViewData.NodeRow.Role);
 	if (InOutViewData.NodeRow.bInitiallyActivated || ActivatedNodes.Contains(InOutViewData.RowName))
 	{
@@ -1319,7 +1319,7 @@ UMaterialInstanceDynamic* UUpgradeNodeWidget::EnsureNodeFillMaterial(UImage* Ima
 	{
 		if (UMaterialInterface* BrushMaterial = Cast<UMaterialInterface>(BrushResource))
 		{
-			// 기존 색상용 브러시의 텍스처도 이어받아 아이콘이 머티리얼의 기본 배경으로 바뀌지 않게 한다.
+			// ���� ����� �귯���� �ؽ�ó�� �̾�޾� �������� ��Ƽ������ �⺻ ������� �ٲ��� �ʰ� �Ѵ�.
 			BrushMaterial->GetTextureParameterValue(FHashedMaterialParameterInfo(NodeTextureParameterName), SourceTexture);
 			if (!SourceTexture)
 			{
@@ -1329,14 +1329,14 @@ UMaterialInstanceDynamic* UUpgradeNodeWidget::EnsureNodeFillMaterial(UImage* Ima
 	}
 	if (!SourceTexture)
 	{
-		// 이미지가 없는 레이어에 머티리얼의 기본 배경 이미지를 임의로 표시하지 않는다.
+		// �̹����� ���� ���̾ ��Ƽ������ �⺻ ��� �̹����� ���Ƿ� ǥ������ �ʴ´�.
 		return nullptr;
 	}
 
 	UMaterialInstanceDynamic* DynamicMaterial = CachedMaterial;
 	if (!DynamicMaterial || BrushResource != DynamicMaterial || CachedNodeFillSource != NodeFillMaterial)
 	{
-		// 이미지마다 MID를 따로 만든다. 공용 MID가 지정되어도 부모에서 복제해 공유를 막는다.
+		// �̹������� MID�� ���� �����. ���� MID�� �����Ǿ �θ𿡼� ������ ������ ���´�.
 		UMaterialInstanceDynamic* SourceDynamic = Cast<UMaterialInstanceDynamic>(NodeFillMaterial.Get());
 		DynamicMaterial = UMaterialInstanceDynamic::Create(SourceDynamic ? SourceDynamic->Parent.Get() : NodeFillMaterial.Get(), this);
 		if (SourceDynamic && DynamicMaterial)
@@ -1356,7 +1356,7 @@ void UUpgradeNodeWidget::RefreshNodeAppearance()
 {
 	const bool bActivated = CurrentState == EOutlierUpgradeNodeState::Activated && !bUnlockPlaying;
 	const bool bHighlight = bNodeHovered && !bActivated;
-	// 호버 강조는 외곽선과 Glow에만 적용한다. 아이콘은 기존 상태 색상을 유지한다.
+	// ȣ�� ������ �ܰ����� Glow���� �����Ѵ�. �������� ���� ���� ������ �����Ѵ�.
 	if (Frame && bFrameHoverTintApplied && (!bHighlight || bUseMaterialStateColors || NodeFillMaterial))
 	{
 		Frame->SetColorAndOpacity(FrameBaseTint);
@@ -1371,7 +1371,7 @@ void UUpgradeNodeWidget::RefreshNodeAppearance()
 	}
 	else if (CachedNodeFillSource)
 	{
-		// 설정을 해제하면 텍스처를 이어받아 기존 색상용 머티리얼 갱신으로 되돌린다.
+		// ������ �����ϸ� �ؽ�ó�� �̾�޾� ���� ����� ��Ƽ���� �������� �ǵ�����.
 		for (UImage* Image : { Background.Get(), Frame.Get(), Icon.Get() })
 		{
 			if (Image)
@@ -1448,7 +1448,7 @@ void UUpgradeNodeWidget::RefreshNodeAppearance()
 		Glow->SetRenderOpacity(bShowGlow ? 1.0f : 0.0f);
 		Glow->SetVisibility(bShowGlow ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Hidden);
 	}
-	// 별도 색상 덮개 대신 기존 배경/테두리/아이콘 자체를 전환하므로 이전 Fill 이미지는 숨긴다.
+	// ���� ���� ���� ��� ���� ���/�׵θ�/������ ��ü�� ��ȯ�ϹǷ� ���� Fill �̹����� �����.
 	if (NodeFill)
 	{
 		NodeFill->SetRenderOpacity(0.0f);
@@ -1469,10 +1469,10 @@ bool UUpgradeNodeWidget::EnsureUnlockMaterial()
 		? Cast<UMaterialInterface>(UnlockLock->GetBrush().GetResourceObject()) : nullptr;
 	const bool bValidSettings = FMath::IsFinite(UnlockDuration) && UnlockDuration > 0.0f
 		&& UnlockFrameCount > 0 && UnlockFrameCount <= 19;
-	// 재생 중에는 이미 검증한 동적 머티리얼을 재사용한다. 매 프레임 머티리얼 매개변수를 다시 검색하지 않는다.
+	// ��� �߿��� �̹� ������ ���� ��Ƽ������ �����Ѵ�. �� ������ ��Ƽ���� �Ű������� �ٽ� �˻����� �ʴ´�.
 	if (Material && Material == UnlockMaterial && bValidSettings) return true;
 	float FrameValue = 0.0f;
-	// 시트는 머티리얼에 고정해도 된다. 코드에서 변경하는 프레임 값만 필수로 확인한다.
+	// ��Ʈ�� ��Ƽ���� �����ص� �ȴ�. �ڵ忡�� �����ϴ� ������ ���� �ʼ��� Ȯ���Ѵ�.
 	const bool bValid = Material && bValidSettings
 		&& Material->GetScalarParameterValue(FHashedMaterialParameterInfo(TEXT("FrameIndex")), FrameValue);
 	if (!bValid)
@@ -1501,7 +1501,7 @@ void UUpgradeNodeWidget::RefreshUnlockImage()
 		UnlockLock->SetVisibility(bShowLock ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
 		if (bShowLock && !bUnlockPlaying) UnlockMaterial->SetScalarParameterValue(TEXT("FrameIndex"), 0.0f);
 	}
-	// 기존 잠금 아이콘에 그려진 자물쇠와 새 스프라이트가 겹치지 않게 한다.
+	// ���� ��� �����ܿ� �׷��� �ڹ���� �� ��������Ʈ�� ��ġ�� �ʰ� �Ѵ�.
 	if (Icon && bShowLock && bHideIconWhileLocked) Icon->SetVisibility(ESlateVisibility::Hidden);
 }
 
@@ -1543,7 +1543,7 @@ bool UUpgradeNodeWidget::AdvanceUnlockPlayback(float DeltaSeconds)
 	}
 	if (!bValid || UnlockElapsed >= UnlockDuration)
 	{
-		// 마지막 프레임에 진입한 순간이 아니라 표시 시간이 끝나야 완료한다. 선의 시간은 여기서 시작한다.
+		// ������ �����ӿ� ������ ������ �ƴ϶� ǥ�� �ð��� ������ �Ϸ��Ѵ�. ���� �ð��� ���⼭ �����Ѵ�.
 		StopUnlockPlayback();
 		RefreshNodeAppearance();
 		RefreshNodeTexture();
@@ -1557,7 +1557,7 @@ bool UUpgradeNodeWidget::TickUnlockPlayback(float DeltaSeconds)
 {
 	if (!IsUnlockVisible())
 	{
-		// 숨겨진 화면에는 완료를 통보하지 않는다. 다시 보이면 현재 서버 상태를 즉시 표시한다.
+		// ������ ȭ�鿡�� �ϷḦ �뺸���� �ʴ´�. �ٽ� ���̸� ���� ���� ���¸� ��� ǥ���Ѵ�.
 		StopUnlockPlayback();
 		RefreshNodeAppearance();
 		RefreshNodeTexture();
@@ -1592,8 +1592,8 @@ void UUpgradeNodeWidget::RefreshNodeFill()
 			continue;
 		}
 		const FLinearColor BaseColor = Material == FrameMaterial.Get() && bNodeHovered && !bShowActivated ? HoverColor : StateColor;
-		// 0/1에서는 양쪽 색을 같게 해 If의 경계 픽셀도 완전히 기본/활성 모습이 되도록 한다.
-		// 활성화 후에는 이미지를 숨기지 않는다. 실제 상태가 Progress=1을 유지하고 Glow만 별도로 켠다.
+		// 0/1������ ���� ���� ���� �� If�� ��� �ȼ��� ������ �⺻/Ȱ�� ����� �ǵ��� �Ѵ�.
+		// Ȱ��ȭ �Ŀ��� �̹����� ������ �ʴ´�. ���� ���°� Progress=1�� �����ϰ� Glow�� ������ �Ҵ�.
 		Material->SetVectorParameterValue(UnlockedColorParameterName, Progress >= 1.0f ? ActivatedColor : BaseColor);
 		Material->SetVectorParameterValue(ActivatedColorParameterName, Progress <= 0.0f ? BaseColor : ActivatedColor);
 		Material->SetScalarParameterValue(UpgradeNodeProgressParameterName, Progress);
@@ -1606,8 +1606,8 @@ void UUpgradeNodeWidget::RefreshNodeFill()
 
 void UUpgradeNodeWidget::RefreshNodeTexture()
 {
-	// 어떤 텍스처 경로로 반환해도 마지막에 자물쇠/중복 아이콘 표시를 맞춘다.
-	ON_SCOPE_EXIT { RefreshUnlockImage(); };
+	// � �ؽ�ó ��η� ��ȯ�ص� �������� �ڹ���/�ߺ� ������ ǥ�ø� �����.
+	ON_SCOPE_EXIT{ RefreshUnlockImage(); };
 	if (!Icon)
 	{
 		return;
@@ -1620,7 +1620,7 @@ void UUpgradeNodeWidget::RefreshNodeTexture()
 		if (!InactiveTexture) InactiveTexture = DeactivatedNodeTexture.Get();
 		UTexture2D* ActiveTexture = UnlockedIconTextureOverride ? UnlockedIconTextureOverride.Get() : BaseTexture;
 		if (!ActiveTexture) ActiveTexture = UnlockedNodeTexture.Get();
-		// 한쪽 이미지만 있어도 표시를 유지한다. 두 이미지는 같은 MID에 넣고 Progress로 전환한다.
+		// ���� �̹����� �־ ǥ�ø� �����Ѵ�. �� �̹����� ���� MID�� �ְ� Progress�� ��ȯ�Ѵ�.
 		if (!InactiveTexture) InactiveTexture = ActiveTexture;
 		if (!ActiveTexture) ActiveTexture = InactiveTexture;
 		Icon->SetVisibility(InactiveTexture ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
