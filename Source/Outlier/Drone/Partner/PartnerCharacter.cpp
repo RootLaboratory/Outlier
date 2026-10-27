@@ -2,6 +2,8 @@
 
 
 #include "Drone/Partner/PartnerCharacter.h"
+#include "Curves/CurveFloat.h"
+#include "TimerManager.h"
 #include "Audio/OutlierAudioFeedback.h"
 #include "Drone/Partner/PartnerPlayerController.h"
 #include "Drone/Partner/PartnerInputConfig.h"
@@ -227,6 +229,12 @@ void APartnerCharacter::OnRep_Controller()
 	RefreshPartnerCooldownUI();
 }
 
+void APartnerCharacter::OnRep_PlayerState()
+{
+	Super::OnRep_PlayerState();
+	RefreshDistanceMonitoring();
+}
+
 UAbilitySystemComponent* APartnerCharacter::GetAbilitySystemComponent() const
 {
 	return OutlierAbilitySystemComponent;
@@ -234,6 +242,7 @@ UAbilitySystemComponent* APartnerCharacter::GetAbilitySystemComponent() const
 
 void APartnerCharacter::RefreshAbilitySystemActorInfo()
 {
+	RefreshDistanceMonitoring();
 	if (OutlierAbilitySystemComponent)
 	{
 		OutlierAbilitySystemComponent->InitializeForPawn(this);
@@ -440,6 +449,14 @@ void APartnerCharacter::RefreshPartnerCooldownUI()
 		NotifyPartnerCooldownUI(CooldownTag);
 	}
 	RefreshPartnerHackChargeUI();
+}
+
+void APartnerCharacter::RefreshDistanceMonitoring()
+{
+	if (DistanceComponent)
+	{
+		DistanceComponent->RefreshActivationFromPlayerState();
+	}
 }
 
 void APartnerCharacter::RefreshPartnerSuitUI()
@@ -667,6 +684,7 @@ void APartnerCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	DOREPLIFETIME(APartnerCharacter, MovementState);
 	DOREPLIFETIME(APartnerCharacter, MoveMode);
 	DOREPLIFETIME(APartnerCharacter, BoundaryState);
+	DOREPLIFETIME(APartnerCharacter, SuitDisableBoundaryRadius);
 	DOREPLIFETIME(APartnerCharacter, SyncLocalOffset);
 	DOREPLIFETIME(APartnerCharacter, bShieldActive);
 	DOREPLIFETIME(APartnerCharacter, bScanning);
@@ -1591,8 +1609,6 @@ void  APartnerCharacter::InitializeFromDataTables()
 		ShieldAmount		= SkillDataRow->ShieldAmount;
 		ShieldDecayRate		= SkillDataRow->ShieldDecayRate;
 		ShieldDecayDelay	= SkillDataRow->ShieldDecayDelay;
-
-		InteractionRange	= SkillDataRow->InteractionRange;
 	}
 	
 	if (const FPartnerSkillCommonRow* SkillCommonRow = PartnerSkillCommonDataRow.GetRow<FPartnerSkillCommonRow>(TEXT("InitializeSkillCommon")))
@@ -1828,7 +1844,7 @@ void APartnerCharacter::SetShooterCharacter(AShooterCharacter* NewShooter)
 
 	if (DistanceComponent)
 	{
-		DistanceComponent->RefreshCharacterRefsFromPlayerState();
+		DistanceComponent->RefreshActivationFromPlayerState();
 	}
 
 	if (SupportComponent)
@@ -1852,7 +1868,12 @@ void APartnerCharacter::SetShooterCharacter(AShooterCharacter* NewShooter)
 void APartnerCharacter::ConfigureSuitDisableBoundaryRadius(float Radius)
 {
 	checkf(Radius > 0.0f, TEXT("Partner suit disable boundary radius must be positive."));
+	if (!HasAuthority() || SuitDisableBoundaryRadius == Radius)
+	{
+		return;
+	}
 	SuitDisableBoundaryRadius = Radius;
+	ForceNetUpdate();
 }
 
 void APartnerCharacter::NotifyOffensiveActionExecuted()

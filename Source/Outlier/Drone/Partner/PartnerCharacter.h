@@ -308,10 +308,6 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Shield")
 	float ShieldDecayDelay = 1.0f;
 
-	// Skill Data - Interaction
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Interaction")
-	float InteractionRange = 200.0f;
-
 	// Skill Common
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
 	float CoolDown = 2.0f;
@@ -326,7 +322,8 @@ protected:
 	uint8 bRequireLineOfSight : 1 = true;
 
 	// Boundary Data
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Boundary")
+	// Injected from the Shooter suit data on the server and shared with the Partner HUD.
+	UPROPERTY(Replicated, EditAnywhere, BlueprintReadOnly, Category = "Boundary")
 	float SuitDisableBoundaryRadius = 500.0f;
 
 	// CameraAssist Data
@@ -431,6 +428,7 @@ protected:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void PossessedBy(AController* NewController) override;
 	virtual void OnRep_Controller() override;
+	virtual void OnRep_PlayerState() override;
 	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
 
 	virtual void UnPossessed() override;
@@ -632,5 +630,6 @@ public:
 	// PlayerState 가 페어의 양쪽 캐릭터 포인터를 들고 있으므로 거기서 이 함수를 부르고,
 	// 로컬 여부는 여기서 스스로 판단한다 (AShooterCharacter::RefreshShooterSuitUI 와 같은 방식).
 	void RefreshPartnerSuitUI();
+	void RefreshDistanceMonitoring();
 	void RefreshPartnerHackChargeUI(bool bPlayRecoveryFeedback = false);
 };

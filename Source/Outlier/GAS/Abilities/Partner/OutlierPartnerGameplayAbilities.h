@@ -23,6 +23,7 @@ public:
 
 protected:
 	void ConfigurePartnerAbilityTags(const FGameplayTag& AbilityTag, const FGameplayTag& CooldownTag);
+	virtual bool RequiresSuit() const { return true; }
 	virtual bool CanActivateAbility(
 		const FGameplayAbilitySpecHandle Handle,
 		const FGameplayAbilityActorInfo* ActorInfo,
@@ -118,6 +119,7 @@ public:
 	UOutlierPartnerScanAbility();
 
 protected:
+	virtual bool RequiresSuit() const override { return false; }
 	virtual void ActivateAbility(
 		const FGameplayAbilitySpecHandle Handle,
 		const FGameplayAbilityActorInfo* ActorInfo,

@@ -93,10 +93,16 @@ void USettingButtonsWidget::ApplySelection()
 
 void USettingButtonsWidget::OffsetSelection(int32 Direction)
 {
+	const int32 PreviousButtonIndex = SelectedButtonIndex;
 	SelectedButtonIndex = (SelectedButtonIndex + Direction + ButtonCount) % ButtonCount;
 	if (!IsExitSelected()) OnPageRequested.Broadcast(GetPageIndexForButton(SelectedButtonIndex));
 	ApplySelection();
 	FocusSelectedButton();
+	if (SelectedButtonIndex != PreviousButtonIndex)
+	{
+		if (UButton* Button = GetButton(SelectedButtonIndex))
+			OutlierAudioFeedback::Local(Button, TEXT("Audio.Context.UI.Menu.Hover"));
+	}
 }
 
 void USettingButtonsWidget::FocusSelectedButton()
