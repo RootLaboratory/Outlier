@@ -24,7 +24,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "World Guide", meta = (Categories = "UI.Info.World"))
 	FGameplayTag WidgetID;
 
-	/** 여기에 렌더링할 WBP를 지정한다. MainUI/Canvas 참조는 필요하지 않다. */
+	/** 소유 BP의 컴포넌트에서 렌더링할 WBP 클래스를 지정한다. 미지정 시 위젯을 생성하지 않는다. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "World Guide")
 	TSubclassOf<UUserWidget> WidgetClass;
 

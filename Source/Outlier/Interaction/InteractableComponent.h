@@ -171,12 +171,14 @@ private:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction|UI", meta = (AllowPrivateAccess = "true", ClampMin = "1.0"))
 	FVector2D InteractInfoWidgetDrawSize = FVector2D(1500.0f, 400.0f);
 
+	/** 소유 BP의 컴포넌트에서 지정한다. 미지정 시 키 위젯을 생성하지 않는다. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction|UI", meta = (AllowPrivateAccess = "true"))
 	TSubclassOf<UInteractKeyWidget> InteractKeyWidgetClass;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction|UI", meta = (AllowPrivateAccess = "true"))
 	float InteractKeyWidgetZOffset = 20.0f;
 
+	/** 소유 BP의 컴포넌트에서 지정한다. 미지정 시 잠금 위젯을 생성하지 않는다. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction|UI", meta = (AllowPrivateAccess = "true"))
 	TSubclassOf<UInteractionLockedWidget> InteractionLockedWidgetClass;
 
@@ -186,6 +188,7 @@ private:
 	UPROPERTY(EditAnywhere, Category = "Interaction|UI")
 	float InteractionLockedWidgetZOffset = 20.0f;
 
+	/** 소유 BP의 컴포넌트에서 지정한다. 미지정 시 외곽 위젯을 생성하지 않는다. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction|UI", meta = (AllowPrivateAccess = "true"))
 	TSubclassOf<UInteractionOutlineWidget> InteractionOutlineWidgetClass;
 

@@ -9,7 +9,6 @@
 #include "Tutorial/WorldGuide/OutlierWorldGuideManager.h"
 #include "Tutorial/WorldGuide/OutlierWorldGuideWidget.h"
 #include "Tutorial/WorldGuide/OutlierWorldGuideDebug.h"
-#include "UObject/ConstructorHelpers.h"
 
 UOutlierWorldGuideTargetComponent::UOutlierWorldGuideTargetComponent()
 {
@@ -18,10 +17,6 @@ UOutlierWorldGuideTargetComponent::UOutlierWorldGuideTargetComponent()
 	PrimaryComponentTick.TickGroup = TG_PostUpdateWork;
 	// 그룹 안내의 타깃별 완료만 복제한다. 소유 액터가 복제되지 않으면 서버 표시만 바뀐다.
 	SetIsReplicatedByDefault(true);
-
-	static ConstructorHelpers::FClassFinder<UOutlierWorldGuideWidget> GuideWidget(
-		TEXT("/Game/Blueprints/Widget/FirstPerson/Tutorial/WBP_WorldGuideWidget"));
-	WidgetClass = GuideWidget.Class;
 }
 
 void UOutlierWorldGuideTargetComponent::SetTargetCompleted(bool bCompleted)

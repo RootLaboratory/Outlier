@@ -18,7 +18,6 @@
 #include "UI/InteractKeyWidget.h"
 #include "UI/InteractionLockedWidget.h"
 #include "UI/InteractionOutlineWidget.h"
-#include "UObject/ConstructorHelpers.h"
 
 namespace InteractableComponentTags
 {
@@ -59,18 +58,6 @@ UInteractableComponent::UInteractableComponent()
 	PrimaryComponentTick.bStartWithTickEnabled = false;
 	SetIsReplicatedByDefault(true);
 	HoldSessions.Reserve(MaxConcurrentHoldSessions);
-
-	static ConstructorHelpers::FClassFinder<UInteractKeyWidget> KeyWidget(
-		TEXT("/Game/Blueprints/Widget/FirstPerson/Interaction/WBP_InteractionKey"));
-	InteractKeyWidgetClass = KeyWidget.Class;
-
-	static ConstructorHelpers::FClassFinder<UInteractionLockedWidget> LockedWidget(
-		TEXT("/Game/Blueprints/Widget/FirstPerson/Interaction/WBP_InteractionLockedWidget"));
-	InteractionLockedWidgetClass = LockedWidget.Class;
-
-	static ConstructorHelpers::FClassFinder<UInteractionOutlineWidget> OutlineWidget(
-		TEXT("/Game/Blueprints/Widget/FirstPerson/Interaction/WBP_UInteractionOutlineWidget"));
-	InteractionOutlineWidgetClass = OutlineWidget.Class;
 }
 
 void UInteractableComponent::BeginPlay()
