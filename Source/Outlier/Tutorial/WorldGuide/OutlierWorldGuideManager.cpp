@@ -270,6 +270,23 @@ bool AOutlierWorldGuideManager::CompleteWidget(FGameplayTag WidgetID, FGameplayT
 	return true;
 }
 
+bool AOutlierWorldGuideManager::CompleteTarget(UOutlierWorldGuideTargetComponent* Target, FGameplayTag NextWidgetID)
+{
+	if (!HasAuthority() || bEndingPlay || !IsValid(Target)) return false;
+	const FGameplayTag WidgetID = Target->WidgetID;
+	FOutlierWorldGuideDataRow Row;
+	if (!TryGetDefinition(WidgetID, Row) || Row.RequiredTargetCount <= 1) return CompleteWidget(WidgetID, NextWidgetID);
+	TSet<FString>& Done = CompletedTargets.FindOrAdd(WidgetID);
+	bool bAlreadyDone = false;
+	Done.Add(Target->GetPathName(), &bAlreadyDone);
+	if (bAlreadyDone) return false;
+	// 그룹이 아직 Queue에 없어도 기록한다. 나중에 활성화되면 남은 타깃만 표시된다.
+	Target->SetTargetCompleted(true);
+	OutlierWorldGuideDebug::Trace(GetWorld(), FString::Printf(TEXT("TARGET DONE %s ID=%s %d/%d"),
+		*Target->GetPathName(), *WidgetID.ToString(), Done.Num(), Row.RequiredTargetCount));
+	return Done.Num() < Row.RequiredTargetCount || CompleteWidget(WidgetID, NextWidgetID);
+}
+
 bool AOutlierWorldGuideManager::IsChainAncestor(FGameplayTag Ancestor, FGameplayTag Descendant) const
 {
 	if (!Ancestor.IsValid() || !Descendant.IsValid() || Ancestor == Descendant) return false;
@@ -333,10 +350,11 @@ void AOutlierWorldGuideManager::SkipGuidesBefore(FGameplayTag Reached)
 		UE_LOG(LogOutlier, Log, TEXT("[WorldGuide] %d earlier guide(s) passed by '%s'."), Passed.Num(), *Reached.ToString());
 }
 
-bool AOutlierWorldGuideManager::NotifyWidgetOverlap(FGameplayTag WidgetID)
+bool AOutlierWorldGuideManager::NotifyWidgetOverlap(FGameplayTag WidgetID, FGameplayTag NextWidgetID)
 {
 	FOutlierWorldGuideDataRow Row;
-	return TryGetDefinition(WidgetID, Row) && Row.EndCondition == EOutlierEventEndCondition::Overlap && CompleteWidget(WidgetID);
+	return TryGetDefinition(WidgetID, Row) && Row.EndCondition == EOutlierEventEndCondition::Overlap
+		&& CompleteWidget(WidgetID, NextWidgetID);
 }
 
 bool AOutlierWorldGuideManager::CancelWidget(FGameplayTag WidgetID) { return FinishMatching(WidgetID, false, false, false); }
@@ -353,7 +371,14 @@ void AOutlierWorldGuideManager::ClearGuides(bool bResetCompleted)
 	if (ActiveContext.RequestID != 0) Cancelled.Insert(ActiveContext, 0);
 	PendingContexts.Reset();
 	ActiveContext = FOutlierWorldGuideContext();
-	if (bResetCompleted) CompletedWidgetIDs.Reset();
+	if (bResetCompleted)
+	{
+		CompletedWidgetIDs.Reset();
+		CompletedTargets.Reset();
+		for (const auto& Pair : Targets)
+			for (const TWeakObjectPtr<UOutlierWorldGuideTargetComponent>& Target : Pair.Value)
+				if (Target.IsValid()) Target->SetTargetCompleted(false);
+	}
 	RefreshPresentation();
 	ForceNetUpdate();
 	for (const FOutlierWorldGuideContext& Context : Cancelled) OnGuideFinished.Broadcast(Context, false);
@@ -366,11 +391,24 @@ void AOutlierWorldGuideManager::RegisterTarget(UOutlierWorldGuideTargetComponent
 	OutlierWorldGuideDebug::Trace(GetWorld(), FString::Printf(TEXT("REGISTER %s ID=%s Class=%s TargetsForID=%d"),
 		*Target->GetPathName(), *Target->WidgetID.ToString(), *GetPathNameSafe(Target->WidgetClass.Get()), GetTargetCount(Target->WidgetID)));
 	Target->SetGuideManager(this);
-	if (ActiveContext.RequestID != 0 && ActiveContext.WidgetID == Target->WidgetID && GetNetMode() != NM_DedicatedServer)
+	if (HasAuthority())
+		if (const TSet<FString>* Done = CompletedTargets.Find(Target->WidgetID))
+			if (Done->Contains(Target->GetPathName())) Target->SetTargetCompleted(true);
+	RefreshTarget(Target);
+}
+
+void AOutlierWorldGuideManager::RefreshTarget(UOutlierWorldGuideTargetComponent* Target)
+{
+	if (!IsValid(Target)) return;
+	if (GetNetMode() != NM_DedicatedServer && !bEndingPlay && ActiveContext.RequestID != 0
+		&& ActiveContext.WidgetID == Target->WidgetID && !Target->IsTargetCompleted())
 	{
 		AddOutline(Target);
 		Target->ApplyGuide(ActiveContext);
+		return;
 	}
+	RemoveOutline(Target);
+	Target->ClearGuide();
 }
 
 void AOutlierWorldGuideManager::UnregisterTarget(UOutlierWorldGuideTargetComponent* Target)
@@ -403,7 +441,8 @@ void AOutlierWorldGuideManager::RefreshPresentation()
 		const auto Snapshot = *Registered;
 		for (const auto& Target : Snapshot)
 		{
-			if (Target.IsValid() && Target->WidgetID == ActiveContext.WidgetID && ActiveContext.RequestID != 0)
+			if (Target.IsValid() && Target->WidgetID == ActiveContext.WidgetID && ActiveContext.RequestID != 0
+				&& !Target->IsTargetCompleted())
 			{
 				AddOutline(Target.Get());
 				Target->ApplyGuide(ActiveContext);

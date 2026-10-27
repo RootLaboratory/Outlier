@@ -10,6 +10,7 @@
 #include "Engine/World.h"
 #include "Engine/GameInstance.h"
 #include "Engine/LocalPlayer.h"
+#include "GameFramework/PlayerController.h"
 #include "Kismet/KismetMaterialLibrary.h"
 #include "LocalPlayerPostProcessSubsystem.h"
 #include "Materials/MaterialParameterCollection.h"
@@ -42,6 +43,16 @@ TStaticArray<UTexture2D*, DeathTransitionTextureCount> GetDeathTransitionTexture
 	Textures[static_cast<int32>(EDeathTransitionTexture::FadeVignette)] = Volume.DeathBlackVignetteTexture;
 	return Textures;
 }
+}
+
+bool AOutlierPostProcessVolume::StartPassageScreenFade(APlayerController* Controller, bool bReveal, float Duration)
+{
+	ULocalPlayer* Player = IsValid(Controller) ? Controller->GetLocalPlayer() : nullptr;
+	ULocalPlayerPostProcessSubsystem* PP = Player ? Player->GetSubsystem<ULocalPlayerPostProcessSubsystem>() : nullptr;
+	if (!PP) return false;
+	if (bReveal) PP->StartScreenBlackoutReveal(Duration);
+	else PP->StartScreenBlackout(Duration);
+	return true;
 }
 
 void AOutlierPostProcessVolume::BeginPlay()

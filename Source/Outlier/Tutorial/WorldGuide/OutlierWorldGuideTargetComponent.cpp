@@ -5,15 +5,43 @@
 #include "Engine/World.h"
 #include "UI/ActorBasedWidgetSubsystem.h"
 #include "GameFramework/PlayerController.h"
+#include "Net/UnrealNetwork.h"
 #include "Tutorial/WorldGuide/OutlierWorldGuideManager.h"
 #include "Tutorial/WorldGuide/OutlierWorldGuideWidget.h"
 #include "Tutorial/WorldGuide/OutlierWorldGuideDebug.h"
+#include "UObject/ConstructorHelpers.h"
 
 UOutlierWorldGuideTargetComponent::UOutlierWorldGuideTargetComponent()
 {
 	PrimaryComponentTick.bCanEverTick = true;
 	PrimaryComponentTick.bStartWithTickEnabled = false;
 	PrimaryComponentTick.TickGroup = TG_PostUpdateWork;
+	// 그룹 안내의 타깃별 완료만 복제한다. 소유 액터가 복제되지 않으면 서버 표시만 바뀐다.
+	SetIsReplicatedByDefault(true);
+
+	static ConstructorHelpers::FClassFinder<UOutlierWorldGuideWidget> GuideWidget(
+		TEXT("/Game/Blueprints/Widget/FirstPerson/Tutorial/WBP_WorldGuideWidget"));
+	WidgetClass = GuideWidget.Class;
+}
+
+void UOutlierWorldGuideTargetComponent::SetTargetCompleted(bool bCompleted)
+{
+	if (!GetOwner() || !GetOwner()->HasAuthority() || bTargetCompleted == bCompleted) return;
+	bTargetCompleted = bCompleted;
+	GetOwner()->ForceNetUpdate();
+	OnRep_TargetCompleted();
+}
+
+void UOutlierWorldGuideTargetComponent::OnRep_TargetCompleted()
+{
+	if (AOutlierWorldGuideManager* Manager = GuideManager.Get()) Manager->RefreshTarget(this);
+	else if (bTargetCompleted) ClearGuide();
+}
+
+void UOutlierWorldGuideTargetComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(UOutlierWorldGuideTargetComponent, bTargetCompleted);
 }
 
 void UOutlierWorldGuideTargetComponent::BeginPlay()
@@ -105,7 +133,6 @@ void UOutlierWorldGuideTargetComponent::UpdateDisplayPlacement()
 {
 	if (!DisplayComponent) return;
 	// 위젯은 뷰포트에 남고, 투영 앵커만 월드를 따라간다.
-	DisplayComponent->SetWorldLocation(GetComponentLocation() + WorldOffset);
 	const FVector2D Size(FMath::Max(1, FMath::RoundToInt(DrawSize.X)), FMath::Max(1, FMath::RoundToInt(DrawSize.Y)));
 	if (DisplayComponent->GetDrawSize() != Size) DisplayComponent->SetDrawSize(Size);
 	const FVector2D Alignment(FMath::Clamp(Pivot.X, 0.0, 1.0), FMath::Clamp(Pivot.Y, 0.0, 1.0));
@@ -118,13 +145,14 @@ void UOutlierWorldGuideTargetComponent::UpdateDisplayPlacement()
 		if (UUserWidget* Widget = DisplayComponent->GetUserWidgetObject())
 			if (Widget->GetOwningLocalPlayer() != LocalPlayer) Widget->SetOwningLocalPlayer(LocalPlayer);
 	}
+	WidgetPresentation.Apply(DisplayComponent, GetComponentLocation() + WorldOffset);
 }
 
 bool UOutlierWorldGuideTargetComponent::CompleteGuide(FGameplayTag NextWidgetID)
 {
 	AOutlierWorldGuideManager* Manager = GuideManager.Get();
 	if (!Manager) Manager = AOutlierWorldGuideManager::Find(GetWorld());
-	const bool bAccepted = GetOwner() && GetOwner()->HasAuthority() && Manager && Manager->CompleteWidget(WidgetID, NextWidgetID);
+	const bool bAccepted = GetOwner() && GetOwner()->HasAuthority() && Manager && Manager->CompleteTarget(this, NextWidgetID);
 	OutlierWorldGuideDebug::Trace(GetWorld(), FString::Printf(TEXT("TARGET COMPLETE %s ID=%s Next=%s accepted=%d"),
 		*GetPathName(), *WidgetID.ToString(), *NextWidgetID.ToString(), bAccepted));
 	return bAccepted;
@@ -134,8 +162,9 @@ bool UOutlierWorldGuideTargetComponent::NotifyGuideOverlap()
 {
 	AOutlierWorldGuideManager* Manager = GuideManager.Get();
 	if (!Manager) Manager = AOutlierWorldGuideManager::Find(GetWorld());
-	const bool bAccepted = GetOwner() && GetOwner()->HasAuthority() && Manager && Manager->NotifyWidgetOverlap(WidgetID);
-	OutlierWorldGuideDebug::Trace(GetWorld(), FString::Printf(TEXT("TARGET OVERLAP %s ID=%s accepted=%d"), *GetPathName(), *WidgetID.ToString(), bAccepted));
+	const bool bAccepted = GetOwner() && GetOwner()->HasAuthority() && Manager && Manager->NotifyWidgetOverlap(WidgetID, OverlapNextWidgetID);
+	OutlierWorldGuideDebug::Trace(GetWorld(), FString::Printf(TEXT("TARGET OVERLAP %s ID=%s Next=%s accepted=%d"),
+		*GetPathName(), *WidgetID.ToString(), *OverlapNextWidgetID.ToString(), bAccepted));
 	return bAccepted;
 }
 

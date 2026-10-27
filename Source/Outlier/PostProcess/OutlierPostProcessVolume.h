@@ -11,6 +11,7 @@ class UMaterialInstanceDynamic;
 class UMaterialParameterCollection;
 class UCurveFloat;
 class UTexture2D;
+class APlayerController;
 
 UENUM(BlueprintType)
 enum class EOutlierPostProcessMaterialType : uint8
@@ -33,6 +34,9 @@ class OUTLIER_API AOutlierPostProcessVolume : public APostProcessVolume
 	GENERATED_BODY()
 
 public:
+	/** Local-player blackout (includes HUD). Networking and completion callbacks belong to the controller. */
+	static bool StartPassageScreenFade(APlayerController* Controller, bool bReveal, float Duration);
+
 	bool HasValidScanPostProcessBindings() const;
 	bool HasValidPostProcessMaterial(EOutlierPostProcessMaterialType MaterialType) const;
 	void SetPostProcessEnabled(EOutlierPostProcessMaterialType MaterialType, bool bInEnabled);

@@ -4,6 +4,7 @@
 #include "Components/SceneComponent.h"
 #include "Interface/ActorBasedWidgetInterface.h"
 #include "Tutorial/WorldGuide/OutlierWorldGuideTypes.h"
+#include "UI/WorldWidgetPresentation.h"
 #include "OutlierWorldGuideTargetComponent.generated.h"
 
 class AOutlierWorldGuideManager;
@@ -35,14 +36,28 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "World Guide")
 	FVector WorldOffset = FVector::ZeroVector;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "World Guide|Widget")
+	FWorldWidgetPresentation WidgetPresentation;
+
 	/** 투영된 월드 앵커 기준 UI 마커 정렬. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "World Guide", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	FVector2D Pivot = FVector2D(0.5, 0.5);
 
+	/** 선택 사항. Overlap 도착으로 완료될 때 ChainContexts 대신 이어갈 분기. 경로별 도착 볼륨에서 쓴다. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "World Guide", meta = (Categories = "UI.Info.World"))
+	FGameplayTag OverlapNextWidgetID;
+
 	UFUNCTION(BlueprintPure, Category = "World Guide")
 	bool IsGuideVisible() const { return bGuideVisible; }
 
-	/** 서버에서 게임플레이로 수동 완료한다. 비어 있지 않은 다음 ID는 분기를 선택한다. */
+	/** 그룹 안내에서 이 타깃이 먼저 완료되어 마커를 다시 띄우지 않는 상태. */
+	UFUNCTION(BlueprintPure, Category = "World Guide")
+	bool IsTargetCompleted() const { return bTargetCompleted; }
+
+	/** 서버 전용. Manager가 그룹 타깃 완료를 기록하거나 초기화할 때 호출한다. */
+	void SetTargetCompleted(bool bCompleted);
+
+	/** 서버에서 게임플레이로 수동 완료한다. 그룹 Row면 이 타깃만 완료로 세고, 비어 있지 않은 다음 ID는 분기를 선택한다. */
 	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "World Guide")
 	bool CompleteGuide(FGameplayTag NextWidgetID = FGameplayTag());
 
@@ -60,9 +75,16 @@ protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 private:
 	void UpdateDisplayPlacement();
+
+	UPROPERTY(ReplicatedUsing = OnRep_TargetCompleted)
+	bool bTargetCompleted = false;
+
+	UFUNCTION()
+	void OnRep_TargetCompleted();
 
 	UPROPERTY(Transient)
 	TObjectPtr<UWidgetComponent> DisplayComponent;
