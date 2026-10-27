@@ -11,6 +11,7 @@
 #include "GAS/Data/OutlierShooterSuitAbilityDataRow.h"
 #include "UI/UILayerTypes.h"
 #include "Interface/JumperAffectableInterface.h"
+#include "PostProcess/OutlierPostProcessVolume.h"
 #include "ShooterCharacter.generated.h"
 
 class UInputAction;
@@ -732,12 +733,6 @@ public:
 	ESuitTransitionPhase GetSuitTransitionPhase() const { return SuitTransitionPhase; }
 	FOnSuitTransitionPhaseChanged OnSuitTransitionPhaseChanged;
 
-	UPROPERTY(EditDefaultsOnly, Category = "Suit|Transition", meta = (ClampMin = "0.0"))
-	float SuitFadeOutDuration = 0.5f;
-	UPROPERTY(EditDefaultsOnly, Category = "Suit|Transition", meta = (ClampMin = "0.0"))
-	float SuitBlackHoldDuration = 0.25f;
-	UPROPERTY(EditDefaultsOnly, Category = "Suit|Transition", meta = (ClampMin = "0.0"))
-	float SuitFadeInDuration = 0.5f;
 	// 미연결/응답 유실도 유한하게 정리한다. 단계별 최소 시간보다 커야 한다.
 	UPROPERTY(EditDefaultsOnly, Category = "Suit|Transition", meta = (ClampMin = "0.1"))
 	float SuitTransitionResponseTimeout = 10.0f;
@@ -961,6 +956,8 @@ protected:
 	void FinishSuitTransition();
 	void HandleSuitTransitionParticipantInvalidated(AFirstPersonCharacter* Participant);
 	void HandleSuitTransitionPairChanged(AOutlierPlayerState* ChangedPlayerState);
+	// PP Volume settings captured when this feature transition begins.
+	FOutlierScreenTransitionTiming SuitTransitionTiming;
 	FGuid ActiveSuitTransitionId;
 	ESuitTransitionPhase SuitTransitionPhase = ESuitTransitionPhase::Idle;
 	TWeakObjectPtr<ASuitInteraction> SuitTransitionInteraction;

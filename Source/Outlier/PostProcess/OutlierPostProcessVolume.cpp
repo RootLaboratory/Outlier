@@ -8,9 +8,9 @@
 #include "Curves/CurveFloat.h"
 #include "Engine/Scene.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
 #include "Engine/GameInstance.h"
 #include "Engine/LocalPlayer.h"
-#include "GameFramework/PlayerController.h"
 #include "Kismet/KismetMaterialLibrary.h"
 #include "LocalPlayerPostProcessSubsystem.h"
 #include "Materials/MaterialParameterCollection.h"
@@ -45,14 +45,25 @@ TStaticArray<UTexture2D*, DeathTransitionTextureCount> GetDeathTransitionTexture
 }
 }
 
-bool AOutlierPostProcessVolume::StartPassageScreenFade(APlayerController* Controller, bool bReveal, float Duration)
+FOutlierScreenTransitionTiming AOutlierPostProcessVolume::ResolveScreenTransitionTiming(
+	UWorld* World, const FVector& Location)
 {
-	ULocalPlayer* Player = IsValid(Controller) ? Controller->GetLocalPlayer() : nullptr;
-	ULocalPlayerPostProcessSubsystem* PP = Player ? Player->GetSubsystem<ULocalPlayerPostProcessSubsystem>() : nullptr;
-	if (!PP) return false;
-	if (bReveal) PP->StartScreenBlackoutReveal(Duration);
-	else PP->StartScreenBlackout(Duration);
-	return true;
+	const AOutlierPostProcessVolume* Selected = nullptr;
+	if (World)
+	{
+		for (TActorIterator<AOutlierPostProcessVolume> It(World); It; ++It)
+		{
+			AOutlierPostProcessVolume* Candidate = *It;
+			if (!IsValid(Candidate) || Candidate->IsActorBeingDestroyed() || !Candidate->bEnabled
+				|| (!Candidate->bUnbound && !Candidate->EncompassesPoint(Location, 0.0f, nullptr))) continue;
+			if (!Selected || Candidate->Priority > Selected->Priority
+				|| (Candidate->Priority == Selected->Priority && Candidate->GetPathName() < Selected->GetPathName()))
+			{
+				Selected = Candidate;
+			}
+		}
+	}
+	return Selected ? Selected->ScreenTransitionTiming : GetDefault<AOutlierPostProcessVolume>()->ScreenTransitionTiming;
 }
 
 void AOutlierPostProcessVolume::BeginPlay()

@@ -27,6 +27,7 @@ bool AShooterCharacter::BeginSuitTransition(ASuitInteraction* Interaction,
 	{
 		return false;
 	}
+	SuitTransitionTiming = AOutlierPostProcessVolume::ResolveScreenTransitionTiming(GetWorld(), GetActorLocation());
 	if (!ValidateSuitTransitionTiming())
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[SuitTransition] Invalid timing configuration Owner=%s"), *GetName());
@@ -87,9 +88,9 @@ bool AShooterCharacter::CanBeginSuitTransition(ASuitInteraction* Interaction)
 bool AShooterCharacter::ValidateSuitTransitionTiming() const
 {
 	const auto IsValidDuration = [](float Duration) { return FMath::IsFinite(Duration) && Duration >= 0.0f; };
-	return IsValidDuration(SuitFadeOutDuration) && IsValidDuration(SuitBlackHoldDuration)
-		&& IsValidDuration(SuitFadeInDuration) && FMath::IsFinite(SuitTransitionResponseTimeout)
-		&& SuitTransitionResponseTimeout > FMath::Max3(SuitFadeOutDuration, SuitBlackHoldDuration, SuitFadeInDuration);
+	return IsValidDuration(SuitTransitionTiming.CleanupRevealDuration) && IsValidDuration(SuitTransitionTiming.FadeOutDuration) && IsValidDuration(SuitTransitionTiming.BlackHoldDuration)
+		&& IsValidDuration(SuitTransitionTiming.FadeInDuration) && FMath::IsFinite(SuitTransitionResponseTimeout)
+		&& SuitTransitionResponseTimeout > FMath::Max3(SuitTransitionTiming.FadeOutDuration, SuitTransitionTiming.BlackHoldDuration, SuitTransitionTiming.FadeInDuration);
 }
 
 bool AShooterCharacter::ValidateSuitTransitionParticipants(bool bForReservation) const
@@ -187,11 +188,11 @@ float AShooterCharacter::GetSuitTransitionMinimumTime(ESuitTransitionPhase Phase
 	switch (Phase)
 	{
 	case ESuitTransitionPhase::FadingOut:
-		return SuitFadeOutDuration;
+		return SuitTransitionTiming.FadeOutDuration;
 	case ESuitTransitionPhase::Applying:
-		return SuitBlackHoldDuration;
+		return SuitTransitionTiming.BlackHoldDuration;
 	default:
-		return SuitFadeInDuration;
+		return SuitTransitionTiming.FadeInDuration;
 	}
 }
 
@@ -325,7 +326,7 @@ void AShooterCharacter::EnterSuitTransitionPhase(ESuitTransitionPhase Phase)
 		}
 		if (AFirstPersonPlayerController* FirstPersonController = Cast<AFirstPersonPlayerController>(ParticipantController.Get()))
 		{
-			FirstPersonController->SendSuitTransitionPhaseFromServer(this, Id, Phase, MinimumTime);
+			FirstPersonController->SendSuitTransitionPhaseFromServer(this, Id, Phase, SuitTransitionTiming);
 		}
 	}
 }
@@ -489,7 +490,7 @@ void AShooterCharacter::FinishSuitTransition()
 	{
 		if (AFirstPersonPlayerController* FirstPersonController = Cast<AFirstPersonPlayerController>(ParticipantController.Get()))
 		{
-			FirstPersonController->SendSuitTransitionPhaseFromServer(this, Id, ESuitTransitionPhase::Idle, 0.0f);
+			FirstPersonController->SendSuitTransitionPhaseFromServer(this, Id, ESuitTransitionPhase::Idle, SuitTransitionTiming);
 		}
 	}
 	// 내부 ID는 이미 무효지만, 종료 알림에는 이전 ID를 전달해 연결된 Controller가 해당 연출만 정리하게 한다.

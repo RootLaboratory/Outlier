@@ -11,7 +11,25 @@ class UMaterialInstanceDynamic;
 class UMaterialParameterCollection;
 class UCurveFloat;
 class UTexture2D;
-class APlayerController;
+
+/** Authoritative snapshot used by both participants for one screen transition. */
+USTRUCT(BlueprintType)
+struct OUTLIER_API FOutlierScreenTransitionTiming
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Screen Transition", meta = (ClampMin = "0.0", Units = "s"))
+	float FadeOutDuration = 0.5f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Screen Transition", meta = (ClampMin = "0.0", Units = "s"))
+	float BlackHoldDuration = 0.25f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Screen Transition", meta = (ClampMin = "0.0", Units = "s"))
+	float FadeInDuration = 0.5f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Screen Transition", meta = (ClampMin = "0.0", Units = "s"))
+	float CleanupRevealDuration = 0.25f;
+};
 
 UENUM(BlueprintType)
 enum class EOutlierPostProcessMaterialType : uint8
@@ -34,8 +52,11 @@ class OUTLIER_API AOutlierPostProcessVolume : public APostProcessVolume
 	GENERATED_BODY()
 
 public:
-	/** Local-player blackout (includes HUD). Networking and completion callbacks belong to the controller. */
-	static bool StartPassageScreenFade(APlayerController* Controller, bool bReveal, float Duration);
+	/** Highest-priority enabled volume containing Location; falls back to the volume class defaults. */
+	static FOutlierScreenTransitionTiming ResolveScreenTransitionTiming(UWorld* World, const FVector& Location);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Screen Transition")
+	FOutlierScreenTransitionTiming ScreenTransitionTiming;
 
 	bool HasValidScanPostProcessBindings() const;
 	bool HasValidPostProcessMaterial(EOutlierPostProcessMaterialType MaterialType) const;
