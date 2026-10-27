@@ -204,6 +204,7 @@ void ULocalPlayerUISubSystem::RefreshEventUI()
 
 void ULocalPlayerUISubSystem::HandleInfoWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources)
 {
+	if (World == GetWorld() || World == VitalityWorld.Get()) ResetVitalityPresentation();
 	PendingInfoRequests.RemoveAll([World](const FOutlierPendingInfoRequest& Pending)
 	{
 		return !Pending.World.IsValid() || Pending.World.Get() == World;
@@ -224,6 +225,7 @@ void ULocalPlayerUISubSystem::Initialize(FSubsystemCollectionBase& Collection)
 void ULocalPlayerUISubSystem::Deinitialize()
 {
 	bIsDeinitializing = true;
+	ResetVitalityPresentation();
 	FWorldDelegates::OnWorldCleanup.Remove(InfoWorldCleanupHandle);
 	ClearEventInfo();
 	Super::Deinitialize();
@@ -246,6 +248,7 @@ void ULocalPlayerUISubSystem::RegisterMainUI(UMainUIBase* InMainUI)
 	// 마지막으로 받은 슈트 상태를 새 MainUI 에 물려준다.
 	// 위젯이 신호보다 늦게 생겨도 게이트가 맞도록 하는 유일한 경로다.
 	OnShooterSuitAcquiredChanged(bShooterSuitAcquired);
+	RefreshVitalityPresentation();
 	RefreshEventUI();
 }
 
@@ -322,24 +325,12 @@ void ULocalPlayerUISubSystem::OnRep_HUDActivate(bool bShouldActivate)
 
 void ULocalPlayerUISubSystem::OnRep_HealthChanged(float InHealth, float MaxHealth)
 {
-	if (!GetMainUI())
-	{
-		return;
-	}
-
-	if (UHPBarUI* HPBarUI = Cast<UHPBarUI>(GetModuleAny(TagDrivenUITags::Shooter::HP(), TagDrivenUITags::Partner::HP())))
-	{
-		HPBarUI->SetHealthState(InHealth, MaxHealth);
-	}
+	ApplyLegacyVitalityPresentation(EOutlierVitalityChannel::ShooterHealth, InHealth, MaxHealth);
 }
 
 void ULocalPlayerUISubSystem::OnRep_PartnerHealthChanged(float InHealth, float MaxHealth)
 {
-	if (UPartnerHealthUI* PartnerHealthUI = Cast<UPartnerHealthUI>(
-		GetModule(TagDrivenUITags::Partner::Health())))
-	{
-		PartnerHealthUI->SetHealthState(InHealth, MaxHealth);
-	}
+	ApplyLegacyVitalityPresentation(EOutlierVitalityChannel::PartnerHealth, InHealth, MaxHealth);
 }
 
 void ULocalPlayerUISubSystem::OnRep_PartnerShieldChanged(float InPartnerShield, float MaxPartnerShield)
@@ -360,15 +351,116 @@ void ULocalPlayerUISubSystem::OnRep_PartnerShieldChanged(float InPartnerShield, 
 
 void ULocalPlayerUISubSystem::OnRep_ShieldChanged( float InCurShield,  float InMaxShield)
 {
-	if (!GetMainUI())
+	ApplyLegacyVitalityPresentation(EOutlierVitalityChannel::ShooterShield, InCurShield, InMaxShield);
+}
+
+void ULocalPlayerUISubSystem::ApplyVitalityPresentation(const FOutlierVitalityPresentationUpdate& Update)
+{
+	const uint8 Index = static_cast<uint8>(Update.Channel);
+	if (Index >= static_cast<uint8>(EOutlierVitalityChannel::Count) || bIsDeinitializing) return;
+	const uint8 Bit = 1 << Index;
+	CachedVitality.SetNum(static_cast<int32>(EOutlierVitalityChannel::Count));
+	const FOutlierVitalityPresentationUpdate& Previous = CachedVitality[Index];
+	if (Update.Channel == EOutlierVitalityChannel::PartnerHealth)
+	{
+		// Receive 뒤 Accepted가 없으면 아래 세대/순서/Source 검사에서 제외된 업데이트다.
+		UE_LOG(LogTemp, Display,
+			TEXT("[PartnerHP][Receive] World=%s Source=%s Valid=%d HP=%.2f/%.2f Gen=%u Seq=%u Snapshot=%d Stream=%d PreviousSource=%s PreviousGen=%u PreviousSeq=%u"),
+			*GetNameSafe(GetWorld()), *GetNameSafe(Update.Source.Get()), IsValid(Update.Source),
+			Update.Current, Update.Maximum, Update.Generation, Update.Sequence, Update.bSnapshot,
+			(VitalityStreamMask & Bit) != 0, *GetNameSafe(Previous.Source.Get()), Previous.Generation, Previous.Sequence);
+	}
+	if ((VitalityStreamMask & Bit) != 0)
+	{
+		// 새 Pawn의 Snapshot보다 늦게 도착한 이전 수명의 RPC와 중복 항목은 재생하지 않는다.
+		const int32 GenerationDelta = static_cast<int32>(Update.Generation - Previous.Generation);
+		if (GenerationDelta < 0) return;
+		// 최초 Snapshot은 Actor 복제보다 먼저 도착해 Source가 비어 있을 수 있다.
+		// 같은 세대의 유효한 후속 참조는 허용하고, 이미 확인한 Source의 교체는 차단한다.
+		const bool bSourceMismatch = IsValid(Previous.Source) && Update.Source != Previous.Source;
+		if (GenerationDelta == 0 && (bSourceMismatch
+			|| static_cast<int32>(Update.Sequence - Previous.Sequence) <= 0)) return;
+		if (GenerationDelta > 0 && !Update.bSnapshot) return;
+	}
+	else if (!Update.bSnapshot)
 	{
 		return;
 	}
+	if (!Update.bSnapshot && !IsValid(Update.Source)) return;
 
-	if (UHPBarUI* HPBarUI = Cast<UHPBarUI>(GetModuleAny(TagDrivenUITags::Shooter::HP(), TagDrivenUITags::Partner::HP())))
+	VitalityWorld = GetWorld();
+	CachedVitality[Index] = Update;
+	VitalityReceivedMask |= Bit;
+	VitalityStreamMask |= Bit;
+	UEventDrivenUI* Module = Update.Channel == EOutlierVitalityChannel::PartnerHealth
+		? GetModule(TagDrivenUITags::Partner::Health())
+		: GetModuleAny(TagDrivenUITags::Shooter::HP(), TagDrivenUITags::Partner::HP());
+	if (Update.Channel == EOutlierVitalityChannel::PartnerHealth)
 	{
-		HPBarUI->SetShieldState(InCurShield, InMaxShield);
+		UE_LOG(LogTemp, Display,
+			TEXT("[PartnerHP][Accepted] World=%s Module=%s Class=%s PartnerHealthUI=%d HP=%.2f/%.2f"),
+			*GetNameSafe(GetWorld()), *GetNameSafe(Module), *GetNameSafe(Module ? Module->GetClass() : nullptr),
+			Cast<UPartnerHealthUI>(Module) != nullptr, Update.Current, Update.Maximum);
 	}
+	ApplyCachedVitalityToModule(Module, Update.bSnapshot, Update.Channel);
+}
+
+void ULocalPlayerUISubSystem::ApplyLegacyVitalityPresentation(EOutlierVitalityChannel Channel, float Current, float Maximum)
+{
+	const uint8 Index = static_cast<uint8>(Channel);
+	const uint8 Bit = 1 << Index;
+	// 원인과 값이 결합된 서버 스트림이 시작된 뒤에는 raw Attribute 통지로 덮어쓰지 않는다.
+	if ((VitalityStreamMask & Bit) != 0 || bIsDeinitializing) return;
+	CachedVitality.SetNum(static_cast<int32>(EOutlierVitalityChannel::Count));
+	FOutlierVitalityPresentationUpdate& Cached = CachedVitality[Index];
+	VitalityWorld = GetWorld();
+	Cached.Channel = Channel;
+	Cached.Current = Current;
+	Cached.Maximum = Maximum;
+	Cached.Policy = EOutlierVitalityUpdatePolicy::Animated;
+	const bool bFirstState = (VitalityReceivedMask & Bit) == 0;
+	VitalityReceivedMask |= Bit;
+	UEventDrivenUI* Module = Channel == EOutlierVitalityChannel::PartnerHealth
+		? GetModule(TagDrivenUITags::Partner::Health())
+		: GetModuleAny(TagDrivenUITags::Shooter::HP(), TagDrivenUITags::Partner::HP());
+	ApplyCachedVitalityToModule(Module, bFirstState, Channel);
+}
+
+void ULocalPlayerUISubSystem::ApplyCachedVitalityToModule(UEventDrivenUI* Module, bool bImmediate, EOutlierVitalityChannel Channel)
+{
+	if (!Module) return;
+	for (int32 Index = 0; Index < CachedVitality.Num(); ++Index)
+	{
+		if ((VitalityReceivedMask & (1 << Index)) == 0) continue;
+		const FOutlierVitalityPresentationUpdate& Cached = CachedVitality[Index];
+		if (Channel != EOutlierVitalityChannel::Count && Cached.Channel != Channel) continue;
+		const bool bSnap = bImmediate || Cached.Policy == EOutlierVitalityUpdatePolicy::Immediate;
+		if (UHPBarUI* HP = Cast<UHPBarUI>(Module))
+		{
+			if (Cached.Channel == EOutlierVitalityChannel::ShooterHealth) HP->SetHealthState(Cached.Current, Cached.Maximum, bSnap);
+			else if (Cached.Channel == EOutlierVitalityChannel::ShooterShield) HP->SetShieldState(Cached.Current, Cached.Maximum, bSnap);
+		}
+		else if (UPartnerHealthUI* PartnerHP = Cast<UPartnerHealthUI>(Module);
+			PartnerHP && Cached.Channel == EOutlierVitalityChannel::PartnerHealth)
+		{
+			PartnerHP->SetHealthState(Cached.Current, Cached.Maximum, bSnap);
+		}
+	}
+}
+
+void ULocalPlayerUISubSystem::RefreshVitalityPresentation()
+{
+	// 재등록/숨김 복귀는 최신 Snapshot만 즉시 반영한다. 누락된 과거 연출은 쌓아두지 않는다.
+	ApplyCachedVitalityToModule(GetModuleAny(TagDrivenUITags::Shooter::HP(), TagDrivenUITags::Partner::HP()), true);
+	ApplyCachedVitalityToModule(GetModule(TagDrivenUITags::Partner::Health()), true);
+}
+
+void ULocalPlayerUISubSystem::ResetVitalityPresentation()
+{
+	VitalityWorld.Reset();
+	CachedVitality.Reset();
+	VitalityReceivedMask = 0;
+	VitalityStreamMask = 0;
 }
 
 void ULocalPlayerUISubSystem::OnShooterSuitAcquiredChanged(bool bAcquired)
@@ -396,6 +488,7 @@ void ULocalPlayerUISubSystem::OnShooterSuitAcquiredChanged(bool bAcquired)
 
 void ULocalPlayerUISubSystem::SyncRegisteredModule(UEventDrivenUI* InModule)
 {
+	ApplyCachedVitalityToModule(InModule, true);
 	if (UAmmoUI* AmmoUI = Cast<UAmmoUI>(InModule))
 	{
 		AmmoUI->SetAmmoState(CachedAmmoCount, CachedMaxAmmo);

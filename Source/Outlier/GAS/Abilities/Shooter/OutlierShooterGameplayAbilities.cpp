@@ -671,12 +671,12 @@ void UOutlierShooterWeaponOverchargeAbility::DrainShield()
 	const float PartnerDrain = FMath::Min(Shooter->GetCurPartnerShield(), RemainingDrain);
 	if (PartnerDrain > 0.0f)
 	{
-		ShooterASC->ApplyPartnerShieldDeltaToSelf(-PartnerDrain, 0.0f);
+		ShooterASC->ApplyPartnerShieldDeltaToSelf(-PartnerDrain, 0.0f, EOutlierVitalityUpdatePolicy::Immediate);
 		RemainingDrain -= PartnerDrain;
 	}
 	if (RemainingDrain > 0.0f && Shooter->GetCurShield() > 0.0f)
 	{
-		ShooterASC->ApplyShieldDeltaToSelf(-FMath::Min(Shooter->GetCurShield(), RemainingDrain));
+		ShooterASC->ApplyShieldDeltaToSelf(-FMath::Min(Shooter->GetCurShield(), RemainingDrain), EOutlierVitalityUpdatePolicy::Immediate);
 	}
 	// 실드 소진은 과부하의 비용만 확정하며, 활성 수명은 8초 DataTable GameplayEffect가 소유한다.
 }

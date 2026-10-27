@@ -17,15 +17,21 @@ class TAGDRIVENUI_API UPartnerHealthUI : public UEventDrivenUI
 
 public:
 	virtual void NativeConstruct() override;
+	virtual void NativeDestruct() override;
+	virtual void Activate() override;
+	virtual void Deactivate() override;
 
 	UFUNCTION(BlueprintNativeEvent, Category = "UI")
 	void HealthChanged(float InHealthRatio);
 
-	void SetHealthState(float InHealth, float InMaxHealth);
+	void SetHealthState(float InHealth, float InMaxHealth, bool bImmediate = false);
 
 private:
-	void SetProgressBarRatio(float InRatio);
+	void SetProgressBarRatio(float InRatio, bool bImmediate = false);
 	void SetValueText(float InValue);
+	bool bHealthUpdateImmediate = false;
+	bool bHasHealthState = false;
+	float CachedMaxHealth = 0.0f;
 
 public:
 	UPROPERTY(BlueprintReadWrite, Category = "Data")

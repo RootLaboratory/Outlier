@@ -9,6 +9,7 @@
 #include "MainUIBase.h"
 #include "PartnerHPUI.h"
 #include "OutlierInfoTypes.h"
+#include "VitalityPresentationTypes.h"
 #include "LocalPlayerUISubSystem.generated.h"
 
 class UEventDrivenUI;
@@ -37,6 +38,7 @@ UCLASS()
 class TAGDRIVENUI_API ULocalPlayerUISubSystem : public ULocalPlayerSubsystem
 {
 	GENERATED_BODY()
+	friend class FGhostVitalityStreamTest;
 	
 public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
@@ -87,6 +89,9 @@ public:
 	void OnRep_PartnerHealthChanged(float InHealth, float MaxHealth);
 	void OnRep_PartnerShieldChanged(float InHealth, float MaxHealth);
 	void OnRep_ShieldChanged( float InCurShield ,  float InMaxShield);
+	void ApplyVitalityPresentation(const FOutlierVitalityPresentationUpdate& Update);
+	void ResetVitalityPresentation();
+	void RefreshVitalityPresentation();
 	void OnRep_AmmoCountChanged(int32 InCurrentAmmo, int32 InMaxAmmo);
 	void OnRep_WeaponOverchargeChanged(bool bActive);
 	void OnRep_InfiniteAmmoDisplayChanged(bool bActive);
@@ -125,6 +130,15 @@ public:
 	void OnAbilityEnabledByDistance();
 
 private:
+	void ApplyLegacyVitalityPresentation(EOutlierVitalityChannel Channel, float Current, float Maximum);
+	void ApplyCachedVitalityToModule(UEventDrivenUI* Module, bool bImmediate,
+		EOutlierVitalityChannel Channel = EOutlierVitalityChannel::Count);
+	UPROPERTY(Transient)
+	TArray<FOutlierVitalityPresentationUpdate> CachedVitality;
+	TWeakObjectPtr<UWorld> VitalityWorld;
+	uint8 VitalityReceivedMask = 0;
+	uint8 VitalityStreamMask = 0;
+
 	bool SubmitInfoRequest(const FOutlierPendingInfoRequest& Pending);
 	bool DispatchInfoRequest(UInfoCanvasBase* Canvas, const FOutlierPendingInfoRequest& Pending);
 	void HandleInfoWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources);

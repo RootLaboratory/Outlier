@@ -168,11 +168,16 @@ float APartnerCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 	{
 		return 0.0f;
 	}
+	const float HealthBefore = OutlierAbilitySystemComponent->GetNumericAttribute(UOutlierVitalAttributeSet::GetHealthAttribute());
 	const bool bApplied = OutlierAbilitySystemComponent->ApplyDamageToSelf(
 		Request.DamageAmount,
 		Request.EventInstigator,
 		Request.DamageCauser,
 		Request.DamageTag);
+	UE_LOG(LogTemp, Display,
+		TEXT("[PartnerHP][Damage] Actor=%s World=%s Amount=%.2f Applied=%d HP=%.2f->%.2f"),
+		*GetNameSafe(this), *GetNameSafe(GetWorld()), Request.DamageAmount, bApplied,
+		HealthBefore, OutlierAbilitySystemComponent->GetNumericAttribute(UOutlierVitalAttributeSet::GetHealthAttribute()));
 	if (bApplied)
 	{
 		// Partner의 실제 피격도 같은 쌍의 은신을 해제한다. 패시브 은신 예외는 능력이 판단한다.

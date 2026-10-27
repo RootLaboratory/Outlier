@@ -700,6 +700,7 @@ protected:
 	void UnbindGasVitalityObservers();
 	void HandleHealthChanged(const FOnAttributeChangeData& ChangeData);
 	void HandleStunnedTagChanged(const FGameplayTag StunnedTag, int32 NewCount);
+	void HandleDeadTagChanged(const FGameplayTag DeadTag, int32 NewCount);
 	bool ApplyDamageInternal(
 		float DamageAmount,
 		AController* DamageInstigator,
@@ -766,6 +767,8 @@ protected:
 	virtual void PrepareForPoolIdle();
 	// 행동 중단 여부는 기존 상태 로직이 결정하고, 파생 클래스는 작은 피격 연출만 정리한다.
 	virtual void InterruptDamagePresentation(float BlendOutTime) {}
+	// 서버 로컬 상태 변경과 GAS 통지를 표현에 반영한다. 게임플레이 상태는 변경하지 않는다.
+	virtual void RefreshCombatStatePresentation() {}
 	virtual void OnPoolStateApplied(EEnemyPoolState PreviousState) {}
 	virtual bool ShouldResetPoolMontages() const { return true; }
 
@@ -790,6 +793,7 @@ protected:
 	virtual void ApplyExplosionReactionPresentation(const FVector& Direction, float ReactionScale);
 	FDelegateHandle HealthChangedHandle;
 	FDelegateHandle StunnedTagChangedHandle;
+	FDelegateHandle DeadTagChangedHandle;
 	void AccumulateImpactVelocity(const FVector& ImpactVelocity);
 	void RefreshImpactReactionDuration();
 	void BeginPossessedImpactInputLock();

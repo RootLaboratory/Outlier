@@ -386,6 +386,13 @@ bool UShooterCombatComponent::IsActionLockBlockingAimFire(const AShooterCharacte
 void UShooterCombatComponent::TryStartAttack()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	if (ShooterCharacter && Cast<AMeleeWeaponBase>(ShooterCharacter->CurrentWeapon))
+	{
+		UE_LOG(LogTemp, Log, TEXT("[MeleeDiag][Input] Shooter=%s Authority=%d Weapon=%s SuitBlocked=%d Dead=%d ActionLock=%d Reloading=%d CanFire=%d"),
+			*GetNameSafe(ShooterCharacter), ShooterCharacter->HasAuthority(), *GetNameSafe(ShooterCharacter->CurrentWeapon),
+			ShooterCharacter->IsSuitTransitionBlocked(), ShooterCharacter->IsDead(), static_cast<int32>(ShooterCharacter->GetActionLock()),
+			bIsReloading, CanFireInCurrentState());
+	}
 	if (!ShooterCharacter || ShooterCharacter->IsSuitTransitionBlocked())
 	{
 		return;
@@ -1001,6 +1008,8 @@ void UShooterCombatComponent::HandleReloadCommitNotify()
 void UShooterCombatComponent::HandleMeleeHitNotify()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	UE_LOG(LogTemp, Log, TEXT("[MeleeDiag][Notify] Event=Hit Shooter=%s Authority=%d Weapon=%s"),
+		*GetNameSafe(ShooterCharacter), ShooterCharacter && ShooterCharacter->HasAuthority(), *GetNameSafe(ShooterCharacter ? ShooterCharacter->CurrentWeapon : nullptr));
 	if (!ShooterCharacter || !ShooterCharacter->HasAuthority())
 	{
 		return;
@@ -1015,6 +1024,8 @@ void UShooterCombatComponent::HandleMeleeHitNotify()
 void UShooterCombatComponent::HandleMeleeTraceBeginNotify()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	UE_LOG(LogTemp, Log, TEXT("[MeleeDiag][Notify] Event=TraceBegin Shooter=%s Authority=%d Weapon=%s"),
+		*GetNameSafe(ShooterCharacter), ShooterCharacter && ShooterCharacter->HasAuthority(), *GetNameSafe(ShooterCharacter ? ShooterCharacter->CurrentWeapon : nullptr));
 	if (!ShooterCharacter || !ShooterCharacter->HasAuthority())
 	{
 		return;
@@ -1029,6 +1040,8 @@ void UShooterCombatComponent::HandleMeleeTraceBeginNotify()
 void UShooterCombatComponent::HandleMeleeTraceTickNotify()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	UE_LOG(LogTemp, Log, TEXT("[MeleeDiag][Notify] Event=TraceTick Shooter=%s Authority=%d Weapon=%s"),
+		*GetNameSafe(ShooterCharacter), ShooterCharacter && ShooterCharacter->HasAuthority(), *GetNameSafe(ShooterCharacter ? ShooterCharacter->CurrentWeapon : nullptr));
 	if (!ShooterCharacter || !ShooterCharacter->HasAuthority())
 	{
 		return;
@@ -1043,6 +1056,8 @@ void UShooterCombatComponent::HandleMeleeTraceTickNotify()
 void UShooterCombatComponent::HandleMeleeTraceEndNotify()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	UE_LOG(LogTemp, Log, TEXT("[MeleeDiag][Notify] Event=TraceEnd Shooter=%s Authority=%d Weapon=%s"),
+		*GetNameSafe(ShooterCharacter), ShooterCharacter && ShooterCharacter->HasAuthority(), *GetNameSafe(ShooterCharacter ? ShooterCharacter->CurrentWeapon : nullptr));
 	if (!ShooterCharacter || !ShooterCharacter->HasAuthority())
 	{
 		return;
@@ -1057,6 +1072,8 @@ void UShooterCombatComponent::HandleMeleeTraceEndNotify()
 void UShooterCombatComponent::HandleMeleeRecoveryEndNotify()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	UE_LOG(LogTemp, Log, TEXT("[MeleeDiag][Notify] Event=RecoveryEnd Shooter=%s Authority=%d Weapon=%s"),
+		*GetNameSafe(ShooterCharacter), ShooterCharacter && ShooterCharacter->HasAuthority(), *GetNameSafe(ShooterCharacter ? ShooterCharacter->CurrentWeapon : nullptr));
 	if (!ShooterCharacter || !ShooterCharacter->HasAuthority())
 	{
 		return;

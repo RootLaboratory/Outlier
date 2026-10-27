@@ -32,6 +32,21 @@ public:
 	void SetInfiniteAmmoDisplayActive(bool bActive);
 
 public:
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Ammo|Text Color", meta = (ClampMin = "0", ClampMax = "1", UIMin = "0", UIMax = "1"))
+	float LowAmmoRatio = 0.30f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Ammo|Text Color", meta = (ClampMin = "0", ClampMax = "1", UIMin = "0", UIMax = "1"))
+	float CriticalAmmoRatio = 0.10f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Ammo|Text Color")
+	FLinearColor NormalAmmoTextColor = FLinearColor::White;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Ammo|Text Color")
+	FLinearColor LowAmmoTextColor = FLinearColor::FromSRGBColor(FColor(255, 128, 0));
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Ammo|Text Color")
+	FLinearColor CriticalAmmoTextColor = FLinearColor::Red;
+
 	UPROPERTY(BlueprintReadOnly, Category = "Data")
 	int32 CurrentAmmo = 0;
 
@@ -59,9 +74,11 @@ protected:
 	virtual void NativeConstruct() override;
 
 private:
+	FLinearColor ResolveAmmoTextColor();
 	void RefreshAmmoTexts();
 	void ApplyWeaponOverchargeVisibility();
 
 	bool bWeaponOverchargeActive = false;
 	bool bInfiniteAmmoDisplayActive = false;
+	bool bInvalidAmmoRatiosWarningLogged = false;
 };

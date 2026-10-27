@@ -91,6 +91,7 @@ void UMainUIBase::On_RepAbilityabledByDistance()
 
 void UMainUIBase::ModulesControl(bool Flag)
 {
+	const bool bWasActive = bModulesActive;
 	bModulesActive = Flag;
 
 	if (!DefaultLayer)
@@ -112,6 +113,17 @@ void UMainUIBase::ModulesControl(bool Flag)
 	if (!Flag)
 	{
 		ApplyExceptionVisibility();
+	}
+	else if (!bWasActive)
+	{
+		if (ULocalPlayer* LocalPlayer = GetOwningLocalPlayer())
+		{
+			if (ULocalPlayerUISubSystem* UI = LocalPlayer->GetSubsystem<ULocalPlayerUISubSystem>())
+			{
+				// 실제 숨김 복귀 때만 동기화한다. 반복되는 슈트 상태 갱신으로 잔상을 끊지 않는다.
+				UI->RefreshVitalityPresentation();
+			}
+		}
 	}
 }
 

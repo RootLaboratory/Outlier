@@ -29,7 +29,7 @@ bool UPartnerShieldRecipientComponent::ApplyShield(float Amount, float Duration,
 	if (!Set) return false;
 	const float ClampedAmount = FMath::Max(Amount, 0.0f);
 	if (!ASC->ApplyPartnerShieldDeltaToSelf(ClampedAmount - Set->GetPartnerShield(),
-		ClampedAmount - Set->GetMaxPartnerShield())) return false;
+		ClampedAmount - Set->GetMaxPartnerShield(), EOutlierVitalityUpdatePolicy::Immediate)) return false;
 	ShieldDuration = Duration;
 	ShieldHealthRegenRate = HealthRegenRate;
 	GetWorld()->GetTimerManager().SetTimer(DecayTimer, this,

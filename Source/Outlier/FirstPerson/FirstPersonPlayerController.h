@@ -14,9 +14,11 @@
 #include "UI/GameOverPendingTypes.h"
 #include "Upgrade/OutlierUpgradeTypes.h"
 #include "Containers/Ticker.h"
+#include "VitalityPresentationTypes.h"
 #include "PostProcess/OutlierPostProcessVolume.h"
 #include "FirstPersonPlayerController.generated.h"
 
+class UOutlierAbilitySystemComponent;
 class UInputMappingContext;
 class UInputAction;
 class UControllerInputConfig;
@@ -97,6 +99,7 @@ public:
 	UFUNCTION(Server, Reliable)
 	void ServerNotifyPassageCovered(ATuto_PassageTransitionVolume* Volume, FGuid ExecutionId);
 	virtual void SetPawn(APawn* InPawn) override;
+	virtual void ReceivedPlayer() override;
 
 	/** 로컬 볼륨 진입은 레벨 액터의 RPC가 아닌 이 소유 transport를 사용한다. */
 	bool NotifyTutorialVolumeEntered(ATuto_EventTriggerVolume* Volume);
@@ -404,6 +407,25 @@ protected:
 	virtual void RequestSuitTransitionCleanup(const FGuid& TransitionId);
 
 private:
+	// 두 역할의 Controller가 같은 서버 연출 스트림을 사용한다. Pawn 빙의와 원래 Partner HP는 별개다.
+	void RefreshVitalitySources(AOutlierPlayerState* ChangedPlayerState);
+	void ClearVitalitySources();
+	void QueueVitalityPresentation(const FOutlierVitalityPresentationUpdate& Update);
+	void FlushVitalityPresentation();
+	UFUNCTION(Server, Reliable)
+	void ServerRequestVitalitySnapshot();
+	UFUNCTION(Client, Reliable)
+	void ClientApplyVitalityPresentation(const TArray<FOutlierVitalityPresentationUpdate>& Updates);
+	TWeakObjectPtr<AOutlierPlayerState> VitalityPlayerState;
+	TWeakObjectPtr<UOutlierAbilitySystemComponent> VitalitySources[2];
+	FDelegateHandle VitalitySourceHandles[2];
+	FDelegateHandle VitalityCharactersHandle;
+	uint32 VitalityGenerations[3] = {};
+	uint32 VitalitySequences[3] = {};
+	UPROPERTY(Transient)
+	TArray<FOutlierVitalityPresentationUpdate> PendingVitalityUpdates;
+	FTimerHandle VitalityFlushTimer;
+
 	UFUNCTION(Client, Reliable)
 	void ClientSetElevatorFade(AElevatorShaftController* Shaft, FGuid ExecutionId, bool bReveal, float Duration);
 

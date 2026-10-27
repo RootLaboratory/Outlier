@@ -472,6 +472,7 @@ void AEnemyBase::ResetReusableCombatRuntime(const TCHAR* StateTreeStopReason)
 	SharedTargetLocation = FVector::ZeroVector;
 	PossessionInstigatorPartner.Reset();
 	PossessionPendingEffectHandle.Invalidate();
+	RefreshCombatStatePresentation();
 }
 
 bool AEnemyBase::MatchesPoolLease(int32 GameplayGeneration, int32 LeaseSerial) const
@@ -1737,6 +1738,7 @@ void AEnemyBase::EnterCombatFromRoom(
 	ReleasePatrolDestination();
 	bInCombat = true;
 	CombatState = EEnemyCombatState::Combat;
+	RefreshCombatStatePresentation();
 	UpdateLastKnownPlayerLocation(PlayerLocation);
 
 	if (bEnteredCombat)
@@ -1811,6 +1813,7 @@ bool AEnemyBase::CommitAlertToNonCombat()
 
 	CombatState = EEnemyCombatState::NonCombat;
 	bInCombat = false;
+	RefreshCombatStatePresentation();
 	RefreshPerceptionConfigForCurrentState();
 
 	SendEnemyStateTreeEventNextTick(
@@ -1842,6 +1845,7 @@ void AEnemyBase::EnterAlertFromPerception(const FVector& PlayerLocation)
 	}
 
 	CombatState = EEnemyCombatState::Alert;
+	RefreshCombatStatePresentation();
 	ReleasePatrolDestination();
 	UpdateLastKnownPlayerLocation(PlayerLocation);
 	RefreshPerceptionConfigForCurrentState();
@@ -1867,6 +1871,7 @@ void AEnemyBase::EnterStun()
 	PreStunCombatState = CombatState;
 	ReleasePatrolDestination();
 	CombatState = EEnemyCombatState::Stun;
+	RefreshCombatStatePresentation();
 	if (DownAudioContext.IsValid())
 		OutlierAudioFeedback::World(this, *DownAudioContext.ToString(), TEXT("Audio.Type.Enemy"));
 	CancelCommittedAction();
@@ -1896,6 +1901,7 @@ void AEnemyBase::RestoreStateAfterStun()
 
 	CombatState = PreStunCombatState;
 	bInCombat = CombatState == EEnemyCombatState::Combat;
+	RefreshCombatStatePresentation();
 	RefreshPerceptionConfigForCurrentState();
 
 	SendEnemyStateTreeEvent(
@@ -2789,6 +2795,15 @@ void AEnemyBase::BindGasVitalityObservers()
 			EGameplayTagEventType::NewOrRemoved).AddUObject(
 				this, &AEnemyBase::HandleStunnedTagChanged);
 	}
+	if (!DeadTagChangedHandle.IsValid())
+	{
+		// Health/CombatState와 Dead 태그의 복제 순서는 다를 수 있다.
+		// 태그 자체도 관찰해야 고정 조명이 다음 Actor 복제까지 남지 않는다.
+		DeadTagChangedHandle = OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+			OutlierGameplayTags::State::Dead(),
+			EGameplayTagEventType::NewOrRemoved).AddUObject(
+				this, &AEnemyBase::HandleDeadTagChanged);
+	}
 }
 
 void AEnemyBase::UnbindGasVitalityObservers()
@@ -2812,10 +2827,18 @@ void AEnemyBase::UnbindGasVitalityObservers()
 			EGameplayTagEventType::NewOrRemoved).Remove(StunnedTagChangedHandle);
 		StunnedTagChangedHandle.Reset();
 	}
+	if (DeadTagChangedHandle.IsValid())
+	{
+		OutlierAbilitySystemComponent->RegisterGameplayTagEvent(
+			OutlierGameplayTags::State::Dead(),
+			EGameplayTagEventType::NewOrRemoved).Remove(DeadTagChangedHandle);
+		DeadTagChangedHandle.Reset();
+	}
 }
 
 void AEnemyBase::HandleHealthChanged(const FOnAttributeChangeData& ChangeData)
 {
+	RefreshCombatStatePresentation();
 	if (!HasAuthority() && ChangeData.NewValue <= 0.0f)
 	{
 		InterruptDamagePresentation(0.0f);
@@ -2848,6 +2871,9 @@ void AEnemyBase::HandleHealthChanged(const FOnAttributeChangeData& ChangeData)
 
 void AEnemyBase::HandleStunnedTagChanged(const FGameplayTag StunnedTag, int32 NewCount)
 {
+	// 태그가 먼저 도착한 클라이언트는 즉시 소등하고, 태그 해제 때도 표현을 재평가한다.
+	// 서버의 실제 상태 복원은 아래 기존 경로가 계속 소유한다.
+	RefreshCombatStatePresentation();
 	// 복제된 스턴도 로컬 피격 연출을 정리한다. 실제 전투 상태 변경은 아래 서버 경로만 담당한다.
 	if (!HasAuthority() && StunnedTag == OutlierGameplayTags::State::Stunned() && NewCount > 0)
 	{
@@ -2867,6 +2893,11 @@ void AEnemyBase::HandleStunnedTagChanged(const FGameplayTag StunnedTag, int32 Ne
 	{
 		RestoreStateAfterStun();
 	}
+}
+
+void AEnemyBase::HandleDeadTagChanged(const FGameplayTag DeadTag, int32 NewCount)
+{
+	RefreshCombatStatePresentation();
 }
 
 void AEnemyBase::Die()
@@ -3656,6 +3687,7 @@ void AEnemyBase::PerformDeathCleanup()
 		return;
 	}
 	bDeathCleanupPerformed = true;
+	RefreshCombatStatePresentation();
 	InterruptDamagePresentation(0.0f);
 
 	if (HasAuthority())
