@@ -35,7 +35,8 @@ namespace
 		case ATuto_CombatObserver::ReinforcementSlot: return TEXT("Reinforcement");
 		case ATuto_CombatObserver::ResistanceSlot: return TEXT("Resistance");
 		case ATuto_CombatObserver::ClearedSlot: return TEXT("Cleared");
-		default: return TEXT("?");
+		case ATuto_CombatObserver::StartedSlot: return TEXT("Started");
+		default: return Slot >= ATuto_CombatObserver::IndexedReinforcementSlotStart ? TEXT("IndexedReinforcement") : TEXT("?");
 		}
 	}
 
@@ -80,13 +81,13 @@ namespace
 		}));
 
 	FAutoConsoleCommandWithWorldAndArgs FireCommand(TEXT("Outlier.Tuto.CombatObserver.Fire"),
-		TEXT("Fire <0|1|2>: run the Reinforcement/Resistance/Cleared handler without combat. One-shot record applies."),
+		TEXT("Fire <slot>: 0=Reinforcement, 1=Resistance, 2=Cleared, 3=Started, 4+=ReinforcementEvents array index + 4. One-shot record applies."),
 		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
 		{
 			const int32 Slot = Args.IsEmpty() ? INDEX_NONE : FCString::Atoi(*Args[0]);
-			if (Slot < ATuto_CombatObserver::ReinforcementSlot || Slot > ATuto_CombatObserver::ClearedSlot)
+			if (Args.IsEmpty() || !Args[0].IsNumeric() || Slot < ATuto_CombatObserver::ReinforcementSlot)
 			{
-				UE_LOG(LogOutlier, Warning, TEXT("[CombatObserverDebug] Usage: Outlier.Tuto.CombatObserver.Fire <0|1|2>"));
+				UE_LOG(LogOutlier, Warning, TEXT("[CombatObserverDebug] Usage: Outlier.Tuto.CombatObserver.Fire <slot> (0-3: legacy, 4+: ReinforcementEvents)"));
 				return;
 			}
 			ForEachObserver(World, [Slot](ATuto_CombatObserver& Observer) { Observer.DebugFireSlot(Slot); });
@@ -107,7 +108,7 @@ namespace
 
 ATuto_CombatObserver::ATuto_CombatObserver()
 {
-	EventTriggers.SetNum(3);
+	EventTriggers.SetNum(4);
 	USceneComponent* GuideRoot = CreateDefaultSubobject<USceneComponent>(TEXT("GuideRoot"));
 	SetRootComponent(GuideRoot);
 	WorldGuideTarget = CreateDefaultSubobject<UOutlierWorldGuideTargetComponent>(TEXT("WorldGuideTarget"));
@@ -158,7 +159,10 @@ void ATuto_CombatObserver::BeginPlay()
 		Combat->OnReinforcementStarted.AddUObject(this, &ThisClass::HandleReinforcementStarted);
 		// 전투 도중의 체크포인트로 복원되면 이미 시작된 증원은 다시 알려지지 않으므로 현재 Wave를 한 번 확인한다.
 		if (Combat->GetRoomState(RoomTag) == ERoomCombatState::Combat)
+		{
+			if (AOutlierPlayerState* Source = FindPlayerInRoom()) HandleCombatStarted(Source);
 			TryReinforcementAtWave(Combat->GetCurrentWaveIndex(RoomTag));
+		}
 	}
 	if (UEnemyAdaptationSubsystem* Adaptation = World->GetSubsystem<UEnemyAdaptationSubsystem>())
 	{
@@ -179,7 +183,7 @@ bool ATuto_CombatObserver::IsSlotFired(int32 Slot) const
 bool ATuto_CombatObserver::AreAllSlotsFired() const
 {
 	bool bAnyConfigured = false;
-	for (int32 Slot = ReinforcementSlot; Slot <= ClearedSlot; ++Slot)
+	for (int32 Slot = ReinforcementSlot; Slot < IndexedReinforcementSlotStart + ReinforcementEvents.Num(); ++Slot)
 	{
 		if (!GetEventTag(Slot).IsValid()) continue;
 		bAnyConfigured = true;
@@ -196,9 +200,24 @@ bool ATuto_CombatObserver::IsReinforcementWave(int32 WaveIndex) const
 
 void ATuto_CombatObserver::TryReinforcementAtWave(int32 WaveIndex)
 {
-	// 증원 slot이 비었거나 이미 나갔으면 플레이어를 찾을 필요가 없다.
-	if (!IsReinforcementWave(WaveIndex) || !GetEventTag(ReinforcementSlot).IsValid() || IsSlotFired(ReinforcementSlot)) return;
-	if (AOutlierPlayerState* Source = FindPlayerInRoom()) HandleReinforcement(Source);
+	// 기존 첫 증원 설정과 인덱스별 추가 설정은 각각 독립된 one-shot 슬롯을 사용한다.
+	AOutlierPlayerState* Source = nullptr;
+	if (IsReinforcementWave(WaveIndex) && GetEventTag(ReinforcementSlot).IsValid() && !IsSlotFired(ReinforcementSlot))
+	{
+		Source = FindPlayerInRoom();
+		if (Source) HandleReinforcement(Source);
+	}
+	if (WaveIndex < 1) return;
+	for (int32 Index = 0; Index < ReinforcementEvents.Num(); ++Index)
+	{
+		const int32 Slot = IndexedReinforcementSlotStart + Index;
+		if (ReinforcementEvents[Index].WaveIndex != WaveIndex || !GetEventTag(Slot).IsValid() || IsSlotFired(Slot)) continue;
+		if (!Source) Source = FindPlayerInRoom();
+		if (!Source) return;
+		const bool bSent = TriggerEvent(Slot, Source);
+		Trace(this, FString::Printf(TEXT("Reinforcement Wave=%d slot=%d -> %s"), WaveIndex, Slot,
+			bSent ? TEXT("sent") : TEXT("rejected (already sent/recipients)")));
+	}
 }
 
 void ATuto_CombatObserver::HandleReinforcementStarted(FGameplayTag EventRoomTag, int32 CombatPhaseIndex, int32 WaveIndex,
@@ -233,6 +252,13 @@ void ATuto_CombatObserver::HandleRoomCleared(AOutlierPlayerState* SourcePlayerSt
 	Trace(this, FString::Printf(TEXT("Cleared slot -> %s"), bSent ? TEXT("sent") : TEXT("rejected (already sent/empty tag/recipients)")));
 }
 
+void ATuto_CombatObserver::HandleCombatStarted(AOutlierPlayerState* SourcePlayerState)
+{
+	if (!GetEventTag(StartedSlot).IsValid() || IsSlotFired(StartedSlot)) return;
+	const bool bSent = TriggerEvent(StartedSlot, SourcePlayerState);
+	Trace(this, FString::Printf(TEXT("Started slot -> %s"), bSent ? TEXT("sent") : TEXT("rejected")));
+}
+
 void ATuto_CombatObserver::HandleCombatEvent(FGameplayTag EventRoomTag, ERoomCombatEvent Event,
 	int32 CombatPhaseIndex, int32 GameplayGeneration)
 {
@@ -242,6 +268,11 @@ void ATuto_CombatObserver::HandleCombatEvent(FGameplayTag EventRoomTag, ERoomCom
 		*UEnum::GetValueAsString(Event), CombatPhaseIndex, GameplayGeneration,
 		Combat ? *UEnum::GetValueAsString(Combat->GetRoomState(RoomTag)) : TEXT("None"),
 		Combat ? Combat->GetCurrentCombatPhaseIndex(RoomTag) : INDEX_NONE));
+	if (Event == ERoomCombatEvent::SequenceStarted)
+	{
+		if (AOutlierPlayerState* Source = FindPlayerInRoom()) HandleCombatStarted(Source);
+		return;
+	}
 	if (Event != ERoomCombatEvent::RoomCleared) return;
 	if (AOutlierPlayerState* Source = FindPlayerInRoom()) HandleRoomCleared(Source);
 	// 클리어된 방에서는 증원과 저항이 더 이상 발생하지 않으므로 observer를 종료한다.
@@ -285,12 +316,14 @@ FString ATuto_CombatObserver::BuildDebugReport() const
 		Combat ? Combat->GetCurrentWaveIndex(RoomTag) : INDEX_NONE);
 	const UOutlierSaveSubSystem* Saves = GetGameInstance()
 		? GetGameInstance()->GetSubsystem<UOutlierSaveSubSystem>() : nullptr;
-	for (int32 Slot = ReinforcementSlot; Slot <= ClearedSlot; ++Slot)
+	for (int32 Slot = ReinforcementSlot; Slot < IndexedReinforcementSlotStart + ReinforcementEvents.Num(); ++Slot)
 	{
 		const FGameplayTag Tag = GetEventTag(Slot);
 		Report += FString::Printf(TEXT("\n    [%d] %-13s Tag=%s Submitted=%d FiredInFlow=%d"), Slot, SlotName(Slot),
 			Tag.IsValid() ? *Tag.ToString() : TEXT("(empty)"), IsEventSubmitted(Slot) ? 1 : 0,
 			Saves && Saves->HasFiredTutorialEvent(Tag) ? 1 : 0);
+		if (Slot >= IndexedReinforcementSlotStart)
+			Report += FString::Printf(TEXT(" Wave=%d"), ReinforcementEvents[Slot - IndexedReinforcementSlotStart].WaveIndex);
 	}
 	return Report;
 }
@@ -298,6 +331,11 @@ FString ATuto_CombatObserver::BuildDebugReport() const
 #if !UE_BUILD_SHIPPING
 bool ATuto_CombatObserver::DebugFireSlot(int32 Slot)
 {
+	if (Slot < ReinforcementSlot || Slot >= IndexedReinforcementSlotStart + ReinforcementEvents.Num())
+	{
+		UE_LOG(LogOutlier, Warning, TEXT("[CombatObserverDebug][%s] Invalid slot %d."), *GetName(), Slot);
+		return false;
+	}
 	AOutlierPlayerState* Source = FindPlayerInRoom();
 	if (!Source) return false;
 	const UOutlierSaveSubSystem* Saves = GetGameInstance()
@@ -309,7 +347,8 @@ bool ATuto_CombatObserver::DebugFireSlot(int32 Slot)
 	case ReinforcementSlot: HandleReinforcement(Source); break;
 	case ResistanceSlot: HandleFirstResistance(Source); break;
 	case ClearedSlot: HandleRoomCleared(Source); break;
-	default: return false;
+	case StartedSlot: HandleCombatStarted(Source); break;
+	default: TriggerEvent(Slot, Source); break;
 	}
 	const bool bSent = !bWasSubmitted && IsEventSubmitted(Slot);
 	UE_LOG(LogOutlier, Log, TEXT("[CombatObserverDebug][%s] Fire %s -> %s"), *GetName(), SlotName(Slot),

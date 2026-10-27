@@ -69,8 +69,4 @@ struct OUTLIER_API FPartnerSkillDataRow : public FTableRowBase
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
 	float ShieldDecayDelay = 1.0f;
-
-	// Interaction
-	UPROPERTY(EditAnywhere, BlueprintReadOnly)
-	float InteractionRange = 200.0f;
 };

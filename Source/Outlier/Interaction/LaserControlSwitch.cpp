@@ -52,8 +52,13 @@ bool ALaserControlSwitch::DestroyLaserFloors()
 	{
 		if (IsValid(LaserFloor) && !LaserFloor->IsActorBeingDestroyed())
 		{
-			bDestroyedAny |= LaserFloor->Destroy();
+			bDestroyedAny |= DeactivateLaserFloor(LaserFloor);
 		}
 	}
 	return bDestroyedAny;
+}
+
+bool ALaserControlSwitch::DeactivateLaserFloor(ALaserKillFloor* LaserFloor)
+{
+	return LaserFloor->Destroy();
 }

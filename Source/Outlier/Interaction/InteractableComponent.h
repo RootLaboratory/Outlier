@@ -6,6 +6,7 @@
 #include "Components/ActorComponent.h"
 #include "GameplayTagContainer.h"
 #include "Interface/ActorBasedWidgetInterface.h"
+#include "UI/WorldWidgetPresentation.h"
 #include "InteractableComponent.generated.h"
 
 class AFirstPersonCharacter;
@@ -13,6 +14,9 @@ class AInteractionDescActor;
 class APlayerController;
 class UInteractInfoWidget;
 class UInteractKeyWidget;
+class UInteractionLockedWidget;
+class UInteractionOutlineWidget;
+class UUserWidget;
 class UWidgetComponent;
 
 /**
@@ -61,6 +65,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Interaction")
 	bool CanInteract(const FGameplayTagContainer& InteractorTags) const;
 
+	/** A hackable owner whose interaction is still locked. Independent of access queries. */
+	UFUNCTION(BlueprintPure, Category = "Interaction")
+	bool IsLockedYet() const;
+
+	/** Lock prompts may bypass only the hack lock, never other interaction restrictions. */
+	UFUNCTION(BlueprintPure, Category = "Interaction")
+	bool CanShowInteractionWidgets(const FGameplayTagContainer& InteractorTags) const;
+
 	bool RequiresHoldInteract() const;
 	bool AllowsConcurrentHold() const;
 	bool IsMultipleUse() const;
@@ -71,14 +83,14 @@ public:
 	void ResetHoldInteraction(AFirstPersonCharacter* Interactor);
 	bool CanCommitHoldInteraction(const AFirstPersonCharacter* Interactor) const;
 	bool CommitHoldInteraction(AFirstPersonCharacter* Interactor);
+	/** Accepted interaction completion on the server; single-use policy is shared by instant and hold interactions. */
+	void CommitInteraction(AFirstPersonCharacter* Interactor);
 
 	void SyncInteractionStateFromServer(
-		EInteractionFlowResult FlowResult,
-		bool bCompletedHoldInteract);
+		EInteractionFlowResult FlowResult);
 	void HandleInteractionSucceeded(
 		AFirstPersonCharacter* Interactor,
 		EInteractionFlowResult FlowResult,
-		bool bCompletedHoldInteract,
 		bool bSyncStateFromServer);
 	void MarkHoldReady();
 	void RestoreUsedState(bool bUsed);
@@ -90,11 +102,36 @@ public:
 
 	void InteractKeyWidgetActivate(AFirstPersonCharacter* Interactor);
 	void InteractKeyWidgetDeactivate();
+	void UpdateInnerRangeWidgets(AFirstPersonCharacter* Interactor, bool bFocused);
+	void InteractionLockedWidgetActivate(AFirstPersonCharacter* Interactor);
+	void InteractionLockedWidgetDeactivate();
+	void InteractionOutlineWidgetActivate(AFirstPersonCharacter* Interactor);
+	void InteractionOutlineWidgetDeactivate();
+
+	/** Local outline-sphere enter/leave hook. Presentation is owned by this component. */
+	UFUNCTION(BlueprintNativeEvent, Category = "Interaction|Outline")
+	void OnOutlineRangeChanged(AFirstPersonCharacter* Interactor, bool bInRange);
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Interaction|Widget")
 	FVector2D InteractKeyWidgetDrawSize = FVector2D(64.0f, 64.0f);
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Interaction|Widget|Info")
+	FWorldWidgetPresentation InteractInfoWidgetPresentation;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Interaction|Widget|Key")
+	FWorldWidgetPresentation InteractKeyWidgetPresentation;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Interaction|Widget|Locked")
+	FWorldWidgetPresentation InteractionLockedWidgetPresentation;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Interaction|Widget|Outline")
+	FWorldWidgetPresentation InteractionOutlineWidgetPresentation;
+
 private:
+	void UpdateWidgetPresentation();
+	void RefreshWidgetTick();
+	bool MeetsInteractionRequirements(const FGameplayTagContainer& InteractorTags) const;
+
 	UFUNCTION()
 	void OnRep_InteractableTags();
 
@@ -109,6 +146,8 @@ private:
 	void ClearInteractionDescActor();
 	UWidgetComponent* EnsureInteractInfoWidgetComponent(APlayerController* PlayerController);
 	UWidgetComponent* EnsureInteractKeyWidgetComponent(APlayerController* PlayerController);
+	UWidgetComponent* CreateRangeWidgetComponent(APlayerController* PlayerController,
+		TSubclassOf<UUserWidget> WidgetClass, FName Name, FVector2D DrawSize, float ZOffset);
 	bool GetPrimaryInteractTag(FGameplayTag& OutInteractTag) const;
 
 	/** Concurrent is a separate policy from access queries and multiple use. */
@@ -132,11 +171,41 @@ private:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction|UI", meta = (AllowPrivateAccess = "true", ClampMin = "1.0"))
 	FVector2D InteractInfoWidgetDrawSize = FVector2D(1500.0f, 400.0f);
 
+	/** 소유 BP의 컴포넌트에서 지정한다. 미지정 시 키 위젯을 생성하지 않는다. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction|UI", meta = (AllowPrivateAccess = "true"))
 	TSubclassOf<UInteractKeyWidget> InteractKeyWidgetClass;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction|UI", meta = (AllowPrivateAccess = "true"))
 	float InteractKeyWidgetZOffset = 20.0f;
+
+	/** 소유 BP의 컴포넌트에서 지정한다. 미지정 시 잠금 위젯을 생성하지 않는다. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction|UI", meta = (AllowPrivateAccess = "true"))
+	TSubclassOf<UInteractionLockedWidget> InteractionLockedWidgetClass;
+
+	UPROPERTY(EditAnywhere, Category = "Interaction|UI", meta = (ClampMin = "1.0"))
+	FVector2D InteractionLockedWidgetDrawSize = FVector2D(64.0f, 64.0f);
+
+	UPROPERTY(EditAnywhere, Category = "Interaction|UI")
+	float InteractionLockedWidgetZOffset = 20.0f;
+
+	/** 소유 BP의 컴포넌트에서 지정한다. 미지정 시 외곽 위젯을 생성하지 않는다. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction|UI", meta = (AllowPrivateAccess = "true"))
+	TSubclassOf<UInteractionOutlineWidget> InteractionOutlineWidgetClass;
+
+	UPROPERTY(EditAnywhere, Category = "Interaction|UI", meta = (ClampMin = "1.0"))
+	FVector2D InteractionOutlineWidgetDrawSize = FVector2D(32.0f, 32.0f);
+
+	UPROPERTY(EditAnywhere, Category = "Interaction|UI")
+	float InteractionOutlineWidgetZOffset = 20.0f;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UInteractionLockedWidget> InteractionLockedWidget;
+	UPROPERTY(Transient)
+	TObjectPtr<UWidgetComponent> InteractionLockedWidgetComponent;
+	UPROPERTY(Transient)
+	TObjectPtr<UInteractionOutlineWidget> InteractionOutlineWidget;
+	UPROPERTY(Transient)
+	TObjectPtr<UWidgetComponent> InteractionOutlineWidgetComponent;
 
 	UPROPERTY(Transient)
 	TObjectPtr<AInteractionDescActor> InteractionDescActor;

@@ -22,6 +22,8 @@ public:
 protected:
 	virtual void BeginPlay() override;
 	virtual bool ActivateTarget() override;
+	/** 기본 스위치는 파괴한다. Tuto 파생형은 완료 알림을 보내는 비활성화를 사용할 수 있다. */
+	virtual bool DeactivateLaserFloor(ALaserKillFloor* LaserFloor);
 
 public:
 	UPROPERTY(EditInstanceOnly, Category = "Switch")

@@ -71,8 +71,21 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|Input", meta = (Categories = "Audio.Context"))
 	FGameplayTagContainer InteractionAudioContextTags;
 
-	UPROPERTY(EditDefaultsOnly, Category = "Interaction")
-	float InteractRange = 100.0f;
+	/** Sphere overlap radius used to show nearby interaction widgets. */
+	UPROPERTY(EditDefaultsOnly, Category = "Interaction", meta = (DisplayName = "Interaction Widget Exposed Range", ClampMin = "0.0", Units = "cm"))
+	float InteractionWidgetExposedRange = 100.0f;
+
+	/** Outer detection radius; always at least 1 cm larger than the widget sphere. */
+	UPROPERTY(EditDefaultsOnly, Category = "Interaction", meta = (ClampMin = "1.0", Units = "cm"))
+	float OutlineSphereRange = 200.0f;
+
+	/** Visible, available or hack-locked actors in the outer sphere, excluding the inner cache. */
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "Interaction")
+	TArray<TObjectPtr<AActor>> OutlineInteractables;
+
+	/** Maximum reach of the line or sphere trace used to interact. */
+	UPROPERTY(EditDefaultsOnly, Category = "Interaction", meta = (DisplayName = "Interaction Available Range", ClampMin = "0.0", Units = "cm"))
+	float InteractionAvailableRange = 100.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Gameplay Tags")
 	FGameplayTagContainer OwnedQueryTags;
@@ -165,6 +178,10 @@ protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
+#if WITH_EDITOR
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
+
 
 public:
 	USkeletalMeshComponent* GetFirstPersonMesh() const { return FirstPersonMesh; }
@@ -216,8 +233,12 @@ private:
 	void UpdateInteractableFocus();
 
 	void SyncInteractableKeyWidgets(const TArray<AActor*>& CurrentInteractables);
+	void SyncOutlineInteractables(const TArray<AActor*>& CurrentInteractables);
+	void ClearInteractionDetection();
 
 	void GetInteractablesInRange(TArray<AActor*>& OutInteractables) const;
+	void GetInteractablesInSphere(float Range, bool bOutlineSphere, TArray<AActor*>& OutInteractables) const;
+	void NormalizeInteractionSphereRanges();
 
 	AActor* FindInteractTargetByTrace() const;
 
@@ -229,6 +250,10 @@ private:
 	UPROPERTY(EditDefaultsOnly, Category = "Interaction")
 	TEnumAsByte<ECollisionChannel> InteractionTraceChannel = ECC_Visibility;
 
+	/** Wall/occluder query, independent of the interactable detection channel. */
+	UPROPERTY(EditDefaultsOnly, Category = "Interaction")
+	TEnumAsByte<ECollisionChannel> InteractionVisibilityTraceChannel = ECC_Visibility;
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Interaction", meta = (AllowPrivateAccess = "true"))
 	EInteractionTraceMode InteractionTraceMode = EInteractionTraceMode::LineTrace;
 
@@ -237,6 +262,9 @@ private:
 
 	UPROPERTY(EditDefaultsOnly, Category = "Interaction|Debug")
 	bool bDrawInteractionTrace = false;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Interaction|Debug")
+	bool bDrawOutlineSphere = false;
 
 	UPROPERTY()
 	AActor* FocusedInteractable = nullptr;

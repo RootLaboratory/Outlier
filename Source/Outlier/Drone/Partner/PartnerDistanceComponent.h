@@ -20,7 +20,15 @@ class OUTLIER_API UPartnerDistanceComponent : public UPartnerCharacterComponentB
 public:
 	UPartnerDistanceComponent();
 
+	// Each transition has its own cooldown. Suppressed sounds are never queued.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Boundary|Audio", meta = (ClampMin = "0.0", Units = "s"))
+	float ConnectionAudioCooldown = 3.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Boundary|Audio", meta = (ClampMin = "0.0", Units = "s"))
+	float DisconnectionAudioCooldown = 3.0f;
+
 	void UpdateBoundaryState();
+	void RefreshActivationFromPlayerState();
 
 	virtual void TickComponent(
 		float DeltaTime,
@@ -30,10 +38,15 @@ public:
 
 protected:
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 private:
 	float CalculateDistance() const;
 	void CacheUISubsystem();
+	void PlayBoundaryTransitionAudio(bool bOutside);
+
+	FTimerHandle ConnectionAudioCooldownTimer;
+	FTimerHandle DisconnectionAudioCooldownTimer;
 
 private:
 	UPROPERTY(Transient)

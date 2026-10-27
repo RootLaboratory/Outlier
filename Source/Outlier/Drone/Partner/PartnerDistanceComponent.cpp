@@ -2,23 +2,67 @@
 
 
 #include "Drone/Partner/PartnerDistanceComponent.h"
+#include "Audio/OutlierAudioFeedback.h"
 #include "LocalPlayerUISubSystem.h"
+#include "OutlierPlayerState.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Engine/LocalPlayer.h"
 #include "GameFramework/PlayerController.h"
 #include "Shooter/ShooterCharacter.h"
+#include "Engine/World.h"
+#include "TimerManager.h"
 
 UPartnerDistanceComponent::UPartnerDistanceComponent()
 {
 	PrimaryComponentTick.bCanEverTick = true;
-	PrimaryComponentTick.bStartWithTickEnabled = true;
+	PrimaryComponentTick.bStartWithTickEnabled = false;
 }
 
 void UPartnerDistanceComponent::BeginPlay()
 {
 	Super::BeginPlay();
 
-	CacheUISubsystem();
+	RefreshActivationFromPlayerState();
+}
+
+void UPartnerDistanceComponent::RefreshActivationFromPlayerState()
+{
+	RefreshCharacterRefsFromPlayerState();
+	const AOutlierPlayerState* PS = PartnerCharacter
+		? PartnerCharacter->GetPlayerState<AOutlierPlayerState>() : nullptr;
+	const bool bShouldTick = HasBegunPlay() && IsValid(PartnerCharacter) && IsValid(ShooterCharacter)
+		&& PS && PS->IsPairSuitAcquired()
+		&& (PartnerCharacter->HasAuthority() || PartnerCharacter->IsLocallyControlled());
+	SetComponentTickEnabled(bShouldTick);
+
+	if (bShouldTick)
+	{
+		CacheUISubsystem();
+	}
+	else
+	{
+		CachedSubsystem = nullptr;
+		if (UWorld* World = GetWorld())
+		{
+			World->GetTimerManager().ClearTimer(ConnectionAudioCooldownTimer);
+			World->GetTimerManager().ClearTimer(DisconnectionAudioCooldownTimer);
+		}
+		// Losing the suit or pair must not leave the Shooter disabled by a stale boundary.
+		if (PartnerCharacter && PartnerCharacter->HasAuthority())
+		{
+			PartnerCharacter->SetBoundaryOutside(false);
+		}
+	}
+}
+
+void UPartnerDistanceComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(ConnectionAudioCooldownTimer);
+		World->GetTimerManager().ClearTimer(DisconnectionAudioCooldownTimer);
+	}
+	Super::EndPlay(EndPlayReason);
 }
 
 void UPartnerDistanceComponent::TickComponent(
@@ -67,21 +111,63 @@ void UPartnerDistanceComponent::TickComponent(
 
 	if (PartnerCharacter->HasAuthority())
 	{
-		const bool bOutside = Distance > BoundaryRadius;
-		PartnerCharacter->SetBoundaryOutside(bOutside);
+		UpdateBoundaryState();
 	}
 }
 
 void UPartnerDistanceComponent::UpdateBoundaryState()
 {
-	if (!PartnerCharacter || !ShooterCharacter || !PartnerCharacter->HasAuthority())
+	if (!IsComponentTickEnabled() || !PartnerCharacter || !ShooterCharacter || !PartnerCharacter->HasAuthority())
 	{
 		return;
 	}
 
 	const float Distance = CalculateDistance();
 	const bool bOutside = Distance > PartnerCharacter->SuitDisableBoundaryRadius;
+	const bool bStateChanged = (PartnerCharacter->GetBoundaryOutside() == EPartnerBoundaryState::Outside) != bOutside;
 	PartnerCharacter->SetBoundaryOutside(bOutside);
+	if (bStateChanged)
+	{
+		PlayBoundaryTransitionAudio(bOutside);
+	}
+}
+
+void UPartnerDistanceComponent::PlayBoundaryTransitionAudio(bool bOutside)
+{
+	UWorld* World = GetWorld();
+	if (!World || !PartnerCharacter || !PartnerCharacter->HasAuthority())
+	{
+		return;
+	}
+
+	FTimerManager& Timers = World->GetTimerManager();
+	FTimerHandle& CooldownTimer = bOutside ? DisconnectionAudioCooldownTimer : ConnectionAudioCooldownTimer;
+	if (Timers.IsTimerActive(CooldownTimer))
+	{
+		return;
+	}
+
+	// Follow the same PlayerState link used to apply the Shooter's suit boundary state.
+	AOutlierPlayerState* PS = PartnerCharacter->GetPlayerState<AOutlierPlayerState>();
+	AShooterCharacter* Shooter = PS ? PS->GetShooterCharacter() : nullptr;
+	if (!IsValid(Shooter))
+	{
+		return;
+	}
+
+	OutlierAudioFeedback::Owner(Shooter, bOutside
+		? TEXT("Audio.Context.Player.01.State.Connection.Lost")
+		: TEXT("Audio.Context.Player.01.State.Connection.On"));
+	OutlierAudioFeedback::Owner(PartnerCharacter, bOutside
+		? TEXT("Audio.Context.Player.02.State.Connection.Lost")
+		: TEXT("Audio.Context.Player.02.State.Connection.On"));
+
+	const float Cooldown = bOutside ? DisconnectionAudioCooldown : ConnectionAudioCooldown;
+	if (Cooldown > 0.0f)
+	{
+		// Expiration only rearms this transition; it must not play a deferred sound.
+		Timers.SetTimer(CooldownTimer, FTimerDelegate::CreateWeakLambda(this, [] {}), Cooldown, false);
+	}
 }
 
 float UPartnerDistanceComponent::CalculateDistance() const

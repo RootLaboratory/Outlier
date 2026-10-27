@@ -441,8 +441,7 @@ bool ARangedWeaponBase::TryResolveWallOffsetMuzzleShot(
 	const float FloorNormalZ = FMath::Clamp(WeaponValues.WallFloorNormalZ, 0.0f, 1.0f);
 
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(WeaponWallOffsetShotTrace), false, OwnerCharacter);
-	Params.AddIgnoredActor(OwnerCharacter);
-	Params.AddIgnoredActor(this);
+	AddWeaponTraceIgnoredActors(Params);
 
 	const auto ResolveProbeAlpha = [&](const FVector& ProbeStart, float Distance, float Radius, float ProbeSafeDistance)
 	{
@@ -675,8 +674,7 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 		Start,
 		BaseDirection);
 	FCollisionQueryParams Params;
-	Params.AddIgnoredActor(this);
-	Params.AddIgnoredActor(OwnerCharacter);
+	AddWeaponTraceIgnoredActors(Params);
 	const AShooterCharacter* AutoAimShooter = Cast<AShooterCharacter>(OwnerCharacter);
 	const bool bAutoAimActive = IsWeaponOvercharged() && AutoAimShooter && AutoAimShooter->IsAutoAimEnabled();
 	const bool bDirectCoreAim = bAutoAimActive

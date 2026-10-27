@@ -122,8 +122,7 @@ bool UOutlierPartnerGameplayAbility::CanActivateAbility(
 	const UOutlierAbilitySystemComponent* AbilitySystem = ActorInfo
 		? Cast<UOutlierAbilitySystemComponent>(ActorInfo->AbilitySystemComponent.Get())
 		: nullptr;
-	// Partner 능력도 슈트에 의존한다. 플래그는 Shooter PlayerState 에만 서므로
-	// 페어를 거슬러 올라가 확인한다(IsPairSuitAcquired).
+	// 슈트가 필요한 능력은 페어의 Shooter PlayerState에서 획득 여부를 확인한다.
 	const AOutlierPlayerState* PartnerPS = Partner
 		? Partner->GetPlayerState<AOutlierPlayerState>()
 		: nullptr;
@@ -131,7 +130,7 @@ bool UOutlierPartnerGameplayAbility::CanActivateAbility(
 	return Partner
 		&& AbilitySystem
 		&& PartnerPS
-		&& PartnerPS->IsPairSuitAcquired()
+		&& (!RequiresSuit() || PartnerPS->IsPairSuitAcquired())
 		&& Partner->CanAcceptInput()
 		&& Partner->GetController()
 		&& Partner->GetController()->GetPawn() == Partner

@@ -29,6 +29,8 @@ protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void Tick(float DeltaTime) override;
+	/** 실제 도착 후 확장 알림. 체크포인트 복원의 스냅도 이 경로를 지난다. */
+	virtual void FinishMove();
 
 	UPROPERTY(VisibleAnywhere, Category = "Component")
 	TObjectPtr<UStaticMeshComponent> Supporter;
@@ -67,7 +69,6 @@ private:
 
 	void StartMove();
 	void SnapToTarget();
-	void FinishMove();
 	float EvaluateProgress(float TimeRatio) const;
 
 	FVector StartLocation = FVector::ZeroVector;

@@ -122,6 +122,7 @@ void AFirstPersonCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
 void AFirstPersonCharacter::BeginPlay()
 {
 	Super::BeginPlay();
+	NormalizeInteractionSphereRanges();
 
 	if (APlayerController* PlayerController = Cast<APlayerController>(GetController()))
 	{
@@ -161,6 +162,8 @@ void AFirstPersonCharacter::BeginPlay()
 
 void AFirstPersonCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	GetWorldTimerManager().ClearTimer(InteractionTraceTimerHandle);
+	ClearInteractionDetection();
 	OnSuitTransitionParticipantInvalidated.Broadcast(this);
 	OnSuitTransitionParticipantInvalidated.Clear();
 	if (BoundSettingsSubsystem)
@@ -490,6 +493,10 @@ void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor)
 		{
 			InteractableComponent->CommitHoldInteraction(this);
 		}
+		else if (FlowResult == EInteractionFlowResult::Completed)
+		{
+			InteractableComponent->CommitInteraction(this);
+		}
 
 		UE_LOG(LogTemp, Log, TEXT("[Server] %s ServerInteract success Target=%s"), *GetName(), *GetNameSafe(TargetActor));
 		ClientOnInteractSucceeded(TargetActor, FlowResult); //InteractObject UI Update;
@@ -544,7 +551,6 @@ void AFirstPersonCharacter::ClientOnInteractSucceeded_Implementation(
 			InteractableComponent->HandleInteractionSucceeded(
 				this,
 				FlowResult,
-				bCompletedHoldInteract,
 				!HasAuthority());
 		}
 	}
@@ -706,6 +712,10 @@ void AFirstPersonCharacter::CompleteDeferredInteraction(AActor* TargetActor, boo
 			{
 				Component->CommitHoldInteraction(this);
 			}
+			else
+			{
+				Component->CommitInteraction(this);
+			}
 			ClientOnInteractSucceeded(TargetActor, EInteractionFlowResult::Completed);
 		}
 	}
@@ -778,6 +788,7 @@ void AFirstPersonCharacter::PrepareForSuitTransition()
 
 void AFirstPersonCharacter::UnPossessed()
 {
+	ClearInteractionDetection();
 	OnSuitTransitionParticipantInvalidated.Broadcast(this);
 	Super::UnPossessed();
 }
@@ -815,12 +826,114 @@ void AFirstPersonCharacter::OnMoveInputUpdated(const FVector2D& MoveValue)
 
 void AFirstPersonCharacter::UpdateInteractableFocus()
 {
+	NormalizeInteractionSphereRanges();
+	// Inner owns overlapping actors. Refresh its cache before querying the outer sphere.
 	TArray<AActor*> CurrentInteractables;
-	GetInteractablesInRange(CurrentInteractables);
+	if (IsLocallyControlled())
+	{
+		GetInteractablesInRange(CurrentInteractables);
+	}
 	SyncInteractableKeyWidgets(CurrentInteractables);
+
+	TArray<AActor*> CurrentOutlineInteractables;
+	if (IsLocallyControlled())
+	{
+		GetInteractablesInSphere(OutlineSphereRange, true, CurrentOutlineInteractables);
+	}
+	SyncOutlineInteractables(CurrentOutlineInteractables);
+}
+
+void AFirstPersonCharacter::SyncOutlineInteractables(const TArray<AActor*>& CurrentInteractables)
+{
+	for (AActor* PreviousActor : OutlineInteractables)
+	{
+		// Inner has already taken ownership; do not clear the state it just applied.
+		if (IsValid(PreviousActor)
+			&& !CurrentInteractables.Contains(PreviousActor)
+			&& !NearbyInteractables.Contains(PreviousActor))
+		{
+			if (IInteractableInterface* Interactable = Cast<IInteractableInterface>(PreviousActor))
+			{
+				if (UInteractableComponent* Component = Interactable->GetInteractableComponent())
+				{
+					Component->InteractionOutlineWidgetDeactivate();
+					Component->OnOutlineRangeChanged(this, false);
+				}
+			}
+		}
+	}
+
+	for (AActor* CurrentActor : CurrentInteractables)
+	{
+		if (IsValid(CurrentActor))
+		{
+			if (IInteractableInterface* Interactable = Cast<IInteractableInterface>(CurrentActor))
+			{
+				if (UInteractableComponent* Component = Interactable->GetInteractableComponent())
+				{
+					Component->InteractionOutlineWidgetActivate(this);
+					if (!OutlineInteractables.Contains(CurrentActor))
+					{
+						Component->OnOutlineRangeChanged(this, true);
+					}
+				}
+			}
+		}
+	}
+
+	OutlineInteractables.Reset(CurrentInteractables.Num());
+	for (AActor* CurrentActor : CurrentInteractables)
+	{
+		if (IsValid(CurrentActor))
+		{
+			OutlineInteractables.Add(CurrentActor);
+		}
+	}
 }
 
 void AFirstPersonCharacter::GetInteractablesInRange(TArray<AActor*>& OutInteractables) const
+{
+	GetInteractablesInSphere(InteractionWidgetExposedRange, false, OutInteractables);
+}
+
+void AFirstPersonCharacter::ClearInteractionDetection()
+{
+	for (AActor* Actor : NearbyInteractables)
+	{
+		if (IsValid(Actor))
+		{
+			if (IInteractableInterface* Interactable = Cast<IInteractableInterface>(Actor))
+			{
+				if (UInteractableComponent* Component = Interactable->GetInteractableComponent())
+				{
+					Component->InteractKeyWidgetDeactivate();
+					Component->InteractionLockedWidgetDeactivate();
+					Component->InteractionOutlineWidgetDeactivate();
+					Component->InteractInfoWidgetDeactivate();
+				}
+			}
+		}
+	}
+	NearbyInteractables.Reset();
+	SyncOutlineInteractables(TArray<AActor*>());
+}
+
+void AFirstPersonCharacter::NormalizeInteractionSphereRanges()
+{
+	InteractionWidgetExposedRange = FMath::Max(InteractionWidgetExposedRange, 0.0f);
+	OutlineSphereRange = FMath::Max(OutlineSphereRange, InteractionWidgetExposedRange + 1.0f);
+}
+
+#if WITH_EDITOR
+void AFirstPersonCharacter::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	NormalizeInteractionSphereRanges();
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+}
+#endif
+
+void AFirstPersonCharacter::GetInteractablesInSphere(
+	float Range, bool bOutlineSphere, TArray<AActor*>& OutInteractables) const
 {
 	if (!GetWorld() || !GetController())
 	{
@@ -836,24 +949,31 @@ void AFirstPersonCharacter::GetInteractablesInRange(TArray<AActor*>& OutInteract
 	QueryParams.AddIgnoredActor(CurrentWeapon);
 
 	TArray<FOverlapResult> Overlaps;
-	const bool bHasOverlap = GetWorld()->OverlapMultiByChannel(
+	GetWorld()->OverlapMultiByChannel(
 		Overlaps,
 		SphereCenter,
 		FQuat::Identity,
 		InteractionTraceChannel,
-		FCollisionShape::MakeSphere(InteractRange),
+		FCollisionShape::MakeSphere(Range),
 		QueryParams
 	);
 
-	if (bDrawInteractionTrace)
+	const bool bDrawSphere = bDrawInteractionTrace || (bOutlineSphere && bDrawOutlineSphere);
+	if (bDrawSphere)
 	{
-		const FColor TraceColor = bHasOverlap ? FColor::Green : FColor::Red;
-		DrawDebugSphere(GetWorld(), SphereCenter, InteractRange, 32, TraceColor, false, InteractionTraceInterval, 0, 1.5f);
+		const FColor TraceColor = !Overlaps.IsEmpty()
+			? (bOutlineSphere ? FColor::Blue : FColor::Green)
+			: FColor::Red;
+		DrawDebugSphere(GetWorld(), SphereCenter, Range, 32, TraceColor, false, InteractionTraceInterval, 0, 1.5f);
 		DrawDebugPoint(GetWorld(), SphereCenter, 12.0f, FColor::Yellow, false, InteractionTraceInterval, 0);
-		DrawDebugString(GetWorld(), SphereCenter + FVector(0.0f, 0.0f, 16.0f), TEXT("Interaction SphereOverlap"), nullptr, TraceColor, InteractionTraceInterval, true);
+		DrawDebugString(GetWorld(), SphereCenter + FVector(0.0f, 0.0f, bOutlineSphere ? 32.0f : 16.0f),
+			FString::Printf(TEXT("%s SphereOverlap | Radius %.0f cm"),
+				bOutlineSphere ? TEXT("Outer Outline") : TEXT("Inner Interaction"), Range),
+			nullptr, TraceColor, InteractionTraceInterval, true);
 	}
 
-	if (!bHasOverlap)
+	// OverlapMultiByChannel can return false with overlap-only hits; inspect the results.
+	if (Overlaps.IsEmpty())
 	{
 		return;
 	}
@@ -864,7 +984,8 @@ void AFirstPersonCharacter::GetInteractablesInRange(TArray<AActor*>& OutInteract
 	for (const FOverlapResult& Overlap : Overlaps)
 	{
 		AActor* HitActor = Overlap.GetActor();
-		if (!HitActor || VisitedActors.Contains(HitActor))
+		if (!IsValid(HitActor) || VisitedActors.Contains(HitActor)
+			|| (bOutlineSphere && NearbyInteractables.Contains(HitActor)))
 		{
 			continue;
 		}
@@ -876,14 +997,40 @@ void AFirstPersonCharacter::GetInteractablesInRange(TArray<AActor*>& OutInteract
 		}
 
 		UInteractableComponent* InteractableComponent = Interactable->GetInteractableComponent();
-		if (!InteractableComponent || !InteractableComponent->CanInteract(OwnedGameplayTags))
+		// Only the hack lock may be bypassed for presentation; other restrictions hide the actor.
+		if (!IsValid(InteractableComponent)
+			|| !InteractableComponent->CanShowInteractionWidgets(OwnedGameplayTags))
 		{
 			continue;
 		}
 
 		if (!HasInteractionLineOfSight(HitActor, Overlap.GetComponent()))
 		{
+			if (bOutlineSphere && bDrawSphere)
+			{
+				const FVector TargetLocation = Overlap.GetComponent()
+					? Overlap.GetComponent()->Bounds.Origin : HitActor->GetActorLocation();
+				DrawDebugLine(GetWorld(), SphereCenter, TargetLocation, FColor::Red,
+					false, InteractionTraceInterval, 0, 1.0f);
+				DrawDebugString(GetWorld(), TargetLocation, TEXT("Outer: Occluded"),
+					nullptr, FColor::Red, InteractionTraceInterval, true);
+			}
 			continue;
+		}
+
+		if (bOutlineSphere && bDrawSphere)
+		{
+			const bool bLocked = !InteractableComponent->CanInteract(OwnedGameplayTags)
+				&& InteractableComponent->IsLockedYet();
+			const FColor TargetColor = bLocked ? FColor::Yellow : FColor::Cyan;
+			const FVector TargetLocation = Overlap.GetComponent()
+				? Overlap.GetComponent()->Bounds.Origin : HitActor->GetActorLocation();
+			DrawDebugLine(GetWorld(), SphereCenter, TargetLocation, TargetColor,
+				false, InteractionTraceInterval, 0, 1.0f);
+			DrawDebugString(GetWorld(), TargetLocation,
+				FString::Printf(TEXT("Outer: %s | %s"), *HitActor->GetName(),
+					bLocked ? TEXT("Locked") : TEXT("Available")),
+				nullptr, TargetColor, InteractionTraceInterval, true);
 		}
 
 		// 한 액터의 가려진 컴포넌트만 먼저 겹쳐도 다른 노출된 컴포넌트를 검사할 수 있게 한다.
@@ -914,7 +1061,7 @@ bool AFirstPersonCharacter::HasInteractionLineOfSight(
 	Params.AddIgnoredActor(TargetActor);
 	FHitResult Hit;
 	return !GetWorld()->LineTraceSingleByChannel(
-		Hit, ViewLocation, TargetLocation, InteractionTraceChannel, Params);
+		Hit, ViewLocation, TargetLocation, InteractionVisibilityTraceChannel, Params);
 }
 
 AActor* AFirstPersonCharacter::FindInteractTargetByTrace() const
@@ -932,8 +1079,8 @@ AActor* AFirstPersonCharacter::FindInteractTargetByTrace() const
 		InteractionTraceMode == EInteractionTraceMode::SphereTrace;
 	const float SphereRadius = FMath::Max(InteractionSphereTraceRadius, 0.0f);
 	const float TraceDistance = bSphereTrace
-		? FMath::Max(InteractRange - SphereRadius, 0.0f)
-		: FMath::Max(InteractRange, 0.0f);
+		? FMath::Max(InteractionAvailableRange - SphereRadius, 0.0f)
+		: FMath::Max(InteractionAvailableRange, 0.0f);
 
 	const FVector Start = CameraLocation;
 	const FVector End = Start + CameraRotation.Vector() * TraceDistance;
@@ -1119,19 +1266,24 @@ void AFirstPersonCharacter::SyncInteractableKeyWidgets(
 	const TArray<AActor*>& CurrentInteractables)
 {
 	TSet<AActor*> CurrentSet;
+	const FGameplayTagContainer OwnedGameplayTags = GetOwnedGameplayTagsForQuery();
 
-	// 범위 추적에는 FocusedInteractable도 포함
+	// Only usable actors retain an active interaction; locked actors stay in the range cache below.
 	for (AActor* CurrentInteractable : CurrentInteractables)
 	{
-		if (CurrentInteractable)
+		if (IInteractableInterface* Interactable = Cast<IInteractableInterface>(CurrentInteractable))
 		{
-			CurrentSet.Add(CurrentInteractable);
+			if (UInteractableComponent* Component = Interactable->GetInteractableComponent();
+				IsValid(Component) && Component->CanInteract(OwnedGameplayTags))
+			{
+				CurrentSet.Add(CurrentInteractable);
+			}
 		}
 	}
 
 	for (TObjectPtr<AActor> PreviousInteractable : NearbyInteractables)
 	{
-		if (!PreviousInteractable ||
+		if (!IsValid(PreviousInteractable) ||
 			CurrentSet.Contains(PreviousInteractable.Get()))
 		{
 			continue;
@@ -1142,6 +1294,7 @@ void AFirstPersonCharacter::SyncInteractableKeyWidgets(
 			if (UInteractableComponent* PreviousComponent = PreviousInterface->GetInteractableComponent())
 			{
 				PreviousComponent->InteractKeyWidgetDeactivate();
+				PreviousComponent->InteractionLockedWidgetDeactivate();
 				const bool bIsActiveInteraction =
 					FocusedInteractable == PreviousInteractable.Get() ||
 					HoldingInteractActor == PreviousInteractable.Get();
@@ -1160,7 +1313,7 @@ void AFirstPersonCharacter::SyncInteractableKeyWidgets(
 					ServerCancelHoldInteract(PreviousInteractable.Get());
 				}
 
-				PreviousComponent->InteractInfoWidgetDeactivate();
+				PreviousComponent->DeactivateInteractionDesc();
 			}
 		}
 
@@ -1174,7 +1327,7 @@ void AFirstPersonCharacter::SyncInteractableKeyWidgets(
 
 	for (AActor* CurrentInteractable : CurrentInteractables)
 	{
-		if (!CurrentInteractable)
+		if (!IsValid(CurrentInteractable))
 		{
 			continue;
 		}
@@ -1187,14 +1340,7 @@ void AFirstPersonCharacter::SyncInteractableKeyWidgets(
 			if (UInteractableComponent* CurrentComponent =
 				CurrentInterface->GetInteractableComponent())
 			{
-				if (CurrentInteractable == FocusedInteractable)
-				{
-					CurrentComponent->InteractKeyWidgetDeactivate();
-				}
-				else
-				{
-					CurrentComponent->InteractKeyWidgetActivate(this);
-				}
+				CurrentComponent->UpdateInnerRangeWidgets(this, CurrentInteractable == FocusedInteractable);
 			}
 		}
 	}

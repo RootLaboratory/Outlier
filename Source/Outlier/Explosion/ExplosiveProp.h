@@ -96,6 +96,10 @@ protected:
 	UFUNCTION(BlueprintImplementableEvent, Category = "Explosive Prop|Feedback")
 	void OnHitFeedback(float HitFlashDuration);
 
+	// 실제 폭발 상태를 반영한다. Tuto 파생형은 Super 호출 후 진행 완료를 전달한다.
+	UFUNCTION()
+	virtual void HandleExplosionProcessed();
+
 private:
 	void SetupMountedPresentation();
 
@@ -107,10 +111,6 @@ private:
 
 	// 폭발 여부에 맞춰 Mesh 표시와 피격 Collision을 함께 변경한다.
 	void ApplyExplodedState();
-
-	// 공통 폭발 처리가 끝났다는 알림을 받아 배치 폭발물을 비활성화한다.
-	UFUNCTION()
-	void HandleExplosionProcessed();
 
 	// OnRep: 서버의 bExploded 값이 클라이언트에 복제됐을 때 표시 상태를 갱신한다.
 	UFUNCTION()

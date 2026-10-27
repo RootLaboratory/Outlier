@@ -8,6 +8,7 @@
 #include "Curves/CurveFloat.h"
 #include "Engine/Scene.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
 #include "Engine/GameInstance.h"
 #include "Engine/LocalPlayer.h"
 #include "Kismet/KismetMaterialLibrary.h"
@@ -42,6 +43,27 @@ TStaticArray<UTexture2D*, DeathTransitionTextureCount> GetDeathTransitionTexture
 	Textures[static_cast<int32>(EDeathTransitionTexture::FadeVignette)] = Volume.DeathBlackVignetteTexture;
 	return Textures;
 }
+}
+
+FOutlierScreenTransitionTiming AOutlierPostProcessVolume::ResolveScreenTransitionTiming(
+	UWorld* World, const FVector& Location)
+{
+	const AOutlierPostProcessVolume* Selected = nullptr;
+	if (World)
+	{
+		for (TActorIterator<AOutlierPostProcessVolume> It(World); It; ++It)
+		{
+			AOutlierPostProcessVolume* Candidate = *It;
+			if (!IsValid(Candidate) || Candidate->IsActorBeingDestroyed() || !Candidate->bEnabled
+				|| (!Candidate->bUnbound && !Candidate->EncompassesPoint(Location, 0.0f, nullptr))) continue;
+			if (!Selected || Candidate->Priority > Selected->Priority
+				|| (Candidate->Priority == Selected->Priority && Candidate->GetPathName() < Selected->GetPathName()))
+			{
+				Selected = Candidate;
+			}
+		}
+	}
+	return Selected ? Selected->ScreenTransitionTiming : GetDefault<AOutlierPostProcessVolume>()->ScreenTransitionTiming;
 }
 
 void AOutlierPostProcessVolume::BeginPlay()
