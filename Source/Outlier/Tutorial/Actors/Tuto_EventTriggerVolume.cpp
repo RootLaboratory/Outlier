@@ -85,6 +85,8 @@ bool ATuto_EventTriggerVolume::ConfirmClientEntry(AFirstPersonPlayerController* 
 	if (!HasAuthority() || !IsValid(Controller) || Controller->GetWorld() != GetWorld()) return false;
 	if (bHasTriggered) return true;
 	if (bConfirmingEntry) return false;
+	// 서버에서 판정하므로 클라이언트의 액터 참조 해석 상태에는 의존하지 않는다.
+	if (!CanTriggerForRequiredActor()) return false;
 	APawn* Pawn = Controller->GetPawn();
 	AOutlierPlayerState* State = Controller->GetPlayerState<AOutlierPlayerState>();
 	if (!IsValid(Pawn) || !IsValid(State)
@@ -95,10 +97,16 @@ bool ATuto_EventTriggerVolume::ConfirmClientEntry(AFirstPersonPlayerController* 
 	if (!TriggerBox->Bounds.GetBox().ExpandBy(Margin).IsInsideOrOn(Pawn->GetActorLocation())) return false;
 	TGuardValue<bool> ConfirmGuard(bConfirmingEntry, true);
 	if (!HandlePawnEntered(State)) return false;
+	MarkEntryComplete();
+	return true;
+}
+
+void ATuto_EventTriggerVolume::MarkEntryComplete()
+{
+	if (!HasAuthority()) return;
 	bHasTriggered = true;
 	SetActorTickEnabled(false);
 	ForceNetUpdate();
-	return true;
 }
 
 void ATuto_EventTriggerVolume::ReceiveEntryResult(AFirstPersonPlayerController* Controller, bool bAccepted)
@@ -119,12 +127,20 @@ void ATuto_EventTriggerVolume::OnRep_HasTriggered()
 
 bool ATuto_EventTriggerVolume::HandlePawnEntered(AOutlierPlayerState* SourcePlayerState)
 {
+	if (!CanTriggerForRequiredActor()) return false;
 	// 이벤트가 있는 볼륨은 transport 준비 전에 도착을 소비하면 안 된다.
 	// EventTag가 비어 있으면 WorldGuide 도착 전용 볼륨으로 쓴다.
 	// game-flow 스킵은 slot을 제출됨으로 표시하므로, 매 틱 재시도하지 않고 도착을 소비한다.
 	if (EventTag.IsValid() && !TriggerEvent(0, SourcePlayerState) && !IsEventSubmitted(0)) return false;
 	const bool bGuideCompleted = UOutlierWorldGuideTargetComponent::NotifyOverlapOnActor(this);
 	return EventTag.IsValid() || bGuideCompleted;
+}
+
+bool ATuto_EventTriggerVolume::CanTriggerForRequiredActor() const
+{
+	if (RequiredActor.IsNull()) return true;
+	const AActor* Actor = RequiredActor.Get();
+	return IsValid(Actor) && !Actor->IsActorBeingDestroyed();
 }
 
 void ATuto_EventTriggerVolume::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const

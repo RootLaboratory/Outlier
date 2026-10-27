@@ -12,6 +12,21 @@ class UOutlierWorldGuideTargetComponent;
 class UEnemyAdaptationSubsystem;
 struct FEnemyAdaptationUpdateResult;
 
+/** Phase와 무관하게 지정한 증원 Wave가 시작될 때 보내는 이벤트. */
+USTRUCT(BlueprintType)
+struct OUTLIER_API FTuto_ReinforcementEvent
+{
+	GENERATED_BODY()
+
+	/** Wave 0은 초기 병력, Wave 1부터 첫 번째/두 번째 증원이다. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Event", meta = (ClampMin = "1"))
+	int32 WaveIndex = 1;
+
+	/** Room 및 항목마다 별도 태그를 지정한다. 같은 태그는 game flow당 한 번만 발동한다. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Event", meta = (Categories = "Event"))
+	FGameplayTag EventTag;
+};
+
 /**
  * 서버에서 전투 방 하나를 관찰한다. 클라이언트는 WorldGuide target anchor만 유지한다. combat/adaptation 서브시스템은 사실만 브로드캐스트하고,
  * 그중 무엇이 튜토리얼 순간인지는 이 액터가 결정한다. 방의 gameplay sublevel에 배치한다. 체크포인트 리로드가
@@ -32,12 +47,20 @@ public:
 	TObjectPtr<UOutlierWorldGuideTargetComponent> WorldGuideTarget;
 	virtual FGameplayTag GetEventTag(int32 EventIndex) const override
 	{
+		if (EventIndex >= IndexedReinforcementSlotStart)
+		{
+			const int32 Index = EventIndex - IndexedReinforcementSlotStart;
+			return ReinforcementEvents.IsValidIndex(Index) ? ReinforcementEvents[Index].EventTag : FGameplayTag();
+		}
 		return EventTriggers.IsValidIndex(EventIndex) ? EventTriggers[EventIndex].EventTag : FGameplayTag();
 	}
 
 	static constexpr int32 ReinforcementSlot = 0;
 	static constexpr int32 ResistanceSlot = 1;
 	static constexpr int32 ClearedSlot = 2;
+	// 기존 BP의 0~2 슬롯은 유지한다.
+	static constexpr int32 StartedSlot = 3;
+	static constexpr int32 IndexedReinforcementSlotStart = StartedSlot + 1;
 
 	/** Outlier.Tuto.CombatObserver.Dump용 서버 상태 요약. */
 	FString BuildDebugReport() const;
@@ -51,7 +74,8 @@ protected:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 	/** Slot 0: 전투 중 첫 후속 Wave(증원) 시작. Slot 1: 이 방 전투 중 ResistanceLevel1에 도달한
-	 *  첫 총기 킬. Slot 2: 방의 모든 phase 완료. */
+	 *  첫 총기 킬. Slot 2: 방의 모든 phase 완료. Slot 3: 첫 전투 시퀀스 활성화(SequenceStarted).
+	 *  Room마다 별도 EventTag를 지정해야 다른 Room의 game-flow 기록과 겹치지 않는다. */
 	UPROPERTY(EditAnywhere, Category = "Tutorial|Event", meta = (TitleProperty = "EventTag"))
 	TArray<FTuto_EventTriggerData> EventTriggers;
 
@@ -63,9 +87,15 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "Tutorial|Event", meta = (ClampMin = "-1"))
 	int32 ReinforcementWaveIndex = INDEX_NONE;
 
+	/** 추가 증원 이벤트. WaveIndex 1 = 첫 증원, 2 = 두 번째 증원. 각 항목은 phase와 무관하게 한 번 발동한다.
+	 *  기존 Slot 0 및 ReinforcementWaveIndex와 독립적으로 처리한다. 디버그 슬롯은 배열 순서대로 4부터 시작한다. */
+	UPROPERTY(EditAnywhere, Category = "Tutorial|Event", meta = (TitleProperty = "WaveIndex"))
+	TArray<FTuto_ReinforcementEvent> ReinforcementEvents;
+
 	virtual void HandleReinforcement(AOutlierPlayerState* SourcePlayerState);
 	virtual void HandleFirstResistance(AOutlierPlayerState* SourcePlayerState);
 	virtual void HandleRoomCleared(AOutlierPlayerState* SourcePlayerState);
+	virtual void HandleCombatStarted(AOutlierPlayerState* SourcePlayerState);
 
 private:
 	UFUNCTION()

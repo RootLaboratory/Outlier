@@ -31,6 +31,7 @@
 #include "UI/UILayerGameplayTags.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Tutorial/Actors/Tuto_EventTriggerVolume.h"
+#include "Tutorial/Actors/Tuto_PassageTransitionVolume.h"
 #include "Tutorial/Trigger/Tuto_EventTriggerInterface.h"
 #include "Tutorial/WorldGuide/OutlierWorldGuideManager.h"
 #include "Engine/DataTable.h"
@@ -170,7 +171,7 @@ namespace
 	}
 
 	// 실제 화면(LocalPlayer)이 있는 Controller에만 있다. 없으면 Suit 연출도 완료 응답도 만들지 않는다.
-	ULocalPlayerPostProcessSubsystem* FindSuitPostProcessSubsystem(const APlayerController* Controller)
+	ULocalPlayerPostProcessSubsystem* FindLocalPostProcessSubsystem(const APlayerController* Controller)
 	{
 		const ULocalPlayer* LocalPlayer = Controller ? Controller->GetLocalPlayer() : nullptr;
 		return LocalPlayer ? LocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>() : nullptr;
@@ -192,7 +193,7 @@ namespace
 	// 이만큼(약 2초) 준비가 안 되면 어떤 조건이 막혔는지 한 번 남긴다. 그대로 두면 서버 timeout까지 화면이 덮여 있다.
 	constexpr int32 SuitPresentationStallLogPolls = 40;
 	// 취소/Pawn 교체로 남은 암전을 걷어내는 시간. 0 ↔ 1 전체 기준이라 남은 만큼만 걸린다.
-	constexpr float SuitCleanupRevealDuration = 0.25f;
+	constexpr float ElevatorCleanupRevealDuration = 0.25f;
 
 	void ResolvePairCharactersForController(
 		AFirstPersonPlayerController* Controller,
@@ -1644,14 +1645,14 @@ void AFirstPersonPlayerController::ApplyLocalElevatorFade(
 {
 	if (!IsLocalController() || !IsValid(Shaft) || Shaft->GetWorld() != GetWorld()
 		|| !ExecutionId.IsValid() || !FMath::IsFinite(Duration) || Duration < 0.0f
-		|| !IsValid(GetPawn()) || LocalSuitTransitionId.IsValid())
+		|| !IsValid(GetPawn()) || LocalSuitTransitionId.IsValid() || ATuto_PassageTransitionVolume::IsLocalTransitionActive(this))
 	{
 		return;
 	}
 	if (!bReveal)
 	{
 		if (LocalElevatorExecutionId.IsValid()) return;
-		ULocalPlayerPostProcessSubsystem* PP = FindSuitPostProcessSubsystem(this);
+		ULocalPlayerPostProcessSubsystem* PP = FindLocalPostProcessSubsystem(this);
 		if (!PP)
 		{
 			UE_LOG(LogOutlier, Warning, TEXT("[Elevator] Missing local blackout presentation PC=%s"), *GetName());
@@ -1756,7 +1757,7 @@ void AFirstPersonPlayerController::ClearLocalElevatorFade()
 	{
 		if (ULocalPlayerPostProcessSubsystem* PP = ElevatorPostProcessSubsystem.Get())
 		{
-			PP->StartScreenBlackoutReveal(SuitCleanupRevealDuration);
+			PP->StartScreenBlackoutReveal(ElevatorCleanupRevealDuration);
 		}
 	}
 	LocalElevatorShaft.Reset();
@@ -1769,7 +1770,7 @@ void AFirstPersonPlayerController::ClearLocalElevatorFade()
 // 연결 흐름: 서버 단계 요청 -> 소유 클라이언트의 빈 연출 지점 -> 실제 완료 콜백 -> 서버 준비 검증.
 // 로컬 ID/단계는 콜백을 구분하기 위한 값일 뿐, 슈트 획득과 단계 진행의 권위는 Shooter 서버에 있다.
 void AFirstPersonPlayerController::SendSuitTransitionPhaseFromServer(
-	AShooterCharacter* Shooter, const FGuid& TransitionId, ESuitTransitionPhase Phase, float Duration)
+	AShooterCharacter* Shooter, const FGuid& TransitionId, ESuitTransitionPhase Phase, const FOutlierScreenTransitionTiming& Timing)
 {
 	if (!HasAuthority() || IsActorBeingDestroyed() || !TransitionId.IsValid())
 	{
@@ -1778,23 +1779,25 @@ void AFirstPersonPlayerController::SendSuitTransitionPhaseFromServer(
 	// Dedicated Server에서는 로컬 준비 응답을 만들지 않는다. Listen Host만 직접 같은 수신 경로에 진입한다.
 	if (IsLocalController())
 	{
-		ApplyLocalSuitTransitionPhase(Shooter, TransitionId, Phase, Duration);
+		ApplyLocalSuitTransitionPhase(Shooter, TransitionId, Phase, Timing);
 	}
 	else
 	{
-		ClientSetSuitTransitionPhase(Shooter, TransitionId, Phase, Duration);
+		ClientSetSuitTransitionPhase(Shooter, TransitionId, Phase, Timing);
 	}
 }
 
 void AFirstPersonPlayerController::ClientSetSuitTransitionPhase_Implementation(
-	AShooterCharacter* Shooter, FGuid TransitionId, ESuitTransitionPhase Phase, float Duration)
+	AShooterCharacter* Shooter, FGuid TransitionId, ESuitTransitionPhase Phase, FOutlierScreenTransitionTiming Timing)
 {
-	ApplyLocalSuitTransitionPhase(Shooter, TransitionId, Phase, Duration);
+	ApplyLocalSuitTransitionPhase(Shooter, TransitionId, Phase, Timing);
 }
 
 void AFirstPersonPlayerController::ApplyLocalSuitTransitionPhase(
-	AShooterCharacter* Shooter, const FGuid& TransitionId, ESuitTransitionPhase Phase, float Duration)
+	AShooterCharacter* Shooter, const FGuid& TransitionId, ESuitTransitionPhase Phase, const FOutlierScreenTransitionTiming& Timing)
 {
+	const float Duration = Phase == ESuitTransitionPhase::FadingOut ? Timing.FadeOutDuration
+		: Phase == ESuitTransitionPhase::Applying ? Timing.BlackHoldDuration : Timing.FadeInDuration;
 	if (!IsLocalController() || !TransitionId.IsValid())
 	{
 		return;
@@ -1814,13 +1817,14 @@ void AFirstPersonPlayerController::ApplyLocalSuitTransitionPhase(
 	}
 	if (Phase == ESuitTransitionPhase::FadingOut)
 	{
-		if (LocalSuitTransitionId.IsValid() || LocalElevatorExecutionId.IsValid())
+		if (LocalSuitTransitionId.IsValid() || LocalElevatorExecutionId.IsValid() || ATuto_PassageTransitionVolume::IsLocalTransitionActive(this))
 		{
 			return;
 		}
 		LocalSuitTransitionShooter = Shooter;
 		LocalSuitTransitionPawn = GetPawn();
 		LocalSuitTransitionId = TransitionId;
+		LocalSuitCleanupRevealDuration = Timing.CleanupRevealDuration;
 	}
 	else
 	{
@@ -1930,7 +1934,7 @@ void AFirstPersonPlayerController::RequestSuitFadeOut(const FGuid& TransitionId,
 		NotifySuitFadeOutFinished(TransitionId);
 		return;
 	}
-	ULocalPlayerPostProcessSubsystem* PPSubsystem = FindSuitPostProcessSubsystem(this);
+	ULocalPlayerPostProcessSubsystem* PPSubsystem = FindLocalPostProcessSubsystem(this);
 	if (!PPSubsystem)
 	{
 		UE_LOG(LogTemp, Log, TEXT("[SuitTransition] No LocalPlayer presentation Controller=%s Phase=FadingOut"), *GetName());
@@ -1952,7 +1956,7 @@ void AFirstPersonPlayerController::RequestSuitPresentationReady(const FGuid& Tra
 		NotifySuitPresentationReady(TransitionId);
 		return;
 	}
-	if (!FindSuitPostProcessSubsystem(this))
+	if (!FindLocalPostProcessSubsystem(this))
 	{
 		UE_LOG(LogTemp, Log, TEXT("[SuitTransition] No LocalPlayer presentation Controller=%s Phase=Applying"), *GetName());
 		return;
@@ -1973,7 +1977,7 @@ void AFirstPersonPlayerController::RequestSuitFadeIn(const FGuid& TransitionId, 
 		NotifySuitFadeInFinished(TransitionId);
 		return;
 	}
-	ULocalPlayerPostProcessSubsystem* PPSubsystem = FindSuitPostProcessSubsystem(this);
+	ULocalPlayerPostProcessSubsystem* PPSubsystem = FindLocalPostProcessSubsystem(this);
 	if (!PPSubsystem)
 	{
 		UE_LOG(LogTemp, Log, TEXT("[SuitTransition] No LocalPlayer presentation Controller=%s Phase=FadingIn"), *GetName());
@@ -1991,18 +1995,18 @@ void AFirstPersonPlayerController::RequestSuitTransitionCleanup(const FGuid& Tra
 	// 정상 종료, 취소, Pawn 교체와 EndPlay가 공유한다. 정상 종료면 암전은 이미 0이라 남은 일이 없다.
 	GetWorldTimerManager().ClearTimer(SuitPresentationPollTimer);
 	bSuitPresentationReadyObserved = false;
-	if (ULocalPlayerPostProcessSubsystem* PPSubsystem = FindSuitPostProcessSubsystem(this))
+	if (ULocalPlayerPostProcessSubsystem* PPSubsystem = FindLocalPostProcessSubsystem(this))
 	{
 		PPSubsystem->OnScreenBlackoutCovered.RemoveAll(this);
 		PPSubsystem->OnScreenBlackoutRevealed.RemoveAll(this);
 		// 취소로 화면이 덮인 채 끝나면 튀지 않게 남은 만큼 걷어낸다. 서브시스템은 Controller보다 오래 살아 끝까지 진행된다.
-		PPSubsystem->StartScreenBlackoutReveal(SuitCleanupRevealDuration);
+		PPSubsystem->StartScreenBlackoutReveal(LocalSuitCleanupRevealDuration);
 	}
 }
 
 void AFirstPersonPlayerController::HandleSuitScreenBlackoutCovered(FGuid TransitionId)
 {
-	if (ULocalPlayerPostProcessSubsystem* PPSubsystem = FindSuitPostProcessSubsystem(this))
+	if (ULocalPlayerPostProcessSubsystem* PPSubsystem = FindLocalPostProcessSubsystem(this))
 	{
 		PPSubsystem->OnScreenBlackoutCovered.RemoveAll(this);
 	}
@@ -2011,7 +2015,7 @@ void AFirstPersonPlayerController::HandleSuitScreenBlackoutCovered(FGuid Transit
 
 void AFirstPersonPlayerController::HandleSuitScreenBlackoutRevealed(FGuid TransitionId)
 {
-	if (ULocalPlayerPostProcessSubsystem* PPSubsystem = FindSuitPostProcessSubsystem(this))
+	if (ULocalPlayerPostProcessSubsystem* PPSubsystem = FindLocalPostProcessSubsystem(this))
 	{
 		PPSubsystem->OnScreenBlackoutRevealed.RemoveAll(this);
 	}
@@ -2863,4 +2867,32 @@ void AFirstPersonPlayerController::ServerRequestVitalitySnapshot_Implementation(
 			for (const FOutlierVitalityPresentationUpdate& Snapshot : Snapshots) QueueVitalityPresentation(Snapshot);
 		}
 	}
+// Owning RPC transport only; the volume owns the local sequence and its lifetime.
+void AFirstPersonPlayerController::ClientStartPassageFade_Implementation(
+	ATuto_PassageTransitionVolume* Volume, FGuid ExecutionId, FOutlierScreenTransitionTiming Timing)
+{
+	if (!IsLocalController() || !IsValid(Volume) || Volume->GetWorld() != GetWorld()
+		|| LocalSuitTransitionId.IsValid() || LocalElevatorExecutionId.IsValid()) return;
+	Volume->StartLocalPassageFade(this, ExecutionId, Timing);
+}
+
+void AFirstPersonPlayerController::ServerNotifyPassageCovered_Implementation(
+	ATuto_PassageTransitionVolume* Volume, FGuid ExecutionId)
+{
+	if (HasAuthority() && IsValid(Volume) && Volume->GetWorld() == GetWorld())
+		Volume->NotifyScreenCovered(this, ExecutionId);
+}
+
+void AFirstPersonPlayerController::ClientRevealPassage_Implementation(
+	ATuto_PassageTransitionVolume* Volume, FGuid ExecutionId, FVector Destination)
+{
+	if (IsLocalController() && IsValid(Volume) && Volume->GetWorld() == GetWorld())
+		Volume->RevealLocalPassage(this, ExecutionId, Destination);
+}
+
+void AFirstPersonPlayerController::ClientClearPassageFade_Implementation(
+	ATuto_PassageTransitionVolume* Volume, FGuid ExecutionId)
+{
+	if (IsLocalController() && IsValid(Volume) && Volume->GetWorld() == GetWorld())
+		Volume->CancelLocalPassage(this, ExecutionId);
 }

@@ -5,6 +5,7 @@
 #include "Components/WidgetComponent.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
+#include "Drone/Partner/HackableComponent.h"
 #include "UI/ActorBasedWidgetSubsystem.h"
 #include "FirstPerson/FirstPersonCharacter.h"
 #include "GameFramework/Actor.h"
@@ -15,6 +16,8 @@
 #include "Net/UnrealNetwork.h"
 #include "UI/InteractInfoWidget.h"
 #include "UI/InteractKeyWidget.h"
+#include "UI/InteractionLockedWidget.h"
+#include "UI/InteractionOutlineWidget.h"
 
 namespace InteractableComponentTags
 {
@@ -66,10 +69,45 @@ void UInteractableComponent::BeginPlay()
 	}
 }
 
+void UInteractableComponent::OnOutlineRangeChanged_Implementation(
+	AFirstPersonCharacter* Interactor, bool bInRange)
+{
+	// Outline and widget presentation can be implemented here or in a Blueprint override.
+}
+
 void UInteractableComponent::DismissActorBasedWidgets_Implementation()
 {
 	InteractInfoWidgetDeactivate();
 	InteractKeyWidgetDeactivate();
+	InteractionLockedWidgetDeactivate();
+	InteractionOutlineWidgetDeactivate();
+}
+
+void UInteractableComponent::RefreshWidgetTick()
+{
+	const auto IsShown = [](const UWidgetComponent* Component)
+	{
+		return IsValid(Component) && Component->IsVisible();
+	};
+	SetComponentTickEnabled(!HoldSessions.IsEmpty()
+		|| IsShown(InteractInfoWidgetComponent) || IsShown(InteractKeyWidgetComponent)
+		|| IsShown(InteractionLockedWidgetComponent) || IsShown(InteractionOutlineWidgetComponent));
+}
+
+void UInteractableComponent::UpdateWidgetPresentation()
+{
+	const auto Apply = [this](UWidgetComponent* Component, const FWorldWidgetPresentation& Settings, float ZOffset)
+	{
+		if (!IsValid(Component) || !Component->IsVisible() || !GetOwner()) return;
+		const FVector Anchor = Component->GetAttachParent()
+			? Component->GetAttachParent()->GetComponentLocation() : GetOwner()->GetActorLocation();
+		Settings.Apply(Component, Anchor + FVector::UpVector * ZOffset);
+	};
+	Apply(InteractInfoWidgetComponent, InteractInfoWidgetPresentation, InteractInfoWidgetZOffset);
+	Apply(InteractKeyWidgetComponent, InteractKeyWidgetPresentation, InteractKeyWidgetZOffset);
+	Apply(InteractionLockedWidgetComponent, InteractionLockedWidgetPresentation, InteractionLockedWidgetZOffset);
+	Apply(InteractionOutlineWidgetComponent, InteractionOutlineWidgetPresentation, InteractionOutlineWidgetZOffset);
+	RefreshWidgetTick();
 }
 
 void UInteractableComponent::TickComponent(
@@ -79,6 +117,7 @@ void UInteractableComponent::TickComponent(
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 	TickHoldInteractions(DeltaTime);
+	UpdateWidgetPresentation();
 }
 
 void UInteractableComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -89,6 +128,8 @@ void UInteractableComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	}
 	CancelAllHoldSessions();
 	ClearInteractionDescActor();
+	InteractionLockedWidgetDeactivate();
+	InteractionOutlineWidgetDeactivate();
 	Super::EndPlay(EndPlayReason);
 }
 
@@ -98,16 +139,30 @@ void UInteractableComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty
 	DOREPLIFETIME(UInteractableComponent, InteractableTags);
 }
 
+bool UInteractableComponent::IsLockedYet() const
+{
+	const AActor* Owner = GetOwner();
+	return IsValid(Owner)
+		&& Owner->FindComponentByClass<UHackableComponent>()
+		&& InteractableTags.HasTagExact(InteractableComponentTags::Locked());
+}
+
 bool UInteractableComponent::CanInteract(const FGameplayTagContainer& InteractorTags) const
+{
+	return MeetsInteractionRequirements(InteractorTags)
+		&& !InteractableTags.HasTagExact(InteractableComponentTags::Locked());
+}
+
+bool UInteractableComponent::CanShowInteractionWidgets(const FGameplayTagContainer& InteractorTags) const
+{
+	return MeetsInteractionRequirements(InteractorTags)
+		&& (!InteractableTags.HasTagExact(InteractableComponentTags::Locked()) || IsLockedYet());
+}
+
+bool UInteractableComponent::MeetsInteractionRequirements(const FGameplayTagContainer& InteractorTags) const
 {
 	const FGameplayTag UsedTag = InteractableComponentTags::Used();
 	if (UsedTag.IsValid() && InteractableTags.HasTagExact(UsedTag))
-	{
-		return false;
-	}
-
-	const FGameplayTag LockedTag = InteractableComponentTags::Locked();
-	if (LockedTag.IsValid() && InteractableTags.HasTagExact(LockedTag))
 	{
 		return false;
 	}
@@ -242,7 +297,7 @@ void UInteractableComponent::EndHoldInteract(AFirstPersonCharacter* Interactor, 
 
 	if (HoldSessions.IsEmpty())
 	{
-		SetComponentTickEnabled(false);
+		RefreshWidgetTick();
 	}
 }
 
@@ -289,23 +344,22 @@ bool UInteractableComponent::CommitHoldInteraction(AFirstPersonCharacter* Intera
 	const int32 SessionIndex = FindHoldSessionIndex(Interactor);
 	HoldSessions.RemoveAt(SessionIndex);
 
-	if (IsMultipleUse())
-	{
-		if (HoldSessions.IsEmpty())
-		{
-			SetComponentTickEnabled(false);
-		}
-
-		return true;
-	}
-
-	MarkUsed(Interactor);
+	CommitInteraction(Interactor);
+	if (HoldSessions.IsEmpty()) RefreshWidgetTick();
 	return true;
 }
 
+void UInteractableComponent::CommitInteraction(AFirstPersonCharacter* Interactor)
+{
+	AActor* Owner = GetOwner();
+	if (!IsValid(Owner) || !Owner->HasAuthority() || IsMultipleUse()) return;
+	MarkUsed(Interactor);
+	OnRep_InteractableTags();
+	Owner->ForceNetUpdate();
+}
+
 void UInteractableComponent::SyncInteractionStateFromServer(
-	EInteractionFlowResult FlowResult,
-	bool bCompletedHoldInteract)
+	EInteractionFlowResult FlowResult)
 {
 	if (FlowResult == EInteractionFlowResult::HoldReady)
 	{
@@ -314,7 +368,6 @@ void UInteractableComponent::SyncInteractionStateFromServer(
 	}
 
 	if (FlowResult == EInteractionFlowResult::Completed
-		&& bCompletedHoldInteract
 		&& !IsMultipleUse())
 	{
 		MarkUsed(nullptr);
@@ -324,14 +377,13 @@ void UInteractableComponent::SyncInteractionStateFromServer(
 void UInteractableComponent::HandleInteractionSucceeded(
 	AFirstPersonCharacter* Interactor,
 	EInteractionFlowResult FlowResult,
-	bool bCompletedHoldInteract,
 	bool bSyncStateFromServer)
 {
 	InteractKeyWidgetDeactivate();
 
 	if (bSyncStateFromServer)
 	{
-		SyncInteractionStateFromServer(FlowResult, bCompletedHoldInteract);
+		SyncInteractionStateFromServer(FlowResult);
 	}
 
 	if (FlowResult == EInteractionFlowResult::Completed)
@@ -360,6 +412,12 @@ void UInteractableComponent::ActivateInteractionDesc(AFirstPersonCharacter* Inte
 		return;
 	}
 
+	if (!CanInteract(Interactor->GetOwnedGameplayTagsForQuery()))
+	{
+		DeactivateInteractionDesc();
+		return;
+	}
+
 	if (AInteractionDescActor* DescActor = EnsureInteractionDescActor())
 	{
 		const AActor* Owner = GetOwner();
@@ -384,6 +442,12 @@ void UInteractableComponent::InteractInfoWidgetActivate(AFirstPersonCharacter* I
 {
 	if (!Interactor || !Interactor->IsLocallyControlled())
 	{
+		return;
+	}
+
+	if (!CanInteract(Interactor->GetOwnedGameplayTagsForQuery()))
+	{
+		InteractInfoWidgetDeactivate();
 		return;
 	}
 
@@ -428,6 +492,7 @@ void UInteractableComponent::InteractInfoWidgetActivate(AFirstPersonCharacter* I
 	{
 		InteractInfoWidget->UpdateInteractInfo(InteractTag, InteractInfo);
 	}
+	UpdateWidgetPresentation();
 }
 
 void UInteractableComponent::InteractInfoWidgetDeactivate()
@@ -441,6 +506,7 @@ void UInteractableComponent::InteractInfoWidgetDeactivate()
 	{
 		InteractInfoWidget->ClearInteractInfo();
 	}
+	UpdateWidgetPresentation();
 }
 
 void UInteractableComponent::InteractKeyWidgetActivate(AFirstPersonCharacter* Interactor)
@@ -484,6 +550,7 @@ void UInteractableComponent::InteractKeyWidgetActivate(AFirstPersonCharacter* In
 	{
 		InteractKeyWidget->UpdateInteractKey();
 	}
+	UpdateWidgetPresentation();
 }
 
 void UInteractableComponent::InteractKeyWidgetDeactivate()
@@ -497,6 +564,132 @@ void UInteractableComponent::InteractKeyWidgetDeactivate()
 	{
 		InteractKeyWidget->ClearInteractKey();
 	}
+	UpdateWidgetPresentation();
+}
+
+void UInteractableComponent::UpdateInnerRangeWidgets(AFirstPersonCharacter* Interactor, bool bFocused)
+{
+	if (!IsValid(Interactor) || !Interactor->IsLocallyControlled())
+	{
+		return;
+	}
+
+	InteractionOutlineWidgetDeactivate();
+	if (!CanShowInteractionWidgets(Interactor->GetOwnedGameplayTagsForQuery()))
+	{
+		InteractKeyWidgetDeactivate();
+		InteractionLockedWidgetDeactivate();
+		DeactivateInteractionDesc();
+		return;
+	}
+	if (CanInteract(Interactor->GetOwnedGameplayTagsForQuery()))
+	{
+		InteractionLockedWidgetDeactivate();
+		if (bFocused)
+		{
+			InteractKeyWidgetDeactivate();
+		}
+		else
+		{
+			InteractKeyWidgetActivate(Interactor);
+		}
+	}
+	else if (IsLockedYet())
+	{
+		InteractKeyWidgetDeactivate();
+		InteractionLockedWidgetActivate(Interactor);
+	}
+	else
+	{
+		InteractKeyWidgetDeactivate();
+		InteractionLockedWidgetDeactivate();
+	}
+}
+
+void UInteractableComponent::InteractionLockedWidgetActivate(AFirstPersonCharacter* Interactor)
+{
+	if (!IsValid(Interactor) || !Interactor->IsLocallyControlled()
+		|| !CanShowInteractionWidgets(Interactor->GetOwnedGameplayTagsForQuery()) || !IsLockedYet())
+	{
+		InteractionLockedWidgetDeactivate();
+		return;
+	}
+	if (!InteractionLockedWidgetComponent)
+	{
+		InteractionLockedWidgetComponent = CreateRangeWidgetComponent(
+			Cast<APlayerController>(Interactor->GetController()), InteractionLockedWidgetClass,
+			TEXT("InteractionLockedWidgetComponent"), InteractionLockedWidgetDrawSize, InteractionLockedWidgetZOffset);
+		if (InteractionLockedWidgetComponent)
+		{
+			InteractionLockedWidget = Cast<UInteractionLockedWidget>(InteractionLockedWidgetComponent->GetUserWidgetObject());
+		}
+	}
+	if (InteractionLockedWidgetComponent && InteractionLockedWidget)
+	{
+		InteractionLockedWidget->ShowLockedPrompt();
+		InteractionLockedWidgetComponent->SetVisibility(true);
+	}
+	UpdateWidgetPresentation();
+}
+
+void UInteractableComponent::InteractionLockedWidgetDeactivate()
+{
+	if (InteractionLockedWidgetComponent)
+	{
+		InteractionLockedWidgetComponent->SetVisibility(false);
+	}
+	if (InteractionLockedWidget)
+	{
+		InteractionLockedWidget->HideLockedPrompt();
+	}
+	UpdateWidgetPresentation();
+}
+
+void UInteractableComponent::InteractionOutlineWidgetActivate(AFirstPersonCharacter* Interactor)
+{
+	if (!IsValid(Interactor) || !Interactor->IsLocallyControlled())
+	{
+		return;
+	}
+	const bool bCanInteract = CanInteract(Interactor->GetOwnedGameplayTagsForQuery());
+	const bool bLocked = !bCanInteract && IsLockedYet();
+	if (!CanShowInteractionWidgets(Interactor->GetOwnedGameplayTagsForQuery()))
+	{
+		InteractionOutlineWidgetDeactivate();
+		DeactivateInteractionDesc();
+		return;
+	}
+	InteractKeyWidgetDeactivate();
+	InteractionLockedWidgetDeactivate();
+	if (!InteractionOutlineWidgetComponent)
+	{
+		InteractionOutlineWidgetComponent = CreateRangeWidgetComponent(
+			Cast<APlayerController>(Interactor->GetController()), InteractionOutlineWidgetClass,
+			TEXT("InteractionOutlineWidgetComponent"), InteractionOutlineWidgetDrawSize, InteractionOutlineWidgetZOffset);
+		if (InteractionOutlineWidgetComponent)
+		{
+			InteractionOutlineWidget = Cast<UInteractionOutlineWidget>(InteractionOutlineWidgetComponent->GetUserWidgetObject());
+		}
+	}
+	if (InteractionOutlineWidgetComponent && InteractionOutlineWidget)
+	{
+		InteractionOutlineWidget->SetLocked(bLocked);
+		InteractionOutlineWidgetComponent->SetVisibility(true);
+	}
+	UpdateWidgetPresentation();
+}
+
+void UInteractableComponent::InteractionOutlineWidgetDeactivate()
+{
+	if (InteractionOutlineWidgetComponent)
+	{
+		InteractionOutlineWidgetComponent->SetVisibility(false);
+	}
+	if (InteractionOutlineWidget)
+	{
+		InteractionOutlineWidget->HideIndicator();
+	}
+	UpdateWidgetPresentation();
 }
 
 void UInteractableComponent::OnRep_InteractableTags()
@@ -513,6 +706,13 @@ void UInteractableComponent::OnRep_InteractableTags()
 	{
 		CancelAllHoldSessions();
 		InteractKeyWidgetDeactivate();
+		DeactivateInteractionDesc();
+	}
+	if ((UsedTag.IsValid() && InteractableTags.HasTagExact(UsedTag))
+		|| (DisabledTag.IsValid() && InteractableTags.HasTagExact(DisabledTag)))
+	{
+		InteractionLockedWidgetDeactivate();
+		InteractionOutlineWidgetDeactivate();
 	}
 }
 
@@ -556,7 +756,7 @@ void UInteractableComponent::TickHoldInteractions(float DeltaTime)
 
 	if (HoldSessions.IsEmpty())
 	{
-		SetComponentTickEnabled(false);
+		RefreshWidgetTick();
 	}
 }
 
@@ -577,13 +777,13 @@ void UInteractableComponent::CancelOtherHoldSessions(AFirstPersonCharacter* Comp
 	}
 
 	HoldSessions.Reset();
-	SetComponentTickEnabled(false);
+	RefreshWidgetTick();
 }
 
 void UInteractableComponent::CancelAllHoldSessions()
 {
 	HoldSessions.Reset();
-	SetComponentTickEnabled(false);
+	RefreshWidgetTick();
 
 	if (IsValid(InteractionDescActor))
 	{
@@ -779,6 +979,36 @@ UWidgetComponent* UInteractableComponent::EnsureInteractKeyWidgetComponent(APlay
 	InteractKeyWidgetComponent = NewWidgetComponent;
 	InteractKeyWidget = Cast<UInteractKeyWidget>(NewWidgetComponent->GetUserWidgetObject());
 	return InteractKeyWidgetComponent;
+}
+
+UWidgetComponent* UInteractableComponent::CreateRangeWidgetComponent(
+	APlayerController* PlayerController, TSubclassOf<UUserWidget> WidgetClass,
+	FName Name, FVector2D DrawSize, float ZOffset)
+{
+	AActor* Owner = GetOwner();
+	if (!Owner || !PlayerController || !WidgetClass)
+	{
+		return nullptr;
+	}
+	UWidgetComponent* Component = NewObject<UWidgetComponent>(Owner, Name);
+	Component->SetWidgetClass(WidgetClass);
+	Component->SetWidgetSpace(EWidgetSpace::Screen);
+	Component->SetDrawSize(DrawSize);
+	Component->SetDrawAtDesiredSize(false);
+	Component->SetRelativeLocation(FVector(0.0f, 0.0f, ZOffset));
+	Component->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	Component->SetGenerateOverlapEvents(false);
+	Component->SetIsReplicated(false);
+	Component->SetVisibility(false);
+	Component->SetOwnerPlayer(PlayerController->GetLocalPlayer());
+	if (USceneComponent* Root = Owner->GetRootComponent())
+	{
+		Component->SetupAttachment(Root);
+	}
+	Owner->AddInstanceComponent(Component);
+	Component->RegisterComponent();
+	Component->InitWidget();
+	return Component;
 }
 
 bool UInteractableComponent::GetPrimaryInteractTag(FGameplayTag& OutInteractTag) const

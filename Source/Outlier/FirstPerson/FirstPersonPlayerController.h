@@ -15,6 +15,7 @@
 #include "Upgrade/OutlierUpgradeTypes.h"
 #include "Containers/Ticker.h"
 #include "VitalityPresentationTypes.h"
+#include "PostProcess/OutlierPostProcessVolume.h"
 #include "FirstPersonPlayerController.generated.h"
 
 class UOutlierAbilitySystemComponent;
@@ -31,6 +32,7 @@ class AActor;
 class AGameStateBase;
 class AShooterCharacter;
 class ATuto_EventTriggerVolume;
+class ATuto_PassageTransitionVolume;
 class AElevatorShaftController;
 class ULocalPlayerPostProcessSubsystem;
 enum class ESuitTransitionPhase : uint8;
@@ -88,6 +90,14 @@ class OUTLIER_API AFirstPersonPlayerController : public APlayerController ,  pub
 	
 public:
 	AFirstPersonPlayerController();
+	UFUNCTION(Client, Reliable)
+	void ClientStartPassageFade(ATuto_PassageTransitionVolume* Volume, FGuid ExecutionId, FOutlierScreenTransitionTiming Timing);
+	UFUNCTION(Client, Reliable)
+	void ClientRevealPassage(ATuto_PassageTransitionVolume* Volume, FGuid ExecutionId, FVector Destination);
+	UFUNCTION(Client, Reliable)
+	void ClientClearPassageFade(ATuto_PassageTransitionVolume* Volume, FGuid ExecutionId);
+	UFUNCTION(Server, Reliable)
+	void ServerNotifyPassageCovered(ATuto_PassageTransitionVolume* Volume, FGuid ExecutionId);
 	virtual void SetPawn(APawn* InPawn) override;
 	virtual void ReceivedPlayer() override;
 
@@ -112,7 +122,7 @@ public:
 
 	// 서버가 시작 당시 확보한 두 Controller에만 전달한다. Listen Host도 같은 로컬 처리 함수를 사용한다.
 	void SendSuitTransitionPhaseFromServer(AShooterCharacter* Shooter, const FGuid& TransitionId,
-		ESuitTransitionPhase Phase, float Duration);
+		ESuitTransitionPhase Phase, const FOutlierScreenTransitionTiming& Timing);
 
 	// 실제 연출 완료 콜백에서 요청받은 ID를 전달한다. 요청 수신/타이머만으로 호출하지 않는다.
 	void NotifySuitFadeOutFinished(const FGuid& TransitionId);
@@ -465,14 +475,14 @@ private:
 
 	UFUNCTION(Client, Reliable)
 	void ClientSetSuitTransitionPhase(AShooterCharacter* Shooter, FGuid TransitionId,
-		ESuitTransitionPhase Phase, float Duration);
+		ESuitTransitionPhase Phase, FOutlierScreenTransitionTiming Timing);
 
 	UFUNCTION(Server, Reliable)
 	void ServerNotifySuitTransitionPhaseFinished(AShooterCharacter* Shooter, FGuid TransitionId,
 		ESuitTransitionPhase Phase);
 
 	void ApplyLocalSuitTransitionPhase(AShooterCharacter* Shooter, const FGuid& TransitionId,
-		ESuitTransitionPhase Phase, float Duration);
+		ESuitTransitionPhase Phase, const FOutlierScreenTransitionTiming& Timing);
 	void NotifySuitTransitionPhaseFinished(const FGuid& TransitionId, ESuitTransitionPhase Phase);
 	void ClearLocalSuitTransition();
 
@@ -485,6 +495,7 @@ private:
 	TWeakObjectPtr<AShooterCharacter> LocalSuitTransitionShooter;
 	TWeakObjectPtr<APawn> LocalSuitTransitionPawn;
 	FGuid LocalSuitTransitionId;
+	float LocalSuitCleanupRevealDuration = 0.0f;
 	FTimerHandle SuitPresentationPollTimer;
 	// 조건이 처음 맞은 폴링에서는 새 ABP가 포즈를 한 번 평가하도록 다음 폴링까지 기다린다.
 	bool bSuitPresentationReadyObserved = false;

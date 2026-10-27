@@ -39,6 +39,7 @@ protected:
 	float RecoveryDuration = 0.35f;
 
 	int32 AttackSequence = 0;
+	bool bPlayedMeleeHitSoundThisAttack = false;
 	bool bWantsToAttack = false;
 	FTimerHandle AttackTimerHandle;
 	FTimerHandle RecoveryTimerHandle;
@@ -71,6 +72,7 @@ protected:
 		const FVector& CurrentStart,
 		const FVector& CurrentEnd);
 	void ResetMeleeTraceState();
+	void PlayMeleeHitSoundOnce(const FHitResult& HitResult);
 	void LogMissingMeleeTraceSockets() const;
 	virtual void NotifyMeleeHitResult(const FMeleeHitContext& Context);
 

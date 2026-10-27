@@ -10,6 +10,7 @@
 #include "Interaction/InteractableSwitchBase.h"
 #include "Interaction/InteractionNode.h"
 #include "Interaction/PanelMover.h"
+#include "Interaction/PassageHatch.h"
 #include "OutlierArenaSettings.h"
 #include "Room/RoomCombatDefinition.h"
 #include "Room/RoomVolume.h"
@@ -97,6 +98,7 @@ FStableIdReport ScanStableIds(UWorld* World)
 			if (Actor->IsA<AInteractableSwitchBase>()) AddProperty(TEXT("SwitchId"));
 			if (Actor->IsA<AInteractionNode>()) AddProperty(TEXT("PickupId"));
 			if (Actor->IsA<APanelMover>()) AddProperty(TEXT("PanelId"));
+			if (Actor->IsA<APassageHatch>()) AddProperty(TEXT("HatchId"));
 			if (const AOutlierCheckpoint* Checkpoint = Cast<AOutlierCheckpoint>(Actor))
 			{
 				AddId(Checkpoint->GetCheckpointId(), TEXT("CheckpointId"));

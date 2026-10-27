@@ -671,6 +671,11 @@ void AOutlierPlayerState::SetAcquiredSuit(bool Acquire)
 
 void AOutlierPlayerState::OnRep_AcquiredSuit()
 {
+	if (APartnerCharacter* Partner = GetPartnerCharacter())
+	{
+		Partner->RefreshDistanceMonitoring();
+	}
+
 	// 로컬 Controller는 Pawn 연결 여부와 무관하게 자기 PS의 슈트 상태를 읽는다.
 	OnAcquiredSuitChanged.Broadcast(this);
 

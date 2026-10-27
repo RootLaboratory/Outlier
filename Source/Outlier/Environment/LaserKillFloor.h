@@ -18,7 +18,7 @@ public:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	UFUNCTION(BlueprintCallable, Category = "Hazard|Laser Floor")
-	void SetHazardEnabled(bool bEnabled);
+	virtual void SetHazardEnabled(bool bEnabled);
 
 	UFUNCTION(BlueprintPure, Category = "Hazard|Laser Floor")
 	bool IsHazardEnabled() const { return bHazardEnabled; }

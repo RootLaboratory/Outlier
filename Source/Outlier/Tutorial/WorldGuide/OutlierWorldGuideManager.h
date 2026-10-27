@@ -59,10 +59,16 @@ public:
 	bool CompleteWidget(FGameplayTag WidgetID, FGameplayTag NextWidgetID = FGameplayTag());
 
 	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "World Guide")
-	bool NotifyWidgetOverlap(FGameplayTag WidgetID);
+	bool NotifyWidgetOverlap(FGameplayTag WidgetID, FGameplayTag NextWidgetID = FGameplayTag());
 
 	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "World Guide")
 	bool CancelWidget(FGameplayTag WidgetID);
+
+	/** 서버 전용. 그룹 Row(RequiredTargetCount > 1)는 타깃별 완료를 기록하고, 필요한 수가 모이면 WidgetID를 완료한다.
+	 *  RequiredTargetCount가 1이면 CompleteWidget과 같다. */
+	bool CompleteTarget(UOutlierWorldGuideTargetComponent* Target, FGameplayTag NextWidgetID = FGameplayTag());
+	/** 타깃 하나의 마커/Outline만 현재 활성 안내와 완료 상태에 맞춘다. 다른 타깃의 위젯은 다시 만들지 않는다. */
+	void RefreshTarget(UOutlierWorldGuideTargetComponent* Target);
 
 	bool CompleteEvent(FGameplayTag EventTag);
 	bool CancelEvent(FGameplayTag EventTag);
@@ -112,6 +118,8 @@ private:
 	TMap<TWeakObjectPtr<UOutlierWorldGuideTargetComponent>, TArray<TWeakObjectPtr<UPrimitiveComponent>>> OutlinedTargets;
 	TMap<TWeakObjectPtr<UPrimitiveComponent>, FOutlierGuideStencilState> StencilStates;
 	TSet<FGameplayTag> CompletedWidgetIDs;
+	/** 서버 전용. 그룹 안내의 완료된 타깃 경로. sublevel 리로드로 다시 생성된 타깃의 완료 표시를 복원한다. */
+	TMap<FGameplayTag, TSet<FString>> CompletedTargets;
 	int32 NextRequestID = 1;
 	bool bChangingQueue = false;
 	bool bEndingPlay = false;

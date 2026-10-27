@@ -127,6 +127,7 @@ void AMeleeWeaponBase::StartAttack()
 		}
 	}
 	AttackSequence = AttackSequence == MAX_int32 ? 1 : AttackSequence + 1;
+	bPlayedMeleeHitSoundThisAttack = false;
 	AttackPhase = EMeleeAttackPhase::Attack;
 	RefreshOwnerCombatState();
 	ForceNetUpdate();
@@ -572,7 +573,7 @@ void AMeleeWeaponBase::SweepMeleeTrace(
 	ObjectQueryParams.AddObjectTypesToQuery(ECC_WorldStatic);
 
 	FCollisionQueryParams TraceParams(SCENE_QUERY_STAT(MeleeSocketTrace), false, OwnerCharacter);
-	TraceParams.AddIgnoredActor(this);
+	AddWeaponTraceIgnoredActors(TraceParams);
 	FVector ViewLocation = OwnerCharacter->GetActorLocation();
 	FRotator ViewRotation;
 	if (AController* OwnerController = OwnerCharacter->GetController())
@@ -622,14 +623,13 @@ void AMeleeWeaponBase::SweepMeleeTrace(
 					*GetNameSafe(this), AttackSequence, *GetNameSafe(Candidate), Candidate->CanBeDamaged());
 				if (Cast<AShooterCharacter>(WeaponOwner) && !Cast<APawn>(Candidate))
 				{
-					HitActorsThisSwing.Add(Candidate);
-					OutlierAudioFeedback::World(this, TEXT("Audio.Context.Player.01.Type.Melee.Hit"), TEXT("Audio.Type.Weapon"), &HitResult.ImpactPoint);
+					PlayMeleeHitSoundOnce(HitResult);
 				}
 				continue;
 			}
 			FHitResult VisibilityHit;
 			FCollisionQueryParams VisibilityParams(SCENE_QUERY_STAT(MeleeSocketVisibility), false, OwnerCharacter);
-			VisibilityParams.AddIgnoredActor(this);
+			AddWeaponTraceIgnoredActors(VisibilityParams);
 			const bool bVisibilityBlocked = World->LineTraceSingleByChannel(
 				VisibilityHit,
 				ViewLocation,
@@ -644,8 +644,7 @@ void AMeleeWeaponBase::SweepMeleeTrace(
 			}
 
 			HitActorsThisSwing.Add(Candidate);
-			if (Cast<AShooterCharacter>(WeaponOwner))
-				OutlierAudioFeedback::World(this, TEXT("Audio.Context.Player.01.Type.Melee.Hit"), TEXT("Audio.Type.Weapon"), &HitResult.ImpactPoint);
+			PlayMeleeHitSoundOnce(HitResult);
 			ApplyHitToTarget(Candidate, HitResult);
 			if (!bCanHitMultipleTargets)
 			{
@@ -653,6 +652,17 @@ void AMeleeWeaponBase::SweepMeleeTrace(
 			}
 		}
 	}
+}
+
+void AMeleeWeaponBase::PlayMeleeHitSoundOnce(const FHitResult& HitResult)
+{
+	if (bPlayedMeleeHitSoundThisAttack || !Cast<AShooterCharacter>(WeaponOwner))
+	{
+		return;
+	}
+
+	bPlayedMeleeHitSoundThisAttack = true;
+	OutlierAudioFeedback::World(this, TEXT("Audio.Context.Player.01.Type.Melee.Hit"), TEXT("Audio.Type.Weapon"), &HitResult.ImpactPoint);
 }
 
 void AMeleeWeaponBase::ResetMeleeTraceState()
@@ -704,7 +714,7 @@ bool AMeleeWeaponBase::FindBestMeleeTarget(
 	ObjectQueryParams.AddObjectTypesToQuery(ECC_PhysicsBody);
 
 	FCollisionQueryParams TraceParams(SCENE_QUERY_STAT(MeleeAttackTrace), false, OwnerCharacter);
-	TraceParams.AddIgnoredActor(this);
+	AddWeaponTraceIgnoredActors(TraceParams);
 
 	TArray<FHitResult> HitResults;
 	World->SweepMultiByObjectType(
@@ -743,7 +753,7 @@ bool AMeleeWeaponBase::FindBestMeleeTarget(
 
 		FHitResult VisibilityHit;
 		FCollisionQueryParams VisibilityParams(SCENE_QUERY_STAT(MeleeAttackVisibility), false, OwnerCharacter);
-		VisibilityParams.AddIgnoredActor(this);
+		AddWeaponTraceIgnoredActors(VisibilityParams);
 		const bool bVisibilityBlocked = World->LineTraceSingleByChannel(
 			VisibilityHit,
 			TraceStart,

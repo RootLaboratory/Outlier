@@ -1419,7 +1419,7 @@ bool AOutlierGameMode::ExecuteGameOverSelection(
 			OutlierPresetStageIds::Level1,
 			OutlierPresetStageIds::Level2,
 			OutlierPresetStageIds::Level3,
-			OutlierPresetStageIds::CheckpointTest
+			OutlierPresetStageIds::Level4
 		};
 		PresetStageId = StageIds[Request.LevelIndex - 1];
 	}
@@ -1442,8 +1442,7 @@ bool AOutlierGameMode::ExecuteGameOverSelection(
 	{
 		return false;
 	}
-	const bool bCheckpointRestart = Request.Choice == EGameOverPendingChoice::Continue
-		|| PresetStageId == OutlierPresetStageIds::CheckpointTest;
+	const bool bCheckpointRestart = Request.Choice == EGameOverPendingChoice::Continue;
 	if (bCheckpointRestart && CheckpointRestartVote.GetState() != EOutlierCheckpointRestartVoteState::Idle)
 	{
 		return false;
