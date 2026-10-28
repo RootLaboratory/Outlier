@@ -56,6 +56,7 @@
 #include "Enemy/SelfDestructDrone.h"
 #include "Explosion/ExplosiveProp.h"
 #include "Audio/OutlierAudioSubsystem.h"
+#include "PhysicalMaterials/PhysicalMaterial.h"
 
 namespace
 {
@@ -295,8 +296,20 @@ void ARangedWeaponBase::ConsumeAmmo()
 		return;
 	}
 
+	const int32 PreviousAmmo = CurrentAmmo;
 	CurrentAmmo = FMath::Max(CurrentAmmo - 1, 0);
 	UpdateLocalAmmoUI();
+
+	// Empty는 빈 방아쇠가 아니라 마지막 탄 소비로 0이 된 순간이다. 재장전/무한 탄약은 이 경로에서 제외된다.
+	if (HasAuthority() && PreviousAmmo > 0 && CurrentAmmo == 0
+		&& WeaponOwner && WeaponOwner->IsPlayerControlled() && EmptyAudioContextTag.IsValid() && CachedAudioSubsystem)
+	{
+		FOutlierAudioPlayRequest Request;
+		Request.EventTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Audio.Type.Weapon")));
+		Request.ContextTags.AddTag(EmptyAudioContextTag);
+		Request.EmitterActor = WeaponOwner;
+		CachedAudioSubsystem->PlayOwner2DFromServer(Request);
+	}
 }
 
 void ARangedWeaponBase::RefillMagazineForWeaponOvercharge()
@@ -675,6 +688,7 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 		BaseDirection);
 	FCollisionQueryParams Params;
 	AddWeaponTraceIgnoredActors(Params);
+	Params.bReturnPhysicalMaterial = true;
 	const AShooterCharacter* AutoAimShooter = Cast<AShooterCharacter>(OwnerCharacter);
 	const bool bAutoAimActive = IsWeaponOvercharged() && AutoAimShooter && AutoAimShooter->IsAutoAimEnabled();
 	const bool bDirectCoreAim = bAutoAimActive
@@ -811,56 +825,57 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 		AActor* HitActor = Hit.GetActor();
 		const FVector TraceEndPoint = bHit ? Hit.ImpactPoint : End;
 		const FVector ImpactNormal = bHit ? Hit.ImpactNormal : -ShotDirection;
+		if (bHit)
+		{
+			// 약점 보완 Hit가 아닌 실제 탄도 충돌 결과로 표면 연출을 결정한다.
+			// Player의 총탄 Hit 태그는 적을 제외한 환경용이다. 적은 자체 피격음 경로를 유지한다.
+			PlaySurfaceImpactSound(Hit, WeaponOwner && WeaponOwner->IsPlayerControlled()
+				&& !Cast<AEnemyBase>(HitActor));
+		}
 		MulticastPlayFireFX(
 			TraceEndPoint,
 			ImpactNormal,
 			HitActor,
 			GetNormalizedLastShotDirection(),
-			FiredMuzzleSocketName);
+			FiredMuzzleSocketName, bHit,
+			static_cast<uint8>(UPhysicalMaterial::DetermineSurfaceType(Hit.PhysMaterial.Get())), ImpactAudioContextTag);
 		
 		// Weapon fire uses the shared tag-driven world-audio path. The server resolves
 		// the weighted variant once and delivers it to relevant clients, so enemy,
 		// partner, and possessed-enemy weapons all follow the same network behavior.
-		if (bPlayShotSound && WeaponAudioContextTag.IsValid())
+		if (bPlayShotSound && WeaponAudioContextTag.IsValid() && CachedAudioSubsystem)
 		{
-			if (UGameInstance* GameInstance = GetGameInstance())
+			FOutlierAudioPlayRequest AudioRequest;
+			AudioRequest.EventTag = FGameplayTag::RequestGameplayTag(
+				FName(TEXT("Audio.Type.Weapon")));
+			AudioRequest.ContextTags.AddTag(WeaponAudioContextTag);
+			// Use the owning character for relevancy. Spawned enemy/partner weapon
+			// actors can be attached and independently culled even while their owner
+			// is relevant to the listener. The explicit location remains the muzzle.
+			AudioRequest.EmitterActor = WeaponOwner.Get();
+			if (!AudioRequest.EmitterActor)
 			{
-				if (UOutlierAudioSubsystem* AudioSubsystem =
-					GameInstance->GetSubsystem<UOutlierAudioSubsystem>())
-				{
-					FOutlierAudioPlayRequest AudioRequest;
-					AudioRequest.EventTag = FGameplayTag::RequestGameplayTag(
-						FName(TEXT("Audio.Type.Weapon")));
-					AudioRequest.ContextTags.AddTag(WeaponAudioContextTag);
-					// Use the owning character for relevancy. Spawned enemy/partner weapon
-					// actors can be attached and independently culled even while their owner
-					// is relevant to the listener. The explicit location remains the muzzle.
-					AudioRequest.EmitterActor = WeaponOwner.Get();
-					if (!AudioRequest.EmitterActor)
-					{
-						AudioRequest.EmitterActor = this;
-					}
+				AudioRequest.EmitterActor = this;
+			}
 
-					TArray<FTransform> AudioMuzzleTransforms;
-					ResolveMuzzleTransforms(false, FiredMuzzleSocketName, AudioMuzzleTransforms);
-					AudioRequest.Location = AudioMuzzleTransforms.IsEmpty()
-						? GetActorLocation()
-						: AudioMuzzleTransforms[0].GetLocation();
-					AudioRequest.bHasLocation = true;
-					const bool bAudioAccepted =
-						AudioSubsystem->PlayRelevantAtLocationFromServer(AudioRequest);
-					if (!bAudioAccepted)
-					{
-						UE_LOG(
-							LogOutlier,
-							Warning,
-							TEXT("[WeaponAudio] Request rejected. Weapon='%s' Owner='%s' Context='%s' Location=%s"),
-							*GetNameSafe(this),
-							*GetNameSafe(WeaponOwner),
-							*WeaponAudioContextTag.ToString(),
-							*AudioRequest.Location.ToCompactString());
-					}
-				}
+			TArray<FTransform> AudioMuzzleTransforms;
+			ResolveMuzzleTransforms(false, FiredMuzzleSocketName, AudioMuzzleTransforms);
+			AudioRequest.Location = AudioMuzzleTransforms.IsEmpty()
+				? GetActorLocation()
+				: AudioMuzzleTransforms[0].GetLocation();
+			AudioRequest.bHasLocation = true;
+			const bool bAudioAccepted =
+				CachedAudioSubsystem->PlayRelevantAtLocationFromServer(AudioRequest);
+			if (!bAudioAccepted)
+			{
+				UE_LOG(
+					LogOutlier,
+					Warning,
+					TEXT("[WeaponAudio] Request rejected. Weapon='%s' Owner='%s' Context='%s' Location=%s"),
+					*GetNameSafe(this),
+					*GetNameSafe(WeaponOwner),
+					*WeaponAudioContextTag.ToString(),
+					*AudioRequest.Location.ToCompactString());
 			}
 		}
 	}
@@ -1475,8 +1490,18 @@ void ARangedWeaponBase::MulticastPlayFireFX_Implementation(
 	FVector_NetQuantizeNormal ImpactNormal,
 	AActor* Hit,
 	FVector2D NormalizedShotDirection,
-	FName FiredMuzzleSocketName)
+	FName FiredMuzzleSocketName,
+	bool bHasImpact, uint8 Surface, FGameplayTag ImpactContext)
 {
+	if (GetNetMode() == NM_DedicatedServer)
+	{
+		return;
+	}
+	// 총구/소유자 메시가 없더라도 서버가 확정한 피격 효과는 한 번 처리한다.
+	if (bHasImpact)
+	{
+		PlaySurfaceImpactVisual(TraceEnd, ImpactNormal, Hit, Surface, ImpactContext, WeaponDecal);
+	}
 	const bool bPartnerWeapon = Cast<APartnerCharacter>(WeaponOwner) != nullptr;
 	if (bPartnerWeapon)
 	{
@@ -1741,7 +1766,7 @@ void ARangedWeaponBase::PlayThirdPersonFireFX(
 		return;
 	}
 
-	if (UVisualEventSubsystem* VisualSubsystem = GetWorld()->GetSubsystem<UVisualEventSubsystem>())
+	if (UVisualEventSubsystem* VisualSubsystem = CachedVisualSubsystem)
 	{
 		for (const FTransform& MuzzleTransform : MuzzleTransforms)
 		{
@@ -1777,39 +1802,11 @@ void ARangedWeaponBase::PlayThirdPersonFireFX(
 				UE_LOG(LogTemp, Error, TEXT("[PartnerWeaponVFX][TP][Muzzle] Failed: WeaponMuzzle definition is null."));
 			}
 
-
 			if (WeaponTrail)
 			{
 				VisualSubsystem->SpawnBeamTrail(WeaponTrail, Start, TraceEnd);
 			}
 		}
-
-
-		if (Hit)
-		{
-			const FRotator ImpactRotation = ImpactNormal.GetSafeNormal().Rotation();
-			IVisualEffectProvider* Provider = Cast<IVisualEffectProvider>(Hit);
-			bool bSpawnFallbackDecal = true;
-
-			if (Provider)
-			{
-				FVisualEventSet AssetSet = Provider->GetVisualEventSet();
-				if (AssetSet.DecalDef && !AssetSet.DecalDef->DecalMaterial)
-				{
-					AssetSet.DecalDef = nullptr;
-				}
-
-				VisualSubsystem->FeaturesEffect(TraceEnd, ImpactRotation, AssetSet);
-				bSpawnFallbackDecal = !AssetSet.DecalDef;
-			}
-
-			if (bSpawnFallbackDecal && WeaponDecal)
-			{
-				VisualSubsystem->SpawnMarkAtLocation(WeaponDecal, TraceEnd, ImpactRotation);
-			}
-
-		}
-
 	}
 	else if (Cast<APartnerCharacter>(WeaponOwner))
 	{
@@ -1831,7 +1828,7 @@ void ARangedWeaponBase::PlayFirstPersonFireFX(
 		return;
 	}
 
-	if (UVisualEventSubsystem* VisualSubsystem = GetWorld()->GetSubsystem<UVisualEventSubsystem>())
+	if (UVisualEventSubsystem* VisualSubsystem = CachedVisualSubsystem)
 	{
 		for (const FTransform& MuzzleTransform : MuzzleTransforms)
 		{
@@ -1875,32 +1872,6 @@ void ARangedWeaponBase::PlayFirstPersonFireFX(
 				VisualSubsystem->SpawnBeamTrail(WeaponTrail, Start, TraceEnd);
 			}
 		}
-
-		if (Hit)
-		{
-			const FRotator ImpactRotation = ImpactNormal.GetSafeNormal().Rotation();
-			IVisualEffectProvider* Provider = Cast<IVisualEffectProvider>(Hit);
-			bool bSpawnFallbackDecal = true;
-
-			if (Provider)
-			{
-				FVisualEventSet AssetSet = Provider->GetVisualEventSet();
-				if (AssetSet.DecalDef && !AssetSet.DecalDef->DecalMaterial)
-				{
-					AssetSet.DecalDef = nullptr;
-				}
-
-				VisualSubsystem->FeaturesEffect(TraceEnd, ImpactRotation, AssetSet);
-				bSpawnFallbackDecal = !AssetSet.DecalDef;
-			}
-
-			if (bSpawnFallbackDecal && WeaponDecal)
-			{
-				VisualSubsystem->SpawnMarkAtLocation(WeaponDecal, TraceEnd, ImpactRotation);
-			}
-
-		}
-
 	}
 	else if (Cast<APartnerCharacter>(WeaponOwner))
 	{
@@ -2056,6 +2027,10 @@ void ARangedWeaponBase::BeginPlay()
 {
 	Super::BeginPlay();
 	AutoAimEnemyRegistry = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>();
+	if (!EmptyAudioContextTag.IsValid() && WeaponType == EWeaponType::Rifle)
+	{
+		EmptyAudioContextTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Audio.Context.Player.01.Type.Rifle.Empty")));
+	}
 
 	if (!WeaponAudioContextTag.IsValid())
 	{

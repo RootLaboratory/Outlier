@@ -31,7 +31,7 @@ protected:
 	UPROPERTY(ReplicatedUsing = OnRep_AttackPhase, VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Melee")
 	EMeleeAttackPhase AttackPhase = EMeleeAttackPhase::Idle;
 
-	// Used as a fallback when no valid server-side third-person attack montage is available.
+	// 서버에서 재생할 유효한 3인칭 공격 몽타주가 없으면 이 값을 사용한다.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Melee|Timing", meta = (ClampMin = "0.01"))
 	float AttackDelay = 0.25f;
 
@@ -124,6 +124,12 @@ protected:
 	UFUNCTION(Client, Reliable)
 	void ClientNotifyMeleeHitFeedback(const FMeleeHitContext& Context);
 
+	void PresentSurfaceImpact(const FHitResult& Hit);
+
+	UFUNCTION(NetMulticast, Unreliable)
+	void MulticastPlaySurfaceImpact(FVector_NetQuantize Location, FVector_NetQuantizeNormal Normal,
+		AActor* HitActor, uint8 Surface, FGameplayTag Context);
+
 protected:
 	virtual void OnRep_EquippedState() override;
 
@@ -139,7 +145,7 @@ public:
 	virtual void StopAttack() override;
 	virtual void PerformAttack() override;
 
-	// Delayed callers must retain the sequence from attack start, not read it at callback time.
+	// 지연 호출에는 공격 시작 시 저장한 시퀀스를 전달한다. 콜백 시점의 현재 시퀀스를 사용하면 안 된다.
 	void CommitAttack(int32 ExpectedAttackSequence);
 	void FinishAttack(int32 ExpectedAttackSequence);
 	void HandleHitNotify();

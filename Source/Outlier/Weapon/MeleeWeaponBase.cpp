@@ -20,6 +20,7 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Net/UnrealNetwork.h"
 #include "TimerManager.h"
+#include "PhysicalMaterials/PhysicalMaterial.h"
 
 #if ENABLE_DRAW_DEBUG
 #include "DrawDebugHelpers.h"
@@ -574,6 +575,7 @@ void AMeleeWeaponBase::SweepMeleeTrace(
 
 	FCollisionQueryParams TraceParams(SCENE_QUERY_STAT(MeleeSocketTrace), false, OwnerCharacter);
 	AddWeaponTraceIgnoredActors(TraceParams);
+	TraceParams.bReturnPhysicalMaterial = true;
 	FVector ViewLocation = OwnerCharacter->GetActorLocation();
 	FRotator ViewRotation;
 	if (AController* OwnerController = OwnerCharacter->GetController())
@@ -623,7 +625,8 @@ void AMeleeWeaponBase::SweepMeleeTrace(
 					*GetNameSafe(this), AttackSequence, *GetNameSafe(Candidate), Candidate->CanBeDamaged());
 				if (Cast<AShooterCharacter>(WeaponOwner) && !Cast<APawn>(Candidate))
 				{
-					PlayMeleeHitSoundOnce(HitResult);
+					HitActorsThisSwing.Add(Candidate);
+					PresentSurfaceImpact(HitResult);
 				}
 				continue;
 			}
@@ -644,7 +647,10 @@ void AMeleeWeaponBase::SweepMeleeTrace(
 			}
 
 			HitActorsThisSwing.Add(Candidate);
-			PlayMeleeHitSoundOnce(HitResult);
+			if (Cast<AShooterCharacter>(WeaponOwner))
+			{
+				PresentSurfaceImpact(HitResult);
+			}
 			ApplyHitToTarget(Candidate, HitResult);
 			if (!bCanHitMultipleTargets)
 			{
@@ -662,7 +668,7 @@ void AMeleeWeaponBase::PlayMeleeHitSoundOnce(const FHitResult& HitResult)
 	}
 
 	bPlayedMeleeHitSoundThisAttack = true;
-	OutlierAudioFeedback::World(this, TEXT("Audio.Context.Player.01.Type.Melee.Hit"), TEXT("Audio.Type.Weapon"), &HitResult.ImpactPoint);
+	PlaySurfaceImpactSound(HitResult);
 }
 
 void AMeleeWeaponBase::ResetMeleeTraceState()
@@ -924,4 +930,23 @@ void AMeleeWeaponBase::ClientNotifyMeleeHitFeedback_Implementation(const FMeleeH
 	{
 		IMeleeTargetInterface::Execute_HandleMeleeHitFeedback(Target, Context);
 	}
+}
+
+void AMeleeWeaponBase::PresentSurfaceImpact(const FHitResult& Hit)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	// 실제 Sweep에서 중복 대상을 거른 뒤에만 호출한다. 가상 Damage Hit에는 연출을 붙이지 않는다.
+	// 타격음은 기존 공격당 한 번 제한을 유지하고, 시각 효과는 실제 대상별로 전달한다.
+	PlayMeleeHitSoundOnce(Hit);
+	MulticastPlaySurfaceImpact(Hit.ImpactPoint, Hit.ImpactNormal, Hit.GetActor(),
+		static_cast<uint8>(UPhysicalMaterial::DetermineSurfaceType(Hit.PhysMaterial.Get())), ImpactAudioContextTag);
+}
+
+void AMeleeWeaponBase::MulticastPlaySurfaceImpact_Implementation(FVector_NetQuantize Location,
+	FVector_NetQuantizeNormal Normal, AActor* HitActor, uint8 Surface, FGameplayTag Context)
+{
+	PlaySurfaceImpactVisual(Location, Normal, HitActor, Surface, Context);
 }
