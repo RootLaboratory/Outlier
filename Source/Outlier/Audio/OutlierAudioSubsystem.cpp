@@ -23,9 +23,26 @@
 #include "TimerManager.h"
 #include "Containers/Ticker.h"
 #include "Misc/ScopeExit.h"
+#include "HAL/IConsoleManager.h"
+#include "PhysicsEngine/PhysicsSettings.h"
 
 namespace
 {
+	TAutoConsoleVariable<int32> CVarOutlierAudioDebugTags(
+		TEXT("Outlier.Audio.DebugTags"), 0,
+		TEXT("Log audio notify calls, surface tag candidates, requests and catalog selection. 0: Off, 1: On."));
+
+	FString AudioTagCandidateList(const TArray<FGameplayTag>& Contexts)
+	{
+		FString Result;
+		for (FGameplayTag Context : Contexts)
+		{
+			if (!Result.IsEmpty()) Result += TEXT(" -> ");
+			Result += Context.ToString();
+		}
+		return Result.IsEmpty() ? TEXT("None") : Result;
+	}
+
 	const TCHAR* PlaybackModeName(EOutlierAudioPlaybackMode PlaybackMode)
 	{
 		switch (PlaybackMode)
@@ -753,14 +770,27 @@ bool UOutlierAudioSubsystem::PlayLocalAtLocation(const FOutlierAudioPlayRequest&
 void UOutlierAudioSubsystem::GetSurfaceContextCandidates(FGameplayTag Context, EPhysicalSurface Surface,
 	TArray<FGameplayTag>& OutContexts) const
 {
-	if (const FOutlierSurfaceContextMapping* Mapping = SurfaceContextMappings.Find(Context))
+	const FOutlierSurfaceContextMapping* Mapping = SurfaceContextMappings.Find(Context);
+	if (Mapping)
 	{
 		Mapping->GetCandidates(Surface, OutContexts);
 		if (Context.IsValid()) OutContexts.AddUnique(Context);
-		return;
 	}
-	OutContexts.Reset();
-	if (Context.IsValid()) OutContexts.Add(Context);
+	else
+	{
+		OutContexts.Reset();
+		if (Context.IsValid()) OutContexts.Add(Context);
+	}
+	if (CVarOutlierAudioDebugTags.GetValueOnGameThread() != 0)
+	{
+		// 후보 조회 기록이며 실제 재생 성공을 뜻하지 않는다. 시각 효과에서도 같은 조회를 사용한다.
+		const FPhysicalSurfaceName* SurfaceName = UPhysicsSettings::Get()->PhysicalSurfaces.FindByPredicate(
+			[Surface](const FPhysicalSurfaceName& Entry) { return Entry.Type == Surface; });
+		UE_LOG(LogOutlier, Log, TEXT("[AudioTags][SurfaceCandidates] World='%s' NetMode=%d Context='%s' Surface='%s'(%d) Mapped=%d Candidates='%s'"),
+			*GetNameSafe(GetWorld()), GetWorld() ? int32(GetWorld()->GetNetMode()) : -1,
+			*Context.ToString(), SurfaceName ? *SurfaceName->Name.ToString() : TEXT("Default/Unknown"),
+			int32(Surface), Mapping != nullptr, *AudioTagCandidateList(OutContexts));
+	}
 }
 
 bool UOutlierAudioSubsystem::PlaySurfaceAtLocationFromServer(AActor* Emitter, FGameplayTag Type,
@@ -810,12 +840,20 @@ bool UOutlierAudioSubsystem::PlayAnimationAudio(USkeletalMeshComponent* Mesh, FG
 	FGameplayTag Context, FName SocketName, bool bQuerySurface, bool bWorldMeshOnly, float TraceDistance)
 {
 	// 발걸음은 숨겨진 로컬 월드 메시도 허용한다. 일반 행동은 시점 메시 하나만 통과한다.
-	if (!Context.IsValid() || !IsAnimationAudioSource(Mesh, bQuerySurface || bWorldMeshOnly)) return false;
+	const bool bAcceptedSource = Context.IsValid() && IsAnimationAudioSource(Mesh, bQuerySurface || bWorldMeshOnly);
+	if (CVarOutlierAudioDebugTags.GetValueOnGameThread() != 0)
+	{
+		UE_LOG(LogOutlier, Log, TEXT("[AudioTags][Notify] Mesh='%s' Emitter='%s' Type='%s' Context='%s' Socket='%s' QuerySurface=%d AcceptedSource=%d"),
+			*GetNameSafe(Mesh), *GetNameSafe(Mesh ? Mesh->GetOwner() : nullptr), *Type.ToString(),
+			*Context.ToString(), *SocketName.ToString(), bQuerySurface, bAcceptedSource);
+	}
+	if (!bAcceptedSource) return false;
 	ACharacter* Character = CastChecked<ACharacter>(Mesh->GetOwner());
 	FVector Location = SocketName != NAME_None && Mesh->DoesSocketExist(SocketName)
 		? Mesh->GetSocketLocation(SocketName) : Mesh->GetComponentLocation();
-	if (!Type.IsValid())
+	auto ResolveNotifyType = [&]()
 	{
+		if (Type.IsValid()) return true;
 		bool bPending = false;
 		TArray<FGameplayTag> TypeContexts;
 		if (bQuerySurface) GetSurfaceContextCandidates(Context, SurfaceType_Default, TypeContexts);
@@ -823,10 +861,17 @@ bool UOutlierAudioSubsystem::PlayAnimationAudio(USkeletalMeshComponent* Mesh, FG
 		for (FGameplayTag TypeContext : TypeContexts)
 		{
 			if (ResolveTypeForContext(TypeContext, Type, bPending)) break;
-			if (bPending) return false;
+			if (bPending) break;
 		}
-		if (!Type.IsValid()) return false;
-	}
+		if (!Type.IsValid() && CVarOutlierAudioDebugTags.GetValueOnGameThread() != 0)
+		{
+			UE_LOG(LogOutlier, Log, TEXT("[AudioTags][NotifySkipped] Emitter='%s' Context='%s' Reason='TypeUnavailable' CatalogPending=%d"),
+				*GetNameSafe(Character), *Context.ToString(), bPending);
+		}
+		return Type.IsValid();
+	};
+	// 디버그 표면 조회 때만 Type 확인을 미룬다. 로그를 끄면 기존처럼 음원 조회 실패 시 Trace 전에 종료한다.
+	if ((!bQuerySurface || CVarOutlierAudioDebugTags.GetValueOnGameThread() == 0) && !ResolveNotifyType()) return false;
 	if (!bQuerySurface)
 	{
 		FOutlierAudioPlayRequest Request;
@@ -840,7 +885,16 @@ bool UOutlierAudioSubsystem::PlayAnimationAudio(USkeletalMeshComponent* Mesh, FG
 	const UCharacterMovementComponent* Movement = Character->GetCharacterMovement();
 	const AShooterCharacter* Shooter = Cast<AShooterCharacter>(Character);
 	if (!Movement || !Movement->IsMovingOnGround() || Character->GetVelocity().SizeSquared2D() < 1.0f
-		|| (Shooter && (Shooter->IsSliding() || Shooter->IsDead()))) return false;
+		|| (Shooter && (Shooter->IsSliding() || Shooter->IsDead())))
+	{
+		if (CVarOutlierAudioDebugTags.GetValueOnGameThread() != 0)
+		{
+			UE_LOG(LogOutlier, Log, TEXT("[AudioTags][NotifySkipped] Emitter='%s' Context='%s' Reason='MovementGate' Grounded=%d Speed2D=%.2f Sliding=%d Dead=%d"),
+				*GetNameSafe(Character), *Context.ToString(), Movement && Movement->IsMovingOnGround(),
+				Character->GetVelocity().Size2D(), Shooter && Shooter->IsSliding(), Shooter && Shooter->IsDead());
+		}
+		return false;
+	}
 	const UCapsuleComponent* Capsule = Character->GetCapsuleComponent();
 	if (SocketName == NAME_None || !Mesh->DoesSocketExist(SocketName)
 		|| (!Mesh->WasRecentlyRendered() && Mesh->VisibilityBasedAnimTickOption != EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones))
@@ -862,8 +916,26 @@ bool UOutlierAudioSubsystem::PlayAnimationAudio(USkeletalMeshComponent* Mesh, FG
 	FHitResult Hit;
 	const float Distance = FMath::Clamp(TraceDistance, 1.0f, 200.0f);
 	if (!GetWorld()->LineTraceSingleByChannel(Hit, Location + FVector::UpVector * 15.0f,
-		Location - FVector::UpVector * Distance, ECC_Visibility, Params) || !Hit.bBlockingHit) return false;
+		Location - FVector::UpVector * Distance, ECC_Visibility, Params) || !Hit.bBlockingHit)
+	{
+		if (CVarOutlierAudioDebugTags.GetValueOnGameThread() != 0)
+		{
+			UE_LOG(LogOutlier, Log, TEXT("[AudioTags][NotifySkipped] Emitter='%s' Context='%s' Reason='SurfaceTraceMiss'"),
+				*GetNameSafe(Character), *Context.ToString());
+		}
+		return false;
+	}
 	const EPhysicalSurface Surface = UPhysicalMaterial::DetermineSurfaceType(Hit.PhysMaterial.Get());
+	// 음원/Type 등록이 끝나지 않아도 실제 바닥과 태그 후보를 먼저 확인할 수 있게 한다.
+	if (CVarOutlierAudioDebugTags.GetValueOnGameThread() != 0)
+	{
+		UE_LOG(LogOutlier, Log, TEXT("[AudioTags][SurfaceHit] Emitter='%s' Context='%s' Hit='%s' PhysicalMaterial='%s' Surface=%d"),
+			*GetNameSafe(Character), *Context.ToString(), *GetNameSafe(Hit.GetComponent()),
+			*GetNameSafe(Hit.PhysMaterial.Get()), int32(Surface));
+		TArray<FGameplayTag> DebugContexts;
+		GetSurfaceContextCandidates(Context, Surface, DebugContexts);
+	}
+	if (!ResolveNotifyType()) return false;
 	const bool bPlayed = PlaySurfaceAtLocationLocally(Character, Type, Context, Surface, Hit.ImpactPoint);
 	if (UVisualEventSubsystem* Visual = GetSurfaceVisualSubsystem())
 	{
@@ -1134,6 +1206,13 @@ bool UOutlierAudioSubsystem::PlayAudio(
 	const FOutlierAudioPlayRequest& Request,
 	const FOutlierAudioExecutionPolicy& Policy)
 {
+	if (CVarOutlierAudioDebugTags.GetValueOnGameThread() != 0)
+	{
+		UE_LOG(LogOutlier, Log, TEXT("[AudioTags][Request] World='%s' Emitter='%s' Authority=%s Audience=%s Type='%s' Contexts='%s' Exact=%d Candidates='%s' MovementEvent=%llu"),
+			*GetNameSafe(GetWorld()), *GetNameSafe(Request.EmitterActor), RequestAuthorityName(Policy.RequestAuthority),
+			AudienceName(Policy.Audience), *Request.EventTag.ToString(), *Request.ContextTags.ToString(),
+			Request.bExactContexts, *AudioTagCandidateList(Request.OrderedContexts), Request.MovementAudioEventId);
+	}
 	if (bStoppingAllLocalAudio) return false;
 	if (!IsMovementPlaybackCurrent(Request.EmitterActor, Request.MovementAudioEventId, Request.MovementPlaybackToken)) return false;
 	UWorld* World = GetWorld();
@@ -1196,6 +1275,10 @@ bool UOutlierAudioSubsystem::PlayAudio(
 	// 로드 트리거가 된다. 큐잉해두고 로드가 끝나면 FlushPendingPlaysForType 이 재시도한다.
 	if (Request.bExactContexts && BankMetadataLoadHandle.IsValid())
 	{
+		if (CVarOutlierAudioDebugTags.GetValueOnGameThread() != 0)
+		{
+			UE_LOG(LogOutlier, Log, TEXT("[AudioTags][Waiting] Type='%s' Reason='BankMetadataLoading'"), *Request.EventTag.ToString());
+		}
 		PendingPlaysByType.FindOrAdd(Request.EventTag).Emplace(Request, Policy);
 		return true;
 	}
@@ -1204,6 +1287,11 @@ bool UOutlierAudioSubsystem::PlayAudio(
 		const FDiscoveredBank* Discovered = DiscoveredBanksByType.Find(Request.EventTag);
 		if (!Discovered)
 		{
+			if (CVarOutlierAudioDebugTags.GetValueOnGameThread() != 0)
+			{
+				UE_LOG(LogOutlier, Log, TEXT("[AudioTags][Selection] Type='%s' Reason='UnknownType' LegacyFallback=%d"),
+					*Request.EventTag.ToString(), Request.LegacySound != nullptr);
+			}
 			if (Request.bExactContexts)
 			{
 				if (!Request.LegacySound) return false;
@@ -1221,6 +1309,10 @@ bool UOutlierAudioSubsystem::PlayAudio(
 
 		if (!Discovered->bContentLoaded)
 		{
+			if (CVarOutlierAudioDebugTags.GetValueOnGameThread() != 0)
+			{
+				UE_LOG(LogOutlier, Log, TEXT("[AudioTags][Waiting] Type='%s' Reason='BankContentLoading'"), *Request.EventTag.ToString());
+			}
 			PendingPlaysByType.FindOrAdd(Request.EventTag).Emplace(Request, Policy);
 			UE_LOG(LogOutlier, Verbose, TEXT("[Audio] Queued Type='%s' Context='%s' while Bank content loads."),
 				*Request.EventTag.ToString(), *Request.ContextTags.ToString());
@@ -1234,6 +1326,14 @@ bool UOutlierAudioSubsystem::PlayAudio(
 	const FRuntimeCatalogEntry* Entry = Request.bExactContexts
 		? ResolveOrderedEntry(Request.EventTag, Request.OrderedContexts)
 		: ResolveBestEntry(Request.EventTag, Request.ContextTags);
+	if (CVarOutlierAudioDebugTags.GetValueOnGameThread() != 0)
+	{
+		// 에셋 선택 결과다. 비동기 로드나 실제 재생 완료와 구분한다.
+		UE_LOG(LogOutlier, Log, TEXT("[AudioTags][Selection] Emitter='%s' Type='%s' SelectedContext='%s' Sound='%s' Reason='%s'"),
+			*GetNameSafe(Request.EmitterActor), *Request.EventTag.ToString(),
+			Entry ? *Entry->RequiredContext.ToString() : TEXT("None"),
+			Entry ? *Entry->Sound.ToSoftObjectPath().ToString() : TEXT("None"), Entry ? TEXT("Matched") : TEXT("NoMatchingSound"));
+	}
 	if (!Entry)
 	{
 		if (Request.bExactContexts && Request.LegacySound)
