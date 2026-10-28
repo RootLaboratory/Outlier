@@ -32,6 +32,8 @@ bool FOutlierMovementAudioPredictionTest::RunTest(const FString& Parameters)
 	APawn* Pawn = World->SpawnActor<APawn>();
 	APlayerController* Controller = World->SpawnActor<APlayerController>();
 	if (!TestNotNull(TEXT("Movement audio pawn"), Pawn) || !TestNotNull(TEXT("Local controller"), Controller)) return false;
+	// NetDriver와 플레이어 접속 과정이 없는 테스트 월드에서는 로컬 컨트롤러를 명시한다.
+	Controller->SetAsLocalPlayerController();
 	Controller->Possess(Pawn);
 	if (!TestTrue(TEXT("Fixture pawn has a local listener"), Pawn->IsLocallyControlled())) return false;
 	TStrongObjectPtr<UGameInstance> GameInstance(NewObject<UGameInstance>());
