@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DeveloperSettings.h"
+#include "GameplayTagContainer.h"
 #include "OutlierArenaSettings.generated.h"
 
 class UWorld;
@@ -24,6 +25,13 @@ public:
 
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly)
 	TSoftObjectPtr<UWorld> ArenaLevel;
+
+	/** 레벨 로드 요청과 함께 준비할 BGM 목록. 전환에 필요한 Start/Loop/End도 각각 지정한다. */
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Arena|Audio", meta = (Categories = "Audio.Context.Bgm"))
+	TMap<TSoftObjectPtr<UWorld>, FGameplayTagContainer> BgmPreloadContexts;
+
+	/** 원본 패키지 기준으로 초기 캐시를 만든다. 같은 맵의 설정은 합치고 빈 항목은 제외한다. */
+	void BuildBgmPreloadMappings(TMap<FString, TArray<FGameplayTag>>& OutMappings) const;
 
 	// 적 풀 구성. 실제 풀 Actor의 생성/정리 정책은 전투 시스템이 관리한다.
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Arena|Enemy Pool")

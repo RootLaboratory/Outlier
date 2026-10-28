@@ -37,6 +37,10 @@ void UOutlierAudioSubsystem::SetZoneMusic(const UObject* Requester, FGameplayTag
 		ZoneMusicTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
 			FTickerDelegate::CreateUObject(this, &ThisClass::TickZoneMusic));
 	}
+	// 준비된 영역 음악은 다음 프레임까지 미루지 않고 기존 페이드 계산으로 진입한다.
+	// TickZoneMusic이 비활성화되면 등록한 Ticker도 여기서 함께 해제한다.
+	const FTSTicker::FDelegateHandle Ticker = ZoneMusicTickerHandle;
+	if (!TickZoneMusic(0.0f)) FTSTicker::GetCoreTicker().RemoveTicker(Ticker);
 }
 
 const UOutlierAudioSubsystem::FZoneMusicRequest* UOutlierAudioSubsystem::RefreshZoneMusicTargets()

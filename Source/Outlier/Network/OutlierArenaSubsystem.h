@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Containers/Ticker.h"
 #include "Engine/EngineTypes.h"
+#include "GameplayTagContainer.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "OutlierArenaInstance.h"
 #include "OutlierArenaSubsystem.generated.h"
@@ -12,6 +13,7 @@ class ULevelStreaming;
 class ULevelStreamingDynamic;
 class AActor;
 class FDataValidationContext;
+class UOutlierAudioSubsystem;
 
 UENUM(BlueprintType)
 enum class EOutlierGameplayReloadPhase : uint8
@@ -54,6 +56,7 @@ class OUTLIER_API UOutlierArenaSubsystem : public UWorldSubsystem
 	GENERATED_BODY()
 
 public:
+	virtual void PostInitialize() override;
 	virtual void Deinitialize() override;
 	virtual void OnWorldBeginPlay(UWorld& InWorld) override;
 
@@ -109,6 +112,16 @@ public:
 	FOnArenaGameplayReloadFailed OnArenaGameplayReloadFailed;
 
 private:
+	friend class FOutlierArenaMusicPreloadTest;
+	uint64 RequestLevelMusicPreload(const TSoftObjectPtr<UWorld>& Map);
+	void SetLevelMusicPreload(ULevelStreaming* Level, const TSoftObjectPtr<UWorld>& Map, bool bLoaded);
+	void ReleaseLevelMusicPreload(ULevelStreaming* Level);
+	void ClearLevelMusicPreloads();
+	void PreloadInitiallyRequestedLevelMusic();
+	TWeakObjectPtr<UOutlierAudioSubsystem> CachedAudioSubsystem;
+	TMap<FString, TArray<FGameplayTag>> BgmPreloadMappings;
+	TMap<TWeakObjectPtr<ULevelStreaming>, uint64> LevelMusicPreloadRequests;
+
 	struct FPendingGameplayReload
 	{
 		uint32 Generation = 0;

@@ -3,8 +3,25 @@
 
 #include "OutlierArenaSettings.h"
 #include "Engine/World.h"
+#include "Engine/Level.h"
+#include "UObject/Package.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
+
+void UOutlierArenaSettings::BuildBgmPreloadMappings(TMap<FString, TArray<FGameplayTag>>& OutMappings) const
+{
+	OutMappings.Reset();
+	for (const auto& Pair : BgmPreloadContexts)
+	{
+		const FString Package = UWorld::RemovePIEPrefix(Pair.Key.ToSoftObjectPath().GetLongPackageName());
+		if (Package.IsEmpty() || Pair.Value.IsEmpty()) continue;
+		TArray<FGameplayTag>& Contexts = OutMappings.FindOrAdd(Package);
+		for (FGameplayTag Context : Pair.Value)
+		{
+			if (Context.IsValid()) Contexts.AddUnique(Context);
+		}
+	}
+}
 
 FString UOutlierArenaSettings::ResolveArenaWorkerHost() const
 {
