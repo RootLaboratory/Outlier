@@ -1,4 +1,5 @@
 #include "AudioTagHelperPanel.h"
+#include "TaggedAudioBatchPanel.h"
 
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetToolsModule.h"
@@ -477,6 +478,12 @@ void SAudioTagHelperPanel::Construct(const FArguments& InArgs)
 					SNew(SButton)
 					.Text(LOCTEXT("CreateAssetButton", "Create / Open Data Asset"))
 					.OnClicked(this, &SAudioTagHelperPanel::CreateOrOpenDataAsset)
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(0.0f, 20.0f, 0.0f, 0.0f)
+				[
+					SNew(STaggedAudioBatchPanel)
 				]
 			]
 		]
