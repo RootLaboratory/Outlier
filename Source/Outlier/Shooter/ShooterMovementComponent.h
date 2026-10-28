@@ -23,8 +23,11 @@ protected:
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Movement")
 	uint8 bIsSprinting : 1 = false;
 
-	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "Movement")
+	UPROPERTY(ReplicatedUsing = OnRep_IsSliding, VisibleAnywhere, BlueprintReadOnly, Category = "Movement")
 	uint8 bIsSliding : 1 = false;
+
+	UFUNCTION()
+	void OnRep_IsSliding();
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Movement")
 	uint8 bIsSlidingCanceled : 1 = false;

@@ -47,6 +47,8 @@ class UPackageMap;
 class ASuitInteraction;
 class APlayerController;
 class AOutlierPlayerState;
+class UOutlierAudioSubsystem;
+class UVisualEventSubsystem;
 
 UENUM()
 enum class ESuitTransitionPhase : uint8
@@ -244,6 +246,17 @@ class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbil
 	friend class FOutlierMeleeAttackLifecycleTest;
 
 protected:
+	UPROPERTY(Transient)
+	TObjectPtr<UOutlierAudioSubsystem> MovementAudioSubsystem;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UVisualEventSubsystem> MovementVisualSubsystem;
+
+	void RefreshSlideAudio();
+
+	UFUNCTION(NetMulticast, Unreliable)
+	void MulticastPlayLandingEffects(uint8 Surface, FVector_NetQuantize Location, FVector_NetQuantizeNormal Normal, FGameplayTag Context);
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
 	TObjectPtr<UOutlierAbilitySystemComponent> OutlierAbilitySystemComponent;
 
@@ -642,7 +655,7 @@ protected:
 	UFUNCTION(Client, Unreliable)
 	void ClientPlayReflectionRipple(FVector_NetQuantize IncomingOrigin);
 
-	/** Initialize input action bindings */
+	/** 입력 액션 바인딩을 초기화한다. */
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
 
 	virtual void OnStartCrouch(float HalfHeightAdjust, float ScaledHalfHeightAdjust) override;

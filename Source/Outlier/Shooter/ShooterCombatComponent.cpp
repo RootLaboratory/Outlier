@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Shooter/ShooterCombatComponent.h"
+#include "Audio/OutlierAudioSubsystem.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Shooter/ShooterFirstPersonAnimInstance.h"
 #include "Weapon/WeaponBase.h"
@@ -823,6 +824,8 @@ void UShooterCombatComponent::CancelReloadInternal()
 		return;
 	}
 
+	// 애니메이션 소유 반복음만 정리한다. 이동/LowHP 등 실제 상태가 소유한 소리는 유지한다.
+	if (ShooterCharacter->MovementAudioSubsystem) ShooterCharacter->MovementAudioSubsystem->StopAnimationAudioLoops(ShooterCharacter);
 	bIsReloading = false;
 	ShooterCharacter->EndActionLock(EShooterActionLock::Reload);
 	UAnimMontage* FirstPersonMontage = ActiveFirstPersonReloadMontage.IsValid()
@@ -869,6 +872,7 @@ void UShooterCombatComponent::FinishReloadInternal()
 		}
 	}
 
+	if (ShooterCharacter->MovementAudioSubsystem) ShooterCharacter->MovementAudioSubsystem->StopAnimationAudioLoops(ShooterCharacter);
 	bIsReloading = false;
 	ShooterCharacter->EndActionLock(EShooterActionLock::Reload);
 	UnbindReloadMontageEndedDelegates();
@@ -893,6 +897,7 @@ void UShooterCombatComponent::OnRep_IsReloading()
 		return;
 	}
 
+	if (ShooterCharacter->MovementAudioSubsystem) ShooterCharacter->MovementAudioSubsystem->StopAnimationAudioLoops(ShooterCharacter);
 	if (ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(ShooterCharacter->CurrentWeapon))
 	{
 		RangedWeapon->CancelReload();

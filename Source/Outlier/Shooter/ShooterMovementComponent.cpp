@@ -27,6 +27,15 @@ void UShooterMovementComponent::GetLifetimeReplicatedProps(TArray<FLifetimePrope
 	DOREPLIFETIME(UShooterMovementComponent, bIsSliding);
 }
 
+void UShooterMovementComponent::OnRep_IsSliding()
+{
+	// 원격은 입력/몽타주가 아니라 서버의 실제 상태를 따라 같은 emitter 반복음을 시작/종료한다.
+	if (AShooterCharacter* ShooterCharacter = GetShooterCharacter())
+	{
+		ShooterCharacter->RefreshSlideAudio();
+	}
+}
+
 void UShooterMovementComponent::HandleSprintPressed()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
@@ -173,6 +182,7 @@ void UShooterMovementComponent::TrySlide()
 	// 슬라이드는 이동 상태, 웅크림, 타이머가 함께 바뀌는 복합 액션
 	// 슬라이드는 sprint와 crouch 상태를 잠시 덮어쓰는 복합 액션
 	bIsSliding = true;
+	ShooterCharacter->RefreshSlideAudio();
 	bIsSlidingCanceled = false;
 	ShooterCharacter->StopLean();
 	ShooterCharacter->BeginActionLock(EShooterActionLock::Slide);
@@ -212,6 +222,7 @@ void UShooterMovementComponent::StopSlide(ESlideEndReason EndReason)
 	}
 
 	bIsSliding = false;
+	ShooterCharacter->RefreshSlideAudio();
 	bIsSlidingCanceled = (EndReason != ESlideEndReason::Finished);
 	ShooterCharacter->EndActionLock(EShooterActionLock::Slide);
 	ShooterCharacter->GetWorldTimerManager().ClearTimer(SlideTimerHandle);

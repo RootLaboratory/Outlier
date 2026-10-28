@@ -4,6 +4,10 @@
 #include "Shooter/ShooterCharacterMovementComponent.h"
 #include "Drone/Partner/PartnerShieldRecipientComponent.h"
 #include "Audio/OutlierAudioFeedback.h"
+#include "Audio/OutlierAudioSubsystem.h"
+#include "Engine/GameInstance.h"
+#include "PhysicalMaterials/PhysicalMaterial.h"
+#include "VisualEventSubsystem.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimClassInterface.h"
 #include "Animation/AnimMontage.h"
@@ -355,6 +359,9 @@ void AShooterCharacter::EndJumperEffect(FName EffectId, AActor* SourceActor)
 void AShooterCharacter::BeginPlay()
 {
 	Super::BeginPlay();
+	MovementAudioSubsystem = GetGameInstance() ? GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>() : nullptr;
+	MovementVisualSubsystem = GetWorld()->GetSubsystem<UVisualEventSubsystem>();
+	RefreshSlideAudio();
 	CaptureInitialPresentation();
 	OnWeaponChanged.AddUniqueDynamic(this, &AShooterCharacter::HandlePresentationWeaponChanged);
 	if (UpgradeComponent)
@@ -578,6 +585,11 @@ void AShooterCharacter::UnPossessed()
 	InitializeAutoAimLocalView(nullptr);
 	AutoAimViewReceivedAt = -1.0;
 	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->ResetCoyoteTime();
+	// 서버의 상태도 종료해야 원격 인스턴스의 RepNotify가 남은 슬라이딩 반복음을 정리한다.
+	if (IsSliding())
+	{
+		StopSlide(ESlideEndReason::ForcedCancel);
+	}
 	OutlierAudioFeedback::StopLoops(this);
 	Super::UnPossessed();
 }
@@ -1413,10 +1425,15 @@ void AShooterCharacter::RefreshFirstPersonShadowPolicy()
 			// 하나도 렌더되지 않아도 계속 애니메이션을 갱신해야 한다
 			ThirdPersonMesh->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
 		}
-		else if (HasAuthority())
+		else if (GetNetMode() == NM_DedicatedServer)
 		{
 			// Dedicated servers still need montage position updates for authoritative gameplay Notifies.
 			ThirdPersonMesh->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::OnlyTickMontagesWhenNotRendered;
+		}
+		else
+		{
+			// 화면 밖에서도 가청 발걸음 Notify는 진행한다. 뼈 갱신은 렌더될 때만 하고 바닥 조회는 캡슐로 보완한다.
+			ThirdPersonMesh->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPose;
 		}
 	}
 
@@ -1529,12 +1546,71 @@ void AShooterCharacter::Landed(const FHitResult& Hit)
 {
 	Super::Landed(Hit);
 
+	// 예측 Landed에서는 재생하지 않는다. 서버가 사운드를 한 번 선택하고 시각 효과만 별도로 전달한다.
+	if (HasAuthority() && Hit.bBlockingHit && !IsDead())
+	{
+		FHitResult SurfaceHit = Hit;
+		if (!Hit.PhysMaterial.IsValid())
+		{
+			FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(ShooterLandingSurface), false, this);
+			QueryParams.bReturnPhysicalMaterial = true;
+			if (InventoryComponent)
+			{
+				for (EWeaponSlot Slot : { EWeaponSlot::Primary, EWeaponSlot::Secondary, EWeaponSlot::Melee })
+				{
+					if (AWeaponBase* Weapon = InventoryComponent->GetWeaponInSlot(Slot))
+					{
+						QueryParams.AddIgnoredActor(Weapon);
+					}
+				}
+			}
+			FHitResult MaterialHit;
+			const FVector TraceStart = Hit.ImpactPoint + FVector::UpVector * 15.0f;
+			if (GetWorld()->LineTraceSingleByChannel(MaterialHit, TraceStart,
+				Hit.ImpactPoint - FVector::UpVector * 30.0f, ECC_Visibility, QueryParams)
+				&& MaterialHit.GetComponent() == Hit.GetComponent())
+			{
+				// 보완 Trace가 다른 물체를 맞혀도 원래 착지 판정/위치를 교체하지 않는다.
+				SurfaceHit.PhysMaterial = MaterialHit.PhysMaterial;
+			}
+		}
+		const EPhysicalSurface Surface = UPhysicalMaterial::DetermineSurfaceType(SurfaceHit.PhysMaterial.Get());
+		const FGameplayTag LandingContext = OutlierAudioFeedback::Tag(TEXT("Audio.Context.Player.01.Movement.Land"));
+		if (MovementAudioSubsystem)
+		{
+			// 착지 사운드와 시각 효과가 같은 표면 후보를 사용한다.
+			MovementAudioSubsystem->PlaySurfaceAtLocationFromServer(this,
+				OutlierAudioFeedback::Tag(TEXT("Audio.Type.Player")),
+				LandingContext, Surface, Hit.ImpactPoint);
+		}
+		MulticastPlayLandingEffects(static_cast<uint8>(Surface), Hit.ImpactPoint, Hit.ImpactNormal, LandingContext);
+	}
+
 	if (IsSliding())
 	{
 		StopSlide(ESlideEndReason::JumpCancel);
 	}
 
 	RefreshMovementState();
+}
+
+void AShooterCharacter::MulticastPlayLandingEffects_Implementation(uint8 Surface,
+	FVector_NetQuantize Location, FVector_NetQuantizeNormal Normal, FGameplayTag Context)
+{
+	if (GetNetMode() == NM_DedicatedServer || !MovementAudioSubsystem || !MovementVisualSubsystem) return;
+	TArray<FGameplayTag> Contexts;
+	MovementAudioSubsystem->GetSurfaceContextCandidates(Context, static_cast<EPhysicalSurface>(Surface), Contexts);
+	// 이 RPC에는 사운드를 넣지 않아 Relevant 오디오와 Listen 호스트의 중복 재생을 막는다.
+	MovementVisualSubsystem->PlayTaggedEffectsAtLocation(Contexts, Location, Normal.Rotation(), FVisualEventSet());
+}
+
+void AShooterCharacter::RefreshSlideAudio()
+{
+	if (!MovementAudioSubsystem || GetNetMode() == NM_DedicatedServer) return;
+	// 예측 진입과 RepNotify가 겹쳐도 Subsystem의 emitter+Context 키가 하나의 요청만 유지한다.
+	MovementAudioSubsystem->SetLocalEmitterLoop(this,
+		OutlierAudioFeedback::Tag(TEXT("Audio.Type.Player")),
+		OutlierAudioFeedback::Tag(TEXT("Audio.Context.Player.01.Movement.Sliding")), IsSliding() && !IsDead());
 }
 
 void AShooterCharacter::OnMovementModeChanged(EMovementMode  PrevMovementMode, uint8 PreviousCustomMode)
@@ -1590,8 +1666,43 @@ void AShooterCharacter::CheckJumpInput(float DeltaTime)
 	auto* JumpMovement = CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement());
 	JumpMovement->PrepareJumpInput(DeltaTime);
 	const int32 PreviousJumpCount = JumpCurrentCount;
+	const bool bWasOnGround = JumpMovement->IsMovingOnGround();
 	Super::CheckJumpInput(DeltaTime);
 	JumpMovement->FinishJumpInput();
+
+	// 입력 예약이나 실패에는 재생하지 않는다. 서버에서 새 점프가 실제로 성공한 경우만 요청한다.
+	if (HasAuthority() && bWasJumping && JumpCurrentCount > PreviousJumpCount && MovementAudioSubsystem)
+	{
+		const UCapsuleComponent* Capsule = GetCapsuleComponent();
+		const FVector FootLocation = Capsule->GetComponentLocation()
+			- FVector::UpVector * Capsule->GetScaledCapsuleHalfHeight();
+		EPhysicalSurface Surface = SurfaceType_Default;
+		// 지상 출발에만 짧게 조회한다. 공중 점프는 아래의 다른 바닥을 선택하지 않고 Plastic을 사용한다.
+		if (bWasOnGround)
+		{
+			FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(ShooterJumpSurface), false, this);
+			QueryParams.bReturnPhysicalMaterial = true;
+			if (InventoryComponent)
+			{
+				for (EWeaponSlot Slot : { EWeaponSlot::Primary, EWeaponSlot::Secondary, EWeaponSlot::Melee })
+				{
+					if (AWeaponBase* Weapon = InventoryComponent->GetWeaponInSlot(Slot))
+					{
+						QueryParams.AddIgnoredActor(Weapon);
+					}
+				}
+			}
+			FHitResult SurfaceHit;
+			if (GetWorld()->LineTraceSingleByChannel(SurfaceHit, FootLocation + FVector::UpVector * 15.0f,
+				FootLocation - FVector::UpVector * 80.0f, ECC_Visibility, QueryParams))
+			{
+				Surface = UPhysicalMaterial::DetermineSurfaceType(SurfaceHit.PhysMaterial.Get());
+			}
+		}
+		MovementAudioSubsystem->PlaySurfaceAtLocationFromServer(this,
+			OutlierAudioFeedback::Tag(TEXT("Audio.Type.Player")),
+			OutlierAudioFeedback::Tag(TEXT("Audio.Context.Player.01.Movement.Jump")), Surface, FootLocation);
+	}
 
 	// Jump()는 입력만 예약한다. 엔진이 실제 점프에 성공해 횟수를 1에서 2로 올린 뒤 서버에서만 알린다.
 	if (HasAuthority() && PreviousJumpCount == 1 && JumpCurrentCount == 2)
@@ -2353,6 +2464,8 @@ void AShooterCharacter::RefreshReplicatedPresentation()
 void AShooterCharacter::HandlePresentationWeaponChanged(EWeaponType NewWeaponType)
 {
 	(void)NewWeaponType;
+	// 교체로 중단된 몽타주의 NotifyEnd가 누락되어도 이전 무기의 애니메이션 반복음은 남기지 않는다.
+	if (MovementAudioSubsystem) MovementAudioSubsystem->StopAnimationAudioLoops(this);
 	RefreshPresentationWeaponAttachment();
 }
 
