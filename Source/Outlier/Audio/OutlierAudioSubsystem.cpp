@@ -262,6 +262,7 @@ void UOutlierAudioSubsystem::StopLocalVoices(ULocalPlayer* Listener)
 
 void UOutlierAudioSubsystem::HandleVoiceWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources)
 {
+	if (World && World->GetGameInstance() == GetGameInstance()) ClearPredictedMovementAudio(nullptr);
 	ReleaseMusicPreloadsForWorld(World);
 	for (auto& Pair : PendingPlaysByType)
 	{
@@ -291,6 +292,7 @@ void UOutlierAudioSubsystem::HandleVoiceWorldCleanup(UWorld* World, bool bSessio
 
 void UOutlierAudioSubsystem::Deinitialize()
 {
+	ClearPredictedMovementAudio(nullptr);
 	ClearMusicPreloads();
 	FWorldDelegates::OnWorldTickStart.Remove(AudioWorldTickHandle);
 	WorldPausedAudioComponents.Reset();
@@ -348,6 +350,7 @@ void UOutlierAudioSubsystem::Deinitialize()
 
 bool UOutlierAudioSubsystem::ReloadCatalog()
 {
+	ClearPredictedMovementAudio(nullptr);
 	// 이전 카탈로그의 선로드 요청은 해제한다. 호출자는 새 카탈로그에 다시 요청해야 한다.
 	ClearMusicPreloads();
 	for (auto& Pair : LocalEmitterLoops)
@@ -1132,6 +1135,7 @@ bool UOutlierAudioSubsystem::PlayAudio(
 	const FOutlierAudioExecutionPolicy& Policy)
 {
 	if (bStoppingAllLocalAudio) return false;
+	if (!IsMovementPlaybackCurrent(Request.EmitterActor, Request.MovementAudioEventId, Request.MovementPlaybackToken)) return false;
 	UWorld* World = GetWorld();
 	if (!World)
 	{
@@ -1425,11 +1429,13 @@ bool UOutlierAudioSubsystem::HandleServerRelevantAtLocationRequest(
 }
 
 bool UOutlierAudioSubsystem::PlayResolvedAudioLocally(
-	const FOutlierResolvedAudioPlay& ResolvedPlay)
+	const FOutlierResolvedAudioPlay& DeliveredPlay)
 {
 	if (bStoppingAllLocalAudio) return false;
 	UWorld* World = GetWorld();
 	if (!World || World->GetNetMode() == NM_DedicatedServer) return false;
+	FOutlierResolvedAudioPlay ResolvedPlay = DeliveredPlay;
+	if (!PrepareDeliveredMovementAudio(ResolvedPlay)) return true;
 	if (ResolvedPlay.LegacySound)
 	{
 		// 서버가 태그 후보 부재를 확정한 경우만 호환음을 재생한다. 수신자는 다시 선택하지 않는다.
@@ -1466,6 +1472,9 @@ bool UOutlierAudioSubsystem::PlayResolvedAudioLocally(
 	}
 
 	FPendingPlay PendingPlay;
+	PendingPlay.MovementAudioEmitter = ResolvedPlay.MovementAudioEmitter;
+	PendingPlay.MovementAudioEventId = ResolvedPlay.MovementAudioEventId;
+	PendingPlay.MovementPlaybackToken = ResolvedPlay.MovementPlaybackToken;
 	PendingPlay.World = GetWorld();
 	PendingPlay.bPlayWhenPaused = !ResolvedPlay.bAtLocation
 		&& Entry->RequiredContext.ToString().StartsWith(TEXT("Audio.Context.UI.Menu."));
@@ -1735,6 +1744,9 @@ bool UOutlierAudioSubsystem::BuildResolvedPlay(
 	FOutlierResolvedAudioPlay& OutResolvedPlay) const
 {
 	OutResolvedPlay.EventTag = TypeTag;
+	OutResolvedPlay.MovementAudioEmitter = Request.MovementAudioEventId ? Request.EmitterActor : nullptr;
+	OutResolvedPlay.MovementAudioEventId = Request.MovementAudioEventId;
+	OutResolvedPlay.MovementPlaybackToken = Request.MovementPlaybackToken;
 	OutResolvedPlay.VariantIndex = Entry.VariantIndex;
 	OutResolvedPlay.StartTime = FMath::Max(0.0f, Request.StartTime);
 	OutResolvedPlay.bLooping = Entry.PlaybackPolicy == EOutlierAudioPlaybackPolicy::Loop;
@@ -2066,6 +2078,8 @@ void UOutlierAudioSubsystem::ExecutePlay(
 	const FPendingPlay& PendingPlay)
 {
 	UWorld* World = PendingPlay.World.Get();
+	if (!IsMovementPlaybackCurrent(PendingPlay.MovementAudioEmitter.Get(),
+		PendingPlay.MovementAudioEventId, PendingPlay.MovementPlaybackToken)) return;
 	if (!World || World != GetWorld() || World->GetNetMode() == NM_DedicatedServer || !Sound)
 	{
 		return;
@@ -2191,6 +2205,8 @@ void UOutlierAudioSubsystem::ExecutePlay(
 			PendingPlay.VolumeType,
 			PendingPlay.AudioInstanceId,
 			PendingPlay.bLooping);
+		FinishMovementPlayback(PendingPlay.MovementAudioEmitter.Get(), PendingPlay.MovementAudioEventId,
+			PendingPlay.MovementPlaybackToken, AudioComponent != nullptr);
 		return;
 	}
 

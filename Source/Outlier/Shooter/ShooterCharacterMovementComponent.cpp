@@ -10,12 +10,15 @@ class FShooterSavedMove : public FSavedMove_Character
 
 public:
 	FShooterJumpSnapshot BeforeJump;
+	uint32 AudioMoveId = 0;
+	uint32 AudioAirborneId = 0;
 	bool bStartedFalling = false;
 
 	virtual void Clear() override
 	{
 		Super::Clear();
 		BeforeJump = {};
+		AudioMoveId = AudioAirborneId = 0;
 		bStartedFalling = false;
 	}
 
@@ -26,6 +29,8 @@ public:
 		const auto* Movement = CastChecked<UShooterCharacterMovementComponent>(Character->GetCharacterMovement());
 		// 소유 클라이언트에서는 CheckJumpInput 다음에 저장된다. 소비 후 상태를 저장하면 재생 때 첫 점프가 사라진다.
 		BeforeJump = Movement->BeforeJumpInput;
+		AudioMoveId = Movement->AudioMoveId;
+		AudioAirborneId = Movement->AudioAirborneId;
 		JumpCurrentCount = BeforeJump.JumpCount;
 		bWasJumping = BeforeJump.bWasJumping;
 		JumpKeyHoldTime = BeforeJump.HoldTime;
@@ -37,6 +42,8 @@ public:
 	virtual void PostUpdate(ACharacter* Character, EPostUpdateMode Mode) override
 	{
 		Super::PostUpdate(Character, Mode);
+		const auto* Movement = CastChecked<UShooterCharacterMovementComponent>(Character->GetCharacterMovement());
+		AudioAirborneId = Movement->AudioAirborneId;
 		// 바닥 이탈을 포함한 이동도 결합하지 않아 서버에서 지지 상실 시각을 다시 판정할 수 있게 한다.
 		bForceNoCombine |= Character->GetCharacterMovement()->IsFalling();
 	}
@@ -57,6 +64,9 @@ public:
 		const FShooterJumpSnapshot ReplayStart = Movement->CaptureJumpSnapshot();
 		Super::PrepMoveFor(Character);
 		Movement->RestoreJumpSnapshot(ReplayStart);
+		// 게임플레이 이력은 보정 결과를 잇되, 연출 키는 원래 저장 이동의 것을 재사용한다.
+		Movement->AudioMoveId = AudioMoveId;
+		Movement->AudioAirborneId = AudioAirborneId;
 	}
 };
 
@@ -75,6 +85,50 @@ public:
 UShooterCharacterMovementComponent::UShooterCharacterMovementComponent()
 {
 	SetMoveResponseDataContainer(MoveResponse);
+	SetNetworkMoveDataContainer(AudioMoveData);
+}
+
+FShooterAudioMoveDataContainer::FShooterAudioMoveDataContainer()
+{
+	NewMoveData = &Moves[0];
+	PendingMoveData = &Moves[1];
+	OldMoveData = &Moves[2];
+}
+
+void FShooterAudioMoveData::ClientFillNetworkMoveData(const FSavedMove_Character& ClientMove, ENetworkMoveType MoveType)
+{
+	FCharacterNetworkMoveData::ClientFillNetworkMoveData(ClientMove, MoveType);
+	const auto& Move = static_cast<const FShooterSavedMove&>(ClientMove);
+	AudioMoveId = Move.AudioMoveId;
+	AudioAirborneId = Move.AudioAirborneId;
+}
+
+bool FShooterAudioMoveData::Serialize(UCharacterMovementComponent& Movement, FArchive& Ar,
+	UPackageMap* PackageMap, ENetworkMoveType MoveType)
+{
+	if (!FCharacterNetworkMoveData::Serialize(Movement, Ar, PackageMap, MoveType)) return false;
+	Ar.SerializeIntPacked(AudioMoveId);
+	Ar.SerializeIntPacked(AudioAirborneId);
+	return !Ar.IsError();
+}
+
+uint64 UShooterCharacterMovementComponent::GetMovementAudioEventId(bool bLanding) const
+{
+	const uint32 Id = bLanding ? AudioAirborneId : AudioMoveId;
+	return Id ? (uint64(Id) << 1) | uint64(bLanding) : 0;
+}
+
+void UShooterCharacterMovementComponent::MoveAutonomous(float ClientTimeStamp, float DeltaTime,
+	uint8 CompressedFlags, const FVector& NewAccel)
+{
+	const auto* Move = static_cast<const FShooterAudioMoveData*>(GetCurrentNetworkMoveData());
+	TGuardValue<bool> NetworkAudioGuard(bUsingNetworkAudioIds, Move != nullptr);
+	if (Move)
+	{
+		AudioMoveId = Move->AudioMoveId;
+		AudioAirborneId = Move->AudioAirborneId;
+	}
+	Super::MoveAutonomous(ClientTimeStamp, DeltaTime, CompressedFlags, NewAccel);
 }
 
 bool UShooterCharacterMovementComponent::HasCoyoteOpportunity() const
@@ -124,6 +178,12 @@ void UShooterCharacterMovementComponent::RestoreJumpSnapshot(const FShooterJumpS
 void UShooterCharacterMovementComponent::PrepareJumpInput(float DeltaTime)
 {
 	(void)DeltaTime;
+	if (CharacterOwner && !CharacterOwner->bClientUpdating && !bUsingNetworkAudioIds)
+	{
+		// 입력 판정이 SetMoveFor보다 먼저 호출된다. 키를 여기서 발급해 점프와 저장 이동이 공유한다.
+		AudioMoveId = ++NextAudioMoveId;
+		if (AudioMoveId == 0) AudioMoveId = ++NextAudioMoveId;
+	}
 	BeforeJumpInput = CaptureJumpSnapshot();
 	bFallingFirstJumpAttempt = CharacterOwner && CharacterOwner->bPressedJump
 		&& !CharacterOwner->bWasJumping && IsFalling() && CharacterOwner->JumpCurrentCount == 0;
@@ -225,6 +285,11 @@ void UShooterCharacterMovementComponent::StartFalling(int32 Iterations, float Re
 
 void UShooterCharacterMovementComponent::OnMovementModeChanged(EMovementMode PreviousMode, uint8 PreviousCustomMode)
 {
+	if (MovementMode == MOVE_Falling && PreviousMode != MOVE_Falling && !bUsingNetworkAudioIds
+		&& CharacterOwner && !CharacterOwner->bClientUpdating)
+	{
+		AudioAirborneId = AudioMoveId;
+	}
 	if (!bStartingNaturalFall || MovementMode != MOVE_Falling)
 	{
 		ResetCoyoteTime();

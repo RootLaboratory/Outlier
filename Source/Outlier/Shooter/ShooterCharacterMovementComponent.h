@@ -32,6 +32,22 @@ struct FShooterMoveResponse : FCharacterMoveResponseDataContainer
 	virtual bool Serialize(UCharacterMovementComponent& Movement, FArchive& Ar, UPackageMap* PackageMap) override;
 };
 
+/** 기존 packed 이동에 연출 식별자만 싣는다. 이동 성공/착지 판정은 서버가 그대로 수행한다. */
+struct FShooterAudioMoveData : FCharacterNetworkMoveData
+{
+	uint32 AudioMoveId = 0;
+	uint32 AudioAirborneId = 0;
+	virtual void ClientFillNetworkMoveData(const FSavedMove_Character& ClientMove, ENetworkMoveType MoveType) override;
+	virtual bool Serialize(UCharacterMovementComponent& Movement, FArchive& Ar, UPackageMap* PackageMap,
+		ENetworkMoveType MoveType) override;
+};
+
+struct FShooterAudioMoveDataContainer : FCharacterNetworkMoveDataContainer
+{
+	FShooterAudioMoveDataContainer();
+	FShooterAudioMoveData Moves[3];
+};
+
 UCLASS()
 class OUTLIER_API UShooterCharacterMovementComponent : public UCharacterMovementComponent
 {
@@ -39,6 +55,7 @@ class OUTLIER_API UShooterCharacterMovementComponent : public UCharacterMovement
 
 	friend class FShooterSavedMove;
 	friend class FShooterCoyoteTimeTest;
+	friend class FOutlierMovementAudioPredictionTest;
 	friend struct FShooterMoveResponse;
 
 public:
@@ -49,6 +66,8 @@ public:
 	void ResetCoyoteTime();
 	void PrepareJumpInput(float DeltaTime);
 	void FinishJumpInput();
+	/** 점프는 저장 이동, 착지는 공중 체류 회차를 사용해 서로 다른 착지 프레임도 같은 이벤트로 묶는다. */
+	uint64 GetMovementAudioEventId(bool bLanding) const;
 
 	virtual bool DoJump(bool bReplayingMoves, float DeltaTime) override;
 	virtual void PerformMovement(float DeltaSeconds) override;
@@ -63,6 +82,8 @@ public:
 	virtual void ClientHandleMoveResponse(const FCharacterMoveResponseDataContainer& MoveResponse) override;
 	virtual bool ClientUpdatePositionAfterServerUpdate() override;
 	virtual void UpdateFromCompressedFlags(uint8 Flags) override;
+	virtual void MoveAutonomous(float ClientTimeStamp, float DeltaTime, uint8 CompressedFlags,
+		const FVector& NewAccel) override;
 	virtual void ServerMoveHandleClientError(float ClientTimeStamp, float DeltaTime, const FVector& Accel,
 		const FVector& RelativeClientLocation, UPrimitiveComponent* ClientMovementBase,
 		FName ClientBaseBoneName, uint8 ClientMovementMode) override;
@@ -79,6 +100,11 @@ private:
 	FShooterJumpSnapshot BeforeJumpInput;
 	FShooterJumpSnapshot PendingServerSnapshot;
 	FShooterMoveResponse MoveResponse;
+	FShooterAudioMoveDataContainer AudioMoveData;
+	uint32 NextAudioMoveId = 0;
+	uint32 AudioMoveId = 0;
+	uint32 AudioAirborneId = 0;
+	bool bUsingNetworkAudioIds = false;
 	bool bFallingFirstJumpAttempt = false;
 	bool bCoyoteJumpAttempt = false;
 	bool bJumpSucceeded = false;

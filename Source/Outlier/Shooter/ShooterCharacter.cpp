@@ -522,6 +522,7 @@ void AShooterCharacter::Tick(float DeltaSeconds)
 
 void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	if (MovementAudioSubsystem) MovementAudioSubsystem->ClearPredictedMovementAudio(this);
 	OutlierAudioFeedback::StopLoops(this);
 	InitializeAutoAimLocalView(nullptr);
 	CancelSuitTransition();
@@ -582,6 +583,7 @@ void AShooterCharacter::PossessedBy(AController* NewController)
 
 void AShooterCharacter::UnPossessed()
 {
+	if (MovementAudioSubsystem) MovementAudioSubsystem->ClearPredictedMovementAudio(this);
 	InitializeAutoAimLocalView(nullptr);
 	AutoAimViewReceivedAt = -1.0;
 	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->ResetCoyoteTime();
@@ -596,6 +598,7 @@ void AShooterCharacter::UnPossessed()
 
 void AShooterCharacter::OnRep_Controller()
 {
+	if (MovementAudioSubsystem) MovementAudioSubsystem->ClearPredictedMovementAudio(this);
 	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->ResetCoyoteTime();
 	Super::OnRep_Controller();
 	RefreshLowHPAudio();
@@ -863,6 +866,7 @@ void AShooterCharacter::HandleDeadTagChanged(const FGameplayTag Tag, int32 NewCo
 	(void)Tag;
 	if (NewCount > 0)
 	{
+		if (MovementAudioSubsystem) MovementAudioSubsystem->ClearPredictedMovementAudio(this);
 		OutlierAudioFeedback::StopLoops(this);
 		CancelActiveQuantumLeap(false);
 		if (OutlierAbilitySystemComponent)
@@ -1546,8 +1550,8 @@ void AShooterCharacter::Landed(const FHitResult& Hit)
 {
 	Super::Landed(Hit);
 
-	// 예측 Landed에서는 재생하지 않는다. 서버가 사운드를 한 번 선택하고 시각 효과만 별도로 전달한다.
-	if (HasAuthority() && Hit.bBlockingHit && !IsDead())
+	// 소유자는 실제 로컬 착지에서 먼저 요청한다. 서버/원격은 같은 공중 체류 키로 확정음을 전달한다.
+	if ((HasAuthority() || IsLocallyControlled()) && Hit.bBlockingHit && !IsDead())
 	{
 		FHitResult SurfaceHit = Hit;
 		if (!Hit.PhysMaterial.IsValid())
@@ -1579,11 +1583,14 @@ void AShooterCharacter::Landed(const FHitResult& Hit)
 		if (MovementAudioSubsystem)
 		{
 			// 착지 사운드와 시각 효과가 같은 표면 후보를 사용한다.
-			MovementAudioSubsystem->PlaySurfaceAtLocationFromServer(this,
-				OutlierAudioFeedback::Tag(TEXT("Audio.Type.Player")),
-				LandingContext, Surface, Hit.ImpactPoint);
+			const auto* Movement = CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement());
+			MovementAudioSubsystem->PlayMovementSurfaceAudio(this, LandingContext, Surface,
+				Hit.ImpactPoint, Movement->GetMovementAudioEventId(true));
 		}
-		MulticastPlayLandingEffects(static_cast<uint8>(Surface), Hit.ImpactPoint, Hit.ImpactNormal, LandingContext);
+		if (HasAuthority())
+		{
+			MulticastPlayLandingEffects(static_cast<uint8>(Surface), Hit.ImpactPoint, Hit.ImpactNormal, LandingContext);
+		}
 	}
 
 	if (IsSliding())
@@ -1670,8 +1677,8 @@ void AShooterCharacter::CheckJumpInput(float DeltaTime)
 	Super::CheckJumpInput(DeltaTime);
 	JumpMovement->FinishJumpInput();
 
-	// 입력 예약이나 실패에는 재생하지 않는다. 서버에서 새 점프가 실제로 성공한 경우만 요청한다.
-	if (HasAuthority() && bWasJumping && JumpCurrentCount > PreviousJumpCount && MovementAudioSubsystem)
+	// 입력 예약/실패에는 재생하지 않는다. 보정 재생은 저장 이동 키를 재사용하므로 같은 소리를 반복하지 않는다.
+	if ((HasAuthority() || IsLocallyControlled()) && bWasJumping && JumpCurrentCount > PreviousJumpCount && MovementAudioSubsystem)
 	{
 		const UCapsuleComponent* Capsule = GetCapsuleComponent();
 		const FVector FootLocation = Capsule->GetComponentLocation()
@@ -1699,9 +1706,9 @@ void AShooterCharacter::CheckJumpInput(float DeltaTime)
 				Surface = UPhysicalMaterial::DetermineSurfaceType(SurfaceHit.PhysMaterial.Get());
 			}
 		}
-		MovementAudioSubsystem->PlaySurfaceAtLocationFromServer(this,
-			OutlierAudioFeedback::Tag(TEXT("Audio.Type.Player")),
-			OutlierAudioFeedback::Tag(TEXT("Audio.Context.Player.01.Movement.Jump")), Surface, FootLocation);
+		MovementAudioSubsystem->PlayMovementSurfaceAudio(this,
+			OutlierAudioFeedback::Tag(TEXT("Audio.Context.Player.01.Movement.Jump")), Surface, FootLocation,
+			JumpMovement->GetMovementAudioEventId(false));
 	}
 
 	// Jump()는 입력만 예약한다. 엔진이 실제 점프에 성공해 횟수를 1에서 2로 올린 뒤 서버에서만 알린다.

@@ -92,6 +92,10 @@ public:
 		EPhysicalSurface Surface, const FVector& Location, USoundDefinition* LegacySound = nullptr);
 	bool PlaySurfaceAtLocationLocally(AActor* Emitter, FGameplayTag Type, FGameplayTag Context,
 		EPhysicalSurface Surface, const FVector& Location);
+	/** 소유자 예측과 서버 확정을 같은 저장 이동 키로 연결한다. 원격은 기존 Relevant 전달을 사용한다. */
+	bool PlayMovementSurfaceAudio(AActor* Emitter, FGameplayTag Context, EPhysicalSurface Surface,
+		const FVector& Location, uint64 EventId);
+	void ClearPredictedMovementAudio(AActor* Emitter);
 	bool IsAnimationAudioSource(USkeletalMeshComponent* Mesh, bool bWorldMeshOnly) const;
 	void SetAnimationAudioLoop(USkeletalMeshComponent* Mesh, FGameplayTag Type, FGameplayTag Context,
 		bool bEnabled, bool bWorldMeshOnly, bool bTwoD = false);
@@ -170,6 +174,31 @@ public:
 
 private:
 	struct FRuntimeCatalogEntry;
+	friend class FOutlierMovementAudioPredictionTest;
+	struct FMovementAudioKey
+	{
+		TWeakObjectPtr<AActor> Emitter;
+		uint64 EventId = 0;
+		bool operator==(const FMovementAudioKey& Other) const { return Emitter == Other.Emitter && EventId == Other.EventId; }
+		friend uint32 GetTypeHash(const FMovementAudioKey& Key)
+		{
+			return HashCombine(GetTypeHash(Key.Emitter), GetTypeHash(Key.EventId));
+		}
+	};
+	enum class EMovementAudioState : uint8 { Pending, Played, Failed };
+	struct FMovementAudioRecord
+	{
+		uint64 Token = 0;
+		EMovementAudioState State = EMovementAudioState::Pending;
+		bool bServerOwned = false;
+	};
+	TMap<FMovementAudioKey, FMovementAudioRecord> MovementAudioRecords;
+	TArray<FMovementAudioKey> MovementAudioOrder;
+	uint64 NextMovementPlaybackToken = 0;
+	FMovementAudioRecord& BeginMovementAudio(const FMovementAudioKey& Key, bool bServerOwned);
+	bool IsMovementPlaybackCurrent(AActor* Emitter, uint64 EventId, uint64 Token) const;
+	void FinishMovementPlayback(AActor* Emitter, uint64 EventId, uint64 Token, bool bPlayed);
+	bool PrepareDeliveredMovementAudio(FOutlierResolvedAudioPlay& Play);
 	friend class FOutlierSurfaceAudioSelectionTest;
 	friend class FOutlierMusicPreloadTest;
 	struct FMusicPreloadRequest
@@ -288,6 +317,9 @@ private:
 
 	struct FPendingPlay
 	{
+		TWeakObjectPtr<AActor> MovementAudioEmitter;
+		uint64 MovementAudioEventId = 0;
+		uint64 MovementPlaybackToken = 0;
 		bool bPlayWhenPaused = false;
 		TWeakObjectPtr<UWorld> World;
 		FString SourceName;

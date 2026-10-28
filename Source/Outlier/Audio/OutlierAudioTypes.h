@@ -168,6 +168,11 @@ struct OUTLIER_API FOutlierAudioPlayRequest
 	/** 비동기 Bank 대기 중 월드가 바뀐 요청을 폐기하기 위한 로컬 정보. */
 	TWeakObjectPtr<UWorld> OriginWorld;
 
+	/** 점프/착지의 저장 이동 식별자. 음원 선택이나 게임플레이 판정에는 사용하지 않는다. */
+	UPROPERTY()
+	uint64 MovementAudioEventId = 0;
+	uint64 MovementPlaybackToken = 0;
+
 	/** 실제 사운드 재생 주체. 소유권 검증, 기본 위치, 네트워크 관련성 판단에 사용한다. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Audio")
 	TObjectPtr<AActor> EmitterActor = nullptr;
@@ -194,6 +199,13 @@ USTRUCT(BlueprintType)
 struct OUTLIER_API FOutlierResolvedAudioPlay
 {
 	GENERATED_BODY()
+
+	UPROPERTY()
+	TObjectPtr<AActor> MovementAudioEmitter = nullptr;
+	UPROPERTY()
+	uint64 MovementAudioEventId = 0;
+	/** 로컬 대기 요청의 교체를 확인하는 값이며 네트워크로 전송하지 않는다. */
+	uint64 MovementPlaybackToken = 0;
 
 	/** 기존 소유자 오디오 경로로 전달할 BGM Context. */
 	UPROPERTY(BlueprintReadOnly, Category = "Audio")
