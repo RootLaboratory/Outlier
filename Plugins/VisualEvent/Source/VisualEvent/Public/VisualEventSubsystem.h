@@ -5,6 +5,8 @@
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "VisualEventType.h"
+#include "GameplayTagContainer.h"
+#include "VisualEventSettings.h"
 #include "VisualEventSubsystem.generated.h"
 
 
@@ -16,6 +18,22 @@ class UProjectionMarkDefinition;
 class UTrailEffectDefinition;
 class USoundDefinition;
 class UDecalComponent;
+struct FStreamableHandle;
+
+USTRUCT()
+struct FPendingTaggedVisualEvent
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TArray<FGameplayTag> Contexts;
+	UPROPERTY()
+	FVector Location = FVector::ZeroVector;
+	UPROPERTY()
+	FRotator Rotation = FRotator::ZeroRotator;
+	UPROPERTY()
+	FVisualEventSet Fallback;
+};
 
 UCLASS()
 class VISUALEVENT_API UVisualEventSubsystem : public UWorldSubsystem
@@ -26,6 +44,14 @@ public:
 
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
+
+	// 사운드는 Audio Subsystem이 처리하며 여기서는 데칼/VFX만 독립적으로 선택한다.
+	UFUNCTION(BlueprintCallable, Category = "Visual Event")
+	void PlayTaggedEffectsAtLocation(const TArray<FGameplayTag>& Contexts, const FVector& Location,
+		const FRotator& Rotation, const FVisualEventSet& Fallback);
+
+	static FVisualEventSet ResolveTaggedEffects(const TArray<FGameplayTag>& Contexts,
+		const TMap<FGameplayTag, FVisualEventSet>& Definitions, const FVisualEventSet& Fallback);
 
 public:
 
@@ -58,6 +84,21 @@ public:
 	void SpawnEffectAtLocation(const UTrailEffectDefinition* Def, const FVector& Location, const FRotator& Rotation);
 
 private:
+	void FinishLoadingTaggedEffects();
+
+	UPROPERTY(Transient)
+	TMap<FGameplayTag, FTaggedVisualEventDefinition> TaggedDefinitions;
+
+	UPROPERTY(Transient)
+	TMap<FGameplayTag, FVisualEventSet> LoadedTaggedEffects;
+
+	UPROPERTY(Transient)
+	TArray<FPendingTaggedVisualEvent> PendingTaggedEffects;
+
+	TSharedPtr<FStreamableHandle> TaggedEffectsLoadHandle;
+	bool bTaggedEffectsLoading = false;
+	bool bAcceptTaggedEffects = false;
+
 	static constexpr int32 MaxActiveMarks = 128;
 	TArray<TWeakObjectPtr<UDecalComponent>> ActiveMarks;
 

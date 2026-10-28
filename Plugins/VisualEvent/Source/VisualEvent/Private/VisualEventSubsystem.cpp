@@ -11,16 +11,157 @@
 #include "Niagara/Public/NiagaraComponent.h"
 #include "Niagara/Classes/NiagaraSystem.h"
 #include "Niagara/Public/NiagaraFunctionLibrary.h"
+#include "Engine/AssetManager.h"
+#include "Engine/StreamableManager.h"
+#include "Engine/World.h"
 
 void UVisualEventSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
-    
-	//UE_LOG(LogTemp, Error, TEXT("WORLDSUBSYSTEM Initalize"));
+	Super::Initialize(Collection);
+	bAcceptTaggedEffects = GetWorld() && GetWorld()->GetNetMode() != NM_DedicatedServer;
+	if (!bAcceptTaggedEffects)
+	{
+		return;
+	}
+
+	TaggedDefinitions = GetDefault<UVisualEventSettings>()->TaggedEffects;
+	TArray<FSoftObjectPath> Paths;
+	for (const TPair<FGameplayTag, FTaggedVisualEventDefinition>& Entry : TaggedDefinitions)
+	{
+		if (!Entry.Value.DecalDef.IsNull())
+		{
+			Paths.AddUnique(Entry.Value.DecalDef.ToSoftObjectPath());
+		}
+		if (!Entry.Value.TrailEffectDef.IsNull())
+		{
+			Paths.AddUnique(Entry.Value.TrailEffectDef.ToSoftObjectPath());
+		}
+	}
+
+	// 로딩 중인 참조는 NULL 설정과 구분한다. 완료 전 요청은 보관하고 월드 종료 시 폐기한다.
+	if (!Paths.IsEmpty())
+	{
+		bTaggedEffectsLoading = true;
+		TaggedEffectsLoadHandle = UAssetManager::GetStreamableManager().RequestAsyncLoad(Paths,
+			FStreamableDelegate::CreateUObject(this, &UVisualEventSubsystem::FinishLoadingTaggedEffects));
+		if (!TaggedEffectsLoadHandle.IsValid())
+		{
+			FinishLoadingTaggedEffects();
+		}
+	}
 }
 
 void UVisualEventSubsystem::Deinitialize()
 {
+	bAcceptTaggedEffects = false;
+	bTaggedEffectsLoading = false;
+	if (TaggedEffectsLoadHandle.IsValid())
+	{
+		TaggedEffectsLoadHandle->CancelHandle();
+		TaggedEffectsLoadHandle.Reset();
+	}
+	PendingTaggedEffects.Reset();
+	LoadedTaggedEffects.Reset();
+	TaggedDefinitions.Reset();
 	ActiveMarks.Reset();
+	Super::Deinitialize();
+}
+
+void UVisualEventSubsystem::FinishLoadingTaggedEffects()
+{
+	if (!bAcceptTaggedEffects)
+	{
+		return;
+	}
+
+	// Definition과 내부 hard reference는 UPROPERTY 캐시에 남겨 GC 이후에도 재사용한다.
+	for (const TPair<FGameplayTag, FTaggedVisualEventDefinition>& Entry : TaggedDefinitions)
+	{
+		FVisualEventSet& Loaded = LoadedTaggedEffects.Add(Entry.Key);
+		Loaded.DecalDef = Entry.Value.DecalDef.Get();
+		Loaded.TrailEffectDef = Entry.Value.TrailEffectDef.Get();
+		if ((!Entry.Value.DecalDef.IsNull() && !Loaded.DecalDef)
+			|| (!Entry.Value.TrailEffectDef.IsNull() && !Loaded.TrailEffectDef))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("Visual Event asset load failed for Context %s; using fallback."),
+				*Entry.Key.ToString());
+		}
+	}
+	bTaggedEffectsLoading = false;
+
+	// 재생을 마칠 때까지 대기 요청의 기존 효과도 UPROPERTY로 유지한다.
+	for (const FPendingTaggedVisualEvent& Request : PendingTaggedEffects)
+	{
+		PlayTaggedEffectsAtLocation(Request.Contexts, Request.Location, Request.Rotation, Request.Fallback);
+	}
+	PendingTaggedEffects.Reset();
+}
+
+FVisualEventSet UVisualEventSubsystem::ResolveTaggedEffects(const TArray<FGameplayTag>& Contexts,
+	const TMap<FGameplayTag, FVisualEventSet>& Definitions, const FVisualEventSet& Fallback)
+{
+	FVisualEventSet Result;
+	auto FillMissingEffects = [&Result](const FVisualEventSet& Candidate)
+	{
+		if (!Result.DecalDef && Candidate.DecalDef && Candidate.DecalDef->DecalMaterial)
+		{
+			Result.DecalDef = Candidate.DecalDef;
+		}
+		if (!Result.TrailEffectDef && Candidate.TrailEffectDef && Candidate.TrailEffectDef->FXAsset)
+		{
+			Result.TrailEffectDef = Candidate.TrailEffectDef;
+		}
+	};
+
+	// 표면 → 명시적 Default → 기준 Context 순서. 데칼과 VFX는 서로 다른 단계에서 보완될 수 있다.
+	for (const FGameplayTag& Context : Contexts)
+	{
+		if (const FVisualEventSet* Candidate = Definitions.Find(Context))
+		{
+			FillMissingEffects(*Candidate);
+		}
+		if (Result.DecalDef && Result.TrailEffectDef)
+		{
+			break;
+		}
+	}
+	FillMissingEffects(Fallback);
+	return Result;
+}
+
+void UVisualEventSubsystem::PlayTaggedEffectsAtLocation(const TArray<FGameplayTag>& Contexts,
+	const FVector& Location, const FRotator& Rotation, const FVisualEventSet& Fallback)
+{
+	if (!bAcceptTaggedEffects || !GetWorld() || GetWorld()->GetNetMode() == NM_DedicatedServer)
+	{
+		return;
+	}
+	if (bTaggedEffectsLoading)
+	{
+		// 초기 로딩이 길어져도 일회성 효과가 무한히 쌓이지 않도록 최근 요청만 남긴다.
+		static constexpr int32 MaxPendingTaggedEffects = 128;
+		if (PendingTaggedEffects.Num() >= MaxPendingTaggedEffects)
+		{
+			PendingTaggedEffects.RemoveAt(0, 1, EAllowShrinking::No);
+		}
+		FPendingTaggedVisualEvent& Pending = PendingTaggedEffects.AddDefaulted_GetRef();
+		Pending.Contexts = Contexts;
+		Pending.Location = Location;
+		Pending.Rotation = Rotation;
+		Pending.Fallback = Fallback;
+		Pending.Fallback.SoundDef = nullptr;
+		return;
+	}
+
+	const FVisualEventSet Effects = ResolveTaggedEffects(Contexts, LoadedTaggedEffects, Fallback);
+	if (Effects.DecalDef)
+	{
+		SpawnMarkAtLocation(Effects.DecalDef, Location, Rotation);
+	}
+	if (Effects.TrailEffectDef)
+	{
+		SpawnEffectAtLocation(Effects.TrailEffectDef, Location, Rotation);
+	}
 }
 
 void UVisualEventSubsystem::SpawnMarkAtLocation(UProjectionMarkDefinition* Def, FVector Location, FRotator Rotation)
