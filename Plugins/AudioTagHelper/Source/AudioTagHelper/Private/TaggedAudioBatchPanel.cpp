@@ -37,9 +37,12 @@ void STaggedAudioBatchPanel::Construct(const FArguments& InArgs)
 			+ SVerticalBox::Slot().AutoHeight().Padding(0, 6)
 			[
 				SNew(STextBlock).AutoWrapText(true).Text(FText::FromString(TEXT(
-					"Content Browser에서 대상 Sequence/Montage를 여러 개 선택하세요. 발걸음은 기본 설정으로 3P에 배치합니다. "
+					"Content Browser에서 대상 애니메이션을 여러 개 선택하세요. 기본 모드는 각 Sequence의 L/R 마커에 발걸음을 배치합니다. "
+					"기존 위치만 정렬하려면 해당 모드를 선택하세요. 지정 트랙/Type/Context의 기존 단발 Notify를 시간순으로 대응합니다. "
+					"MakeNoise 등은 '이름으로 기존 Notify만 L/R에 정렬'에서 이름을 지정하세요. 대상 트랙이 None이면 전체 트랙에서 찾습니다. "
+					"기존 Notify와 마커 개수가 다르거나 좌우 대응이 불분명하면 건너뜁니다. 발걸음은 3P에 배치합니다. "
 					"재장전은 Query Surface를 끄고 메시 정책을 설정하세요. 점프·착지·발사·슬라이딩은 상태 코드가 처리합니다. "
-					"기존 AI 소음·탄창 처리·카메라 Notify는 변경하지 않습니다. 복사는 TaggedAudio 설정과 시점만 사용합니다.")))
+					"이름 정렬은 선택한 Notify의 시간만 옮기고 기존 동작과 설정은 유지합니다. 복사는 TaggedAudio 설정과 시점만 사용합니다.")))
 			]
 			+ SVerticalBox::Slot().AutoHeight()[Details]
 			+ SVerticalBox::Slot().AutoHeight().Padding(0, 6)
@@ -101,8 +104,8 @@ FReply STaggedAudioBatchPanel::ApplyPreview()
 			+ TaggedAudioBatch::Describe(PreviewRows)));
 		return FReply::Handled();
 	}
-	const int32 Added = TaggedAudioBatch::Apply(*Settings, CurrentRows);
-	PreviewText->SetText(FText::FromString(FString::Printf(TEXT("%d개 추가했습니다. Ctrl+Z로 되돌릴 수 있습니다. 변경된 애니메이션은 확인 후 저장하세요.\n"), Added)
+	const int32 Changed = TaggedAudioBatch::Apply(*Settings, CurrentRows);
+	PreviewText->SetText(FText::FromString(FString::Printf(TEXT("%d개 추가/이동했습니다. Ctrl+Z로 되돌릴 수 있습니다. 변경된 애니메이션은 확인 후 저장하세요.\n"), Changed)
 		+ TaggedAudioBatch::Describe(CurrentRows)));
 	bHasPreview = false;
 	return FReply::Handled();
