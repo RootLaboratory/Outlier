@@ -22,6 +22,7 @@
 #include "Sound/SoundBase.h"
 #include "TimerManager.h"
 #include "Containers/Ticker.h"
+#include "Misc/ScopeExit.h"
 
 namespace
 {
@@ -261,6 +262,7 @@ void UOutlierAudioSubsystem::StopLocalVoices(ULocalPlayer* Listener)
 
 void UOutlierAudioSubsystem::HandleVoiceWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources)
 {
+	ReleaseMusicPreloadsForWorld(World);
 	for (auto& Pair : PendingPlaysByType)
 	{
 		Pair.Value.RemoveAll([World](const auto& Item) { return Item.Key.OriginWorld.Get() == World; });
@@ -289,6 +291,7 @@ void UOutlierAudioSubsystem::HandleVoiceWorldCleanup(UWorld* World, bool bSessio
 
 void UOutlierAudioSubsystem::Deinitialize()
 {
+	ClearMusicPreloads();
 	FWorldDelegates::OnWorldTickStart.Remove(AudioWorldTickHandle);
 	WorldPausedAudioComponents.Reset();
 	RequestMusic(FGameplayTag());
@@ -345,6 +348,8 @@ void UOutlierAudioSubsystem::Deinitialize()
 
 bool UOutlierAudioSubsystem::ReloadCatalog()
 {
+	// 이전 카탈로그의 선로드 요청은 해제한다. 호출자는 새 카탈로그에 다시 요청해야 한다.
+	ClearMusicPreloads();
 	for (auto& Pair : LocalEmitterLoops)
 	{
 		StopLoopAudioLocally(Pair.Value.InstanceId);
@@ -384,6 +389,16 @@ bool UOutlierAudioSubsystem::ReloadCatalog()
 
 void UOutlierAudioSubsystem::DiscoverAudioBanks()
 {
+	bBankDiscoveryComplete = false;
+	ON_SCOPE_EXIT
+	{
+		// 발견 자체가 실패한 경우에도 선로드 요청을 무기한 대기시키지 않는다.
+		if (!BankMetadataLoadHandle.IsValid())
+		{
+			bBankDiscoveryComplete = true;
+			ResumeMusicPreloads();
+		}
+	};
 	UAssetManager* AssetManager = UAssetManager::GetIfInitialized();
 	if (!AssetManager)
 	{
@@ -423,6 +438,11 @@ void UOutlierAudioSubsystem::DiscoverAudioBanks()
 void UOutlierAudioSubsystem::HandleBankMetadataLoaded(TArray<FPrimaryAssetId> BankIds)
 {
 	BankMetadataLoadHandle.Reset();
+	ON_SCOPE_EXIT
+	{
+		bBankDiscoveryComplete = true;
+		ResumeMusicPreloads();
+	};
 
 	UAssetManager* AssetManager = UAssetManager::GetIfInitialized();
 	if (!AssetManager)
@@ -694,6 +714,7 @@ void UOutlierAudioSubsystem::IngestBank(UOutlierAudioBank* Bank)
 
 void UOutlierAudioSubsystem::FlushPendingPlaysForType(FGameplayTag TypeTag)
 {
+	if (TypeTag == FGameplayTag::RequestGameplayTag(TEXT("Audio.Type.BGM"))) ResumeMusicPreloads();
 	TArray<TPair<FOutlierAudioPlayRequest, FOutlierAudioExecutionPolicy>> Pending;
 	PendingPlaysByType.RemoveAndCopyValue(TypeTag, Pending);
 

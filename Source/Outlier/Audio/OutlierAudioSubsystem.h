@@ -21,6 +21,16 @@ DECLARE_MULTICAST_DELEGATE_TwoParams(FOnOutlierVoiceStarted, ULocalPlayer*, FGam
 DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnOutlierVoiceFinished, ULocalPlayer*, FGameplayTag, bool);
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnOutlierVoiceUnavailable, ULocalPlayer*, FGameplayTag);
 
+/** Ready는 음원 객체의 로드 완료다. 스트리밍 청크의 준비 완료까지 보장하지 않는다. */
+enum class EOutlierMusicPreloadState : uint8
+{
+	Waiting,
+	Loading,
+	Ready,
+	Failed,
+	Released
+};
+
 /**
  * 오디오 재생 요청(Type + Context)에 맞는 사운드를 Audio Bank에서 선택하고,
  * 비동기로 로드한 뒤 현재 게임 월드에서 재생한다.
@@ -44,6 +54,13 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Outlier|Audio")
 	bool IsCatalogReady() const { return CatalogEntriesByType.Num() > 0; }
+
+	/** 월드 수명에 묶인 BGM 선로드 요청. 반환값 0은 요청 거절이며, 호출자가 해제 책임을 가진다. */
+	uint64 RequestMusicPreload(UWorld* World, const TArray<FGameplayTag>& Contexts);
+	/** 알 수 없거나 카탈로그 재로드/월드 정리로 해제된 요청은 Released를 반환한다. */
+	EOutlierMusicPreloadState GetMusicPreloadState(uint64 RequestId) const;
+	/** 마지막 선로드 사용자의 참조만 해제하며 현재 음악 재생은 중단하지 않는다. */
+	void ReleaseMusicPreload(uint64 RequestId);
 
 	/** 입력 및 UI 피드백에 사용하는 로컬 전용 2D 재생. */
 	bool PlayLocal2D(const FOutlierAudioPlayRequest& Request);
@@ -154,6 +171,36 @@ public:
 private:
 	struct FRuntimeCatalogEntry;
 	friend class FOutlierSurfaceAudioSelectionTest;
+	friend class FOutlierMusicPreloadTest;
+	struct FMusicPreloadRequest
+	{
+		TWeakObjectPtr<UWorld> World;
+		TArray<FGameplayTag> Contexts;
+		TSet<FSoftObjectPath> SoundPaths;
+		EOutlierMusicPreloadState State = EOutlierMusicPreloadState::Waiting;
+		bool bMissingContext = false;
+	};
+	struct FMusicPreloadSound
+	{
+		TSharedPtr<FStreamableHandle> Handle;
+		uint64 Serial = 0;
+		int32 Users = 0;
+		bool bComplete = false;
+		bool bFailed = false;
+	};
+	TMap<uint64, FMusicPreloadRequest> MusicPreloadRequests;
+	TMap<FSoftObjectPath, FMusicPreloadSound> MusicPreloadSounds;
+	UPROPERTY(Transient)
+	TMap<FSoftObjectPath, TObjectPtr<USoundBase>> RetainedMusicPreloadSounds;
+	uint64 NextMusicPreloadRequestId = 0;
+	uint64 NextMusicPreloadSoundSerial = 0;
+	bool bBankDiscoveryComplete = false;
+	bool bResumingMusicPreloads = false;
+	void ResumeMusicPreloads();
+	void AcquireMusicPreloadSound(const FSoftObjectPath& Path);
+	void HandleMusicPreloadSoundLoaded(FSoftObjectPath Path, uint64 Serial);
+	void ReleaseMusicPreloadsForWorld(UWorld* World);
+	void ClearMusicPreloads();
 	TMap<FGameplayTag, FOutlierSurfaceContextMapping> SurfaceContextMappings;
 	TMap<TWeakObjectPtr<USkeletalMeshComponent>, TSet<FGameplayTag>> AnimationAudioTokens;
 	TWeakObjectPtr<UWorld> SurfaceVisualWorld;
