@@ -41,17 +41,36 @@ bool FOutlierSurfaceAudioSelectionTest::RunTest(const FString& Parameters)
 		const FGameplayTag EventPlastic = Tag(*(EventPrefix + TEXT(".Plastic")));
 		const FGameplayTag EventMetal = Tag(*(EventPrefix + TEXT(".Metal")));
 		const FGameplayTag EventMarble = Tag(*(EventPrefix + TEXT(".Marble")));
+		const bool bMovement = EventPrefix.StartsWith(TEXT("Audio.Context.Player.01.Movement."));
+		const TCHAR* SurfaceNames[] = { TEXT("Plastic"), TEXT("Marble"), TEXT("Metal"), TEXT("Glass"),
+			TEXT("Plastic"), TEXT("Fabric"), TEXT("Plant"), TEXT("Paper") };
 		for (EPhysicalSurface Surface : { SurfaceType_Default, SurfaceType1, SurfaceType2, SurfaceType3,
 			SurfaceType4, SurfaceType5, SurfaceType6, SurfaceType7, SurfaceType_Max })
 		{
 			Audio->GetSurfaceContextCandidates(Event, Surface, Candidates);
 			const bool bMeleeGlass = EventPrefix.EndsWith(TEXT("Melee.Hit")) && Surface == SurfaceType3;
-			const FGameplayTag Expected = Surface == SurfaceType1 ? EventMarble : Surface == SurfaceType2 ? EventMetal
+			const FGameplayTag Expected = bMovement && Surface >= SurfaceType1 && Surface <= SurfaceType7
+				? Tag(*(EventPrefix + TEXT(".") + SurfaceNames[Surface]))
+				: Surface == SurfaceType1 ? EventMarble : Surface == SurfaceType2 ? EventMetal
 				: bMeleeGlass ? Tag(*(EventPrefix + TEXT(".Glass"))) : EventPlastic;
 			TestEqual(TEXT("Event selects its configured surface or Plastic"), Candidates[0], Expected);
 			TestTrue(TEXT("Every event retains its own Plastic fallback"), Candidates.Contains(EventPlastic));
+			Audio->GetSurfaceContextCandidates(EventPlastic, Surface, Candidates);
+			TestEqual(TEXT("Plastic alias selects the same surface as its event"), Candidates[0], Expected);
+			if (bMovement)
+			{
+				// 새 표면 태그에 음원을 아직 연결하지 않은 경우에도 같은 행동의 기본음을 사용한다.
+				UOutlierAudioSubsystem::FRuntimeCatalogEntry DefaultEntry;
+				DefaultEntry.RequiredContext = EventPlastic;
+				DefaultEntry.Sound = NewObject<USoundWave>();
+				Audio->CatalogEntriesByType.FindOrAdd(Type) = { DefaultEntry };
+				const auto* Fallback = Audio->ResolveOrderedEntry(Type, Candidates);
+				TestTrue(TEXT("Unconfigured movement surface sound inherits its event Plastic"),
+					Fallback && Fallback->RequiredContext == EventPlastic);
+			}
 		}
 	}
+	Audio->CatalogEntriesByType.Reset();
 	Audio->GetSurfaceContextCandidates(Base, SurfaceType1, Candidates);
 	TestEqual(TEXT("Rifle Marble uses its registered Context"), Candidates[0], Marble);
 	const FGameplayTag Pistol = Tag(TEXT("Audio.Context.Player.01.Type.Pistol.Hit"));
