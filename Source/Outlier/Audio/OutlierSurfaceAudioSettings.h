@@ -14,11 +14,23 @@ struct OUTLIER_API FOutlierSurfaceContextMapping
 	UPROPERTY(EditAnywhere, Category = "Surface", meta = (Categories = "Audio.Context"))
 	FGameplayTag DefaultContext;
 	UPROPERTY(EditAnywhere, Category = "Surface", meta = (Categories = "Audio.Context"))
-	FGameplayTag NoneMetalContext;
+	FGameplayTag MarbleContext;
 	UPROPERTY(EditAnywhere, Category = "Surface", meta = (Categories = "Audio.Context"))
 	FGameplayTag MetalContext;
 	UPROPERTY(EditAnywhere, Category = "Surface", meta = (Categories = "Audio.Context"))
 	FGameplayTag GlassContext;
+	UPROPERTY(EditAnywhere, Category = "Surface", meta = (Categories = "Audio.Context"))
+	FGameplayTag PlasticContext;
+	UPROPERTY(EditAnywhere, Category = "Surface", meta = (Categories = "Audio.Context"))
+	FGameplayTag FabricContext;
+	UPROPERTY(EditAnywhere, Category = "Surface", meta = (Categories = "Audio.Context"))
+	FGameplayTag PlantContext;
+	UPROPERTY(EditAnywhere, Category = "Surface", meta = (Categories = "Audio.Context"))
+	FGameplayTag PaperContext;
+
+	/** 이전 설정을 읽기 위한 호환 필드. MarbleContext가 없을 때만 SurfaceType1에 사용한다. */
+	UPROPERTY()
+	FGameplayTag NoneMetalContext;
 
 	void GetCandidates(EPhysicalSurface Surface, TArray<FGameplayTag>& OutContexts) const;
 };

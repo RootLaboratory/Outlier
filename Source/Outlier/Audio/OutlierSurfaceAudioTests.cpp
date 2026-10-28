@@ -17,6 +17,7 @@ bool FOutlierSurfaceAudioSelectionTest::RunTest(const FString& Parameters)
 	const FGameplayTag Base = Tag(TEXT("Audio.Context.Player.01.Type.Rifle.Hit"));
 	const FGameplayTag Plastic = Tag(TEXT("Audio.Context.Player.01.Type.Rifle.Hit.Plastic"));
 	const FGameplayTag Metal = Tag(TEXT("Audio.Context.Player.01.Type.Rifle.Hit.Metal"));
+	const FGameplayTag Marble = Tag(TEXT("Audio.Context.Player.01.Type.Rifle.Hit.Marble"));
 	const FGameplayTag Glass = Tag(TEXT("Audio.Context.Player.01.Type.Rifle.Hit.Glass"));
 	const FGameplayTag Other = Tag(TEXT("Audio.Context.Player.01.Type.Pistol.Hit.Plastic"));
 	UOutlierAudioSubsystem* Audio = NewObject<UOutlierAudioSubsystem>(NewObject<UGameInstance>());
@@ -39,22 +40,23 @@ bool FOutlierSurfaceAudioSelectionTest::RunTest(const FString& Parameters)
 		const FString EventPrefix(EventName);
 		const FGameplayTag EventPlastic = Tag(*(EventPrefix + TEXT(".Plastic")));
 		const FGameplayTag EventMetal = Tag(*(EventPrefix + TEXT(".Metal")));
-		TestTrue(TEXT("Marble tag is registered without changing Surface Types"),
-			Tag(*(EventPrefix + TEXT(".Marble"))).IsValid());
-		for (EPhysicalSurface Surface : { SurfaceType_Default, SurfaceType1, SurfaceType2, SurfaceType3, SurfaceType_Max })
+		const FGameplayTag EventMarble = Tag(*(EventPrefix + TEXT(".Marble")));
+		for (EPhysicalSurface Surface : { SurfaceType_Default, SurfaceType1, SurfaceType2, SurfaceType3,
+			SurfaceType4, SurfaceType5, SurfaceType6, SurfaceType7, SurfaceType_Max })
 		{
 			Audio->GetSurfaceContextCandidates(Event, Surface, Candidates);
 			const bool bMeleeGlass = EventPrefix.EndsWith(TEXT("Melee.Hit")) && Surface == SurfaceType3;
-			const FGameplayTag Expected = Surface == SurfaceType2 ? EventMetal
+			const FGameplayTag Expected = Surface == SurfaceType1 ? EventMarble : Surface == SurfaceType2 ? EventMetal
 				: bMeleeGlass ? Tag(*(EventPrefix + TEXT(".Glass"))) : EventPlastic;
 			TestEqual(TEXT("Event selects its configured surface or Plastic"), Candidates[0], Expected);
 			TestTrue(TEXT("Every event retains its own Plastic fallback"), Candidates.Contains(EventPlastic));
 		}
 	}
 	Audio->GetSurfaceContextCandidates(Base, SurfaceType1, Candidates);
-	TestEqual(TEXT("Rifle NoneMetal uses Plastic"), Candidates[0], Plastic);
+	TestEqual(TEXT("Rifle Marble uses its registered Context"), Candidates[0], Marble);
 	const FGameplayTag Pistol = Tag(TEXT("Audio.Context.Player.01.Type.Pistol.Hit"));
-	for (EPhysicalSurface Surface : { SurfaceType_Default, SurfaceType1, SurfaceType2, SurfaceType3, SurfaceType_Max })
+	for (EPhysicalSurface Surface : { SurfaceType_Default, SurfaceType1, SurfaceType2, SurfaceType3,
+		SurfaceType4, SurfaceType5, SurfaceType6, SurfaceType7, SurfaceType_Max })
 	{
 		Audio->GetSurfaceContextCandidates(Pistol, Surface, Candidates);
 		TestEqual(TEXT("Pistol uses Plastic on every surface"), Candidates[0], Other);
@@ -120,9 +122,25 @@ bool FOutlierSurfaceAudioSelectionTest::RunTest(const FString& Parameters)
 	FourSurfaces.MetalContext = Metal;
 	FourSurfaces.GlassContext = Glass;
 	FourSurfaces.GetCandidates(SurfaceType1, Candidates);
-	TestEqual(TEXT("NoneMetal uses its explicit mapping"), Candidates[0], Other);
+	TestEqual(TEXT("Legacy NoneMetal setting remains readable"), Candidates[0], Other);
+	FourSurfaces.MarbleContext = Marble;
+	FourSurfaces.GetCandidates(SurfaceType1, Candidates);
+	TestEqual(TEXT("Explicit Marble wins over legacy NoneMetal"), Candidates[0], Marble);
 	FourSurfaces.GetCandidates(SurfaceType3, Candidates);
 	TestEqual(TEXT("Glass uses its explicit mapping"), Candidates[0], Glass);
+	FourSurfaces.PlasticContext = Other;
+	FourSurfaces.FabricContext = Metal;
+	FourSurfaces.PlantContext = Marble;
+	FourSurfaces.PaperContext = Glass;
+	for (const auto& Pair : { TPair<EPhysicalSurface, FGameplayTag>(SurfaceType4, Other),
+		TPair<EPhysicalSurface, FGameplayTag>(SurfaceType5, Metal),
+		TPair<EPhysicalSurface, FGameplayTag>(SurfaceType6, Marble),
+		TPair<EPhysicalSurface, FGameplayTag>(SurfaceType7, Glass) })
+	{
+		FourSurfaces.GetCandidates(Pair.Key, Candidates);
+		TestEqual(TEXT("Additional surface uses its explicit Context"), Candidates[0], Pair.Value);
+		TestEqual(TEXT("Additional surface retains event Default"), Candidates.Last(), Plastic);
+	}
 	Audio->CatalogEntriesByType.FindOrAdd(Tag(TEXT("Audio.Type.Weapon"))) = Audio->CatalogEntriesByType[Type];
 	FGameplayTag FoundType;
 	bool bPending = false;
