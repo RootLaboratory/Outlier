@@ -1,0 +1,13 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "Lightmap UV Helper",
+	"Description": "Inspect and batch-edit lightmap UV settings with mesh previews and lighting readiness checks.",
+	"Category": "Editor",
+	"CreatedBy": "Outlier",
+	"CanContainContent": false,
+	"Modules": [
+		{ "Name": "LightmapUVHelper", "Type": "Editor", "LoadingPhase": "Default" }
+	]
+}

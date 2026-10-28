@@ -1,6 +1,6 @@
 {
 	"FileVersion": 3,
-	"EngineAssociation": "{D296F0B0-4540-8B07-F25E-D3A6843AE59D}",
+	"EngineAssociation": "{F7E46EA5-496E-E05C-2AFE-298808BF39BD}",
 	"Category": "",
 	"Description": "",
 	"Modules": [
@@ -75,6 +75,13 @@
 		{
 			"Name": "GraphicSettingDebugger",
 			"Enabled": true
+		},
+		{
+			"Name": "LightmapUVHelper",
+			"Enabled": true,
+			"TargetAllowList": [
+				"Editor"
+			]
 		}
 	]
 }
