@@ -7,6 +7,7 @@
 #include "OutlierAudioTypes.generated.h"
 
 class USoundBase;
+class USoundDefinition;
 class AActor;
 
 UENUM(BlueprintType)
@@ -44,13 +45,13 @@ struct OUTLIER_API FOutlierAudioVariant
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Audio", meta = (ClampMin = "0.0"))
 	float Weight = 1.0f;
 
-	/** Audio owns persistent playback behavior; gameplay only submits the context tag. */
+	/** 지속 재생 동작은 오디오가 관리하며, 게임플레이는 Context 태그만 전달한다. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Audio")
 	EOutlierAudioPlaybackPolicy PlaybackPolicy = EOutlierAudioPlaybackPolicy::OneShot;
 
 	/**
-	 * Identity of the loop controlled by this variant. A Loop variant may leave this empty
-	 * to use RequiredContext. StopLoop and StopLoopThenOneShot variants must identify the loop to stop.
+	 * 이 Variant가 제어할 루프의 식별 태그. Loop는 비워 두면 RequiredContext를 사용한다.
+	 * StopLoop와 StopLoopThenOneShot은 중단할 루프의 태그를 반드시 지정해야 한다.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Audio", meta = (Categories = "Audio.Context"))
 	FGameplayTag LoopContextTag;
@@ -114,7 +115,7 @@ public:
 	TArray<TSoftObjectPtr<UOutlierAudioEventDefinition>> Definitions;
 };
 
-/** Native-only execution rules. Audio definitions intentionally do not own network flow. */
+/** C++ 전용 실행 규칙. 오디오 정의는 네트워크 전달 흐름을 관리하지 않는다. */
 enum class EOutlierAudioPlaybackMode : uint8
 {
 	TwoD,
@@ -155,19 +156,31 @@ struct OUTLIER_API FOutlierAudioPlayRequest
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Audio")
 	FGameplayTagContainer ContextTags;
 
-	/** Actual sound emitter. Used for ownership validation, default location, and relevancy. */
+	/** 표면 요청만 사용한다. 순서대로 정확히 일치하는 Context를 찾고 일반 Bank fallback은 생략한다. */
+	UPROPERTY()
+	TArray<FGameplayTag> OrderedContexts;
+	UPROPERTY()
+	bool bExactContexts = false;
+
+	UPROPERTY()
+	TObjectPtr<USoundDefinition> LegacySound = nullptr;
+
+	/** 비동기 Bank 대기 중 월드가 바뀐 요청을 폐기하기 위한 로컬 정보. */
+	TWeakObjectPtr<UWorld> OriginWorld;
+
+	/** 실제 사운드 재생 주체. 소유권 검증, 기본 위치, 네트워크 관련성 판단에 사용한다. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Audio")
 	TObjectPtr<AActor> EmitterActor = nullptr;
 
-	/** Target listener when Audience is Owner. Falls back to EmitterActor when omitted. */
+	/** Audience가 Owner일 때의 수신 대상. 생략하면 EmitterActor를 기준으로 결정한다. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Audio")
 	TObjectPtr<AActor> RecipientActor = nullptr;
 
-	/** Explicit world location used by AtLocation playback. */
+	/** AtLocation 재생에 사용할 명시적인 월드 위치. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Audio")
 	FVector Location = FVector::ZeroVector;
 
-	/** Kept separate because the world origin is a valid audio location. */
+	/** 월드 원점도 유효한 재생 위치이므로 위치 지정 여부를 별도로 보관한다. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Audio")
 	bool bHasLocation = false;
 
@@ -176,13 +189,13 @@ struct OUTLIER_API FOutlierAudioPlayRequest
 
 };
 
-/** Server-resolved playback data. Clients do not run weighted selection again. */
+/** 서버에서 확정한 재생 데이터. 클라이언트는 가중치 선택을 다시 수행하지 않는다. */
 USTRUCT(BlueprintType)
 struct OUTLIER_API FOutlierResolvedAudioPlay
 {
 	GENERATED_BODY()
 
-	/** BGM context delivered through the existing owner-audio route. */
+	/** 기존 소유자 오디오 경로로 전달할 BGM Context. */
 	UPROPERTY(BlueprintReadOnly, Category = "Audio")
 	FGameplayTag MusicContextTag;
 
@@ -192,6 +205,10 @@ struct OUTLIER_API FOutlierResolvedAudioPlay
 
 	UPROPERTY(BlueprintReadOnly, Category = "Audio")
 	int32 VariantIndex = INDEX_NONE;
+
+	/** 서버가 태그 후보를 모두 확인한 경우에만 선택한 기존 Provider 사운드. */
+	UPROPERTY()
+	TObjectPtr<USoundDefinition> LegacySound = nullptr;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Audio")
 	bool bAtLocation = false;
@@ -205,7 +222,7 @@ struct OUTLIER_API FOutlierResolvedAudioPlay
 	UPROPERTY(BlueprintReadOnly, Category = "Audio")
 	bool bLooping = false;
 
-	/** Server-assigned identity used to stop this loop on each client. */
+	/** 각 클라이언트에서 이 루프를 중단할 때 사용하는 서버 발급 식별자. */
 	UPROPERTY(BlueprintReadOnly, Category = "Audio")
 	int32 AudioInstanceId = 0;
 };

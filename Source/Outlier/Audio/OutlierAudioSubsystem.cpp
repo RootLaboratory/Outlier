@@ -1,6 +1,14 @@
 ﻿#include "Audio/OutlierAudioSubsystem.h"
 
 #include "Components/AudioComponent.h"
+#include "Components/CapsuleComponent.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "FirstPerson/FirstPersonCharacter.h"
+#include "GameFramework/CharacterMovementComponent.h"
+#include "Shooter/ShooterCharacter.h"
+#include "Shooter/ShooterInventoryComponent.h"
+#include "VisualEventSubsystem.h"
+#include "SoundDefinition.h"
 #include "Engine/AssetManager.h"
 #include "Engine/GameInstance.h"
 #include "Engine/StreamableManager.h"
@@ -81,6 +89,7 @@ namespace
 void UOutlierAudioSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
+	GetDefault<UOutlierSurfaceAudioSettings>()->BuildMappings(SurfaceContextMappings);
 	VolumeMultipliers.Add(EOutlierAudioVolumeType::Master, 1.0f);
 	VolumeMultipliers.Add(EOutlierAudioVolumeType::BGM, 1.0f);
 	VolumeMultipliers.Add(EOutlierAudioVolumeType::SFX, 1.0f);
@@ -252,6 +261,19 @@ void UOutlierAudioSubsystem::StopLocalVoices(ULocalPlayer* Listener)
 
 void UOutlierAudioSubsystem::HandleVoiceWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources)
 {
+	for (auto& Pair : PendingPlaysByType)
+	{
+		Pair.Value.RemoveAll([World](const auto& Item) { return Item.Key.OriginWorld.Get() == World; });
+	}
+	for (auto& Pair : PendingResolvedPlaysByType)
+	{
+		Pair.Value.RemoveAll([World](const auto& Item) { return Item.Value.Get() == World; });
+	}
+	for (auto& Pair : PendingSurfaceSelectionsBySound)
+	{
+		Pair.Value.RemoveAll([World](const auto& Item) { return Item.Key.OriginWorld.Get() == World; });
+	}
+	if (World && World->GetGameInstance() == GetGameInstance()) PendingLegacySounds.Reset();
 	if (World && World->GetGameInstance() == GetGameInstance() && !bFrontendMusic)
 	{
 		bCombatMusic = false;
@@ -310,6 +332,10 @@ void UOutlierAudioSubsystem::Deinitialize()
 	LoopInstances.Empty();
 	PendingPlaysBySound.Empty();
 	PendingPlaysByType.Empty();
+	PendingResolvedPlaysByType.Empty();
+	PendingSurfaceSelectionsBySound.Empty();
+	PendingLegacySounds.Empty();
+	FailedSurfaceSounds.Empty();
 	CatalogEntriesByType.Empty();
 	DiscoveredBanksByType.Empty();
 	LoadedBanks.Empty();
@@ -345,6 +371,10 @@ bool UOutlierAudioSubsystem::ReloadCatalog()
 	DiscoveredBanksByType.Empty();
 	LoadedBanks.Empty();
 	PendingPlaysByType.Empty();
+	PendingResolvedPlaysByType.Empty();
+	PendingSurfaceSelectionsBySound.Empty();
+	PendingLegacySounds.Empty();
+	FailedSurfaceSounds.Empty();
 
 	DiscoverAudioBanks();
 
@@ -447,6 +477,10 @@ void UOutlierAudioSubsystem::HandleBankMetadataLoaded(TArray<FPrimaryAssetId> Ba
 		TEXT("[Audio] Discovered %d Audio Banks (%d eager)."),
 		DiscoveredBanksByType.Num(),
 		EagerBankCount);
+	TArray<FGameplayTag> WaitingTypes;
+	PendingPlaysByType.GetKeys(WaitingTypes);
+	for (const auto& Pair : PendingResolvedPlaysByType) WaitingTypes.AddUnique(Pair.Key);
+	for (FGameplayTag Type : WaitingTypes) FlushPendingPlaysForType(Type);
 	StartNextVoice();
 }
 
@@ -488,6 +522,7 @@ void UOutlierAudioSubsystem::LoadBankContent(FGameplayTag TypeTag)
 			*GetNameSafe(Bank),
 			*TypeTag.ToString());
 		Discovered->bContentLoaded = true;
+		FlushPendingPlaysForType(TypeTag);
 		return;
 	}
 
@@ -503,6 +538,8 @@ void UOutlierAudioSubsystem::LoadBankContent(FGameplayTag TypeTag)
 		UE_LOG(LogOutlier, Error,
 			TEXT("[Audio] Failed to start async load for Bank content '%s'."),
 			*TypeTag.ToString());
+		Discovered->bContentLoaded = true;
+		FlushPendingPlaysForType(TypeTag);
 		return;
 	}
 
@@ -529,6 +566,7 @@ void UOutlierAudioSubsystem::HandleBankContentLoaded(FGameplayTag TypeTag)
 		UE_LOG(LogOutlier, Error,
 			TEXT("[Audio] HandleBankContentLoaded: Bank for Type '%s' failed to resolve."),
 			*TypeTag.ToString());
+		FlushPendingPlaysForType(TypeTag);
 		return;
 	}
 
@@ -543,6 +581,7 @@ bool UOutlierAudioSubsystem::ResolveTypeForContext(
 	bool& bOutPending)
 {
 	bOutPending = false;
+	OutType = FGameplayTag();
 	if (!Context.IsValid())
 	{
 		return false;
@@ -556,8 +595,13 @@ bool UOutlierAudioSubsystem::ResolveTypeForContext(
 				return Entry.RequiredContext == Context;
 			}))
 		{
+			if (OutType.IsValid() && OutType != Pair.Key)
+			{
+				UE_LOG(LogOutlier, Warning, TEXT("[Audio] Context '%s' belongs to multiple Types."), *Context.ToString());
+				OutType = FGameplayTag();
+				return false;
+			}
 			OutType = Pair.Key;
-			return true;
 		}
 	}
 
@@ -571,7 +615,7 @@ bool UOutlierAudioSubsystem::ResolveTypeForContext(
 			bOutPending = true;
 		}
 	}
-	return false;
+	return OutType.IsValid() && !bOutPending;
 }
 
 void UOutlierAudioSubsystem::IngestBank(UOutlierAudioBank* Bank)
@@ -655,7 +699,14 @@ void UOutlierAudioSubsystem::FlushPendingPlaysForType(FGameplayTag TypeTag)
 
 	for (const TPair<FOutlierAudioPlayRequest, FOutlierAudioExecutionPolicy>& Item : Pending)
 	{
-		PlayAudio(Item.Key, Item.Value);
+		if (Item.Key.OrderedContexts.IsEmpty() || Item.Key.OriginWorld.Get() == GetWorld())
+			PlayAudio(Item.Key, Item.Value);
+	}
+	TArray<TPair<FOutlierResolvedAudioPlay, TWeakObjectPtr<UWorld>>> Delivered;
+	PendingResolvedPlaysByType.RemoveAndCopyValue(TypeTag, Delivered);
+	for (const auto& Item : Delivered)
+	{
+		if (Item.Value.IsValid() && Item.Value.Get() == GetWorld()) PlayResolvedAudioLocally(Item.Key);
 	}
 }
 
@@ -673,6 +724,180 @@ bool UOutlierAudioSubsystem::PlayLocalAtLocation(const FOutlierAudioPlayRequest&
 		EOutlierAudioPlaybackMode::AtLocation,
 		EOutlierAudioAudience::Local,
 		EOutlierAudioRequestAuthority::Local });
+}
+
+void UOutlierAudioSubsystem::GetSurfaceContextCandidates(FGameplayTag Context, EPhysicalSurface Surface,
+	TArray<FGameplayTag>& OutContexts) const
+{
+	if (const FOutlierSurfaceContextMapping* Mapping = SurfaceContextMappings.Find(Context))
+	{
+		Mapping->GetCandidates(Surface, OutContexts);
+		if (Context.IsValid()) OutContexts.AddUnique(Context);
+		return;
+	}
+	OutContexts.Reset();
+	if (Context.IsValid()) OutContexts.Add(Context);
+}
+
+bool UOutlierAudioSubsystem::PlaySurfaceAtLocationFromServer(AActor* Emitter, FGameplayTag Type,
+	FGameplayTag Context, EPhysicalSurface Surface, const FVector& Location, USoundDefinition* LegacySound)
+{
+	if (!IsValid(Emitter) || !Emitter->HasAuthority() || Emitter->GetWorld() != GetWorld()) return false;
+	FOutlierAudioPlayRequest Request;
+	Request.EmitterActor = Emitter;
+	Request.EventTag = Type;
+	Request.Location = Location;
+	Request.bHasLocation = true;
+	Request.bExactContexts = true;
+	Request.OriginWorld = GetWorld();
+	Request.LegacySound = LegacySound;
+	if (LegacySound) PendingLegacySounds.AddUnique(LegacySound);
+	GetSurfaceContextCandidates(Context, Surface, Request.OrderedContexts);
+	return PlayRelevantAtLocationFromServer(Request);
+}
+
+bool UOutlierAudioSubsystem::PlaySurfaceAtLocationLocally(AActor* Emitter, FGameplayTag Type,
+	FGameplayTag Context, EPhysicalSurface Surface, const FVector& Location)
+{
+	if (!IsValid(Emitter) || Emitter->GetWorld() != GetWorld()) return false;
+	FOutlierAudioPlayRequest Request;
+	Request.EmitterActor = Emitter;
+	Request.EventTag = Type;
+	Request.Location = Location;
+	Request.bHasLocation = true;
+	Request.bExactContexts = true;
+	Request.OriginWorld = GetWorld();
+	GetSurfaceContextCandidates(Context, Surface, Request.OrderedContexts);
+	return PlayLocalAtLocation(Request);
+}
+
+bool UOutlierAudioSubsystem::IsAnimationAudioSource(USkeletalMeshComponent* Mesh, bool bWorldMeshOnly) const
+{
+	if (!IsValid(Mesh) || Mesh->GetWorld() != GetWorld() || !GetWorld()
+		|| GetWorld()->GetNetMode() == NM_DedicatedServer) return false;
+	const ACharacter* Character = Cast<ACharacter>(Mesh->GetOwner());
+	if (!Character) return false;
+	if (bWorldMeshOnly || !Character->IsLocallyControlled()) return Mesh == Character->GetMesh();
+	const AFirstPersonCharacter* FirstPerson = Cast<AFirstPersonCharacter>(Character);
+	return Mesh == (FirstPerson ? FirstPerson->GetFirstPersonMesh() : Character->GetMesh());
+}
+
+bool UOutlierAudioSubsystem::PlayAnimationAudio(USkeletalMeshComponent* Mesh, FGameplayTag Type,
+	FGameplayTag Context, FName SocketName, bool bQuerySurface, bool bWorldMeshOnly, float TraceDistance)
+{
+	// 발걸음은 숨겨진 로컬 월드 메시도 허용한다. 일반 행동은 시점 메시 하나만 통과한다.
+	if (!Context.IsValid() || !IsAnimationAudioSource(Mesh, bQuerySurface || bWorldMeshOnly)) return false;
+	ACharacter* Character = CastChecked<ACharacter>(Mesh->GetOwner());
+	FVector Location = SocketName != NAME_None && Mesh->DoesSocketExist(SocketName)
+		? Mesh->GetSocketLocation(SocketName) : Mesh->GetComponentLocation();
+	if (!Type.IsValid())
+	{
+		bool bPending = false;
+		TArray<FGameplayTag> TypeContexts;
+		if (bQuerySurface) GetSurfaceContextCandidates(Context, SurfaceType_Default, TypeContexts);
+		else TypeContexts.Add(Context);
+		for (FGameplayTag TypeContext : TypeContexts)
+		{
+			if (ResolveTypeForContext(TypeContext, Type, bPending)) break;
+			if (bPending) return false;
+		}
+		if (!Type.IsValid()) return false;
+	}
+	if (!bQuerySurface)
+	{
+		FOutlierAudioPlayRequest Request;
+		Request.EmitterActor = Character;
+		Request.EventTag = Type;
+		Request.ContextTags.AddTag(Context);
+		Request.Location = Location;
+		Request.bHasLocation = true;
+		return PlayLocalAtLocation(Request);
+	}
+	const UCharacterMovementComponent* Movement = Character->GetCharacterMovement();
+	const AShooterCharacter* Shooter = Cast<AShooterCharacter>(Character);
+	if (!Movement || !Movement->IsMovingOnGround() || Character->GetVelocity().SizeSquared2D() < 1.0f
+		|| (Shooter && (Shooter->IsSliding() || Shooter->IsDead()))) return false;
+	const UCapsuleComponent* Capsule = Character->GetCapsuleComponent();
+	if (SocketName == NAME_None || !Mesh->DoesSocketExist(SocketName)
+		|| (!Mesh->WasRecentlyRendered() && Mesh->VisibilityBasedAnimTickOption != EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones))
+	{
+		Location = Capsule->GetComponentLocation() - FVector::UpVector * Capsule->GetScaledCapsuleHalfHeight();
+	}
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(AnimationSurfaceAudio), false, Character);
+	Params.bReturnPhysicalMaterial = true;
+	if (const AFirstPersonCharacter* FirstPerson = Cast<AFirstPersonCharacter>(Character))
+		Params.AddIgnoredActor(FirstPerson->GetCurrentWeapon());
+	if (Shooter)
+	{
+		if (const UShooterInventoryComponent* Inventory = Shooter->GetInventoryComponent())
+		{
+			for (EWeaponSlot Slot : { EWeaponSlot::Primary, EWeaponSlot::Secondary, EWeaponSlot::Melee })
+				Params.AddIgnoredActor(Inventory->GetWeaponInSlot(Slot));
+		}
+	}
+	FHitResult Hit;
+	const float Distance = FMath::Clamp(TraceDistance, 1.0f, 200.0f);
+	if (!GetWorld()->LineTraceSingleByChannel(Hit, Location + FVector::UpVector * 15.0f,
+		Location - FVector::UpVector * Distance, ECC_Visibility, Params) || !Hit.bBlockingHit) return false;
+	const EPhysicalSurface Surface = UPhysicalMaterial::DetermineSurfaceType(Hit.PhysMaterial.Get());
+	const bool bPlayed = PlaySurfaceAtLocationLocally(Character, Type, Context, Surface, Hit.ImpactPoint);
+	if (UVisualEventSubsystem* Visual = GetSurfaceVisualSubsystem())
+	{
+		TArray<FGameplayTag> Contexts;
+		GetSurfaceContextCandidates(Context, Surface, Contexts);
+		Visual->PlayTaggedEffectsAtLocation(Contexts, Hit.ImpactPoint, Hit.ImpactNormal.Rotation(), FVisualEventSet());
+	}
+	return bPlayed;
+}
+
+UVisualEventSubsystem* UOutlierAudioSubsystem::GetSurfaceVisualSubsystem()
+{
+	UWorld* World = GetWorld();
+	if (SurfaceVisualWorld.Get() != World || !SurfaceVisualSubsystem.IsValid())
+	{
+		SurfaceVisualWorld = World;
+		SurfaceVisualSubsystem = World ? World->GetSubsystem<UVisualEventSubsystem>() : nullptr;
+	}
+	return SurfaceVisualSubsystem.Get();
+}
+
+void UOutlierAudioSubsystem::SetAnimationAudioLoop(USkeletalMeshComponent* Mesh, FGameplayTag Type,
+	FGameplayTag Context, bool bEnabled, bool bWorldMeshOnly, bool bTwoD)
+{
+	if (!IsValid(Mesh) || !Context.IsValid()) return;
+	if (bEnabled)
+	{
+		if (!Type.IsValid() || !IsAnimationAudioSource(Mesh, bWorldMeshOnly)) return;
+		TSet<FGameplayTag>& Tokens = AnimationAudioTokens.FindOrAdd(Mesh);
+		if (Tokens.Contains(Context)) return;
+		Tokens.Add(Context);
+		SetLocalEmitterLoop(Mesh->GetOwner(), Type, Context, true, bTwoD);
+		return;
+	}
+	// 종료 시에는 현재 시점이 달라도 시작을 승인한 메시의 토큰으로 정리한다. 그림자 End는 토큰이 없다.
+	TSet<FGameplayTag>* Tokens = AnimationAudioTokens.Find(Mesh);
+	if (!Tokens || Tokens->Remove(Context) == 0) return;
+	if (Tokens->IsEmpty()) AnimationAudioTokens.Remove(Mesh);
+	for (const auto& Pair : AnimationAudioTokens)
+	{
+		const USkeletalMeshComponent* OtherMesh = Pair.Key.Get();
+		if (OtherMesh && OtherMesh->GetOwner() == Mesh->GetOwner() && Pair.Value.Contains(Context)) return;
+	}
+	SetLocalEmitterLoop(Mesh->GetOwner(), Type, Context, false, bTwoD);
+}
+
+void UOutlierAudioSubsystem::StopAnimationAudioLoops(AActor* Emitter)
+{
+	for (auto It = AnimationAudioTokens.CreateIterator(); It; ++It)
+	{
+		USkeletalMeshComponent* Mesh = It.Key().Get();
+		if (!Mesh || Mesh->GetOwner() == Emitter)
+		{
+			if (Mesh)
+				for (FGameplayTag Context : It.Value()) SetLocalEmitterLoop(Emitter, FGameplayTag(), Context, false);
+			It.RemoveCurrent();
+		}
+	}
 }
 
 bool UOutlierAudioSubsystem::PlayOwner2DFromServer(const FOutlierAudioPlayRequest& Request)
@@ -891,6 +1116,7 @@ bool UOutlierAudioSubsystem::PlayAudio(
 	{
 		return false;
 	}
+	if (Request.bExactContexts && Request.OriginWorld.Get() != World) return false;
 
 	if (Policy.RequestAuthority == EOutlierAudioRequestAuthority::Local
 		&& Policy.Audience != EOutlierAudioAudience::Local)
@@ -943,11 +1169,25 @@ bool UOutlierAudioSubsystem::PlayAudio(
 
 	// Type 콘텐츠가 아직 로드되지 않은 Deferred Bank( BGM/Voice 등 )라면, 재생 요청 자체가
 	// 로드 트리거가 된다. 큐잉해두고 로드가 끝나면 FlushPendingPlaysForType 이 재시도한다.
+	if (Request.bExactContexts && BankMetadataLoadHandle.IsValid())
+	{
+		PendingPlaysByType.FindOrAdd(Request.EventTag).Emplace(Request, Policy);
+		return true;
+	}
 	if (!CatalogEntriesByType.Contains(Request.EventTag))
 	{
 		const FDiscoveredBank* Discovered = DiscoveredBanksByType.Find(Request.EventTag);
 		if (!Discovered)
 		{
+			if (Request.bExactContexts)
+			{
+				if (!Request.LegacySound) return false;
+				FOutlierResolvedAudioPlay Fallback;
+				Fallback.LegacySound = Request.LegacySound;
+				Fallback.bAtLocation = true;
+				Fallback.Location = Request.Location;
+				return RouteByAudience(Request, Fallback, Policy.Audience);
+			}
 			UE_LOG(LogOutlier, Warning,
 				TEXT("[Audio] Unknown audio Type '%s'."),
 				*Request.EventTag.ToString());
@@ -966,12 +1206,38 @@ bool UOutlierAudioSubsystem::PlayAudio(
 		// ResolveBestEntry 에서 통상적인 실패 로그를 남기도록 그대로 진행한다.
 	}
 
-	const FRuntimeCatalogEntry* Entry = ResolveBestEntry(Request.EventTag, Request.ContextTags);
+	const FRuntimeCatalogEntry* Entry = Request.bExactContexts
+		? ResolveOrderedEntry(Request.EventTag, Request.OrderedContexts)
+		: ResolveBestEntry(Request.EventTag, Request.ContextTags);
 	if (!Entry)
 	{
+		if (Request.bExactContexts && Request.LegacySound)
+		{
+			FOutlierResolvedAudioPlay Fallback;
+			Fallback.LegacySound = Request.LegacySound;
+			Fallback.bAtLocation = true;
+			Fallback.Location = Request.Location;
+			return RouteByAudience(Request, Fallback, Policy.Audience);
+		}
 		return false;
 	}
 
+	if (Request.bExactContexts && !Entry->Sound.Get())
+	{
+		// 서버는 음원 로드 성공까지 기다린 뒤 한 후보만 전송한다. 실패한 경로는 다음 Default 후보로 넘긴다.
+		const FSoftObjectPath Path = Entry->Sound.ToSoftObjectPath();
+		PendingSurfaceSelectionsBySound.FindOrAdd(Path).Emplace(Request, Policy);
+		if (ActiveLoadHandles.Contains(Path)) return true;
+		TSharedPtr<FStreamableHandle> Handle = UAssetManager::GetStreamableManager().RequestAsyncLoad(
+			Path, FStreamableDelegate::CreateUObject(this, &ThisClass::HandleSoundLoaded, Path));
+		if (Handle.IsValid())
+		{
+			ActiveLoadHandles.Add(Path, MoveTemp(Handle));
+			return true;
+		}
+		HandleSoundLoaded(Path);
+		return true;
+	}
 	const bool bLooping = Entry->PlaybackPolicy == EOutlierAudioPlaybackPolicy::Loop;
 	const FGameplayTag LoopContextTag = Entry->LoopContextTag.IsValid()
 		? Entry->LoopContextTag
@@ -1141,6 +1407,18 @@ bool UOutlierAudioSubsystem::PlayResolvedAudioLocally(
 	const FOutlierResolvedAudioPlay& ResolvedPlay)
 {
 	if (bStoppingAllLocalAudio) return false;
+	UWorld* World = GetWorld();
+	if (!World || World->GetNetMode() == NM_DedicatedServer) return false;
+	if (ResolvedPlay.LegacySound)
+	{
+		// 서버가 태그 후보 부재를 확정한 경우만 호환음을 재생한다. 수신자는 다시 선택하지 않는다.
+		if (UVisualEventSubsystem* Visual = World->GetSubsystem<UVisualEventSubsystem>())
+		{
+			Visual->PlaySoundAtLocation(ResolvedPlay.LegacySound, ResolvedPlay.Location);
+			return true;
+		}
+		return false;
+	}
 	if (!ResolvedPlay.bAtLocation && ResolvedPlay.MusicContextTag.IsValid()
 		&& ResolvedPlay.EventTag == FGameplayTag::RequestGameplayTag(TEXT("Audio.Type.BGM")))
 	{
@@ -1152,6 +1430,13 @@ bool UOutlierAudioSubsystem::PlayResolvedAudioLocally(
 		FindResolvedEntry(ResolvedPlay.EventTag, ResolvedPlay.VariantIndex);
 	if (!Entry)
 	{
+		const FDiscoveredBank* Bank = DiscoveredBanksByType.Find(ResolvedPlay.EventTag);
+		if (BankMetadataLoadHandle.IsValid() || (Bank && !Bank->bContentLoaded))
+		{
+			PendingResolvedPlaysByType.FindOrAdd(ResolvedPlay.EventTag).Emplace(ResolvedPlay, World);
+			LoadBankContent(ResolvedPlay.EventTag);
+			return true;
+		}
 		UE_LOG(LogOutlier, Warning,
 			TEXT("[Audio] Could not resolve delivered Type '%s' variant %d."),
 			*ResolvedPlay.EventTag.ToString(),
@@ -1187,7 +1472,7 @@ bool UOutlierAudioSubsystem::StopLoopAudioLocally(int32 AudioInstanceId, float F
 	for (int32 Index = ActiveAudioPlaybacks.Num() - 1; Index >= 0; --Index)
 	{
 		FActiveAudioPlayback& ActivePlayback = ActiveAudioPlaybacks[Index];
-		if (!ActivePlayback.bLooping || ActivePlayback.AudioInstanceId != AudioInstanceId)
+		if ((!ActivePlayback.bLooping && AudioInstanceId >= 0) || ActivePlayback.AudioInstanceId != AudioInstanceId)
 		{
 			continue;
 		}
@@ -1221,7 +1506,7 @@ bool UOutlierAudioSubsystem::StopLoopAudioLocally(int32 AudioInstanceId, float F
 	{
 		bPendingLoad = Pair.Value.ContainsByPredicate([AudioInstanceId](const FPendingPlay& PendingPlay)
 		{
-			return PendingPlay.bLooping && PendingPlay.AudioInstanceId == AudioInstanceId;
+			return PendingPlay.AudioInstanceId == AudioInstanceId;
 		});
 		if (bPendingLoad)
 		{
@@ -1272,6 +1557,9 @@ void UOutlierAudioSubsystem::StopAllLocalAudio()
 	// gameplay requests that were waiting for those banks before GameOver.
 	PendingPlaysByType.Empty();
 	PendingPlaysBySound.Empty();
+	PendingResolvedPlaysByType.Empty();
+	PendingSurfaceSelectionsBySound.Empty();
+	PendingLegacySounds.Empty();
 	auto LoadHandlesToCancel = MoveTemp(ActiveLoadHandles);
 	ActiveLoadHandles.Empty();
 	for (auto& Pair : LoadHandlesToCancel)
@@ -1296,6 +1584,38 @@ void UOutlierAudioSubsystem::StopAllLocalAudio()
 	LoopAudioComponentPool.Empty();
 	LoopInstances.Empty();
 	CancelledLoopAudioInstances.Empty();
+}
+
+const UOutlierAudioSubsystem::FRuntimeCatalogEntry* UOutlierAudioSubsystem::ResolveOrderedEntry(
+	FGameplayTag Type, const TArray<FGameplayTag>& Contexts) const
+{
+	const TArray<FRuntimeCatalogEntry>* Entries = CatalogEntriesByType.Find(Type);
+	if (!Entries) return nullptr;
+	// 표면 → 이 이벤트의 Default 순서만 허용한다. 부모 태그/빈 Context는 후보에 끼워 넣지 않는다.
+	for (FGameplayTag Context : Contexts)
+	{
+		if (!Context.IsValid()) continue;
+		TArray<const FRuntimeCatalogEntry*> Matches;
+		float TotalWeight = 0.0f;
+		for (const FRuntimeCatalogEntry& Entry : *Entries)
+		{
+			if (Entry.RequiredContext == Context && !Entry.Sound.IsNull() && Entry.Weight > 0.0f
+				&& !FailedSurfaceSounds.Contains(Entry.Sound.ToSoftObjectPath()))
+			{
+				Matches.Add(&Entry);
+				TotalWeight += Entry.Weight;
+			}
+		}
+		if (Matches.IsEmpty()) continue;
+		float Selection = FMath::FRandRange(0.0f, TotalWeight);
+		for (const FRuntimeCatalogEntry* Match : Matches)
+		{
+			Selection -= Match->Weight;
+			if (Selection <= 0.0f) return Match;
+		}
+		return Matches.Last();
+	}
+	return nullptr;
 }
 
 const UOutlierAudioSubsystem::FRuntimeCatalogEntry* UOutlierAudioSubsystem::ResolveBestEntry(
@@ -1691,6 +2011,15 @@ void UOutlierAudioSubsystem::HandleSoundLoaded(FSoftObjectPath SoundPath)
 	PendingPlaysBySound.RemoveAndCopyValue(SoundPath, PendingPlays);
 
 	USoundBase* LoadedSound = Cast<USoundBase>(SoundPath.ResolveObject());
+	TArray<TPair<FOutlierAudioPlayRequest, FOutlierAudioExecutionPolicy>> SurfaceRequests;
+	PendingSurfaceSelectionsBySound.RemoveAndCopyValue(SoundPath, SurfaceRequests);
+	if (!LoadedSound && !SurfaceRequests.IsEmpty()) FailedSurfaceSounds.Add(SoundPath);
+	for (const auto& Item : SurfaceRequests)
+	{
+		if (Item.Key.OriginWorld.IsValid() && Item.Key.OriginWorld.Get() == GetWorld()
+			&& IsValid(Item.Key.EmitterActor) && !Item.Key.EmitterActor->IsActorBeingDestroyed())
+			PlayAudio(Item.Key, Item.Value);
+	}
 	if (!LoadedSound)
 	{
 		UE_LOG(LogOutlier, Error,
@@ -1716,7 +2045,7 @@ void UOutlierAudioSubsystem::ExecutePlay(
 	const FPendingPlay& PendingPlay)
 {
 	UWorld* World = PendingPlay.World.Get();
-	if (!World || !Sound)
+	if (!World || World != GetWorld() || World->GetNetMode() == NM_DedicatedServer || !Sound)
 	{
 		return;
 	}
@@ -1726,8 +2055,7 @@ void UOutlierAudioSubsystem::ExecutePlay(
 		return;
 	}
 
-	if (PendingPlay.bLooping
-		&& CancelledLoopAudioInstances.Remove(PendingPlay.AudioInstanceId) > 0)
+	if (CancelledLoopAudioInstances.Remove(PendingPlay.AudioInstanceId) > 0)
 	{
 		return;
 	}
@@ -1984,7 +2312,12 @@ void UOutlierAudioSubsystem::SetLocalEmitterLoop(AActor* Emitter, FGameplayTag T
 	if (!bEnabled)
 	{
 		FLocalEmitterLoop Removed;
-		if (LocalEmitterLoops.RemoveAndCopyValue(Key, Removed)) StopLoopAudioLocally(Removed.InstanceId, FadeOutDuration);
+		if (LocalEmitterLoops.RemoveAndCopyValue(Key, Removed))
+		{
+			StopLoopAudioLocally(Removed.InstanceId, FadeOutDuration);
+			for (auto& Pair : PendingPlaysBySound)
+				Pair.Value.RemoveAll([&Removed](const FPendingPlay& Play) { return Play.AudioInstanceId == Removed.InstanceId && Removed.InstanceId != 0; });
+		}
 		return;
 	}
 	if (!IsValid(Emitter) || !Type.IsValid()) return;
@@ -2002,6 +2335,7 @@ void UOutlierAudioSubsystem::SetLocalEmitterLoop(AActor* Emitter, FGameplayTag T
 
 void UOutlierAudioSubsystem::StopLocalEmitterLoops(AActor* Emitter)
 {
+	StopAnimationAudioLoops(Emitter);
 	for (auto It = LocalEmitterLoops.CreateIterator(); It; ++It)
 	{
 		if (It.Key().EmitterActor == Emitter)
@@ -2014,6 +2348,7 @@ void UOutlierAudioSubsystem::StopLocalEmitterLoops(AActor* Emitter)
 
 void UOutlierAudioSubsystem::ClearLocalEmitterLoops()
 {
+	AnimationAudioTokens.Empty();
 	if (UWorld* World = LocalLoopWorld.Get()) World->GetTimerManager().ClearTimer(LocalLoopTimer);
 	for (const auto& Pair : LocalEmitterLoops) StopLoopAudioLocally(Pair.Value.InstanceId);
 	LocalEmitterLoops.Empty();
@@ -2032,6 +2367,7 @@ void UOutlierAudioSubsystem::RefreshLocalEmitterLoops()
 			It.RemoveCurrent();
 			continue;
 		}
+		if (Loop.bOneShotSubmitted) continue;
 		if (Loop.InstanceId != 0)
 		{
 			const bool bPlaying = ActiveAudioPlaybacks.ContainsByPredicate([&Loop](const FActiveAudioPlayback& Play)
@@ -2051,7 +2387,29 @@ void UOutlierAudioSubsystem::RefreshLocalEmitterLoops()
 		FGameplayTagContainer Contexts;
 		Contexts.AddTag(It.Key().LoopContextTag);
 		const FRuntimeCatalogEntry* Entry = ResolveBestEntry(Loop.Type, Contexts);
-		if (!Entry || Entry->PlaybackPolicy != EOutlierAudioPlaybackPolicy::Loop) continue;
+		if (!Entry) continue;
+		if (Entry->PlaybackPolicy == EOutlierAudioPlaybackPolicy::OneShot)
+		{
+			// 활성 상태는 유지하되 단발음은 진입당 한 번만 요청한다. 종료 후 재진입하면 다시 허용한다.
+			if (Loop.bOneShotSubmitted) continue;
+			Loop.bOneShotSubmitted = true;
+			Loop.InstanceId = NextLocalLoopId;
+			NextLocalLoopId = NextLocalLoopId == MIN_int32 ? -1 : NextLocalLoopId - 1;
+			FPendingPlay OneShot;
+			OneShot.World = Emitter->GetWorld();
+			OneShot.SourceName = Entry->SourceName;
+			OneShot.bAtLocation = !Loop.bTwoD;
+			OneShot.Location = Emitter->GetActorLocation();
+			OneShot.AttachedEmitter = Emitter;
+			OneShot.bAttachToEmitter = !Loop.bTwoD;
+			OneShot.VolumeMultiplier = Entry->VolumeMultiplier;
+			OneShot.PitchMultiplier = Entry->PitchMultiplier;
+			OneShot.VolumeType = Entry->VolumeType;
+			OneShot.AudioInstanceId = Loop.InstanceId;
+			QueueOrPlay(*Entry, OneShot);
+			continue;
+		}
+		if (Entry->PlaybackPolicy != EOutlierAudioPlaybackPolicy::Loop) continue;
 		Loop.InstanceId = NextLocalLoopId;
 		NextLocalLoopId = NextLocalLoopId == MIN_int32 ? -1 : NextLocalLoopId - 1;
 		FPendingPlay Pending;

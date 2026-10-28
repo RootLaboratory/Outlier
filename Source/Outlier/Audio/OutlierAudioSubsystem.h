@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Containers/Ticker.h"
 #include "Audio/OutlierAudioTypes.h"
+#include "Audio/OutlierSurfaceAudioSettings.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "TimerManager.h"
 #include "OutlierAudioSubsystem.generated.h"
@@ -13,18 +14,20 @@ class UAudioComponent;
 class AActor;
 class AFirstPersonPlayerController;
 class ULocalPlayer;
+class USkeletalMeshComponent;
+class UVisualEventSubsystem;
 
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnOutlierVoiceStarted, ULocalPlayer*, FGameplayTag);
 DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnOutlierVoiceFinished, ULocalPlayer*, FGameplayTag, bool);
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnOutlierVoiceUnavailable, ULocalPlayer*, FGameplayTag);
 
 /**
- * Resolves an audio play request (Type + Context) against Audio Bank content, loads the
- * selected sound asynchronously, and plays it in the current game world.
+ * 오디오 재생 요청(Type + Context)에 맞는 사운드를 Audio Bank에서 선택하고,
+ * 비동기로 로드한 뒤 현재 게임 월드에서 재생한다.
  *
- * Query/load unit is the Audio Bank (Type). Each Bank is discovered cheaply at boot
- * (metadata only); Banks flagged bLoadImmediately have their Definitions/Variants loaded
- * right away, the rest are loaded on first play request for that Type.
+ * 조회와 로드는 Audio Bank(Type) 단위로 처리한다. 시작 시에는 메타데이터만 조회하고,
+ * bLoadImmediately가 설정된 Bank의 Definitions/Variants만 즉시 로드한다.
+ * 나머지는 해당 Type의 첫 재생 요청 시 로드한다.
  */
 UCLASS()
 class OUTLIER_API UOutlierAudioSubsystem : public UGameInstanceSubsystem
@@ -35,14 +38,14 @@ public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 
-	/** Restarts Bank discovery and (re)loads every eager Bank. Asynchronous — use IsCatalogReady() to poll. */
+	/** Bank를 다시 검색하고 즉시 로드 대상 Bank를 로드한다. 비동기 완료 여부는 IsCatalogReady()로 확인한다. */
 	UFUNCTION(BlueprintCallable, Category = "Outlier|Audio")
 	bool ReloadCatalog();
 
 	UFUNCTION(BlueprintPure, Category = "Outlier|Audio")
 	bool IsCatalogReady() const { return CatalogEntriesByType.Num() > 0; }
 
-	/** Local-only 2D playback. Suitable for input and UI feedback. */
+	/** 입력 및 UI 피드백에 사용하는 로컬 전용 2D 재생. */
 	bool PlayLocal2D(const FOutlierAudioPlayRequest& Request);
 
 	/** 로컬 Voice 뱅크 직렬 재생. P0 > P1 > P2 > P3 순이며, 더 높은 우선순위는 기존 음성과 자막을 중단한다. 같거나 낮으면 대기한다. */
@@ -56,48 +59,59 @@ public:
 	FOnOutlierVoiceUnavailable OnVoiceUnavailable;
 
 	/**
-	 * Local-only 3D playback, for callers that already execute on every client and must not
-	 * route across the network again — GameplayCue notifies in particular.
+	 * 각 클라이언트에서 이미 실행되는 호출부를 위한 로컬 전용 3D 재생이다.
+	 * GameplayCue Notify처럼 네트워크로 다시 전송하면 안 되는 경로에서 사용한다.
 	 *
-	 * A cue is already multicast by the ASC and runs locally on each client, so calling one of
-	 * the Relevant* entry points from inside a notify would propagate a second time.
+	 * Cue는 ASC가 이미 멀티캐스트하므로 Notify에서 Relevant* 함수를 호출하면
+	 * 동일한 재생 요청이 네트워크로 한 번 더 전파된다.
 	 *
-	 * Note the trade-off against the Relevant* path: the server does not resolve the variant
-	 * here, so each client rolls its own. Use a Relevant* entry point when every player must
-	 * hear the same variant.
+	 * 이 경로는 서버가 Variant를 확정하지 않아 클라이언트마다 독립적으로 선택한다.
+	 * 모든 플레이어가 같은 Variant를 들어야 한다면 Relevant* 함수를 사용한다.
 	 */
 	bool PlayLocalAtLocation(const FOutlierAudioPlayRequest& Request);
 
-	/** Server-authoritative 2D playback delivered to one owning player. */
+	void GetSurfaceContextCandidates(FGameplayTag Context, EPhysicalSurface Surface, TArray<FGameplayTag>& OutContexts) const;
+	bool PlaySurfaceAtLocationFromServer(AActor* Emitter, FGameplayTag Type, FGameplayTag Context,
+		EPhysicalSurface Surface, const FVector& Location, USoundDefinition* LegacySound = nullptr);
+	bool PlaySurfaceAtLocationLocally(AActor* Emitter, FGameplayTag Type, FGameplayTag Context,
+		EPhysicalSurface Surface, const FVector& Location);
+	bool IsAnimationAudioSource(USkeletalMeshComponent* Mesh, bool bWorldMeshOnly) const;
+	void SetAnimationAudioLoop(USkeletalMeshComponent* Mesh, FGameplayTag Type, FGameplayTag Context,
+		bool bEnabled, bool bWorldMeshOnly, bool bTwoD = false);
+	void StopAnimationAudioLoops(AActor* Emitter);
+	bool PlayAnimationAudio(USkeletalMeshComponent* Mesh, FGameplayTag Type, FGameplayTag Context,
+		FName SocketName, bool bQuerySurface, bool bWorldMeshOnly, float TraceDistance = 80.0f);
+
+	/** 서버에서 확정한 2D 사운드를 소유 플레이어 한 명에게 전달한다. */
 	bool PlayOwner2DFromServer(const FOutlierAudioPlayRequest& Request);
 
-	/** Gameplay submits only Type + Context. Playback lifetime is owned by the audio subsystem. */
+	/** 게임플레이는 Type + Context만 전달하고, 재생 수명은 오디오 서브시스템이 관리한다. */
 	static bool PlayTaggedAtLocationFromServer(
 		AActor* EmitterActor,
 		FGameplayTag TypeTag,
 		FGameplayTag ContextTag);
 
-	/** Stops the persistent playback identified by the emitter and context. */
+	/** 재생 주체와 Context로 식별한 지속 재생을 중단한다. */
 	static bool StopTaggedAtLocationFromServer(
 		AActor* EmitterActor,
 		FGameplayTag TypeTag,
 		FGameplayTag ContextTag);
 
-	/** Relevant world playback that an owning client may request through its controller. */
+	/** 소유 클라이언트가 자신의 Controller를 통해 월드 사운드 재생을 요청한다. 네트워크 관련성이 있는 클라이언트에 전달한다. */
 	bool PlayRelevantAtLocationFromOwningClient(const FOutlierAudioPlayRequest& Request);
 
-	/** Relevant world playback that must originate from server gameplay. */
+	/** 서버 게임플레이에서 월드 사운드 재생을 요청한다. 네트워크 관련성이 있는 클라이언트에 전달한다. */
 	bool PlayRelevantAtLocationFromServer(const FOutlierAudioPlayRequest& Request);
 
-	/** Called only by the owning PlayerController's world-audio Server RPC. */
+	/** 소유 PlayerController의 월드 오디오 Server RPC에서만 호출한다. */
 	bool HandleServerRelevantAtLocationRequest(
 		AFirstPersonPlayerController* RequestingController,
 		const FOutlierAudioPlayRequest& Request);
 
-	/** RPC/GAS delivery endpoint. Never routes across the network again. */
+	/** RPC/GAS로 전달된 재생 요청의 최종 처리 지점. 네트워크로 다시 전송하지 않는다. */
 	bool PlayResolvedAudioLocally(const FOutlierResolvedAudioPlay& ResolvedPlay);
 
-	/** Stops and releases one locally playing loop instance. */
+	/** 로컬에서 재생 중인 루프 인스턴스 하나를 중단하고 해제한다. */
 	bool StopLoopAudioLocally(int32 AudioInstanceId, float FadeOutDuration = 0.0f);
 
 	UFUNCTION(BlueprintCallable, Category = "Outlier|Audio|Settings")
@@ -106,15 +120,15 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Outlier|Audio|Settings")
 	float GetVolumeMultiplier(EOutlierAudioVolumeType VolumeType) const;
 
-	/** Stops current playback and discards all queued plays; future UI requests remain usable. */
+	/** 현재 재생과 대기 요청을 모두 정리한다. 이후 UI 재생 요청은 계속 사용할 수 있다. */
 	UFUNCTION(BlueprintCallable, Category = "Outlier|Audio|Playback")
 	void StopAllLocalAudio();
-	/** Menu entry stops transient feedback without discarding gameplay-owned desired loops. */
+	/** 메뉴 진입 시 일시적인 피드백만 중단하고 게임플레이가 요청한 루프 상태는 유지한다. */
 	void StopTransientLocalAudio();
 	void StartFrontendMusic();
 	void EnterGameplayMusic();
 
-// Desired local loop state. The subsystem owns handles, retries and emitter attachment.
+// 요청된 로컬 루프 상태. 핸들, 재시도, 재생 주체에 대한 부착은 서브시스템이 관리한다.
 	void SetLocalEmitterLoop(AActor* Emitter, FGameplayTag Type, FGameplayTag Context, bool bEnabled,
 		bool bTwoD = false, float FadeOutDuration = 0.0f);
 
@@ -138,6 +152,14 @@ public:
 	void MarkMenuAction() { ++MenuAudioSerial; LastMenuAudioFrame = GFrameCounter; }
 
 private:
+	struct FRuntimeCatalogEntry;
+	friend class FOutlierSurfaceAudioSelectionTest;
+	TMap<FGameplayTag, FOutlierSurfaceContextMapping> SurfaceContextMappings;
+	TMap<TWeakObjectPtr<USkeletalMeshComponent>, TSet<FGameplayTag>> AnimationAudioTokens;
+	TWeakObjectPtr<UWorld> SurfaceVisualWorld;
+	TWeakObjectPtr<UVisualEventSubsystem> SurfaceVisualSubsystem;
+	UVisualEventSubsystem* GetSurfaceVisualSubsystem();
+	const FRuntimeCatalogEntry* ResolveOrderedEntry(FGameplayTag Type, const TArray<FGameplayTag>& Contexts) const;
 	void HandleAudioWorldTick(UWorld* World, ELevelTick TickType, float DeltaTime);
 	void SyncAudioPause(UAudioComponent* Component);
 	FDelegateHandle AudioWorldTickHandle;
@@ -352,6 +374,11 @@ private:
 	TMap<FGameplayTag /*TypeTag*/, TArray<FRuntimeCatalogEntry>> CatalogEntriesByType;
 	TMap<FGameplayTag /*TypeTag*/, FDiscoveredBank> DiscoveredBanksByType;
 	TMap<FGameplayTag /*TypeTag*/, TArray<TPair<FOutlierAudioPlayRequest, FOutlierAudioExecutionPolicy>>> PendingPlaysByType;
+	TMap<FGameplayTag, TArray<TPair<FOutlierResolvedAudioPlay, TWeakObjectPtr<UWorld>>>> PendingResolvedPlaysByType;
+	TMap<FSoftObjectPath, TArray<TPair<FOutlierAudioPlayRequest, FOutlierAudioExecutionPolicy>>> PendingSurfaceSelectionsBySound;
+	TSet<FSoftObjectPath> FailedSurfaceSounds;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<USoundDefinition>> PendingLegacySounds;
 	TSharedPtr<FStreamableHandle> BankMetadataLoadHandle;
 	TMap<FGameplayTag /*TypeTag*/, TSharedPtr<FStreamableHandle>> BankContentLoadHandles;
 
@@ -369,13 +396,14 @@ private:
 		FGameplayTag Type;
 		int32 InstanceId = 0;
 		bool bTwoD = false;
+		bool bOneShotSubmitted = false;
 	};
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<class UOutlierMenuAudioBinding>> MenuAudioBindings;
 	TMap<FLoopPlaybackKey, FLocalEmitterLoop> LocalEmitterLoops;
 	FTimerHandle LocalLoopTimer;
 	TWeakObjectPtr<UWorld> LocalLoopWorld;
-	int32 NextLocalLoopId = -1; // Network instance IDs are positive.
+	int32 NextLocalLoopId = -1; // 네트워크 인스턴스 ID는 양수를 사용한다.
 	void RefreshLocalEmitterLoops();
 	void ClearLocalEmitterLoops();
 	int32 NextAudioInstanceId = 1;
