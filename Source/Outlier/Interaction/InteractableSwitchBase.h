@@ -81,6 +81,10 @@ protected:
 	FName HackedScalarParamName = TEXT("Hacked");
 
 private:
+#if WITH_DEV_AUTOMATION_TESTS
+	friend class FInteractableSwitchDoorBindingTest;
+#endif
+
 	UFUNCTION()
 	void OnRep_IsActivated();
 
