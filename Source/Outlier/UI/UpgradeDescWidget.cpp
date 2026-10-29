@@ -121,7 +121,7 @@ void UUpgradeDescWidget::ShowNodeData(
 	UpdateNodeData(InNodeRowName, InNodeData, InNodeState, InCurrentNodeCount, bInCanAfford);
 	// 영상의 설정 주체는 노드다. 캐시된 설명창에도 열 때마다 현재 노드의 값을 전달한다.
 	CurrentPreviewMedia = InPreviewMedia;
-	SetVisibility(ESlateVisibility::Visible);
+	SetVisibility(ESlateVisibility::HitTestInvisible);
 	InvalidateLayoutAndVolatility();
 	ForceLayoutPrepass();
 	PlayPopUp(true);
@@ -181,7 +181,8 @@ void UUpgradeDescWidget::PlayPopUp(bool bOpen)
 	{
 		bClearWhenClosed = false;
 		bDescriptionOpen = true;
-		SetVisibility(ESlateVisibility::Visible);
+		// 설명창과 자식 전체가 아래 노드의 호버·누르기 입력을 가로채지 않는다.
+		SetVisibility(ESlateVisibility::HitTestInvisible);
 		BindPreviewVisibility();
 		if (!bDescriptionOpen) return;
 		StartPreviewMedia();

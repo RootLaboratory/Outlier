@@ -188,6 +188,7 @@ struct FUpgradeNodeInteractionTestAccess
 		if (!Desc->MediaImage) Desc->MediaImage = NewObject<UImage>(Desc);
 	}
 	static void HoverDescription(UUpgradeNodeWidget* Node) { Node->HandleHovered(); }
+	static bool HoverDescriptionVisible(UUpgradeNodeWidget* Node) { return Node->bHoverDescVisible; }
 	static UFileMediaSource* PreviewSource(UUpgradeDescWidget* Desc) { return Desc->CurrentPreviewMedia.Get(); }
 	static UMediaPlayer* PreviewPlayer(UUpgradeDescWidget* Desc) { return Desc->PreviewPlayer; }
 	static UImage* PreviewImage(UUpgradeDescWidget* Desc) { return Desc->MediaImage; }
@@ -926,6 +927,52 @@ bool FUpgradeUnlockResponseOrderTest::RunTest(const FString& Parameters)
 	Access::Result(Node, Owner, 3, false);
 	TestFalse(TEXT("Rejected purchase does not play"), Node->IsUnlockPresentationPlaying());
 	TestEqual(TEXT("Rejected purchase leaves the closed frame"), Access::UnlockFrame(Node), 0.0f);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FUpgradeDescHoverLifetimeTest, "Outlier.UI.Upgrade.Description.HoverLifetime",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUpgradeDescHoverLifetimeTest::RunTest(const FString& Parameters)
+{
+	using Access = FUpgradeNodeInteractionTestAccess;
+	UClass* DescClass = LoadClass<UUpgradeDescWidget>(nullptr,
+		TEXT("/Game/Blueprints/Widget/FirstPerson/Upgrade/WBP_UpgradeRegularDesc.WBP_UpgradeRegularDesc_C"));
+	if (!TestNotNull(TEXT("Regular description BP exists"), DescClass)) return false;
+	UUpgradeDescWidget* Desc = NewObject<UUpgradeDescWidget>(GetTransientPackage(), DescClass);
+	Access::AddPopupRetainer(Desc);
+	UCanvasPanel* Canvas = NewObject<UCanvasPanel>();
+	Canvas->AddChild(Desc);
+	UUpgradeNodeWidget* Node = NewObject<UUpgradeNodeWidget>();
+	Canvas->AddChild(Node);
+	Node->SetUpgradeDescWidget(Desc);
+	Node->InjectNodeData(TEXT("A"), FOutlierUpgradeNodeRow());
+	Access::HoverDescription(Node);
+	TestTrue(TEXT("Node hover opens the description"), Access::DescriptionOpen(Desc));
+	TestTrue(TEXT("Node tracks the open description"), Access::HoverDescriptionVisible(Node));
+	TestEqual(TEXT("Description and all children pass pointer input through"),
+		Desc->GetVisibility(), ESlateVisibility::HitTestInvisible);
+
+	// 월드나 타이머 진행 없이 언호버 호출만으로 닫기가 시작되어야 한다.
+	Access::Leave(Node);
+	TestFalse(TEXT("Unhover immediately begins closing"), Access::DescriptionOpen(Desc));
+	TestFalse(TEXT("Unhover clears the node's logical open state"), Access::HoverDescriptionVisible(Node));
+	TestEqual(TEXT("Closing keeps the description visible for its animation"),
+		Desc->GetVisibility(), ESlateVisibility::HitTestInvisible);
+	Access::FinishPopupClose(Desc);
+	TestEqual(TEXT("Only close completion collapses the description"), Desc->GetVisibility(), ESlateVisibility::Collapsed);
+
+	// 닫히는 중 재진입하면 다시 열고, 이전 완료 알림은 새 표시를 지우지 않는다.
+	Access::HoverDescription(Node);
+	Access::Leave(Node);
+	Access::HoverDescription(Node);
+	Access::FinishPopupClose(Desc);
+	TestTrue(TEXT("Reentry during closing reopens the description"), Access::DescriptionOpen(Desc));
+	TestTrue(TEXT("Reentry restores the node's logical open state"), Access::HoverDescriptionVisible(Node));
+	TestEqual(TEXT("Reopening still passes all pointer input through"),
+		Desc->GetVisibility(), ESlateVisibility::HitTestInvisible);
+	TestTrue(TEXT("A stale close preserves the current node data"), Desc->GetCurrentNodeRowName() == TEXT("A"));
+	Node->DismissDescription();
 	return true;
 }
 

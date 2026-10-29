@@ -21,7 +21,6 @@
 #include "UI/UpgradeNodeGroupWidget.h"
 #include "Upgrade/OutlierUpgradeComponent.h"
 #include "Upgrade/OutlierUpgradeSetData.h"
-#include "TimerManager.h"
 #include "HAL/PlatformTime.h"
 #include "Widgets/SWidget.h"
 
@@ -81,10 +80,6 @@ void UUpgradeNodeWidget::NativeDestruct()
 	SetNodeHovered(false);
 	ResetUpgradeInteraction();
 	UnbindUpgradeContextEvents();
-	if (GetWorld())
-	{
-		GetWorld()->GetTimerManager().ClearTimer(DescHideTimerHandle);
-	}
 	HideUpgradeDescWidget();
 
 	if (CachedUpgradeDescWidget && CachedUpgradeDescWidget->GetParent())
@@ -215,10 +210,6 @@ void UUpgradeNodeWidget::DismissDescription()
 {
 	if (bHoverDescVisible || CachedUpgradeDescWidget)
 	{
-		if (GetWorld())
-		{
-			GetWorld()->GetTimerManager().ClearTimer(DescHideTimerHandle);
-		}
 		if (CachedUpgradeDescWidget)
 		{
 			CachedUpgradeDescWidget->ClearNodeData();
@@ -658,10 +649,6 @@ void UUpgradeNodeWidget::HandleHovered()
 	{
 		NodeGroupWidget->DismissOtherNodeDescriptions(this);
 	}
-	if (GetWorld())
-	{
-		GetWorld()->GetTimerManager().ClearTimer(DescHideTimerHandle);
-	}
 	if (bSuppressDescUntilUnhover)
 	{
 		return;
@@ -733,33 +720,14 @@ void UUpgradeNodeWidget::HandleUnhovered()
 	SetNodeHovered(false);
 	CancelHold();
 	bSuppressDescUntilUnhover = false;
-	ScheduleDescHide();
+	if (bHoverDescVisible)
+	{
+		// 닫힘 연출은 기존 경로로 재생하고, 재진입은 새 열기로 처리한다.
+		bHoverDescVisible = false;
+		HideUpgradeDescWidget();
+	}
 
 	OnUpgradeNodeUnhovered.Broadcast(this, CurrentNodeRowName);
-}
-
-void UUpgradeNodeWidget::ScheduleDescHide()
-{
-	if (!bHoverDescVisible || !GetWorld())
-	{
-		return;
-	}
-
-	GetWorld()->GetTimerManager().SetTimer(
-		DescHideTimerHandle, this, &UUpgradeNodeWidget::HandleDescHideTimer, 0.2f, true);
-}
-
-void UUpgradeNodeWidget::HandleDescHideTimer()
-{
-	if ((NodeButton && NodeButton->IsHovered())
-		|| (CachedUpgradeDescWidget && CachedUpgradeDescWidget->GetVisibility() != ESlateVisibility::Collapsed
-			&& CachedUpgradeDescWidget->GetCachedGeometry().IsUnderLocation(FSlateApplication::Get().GetCursorPos())))
-	{
-		return;
-	}
-
-	HideUpgradeDescWidget();
-	bHoverDescVisible = false;
 }
 
 void UUpgradeNodeWidget::BindButtonEvents()
@@ -941,10 +909,6 @@ UUpgradeDescWidget* UUpgradeNodeWidget::EnsureUpgradeDescWidget()
 
 void UUpgradeNodeWidget::HideUpgradeDescWidget()
 {
-	if (GetWorld())
-	{
-		GetWorld()->GetTimerManager().ClearTimer(DescHideTimerHandle);
-	}
 	if (CachedUpgradeDescWidget)
 	{
 		CachedUpgradeDescWidget->HideNodeData(CurrentNodeRowName);

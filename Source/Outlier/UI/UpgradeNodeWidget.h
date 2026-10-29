@@ -3,7 +3,6 @@
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
 #include "Containers/Ticker.h"
-#include "TimerManager.h"
 #include "Upgrade/OutlierUpgradeTypes.h"
 #include "UObject/PropertyText.h"
 #include "UpgradeNodeWidget.generated.h"
@@ -327,8 +326,6 @@ private:
 	EOutlierUpgradeNodeState GetDisplayedDescState() const;
 	UUpgradeDescWidget* EnsureUpgradeDescWidget();
 	void HideUpgradeDescWidget();
-	void ScheduleDescHide();
-	void HandleDescHideTimer();
 	UCanvasPanel* FindDescCanvas() const;
 	bool CalculateDescWidgetLayout(UCanvasPanel* ParentCanvas, FVector2D& OutPosition, FVector2D& OutSize, float& OutRenderScale) const;
 	float CalculateDescViewportScale(const FVector2D& CanvasSize) const;
@@ -363,7 +360,6 @@ private:
 	FDelegateHandle UpgradeResultHandle;
 	FDelegateHandle NodeCountChangedHandle;
 	FDelegateHandle ActivatedNodesChangedHandle;
-	FTimerHandle DescHideTimerHandle;
 	bool bUnlockStateInitialized = false;
 	bool bUnlockPlaying = false;
 	bool bUnlockConfigurationWarned = false;
