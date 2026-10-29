@@ -61,6 +61,10 @@ struct OUTLIER_API FAutoTurretBehaviorRow : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Attack", meta = (ClampMin = "0.0"))
 	float BeamPresentationDuration = 0.25f;
 
+	// 레이저 저격 Task가 빔 표시를 끝낸 뒤 기다리는 시간. 무기 쿨다운과 중복하지 않는다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Attack", meta = (ClampMin = "0.0"))
+	float RecoveryDuration = 1.0f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Search", meta = (ClampMin = "0.0", ClampMax = "180.0"))
 	float SearchYawDegrees = 45.0f;
 
@@ -340,6 +344,8 @@ private:
 	void ApplyWaitingForWaveState();
 	void ApplyDeadPersistentPose();
 	void PlayDeathMontageIfNeeded();
+	UFUNCTION()
+	void LogDeathMontageEnded(UAnimMontage* Montage, bool bInterrupted);
 	bool RestoreDeadPersistentState();
 	bool BeginRoomWaveDeployment(int32 GameplayGeneration);
 	bool BeginTurretDeploymentInternal();

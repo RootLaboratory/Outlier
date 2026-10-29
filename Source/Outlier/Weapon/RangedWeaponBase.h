@@ -242,6 +242,11 @@ protected:
 	virtual void InitializeRecoilFromDataTable();
 	virtual void InitializeProjectileFromDataTable();
 	virtual void ApplyFeedbackDefinition();
+	// 실제 서버 충돌 결과를 사용하는 파생 무기의 연출 확장점.
+	virtual void OnHitscanShotResolved(const FVector& ShotStart, const FVector& TraceEnd, const FVector& ImpactNormal,
+		bool bHasImpact, FName FiredMuzzleSocketName) {}
+	virtual bool ShouldPlayDefaultFireFX() const { return true; }
+	virtual bool ResolveShotTransform(FName FiredMuzzleSocketName, FTransform& OutTransform) const;
 
 	void ApplySightMesh();
 	void HideSightPresentation();

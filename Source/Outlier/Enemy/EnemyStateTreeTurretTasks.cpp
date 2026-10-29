@@ -3,6 +3,7 @@
 #include "Enemy/EnemyAIController.h"
 #include "Outlier.h"
 #include "Weapon/RangedWeaponBase.h"
+#include "Weapon/LaserWeapon.h"
 
 namespace
 {
@@ -268,7 +269,9 @@ EStateTreeRunStatus FEnemyTurretSniperShotTask::EnterState(
 {
 	FInstanceDataType& Data = Context.GetInstanceData(*this);
 	AActor* Target = ResolveVisibleTarget(Data.Turret, Data.TargetActor);
-	if (!Data.Turret || !Data.Turret->HasAuthority() || !IsValid(Target)
+	if (!IsValid(Data.Turret) || !Data.Turret->HasAuthority() || !IsValid(Target)
+		|| Data.Turret->IsDead() || Data.Turret->GetCombatState() == EEnemyCombatState::Stun
+		|| Data.Turret->IsAIControlSuppressed()
 		|| !IsValid(Data.Turret->GetCurrentWeapon()))
 	{
 		if (AAutoTurret::IsTurretDiagnosticsEnabled())
@@ -287,6 +290,21 @@ EStateTreeRunStatus FEnemyTurretSniperShotTask::EnterState(
 	Data.ElapsedTime = 0.0f;
 	Data.Phase = EEnemyTurretSniperTaskPhase::LaserTelegraphAndTracking;
 	Data.bAttackStarted = false;
+	Data.bLoggedAttackBlocked = false;
+	Data.ActiveWeapon = Data.Turret->GetCurrentWeapon();
+	if (AAutoTurret::IsTurretDiagnosticsEnabled())
+	{
+		const FAutoTurretBehaviorRow& Behavior = Data.Turret->GetTurretBehavior();
+		UE_LOG(LogOutlier, Display, TEXT("[TurretDiag][Laser] ChargeEnter Turret=%s Weapon=%s Class=%s Laser=%d Target=%s Aim=%s Charge=%.3f Trail=%.3f Recovery=%.3f"),
+			*GetNameSafe(Data.Turret), *GetNameSafe(Data.ActiveWeapon), *GetNameSafe(Data.ActiveWeapon->GetClass()),
+			Cast<ALaserWeapon>(Data.ActiveWeapon) != nullptr, *GetNameSafe(Target), *Data.LockedAimLocation.ToCompactString(),
+			Behavior.TelegraphDuration, Behavior.BeamPresentationDuration, Behavior.RecoveryDuration);
+	}
+	if (ALaserWeapon* Laser = Cast<ALaserWeapon>(Data.ActiveWeapon))
+	{
+		const FAutoTurretBehaviorRow& Behavior = Data.Turret->GetTurretBehavior();
+		Laser->BeginCharge(Behavior.TelegraphDuration, Behavior.BeamPresentationDuration);
+	}
 	Data.Turret->SetAttackPhase(EEnemyAttackPhase::Telegraph);
 	return EStateTreeRunStatus::Running;
 }
@@ -296,10 +314,24 @@ EStateTreeRunStatus FEnemyTurretSniperShotTask::Tick(FStateTreeExecutionContext&
 	FInstanceDataType& Data = Context.GetInstanceData(*this);
 	AAutoTurret* Turret = Data.Turret;
 	ARangedWeaponBase* Weapon = Turret ? Turret->GetCurrentWeapon() : nullptr;
-	if (!Turret || !Turret->HasAuthority() || !Weapon)
+	if (!IsValid(Turret) || !Turret->HasAuthority() || !IsValid(Weapon)
+		|| Weapon != Data.ActiveWeapon || Turret->IsDead()
+		|| Turret->GetCombatState() == EEnemyCombatState::Stun || Turret->IsAIControlSuppressed())
 	{
+		if (AAutoTurret::IsTurretDiagnosticsEnabled())
+		{
+			UE_LOG(LogOutlier, Warning, TEXT("[TurretDiag][Laser] Abort Turret=%s Weapon=%s ActiveWeapon=%s Phase=%d Elapsed=%.3f Authority=%d Dead=%d Stun=%d Suppressed=%d"),
+				*GetNameSafe(Turret), *GetNameSafe(Weapon), *GetNameSafe(Data.ActiveWeapon), static_cast<int32>(Data.Phase), Data.ElapsedTime,
+				IsValid(Turret) && Turret->HasAuthority(), IsValid(Turret) && Turret->IsDead(),
+				IsValid(Turret) && Turret->GetCombatState() == EEnemyCombatState::Stun, IsValid(Turret) && Turret->IsAIControlSuppressed());
+		}
+		if (IsValid(Data.ActiveWeapon))
+		{
+			Data.ActiveWeapon->StopAttack();
+		}
 		return EStateTreeRunStatus::Failed;
 	}
+	ALaserWeapon* Laser = Cast<ALaserWeapon>(Weapon);
 
 	if (Data.Phase == EEnemyTurretSniperTaskPhase::LaserTelegraphAndTracking)
 	{
@@ -315,16 +347,32 @@ EStateTreeRunStatus FEnemyTurretSniperShotTask::Tick(FStateTreeExecutionContext&
 		}
 		if (!Weapon->CanAttack())
 		{
+			if (!Data.bLoggedAttackBlocked && AAutoTurret::IsTurretDiagnosticsEnabled())
+			{
+				UE_LOG(LogOutlier, Warning, TEXT("[TurretDiag][Laser] WaitingCanAttack Turret=%s Weapon=%s Elapsed=%.3f"), *GetNameSafe(Turret), *GetNameSafe(Weapon), Data.ElapsedTime);
+			}
+			Data.bLoggedAttackBlocked = true;
 			return EStateTreeRunStatus::Running;
 		}
 		if (!Turret->StartAttackLocation(Data.LockedAimLocation))
 		{
+			if (AAutoTurret::IsTurretDiagnosticsEnabled())
+			{
+				UE_LOG(LogOutlier, Warning, TEXT("[TurretDiag][Laser] FireRejected Turret=%s Weapon=%s Aim=%s"), *GetNameSafe(Turret), *GetNameSafe(Weapon), *Data.LockedAimLocation.ToCompactString());
+			}
 			return EStateTreeRunStatus::Failed;
+		}
+		if (AAutoTurret::IsTurretDiagnosticsEnabled())
+		{
+			UE_LOG(LogOutlier, Display, TEXT("[TurretDiag][Laser] FireRequested Turret=%s Weapon=%s Target=%s Visible=%d Aim=%s"),
+				*GetNameSafe(Turret), *GetNameSafe(Weapon), *GetNameSafe(Data.TargetActor), Turret->IsPlayerCurrentlyVisible(), *Data.LockedAimLocation.ToCompactString());
 		}
 		Turret->PlayFireMontage();
 		Data.Phase = EEnemyTurretSniperTaskPhase::BeamPresentation;
 		Data.ElapsedTime = 0.0f;
 		Data.bAttackStarted = true;
+		// 전조 Tick의 시간을 새 빔 표시 단계에 다시 더하지 않는다.
+		return EStateTreeRunStatus::Running;
 	}
 
 	if (Data.Phase == EEnemyTurretSniperTaskPhase::BeamPresentation)
@@ -335,15 +383,31 @@ EStateTreeRunStatus FEnemyTurretSniperShotTask::Tick(FStateTreeExecutionContext&
 			return EStateTreeRunStatus::Running;
 		}
 		Data.Phase = EEnemyTurretSniperTaskPhase::Cooling;
+		Data.ElapsedTime = 0.0f;
+		if (AAutoTurret::IsTurretDiagnosticsEnabled())
+		{
+			UE_LOG(LogOutlier, Display, TEXT("[TurretDiag][Laser] RecoveryEnter Turret=%s Weapon=%s Duration=%.3f"), *GetNameSafe(Turret), *GetNameSafe(Weapon), Turret->GetTurretBehavior().RecoveryDuration);
+		}
+		if (Laser)
+		{
+			Laser->EndLaserPresentation();
+		}
 		Turret->StopFireMontage();
 		Turret->SetAttackPhase(EEnemyAttackPhase::Recover);
+		return EStateTreeRunStatus::Running;
 	}
 
-	if (Weapon->IsOnPostBurstCooldown())
+	Data.ElapsedTime += DeltaTime;
+	if (Laser ? Data.ElapsedTime < FMath::Max(Turret->GetTurretBehavior().RecoveryDuration, 0.0f)
+		: Weapon->IsOnPostBurstCooldown())
 	{
 		return EStateTreeRunStatus::Running;
 	}
 	Turret->SetAttackPhase(EEnemyAttackPhase::Idle);
+	if (AAutoTurret::IsTurretDiagnosticsEnabled())
+	{
+		UE_LOG(LogOutlier, Display, TEXT("[TurretDiag][Laser] CycleComplete Turret=%s Weapon=%s"), *GetNameSafe(Turret), *GetNameSafe(Weapon));
+	}
 	return EStateTreeRunStatus::Succeeded;
 }
 
@@ -351,9 +415,25 @@ void FEnemyTurretSniperShotTask::ExitState(
 	FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const
 {
 	const FInstanceDataType& Data = Context.GetInstanceData(*this);
+	if (AAutoTurret::IsTurretDiagnosticsEnabled())
+	{
+		UE_LOG(LogOutlier, Display, TEXT("[TurretDiag][Laser] TaskExit Turret=%s Weapon=%s Phase=%d Elapsed=%.3f AttackStarted=%d"),
+			*GetNameSafe(Data.Turret), *GetNameSafe(Data.ActiveWeapon), static_cast<int32>(Data.Phase), Data.ElapsedTime, Data.bAttackStarted);
+	}
+	if (IsValid(Data.ActiveWeapon))
+	{
+		Data.ActiveWeapon->StopAttack();
+	}
 	if (Data.Turret)
 	{
-		Data.Turret->StopCurrentAttack();
+		if (Data.Turret->GetCurrentWeapon() == Data.ActiveWeapon)
+		{
+			Data.Turret->StopCurrentAttack();
+		}
+		else
+		{
+			Data.Turret->SetAttackPhase(EEnemyAttackPhase::Idle);
+		}
 		Data.Turret->StopFireMontage();
 	}
 }
