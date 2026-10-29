@@ -3,10 +3,28 @@
 #include "AbilitySlotUI.h"
 
 #include "AbilityIconUI.h"
+#include "InputAction.h"
+#include "InputActionDisplayInterface.h"
 #include "Components/Image.h"
 #include "Components/SizeBox.h"
 #include "Engine/Texture2D.h"
 #include "TagDrivenUIGameplayTags.h"
+
+void UAbilitySlotUI::SetInputAction(UInputAction* InputAction)
+{
+	bHasInputActionOverride = true;
+	DisplayedInputAction = InputAction;
+	ApplyInputAction();
+}
+
+void UAbilitySlotUI::ApplyInputAction()
+{
+	if (bHasInputActionOverride && WBP_InputBindKeyDisplayWidget &&
+		WBP_InputBindKeyDisplayWidget->GetClass()->ImplementsInterface(UInputActionDisplayInterface::StaticClass()))
+	{
+		IInputActionDisplayInterface::Execute_SetDisplayedInputAction(WBP_InputBindKeyDisplayWidget, DisplayedInputAction);
+	}
+}
 
 void UAbilitySlotUI::SetIconLayout(const FVector2D& RenderScale, const FVector2D& PositionOffset)
 {
@@ -38,6 +56,7 @@ void UAbilitySlotUI::NativePreConstruct()
 void UAbilitySlotUI::NativeConstruct()
 {
 	Super::NativeConstruct();
+	ApplyInputAction();
 
 	if (!CurrentAbilityTag.IsValid())
 	{
