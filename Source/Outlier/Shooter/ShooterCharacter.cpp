@@ -2354,6 +2354,7 @@ bool AShooterCharacter::ApplyValidatedPresentationConfiguration(const FShooterPr
 	}
 	ShadowMesh->SetLeaderPoseComponent(Mesh3P);
 	RefreshFirstPersonShadowPolicy();
+	IOutlierReadabilityTarget::Execute_InitializeReadabilityStencil(this, true);
 	if (bPresentationChanged || bFirstPersonChanged || bThirdPersonChanged)
 	{
 		OnPresentationChanged.Broadcast();

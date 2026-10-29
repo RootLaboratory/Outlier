@@ -73,6 +73,7 @@ void AOutlierPostProcessVolume::BeginPlay()
 	InitializeRuntimePostProcessMaterial(EOutlierPostProcessMaterialType::Damaged);
 	InitializeRuntimePostProcessMaterial(EOutlierPostProcessMaterialType::Magnetic);
 	InitializeRuntimePostProcessMaterial(EOutlierPostProcessMaterialType::PartnerOutline);
+	InitializeRuntimePostProcessMaterial(EOutlierPostProcessMaterialType::Readability);
 
 	if (!HasStealthMeshMaterials())
 	{

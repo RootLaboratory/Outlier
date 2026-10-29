@@ -7,6 +7,7 @@
 #include "InputCoreTypes.h"
 #include "Fonts/SlateFontInfo.h"
 #include "Styling/SlateBrush.h"
+#include "InputActionDisplayInterface.h"
 #include "InputActionKeyDisplayWidget.generated.h"
 
 class UEnhancedInputLocalPlayerSubsystem;
@@ -45,11 +46,13 @@ struct FInputKeyTextureDataRow;
  * 있지 않을 때도(즉 이 위젯이 더 오래 살아있어도) 정상적으로 갱신된다.
  */
 UCLASS(Abstract, Blueprintable)
-class OUTLIER_API UInputActionKeyDisplayWidget : public UUserWidget
+class OUTLIER_API UInputActionKeyDisplayWidget : public UUserWidget, public IInputActionDisplayInterface
 {
 	GENERATED_BODY()
 
 public:
+	virtual void SetDisplayedInputAction_Implementation(UInputAction* InputAction) override;
+
 	virtual void SynchronizeProperties() override;
 
 	UFUNCTION(BlueprintCallable, Category = "UI|Input")
@@ -84,6 +87,9 @@ public:
 	UFUNCTION(BlueprintSetter, Category = "UI|Input")
 	void SetKeyTextColor(FLinearColor NewColor);
 
+	UFUNCTION(BlueprintSetter, Category = "UI|Input")
+	void SetShowKeyTextWithImage(bool bNewShowKeyTextWithImage);
+
 	UFUNCTION(BlueprintCallable, Category = "UI|Input")
 	void SetDisplayHeight(float NewHeight);
 
@@ -109,6 +115,10 @@ protected:
 	// WBP 파생 클래스에서 이미지 텍스처를 주입하면 Border Brush에 반영된다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI|Input")
 	TObjectPtr<UTexture2D> BorderImage;
+
+	/** 켜면 BorderImage를 배경으로 유지하고 표시명 DT의 키 텍스트를 함께 표시한다. BorderImage가 없으면 이미지 DT의 프레임을 사용한다. 끄면 이미지 DT의 bShowKeyText 설정을 따른다. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, BlueprintSetter = SetShowKeyTextWithImage, Category = "UI|Input")
+	bool bShowKeyTextWithImage = false;
 
 	/** 키 라벨과 override 텍스트 색상. BP 기본값이나 런타임에 변경할 수 있다. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, BlueprintSetter = SetKeyTextColor, Category = "UI|Input")

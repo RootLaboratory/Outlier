@@ -16,6 +16,11 @@
 #include "UI/InputKeyTextureDataRow.h"
 #include "Outlier.h"
 
+void UInputActionKeyDisplayWidget::SetDisplayedInputAction_Implementation(UInputAction* InputAction)
+{
+	SetWatchedInputAction(InputAction);
+}
+
 void UInputActionKeyDisplayWidget::SynchronizeProperties()
 {
 	Super::SynchronizeProperties();
@@ -83,6 +88,19 @@ void UInputActionKeyDisplayWidget::SetWatchedInputAction(UInputAction* NewInputA
 	if (bIsConstructed)
 	{
 		BindSettingsSubsystem();
+		EnsureWatchedKeyIsResolved();
+	}
+}
+
+void UInputActionKeyDisplayWidget::SetShowKeyTextWithImage(bool bNewShowKeyTextWithImage)
+{
+	bShowKeyTextWithImage = bNewShowKeyTextWithImage;
+	if (IsDesignTime() && bUseExplicitKey)
+	{
+		RefreshDisplayedKey();
+	}
+	else
+	{
 		EnsureWatchedKeyIsResolved();
 	}
 }
@@ -174,7 +192,7 @@ bool UInputActionKeyDisplayWidget::ShowResolvedKey(FKey Key)
 		return false;
 	}
 	const FInputKeyTextureDataRow* Row = FindKeyTextureRow(Key);
-	if (Row && IsValid(Row->Texture) && !Row->bShowKeyText)
+	if (Row && IsValid(Row->Texture) && !Row->bShowKeyText && !bShowKeyTextWithImage)
 	{
 		ShowKeyImage(*Row);
 	}
@@ -404,7 +422,11 @@ void UInputActionKeyDisplayWidget::RefreshBorderBrush()
 		bHasDefaultBorderBrush = true;
 	}
 	FSlateBrush Brush = DefaultBorderBrush;
-	UTexture2D* FrameTexture = IsValid(DisplayedKeyTexture) ? DisplayedKeyTexture.Get() : BorderImage.Get();
+	// The WBP text override uses its own background (for example an ability icon),
+	// rather than replacing it with the key texture from the table.
+	UTexture2D* FrameTexture = bShowKeyTextWithImage && IsValid(BorderImage)
+		? BorderImage.Get()
+		: (IsValid(DisplayedKeyTexture) ? DisplayedKeyTexture.Get() : BorderImage.Get());
 	if (bDisplayingImageKey)
 	{
 		Brush.SetResourceObject(DisplayedKeyTexture);
