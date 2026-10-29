@@ -47,6 +47,13 @@ class UPackageMap;
 class ASuitInteraction;
 class APlayerController;
 class AOutlierPlayerState;
+class UOutlierAudioSubsystem;
+class UVisualEventSubsystem;
+
+namespace ShooterSlideSimulationTests
+{
+	struct FFixture;
+}
 
 UENUM()
 enum class ESuitTransitionPhase : uint8
@@ -231,8 +238,12 @@ class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbil
 	friend class UShooterInventoryComponent;
 	friend class UShooterCombatComponent;
 	friend class UShooterMovementComponent;
+	friend class UShooterCharacterMovementComponent;
+	friend struct ShooterSlideSimulationTests::FFixture;
 	friend class FShooterGroundedMovementTest;
 	friend class FShooterCoyoteTimeTest;
+	friend class FShooterSlidePredictionTest;
+	friend class FShooterSlideLifecycleTest;
 	friend class FShooterPresentationConfigurationTest;
 	friend class FOutlierShooterPresentationAssetsTest;
 	friend class FShooterPresentationReplicationTest;
@@ -244,6 +255,17 @@ class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbil
 	friend class FOutlierMeleeAttackLifecycleTest;
 
 protected:
+	UPROPERTY(Transient)
+	TObjectPtr<UOutlierAudioSubsystem> MovementAudioSubsystem;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UVisualEventSubsystem> MovementVisualSubsystem;
+
+	void RefreshSlideAudio();
+
+	UFUNCTION(NetMulticast, Unreliable)
+	void MulticastPlayLandingEffects(uint8 Surface, FVector_NetQuantize Location, FVector_NetQuantizeNormal Normal, FGameplayTag Context);
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
 	TObjectPtr<UOutlierAbilitySystemComponent> OutlierAbilitySystemComponent;
 
@@ -424,8 +446,11 @@ protected:
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "State")
 	ECombatState CombatState = ECombatState::Idle;
 
-	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = "State")
+	UPROPERTY(ReplicatedUsing = OnRep_ActionLock, VisibleAnywhere, BlueprintReadOnly, Category = "State")
 	EShooterActionLock ActionLock = EShooterActionLock::None;
+
+	UFUNCTION()
+	void OnRep_ActionLock(EShooterActionLock PreviousLock);
 
 	// 기존 BP 조회용 이름은 유지하되, 외형 복제/적용의 입력으로 사용하지 않는다.
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Suit|Mesh")
@@ -642,7 +667,7 @@ protected:
 	UFUNCTION(Client, Unreliable)
 	void ClientPlayReflectionRipple(FVector_NetQuantize IncomingOrigin);
 
-	/** Initialize input action bindings */
+	/** 입력 액션 바인딩을 초기화한다. */
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
 
 	virtual void OnStartCrouch(float HalfHeightAdjust, float ScaledHalfHeightAdjust) override;
@@ -1049,6 +1074,9 @@ protected:
 
 	UFUNCTION(NetMulticast, Reliable)
 	void MulticastPlayThirdPersonActionMontage(EShooterMontageAction Action, EWeaponType WeaponType, bool bAimingAtShot = false);
+
+	UFUNCTION(NetMulticast, Reliable)
+	void MulticastStopSlideMontage();
 
 
 public:

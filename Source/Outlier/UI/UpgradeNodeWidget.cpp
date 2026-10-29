@@ -213,7 +213,7 @@ void UUpgradeNodeWidget::SetUpgradeDescWidgetClass(TSubclassOf<UUpgradeDescWidge
 
 void UUpgradeNodeWidget::DismissDescription()
 {
-	if (bHoverDescVisible)
+	if (bHoverDescVisible || CachedUpgradeDescWidget)
 	{
 		if (GetWorld())
 		{
@@ -673,6 +673,11 @@ void UUpgradeNodeWidget::HandleHovered()
 	}
 
 	OnUpgradeNodeHovered.Broadcast(this, CurrentNodeRowName);
+	// 부모 숨김으로 설명창만 정리된 경우, 다음 호버를 새 열기로 처리한다.
+	if (bHoverDescVisible && CachedUpgradeDescWidget && !CachedUpgradeDescWidget->IsVisible())
+	{
+		bHoverDescVisible = false;
+	}
 	if (bHoverDescVisible)
 	{
 		return;
@@ -698,7 +703,8 @@ void UUpgradeNodeWidget::HandleHovered()
 		CurrentNodeData,
 		GetDisplayedDescState(),
 		CurrentNodeCount,
-		bCanAfford);
+		bCanAfford,
+		PreviewMedia);
 
 	FVector2D PopupPosition = FVector2D::ZeroVector;
 	FVector2D PopupSize = FVector2D::ZeroVector;

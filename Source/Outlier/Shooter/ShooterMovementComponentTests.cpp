@@ -2,6 +2,7 @@
 
 #include "Shooter/ShooterCharacter.h"
 #include "Shooter/ShooterMovementComponent.h"
+#include "Shooter/ShooterCharacterMovementComponent.h"
 #include "Shooter/ShooterCombatComponent.h"
 #include "OutlierPlayerState.h"
 #include "Curves/CurveFloat.h"
@@ -132,6 +133,33 @@ bool FShooterGroundedMovementTest::RunTest(const FString& Parameters)
 				Combat->FinishReloadInternal();
 				TestFalse(TEXT("Shift release during reload prevents sprint resume"), Movement->IsSprinting());
 				TestFalse(TEXT("Shift release during reload clears intent"), Movement->WantsToSprint());
+
+				CharacterMovement->Velocity = FVector(400.0f, 0.0f, 0.0f);
+				Movement->HandleSprintPressed();
+				BeginReloadFixture();
+				Movement->HandleCrouchPressed();
+				TestTrue(TEXT("Reload permits crouch hold"), Movement->WantsToCrouch());
+				TestTrue(TEXT("Reload crouch reaches the engine movement request"), CharacterMovement->bWantsToCrouch != 0);
+				TestTrue(TEXT("Crouching does not cancel reload"), Shooter->IsReloading());
+				TestEqual(TEXT("Crouching preserves the reload lock"), Shooter->GetActionLock(), EShooterActionLock::Reload);
+				TestFalse(TEXT("Reload crouch cannot start Slide"), Movement->IsSliding());
+				TestFalse(TEXT("Reload still rejects direct Slide entry"), Movement->CanStartSlide());
+				Movement->HandleCrouchReleased();
+				TestFalse(TEXT("Reload permits releasing crouch"), CharacterMovement->bWantsToCrouch != 0);
+				TestTrue(TEXT("Releasing crouch does not cancel reload"), Shooter->IsReloading());
+				TestEqual(TEXT("Releasing crouch preserves the reload lock"), Shooter->GetActionLock(), EShooterActionLock::Reload);
+				Movement->HandleCrouchPressed();
+				Combat->FinishReloadInternal();
+				TestTrue(TEXT("Reload completion preserves crouch hold"), Movement->WantsToCrouch());
+				TestTrue(TEXT("Reload completion keeps the engine crouch request"), CharacterMovement->bWantsToCrouch != 0);
+				TestFalse(TEXT("Held crouch prevents Sprint after reload"), Movement->IsSprinting());
+				Movement->HandleCrouchReleased();
+				TestTrue(TEXT("Releasing crouch after reload resumes held Sprint"), Movement->IsSprinting());
+				Shooter->BeginActionLock(EShooterActionLock::Equip);
+				Movement->HandleCrouchPressed();
+				TestFalse(TEXT("Equip lock still rejects crouch hold"), Movement->WantsToCrouch());
+				TestFalse(TEXT("Equip lock still rejects engine crouch request"), CharacterMovement->bWantsToCrouch != 0);
+				Shooter->EndActionLock(EShooterActionLock::Equip);
 			}
 			Movement->HandleSprintReleased();
 			TestFalse(TEXT("Shift release clears sprint intent"), Movement->WantsToSprint());
@@ -233,23 +261,34 @@ bool FShooterGroundedMovementTest::RunTest(const FString& Parameters)
 			Movement->HandleSprintPressed();
 			Movement->HandleCrouchPressed();
 			TestTrue(TEXT("Deceleration slide fixture starts"), Movement->IsSliding());
-			float PreviousSpeed = CharacterMovement->Velocity.Size2D();
+			auto* SlideMovement = CastChecked<UShooterCharacterMovementComponent>(CharacterMovement);
+			float PreviousSpeed = SlideMovement->GetCurrentSlideSpeed();
+			// 여기서는 커브 규칙만 검사한다. 실제 Walking의 시간/거리/자동 종료는 Slide.Simulation에서 검증한다.
 			for (int32 Step = 0; Step <= 100; ++Step)
 			{
 				const float Progress = Step / 100.0f;
-				Movement->SlideStartTime = World->GetTimeSeconds() - Progress * Shooter->SlideDuration;
-				Movement->UpdateSlideMovement();
-				const float Speed = CharacterMovement->Velocity.Size2D();
+				const float Speed = SlideMovement->EvaluateSlideSpeed(Progress * Shooter->SlideDuration);
 				TestTrue(TEXT("Cubic slide curve never reaccelerates"), Speed <= PreviousSpeed + KINDA_SMALL_NUMBER);
+				SlideMovement->CurrentSlideSpeed = Speed;
 				PreviousSpeed = Speed;
 			}
 			TestTrue(TEXT("Curve finishes at 44 percent of slide start speed"),
-				FMath::IsNearlyEqual(CharacterMovement->Velocity.Size2D(), 400.0f * 1.2f * 0.44f, 0.01f));
+				FMath::IsNearlyEqual(SlideMovement->GetCurrentSlideSpeed(), 400.0f * 1.2f * 0.44f, 0.01f));
 			Movement->HandleCrouchReleased();
 			const FVector ExitVelocity = CharacterMovement->Velocity;
 			Movement->StopSlide(ESlideEndReason::Finished);
 			TestTrue(TEXT("Slide exit preserves remaining momentum"), CharacterMovement->Velocity.Equals(ExitVelocity));
 			Movement->HandleSprintReleased();
+
+			// 초기 Refresh 없이 공개 진입 API를 호출해도 Slide의 임시 속도를 기본값으로 캐시하지 않는다.
+			const float DirectEntryCrouchSpeed = CharacterMovement->MaxWalkSpeedCrouched;
+			Movement->BaseMaxWalkSpeedCrouched = -1.0f;
+			CharacterMovement->Velocity = FVector(400.0f, 0.0f, 0.0f);
+			Movement->TrySlide();
+			TestTrue(TEXT("Direct slide entry starts simulation"), SlideMovement->IsSlideSimulating());
+			Movement->StopSlide(ESlideEndReason::ForcedCancel);
+			TestEqual(TEXT("Direct slide entry preserves normal crouch speed"),
+				CharacterMovement->MaxWalkSpeedCrouched, DirectEntryCrouchSpeed);
 		}
 	}
 	GEngine->ShutdownWorldNetDriver(World);

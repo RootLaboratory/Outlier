@@ -21,6 +21,9 @@ class UInteractableComponent;
 class UProceduralAnimValues;
 class UMaterialInterface;
 struct FCollisionQueryParams;
+class UOutlierAudioSubsystem;
+class UVisualEventSubsystem;
+class UProjectionMarkDefinition;
 
 UENUM(BlueprintType)
 enum class EWeaponType : uint8
@@ -64,9 +67,22 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = Weapon)
 	EWeaponType WeaponType = EWeaponType::Unarmed;
 
-	/** Context used by the shared Audio.Type.Weapon bank for this weapon's world fire sound. */
+	/** 공용 Audio.Type.Weapon Bank에서 이 무기의 월드 발사음을 선택할 때 사용하는 Context. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Audio", meta = (Categories = "Audio.Context"))
 	FGameplayTag WeaponAudioContextTag;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Audio", meta = (Categories = "Audio.Context"))
+	FGameplayTag ImpactAudioContextTag;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UOutlierAudioSubsystem> CachedAudioSubsystem;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UVisualEventSubsystem> CachedVisualSubsystem;
+
+	void PlaySurfaceImpactSound(const FHitResult& Hit, bool bUseSurfaceContext = true);
+	void PlaySurfaceImpactVisual(const FVector& Location, const FVector& Normal, AActor* HitActor,
+		uint8 Surface, FGameplayTag Context, UProjectionMarkDefinition* FallbackDecal = nullptr);
 
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapon|Data")
 	EWeaponFireType FireType = EWeaponFireType::HitScan;

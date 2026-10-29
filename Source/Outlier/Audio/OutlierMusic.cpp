@@ -114,6 +114,8 @@ void UOutlierAudioSubsystem::RequestMusic(FGameplayTag Context)
 		MusicTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
 			FTickerDelegate::CreateUObject(this, &ThisClass::TickMusic), 0.1f);
 	}
+	// 선로드된 곡은 요청 시 바로 시작한다. Ticker는 미준비/일시정지 상태의 재시도만 담당한다.
+	if (Context.IsValid()) TickMusic(0.0f);
 }
 
 bool UOutlierAudioSubsystem::TickMusic(float DeltaTime)

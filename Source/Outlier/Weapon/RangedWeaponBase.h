@@ -80,6 +80,10 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Cooldown")
 	float ReuseCooldown = 0.0f;
 
+	// 탄약이 양수에서 0으로 바뀔 때 소유자에게 재생한다. 기본 태그는 Rifle에만 지정한다.
+	UPROPERTY(EditDefaultsOnly, Category = "Weapon|Audio", meta = (Categories = "Audio.Context"))
+	FGameplayTag EmptyAudioContextTag;
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Burst", meta = (ClampMin = "0"))
 	int32 BurstShotCount = 0;
 
@@ -393,7 +397,8 @@ protected:
 
 	UFUNCTION(NetMulticast, Unreliable)
 	void MulticastPlayFireFX(FVector_NetQuantize TraceEnd, FVector_NetQuantizeNormal ImpactNormal,
-		AActor* Hit, FVector2D NormalizedShotDirection, FName FiredMuzzleSocketName);
+		AActor* Hit, FVector2D NormalizedShotDirection, FName FiredMuzzleSocketName,
+		bool bHasImpact, uint8 Surface, FGameplayTag ImpactContext);
 
 	void PlayThirdPersonFireFX(FVector TraceEnd, FVector ImpactNormal, AActor* Hit, FName FiredMuzzleSocketName);
 

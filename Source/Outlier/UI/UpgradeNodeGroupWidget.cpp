@@ -194,6 +194,8 @@ void UUpgradeNodeGroupWidget::NativeConstruct()
 
 void UUpgradeNodeGroupWidget::NativeDestruct()
 {
+	// 닫힘 연출 중인 설명창도 즉시 정리해, 캐시된 화면 뒤에서 영상이 재생되지 않게 한다.
+	DismissOtherNodeDescriptions(nullptr);
 	ResetNodeUnlockPresentations();
 	ClearConnectionLines();
 	UnbindUpgradePresentationChanged();

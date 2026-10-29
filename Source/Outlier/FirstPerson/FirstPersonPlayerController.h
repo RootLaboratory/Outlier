@@ -14,8 +14,8 @@
 #include "UI/GameOverPendingTypes.h"
 #include "Upgrade/OutlierUpgradeTypes.h"
 #include "Containers/Ticker.h"
-#include "VitalityPresentationTypes.h"
 #include "PostProcess/OutlierPostProcessVolume.h"
+#include "VitalityPresentationTypes.h"
 #include "FirstPersonPlayerController.generated.h"
 
 class UOutlierAbilitySystemComponent;

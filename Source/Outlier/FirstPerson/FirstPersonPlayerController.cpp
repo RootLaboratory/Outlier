@@ -2724,6 +2724,36 @@ void AFirstPersonPlayerController::RefreshPostProcessState()
 	
 }
 
+// Owning RPC transport only; the volume owns the local sequence and its lifetime.
+void AFirstPersonPlayerController::ClientStartPassageFade_Implementation(
+	ATuto_PassageTransitionVolume* Volume, FGuid ExecutionId, FOutlierScreenTransitionTiming Timing)
+{
+	if (!IsLocalController() || !IsValid(Volume) || Volume->GetWorld() != GetWorld()
+		|| LocalSuitTransitionId.IsValid() || LocalElevatorExecutionId.IsValid()) return;
+	Volume->StartLocalPassageFade(this, ExecutionId, Timing);
+}
+
+void AFirstPersonPlayerController::ServerNotifyPassageCovered_Implementation(
+	ATuto_PassageTransitionVolume* Volume, FGuid ExecutionId)
+{
+	if (HasAuthority() && IsValid(Volume) && Volume->GetWorld() == GetWorld())
+		Volume->NotifyScreenCovered(this, ExecutionId);
+}
+
+void AFirstPersonPlayerController::ClientRevealPassage_Implementation(
+	ATuto_PassageTransitionVolume* Volume, FGuid ExecutionId, FVector Destination)
+{
+	if (IsLocalController() && IsValid(Volume) && Volume->GetWorld() == GetWorld())
+		Volume->RevealLocalPassage(this, ExecutionId, Destination);
+}
+
+void AFirstPersonPlayerController::ClientClearPassageFade_Implementation(
+	ATuto_PassageTransitionVolume* Volume, FGuid ExecutionId)
+{
+	if (IsLocalController() && IsValid(Volume) && Volume->GetWorld() == GetWorld())
+		Volume->CancelLocalPassage(this, ExecutionId);
+}
+
 void AFirstPersonPlayerController::ClearVitalitySources()
 {
 	if (AOutlierPlayerState* State = VitalityPlayerState.Get())
@@ -2867,34 +2897,4 @@ void AFirstPersonPlayerController::ServerRequestVitalitySnapshot_Implementation(
 			for (const FOutlierVitalityPresentationUpdate& Snapshot : Snapshots) QueueVitalityPresentation(Snapshot);
 		}
 	}
-}
-
-// Owning RPC transport only; the volume owns the local sequence and its lifetime.
-void AFirstPersonPlayerController::ClientStartPassageFade_Implementation(
-	ATuto_PassageTransitionVolume* Volume, FGuid ExecutionId, FOutlierScreenTransitionTiming Timing)
-{
-	if (!IsLocalController() || !IsValid(Volume) || Volume->GetWorld() != GetWorld()
-		|| LocalSuitTransitionId.IsValid() || LocalElevatorExecutionId.IsValid()) return;
-	Volume->StartLocalPassageFade(this, ExecutionId, Timing);
-}
-
-void AFirstPersonPlayerController::ServerNotifyPassageCovered_Implementation(
-	ATuto_PassageTransitionVolume* Volume, FGuid ExecutionId)
-{
-	if (HasAuthority() && IsValid(Volume) && Volume->GetWorld() == GetWorld())
-		Volume->NotifyScreenCovered(this, ExecutionId);
-}
-
-void AFirstPersonPlayerController::ClientRevealPassage_Implementation(
-	ATuto_PassageTransitionVolume* Volume, FGuid ExecutionId, FVector Destination)
-{
-	if (IsLocalController() && IsValid(Volume) && Volume->GetWorld() == GetWorld())
-		Volume->RevealLocalPassage(this, ExecutionId, Destination);
-}
-
-void AFirstPersonPlayerController::ClientClearPassageFade_Implementation(
-	ATuto_PassageTransitionVolume* Volume, FGuid ExecutionId)
-{
-	if (IsLocalController() && IsValid(Volume) && Volume->GetWorld() == GetWorld())
-		Volume->CancelLocalPassage(this, ExecutionId);
 }

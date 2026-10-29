@@ -8,11 +8,13 @@
 
 class UTextBlock;
 class UImage;
-class UMaterialInstanceDynamic;
 class UMaterialInterface;
+class UFileMediaSource;
+class UMediaPlayer;
 class UMediaTexture;
 class UPopupRetainerBox;
 class UTexture2D;
+enum class EMediaEvent;
 
 UCLASS(Abstract, Blueprintable)
 class OUTLIER_API UUpgradeDescWidget : public UUserWidget
@@ -42,7 +44,8 @@ public:
 		const FOutlierUpgradeNodeRow& InNodeData,
 		EOutlierUpgradeNodeState InNodeState,
 		int32 InCurrentNodeCount,
-		bool bInCanAfford);
+		bool bInCanAfford,
+		TSoftObjectPtr<UFileMediaSource> InPreviewMedia);
 
 	UFUNCTION(BlueprintCallable, Category = "Upgrade")
 	void HideNodeData(FName InNodeRowName);
@@ -99,6 +102,7 @@ protected:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
 	TObjectPtr<UImage> MediaImage;
 
+	// 기존 WBP 참조를 전환할 때까지 보존한다. 새 미리보기 재생에서는 사용하지 않는다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Media")
 	TObjectPtr<UMediaTexture> MediaTexture;
 
@@ -137,13 +141,20 @@ protected:
 	FText CostNeedTextFormat = NSLOCTEXT("UpgradeDescWidget", "CostNeedTextFormat", "{0}");
 
 	virtual void NativeConstruct() override;
+	virtual void NativeDestruct() override;
 
 private:
 	UFUNCTION()
 	void HandlePopupClosed();
 
 	void RefreshTextBlocks();
-	void InitializeMediaImage();
+	void StartPreviewMedia();
+	void SuspendPreviewMedia();
+	void StopPreviewMedia();
+	void HandlePreviewMediaEvent(UMediaPlayer* EventPlayer, EMediaEvent Event);
+	void BindPreviewVisibility();
+	void UnbindPreviewVisibility();
+	void HandlePreviewVisibilityChanged(ESlateVisibility InVisibility);
 	void RefreshBackground();
 	void RefreshCostTextStyle();
 	void RefreshStatusImage();
@@ -153,7 +164,18 @@ private:
 	FSlateBrush DefaultBackgroundBrush;
 
 	UPROPERTY(Transient)
-	TObjectPtr<UMaterialInstanceDynamic> MediaImageMaterial;
+	TSoftObjectPtr<UFileMediaSource> CurrentPreviewMedia;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMediaPlayer> PreviewPlayer;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMediaTexture> PreviewTexture;
+
+	TArray<TWeakObjectPtr<UWidget>> PreviewVisibilityOwners;
+	FDelegateHandle PreviewMediaEventHandle;
+	bool bDescriptionOpen = false;
+	bool bPreviewOpening = false;
 
 	bool bDefaultBackgroundBrushCached = false;
 	bool bClearWhenClosed = false;

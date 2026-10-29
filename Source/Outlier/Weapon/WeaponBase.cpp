@@ -17,6 +17,8 @@
 #include "Shooter/ShooterCharacter.h"
 #include "Net/UnrealNetwork.h"
 #include "Engine/DataTable.h"
+#include "Engine/GameInstance.h"
+#include "Engine/World.h"
 #include "Engine/SkeletalMesh.h"
 #include "Interaction/InteractableComponent.h"
 #include "Weapon/WeaponCoreRow.h"
@@ -24,6 +26,11 @@
 #include "Shooter/Anim/ProceduralAnimValues.h"
 #include "Materials/MaterialInterface.h"
 #include "TimerManager.h"
+#include "Audio/OutlierAudioSubsystem.h"
+#include "VisualEventSubsystem.h"
+#include "VisualEffectProvider.h"
+#include "ProjectionMarkDefinition.h"
+#include "PhysicalMaterials/PhysicalMaterial.h"
 
 static TAutoConsoleVariable<int32> CVarFirstPickupTest(
 	TEXT("outlier.FPFirstPickupTest"), 0,
@@ -541,6 +548,61 @@ void AWeaponBase::BeginPlay()
 	Super::BeginPlay();
 
 	EnsureWeaponDataInitialized();
+	CachedAudioSubsystem = GetGameInstance() ? GetGameInstance()->GetSubsystem<UOutlierAudioSubsystem>() : nullptr;
+	CachedVisualSubsystem = GetWorld()->GetSubsystem<UVisualEventSubsystem>();
+	if (!ImpactAudioContextTag.IsValid())
+	{
+		const TCHAR* Context = WeaponType == EWeaponType::Pistol ? TEXT("Audio.Context.Player.01.Type.Pistol.Hit")
+			: WeaponType == EWeaponType::Rifle ? TEXT("Audio.Context.Player.01.Type.Rifle.Hit")
+			: WeaponType == EWeaponType::Melee ? TEXT("Audio.Context.Player.01.Type.Melee.Hit") : nullptr;
+		if (Context)
+		{
+			ImpactAudioContextTag = FGameplayTag::RequestGameplayTag(FName(Context));
+		}
+	}
+}
+
+void AWeaponBase::PlaySurfaceImpactSound(const FHitResult& Hit, bool bUseSurfaceContext)
+{
+	if (!HasAuthority() || !CachedAudioSubsystem)
+	{
+		return;
+	}
+	const IVisualEffectProvider* Provider = Cast<IVisualEffectProvider>(Hit.GetActor());
+	// 환경 표면음 대상이 아니면 태그 후보를 비워 대상 Provider의 고유 피격음만 사용한다.
+	// 사운드 후보는 서버에서 한 번만 선택한다. Provider는 태그 후보가 모두 없을 때만 사용한다.
+	CachedAudioSubsystem->PlaySurfaceAtLocationFromServer(
+		WeaponOwner ? static_cast<AActor*>(WeaponOwner.Get()) : this,
+		FGameplayTag::RequestGameplayTag(FName(TEXT("Audio.Type.Weapon"))),
+		bUseSurfaceContext ? ImpactAudioContextTag : FGameplayTag(),
+		UPhysicalMaterial::DetermineSurfaceType(Hit.PhysMaterial.Get()), Hit.ImpactPoint,
+		Provider ? Provider->GetVisualEventSet().SoundDef : nullptr);
+}
+
+void AWeaponBase::PlaySurfaceImpactVisual(const FVector& Location, const FVector& Normal, AActor* HitActor,
+	uint8 Surface, FGameplayTag Context, UProjectionMarkDefinition* FallbackDecal)
+{
+	if (GetNetMode() == NM_DedicatedServer || !CachedVisualSubsystem)
+	{
+		return;
+	}
+	FVisualEventSet Fallback;
+	if (IVisualEffectProvider* Provider = Cast<IVisualEffectProvider>(HitActor))
+	{
+		Fallback = Provider->GetVisualEventSet();
+	}
+	if (!Fallback.DecalDef || !Fallback.DecalDef->DecalMaterial)
+	{
+		Fallback.DecalDef = FallbackDecal;
+	}
+	// 사운드는 서버 전달 경로가 담당한다. 여기서는 데칼/VFX만 항목별로 보완한다.
+	Fallback.SoundDef = nullptr;
+	TArray<FGameplayTag> Contexts;
+	if (CachedAudioSubsystem)
+	{
+		CachedAudioSubsystem->GetSurfaceContextCandidates(Context, static_cast<EPhysicalSurface>(Surface), Contexts);
+	}
+	CachedVisualSubsystem->PlayTaggedEffectsAtLocation(Contexts, Location, Normal.GetSafeNormal().Rotation(), Fallback);
 }
 
 bool AWeaponBase::CanAttack() const

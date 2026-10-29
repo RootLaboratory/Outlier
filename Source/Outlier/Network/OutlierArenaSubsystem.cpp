@@ -1,4 +1,5 @@
 #include "Network/OutlierArenaSubsystem.h"
+#include "Audio/OutlierAudioSubsystem.h"
 
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
@@ -17,6 +18,7 @@
 #include "OutlierGameMode.h"
 #include "Engine/NetConnection.h"
 #include "Misc/PackageName.h"
+#include "UObject/Package.h"
 #include "LocalPlayerPostProcessSubsystem.h"
 #include "PostProcess/MaterialPostProcessSubsystem.h"
 
@@ -90,8 +92,35 @@ namespace
 	}
 }
 
+void UOutlierArenaSubsystem::PostInitialize()
+{
+	Super::PostInitialize();
+	UWorld* World = GetWorld();
+	if (!World || !World->IsGameWorld() || IsRunningDedicatedServer() || World->GetNetMode() == NM_DedicatedServer) return;
+	GetDefault<UOutlierArenaSettings>()->BuildBgmPreloadMappings(BgmPreloadMappings);
+	if (UGameInstance* GameInstance = World->GetGameInstance())
+	{
+		CachedAudioSubsystem = GameInstance->GetSubsystem<UOutlierAudioSubsystem>();
+	}
+	// InitWorld의 서브시스템 준비 단계에서 기존 로드 요청을 관찰한다. BeginPlay/표시까지 기다리지 않는다.
+	PreloadInitiallyRequestedLevelMusic();
+}
+
+void UOutlierArenaSubsystem::PreloadInitiallyRequestedLevelMusic()
+{
+	UWorld* World = GetWorld();
+	if (!World || !CachedAudioSubsystem.IsValid() || BgmPreloadMappings.IsEmpty()) return;
+	for (ULevelStreaming* Level : World->GetStreamingLevels())
+	{
+		if (Level && Level->ShouldBeLoaded()) SetLevelMusicPreload(Level, Level->GetWorldAsset(), true);
+	}
+}
+
 void UOutlierArenaSubsystem::Deinitialize()
 {
+	ClearLevelMusicPreloads();
+	CachedAudioSubsystem.Reset();
+	BgmPreloadMappings.Reset();
 	if (ArenaPollTickerHandle.IsValid())
 	{
 		FTSTicker::GetCoreTicker().RemoveTicker(ArenaPollTickerHandle);
@@ -103,9 +132,56 @@ void UOutlierArenaSubsystem::Deinitialize()
 	Super::Deinitialize();
 }
 
+uint64 UOutlierArenaSubsystem::RequestLevelMusicPreload(const TSoftObjectPtr<UWorld>& Map)
+{
+	UOutlierAudioSubsystem* Audio = CachedAudioSubsystem.Get();
+	if (!Audio || Map.IsNull()) return 0;
+	const FString Package = UWorld::RemovePIEPrefix(Map.ToSoftObjectPath().GetLongPackageName());
+	const TArray<FGameplayTag>* Contexts = BgmPreloadMappings.Find(Package);
+	return Contexts ? Audio->RequestMusicPreload(GetWorld(), *Contexts) : 0;
+}
+
+void UOutlierArenaSubsystem::SetLevelMusicPreload(ULevelStreaming* Level,
+	const TSoftObjectPtr<UWorld>& Map, bool bLoaded)
+{
+	if (!Level) return;
+	if (!bLoaded)
+	{
+		ReleaseLevelMusicPreload(Level);
+		return;
+	}
+	if (const uint64* Existing = LevelMusicPreloadRequests.Find(Level))
+	{
+		if (UOutlierAudioSubsystem* Audio = CachedAudioSubsystem.Get())
+		{
+			if (Audio->GetMusicPreloadState(*Existing) != EOutlierMusicPreloadState::Released) return;
+		}
+		LevelMusicPreloadRequests.Remove(Level);
+	}
+	const uint64 RequestId = RequestLevelMusicPreload(Map);
+	if (RequestId != 0) LevelMusicPreloadRequests.Add(Level, RequestId);
+}
+
+void UOutlierArenaSubsystem::ReleaseLevelMusicPreload(ULevelStreaming* Level)
+{
+	uint64 RequestId = 0;
+	if (!LevelMusicPreloadRequests.RemoveAndCopyValue(Level, RequestId)) return;
+	if (UOutlierAudioSubsystem* Audio = CachedAudioSubsystem.Get()) Audio->ReleaseMusicPreload(RequestId);
+}
+
+void UOutlierArenaSubsystem::ClearLevelMusicPreloads()
+{
+	if (UOutlierAudioSubsystem* Audio = CachedAudioSubsystem.Get())
+	{
+		for (const auto& Pair : LevelMusicPreloadRequests) Audio->ReleaseMusicPreload(Pair.Value);
+	}
+	LevelMusicPreloadRequests.Reset();
+}
+
 void UOutlierArenaSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 {
 	Super::OnWorldBeginPlay(InWorld);
+	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
 	if (AOutlierGameMode::IsDirectPairTestWorld(&InWorld))
 	{
 		// 테스트 맵 자체가 이미 로드되어 있다. 전역 Arena 맵/서브레벨을 추가로 로드하지 않는다.
@@ -114,7 +190,6 @@ void UOutlierArenaSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 		RefreshArenaReadyState();
 		return;
 	}
-	const UOutlierArenaSettings* Settings = GetDefault<UOutlierArenaSettings>();
 	ArenaLevel = Settings->ArenaLevel;
 	InitialLoadStartTime = FPlatformTime::Seconds();
 	if (ArenaLevel.IsNull())
@@ -247,16 +322,20 @@ ULevelStreamingDynamic* UOutlierArenaSubsystem::LoadLevelInstance(
 	{
 		return nullptr;
 	}
+	// 인스턴스 이름이 붙기 전 원본 맵으로 조회하고, 실제 레벨 요청보다 먼저 음원 로드를 시작한다.
+	const uint64 MusicRequest = RequestLevelMusicPreload(Map);
 	bool bSuccess = false;
 	ULevelStreamingDynamic* Level = ULevelStreamingDynamic::LoadLevelInstanceBySoftObjectPtr(
 		World, Map, Arena.InstanceTransform.GetLocation(),
 		Arena.InstanceTransform.GetRotation().Rotator(), bSuccess, InstanceName);
 	if (!bSuccess || !Level)
 	{
+		if (UOutlierAudioSubsystem* Audio = CachedAudioSubsystem.Get()) Audio->ReleaseMusicPreload(MusicRequest);
 		UE_LOG(LogTemp, Error, TEXT("[ArenaLevels] Failed to create %s from %s"),
 			*InstanceName, *Map.ToSoftObjectPath().ToString());
 		return nullptr;
 	}
+	if (MusicRequest != 0) LevelMusicPreloadRequests.Add(Level, MusicRequest);
 	Level->SetShouldBeLoaded(true);
 	Level->SetShouldBeVisible(true);
 	UE_LOG(LogTemp, Display,
@@ -314,6 +393,7 @@ bool UOutlierArenaSubsystem::CreateListenGameplayLevels()
 		{
 			for (ULevelStreaming* Created : GameplayStreamingLevels)
 			{
+				ReleaseLevelMusicPreload(Created);
 				Created->SetShouldBeVisible(false);
 				Created->SetShouldBeLoaded(false);
 				Created->SetIsRequestingUnloadAndRemoval(true);
@@ -356,6 +436,7 @@ void UOutlierArenaSubsystem::EnsureArenaLoaded()
 	}
 	else
 	{
+		SetLevelMusicPreload(Arena.StreamingLevel, ArenaLevel, true);
 		Arena.StreamingLevel->SetShouldBeLoaded(true);
 		Arena.StreamingLevel->SetShouldBeVisible(true);
 		EnsureArenaPollTicker();
@@ -376,6 +457,7 @@ FOutlierArenaInstance* UOutlierArenaSubsystem::AcquireArena()
 
 void UOutlierArenaSubsystem::ReleaseArena()
 {
+	ClearLevelMusicPreloads();
 	Arena.bInUse = false;
 	Arena.PairId = INDEX_NONE;
 	OnArenaReleased.Broadcast();
@@ -408,12 +490,15 @@ void UOutlierArenaSubsystem::ReleaseArena()
 
 void UOutlierArenaSubsystem::RequestGameplayLevelsLoaded(bool bLoaded)
 {
-	for (ULevelStreaming* Level : GameplayStreamingLevels)
+	for (int32 Index = 0; Index < GameplayStreamingLevels.Num(); ++Index)
 	{
+		ULevelStreaming* Level = GameplayStreamingLevels[Index];
 		if (!Level)
 		{
 			continue;
 		}
+		// 동적 인스턴스의 패키지명 대신 최초 발견한 원본 맵을 사용한다. 수명 키는 레벨 객체다.
+		if (GameplaySublevels.IsValidIndex(Index)) SetLevelMusicPreload(Level, GameplaySublevels[Index], bLoaded);
 		if (bLoaded)
 		{
 			Level->SetShouldBeLoaded(true);

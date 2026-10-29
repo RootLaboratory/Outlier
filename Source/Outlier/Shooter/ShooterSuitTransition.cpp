@@ -11,6 +11,7 @@
 #include "Interaction/SuitInteraction.h"
 #include "OutlierPlayerState.h"
 #include "Shooter/ShooterCombatComponent.h"
+#include "Shooter/ShooterCharacterMovementComponent.h"
 #include "Shooter/ShooterInventoryComponent.h"
 #include "TimerManager.h"
 #include "Weapon/RangedWeaponBase.h"
@@ -211,6 +212,7 @@ void AShooterCharacter::PrepareForSuitTransition()
 {
 	// 게임플레이 상태와 예약된 후속 처리를 먼저 취소한다. 몽타주만 멈추면 Reload/Equip 상태가 남을 수 있다.
 	Super::PrepareForSuitTransition();
+	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->ResetSlideForLifecycle();
 	ClearInputIntent();
 	StopLean();
 	StopAimInternal();
@@ -223,10 +225,6 @@ void AShooterCharacter::PrepareForSuitTransition()
 	if (CombatComponent)
 	{
 		CombatComponent->CancelMeleeAttack();
-	}
-	if (IsSliding())
-	{
-		StopSlide(ESlideEndReason::ForcedCancel);
 	}
 	StopSprintInternal();
 	EndActionLock(EShooterActionLock::Equip);

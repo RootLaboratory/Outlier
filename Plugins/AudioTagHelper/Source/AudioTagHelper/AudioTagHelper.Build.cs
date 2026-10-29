@@ -21,6 +21,9 @@ public class AudioTagHelper : ModuleRules
 				"GameplayTagsEditor",
 				"AssetTools",
 				"AssetRegistry",
+				"ContentBrowser",
+				"PropertyEditor",
+				"AnimationBlueprintLibrary",
 				"Outlier"
 			}
 		);
