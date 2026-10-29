@@ -11,6 +11,7 @@
 class UButton;
 class UCanvasPanel;
 class UDataTable;
+class UFileMediaSource;
 class UImage;
 class UMaterialInstanceDynamic;
 class UMaterialInterface;
@@ -139,6 +140,10 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Desc")
 	TSubclassOf<UUpgradeDescWidget> UpgradeDescWidgetClass;
+
+	// 그룹 WBP에서 각 노드 인스턴스를 선택해 설명창의 반복 영상을 지정한다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Desc")
+	TSoftObjectPtr<UFileMediaSource> PreviewMedia;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Upgrade|Desc")
 	FVector2D DescPopupOffset = FVector2D(24.0f, 0.0f);

@@ -4,15 +4,21 @@
 #include "UI/UpgradeDescWidget.h"
 
 #include "Components/Button.h"
+#include "Components/CanvasPanel.h"
 #include "Components/Image.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Engine/Engine.h"
 #include "Engine/Texture2D.h"
 #include "Engine/World.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
+#include "FileMediaSource.h"
+#include "IMediaEventSink.h"
+#include "MediaPlayer.h"
+#include "MediaTexture.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Misc/AutomationTest.h"
 #include "OutlierPlayerState.h"
+#include "PopupRetainerBox.h"
 #include "Upgrade/OutlierUpgradeComponent.h"
 #include "Upgrade/OutlierUpgradeSetData.h"
 
@@ -176,6 +182,35 @@ struct FUpgradeNodeInteractionTestAccess
 		Desc->PrerequisiteDisabledTexture = Textures[2];
 		Desc->PurchasedDisabledTexture = Textures[3];
 	}
+
+	static void SetPreviewImage(UUpgradeDescWidget* Desc)
+	{
+		if (!Desc->MediaImage) Desc->MediaImage = NewObject<UImage>(Desc);
+	}
+	static void HoverDescription(UUpgradeNodeWidget* Node) { Node->HandleHovered(); }
+	static UFileMediaSource* PreviewSource(UUpgradeDescWidget* Desc) { return Desc->CurrentPreviewMedia.Get(); }
+	static UMediaPlayer* PreviewPlayer(UUpgradeDescWidget* Desc) { return Desc->PreviewPlayer; }
+	static UImage* PreviewImage(UUpgradeDescWidget* Desc) { return Desc->MediaImage; }
+	static bool DescriptionOpen(UUpgradeDescWidget* Desc) { return Desc->bDescriptionOpen; }
+	static void SeedPreviewSession(UUpgradeDescWidget* Desc)
+	{
+		// 디코더와 파일 없이 열기 결과와 상태 갱신에 따른 표시/정리 계약을 검증한다.
+		Desc->SetVisibility(ESlateVisibility::Visible);
+		Desc->bDescriptionOpen = true;
+		Desc->bPreviewOpening = true;
+		Desc->PreviewPlayer = NewObject<UMediaPlayer>(Desc);
+		Desc->PreviewTexture = NewObject<UMediaTexture>(Desc);
+		Desc->MediaImage->SetBrushResourceObject(Desc->PreviewTexture);
+		Desc->MediaImage->SetVisibility(ESlateVisibility::HitTestInvisible);
+	}
+	static void PreviewFailed(UUpgradeDescWidget* Desc, UMediaPlayer* Player)
+	{
+		Desc->HandlePreviewMediaEvent(Player, EMediaEvent::MediaOpenFailed);
+	}
+	static void BindPreviewVisibility(UUpgradeDescWidget* Desc) { Desc->BindPreviewVisibility(); }
+	static void DestructDescription(UUpgradeDescWidget* Desc) { Desc->NativeDestruct(); }
+	static void AddPopupRetainer(UUpgradeDescWidget* Desc) { Desc->PopupRetainer = NewObject<UPopupRetainerBox>(Desc); }
+	static void FinishPopupClose(UUpgradeDescWidget* Desc) { Desc->HandlePopupClosed(); }
 };
 
 namespace UpgradeNodeInteractionTests
@@ -891,6 +926,131 @@ bool FUpgradeUnlockResponseOrderTest::RunTest(const FString& Parameters)
 	Access::Result(Node, Owner, 3, false);
 	TestFalse(TEXT("Rejected purchase does not play"), Node->IsUnlockPresentationPlaying());
 	TestEqual(TEXT("Rejected purchase leaves the closed frame"), Access::UnlockFrame(Node), 0.0f);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FUpgradeDescPreviewStateTest, "Outlier.UI.Upgrade.Description.PreviewState",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUpgradeDescPreviewStateTest::RunTest(const FString& Parameters)
+{
+	using Access = FUpgradeNodeInteractionTestAccess;
+	UClass* DescClass = LoadClass<UUpgradeDescWidget>(nullptr,
+		TEXT("/Game/Blueprints/Widget/FirstPerson/Upgrade/WBP_UpgradeRegularDesc.WBP_UpgradeRegularDesc_C"));
+	if (!TestNotNull(TEXT("Regular description BP exists"), DescClass)) return false;
+	UUpgradeDescWidget* Desc = NewObject<UUpgradeDescWidget>(GetTransientPackage(), DescClass);
+	UFileMediaSource* SourceA = NewObject<UFileMediaSource>(Desc);
+	UFileMediaSource* SourceB = NewObject<UFileMediaSource>(Desc);
+	const FOutlierUpgradeNodeRow Row;
+	UCanvasPanel* Canvas = NewObject<UCanvasPanel>();
+	Canvas->AddChild(Desc);
+	UUpgradeNodeWidget* NodeA = NewObject<UUpgradeNodeWidget>();
+	UUpgradeNodeWidget* NodeB = NewObject<UUpgradeNodeWidget>();
+	for (UUpgradeNodeWidget* Node : { NodeA, NodeB })
+	{
+		Canvas->AddChild(Node);
+		Node->SetUpgradeDescWidget(Desc);
+	}
+	NodeA->InjectNodeData(TEXT("A"), Row);
+	NodeB->InjectNodeData(TEXT("B"), Row);
+	NodeA->PreviewMedia = SourceA;
+	NodeB->PreviewMedia = SourceB;
+	// MediaImage를 붙이기 전이라 파일을 열지 않는다. 실제 호버 경로의 노드 -> Desc 전달을 검증한다.
+	Access::HoverDescription(NodeA);
+	TestTrue(TEXT("A forwards its instance media"), Access::PreviewSource(Desc) == SourceA);
+	Access::HoverDescription(NodeB);
+	TestTrue(TEXT("B replaces media in the same cached description"), Access::PreviewSource(Desc) == SourceB);
+	NodeA->DismissDescription();
+	NodeA->PreviewMedia = nullptr;
+	Access::HoverDescription(NodeA);
+	TestNull(TEXT("An unconfigured node cannot reuse another node's media"), Access::PreviewSource(Desc));
+	Desc->InjectNodeData(Row, EOutlierUpgradeNodeState::Unlocked, 0, false);
+	TestNull(TEXT("Legacy injection without RowName cannot reuse previous media"), Access::PreviewSource(Desc));
+
+	Access::SetPreviewImage(Desc);
+	Desc->UpdateNodeData(TEXT("A"), Row, EOutlierUpgradeNodeState::Locked, 0, false);
+	Access::SeedPreviewSession(Desc);
+	UMediaPlayer* Session = Access::PreviewPlayer(Desc);
+	UObject* Texture = Access::PreviewImage(Desc)->GetBrush().GetResourceObject();
+	for (EOutlierUpgradeNodeState State : { EOutlierUpgradeNodeState::Locked,
+		EOutlierUpgradeNodeState::Unlocked, EOutlierUpgradeNodeState::Activated })
+	{
+		for (bool bCanAfford : { false, true })
+		{
+			Desc->UpdateNodeData(TEXT("A"), Row, State, bCanAfford ? 10 : 0, bCanAfford);
+			TestTrue(TEXT("State/currency refresh keeps the same session"), Access::PreviewPlayer(Desc) == Session);
+			TestTrue(TEXT("All purchase states keep the video visible"), Access::PreviewImage(Desc)->IsVisible());
+			TestTrue(TEXT("State refresh keeps the current frame"), Access::PreviewImage(Desc)->GetBrush().GetResourceObject() == Texture);
+		}
+	}
+	Desc->HideNodeData(TEXT("B"));
+	TestTrue(TEXT("Another node cannot close this session"), Access::PreviewPlayer(Desc) == Session);
+	Desc->HideNodeData(TEXT("A"));
+	TestNull(TEXT("Closing without a retainer releases the player"), Access::PreviewPlayer(Desc));
+	TestNull(TEXT("Closing clears the image resource"), Access::PreviewImage(Desc)->GetBrush().GetResourceObject());
+	TestFalse(TEXT("Closing ends the presentation"), Access::DescriptionOpen(Desc));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FUpgradeDescPreviewLifetimeTest, "Outlier.UI.Upgrade.Description.PreviewLifetime",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUpgradeDescPreviewLifetimeTest::RunTest(const FString& Parameters)
+{
+	using Access = FUpgradeNodeInteractionTestAccess;
+	UClass* DescClass = LoadClass<UUpgradeDescWidget>(nullptr,
+		TEXT("/Game/Blueprints/Widget/FirstPerson/Upgrade/WBP_UpgradeRegularDesc.WBP_UpgradeRegularDesc_C"));
+	if (!TestNotNull(TEXT("Regular description BP exists"), DescClass)) return false;
+	UUpgradeDescWidget* Desc = NewObject<UUpgradeDescWidget>(GetTransientPackage(), DescClass);
+	Access::SetPreviewImage(Desc);
+	Desc->ShowNodeData(TEXT("A"), FOutlierUpgradeNodeRow(), EOutlierUpgradeNodeState::Locked, 0, false, nullptr);
+	TestTrue(TEXT("Missing media still opens the description"), Access::DescriptionOpen(Desc));
+	TestFalse(TEXT("Missing media hides only the preview"), Access::PreviewImage(Desc)->IsVisible());
+	Access::SeedPreviewSession(Desc);
+	UMediaPlayer* PreviousPlayer = Access::PreviewPlayer(Desc);
+	Desc->ClearNodeData();
+	Access::SeedPreviewSession(Desc);
+	UMediaPlayer* CurrentPlayer = Access::PreviewPlayer(Desc);
+	Access::PreviewFailed(Desc, PreviousPlayer);
+	TestTrue(TEXT("A stale callback cannot clear the new session"), Access::PreviewPlayer(Desc) == CurrentPlayer);
+	Access::PreviewFailed(Desc, CurrentPlayer);
+	TestNull(TEXT("Current open failure releases the player"), Access::PreviewPlayer(Desc));
+	TestTrue(TEXT("Open failure preserves the description"), Access::DescriptionOpen(Desc));
+	TestFalse(TEXT("Open failure hides the preview"), Access::PreviewImage(Desc)->IsVisible());
+
+	Access::AddPopupRetainer(Desc);
+	Access::SeedPreviewSession(Desc);
+	Desc->HideNodeData(TEXT("A"));
+	Desc->UpdateNodeData(TEXT("A"), FOutlierUpgradeNodeRow(), EOutlierUpgradeNodeState::Activated, 0, false);
+	TestFalse(TEXT("Purchase refresh cannot reopen a closing description"), Access::DescriptionOpen(Desc));
+	Access::FinishPopupClose(Desc);
+	TestTrue(TEXT("Purchase refresh preserves the pending clear"), Desc->GetCurrentNodeRowName().IsNone());
+	TestNull(TEXT("Popup close releases the old session"), Access::PreviewPlayer(Desc));
+	Desc->ShowNodeData(TEXT("A"), FOutlierUpgradeNodeRow(), EOutlierUpgradeNodeState::Activated, 0, false, nullptr);
+	Access::FinishPopupClose(Desc);
+	TestTrue(TEXT("A stale popup close cannot hide a reopened description"), Access::DescriptionOpen(Desc));
+	TestTrue(TEXT("Reopening preserves the selected row"), Desc->GetCurrentNodeRowName() == TEXT("A"));
+	Desc->ClearNodeData();
+
+	// 부모 숨김은 자식의 NativeDestruct를 호출하지 않을 수 있어 실제 가시성 이벤트로 검증한다.
+	UUpgradeDescWidget* Parent = NewObject<UUpgradeDescWidget>(GetTransientPackage(), DescClass);
+	UCanvasPanel* Canvas = NewObject<UCanvasPanel>(Parent);
+	Canvas->AddChild(Desc);
+	Access::SeedPreviewSession(Desc);
+	Access::BindPreviewVisibility(Desc);
+	Parent->SetVisibility(ESlateVisibility::Collapsed);
+	TestNull(TEXT("Parent hide closes cached media"), Access::PreviewPlayer(Desc));
+	TestFalse(TEXT("Parent hide ends the presentation"), Access::DescriptionOpen(Desc));
+	Parent->SetVisibility(ESlateVisibility::Visible);
+	Access::SeedPreviewSession(Desc);
+	Desc->SetVisibility(ESlateVisibility::Visible);
+	Access::BindPreviewVisibility(Desc);
+	Canvas->SetVisibility(ESlateVisibility::Hidden);
+	TestNull(TEXT("An intermediate panel hide also releases media"), Access::PreviewPlayer(Desc));
+	Access::SeedPreviewSession(Desc);
+	Access::DestructDescription(Desc);
+	TestNull(TEXT("Destruction releases media even without a close animation"), Access::PreviewPlayer(Desc));
+	TestNull(TEXT("Destruction releases the brush resource"), Access::PreviewImage(Desc)->GetBrush().GetResourceObject());
 	return true;
 }
 
