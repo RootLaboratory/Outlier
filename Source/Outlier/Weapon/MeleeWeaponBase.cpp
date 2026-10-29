@@ -8,6 +8,8 @@
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Drone/Partner/PartnerVitalityComponent.h"
 #include "Enemy/EnemyBase.h"
+#include "Enemy/AutoTurret.h"
+#include "EngineUtils.h"
 #include "GAS/Attributes/OutlierVitalAttributeSet.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "OutlierPlayerState.h"
@@ -21,6 +23,8 @@
 #include "Net/UnrealNetwork.h"
 #include "TimerManager.h"
 #include "PhysicalMaterials/PhysicalMaterial.h"
+#include "TrailEffectDefinition.h"
+#include "VisualEventSubsystem.h"
 
 #if ENABLE_DRAW_DEBUG
 #include "DrawDebugHelpers.h"
@@ -455,6 +459,7 @@ void AMeleeWeaponBase::TraceMeleeHit()
 	}
 
 	HitActorsThisSwing.Reset();
+	SurfaceActorsThisSwing.Reset();
 	SweepMeleeTrace(TraceStart, TraceEnd, TraceStart, TraceEnd);
 }
 
@@ -465,6 +470,31 @@ bool AMeleeWeaponBase::BeginMeleeTrace()
 	if (!HasAuthority() || AttackPhase != EMeleeAttackPhase::Attack || !bIsAttacking)
 	{
 		return false;
+	}
+	if (AAutoTurret::IsTurretDiagnosticsEnabled() && GetWorld() && IsValid(WeaponOwner))
+	{
+		// 접촉 로그가 없어도 주변 터렛의 서버 충돌 설정을 타격 시작 시 한 번 확인한다.
+		for (TActorIterator<AAutoTurret> It(GetWorld()); It; ++It)
+		{
+			AAutoTurret* Turret = *It;
+			const float Distance = FVector::Distance(WeaponOwner->GetActorLocation(), Turret->GetActorLocation());
+			if (Distance > 1500.0f) continue;
+			UE_LOG(LogMeleeDiagnostics, Log, TEXT("[MeleeDiag][TurretSnapshot] Weapon=%s Sequence=%d Turret=%s Distance=%.1f Team=%d CanBeDamaged=%d Dead=%d HP=%.2f Lifecycle=%d Hidden=%d"),
+				*GetNameSafe(this), AttackSequence, *GetNameSafe(Turret), Distance, Turret->GetGenericTeamId().GetId(), Turret->CanBeDamaged(),
+				Turret->IsDead(), Turret->GetCurrentHealth(), static_cast<int32>(Turret->GetTurretLifecycleState()), Turret->IsHidden());
+			TInlineComponentArray<UPrimitiveComponent*> Components;
+			Turret->GetComponents(Components);
+			for (const UPrimitiveComponent* Component : Components)
+			{
+				const ECollisionChannel ObjectType = Component->GetCollisionObjectType();
+				const bool bQueriedType = ObjectType == ECC_Pawn || ObjectType == ECC_PhysicsBody || ObjectType == ECC_WorldDynamic || ObjectType == ECC_WorldStatic;
+				UE_LOG(LogMeleeDiagnostics, Log, TEXT("[MeleeDiag][TurretCollision] Weapon=%s Sequence=%d Turret=%s Component=%s Registered=%d CollisionEnabled=%d QueryEnabled=%d ObjectType=%d InSweepObjectTypes=%d VisibilityResponse=%d Location=%s BoundsOrigin=%s BoundsExtent=%s"),
+					*GetNameSafe(this), AttackSequence, *GetNameSafe(Turret), *GetNameSafe(Component), Component->IsRegistered(),
+					static_cast<int32>(Component->GetCollisionEnabled()), Component->IsQueryCollisionEnabled(), static_cast<int32>(ObjectType), bQueriedType,
+					static_cast<int32>(Component->GetCollisionResponseToChannel(ECC_Visibility)), *Component->GetComponentLocation().ToCompactString(),
+					*Component->Bounds.Origin.ToCompactString(), *Component->Bounds.BoxExtent.ToCompactString());
+			}
+		}
 	}
 
 	FVector TraceStart;
@@ -613,6 +643,12 @@ void AMeleeWeaponBase::SweepMeleeTrace(
 		for (const FHitResult& HitResult : MeleeTraceHitBuffer)
 		{
 			AActor* Candidate = HitResult.GetActor();
+			if (Cast<AAutoTurret>(Candidate) && AAutoTurret::IsTurretDiagnosticsEnabled())
+			{
+				UE_LOG(LogMeleeDiagnostics, Log, TEXT("[MeleeDiag][TurretContact] Weapon=%s Sequence=%d Target=%s Component=%s Bone=%s Blocking=%d InitialOverlap=%d AlreadyHit=%d Impact=%s"),
+					*GetNameSafe(this), AttackSequence, *GetNameSafe(Candidate), *GetNameSafe(HitResult.GetComponent()), *HitResult.BoneName.ToString(),
+					HitResult.bBlockingHit, HitResult.bStartPenetrating, HitActorsThisSwing.Contains(Candidate), *HitResult.ImpactPoint.ToCompactString());
+			}
 			if (!IsValid(Candidate) || HitActorsThisSwing.Contains(Candidate)
 				|| Candidate == WeaponOwner || Candidate == this)
 			{
@@ -621,11 +657,13 @@ void AMeleeWeaponBase::SweepMeleeTrace(
 
 			if (!IsValidMeleeTarget(Candidate, true, false))
 			{
-				UE_LOG(LogMeleeDiagnostics, Log, TEXT("[MeleeDiag][RejectTarget] Weapon=%s Sequence=%d Target=%s CanBeDamaged=%d"),
-					*GetNameSafe(this), AttackSequence, *GetNameSafe(Candidate), Candidate->CanBeDamaged());
+				const AEnemyBase* Enemy = Cast<AEnemyBase>(Candidate);
+				UE_LOG(LogMeleeDiagnostics, Log, TEXT("[MeleeDiag][RejectTarget] Weapon=%s Sequence=%d Target=%s CanBeDamaged=%d Enemy=%d Dead=%d Team=%d RequiredTeam=%d Component=%s Bone=%s"),
+					*GetNameSafe(this), AttackSequence, *GetNameSafe(Candidate), Candidate->CanBeDamaged(), Enemy != nullptr,
+					Enemy && Enemy->IsDead(), Enemy ? Enemy->GetGenericTeamId().GetId() : -1, OutlierTeamIds::Enemy,
+					*GetNameSafe(HitResult.GetComponent()), *HitResult.BoneName.ToString());
 				if (Cast<AShooterCharacter>(WeaponOwner) && !Cast<APawn>(Candidate))
 				{
-					HitActorsThisSwing.Add(Candidate);
 					PresentSurfaceImpact(HitResult);
 				}
 				continue;
@@ -636,13 +674,14 @@ void AMeleeWeaponBase::SweepMeleeTrace(
 			const bool bVisibilityBlocked = World->LineTraceSingleByChannel(
 				VisibilityHit,
 				ViewLocation,
-				Candidate->GetActorLocation(),
+				HitResult.ImpactPoint,
 				ECC_Visibility,
 				VisibilityParams);
 			if (bVisibilityBlocked && VisibilityHit.GetActor() != Candidate)
 			{
-				UE_LOG(LogMeleeDiagnostics, Log, TEXT("[MeleeDiag][Occluded] Weapon=%s Sequence=%d Target=%s Blocker=%s View=%s TargetLocation=%s"),
-					*GetNameSafe(this), AttackSequence, *GetNameSafe(Candidate), *GetNameSafe(VisibilityHit.GetActor()), *ViewLocation.ToString(), *Candidate->GetActorLocation().ToString());
+				UE_LOG(LogMeleeDiagnostics, Log, TEXT("[MeleeDiag][Occluded] Weapon=%s Sequence=%d Target=%s Blocker=%s BlockerComponent=%s BlockerBone=%s BlockerImpact=%s View=%s TargetLocation=%s HitPoint=%s"),
+					*GetNameSafe(this), AttackSequence, *GetNameSafe(Candidate), *GetNameSafe(VisibilityHit.GetActor()), *GetNameSafe(VisibilityHit.GetComponent()),
+					*VisibilityHit.BoneName.ToString(), *VisibilityHit.ImpactPoint.ToCompactString(), *ViewLocation.ToString(), *Candidate->GetActorLocation().ToString(), *HitResult.ImpactPoint.ToCompactString());
 				continue;
 			}
 
@@ -678,6 +717,7 @@ void AMeleeWeaponBase::ResetMeleeTraceState()
 	PreviousMeleeTraceStart = FVector::ZeroVector;
 	PreviousMeleeTraceEnd = FVector::ZeroVector;
 	HitActorsThisSwing.Reset();
+	SurfaceActorsThisSwing.Reset();
 }
 
 void AMeleeWeaponBase::LogMissingMeleeTraceSockets() const
@@ -934,11 +974,13 @@ void AMeleeWeaponBase::ClientNotifyMeleeHitFeedback_Implementation(const FMeleeH
 
 void AMeleeWeaponBase::PresentSurfaceImpact(const FHitResult& Hit)
 {
-	if (!HasAuthority())
+	AActor* SurfaceActor = Hit.GetActor();
+	if (!HasAuthority() || !IsValid(SurfaceActor) || SurfaceActorsThisSwing.Contains(SurfaceActor))
 	{
 		return;
 	}
-	// 실제 Sweep에서 중복 대상을 거른 뒤에만 호출한다. 가상 Damage Hit에는 연출을 붙이지 않는다.
+	SurfaceActorsThisSwing.Add(SurfaceActor);
+	// 표면 연출은 별도로 중복을 거른다. 벽/트리거 접촉은 공격 대상 타격으로 세지 않는다.
 	// 타격음은 기존 공격당 한 번 제한을 유지하고, 시각 효과는 실제 대상별로 전달한다.
 	const uint8 Surface = ResolveSurfaceImpact(Hit);
 	PlayMeleeHitSoundOnce(Hit, Surface);
@@ -949,5 +991,11 @@ void AMeleeWeaponBase::PresentSurfaceImpact(const FHitResult& Hit)
 void AMeleeWeaponBase::MulticastPlaySurfaceImpact_Implementation(FVector_NetQuantize Location,
 	FVector_NetQuantizeNormal Normal, AActor* HitActor, uint8 Surface, FGameplayTag Context)
 {
+	if (GetNetMode() == NM_DedicatedServer) return;
+	if (ImpactEffect && ImpactEffect->FXAsset && CachedVisualSubsystem)
+	{
+		CachedVisualSubsystem->SpawnEffectAtLocation(ImpactEffect, Location, Normal.GetSafeNormal().Rotation());
+		return;
+	}
 	PlaySurfaceImpactVisual(Location, Normal, HitActor, Surface, Context);
 }

@@ -8,6 +8,7 @@
 #include "MeleeWeaponBase.generated.h"
 
 class UAnimMontage;
+class UTrailEffectDefinition;
 
 struct FOutlierStealthSession;
 
@@ -50,6 +51,8 @@ protected:
 	FVector PreviousMeleeTraceStart = FVector::ZeroVector;
 	FVector PreviousMeleeTraceEnd = FVector::ZeroVector;
 	TSet<AActor*> HitActorsThisSwing;
+	// 표면 연출의 중복 방지는 단일 대상 피해 판정을 소모하지 않는다.
+	TSet<AActor*> SurfaceActorsThisSwing;
 	TSharedPtr<FOutlierStealthSession> SwingStealthSession;
 	TArray<FHitResult> MeleeTraceHitBuffer;
 	float CurrentTargetSearchInterval = 0.1f;
@@ -111,6 +114,10 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Melee")
 	bool bCanHitMultipleTargets = false;
+
+	// 지정하면 공용 표면 시각 효과 대신 사용한다. 사운드는 기존 표면 경로를 유지한다.
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Melee|Feedback")
+	TObjectPtr<UTrailEffectDefinition> ImpactEffect;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Melee|Target Search", meta = (ClampMin = "0.01"))
 	float InitialTargetSearchInterval = 0.1f;

@@ -15,6 +15,7 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/BoxComponent.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Shooter/ShooterCombatComponent.h"
 #include "Shooter/ShooterMovementComponent.h"
@@ -704,6 +705,107 @@ bool FOutlierMeleeTargetInterfaceTest::RunTest(const FString& Parameters)
 			AdaptiveInterval, false, true, InitialInterval, IntervalStep, MaxInterval),
 		InitialInterval);
 
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FOutlierMeleeSurfaceDoesNotConsumeHitTest,
+	"Outlier.Weapon.Melee.SurfaceDoesNotConsumeHit",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierMeleeSurfaceDoesNotConsumeHitTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FScopedMeleeTestWorld TestWorld;
+	if (!TestWorld.Initialize(*this)) return false;
+	UWorld* World = TestWorld.World;
+	UClass* ShooterClass = LoadClass<AShooterCharacter>(
+		nullptr, TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	if (!TestNotNull(TEXT("Concrete shooter fixture"), ShooterClass)) return false;
+	FActorSpawnParameters SpawnParameters;
+	SpawnParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AShooterCharacter* Owner = World->SpawnActor<AShooterCharacter>(ShooterClass, FVector(800, 100, 100), FRotator::ZeroRotator, SpawnParameters);
+	AMeleeWeaponTestActor* Weapon = World->SpawnActor<AMeleeWeaponTestActor>();
+	AActor* Surface = World->SpawnActor<AActor>();
+	AEnemyBase* Enemy = World->SpawnActor<AEnemyBase>(FVector(1000, 100, 100), FRotator::ZeroRotator, SpawnParameters);
+	AEnemyBase* OtherEnemy = World->SpawnActor<AEnemyBase>(FVector(1000, 200, 100), FRotator::ZeroRotator, SpawnParameters);
+	if (!TestNotNull(TEXT("Shooter"), Owner) || !TestNotNull(TEXT("Weapon"), Weapon)
+		|| !TestNotNull(TEXT("Surface actor"), Surface) || !TestNotNull(TEXT("Enemy"), Enemy)
+		|| !TestNotNull(TEXT("Other enemy"), OtherEnemy)) return false;
+
+	UBoxComponent* Trigger = NewObject<UBoxComponent>(Surface);
+	Surface->SetRootComponent(Trigger);
+	Surface->AddInstanceComponent(Trigger);
+	Trigger->SetBoxExtent(FVector(20));
+	Trigger->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+	Trigger->SetCollisionObjectType(ECC_WorldDynamic);
+	Trigger->SetCollisionResponseToAllChannels(ECR_Overlap);
+	Trigger->SetWorldLocation(FVector(1000, 0, 100));
+	Trigger->RegisterComponent();
+	for (AEnemyBase* Target : { Enemy, OtherEnemy })
+	{
+		Target->SetCanBeDamaged(true);
+		UCapsuleComponent* Capsule = Target->GetCapsuleComponent();
+		Capsule->SetCapsuleSize(10, 20);
+		Capsule->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+		Capsule->SetCollisionObjectType(ECC_Pawn);
+		Capsule->SetCollisionResponseToAllChannels(ECR_Ignore);
+	}
+	Weapon->SetTestOwner(Owner);
+	Weapon->ResetSwingForTest();
+	const FVector Initial(1000, 0, 100);
+	const FVector Impact(1000, 100, 100);
+	Weapon->SweepForTest(Initial, Initial);
+	TestEqual(TEXT("Trigger contact does not consume the single damage target"), Weapon->GetDamageTargetCountForTest(), 0);
+	TestEqual(TEXT("Trigger contact applies no damage"), Weapon->GetAppliedTargetCount(), 0);
+	TestEqual(TEXT("Surface feedback still records the contacted actor"), Weapon->GetSurfaceTargetCountForTest(), 1);
+	Weapon->SweepForTest(Initial, Initial);
+	TestEqual(TEXT("Repeated surface contact stays deduplicated"), Weapon->GetSurfaceTargetCountForTest(), 1);
+	Weapon->SweepForTest(Initial, Impact);
+	TestEqual(TEXT("Later socket trajectory still hits the enemy"), Weapon->GetLastAppliedTarget(), static_cast<AActor*>(Enemy));
+	TestEqual(TEXT("One target forwarded"), Weapon->GetAppliedTargetCount(), 1);
+	Weapon->SweepForTest(Impact, OtherEnemy->GetActorLocation());
+	TestEqual(TEXT("Single target limit survives later sweeps"), Weapon->GetAppliedTargetCount(), 1);
+	Weapon->ResetSwingForTest();
+	TestEqual(TEXT("Next swing clears surface feedback history"), Weapon->GetSurfaceTargetCountForTest(), 0);
+	Weapon->SweepForTest(Impact, Impact);
+	TestEqual(TEXT("Next swing can hit the same enemy again"), Weapon->GetAppliedTargetCount(), 2);
+
+	// 터렛처럼 Actor 원점이 바닥에 있고 실제 타격 부위는 위에 있는 배치.
+	Enemy->GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	auto AddBox = [](AActor* Actor, const FVector& Location, const FVector& Extent)
+	{
+		UBoxComponent* Box = NewObject<UBoxComponent>(Actor);
+		Actor->AddInstanceComponent(Box);
+		Box->SetBoxExtent(Extent);
+		Box->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+		Box->SetCollisionObjectType(ECC_WorldDynamic);
+		Box->SetCollisionResponseToAllChannels(ECR_Block);
+		Box->SetWorldLocation(Location);
+		Box->RegisterComponent();
+		return Box;
+	};
+	const FVector HeadLocation = Enemy->GetActorLocation() + FVector::UpVector * 100;
+	AddBox(Enemy, HeadLocation, FVector(20));
+	AActor* Floor = World->SpawnActor<AActor>();
+	AActor* Wall = World->SpawnActor<AActor>();
+	if (!TestNotNull(TEXT("Floor fixture"), Floor) || !TestNotNull(TEXT("Wall fixture"), Wall)) return false;
+	AddBox(Floor, Enemy->GetActorLocation(), FVector(30, 30, 5));
+	FHitResult OriginHit;
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(MeleeOriginRegression), false, Owner);
+	TestTrue(TEXT("Old actor-origin visibility ray is blocked by the floor"), World->LineTraceSingleByChannel(
+		OriginHit, Owner->GetActorLocation(), Enemy->GetActorLocation(), ECC_Visibility, QueryParams));
+	TestEqual(TEXT("Floor is the false blocker"), OriginHit.GetActor(), Floor);
+	Weapon->ResetSwingForTest();
+	Weapon->ResetAppliedTarget();
+	Weapon->SweepForTest(HeadLocation + FVector(0, 60, 0), HeadLocation);
+	TestEqual(TEXT("Floor at actor origin does not reject the exposed head hit"), Weapon->GetLastAppliedTarget(), static_cast<AActor*>(Enemy));
+	TestEqual(TEXT("Exposed head forwards one hit"), Weapon->GetAppliedTargetCount(), 1);
+	AddBox(Wall, FVector(900, 100, 150), FVector(10, 30, 120));
+	Weapon->ResetSwingForTest();
+	Weapon->ResetAppliedTarget();
+	Weapon->SweepForTest(HeadLocation + FVector(0, 60, 0), HeadLocation);
+	TestEqual(TEXT("A real wall between view and impact still blocks damage"), Weapon->GetAppliedTargetCount(), 0);
 	return true;
 }
 
