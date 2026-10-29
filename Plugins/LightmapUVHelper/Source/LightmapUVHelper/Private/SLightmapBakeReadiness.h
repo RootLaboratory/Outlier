@@ -1,6 +1,7 @@
 #pragma once
 
 #include "LightmapBakeReadiness.h"
+#include "LightmapMeshDiagnostics.h"
 #include "Widgets/SCompoundWidget.h"
 
 class SVerticalBox;
@@ -15,7 +16,10 @@ private:
 	FReply Refresh();
 	FReply OpenPanel();
 	FReply Export();
+	FReply ScanMeshes();
+	FReply ExportMeshes();
 	FLightmapBakeReadiness Report;
+	FLightmapMeshDiagnosticReport MeshReport;
 	TSharedPtr<SVerticalBox> CheckRows;
 	FString Status;
 };

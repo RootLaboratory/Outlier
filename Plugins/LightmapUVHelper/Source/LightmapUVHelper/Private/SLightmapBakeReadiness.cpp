@@ -1,5 +1,13 @@
 #include "SLightmapBakeReadiness.h"
 
+#include "AssetRegistry/AssetData.h"
+#include "Components/StaticMeshComponent.h"
+#include "ContentBrowserModule.h"
+#include "Editor.h"
+#include "Engine/StaticMesh.h"
+#include "GameFramework/Actor.h"
+#include "IContentBrowserSingleton.h"
+
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Text/STextBlock.h"
@@ -28,6 +36,17 @@ void SLightmapBakeReadiness::Construct(const FArguments& Args)
 			[SNew(SButton).Text(LOCTEXT("Export", "검사 보고서 저장"))
 				.ToolTipText(LOCTEXT("ExportHint", "현재 환경과 카메라를 다시 검사하고 Saved/LightmapUVHelper/Readiness에 JSON으로 저장합니다."))
 				.OnClicked(this, &SLightmapBakeReadiness::Export)]
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(4)
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().AutoWidth()
+			[SNew(SButton).Text(LOCTEXT("MeshScan", "크래시 후보 메시 검사"))
+				.ToolTipText(LOCTEXT("MeshScanHint", "현재 로드된 레벨의 SM·ISM·HISM을 읽고 GPULM 예상 배치와 Ray Tracing Proxy 섹션 수를 비교합니다. 베이크/에셋 변경은 하지 않습니다."))
+				.OnClicked(this, &SLightmapBakeReadiness::ScanMeshes)]
+			+ SHorizontalBox::Slot().AutoWidth().Padding(6, 0)
+			[SNew(SButton).Text(LOCTEXT("ExportMeshes", "메시 진단 보고서 저장"))
+				.OnClicked(this, &SLightmapBakeReadiness::ExportMeshes)]
 		]
 		+ SVerticalBox::Slot().FillHeight(1)
 		[SNew(SScrollBox) + SScrollBox::Slot()[SAssignNew(CheckRows, SVerticalBox)]]
@@ -72,6 +91,67 @@ FReply SLightmapBakeReadiness::Export()
 	Refresh();
 	FString Path;
 	Status = LightmapBake::SaveReport(Report, Path) ? TEXT("검사 보고서 저장: ") + Path : TEXT("보고서 저장 실패: ") + Path;
+	return FReply::Handled();
+}
+
+FReply SLightmapBakeReadiness::ScanMeshes()
+{
+	MeshReport = LightmapMeshDiagnostics::ScanEditorWorld();
+	CheckRows->ClearChildren();
+	if (!MeshReport.Error.IsEmpty()) { Status = MeshReport.Error; return FReply::Handled(); }
+	CheckRows->AddSlot().AutoHeight().Padding(4)
+	[SNew(STextBlock).AutoWrapText(true).Text(LOCTEXT("DiagnosticScope",
+		"로드된 SM·ISM·HISM의 모든 렌더 LOD를 검사합니다. 후보가 곧 원인 확정은 아닙니다. -1은 RHI 미상주/확인 불가입니다. Landscape와 언로드된 액터는 제외됩니다."))];
+	int32 Shown = 0;
+	for (const FLightmapMeshDiagnostic& Entry : MeshReport.Entries)
+	{
+		if (!Entry.HasRisk()) continue;
+		if (Shown++ >= 50) break;
+		CheckRows->AddSlot().AutoHeight().Padding(4, 6)
+		[
+			SNew(SVerticalBox)
+			+ SVerticalBox::Slot().AutoHeight()
+			[SNew(STextBlock).AutoWrapText(true).ColorAndOpacity(Entry.bCountMismatch || Entry.bIndexMismatch
+				? FLinearColor(1, 0.45f, 0.35f) : FLinearColor(1, 0.8f, 0.3f))
+				.Text(FText::FromString(Entry.Description()))]
+			+ SVerticalBox::Slot().AutoHeight()
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot().AutoWidth()
+				[SNew(SButton).Text(LOCTEXT("SelectActor", "액터 선택"))
+					.OnClicked_Lambda([Component = Entry.Component]()
+					{
+						if (Component.IsValid() && Component->GetOwner() && GEditor)
+						{
+							GEditor->SelectNone(false, true);
+							GEditor->SelectActor(Component->GetOwner(), true, true);
+						}
+						return FReply::Handled();
+					})]
+				+ SHorizontalBox::Slot().AutoWidth().Padding(6, 0)
+				[SNew(SButton).Text(LOCTEXT("FindMesh", "콘텐츠에서 찾기"))
+					.OnClicked_Lambda([Component = Entry.Component]()
+					{
+						if (Component.IsValid() && Component->GetStaticMesh())
+						{
+							FModuleManager::LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser")).Get()
+								.SyncBrowserToAssets(TArray<FAssetData>{FAssetData(Component->GetStaticMesh())});
+						}
+						return FReply::Handled();
+					})]
+			]
+		];
+	}
+	Status = FString::Printf(TEXT("컴포넌트 %d / 고유 메시 %d / 후보 LOD 항목 %d. 화면에는 최대 50개, 보고서에는 전체 결과가 저장됩니다.%s"),
+		MeshReport.Components, MeshReport.UniqueMeshes, MeshReport.RiskCount(), MeshReport.bCancelled ? TEXT(" 취소됨: 일부 검사 결과입니다.") : TEXT(" 에셋 변경·베이크 실행 없음."));
+	return FReply::Handled();
+}
+
+FReply SLightmapBakeReadiness::ExportMeshes()
+{
+	if (MeshReport.Map.IsEmpty()) { Status = TEXT("크래시 후보 메시 검사를 먼저 실행하세요."); return FReply::Handled(); }
+	FString Path;
+	Status = LightmapMeshDiagnostics::Save(MeshReport, Path) ? TEXT("메시 진단 보고서 저장: ") + Path : TEXT("보고서 저장 실패: ") + Path;
 	return FReply::Handled();
 }
 
