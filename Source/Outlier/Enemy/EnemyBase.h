@@ -175,6 +175,12 @@ public:
 		bPoolPresentationAutoCompleteForTesting = bEnabled;
 	}
 	void BeginDeathForPoolTesting() { HandleDeath(); }
+	void SetDeathDebrisForPoolTesting(UGeometryCollection* Collection, float Delay)
+	{
+		DeathDebrisCollection = Collection;
+		DeathDebrisDelay = Delay;
+	}
+	FTimerHandle GetDeathDebrisTimerForPoolTesting() const { return DeathDebrisTimerHandle; }
 	void SimulateDeathPresentationForPoolTesting()
 	{
 		DisableDeathCollision();
@@ -792,7 +798,6 @@ protected:
 
 	virtual void HideSourceMeshes();
 	void SaveSourceMeshVisibility(USceneComponent* SourceMeshRoot);
-	void SpawnDeathDebris(FTransform SourceTransform, FVector DeathVelocity);
 	virtual float GetDeathDestroyDelay() const { return DeathDestroyDelay; }
 	virtual bool TryApplyCommittedImpactVelocity(const FVector& ImpactVelocity);
 	virtual void CancelCommittedAction();
@@ -812,7 +817,7 @@ protected:
 	// 파편은 놓치면 적이 그냥 사라져 보이므로 Reliable 을 쓴다.
 	// ( 폭발 VFX/사운드는 GameplayCue 로 나가고 그쪽은 unreliable 이다 )
 	UFUNCTION(NetMulticast, Reliable)
-	void MulticastPlayDeathDebris(FVector_NetQuantize100 DeathVelocity);
+	void MulticastPlayDeathDebris(FTransform SourceTransform, FVector_NetQuantize100 DeathVelocity);
 
 	// 시체가 남은 DeathDestroyDelay 동안 트레이스/판정에 걸리지 않게 한다.
 	void DisableDeathCollision();
@@ -831,6 +836,7 @@ protected:
 	bool bMagneticPullActive = false;
 	FTimerHandle PossessedImpactInputLockTimerHandle;
 	FTimerHandle DeathDebrisTimerHandle;
+	uint32 DeathDebrisPresentationSerial = 0;
 	FActiveGameplayEffectHandle PossessionPendingEffectHandle;
 
 	UPROPERTY(ReplicatedUsing = OnRep_PoolState, VisibleInstanceOnly, BlueprintReadOnly, Category = "Enemy|Pool")
