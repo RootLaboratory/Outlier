@@ -21,6 +21,7 @@
 #include "Enemy/EnemyPoolTypes.h"
 #include "Enemy/EnemyFlightHeightTypes.h"
 #include "PostProcess/OutlierSpawnVisualTarget.h"
+#include "PostProcess/OutlierReadabilityTarget.h"
 #include "EnemyBase.generated.h"
 
 class UStateTreeComponent;
@@ -90,11 +91,16 @@ enum class EEnemyAttackPhase : uint8
 };
 
 UCLASS()
-class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, public IEMPableInterface, public IScannableInterface, public IGenericTeamAgentInterface, public IRoomTagInterface, public IAbilitySystemInterface, public IOutlierDamageReceiver, public IMeleeTargetInterface, public IOutlierSpawnVisualTarget, public IWeaponDamageModifierProvider
+class OUTLIER_API AEnemyBase : public ACharacter, public IHackableInterface, public IEMPableInterface, public IScannableInterface, public IGenericTeamAgentInterface, public IRoomTagInterface, public IAbilitySystemInterface, public IOutlierDamageReceiver, public IMeleeTargetInterface, public IOutlierSpawnVisualTarget, public IWeaponDamageModifierProvider, public IOutlierReadabilityTarget
 {
 	GENERATED_BODY()
 
 public:
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "PostProcess|Readability", meta = (ClampMin = "1", ClampMax = "255"))
+	int32 ReadabilityStencilValue = IOutlierReadabilityTarget::DefaultReadabilityStencilValue;
+
+	virtual void InitializeReadabilityStencil_Implementation(bool bPreserveExistingStencil) override;
+
 	void SetPossessionDamageMultiplier(float Multiplier);
 	virtual void GetWeaponDamageModifiers(FWeaponDamageModifiers& OutModifiers) const override;
 

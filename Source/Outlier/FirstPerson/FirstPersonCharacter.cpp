@@ -122,6 +122,7 @@ void AFirstPersonCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
 void AFirstPersonCharacter::BeginPlay()
 {
 	Super::BeginPlay();
+	IOutlierReadabilityTarget::Execute_InitializeReadabilityStencil(this, false);
 	NormalizeInteractionSphereRanges();
 
 	if (APlayerController* PlayerController = Cast<APlayerController>(GetController()))
@@ -796,6 +797,22 @@ void AFirstPersonCharacter::UnPossessed()
 EWeaponType AFirstPersonCharacter::GetWeaponType() const
 {
 	return CurrentWeaponType;
+}
+
+void AFirstPersonCharacter::InitializeReadabilityStencil_Implementation(bool bPreserveExistingStencil)
+{
+	if (GetNetMode() == NM_DedicatedServer) return;
+
+	// Only the 3P body subtree: exclude first-person arms, weapons and the sibling ShadowMesh.
+	USkeletalMeshComponent* ThirdPersonMesh = GetMesh();
+	if (!ThirdPersonMesh) return;
+	TArray<USceneComponent*> Components;
+	ThirdPersonMesh->GetChildrenComponents(true, Components);
+	Components.Add(ThirdPersonMesh);
+	for (USceneComponent* Component : Components)
+	{
+		ApplyReadabilityStencil(Cast<UMeshComponent>(Component), ReadabilityStencilValue, bPreserveExistingStencil);
+	}
 }
 
 void AFirstPersonCharacter::CollectStealthMeshes(

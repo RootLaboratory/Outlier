@@ -41,8 +41,10 @@ enum class EOutlierPostProcessMaterialType : uint8
 	Damaged UMETA(DisplayName = "Damaged"),
 	// 자기장 발생기의 중력렌즈. BP 맵 키 호환 때문에 반드시 맨 뒤에 추가한다.
 	Magnetic UMETA(DisplayName = "Magnetic"),
-	// 파트너 아웃라인. 게임플레이 이벤트와 무관하게 상시 켜져 있는 유일한 패스다.
-	PartnerOutline UMETA(DisplayName = "Partner Outline")
+	// 파트너 아웃라인. 게임플레이 이벤트와 무관하게 상시 켜져 있다.
+	PartnerOutline UMETA(DisplayName = "Partner Outline"),
+	// Append only: existing Blueprint map keys retain their serialized values.
+	Readability UMETA(DisplayName = "Character Readability")
 
 };
 

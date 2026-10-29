@@ -291,6 +291,7 @@ void AEnemyBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifeti
 void AEnemyBase::BeginPlay()
 {
 	Super::BeginPlay();
+	IOutlierReadabilityTarget::Execute_InitializeReadabilityStencil(this, false);
 	RefreshAbilitySystemActorInfo();
 	BindGasVitalityObservers();
 
@@ -620,6 +621,19 @@ void AEnemyBase::OnPoolSpawnPresentationStarted_Implementation(
 		{
 			CompletePoolSpawnPresentation(GameplayGeneration, LeaseSerial);
 		}));
+}
+
+void AEnemyBase::InitializeReadabilityStencil_Implementation(bool bPreserveExistingStencil)
+{
+	if (GetNetMode() == NM_DedicatedServer) return;
+
+	// Includes derived actors' body parts, such as AutoTurret's separate head mesh.
+	TArray<UMeshComponent*> Meshes;
+	GetComponents<UMeshComponent>(Meshes);
+	for (UMeshComponent* MeshComponent : Meshes)
+	{
+		ApplyReadabilityStencil(MeshComponent, ReadabilityStencilValue, bPreserveExistingStencil);
+	}
 }
 
 void AEnemyBase::CollectSpawnPresentationMeshes(TArray<UMeshComponent*>& OutMeshes) const

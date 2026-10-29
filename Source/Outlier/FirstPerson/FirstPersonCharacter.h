@@ -10,6 +10,7 @@
 #include "Interface/RoomTagInterface.h"
 #include "Interface/GameplayTagProviderInterface.h"
 #include "PostProcess/OutlierStealthVisualTarget.h"
+#include "PostProcess/OutlierReadabilityTarget.h"
 #include "Interaction/InteractableComponent.h"
 #include "FirstPersonCharacter.generated.h"
 
@@ -35,7 +36,7 @@ enum class EInteractionTraceMode : uint8
 };
 
 UCLASS()
-class OUTLIER_API AFirstPersonCharacter : public ACharacter, public IGameplayTagProviderInterface, public IGenericTeamAgentInterface, public IRoomTagInterface, public IOutlierStealthVisualTarget
+class OUTLIER_API AFirstPersonCharacter : public ACharacter, public IGameplayTagProviderInterface, public IGenericTeamAgentInterface, public IRoomTagInterface, public IOutlierStealthVisualTarget, public IOutlierReadabilityTarget
 {
 	GENERATED_BODY()
 
@@ -105,6 +106,11 @@ protected:
 public:
 	/** Sets default values for this character's properties */
 	AFirstPersonCharacter(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "PostProcess|Readability", meta = (ClampMin = "1", ClampMax = "255"))
+	int32 ReadabilityStencilValue = IOutlierReadabilityTarget::DefaultReadabilityStencilValue;
+
+	virtual void InitializeReadabilityStencil_Implementation(bool bPreserveExistingStencil) override;
 
 	virtual FGenericTeamId GetGenericTeamId() const override;
 
