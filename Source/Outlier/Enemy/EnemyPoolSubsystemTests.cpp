@@ -323,9 +323,14 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 				for (int32 Index = 0; Index < State.TasksNum; ++Index)
 				{
 					const auto* Task = GunBattleTree->GetNode(State.TasksBegin + Index).GetPtr<const FEnemySearchSessionTask>();
-					bHasSession |= Task && Task->bTaskEnabled && !Task->bConsideredForCompletion;
+					bool bValidSession = Task && Task->bTaskEnabled;
+#if WITH_EDITORONLY_DATA
+					// 완료 참여 설정은 에디터 전용이므로 패키징에서는 활성 여부만 검사한다.
+					bValidSession = bValidSession && !Task->bConsideredForCompletion;
+#endif
+					bHasSession |= bValidSession;
 				}
-				TestTrue(TEXT("Search owns a non-completing search session"), bHasSession);
+				TestTrue(TEXT("Search owns an enabled search session with valid completion settings"), bHasSession);
 			}
 		}
 		TestTrue(TEXT("Gun battle StateTree contains Search"), bFoundSearch);
