@@ -11,6 +11,7 @@ class UAbilityIconUI;
 class UImage;
 class UTexture2D;
 class USizeBox;
+class UInputAction;
 
 // Shooter는 선택한 스킬 하나, Partner는 고정 스킬별 인스턴스로 사용한다.
 // 아이콘, 충전 막대와 회복 연출을 하나의 슬롯에서 갱신한다.
@@ -20,6 +21,9 @@ class TAGDRIVENUI_API UAbilitySlotUI : public UEventDrivenUI
 	GENERATED_BODY()
 
 public:
+	UFUNCTION(BlueprintCallable, Category = "Ability|Input")
+	void SetInputAction(UInputAction* InputAction);
+
 	virtual void NativePreConstruct() override;
 	virtual void NativeConstruct() override;
 	virtual void NativeDestruct() override;
@@ -64,6 +68,13 @@ public:
 	FGameplayTag GetCurrentAbilityTag() const { return CurrentAbilityTag; }
 
 private:
+	void ApplyInputAction();
+
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> DisplayedInputAction;
+
+	bool bHasInputActionOverride = false;
+
 	void ApplyIconTexture();
 	void UpdateSkillCountVisibility();
 	void ApplyCurrentChargeState();
@@ -71,6 +82,10 @@ private:
 	void PlayBarFeedback(UImage* Image);
 
 public:
+	// Matches the existing child name in the shared slot WBP.
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional, MustImplement = "/Script/TagDrivenUI.InputActionDisplayInterface"))
+	TObjectPtr<UUserWidget> WBP_InputBindKeyDisplayWidget;
+
 	// 미지정 능력은 1회로 표시한다. 업그레이드가 바뀌면 해당 능력의 값만 갱신한다.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Ability", meta = (Categories = "Ability"))
 	TMap<FGameplayTag, int32> AbilitySkillCounts;

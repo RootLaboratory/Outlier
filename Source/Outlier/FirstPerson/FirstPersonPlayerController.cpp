@@ -2867,6 +2867,8 @@ void AFirstPersonPlayerController::ServerRequestVitalitySnapshot_Implementation(
 			for (const FOutlierVitalityPresentationUpdate& Snapshot : Snapshots) QueueVitalityPresentation(Snapshot);
 		}
 	}
+}
+
 // Owning RPC transport only; the volume owns the local sequence and its lifetime.
 void AFirstPersonPlayerController::ClientStartPassageFade_Implementation(
 	ATuto_PassageTransitionVolume* Volume, FGuid ExecutionId, FOutlierScreenTransitionTiming Timing)

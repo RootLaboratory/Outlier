@@ -91,7 +91,8 @@ void UMaterialPostProcessSubsystem::RegisterPostProcessVolume(AOutlierPostProces
 		&& !InPostProcessVolume->HasEnemySpawnDissolveMaterial()
 		&& !InPostProcessVolume->HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::Damaged)
 		&& !InPostProcessVolume->HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::Magnetic)
-		&& !InPostProcessVolume->HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::PartnerOutline))
+		&& !InPostProcessVolume->HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::PartnerOutline)
+		&& !InPostProcessVolume->HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::Readability))
 	{
 		return;
 	}
@@ -996,6 +997,12 @@ void UMaterialPostProcessSubsystem::ApplyAlwaysOnPostProcess()
 	if (ShouldSkipRenderingWork() || !BoundPostProcessVolume)
 	{
 		return;
+	}
+
+	// Readability also survives normal PP resets; hard disables still turn every blendable off.
+	if (BoundPostProcessVolume->HasValidPostProcessMaterial(EOutlierPostProcessMaterialType::Readability))
+	{
+		BoundPostProcessVolume->SetPostProcessEnabled(EOutlierPostProcessMaterialType::Readability, true);
 	}
 
 	// 파트너 아웃라인은 스캔과 달리 게임플레이 이벤트가 켜고 끄지 않는다.
