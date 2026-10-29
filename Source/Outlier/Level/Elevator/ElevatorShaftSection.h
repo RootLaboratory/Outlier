@@ -27,6 +27,8 @@ public:
 	// 초기화 때만 조회한다. 중복 문 구성은 nullptr로 반환해 Controller가 시작 전에 거부한다.
 	void RefreshChildActors();
 	AInteractableDoor* GetEntranceDoor() const;
+	// 스위치 요청은 현재 계층만 읽는다. 운행용 캐시/가시성/문 이벤트는 건드리지 않는다.
+	AInteractableDoor* FindCurrentDoor(FString& OutError, bool& bOutPendingConstruction) const;
 	bool HasEntranceDoor() const { return EntranceDoor.IsValid(); }
 
 #if WITH_EDITOR

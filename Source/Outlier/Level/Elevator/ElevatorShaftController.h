@@ -127,6 +127,9 @@ public:
 	// 큰 시간 간격에도 층 간격을 유지하며, 첫 입구 슬롯에는 반복 벽을 겹쳐 넣지 않는다.
 	static double CalculateLoopOffset(double Distance, int32 Slot, int32 Count, double Height);
 
+	// 요청 시 현재 Section을 조회한다. 운행용 문 참조와 delegate 바인딩은 유지한다.
+	AInteractableDoor* FindSwitchDoor(bool bArrival, FString& OutError, bool& bOutPendingConstruction) const;
+
 	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Elevator|Setup")
 	TObjectPtr<ARoomVolume> EntryRoom;
 

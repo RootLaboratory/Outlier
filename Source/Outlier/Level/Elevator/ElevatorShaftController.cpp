@@ -96,6 +96,52 @@ AElevatorShaftSection* AElevatorShaftController::FindEntranceSection() const
 	return FoundSection;
 }
 
+AInteractableDoor* AElevatorShaftController::FindSwitchDoor(bool bArrival, FString& OutError, bool& bOutPendingConstruction) const
+{
+	OutError.Reset();
+	bOutPendingConstruction = false;
+	const AElevatorShaftSection* Section = bArrival ? ArrivalSection.Get() : FindEntranceSection();
+	if (!bArrival)
+	{
+		int32 SectionCount = 0;
+		TInlineComponentArray<UChildActorComponent*> ChildComponents;
+		GetComponents(ChildComponents, false);
+		for (const UChildActorComponent* Component : ChildComponents)
+		{
+			if (Component->GetChildActorClass()
+				&& Component->GetChildActorClass()->IsChildOf(AElevatorShaftSection::StaticClass()))
+			{
+				++SectionCount;
+				bOutPendingConstruction |= !Component->GetChildActor();
+			}
+		}
+		if (SectionCount != 1)
+		{
+			OutError = TEXT("Controller requires exactly one direct Entrance Section Child Actor.");
+			bOutPendingConstruction = false;
+			return nullptr;
+		}
+		if (bOutPendingConstruction)
+		{
+			OutError = TEXT("Entrance Section Child Actor is not constructed yet.");
+			return nullptr;
+		}
+	}
+	if (!IsValid(Section) || Section->IsActorBeingDestroyed() || Section->GetWorld() != GetWorld())
+	{
+		OutError = FString::Printf(TEXT("%s Section is missing, invalid, destroying or in another world."),
+			bArrival ? TEXT("Arrival") : TEXT("Entrance"));
+		return nullptr;
+	}
+	FString SectionError;
+	AInteractableDoor* Door = Section->FindCurrentDoor(SectionError, bOutPendingConstruction);
+	if (!Door)
+	{
+		OutError = FString::Printf(TEXT("Section=%s: %s"), *Section->GetPathName(), *SectionError);
+	}
+	return Door;
+}
+
 void AElevatorShaftController::ResolveEntranceActors()
 {
 	EntranceSection = FindEntranceSection();

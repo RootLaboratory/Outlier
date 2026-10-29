@@ -1,6 +1,7 @@
 #include "Level/Elevator/ElevatorShaftSection.h"
 
 #include "Components/SceneComponent.h"
+#include "Components/ChildActorComponent.h"
 #include "Engine/StaticMesh.h"
 #include "Interaction/InteractableDoor.h"
 #if WITH_EDITOR
@@ -68,6 +69,50 @@ void AElevatorShaftSection::RefreshChildActors()
 AInteractableDoor* AElevatorShaftSection::GetEntranceDoor() const
 {
 	return bHasMultipleDoors ? nullptr : EntranceDoor.Get();
+}
+
+AInteractableDoor* AElevatorShaftSection::FindCurrentDoor(FString& OutError, bool& bOutPendingConstruction) const
+{
+	OutError.Reset();
+	bOutPendingConstruction = false;
+	TInlineComponentArray<UChildActorComponent*> ChildComponents;
+	GetComponents(ChildComponents, true);
+	for (const UChildActorComponent* Component : ChildComponents)
+	{
+		bOutPendingConstruction |= Component->GetChildActorClass() && !Component->GetChildActor();
+	}
+
+	AInteractableDoor* FoundDoor = nullptr;
+	TArray<AActor*> ChildActors;
+	GetAllChildActors(ChildActors, true);
+	for (AActor* Child : ChildActors)
+	{
+		if (AInteractableDoor* Door = Cast<AInteractableDoor>(Child))
+		{
+			if (!IsValid(Door) || Door->IsActorBeingDestroyed() || Door->GetWorld() != GetWorld()
+				|| (HasAuthority() && !Door->HasAuthority()))
+			{
+				OutError = TEXT("Section contains an invalid, destroying, cross-world or non-authority door.");
+				bOutPendingConstruction = false;
+				return nullptr;
+			}
+			if (FoundDoor)
+			{
+				OutError = TEXT("Section contains multiple doors; exactly one is required.");
+				bOutPendingConstruction = false;
+				return nullptr;
+			}
+			FoundDoor = Door;
+		}
+	}
+	// 미생성 자식 안에 다른 문이 있을 수 있으므로 완성된 계층만 승인한다.
+	if (bOutPendingConstruction || !FoundDoor)
+	{
+		OutError = bOutPendingConstruction ? TEXT("Section Child Actors are not constructed yet.")
+			: TEXT("Section contains no door; exactly one is required.");
+		return nullptr;
+	}
+	return FoundDoor;
 }
 
 void AElevatorShaftSection::SetSectionVisible(bool bVisible)

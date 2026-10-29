@@ -825,11 +825,13 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 		AActor* HitActor = Hit.GetActor();
 		const FVector TraceEndPoint = bHit ? Hit.ImpactPoint : End;
 		const FVector ImpactNormal = bHit ? Hit.ImpactNormal : -ShotDirection;
+		// 실제 탄도 Hit는 유지하고, 한 번 조회한 표면을 타격음과 FX에 함께 전달한다.
+		const uint8 ImpactSurface = bHit ? ResolveSurfaceImpact(Hit) : static_cast<uint8>(SurfaceType_Default);
 		if (bHit)
 		{
 			// 약점 보완 Hit가 아닌 실제 탄도 충돌 결과로 표면 연출을 결정한다.
 			// Player의 총탄 Hit 태그는 적을 제외한 환경용이다. 적은 자체 피격음 경로를 유지한다.
-			PlaySurfaceImpactSound(Hit, WeaponOwner && WeaponOwner->IsPlayerControlled()
+			PlaySurfaceImpactSound(Hit, ImpactSurface, WeaponOwner && WeaponOwner->IsPlayerControlled()
 				&& !Cast<AEnemyBase>(HitActor));
 		}
 		MulticastPlayFireFX(
@@ -838,7 +840,7 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 			HitActor,
 			GetNormalizedLastShotDirection(),
 			FiredMuzzleSocketName, bHit,
-			static_cast<uint8>(UPhysicalMaterial::DetermineSurfaceType(Hit.PhysMaterial.Get())), ImpactAudioContextTag);
+			ImpactSurface, ImpactAudioContextTag);
 		
 		// Weapon fire uses the shared tag-driven world-audio path. The server resolves
 		// the weighted variant once and delivers it to relevant clients, so enemy,
