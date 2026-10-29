@@ -522,6 +522,7 @@ void AShooterCharacter::Tick(float DeltaSeconds)
 
 void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->ResetSlideForLifecycle();
 	if (MovementAudioSubsystem) MovementAudioSubsystem->ClearPredictedMovementAudio(this);
 	OutlierAudioFeedback::StopLoops(this);
 	InitializeAutoAimLocalView(nullptr);
@@ -588,10 +589,7 @@ void AShooterCharacter::UnPossessed()
 	AutoAimViewReceivedAt = -1.0;
 	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->ResetCoyoteTime();
 	// 서버의 상태도 종료해야 원격 인스턴스의 RepNotify가 남은 슬라이딩 반복음을 정리한다.
-	if (IsSliding())
-	{
-		StopSlide(ESlideEndReason::ForcedCancel);
-	}
+	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->ResetSlideForLifecycle();
 	OutlierAudioFeedback::StopLoops(this);
 	Super::UnPossessed();
 }
@@ -600,6 +598,7 @@ void AShooterCharacter::OnRep_Controller()
 {
 	if (MovementAudioSubsystem) MovementAudioSubsystem->ClearPredictedMovementAudio(this);
 	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->ResetCoyoteTime();
+	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->ResetSlideForLifecycle();
 	Super::OnRep_Controller();
 	RefreshLowHPAudio();
 	RefreshAbilitySystemActorInfo();
@@ -1671,6 +1670,8 @@ bool AShooterCharacter::CanJumpInternal_Implementation() const
 void AShooterCharacter::CheckJumpInput(float DeltaTime)
 {
 	auto* JumpMovement = CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement());
+	// 로컬 예측/서버/보정 재생 모두 같은 이동의 점프 판정 전에 Slide 입력을 소비한다.
+	JumpMovement->ApplyMovementInput();
 	JumpMovement->PrepareJumpInput(DeltaTime);
 	const int32 PreviousJumpCount = JumpCurrentCount;
 	const bool bWasOnGround = JumpMovement->IsMovingOnGround();
@@ -2044,6 +2045,22 @@ void AShooterCharacter::OnRep_MovementState()
 	OnMovementStateChanged.Broadcast(MovementState);
 }
 
+void AShooterCharacter::OnRep_ActionLock(EShooterActionLock PreviousLock)
+{
+	if (!IsLocallyControlled()) return;
+	const auto* Movement = CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement());
+	// 늦게 도착한 Slide 잠금/해제가 소유자의 예측 결과를 되돌리지 않게 한다.
+	// Reload/Equip 등 다른 서버 잠금은 기존 복제 경로가 계속 담당한다.
+	if (ActionLock == EShooterActionLock::Slide && !Movement->IsSlideSimulating())
+	{
+		ActionLock = PreviousLock == EShooterActionLock::Slide ? EShooterActionLock::None : PreviousLock;
+	}
+	else if (ActionLock == EShooterActionLock::None && Movement->IsSlideSimulating())
+	{
+		ActionLock = EShooterActionLock::Slide;
+	}
+}
+
 void AShooterCharacter::OnRep_CurrentLeanAlpha()
 {
 	ApplyLeanPresentation();
@@ -2062,7 +2079,7 @@ void AShooterCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
-	DOREPLIFETIME(AShooterCharacter, MovementState);
+	DOREPLIFETIME_CONDITION(AShooterCharacter, MovementState, COND_SkipOwner);
 	DOREPLIFETIME(AShooterCharacter, WeaponMode);
 	DOREPLIFETIME(AShooterCharacter, CombatState);
 	DOREPLIFETIME(AShooterCharacter, ActionLock);
@@ -3354,6 +3371,7 @@ void AShooterCharacter::HandleSlideWallHit(const FHitResult& Hit)
 void AShooterCharacter::HandleDeath()
 {
 	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->ResetCoyoteTime();
+	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->ResetSlideForLifecycle();
 	CancelSuitTransition();
 	ClearInputIntent();
 	if (InventoryComponent && HasAuthority())
@@ -3375,11 +3393,6 @@ void AShooterCharacter::HandleDeath()
 	if (ARangedWeaponBase* RangedWeapon = Cast<ARangedWeaponBase>(CurrentWeapon))
 	{
 		RangedWeapon->CancelLocalRecoilPresentation();
-	}
-
-	if (IsSliding())
-	{
-		StopSlide(ESlideEndReason::ForcedCancel);
 	}
 
 	StopAimInternal();
@@ -4121,11 +4134,8 @@ void AShooterCharacter::ServerSetSprintState_Implementation(bool bNewSprinting)
 		return;
 	}
 
-	if (bNewSprinting)
-	{
-		MovementComponent->HandleSprintPressed();
-	}
-	else
+	// 전투의 기존 Sprint 해제 요청만 보존한다. 이동 입력의 시작/해제는 packed 이동에서 처리한다.
+	if (!bNewSprinting)
 	{
 		MovementComponent->HandleSprintReleased();
 	}
@@ -4133,27 +4143,17 @@ void AShooterCharacter::ServerSetSprintState_Implementation(bool bNewSprinting)
 
 void AShooterCharacter::ServerRequestCrouchOrSlide_Implementation()
 {
-	if (MovementComponent)
-	{
-		MovementComponent->RequestCrouchOrSlide();
-	}
+	// 기존 BP API는 유지하되 이동 패킷과 같은 요청을 두 번 실행하지 않는다.
 }
 
 void AShooterCharacter::ServerRequestUncrouch_Implementation()
 {
-	if (MovementComponent)
-	{
-		MovementComponent->RequestUncrouch();
-	}
+	// 앉기 해제도 저장 이동에 담긴 홀드 변경만 처리한다.
 }
 
 void AShooterCharacter::ServerJumpStart_Implementation()
 {
-	// 실제 점프 입력은 CharacterMovement 패킷만 처리한다. 기존 RPC는 슬라이드 취소 의도만 전달한다.
-	if (MovementComponent && IsSliding())
-	{
-		StopSlide(ESlideEndReason::JumpCancel);
-	}
+	// Slide 취소를 포함한 점프 입력은 이동 패킷에서만 처리한다.
 }
 
 void AShooterCharacter::ServerJumpEnd_Implementation()
@@ -4193,8 +4193,17 @@ void AShooterCharacter::ClientPlayFirstPersonActionMontage_Implementation(EShoot
 	PlayFirstPersonActionMontage(Action, WeaponType);
 }
 
+void AShooterCharacter::MulticastStopSlideMontage_Implementation()
+{
+	// 소유자는 예측/보정의 종료를 따른다. 관찰자는 시작 multicast와 같은 reliable 순서로 종료한다.
+	if (IsLocallyControlled()) return;
+	StopSplitMontages(GetActionMontage(EShooterMontageAction::Slide, true), GetActionMontage(EShooterMontageAction::Slide, false));
+}
+
 void AShooterCharacter::MulticastPlayThirdPersonActionMontage_Implementation(EShooterMontageAction Action, EWeaponType WeaponType, bool bAimingAtShot)
 {
+	// 소유자의 Slide 연출은 로컬 예측/보정 결과가 담당한다. 서버 승인 RPC로 다시 시작하지 않는다.
+	if (Action == EShooterMontageAction::Slide && IsLocallyControlled()) return;
 	UE_LOG(
 		LogTemp,
 		Warning,
