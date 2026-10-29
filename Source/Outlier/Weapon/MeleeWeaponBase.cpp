@@ -660,7 +660,7 @@ void AMeleeWeaponBase::SweepMeleeTrace(
 	}
 }
 
-void AMeleeWeaponBase::PlayMeleeHitSoundOnce(const FHitResult& HitResult)
+void AMeleeWeaponBase::PlayMeleeHitSoundOnce(const FHitResult& HitResult, uint8 Surface)
 {
 	if (bPlayedMeleeHitSoundThisAttack || !Cast<AShooterCharacter>(WeaponOwner))
 	{
@@ -668,7 +668,7 @@ void AMeleeWeaponBase::PlayMeleeHitSoundOnce(const FHitResult& HitResult)
 	}
 
 	bPlayedMeleeHitSoundThisAttack = true;
-	PlaySurfaceImpactSound(HitResult);
+	PlaySurfaceImpactSound(HitResult, Surface);
 }
 
 void AMeleeWeaponBase::ResetMeleeTraceState()
@@ -940,9 +940,10 @@ void AMeleeWeaponBase::PresentSurfaceImpact(const FHitResult& Hit)
 	}
 	// 실제 Sweep에서 중복 대상을 거른 뒤에만 호출한다. 가상 Damage Hit에는 연출을 붙이지 않는다.
 	// 타격음은 기존 공격당 한 번 제한을 유지하고, 시각 효과는 실제 대상별로 전달한다.
-	PlayMeleeHitSoundOnce(Hit);
+	const uint8 Surface = ResolveSurfaceImpact(Hit);
+	PlayMeleeHitSoundOnce(Hit, Surface);
 	MulticastPlaySurfaceImpact(Hit.ImpactPoint, Hit.ImpactNormal, Hit.GetActor(),
-		static_cast<uint8>(UPhysicalMaterial::DetermineSurfaceType(Hit.PhysMaterial.Get())), ImpactAudioContextTag);
+		Surface, ImpactAudioContextTag);
 }
 
 void AMeleeWeaponBase::MulticastPlaySurfaceImpact_Implementation(FVector_NetQuantize Location,

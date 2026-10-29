@@ -2,6 +2,7 @@
 
 
 #include "Weapon/WeaponBase.h"
+#include "Outlier.h"
 #include "CollisionQueryParams.h"
 #include "Drone/Partner/PartnerShieldSphere.h"
 #include "EngineUtils.h"
@@ -10,6 +11,7 @@
 #include "Components/MeshComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/SphereComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "FirstPerson/FirstPersonCharacter.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "GameFramework/Character.h"
@@ -31,6 +33,7 @@
 #include "VisualEffectProvider.h"
 #include "ProjectionMarkDefinition.h"
 #include "PhysicalMaterials/PhysicalMaterial.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 
 static TAutoConsoleVariable<int32> CVarFirstPickupTest(
 	TEXT("outlier.FPFirstPickupTest"), 0,
@@ -562,7 +565,57 @@ void AWeaponBase::BeginPlay()
 	}
 }
 
-void AWeaponBase::PlaySurfaceImpactSound(const FHitResult& Hit, bool bUseSurfaceContext)
+uint8 AWeaponBase::ResolveSurfaceImpact(const FHitResult& Hit, bool* bResolvedMaterial)
+{
+	if (bResolvedMaterial) *bResolvedMaterial = false;
+	const uint8 OriginalSurface = static_cast<uint8>(UPhysicalMaterial::DetermineSurfaceType(Hit.PhysMaterial.Get()));
+	UStaticMeshComponent* Component = Cast<UStaticMeshComponent>(Hit.GetComponent());
+	static const IConsoleVariable* DebugTags = IConsoleManager::Get().FindConsoleVariable(TEXT("Outlier.Audio.DebugTags"));
+	auto ReportSurface = [&](const TCHAR* Reason, uint8 Surface, const FHitResult* MaterialHit = nullptr)
+	{
+		if (DebugTags && DebugTags->GetInt() != 0)
+		{
+			UE_LOG(LogOutlier, Log, TEXT("[AudioTags][WeaponSurface] Actor='%s' Component='%s' Reason='%s' OriginalPM='%s' QueryPM='%s' OriginalSurface=%d Surface=%d QueryBlocking=%d Face=%d Point=%s"),
+				*GetNameSafe(Hit.GetActor()), *GetNameSafe(Hit.GetComponent()), Reason,
+				*GetNameSafe(Hit.PhysMaterial.Get()), *GetNameSafe(MaterialHit ? MaterialHit->PhysMaterial.Get() : nullptr),
+				OriginalSurface, Surface, MaterialHit && MaterialHit->bBlockingHit,
+				MaterialHit ? MaterialHit->FaceIndex : INDEX_NONE, *Hit.ImpactPoint.ToString());
+		}
+		return Surface;
+	};
+	if (!Hit.bBlockingHit || Hit.bStartPenetrating || !IsValid(Component)
+		|| Hit.ImpactPoint.ContainsNaN() || Hit.ImpactNormal.ContainsNaN())
+	{
+		return ReportSurface(TEXT("IneligibleHit"), OriginalSurface);
+	}
+	const FVector Normal = Hit.ImpactNormal.GetSafeNormal();
+	if (Normal.IsNearlyZero())
+	{
+		return ReportSurface(TEXT("InvalidNormal"), OriginalSurface);
+	}
+
+	// 명중 판정을 다시 하지 않는다. 맞은 컴포넌트의 표면만 앞뒤 5cm 안에서 한 번 확인한다.
+	TRACE_CPUPROFILER_EVENT_SCOPE(WeaponSurfaceMaterial);
+	constexpr float TraceHalfLength = 5.0f;
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(WeaponSurfaceMaterial), true);
+	Params.bReturnPhysicalMaterial = true;
+	FHitResult MaterialHit;
+	if (Component->LineTraceComponent(MaterialHit, Hit.ImpactPoint + Normal * TraceHalfLength,
+		Hit.ImpactPoint - Normal * TraceHalfLength, Params)
+		&& !MaterialHit.bStartPenetrating
+		&& MaterialHit.GetComponent() == Component && MaterialHit.PhysMaterial.IsValid())
+	{
+		// 컴포넌트 조회는 성공해도 내부 Touch 변환 때문에 bBlockingHit가 false일 수 있다.
+		// 원래 공격의 Blocking 판정은 위에서 확인했고, 보완 조회는 반환값으로 성공을 판단한다.
+		// 유효한 Default 재질도 조회 성공이다. 실패했을 때만 원래 재질을 사용한다.
+		if (bResolvedMaterial) *bResolvedMaterial = true;
+		return ReportSurface(TEXT("ComplexMaterial"),
+			static_cast<uint8>(UPhysicalMaterial::DetermineSurfaceType(MaterialHit.PhysMaterial.Get())), &MaterialHit);
+	}
+	return ReportSurface(TEXT("QueryFallback"), OriginalSurface, &MaterialHit);
+}
+
+void AWeaponBase::PlaySurfaceImpactSound(const FHitResult& Hit, uint8 Surface, bool bUseSurfaceContext)
 {
 	if (!HasAuthority() || !CachedAudioSubsystem)
 	{
@@ -575,7 +628,7 @@ void AWeaponBase::PlaySurfaceImpactSound(const FHitResult& Hit, bool bUseSurface
 		WeaponOwner ? static_cast<AActor*>(WeaponOwner.Get()) : this,
 		FGameplayTag::RequestGameplayTag(FName(TEXT("Audio.Type.Weapon"))),
 		bUseSurfaceContext ? ImpactAudioContextTag : FGameplayTag(),
-		UPhysicalMaterial::DetermineSurfaceType(Hit.PhysMaterial.Get()), Hit.ImpactPoint,
+		static_cast<EPhysicalSurface>(Surface), Hit.ImpactPoint,
 		Provider ? Provider->GetVisualEventSet().SoundDef : nullptr);
 }
 

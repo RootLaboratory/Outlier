@@ -80,7 +80,11 @@ protected:
 	UPROPERTY(Transient)
 	TObjectPtr<UVisualEventSubsystem> CachedVisualSubsystem;
 
-	void PlaySurfaceImpactSound(const FHitResult& Hit, bool bUseSurfaceContext = true);
+	friend class FWeaponSurfaceImpactTest;
+
+	// 원래 명중 결과는 보존하고, 사운드와 시각 효과가 공유할 표면만 보완한다.
+	static uint8 ResolveSurfaceImpact(const FHitResult& Hit, bool* bResolvedMaterial = nullptr);
+	void PlaySurfaceImpactSound(const FHitResult& Hit, uint8 Surface, bool bUseSurfaceContext = true);
 	void PlaySurfaceImpactVisual(const FVector& Location, const FVector& Normal, AActor* HitActor,
 		uint8 Surface, FGameplayTag Context, UProjectionMarkDefinition* FallbackDecal = nullptr);
 

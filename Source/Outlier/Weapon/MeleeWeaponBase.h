@@ -72,7 +72,7 @@ protected:
 		const FVector& CurrentStart,
 		const FVector& CurrentEnd);
 	void ResetMeleeTraceState();
-	void PlayMeleeHitSoundOnce(const FHitResult& HitResult);
+	void PlayMeleeHitSoundOnce(const FHitResult& HitResult, uint8 Surface);
 	void LogMissingMeleeTraceSockets() const;
 	virtual void NotifyMeleeHitResult(const FMeleeHitContext& Context);
 
