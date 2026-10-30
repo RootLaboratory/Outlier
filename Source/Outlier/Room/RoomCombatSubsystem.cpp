@@ -328,6 +328,7 @@ bool URoomCombatSubsystem::CreateTriggerContext(
 		|| !IsValid(Requester) || Requester->IsActorBeingDestroyed()
 		|| !Requester->HasAuthority() || Requester->GetWorld() != World
 		|| !Runtime || !Runtime->RoomVolume.IsValid()
+		|| (Runtime->CheckpointHoldOwner.IsValid() && Runtime->CheckpointHoldOwner.Get() != Requester)
 		|| Runtime->State != ERoomCombatState::WaitingForTrigger
 		|| (ActiveCombatRoomTag.IsValid() && ActiveCombatRoomTag != RoomTag)
 		|| !Phase
@@ -367,6 +368,77 @@ bool URoomCombatSubsystem::IsSingleExternalTriggerEncounter(FGameplayTag RoomTag
 	}
 	const FRoomCombatPhaseDefinition& Phase = Definition->CombatPhases[0];
 	return Phase.StartPolicy == ERoomCombatPhaseStartPolicy::ExternalTrigger;
+}
+
+bool URoomCombatSubsystem::IsElevatorEncounter(FGameplayTag RoomTag) const
+{
+	const FRoomCombatRoomDefinition* Definition = FindRoomDefinition(RoomTag);
+	if (!Definition || !Definition->CanStartTriggeredSequence(0)
+		|| Definition->CombatPhases[0].StartPolicy != ERoomCombatPhaseStartPolicy::ExternalTrigger)
+	{
+		return false;
+	}
+	// 일반 전투는 후속 외부 Trigger를 허용하지만, 운행 중에는 자동 차수만 이어간다.
+	for (int32 Index = 1; Index < Definition->CombatPhases.Num(); ++Index)
+	{
+		if (Definition->CombatPhases[Index].StartPolicy != ERoomCombatPhaseStartPolicy::Automatic)
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+bool URoomCombatSubsystem::AcquireEncounterCheckpointHold(
+	const FRoomCombatTriggerContext& Context, FGuid ExecutionId)
+{
+	FRoomCombatTriggerContext Current;
+	if (!ExecutionId.IsValid() || !IsElevatorEncounter(Context.RoomTag)
+		|| !CreateTriggerContext(Context.Requester.Get(), Context.RoomTag, Context.ActivationGroupTag, Current)
+		|| Current.CombatPhaseIndex != 0 || Context.CombatPhaseIndex != 0
+		|| Current.RoomRegistrationId != Context.RoomRegistrationId
+		|| Current.GameplayGeneration != Context.GameplayGeneration)
+	{
+		return false;
+	}
+	FRoomCombatRuntime& Runtime = RoomRuntimes.FindChecked(Context.RoomTag);
+	if (Runtime.CheckpointHoldOwner.IsValid()
+		&& (Runtime.CheckpointHoldOwner != Context.Requester || Runtime.CheckpointHoldExecutionId != ExecutionId))
+	{
+		return false;
+	}
+	Runtime.CheckpointHoldOwner = Context.Requester;
+	Runtime.CheckpointHoldExecutionId = ExecutionId;
+	return true;
+}
+
+void URoomCombatSubsystem::ReleaseEncounterCheckpointHold(FGameplayTag RoomTag, FGuid ExecutionId)
+{
+	if (FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
+		Runtime && Runtime->CheckpointHoldExecutionId == ExecutionId)
+	{
+		Runtime->CheckpointHoldOwner.Reset();
+		Runtime->CheckpointHoldExecutionId.Invalidate();
+	}
+}
+
+bool URoomCombatSubsystem::IsEncounterContextCurrent(
+	const FRoomCombatTriggerContext& Context, FGuid ExecutionId) const
+{
+	const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(Context.RoomTag);
+	return CanRunServerGameplay() && Runtime && Runtime->RoomVolume.IsValid()
+		&& Runtime->RegistrationId == Context.RoomRegistrationId
+		&& Runtime->GameplayGeneration == Context.GameplayGeneration
+		&& ExecutionId.IsValid() && Runtime->CheckpointHoldExecutionId == ExecutionId
+		&& Context.Requester.IsValid() && Runtime->CheckpointHoldOwner == Context.Requester;
+}
+
+bool URoomCombatSubsystem::IsCombatPhaseCheckpointDeferred(FGameplayTag RoomTag, int32 Generation) const
+{
+	const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
+	return CanRunServerGameplay() && Runtime && Runtime->RoomVolume.IsValid()
+		&& Runtime->GameplayGeneration == Generation && Runtime->CheckpointHoldExecutionId.IsValid()
+		&& Runtime->CheckpointHoldOwner.IsValid() && !Runtime->CheckpointHoldOwner->IsActorBeingDestroyed();
 }
 
 bool URoomCombatSubsystem::StartTriggeredSequence(
@@ -556,12 +628,24 @@ void URoomCombatSubsystem::UnregisterBarrier(ARoomCombatBarrier* Barrier)
 }
 
 void URoomCombatSubsystem::BroadcastCombatEvent(
-	FGameplayTag RoomTag, ERoomCombatEvent Event, int32 PhaseIndex, int32 Generation)
+	FGameplayTag RoomTag, ERoomCombatEvent Event, int32 PhaseIndex, int32 Generation,
+	FGuid RegistrationId, FGuid ExecutionId)
 {
+	// 다른 수신자가 Reset/재등록해도 이 알림이 새 운행의 문맥을 얻지 않도록 먼저 복사한다.
+	if (!RegistrationId.IsValid())
+	{
+		if (const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag))
+		{
+			RegistrationId = Runtime->RegistrationId;
+			ExecutionId = Runtime->CheckpointHoldExecutionId;
+		}
+	}
+	const FRoomCombatLifecycleEvent Context{RoomTag, Event, PhaseIndex, Generation, RegistrationId, ExecutionId};
 	UE_LOG(LogTemp, Display, TEXT("[RoomCombat] Event=%d Room=%s Phase=%d Generation=%d"),
 		static_cast<int32>(Event), *RoomTag.ToString(), PhaseIndex, Generation);
 	PublishCombatMusicState(Event != ERoomCombatEvent::Cancelled);
 	OnCombatEvent.Broadcast(RoomTag, Event, PhaseIndex, Generation);
+	OnCombatLifecycleEvent.Broadcast(Context);
 #if WITH_DEV_AUTOMATION_TESTS
 	if (CombatEventObserverForTesting)
 	{
@@ -837,9 +921,12 @@ void URoomCombatSubsystem::UnregisterRoom(ARoomVolume* RoomVolume)
 	}
 	const bool bWasSequenceActive = Runtime->bExitBlockActive
 		|| Runtime->bTriggeredSequenceActive
+		|| Runtime->CheckpointHoldExecutionId.IsValid()
 		|| Runtime->State == ERoomCombatState::Preparing;
 	const int32 CancelledPhase = Runtime->CurrentCombatPhaseIndex;
 	const int32 CancelledGeneration = Runtime->GameplayGeneration;
+	const FGuid CancelledRegistrationId = Runtime->RegistrationId;
+	const FGuid CancelledExecutionId = Runtime->CheckpointHoldExecutionId;
 	RoomStartHolds.Remove(RoomTag);
 	GetWorld()->GetTimerManager().ClearTimer(Runtime->InitialSpawnDelayTimer);
 	GetWorld()->GetTimerManager().ClearTimer(Runtime->PhaseDelayTimer);
@@ -926,7 +1013,8 @@ void URoomCombatSubsystem::UnregisterRoom(ARoomVolume* RoomVolume)
 	}
 	if (bWasSequenceActive)
 	{
-		BroadcastCombatEvent(RoomTag, ERoomCombatEvent::Cancelled, CancelledPhase, CancelledGeneration);
+		BroadcastCombatEvent(RoomTag, ERoomCombatEvent::Cancelled, CancelledPhase, CancelledGeneration,
+			CancelledRegistrationId, CancelledExecutionId);
 	}
 }
 
@@ -2593,6 +2681,8 @@ void URoomCombatSubsystem::ResetRuntimeCombatState()
 		FGameplayTag RoomTag;
 		int32 PhaseIndex;
 		int32 Generation;
+		FGuid RegistrationId;
+		FGuid ExecutionId;
 	};
 	TArray<FCancelledSequence> CancelledSequences;
 	TArray<TWeakObjectPtr<AEnemyBase>> EnemiesToReturn;
@@ -2613,9 +2703,11 @@ void URoomCombatSubsystem::ResetRuntimeCombatState()
 		SetActivationGroupActive(Entry.Key, Entry.Value.ActiveActivationGroupTag, false);
 		// 준비 중에는 차단막이 없어도 대기 중인 합류 요청에 취소를 알려야 한다.
 		if (Entry.Value.bExitBlockActive || Entry.Value.bTriggeredSequenceActive
+			|| Entry.Value.CheckpointHoldExecutionId.IsValid()
 			|| Entry.Value.State == ERoomCombatState::Preparing)
 		{
-			CancelledSequences.Add({Entry.Key, Entry.Value.CurrentCombatPhaseIndex, Entry.Value.GameplayGeneration});
+			CancelledSequences.Add({Entry.Key, Entry.Value.CurrentCombatPhaseIndex, Entry.Value.GameplayGeneration,
+				Entry.Value.RegistrationId, Entry.Value.CheckpointHoldExecutionId});
 		}
 	}
 	// 토큰을 먼저 무효화해야 Reset 도중 도착한 AnimNotify가 현재 Wave의 Pending을 소모하지 못한다.
@@ -2678,7 +2770,7 @@ void URoomCombatSubsystem::ResetRuntimeCombatState()
 	for (const auto& Sequence : CancelledSequences)
 	{
 		BroadcastCombatEvent(Sequence.RoomTag, ERoomCombatEvent::Cancelled,
-			Sequence.PhaseIndex, Sequence.Generation);
+			Sequence.PhaseIndex, Sequence.Generation, Sequence.RegistrationId, Sequence.ExecutionId);
 	}
 	UE_LOG(LogTemp, Display,
 		TEXT("[RoomCombat] Runtime reset completed. Rooms=%d Enemies=%d WaveTurrets=%d PendingSpawns=%d"),
@@ -2836,6 +2928,7 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 	const int32 CompletedPhaseIndex = Runtime->CurrentCombatPhaseIndex;
 	const int32 Generation = Runtime->GameplayGeneration;
 	const FGuid RegistrationId = Runtime->RegistrationId;
+	const FGuid ExecutionId = Runtime->CheckpointHoldExecutionId;
 	const int32 NextPhaseIndex = CompletedPhaseIndex + 1;
 	const FRoomCombatPhaseDefinition* NextPhase = Definition->FindPhase(NextPhaseIndex);
 	// 차수가 완료되면 이전 합류 기준 플레이어를 다음 차수로 넘기지 않는다.
@@ -2885,12 +2978,14 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 			}
 		}
 		// 전체 완료에서 차단 해제를 먼저 알린다. 이어지는 차수 알림이 Reset을 요청해도 해제가 누락되지 않는다.
-		BroadcastCombatEvent(RoomTag, ERoomCombatEvent::RoomCleared, CompletedPhaseIndex, Generation);
+		BroadcastCombatEvent(RoomTag, ERoomCombatEvent::RoomCleared, CompletedPhaseIndex, Generation,
+			RegistrationId, ExecutionId);
 		// 완료 이벤트 수신 중 Room 해제/Reset이 일어나면 이전 Room의 후속 통보를 보내지 않는다.
 		Runtime = RoomRuntimes.Find(RoomTag);
 		if (Runtime && Runtime->RegistrationId == RegistrationId && Runtime->State == ERoomCombatState::Cleared)
 		{
-			BroadcastCombatEvent(RoomTag, ERoomCombatEvent::PhaseCompleted, CompletedPhaseIndex, Generation);
+			BroadcastCombatEvent(RoomTag, ERoomCombatEvent::PhaseCompleted, CompletedPhaseIndex, Generation,
+				RegistrationId, ExecutionId);
 		}
 		return;
 	}
@@ -2920,7 +3015,8 @@ void URoomCombatSubsystem::CompleteCurrentPhase(
 		bCancelRemainingWaves ? 1 : 0,
 		NextPhaseIndex,
 		static_cast<int32>(Runtime->State));
-	BroadcastCombatEvent(RoomTag, ERoomCombatEvent::PhaseCompleted, CompletedPhaseIndex, Generation);
+	BroadcastCombatEvent(RoomTag, ERoomCombatEvent::PhaseCompleted, CompletedPhaseIndex, Generation,
+		RegistrationId, ExecutionId);
 	// 0초 자동 차수도 완료 이벤트 처리가 끝난 뒤 시작한다. 이벤트 중 Reset됐다면 토큰 검증에서 거부된다.
 	if (GetPhaseDelayRemainingSeconds(RoomTag) == 0.0f)
 	{

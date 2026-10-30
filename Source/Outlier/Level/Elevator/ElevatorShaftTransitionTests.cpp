@@ -153,10 +153,15 @@ bool FElevatorCompletionBoundaryTest::RunTest(const FString& Parameters)
 	Controller->Motion.State = EElevatorShaftState::FinishingCurrentSection;
 	Controller->Motion.FinishDistance = FElevatorShaftSpeedProfile::FinishBoundary(ExpectedDistance, 1450.0);
 	const double ReservedBoundary = Controller->Motion.FinishDistance;
+	Controller->Motion.ExecutionId = FGuid::NewGuid();
+	Controller->CombatContext.RoomRegistrationId = FGuid::NewGuid();
+	Controller->CombatContext.GameplayGeneration = static_cast<int32>(Controller->Motion.Generation);
 	for (int32 Duplicate = 0; Duplicate < 3; ++Duplicate)
 	{
-		Controller->OnCombatEvent(Controller->CombatRoomTag, ERoomCombatEvent::RoomCleared,
-			Controller->CombatContext.CombatPhaseIndex, static_cast<int32>(Controller->Motion.Generation));
+		FRoomCombatLifecycleEvent Context{Controller->CombatRoomTag, ERoomCombatEvent::RoomCleared,
+			Controller->CombatContext.CombatPhaseIndex, static_cast<int32>(Controller->Motion.Generation),
+			Controller->CombatContext.RoomRegistrationId, Controller->Motion.ExecutionId};
+		Controller->OnCombatEvent(Context);
 	}
 	TestEqual(TEXT("Duplicate RoomCleared cannot reserve extra floors"), Controller->Motion.FinishDistance, ReservedBoundary);
 	TestTrue(TEXT("Only the current section remains to travel"), ReservedBoundary - ExpectedDistance >= 0.0 && ReservedBoundary - ExpectedDistance < 1450.0);

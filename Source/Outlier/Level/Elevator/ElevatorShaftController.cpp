@@ -223,7 +223,7 @@ void AElevatorShaftController::BeginPlay()
 	EntryRoom->OnRoomActorOverlapChanged.AddUObject(this, &ThisClass::OnOverlap);
 	EntranceDoor->OnDoorMotionFinished.AddUObject(this, &ThisClass::OnDoorFinished);
 	EntranceDoor->OnDoorSafetyReopenStarted.AddUObject(this, &ThisClass::OnDoorReopened);
-	Combat->OnCombatEvent.AddDynamic(this, &ThisClass::OnCombatEvent);
+	Combat->OnCombatLifecycleEvent.AddUObject(this, &ThisClass::OnCombatEvent);
 	Combat->OnRoomStartReadinessChanged.AddUObject(this, &ThisClass::OnReadinessChanged);
 	Combat->OnWaveFirstSpawned.AddUObject(this, &ThisClass::OnFirstSpawn);
 	if (Arena.IsValid())
@@ -263,7 +263,8 @@ void AElevatorShaftController::EndPlay(const EEndPlayReason::Type Reason)
 	}
 	if (Combat.IsValid())
 	{
-		Combat->OnCombatEvent.RemoveDynamic(this, &ThisClass::OnCombatEvent);
+		Combat->ReleaseEncounterCheckpointHold(CombatRoomTag, Motion.ExecutionId);
+		Combat->OnCombatLifecycleEvent.RemoveAll(this);
 		Combat->OnRoomStartReadinessChanged.RemoveAll(this);
 		Combat->OnWaveFirstSpawned.RemoveAll(this);
 	}
@@ -492,12 +493,18 @@ void AElevatorShaftController::EvaluateEntry()
 	{
 		return;
 	}
-	if (!Combat->IsSingleExternalTriggerEncounter(CombatRoomTag))
+	if (!Combat->IsElevatorEncounter(CombatRoomTag))
 	{
-		UE_LOG(LogElevatorShaft, Error, TEXT("%s requires one ExternalTrigger phase with spawn waves."), *GetName());
+		UE_LOG(LogElevatorShaft, Error, TEXT("%s requires an ExternalTrigger phase followed only by Automatic phases with valid spawn waves."), *GetName());
 		return;
 	}
 	if (!Combat->CreateTriggerContext(this, CombatRoomTag, FGameplayTag(), CombatContext))
+	{
+		return;
+	}
+	// 안전 재개방/닫힘 거부 뒤 같은 Room에 재진입해도 이전 시도의 연출 콜백을 재사용하지 않는다.
+	Motion.ExecutionId = FGuid::NewGuid();
+	if (!Combat->AcquireEncounterCheckpointHold(CombatContext, Motion.ExecutionId))
 	{
 		return;
 	}
@@ -603,6 +610,7 @@ void AElevatorShaftController::OnDoorReopened(AInteractableDoor* Door)
 	if (Door == EntranceDoor && Motion.State == EElevatorShaftState::ClosingEntrance)
 	{
 		// 안전 재개방 뒤 자동으로 다시 닫지 않는다. 다음 실제 진입/준비 알림을 기다린다.
+		if (Combat.IsValid()) Combat->ReleaseEncounterCheckpointHold(CombatRoomTag, Motion.ExecutionId);
 		Motion.ExecutionId = FGuid::NewGuid();
 		bCloseRejected = true;
 		SetState(EElevatorShaftState::WaitingForPair);
@@ -651,6 +659,12 @@ void AElevatorShaftController::StartCombat()
 	{
 		return;
 	}
+	// 준비 부족으로 시작이 거부된 재시도도 같은 등록/운행에만 저장 보류를 다시 획득한다.
+	if (!Combat->AcquireEncounterCheckpointHold(CombatContext, Motion.ExecutionId))
+	{
+		ResetExecution(Motion.Generation);
+		return;
+	}
 	SetState(EElevatorShaftState::AwaitingSpawn);
 	bStartingCombat = true;
 	const FGuid StartingExecution = Motion.ExecutionId;
@@ -666,7 +680,10 @@ void AElevatorShaftController::StartCombat()
 	bCombatRequested = bStarted;
 	if (!bStarted)
 	{
-		UE_LOG(LogElevatorShaft, Warning, TEXT("%s: combat start pending; waiting for Room readiness."), *GetName());
+		// 시작 자체가 거부되면 봉쇄/저장 보류도 되돌린다. 준비 알림이나 새 진입에서 다시 시도한다.
+		ResetExecution(Motion.Generation);
+		bCloseRejected = true;
+		UE_LOG(LogElevatorShaft, Warning, TEXT("%s: combat start rejected; entry restored until Room readiness changes."), *GetName());
 		return;
 	}
 	// 즉시 스폰이 완료되어 알림이 재진입한 경우에도 상승을 중복 시작하지 않는다.
@@ -680,7 +697,8 @@ void AElevatorShaftController::OnFirstSpawn(FGameplayTag Room, int32 Phase, int3
 {
 	if (!HasAuthority() || Motion.State != EElevatorShaftState::AwaitingSpawn || Room != CombatRoomTag
 		|| Phase != CombatContext.CombatPhaseIndex || Generation != CombatContext.GameplayGeneration
-		|| Generation != static_cast<int32>(Motion.Generation) || RegistrationId != CombatContext.RoomRegistrationId)
+		|| Generation != static_cast<int32>(Motion.Generation) || RegistrationId != CombatContext.RoomRegistrationId
+		|| !Combat.IsValid() || !Combat->IsEncounterContextCurrent(CombatContext, Motion.ExecutionId))
 	{
 		return;
 	}
@@ -691,14 +709,18 @@ void AElevatorShaftController::OnFirstSpawn(FGameplayTag Room, int32 Phase, int3
 	UpdateMotionPhase();
 }
 
-void AElevatorShaftController::OnCombatEvent(FGameplayTag Room, ERoomCombatEvent Event, int32 Phase, int32 Generation)
+void AElevatorShaftController::OnCombatEvent(const FRoomCombatLifecycleEvent& Context)
 {
-	if (Room != CombatRoomTag || Generation != static_cast<int32>(Motion.Generation)
-		|| Phase != CombatContext.CombatPhaseIndex)
+	if (!HasAuthority() || Context.RoomTag != CombatRoomTag
+		|| Context.GameplayGeneration != static_cast<int32>(Motion.Generation)
+		|| Context.GameplayGeneration != CombatContext.GameplayGeneration
+		|| !Context.RoomRegistrationId.IsValid() || Context.RoomRegistrationId != CombatContext.RoomRegistrationId
+		|| !Context.ExecutionId.IsValid() || Context.ExecutionId != Motion.ExecutionId)
 	{
 		return;
 	}
-	if (Event == ERoomCombatEvent::Cancelled)
+	// Cancelled는 Room 제거 후 도착한다. 현재 등록 조회로 이 정리 경로를 막지 않는다.
+	if (Context.Event == ERoomCombatEvent::Cancelled)
 	{
 		if (Motion.State != EElevatorShaftState::WaitingForPair && Motion.State != EElevatorShaftState::Completed)
 		{
@@ -706,9 +728,12 @@ void AElevatorShaftController::OnCombatEvent(FGameplayTag Room, ERoomCombatEvent
 		}
 		return;
 	}
-	if (Event == ERoomCombatEvent::RoomCleared && (Motion.State == EElevatorShaftState::RisingCombat
-		|| Motion.State == EElevatorShaftState::AwaitingSpawn))
+	if (Context.Event == ERoomCombatEvent::RoomCleared && (Motion.State == EElevatorShaftState::RisingCombat
+		|| Motion.State == EElevatorShaftState::AwaitingSpawn)
+		&& Combat.IsValid() && Combat->IsEncounterContextCurrent(CombatContext, Motion.ExecutionId)
+		&& Combat->GetRoomState(CombatRoomTag) == ERoomCombatState::Cleared)
 	{
+		Combat->ReleaseEncounterCheckpointHold(CombatRoomTag, Motion.ExecutionId);
 		// 완료 순간의 한 층 경계만 예약한다. 중복 RoomCleared는 이 상태에 다시 진입하지 않는다.
 		Motion.FinishDistance = FElevatorShaftSpeedProfile::FinishBoundary(CurrentDistance(), EntranceSection->GetSectionHeight());
 		SetState(EElevatorShaftState::FinishingCurrentSection);
@@ -718,6 +743,10 @@ void AElevatorShaftController::OnCombatEvent(FGameplayTag Room, ERoomCombatEvent
 
 void AElevatorShaftController::SetState(EElevatorShaftState State)
 {
+	if (State == EElevatorShaftState::WaitingForPair && Combat.IsValid())
+	{
+		Combat->ReleaseEncounterCheckpointHold(CombatRoomTag, Motion.ExecutionId);
+	}
 	Motion.State = State;
 	if (State != EElevatorShaftState::WaitingForPair)
 	{
@@ -989,6 +1018,7 @@ void AElevatorShaftController::ResetExecution(uint32 Generation)
 	{
 		return;
 	}
+	if (Combat.IsValid()) Combat->ReleaseEncounterCheckpointHold(CombatRoomTag, Motion.ExecutionId);
 	GetWorldTimerManager().ClearTimer(RetryTimer);
 	GetWorldTimerManager().ClearTimer(FadeTimeoutTimer);
 	GetWorldTimerManager().ClearTimer(FadeMinimumTimer);

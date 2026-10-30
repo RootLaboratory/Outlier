@@ -927,6 +927,15 @@ bool AOutlierGameMode::CommitCombatPhaseCheckpoint(
 		return false;
 	}
 
+	// 운행 중 차수만 진행하고 입장 전 확정 저장은 유지한다. 최종 완료 저장은 이 제한을 거치지 않는다.
+	const URoomCombatSubsystem* Combat = World->GetSubsystem<URoomCombatSubsystem>();
+	if (!bEncounterCleared && Combat && Combat->IsCombatPhaseCheckpointDeferred(RoomTag, GameplayGeneration))
+	{
+		UE_LOG(LogTemp, Verbose, TEXT("[Checkpoint] Elevator phase save deferred Room=%s NextPhase=%d"),
+			*RoomTag.ToString(), NextPhaseIndex);
+		return true;
+	}
+
 	// 직접 실행하는 PIE 페어는 저장 소유권을 만들지 않는다. 위의 서버/페어/완료 검증은
 	// 그대로 거친 뒤 디스크 저장만 생략하여, 전투 완료 후 출구 전환을 시험할 수 있게 한다.
 	if (IsDirectPairTestWorld(World))

@@ -71,6 +71,18 @@ struct OUTLIER_API FRoomCombatTriggerContext
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(FOnRoomCombatEvent,
 	FGameplayTag, RoomTag, ERoomCombatEvent, Event, int32, CombatPhaseIndex, int32, GameplayGeneration);
+
+// BP 알림과 별개로, 등록 해제 뒤에도 취소된 운행의 수명을 보존하는 서버 문맥이다.
+struct FRoomCombatLifecycleEvent
+{
+	FGameplayTag RoomTag;
+	ERoomCombatEvent Event = ERoomCombatEvent::Cancelled;
+	int32 CombatPhaseIndex = INDEX_NONE;
+	int32 GameplayGeneration = INDEX_NONE;
+	FGuid RoomRegistrationId;
+	FGuid ExecutionId;
+};
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnRoomCombatLifecycleEvent, const FRoomCombatLifecycleEvent&);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnRoomStartReadinessChanged, FGameplayTag /*RoomTag*/);
 DECLARE_MULTICAST_DELEGATE_FourParams(FOnRoomReinforcementStarted,
 	FGameplayTag /*RoomTag*/, int32 /*CombatPhaseIndex*/, int32 /*WaveIndex*/, int32 /*GameplayGeneration*/);
@@ -106,6 +118,9 @@ struct FRoomCombatRuntime
 	int32 PendingActivationCount = 0;
 	int32 GameplayGeneration = 0;
 	FGuid RegistrationId;
+	// 엘리베이터 운행 동안만 중간 체크포인트 확정을 보류한다. Room 재등록 시 함께 폐기된다.
+	FGuid CheckpointHoldExecutionId;
+	TWeakObjectPtr<AActor> CheckpointHoldOwner;
 	TWeakObjectPtr<AActor> PreparingAnchorPlayer; // 중복 발각으로 바뀌지 않으며 준비/차수 종료 때 비운다.
 	FGameplayTag ActiveActivationGroupTag;
 	bool bTriggeredSequenceActive = false;
@@ -208,6 +223,7 @@ public:
 	// 델리게이트는 서버 로컬 알림이다. 늦게 로드된 오브젝트는 구독 후 IsExitBlocked도 조회한다.
 	UPROPERTY(BlueprintAssignable, Category = "Room Combat")
 	FOnRoomCombatEvent OnCombatEvent;
+	FOnRoomCombatLifecycleEvent OnCombatLifecycleEvent;
 	FOnRoomStartReadinessChanged OnRoomStartReadinessChanged;
 	// 남은 적 비율이 기준 이하가 되어 후속 Wave(1 이상) 시작에 성공했을 때만 보낸다. 각 phase의 Wave 0 시작은 포함하지 않는다.
 	FOnRoomReinforcementStarted OnReinforcementStarted;
@@ -215,6 +231,11 @@ public:
 	FOnRoomWaveFirstSpawned OnWaveFirstSpawned;
 	bool HasCurrentWaveSpawned(const FRoomCombatTriggerContext& Context) const;
 	bool IsSingleExternalTriggerEncounter(FGameplayTag RoomTag) const;
+	bool IsElevatorEncounter(FGameplayTag RoomTag) const;
+	bool AcquireEncounterCheckpointHold(const FRoomCombatTriggerContext& Context, FGuid ExecutionId);
+	void ReleaseEncounterCheckpointHold(FGameplayTag RoomTag, FGuid ExecutionId);
+	bool IsEncounterContextCurrent(const FRoomCombatTriggerContext& Context, FGuid ExecutionId) const;
+	bool IsCombatPhaseCheckpointDeferred(FGameplayTag RoomTag, int32 Generation) const;
 	// ExternalTrigger의 첫 Wave가 등록된 Room과 설정한 수의 활성 SpawnPoint를 확보했는지 확인한다.
 	bool HasReadyExternalTriggerRoster(const ARoomVolume* RoomVolume, FGameplayTag RoomTag) const;
 
@@ -322,7 +343,7 @@ private:
 	bool IsInitialDetectionPhase(FGameplayTag RoomTag, const FRoomCombatRuntime& Runtime) const;
 	void StartInitialDetectionCombat(FGameplayTag RoomTag, FRoomCombatRuntime& Runtime);
 	void BroadcastCombatEvent(FGameplayTag RoomTag, ERoomCombatEvent Event,
-		int32 PhaseIndex, int32 Generation);
+		int32 PhaseIndex, int32 Generation, FGuid RegistrationId = FGuid(), FGuid ExecutionId = FGuid());
 	void ResumeDeferredSpawning(FGameplayTag RoomTag, const FGuid& RegistrationId);
 	// 소환 시작: 조건 검사 -> 고정 명단 구성 -> 지점 분배 -> Pending 실행.
 	const FRoomCombatWaveDefinition* FindSpawnableWave(

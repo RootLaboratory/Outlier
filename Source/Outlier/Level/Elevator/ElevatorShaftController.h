@@ -301,8 +301,7 @@ private:
 	UFUNCTION()
 	void OnRep_Motion();
 
-	UFUNCTION()
-	void OnCombatEvent(FGameplayTag Room, ERoomCombatEvent Event, int32 Phase, int32 Generation);
+	void OnCombatEvent(const FRoomCombatLifecycleEvent& Context);
 
 	void OnFirstSpawn(FGameplayTag Room, int32 Phase, int32 Wave, int32 Generation, FGuid RegistrationId);
 	void OnReadinessChanged(FGameplayTag Room);
@@ -364,5 +363,7 @@ private:
 	friend class FElevatorArrivalMotionTest;
 	friend class FElevatorCompletionBoundaryTest;
 	friend class FElevatorControllerTransportTest;
+	friend class FElevatorMultiPhaseCombatTest;
+	friend class FElevatorMultiPhaseCancellationTest;
 #endif
 };
