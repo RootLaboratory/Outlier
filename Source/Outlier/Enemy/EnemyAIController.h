@@ -45,6 +45,7 @@ public:
 
 	friend class FEnemyHearingCombatJoinTest;
 	friend class FEnemySightCombatJoinTest;
+	friend class FRoomGroupPursuitDetectionTest;
 	friend class FEnemyChaseIntegrationTest;
 	friend class FEnemySearchWorldLifecycleTest;
 #endif

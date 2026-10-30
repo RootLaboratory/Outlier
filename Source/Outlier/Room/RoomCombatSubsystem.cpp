@@ -1838,6 +1838,84 @@ bool URoomCombatSubsystem::TryStartInitialDetectionForPlayers(FGameplayTag RoomT
 	return TryStartInitialDetectionForPlayers(RoomTag, [] { return true; });
 }
 
+bool URoomCombatSubsystem::HasAlivePreplacedEnemy(
+	FGameplayTag RoomTag, const FRoomCombatRuntime& Runtime) const
+{
+	for (const TWeakObjectPtr<AEnemyBase>& EnemyPtr : Runtime.TrackedAliveEnemies)
+	{
+		const AEnemyBase* Enemy = EnemyPtr.Get();
+		const FRoomCombatEnemyRegistration* Registration = RegisteredEnemies.Find(EnemyPtr);
+		if (IsValid(Enemy) && !Enemy->IsActorBeingDestroyed() && !Enemy->IsDead()
+			&& Registration && Registration->bPreplaced && Registration->RoomTag == RoomTag)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool URoomCombatSubsystem::TryStartCombatFromPursuit(AEnemyBase* Enemy, FGameplayTag EnteredRoomTag)
+{
+	if (!CanRunServerGameplay() || !IsValid(Enemy) || !Enemy->HasAuthority()
+		|| Enemy->GetWorld() != GetWorld())
+	{
+		return false;
+	}
+	const FGameplayTag SourceTag = Enemy->GetDefaultRoomTag();
+	const FRoomCombatRuntime* Source = RoomRuntimes.Find(SourceTag);
+	const FRoomCombatRuntime* Destination = RoomRuntimes.Find(EnteredRoomTag);
+	if (SourceTag == EnteredRoomTag || !URoomTagComponent::AreRoomsInSameGroup(SourceTag, EnteredRoomTag)
+		|| !Source || !Destination || Destination->State != ERoomCombatState::Dormant)
+	{
+		return false;
+	}
+	const FGuid SourceId = Source->RegistrationId;
+	const FGuid DestinationId = Destination->RegistrationId;
+	const int32 Lease = Enemy->GetPoolLeaseSerial();
+	const int32 Generation = Enemy->GetPoolGameplayGeneration();
+	// 시작 이벤트가 Reset/언로드/풀 반환을 일으킬 수 있다. 최초 판정뿐 아니라
+	// 합류와 전투 확정 사이에도 같은 적·방 수명과 실제 진입 상태를 재검사한다.
+	auto IsPursuitCurrent = [this, Enemy, SourceTag, EnteredRoomTag,
+		SourceId, DestinationId, Lease, Generation]()
+	{
+		if (!IsValid(Enemy) || Enemy->IsActorBeingDestroyed() || Enemy->IsDead()
+			|| Enemy->GetCombatState() != EEnemyCombatState::Combat
+			|| Enemy->IsAIControlSuppressed() || !Enemy->CanUseRoomTargetSharing()
+			|| Enemy->GetDefaultRoomTag() != SourceTag || Enemy->GetCurrentRoomTag() != EnteredRoomTag
+			|| (Enemy->IsPoolManaged() && (Enemy->GetEnemyPoolState() != EEnemyPoolState::CombatActive
+				|| !Enemy->MatchesPoolLease(Generation, Lease))))
+		{
+			return false;
+		}
+		const FRoomCombatRuntime* CurrentSource = RoomRuntimes.Find(SourceTag);
+		const FRoomCombatRuntime* CurrentDestination = RoomRuntimes.Find(EnteredRoomTag);
+		const TWeakObjectPtr<AEnemyBase> EnemyPtr(Enemy);
+		const FRoomCombatEnemyRegistration* Registration = RegisteredEnemies.Find(EnemyPtr);
+		ARoomVolume* Room = CurrentDestination ? CurrentDestination->RoomVolume.Get() : nullptr;
+		return CurrentSource && CurrentSource->RegistrationId == SourceId
+			&& CurrentSource->RoomVolume.IsValid() && IsActiveCombatRuntime(SourceTag, *CurrentSource)
+			&& CurrentSource->TrackedAliveEnemies.Contains(EnemyPtr)
+			&& Registration && Registration->RoomTag == SourceTag
+			&& CurrentDestination && CurrentDestination->RegistrationId == DestinationId
+			&& IsValid(Room) && !Room->IsActorBeingDestroyed()
+			&& IsInitialDetectionPhase(EnteredRoomTag, *CurrentDestination)
+			&& HasAlivePreplacedEnemy(EnteredRoomTag, *CurrentDestination)
+			// Capsule 가장자리가 먼저 입장할 수 있다. 중심점만 요구하면 이후에는
+			// Room 변경 이벤트가 없어 확산을 놓치므로 실제 overlap도 입장으로 인정한다.
+			&& (Room->ContainsWorldLocation(Enemy->GetActorLocation()) || Room->IsOverlappingActor(Enemy));
+	};
+	if (!IsPursuitCurrent()
+		|| !TryStartInitialDetectionForPlayers(EnteredRoomTag, IsPursuitCurrent))
+	{
+		return false;
+	}
+	// 방의 시작 조건/플레이어 합류가 확정된 뒤 도착 방 소속 AI에만 전파한다.
+	// 들어온 적은 원래 방 등록에 남으므로 도착 방 생존 수에 추가되지 않는다.
+	UEnemyRoomSubsystem* Rooms = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>();
+	return IsPursuitCurrent() && Rooms
+		&& Rooms->NotifyRoomCombat(EnteredRoomTag, Enemy->GetLastKnownPlayerLocation(), nullptr);
+}
+
 bool URoomCombatSubsystem::TryStartInitialDetectionForPlayers(
 	FGameplayTag RoomTag, TFunctionRef<bool()> IsRequestCurrent)
 {

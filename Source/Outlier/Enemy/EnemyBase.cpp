@@ -3555,10 +3555,18 @@ void AEnemyBase::HandleCurrentRoomTagChanged(
 	FGameplayTag NewRoomTag)
 {
 	(void)PreviousRoomTag;
-	(void)NewRoomTag;
 	RemoveRoomTargetObserver();
 	ClearSharedTargetContact();
 	ReleaseSearchDestinations();
+	// 위치 변경은 기존 방의 탐색 정보를 먼저 정리한다. 추적 진입의 참여 판정만
+	// 전투 관리자에 맡기며 DefaultRoomTag와 원래 방의 Enemy 등록은 옮기지 않는다.
+	if (HasAuthority())
+	{
+		if (URoomCombatSubsystem* Combat = GetWorld()->GetSubsystem<URoomCombatSubsystem>())
+		{
+			Combat->TryStartCombatFromPursuit(this, NewRoomTag);
+		}
+	}
 }
 
 void AEnemyBase::RemoveRoomTargetObserver()
