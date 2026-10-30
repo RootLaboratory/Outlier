@@ -27,6 +27,7 @@ public class OutlierEditor : ModuleRules
 			"GraphicSettingDebuggerEditor"
 		});
 
-		PrivateDependencyModuleNames.AddRange(new string[] { "LevelEditor", "RDG", "TagDrivenUI", "UMG" });
+		PrivateDependencyModuleNames.AddRange(new string[] { "LevelEditor", "RDG", "TagDrivenUI", "UMG",
+			"StateTreeModule", "StateTreeEditorModule", "GameplayStateTreeModule", "PropertyBindingUtils" });
 	}
 }

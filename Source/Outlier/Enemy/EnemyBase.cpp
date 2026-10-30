@@ -38,6 +38,8 @@
 #include "TimerManager.h"
 #include "Room/RoomTagComponent.h"
 #include "Room/RoomCombatSubsystem.h"
+#include "Room/RoomVolume.h"
+#include "Drone/FlightPathfinding.h"
 #include "Network/OutlierArenaSubsystem.h"
 #include "Weapon/RangedWeaponBase.h"
 #include "Shooter/ShooterCharacter.h"
@@ -1850,7 +1852,16 @@ bool AEnemyBase::CommitAlertToNonCombat()
 		}
 	}
 
-	CombatState = EEnemyCombatState::NonCombat;
+	// 형제 방에서 Alert가 끝나도 곧바로 순찰하지 않는다. 원래 방의 실제
+	// 캡슐 위치를 확인하고, 아직 밖이면 StateTree의 귀환 이동으로 넘긴다.
+	const URoomCombatSubsystem* Combat = GetWorld()->GetSubsystem<URoomCombatSubsystem>();
+	const FGameplayTag HomeTag = GetDefaultRoomTag();
+	const ARoomVolume* Home = Combat ? Combat->GetRegisteredRoomVolume(HomeTag) : nullptr;
+	// 소속 방이 언로드된 동안 CurrentRoomTag가 기본 태그로 돌아와도 도착으로
+	// 취급하지 않는다. 등록이 복구될 때까지 귀환 상태에서 대기한다.
+	const bool bAwayFromHome = Home ? !IsInsideDefaultRoom()
+		: URoomTagComponent::IsValidChildRoomTag(HomeTag);
+	CombatState = bAwayFromHome ? EEnemyCombatState::Returning : EEnemyCombatState::NonCombat;
 	bInCombat = false;
 	RefreshCombatStatePresentation();
 	RefreshPerceptionConfigForCurrentState();
@@ -1859,6 +1870,60 @@ bool AEnemyBase::CommitAlertToNonCombat()
 		FGameplayTag::RequestGameplayTag(
 			TEXT("Enemy.Event.Combat.AlertCleared")));
 
+	return true;
+}
+
+bool AEnemyBase::IsInsideDefaultRoom() const
+{
+	const UWorld* World = GetWorld();
+	const URoomCombatSubsystem* Combat = World ? World->GetSubsystem<URoomCombatSubsystem>() : nullptr;
+	ARoomVolume* Home = Combat ? Combat->GetRegisteredRoomVolume(GetDefaultRoomTag()) : nullptr;
+	const UCapsuleComponent* Capsule = GetCapsuleComponent();
+	if (!IsValid(Home) || Home->IsActorBeingDestroyed() || !IsValid(Capsule)) return false;
+	FFlightPathRequest Bounds;
+	Bounds.bRequireRoom = true;
+	Bounds.Room = Home;
+	const FVector Extent = FlightPathfinding::GetCapsuleWorldExtent(
+		Capsule->GetScaledCapsuleRadius(), Capsule->GetScaledCapsuleHalfHeight(), Capsule->GetComponentQuat());
+	return FlightPathfinding::IsInsideMovementRooms(Bounds, Capsule->GetComponentLocation(), Extent);
+}
+
+bool AEnemyBase::GetReturnHomeDestination(FVector& OutDestination) const
+{
+	const UWorld* World = GetWorld();
+	const URoomCombatSubsystem* Combat = World ? World->GetSubsystem<URoomCombatSubsystem>() : nullptr;
+	ARoomVolume* Home = Combat ? Combat->GetRegisteredRoomVolume(GetDefaultRoomTag()) : nullptr;
+	const UCapsuleComponent* Capsule = GetCapsuleComponent();
+	if (!HasAuthority() || CombatState != EEnemyCombatState::Returning || IsDead()
+		|| IsAIControlSuppressed() || !IsValid(Home) || Home->IsActorBeingDestroyed() || !IsValid(Capsule))
+	{
+		return false;
+	}
+	const FVector Offset = Capsule->GetComponentLocation() - GetActorLocation();
+	const FVector Extent = FlightPathfinding::GetCapsuleWorldExtent(
+		Capsule->GetScaledCapsuleRadius() + 5.0f, Capsule->GetScaledCapsuleHalfHeight() + 5.0f,
+		Capsule->GetComponentQuat());
+	FVector Center;
+	// 순찰 A는 원래 배치/대여 위치다. 이 좌표가 경계 밖이어도 목적지는 원래
+	// 방 안으로만 보정한다. 경로가 막히면 이동 Task가 재시도하고 순간이동하지 않는다.
+	const FVector Requested = GetPatrolPointA().ContainsNaN() ? Home->GetActorLocation() : GetPatrolPointA();
+	if (!Home->TryClampFlightLocation(Requested + Offset, Extent, Center)) return false;
+	OutDestination = Center - Offset;
+	return true;
+}
+
+bool AEnemyBase::CompleteReturnHome()
+{
+	if (!HasAuthority() || CombatState != EEnemyCombatState::Returning || IsDead()
+		|| IsAIControlSuppressed() || !IsInsideDefaultRoom())
+	{
+		return false;
+	}
+	CombatState = EEnemyCombatState::NonCombat;
+	bInCombat = false;
+	RefreshCombatStatePresentation();
+	RefreshPerceptionConfigForCurrentState();
+	SendEnemyStateTreeEventNextTick(FGameplayTag::RequestGameplayTag(TEXT("Enemy.Event.Combat.AlertCleared")));
 	return true;
 }
 
@@ -3243,7 +3308,8 @@ void AEnemyBase::PromotePreStunState(EEnemyCombatState DetectedState)
 		return;
 	}
 
-	if (DetectedState == EEnemyCombatState::Alert && PreStunCombatState == EEnemyCombatState::NonCombat)
+	if (DetectedState == EEnemyCombatState::Alert
+		&& (PreStunCombatState == EEnemyCombatState::NonCombat || PreStunCombatState == EEnemyCombatState::Returning))
 	{
 		PreStunCombatState = EEnemyCombatState::Alert;
 	}

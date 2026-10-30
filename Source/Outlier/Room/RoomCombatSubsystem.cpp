@@ -768,6 +768,7 @@ bool URoomCombatSubsystem::RegisterRoom(
 		return true;
 	}
 
+	++MovementRoomRevision;
 	FRoomCombatRuntime& Runtime = RoomRuntimes.Add(RoomTag);
 	Runtime.RoomVolume = RoomVolume;
 	Runtime.RegistrationId = FGuid::NewGuid();
@@ -988,6 +989,7 @@ void URoomCombatSubsystem::UnregisterRoom(ARoomVolume* RoomVolume)
 
 		Runtime = RoomRuntimes.Find(RoomTag);
 	}
+	++MovementRoomRevision;
 	const bool bWasSequenceActive = Runtime->bExitBlockActive
 		|| Runtime->bTriggeredSequenceActive
 		|| Runtime->CheckpointHoldExecutionId.IsValid()
@@ -1852,6 +1854,58 @@ bool URoomCombatSubsystem::HasAlivePreplacedEnemy(
 		}
 	}
 	return false;
+}
+
+bool URoomCombatSubsystem::BuildEnemyMovementRoomContext(
+	const AEnemyBase* Enemy, FEnemyMovementRoomContext& Out) const
+{
+	Out = FEnemyMovementRoomContext();
+	if (!CanRunServerGameplay() || !IsValid(Enemy) || Enemy->IsActorBeingDestroyed()
+		|| !Enemy->HasAuthority() || Enemy->GetWorld() != GetWorld()) return false;
+	const FGameplayTag Home = Enemy->GetDefaultRoomTag();
+	const FRoomCombatRuntime* Source = RoomRuntimes.Find(Home);
+	const ARoomVolume* HomeVolume = Source ? Source->RoomVolume.Get() : nullptr;
+	if (!IsValid(HomeVolume) || HomeVolume->IsActorBeingDestroyed()
+		|| HomeVolume->GetWorld() != GetWorld()) return false;
+	Out.HomeRoomTag = Home;
+	Out.bAllowGroup = Enemy->GetCombatState() == EEnemyCombatState::Combat
+		|| Enemy->GetCombatState() == EEnemyCombatState::Returning;
+	Out.Revision = MovementRoomRevision;
+	Out.Rooms.Add(Source->RoomVolume);
+	if (Out.bAllowGroup && URoomTagComponent::GetRoomGroupTag(Home).IsValid())
+	{
+		for (const auto& Entry : RoomRuntimes)
+		{
+			if (Entry.Key == Home || !URoomTagComponent::AreRoomsInSameGroup(Home, Entry.Key)) continue;
+			const ARoomVolume* Room = Entry.Value.RoomVolume.Get();
+			if (!IsValid(Room) || Room->IsActorBeingDestroyed() || Room->GetWorld() != GetWorld())
+			{
+				Out = FEnemyMovementRoomContext();
+				return false;
+			}
+			Out.Rooms.Add(Entry.Value.RoomVolume);
+		}
+	}
+	return true;
+}
+
+bool URoomCombatSubsystem::IsEnemyMovementRoomContextCurrent(
+	const AEnemyBase* Enemy, const FEnemyMovementRoomContext& Context) const
+{
+	if (!CanRunServerGameplay() || Context.Revision != MovementRoomRevision
+		|| !IsValid(Enemy) || Enemy->IsActorBeingDestroyed() || !Enemy->HasAuthority()
+		|| Enemy->GetWorld() != GetWorld() || Context.HomeRoomTag != Enemy->GetDefaultRoomTag()
+		|| Context.Rooms.IsEmpty()) return false;
+	const bool bAllowGroup = Enemy->GetCombatState() == EEnemyCombatState::Combat
+		|| Enemy->GetCombatState() == EEnemyCombatState::Returning;
+	if (Context.bAllowGroup != bAllowGroup) return false;
+	const FRoomCombatRuntime* Source = RoomRuntimes.Find(Context.HomeRoomTag);
+	if (!Source || Context.Rooms[0] != Source->RoomVolume) return false;
+	for (const TWeakObjectPtr<ARoomVolume>& Room : Context.Rooms)
+	{
+		if (!Room.IsValid() || Room->IsActorBeingDestroyed() || Room->GetWorld() != GetWorld()) return false;
+	}
+	return true;
 }
 
 bool URoomCombatSubsystem::TryStartCombatFromPursuit(AEnemyBase* Enemy, FGameplayTag EnteredRoomTag)
@@ -2955,6 +3009,7 @@ void URoomCombatSubsystem::ResetRuntimeCombatState()
 	}
 	// 취소 통보에서 Reset이 재진입하거나 새 전투를 시작하지 못하게 정리 전체를 하나의 경계로 묶는다.
 	TGuardValue<bool> ResetGuard(bResettingRuntime, true);
+	++MovementRoomRevision;
 	RoomStartHolds.Reset();
 	bRestoredAutomaticStartAllowed = false;
 	UE_LOG(LogTemp, Display,

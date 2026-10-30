@@ -133,10 +133,40 @@ void UpdateAssessment(FEnemyCombatAssessmentTaskInstanceData& Data)
 constexpr float MinimumEnemyFlightZ = 150.0f;
 constexpr float CombatFlightClearance = 5.0f;
 
-ARoomVolume* ResolveCombatFlightRoom(const AEnemyBase& Enemy)
+template<typename TData>
+bool CaptureCombatMovementRooms(TData& Data)
 {
-	URoomCombatSubsystem* Rooms = Enemy.GetWorld()->GetSubsystem<URoomCombatSubsystem>();
-	return Rooms ? Rooms->GetRegisteredRoomVolume(Enemy.GetDefaultRoomTag()) : nullptr;
+	AEnemyBase& Enemy = *Data.Enemy;
+	Data.CachedRooms = Enemy.GetWorld()->GetSubsystem<URoomCombatSubsystem>();
+	Data.CachedMovementController = Cast<AEnemyAIController>(Enemy.GetController());
+	Data.CapturedMovementState = Enemy.GetCombatState();
+	Data.CapturedMovementGeneration = Enemy.GetPoolGameplayGeneration();
+	Data.CapturedMovementLease = Enemy.GetPoolLeaseSerial();
+	Data.CachedRoom = Data.CachedRooms.IsValid()
+		? Data.CachedRooms->GetRegisteredRoomVolume(Enemy.GetDefaultRoomTag()) : nullptr;
+	return Data.CachedRooms.IsValid()
+		&& Data.CachedRooms->BuildEnemyMovementRoomContext(&Enemy, Data.MovementRooms);
+}
+
+template<typename TData>
+bool AreCombatMovementRoomsCurrent(const TData& Data)
+{
+	return IsValid(Data.Enemy) && !Data.Enemy->IsDead() && !Data.Enemy->IsEnemyPossessed()
+		&& Data.CachedRooms.IsValid() && Data.CachedMovementController.IsValid()
+		&& Data.Enemy->GetController() == Data.CachedMovementController.Get()
+		&& Data.CachedMovementController->GetPawn() == Data.Enemy
+		&& Data.CapturedMovementState == Data.Enemy->GetCombatState()
+		&& Data.CapturedMovementGeneration == Data.Enemy->GetPoolGameplayGeneration()
+		&& Data.CapturedMovementLease == Data.Enemy->GetPoolLeaseSerial()
+		&& Data.CachedRooms->IsEnemyMovementRoomContextCurrent(Data.Enemy, Data.MovementRooms);
+}
+
+FFlightPathRequest CombatRoomRequest(const FEnemyMovementRoomContext& Rooms)
+{
+	FFlightPathRequest Request;
+	Request.bRequireRoom = true;
+	Request.AllowedRooms = Rooms.Rooms;
+	return Request;
 }
 
 FVector GetCombatFlightExtent(const UCapsuleComponent& Capsule)
@@ -147,14 +177,15 @@ FVector GetCombatFlightExtent(const UCapsuleComponent& Capsule)
 		Capsule.GetComponentQuat());
 }
 
-bool ClampCombatFlightDestination(const AEnemyBase& Enemy, const ARoomVolume* Room, FVector& Destination)
+bool ClampCombatFlightDestination(const AEnemyBase& Enemy, const FEnemyMovementRoomContext& Rooms, FVector& Destination)
 {
 	const UCapsuleComponent* Capsule = Enemy.GetCapsuleComponent();
-	if (!IsValid(Room) || !Capsule) return false;
+	if (!Capsule || Rooms.Rooms.IsEmpty()) return false;
 	// 기존 Task의 Actor 좌표를 Fly와 같은 캡슐 중심/여유 기준으로 보정한다.
 	const FVector Offset = Capsule->GetComponentLocation() - Enemy.GetActorLocation();
 	FVector ClampedCenter;
-	if (!Room->TryClampFlightLocation(Destination + Offset, GetCombatFlightExtent(*Capsule), ClampedCenter))
+	if (!FlightPathfinding::ClampToMovementRooms(CombatRoomRequest(Rooms), Destination + Offset,
+		GetCombatFlightExtent(*Capsule), ClampedCenter))
 	{
 		return false;
 	}
@@ -175,12 +206,17 @@ bool IsCombatFlightStepInsideRoom(const ARoomVolume* Room, const FVector& Center
 		&& Prediction.Equals(ClampedPrediction, 0.01);
 }
 
-bool CanRemainInCombatFlightRoom(const AEnemyBase& Enemy, const ARoomVolume* Room, float DeltaTime)
+bool CanRemainInCombatFlightRoom(const AEnemyBase& Enemy, const FEnemyMovementRoomContext& Rooms, float DeltaTime)
 {
 	const UCapsuleComponent* Capsule = Enemy.GetCapsuleComponent();
 	const UCharacterMovementComponent* Movement = Enemy.GetCharacterMovement();
-	return Capsule && Movement && IsCombatFlightStepInsideRoom(Room, Capsule->GetComponentLocation(),
-		GetCombatFlightExtent(*Capsule), Movement->Velocity, Movement->GetMaxAcceleration(), DeltaTime);
+	if (!Capsule || !Movement) return false;
+	const float Step = FMath::Max(DeltaTime, 0.0f);
+	const FVector Center = Capsule->GetComponentLocation();
+	const FVector Extent = GetCombatFlightExtent(*Capsule)
+		+ FVector(FMath::Max(Movement->GetMaxAcceleration(), 0.0f) * Step * Step);
+	return FlightPathfinding::IsSegmentInsideMovementRooms(CombatRoomRequest(Rooms), Center,
+		Center + Movement->Velocity * Step, Extent);
 }
 
 void LogCombatFlightRoom(const TCHAR* Phase, const AEnemyBase& Enemy, const ARoomVolume* Room,
@@ -320,7 +356,7 @@ void RestoreCombatTaskBaseSpeed(AEnemyBase& Enemy)
 void ApplyFlightMovement(
 	AEnemyBase& Enemy,
 	AEnemyAIController& AIController,
-	const ARoomVolume* Room,
+	const FEnemyMovementRoomContext& Rooms,
 	const FVector& Destination,
 	const FVector& FacingLocation,
 	float AcceptanceRadius,
@@ -348,12 +384,16 @@ void ApplyFlightMovement(
 	ApplyCombatTaskSpeedMultiplier(Enemy, SpeedMultiplier);
 
 	FVector SafeDestination = Destination;
-	if (!ClampCombatFlightDestination(Enemy, Room, SafeDestination)
-		|| !CanRemainInCombatFlightRoom(Enemy, Room, DeltaTime))
+	if (!ClampCombatFlightDestination(Enemy, Rooms, SafeDestination)
+		|| !CanRemainInCombatFlightRoom(Enemy, Rooms, DeltaTime)
+		|| !FlightPathfinding::IsSegmentInsideMovementRooms(CombatRoomRequest(Rooms),
+			Enemy.GetCapsuleComponent()->GetComponentLocation(),
+			SafeDestination + Enemy.GetCapsuleComponent()->GetComponentLocation() - Enemy.GetActorLocation(),
+			GetCombatFlightExtent(*Enemy.GetCapsuleComponent())))
 	{
 		if (!Movement->Velocity.IsNearlyZero())
 		{
-			LogCombatFlightRoom(TEXT("BoundaryBrake"), Enemy, Room, Destination, SafeDestination);
+			LogCombatFlightRoom(TEXT("BoundaryBrake"), Enemy, nullptr, Destination, SafeDestination);
 		}
 		Enemy.ConsumeMovementInputVector();
 		Movement->StopMovementImmediately();
@@ -646,8 +686,7 @@ EStateTreeRunStatus FEnemyApproachTargetTask::EnterState(
 	InstanceData.bHasMoveDestination = false;
 	InstanceData.bShouldEnterOrbit = false;
 	StopFlightMovement(*InstanceData.Enemy, *AIController);
-	InstanceData.CachedRoom = ResolveCombatFlightRoom(*InstanceData.Enemy);
-	if (!InstanceData.CachedRoom.IsValid())
+	if (!CaptureCombatMovementRooms(InstanceData))
 	{
 		LogCombatFlightRoom(TEXT("MissingRoom"), *InstanceData.Enemy, nullptr, FVector::ZeroVector, FVector::ZeroVector);
 		return EStateTreeRunStatus::Failed;
@@ -669,7 +708,7 @@ EStateTreeRunStatus FEnemyApproachTargetTask::Tick(
 	{
 		return EStateTreeRunStatus::Failed;
 	}
-	if (!InstanceData.CachedRoom.IsValid() || InstanceData.CachedRoom->GetRoomTag() != Enemy->GetDefaultRoomTag())
+	if (!AreCombatMovementRoomsCurrent(InstanceData))
 	{
 		StopFlightMovement(*Enemy, *AIController);
 		return EStateTreeRunStatus::Failed;
@@ -702,7 +741,7 @@ EStateTreeRunStatus FEnemyApproachTargetTask::Tick(
 			ApplyFlightMovement(
 				*Enemy,
 				*AIController,
-				InstanceData.CachedRoom.Get(),
+				InstanceData.MovementRooms,
 				InstanceData.MoveDestination,
 				TargetLocation,
 				InstanceData.AcceptanceRadius,
@@ -750,7 +789,7 @@ EStateTreeRunStatus FEnemyApproachTargetTask::Tick(
 			ApplyFlightMovement(
 				*Enemy,
 				*AIController,
-				InstanceData.CachedRoom.Get(),
+				InstanceData.MovementRooms,
 				InstanceData.MoveDestination,
 				TargetLocation,
 				InstanceData.AcceptanceRadius,
@@ -762,7 +801,7 @@ EStateTreeRunStatus FEnemyApproachTargetTask::Tick(
 	}
 
 	const FVector RequestedCandidate = Candidate;
-	if (!ClampCombatFlightDestination(*Enemy, InstanceData.CachedRoom.Get(), Candidate))
+	if (!ClampCombatFlightDestination(*Enemy, InstanceData.MovementRooms, Candidate))
 	{
 		InstanceData.bHasMoveDestination = false;
 		StopFlightMovement(*Enemy, *AIController);
@@ -787,7 +826,7 @@ EStateTreeRunStatus FEnemyApproachTargetTask::Tick(
 		ApplyFlightMovement(
 			*Enemy,
 			*AIController,
-			InstanceData.CachedRoom.Get(),
+			InstanceData.MovementRooms,
 			InstanceData.MoveDestination,
 			TargetLocation,
 			InstanceData.AcceptanceRadius,
@@ -852,8 +891,7 @@ EStateTreeRunStatus FEnemyOrbitTargetTask::EnterState(
 	InstanceData.bShouldFallbackToApproach = false;
 	InstanceData.bShouldExitOrbit = false;
 	StopFlightMovement(*InstanceData.Enemy, *AIController);
-	InstanceData.CachedRoom = ResolveCombatFlightRoom(*InstanceData.Enemy);
-	if (!InstanceData.CachedRoom.IsValid())
+	if (!CaptureCombatMovementRooms(InstanceData))
 	{
 		LogCombatFlightRoom(TEXT("MissingRoom"), *InstanceData.Enemy, nullptr, FVector::ZeroVector, FVector::ZeroVector);
 		return EStateTreeRunStatus::Failed;
@@ -875,7 +913,7 @@ EStateTreeRunStatus FEnemyOrbitTargetTask::Tick(
 	{
 		return EStateTreeRunStatus::Failed;
 	}
-	if (!InstanceData.CachedRoom.IsValid() || InstanceData.CachedRoom->GetRoomTag() != Enemy->GetDefaultRoomTag())
+	if (!AreCombatMovementRoomsCurrent(InstanceData))
 	{
 		StopFlightMovement(*Enemy, *AIController);
 		return EStateTreeRunStatus::Failed;
@@ -907,7 +945,7 @@ EStateTreeRunStatus FEnemyOrbitTargetTask::Tick(
 			ApplyFlightMovement(
 				*Enemy,
 				*AIController,
-				InstanceData.CachedRoom.Get(),
+				InstanceData.MovementRooms,
 				InstanceData.MoveDestination,
 				OrbitCenter,
 				InstanceData.AcceptanceRadius,
@@ -951,7 +989,7 @@ EStateTreeRunStatus FEnemyOrbitTargetTask::Tick(
 			continue;
 		}
 		const FVector RequestedCandidate = Candidate;
-		if (!ClampCombatFlightDestination(*Enemy, InstanceData.CachedRoom.Get(), Candidate)
+		if (!ClampCombatFlightDestination(*Enemy, InstanceData.MovementRooms, Candidate)
 			|| IsCandidateOccupied(
 				*Enemy->GetWorld(),
 				*Enemy,
@@ -971,7 +1009,7 @@ EStateTreeRunStatus FEnemyOrbitTargetTask::Tick(
 			ApplyFlightMovement(
 				*Enemy,
 				*AIController,
-				InstanceData.CachedRoom.Get(),
+				InstanceData.MovementRooms,
 				InstanceData.MoveDestination,
 				OrbitCenter,
 				InstanceData.AcceptanceRadius,
@@ -991,7 +1029,7 @@ EStateTreeRunStatus FEnemyOrbitTargetTask::Tick(
 		ApplyFlightMovement(
 			*Enemy,
 			*AIController,
-			InstanceData.CachedRoom.Get(),
+			InstanceData.MovementRooms,
 			InstanceData.MoveDestination,
 			OrbitCenter,
 			InstanceData.AcceptanceRadius,
@@ -1009,7 +1047,7 @@ EStateTreeRunStatus FEnemyOrbitTargetTask::Tick(
 		ApplyFlightMovement(
 			*Enemy,
 			*AIController,
-			InstanceData.CachedRoom.Get(),
+			InstanceData.MovementRooms,
 			InstanceData.MoveDestination,
 			OrbitCenter,
 			InstanceData.AcceptanceRadius,

@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "EnemyBase.h"
+#include "Room/RoomCombatSubsystem.h"
 #include "EnemyStateTreeTacticalTasks.h"
 #include "StateTreeExecutionContext.h"
 #include "StateTreeExecutionTypes.h"
@@ -158,6 +159,12 @@ struct FEnemyApproachTargetTaskInstanceData
 
 	UPROPERTY(Transient)
 	TWeakObjectPtr<ARoomVolume> CachedRoom;
+	FEnemyMovementRoomContext MovementRooms;
+	TWeakObjectPtr<URoomCombatSubsystem> CachedRooms;
+	TWeakObjectPtr<AEnemyAIController> CachedMovementController;
+	EEnemyCombatState CapturedMovementState = EEnemyCombatState::NonCombat;
+	int32 CapturedMovementGeneration = 0;
+	int32 CapturedMovementLease = 0;
 
 	float RefreshElapsedTime = 0.0f;
 	bool bHasMoveDestination = false;
@@ -264,6 +271,12 @@ struct FEnemyOrbitTargetTaskInstanceData
 
 	UPROPERTY(Transient)
 	TWeakObjectPtr<ARoomVolume> CachedRoom;
+	FEnemyMovementRoomContext MovementRooms;
+	TWeakObjectPtr<URoomCombatSubsystem> CachedRooms;
+	TWeakObjectPtr<AEnemyAIController> CachedMovementController;
+	EEnemyCombatState CapturedMovementState = EEnemyCombatState::NonCombat;
+	int32 CapturedMovementGeneration = 0;
+	int32 CapturedMovementLease = 0;
 
 	float RefreshElapsedTime = 0.0f;
 	float RetryElapsedTime = 0.0f;

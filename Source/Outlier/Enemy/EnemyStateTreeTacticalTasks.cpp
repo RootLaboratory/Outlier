@@ -32,7 +32,18 @@ DEFINE_LOG_CATEGORY_STATIC(LogEnemyPatrol, Log, All);
 bool IsPatrolLifetimeCurrent(const FEnemyPatrolTaskInstanceData& Data)
 {
 	const AEnemyBase* Enemy = Data.Enemy;
+	const UCapsuleComponent* Capsule = IsValid(Enemy) ? Enemy->GetCapsuleComponent() : nullptr;
+	ARoomVolume* Home = IsValid(Enemy) && IsValid(Data.CombatSubsystem)
+		? Data.CombatSubsystem->GetRegisteredRoomVolume(Enemy->GetDefaultRoomTag()) : nullptr;
+	FFlightPathRequest HomeRequest;
+	HomeRequest.bRequireRoom = true;
+	HomeRequest.Room = Home;
+	// 현재 RoomTag가 남아 있어도 실제 캡슐이 귀환하기 전에는 순찰을 시작하지 않는다.
+	const bool bInsideHome = Capsule && Home && FlightPathfinding::IsInsideMovementRooms(HomeRequest,
+		Capsule->GetComponentLocation(), FlightPathfinding::GetCapsuleWorldExtent(
+			Capsule->GetScaledCapsuleRadius(), Capsule->GetScaledCapsuleHalfHeight(), Capsule->GetComponentQuat()));
 	return IsValid(Enemy) && Enemy->HasAuthority() && !Enemy->IsDead()
+		&& bInsideHome
 		&& Enemy->CanUseEnemyPerception() && !Enemy->IsAIControlSuppressed()
 		&& Enemy->GetCombatState() == EEnemyCombatState::NonCombat
 		&& Enemy->GetNonCombatBehavior() == EEnemyNonCombatBehavior::PatrolRoute
@@ -490,7 +501,7 @@ bool IsEnvQueryRoomCurrent(const FEnemyRunEnvQueryTaskInstanceData& Data)
 {
 	return Data.Enemy->GetDefaultRoomTag() == Data.CapturedRoomTag
 		&& Data.CapturedRoom.IsValid() && Data.CachedRooms
-		&& Data.CachedRooms->GetRegisteredRoomVolume(Data.CapturedRoomTag) == Data.CapturedRoom.Get();
+		&& Data.CachedRooms->IsEnemyMovementRoomContextCurrent(Data.Enemy, Data.MovementRooms);
 }
 
 bool IsEnvQueryTargetCurrent(const FEnemyRunEnvQueryTaskInstanceData& Data)
@@ -562,6 +573,8 @@ void CaptureEnvQuerySnapshot(FEnemyRunEnvQueryTaskInstanceData& Data)
 	Data.CachedRooms = Enemy->GetWorld()->GetSubsystem<URoomCombatSubsystem>();
 	Data.CapturedRoomTag = Enemy->GetDefaultRoomTag();
 	Data.CapturedRoom = Data.CachedRooms ? Data.CachedRooms->GetRegisteredRoomVolume(Data.CapturedRoomTag) : nullptr;
+	Data.MovementRooms = FEnemyMovementRoomContext();
+	if (Data.CachedRooms) Data.CachedRooms->BuildEnemyMovementRoomContext(Enemy, Data.MovementRooms);
 	Data.CapturedTarget = Data.CachedController.IsValid() && Data.bRequireVisibleTarget
 		? Data.CachedController->GetCachedVisibleTarget() : nullptr;
 	Data.SelectedTargetLocation = Data.CapturedTarget.IsValid()
@@ -622,6 +635,7 @@ bool IsEnvQueryDestinationClear(const FEnemyRunEnvQueryTaskInstanceData& Data, c
 	FFlightPathRequest Check;
 	Check.bRequireRoom = true;
 	Check.Room = Data.CapturedRoom;
+	Check.AllowedRooms = Data.MovementRooms.Rooms;
 	Check.Clearance = Data.Clearance;
 	Check.Start = Capsule->GetComponentLocation();
 	Check.Goal = Destination + Check.Start - Data.Enemy->GetActorLocation();
@@ -662,6 +676,7 @@ FFlightPathRequest MakeCandidatePathRequest(const FEnemyRunEnvQueryTaskInstanceD
 	Request.Clearance = Data.Clearance;
 	Request.bRequireRoom = true;
 	Request.Room = Data.CapturedRoom;
+	Request.AllowedRooms = Data.MovementRooms.Rooms;
 	Request.MaxSearchNodes = Nodes;
 	Request.MaxCollisionChecks = Checks;
 	Request.MaxSearchMilliseconds = Milliseconds;
@@ -1249,6 +1264,7 @@ bool SelectSearchDestinations(FEnemyRunEnvQueryTaskInstanceData& Data, const FEn
 void ApplyEnvQueryResult(FEnemyRunEnvQueryTaskInstanceData& Data, const FEnvQueryResult& Result)
 {
 	Data.RequestId = INDEX_NONE;
+	Data.bHasDestination = false;
 	Data.QueryResult = EEnemyEnvQueryResult::Failed;
 	// 요청 당시 상태 유지 -> 시간 제한 -> 결과 형식 -> 목적지 안전 검사 후에만 출력을 기록한다.
 	if (!IsEnvQuerySnapshotCurrent(Data))

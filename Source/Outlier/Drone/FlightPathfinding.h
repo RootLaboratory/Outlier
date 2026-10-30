@@ -66,6 +66,8 @@ struct OUTLIER_API FFlightPathRequest
 	// Enemy는 초기 소속 방을 명시하고, Partner는 방 제한을 사용하지 않는다.
 	bool bRequireRoom = false;
 	TWeakObjectPtr<ARoomVolume> Room;
+	// 비어 있으면 단일 Room을 사용한다. 하나라도 수명이 끝나면 요청을 거부한다.
+	TArray<TWeakObjectPtr<ARoomVolume>> AllowedRooms;
 
 	// 후퇴는 플레이어를 기준으로 드론 쪽 반공간 안에서만 탐색/이동한다.
 	// Origin은 캡슐 좌표, Direction은 수평 단위 벡터다. 기본값은 기존 경로에 영향을 주지 않는다.
@@ -163,6 +165,12 @@ namespace FlightPathfinding
 	OUTLIER_API FTestCost GetTestCost();
 	OUTLIER_API void RecordTestQuery(UWorld* World, bool bFinished);
 #endif
+	OUTLIER_API bool IsInsideMovementRooms(const FFlightPathRequest& Request,
+		const FVector& Center, const FVector& Extent);
+	OUTLIER_API bool IsSegmentInsideMovementRooms(const FFlightPathRequest& Request,
+		const FVector& From, const FVector& To, const FVector& Extent);
+	OUTLIER_API bool ClampToMovementRooms(const FFlightPathRequest& Request,
+		const FVector& Location, const FVector& Extent, FVector& OutLocation);
 	OUTLIER_API bool IsInsideAwayHalfSpace(const FFlightPathRequest& Request, const FVector& Position);
 	// 회전된 박스가 아니라 캡슐 중심축과 구형 끝부분으로 월드 경계 범위를 계산한다.
 	OUTLIER_API FVector GetCapsuleWorldExtent(float Radius, float HalfHeight, const FQuat& Rotation);

@@ -12,6 +12,7 @@
 #include "CoreGlobals.h"
 #include "Misc/ScopeExit.h"
 #include "Room/RoomVolume.h"
+#include "Components/BoxComponent.h"
 
 namespace
 {
@@ -600,6 +601,232 @@ namespace
 
 		return true;
 	}
+
+	bool AreMovementRoomsValid(const FFlightPathRequest& Request, const UWorld* World = nullptr)
+	{
+		if (!Request.bRequireRoom)
+		{
+			return true;
+		}
+		const auto IsRoomValid = [World](const ARoomVolume* Room)
+		{
+			return IsValid(Room) && !Room->IsActorBeingDestroyed() && (!World || Room->GetWorld() == World)
+				&& Cast<UBoxComponent>(Room->GetRootComponent())
+				&& Room->GetRootComponent()->GetComponentTransform().GetScale3D().GetAbs().GetMin() > UE_SMALL_NUMBER;
+		};
+		if (Request.AllowedRooms.IsEmpty())
+		{
+			return IsRoomValid(Request.Room.Get());
+		}
+		for (const auto& Room : Request.AllowedRooms)
+		{
+			if (!IsRoomValid(Room.Get())) return false;
+		}
+		return true;
+	}
+
+	using FMovementFace = TArray<FVector>;
+	struct FMovementCell
+	{
+		TArray<FMovementFace> Faces;
+	};
+	struct FMovementPlane
+	{
+		FVector Normal;
+		double Distance;
+		double Evaluate(const FVector& Point) const { return FVector::DotProduct(Normal, Point) - Distance; }
+	};
+
+	FMovementCell ClipMovementCell(const FMovementCell& Cell, const FMovementPlane& Plane)
+	{
+		// 평면 안쪽의 다각형들을 남기고 잘린 모서리를 이어 새 단면을 만든다.
+		// 이 단면도 다음 Room을 빼는 입력이므로 면 목록에서 생략하면 안 된다.
+		FMovementCell Result;
+		TArray<FVector> Cap;
+		for (const FMovementFace& Face : Cell.Faces)
+		{
+			FMovementFace Clipped;
+			for (int32 Index = 0; Index < Face.Num(); ++Index)
+			{
+				const FVector& A = Face[Index];
+				const FVector& B = Face[(Index + 1) % Face.Num()];
+				const double DA = Plane.Evaluate(A);
+				const double DB = Plane.Evaluate(B);
+				if (DA <= 0.0) Clipped.Add(A);
+				if ((DA < 0.0 && DB > 0.0) || (DA > 0.0 && DB < 0.0))
+				{
+					const FVector Intersection = A + (B - A) * (DA / (DA - DB));
+					Clipped.Add(Intersection);
+					Cap.AddUnique(Intersection);
+				}
+				if (DA == 0.0) Cap.AddUnique(A);
+			}
+			if (!Clipped.IsEmpty()) Result.Faces.Add(MoveTemp(Clipped));
+		}
+		if (Cap.Num() >= 3)
+		{
+			FVector Center = FVector::ZeroVector;
+			for (const FVector& Point : Cap) Center += Point;
+			Center /= Cap.Num();
+			FVector Axis, OtherAxis;
+			Plane.Normal.FindBestAxisVectors(Axis, OtherAxis);
+			Cap.Sort([&](const FVector& A, const FVector& B)
+			{
+				return FMath::Atan2(FVector::DotProduct(A - Center, OtherAxis), FVector::DotProduct(A - Center, Axis))
+					< FMath::Atan2(FVector::DotProduct(B - Center, OtherAxis), FVector::DotProduct(B - Center, Axis));
+			});
+			Result.Faces.Add(MoveTemp(Cap));
+		}
+		return Result;
+	}
+
+	FMovementCell MakeMovementSweep(const FVector& From, const FVector& To, const FVector& Extent)
+	{
+		const FVector Min = From.ComponentMin(To) - Extent;
+		const FVector Max = From.ComponentMax(To) + Extent;
+		FVector Vertices[8];
+		for (int32 Index = 0; Index < 8; ++Index)
+			Vertices[Index] = FVector((Index & 1) ? Max.X : Min.X,
+				(Index & 2) ? Max.Y : Min.Y, (Index & 4) ? Max.Z : Min.Z);
+		FMovementCell Cell;
+		const int32 Faces[6][4] = {{0, 2, 6, 4}, {1, 5, 7, 3}, {0, 4, 5, 1},
+			{2, 3, 7, 6}, {0, 1, 3, 2}, {4, 6, 7, 5}};
+		for (const auto& Face : Faces)
+		{
+			FMovementFace Polygon;
+			for (int32 Index : Face) Polygon.Add(Vertices[Index]);
+			Cell.Faces.Add(MoveTemp(Polygon));
+		}
+		// 박스를 선분 방향으로 압출한 볼록체: 축 평면 외에 각 박스 모서리의 압출 평면이 필요하다.
+		// 양 끝점 박스의 합집합이나 큰 경계 박스만으로 대신하면 대각선 이동의 판정이 달라진다.
+		const FVector Delta = To - From;
+		for (const FVector& Axis : {FVector::XAxisVector, FVector::YAxisVector, FVector::ZAxisVector})
+		{
+			const FVector Normal = FVector::CrossProduct(Delta, Axis).GetSafeNormal();
+			if (Normal.IsZero()) continue;
+			for (double Sign : {-1.0, 1.0})
+			{
+				const FVector N = Normal * Sign;
+				Cell = ClipMovementCell(Cell, {N, FMath::Max(FVector::DotProduct(N, From),
+					FVector::DotProduct(N, To)) + FVector::DotProduct(N.GetAbs(), Extent)});
+			}
+		}
+		return Cell;
+	}
+
+	bool IsMovementSweepCovered(const FFlightPathRequest& Request,
+		const FVector& From, const FVector& To, const FVector& Extent)
+	{
+		if (!Request.bRequireRoom)
+		{
+			return true;
+		}
+		if (From.ContainsNaN() || To.ContainsNaN() || Extent.ContainsNaN() || Extent.GetMin() < 0.0
+			|| !AreMovementRoomsValid(Request))
+		{
+			return false;
+		}
+		if (Request.AllowedRooms.IsEmpty())
+		{
+			return IsCapsuleInsideRoom(*Request.Room, From, Extent) && IsCapsuleInsideRoom(*Request.Room, To, Extent);
+		}
+		for (const auto& Room : Request.AllowedRooms)
+		{
+			if (IsCapsuleInsideRoom(*Room, From, Extent) && IsCapsuleInsideRoom(*Room, To, Extent)) return true;
+		}
+		TArray<FMovementCell> Uncovered;
+		Uncovered.Add(MakeMovementSweep(From, To, Extent));
+		// 각 Room 내부를 볼록 조각에서 뺀다. 남은 조각이 없으면 전체 이동 영역이 합집합 안이다.
+		// 양의 허용 오차나 표본 검사를 쓰지 않아 아주 얇은 미등록 구간도 통과시키지 않는다.
+		for (const auto& Room : Request.AllowedRooms)
+		{
+			const UBoxComponent* Box = CastChecked<UBoxComponent>(Room->GetRootComponent());
+			const FTransform Transform = Box->GetComponentTransform();
+			const FVector BoxExtent = Box->GetScaledBoxExtent();
+			const FVector Axes[3] = {Transform.GetUnitAxis(EAxis::X), Transform.GetUnitAxis(EAxis::Y), Transform.GetUnitAxis(EAxis::Z)};
+			TArray<FMovementCell> Remaining;
+			for (const FMovementCell& Fragment : Uncovered)
+			{
+				FMovementCell Inside = Fragment;
+				for (int32 Index = 0; Index < 6 && !Inside.Faces.IsEmpty(); ++Index)
+				{
+					const FVector Normal = Axes[Index / 2] * ((Index & 1) ? 1.0 : -1.0);
+					const FMovementPlane Plane{Normal, FVector::DotProduct(Normal, Transform.GetLocation()) + BoxExtent[Index / 2]};
+					double Minimum = TNumericLimits<double>::Max();
+					double Maximum = -TNumericLimits<double>::Max();
+					for (const FMovementFace& Face : Inside.Faces)
+						for (const FVector& Vertex : Face)
+						{
+							const double Distance = Plane.Evaluate(Vertex);
+							Minimum = FMath::Min(Minimum, Distance);
+							Maximum = FMath::Max(Maximum, Distance);
+						}
+					if (Maximum <= 0.0)
+					{
+						continue;
+					}
+					if (Minimum >= 0.0)
+					{
+						Remaining.Add(MoveTemp(Inside));
+						Inside.Faces.Reset();
+						break;
+					}
+					// 바깥 조각은 다음 Room이 덮는지 검사하고, 안쪽만 현재 Room의 다음 평면으로 넘긴다.
+					Remaining.Add(ClipMovementCell(Inside, {-Normal, -Plane.Distance}));
+					Inside = ClipMovementCell(Inside, Plane);
+				}
+				// 구성 오류로 조각이 폭증하면 제한을 풀지 않고 해당 연결을 거부한다.
+				if (Remaining.Num() > 256) return false;
+			}
+			Uncovered = MoveTemp(Remaining);
+			if (Uncovered.IsEmpty()) return true;
+		}
+		return false;
+	}
+}
+
+bool FlightPathfinding::IsInsideMovementRooms(const FFlightPathRequest& Request,
+	const FVector& Center, const FVector& Extent)
+{
+	return IsMovementSweepCovered(Request, Center, Center, Extent);
+}
+
+bool FlightPathfinding::IsSegmentInsideMovementRooms(const FFlightPathRequest& Request,
+	const FVector& From, const FVector& To, const FVector& Extent)
+{
+	return IsMovementSweepCovered(Request, From, To, Extent);
+}
+
+bool FlightPathfinding::ClampToMovementRooms(const FFlightPathRequest& Request,
+	const FVector& Location, const FVector& Extent, FVector& OutLocation)
+{
+	if (IsInsideMovementRooms(Request, Location, Extent))
+	{
+		OutLocation = Location;
+		return true;
+	}
+	if (!AreMovementRoomsValid(Request)) return false;
+	if (Request.AllowedRooms.IsEmpty())
+	{
+		return Request.Room.IsValid() && Request.Room->TryClampFlightLocation(Location, Extent, OutLocation);
+	}
+	bool bFound = false;
+	double BestDistance = TNumericLimits<double>::Max();
+	for (const auto& Room : Request.AllowedRooms)
+	{
+		FVector Candidate;
+		if (Room->TryClampFlightLocation(Location, Extent, Candidate))
+		{
+			const double Distance = FVector::DistSquared(Location, Candidate);
+			if (Distance < BestDistance)
+			{
+				bFound = true;
+				BestDistance = Distance;
+				OutLocation = Candidate;
+			}
+		}
+	}
+	return bFound;
 }
 
 bool FlightPathfinding::IsInsideAwayHalfSpace(const FFlightPathRequest& Request, const FVector& Position)
@@ -1070,9 +1297,8 @@ static void LogFailedFlightSegment(
 	const FVector Extent = FlightPathfinding::GetCapsuleWorldExtent(Radius, HalfHeight, Rotation);
 	const FVector ActualExtent = FlightPathfinding::GetCapsuleWorldExtent(
 		Capsule.GetScaledCapsuleRadius(), Capsule.GetScaledCapsuleHalfHeight(), Rotation);
-	const bool bStartInsideRoom = !Request.bRequireRoom
-		|| IsCapsuleInsideRoom(*Room, Request.Start, bClearanceEscape ? ActualExtent : Extent);
-	const bool bGoalInsideRoom = !Request.bRequireRoom || IsCapsuleInsideRoom(*Room, Request.Goal, Extent);
+	const bool bStartInsideRoom = FlightPathfinding::IsInsideMovementRooms(Request, Request.Start, bClearanceEscape ? ActualExtent : Extent);
+	const bool bGoalInsideRoom = FlightPathfinding::IsInsideMovementRooms(Request, Request.Goal, Extent);
 	UE_LOG(LogFlightPathCost, Log,
 		TEXT("[FlightSegment] Enemy=%s Status=%s StartBlocked=%d From=%s To=%s Room=%s StartInsideRoom=%d GoalInsideRoom=%d Radius=%.1f HalfHeight=%.1f ClearanceEscape=%d"),
 		*GetNameSafe(Owner), *UEnum::GetValueAsString(Result.Status), Result.bStartBlocked,
@@ -1173,7 +1399,7 @@ static FFlightPathResult FindPathOrCheckSegment(
 	if (World.GetNetMode() == NM_Client || !IsValid(Owner) || !Owner->HasAuthority()
 		|| !World.GetPhysicsScene() || MovementCapsule.GetWorld() != &World || !MovementCapsule.IsRegistered()
 		|| !MovementCapsule.IsQueryCollisionEnabled()
-		|| (Request.bRequireRoom && (!IsValid(Room) || Room->GetWorld() != &World)))
+		|| !AreMovementRoomsValid(Request, &World))
 	{
 		Failure.Status = EFlightPathStatus::Unavailable;
 		return Failure;
@@ -1205,7 +1431,7 @@ static FFlightPathResult FindPathOrCheckSegment(
 	const auto IsInsideRoom = [&](const FVector& Position)
 	{
 		return FlightPathfinding::IsInsideAwayHalfSpace(Request, Position)
-			&& (!Request.bRequireRoom || IsCapsuleInsideRoom(*Room, Position, Extent));
+			&& FlightPathfinding::IsInsideMovementRooms(Request, Position, Extent);
 	};
 	if (Mode == EFlightCheckMode::Destination)
 	{
@@ -1252,7 +1478,7 @@ static FFlightPathResult FindPathOrCheckSegment(
 		if (!bClear && Request.Start.Equals(MovementCapsule.GetComponentLocation(), 0.01))
 		{
 			bStartClear = FlightPathfinding::IsInsideAwayHalfSpace(Request, Position)
-				&& (!Request.bRequireRoom || IsCapsuleInsideRoom(*Room, Position, ActualExtent))
+				&& FlightPathfinding::IsInsideMovementRooms(Request, Position, ActualExtent)
 				&& !World.OverlapBlockingTestByChannel(Position, Rotation, Channel, ActualShape, Params, Responses);
 			bStartNeedsClearanceEscape = bStartClear;
 		}
@@ -1269,13 +1495,13 @@ static FFlightPathResult FindPathOrCheckSegment(
 			// 첫 짧은 구간만 실제 크기로 Sweep한다. 도착점은 확장 캡슐 검사 통과점이며 이후 구간은 원래 여유를 쓴다.
 			// 긴 직선 전체에서 여유를 없애지 않도록 A* 이웃 한 구간 길이까지만 허용한다.
 			bClear = FVector::DistSquared(From, To) <= FMath::Square(Request.CellSize * 1.75f)
-				&& (!Request.bRequireRoom || (IsCapsuleInsideRoom(*Room, From, ActualExtent)
-					&& IsCapsuleInsideRoom(*Room, To, ActualExtent)))
+				&& FlightPathfinding::IsSegmentInsideMovementRooms(Request, From, To, ActualExtent)
 				&& !World.SweepTestByChannel(From, To, Rotation, Channel, ActualShape, Params, Responses);
 		}
 		else
 		{
-			bClear = IsInsideRoom(From) && IsInsideRoom(To) && !World.SweepTestByChannel(
+			bClear = IsInsideRoom(From) && IsInsideRoom(To)
+				&& FlightPathfinding::IsSegmentInsideMovementRooms(Request, From, To, Extent) && !World.SweepTestByChannel(
 				From, To, Rotation, Channel, Shape, Params, Responses);
 		}
 		if (bSearchDebug && !bClear && RejectedSegmentSamples.Num() < 2)
@@ -1319,7 +1545,7 @@ static FFlightPathResult FindPathOrCheckSegment(
 				- FVector::DotProduct(RegionExtent, Request.AwayDirection.GetAbs());
 			if (MinimumDistance < 0.0) return false;
 		}
-		if (Request.bRequireRoom && !IsCapsuleInsideRoom(*Room, Center, BoxExtent)) return false;
+		if (!FlightPathfinding::IsInsideMovementRooms(Request, Center, BoxExtent)) return false;
 		return !World.OverlapBlockingTestByChannel(Center, FQuat::Identity, Channel,
 			FCollisionShape::MakeBox(BoxExtent), Params, Responses);
 	};
@@ -1355,7 +1581,7 @@ static FFlightPathResult FindPathOrCheckSegment(
 				TEXT("[FlightSearchBlocker] Owner=%s Kind=Segment From=%s To=%s Hit=%d Blocker=%s Component=%s Impact=%s StartPenetrating=%d InsideConstraints=%d EscapeLengthRejected=%d"),
 				*GetNameSafe(Owner), *Segment.Key.ToCompactString(), *Segment.Value.ToCompactString(), bHit,
 				*GetNameSafe(Hit.GetActor()), *GetNameSafe(Hit.GetComponent()), *Hit.ImpactPoint.ToCompactString(), Hit.bStartPenetrating,
-				IsInsideRoom(Segment.Key) && IsInsideRoom(Segment.Value),
+				FlightPathfinding::IsSegmentInsideMovementRooms(Request, Segment.Key, Segment.Value, bEscape ? ActualExtent : Extent),
 				bEscape && FVector::DistSquared(Segment.Key, Segment.Value) > FMath::Square(Request.CellSize * 1.75f));
 		}
 		UE_LOG(LogFlightPathCost, Log, TEXT("[FlightSearchDiagnostic] Owner=%s ExtraQueries=%d ExtraMs=%.3f ExcludedFromSearchBudget=1"),
@@ -1949,7 +2175,7 @@ namespace
 				|| !Owner->HasAuthority() || CurrentWorld->GetNetMode() == NM_Client
 				|| !CurrentWorld->GetPhysicsScene() || CurrentCapsule->GetWorld() != CurrentWorld
 				|| !CurrentCapsule->IsRegistered() || !CurrentCapsule->IsQueryCollisionEnabled()
-				|| (Request.bRequireRoom && (!IsValid(Room) || Room->GetWorld() != CurrentWorld)))
+				|| !AreMovementRoomsValid(Request, CurrentWorld))
 				return EFlightPathStatus::Unavailable;
 			// 캐시에 사용했던 캡슐 설정이 바뀌면 기존 결과를 전달하지 않는다. 위치 이동은 경로 합류로 처리한다.
 			if (!FMath::IsNearlyEqual(Radius, CurrentCapsule->GetScaledCapsuleRadius())
@@ -1966,7 +2192,7 @@ namespace
 		{
 			const ARoomVolume* Room = Request.Room.Get();
 			return FlightPathfinding::IsInsideAwayHalfSpace(Request, Position)
-				&& (!Request.bRequireRoom || (Room && IsCapsuleInsideRoom(*Room, Position, BoundsExtent)));
+				&& FlightPathfinding::IsInsideMovementRooms(Request, Position, BoundsExtent);
 		}
 
 		bool PositionClear(const FVector& Position)
@@ -1993,7 +2219,8 @@ namespace
 			const bool bEscape = bClearanceEscape && From.Equals(Request.Start, 0.01);
 			if (bEscape && FVector::DistSquared(From, To) > FMath::Square(Request.CellSize * 1.75f)) return false;
 			const FVector& BoundsExtent = bEscape ? ActualExtent : Extent;
-			return Inside(From, BoundsExtent) && Inside(To, BoundsExtent) && !CurrentWorld->SweepTestByChannel(
+			return Inside(From, BoundsExtent) && Inside(To, BoundsExtent)
+				&& FlightPathfinding::IsSegmentInsideMovementRooms(Request, From, To, BoundsExtent) && !CurrentWorld->SweepTestByChannel(
 				From, To, Rotation, Channel, bEscape ? ActualShape : Shape, Params, Responses);
 		}
 

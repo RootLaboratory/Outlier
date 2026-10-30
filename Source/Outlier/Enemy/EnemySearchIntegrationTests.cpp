@@ -185,6 +185,7 @@ FEnemyRunEnvQueryTaskInstanceData MakeSearchData(
 	Data.CachedRooms = Enemy ? Enemy->GetWorld()->GetSubsystem<URoomCombatSubsystem>() : nullptr;
 	Data.CapturedRoomTag = Enemy->GetRoomTagComp()->GetDefaultRoomTag();
 	Data.CapturedRoom = Room;
+	if (Data.CachedRooms) Data.CachedRooms->BuildEnemyMovementRoomContext(Enemy, Data.MovementRooms);
 	Data.CapturedCombatState = EEnemyCombatState::Combat;
 	Data.CapturedGeneration = Enemy ? Enemy->GetPoolGameplayGeneration() : 0;
 	Data.CapturedLease = Enemy ? Enemy->GetPoolLeaseSerial() : 0;

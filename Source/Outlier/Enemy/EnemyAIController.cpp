@@ -495,7 +495,7 @@ void AEnemyAIController::HandleHearingStimulus(AEnemyBase* Enemy, AActor* Actor,
 	}
 
 	// 아직 전투가 시작되지 않은 방에서는 기존 경계 흐름을 유지한다.
-	if (State == EEnemyCombatState::NonCombat ||
+	if (State == EEnemyCombatState::NonCombat || State == EEnemyCombatState::Returning ||
 		State == EEnemyCombatState::Stun)
 	{
 		Enemy->EnterAlertFromPerception(HeardLocation);

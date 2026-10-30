@@ -77,17 +77,6 @@ void LogGeneratorResult(const FEnvQueryInstance& Query, const AEnemyBase* Enemy,
 		Enemy ? *Enemy->GetDefaultRoomTag().ToString() : TEXT("None"), Reason, Attempted, Generated, NoFloor);
 }
 
-bool IsDestinationCapsuleInsideRoom(const ARoomVolume& Room, const FVector& Position, const FVector& Extent)
-{
-	for (int32 Index = 0; Index < 8; ++Index)
-	{
-		const FVector Offset((Index & 1) ? Extent.X : -Extent.X,
-			(Index & 2) ? Extent.Y : -Extent.Y, (Index & 4) ? Extent.Z : -Extent.Z);
-		if (!Room.ContainsWorldLocation(Position + Offset)) return false;
-	}
-	return true;
-}
-
 void LogDestinationCheck(const FEnvQueryInstance& Query, int32 Index, const AEnemyBase* Enemy,
 	const UCapsuleComponent* Capsule, const FFlightPathRequest& Request, EFlightPathStatus Status, bool bWantsValid)
 {
@@ -101,7 +90,7 @@ void LogDestinationCheck(const FEnvQueryInstance& Query, int32 Index, const AEne
 		const float HalfHeight = Capsule->GetScaledCapsuleHalfHeight() + Request.Clearance;
 		const FVector Extent = FlightPathfinding::GetCapsuleWorldExtent(Radius, HalfHeight, Capsule->GetComponentQuat());
 		// 충돌 Trace를 반복하지 않고 기존 검사 결과와 동일한 방 경계 계산으로 원인을 구분한다.
-		Reason = IsDestinationCapsuleInsideRoom(*Room, Request.Goal, Extent)
+		Reason = FlightPathfinding::IsInsideMovementRooms(Request, Request.Goal, Extent)
 			? TEXT("BlockingOverlap") : TEXT("OutsideRoom");
 	}
 	else if (!Room) Reason = TEXT("MissingInitialRoom");
@@ -583,7 +572,7 @@ bool HasHeightBudget(const FEnemyFlightHeightSnapshot& Snapshot, int32 MaxChecks
 	return Snapshot.CollisionChecks < MaxChecks && (FPlatformTime::Seconds() - Started) * 1000.0 < MaxMilliseconds;
 }
 
-EFlightPathStatus ResolveCandidateHeight(const AEnemyBase& Enemy, const UCapsuleComponent& Capsule, ARoomVolume& Room,
+EFlightPathStatus ResolveCandidateHeight(const AEnemyBase& Enemy, const UCapsuleComponent& Capsule, const FEnemyMovementRoomContext& Rooms,
 	const FVector& Start, const FVector& Target, bool bChase, float Clearance, int32 MaxChecks,
 	double Started, double MaxMilliseconds, FEnemyFlightHeightSnapshot& Snapshot, FEnemyFlightHeightCandidate& OutCandidate)
 {
@@ -593,7 +582,10 @@ EFlightPathStatus ResolveCandidateHeight(const AEnemyBase& Enemy, const UCapsule
 	const FEnemyFlightHeightSettings& Settings = Snapshot.Settings;
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(EnemyFlightHeightFloor), false, &Enemy);
 	// Object 검사에서는 채널 응답과 관계없이 방 트리거가 잡힐 수 있다. 지형과 분리한다.
-	Params.AddIgnoredActor(&Room);
+	for (const TWeakObjectPtr<ARoomVolume>& Room : Rooms.Rooms)
+	{
+		if (Room.IsValid()) Params.AddIgnoredActor(Room.Get());
+	}
 	Params.AddIgnoredActors(Capsule.GetMoveIgnoreActors());
 	Params.AddIgnoredComponents(Capsule.GetMoveIgnoreComponents());
 	// 현재 비행 층에서 아래쪽 바닥만 찾는다. 천장 위에서 내려 쏴 천장을 바닥으로 선택하지 않는다.
@@ -638,7 +630,7 @@ EFlightPathStatus ResolveCandidateHeight(const AEnemyBase& Enemy, const UCapsule
 	DesiredZ = FMath::Clamp(DesiredZ, MinimumZ, MaximumZ);
 	FFlightPathRequest Request;
 	Request.bRequireRoom = true;
-	Request.Room = &Room;
+	Request.AllowedRooms = Rooms.Rooms;
 	Request.Clearance = Clearance;
 	Request.Start = Capsule.GetComponentLocation();
 
@@ -689,8 +681,8 @@ EFlightPathStatus EnemyFlightHeight::PrepareQuery(const AEnemyBase& Enemy, const
 		|| MaxChecks <= 0 || !FMath::IsFinite(MaxMilliseconds) || MaxMilliseconds <= 0.0)
 		return EFlightPathStatus::InvalidRequest;
 	const URoomCombatSubsystem* Rooms = Enemy.GetWorld()->GetSubsystem<URoomCombatSubsystem>();
-	ARoomVolume* Room = Rooms ? Rooms->GetRegisteredRoomVolume(Enemy.GetDefaultRoomTag()) : nullptr;
-	if (!Room) return EFlightPathStatus::Unavailable;
+	FEnemyMovementRoomContext MovementRooms;
+	if (!Rooms || !Rooms->BuildEnemyMovementRoomContext(&Enemy, MovementRooms)) return EFlightPathStatus::Unavailable;
 	TArray<FVector> Sources;
 	if (!BuildHeightSourceCandidates(Generator, Start, Target, PreferredOrbitLength, bLeft, Lane, Sources))
 		return EFlightPathStatus::InvalidRequest;
@@ -700,7 +692,7 @@ EFlightPathStatus EnemyFlightHeight::PrepareQuery(const AEnemyBase& Enemy, const
 	{
 		FEnemyFlightHeightCandidate& Candidate = OutSnapshot.Candidates.AddDefaulted_GetRef();
 		Candidate.Location = Source;
-		Candidate.Status = ResolveCandidateHeight(Enemy, *Capsule, *Room, Start, Target,
+		Candidate.Status = ResolveCandidateHeight(Enemy, *Capsule, MovementRooms, Start, Target,
 			Generator.IsA<UEnemyEnvQueryGenerator_Chase>(), Clearance, MaxChecks, Started, MaxMilliseconds,
 			OutSnapshot, Candidate);
 		// NamedParam은 float다. Task도 EQS가 실제로 받은 정밀도의 좌표를 사용한다.
@@ -900,6 +892,9 @@ void UEnemyEnvQueryTest_FlightDestination::RunTest(FEnvQueryInstance& QueryInsta
 	Request.Clearance = Clearance;
 	Request.bRequireRoom = true;
 	Request.Room = Rooms && Enemy ? Rooms->GetRegisteredRoomVolume(Enemy->GetDefaultRoomTag()) : nullptr;
+	FEnemyMovementRoomContext MovementRooms;
+	const bool bHasMovementRooms = Rooms && Enemy && Rooms->BuildEnemyMovementRoomContext(Enemy, MovementRooms);
+	Request.AllowedRooms = MovementRooms.Rooms;
 	const FVector CapsuleOffset = Capsule && Enemy
 		? Capsule->GetComponentLocation() - Enemy->GetActorLocation() : FVector::ZeroVector;
 	BoolValue.BindData(QueryInstance.Owner.Get(), QueryInstance.QueryID);
@@ -909,7 +904,7 @@ void UEnemyEnvQueryTest_FlightDestination::RunTest(FEnvQueryInstance& QueryInsta
 	{
 		bool bClear = false;
 		EFlightPathStatus Status = EFlightPathStatus::Unavailable;
-		if (CanCheckFlightDestination(Enemy, World, Capsule))
+		if (bHasMovementRooms && CanCheckFlightDestination(Enemy, World, Capsule))
 		{
 			Request.Start = Capsule->GetComponentLocation();
 			Request.Goal = GetItemLocation(QueryInstance, It.GetIndex()) + CapsuleOffset;
