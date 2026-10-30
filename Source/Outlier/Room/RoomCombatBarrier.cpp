@@ -6,6 +6,7 @@
 #include "Level/Elevator/ElevatorShaftController.h"
 #include "Net/UnrealNetwork.h"
 #include "Room/RoomCombatSubsystem.h"
+#include "Room/RoomTagComponent.h"
 
 ARoomCombatBarrier::ARoomCombatBarrier()
 {
@@ -81,9 +82,9 @@ void ARoomCombatBarrier::HandleCombatEvent(FGameplayTag EventRoomTag, ERoomComba
 	(void)Event;
 	(void)CombatPhaseIndex;
 	(void)GameplayGeneration;
-	if (EventRoomTag == RoomTag || AdditionalRoomTags.HasTagExact(EventRoomTag))
+	if (CanBlockRoom(EventRoomTag))
 	{
-		// 이벤트 종류만으로 열고 닫지 않는다. 공유 출입구는 다른 Room이 아직 차단 중일 수 있다.
+		// 완료한 방의 이벤트여도 형제 방은 진행 중일 수 있다. 현재 그룹 상태를 다시 조회한다.
 		RefreshFromRoomCombat();
 	}
 }
@@ -96,12 +97,18 @@ void ARoomCombatBarrier::RefreshFromRoomCombat()
 	}
 	const URoomCombatSubsystem* Combat = GetWorld()
 		? GetWorld()->GetSubsystem<URoomCombatSubsystem>() : nullptr;
-	bool bShouldBlock = Combat && RoomTag.IsValid() && Combat->IsExitBlocked(RoomTag);
+	if (IsGroupInternalPassage())
+	{
+		SetBlocked(false);
+		return;
+	}
+	bool bShouldBlock = Combat && (Combat->IsGroupExitBlocked(RoomTag)
+		|| Combat->IsGroupExitBlocked(ConnectedRoomTag));
 	if (Combat && !bShouldBlock)
 	{
 		for (const FGameplayTag& AdditionalTag : AdditionalRoomTags)
 		{
-			if (Combat->IsExitBlocked(AdditionalTag))
+			if (Combat->IsGroupExitBlocked(AdditionalTag))
 			{
 				bShouldBlock = true;
 				break;
@@ -113,7 +120,34 @@ void ARoomCombatBarrier::RefreshFromRoomCombat()
 
 bool ARoomCombatBarrier::ServesRoom(FGameplayTag InRoomTag) const
 {
-	return InRoomTag.IsValid() && (RoomTag == InRoomTag || AdditionalRoomTags.HasTagExact(InRoomTag));
+	return InRoomTag.IsValid() && (RoomTag == InRoomTag || ConnectedRoomTag == InRoomTag
+		|| AdditionalRoomTags.HasTagExact(InRoomTag));
+}
+
+bool ARoomCombatBarrier::IsGroupInternalPassage() const
+{
+	return RoomTag != ConnectedRoomTag && URoomTagComponent::AreRoomsInSameGroup(RoomTag, ConnectedRoomTag);
+}
+
+bool ARoomCombatBarrier::CanBlockRoom(FGameplayTag InRoomTag) const
+{
+	if (!InRoomTag.IsValid() || IsGroupInternalPassage())
+	{
+		return false;
+	}
+	if (ServesRoom(InRoomTag) || URoomTagComponent::AreRoomsInSameGroup(RoomTag, InRoomTag)
+		|| URoomTagComponent::AreRoomsInSameGroup(ConnectedRoomTag, InRoomTag))
+	{
+		return true;
+	}
+	for (const FGameplayTag& Tag : AdditionalRoomTags)
+	{
+		if (URoomTagComponent::AreRoomsInSameGroup(Tag, InRoomTag))
+		{
+			return true;
+		}
+	}
+	return false;
 }
 
 FVector ARoomCombatBarrier::GetJoinFallbackLocation() const

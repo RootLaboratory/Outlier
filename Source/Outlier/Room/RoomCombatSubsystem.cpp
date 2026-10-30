@@ -886,6 +886,12 @@ bool URoomCombatSubsystem::RegisterRoom(
 		}
 	}
 	OnRoomStartReadinessChanged.Broadcast(RoomTag);
+	// 복원된 방을 기존 차단막의 현재 그룹 상태에도 반영한다.
+	for (const TWeakObjectPtr<ARoomCombatBarrier>& Barrier : RegisteredBarriers)
+	{
+		if (Barrier.IsValid() && Barrier->CanBlockRoom(RoomTag)) Barrier->RefreshFromRoomCombat();
+	}
+
 	if (bRestoredAutomaticStartAllowed)
 	{
 		TryStartRestoredAutomaticPhase(RoomTag);
@@ -1652,7 +1658,9 @@ bool URoomCombatSubsystem::IsSafeJoinDestination(
 	for (const TWeakObjectPtr<ARoomCombatBarrier>& BarrierPtr : RegisteredBarriers)
 	{
 		const ARoomCombatBarrier* Barrier = BarrierPtr.Get();
-		if (Barrier && Barrier->ServesRoom(Room->GetRoomTag())
+		// 아직 숨겨진 외곽도 합류 직후 닫힐 수 있다. 형제 방 소속의 외곽까지
+		// 검사하되, 계속 열려 있는 그룹 내부 통로는 벽으로 취급하지 않는다.
+		if (Barrier && Barrier->CanBlockRoom(Room->GetRoomTag())
 			&& Barrier->OverlapsJoinCapsule(Location, Radius, HalfHeight))
 		{
 			return false;

@@ -21,6 +21,9 @@ public:
 	bool IsBlocked() const { return bBlocked; }
 	void RefreshFromRoomCombat();
 	bool ServesRoom(FGameplayTag InRoomTag) const;
+	bool IsGroupInternalPassage() const;
+	// 합류 시 아직 꺼진 차단막도 전투 확정 후 닫힐 수 있는지 검사한다.
+	bool CanBlockRoom(FGameplayTag InRoomTag) const;
 	FVector GetJoinFallbackLocation() const;
 	bool OverlapsJoinCapsule(const FVector& Location, float Radius, float HalfHeight) const;
 
@@ -38,7 +41,13 @@ protected:
 	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Room Combat|Barrier", meta = (Categories = "Room"))
 	FGameplayTag RoomTag;
 
-	// 공유 출입구라면 양쪽 Room 중 하나라도 차단 중일 때 계속 막는다.
+	// 통로 반대편 Room. 서로 다른 형제 방을 연결하면 그룹 내부 통로로 유지한다.
+	// 비어 있으면 외곽이며, 기존 공유 출입구 태그 목록과 별도로 연결 구조를 명시한다.
+	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Room Combat|Barrier", meta = (Categories = "Room"))
+	FGameplayTag ConnectedRoomTag;
+
+	// 기존 공유 출입구의 추가 소속 방. 내부 판정은 RoomTag/ConnectedRoomTag로만 한다.
+	// 외곽에서는 이 목록에 속한 그룹 중 하나라도 차단 중이면 계속 막는다.
 	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Room Combat|Barrier", meta = (Categories = "Room"))
 	FGameplayTagContainer AdditionalRoomTags;
 
