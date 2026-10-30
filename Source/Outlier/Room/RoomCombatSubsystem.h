@@ -14,6 +14,16 @@ class ARoomCombatBarrier;
 class ARoomVolume;
 class AFirstPersonCharacter;
 class URoomCombatDefinition;
+struct FOutlierRoomPhaseProgress;
+// 요청 동안 확보하는 약한 공간 문맥이며 Room 등록 변경 시 다시 만든다.
+struct OUTLIER_API FEnemyMovementRoomContext
+{
+	FGameplayTag HomeRoomTag;
+	bool bAllowGroup = false;
+	uint64 Revision = 0;
+	TArray<TWeakObjectPtr<ARoomVolume>> Rooms;
+};
+
 struct FRoomCombatRoomDefinition;
 struct FRoomCombatWaveDefinition;
 
@@ -95,11 +105,16 @@ struct FRoomCombatPreparationContext // Room 재등록/Arena 리로드 뒤 이�
 	FGameplayTag RoomTag;
 	TWeakObjectPtr<AActor> AnchorPlayer;
 	FGuid RoomRegistrationId;
+	FGuid PreparationId;
 	int32 GameplayGeneration = INDEX_NONE;
 };
 
 struct FRoomCombatReconnectContext // 재접속 로드 완료 전에 Room 수명이 바뀌었는지 확인한다.
 {
+	FGuid CombatGroupId;
+	// 그룹 대표 방과 실제 합류 방은 다를 수 있다. ACK는 목적지 등록 수명까지 비교한다.
+	FGameplayTag DestinationRoomTag;
+	FGuid DestinationRoomRegistrationId;
 	FGameplayTag RoomTag;
 	FGuid RoomRegistrationId;
 	int32 GameplayGeneration = INDEX_NONE;
@@ -122,6 +137,11 @@ struct FRoomCombatRuntime
 	FGuid CheckpointHoldExecutionId;
 	TWeakObjectPtr<AActor> CheckpointHoldOwner;
 	TWeakObjectPtr<AActor> PreparingAnchorPlayer; // 중복 발각으로 바뀌지 않으며 준비/차수 종료 때 비운다.
+	FGuid PreparationId;
+	double NextPreparationAllowedTimeSeconds = 0.0;
+	bool bInitialDetectionPendingJoin = false;
+	bool bPreparationOwnsReservation = false;
+	bool bPreparationExitBlockWasActive = false;
 	FGameplayTag ActiveActivationGroupTag;
 	bool bTriggeredSequenceActive = false;
 	// 현재 차수 진행 여부와 별개다. 한 번 막힌 출입구는 중간 대기에도 유지하고 Clear/Reset에서 연다.
@@ -139,6 +159,8 @@ struct FRoomCombatRuntime
 	bool bCurrentWaveHasSpawned = false;
 	bool bEncounterIdRegistered = false;
 	bool bSavedAutomaticPhasePending = false;
+	// 완료 경계의 다음 차수 대기와 구분한다. 준비 완료 후 현재 차수의 첫 Wave를 재구성한다.
+	bool bSavedCurrentPhasePending = false;
 };
 
 struct FRoomCombatEnemyRegistration
@@ -206,9 +228,13 @@ public:
 	bool AcquireRoomStartHold(FGameplayTag RoomTag, FGuid ExecutionId, UObject* Owner);
 	void ReleaseRoomStartHold(FGuid ExecutionId);
 
-	// 서버 상태 조회다. 차단 Actor는 이 값으로 충돌을 적용하고 자신의 상태를 Client에 복제한다.
+	// 해당 방이 직접 유지 중인 차단 원인이다. 외곽 Actor는 아래 그룹 조회를 사용한다.
 	UFUNCTION(BlueprintPure, Category = "Room Combat")
 	bool IsExitBlocked(FGameplayTag RoomTag) const;
+
+	// 외곽 차단용 조회. 실제 참여 방의 차단 원인이 모두 끝날 때 해제한다.
+	UFUNCTION(BlueprintPure, Category = "Room Combat")
+	bool IsGroupExitBlocked(FGameplayTag RoomTag) const;
 
 	// 서버 조회용이다. 클라이언트 UI에 필요하면 호출자가 별도로 복제한다.
 	UFUNCTION(BlueprintPure, Category = "Room Combat")
@@ -282,9 +308,15 @@ public:
 	bool BeginInitialDetectionPreparation(FGameplayTag RoomTag, AActor* AnchorPlayer,
 		FRoomCombatPreparationContext& OutContext);
 	bool CompleteInitialDetectionPreparation(const FRoomCombatPreparationContext& Context);
+	bool CancelInitialDetectionPreparation(const FRoomCombatPreparationContext& Context);
 	bool TryStartInitialDetectionForPlayers(FGameplayTag RoomTag);
+	// 추적 적의 현재 위치만 검사한다. 전투 소속과 Wave 명단은 원래 방에 유지한다.
+	bool TryStartCombatFromPursuit(AEnemyBase* Enemy, FGameplayTag EnteredRoomTag);
 	bool GetReconnectContext(FRoomCombatReconnectContext& OutContext) const;
+	void CaptureRoomPhaseProgressForCheckpoint(TMap<FGameplayTag, FOutlierRoomPhaseProgress>& OutProgress) const;
 	bool IsReconnectContextCurrent(const FRoomCombatReconnectContext& Context) const;
+	// 그룹 전투가 끝난 뒤에도 ACK가 가리키는 실제 목적지의 등록 수명을 검사한다.
+	bool IsReconnectDestinationCurrent(const FRoomCombatReconnectContext& Context) const;
 	bool TryPlaceReconnectingPlayer(AFirstPersonCharacter* Player,
 		AFirstPersonCharacter* Anchor, const FRoomCombatReconnectContext& Context);
 	bool IsEnemyAttackBlocked(AEnemyBase* Enemy) const;
@@ -293,10 +325,16 @@ public:
 	void ResetRuntimeCombatState();
 	void ResumeRestoredAutomaticPhases();
 
+	bool BuildEnemyMovementRoomContext(const AEnemyBase* Enemy, FEnemyMovementRoomContext& Out) const;
+	bool IsEnemyMovementRoomContextCurrent(const AEnemyBase* Enemy, const FEnemyMovementRoomContext& Context) const;
 	bool IsRoomRegistered(FGameplayTag RoomTag) const;
 	ARoomVolume* GetRegisteredRoomVolume(FGameplayTag RoomTag) const;
 	ERoomCombatState GetRoomState(FGameplayTag RoomTag) const;
+	// 기존 단일 방 조회/진단용 대표다. 전투 허용 여부는 방별 예약과 상태로 판정한다.
 	FGameplayTag GetActiveCombatRoomTag() const { return ActiveCombatRoomTag; }
+	FGameplayTag GetActiveCombatGroupTag() const { return ActiveCombatGroupTag; }
+	bool HasActiveCombatReservation() const { return !ReservedCombatRooms.IsEmpty(); }
+	bool IsRoomCombatReserved(FGameplayTag RoomTag) const { return ReservedCombatRooms.Contains(RoomTag); }
 	int32 GetCurrentCombatPhaseIndex(FGameplayTag RoomTag) const;
 	int32 GetCurrentWaveIndex(FGameplayTag RoomTag) const;
 	int32 GetWaveBaselineEnemyCount(FGameplayTag RoomTag) const;
@@ -316,6 +354,7 @@ public:
 	void RetryPendingSpawnsForTesting() { RetryPendingSpawns(); }
 	void SetCombatDefinitionForTesting(URoomCombatDefinition* Definition) { CombatDefinition = Definition; }
 	TFunction<void(FGameplayTag, ERoomCombatEvent, int32)> CombatEventObserverForTesting;
+	TFunction<void()> JoinTeleportObserverForTesting;
 #endif
 
 private:
@@ -326,9 +365,18 @@ private:
 		TWeakObjectPtr<UObject> Owner;
 	};
 	bool IsRoomStartHeld(FGameplayTag RoomTag) const;
+	bool IsPreparationContextCurrent(const FRoomCombatPreparationContext& Context) const;
+	bool CanReserveCombatRoom(FGameplayTag RoomTag) const;
+	void ReserveCombatRoom(FGameplayTag RoomTag);
+	void ReleaseCombatRoom(FGameplayTag RoomTag);
 	void ResumeRoomAfterStartHold(FGameplayTag RoomTag, FGuid RegistrationId);
 	TMap<FGameplayTag, FRoomStartHold> RoomStartHolds;
 	bool IsPlayerInsideRoom(const AFirstPersonCharacter* Player, const ARoomVolume* Room) const;
+	ARoomVolume* FindPlayerRoomInCombatGroup(const AFirstPersonCharacter* Player, FGameplayTag CombatRoomTag) const;
+	bool CompleteInitialDetectionPreparation(const FRoomCombatPreparationContext& Context,
+		TFunctionRef<bool()> IsJoinCurrent);
+	bool TryStartInitialDetectionForPlayers(FGameplayTag RoomTag, TFunctionRef<bool()> IsRequestCurrent);
+	bool HasAlivePreplacedEnemy(FGameplayTag RoomTag, const FRoomCombatRuntime& Runtime) const;
 	bool IsSafeJoinDestination(const AFirstPersonCharacter* MovingPlayer,
 		const AFirstPersonCharacter* Anchor, const ARoomVolume* Room,
 		const FVector& Location) const;
@@ -388,6 +436,7 @@ private:
 	void HandleArenaGameplayReloadStarted(uint32 GameplayGeneration);
 	void HandleArenaReleased();
 
+	uint64 MovementRoomRevision = 1;
 	TMap<FGameplayTag, FRoomCombatRuntime> RoomRuntimes;
 	TMap<FGameplayTag, TSet<TWeakObjectPtr<AEnemyBase>>> PendingPreplacedEnemies;
 	TMap<TWeakObjectPtr<AEnemyBase>, FRoomCombatEnemyRegistration> RegisteredEnemies;
@@ -402,6 +451,11 @@ private:
 	UPROPERTY()
 	TObjectPtr<URoomCombatDefinition> CombatDefinition;
 	FGameplayTag ActiveCombatRoomTag;
+	FGameplayTag ActiveCombatGroupTag;
+	// 대표 자식 방이 완료/언로드되어도 유지하고, 그룹 점유가 끝나면 폐기한다.
+	FGuid ActiveCombatGroupId;
+	// Preparing도 그룹을 예약한다. 완료/실패한 방만 제거하며 나머지 방의 점유는 유지한다.
+	TSet<FGameplayTag> ReservedCombatRooms;
 	FTimerHandle SpawnRetryTimer;
 	bool bResettingRuntime = false;
 	bool bRestoredAutomaticStartAllowed = false;

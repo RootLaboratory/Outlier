@@ -293,7 +293,7 @@ void ATuto_CombatObserver::HandleAdaptationUpdated(const FEnemyAdaptationUpdateR
 	if (Result.KillCategory != EEnemyFinalKillCategory::Gun
 		|| Result.PreviousState >= EEnemyAdaptationState::ResistanceLevel1
 		|| Result.CurrentState < EEnemyAdaptationState::ResistanceLevel1
-		|| !Combat || ActiveRoom != RoomTag) return;
+		|| !Combat || Combat->GetRoomState(RoomTag) != ERoomCombatState::Combat) return;
 	if (AOutlierPlayerState* Source = FindPlayerInRoom()) HandleFirstResistance(Source);
 }
 
