@@ -27,6 +27,9 @@ public:
 	void RefreshTeamAndPerceptionFromPawn();
 	void BeginTaskDrivenControlPitch();
 	void EndTaskDrivenControlPitch();
+	// 발사 시작부터 중단까지 공격 경로가 조준 회전을 소유한다.
+	void SetAttackAimActive(bool bActive);
+	bool IsAttackAimActive() const { return bAttackAimActive; }
 	// 사망 또는 리스폰으로 교체되는 액터를 감지 캐시에서 제거하고 남은 타겟을 즉시 재평가한다.
 	void ForgetDetectionTarget(AActor* TargetActor);
 
@@ -83,4 +86,5 @@ protected:
 	TWeakObjectPtr<AActor> LastVisibleTarget;
 	mutable TArray<AActor*> PerceivedActorScratch;
 	int32 TaskDrivenControlPitchCount = 0;
+	bool bAttackAimActive = false;
 };

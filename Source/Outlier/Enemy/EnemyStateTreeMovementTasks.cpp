@@ -123,6 +123,12 @@ FVector ResolveFacingLocation(
 	return InstanceData.TargetLocation;
 }
 
+bool ShouldYieldRotationToAttack(const AAIController& AIController)
+{
+	const AEnemyAIController* EnemyController = Cast<AEnemyAIController>(&AIController);
+	return EnemyController && EnemyController->IsAttackAimActive();
+}
+
 // Capsule(Actor 본체)은 Yaw만 돌리고, AIController의 ControlRotation에는 Pitch까지 반영한다.
 // VECDroneMovementComponent::UpdateAIFacingPitch()가 이 Pitch를 읽어 AIFacingPitchRoot(메시 쪽
 // Pitch 전용 회전축)에 적용하므로, 몸체 이동/충돌은 Yaw만으로 처리하고 시각적인 "바라보는 방향"
@@ -135,6 +141,12 @@ bool RotateTowardLocation(
 	float AngleTolerance,
 	float DeltaTime)
 {
+	// 병렬 MaintainFacing/이동 Task가 공격 조준을 본체 기준 회전으로 덮지 않게 한다.
+	if (ShouldYieldRotationToAttack(AIController))
+	{
+		return false;
+	}
+
 	const FVector Direction = TargetLocation - Enemy.GetActorLocation();
 	if (Direction.IsNearlyZero())
 	{
@@ -751,6 +763,59 @@ void Stop(FEnemyFlyToLocationTaskInstanceData& Data)
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyFlightProgressTest,
 	"Outlier.Enemy.Flight.Progress", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyAttackAimOwnershipTest,
+	"Outlier.Enemy.Combat.AttackAimOwnership", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyAttackAimOwnershipTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false,
+		MakeUniqueObjectName(nullptr, UWorld::StaticClass(), TEXT("AttackAimOwnership")));
+	if (!TestNotNull(TEXT("World exists"), World)) return false;
+	GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(World);
+	ON_SCOPE_EXIT
+	{
+		World->DestroyWorld(false);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+	};
+	World->InitializeActorsForPlay(FURL());
+	AEnemyBase* Enemy = World->SpawnActor<AEnemyBase>();
+	AEnemyAIController* Controller = World->SpawnActor<AEnemyAIController>();
+	if (!TestNotNull(TEXT("Enemy exists"), Enemy)
+		|| !TestNotNull(TEXT("Controller exists"), Controller)) return false;
+	Controller->Possess(Enemy);
+	const FRotator AttackRotation(-25.0f, 70.0f, 0.0f);
+	Controller->SetControlRotation(AttackRotation);
+	Controller->SetAttackAimActive(true);
+
+	// 기본 AI 갱신과 병렬 이동 회전을 순서대로 실행해 연사 사이의 덮어쓰기를 재현한다.
+	Controller->UpdateControlRotation(0.1f);
+	TestTrue(TEXT("AI update preserves attack pitch and yaw"),
+		Controller->GetControlRotation().Equals(AttackRotation));
+	TestFalse(TEXT("Movement rotation waits while attack owns aim"),
+		RotateTowardLocation(*Enemy, *Controller, FVector(0, -500, 300), 360.0f, 5.0f, 1.0f));
+	TestTrue(TEXT("Movement cannot overwrite attack aim"),
+		Controller->GetControlRotation().Equals(AttackRotation));
+
+	// 무기가 없어져도 공통 중단 경로가 소유권을 해제해야 한다.
+	Enemy->StopCurrentWeaponAttack();
+	TestFalse(TEXT("Weapon stop releases aim without a weapon"), Controller->IsAttackAimActive());
+	Controller->UpdateControlRotation(0.1f);
+	TestTrue(TEXT("Normal AI pitch reset resumes after stop"),
+		FMath::IsNearlyZero(Controller->GetControlRotation().Pitch));
+	TestTrue(TEXT("Movement rotation resumes after stop"),
+		RotateTowardLocation(*Enemy, *Controller, FVector(0, -500, 300), 360.0f, 5.0f, 1.0f));
+
+	Controller->SetAttackAimActive(true);
+	Enemy->EnterStun();
+	TestFalse(TEXT("Stun releases attack aim"), Controller->IsAttackAimActive());
+	Controller->SetAttackAimActive(true);
+	Controller->UnPossess();
+	TestFalse(TEXT("Unpossess releases attack aim"), Controller->IsAttackAimActive());
+	return true;
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyFlightWaypointTurnTest,
 	"Outlier.Enemy.Flight.WaypointTurn", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -1599,6 +1664,11 @@ EStateTreeRunStatus FEnemyRotateToAngleAndWaitTask::Tick(
 		return EStateTreeRunStatus::Failed;
 	}
 
+	if (ShouldYieldRotationToAttack(*AIController))
+	{
+		return EStateTreeRunStatus::Running;
+	}
+
 	const float CurrentYaw = InstanceData.Enemy->GetActorRotation().Yaw;
 	const float NewYaw = FMath::FixedTurn(
 		CurrentYaw,
@@ -1666,7 +1736,10 @@ EStateTreeRunStatus FEnemyLookAroundTask::EnterState(
 	InstanceData.BaseControlRotation = AIController->GetControlRotation().GetNormalized();
 	InstanceData.BaseControlRotation.Pitch = 0.0f;
 	InstanceData.BaseControlRotation.Roll = 0.0f;
-	AIController->SetControlRotation(InstanceData.BaseControlRotation);
+	if (!ShouldYieldRotationToAttack(*AIController))
+	{
+		AIController->SetControlRotation(InstanceData.BaseControlRotation);
+	}
 	if (!InstanceData.bOwnsTaskDrivenPitch)
 	{
 		if (AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(AIController))
@@ -1695,6 +1768,12 @@ EStateTreeRunStatus FEnemyLookAroundTask::Tick(
 	if (!Enemy || !Enemy->HasAuthority() || !AIController)
 	{
 		return EStateTreeRunStatus::Failed;
+	}
+
+	// AttackLocation과 병렬 실행돼도 사격 중에는 탐색 회전과 단계 진행을 보류한다.
+	if (ShouldYieldRotationToAttack(*AIController))
+	{
+		return EStateTreeRunStatus::Running;
 	}
 
 	if (!InstanceData.Steps.IsValidIndex(InstanceData.CurrentStepIndex))

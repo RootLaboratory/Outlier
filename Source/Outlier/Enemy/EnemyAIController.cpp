@@ -156,11 +156,19 @@ void AEnemyAIController::OnUnPossess()
 	ProcessedStealthedTargets.Reset();
 	LastVisibleTarget.Reset();
 	TaskDrivenControlPitchCount = 0;
+	bAttackAimActive = false;
 	Super::OnUnPossess();
 }
 
 void AEnemyAIController::UpdateControlRotation(float DeltaTime, bool bUpdatePawn)
 {
+	// 공격 경로가 시점 기준으로 Pitch/Yaw와 본체 Yaw를 함께 설정한다.
+	// 기본 Focus/이동 회전으로 덮으면 다음 연사 타이머가 잘못된 방향을 읽는다.
+	if (bAttackAimActive)
+	{
+		return;
+	}
+
 	const float TaskPitch = GetControlRotation().Pitch;
 	Super::UpdateControlRotation(DeltaTime, bUpdatePawn);
 
@@ -182,6 +190,11 @@ void AEnemyAIController::BeginTaskDrivenControlPitch()
 void AEnemyAIController::EndTaskDrivenControlPitch()
 {
 	TaskDrivenControlPitchCount = FMath::Max(TaskDrivenControlPitchCount - 1, 0);
+}
+
+void AEnemyAIController::SetAttackAimActive(bool bActive)
+{
+	bAttackAimActive = bActive;
 }
 
 void AEnemyAIController::ForgetDetectionTarget(AActor* TargetActor)

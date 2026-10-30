@@ -366,7 +366,8 @@ void ApplyFlightMovement(
 	// 전투 이동 방향과 시선 방향을 분리한다. 선회 중에는 원의 접선으로 이동하더라도
 	// ControlRotation은 타겟을 계속 향해야 시야 감지와 메시 조준이 끊기지 않는다.
 	const FVector ToFacingLocation = FacingLocation - EnemyLocation;
-	if (!ToFacingLocation.IsNearlyZero())
+	// 공격 중에는 시점 기준 조준을 유지하고, 아래의 이동/감속 계산만 계속한다.
+	if (!AIController.IsAttackAimActive() && !ToFacingLocation.IsNearlyZero())
 	{
 		FRotator DesiredRotation = ToFacingLocation.Rotation();
 		DesiredRotation.Roll = 0.0f;

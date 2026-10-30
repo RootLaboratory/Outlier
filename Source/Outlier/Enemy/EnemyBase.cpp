@@ -1303,6 +1303,15 @@ FGenericTeamId AEnemyBase::GetGenericTeamId() const
 
 FVector AEnemyBase::GetCombatAimPoint(const AActor* TargetActor) const
 {
+	if (const ACharacter* TargetCharacter = Cast<ACharacter>(TargetActor))
+	{
+		// 시점 높이 대신 실제 캡슐 중심을 겨냥해 작은 Partner도 몸체 안쪽으로 조준한다.
+		if (const UCapsuleComponent* TargetCapsule = TargetCharacter->GetCapsuleComponent())
+		{
+			return TargetCapsule->Bounds.Origin;
+		}
+	}
+
 	if (const APawn* TargetPawn = Cast<APawn>(TargetActor))
 	{
 		return TargetPawn->GetPawnViewLocation();
@@ -3324,6 +3333,11 @@ bool AEnemyBase::StartAttackLocation(const FVector& TargetLocation)
 		return false;
 	}
 
+	// 첫 발 전에 소유권을 확보하고, 이후 연사 사이에도 같은 조준을 유지한다.
+	if (AEnemyAIController* EnemyController = Cast<AEnemyAIController>(GetController()))
+	{
+		EnemyController->SetAttackAimActive(true);
+	}
 	CurrentWeapon->StartAttack();
 	SetAttackPhase(EEnemyAttackPhase::Firing);
 	return true;
@@ -3404,6 +3418,14 @@ bool AEnemyBase::UpdateAttackLocation(const FVector& TargetLocation)
 
 void AEnemyBase::StopCurrentWeaponAttack()
 {
+	// Task 종료뿐 아니라 Stun/사망/빙의 등의 공통 중단 경로에서도 해제한다.
+	if (HasAuthority())
+	{
+		if (AEnemyAIController* EnemyController = Cast<AEnemyAIController>(GetController()))
+		{
+			EnemyController->SetAttackAimActive(false);
+		}
+	}
 	if (HasAuthority() && IsValid(CurrentWeapon))
 	{
 		CurrentWeapon->StopAttack();
