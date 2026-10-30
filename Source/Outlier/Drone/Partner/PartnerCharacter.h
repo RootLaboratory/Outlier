@@ -95,6 +95,7 @@ class OUTLIER_API APartnerCharacter : public AFirstPersonCharacter, public IWeap
 	friend class UPartnerHackComponent;
 	friend class UPartnerEMPComponent;
 	friend class FPartnerStandbyTest;
+	friend class FOutlierSlideSuitRecoveryTest;
 protected:
 	// Components
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")

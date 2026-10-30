@@ -75,7 +75,8 @@ AFirstPersonCharacter::AFirstPersonCharacter(const FObjectInitializer& ObjectIni
 	GetCapsuleComponent()->SetCapsuleSize(34.0f, 96.0f);
 
 	// configure character movement
-	GetCharacterMovement()->BrakingDecelerationFalling = 1500.0f;
+	// 공중 자동 제동은 적용하지 않는다. Slide 점프의 초과 속도 감속은 전용 커브가 담당한다.
+	GetCharacterMovement()->BrakingDecelerationFalling = 0.0f;
 	GetCharacterMovement()->AirControl = 0.5f;
 }
 

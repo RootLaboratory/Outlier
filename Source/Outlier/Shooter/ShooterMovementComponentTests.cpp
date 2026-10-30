@@ -88,23 +88,23 @@ bool FShooterGroundedMovementTest::RunTest(const FString& Parameters)
 			CharacterMovement->Velocity = FVector(100.0f, 0.0f, 0.0f);
 			TestTrue(TEXT("Grounded sprint is allowed"), Movement->CanSprint());
 			Shooter->CombatState = ECombatState::Fire;
-			Movement->HandleSprintPressed();
+			Movement->SetSprintIntent(true);
 			TestTrue(TEXT("Sprint starts on ground"), Movement->WantsToSprint());
 			TestTrue(TEXT("Sprint interrupts fire state"), Shooter->GetCombatState() != ECombatState::Fire);
 			CharacterMovement->SetMovementMode(MOVE_Falling);
-			TestTrue(TEXT("Falling preserves held sprint intent"), Movement->WantsToSprint());
+			TestTrue(TEXT("Falling preserves Sprint toggle intent"), Movement->WantsToSprint());
 			TestFalse(TEXT("Falling suspends actual sprint"), Movement->IsSprinting());
 			TestFalse(TEXT("Falling sprint is rejected"), Movement->CanSprint());
 			TestEqual(TEXT("Falling uses walk speed limit"), CharacterMovement->MaxWalkSpeed, Shooter->WalkSpeed);
 			const float AirSpeedLimit = CharacterMovement->MaxWalkSpeed;
-			Movement->HandleSprintPressed();
+			Movement->SetSprintIntent(true);
 			TestEqual(TEXT("Airborne sprint does not increase speed limit"), CharacterMovement->MaxWalkSpeed, AirSpeedLimit);
 			Movement->RequestCrouchOrSlide();
 			TestFalse(TEXT("Airborne crouch intent is rejected"), Movement->WantsToCrouch());
 			TestFalse(TEXT("Airborne crouch is not queued in engine"), CharacterMovement->bWantsToCrouch != 0);
 
 			CharacterMovement->SetMovementMode(MOVE_Walking);
-			TestTrue(TEXT("Landing resumes held sprint"), Movement->IsSprinting());
+			TestTrue(TEXT("Landing resumes Sprint toggle"), Movement->IsSprinting());
 			TestEqual(TEXT("Landing restores sprint speed"), CharacterMovement->MaxWalkSpeed, Shooter->SprintSpeed);
 			UShooterCombatComponent* Combat = Shooter->FindComponentByClass<UShooterCombatComponent>();
 			if (TestNotNull(TEXT("Combat fixture"), Combat))
@@ -123,19 +123,21 @@ bool FShooterGroundedMovementTest::RunTest(const FString& Parameters)
 				Movement->RefreshMovementState();
 				Combat->ResolveStateConflicts();
 				TestFalse(TEXT("Reload suspends actual sprint"), Movement->IsSprinting());
-				TestTrue(TEXT("Reload preserves held sprint intent"), Movement->WantsToSprint());
+				TestTrue(TEXT("Reload preserves Sprint toggle intent"), Movement->WantsToSprint());
 				TestEqual(TEXT("Reload uses walk speed"), CharacterMovement->MaxWalkSpeed, Shooter->WalkSpeed);
 				Combat->FinishReloadInternal();
-				TestTrue(TEXT("Reload completion resumes held sprint"), Movement->IsSprinting());
+				TestTrue(TEXT("Reload completion resumes Sprint toggle"), Movement->IsSprinting());
 				TestEqual(TEXT("Reload completion restores sprint speed"), CharacterMovement->MaxWalkSpeed, Shooter->SprintSpeed);
 				BeginReloadFixture();
 				Movement->HandleSprintReleased();
+				TestTrue(TEXT("Ordinary release during reload preserves Sprint toggle"), Movement->WantsToSprint());
+				Movement->HandleSprintPressed();
 				Combat->FinishReloadInternal();
-				TestFalse(TEXT("Shift release during reload prevents sprint resume"), Movement->IsSprinting());
-				TestFalse(TEXT("Shift release during reload clears intent"), Movement->WantsToSprint());
+				TestFalse(TEXT("Toggle OFF during reload prevents sprint resume"), Movement->IsSprinting());
+				TestFalse(TEXT("Toggle OFF during reload clears intent"), Movement->WantsToSprint());
 
 				CharacterMovement->Velocity = FVector(400.0f, 0.0f, 0.0f);
-				Movement->HandleSprintPressed();
+				Movement->SetSprintIntent(true);
 				BeginReloadFixture();
 				Movement->HandleCrouchPressed();
 				TestTrue(TEXT("Reload permits crouch hold"), Movement->WantsToCrouch());
@@ -154,15 +156,15 @@ bool FShooterGroundedMovementTest::RunTest(const FString& Parameters)
 				TestTrue(TEXT("Reload completion keeps the engine crouch request"), CharacterMovement->bWantsToCrouch != 0);
 				TestFalse(TEXT("Held crouch prevents Sprint after reload"), Movement->IsSprinting());
 				Movement->HandleCrouchReleased();
-				TestTrue(TEXT("Releasing crouch after reload resumes held Sprint"), Movement->IsSprinting());
+				TestTrue(TEXT("Releasing crouch after reload resumes Sprint toggle"), Movement->IsSprinting());
 				Shooter->BeginActionLock(EShooterActionLock::Equip);
 				Movement->HandleCrouchPressed();
 				TestFalse(TEXT("Equip lock still rejects crouch hold"), Movement->WantsToCrouch());
 				TestFalse(TEXT("Equip lock still rejects engine crouch request"), CharacterMovement->bWantsToCrouch != 0);
 				Shooter->EndActionLock(EShooterActionLock::Equip);
 			}
-			Movement->HandleSprintReleased();
-			TestFalse(TEXT("Shift release clears sprint intent"), Movement->WantsToSprint());
+			Movement->SetSprintIntent(false);
+			TestFalse(TEXT("Toggle OFF clears sprint intent"), Movement->WantsToSprint());
 			CharacterMovement->Velocity = FVector::ZeroVector;
 			Movement->HandleCrouchPressed();
 			TestTrue(TEXT("Crouch press sets hold intent"), Movement->WantsToCrouch());
@@ -184,7 +186,7 @@ bool FShooterGroundedMovementTest::RunTest(const FString& Parameters)
 			const float Acceleration = CharacterMovement->MaxAcceleration;
 			const float CrouchSpeed = CharacterMovement->MaxWalkSpeedCrouched;
 			CharacterMovement->Velocity = FVector(400.0f, 0.0f, 0.0f);
-			Movement->HandleSprintPressed();
+			Movement->SetSprintIntent(true);
 			Movement->HandleCrouchPressed();
 			TestTrue(TEXT("Ground sprint crouch starts slide"), Movement->IsSliding());
 			TestTrue(TEXT("Slide applies entry speed, multiplier, and curve immediately"),
@@ -198,7 +200,7 @@ bool FShooterGroundedMovementTest::RunTest(const FString& Parameters)
 			TestTrue(TEXT("Release does not interrupt the slide"), Movement->IsSliding());
 			Movement->StopSlide(ESlideEndReason::Finished);
 			TestFalse(TEXT("Released slide finishes standing"), CharacterMovement->bWantsToCrouch != 0);
-			TestTrue(TEXT("Released crouch slide resumes held sprint"), Movement->IsSprinting());
+			TestTrue(TEXT("Released crouch slide resumes Sprint toggle"), Movement->IsSprinting());
 			TestEqual(TEXT("Slide completion restores sprint speed"), CharacterMovement->MaxWalkSpeed, Shooter->SprintSpeed);
 			TestEqual(TEXT("Slide restores friction"), CharacterMovement->GroundFriction, GroundFriction);
 			TestEqual(TEXT("Slide restores braking"), CharacterMovement->BrakingDecelerationWalking, Braking);
@@ -207,20 +209,20 @@ bool FShooterGroundedMovementTest::RunTest(const FString& Parameters)
 			TestEqual(TEXT("Slide restores crouch speed"), CharacterMovement->MaxWalkSpeedCrouched, CrouchSpeed);
 
 			CharacterMovement->Velocity = FVector(400.0f, 0.0f, 0.0f);
-			Movement->HandleSprintPressed();
+			Movement->SetSprintIntent(true);
 			Movement->HandleCrouchPressed();
 			Movement->HandleCrouchReleased();
 			Movement->HandleCrouchPressed();
 			TestTrue(TEXT("Re-press during slide restores hold intent"), Movement->WantsToCrouch());
 			Movement->StopSlide(ESlideEndReason::Finished);
 			TestTrue(TEXT("Held slide finishes crouched"), CharacterMovement->bWantsToCrouch != 0);
-			TestTrue(TEXT("Crouch preserves held sprint intent"), Movement->WantsToSprint());
+			TestTrue(TEXT("Crouch preserves Sprint toggle intent"), Movement->WantsToSprint());
 			TestFalse(TEXT("Crouch takes priority over sprint"), Movement->IsSprinting());
 			Movement->HandleCrouchReleased();
 			TestTrue(TEXT("Releasing crouch resumes sprint"), Movement->IsSprinting());
 
 			CharacterMovement->Velocity = FVector(400.0f, 0.0f, 0.0f);
-			Movement->HandleSprintPressed();
+			Movement->SetSprintIntent(true);
 			Movement->HandleCrouchPressed();
 			Movement->StopSlide(ESlideEndReason::ForcedCancel);
 			TestEqual(TEXT("Canceled slide restores friction"), CharacterMovement->GroundFriction, GroundFriction);
@@ -228,21 +230,23 @@ bool FShooterGroundedMovementTest::RunTest(const FString& Parameters)
 			TestFalse(TEXT("Forced cancel clears crouch"), CharacterMovement->bWantsToCrouch != 0);
 
 			CharacterMovement->Velocity = FVector(100.0f, 0.0f, 0.0f);
-			Movement->HandleSprintPressed();
+			Movement->SetSprintIntent(true);
 			Movement->HandleCrouchPressed();
 			TestFalse(TEXT("Below threshold does not start slide"), Movement->IsSliding());
 			TestTrue(TEXT("Rejected slide falls back to crouch"), CharacterMovement->bWantsToCrouch != 0);
 			Movement->HandleCrouchReleased();
-			Movement->HandleSprintReleased();
+			Movement->SetSprintIntent(false);
 			CharacterMovement->Velocity = FVector(400.0f, 0.0f, 0.0f);
-			Movement->HandleSprintPressed();
+			Movement->SetSprintIntent(true);
 			Movement->HandleCrouchPressed();
 			Movement->HandleSprintReleased();
+			TestTrue(TEXT("Ordinary release during Slide preserves Sprint toggle"), Movement->WantsToSprint());
+			Movement->HandleSprintPressed();
 			Movement->HandleCrouchReleased();
 			Movement->StopSlide(ESlideEndReason::Finished);
-			TestFalse(TEXT("Shift release during slide prevents sprint resume"), Movement->WantsToSprint());
-			TestFalse(TEXT("Finished slide without Shift stays walking"), Movement->IsSprinting());
-			TestEqual(TEXT("Finished slide without Shift uses walk speed"), CharacterMovement->MaxWalkSpeed, Shooter->WalkSpeed);
+			TestFalse(TEXT("Toggle OFF during slide prevents sprint resume"), Movement->WantsToSprint());
+			TestFalse(TEXT("Finished slide with Toggle OFF stays walking"), Movement->IsSprinting());
+			TestEqual(TEXT("Finished slide with Toggle OFF uses walk speed"), CharacterMovement->MaxWalkSpeed, Shooter->WalkSpeed);
 
 			UCurveFloat* DecelerationCurve = NewObject<UCurveFloat>(Shooter);
 			const FVector2D Samples[] = {
@@ -258,7 +262,7 @@ bool FShooterGroundedMovementTest::RunTest(const FString& Parameters)
 			DecelerationCurve->FloatCurve.AutoSetTangents();
 			Shooter->SlideSpeedCurve = DecelerationCurve;
 			CharacterMovement->Velocity = FVector(400.0f, 0.0f, 0.0f);
-			Movement->HandleSprintPressed();
+			Movement->SetSprintIntent(true);
 			Movement->HandleCrouchPressed();
 			TestTrue(TEXT("Deceleration slide fixture starts"), Movement->IsSliding());
 			auto* SlideMovement = CastChecked<UShooterCharacterMovementComponent>(CharacterMovement);
@@ -278,7 +282,7 @@ bool FShooterGroundedMovementTest::RunTest(const FString& Parameters)
 			const FVector ExitVelocity = CharacterMovement->Velocity;
 			Movement->StopSlide(ESlideEndReason::Finished);
 			TestTrue(TEXT("Slide exit preserves remaining momentum"), CharacterMovement->Velocity.Equals(ExitVelocity));
-			Movement->HandleSprintReleased();
+			Movement->SetSprintIntent(false);
 
 			// 초기 Refresh 없이 공개 진입 API를 호출해도 Slide의 임시 속도를 기본값으로 캐시하지 않는다.
 			const float DirectEntryCrouchSpeed = CharacterMovement->MaxWalkSpeedCrouched;

@@ -104,6 +104,10 @@ struct FFixture
 		Input = Shooter->FindComponentByClass<UShooterMovementComponent>();
 		if (!Test.TestNotNull(TEXT("Slide CMC"), Movement)
 			|| !Test.TestNotNull(TEXT("Slide input component"), Input)) return false;
+		UCurveFloat* JumpCurve = NewObject<UCurveFloat>(Movement);
+		JumpCurve->FloatCurve.AddKey(0.0f, 1.0f);
+		JumpCurve->FloatCurve.AddKey(1.0f, 0.0f);
+		Movement->SlideJumpDecayCurve = JumpCurve;
 		if (Terrain == ETerrain::Cliff)
 		{
 			// UE는 에디터의 BeginPlay 전/첫 1초에 낙하를 보류한다. 이 월드는 Tick하지 않아 그 상태가 영구히 남는다.
@@ -133,7 +137,7 @@ struct FFixture
 		Acceleration = Movement->MaxAcceleration;
 		CrouchSpeed = Movement->MaxWalkSpeedCrouched;
 		Movement->Velocity = FVector(400.0, 0.0, 0.0);
-		Input->HandleSprintPressed();
+		Input->SetSprintIntent(true);
 		Input->HandleCrouchPressed();
 		Start = Shooter->GetActorLocation();
 		return Test.TestTrue(TEXT("Slide starts through the gameplay input path"), Movement->IsSlideSimulating() && Input->IsSliding());
@@ -368,14 +372,14 @@ bool FShooterSlideSimulationTest::RunTest(const FString& Parameters)
 
 		// 종료 후 실제 웅크림을 해제하고 새 입력으로 재진입한다. 이전 시계/커브 상태가 남으면 실패한다.
 		Fixture.Input->HandleCrouchReleased();
-		Fixture.Input->HandleSprintReleased();
+		Fixture.Input->SetSprintIntent(false);
 		Fixture.Movement->SetMovementMode(MOVE_Walking);
 		Fixture.Shooter->SetActorLocation(FVector(0.0, 0.0,
 			Fixture.Shooter->GetCapsuleComponent()->GetScaledCapsuleHalfHeight() + 2.15));
 		Fixture.Movement->bForceNextFloorCheck = true;
 		Fixture.Movement->PerformMovement(1.0f / 60.0f);
 		Fixture.Movement->Velocity = FVector(400.0, 0.0, 0.0);
-		Fixture.Input->HandleSprintPressed();
+		Fixture.Input->SetSprintIntent(true);
 		Fixture.Input->HandleCrouchPressed();
 		TestTrue(TEXT("Slide re-enters after cancellation"), Fixture.Movement->IsSlideSimulating());
 		TestEqual(TEXT("Re-entry clears previous simulation time"), Fixture.Movement->GetSlideElapsedTime(), 0.0f);
@@ -491,6 +495,8 @@ bool FShooterSlidePredictionTest::RunTest(const FString& Parameters)
 		Sent.AudioAirborneId = 19;
 		Sent.MovementInput.CrouchRequest = 17;
 		Sent.MovementInput.JumpCancelRequest = 18;
+		Sent.MovementInput.ActionRequest = 19;
+		Sent.MovementInput.bAim = true;
 		Sent.MovementInput.bSprintAtCrouch = true;
 		Sent.MovementInput.bCrouch = true;
 		Sent.PredictedSlideRequest = 17;
@@ -499,6 +505,14 @@ bool FShooterSlidePredictionTest::RunTest(const FString& Parameters)
 		Sent.bPredictedCrouchHeld = true;
 		Sent.bPredictedCrouched = true;
 		Sent.PredictedEndReason = uint8(ESlideEndReason::JumpCancel);
+		Sent.PredictedJumpMomentum.TargetSpeed = 600.0f;
+		Sent.PredictedJumpMomentum.InitialExcessSpeed = 400.0f;
+		Sent.PredictedJumpMomentum.Elapsed = 0.1f;
+		Sent.PredictedJumpMomentum.Duration = 0.5f;
+		Sent.PredictedJumpMomentum.RemainingRatio = 0.95f;
+		Sent.PredictedJumpMomentum.bActive = true;
+		Sent.PredictedJumpCount = 1;
+		Sent.bPredictedSlideJumpRejected = true;
 		FNetBitWriter Writer(nullptr, 8192);
 		using EMoveType = FCharacterNetworkMoveData::ENetworkMoveType;
 		if (!TestTrue(TEXT("Packed movement input serializes"), Sent.Serialize(*Movement, Writer, nullptr, EMoveType::NewMove))) return false;
@@ -513,6 +527,14 @@ bool FShooterSlidePredictionTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("Movement packet preserves effective crouch intent"), Received.bPredictedCrouchHeld, Sent.bPredictedCrouchHeld);
 		TestEqual(TEXT("Movement packet preserves actual capsule posture"), Received.bPredictedCrouched, Sent.bPredictedCrouched);
 		TestEqual(TEXT("Movement packet preserves predicted end reason"), Received.PredictedEndReason, Sent.PredictedEndReason);
+		TestTrue(TEXT("Movement packet preserves active jump momentum"), Received.PredictedJumpMomentum.bActive);
+		TestEqual(TEXT("Movement packet preserves fixed jump target"), Received.PredictedJumpMomentum.TargetSpeed, 600.0f);
+		TestEqual(TEXT("Movement packet preserves initial excess jump speed"), Received.PredictedJumpMomentum.InitialExcessSpeed, 400.0f);
+		TestEqual(TEXT("Movement packet preserves jump curve elapsed time"), Received.PredictedJumpMomentum.Elapsed, 0.1f);
+		TestEqual(TEXT("Movement packet preserves jump curve duration"), Received.PredictedJumpMomentum.Duration, 0.5f);
+		TestEqual(TEXT("Movement packet preserves monotone jump curve ratio"), Received.PredictedJumpMomentum.RemainingRatio, 0.95f);
+		TestEqual(TEXT("Movement packet preserves predicted jump count"), Received.PredictedJumpCount, 1);
+		TestTrue(TEXT("Movement packet preserves rejected Slide Press result"), Received.bPredictedSlideJumpRejected);
 		TestEqual(TEXT("Movement packet preserves existing movement audio ID"), Received.AudioMoveId, Sent.AudioMoveId);
 		TestEqual(TEXT("Movement packet preserves existing airborne audio ID"), Received.AudioAirborneId, Sent.AudioAirborneId);
 
@@ -523,12 +545,16 @@ bool FShooterSlidePredictionTest::RunTest(const FString& Parameters)
 		Response.SlideSnapshot.ActiveRequest = 17;
 		Response.SlideSnapshot.ProcessedCrouchRequest = 17;
 		Response.SlideSnapshot.ProcessedJumpCancelRequest = 16;
+		Response.SlideSnapshot.ProcessedActionRequest = 19;
+		Response.SlideSnapshot.bAimHeld = true;
 		Response.SlideSnapshot.AppliedInput = Sent.MovementInput;
 		Response.SlideSnapshot.Elapsed = 0.375f;
 		Response.SlideSnapshot.CurrentSpeed = 379.2f;
 		Response.SlideSnapshot.bCrouched = true;
 		Response.JumpSnapshot.JumpCount = 1;
 		Response.JumpSnapshot.Coyote.RemainingTime = 0.025f;
+		Response.JumpSnapshot.bSlideJumpRejected = true;
+		Response.SlideSnapshot.JumpMomentum = Sent.PredictedJumpMomentum;
 		FNetBitWriter ResponseWriter(nullptr, 8192);
 		if (!TestTrue(TEXT("Slide correction serializes"), Response.Serialize(*Movement, ResponseWriter, nullptr))) return false;
 		FNetBitReader ResponseReader(nullptr, ResponseWriter.GetData(), ResponseWriter.GetNumBits());
@@ -541,6 +567,8 @@ bool FShooterSlidePredictionTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Correction preserves applied input baseline"), Snapshot.AppliedInput == Response.SlideSnapshot.AppliedInput);
 		TestEqual(TEXT("Correction preserves request watermark"), Snapshot.ProcessedCrouchRequest, uint32(17));
 		TestEqual(TEXT("Correction preserves cancel watermark"), Snapshot.ProcessedJumpCancelRequest, uint32(16));
+		TestEqual(TEXT("Correction preserves action input watermark"), Snapshot.ProcessedActionRequest, uint32(19));
+		TestTrue(TEXT("Correction preserves buffered Aim intent"), Snapshot.bAimHeld);
 		TestEqual(TEXT("Correction preserves active request"), Snapshot.ActiveRequest, uint32(17));
 		TestEqual(TEXT("Correction preserves entry direction"), Snapshot.Direction, Response.SlideSnapshot.Direction);
 		TestEqual(TEXT("Correction preserves entry speed"), Snapshot.StartSpeed, Response.SlideSnapshot.StartSpeed);
@@ -549,6 +577,13 @@ bool FShooterSlidePredictionTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("Correction preserves duration"), Snapshot.Duration, Response.SlideSnapshot.Duration);
 		TestEqual(TEXT("Slide extension preserves existing jump snapshot"), ReceivedResponse.JumpSnapshot.JumpCount, 1);
 		TestEqual(TEXT("Slide extension preserves existing coyote snapshot"), ReceivedResponse.JumpSnapshot.Coyote.RemainingTime, 0.025f);
+		TestTrue(TEXT("Correction preserves rejected Slide Press"), ReceivedResponse.JumpSnapshot.bSlideJumpRejected);
+		TestTrue(TEXT("Correction preserves active jump momentum"), Snapshot.JumpMomentum.bActive);
+		TestEqual(TEXT("Correction preserves fixed jump target"), Snapshot.JumpMomentum.TargetSpeed, 600.0f);
+		TestEqual(TEXT("Correction preserves initial excess jump speed"), Snapshot.JumpMomentum.InitialExcessSpeed, 400.0f);
+		TestEqual(TEXT("Correction preserves jump curve elapsed time"), Snapshot.JumpMomentum.Elapsed, 0.1f);
+		TestEqual(TEXT("Correction preserves jump curve duration"), Snapshot.JumpMomentum.Duration, 0.5f);
+		TestEqual(TEXT("Correction preserves monotone jump curve ratio"), Snapshot.JumpMomentum.RemainingRatio, 0.95f);
 		AddInfo(TEXT("[SlidePredictionTest] Case=Serialization MovementAndCorrection=Completed"));
 
 		// 위치가 일치해도 Slide 상태가 다르면 서버가 보정해야 한다. 전송 지연 후에도 판정 시점의 상태를 보낸다.
@@ -587,11 +622,12 @@ bool FShooterSlidePredictionTest::RunTest(const FString& Parameters)
 	UClass* ConnectionClass = LoadClass<UNetConnection>(nullptr, TEXT("/Script/OnlineSubsystemUtils.IpConnection"));
 	if (!TestNotNull(TEXT("Client fixture net driver class"), DriverClass)
 		|| !TestNotNull(TEXT("Client fixture connection class"), ConnectionClass)) return false;
-	for (int32 Case = 0; Case < 6; ++Case)
+	for (int32 Case = 0; Case < 8; ++Case)
 	{
 		const TCHAR* Name = Case == 0 ? TEXT("RejectedRequest") : Case == 1 ? TEXT("ActiveCorrection")
 			: Case == 2 ? TEXT("NewRequest") : Case == 3 ? TEXT("JumpCancelBoundary")
-			: Case == 4 ? TEXT("FinishBoundary") : TEXT("LifecycleBoundary");
+			: Case == 4 ? TEXT("FinishBoundary") : Case == 5 ? TEXT("LifecycleBoundary")
+			: Case == 6 ? TEXT("SprintToggleOff") : TEXT("BufferedAim");
 		FFixture Fixture;
 		if (!Fixture.Initialize(*this)) return false;
 		auto* Movement = Fixture.Movement;
@@ -632,9 +668,11 @@ bool FShooterSlidePredictionTest::RunTest(const FString& Parameters)
 		auto* ClientData = static_cast<FNetworkPredictionData_Client_Character*>(Movement->GetPredictionData_Client());
 		FShooterMovementInput Input;
 		Input.CrouchRequest = 10;
+		Input.ActionRequest = 10;
 		Input.bSprint = Input.bCrouch = Input.bSprintAtCrouch = true;
 		Movement->MoveInput = Movement->AppliedMovementInput = Movement->LiveMovementInput = Input;
 		Movement->ProcessedCrouchRequest = Movement->ActiveSlideRequest = 10;
+		Movement->ProcessedActionRequest = 10;
 		Movement->PerformMovement(0.25f);
 		FShooterSlideSnapshot ServerSlide = Movement->CaptureSlideSnapshot();
 		const FShooterJumpSnapshot ServerJump = Movement->CaptureJumpSnapshot();
@@ -691,9 +729,17 @@ bool FShooterSlidePredictionTest::RunTest(const FString& Parameters)
 		FSavedMovePtr Acked = SaveMove(1.0f);
 		if (Case == 2)
 		{
-			// 같은 이동 전에 앉기/Shift를 놓아도 누른 순간의 Slide 요청과 진입 의도는 남아 있어야 한다.
+			// 같은 이동 전에 앉기를 놓고 Sprint를 OFF해도 시작 순간의 Slide 진입 의도는 남아 있어야 한다.
 			Input.bCrouch = false;
 			Input.bSprint = false;
+			Input.ActionRequest = 12;
+		}
+		else if (Case >= 6)
+		{
+			// 실제 보정 후 두 SavedMove를 재생해도 OFF를 재반전하거나 대기 Aim을 잃지 않아야 한다.
+			Input.ActionRequest = 12;
+			Input.bSprint = false;
+			Input.bAim = Case == 7;
 		}
 		for (int32 Index = 0; Index < 2; ++Index)
 		{
@@ -708,7 +754,7 @@ bool FShooterSlidePredictionTest::RunTest(const FString& Parameters)
 		}
 		TestFalse(TEXT("Slide or custom input boundary does not combine"),
 			Acked->CanCombineWith(ClientData->SavedMoves.Last(), Shooter, 0.125f));
-		if (Case == 2 || Case == 3)
+		if (Case == 2 || Case == 3 || Case >= 6)
 			TestTrue(TEXT("Changed Slide input remains an important move for resend"), ClientData->SavedMoves.Last()->IsImportantMove(Acked));
 
 		// 실제 packed 응답도 CMC에 등록된 컨테이너를 채운 뒤 엔진 보정 경로로 전달한다.
@@ -740,19 +786,31 @@ bool FShooterSlidePredictionTest::RunTest(const FString& Parameters)
 		if (!TestTrue(TEXT("Native saved-move replay executes"), Movement->ClientUpdatePositionAfterServerUpdate())) continue;
 		TestFalse(TEXT("Native replay consumes the update request"), ClientData->bUpdatePosition);
 		TestFalse(TEXT("Replayed position remains finite"), Shooter->GetActorLocation().ContainsNaN());
-		TestEqual(TEXT("Slide replay does not consume jump count"), Shooter->JumpCurrentCount, JumpCount);
-		if (Case == 1 || Case == 2)
+		TestEqual(TEXT("Slide replay reproduces the jump count without another consumption"), Shooter->JumpCurrentCount, JumpCount);
+		if (Case == 3)
+		{
+			TestEqual(TEXT("Slide Jump Press consumes exactly the first jump after replay"), Shooter->JumpCurrentCount, 1);
+			TestTrue(TEXT("Slide Jump replay transitions to Falling"), Movement->IsFalling());
+			TestFalse(TEXT("Slide Jump replay clears the old crouch hold"), Fixture.Input->WantsToCrouch());
+		}
+		if (Case == 1 || Case == 2 || Case >= 6)
 		{
 			TestTrue(TEXT("Approved/new Slide remains active after replay"), Movement->IsSlideSimulating());
 			TestTrue(TEXT("Replay advances from server state without restarting each move"),
-				FMath::IsNearlyEqual(Movement->GetSlideElapsedTime(), Case == 1 ? 0.35f : 0.1f, 0.0001f));
+				FMath::IsNearlyEqual(Movement->GetSlideElapsedTime(), Case == 2 ? 0.1f : 0.35f, 0.0001f));
 			TestEqual(TEXT("Replayed sticky request starts at most once"), Movement->SlideSimulationSerial - BeforeReplaySerial, uint32(Case == 2 ? 1 : 0));
 			TestTrue(TEXT("Replayed Slide advances actual position"), Shooter->GetActorLocation().X > BeforeReplay.X + 20.0);
 			TestTrue(TEXT("Entry speed multiplier is not applied again during replay"), FMath::IsNearlyEqual(Movement->SlideStartSpeed, 480.0f, 0.01f));
 			if (Case == 2)
 			{
 				TestFalse(TEXT("Replay preserves released crouch hold after a short tap"), Fixture.Input->WantsToCrouch());
-				TestFalse(TEXT("Replay preserves released Sprint hold after entry"), Fixture.Input->WantsToSprint());
+				TestFalse(TEXT("Replay preserves Sprint Toggle OFF after entry"), Fixture.Input->WantsToSprint());
+			}
+			if (Case >= 6)
+			{
+				TestFalse(TEXT("Native replay applies Sprint OFF without toggling it back on"), Fixture.Input->WantsToSprint());
+				TestEqual(TEXT("Native replay preserves the shared action watermark"), Movement->ProcessedActionRequest, uint32(12));
+				TestEqual(TEXT("Native replay preserves the latest buffered Aim"), Shooter->WantsToAim(), Case == 7);
 			}
 		}
 		else
@@ -871,6 +929,7 @@ bool FShooterSlideLifecycleTest::RunTest(const FString& Parameters)
 			Movement->MoveInput = OldSlide.AppliedInput;
 			Movement->MoveInput.bSprint = Movement->MoveInput.bCrouch = Movement->MoveInput.bSprintAtCrouch = true;
 			Movement->MoveInput.CrouchRequest = 11;
+			Movement->MoveInput.ActionRequest = 11;
 			Movement->ApplyMovementInput();
 			TestFalse(TEXT("Delayed old-lifecycle request cannot start Slide"), Movement->IsSlideSimulating());
 			Movement->MoveInput.Epoch = Movement->MovementEpoch;
@@ -993,7 +1052,7 @@ bool FShooterSlideLifecycleTest::RunTest(const FString& Parameters)
 		// 호환용 명시 호출만 검증한다. 실제 충돌이 이 함수를 호출하도록 바인딩하지 않는다.
 		Fixture.Input->HandleCrouchReleased();
 		Fixture.Input->HandleCrouchPressed();
-		Fixture.Input->HandleSprintReleased();
+		Fixture.Input->SetSprintIntent(false);
 		FHitResult Hit;
 		Fixture.Shooter->SlideWallStopDotThreshold = 0.5f;
 		Hit.bBlockingHit = true;
@@ -1001,7 +1060,7 @@ bool FShooterSlideLifecycleTest::RunTest(const FString& Parameters)
 		Fixture.Shooter->HandleSlideWallHit(Hit);
 		TestEqual(TEXT("Explicit compatibility wall callback retains WallCancel"), Fixture.Movement->SlideEndReason, uint8(ESlideEndReason::WallCancel));
 		TestTrue(TEXT("WallCancel respects re-pressed crouch hold"), Fixture.Input->WantsToCrouch());
-		TestFalse(TEXT("WallCancel cannot resume released Sprint"), Fixture.Input->WantsToSprint());
+		TestFalse(TEXT("WallCancel cannot resume Sprint Toggle OFF"), Fixture.Input->WantsToSprint());
 		Fixture.CheckRestored(*this);
 		AddInfo(TEXT("[SlideLifecycleTest] Case=ExplicitWallCallback EndReason=WallCancel CrouchHeld=1 SprintHeld=0"));
 	}

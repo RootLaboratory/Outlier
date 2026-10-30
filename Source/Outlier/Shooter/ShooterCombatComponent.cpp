@@ -8,6 +8,7 @@
 #include "Weapon/RangedWeaponBase.h"
 #include "Weapon/MeleeWeaponBase.h"
 #include "Shooter/ShooterMovementComponent.h"
+#include "Shooter/ShooterCharacterMovementComponent.h"
 #include "OutlierNetUtils.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
@@ -226,24 +227,21 @@ void UShooterCombatComponent::TryReload()
 void UShooterCombatComponent::HandleAimPressed()
 {
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (!ShooterCharacter)
+	if (!ShooterCharacter || ShooterCharacter->IsDead() || ShooterCharacter->IsSuitTransitionBlocked())
 	{
 		return;
 	}
 
+	// 물리 입력에서만 순번을 발급한다. RPC와 이동 패킷은 같은 최종 의도를 전달한다.
+	auto* Movement = CastChecked<UShooterCharacterMovementComponent>(ShooterCharacter->GetCharacterMovement());
+	const uint32 InputSequence = Movement->RecordActionInput(true);
 	if (!ShooterCharacter->HasAuthority())
 	{
-		ShooterCharacter->ServerSetAimState(true);
+		ShooterCharacter->ServerSetAimState(true, Movement->GetSprintInputIntent(),
+			InputSequence, Movement->GetMovementInputEpoch(), Movement->GetAimInputSwitchId());
 	}
 
-	bWantsToAim = true;
-	RefreshWeaponMode();
-	if (!CanAimInCurrentState())
-	{
-		return;
-	}
-
-	StartAimInternal();
+	ApplyAimInput(true);
 }
 
 void UShooterCombatComponent::StartAimInternal()
@@ -276,6 +274,26 @@ void UShooterCombatComponent::StartAimInternal()
 
 void UShooterCombatComponent::OnRep_IsAiming()
 {
+	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	// 서버의 ADS가 먼저 도착해도 소유자의 Raise나 최신 Release를 건너뛰지 않는다.
+	// 홀드 의도는 남겨 두고 교체/잠금 완료 경계에서 기존 복구 경로로 다시 평가한다.
+	if (ShooterCharacter && ShooterCharacter->IsLocallyControlled() && bIsAiming
+		&& (!bWantsToAim || !CanAimInCurrentState()))
+	{
+		SuspendAimInternal();
+		RefreshCombatState();
+		return;
+	}
+	if (ShooterCharacter && ShooterCharacter->IsLocallyControlled() && !bIsAiming
+		&& bWantsToAim && CanAimInCurrentState())
+	{
+		// 이전 중지 복제가 Raise 완료보다 늦게 와도 유효한 현재 홀드를 지우지 않는다.
+		// 잠금/지상/현재 무기 검사는 그대로 거쳐 소유자의 예측만 복구한다.
+		RestoreAimIfRequested();
+		RefreshCombatState();
+		return;
+	}
+
 	// 복제로 바뀐 조준 상태도 로컬 상태 전이와 같은 표시 갱신을 적용한다.
 	NotifyAimPresentation();
 }
@@ -304,13 +322,42 @@ void UShooterCombatComponent::HandleAimReleased()
 		return;
 	}
 
+	auto* Movement = CastChecked<UShooterCharacterMovementComponent>(ShooterCharacter->GetCharacterMovement());
+	const uint32 InputSequence = Movement->RecordActionInput(false);
 	if (!ShooterCharacter->HasAuthority())
 	{
-		ShooterCharacter->ServerSetAimState(false);
-
+		ShooterCharacter->ServerSetAimState(false, Movement->GetSprintInputIntent(),
+			InputSequence, Movement->GetMovementInputEpoch(), Movement->GetAimInputSwitchId());
 	}
 
-	StopAimInternal();
+	ApplyAimInput(false);
+}
+
+void UShooterCombatComponent::ApplyAimInput(bool bNewWantsToAim)
+{
+	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	if (!ShooterCharacter)
+	{
+		return;
+	}
+
+	if (!bNewWantsToAim || ShooterCharacter->IsDead() || ShooterCharacter->IsSuitTransitionBlocked())
+	{
+		// 상태 적용은 과거 이동 재생에서도 호출된다. 물리 입력 취소 순번은 발급하지 않는다.
+		bWantsToAim = false;
+		SuspendAimInternal();
+		RefreshCombatState();
+		return;
+	}
+
+	bWantsToAim = true;
+	// 공중/교체 중에도 Aim 의도는 Sprint를 취소한다. 실제 ADS의 허용 여부와 분리한다.
+	if (ShooterCharacter->MovementComponent)
+	{
+		ShooterCharacter->MovementComponent->SetSprintIntent(false);
+	}
+	ShooterCharacter->RefreshMovementState();
+	RestoreAimIfRequested();
 	RefreshCombatState();
 }
 
@@ -337,12 +384,14 @@ void UShooterCombatComponent::QueueSprintExitFire(AShooterCharacter& ShooterChar
 
 	if (ShooterCharacter.IsSprinting())
 	{
+		ShooterCharacter.StopSprintInternal();
 		if (!ShooterCharacter.HasAuthority())
 		{
-			ShooterCharacter.ServerSetSprintState(false);
+			const auto* Movement = CastChecked<UShooterCharacterMovementComponent>(ShooterCharacter.GetCharacterMovement());
+			// 발사 대기로 취소한 순번을 함께 보낸다. 늦은 취소 RPC가 이후 Toggle ON을 덮지 않는다.
+			ShooterCharacter.ServerSetSprintState(false, Movement->GetActionInputRequest(), Movement->GetMovementInputEpoch());
 		}
 
-		ShooterCharacter.StopSprintInternal();
 		ShooterCharacter.RefreshMovementState();
 	}
 
@@ -719,6 +768,11 @@ void UShooterCombatComponent::ResolveStateConflicts()
 
 void UShooterCombatComponent::StopAimInternal()
 {
+	if (AShooterCharacter* ShooterCharacter = GetShooterCharacter())
+	{
+		CastChecked<UShooterCharacterMovementComponent>(ShooterCharacter->GetCharacterMovement())
+			->CancelActionInput(false, true);
+	}
 	bWantsToAim = false;
 	SuspendAimInternal();
 }
@@ -1111,7 +1165,10 @@ bool UShooterCombatComponent::CanAimInCurrentState() const
 	const AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 	return ShooterCharacter
 		&& !ShooterCharacter->IsDead()
+		&& !ShooterCharacter->IsSuitTransitionBlocked()
+		&& Cast<ARangedWeaponBase>(ShooterCharacter->CurrentWeapon)
 		&& !IsActionLockBlockingAimFire(*ShooterCharacter)
+		&& !ShooterCharacter->IsWeaponSwitchInProgress()
 		&& ShooterCharacter->GetCharacterMovement()->IsMovingOnGround()
 		&& (ShooterCharacter->WeaponMode == EWeaponMode::Primary || ShooterCharacter->WeaponMode == EWeaponMode::Secondary);
 }
@@ -1146,13 +1203,12 @@ bool UShooterCombatComponent::CanFireInCurrentState() const
 		return false;
 	}
 
-	if (ShooterCharacter->IsSliding())
+	// 총기는 현재 Hip/ADS 설정으로 발사한다. Slide 전용 시작 제한은 근접 옵션에만 적용한다.
+	if (ShooterCharacter->IsSliding()
+		&& ShooterCharacter->GetWeaponType() == EWeaponType::Melee
+		&& !ShooterCharacter->AllowsMeleeAttackWhileSliding())
 	{
-		const bool bIsMelee = ShooterCharacter->GetWeaponType() == EWeaponType::Melee;
-		if (bIsMelee ? !ShooterCharacter->AllowsMeleeAttackWhileSliding() : (!bWantsToAim && !bIsAiming))
-		{
-			return false;
-		}
+		return false;
 	}
 
 	if (bIsReloading)

@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/CharacterMovementReplication.h"
+#include "Curves/CurveFloat.h"
 #include "ShooterCharacterMovementComponent.generated.h"
 
 struct FShooterCoyoteState
@@ -21,6 +22,7 @@ struct FShooterJumpSnapshot
 	bool bWasJumping = false;
 	bool bPressedJump = false;
 	bool bExternalMovementPending = false;
+	bool bSlideJumpRejected = false;
 };
 
 // 순번은 이동 timestamp 리셋과 독립적이다. 최신 요청을 반복 전송해 패킷 손실에도 의도를 보존한다.
@@ -30,7 +32,7 @@ enum class EShooterMovementInput : uint8
 	SprintReleased,
 	CrouchPressed,
 	CrouchReleased,
-	SlideJumpCancel
+	SlideJumpPressed
 };
 
 struct FShooterMovementInput
@@ -38,25 +40,44 @@ struct FShooterMovementInput
 	// 서버가 수명주기 경계에서 갱신한다. 이전 조종/위치의 지연 패킷은 새 Slide를 시작할 수 없다.
 	uint32 Epoch = 0;
 	uint32 CrouchRequest = 0;
-	uint32 JumpCancelRequest = 0;
+	uint32 JumpCancelRequest = 0; // 기존 패킷 필드명 유지. Slide 종료와 점프를 함께 요청하는 Press다.
+	// Aim RPC와 이동 패킷이 같은 입력 순서를 공유한다. 최종 bool과 함께 중간 취소 결과도 보존한다.
+	uint32 ActionRequest = 0;
+	int32 AimSwitchId = 0;
 	bool bSprint = false;
+	bool bAim = false;
 	bool bCrouch = false;
 	bool bSprintAtCrouch = false;
 	bool operator==(const FShooterMovementInput& Other) const;
 	void Serialize(FArchive& Ar);
 };
 
+// 실제 속도는 엔진 보정이 담당한다. 커브 진행만 복원하고 과거 속도를 재주입하지 않는다.
+struct FShooterSlideJumpMomentum
+{
+	float TargetSpeed = 0.0f;
+	float InitialExcessSpeed = 0.0f;
+	float Elapsed = 0.0f;
+	float Duration = 0.0f;
+	float RemainingRatio = 1.0f;
+	bool bActive = false;
+	void Serialize(FArchive& Ar);
+};
+
 // 정보                         | 저장/복원 책임
-// 요청 순번, 눌림/홀드 입력      | SavedMove -> 이동 패킷 -> 해당 이동의 입력 판정
+// 요청 순번, Toggle/홀드 의도    | SavedMove -> 이동 패킷 -> 해당 이동의 입력 판정
 // 처리 완료 순번, 승인된 상태   | 서버 보정 -> 최초 재생 기준; 이후에는 직전 재생 결과를 유지
 // 방향/진입 속도/경과/감속/종료 | 아래 Snapshot; 실제 Velocity/위치는 엔진 보정이 담당
 // 실제 앉기 자세               | Snapshot으로 캡슐 복원; 홀드 의도와 구분
 // 마찰/제동/가속 임시 설정      | 로컬에서 한 번 보관/복구하며 패킷에 싣지 않음
 struct FShooterSlideSnapshot
 {
+	FShooterSlideJumpMomentum JumpMomentum;
 	FShooterMovementInput AppliedInput;
 	uint32 ProcessedCrouchRequest = 0;
 	uint32 ProcessedJumpCancelRequest = 0;
+	uint32 ProcessedActionRequest = 0;
+	int32 AimSwitchId = 0;
 	uint32 ActiveRequest = 0;
 	FVector Direction = FVector::ZeroVector;
 	float StartSpeed = 0.0f;
@@ -65,7 +86,8 @@ struct FShooterSlideSnapshot
 	float Duration = 0.0f;
 	uint8 EndReason = 0;
 	bool bActive = false;
-	bool bSprintHeld = false;
+	bool bSprintHeld = false; // 기존 패킷 필드명 유지. 키 홀드가 아닌 Sprint Toggle 결과다.
+	bool bAimHeld = false;
 	bool bCrouchHeld = false;
 	bool bCrouched = false;
 	void Serialize(FArchive& Ar);
@@ -90,9 +112,13 @@ struct FShooterAudioMoveData : FCharacterNetworkMoveData
 	uint32 PredictedSlideRequest = 0;
 	bool bPredictedSliding = false;
 	bool bPredictedSprintHeld = false;
+	bool bPredictedAimHeld = false;
 	bool bPredictedCrouchHeld = false;
 	bool bPredictedCrouched = false;
 	uint8 PredictedEndReason = 0;
+	FShooterSlideJumpMomentum PredictedJumpMomentum;
+	int32 PredictedJumpCount = 0;
+	bool bPredictedSlideJumpRejected = false;
 	virtual void ClientFillNetworkMoveData(const FSavedMove_Character& ClientMove, ENetworkMoveType MoveType) override;
 	virtual bool Serialize(UCharacterMovementComponent& Movement, FArchive& Ar, UPackageMap* PackageMap,
 		ENetworkMoveType MoveType) override;
@@ -116,10 +142,13 @@ class OUTLIER_API UShooterCharacterMovementComponent : public UCharacterMovement
 	friend class FShooterCoyoteTimeTest;
 	friend class FOutlierMovementAudioPredictionTest;
 	friend class FShooterGroundedMovementTest;
+	friend class FShooterActionIntentTest;
 	friend class UShooterMovementComponent;
 	friend struct FShooterMoveResponse;
 	friend class FShooterSlidePredictionTest;
+	friend class FShooterSlideJumpTest;
 	friend class FShooterSlideLifecycleTest;
+	friend class FOutlierSlideSuitRecoveryTest;
 	friend class FShooterSlideTerrainTest;
 
 public:
@@ -130,9 +159,33 @@ public:
 	float GetCurrentSlideSpeed() const { return CurrentSlideSpeed; }
 	FVector GetSlideDirection() const { return SlideDirection; }
 	bool QueueMovementInput(EShooterMovementInput Input);
+	uint32 RecordActionInput(bool bAim);
+	void CancelActionInput(bool bCancelSprint, bool bCancelAim);
+	bool ApplyActionInput(uint32 Request, uint32 Epoch, bool bSprint, bool bAim, int32 AimSwitchId = 0);
+	uint32 GetMovementInputEpoch() const { return MovementEpoch; }
+	bool GetSprintInputIntent() const { return LiveMovementInput.bSprint; }
+	uint32 GetActionInputRequest() const { return LiveMovementInput.ActionRequest; }
+	int32 GetAimInputSwitchId() const { return LiveMovementInput.AimSwitchId; }
 	void ApplyMovementInput();
 	bool IsReplayingMovement() const;
 	void ResetSlideForLifecycle();
+	void StartSlideJumpMomentum(const FVector& ActualHorizontalVelocity);
+	void ResetSlideJumpMomentum();
+
+	/** 성공한 Slide 점프의 실제 XY 속도에 한 번 적용한다. 1이면 추가 가속 없이 계승한다. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Movement|Slide", meta = (ClampMin = "0.0"))
+	float SlideJumpSpeedMultiplier = 1.10f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Movement|Slide", meta = (ClampMin = "0.01", Units = "s"))
+	float SlideJumpDecayDuration = 0.5f;
+
+	/** 필수 Curve Float. X: 감속 진행률(0~1), Y: 달리기 기준 초과 속도의 잔여 비율(1~0). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Movement|Slide")
+	TObjectPtr<UCurveFloat> SlideJumpDecayCurve = nullptr;
+
+#if WITH_EDITOR
+	virtual EDataValidationResult IsDataValid(FDataValidationContext& Context) const override;
+#endif
 
 #if !UE_BUILD_SHIPPING
 	static bool IsSlideDiagnosticEnabled();
@@ -144,6 +197,7 @@ public:
 	void ResetCoyoteTime();
 	void PrepareJumpInput(float DeltaTime);
 	void FinishJumpInput();
+	void PrepareSlideJump();
 	/** 점프는 저장 이동, 착지는 공중 체류 회차를 사용해 서로 다른 착지 프레임도 같은 이벤트로 묶는다. */
 	uint64 GetMovementAudioEventId(bool bLanding) const;
 
@@ -168,6 +222,8 @@ public:
 
 protected:
 	virtual void BeginPlay() override;
+	virtual void CalcVelocity(float DeltaTime, float Friction, bool bFluid, float BrakingDeceleration) override;
+	virtual void PhysFalling(float DeltaTime, int32 Iterations) override;
 	virtual void PhysWalking(float DeltaTime, int32 Iterations) override;
 	virtual void PhysNavWalking(float DeltaTime, int32 Iterations) override;
 	virtual void HandleImpact(const FHitResult& Hit, float TimeSlice, const FVector& MoveDelta) override;
@@ -176,6 +232,9 @@ protected:
 		const FVector& Delta, const FVector& SubLocation) override;
 
 private:
+	bool TryEvaluateSlideJumpRemainingRatio(float Progress, float& OutRatio) const;
+	// 이번 PhysFalling 구간의 평균 감속량. 충돌용 가상 CalcVelocity에서는 시간/커브 상태를 변경하지 않는다.
+	float SlideJumpIntervalDecayRate = 0.0f;
 	bool BeginSlideSimulation(UShooterMovementComponent* Movement);
 	void EndSlideSimulation();
 	void PhysSlide(float DeltaTime, int32 Iterations, EMovementMode GroundMode);
@@ -194,6 +253,8 @@ private:
 	uint32 NextMovementRequest = 0;
 	uint32 ProcessedCrouchRequest = 0;
 	uint32 ProcessedJumpCancelRequest = 0;
+	uint32 ProcessedActionRequest = 0;
+	int32 AppliedAimSwitchId = 0;
 	uint32 ActiveSlideRequest = 0;
 	uint32 PresentedSlideRequest = 0;
 	uint32 PresentedSlideEpoch = 0;
@@ -214,6 +275,7 @@ private:
 
 	// CMC만 시간/속도/임시 물리 설정을 소유한다. ActorComponent의 복제 bool은 기존 연출 연결용이다.
 	TWeakObjectPtr<UShooterMovementComponent> SlideMovement;
+	FShooterSlideJumpMomentum SlideJumpMomentum;
 	FVector SlideDirection = FVector::ZeroVector;
 	float SlideStartSpeed = 0.0f;
 	float CurrentSlideSpeed = 0.0f;
@@ -251,6 +313,11 @@ private:
 	bool bFallingFirstJumpAttempt = false;
 	bool bCoyoteJumpAttempt = false;
 	bool bJumpSucceeded = false;
+	// 한 Press의 Slide 종료와 실제 점프 성공을 연결한다. 실패한 입력은 다음 이동으로 넘기지 않는다.
+	bool bSlideJumpAttempt = false;
+	bool bStopSlideJumpAfterCheck = false;
+	bool bSlideJumpRejected = false;
+	FVector SlideJumpVelocity = FVector::ZeroVector;
 	bool bStartingNaturalFall = false;
 	bool bExternalMovementPending = false;
 	bool bHasCorrectedJumpInput = false;

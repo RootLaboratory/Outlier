@@ -344,7 +344,11 @@ void UShooterInventoryComponent::SelectWeaponSlot(EWeaponSlot Slot)
 		ShooterCharacter->EndActiveWeaponOvercharge(true);
 	}
 
-	ShooterCharacter->StopAimInternal();
+	// 일반 교체는 홀드 의도를 보존하고 실제 ADS만 내린다. 슈트 지급의 강제 초기화와 구분한다.
+	if (ShooterCharacter->CombatComponent)
+	{
+		ShooterCharacter->CombatComponent->SuspendAimInternal();
+	}
 
 	if (ShooterCharacter->CurrentWeapon)
 	{
@@ -417,6 +421,9 @@ void UShooterInventoryComponent::CancelPendingWeaponSwitch()
 	bHasPendingWeaponSwitch = false;
 	if (AShooterCharacter* ShooterCharacter = GetShooterCharacter())
 	{
+		// 실패/timeout은 정상 완료 복구와 구분한다. 잠금을 풀기 전에 예약을 버린다.
+		ShooterCharacter->FailedProceduralSwitchId = PendingSwitchId;
+		ShooterCharacter->StopAimInternal();
 		if (ShooterCharacter->HasAuthority() && !ShooterCharacter->IsDead() &&
 			ShooterCharacter->GetThirdPersonSwitchMontage())
 		{
@@ -461,6 +468,11 @@ void UShooterInventoryComponent::ApplyWeaponToSlot(
 	}
 
 	ShooterCharacter->RefreshWeaponMode();
+	if (ShooterCharacter->CombatComponent && !Cast<ARangedWeaponBase>(Weapon))
+	{
+		// ADS 불가 무기로 끝난 교체의 홀드를 다음 총기 교체까지 예약하지 않는다.
+		ShooterCharacter->StopAimInternal();
+	}
 	ShooterCharacter->RefreshCombatState();
 
 	CaptureLoadoutToPlayerState();

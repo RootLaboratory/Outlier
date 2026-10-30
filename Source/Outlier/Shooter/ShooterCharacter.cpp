@@ -522,6 +522,11 @@ void AShooterCharacter::Tick(float DeltaSeconds)
 
 void AShooterCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	if (auto* Subsystem = ActionInputSubsystem.Get())
+	{
+		Subsystem->ControlMappingsRebuiltDelegate.RemoveDynamic(this, &AShooterCharacter::HandleControlMappingsRebuilt);
+	}
+	ActionInputSubsystem.Reset();
 	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->ResetSlideForLifecycle();
 	if (MovementAudioSubsystem) MovementAudioSubsystem->ClearPredictedMovementAudio(this);
 	OutlierAudioFeedback::StopLoops(this);
@@ -584,6 +589,7 @@ void AShooterCharacter::PossessedBy(AController* NewController)
 
 void AShooterCharacter::UnPossessed()
 {
+	ClearInputIntent();
 	if (MovementAudioSubsystem) MovementAudioSubsystem->ClearPredictedMovementAudio(this);
 	InitializeAutoAimLocalView(nullptr);
 	AutoAimViewReceivedAt = -1.0;
@@ -592,6 +598,7 @@ void AShooterCharacter::UnPossessed()
 	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->ResetSlideForLifecycle();
 	OutlierAudioFeedback::StopLoops(this);
 	Super::UnPossessed();
+	BindActionInputReset();
 }
 
 void AShooterCharacter::OnRep_Controller()
@@ -600,6 +607,7 @@ void AShooterCharacter::OnRep_Controller()
 	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->ResetCoyoteTime();
 	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->ResetSlideForLifecycle();
 	Super::OnRep_Controller();
+	BindActionInputReset();
 	RefreshLowHPAudio();
 	RefreshAbilitySystemActorInfo();
 	RefreshShooterSuitCooldownUI();
@@ -1529,6 +1537,54 @@ void AShooterCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 	EnhancedInputComponent->BindAction(ShooterInputConfig->AimAction,			ETriggerEvent::Started,   this, &AShooterCharacter::HandleAimPressed);
 	EnhancedInputComponent->BindAction(ShooterInputConfig->AimAction,			ETriggerEvent::Completed, this, &AShooterCharacter::HandleAimReleased);
 	EnhancedInputComponent->BindAction(ShooterInputConfig->AimAction,			ETriggerEvent::Canceled,  this, &AShooterCharacter::HandleAimReleased);
+	BindActionInputReset();
+}
+
+void AShooterCharacter::BindActionInputReset()
+{
+	if (auto* Previous = ActionInputSubsystem.Get())
+	{
+		Previous->ControlMappingsRebuiltDelegate.RemoveDynamic(this, &AShooterCharacter::HandleControlMappingsRebuilt);
+	}
+	ActionInputSubsystem.Reset();
+	const auto* PlayerController = Cast<APlayerController>(GetController());
+	ULocalPlayer* LocalPlayer = PlayerController ? PlayerController->GetLocalPlayer() : nullptr;
+	if (!LocalPlayer) return;
+	if (auto* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(LocalPlayer))
+	{
+		ActionInputSubsystem = Subsystem;
+		Subsystem->ControlMappingsRebuiltDelegate.AddUniqueDynamic(this, &AShooterCharacter::HandleControlMappingsRebuilt);
+	}
+}
+
+void AShooterCharacter::HandleControlMappingsRebuilt()
+{
+	const auto* Config = Cast<UShooterInputConfig>(InputConfig);
+	const auto* Subsystem = ActionInputSubsystem.Get();
+	if (!IsLocallyControlled() || !Config || !Subsystem) return;
+	const bool bMissingSprint = Config->SprintAction && Subsystem->QueryKeysMappedToAction(Config->SprintAction).IsEmpty();
+	const bool bMissingAim = Config->AimAction && Subsystem->QueryKeysMappedToAction(Config->AimAction).IsEmpty();
+	if (!bMissingSprint && !bMissingAim) return;
+	// 일반 Release와 컨텍스트 종료를 구분한다. 키 재설정으로 액션이 계속 유효하면 의도는 유지한다.
+	auto* Movement = CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement());
+	Movement->CancelActionInput(bMissingSprint, bMissingAim);
+	if (bMissingSprint) StopSprintInternal();
+	if (bMissingAim) StopAimInternal();
+	RefreshActionIntentsAfterEquip();
+	if (!HasAuthority()) ServerSetAimState(WantsToAim(), Movement->GetSprintInputIntent(),
+		Movement->GetActionInputRequest(), Movement->GetMovementInputEpoch(), Movement->GetAimInputSwitchId());
+}
+
+void AShooterCharacter::ResetActionInput()
+{
+	if (!IsLocallyControlled()) return;
+	ClearInputIntent();
+	StopSprintInternal();
+	RefreshActionIntentsAfterEquip();
+	auto* Movement = CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement());
+	// 포커스 초기화는 이동이 일시 정지해도 서버에 전달한다. 단순 키 Release에서는 호출하지 않는다.
+	const uint32 Request = Movement->RecordActionInput(false);
+	if (!HasAuthority()) ServerSetAimState(false, false, Request, Movement->GetMovementInputEpoch(), 0);
 }
 
 void AShooterCharacter::OnStartCrouch(float HalfHeightAdjust, float ScaledHalfHeightAdjust)
@@ -1679,7 +1735,8 @@ void AShooterCharacter::CheckJumpInput(float DeltaTime)
 	JumpMovement->FinishJumpInput();
 
 	// 입력 예약/실패에는 재생하지 않는다. 보정 재생은 저장 이동 키를 재사용하므로 같은 소리를 반복하지 않는다.
-	if ((HasAuthority() || IsLocallyControlled()) && bWasJumping && JumpCurrentCount > PreviousJumpCount && MovementAudioSubsystem)
+	// 짧은 Press/Release는 성공 직후 홀드를 종료해 bWasJumping이 false여도 이륙한 점프다.
+	if ((HasAuthority() || IsLocallyControlled()) && JumpCurrentCount > PreviousJumpCount && MovementAudioSubsystem)
 	{
 		const UCapsuleComponent* Capsule = GetCapsuleComponent();
 		const FVector FootLocation = Capsule->GetComponentLocation()
@@ -2059,6 +2116,8 @@ void AShooterCharacter::OnRep_ActionLock(EShooterActionLock PreviousLock)
 	{
 		ActionLock = EShooterActionLock::Slide;
 	}
+	if (ActionLock == EShooterActionLock::Equip && CombatComponent) CombatComponent->SuspendAimInternal();
+	RefreshActionIntentsAfterEquip();
 }
 
 void AShooterCharacter::OnRep_CurrentLeanAlpha()
@@ -2492,6 +2551,7 @@ void AShooterCharacter::HandlePresentationWeaponChanged(EWeaponType NewWeaponTyp
 	// 교체로 중단된 몽타주의 NotifyEnd가 누락되어도 이전 무기의 애니메이션 반복음은 남기지 않는다.
 	if (MovementAudioSubsystem) MovementAudioSubsystem->StopAnimationAudioLoops(this);
 	RefreshPresentationWeaponAttachment();
+	if (HasAuthority() || IsLocallyControlled()) RefreshActionIntentsAfterEquip();
 }
 
 void AShooterCharacter::RefreshPresentationWeaponAttachment()
@@ -2723,6 +2783,12 @@ void AShooterCharacter::BeginActionLock(EShooterActionLock NewLock)
 	ActionLock = NewLock;
 	bIsEquipping = (ActionLock == EShooterActionLock::Equip);
 	GetWorldTimerManager().ClearTimer(ActionLockTimerHandle);
+	if (NewLock == EShooterActionLock::Equip)
+	{
+		++EquipActionGeneration;
+		if (CombatComponent) CombatComponent->SuspendAimInternal();
+	}
+	RefreshMovementState();
 }
 
 void AShooterCharacter::EndActionLock(EShooterActionLock LockToEnd)
@@ -2735,6 +2801,33 @@ void AShooterCharacter::EndActionLock(EShooterActionLock LockToEnd)
 	ActionLock = EShooterActionLock::None;
 	bIsEquipping = false;
 	GetWorldTimerManager().ClearTimer(ActionLockTimerHandle);
+	RefreshActionIntentsAfterEquip();
+}
+
+bool AShooterCharacter::IsWeaponSwitchInProgress() const
+{
+	return IsLocallyControlled() && FirstPersonSwitchVisualPhase != EFirstPersonWeaponSwitchVisualPhase::None;
+}
+
+void AShooterCharacter::RefreshActionIntentsAfterEquip()
+{
+	RefreshMovementState();
+	if (!CombatComponent) return;
+	CombatComponent->RefreshWeaponMode();
+	// 서버 잠금과 소유자 Raise는 서로 다른 순서로 끝날 수 있다. 마지막으로 끝난 경계가
+	// 현재 홀드만 재평가하며, 과거 입력을 다시 주입하거나 새 ADS 명령을 만들지 않는다.
+	if (ActionLock != EShooterActionLock::Equip && !IsWeaponSwitchInProgress())
+	{
+		if (!Cast<ARangedWeaponBase>(CurrentWeapon)) CombatComponent->StopAimInternal();
+		CombatComponent->RestoreAimIfRequested();
+	}
+	RefreshCombatState();
+}
+
+void AShooterCharacter::FinishEquipAction(uint32 Generation)
+{
+	// 이전 교체의 지연 완료가 새 Equip 잠금을 풀지 못하게 한다.
+	if (Generation == EquipActionGeneration) EndActionLock(EShooterActionLock::Equip);
 }
 
 bool AShooterCharacter::ApplyDamageInternal(
@@ -3439,9 +3532,11 @@ void AShooterCharacter::HandleDeath()
 
 void AShooterCharacter::ClearInputIntent()
 {
+	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())->CancelActionInput(true, true);
 	if (CombatComponent)
 	{
 		CombatComponent->ClearInputIntent();
+		CombatComponent->SuspendAimInternal();
 	}
 
 	if (MovementComponent)
@@ -3904,7 +3999,7 @@ void AShooterCharacter::PlayEquipPresentation()
 	if (EquipLockDuration > 0.0f)
 	{
 		FTimerDelegate EquipEndDelegate;
-		EquipEndDelegate.BindUObject(this, &AShooterCharacter::EndActionLock, EShooterActionLock::Equip);
+		EquipEndDelegate.BindUObject(this, &AShooterCharacter::FinishEquipAction, EquipActionGeneration);
 		GetWorldTimerManager().SetTimer(ActionLockTimerHandle, EquipEndDelegate, EquipLockDuration, false);
 	}
 	else
@@ -3949,6 +4044,7 @@ void AShooterCharacter::BeginProceduralEquipRaise(AWeaponBase* ExpectedWeapon)
 
 void AShooterCharacter::StartLocalProceduralWeaponSwitch(int32 SwitchId)
 {
+	if (CombatComponent) CombatComponent->SuspendAimInternal();
 	ActiveProceduralSwitchId = SwitchId;
 	WeaponAtSwitchStart = CurrentWeapon;
 	WeaponExpectedOnRaise.Reset();
@@ -3962,6 +4058,7 @@ void AShooterCharacter::StartLocalProceduralWeaponSwitch(int32 SwitchId)
 
 void AShooterCharacter::StartLocalProceduralEquipRaise(AWeaponBase* ExpectedWeapon, AWeaponBase* PreviousWeapon)
 {
+	if (CombatComponent) CombatComponent->SuspendAimInternal();
 	OutlierFirstPickup::FScope Scope(TEXT("StartLocalRaise"), ExpectedWeapon);
 	ActiveProceduralSwitchId = 0;
 	WeaponAtSwitchStart = PreviousWeapon;
@@ -4023,6 +4120,7 @@ void AShooterCharacter::UpdateLocalProceduralWeaponSwitch(float DeltaSeconds)
 		}
 		else if (FirstPersonSwitchVisualElapsed > 3.5f)
 		{
+			StopAimInternal();
 			CancelLocalProceduralWeaponSwitch();
 		}
 	}
@@ -4041,6 +4139,7 @@ void AShooterCharacter::UpdateLocalProceduralWeaponSwitch(float DeltaSeconds)
 			bProceduralEquipRaiseOnly = false;
 			bProceduralEquipExpectedWeaponUnmapped = false;
 			ActiveProceduralSwitchId = 0;
+			RefreshActionIntentsAfterEquip();
 		}
 	}
 }
@@ -4054,6 +4153,8 @@ void AShooterCharacter::ClientCancelProceduralWeaponSwitch_Implementation(int32 
 {
 	if (SwitchId == ActiveProceduralSwitchId)
 	{
+		FailedProceduralSwitchId = SwitchId;
+		StopAimInternal();
 		CancelLocalProceduralWeaponSwitch();
 	}
 }
@@ -4099,7 +4200,7 @@ void AShooterCharacter::PlayProceduralSwitchThirdPersonEquip(EWeaponType Previou
 	// Switch가 없으면 3P 재생은 건너뛰되 1P Raise와 장착 잠금 종료는 유지한다.
 	MulticastPlayThirdPersonSwitchRaise(EquippedWeaponType, SectionName);
 	FTimerDelegate EquipEndDelegate;
-	EquipEndDelegate.BindUObject(this, &AShooterCharacter::EndActionLock, EShooterActionLock::Equip);
+	EquipEndDelegate.BindUObject(this, &AShooterCharacter::FinishEquipAction, EquipActionGeneration);
 	GetWorldTimerManager().SetTimer(ActionLockTimerHandle, EquipEndDelegate, EquipLockDuration, false);
 }
 
@@ -4111,24 +4212,13 @@ void AShooterCharacter::ServerSelectWeaponByIndex_Implementation(int32 SlotIndex
 	}
 }
 
-void AShooterCharacter::ServerSetAimState_Implementation(bool bNewAiming)
+void AShooterCharacter::ServerSetAimState_Implementation(bool bNewAiming, bool bSprintIntent, uint32 InputRequest, uint32 InputEpoch, int32 AimSwitchId)
 {
-	if (!CombatComponent)
-	{
-		return;
-	}
-
-	if (bNewAiming)
-	{
-		CombatComponent->HandleAimPressed();
-	}
-	else
-	{
-		CombatComponent->HandleAimReleased();
-	}
+	CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())
+		->ApplyActionInput(InputRequest, InputEpoch, bSprintIntent, bNewAiming, AimSwitchId);
 }
 
-void AShooterCharacter::ServerSetSprintState_Implementation(bool bNewSprinting)
+void AShooterCharacter::ServerSetSprintState_Implementation(bool bNewSprinting, uint32 InputRequest, uint32 InputEpoch)
 {
 	if (!MovementComponent)
 	{
@@ -4138,7 +4228,8 @@ void AShooterCharacter::ServerSetSprintState_Implementation(bool bNewSprinting)
 	// 전투의 기존 Sprint 해제 요청만 보존한다. 이동 입력의 시작/해제는 packed 이동에서 처리한다.
 	if (!bNewSprinting)
 	{
-		MovementComponent->HandleSprintReleased();
+		CastChecked<UShooterCharacterMovementComponent>(GetCharacterMovement())
+			->ApplyActionInput(InputRequest, InputEpoch, false, false);
 	}
 }
 
