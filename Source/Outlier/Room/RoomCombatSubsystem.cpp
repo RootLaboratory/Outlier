@@ -1599,6 +1599,18 @@ bool URoomCombatSubsystem::IsPlayerInsideRoom(
 		&& Room->ContainsWorldLocation(Player->GetActorLocation());
 }
 
+ARoomVolume* URoomCombatSubsystem::FindPlayerRoomInCombatGroup(
+	const AFirstPersonCharacter* Player, FGameplayTag CombatRoomTag) const
+{
+	if (!IsValid(Player) || Player->GetWorld() != GetWorld()) return nullptr;
+	const FGameplayTag PlayerRoomTag = Player->GetCurrentRoomTag();
+	// 기존 태그는 같은 방만 인정한다. 형제 관계는 정확한 네 단계 태그끼리만 허용한다.
+	if (PlayerRoomTag != CombatRoomTag
+		&& !URoomTagComponent::AreRoomsInSameGroup(PlayerRoomTag, CombatRoomTag)) return nullptr;
+	ARoomVolume* Room = GetRegisteredRoomVolume(PlayerRoomTag);
+	return IsPlayerInsideRoom(Player, Room) ? Room : nullptr;
+}
+
 bool URoomCombatSubsystem::IsSafeJoinDestination(
 	const AFirstPersonCharacter* MovingPlayer, const AFirstPersonCharacter* Anchor,
 	const ARoomVolume* Room, const FVector& Location) const
@@ -1873,8 +1885,8 @@ bool URoomCombatSubsystem::TryStartInitialDetectionForPlayers(
 			*RoomTag.ToString());
 		return false;
 	}
-	ARoomVolume* ShooterRoom = IsPlayerInsideRoom(Shooter, Room) ? Room : nullptr;
-	ARoomVolume* PartnerRoom = IsPlayerInsideRoom(Partner, Room) ? Room : nullptr;
+	ARoomVolume* ShooterRoom = FindPlayerRoomInCombatGroup(Shooter, RoomTag);
+	ARoomVolume* PartnerRoom = FindPlayerRoomInCombatGroup(Partner, RoomTag);
 	const bool bShooterInside = ShooterRoom != nullptr;
 	const bool bPartnerInside = PartnerRoom != nullptr;
 	// 발각시킨 Actor가 누구인지는 사용하지 않는다. 두 명 모두 밖이면 Enemy도 Battle로 넘기지 않는다.
@@ -1911,9 +1923,8 @@ bool URoomCombatSubsystem::TryStartInitialDetectionForPlayers(
 	};
 	auto ArePlayersJoined = [this, Shooter, Partner, RoomTag, &IsJoinRoomCurrent]()
 	{
-		ARoomVolume* JoinRoom = GetRegisteredRoomVolume(RoomTag);
-		return IsJoinRoomCurrent() && IsPlayerInsideRoom(Shooter, JoinRoom)
-			&& IsPlayerInsideRoom(Partner, JoinRoom);
+		return IsJoinRoomCurrent() && FindPlayerRoomInCombatGroup(Shooter, RoomTag)
+			&& FindPlayerRoomInCombatGroup(Partner, RoomTag);
 	};
 	FRoomCombatPreparationContext Context;
 	if (!BeginInitialDetectionPreparation(RoomTag, Anchor, Context))
