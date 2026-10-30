@@ -17,6 +17,7 @@
 #include "Shooter/ShooterCharacter.h"
 #include "Team/OutlierTeamIds.h"
 #include "GameFramework/Controller.h"
+#include "GameFramework/Volume.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -643,6 +644,12 @@ void AMeleeWeaponBase::SweepMeleeTrace(
 		for (const FHitResult& HitResult : MeleeTraceHitBuffer)
 		{
 			AActor* Candidate = HitResult.GetActor();
+			// 환경음/방 트리거 등 보이지 않는 Volume은 공격 판정과 표면 연출에서 제외한다.
+			if (Candidate && Candidate->IsA<AVolume>())
+			{
+				continue;
+			}
+
 			if (Cast<AAutoTurret>(Candidate) && AAutoTurret::IsTurretDiagnosticsEnabled())
 			{
 				UE_LOG(LogMeleeDiagnostics, Log, TEXT("[MeleeDiag][TurretContact] Weapon=%s Sequence=%d Target=%s Component=%s Bone=%s Blocking=%d InitialOverlap=%d AlreadyHit=%d Impact=%s"),
