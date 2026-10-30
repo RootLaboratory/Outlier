@@ -768,6 +768,21 @@ bool URoomCombatSubsystem::RegisterRoom(
 		return true;
 	}
 
+	UGameInstance* GameInstance = World->GetGameInstance();
+	UOutlierSaveSubSystem* SaveSubsystem = GameInstance
+		? GameInstance->GetSubsystem<UOutlierSaveSubSystem>() : nullptr;
+	const FOutlierRoomPhaseProgress* SavedProgress = SaveSubsystem
+		? SaveSubsystem->GetCurrentRoomPhaseProgress().Find(RoomTag) : nullptr;
+	// 복원 차단을 먼저 켜고 예약만 실패하면 두 그룹의 외곽이 동시에 닫힌다.
+	// 다른 그룹의 참여 기록은 등록 자체를 거부해 부분 적용을 막는다.
+	if (SavedProgress && SavedProgress->bExitBlockActive
+		&& !SaveSubsystem->HasWorldProgress(EOutlierWorldProgressType::CompletedEncounter, RoomTag.GetTagName())
+		&& !CanReserveCombatRoom(RoomTag))
+	{
+		UE_LOG(LogTemp, Error, TEXT("[RoomCombat] Conflicting restored combat group. Room=%s ActiveGroup=%s"),
+			*RoomTag.ToString(), *ActiveCombatGroupTag.ToString());
+		return false;
+	}
 	++MovementRoomRevision;
 	FRoomCombatRuntime& Runtime = RoomRuntimes.Add(RoomTag);
 	Runtime.RoomVolume = RoomVolume;
@@ -783,10 +798,6 @@ bool URoomCombatSubsystem::RegisterRoom(
 		Runtime.GameplayGeneration = static_cast<int32>(Arena->GetGameplayGeneration());
 	}
 
-	UGameInstance* GameInstance = World->GetGameInstance();
-	UOutlierSaveSubSystem* SaveSubsystem = GameInstance
-		? GameInstance->GetSubsystem<UOutlierSaveSubSystem>()
-		: nullptr;
 	const FName EncounterId = RoomTag.GetTagName();
 	if (SaveSubsystem)
 	{
@@ -809,19 +820,21 @@ bool URoomCombatSubsystem::RegisterRoom(
 			SaveSubsystem->GetCurrentRoomPhaseProgress().Find(RoomTag))
 		{
 			const FRoomCombatPhaseDefinition* Phase = Definition->FindPhase(Saved->NextPhaseIndex);
-			if (Phase && Saved->NextPhaseIndex > 0)
+			if (Phase && (Saved->NextPhaseIndex > 0
+				|| (Saved->NextPhaseIndex == 0 && Saved->bResumeCurrentPhase && Saved->bExitBlockActive)))
 			{
 				Runtime.CurrentCombatPhaseIndex = Saved->NextPhaseIndex;
 				Runtime.bExitBlockActive = Saved->bExitBlockActive;
 				Runtime.bTriggeredSequenceActive = Saved->bTriggeredSequenceActive;
 				Runtime.ActiveActivationGroupTag = Saved->ActivationGroupTag;
+				Runtime.bSavedCurrentPhasePending = Saved->bResumeCurrentPhase && Saved->bExitBlockActive;
 				Runtime.bSavedAutomaticPhasePending =
 					Phase->StartPolicy == ERoomCombatPhaseStartPolicy::Automatic;
-				Runtime.State = Runtime.bSavedAutomaticPhasePending
+				Runtime.State = (Runtime.bSavedAutomaticPhasePending || Runtime.bSavedCurrentPhasePending)
 					? ERoomCombatState::Dormant : ERoomCombatState::WaitingForTrigger;
 				if (Runtime.bExitBlockActive)
 				{
-					ReserveCombatRoom(RoomTag);
+					if (CanReserveCombatRoom(RoomTag)) ReserveCombatRoom(RoomTag);
 				}
 			}
 			else
@@ -830,7 +843,7 @@ bool URoomCombatSubsystem::RegisterRoom(
 					*RoomTag.ToString(), Saved->NextPhaseIndex);
 			}
 		}
-		if (Runtime.CurrentCombatPhaseIndex == 0)
+		if (Runtime.CurrentCombatPhaseIndex == 0 && !Runtime.bSavedCurrentPhasePending)
 		{
 			if (const FRoomCombatPhaseDefinition* FirstPhase = Definition->FindPhase(0);
 				FirstPhase && (FirstPhase->StartPolicy == ERoomCombatPhaseStartPolicy::HackTrigger
@@ -886,12 +899,11 @@ bool URoomCombatSubsystem::RegisterRoom(
 		}
 	}
 	OnRoomStartReadinessChanged.Broadcast(RoomTag);
-	// 복원된 방을 기존 차단막의 현재 그룹 상태에도 반영한다.
+	// 복원은 시작 이벤트를 재생하지 않는다. 이미 로드된 외곽 차단막도 현재 값으로 맞춘다.
 	for (const TWeakObjectPtr<ARoomCombatBarrier>& Barrier : RegisteredBarriers)
 	{
 		if (Barrier.IsValid() && Barrier->CanBlockRoom(RoomTag)) Barrier->RefreshFromRoomCombat();
 	}
-
 	if (bRestoredAutomaticStartAllowed)
 	{
 		TryStartRestoredAutomaticPhase(RoomTag);
@@ -1511,6 +1523,10 @@ void URoomCombatSubsystem::RegisterPreplacedEnemy(AEnemyBase* Enemy)
 
 	Runtime->TrackedAliveEnemies.Add(EnemyPtr);
 	Runtime->bHadPreplacedEnemy = true;
+	if (bRestoredAutomaticStartAllowed)
+	{
+		TryStartRestoredAutomaticPhase(RoomTag);
+	}
 }
 
 void URoomCombatSubsystem::UnregisterEnemy(AEnemyBase* Enemy)
@@ -1762,18 +1778,24 @@ bool URoomCombatSubsystem::FindJoinDestination(
 bool URoomCombatSubsystem::GetReconnectContext(FRoomCombatReconnectContext& OutContext) const
 {
 	OutContext = FRoomCombatReconnectContext();
-	const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(ActiveCombatRoomTag);
-	if (!CanRunServerGameplay() || !Runtime || !Runtime->RoomVolume.IsValid()
-		|| !Runtime->bExitBlockActive
-		|| (Runtime->State != ERoomCombatState::Combat
-			&& Runtime->State != ERoomCombatState::WaitingForTrigger))
+	if (!CanRunServerGameplay() || !ActiveCombatGroupId.IsValid())
 	{
 		return false;
 	}
-	OutContext.RoomTag = ActiveCombatRoomTag;
-	OutContext.RoomRegistrationId = Runtime->RegistrationId;
-	OutContext.GameplayGeneration = Runtime->GameplayGeneration;
-	return true;
+	// 대표 방은 Preparing일 수도 있다. 실제 차단 중인 참여 방을 결정적으로 선택한다.
+	for (const auto& Entry : RoomRuntimes)
+	{
+		const FRoomCombatRuntime& Runtime = Entry.Value;
+		if (IsRoomCombatReserved(Entry.Key) && Runtime.bExitBlockActive && Runtime.RoomVolume.IsValid()
+			&& (!OutContext.RoomTag.IsValid() || Entry.Key.GetTagName().LexicalLess(OutContext.RoomTag.GetTagName())))
+		{
+			OutContext.RoomTag = Entry.Key;
+			OutContext.RoomRegistrationId = Runtime.RegistrationId;
+			OutContext.GameplayGeneration = Runtime.GameplayGeneration;
+			OutContext.CombatGroupId = ActiveCombatGroupId;
+		}
+	}
+	return OutContext.RoomTag.IsValid();
 }
 
 bool URoomCombatSubsystem::IsReconnectContextCurrent(
@@ -1781,60 +1803,102 @@ bool URoomCombatSubsystem::IsReconnectContextCurrent(
 {
 	FRoomCombatReconnectContext Current;
 	return GetReconnectContext(Current)
-		&& Current.RoomTag == Context.RoomTag
-		&& Current.RoomRegistrationId == Context.RoomRegistrationId
+		&& Context.CombatGroupId.IsValid() && Current.CombatGroupId == Context.CombatGroupId
 		&& Current.GameplayGeneration == Context.GameplayGeneration;
+}
+
+bool URoomCombatSubsystem::IsReconnectDestinationCurrent(const FRoomCombatReconnectContext& Context) const
+{
+	const FRoomCombatRuntime* Runtime = RoomRuntimes.Find(Context.DestinationRoomTag);
+	return CanRunServerGameplay() && Runtime && Runtime->RoomVolume.IsValid()
+		&& Context.DestinationRoomRegistrationId.IsValid()
+		&& Runtime->RegistrationId == Context.DestinationRoomRegistrationId
+		&& Runtime->GameplayGeneration == Context.GameplayGeneration;
 }
 
 bool URoomCombatSubsystem::TryPlaceReconnectingPlayer(
 	AFirstPersonCharacter* Player, AFirstPersonCharacter* Anchor,
-	const FRoomCombatReconnectContext& Context)
+	FRoomCombatReconnectContext& Context)
 {
-	if (!IsValid(Player) || !Player->HasAuthority() || !IsReconnectContextCurrent(Context))
+	if (!IsValid(Player) || Player->GetWorld() != GetWorld()
+		|| !Player->HasAuthority() || !IsReconnectContextCurrent(Context))
 	{
 		return false;
 	}
-	ARoomVolume* Room = RoomRuntimes.FindChecked(Context.RoomTag).RoomVolume.Get();
+	FRoomCombatReconnectContext Current;
 	// 보존 Pawn이 아직 차단막 안쪽의 안전한 자리에 있으면 이동시키지 않는다.
 	// Overlap을 먼저 갱신해야 현재 Room 태그와 실제 위치를 함께 판정할 수 있다.
 	if (UCapsuleComponent* Capsule = Player->GetCapsuleComponent())
 	{
 		Capsule->UpdateOverlaps();
 	}
-	if (IsPlayerInsideRoom(Player, Room)
-		&& IsSafeJoinDestination(Player, nullptr, Room, Player->GetActorLocation()))
+	// Overlap 통보가 Reset/언로드를 실행할 수 있다. 위치 유지 성공도 그 이후 수명으로 판정한다.
+	if (!IsReconnectContextCurrent(Context) || !GetReconnectContext(Current)) return false;
+	ARoomVolume* PlayerRoom = FindPlayerRoomInCombatGroup(Player, Current.RoomTag);
+	if (PlayerRoom && IsSafeJoinDestination(Player, nullptr, PlayerRoom, Player->GetActorLocation()))
 	{
+		Context = Current;
+		Context.DestinationRoomTag = PlayerRoom->GetRoomTag();
+		Context.DestinationRoomRegistrationId = RoomRuntimes.FindChecked(Context.DestinationRoomTag).RegistrationId;
 		return true;
 	}
-	if (!IsPlayerInsideRoom(Anchor, Room))
+	ARoomVolume* AnchorRoom = FindPlayerRoomInCombatGroup(Anchor, Current.RoomTag);
+	if (!AnchorRoom) Anchor = nullptr;
+	TArray<FGameplayTag> DestinationRooms;
+	if (AnchorRoom) DestinationRooms.Add(AnchorRoom->GetRoomTag());
+	else
 	{
-		Anchor = nullptr;
+		for (const auto& Entry : RoomRuntimes)
+		{
+			if (Entry.Value.bExitBlockActive && IsRoomCombatReserved(Entry.Key)
+				&& Entry.Value.RoomVolume.IsValid()) DestinationRooms.Add(Entry.Key);
+		}
+		DestinationRooms.Sort([](FGameplayTag Left, FGameplayTag Right)
+		{
+			return Left.GetTagName().LexicalLess(Right.GetTagName());
+		});
 	}
 
 	// 첫 합류와 같은 안전 검사를 사용한다. 두 플레이어가 모두 끊겼다면
 	// Anchor 없이 출입구 fallback만 검사하며, 실패한 위치에 강제로 배치하지 않는다.
-	for (const bool bFallbackOnly : {false, true})
+	for (FGameplayTag DestinationTag : DestinationRooms)
 	{
-		if (!Anchor && !bFallbackOnly)
+		const FRoomCombatRuntime* DestinationRuntime = RoomRuntimes.Find(DestinationTag);
+		if (!DestinationRuntime || !DestinationRuntime->RoomVolume.IsValid()) continue;
+		ARoomVolume* Room = DestinationRuntime->RoomVolume.Get();
+		const FGuid DestinationRegistration = DestinationRuntime->RegistrationId;
+		auto IsDestinationCurrent = [&]()
 		{
-			continue;
-		}
-		FVector Destination;
-		if (!FindJoinDestination(Player, Anchor, Room, bFallbackOnly, Destination)
-			|| !IsReconnectContextCurrent(Context)
-			|| !IsSafeJoinDestination(Player, Anchor, Room, Destination)
-			|| !Player->TeleportTo(Destination, Player->GetActorRotation(), false, true))
+			const FRoomCombatRuntime* Registered = RoomRuntimes.Find(DestinationTag);
+			return IsReconnectContextCurrent(Context) && Registered
+				&& Registered->RegistrationId == DestinationRegistration && Registered->RoomVolume.Get() == Room;
+		};
+		for (const bool bFallbackOnly : {false, true})
 		{
-			continue;
-		}
-		Player->GetCapsuleComponent()->UpdateOverlaps();
-		if (IsReconnectContextCurrent(Context) && IsPlayerInsideRoom(Player, Room))
-		{
-			UE_LOG(LogTemp, Display,
-				TEXT("[RoomCombat] Reconnect joined. Room=%s Player=%s Method=%s Generation=%d"),
-				*Context.RoomTag.ToString(), *GetNameSafe(Player),
-				bFallbackOnly ? TEXT("Fallback") : TEXT("Nearby"), Context.GameplayGeneration);
-			return true;
+			if (!Anchor && !bFallbackOnly)
+			{
+				continue;
+			}
+			FVector Destination;
+			if (!FindJoinDestination(Player, Anchor, Room, bFallbackOnly, Destination)
+				|| !IsDestinationCurrent()
+				|| !IsSafeJoinDestination(Player, Anchor, Room, Destination)
+				|| !Player->TeleportTo(Destination, Player->GetActorRotation(), false, true))
+			{
+				continue;
+			}
+			Player->GetCapsuleComponent()->UpdateOverlaps();
+			if (IsDestinationCurrent() && IsPlayerInsideRoom(Player, Room))
+			{
+				Context = Current;
+				Context.DestinationRoomTag = DestinationTag;
+				Context.DestinationRoomRegistrationId = DestinationRegistration;
+				UE_LOG(LogTemp, Display,
+					TEXT("[RoomCombat] Reconnect joined. Room=%s Player=%s Method=%s Generation=%d"),
+					*DestinationTag.ToString(), *GetNameSafe(Player),
+					bFallbackOnly ? TEXT("Fallback") : TEXT("Nearby"), Context.GameplayGeneration);
+				return true;
+			}
 		}
 	}
 	UE_LOG(LogTemp, Warning,
@@ -2150,7 +2214,7 @@ bool URoomCombatSubsystem::BeginInitialDetectionPreparation(
 	}
 
 	FRoomCombatRuntime* Runtime = RoomRuntimes.Find(RoomTag);
-	if (!Runtime || !Runtime->RoomVolume.IsValid())
+	if (!Runtime || !Runtime->RoomVolume.IsValid() || Runtime->bSavedCurrentPhasePending)
 	{
 		return false;
 	}
@@ -2349,6 +2413,7 @@ bool URoomCombatSubsystem::NotifyRoomCombatStarted(FGameplayTag RoomTag)
 		return IsRoomCombatReserved(RoomTag);
 	}
 	if (Runtime->State != ERoomCombatState::Dormant
+		|| Runtime->bSavedCurrentPhasePending
 		|| !CanReserveCombatRoom(RoomTag))
 	{
 		return false;
@@ -3490,6 +3555,29 @@ void URoomCombatSubsystem::StartAutomaticPhase(FGameplayTag RoomTag)
 	ResumeDeferredSpawning(RoomTag, RegistrationId);
 }
 
+void URoomCombatSubsystem::CaptureRoomPhaseProgressForCheckpoint(
+	TMap<FGameplayTag, FOutlierRoomPhaseProgress>& OutProgress) const
+{
+	const UGameInstance* GameInstance = GetWorld() ? GetWorld()->GetGameInstance() : nullptr;
+	const UOutlierSaveSubSystem* Saves = GameInstance ? GameInstance->GetSubsystem<UOutlierSaveSubSystem>() : nullptr;
+	OutProgress = Saves ? Saves->GetCurrentRoomPhaseProgress() : TMap<FGameplayTag, FOutlierRoomPhaseProgress>();
+	// A의 완료 경계에서도 B는 전투 중일 수 있다. 완료 경계 기록을 보존한 뒤
+	// 실제 참여 방만 덮어써 B의 첫 차수와 수락된 문/해킹 전투까지 함께 복원한다.
+	for (const auto& Entry : RoomRuntimes)
+	{
+		const FRoomCombatRuntime& Runtime = Entry.Value;
+		if (!Runtime.bExitBlockActive || !IsRoomCombatReserved(Entry.Key) || !Runtime.RoomVolume.IsValid()) continue;
+		FOutlierRoomPhaseProgress& Progress = OutProgress.FindOrAdd(Entry.Key);
+		Progress.NextPhaseIndex = Runtime.CurrentCombatPhaseIndex;
+		Progress.bExitBlockActive = true;
+		Progress.bTriggeredSequenceActive = Runtime.bTriggeredSequenceActive;
+		Progress.ActivationGroupTag = Runtime.ActiveActivationGroupTag;
+		Progress.bResumeCurrentPhase = Runtime.bSavedCurrentPhasePending
+			|| (Runtime.State == ERoomCombatState::Combat && !Runtime.bPhaseDelayPending
+				&& !Runtime.bSavedAutomaticPhasePending);
+	}
+}
+
 void URoomCombatSubsystem::RecordPhaseBoundary(
 	FGameplayTag RoomTag, const FRoomCombatRuntime& Runtime)
 {
@@ -3538,11 +3626,65 @@ void URoomCombatSubsystem::TryStartRestoredAutomaticPhase(FGameplayTag RoomTag)
 		? GetWorld()->GetSubsystem<UOutlierArenaSubsystem>() : nullptr;
 	if (!bRestoredAutomaticStartAllowed || !CanRunServerGameplay() || IsRoomStartHeld(RoomTag)
 		|| !Arena || !Arena->IsGameplayLevelsReady()
-		|| !Runtime || !Runtime->bSavedAutomaticPhasePending
+		|| !Runtime || (!Runtime->bSavedAutomaticPhasePending && !Runtime->bSavedCurrentPhasePending)
 		|| Runtime->State != ERoomCombatState::Dormant
-		|| !Phase || Phase->StartPolicy != ERoomCombatPhaseStartPolicy::Automatic
+		|| !Phase
 		|| !CanReserveCombatRoom(RoomTag))
 	{
+		return;
+	}
+
+	// 이미 시작됐던 차수는 트리거를 다시 요구하지 않는다. 완료 경계의 후속
+	// 차수와 구분하여 첫 Wave만 재구성하고, 문/해킹 오브젝트 이벤트는 재생하지 않는다.
+	if (Runtime->bSavedCurrentPhasePending)
+	{
+		if (Phase->StartPolicy == ERoomCombatPhaseStartPolicy::InitialDetection)
+		{
+			if (Runtime->TrackedAliveEnemies.IsEmpty()) return;
+			Runtime->bSavedCurrentPhasePending = false;
+			Runtime->bSavedAutomaticPhasePending = false;
+			const FGuid RegistrationId = Runtime->RegistrationId;
+			StartInitialDetectionCombat(RoomTag, *Runtime);
+			Runtime = RoomRuntimes.Find(RoomTag);
+			if (Runtime && Runtime->RegistrationId == RegistrationId && Runtime->State == ERoomCombatState::Combat)
+			{
+				BroadcastCombatEvent(RoomTag, ERoomCombatEvent::SequenceStarted,
+					Runtime->CurrentCombatPhaseIndex, Runtime->GameplayGeneration);
+				Runtime = RoomRuntimes.Find(RoomTag);
+				if (Runtime && Runtime->RegistrationId == RegistrationId && Runtime->State == ERoomCombatState::Combat)
+				{
+					if (UEnemyRoomSubsystem* EnemyRooms = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
+					{
+						EnemyRooms->NotifyRoomCombat(RoomTag, Runtime->RoomVolume->GetActorLocation(), nullptr);
+					}
+				}
+			}
+			return;
+		}
+		Runtime->State = ERoomCombatState::Combat;
+		Runtime->bDeferSpawnExecution = true;
+		SetActivationGroupActive(RoomTag, Runtime->ActiveActivationGroupTag, true);
+		if (!StartWaveSpawning(RoomTag, Runtime->CurrentCombatPhaseIndex, 0))
+		{
+			Runtime->State = ERoomCombatState::Dormant;
+			Runtime->bDeferSpawnExecution = false;
+			return;
+		}
+		Runtime->bSavedCurrentPhasePending = false;
+		Runtime->bSavedAutomaticPhasePending = false;
+		const FGuid RegistrationId = Runtime->RegistrationId;
+		BroadcastCombatEvent(RoomTag, ERoomCombatEvent::SequenceStarted,
+			Runtime->CurrentCombatPhaseIndex, Runtime->GameplayGeneration);
+		Runtime = RoomRuntimes.Find(RoomTag);
+		if (Runtime && Runtime->RegistrationId == RegistrationId && Runtime->State == ERoomCombatState::Combat)
+		{
+			// 새 Pool 대여가 이전 Room의 AI 공유 상태를 물려받지 않도록 소환 전에 전투를 연다.
+			if (UEnemyRoomSubsystem* EnemyRooms = GetWorld()->GetSubsystem<UEnemyRoomSubsystem>())
+			{
+				EnemyRooms->NotifyRoomCombat(RoomTag, Runtime->RoomVolume->GetActorLocation(), nullptr);
+			}
+		}
+		ResumeDeferredSpawning(RoomTag, RegistrationId);
 		return;
 	}
 

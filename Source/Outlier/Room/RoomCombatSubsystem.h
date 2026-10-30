@@ -318,7 +318,7 @@ public:
 	// 그룹 전투가 끝난 뒤에도 ACK가 가리키는 실제 목적지의 등록 수명을 검사한다.
 	bool IsReconnectDestinationCurrent(const FRoomCombatReconnectContext& Context) const;
 	bool TryPlaceReconnectingPlayer(AFirstPersonCharacter* Player,
-		AFirstPersonCharacter* Anchor, const FRoomCombatReconnectContext& Context);
+		AFirstPersonCharacter* Anchor, FRoomCombatReconnectContext& Context);
 	bool IsEnemyAttackBlocked(AEnemyBase* Enemy) const;
 	bool NotifyRoomCombatStarted(FGameplayTag RoomTag);
 	bool StartWaveSpawning(FGameplayTag RoomTag, int32 CombatPhaseIndex, int32 WaveIndex);

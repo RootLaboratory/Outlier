@@ -846,7 +846,7 @@ bool AOutlierGameMode::RegisterCheckpoint(AController* Controller, AOutlierCheck
 		? GetWorld()->GetSubsystem<URoomCombatSubsystem>()
 		: nullptr;
 	if (RoomCombatSubsystem
-		&& RoomCombatSubsystem->GetActiveCombatRoomTag().IsValid())
+		&& RoomCombatSubsystem->HasActiveCombatReservation())
 	{
 		// 생존 적이 잠시 0명이더라도 다음 Wave를 기다리는 중이면 체크포인트를 확정하지 않는다.
 		UE_LOG(LogTemp, Warning,
@@ -4123,6 +4123,9 @@ bool AOutlierGameMode::ValidateReconnectPawn(
 		*Previous = Current;
 		// 로딩 ACK가 이전 합류 위치를 대상으로 왔다면, 새 위치를 전달하고 다시 ACK받는다.
 		if (OldContext.RoomTag != Current.RoomTag
+			|| OldContext.CombatGroupId != Current.CombatGroupId
+			|| OldContext.DestinationRoomTag != Current.DestinationRoomTag
+			|| OldContext.DestinationRoomRegistrationId != Current.DestinationRoomRegistrationId
 			|| OldContext.RoomRegistrationId != Current.RoomRegistrationId
 			|| OldContext.GameplayGeneration != Current.GameplayGeneration
 			|| !Before.Equals(Player->GetActorLocation()))
@@ -4141,8 +4144,13 @@ bool AOutlierGameMode::ValidateReconnectPawn(
 	{
 		// Clear는 그대로 입장해도 되지만 Reset/언로드로 Room 자체가 사라졌다면
 		// 이전 차단막 안쪽 좌표를 재사용하지 않고 Arena 시작점의 스트리밍을 다시 요청한다.
-		if (!Combat->IsRoomRegistered(OldContext.RoomTag)
-			|| Combat->GetRoomState(OldContext.RoomTag) == ERoomCombatState::Dormant)
+		// 대표 A가 Clear되어도 실제 합류 방 C는 언로드됐을 수 있다. 목적지 토큰이
+		// 있으면 그 수명을 우선하며, 배치 전의 끊김 문맥만 기존 대표 방 판정을 사용한다.
+		const bool bDestinationExpired = OldContext.DestinationRoomTag.IsValid()
+			? !Combat->IsReconnectDestinationCurrent(OldContext)
+			: (!Combat->IsRoomRegistered(OldContext.RoomTag)
+				|| Combat->GetRoomState(OldContext.RoomTag) == ERoomCombatState::Dormant);
+		if (bDestinationExpired)
 		{
 			if (!MoveReconnectPawnToFallback(PlayerController, Player))
 			{
@@ -5012,6 +5020,10 @@ bool AOutlierGameMode::BuildPairCheckpointSnapshot(
 	{
 		OutSnapshot.WorldProgress = SaveSubsystem->GetCurrentWorldProgress();
 		OutSnapshot.RoomPhaseProgress = SaveSubsystem->GetCurrentRoomPhaseProgress();
+		if (const URoomCombatSubsystem* Combat = GetWorld()->GetSubsystem<URoomCombatSubsystem>())
+		{
+			Combat->CaptureRoomPhaseProgressForCheckpoint(OutSnapshot.RoomPhaseProgress);
+		}
 		OutSnapshot.DestroyedTurretIds = SaveSubsystem->GetCurrentDestroyedTurretIds();
 		OutSnapshot.FiredTutorialEvents = SaveSubsystem->GetFiredTutorialEvents();
 	}
