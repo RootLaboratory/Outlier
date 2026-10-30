@@ -392,9 +392,7 @@ EStateTreeRunStatus FEnemyChargeLastDirectionTask::EnterState(
 	LogChargeEligibility(TEXT("ChargeEnter"), Drone, Target, Eligibility);
 	if (Eligibility != EEnemyChargeEligibility::Ready) return EStateTreeRunStatus::Failed;
 	if (!FMath::IsFinite(InstanceData.TelegraphDuration) || InstanceData.TelegraphDuration < 0.0f
-		|| !FMath::IsFinite(InstanceData.ChargeSpeedMultiplier) || InstanceData.ChargeSpeedMultiplier <= 0.0f
-		|| !FMath::IsFinite(InstanceData.MaxChargeDistance) || InstanceData.MaxChargeDistance <= 0.0f
-		|| !FMath::IsFinite(InstanceData.TargetStopDistance) || InstanceData.TargetStopDistance < 0.0f)
+		|| !FMath::IsFinite(InstanceData.ChargeSpeedMultiplier) || InstanceData.ChargeSpeedMultiplier <= 0.0f)
 	{
 		LogChargeEligibility(TEXT("ChargeRejectedConfiguration"), Drone, Target, EEnemyChargeEligibility::Invalid);
 		return EStateTreeRunStatus::Failed;
@@ -406,9 +404,7 @@ EStateTreeRunStatus FEnemyChargeLastDirectionTask::EnterState(
 	const bool bCommitted = Drone->BeginCommittedSelfDestruct(
 		Target,
 		InstanceData.TelegraphDuration,
-		ChargeSpeed,
-		InstanceData.MaxChargeDistance,
-		InstanceData.TargetStopDistance);
+		ChargeSpeed);
 	LogChargeEligibility(bCommitted ? TEXT("Committed") : TEXT("CommitRejected"), Drone, Target,
 		bCommitted ? EEnemyChargeEligibility::Ready : EEnemyChargeEligibility::Invalid);
 	return bCommitted ? EStateTreeRunStatus::Running : EStateTreeRunStatus::Failed;

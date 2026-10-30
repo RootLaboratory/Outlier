@@ -189,7 +189,7 @@ void ASelfDestructDrone::NotifyHit(UPrimitiveComponent* MyComp, AActor* Other,
 	// 메시/부착물 접촉은 제외한다. 커밋된 본체의 실제 차단 충돌만 폭발한다.
 	if (!HasAuthority() || !bHasCommittedSelfDestruct || bDeathHandling || IsDead()
 		|| MyComp != GetCapsuleComponent() || !Hit.bBlockingHit
-		|| !IsValid(Other) || Other == this || Other->GetOwner() == this)
+		|| !IsValid(Other) || Other == this || Other->GetOwner() == this || Other->IsAttachedTo(this))
 	{
 		return;
 	}
@@ -201,9 +201,7 @@ void ASelfDestructDrone::NotifyHit(UPrimitiveComponent* MyComp, AActor* Other,
 bool ASelfDestructDrone::BeginCommittedSelfDestruct(
 	AActor* TargetActor,
 	float TelegraphDuration,
-	float ChargeSpeed,
-	float MaxChargeDistance,
-	float TargetStopDistance)
+	float ChargeSpeed)
 {
 	if (!IsValid(TargetActor))
 	{
@@ -211,14 +209,13 @@ bool ASelfDestructDrone::BeginCommittedSelfDestruct(
 	}
 
 	const FVector ToTarget = TargetActor->GetActorLocation() - GetActorLocation();
-	const float ChargeDistanceLimit = FMath::Min(
-		FMath::Max(MaxChargeDistance, 0.0f),
-		FMath::Max(ToTarget.Size() - FMath::Max(TargetStopDistance, 0.0f), 0.0f));
+	// AI는 목표 앞에서 멈추지 않는다. 충돌 또는 StateTree의 전조 만료까지 계속 돌진한다.
 	return BeginCommittedSelfDestructInternal(
 		ToTarget,
 		TelegraphDuration,
 		ChargeSpeed,
-		ChargeDistanceLimit);
+		false,
+		0.0f);
 }
 
 bool ASelfDestructDrone::BeginCommittedSelfDestructDirection(
@@ -231,6 +228,7 @@ bool ASelfDestructDrone::BeginCommittedSelfDestructDirection(
 		ChargeDirection,
 		TelegraphDuration,
 		ChargeSpeed,
+		true,
 		FMath::Max(MaxChargeDistance, 0.0f));
 }
 
@@ -238,6 +236,7 @@ bool ASelfDestructDrone::BeginCommittedSelfDestructInternal(
 	const FVector& ChargeDirection,
 	float TelegraphDuration,
 	float ChargeSpeed,
+	bool bLimitChargeDistance,
 	float ChargeDistanceLimit)
 {
 	if (!HasAuthority()
@@ -257,6 +256,7 @@ bool ASelfDestructDrone::BeginCommittedSelfDestructInternal(
 	CommittedChargeStartLocation = GetActorLocation();
 	ChargeSpeedState.Reset();
 	CommittedChargeSpeed = FMath::Max(ChargeSpeed, 0.0f);
+	bCommittedChargeDistanceLimited = bLimitChargeDistance;
 	CommittedChargeDistanceLimit = FMath::Max(ChargeDistanceLimit, 0.0f);
 	CommittedImpactElapsedTime = 0.0f;
 
@@ -285,8 +285,9 @@ bool ASelfDestructDrone::BeginCommittedSelfDestructInternal(
 	}
 	SetActorRotation(FRotator(0.0f, ChargeRotation.Yaw, 0.0f));
 	MulticastSelfDestructTelegraphStarted(FMath::Max(TelegraphDuration, 0.0f));
-	UE_LOG(LogEnemyChargeCollision, Log, TEXT("[Charge] Commit Drone=%s Direction=%s Speed=%.1f Distance=%.1f Duration=%.2f"),
-		*GetNameSafe(this), *CommittedChargeDirection.ToCompactString(), ChargeSpeed, ChargeDistanceLimit, TelegraphDuration);
+	UE_LOG(LogEnemyChargeCollision, Log, TEXT("[Charge] Commit Drone=%s Direction=%s Speed=%.1f DistanceLimited=%d Distance=%.1f Duration=%.2f"),
+		*GetNameSafe(this), *CommittedChargeDirection.ToCompactString(), ChargeSpeed,
+		bCommittedChargeDistanceLimited, ChargeDistanceLimit, TelegraphDuration);
 	ForceNetUpdate();
 	return true;
 }
@@ -333,23 +334,22 @@ bool ASelfDestructDrone::UpdateCommittedSelfDestructMovement(
 	}
 	CurrentImpactStrength = AccumulatedImpactVelocity.Size();
 
-	const float TraveledChargeDistance = FMath::Max(
-		FVector::DotProduct(
-			GetActorLocation() - CommittedChargeStartLocation,
-			CommittedChargeTargetDirection),
-		0.0f);
-	const float RemainingChargeDistance = FMath::Max(
-		CommittedChargeDistanceLimit - TraveledChargeDistance,
-		0.0f);
-	const float SafeDeltaTime = FMath::Max(DeltaTime, SMALL_NUMBER);
-	// 빙의 돌진과 외부 충격 속도는 기존대로 유지하고 AI의 전진 속도만 가속한다.
+	// AI는 가속만 적용하며 거리로 감속하지 않는다. 빙의 돌진의 거리 제한은 아래에서 별도로 적용한다.
 	const float ProfiledChargeSpeed = IsEnemyPossessed() ? FMath::Max(ChargeSpeed, 0.0f)
 		: ChargeSpeedState.Update(AIChargeSpeedProfile, ChargeSpeed, Movement->Velocity.Size(),
-			RemainingChargeDistance, DeltaTime, false, this, TEXT("Charge"));
-	const float LimitedChargeSpeed = FMath::Min(
-		ProfiledChargeSpeed,
-		RemainingChargeDistance / SafeDeltaTime);
-	const FVector ChargeVelocity = CommittedChargeDirection * LimitedChargeSpeed;
+			0.0f, DeltaTime, false, this, TEXT("Charge"));
+	float ForwardChargeSpeed = ProfiledChargeSpeed;
+	if (bCommittedChargeDistanceLimited)
+	{
+		const float TraveledChargeDistance = FMath::Max(
+			FVector::DotProduct(GetActorLocation() - CommittedChargeStartLocation,
+				CommittedChargeTargetDirection), 0.0f);
+		const float RemainingChargeDistance = FMath::Max(
+			CommittedChargeDistanceLimit - TraveledChargeDistance, 0.0f);
+		ForwardChargeSpeed = FMath::Min(ProfiledChargeSpeed,
+			RemainingChargeDistance / FMath::Max(DeltaTime, SMALL_NUMBER));
+	}
+	const FVector ChargeVelocity = CommittedChargeDirection * ForwardChargeSpeed;
 	const FVector FinalVelocity = ChargeVelocity + AccumulatedImpactVelocity;
 	Movement->MaxFlySpeed = FMath::Max(
 		GetRuntimeStat().MoveSpeed,
@@ -386,6 +386,7 @@ void ASelfDestructDrone::CancelCommittedSelfDestruct()
 	CommittedChargeStartLocation = FVector::ZeroVector;
 	CommittedChargeSpeed = 0.0f;
 	CommittedChargeDistanceLimit = 0.0f;
+	bCommittedChargeDistanceLimited = false;
 	CommittedImpactElapsedTime = 0.0f;
 	AccumulatedImpactVelocity = FVector::ZeroVector;
 	CurrentImpactStrength = 0.0f;
@@ -480,6 +481,7 @@ void ASelfDestructDrone::HandleDeath()
 
 	bDeathHandling = true;
 	bHasCommittedSelfDestruct = false;
+	bCommittedChargeDistanceLimited = false;
 	// EnemyBase가 Actor를 제거하기 전에 폭발 Queue와 클라이언트 연출을 먼저 확정한다.
 	if (ExplosionComponent)
 	{
@@ -509,6 +511,7 @@ void ASelfDestructDrone::ResetPoolRuntimeState()
 	CommittedChargeStartLocation = FVector::ZeroVector;
 	CommittedChargeSpeed = 0.0f;
 	CommittedChargeDistanceLimit = 0.0f;
+	bCommittedChargeDistanceLimited = false;
 	CommittedImpactElapsedTime = 0.0f;
 	SpawnAndAttachMountedExplosives();
 }

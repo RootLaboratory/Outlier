@@ -89,10 +89,13 @@ struct FEnemyChargeLastDirectionTaskInstanceData
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0"))
 	float ChargeSpeedMultiplier = 1.5f;
 
-	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0"))
+	// 기존 StateTree 저장값/바인딩 호환용이다. AI 돌진에는 두 거리 값을 적용하지 않는다.
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = Parameter, meta = (DeprecatedProperty,
+		DeprecationMessage = "AI charge continues until collision or timeout; distance is ignored."))
 	float MaxChargeDistance = 500.0f;
 
-	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0"))
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = Parameter, meta = (DeprecatedProperty,
+		DeprecationMessage = "AI charge does not stop before the target; distance is ignored."))
 	float TargetStopDistance = 100.0f;
 
 	UPROPERTY(EditAnywhere, Category = Output)
