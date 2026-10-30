@@ -133,10 +133,14 @@ struct FEnemyTurretSniperShotTaskInstanceData
 	TObjectPtr<AAutoTurret> Turret = nullptr;
 	UPROPERTY(EditAnywhere, Category = Input, meta = (Optional))
 	TObjectPtr<AActor> TargetActor = nullptr;
+	// 중간에 CurrentWeapon이 바뀌어도 시작한 무기의 연출을 정리한다.
+	UPROPERTY(Transient)
+	TObjectPtr<ARangedWeaponBase> ActiveWeapon = nullptr;
 	float ElapsedTime = 0.0f;
 	FVector LockedAimLocation = FVector::ZeroVector;
 	EEnemyTurretSniperTaskPhase Phase = EEnemyTurretSniperTaskPhase::LaserTelegraphAndTracking;
 	bool bAttackStarted = false;
+	bool bLoggedAttackBlocked = false;
 };
 
 USTRUCT(meta = (DisplayName = "Enemy Turret Sniper Shot", Category = "Enemy|Turret"))

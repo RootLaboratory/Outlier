@@ -17,6 +17,8 @@
 #include "Enemy/EnemyAdaptationSubsystem.h"
 #include "Enemy/EnemyRoomSubsystem.h"
 #include "Enemy/Death/OutlierDeathDebrisActor.h"
+#include "GeometryCollection/GeometryCollectionObject.h"
+#include "UObject/StrongObjectPtr.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameplayEffect.h"
 #include "Animation/AnimInstance.h"
@@ -554,6 +556,18 @@ void AEnemyBase::FinishPoolReturn(int32 GameplayGeneration, int32 LeaseSerial)
 		return;
 	}
 
+	// 생존 상태의 전투 이탈도 원래 위치에 파편을 남긴다. 사망 경로의 요청은 중복하지 않는다.
+	if (PoolState == EEnemyPoolState::CombatActive && !bDeathCleanupPerformed)
+	{
+		UE_LOG(LogOutlier, Display, TEXT("[DeathDebris] PoolReturn Enemy=%s Collection=%s Generation=%d Lease=%d"),
+			*GetName(), *GetNameSafe(DeathDebrisCollection), GameplayGeneration, LeaseSerial);
+		if (DeathDebrisCollection)
+		{
+			FlushNetDormancy();
+			MulticastPlayDeathDebris(GetMesh() ? GetMesh()->GetComponentTransform() : GetActorTransform(), GetVelocity());
+		}
+	}
+
 	// 전투 집계와 AI 공유 등록을 먼저 끊고 Idle로 옮긴다. 반환 자체는 처치 이벤트가 아니다.
 	if (UEnemyAdaptationSubsystem* AdaptationSubsystem = GetEnemyAdaptationSubsystem())
 	{
@@ -957,6 +971,9 @@ void AEnemyBase::ResetPoolRuntimeState()
 
 void AEnemyBase::ResetPoolPresentationState()
 {
+	// 이전 대여의 지연 파편은 재생하되, 다시 대여된 원본 메시를 감추지 않는다.
+	++DeathDebrisPresentationSerial;
+	DeathDebrisTimerHandle.Invalidate();
 	for (const FSourceMeshVisibility& SavedState : SavedSourceMeshVisibility)
 	{
 		if (USceneComponent* Component = SavedState.Component.Get())
@@ -998,7 +1015,6 @@ void AEnemyBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	{
 		PostProcessSubsystem->StopEnemySpawnPresentation(this);
 	}
-	GetWorldTimerManager().ClearTimer(DeathDebrisTimerHandle);
 	CancelPossessionProcess();
 	ResetPossessedAttackInput();
 	EndPossessedImpactInputLock();
@@ -3538,12 +3554,14 @@ void AEnemyBase::RemoveRoomTargetObserver()
 
 void AEnemyBase::HandleDeath()
 {
+	UE_LOG(LogOutlier, Display, TEXT("[DeathDebris] Death Enemy=%s Collection=%s Generation=%d Lease=%d"),
+		*GetName(), *GetNameSafe(DeathDebrisCollection), PoolGameplayGeneration, PoolLeaseSerial);
 	// 파편 컬렉션이 지정된 적만 연출을 탄다. 없으면 기존 사망 동작 그대로다.
 	// Super 가 아래에서 SetLifeSpan 으로 파괴를 예약하므로 그 전에 브로드캐스트해야
 	// 액터 채널이 닫히기 전에 RPC 가 나간다 ( DeathDestroyDelay 주석 참고 ).
 	if (DeathDebrisCollection)
 	{
-		MulticastPlayDeathDebris(GetVelocity());
+		MulticastPlayDeathDebris(GetMesh() ? GetMesh()->GetComponentTransform() : GetActorTransform(), GetVelocity());
 	}
 
 	PerformDeathCleanup();
@@ -3568,60 +3586,45 @@ void AEnemyBase::HandleDeath()
 	}
 }
 
-void AEnemyBase::MulticastPlayDeathDebris_Implementation(FVector_NetQuantize100 DeathVelocity)
+void AEnemyBase::MulticastPlayDeathDebris_Implementation(FTransform SourceTransform, FVector_NetQuantize100 DeathVelocity)
 {
 	// 판정 제거는 데디케이티드 서버를 포함한 모든 인스턴스에서 한다.
-	// 파편으로 대체된 시체가 DeathDestroyDelay 동안 트레이스를 막으면 안 된다.
 	DisableDeathCollision();
+	if (GetNetMode() == NM_DedicatedServer) return;
 
-	if (GetNetMode() == NM_DedicatedServer)
+	// 월드 소유 타이머와 스냅샷으로 풀 반환/재대여/파괴와 독립적으로 재생한다.
+	const uint32 PresentationSerial = ++DeathDebrisPresentationSerial;
+	const TWeakObjectPtr<AEnemyBase> WeakSource(this);
+	const TWeakObjectPtr<UWorld> WeakWorld(GetWorld());
+	const TStrongObjectPtr<UGeometryCollection> Collection(DeathDebrisCollection);
+	const FGeometryCollectionDeathProfile Profile = DeathDebrisProfile;
+	const auto SpawnDebris = [WeakSource, WeakWorld, Collection, Profile, SourceTransform, DeathVelocity, PresentationSerial]()
 	{
-		return;
-	}
-
-	// Geometry Collection 은 스켈레톤이 없는, 미리 프랙처된 리지드 지오메트리다.
-	// 본 포즈는 무관하고 메시 컴포넌트의 월드 트랜스폼만 있으면 원본 자리에 정확히 얹힌다.
-	const USkeletalMeshComponent* SourceMesh = GetMesh();
-	if (!SourceMesh)
-	{
-		return;
-	}
-
-	const FTransform SourceTransform = SourceMesh->GetComponentTransform();
+		UWorld* World = WeakWorld.Get();
+		if (!World) return;
+		const AOutlierDeathDebrisActor* Debris = AOutlierDeathDebrisActor::SpawnLocalDebris(
+			World, Collection.Get(), SourceTransform, FVector(DeathVelocity), Profile);
+		AEnemyBase* Source = WeakSource.Get();
+		// 새 대여의 메시를 이전 파편 연출이 숨기지 않는다. 생성 실패 시에도 원본은 유지한다.
+		if (Debris && Source && Source->DeathDebrisPresentationSerial == PresentationSerial
+			&& (!Source->IsPoolManaged() || Source->PoolState != EEnemyPoolState::Idle))
+		{
+			Source->HideSourceMeshes();
+		}
+		UE_LOG(LogOutlier, Display, TEXT("[DeathDebris] Spawn Source=%s Success=%d Collection=%s Location=%s"),
+			*GetNameSafe(Source), Debris != nullptr, *GetNameSafe(Collection.Get()), *SourceTransform.GetLocation().ToCompactString());
+	};
 	const float Delay = FMath::Max(DeathDebrisDelay, 0.0f);
+	UE_LOG(LogOutlier, Display, TEXT("[DeathDebris] Requested Enemy=%s PoolState=%s Generation=%d Lease=%d Delay=%.3f Collection=%s Location=%s"),
+		*GetName(), *UEnum::GetValueAsString(PoolState), PoolGameplayGeneration, PoolLeaseSerial, Delay,
+		*GetNameSafe(DeathDebrisCollection), *SourceTransform.GetLocation().ToCompactString());
 	if (Delay > KINDA_SMALL_NUMBER)
 	{
-		GetWorldTimerManager().SetTimer(
-			DeathDebrisTimerHandle,
-			FTimerDelegate::CreateUObject(
-				this,
-				&AEnemyBase::SpawnDeathDebris,
-				SourceTransform,
-				FVector(DeathVelocity)),
-			Delay,
-			false);
+		GetWorldTimerManager().SetTimer(DeathDebrisTimerHandle,
+			FTimerDelegate::CreateLambda(SpawnDebris), Delay, false);
 		return;
 	}
-
-	SpawnDeathDebris(SourceTransform, FVector(DeathVelocity));
-}
-
-void AEnemyBase::SpawnDeathDebris(
-	FTransform SourceTransform,
-	FVector DeathVelocity)
-{
-	const AOutlierDeathDebrisActor* Debris = AOutlierDeathDebrisActor::SpawnLocalDebris(
-		GetWorld(),
-		DeathDebrisCollection,
-		SourceTransform,
-		DeathVelocity,
-		DeathDebrisProfile);
-
-	// 파편이 실제로 떴을 때만 원본을 감춘다. 실패했는데 감추면 적이 그냥 증발한다.
-	if (Debris)
-	{
-		HideSourceMeshes();
-	}
+	SpawnDebris();
 }
 
 void AEnemyBase::DisableDeathCollision()

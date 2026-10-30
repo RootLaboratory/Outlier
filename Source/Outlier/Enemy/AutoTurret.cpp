@@ -215,6 +215,12 @@ float AAutoTurret::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 	const UPrimitiveComponent* HitComponent = Request.HitResult.GetComponent();
 	const FName HitBoneName = Request.HitResult.BoneName;
 	const FString DamageTagString = Request.DamageTag.ToString();
+	if (IsTurretDiagnosticsEnabled())
+	{
+		UE_LOG(LogOutlier, Display, TEXT("[TurretDiag][Damage] Received Turret=%s Authority=%d Active=%d Lifecycle=%d Team=%d CanBeDamaged=%d Dead=%d HP=%.2f Damage=%.2f Component=%s Bone=%s Tag=%s Causer=%s"),
+			*GetName(), HasAuthority(), IsCombatActive(), static_cast<int32>(TurretLifecycleState), GetGenericTeamId().GetId(), CanBeDamaged(), IsDead(), GetCurrentHealth(),
+			Request.DamageAmount, *GetNameSafe(HitComponent), *HitBoneName.ToString(), *DamageTagString, *GetNameSafe(Request.DamageCauser));
+	}
 
 	if (!IsCombatActive())
 	{
@@ -262,7 +268,14 @@ float AAutoTurret::ReceiveOutlierDamage(const FOutlierDamageRequest& Request)
 		}
 	}
 
-	return Super::ReceiveOutlierDamage(Request);
+	const float HealthBefore = GetCurrentHealth();
+	const float AppliedDamage = Super::ReceiveOutlierDamage(Request);
+	if (IsTurretDiagnosticsEnabled())
+	{
+		UE_LOG(LogOutlier, Display, TEXT("[TurretDiag][Damage] Result Turret=%s Requested=%.2f Applied=%.2f HP=%.2f->%.2f Authority=%d CanBeDamaged=%d Dead=%d Tag=%s Causer=%s"),
+			*GetName(), Request.DamageAmount, AppliedDamage, HealthBefore, GetCurrentHealth(), HasAuthority(), CanBeDamaged(), IsDead(), *DamageTagString, *GetNameSafe(Request.DamageCauser));
+	}
+	return AppliedDamage;
 }
 
 FGenericTeamId AAutoTurret::GetGenericTeamId() const
@@ -856,34 +869,76 @@ void AAutoTurret::PlayDeathMontageIfNeeded()
 	UAnimInstance* AnimInstance = TurretHeadMesh ? TurretHeadMesh->GetAnimInstance() : nullptr;
 	if (!AnimInstance || !DeathMontage || AnimInstance->Montage_IsActive(DeathMontage))
 	{
+		if (IsTurretDiagnosticsEnabled())
+		{
+			UE_LOG(LogOutlier, Display, TEXT("[TurretDiag][DeathAnim] PlaySkipped Turret=%s NetMode=%d Reason=%s Mesh=%s AnimInstance=%s Montage=%s State=%d"),
+				*GetName(), static_cast<int32>(GetNetMode()), !AnimInstance ? TEXT("NoAnimInstance") : !DeathMontage ? TEXT("NoDeathMontage") : TEXT("AlreadyActive"),
+				*GetNameSafe(TurretHeadMesh), *GetNameSafe(AnimInstance), *GetNameSafe(DeathMontage), static_cast<int32>(TurretLifecycleState));
+		}
 		return;
 	}
 	StopMontageOnMesh(TurretHeadMesh);
-	AnimInstance->Montage_Play(DeathMontage);
+	// 기존 종료 delegate를 교체하지 않고 관측만 추가한다.
+	AnimInstance->OnMontageEnded.AddUniqueDynamic(this, &AAutoTurret::LogDeathMontageEnded);
+	const float PlayResult = AnimInstance->Montage_Play(DeathMontage);
+	if (IsTurretDiagnosticsEnabled())
+	{
+		UE_LOG(LogOutlier, Display, TEXT("[TurretDiag][DeathAnim] PlayResult Turret=%s Authority=%d NetMode=%d Mesh=%s AnimInstance=%s Montage=%s Result=%.3f Active=%d Playing=%d Position=%.3f MeshTick=%d AnimTickOption=%d Slot=%s Generation=%d Serial=%d"),
+			*GetName(), HasAuthority(), static_cast<int32>(GetNetMode()), *GetNameSafe(TurretHeadMesh), *GetNameSafe(AnimInstance), *GetNameSafe(DeathMontage),
+			PlayResult, AnimInstance->Montage_IsActive(DeathMontage), AnimInstance->Montage_IsPlaying(DeathMontage), AnimInstance->Montage_GetPosition(DeathMontage),
+			TurretHeadMesh->IsComponentTickEnabled(), static_cast<int32>(TurretHeadMesh->VisibilityBasedAnimTickOption),
+			DeathMontage->SlotAnimTracks.IsEmpty() ? TEXT("None") : *DeathMontage->SlotAnimTracks[0].SlotName.ToString(), RoomWaveGameplayGeneration, RoomWaveActivationSerial);
+	}
+}
+
+void AAutoTurret::LogDeathMontageEnded(UAnimMontage* Montage, bool bInterrupted)
+{
+	if (Montage == DeathMontage && IsTurretDiagnosticsEnabled())
+	{
+		UE_LOG(LogOutlier, Display, TEXT("[TurretDiag][DeathAnim] Ended Turret=%s Authority=%d NetMode=%d Montage=%s Interrupted=%d State=%d Generation=%d Serial=%d"),
+			*GetName(), HasAuthority(), static_cast<int32>(GetNetMode()), *GetNameSafe(Montage), bInterrupted,
+			static_cast<int32>(TurretLifecycleState), RoomWaveGameplayGeneration, RoomWaveActivationSerial);
+	}
 }
 
 void AAutoTurret::ApplyDeadPersistentPose()
 {
 	if (!TurretHeadMesh || !DeathMontage)
 	{
+		if (IsTurretDiagnosticsEnabled())
+		{
+			UE_LOG(LogOutlier, Warning, TEXT("[TurretDiag][DeathAnim] FinalPoseSkipped Turret=%s NetMode=%d Reason=MissingMeshOrMontage Mesh=%s Montage=%s"),
+				*GetName(), static_cast<int32>(GetNetMode()), *GetNameSafe(TurretHeadMesh), *GetNameSafe(DeathMontage));
+		}
 		return;
 	}
 
 	UAnimInstance* AnimInstance = TurretHeadMesh->GetAnimInstance();
 	if (!AnimInstance)
 	{
+		if (IsTurretDiagnosticsEnabled())
+		{
+			UE_LOG(LogOutlier, Warning, TEXT("[TurretDiag][DeathAnim] FinalPoseSkipped Turret=%s NetMode=%d Reason=NoAnimInstance"), *GetName(), static_cast<int32>(GetNetMode()));
+		}
 		return;
 	}
 
 	// 실시간 사망 연출에서는 현재 몽타주를 마지막 프레임에 고정하고,
 	// 체크포인트 직접 복원에서는 같은 최종 프레임만 즉시 구성한다.
+	float PlayResult = -1.0f;
 	if (!AnimInstance->Montage_IsActive(DeathMontage))
 	{
-		AnimInstance->Montage_Play(DeathMontage);
+		PlayResult = AnimInstance->Montage_Play(DeathMontage);
 	}
 	const float FinalPoseTime = FMath::Max(DeathMontage->GetPlayLength() - KINDA_SMALL_NUMBER, 0.0f);
 	AnimInstance->Montage_SetPosition(DeathMontage, FinalPoseTime);
 	AnimInstance->Montage_Pause(DeathMontage);
+	if (IsTurretDiagnosticsEnabled())
+	{
+		UE_LOG(LogOutlier, Display, TEXT("[TurretDiag][DeathAnim] FinalPose Turret=%s NetMode=%d Montage=%s PlayResult=%.3f RequestedPosition=%.3f Position=%.3f Active=%d Playing=%d"),
+			*GetName(), static_cast<int32>(GetNetMode()), *GetNameSafe(DeathMontage), PlayResult, FinalPoseTime,
+			AnimInstance->Montage_GetPosition(DeathMontage), AnimInstance->Montage_IsActive(DeathMontage), AnimInstance->Montage_IsPlaying(DeathMontage));
+	}
 }
 
 bool AAutoTurret::RestoreDeadPersistentState()

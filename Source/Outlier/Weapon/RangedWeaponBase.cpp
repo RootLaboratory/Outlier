@@ -636,6 +636,19 @@ void ARangedWeaponBase::ApplyOwnerDamageModifiers(FOutlierDamageRequest& Request
 	Request.DamageAmount *= DamageMultiplier;
 }
 
+bool ARangedWeaponBase::ResolveShotTransform(FName FiredMuzzleSocketName, FTransform& OutTransform) const
+{
+	if (!WeaponOwner || !WeaponOwner->GetController()) return false;
+	FVector ViewLocation;
+	FRotator ViewRotation;
+	WeaponOwner->GetController()->GetPlayerViewPoint(ViewLocation, ViewRotation);
+	FVector Start = ViewLocation;
+	FVector Direction = ViewRotation.Vector().GetSafeNormal();
+	TryResolveWallOffsetMuzzleShot(WeaponOwner, FiredMuzzleSocketName, ViewLocation, ViewRotation, Start, Direction);
+	OutTransform = FTransform(Direction.Rotation(), Start);
+	return true;
+}
+
 void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPlayShotSound,
 	const TSharedPtr<FOutlierStealthSession>& StealthSession)
 {
@@ -677,15 +690,10 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 
 	OwnerCharacter->GetController()->GetPlayerViewPoint(CameraLocation, CameraRotation);
 
-	FVector Start = CameraLocation;
-	FVector BaseDirection = CameraRotation.Vector().GetSafeNormal();
-	TryResolveWallOffsetMuzzleShot(
-		OwnerCharacter,
-		FiredMuzzleSocketName,
-		CameraLocation,
-		CameraRotation,
-		Start,
-		BaseDirection);
+	FTransform ShotTransform;
+	if (!ResolveShotTransform(FiredMuzzleSocketName, ShotTransform)) return;
+	FVector Start = ShotTransform.GetLocation();
+	FVector BaseDirection = ShotTransform.GetUnitAxis(EAxis::X);
 	FCollisionQueryParams Params;
 	AddWeaponTraceIgnoredActors(Params);
 	Params.bReturnPhysicalMaterial = true;
@@ -834,13 +842,17 @@ void ARangedWeaponBase::FireShotFromMuzzle(FName FiredMuzzleSocketName, bool bPl
 			PlaySurfaceImpactSound(Hit, ImpactSurface, WeaponOwner && WeaponOwner->IsPlayerControlled()
 				&& !Cast<AEnemyBase>(HitActor));
 		}
-		MulticastPlayFireFX(
+		OnHitscanShotResolved(Start, TraceEndPoint, ImpactNormal, bHit, FiredMuzzleSocketName);
+		if (ShouldPlayDefaultFireFX())
+		{
+			MulticastPlayFireFX(
 			TraceEndPoint,
 			ImpactNormal,
 			HitActor,
 			GetNormalizedLastShotDirection(),
 			FiredMuzzleSocketName, bHit,
 			ImpactSurface, ImpactAudioContextTag);
+		}
 		
 		// Weapon fire uses the shared tag-driven world-audio path. The server resolves
 		// the weighted variant once and delivers it to relevant clients, so enemy,

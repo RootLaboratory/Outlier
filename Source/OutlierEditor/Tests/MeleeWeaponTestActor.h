@@ -41,6 +41,13 @@ public:
 	}
 
 	void SetTestMeleeTraceRadius(float InRadius) { TraceRadius = InRadius; }
+	void SweepForTest(const FVector& From, const FVector& To)
+	{
+		SweepMeleeTrace(From, From + FVector::UpVector * 10.0f, To, To + FVector::UpVector * 10.0f);
+	}
+	void ResetSwingForTest() { ResetMeleeTraceState(); }
+	int32 GetDamageTargetCountForTest() const { return HitActorsThisSwing.Num(); }
+	int32 GetSurfaceTargetCountForTest() const { return SurfaceActorsThisSwing.Num(); }
 
 	void ResetAppliedTarget()
 	{

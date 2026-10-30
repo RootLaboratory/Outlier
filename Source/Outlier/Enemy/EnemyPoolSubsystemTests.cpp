@@ -13,6 +13,7 @@
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
+#include "GeometryCollection/GeometryCollectionObject.h"
 #include "Misc/AutomationTest.h"
 #if WITH_EDITOR
 #include "Misc/DataValidation.h"
@@ -270,6 +271,40 @@ bool FEnemyPoolRuntimeTest::RunTest(const FString& Parameters)
 			SecondLeaseSerial);
 		TestEqual(TEXT("A stale death callback cannot return a newer lease"),
 			MaxLeaseA->GetEnemyPoolState(), EEnemyPoolState::CombatActive);
+	}
+
+	if (MaxLeaseA)
+	{
+		// 빈 컬렉션으로 물리 파편 없이 요청/타이머 수명만 검증한다.
+		UGeometryCollection* Collection = NewObject<UGeometryCollection>(World);
+		MaxLeaseA->SetDeathDebrisForPoolTesting(Collection, 0.5f);
+		TestTrue(TEXT("Living Enemy returns without a death event"), Pool->ReturnEnemy(
+			MaxLeaseA, MaxLeaseA->GetPoolGameplayGeneration(), MaxLeaseA->GetPoolLeaseSerial()));
+		const FTimerHandle LivingDebrisTimer = MaxLeaseA->GetDeathDebrisTimerForPoolTesting();
+		TestTrue(TEXT("Living pool return preserves delayed debris after clearing Enemy timers"),
+			World->GetTimerManager().IsTimerActive(LivingDebrisTimer));
+		TestFalse(TEXT("Cosmetic pool return does not mark a living Enemy dead"), MaxLeaseA->IsDead());
+		AEnemyBase* ReusedEnemy = Pool->LeaseEnemy(AEnemyBase::StaticClass(),
+			FTransform(FVector(3000.0, 0.0, 100.0)), FirstContext);
+		TestEqual(TEXT("Returned fixture is reused"), ReusedEnemy, MaxLeaseA);
+		if (ReusedEnemy)
+		{
+			TestTrue(TEXT("Releasing the old timer handle does not cancel its presentation"),
+				World->GetTimerManager().IsTimerActive(LivingDebrisTimer));
+			ReusedEnemy->SetPoolPresentationAutoCompleteForTesting(false);
+			ReusedEnemy->BeginDeathForPoolTesting();
+			const FTimerHandle DeathDebrisTimer = ReusedEnemy->GetDeathDebrisTimerForPoolTesting();
+			TestTrue(TEXT("New death schedules a separate debris timer"),
+				World->GetTimerManager().IsTimerActive(DeathDebrisTimer) && DeathDebrisTimer != LivingDebrisTimer);
+			TestTrue(TEXT("New death does not overwrite the old lease's delayed debris"),
+				World->GetTimerManager().IsTimerActive(LivingDebrisTimer));
+			ReusedEnemy->CompletePoolDeathPresentation(
+				ReusedEnemy->GetPoolGameplayGeneration(), ReusedEnemy->GetPoolLeaseSerial());
+			TestTrue(TEXT("Death pool return preserves its pending debris"),
+				World->GetTimerManager().IsTimerActive(DeathDebrisTimer));
+			TestTrue(TEXT("Death pool return does not request duplicate debris"),
+				ReusedEnemy->GetDeathDebrisTimerForPoolTesting() == DeathDebrisTimer);
+		}
 	}
 
 	Pool->DestroyPool();
