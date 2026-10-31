@@ -12,6 +12,7 @@
 #include "FirstPersonInputConfig.h"
 #include "Interface/InteractableInterface.h"
 #include "Interaction/InteractableComponent.h"
+#include "Interaction/InteractionNode.h"
 #include "FirstPerson/FirstPersonPlayerController.h"
 #include "EnhancedInputComponent.h"
 #include "Engine/LocalPlayer.h"
@@ -319,13 +320,15 @@ void AFirstPersonCharacter::TryInteract()
 				CancelLocalHoldInteract(true);
 			}
 
-			if (!InteractableComponent->BeginHoldInteract(this))
+			const int32 HoldAttemptId = TargetActor->IsA<AInteractionNode>() ? ++NextNodeHoldAttemptId : 0;
+			if (!InteractableComponent->BeginHoldInteract(this, HoldAttemptId))
 			{
 				return;
 			}
 
 			HoldingInteractActor = TargetActor;
-			ServerBeginHoldInteract(TargetActor);
+			LocalNodeHoldAttemptId = HoldAttemptId;
+			ServerBeginHoldInteract(TargetActor, HoldAttemptId);
 			return;
 		}
 	}
@@ -361,14 +364,16 @@ void AFirstPersonCharacter::NotifyHoldInteractCompleted(AActor* CompletedActor)
 	}
 
 	bAwaitingHoldInteractResult = true;
-	ServerInteract(CompletedActor);
+	ServerInteract(CompletedActor, LocalNodeHoldAttemptId);
 }
 
 void AFirstPersonCharacter::CancelLocalHoldInteract(bool bNotifyServer)
 {
 	AActor* CanceledActor = HoldingInteractActor.Get();
+	const int32 HoldAttemptId = LocalNodeHoldAttemptId;
 	if (!CanceledActor)
 	{
+		LocalNodeHoldAttemptId = 0;
 		bAwaitingHoldInteractResult = false;
 		return;
 	}
@@ -387,11 +392,12 @@ void AFirstPersonCharacter::CancelLocalHoldInteract(bool bNotifyServer)
 	}
 
 	HoldingInteractActor = nullptr;
+	LocalNodeHoldAttemptId = 0;
 	bAwaitingHoldInteractResult = false;
 
 	if (bNotifyServer)
 	{
-		ServerCancelHoldInteract(CanceledActor);
+		ServerCancelHoldInteract(CanceledActor, HoldAttemptId);
 	}
 }
 
@@ -399,12 +405,19 @@ void AFirstPersonCharacter::NotifyHoldInteractInvalidated(AActor* TargetActor)
 {
 	if (HasAuthority())
 	{
-		ClientOnHoldInteractFailed(TargetActor);
+		ClientOnHoldInteractFailed(TargetActor, ServerNodeHoldActor == TargetActor ? ServerNodeHoldAttemptId : 0);
 	}
 }
 
-void AFirstPersonCharacter::ServerBeginHoldInteract_Implementation(AActor* TargetActor)
+void AFirstPersonCharacter::ServerBeginHoldInteract_Implementation(AActor* TargetActor, int32 HoldAttemptId)
 {
+	if (TargetActor && TargetActor->IsA<AInteractionNode>())
+	{
+		// Reliable RPC의 오래된 시작 요청은 현재 노드 세션을 취소하거나 다시 시작하지 못한다.
+		if (HoldAttemptId <= ServerNodeHoldAttemptId) return;
+		ServerNodeHoldAttemptId = HoldAttemptId;
+		ServerNodeHoldActor = TargetActor;
+	}
 	IInteractableInterface* Interactable = Cast<IInteractableInterface>(TargetActor);
 	UInteractableComponent* InteractableComponent =
 		Interactable ? Interactable->GetInteractableComponent() : nullptr;
@@ -415,39 +428,42 @@ void AFirstPersonCharacter::ServerBeginHoldInteract_Implementation(AActor* Targe
 		|| !IsInteractTargetByTrace(TargetActor)
 		|| !InteractableComponent
 		|| !InteractableComponent->RequiresHoldInteract()
-		|| !InteractableComponent->BeginHoldInteract(this))
+		|| !InteractableComponent->BeginHoldInteract(this, HoldAttemptId))
 	{
 		if (InteractableComponent)
 		{
 			InteractableComponent->EndHoldInteract(this, true);
 		}
-		ClientOnHoldInteractFailed(TargetActor);
+		ClientOnHoldInteractFailed(TargetActor, HoldAttemptId);
 	}
 }
 
-void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor)
+void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor, int32 HoldAttemptId)
 {
+	const bool bNodeInteraction = TargetActor && TargetActor->IsA<AInteractionNode>();
+	if (bNodeInteraction && HoldAttemptId != 0
+		&& (HoldAttemptId != ServerNodeHoldAttemptId || ServerNodeHoldActor != TargetActor)) return;
 	if (!TargetActor || !CanInteract())
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[Server] %s ServerInteract blocked Target=%s"), *GetName(), *GetNameSafe(TargetActor));
-		ServerCancelHoldInteract_Implementation(TargetActor);
-		ClientOnHoldInteractFailed(TargetActor);
+		ServerCancelHoldInteract_Implementation(TargetActor, HoldAttemptId);
+		ClientOnHoldInteractFailed(TargetActor, HoldAttemptId);
 		return;
 	}
 
 	if (!GetController())
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[Server] %s ServerInteract blocked: controller is null"), *GetName());
-		ServerCancelHoldInteract_Implementation(TargetActor);
-		ClientOnHoldInteractFailed(TargetActor);
+		ServerCancelHoldInteract_Implementation(TargetActor, HoldAttemptId);
+		ClientOnHoldInteractFailed(TargetActor, HoldAttemptId);
 		return;
 	}
 
 	if (!IsInteractTargetByTrace(TargetActor))
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[Server] %s ServerInteract validation failed Requested=%s"), *GetName(), *GetNameSafe(TargetActor));
-		ServerCancelHoldInteract_Implementation(TargetActor);
-		ClientOnHoldInteractFailed(TargetActor);
+		ServerCancelHoldInteract_Implementation(TargetActor, HoldAttemptId);
+		ClientOnHoldInteractFailed(TargetActor, HoldAttemptId);
 		return;
 	}
 
@@ -457,16 +473,22 @@ void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor)
 		if (!InteractableComponent
 			|| !InteractableComponent->CanInteract(GetOwnedGameplayTagsForQuery()))
 		{
-			ServerCancelHoldInteract_Implementation(TargetActor);
-			ClientOnHoldInteractFailed(TargetActor);
+			ServerCancelHoldInteract_Implementation(TargetActor, HoldAttemptId);
+			ClientOnHoldInteractFailed(TargetActor, HoldAttemptId);
 			return;
 		}
 
 		const bool bHoldInteraction = InteractableComponent->RequiresHoldInteract();
+		// 번호 없는 요청은 최초 HoldReady 진입만 허용하고, 실제 누르기 완료에는 시도 번호가 필요하다.
+		if (bNodeInteraction && bHoldInteraction != (HoldAttemptId != 0))
+		{
+			ClientOnHoldInteractFailed(TargetActor, HoldAttemptId);
+			return;
+		}
 		if (bHoldInteraction && !InteractableComponent->CanCommitHoldInteraction(this))
 		{
-			ServerCancelHoldInteract_Implementation(TargetActor);
-			ClientOnHoldInteractFailed(TargetActor);
+			ServerCancelHoldInteract_Implementation(TargetActor, HoldAttemptId);
+			ClientOnHoldInteractFailed(TargetActor, HoldAttemptId);
 			return;
 		}
 
@@ -476,8 +498,8 @@ void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor)
 				TEXT("[Server] %s ServerInteract rejected by target Target=%s"),
 				*GetName(),
 				*GetNameSafe(TargetActor));
-			ServerCancelHoldInteract_Implementation(TargetActor);
-			ClientOnHoldInteractFailed(TargetActor);
+			ServerCancelHoldInteract_Implementation(TargetActor, HoldAttemptId);
+			ClientOnHoldInteractFailed(TargetActor, HoldAttemptId);
 			return;
 		}
 
@@ -501,18 +523,20 @@ void AFirstPersonCharacter::ServerInteract_Implementation(AActor* TargetActor)
 		}
 
 		UE_LOG(LogTemp, Log, TEXT("[Server] %s ServerInteract success Target=%s"), *GetName(), *GetNameSafe(TargetActor));
-		ClientOnInteractSucceeded(TargetActor, FlowResult); //InteractObject UI Update;
+		ClientOnInteractSucceeded(TargetActor, FlowResult, HoldAttemptId); //InteractObject UI Update;
 	}
 	else
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[Server] %s ServerInteract failed: target not interactable Target=%s"), *GetName(), *GetNameSafe(TargetActor));
-		ServerCancelHoldInteract_Implementation(TargetActor);
-		ClientOnHoldInteractFailed(TargetActor);
+		ServerCancelHoldInteract_Implementation(TargetActor, HoldAttemptId);
+		ClientOnHoldInteractFailed(TargetActor, HoldAttemptId);
 	}
 }
 
-void AFirstPersonCharacter::ServerCancelHoldInteract_Implementation(AActor* TargetActor)
+void AFirstPersonCharacter::ServerCancelHoldInteract_Implementation(AActor* TargetActor, int32 HoldAttemptId)
 {
+	if (TargetActor && TargetActor->IsA<AInteractionNode>()
+		&& (HoldAttemptId == 0 || HoldAttemptId != ServerNodeHoldAttemptId || ServerNodeHoldActor != TargetActor)) return;
 	if (IInteractableInterface* Interactable = Cast<IInteractableInterface>(TargetActor))
 	{
 		if (UInteractableComponent* InteractableComponent = Interactable->GetInteractableComponent())
@@ -524,8 +548,13 @@ void AFirstPersonCharacter::ServerCancelHoldInteract_Implementation(AActor* Targ
 
 void AFirstPersonCharacter::ClientOnInteractSucceeded_Implementation(
 	AActor* TargetActor,
-	EInteractionFlowResult FlowResult)
+	EInteractionFlowResult FlowResult,
+	int32 HoldAttemptId)
 {
+	// 늦은 HoldReady(번호 0)도 새 누르기를 정리하지 못하도록 노드는 모든 응답 번호를 확인한다.
+	if (TargetActor && TargetActor->IsA<AInteractionNode>()
+		&& (HoldAttemptId != LocalNodeHoldAttemptId
+			|| (HoldAttemptId != 0 && HoldingInteractActor != TargetActor))) return;
 	const bool bCompletedHoldInteract =
 		bAwaitingHoldInteractResult &&
 		HoldingInteractActor == TargetActor;
@@ -541,6 +570,7 @@ void AFirstPersonCharacter::ClientOnInteractSucceeded_Implementation(
 		}
 
 		HoldingInteractActor = nullptr;
+		LocalNodeHoldAttemptId = 0;
 		bAwaitingHoldInteractResult = false;
 	}
 
@@ -558,8 +588,10 @@ void AFirstPersonCharacter::ClientOnInteractSucceeded_Implementation(
 	}
 }
 
-void AFirstPersonCharacter::ClientOnHoldInteractFailed_Implementation(AActor* TargetActor)
+void AFirstPersonCharacter::ClientOnHoldInteractFailed_Implementation(AActor* TargetActor, int32 HoldAttemptId)
 {
+	if ((HoldAttemptId != 0 || LocalNodeHoldAttemptId != 0)
+		&& HoldAttemptId != LocalNodeHoldAttemptId) return;
 	if (TargetActor && HoldingInteractActor != TargetActor)
 	{
 		return;
@@ -700,10 +732,11 @@ void AFirstPersonCharacter::CompleteDeferredInteraction(AActor* TargetActor, boo
 	{
 		return;
 	}
+	const int32 HoldAttemptId = ServerNodeHoldActor == TargetActor ? ServerNodeHoldAttemptId : 0;
 	if (!bSucceeded)
 	{
-		ServerCancelHoldInteract_Implementation(TargetActor);
-		ClientOnHoldInteractFailed(TargetActor);
+		ServerCancelHoldInteract_Implementation(TargetActor, HoldAttemptId);
+		ClientOnHoldInteractFailed(TargetActor, HoldAttemptId);
 		return;
 	}
 	if (IInteractableInterface* Interactable = Cast<IInteractableInterface>(TargetActor))
@@ -718,7 +751,7 @@ void AFirstPersonCharacter::CompleteDeferredInteraction(AActor* TargetActor, boo
 			{
 				Component->CommitInteraction(this);
 			}
-			ClientOnInteractSucceeded(TargetActor, EInteractionFlowResult::Completed);
+			ClientOnInteractSucceeded(TargetActor, EInteractionFlowResult::Completed, HoldAttemptId);
 		}
 	}
 }
@@ -1322,13 +1355,16 @@ void AFirstPersonCharacter::SyncInteractableKeyWidgets(
 					PreviousComponent->RequiresHoldInteract())
 				{
 					PreviousComponent->ResetHoldInteraction(this);
+					const int32 HoldAttemptId = HoldingInteractActor == PreviousInteractable.Get()
+						? LocalNodeHoldAttemptId : 0;
 
 					if (HoldingInteractActor == PreviousInteractable.Get())
 					{
 						HoldingInteractActor = nullptr;
+						LocalNodeHoldAttemptId = 0;
 					}
 
-					ServerCancelHoldInteract(PreviousInteractable.Get());
+					ServerCancelHoldInteract(PreviousInteractable.Get(), HoldAttemptId);
 				}
 
 				PreviousComponent->DeactivateInteractionDesc();

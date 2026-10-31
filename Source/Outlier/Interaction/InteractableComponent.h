@@ -10,6 +10,7 @@
 #include "InteractableComponent.generated.h"
 
 class AFirstPersonCharacter;
+class AInteractionNode;
 class AInteractionDescActor;
 class APlayerController;
 class UInteractInfoWidget;
@@ -45,6 +46,7 @@ class OUTLIER_API UInteractableComponent : public UActorComponent, public IActor
 
 public:
 	UInteractableComponent();
+	virtual void OnRegister() override;
 	virtual void BeginPlay() override;
 	virtual void DismissActorBasedWidgets_Implementation() override;
 
@@ -78,7 +80,7 @@ public:
 	bool IsMultipleUse() const;
 	EInteractionFlowResult AdvanceInteractionFlow(AFirstPersonCharacter* Interactor);
 
-	bool BeginHoldInteract(AFirstPersonCharacter* Interactor);
+	bool BeginHoldInteract(AFirstPersonCharacter* Interactor, int32 AttemptId = 0);
 	void EndHoldInteract(AFirstPersonCharacter* Interactor, bool bCanceled);
 	void ResetHoldInteraction(AFirstPersonCharacter* Interactor);
 	bool CanCommitHoldInteraction(const AFirstPersonCharacter* Interactor) const;
@@ -128,6 +130,11 @@ public:
 	FWorldWidgetPresentation InteractionOutlineWidgetPresentation;
 
 private:
+	friend class AInteractionNode;
+	friend class FInteractionNodePresentationTest;
+	UPROPERTY(Transient)
+	TObjectPtr<AInteractionNode> InteractionNode;
+
 	void UpdateWidgetPresentation();
 	void RefreshWidgetTick();
 	bool MeetsInteractionRequirements(const FGameplayTagContainer& InteractorTags) const;
@@ -138,7 +145,7 @@ private:
 	int32 FindHoldSessionIndex(const AFirstPersonCharacter* Interactor) const;
 	void TickHoldInteractions(float DeltaTime);
 	void CancelOtherHoldSessions(AFirstPersonCharacter* CompletedInteractor);
-	void CancelAllHoldSessions();
+	void CancelAllHoldSessions(bool bCanceled = true);
 	void MarkUsed(AFirstPersonCharacter* CompletedInteractor);
 	void ClearHoldReady();
 

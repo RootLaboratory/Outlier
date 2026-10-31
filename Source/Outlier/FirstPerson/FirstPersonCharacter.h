@@ -39,6 +39,9 @@ UCLASS()
 class OUTLIER_API AFirstPersonCharacter : public ACharacter, public IGameplayTagProviderInterface, public IGenericTeamAgentInterface, public IRoomTagInterface, public IOutlierStealthVisualTarget, public IOutlierReadabilityTarget
 {
 	GENERATED_BODY()
+	friend class FInteractionNodePresentationTest;
+	// 상호작용 세션은 캐릭터의 기존 입력 가능 판정을 재사용한다.
+	friend class UInteractableComponent;
 
 protected:
 	/** Pawn Mesh : first person view(arms; seen only by self) */
@@ -156,21 +159,22 @@ protected:
 	virtual void UnPossessed() override;
 
 	UFUNCTION(Server, Reliable)
-	void ServerInteract(AActor* TargetActor);
+	void ServerInteract(AActor* TargetActor, int32 HoldAttemptId = 0);
 
 	UFUNCTION(Server, Reliable)
-	void ServerBeginHoldInteract(AActor* TargetActor);
+	void ServerBeginHoldInteract(AActor* TargetActor, int32 HoldAttemptId = 0);
 
 	UFUNCTION(Server, Reliable)
-	void ServerCancelHoldInteract(AActor* TargetActor);
+	void ServerCancelHoldInteract(AActor* TargetActor, int32 HoldAttemptId = 0);
 
 	UFUNCTION(Client, Reliable)
 	void ClientOnInteractSucceeded(
 		AActor* TargetActor,
-		EInteractionFlowResult FlowResult);
+		EInteractionFlowResult FlowResult,
+		int32 HoldAttemptId = 0);
 
 	UFUNCTION(Client, Reliable)
-	void ClientOnHoldInteractFailed(AActor* TargetActor);
+	void ClientOnHoldInteractFailed(AActor* TargetActor, int32 HoldAttemptId = 0);
 
 	// 서버에서 적용된 피해를 로컬 HUD에 방향 정보와 함께 전달한다.
 	UFUNCTION(Client, Reliable)
@@ -279,6 +283,11 @@ private:
 	TObjectPtr<AActor> HoldingInteractActor;
 
 	bool bAwaitingHoldInteractResult = false;
+	// 노드의 이전 응답/취소가 새 누르기 시도를 덮어쓰지 않도록 요청부터 결과까지 같은 번호를 사용한다.
+	int32 NextNodeHoldAttemptId = 0;
+	int32 LocalNodeHoldAttemptId = 0;
+	int32 ServerNodeHoldAttemptId = 0;
+	TWeakObjectPtr<AActor> ServerNodeHoldActor;
 
 	UPROPERTY()
 	TArray<TObjectPtr<AActor>> NearbyInteractables;

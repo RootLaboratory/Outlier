@@ -12,6 +12,7 @@
 #include "GameFramework/PlayerController.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 #include "Interaction/InteractionDescActor.h"
+#include "Interaction/InteractionNode.h"
 #include "Interaction/InteractInfoSubsystem.h"
 #include "Net/UnrealNetwork.h"
 #include "UI/InteractInfoWidget.h"
@@ -60,6 +61,13 @@ UInteractableComponent::UInteractableComponent()
 	HoldSessions.Reserve(MaxConcurrentHoldSessions);
 }
 
+void UInteractableComponent::OnRegister()
+{
+	// BP 복제 시 생성자의 참조가 템플릿을 가리키지 않도록 실제 소유 노드로 다시 연결한다.
+	InteractionNode = Cast<AInteractionNode>(GetOwner());
+	Super::OnRegister();
+}
+
 void UInteractableComponent::BeginPlay()
 {
 	Super::BeginPlay();
@@ -90,6 +98,7 @@ void UInteractableComponent::RefreshWidgetTick()
 		return IsValid(Component) && Component->IsVisible();
 	};
 	SetComponentTickEnabled(!HoldSessions.IsEmpty()
+		|| (InteractionNode && InteractionNode->NeedsPresentationUpdate())
 		|| IsShown(InteractInfoWidgetComponent) || IsShown(InteractKeyWidgetComponent)
 		|| IsShown(InteractionLockedWidgetComponent) || IsShown(InteractionOutlineWidgetComponent));
 }
@@ -117,6 +126,7 @@ void UInteractableComponent::TickComponent(
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 	TickHoldInteractions(DeltaTime);
+	if (InteractionNode && InteractionNode->NeedsPresentationUpdate()) InteractionNode->UpdateHoldPresentation();
 	UpdateWidgetPresentation();
 }
 
@@ -161,6 +171,7 @@ bool UInteractableComponent::CanShowInteractionWidgets(const FGameplayTagContain
 
 bool UInteractableComponent::MeetsInteractionRequirements(const FGameplayTagContainer& InteractorTags) const
 {
+	if (InteractionNode && !InteractorTags.HasTagExact(OutlierGameplayTags::Actor::Role::Partner())) return false;
 	const FGameplayTag UsedTag = InteractableComponentTags::Used();
 	if (UsedTag.IsValid() && InteractableTags.HasTagExact(UsedTag))
 	{
@@ -230,9 +241,10 @@ EInteractionFlowResult UInteractableComponent::AdvanceInteractionFlow(AFirstPers
 	return EInteractionFlowResult::HoldReady;
 }
 
-bool UInteractableComponent::BeginHoldInteract(AFirstPersonCharacter* Interactor)
+bool UInteractableComponent::BeginHoldInteract(AFirstPersonCharacter* Interactor, int32 AttemptId)
 {
 	if (!Interactor || !RequiresHoldInteract()
+		|| (InteractionNode && (!FMath::IsFinite(HoldDuration) || HoldDuration <= 0.0f))
 		|| !CanInteract(Interactor->GetOwnedGameplayTagsForQuery()))
 	{
 		return false;
@@ -251,6 +263,7 @@ bool UInteractableComponent::BeginHoldInteract(AFirstPersonCharacter* Interactor
 
 	FHoldInteractionSession& NewSession = HoldSessions.AddDefaulted_GetRef();
 	NewSession.Interactor = Interactor;
+	if (InteractionNode) InteractionNode->BeginHoldPresentation(Interactor, AttemptId, HoldDuration);
 
 	if (Interactor->IsLocallyControlled())
 	{
@@ -278,6 +291,7 @@ void UInteractableComponent::EndHoldInteract(AFirstPersonCharacter* Interactor, 
 	}
 
 	const bool bWasLocalSession = Interactor && Interactor->IsLocallyControlled();
+	if (InteractionNode) InteractionNode->EndHoldPresentation(bCanceled);
 	HoldSessions.RemoveAt(SessionIndex);
 
 	if (bCanceled && HoldSessions.IsEmpty())
@@ -331,6 +345,12 @@ bool UInteractableComponent::CanCommitHoldInteraction(const AFirstPersonCharacte
 	}
 
 	constexpr float CompletionToleranceSeconds = 0.1f;
+	// 수집 함수가 bCollected를 먼저 설정해도 세션 확정에는 원래 시작 시각을 사용한다.
+	if (InteractionNode)
+	{
+		return InteractionNode->HoldState.GetProgress(
+			InteractionNode->GetPresentationTime() + CompletionToleranceSeconds) >= 1.0f;
+	}
 	return HoldSessions[SessionIndex].ElapsedTime + CompletionToleranceSeconds >= HoldDuration;
 }
 
@@ -704,7 +724,8 @@ void UInteractableComponent::OnRep_InteractableTags()
 
 	if (bInteractionUnavailable)
 	{
-		CancelAllHoldSessions();
+		// Used가 수집 상태보다 먼저 복제돼도 성공을 취소로 표시하지 않는다.
+		CancelAllHoldSessions(!InteractableTags.HasTagExact(UsedTag));
 		InteractKeyWidgetDeactivate();
 		DeactivateInteractionDesc();
 	}
@@ -731,14 +752,27 @@ void UInteractableComponent::TickHoldInteractions(float DeltaTime)
 	{
 		FHoldInteractionSession& Session = HoldSessions[Index];
 		AFirstPersonCharacter* Interactor = Session.Interactor.Get();
+		if (InteractionNode && Interactor && GetOwner()->HasAuthority()
+			&& (!Interactor->GetController() || !Interactor->CanInteract()
+				|| !CanInteract(Interactor->GetOwnedGameplayTagsForQuery())))
+		{
+			// 연결 종료/사망/조건 무효화 → 서버 세션 종료 → 소유 클라이언트 입력 상태 정리.
+			EndHoldInteract(Interactor, true);
+			Interactor->NotifyHoldInteractInvalidated(GetOwner());
+			continue;
+		}
 		if (!Interactor)
 		{
+			if (InteractionNode) InteractionNode->EndHoldPresentation(true);
 			HoldSessions.RemoveAtSwap(Index);
+			if (InteractionNode && HoldSessions.IsEmpty() && GetOwner()->HasAuthority()) ClearHoldReady();
 			continue;
 		}
 
 		Session.ElapsedTime += DeltaTime;
-		const float HoldProgress = FMath::Clamp(Session.ElapsedTime / FMath::Max(HoldDuration, KINDA_SMALL_NUMBER), 0.0f, 1.0f);
+		// Node는 UI와 발광에 같은 서버 시각을 사용한다. 다른 상호작용의 누적 시간 정책은 유지한다.
+		const float HoldProgress = InteractionNode ? InteractionNode->GetHoldProgress()
+			: FMath::Clamp(Session.ElapsedTime / FMath::Max(HoldDuration, KINDA_SMALL_NUMBER), 0.0f, 1.0f);
 
 		if (Interactor->IsLocallyControlled() && IsValid(InteractionDescActor))
 		{
@@ -762,6 +796,7 @@ void UInteractableComponent::TickHoldInteractions(float DeltaTime)
 
 void UInteractableComponent::CancelOtherHoldSessions(AFirstPersonCharacter* CompletedInteractor)
 {
+	if (InteractionNode) InteractionNode->EndHoldPresentation(false);
 	if (GetOwner() && GetOwner()->HasAuthority())
 	{
 		for (const FHoldInteractionSession& Session : HoldSessions)
@@ -780,8 +815,9 @@ void UInteractableComponent::CancelOtherHoldSessions(AFirstPersonCharacter* Comp
 	RefreshWidgetTick();
 }
 
-void UInteractableComponent::CancelAllHoldSessions()
+void UInteractableComponent::CancelAllHoldSessions(bool bCanceled)
 {
+	if (InteractionNode) InteractionNode->EndHoldPresentation(bCanceled);
 	HoldSessions.Reset();
 	RefreshWidgetTick();
 
