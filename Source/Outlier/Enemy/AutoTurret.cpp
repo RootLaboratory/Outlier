@@ -1412,12 +1412,19 @@ void AAutoTurret::HandleHackEffect(FGameplayTag EffectTag, const FHackResultCont
 
 	if (bHackedToPlayerTeam) return;
 	bHackedToPlayerTeam = true;
+	ApplyHackedTeamState();
+	// 팀 전환이 적용된 뒤에만 시간을 시작한다. 시작이 거부되면 전환도 확정하지 않는다.
+	if (!BeginHackEffect())
+	{
+		bHackedToPlayerTeam = false;
+		ApplyHackedTeamState();
+		return;
+	}
 	OutlierAudioFeedback::World(this, *HackedAudioContext.ToString(), TEXT("Audio.Type.Enemy"));
 	if (HackableComponent)
 	{
 		HackableComponent->MarkAsHackedOnce();
 	}
-	ApplyHackedTeamState();
 }
 
 void AAutoTurret::HandleHackCompleted(const FHackResultContext& Context)

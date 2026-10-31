@@ -20,6 +20,7 @@
 #include "GeometryCollection/GeometryCollectionObject.h"
 #include "UObject/StrongObjectPtr.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "GameFramework/GameStateBase.h"
 #include "GameplayEffect.h"
 #include "Animation/AnimInstance.h"
 #include "Components/CapsuleComponent.h"
@@ -290,6 +291,175 @@ void AEnemyBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifeti
 	DOREPLIFETIME(AEnemyBase, PoolLeaseSerial);
 	DOREPLIFETIME(AEnemyBase, PoolCombatPhaseIndex);
 	DOREPLIFETIME(AEnemyBase, PoolWaveIndex);
+	DOREPLIFETIME(AEnemyBase, HackEffectState);
+}
+
+float AEnemyBase::GetHackEffectRemainingTime() const
+{
+	const UWorld* World = GetWorld();
+	if (!HackEffectState.bActive || !World)
+	{
+		return 0.0f;
+	}
+
+	double ServerTime = World->GetTimeSeconds();
+	if (!HasAuthority())
+	{
+		const AGameStateBase* GameState = World->GetGameState();
+		if (!GameState)
+		{
+			// 서버 시계가 아직 없으면 60초에서 대기한다. 로컬 시계로 조기 만료시키지 않는다.
+			return GetHackEffectDuration();
+		}
+		ServerTime = GameState->GetServerWorldTimeSeconds();
+	}
+	return static_cast<float>(FMath::Clamp(HackEffectState.EndServerTime - ServerTime,
+		0.0, static_cast<double>(GetHackEffectDuration())));
+}
+
+FEnemyHackEffectTime AEnemyBase::GetHackEffectRemainingMinutesAndSeconds() const
+{
+	return FEnemyHackEffectTime::FromRemainingTime(GetHackEffectRemainingTime());
+}
+
+bool AEnemyBase::BeginHackEffect()
+{
+	if (!HasAuthority() || !GetWorld() || IsActorBeingDestroyed() || IsDead() || bDeathCleanupPerformed
+		|| HackEffectState.bActive || HackEffectState.EndServerTime > 0.0
+		|| (IsPoolManaged() && PoolState != EEnemyPoolState::CombatActive))
+	{
+		return false;
+	}
+
+	const FEnemyHackEffectState PreviousState = HackEffectState;
+	++HackEffectState.Revision;
+	HackEffectState.bActive = true;
+	HackEffectState.EndServerTime = GetWorld()->GetTimeSeconds() + GetHackEffectDuration();
+	GetWorldTimerManager().SetTimer(HackEffectExpiryTimer,
+		FTimerDelegate::CreateUObject(this, &ThisClass::HandleHackEffectExpired,
+			HackEffectState.Revision, PoolGameplayGeneration, PoolLeaseSerial),
+		GetHackEffectDuration(), false);
+	FlushNetDormancy();
+	ForceNetUpdate();
+	BroadcastHackEffectStateChange(PreviousState);
+	return true;
+}
+
+bool AEnemyBase::EndHackEffect(EEnemyHackEffectEndReason EndReason)
+{
+	if (!HasAuthority() || !HackEffectState.bActive)
+	{
+		return false;
+	}
+
+	// 먼저 종료를 확정한다. 아래 알림에서 사망/복귀가 재진입해도 다시 종료하지 않는다.
+	GetWorldTimerManager().ClearTimer(HackEffectExpiryTimer);
+	const FEnemyHackEffectState PreviousState = HackEffectState;
+	HackEffectState.bActive = false;
+	HackEffectState.EndReason = EndReason;
+	++HackEffectState.Revision;
+	FlushNetDormancy();
+	ForceNetUpdate();
+	MulticastHackEffectEnded(HackEffectState);
+	BroadcastHackEffectStateChange(PreviousState);
+	return true;
+}
+
+bool AEnemyBase::HasHackEffectEndedWithDeath() const
+{
+	return !HackEffectState.bActive && HackEffectState.EndServerTime > 0.0
+		&& (HackEffectState.EndReason == EEnemyHackEffectEndReason::Expired
+			|| HackEffectState.EndReason == EEnemyHackEffectEndReason::ManualRelease);
+}
+
+bool AEnemyBase::EndHackEffectAndDie(EEnemyHackEffectEndReason EndReason)
+{
+	if (EndReason != EEnemyHackEffectEndReason::Expired
+		&& EndReason != EEnemyHackEffectEndReason::ManualRelease)
+	{
+		return false;
+	}
+	// 종료 알림이 복귀/사망을 다시 호출해도 같은 효과를 두 번 처치하지 않는다.
+	// 사망은 기존 GAS 경로가 맡아 Room 집계와 터렛 수명주기를 그대로 거친다.
+	const uint32 EndedRevision = HackEffectState.Revision + 1;
+	if (!EndHackEffect(EndReason))
+	{
+		return false;
+	}
+	// 종료 구독자가 Actor를 풀에 반환/재대여한 경우 새 수명은 처치하지 않는다.
+	if (IsValid(this) && !IsActorBeingDestroyed() && HackEffectState.Revision == EndedRevision)
+	{
+		Die();
+	}
+	return true;
+}
+
+void AEnemyBase::HandleHackEffectExpired(uint32 ExpectedRevision, int32 GameplayGeneration, int32 LeaseSerial)
+{
+	if (!HasAuthority() || !HackEffectState.bActive || HackEffectState.Revision != ExpectedRevision
+		|| (IsPoolManaged() && !MatchesPoolLease(GameplayGeneration, LeaseSerial)))
+	{
+		return;
+	}
+
+	// TimerManager의 프레임 경계보다 저장된 서버 만료 시각을 우선한다.
+	const float RemainingTime = GetHackEffectRemainingTime();
+	if (RemainingTime > 0.0f)
+	{
+		GetWorldTimerManager().SetTimer(HackEffectExpiryTimer,
+			FTimerDelegate::CreateUObject(this, &ThisClass::HandleHackEffectExpired,
+				ExpectedRevision, GameplayGeneration, LeaseSerial), RemainingTime, false);
+		return;
+	}
+	EndHackEffectAndDie(EEnemyHackEffectEndReason::Expired);
+}
+
+void AEnemyBase::OnRep_HackEffectState(const FEnemyHackEffectState& PreviousState)
+{
+	// 종료 RPC와 상태 복제는 같은 변경을 전달한다. 이미 처리한 상태로 되돌아가지 않는다.
+	if (HackEffectState.Revision <= PreviousState.Revision)
+	{
+		HackEffectState = PreviousState;
+		return;
+	}
+	BroadcastHackEffectStateChange(PreviousState);
+}
+
+void AEnemyBase::MulticastHackEffectEnded_Implementation(const FEnemyHackEffectState& EndedState)
+{
+	if (HasAuthority() || EndedState.Revision <= HackEffectState.Revision)
+	{
+		return;
+	}
+	const FEnemyHackEffectState PreviousState = HackEffectState;
+	HackEffectState = EndedState;
+	BroadcastHackEffectStateChange(PreviousState);
+}
+
+void AEnemyBase::BroadcastHackEffectStateChange(const FEnemyHackEffectState& PreviousState)
+{
+	if (HackEffectState.bActive)
+	{
+		OnHackEffectStarted.Broadcast(this, GetHackEffectDuration());
+	}
+	else if (PreviousState.bActive || HackEffectState.EndServerTime > 0.0)
+	{
+		OnHackEffectEnded.Broadcast(this, HackEffectState.EndReason);
+	}
+}
+
+void AEnemyBase::ResetHackEffectForPool()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	EndHackEffect(EEnemyHackEffectEndReason::Cleanup);
+	GetWorldTimerManager().ClearTimer(HackEffectExpiryTimer);
+	// Revision은 초기화하지 않아 이전 대여의 콜백과 종료 알림을 새 대여에서 거부한다.
+	const uint32 NextRevision = HackEffectState.Revision + 1;
+	HackEffectState = FEnemyHackEffectState();
+	HackEffectState.Revision = NextRevision;
 }
 
 void AEnemyBase::BeginPlay()
@@ -558,6 +728,8 @@ void AEnemyBase::FinishPoolReturn(int32 GameplayGeneration, int32 LeaseSerial)
 		return;
 	}
 
+	ResetHackEffectForPool();
+
 	// 생존 상태의 전투 이탈도 원래 위치에 파편을 남긴다. 사망 경로의 요청은 중복하지 않는다.
 	if (PoolState == EEnemyPoolState::CombatActive && !bDeathCleanupPerformed)
 	{
@@ -604,6 +776,7 @@ void AEnemyBase::FinishPoolReturn(int32 GameplayGeneration, int32 LeaseSerial)
 
 void AEnemyBase::InvalidatePoolLease()
 {
+	ResetHackEffectForPool();
 	PoolGameplayGeneration = 0;
 	PoolLeaseSerial = 0;
 	OwningPoolSubsystem.Reset();
@@ -962,6 +1135,7 @@ void AEnemyBase::ReturnToOwningPool()
 
 void AEnemyBase::ResetPoolRuntimeState()
 {
+	ResetHackEffectForPool();
 	EndSearchEpisode();
 	SharedTargetRevision = 0;
 	ConsumedSharedTargetRevision = 0;
@@ -1009,6 +1183,7 @@ void AEnemyBase::PrepareForPoolIdle()
 
 void AEnemyBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	EndHackEffect(EEnemyHackEffectEndReason::Cleanup);
 	OutlierAudioFeedback::StopLoops(this);
 	ReleasePatrolDestination();
 	if (UMaterialPostProcessSubsystem* PostProcessSubsystem = GetWorld()
@@ -3800,6 +3975,7 @@ void AEnemyBase::PerformDeathCleanup()
 		return;
 	}
 	bDeathCleanupPerformed = true;
+	EndHackEffect(EEnemyHackEffectEndReason::TargetDied);
 	RefreshCombatStatePresentation();
 	InterruptDamagePresentation(0.0f);
 

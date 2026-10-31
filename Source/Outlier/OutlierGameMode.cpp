@@ -2955,7 +2955,7 @@ void AOutlierGameMode::Logout(AController* Exiting)
 			{
 				if (Cast<AEnemyBase>(PartnerController->GetPawn()))
 				{
-					PartnerController->ReleaseEnemyPossession();
+					PartnerController->ReleaseEnemyPossessionForDisconnect();
 				}
 			}
 			if (AFirstPersonCharacter* Pawn = Cast<AFirstPersonCharacter>(ExitingPlayer->GetPawn()))
@@ -3009,7 +3009,7 @@ void AOutlierGameMode::Logout(AController* Exiting)
 			if (APartnerPlayerController* Partner = Cast<APartnerPlayerController>(ExitingPlayer);
 				Partner && Cast<AEnemyBase>(Pawn))
 			{
-				Partner->ReleaseEnemyPossession();
+				Partner->ReleaseEnemyPossessionForDisconnect();
 				Pawn = Partner->GetPawn();
 			}
 			if (AFirstPersonCharacter* Character = Cast<AFirstPersonCharacter>(Pawn))
@@ -3220,7 +3220,7 @@ bool AOutlierGameMode::RespawnPairAtCheckpoint(AController* Controller)
 	{
 		if (Cast<AEnemyBase>(PartnerController->GetPawn()))
 		{
-			PartnerController->ReleaseEnemyPossession();
+			PartnerController->ReleaseEnemyPossessionForCleanup();
 		}
 	}
 	ResetRuntimeCombatStateForRespawn();
@@ -3429,7 +3429,7 @@ bool AOutlierGameMode::ReloadArenaAndRespawnPair(
 	{
 		if (Cast<AEnemyBase>(PartnerPC->GetPawn()))
 		{
-			PartnerPC->ReleaseEnemyPossession();
+			PartnerPC->ReleaseEnemyPossessionForCleanup();
 		}
 	}
 

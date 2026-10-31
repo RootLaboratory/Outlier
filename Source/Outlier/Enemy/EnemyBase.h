@@ -20,6 +20,7 @@
 #include "Enemy/EnemyAdaptationTypes.h"
 #include "Enemy/EnemyPoolTypes.h"
 #include "Enemy/EnemyFlightHeightTypes.h"
+#include "Enemy/EnemyHackEffectTypes.h"
 #include "PostProcess/OutlierSpawnVisualTarget.h"
 #include "PostProcess/OutlierReadabilityTarget.h"
 #include "EnemyBase.generated.h"
@@ -38,11 +39,17 @@ class UOutlierAbilitySystemComponent;
 class UOutlierVitalAttributeSet;
 class UEnemyAdaptationSubsystem;
 class UEnemyHudWidget;
+class AEnemyBase;
 class UEnemyPoolSubsystem;
 class UMeshComponent;
 class UPrimitiveComponent;
 class USceneComponent;
 struct FOnAttributeChangeData;
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnEnemyHackEffectStarted,
+	AEnemyBase*, Target, float, Duration);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnEnemyHackEffectEnded,
+	AEnemyBase*, Target, EEnemyHackEffectEndReason, EndReason);
 
 // 자식 State가 바뀌어도 한 수색 회차의 중심/선정 지점은 유지한다. 서버에서만 사용한다.
 struct FEnemySearchEpisode
@@ -137,6 +144,34 @@ public:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual float ReceiveOutlierDamage(const FOutlierDamageRequest& Request) override;
 
+	UFUNCTION(BlueprintPure, Category = "Enemy|Hack")
+	bool IsHackEffectActive() const { return HackEffectState.bActive; }
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Hack")
+	float GetHackEffectDuration() const { return FEnemyHackEffectTime::Duration; }
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Hack")
+	float GetHackEffectRemainingTime() const;
+
+	UFUNCTION(BlueprintPure, Category = "Enemy|Hack")
+	FEnemyHackEffectTime GetHackEffectRemainingMinutesAndSeconds() const;
+
+	UPROPERTY(BlueprintAssignable, Category = "Enemy|Hack")
+	FOnEnemyHackEffectStarted OnHackEffectStarted;
+
+	UPROPERTY(BlueprintAssignable, Category = "Enemy|Hack")
+	FOnEnemyHackEffectEnded OnHackEffectEnded;
+
+	// C++ 게임플레이 연결부 전용이다. BP/UI에는 조회와 알림만 공개한다.
+	bool BeginHackEffect();
+	bool EndHackEffect(EEnemyHackEffectEndReason EndReason);
+	bool EndHackEffectAndDie(EEnemyHackEffectEndReason EndReason);
+	bool HasHackEffectEndedWithDeath() const;
+	bool HasHackEffectExpired() const
+	{
+		return HasHackEffectEndedWithDeath() && HackEffectState.EndReason == EEnemyHackEffectEndReason::Expired;
+	}
+
 	// IOutlierSpawnVisualTarget : 등장 디졸브를 받을 메시만 알려준다 ( 교체 / 진행 / 원복은 UMaterialPostProcessSubsystem 담당 ).
 	// 본체와 장착 무기의 메시를 넘긴다. 메시 구성이 다른 파생 적은 Override 한다.
 	virtual void CollectSpawnPresentationMeshes(TArray<UMeshComponent*>& OutMeshes) const override;
@@ -209,6 +244,29 @@ protected:
 	virtual void OnRep_Controller() override;
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 	void RefreshAbilitySystemActorInfo();
+
+private:
+	friend class FEnemyHackEffectLifetimeTest;
+	friend class FEnemyHackEffectGameplayTest;
+	friend class FEnemyHackEffectHUDTest;
+
+	UPROPERTY(ReplicatedUsing = OnRep_HackEffectState)
+	FEnemyHackEffectState HackEffectState;
+
+	FTimerHandle HackEffectExpiryTimer;
+
+	UFUNCTION()
+	void OnRep_HackEffectState(const FEnemyHackEffectState& PreviousState);
+
+	// 마지막 상태 복제가 Actor 파괴보다 늦어져도 UI가 종료 사유를 받을 수 있게 한다.
+	UFUNCTION(NetMulticast, Reliable)
+	void MulticastHackEffectEnded(const FEnemyHackEffectState& EndedState);
+
+	void BroadcastHackEffectStateChange(const FEnemyHackEffectState& PreviousState);
+	void HandleHackEffectExpired(uint32 ExpectedRevision, int32 GameplayGeneration, int32 LeaseSerial);
+	void ResetHackEffectForPool();
+
+protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
 	TObjectPtr<UOutlierAbilitySystemComponent> OutlierAbilitySystemComponent;

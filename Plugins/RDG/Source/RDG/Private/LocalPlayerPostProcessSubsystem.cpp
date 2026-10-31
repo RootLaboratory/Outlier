@@ -1145,6 +1145,12 @@ void ULocalPlayerPostProcessSubsystem::UpdateSplitPrism(float DeltaTime)
 	{
 		ApplySplitPrism();
 	}
+
+	// Idle/Holding으로 들어간 프레임에만 알린다. 이후 Tick은 위 default에서 빠져나간다.
+	if (SplitPrismPhase == ESplitPrismPhase::Idle || SplitPrismPhase == ESplitPrismPhase::Holding)
+	{
+		OnSplitPrismSettled.Broadcast();
+	}
 }
 
 void ULocalPlayerPostProcessSubsystem::ApplySplitPrism()

@@ -35,6 +35,8 @@ void APartnerPlayerController::BeginPlay()
 
 void APartnerPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	HackLifetimePendingRevealTarget.Reset();
+	bHackPossessionRevealFinished = false;
 	if (HasAuthority())
 	{
 		DiscardCommittedPartnerAbilityCooldownSession(CachedPartnerCharacter.Get());
@@ -66,6 +68,7 @@ void APartnerPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		{
 			PPSubsystem->OnHackTransitionCovered.RemoveAll(this);
 			PPSubsystem->OnHackTransitionFinished.RemoveAll(this);
+			PPSubsystem->OnSplitPrismSettled.RemoveAll(this);
 			PPSubsystem->CancelHackPossessionTransition();
 		}
 	}
@@ -289,10 +292,15 @@ void APartnerPlayerController::CommitPendingEnemyPossession(AEnemyBase* Expected
 	}
 
 	CachePartnerCharacterForEnemyPossession(PartnerCharacter);
+	// Listen Server에서는 Possess 안에서 연출 없는 복귀 콜백이 즉시 올 수 있다.
+	// 먼저 대상을 기록하고, 실제 타이머 시작은 아래 commit과 연출 완료를 모두 확인한다.
+	HackLifetimePendingRevealTarget = EnemyTarget;
+	bHackPossessionRevealFinished = false;
 	Possess(EnemyTarget);
 
 	if (GetPawn() != EnemyTarget)
 	{
+		HackLifetimePendingRevealTarget.Reset();
 		CachedPartnerCharacter.Reset();
 		CancelPendingEnemyPossessionTransition();
 		return;
@@ -307,7 +315,7 @@ void APartnerPlayerController::CommitPendingEnemyPossession(AEnemyBase* Expected
 			TEXT("[PartnerPossession] Failed to suspend Partner cooldowns after possession commit Partner=%s Enemy=%s"),
 			*GetNameSafe(PartnerCharacter),
 			*GetNameSafe(EnemyTarget));
-		ReleaseEnemyPossession();
+		ReleaseEnemyPossessionForCleanup();
 		PendingEnemyPossessionTarget.Reset();
 		PendingEnemyPossessionSource.Reset();
 		UnbindPossessionTargetEndPlay(EnemyTarget);
@@ -331,6 +339,38 @@ void APartnerPlayerController::CommitPendingEnemyPossession(AEnemyBase* Expected
 	PendingEnemyPossessionTarget.Reset();
 	PendingEnemyPossessionSource.Reset();
 	UnbindPossessionTargetEndPlay(EnemyTarget);
+
+	TryStartHackLifetimeAfterReveal();
+}
+
+void APartnerPlayerController::ServerNotifyHackPossessionRevealFinished_Implementation(AEnemyBase* EnemyTarget)
+{
+	if (!HasAuthority() || !IsValid(EnemyTarget)
+		|| HackLifetimePendingRevealTarget.Get() != EnemyTarget || GetPawn() != EnemyTarget
+		|| !EnemyTarget->IsEnemyPossessed() || EnemyTarget->IsDead()
+		|| EnemyTarget->GetCurrentHealth() <= 0.0f || EnemyTarget->IsActorBeingDestroyed())
+	{
+		return;
+	}
+	bHackPossessionRevealFinished = true;
+	TryStartHackLifetimeAfterReveal();
+}
+
+void APartnerPlayerController::TryStartHackLifetimeAfterReveal()
+{
+	AEnemyBase* EnemyTarget = HackLifetimePendingRevealTarget.Get();
+	if (!HasAuthority() || !bHackPossessionRevealFinished || !bPartnerAbilityCooldownSessionCommitted
+		|| !IsValid(EnemyTarget) || GetPawn() != EnemyTarget)
+	{
+		return;
+	}
+	// 화면 복귀가 끝난 뒤 서버가 한 번만 시작한다. 늦거나 중복된 완료 통보는 재시작할 수 없다.
+	HackLifetimePendingRevealTarget.Reset();
+	bHackPossessionRevealFinished = false;
+	if (!EnemyTarget->BeginHackEffect())
+	{
+		ReleaseEnemyPossessionForCleanup();
+	}
 }
 
 bool APartnerPlayerController::ShouldDeferPartnerHackRecharge(const APartnerCharacter* PartnerCharacter) const
@@ -447,6 +487,32 @@ void APartnerPlayerController::HandleHackPossessionTransitionFinished()
 	SetPartnerPossessionState(
 		EPartnerPossessionState::EnemyPossessed,
 		CompletedTarget);
+	NotifyHackPossessionPresentationFinished();
+}
+
+void APartnerPlayerController::NotifyHackPossessionPresentationFinished()
+{
+	if (!IsLocalController() || PartnerPossessionState != EPartnerPossessionState::EnemyPossessed)
+	{
+		return;
+	}
+	if (ULocalPlayer* LocalPlayer = GetLocalPlayer())
+	{
+		if (ULocalPlayerPostProcessSubsystem* PPSubsystem =
+			LocalPlayer->GetSubsystem<ULocalPlayerPostProcessSubsystem>())
+		{
+			// 화면 복귀 뒤 시작하는 초점 연출까지 기다린다. 상시 잔차(Holding)는 더 기다리지 않는다.
+			const ESplitPrismPhase Phase = PPSubsystem->GetSplitPrismPhase();
+			if (Phase == ESplitPrismPhase::Focusing || Phase == ESplitPrismPhase::Settling)
+			{
+				return;
+			}
+		}
+	}
+	if (AEnemyBase* EnemyTarget = Cast<AEnemyBase>(GetPawn()))
+	{
+		ServerNotifyHackPossessionRevealFinished(EnemyTarget);
+	}
 }
 
 void APartnerPlayerController::SetPartnerPossessionState(
@@ -470,7 +536,7 @@ void APartnerPlayerController::SetPartnerPossessionState(
 
 	case EPartnerPossessionState::PartnerControlled:
 		SetHackTransitionInputBlocked(false);
-		PopEnemyHud();
+		RequestPopEnemyHud();
 		if (ULocalPlayer* LocalPlayer = GetLocalPlayer())
 		{
 			if (ULocalPlayerPostProcessSubsystem* PPSubsystem =
@@ -526,6 +592,10 @@ void APartnerPlayerController::SetHackTransitionInputBlocked(bool bBlocked)
 void APartnerPlayerController::RefreshHudVisibility()
 {
 	Super::RefreshHudVisibility();
+	if (bEnemyHudPopPending && IsHudHiddenForDeath())
+	{
+		PopEnemyHud();
+	}
 	EnemyHudCollapseState.Apply(EnemyHudInstance, !IsHudHiddenForDeath());
 	if (EnemyHudInstance)
 	{
@@ -567,6 +637,11 @@ bool APartnerPlayerController::ShouldShowMainWidget() const
 
 void APartnerPlayerController::PushEnemyHud(AEnemyBase* PossessedEnemy)
 {
+	// 빠른 재빙의는 이전 HUD의 지연 제거를 기다리지 않는다. 새 대상에 옛 콜백을 남기지 않는다.
+	if (bEnemyHudPopPending)
+	{
+		PopEnemyHud();
+	}
 	if (!IsLocalController() || EnemyHudLayerHandle.IsValid() || !IsValid(PossessedEnemy))
 	{
 		return;
@@ -615,10 +690,33 @@ void APartnerPlayerController::PushEnemyHud(AEnemyBase* PossessedEnemy)
 	EnemyHudInstance = EnemyHud;
 }
 
-void APartnerPlayerController::PopEnemyHud()
+void APartnerPlayerController::ClientPrepareExpiredEnemyHud_Implementation(AEnemyBase* EnemyTarget)
 {
 	if (EnemyHudInstance)
 	{
+		EnemyHudInstance->ShowHackTimerExpiry(EnemyTarget);
+	}
+}
+
+void APartnerPlayerController::RequestPopEnemyHud()
+{
+	if (EnemyHudInstance && EnemyHudInstance->IsShowingHackTimerExpiry() && !IsHudHiddenForDeath())
+	{
+		// 제어/입력은 이미 Partner로 복귀한다. 체력 피드백은 즉시 끊고 마지막 숫자만 한 프레임 남긴다.
+		bEnemyHudPopPending = true;
+		EnemyHudInstance->ReleaseDamageFeedback(true);
+		EnemyHudInstance->OnHackTimerExpiryDisplayFinished.BindUObject(this, &ThisClass::PopEnemyHud);
+		return;
+	}
+	PopEnemyHud();
+}
+
+void APartnerPlayerController::PopEnemyHud()
+{
+	bEnemyHudPopPending = false;
+	if (EnemyHudInstance)
+	{
+		EnemyHudInstance->OnHackTimerExpiryDisplayFinished.Unbind();
 		EnemyHudInstance->ReleaseDamageFeedback();
 	}
 
@@ -712,6 +810,59 @@ void APartnerPlayerController::ReleaseEnemyPossession()
 		ServerReleaseEnemyPossession();
 		return;
 	}
+	if (AEnemyBase* EnemyPawn = HackLifetimePendingRevealTarget.Get();
+		EnemyPawn && GetPawn() == EnemyPawn && !EnemyPawn->IsDead())
+	{
+		// 제어 전환 후 연출 도중 해제도 수동 종료 처치다. 종료 사유만 남기고 즉시 끝낸다.
+		EnemyPawn->BeginHackEffect();
+	}
+	if (AEnemyBase* EnemyPawn = Cast<AEnemyBase>(GetPawn()); EnemyPawn && EnemyPawn->IsHackEffectActive())
+	{
+		// Die -> PerformDeathCleanup에서 다시 호출될 때는 아래 복귀만 실행한다.
+		EnemyPawn->EndHackEffectAndDie(EEnemyHackEffectEndReason::ManualRelease);
+		return;
+	}
+	RestoreEnemyPossessionWithoutKill();
+}
+
+void APartnerPlayerController::ReleaseEnemyPossessionForCleanup()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	if (AEnemyBase* EnemyPawn = Cast<AEnemyBase>(GetPawn()))
+	{
+		EnemyPawn->EndHackEffect(EEnemyHackEffectEndReason::Cleanup);
+	}
+	RestoreEnemyPossessionWithoutKill();
+}
+
+void APartnerPlayerController::ReleaseEnemyPossessionForDisconnect()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	// 연출 완료 통보 전에 끊긴 연결은 더 이상 콜백을 보낼 수 없다. 무기한 생존하지 않도록
+	// 이 경우에만 서버에서 시간을 시작하고, 이미 시작한 효과의 만료 시각은 그대로 유지한다.
+	if (AEnemyBase* EnemyPawn = HackLifetimePendingRevealTarget.Get();
+		EnemyPawn && GetPawn() == EnemyPawn && !EnemyPawn->IsDead())
+	{
+		EnemyPawn->BeginHackEffect();
+	}
+	// 연결만 끊긴 경우 현재 Pawn 복구 정책을 유지하되, 대상의 만료 타이머는 취소하지 않는다.
+	RestoreEnemyPossessionWithoutKill();
+}
+
+void APartnerPlayerController::RestoreEnemyPossessionWithoutKill()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	HackLifetimePendingRevealTarget.Reset();
+	bHackPossessionRevealFinished = false;
 
 	AEnemyBase* EnemyPawn = Cast<AEnemyBase>(GetPawn());
 	if (!EnemyPawn)
@@ -720,8 +871,15 @@ void APartnerPlayerController::ReleaseEnemyPossession()
 	}
 
 	// Pooled enemies do not trigger PawnPendingDestroy on death.
-	if (EnemyPawn->IsDead() || EnemyPawn->GetCurrentHealth() <= 0.0f)
+	if (EnemyPawn->IsDead() || EnemyPawn->GetCurrentHealth() <= 0.0f
+		|| EnemyPawn->HasHackEffectEndedWithDeath())
 	{
+		// Enemy의 종료 multicast와 Controller의 Pawn 복제는 서로 다른 채널이다.
+		// ClientRestart보다 먼저 같은 Controller 채널에 알림을 보내 HUD 제거 순서를 고정한다.
+		if (EnemyPawn->HasHackEffectExpired())
+		{
+			ClientPrepareExpiredEnemyHud(EnemyPawn);
+		}
 		UnPossess();
 		RestoreCachedPartnerCharacter();
 		return;
@@ -767,7 +925,7 @@ bool APartnerPlayerController::RestorePartnerForWorldTransition()
 	{
 		CancelPendingEnemyPossessionTransition();
 	}
-	ReleaseEnemyPossession();
+	ReleaseEnemyPossessionForCleanup();
 	const AOutlierPlayerState* PS = GetPlayerState<AOutlierPlayerState>();
 	return PS && IsValid(PS->GetPartnerCharacter()) && GetPawn() == PS->GetPartnerCharacter();
 }
@@ -989,12 +1147,16 @@ void APartnerPlayerController::BindPostProcessSubSystem()
 	{
 		PPSubsystem->OnHackTransitionCovered.RemoveAll(this);
 		PPSubsystem->OnHackTransitionFinished.RemoveAll(this);
+		PPSubsystem->OnSplitPrismSettled.RemoveAll(this);
 		PPSubsystem->OnHackTransitionCovered.AddUObject(
 			this,
 			&APartnerPlayerController::NotifyHackTransitionCovered);
 		PPSubsystem->OnHackTransitionFinished.AddUObject(
 			this,
 			&APartnerPlayerController::HandleHackPossessionTransitionFinished);
+		PPSubsystem->OnSplitPrismSettled.AddUObject(
+			this,
+			&APartnerPlayerController::NotifyHackPossessionPresentationFinished);
 	}
 }
 
