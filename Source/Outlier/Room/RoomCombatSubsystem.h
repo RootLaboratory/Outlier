@@ -15,6 +15,7 @@ class ARoomVolume;
 class AFirstPersonCharacter;
 class URoomCombatDefinition;
 struct FOutlierRoomPhaseProgress;
+enum class ERoomJoinRejection : uint8;
 // 요청 동안 확보하는 약한 공간 문맥이며 Room 등록 변경 시 다시 만든다.
 struct OUTLIER_API FEnemyMovementRoomContext
 {
@@ -379,10 +380,10 @@ private:
 	bool HasAlivePreplacedEnemy(FGameplayTag RoomTag, const FRoomCombatRuntime& Runtime) const;
 	bool IsSafeJoinDestination(const AFirstPersonCharacter* MovingPlayer,
 		const AFirstPersonCharacter* Anchor, const ARoomVolume* Room,
-		const FVector& Location) const;
+		const FVector& Location, ERoomJoinRejection* OutRejection = nullptr) const;
 	bool FindJoinDestination(AFirstPersonCharacter* MovingPlayer,
 		AFirstPersonCharacter* Anchor, ARoomVolume* Room, bool bFallbackOnly,
-		FVector& OutLocation) const;
+		FVector& OutLocation, FString* OutRejectionSummary = nullptr) const;
 	TArray<TWeakObjectPtr<ARoomCombatBarrier>> RegisteredBarriers;
 	bool CanRunServerGameplay() const;
 	bool HasPendingSpawns(FGameplayTag RoomTag) const;

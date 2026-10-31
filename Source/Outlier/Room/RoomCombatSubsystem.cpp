@@ -28,6 +28,21 @@
 #include "Shooter/ShooterCharacter.h"
 #include "Drone/Partner/PartnerCharacter.h"
 
+// 안전 판정의 반환값은 유지하고, 실패한 최초 조건만 진단용으로 전달한다.
+enum class ERoomJoinRejection : uint8
+{
+	None,
+	InvalidContext,
+	CenterOutsideRoom,
+	CapsuleOutsideRoom,
+	AnchorOverlap,
+	ExitBarrierOverlap,
+	WorldBlockingCollision,
+	GroundMissing,
+	GroundTooSteep,
+	Count
+};
+
 namespace RoomCombat
 {
 	int32 SelectWeightedSpawnPoint(
@@ -64,6 +79,22 @@ namespace RoomCombat
 
 namespace
 {
+	const TCHAR* JoinRejectionName(ERoomJoinRejection Reason)
+	{
+		switch (Reason)
+		{
+		case ERoomJoinRejection::InvalidContext: return TEXT("InvalidContext");
+		case ERoomJoinRejection::CenterOutsideRoom: return TEXT("CenterOutsideRoom");
+		case ERoomJoinRejection::CapsuleOutsideRoom: return TEXT("CapsuleOutsideRoom");
+		case ERoomJoinRejection::AnchorOverlap: return TEXT("AnchorOverlap");
+		case ERoomJoinRejection::ExitBarrierOverlap: return TEXT("ExitBarrierOverlap");
+		case ERoomJoinRejection::WorldBlockingCollision: return TEXT("WorldBlockingCollision");
+		case ERoomJoinRejection::GroundMissing: return TEXT("GroundMissing");
+		case ERoomJoinRejection::GroundTooSteep: return TEXT("GroundTooSteep");
+		default: return TEXT("None");
+		}
+	}
+
 	constexpr float SpawnRetryIntervalSeconds = 0.5f;
 	TAutoConsoleVariable<float> CVarInitialDetectionRetrySeconds(
 		TEXT("outlier.RoomCombat.InitialDetectionRetrySeconds"), 1.0f,
@@ -1637,15 +1668,24 @@ ARoomVolume* URoomCombatSubsystem::FindPlayerRoomInCombatGroup(
 
 bool URoomCombatSubsystem::IsSafeJoinDestination(
 	const AFirstPersonCharacter* MovingPlayer, const AFirstPersonCharacter* Anchor,
-	const ARoomVolume* Room, const FVector& Location) const
+	const ARoomVolume* Room, const FVector& Location, ERoomJoinRejection* OutRejection) const
 {
+	if (OutRejection) *OutRejection = ERoomJoinRejection::None;
+	auto Reject = [OutRejection](ERoomJoinRejection Reason)
+	{
+		if (OutRejection) *OutRejection = Reason;
+		return false;
+	};
 	const UCapsuleComponent* Capsule = MovingPlayer ? MovingPlayer->GetCapsuleComponent() : nullptr;
 	const UCapsuleComponent* AnchorCapsule = Anchor ? Anchor->GetCapsuleComponent() : nullptr;
 	UWorld* World = GetWorld();
-	if (!Capsule || !World || !Room
-		|| !Room->ContainsWorldLocation(Location))
+	if (!Capsule || !World || !Room)
 	{
-		return false;
+		return Reject(ERoomJoinRejection::InvalidContext);
+	}
+	if (!Room->ContainsWorldLocation(Location))
+	{
+		return Reject(ERoomJoinRejection::CenterOutsideRoom);
 	}
 	const float Radius = Capsule->GetScaledCapsuleRadius();
 	const float HalfHeight = Capsule->GetScaledCapsuleHalfHeight();
@@ -1660,7 +1700,7 @@ bool URoomCombatSubsystem::IsSafeJoinDestination(
 	{
 		if (!Room->ContainsWorldLocation(Location + Offset))
 		{
-			return false;
+			return Reject(ERoomJoinRejection::CapsuleOutsideRoom);
 		}
 	}
 	if (AnchorCapsule
@@ -1669,7 +1709,7 @@ bool URoomCombatSubsystem::IsSafeJoinDestination(
 		&& FVector::Dist2D(Location, Anchor->GetActorLocation())
 			< Radius + AnchorCapsule->GetScaledCapsuleRadius() + 10.0f)
 	{
-		return false;
+		return Reject(ERoomJoinRejection::AnchorOverlap);
 	}
 	for (const TWeakObjectPtr<ARoomCombatBarrier>& BarrierPtr : RegisteredBarriers)
 	{
@@ -1679,7 +1719,7 @@ bool URoomCombatSubsystem::IsSafeJoinDestination(
 		if (Barrier && Barrier->CanBlockRoom(Room->GetRoomTag())
 			&& Barrier->OverlapsJoinCapsule(Location, Radius, HalfHeight))
 		{
-			return false;
+			return Reject(ERoomJoinRejection::ExitBarrierOverlap);
 		}
 	}
 	FCollisionQueryParams Query(SCENE_QUERY_STAT(RoomCombatJoin), false, MovingPlayer);
@@ -1690,27 +1730,58 @@ bool URoomCombatSubsystem::IsSafeJoinDestination(
 	if (World->OverlapBlockingTestByProfile(Location, MovingPlayer->GetActorQuat(),
 		Capsule->GetCollisionProfileName(), FCollisionShape::MakeCapsule(Radius, HalfHeight), Query))
 	{
-		return false;
+		return Reject(ERoomJoinRejection::WorldBlockingCollision);
 	}
 	if (Cast<AShooterCharacter>(MovingPlayer))
 	{
 		FHitResult GroundHit;
 		const FVector Feet = Location - FVector(0, 0, HalfHeight);
-		return World->LineTraceSingleByChannel(GroundHit, Feet + FVector(0, 0, 30),
-			Feet - FVector(0, 0, 70), ECC_Visibility, Query)
-			&& GroundHit.ImpactNormal.Z >= 0.7f;
+		if (!World->LineTraceSingleByChannel(GroundHit, Feet + FVector(0, 0, 30),
+			Feet - FVector(0, 0, 70), ECC_Visibility, Query))
+		{
+			return Reject(ERoomJoinRejection::GroundMissing);
+		}
+		if (!(GroundHit.ImpactNormal.Z >= 0.7f)) return Reject(ERoomJoinRejection::GroundTooSteep);
 	}
 	return true;
 }
 
 bool URoomCombatSubsystem::FindJoinDestination(
 	AFirstPersonCharacter* MovingPlayer, AFirstPersonCharacter* Anchor,
-	ARoomVolume* Room, bool bFallbackOnly, FVector& OutLocation) const
+	ARoomVolume* Room, bool bFallbackOnly, FVector& OutLocation, FString* OutRejectionSummary) const
 {
+	if (OutRejectionSummary) OutRejectionSummary->Reset();
+	int32 Rejections[static_cast<int32>(ERoomJoinRejection::Count)] = {};
+	auto RecordRejection = [&](ERoomJoinRejection Reason, const FVector& Candidate)
+	{
+		if (!OutRejectionSummary) return;
+		++Rejections[static_cast<int32>(Reason)];
+		UE_LOG(LogTemp, Verbose,
+			TEXT("[RoomCombat] Join candidate rejected. Method=%s Room=%s Player=%s Reason=%s Location=%s"),
+			bFallbackOnly ? TEXT("Fallback") : TEXT("Nearby"),
+			*Room->GetRoomTag().ToString(), *GetNameSafe(MovingPlayer), JoinRejectionName(Reason), *Candidate.ToString());
+	};
+	auto FinishRejectedSearch = [&]()
+	{
+		if (OutRejectionSummary)
+		{
+			// 일반 로그는 후보마다 늘리지 않고 실패한 탐색의 원인별 개수를 한 줄로 모은다.
+			for (int32 Index = 1; Index < static_cast<int32>(ERoomJoinRejection::Count); ++Index)
+			{
+				if (Rejections[Index] == 0) continue;
+				if (!OutRejectionSummary->IsEmpty()) *OutRejectionSummary += TEXT(",");
+				*OutRejectionSummary += FString::Printf(TEXT("%s:%d"),
+					JoinRejectionName(static_cast<ERoomJoinRejection>(Index)), Rejections[Index]);
+			}
+			if (OutRejectionSummary->IsEmpty()) *OutRejectionSummary = TEXT("NoFallbackConfigured");
+		}
+		return false;
+	};
 	const UCapsuleComponent* Capsule = MovingPlayer ? MovingPlayer->GetCapsuleComponent() : nullptr;
 	const UCapsuleComponent* AnchorCapsule = Anchor ? Anchor->GetCapsuleComponent() : nullptr;
 	if (!Capsule || !Room || (!bFallbackOnly && !AnchorCapsule))
 	{
+		if (OutRejectionSummary) *OutRejectionSummary = TEXT("InvalidContext");
 		return false;
 	}
 	// 첫 단계에서는 방 안 플레이어 주변의 고정 후보만 한 바퀴 검사한다. 반경 확대나 타이머 재시도는 없다.
@@ -1735,17 +1806,20 @@ bool URoomCombatSubsystem::FindJoinDestination(
 				if (!GetWorld()->LineTraceSingleByChannel(GroundHit, Candidate + FVector(0, 0, 100),
 					Candidate - FVector(0, 0, 250), ECC_Visibility, Query))
 				{
+					RecordRejection(ERoomJoinRejection::GroundMissing, Candidate);
 					continue;
 				}
 				Candidate.Z = GroundHit.ImpactPoint.Z + Capsule->GetScaledCapsuleHalfHeight() + 1.0f;
 			}
-			if (IsSafeJoinDestination(MovingPlayer, Anchor, Room, Candidate))
+			ERoomJoinRejection Reason;
+			if (IsSafeJoinDestination(MovingPlayer, Anchor, Room, Candidate, &Reason))
 			{
 				OutLocation = Candidate;
 				return true;
 			}
+			RecordRejection(Reason, Candidate);
 		}
-		return false;
+		return FinishRejectedSearch();
 	}
 
 	// 주변 후보는 여기서 끝이다. 두 명 모두 재접속 중이라 기준 플레이어가 없으면
@@ -1766,13 +1840,15 @@ bool URoomCombatSubsystem::FindJoinDestination(
 	for (const auto& Entry : Fallbacks)
 	{
 		const FVector Candidate = Entry.Value->GetJoinFallbackLocation();
-		if (IsSafeJoinDestination(MovingPlayer, Anchor, Room, Candidate))
+		ERoomJoinRejection Reason;
+		if (IsSafeJoinDestination(MovingPlayer, Anchor, Room, Candidate, &Reason))
 		{
 			OutLocation = Candidate;
 			return true;
 		}
+		RecordRejection(Reason, Candidate);
 	}
-	return false;
+	return FinishRejectedSearch();
 }
 
 bool URoomCombatSubsystem::GetReconnectContext(FRoomCombatReconnectContext& OutContext) const
@@ -2096,8 +2172,10 @@ bool URoomCombatSubsystem::TryStartInitialDetectionForPlayers(
 	// 발각시킨 Actor가 누구인지는 사용하지 않는다. 두 명 모두 밖이면 Enemy도 Battle로 넘기지 않는다.
 	if (!bShooterInside && !bPartnerInside)
 	{
-		UE_LOG(LogTemp, Display, TEXT("[RoomCombat] Detection deferred: no player inside. Room=%s"),
-			*RoomTag.ToString());
+		UE_LOG(LogTemp, Display,
+			TEXT("[RoomCombat] Detection deferred: no player inside. Room=%s ShooterRoom=%s ShooterLocation=%s PartnerRoom=%s PartnerLocation=%s"),
+			*RoomTag.ToString(), *Shooter->GetCurrentRoomTag().ToString(), *Shooter->GetActorLocation().ToString(),
+			*Partner->GetCurrentRoomTag().ToString(), *Partner->GetActorLocation().ToString());
 		return false;
 	}
 	AFirstPersonCharacter* Anchor = bShooterInside ? static_cast<AFirstPersonCharacter*>(Shooter)
@@ -2138,53 +2216,88 @@ bool URoomCombatSubsystem::TryStartInitialDetectionForPlayers(
 	// Preparing이 배치 Enemy 공격과 Wave를 막는 동안 밖의 플레이어만 이동한다.
 	if (MovingPlayer)
 	{
-		auto TryMoveOnce = [this, MovingPlayer, Anchor, JoinRoom, RoomTag, &Context,
-			&IsJoinRoomCurrent](bool bFallbackOnly)
+		const TCHAR* Failures[] = {TEXT("NotAttempted"), TEXT("NotAttempted")};
+		FString RejectionSummaries[2];
+		auto TryMoveOnce = [this, MovingPlayer, Anchor, JoinRoom, JoinRoomTag, RoomTag, &Context,
+			&IsJoinRoomCurrent, &Failures, &RejectionSummaries](bool bFallbackOnly)
 		{
+			const int32 MethodIndex = bFallbackOnly ? 1 : 0;
+			FVector Destination = FVector::ZeroVector;
+			bool bHasDestination = false;
+			auto Fail = [&](const TCHAR* Reason)
+			{
+				Failures[MethodIndex] = Reason;
+				const bool bPlayerValid = IsValid(MovingPlayer);
+				const FVector ActualLocation = bPlayerValid ? MovingPlayer->GetActorLocation() : FVector::ZeroVector;
+				// 이동 전 후보 실패와 이동 후 소속 실패를 구분한다. 겹침은 태그만 달라질 수
+				// 있으므로 실제 위치가 목적지 안인지도 같은 줄에 남긴다.
+				UE_LOG(LogTemp, Display,
+					TEXT("[RoomCombat] Join attempt failed. Reason=%s Method=%s Room=%s DestinationRoom=%s Moving=%s CurrentRoom=%s Candidate=%s ActualLocation=%s InsideDestination=%d Rejected=[%s] Generation=%d"),
+					Reason, bFallbackOnly ? TEXT("Fallback") : TEXT("Nearby"), *RoomTag.ToString(),
+					*JoinRoomTag.ToString(), *GetNameSafe(MovingPlayer),
+					bPlayerValid ? *MovingPlayer->GetCurrentRoomTag().ToString() : TEXT("None"),
+					bHasDestination ? *Destination.ToString() : TEXT("NotSelected"), *ActualLocation.ToString(),
+					bPlayerValid && IsValid(JoinRoom) && JoinRoom->ContainsWorldLocation(ActualLocation),
+					*RejectionSummaries[MethodIndex], Context.GameplayGeneration);
+				return false;
+			};
 			// 이동/Overlap 콜백이 Room을 재등록하거나 Reset할 수 있다. 이전 시도로는
 			// fallback 이동도 실행하지 않으며, 각 콜백 뒤 현재 시도인지 다시 확인한다.
 			if (!IsPreparationContextCurrent(Context) || !IsValid(MovingPlayer)
 				|| !IsJoinRoomCurrent())
 			{
-				return false;
+				return Fail(TEXT("ContextChangedBeforeSearch"));
 			}
-			FVector Destination;
-			if (!FindJoinDestination(MovingPlayer, Anchor, JoinRoom, bFallbackOnly, Destination)
-				|| !IsSafeJoinDestination(MovingPlayer, Anchor, JoinRoom, Destination))
+			if (!FindJoinDestination(MovingPlayer, Anchor, JoinRoom, bFallbackOnly, Destination,
+				&RejectionSummaries[MethodIndex]))
 			{
-				return false;
+				return Fail(TEXT("NoSafeDestination"));
+			}
+			bHasDestination = true;
+			ERoomJoinRejection Rejection;
+			if (!IsSafeJoinDestination(MovingPlayer, Anchor, JoinRoom, Destination, &Rejection))
+			{
+				RejectionSummaries[MethodIndex] = JoinRejectionName(Rejection);
+				return Fail(TEXT("DestinationBecameUnsafe"));
 			}
 #if WITH_DEV_AUTOMATION_TESTS
 			if (JoinTeleportObserverForTesting) JoinTeleportObserverForTesting();
 #endif
-			if (!IsPreparationContextCurrent(Context) || !IsJoinRoomCurrent()
-				|| !IsValid(MovingPlayer)
-				|| !MovingPlayer->TeleportTo(Destination, MovingPlayer->GetActorRotation(), false, true))
+			if (!IsPreparationContextCurrent(Context) || !IsJoinRoomCurrent() || !IsValid(MovingPlayer))
 			{
-				return false;
+				return Fail(TEXT("ContextChangedBeforeTeleport"));
+			}
+			if (!MovingPlayer->TeleportTo(Destination, MovingPlayer->GetActorRotation(), false, true))
+			{
+				return Fail(TEXT("TeleportFailed"));
 			}
 			if (!IsPreparationContextCurrent(Context) || !IsValid(MovingPlayer) || !IsJoinRoomCurrent())
 			{
-				return false;
+				return Fail(TEXT("ContextChangedAfterTeleport"));
 			}
 			MovingPlayer->GetCapsuleComponent()->UpdateOverlaps();
-			const bool bInside = IsPreparationContextCurrent(Context)
-				&& IsJoinRoomCurrent() && IsPlayerInsideRoom(MovingPlayer, JoinRoom);
-			if (bInside)
+			if (!IsPreparationContextCurrent(Context) || !IsJoinRoomCurrent() || !IsValid(MovingPlayer))
 			{
-				UE_LOG(LogTemp, Display,
-					TEXT("[RoomCombat] Player joined. Room=%s Player=%s Method=%s Location=%s"),
-					*RoomTag.ToString(), *GetNameSafe(MovingPlayer),
-					bFallbackOnly ? TEXT("Fallback") : TEXT("Nearby"), *Destination.ToString());
+				return Fail(TEXT("ContextChangedAfterOverlap"));
 			}
-			return bInside;
+			if (!IsPlayerInsideRoom(MovingPlayer, JoinRoom))
+			{
+				return Fail(MovingPlayer->GetCurrentRoomTag() != JoinRoomTag
+					? TEXT("PostMoveRoomTagMismatch") : TEXT("PostMoveOutsideRoom"));
+			}
+			UE_LOG(LogTemp, Display,
+				TEXT("[RoomCombat] Player joined. Room=%s Player=%s Method=%s Location=%s"),
+				*RoomTag.ToString(), *GetNameSafe(MovingPlayer),
+				bFallbackOnly ? TEXT("Fallback") : TEXT("Nearby"), *Destination.ToString());
+			return true;
 		};
 		// 주변 이동은 한 번만 시도한다. 실패 시 설정된 출입구 fallback으로 한 번 더 보낸다.
 		if (!TryMoveOnce(false) && !TryMoveOnce(true))
 		{
 			UE_LOG(LogTemp, Warning,
-				TEXT("[RoomCombat] Join deferred: no safe destination. Room=%s Moving=%s Generation=%d"),
-				*RoomTag.ToString(), *GetNameSafe(MovingPlayer), Context.GameplayGeneration);
+				TEXT("[RoomCombat] Join deferred. Room=%s DestinationRoom=%s Moving=%s NearbyFailure=%s NearbyRejected=[%s] FallbackFailure=%s FallbackRejected=[%s] Generation=%d"),
+				*RoomTag.ToString(), *JoinRoomTag.ToString(), *GetNameSafe(MovingPlayer),
+				Failures[0], *RejectionSummaries[0], Failures[1], *RejectionSummaries[1], Context.GameplayGeneration);
 			CancelInitialDetectionPreparation(Context);
 			return false;
 		}

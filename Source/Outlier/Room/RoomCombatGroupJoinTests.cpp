@@ -399,6 +399,11 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomGroupJoinNarrowSpaceTest, "Outlier.Room.Gr
 bool FRoomGroupJoinNarrowSpaceTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	// 원래 실패해야 하는 배치에서는 상태 복구뿐 아니라 일반 로그의 원인 분류도 검증한다.
+	AddExpectedMessagePlain(TEXT("NearbyRejected=[WorldBlockingCollision:8] FallbackFailure=NoSafeDestination FallbackRejected=[WorldBlockingCollision:1]"),
+		ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 2);
+	AddExpectedMessagePlain(TEXT("NearbyRejected=[CapsuleOutsideRoom:8] FallbackFailure=NoSafeDestination FallbackRejected=[NoFallbackConfigured]"),
+		ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 2);
 	UClass* Class = LoadJoinShooter();
 	if (!TestNotNull(TEXT("Concrete Shooter"), Class)) return false;
 	enum class ESpace { OneOpening, SafeFallback, BlockedFallback, LowCeiling };
@@ -482,6 +487,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomGroupJoinBoundaryTest, "Outlier.Room.Group
 bool FRoomGroupJoinBoundaryTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	AddExpectedMessagePlain(TEXT("Reason=ContextChangedBeforeTeleport Method=Nearby"),
+		ELogVerbosity::Display, EAutomationExpectedMessageFlags::Contains, 2);
 	UClass* Class = LoadJoinShooter();
 	if (!TestNotNull(TEXT("Concrete Shooter"), Class)) return false;
 	enum class EBoundary { Corner, DoorSill, CapsuleOutside, SharedFace, AnchorLeaves };
@@ -635,6 +642,11 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomGroupJoinOverlapScenarioTest, "Outlier.Roo
 bool FRoomGroupJoinOverlapScenarioTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	// 물리적으로 도착했는데 방 태그가 다른 경우를 공간 탐색 실패와 섞지 않는다.
+	AddExpectedMessage(TEXT("Reason=PostMoveRoomTagMismatch .*InsideDestination=1"),
+		ELogVerbosity::Display, EAutomationExpectedMessageFlags::Contains, 4);
+	AddExpectedMessagePlain(TEXT("NearbyFailure=PostMoveRoomTagMismatch"),
+		ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 4);
 	UClass* Class = LoadJoinShooter();
 	if (!TestNotNull(TEXT("Concrete Shooter"), Class)) return false;
 	for (bool bSameGroup : {true, false})
