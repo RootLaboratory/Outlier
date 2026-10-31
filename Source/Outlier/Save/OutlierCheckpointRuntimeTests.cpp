@@ -362,6 +362,7 @@ bool FOutlierCheckpointDurableCommitTest::RunTest(const FString& Parameters)
 		FOutlierRoomPhaseProgress PhaseProgress;
 		PhaseProgress.NextPhaseIndex = 2;
 		PhaseProgress.bExitBlockActive = true;
+		PhaseProgress.bResumeCurrentPhase = true;
 		First.RoomPhaseProgress.Add(PhaseRoom, PhaseProgress);
 		TestTrue(TEXT("First disk commit succeeds"), Save->CommitDurableCheckpointSnapshot(First));
 		FOutlierCheckpointSnapshot Upgraded = First;
@@ -427,6 +428,7 @@ bool FOutlierCheckpointDurableCommitTest::RunTest(const FString& Parameters)
 		{
 			TestEqual(TEXT("Disk next phase round trips"), RestoredPhase->NextPhaseIndex, 2);
 			TestTrue(TEXT("Disk exit block state round trips"), RestoredPhase->bExitBlockActive);
+			TestTrue(TEXT("Disk in-progress phase resume state round trips"), RestoredPhase->bResumeCurrentPhase);
 		}
 		TestFalse(TEXT("Another SaveId cannot load this file"),
 			Save->LoadLatestSave(OwnerId, FGuid::NewGuid(), Verifier));

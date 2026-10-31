@@ -4,6 +4,7 @@
 #include "Enemy/EnemyAIController.h"
 #include "Enemy/EnemyRoomSubsystem.h"
 #include "Enemy/EnemyStateTreeTacticalTasks.h"
+#include "Components/CapsuleComponent.h"
 #include "Engine/Engine.h"
 #include "EngineGlobals.h"
 #include "Engine/GameInstance.h"
@@ -69,6 +70,49 @@ struct FEnemySearchTestWorld
 		World->GetTimerManager().Tick(Seconds);
 	}
 };
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyCombatAimPointTest,
+	"Outlier.Enemy.Combat.AimPoint", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyCombatAimPointTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FEnemySearchTestWorld Fixture;
+	if (!TestNotNull(TEXT("Authority world exists"), Fixture.World)) return false;
+	AEnemyBase* Enemy = Fixture.SpawnEnemy(FGameplayTag(), FVector::ZeroVector, false);
+	ACharacter* Target = Fixture.World->SpawnActor<ACharacter>();
+	if (!TestNotNull(TEXT("Enemy exists"), Enemy)
+		|| !TestNotNull(TEXT("Character target exists"), Target)) return false;
+
+	// 시점과 몸체 중심을 분리해 기존 시점 조준으로 되돌아가는 회귀를 검출한다.
+	Target->BaseEyeHeight = 80.0f;
+	Target->GetCapsuleComponent()->SetCapsuleSize(20.0f, 30.0f);
+	Target->SetActorLocation(FVector(500.0f, 200.0f, 300.0f));
+	const FVector InitialCenter = Target->GetCapsuleComponent()->Bounds.Origin;
+	TestFalse(TEXT("View location differs from the small capsule center"),
+		Target->GetPawnViewLocation().Equals(InitialCenter));
+	TestTrue(TEXT("Character aim uses capsule center instead of view height"),
+		Enemy->GetCombatAimPoint(Target).Equals(InitialCenter));
+
+	Target->SetActorLocation(FVector(750.0f, -100.0f, 450.0f));
+	const FVector MovedCenter = Target->GetCapsuleComponent()->Bounds.Origin;
+	TestFalse(TEXT("Target capsule moved"), MovedCenter.Equals(InitialCenter));
+	TestTrue(TEXT("Tracking query follows the current capsule center"),
+		Enemy->GetCombatAimPoint(Target).Equals(MovedCenter));
+
+	APawn* PawnTarget = Fixture.World->SpawnActor<APawn>();
+	AActor* ActorTarget = Fixture.World->SpawnActor<AActor>();
+	if (!TestNotNull(TEXT("Non-character pawn exists"), PawnTarget)
+		|| !TestNotNull(TEXT("Non-pawn actor exists"), ActorTarget)) return false;
+	PawnTarget->BaseEyeHeight = 47.0f;
+	TestTrue(TEXT("Pawn without a character capsule keeps its view-location fallback"),
+		Enemy->GetCombatAimPoint(PawnTarget).Equals(PawnTarget->GetPawnViewLocation()));
+	TestTrue(TEXT("Non-pawn actor keeps its actor-location fallback"),
+		Enemy->GetCombatAimPoint(ActorTarget).Equals(ActorTarget->GetActorLocation()));
+	TestTrue(TEXT("Null target keeps the zero-vector fallback"),
+		Enemy->GetCombatAimPoint(nullptr).Equals(FVector::ZeroVector));
+	return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemySearchEpisodeTest,

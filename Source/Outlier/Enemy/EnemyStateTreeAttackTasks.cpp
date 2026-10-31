@@ -166,7 +166,9 @@ EStateTreeRunStatus FEnemyAttackTargetTask::Tick(
 		return EStateTreeRunStatus::Running;
 	}
 
-	if (!InstanceData.Enemy->UpdateAttackLocation(TargetActor->GetActorLocation()))
+	// 공격 시작과 같은 조준점을 매 Tick 조회해 추적 중에도 캡슐 중심을 유지한다.
+	const FVector TargetLocation = InstanceData.Enemy->GetCombatAimPoint(TargetActor);
+	if (!InstanceData.Enemy->UpdateAttackLocation(TargetLocation))
 	{
 		return EStateTreeRunStatus::Failed;
 	}

@@ -1201,7 +1201,7 @@ bool FEnemyFlightHeightChargeRegressionTest::RunTest(const FString& Parameters)
 			EnemyCharge::Assess(Drone, Controller, Target, 500, 5), EEnemyChargeEligibility::Ready);
 	}
 	if (!TestTrue(TEXT("Charge commits the current direct heading"),
-		Drone->BeginCommittedSelfDestruct(Target, 0, 400, 1000, 0))) return false;
+		Drone->BeginCommittedSelfDestruct(Target, 0, 400))) return false;
 	ON_SCOPE_EXIT { Drone->CancelCommittedSelfDestruct(); };
 	Target->SetActorLocation(FVector(400, 1400, 800));
 	Drone->CombatHeightPreference = EEnemyFlightHeightPreference::High;

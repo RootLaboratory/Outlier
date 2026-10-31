@@ -123,6 +123,12 @@ FVector ResolveFacingLocation(
 	return InstanceData.TargetLocation;
 }
 
+bool ShouldYieldRotationToAttack(const AAIController& AIController)
+{
+	const AEnemyAIController* EnemyController = Cast<AEnemyAIController>(&AIController);
+	return EnemyController && EnemyController->IsAttackAimActive();
+}
+
 // Capsule(Actor 본체)은 Yaw만 돌리고, AIController의 ControlRotation에는 Pitch까지 반영한다.
 // VECDroneMovementComponent::UpdateAIFacingPitch()가 이 Pitch를 읽어 AIFacingPitchRoot(메시 쪽
 // Pitch 전용 회전축)에 적용하므로, 몸체 이동/충돌은 Yaw만으로 처리하고 시각적인 "바라보는 방향"
@@ -135,6 +141,12 @@ bool RotateTowardLocation(
 	float AngleTolerance,
 	float DeltaTime)
 {
+	// 병렬 MaintainFacing/이동 Task가 공격 조준을 본체 기준 회전으로 덮지 않게 한다.
+	if (ShouldYieldRotationToAttack(AIController))
+	{
+		return false;
+	}
+
 	const FVector Direction = TargetLocation - Enemy.GetActorLocation();
 	if (Direction.IsNearlyZero())
 	{
@@ -268,6 +280,7 @@ FFlightPathRequest MakeFlightPathRequest(
 	Request.MaxSearchMilliseconds = Data.MaxSearchMilliseconds;
 	Request.bRequireRoom = true;
 	Request.Room = Data.CachedRoom;
+	Request.AllowedRooms = Data.MovementRooms.Rooms;
 	Request.bRequireAwayHalfSpace = Data.bConstrainRetreatPath;
 	Request.AwayOrigin = Data.RetreatOrigin + Request.Start - Data.Enemy->GetActorLocation();
 	Request.AwayDirection = Data.RetreatDirection;
@@ -288,9 +301,44 @@ bool IsRetreatFlightConfigurationValid(const FEnemyFlyToLocationTaskInstanceData
 
 bool HasCurrentFlightRoom(const FEnemyFlyToLocationTaskInstanceData& Data)
 {
-	return IsValid(Data.CachedCapsule) && IsValid(Data.CachedRoomSubsystem)
+	return IsValid(Data.Enemy) && !Data.Enemy->IsDead() && !Data.Enemy->IsEnemyPossessed()
+		&& IsValid(Data.CachedCapsule) && IsValid(Data.CachedRoomSubsystem)
 		&& Data.CachedRoom.IsValid() && Data.PathRoomTag == Data.Enemy->GetDefaultRoomTag()
-		&& Data.CachedRoomSubsystem->GetRegisteredRoomVolume(Data.PathRoomTag) == Data.CachedRoom.Get();
+		&& Data.CapturedMovementState == Data.Enemy->GetCombatState()
+		&& Data.CapturedMovementGeneration == Data.Enemy->GetPoolGameplayGeneration()
+		&& Data.CapturedMovementLease == Data.Enemy->GetPoolLeaseSerial()
+		&& Data.CachedRoomSubsystem->IsEnemyMovementRoomContextCurrent(Data.Enemy, Data.MovementRooms);
+}
+
+bool IsFlightStepInsideMovementRooms(const FEnemyFlyToLocationTaskInstanceData& Data, float DeltaTime)
+{
+	if (!HasCurrentFlightRoom(Data)) return false;
+	const UCharacterMovementComponent* Movement = Data.Enemy->GetCharacterMovement();
+	if (!Movement) return false;
+	const float Step = FMath::Max(DeltaTime, 0.0f);
+	const FVector Center = Data.CachedCapsule->GetComponentLocation();
+	const FVector Extent = FlightPathfinding::GetCapsuleWorldExtent(
+		Data.CachedCapsule->GetScaledCapsuleRadius() + Data.PathClearance,
+		Data.CachedCapsule->GetScaledCapsuleHalfHeight() + Data.PathClearance,
+		Data.CachedCapsule->GetComponentQuat()) + FVector(Movement->GetMaxAcceleration() * Step * Step);
+	// 경로 검사는 간격을 유지하되 관성에 의한 그룹 경계 이탈은 매 이동 입력 전에 막는다.
+	const FFlightPathRequest Request = MakeFlightPathRequest(Data, Center);
+	return FlightPathfinding::IsSegmentInsideMovementRooms(Request, Center, Center + Movement->Velocity * Step, Extent);
+}
+
+bool CheckDirectFlightBoundary(FEnemyFlyToLocationTaskInstanceData& Data, float DeltaTime)
+{
+	if (!IsFlightStepInsideMovementRooms(Data, DeltaTime)) return false;
+	Data.SegmentCheckElapsed += DeltaTime;
+	const bool bDestinationChanged = !Data.LastDestination.Equals(Data.Destination, 0.01);
+	if (bDestinationChanged || Data.SegmentCheckElapsed >= FMath::Max(Data.PathCheckInterval, 0.01f))
+	{
+		Data.SegmentCheckElapsed = 0.0f;
+		const FVector Offset = Data.CachedCapsule->GetComponentLocation() - Data.Enemy->GetActorLocation();
+		Data.PathStatus = FlightPathfinding::CheckSegment(*Data.Enemy->GetWorld(), *Data.CachedCapsule,
+			MakeFlightPathRequest(Data, Data.Destination + Offset));
+	}
+	return Data.PathStatus == EFlightPathStatus::Success;
 }
 
 bool IsRetryableFlightFailure(EFlightPathStatus Status)
@@ -443,7 +491,7 @@ EStateTreeRunStatus RequestFlightPath(FEnemyFlyToLocationTaskInstanceData& Data)
 		const FVector Extent = FlightPathfinding::GetCapsuleWorldExtent(
 			Radius, HalfHeight, Data.CachedCapsule->GetComponentQuat());
 		FVector RoomGoal;
-		if (Data.CachedRoom->TryClampFlightLocation(Request.Goal, Extent, RoomGoal))
+		if (FlightPathfinding::ClampToMovementRooms(Request, Request.Goal, Extent, RoomGoal))
 		{
 			bRoomAdjusted = !RoomGoal.Equals(Request.Goal, 0.01);
 			Request = MakeFlightPathRequest(Data, RoomGoal);
@@ -562,8 +610,7 @@ EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, fl
 		StopFlyTask(Data);
 		return EStateTreeRunStatus::Failed;
 	}
-	if (!IsValid(Data.CachedCapsule) || !Data.CachedRoom.IsValid()
-		|| Data.PathRoomTag != Data.Enemy->GetDefaultRoomTag())
+	if (!HasCurrentFlightRoom(Data))
 	{
 		Data.PathStatus = EFlightPathStatus::Unavailable;
 		Data.MoveResult = EEnemyFlightMoveResult::Invalid;
@@ -676,6 +723,12 @@ EStateTreeRunStatus TickFlightPath(FEnemyFlyToLocationTaskInstanceData& Data, fl
 	}
 
 	const float Distance = FVector::Distance(Position, NextPoint);
+	if (!IsFlightStepInsideMovementRooms(Data, DeltaTime))
+	{
+		Data.PathStatus = EFlightPathStatus::BlockedSegment;
+		WaitForFlightPath(Data);
+		return EStateTreeRunStatus::Running;
+	}
 	Data.NoProgressElapsed += DeltaTime;
 	RecordFlightPathProgress(Data, Distance, bReachedPoint);
 	const float NoProgressLimit = Data.bUsePlannedPath && Data.NoProgressTimeout <= 0.0f ? 2.0f : Data.NoProgressTimeout;
@@ -734,13 +787,27 @@ namespace EnemyFlightTesting
 {
 EStateTreeRunStatus StartPath(FEnemyFlyToLocationTaskInstanceData& Data)
 {
+	if (Data.bReturnHome && (!IsValid(Data.Enemy) || !Data.Enemy->GetReturnHomeDestination(Data.Destination)))
+		return EStateTreeRunStatus::Failed;
 	if (!IsRetreatFlightConfigurationValid(Data)) return EStateTreeRunStatus::Failed;
-	return Data.bUsePlannedPath ? StartPlannedFlight(Data) : RequestFlightPath(Data);
+	if (!IsValid(Data.Enemy) || !IsValid(Data.CachedRoomSubsystem)
+		|| !Data.CachedRoomSubsystem->BuildEnemyMovementRoomContext(Data.Enemy, Data.MovementRooms))
+		return EStateTreeRunStatus::Failed;
+	Data.CapturedMovementState = Data.Enemy->GetCombatState();
+	Data.CapturedMovementGeneration = Data.Enemy->GetPoolGameplayGeneration();
+	Data.CapturedMovementLease = Data.Enemy->GetPoolLeaseSerial();
+	return Data.bUsePlannedPath ? StartPlannedFlight(Data)
+		: Data.bUseInitialPath ? StartInitialFlight(Data) : RequestFlightPath(Data);
 }
 
 EStateTreeRunStatus TickPath(FEnemyFlyToLocationTaskInstanceData& Data, float DeltaTime)
 {
 	return TickFlightPath(Data, DeltaTime);
+}
+
+bool CheckDirectBoundary(FEnemyFlyToLocationTaskInstanceData& Data, float DeltaTime)
+{
+	return CheckDirectFlightBoundary(Data, DeltaTime);
 }
 
 void Stop(FEnemyFlyToLocationTaskInstanceData& Data)
@@ -751,6 +818,59 @@ void Stop(FEnemyFlyToLocationTaskInstanceData& Data)
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyFlightProgressTest,
 	"Outlier.Enemy.Flight.Progress", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyAttackAimOwnershipTest,
+	"Outlier.Enemy.Combat.AttackAimOwnership", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FEnemyAttackAimOwnershipTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false,
+		MakeUniqueObjectName(nullptr, UWorld::StaticClass(), TEXT("AttackAimOwnership")));
+	if (!TestNotNull(TEXT("World exists"), World)) return false;
+	GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(World);
+	ON_SCOPE_EXIT
+	{
+		World->DestroyWorld(false);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+	};
+	World->InitializeActorsForPlay(FURL());
+	AEnemyBase* Enemy = World->SpawnActor<AEnemyBase>();
+	AEnemyAIController* Controller = World->SpawnActor<AEnemyAIController>();
+	if (!TestNotNull(TEXT("Enemy exists"), Enemy)
+		|| !TestNotNull(TEXT("Controller exists"), Controller)) return false;
+	Controller->Possess(Enemy);
+	const FRotator AttackRotation(-25.0f, 70.0f, 0.0f);
+	Controller->SetControlRotation(AttackRotation);
+	Controller->SetAttackAimActive(true);
+
+	// 기본 AI 갱신과 병렬 이동 회전을 순서대로 실행해 연사 사이의 덮어쓰기를 재현한다.
+	Controller->UpdateControlRotation(0.1f);
+	TestTrue(TEXT("AI update preserves attack pitch and yaw"),
+		Controller->GetControlRotation().Equals(AttackRotation));
+	TestFalse(TEXT("Movement rotation waits while attack owns aim"),
+		RotateTowardLocation(*Enemy, *Controller, FVector(0, -500, 300), 360.0f, 5.0f, 1.0f));
+	TestTrue(TEXT("Movement cannot overwrite attack aim"),
+		Controller->GetControlRotation().Equals(AttackRotation));
+
+	// 무기가 없어져도 공통 중단 경로가 소유권을 해제해야 한다.
+	Enemy->StopCurrentWeaponAttack();
+	TestFalse(TEXT("Weapon stop releases aim without a weapon"), Controller->IsAttackAimActive());
+	Controller->UpdateControlRotation(0.1f);
+	TestTrue(TEXT("Normal AI pitch reset resumes after stop"),
+		FMath::IsNearlyZero(Controller->GetControlRotation().Pitch));
+	TestTrue(TEXT("Movement rotation resumes after stop"),
+		RotateTowardLocation(*Enemy, *Controller, FVector(0, -500, 300), 360.0f, 5.0f, 1.0f));
+
+	Controller->SetAttackAimActive(true);
+	Enemy->EnterStun();
+	TestFalse(TEXT("Stun releases attack aim"), Controller->IsAttackAimActive());
+	Controller->SetAttackAimActive(true);
+	Controller->UnPossess();
+	TestFalse(TEXT("Unpossess releases attack aim"), Controller->IsAttackAimActive());
+	return true;
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyFlightWaypointTurnTest,
 	"Outlier.Enemy.Flight.WaypointTurn", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -1025,16 +1145,22 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::EnterState(
 	InstanceData.CachedRoom.Reset();
 	InstanceData.CachedCapsule = nullptr;
 	InstanceData.CachedRoomSubsystem = nullptr;
+	InstanceData.MovementRooms = FEnemyMovementRoomContext();
 	InstanceData.bWaitingForPath = false;
 	InstanceData.bRepathEpisode = false;
 	InstanceData.RepathAttempts = 0;
 	InstanceData.RetryElapsed = 0.0f;
 	InstanceData.RetryDelay = 0.0f;
+	InstanceData.SegmentCheckElapsed = 0.0f;
 	InstanceData.PathStatus = EFlightPathStatus::Unavailable;
 	LogFlight(TEXT("Enter"), InstanceData, &Transition);
 	if (!Enemy || !Enemy->HasAuthority() || !AIController)
 	{
 		LogFlight(TEXT("Rejected: missing enemy/authority/AIController"), InstanceData);
+		return EStateTreeRunStatus::Failed;
+	}
+	if (InstanceData.bReturnHome && !Enemy->GetReturnHomeDestination(InstanceData.Destination))
+	{
 		return EStateTreeRunStatus::Failed;
 	}
 
@@ -1043,6 +1169,20 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::EnterState(
 	InstanceData.bOwnsMovement = true;
 	Enemy->ConsumeMovementInputVector();
 	InstanceData.LastDestination = InstanceData.Destination;
+	InstanceData.CachedCapsule = Enemy->GetCapsuleComponent();
+	InstanceData.CachedRoomSubsystem = Enemy->GetWorld()->GetSubsystem<URoomCombatSubsystem>();
+	InstanceData.PathRoomTag = Enemy->GetDefaultRoomTag();
+	InstanceData.CachedRoom = InstanceData.CachedRoomSubsystem
+		? InstanceData.CachedRoomSubsystem->GetRegisteredRoomVolume(InstanceData.PathRoomTag) : nullptr;
+	InstanceData.CapturedMovementState = Enemy->GetCombatState();
+	InstanceData.CapturedMovementGeneration = Enemy->GetPoolGameplayGeneration();
+	InstanceData.CapturedMovementLease = Enemy->GetPoolLeaseSerial();
+	if (!InstanceData.CachedRoomSubsystem
+		|| !InstanceData.CachedRoomSubsystem->BuildEnemyMovementRoomContext(Enemy, InstanceData.MovementRooms))
+	{
+		StopFlyTask(InstanceData);
+		return EStateTreeRunStatus::Failed;
+	}
 	InstanceData.BestDistance = FVector::Distance(Enemy->GetActorLocation(), InstanceData.Destination);
 	if (InstanceData.Destination.ContainsNaN() || !IsRetreatFlightConfigurationValid(InstanceData))
 	{
@@ -1088,6 +1228,15 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::EnterState(
 		return RequestFlightPath(InstanceData);
 	}
 
+	// 직접 비행도 같은 경계 계약을 사용한다. A* 옵션을 꺼서 미등록 구간을 통과할 수 없다.
+	const FVector Offset = InstanceData.CachedCapsule->GetComponentLocation() - Enemy->GetActorLocation();
+	InstanceData.PathStatus = FlightPathfinding::CheckSegment(*Enemy->GetWorld(), *InstanceData.CachedCapsule,
+		MakeFlightPathRequest(InstanceData, InstanceData.Destination + Offset));
+	if (InstanceData.PathStatus != EFlightPathStatus::Success)
+	{
+		StopFlyTask(InstanceData);
+		return EStateTreeRunStatus::Failed;
+	}
 	const float AcceptanceRadius = FMath::Max(InstanceData.AcceptanceRadius, 0.0f);
 	const bool bAlreadyAtDestination =
 		FVector::DistSquared(Enemy->GetActorLocation(), InstanceData.Destination)
@@ -1118,6 +1267,12 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::Tick(
 		StopFlyTask(InstanceData);
 		return EStateTreeRunStatus::Failed;
 	}
+	if (!HasCurrentFlightRoom(InstanceData))
+	{
+		InstanceData.MoveResult = EEnemyFlightMoveResult::Interrupted;
+		StopFlyTask(InstanceData);
+		return EStateTreeRunStatus::Failed;
+	}
 
 	// Keep the task resumable if hacking is cancelled before the state transition.
 	if (Enemy->IsPossessionInProgress())
@@ -1138,6 +1293,12 @@ EStateTreeRunStatus FEnemyFlyToLocationTask::Tick(
 	}
 
 	ApplyFlyTaskSpeedMultiplier(*Enemy, InstanceData.SpeedMultiplier);
+	if (!CheckDirectFlightBoundary(InstanceData, DeltaTime))
+	{
+		InstanceData.MoveResult = EEnemyFlightMoveResult::Blocked;
+		StopFlyTask(InstanceData);
+		return EStateTreeRunStatus::Failed;
+	}
 	const FVector ToDestination = InstanceData.Destination - Enemy->GetActorLocation();
 	const float AcceptanceRadius = FMath::Max(InstanceData.AcceptanceRadius, 0.0f);
 
@@ -1599,6 +1760,11 @@ EStateTreeRunStatus FEnemyRotateToAngleAndWaitTask::Tick(
 		return EStateTreeRunStatus::Failed;
 	}
 
+	if (ShouldYieldRotationToAttack(*AIController))
+	{
+		return EStateTreeRunStatus::Running;
+	}
+
 	const float CurrentYaw = InstanceData.Enemy->GetActorRotation().Yaw;
 	const float NewYaw = FMath::FixedTurn(
 		CurrentYaw,
@@ -1666,7 +1832,10 @@ EStateTreeRunStatus FEnemyLookAroundTask::EnterState(
 	InstanceData.BaseControlRotation = AIController->GetControlRotation().GetNormalized();
 	InstanceData.BaseControlRotation.Pitch = 0.0f;
 	InstanceData.BaseControlRotation.Roll = 0.0f;
-	AIController->SetControlRotation(InstanceData.BaseControlRotation);
+	if (!ShouldYieldRotationToAttack(*AIController))
+	{
+		AIController->SetControlRotation(InstanceData.BaseControlRotation);
+	}
 	if (!InstanceData.bOwnsTaskDrivenPitch)
 	{
 		if (AEnemyAIController* EnemyAIController = Cast<AEnemyAIController>(AIController))
@@ -1695,6 +1864,12 @@ EStateTreeRunStatus FEnemyLookAroundTask::Tick(
 	if (!Enemy || !Enemy->HasAuthority() || !AIController)
 	{
 		return EStateTreeRunStatus::Failed;
+	}
+
+	// AttackLocation과 병렬 실행돼도 사격 중에는 탐색 회전과 단계 진행을 보류한다.
+	if (ShouldYieldRotationToAttack(*AIController))
+	{
+		return EStateTreeRunStatus::Running;
 	}
 
 	if (!InstanceData.Steps.IsValidIndex(InstanceData.CurrentStepIndex))

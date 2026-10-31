@@ -15,6 +15,7 @@
 #include "ShooterCharacter.generated.h"
 
 class UInputAction;
+class UEnhancedInputLocalPlayerSubsystem;
 struct FInputActionValue;
 class AWeaponBase;
 class UShooterHealthComponent;
@@ -241,8 +242,11 @@ class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbil
 	friend class UShooterCharacterMovementComponent;
 	friend struct ShooterSlideSimulationTests::FFixture;
 	friend class FShooterGroundedMovementTest;
+	friend class FShooterActionIntentTest;
 	friend class FShooterCoyoteTimeTest;
 	friend class FShooterSlidePredictionTest;
+	friend class FShooterSlideFireTest;
+	friend class FShooterSlideJumpTest;
 	friend class FShooterSlideLifecycleTest;
 	friend class FShooterPresentationConfigurationTest;
 	friend class FOutlierShooterPresentationAssetsTest;
@@ -251,6 +255,7 @@ class OUTLIER_API AShooterCharacter : public AFirstPersonCharacter, public IAbil
 	friend class FOutlierShooterPresentationAnimationTest;
 	friend class FOutlierProceduralEquipReferenceOrderTest;
 	friend class FOutlierSuitTransitionTest;
+	friend class FOutlierSlideSuitRecoveryTest;
 	friend class FOutlierTransitionRecoveryTest;
 	friend class FOutlierMeleeAttackLifecycleTest;
 
@@ -544,6 +549,14 @@ protected:
 	FTimerHandle LeanUpdateTimerHandle;
 
 	FTimerHandle ActionLockTimerHandle;
+	uint32 EquipActionGeneration = 0;
+	int32 FailedProceduralSwitchId = 0;
+	TWeakObjectPtr<UEnhancedInputLocalPlayerSubsystem> ActionInputSubsystem;
+	void BindActionInputReset();
+	UFUNCTION()
+	void HandleControlMappingsRebuilt();
+	void FinishEquipAction(uint32 Generation);
+	void RefreshActionIntentsAfterEquip();
 
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Shield")
@@ -794,6 +807,8 @@ public:
 
 	bool WantsToAim() const;
 	bool IsAiming() const;
+	bool IsWeaponSwitchInProgress() const;
+	void ResetActionInput();
 	bool IsSliding() const;
 	bool AllowsMeleeAttackWhileSliding() const { return bAllowMeleeAttackWhileSliding; }
 	bool IsSprinting() const;
@@ -1043,10 +1058,10 @@ protected:
 	void MulticastPlayThirdPersonSwitchRaise(EWeaponType WeaponType, FName SectionName);
 
 	UFUNCTION(Server, Reliable)
-	void ServerSetAimState(bool bNewAiming);
+	void ServerSetAimState(bool bNewAiming, bool bSprintIntent, uint32 InputRequest, uint32 InputEpoch, int32 AimSwitchId);
 
 	UFUNCTION(Server, Reliable)
-	void ServerSetSprintState(bool bNewSprinting);
+	void ServerSetSprintState(bool bNewSprinting, uint32 InputRequest, uint32 InputEpoch);
 
 	UFUNCTION(Server, Reliable)
 	void ServerRequestCrouchOrSlide();

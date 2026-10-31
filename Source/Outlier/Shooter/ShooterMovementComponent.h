@@ -12,6 +12,7 @@ class OUTLIER_API UShooterMovementComponent : public UShooterCharacterComponentB
 {
 	GENERATED_BODY()
 	friend class FShooterGroundedMovementTest;
+	friend class FShooterActionIntentTest;
 	friend class UShooterCharacterMovementComponent;
 
 protected:
@@ -58,6 +59,8 @@ public:
 
 	void HandleSprintPressed();
 	void HandleSprintReleased();
+	// 입력 Toggle과 구분한다. 서버/보정 재생은 저장된 결과를 한 번 더 반전하지 않고 적용한다.
+	void SetSprintIntent(bool bSprint);
 	void HandleCrouchPressed();
 	void HandleCrouchReleased();
 	void RequestCrouchOrSlide();

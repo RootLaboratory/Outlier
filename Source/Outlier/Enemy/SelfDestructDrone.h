@@ -38,9 +38,8 @@ public:
 	bool BeginCommittedSelfDestruct(
 		AActor* TargetActor,
 		float TelegraphDuration,
-		float ChargeSpeed,
-		float MaxChargeDistance,
-		float TargetStopDistance);
+		float ChargeSpeed);
+	// 직접 빙의 돌진은 시선 방향과 최대 이동 거리를 고정한다.
 	bool BeginCommittedSelfDestructDirection(
 		const FVector& ChargeDirection,
 		float TelegraphDuration,
@@ -102,6 +101,7 @@ private:
 		const FVector& ChargeDirection,
 		float TelegraphDuration,
 		float ChargeSpeed,
+		bool bLimitChargeDistance,
 		float ChargeDistanceLimit);
 
 	bool bDeathHandling = false;
@@ -116,6 +116,7 @@ private:
 	FVector CommittedChargeTargetDirection = FVector::ForwardVector;
 	FVector CommittedChargeStartLocation = FVector::ZeroVector;
 	float CommittedChargeSpeed = 0.0f;
+	bool bCommittedChargeDistanceLimited = false;
 	float CommittedChargeDistanceLimit = 0.0f;
 	float CommittedImpactElapsedTime = 0.0f;
 };

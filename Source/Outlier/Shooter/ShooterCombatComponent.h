@@ -15,6 +15,7 @@ class OUTLIER_API UShooterCombatComponent : public UShooterCharacterComponentBas
 	GENERATED_BODY()
 	friend class FOutlierShooterPresentationAnimationTest;
 	friend class FShooterGroundedMovementTest;
+	friend class FShooterActionIntentTest;
 
 protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
@@ -80,6 +81,8 @@ public:
 	void TryReload();
 	void HandleAimPressed();
 	void HandleAimReleased();
+	// 입력 수집/RPC와 분리해 승인된 의도를 적용한다. 서버와 보정 재생에서 입력을 새로 발급하지 않는다.
+	void ApplyAimInput(bool bNewWantsToAim);
 	void TryStartAttack();
 	void TryStopAttack();
 	void CancelMeleeAttack();

@@ -153,6 +153,11 @@ struct OUTLIER_API FOutlierRoomPhaseProgress
 	UPROPERTY()
 	int32 NextPhaseIndex = INDEX_NONE;
 
+	// 다른 방의 저장 경계에서 진행 중이던 차수는 첫 Wave부터 재개한다.
+	// false는 기존 차수 경계 저장이며 문/해킹 등 다음 차수의 시작 조건을 유지한다.
+	UPROPERTY()
+	bool bResumeCurrentPhase = false;
+
 	UPROPERTY()
 	bool bExitBlockActive = false;
 

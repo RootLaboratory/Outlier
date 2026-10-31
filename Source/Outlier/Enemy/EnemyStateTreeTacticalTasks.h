@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Room/RoomCombatSubsystem.h"
 #include "EnemyBase.h"
 #include "EnemyEnvQuery.h"
 #include "Drone/FlightPathfinding.h"
@@ -232,6 +233,7 @@ struct FEnemyRunEnvQueryTaskInstanceData
 	TObjectPtr<URoomCombatSubsystem> CachedRooms = nullptr;
 	UPROPERTY(Transient)
 	FGameplayTag CapturedRoomTag;
+	FEnemyMovementRoomContext MovementRooms;
 	int32 CapturedGeneration = 0;
 	int32 CapturedLease = 0;
 	EEnemyCombatState CapturedCombatState = EEnemyCombatState::NonCombat;

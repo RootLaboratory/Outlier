@@ -21,6 +21,13 @@
 #include "GAS/Attributes/OutlierShieldAttributeSet.h"
 #include "GAS/Attributes/OutlierVitalAttributeSet.h"
 
+void AShooterPlayerController::FlushPressedKeys()
+{
+	// 뷰포트 포커스 상실/입력 초기화는 일반 키 해제와 달리 Toggle과 Aim 예약을 모두 폐기한다.
+	if (auto* Shooter = Cast<AShooterCharacter>(GetPawn())) Shooter->ResetActionInput();
+	Super::FlushPressedKeys();
+}
+
 AShooterPlayerController::AShooterPlayerController()
 {
 	DefaultPlayerRole = EOutlierPlayerRole::Shooter;

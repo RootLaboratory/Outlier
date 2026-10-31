@@ -40,20 +40,27 @@ void UShooterMovementComponent::HandleSprintPressed()
 	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
 	if (ShooterCharacter && CastChecked<UShooterCharacterMovementComponent>(ShooterCharacter->GetCharacterMovement())
 		->QueueMovementInput(EShooterMovementInput::SprintPressed)) return;
-	if (!ShooterCharacter || ShooterCharacter->IsDead() || ShooterCharacter->IsSuitTransitionBlocked()
-		|| !ShooterCharacter->GetCharacterMovement()->IsMovingOnGround())
+	if (!ShooterCharacter || ShooterCharacter->IsDead() || ShooterCharacter->IsSuitTransitionBlocked())
 	{
 		return;
 	}
 
-	if (ShooterCharacter->WantsToAim() || ShooterCharacter->IsAiming())
+	const bool bSprint = !bWantsToSprint;
+	if (bSprint && (ShooterCharacter->WantsToAim() || ShooterCharacter->IsAiming()))
 	{
 		ShooterCharacter->StopAimInternal();
 		ShooterCharacter->RefreshCombatState();
 	}
 
-	bWantsToSprint = true;
-	if (CanSprint())
+	SetSprintIntent(bSprint);
+}
+
+void UShooterMovementComponent::SetSprintIntent(bool bSprint)
+{
+	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
+	if (!ShooterCharacter) return;
+	bWantsToSprint = bSprint && !ShooterCharacter->IsDead() && !ShooterCharacter->IsSuitTransitionBlocked();
+	if (bWantsToSprint && CanSprint())
 	{
 		ShooterCharacter->TryStopAttack();
 		ShooterCharacter->StopLean();
@@ -63,17 +70,7 @@ void UShooterMovementComponent::HandleSprintPressed()
 
 void UShooterMovementComponent::HandleSprintReleased()
 {
-	AShooterCharacter* ShooterCharacter = GetShooterCharacter();
-	if (ShooterCharacter && CastChecked<UShooterCharacterMovementComponent>(ShooterCharacter->GetCharacterMovement())
-		->QueueMovementInput(EShooterMovementInput::SprintReleased)) return;
-	if (!ShooterCharacter)
-	{
-		return;
-	}
-
-	bWantsToSprint = false;
-	StopSprintInternal();
-	RefreshMovementState();
+	// Sprint는 Toggle이다. 명시적 취소는 StopSprintInternal로 구분해 서버/재생에서도 키 해제와 섞지 않는다.
 }
 
 void UShooterMovementComponent::HandleCrouchPressed()
@@ -282,9 +279,12 @@ void UShooterMovementComponent::DoJumpStart()
 
 	if (bIsSliding)
 	{
-		if (CastChecked<UShooterCharacterMovementComponent>(ShooterCharacter->GetCharacterMovement())
-			->QueueMovementInput(EShooterMovementInput::SlideJumpCancel)) return;
-		StopSlide(ESlideEndReason::JumpCancel);
+		auto* JumpMovement = CastChecked<UShooterCharacterMovementComponent>(ShooterCharacter->GetCharacterMovement());
+		if (!JumpMovement->QueueMovementInput(EShooterMovementInput::SlideJumpPressed))
+		{
+			JumpMovement->PrepareSlideJump();
+		}
+		ShooterCharacter->Jump();
 		return;
 	}
 
@@ -426,10 +426,7 @@ void UShooterMovementComponent::StopSprintInternal()
 	{
 		auto* Movement = CastChecked<UShooterCharacterMovementComponent>(Shooter->GetCharacterMovement());
 		// 조준/공격 등 기존 정책으로 해제한 의도도 다음 이동에 반영한다. 과거 재생 입력은 실제 키 상태에 쓰지 않는다.
-		if (!Movement->bApplyingMovementInput && !Movement->IsReplayingMovement())
-		{
-			Movement->LiveMovementInput.bSprint = false;
-		}
+		Movement->CancelActionInput(true, false);
 	}
 	SuspendSprintInternal();
 }
@@ -457,6 +454,7 @@ void UShooterMovementComponent::ClearInputIntent()
 	if (AShooterCharacter* Shooter = GetShooterCharacter())
 	{
 		auto* Movement = CastChecked<UShooterCharacterMovementComponent>(Shooter->GetCharacterMovement());
+		Movement->CancelActionInput(true, false);
 		if (!Movement->bApplyingMovementInput && !Movement->IsReplayingMovement())
 		{
 			Movement->LiveMovementInput.bSprint = false;
@@ -490,7 +488,7 @@ bool UShooterMovementComponent::CanSprint() const
 		&& !bWantsToCrouch && !bIsSliding
 		&& !ShooterCharacter->WantsToAim()
 		&& !ShooterCharacter->IsReloading()
-		&& !ShooterCharacter->IsActionLocked();
+		&& (!ShooterCharacter->IsActionLocked() || ShooterCharacter->GetActionLock() == EShooterActionLock::Equip);
 }
 
 float UShooterMovementComponent::GetStealthSpeedMultiplier() const

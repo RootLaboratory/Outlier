@@ -27,6 +27,11 @@ protected:
 	FGameplayTag DefaultRoomTag;
 
 public:
+	// 그룹 판정은 Room.<레벨명>.<a>.<b> 형식의 자식 Room에만 적용한다.
+	static bool IsValidChildRoomTag(FGameplayTag RoomTag);
+	static FGameplayTag GetRoomGroupTag(FGameplayTag RoomTag);
+	static bool AreRoomsInSameGroup(FGameplayTag FirstRoomTag, FGameplayTag SecondRoomTag);
+
 	void EnterRoom(ARoomVolume* Room);
 	void LeaveRoom(ARoomVolume* Room);
 	bool HasActiveRoom(const ARoomVolume* Room) const;

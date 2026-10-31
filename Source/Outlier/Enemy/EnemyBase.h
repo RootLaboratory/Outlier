@@ -64,7 +64,9 @@ enum class EEnemyCombatState : uint8
 	NonCombat,
 	Alert,
 	Combat,
-	Stun
+	Stun,
+	// 저장된 기존 enum 값은 유지한다. 원래 방 복귀를 마쳐야 NonCombat으로 넘어간다.
+	Returning
 };
 
 struct OUTLIER_API FEnemyAdaptationBreakApplicationResult
@@ -605,6 +607,9 @@ public:
 	// 상태 변경 후 Combat.Entered 또는 Combat.AlertCleared 이벤트로 StateTree 전환을 요청한다.
 	bool CommitAlertToCombat();
 	bool CommitAlertToNonCombat();
+	bool GetReturnHomeDestination(FVector& OutDestination) const;
+	bool CompleteReturnHome();
+	bool IsInsideDefaultRoom() const;
 
 	void EnterCombatFromRoom(
 		const FVector& PlayerLocation,

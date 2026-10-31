@@ -7,6 +7,9 @@
 #include "Animation/Skeleton.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Components/BoxComponent.h"
+#include "Components/CapsuleComponent.h"
+#include "Curves/CurveFloat.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
@@ -28,6 +31,8 @@
 #include "Shooter/ShooterAnimInstance.h"
 #include "Shooter/ShooterFirstPersonAnimInstance.h"
 #include "Shooter/ShooterCombatComponent.h"
+#include "Shooter/ShooterCharacterMovementComponent.h"
+#include "Shooter/ShooterMovementComponent.h"
 #include "Shooter/Anim/ProceduralAnimValues.h"
 #include "Shooter/ShooterInventoryComponent.h"
 #include "UObject/UnrealType.h"
@@ -48,6 +53,7 @@ namespace
 struct FScopedSuitInteractionTestWorld
 {
 	UWorld* World = nullptr;
+	uint64 LastSimulatedFrame = 0;
 
 	bool Initialize(FAutomationTestBase& Test)
 	{
@@ -74,18 +80,23 @@ struct FScopedSuitInteractionTestWorld
 		return true;
 	}
 
-	void AdvanceTime(float Duration)
+	void AdvanceTime(float Duration, TFunction<void()> BeforeTick = {})
 	{
 		// 동기 테스트는 엔진 프레임을 넘기지 않는다. TimerManager의 프레임당 1회 Tick 제한을
 		// 피하도록 테스트 프레임을 진행하고, 종료 시 전역 카운터를 원래 값으로 복구한다.
 		TGuardValue<uint64> RestoreFrameCounter(GFrameCounter, GFrameCounter);
+		// 같은 월드의 다음 호출도 새 프레임이어야 한다. 번호를 재사용하면 Actor/Component의
+		// TickVisitedGFrameCounter와 충돌하여 월드 시간만 흐르고 실제 이동 Tick은 생략된다.
+		GFrameCounter = FMath::Max(GFrameCounter, LastSimulatedFrame);
 		// 첫 Tick은 Pending 타이머를 활성화한다. 큰 Delta 한 번 대신 작은 프레임들로 만료까지 진행한다.
 		constexpr float Step = 1.0f / 60.0f;
 		for (float Remaining = Duration; Remaining > KINDA_SMALL_NUMBER; Remaining -= Step)
 		{
 			++GFrameCounter;
+			if (BeforeTick) BeforeTick();
 			World->Tick(LEVELTICK_All, FMath::Min(Step, Remaining));
 		}
+		LastSimulatedFrame = GFrameCounter;
 	}
 
 	void Shutdown()
@@ -1721,6 +1732,212 @@ bool FOutlierSuitTransitionTest::RunTest(const FString& Parameters)
 		!ShooterController->LocalSuitTransitionId.IsValid()
 		&& ShooterController->CleanupRequests == CleanupRequestsBeforeEndPlay + 1);
 	TestFalse(TEXT("EndPlay callback cannot restart the completed server transition"), Shooter->GetSuitTransitionId().IsValid());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FOutlierSlideSuitRecoveryTest,
+	"Outlier.Interaction.Suit.SlideRecovery", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FOutlierSlideSuitRecoveryTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UClass* ShooterClass = LoadClass<AShooterCharacter>(nullptr,
+		TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	UClass* PartnerClass = LoadClass<APartnerCharacter>(nullptr,
+		TEXT("/Game/Blueprints/Partner/BP_PartnerCharacter.BP_PartnerCharacter_C"));
+	FShooterPresentationConfiguration Configuration;
+	if (!TestNotNull(TEXT("Slide recovery Shooter class"), ShooterClass)
+		|| !TestNotNull(TEXT("Slide recovery Partner class"), PartnerClass)
+		|| !LoadSuitPresentationConfiguration(*this, Configuration)) return false;
+
+	enum class EOutcome { Complete, CancelBeforeCommit, TimeoutAfterCommit, PreservePartnerStop };
+	for (const float SlideAge : {0.0f, 0.45f, 0.9f})
+	for (const EOutcome Outcome : {EOutcome::Complete, EOutcome::CancelBeforeCommit,
+		EOutcome::TimeoutAfterCommit, EOutcome::PreservePartnerStop})
+	{
+		AddInfo(FString::Printf(TEXT("[SlideSuitRecovery] Begin SlideAge=%.2f Outcome=%d"), SlideAge, int32(Outcome)));
+		FScopedSuitInteractionTestWorld TestWorld;
+		if (!TestWorld.Initialize(*this)) return false;
+		UWorld* World = TestWorld.World;
+		AActor* Floor = World->SpawnActor<AActor>();
+		if (!TestNotNull(TEXT("Slide recovery floor"), Floor)) return false;
+		UBoxComponent* Box = NewObject<UBoxComponent>(Floor);
+		Floor->SetRootComponent(Box);
+		Box->SetBoxExtent(FVector(10000.0, 10000.0, 50.0));
+		Box->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+		Box->SetCollisionResponseToAllChannels(ECR_Block);
+		Box->SetCollisionObjectType(ECC_WorldStatic);
+		Box->SetMobility(EComponentMobility::Static);
+		Box->SetWorldLocation(FVector(0.0, 0.0, -50.0));
+		Box->RegisterComponent();
+
+		AShooterCharacter* Shooter = World->SpawnActorDeferred<AShooterCharacter>(ShooterClass,
+			FTransform(FVector(0.0, 0.0, 200.0)), nullptr, nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+		if (!TestNotNull(TEXT("Slide recovery Shooter"), Shooter)) return false;
+		// PreSuit는 BP의 실제 설정을 보존한다. 동일 Mesh/ABP를 양쪽에 넣어 Skeleton 전환을 생략하지 않는다.
+		Shooter->SuitPresentation = Configuration;
+		FString ConfigurationError;
+		if (!TestTrue(TEXT("Actual PreSuit configuration is valid"), Shooter->PreSuitPresentation.Validate(ConfigurationError)))
+		{
+			AddError(ConfigurationError);
+			return false;
+		}
+		Shooter->FinishSpawning(FTransform(FVector(0.0, 0.0, 200.0)));
+		FActorSpawnParameters Spawn;
+		Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		APartnerCharacter* Partner = World->SpawnActor<APartnerCharacter>(PartnerClass,
+			FVector(0.0, 500.0, 200.0), FRotator::ZeroRotator, Spawn);
+		auto* ShooterController = World->SpawnActor<ASuitTransitionTestPlayerController>();
+		auto* PartnerController = World->SpawnActor<ASuitTransitionTestPlayerController>();
+		auto* ShooterPS = World->SpawnActor<AOutlierPlayerState>();
+		auto* PartnerPS = World->SpawnActor<AOutlierPlayerState>();
+		if (!Partner || !ShooterController || !PartnerController || !ShooterPS || !PartnerPS)
+		{
+			AddError(TEXT("Slide recovery participants did not spawn"));
+			return false;
+		}
+		if (!Shooter->HasActorBegunPlay()) Shooter->DispatchBeginPlay();
+		if (!Partner->HasActorBegunPlay()) Partner->DispatchBeginPlay();
+		ShooterController->Possess(Shooter);
+		PartnerController->Possess(Partner);
+		Shooter->SetPlayerState(ShooterPS);
+		Partner->SetPlayerState(PartnerPS);
+		ShooterPS->SetPlayerRole(EOutlierPlayerRole::Shooter);
+		PartnerPS->SetPlayerRole(EOutlierPlayerRole::Partner);
+		ShooterPS->SetPairId(0);
+		PartnerPS->SetPairId(0);
+		for (AOutlierPlayerState* PS : {ShooterPS, PartnerPS})
+		{
+			PS->SetShooterCharacter(Shooter);
+			PS->SetPartnerCharacter(Partner);
+		}
+		auto* Suit = World->SpawnActorDeferred<ASuitInteractionTestActor>(ASuitInteractionTestActor::StaticClass(),
+			FTransform::Identity, nullptr, nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+		if (!TestNotNull(TEXT("Slide recovery Suit"), Suit)) return false;
+		Suit->Configure(NewObject<UStaticMesh>(GetTransientPackage()), Configuration.FirstPersonMesh, Configuration.ThirdPersonMesh);
+		Suit->FinishSpawning(FTransform::Identity);
+		if (!Suit->HasActorBegunPlay()) Suit->DispatchBeginPlay();
+		auto* TimingVolume = World->SpawnActor<AOutlierPostProcessVolume>();
+		if (!TestNotNull(TEXT("Slide recovery timing"), TimingVolume)) return false;
+		TimingVolume->bUnbound = true;
+		TimingVolume->ScreenTransitionTiming.FadeOutDuration = 0.0f;
+		TimingVolume->ScreenTransitionTiming.BlackHoldDuration = 0.0f;
+		TimingVolume->ScreenTransitionTiming.FadeInDuration = 0.0f;
+		Shooter->SuitTransitionResponseTimeout = 0.5f;
+
+		auto* Movement = Cast<UShooterCharacterMovementComponent>(Shooter->GetCharacterMovement());
+		auto* Input = Shooter->FindComponentByClass<UShooterMovementComponent>();
+		auto* PartnerMovement = Partner->GetCharacterMovement();
+		if (!TestNotNull(TEXT("Slide recovery CMC"), Movement)
+			|| !TestNotNull(TEXT("Slide recovery input"), Input)
+			|| !TestNotNull(TEXT("Partner movement"), PartnerMovement)) return false;
+		if (Outcome == EOutcome::PreservePartnerStop) PartnerMovement->DisableMovement();
+		const EMovementMode PartnerMode = PartnerMovement->MovementMode;
+		Movement->SetMovementMode(MOVE_Walking);
+		Shooter->SetActorLocation(FVector(0.0, 0.0, Shooter->GetCapsuleComponent()->GetScaledCapsuleHalfHeight() + 2.15));
+		Movement->bForceNextFloorCheck = true;
+		Movement->PerformMovement(1.0f / 60.0f);
+		if (!TestTrue(TEXT("Slide recovery begins on a real floor"), Movement->CurrentFloor.IsWalkableFloor())) return false;
+		Shooter->SlideDuration = 1.0f;
+		Shooter->MinSlideSpeed = 200.0f;
+		UCurveFloat* Curve = NewObject<UCurveFloat>(Shooter);
+		Curve->FloatCurve.AddKey(0.0f, 1.0f);
+		Curve->FloatCurve.AddKey(1.0f, 0.6f);
+		Shooter->SlideSpeedCurve = Curve;
+		const float Friction = Movement->GroundFriction;
+		const float Braking = Movement->BrakingDecelerationWalking;
+		const float BrakingFactor = Movement->BrakingFrictionFactor;
+		const float Acceleration = Movement->MaxAcceleration;
+		const float CrouchSpeed = Movement->MaxWalkSpeedCrouched;
+		Movement->Velocity = FVector(400.0, 0.0, 0.0);
+		Input->HandleSprintPressed();
+		Input->HandleCrouchPressed();
+		Movement->ApplyMovementInput();
+		for (float Remaining = SlideAge; Remaining > KINDA_SMALL_NUMBER; Remaining -= 1.0f / 60.0f)
+		{
+			Movement->PerformMovement(FMath::Min(Remaining, 1.0f / 60.0f));
+		}
+		if (!TestTrue(TEXT("Interaction begins during actual Slide simulation"), Movement->IsSlideSimulating() && Input->IsSliding())) return false;
+		const FShooterSlideSnapshot OldSlide = Movement->CaptureSlideSnapshot();
+		if (!TestTrue(TEXT("Slide interaction reserves the Suit"), Suit->Interact(Shooter))) return false;
+		const FGuid Id = Shooter->GetSuitTransitionId();
+		TestTrue(TEXT("Reservation blocks both participants"), Shooter->IsSuitTransitionBlocked() && Partner->IsSuitTransitionBlocked());
+		TestEqual(TEXT("Reservation disables Shooter movement"), EMovementMode(Movement->MovementMode), MOVE_None);
+		TestFalse(TEXT("Reservation ends Slide before storing the recovery mode"), Movement->IsSlideSimulating());
+		Shooter->ReleaseSuitTransitionBlock(FGuid::NewGuid());
+		TestTrue(TEXT("Foreign release cannot unlock this transition"), Shooter->IsSuitTransitionBlocked());
+
+		const bool bCommit = Outcome == EOutcome::Complete || Outcome == EOutcome::TimeoutAfterCommit;
+		if (!bCommit)
+		{
+			Shooter->CancelSuitTransition();
+			TestTrue(TEXT("Pre-commit cancel makes the interaction retryable"), Suit->CanReserveFor(Shooter));
+		}
+		else
+		{
+			ShooterController->NotifySuitFadeOutFinished(Id);
+			PartnerController->NotifySuitFadeOutFinished(Id);
+			if (!TestEqual(TEXT("Committed Slide transition waits in Applying"), Shooter->GetSuitTransitionPhase(), ESuitTransitionPhase::Applying)) return false;
+			if (Outcome == EOutcome::TimeoutAfterCommit)
+			{
+				AddExpectedErrorPlain(TEXT("[SuitTransition] Timeout"), EAutomationExpectedErrorFlags::Contains, 1);
+				TestWorld.AdvanceTime(0.6f);
+			}
+			else
+			{
+				ShooterController->NotifySuitPresentationReady(Id);
+				PartnerController->NotifySuitPresentationReady(Id);
+				ShooterController->NotifySuitFadeInFinished(Id);
+				PartnerController->NotifySuitFadeInFinished(Id);
+			}
+		}
+
+		// 해제 bool만 보지 않는다. 전환 전체가 끝낸 물리/의도와 오래된 보정의 차단을 함께 검사한다.
+		TestFalse(TEXT("Completed path releases both blocks"), Shooter->IsSuitTransitionBlocked() || Partner->IsSuitTransitionBlocked());
+		TestEqual(TEXT("Transition returns Idle"), Shooter->GetSuitTransitionPhase(), ESuitTransitionPhase::Idle);
+		TestEqual(TEXT("Shooter recovers Walking without a test-side mode reset"), EMovementMode(Movement->MovementMode), MOVE_Walking);
+		TestEqual(TEXT("Partner preserves its original movement mode or independent stop"), EMovementMode(PartnerMovement->MovementMode), PartnerMode);
+		TestEqual(TEXT("Acquisition follows commit policy"), ShooterPS->GetAcquiredSuit() && PartnerPS->GetAcquiredSuit(), bCommit);
+		TestEqual(TEXT("Presentation follows commit policy"), Shooter->GetAppliedPresentation(), bCommit ? EShooterPresentation::Suit : EShooterPresentation::PreSuit);
+		TestFalse(TEXT("Transition leaves no Slide simulation or display"), Movement->IsSlideSimulating() || Input->IsSliding());
+		TestFalse(TEXT("Transition leaves no Sprint/crouch/Aim intent"), Input->WantsToSprint() || Input->WantsToCrouch() || Shooter->WantsToAim());
+		TestEqual(TEXT("Transition restores friction"), Movement->GroundFriction, Friction);
+		TestEqual(TEXT("Transition restores braking"), Movement->BrakingDecelerationWalking, Braking);
+		TestEqual(TEXT("Transition restores braking factor"), Movement->BrakingFrictionFactor, BrakingFactor);
+		TestEqual(TEXT("Transition restores acceleration"), Movement->MaxAcceleration, Acceleration);
+		TestEqual(TEXT("Transition restores crouched speed"), Movement->MaxWalkSpeedCrouched, CrouchSpeed);
+		TestTrue(TEXT("Transition advances the movement lifecycle"), Movement->GetMovementInputEpoch() > OldSlide.AppliedInput.Epoch);
+		const FVector Position = Shooter->GetActorLocation();
+		// 실제 응답 수신/위치 보정은 runtime 모듈의 Slide.Prediction이 검증한다.
+		// 여기서는 전체 Suit 전환이 갱신한 epoch가 이전 Slide 상태 복원을 거절하는지 확인한다.
+		Movement->RestoreSlideSnapshot(OldSlide);
+		TestFalse(TEXT("Old Slide snapshot cannot revive simulation after recovery"), Movement->IsSlideSimulating());
+		ShooterController->NotifySuitPresentationReady(Id);
+		TestFalse(TEXT("Late transition completion cannot reacquire the block"), Shooter->IsSuitTransitionBlocked());
+
+		// 실제 입력→기존 이동 Tick으로 검증한다. 강제 Velocity나 MOVE_Walking 설정으로 복구를 대신하지 않는다.
+		const FVector PartnerPosition = Partner->GetActorLocation();
+		TestWorld.AdvanceTime(0.25f, [Shooter, Partner]()
+		{
+			Shooter->DoMove(0.0f, 1.0f);
+			Partner->DoMove(0.0f, 1.0f);
+		});
+		TestTrue(TEXT("New movement input produces actual displacement after recovery"), FVector::Dist2D(Position, Shooter->GetActorLocation()) > 1.0f);
+		const float PartnerDistance = FVector::Dist2D(PartnerPosition, Partner->GetActorLocation());
+		if (Outcome == EOutcome::PreservePartnerStop)
+		{
+			TestTrue(TEXT("Independent Partner stop still rejects physical movement"), PartnerDistance < 0.1f);
+		}
+		else
+		{
+			TestTrue(TEXT("Partner input also produces actual displacement after recovery"), PartnerDistance > 1.0f);
+		}
+		TestFalse(TEXT("New movement cannot revive the old Slide"), Movement->IsSlideSimulating() || Shooter->GetMovementState() == EMovementState::Slide);
+		TestFalse(TEXT("Recovery clears the Slide action lock"), Shooter->GetActionLock() == EShooterActionLock::Slide);
+		AddInfo(FString::Printf(TEXT("[SlideSuitRecovery] SlideAge=%.2f Outcome=%d DistanceCm=%.3f PartnerDistanceCm=%.3f ShooterMode=%d PartnerMode=%d"),
+			SlideAge, int32(Outcome), FVector::Dist2D(Position, Shooter->GetActorLocation()), PartnerDistance,
+			int32(Movement->MovementMode), int32(PartnerMovement->MovementMode)));
+	}
 	return true;
 }
 

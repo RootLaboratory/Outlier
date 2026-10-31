@@ -16,8 +16,12 @@
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "GameFramework/GameStateBase.h"
+#include "HAL/IConsoleManager.h"
 #include "GAS/OutlierAbilitySystemComponent.h"
 #include "Misc/AutomationTest.h"
+#include "Misc/ScopeExit.h"
+#include "OutlierPlayerState.h"
 #include "Room/RoomCombatBarrier.h"
 #include "Room/RoomCombatDefinition.h"
 #include "Room/RoomCombatSpawnPoint.h"
@@ -25,6 +29,7 @@
 #include "Room/RoomTagComponent.h"
 #include "Room/RoomVolume.h"
 #include "Save/OutlierSaveSubSystem.h"
+#include "Shooter/ShooterCharacter.h"
 #include "UObject/UnrealType.h"
 #include "GameplayTags/OutlierGameplayTags.h"
 
@@ -2543,6 +2548,161 @@ bool FRoomCombatInitialDetectionPreparationTest::RunTest(const FString& Paramete
 	TestEqual(TEXT("Wave 2 reinforcement remains pending until a spawn point is available"),
 		Combat->GetPendingSpawnCount(RoomTag), 1);
 	CleanupWorld();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FRoomCombatInitialDetectionRecoveryTest,
+	"Outlier.Room.InitialDetectionRecovery",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRoomCombatInitialDetectionRecoveryTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	IConsoleVariable* RetrySeconds = IConsoleManager::Get().FindConsoleVariable(
+		TEXT("outlier.RoomCombat.InitialDetectionRetrySeconds"));
+	UClass* ShooterClass = LoadClass<AShooterCharacter>(nullptr,
+		TEXT("/Game/Blueprints/Shooter/BP_ShooterCharacter.BP_ShooterCharacter_C"));
+	if (!TestNotNull(TEXT("Retry interval setting"), RetrySeconds)
+		|| !TestNotNull(TEXT("Concrete Shooter class"), ShooterClass)) return false;
+	const float PreviousRetrySeconds = RetrySeconds->GetFloat();
+	RetrySeconds->Set(1.0f, ECVF_SetByCode);
+	ON_SCOPE_EXIT { RetrySeconds->Set(PreviousRetrySeconds, ECVF_SetByCode); };
+
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false,
+		MakeUniqueObjectName(nullptr, UWorld::StaticClass(), TEXT("JoinRecoveryTest")));
+	if (!TestNotNull(TEXT("Recovery world"), World)) return false;
+	FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
+	WorldContext.SetCurrentWorld(World);
+	UGameInstance* GameInstance = NewObject<UGameInstance>(GEngine);
+	World->SetGameInstance(GameInstance);
+	GameInstance->Init();
+	World->SetGameMode(FURL());
+	World->InitializeActorsForPlay(FURL());
+	ON_SCOPE_EXIT
+	{
+		GEngine->ShutdownWorldNetDriver(World);
+		World->DestroyWorld(false);
+		GameInstance->Shutdown();
+		World->SetPhysicsScene(nullptr);
+		GEngine->DestroyWorldContext(World);
+		World->RemoveFromRoot();
+	};
+
+	URoomCombatSubsystem* Combat = World->GetSubsystem<URoomCombatSubsystem>();
+	const FGameplayTag RoomTag = FGameplayTag::RequestGameplayTag(TEXT("Room.Level01.1"));
+	const FGameplayTag OtherTag = FGameplayTag::RequestGameplayTag(TEXT("Room.Level01.2"));
+	URoomCombatDefinition* Definition = NewObject<URoomCombatDefinition>(World);
+	AddSpawnWaveDefinition(Definition, RoomTag, 1);
+	AddSingleWaveDefinition(Definition, OtherTag);
+	ARoomVolume* Room = World->SpawnActor<ARoomVolume>();
+	ARoomVolume* OtherRoom = World->SpawnActor<ARoomVolume>();
+	AEnemyBase* Enemy = SpawnTestEnemy(World, RoomTag);
+	AEnemyBase* OtherEnemy = SpawnTestEnemy(World, OtherTag);
+	FActorSpawnParameters SpawnParameters;
+	SpawnParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AShooterCharacter* Shooter = World->SpawnActor<AShooterCharacter>(
+		ShooterClass, FTransform::Identity, SpawnParameters);
+	APartnerCharacter* Partner = World->SpawnActor<APartnerCharacter>(
+		APartnerCharacter::StaticClass(), FTransform(FVector(2000, 0, 0)), SpawnParameters);
+	AOutlierPlayerState* PlayerState = World->SpawnActor<AOutlierPlayerState>();
+	AGameStateBase* GameState = World->GetGameState();
+	if (!GameState)
+	{
+		GameState = World->SpawnActor<AGameStateBase>();
+		World->SetGameState(GameState);
+	}
+	if (!TestNotNull(TEXT("Combat"), Combat) || !TestNotNull(TEXT("Room"), Room)
+		|| !TestNotNull(TEXT("Other Room"), OtherRoom) || !TestNotNull(TEXT("Enemy"), Enemy)
+		|| !TestNotNull(TEXT("Other enemy"), OtherEnemy) || !TestNotNull(TEXT("Shooter"), Shooter)
+		|| !TestNotNull(TEXT("Partner"), Partner) || !TestNotNull(TEXT("Player state"), PlayerState)
+		|| !TestNotNull(TEXT("Game state"), GameState)) return false;
+	UBoxComponent* Box = Cast<UBoxComponent>(Room->GetRootComponent());
+	FStructProperty* TagProperty = FindFProperty<FStructProperty>(ARoomVolume::StaticClass(), TEXT("RoomTag"));
+	if (!TestNotNull(TEXT("Room box"), Box) || !TestNotNull(TEXT("Room tag property"), TagProperty)) return false;
+	*TagProperty->ContainerPtrToValuePtr<FGameplayTag>(Room) = RoomTag;
+	*TagProperty->ContainerPtrToValuePtr<FGameplayTag>(OtherRoom) = OtherTag;
+	OtherRoom->SetActorLocation(FVector(10000, 0, 0));
+	Shooter->GetRoomTagComp()->AssignDefaultRoomTag(RoomTag);
+	Partner->GetRoomTagComp()->AssignDefaultRoomTag(RoomTag);
+	PlayerState->SetShooterCharacter(Shooter);
+	PlayerState->SetPartnerCharacter(Partner);
+	GameState->PlayerArray.AddUnique(PlayerState);
+	Combat->SetCombatDefinitionForTesting(Definition);
+	TestTrue(TEXT("Room registers"), Combat->RegisterRoom(Room, RoomTag));
+	Combat->RegisterPreplacedEnemy(Enemy);
+
+	// 중심은 방 안이지만 합류 캡슐 전체를 수용할 수 없는 방으로 실제 탐색 실패를 만든다.
+	Box->SetBoxExtent(FVector(20, 20, 20));
+	const FVector OriginalPartnerLocation = Partner->GetActorLocation();
+	TestFalse(TEXT("Unsafe nearby and missing fallback reject production join"),
+		Combat->TryStartInitialDetectionForPlayers(RoomTag));
+	TestEqual(TEXT("Failed join releases Preparing"), Combat->GetRoomState(RoomTag), ERoomCombatState::Dormant);
+	TestFalse(TEXT("Failed join releases its reservation"), Combat->GetActiveCombatRoomTag().IsValid());
+	TestFalse(TEXT("Failed join leaves barriers open"), Combat->IsExitBlocked(RoomTag));
+	TestFalse(TEXT("Failed join releases the attack gate"), Combat->IsEnemyAttackBlocked(Enemy));
+	TestEqual(TEXT("Failed join does not advance the Wave"), Combat->GetCurrentWaveIndex(RoomTag), 0);
+	TestEqual(TEXT("Failed join does not commit a baseline"), Combat->GetWaveBaselineEnemyCount(RoomTag), INDEX_NONE);
+	TestTrue(TEXT("Failed join never forces an unsafe teleport"), Partner->GetActorLocation().Equals(OriginalPartnerLocation));
+	Box->SetBoxExtent(FVector(500, 500, 500));
+	TestFalse(TEXT("A now-safe room cannot retry immediately"), Combat->TryStartInitialDetectionForPlayers(RoomTag));
+	for (int32 TickIndex = 0; TickIndex < 5; ++TickIndex) World->Tick(LEVELTICK_All, 0.1f);
+	TestFalse(TEXT("Detection inside the one-second interval is rejected"), Combat->TryStartInitialDetectionForPlayers(RoomTag));
+	for (int32 TickIndex = 0; TickIndex < 6; ++TickIndex) World->Tick(LEVELTICK_All, 0.1f);
+	TestEqual(TEXT("Time passing alone does not retry"), Combat->GetRoomState(RoomTag), ERoomCombatState::Dormant);
+	TestTrue(TEXT("A new detection after the interval joins and starts combat"),
+		Combat->TryStartInitialDetectionForPlayers(RoomTag));
+	TestTrue(TEXT("Partner actually joined the room"), Room->ContainsWorldLocation(Partner->GetActorLocation()));
+	TestEqual(TEXT("Successful retry enters combat"), Combat->GetRoomState(RoomTag), ERoomCombatState::Combat);
+
+	// 같은 Room 등록 수명 안에서 시도만 교체해 이전 완료/취소가 새 시도를 건드리지 못함을 검증한다.
+	Combat->ResetRuntimeCombatState();
+	Combat->RegisterRoom(Room, RoomTag);
+	Combat->RegisterPreplacedEnemy(Enemy);
+	FRoomCombatPreparationContext First, Second, Repeated, Invalid;
+	TestTrue(TEXT("Reset also removes the retry wait"), Combat->BeginInitialDetectionPreparation(RoomTag, Shooter, First));
+	TestTrue(TEXT("First preparation cancels"), Combat->CancelInitialDetectionPreparation(First));
+	TestFalse(TEXT("Begin API also enforces retry interval"), Combat->BeginInitialDetectionPreparation(RoomTag, Shooter, Second));
+	RetrySeconds->Set(0.0f, ECVF_SetByCode);
+	// 이미 기록된 대기 시각은 설정 변경으로 건너뛰지 않는다.
+	for (int32 TickIndex = 0; TickIndex < 11; ++TickIndex) World->Tick(LEVELTICK_All, 0.1f);
+	TestTrue(TEXT("Second preparation starts"), Combat->BeginInitialDetectionPreparation(RoomTag, Shooter, Second));
+	TestTrue(TEXT("Retry gets a distinct attempt ID"), First.PreparationId != Second.PreparationId);
+	TestTrue(TEXT("Repeated begin preserves its attempt"), Combat->BeginInitialDetectionPreparation(RoomTag, Partner, Repeated));
+	TestEqual(TEXT("Repeated context uses the same attempt"), Repeated.PreparationId, Second.PreparationId);
+	TestFalse(TEXT("Old completion cannot finish a newer attempt"), Combat->CompleteInitialDetectionPreparation(First));
+	TestFalse(TEXT("Old cancellation cannot cancel a newer attempt"), Combat->CancelInitialDetectionPreparation(First));
+	Invalid = Second;
+	++Invalid.GameplayGeneration;
+	TestFalse(TEXT("Wrong generation cannot cancel"), Combat->CancelInitialDetectionPreparation(Invalid));
+	TestTrue(TEXT("New attempt still owns the reservation"), Combat->GetActiveCombatRoomTag() == RoomTag);
+	TestTrue(TEXT("Second preparation cancels"), Combat->CancelInitialDetectionPreparation(Second));
+	Combat->RegisterRoom(OtherRoom, OtherTag);
+	Combat->RegisterPreplacedEnemy(OtherEnemy);
+	FRoomCombatPreparationContext Other;
+	TestTrue(TEXT("Other room can reserve after failure"), Combat->BeginInitialDetectionPreparation(OtherTag, Shooter, Other));
+	TestTrue(TEXT("Other room starts combat"), Combat->CompleteInitialDetectionPreparation(Other));
+	TestFalse(TEXT("Old cancellation cannot affect another room"), Combat->CancelInitialDetectionPreparation(Second));
+	TestEqual(TEXT("Other combat reservation survives"), Combat->GetActiveCombatRoomTag(), OtherTag);
+
+	Combat->ResetRuntimeCombatState();
+	TestFalse(TEXT("Reset rejects old completion"), Combat->CompleteInitialDetectionPreparation(Other));
+	TestFalse(TEXT("Reset rejects old cancellation"), Combat->CancelInitialDetectionPreparation(Other));
+	Combat->RegisterRoom(Room, RoomTag);
+	Combat->RegisterPreplacedEnemy(Enemy);
+	TestTrue(TEXT("Fresh registration prepares"), Combat->BeginInitialDetectionPreparation(RoomTag, Shooter, First));
+	Combat->UnregisterRoom(Room);
+	Combat->RegisterRoom(Room, RoomTag);
+	Combat->RegisterPreplacedEnemy(Enemy);
+	TestTrue(TEXT("Reloaded room prepares"), Combat->BeginInitialDetectionPreparation(RoomTag, Shooter, Second));
+	TestFalse(TEXT("Unloaded registration cannot complete"), Combat->CompleteInitialDetectionPreparation(First));
+	TestFalse(TEXT("Unloaded registration cannot cancel"), Combat->CancelInitialDetectionPreparation(First));
+	Combat->NotifyEnemyDefeated(Enemy);
+	TestTrue(TEXT("Preparation can cancel after its last enemy dies"), Combat->CancelInitialDetectionPreparation(Second));
+	TestTrue(TEXT("An already-detected empty phase can prepare again"), Combat->BeginInitialDetectionPreparation(RoomTag, Shooter, Repeated));
+	TestEqual(TEXT("Cancellation does not record a stealth phase completion"), Combat->GetCurrentCombatPhaseIndex(RoomTag), 0);
+	TestTrue(TEXT("Empty phase resumes only after join confirmation"), Combat->CompleteInitialDetectionPreparation(Repeated));
+	TestEqual(TEXT("Reinforcements resume after confirmed join"), Combat->GetCurrentWaveIndex(RoomTag), 1);
 	return true;
 }
 

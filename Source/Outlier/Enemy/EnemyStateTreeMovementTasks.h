@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "EnemyBase.h"
+#include "Room/RoomCombatSubsystem.h"
 #include "Drone/FlightPathfinding.h"
 #include "Drone/FlightMovementComponentBase.h"
 #include "StateTreeExecutionContext.h"
@@ -31,6 +32,10 @@ struct FEnemyFlyToLocationTaskInstanceData
 	UPROPERTY(EditAnywhere, Category = Input)
 	FVector Destination = FVector::ZeroVector;
 
+	// 귀환 분기는 외부 목적지 바인딩 대신 진입 시 원래 방의 안전한 목적지를 다시 구한다.
+	UPROPERTY(EditAnywhere, Category = Parameter)
+	bool bReturnHome = false;
+
 	UPROPERTY(EditAnywhere, Category = Parameter, meta = (ClampMin = "0.0"))
 	float AcceptanceRadius = 50.0f;
 
@@ -59,7 +64,7 @@ struct FEnemyFlyToLocationTaskInstanceData
 	UPROPERTY(EditAnywhere, Category = Output)
 	EEnemyFlightMoveResult MoveResult = EEnemyFlightMoveResult::None;
 
-	// 기존 직진 이동은 유지한다. 새 경로 이동은 초기 소속 방 안에서만 실행한다.
+	// 직접 비행과 경로 비행 모두 현재 상태에 허용된 등록 Room 공간으로 제한한다.
 	UPROPERTY(EditAnywhere, Category = Parameter)
 	bool bUsePathfinding = false;
 	// 선회 EQS가 검증한 Actor 좌표 경로를 사용한다. A*와 동시에 켜지 않는다.
@@ -111,6 +116,10 @@ struct FEnemyFlyToLocationTaskInstanceData
 	TObjectPtr<URoomCombatSubsystem> CachedRoomSubsystem = nullptr;
 	UPROPERTY(Transient)
 	TWeakObjectPtr<ARoomVolume> CachedRoom;
+	FEnemyMovementRoomContext MovementRooms;
+	EEnemyCombatState CapturedMovementState = EEnemyCombatState::NonCombat;
+	int32 CapturedMovementGeneration = 0;
+	int32 CapturedMovementLease = 0;
 	UPROPERTY(Transient)
 	FGameplayTag PathRoomTag;
 	UPROPERTY(Transient)
@@ -178,6 +187,7 @@ namespace EnemyFlightTesting
 {
 	OUTLIER_API EStateTreeRunStatus StartPath(FEnemyFlyToLocationTaskInstanceData& Data);
 	OUTLIER_API EStateTreeRunStatus TickPath(FEnemyFlyToLocationTaskInstanceData& Data, float DeltaTime);
+	OUTLIER_API bool CheckDirectBoundary(FEnemyFlyToLocationTaskInstanceData& Data, float DeltaTime);
 	OUTLIER_API void Stop(FEnemyFlyToLocationTaskInstanceData& Data);
 }
 #endif

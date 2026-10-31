@@ -159,6 +159,7 @@ public:
 private:
 	friend class FOutlierGameOverPendingFailureTest;
 	friend class FOutlierDirectPairTest;
+	friend class FElevatorCheckpointIntegrationTest;
 	void TryStartDirectPairTest();
 	bool ResolveDirectPairTestSpawns(FTransform& ShooterSpawn, FTransform& PartnerSpawn) const;
 	TArray<TWeakObjectPtr<APlayerController>> DirectPairTestPlayers;
