@@ -31,6 +31,26 @@ struct FDroneStateLightTestAccess
 		Drone.CombatState = State;
 		Drone.PostNetReceive();
 	}
+	static void ReceivePossession(AVECDrone& Drone, bool bPossessed)
+	{
+		Drone.bIsPossessed = bPossessed;
+		Drone.PostNetReceive();
+	}
+	static void EnablePossessedPulse(AVECDrone& Drone)
+	{
+		Drone.PossessedLightSettings.bPulseEnabled = true;
+		Drone.PossessedLightSettings.MinIntensity = 0.0f;
+		Drone.ResetStateSpotLight();
+		Drone.RefreshStateSpotLight();
+	}
+	static void ReceiveHackEnd(AVECDrone& Drone, EEnemyHackEffectEndReason Reason)
+	{
+		// 종료 복제가 Health/소유권 복제보다 먼저 도착하는 경계에서도 원래 AI 색을 켜지 않는다.
+		Drone.BeginHackEffect();
+		Drone.EndHackEffect(Reason);
+		Drone.PostNetReceive();
+	}
+	static bool HasPossessionCache(const AVECDrone& Drone) { return Drone.bAppliedStateLightPossessed; }
 	static bool IsPulsing(AVECDrone& Drone)
 	{
 		return Drone.GetWorldTimerManager().IsTimerActive(Drone.StateLightPulseTimerHandle);
@@ -71,17 +91,26 @@ struct FDroneStateLightWorld
 
 	FDroneStateLightWorld()
 	{
-		if (!GEngine) return;
+		if (!GEngine)
+		{
+			return;
+		}
 		World = UWorld::CreateWorld(EWorldType::Game, false,
 			MakeUniqueObjectName(nullptr, UWorld::StaticClass(), TEXT("DroneStateLightTest")), GetTransientPackage());
-		if (!World) return;
+		if (!World)
+		{
+			return;
+		}
 		World->AddToRoot();
 		GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(World);
 		World->InitializeActorsForPlay(FURL());
 	}
 	~FDroneStateLightWorld()
 	{
-		if (!World) return;
+		if (!World)
+		{
+			return;
+		}
 		World->DestroyWorld(true);
 		World->SetPhysicsScene(nullptr);
 		GEngine->DestroyWorldContext(World);
@@ -115,7 +144,10 @@ bool FDroneStateLightTransitionTest::RunTest(const FString& Parameters)
 {
 	FDroneStateLightWorld Fixture;
 	AVECDrone* Drone = Fixture.Spawn();
-	if (!TestNotNull(TEXT("Drone"), Drone)) return false;
+	if (!TestNotNull(TEXT("Drone"), Drone))
+	{
+		return false;
+	}
 	USpotLightComponent& Light = FDroneStateLightTestAccess::Light(*Drone);
 	TestEqual(TEXT("Existing BP light is reused"), Light.GetFName(), FName(TEXT("SpotLight")));
 	TestTrue(TEXT("Existing attachment is preserved"), Light.GetAttachParent() == Drone->GetRootComponent());
@@ -166,7 +198,10 @@ bool FDroneStateLightLifetimeTest::RunTest(const FString& Parameters)
 {
 	FDroneStateLightWorld Fixture;
 	AVECDrone* Drone = Fixture.Spawn();
-	if (!TestNotNull(TEXT("Drone"), Drone)) return false;
+	if (!TestNotNull(TEXT("Drone"), Drone))
+	{
+		return false;
+	}
 	USpotLightComponent& Light = FDroneStateLightTestAccess::Light(*Drone);
 	Drone->EnterAlert(FVector::ZeroVector);
 	UOutlierAbilitySystemComponent* ASC = Drone->GetOutlierAbilitySystemComponent();
@@ -201,6 +236,75 @@ bool FDroneStateLightLifetimeTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FDroneStateLightPossessionTest,
+	"Outlier.Enemy.StateLight.Possession", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDroneStateLightPossessionTest::RunTest(const FString& Parameters)
+{
+	FDroneStateLightWorld Fixture;
+	AVECDrone* Drone = Fixture.Spawn();
+	if (!TestNotNull(TEXT("Drone"), Drone))
+	{
+		return false;
+	}
+	USpotLightComponent& Light = FDroneStateLightTestAccess::Light(*Drone);
+	const FLinearColor Cyan(0.0f, 1.0f, 1.0f);
+	for (EEnemyCombatState State : {EEnemyCombatState::NonCombat, EEnemyCombatState::Alert, EEnemyCombatState::Combat})
+	{
+		FDroneStateLightTestAccess::ReceiveState(*Drone, State);
+		Drone->SetEnemyPossessed(true);
+		TestTrue(TEXT("Server possession immediately applies cyan in every combat state"), Light.GetLightColor().Equals(Cyan));
+		TestEqual(TEXT("Default possession brightness is fixed"), Light.Intensity, 1000.0f);
+		TestFalse(TEXT("Possession stops the previous Alert pulse"), FDroneStateLightTestAccess::IsPulsing(*Drone));
+		Drone->SetEnemyPossessed(false);
+		TestFalse(TEXT("Unpossessed presentation clears possession cache"), FDroneStateLightTestAccess::HasPossessionCache(*Drone));
+	}
+
+	// 원격 갱신은 소유 Controller 없이 복제된 빙의 플래그만으로 같은 표현을 선택한다.
+	FDroneStateLightTestAccess::ReceivePossession(*Drone, true);
+	FDroneStateLightTestAccess::EnablePossessedPulse(*Drone);
+	FDroneStateLightTestAccess::SampleAt(*Drone, 0.5);
+	const double StartTime = FDroneStateLightTestAccess::StartTime(*Drone);
+	for (EEnemyCombatState State : {EEnemyCombatState::NonCombat, EEnemyCombatState::Alert, EEnemyCombatState::Combat})
+	{
+		FDroneStateLightTestAccess::ReceiveState(*Drone, State);
+		TestTrue(TEXT("Possession overrides replicated combat colors"), Light.GetLightColor().Equals(Cyan));
+		TestEqual(TEXT("Combat changes preserve the possessed pulse phase"), FDroneStateLightTestAccess::StartTime(*Drone), StartTime);
+	}
+	UOutlierAbilitySystemComponent* ASC = Drone->GetOutlierAbilitySystemComponent();
+	ASC->AddLooseGameplayTag(OutlierGameplayTags::State::Stunned());
+	TestFalse(TEXT("Stun overrides possession"), Light.IsVisible());
+	TestFalse(TEXT("Stun clears possessed pulse"), FDroneStateLightTestAccess::IsPulsing(*Drone));
+	ASC->RemoveLooseGameplayTag(OutlierGameplayTags::State::Stunned());
+	TestTrue(TEXT("Stun removal restores cyan"), Light.GetLightColor().Equals(Cyan));
+	TestTrue(TEXT("Stun removal restores configured possessed pulse"), FDroneStateLightTestAccess::IsPulsing(*Drone));
+	FDroneStateLightTestAccess::SetLease(*Drone, 1, 1, EEnemyPoolState::CombatActive);
+	FDroneStateLightTestAccess::SampleAt(*Drone, 0.5);
+	FDroneStateLightTestAccess::SetLease(*Drone, 1, 2, EEnemyPoolState::CombatActive);
+	TestEqual(TEXT("New lease restarts possessed pulse at minimum"), Light.Intensity, 0.0f);
+	FDroneStateLightTestAccess::SetLease(*Drone, 1, 2, EEnemyPoolState::Idle);
+	TestFalse(TEXT("Pool return hides possessed light"), Light.IsVisible());
+	TestFalse(TEXT("Pool return clears possession cache"), FDroneStateLightTestAccess::HasPossessionCache(*Drone));
+	FDroneStateLightTestAccess::SetLease(*Drone, 2, 3, EEnemyPoolState::CombatActive);
+	TestTrue(TEXT("New generation restores current possession"), Light.GetLightColor().Equals(Cyan));
+	FDroneStateLightTestAccess::ReceiveHackEnd(*Drone, EEnemyHackEffectEndReason::ManualRelease);
+	TestFalse(TEXT("Manual-release death suppresses light before Health replication"), Light.IsVisible());
+	TestFalse(TEXT("Terminal release clears pulse"), FDroneStateLightTestAccess::IsPulsing(*Drone));
+	FDroneStateLightTestAccess::ReceivePossession(*Drone, false);
+	TestFalse(TEXT("Unpossession cannot flash the original combat color"), Light.IsVisible());
+	AVECDrone* ExpiringDrone = Fixture.Spawn();
+	AVECDrone* CancelledDrone = Fixture.Spawn();
+	if (!TestNotNull(TEXT("Expiring drone"), ExpiringDrone) || !TestNotNull(TEXT("Cancelled drone"), CancelledDrone))
+	{
+		return false;
+	}
+	FDroneStateLightTestAccess::ReceiveHackEnd(*ExpiringDrone, EEnemyHackEffectEndReason::Expired);
+	TestFalse(TEXT("Natural expiry also suppresses the original combat light"), FDroneStateLightTestAccess::Light(*ExpiringDrone).IsVisible());
+	FDroneStateLightTestAccess::ReceiveHackEnd(*CancelledDrone, EEnemyHackEffectEndReason::Cleanup);
+	TestTrue(TEXT("Cancellation before possession retains ordinary light"), FDroneStateLightTestAccess::Light(*CancelledDrone).IsVisible());
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FDroneStateLightSettingsTest,
 	"Outlier.Enemy.StateLight.InvalidSettings", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
@@ -208,7 +312,10 @@ bool FDroneStateLightSettingsTest::RunTest(const FString& Parameters)
 {
 	FDroneStateLightWorld Fixture;
 	AVECDrone* Drone = Fixture.Spawn();
-	if (!TestNotNull(TEXT("Drone"), Drone)) return false;
+	if (!TestNotNull(TEXT("Drone"), Drone))
+	{
+		return false;
+	}
 	USpotLightComponent& Light = FDroneStateLightTestAccess::Light(*Drone);
 	FDroneStateLightSettings Settings;
 	Settings.bPulseEnabled = true;

@@ -1527,7 +1527,13 @@ void AEnemyBase::SetEnemyPossessed(bool bNewIsPossessed)
 	bPossessedAttackHeld = false;
 	EndPossessedImpactInputLock();
 	bIsPossessed = bNewIsPossessed;
-	if (bIsPossessed) ReleasePatrolDestination();
+	// 서버 로컬 변경에는 PostNetReceive가 없으므로 같은 표현 경로를 직접 갱신한다.
+	// 해킹 종료 처치가 시작된 경우에는 드론 쪽에서 소등하여 원래 상태 색이 잠깐 켜지는 것을 막는다.
+	RefreshCombatStatePresentation();
+	if (bIsPossessed)
+	{
+		ReleasePatrolDestination();
+	}
 	if (bIsPossessed)
 	{
 		CancelCommittedAction();
