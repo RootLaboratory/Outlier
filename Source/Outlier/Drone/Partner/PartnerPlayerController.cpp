@@ -2,6 +2,7 @@
 
 
 #include "Drone/Partner/PartnerPlayerController.h"
+#include "InputKeyEventArgs.h"
 #include "Drone/Partner/PartnerCharacter.h"
 #include "Engine/LocalPlayer.h"
 #include "FirstPerson/FirstPersonPlayerCameraManager.h"
@@ -12,6 +13,7 @@
 #include "OutlierPlayerState.h"
 #include "Shooter/ShooterCharacter.h"
 #include "Enemy/EnemyBase.h"
+#include "Room/RoomCombatSubsystem.h"
 #include "TimerManager.h"
 #include "UI/LocalPlayerUILayerSubsystem.h"
 #include "UI/UILayerGameplayTags.h"
@@ -26,6 +28,22 @@ APartnerPlayerController::APartnerPlayerController()
 {
 	DefaultPlayerRole = EOutlierPlayerRole::Partner;
 	PlayerCameraManagerClass = AFirstPersonPlayerCameraManager::StaticClass();
+}
+
+void APartnerPlayerController::FlushPressedKeys()
+{
+	if (APartnerCharacter* Partner = Cast<APartnerCharacter>(GetPawn())) Partner->ResetAccelerateInput();
+	Super::FlushPressedKeys();
+}
+
+bool APartnerPlayerController::InputKey(const FInputKeyEventArgs& Params)
+{
+	// Enhanced Input의 재구성/Flush 콜백과 달리 실제 새 Press만 재입력을 허용한다.
+	if (Params.Event == IE_Pressed)
+	{
+		if (APartnerCharacter* Partner = Cast<APartnerCharacter>(GetPawn())) Partner->NotifyAccelerateKeyPressed(Params.Key);
+	}
+	return Super::InputKey(Params);
 }
 
 void APartnerPlayerController::BeginPlay()
@@ -341,6 +359,11 @@ void APartnerPlayerController::CommitPendingEnemyPossession(AEnemyBase* Expected
 	UnbindPossessionTargetEndPlay(EnemyTarget);
 
 	TryStartHackLifetimeAfterReveal();
+	// 실제 빙의와 능력 세션이 모두 성공 확정된 뒤에만 적 생존 집계에서 제외한다.
+	if (URoomCombatSubsystem* Combat = GetWorld()->GetSubsystem<URoomCombatSubsystem>())
+	{
+		Combat->NotifyEnemyAllied(EnemyTarget);
+	}
 }
 
 void APartnerPlayerController::ServerNotifyHackPossessionRevealFinished_Implementation(AEnemyBase* EnemyTarget)

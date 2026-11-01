@@ -48,6 +48,8 @@
 #include "GAS/Attributes/OutlierPartnerMovementAttributeSet.h"
 #include "GAS/Attributes/OutlierPartnerCombatAttributeSet.h"
 #include "GameplayEffect.h"
+#include "Settings/LocalPlayerSettingsSubsystem.h"
+#include "Engine/LocalPlayer.h"
 
 namespace
 {
@@ -108,6 +110,7 @@ void APartnerCharacter::BeginPlay()
 
 void APartnerCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	UnbindAccelerateInputSettings();
 	SetStandby(false);
 	if (HasAuthority())
 	{
@@ -150,6 +153,7 @@ void APartnerCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 void APartnerCharacter::PossessedBy(AController* NewController)
 {
 	Super::PossessedBy(NewController);
+	ResetAccelerateInput();
 	NotifyStandbyActivity();
 	bStandbyAimInitialized = false;
 	RefreshAbilitySystemActorInfo();
@@ -203,6 +207,8 @@ float APartnerCharacter::ReceiveOutlierDamage(const FOutlierDamageRequest& Reque
 
 void APartnerCharacter::UnPossessed()
 {
+	ResetAccelerateInput();
+	UnbindAccelerateInputSettings();
 	NotifyStandbyActivity();
 	bStandbyAimInitialized = false;
 	StopBoostNoiseTimer();
@@ -226,6 +232,11 @@ void APartnerCharacter::UnPossessed()
 void APartnerCharacter::OnRep_Controller()
 {
 	Super::OnRep_Controller();
+	if (!IsLocallyControlled())
+	{
+		ResetAccelerateInput();
+		UnbindAccelerateInputSettings();
+	}
 	if (MovementComponent && !IsLocallyControlled())
 	{
 		MovementComponent->ResetAutoFollowForOwnerChange();
@@ -601,6 +612,9 @@ void APartnerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 
 	// Accelerate
 	EnhancedInputComponent->BindAction(PartnerInputConfig->AccelerateAction,	ETriggerEvent::Started,	  this, &APartnerCharacter::ToggleAccelerate);
+	EnhancedInputComponent->BindAction(PartnerInputConfig->AccelerateAction,	ETriggerEvent::Completed, this, &APartnerCharacter::ReleaseAccelerate);
+	EnhancedInputComponent->BindAction(PartnerInputConfig->AccelerateAction,	ETriggerEvent::Canceled,  this, &APartnerCharacter::ReleaseAccelerate);
+	BindAccelerateInputSettings();
 
 	// FreeMove
 	EnhancedInputComponent->BindAction(PartnerInputConfig->FreeMoveAction,		ETriggerEvent::Triggered, this, &APartnerCharacter::FreeMove);
@@ -694,6 +708,7 @@ void APartnerCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	DOREPLIFETIME(APartnerCharacter, bShieldActive);
 	DOREPLIFETIME(APartnerCharacter, bScanning);
 	DOREPLIFETIME(APartnerCharacter, bIsAccelerate);
+	DOREPLIFETIME_CONDITION(APartnerCharacter, AccelerateInputEpoch, COND_OwnerOnly);
 	DOREPLIFETIME(APartnerCharacter, bHiddenForEnemyPossession);
 	DOREPLIFETIME(APartnerCharacter, bIsStandby);
 }
@@ -1037,17 +1052,148 @@ void APartnerCharacter::StopSyncMove()
 
 void APartnerCharacter::ToggleAccelerate()
 {
-	if (!CanAcceptInput())
+	if (!CanAcceptInput() || bAccelerateNeedsFreshPress || bAccelerateInputHeld)
 	{
 		return;
 	}
 
-	const bool bNewAccelerate = !bIsAccelerate;
-	ApplyAccelerateState(bNewAccelerate);
+	bAccelerateInputHeld = true;
+	const bool bNewAccelerate = AccelerateInputMode == EOutlierSprintInputMode::Hold || !bIsAccelerate;
+	ApplyAccelerateInput(bNewAccelerate);
+}
 
-	if (!HasAuthority())
+void APartnerCharacter::ReleaseAccelerate()
+{
+	bAccelerateInputHeld = false;
+	if (AccelerateInputMode != EOutlierSprintInputMode::Hold) return;
+	ApplyAccelerateInput(false);
+}
+
+void APartnerCharacter::ResetAccelerateInput()
+{
+	// Flush/매핑 재구성에서 만들어지는 Started는 새 물리 입력이 아니다.
+	// Controller의 실제 IE_Pressed만 아래 차단을 해제하므로 기존 홀드가 전환을 넘지 않는다.
+	bAccelerateNeedsFreshPress = true;
+	bAccelerateInputHeld = false;
+	if (HasAuthority())
 	{
-		ServerSetAccelerate(bNewAccelerate);
+		if (++AccelerateInputEpoch == 0) ++AccelerateInputEpoch;
+		ProcessedAccelerateInputRequest = 0;
+		ApplyAccelerateState(false);
+		ForceNetUpdate();
+	}
+	else if (IsLocallyControlled())
+	{
+		// ON이 서버에 아직 도착하지 않았어도 더 최신 OFF를 보낸다.
+		ApplyAccelerateInput(false);
+	}
+	else
+	{
+		ApplyAccelerateState(false);
+	}
+}
+
+void APartnerCharacter::ApplyAccelerateInput(bool bAccelerate)
+{
+	if (++NextAccelerateInputRequest == 0) ++NextAccelerateInputRequest;
+	if (HasAuthority())
+	{
+		ServerSetAccelerate_Implementation(bAccelerate, NextAccelerateInputRequest, AccelerateInputEpoch);
+	}
+	else
+	{
+		ApplyAccelerateState(bAccelerate);
+		ServerSetAccelerate(bAccelerate, NextAccelerateInputRequest, AccelerateInputEpoch);
+	}
+}
+
+void APartnerCharacter::OnRep_AccelerateInputEpoch()
+{
+	// 서버가 조종/슈트/생존 경계를 변경했다. 이전 로컬 홀드와 승인 대기 ON은 승계하지 않는다.
+	bAccelerateNeedsFreshPress = true;
+	bAccelerateInputHeld = false;
+	ApplyAccelerateState(false);
+}
+
+void APartnerCharacter::NotifyAccelerateKeyPressed(FKey Key)
+{
+	if (AccelerateInputKeys.Contains(Key)) bAccelerateNeedsFreshPress = false;
+}
+
+void APartnerCharacter::BindAccelerateInputSettings()
+{
+	UnbindAccelerateInputSettings();
+	const APlayerController* PlayerController = Cast<APlayerController>(GetController());
+	ULocalPlayer* LocalPlayer = PlayerController ? PlayerController->GetLocalPlayer() : nullptr;
+	if (!LocalPlayer) return;
+	AccelerateSettings = LocalPlayer->GetSubsystem<ULocalPlayerSettingsSubsystem>();
+	AccelerateInputSubsystem = LocalPlayer->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>();
+	if (ULocalPlayerSettingsSubsystem* Settings = AccelerateSettings.Get())
+	{
+		Settings->RefreshInputSettingsContext();
+		AccelerateInputMode = Settings->GetSprintInputMode(EOutlierPlayerRole::Partner);
+		Settings->OnSprintInputModeChanged.AddUniqueDynamic(this, &ThisClass::HandleAccelerateModeChanged);
+		Settings->OnInputSettingsContextChanged.AddUObject(this, &ThisClass::HandleAccelerateContextChanged);
+	}
+	if (UEnhancedInputLocalPlayerSubsystem* Subsystem = AccelerateInputSubsystem.Get())
+	{
+		Subsystem->ControlMappingsRebuiltDelegate.AddUniqueDynamic(this, &ThisClass::HandleAccelerateMappingsRebuilt);
+		Subsystem->OnPostUserSettingsInitialized.AddUniqueDynamic(this, &ThisClass::HandleAccelerateSettingsInitialized);
+	}
+	HandleAccelerateMappingsRebuilt();
+	ResetAccelerateInput();
+}
+
+void APartnerCharacter::UnbindAccelerateInputSettings()
+{
+	if (ULocalPlayerSettingsSubsystem* Settings = AccelerateSettings.Get())
+	{
+		Settings->OnSprintInputModeChanged.RemoveAll(this);
+		Settings->OnInputSettingsContextChanged.RemoveAll(this);
+	}
+	if (UEnhancedInputLocalPlayerSubsystem* Subsystem = AccelerateInputSubsystem.Get())
+	{
+		Subsystem->ControlMappingsRebuiltDelegate.RemoveAll(this);
+		Subsystem->OnPostUserSettingsInitialized.RemoveAll(this);
+	}
+	AccelerateSettings.Reset();
+	AccelerateInputSubsystem.Reset();
+	AccelerateInputKeys.Reset();
+}
+
+void APartnerCharacter::HandleAccelerateModeChanged(EOutlierPlayerRole SettingsRole, EOutlierSprintInputMode Mode)
+{
+	if (!IsLocallyControlled() || SettingsRole != EOutlierPlayerRole::Partner || AccelerateInputMode == Mode) return;
+	AccelerateInputMode = Mode;
+	ResetAccelerateInput();
+}
+
+void APartnerCharacter::HandleAccelerateContextChanged(EOutlierPlayerRole SettingsRole)
+{
+	if (!IsLocallyControlled()) return;
+	ResetAccelerateInput();
+	if (const ULocalPlayerSettingsSubsystem* Settings = AccelerateSettings.Get())
+	{
+		AccelerateInputMode = Settings->GetSprintInputMode(EOutlierPlayerRole::Partner);
+	}
+}
+
+void APartnerCharacter::HandleAccelerateMappingsRebuilt()
+{
+	const UPartnerInputConfig* Config = Cast<UPartnerInputConfig>(InputConfig);
+	const UEnhancedInputLocalPlayerSubsystem* Subsystem = AccelerateInputSubsystem.Get();
+	if (!Config || !Subsystem) return;
+	AccelerateInputKeys = Subsystem->QueryKeysMappedToAction(Config->AccelerateAction);
+	if (AccelerateInputKeys.IsEmpty()) ResetAccelerateInput();
+}
+
+void APartnerCharacter::HandleAccelerateSettingsInitialized(const UEnhancedInputUserSettings* Settings)
+{
+	// 전달된 저장 설정을 직접 읽어 Subsystem 구독자의 실행 순서에 의존하지 않는다.
+	if (const UOutlierInputUserSettings* InputSettings = Cast<UOutlierInputUserSettings>(Settings))
+	{
+		HandleAccelerateModeChanged(EOutlierPlayerRole::Partner,
+			InputSettings->GetSprintInputMode(EOutlierPlayerRole::Partner));
 	}
 }
 
@@ -1157,6 +1303,7 @@ void APartnerCharacter::SetEnemyPossessionProtection(bool bEnabled)
 
 void APartnerCharacter::StopActionsForReboot()
 {
+	ResetAccelerateInput();
 	if (!HasAuthority())
 	{
 		return;
@@ -1236,6 +1383,7 @@ void APartnerCharacter::OnSuitTransitionBlockChanged()
 void APartnerCharacter::PrepareForSuitTransition()
 {
 	Super::PrepareForSuitTransition();
+	ResetAccelerateInput();
 	// 기존 취소 함수는 능력/공격/Reload 타이머와 비행 입력만 정리하며 Reboot 상태를 부여하지 않는다.
 	if (HasAuthority())
 	{
@@ -1466,9 +1614,13 @@ void APartnerCharacter::CleanupBoostVFXComponents()
 	BoostVFXComponents.Reset();
 }
 
-void APartnerCharacter::ServerSetAccelerate_Implementation(bool bNewAccelerate)
+void APartnerCharacter::ServerSetAccelerate_Implementation(bool bNewAccelerate, uint32 Request, uint32 Epoch)
 {
-	if (!CanAcceptInput())
+	if (Epoch != AccelerateInputEpoch || Request == 0
+		|| static_cast<int32>(Request - ProcessedAccelerateInputRequest) <= 0) return;
+	ProcessedAccelerateInputRequest = Request;
+	// 해제는 차단 상태에서도 수락한다. Release/포커스 초기화가 서버 가속 상태를 남기지 않게 한다.
+	if (bNewAccelerate && !CanAcceptInput())
 	{
 		return;
 	}

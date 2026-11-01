@@ -190,6 +190,8 @@ protected:
 
 public:
 	APartnerPlayerController();
+	virtual void FlushPressedKeys() override;
+	virtual bool InputKey(const FInputKeyEventArgs& Params) override;
 
 	// HUD 슈트 상태는 빙의된 Pawn 대신 이 Controller의 PlayerState를 기준으로 한다.
 	void RefreshPartnerSuitUI();
